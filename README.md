@@ -99,6 +99,7 @@ function run() { addEmployee('王小明', 'E10'); } // 或自訂編號
 | `pending_device_approval` | 新裝置，待核准（核准後會變 `ok`） |
 | `rejected_out_of_range` | 超出 50 公尺範圍，記錄但不算數 |
 | `rejected_device` | 新裝置被拒，不算數 |
+| `rejected_duplicate` | 重複打卡（回看 12 小時內最後一筆算數的卡是同型，上/下班未交替），記錄但不算數 |
 
 ### 員工換手機（或懷疑連結被轉傳）時的核准流程
 

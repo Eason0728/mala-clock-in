@@ -103,6 +103,10 @@
   .btn:disabled { opacity: 0.5; }
   .btn-in { background: var(--brand-orange); }
   .btn-out { background: var(--brand-black); }
+  .btn.not-allowed {
+    filter: grayscale(1);
+    opacity: 0.45;
+  }
   .status-box {
     margin-top: 16px;
     padding: 16px;
@@ -210,7 +214,24 @@
     if (s === 'pending_device_approval') return '待核准';
     if (s === 'rejected_out_of_range') return '超出範圍';
     if (s === 'rejected_device') return '裝置被拒';
+    if (s === 'rejected_duplicate') return '重複打卡';
     return s;
+  }
+
+  // 目前不允許的打卡型別（'in'/'out'/null）。由伺服器 whoami 的 last_counted
+  // （12 小時回看視窗，跨日也算）決定，不要自己從 today_events 算。
+  var blockedType = null;
+
+  function duplicateMessage(lastType) {
+    return lastType === 'in'
+      ? '⚠ 已打過上班卡，下一筆請打下班卡'
+      : '⚠ 已打過下班卡，下一筆請打上班卡';
+  }
+
+  function updateButtonStates(lastCounted) {
+    blockedType = lastCounted ? lastCounted.type : null;
+    btnIn.classList.toggle('not-allowed', blockedType === 'in');
+    btnOut.classList.toggle('not-allowed', blockedType === 'out');
   }
 
   function renderTodayEvents(events) {
@@ -268,6 +289,7 @@
           deviceHintEl.textContent = '';
         }
         renderTodayEvents(res.today_events);
+        updateButtonStates(res.last_counted);
       })
       .catch(function () {
         showError('連線失敗，請檢查網路連線後重新整理頁面。');
@@ -316,6 +338,11 @@
   }
 
   function doClock(type) {
+    if (blockedType === type) {
+      // 不打 API，直接提醒（按鈕仍可點，僅灰階視覺）
+      showStatus('status-warn', duplicateMessage(blockedType));
+      return;
+    }
     setBusy(true);
     showStatus('status-loading', '定位中…');
     getPosition()
@@ -341,11 +368,17 @@
           showStatus('status-error', '✕ 距離門市 ' + Math.round(res.distance_m) + ' 公尺，超出範圍，請到店內再打卡。');
         } else if (res.status === 'pending_device_approval') {
           showStatus('status-warn', '⚠ 新裝置，需老闆核准後生效。');
+        } else if (res.status === 'rejected_duplicate') {
+          // 安全網：舊頁面/多分頁競態下由伺服器擋下
+          showStatus('status-warn', duplicateMessage(res.last_type));
         } else {
           showStatus('status-warn', String(res.status));
         }
         apiPost({ action: 'whoami', key: key, device_id: deviceId }).then(function (r) {
-          if (r.ok) renderTodayEvents(r.today_events);
+          if (r.ok) {
+            renderTodayEvents(r.today_events);
+            updateButtonStates(r.last_counted);
+          }
         });
       })
       .catch(function (err) {

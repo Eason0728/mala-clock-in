@@ -32,6 +32,9 @@ ADMIN_KEY = "test-admin"
 STORE_LAT = 24.7838051
 STORE_LNG = 121.015592
 RADIUS_M = 50
+# 上下班交替判斷的回看視窗（小時）：看得到跨夜班前一晚的上班卡，
+# 但昨天忘打的下班卡（超過視窗）不會鎖死今天的上班卡。
+ALTERNATION_LOOKBACK_HOURS = 12
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
 
@@ -117,6 +120,26 @@ def find_roster_by_empid(data, emp_id):
     return None
 
 
+def last_counted_event(data, emp_id):
+    """上下班交替判斷：取該員工「現在往前 ALTERNATION_LOOKBACK_HOURS 小時內」
+    status 非 rejected_* 的最後一筆事件（跨日也算）。回傳 {ts, type} 或 None。
+    pending_device_approval 也算數：核准後會翻成 ok，若不算數會造成核准後同型重複。"""
+    cutoff = now_taipei() - timedelta(hours=ALTERNATION_LOOKBACK_HOURS)
+    last = None
+    for e in data["events"]:
+        if e["emp_id"] != emp_id:
+            continue
+        if str(e["status"]).startswith("rejected_"):
+            continue
+        try:
+            ts = datetime.fromisoformat(e["ts"])
+        except ValueError:
+            continue
+        if ts >= cutoff:
+            last = {"ts": e["ts"], "type": e["type"]}
+    return last
+
+
 def handle_clock(data, body):
     key = body.get("key")
     type_ = body.get("type")
@@ -133,6 +156,10 @@ def handle_clock(data, body):
     within_range = distance_m <= RADIUS_M
     ts = iso_now()
 
+    # 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
+    last_counted = last_counted_event(data, roster["emp_id"])
+    is_duplicate = last_counted is not None and last_counted["type"] == type_
+
     if not roster.get("device_id"):
         roster["device_id"] = device_id
         roster["device_bound_at"] = ts
@@ -142,8 +169,10 @@ def handle_clock(data, body):
     else:
         device_match = False
 
-    # status 優先序：裝置不符 > 超出範圍 > ok
-    if not device_match:
+    # status 優先序：重複 > 裝置不符 > 超出範圍 > ok
+    if is_duplicate:
+        status = "rejected_duplicate"
+    elif not device_match:
         status = "pending_device_approval"
     elif not within_range:
         status = "rejected_out_of_range"
@@ -165,7 +194,7 @@ def handle_clock(data, body):
     data["events"].append(event)
     save_data(data)
 
-    return {
+    result = {
         "ok": True,
         "status": status,
         "name": roster["name"],
@@ -173,6 +202,9 @@ def handle_clock(data, body):
         "distance_m": distance_m,
         "within_range": within_range,
     }
+    if status == "rejected_duplicate":
+        result["last_type"] = last_counted["type"]
+    return result
 
 
 def handle_whoami(data, body):
@@ -203,6 +235,9 @@ def handle_whoami(data, body):
         "name": roster["name"],
         "device_state": device_state,
         "today_events": today_events,
+        # 前端按鈕灰階/擋卡提醒用這個判斷（12 小時回看視窗，跨日也算），
+        # 不要自己從 today_events 算，避免跨日時兩邊算法不一致。
+        "last_counted": last_counted_event(data, roster["emp_id"]),
     }
 
 

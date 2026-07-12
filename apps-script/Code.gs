@@ -20,6 +20,9 @@ const CONFIG = {
   STORE_LNG: 121.015592,
   RADIUS_M: 50,
   ADMIN_KEY: 'PASTE_ADMIN_KEY_HERE',
+  // 上下班交替判斷的回看視窗（小時）：看得到跨夜班前一晚的上班卡，
+  // 但昨天忘打的下班卡（超過視窗）不會鎖死今天的上班卡。
+  ALTERNATION_LOOKBACK_HOURS: 12,
 };
 
 const ROSTER_HEADERS = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active'];
@@ -159,6 +162,24 @@ function stripRowIndex(row) {
   return copy;
 }
 
+/**
+ * 上下班交替判斷：取該員工「現在時刻往前 ALTERNATION_LOOKBACK_HOURS 小時內」
+ * status 非 rejected_* 的最後一筆事件（跨日也算）。回傳 {ts, type} 或 null。
+ * pending_device_approval 也算數：核准後會翻成 ok，若不算數會造成核准後同型重複。
+ */
+function lastCountedEvent(eventRows, empId) {
+  const cutoffMs = Date.now() - CONFIG.ALTERNATION_LOOKBACK_HOURS * 60 * 60 * 1000;
+  let last = null;
+  eventRows.forEach(function (e) {
+    if (String(e.emp_id) !== String(empId)) return;
+    if (String(e.status).indexOf('rejected_') === 0) return;
+    const tsMs = new Date(String(e.ts)).getTime();
+    if (isNaN(tsMs) || tsMs < cutoffMs) return;
+    last = { ts: String(e.ts), type: String(e.type) };
+  });
+  return last;
+}
+
 function handleClock(body) {
   const ss = getSS();
   const rosterSheet = ss.getSheetByName('roster');
@@ -177,6 +198,10 @@ function handleClock(body) {
   const withinRange = distanceM <= CONFIG.RADIUS_M;
   const ts = nowTaipeiIso();
 
+  // 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
+  const lastCounted = lastCountedEvent(readSheetAsObjects(eventsSheet).rows, roster.emp_id);
+  const isDuplicate = lastCounted !== null && lastCounted.type === String(body.type);
+
   let deviceMatch;
   if (!roster.device_id) {
     rosterSheet.getRange(roster.__rowIndex, ROSTER_HEADERS.indexOf('device_id') + 1).setValue(deviceId);
@@ -188,9 +213,11 @@ function handleClock(body) {
     deviceMatch = false;
   }
 
-  // status 優先序：裝置不符 > 超出範圍 > ok
+  // status 優先序：重複 > 裝置不符 > 超出範圍 > ok
   let status;
-  if (!deviceMatch) {
+  if (isDuplicate) {
+    status = 'rejected_duplicate';
+  } else if (!deviceMatch) {
     status = 'pending_device_approval';
   } else if (!withinRange) {
     status = 'rejected_out_of_range';
@@ -200,7 +227,11 @@ function handleClock(body) {
 
   eventsSheet.appendRow([ts, roster.emp_id, body.type, lat, lng, distanceM, withinRange, deviceId, deviceMatch, status]);
 
-  return { ok: true, status: status, name: roster.name, ts: ts, distance_m: distanceM, within_range: withinRange };
+  const result = { ok: true, status: status, name: roster.name, ts: ts, distance_m: distanceM, within_range: withinRange };
+  if (status === 'rejected_duplicate') {
+    result.last_type = lastCounted.type;
+  }
+  return result;
 }
 
 function handleWhoami(body) {
@@ -230,7 +261,16 @@ function handleWhoami(body) {
     .filter(function (e) { return String(e.emp_id) === String(roster.emp_id) && String(e.ts).slice(0, 10) === today; })
     .map(function (e) { return { ts: e.ts, type: e.type, status: e.status }; });
 
-  return { ok: true, emp_id: roster.emp_id, name: roster.name, device_state: deviceState, today_events: todayEvents };
+  return {
+    ok: true,
+    emp_id: roster.emp_id,
+    name: roster.name,
+    device_state: deviceState,
+    today_events: todayEvents,
+    // 前端按鈕灰階/擋卡提醒用這個判斷（12 小時回看視窗，跨日也算），
+    // 不要自己從 today_events 算，避免跨日時兩邊算法不一致。
+    last_counted: lastCountedEvent(eventRows, roster.emp_id),
+  };
 }
 
 function checkAdmin(body) {
