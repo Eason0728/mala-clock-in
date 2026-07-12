@@ -19,9 +19,9 @@
 
 const CONFIG = {
   SPREADSHEET_ID: 'PASTE_SPREADSHEET_ID_HERE',
-  STORE_LAT: 24.7838051,
-  STORE_LNG: 121.015592,
-  RADIUS_M: 5, // 允許打卡半徑（公尺）：Eason 指定收緊為 5 公尺，人要就在店裡
+  STORE_LAT: 24.7840945,   // 2026-07-13 依店內實測校正（原地址標記點偏差約 35m）
+  STORE_LNG: 121.0157448,
+  RADIUS_M: 30,             // 允許打卡半徑（公尺）。2026-07-13 Eason 定案：涵蓋室內 GPS 飄移、擋隔壁街區
   ADMIN_KEY: 'PASTE_ADMIN_KEY_HERE',
   // 上下班交替判斷的回看視窗（小時）：看得到跨夜班前一晚的上班卡，
   // 但昨天忘打的下班卡（超過視窗）不會鎖死今天的上班卡。
