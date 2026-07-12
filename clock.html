@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>麻的小辛辣 員工打卡</title>
+<style>
+  :root {
+    --brand-red: #E8380D;
+    --brand-pink: #EF856D;
+    --brand-black: #231815;
+    --brand-orange: #F08300;
+    --brand-gold: #FABE00;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: var(--brand-red);
+    color: #fff;
+    min-height: 100vh;
+  }
+  .container {
+    max-width: 480px;
+    margin: 0 auto;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    padding: 28px 20px 40px;
+  }
+  header {
+    text-align: center;
+    margin-bottom: 28px;
+  }
+  header h1 {
+    font-size: 26px;
+    font-weight: 900;
+    margin: 0 0 4px;
+    letter-spacing: 2px;
+  }
+  header p {
+    margin: 0;
+    opacity: 0.85;
+    font-size: 14px;
+  }
+  .card {
+    background: #fff;
+    color: var(--brand-black);
+    border-radius: 16px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  }
+  .name-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 10px;
+  }
+  .name-row .name {
+    font-size: 22px;
+    font-weight: 700;
+  }
+  .device-hint {
+    font-size: 12px;
+    color: #8a6a5f;
+    margin-bottom: 10px;
+    min-height: 16px;
+  }
+  .today-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    font-size: 14px;
+  }
+  .today-list li {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid #f0e6e2;
+  }
+  .today-list li:last-child { border-bottom: none; }
+  .no-events {
+    font-size: 14px;
+    color: #8a6a5f;
+  }
+  .btn-group {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: auto;
+  }
+  .btn {
+    font-size: 22px;
+    font-weight: 900;
+    padding: 26px;
+    border-radius: 16px;
+    border: none;
+    color: #fff;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn:disabled { opacity: 0.5; }
+  .btn-in { background: var(--brand-orange); }
+  .btn-out { background: var(--brand-black); }
+  .status-box {
+    margin-top: 16px;
+    padding: 16px;
+    border-radius: 12px;
+    font-size: 15px;
+    line-height: 1.6;
+    display: none;
+  }
+  .status-box.show { display: block; }
+  .status-ok { background: #e6f7ec; color: #1a7a3d; }
+  .status-warn { background: #fff6e0; color: #8a6100; }
+  .status-error { background: #fdeceb; color: #c22a12; }
+  .status-loading { background: rgba(255, 255, 255, 0.9); color: var(--brand-black); }
+  .center-msg { text-align: center; padding: 40px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>麻的🔥小辛辣</h1>
+    <p>員工打卡</p>
+  </header>
+
+  <div id="loadingCard" class="card center-msg">載入中…</div>
+
+  <div id="mainCard" class="card" style="display:none;">
+    <div class="name-row">
+      <span class="name" id="empName">—</span>
+    </div>
+    <div class="device-hint" id="deviceHint"></div>
+    <ul class="today-list" id="todayList"></ul>
+    <div class="no-events" id="noEvents" style="display:none;">今天還沒有打卡紀錄</div>
+  </div>
+
+  <div id="errorCard" class="card center-msg" style="display:none; color:#c22a12;"></div>
+
+  <div class="btn-group" id="btnGroup" style="display:none;">
+    <button class="btn btn-in" id="btnIn" type="button">上班打卡</button>
+    <button class="btn btn-out" id="btnOut" type="button">下班打卡</button>
+  </div>
+
+  <div class="status-box" id="statusBox"></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var API_URL = 'PASTE_APPS_SCRIPT_URL_HERE';
+
+  function qs(name) {
+    var params = new URLSearchParams(window.location.search);
+    return params.get(name);
+  }
+
+  var isLocalHost = ['localhost', '127.0.0.1'].indexOf(window.location.hostname) !== -1;
+  if (isLocalHost) {
+    var apiOverride = qs('api');
+    if (apiOverride) API_URL = apiOverride;
+  }
+
+  var key = qs('k');
+
+  var DEVICE_KEY = 'mala_clock_device';
+  function fallbackUuid() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      var r = (Math.random() * 16) | 0;
+      var v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+  function getDeviceId() {
+    var id = localStorage.getItem(DEVICE_KEY);
+    if (!id) {
+      id = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : fallbackUuid();
+      localStorage.setItem(DEVICE_KEY, id);
+    }
+    return id;
+  }
+  var deviceId = getDeviceId();
+
+  var loadingCard = document.getElementById('loadingCard');
+  var mainCard = document.getElementById('mainCard');
+  var errorCard = document.getElementById('errorCard');
+  var btnGroup = document.getElementById('btnGroup');
+  var empNameEl = document.getElementById('empName');
+  var deviceHintEl = document.getElementById('deviceHint');
+  var todayListEl = document.getElementById('todayList');
+  var noEventsEl = document.getElementById('noEvents');
+  var statusBox = document.getElementById('statusBox');
+  var btnIn = document.getElementById('btnIn');
+  var btnOut = document.getElementById('btnOut');
+
+  function showError(msg) {
+    loadingCard.style.display = 'none';
+    mainCard.style.display = 'none';
+    btnGroup.style.display = 'none';
+    errorCard.style.display = 'block';
+    errorCard.textContent = msg;
+  }
+
+  function typeLabel(t) { return t === 'in' ? '上班' : '下班'; }
+  function statusLabel(s) {
+    if (s === 'ok') return '正常';
+    if (s === 'pending_device_approval') return '待核准';
+    if (s === 'rejected_out_of_range') return '超出範圍';
+    if (s === 'rejected_device') return '裝置被拒';
+    return s;
+  }
+
+  function renderTodayEvents(events) {
+    todayListEl.innerHTML = '';
+    if (!events || events.length === 0) {
+      noEventsEl.style.display = 'block';
+      return;
+    }
+    noEventsEl.style.display = 'none';
+    events.forEach(function (e) {
+      var li = document.createElement('li');
+      var time = (e.ts || '').substring(11, 16);
+      var left = document.createElement('span');
+      left.textContent = typeLabel(e.type) + ' ' + time;
+      var right = document.createElement('span');
+      right.textContent = statusLabel(e.status);
+      li.appendChild(left);
+      li.appendChild(right);
+      todayListEl.appendChild(li);
+    });
+  }
+
+  function apiPost(payload) {
+    return fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(payload),
+    }).then(function (res) { return res.json(); });
+  }
+
+  function init() {
+    if (!key) {
+      showError('連結錯誤：找不到員工代碼，請確認打卡連結是否完整。');
+      return;
+    }
+    if (API_URL.indexOf('PASTE_') === 0) {
+      showError('系統尚未設定完成，請聯絡老闆。');
+      return;
+    }
+    apiPost({ action: 'whoami', key: key, device_id: deviceId })
+      .then(function (res) {
+        if (!res.ok) {
+          showError('找不到這個打卡連結對應的員工，請確認連結是否正確。');
+          return;
+        }
+        loadingCard.style.display = 'none';
+        mainCard.style.display = 'block';
+        btnGroup.style.display = 'flex';
+        empNameEl.textContent = res.name;
+        if (res.device_state === 'unbound') {
+          deviceHintEl.textContent = '本裝置尚未綁定，首次打卡將自動綁定。';
+        } else if (res.device_state === 'mismatch') {
+          deviceHintEl.textContent = '這不是你平常綁定的裝置，打卡將送出待核准。';
+        } else {
+          deviceHintEl.textContent = '';
+        }
+        renderTodayEvents(res.today_events);
+      })
+      .catch(function () {
+        showError('連線失敗，請檢查網路連線後重新整理頁面。');
+      });
+  }
+
+  function setBusy(busy) {
+    btnIn.disabled = busy;
+    btnOut.disabled = busy;
+  }
+
+  function showStatus(cls, text) {
+    statusBox.className = 'status-box show ' + cls;
+    statusBox.textContent = text;
+  }
+
+  function getPosition() {
+    return new Promise(function (resolve, reject) {
+      if (!navigator.geolocation) {
+        reject(new Error('此裝置不支援定位功能，無法打卡。'));
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        function (pos) { resolve(pos); },
+        function (err) {
+          if (err.code === err.PERMISSION_DENIED) {
+            reject(new Error('定位權限被拒絕，請到手機設定開啟此頁面的定位權限後再試一次。'));
+          } else if (err.code === err.TIMEOUT) {
+            reject(new Error('定位逾時，請確認 GPS 訊號後重試。'));
+          } else {
+            reject(new Error('定位失敗，請重試。'));
+          }
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    });
+  }
+
+  function doClock(type) {
+    setBusy(true);
+    showStatus('status-loading', '定位中…');
+    getPosition()
+      .then(function (pos) {
+        showStatus('status-loading', '送出打卡中…');
+        return apiPost({
+          action: 'clock',
+          key: key,
+          type: type,
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          device_id: deviceId,
+        });
+      })
+      .then(function (res) {
+        if (!res.ok) {
+          showStatus('status-error', '✕ 打卡失敗：找不到員工資料，請確認連結是否正確。');
+          return;
+        }
+        if (res.status === 'ok') {
+          showStatus('status-ok', '✓ 打卡成功　' + (res.ts || '').substring(11, 16));
+        } else if (res.status === 'rejected_out_of_range') {
+          showStatus('status-error', '✕ 距離門市 ' + Math.round(res.distance_m) + ' 公尺，超出範圍，請到店內再打卡。');
+        } else if (res.status === 'pending_device_approval') {
+          showStatus('status-warn', '⚠ 新裝置，需老闆核准後生效。');
+        } else {
+          showStatus('status-warn', String(res.status));
+        }
+        apiPost({ action: 'whoami', key: key, device_id: deviceId }).then(function (r) {
+          if (r.ok) renderTodayEvents(r.today_events);
+        });
+      })
+      .catch(function (err) {
+        showStatus('status-error', '✕ ' + err.message);
+      })
+      .then(function () { setBusy(false); }, function () { setBusy(false); });
+  }
+
+  btnIn.addEventListener('click', function () { doClock('in'); });
+  btnOut.addEventListener('click', function () { doClock('out'); });
+
+  init();
+})();
+</script>
+</body>
+</html>

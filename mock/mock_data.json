@@ -1,0 +1,21 @@
+{
+  "roster": [
+    {
+      "emp_id": "E01",
+      "name": "測試一",
+      "key": "testkey1",
+      "device_id": "",
+      "device_bound_at": "",
+      "active": true
+    },
+    {
+      "emp_id": "E02",
+      "name": "測試二",
+      "key": "testkey2",
+      "device_id": "",
+      "device_bound_at": "",
+      "active": true
+    }
+  ],
+  "events": []
+}
