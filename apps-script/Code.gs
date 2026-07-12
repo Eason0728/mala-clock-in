@@ -370,7 +370,11 @@ function applyDeviceDecision(empId, deviceId, approve) {
       String(e.device_id) === String(deviceId) &&
       e.status === 'pending_device_approval'
     ) {
-      const newStatus = approve ? 'ok' : 'rejected_device';
+      // 核准只解「裝置」這一關：超出範圍的卡翻成 rejected_out_of_range，不得入帳
+      // （否則在家用新裝置打卡→核准換機→在家打的卡變有效，2026-07-12 實測抓到的漏洞）
+      const newStatus = approve
+        ? (e.within_range === true ? 'ok' : 'rejected_out_of_range')
+        : 'rejected_device';
       eventsSheet.getRange(e.__rowIndex, EVENTS_HEADERS.indexOf('status') + 1).setValue(newStatus);
       if (approve) {
         eventsSheet.getRange(e.__rowIndex, EVENTS_HEADERS.indexOf('device_match') + 1).setValue(true);

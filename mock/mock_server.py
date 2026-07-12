@@ -324,7 +324,8 @@ def handle_approve_device(data, body):
             and e["status"] == "pending_device_approval"
         ):
             if approve:
-                e["status"] = "ok"
+                # 核准只解「裝置」這一關：超出範圍的卡不得因核准而入帳（與 Code.gs 同步）
+                e["status"] = "ok" if e.get("within_range") else "rejected_out_of_range"
                 e["device_match"] = True
             else:
                 e["status"] = "rejected_device"
