@@ -4,7 +4,8 @@
  * 部署方式（老闆手動操作，Claude 不代為部署雲端資源）：
  *   1. 開一份新的 Google 試算表，複製其 ID 貼到下面 CONFIG.SPREADSHEET_ID。
  *   2. 開啟 Extensions > Apps Script，貼上本檔全部內容。
- *   3. 設定 CONFIG.ADMIN_KEY（自訂一組管理密鑰，供排班 App 呼叫管理端點用）。
+ *   3. 設定 CONFIG.ADMIN_KEY（自訂一組管理密鑰，供管理端點 API 使用；
+ *      排班 app 整合暫緩期間，日常名冊/裝置管理改用檔尾的編輯器管理函式）。
  *   4. 手動執行一次 setup() 函式（會要求授權），建立 roster / events 兩個分頁與表頭。
  *   5. Deploy > New deployment > Web app：Execute as「我」、Who has access「Anyone」。
  *   6. 複製部署網址，貼到 clock.html 的 API_URL 常數。
@@ -284,28 +285,30 @@ function handleGetEvents(body) {
   return { ok: true, events: filtered };
 }
 
-function handleApproveDevice(body) {
-  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
-
+/**
+ * 裝置核准/拒絕的共用邏輯（API 的 approve_device 與編輯器端
+ * approvePendingDevice / rejectPendingDevice 都走這裡，勿複製兩份）。
+ * approve=true：roster 改綁該裝置＋pending events 改 ok、device_match=true；
+ * approve=false：pending events 改 rejected_device，roster 不改綁。
+ */
+function applyDeviceDecision(empId, deviceId, approve) {
   const ss = getSS();
   const rosterSheet = ss.getSheetByName('roster');
   const eventsSheet = ss.getSheetByName('events');
   const rosterRows = readSheetAsObjects(rosterSheet).rows;
-  const roster = findRosterByEmpId(rosterRows, body.emp_id);
+  const roster = findRosterByEmpId(rosterRows, empId);
   if (!roster) return { ok: false, error: 'invalid_emp_id' };
-
-  const deviceId = body.device_id;
-  const approve = !!body.approve;
 
   if (approve) {
     rosterSheet.getRange(roster.__rowIndex, ROSTER_HEADERS.indexOf('device_id') + 1).setValue(deviceId);
     rosterSheet.getRange(roster.__rowIndex, ROSTER_HEADERS.indexOf('device_bound_at') + 1).setValue(nowTaipeiIso());
   }
 
+  let changed = 0;
   const eventRows = readSheetAsObjects(eventsSheet).rows;
   eventRows.forEach(function (e) {
     if (
-      String(e.emp_id) === String(body.emp_id) &&
+      String(e.emp_id) === String(empId) &&
       String(e.device_id) === String(deviceId) &&
       e.status === 'pending_device_approval'
     ) {
@@ -314,8 +317,134 @@ function handleApproveDevice(body) {
       if (approve) {
         eventsSheet.getRange(e.__rowIndex, EVENTS_HEADERS.indexOf('device_match') + 1).setValue(true);
       }
+      changed++;
     }
   });
 
-  return { ok: true };
+  return { ok: true, changed: changed };
+}
+
+function handleApproveDevice(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  return applyDeviceDecision(body.emp_id, body.device_id, !!body.approve);
+}
+
+/* ============================================================
+ * 管理用函式：在 Apps Script 編輯器手動執行，不經 API。
+ * （排班 app 整合暫緩，名冊管理與裝置核准先由這裡操作。）
+ * 用法：在編輯器裡開一個暫時函式帶參數呼叫，例如
+ *   function run() { addEmployee('王小明'); }
+ * 然後選 run 執行，結果看「執行紀錄」（Logger）。
+ * ============================================================ */
+
+/**
+ * 新增員工。empId 可省略，省略時自動編號（接續現有最大 E 編號，如 E03）。
+ * 執行後 Logger 印出該員工的專屬連結參數（?k=金鑰）。
+ */
+function addEmployee(name, empId) {
+  if (!name) throw new Error('請提供員工姓名，例如 addEmployee("王小明")');
+  const ss = getSS();
+  const rosterSheet = ss.getSheetByName('roster');
+  const rosterRows = readSheetAsObjects(rosterSheet).rows;
+
+  if (!empId) {
+    let maxNum = 0;
+    rosterRows.forEach(function (r) {
+      const m = String(r.emp_id).match(/^E(\d+)$/);
+      if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
+    });
+    empId = 'E' + ('0' + (maxNum + 1)).slice(-2);
+  } else if (findRosterByEmpId(rosterRows, empId)) {
+    throw new Error('emp_id 已存在：' + empId);
+  }
+
+  const key = genKey();
+  rosterSheet.appendRow([empId, name, key, '', '', true]);
+  Logger.log('已新增員工 %s（%s），專屬連結參數：?k=%s', name, empId, key);
+  return { emp_id: empId, name: name, key: key };
+}
+
+/** 員工離職：active 設 false（不刪列、不動 key/裝置紀錄）。用法：deactivateEmployee('E03') */
+function deactivateEmployee(empId) {
+  const ss = getSS();
+  const rosterSheet = ss.getSheetByName('roster');
+  const roster = findRosterByEmpId(readSheetAsObjects(rosterSheet).rows, empId);
+  if (!roster) throw new Error('找不到員工：' + empId);
+  rosterSheet.getRange(roster.__rowIndex, ROSTER_HEADERS.indexOf('active') + 1).setValue(false);
+  Logger.log('已將 %s（%s）設為離職（active=false）', roster.name, empId);
+}
+
+/** 收集所有待核准裝置，依 員工＋裝置碼 分組（內部共用）。 */
+function collectPendingDevices() {
+  const ss = getSS();
+  const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
+  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows;
+
+  const groups = {};
+  eventRows.forEach(function (e) {
+    if (e.status !== 'pending_device_approval') return;
+    const gk = String(e.emp_id) + '||' + String(e.device_id);
+    if (!groups[gk]) {
+      const roster = findRosterByEmpId(rosterRows, e.emp_id);
+      groups[gk] = {
+        emp_id: String(e.emp_id),
+        name: roster ? roster.name : '(不在名冊)',
+        device_id: String(e.device_id),
+        first_ts: String(e.ts),
+        last_ts: String(e.ts),
+        count: 0,
+      };
+    }
+    const g = groups[gk];
+    g.count++;
+    if (String(e.ts) < g.first_ts) g.first_ts = String(e.ts);
+    if (String(e.ts) > g.last_ts) g.last_ts = String(e.ts);
+  });
+
+  return Object.keys(groups).map(function (k) { return groups[k]; })
+    .sort(function (a, b) { return a.first_ts < b.first_ts ? -1 : 1; });
+}
+
+/** 列出所有待核准的新裝置（姓名、裝置碼、首次時間、筆數），結果看 Logger。 */
+function listPendingDevices() {
+  const pending = collectPendingDevices();
+  if (pending.length === 0) {
+    Logger.log('目前沒有待核准的裝置。');
+    return;
+  }
+  pending.forEach(function (g) {
+    Logger.log(
+      '員工 %s（%s）｜裝置碼 %s｜首次 %s｜共 %s 筆待核准',
+      g.name, g.emp_id, g.device_id, g.first_ts, String(g.count)
+    );
+  });
+}
+
+/** 取該員工最新（最後打卡）的待核准裝置；沒有則丟錯誤（內部共用）。 */
+function latestPendingDevice(empId) {
+  const pending = collectPendingDevices().filter(function (g) { return g.emp_id === String(empId); });
+  if (pending.length === 0) throw new Error('員工 ' + empId + ' 沒有待核准的裝置');
+  pending.sort(function (a, b) { return a.last_ts < b.last_ts ? -1 : 1; });
+  return pending[pending.length - 1];
+}
+
+/**
+ * 核准某員工「最新一個」待核准裝置：roster 改綁該裝置，
+ * 該員工該裝置所有 pending events 改 status=ok、device_match=true。
+ * 用法：approvePendingDevice('E01')
+ */
+function approvePendingDevice(empId) {
+  const target = latestPendingDevice(empId);
+  const result = applyDeviceDecision(empId, target.device_id, true);
+  Logger.log('已核准 %s（%s）的裝置 %s，共更新 %s 筆事件', target.name, empId, target.device_id, String(result.changed));
+}
+
+/**
+ * 拒絕某員工「最新一個」待核准裝置：pending events 改 status=rejected_device，
+ * roster 不改綁。用法：rejectPendingDevice('E01')
+ */
+function rejectPendingDevice(empId) {
+  const target = latestPendingDevice(empId);
+  const result = applyDeviceDecision(empId, target.device_id, false);
+  Logger.log('已拒絕 %s（%s）的裝置 %s，共更新 %s 筆事件', target.name, empId, target.device_id, String(result.changed));
 }

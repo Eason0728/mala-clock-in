@@ -57,7 +57,7 @@
 2. 開啟該試算表的 Extensions > Apps Script，貼上 `apps-script/Code.gs` 全部內容。
 3. 修改檔頭 `CONFIG`：
    - `SPREADSHEET_ID` 填入步驟 1 的試算表 ID
-   - `ADMIN_KEY` 自訂一組管理密鑰（給排班 App 呼叫管理端點用，不要用本機測試的 `test-admin`）
+   - `ADMIN_KEY` 自訂一組管理密鑰（供管理端點 API 使用，不要用本機測試的 `test-admin`）
    - `STORE_LAT` / `STORE_LNG` / `RADIUS_M` 已預填光復店座標與 50 公尺半徑，如需調整在此修改
 4. 在 Apps Script 編輯器手動執行一次 `setup()` 函式（會跳出授權視窗，需同意），建立 `roster`、`events` 兩個分頁與表頭。
 5. Deploy > New deployment > Web app：
@@ -65,12 +65,55 @@
    - Who has access：Anyone
    - 部署後複製 Web App 網址
 6. 把該網址貼到 `clock.html` 的 `API_URL` 常數（取代 `PASTE_APPS_SCRIPT_URL_HERE`）。
-7. 用排班 App 的「同步名冊」功能（`sync_roster` 動作）把在職員工同步進 `roster` 分頁，取得每人的專屬 `key`，組出打卡連結：
+7. 加入員工並取得每人的專屬 `key`（做法見下節「不連接排班 app 的營運方式」），組出打卡連結：
    ```
    https://你的網域或路徑/clock.html?k=員工的key
    ```
    （若 clock.html 直接放 GitHub Pages 或其他靜態網站，網址前綴依實際部署位置而定）
 8. 把連結傳給對應員工即可開始使用。
+
+（暫緩，待日後連接）原設計由排班 App 的「同步名冊」按鈕呼叫 `sync_roster` 動作批次同步在職員工、並在排班 App 的「出勤」分頁看紀錄與核准裝置；排班 app 整合暫緩期間改用下節做法，`sync_roster`／`approve_device` 等 API 動作原樣保留，日後連接直接可用。
+
+## 不連接排班 app 的營運方式（現行做法）
+
+排班 app 整合暫緩，名冊管理與裝置核准全部在 **Apps Script 編輯器**操作：開啟試算表 > Extensions > Apps Script，在程式碼最下方寫一個暫時函式帶參數，選它執行，結果看下方「執行紀錄」（Logger）。
+
+### 加員工、拿專屬連結
+
+```javascript
+function run() { addEmployee('王小明'); }        // 自動編號（接續最大 E 編號，如 E03）
+function run() { addEmployee('王小明', 'E10'); } // 或自訂編號
+```
+
+執行紀錄會印出：`已新增員工 王小明（E03），專屬連結參數：?k=xxxxxxxxxxxxxxxxxxxx`。把 `?k=...` 接在 clock.html 網址後面，傳給該員工。
+
+員工離職：`function run() { deactivateEmployee('E03'); }`（active 設 false，該連結即失效，不刪資料）。
+
+### 看打卡紀錄
+
+直接開 Google 試算表的 `events` 分頁，一列一筆打卡事件（時間、員工、上/下班、座標、距離、是否在範圍內、裝置、狀態）。`status` 欄意義：
+
+| status | 意義 |
+|---|---|
+| `ok` | 正常入帳 |
+| `pending_device_approval` | 新裝置，待核准（核准後會變 `ok`） |
+| `rejected_out_of_range` | 超出 50 公尺範圍，記錄但不算數 |
+| `rejected_device` | 新裝置被拒，不算數 |
+
+### 員工換手機（或懷疑連結被轉傳）時的核准流程
+
+1. 列出所有待核准裝置（姓名、裝置碼、首次時間、筆數）：
+   ```javascript
+   function run() { listPendingDevices(); }
+   ```
+2. 確認是本人換手機 → 核准（取該員工「最新一個」待核准裝置：roster 改綁新裝置，該裝置的待核准打卡全部補登為 `ok`）：
+   ```javascript
+   function run() { approvePendingDevice('E01'); }
+   ```
+3. 不是本人（連結被轉傳代打）→ 拒絕（那些打卡改 `rejected_device`，roster 不改綁）：
+   ```javascript
+   function run() { rejectPendingDevice('E01'); }
+   ```
 
 ## 注意事項
 
