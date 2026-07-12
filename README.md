@@ -58,7 +58,7 @@
 3. 修改檔頭 `CONFIG`：
    - `SPREADSHEET_ID` 填入步驟 1 的試算表 ID
    - `ADMIN_KEY` 自訂一組管理密鑰（供管理端點 API 使用，不要用本機測試的 `test-admin`）
-   - `STORE_LAT` / `STORE_LNG` / `RADIUS_M` 已預填光復店座標與 50 公尺半徑，如需調整在此修改
+   - `STORE_LAT` / `STORE_LNG` / `RADIUS_M` 已預填光復店座標與 5 公尺半徑，如需調整在此修改
 4. 在 Apps Script 編輯器手動執行一次 `setup()` 函式（會跳出授權視窗，需同意），建立 `roster`、`events` 兩個分頁與表頭。
 5. Deploy > New deployment > Web app：
    - Execute as：我（自己的帳號）
@@ -97,7 +97,7 @@ function run() { addEmployee('王小明', 'E10'); } // 或自訂編號
 |---|---|
 | `ok` | 正常入帳 |
 | `pending_device_approval` | 新裝置，待核准（核准後會變 `ok`） |
-| `rejected_out_of_range` | 超出 50 公尺範圍，記錄但不算數 |
+| `rejected_out_of_range` | 超出 5 公尺範圍，記錄但不算數 |
 | `rejected_device` | 新裝置被拒，不算數 |
 | `rejected_duplicate` | 重複打卡（回看 12 小時內最後一筆算數的卡是同型，上/下班未交替），記錄但不算數 |
 
@@ -115,6 +115,42 @@ function run() { addEmployee('王小明', 'E10'); } // 或自訂編號
    ```javascript
    function run() { rejectPendingDevice('E01'); }
    ```
+
+## 出勤月表
+
+### 分頁機制
+
+- 每月一個分頁，分頁名＝`yyyy-MM`（如 `2026-07`），由程式**整頁重算產生**——不要手動改月表分頁的內容，下次重算會整頁覆蓋（要人工修正就改 `events`／`leave` 來源資料）。
+- 版面：上段「當月累計」（姓名｜參考時數｜異常筆數｜請假天數，依 roster 順序、只列在職員工），空一列後接明細——**一人一整月**：每位員工一個區塊（粗體姓名標題列＋該員工當月每個有紀錄日一列：日期｜星期｜班段｜參考時數｜備註＋「小計」列），區塊間空一列。明細列到今天為止；週六日該列淺灰底、備註異常字紅色。
+- 班段＝`ok` 事件依時間配對（in 配 12 小時內的下一筆 out），跨夜班顯示 `HH:MM–HH:MM(+1)` 並歸上班那天。配不到的顯示 `？`＋備註「下班忘刷卡」／「上班忘刷卡」；**當天只要有任一筆忘刷卡，該日參考時數整天留空白**（待人工判定）。參考時數為原始時數（1 位小數），不四捨五入、不取整——薪資規則是階段二的事。
+- 自動重算：先在 Apps Script 編輯器手動執行一次 `setupMonthlyTrigger()`（重複執行不會疊加觸發器），之後每天 05:00 自動重算當月。**觸發時刻依 Apps Script 專案設定的時區，請確認為台北 (GMT+8)。**
+- 凍結規則：每月 1–3 日會連上月一起重算（收尾跨夜班、補核准的裝置事件），4 日起上月分頁凍結不再變動。
+
+### leave（請假）分頁填法
+
+`setup()` 會建立 `leave` 分頁，Eason 手動填三欄：
+
+| 欄 | 格式 | 範例 |
+|---|---|---|
+| 日期 | yyyy-mm-dd | 2026-07-09 |
+| 姓名 | 須與 roster 的 name 一致（前後空白自動忽略） | 王小明 |
+| 假別 | 自由填 | 特休 |
+
+姓名比對不到 roster 的列會被**跳過**（不會報錯），填完可跑一次重算確認月表有出現。請假天數計整月（含當月還沒到的已填假單）；明細列只列到今天。
+
+### 手動重算（rebuild_month）
+
+改了 leave 或核准裝置後想立刻更新月表，不用等 05:00：
+
+- 編輯器端：`function run() { rebuildMonth('2026-07'); }`（或 `dailyMonthlyRebuild()` 重算當月）。
+- API 端（給日後排班 app 或指令列用）：
+  ```bash
+  curl -s -X POST 'APPS_SCRIPT網址' \
+    -H 'Content-Type: text/plain' \
+    -d '{"action":"rebuild_month","admin_key":"你的ADMIN_KEY","ym":"2026-07"}'
+  # ym 可省略＝當月；回 {"ok":true,"ym":"2026-07","rows":N}
+  ```
+- `rebuild_month` 是 GAS 專屬 action（依賴試算表分頁），mock server 不實作。
 
 ## 注意事項
 

@@ -13,13 +13,15 @@
  *
  * 本檔與 mock/mock_server.py 實作同一套 API 合約：
  *   clock / whoami / sync_roster / get_roster / get_events / approve_device
+ * 另有 GAS 專屬 action（mock_server 不實作，因為依賴試算表分頁）：
+ *   rebuild_month {admin_key, ym?}（ym 缺省＝當月，格式 yyyy-MM）→ 重算該月出勤月表分頁
  */
 
 const CONFIG = {
   SPREADSHEET_ID: 'PASTE_SPREADSHEET_ID_HERE',
   STORE_LAT: 24.7838051,
   STORE_LNG: 121.015592,
-  RADIUS_M: 50,
+  RADIUS_M: 5, // 允許打卡半徑（公尺）：Eason 指定收緊為 5 公尺，人要就在店裡
   ADMIN_KEY: 'PASTE_ADMIN_KEY_HERE',
   // 上下班交替判斷的回看視窗（小時）：看得到跨夜班前一晚的上班卡，
   // 但昨天忘打的下班卡（超過視窗）不會鎖死今天的上班卡。
@@ -27,6 +29,7 @@ const CONFIG = {
 };
 
 const ROSTER_HEADERS = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active'];
+const LEAVE_HEADERS = ['日期', '姓名', '假別'];
 const EVENTS_HEADERS = [
   'ts',
   'emp_id',
@@ -64,6 +67,13 @@ function setup() {
     events = ss.insertSheet('events');
   }
   events.getRange(1, 1, 1, EVENTS_HEADERS.length).setValues([EVENTS_HEADERS]);
+
+  // 請假分頁：Eason 手動填（日期 yyyy-mm-dd、姓名須與 roster.name 一致、假別如「特休」）
+  let leave = ss.getSheetByName('leave');
+  if (!leave) {
+    leave = ss.insertSheet('leave');
+  }
+  leave.getRange(1, 1, 1, LEAVE_HEADERS.length).setValues([LEAVE_HEADERS]);
 }
 
 function doGet(e) {
@@ -87,6 +97,7 @@ function doPost(e) {
     get_roster: handleGetRoster,
     get_events: handleGetEvents,
     approve_device: handleApproveDevice,
+    rebuild_month: handleRebuildMonth,
   };
 
   const handler = handlers[body.action];
@@ -374,6 +385,333 @@ function applyDeviceDecision(empId, deviceId, approve) {
 function handleApproveDevice(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   return applyDeviceDecision(body.emp_id, body.device_id, !!body.approve);
+}
+
+/* ============================================================
+ * 出勤月表 — 純函式區
+ * 只吃 plain object 陣列、回列陣列，不碰 SpreadsheetApp/Utilities，
+ * 可直接用 node 載入本檔測試（本檔頂層無任何 GAS 呼叫）。
+ * ============================================================ */
+
+// in 配「12 小時內的下一筆 out」的配對視窗（小時）
+const MONTHLY_PAIR_WINDOW_HOURS = 12;
+const WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
+// 備註欄中屬於「異常」的字樣（列入異常筆數統計、明細標紅）；假別不算異常
+const ABNORMAL_NOTES = ['下班忘刷卡', '上班忘刷卡', '新裝置待核准', '超出範圍嘗試'];
+
+function tsMs(ts) { return new Date(String(ts)).getTime(); }
+function tsDateStr(ts) { return String(ts).slice(0, 10); }
+function tsHm(ts) { return String(ts).slice(11, 16); }
+function pad2(n) { return ('0' + n).slice(-2); }
+
+function lastDayOfMonth(ym) {
+  const y = parseInt(ym.slice(0, 4), 10);
+  const m = parseInt(ym.slice(5, 7), 10);
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+function prevYm(ym) {
+  let y = parseInt(ym.slice(0, 4), 10);
+  let m = parseInt(ym.slice(5, 7), 10) - 1;
+  if (m === 0) { m = 12; y--; }
+  return y + '-' + pad2(m);
+}
+
+/** 0=日 … 6=六（用 UTC 午夜算，避開時區位移） */
+function weekdayOf(dateStr) {
+  return new Date(dateStr + 'T00:00:00Z').getUTCDay();
+}
+
+/**
+ * 打卡事件配對成班段。只取 status='ok'，依員工分組、時間排序，
+ * in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」（途中遇到另一筆 in 就斷）。
+ * 回傳 { shifts:[{emp_id,in_ts,out_ts}], unmatchedIns:[event], unmatchedOuts:[event] }。
+ */
+function pairShifts(events) {
+  const byEmp = {};
+  events.forEach(function (e) {
+    if (String(e.status) !== 'ok') return;
+    if (e.type !== 'in' && e.type !== 'out') return;
+    const k = String(e.emp_id);
+    (byEmp[k] = byEmp[k] || []).push(e);
+  });
+
+  const shifts = [];
+  const unmatchedIns = [];
+  const unmatchedOuts = [];
+
+  Object.keys(byEmp).forEach(function (emp) {
+    const evs = byEmp[emp].slice().sort(function (a, b) { return tsMs(a.ts) - tsMs(b.ts); });
+    let open = null;
+    evs.forEach(function (e) {
+      if (e.type === 'in') {
+        if (open) unmatchedIns.push(open); // 途中遇到另一筆 in → 前一筆 in 斷掉
+        open = e;
+      } else if (open && tsMs(e.ts) - tsMs(open.ts) <= MONTHLY_PAIR_WINDOW_HOURS * 3600000) {
+        shifts.push({ emp_id: emp, in_ts: String(open.ts), out_ts: String(e.ts) });
+        open = null;
+      } else {
+        if (open) { unmatchedIns.push(open); open = null; } // out 超過視窗 → in 也配不到
+        unmatchedOuts.push(e);
+      }
+    });
+    if (open) unmatchedIns.push(open);
+  });
+
+  return { shifts: shifts, unmatchedIns: unmatchedIns, unmatchedOuts: unmatchedOuts };
+}
+
+/**
+ * 產生月表分頁的全部列＋格式標記（純函式）。
+ * @param {string} ym 'yyyy-MM'
+ * @param {Array} roster [{emp_id,name,active}]（依 roster 順序輸出累計）
+ * @param {Array} events [{ts,emp_id,type,status}] 必須涵蓋「月初往前 1 天～月底往後 1 天」
+ *                （跨月班段配對用：班段歸 in 日所在月份；上月末深夜 in 配到本月初 out 時，
+ *                 該 out 不得在本月被判「上班忘刷卡」）
+ * @param {Array} leaves [{date:'yyyy-mm-dd',name,type}] leave 分頁原始列（姓名未比對）
+ * @param {string} todayStr 'yyyy-mm-dd'（台北）——當月明細只列到今天
+ * @returns {{rows:Array, boldRows:Array, weekendRows:Array, abnormalNoteRows:Array}}
+ *          rows 為 5 欄列陣列（明細依員工分區塊）；*Rows 皆為 1-based 列號
+ */
+function buildMonthlySheet(ym, roster, events, leaves, todayStr) {
+  const activeRoster = roster.filter(function (r) { return String(r.active).toLowerCase() === 'true'; });
+
+  const lastDay = lastDayOfMonth(ym);
+  const todayYm = todayStr.slice(0, 7);
+  let endDay;
+  if (ym < todayYm) endDay = lastDay;         // 過去月份：整月
+  else if (ym === todayYm) endDay = parseInt(todayStr.slice(8, 10), 10); // 當月：到今天
+  else endDay = 0;                            // 未來月份：不產明細
+
+  const nameToEmp = {};
+  activeRoster.forEach(function (r) { nameToEmp[String(r.name).trim()] = String(r.emp_id); });
+  const empName = {};
+  roster.forEach(function (r) { empName[String(r.emp_id)] = String(r.name); });
+
+  function inMonthToEnd(dateStr) {
+    return dateStr.slice(0, 7) === ym && parseInt(dateStr.slice(8, 10), 10) <= endDay;
+  }
+
+  // 每日×每員工一格：班段/備註/時數彙整
+  const cellMap = {};
+  function cell(dateStr, emp) {
+    const k = dateStr + '||' + emp;
+    if (!cellMap[k]) {
+      cellMap[k] = { date: dateStr, emp_id: emp, segments: [], notes: [], hours: 0, hasComplete: false, incomplete: false };
+    }
+    return cellMap[k];
+  }
+
+  const paired = pairShifts(events);
+
+  paired.shifts.forEach(function (s) {
+    const d = tsDateStr(s.in_ts); // 班段歸 in 的那一天
+    if (!inMonthToEnd(d)) return;
+    const cross = tsDateStr(s.out_ts) !== d;
+    const c = cell(d, String(s.emp_id));
+    c.segments.push({ sortMs: tsMs(s.in_ts), text: tsHm(s.in_ts) + '–' + tsHm(s.out_ts) + (cross ? '(+1)' : '') });
+    c.hours += (tsMs(s.out_ts) - tsMs(s.in_ts)) / 3600000;
+    c.hasComplete = true;
+  });
+
+  paired.unmatchedIns.forEach(function (e) {
+    const d = tsDateStr(e.ts);
+    if (!inMonthToEnd(d)) return;
+    const c = cell(d, String(e.emp_id));
+    c.segments.push({ sortMs: tsMs(e.ts), text: tsHm(e.ts) + '–？' });
+    c.notes.push('下班忘刷卡');
+    c.incomplete = true;
+  });
+
+  paired.unmatchedOuts.forEach(function (e) {
+    const d = tsDateStr(e.ts);
+    if (!inMonthToEnd(d)) return;
+    const c = cell(d, String(e.emp_id));
+    c.segments.push({ sortMs: tsMs(e.ts), text: '？–' + tsHm(e.ts) });
+    c.notes.push('上班忘刷卡');
+    c.incomplete = true;
+  });
+
+  // pending → 備註不入班段；超出範圍 → 備註；rejected_duplicate / rejected_device 不顯示（雜訊）
+  events.forEach(function (e) {
+    const st = String(e.status);
+    if (st !== 'pending_device_approval' && st !== 'rejected_out_of_range') return;
+    const d = tsDateStr(e.ts);
+    if (!inMonthToEnd(d)) return;
+    cell(d, String(e.emp_id)).notes.push(st === 'pending_device_approval' ? '新裝置待核准' : '超出範圍嘗試');
+  });
+
+  // 請假：姓名 trim 後精確比對 roster.name，比不到就跳過該列。
+  // 請假天數計整月（含當月未到期的已填假單）；明細列只到今天。
+  const leaveDates = {};
+  leaves.forEach(function (l) {
+    const emp = nameToEmp[String(l.name || '').trim()];
+    if (!emp) return;
+    const d = String(l.date || '').slice(0, 10);
+    if (d.slice(0, 7) !== ym) return;
+    (leaveDates[emp] = leaveDates[emp] || {})[d] = true;
+    if (inMonthToEnd(d)) cell(d, emp).notes.push(String(l.type || '請假'));
+  });
+
+  // ---- 每員工統計（上段累計與區塊小計共用） ----
+  const empStats = {}; // emp -> { total, abnormal }
+  Object.keys(cellMap).forEach(function (k) {
+    const c = cellMap[k];
+    const s = (empStats[c.emp_id] = empStats[c.emp_id] || { total: 0, abnormal: 0 });
+    if (!c.incomplete) s.total += c.hours; // 有忘刷卡的那天整天不計入
+    c.notes.forEach(function (n) { if (ABNORMAL_NOTES.indexOf(n) !== -1) s.abnormal++; });
+  });
+
+  // ---- 組列（5 欄）----
+  const rows = [];
+  const boldRows = [];
+  const weekendRows = [];
+  const abnormalNoteRows = [];
+
+  rows.push(['姓名', '參考時數', '異常筆數', '請假天數', '']);
+  boldRows.push(1);
+
+  activeRoster.forEach(function (r) {
+    const emp = String(r.emp_id);
+    const s = empStats[emp] || { total: 0, abnormal: 0 };
+    const leaveCount = Object.keys(leaveDates[emp] || {}).length;
+    rows.push([String(r.name), Math.round(s.total * 10) / 10, s.abnormal, leaveCount, '']);
+  });
+
+  rows.push(['', '', '', '', '']);
+  rows.push(['日期', '星期', '班段', '參考時數', '備註']);
+  boldRows.push(rows.length);
+
+  // 明細：依員工分組（roster 順序、只列 active 或該月有紀錄者），每人一個區塊
+  const blockEmps = [];
+  roster.forEach(function (r) {
+    const emp = String(r.emp_id);
+    const isActive = String(r.active).toLowerCase() === 'true';
+    if (isActive || empStats[emp]) blockEmps.push(emp);
+  });
+  Object.keys(empStats).sort().forEach(function (emp) { // 名冊外但有紀錄者（理論上不會發生）補在最後
+    if (blockEmps.indexOf(emp) === -1) blockEmps.push(emp);
+  });
+
+  blockEmps.forEach(function (emp, idx) {
+    if (idx > 0) rows.push(['', '', '', '', '']); // 區塊之間空一列
+    rows.push([empName[emp] || emp, '', '', '', '']); // 粗體姓名標題列
+    boldRows.push(rows.length);
+
+    const dayCells = Object.keys(cellMap).map(function (k) { return cellMap[k]; })
+      .filter(function (c) { return c.emp_id === emp; })
+      .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+
+    dayCells.forEach(function (c) {
+      const wd = weekdayOf(c.date);
+      c.segments.sort(function (a, b) { return a.sortMs - b.sortMs; });
+      const seg = c.segments.map(function (s) { return s.text; }).join('、');
+      // 當天只要有任一筆忘刷卡 → 時數整天留空白（待人工判定）
+      const hours = (!c.incomplete && c.hasComplete) ? Math.round(c.hours * 10) / 10 : '';
+      rows.push([c.date, WEEKDAY_ZH[wd], seg, hours, c.notes.join('、')]);
+      const rowNo = rows.length;
+      if (wd === 0 || wd === 6) weekendRows.push(rowNo);
+      if (c.notes.some(function (n) { return ABNORMAL_NOTES.indexOf(n) !== -1; })) abnormalNoteRows.push(rowNo);
+    });
+
+    const s = empStats[emp] || { total: 0 };
+    rows.push(['小計', '', '', Math.round(s.total * 10) / 10, '']);
+  });
+
+  return { rows: rows, boldRows: boldRows, weekendRows: weekendRows, abnormalNoteRows: abnormalNoteRows };
+}
+
+/* ============================================================
+ * 出勤月表 — sheet 讀寫層（SpreadsheetApp 只在這層出現）
+ * ============================================================ */
+
+/** leave 分頁的日期格常被 Sheets 轉成 Date 物件，正規化回 yyyy-MM-dd 字串。 */
+function normCellDate(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, 'Asia/Taipei', 'yyyy-MM-dd');
+  return String(v || '').trim().slice(0, 10);
+}
+
+/** events.ts 若被 Sheets 轉成 Date 物件，正規化回台北 ISO 字串。 */
+function normCellTs(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX");
+  return String(v || '');
+}
+
+function currentYmTaipei() {
+  return Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
+}
+
+/** 整頁重算 ym（yyyy-MM）月表分頁：不存在自動建立，存在則整頁重寫。回傳列數。 */
+function rebuildMonth(ym) {
+  ym = String(ym);
+  if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error('月份格式錯誤，應為 yyyy-MM：' + ym);
+
+  const ss = getSS();
+  const roster = readSheetAsObjects(ss.getSheetByName('roster')).rows.map(stripRowIndex);
+
+  // 事件取「月初往前 1 天～月底往後 1 天」跑配對（跨月班段用）
+  const fromMs = new Date(ym + '-01T00:00:00+08:00').getTime() - 24 * 3600000;
+  const toMs = new Date(ym + '-' + pad2(lastDayOfMonth(ym)) + 'T23:59:59+08:00').getTime() + 24 * 3600000;
+  const events = readSheetAsObjects(ss.getSheetByName('events')).rows.map(stripRowIndex)
+    .map(function (e) { e.ts = normCellTs(e.ts); return e; })
+    .filter(function (e) {
+      const t = tsMs(e.ts);
+      return !isNaN(t) && t >= fromMs && t <= toMs;
+    });
+
+  const leaveSheet = ss.getSheetByName('leave');
+  const leaves = leaveSheet
+    ? readSheetAsObjects(leaveSheet).rows.map(function (r) {
+        return { date: normCellDate(r['日期']), name: r['姓名'], type: r['假別'] };
+      })
+    : [];
+
+  const built = buildMonthlySheet(ym, roster, events, leaves, todayTaipeiStr());
+
+  let sheet = ss.getSheetByName(ym);
+  if (!sheet) sheet = ss.insertSheet(ym);
+  sheet.clear();
+
+  if (built.rows.length > 0) {
+    sheet.getRange(1, 1, built.rows.length, 5).setValues(built.rows);
+    built.boldRows.forEach(function (r) { sheet.getRange(r, 1, 1, 5).setFontWeight('bold'); });
+    built.weekendRows.forEach(function (r) { sheet.getRange(r, 1, 1, 5).setBackground('#f3f3f3'); });
+    built.abnormalNoteRows.forEach(function (r) { sheet.getRange(r, 5).setFontColor('#cc0000'); });
+    sheet.setFrozenRows(1);
+  }
+  return built.rows.length;
+}
+
+/**
+ * 每日重算（給時間觸發器跑）：重算當月；每月 1–3 日連上月一起重算
+ * （收尾跨夜班與補核准的裝置事件），之後上月凍結不再改動。
+ */
+function dailyMonthlyRebuild() {
+  const ym = currentYmTaipei();
+  rebuildMonth(ym);
+  const day = parseInt(todayTaipeiStr().slice(8, 10), 10);
+  if (day <= 3) rebuildMonth(prevYm(ym));
+}
+
+/**
+ * 手動跑一次：建立每日 05:00 的 dailyMonthlyRebuild 時間觸發器
+ * （先刪除既有同 handler 的觸發器再建，跑幾次都不會重複）。
+ * 注意：觸發時刻依 Apps Script「專案設定」的時區，請確認為台北 (GMT+8)。
+ */
+function setupMonthlyTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'dailyMonthlyRebuild') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('dailyMonthlyRebuild').timeBased().everyDays(1).atHour(5).create();
+  Logger.log('已建立 dailyMonthlyRebuild 每日 05:00 觸發器');
+}
+
+/** API：{action:'rebuild_month', admin_key, ym?}（ym 缺省＝當月）。GAS 專屬，mock 不實作。 */
+function handleRebuildMonth(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = body.ym || currentYmTaipei();
+  const rows = rebuildMonth(ym);
+  return { ok: true, ym: ym, rows: rows };
 }
 
 /* ============================================================
