@@ -198,6 +198,40 @@ function lastCountedEvent(eventRows, empId) {
   return last;
 }
 
+/**
+ * 今日出勤時數（whoami 用，同仁自助查詢，不落地寫入試算表）。
+ * 只取今日（Asia/Taipei）status='ok' 的事件跑 pairShifts（沿用月表同一套配對／核定
+ * 邏輯，不重寫 pairShifts/approvedHoursOfShift 本身）：
+ *   reference＝已完成時段原始相減加總（小時，取 2 位小數）
+ *   approved＝已完成時段 approvedHoursOfShift 加總（必為 0.25 倍數，取 2 位小數整理浮點誤差）
+ * 若今日最後一筆 ok 事件是尚未配對的 in（上班中）→ working_since 為該筆「原始」HH:mm
+ * （不是取整後的刻度），reference/approved 只計入已完成時段；今日無完成時段則兩者為 0。
+ */
+function todayHoursSummary(eventRows, empId, today) {
+  const todayOkEvents = eventRows.filter(function (e) {
+    return String(e.emp_id) === String(empId) && String(e.status) === 'ok' && String(e.ts).slice(0, 10) === today;
+  });
+  const paired = pairShifts(todayOkEvents);
+
+  let reference = 0;
+  let approved = 0;
+  paired.shifts.forEach(function (s) {
+    reference += (tsMs(s.out_ts) - tsMs(s.in_ts)) / 3600000;
+    approved += approvedHoursOfShift(s.in_ts, s.out_ts);
+  });
+
+  const result = {
+    reference: Math.round(reference * 100) / 100,
+    approved: Math.round(approved * 100) / 100,
+    working_since: null,
+  };
+  if (paired.unmatchedIns.length > 0) {
+    const openIn = paired.unmatchedIns[paired.unmatchedIns.length - 1];
+    result.working_since = tsHm(openIn.ts);
+  }
+  return result;
+}
+
 function handleClock(body) {
   const ss = getSS();
   const rosterSheet = ss.getSheetByName('roster');
@@ -288,6 +322,7 @@ function handleWhoami(body) {
     // 前端按鈕灰階/擋卡提醒用這個判斷（12 小時回看視窗，跨日也算），
     // 不要自己從 today_events 算，避免跨日時兩邊算法不一致。
     last_counted: lastCountedEvent(eventRows, roster.emp_id),
+    today_hours: todayHoursSummary(eventRows, roster.emp_id, today),
   };
 }
 

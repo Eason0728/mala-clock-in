@@ -157,6 +157,7 @@
     <div class="device-hint" id="deviceHint"></div>
     <ul class="today-list" id="todayList"></ul>
     <div class="no-events" id="noEvents" style="display:none;">今天還沒有打卡紀錄</div>
+    <div class="no-events" id="todayHours"></div>
   </div>
 
   <div id="errorCard" class="card center-msg" style="display:none; color:#c22a12;"></div>
@@ -214,6 +215,7 @@
   var deviceHintEl = document.getElementById('deviceHint');
   var todayListEl = document.getElementById('todayList');
   var noEventsEl = document.getElementById('noEvents');
+  var todayHoursEl = document.getElementById('todayHours');
   var statusBox = document.getElementById('statusBox');
   var btnIn = document.getElementById('btnIn');
   var btnOut = document.getElementById('btnOut');
@@ -272,6 +274,17 @@
     });
   }
 
+  // 今日時數摘要（whoami 的 today_hours：{reference, approved, working_since}）。
+  // 有 working_since→仍在上班中，只列已完成時段的時數；無→今日已無進行中的班段。
+  function renderTodayHours(h) {
+    if (!h) { todayHoursEl.textContent = ''; return; }
+    if (h.working_since) {
+      todayHoursEl.textContent = '上班中（' + h.working_since + ' 起）・已完成時段：參考 ' + h.reference + ' 小時／核定 ' + h.approved + ' 小時';
+    } else {
+      todayHoursEl.textContent = '今日時數：參考 ' + h.reference + ' 小時／核定 ' + h.approved + ' 小時';
+    }
+  }
+
   function apiPost(payload) {
     return fetch(API_URL, {
       method: 'POST',
@@ -307,6 +320,7 @@
           deviceHintEl.textContent = '';
         }
         renderTodayEvents(res.today_events);
+        renderTodayHours(res.today_hours);
         updateButtonStates(res.last_counted);
       })
       .catch(function () {
@@ -326,7 +340,7 @@
 
   // 本機測試限定：?loc=store 模擬人在店內、?loc=away 模擬人在外地，正式環境不生效
   var FAKE_LOCATIONS = {
-    store: { latitude: 24.7838051, longitude: 121.015592 },
+    store: { latitude: 24.7840945, longitude: 121.0157448 }, // 2026-07-13 校正座標，與後端 CONFIG 對齊
     away: { latitude: 25.0330, longitude: 121.5654 },
   };
 
@@ -395,6 +409,7 @@
         apiPost({ action: 'whoami', key: key, device_id: deviceId }).then(function (r) {
           if (r.ok) {
             renderTodayEvents(r.today_events);
+            renderTodayHours(r.today_hours);
             updateButtonStates(r.last_counted);
           }
         });

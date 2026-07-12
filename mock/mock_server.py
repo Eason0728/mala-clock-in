@@ -140,6 +140,77 @@ def last_counted_event(data, emp_id):
     return last
 
 
+MONTHLY_PAIR_WINDOW_HOURS = 12  # in 配「12 小時內的下一筆 out」，與 Code.gs 的 MONTHLY_PAIR_WINDOW_HOURS 同步
+
+
+def approved_hours_of_shift(in_ts, out_ts):
+    """核定工時：打卡時間各自取整到 15 分鐘刻度再相減（與 Code.gs approvedHoursOfShift 同一套規則）。
+    上班先捨秒、往後進位到刻度；下班先捨秒、往前捨去到刻度。"""
+    in_min = int(datetime.fromisoformat(in_ts).timestamp() // 60)
+    out_min = int(datetime.fromisoformat(out_ts).timestamp() // 60)
+    in_grid = math.ceil(in_min / 15) * 15
+    out_grid = math.floor(out_min / 15) * 15
+    return max(0.0, (out_grid - in_grid) / 60.0)
+
+
+def pair_shifts(events):
+    """事件配對成班段（與 Code.gs pairShifts 同一套邏輯，本檔僅供 whoami 今日時數用，
+    不做月表，故只回傳 shifts / unmatched_ins）。只吃 status='ok' 的 in/out，依時間排序，
+    in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」，途中遇到另一筆 in 就斷掉。"""
+    evs = sorted(
+        [e for e in events if e.get("status") == "ok" and e.get("type") in ("in", "out")],
+        key=lambda e: e["ts"],
+    )
+    shifts = []
+    unmatched_ins = []
+    open_in = None
+    window = timedelta(hours=MONTHLY_PAIR_WINDOW_HOURS)
+    for e in evs:
+        if e["type"] == "in":
+            if open_in:
+                unmatched_ins.append(open_in)
+            open_in = e
+        elif open_in and (datetime.fromisoformat(e["ts"]) - datetime.fromisoformat(open_in["ts"])) <= window:
+            shifts.append({"in_ts": open_in["ts"], "out_ts": e["ts"]})
+            open_in = None
+        else:
+            if open_in:
+                unmatched_ins.append(open_in)
+                open_in = None
+    if open_in:
+        unmatched_ins.append(open_in)
+    return shifts, unmatched_ins
+
+
+def today_hours_summary(data, emp_id, today):
+    """今日出勤時數（whoami 用，與 Code.gs todayHoursSummary 同步邏輯）：
+    reference＝已完成時段原始相減加總，approved＝已完成時段 approvedHoursOfShift 加總；
+    今日最後一筆 ok 事件若是尚未配對的 in（上班中）→ working_since 為該筆原始 HH:mm，
+    reference/approved 只計入已完成時段；今日無完成時段則兩者為 0。"""
+    today_ok_events = [
+        e for e in data["events"]
+        if e["emp_id"] == emp_id and e.get("status") == "ok" and e["ts"][:10] == today
+    ]
+    shifts, unmatched_ins = pair_shifts(today_ok_events)
+
+    reference = 0.0
+    approved = 0.0
+    for s in shifts:
+        reference += (
+            datetime.fromisoformat(s["out_ts"]) - datetime.fromisoformat(s["in_ts"])
+        ).total_seconds() / 3600.0
+        approved += approved_hours_of_shift(s["in_ts"], s["out_ts"])
+
+    result = {
+        "reference": round(reference, 2),
+        "approved": round(approved, 2),
+        "working_since": None,
+    }
+    if unmatched_ins:
+        result["working_since"] = unmatched_ins[-1]["ts"][11:16]
+    return result
+
+
 def handle_clock(data, body):
     key = body.get("key")
     type_ = body.get("type")
@@ -238,6 +309,7 @@ def handle_whoami(data, body):
         # 前端按鈕灰階/擋卡提醒用這個判斷（12 小時回看視窗，跨日也算），
         # 不要自己從 today_events 算，避免跨日時兩邊算法不一致。
         "last_counted": last_counted_event(data, roster["emp_id"]),
+        "today_hours": today_hours_summary(data, roster["emp_id"], today),
     }
 
 
