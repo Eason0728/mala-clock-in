@@ -2,7 +2,8 @@
  * 麻的小辛辣 員工打卡系統 - Apps Script 後端
  *
  * 部署方式（老闆手動操作，Claude 不代為部署雲端資源）：
- *   1. 開一份新的 Google 試算表，複製其 ID 貼到下面 CONFIG.SPREADSHEET_ID。
+ *   1. 開一份新的 Google 試算表，把試算表「網址」整串貼到下面 CONFIG.SPREADSHEET_ID
+ *      （貼純 ID 也可以，程式會自動從網址抽出 ID）。
  *   2. 開啟 Extensions > Apps Script，貼上本檔全部內容。
  *   3. 設定 CONFIG.ADMIN_KEY（自訂一組管理密鑰，供管理端點 API 使用；
  *      排班 app 整合暫緩期間，日常名冊/裝置管理改用檔尾的編輯器管理函式）。
@@ -43,8 +44,14 @@ const EVENTS_HEADERS = [
  * 手動執行一次：建立 roster / events 兩個分頁與表頭。
  * 若分頁已存在則只補表頭，不會清空既有資料。
  */
+/** CONFIG.SPREADSHEET_ID 接受整串試算表網址或純 ID。 */
+function spreadsheetId() {
+  const m = String(CONFIG.SPREADSHEET_ID).match(/\/d\/([a-zA-Z0-9\-_]+)/);
+  return m ? m[1] : CONFIG.SPREADSHEET_ID;
+}
+
 function setup() {
-  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(spreadsheetId());
 
   let roster = ss.getSheetByName('roster');
   if (!roster) {
@@ -99,7 +106,7 @@ function jsonOut(obj) {
 }
 
 function getSS() {
-  return SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  return SpreadsheetApp.openById(spreadsheetId());
 }
 
 function nowTaipeiIso() {
