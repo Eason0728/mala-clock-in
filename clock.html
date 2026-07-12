@@ -284,7 +284,16 @@
     statusBox.textContent = text;
   }
 
+  // 本機測試限定：?loc=store 模擬人在店內、?loc=away 模擬人在外地，正式環境不生效
+  var FAKE_LOCATIONS = {
+    store: { latitude: 24.7838051, longitude: 121.015592 },
+    away: { latitude: 25.0330, longitude: 121.5654 },
+  };
+
   function getPosition() {
+    if (isLocalHost && FAKE_LOCATIONS[qs('loc')]) {
+      return Promise.resolve({ coords: FAKE_LOCATIONS[qs('loc')] });
+    }
     return new Promise(function (resolve, reject) {
       if (!navigator.geolocation) {
         reject(new Error('此裝置不支援定位功能，無法打卡。'));
