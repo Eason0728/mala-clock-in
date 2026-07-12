@@ -98,6 +98,7 @@ function doPost(e) {
     get_events: handleGetEvents,
     approve_device: handleApproveDevice,
     rebuild_month: handleRebuildMonth,
+    my_recent: handleMyRecent,
   };
 
   const handler = handlers[body.action];
@@ -230,6 +231,105 @@ function todayHoursSummary(eventRows, empId, today) {
     result.working_since = tsHm(openIn.ts);
   }
   return result;
+}
+
+// my_recent 回查視窗（天，含今天）。2026-07-13 Eason 指定 40 天（原規劃 14）
+const RECENT_DAYS_WINDOW = 40;
+
+/**
+ * 最近 N 天出勤明細（my_recent 用，同仁自助回查，不落地寫入試算表）。
+ * 配對／核定沿用月表同一套（pairShifts＋approvedHoursOfShift，只算 status='ok'），
+ * 慣例照 buildMonthlySheet：班段歸 in 那一天（跨夜段標 cross，前端顯示 (+1)）、
+ * 未配對 in→「下班忘刷卡」、未配對 out→「上班忘刷卡」；事件往前多抓 1 天供跨夜配對。
+ * 例外：未配對 in 落在「今天」→ 不算忘刷卡（上班中），照 today_hours 的邏輯。
+ * reference/approved 只計入該日已完成班段（0.25 倍數同 today_hours，取 2 位小數）。
+ * 無任何事件的日子省略不回；回傳依日期由舊到新排序。
+ */
+function buildRecentDays(eventRows, empId, todayStr) {
+  const todayMs = new Date(todayStr + 'T00:00:00Z').getTime(); // 純日期運算，todayStr 已是台北日期
+  const startStr = new Date(todayMs - (RECENT_DAYS_WINDOW - 1) * 86400000).toISOString().slice(0, 10);
+  const fetchStartStr = new Date(todayMs - RECENT_DAYS_WINDOW * 86400000).toISOString().slice(0, 10);
+
+  const evs = eventRows.filter(function (e) {
+    if (String(e.emp_id) !== String(empId)) return false;
+    const d = tsDateStr(e.ts);
+    return d >= fetchStartStr && d <= todayStr;
+  });
+  const paired = pairShifts(evs); // pairShifts 內部只取 status='ok'
+
+  const dayMap = {};
+  function day(d) {
+    if (!dayMap[d]) dayMap[d] = { date: d, segments: [], reference: 0, approved: 0, notes: [] };
+    return dayMap[d];
+  }
+
+  paired.shifts.forEach(function (s) {
+    const d = tsDateStr(s.in_ts); // 班段歸 in 的那一天（月表慣例）
+    if (d < startStr || d > todayStr) return;
+    const c = day(d);
+    c.segments.push({ sortMs: tsMs(s.in_ts), in: tsHm(s.in_ts), out: tsHm(s.out_ts), cross: tsDateStr(s.out_ts) !== d });
+    c.reference += (tsMs(s.out_ts) - tsMs(s.in_ts)) / 3600000;
+    c.approved += approvedHoursOfShift(s.in_ts, s.out_ts);
+  });
+
+  paired.unmatchedIns.forEach(function (e) {
+    const d = tsDateStr(e.ts);
+    if (d < startStr || d > todayStr) return;
+    const c = day(d);
+    c.segments.push({ sortMs: tsMs(e.ts), in: tsHm(e.ts), out: null, cross: false });
+    c.notes.push(d === todayStr ? '上班中' : '下班忘刷卡');
+  });
+
+  paired.unmatchedOuts.forEach(function (e) {
+    const d = tsDateStr(e.ts);
+    if (d < startStr || d > todayStr) return;
+    const c = day(d);
+    c.segments.push({ sortMs: tsMs(e.ts), in: null, out: tsHm(e.ts), cross: false });
+    c.notes.push('上班忘刷卡');
+  });
+
+  return Object.keys(dayMap).sort().map(function (d) {
+    const c = dayMap[d];
+    c.segments.sort(function (a, b) { return a.sortMs - b.sortMs; });
+    c.segments.forEach(function (s) { delete s.sortMs; });
+    c.reference = Math.round(c.reference * 100) / 100;
+    c.approved = Math.round(c.approved * 100) / 100;
+    return c;
+  });
+}
+
+/**
+ * API：{action:'my_recent', key, device_id} → 該員工最近 RECENT_DAYS_WINDOW 天（含今天）出勤明細。
+ * 驗證與 whoami 相同：key 無效（或離職）→ invalid_key；裝置照 whoami 作法只回
+ * device_state 供前端提示，不因裝置不符而拒回（回查是唯讀，不產生打卡事件）。
+ */
+function handleMyRecent(body) {
+  const ss = getSS();
+  const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
+
+  const roster = findRosterByKey(rosterRows, body.key);
+  if (!roster || roster.active !== true) {
+    return { ok: false, error: 'invalid_key' };
+  }
+
+  const deviceId = body.device_id || '';
+  let deviceState;
+  if (!roster.device_id) {
+    deviceState = 'unbound';
+  } else if (String(roster.device_id) === String(deviceId)) {
+    deviceState = 'match';
+  } else {
+    deviceState = 'mismatch';
+  }
+
+  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows;
+  return {
+    ok: true,
+    emp_id: roster.emp_id,
+    name: roster.name,
+    device_state: deviceState,
+    days: buildRecentDays(eventRows, roster.emp_id, todayTaipeiStr()),
+  };
 }
 
 function handleClock(body) {

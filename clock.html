@@ -101,6 +101,25 @@
     font-size: 14px;
     color: #8a6a5f;
   }
+  /* 次要按鈕：回查最近 40 天（沿用卡片內既有的字色與分隔線色，不加新色彩） */
+  .recent-toggle {
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px;
+    font-size: 14px;
+    color: #8a6a5f;
+    background: none;
+    border: 1px solid #f0e6e2;
+    border-radius: 8px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .recent-toggle:disabled { opacity: 0.5; }
+  .recent-list li {
+    gap: 8px;
+  }
+  .recent-list .day-info { flex: 1; }
+  .recent-list .day-hours { white-space: nowrap; }
   .btn-group {
     display: flex;
     flex-direction: column;
@@ -158,6 +177,8 @@
     <ul class="today-list" id="todayList"></ul>
     <div class="no-events" id="noEvents" style="display:none;">今天還沒有打卡紀錄</div>
     <div class="no-events" id="todayHours"></div>
+    <button class="recent-toggle" id="btnRecent" type="button">查看最近 40 天</button>
+    <ul class="today-list recent-list" id="recentList" style="display:none;"></ul>
   </div>
 
   <div id="errorCard" class="card center-msg" style="display:none; color:#c22a12;"></div>
@@ -219,6 +240,8 @@
   var statusBox = document.getElementById('statusBox');
   var btnIn = document.getElementById('btnIn');
   var btnOut = document.getElementById('btnOut');
+  var btnRecent = document.getElementById('btnRecent');
+  var recentListEl = document.getElementById('recentList');
 
   function showError(msg) {
     loadingCard.style.display = 'none';
@@ -292,6 +315,85 @@
       body: JSON.stringify(payload),
     }).then(function (res) { return res.json(); });
   }
+
+  // ---- 最近 40 天回查（my_recent）：點按鈕才 fetch，可展開/收合 ----
+  var WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
+  var recentOpen = false;
+  var recentLoaded = false; // 打卡成功後設回 false，下次展開重新抓
+
+  function weekdayZh(dateStr) {
+    return WEEKDAY_ZH[new Date(dateStr + 'T00:00:00Z').getUTCDay()];
+  }
+
+  // 班段文字照月表慣例：跨夜段加 (+1)、缺的一端顯示「？」（如 17:05–？）
+  function segmentText(s) {
+    return (s.in || '？') + '–' + (s.out || '？') + (s.cross ? '(+1)' : '');
+  }
+
+  function renderRecentDays(days) {
+    recentListEl.innerHTML = '';
+    if (!days || days.length === 0) {
+      var empty = document.createElement('li');
+      empty.textContent = '最近 40 天沒有打卡紀錄';
+      recentListEl.appendChild(empty);
+      return;
+    }
+    days.forEach(function (d) {
+      var li = document.createElement('li');
+      var info = document.createElement('span');
+      info.className = 'day-info';
+      var md = parseInt(d.date.slice(5, 7), 10) + '/' + parseInt(d.date.slice(8, 10), 10);
+      var segs = d.segments.map(segmentText).join('、');
+      info.textContent = md + '（' + weekdayZh(d.date) + '）　' + segs
+        + (d.notes && d.notes.length ? '　' + d.notes.join('、') : '');
+      var hours = document.createElement('span');
+      hours.className = 'day-hours';
+      hours.textContent = '參考 ' + d.reference + '／核定 ' + d.approved;
+      li.appendChild(info);
+      li.appendChild(hours);
+      recentListEl.appendChild(li);
+    });
+  }
+
+  function setRecentClosed() {
+    recentOpen = false;
+    recentListEl.style.display = 'none';
+    btnRecent.textContent = '查看最近 40 天';
+  }
+
+  btnRecent.addEventListener('click', function () {
+    if (recentOpen) {
+      setRecentClosed();
+      return;
+    }
+    if (recentLoaded) {
+      recentOpen = true;
+      recentListEl.style.display = 'block';
+      btnRecent.textContent = '收合';
+      return;
+    }
+    btnRecent.disabled = true;
+    btnRecent.textContent = '載入中…';
+    apiPost({ action: 'my_recent', key: key, device_id: deviceId })
+      .then(function (res) {
+        btnRecent.disabled = false;
+        if (!res.ok) {
+          setRecentClosed();
+          showStatus('status-error', '✕ 查詢失敗，請重新整理頁面後再試。');
+          return;
+        }
+        recentLoaded = true;
+        renderRecentDays(res.days);
+        recentOpen = true;
+        recentListEl.style.display = 'block';
+        btnRecent.textContent = '收合';
+      })
+      .catch(function () {
+        btnRecent.disabled = false;
+        setRecentClosed();
+        showStatus('status-error', '✕ 連線失敗，請檢查網路後再試。');
+      });
+  });
 
   function init() {
     if (!key) {
@@ -413,6 +515,16 @@
             updateButtonStates(r.last_counted);
           }
         });
+        // 剛打了卡，快取的最近 40 天已過期：展開中就立刻重抓，收合中則下次展開再抓
+        recentLoaded = false;
+        if (recentOpen) {
+          apiPost({ action: 'my_recent', key: key, device_id: deviceId }).then(function (r2) {
+            if (r2.ok) {
+              recentLoaded = true;
+              renderRecentDays(r2.days);
+            }
+          });
+        }
       })
       .catch(function (err) {
         showStatus('status-error', '✕ ' + err.message);

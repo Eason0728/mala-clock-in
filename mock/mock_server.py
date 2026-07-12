@@ -154,15 +154,17 @@ def approved_hours_of_shift(in_ts, out_ts):
 
 
 def pair_shifts(events):
-    """事件配對成班段（與 Code.gs pairShifts 同一套邏輯，本檔僅供 whoami 今日時數用，
-    不做月表，故只回傳 shifts / unmatched_ins）。只吃 status='ok' 的 in/out，依時間排序，
-    in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」，途中遇到另一筆 in 就斷掉。"""
+    """事件配對成班段（與 Code.gs pairShifts 同一套邏輯，供 whoami 今日時數與
+    my_recent 回查用）。只吃 status='ok' 的 in/out，依時間排序，
+    in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」，途中遇到另一筆 in 就斷掉。
+    回傳 (shifts, unmatched_ins, unmatched_outs)。"""
     evs = sorted(
         [e for e in events if e.get("status") == "ok" and e.get("type") in ("in", "out")],
         key=lambda e: e["ts"],
     )
     shifts = []
     unmatched_ins = []
+    unmatched_outs = []
     open_in = None
     window = timedelta(hours=MONTHLY_PAIR_WINDOW_HOURS)
     for e in evs:
@@ -174,12 +176,13 @@ def pair_shifts(events):
             shifts.append({"in_ts": open_in["ts"], "out_ts": e["ts"]})
             open_in = None
         else:
-            if open_in:
+            if open_in:  # out 超過視窗 → in 也配不到（與 Code.gs 同）
                 unmatched_ins.append(open_in)
                 open_in = None
+            unmatched_outs.append(e)
     if open_in:
         unmatched_ins.append(open_in)
-    return shifts, unmatched_ins
+    return shifts, unmatched_ins, unmatched_outs
 
 
 def today_hours_summary(data, emp_id, today):
@@ -191,7 +194,7 @@ def today_hours_summary(data, emp_id, today):
         e for e in data["events"]
         if e["emp_id"] == emp_id and e.get("status") == "ok" and e["ts"][:10] == today
     ]
-    shifts, unmatched_ins = pair_shifts(today_ok_events)
+    shifts, unmatched_ins, _unmatched_outs = pair_shifts(today_ok_events)
 
     reference = 0.0
     approved = 0.0
@@ -209,6 +212,101 @@ def today_hours_summary(data, emp_id, today):
     if unmatched_ins:
         result["working_since"] = unmatched_ins[-1]["ts"][11:16]
     return result
+
+
+RECENT_DAYS_WINDOW = 40  # my_recent 回查視窗（天，含今天），與 Code.gs 的 RECENT_DAYS_WINDOW 同步（2026-07-13 Eason 指定 40）
+
+
+def build_recent_days(data, emp_id, today):
+    """最近 N 天出勤明細（my_recent 用，與 Code.gs buildRecentDays 同步邏輯）。
+    慣例照月表 buildMonthlySheet：班段歸 in 那一天（跨夜段 cross=True，前端顯示 (+1)）、
+    未配對 in→「下班忘刷卡」、未配對 out→「上班忘刷卡」；事件往前多抓 1 天供跨夜配對。
+    例外：未配對 in 落在「今天」→ 不算忘刷卡（上班中）。無事件的日子省略不回。"""
+    today_d = datetime.strptime(today, "%Y-%m-%d").date()
+    start = (today_d - timedelta(days=RECENT_DAYS_WINDOW - 1)).isoformat()
+    fetch_start = (today_d - timedelta(days=RECENT_DAYS_WINDOW)).isoformat()
+
+    evs = [
+        e for e in data["events"]
+        if e["emp_id"] == emp_id and fetch_start <= e["ts"][:10] <= today
+    ]
+    shifts, unmatched_ins, unmatched_outs = pair_shifts(evs)  # pair_shifts 內部只取 status='ok'
+
+    day_map = {}
+
+    def day(d):
+        if d not in day_map:
+            day_map[d] = {"date": d, "segments": [], "reference": 0.0, "approved": 0.0, "notes": []}
+        return day_map[d]
+
+    for s in shifts:
+        d = s["in_ts"][:10]  # 班段歸 in 的那一天（月表慣例）
+        if not (start <= d <= today):
+            continue
+        c = day(d)
+        c["segments"].append({
+            "_sort": s["in_ts"],
+            "in": s["in_ts"][11:16],
+            "out": s["out_ts"][11:16],
+            "cross": s["out_ts"][:10] != d,
+        })
+        c["reference"] += (
+            datetime.fromisoformat(s["out_ts"]) - datetime.fromisoformat(s["in_ts"])
+        ).total_seconds() / 3600.0
+        c["approved"] += approved_hours_of_shift(s["in_ts"], s["out_ts"])
+
+    for e in unmatched_ins:
+        d = e["ts"][:10]
+        if not (start <= d <= today):
+            continue
+        c = day(d)
+        c["segments"].append({"_sort": e["ts"], "in": e["ts"][11:16], "out": None, "cross": False})
+        c["notes"].append("上班中" if d == today else "下班忘刷卡")
+
+    for e in unmatched_outs:
+        d = e["ts"][:10]
+        if not (start <= d <= today):
+            continue
+        c = day(d)
+        c["segments"].append({"_sort": e["ts"], "in": None, "out": e["ts"][11:16], "cross": False})
+        c["notes"].append("上班忘刷卡")
+
+    days = []
+    for d in sorted(day_map):
+        c = day_map[d]
+        c["segments"].sort(key=lambda s: s["_sort"])
+        for s in c["segments"]:
+            del s["_sort"]
+        c["reference"] = round(c["reference"], 2)
+        c["approved"] = round(c["approved"], 2)
+        days.append(c)
+    return days
+
+
+def handle_my_recent(data, body):
+    """{action:'my_recent', key, device_id} → 最近 RECENT_DAYS_WINDOW 天出勤明細。
+    驗證與 whoami 相同：key 無效（或離職）→ invalid_key；裝置只回 device_state 不拒回。"""
+    key = body.get("key")
+    device_id = body.get("device_id") or ""
+
+    roster = find_roster_by_key(data, key)
+    if not roster or not roster.get("active", False):
+        return {"ok": False, "error": "invalid_key"}
+
+    if not roster.get("device_id"):
+        device_state = "unbound"
+    elif roster["device_id"] == device_id:
+        device_state = "match"
+    else:
+        device_state = "mismatch"
+
+    return {
+        "ok": True,
+        "emp_id": roster["emp_id"],
+        "name": roster["name"],
+        "device_state": device_state,
+        "days": build_recent_days(data, roster["emp_id"], today_str()),
+    }
 
 
 def handle_clock(data, body):
@@ -413,6 +511,7 @@ ACTIONS = {
     "get_roster": handle_get_roster,
     "get_events": handle_get_events,
     "approve_device": handle_approve_device,
+    "my_recent": handle_my_recent,
 }
 
 MIME_TYPES = {
