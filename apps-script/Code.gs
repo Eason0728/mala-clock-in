@@ -423,6 +423,22 @@ function weekdayOf(dateStr) {
 }
 
 /**
+ * 核定工時（Eason 定案）：打卡時間「各自」取整到 15 分鐘刻度再相減，不是段長捨去——
+ * 上班先捨秒、往「後」進位到刻度（11:02→11:15；剛好在刻度不動）；
+ * 下班先捨秒、往「前」捨去到刻度（14:31→14:30）。
+ * 每段＝取整後相減（取整後 out ≤ in 該段＝0），當日＝各段相加，跨夜段同規則。
+ * 例：11:02–14:31＋17:05–21:44 → 3.25＋4.25 ＝ 7.5H。
+ * （epoch 分鐘取整可對齊本地 15 分鐘刻度：epoch 起點在刻度上、+08:00 也是 15 的倍數。）
+ */
+function approvedHoursOfShift(inTs, outTs) {
+  const inMin = Math.floor(tsMs(inTs) / 60000);   // 捨秒
+  const outMin = Math.floor(tsMs(outTs) / 60000); // 捨秒
+  const inGrid = Math.ceil(inMin / 15) * 15;      // 上班往後進位到刻度
+  const outGrid = Math.floor(outMin / 15) * 15;   // 下班往前捨去到刻度
+  return Math.max(0, (outGrid - inGrid) / 60);
+}
+
+/**
  * 打卡事件配對成班段。只取 status='ok'，依員工分組、時間排序，
  * in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」（途中遇到另一筆 in 就斷）。
  * 回傳 { shifts:[{emp_id,in_ts,out_ts}], unmatchedIns:[event], unmatchedOuts:[event] }。
@@ -471,7 +487,7 @@ function pairShifts(events) {
  * @param {Array} leaves [{date:'yyyy-mm-dd',name,type}] leave 分頁原始列（姓名未比對）
  * @param {string} todayStr 'yyyy-mm-dd'（台北）——當月明細只列到今天
  * @returns {{rows:Array, boldRows:Array, weekendRows:Array, abnormalNoteRows:Array}}
- *          rows 為 5 欄列陣列（明細依員工分區塊）；*Rows 皆為 1-based 列號
+ *          rows 為 6 欄列陣列（明細依員工分區塊，參考時數／核定工時並列）；*Rows 皆為 1-based 列號
  */
 function buildMonthlySheet(ym, roster, events, leaves, todayStr) {
   const activeRoster = roster.filter(function (r) { return String(r.active).toLowerCase() === 'true'; });
@@ -497,7 +513,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr) {
   function cell(dateStr, emp) {
     const k = dateStr + '||' + emp;
     if (!cellMap[k]) {
-      cellMap[k] = { date: dateStr, emp_id: emp, segments: [], notes: [], hours: 0, hasComplete: false, incomplete: false };
+      cellMap[k] = { date: dateStr, emp_id: emp, segments: [], notes: [], hours: 0, approved: 0, hasComplete: false, incomplete: false };
     }
     return cellMap[k];
   }
@@ -511,6 +527,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr) {
     const c = cell(d, String(s.emp_id));
     c.segments.push({ sortMs: tsMs(s.in_ts), text: tsHm(s.in_ts) + '–' + tsHm(s.out_ts) + (cross ? '(+1)' : '') });
     c.hours += (tsMs(s.out_ts) - tsMs(s.in_ts)) / 3600000;
+    c.approved += approvedHoursOfShift(s.in_ts, s.out_ts); // 每段各自取整再加總
     c.hasComplete = true;
   });
 
@@ -554,32 +571,38 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr) {
   });
 
   // ---- 每員工統計（上段累計與區塊小計共用） ----
-  const empStats = {}; // emp -> { total, abnormal }
+  const empStats = {}; // emp -> { total, approved, abnormal }
   Object.keys(cellMap).forEach(function (k) {
     const c = cellMap[k];
-    const s = (empStats[c.emp_id] = empStats[c.emp_id] || { total: 0, abnormal: 0 });
-    if (!c.incomplete) s.total += c.hours; // 有忘刷卡的那天整天不計入
+    const s = (empStats[c.emp_id] = empStats[c.emp_id] || { total: 0, approved: 0, abnormal: 0 });
+    if (!c.incomplete) { // 有忘刷卡的那天整天不計入（參考/核定皆然）
+      s.total += c.hours;
+      s.approved += c.approved;
+    }
     c.notes.forEach(function (n) { if (ABNORMAL_NOTES.indexOf(n) !== -1) s.abnormal++; });
   });
 
-  // ---- 組列（5 欄）----
+  // 核定工時是 0.25 的倍數，用 2 位小數整理浮點誤差（勿取 1 位，會把 .75 進成 .8）
+  function roundApproved(x) { return Math.round(x * 100) / 100; }
+
+  // ---- 組列（6 欄）----
   const rows = [];
   const boldRows = [];
   const weekendRows = [];
   const abnormalNoteRows = [];
 
-  rows.push(['姓名', '參考時數', '異常筆數', '請假天數', '']);
+  rows.push(['姓名', '參考時數', '核定工時', '異常筆數', '請假天數', '']);
   boldRows.push(1);
 
   activeRoster.forEach(function (r) {
     const emp = String(r.emp_id);
-    const s = empStats[emp] || { total: 0, abnormal: 0 };
+    const s = empStats[emp] || { total: 0, approved: 0, abnormal: 0 };
     const leaveCount = Object.keys(leaveDates[emp] || {}).length;
-    rows.push([String(r.name), Math.round(s.total * 10) / 10, s.abnormal, leaveCount, '']);
+    rows.push([String(r.name), Math.round(s.total * 10) / 10, roundApproved(s.approved), s.abnormal, leaveCount, '']);
   });
 
-  rows.push(['', '', '', '', '']);
-  rows.push(['日期', '星期', '班段', '參考時數', '備註']);
+  rows.push(['', '', '', '', '', '']);
+  rows.push(['日期', '星期', '班段', '參考時數', '核定工時', '備註']);
   boldRows.push(rows.length);
 
   // 明細：依員工分組（roster 順序、只列 active 或該月有紀錄者），每人一個區塊
@@ -594,8 +617,8 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr) {
   });
 
   blockEmps.forEach(function (emp, idx) {
-    if (idx > 0) rows.push(['', '', '', '', '']); // 區塊之間空一列
-    rows.push([empName[emp] || emp, '', '', '', '']); // 粗體姓名標題列
+    if (idx > 0) rows.push(['', '', '', '', '', '']); // 區塊之間空一列
+    rows.push([empName[emp] || emp, '', '', '', '', '']); // 粗體姓名標題列
     boldRows.push(rows.length);
 
     const dayCells = Object.keys(cellMap).map(function (k) { return cellMap[k]; })
@@ -606,16 +629,18 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr) {
       const wd = weekdayOf(c.date);
       c.segments.sort(function (a, b) { return a.sortMs - b.sortMs; });
       const seg = c.segments.map(function (s) { return s.text; }).join('、');
-      // 當天只要有任一筆忘刷卡 → 時數整天留空白（待人工判定）
-      const hours = (!c.incomplete && c.hasComplete) ? Math.round(c.hours * 10) / 10 : '';
-      rows.push([c.date, WEEKDAY_ZH[wd], seg, hours, c.notes.join('、')]);
+      // 當天只要有任一筆忘刷卡 → 參考/核定兩欄整天留空白（待人工判定）
+      const complete = !c.incomplete && c.hasComplete;
+      const hours = complete ? Math.round(c.hours * 10) / 10 : '';
+      const approved = complete ? roundApproved(c.approved) : '';
+      rows.push([c.date, WEEKDAY_ZH[wd], seg, hours, approved, c.notes.join('、')]);
       const rowNo = rows.length;
       if (wd === 0 || wd === 6) weekendRows.push(rowNo);
       if (c.notes.some(function (n) { return ABNORMAL_NOTES.indexOf(n) !== -1; })) abnormalNoteRows.push(rowNo);
     });
 
-    const s = empStats[emp] || { total: 0 };
-    rows.push(['小計', '', '', Math.round(s.total * 10) / 10, '']);
+    const s = empStats[emp] || { total: 0, approved: 0 };
+    rows.push(['小計', '', '', Math.round(s.total * 10) / 10, roundApproved(s.approved), '']);
   });
 
   return { rows: rows, boldRows: boldRows, weekendRows: weekendRows, abnormalNoteRows: abnormalNoteRows };
@@ -673,10 +698,10 @@ function rebuildMonth(ym) {
   sheet.clear();
 
   if (built.rows.length > 0) {
-    sheet.getRange(1, 1, built.rows.length, 5).setValues(built.rows);
-    built.boldRows.forEach(function (r) { sheet.getRange(r, 1, 1, 5).setFontWeight('bold'); });
-    built.weekendRows.forEach(function (r) { sheet.getRange(r, 1, 1, 5).setBackground('#f3f3f3'); });
-    built.abnormalNoteRows.forEach(function (r) { sheet.getRange(r, 5).setFontColor('#cc0000'); });
+    sheet.getRange(1, 1, built.rows.length, 6).setValues(built.rows);
+    built.boldRows.forEach(function (r) { sheet.getRange(r, 1, 1, 6).setFontWeight('bold'); });
+    built.weekendRows.forEach(function (r) { sheet.getRange(r, 1, 1, 6).setBackground('#f3f3f3'); });
+    built.abnormalNoteRows.forEach(function (r) { sheet.getRange(r, 6).setFontColor('#cc0000'); });
     sheet.setFrozenRows(1);
   }
   return built.rows.length;
