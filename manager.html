@@ -500,15 +500,28 @@
   }
   function cacheable(dateStr) { return !!dateStr && dateStr < deviceTodayStr(); } // 嚴格早於今天才快取
 
+  // 背景預抓中心日往前 N 天（近一週），讓手機翻閱近日幾乎都命中快取、不用等後端 ~2 秒。
+  // Apps Script 每請求固定 ~2 秒，所以循序一次抓一天（近的先），避免手機同時開一堆連線互相拖慢。
+  var PREFETCH_PAST_DAYS = 6;
+
   function prefetchNeighbors(dateStr) {
-    [addDaysStr(dateStr, -1), addDaysStr(dateStr, 1)].forEach(function (d) {
-      if (!cacheable(d) || dayCache[d] || prefetching[d]) return;
+    var targets = [];
+    for (var i = 1; i <= PREFETCH_PAST_DAYS; i++) targets.push(addDaysStr(dateStr, -i)); // 往前近→遠
+    targets.push(addDaysStr(dateStr, 1)); // 往後一天（多半是今天/未來，會被 cacheable 擋掉）
+    (function next() {
+      var d = null;
+      while (targets.length) {
+        var cand = targets.shift();
+        if (cacheable(cand) && !dayCache[cand] && !prefetching[cand]) { d = cand; break; }
+      }
+      if (!d) return;
       prefetching[d] = true;
       apiPost({ action: 'mgr_day', mgr_key: mgrKey, date: d }).then(function (res) {
         delete prefetching[d];
         if (res && res.ok) dayCache[res.date] = res.employees;
-      }).catch(function () { delete prefetching[d]; });
-    });
+        next();
+      }).catch(function () { delete prefetching[d]; next(); });
+    })();
   }
 
   function renderDay(dateStr, employees) {
