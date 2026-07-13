@@ -963,8 +963,14 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     if (!inMonthToEnd(d)) return;
     const c = cell(d, String(e.emp_id));
     c.segments.push({ sortMs: tsMs(e.ts), text: tsHm(e.ts) + '–？' });
-    c.notes.push('下班忘刷卡');
-    c.incomplete = true;
+    if (d === todayStr) {
+      // 今天的未配對上班卡＝人還在上班，顯示「上班中」、當天已完成班段時數照計，
+      // 不標忘刷卡（營業時間看月表才不會滿版假忘刷卡）；隔天起才算真的下班忘刷卡
+      c.notes.push('上班中');
+    } else {
+      c.notes.push('下班忘刷卡');
+      c.incomplete = true;
+    }
   });
 
   paired.unmatchedOuts.forEach(function (e) {
