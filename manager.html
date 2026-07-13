@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>麻的小辛辣 值班主管核定</title>
+<link rel="apple-touch-icon" href="assets/icon-180.png">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+<meta name="apple-mobile-web-app-title" content="核定">
+<style>
+  :root {
+    --brand-red: #E8380D;
+    --brand-pink: #EF856D;
+    --brand-black: #231815;
+    --brand-orange: #F08300;
+    --brand-gold: #FABE00;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: radial-gradient(120% 90% at 50% 16%, #c9290b 0%, #a81f08 55%, #8a1906 100%) fixed;
+    color: #fff;
+    min-height: 100vh;
+  }
+  .container {
+    max-width: 520px;
+    margin: 0 auto;
+    min-height: 100vh;
+    padding: 24px 16px 40px;
+  }
+  header {
+    text-align: center;
+    margin-bottom: 20px;
+  }
+  header h1 {
+    font-size: 22px;
+    font-weight: 900;
+    margin: 0 0 4px;
+    letter-spacing: 1px;
+  }
+  header p {
+    margin: 0;
+    opacity: 0.85;
+    font-size: 13px;
+  }
+  .date-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 18px;
+  }
+  .date-bar button {
+    flex: 0 0 auto;
+    background: rgba(255,255,255,0.15);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 16px;
+    font-weight: 700;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .date-bar input[type=date] {
+    flex: 1 1 auto;
+    padding: 10px 8px;
+    border-radius: 10px;
+    border: none;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--brand-black);
+    text-align: center;
+  }
+  .card {
+    background: #fff;
+    color: var(--brand-black);
+    border-radius: 16px;
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  }
+  .center-msg { text-align: center; padding: 40px 0; }
+  .emp-name {
+    font-size: 19px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .punch-summary {
+    font-size: 13px;
+    color: #6b524a;
+    margin-bottom: 4px;
+    line-height: 1.5;
+  }
+  .approved-badge {
+    display: inline-block;
+    font-size: 13px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 999px;
+    margin-bottom: 10px;
+  }
+  .approved-badge.normal { background: #e6f7ec; color: #1a7a3d; }
+  .approved-badge.warn { background: #fff6e0; color: #8a6100; }
+  .approved-badge.pending { background: #f0e6e2; color: #8a6a5f; }
+  .period-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .period-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .period-row input[type=time] {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 8px 6px;
+    border-radius: 8px;
+    border: 1px solid #f0e6e2;
+    font-size: 15px;
+    color: var(--brand-black);
+  }
+  .period-row .dash { color: #8a6a5f; }
+  .period-row .remove-btn {
+    flex: 0 0 auto;
+    background: none;
+    border: 1px solid #f0e6e2;
+    color: #c22a12;
+    border-radius: 8px;
+    width: 34px;
+    height: 34px;
+    font-size: 16px;
+    line-height: 1;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .card-actions {
+    display: flex;
+    gap: 10px;
+  }
+  .add-period-btn {
+    flex: 1 1 auto;
+    background: none;
+    border: 1px dashed #d9b8ae;
+    color: #8a6a5f;
+    border-radius: 10px;
+    padding: 10px;
+    font-size: 14px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .submit-btn {
+    flex: 1 1 auto;
+    background: var(--brand-orange);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 10px;
+    font-size: 15px;
+    font-weight: 700;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .submit-btn:disabled { opacity: 0.5; }
+  .result-box {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 14px;
+    line-height: 1.6;
+    display: none;
+  }
+  .result-box.show { display: block; }
+  .result-ok { background: #e6f7ec; color: #1a7a3d; }
+  .result-warn { background: #fff6e0; color: #8a6100; }
+  .result-error { background: #fdeceb; color: #c22a12; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>麻的🔥小辛辣</h1>
+    <p>值班主管核定</p>
+  </header>
+
+  <div class="date-bar">
+    <button type="button" id="btnPrevDay">‹</button>
+    <input type="date" id="dateInput">
+    <button type="button" id="btnNextDay">›</button>
+    <button type="button" id="btnToday">今天</button>
+  </div>
+
+  <div id="loadingCard" class="card center-msg">載入中…</div>
+  <div id="errorCard" class="card center-msg" style="display:none; color:#c22a12;"></div>
+  <div id="empList"></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var API_URL = 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
+
+  function qs(name) {
+    var params = new URLSearchParams(window.location.search);
+    return params.get(name);
+  }
+
+  var isLocalHost = ['localhost', '127.0.0.1'].indexOf(window.location.hostname) !== -1;
+  if (isLocalHost) {
+    var apiOverride = qs('api');
+    if (apiOverride) API_URL = apiOverride;
+  }
+
+  var mgrKey = qs('k');
+
+  var loadingCard = document.getElementById('loadingCard');
+  var errorCard = document.getElementById('errorCard');
+  var empListEl = document.getElementById('empList');
+  var dateInput = document.getElementById('dateInput');
+  var btnPrevDay = document.getElementById('btnPrevDay');
+  var btnNextDay = document.getElementById('btnNextDay');
+  var btnToday = document.getElementById('btnToday');
+
+  var currentDate = null; // 'yyyy-mm-dd'，由伺服器回傳值決定（避免依賴裝置時區）
+
+  function apiPost(payload) {
+    return fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(payload),
+    }).then(function (res) { return res.json(); });
+  }
+
+  function showError(msg) {
+    loadingCard.style.display = 'none';
+    empListEl.innerHTML = '';
+    errorCard.style.display = 'block';
+    errorCard.textContent = msg;
+  }
+
+  function addDaysStr(dateStr, n) {
+    var d = new Date(dateStr + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+
+  function weekdayZh(dateStr) {
+    var WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
+    return WEEKDAY_ZH[new Date(dateStr + 'T00:00:00Z').getUTCDay()];
+  }
+
+  function segmentText(s) {
+    return (s.in || '？') + '–' + (s.out || '？') + (s.cross ? '(+1)' : '');
+  }
+
+  function badgeClass(statusText) {
+    if (!statusText || statusText === '正常') return 'normal';
+    return 'warn';
+  }
+
+  function buildPeriodRow(period) {
+    var row = document.createElement('div');
+    row.className = 'period-row';
+    var start = document.createElement('input');
+    start.type = 'time';
+    start.className = 'p-start';
+    start.value = (period && period.start) || '';
+    var dash = document.createElement('span');
+    dash.className = 'dash';
+    dash.textContent = '–';
+    var end = document.createElement('input');
+    end.type = 'time';
+    end.className = 'p-end';
+    end.value = (period && period.end) || '';
+    var removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'remove-btn';
+    removeBtn.textContent = '－';
+    removeBtn.addEventListener('click', function () { row.remove(); });
+    row.appendChild(start);
+    row.appendChild(dash);
+    row.appendChild(end);
+    row.appendChild(removeBtn);
+    return row;
+  }
+
+  function renderResult(resultBox, res) {
+    resultBox.className = 'result-box show ' + (badgeClass(res.status_text) === 'normal' ? 'result-ok' : 'result-warn');
+    resultBox.textContent = '✓ 已核定 ' + res.approved_hours + ' 小時・' + res.status_text + '（' + res.manager_name + '）';
+  }
+
+  function buildEmployeeCard(emp) {
+    var card = document.createElement('div');
+    card.className = 'card';
+
+    var nameEl = document.createElement('div');
+    nameEl.className = 'emp-name';
+    nameEl.textContent = emp.name;
+    card.appendChild(nameEl);
+
+    var segText = emp.segments && emp.segments.length
+      ? emp.segments.map(segmentText).join('、')
+      : '（今日無打卡紀錄）';
+    var punchEl = document.createElement('div');
+    punchEl.className = 'punch-summary';
+    punchEl.textContent = '打卡：' + segText + '　參考 ' + emp.reference + ' 小時';
+    card.appendChild(punchEl);
+
+    if (emp.approved) {
+      var badge = document.createElement('div');
+      badge.className = 'approved-badge ' + badgeClass(emp.approved.status_text);
+      badge.textContent = '已核定 ' + emp.approved.approved_hours + ' 小時・' + emp.approved.status_text
+        + '（' + emp.approved.manager_name + '）';
+      card.appendChild(badge);
+    } else {
+      var pending = document.createElement('div');
+      pending.className = 'approved-badge pending';
+      pending.textContent = '待核定';
+      card.appendChild(pending);
+    }
+
+    var periodRows = document.createElement('div');
+    periodRows.className = 'period-rows';
+    var initialPeriods = (emp.approved && emp.approved.periods && emp.approved.periods.length)
+      ? emp.approved.periods
+      : [null];
+    initialPeriods.forEach(function (p) { periodRows.appendChild(buildPeriodRow(p)); });
+    card.appendChild(periodRows);
+
+    var actions = document.createElement('div');
+    actions.className = 'card-actions';
+    var addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'add-period-btn';
+    addBtn.textContent = '＋ 加一段';
+    addBtn.addEventListener('click', function () { periodRows.appendChild(buildPeriodRow(null)); });
+    var submitBtn = document.createElement('button');
+    submitBtn.type = 'button';
+    submitBtn.className = 'submit-btn';
+    submitBtn.textContent = emp.approved ? '重新送出核定' : '送出核定';
+    actions.appendChild(addBtn);
+    actions.appendChild(submitBtn);
+    card.appendChild(actions);
+
+    var resultBox = document.createElement('div');
+    resultBox.className = 'result-box';
+    card.appendChild(resultBox);
+
+    submitBtn.addEventListener('click', function () {
+      var periods = [];
+      periodRows.querySelectorAll('.period-row').forEach(function (row) {
+        var s = row.querySelector('.p-start').value;
+        var e = row.querySelector('.p-end').value;
+        if (s && e) periods.push({ start: s, end: e });
+      });
+      if (periods.length === 0) {
+        resultBox.className = 'result-box show result-error';
+        resultBox.textContent = '✕ 請至少輸入一段時間（起訖都要填）。';
+        return;
+      }
+      submitBtn.disabled = true;
+      submitBtn.textContent = '送出中…';
+      apiPost({
+        action: 'mgr_approve',
+        mgr_key: mgrKey,
+        date: currentDate,
+        emp_id: emp.emp_id,
+        periods: periods,
+      }).then(function (res) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '重新送出核定';
+        if (!res.ok) {
+          resultBox.className = 'result-box show result-error';
+          resultBox.textContent = '✕ 核定失敗：' + (res.error || '未知錯誤');
+          return;
+        }
+        renderResult(resultBox, res);
+      }).catch(function () {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '重新送出核定';
+        resultBox.className = 'result-box show result-error';
+        resultBox.textContent = '✕ 連線失敗，請檢查網路後再試。';
+      });
+    });
+
+    return card;
+  }
+
+  function renderEmployees(employees) {
+    empListEl.innerHTML = '';
+    if (!employees || employees.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'card center-msg';
+      empty.textContent = '這天沒有任何同仁打卡紀錄。';
+      empListEl.appendChild(empty);
+      return;
+    }
+    employees.forEach(function (emp) { empListEl.appendChild(buildEmployeeCard(emp)); });
+  }
+
+  function loadDay(dateOverride) {
+    loadingCard.style.display = 'block';
+    errorCard.style.display = 'none';
+    empListEl.innerHTML = '';
+    var payload = { action: 'mgr_day', mgr_key: mgrKey };
+    if (dateOverride) payload.date = dateOverride;
+    apiPost(payload).then(function (res) {
+      loadingCard.style.display = 'none';
+      if (!res.ok) {
+        showError(res.error === 'unauthorized' ? '主管金鑰錯誤，請確認網址是否正確。' : ('讀取失敗：' + res.error));
+        return;
+      }
+      currentDate = res.date;
+      dateInput.value = currentDate;
+      renderEmployees(res.employees);
+    }).catch(function () {
+      loadingCard.style.display = 'none';
+      showError('連線失敗，請檢查網路連線後重新整理頁面。');
+    });
+  }
+
+  dateInput.addEventListener('change', function () {
+    if (dateInput.value) loadDay(dateInput.value);
+  });
+  btnPrevDay.addEventListener('click', function () {
+    if (currentDate) loadDay(addDaysStr(currentDate, -1));
+  });
+  btnNextDay.addEventListener('click', function () {
+    if (currentDate) loadDay(addDaysStr(currentDate, 1));
+  });
+  btnToday.addEventListener('click', function () { loadDay(null); });
+
+  function init() {
+    if (!mgrKey) {
+      loadingCard.style.display = 'none';
+      showError('連結錯誤：找不到主管代碼，請確認網址是否完整。');
+      return;
+    }
+    if (API_URL.indexOf('PASTE_') === 0) {
+      loadingCard.style.display = 'none';
+      showError('系統尚未設定完成，請聯絡老闆。');
+      return;
+    }
+    loadDay(null);
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

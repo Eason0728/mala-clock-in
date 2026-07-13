@@ -17,6 +17,7 @@ import json
 import math
 import os
 import random
+import re
 import string
 import sys
 from datetime import datetime, timedelta, timezone
@@ -68,6 +69,11 @@ def gen_key(n=20):
     return "".join(random.choice(chars) for _ in range(n))
 
 
+def seed_managers():
+    # 值班主管核定（2026-07-13 新增）種子主管：測試主管 / testmgr1
+    return [{"name": "測試主管", "key": "testmgr1", "active": True}]
+
+
 def seed_data():
     return {
         "roster": [
@@ -89,6 +95,8 @@ def seed_data():
             },
         ],
         "events": [],
+        "managers": seed_managers(),
+        "approved": [],
     }
 
 
@@ -98,7 +106,18 @@ def load_data():
         save_data(data)
         return data
     with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    # 既有 mock_data.json（40 天假資料）補欄位，不清空既有內容（Eason 2026-07-13 正在用）
+    changed = False
+    if "managers" not in data:
+        data["managers"] = seed_managers()
+        changed = True
+    if "approved" not in data:
+        data["approved"] = []
+        changed = True
+    if changed:
+        save_data(data)
+    return data
 
 
 def save_data(data):
@@ -309,6 +328,228 @@ def handle_my_recent(data, body):
     }
 
 
+def find_manager_by_key(data, key):
+    for m in data.get("managers", []):
+        if m["key"] == key and m.get("active", False):
+            return m
+    return None
+
+
+def add_days_str(date_str, n):
+    d = datetime.strptime(date_str, "%Y-%m-%d").date() + timedelta(days=n)
+    return d.isoformat()
+
+
+def day_punch_segments(data, emp_id, date_str):
+    """單一員工單一天的打卡段（給 mgr_day/mgr_approve 用，與 Code.gs dayPunchSegments 同步）。
+    事件往前後各多抓 1 天供跨夜配對，只回傳歸屬 date_str 這天的班段。"""
+    lo = add_days_str(date_str, -1)
+    hi = add_days_str(date_str, 1)
+    evs = [e for e in data["events"] if e["emp_id"] == emp_id and lo <= e["ts"][:10] <= hi]
+    shifts, unmatched_ins, unmatched_outs = pair_shifts(evs)
+
+    segments = []
+    reference = 0.0
+    for s in shifts:
+        d = s["in_ts"][:10]
+        if d != date_str:
+            continue
+        segments.append({
+            "_sort": s["in_ts"],
+            "in": s["in_ts"][11:16],
+            "out": s["out_ts"][11:16],
+            "cross": s["out_ts"][:10] != d,
+        })
+        reference += (
+            datetime.fromisoformat(s["out_ts"]) - datetime.fromisoformat(s["in_ts"])
+        ).total_seconds() / 3600.0
+    for e in unmatched_ins:
+        if e["ts"][:10] != date_str:
+            continue
+        segments.append({"_sort": e["ts"], "in": e["ts"][11:16], "out": None, "cross": False})
+    for e in unmatched_outs:
+        if e["ts"][:10] != date_str:
+            continue
+        segments.append({"_sort": e["ts"], "in": None, "out": e["ts"][11:16], "cross": False})
+
+    segments.sort(key=lambda s: s["_sort"])
+    for s in segments:
+        del s["_sort"]
+    return {"segments": segments, "reference": round(reference, 2)}
+
+
+def parse_periods_str(s):
+    """'HH:mm-HH:mm,HH:mm-HH:mm' → [{"start","end"}]"""
+    if not s:
+        return []
+    out = []
+    for part in s.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        start, end = part.split("-")
+        out.append({"start": start, "end": end})
+    return out
+
+
+TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def hm_to_ms(date_str, hm):
+    """'yyyy-MM-dd' + 'HH:mm' → 該台北時刻的 epoch ms（明寫 +08:00）。"""
+    h, m = hm.split(":")
+    dt = datetime.strptime(date_str, "%Y-%m-%d").replace(hour=int(h), minute=int(m), tzinfo=TAIPEI_TZ)
+    return dt.timestamp() * 1000.0
+
+
+def compute_approval_status(periods, punch_segments):
+    """比對主管輸入時段 vs 打卡段，回傳狀態字串（與 Code.gs computeApprovalStatus 同步）。
+    periods: [{"start_ms","end_ms"}]；punch_segments: [{"in_ms","out_ms"}]（未配對為 None）。"""
+    full_segs = [s for s in punch_segments if s["in_ms"] is not None and s["out_ms"] is not None]
+    notes = []
+    used = set()
+
+    for p in periods:
+        best_i, best_overlap = -1, 0
+        for i, seg in enumerate(full_segs):
+            overlap = min(p["end_ms"], seg["out_ms"]) - max(p["start_ms"], seg["in_ms"])
+            if overlap > best_overlap:
+                best_overlap, best_i = overlap, i
+        if best_i == -1:
+            if "該段無打卡" not in notes:
+                notes.append("該段無打卡")
+            continue
+        used.add(best_i)
+        seg = full_segs[best_i]
+        if seg["in_ms"] > p["start_ms"]:
+            notes.append("遲到{}分".format(round((seg["in_ms"] - p["start_ms"]) / 60000)))
+        if seg["out_ms"] < p["end_ms"]:
+            notes.append("早退{}分".format(round((p["end_ms"] - seg["out_ms"]) / 60000)))
+
+    if len(full_segs) > len(used):
+        notes.append("有多出的打卡段")
+    return "、".join(notes) if notes else "正常"
+
+
+def latest_approved_record(data, date_str, emp_id):
+    matches = [r for r in data["approved"] if r["date"] == date_str and r["emp_id"] == emp_id]
+    if not matches:
+        return None
+    matches.sort(key=lambda r: r["entered_at"])
+    return matches[-1]
+
+
+def handle_mgr_day(data, body):
+    """{action:'mgr_day', mgr_key, date?}（date 缺省＝今天）→ 該日有打卡事件的每位同仁：
+    打卡段（含未配對？）、參考時數、既有核定紀錄（若已核過，取最新一筆）。"""
+    mgr = find_manager_by_key(data, body.get("mgr_key"))
+    if not mgr:
+        return {"ok": False, "error": "unauthorized"}
+
+    date = body.get("date") or today_str()
+    emp_ids = sorted({e["emp_id"] for e in data["events"] if e["ts"][:10] == date})
+
+    employees = []
+    for emp_id in emp_ids:
+        roster = find_roster_by_empid(data, emp_id)
+        name = roster["name"] if roster else emp_id
+        punch = day_punch_segments(data, emp_id, date)
+        rec = latest_approved_record(data, date, emp_id)
+        out = {
+            "emp_id": emp_id,
+            "name": name,
+            "segments": punch["segments"],
+            "reference": punch["reference"],
+        }
+        if rec:
+            out["approved"] = {
+                "periods": parse_periods_str(rec["periods"]),
+                "approved_hours": rec["approved_hours"],
+                "status_text": rec["status_text"],
+                "manager_name": rec["manager_name"],
+            }
+        employees.append(out)
+
+    return {"ok": True, "date": date, "employees": employees}
+
+
+def handle_mgr_approve(data, body):
+    """{action:'mgr_approve', mgr_key, date, emp_id, periods:[{start,end}]} → 驗證格式、
+    計算核定時數與遲到早退判定，append 到 approved（只追加不覆蓋），回傳計算結果。"""
+    mgr = find_manager_by_key(data, body.get("mgr_key"))
+    if not mgr:
+        return {"ok": False, "error": "unauthorized"}
+
+    date = str(body.get("date") or "")
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        return {"ok": False, "error": "bad_date"}
+
+    emp_id = body.get("emp_id")
+    roster = find_roster_by_empid(data, emp_id)
+    if not roster:
+        return {"ok": False, "error": "invalid_emp_id"}
+
+    raw_periods = body.get("periods") or []
+    if not isinstance(raw_periods, list) or len(raw_periods) == 0:
+        return {"ok": False, "error": "bad_periods"}
+    for p in raw_periods:
+        if (
+            not isinstance(p, dict)
+            or not TIME_RE.match(str(p.get("start", "")))
+            or not TIME_RE.match(str(p.get("end", "")))
+        ):
+            return {"ok": False, "error": "bad_periods"}
+
+    periods = []
+    approved_hours = 0.0
+    for p in raw_periods:
+        start_ms = hm_to_ms(date, p["start"])
+        end_ms = hm_to_ms(date, p["end"])
+        if end_ms <= start_ms:
+            end_ms += 24 * 3600 * 1000  # 跨夜段：end<=start 視為+1天
+        periods.append({"start_ms": start_ms, "end_ms": end_ms})
+        approved_hours += (end_ms - start_ms) / 3600000.0
+    approved_hours = round(approved_hours, 2)
+
+    punch = day_punch_segments(data, emp_id, date)
+    punch_segments = []
+    for s in punch["segments"]:
+        in_ms = hm_to_ms(date, s["in"]) if s["in"] else None
+        out_date = add_days_str(date, 1) if s["cross"] else date
+        out_ms = hm_to_ms(out_date, s["out"]) if s["out"] else None
+        punch_segments.append({"in_ms": in_ms, "out_ms": out_ms})
+
+    status_text = compute_approval_status(periods, punch_segments)
+    periods_str = ",".join("{}-{}".format(p["start"], p["end"]) for p in raw_periods)
+    entered_at = iso_now()
+
+    data["approved"].append(
+        {
+            "date": date,
+            "emp_id": emp_id,
+            "name": roster["name"],
+            "periods": periods_str,
+            "approved_hours": approved_hours,
+            "status_text": status_text,
+            "manager_name": mgr["name"],
+            "entered_at": entered_at,
+        }
+    )
+    save_data(data)
+
+    return {
+        "ok": True,
+        "date": date,
+        "emp_id": emp_id,
+        "name": roster["name"],
+        "periods": raw_periods,
+        "approved_hours": approved_hours,
+        "status_text": status_text,
+        "manager_name": mgr["name"],
+        "entered_at": entered_at,
+    }
+
+
 def handle_clock(data, body):
     key = body.get("key")
     type_ = body.get("type")
@@ -512,6 +753,8 @@ ACTIONS = {
     "get_events": handle_get_events,
     "approve_device": handle_approve_device,
     "my_recent": handle_my_recent,
+    "mgr_day": handle_mgr_day,
+    "mgr_approve": handle_mgr_approve,
 }
 
 MIME_TYPES = {
