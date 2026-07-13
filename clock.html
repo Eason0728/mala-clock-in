@@ -407,15 +407,18 @@
       showError('系統尚未設定完成，請聯絡老闆。');
       return;
     }
+    // 立即顯示外殼與打卡按鈕，不等 whoami（後端約 2.5 秒）——打卡本身只需 key＋GPS＋裝置碼，
+    // 伺服器端有重複打卡防護當安全網，員工一開 app 就能按。姓名／今日紀錄／按鈕灰階待 whoami 補上。
+    loadingCard.style.display = 'none';
+    mainCard.style.display = 'block';
+    btnGroup.style.display = 'flex';
+    empNameEl.textContent = '載入中…';
     apiPost({ action: 'whoami', key: key, device_id: deviceId })
       .then(function (res) {
         if (!res.ok) {
           showError('找不到這個打卡連結對應的員工，請確認連結是否正確。');
           return;
         }
-        loadingCard.style.display = 'none';
-        mainCard.style.display = 'block';
-        btnGroup.style.display = 'flex';
         empNameEl.textContent = res.name;
         if (res.device_state === 'unbound') {
           deviceHintEl.textContent = '本裝置尚未綁定，首次打卡將自動綁定。';
