@@ -195,8 +195,10 @@ def approved_hours_of_shift(in_ts, out_ts):
 def pair_shifts(events):
     """事件配對成班段（與 Code.gs pairShifts 同一套邏輯，供 whoami 今日時數與
     my_recent 回查用）。取 status='ok' 的 in/out 配對，另把 status='rejected_duplicate'
-    的 in 當「忘打下班」斷點訊號（本身不入帳、不開新段）：距開著的 in ≥ REJECTED_IN_BREAK_MIN
-    分鐘才斷（低於＝手滑連按，忽略），避免忘打下班時前後兩段被誤併成一長段。
+    的 in 當「新一段的實際起點」：同仁忘打下班、隔一段又打上班被擋，這筆雖被拒但系統有記到
+    時間，代表前一段結束、新一段從這裡開始——收前段為「下班忘刷卡」＋以它當新 open 起點，
+    讓後面的 out 配成完整段（不冤枉同仁標上班忘刷卡，也不會前後兩段被誤併成一長段）。
+    距開著的 in ≥ REJECTED_IN_BREAK_MIN 分鐘才視為換段（低於＝手滑連按，忽略）。
     in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」，途中遇到另一筆 in 就斷掉。
     回傳 (shifts, unmatched_ins, unmatched_outs)。"""
     evs = sorted(
@@ -215,10 +217,13 @@ def pair_shifts(events):
     break_gap = timedelta(minutes=REJECTED_IN_BREAK_MIN)
     for e in evs:
         if e.get("status") == "rejected_duplicate":
-            # 斷點訊號：距開著的 in ≥ 門檻 → 那段忘打下班，收成未配對；此卡不入段、不開新段。
-            if open_in and (datetime.fromisoformat(e["ts"]) - datetime.fromisoformat(open_in["ts"])) >= break_gap:
+            # 被擋的重複上班卡：距開著的 in ≥ 門檻 → 前段忘打下班（收未配對），以本卡當新段起點；
+            # 未達門檻＝手滑連按，忽略（open 不變）；沒有開著的 in → 也以本卡當新段起點（防禦）。
+            if open_in is None:
+                open_in = e
+            elif (datetime.fromisoformat(e["ts"]) - datetime.fromisoformat(open_in["ts"])) >= break_gap:
                 unmatched_ins.append(open_in)
-                open_in = None
+                open_in = e
             continue
         if e["type"] == "in":
             if open_in:
