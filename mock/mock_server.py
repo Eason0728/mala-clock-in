@@ -32,7 +32,7 @@ DATA_FILE = os.path.join(BASE_DIR, "mock_data.json")
 ADMIN_KEY = "test-admin"
 STORE_LAT = 24.7840945  # 2026-07-13 依店內實測校正
 STORE_LNG = 121.0157448
-RADIUS_M = 30  # 允許打卡半徑（公尺），與 Code.gs 的 CONFIG.RADIUS_M 同步（2026-07-13 Eason 定案）
+RADIUS_M = 20  # 允許打卡半徑（公尺），與 Code.gs 的 CONFIG.RADIUS_M 同步（2026-07-14 Eason 指定收緊為 20）
 # 上下班交替判斷的回看視窗（小時）：看得到跨夜班前一晚的上班卡，
 # 但昨天忘打的下班卡（超過視窗）不會鎖死今天的上班卡。
 ALTERNATION_LOOKBACK_HOURS = 12
