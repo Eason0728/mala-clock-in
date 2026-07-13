@@ -568,8 +568,11 @@ function parsePeriodsStr(s) {
 
 /**
  * API：{action:'mgr_day', mgr_key, date?}（date 缺省＝今天，Asia/Taipei）
- * → 回傳該日「有打卡事件」的每位同仁：打卡段（沿用 pairShifts，未配對顯示？）、
- *   參考時數、既有核定紀錄（若已核過，取最新一筆）。
+ * → 回傳「roster 全部 active 同仁」（2026-07-13 Eason 實測回饋改版：當天沒打卡的也要出現，
+ *   整天忘刷卡的人才核得到——segments 空陣列、reference=null，主管照樣可輸入時段核定）：
+ *   有打卡的照舊顯示打卡段（沿用 pairShifts，未配對顯示？）＋參考時數、既有核定紀錄（最新一筆）。
+ *   排序：有打卡的在前（依當日第一筆打卡時間），沒打卡的在後（依名冊順序）。
+ *   名冊外（或已離職）但當天有事件的 emp_id 補在最後，防禦用。
  */
 function handleMgrDay(body) {
   const ss = getSS();
@@ -585,19 +588,50 @@ function handleMgrDay(body) {
   const approvedRows = approvedSheet ? readSheetAsObjects(approvedSheet).rows : [];
   const approvedMap = buildLatestApprovedMap(approvedRows);
 
-  const empIds = {};
-  eventRows.forEach(function (e) { if (tsDateStr(e.ts) === date) empIds[String(e.emp_id)] = true; });
+  // 該日每位員工最早一筆事件時間（有打卡者排序用；任何 status 的事件都算「有打卡」）
+  const firstTs = {};
+  eventRows.forEach(function (e) {
+    if (tsDateStr(e.ts) !== date) return;
+    const emp = String(e.emp_id);
+    if (!firstTs[emp] || String(e.ts) < firstTs[emp]) firstTs[emp] = String(e.ts);
+  });
 
-  const employees = Object.keys(empIds).sort().map(function (empId) {
-    const roster = findRosterByEmpId(rosterRows, empId);
-    const punch = dayPunchSegments(eventRows, empId, date);
+  // roster 全部 active 同仁都列；名冊外但當天有事件者補最後（防禦，理論上不會發生）
+  const listed = [];
+  const seen = {};
+  rosterRows.forEach(function (r) {
+    if (String(r.active).toLowerCase() !== 'true') return;
+    const emp = String(r.emp_id);
+    listed.push({ emp_id: emp, name: String(r.name), rosterIdx: listed.length });
+    seen[emp] = true;
+  });
+  Object.keys(firstTs).sort().forEach(function (emp) {
+    if (!seen[emp]) {
+      const roster = findRosterByEmpId(rosterRows, emp);
+      listed.push({ emp_id: emp, name: roster ? String(roster.name) : emp, rosterIdx: listed.length });
+    }
+  });
+
+  // 排序：有打卡的在前（依第一筆打卡時間），沒打卡的在後（依名冊順序）
+  listed.sort(function (a, b) {
+    const fa = firstTs[a.emp_id];
+    const fb = firstTs[b.emp_id];
+    if (fa && fb) return fa < fb ? -1 : (fa > fb ? 1 : 0);
+    if (fa) return -1;
+    if (fb) return 1;
+    return a.rosterIdx - b.rosterIdx;
+  });
+
+  const employees = listed.map(function (item) {
+    const hasPunch = !!firstTs[item.emp_id];
+    const punch = hasPunch ? dayPunchSegments(eventRows, item.emp_id, date) : null;
     const out = {
-      emp_id: empId,
-      name: roster ? roster.name : empId,
-      segments: punch.segments,
-      reference: punch.reference,
+      emp_id: item.emp_id,
+      name: item.name,
+      segments: hasPunch ? punch.segments : [],
+      reference: hasPunch ? punch.reference : null, // 沒打卡＝參考空白
     };
-    const rec = (approvedMap[date] || {})[empId];
+    const rec = (approvedMap[date] || {})[item.emp_id];
     if (rec) {
       out.approved = {
         periods: parsePeriodsStr(rec.periods),

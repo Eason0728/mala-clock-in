@@ -299,12 +299,15 @@
     nameEl.textContent = emp.name;
     card.appendChild(nameEl);
 
-    var segText = emp.segments && emp.segments.length
-      ? emp.segments.map(segmentText).join('、')
-      : '（今日無打卡紀錄）';
     var punchEl = document.createElement('div');
     punchEl.className = 'punch-summary';
-    punchEl.textContent = '打卡：' + segText + '　參考 ' + emp.reference + ' 小時';
+    if (emp.segments && emp.segments.length) {
+      punchEl.textContent = '打卡：' + emp.segments.map(segmentText).join('、')
+        + '　參考 ' + emp.reference + ' 小時';
+    } else {
+      // 沒打卡的同仁也列出（整天忘刷卡的人才核得到）；參考空白不顯示數字
+      punchEl.textContent = '今天沒有打卡紀錄';
+    }
     card.appendChild(punchEl);
 
     if (emp.approved) {

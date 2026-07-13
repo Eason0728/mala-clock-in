@@ -93,6 +93,22 @@ def seed_data():
                 "device_bound_at": "",
                 "active": True,
             },
+            {
+                "emp_id": "E03",
+                "name": "測試三",
+                "key": "testkey3",
+                "device_id": "",
+                "device_bound_at": "",
+                "active": True,
+            },
+            {
+                "emp_id": "E04",
+                "name": "測試四",
+                "key": "testkey4",
+                "device_id": "",
+                "device_bound_at": "",
+                "active": True,
+            },
         ],
         "events": [],
         "managers": seed_managers(),
@@ -440,26 +456,58 @@ def latest_approved_record(data, date_str, emp_id):
 
 
 def handle_mgr_day(data, body):
-    """{action:'mgr_day', mgr_key, date?}（date 缺省＝今天）→ 該日有打卡事件的每位同仁：
-    打卡段（含未配對？）、參考時數、既有核定紀錄（若已核過，取最新一筆）。"""
+    """{action:'mgr_day', mgr_key, date?}（date 缺省＝今天）→ roster 全部 active 同仁
+    （2026-07-13 Eason 實測回饋改版：當天沒打卡的也要出現——segments 空、reference=None，
+    主管照樣可輸入時段核定，整天忘刷卡的人才核得到）。有打卡的照舊顯示打卡段＋參考時數＋
+    既有核定紀錄（最新一筆）。排序：有打卡的在前（依當日第一筆打卡時間），沒打卡的在後
+    （依名冊順序）；名冊外但當天有事件的 emp_id 補最後（防禦）。與 Code.gs handleMgrDay 同步。"""
     mgr = find_manager_by_key(data, body.get("mgr_key"))
     if not mgr:
         return {"ok": False, "error": "unauthorized"}
 
     date = body.get("date") or today_str()
-    emp_ids = sorted({e["emp_id"] for e in data["events"] if e["ts"][:10] == date})
+
+    # 該日每位員工最早一筆事件時間（任何 status 都算「有打卡」，排序用）
+    first_ts = {}
+    for e in data["events"]:
+        if e["ts"][:10] != date:
+            continue
+        emp = e["emp_id"]
+        if emp not in first_ts or e["ts"] < first_ts[emp]:
+            first_ts[emp] = e["ts"]
+
+    listed = []
+    seen = set()
+    for r in data["roster"]:
+        if not r.get("active", False):
+            continue
+        listed.append({"emp_id": r["emp_id"], "name": r["name"]})
+        seen.add(r["emp_id"])
+    for emp in sorted(first_ts):
+        if emp not in seen:
+            roster = find_roster_by_empid(data, emp)
+            listed.append({"emp_id": emp, "name": roster["name"] if roster else emp})
+
+    # 有打卡的在前（依第一筆打卡時間），沒打卡的在後（維持名冊順序）
+    listed = (
+        sorted(
+            [x for x in listed if x["emp_id"] in first_ts],
+            key=lambda x: first_ts[x["emp_id"]],
+        )
+        + [x for x in listed if x["emp_id"] not in first_ts]
+    )
 
     employees = []
-    for emp_id in emp_ids:
-        roster = find_roster_by_empid(data, emp_id)
-        name = roster["name"] if roster else emp_id
-        punch = day_punch_segments(data, emp_id, date)
+    for item in listed:
+        emp_id = item["emp_id"]
+        has_punch = emp_id in first_ts
+        punch = day_punch_segments(data, emp_id, date) if has_punch else None
         rec = latest_approved_record(data, date, emp_id)
         out = {
             "emp_id": emp_id,
-            "name": name,
-            "segments": punch["segments"],
-            "reference": punch["reference"],
+            "name": item["name"],
+            "segments": punch["segments"] if has_punch else [],
+            "reference": punch["reference"] if has_punch else None,  # 沒打卡＝參考空白
         }
         if rec:
             out["approved"] = {
