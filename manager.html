@@ -462,6 +462,7 @@
           resultBox.textContent = '✕ 核定失敗：' + (res.error || '未知錯誤');
           return;
         }
+        delete dayCache[currentDate]; // 核定改了這天的資料 → 清快取，下次切回會抓新的
         renderResult(resultBox, res);
       }).catch(function () {
         submitBtn.disabled = false;
@@ -486,21 +487,58 @@
     employees.forEach(function (emp) { empListEl.appendChild(buildEmployeeCard(emp)); });
   }
 
+  // 日期資料快取：Apps Script 每次請求都要讀 5 張表、有固定延遲，切換日期若每次重打會慢。
+  // 只快取「今天之前」的日期（過去資料不會變——除了主管當下核定，核定成功會清掉該日快取）；
+  // 今天/未來一律即時抓（會有新打卡）。載入某天時背景預抓前後一天，讓 ‹ › 幾乎瞬間。
+  var dayCache = {};      // 'yyyy-mm-dd' -> employees 陣列
+  var prefetching = {};   // 進行中的背景預抓，避免同一天重複打
+
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function deviceTodayStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  function cacheable(dateStr) { return !!dateStr && dateStr < deviceTodayStr(); } // 嚴格早於今天才快取
+
+  function prefetchNeighbors(dateStr) {
+    [addDaysStr(dateStr, -1), addDaysStr(dateStr, 1)].forEach(function (d) {
+      if (!cacheable(d) || dayCache[d] || prefetching[d]) return;
+      prefetching[d] = true;
+      apiPost({ action: 'mgr_day', mgr_key: mgrKey, date: d }).then(function (res) {
+        delete prefetching[d];
+        if (res && res.ok) dayCache[res.date] = res.employees;
+      }).catch(function () { delete prefetching[d]; });
+    });
+  }
+
+  function renderDay(dateStr, employees) {
+    loadingCard.style.display = 'none';
+    errorCard.style.display = 'none';
+    currentDate = dateStr;
+    dateInput.value = dateStr;
+    renderEmployees(employees);
+  }
+
   function loadDay(dateOverride) {
+    // 命中快取（過去看過或已預抓的日期）→ 直接畫，不轉圈、不打後端
+    if (dateOverride && dayCache[dateOverride]) {
+      renderDay(dateOverride, dayCache[dateOverride]);
+      prefetchNeighbors(dateOverride);
+      return;
+    }
     loadingCard.style.display = 'block';
     errorCard.style.display = 'none';
     empListEl.innerHTML = '';
     var payload = { action: 'mgr_day', mgr_key: mgrKey };
     if (dateOverride) payload.date = dateOverride;
     apiPost(payload).then(function (res) {
-      loadingCard.style.display = 'none';
       if (!res.ok) {
         showError(res.error === 'unauthorized' ? '主管金鑰錯誤，請確認網址是否正確。' : ('讀取失敗：' + res.error));
         return;
       }
-      currentDate = res.date;
-      dateInput.value = currentDate;
-      renderEmployees(res.employees);
+      if (cacheable(res.date)) dayCache[res.date] = res.employees;
+      renderDay(res.date, res.employees);
+      prefetchNeighbors(res.date);
     }).catch(function () {
       loadingCard.style.display = 'none';
       showError('連線失敗，請檢查網路連線後重新整理頁面。');
