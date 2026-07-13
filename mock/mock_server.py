@@ -131,6 +131,9 @@ def load_data():
     if "approved" not in data:
         data["approved"] = []
         changed = True
+    if "leave" not in data:
+        data["leave"] = []
+        changed = True
     if changed:
         save_data(data)
     return data
@@ -409,6 +412,8 @@ def parse_periods_str(s):
 
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+# 主管核定頁「請假註記」可選假別（與 Code.gs LEAVE_TYPES 同步）
+LEAVE_TYPES = ["病假", "事假", "特休假", "生理假", "家庭照顧假", "喪假", "婚假"]
 
 
 def hm_to_ms(date_str, hm):
@@ -497,6 +502,12 @@ def handle_mgr_day(data, body):
         + [x for x in listed if x["emp_id"] not in first_ts]
     )
 
+    # 該日 leave 的假別（姓名→假別；同日同人多筆時最後一筆為準，與 upsert_leave 保留邏輯一致）
+    leave_by_name = {}
+    for l in data.get("leave", []):
+        if str(l.get("date", ""))[:10] == date:
+            leave_by_name[str(l.get("name", "")).strip()] = str(l.get("type", "")).strip()
+
     employees = []
     for item in listed:
         emp_id = item["emp_id"]
@@ -508,6 +519,7 @@ def handle_mgr_day(data, body):
             "name": item["name"],
             "segments": punch["segments"] if has_punch else [],
             "reference": punch["reference"] if has_punch else None,  # 沒打卡＝參考空白
+            "leave_type": leave_by_name.get(item["name"], ""),
         }
         if rec:
             out["approved"] = {
@@ -536,6 +548,10 @@ def handle_mgr_approve(data, body):
     roster = find_roster_by_empid(data, emp_id)
     if not roster:
         return {"ok": False, "error": "invalid_emp_id"}
+
+    leave_type = str(body.get("leave_type") or "").strip()
+    if leave_type and leave_type not in LEAVE_TYPES:
+        return {"ok": False, "error": "bad_leave_type"}
 
     raw_periods = body.get("periods") or []
     if not isinstance(raw_periods, list) or len(raw_periods) == 0:
@@ -583,6 +599,13 @@ def handle_mgr_approve(data, body):
             "entered_at": entered_at,
         }
     )
+    # 請假註記 upsert：同日同人最多一筆；空字串＝清掉（與 Code.gs upsertLeaveRow 同步）
+    data["leave"] = [
+        l for l in data.get("leave", [])
+        if not (str(l.get("date", ""))[:10] == date and str(l.get("name", "")).strip() == roster["name"])
+    ]
+    if leave_type:
+        data["leave"].append({"date": date, "name": roster["name"], "type": leave_type})
     save_data(data)
 
     return {
@@ -592,6 +615,7 @@ def handle_mgr_approve(data, body):
         "name": roster["name"],
         "periods": raw_periods,
         "approved_hours": approved_hours,
+        "leave_type": leave_type,
         "status_text": status_text,
         "manager_name": mgr["name"],
         "entered_at": entered_at,

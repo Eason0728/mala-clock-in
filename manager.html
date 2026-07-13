@@ -136,6 +136,27 @@
     line-height: 1;
     -webkit-tap-highlight-color: transparent;
   }
+  .leave-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .leave-row label {
+    flex: 0 0 auto;
+    font-size: 14px;
+    color: #8a6a5f;
+  }
+  .leave-row select {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 8px 6px;
+    border-radius: 8px;
+    border: 1px solid #f0e6e2;
+    font-size: 15px;
+    color: var(--brand-black);
+    background: #fff;
+  }
   .card-actions {
     display: flex;
     gap: 10px;
@@ -287,7 +308,8 @@
 
   function renderResult(resultBox, res) {
     resultBox.className = 'result-box show ' + (badgeClass(res.status_text) === 'normal' ? 'result-ok' : 'result-warn');
-    resultBox.textContent = '✓ 已核定 ' + res.approved_hours + ' 小時・' + res.status_text + '（' + res.manager_name + '）';
+    resultBox.textContent = '✓ 已核定 ' + res.approved_hours + ' 小時・' + res.status_text
+      + (res.leave_type ? '・' + res.leave_type : '') + '（' + res.manager_name + '）';
   }
 
   function buildEmployeeCard(emp) {
@@ -314,7 +336,7 @@
       var badge = document.createElement('div');
       badge.className = 'approved-badge ' + badgeClass(emp.approved.status_text);
       badge.textContent = '已核定 ' + emp.approved.approved_hours + ' 小時・' + emp.approved.status_text
-        + '（' + emp.approved.manager_name + '）';
+        + (emp.leave_type ? '・' + emp.leave_type : '') + '（' + emp.approved.manager_name + '）';
       card.appendChild(badge);
     } else {
       var pending = document.createElement('div');
@@ -330,6 +352,24 @@
       : [null];
     initialPeriods.forEach(function (p) { periodRows.appendChild(buildPeriodRow(p)); });
     card.appendChild(periodRows);
+
+    // 請假註記：選了假別會寫入 leave 分頁（月表狀態欄顯示），改回「無」重送會清掉
+    var LEAVE_TYPES = ['病假', '事假', '特休假', '生理假', '家庭照顧假', '喪假', '婚假'];
+    var leaveRow = document.createElement('div');
+    leaveRow.className = 'leave-row';
+    var leaveLabel = document.createElement('label');
+    leaveLabel.textContent = '請假註記';
+    var leaveSelect = document.createElement('select');
+    ['無'].concat(LEAVE_TYPES).forEach(function (t) {
+      var opt = document.createElement('option');
+      opt.value = t === '無' ? '' : t;
+      opt.textContent = t;
+      leaveSelect.appendChild(opt);
+    });
+    leaveSelect.value = emp.leave_type || '';
+    leaveRow.appendChild(leaveLabel);
+    leaveRow.appendChild(leaveSelect);
+    card.appendChild(leaveRow);
 
     var actions = document.createElement('div');
     actions.className = 'card-actions';
@@ -370,6 +410,7 @@
         date: currentDate,
         emp_id: emp.emp_id,
         periods: periods,
+        leave_type: leaveSelect.value,
       }).then(function (res) {
         submitBtn.disabled = false;
         submitBtn.textContent = '重新送出核定';

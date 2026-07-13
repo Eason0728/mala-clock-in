@@ -46,6 +46,8 @@ const EVENTS_HEADERS = [
 // 值班主管核定（2026-07-13 新增）：只追加不覆蓋；同 (date,emp_id) 多筆以 entered_at 最新為準（讀取端處理）
 const APPROVED_HEADERS = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at'];
 const MANAGERS_HEADERS = ['name', 'key', 'active'];
+// 主管核定頁「請假註記」可選假別（2026-07-13 Eason 定案；改清單前後端 mock 要同步）
+const LEAVE_TYPES = ['病假', '事假', '特休假', '生理假', '家庭照顧假', '喪假', '婚假'];
 
 /**
  * 手動執行一次：建立 roster / events 兩個分頁與表頭。
@@ -588,6 +590,16 @@ function handleMgrDay(body) {
   const approvedRows = approvedSheet ? readSheetAsObjects(approvedSheet).rows : [];
   const approvedMap = buildLatestApprovedMap(approvedRows);
 
+  // 該日 leave 分頁的假別（姓名→假別；同日同人多筆時最後一筆為準，與 upsertLeaveRow 保留邏輯一致）
+  const leaveSheetForDay = ss.getSheetByName('leave');
+  const leaveByName = {};
+  if (leaveSheetForDay) {
+    readSheetAsObjects(leaveSheetForDay).rows.forEach(function (l) {
+      if (normCellDate(l['日期']) !== date) return;
+      leaveByName[String(l['姓名'] || '').trim()] = String(l['假別'] || '').trim();
+    });
+  }
+
   // 該日每位員工最早一筆事件時間（有打卡者排序用；任何 status 的事件都算「有打卡」）
   const firstTs = {};
   eventRows.forEach(function (e) {
@@ -630,6 +642,7 @@ function handleMgrDay(body) {
       name: item.name,
       segments: hasPunch ? punch.segments : [],
       reference: hasPunch ? punch.reference : null, // 沒打卡＝參考空白
+      leave_type: leaveByName[item.name] || '',
     };
     const rec = (approvedMap[date] || {})[item.emp_id];
     if (rec) {
@@ -667,6 +680,9 @@ function handleMgrApprove(body) {
   const roster = findRosterByEmpId(rosterRows, body.emp_id);
   if (!roster) return { ok: false, error: 'invalid_emp_id' };
 
+  const leaveType = String(body.leave_type || '').trim();
+  if (leaveType && LEAVE_TYPES.indexOf(leaveType) === -1) return { ok: false, error: 'bad_leave_type' };
+
   const rawPeriods = body.periods || [];
   const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
   if (!Array.isArray(rawPeriods) || rawPeriods.length === 0) return { ok: false, error: 'bad_periods' };
@@ -702,12 +718,40 @@ function handleMgrApprove(body) {
   const approvedSheet = ss.getSheetByName('approved');
   if (!approvedSheet) return { ok: false, error: 'approved_sheet_missing' };
   approvedSheet.appendRow([date, body.emp_id, roster.name, periodsStr, approvedHours, statusText, mgr.name, enteredAt]);
+  upsertLeaveRow(ss, date, String(roster.name), leaveType);
 
   return {
     ok: true, date: date, emp_id: body.emp_id, name: roster.name,
-    periods: rawPeriods, approved_hours: approvedHours,
+    periods: rawPeriods, approved_hours: approvedHours, leave_type: leaveType,
     status_text: statusText, manager_name: mgr.name, entered_at: enteredAt,
   };
+}
+
+/**
+ * 主管核定夾帶的請假註記寫回 leave 分頁：同日同人維持最多一筆——
+ * 有假別＝更新既有列（無則新增）；空字串＝刪除既有列（主管改回「無」重送時清掉，
+ * 含 Eason 手填的同日同人列——核定頁送出後以核定頁為準）。
+ * 多筆歷史重複列順手去重，只留最後一筆。
+ */
+function upsertLeaveRow(ss, date, name, leaveType) {
+  const sheet = ss.getSheetByName('leave');
+  if (!sheet) return;
+  const matches = readSheetAsObjects(sheet).rows
+    .filter(function (r) {
+      return normCellDate(r['日期']) === date && String(r['姓名'] || '').trim() === name;
+    })
+    .map(function (r) { return r.__rowIndex; });
+  let kept = matches.length ? matches[matches.length - 1] : 0;
+  for (let j = matches.length - 2; j >= 0; j--) {
+    sheet.deleteRow(matches[j]); // 由下往上刪重複列，避免列號位移
+    kept--; // 刪的都在保留列上方，保留列每次上移一列
+  }
+  if (leaveType) {
+    if (kept) sheet.getRange(kept, 3).setValue(leaveType);
+    else sheet.appendRow([date, name, leaveType]);
+  } else if (kept) {
+    sheet.deleteRow(kept);
+  }
 }
 
 /* ============================================================
