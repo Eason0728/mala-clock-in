@@ -434,16 +434,51 @@
 
     submitBtn.addEventListener('click', function () {
       var periods = [];
+      var halfFilled = false;
       periodRows.querySelectorAll('.period-row').forEach(function (row) {
         var s = row.querySelector('.p-start').value;
         var e = row.querySelector('.p-end').value;
         if (s && e) periods.push({ start: s, end: e });
+        else if (s || e) halfFilled = true; // 只填了上班或下班一邊
       });
+      if (halfFilled) {
+        resultBox.className = 'result-box show result-error';
+        resultBox.textContent = '✕ 有一段只填了上班或下班時間，請補齊兩邊，或按該段的 － 移除。';
+        return;
+      }
       if (periods.length === 0) {
         resultBox.className = 'result-box show result-error';
         resultBox.textContent = '✕ 請至少輸入一段時間（起訖都要填）。';
         return;
       }
+
+      // 送出前防呆：算總時數（跨夜比照後端 end<=start 視為隔天）、揪出打反與時段重疊，
+      // 用確認框把「核定總時數＋提醒」攤給主管看過再寫入（覆蓋前先確認、把打錯攔在寫入前）。
+      function hm2min(t) { var a = t.split(':'); return (+a[0]) * 60 + (+a[1]); }
+      var segs = periods.map(function (p) {
+        var sm = hm2min(p.start), em = hm2min(p.end), overnight = em <= sm;
+        if (overnight) em += 1440;
+        return { start: p.start, end: p.end, sm: sm, em: em, overnight: overnight };
+      });
+      var totalH = Math.round(segs.reduce(function (a, s) { return a + (s.em - s.sm) / 60; }, 0) * 100) / 100;
+
+      var warnings = [];
+      segs.forEach(function (s) {
+        if (s.overnight) warnings.push('・' + s.start + '–' + s.end + ' 會算成跨夜到隔天（' + (Math.round((s.em - s.sm) / 60 * 100) / 100) + ' 小時），若是打錯請改回。');
+      });
+      var sorted = segs.slice().sort(function (a, b) { return a.sm - b.sm; });
+      for (var i = 1; i < sorted.length; i++) {
+        if (sorted[i].sm < sorted[i - 1].em) {
+          warnings.push('・' + sorted[i - 1].start + '–' + sorted[i - 1].end + ' 與 ' + sorted[i].start + '–' + sorted[i].end + ' 時段重疊，會重複計算。');
+        }
+      }
+
+      var msg = '即將核定 ' + emp.name + '：\n' + segs.map(function (s) { return s.start + '–' + s.end; }).join('、')
+        + '\n核定時數共 ' + totalH + ' 小時';
+      if (leaveSelect.value) msg += '\n請假：' + leaveSelect.value + (leaveHours.value ? ' ' + leaveHours.value + ' 小時' : '');
+      if (warnings.length) msg += '\n\n⚠ 請再確認：\n' + warnings.join('\n');
+      msg += '\n\n確定送出?';
+      if (!window.confirm(msg)) return;
       submitBtn.disabled = true;
       submitBtn.textContent = '送出中…';
       apiPost({
