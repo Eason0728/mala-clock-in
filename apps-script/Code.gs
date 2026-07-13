@@ -232,7 +232,9 @@ function lastCountedEvent(eventRows, empId) {
  */
 function todayHoursSummary(eventRows, empId, today) {
   const todayOkEvents = eventRows.filter(function (e) {
-    return String(e.emp_id) === String(empId) && String(e.status) === 'ok' && String(e.ts).slice(0, 10) === today;
+    if (String(e.emp_id) !== String(empId) || String(e.ts).slice(0, 10) !== today) return false;
+    // 保留 ok 事件，另保留 rejected_duplicate 的 in（pairShifts 用它當忘打下班的斷點）
+    return String(e.status) === 'ok' || (String(e.status) === 'rejected_duplicate' && e.type === 'in');
   });
   const paired = pairShifts(todayOkEvents);
 
@@ -250,7 +252,12 @@ function todayHoursSummary(eventRows, empId, today) {
   };
   if (paired.unmatchedIns.length > 0) {
     const openIn = paired.unmatchedIns[paired.unmatchedIns.length - 1];
-    result.working_since = tsHm(openIn.ts);
+    // 這筆未配對 in 之後若已有 ok 的下班卡 → 當天其實已下班（只是中間漏刷一次），不算上班中；
+    // 只有後面沒有更晚的下班卡才顯示「上班中」（被拒的重複上班卡不代表離場）。
+    const laterOut = todayOkEvents.some(function (e) {
+      return String(e.status) === 'ok' && e.type === 'out' && tsMs(e.ts) > tsMs(openIn.ts);
+    });
+    if (!laterOut) result.working_since = tsHm(openIn.ts);
   }
   return result;
 }
@@ -762,6 +769,9 @@ function upsertLeaveRow(ss, date, name, leaveType) {
 
 // in 配「12 小時內的下一筆 out」的配對視窗（小時）
 const MONTHLY_PAIR_WINDOW_HOURS = 12;
+// 被拒的重複上班卡（rejected_duplicate 的 in）距開著的 in 達此分鐘數 → 視為忘打下班的斷點
+// （見 pairShifts）。低於此門檻＝手滑連按，忽略不斷段。
+const REJECTED_IN_BREAK_MIN = 60;
 const WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
 // 備註欄中屬於「異常」的字樣（列入異常筆數統計、明細標紅）；假別不算異常
 const ABNORMAL_NOTES = ['下班忘刷卡', '上班忘刷卡', '新裝置待核准', '超出範圍嘗試'];
@@ -806,15 +816,21 @@ function approvedHoursOfShift(inTs, outTs) {
 }
 
 /**
- * 打卡事件配對成班段。只取 status='ok'，依員工分組、時間排序，
- * in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」（途中遇到另一筆 in 就斷）。
+ * 打卡事件配對成班段。取 status='ok' 的 in/out 配對，另把 status='rejected_duplicate'
+ * 的 in 當「忘打下班」斷點訊號（本身不入帳、不開新段）：同仁上班中途忘打下班、隔一段
+ * 又打上班被交替防呆擋下，這筆雖被拒，卻代表前一段班已結束——用它把開著的 in 斷成
+ * 「下班忘刷卡」，避免 11:02 in 與 21:44 out 相距＜12h 被誤併成一長段。
+ * 依員工分組、時間排序，in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」（途中遇到
+ * 另一筆 in 就斷）；被拒 in 距開著的 in ≥ REJECTED_IN_BREAK_MIN 分鐘才斷（低於＝手滑連按，忽略）。
  * 回傳 { shifts:[{emp_id,in_ts,out_ts}], unmatchedIns:[event], unmatchedOuts:[event] }。
  */
 function pairShifts(events) {
   const byEmp = {};
   events.forEach(function (e) {
-    if (String(e.status) !== 'ok') return;
-    if (e.type !== 'in' && e.type !== 'out') return;
+    const st = String(e.status);
+    const isOk = st === 'ok' && (e.type === 'in' || e.type === 'out');
+    const isBreakMark = st === 'rejected_duplicate' && e.type === 'in';
+    if (!isOk && !isBreakMark) return;
     const k = String(e.emp_id);
     (byEmp[k] = byEmp[k] || []).push(e);
   });
@@ -827,6 +843,14 @@ function pairShifts(events) {
     const evs = byEmp[emp].slice().sort(function (a, b) { return tsMs(a.ts) - tsMs(b.ts); });
     let open = null;
     evs.forEach(function (e) {
+      if (String(e.status) === 'rejected_duplicate') {
+        // 斷點訊號：距開著的 in ≥ 門檻 → 那段忘打下班，收成未配對；此卡不入段、不開新段。
+        if (open && tsMs(e.ts) - tsMs(open.ts) >= REJECTED_IN_BREAK_MIN * 60000) {
+          unmatchedIns.push(open);
+          open = null;
+        }
+        return;
+      }
       if (e.type === 'in') {
         if (open) unmatchedIns.push(open); // 途中遇到另一筆 in → 前一筆 in 斷掉
         open = e;

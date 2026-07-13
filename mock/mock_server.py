@@ -179,6 +179,7 @@ def last_counted_event(data, emp_id):
 
 
 MONTHLY_PAIR_WINDOW_HOURS = 12  # in 配「12 小時內的下一筆 out」，與 Code.gs 的 MONTHLY_PAIR_WINDOW_HOURS 同步
+REJECTED_IN_BREAK_MIN = 60  # 被拒的重複上班卡（rejected_duplicate 的 in）距開著的 in 達此分鐘數 → 視為忘打下班的斷點（與 Code.gs 同步）
 
 
 def approved_hours_of_shift(in_ts, out_ts):
@@ -193,11 +194,17 @@ def approved_hours_of_shift(in_ts, out_ts):
 
 def pair_shifts(events):
     """事件配對成班段（與 Code.gs pairShifts 同一套邏輯，供 whoami 今日時數與
-    my_recent 回查用）。只吃 status='ok' 的 in/out，依時間排序，
+    my_recent 回查用）。取 status='ok' 的 in/out 配對，另把 status='rejected_duplicate'
+    的 in 當「忘打下班」斷點訊號（本身不入帳、不開新段）：距開著的 in ≥ REJECTED_IN_BREAK_MIN
+    分鐘才斷（低於＝手滑連按，忽略），避免忘打下班時前後兩段被誤併成一長段。
     in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」，途中遇到另一筆 in 就斷掉。
     回傳 (shifts, unmatched_ins, unmatched_outs)。"""
     evs = sorted(
-        [e for e in events if e.get("status") == "ok" and e.get("type") in ("in", "out")],
+        [
+            e for e in events
+            if (e.get("status") == "ok" and e.get("type") in ("in", "out"))
+            or (e.get("status") == "rejected_duplicate" and e.get("type") == "in")
+        ],
         key=lambda e: e["ts"],
     )
     shifts = []
@@ -205,7 +212,14 @@ def pair_shifts(events):
     unmatched_outs = []
     open_in = None
     window = timedelta(hours=MONTHLY_PAIR_WINDOW_HOURS)
+    break_gap = timedelta(minutes=REJECTED_IN_BREAK_MIN)
     for e in evs:
+        if e.get("status") == "rejected_duplicate":
+            # 斷點訊號：距開著的 in ≥ 門檻 → 那段忘打下班，收成未配對；此卡不入段、不開新段。
+            if open_in and (datetime.fromisoformat(e["ts"]) - datetime.fromisoformat(open_in["ts"])) >= break_gap:
+                unmatched_ins.append(open_in)
+                open_in = None
+            continue
         if e["type"] == "in":
             if open_in:
                 unmatched_ins.append(open_in)
@@ -230,7 +244,8 @@ def today_hours_summary(data, emp_id, today):
     reference/approved 只計入已完成時段；今日無完成時段則兩者為 0。"""
     today_ok_events = [
         e for e in data["events"]
-        if e["emp_id"] == emp_id and e.get("status") == "ok" and e["ts"][:10] == today
+        if e["emp_id"] == emp_id and e["ts"][:10] == today
+        and (e.get("status") == "ok" or (e.get("status") == "rejected_duplicate" and e.get("type") == "in"))
     ]
     shifts, unmatched_ins, _unmatched_outs = pair_shifts(today_ok_events)
 
@@ -248,7 +263,14 @@ def today_hours_summary(data, emp_id, today):
         "working_since": None,
     }
     if unmatched_ins:
-        result["working_since"] = unmatched_ins[-1]["ts"][11:16]
+        open_in = unmatched_ins[-1]
+        # 這筆未配對 in 之後若已有 ok 下班卡 → 當天已下班（中間漏刷），不算上班中
+        later_out = any(
+            e.get("status") == "ok" and e.get("type") == "out" and e["ts"] > open_in["ts"]
+            for e in today_ok_events
+        )
+        if not later_out:
+            result["working_since"] = open_in["ts"][11:16]
     return result
 
 
