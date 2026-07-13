@@ -870,6 +870,59 @@ function setupMonthlyTrigger() {
   Logger.log('已建立 dailyMonthlyRebuild 每日 05:00 觸發器');
 }
 
+// refreshCurrentMonth 記錄「上次重算時 events 分頁的列數」用的 Script Properties key
+const REFRESH_LAST_ROW_PROP = 'REFRESH_CURRENT_MONTH_LAST_ROW';
+
+/**
+ * 每 10 分鐘重算當月月表（給時間觸發器呼叫，不進 doPost 路由，Eason 2026-07-13 要求
+ * 打卡後最多 10 分鐘反映到月表，不等隔天 05:00）。重用 rebuildMonth 既有核心，不複製邏輯。
+ *
+ * 三道防呆：
+ *   1. events 分頁列數沒變 → 沒有新打卡，直接 return（半夜空轉幾乎零成本）。
+ *   2. LockService 搶不到鎖（跟 05:00 的 dailyMonthlyRebuild 或手動 rebuild_month 撞期）
+ *      → tryLock(0) 立刻放棄，不排隊等待，直接 return。
+ *   3. 任何例外都吞掉只寫 log，不讓觸發器因丟例外被 Apps Script 自動停用。
+ */
+function refreshCurrentMonth() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(0)) {
+    console.log('refreshCurrentMonth: 搶不到鎖，跳過本次（可能與 05:00 重算或手動 rebuild_month 重疊）');
+    return;
+  }
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const eventsSheet = getSS().getSheetByName('events');
+    const lastRow = eventsSheet.getLastRow();
+    const prevRow = parseInt(props.getProperty(REFRESH_LAST_ROW_PROP) || '0', 10);
+
+    if (lastRow === prevRow) {
+      return; // events 沒有新增列，跳過本次重算
+    }
+
+    rebuildMonth(currentYmTaipei());
+    props.setProperty(REFRESH_LAST_ROW_PROP, String(lastRow));
+  } catch (err) {
+    console.log('refreshCurrentMonth 執行失敗：' + err);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * 手動跑一次：建立每 10 分鐘一次的 refreshCurrentMonth 時間觸發器
+ * （先刪除既有同 handler 的觸發器再建，跑幾次都不會疊加出第二顆）。
+ * 部署後要在 Apps Script 編輯器手動執行一次本函式才會生效；本函式只建立觸發器，
+ * 不會自己執行 refreshCurrentMonth。
+ * 注意：觸發時刻依 Apps Script「專案設定」的時區，請確認為台北 (GMT+8)。
+ */
+function setupMonthRefreshTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'refreshCurrentMonth') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('refreshCurrentMonth').timeBased().everyMinutes(10).create();
+  Logger.log('已建立 refreshCurrentMonth 每 10 分鐘觸發器');
+}
+
 /** API：{action:'rebuild_month', admin_key, ym?}（ym 缺省＝當月）。GAS 專屬，mock 不實作。 */
 function handleRebuildMonth(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
