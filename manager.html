@@ -157,6 +157,21 @@
     color: var(--brand-black);
     background: #fff;
   }
+  .leave-row input.leave-hours {
+    flex: 0 0 88px;
+    width: 88px;
+    min-width: 0;
+    padding: 8px 6px;
+    border-radius: 8px;
+    border: 1px solid #f0e6e2;
+    font-size: 15px;
+    color: var(--brand-black);
+  }
+  .leave-row input.leave-hours:disabled {
+    background: #f4efec;
+    color: #b7a9a2;
+  }
+  .leave-row .hours-unit { flex: 0 0 auto; font-size: 14px; color: #8a6a5f; }
   .card-actions {
     display: flex;
     gap: 10px;
@@ -306,10 +321,17 @@
     return row;
   }
 
+  // 假別＋時數的顯示後綴，如「・病假2.5h」「・病假」；沒假別回空字串
+  function leaveSuffix(type, hours) {
+    if (!type) return '';
+    var h = (hours === 0 || hours) && hours !== '' ? Number(hours) : null;
+    return '・' + type + (h != null && isFinite(h) ? h + 'h' : '');
+  }
+
   function renderResult(resultBox, res) {
     resultBox.className = 'result-box show ' + (badgeClass(res.status_text) === 'normal' ? 'result-ok' : 'result-warn');
     resultBox.textContent = '✓ 已核定 ' + res.approved_hours + ' 小時・' + res.status_text
-      + (res.leave_type ? '・' + res.leave_type : '') + '（' + res.manager_name + '）';
+      + leaveSuffix(res.leave_type, res.leave_hours) + '（' + res.manager_name + '）';
   }
 
   function buildEmployeeCard(emp) {
@@ -336,7 +358,7 @@
       var badge = document.createElement('div');
       badge.className = 'approved-badge ' + badgeClass(emp.approved.status_text);
       badge.textContent = '已核定 ' + emp.approved.approved_hours + ' 小時・' + emp.approved.status_text
-        + (emp.leave_type ? '・' + emp.leave_type : '') + '（' + emp.approved.manager_name + '）';
+        + leaveSuffix(emp.leave_type, emp.leave_hours) + '（' + emp.approved.manager_name + '）';
       card.appendChild(badge);
     } else {
       var pending = document.createElement('div');
@@ -367,8 +389,28 @@
       leaveSelect.appendChild(opt);
     });
     leaveSelect.value = emp.leave_type || '';
+    // 時數：只在有選假別時可填（選「無」時鎖住並清空），單位小時、以 0.25（15 分鐘）為刻度
+    var leaveHours = document.createElement('input');
+    leaveHours.type = 'number';
+    leaveHours.className = 'leave-hours';
+    leaveHours.step = '0.25';
+    leaveHours.min = '0';
+    leaveHours.placeholder = '時數';
+    leaveHours.value = (emp.leave_hours === 0 || emp.leave_hours) ? emp.leave_hours : '';
+    var hoursUnit = document.createElement('span');
+    hoursUnit.className = 'hours-unit';
+    hoursUnit.textContent = '小時';
+    function syncLeaveHoursEnabled() {
+      var on = !!leaveSelect.value;
+      leaveHours.disabled = !on;
+      if (!on) leaveHours.value = '';
+    }
+    leaveSelect.addEventListener('change', syncLeaveHoursEnabled);
+    syncLeaveHoursEnabled();
     leaveRow.appendChild(leaveLabel);
     leaveRow.appendChild(leaveSelect);
+    leaveRow.appendChild(leaveHours);
+    leaveRow.appendChild(hoursUnit);
     card.appendChild(leaveRow);
 
     var actions = document.createElement('div');
@@ -411,6 +453,7 @@
         emp_id: emp.emp_id,
         periods: periods,
         leave_type: leaveSelect.value,
+        leave_hours: leaveSelect.value ? leaveHours.value : '',
       }).then(function (res) {
         submitBtn.disabled = false;
         submitBtn.textContent = '重新送出核定';

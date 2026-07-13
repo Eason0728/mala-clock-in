@@ -30,7 +30,7 @@ const CONFIG = {
 };
 
 const ROSTER_HEADERS = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active'];
-const LEAVE_HEADERS = ['日期', '姓名', '假別'];
+const LEAVE_HEADERS = ['日期', '姓名', '假別', '時數'];
 const EVENTS_HEADERS = [
   'ts',
   'emp_id',
@@ -597,13 +597,16 @@ function handleMgrDay(body) {
   const approvedRows = approvedSheet ? readSheetAsObjects(approvedSheet).rows : [];
   const approvedMap = buildLatestApprovedMap(approvedRows);
 
-  // 該日 leave 分頁的假別（姓名→假別；同日同人多筆時最後一筆為準，與 upsertLeaveRow 保留邏輯一致）
+  // 該日 leave 分頁的假別＋時數（姓名→值；同日同人多筆時最後一筆為準，與 upsertLeaveRow 保留邏輯一致）
   const leaveSheetForDay = ss.getSheetByName('leave');
   const leaveByName = {};
+  const leaveHoursByName = {};
   if (leaveSheetForDay) {
     readSheetAsObjects(leaveSheetForDay).rows.forEach(function (l) {
       if (normCellDate(l['日期']) !== date) return;
-      leaveByName[String(l['姓名'] || '').trim()] = String(l['假別'] || '').trim();
+      const nm = String(l['姓名'] || '').trim();
+      leaveByName[nm] = String(l['假別'] || '').trim();
+      leaveHoursByName[nm] = l['時數'] === '' || l['時數'] == null ? '' : Number(l['時數']);
     });
   }
 
@@ -650,6 +653,7 @@ function handleMgrDay(body) {
       segments: hasPunch ? punch.segments : [],
       reference: hasPunch ? punch.reference : null, // 沒打卡＝參考空白
       leave_type: leaveByName[item.name] || '',
+      leave_hours: (leaveHoursByName[item.name] === '' || leaveHoursByName[item.name] == null) ? '' : leaveHoursByName[item.name],
     };
     const rec = (approvedMap[date] || {})[item.emp_id];
     if (rec) {
@@ -689,6 +693,13 @@ function handleMgrApprove(body) {
 
   const leaveType = String(body.leave_type || '').trim();
   if (leaveType && LEAVE_TYPES.indexOf(leaveType) === -1) return { ok: false, error: 'bad_leave_type' };
+  // 請假時數：可留空（＝只註記假別、不記時數）；有填要是 0 以上的數字，四捨五入到 2 位。
+  let leaveHours = '';
+  if (leaveType && body.leave_hours !== '' && body.leave_hours != null) {
+    const h = Number(body.leave_hours);
+    if (!isFinite(h) || h < 0) return { ok: false, error: 'bad_leave_hours' };
+    leaveHours = Math.round(h * 100) / 100;
+  }
 
   const rawPeriods = body.periods || [];
   const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -725,24 +736,25 @@ function handleMgrApprove(body) {
   const approvedSheet = ss.getSheetByName('approved');
   if (!approvedSheet) return { ok: false, error: 'approved_sheet_missing' };
   approvedSheet.appendRow([date, body.emp_id, roster.name, periodsStr, approvedHours, statusText, mgr.name, enteredAt]);
-  upsertLeaveRow(ss, date, String(roster.name), leaveType);
+  upsertLeaveRow(ss, date, String(roster.name), leaveType, leaveHours);
 
   return {
     ok: true, date: date, emp_id: body.emp_id, name: roster.name,
-    periods: rawPeriods, approved_hours: approvedHours, leave_type: leaveType,
+    periods: rawPeriods, approved_hours: approvedHours, leave_type: leaveType, leave_hours: leaveHours,
     status_text: statusText, manager_name: mgr.name, entered_at: enteredAt,
   };
 }
 
 /**
  * 主管核定夾帶的請假註記寫回 leave 分頁：同日同人維持最多一筆——
- * 有假別＝更新既有列（無則新增）；空字串＝刪除既有列（主管改回「無」重送時清掉，
+ * 有假別＝更新既有列的假別＋時數（無則新增）；空字串＝刪除既有列（主管改回「無」重送時清掉，
  * 含 Eason 手填的同日同人列——核定頁送出後以核定頁為準）。
- * 多筆歷史重複列順手去重，只留最後一筆。
+ * 多筆歷史重複列順手去重，只留最後一筆。leaveHours 傳 '' ＝時數欄留空。
  */
-function upsertLeaveRow(ss, date, name, leaveType) {
+function upsertLeaveRow(ss, date, name, leaveType, leaveHours) {
   const sheet = ss.getSheetByName('leave');
   if (!sheet) return;
+  const hours = (leaveHours === '' || leaveHours == null) ? '' : leaveHours;
   const matches = readSheetAsObjects(sheet).rows
     .filter(function (r) {
       return normCellDate(r['日期']) === date && String(r['姓名'] || '').trim() === name;
@@ -754,8 +766,8 @@ function upsertLeaveRow(ss, date, name, leaveType) {
     kept--; // 刪的都在保留列上方，保留列每次上移一列
   }
   if (leaveType) {
-    if (kept) sheet.getRange(kept, 3).setValue(leaveType);
-    else sheet.appendRow([date, name, leaveType]);
+    if (kept) sheet.getRange(kept, 3, 1, 2).setValues([[leaveType, hours]]);
+    else sheet.appendRow([date, name, leaveType, hours]);
   } else if (kept) {
     sheet.deleteRow(kept);
   }
@@ -817,11 +829,12 @@ function approvedHoursOfShift(inTs, outTs) {
 
 /**
  * 打卡事件配對成班段。取 status='ok' 的 in/out 配對，另把 status='rejected_duplicate'
- * 的 in 當「忘打下班」斷點訊號（本身不入帳、不開新段）：同仁上班中途忘打下班、隔一段
- * 又打上班被交替防呆擋下，這筆雖被拒，卻代表前一段班已結束——用它把開著的 in 斷成
- * 「下班忘刷卡」，避免 11:02 in 與 21:44 out 相距＜12h 被誤併成一長段。
+ * 的 in 當「新一段的實際起點」：同仁上班中途忘打下班、隔一段又打上班被交替防呆擋下——
+ * 這筆雖被拒不算正式打卡，但系統有記到時間，代表前一段班已結束、新一段從這裡開始。
+ * 用它把開著的 in 收成「下班忘刷卡」＋以它當新 open 起點，讓後面的 out 配成完整段
+ * （不是把它當忘刷卡冤枉同仁，也不會 11:02 in 與 21:44 out 相距＜12h 被誤併成一長段）。
  * 依員工分組、時間排序，in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」（途中遇到
- * 另一筆 in 就斷）；被拒 in 距開著的 in ≥ REJECTED_IN_BREAK_MIN 分鐘才斷（低於＝手滑連按，忽略）。
+ * 另一筆 in 就斷）；被拒 in 距開著的 in ≥ REJECTED_IN_BREAK_MIN 分鐘才視為換段（低於＝手滑連按，忽略）。
  * 回傳 { shifts:[{emp_id,in_ts,out_ts}], unmatchedIns:[event], unmatchedOuts:[event] }。
  */
 function pairShifts(events) {
@@ -844,10 +857,14 @@ function pairShifts(events) {
     let open = null;
     evs.forEach(function (e) {
       if (String(e.status) === 'rejected_duplicate') {
-        // 斷點訊號：距開著的 in ≥ 門檻 → 那段忘打下班，收成未配對；此卡不入段、不開新段。
-        if (open && tsMs(e.ts) - tsMs(open.ts) >= REJECTED_IN_BREAK_MIN * 60000) {
+        // 被擋的重複上班卡：距開著的 in ≥ 門檻 → 前段忘打下班（收未配對），以本卡當新段起點。
+        // 未達門檻＝手滑連按，忽略（open 不變）；沒有開著的 in → 也以本卡當新段起點（防禦，
+        // 例如視窗外的 ok in 未抓到），讓後面的 out 仍能配成段而非誤判上班忘刷卡。
+        if (!open) {
+          open = e;
+        } else if (tsMs(e.ts) - tsMs(open.ts) >= REJECTED_IN_BREAK_MIN * 60000) {
           unmatchedIns.push(open);
-          open = null;
+          open = e;
         }
         return;
       }
@@ -1062,13 +1079,19 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
   // 請假：姓名 trim 後精確比對 roster.name，比不到就跳過該列。
   // 請假天數計整月（含當月未到期的已填假單）；明細列只到今天。
   const leaveDates = {};
+  const leaveHoursByEmp = {};
   leaves.forEach(function (l) {
     const emp = nameToEmp[String(l.name || '').trim()];
     if (!emp) return;
     const d = String(l.date || '').slice(0, 10);
     if (d.slice(0, 7) !== ym) return;
     (leaveDates[emp] = leaveDates[emp] || {})[d] = true;
-    if (inMonthToEnd(d)) cell(d, emp).notes.push(String(l.type || '請假'));
+    const h = (l.hours === '' || l.hours == null) ? null : Number(l.hours);
+    if (h != null && isFinite(h)) leaveHoursByEmp[emp] = (leaveHoursByEmp[emp] || 0) + h;
+    if (inMonthToEnd(d)) {
+      const label = String(l.type || '請假') + (h != null && isFinite(h) ? Math.round(h * 100) / 100 + 'h' : '');
+      cell(d, emp).notes.push(label);
+    }
   });
 
   // 核定紀錄可能落在沒有任何打卡事件的日子（主管手動補登實際時段），
@@ -1105,14 +1128,15 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
   const weekendRows = [];
   const abnormalNoteRows = [];
 
-  rows.push(['姓名', '參考時數', '核定時數', '異常筆數', '請假天數', '']);
+  rows.push(['姓名', '參考時數', '核定時數', '異常筆數', '請假天數', '請假時數']);
   boldRows.push(1);
 
   activeRoster.forEach(function (r) {
     const emp = String(r.emp_id);
     const s = empStats[emp] || { total: 0, abnormal: 0 };
     const leaveCount = Object.keys(leaveDates[emp] || {}).length;
-    rows.push([String(r.name), Math.round(s.total * 10) / 10, roundApproved(approvedTotalByEmp[emp] || 0), s.abnormal, leaveCount, '']);
+    const leaveHoursSum = leaveHoursByEmp[emp] ? Math.round(leaveHoursByEmp[emp] * 100) / 100 : '';
+    rows.push([String(r.name), Math.round(s.total * 10) / 10, roundApproved(approvedTotalByEmp[emp] || 0), s.abnormal, leaveCount, leaveHoursSum]);
   });
 
   rows.push(['', '', '', '', '', '']);
@@ -1206,7 +1230,7 @@ function rebuildMonth(ym) {
   const leaveSheet = ss.getSheetByName('leave');
   const leaves = leaveSheet
     ? readSheetAsObjects(leaveSheet).rows.map(function (r) {
-        return { date: normCellDate(r['日期']), name: r['姓名'], type: r['假別'] };
+        return { date: normCellDate(r['日期']), name: r['姓名'], type: r['假別'], hours: r['時數'] };
       })
     : [];
 
