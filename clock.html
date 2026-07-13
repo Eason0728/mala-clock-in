@@ -299,12 +299,13 @@
 
   // 今日時數摘要（whoami 的 today_hours：{reference, approved, working_since}）。
   // 有 working_since→仍在上班中，只列已完成時段的時數；無→今日已無進行中的班段。
+  // 只顯示核定，不顯示參考（Eason 2026-07-13 指定；後端仍回 reference，月表照舊兩欄並列）。
   function renderTodayHours(h) {
     if (!h) { todayHoursEl.textContent = ''; return; }
     if (h.working_since) {
-      todayHoursEl.textContent = '上班中（' + h.working_since + ' 起）・已完成時段：參考 ' + h.reference + ' 小時／核定 ' + h.approved + ' 小時';
+      todayHoursEl.textContent = '上班中（' + h.working_since + ' 起）・已完成時段核定 ' + h.approved + ' 小時';
     } else {
-      todayHoursEl.textContent = '今日時數：參考 ' + h.reference + ' 小時／核定 ' + h.approved + ' 小時';
+      todayHoursEl.textContent = '今日核定時數：' + h.approved + ' 小時';
     }
   }
 
@@ -348,7 +349,8 @@
         + (d.notes && d.notes.length ? '　' + d.notes.join('、') : '');
       var hours = document.createElement('span');
       hours.className = 'day-hours';
-      hours.textContent = '參考 ' + d.reference + '／核定 ' + d.approved;
+      // 只顯示核定；忘刷卡當天不顯示時數（照月表「空白待人工判定」慣例，Eason 2026-07-13 指定）
+      hours.textContent = (d.notes && d.notes.length) ? '' : '核定 ' + d.approved;
       li.appendChild(info);
       li.appendChild(hours);
       recentListEl.appendChild(li);
