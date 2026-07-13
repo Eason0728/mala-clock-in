@@ -703,34 +703,44 @@ function handleMgrApprove(body) {
 
   const rawPeriods = body.periods || [];
   const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
-  if (!Array.isArray(rawPeriods) || rawPeriods.length === 0) return { ok: false, error: 'bad_periods' };
-  for (let i = 0; i < rawPeriods.length; i++) {
-    const p = rawPeriods[i];
-    if (!p || !timeRe.test(p.start) || !timeRe.test(p.end)) return { ok: false, error: 'bad_periods' };
+  if (!Array.isArray(rawPeriods)) return { ok: false, error: 'bad_periods' };
+
+  let approvedHours, periodsStr, statusText;
+  if (rawPeriods.length === 0) {
+    // 整天請假：沒有任何上班時段，但必須有假別；核定 0 小時、狀態標「全天請假」
+    // （沒假別的空送出仍擋掉）。這樣月表那天顯示核定 0h＋假別，而非誤導的「待核定」。
+    if (!leaveType) return { ok: false, error: 'bad_periods' };
+    approvedHours = 0;
+    periodsStr = '';
+    statusText = '全天請假';
+  } else {
+    for (let i = 0; i < rawPeriods.length; i++) {
+      const p = rawPeriods[i];
+      if (!p || !timeRe.test(p.start) || !timeRe.test(p.end)) return { ok: false, error: 'bad_periods' };
+    }
+    const periods = rawPeriods.map(function (p) {
+      const startMs = hmToMs(date, p.start);
+      let endMs = hmToMs(date, p.end);
+      if (endMs <= startMs) endMs += 24 * 3600000; // 跨夜段：end<=start 視為+1天
+      return { start: p.start, end: p.end, startMs: startMs, endMs: endMs };
+    });
+    approvedHours = 0;
+    periods.forEach(function (p) { approvedHours += (p.endMs - p.startMs) / 3600000; });
+    approvedHours = Math.round(approvedHours * 100) / 100;
+
+    const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows;
+    const punch = dayPunchSegments(eventRows, body.emp_id, date);
+    const punchWithMs = punch.segments.map(function (s) {
+      const outDate = s.cross ? addDaysStr(date, 1) : date;
+      return {
+        in: s.in, out: s.out,
+        inMs: s.in ? hmToMs(date, s.in) : null,
+        outMs: s.out ? hmToMs(outDate, s.out) : null,
+      };
+    });
+    statusText = computeApprovalStatus(periods, punchWithMs);
+    periodsStr = rawPeriods.map(function (p) { return p.start + '-' + p.end; }).join(',');
   }
-
-  const periods = rawPeriods.map(function (p) {
-    const startMs = hmToMs(date, p.start);
-    let endMs = hmToMs(date, p.end);
-    if (endMs <= startMs) endMs += 24 * 3600000; // 跨夜段：end<=start 視為+1天
-    return { start: p.start, end: p.end, startMs: startMs, endMs: endMs };
-  });
-  let approvedHours = 0;
-  periods.forEach(function (p) { approvedHours += (p.endMs - p.startMs) / 3600000; });
-  approvedHours = Math.round(approvedHours * 100) / 100;
-
-  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows;
-  const punch = dayPunchSegments(eventRows, body.emp_id, date);
-  const punchWithMs = punch.segments.map(function (s) {
-    const outDate = s.cross ? addDaysStr(date, 1) : date;
-    return {
-      in: s.in, out: s.out,
-      inMs: s.in ? hmToMs(date, s.in) : null,
-      outMs: s.out ? hmToMs(outDate, s.out) : null,
-    };
-  });
-  const statusText = computeApprovalStatus(periods, punchWithMs);
-  const periodsStr = rawPeriods.map(function (p) { return p.start + '-' + p.end; }).join(',');
   const enteredAt = nowTaipeiIso();
 
   const approvedSheet = ss.getSheetByName('approved');

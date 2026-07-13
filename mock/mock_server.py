@@ -597,37 +597,46 @@ def handle_mgr_approve(data, body):
         leave_hours = round(h, 2)
 
     raw_periods = body.get("periods") or []
-    if not isinstance(raw_periods, list) or len(raw_periods) == 0:
+    if not isinstance(raw_periods, list):
         return {"ok": False, "error": "bad_periods"}
-    for p in raw_periods:
-        if (
-            not isinstance(p, dict)
-            or not TIME_RE.match(str(p.get("start", "")))
-            or not TIME_RE.match(str(p.get("end", "")))
-        ):
+
+    if len(raw_periods) == 0:
+        # 整天請假：沒時段但要有假別；核定 0 小時、狀態「全天請假」（與 Code.gs 同步）
+        if not leave_type:
             return {"ok": False, "error": "bad_periods"}
+        approved_hours = 0.0
+        periods_str = ""
+        status_text = "全天請假"
+    else:
+        for p in raw_periods:
+            if (
+                not isinstance(p, dict)
+                or not TIME_RE.match(str(p.get("start", "")))
+                or not TIME_RE.match(str(p.get("end", "")))
+            ):
+                return {"ok": False, "error": "bad_periods"}
 
-    periods = []
-    approved_hours = 0.0
-    for p in raw_periods:
-        start_ms = hm_to_ms(date, p["start"])
-        end_ms = hm_to_ms(date, p["end"])
-        if end_ms <= start_ms:
-            end_ms += 24 * 3600 * 1000  # 跨夜段：end<=start 視為+1天
-        periods.append({"start_ms": start_ms, "end_ms": end_ms})
-        approved_hours += (end_ms - start_ms) / 3600000.0
-    approved_hours = round(approved_hours, 2)
+        periods = []
+        approved_hours = 0.0
+        for p in raw_periods:
+            start_ms = hm_to_ms(date, p["start"])
+            end_ms = hm_to_ms(date, p["end"])
+            if end_ms <= start_ms:
+                end_ms += 24 * 3600 * 1000  # 跨夜段：end<=start 視為+1天
+            periods.append({"start_ms": start_ms, "end_ms": end_ms})
+            approved_hours += (end_ms - start_ms) / 3600000.0
+        approved_hours = round(approved_hours, 2)
 
-    punch = day_punch_segments(data, emp_id, date)
-    punch_segments = []
-    for s in punch["segments"]:
-        in_ms = hm_to_ms(date, s["in"]) if s["in"] else None
-        out_date = add_days_str(date, 1) if s["cross"] else date
-        out_ms = hm_to_ms(out_date, s["out"]) if s["out"] else None
-        punch_segments.append({"in_ms": in_ms, "out_ms": out_ms})
+        punch = day_punch_segments(data, emp_id, date)
+        punch_segments = []
+        for s in punch["segments"]:
+            in_ms = hm_to_ms(date, s["in"]) if s["in"] else None
+            out_date = add_days_str(date, 1) if s["cross"] else date
+            out_ms = hm_to_ms(out_date, s["out"]) if s["out"] else None
+            punch_segments.append({"in_ms": in_ms, "out_ms": out_ms})
 
-    status_text = compute_approval_status(periods, punch_segments)
-    periods_str = ",".join("{}-{}".format(p["start"], p["end"]) for p in raw_periods)
+        status_text = compute_approval_status(periods, punch_segments)
+        periods_str = ",".join("{}-{}".format(p["start"], p["end"]) for p in raw_periods)
     entered_at = iso_now()
 
     data["approved"].append(
