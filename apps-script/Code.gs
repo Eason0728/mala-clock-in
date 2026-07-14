@@ -527,6 +527,7 @@ function applyDeviceDecision(empId, deviceId, approve) {
   }
 
   let changed = 0;
+  const affectedMonths = {};
   const eventRows = readSheetAsObjects(eventsSheet).rows;
   eventRows.forEach(function (e) {
     if (
@@ -543,11 +544,24 @@ function applyDeviceDecision(empId, deviceId, approve) {
       if (approve) {
         eventsSheet.getRange(e.__rowIndex, EVENTS_HEADERS.indexOf('device_match') + 1).setValue(true);
       }
+      // 記下受影響月份：月表註記放在 tsDateStr(e.ts) 那天，取同一日期的 yyyy-MM 才一致；
+      // e.ts 由原始儲存格讀出可能是 Date，先 normCellTs 正規化成台北 ISO 字串再切。
+      const ym = tsDateStr(normCellTs(e.ts)).slice(0, 7);
+      if (/^\d{4}-\d{2}$/.test(ym)) affectedMonths[ym] = true;
       changed++;
     }
   });
 
-  return { ok: true, changed: changed };
+  // 就地改既有列的狀態不新增 events 列 → 每 10 分鐘「列數變化式」自動重算會跳過，
+  // 月表會停在舊狀態（例：核准裝置後仍顯示「新裝置待核准」）。故核准/拒絕有異動時
+  // 主動重算受影響月份，讓變更即時反映。重算失敗不得回滾已完成的核准，故 try/catch 吞掉。
+  // （2026-07-14 根治；沿用 handleRebuildMonth 的無鎖直接呼叫慣例。rebuilt 欄同時當「新版已部署」的辨識訊號）
+  const rebuilt = [];
+  Object.keys(affectedMonths).forEach(function (ym) {
+    try { rebuildMonth(ym); rebuilt.push(ym); } catch (err) {}
+  });
+
+  return { ok: true, changed: changed, rebuilt: rebuilt };
 }
 
 function handleApproveDevice(body) {
