@@ -998,11 +998,13 @@ function computeApprovalStatus(periods, punchSegments) {
 function buildLatestApprovedMap(approvedRecords) {
   const map = {};
   approvedRecords.forEach(function (r) {
-    const d = tsDateStr(r.date);
+    // r.date 由儲存格讀出可能被 Sheets 轉成 Date 物件，必須 normCellDate 而非 tsDateStr
+    //（String(Date) 開頭是 "Tue Jul 14"，slice 10 字對不上 yyyy-MM-dd，核定紀錄會整批查不回來）
+    const d = normCellDate(r.date);
     const emp = String(r.emp_id);
     if (!map[d]) map[d] = {};
     const existing = map[d][emp];
-    if (!existing || String(r.entered_at) > String(existing.entered_at)) {
+    if (!existing || normCellTs(r.entered_at) > normCellTs(existing.entered_at)) {
       map[d][emp] = r;
     }
   });
