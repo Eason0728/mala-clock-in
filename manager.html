@@ -354,18 +354,20 @@
     }
     card.appendChild(punchEl);
 
-    if (emp.approved) {
-      var badge = document.createElement('div');
-      badge.className = 'approved-badge ' + badgeClass(emp.approved.status_text);
-      badge.textContent = '已核定 ' + emp.approved.approved_hours + ' 小時・' + emp.approved.status_text
-        + leaveSuffix(emp.leave_type, emp.leave_hours) + '（' + emp.approved.manager_name + '）';
-      card.appendChild(badge);
-    } else {
-      var pending = document.createElement('div');
-      pending.className = 'approved-badge pending';
-      pending.textContent = '待核定';
-      card.appendChild(pending);
+    // 狀態徽章抽成可重設的元素：核定成功後當場翻成「已核定」，不用重新整理才看得到
+    var badge = document.createElement('div');
+    function setBadge(approved, leaveType, leaveHours) {
+      if (approved) {
+        badge.className = 'approved-badge ' + badgeClass(approved.status_text);
+        badge.textContent = '已核定 ' + approved.approved_hours + ' 小時・' + approved.status_text
+          + leaveSuffix(leaveType, leaveHours) + '（' + approved.manager_name + '）';
+      } else {
+        badge.className = 'approved-badge pending';
+        badge.textContent = '待核定';
+      }
     }
+    setBadge(emp.approved, emp.leave_type, emp.leave_hours);
+    card.appendChild(badge);
 
     var periodRows = document.createElement('div');
     periodRows.className = 'period-rows';
@@ -506,6 +508,7 @@
         }
         delete dayCache[currentDate]; // 核定改了這天的資料 → 清快取，下次切回會抓新的
         renderResult(resultBox, res);
+        setBadge(res, res.leave_type, res.leave_hours);
       }).catch(function () {
         submitBtn.disabled = false;
         submitBtn.textContent = '重新送出核定';
