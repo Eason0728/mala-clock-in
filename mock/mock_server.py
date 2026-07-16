@@ -286,7 +286,10 @@ def build_recent_days(data, emp_id, today):
     """最近 N 天出勤明細（my_recent 用，與 Code.gs buildRecentDays 同步邏輯）。
     慣例照月表 buildMonthlySheet：班段歸 in 那一天（跨夜段 cross=True，前端顯示 (+1)）、
     未配對 in→「下班忘刷卡」、未配對 out→「上班忘刷卡」；事件往前多抓 1 天供跨夜配對。
-    例外：未配對 in 落在「今天」→ 不算忘刷卡（上班中）。無事件的日子省略不回。"""
+    例外：未配對 in 落在「今天」→ 不算忘刷卡（上班中）。無事件的日子省略不回。
+    reference＝已完成班段原始相減加總。approved＝值班主管在 approved 的核定時數
+    （有紀錄→數字、無紀錄→None＝待核定），不是 approved_hours_of_shift 的 15 分鐘取整
+    ——那是 2026-07-13 前的舊定義，核定已改主管手動輸入實際時段（2026-07-15 改）。"""
     today_d = datetime.strptime(today, "%Y-%m-%d").date()
     start = (today_d - timedelta(days=RECENT_DAYS_WINDOW - 1)).isoformat()
     fetch_start = (today_d - timedelta(days=RECENT_DAYS_WINDOW)).isoformat()
@@ -301,7 +304,7 @@ def build_recent_days(data, emp_id, today):
 
     def day(d):
         if d not in day_map:
-            day_map[d] = {"date": d, "segments": [], "reference": 0.0, "approved": 0.0, "notes": []}
+            day_map[d] = {"date": d, "segments": [], "reference": 0.0, "notes": []}
         return day_map[d]
 
     for s in shifts:
@@ -318,7 +321,6 @@ def build_recent_days(data, emp_id, today):
         c["reference"] += (
             datetime.fromisoformat(s["out_ts"]) - datetime.fromisoformat(s["in_ts"])
         ).total_seconds() / 3600.0
-        c["approved"] += approved_hours_of_shift(s["in_ts"], s["out_ts"])
 
     for e in unmatched_ins:
         d = e["ts"][:10]
@@ -343,7 +345,10 @@ def build_recent_days(data, emp_id, today):
         for s in c["segments"]:
             del s["_sort"]
         c["reference"] = round(c["reference"], 2)
-        c["approved"] = round(c["approved"], 2)
+        # 核定＝主管在 approved 的最新核定（與 Code.gs buildRecentDays／月表同一套慣例）：
+        # 無紀錄→None＝待核定；有紀錄但 0 小時＝全天請假，要與 None 區分，故看 rec 是否存在。
+        rec = latest_approved_record(data, d, emp_id)
+        c["approved"] = round(float(rec["approved_hours"]), 2) if rec else None
         days.append(c)
     return days
 

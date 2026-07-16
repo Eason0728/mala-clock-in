@@ -267,14 +267,17 @@ const RECENT_DAYS_WINDOW = 40;
 
 /**
  * 最近 N 天出勤明細（my_recent 用，同仁自助回查，不落地寫入試算表）。
- * 配對／核定沿用月表同一套（pairShifts＋approvedHoursOfShift，只算 status='ok'），
- * 慣例照 buildMonthlySheet：班段歸 in 那一天（跨夜段標 cross，前端顯示 (+1)）、
- * 未配對 in→「下班忘刷卡」、未配對 out→「上班忘刷卡」；事件往前多抓 1 天供跨夜配對。
+ * 配對沿用月表同一套（pairShifts，只算 status='ok'），慣例照 buildMonthlySheet：
+ * 班段歸 in 那一天（跨夜段標 cross，前端顯示 (+1)）、未配對 in→「下班忘刷卡」、
+ * 未配對 out→「上班忘刷卡」；事件往前多抓 1 天供跨夜配對。
  * 例外：未配對 in 落在「今天」→ 不算忘刷卡（上班中），照 today_hours 的邏輯。
- * reference/approved 只計入該日已完成班段（0.25 倍數同 today_hours，取 2 位小數）。
+ * reference＝該日已完成班段原始相減加總（取 2 位小數）。
+ * approved＝值班主管在 approved 分頁核定的時數，照月表（1201 行）慣例：有紀錄→數字、
+ * 無紀錄→null 讓前端顯示「待核定」。**不是** approvedHoursOfShift 的 15 分鐘取整——
+ * 那是 2026-07-13 前的舊定義，核定已改為主管手動輸入實際時段（2026-07-15 改）。
  * 無任何事件的日子省略不回；回傳依日期由舊到新排序。
  */
-function buildRecentDays(eventRows, empId, todayStr) {
+function buildRecentDays(eventRows, empId, todayStr, approvedMap) {
   const todayMs = new Date(todayStr + 'T00:00:00Z').getTime(); // 純日期運算，todayStr 已是台北日期
   const startStr = new Date(todayMs - (RECENT_DAYS_WINDOW - 1) * 86400000).toISOString().slice(0, 10);
   const fetchStartStr = new Date(todayMs - RECENT_DAYS_WINDOW * 86400000).toISOString().slice(0, 10);
@@ -288,7 +291,7 @@ function buildRecentDays(eventRows, empId, todayStr) {
 
   const dayMap = {};
   function day(d) {
-    if (!dayMap[d]) dayMap[d] = { date: d, segments: [], reference: 0, approved: 0, notes: [] };
+    if (!dayMap[d]) dayMap[d] = { date: d, segments: [], reference: 0, notes: [] };
     return dayMap[d];
   }
 
@@ -298,7 +301,6 @@ function buildRecentDays(eventRows, empId, todayStr) {
     const c = day(d);
     c.segments.push({ sortMs: tsMs(s.in_ts), in: tsHm(s.in_ts), out: tsHm(s.out_ts), cross: tsDateStr(s.out_ts) !== d });
     c.reference += (tsMs(s.out_ts) - tsMs(s.in_ts)) / 3600000;
-    c.approved += approvedHoursOfShift(s.in_ts, s.out_ts);
   });
 
   paired.unmatchedIns.forEach(function (e) {
@@ -322,7 +324,10 @@ function buildRecentDays(eventRows, empId, todayStr) {
     c.segments.sort(function (a, b) { return a.sortMs - b.sortMs; });
     c.segments.forEach(function (s) { delete s.sortMs; });
     c.reference = Math.round(c.reference * 100) / 100;
-    c.approved = Math.round(c.approved * 100) / 100;
+    // 核定＝值班主管在 approved 分頁的最新核定（照月表 1201 慣例）。無紀錄→null＝待核定；
+    // 有紀錄但 0 小時＝全天請假，必須與 null 區分，故用 rec 是否存在判斷、不看數值真假。
+    const rec = ((approvedMap || {})[d] || {})[String(empId)];
+    c.approved = rec ? Math.round(Number(rec.approved_hours) * 100) / 100 : null;
     return c;
   });
 }
@@ -352,12 +357,17 @@ function handleMyRecent(body) {
   }
 
   const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows;
+  // 核定時數取自 approved 分頁；讀法與「最新一筆」判斷完全沿用 mgr_day／月表那套
+  // （buildLatestApprovedMap 內部會 normCellDate，勿自己重寫日期正規化）。
+  const approvedSheet = ss.getSheetByName('approved');
+  const approvedRows = approvedSheet ? readSheetAsObjects(approvedSheet).rows : [];
+  const approvedMap = buildLatestApprovedMap(approvedRows);
   return {
     ok: true,
     emp_id: roster.emp_id,
     name: roster.name,
     device_state: deviceState,
-    days: buildRecentDays(eventRows, roster.emp_id, todayTaipeiStr()),
+    days: buildRecentDays(eventRows, roster.emp_id, todayTaipeiStr(), approvedMap),
   };
 }
 

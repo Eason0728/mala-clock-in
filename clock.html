@@ -350,8 +350,13 @@
         + (d.notes && d.notes.length ? '　' + d.notes.join('、') : '');
       var hours = document.createElement('span');
       hours.className = 'day-hours';
-      // 只顯示參考；忘刷卡當天不顯示時數（照月表「空白待人工判定」慣例，Eason 2026-07-13 指定）
-      hours.textContent = (d.notes && d.notes.length) ? '' : '參考 ' + d.reference;
+      // 只顯示核定（Eason 2026-07-15 定案）：核定＝值班主管輸入之實際時段總長，是計薪依據；
+      // 後端 my_recent 的 d.approved 已改讀 approved 分頁（不再是 15 分鐘取整的舊定義）。
+      // 無核定紀錄→「待核定」（月表同款措辭）；忘刷卡當天不再空白——主管核定後就看得到時數，
+      // 那正是最需要看核定的情境。d.approved 為 0 是合法值（全天請假），故不可用 falsy 判斷。
+      hours.textContent = (d.approved === null || d.approved === undefined)
+        ? '待核定'
+        : '核定 ' + d.approved;
       li.appendChild(info);
       li.appendChild(hours);
       recentListEl.appendChild(li);
