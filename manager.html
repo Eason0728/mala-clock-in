@@ -346,8 +346,12 @@
     var punchEl = document.createElement('div');
     punchEl.className = 'punch-summary';
     if (emp.segments && emp.segments.length) {
-      punchEl.textContent = '打卡：' + emp.segments.map(segmentText).join('、')
-        + '　參考 ' + emp.reference + ' 小時';
+      // C2：後端忘刷卡整天回 reference=null（與月表空白同義），不可直接串接成字面 "null"
+      var refText = (emp.reference === null || emp.reference === undefined) ? '參考 —' : ('參考 ' + emp.reference + ' 小時');
+      punchEl.textContent = '打卡：' + emp.segments.map(segmentText).join('、') + '　' + refText;
+    } else if (emp.attempts > 0) {
+      // C3：有嘗試打卡但全部沒入帳（如被裝置/範圍擋下）——與「真的沒打卡」分開講清楚
+      punchEl.textContent = '今天沒有入帳的打卡（有 ' + emp.attempts + ' 筆未入帳嘗試）';
     } else {
       // 沒打卡的同仁也列出（整天忘刷卡的人才核得到）；參考空白不顯示數字
       punchEl.textContent = '今天沒有打卡紀錄';
@@ -448,6 +452,12 @@
         resultBox.textContent = '✕ 有一段只填了上班或下班時間，請補齊兩邊，或按該段的 － 移除。';
         return;
       }
+      // C4：請假時數負數在送出前（confirm 之前）直接擋下，不用等後端回 bad_leave_hours
+      if (leaveHours.value !== '' && Number(leaveHours.value) < 0) {
+        resultBox.className = 'result-box show result-error';
+        resultBox.textContent = '✕ 請假時數不能是負數，請修正後再送出。';
+        return;
+      }
       if (periods.length === 0) {
         // 沒填任何上班時段：有選假別＝整天請假（核定 0 小時）；否則就是漏填
         if (!leaveSelect.value) {
@@ -474,12 +484,20 @@
         segs.forEach(function (s) {
           if (s.overnight) warnings.push('・' + s.start + '–' + s.end + ' 會算成跨夜到隔天（' + (Math.round((s.em - s.sm) / 60 * 100) / 100) + ' 小時），若是打錯請改回。');
         });
+        // C5：只比相鄰兩段會漏報「長段包兩短段」（3 段以上時）；改為維護 runningMaxEnd 的掃描——
+        // 依起點排序後，任一段起點 < 目前為止看過的最大終點，就與那個「目前最長」的段標重疊。
         var sorted = segs.slice().sort(function (a, b) { return a.sm - b.sm; });
-        for (var i = 1; i < sorted.length; i++) {
-          if (sorted[i].sm < sorted[i - 1].em) {
-            warnings.push('・' + sorted[i - 1].start + '–' + sorted[i - 1].end + ' 與 ' + sorted[i].start + '–' + sorted[i].end + ' 時段重疊，會重複計算。');
+        var runningMaxEnd = -Infinity;
+        var runningMaxSeg = null;
+        sorted.forEach(function (s, i) {
+          if (i > 0 && s.sm < runningMaxEnd) {
+            warnings.push('・' + runningMaxSeg.start + '–' + runningMaxSeg.end + ' 與 ' + s.start + '–' + s.end + ' 時段重疊，會重複計算。');
           }
-        }
+          if (s.em > runningMaxEnd) {
+            runningMaxEnd = s.em;
+            runningMaxSeg = s;
+          }
+        });
 
         var msg = '即將核定 ' + emp.name + '：\n' + segs.map(function (s) { return s.start + '–' + s.end; }).join('、')
           + '\n核定時數共 ' + totalH + ' 小時';
@@ -490,10 +508,11 @@
       }
       submitBtn.disabled = true;
       submitBtn.textContent = '送出中…';
+      var approveDate = currentDate; // C1：送出當下鎖定日期，避免回呼觸發時 currentDate 已切到別天
       apiPost({
         action: 'mgr_approve',
         mgr_key: mgrKey,
-        date: currentDate,
+        date: approveDate,
         emp_id: emp.emp_id,
         periods: periods,
         leave_type: leaveSelect.value,
@@ -506,7 +525,7 @@
           resultBox.textContent = '✕ 核定失敗：' + (res.error || '未知錯誤');
           return;
         }
-        delete dayCache[currentDate]; // 核定改了這天的資料 → 清快取，下次切回會抓新的
+        delete dayCache[approveDate]; // 核定改了這天的資料 → 清快取，下次切回會抓新的（用送出當下鎖定的日期）
         renderResult(resultBox, res);
         setBadge(res, res.leave_type, res.leave_hours);
       }).catch(function () {
@@ -538,12 +557,12 @@
   var dayCache = {};      // 'yyyy-mm-dd' -> employees 陣列
   var prefetching = {};   // 進行中的背景預抓，避免同一天重複打
 
-  function pad2(n) { return (n < 10 ? '0' : '') + n; }
-  function deviceTodayStr() {
-    var d = new Date();
-    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  // C6：「今天」一律以台北時區為準（與後端 todayTaipeiStr 對齊），不用裝置本地時區——
+  // 裝置在異地或跨時區時，本地日期可能與台北日期差一天，會讓快取邊界誤判。
+  function taipeiTodayStr() {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
   }
-  function cacheable(dateStr) { return !!dateStr && dateStr < deviceTodayStr(); } // 嚴格早於今天才快取
+  function cacheable(dateStr) { return !!dateStr && dateStr < taipeiTodayStr(); } // 嚴格早於今天（台北時區）才快取
 
   // 背景預抓中心日往前 N 天（近一週），讓手機翻閱近日幾乎都命中快取、不用等後端 ~2 秒。
   // Apps Script 每請求固定 ~2 秒，所以循序一次抓一天（近的先），避免手機同時開一堆連線互相拖慢。

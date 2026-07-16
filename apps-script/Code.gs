@@ -272,7 +272,9 @@ const RECENT_DAYS_WINDOW = 40;
  * 班段歸 in 那一天（跨夜段標 cross，前端顯示 (+1)）、未配對 in→「下班忘刷卡」、
  * 未配對 out→「上班忘刷卡」；事件往前多抓 1 天供跨夜配對。
  * 例外：未配對 in 落在「今天」→ 不算忘刷卡（上班中），照 today_hours 的邏輯。
- * reference＝該日已完成班段 15 分鐘取整加總（approvedHoursOfShift，2026-07-15 起）。
+ * reference＝該日已完成班段 15 分鐘取整加總（approvedHoursOfShift，2026-07-15 起）；
+ * 當天有任一筆忘刷卡（見上例外）→ 整天回 null，不是部分加總（A3，與月表同一規則，
+ * 見 dayReferenceIncomplete，勿各自重寫判斷）。
  * approved＝值班主管在 approved 分頁核定的時數，照月表（1201 行）慣例：有紀錄→數字、
  * 無紀錄→null 讓前端顯示「待核定」。**不是** approvedHoursOfShift 的 15 分鐘取整——
  * 那是 2026-07-13 前的舊定義，核定已改為主管手動輸入實際時段（2026-07-15 改）。
@@ -324,7 +326,8 @@ function buildRecentDays(eventRows, empId, todayStr, approvedMap) {
     const c = dayMap[d];
     c.segments.sort(function (a, b) { return a.sortMs - b.sortMs; });
     c.segments.forEach(function (s) { delete s.sortMs; });
-    c.reference = Math.round(c.reference * 100) / 100;
+    // 參考時數：忘刷卡整天留白（null），與出勤月表同一規則（A3，見 dayReferenceIncomplete）
+    c.reference = dayReferenceIncomplete(c.segments, d, todayStr) ? null : Math.round(c.reference * 100) / 100;
     // 核定＝值班主管在 approved 分頁的最新核定（照月表 1201 慣例）。無紀錄→null＝待核定；
     // 有紀錄但 0 小時＝全天請假，必須與 null 區分，故用 rec 是否存在判斷、不看數值真假。
     const rec = ((approvedMap || {})[d] || {})[String(empId)];
@@ -347,7 +350,7 @@ function handleMyRecent(body) {
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
 
   const roster = findRosterByKey(rosterRows, body.key);
-  if (!roster || roster.active !== true) {
+  if (!roster || String(roster.active).toLowerCase() !== 'true') {
     return { ok: false, error: 'invalid_key' };
   }
 
@@ -361,7 +364,8 @@ function handleMyRecent(body) {
     deviceState = 'mismatch';
   }
 
-  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows;
+  // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化（勿自己重寫日期正規化，沿用既有 normCellTs）
+  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
   // 核定時數取自 approved 分頁；讀法與「最新一筆」判斷完全沿用 mgr_day／月表那套
   // （buildLatestApprovedMap 內部會 normCellDate，勿自己重寫日期正規化）。
   const approvedSheet = ss.getSheetByName('approved');
@@ -383,7 +387,7 @@ function handleClock(body) {
   const rosterRows = readSheetAsObjects(rosterSheet).rows;
 
   const roster = findRosterByKey(rosterRows, body.key);
-  if (!roster || roster.active !== true) {
+  if (!roster || String(roster.active).toLowerCase() !== 'true') {
     return { ok: false, error: 'invalid_key' };
   }
 
@@ -395,7 +399,9 @@ function handleClock(body) {
   const ts = nowTaipeiIso();
 
   // 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
-  const lastCounted = lastCountedEvent(readSheetAsObjects(eventsSheet).rows, roster.emp_id);
+  // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化，否則交替防呆的回看視窗可能誤判
+  const clockEventRows = readSheetAsObjects(eventsSheet).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  const lastCounted = lastCountedEvent(clockEventRows, roster.emp_id);
   const isDuplicate = lastCounted !== null && lastCounted.type === String(body.type);
 
   let deviceMatch;
@@ -437,7 +443,7 @@ function handleWhoami(body) {
   const rosterRows = readSheetAsObjects(rosterSheet).rows;
 
   const roster = findRosterByKey(rosterRows, body.key);
-  if (!roster || roster.active !== true) {
+  if (!roster || String(roster.active).toLowerCase() !== 'true') {
     return { ok: false, error: 'invalid_key' };
   }
 
@@ -452,7 +458,8 @@ function handleWhoami(body) {
   }
 
   const today = todayTaipeiStr();
-  const eventRows = readSheetAsObjects(eventsSheet).rows;
+  // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化（同一批補漏見 handleMyRecent/handleMgrDay 等）
+  const eventRows = readSheetAsObjects(eventsSheet).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
   const todayEvents = eventRows
     .filter(function (e) { return String(e.emp_id) === String(roster.emp_id) && String(e.ts).slice(0, 10) === today; })
     .map(function (e) { return { ts: e.ts, type: e.type, status: e.status }; });
@@ -507,7 +514,8 @@ function handleGetRoster(body) {
 function handleGetEvents(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const ss = getSS();
-  const rows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(stripRowIndex);
+  const rows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(stripRowIndex)
+    .map(function (e) { e.ts = normCellTs(e.ts); return e; });
 
   const toDate = body.to ? new Date(body.to + 'T23:59:59+08:00') : new Date();
   const fromDate = body.from
@@ -553,7 +561,7 @@ function applyDeviceDecision(empId, deviceId, approve) {
       // 核准只解「裝置」這一關：超出範圍的卡翻成 rejected_out_of_range，不得入帳
       // （否則在家用新裝置打卡→核准換機→在家打的卡變有效，2026-07-12 實測抓到的漏洞）
       const newStatus = approve
-        ? (e.within_range === true ? 'ok' : 'rejected_out_of_range')
+        ? (String(e.within_range).toLowerCase() === 'true' ? 'ok' : 'rejected_out_of_range')
         : 'rejected_device';
       eventsSheet.getRange(e.__rowIndex, EVENTS_HEADERS.indexOf('status') + 1).setValue(newStatus);
       if (approve) {
@@ -592,7 +600,7 @@ function handleApproveDevice(body) {
  * ============================================================ */
 
 function findManagerByKey(rows, key) {
-  return rows.filter(function (r) { return String(r.key) === String(key) && r.active === true; })[0];
+  return rows.filter(function (r) { return String(r.key) === String(key) && String(r.active).toLowerCase() === 'true'; })[0];
 }
 
 /** 'HH:mm-HH:mm,HH:mm-HH:mm' → [{start,end}] */
@@ -609,6 +617,8 @@ function parsePeriodsStr(s) {
  * → 回傳「roster 全部 active 同仁」（2026-07-13 Eason 實測回饋改版：當天沒打卡的也要出現，
  *   整天忘刷卡的人才核得到——segments 空陣列、reference=null，主管照樣可輸入時段核定）：
  *   有打卡的照舊顯示打卡段（沿用 pairShifts，未配對顯示？）＋參考時數、既有核定紀錄（最新一筆）。
+ *   reference 忘刷卡整天也回 null（A3，與月表／my_recent 同一規則，不是沒打卡才 null）。
+ *   attempts＝該日該員工 status!=='ok' 的事件筆數（A4，rejected 開頭或 pending 都算，主管頁揭露透明度）。
  *   排序：有打卡的在前（依當日第一筆打卡時間），沒打卡的在後（依名冊順序）。
  *   名冊外（或已離職）但當天有事件的 emp_id 補在最後，防禦用。
  */
@@ -619,9 +629,11 @@ function handleMgrDay(body) {
   const mgr = findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key);
   if (!mgr) return { ok: false, error: 'unauthorized' };
 
-  const date = body.date || todayTaipeiStr();
+  const today = todayTaipeiStr(); // 與 date 分開：判斷「今天」的未配對上班卡是否算上班中（A3）
+  const date = body.date || today;
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
-  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows;
+  // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化（勿自己重寫日期正規化，沿用既有 normCellTs）
+  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
   const approvedSheet = ss.getSheetByName('approved');
   const approvedRows = approvedSheet ? readSheetAsObjects(approvedSheet).rows : [];
   const approvedMap = buildLatestApprovedMap(approvedRows);
@@ -639,12 +651,15 @@ function handleMgrDay(body) {
     });
   }
 
-  // 該日每位員工最早一筆事件時間（有打卡者排序用；任何 status 的事件都算「有打卡」）
+  // 該日每位員工最早一筆事件時間（有打卡者排序用；任何 status 的事件都算「有打卡」）＋
+  // 未入帳嘗試次數（A4：status !== 'ok' 的事件筆數，rejected_*/pending 都算，供主管頁揭露透明度）
   const firstTs = {};
+  const attemptsCount = {};
   eventRows.forEach(function (e) {
     if (tsDateStr(e.ts) !== date) return;
     const emp = String(e.emp_id);
     if (!firstTs[emp] || String(e.ts) < firstTs[emp]) firstTs[emp] = String(e.ts);
+    if (String(e.status) !== 'ok') attemptsCount[emp] = (attemptsCount[emp] || 0) + 1;
   });
 
   // roster 全部 active 同仁都列；名冊外但當天有事件者補最後（防禦，理論上不會發生）
@@ -676,11 +691,14 @@ function handleMgrDay(body) {
   const employees = listed.map(function (item) {
     const hasPunch = !!firstTs[item.emp_id];
     const punch = hasPunch ? dayPunchSegments(eventRows, item.emp_id, date) : null;
+    // 參考時數：忘刷卡整天留白，與月表／my_recent 同一規則（A3，見 dayReferenceIncomplete，禁止重寫判斷）
+    const incomplete = hasPunch && dayReferenceIncomplete(punch.segments, date, today);
     const out = {
       emp_id: item.emp_id,
       name: item.name,
       segments: hasPunch ? punch.segments : [],
-      reference: hasPunch ? punch.reference : null, // 沒打卡＝參考空白
+      reference: hasPunch && !incomplete ? punch.reference : null, // 沒打卡或忘刷卡整天＝參考空白
+      attempts: attemptsCount[item.emp_id] || 0, // A4：未入帳嘗試次數（status!=='ok'，供主管頁透明化）
       leave_type: leaveByName[item.name] || '',
       leave_hours: (leaveHoursByName[item.name] === '' || leaveHoursByName[item.name] == null) ? '' : leaveHoursByName[item.name],
     };
@@ -757,7 +775,8 @@ function handleMgrApprove(body) {
     periods.forEach(function (p) { approvedHours += (p.endMs - p.startMs) / 3600000; });
     approvedHours = Math.round(approvedHours * 100) / 100;
 
-    const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows;
+    // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化（勿自己重寫日期正規化，沿用既有 normCellTs）
+    const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
     const punch = dayPunchSegments(eventRows, body.emp_id, date);
     const punchWithMs = punch.segments.map(function (s) {
       const outDate = s.cross ? addDaysStr(date, 1) : date;
@@ -973,6 +992,23 @@ function dayPunchSegments(eventRows, empId, dateStr) {
 }
 
 /**
+ * 判斷某天參考時數是否該留白（A3：與出勤月表「當天只要有任一筆忘刷卡→整天留空白」同一規則，
+ * 套到 my_recent／mgr_day——抽共用 helper、禁止各自重寫判斷）。只吃已算好的 segments
+ * （dayPunchSegments／buildRecentDays 產生的 {in,out,cross} 陣列，未配對一端為 null），
+ * 不重新讀事件：
+ *   有任一筆未配對 out（in 為 null，即「上班忘刷卡」）→ 恆不完整；
+ *   有任一筆未配對 in（out 為 null，即「下班忘刷卡」）且 dateStr 不是今天 → 不完整；
+ *   dateStr 是今天的未配對 in → 上班中，不算不完整（a872de4 規則，月表已如此）。
+ * ⚠ 月表 buildMonthlySheet 因 segments 結構不同（{sortMs,text}）無法呼叫本函式，
+ *   在 unmatchedIns/unmatchedOuts 兩段維護著同一規則的 inline 版——改這裡必同步改那裡。
+ */
+function dayReferenceIncomplete(segments, dateStr, todayStr) {
+  const hasForgotOut = segments.some(function (s) { return s.in === null; });
+  const hasForgotIn = segments.some(function (s) { return s.out === null; });
+  return hasForgotOut || (hasForgotIn && dateStr !== todayStr);
+}
+
+/**
  * 比對主管輸入時段 vs 打卡段，回傳狀態字串（'正常' 或以「、」串接的異常註記）。
  * 規則（無寬限）：每個輸入時段找重疊最大的打卡段；in 晚於時段起點→「遲到X分」；
  * out 早於時段終點→「早退X分」；早到晚走不標記。該段完全找不到重疊打卡→「該段無打卡」。
@@ -1084,6 +1120,8 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     c.hasComplete = true;
   });
 
+  // ⚠ 下面兩段的 incomplete 判斷＝dayReferenceIncomplete() 的 inline 版（segments 結構不同
+  // 無法共用）——改任一邊要同步改另一邊，含「今天未配對 in＝上班中不算忘刷卡」例外。
   paired.unmatchedIns.forEach(function (e) {
     const d = tsDateStr(e.ts);
     if (!inMonthToEnd(d)) return;
@@ -1177,7 +1215,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     const s = empStats[emp] || { total: 0, abnormal: 0 };
     const leaveCount = Object.keys(leaveDates[emp] || {}).length;
     const leaveHoursSum = leaveHoursByEmp[emp] ? Math.round(leaveHoursByEmp[emp] * 100) / 100 : '';
-    rows.push([String(r.name), Math.round(s.total * 10) / 10, roundApproved(approvedTotalByEmp[emp] || 0), s.abnormal, leaveCount, leaveHoursSum]);
+    rows.push([String(r.name), Math.round(s.total * 100) / 100, roundApproved(approvedTotalByEmp[emp] || 0), s.abnormal, leaveCount, leaveHoursSum]);
   });
 
   rows.push(['', '', '', '', '', '']);
@@ -1224,7 +1262,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     });
 
     const s = empStats[emp] || { total: 0 };
-    rows.push(['小計', '', '', Math.round(s.total * 10) / 10, roundApproved(approvedTotalByEmp[emp] || 0), '']);
+    rows.push(['小計', '', '', Math.round(s.total * 100) / 100, roundApproved(approvedTotalByEmp[emp] || 0), '']);
   });
 
   return { rows: rows, boldRows: boldRows, weekendRows: weekendRows, abnormalNoteRows: abnormalNoteRows };
@@ -1336,14 +1374,17 @@ const REFRESH_LAST_ROW_PROP = 'REFRESH_CURRENT_MONTH_LAST_ROW';
 // 同上，記錄 approved 分頁的列數（2026-07-13 新增：主管核定後 10 分鐘內月表也要反映，
 // 不能只看 events 有沒有新列——主管核定不會新增 events 列）
 const REFRESH_LAST_APPROVED_ROW_PROP = 'REFRESH_CURRENT_MONTH_LAST_APPROVED_ROW';
+// 同上，記錄 leave 分頁的列數（A5 補漏：Eason 手填 leave 分頁也不會新增 events/approved 列，
+// 原本只看那兩張表會漏掉請假異動，要等隔天 05:00 才反映）
+const REFRESH_LAST_LEAVE_ROW_PROP = 'REFRESH_CURRENT_MONTH_LAST_LEAVE_ROW';
 
 /**
  * 每 10 分鐘重算當月月表（給時間觸發器呼叫，不進 doPost 路由，Eason 2026-07-13 要求
  * 打卡後最多 10 分鐘反映到月表，不等隔天 05:00）。重用 rebuildMonth 既有核心，不複製邏輯。
  *
  * 三道防呆：
- *   1. events 分頁「與」approved 分頁列數都沒變 → 沒有新打卡也沒有新核定，直接 return
- *      （半夜空轉幾乎零成本；任一張表有新列就重算）。
+ *   1. events／approved／leave 三個分頁列數都沒變 → 沒有新打卡、新核定、也沒有新請假紀錄，
+ *      直接 return（半夜空轉幾乎零成本；任一張表有新列就重算）。
  *   2. LockService 搶不到鎖（跟 05:00 的 dailyMonthlyRebuild 或手動 rebuild_month 撞期）
  *      → tryLock(0) 立刻放棄，不排隊等待，直接 return。
  *   3. 任何例外都吞掉只寫 log，不讓觸發器因丟例外被 Apps Script 自動停用。
@@ -1359,18 +1400,22 @@ function refreshCurrentMonth() {
     const ss = getSS();
     const eventsSheet = ss.getSheetByName('events');
     const approvedSheet = ss.getSheetByName('approved');
+    const leaveSheet = ss.getSheetByName('leave'); // 可能不存在（防禦同 approvedSheet 寫法）
     const lastRow = eventsSheet.getLastRow();
     const lastApprovedRow = approvedSheet ? approvedSheet.getLastRow() : 0;
+    const lastLeaveRow = leaveSheet ? leaveSheet.getLastRow() : 0;
     const prevRow = parseInt(props.getProperty(REFRESH_LAST_ROW_PROP) || '0', 10);
     const prevApprovedRow = parseInt(props.getProperty(REFRESH_LAST_APPROVED_ROW_PROP) || '0', 10);
+    const prevLeaveRow = parseInt(props.getProperty(REFRESH_LAST_LEAVE_ROW_PROP) || '0', 10);
 
-    if (lastRow === prevRow && lastApprovedRow === prevApprovedRow) {
-      return; // 兩張表都沒有新增列，跳過本次重算
+    if (lastRow === prevRow && lastApprovedRow === prevApprovedRow && lastLeaveRow === prevLeaveRow) {
+      return; // 三張表都沒有新增列，跳過本次重算
     }
 
     rebuildMonth(currentYmTaipei());
     props.setProperty(REFRESH_LAST_ROW_PROP, String(lastRow));
     props.setProperty(REFRESH_LAST_APPROVED_ROW_PROP, String(lastApprovedRow));
+    props.setProperty(REFRESH_LAST_LEAVE_ROW_PROP, String(lastLeaveRow));
   } catch (err) {
     console.log('refreshCurrentMonth 執行失敗：' + err);
   } finally {
@@ -1450,7 +1495,8 @@ function deactivateEmployee(empId) {
 function collectPendingDevices() {
   const ss = getSS();
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
-  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows;
+  // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化（勿自己重寫日期正規化，沿用既有 normCellTs）
+  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
 
   const groups = {};
   eventRows.forEach(function (e) {

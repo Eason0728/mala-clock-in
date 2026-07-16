@@ -285,7 +285,9 @@ def build_recent_days(data, emp_id, today):
     慣例照月表 buildMonthlySheet：班段歸 in 那一天（跨夜段 cross=True，前端顯示 (+1)）、
     未配對 in→「下班忘刷卡」、未配對 out→「上班忘刷卡」；事件往前多抓 1 天供跨夜配對。
     例外：未配對 in 落在「今天」→ 不算忘刷卡（上班中）。無事件的日子省略不回。
-    reference＝已完成班段 15 分鐘取整加總（approved_hours_of_shift，2026-07-15 起）。approved＝值班主管在 approved 的核定時數
+    reference＝已完成班段 15 分鐘取整加總（approved_hours_of_shift，2026-07-15 起）；當天有忘刷卡
+    （見上例外）→ 整天回 None，不是部分加總（A3，與月表同一規則，見 day_reference_incomplete，
+    勿各自重寫判斷）。approved＝值班主管在 approved 的核定時數
     （有紀錄→數字、無紀錄→None＝待核定），不是 approved_hours_of_shift 的 15 分鐘取整
     ——那是 2026-07-13 前的舊定義，核定已改主管手動輸入實際時段（2026-07-15 改）。"""
     today_d = datetime.strptime(today, "%Y-%m-%d").date()
@@ -340,7 +342,8 @@ def build_recent_days(data, emp_id, today):
         c["segments"].sort(key=lambda s: s["_sort"])
         for s in c["segments"]:
             del s["_sort"]
-        c["reference"] = round(c["reference"], 2)
+        # 參考時數：忘刷卡整天留白（None），與出勤月表同一規則（A3，見 day_reference_incomplete）
+        c["reference"] = None if day_reference_incomplete(c["segments"], d, today) else round(c["reference"], 2)
         # 核定＝主管在 approved 的最新核定（與 Code.gs buildRecentDays／月表同一套慣例）：
         # 無紀錄→None＝待核定；有紀錄但 0 小時＝全天請假，要與 None 區分，故看 rec 是否存在。
         rec = latest_approved_record(data, d, emp_id)
@@ -426,6 +429,16 @@ def day_punch_segments(data, emp_id, date_str):
     return {"segments": segments, "reference": round(reference, 2)}
 
 
+def day_reference_incomplete(segments, date_str, today_str):
+    """判斷某天參考時數是否該留白（A3：與 Code.gs dayReferenceIncomplete 同步，月表／my_recent／
+    mgr_day 共用同一判斷，勿各自重寫）。只吃已算好的 segments（{in,out,cross}，未配對一端為 None）：
+    有任一筆未配對 out（in 為 None，即「上班忘刷卡」）→ 恆不完整；有任一筆未配對 in（out 為 None，
+    即「下班忘刷卡」）且 date_str 不是今天 → 不完整；今天的未配對 in＝上班中，不算不完整（a872de4 規則）。"""
+    has_forgot_out = any(s["in"] is None for s in segments)
+    has_forgot_in = any(s["out"] is None for s in segments)
+    return has_forgot_out or (has_forgot_in and date_str != today_str)
+
+
 def parse_periods_str(s):
     """'HH:mm-HH:mm,HH:mm-HH:mm' → [{"start","end"}]"""
     if not s:
@@ -471,10 +484,11 @@ def compute_approval_status(periods, punch_segments):
             continue
         used.add(best_i)
         seg = full_segs[best_i]
+        # B3：Python round() 是銀行家捨入，與 JS Math.round 不同；改用 floor(x+0.5)（值恆非負，即四捨五入）
         if seg["in_ms"] > p["start_ms"]:
-            notes.append("遲到{}分".format(round((seg["in_ms"] - p["start_ms"]) / 60000)))
+            notes.append("遲到{}分".format(int(math.floor((seg["in_ms"] - p["start_ms"]) / 60000 + 0.5))))
         if seg["out_ms"] < p["end_ms"]:
-            notes.append("早退{}分".format(round((p["end_ms"] - seg["out_ms"]) / 60000)))
+            notes.append("早退{}分".format(int(math.floor((p["end_ms"] - seg["out_ms"]) / 60000 + 0.5))))
 
     if len(full_segs) > len(used):
         notes.append("有多出的打卡段")
@@ -493,22 +507,29 @@ def handle_mgr_day(data, body):
     """{action:'mgr_day', mgr_key, date?}（date 缺省＝今天）→ roster 全部 active 同仁
     （2026-07-13 Eason 實測回饋改版：當天沒打卡的也要出現——segments 空、reference=None，
     主管照樣可輸入時段核定，整天忘刷卡的人才核得到）。有打卡的照舊顯示打卡段＋參考時數＋
-    既有核定紀錄（最新一筆）。排序：有打卡的在前（依當日第一筆打卡時間），沒打卡的在後
+    既有核定紀錄（最新一筆）。reference 忘刷卡整天也回 None（A3，與月表／my_recent 同一規則，
+    不是沒打卡才 None）。attempts＝該日該員工 status != 'ok' 的事件筆數（A4，rejected 開頭或
+    pending 都算，供主管頁揭露透明度）。排序：有打卡的在前（依當日第一筆打卡時間），沒打卡的在後
     （依名冊順序）；名冊外但當天有事件的 emp_id 補最後（防禦）。與 Code.gs handleMgrDay 同步。"""
     mgr = find_manager_by_key(data, body.get("mgr_key"))
     if not mgr:
         return {"ok": False, "error": "unauthorized"}
 
-    date = body.get("date") or today_str()
+    today = today_str()  # 與 date 分開：判斷「今天」的未配對上班卡是否算上班中（A3）
+    date = body.get("date") or today
 
-    # 該日每位員工最早一筆事件時間（任何 status 都算「有打卡」，排序用）
+    # 該日每位員工最早一筆事件時間（任何 status 都算「有打卡」，排序用）＋未入帳嘗試次數
+    # （A4：status != 'ok' 的事件筆數，rejected_*/pending 都算，供主管頁揭露透明度用）
     first_ts = {}
+    attempts_count = {}
     for e in data["events"]:
         if e["ts"][:10] != date:
             continue
         emp = e["emp_id"]
         if emp not in first_ts or e["ts"] < first_ts[emp]:
             first_ts[emp] = e["ts"]
+        if e.get("status") != "ok":
+            attempts_count[emp] = attempts_count.get(emp, 0) + 1
 
     listed = []
     seen = set()
@@ -546,12 +567,15 @@ def handle_mgr_day(data, body):
         emp_id = item["emp_id"]
         has_punch = emp_id in first_ts
         punch = day_punch_segments(data, emp_id, date) if has_punch else None
+        # 參考時數：忘刷卡整天留白，與月表／my_recent 同一規則（A3，見 day_reference_incomplete，禁止重寫判斷）
+        incomplete = has_punch and day_reference_incomplete(punch["segments"], date, today)
         rec = latest_approved_record(data, date, emp_id)
         out = {
             "emp_id": emp_id,
             "name": item["name"],
             "segments": punch["segments"] if has_punch else [],
-            "reference": punch["reference"] if has_punch else None,  # 沒打卡＝參考空白
+            "reference": punch["reference"] if (has_punch and not incomplete) else None,  # 沒打卡或忘刷卡整天＝參考空白
+            "attempts": attempts_count.get(emp_id, 0),  # A4：未入帳嘗試次數（status!='ok'，供主管頁透明化）
             "leave_type": leave_by_name.get(item["name"], ""),
             "leave_hours": leave_hours_by_name.get(item["name"], ""),
         }
@@ -594,7 +618,8 @@ def handle_mgr_approve(data, body):
             h = float(lh_raw)
         except (TypeError, ValueError):
             return {"ok": False, "error": "bad_leave_hours"}
-        if h < 0:
+        # B2：float() 對 "nan"/"inf" 字串不會丟例外，要另外擋（與 Code.gs 726-731 的 isFinite 對齊）
+        if not math.isfinite(h) or h < 0:
             return {"ok": False, "error": "bad_leave_hours"}
         leave_hours = round(h, 2)
 
