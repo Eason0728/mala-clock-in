@@ -225,7 +225,8 @@ function lastCountedEvent(eventRows, empId) {
  * 今日出勤時數（whoami 用，同仁自助查詢，不落地寫入試算表）。
  * 只取今日（Asia/Taipei）status='ok' 的事件跑 pairShifts（沿用月表同一套配對／核定
  * 邏輯，不重寫 pairShifts/approvedHoursOfShift 本身）：
- *   reference＝已完成時段原始相減加總（小時，取 2 位小數）
+ *   reference＝已完成時段 15 分鐘取整加總（2026-07-15 Eason 指定：原始相減改為與核定工時
+ *   同一套 approvedHoursOfShift 取整——上班進位、下班捨去，必為 0.25 倍數）
  *   approved＝已完成時段 approvedHoursOfShift 加總（必為 0.25 倍數，取 2 位小數整理浮點誤差）
  * 若今日最後一筆 ok 事件是尚未配對的 in（上班中）→ working_since 為該筆「原始」HH:mm
  * （不是取整後的刻度），reference/approved 只計入已完成時段；今日無完成時段則兩者為 0。
@@ -241,7 +242,7 @@ function todayHoursSummary(eventRows, empId, today) {
   let reference = 0;
   let approved = 0;
   paired.shifts.forEach(function (s) {
-    reference += (tsMs(s.out_ts) - tsMs(s.in_ts)) / 3600000;
+    reference += approvedHoursOfShift(s.in_ts, s.out_ts);
     approved += approvedHoursOfShift(s.in_ts, s.out_ts);
   });
 
@@ -271,7 +272,7 @@ const RECENT_DAYS_WINDOW = 40;
  * 班段歸 in 那一天（跨夜段標 cross，前端顯示 (+1)）、未配對 in→「下班忘刷卡」、
  * 未配對 out→「上班忘刷卡」；事件往前多抓 1 天供跨夜配對。
  * 例外：未配對 in 落在「今天」→ 不算忘刷卡（上班中），照 today_hours 的邏輯。
- * reference＝該日已完成班段原始相減加總（取 2 位小數）。
+ * reference＝該日已完成班段 15 分鐘取整加總（approvedHoursOfShift，2026-07-15 起）。
  * approved＝值班主管在 approved 分頁核定的時數，照月表（1201 行）慣例：有紀錄→數字、
  * 無紀錄→null 讓前端顯示「待核定」。**不是** approvedHoursOfShift 的 15 分鐘取整——
  * 那是 2026-07-13 前的舊定義，核定已改為主管手動輸入實際時段（2026-07-15 改）。
@@ -300,7 +301,7 @@ function buildRecentDays(eventRows, empId, todayStr, approvedMap) {
     if (d < startStr || d > todayStr) return;
     const c = day(d);
     c.segments.push({ sortMs: tsMs(s.in_ts), in: tsHm(s.in_ts), out: tsHm(s.out_ts), cross: tsDateStr(s.out_ts) !== d });
-    c.reference += (tsMs(s.out_ts) - tsMs(s.in_ts)) / 3600000;
+    c.reference += approvedHoursOfShift(s.in_ts, s.out_ts);
   });
 
   paired.unmatchedIns.forEach(function (e) {
@@ -955,7 +956,7 @@ function dayPunchSegments(eventRows, empId, dateStr) {
     const d = tsDateStr(s.in_ts);
     if (d !== dateStr) return;
     segments.push({ sortMs: tsMs(s.in_ts), in: tsHm(s.in_ts), out: tsHm(s.out_ts), cross: tsDateStr(s.out_ts) !== d });
-    reference += (tsMs(s.out_ts) - tsMs(s.in_ts)) / 3600000;
+    reference += approvedHoursOfShift(s.in_ts, s.out_ts);
   });
   paired.unmatchedIns.forEach(function (e) {
     if (tsDateStr(e.ts) !== dateStr) return;
@@ -1079,7 +1080,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     const cross = tsDateStr(s.out_ts) !== d;
     const c = cell(d, String(s.emp_id));
     c.segments.push({ sortMs: tsMs(s.in_ts), text: tsHm(s.in_ts) + '–' + tsHm(s.out_ts) + (cross ? '(+1)' : '') });
-    c.hours += (tsMs(s.out_ts) - tsMs(s.in_ts)) / 3600000;
+    c.hours += approvedHoursOfShift(s.in_ts, s.out_ts);
     c.hasComplete = true;
   });
 
@@ -1209,7 +1210,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
       const seg = c.segments.map(function (s) { return s.text; }).join('、');
       // 參考時數：當天只要有任一筆忘刷卡 → 整天留空白（待人工判定），不受核定是否已輸入影響
       const complete = !c.incomplete && c.hasComplete;
-      const hours = complete ? Math.round(c.hours * 10) / 10 : '';
+      const hours = complete ? Math.round(c.hours * 100) / 100 : ''; // 0.25 刻度要兩位小數，一位會把 7.25 顯示成 7.3
       // 核定時數：改讀 approved 分頁最新一筆，主管沒輸入就顯示「待核定」
       const approvedRec = (approvedMap[c.date] || {})[emp];
       const approvedDisplay = approvedRec ? roundApproved(approvedRec.approved_hours) : '待核定';

@@ -244,7 +244,7 @@ def pair_shifts(events):
 
 def today_hours_summary(data, emp_id, today):
     """今日出勤時數（whoami 用，與 Code.gs todayHoursSummary 同步邏輯）：
-    reference＝已完成時段原始相減加總，approved＝已完成時段 approvedHoursOfShift 加總；
+    reference＝已完成時段 15 分鐘取整加總（approved_hours_of_shift，2026-07-15 起），approved＝已完成時段 approvedHoursOfShift 加總；
     今日最後一筆 ok 事件若是尚未配對的 in（上班中）→ working_since 為該筆原始 HH:mm，
     reference/approved 只計入已完成時段；今日無完成時段則兩者為 0。"""
     today_ok_events = [
@@ -257,9 +257,7 @@ def today_hours_summary(data, emp_id, today):
     reference = 0.0
     approved = 0.0
     for s in shifts:
-        reference += (
-            datetime.fromisoformat(s["out_ts"]) - datetime.fromisoformat(s["in_ts"])
-        ).total_seconds() / 3600.0
+        reference += approved_hours_of_shift(s["in_ts"], s["out_ts"])
         approved += approved_hours_of_shift(s["in_ts"], s["out_ts"])
 
     result = {
@@ -287,7 +285,7 @@ def build_recent_days(data, emp_id, today):
     慣例照月表 buildMonthlySheet：班段歸 in 那一天（跨夜段 cross=True，前端顯示 (+1)）、
     未配對 in→「下班忘刷卡」、未配對 out→「上班忘刷卡」；事件往前多抓 1 天供跨夜配對。
     例外：未配對 in 落在「今天」→ 不算忘刷卡（上班中）。無事件的日子省略不回。
-    reference＝已完成班段原始相減加總。approved＝值班主管在 approved 的核定時數
+    reference＝已完成班段 15 分鐘取整加總（approved_hours_of_shift，2026-07-15 起）。approved＝值班主管在 approved 的核定時數
     （有紀錄→數字、無紀錄→None＝待核定），不是 approved_hours_of_shift 的 15 分鐘取整
     ——那是 2026-07-13 前的舊定義，核定已改主管手動輸入實際時段（2026-07-15 改）。"""
     today_d = datetime.strptime(today, "%Y-%m-%d").date()
@@ -318,9 +316,7 @@ def build_recent_days(data, emp_id, today):
             "out": s["out_ts"][11:16],
             "cross": s["out_ts"][:10] != d,
         })
-        c["reference"] += (
-            datetime.fromisoformat(s["out_ts"]) - datetime.fromisoformat(s["in_ts"])
-        ).total_seconds() / 3600.0
+        c["reference"] += approved_hours_of_shift(s["in_ts"], s["out_ts"])
 
     for e in unmatched_ins:
         d = e["ts"][:10]
@@ -414,9 +410,7 @@ def day_punch_segments(data, emp_id, date_str):
             "out": s["out_ts"][11:16],
             "cross": s["out_ts"][:10] != d,
         })
-        reference += (
-            datetime.fromisoformat(s["out_ts"]) - datetime.fromisoformat(s["in_ts"])
-        ).total_seconds() / 3600.0
+        reference += approved_hours_of_shift(s["in_ts"], s["out_ts"])
     for e in unmatched_ins:
         if e["ts"][:10] != date_str:
             continue
