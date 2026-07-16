@@ -349,6 +349,9 @@ def build_recent_days(data, emp_id, today):
         # 無紀錄→None＝待核定；有紀錄但 0 小時＝全天請假，要與 None 區分，故看 rec 是否存在。
         rec = latest_approved_record(data, d, emp_id)
         c["approved"] = round(float(rec["approved_hours"]), 2) if rec else None
+        # 核定狀態（遲到/早退等，compute_approval_status 於核定當下算好，月表狀態欄同源）。
+        # 原樣帶回，「正常」由前端決定不顯示（與 Code.gs buildRecentDays 同步）。
+        c["approved_status"] = str(rec.get("status_text") or "") if rec else None
         days.append(c)
     return days
 

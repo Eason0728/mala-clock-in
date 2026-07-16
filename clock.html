@@ -119,7 +119,20 @@
     gap: 8px;
   }
   .recent-list .day-info { flex: 1; }
-  .recent-list .day-hours { white-space: nowrap; }
+  /* 右欄改直向靠右：核定時數在上，遲到/早退標記疊在下一行，
+     窄螢幕不會被擠爆（時數與標記各自 nowrap） */
+  .recent-list .day-hours {
+    white-space: nowrap;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+  /* 遲到/早退等核定狀態：沿用既有品牌橘當警示，不引入新色彩 */
+  .recent-list .day-mark {
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--brand-orange);
+  }
   .btn-group {
     display: flex;
     flex-direction: column;
@@ -354,9 +367,18 @@
       // 後端 my_recent 的 d.approved 已改讀 approved 分頁（不再是 15 分鐘取整的舊定義）。
       // 無核定紀錄→「待核定」（月表同款措辭）；忘刷卡當天不再空白——主管核定後就看得到時數，
       // 那正是最需要看核定的情境。d.approved 為 0 是合法值（全天請假），故不可用 falsy 判斷。
-      hours.textContent = (d.approved === null || d.approved === undefined)
+      var hoursText = (d.approved === null || d.approved === undefined)
         ? '待核定'
         : '核定 ' + d.approved;
+      hours.textContent = hoursText;
+      // 遲到/早退等核定狀態（後端 approved_status＝主管核定當下算的 status_text，與月表狀態欄同源）。
+      // 「正常」不顯示以免雜訊；有異常才追加一段醒目小字（Eason 2026-07-15 要求顯示遲到分鐘）。
+      if (d.approved_status && d.approved_status !== '正常') {
+        var mark = document.createElement('span');
+        mark.className = 'day-mark';
+        mark.textContent = d.approved_status;
+        hours.appendChild(mark);
+      }
       li.appendChild(info);
       li.appendChild(hours);
       recentListEl.appendChild(li);

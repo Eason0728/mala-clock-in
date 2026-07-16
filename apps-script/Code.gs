@@ -328,6 +328,10 @@ function buildRecentDays(eventRows, empId, todayStr, approvedMap) {
     // 有紀錄但 0 小時＝全天請假，必須與 null 區分，故用 rec 是否存在判斷、不看數值真假。
     const rec = ((approvedMap || {})[d] || {})[String(empId)];
     c.approved = rec ? Math.round(Number(rec.approved_hours) * 100) / 100 : null;
+    // 核定狀態（computeApprovalStatus 於主管核定當下算好存進 status_text，月表狀態欄同源，
+    // 故兩邊標記保證一致）：'遲到2分'／'早退5分'／'遲到2分、早退5分'／'該段無打卡'／
+    // '有多出的打卡段'，無異常＝'正常'。這裡原樣帶回，由前端決定「正常」不顯示。
+    c.approved_status = rec ? String(rec.status_text || '') : null;
     return c;
   });
 }
