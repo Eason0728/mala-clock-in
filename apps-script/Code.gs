@@ -16,6 +16,8 @@
  *   mgr_day / mgr_approve（值班主管核定，2026-07-13 新增）
  * 另有 GAS 專屬 action（mock_server 不實作，因為依賴試算表分頁）：
  *   rebuild_month {admin_key, ym?}（ym 缺省＝當月，格式 yyyy-MM）→ 重算該月出勤月表分頁
+ *   recheck_approvals {admin_key}（2026-07-19 新增）→ 手動觸發「該段無打卡」核定狀態重算
+ *   （平常由每日 05:00 觸發器 dailyMonthlyRebuild 自動跑，這個 action 只供部署後手動驗證）
  */
 
 const CONFIG = {
@@ -118,6 +120,7 @@ function doPost(e) {
     get_events: handleGetEvents,
     approve_device: handleApproveDevice,
     rebuild_month: handleRebuildMonth,
+    recheck_approvals: handleRecheckApprovals,
     my_recent: handleMyRecent,
     mgr_day: handleMgrDay,
     mgr_approve: handleMgrApprove,
@@ -1345,11 +1348,84 @@ function rebuildMonth(ym) {
   return built.rows.length;
 }
 
+// recheckPendingApprovalStatuses 往回檢查的天數（今天不算，從昨天起算）。
+// 3 天：涵蓋週五核定週六才打完卡、連假等情境；比對成本低（只掃 approved 分頁近期列），不必貪多。
+const RECHECK_STATUS_DAYS = 3;
+// 補寫的核定紀錄用這個字樣標示「系統自動重算」，跟主管手動核定的紀錄分開看得出來。
+const RECHECK_MARK = '（系統重算）';
+
 /**
- * 每日重算（給時間觸發器跑）：重算當月；每月 1–3 日連上月一起重算
- * （收尾跨夜班與補核准的裝置事件），之後上月凍結不再改動。
+ * 核定時若下班段還沒打卡（開著的 in、out 為 null），這段不算「完整段」，主管核定當下比對
+ * 不到就會誤判「該段無打卡」——核定時數本身是主管輸入時段直接算的，不受影響，但狀態文字
+ * 是錯的，且核定是一次性快照，之後同仁補打卡也不會自動回頭修正（見 2026-07-19 張羽成案例）。
+ * 此函式用「當下最新」打卡資料，重新比對近 RECHECK_STATUS_DAYS 天內狀態含「該段無打卡」的
+ * 核定紀錄；比對得到（新狀態≠舊狀態）就補一筆狀態修正過的核定紀錄——沿用 approved 分頁
+ * append-only、同 (date,emp_id) 取 entered_at 最新為準的既有設計，periods／approved_hours
+ * 原封不動照抄，只換 status_text，manager_name 加註記、entered_at 設為現在。
+ * 由 dailyMonthlyRebuild（05:00 觸發器）呼叫；也開放 recheck_approvals 管理 API 供手動驗證。
+ */
+function recheckPendingApprovalStatuses() {
+  const ss = getSS();
+  const approvedSheet = ss.getSheetByName('approved');
+  if (!approvedSheet) return { checked: 0, fixed: 0 };
+
+  const approvedMap = buildLatestApprovedMap(readSheetAsObjects(approvedSheet).rows);
+  const today = todayTaipeiStr();
+  const dates = [];
+  for (let i = 1; i <= RECHECK_STATUS_DAYS; i++) dates.push(addDaysStr(today, -i));
+
+  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
+
+  let checked = 0;
+  let fixed = 0;
+  dates.forEach(function (date) {
+    const dayMap = approvedMap[date];
+    if (!dayMap) return;
+    Object.keys(dayMap).forEach(function (empId) {
+      const rec = dayMap[empId];
+      const statusText = String(rec.status_text || '');
+      if (statusText.indexOf('該段無打卡') === -1) return; // 只修這個症狀，其他狀態（含已經是系統重算過的）不動
+      const rawPeriods = parsePeriodsStr(rec.periods);
+      if (!rawPeriods.length) return; // 整天請假無時段，跳過
+      checked++;
+
+      const periods = rawPeriods.map(function (p) {
+        const startMs = hmToMs(date, p.start);
+        let endMs = hmToMs(date, p.end);
+        if (endMs <= startMs) endMs += 24 * 3600000; // 跨夜段：end<=start 視為+1天（與 handleMgrApprove 同規則）
+        return { start: p.start, end: p.end, startMs: startMs, endMs: endMs };
+      });
+      const punch = dayPunchSegments(eventRows, empId, date);
+      const punchWithMs = punch.segments.map(function (s) {
+        const outDate = s.cross ? addDaysStr(date, 1) : date;
+        return {
+          in: s.in, out: s.out,
+          inMs: s.in ? hmToMs(date, s.in) : null,
+          outMs: s.out ? hmToMs(outDate, s.out) : null,
+        };
+      });
+      const newStatusText = computeApprovalStatus(periods, punchWithMs);
+      if (newStatusText === statusText) return; // 還是沒打卡，維持原樣，下次再檢查
+
+      const roster = findRosterByEmpId(rosterRows, empId);
+      approvedSheet.appendRow([
+        date, empId, roster ? roster.name : rec.name, rec.periods, rec.approved_hours,
+        newStatusText, String(rec.manager_name || '') + RECHECK_MARK, nowTaipeiIso(),
+      ]);
+      fixed++;
+    });
+  });
+  return { checked: checked, fixed: fixed };
+}
+
+/**
+ * 每日重算（給時間觸發器跑）：先重算「該段無打卡」的核定狀態，再重算月表分頁
+ * （順序必須是先修狀態、後重算月表，否則月表這輪還是讀到舊狀態）。
+ * 重算當月；每月 1–3 日連上月一起重算（收尾跨夜班與補核准的裝置事件），之後上月凍結不再改動。
  */
 function dailyMonthlyRebuild() {
+  recheckPendingApprovalStatuses();
   const ym = currentYmTaipei();
   rebuildMonth(ym);
   const day = parseInt(todayTaipeiStr().slice(8, 10), 10);
@@ -1444,6 +1520,13 @@ function handleRebuildMonth(body) {
   const ym = body.ym || currentYmTaipei();
   const rows = rebuildMonth(ym);
   return { ok: true, ym: ym, rows: rows };
+}
+
+/** 手動觸發 recheckPendingApprovalStatuses（平常由 05:00 觸發器跑），供部署後驗證用。 */
+function handleRecheckApprovals(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const result = recheckPendingApprovalStatuses();
+  return { ok: true, checked: result.checked, fixed: result.fixed };
 }
 
 /* ============================================================
