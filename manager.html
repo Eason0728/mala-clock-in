@@ -102,6 +102,15 @@
   }
   .approved-badge.normal { background: #e6f7ec; color: #1a7a3d; }
   .approved-badge.warn { background: #fff6e0; color: #8a6100; }
+  .open-shift-warn {
+    font-size: 13px;
+    color: #8a6100;
+    background: #fff6e0;
+    border-radius: 8px;
+    padding: 6px 10px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
   .approved-badge.pending { background: #f0e6e2; color: #8a6a5f; }
   .period-rows {
     display: flex;
@@ -358,6 +367,17 @@
     }
     card.appendChild(punchEl);
 
+    // 防呆：這天若有打卡段還沒配對完成（有上班沒下班，out===null），現在核定會比對不到
+    // 這段（未配對的段不算「完整段」），核定結果卻是核定當下寫死，之後打卡補上也不會
+    // 自動重算——常見於跨夜班還沒打完就核定。跨天下班卡本身配對正常，這只是時機問題。
+    var hasOpenSeg = (emp.segments || []).some(function (s) { return s.in && !s.out; });
+    if (hasOpenSeg) {
+      var openWarn = document.createElement('div');
+      openWarn.className = 'open-shift-warn';
+      openWarn.textContent = '⚠ 有打卡段還沒打下班卡（可能還在上班或跨夜還沒打完），現在核定會核不到這段、且之後補打卡也不會自動更新。請同仁立即打卡避免忘刷卡。';
+      card.appendChild(openWarn);
+    }
+
     // 狀態徽章抽成可重設的元素：核定成功後當場翻成「已核定」，不用重新整理才看得到
     var badge = document.createElement('div');
     function setBadge(approved, leaveType, leaveHours) {
@@ -484,6 +504,9 @@
         segs.forEach(function (s) {
           if (s.overnight) warnings.push('・' + s.start + '–' + s.end + ' 會算成跨夜到隔天（' + (Math.round((s.em - s.sm) / 60 * 100) / 100) + ' 小時），若是打錯請改回。');
         });
+        if (hasOpenSeg) {
+          warnings.push('・這天有打卡段還沒打下班卡，現在核定可能會核不到那一段，且之後補打卡不會自動重算——請同仁立即打卡避免忘刷卡。');
+        }
         // C5：只比相鄰兩段會漏報「長段包兩短段」（3 段以上時）；改為維護 runningMaxEnd 的掃描——
         // 依起點排序後，任一段起點 < 目前為止看過的最大終點，就與那個「目前最長」的段標重疊。
         var sorted = segs.slice().sort(function (a, b) { return a.sm - b.sm; });
