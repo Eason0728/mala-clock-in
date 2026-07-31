@@ -127,6 +127,32 @@
     flex-direction: column;
     align-items: flex-end;
   }
+  /* 本月／上月核定時數合計：擺在明細清單上方當摘要，兩欄並排、窄螢幕也放得下 */
+  .month-totals {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .month-totals .mt-box {
+    flex: 1;
+    background: #faf6f4;
+    border: 1px solid #f0e6e2;
+    border-radius: 8px;
+    padding: 8px 10px;
+    text-align: center;
+  }
+  .month-totals .mt-label {
+    display: block;
+    font-size: 12px;
+    color: #8a6a5f;
+  }
+  .month-totals .mt-value {
+    display: block;
+    margin-top: 2px;
+    font-size: 17px;
+    font-weight: 700;
+    color: #3b2b26;
+  }
   /* 遲到/早退等核定狀態：沿用既有品牌橘當警示，不引入新色彩 */
   .recent-list .day-mark {
     margin-top: 2px;
@@ -191,6 +217,7 @@
     <div class="no-events" id="noEvents" style="display:none;">今天還沒有打卡紀錄</div>
     <div class="no-events" id="todayHours"></div>
     <button class="recent-toggle" id="btnRecent" type="button">查看最近 40 天</button>
+    <div class="month-totals" id="monthTotals" style="display:none;"></div>
     <ul class="today-list recent-list" id="recentList" style="display:none;"></ul>
   </div>
 
@@ -255,6 +282,7 @@
   var btnOut = document.getElementById('btnOut');
   var btnRecent = document.getElementById('btnRecent');
   var recentListEl = document.getElementById('recentList');
+  var monthTotalsEl = document.getElementById('monthTotals');
 
   function showError(msg) {
     loadingCard.style.display = 'none';
@@ -345,6 +373,36 @@
     return (s.in || '？') + '–' + (s.out || '？') + (s.cross ? '(+1)' : '');
   }
 
+  // 本月／上月核定時數合計。後端 month_totals 是掃 approved 分頁全部日期算的（與月表同源），
+  // 不是把 days 加總——40 天視窗蓋不滿整個上月。舊後端沒有這個欄位時整塊不顯示（優雅降級）。
+  function renderMonthTotals(totals) {
+    monthTotalsEl.innerHTML = '';
+    if (!totals || !totals.current || !totals.previous) {
+      monthTotalsEl.style.display = 'none';
+      return;
+    }
+    [
+      { label: '本月合計', t: totals.current },
+      { label: '上月合計', t: totals.previous },
+    ].forEach(function (item) {
+      var box = document.createElement('div');
+      box.className = 'mt-box';
+      var label = document.createElement('span');
+      label.className = 'mt-label';
+      // 標題帶月份，避免月初剛換月時看不出算的是哪個月
+      label.textContent = item.label + '（' + parseInt(item.t.ym.slice(5, 7), 10) + ' 月）';
+      var value = document.createElement('span');
+      value.className = 'mt-value';
+      // 0 是合法值（該月尚無核定或全天請假），不可用 falsy 判斷
+      var h = (item.t.hours === null || item.t.hours === undefined) ? 0 : item.t.hours;
+      value.textContent = h + ' 小時';
+      box.appendChild(label);
+      box.appendChild(value);
+      monthTotalsEl.appendChild(box);
+    });
+    monthTotalsEl.style.display = 'flex';
+  }
+
   function renderRecentDays(days) {
     recentListEl.innerHTML = '';
     if (!days || days.length === 0) {
@@ -388,7 +446,17 @@
   function setRecentClosed() {
     recentOpen = false;
     recentListEl.style.display = 'none';
+    monthTotalsEl.style.display = 'none'; // 合計跟著明細一起收合
     btnRecent.textContent = '查看最近 40 天';
+  }
+
+  /** 展開明細（含合計）——首次載入與再次展開共用，避免兩處各寫一份顯示邏輯。 */
+  function setRecentOpen() {
+    recentOpen = true;
+    recentListEl.style.display = 'block';
+    // 合計整塊有內容才顯示（舊後端無 month_totals 時 renderMonthTotals 已清空並隱藏）
+    if (monthTotalsEl.children.length) monthTotalsEl.style.display = 'flex';
+    btnRecent.textContent = '收合';
   }
 
   btnRecent.addEventListener('click', function () {
@@ -397,9 +465,7 @@
       return;
     }
     if (recentLoaded) {
-      recentOpen = true;
-      recentListEl.style.display = 'block';
-      btnRecent.textContent = '收合';
+      setRecentOpen();
       return;
     }
     btnRecent.disabled = true;
@@ -413,10 +479,9 @@
           return;
         }
         recentLoaded = true;
+        renderMonthTotals(res.month_totals);
         renderRecentDays(res.days);
-        recentOpen = true;
-        recentListEl.style.display = 'block';
-        btnRecent.textContent = '收合';
+        setRecentOpen();
       })
       .catch(function () {
         btnRecent.disabled = false;

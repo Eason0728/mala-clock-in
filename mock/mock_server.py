@@ -378,6 +378,36 @@ def handle_my_recent(data, body):
         "name": roster["name"],
         "device_state": device_state,
         "days": build_recent_days(data, roster["emp_id"], today_str()),
+        # 本月／上月核定時數合計（與 Code.gs monthTotalsFor 同步）
+        "month_totals": month_totals_for(data, roster["emp_id"]),
+    }
+
+
+def monthly_approved_total(data, emp_id, ym):
+    """某員工某月（ym='yyyy-MM'）的核定時數合計（與 Code.gs monthlyApprovedTotal 同步）。
+    直接掃 approved 全部紀錄，不是把 build_recent_days 的結果加總——40 天視窗蓋不滿整個上月。
+    同日多筆取 entered_at 最新一筆（沿用 latest_approved_record 的取法，勿另寫一套）。"""
+    dates = sorted({r["date"] for r in data["approved"] if str(r["date"])[:7] == ym})
+    total = 0.0
+    for d in dates:
+        rec = latest_approved_record(data, d, emp_id)
+        if not rec:
+            continue
+        h = rec.get("approved_hours")
+        if h is None or not math.isfinite(float(h)):
+            continue
+        total += float(h)
+    return round(total, 2)
+
+
+def month_totals_for(data, emp_id):
+    """打卡頁「本月／上月合計」成組回傳（與 Code.gs monthTotalsFor 同步）。"""
+    ym = now_taipei().strftime("%Y-%m")
+    y, m = int(ym[:4]), int(ym[5:7])
+    prev = "%04d-%02d" % ((y - 1, 12) if m == 1 else (y, m - 1))
+    return {
+        "current": {"ym": ym, "hours": monthly_approved_total(data, emp_id, ym)},
+        "previous": {"ym": prev, "hours": monthly_approved_total(data, emp_id, prev)},
     }
 
 

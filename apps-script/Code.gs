@@ -344,6 +344,26 @@ function buildRecentDays(eventRows, empId, todayStr, approvedMap) {
 }
 
 /**
+ * 某員工某月（ym='yyyy-MM'）的核定時數合計——打卡頁「本月／上月合計」用。
+ * 讀 approvedMap（buildLatestApprovedMap 產出＝每日最新一筆核定），與出勤月表的
+ * approvedTotalByEmp 同一份資料、同一套讀法，兩邊數字保證一致。
+ * ⚠ 絕不可改成把 my_recent 的 days 加總——RECENT_DAYS_WINDOW(40) 天視窗涵蓋不到完整上月
+ *   （例：7/31 只回溯到 6/22，6/1–6/21 全部漏掉），合計會少算。
+ * 未核定的日子不計入（rec 不存在＝待核定）；核定 0 小時（全天請假）是合法值照樣計入 0。
+ */
+function monthlyApprovedTotal(approvedMap, empId, ym) {
+  let total = 0;
+  Object.keys(approvedMap || {}).forEach(function (d) {
+    if (String(d).slice(0, 7) !== ym) return;
+    const rec = approvedMap[d][String(empId)];
+    if (!rec) return;
+    total += Number(rec.approved_hours) || 0;
+  });
+  // 核定工時是 0.25 的倍數，用 2 位小數整理浮點誤差（勿取 1 位，會把 .75 進成 .8）
+  return Math.round(total * 100) / 100;
+}
+
+/**
  * API：{action:'my_recent', key, device_id} → 該員工最近 RECENT_DAYS_WINDOW 天（含今天）出勤明細。
  * 驗證與 whoami 相同：key 無效（或離職）→ invalid_key；裝置照 whoami 作法只回
  * device_state 供前端提示，不因裝置不符而拒回（回查是唯讀，不產生打卡事件）。
@@ -380,6 +400,19 @@ function handleMyRecent(body) {
     name: roster.name,
     device_state: deviceState,
     days: buildRecentDays(eventRows, roster.emp_id, todayTaipeiStr(), approvedMap),
+    // 本月／上月核定時數合計（2026-07-31 新增）。獨立於 days 計算——days 只有 40 天視窗，
+    // 蓋不滿整個上月；這裡直接掃 approved 分頁全部日期，與月表合計同源。
+    month_totals: monthTotalsFor(approvedMap, roster.emp_id),
+  };
+}
+
+/** 打卡頁「本月／上月合計」的成組回傳（current/previous 各含 ym 與 hours）。 */
+function monthTotalsFor(approvedMap, empId) {
+  const ym = currentYmTaipei();
+  const prev = prevYm(ym);
+  return {
+    current: { ym: ym, hours: monthlyApprovedTotal(approvedMap, empId, ym) },
+    previous: { ym: prev, hours: monthlyApprovedTotal(approvedMap, empId, prev) },
   };
 }
 
