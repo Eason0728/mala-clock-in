@@ -400,15 +400,54 @@ def monthly_approved_total(data, emp_id, ym):
     return round(total, 2)
 
 
+def month_worked_days(data, emp_id, ym):
+    """某員工某月「有上班紀錄」的日期清單（與 Code.gs monthWorkedDays 同步）。
+    日期歸屬比照月表：完整班段歸 in 那天（跨夜不會多算一天）、未配對的 in／out 各歸自己那天。"""
+    shifts, unmatched_ins, unmatched_outs = pair_shifts(
+        [e for e in data["events"] if e["emp_id"] == emp_id]
+    )
+    days = set()
+
+    def mark(d):
+        if str(d)[:7] == ym:
+            days.add(d)
+
+    for s in shifts:
+        mark(s["in_ts"][:10])
+    for e in unmatched_ins:
+        mark(e["ts"][:10])
+    for e in unmatched_outs:
+        mark(e["ts"][:10])
+    return sorted(days)
+
+
+def month_pending_approval_days(data, emp_id, ym, today):
+    """某月「有上班但主管還沒核定」的天數（與 Code.gs monthPendingApprovalDays 同步）。
+    今天（與未來）不算：當天班還沒結束，主管本來就還不會核。"""
+    n = 0
+    for d in month_worked_days(data, emp_id, ym):
+        if d >= today:
+            continue
+        if not latest_approved_record(data, d, emp_id):
+            n += 1
+    return n
+
+
 def month_totals_for(data, emp_id):
     """打卡頁「本月／上月合計」成組回傳（與 Code.gs monthTotalsFor 同步）。"""
     ym = now_taipei().strftime("%Y-%m")
     y, m = int(ym[:4]), int(ym[5:7])
     prev = "%04d-%02d" % ((y - 1, 12) if m == 1 else (y, m - 1))
-    return {
-        "current": {"ym": ym, "hours": monthly_approved_total(data, emp_id, ym)},
-        "previous": {"ym": prev, "hours": monthly_approved_total(data, emp_id, prev)},
-    }
+    today = today_str()
+
+    def box(y_m):
+        return {
+            "ym": y_m,
+            "hours": monthly_approved_total(data, emp_id, y_m),
+            "pending_days": month_pending_approval_days(data, emp_id, y_m, today),
+        }
+
+    return {"current": box(ym), "previous": box(prev)}
 
 
 def find_manager_by_key(data, key):

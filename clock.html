@@ -153,6 +153,14 @@
     font-weight: 700;
     color: #3b2b26;
   }
+  /* 待核定提示：沿用 day-mark 的品牌橘當提醒色，不引入新色彩 */
+  .month-totals .mt-pending {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--brand-orange);
+  }
   /* 遲到/早退等核定狀態：沿用既有品牌橘當警示，不引入新色彩 */
   .recent-list .day-mark {
     margin-top: 2px;
@@ -398,6 +406,15 @@
       value.textContent = h + ' 小時';
       box.appendChild(label);
       box.appendChild(value);
+      // 合計只加總「已核定」的日子；有上班但主管還沒核的天數在此揭露，
+      // 免得同仁以為時數被少算（Eason 2026-07-31 指定）。0 天不顯示，避免雜訊。
+      var pending = item.t.pending_days;
+      if (pending) {
+        var note = document.createElement('span');
+        note.className = 'mt-pending';
+        note.textContent = '尚有 ' + pending + ' 天待核定';
+        box.appendChild(note);
+      }
       monthTotalsEl.appendChild(box);
     });
     monthTotalsEl.style.display = 'flex';

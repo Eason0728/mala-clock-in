@@ -402,18 +402,51 @@ function handleMyRecent(body) {
     days: buildRecentDays(eventRows, roster.emp_id, todayTaipeiStr(), approvedMap),
     // 本月／上月核定時數合計（2026-07-31 新增）。獨立於 days 計算——days 只有 40 天視窗，
     // 蓋不滿整個上月；這裡直接掃 approved 分頁全部日期，與月表合計同源。
-    month_totals: monthTotalsFor(approvedMap, roster.emp_id),
+    month_totals: monthTotalsFor(approvedMap, roster.emp_id, eventRows, todayTaipeiStr()),
   };
 }
 
-/** 打卡頁「本月／上月合計」的成組回傳（current/previous 各含 ym 與 hours）。 */
-function monthTotalsFor(approvedMap, empId) {
+/**
+ * 某員工某月「有上班紀錄」的日期清單。日期歸屬完全比照出勤月表 buildMonthlySheet：
+ * 完整班段歸 in 那一天（跨夜段不會誤算成隔天多一天）、未配對的 in／out 各歸自己那天
+ * （＝忘刷卡的那天也算有上班，那正是最需要主管核定的日子）。
+ * 直接用 pairShifts，勿自己重寫配對或日期歸屬。
+ */
+function monthWorkedDays(eventRows, empId, ym) {
+  const paired = pairShifts(eventRows.filter(function (e) { return String(e.emp_id) === String(empId); }));
+  const days = {};
+  function mark(d) { if (String(d).slice(0, 7) === ym) days[d] = true; }
+  paired.shifts.forEach(function (s) { mark(tsDateStr(s.in_ts)); });
+  paired.unmatchedIns.forEach(function (e) { mark(tsDateStr(e.ts)); });
+  paired.unmatchedOuts.forEach(function (e) { mark(tsDateStr(e.ts)); });
+  return Object.keys(days);
+}
+
+/**
+ * 某員工某月「有上班但主管還沒核定」的天數——打卡頁合計下方的提示用。
+ * 合計只加總已核定的日子，沒這個提示同仁會以為時數被少算（Eason 2026-07-31 指定）。
+ * 今天（與未來）不算：當天班還沒結束、主管本來就還不會核，天天顯示只是雜訊
+ * （與月表把今天未配對 in 標「上班中」而非忘刷卡同一個精神）。
+ */
+function monthPendingApprovalDays(eventRows, approvedMap, empId, ym, todayStr) {
+  return monthWorkedDays(eventRows, empId, ym).filter(function (d) {
+    if (d >= todayStr) return false;
+    return !((approvedMap[d] || {})[String(empId)]);
+  }).length;
+}
+
+/** 打卡頁「本月／上月合計」的成組回傳（current/previous 各含 ym、hours、pending_days）。 */
+function monthTotalsFor(approvedMap, empId, eventRows, todayStr) {
   const ym = currentYmTaipei();
   const prev = prevYm(ym);
-  return {
-    current: { ym: ym, hours: monthlyApprovedTotal(approvedMap, empId, ym) },
-    previous: { ym: prev, hours: monthlyApprovedTotal(approvedMap, empId, prev) },
-  };
+  function box(y) {
+    return {
+      ym: y,
+      hours: monthlyApprovedTotal(approvedMap, empId, y),
+      pending_days: monthPendingApprovalDays(eventRows, approvedMap, empId, y, todayStr),
+    };
+  }
+  return { current: box(ym), previous: box(prev) };
 }
 
 function handleClock(body) {
