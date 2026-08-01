@@ -285,11 +285,89 @@ function payRunItemsToResult(run, items) {
   };
 }
 
+/* 排班系統(mala_employees 一筆) → 薪資主檔欄位。只對映排班「有」的欄位；
+   缺口欄位(勞健保/團保/退休金/小編津貼/在職/離職)不在這裡，交給 payMergeScheduleMaster 保留既有值。 */
+function paySchedFieldsToMaster(s) {
+  function num(v) { return (v === '' || v == null || isNaN(Number(v))) ? 0 : Number(v); }
+  return {
+    emp_id: String(s.id),
+    name: s.name,
+    is_full_time: (s.isFullTime === true || String(s.isFullTime).toLowerCase() === 'true') ? 'true' : 'false',
+    wage: num(s.wage), base: num(s.base), ot_rate: num(s.otRate),
+    skill_allow: num(s.skillAllow), night_allow: num(s.nightAllow), mgr_allow: num(s.mgrAllow),
+    attend_cap: num(s.attendBonus), dormitory: num(s.dormitory),
+    hire_date: s.hireDate || '',
+  };
+}
+
+/* 合併：以既有主檔為底，套上排班帶來的欄位；缺口欄位沿用既有值(新人給預設)。
+   ⚠ 放引擎區段讓 payroll_mock.js 抽出、測得到「缺口保留」邏輯——這正是手動微調不被帶入蓋掉的關鍵。
+   既有主檔裡排班沒有的人(離職但沒清)會原封保留，不會被刪。 */
+function payMergeScheduleMaster(existing, schedEmployees) {
+  const GAP = { editor_allow: 0, labor_ins: 0, health_ins: 0, group_ins: 0, pension: 0, leave_date: '', active: 'true' };
+  const byId = {};
+  (existing || []).forEach(function (m) { byId[String(m.emp_id)] = m; });
+  const updated = [], added = [];
+  (schedEmployees || []).forEach(function (s) {
+    const mapped = paySchedFieldsToMaster(s);
+    const prev = byId[mapped.emp_id];
+    const gap = {};
+    Object.keys(GAP).forEach(function (k) {
+      gap[k] = (prev && prev[k] !== undefined && prev[k] !== '') ? prev[k] : GAP[k];
+    });
+    byId[mapped.emp_id] = Object.assign({}, gap, mapped);   // gap 先、mapped 後：排班欄位覆蓋，缺口欄位保留
+    (prev ? updated : added).push(mapped.name);
+  });
+  return { master: Object.keys(byId).map(function (k) { return byId[k]; }), updated: updated, added: added };
+}
+
 /* ═══════════════════ Handlers ═══════════════════ */
 
 function handlePayrollSetup(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   return ensurePayrollSheets();
+}
+
+/* 從排班系統的 token-free Gist 帶入主檔＋(可選)當月紅字天數。
+   一鍵帶入：覆蓋排班有的欄位，缺口欄位保留既有(見 payMergeScheduleMaster)，帶入後仍可在薪資頁手動微調。*/
+var SCHEDULE_GIST_URL = 'https://api.github.com/gists/1f7ecf0be418990e24d7b2351572e4aa';
+
+function handlePayrollImportSchedule(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  ensurePayrollSheets();
+
+  var resp;
+  try { resp = UrlFetchApp.fetch(SCHEDULE_GIST_URL, { muteHttpExceptions: true }); }
+  catch (e) { return { ok: false, error: 'fetch_failed', detail: String(e) }; }
+  if (resp.getResponseCode() !== 200) return { ok: false, error: 'gist_http_' + resp.getResponseCode() };
+
+  var data;
+  try {
+    var gist = JSON.parse(resp.getContentText());
+    data = JSON.parse(gist.files['mala-schedule.json'].content);
+  } catch (e) { return { ok: false, error: 'parse_failed', detail: String(e) }; }
+
+  var emps = data.mala_employees || [];
+  if (!emps.length) return { ok: false, error: 'no_employees' };
+
+  var merged = payMergeScheduleMaster(payRead('master'), emps);
+  var now = nowTaipeiIso();
+  payReplaceAll('master', merged.master.map(function (m) { m.updated_at = now; return m; }));
+
+  var redInfo = null;
+  var ym = String(body.ym || '');
+  if (/^\d{4}-\d{2}$/.test(ym)) {
+    var key = 'mala_hol_' + ym.slice(0, 4) + '_' + String(Number(ym.slice(5, 7)));
+    var hol = data[key];
+    if (Array.isArray(hol)) {
+      var others = payRead('holiday').filter(function (h) { return String(h.ym) !== ym; });
+      payReplaceAll('holiday', others.concat([{ ym: ym, red_days: hol.length, note: '排班帶入 ' + now.slice(0, 10) }]));
+      redInfo = { ym: ym, red_days: hol.length };
+    } else {
+      redInfo = { ym: ym, red_days: null, note: '排班無此月假日資料' };
+    }
+  }
+  return { ok: true, added: merged.added, updated: merged.updated, count: merged.master.length, red: redInfo };
 }
 
 function handlePayrollBootstrap(body) {
@@ -494,6 +572,7 @@ function handleMyPayslip(body) {
 const PAYROLL_HANDLERS = {
   payroll_setup:        handlePayrollSetup,
   payroll_bootstrap:    handlePayrollBootstrap,
+  payroll_import_schedule: handlePayrollImportSchedule,
   payroll_master_get:   handlePayrollMasterGet,
   payroll_master_set:   handlePayrollMasterSet,
   payroll_config_set:   handlePayrollConfigSet,

@@ -99,11 +99,6 @@ input[type=text]{text-align:left}
     </div>
     <div class="scroll"><table id="runTbl"></table></div>
   </div>
-  <div class="card" id="chkCard" style="display:none">
-    <h2>2026-06 對帳驗證</h2>
-    <p class="hint">系統算出的實付，與損益表 SD 分頁實際發放金額逐人比對。</p>
-    <div class="scroll"><table id="chkTbl"></table></div>
-  </div>
 </section>
 
 <section class="panel" id="p-att">
@@ -129,7 +124,11 @@ input[type=text]{text-align:left}
   <div class="card">
     <h2>員工薪資主檔</h2>
     <p class="hint">每個欄位都可改。正職用「底薪＋加班費率」，計時用「時薪」。填了到職／離職日才會做月中折算。</p>
-    <div class="row" style="margin-bottom:14px"><button class="btn" onclick="saveMaster()">儲存主檔</button></div>
+    <p class="hint">「從排班系統帶入」會用排班的資料更新姓名／正職計時／底薪／時薪／加班費率／各津貼／宿舍／到職日，並帶入所選月份的紅字天數；<b>勞健保、團保、退休金、小編津貼不在排班裡，會保留你在這裡填的值不被覆蓋</b>。帶入後仍可手動微調，記得按「儲存主檔」。</p>
+    <div class="row" style="margin-bottom:14px">
+      <button class="btn" onclick="saveMaster()">儲存主檔</button>
+      <button class="btn ghost" onclick="importFromSchedule()">從排班系統帶入</button>
+    </div>
     <div id="empList"></div>
   </div>
 </section>
@@ -186,8 +185,7 @@ input[type=text]{text-align:left}
 <script>
 /* 部署到 Apps Script 後把 API 改成 Web App 網址；本機測試留空＝打同一台 mock */
 const API = '';
-const ADMIN_KEY = 'local-test';
-const SD = {E01:0,E02:0,E03:0,E04:0,E05:0,E06:0};
+const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 
 let MASTER=[], CFG={}, HOL={}, ATT={}, RESULTS=[], STATUS='draft';
 
@@ -208,6 +206,15 @@ async function post(action,body){
   const j=await res.json();
   if(!j.ok&&j.message) toast(j.message,true);
   return j;
+}
+
+async function importFromSchedule(){
+  if(!confirm('從排班系統帶入主檔？\n\n會用排班資料更新姓名/正職計時/底薪/時薪/加班費率/各津貼/宿舍/到職日，並帶入 '+ym()+' 的紅字天數。\n勞健保、退休金、小編津貼會保留現值。\n\n帶入後記得檢查並按「儲存主檔」。')) return;
+  const r=await post('payroll_import_schedule',{ym:ym()});
+  if(!r.ok){toast('帶入失敗：'+(r.error||'')+(r.detail?'（'+r.detail+'）':''),true);return}
+  const red=r.red&&r.red.red_days!=null?('，紅字天數 '+r.red.red_days+' 天'):(r.red?('，'+(r.red.note||'該月無假日資料')):'');
+  toast('已帶入：更新 '+r.updated.length+' 人、新增 '+r.added.length+' 人'+red+'。請檢查後儲存主檔。');
+  await boot();
 }
 
 /* ═════ 載入 ═════ */
@@ -243,7 +250,7 @@ function renderRun(){
   $('lockBtn').textContent=STATUS==='final'?'解鎖本月':'鎖定本月';
   const t=$('runTbl');
   if(!RESULTS.length){t.innerHTML='<tr><td style="text-align:center;padding:34px;color:#8a817a">按「重新計算」產生本月薪資</td></tr>';
-    $('chkCard').style.display='none';return}
+    return}
   let h=`<thead><tr><th>姓名</th><th>型態</th><th>核定時數</th><th>基本工時</th><th>超時/不足</th>
     <th>計薪加班</th><th>應收</th><th>應付</th><th>實付</th></tr></thead><tbody>`;
   let g=0,d=0,net=0;
@@ -260,21 +267,6 @@ function renderRun(){
   });
   t.innerHTML=h+`</tbody><tfoot><tr style="background:#f6f2ee;font-weight:900">
     <td colspan="6">合計 ${RESULTS.length} 人</td><td>${nf(g)}</td><td>${nf(d)}</td><td>${nf(net)}</td></tr></tfoot>`;
-  renderChk();
-}
-function renderChk(){
-  if(ym()!=='2026-06'){$('chkCard').style.display='none';return}
-  $('chkCard').style.display='';
-  let h=`<thead><tr><th>姓名</th><th>系統實付</th><th>SD 分頁</th><th>差異</th><th>結果</th></tr></thead><tbody>`,all=true;
-  RESULTS.forEach(r=>{
-    const sd=SD[r.emp_id];if(sd===undefined)return;
-    const df=r.net-sd;if(df)all=false;
-    h+=`<tr><td><b>${r.name}</b></td><td>${nf(r.net)}</td><td>${nf(sd)}</td>
-      <td class="${df?'bad':''}">${df>0?'+':''}${nf(df)}</td>
-      <td>${df?'<span class="bad">✗ 不符</span>':'<span class="ok">✓ 相符</span>'}</td></tr>`;
-  });
-  $('chkTbl').innerHTML=h+`</tbody><tfoot><tr style="background:#f6f2ee;font-weight:900"><td colspan="4">整體</td>
-    <td>${all?'<span class="ok">全部相符</span>':'<span class="bad">有差異</span>'}</td></tr></tfoot>`;
 }
 async function toggleLock(){
   const lock=STATUS!=='final';
