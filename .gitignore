@@ -1,3 +1,7 @@
 deploy-local/
 mock/mock_data.json
 monthly-preview-sample.html
+.DS_Store
+# 薪資 mock 含真實姓名與薪資數字，repo 為 public，絕不 commit
+mock/payroll_mock.js
+mock/payroll_mock_db.json

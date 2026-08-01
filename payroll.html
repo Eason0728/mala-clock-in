@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>麻的小辛辣 — 薪資結算</title>
+<style>
+:root{--red:#E8380D;--black:#231815;--orange:#F08300;--gold:#FABE00;--cream:#FFE893;
+ --bg:#faf8f6;--line:#e6e0da;--muted:#8a817a;--ok:#2f7d4f;--bad:#c0392b}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Noto Sans TC","PingFang TC",sans-serif;background:var(--bg);color:var(--black);font-size:14px;line-height:1.6}
+header{background:var(--black);color:#fff;padding:14px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+header h1{font-size:17px;font-weight:900} header h1 span{color:var(--orange)}
+header .r{margin-left:auto;display:flex;align-items:center;gap:8px}
+header input{font:inherit;padding:5px 8px;border:0;border-radius:5px;background:#3a3330;color:#fff}
+nav{background:#fff;border-bottom:1px solid var(--line);display:flex;overflow-x:auto;position:sticky;top:0;z-index:20}
+nav button{font:inherit;font-weight:700;border:0;background:none;padding:13px 20px;cursor:pointer;
+ color:var(--muted);border-bottom:3px solid transparent;white-space:nowrap}
+nav button.on{color:var(--red);border-bottom-color:var(--red)}
+main{max-width:1180px;margin:0 auto;padding:22px 18px 70px}
+.panel{display:none}.panel.on{display:block}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:18px}
+.card>h2{font-size:15px;font-weight:900}
+.card>p.hint{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px 9px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{background:#f6f2ee;font-weight:700;font-size:12px;color:#5d554f}
+.scroll{overflow-x:auto}
+input[type=number],input[type=text],input[type=date]{font:inherit;width:100%;min-width:74px;padding:5px 7px;
+ border:1px solid var(--line);border-radius:5px;text-align:right}
+input[type=text]{text-align:left}
+.btn{font:inherit;font-weight:700;border:0;border-radius:7px;padding:9px 17px;cursor:pointer;background:var(--red);color:#fff}
+.btn:hover{background:#c92f0a}
+.btn.ghost{background:#fff;color:var(--black);border:1px solid var(--line)}
+.btn.dark{background:var(--black)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+.tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px}
+.tag.ft{background:var(--cream);color:#7a5a00}.tag.pt{background:#eef1f4;color:#556}
+.tag.final{background:#e7f3ec;color:var(--ok)}.tag.draft{background:#fdf0ee;color:var(--red)}
+.ok{color:var(--ok);font-weight:700}.bad{color:var(--bad);font-weight:700}
+.big{font-size:20px;font-weight:900}
+.note{background:#fff8ec;border-left:4px solid var(--gold);padding:12px 14px;border-radius:0 7px 7px 0;font-size:12.5px;margin-bottom:15px}
+.note.warn{background:#fdf0ee;border-left-color:var(--red)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+.fld{display:flex;flex-direction:column;gap:3px}
+.fld label{font-size:11.5px;color:var(--muted);font-weight:700}
+.mode{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;width:max-content}
+.mode button{font:inherit;font-weight:700;border:0;background:#fff;padding:8px 15px;cursor:pointer;color:var(--muted);font-size:12.5px}
+.mode button.on{background:var(--black);color:#fff}
+#msg{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;background:var(--black);color:#fff;
+ padding:11px 22px;border-radius:8px;font-weight:700;display:none;z-index:99}
+.slip{max-width:760px;margin:0 auto;padding:34px 38px;background:#fff}
+.slip h3{font-size:19px;font-weight:900;text-align:center;letter-spacing:2px}
+.slip .sub{text-align:center;color:var(--muted);font-size:12.5px;margin-bottom:20px}
+.slip .who{display:flex;justify-content:space-between;border-top:2px solid var(--black);
+ border-bottom:1px solid var(--line);padding:10px 0;margin-bottom:16px}
+.slipcols{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+.slipcols h4{font-size:13px;font-weight:900;padding-bottom:5px;border-bottom:2px solid var(--red);margin-bottom:5px}
+.slipcols h4.d{border-bottom-color:var(--black)}
+.slipcols td{border-bottom:1px dotted var(--line);padding:5px 2px;font-size:12.5px}
+.slipnet{margin-top:22px;background:var(--black);color:#fff;border-radius:8px;padding:14px 20px;display:flex;justify-content:space-between;align-items:center}
+.slipnet .big{font-size:25px;color:var(--gold)}
+@media print{header,nav,.noprint{display:none!important}body{background:#fff}main{padding:0;max-width:none}
+ .panel{display:none!important}.panel.on{display:block!important}.card{border:0;padding:0}}
+@media(max-width:640px){.slipcols{grid-template-columns:1fr}main{padding:14px 10px 60px}}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>麻的<span>小辛辣</span> ｜ 薪資結算</h1>
+  <div class="r">
+    <label style="font-size:12.5px;color:#bbb">薪資月份</label>
+    <input type="month" id="ym" value="2026-06">
+    <span id="lock"></span>
+  </div>
+</header>
+
+<nav id="nav">
+  <button data-p="run" class="on">月結</button>
+  <button data-p="att">工時</button>
+  <button data-p="emp">員工設定</button>
+  <button data-p="cfg">參數設定</button>
+  <button data-p="slip">薪資單</button>
+</nav>
+
+<main>
+
+<section class="panel on" id="p-run">
+  <div class="card">
+    <h2>月結結果</h2>
+    <p class="hint">工時直接從打卡系統的核定紀錄歸集，不需人工搬。金額四捨五入到元。</p>
+    <div class="row" style="margin-bottom:14px">
+      <button class="btn" onclick="doCalc()">重新計算</button>
+      <button class="btn ghost" onclick="exportCSV()">匯出 CSV</button>
+      <button class="btn dark" id="lockBtn" onclick="toggleLock()">鎖定本月</button>
+    </div>
+    <div class="scroll"><table id="runTbl"></table></div>
+  </div>
+  <div class="card" id="chkCard" style="display:none">
+    <h2>2026-06 對帳驗證</h2>
+    <p class="hint">系統算出的實付，與損益表 SD 分頁實際發放金額逐人比對。</p>
+    <div class="scroll"><table id="chkTbl"></table></div>
+  </div>
+</section>
+
+<section class="panel" id="p-att">
+  <div class="card">
+    <h2>工時（從打卡系統歸集）</h2>
+    <p class="hint">
+      這些數字是後端從 <b>approved</b>（主管核定）、<b>leave</b>（請假）、<b>events</b>（打卡事件）自動算出來的。<br>
+      要覆蓋某個值就直接改欄位，改過的會蓋掉歸集值送去計算。
+    </p>
+    <div class="scroll"><table id="attTbl"></table></div>
+  </div>
+  <div class="card">
+    <h2>跨店支援明細</h2>
+    <p class="hint">
+      到別家門市上的班填在這裡。<b>支援時數不計入本店工時</b>，所以不會影響基本工時與加班的判斷。<br>
+      支援薪資留空＝自動用「支援時數 × 支援費率」；有特殊協議就直接填金額覆蓋。
+    </p>
+    <div id="supList"></div>
+  </div>
+</section>
+
+<section class="panel" id="p-emp">
+  <div class="card">
+    <h2>員工薪資主檔</h2>
+    <p class="hint">每個欄位都可改。正職用「底薪＋加班費率」，計時用「時薪」。填了到職／離職日才會做月中折算。</p>
+    <div class="row" style="margin-bottom:14px"><button class="btn" onclick="saveMaster()">儲存主檔</button></div>
+    <div id="empList"></div>
+  </div>
+</section>
+
+<section class="panel" id="p-cfg">
+  <div class="card">
+    <h2>計算模式</h2>
+    <div class="note">
+      <b>工時不足為什麼預設不倒扣？</b><br>
+      2026-06 陳盈如工時不足 60H，而她的病假 50H ＋ 事假 10H 剛好也是 60H——
+      這段缺勤已經用請假扣款扣過一次了，再倒扣等於<b>同一段缺勤扣兩次</b>。
+      Eason 2026-07-20 定案採「不倒扣」。
+    </div>
+    <div>
+      <label style="font-size:12.5px;font-weight:700;color:var(--muted)">工時不足時</label>
+      <div class="mode" style="margin-top:5px">
+        <button id="m-sf-1" onclick="setMode('shortfall_deduct',true)">倒扣（新制）</button>
+        <button id="m-sf-0" onclick="setMode('shortfall_deduct',false)">只記錄不扣（舊表現況）</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>全域參數</h2>
+    <p class="hint">事假費率 ＝ (底薪＋職能＋夜間＋店長＋全勤上限) ÷ 分母天 ÷ 分母時；病假為其一半。</p>
+    <div class="grid2" id="cfgGrid"></div>
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">儲存參數</button></div>
+  </div>
+  <div class="card">
+    <h2>紅字天數（行政院行事曆）</h2>
+    <p class="hint">基本工時 ＝ (當月天數 − 紅字天數) × 每日工時。沒設定該月就不給計算。</p>
+    <div class="scroll"><table id="holTbl"></table></div>
+    <div class="row" style="margin-top:12px">
+      <input type="text" id="hy" placeholder="2026-08" style="width:110px;text-align:left">
+      <input type="number" id="hd" placeholder="天數" style="width:80px">
+      <button class="btn ghost" onclick="addHol()">新增</button>
+    </div>
+  </div>
+</section>
+
+<section class="panel" id="p-slip">
+  <div class="card noprint">
+    <h2>個人薪資單</h2>
+    <div class="row">
+      <select id="slipSel" onchange="renderSlip()" style="font:inherit;padding:8px 11px;border:1px solid var(--line);border-radius:6px"></select>
+      <button class="btn" onclick="window.print()">列印 / 存成 PDF</button>
+    </div>
+  </div>
+  <div class="card" style="padding:0" id="slipWrap"></div>
+</section>
+
+</main>
+<div id="msg"></div>
+
+<script>
+/* 部署到 Apps Script 後把 API 改成 Web App 網址；本機測試留空＝打同一台 mock */
+const API = '';
+const ADMIN_KEY = 'local-test';
+const SD = {E01:0,E02:0,E03:0,E04:0,E05:0,E06:0};
+
+let MASTER=[], CFG={}, HOL={}, ATT={}, RESULTS=[], STATUS='draft';
+
+const $=id=>document.getElementById(id);
+const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};
+const r2=v=>Math.round(v*100)/100;
+const nf=v=>Math.round(v).toLocaleString('zh-TW');
+const ym=()=>$('ym').value;
+const isFT=e=>String(e.is_full_time)==='true'||e.is_full_time===true;
+
+function toast(t,bad){const m=$('msg');m.textContent=t;m.style.background=bad?'#c0392b':'#231815';
+  m.style.display='block';clearTimeout(m._t);m._t=setTimeout(()=>m.style.display='none',2600)}
+
+async function post(action,body){
+  const res=await fetch(API||location.pathname.replace(/[^/]*$/,''),{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(Object.assign({action,admin_key:ADMIN_KEY},body||{}))});
+  const j=await res.json();
+  if(!j.ok&&j.message) toast(j.message,true);
+  return j;
+}
+
+/* ═════ 載入 ═════ */
+async function boot(){
+  const m=await post('payroll_master_get');
+  if(!m.ok){toast('讀取主檔失敗',true);return}
+  MASTER=m.master; CFG=m.config; HOL=m.holidays||{};
+  renderEmp(); renderCfg();
+  await loadAtt();
+  await loadRun();
+}
+async function loadAtt(){
+  const r=await post('payroll_inputs',{ym:ym()});
+  ATT=r.ok?(r.inputs||{}):{};
+  renderAtt();
+}
+async function loadRun(){
+  const r=await post('payroll_get',{ym:ym()});
+  if(r.ok&&r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'}
+  else{RESULTS=[];STATUS='draft'}
+  renderRun();renderSlipSel();
+}
+async function doCalc(){
+  const r=await post('payroll_calc',{ym:ym(),inputs:ATT});
+  if(!r.ok)return;
+  RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;
+  renderRun();renderSlipSel();toast('已重新計算');
+}
+
+/* ═════ 月結 ═════ */
+function renderRun(){
+  $('lock').innerHTML=RESULTS.length?`<span class="tag ${STATUS==='final'?'final':'draft'}">${STATUS==='final'?'已鎖定':'草稿'}</span>`:'';
+  $('lockBtn').textContent=STATUS==='final'?'解鎖本月':'鎖定本月';
+  const t=$('runTbl');
+  if(!RESULTS.length){t.innerHTML='<tr><td style="text-align:center;padding:34px;color:#8a817a">按「重新計算」產生本月薪資</td></tr>';
+    $('chkCard').style.display='none';return}
+  let h=`<thead><tr><th>姓名</th><th>型態</th><th>核定時數</th><th>基本工時</th><th>超時/不足</th>
+    <th>計薪加班</th><th>應收</th><th>應付</th><th>實付</th></tr></thead><tbody>`;
+  let g=0,d=0,net=0;
+  RESULTS.forEach(r=>{
+    g+=r.gross;d+=r.deduction;net+=r.net;
+    const s=r.surplus_hours;
+    h+=`<tr><td><b>${r.name}</b></td>
+      <td style="text-align:left"><span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span>
+      ${r.ratio<1?`<span class="tag draft">折算${Math.round(r.ratio*100)}%</span>`:''}</td>
+      <td>${r.total_hours}</td><td>${r.base_hours==null?'—':r.base_hours}</td>
+      <td>${s==null?'—':(s>=0?'+'+r2(s)+' H':`<span class="bad">${r2(s)} H</span>`)}</td>
+      <td>${r.ot_paid_hours==null?'—':r2(r.ot_paid_hours)+' H'}</td>
+      <td>${nf(r.gross)}</td><td>${nf(r.deduction)}</td><td class="big">${nf(r.net)}</td></tr>`;
+  });
+  t.innerHTML=h+`</tbody><tfoot><tr style="background:#f6f2ee;font-weight:900">
+    <td colspan="6">合計 ${RESULTS.length} 人</td><td>${nf(g)}</td><td>${nf(d)}</td><td>${nf(net)}</td></tr></tfoot>`;
+  renderChk();
+}
+function renderChk(){
+  if(ym()!=='2026-06'){$('chkCard').style.display='none';return}
+  $('chkCard').style.display='';
+  let h=`<thead><tr><th>姓名</th><th>系統實付</th><th>SD 分頁</th><th>差異</th><th>結果</th></tr></thead><tbody>`,all=true;
+  RESULTS.forEach(r=>{
+    const sd=SD[r.emp_id];if(sd===undefined)return;
+    const df=r.net-sd;if(df)all=false;
+    h+=`<tr><td><b>${r.name}</b></td><td>${nf(r.net)}</td><td>${nf(sd)}</td>
+      <td class="${df?'bad':''}">${df>0?'+':''}${nf(df)}</td>
+      <td>${df?'<span class="bad">✗ 不符</span>':'<span class="ok">✓ 相符</span>'}</td></tr>`;
+  });
+  $('chkTbl').innerHTML=h+`</tbody><tfoot><tr style="background:#f6f2ee;font-weight:900"><td colspan="4">整體</td>
+    <td>${all?'<span class="ok">全部相符</span>':'<span class="bad">有差異</span>'}</td></tr></tfoot>`;
+}
+async function toggleLock(){
+  const lock=STATUS!=='final';
+  let reason='';
+  if(!lock){reason=prompt('解鎖原因（會寫進稽核紀錄）：')||'';if(!reason)return}
+  const r=await post('payroll_finalize',{ym:ym(),lock,reason,operator:'Eason'});
+  if(r.ok){STATUS=r.status;renderRun();toast(lock?'已鎖定':'已解鎖')}
+}
+
+/* ═════ 工時 ═════ */
+const AF=[['hours','本店核定時數'],['extra_ot','額外加班 H'],['personal_h','事假 H'],
+          ['sick_h','病假 H'],['annual_h','特休 H'],['deduct_days','全勤扣減天數']];
+function renderAtt(){
+  let h='<thead><tr><th>姓名</th>'+AF.map(f=>`<th>${f[1]}</th>`).join('')+'<th>支援時數</th></tr></thead><tbody>';
+  MASTER.filter(e=>String(e.active)==='true').forEach(e=>{
+    const A=ATT[e.emp_id]=ATT[e.emp_id]||{};
+    A.support=A.support||[];
+    const sh=A.support.reduce((a,s)=>a+n(s.hours),0);
+    h+=`<tr><td><b>${e.name}</b> <span class="tag ${isFT(e)?'ft':'pt'}">${isFT(e)?'正職':'計時'}</span></td>`;
+    AF.forEach(([k])=>{
+      const dis=!isFT(e)&&(k==='extra_ot'||k==='deduct_days');
+      h+=`<td>${dis?'—':`<input type="number" step="0.25" value="${A[k]??0}"
+        onchange="ATT['${e.emp_id}']['${k}']=n(this.value)">`}</td>`;
+    });
+    h+=`<td>${sh?r2(sh)+' H':'—'}</td></tr>`;
+  });
+  $('attTbl').innerHTML=h+'</tbody>';
+  renderSup();
+}
+
+/* ── 跨店支援明細 ── */
+function renderSup(){
+  $('supList').innerHTML=MASTER.filter(e=>String(e.active)==='true').map(e=>{
+    const A=ATT[e.emp_id]=ATT[e.emp_id]||{}; A.support=A.support||[];
+    const rows=A.support.map((s,i)=>`<tr>
+      <td><input type="text" value="${s.store??''}" placeholder="門市名稱"
+        onchange="ATT['${e.emp_id}'].support[${i}].store=this.value"></td>
+      <td><input type="number" step="0.25" value="${s.hours??''}"
+        onchange="ATT['${e.emp_id}'].support[${i}].hours=n(this.value);renderAtt()"></td>
+      <td><input type="number" value="${s.rate??''}"
+        onchange="ATT['${e.emp_id}'].support[${i}].rate=n(this.value)"></td>
+      <td><input type="number" value="${s.amount??''}" placeholder="自動"
+        onchange="ATT['${e.emp_id}'].support[${i}].amount=this.value"></td>
+      <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
+        onclick="ATT['${e.emp_id}'].support.splice(${i},1);renderAtt()">移除</button></td></tr>`).join('');
+    return `<div class="card" style="background:#fdfcfb;margin-bottom:12px">
+      <div class="row" style="margin-bottom:10px">
+        <b>${e.name}</b>
+        <button class="btn ghost" style="margin-left:auto;padding:5px 12px;font-size:12px"
+          onclick="ATT['${e.emp_id}'].support.push({store:'',hours:0,rate:0,amount:''});renderAtt()">＋ 新增支援</button>
+      </div>
+      ${A.support.length?`<div class="scroll"><table>
+        <thead><tr><th>支援門市</th><th>支援時數</th><th>支援費率</th><th>支援薪資</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+       :'<div style="color:var(--muted);font-size:12.5px">本月無跨店支援</div>'}
+    </div>`;
+  }).join('');
+}
+
+/* ═════ 員工設定 ═════ */
+const EF=[['name','姓名','text'],['wage','時薪'],['base','底薪'],['ot_rate','加班費率'],
+ ['skill_allow','職能津貼'],['night_allow','夜間津貼'],['mgr_allow','店長津貼'],['editor_allow','小編津貼'],
+ ['attend_cap','全勤上限'],['labor_ins','勞保費'],['health_ins','健保費'],['group_ins','團保費'],
+ ['pension','退休金'],['dormitory','宿舍費'],['hire_date','到職日','date'],['leave_date','離職日','date']];
+function renderEmp(){
+  $('empList').innerHTML=MASTER.map((e,i)=>{
+    const ft=isFT(e);
+    return `<div class="card" style="background:#fdfcfb">
+      <div class="row" style="margin-bottom:12px">
+        <b style="font-size:15px">${e.name||'（未命名）'}</b>
+        <label style="font-size:12.5px"><input type="checkbox" ${ft?'checked':''}
+          onchange="MASTER[${i}].is_full_time=this.checked?'true':'false';renderEmp();renderAtt()"> 正職</label>
+        <label style="font-size:12.5px"><input type="checkbox" ${String(e.active)==='true'?'checked':''}
+          onchange="MASTER[${i}].active=this.checked?'true':'false';renderEmp();renderAtt()"> 在職</label>
+      </div><div class="grid2">`+
+      EF.filter(([k])=>!( (!ft&&['base','ot_rate','attend_cap','skill_allow','night_allow','mgr_allow'].includes(k))
+                        || (ft&&k==='wage') ))
+        .map(([k,lb,ty])=>`<div class="fld"><label>${lb}</label>
+          <input type="${ty||'number'}" value="${e[k]??''}"
+            onchange="MASTER[${i}]['${k}']=${ty==='text'||ty==='date'?'this.value':'n(this.value)'}"></div>`).join('')+
+      '</div></div>';
+  }).join('');
+}
+async function saveMaster(){
+  const r=await post('payroll_master_set',{master:MASTER});
+  if(r.ok){toast('主檔已儲存');renderEmp()}
+}
+
+/* ═════ 參數 ═════ */
+const CF=[['daily_hours','每日基本工時（H）'],['attend_deduct_per_day','全勤每日倒扣（元）'],
+ ['leave_div_days','事假費率分母（天）'],['leave_div_hours','事假費率分母（時）'],
+ ['sick_ratio','病假占事假比例'],['payday','發薪日']];
+function renderCfg(){
+  $('cfgGrid').innerHTML=CF.map(([k,lb])=>`<div class="fld"><label>${lb}</label>
+    <input type="number" step="0.01" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`).join('');
+  ['m-sf-1','m-sf-0'].forEach(i=>$(i).classList.remove('on'));
+  $(CFG.shortfall_deduct?'m-sf-1':'m-sf-0').classList.add('on');
+  let h='<thead><tr><th>月份</th><th>紅字天數</th><th></th></tr></thead><tbody>';
+  Object.keys(HOL).sort().forEach(k=>{
+    h+=`<tr><td>${k}</td><td><input type="number" value="${HOL[k]}" onchange="HOL['${k}']=n(this.value)"></td>
+      <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
+        onclick="delete HOL['${k}'];saveHol()">移除</button></td></tr>`;
+  });
+  $('holTbl').innerHTML=h+'</tbody>';
+}
+async function setMode(k,v){CFG[k]=v;const r=await post('payroll_config_set',{config:CFG});
+  if(r.ok){CFG=r.config||CFG;renderCfg();if(RESULTS.length)doCalc()}}
+async function saveCfg(){const r=await post('payroll_config_set',{config:CFG});if(r.ok)toast('參數已儲存')}
+async function saveHol(){const r=await post('payroll_holiday_set',{holidays:HOL});if(r.ok){renderCfg();toast('已更新')}}
+function addHol(){
+  const y=$('hy').value.trim(),d=$('hd').value;
+  if(!/^\d{4}-\d{2}$/.test(y)){toast('月份格式要像 2026-08',true);return}
+  HOL[y]=n(d);$('hy').value='';$('hd').value='';saveHol();
+}
+
+/* ═════ 薪資單 ═════ */
+function renderSlipSel(){
+  const s=$('slipSel'),cur=s.value;
+  s.innerHTML=RESULTS.map(r=>`<option value="${r.emp_id}">${r.name}</option>`).join('');
+  if(cur&&RESULTS.some(r=>r.emp_id===cur))s.value=cur;
+  renderSlip();
+}
+function renderSlip(){
+  const r=RESULTS.find(x=>x.emp_id===$('slipSel').value),w=$('slipWrap');
+  if(!r){w.innerHTML='<div class="slip" style="text-align:center;color:#8a817a;padding:50px">請先在「月結」頁計算</div>';return}
+  const HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','hourly_wage'];
+  const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${HOURY.includes(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
+  w.innerHTML=`<div class="slip">
+    <h3>薪 資 明 細 表</h3>
+    <div class="sub">麻的小辛辣 · 新竹光復店 ｜ ${ym().replace('-','年')}月 ｜ 發薪日 每月 ${CFG.payday} 日</div>
+    <div class="who"><div>姓名 <b style="font-size:16px">${r.name}</b>
+      <span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span></div>
+      <div style="text-align:right;font-size:13px">核定總時數 <b>${r.total_hours}</b> H
+      ${r.base_hours!=null?`　基本工時 <b>${r.base_hours}</b> H`:''}
+      ${r.ratio<1?`<br><span style="color:var(--red);font-size:12px">月中到離職，按在職比例 ${Math.round(r.ratio*100)}% 折算</span>`:''}</div></div>
+    <div class="slipcols">
+      <div><h4>加項</h4><table>${r.earn.map(line).join('')}
+        <tr style="font-weight:900"><td>應收合計</td><td>${nf(r.gross)}</td></tr></table></div>
+      <div><h4 class="d">扣項</h4><table>${r.ded.length?r.ded.map(line).join(''):'<tr><td colspan="2" style="color:#8a817a">無</td></tr>'}
+        <tr style="font-weight:900"><td>應付合計</td><td>${nf(r.deduction)}</td></tr></table></div>
+    </div>
+    <div class="slipnet"><div>實付金額</div><div class="big">NT$ ${nf(r.net)}</div></div>
+    <div style="margin-top:26px;font-size:11.5px;color:#8a817a;border-top:1px dotted #ccc;padding-top:9px">
+      本表由薪資結算系統產生。如有疑問請於發薪日起 7 日內向店長反映。</div></div>`;
+}
+
+/* ═════ 匯出 ═════ */
+function exportCSV(){
+  if(!RESULTS.length){toast('請先計算',true);return}
+  const head=['姓名','型態','核定時數','基本工時','超時/不足','計薪加班','應收','應付','實付'];
+  const rows=RESULTS.map(r=>[r.name,r.is_full_time?'正職':'計時',r.total_hours,r.base_hours??'',
+    r.surplus_hours??'',r.ot_paid_hours??'',Math.round(r.gross),Math.round(r.deduction),Math.round(r.net)]);
+  const csv='﻿'+[head,...rows].map(a=>a.map(v=>`"${v}"`).join(',')).join('\r\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  a.download=`薪資彙整表_${ym()}.csv`;a.click();
+}
+
+/* ═════ 啟動 ═════ */
+$('nav').addEventListener('click',ev=>{
+  const b=ev.target.closest('button[data-p]');if(!b)return;
+  document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));
+  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');$('p-'+b.dataset.p).classList.add('on');
+});
+$('ym').addEventListener('change',async()=>{await loadAtt();await loadRun()});
+boot();
+</script>
+</body>
+</html>

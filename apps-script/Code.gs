@@ -126,6 +126,11 @@ function doPost(e) {
     mgr_approve: handleMgrApprove,
   };
 
+  // 薪資模組（Payroll.gs）的 action 掛載於此；Payroll.gs 不存在時完全不影響打卡與核定。
+  if (typeof PAYROLL_HANDLERS !== 'undefined') {
+    Object.keys(PAYROLL_HANDLERS).forEach(function (k) { handlers[k] = PAYROLL_HANDLERS[k]; });
+  }
+
   const handler = handlers[body.action];
   if (!handler) {
     return jsonOut({ ok: false, error: 'unknown_action' });

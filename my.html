@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>我的薪資 — 麻的小辛辣</title>
+<style>
+:root{--red:#E8380D;--black:#231815;--gold:#FABE00;--cream:#FFE893;--bg:#faf8f6;--line:#e6e0da;--muted:#8a817a}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Noto Sans TC","PingFang TC",sans-serif;background:var(--bg);color:var(--black);
+ font-size:15px;line-height:1.65;padding-bottom:50px}
+header{background:var(--black);color:#fff;padding:15px 18px;display:flex;align-items:center;gap:10px}
+header h1{font-size:16px;font-weight:900}header h1 span{color:var(--gold)}
+header input{font:inherit;margin-left:auto;padding:5px 8px;border:0;border-radius:5px;background:#3a3330;color:#fff}
+main{max-width:560px;margin:0 auto;padding:18px 14px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:16px}
+.who{display:flex;justify-content:space-between;align-items:flex-end;
+ border-bottom:2px solid var(--black);padding-bottom:11px;margin-bottom:15px}
+.who b{font-size:21px}
+.who .m{color:var(--muted);font-size:12.5px}
+h4{font-size:13px;font-weight:900;padding-bottom:5px;border-bottom:2px solid var(--red);margin:18px 0 4px}
+h4.d{border-bottom-color:var(--black)}
+table{width:100%;border-collapse:collapse}
+td{padding:7px 2px;border-bottom:1px dotted var(--line);font-size:13.5px}
+td:last-child{text-align:right;white-space:nowrap}
+tr.sum td{font-weight:900;border-bottom:0}
+.hrs{display:flex;gap:10px;margin-bottom:4px}
+.hrs div{flex:1;background:#f6f2ee;border-radius:9px;padding:11px 13px}
+.hrs span{display:block;font-size:11.5px;color:var(--muted);font-weight:700}
+.hrs b{font-size:19px}
+.net{margin-top:20px;background:var(--black);color:#fff;border-radius:10px;padding:16px 20px;
+ display:flex;justify-content:space-between;align-items:center}
+.net .v{font-size:27px;font-weight:900;color:var(--gold)}
+.state{text-align:center;padding:46px 20px;color:var(--muted)}
+.state .ic{font-size:34px;margin-bottom:10px}
+.foot{font-size:11.5px;color:var(--muted);text-align:center;margin-top:16px;line-height:1.8}
+</style>
+</head>
+<body>
+<header>
+  <h1>麻的<span>小辛辣</span> ｜ 我的薪資</h1>
+  <input type="month" id="ym" value="2026-06">
+</header>
+<main id="app"><div class="card"><div class="state">載入中…</div></div></main>
+
+<script>
+const API='';
+const KEY=new URLSearchParams(location.search).get('k')||'';
+const nf=v=>Math.round(v).toLocaleString('zh-TW');
+const r2=v=>Math.round(v*100)/100;
+const HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','hourly_wage'];
+
+async function load(){
+  const app=document.getElementById('app');
+  if(!KEY){app.innerHTML=st('🔒','連結不完整','請用店長給你的專屬打卡連結開啟。');return}
+  app.innerHTML='<div class="card"><div class="state">載入中…</div></div>';
+  let j;
+  try{
+    const res=await fetch(API||location.pathname.replace(/[^/]*$/,''),{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'my_payslip',key:KEY,ym:document.getElementById('ym').value})});
+    j=await res.json();
+  }catch(e){app.innerHTML=st('📡','連不上伺服器','請確認網路後重新整理。');return}
+
+  if(!j.ok){app.innerHTML=st('🔒','無法驗證身分','這個連結可能已失效，請找店長重新取得。');return}
+  if(!j.ready){app.innerHTML=st('🕒',j.message||'尚未結算','薪資結算後這裡就會顯示明細。');return}
+
+  const r=j.result||j.run, earn=r.earn||[], ded=r.ded||[];
+  const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a;font-size:12px">${r2(x.qty)}${HOURY.includes(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
+  app.innerHTML=`<div class="card">
+    <div class="who"><div><b>${j.name}</b><div class="m">${j.ym.replace('-','年')}月薪資</div></div>
+      <div class="m" style="text-align:right">發薪日<br>每月 ${j.payday} 日</div></div>
+    <div class="hrs">
+      <div><span>核定總時數</span><b>${r.total_hours}</b> H</div>
+      ${r.base_hours!=null?`<div><span>基本工時</span><b>${r.base_hours}</b> H</div>`:''}
+      ${r.ot_paid_hours?`<div><span>計薪加班</span><b>${r2(r.ot_paid_hours)}</b> H</div>`:''}
+    </div>
+    <h4>加項</h4><table>${earn.map(line).join('')}
+      <tr class="sum"><td>應收合計</td><td>${nf(r.gross)}</td></tr></table>
+    <h4 class="d">扣項</h4><table>${ded.length?ded.map(line).join(''):'<tr><td colspan="2" style="color:#8a817a">無</td></tr>'}
+      <tr class="sum"><td>應付合計</td><td>${nf(r.deduction)}</td></tr></table>
+    <div class="net"><div>實付金額</div><div class="v">NT$ ${nf(r.net)}</div></div>
+    <div class="foot">如有疑問請於發薪日起 7 日內向店長反映。<br>本頁只顯示你本人的資料。</div>
+  </div>`;
+}
+function st(ic,t,d){return `<div class="card"><div class="state"><div class="ic">${ic}</div>
+  <div style="font-weight:900;color:#231815;font-size:16px;margin-bottom:5px">${t}</div><div>${d}</div></div></div>`}
+document.getElementById('ym').addEventListener('change',load);
+load();
+</script>
+</body>
+</html>
