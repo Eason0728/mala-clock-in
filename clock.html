@@ -320,6 +320,13 @@
       : '⚠ 已打過下班卡，下一筆請打上班卡';
   }
 
+  // 打卡沒成功時一律顯示這一句（Eason 2026-08-03 指定的統一措辭）。
+  // 涵蓋所有失敗原因：超出範圍、新裝置待核准、重複打卡、定位失敗、沒網路、逾時、伺服器異常。
+  // ⚠ 措辭要對「所有」情況都成立，所以刻意先叫她看今日紀錄再決定要不要重打——
+  //   有些情況（新裝置待核准、伺服器有收到但回應異常）其實已經記錄下來了，
+  //   直接叫她重打會產生重複卡；今日紀錄會顯示「待核准」等狀態，看了就知道。
+  var CLOCK_FAIL_MSG = '⚠ 打卡未完成。請看下方今日紀錄確認，若沒有出現請再打一次；仍然不行請告知主管。';
+
   function updateButtonStates(lastCounted) {
     blockedType = lastCounted ? lastCounted.type : null;
     btnIn.classList.toggle('not-allowed', blockedType === 'in');
@@ -621,7 +628,8 @@
 
   function doClock(type) {
     if (blockedType === type) {
-      // 不打 API，直接提醒（按鈕仍可點，僅灰階視覺）
+      // 前端先擋下的重複打卡（不打 API）。這句保留「已打過上班/下班卡」的具體說法：
+      // 它不是「打卡沒成功」，而是「這一筆本來就不該打」，用統一失敗句會叫她再打一次、更混亂。
       showStatus('status-warn', duplicateMessage(blockedType));
       return;
     }
@@ -640,21 +648,12 @@
         });
       })
       .then(function (res) {
-        if (!res.ok) {
-          showStatus('status-error', '✕ 打卡失敗：找不到員工資料，請確認連結是否正確。');
-          return;
-        }
-        if (res.status === 'ok') {
+        // 只分「成功」與「沒成功」兩種（Eason 2026-08-03 指定：不管什麼狀況，
+        // 只要沒打卡成功就跳同一句提醒，不要讓同仁去讀一堆不同的錯誤訊息）。
+        if (res.ok && res.status === 'ok') {
           showStatus('status-ok', '✓ 打卡成功　' + (res.ts || '').substring(11, 16));
-        } else if (res.status === 'rejected_out_of_range') {
-          showStatus('status-error', '✕ 距離門市 ' + Math.round(res.distance_m) + ' 公尺，超出範圍，請到店內再打卡。');
-        } else if (res.status === 'pending_device_approval') {
-          showStatus('status-warn', '⚠ 新裝置，需老闆核准後生效。');
-        } else if (res.status === 'rejected_duplicate') {
-          // 安全網：舊頁面/多分頁競態下由伺服器擋下
-          showStatus('status-warn', duplicateMessage(res.last_type));
         } else {
-          showStatus('status-warn', String(res.status));
+          showStatus('status-warn', CLOCK_FAIL_MSG);
         }
         apiPost({ action: 'whoami', key: key, device_id: deviceId }).then(function (r) {
           if (r.ok) {
@@ -674,9 +673,10 @@
           });
         }
       })
-      .catch(function (err) {
-        showStatus('status-error', '✕ ' + err.message);
-        // 打卡失敗/逾時後主動刷新今日紀錄：逾時不代表沒進伺服器，讓她當場看得到到底有沒有成功，
+      .catch(function () {
+        // 定位失敗、沒網路、逾時、伺服器異常 → 一律同一句（不再區分原因）
+        showStatus('status-warn', CLOCK_FAIL_MSG);
+        // 主動刷新今日紀錄：逾時/異常不代表沒進伺服器，讓她當場看得到到底有沒有成功，
         // 不用自己猜。這通失敗就算了（本來就是連線有問題），不再另外報錯蓋掉上面的訊息。
         apiPost({ action: 'whoami', key: key, device_id: deviceId }).then(function (r) {
           if (r.ok) {
