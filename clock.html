@@ -380,14 +380,23 @@
     };
     if (ctrl) opts.signal = ctrl.signal;
 
+    // 三種失敗要用不同措辭，因為「這次到底送出去了沒」不一樣，講錯會害同仁重複打卡或漏打：
+    //   ① 逾時（我們主動 abort）：連線是通的，請求可能已抵達伺服器 → 講「可能沒送出，請看今日紀錄」
+    //   ② fetch 本身失敗（沒網路／Wi-Fi 斷線／連線被拒，TypeError）：根本沒送出去 → 可放心叫她直接重打
+    //      （原樣顯示會是英文 "Failed to fetch"，同仁看不懂，2026-08-03 Eason 要求改中文）
+    //   ③ 回應不是 JSON（伺服器有回應但內容異常）：請求已經到了伺服器 → 不可說「沒送出」
     return fetch(API_URL, opts)
-      .then(function (res) { return res.json(); })
-      .catch(function (err) {
-        // 逾時的錯誤訊息要講「可能沒送出」而不是「失敗」——請求有可能已經抵達伺服器，
-        // 叫她確認今日紀錄再決定要不要重打，比直接叫她重打安全。
-        if (timedOut) throw new Error('連線逾時，這次打卡可能沒有送出。請看下方今日紀錄確認，若沒有出現請再打一次。');
-        throw err;
-      })
+      .then(
+        function (res) {
+          return res.json().catch(function () {
+            throw new Error('伺服器回應異常，這次打卡可能已經送出。請看下方今日紀錄確認，不要急著重打。');
+          });
+        },
+        function (err) {
+          if (timedOut) throw new Error('連線逾時，這次打卡可能沒有送出。請看下方今日紀錄確認，若沒有出現請再打一次。');
+          throw new Error('連不上伺服器，這次打卡沒有送出。請確認手機網路連線後再打一次。');
+        }
+      )
       .then(function (v) { clearTimeout(timer); return v; }, function (e) { clearTimeout(timer); throw e; });
   }
 
