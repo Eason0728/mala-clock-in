@@ -102,6 +102,34 @@
   }
   .approved-badge.normal { background: #e6f7ec; color: #1a7a3d; }
   .approved-badge.warn { background: #fff6e0; color: #8a6100; }
+  /* 待核准裝置區：用品牌橘左邊框與淺橘底和一般核定卡片區隔，一眼看得出是要處理的事 */
+  .pd-card {
+    background: #fff;
+    /* 必要：頁面底色是品牌紅、body 文字色為白，白卡片上不設色會變成白字看不見（2026-08-03 實測踩到） */
+    color: var(--brand-black);
+    border-radius: 14px;
+    border-left: 4px solid var(--brand-orange);
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .pd-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+  .pd-meta { font-size: 13px; color: #6b524a; line-height: 1.6; }
+  .pd-warn { font-size: 13px; color: #c22a12; margin-top: 6px; }
+  .pd-actions { display: flex; gap: 10px; margin-top: 12px; }
+  .pd-actions button {
+    flex: 1;
+    padding: 10px;
+    font-size: 15px;
+    font-weight: 700;
+    border: none;
+    border-radius: 10px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .pd-approve { background: var(--brand-orange); color: #fff; }
+  .pd-reject { background: #f0e6e2; color: #8a6a5f; }
+  .pd-actions button:disabled { opacity: 0.5; }
+  .pd-result { margin-top: 10px; font-size: 14px; }
   .open-shift-warn {
     font-size: 13px;
     color: #8a6100;
@@ -235,6 +263,9 @@
     <button type="button" id="btnToday">今天</button>
   </div>
 
+  <!-- 待核准裝置：只有真的有待核准時才出現，平常完全不佔版面 -->
+  <div id="pendingDevices"></div>
+
   <div id="loadingCard" class="card center-msg">載入中…</div>
   <div id="errorCard" class="card center-msg" style="display:none; color:#c22a12;"></div>
   <div id="empList"></div>
@@ -262,6 +293,7 @@
   var loadingCard = document.getElementById('loadingCard');
   var errorCard = document.getElementById('errorCard');
   var empListEl = document.getElementById('empList');
+  var pendingDevicesEl = document.getElementById('pendingDevices');
   var dateInput = document.getElementById('dateInput');
   var btnPrevDay = document.getElementById('btnPrevDay');
   var btnNextDay = document.getElementById('btnNextDay');
@@ -619,6 +651,114 @@
     renderEmployees(employees);
   }
 
+  /**
+   * 待核准裝置區（2026-08-03 新增）。原本核准裝置只能開 Apps Script 編輯器跑函式，
+   * 現在主管頁點兩下就好。核准邏輯全在後端 applyDeviceDecision（含「核准只解裝置這關、
+   * 店外打的卡仍不入帳」的分流），這裡只負責顯示與送出。
+   * 沒有待核准時整區不畫，平常不佔版面；載入失敗也靜默略過（不影響主要的核定功能）。
+   */
+  function loadPendingDevices() {
+    apiPost({ action: 'mgr_pending_devices', mgr_key: mgrKey }).then(function (res) {
+      if (!res.ok || !res.pending || !res.pending.length) {
+        pendingDevicesEl.innerHTML = '';
+        return;
+      }
+      pendingDevicesEl.innerHTML = '';
+      res.pending.forEach(function (g) { pendingDevicesEl.appendChild(buildPendingCard(g)); });
+    }).catch(function () { /* 靜默：待核准區失敗不該擋住當日核定 */ });
+  }
+
+  function tsLabel(ts) {
+    // '2026-08-01T21:43:12+08:00' → '8/1 21:43'
+    return parseInt(ts.slice(5, 7), 10) + '/' + parseInt(ts.slice(8, 10), 10) + ' ' + ts.slice(11, 16);
+  }
+
+  function buildPendingCard(g) {
+    var card = document.createElement('div');
+    card.className = 'pd-card';
+
+    var title = document.createElement('div');
+    title.className = 'pd-title';
+    title.textContent = '⚠ ' + g.name + '　新裝置待核准';
+    card.appendChild(title);
+
+    var meta = document.createElement('div');
+    meta.className = 'pd-meta';
+    var range = g.count > 1 ? (tsLabel(g.first_ts) + ' ～ ' + tsLabel(g.last_ts)) : tsLabel(g.first_ts);
+    meta.textContent = g.count + ' 筆待核准打卡・' + range
+      + '　最遠 ' + g.max_distance_m + ' 公尺'
+      + '\n裝置碼 …' + String(g.device_id).slice(-6);
+    meta.style.whiteSpace = 'pre-line';
+    card.appendChild(meta);
+
+    // 全部都在範圍內＝人確實在店裡打的，可安心核准；有超出範圍的要主管自己判斷
+    if (!g.all_within_range) {
+      var warn = document.createElement('div');
+      warn.className = 'pd-warn';
+      warn.textContent = '有打卡超出門市範圍。核准只會解除「裝置」這一關，超出範圍的那幾筆仍然不會入帳。';
+      card.appendChild(warn);
+    }
+
+    var actions = document.createElement('div');
+    actions.className = 'pd-actions';
+    var btnOk = document.createElement('button');
+    btnOk.type = 'button';
+    btnOk.className = 'pd-approve';
+    btnOk.textContent = '核准';
+    var btnNo = document.createElement('button');
+    btnNo.type = 'button';
+    btnNo.className = 'pd-reject';
+    btnNo.textContent = '拒絕';
+    actions.appendChild(btnOk);
+    actions.appendChild(btnNo);
+    card.appendChild(actions);
+
+    var result = document.createElement('div');
+    result.className = 'pd-result';
+    card.appendChild(result);
+
+    function decide(approve) {
+      var msg = approve
+        ? ('核准 ' + g.name + ' 的新裝置？\n\n這 ' + g.count + ' 筆打卡會開始計入出勤，'
+           + '且她之後只能用這個裝置打卡。')
+        : ('拒絕 ' + g.name + ' 的新裝置？\n\n這 ' + g.count + ' 筆打卡將不予計入，原本綁定的裝置維持不變。');
+      if (!window.confirm(msg + '\n\n確定?')) return;
+      btnOk.disabled = true;
+      btnNo.disabled = true;
+      result.textContent = '處理中…';
+      apiPost({
+        action: 'mgr_device_decision', mgr_key: mgrKey,
+        emp_id: g.emp_id, device_id: g.device_id, approve: approve,
+      }).then(function (res) {
+        if (!res.ok) {
+          btnOk.disabled = false;
+          btnNo.disabled = false;
+          // no_pending_device＝這批已被別人（或另一個分頁）處理掉了，重新整理就會消失
+          result.style.color = '#c22a12';
+          result.textContent = res.error === 'no_pending_device'
+            ? '✕ 這批待核准已被處理過了，請重新整理頁面。'
+            : ('✕ 失敗：' + res.error);
+          return;
+        }
+        result.style.color = '#1a7a3d';
+        result.textContent = (approve ? '✓ 已核准' : '✓ 已拒絕') + '，更新 ' + res.changed + ' 筆打卡';
+        actions.style.display = 'none';
+        // 核准會讓當日打卡狀態改變（pending→ok），清快取讓核定卡片拿到新的打卡段
+        dayCache = {};
+        if (currentDate) loadDay(currentDate);
+      }).catch(function () {
+        btnOk.disabled = false;
+        btnNo.disabled = false;
+        result.style.color = '#c22a12';
+        result.textContent = '✕ 連線失敗，請再試一次。';
+      });
+    }
+
+    btnOk.addEventListener('click', function () { decide(true); });
+    btnNo.addEventListener('click', function () { decide(false); });
+    return card;
+  }
+
   function loadDay(dateOverride) {
     // 命中快取（過去看過或已預抓的日期）→ 直接畫，不轉圈、不打後端
     if (dateOverride && dayCache[dateOverride]) {
@@ -668,6 +808,7 @@
       return;
     }
     loadDay(null);
+    loadPendingDevices(); // 與當日核定並行載入，失敗不影響主要功能
   }
 
   init();

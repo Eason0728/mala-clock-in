@@ -933,37 +933,94 @@ def handle_get_events(data, body):
     return {"ok": True, "events": events}
 
 
-def handle_approve_device(data, body):
-    if not check_admin(body):
-        return {"ok": False, "error": "unauthorized"}
-
-    emp_id = body.get("emp_id")
-    device_id = body.get("device_id")
-    approve = bool(body.get("approve"))
-
+def apply_device_decision(data, emp_id, device_id, approve):
+    """裝置核准/拒絕的共用邏輯（與 Code.gs applyDeviceDecision 同步）。"""
     roster = find_roster_by_empid(data, emp_id)
     if not roster:
         return {"ok": False, "error": "invalid_emp_id"}
+
+    # 防呆（2026-08-03，與 Code.gs 同步）：至少要有一筆待核准事件才准動。
+    # 否則傳一個不存在的 device_id 會把名冊改綁成假 ID，回應卻是無害的 changed:0。
+    matches = [
+        e for e in data["events"]
+        if e["emp_id"] == emp_id
+        and e["device_id"] == device_id
+        and e["status"] == "pending_device_approval"
+    ]
+    if not matches:
+        return {"ok": False, "error": "no_pending_device"}
 
     if approve:
         roster["device_id"] = device_id
         roster["device_bound_at"] = iso_now()
 
-    for e in data["events"]:
-        if (
-            e["emp_id"] == emp_id
-            and e["device_id"] == device_id
-            and e["status"] == "pending_device_approval"
-        ):
-            if approve:
-                # 核准只解「裝置」這一關：超出範圍的卡不得因核准而入帳（與 Code.gs 同步）
-                e["status"] = "ok" if e.get("within_range") else "rejected_out_of_range"
-                e["device_match"] = True
-            else:
-                e["status"] = "rejected_device"
+    changed = 0
+    for e in matches:
+        if approve:
+            # 核准只解「裝置」這一關：超出範圍的卡不得因核准而入帳（與 Code.gs 同步）
+            e["status"] = "ok" if e.get("within_range") else "rejected_out_of_range"
+            e["device_match"] = True
+        else:
+            e["status"] = "rejected_device"
+        changed += 1
 
     save_data(data)
-    return {"ok": True, "roster": roster}
+    return {"ok": True, "changed": changed, "roster": roster}
+
+
+def handle_approve_device(data, body):
+    if not check_admin(body):
+        return {"ok": False, "error": "unauthorized"}
+    return apply_device_decision(data, body.get("emp_id"), body.get("device_id"), bool(body.get("approve")))
+
+
+def collect_pending_devices(data):
+    """待核准裝置依 員工＋裝置碼 分組（與 Code.gs collectPendingDevices 同步）。"""
+    groups = {}
+    for e in data["events"]:
+        if e["status"] != "pending_device_approval":
+            continue
+        gk = (e["emp_id"], e["device_id"])
+        if gk not in groups:
+            roster = find_roster_by_empid(data, e["emp_id"])
+            groups[gk] = {
+                "emp_id": e["emp_id"],
+                "name": roster["name"] if roster else "(不在名冊)",
+                "device_id": e["device_id"],
+                "first_ts": e["ts"],
+                "last_ts": e["ts"],
+                "count": 0,
+                "all_within_range": True,
+                "max_distance_m": 0,
+            }
+        g = groups[gk]
+        g["count"] += 1
+        g["first_ts"] = min(g["first_ts"], e["ts"])
+        g["last_ts"] = max(g["last_ts"], e["ts"])
+        if not e.get("within_range"):
+            g["all_within_range"] = False
+        d = e.get("distance_m")
+        if d is not None and math.isfinite(float(d)) and float(d) > g["max_distance_m"]:
+            g["max_distance_m"] = round(float(d), 1)
+    return sorted(groups.values(), key=lambda g: g["first_ts"])
+
+
+def handle_mgr_pending_devices(data, body):
+    """{action:'mgr_pending_devices', mgr_key} → 待核准裝置清單（與 Code.gs 同步）。"""
+    if not find_manager_by_key(data, body.get("mgr_key")):
+        return {"ok": False, "error": "unauthorized"}
+    return {"ok": True, "pending": collect_pending_devices(data)}
+
+
+def handle_mgr_device_decision(data, body):
+    """{action:'mgr_device_decision', mgr_key, emp_id, device_id, approve}（與 Code.gs 同步）。"""
+    mgr = find_manager_by_key(data, body.get("mgr_key"))
+    if not mgr:
+        return {"ok": False, "error": "unauthorized"}
+    result = apply_device_decision(data, body.get("emp_id"), body.get("device_id"), bool(body.get("approve")))
+    if result.get("ok"):
+        result["manager_name"] = mgr["name"]
+    return result
 
 
 ACTIONS = {
@@ -976,6 +1033,8 @@ ACTIONS = {
     "my_recent": handle_my_recent,
     "mgr_day": handle_mgr_day,
     "mgr_approve": handle_mgr_approve,
+    "mgr_pending_devices": handle_mgr_pending_devices,
+    "mgr_device_decision": handle_mgr_device_decision,
 }
 
 MIME_TYPES = {

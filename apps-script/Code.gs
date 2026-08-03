@@ -124,12 +124,9 @@ function doPost(e) {
     my_recent: handleMyRecent,
     mgr_day: handleMgrDay,
     mgr_approve: handleMgrApprove,
+    mgr_pending_devices: handleMgrPendingDevices,
+    mgr_device_decision: handleMgrDeviceDecision,
   };
-
-  // 薪資模組（Payroll.gs）的 action 掛載於此；Payroll.gs 不存在時完全不影響打卡與核定。
-  if (typeof PAYROLL_HANDLERS !== 'undefined') {
-    Object.keys(PAYROLL_HANDLERS).forEach(function (k) { handlers[k] = PAYROLL_HANDLERS[k]; });
-  }
 
   const handler = handlers[body.action];
   if (!handler) {
@@ -618,6 +615,19 @@ function applyDeviceDecision(empId, deviceId, approve) {
   const roster = findRosterByEmpId(rosterRows, empId);
   if (!roster) return { ok: false, error: 'invalid_emp_id' };
 
+  const eventRows = readSheetAsObjects(eventsSheet).rows;
+
+  // 防呆（2026-08-03）：該 (emp_id, device_id) 至少要有一筆待核准事件才准動。
+  // 原本改綁那段無條件執行且在事件迴圈之前——傳一個不存在的 device_id（例如只看了前 8 碼
+  // 自己補完的），回應是無害的 changed:0，名冊卻已被改綁成那個假 ID，該同仁下次打卡直接
+  // 變「新裝置待核准」。沒有待核准事件＝沒有東西要決定，一律不改綁、不寫入。
+  const hasPending = eventRows.some(function (e) {
+    return String(e.emp_id) === String(empId) &&
+      String(e.device_id) === String(deviceId) &&
+      e.status === 'pending_device_approval';
+  });
+  if (!hasPending) return { ok: false, error: 'no_pending_device' };
+
   if (approve) {
     rosterSheet.getRange(roster.__rowIndex, ROSTER_HEADERS.indexOf('device_id') + 1).setValue(deviceId);
     rosterSheet.getRange(roster.__rowIndex, ROSTER_HEADERS.indexOf('device_bound_at') + 1).setValue(nowTaipeiIso());
@@ -625,7 +635,6 @@ function applyDeviceDecision(empId, deviceId, approve) {
 
   let changed = 0;
   const affectedMonths = {};
-  const eventRows = readSheetAsObjects(eventsSheet).rows;
   eventRows.forEach(function (e) {
     if (
       String(e.emp_id) === String(empId) &&
@@ -664,6 +673,35 @@ function applyDeviceDecision(empId, deviceId, approve) {
 function handleApproveDevice(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   return applyDeviceDecision(body.emp_id, body.device_id, !!body.approve);
+}
+
+/**
+ * API：{action:'mgr_pending_devices', mgr_key} → 目前所有待核准裝置（給主管頁用）。
+ * 與 admin 的差別只在驗證方式（主管金鑰 vs 管理金鑰），資料來源同為 collectPendingDevices，
+ * 不另寫一套分組邏輯。（2026-08-03 新增：原本核准裝置只能開 Apps Script 編輯器跑函式。）
+ */
+function handleMgrPendingDevices(body) {
+  const ss = getSS();
+  const mgrSheet = ss.getSheetByName('managers');
+  if (!mgrSheet) return { ok: false, error: 'managers_sheet_missing' };
+  if (!findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key)) return { ok: false, error: 'unauthorized' };
+  return { ok: true, pending: collectPendingDevices() };
+}
+
+/**
+ * API：{action:'mgr_device_decision', mgr_key, emp_id, device_id, approve} → 核准/拒絕裝置。
+ * 直接轉呼叫 applyDeviceDecision（含「核准只解裝置這關、超出範圍的卡仍不入帳」的分流，
+ * 以及 2026-08-03 的「沒有待核准事件就不改綁」防呆），不重寫決策邏輯。
+ */
+function handleMgrDeviceDecision(body) {
+  const ss = getSS();
+  const mgrSheet = ss.getSheetByName('managers');
+  if (!mgrSheet) return { ok: false, error: 'managers_sheet_missing' };
+  const mgr = findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key);
+  if (!mgr) return { ok: false, error: 'unauthorized' };
+  const result = applyDeviceDecision(body.emp_id, body.device_id, !!body.approve);
+  if (result.ok) result.manager_name = mgr.name;
+  return result;
 }
 
 /* ============================================================
@@ -1665,12 +1703,19 @@ function collectPendingDevices() {
         first_ts: String(e.ts),
         last_ts: String(e.ts),
         count: 0,
+        // 主管頁判斷用（2026-08-03 新增，欄位為附加，不影響既有 listPendingDevices）：
+        // 全部都在範圍內＝人確實在店裡，可安心核准；有超出範圍的要留意
+        all_within_range: true,
+        max_distance_m: 0,
       };
     }
     const g = groups[gk];
     g.count++;
     if (String(e.ts) < g.first_ts) g.first_ts = String(e.ts);
     if (String(e.ts) > g.last_ts) g.last_ts = String(e.ts);
+    if (String(e.within_range).toLowerCase() !== 'true') g.all_within_range = false;
+    const dist = Number(e.distance_m);
+    if (isFinite(dist) && dist > g.max_distance_m) g.max_distance_m = Math.round(dist * 10) / 10;
   });
 
   return Object.keys(groups).map(function (k) { return groups[k]; })
