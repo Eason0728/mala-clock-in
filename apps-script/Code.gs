@@ -33,6 +33,12 @@ const CONFIG = {
 
 const ROSTER_HEADERS = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active'];
 const LEAVE_HEADERS = ['日期', '姓名', '假別', '時數'];
+// 人工備註（Eason 在月表明細右邊那欄手打的忘刷卡原因等）。月表每次重算是 sheet.clear()
+// 整張清空再重寫，手打的字不另外保存就會被擦掉——notes 分頁是這些字的正本。
+const NOTES_HEADERS = ['日期', '姓名', '備註'];
+// 月表明細的第 7 欄＝人工備註欄（前 6 欄由程式產生：日期/星期/班段/參考時數/核定時數/狀態）
+const MONTH_NOTE_COL = 7;
+const MONTH_NOTE_HEADER = '人工備註';
 const EVENTS_HEADERS = [
   'ts',
   'emp_id',
@@ -89,6 +95,13 @@ function setup() {
     approved = ss.insertSheet('approved');
   }
   approved.getRange(1, 1, 1, APPROVED_HEADERS.length).setValues([APPROVED_HEADERS]);
+
+  // 人工備註正本：月表明細第 7 欄手打的字，重算前會被收進這裡再放回去（2026-08-07 新增）
+  let notes = ss.getSheetByName('notes');
+  if (!notes) {
+    notes = ss.insertSheet('notes');
+  }
+  notes.getRange(1, 1, 1, NOTES_HEADERS.length).setValues([NOTES_HEADERS]);
 
   // 值班主管名冊：addManager() 產生 key（2026-07-13 新增）
   let managers = ss.getSheetByName('managers');
@@ -1318,6 +1331,10 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
   const boldRows = [];
   const weekendRows = [];
   const abnormalNoteRows = [];
+  // 明細列的座標簿：{row, date, name}，給 rebuildMonth 依 (日期,姓名) 把人工備註放回第 7 欄。
+  // 用 (日期,姓名) 當 key 而不是列號，所以名冊增減、月份天數不同都不會錯位。
+  const detailRows = [];
+  let detailHeaderRow = 0;
 
   rows.push(['姓名', '參考時數', '核定時數', '異常筆數', '請假天數', '請假時數']);
   boldRows.push(1);
@@ -1333,6 +1350,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
   rows.push(['', '', '', '', '', '']);
   rows.push(['日期', '星期', '班段', '參考時數', '核定時數', '狀態']);
   boldRows.push(rows.length);
+  detailHeaderRow = rows.length;
 
   // 明細：依員工分組（roster 順序、只列 active 或該月有紀錄者），每人一個區塊
   const blockEmps = [];
@@ -1369,6 +1387,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
       if (approvedRec && approvedRec.status_text) statusNotes.push(String(approvedRec.status_text));
       rows.push([c.date, WEEKDAY_ZH[wd], seg, hours, approvedDisplay, statusNotes.join('、')]);
       const rowNo = rows.length;
+      detailRows.push({ row: rowNo, date: c.date, name: empName[emp] || emp });
       if (wd === 0 || wd === 6) weekendRows.push(rowNo);
       if (c.notes.some(function (n) { return ABNORMAL_NOTES.indexOf(n) !== -1; })) abnormalNoteRows.push(rowNo);
     });
@@ -1377,7 +1396,14 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     rows.push(['小計', '', '', Math.round(s.total * 100) / 100, roundApproved(approvedTotalByEmp[emp] || 0), '']);
   });
 
-  return { rows: rows, boldRows: boldRows, weekendRows: weekendRows, abnormalNoteRows: abnormalNoteRows };
+  return {
+    rows: rows,
+    boldRows: boldRows,
+    weekendRows: weekendRows,
+    abnormalNoteRows: abnormalNoteRows,
+    detailRows: detailRows,
+    detailHeaderRow: detailHeaderRow,
+  };
 }
 
 /* ============================================================
@@ -1398,6 +1424,90 @@ function normCellTs(v) {
 
 function currentYmTaipei() {
   return Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
+}
+
+/**
+ * 從「上一版」月表分頁把第 7 欄的人工備註撈出來，回傳 [{date, name, note}]。
+ * 月表沒有「這列是誰的」欄位，靠由上而下掃描還原：先等到明細表頭（A 欄＝「日期」）才開始，
+ * 之後 A 欄是日期＝明細列（歸給目前的姓名區塊）、A 欄是其他非空字串＝新的姓名標題列。
+ * 彙總區（表頭之前）與「小計」列一律略過——備註只認明細列。
+ * ⚠ A 欄日期被 Sheets 存成 Date 物件，一律過 normCellDate，不可直接 String()。
+ */
+function harvestMonthNotes(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 1) return [];
+  const vals = sheet.getRange(1, 1, lastRow, MONTH_NOTE_COL).getValues();
+  const out = [];
+  let curName = '';
+  let inDetail = false;
+  for (let i = 0; i < vals.length; i++) {
+    const raw = vals[i][0];
+    const a = raw instanceof Date ? normCellDate(raw) : String(raw == null ? '' : raw).trim();
+    if (!inDetail) {
+      if (a === '日期') inDetail = true; // 明細表頭，下一列起才是明細
+      continue;
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(a)) {
+      const note = String(vals[i][MONTH_NOTE_COL - 1] == null ? '' : vals[i][MONTH_NOTE_COL - 1]).trim();
+      if (note && curName) out.push({ date: a, name: curName, note: note });
+      continue;
+    }
+    if (a && a !== '小計') curName = a; // 姓名標題列
+  }
+  return out;
+}
+
+/**
+ * 把撈到的人工備註寫進 notes 分頁（同一天同一人只留一列，內容有變才改；新的追加）。
+ * 這裡是「只增不減」——月表上被清空的格子不會回頭刪 notes 分頁的舊備註，
+ * 要刪備註請直接在 notes 分頁刪那一列（月表上清掉再重算會被正本蓋回來）。
+ */
+function upsertMonthNotes(ss, harvested) {
+  if (!harvested || !harvested.length) return;
+  let sheet = ss.getSheetByName('notes');
+  if (!sheet) {
+    sheet = ss.insertSheet('notes');
+    sheet.getRange(1, 1, 1, NOTES_HEADERS.length).setValues([NOTES_HEADERS]);
+  }
+  const lastRow = sheet.getLastRow();
+  const existing = lastRow > 1 ? sheet.getRange(2, 1, lastRow - 1, NOTES_HEADERS.length).getValues() : [];
+  const rowOf = {};
+  existing.forEach(function (r, i) {
+    rowOf[normCellDate(r[0]) + '||' + String(r[1] == null ? '' : r[1]).trim()] = i + 2;
+  });
+  const appends = [];
+  const queued = {};
+  harvested.forEach(function (h) {
+    const k = h.date + '||' + h.name;
+    const rowNo = rowOf[k];
+    if (rowNo) {
+      const old = String(existing[rowNo - 2][2] == null ? '' : existing[rowNo - 2][2]).trim();
+      if (old !== h.note) sheet.getRange(rowNo, 3).setValue(h.note);
+    } else if (!queued[k]) {
+      queued[k] = true;
+      appends.push([h.date, h.name, h.note]);
+    }
+  });
+  if (appends.length) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, appends.length, NOTES_HEADERS.length).setValues(appends);
+  }
+}
+
+/** notes 分頁 → { 'yyyy-MM-dd||姓名': 備註 }。同 key 有多列時以最後一列為準。 */
+function readMonthNotesMap(ss) {
+  const sheet = ss.getSheetByName('notes');
+  if (!sheet) return {};
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return {};
+  const vals = sheet.getRange(2, 1, lastRow - 1, NOTES_HEADERS.length).getValues();
+  const map = {};
+  vals.forEach(function (r) {
+    const d = normCellDate(r[0]); // ⚠ Sheets 會把純日期字串轉成 Date 物件
+    const n = String(r[1] == null ? '' : r[1]).trim();
+    const note = String(r[2] == null ? '' : r[2]).trim();
+    if (d && n) map[d + '||' + n] = note;
+  });
+  return map;
 }
 
 /** 整頁重算 ym（yyyy-MM）月表分頁：不存在自動建立，存在則整頁重寫。回傳列數。 */
@@ -1445,6 +1555,14 @@ function rebuildMonth(ym) {
 
   let sheet = ss.getSheetByName(ym);
   if (!sheet) sheet = ss.insertSheet(ym);
+
+  // ⚠ 順序不能動：sheet.clear() 會把整張表（含第 7 欄手打的備註）清光，
+  //    所以一定要先把上一版的人工備註收進 notes 分頁，再清、再依 (日期,姓名) 放回去。
+  //    這裡刻意不 try/catch——收集失敗就讓整個重算失敗（月表停在舊狀態、備註還在），
+  //    比「吞掉例外照樣清空」安全，手打的字沒有第二份。
+  upsertMonthNotes(ss, harvestMonthNotes(sheet));
+  const notesMap = readMonthNotesMap(ss);
+
   sheet.clear();
 
   if (built.rows.length > 0) {
@@ -1453,6 +1571,23 @@ function rebuildMonth(ym) {
     built.weekendRows.forEach(function (r) { sheet.getRange(r, 1, 1, 6).setBackground('#f3f3f3'); });
     built.abnormalNoteRows.forEach(function (r) { sheet.getRange(r, 6).setFontColor('#cc0000'); });
     sheet.setFrozenRows(1);
+
+    // 第 7 欄：人工備註（表頭＋依 (日期,姓名) 對回來的內容）
+    if (built.detailHeaderRow) {
+      sheet.getRange(built.detailHeaderRow, MONTH_NOTE_COL).setValue(MONTH_NOTE_HEADER).setFontWeight('bold');
+    }
+    if (built.detailRows.length > 0) {
+      const first = built.detailRows[0].row;
+      const last = built.detailRows[built.detailRows.length - 1].row;
+      const col = [];
+      for (let r = first; r <= last; r++) col.push(['']);
+      built.detailRows.forEach(function (d) {
+        const note = notesMap[d.date + '||' + d.name];
+        if (note) col[d.row - first][0] = note;
+      });
+      sheet.getRange(first, MONTH_NOTE_COL, col.length, 1).setValues(col); // 一次寫整段，不逐格 setValue
+      sheet.setColumnWidth(MONTH_NOTE_COL, 220);
+    }
   }
   return built.rows.length;
 }
