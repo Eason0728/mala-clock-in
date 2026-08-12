@@ -185,6 +185,16 @@ function run() { addEmployee('王小明', 'E10'); } // 或自訂編號
   ```
 - `rebuild_month` 是 GAS 專屬 action（依賴試算表分頁），mock server 不實作。
 
+## 定位精確度（`accuracy_m`，2026-08-11 起）
+
+`events` 分頁最後一欄記手機回報的定位誤差（公尺，`position.coords.accuracy`）。**加在最後一欄，既有 10 欄不位移；舊資料此欄為空。** 表頭若還是舊的 10 欄，`handleClock` 會就地補寫（`readSheetAsObjects` 是照表頭取值，不補的話新欄位永遠讀不回來），不必手動跑 `setup()`。
+
+- **為什麼要存**：判「超出範圍」時只有座標，分不出「定位很準、人真的在店外」還是「人在店裡但定位不準」。GPS 通常 5–30 m；Wi-Fi／基地台定位常見 50–150 m。2026-08-11 王禹婕當天 12 筆全被擋，是靠座標反推「南北固定偏 77 m、東西亂跳」才判定是 Wi-Fi 定位——有這一欄就一眼看得出來。
+- **門檻** `LOW_ACCURACY_M = 50`（Code.gs 與 mock 兩處同步）。超過即視為這次定位不可信；門市半徑只有 20 m，誤差 50 m 以上的座標本來就不足以判斷人在不在店裡。
+- **同仁端**：`clock` 與 `whoami.today_events` 都回 `accuracy_m` 與 `low_accuracy`。打卡被判 `rejected_out_of_range` **且** `low_accuracy` 為真時，統一失敗訊息後面加一段「這次定位可能不準（誤差約 ±X 公尺）：請關掉 Wi-Fi、或確認手機『精確位置』已開啟」；今日紀錄該筆顯示「超出範圍（誤差±Xm）」。**定位很準卻在店外時不顯示這段**——不要給不在店裡的人現成藉口。平常也不顯示誤差數字（對同仁沒意義）。
+- 前後端部署順序**不互卡**：舊後端收到多的 `accuracy` 欄位會忽略；舊前端不帶此欄則存空、`low_accuracy` 為假、提示不出現。
+- 本機測試：`clock.html` 的 `loc=` 旁多一個 localhost 限定的 `acc=`（如 `?loc=away&acc=120`）可模擬定位誤差。
+
 ## 打卡頁的今日時數（自助查詢）
 
 `clock.html` 在今日打卡清單下方會多顯示一行今日時數摘要（`whoami` 回應新增 `today_hours: {reference, approved, working_since}`），讓同仁自己就能查、不用來問 Eason：

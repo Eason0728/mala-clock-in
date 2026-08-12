@@ -50,7 +50,16 @@ const EVENTS_HEADERS = [
   'device_id',
   'device_match',
   'status',
+  // 手機回報的定位精確度（公尺，越小越準）。2026-08-11 新增：王禹婕當天 12 筆全被判超出範圍，
+  // 只能靠座標反推是 Wi-Fi 定位不是 GPS；存下這個數字，這類案子一眼就分得出來。
+  // ⚠ 加在最後一欄，既有 10 欄資料不位移；舊列此欄為空。
+  'accuracy_m',
 ];
+
+// 定位精確度超過這個值就視為「這次定位不可信」（公尺）。
+// GPS 通常 5–30 m；Wi-Fi／基地台定位常見 50–150 m。門市半徑只有 20 m，
+// 誤差 50 m 以上的座標本來就不足以判斷人在不在店裡，所以拿來提示同仁「定位可能不準」。
+const LOW_ACCURACY_M = 50;
 // 值班主管核定（2026-07-13 新增）：只追加不覆蓋；同 (date,emp_id) 多筆以 entered_at 最新為準（讀取端處理）
 const APPROVED_HEADERS = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at'];
 const MANAGERS_HEADERS = ['name', 'key', 'active'];
@@ -481,10 +490,19 @@ function handleClock(body) {
   const distanceM = Math.round(haversineM(CONFIG.STORE_LAT, CONFIG.STORE_LNG, lat, lng) * 10) / 10;
   const withinRange = distanceM <= CONFIG.RADIUS_M;
   const ts = nowTaipeiIso();
+  // 手機沒給或給了怪值就存空白（舊版前端不會帶這個欄位，不能因此讓打卡失敗）
+  const rawAccuracy = parseFloat(body.accuracy);
+  const accuracyM = isFinite(rawAccuracy) && rawAccuracy >= 0 ? Math.round(rawAccuracy * 10) / 10 : '';
 
   // 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
   // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化，否則交替防呆的回看視窗可能誤判
-  const clockEventRows = readSheetAsObjects(eventsSheet).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  const eventsRead = readSheetAsObjects(eventsSheet);
+  // 既有 events 分頁的表頭只有 10 欄，沒補表頭的話新寫入的第 11 欄會因為 readSheetAsObjects
+  // 是照表頭取值而永遠讀不回來。這裡就地自癒，不必請 Eason 去編輯器跑 setup()。
+  if (eventsRead.headers.indexOf('accuracy_m') === -1) {
+    eventsSheet.getRange(1, 1, 1, EVENTS_HEADERS.length).setValues([EVENTS_HEADERS]);
+  }
+  const clockEventRows = eventsRead.rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
   const lastCounted = lastCountedEvent(clockEventRows, roster.emp_id);
   const isDuplicate = lastCounted !== null && lastCounted.type === String(body.type);
 
@@ -511,9 +529,19 @@ function handleClock(body) {
     status = 'ok';
   }
 
-  eventsSheet.appendRow([ts, roster.emp_id, body.type, lat, lng, distanceM, withinRange, deviceId, deviceMatch, status]);
+  eventsSheet.appendRow([ts, roster.emp_id, body.type, lat, lng, distanceM, withinRange, deviceId, deviceMatch, status, accuracyM]);
 
-  const result = { ok: true, status: status, name: roster.name, ts: ts, distance_m: distanceM, within_range: withinRange };
+  const result = {
+    ok: true,
+    status: status,
+    name: roster.name,
+    ts: ts,
+    distance_m: distanceM,
+    within_range: withinRange,
+    accuracy_m: accuracyM === '' ? null : accuracyM,
+    // 前端用這個決定要不要多給一句「定位可能不準」的提示，門檻不寫死在前端
+    low_accuracy: accuracyM !== '' && accuracyM > LOW_ACCURACY_M,
+  };
   if (status === 'rejected_duplicate') {
     result.last_type = lastCounted.type;
   }
@@ -546,7 +574,17 @@ function handleWhoami(body) {
   const eventRows = readSheetAsObjects(eventsSheet).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
   const todayEvents = eventRows
     .filter(function (e) { return String(e.emp_id) === String(roster.emp_id) && String(e.ts).slice(0, 10) === today; })
-    .map(function (e) { return { ts: e.ts, type: e.type, status: e.status }; });
+    .map(function (e) {
+      const acc = parseFloat(e.accuracy_m);
+      return {
+        ts: e.ts,
+        type: e.type,
+        status: e.status,
+        // 今日紀錄裡「超出範圍」那幾筆要能標出定位誤差，同仁才知道是定位不準還是真的不在店裡
+        accuracy_m: isFinite(acc) ? acc : null,
+        low_accuracy: isFinite(acc) && acc > LOW_ACCURACY_M,
+      };
+    });
 
   return {
     ok: true,

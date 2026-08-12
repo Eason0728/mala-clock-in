@@ -33,6 +33,8 @@ ADMIN_KEY = "test-admin"
 STORE_LAT = 24.7840945  # 2026-07-13 依店內實測校正
 STORE_LNG = 121.0157448
 RADIUS_M = 20  # 允許打卡半徑（公尺），與 Code.gs 的 CONFIG.RADIUS_M 同步（2026-07-14 Eason 指定收緊為 20）
+# 定位精確度超過這個值＝這次定位不可信（公尺），與 Code.gs 的 LOW_ACCURACY_M 同步
+LOW_ACCURACY_M = 50
 # 上下班交替判斷的回看視窗（小時）：看得到跨夜班前一晚的上班卡，
 # 但昨天忘打的下班卡（超過視窗）不會鎖死今天的上班卡。
 ALTERNATION_LOOKBACK_HOURS = 12
@@ -786,6 +788,12 @@ def handle_clock(data, body):
     distance_m = round(haversine_m(STORE_LAT, STORE_LNG, lat, lng), 1)
     within_range = distance_m <= RADIUS_M
     ts = iso_now()
+    # 手機沒給或給了怪值就存 None（舊版前端不帶這欄，不能因此讓打卡失敗）
+    try:
+        raw_acc = float(body.get("accuracy"))
+        accuracy_m = round(raw_acc, 1) if math.isfinite(raw_acc) and raw_acc >= 0 else None
+    except (TypeError, ValueError):
+        accuracy_m = None
 
     # 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
     last_counted = last_counted_event(data, roster["emp_id"])
@@ -821,6 +829,7 @@ def handle_clock(data, body):
         "device_id": device_id,
         "device_match": device_match,
         "status": status,
+        "accuracy_m": accuracy_m,
     }
     data["events"].append(event)
     save_data(data)
@@ -832,6 +841,9 @@ def handle_clock(data, body):
         "ts": ts,
         "distance_m": distance_m,
         "within_range": within_range,
+        "accuracy_m": accuracy_m,
+        # 前端用這個決定要不要多給一句「定位可能不準」，門檻不寫死在前端
+        "low_accuracy": accuracy_m is not None and accuracy_m > LOW_ACCURACY_M,
     }
     if status == "rejected_duplicate":
         result["last_type"] = last_counted["type"]
@@ -855,7 +867,13 @@ def handle_whoami(data, body):
 
     today = today_str()
     today_events = [
-        {"ts": e["ts"], "type": e["type"], "status": e["status"]}
+        {
+            "ts": e["ts"],
+            "type": e["type"],
+            "status": e["status"],
+            "accuracy_m": e.get("accuracy_m"),
+            "low_accuracy": e.get("accuracy_m") is not None and e["accuracy_m"] > LOW_ACCURACY_M,
+        }
         for e in data["events"]
         if e["emp_id"] == roster["emp_id"] and e["ts"][:10] == today
     ]
