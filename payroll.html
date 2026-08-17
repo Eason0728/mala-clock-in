@@ -183,8 +183,10 @@ input[type=text]{text-align:left}
 <div id="msg"></div>
 
 <script>
-/* 部署到 Apps Script 後把 API 改成 Web App 網址；本機測試留空＝打同一台 mock */
-const API = '';
+/* API 依環境自動判斷：本機(localhost)留空＝打同一台 mock；正式站打 Apps Script Web App。
+   ⚠ 不可留空上線——GitHub Pages 只放靜態頁，POST 到自身會 405、拿到 HTML、全部靜默失敗。 */
+const API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? ''
+  : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
 const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 
 let MASTER=[], CFG={}, HOL={}, ATT={}, RESULTS=[], STATUS='draft';
@@ -441,6 +443,12 @@ $('nav').addEventListener('click',ev=>{
   document.querySelectorAll('.panel').forEach(x=>x.classList.remove('on'));
   b.classList.add('on');$('p-'+b.dataset.p).classList.add('on');
 });
+// 預設月份＝開啟當下的月份（台北時區），而非寫死
+(function(){
+  const p=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit'}).formatToParts(new Date());
+  const y=p.find(x=>x.type==='year').value, mo=p.find(x=>x.type==='month').value;
+  if(y&&mo) $('ym').value=y+'-'+mo;
+})();
 $('ym').addEventListener('change',async()=>{await loadAtt();await loadRun()});
 boot();
 </script>

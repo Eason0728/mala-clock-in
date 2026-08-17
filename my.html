@@ -44,7 +44,9 @@ tr.sum td{font-weight:900;border-bottom:0}
 <main id="app"><div class="card"><div class="state">載入中…</div></div></main>
 
 <script>
-const API='';
+/* API 依環境自動判斷：本機留空打 mock；正式站打 Apps Script（GitHub Pages 不收 POST，留空會 405）*/
+const API=(location.hostname==='localhost'||location.hostname==='127.0.0.1')?''
+  :'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
 const KEY=new URLSearchParams(location.search).get('k')||'';
 const nf=v=>Math.round(v).toLocaleString('zh-TW');
 const r2=v=>Math.round(v*100)/100;
