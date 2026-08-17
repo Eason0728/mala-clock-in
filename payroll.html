@@ -203,7 +203,7 @@ function toast(t,bad){const m=$('msg');m.textContent=t;m.style.background=bad?'#
 
 async function post(action,body){
   const res=await fetch(API||location.pathname.replace(/[^/]*$/,''),{method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:{'Content-Type':'text/plain'},
     body:JSON.stringify(Object.assign({action,admin_key:ADMIN_KEY},body||{}))});
   const j=await res.json();
   if(!j.ok&&j.message) toast(j.message,true);

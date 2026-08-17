@@ -59,7 +59,7 @@ async function load(){
   let j;
   try{
     const res=await fetch(API||location.pathname.replace(/[^/]*$/,''),{method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers:{'Content-Type':'text/plain'},
       body:JSON.stringify({action:'my_payslip',key:KEY,ym:document.getElementById('ym').value})});
     j=await res.json();
   }catch(e){app.innerHTML=st('📡','連不上伺服器','請確認網路後重新整理。');return}
