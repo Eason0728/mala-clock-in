@@ -154,14 +154,15 @@ function payCollect(ym) {
 
   // 3) 請假時數（分假別）＋ 請假日
   leaves.forEach(function (l) {
-    const emp = nameToEmp[String(l.name || '').trim()];
+    // ⚠ leave 分頁表頭是中文（日期/姓名/假別/時數，見 Code.gs LEAVE_HEADERS），不是英文 key！
+    //   原本讀 l.name/l.date/l.hours/l.type 全 undefined → 請假整批被跳過。沿用月表(buildMonthlySheet)同一套中文 key。
+    const emp = nameToEmp[String(l['姓名'] || '').trim()];
     if (!emp) return;
-    // ⚠ leave.date 被 Sheets 存成 Date 物件時，String().slice 會得到 "Thu Aug 07" 對不上 yyyy-MM，
-    //   請假整批被濾掉。一律過 normCellDate（沿用月表/核定同一套讀法）。
-    const d = normCellDate(l.date);
+    // leave 日期被 Sheets 存成 Date 物件時，用 normCellDate 正規化（避免日期陷阱）。
+    const d = normCellDate(l['日期']);
     if (d.slice(0, 7) !== ym) return;
-    const h = Number(l.hours) || 0;
-    const t = String(l.type || '');
+    const h = Number(l['時數']) || 0;
+    const t = String(l['假別'] || '');
     const s = slot(emp);
     if (t.indexOf('事') !== -1)      s.personal_h += h;
     else if (t.indexOf('病') !== -1) s.sick_h += h;
