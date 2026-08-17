@@ -208,12 +208,24 @@ async function post(action,body){
   return j;
 }
 
+const SCHEDULE_GIST='https://api.github.com/gists/1f7ecf0be418990e24d7b2351572e4aa';
 async function importFromSchedule(){
   if(!confirm('從排班系統帶入主檔？\n\n會用排班資料更新姓名/正職計時/底薪/時薪/加班費率/各津貼/宿舍/到職日，並帶入 '+ym()+' 的紅字天數。\n勞健保、退休金、小編津貼會保留現值。\n\n帶入後記得檢查並按「儲存主檔」。')) return;
-  const r=await post('payroll_import_schedule',{ym:ym()});
+  // 排班資料由瀏覽器直接讀 token-free Gist，再交給後端（後端不需連外權限）
+  let data;
+  try{
+    const g=await (await fetch(SCHEDULE_GIST)).json();
+    data=JSON.parse(g.files['mala-schedule.json'].content);
+  }catch(e){toast('讀不到排班系統資料，請稍後再試',true);return}
+  const emps=data.mala_employees||[];
+  if(!emps.length){toast('排班系統目前沒有員工資料',true);return}
+  const y=ym(), holKey='mala_hol_'+y.slice(0,4)+'_'+Number(y.slice(5,7)), hol=data[holKey];
+  const red_days=Array.isArray(hol)?hol.length:null;
+  const r=await post('payroll_import_schedule',{employees:emps,ym:y,red_days:red_days});
   if(!r.ok){toast('帶入失敗：'+(r.error||'')+(r.detail?'（'+r.detail+'）':''),true);return}
   const red=r.red&&r.red.red_days!=null?('，紅字天數 '+r.red.red_days+' 天'):(r.red?('，'+(r.red.note||'該月無假日資料')):'');
-  toast('已帶入：更新 '+r.updated.length+' 人、新增 '+r.added.length+' 人'+red+'。請檢查後儲存主檔。');
+  const skip=(r.skipped&&r.skipped.length)?('。⚠ 姓名對不到打卡、已跳過：'+r.skipped.join('、')):'';
+  toast('已帶入：更新 '+r.updated.length+' 人、新增 '+r.added.length+' 人'+red+skip+'。請檢查後儲存主檔。',!!skip);
   await boot();
 }
 

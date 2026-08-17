@@ -303,13 +303,21 @@ function paySchedFieldsToMaster(s) {
 /* 合併：以既有主檔為底，套上排班帶來的欄位；缺口欄位沿用既有值(新人給預設)。
    ⚠ 放引擎區段讓 payroll_mock.js 抽出、測得到「缺口保留」邏輯——這正是手動微調不被帶入蓋掉的關鍵。
    既有主檔裡排班沒有的人(離職但沒清)會原封保留，不會被刪。 */
-function payMergeScheduleMaster(existing, schedEmployees) {
+/* nameToEmp：{排班姓名 → 打卡 roster 的 emp_id}。⚠ 排班系統自己的 id（uid）與打卡 emp_id 是兩套，
+   工時歸集(payCollect)用的是 roster emp_id，所以主檔必須也用 roster emp_id，否則計算時工時接不到人（全 0）。
+   唯一能對起來的是姓名。傳 nameToEmp 時以它為準；沒傳時（mock 單元測試）退回用排班自己的 id。
+   姓名在 roster 找不到的排班員工 → 收進 skipped、不寫入（沒有打卡身分就無法計薪）。*/
+function payMergeScheduleMaster(existing, schedEmployees, nameToEmp) {
   const GAP = { editor_allow: 0, labor_ins: 0, health_ins: 0, group_ins: 0, pension: 0, leave_date: '', active: 'true' };
   const byId = {};
   (existing || []).forEach(function (m) { byId[String(m.emp_id)] = m; });
-  const updated = [], added = [];
+  const updated = [], added = [], skipped = [];
   (schedEmployees || []).forEach(function (s) {
+    const nm = String(s.name || '').trim();
+    const empId = nameToEmp ? nameToEmp[nm] : String(s.id);
+    if (!empId) { skipped.push(nm || String(s.id)); return; }
     const mapped = paySchedFieldsToMaster(s);
+    mapped.emp_id = String(empId);   // 用打卡 roster 的 emp_id，不是排班自己的 id
     const prev = byId[mapped.emp_id];
     const gap = {};
     Object.keys(GAP).forEach(function (k) {
@@ -318,7 +326,7 @@ function payMergeScheduleMaster(existing, schedEmployees) {
     byId[mapped.emp_id] = Object.assign({}, gap, mapped);   // gap 先、mapped 後：排班欄位覆蓋，缺口欄位保留
     (prev ? updated : added).push(mapped.name);
   });
-  return { master: Object.keys(byId).map(function (k) { return byId[k]; }), updated: updated, added: added };
+  return { master: Object.keys(byId).map(function (k) { return byId[k]; }), updated: updated, added: added, skipped: skipped };
 }
 
 /* ═══════════════════ Handlers ═══════════════════ */
@@ -328,46 +336,35 @@ function handlePayrollSetup(body) {
   return ensurePayrollSheets();
 }
 
-/* 從排班系統的 token-free Gist 帶入主檔＋(可選)當月紅字天數。
+/* 帶入排班主檔＋(可選)當月紅字天數。
+   ⚠ 排班資料由「前端(payroll.html)在瀏覽器讀 token-free Gist」後 POST 進來（body.employees／body.red_days），
+   後端不做 UrlFetch——這樣後端就不需要 external_request 連外權限（免額外授權、攻擊面更小）。
    一鍵帶入：覆蓋排班有的欄位，缺口欄位保留既有(見 payMergeScheduleMaster)，帶入後仍可在薪資頁手動微調。*/
-var SCHEDULE_GIST_URL = 'https://api.github.com/gists/1f7ecf0be418990e24d7b2351572e4aa';
-
 function handlePayrollImportSchedule(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   ensurePayrollSheets();
 
-  var resp;
-  try { resp = UrlFetchApp.fetch(SCHEDULE_GIST_URL, { muteHttpExceptions: true }); }
-  catch (e) { return { ok: false, error: 'fetch_failed', detail: String(e) }; }
-  if (resp.getResponseCode() !== 200) return { ok: false, error: 'gist_http_' + resp.getResponseCode() };
+  var emps = body.employees;
+  if (!Array.isArray(emps) || !emps.length) return { ok: false, error: 'no_employees' };
 
-  var data;
-  try {
-    var gist = JSON.parse(resp.getContentText());
-    data = JSON.parse(gist.files['mala-schedule.json'].content);
-  } catch (e) { return { ok: false, error: 'parse_failed', detail: String(e) }; }
+  // 用打卡 roster 的姓名→emp_id 對映，把排班員工鍵成 roster emp_id（否則工時接不到人）
+  var roster = readSheetAsObjects(getSS().getSheetByName('roster')).rows.map(stripRowIndex);
+  var nameToEmp = {};
+  roster.forEach(function (r) { nameToEmp[String(r.name).trim()] = String(r.emp_id); });
 
-  var emps = data.mala_employees || [];
-  if (!emps.length) return { ok: false, error: 'no_employees' };
-
-  var merged = payMergeScheduleMaster(payRead('master'), emps);
+  var merged = payMergeScheduleMaster(payRead('master'), emps, nameToEmp);
   var now = nowTaipeiIso();
   payReplaceAll('master', merged.master.map(function (m) { m.updated_at = now; return m; }));
 
   var redInfo = null;
   var ym = String(body.ym || '');
-  if (/^\d{4}-\d{2}$/.test(ym)) {
-    var key = 'mala_hol_' + ym.slice(0, 4) + '_' + String(Number(ym.slice(5, 7)));
-    var hol = data[key];
-    if (Array.isArray(hol)) {
-      var others = payRead('holiday').filter(function (h) { return String(h.ym) !== ym; });
-      payReplaceAll('holiday', others.concat([{ ym: ym, red_days: hol.length, note: '排班帶入 ' + now.slice(0, 10) }]));
-      redInfo = { ym: ym, red_days: hol.length };
-    } else {
-      redInfo = { ym: ym, red_days: null, note: '排班無此月假日資料' };
-    }
+  if (/^\d{4}-\d{2}$/.test(ym) && body.red_days !== undefined && body.red_days !== null && body.red_days !== '') {
+    var red = Number(body.red_days);
+    var others = payRead('holiday').filter(function (h) { return String(h.ym) !== ym; });
+    payReplaceAll('holiday', others.concat([{ ym: ym, red_days: red, note: '排班帶入 ' + now.slice(0, 10) }]));
+    redInfo = { ym: ym, red_days: red };
   }
-  return { ok: true, added: merged.added, updated: merged.updated, count: merged.master.length, red: redInfo };
+  return { ok: true, added: merged.added, updated: merged.updated, skipped: merged.skipped, count: merged.master.length, red: redInfo };
 }
 
 function handlePayrollBootstrap(body) {
