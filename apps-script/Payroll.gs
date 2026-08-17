@@ -59,9 +59,19 @@ function ensurePayrollSheets() {
 
 function payRead(kind) { return readSheetAsObjects(paySheet(kind)).rows.map(stripRowIndex); }
 
+/* ⚠ Sheets 會把 '2026-08'、'2020-01-01' 這種字串自動轉成日期儲存格，讀回變 Date 物件、比對全失敗
+   （ym 對不到 → no_holiday／查不到 run；hire_date 壞 → payRatio 錯）。寫入前把這些字串欄鎖成文字格式 '@'。*/
+function payForceTextCols(sh, cols) {
+  const TEXT = { ym: 1, hire_date: 1, leave_date: 1 };
+  cols.forEach(function (c, i) {
+    if (TEXT[c]) sh.getRange(1, i + 1, sh.getMaxRows(), 1).setNumberFormat('@');
+  });
+}
+
 /** 整張覆寫（保留表頭）——用於 master / holiday / run / item 的重建 */
 function payReplaceAll(kind, rows) {
   const sh = paySheet(kind), cols = PAY_SHEETS[kind];
+  payForceTextCols(sh, cols);
   const last = sh.getLastRow();
   if (last > 1) sh.getRange(2, 1, last - 1, cols.length).clearContent();
   if (!rows.length) return;
@@ -72,6 +82,7 @@ function payReplaceAll(kind, rows) {
 function payAppend(kind, rows) {
   if (!rows.length) return;
   const sh = paySheet(kind), cols = PAY_SHEETS[kind];
+  payForceTextCols(sh, cols);
   const values = rows.map(function (r) { return cols.map(function (c) { return r[c] == null ? '' : r[c]; }); });
   sh.getRange(sh.getLastRow() + 1, 1, values.length, cols.length).setValues(values);
 }
