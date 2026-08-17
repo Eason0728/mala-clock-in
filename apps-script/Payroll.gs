@@ -156,7 +156,9 @@ function payCollect(ym) {
   leaves.forEach(function (l) {
     const emp = nameToEmp[String(l.name || '').trim()];
     if (!emp) return;
-    const d = String(l.date || '').slice(0, 10);
+    // ⚠ leave.date 被 Sheets 存成 Date 物件時，String().slice 會得到 "Thu Aug 07" 對不上 yyyy-MM，
+    //   請假整批被濾掉。一律過 normCellDate（沿用月表/核定同一套讀法）。
+    const d = normCellDate(l.date);
     if (d.slice(0, 7) !== ym) return;
     const h = Number(l.hours) || 0;
     const t = String(l.type || '');
