@@ -123,11 +123,11 @@ input[type=text]{text-align:left}
 <section class="panel" id="p-emp">
   <div class="card">
     <h2>員工薪資主檔</h2>
-    <p class="hint">每個欄位都可改。正職用「底薪＋加班費率」，計時用「時薪」。填了到職／離職日才會做月中折算。</p>
-    <p class="hint">「從排班系統帶入」會用排班的資料更新姓名／正職計時／底薪／時薪／加班費率／各津貼／宿舍／到職日，並帶入所選月份的紅字天數；<b>勞健保、團保、退休金、小編津貼不在排班裡，會保留你在這裡填的值不被覆蓋</b>。帶入後仍可手動微調，記得按「儲存主檔」。</p>
+    <p class="hint">員工的基本固定資料（底薪／時薪／加班費率／各津貼／勞健保／宿舍／到職日）填一次就固定在這裡，之後只有調薪或新人才要動。正職用「底薪＋加班費率」，計時用「時薪」。填了到職／離職日才會做月中折算。</p>
+    <p class="hint">第一次或有新人時按「<b>從打卡名冊建立</b>」——會用打卡系統的名冊自動帶出同仁（含正確員工編號，對得上工時），欄位先給空白／0，你再逐一填上金額後按「儲存主檔」。已存在的人不會被覆蓋。</p>
     <div class="row" style="margin-bottom:14px">
       <button class="btn" onclick="saveMaster()">儲存主檔</button>
-      <button class="btn ghost" onclick="importFromSchedule()">從排班系統帶入</button>
+      <button class="btn ghost" onclick="bootstrapFromRoster()">從打卡名冊建立</button>
     </div>
     <div id="empList"></div>
   </div>
@@ -208,24 +208,12 @@ async function post(action,body){
   return j;
 }
 
-const SCHEDULE_GIST='https://api.github.com/gists/1f7ecf0be418990e24d7b2351572e4aa';
-async function importFromSchedule(){
-  if(!confirm('從排班系統帶入主檔？\n\n會用排班資料更新姓名/正職計時/底薪/時薪/加班費率/各津貼/宿舍/到職日，並帶入 '+ym()+' 的紅字天數。\n勞健保、退休金、小編津貼會保留現值。\n\n帶入後記得檢查並按「儲存主檔」。')) return;
-  // 排班資料由瀏覽器直接讀 token-free Gist，再交給後端（後端不需連外權限）
-  let data;
-  try{
-    const g=await (await fetch(SCHEDULE_GIST)).json();
-    data=JSON.parse(g.files['mala-schedule.json'].content);
-  }catch(e){toast('讀不到排班系統資料，請稍後再試',true);return}
-  const emps=data.mala_employees||[];
-  if(!emps.length){toast('排班系統目前沒有員工資料',true);return}
-  const y=ym(), holKey='mala_hol_'+y.slice(0,4)+'_'+Number(y.slice(5,7)), hol=data[holKey];
-  const red_days=Array.isArray(hol)?hol.length:null;
-  const r=await post('payroll_import_schedule',{employees:emps,ym:y,red_days:red_days});
-  if(!r.ok){toast('帶入失敗：'+(r.error||'')+(r.detail?'（'+r.detail+'）':''),true);return}
-  const red=r.red&&r.red.red_days!=null?('，紅字天數 '+r.red.red_days+' 天'):(r.red?('，'+(r.red.note||'該月無假日資料')):'');
-  const skip=(r.skipped&&r.skipped.length)?('。⚠ 姓名對不到打卡、已跳過：'+r.skipped.join('、')):'';
-  toast('已帶入：更新 '+r.updated.length+' 人、新增 '+r.added.length+' 人'+red+skip+'。請檢查後儲存主檔。',!!skip);
+async function bootstrapFromRoster(){
+  if(!confirm('從打卡名冊建立主檔？\n\n會把打卡系統名冊裡、還沒在主檔的同仁自動加進來（含正確員工編號），金額欄位先給空白／0。\n已存在的人不會被覆蓋。\n\n建立後請逐一填上金額，再按「儲存主檔」。')) return;
+  const r=await post('payroll_bootstrap',{});
+  if(!r.ok){toast('建立失敗：'+(r.error||''),true);return}
+  if(!r.added||!r.added.length){toast('名冊裡的同仁都已在主檔，沒有新增。');await boot();return}
+  toast('已從打卡名冊新增 '+r.added.length+' 人：'+r.added.join('、')+'。請填上金額後儲存主檔。');
   await boot();
 }
 
