@@ -221,7 +221,11 @@ async function bootstrapFromRoster(){
 async function boot(){
   const m=await post('payroll_master_get');
   if(!m.ok){toast('讀取主檔失敗',true);return}
-  MASTER=m.master; CFG=m.config; HOL=m.holidays||{};
+  MASTER=m.master; CFG=m.config;
+  // 後端 holidays 是陣列 [{ym,red_days}]（prod）；轉成前端用的物件 {ym:red_days}。相容舊物件格式。
+  HOL={}; const _hs=m.holidays||[];
+  if(Array.isArray(_hs)) _hs.forEach(h=>{ if(h&&h.ym!=null) HOL[String(h.ym)]=n(h.red_days); });
+  else Object.keys(_hs).forEach(k=>HOL[k]=n(_hs[k]));
   renderEmp(); renderCfg();
   await loadAtt();
   await loadRun();
@@ -375,7 +379,12 @@ function renderCfg(){
 async function setMode(k,v){CFG[k]=v;const r=await post('payroll_config_set',{config:CFG});
   if(r.ok){CFG=r.config||CFG;renderCfg();if(RESULTS.length)doCalc()}}
 async function saveCfg(){const r=await post('payroll_config_set',{config:CFG});if(r.ok)toast('參數已儲存')}
-async function saveHol(){const r=await post('payroll_holiday_set',{holidays:HOL});if(r.ok){renderCfg();toast('已更新')}}
+async function saveHol(){
+  // 後端只收陣列 [{ym,red_days,note}]，把物件 HOL 轉成陣列再送
+  const arr=Object.keys(HOL).map(k=>({ym:k,red_days:HOL[k],note:''}));
+  const r=await post('payroll_holiday_set',{holidays:arr});
+  if(r.ok){renderCfg();toast('已更新')} else {toast('儲存失敗：'+(r.error||''),true)}
+}
 function addHol(){
   const y=$('hy').value.trim(),d=$('hd').value;
   if(!/^\d{4}-\d{2}$/.test(y)){toast('月份格式要像 2026-08',true);return}
