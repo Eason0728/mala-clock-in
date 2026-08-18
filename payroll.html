@@ -231,6 +231,13 @@ async function boot(){
   renderEmp(); renderCfg();
   await loadAtt();
   await loadRun();
+  await autoCalc();
+}
+/* 切月份/開啟時自動帶出當月數字：未鎖定且尚未算過就靜默試算一次（未設紅字等失敗則安靜略過，不跳錯誤）*/
+async function autoCalc(){
+  if(STATUS==='final' || RESULTS.length) return;
+  const r=await post('payroll_calc',{ym:ym(),inputs:ATT});
+  if(r&&r.ok){RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;renderRun();renderSlipSel()}
 }
 async function loadAtt(){
   const r=await post('payroll_inputs',{ym:ym()});
@@ -449,7 +456,7 @@ $('nav').addEventListener('click',ev=>{
   const y=p.find(x=>x.type==='year').value, mo=p.find(x=>x.type==='month').value;
   if(y&&mo) $('ym').value=y+'-'+mo;
 })();
-$('ym').addEventListener('change',async()=>{await loadAtt();await loadRun()});
+$('ym').addEventListener('change',async()=>{await loadAtt();await loadRun();await autoCalc()});
 boot();
 </script>
 </body>
