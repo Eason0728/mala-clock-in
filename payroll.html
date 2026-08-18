@@ -107,10 +107,14 @@ input[type=text]{text-align:left}
   <div class="card">
     <h2>工時（從打卡系統歸集）</h2>
     <p class="hint">
-      這些數字是後端從 <b>approved</b>（主管核定）、<b>leave</b>（請假）、<b>events</b>（打卡事件）自動算出來的。<br>
-      要覆蓋某個值就直接改欄位，改過的會蓋掉歸集值送去計算。
+      這些數字預設是後端從 <b>approved</b>（主管核定）、<b>leave</b>（請假）、<b>events</b>（打卡事件）自動歸集的。<br>
+      沒有打卡資料的月份（如打卡上線前、或還沒裝打卡的門市），直接改欄位手動輸入工時，按「<b>儲存工時</b>」就會存起來、跨月保留、計算時採用。
     </p>
     <div class="scroll"><table id="attTbl"></table></div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn" onclick="saveAtt()">儲存工時</button>
+      <button class="btn ghost" onclick="clearAtt()">清除本月手動工時（還原成打卡歸集）</button>
+    </div>
   </div>
   <div class="card">
     <h2>跨店支援明細</h2>
@@ -257,6 +261,19 @@ async function loadAtt(){
   const r=await post('payroll_inputs',{ym:ym()});
   ATT=r.ok?(r.inputs||{}):{};
   renderAtt();
+}
+async function saveAtt(){
+  const r=await post('payroll_input_set',{ym:ym(),inputs:ATT});
+  if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return}
+  toast(ym()+' 工時已儲存（'+r.count+' 人）');
+  await loadRun();await autoCalc();   // 存完重算帶出新數字
+}
+async function clearAtt(){
+  if(!confirm('清除 '+ym()+' 的手動工時？\n\n會刪掉這個月你手動輸入/儲存的工時，還原成打卡自動歸集的值。')) return;
+  const r=await post('payroll_input_set',{ym:ym(),inputs:{}});
+  if(!r.ok){toast('清除失敗：'+(r.error||''),true);return}
+  toast(ym()+' 手動工時已清除');
+  await loadAtt();await loadRun();await autoCalc();
 }
 async function loadRun(){
   const r=await post('payroll_get',{ym:ym()});

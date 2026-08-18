@@ -19,11 +19,12 @@ const PAY_SHEETS = {
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
             'ot_paid_hours','gross','deduction','net','status','run_at'],
   item:    ['ym','emp_id','item_type','item_key','item_label','qty','rate','amount','source','memo'],
+  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at'],
   audit:   ['ts','ym','action','operator','reason'],
 };
 const PAY_SHEET_NAME = {
   master:'payroll_master', config:'payroll_config', holiday:'payroll_holiday',
-  run:'payroll_run', item:'payroll_item', audit:'payroll_audit',
+  run:'payroll_run', item:'payroll_item', input:'payroll_input', audit:'payroll_audit',
 };
 const PAY_CONFIG_DEFAULT = [
   ['daily_hours', 8, '每日基本工時'],
@@ -430,11 +431,57 @@ function handlePayrollHolidaySet(body) {
 }
 
 /** 只歸集不計算——讓管理者先看工時對不對，再按計算 */
+/** 讀 payroll_input 分頁的手動工時覆蓋（某月）→ {emp_id:{hours,extra_ot,...,support:[]}} */
+function paySavedInputs(ym) {
+  const out = {};
+  payRead('input').forEach(function (r) {
+    if (String(r.ym) !== ym) return;
+    var sup = [];
+    try { sup = r.support ? JSON.parse(r.support) : []; } catch (e) { sup = []; }
+    out[String(r.emp_id)] = {
+      hours: payNum(r.hours), extra_ot: payNum(r.extra_ot),
+      personal_h: payNum(r.personal_h), sick_h: payNum(r.sick_h), annual_h: payNum(r.annual_h),
+      deduct_days: payNum(r.deduct_days), support: sup,
+    };
+  });
+  return out;
+}
+
+/** 工時基底＝打卡歸集(payCollect) 疊上手動覆蓋(payroll_input)；saved 有該員就整筆蓋掉歸集值。
+ *  供「工時分頁顯示」與「計算」共用，確保兩邊一致。 */
+function payInputsBase(ym) {
+  const base = payCollect(ym);
+  const saved = paySavedInputs(ym);
+  Object.keys(saved).forEach(function (emp) { base[emp] = saved[emp]; });
+  return base;
+}
+
 function handlePayrollInputs(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const ym = String(body.ym || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
-  return { ok: true, ym: ym, inputs: payCollect(ym), master: payRead('master') };
+  return { ok: true, ym: ym, inputs: payInputsBase(ym), master: payRead('master') };
+}
+
+/** 儲存/覆蓋某月手動工時；inputs 空＝清除該月手動覆蓋（還原成打卡歸集）。 */
+function handlePayrollInputSet(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = String(body.ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  const inputs = body.inputs || {};
+  const now = nowTaipeiIso();
+  const rows = Object.keys(inputs).map(function (emp) {
+    const a = inputs[emp] || {};
+    return {
+      ym: ym, emp_id: emp,
+      hours: payNum(a.hours), extra_ot: payNum(a.extra_ot),
+      personal_h: payNum(a.personal_h), sick_h: payNum(a.sick_h), annual_h: payNum(a.annual_h),
+      deduct_days: payNum(a.deduct_days), support: JSON.stringify(a.support || []), updated_at: now,
+    };
+  });
+  const others = payRead('input').filter(function (r) { return String(r.ym) !== ym; });
+  payReplaceAll('input', others.concat(rows));
+  return { ok: true, ym: ym, count: rows.length };
 }
 
 function handlePayrollCalc(body) {
@@ -453,8 +500,8 @@ function handlePayrollCalc(body) {
 
   const cfg = payConfig();
   const master = payRead('master').filter(function (m) { return String(m.active).toLowerCase() === 'true'; });
-  const collected = payCollect(ym);
-  const override = body.inputs || {};   // 管理者手改的工時（逐日加班等）
+  const collected = payInputsBase(ym);   // 打卡歸集＋已儲存的手動覆蓋
+  const override = body.inputs || {};   // 本次前端送來的即時編輯（未存的也要算）
 
   const results = master.map(function (e) {
     const c = collected[String(e.emp_id)] || {};
@@ -589,6 +636,7 @@ const PAYROLL_HANDLERS = {
   payroll_config_set:   handlePayrollConfigSet,
   payroll_holiday_set:  handlePayrollHolidaySet,
   payroll_inputs:       handlePayrollInputs,
+  payroll_input_set:    handlePayrollInputSet,
   payroll_calc:         handlePayrollCalc,
   payroll_get:          handlePayrollGet,
   payroll_item_upsert:  handlePayrollItemUpsert,
