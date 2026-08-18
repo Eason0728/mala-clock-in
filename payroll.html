@@ -63,7 +63,8 @@ input[type=text]{text-align:left}
 .slipnet{margin-top:22px;background:var(--black);color:#fff;border-radius:8px;padding:14px 20px;display:flex;justify-content:space-between;align-items:center}
 .slipnet .big{font-size:25px;color:var(--gold)}
 @media print{header,nav,.noprint{display:none!important}body{background:#fff}main{padding:0;max-width:none}
- .panel{display:none!important}.panel.on{display:block!important}.card{border:0;padding:0}}
+ .panel{display:none!important}.panel.on{display:block!important}.card{border:0;padding:0}
+ .exp-person{page-break-inside:avoid}}
 @media(max-width:640px){.slipcols{grid-template-columns:1fr}main{padding:14px 10px 60px}}
 </style>
 </head>
@@ -84,6 +85,7 @@ input[type=text]{text-align:left}
   <button data-p="emp">員工設定</button>
   <button data-p="cfg">參數設定</button>
   <button data-p="slip">薪資單</button>
+  <button data-p="export">匯出</button>
 </nav>
 
 <main>
@@ -179,6 +181,18 @@ input[type=text]{text-align:left}
   <div class="card" style="padding:0" id="slipWrap"></div>
 </section>
 
+<section class="panel" id="p-export">
+  <div class="card noprint">
+    <h2>匯出當月薪資明細</h2>
+    <p class="hint">匯出所選月份（<b id="expYm"></b>）全體同仁的完整薪資明細，含每人加項／扣項逐筆。Excel 供存檔與分析，PDF 供列印與存證。未鎖定的月份匯出的是草稿。</p>
+    <div class="row">
+      <button class="btn" onclick="exportExcel()">匯出 Excel</button>
+      <button class="btn ghost" onclick="exportPDF()">匯出 PDF</button>
+    </div>
+  </div>
+  <div id="exportDetail"></div>
+</section>
+
 </main>
 <div id="msg"></div>
 
@@ -259,6 +273,7 @@ async function doCalc(){
 
 /* ═════ 月結 ═════ */
 function renderRun(){
+  renderExport();
   $('lock').innerHTML=RESULTS.length?`<span class="tag ${STATUS==='final'?'final':'draft'}">${STATUS==='final'?'已鎖定':'草稿'}</span>`:'';
   $('lockBtn').textContent=STATUS==='final'?'解鎖本月':'鎖定本月';
   const t=$('runTbl');
@@ -441,6 +456,60 @@ function exportCSV(){
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
   a.download=`薪資彙整表_${ym()}.csv`;a.click();
+}
+
+/* ═════ 匯出（完整明細）═════ */
+const EXP_HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','hourly_wage','cross_store'];
+function expSub(x){ return x.qty!=null ? `${r2(x.qty)}${EXP_HOURY.includes(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}` : ''; }
+function renderExport(){
+  if($('expYm')) $('expYm').textContent=ym();
+  const w=$('exportDetail'); if(!w) return;
+  if(!RESULTS.length){ w.innerHTML='<div class="card"><div style="text-align:center;padding:34px;color:#8a817a">此月份尚無資料，請先到「月結」計算</div></div>'; return; }
+  const row=x=>`<tr><td style="padding:4px 0;border-bottom:1px dotted var(--line)">${x.item_label}${expSub(x)?` <span style="color:#8a817a;font-size:12px">${expSub(x)}</span>`:''}</td><td style="text-align:right;border-bottom:1px dotted var(--line)">${nf(x.amount)}</td></tr>`;
+  let h=`<div class="card"><div style="font-size:18px;font-weight:900">麻的小辛辣 薪資明細</div>
+    <div style="color:#8a817a;margin:4px 0 16px">${ym().replace('-','年')}月　${STATUS==='final'?'已鎖定':'草稿'}　共 ${RESULTS.length} 人</div>`;
+  RESULTS.forEach(r=>{
+    h+=`<div class="exp-person" style="border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid var(--black);padding-bottom:8px;margin-bottom:8px">
+        <b style="font-size:16px">${r.name}</b>
+        <span style="color:#8a817a;font-size:12.5px">${r.is_full_time?'正職':'計時'}　核定 ${r.total_hours}H${r.base_hours!=null?'　基本 '+r.base_hours+'H':''}${r.ot_paid_hours?'　加班 '+r2(r.ot_paid_hours)+'H':''}</span>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+        <tr><td colspan="2" style="font-weight:800;color:var(--red);padding:2px 0">加項</td></tr>
+        ${r.earn.map(row).join('')}
+        <tr><td style="font-weight:800;padding:4px 0">應收合計</td><td style="text-align:right;font-weight:800">${nf(r.gross)}</td></tr>
+        <tr><td colspan="2" style="font-weight:800;padding:8px 0 2px">扣項</td></tr>
+        ${r.ded.length?r.ded.map(row).join(''):'<tr><td colspan="2" style="color:#8a817a;padding:4px 0">無</td></tr>'}
+        <tr><td style="font-weight:800;padding:4px 0">應付合計</td><td style="text-align:right;font-weight:800">${nf(r.deduction)}</td></tr>
+        <tr><td style="font-weight:900;font-size:15px;padding-top:8px">實付</td><td style="text-align:right;font-weight:900;font-size:15px;padding-top:8px;color:var(--red)">NT$ ${nf(r.net)}</td></tr>
+      </table></div>`;
+  });
+  w.innerHTML=h+'</div>';
+}
+function exportExcel(){
+  if(!RESULTS.length){toast('此月份尚無資料，請先計算',true);return}
+  const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  let sum=`<table border="1"><tr><th>姓名</th><th>型態</th><th>核定時數</th><th>基本工時</th><th>計薪加班</th><th>應收</th><th>應付</th><th>實付</th></tr>`;
+  RESULTS.forEach(r=>{sum+=`<tr><td>${esc(r.name)}</td><td>${r.is_full_time?'正職':'計時'}</td><td>${r.total_hours}</td><td>${r.base_hours??''}</td><td>${r.ot_paid_hours?r2(r.ot_paid_hours):''}</td><td>${Math.round(r.gross)}</td><td>${Math.round(r.deduction)}</td><td>${Math.round(r.net)}</td></tr>`});
+  sum+='</table>';
+  let det=`<table border="1"><tr><th>姓名</th><th>類別</th><th>項目</th><th>時數</th><th>費率</th><th>金額</th></tr>`;
+  RESULTS.forEach(r=>{
+    r.earn.forEach(x=>{det+=`<tr><td>${esc(r.name)}</td><td>加項</td><td>${esc(x.item_label)}</td><td>${x.qty!=null?r2(x.qty):''}</td><td>${x.rate||''}</td><td>${Math.round(x.amount)}</td></tr>`});
+    r.ded.forEach(x=>{det+=`<tr><td>${esc(r.name)}</td><td>扣項</td><td>${esc(x.item_label)}</td><td>${x.qty!=null?r2(x.qty):''}</td><td>${x.rate||''}</td><td>${Math.round(x.amount)}</td></tr>`});
+  });
+  det+='</table>';
+  const html=`<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>
+    <h3>麻的小辛辣 薪資明細 ${ym()}（${STATUS==='final'?'已鎖定':'草稿'}）</h3>
+    <h4>彙總</h4>${sum}<br><h4>逐筆明細</h4>${det}</body></html>`;
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(['﻿'+html],{type:'application/vnd.ms-excel;charset=utf-8'}));
+  a.download=`薪資明細_${ym()}.xls`;a.click();
+  toast('已匯出 Excel');
+}
+function exportPDF(){
+  if(!RESULTS.length){toast('此月份尚無資料，請先計算',true);return}
+  renderExport();
+  window.print();   // @media print 只印目前(匯出)面板的明細；.noprint 控制列自動隱藏
 }
 
 /* ═════ 啟動 ═════ */
