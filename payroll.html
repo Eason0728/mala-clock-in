@@ -220,12 +220,19 @@ function toast(t,bad){const m=$('msg');m.textContent=t;m.style.background=bad?'#
   m.style.display='block';clearTimeout(m._t);m._t=setTimeout(()=>m.style.display='none',2600)}
 
 async function post(action,body){
-  const res=await fetch(API||location.pathname.replace(/[^/]*$/,''),{method:'POST',
-    headers:{'Content-Type':'text/plain'},
-    body:JSON.stringify(Object.assign({action,admin_key:ADMIN_KEY},body||{}))});
-  const j=await res.json();
-  if(!j.ok&&j.message) toast(j.message,true);
-  return j;
+  // Apps Script 跨網域偶爾回 Google HTML 頁（非 JSON）→ res.json() 會爆並中斷整個流程（表面就是「沒反應」）。
+  // 改成：讀純文字自己 parse、非 JSON 時重試一次，仍失敗才跳提示、回 {ok:false}，絕不 throw。
+  const url=API||location.pathname.replace(/[^/]*$/,'');
+  const payload=JSON.stringify(Object.assign({action,admin_key:ADMIN_KEY},body||{}));
+  for(let attempt=0;attempt<2;attempt++){
+    try{
+      const res=await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain'},body:payload});
+      const txt=await res.text();
+      let j; try{ j=JSON.parse(txt); }catch(e){ if(attempt===0) continue; toast('連線異常（伺服器忙碌），請再試一次',true); return {ok:false,error:'bad_response'}; }
+      if(!j.ok&&j.message) toast(j.message,true);
+      return j;
+    }catch(e){ if(attempt===0) continue; toast('連不上伺服器，請稍後再試',true); return {ok:false,error:'network'}; }
+  }
 }
 
 async function bootstrapFromRoster(){
