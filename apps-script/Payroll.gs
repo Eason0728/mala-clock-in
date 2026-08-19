@@ -572,6 +572,36 @@ function handlePayrollGet(body) {
   };
 }
 
+/** 從 run 列＋item 列重建 {results, status}（每人用 payRunItemsToResult 還原 earn/ded）；無資料回 null。 */
+function payBuildRunResults(ym) {
+  const runRows = payRead('run').filter(function (r) { return String(r.ym) === ym; });
+  if (!runRows.length) return null;
+  const items = payRead('item').filter(function (i) { return String(i.ym) === ym; });
+  const byEmp = {};
+  items.forEach(function (i) { (byEmp[String(i.emp_id)] = byEmp[String(i.emp_id)] || []).push(i); });
+  const results = runRows.map(function (run) { return payRunItemsToResult(run, byEmp[String(run.emp_id)] || []); });
+  return { results: results, status: String(runRows[0].status || 'draft') };
+}
+
+/** 切月份一次到位：一個請求回 工時(inputs)＋月結(run)；沒算過且該月有紅字天數就自動算一次。
+ *  取代前端「payroll_inputs→payroll_get→payroll_calc」三次往返，切月份大幅變快。 */
+function handlePayrollMonth(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = String(body.ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  const inputs = payInputsBase(ym);
+  let run = payBuildRunResults(ym);
+  if (!run) {
+    const hol = payRead('holiday').filter(function (h) { return String(h.ym) === ym; })[0];
+    if (hol) {
+      const calc = handlePayrollCalc({ admin_key: body.admin_key, ym: ym, inputs: body.inputs || {} });
+      if (calc && calc.ok) run = { results: calc.results, status: 'draft' };
+    }
+  }
+  return { ok: true, ym: ym, inputs: inputs, run: run,
+           master: payRead('master'), config: payConfig(), holidays: payRead('holiday') };
+}
+
 function handlePayrollItemUpsert(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const it = body.item;
@@ -637,6 +667,7 @@ const PAYROLL_HANDLERS = {
   payroll_holiday_set:  handlePayrollHolidaySet,
   payroll_inputs:       handlePayrollInputs,
   payroll_input_set:    handlePayrollInputSet,
+  payroll_month:        handlePayrollMonth,
   payroll_calc:         handlePayrollCalc,
   payroll_get:          handlePayrollGet,
   payroll_item_upsert:  handlePayrollItemUpsert,

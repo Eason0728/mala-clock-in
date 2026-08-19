@@ -20,8 +20,8 @@ body{font-family:"Noto Sans TC","PingFang TC",sans-serif;background:var(--bg);co
 .brand .logo{width:50px;height:50px;border-radius:13px;background:#fff;flex:none;padding:5px;
  display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.25)}
 .brand .logo img{width:100%;height:100%;object-fit:contain;display:block}
-.brand .bt{font-size:17px;font-weight:900;color:#fff;line-height:1.1}
-.brand .bs{font-size:9.5px;letter-spacing:.22em;color:#8a8078;font-weight:700}
+.brand .bt{font-size:16px;font-weight:900;color:#fff;line-height:1.15;letter-spacing:.01em}
+.brand .bs{font-size:8.5px;letter-spacing:.1em;color:#8a8078;font-weight:700;margin-top:1px}
 .nav-label{font-size:12px;letter-spacing:.12em;color:#7a6f65;font-weight:800;padding:18px 22px 7px}
 #nav{display:flex;flex-direction:column;padding:0 12px 10px;gap:3px;flex:1}
 #nav button{display:flex;align-items:center;gap:13px;width:100%;text-align:left;background:none;border:0;
@@ -126,7 +126,7 @@ input:focus{outline:2px solid var(--gold);outline-offset:-1px;border-color:var(-
   <aside class="sidebar">
     <div class="brand">
       <div class="logo"><img src="assets/emblem.png" alt="小辛辣"></div>
-      <div><div class="bt">小辛辣</div><div class="bs">MILD SPICY</div></div>
+      <div><div class="bt">麻的小辛辣</div><div class="bs">MADE SIAO SIN LA</div></div>
     </div>
     <nav id="nav">
       <div class="nav-label">薪資作業</div>
@@ -335,9 +335,7 @@ async function boot(){
   if(Array.isArray(_hs)) _hs.forEach(h=>{ if(h&&h.ym!=null) HOL[String(h.ym)]=n(h.red_days); });
   else Object.keys(_hs).forEach(k=>HOL[k]=n(_hs[k]));
   renderEmp(); renderCfg();
-  await loadAtt();
-  await loadRun();
-  await autoCalc();
+  await loadMonth();
 }
 /* 切月份/開啟時自動帶出當月數字：未鎖定且尚未算過就靜默試算一次（未設紅字等失敗則安靜略過，不跳錯誤）*/
 async function autoCalc(){
@@ -354,20 +352,28 @@ async function saveAtt(){
   const r=await post('payroll_input_set',{ym:ym(),inputs:ATT});
   if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return}
   toast(ym()+' 工時已儲存（'+r.count+' 人）');
-  await loadRun();await autoCalc();   // 存完重算帶出新數字
+  await doCalc();   // 存完用新工時重算帶出數字
 }
 async function clearAtt(){
   if(!confirm('清除 '+ym()+' 的手動工時？\n\n會刪掉這個月你手動輸入/儲存的工時，還原成打卡自動歸集的值。')) return;
   const r=await post('payroll_input_set',{ym:ym(),inputs:{}});
   if(!r.ok){toast('清除失敗：'+(r.error||''),true);return}
   toast(ym()+' 手動工時已清除');
-  await loadAtt();await loadRun();await autoCalc();
+  await loadMonth();
 }
 async function loadRun(){
   const r=await post('payroll_get',{ym:ym()});
   if(r.ok&&r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'}
   else{RESULTS=[];STATUS='draft'}
   renderRun();renderSlipSel();
+}
+/* 切月份一次到位：一個請求回工時＋月結（必要時後端自動算），比原本三次往返快很多 */
+async function loadMonth(){
+  const r=await post('payroll_month',{ym:ym(),inputs:{}});
+  if(!r.ok) return;
+  ATT=r.inputs||{};
+  if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
+  renderAtt();renderRun();renderSlipSel();
 }
 async function doCalc(){
   const r=await post('payroll_calc',{ym:ym(),inputs:ATT});
@@ -643,7 +649,7 @@ $('nav').addEventListener('click',ev=>{
   const y=p.find(x=>x.type==='year').value, mo=p.find(x=>x.type==='month').value;
   if(y&&mo) $('ym').value=y+'-'+mo;
 })();
-$('ym').addEventListener('change',async()=>{await loadAtt();await loadRun();await autoCalc()});
+$('ym').addEventListener('change',loadMonth);
 boot();
 </script>
 </body>
