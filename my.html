@@ -50,7 +50,7 @@ const API=(location.hostname==='localhost'||location.hostname==='127.0.0.1')?''
 const KEY=new URLSearchParams(location.search).get('k')||'';
 const nf=v=>Math.round(v).toLocaleString('zh-TW');
 const r2=v=>Math.round(v*100)/100;
-const HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','hourly_wage'];
+const HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage'];
 
 async function load(){
   const app=document.getElementById('app');
@@ -74,6 +74,7 @@ async function load(){
       <div class="m" style="text-align:right">發薪日<br>每月 ${j.payday} 日</div></div>
     <div class="hrs">
       <div><span>核定總時數</span><b>${r.total_hours}</b> H</div>
+      ${r.support_hours?`<div><span>支援時數</span><b>${r2(r.support_hours)}</b> H</div>`:''}
       ${r.base_hours!=null?`<div><span>基本工時</span><b>${r.base_hours}</b> H</div>`:''}
       ${r.ot_paid_hours?`<div><span>計薪加班</span><b>${r2(r.ot_paid_hours)}</b> H</div>`:''}
     </div>

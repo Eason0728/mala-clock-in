@@ -167,14 +167,18 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 <section class="panel on" id="p-run">
   <div class="stats" id="runStats"></div>
   <div class="card">
-    <h2>月結結果</h2>
+    <h2>當月薪資總覽 <span id="baseHint" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
     <p class="hint">工時直接從打卡系統的核定紀錄歸集，不需人工搬。金額四捨五入到元。</p>
     <div class="row" style="margin-bottom:14px">
       <button class="btn" onclick="doCalc()">重新計算</button>
-      <button class="btn ghost" onclick="exportCSV()">匯出 CSV</button>
       <button class="btn dark" id="lockBtn" onclick="toggleLock()">鎖定本月</button>
     </div>
     <div class="scroll"><table id="runTbl"></table></div>
+  </div>
+  <div class="card" id="costCard" style="display:none">
+    <h2>人事成本分類（對應損益表）</h2>
+    <p class="hint">依損益表科目彙總本月人事成本。⚠ 保險為<b>員工自付額</b>（從薪水扣的部分）；公司負擔的勞健保、負責人勞健保、團險（年繳）為另計，不在此表。</p>
+    <div class="scroll"><table id="costTbl"></table></div>
   </div>
 </section>
 
@@ -216,26 +220,16 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 
 <section class="panel" id="p-cfg">
   <div class="card">
-    <h2>計算模式</h2>
-    <div class="note">
-      <b>工時不足為什麼預設不倒扣？</b><br>
-      2026-06 陳盈如工時不足 60H，而她的病假 50H ＋ 事假 10H 剛好也是 60H——
-      這段缺勤已經用請假扣款扣過一次了，再倒扣等於<b>同一段缺勤扣兩次</b>。
-      Eason 2026-07-20 定案採「不倒扣」。
-    </div>
-    <div>
-      <label style="font-size:12.5px;font-weight:700;color:var(--muted)">工時不足時</label>
-      <div class="mode" style="margin-top:5px">
-        <button id="m-sf-1" onclick="setMode('shortfall_deduct',true)">倒扣（新制）</button>
-        <button id="m-sf-0" onclick="setMode('shortfall_deduct',false)">只記錄不扣（舊表現況）</button>
-      </div>
-    </div>
-  </div>
-  <div class="card">
     <h2>全域參數</h2>
     <p class="hint">事假費率 ＝ (底薪＋職能＋夜間＋店長＋全勤上限) ÷ 分母天 ÷ 分母時；病假為其一半。</p>
     <div class="grid2" id="cfgGrid"></div>
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">儲存參數</button></div>
+  </div>
+  <div class="card">
+    <h2>公司負擔（每月手動填）</h2>
+    <p class="hint">公司負擔的保險支出逐人算不出來，這裡手動填、之後沿用。會顯示在「當月薪資總覽 → 人事成本分類」的公司負擔區，並計入人事總成本。</p>
+    <div class="grid2" id="coGrid"></div>
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">儲存公司負擔</button></div>
   </div>
   <div class="card">
     <h2>紅字天數（行政院行事曆）</h2>
@@ -401,15 +395,60 @@ function renderStats(){
     +tile('📥','應收總額',nf(g))
     +tile('📤','應付總額',nf(d));
 }
+function costTotals(){
+  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,labor:0,health:0,pension:0,group:0};
+  RESULTS.forEach(r=>{
+    r.earn.forEach(x=>{const k=x.item_key,a=x.amount;
+      if(k==='base_salary')g.base+=a;else if(k==='overtime')g.ot+=a;else if(k==='attend_bonus')g.attend+=a;
+      else if(k==='night_allow'||k==='skill_allow')g.allow+=a;else if(k==='mgr_allow')g.mgr+=a;
+      else if(k==='hourly_wage'||k==='cross_store')g.pt+=a;else g.other+=a;});
+    r.ded.forEach(x=>{const k=x.item_key,a=x.amount;
+      if(k==='labor_ins')g.labor+=a;else if(k==='health_ins')g.health+=a;
+      else if(k==='pension')g.pension+=a;else if(k==='group_ins')g.group+=a;});
+  });
+  return g;
+}
+/* 成本分類的列定義（label, 值），供月結卡與 Excel 共用 */
+const CO_ITEMS=[['co_labor','公司負擔勞保'],['co_health','公司負擔健保'],['co_pension','公司負擔退休金'],['co_owner','負責人勞健保'],['co_group','團險']];
+function costRows(g){
+  const co={}; CO_ITEMS.forEach(([k])=>co[k]=n(CFG[k]));
+  const salaryTotal=g.base+g.ot+g.attend+g.allow+g.mgr+g.pt+g.other;
+  const coTotal=CO_ITEMS.reduce((a,[k])=>a+co[k],0);
+  return [
+    ['h','薪資／人事費用成本'],
+    ['薪資費用／正職',g.base],['薪資費用 加班／正職',g.ot],['薪資費用 全勤／正職',g.attend],
+    ['薪資費用 夜間津貼／職能津貼／正職',g.allow],['薪資費用 店長津貼',g.mgr],
+    ...(g.other?[['薪資費用 其他津貼',g.other]]:[]),['薪資費用／PT',g.pt],
+    ['s','薪資小計',salaryTotal],
+    ['h','公司負擔保險成本'],
+    ...CO_ITEMS.map(([k,lb])=>[lb,co[k]]),
+    ['s','公司負擔小計',coTotal],
+    ['g','人事總成本（薪資＋公司負擔）',salaryTotal+coTotal],
+    ['h','（參考）員工自付額 · 已含在上方薪資內'],
+    ['勞保費',g.labor],['健保費',g.health],['退休金',g.pension],['團險',g.group],
+  ];
+}
+function renderCost(){
+  const card=$('costCard'); if(!card) return;
+  if(!RESULTS.length){card.style.display='none';return}
+  card.style.display='';
+  $('costTbl').innerHTML='<tbody>'+costRows(costTotals()).map(r=>{
+    if(r[0]==='h')return `<tr style="background:#faf7f3;font-weight:900"><td colspan="2">${r[1]}</td></tr>`;
+    if(r[0]==='s')return `<tr style="font-weight:900"><td>${r[1]}</td><td>${nf(r[2])}</td></tr>`;
+    if(r[0]==='g')return `<tr style="font-weight:900;background:var(--black);color:#fff"><td>${r[1]}</td><td style="color:var(--gold)">${nf(r[2])}</td></tr>`;
+    return `<tr><td style="padding-left:22px">${r[0]}</td><td>${nf(r[1])}</td></tr>`;
+  }).join('')+'</tbody>';
+}
 function renderRun(){
   renderStats();
+  renderCost();
   renderExport();
   $('lock').innerHTML=RESULTS.length?`<span class="tag ${STATUS==='final'?'final':'draft'}">${STATUS==='final'?'已鎖定':'草稿'}</span>`:'';
   $('lockBtn').textContent=STATUS==='final'?'解鎖本月':'鎖定本月';
   const t=$('runTbl');
   if(!RESULTS.length){t.innerHTML='<tr><td style="text-align:center;padding:34px;color:#8a817a">按「重新計算」產生本月薪資</td></tr>';
     return}
-  let h=`<thead><tr><th>姓名</th><th>型態</th><th>核定時數</th><th>基本工時</th><th>超時/不足</th>
+  let h=`<thead><tr><th>姓名</th><th>型態</th><th>核定時數</th><th>支援時數</th><th>超時/不足</th>
     <th>計薪加班</th><th>應收</th><th>應付</th><th>實付</th></tr></thead><tbody>`;
   let g=0,d=0,net=0;
   RESULTS.forEach(r=>{
@@ -417,14 +456,16 @@ function renderRun(){
     const s=r.surplus_hours;
     h+=`<tr><td><b>${r.name}</b></td>
       <td style="text-align:left"><span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span>
-      ${r.ratio<1?`<span class="tag draft">折算${Math.round(r.ratio*100)}%</span>`:''}</td>
-      <td>${r.total_hours}</td><td>${r.base_hours==null?'—':r.base_hours}</td>
+      ${(r.is_full_time&&r.ratio<1)?`<span class="tag draft">折算${Math.round(r.ratio*100)}%</span>`:''}</td>
+      <td>${r.total_hours}</td><td>${r.support_hours?r2(r.support_hours):'—'}</td>
       <td>${s==null?'—':(s>=0?'+'+r2(s)+' H':`<span class="bad">${r2(s)} H</span>`)}</td>
       <td>${r.ot_paid_hours==null?'—':r2(r.ot_paid_hours)+' H'}</td>
       <td>${nf(r.gross)}</td><td>${nf(r.deduction)}</td><td class="big">${nf(r.net)}</td></tr>`;
   });
   t.innerHTML=h+`</tbody><tfoot><tr style="background:#f6f2ee;font-weight:900">
     <td colspan="6">合計 ${RESULTS.length} 人</td><td>${nf(g)}</td><td>${nf(d)}</td><td>${nf(net)}</td></tr></tfoot>`;
+  const ftBase=(RESULTS.find(x=>x.is_full_time&&x.base_hours!=null)||{}).base_hours;
+  if($('baseHint')) $('baseHint').textContent=ftBase!=null?`（正職當月基本工時 ${ftBase} 小時）`:'';
 }
 async function toggleLock(){
   const lock=STATUS!=='final';
@@ -436,7 +477,7 @@ async function toggleLock(){
 
 /* ═════ 工時 ═════ */
 const AF=[['hours','本店核定時數'],['extra_ot','額外加班 H'],['personal_h','事假 H'],
-          ['sick_h','病假 H'],['annual_h','特休 H'],['deduct_days','全勤扣減天數']];
+          ['sick_h','病假 H'],['menstrual_h','生理假 H'],['disaster_h','天災假 H'],['annual_h','特休 H'],['deduct_days','全勤扣減天數']];
 function renderAtt(){
   let h='<thead><tr><th>姓名</th>'+AF.map(f=>`<th>${f[1]}</th>`).join('')+'<th>支援時數</th></tr></thead><tbody>';
   MASTER.filter(e=>String(e.active)==='true').forEach(e=>{
@@ -524,8 +565,8 @@ const CF=[['daily_hours','每日基本工時（H）'],['attend_deduct_per_day','
 function renderCfg(){
   $('cfgGrid').innerHTML=CF.map(([k,lb])=>`<div class="fld"><label>${lb}</label>
     <input type="number" step="0.01" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`).join('');
-  ['m-sf-1','m-sf-0'].forEach(i=>$(i).classList.remove('on'));
-  $(CFG.shortfall_deduct?'m-sf-1':'m-sf-0').classList.add('on');
+  if($('coGrid')) $('coGrid').innerHTML=CO_ITEMS.map(([k,lb])=>`<div class="fld"><label>${lb}</label>
+    <input type="number" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`).join('');
   let h='<thead><tr><th>月份</th><th>紅字天數</th><th></th></tr></thead><tbody>';
   Object.keys(HOL).sort().forEach(k=>{
     h+=`<tr><td>${k}</td><td><input type="number" value="${HOL[k]}" onchange="HOL['${k}']=n(this.value)"></td>
@@ -559,7 +600,7 @@ function renderSlipSel(){
 function renderSlip(){
   const r=RESULTS.find(x=>x.emp_id===$('slipSel').value),w=$('slipWrap');
   if(!r){w.innerHTML='<div class="slip" style="text-align:center;color:#8a817a;padding:50px">請先在「月結」頁計算</div>';return}
-  const HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','hourly_wage'];
+  const HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage'];
   const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${HOURY.includes(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   w.innerHTML=`<div class="slip">
     <h3>薪 資 明 細 表</h3>
@@ -567,8 +608,9 @@ function renderSlip(){
     <div class="who"><div>姓名 <b style="font-size:16px">${r.name}</b>
       <span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span></div>
       <div style="text-align:right;font-size:13px">核定總時數 <b>${r.total_hours}</b> H
+      ${r.support_hours?`　支援 <b>${r2(r.support_hours)}</b> H`:''}
       ${r.base_hours!=null?`　基本工時 <b>${r.base_hours}</b> H`:''}
-      ${r.ratio<1?`<br><span style="color:var(--red);font-size:12px">月中到離職，按在職比例 ${Math.round(r.ratio*100)}% 折算</span>`:''}</div></div>
+      ${(r.is_full_time&&r.ratio<1)?`<br><span style="color:var(--red);font-size:12px">月中到離職，按在職比例 ${Math.round(r.ratio*100)}% 折算</span>`:''}</div></div>
     <div class="slipcols">
       <div><h4>加項</h4><table>${r.earn.map(line).join('')}
         <tr style="font-weight:900"><td>應收合計</td><td>${nf(r.gross)}</td></tr></table></div>
@@ -593,7 +635,7 @@ function exportCSV(){
 }
 
 /* ═════ 匯出（完整明細）═════ */
-const EXP_HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','hourly_wage','cross_store'];
+const EXP_HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage','cross_store'];
 function expSub(x){ return x.qty!=null ? `${r2(x.qty)}${EXP_HOURY.includes(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}` : ''; }
 function renderExport(){
   if($('expYm')) $('expYm').textContent=ym();
@@ -623,8 +665,8 @@ function renderExport(){
 function exportExcel(){
   if(!RESULTS.length){toast('此月份尚無資料，請先計算',true);return}
   const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-  let sum=`<table border="1"><tr><th>姓名</th><th>型態</th><th>核定時數</th><th>基本工時</th><th>計薪加班</th><th>應收</th><th>應付</th><th>實付</th></tr>`;
-  RESULTS.forEach(r=>{sum+=`<tr><td>${esc(r.name)}</td><td>${r.is_full_time?'正職':'計時'}</td><td>${r.total_hours}</td><td>${r.base_hours??''}</td><td>${r.ot_paid_hours?r2(r.ot_paid_hours):''}</td><td>${Math.round(r.gross)}</td><td>${Math.round(r.deduction)}</td><td>${Math.round(r.net)}</td></tr>`});
+  let sum=`<table border="1"><tr><th>姓名</th><th>型態</th><th>核定時數</th><th>支援時數</th><th>基本工時</th><th>超時/不足</th><th>計薪加班</th><th>應收</th><th>應付</th><th>實付</th></tr>`;
+  RESULTS.forEach(r=>{sum+=`<tr><td>${esc(r.name)}</td><td>${r.is_full_time?'正職':'計時'}</td><td>${r.total_hours}</td><td>${r.support_hours?r2(r.support_hours):''}</td><td>${r.base_hours??''}</td><td>${r.surplus_hours??''}</td><td>${r.ot_paid_hours?r2(r.ot_paid_hours):''}</td><td>${Math.round(r.gross)}</td><td>${Math.round(r.deduction)}</td><td>${Math.round(r.net)}</td></tr>`});
   sum+='</table>';
   let det=`<table border="1"><tr><th>姓名</th><th>類別</th><th>項目</th><th>時數</th><th>費率</th><th>金額</th></tr>`;
   RESULTS.forEach(r=>{
@@ -632,9 +674,16 @@ function exportExcel(){
     r.ded.forEach(x=>{det+=`<tr><td>${esc(r.name)}</td><td>扣項</td><td>${esc(x.item_label)}</td><td>${x.qty!=null?r2(x.qty):''}</td><td>${x.rate||''}</td><td>${Math.round(x.amount)}</td></tr>`});
   });
   det+='</table>';
+  let cost=`<table border="1"><tr><th>科目</th><th>金額</th></tr>`;
+  costRows(costTotals()).forEach(r=>{
+    if(r[0]==='h') cost+=`<tr><td colspan="2"><b>${esc(r[1])}</b></td></tr>`;
+    else if(r[0]==='s'||r[0]==='g') cost+=`<tr><td><b>${esc(r[1])}</b></td><td><b>${Math.round(r[2])}</b></td></tr>`;
+    else cost+=`<tr><td>${esc(r[0])}</td><td>${Math.round(r[1])}</td></tr>`;
+  });
+  cost+='</table>';
   const html=`<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>
     <h3>麻的小辛辣 薪資明細 ${ym()}（${STATUS==='final'?'已鎖定':'草稿'}）</h3>
-    <h4>彙總</h4>${sum}<br><h4>逐筆明細</h4>${det}</body></html>`;
+    <h4>彙總</h4>${sum}<br><h4>逐筆明細</h4>${det}<br><h4>人事成本分類（對應損益表）</h4>${cost}</body></html>`;
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob(['﻿'+html],{type:'application/vnd.ms-excel;charset=utf-8'}));
   a.download=`薪資明細_${ym()}.xls`;a.click();

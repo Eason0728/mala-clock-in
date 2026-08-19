@@ -17,9 +17,9 @@ const PAY_SHEETS = {
   config:  ['key','value','note'],
   holiday: ['ym','red_days','note'],
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
-            'ot_paid_hours','gross','deduction','net','status','run_at'],
+            'ot_paid_hours','gross','deduction','net','status','run_at','support_hours'],
   item:    ['ym','emp_id','item_type','item_key','item_label','qty','rate','amount','source','memo'],
-  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at'],
+  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h'],
   audit:   ['ts','ym','action','operator','reason'],
 };
 const PAY_SHEET_NAME = {
@@ -72,6 +72,7 @@ function payForceTextCols(sh, cols) {
 /** 整張覆寫（保留表頭）——用於 master / holiday / run / item 的重建 */
 function payReplaceAll(kind, rows) {
   const sh = paySheet(kind), cols = PAY_SHEETS[kind];
+  sh.getRange(1, 1, 1, cols.length).setValues([cols]);   // 同步表頭（schema 只 append，補上新欄不動既有資料）
   payForceTextCols(sh, cols);
   const last = sh.getLastRow();
   if (last > 1) sh.getRange(2, 1, last - 1, cols.length).clearContent();
@@ -121,7 +122,7 @@ function payCollect(ym) {
   function slot(emp) {
     if (!out[emp]) out[emp] = {
       hours: 0, extra_ot: 0,
-      personal_h: 0, sick_h: 0, annual_h: 0, other_h: 0,
+      personal_h: 0, sick_h: 0, menstrual_h: 0, annual_h: 0, disaster_h: 0, other_h: 0,
       deduct_days: 0, _days: {},
     };
     return out[emp];
@@ -165,11 +166,14 @@ function payCollect(ym) {
     const h = Number(l['時數']) || 0;
     const t = String(l['假別'] || '');
     const s = slot(emp);
-    if (t.indexOf('事') !== -1)      s.personal_h += h;
-    else if (t.indexOf('病') !== -1) s.sick_h += h;
-    else if (t.indexOf('特') !== -1) s.annual_h += h;
-    else                             s.other_h += h;
-    markDay(emp, d);
+    const isDisaster = t.indexOf('災') !== -1;   // 天災假
+    if (t.indexOf('事') !== -1)        s.personal_h += h;
+    else if (t.indexOf('生理') !== -1) s.menstrual_h += h;
+    else if (isDisaster)               s.disaster_h += h;
+    else if (t.indexOf('病') !== -1)   s.sick_h += h;
+    else if (t.indexOf('特') !== -1)   s.annual_h += h;
+    else                               s.other_h += h;
+    if (!isDisaster) markDay(emp, d);   // 天災假不計缺勤天數（不扣全勤）
   });
 
   Object.keys(out).forEach(function (emp) {
@@ -190,17 +194,35 @@ function payDaysIn(ym) {
   return new Date(y, m, 0).getDate();
 }
 
+/** 到職／離職日字串（相容 Sheets 把純日期存成 Date 物件的陷阱）→ 'yyyy-MM-dd' */
+function payDateStr(v) {
+  if (v instanceof Date) return v.getFullYear() + '-' + pad2(v.getMonth() + 1) + '-' + pad2(v.getDate());
+  return String(v || '').trim().slice(0, 10);
+}
+
 /** 在職比例：月中到職／離職才折算，整月在職回 1 */
 function payRatio(e, ym) {
   const D = payDaysIn(ym);
   const first = new Date(ym + '-01T00:00:00');
   const last  = new Date(ym + '-' + pad2(D) + 'T00:00:00');
   let s = first, t = last;
-  if (e.hire_date)  { const h = new Date(String(e.hire_date).slice(0, 10) + 'T00:00:00');  if (h > s) s = h; }
-  if (e.leave_date) { const l = new Date(String(e.leave_date).slice(0, 10) + 'T00:00:00'); if (l < t) t = l; }
+  const hs = payDateStr(e.hire_date), ls = payDateStr(e.leave_date);
+  if (hs) { const h = new Date(hs + 'T00:00:00'); if (!isNaN(h) && h > s) s = h; }
+  if (ls) { const l = new Date(ls + 'T00:00:00'); if (!isNaN(l) && l < t) t = l; }
   if (s > t) return 0;
   const d = Math.round((t - s) / 86400000) + 1;
   return Math.min(1, d / D);
+}
+
+/** 計時「年資加給」：任職滿半年「之後的次月」起，時薪 +10。
+ *  例：到職 6/5 → 12/5 滿半年 → 隔年 1 月起（該月 1 號晚於滿半年日才算）。 */
+function payTenurePlus(e, ym) {
+  const hs = payDateStr(e.hire_date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(hs)) return 0;
+  const h = new Date(hs + 'T00:00:00');
+  const sixMo = new Date(h.getFullYear(), h.getMonth() + 6, h.getDate());
+  const monthStart = new Date(ym + '-01T00:00:00');
+  return monthStart > sixMo ? 10 : 0;
 }
 
 function payCalcOne(e, ym, att, cfg, redDays) {
@@ -212,24 +234,31 @@ function payCalcOne(e, ym, att, cfg, redDays) {
   }
 
   let baseH = null, surplus = null, otPaid = null;
+  const supportH = (att.support || []).reduce(function (a, s) { return a + payNum(s.hours); }, 0);
 
   if (ft) {
-    // 本店工時才進基本工時／加班的比較；跨店支援時數不計入本店工時，另以 support 明細計薪
+    // 正職：加班／不足時數以「本店核定＋支援」的總時數對基本工時判斷（支援併入，用員工加班費率）
     baseH = payR2((D - redDays) * payNum(cfg.daily_hours) * P);
-    surplus = payR2(att.hours - baseH);
+    surplus = payR2((att.hours + supportH) - baseH);
     otPaid = payR2((surplus > 0 ? surplus : 0) + payNum(att.extra_ot));
     push(earn, 'base_salary', '底薪', null, null, payNum(e.base) * P);
     if (otPaid > 0) push(earn, 'overtime', '加班', otPaid, payNum(e.ot_rate), otPaid * payNum(e.ot_rate));
-    if (surplus < 0 && cfg.shortfall_deduct) {
-      push(ded, 'shortfall_hours', '不足時數', Math.abs(surplus), payNum(e.ot_rate),
-           Math.abs(surplus) * payNum(e.ot_rate));
+    if (surplus < 0) {
+      // 不足時數倒扣，但先扣掉已請假時數（事假＋病假＋生理假＋特休＋天災假）——那些另有處理，不重複倒扣
+      const paidLeave = payNum(att.personal_h) + payNum(att.sick_h) + payNum(att.menstrual_h) + payNum(att.annual_h) + payNum(att.disaster_h);
+      const shortH = payR2(Math.max(0, Math.abs(surplus) - paidLeave));
+      if (shortH > 0) push(ded, 'shortfall_hours', '不足時數', shortH, payNum(e.ot_rate), shortH * payNum(e.ot_rate));
     }
     if (payNum(e.attend_cap) > 0) {
       push(earn, 'attend_bonus', '全勤獎金', null, null,
            Math.max(0, payNum(e.attend_cap) * P - att.deduct_days * payNum(cfg.attend_deduct_per_day)));
     }
   } else {
-    push(earn, 'hourly_wage', '薪資（時數）', payR2(att.hours), payNum(e.wage), att.hours * payNum(e.wage));
+    // 計時：本店時數 × 時薪；時薪加給＝滿勤(當月本店滿100H且全勤)+10、年資(滿半年次月起)+10，可疊加
+    let w = payNum(e.wage);
+    if (payR2(att.hours) >= 100 && payNum(att.deduct_days) === 0) w += 10;  // E1 滿勤加給
+    w += payTenurePlus(e, ym);                                              // E2 年資加給
+    push(earn, 'hourly_wage', '薪資（時數）', payR2(att.hours), w, att.hours * w);
   }
 
   const pr = ft ? P : 1;
@@ -238,15 +267,17 @@ function payCalcOne(e, ym, att, cfg, redDays) {
   if (payNum(e.mgr_allow))    push(earn, 'mgr_allow', '店長津貼', null, null, payNum(e.mgr_allow) * pr);
   if (payNum(e.editor_allow)) push(earn, 'editor_allow', '小編津貼', null, null, payNum(e.editor_allow));
 
-  /* 跨店支援：每筆＝支援門市／支援時數／支援費率／支援薪資。
-     支援時數不計入本店 hours，所以不會影響上面的基本工時／加班判斷。
-     支援薪資留空時自動＝時數 × 費率；填了就以填的為準（方便處理特殊協議）。 */
-  (att.support || []).forEach(function (s) {
-    const h = payNum(s.hours), rt = payNum(s.rate);
-    const amt = (s.amount === '' || s.amount == null) ? h * rt : payNum(s.amount);
-    if (!amt && !h) return;
-    push(earn, 'cross_store', '支援' + (s.store ? '－' + s.store : ''), h, rt, amt);
-  });
+  /* 跨店支援明細：
+     - 計時：支援時數 × 支援門市費率，獨立加項（留空金額＝時數×費率；填了以填的為準）。
+     - 正職：支援時數已併入上面的總時數、以員工加班費率計酬，這裡不再獨立列（門市/費率仍保留於工時分頁供記錄）。 */
+  if (!ft) {
+    (att.support || []).forEach(function (s) {
+      const h = payNum(s.hours), rt = payNum(s.rate);
+      const amt = (s.amount === '' || s.amount == null) ? h * rt : payNum(s.amount);
+      if (!amt && !h) return;
+      push(earn, 'cross_store', '支援' + (s.store ? '－' + s.store : ''), h, rt, amt);
+    });
+  }
 
   // 請假扣款：費率用「未折算」的全額（費率是職位時薪，不因月中到職而改變）
   const rate = payR0(
@@ -254,9 +285,14 @@ function payCalcOne(e, ym, att, cfg, redDays) {
      payNum(e.mgr_allow) + payNum(e.attend_cap)) / payNum(cfg.leave_div_days) / payNum(cfg.leave_div_hours)
   );
   if (att.personal_h) push(ded, 'personal_leave', '事假', att.personal_h, rate, att.personal_h * rate);
+  if (att.disaster_h) push(ded, 'disaster_leave', '天災假(無薪)', att.disaster_h, rate, att.disaster_h * rate);
   if (att.sick_h) {
     const sr = payR0(rate * payNum(cfg.sick_ratio));
     push(ded, 'sick_leave', '病假', att.sick_h, sr, att.sick_h * sr);
+  }
+  if (att.menstrual_h) {   // 生理假：半薪（同病假，法定）
+    const mr = payR0(rate * payNum(cfg.sick_ratio));
+    push(ded, 'menstrual_leave', '生理假', att.menstrual_h, mr, att.menstrual_h * mr);
   }
   // 特休不扣款
 
@@ -271,7 +307,8 @@ function payCalcOne(e, ym, att, cfg, redDays) {
   const deduct = ded.reduce(function (a, b) { return a + b.amount; }, 0);
   return {
     emp_id: e.emp_id, name: e.name, is_full_time: ft, ratio: P,
-    total_hours: payR2(att.hours), base_hours: baseH, surplus_hours: surplus, ot_paid_hours: otPaid,
+    total_hours: payR2(att.hours), support_hours: payR2(supportH),
+    base_hours: baseH, surplus_hours: surplus, ot_paid_hours: otPaid,
     earn: earn, ded: ded, gross: gross, deduction: deduct, net: gross - deduct, leave_rate: rate,
   };
 }
@@ -293,7 +330,7 @@ function payRunItemsToResult(run, items) {
   const ded  = items.filter(function (i) { return String(i.item_type) === 'deduction'; }).map(toLine);
   return {
     emp_id: run.emp_id, name: run.name, is_full_time: run.is_full_time, ratio: Number(run.ratio),
-    total_hours: Number(run.total_hours), base_hours: Number(run.base_hours),
+    total_hours: Number(run.total_hours), support_hours: Number(run.support_hours) || 0, base_hours: Number(run.base_hours),
     surplus_hours: Number(run.surplus_hours), ot_paid_hours: Number(run.ot_paid_hours),
     earn: earn, ded: ded,
     gross: Number(run.gross), deduction: Number(run.deduction), net: Number(run.net),
@@ -440,7 +477,7 @@ function paySavedInputs(ym) {
     try { sup = r.support ? JSON.parse(r.support) : []; } catch (e) { sup = []; }
     out[String(r.emp_id)] = {
       hours: payNum(r.hours), extra_ot: payNum(r.extra_ot),
-      personal_h: payNum(r.personal_h), sick_h: payNum(r.sick_h), annual_h: payNum(r.annual_h),
+      personal_h: payNum(r.personal_h), sick_h: payNum(r.sick_h), menstrual_h: payNum(r.menstrual_h), disaster_h: payNum(r.disaster_h), annual_h: payNum(r.annual_h),
       deduct_days: payNum(r.deduct_days), support: sup,
     };
   });
@@ -475,7 +512,7 @@ function handlePayrollInputSet(body) {
     return {
       ym: ym, emp_id: emp,
       hours: payNum(a.hours), extra_ot: payNum(a.extra_ot),
-      personal_h: payNum(a.personal_h), sick_h: payNum(a.sick_h), annual_h: payNum(a.annual_h),
+      personal_h: payNum(a.personal_h), sick_h: payNum(a.sick_h), menstrual_h: payNum(a.menstrual_h), disaster_h: payNum(a.disaster_h), annual_h: payNum(a.annual_h),
       deduct_days: payNum(a.deduct_days), support: JSON.stringify(a.support || []), updated_at: now,
     };
   });
@@ -511,6 +548,8 @@ function handlePayrollCalc(body) {
       extra_ot:   o.extra_ot   !== undefined ? payNum(o.extra_ot)   : payNum(c.extra_ot),
       personal_h: o.personal_h !== undefined ? payNum(o.personal_h) : payNum(c.personal_h),
       sick_h:     o.sick_h     !== undefined ? payNum(o.sick_h)     : payNum(c.sick_h),
+      menstrual_h:o.menstrual_h!== undefined ? payNum(o.menstrual_h): payNum(c.menstrual_h),
+      disaster_h: o.disaster_h !== undefined ? payNum(o.disaster_h) : payNum(c.disaster_h),
       annual_h:   o.annual_h   !== undefined ? payNum(o.annual_h)   : payNum(c.annual_h),
       deduct_days:o.deduct_days!== undefined ? payNum(o.deduct_days): payNum(c.deduct_days),
       support:    o.support    !== undefined ? o.support            : (c.support || []),
@@ -541,7 +580,7 @@ function handlePayrollCalc(body) {
 
     runRows.push({
       ym: ym, emp_id: r.emp_id, name: r.name, is_full_time: r.is_full_time, ratio: r.ratio,
-      total_hours: r.total_hours, base_hours: r.base_hours, surplus_hours: r.surplus_hours,
+      total_hours: r.total_hours, support_hours: r.support_hours, base_hours: r.base_hours, surplus_hours: r.surplus_hours,
       ot_paid_hours: r.ot_paid_hours, gross: r.gross, deduction: r.deduction, net: r.net,
       status: 'draft', run_at: now,
     });
