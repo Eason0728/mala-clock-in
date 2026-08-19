@@ -24,13 +24,6 @@
     color: #fff;
     min-height: 100vh;
   }
-  /* 背景真實火焰影片（黑底以 screen 混合去除）＋暖色暈影——與績效系統同一套 */
-  .fireVid {
-    position: fixed; inset: 0; width: 100%; height: 100%;
-    object-fit: cover; object-position: center; z-index: 0; pointer-events: none;
-    mix-blend-mode: screen; filter: brightness(1.05) saturate(1.05) contrast(1.05);
-    opacity: 0.55;
-  }
   .scrim {
     position: fixed; inset: 0; z-index: 0; pointer-events: none;
     background: radial-gradient(85% 74% at 50% 44%, rgba(42,11,3,0) 0%, rgba(34,9,3,.14) 60%, rgba(20,5,1,.4) 100%);
@@ -237,11 +230,48 @@
   #payView .pstate { text-align: center; padding: 40px 16px; color: #8a817a; }
   #payView .pstate .ic { font-size: 34px; margin-bottom: 10px; }
   #payView .pstate .t { font-weight: 900; color: var(--brand-black); font-size: 17px; margin-bottom: 5px; }
+
+  /* ── 天氣動態背景 ─────────────────────────────────────────────
+     依門市當下的天氣切換情境：晴天出太陽、雨天下雨、雷雨打閃電、
+     陰天／起霧飄雲、夜晚換月亮與星星。太陽、雲、雨、雪、閃電都在
+     canvas 上即時算（見檔尾的天氣程式），這裡只負責整片的色調。
+     抓不到天氣資料就完全不套用，畫面維持原本的紅底。 */
+  .wx { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+
+  #wxCanvas { opacity: 0; transition: opacity 1.2s ease; }
+  body.wx-on #wxCanvas { opacity: 1; }
+
+  /* 全畫面色調：雨天壓成冷色、晴天鋪暖光、陰霧轉灰 */
+  .wxTint { background: transparent; transition: background 1.6s ease; }
+  body.wx-clear.wx-day .wxTint  { background: radial-gradient(130% 88% at 84% 0%, rgba(255,206,96,.40) 0%, rgba(255,150,32,.12) 44%, rgba(255,130,16,0) 74%); }
+  body.wx-cloudy.wx-day .wxTint { background: radial-gradient(130% 88% at 84% 0%, rgba(255,206,96,.22) 0%, rgba(122,112,106,.20) 48%, rgba(88,82,78,.30) 100%); }
+  body.wx-overcast .wxTint { background: linear-gradient(180deg, rgba(104,104,110,.50) 0%, rgba(58,58,64,.58) 100%); }
+  body.wx-fog .wxTint      { background: linear-gradient(180deg, rgba(178,176,178,.56) 0%, rgba(138,136,140,.66) 100%); }
+  body.wx-snow .wxTint     { background: linear-gradient(180deg, rgba(30,52,86,.40) 0%, rgba(18,32,58,.50) 100%); }
+  body.wx-rain .wxTint     { background: linear-gradient(180deg, rgba(12,32,58,.54) 0%, rgba(6,18,36,.64) 100%); }
+  body.wx-storm .wxTint    { background: linear-gradient(180deg, rgba(8,20,42,.66) 0%, rgba(3,10,24,.74) 100%); }
+
+  /* 夜間再壓一層深色（與天氣分開，兩者可疊加） */
+  .wxNight { background: linear-gradient(180deg, rgba(3,8,22,.52) 0%, rgba(2,5,14,.68) 100%); opacity: 0; transition: opacity 1.6s ease; }
+  body.wx-night .wxNight { opacity: 1; }
+
+  /* 雷雨的整片閃光（電光本身畫在 canvas 上） */
+  .wxFlash { background: #eaf1ff; opacity: 0; }
+  .wxFlash.on { animation: wxFlash 900ms ease-out; }
+  @keyframes wxFlash { 0% { opacity: 0; } 4% { opacity: .46; } 10% { opacity: .05; } 16% { opacity: .34; } 26% { opacity: 0; } 100% { opacity: 0; } }
+
+  /* 使用者在系統設定關閉動畫時：只留靜態畫面，不做動畫 */
+  @media (prefers-reduced-motion: reduce) {
+    .wxFlash.on { animation: none; }
+  }
 </style>
 </head>
 <body>
-<video class="fireVid" src="assets/fire.mp4" autoplay muted loop playsinline aria-hidden="true"></video>
 <div class="scrim" aria-hidden="true"></div>
+<div class="wx wxTint" aria-hidden="true"></div>
+<div class="wx wxNight" aria-hidden="true"></div>
+<canvas class="wx" id="wxCanvas" aria-hidden="true"></canvas>
+<div class="wx wxFlash" aria-hidden="true"></div>
 <div class="container">
   <header>
     <h1>麻的🔥小辛辣</h1>
@@ -764,22 +794,6 @@
   btnIn.addEventListener('click', function () { doClock('in'); });
   btnOut.addEventListener('click', function () { doClock('out'); });
 
-  // 背景火焰影片（純視覺，不影響打卡）：
-  // 系統設「減少動態」→ 暫停；否則若 autoplay 被瀏覽器政策擋下，主動嘗試播放，
-  // 再不行就等第一次觸碰畫面（使用者手勢）補播——涵蓋 LINE 內建瀏覽器等嚴格環境。
-  (function () {
-    var fv = document.querySelector('.fireVid');
-    if (!fv) return;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      fv.pause(); fv.removeAttribute('autoplay');
-      return;
-    }
-    var tryPlay = function () { var p = fv.play(); if (p && p.catch) p.catch(function () {}); };
-    tryPlay();
-    document.addEventListener('touchstart', tryPlay, { once: true });
-    document.addEventListener('click', tryPlay, { once: true });
-  })();
-
   // ══════ 我的薪資分頁（與打卡共用同一把 key，同仁不必另外領連結）══════
   var tabbar = document.getElementById('tabbar');
   var clockView = document.getElementById('clockView');
@@ -858,6 +872,689 @@
   }
 
   init();
+})();
+</script>
+<script>
+/* 天氣動態背景 ─ 依門市當下天氣切換背景情境（晴／多雲／陰／霧／雨／雷雨／雪，各分日夜）。
+   全部效果都在同一張 canvas 上即時算：雨有景深與動態模糊、玻璃上會積水滑落、地面濺起水花，
+   晴天是真的光束＋鏡頭光暈，雲霧用碎形雜訊算出來的雲層，雷雨會打出有分岔的閃電。
+   天氣來源：Open-Meteo（免金鑰、免註冊），每 20 分鐘更新一次，結果存 localStorage，
+   下次開頁先用上次的天氣立刻上場再背景更新，不會卡住打卡畫面。
+   抓不到天氣就完全不套用情境，畫面維持原本的火焰背景。
+   預覽用：?weather=clear|cloudy|overcast|fog|drizzle|rain|heavy-rain|storm|snow（可再加 &night=1 看夜間版）。 */
+(function () {
+  'use strict';
+
+  var STORE_LAT = 24.7840945;      // 光復店；與 apps-script/Code.gs 的 CONFIG.STORE_LAT/STORE_LNG 同一組座標
+  var STORE_LNG = 121.0157448;
+  var WX_API = 'https://api.open-meteo.com/v1/forecast?latitude=' + STORE_LAT +
+               '&longitude=' + STORE_LNG + '&current=weather_code,is_day&timezone=Asia%2FTaipei';
+  var CACHE_KEY = 'mala_wx_cache';
+  var CACHE_MS = 20 * 60 * 1000;   // 天氣多久重抓一次
+  var TIMEOUT_MS = 6000;           // 抓天氣的逾時：訊號差時不要一直等
+
+  var body = document.body;
+  var canvas = document.getElementById('wxCanvas');
+  var flashEl = document.querySelector('.wxFlash');
+  var ctx = (canvas && canvas.getContext) ? canvas.getContext('2d') : null;
+  var mq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  var reduceMotion = !!(mq && mq.matches);
+
+  var SCENE_CLASSES = ['wx-on', 'wx-day', 'wx-night', 'wx-sun', 'wx-moon',
+                       'wx-clear', 'wx-cloudy', 'wx-overcast', 'wx-fog', 'wx-rain', 'wx-storm', 'wx-snow'];
+
+  function qsParam(n) {
+    try { return new URLSearchParams(window.location.search).get(n); } catch (e) { return null; }
+  }
+  function rand(a, b) { return a + Math.random() * (b - a); }
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  /* WMO 天氣代碼 → 背景情境。power 是雨勢強弱（影響雨量、水滴與水花） */
+  function sceneOf(code, isDay) {
+    var c = Number(code);
+    var s = { kind: 'cloudy', power: 1, day: !!isDay };
+    if (c === 0) s.kind = 'clear';
+    else if (c === 1 || c === 2) s.kind = 'cloudy';
+    else if (c === 3) s.kind = 'overcast';
+    else if (c === 45 || c === 48) s.kind = 'fog';
+    else if (c >= 51 && c <= 57) { s.kind = 'rain'; s.power = 0.5; }            // 毛毛雨
+    else if (c === 61 || c === 66 || c === 80) { s.kind = 'rain'; s.power = 0.85; }
+    else if (c === 63 || c === 81) { s.kind = 'rain'; s.power = 1.2; }
+    else if (c === 65 || c === 67 || c === 82) { s.kind = 'rain'; s.power = 1.7; }  // 大雨
+    else if ((c >= 71 && c <= 77) || c === 85 || c === 86) s.kind = 'snow';
+    else if (c >= 95) { s.kind = 'storm'; s.power = 1.7; }                      // 雷雨
+    return s;
+  }
+
+  var scene = null;
+
+  function apply(next) {
+    if (scene && scene.kind === next.kind && scene.day === next.day && scene.power === next.power) return;
+    scene = next;
+    for (var i = 0; i < SCENE_CLASSES.length; i++) body.classList.remove(SCENE_CLASSES[i]);
+    body.classList.add('wx-' + scene.kind);
+    body.classList.add(scene.day ? 'wx-day' : 'wx-night');
+    if (scene.kind === 'clear' || scene.kind === 'cloudy') {
+      body.classList.add(scene.day ? 'wx-sun' : 'wx-moon');
+    }
+    body.classList.add('wx-on');
+    rebuild();
+    scheduleBolt();
+  }
+
+  /* ══ 畫面素材：雲的碎形雜訊貼圖、雨滴的動態模糊筆刷 ══════════════
+     兩者都只在第一次用到時算一次，之後每一格只是貼上去，手機才跑得動。 */
+
+  var cloudTile = null, dropSprite = null, glassSprites = null, trailSprite = null, spriteDpr = 0;
+
+  function fbm(size, lattice, octaves) {   // 可左右無縫接續的碎形雜訊
+    var out = new Float32Array(size * size), amp = 1, total = 0, o, i;
+    for (o = 0; o < octaves; o++) {
+      var L = lattice << o, grid = new Float32Array(L * L);
+      for (i = 0; i < L * L; i++) grid[i] = Math.random();
+      var cell = size / L;
+      for (var y = 0; y < size; y++) {
+        var gy = y / cell, iy = Math.floor(gy), fy = gy - iy;
+        fy = fy * fy * (3 - 2 * fy);
+        var y0 = ((iy % L) + L) % L, y1 = (y0 + 1) % L;
+        for (var x = 0; x < size; x++) {
+          var gx = x / cell, ix = Math.floor(gx), fx = gx - ix;
+          fx = fx * fx * (3 - 2 * fx);
+          var x0 = ((ix % L) + L) % L, x1 = (x0 + 1) % L;
+          var top = grid[y0 * L + x0] + (grid[y0 * L + x1] - grid[y0 * L + x0]) * fx;
+          var bot = grid[y1 * L + x0] + (grid[y1 * L + x1] - grid[y1 * L + x0]) * fx;
+          out[y * size + x] += amp * (top + (bot - top) * fy);
+        }
+      }
+      total += amp; amp *= 0.5;
+    }
+    for (i = 0; i < out.length; i++) out[i] /= total;
+    return out;
+  }
+
+  function buildCloudTile() {
+    var S = 256, n = fbm(S, 3, 4);
+    var c = document.createElement('canvas');
+    c.width = S; c.height = S;
+    var g = c.getContext('2d'), img = g.createImageData(S, S), d = img.data;
+    for (var y = 0; y < S; y++) {
+      var edge = Math.sin(Math.PI * (y / (S - 1)));      // 上下淡出，貼上去才沒有硬邊
+      edge = edge * edge;
+      for (var x = 0; x < S; x++) {
+        var v = (n[y * S + x] - 0.42) * 2.5;             // 拉對比：讓雲有厚薄，不是一片均勻的霧
+        v = v < 0 ? 0 : (v > 1 ? 1 : v);
+        var p = (y * S + x) * 4;
+        d[p] = 255; d[p + 1] = 253; d[p + 2] = 250;
+        d[p + 3] = Math.round(255 * v * edge);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    cloudTile = c;
+  }
+
+  function buildDropSprite() {   // 一顆帶動態模糊的雨滴：中間亮、頭尾散開
+    var W = 16, H = 96;
+    var c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    var g = c.getContext('2d');
+    var lin = g.createLinearGradient(0, 0, 0, H);
+    lin.addColorStop(0, 'rgba(255,255,255,0)');
+    lin.addColorStop(0.35, 'rgba(226,240,255,.55)');
+    lin.addColorStop(0.82, 'rgba(255,255,255,.95)');
+    lin.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = lin;
+    g.fillRect(0, 0, W, H);
+    var mask = g.createLinearGradient(0, 0, W, 0);                    // 橫向羽化，邊緣不銳利
+    mask.addColorStop(0, 'rgba(0,0,0,0)');
+    mask.addColorStop(0.5, 'rgba(0,0,0,1)');
+    mask.addColorStop(1, 'rgba(0,0,0,0)');
+    g.globalCompositeOperation = 'destination-in';
+    g.fillStyle = mask;
+    g.fillRect(0, 0, W, H);
+    dropSprite = c;
+  }
+
+  function buildGlassSprites() {
+    glassSprites = [];
+    for (var i = 0; i < 6; i++) {
+      var r = 1.1 + i * 0.92, S = Math.ceil((r * 1.06 + 2) * 2);
+      var c = document.createElement('canvas');
+      c.width = Math.ceil(S * DPR); c.height = Math.ceil(S * DPR);
+      var g = c.getContext('2d');
+      g.setTransform(DPR, 0, 0, DPR, 0, 0);
+      var x = S / 2, y = S / 2;
+      // 水珠把背景折射掉：上緣偏暗、下緣把光聚起來，再加一點高光
+      var rim = g.createRadialGradient(x, y - r * 0.34, r * 0.1, x, y, r * 1.02);
+      rim.addColorStop(0, 'rgba(20,7,3,.30)');
+      rim.addColorStop(0.75, 'rgba(20,7,3,.16)');
+      rim.addColorStop(1, 'rgba(20,7,3,0)');
+      g.fillStyle = rim;
+      g.beginPath(); g.ellipse(x, y, r, r * 1.06, 0, 0, Math.PI * 2); g.fill();
+      var lens = g.createRadialGradient(x + r * 0.2, y + r * 0.42, 0, x + r * 0.1, y + r * 0.3, r * 0.86);
+      lens.addColorStop(0, 'rgba(255,238,214,.34)');
+      lens.addColorStop(0.6, 'rgba(255,224,188,.13)');
+      lens.addColorStop(1, 'rgba(255,220,180,0)');
+      g.fillStyle = lens;
+      g.beginPath(); g.ellipse(x, y, r, r * 1.06, 0, 0, Math.PI * 2); g.fill();
+      if (r > 1.6) {                                   // 大顆的才看得到高光
+        g.fillStyle = 'rgba(255,252,246,.5)';
+        g.beginPath(); g.ellipse(x - r * 0.32, y - r * 0.42, r * 0.2, r * 0.15, -0.5, 0, Math.PI * 2); g.fill();
+      }
+      glassSprites.push({ c: c, r: r, s: S });
+    }
+    var t = document.createElement('canvas');          // 滑下去留的水痕
+    t.width = 8; t.height = 64;
+    var tg = t.getContext('2d');
+    var lin = tg.createLinearGradient(0, 0, 0, 64);
+    lin.addColorStop(0, 'rgba(236,246,255,0)');
+    lin.addColorStop(1, 'rgba(236,246,255,.85)');
+    tg.fillStyle = lin; tg.fillRect(0, 0, 8, 64);
+    trailSprite = t;
+    spriteDpr = DPR;
+  }
+
+  /* ══ 粒子 ══════════════════════════════════════════════════════ */
+
+  var W = 0, H = 0, lastW = 0, lastH = 0, DPR = 1;
+  var drops = [], glass = [], splashes = [], flakes = [], stars = [];
+  var wind = 0, rainOn = false, snowOn = false, starsOn = false;
+  var sunOn = false, moonOn = false, cloudA = 0, cloudLow = false;
+  var rafId = 0, lastTs = 0, clock = 0;
+
+  function sizeCanvas() {
+    DPR = Math.min(window.devicePixelRatio || 1, 1.75);   // 背景效果不需要滿版視網膜，省一半算力
+    W = window.innerWidth || document.documentElement.clientWidth;
+    H = window.innerHeight || document.documentElement.clientHeight;
+    lastW = W; lastH = H;
+    canvas.width = Math.max(1, Math.round(W * DPR));
+    canvas.height = Math.max(1, Math.round(H * DPR));
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  function newDrop(seeded) {
+    var z = Math.random();                      // 景深：0 最遠（細、慢、淡）1 最近（粗、快、亮）
+    return {
+      x: rand(-0.25 * W, 1.1 * W),
+      y: seeded ? rand(-H, H) : rand(-H * 0.4, -20),
+      z: z,
+      len: (26 + z * 74) * (0.6 + scene.power * 0.5),
+      sp: (760 + z * 900) * (0.65 + scene.power * 0.45)
+    };
+  }
+  function newGlass(seeded) {
+    var i = Math.random() < 0.62 ? (Math.random() < 0.6 ? 0 : 1) : (2 + Math.floor(Math.random() * 4));
+    return {
+      x: rand(0, W), y: seeded ? rand(0, H) : rand(-40, 0), i: i, r: glassSprites[i].r,
+      life: rand(4, 16),                        // 停多久才開始滑
+      vy: 0, trail: 0
+    };
+  }
+  function newFlake(seeded) {
+    var z = Math.random();
+    return { x: rand(0, W), y: seeded ? rand(0, H) : rand(-H * 0.3, -8),
+             r: 1 + z * 3, sp: 24 + z * 56, ph: rand(0, Math.PI * 2), sw: rand(10, 30), z: z };
+  }
+  function newStar() {
+    return { x: rand(0, W), y: rand(0, H * 0.68), r: rand(0.5, 1.7),
+             ph: rand(0, Math.PI * 2), sp: rand(0.5, 1.8), a: rand(0.32, 1) };
+  }
+
+  function rebuild() {
+    if (!ctx || !scene) return;
+    stopLoop();
+    sizeCanvas();
+    var k = scene.kind, span = Math.sqrt(W * H) / 26, i, n;
+
+    rainOn = (k === 'rain' || k === 'storm');
+    snowOn = (k === 'snow');
+    starsOn = (k === 'clear' && !scene.day);
+    sunOn = (k === 'clear' || k === 'cloudy') && scene.day;
+    moonOn = (k === 'clear' || k === 'cloudy') && !scene.day;
+    cloudLow = (k === 'fog');
+    cloudA = k === 'cloudy' ? 0.34 : k === 'overcast' ? 0.6 : k === 'fog' ? 0.72
+           : k === 'rain' ? 0.5 : k === 'storm' ? 0.6 : k === 'snow' ? 0.5 : 0;
+    if (!scene.day) cloudA *= 0.5;
+
+    drops = []; glass = []; splashes = []; flakes = []; stars = [];
+    wind = k === 'storm' ? 0.38 : 0.17;
+
+    if (rainOn) {
+      if (!dropSprite) buildDropSprite();
+      if (!glassSprites || spriteDpr !== DPR) buildGlassSprites();
+      n = clamp(Math.round(span * 2.6 * scene.power), 24, 170);
+      for (i = 0; i < n; i++) drops.push(newDrop(true));
+      n = clamp(Math.round(span * 0.85 * scene.power), 10, 54);      // 玻璃上的積水
+      for (i = 0; i < n; i++) glass.push(newGlass(true));
+    }
+    if (snowOn) {
+      n = clamp(Math.round(span * 1.9), 20, 120);
+      for (i = 0; i < n; i++) flakes.push(newFlake(true));
+    }
+    if (starsOn) {
+      n = clamp(Math.round(span * 1.6), 24, 110);
+      for (i = 0; i < n; i++) stars.push(newStar());
+    }
+    if (cloudA > 0 && !cloudTile) buildCloudTile();
+
+    if (reduceMotion) { drawFrame(0); return; }   // 關閉動畫時只畫靜止的一幀
+    startLoop();
+  }
+
+  /* ══ 每一格的運算 ══════════════════════════════════════════════ */
+
+  function step(dt) {
+    var i, p;
+    clock += dt;
+    for (i = 0; i < drops.length; i++) {
+      p = drops[i];
+      p.y += p.sp * dt;
+      p.x += p.sp * wind * dt;
+      if (p.y > H + 40 || p.x > W + 60) {
+        if (p.z > 0.62 && splashes.length < 16) {                    // 近處的雨才看得到落地水花
+          splashes.push({ x: p.x, y: rand(H * 0.965, H * 1.005), t: 0, life: rand(0.3, 0.52), r: rand(5, 12) * p.z });
+        }
+        drops[i] = newDrop(false);
+      }
+    }
+    for (i = splashes.length - 1; i >= 0; i--) {
+      splashes[i].t += dt;
+      if (splashes[i].t > splashes[i].life) splashes.splice(i, 1);
+    }
+    for (i = 0; i < glass.length; i++) {
+      p = glass[i];
+      p.life -= dt;
+      if (p.life <= 0) {                                             // 積到夠重就開始往下滑
+        p.vy += (30 + p.r * 26) * dt;
+        p.y += p.vy * dt;
+        p.x += Math.sin(p.y * 0.03) * 8 * dt;
+        p.trail = 1;
+      }
+      if (p.y - p.r > H) glass[i] = newGlass(false);
+    }
+    for (i = 0; i < flakes.length; i++) {
+      p = flakes[i];
+      p.ph += dt;
+      p.y += p.sp * dt;
+      p.x += Math.sin(p.ph) * p.sw * dt;
+      if (p.y > H + 8) { p.y = rand(-H * 0.25, -8); p.x = rand(0, W); }
+      if (p.x < -14) p.x = W + 10; else if (p.x > W + 14) p.x = -10;
+    }
+    for (i = 0; i < stars.length; i++) stars[i].ph += stars[i].sp * dt;
+    if (bolt) {
+      bolt.t += dt;
+      if (bolt.t > bolt.life) bolt = null;
+    }
+  }
+
+  /* ── 雲層：兩層碎形雲以不同速度飄，霧就壓低放大 ── */
+  function drawClouds() {
+    if (!(cloudA > 0) || !cloudTile) return;
+    var bands = cloudLow
+      ? [{ y: 0.10, h: 0.52, w: 2.1, sp: 5.5, a: 1 }, { y: 0.46, h: 0.6, w: 2.7, sp: 3.4, a: 0.92 }]
+      : [{ y: -0.06, h: 0.42, w: 1.7, sp: 9, a: 1 }, { y: 0.16, h: 0.5, w: 2.4, sp: 5.5, a: 0.6 }];
+    for (var b = 0; b < bands.length; b++) {
+      var s = bands[b], tw = W * s.w, th = H * s.h, ty = H * s.y;
+      var x = -((clock * s.sp) % tw);
+      ctx.globalAlpha = cloudA * s.a;
+      for (var k = 0; k < 2 + Math.ceil(W / tw); k++) ctx.drawImage(cloudTile, x + k * tw, ty, tw, th);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* ── 太陽：光暈＋放射光束＋鏡頭光斑（相機對著太陽拍的樣子）──
+     整組先烘成一張離屏貼圖，每格只做「貼圖＋緩慢旋轉的光束層」，省掉幾十個漸層 */
+  var sunLayer = null, rayLayer = null, sunKey = '';
+
+  function buildSun() {
+    var sx = W * 0.84, sy = H * 0.045, R = Math.max(W, H) * 1.15;
+    var mk = function () {
+      var c = document.createElement('canvas');
+      c.width = Math.ceil(W * DPR); c.height = Math.ceil(H * DPR);
+      var g = c.getContext('2d');
+      g.setTransform(DPR, 0, 0, DPR, 0, 0);
+      return { c: c, g: g };
+    };
+    var base = mk(), g = base.g, i;
+
+    var halo = g.createRadialGradient(sx, sy, 0, sx, sy, R * 0.42);
+    halo.addColorStop(0, 'rgba(255,248,214,.8)');
+    halo.addColorStop(0.06, 'rgba(255,231,150,.46)');
+    halo.addColorStop(0.26, 'rgba(255,193,86,.16)');
+    halo.addColorStop(1, 'rgba(255,170,40,0)');
+    g.fillStyle = halo;
+    g.fillRect(0, 0, W, H);
+
+    var core = g.createRadialGradient(sx, sy, 0, sx, sy, W * 0.15);
+    core.addColorStop(0, 'rgba(255,255,250,.95)');
+    core.addColorStop(0.5, 'rgba(255,240,180,.35)');
+    core.addColorStop(1, 'rgba(255,220,120,0)');
+    g.fillStyle = core;
+    g.fillRect(0, 0, W, H);
+
+    var cx = W / 2, cy = H / 2, dx = cx - sx, dy = cy - sy;   // 鏡頭光斑：沿著太陽→畫面中心那條線
+    var ghosts = [[0.42, 0.055, 'rgba(255,196,120,.10)'], [0.72, 0.03, 'rgba(180,220,255,.10)'],
+                  [1.15, 0.075, 'rgba(255,170,90,.075)'], [1.5, 0.042, 'rgba(210,190,255,.07)']];
+    for (i = 0; i < ghosts.length; i++) {
+      var gx = sx + dx * ghosts[i][0], gy = sy + dy * ghosts[i][0], gr = W * ghosts[i][1];
+      var gg = g.createRadialGradient(gx, gy, gr * 0.2, gx, gy, gr);
+      gg.addColorStop(0, ghosts[i][2]);
+      gg.addColorStop(0.72, ghosts[i][2]);
+      gg.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = gg;
+      g.beginPath(); g.arc(gx, gy, gr, 0, Math.PI * 2); g.fill();
+    }
+    var streak = g.createLinearGradient(sx - W * 0.6, sy, sx + W * 0.6, sy);   // 橫向散光
+    streak.addColorStop(0, 'rgba(255,214,150,0)');
+    streak.addColorStop(0.5, 'rgba(255,236,196,.16)');
+    streak.addColorStop(1, 'rgba(255,214,150,0)');
+    g.fillStyle = streak;
+    g.fillRect(0, sy - 5, W, 10);
+    sunLayer = base.c;
+
+    var rays = mk(); g = rays.g;
+    for (i = 0; i < 15; i++) {                           // 光束：寬窄不一
+      var a0 = i * 2.39996;                              // 黃金角，分佈才不會規律得像圖案
+      var wdt = 0.012 + 0.035 * (0.5 + 0.5 * Math.sin(i * 12.9898));
+      var amp = 0.05 + 0.06 * (0.5 + 0.5 * Math.sin(i * 7.13));
+      var lg = g.createLinearGradient(sx, sy, sx + Math.cos(a0) * R, sy + Math.sin(a0) * R);
+      lg.addColorStop(0, 'rgba(255,240,190,' + amp.toFixed(3) + ')');
+      lg.addColorStop(0.42, 'rgba(255,214,120,' + (amp * 0.42).toFixed(3) + ')');
+      lg.addColorStop(1, 'rgba(255,190,80,0)');
+      g.fillStyle = lg;
+      g.beginPath();
+      g.moveTo(sx, sy);
+      g.lineTo(sx + Math.cos(a0 - wdt) * R, sy + Math.sin(a0 - wdt) * R);
+      g.lineTo(sx + Math.cos(a0 + wdt) * R, sy + Math.sin(a0 + wdt) * R);
+      g.closePath();
+      g.fill();
+    }
+    rayLayer = rays.c;
+    sunKey = W + 'x' + H + '@' + DPR;
+  }
+
+  function drawSun() {
+    if (sunKey !== W + 'x' + H + '@' + DPR) buildSun();
+    var sx = W * 0.84, sy = H * 0.045;
+    var pulse = 0.92 + 0.08 * Math.sin(clock * 0.7);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = pulse;
+    ctx.drawImage(sunLayer, 0, 0, W, H);
+    ctx.save();                                          // 光束整層繞太陽緩慢轉
+    ctx.translate(sx, sy);
+    ctx.rotate(clock * 0.016);
+    ctx.translate(-sx, -sy);
+    ctx.globalAlpha = 0.75 + 0.25 * Math.sin(clock * 0.45);
+    ctx.drawImage(rayLayer, 0, 0, W, H);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ── 月亮：月面有紋理、外圈有大氣散射的光暈 ── */
+  function drawMoon() {
+    var mx = W * 0.8, my = H * 0.1, r = Math.min(W, H) * 0.062;
+    ctx.globalCompositeOperation = 'lighter';
+    var halo = ctx.createRadialGradient(mx, my, r * 0.6, mx, my, r * 7);
+    halo.addColorStop(0, 'rgba(196,216,255,.3)');
+    halo.addColorStop(0.35, 'rgba(150,180,255,.08)');
+    halo.addColorStop(1, 'rgba(120,160,255,0)');
+    ctx.fillStyle = halo;
+    ctx.fillRect(0, 0, W, H);
+    var disc = ctx.createRadialGradient(mx - r * 0.28, my - r * 0.3, r * 0.1, mx, my, r);
+    disc.addColorStop(0, 'rgba(255,255,252,1)');
+    disc.addColorStop(0.62, 'rgba(238,242,252,.96)');
+    disc.addColorStop(0.94, 'rgba(206,218,240,.9)');
+    disc.addColorStop(1, 'rgba(190,206,235,0)');
+    ctx.fillStyle = disc;
+    ctx.beginPath(); ctx.arc(mx, my, r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalCompositeOperation = 'source-atop';       // 月海：幾塊淡淡的陰影
+    var maria = [[-0.26, -0.20, 0.62], [0.22, 0.26, 0.52], [0.10, -0.36, 0.38]];
+    for (var i = 0; i < maria.length; i++) {
+      var ox = mx + r * maria[i][0], oy = my + r * maria[i][1], orr = r * maria[i][2];
+      var mg = ctx.createRadialGradient(ox, oy, 0, ox, oy, orr);
+      mg.addColorStop(0, 'rgba(126,138,164,.15)');
+      mg.addColorStop(0.55, 'rgba(126,138,164,.09)');
+      mg.addColorStop(1, 'rgba(126,138,164,0)');
+      ctx.fillStyle = mg;
+      ctx.beginPath(); ctx.arc(ox, oy, orr, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function drawStars() {
+    for (var i = 0; i < stars.length; i++) {
+      var p = stars[i], a = p.a * (0.45 + 0.55 * Math.sin(p.ph));
+      ctx.fillStyle = 'rgba(255,252,238,' + (a > 0 ? a.toFixed(3) : 0) + ')';
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  /* ── 雨：整片一起旋轉，貼上帶動態模糊的雨滴筆刷 ── */
+  function drawRain() {
+    var ang = Math.atan(wind);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.rotate(ang);
+    var cos = Math.cos(ang), sin = Math.sin(ang);
+    for (var i = 0; i < drops.length; i++) {
+      var p = drops[i];
+      var rx = p.x * cos + p.y * sin, ry = -p.x * sin + p.y * cos;   // 轉到旋轉後的座標
+      var w = (0.7 + p.z * 1.9);
+      ctx.globalAlpha = 0.12 + p.z * 0.5;
+      ctx.drawImage(dropSprite, rx - w / 2, ry, w, p.len);
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function drawSplashes() {
+    ctx.globalCompositeOperation = 'lighter';
+    for (var i = 0; i < splashes.length; i++) {
+      var s = splashes[i], k = s.t / s.life, r = s.r * (0.3 + k * 1.9);
+      ctx.strokeStyle = 'rgba(226,240,255,' + ((1 - k) * 0.24).toFixed(3) + ')';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.ellipse(s.x, s.y, r, r * 0.32, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      if (k < 0.5) {                                   // 濺起來的小水珠
+        var up = Math.sin(k * Math.PI) * s.r * 1.5;
+        ctx.fillStyle = 'rgba(240,248,255,' + ((0.5 - k) * 0.7).toFixed(3) + ')';
+        ctx.beginPath(); ctx.arc(s.x - r * 0.5, s.y - up, 1.1, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(s.x + r * 0.55, s.y - up * 0.8, 1, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ── 玻璃上的積水：暗邊＋亮底＋高光，滑下去會留水痕 ── */
+  function drawGlass() {
+    for (var i = 0; i < glass.length; i++) {
+      var p = glass[i], r = p.r, sp = glassSprites[p.i];
+      if (p.trail && p.vy > 6) {                       // 水痕
+        var tl = Math.min(p.vy * 0.5, 90);
+        ctx.globalAlpha = 0.16;
+        ctx.drawImage(trailSprite, p.x - r * 0.42, p.y - tl, r * 0.84, tl);
+        ctx.globalAlpha = 1;
+      }
+      ctx.drawImage(sp.c, p.x - sp.s / 2, p.y - sp.s / 2, sp.s, sp.s);
+    }
+  }
+  function drawSnow() {
+    for (var i = 0; i < flakes.length; i++) {
+      var p = flakes[i];
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.32 + p.z * 0.55).toFixed(3) + ')';
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  /* ── 閃電：中點位移法畫出有分岔的電光 ── */
+  var bolt = null, boltTimer = 0;
+
+  function makeBolt() {
+    var x = rand(W * 0.15, W * 0.85), pts = [{ x: x, y: -20 }], segs = [];
+    var y = -20, endY = rand(H * 0.5, H * 0.92);
+    while (y < endY) {
+      y += rand(H * 0.05, H * 0.13);
+      x += rand(-W * 0.09, W * 0.09);
+      pts.push({ x: x, y: y });
+      if (Math.random() < 0.32 && pts.length > 2) {                  // 分岔
+        var bx = x, by = y, br = [{ x: bx, y: by }];
+        for (var k = 0; k < 3; k++) {
+          bx += rand(-W * 0.11, W * 0.11); by += rand(H * 0.03, H * 0.08);
+          br.push({ x: bx, y: by });
+        }
+        segs.push(br);
+      }
+    }
+    return { main: pts, branches: segs, t: 0, life: 0.5 };
+  }
+
+  function drawBolt() {
+    if (!bolt) return;
+    var k = bolt.t / bolt.life;
+    var flick = (k < 0.12 || (k > 0.2 && k < 0.28) || (k > 0.4 && k < 0.46)) ? 1 : 0.22;
+    var a = (1 - k) * flick;
+    if (a <= 0.01) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    function stroke(pts, w, color) {
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.strokeStyle = color; ctx.lineWidth = w; ctx.stroke();
+    }
+    stroke(bolt.main, 13, 'rgba(150,190,255,' + (a * 0.16).toFixed(3) + ')');   // 外層輝光
+    stroke(bolt.main, 5, 'rgba(206,226,255,' + (a * 0.5).toFixed(3) + ')');
+    stroke(bolt.main, 1.7, 'rgba(255,255,255,' + a.toFixed(3) + ')');           // 核心
+    for (var i = 0; i < bolt.branches.length; i++) {
+      stroke(bolt.branches[i], 4, 'rgba(180,208,255,' + (a * 0.22).toFixed(3) + ')');
+      stroke(bolt.branches[i], 1.1, 'rgba(255,255,255,' + (a * 0.7).toFixed(3) + ')');
+    }
+    ctx.restore();
+  }
+
+  function scheduleBolt() {
+    clearTimeout(boltTimer);
+    bolt = null;
+    if (reduceMotion || !scene || scene.kind !== 'storm') return;
+    boltTimer = setTimeout(function () {
+      if (!document.hidden) {
+        bolt = makeBolt();
+        if (flashEl) {
+          flashEl.classList.remove('on');
+          void flashEl.offsetWidth;             // 重觸發動畫
+          flashEl.classList.add('on');
+        }
+      }
+      scheduleBolt();
+    }, 5000 + Math.random() * 11000);
+  }
+
+  function drawFrame() {
+    ctx.clearRect(0, 0, W, H);
+    if (cloudA > 0) drawClouds();
+    if (starsOn) drawStars();
+    if (sunOn) drawSun();
+    if (moonOn) drawMoon();
+    if (snowOn) drawSnow();
+    if (rainOn) { drawRain(); drawSplashes(); drawGlass(); }
+    if (bolt) drawBolt();
+  }
+
+  function frame(ts) {
+    rafId = window.requestAnimationFrame(frame);
+    var dt = lastTs ? (ts - lastTs) / 1000 : 0.016;
+    lastTs = ts;
+    if (dt > 0.05) dt = 0.05;                   // 切回分頁時不要一次跳太多
+    step(dt);
+    drawFrame();
+  }
+  function startLoop() {
+    if (rafId || reduceMotion || !scene || !window.requestAnimationFrame) return;
+    lastTs = 0;
+    rafId = window.requestAnimationFrame(frame);
+  }
+  function stopLoop() {
+    if (rafId) { window.cancelAnimationFrame(rafId); rafId = 0; }
+  }
+
+  /* ══ 取天氣 ══════════════════════════════════════════════════ */
+  function readCache() {
+    try {
+      var j = JSON.parse(window.localStorage.getItem(CACHE_KEY) || 'null');
+      if (j && isFinite(j.code) && isFinite(j.t)) return j;
+    } catch (e) {}
+    return null;
+  }
+  function writeCache(code, day) {
+    try {
+      window.localStorage.setItem(CACHE_KEY, JSON.stringify({ code: code, day: day ? 1 : 0, t: Date.now() }));
+    } catch (e) {}
+  }
+  function fetchWeather() {
+    var ctl = window.AbortController ? new window.AbortController() : null;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, TIMEOUT_MS);
+    return fetch(WX_API, ctl ? { signal: ctl.signal } : undefined).then(function (r) {
+      if (!r.ok) throw new Error('http ' + r.status);
+      return r.json();
+    }).then(function (j) {
+      clearTimeout(timer);
+      var cur = j && j.current;
+      var code = cur ? Number(cur.weather_code) : NaN;
+      if (!isFinite(code)) throw new Error('bad payload');
+      var day = (cur.is_day === 1 || cur.is_day === true);
+      writeCache(code, day);
+      return { code: code, day: day };
+    }, function (err) { clearTimeout(timer); throw err; });
+  }
+  function refresh() {
+    if (forced || !window.fetch || !window.Promise) return;   // 預覽模式與不支援的瀏覽器都不抓
+    var c = readCache();
+    if (c && Date.now() - c.t < CACHE_MS) return;             // 還新鮮就不重抓
+    fetchWeather().then(function (w) { apply(sceneOf(w.code, w.day)); }, function () {});
+  }
+
+  function forcedScene(nameRaw) {
+    var codes = { clear: 0, sunny: 0, cloudy: 2, overcast: 3, fog: 45, drizzle: 53,
+                  rain: 63, 'heavy-rain': 65, storm: 95, thunder: 95, snow: 73 };
+    var name = String(nameRaw).toLowerCase();
+    var code = Object.prototype.hasOwnProperty.call(codes, name) ? codes[name] : 0;
+    return sceneOf(code, qsParam('night') !== '1');
+  }
+
+  window.addEventListener('resize', function () {
+    if (!scene || !ctx) return;
+    // 手機捲動時網址列伸縮也會觸發 resize，高度小幅變化只調畫布、不重排粒子
+    if (Math.abs(window.innerWidth - lastW) < 2 && Math.abs(window.innerHeight - lastH) < 140) {
+      sizeCanvas();
+    } else {
+      rebuild();
+    }
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) { stopLoop(); clearTimeout(boltTimer); return; }
+    startLoop();
+    scheduleBolt();
+    refresh();                                   // 回到前景順便看看天氣變了沒
+  });
+  if (mq && mq.addEventListener) {
+    mq.addEventListener('change', function (e) { reduceMotion = e.matches; rebuild(); scheduleBolt(); });
+  }
+
+  var forced = qsParam('weather');
+  if (forced) {
+    apply(forcedScene(forced));
+  } else if (window.fetch && window.Promise) {
+    var cached = readCache();
+    if (cached) apply(sceneOf(cached.code, cached.day === 1));  // 先套上次的天氣，畫面不用等連線
+    refresh();
+    setInterval(refresh, CACHE_MS);                              // 頁面長時間開著也會跟著換
+  }
 })();
 </script>
 </body>
