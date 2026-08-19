@@ -14,7 +14,7 @@ body{font-family:"Noto Sans TC","PingFang TC",sans-serif;background:var(--bg);co
 
 /* ── 版面：側欄 + 主區 ── */
 .app{display:flex;min-height:100vh}
-.sidebar{width:236px;flex:none;background:var(--sidebar);color:var(--side-txt);
+.sidebar{width:252px;flex:none;background:var(--sidebar);color:var(--side-txt);
  display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
 .brand{display:flex;align-items:center;gap:11px;padding:22px 20px 18px}
 .brand .logo{width:42px;height:42px;border-radius:11px;background:#fff;flex:none;padding:4px;
@@ -22,13 +22,13 @@ body{font-family:"Noto Sans TC","PingFang TC",sans-serif;background:var(--bg);co
 .brand .logo img{width:100%;height:100%;object-fit:contain;display:block}
 .brand .bt{font-size:17px;font-weight:900;color:#fff;line-height:1.1}
 .brand .bs{font-size:9.5px;letter-spacing:.22em;color:#8a8078;font-weight:700}
-.nav-label{font-size:10.5px;letter-spacing:.14em;color:#6d635a;font-weight:800;padding:16px 22px 6px}
-#nav{display:flex;flex-direction:column;padding:0 12px 10px;gap:2px;flex:1}
-#nav button{display:flex;align-items:center;gap:11px;width:100%;text-align:left;background:none;border:0;
- color:var(--side-txt);font:inherit;font-weight:600;padding:10px 12px;border-radius:10px;cursor:pointer}
+.nav-label{font-size:12px;letter-spacing:.12em;color:#7a6f65;font-weight:800;padding:18px 22px 7px}
+#nav{display:flex;flex-direction:column;padding:0 12px 10px;gap:3px;flex:1}
+#nav button{display:flex;align-items:center;gap:13px;width:100%;text-align:left;background:none;border:0;
+ color:var(--side-txt);font:inherit;font-size:16.5px;font-weight:700;padding:13px 14px;border-radius:11px;cursor:pointer}
 #nav button:hover{background:var(--sidebar-2);color:#fff}
-#nav button.on{background:var(--gold);color:#231815;font-weight:800;box-shadow:0 4px 12px rgba(250,190,0,.25)}
-#nav button .ic{width:18px;height:18px;flex:none;display:inline-flex;align-items:center;justify-content:center;font-size:15px}
+#nav button.on{background:var(--gold);color:#231815;font-weight:900;box-shadow:0 4px 12px rgba(250,190,0,.25)}
+#nav button .ic{width:22px;height:22px;flex:none;display:inline-flex;align-items:center;justify-content:center;font-size:18px}
 .side-user{margin-top:auto;padding:14px 18px;border-top:1px solid var(--sidebar-line);display:flex;align-items:center;gap:10px}
 .side-user .av{width:34px;height:34px;border-radius:50%;background:var(--sidebar-2);display:flex;align-items:center;justify-content:center;font-size:15px;flex:none}
 .side-user .nm{font-size:13px;font-weight:800;color:#fff;line-height:1.2}
