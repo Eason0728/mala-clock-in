@@ -526,7 +526,7 @@ def parse_periods_str(s):
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 # 主管核定頁「請假註記」可選假別（與 Code.gs LEAVE_TYPES 同步）
-LEAVE_TYPES = ["病假", "事假", "特休假", "生理假", "家庭照顧假", "喪假", "婚假"]
+LEAVE_TYPES = ["病假", "事假", "特休假", "生理假", "家庭照顧假", "天災假", "喪假", "婚假"]
 
 
 def hm_to_ms(date_str, hm):
