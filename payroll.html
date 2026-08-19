@@ -71,10 +71,11 @@ th:first-child,td:first-child{text-align:left}
 th{background:#faf7f3;font-weight:800;font-size:11.5px;color:#7a7067;text-transform:none}
 tbody tr:hover{background:#faf8f5}
 .scroll{overflow-x:auto;border-radius:10px}
-input[type=number],input[type=text],input[type=date],input[type=month]{font:inherit;width:100%;min-width:74px;padding:6px 8px;
+input[type=number],input[type=text],input[type=date],input[type=month],select{font:inherit;width:100%;min-width:74px;padding:6px 8px;
  border:1px solid var(--line);border-radius:7px;text-align:right;background:#fff}
-input[type=text]{text-align:left}
-input:focus{outline:2px solid var(--gold);outline-offset:-1px;border-color:var(--gold)}
+input[type=text],select{text-align:left}
+select{min-width:120px}
+input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;border-color:var(--gold)}
 .btn{font:inherit;font-weight:800;border:0;border-radius:9px;padding:9px 18px;cursor:pointer;background:var(--red);color:#fff}
 .btn:hover{background:#c92f0a}
 .btn.ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
@@ -450,12 +451,16 @@ function renderAtt(){
 }
 
 /* ── 跨店支援明細 ── */
+const STORES=['小辛辣光復','墨竹亭金山','墨竹亭光復','墨竹亭六張犁','央廚'];
+function storeOptions(cur){
+  const list=STORES.slice(); if(cur && !list.includes(cur)) list.unshift(cur);
+  return '<option value="">選擇門市</option>'+list.map(s=>`<option ${s===cur?'selected':''}>${s}</option>`).join('');
+}
 function renderSup(){
   $('supList').innerHTML=MASTER.filter(e=>String(e.active)==='true').map(e=>{
     const A=ATT[e.emp_id]=ATT[e.emp_id]||{}; A.support=A.support||[];
     const rows=A.support.map((s,i)=>`<tr>
-      <td><input type="text" value="${s.store??''}" placeholder="門市名稱"
-        onchange="ATT['${e.emp_id}'].support[${i}].store=this.value"></td>
+      <td><select onchange="ATT['${e.emp_id}'].support[${i}].store=this.value">${storeOptions(s.store)}</select></td>
       <td><input type="number" step="0.25" value="${s.hours??''}"
         onchange="ATT['${e.emp_id}'].support[${i}].hours=n(this.value);renderAtt()"></td>
       <td><input type="number" value="${s.rate??''}"
