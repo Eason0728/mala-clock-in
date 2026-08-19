@@ -13,13 +13,13 @@
 const PAY_SHEETS = {
   master:  ['emp_id','name','is_full_time','wage','base','ot_rate','skill_allow','night_allow',
             'mgr_allow','editor_allow','attend_cap','labor_ins','health_ins','group_ins',
-            'pension','dormitory','hire_date','leave_date','active','updated_at'],
+            'pension','dormitory','hire_date','leave_date','active','updated_at','meal_allow'],
   config:  ['key','value','note'],
   holiday: ['ym','red_days','note'],
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
             'ot_paid_hours','gross','deduction','net','status','run_at','support_hours'],
   item:    ['ym','emp_id','item_type','item_key','item_label','qty','rate','amount','source','memo'],
-  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend'],
+  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override'],
   audit:   ['ts','ym','action','operator','reason'],
 };
 const PAY_SHEET_NAME = {
@@ -123,7 +123,7 @@ function payCollect(ym) {
     if (!out[emp]) out[emp] = {
       hours: 0, extra_ot: 0,
       personal_h: 0, sick_h: 0, menstrual_h: 0, annual_h: 0, disaster_h: 0, other_h: 0,
-      deduct_days: 0, _days: {},
+      deduct_days: 0, _days: {}, work_days: 0, _wd: {},
     };
     return out[emp];
   }
@@ -135,6 +135,7 @@ function payCollect(ym) {
     Object.keys(approvedMap[d]).forEach(function (emp) {
       const rec = approvedMap[d][emp];
       slot(emp).hours += Number(rec.approved_hours) || 0;
+      slot(emp)._wd[d] = true;   // 有核定紀錄＝這天有上班（供餐費補助數出勤天數）
       const st = String(rec.status_text || '');
       if (st.indexOf('遲到') !== -1 || st.indexOf('早退') !== -1) markDay(emp, d);
     });
@@ -178,7 +179,8 @@ function payCollect(ym) {
 
   Object.keys(out).forEach(function (emp) {
     out[emp].deduct_days = Object.keys(out[emp]._days).length;
-    delete out[emp]._days;
+    out[emp].work_days = Object.keys(out[emp]._wd).length;
+    delete out[emp]._days; delete out[emp]._wd;
   });
   return out;
 }
@@ -255,9 +257,14 @@ function payCalcOne(e, ym, att, cfg, redDays) {
       push(earn, 'attend_bonus', '全勤獎金', null, null,
            Math.max(0, payNum(e.attend_cap) * P - att.deduct_days * payNum(cfg.attend_deduct_per_day)));
     }
+    // 餐費補助（正職）：有上班就補，出勤天數 × 餐費補助/日（主檔未填＝預設 100）。按實際上班天數，已內含折算不另乘 P。
+    const mealRate = (e.meal_allow === '' || e.meal_allow == null) ? 100 : payNum(e.meal_allow);
+    const wd = payNum(att.work_days);
+    if (mealRate > 0 && wd > 0) push(earn, 'meal_sub', '餐費補助', wd, mealRate, wd * mealRate);
   } else {
     // 計時：本店時數 × 時薪；時薪加給＝滿勤(工時分頁手動打勾)+10、年資(滿半年次月起)+10，可疊加
-    let w = payNum(e.wage);
+    // 本月時薪：工時分頁填了 wage_override 就用該月值，否則用主檔 wage（計時每月時薪可不同、又保留歷史）
+    let w = payNum(att.wage_override) > 0 ? payNum(att.wage_override) : payNum(e.wage);
     if (payBool(att.full_attend)) w += 10;   // E1 滿勤加給：管理者於工時分頁手動勾選（滿100H+全勤由管理者判定）
     w += payTenurePlus(e, ym);               // E2 年資加給
     push(earn, 'hourly_wage', '薪資（時數）', payR2(att.hours), w, att.hours * w);
@@ -300,7 +307,9 @@ function payCalcOne(e, ym, att, cfg, redDays) {
 
   // 勞保與宿舍折算；健保、團保、退休金算整月
   if (payNum(e.labor_ins))  push(ded, 'labor_ins', '勞保費', null, null, payNum(e.labor_ins) * pr);
-  if (payNum(e.dormitory))  push(ded, 'dormitory', '宿舍自付額', null, null, payNum(e.dormitory) * pr);
+  // 宿舍費隨月：工時分頁填了「本月宿舍費」（含 0＝本月免收）就用該月值，空白＝用主檔
+  const dormFee = (att.dorm_override === '' || att.dorm_override == null) ? payNum(e.dormitory) : payNum(att.dorm_override);
+  if (dormFee) push(ded, 'dormitory', '宿舍自付額', null, null, dormFee * pr);
   if (payNum(e.health_ins)) push(ded, 'health_ins', '健保費', null, null, payNum(e.health_ins));
   if (payNum(e.group_ins))  push(ded, 'group_ins', '團保費', null, null, payNum(e.group_ins));
   if (payNum(e.pension))    push(ded, 'pension', '退休金', null, null, payNum(e.pension));
@@ -481,6 +490,8 @@ function paySavedInputs(ym) {
       hours: payNum(r.hours), extra_ot: payNum(r.extra_ot),
       personal_h: payNum(r.personal_h), sick_h: payNum(r.sick_h), menstrual_h: payNum(r.menstrual_h), disaster_h: payNum(r.disaster_h), annual_h: payNum(r.annual_h),
       deduct_days: payNum(r.deduct_days), support: sup, full_attend: payBool(r.full_attend),
+      work_days: payNum(r.work_days), wage_override: payNum(r.wage_override),
+      dorm_override: (r.dorm_override === '' || r.dorm_override == null) ? '' : payNum(r.dorm_override),
     };
   });
   return out;
@@ -517,6 +528,8 @@ function handlePayrollInputSet(body) {
       personal_h: payNum(a.personal_h), sick_h: payNum(a.sick_h), menstrual_h: payNum(a.menstrual_h), disaster_h: payNum(a.disaster_h), annual_h: payNum(a.annual_h),
       deduct_days: payNum(a.deduct_days), support: JSON.stringify(a.support || []), updated_at: now,
       full_attend: payBool(a.full_attend) ? 1 : 0,
+      work_days: payNum(a.work_days), wage_override: payNum(a.wage_override),
+      dorm_override: (a.dorm_override === '' || a.dorm_override == null) ? '' : payNum(a.dorm_override),
     };
   });
   const others = payRead('input').filter(function (r) { return String(r.ym) !== ym; });
@@ -557,6 +570,9 @@ function handlePayrollCalc(body) {
       deduct_days:o.deduct_days!== undefined ? payNum(o.deduct_days): payNum(c.deduct_days),
       support:    o.support    !== undefined ? o.support            : (c.support || []),
       full_attend:o.full_attend!== undefined ? payBool(o.full_attend): payBool(c.full_attend),
+      work_days:  o.work_days  !== undefined ? payNum(o.work_days)  : payNum(c.work_days),
+      wage_override: o.wage_override !== undefined ? payNum(o.wage_override) : payNum(c.wage_override),
+      dorm_override: o.dorm_override !== undefined ? o.dorm_override : (c.dorm_override != null ? c.dorm_override : ''),
     };
     return payCalcOne(e, ym, att, cfg, redDays);
   });
