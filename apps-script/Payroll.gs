@@ -728,6 +728,9 @@ function payAnnualInfo(ym) {
   const leaves = sh ? readSheetAsObjects(sh).rows.map(stripRowIndex) : [];
   const out = {};
   master.forEach(function (e) {
+    // 計時同仁沒有特休（Eason 2026-08 定案）——不算也不顯示
+    const ft = String(e.is_full_time).toLowerCase() === 'true' || e.is_full_time === true;
+    if (!ft) { out[String(e.emp_id)] = null; return; }
     const q = payAnnualQuota(e.hire_date, ym);
     if (!q) { out[String(e.emp_id)] = null; return; }
     let used = 0;
