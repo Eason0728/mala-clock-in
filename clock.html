@@ -237,11 +237,130 @@
   #payView .pstate { text-align: center; padding: 40px 16px; color: #8a817a; }
   #payView .pstate .ic { font-size: 34px; margin-bottom: 10px; }
   #payView .pstate .t { font-weight: 900; color: var(--brand-black); font-size: 17px; margin-bottom: 5px; }
+
+  /* ── 天氣動態背景 ─────────────────────────────────────────────
+     依門市當下的天氣切換情境：晴天出太陽、雨天下雨、雷雨加閃電、
+     陰天／起霧飄雲、夜晚換月亮與星星。火焰底圖保留，只是依天氣調亮暗。
+     抓不到天氣資料就完全不套用，畫面維持原本的樣子。 */
+  .fireVid { transition: opacity 1.6s ease; }
+  .wx { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+
+  #wxCanvas { opacity: 0; transition: opacity 1.6s ease; }
+  body.wx-on #wxCanvas { opacity: 1; }
+
+  /* 全畫面色調：雨天壓成冷色、晴天鋪暖光、陰霧轉灰 */
+  .wxTint { background: transparent; transition: background 1.6s ease; }
+  body.wx-clear.wx-day .wxTint  { background: radial-gradient(120% 82% at 80% 0%, rgba(255,214,110,.34) 0%, rgba(255,160,40,.10) 42%, rgba(255,140,20,0) 72%); }
+  body.wx-cloudy.wx-day .wxTint { background: radial-gradient(120% 82% at 80% 0%, rgba(255,214,110,.20) 0%, rgba(120,110,105,.16) 46%, rgba(90,85,80,.24) 100%); }
+  body.wx-overcast .wxTint { background: linear-gradient(180deg, rgba(104,104,110,.44) 0%, rgba(62,62,68,.52) 100%); }
+  body.wx-fog .wxTint      { background: linear-gradient(180deg, rgba(176,174,176,.52) 0%, rgba(138,136,140,.62) 100%); }
+  body.wx-snow .wxTint     { background: linear-gradient(180deg, rgba(26,46,78,.34) 0%, rgba(16,30,56,.44) 100%); }
+  body.wx-rain .wxTint     { background: linear-gradient(180deg, rgba(10,28,52,.46) 0%, rgba(6,18,36,.56) 100%); }
+  body.wx-storm .wxTint    { background: linear-gradient(180deg, rgba(6,18,38,.58) 0%, rgba(3,10,24,.66) 100%); }
+
+  /* 夜間再壓一層深色（與天氣分開，兩者可疊加） */
+  .wxNight { background: linear-gradient(180deg, rgba(3,8,22,.52) 0%, rgba(2,5,14,.68) 100%); opacity: 0; transition: opacity 1.6s ease; }
+  body.wx-night .wxNight { opacity: 1; }
+
+  /* 太陽：光暈圓盤＋緩慢旋轉的光芒 */
+  .wxSun, .wxMoon { position: absolute; opacity: 0; transition: opacity 1.8s ease; }
+  body.wx-sun .wxSun { opacity: 1; }
+  body.wx-sun.wx-cloudy .wxSun { opacity: .55; }
+  body.wx-moon .wxMoon { opacity: 1; }
+  .wxSun { top: -84px; right: -70px; width: 320px; height: 320px; }
+  .wxSun .rays {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: repeating-conic-gradient(from 0deg, rgba(255,238,175,.40) 0deg 4deg, rgba(255,238,175,0) 4deg 20deg);
+    -webkit-mask-image: radial-gradient(circle, rgba(0,0,0,.95) 20%, rgba(0,0,0,.45) 44%, rgba(0,0,0,0) 70%);
+            mask-image: radial-gradient(circle, rgba(0,0,0,.95) 20%, rgba(0,0,0,.45) 44%, rgba(0,0,0,0) 70%);
+    animation: wxSpin 120s linear infinite;
+  }
+  .wxSun .disc {
+    position: absolute; inset: 104px; border-radius: 50%;
+    background: radial-gradient(circle, #fffdf0 0%, #ffe98e 40%, rgba(255,196,52,.62) 66%, rgba(255,170,30,0) 78%);
+    box-shadow: 0 0 70px 30px rgba(255,196,60,.26);
+    animation: wxBreathe 7s ease-in-out infinite;
+  }
+  /* 月亮：夜間取代太陽 */
+  .wxMoon { top: 42px; right: 34px; width: 76px; height: 76px; }
+  .wxMoon .disc {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: radial-gradient(circle at 36% 34%, #ffffff 0%, #f4f7ff 44%, #dbe4f6 68%, rgba(202,216,242,.34) 84%, rgba(180,200,235,0) 100%);
+    box-shadow: 0 0 34px 10px rgba(200,220,255,.30), 0 0 96px 34px rgba(140,175,255,.16);
+    animation: wxBreathe 9s ease-in-out infinite;
+  }
+
+  /* 雲／霧：三片模糊雲團橫向飄移 */
+  .wxClouds { position: absolute; inset: 0; opacity: 0; transition: opacity 1.8s ease; }
+  body.wx-cloudy .wxClouds { opacity: .62; }
+  body.wx-overcast .wxClouds, body.wx-rain .wxClouds, body.wx-snow .wxClouds { opacity: .82; }
+  body.wx-storm .wxClouds { opacity: .9; }
+  body.wx-fog .wxClouds { opacity: 1; }
+  .wxClouds i {
+    position: absolute; left: 0; display: block; border-radius: 50%; will-change: transform;
+    background: radial-gradient(closest-side, rgba(255,255,255,.82) 0%, rgba(238,232,230,.42) 56%, rgba(232,226,224,0) 100%);
+    filter: blur(12px); animation: wxDrift linear infinite;
+  }
+  .wxClouds i::before, .wxClouds i::after {   /* 兩球凸起，才像雲不像一團霧 */
+    content: ''; position: absolute; border-radius: 50%; background: inherit;
+  }
+  .wxClouds i::before { left: 12%; top: -32%; width: 48%; height: 88%; }
+  .wxClouds i::after  { right: 10%; top: -20%; width: 38%; height: 74%; }
+  .wxClouds i:nth-child(1) { top: 3%;  width: 58vw; height: 20vh; animation-duration: 82s;  animation-delay: -14s; }
+  .wxClouds i:nth-child(2) { top: 21%; width: 44vw; height: 15vh; animation-duration: 108s; animation-delay: -62s; opacity: .8; }
+  .wxClouds i:nth-child(3) { top: 44%; width: 72vw; height: 26vh; animation-duration: 140s; animation-delay: -34s; opacity: .6; }
+  /* 起霧時改成貼地的大片灰白霧氣 */
+  body.wx-fog .wxClouds i {
+    filter: blur(34px);
+    background: radial-gradient(closest-side, rgba(226,225,226,.9) 0%, rgba(206,204,206,.5) 58%, rgba(200,199,201,0) 100%);
+  }
+  body.wx-fog .wxClouds i:nth-child(1) { top: 12%; width: 118vw; height: 42vh; }
+  body.wx-fog .wxClouds i:nth-child(2) { top: 40%; width: 96vw;  height: 38vh; }
+  body.wx-fog .wxClouds i:nth-child(3) { top: 64%; width: 128vw; height: 46vh; }
+
+  /* 雷雨閃電 */
+  .wxFlash { background: #fff; opacity: 0; }
+  .wxFlash.on { animation: wxFlash 900ms ease-out; }
+
+  /* 火焰底圖依天氣調整亮度（雨夜最暗、晴天最亮） */
+  body.wx-clear.wx-day .fireVid  { opacity: .62; }
+  body.wx-cloudy.wx-day .fireVid { opacity: .46; }
+  body.wx-overcast .fireVid, body.wx-fog .fireVid { opacity: .34; }
+  body.wx-snow .fireVid  { opacity: .30; }
+  body.wx-rain .fireVid  { opacity: .26; }
+  body.wx-storm .fireVid { opacity: .20; }
+  body.wx-night.wx-clear .fireVid, body.wx-night.wx-cloudy .fireVid { opacity: .44; }
+  body.wx-night.wx-rain .fireVid  { opacity: .20; }
+  body.wx-night.wx-storm .fireVid { opacity: .16; }
+
+  @keyframes wxSpin { to { transform: rotate(360deg); } }
+  @keyframes wxBreathe { 0%, 100% { transform: scale(1); opacity: .94; } 50% { transform: scale(1.045); opacity: 1; } }
+  @keyframes wxDrift { from { transform: translate3d(-50vw, 0, 0); } to { transform: translate3d(120vw, 0, 0); } }
+  @keyframes wxFlash { 0% { opacity: 0; } 4% { opacity: .5; } 10% { opacity: .06; } 16% { opacity: .38; } 26% { opacity: 0; } 100% { opacity: 0; } }
+
+  /* 使用者在系統設定關閉動畫時：只留靜態畫面，不做動畫 */
+  @media (prefers-reduced-motion: reduce) {
+    .wxSun .rays, .wxSun .disc, .wxMoon .disc, .wxClouds i, .wxFlash.on { animation: none; }
+    .wxClouds i:nth-child(1) { transform: translate3d(2vw, 0, 0); }
+    .wxClouds i:nth-child(2) { transform: translate3d(44vw, 0, 0); }
+    .wxClouds i:nth-child(3) { transform: translate3d(18vw, 0, 0); }
+  }
 </style>
 </head>
 <body>
 <video class="fireVid" src="assets/fire.mp4" autoplay muted loop playsinline aria-hidden="true"></video>
 <div class="scrim" aria-hidden="true"></div>
+<div class="wx wxSky" aria-hidden="true">
+  <div class="wxClouds"><i></i><i></i><i></i></div>
+</div>
+<div class="wx wxTint" aria-hidden="true"></div>
+<div class="wx wxNight" aria-hidden="true"></div>
+<div class="wx wxLights" aria-hidden="true">
+  <div class="wxSun"><span class="rays"></span><span class="disc"></span></div>
+  <div class="wxMoon"><span class="disc"></span></div>
+</div>
+<canvas class="wx" id="wxCanvas" aria-hidden="true"></canvas>
+<div class="wx wxFlash" aria-hidden="true"></div>
 <div class="container">
   <header>
     <h1>麻的🔥小辛辣</h1>
@@ -858,6 +977,307 @@
   }
 
   init();
+})();
+</script>
+<script>
+/* 天氣動態背景 ─ 依門市當下天氣切換背景情境（晴／多雲／陰／霧／雨／雷雨／雪，各分日夜）。
+   天氣來源：Open-Meteo（免金鑰、免註冊），每 20 分鐘更新一次，結果存 localStorage，
+   下次開頁先用上次的天氣立刻上場再背景更新，不會卡住打卡畫面。
+   抓不到天氣就完全不套用情境，畫面維持原本的火焰背景。
+   預覽用：?weather=clear|cloudy|overcast|fog|drizzle|rain|heavy-rain|storm|snow（可再加 &night=1 看夜間版）。 */
+(function () {
+  'use strict';
+
+  var STORE_LAT = 24.7840945;      // 光復店；與 apps-script/Code.gs 的 CONFIG.STORE_LAT/STORE_LNG 同一組座標
+  var STORE_LNG = 121.0157448;
+  var WX_API = 'https://api.open-meteo.com/v1/forecast?latitude=' + STORE_LAT +
+               '&longitude=' + STORE_LNG + '&current=weather_code,is_day&timezone=Asia%2FTaipei';
+  var CACHE_KEY = 'mala_wx_cache';
+  var CACHE_MS = 20 * 60 * 1000;   // 天氣多久重抓一次
+  var TIMEOUT_MS = 6000;           // 抓天氣的逾時：訊號差時不要一直等
+
+  var body = document.body;
+  var canvas = document.getElementById('wxCanvas');
+  var flashEl = document.querySelector('.wxFlash');
+  var ctx = (canvas && canvas.getContext) ? canvas.getContext('2d') : null;
+  var mq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  var reduceMotion = !!(mq && mq.matches);
+
+  var SCENE_CLASSES = ['wx-on', 'wx-day', 'wx-night', 'wx-sun', 'wx-moon',
+                       'wx-clear', 'wx-cloudy', 'wx-overcast', 'wx-fog', 'wx-rain', 'wx-storm', 'wx-snow'];
+
+  function qsParam(n) {
+    try { return new URLSearchParams(window.location.search).get(n); } catch (e) { return null; }
+  }
+  function rand(a, b) { return a + Math.random() * (b - a); }
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  /* WMO 天氣代碼 → 背景情境。power 是雨勢強弱（影響雨滴數量與速度） */
+  function sceneOf(code, isDay) {
+    var c = Number(code);
+    var s = { kind: 'cloudy', power: 1, day: !!isDay };
+    if (c === 0) s.kind = 'clear';
+    else if (c === 1 || c === 2) s.kind = 'cloudy';
+    else if (c === 3) s.kind = 'overcast';
+    else if (c === 45 || c === 48) s.kind = 'fog';
+    else if (c >= 51 && c <= 57) { s.kind = 'rain'; s.power = 0.5; }            // 毛毛雨
+    else if (c === 61 || c === 66 || c === 80) { s.kind = 'rain'; s.power = 0.85; }
+    else if (c === 63 || c === 81) { s.kind = 'rain'; s.power = 1.2; }
+    else if (c === 65 || c === 67 || c === 82) { s.kind = 'rain'; s.power = 1.7; }  // 大雨
+    else if ((c >= 71 && c <= 77) || c === 85 || c === 86) s.kind = 'snow';
+    else if (c >= 95) { s.kind = 'storm'; s.power = 1.6; }                      // 雷雨
+    return s;
+  }
+
+  var current = null;
+
+  function apply(scene) {
+    if (current && current.kind === scene.kind && current.day === scene.day && current.power === scene.power) return;
+    current = scene;
+    for (var i = 0; i < SCENE_CLASSES.length; i++) body.classList.remove(SCENE_CLASSES[i]);
+    body.classList.add('wx-' + scene.kind);
+    body.classList.add(scene.day ? 'wx-day' : 'wx-night');
+    if (scene.kind === 'clear' || scene.kind === 'cloudy') {
+      body.classList.add(scene.day ? 'wx-sun' : 'wx-moon');
+    }
+    body.classList.add('wx-on');
+    resetCanvas();
+    scheduleFlash();
+  }
+
+  /* ── canvas 粒子（雨滴／雪花／星星）───────────────────────── */
+  var W = 0, H = 0, lastW = 0, lastH = 0, parts = [], mode = 'none', wind = 0, rafId = 0, lastTs = 0;
+
+  function sizeCanvas() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth || document.documentElement.clientWidth;
+    H = window.innerHeight || document.documentElement.clientHeight;
+    lastW = W; lastH = H;
+    canvas.width = Math.max(1, Math.round(W * dpr));
+    canvas.height = Math.max(1, Math.round(H * dpr));
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function makeDrop(scene, seeded) {
+    var z = Math.random();                        // 遠近層次：0 遠、1 近
+    return {
+      x: rand(-0.2 * W, 1.05 * W),
+      y: seeded ? rand(-H, H) : rand(-H * 0.35, -10),
+      len: (10 + z * 26) * (0.75 + scene.power * 0.35),
+      sp: (620 + z * 760) * (0.7 + scene.power * 0.42),
+      b: z < 0.34 ? 0 : (z < 0.7 ? 1 : 2)
+    };
+  }
+  function makeFlake(seeded) {
+    var z = Math.random();
+    return { x: rand(0, W), y: seeded ? rand(0, H) : rand(-H * 0.3, -6),
+             r: 1 + z * 2.4, sp: 26 + z * 52, ph: rand(0, Math.PI * 2), sw: rand(8, 26) };
+  }
+  function makeStar() {
+    return { x: rand(0, W), y: rand(0, H * 0.6), r: rand(0.5, 1.5),
+             ph: rand(0, Math.PI * 2), sp: rand(0.6, 2), a: rand(0.25, 0.8) };
+  }
+
+  function buildParts(scene) {
+    parts = [];
+    var span = Math.sqrt(W * H) / 26;             // 依螢幕大小決定密度，手機不會爆量
+    var i, n;
+    if (scene.kind === 'rain' || scene.kind === 'storm') {
+      mode = 'rain';
+      wind = scene.kind === 'storm' ? 0.4 : 0.2;
+      n = clamp(Math.round(span * 3.2 * scene.power), 26, 200);
+      for (i = 0; i < n; i++) parts.push(makeDrop(scene, true));
+    } else if (scene.kind === 'snow') {
+      mode = 'snow';
+      n = clamp(Math.round(span * 1.9), 20, 120);
+      for (i = 0; i < n; i++) parts.push(makeFlake(true));
+    } else if (scene.kind === 'clear' && !scene.day) {
+      mode = 'stars';
+      n = clamp(Math.round(span * 1.6), 24, 110);
+      for (i = 0; i < n; i++) parts.push(makeStar());
+    } else {
+      mode = 'none';                              // 晴天白天／陰天／霧：效果全在 CSS 圖層
+    }
+  }
+
+  function step(dt) {
+    var i, p;
+    if (mode === 'rain') {
+      for (i = 0; i < parts.length; i++) {
+        p = parts[i];
+        p.y += p.sp * dt;
+        p.x += p.sp * wind * dt;
+        if (p.y > H + 20 || p.x > W + 40) { p.y = rand(-H * 0.3, -12); p.x = rand(-0.2 * W, 1.05 * W); }
+      }
+    } else if (mode === 'snow') {
+      for (i = 0; i < parts.length; i++) {
+        p = parts[i];
+        p.ph += dt;
+        p.y += p.sp * dt;
+        p.x += Math.sin(p.ph) * p.sw * dt;
+        if (p.y > H + 6) { p.y = rand(-H * 0.25, -6); p.x = rand(0, W); }
+        if (p.x < -12) p.x = W + 8; else if (p.x > W + 12) p.x = -8;
+      }
+    } else if (mode === 'stars') {
+      for (i = 0; i < parts.length; i++) parts[i].ph += parts[i].sp * dt;
+    }
+  }
+
+  var RAIN_STROKE = ['rgba(198,224,255,.20)', 'rgba(216,236,255,.34)', 'rgba(236,246,255,.54)'];
+  var RAIN_WIDTH = [0.9, 1.3, 1.9];
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    var i, b, p;
+    if (mode === 'rain') {
+      ctx.lineCap = 'round';
+      for (b = 0; b < 3; b++) {                   // 依遠近分三批畫，一批一次 stroke 比較省
+        ctx.beginPath();
+        ctx.strokeStyle = RAIN_STROKE[b];
+        ctx.lineWidth = RAIN_WIDTH[b];
+        for (i = 0; i < parts.length; i++) {
+          p = parts[i];
+          if (p.b !== b) continue;
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x + p.len * wind, p.y + p.len);
+        }
+        ctx.stroke();
+      }
+    } else if (mode === 'snow') {
+      ctx.fillStyle = 'rgba(255,255,255,.82)';
+      ctx.beginPath();
+      for (i = 0; i < parts.length; i++) {
+        p = parts[i];
+        ctx.moveTo(p.x + p.r, p.y);
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    } else if (mode === 'stars') {
+      for (i = 0; i < parts.length; i++) {
+        p = parts[i];
+        ctx.fillStyle = 'rgba(255,252,236,' + (p.a * (0.55 + 0.45 * Math.sin(p.ph))).toFixed(3) + ')';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  function frame(ts) {
+    rafId = window.requestAnimationFrame(frame);
+    var dt = lastTs ? (ts - lastTs) / 1000 : 0.016;
+    lastTs = ts;
+    if (dt > 0.05) dt = 0.05;                     // 切回分頁時不要一次跳太多
+    step(dt);
+    draw();
+  }
+  function startLoop() {
+    if (rafId || mode === 'none' || reduceMotion || !window.requestAnimationFrame) return;
+    lastTs = 0;
+    rafId = window.requestAnimationFrame(frame);
+  }
+  function stopLoop() {
+    if (rafId) { window.cancelAnimationFrame(rafId); rafId = 0; }
+  }
+  function resetCanvas() {
+    if (!ctx || !current) return;
+    stopLoop();
+    sizeCanvas();
+    buildParts(current);
+    if (mode === 'none') { ctx.clearRect(0, 0, W, H); return; }
+    if (reduceMotion) { draw(); return; }          // 關閉動畫時只畫靜止的一幀
+    startLoop();
+  }
+
+  /* 雷雨閃電：每 5～16 秒閃一次 */
+  var flashTimer = 0;
+  function scheduleFlash() {
+    clearTimeout(flashTimer);
+    if (!flashEl || reduceMotion || !current || current.kind !== 'storm') return;
+    flashTimer = setTimeout(function () {
+      if (!document.hidden) {
+        flashEl.classList.remove('on');
+        void flashEl.offsetWidth;                  // 重觸發動畫
+        flashEl.classList.add('on');
+      }
+      scheduleFlash();
+    }, 5000 + Math.random() * 11000);
+  }
+
+  /* ── 取天氣 ────────────────────────────────────────────────── */
+  function readCache() {
+    try {
+      var j = JSON.parse(window.localStorage.getItem(CACHE_KEY) || 'null');
+      if (j && isFinite(j.code) && isFinite(j.t)) return j;
+    } catch (e) {}
+    return null;
+  }
+  function writeCache(code, day) {
+    try {
+      window.localStorage.setItem(CACHE_KEY, JSON.stringify({ code: code, day: day ? 1 : 0, t: Date.now() }));
+    } catch (e) {}
+  }
+  function fetchWeather() {
+    var ctl = window.AbortController ? new window.AbortController() : null;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, TIMEOUT_MS);
+    return fetch(WX_API, ctl ? { signal: ctl.signal } : undefined).then(function (r) {
+      if (!r.ok) throw new Error('http ' + r.status);
+      return r.json();
+    }).then(function (j) {
+      clearTimeout(timer);
+      var cur = j && j.current;
+      var code = cur ? Number(cur.weather_code) : NaN;
+      if (!isFinite(code)) throw new Error('bad payload');
+      var day = (cur.is_day === 1 || cur.is_day === true);
+      writeCache(code, day);
+      return { code: code, day: day };
+    }, function (err) { clearTimeout(timer); throw err; });
+  }
+  function refresh() {
+    if (forced || !window.fetch || !window.Promise) return;   // 預覽模式與不支援的瀏覽器都不抓
+    var c = readCache();
+    if (c && Date.now() - c.t < CACHE_MS) return;  // 還新鮮就不重抓
+    fetchWeather().then(function (w) { apply(sceneOf(w.code, w.day)); }, function () {});
+  }
+
+  function forcedScene(nameRaw) {
+    var codes = { clear: 0, sunny: 0, cloudy: 2, overcast: 3, fog: 45, drizzle: 53,
+                  rain: 63, 'heavy-rain': 65, storm: 95, thunder: 95, snow: 73 };
+    var name = String(nameRaw).toLowerCase();
+    var code = Object.prototype.hasOwnProperty.call(codes, name) ? codes[name] : 0;
+    return sceneOf(code, qsParam('night') !== '1');
+  }
+
+  window.addEventListener('resize', function () {
+    if (!current || !ctx) return;
+    // 手機捲動時網址列伸縮也會觸發 resize，高度小幅變化只調畫布、不重排粒子
+    if (Math.abs(window.innerWidth - lastW) < 2 && Math.abs(window.innerHeight - lastH) < 140) {
+      sizeCanvas();
+    } else {
+      resetCanvas();
+    }
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) { stopLoop(); clearTimeout(flashTimer); return; }
+    startLoop();
+    scheduleFlash();
+    refresh();                                     // 回到前景順便看看天氣變了沒
+  });
+  if (mq && mq.addEventListener) {
+    mq.addEventListener('change', function (e) { reduceMotion = e.matches; resetCanvas(); scheduleFlash(); });
+  }
+
+  var forced = qsParam('weather');
+  if (forced) {
+    apply(forcedScene(forced));
+  } else if (window.fetch && window.Promise) {
+    var cached = readCache();
+    if (cached) apply(sceneOf(cached.code, cached.day === 1));  // 先套上次的天氣，畫面不用等連線
+    refresh();
+    setInterval(refresh, CACHE_MS);                              // 頁面長時間開著也會跟著換
+  }
 })();
 </script>
 </body>
