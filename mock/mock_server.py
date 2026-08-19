@@ -536,9 +536,21 @@ def hm_to_ms(date_str, hm):
     return dt.timestamp() * 1000.0
 
 
-def compute_approval_status(periods, punch_segments):
+# 「核定時段對不到打卡段」有兩種成因，措辭要分開（與 Code.gs 同步，2026-08-19）
+NO_PUNCH_NOTE = "該段無打卡"
+NOT_RECORDED_NOTE = "打卡未入帳，主管補登"
+
+
+def unrecorded_attempt_count(data, emp_id, date_str):
+    """某人某天送出了但沒入帳的打卡筆數（status!='ok'，與 Code.gs unrecordedAttemptCount 同步）。"""
+    return sum(1 for e in data["events"]
+               if e["emp_id"] == emp_id and e["ts"][:10] == date_str and e.get("status") != "ok")
+
+
+def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=False):
     """比對主管輸入時段 vs 打卡段，回傳狀態字串（與 Code.gs computeApprovalStatus 同步）。
-    periods: [{"start_ms","end_ms"}]；punch_segments: [{"in_ms","out_ms"}]（未配對為 None）。"""
+    periods: [{"start_ms","end_ms"}]；punch_segments: [{"in_ms","out_ms"}]（未配對為 None）。
+    had_unrecorded_attempts: 當天有沒有送出但沒入帳的打卡，決定對不到段時的措辭。"""
     full_segs = [s for s in punch_segments if s["in_ms"] is not None and s["out_ms"] is not None]
     notes = []
     used = set()
@@ -550,8 +562,9 @@ def compute_approval_status(periods, punch_segments):
             if overlap > best_overlap:
                 best_overlap, best_i = overlap, i
         if best_i == -1:
-            if "該段無打卡" not in notes:
-                notes.append("該段無打卡")
+            note = NOT_RECORDED_NOTE if had_unrecorded_attempts else NO_PUNCH_NOTE
+            if note not in notes:
+                notes.append(note)
             continue
         used.add(best_i)
         seg = full_segs[best_i]
@@ -733,7 +746,8 @@ def handle_mgr_approve(data, body):
             out_ms = hm_to_ms(out_date, s["out"]) if s["out"] else None
             punch_segments.append({"in_ms": in_ms, "out_ms": out_ms})
 
-        status_text = compute_approval_status(periods, punch_segments)
+        status_text = compute_approval_status(
+            periods, punch_segments, unrecorded_attempt_count(data, emp_id, date) > 0)
         periods_str = ",".join("{}-{}".format(p["start"], p["end"]) for p in raw_periods)
     entered_at = iso_now()
 

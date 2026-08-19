@@ -954,7 +954,7 @@ function handleMgrApprove(body) {
         outMs: s.out ? hmToMs(outDate, s.out) : null,
       };
     });
-    statusText = computeApprovalStatus(periods, punchWithMs);
+    statusText = computeApprovalStatus(periods, punchWithMs, unrecordedAttemptCount(eventRows, body.emp_id, date) > 0);
     periodsStr = rawPeriods.map(function (p) { return p.start + '-' + p.end; }).join(',');
   }
   const enteredAt = nowTaipeiIso();
@@ -1228,7 +1228,25 @@ function dayReferenceIncomplete(segments, dateStr, todayStr) {
  * @param {Array} periods [{startMs,endMs}]
  * @param {Array} punchSegments dayPunchSegments().segments 各自加上 inMs/outMs（未配對為 null）
  */
-function computeApprovalStatus(periods, punchSegments) {
+// 「核定時段對不到打卡段」有兩種成因，措辭要分開（2026-08-19 Eason 指定）：
+//   1. 同仁有打，但那天的卡整批沒入帳（超出範圍／新裝置待核准）→ 不是他沒打，是系統沒收
+//   2. 真的沒打（忘刷卡）→ 沿用原本的說法
+// 分辨依據＝當天有沒有 status!=='ok' 的事件（與 mgr_day 的 attempts 同一口徑）。
+const NO_PUNCH_NOTE = '該段無打卡';
+const NOT_RECORDED_NOTE = '打卡未入帳，主管補登';
+
+/** 某人某天「送出了但沒入帳」的打卡筆數（status!=='ok'，含超出範圍與待核准，與 mgr_day 的 attempts 同口徑）。 */
+function unrecordedAttemptCount(eventRows, empId, dateStr) {
+  let n = 0;
+  eventRows.forEach(function (e) {
+    if (String(e.emp_id) !== String(empId)) return;
+    if (tsDateStr(e.ts) !== dateStr) return;
+    if (String(e.status) !== 'ok') n++;
+  });
+  return n;
+}
+
+function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts) {
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
   const notes = [];
   const usedIdx = {};
@@ -1241,7 +1259,9 @@ function computeApprovalStatus(periods, punchSegments) {
       if (overlap > bestOverlap) { bestOverlap = overlap; bestIdx = i; }
     });
     if (bestIdx === -1) {
-      if (notes.indexOf('該段無打卡') === -1) notes.push('該段無打卡');
+      // 舊呼叫端沒傳第三個參數＝undefined＝falsy，行為與改版前相同
+      const note = hadUnrecordedAttempts ? NOT_RECORDED_NOTE : NO_PUNCH_NOTE;
+      if (notes.indexOf(note) === -1) notes.push(note);
       return;
     }
     usedIdx[bestIdx] = true;
@@ -1689,7 +1709,14 @@ function rebuildMonth(ym) {
 
 // recheckPendingApprovalStatuses 往回檢查的天數（今天不算，從昨天起算）。
 // 3 天：涵蓋週五核定週六才打完卡、連假等情境；比對成本低（只掃 approved 分頁近期列），不必貪多。
-const RECHECK_STATUS_DAYS = 3;
+// 2026-08-19 由 3 天放寬到 40 天（Eason 指定「回頭看」）。原本 3 天只涵蓋「週五核定、
+// 週六才打完卡」這種短情境，同仁隔比較久才補打卡就永遠修不到了。
+// 成本很低：讀 approved／events／roster 是一次性的，跟天數無關；迴圈只在「那天真的有
+// 『該段無打卡』的核定紀錄」時才進到重算，多掃的日期絕大多數直接跳過。
+// 取 40 與 RECENT_DAYS_WINDOW 一致，也蓋得住「當月＋上月月表凍結前」的範圍。
+// ⚠ 這只修「後來補打卡了、狀態卻停在舊快照」的情況；打卡根本沒進系統的日子（例如整批被判
+//   超出範圍），重算結果還是「該段無打卡」，不會變——那要另外處理措辭，不是這裡的事。
+const RECHECK_STATUS_DAYS = 40;
 // 補寫的核定紀錄用這個字樣標示「系統自動重算」，跟主管手動核定的紀錄分開看得出來。
 const RECHECK_MARK = '（系統重算）';
 
@@ -1724,7 +1751,8 @@ function recheckPendingApprovalStatuses() {
     Object.keys(dayMap).forEach(function (empId) {
       const rec = dayMap[empId];
       const statusText = String(rec.status_text || '');
-      if (statusText.indexOf('該段無打卡') === -1) return; // 只修這個症狀，其他狀態（含已經是系統重算過的）不動
+      // 兩種措辭都要納入：待核准裝置事後被核准 → 卡會翻成 ok → 那天就真的比對得到了
+      if (statusText.indexOf(NO_PUNCH_NOTE) === -1 && statusText.indexOf(NOT_RECORDED_NOTE) === -1) return;
       const rawPeriods = parsePeriodsStr(rec.periods);
       if (!rawPeriods.length) return; // 整天請假無時段，跳過
       checked++;
@@ -1744,7 +1772,7 @@ function recheckPendingApprovalStatuses() {
           outMs: s.out ? hmToMs(outDate, s.out) : null,
         };
       });
-      const newStatusText = computeApprovalStatus(periods, punchWithMs);
+      const newStatusText = computeApprovalStatus(periods, punchWithMs, unrecordedAttemptCount(eventRows, empId, date) > 0);
       if (newStatusText === statusText) return; // 還是沒打卡，維持原樣，下次再檢查
 
       const roster = findRosterByEmpId(rosterRows, empId);
