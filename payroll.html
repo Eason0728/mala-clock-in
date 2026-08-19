@@ -721,6 +721,7 @@ function renderSlip(){
       <div style="text-align:right;font-size:13px">核定總時數 <b>${r.total_hours}</b> H
       ${r.support_hours?`　支援 <b>${r2(r.support_hours)}</b> H`:''}
       ${r.base_hours!=null?`　基本工時 <b>${r.base_hours}</b> H`:''}
+      ${ANNUAL[r.emp_id]?`　剩餘特休 <b>${ANNUAL[r.emp_id].left_h}</b> H`:''}
       ${(r.is_full_time&&r.ratio<1)?`<br><span style="color:var(--red);font-size:12px">月中到離職，按在職比例 ${Math.round(r.ratio*100)}% 折算</span>`:''}</div></div>
     <div class="slipcols">
       <div><h4>加項</h4><table>${r.earn.map(line).join('')}
