@@ -448,22 +448,25 @@ function renderRun(){
   const t=$('runTbl');
   if(!RESULTS.length){t.innerHTML='<tr><td style="text-align:center;padding:34px;color:#8a817a">按「重新計算」產生本月薪資</td></tr>';
     return}
-  let h=`<thead><tr><th>姓名</th><th>型態</th><th>核定時數</th><th>支援時數</th><th>超時/不足</th>
+  let h=`<thead><tr><th>姓名</th><th style="text-align:left">型態</th><th style="text-align:left">職稱／時薪</th><th>核定時數</th><th>支援時數</th><th>超時/不足</th>
     <th>計薪加班</th><th>應收</th><th>應付</th><th>實付</th></tr></thead><tbody>`;
   let g=0,d=0,net=0;
   RESULTS.forEach(r=>{
     g+=r.gross;d+=r.deduction;net+=r.net;
     const s=r.surplus_hours;
+    const m=MASTER.find(x=>String(x.emp_id)===String(r.emp_id))||{};
+    const roleCell=r.is_full_time?(n(m.mgr_allow)>0?'<b>店長</b>':'正職'):('時薪 '+nf(n(m.wage)));
     h+=`<tr><td><b>${r.name}</b></td>
       <td style="text-align:left"><span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span>
       ${(r.is_full_time&&r.ratio<1)?`<span class="tag draft">折算${Math.round(r.ratio*100)}%</span>`:''}</td>
+      <td style="text-align:left">${roleCell}</td>
       <td>${r.total_hours}</td><td>${r.support_hours?r2(r.support_hours):'—'}</td>
       <td>${s==null?'—':(s>=0?'+'+r2(s)+' H':`<span class="bad">${r2(s)} H</span>`)}</td>
       <td>${r.ot_paid_hours==null?'—':r2(r.ot_paid_hours)+' H'}</td>
       <td>${nf(r.gross)}</td><td>${nf(r.deduction)}</td><td class="big">${nf(r.net)}</td></tr>`;
   });
   t.innerHTML=h+`</tbody><tfoot><tr style="background:#f6f2ee;font-weight:900">
-    <td colspan="6">合計 ${RESULTS.length} 人</td><td>${nf(g)}</td><td>${nf(d)}</td><td>${nf(net)}</td></tr></tfoot>`;
+    <td colspan="7">合計 ${RESULTS.length} 人</td><td>${nf(g)}</td><td>${nf(d)}</td><td>${nf(net)}</td></tr></tfoot>`;
   const ftBase=(RESULTS.find(x=>x.is_full_time&&x.base_hours!=null)||{}).base_hours;
   if($('baseHint')) $('baseHint').textContent=ftBase!=null?`（正職當月基本工時 ${ftBase} 小時）`:'';
 }
@@ -479,23 +482,24 @@ async function toggleLock(){
 const AF=[['hours','本店核定時數'],['extra_ot','額外加班 H'],['personal_h','事假 H'],
           ['sick_h','病假 H'],['menstrual_h','生理假 H'],['disaster_h','天災假 H'],['annual_h','特休 H'],['deduct_days','全勤扣減天數']];
 function renderAtt(){
-  let h='<thead><tr><th>姓名</th>'+AF.map(f=>`<th>${f[1]}</th>`).join('')
-    +'<th>全勤津貼<br><span style="font-weight:400;color:var(--muted)">計時＋10</span></th><th>支援時數</th></tr></thead><tbody>';
+  let h='<thead><tr><th>姓名</th>'
+    +'<th>全勤津貼<br><span style="font-weight:400;color:var(--muted)">計時＋10</span></th>'
+    +AF.map(f=>`<th>${f[1]}</th>`).join('')+'<th>支援時數</th></tr></thead><tbody>';
   MASTER.filter(e=>String(e.active)==='true').forEach(e=>{
     const A=ATT[e.emp_id]=ATT[e.emp_id]||{};
     A.support=A.support||[];
     const sh=A.support.reduce((a,s)=>a+n(s.hours),0);
     h+=`<tr><td><b>${e.name}</b> <span class="tag ${isFT(e)?'ft':'pt'}">${isFT(e)?'正職':'計時'}</span></td>`;
+    // 全勤津貼：只有計時可勾（滿100H＋全勤由管理者判定），勾了時薪＋10；放在姓名旁第一欄
+    h+=`<td style="text-align:center">${isFT(e)?'—':
+      `<input type="checkbox" ${A.full_attend?'checked':''}
+        onchange="ATT['${e.emp_id}'].full_attend=this.checked"
+        style="width:20px;height:20px;cursor:pointer;accent-color:var(--red)">`}</td>`;
     AF.forEach(([k])=>{
       const dis=!isFT(e)&&(k==='extra_ot'||k==='deduct_days');
       h+=`<td>${dis?'—':`<input type="number" step="0.25" value="${A[k]??0}"
         onchange="ATT['${e.emp_id}']['${k}']=n(this.value)">`}</td>`;
     });
-    // 全勤津貼：只有計時可勾（滿100H＋全勤由管理者判定），勾了時薪＋10
-    h+=`<td style="text-align:center">${isFT(e)?'—':
-      `<input type="checkbox" ${A.full_attend?'checked':''}
-        onchange="ATT['${e.emp_id}'].full_attend=this.checked"
-        style="width:20px;height:20px;cursor:pointer;accent-color:var(--red)">`}</td>`;
     h+=`<td>${sh?r2(sh)+' H':'—'}</td></tr>`;
   });
   $('attTbl').innerHTML=h+'</tbody>';

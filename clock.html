@@ -205,6 +205,38 @@
   .status-error { background: #fdeceb; color: #c22a12; }
   .status-loading { background: rgba(255, 255, 255, 0.9); color: var(--brand-black); }
   .center-msg { text-align: center; padding: 40px 0; }
+  /* ── 分頁列（打卡／我的薪資）── */
+  .tabbar { display: flex; gap: 8px; margin-bottom: 20px; }
+  .tabbar .tab { flex: 1; border: 0; border-radius: 12px; padding: 12px 0; font: inherit;
+    font-size: 16px; font-weight: 800; background: rgba(255,255,255,.14); color: #fff; cursor: pointer; transition: .15s; }
+  .tabbar .tab.on { background: var(--brand-gold); color: var(--brand-black); box-shadow: 0 4px 14px rgba(250,190,0,.3); }
+  /* ── 我的薪資分頁 ── */
+  .pay-monthcard { display: flex; align-items: center; gap: 12px; }
+  .pay-mlabel { font-size: 15px; font-weight: 800; color: var(--brand-black); }
+  #payYm { font: inherit; font-size: 18px; font-weight: 800; border: 1px solid #e6e0da;
+    border-radius: 8px; padding: 8px 10px; margin-left: auto; color: var(--brand-black); }
+  #payView .who { display: flex; justify-content: space-between; align-items: flex-end;
+    border-bottom: 2px solid var(--brand-black); padding-bottom: 11px; margin-bottom: 14px; }
+  #payView .who b { font-size: 23px; }
+  #payView .who .m { color: #8a817a; font-size: 13px; text-align: right; }
+  #payView .hrs { display: flex; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+  #payView .hrs div { flex: 1; min-width: 120px; background: #f6f2ee; border-radius: 10px; padding: 11px 13px; }
+  #payView .hrs span { display: block; font-size: 12.5px; color: #8a817a; font-weight: 700; }
+  #payView .hrs b { font-size: 21px; }
+  #payView h4 { font-size: 15px; font-weight: 900; padding-bottom: 5px;
+    border-bottom: 2px solid var(--brand-red); margin: 18px 0 4px; }
+  #payView h4.d { border-bottom-color: var(--brand-black); }
+  #payView table { width: 100%; border-collapse: collapse; }
+  #payView td { padding: 8px 2px; border-bottom: 1px dotted #e6e0da; font-size: 15px; color: var(--brand-black); }
+  #payView td:last-child { text-align: right; white-space: nowrap; }
+  #payView tr.sum td { font-weight: 900; border-bottom: 0; }
+  #payView .net { margin-top: 20px; background: var(--brand-black); color: #fff; border-radius: 12px;
+    padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; }
+  #payView .net .v { font-size: 28px; font-weight: 900; color: var(--brand-gold); }
+  #payView .pfoot { font-size: 12.5px; color: #8a817a; text-align: center; margin-top: 16px; line-height: 1.8; }
+  #payView .pstate { text-align: center; padding: 40px 16px; color: #8a817a; }
+  #payView .pstate .ic { font-size: 34px; margin-bottom: 10px; }
+  #payView .pstate .t { font-weight: 900; color: var(--brand-black); font-size: 17px; margin-bottom: 5px; }
 </style>
 </head>
 <body>
@@ -213,9 +245,15 @@
 <div class="container">
   <header>
     <h1>麻的🔥小辛辣</h1>
-    <p>員工打卡</p>
+    <p>員工專區</p>
   </header>
 
+  <nav class="tabbar" id="tabbar">
+    <button class="tab on" data-view="clock" type="button">🕐 打卡</button>
+    <button class="tab" data-view="pay" type="button">💰 我的薪資</button>
+  </nav>
+
+  <div id="clockView">
   <div id="loadingCard" class="card center-msg">載入中…</div>
 
   <div id="mainCard" class="card" style="display:none;">
@@ -239,6 +277,15 @@
   </div>
 
   <div class="status-box" id="statusBox"></div>
+  </div><!-- /clockView -->
+
+  <div id="payView" style="display:none;">
+    <div class="card pay-monthcard">
+      <span class="pay-mlabel">薪資月份</span>
+      <input type="month" id="payYm">
+    </div>
+    <div id="paySlip"></div>
+  </div>
 </div>
 
 <script>
@@ -732,6 +779,83 @@
     document.addEventListener('touchstart', tryPlay, { once: true });
     document.addEventListener('click', tryPlay, { once: true });
   })();
+
+  // ══════ 我的薪資分頁（與打卡共用同一把 key，同仁不必另外領連結）══════
+  var tabbar = document.getElementById('tabbar');
+  var clockView = document.getElementById('clockView');
+  var payView = document.getElementById('payView');
+  var payYm = document.getElementById('payYm');
+  var paySlipEl = document.getElementById('paySlip');
+  var payLoadedYm = null;
+  var HOURY = ['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage'];
+  function payNf(v) { return Math.round(v).toLocaleString('zh-TW'); }
+  function payR2(v) { return Math.round(v * 100) / 100; }
+
+  // 預設月份＝當月（台北時區）
+  (function () {
+    try {
+      var parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit' }).formatToParts(new Date());
+      var y = parts.find(function (p) { return p.type === 'year'; }).value;
+      var mo = parts.find(function (p) { return p.type === 'month'; }).value;
+      if (y && mo) payYm.value = y + '-' + mo;
+    } catch (e) {}
+  })();
+
+  function payState(ic, t, d) {
+    return '<div class="card"><div class="pstate"><div class="ic">' + ic + '</div><div class="t">' + t + '</div><div>' + d + '</div></div></div>';
+  }
+  function payLine(x) {
+    var sub = '';
+    if (x.qty != null) {
+      sub = ' <span style="color:#8a817a;font-size:12px">' + payR2(x.qty) + (HOURY.indexOf(x.item_key) !== -1 ? 'H' : '') + (x.rate ? ' × ' + payNf(x.rate) : '') + '</span>';
+    }
+    return '<tr><td>' + x.item_label + sub + '</td><td>' + payNf(x.amount) + '</td></tr>';
+  }
+  function renderPay(j) {
+    if (!j || !j.ok) { paySlipEl.innerHTML = payState('🔒', '無法驗證身分', '這個連結可能已失效，請找店長重新取得。'); return; }
+    if (!j.ready) { paySlipEl.innerHTML = payState('🕒', j.message || '尚未結算', '薪資結算後這裡就會顯示明細。'); return; }
+    var r = j.result || j.run, earn = r.earn || [], ded = r.ded || [];
+    paySlipEl.innerHTML = '<div class="card">'
+      + '<div class="who"><div><b>' + j.name + '</b><div class="m">' + String(j.ym).replace('-', '年') + '月薪資</div></div>'
+      + '<div class="m">發薪日<br>每月 ' + j.payday + ' 日</div></div>'
+      + '<div class="hrs">'
+      + '<div><span>核定總時數</span><b>' + r.total_hours + '</b> H</div>'
+      + (r.support_hours ? '<div><span>支援時數</span><b>' + payR2(r.support_hours) + '</b> H</div>' : '')
+      + (r.base_hours != null ? '<div><span>基本工時</span><b>' + r.base_hours + '</b> H</div>' : '')
+      + (r.ot_paid_hours ? '<div><span>計薪加班</span><b>' + payR2(r.ot_paid_hours) + '</b> H</div>' : '')
+      + '</div>'
+      + '<h4>加項</h4><table>' + earn.map(payLine).join('') + '<tr class="sum"><td>應收合計</td><td>' + payNf(r.gross) + '</td></tr></table>'
+      + '<h4 class="d">扣項</h4><table>' + (ded.length ? ded.map(payLine).join('') : '<tr><td colspan="2" style="color:#8a817a">無</td></tr>') + '<tr class="sum"><td>應付合計</td><td>' + payNf(r.deduction) + '</td></tr></table>'
+      + '<div class="net"><div>實付金額</div><div class="v">NT$ ' + payNf(r.net) + '</div></div>'
+      + '<div class="pfoot">如有疑問請於發薪日起 7 日內向店長反映。<br>本頁只顯示你本人的資料。</div>'
+      + '</div>';
+  }
+  function loadPayslip(force) {
+    if (!key) { paySlipEl.innerHTML = payState('🔒', '連結不完整', '請用店長給你的專屬連結開啟。'); return; }
+    if (!force && payLoadedYm === payYm.value) return;
+    paySlipEl.innerHTML = '<div class="card center-msg" style="color:#8a817a">載入中…</div>';
+    var reqYm = payYm.value;
+    apiPost({ action: 'my_payslip', key: key, ym: reqYm }).then(function (j) {
+      payLoadedYm = reqYm;
+      renderPay(j);
+    }, function () {
+      paySlipEl.innerHTML = payState('📡', '連不上伺服器', '請確認網路後重新整理。');
+    });
+  }
+  if (tabbar) {
+    tabbar.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('.tab') : null;
+      if (!b) return;
+      var tabs = tabbar.querySelectorAll('.tab');
+      for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('on');
+      b.classList.add('on');
+      var isPay = b.getAttribute('data-view') === 'pay';
+      clockView.style.display = isPay ? 'none' : '';
+      payView.style.display = isPay ? '' : 'none';
+      if (isPay) loadPayslip(false);
+    });
+    payYm.addEventListener('change', function () { loadPayslip(true); });
+  }
 
   init();
 })();
