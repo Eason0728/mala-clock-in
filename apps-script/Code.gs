@@ -50,7 +50,7 @@ const EVENTS_HEADERS = [
   'device_id',
   'device_match',
   'status',
-  // 手機回報的定位精確度（公尺，越小越準）。2026-08-11 新增：王禹婕當天 12 筆全被判超出範圍，
+  // 手機回報的定位精確度（公尺，越小越準）。2026-08-19 新增：王禹婕 8/11 當天 12 筆全被判超出範圍，
   // 只能靠座標反推是 Wi-Fi 定位不是 GPS；存下這個數字，這類案子一眼就分得出來。
   // ⚠ 加在最後一欄，既有 10 欄資料不位移；舊列此欄為空。
   'accuracy_m',
@@ -64,7 +64,7 @@ const LOW_ACCURACY_M = 50;
 const APPROVED_HEADERS = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at'];
 const MANAGERS_HEADERS = ['name', 'key', 'active'];
 // 主管核定頁「請假註記」可選假別（2026-07-13 Eason 定案；改清單前後端 mock 要同步）
-const LEAVE_TYPES = ['病假', '事假', '特休假', '生理假', '家庭照顧假', '喪假', '婚假'];
+const LEAVE_TYPES = ['病假', '事假', '特休假', '生理假', '家庭照顧假', '天災假', '喪假', '婚假'];
 
 /**
  * 手動執行一次：建立 roster / events 兩個分頁與表頭。
@@ -105,7 +105,7 @@ function setup() {
   }
   approved.getRange(1, 1, 1, APPROVED_HEADERS.length).setValues([APPROVED_HEADERS]);
 
-  // 人工備註正本：月表明細第 7 欄手打的字，重算前會被收進這裡再放回去（2026-08-07 新增）
+  // 人工備註正本：月表明細第 7 欄手打的字，重算前會被收進這裡再放回去（2026-08-19 新增）
   let notes = ss.getSheetByName('notes');
   if (!notes) {
     notes = ss.insertSheet('notes');
@@ -1012,7 +1012,13 @@ const MONTHLY_PAIR_WINDOW_HOURS = 12;
 const REJECTED_IN_BREAK_MIN = 60;
 const WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
 // 備註欄中屬於「異常」的字樣（列入異常筆數統計、明細標紅）；假別不算異常
-const ABNORMAL_NOTES = ['下班忘刷卡', '上班忘刷卡', '新裝置待核准', '超出範圍嘗試'];
+// 計入月表「異常筆數」的註記。2026-08-19 Eason 指定把「超出範圍嘗試」拿掉——
+// 那多半是同仁人在店裡、手機定位飄掉（王禹婕 8/11 一天就被擋 12 次），一天狂按就把
+// 這個數字灌爆，當「異常」看反而失真；真正要人去處理的是忘刷卡與待核准裝置。
+const ABNORMAL_NOTES = ['下班忘刷卡', '上班忘刷卡', '新裝置待核准'];
+// 狀態欄要標紅字的註記＝上面那組再加「超出範圍嘗試」。
+// 不計數但仍標紅：看得到當天有被擋過（可能是定位不準，也可能真的不在店裡），只是不進統計。
+const HIGHLIGHT_NOTES = ABNORMAL_NOTES.concat(['超出範圍嘗試']);
 
 function tsMs(ts) { return new Date(String(ts)).getTime(); }
 function tsDateStr(ts) { return String(ts).slice(0, 10); }
@@ -1432,7 +1438,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
       const rowNo = rows.length;
       detailRows.push({ row: rowNo, date: c.date, name: empName[emp] || emp });
       if (wd === 0 || wd === 6) weekendRows.push(rowNo);
-      if (c.notes.some(function (n) { return ABNORMAL_NOTES.indexOf(n) !== -1; })) abnormalNoteRows.push(rowNo);
+      if (c.notes.some(function (n) { return HIGHLIGHT_NOTES.indexOf(n) !== -1; })) abnormalNoteRows.push(rowNo);
     });
 
     const s = empStats[emp] || { total: 0 };
