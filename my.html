@@ -79,6 +79,7 @@ async function load(){
       ${r.support_hours?`<div><span>支援時數</span><b>${r2(r.support_hours)}</b> H</div>`:''}
       ${r.base_hours!=null?`<div><span>基本工時</span><b>${r.base_hours}</b> H</div>`:''}
       ${r.ot_paid_hours?`<div><span>計薪加班</span><b>${r2(r.ot_paid_hours)}</b> H</div>`:''}
+      ${j.annual?`<div><span>剩餘特休</span><b>${j.annual.left_h}</b> H</div>`:''}
     </div>
     <h4>加項</h4><table>${earn.map(line).join('')}
       <tr class="sum"><td>應收合計</td><td>${nf(r.gross)}</td></tr></table>

@@ -204,6 +204,23 @@ function payDateStr(v) {
   return String(v || '').trim().slice(0, 10);
 }
 
+/** 特休額度（台灣勞基法§38 週年制）：以薪資月月底為基準日，回當前週年期 {days, ps, pe}。
+ *  滿6月未滿1年3日；1年7日；2年10日；3年14日；5年15日；10年起每年+1、上限30日。年資未滿6月回 days:0。 */
+function payAnnualQuota(hireStr, ym) {
+  const hs = payDateStr(hireStr); if (!hs) return null;
+  const h = new Date(hs + 'T00:00:00'); if (isNaN(h)) return null;
+  const asof = new Date(ym + '-' + pad2(payDaysIn(ym)) + 'T00:00:00');
+  let months = (asof.getFullYear() - h.getFullYear()) * 12 + (asof.getMonth() - h.getMonth());
+  if (asof.getDate() < h.getDate()) months--;
+  if (months < 6) return { days: 0, ps: '', pe: '' };
+  function addM(d, m) { const x = new Date(d); x.setMonth(x.getMonth() + m); return x; }
+  const fmt = function (d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
+  if (months < 12) return { days: 3, ps: fmt(addM(h, 6)), pe: fmt(addM(h, 12)) };
+  const y = Math.floor(months / 12);
+  const days = y < 2 ? 7 : y < 3 ? 10 : y < 5 ? 14 : y < 10 ? 15 : Math.min(30, 15 + (y - 9));
+  return { days: days, ps: fmt(addM(h, y * 12)), pe: fmt(addM(h, (y + 1) * 12)) };
+}
+
 /** 在職比例：月中到職／離職才折算，整月在職回 1 */
 function payRatio(e, ym) {
   const D = payDaysIn(ym);
@@ -669,7 +686,7 @@ function handlePayrollMonth(body) {
       if (calc && calc.ok) run = { results: calc.results, status: 'draft' };
     }
   }
-  return { ok: true, ym: ym, inputs: inputs, run: run,
+  return { ok: true, ym: ym, inputs: inputs, run: run, annual: payAnnualInfo(ym),
            master: payRead('master'), config: payConfig(), holidays: payRead('holiday') };
 }
 
@@ -704,6 +721,27 @@ function handlePayrollFinalize(body) {
  * 員工自助查詢：以打卡專屬連結的 key 反查 emp_id。
  * 絕不接受前端傳入的 emp_id——否則改網址就能看別人的薪水。
  */
+/** 每人剩餘特休（工時分頁與員工薪資單共用）：額度=payAnnualQuota、已用=當前週年期內 leave 分頁特休時數合計 */
+function payAnnualInfo(ym) {
+  const master = payRead('master');
+  const sh = getSS().getSheetByName('leave');
+  const leaves = sh ? readSheetAsObjects(sh).rows.map(stripRowIndex) : [];
+  const out = {};
+  master.forEach(function (e) {
+    const q = payAnnualQuota(e.hire_date, ym);
+    if (!q) { out[String(e.emp_id)] = null; return; }
+    let used = 0;
+    leaves.forEach(function (l) {
+      if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
+      if (String(l['假別'] || '').indexOf('特') === -1) return;
+      const d = normCellDate(l['日期']);
+      if (q.ps && d >= q.ps && d < q.pe) used += Number(l['時數']) || 0;
+    });
+    out[String(e.emp_id)] = { days: q.days, quota_h: q.days * 8, used_h: payR2(used), left_h: payR2(q.days * 8 - used) };
+  });
+  return out;
+}
+
 function handleMyPayslip(body) {
   const key = String(body.key || '');
   if (!key) return { ok: false, error: 'unauthorized' };
@@ -715,14 +753,15 @@ function handleMyPayslip(body) {
   const run = payRead('run').filter(function (r) {
     return String(r.ym) === ym && String(r.emp_id) === String(me.emp_id);
   })[0];
-  if (!run) return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資尚未結算' };
+  const annual = payAnnualInfo(ym)[String(me.emp_id)] || null;
+  if (!run) return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資尚未結算', annual: annual };
   if (String(run.status) !== 'final') {
-    return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資結算中，尚未定案' };
+    return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資結算中，尚未定案', annual: annual };
   }
   const items = payRead('item').filter(function (i) {
     return String(i.ym) === ym && String(i.emp_id) === String(me.emp_id);
   });
-  return { ok: true, ym: ym, name: me.name, ready: true,
+  return { ok: true, ym: ym, name: me.name, ready: true, annual: annual,
            result: payRunItemsToResult(run, items), payday: payConfig().payday };
 }
 

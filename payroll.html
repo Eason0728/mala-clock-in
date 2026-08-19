@@ -288,7 +288,7 @@ const API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ?
   : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
 const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 
-let MASTER=[], CFG={}, HOL={}, ATT={}, RESULTS=[], STATUS='draft';
+let MASTER=[], CFG={}, HOL={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={};
 
 const $=id=>document.getElementById(id);
 const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};
@@ -384,7 +384,7 @@ async function loadMonth(){
   try{
     const r=await post('payroll_month',{ym:ym(),inputs:{}});
     if(!r.ok) return;
-    ATT=r.inputs||{};
+    ATT=r.inputs||{}; ANNUAL=r.annual||{};
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
     renderAtt();renderRun();renderSlipSel();
   } finally { setBusy(false); }
@@ -515,7 +515,8 @@ function renderAtt(){
     +'<th>本月宿舍費<br><span style="font-weight:400;color:var(--muted)">空白＝主檔</span></th>'
     +AF.map(f=>`<th>${f[1]}</th>`).join('')+'<th>支援時數</th>'
     +'<th style="text-align:left">自訂加薪<br><span style="font-weight:400;color:var(--muted)">名稱＋金額</span></th>'
-    +'<th style="text-align:left">自訂扣款<br><span style="font-weight:400;color:var(--muted)">名稱＋金額</span></th></tr></thead><tbody>';
+    +'<th style="text-align:left">自訂扣款<br><span style="font-weight:400;color:var(--muted)">名稱＋金額</span></th>'
+    +'<th>剩餘特休<br><span style="font-weight:400;color:var(--muted)">勞基法自動算</span></th></tr></thead><tbody>';
   MASTER.filter(e=>String(e.active)==='true').forEach(e=>{
     const A=ATT[e.emp_id]=ATT[e.emp_id]||{};
     A.support=A.support||[];
@@ -557,7 +558,10 @@ function renderAtt(){
       <input type="text" placeholder="名稱" value="${A.custom_ded_label||''}" style="min-width:90px"
         onchange="ATT['${e.emp_id}'].custom_ded_label=this.value">
       <input type="number" placeholder="金額" value="${n(A.custom_ded_amt)||''}" style="min-width:80px"
-        onchange="ATT['${e.emp_id}'].custom_ded_amt=n(this.value)"></div></td></tr>`;
+        onchange="ATT['${e.emp_id}'].custom_ded_amt=n(this.value)"></div></td>`;
+    // 剩餘特休：後端依到職日按勞基法(週年制)算額度、扣掉本週年期已用特休(唯讀)
+    const av=ANNUAL[e.emp_id];
+    h+=`<td style="white-space:nowrap">${av?`<b>${av.left_h}</b> H <span style="color:var(--muted);font-size:11.5px">/ ${av.quota_h}H(${av.days}天)</span>`:'—'}</td></tr>`;
   });
   $('attTbl').innerHTML=h+'</tbody>';
   renderSup();
@@ -569,9 +573,30 @@ function storeOptions(cur){
   const list=STORES.slice(); if(cur && !list.includes(cur)) list.unshift(cur);
   return '<option value="">選擇門市</option>'+list.map(s=>`<option ${s===cur?'selected':''}>${s}</option>`).join('');
 }
+function addSupportFor(emp){
+  if(!emp){toast('請先選擇同仁',true);return}
+  const A=ATT[emp]=ATT[emp]||{}; A.support=A.support||[];
+  A.support.push({store:'',hours:0,rate:0,amount:''});
+  renderAtt();
+}
 function renderSup(){
-  $('supList').innerHTML=MASTER.filter(e=>String(e.active)==='true').map(e=>{
-    const A=ATT[e.emp_id]=ATT[e.emp_id]||{}; A.support=A.support||[];
+  const act=MASTER.filter(e=>String(e.active)==='true');
+  // 顯眼的新增支援列：選同仁＋大按鈕
+  const adder=`<div class="card" style="background:var(--gold-soft);border-color:var(--gold)">
+    <div class="row">
+      <b style="font-size:16px">跨店支援</b>
+      <select id="supWho" style="min-width:150px;font-size:15px;padding:9px 11px">
+        <option value="">選擇同仁</option>
+        ${act.map(e=>`<option value="${e.emp_id}">${e.name}</option>`).join('')}
+      </select>
+      <button class="btn" style="font-size:16.5px;padding:11px 24px"
+        onclick="addSupportFor($('supWho').value)">＋ 新增支援</button>
+    </div>
+  </div>`;
+  // 只顯示本月有支援明細的同仁
+  const withSup=act.filter(e=>((ATT[e.emp_id]||{}).support||[]).length);
+  $('supList').innerHTML=adder+(withSup.length?withSup.map(e=>{
+    const A=ATT[e.emp_id];
     const rows=A.support.map((s,i)=>`<tr>
       <td><select onchange="ATT['${e.emp_id}'].support[${i}].store=this.value">${storeOptions(s.store)}</select></td>
       <td><input type="number" step="0.25" value="${s.hours??''}"
@@ -583,17 +608,12 @@ function renderSup(){
       <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
         onclick="ATT['${e.emp_id}'].support.splice(${i},1);renderAtt()">移除</button></td></tr>`).join('');
     return `<div class="card" style="background:#fdfcfb;margin-bottom:12px">
-      <div class="row" style="margin-bottom:10px">
-        <b>${e.name}</b>
-        <button class="btn ghost" style="margin-left:auto;padding:5px 12px;font-size:12px"
-          onclick="ATT['${e.emp_id}'].support.push({store:'',hours:0,rate:0,amount:''});renderAtt()">＋ 新增支援</button>
-      </div>
-      ${A.support.length?`<div class="scroll"><table>
+      <div class="row" style="margin-bottom:10px"><b>${e.name}</b></div>
+      <div class="scroll"><table>
         <thead><tr><th>支援門市</th><th>支援時數</th><th>支援費率</th><th>支援薪資</th><th></th></tr></thead>
-        <tbody>${rows}</tbody></table></div>`
-       :'<div style="color:var(--muted);font-size:12.5px">本月無跨店支援</div>'}
+        <tbody>${rows}</tbody></table></div>
     </div>`;
-  }).join('');
+  }).join(''):'<div style="color:var(--muted);font-size:13px;padding:6px 2px">本月尚無跨店支援，用上方「＋ 新增支援」加入。</div>');
 }
 
 /* ═════ 員工設定 ═════ */

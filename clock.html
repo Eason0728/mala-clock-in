@@ -827,7 +827,9 @@
   }
   function renderPay(j) {
     if (!j || !j.ok) { paySlipEl.innerHTML = payState('🔒', '無法驗證身分', '這個連結可能已失效，請找店長重新取得。'); return; }
-    if (!j.ready) { paySlipEl.innerHTML = payState('🕒', j.message || '尚未結算', '薪資結算後這裡就會顯示明細。'); return; }
+    if (!j.ready) {
+      var an = j.annual ? '<div class="card"><div class="hrs"><div><span>剩餘特休</span><b>' + j.annual.left_h + '</b> H</div></div></div>' : '';
+      paySlipEl.innerHTML = an + payState('🕒', j.message || '尚未結算', '薪資結算後這裡就會顯示明細。'); return; }
     var r = j.result || j.run, earn = r.earn || [], ded = r.ded || [];
     paySlipEl.innerHTML = '<div class="card">'
       + '<div class="who"><div><b>' + j.name + '</b><div class="m">' + String(j.ym).replace('-', '年') + '月薪資</div></div>'
@@ -837,6 +839,7 @@
       + (r.support_hours ? '<div><span>支援時數</span><b>' + payR2(r.support_hours) + '</b> H</div>' : '')
       + (r.base_hours != null ? '<div><span>基本工時</span><b>' + r.base_hours + '</b> H</div>' : '')
       + (r.ot_paid_hours ? '<div><span>計薪加班</span><b>' + payR2(r.ot_paid_hours) + '</b> H</div>' : '')
+      + (j.annual ? '<div><span>剩餘特休</span><b>' + j.annual.left_h + '</b> H</div>' : '')
       + '</div>'
       + '<h4>加項</h4><table>' + earn.map(payLine).join('') + '<tr class="sum"><td>應收合計</td><td>' + payNf(r.gross) + '</td></tr></table>'
       + '<h4 class="d">扣項</h4><table>' + (ded.length ? ded.map(payLine).join('') : '<tr><td colspan="2" style="color:#8a817a">無</td></tr>') + '<tr class="sum"><td>應付合計</td><td>' + payNf(r.deduction) + '</td></tr></table>'
