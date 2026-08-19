@@ -478,7 +478,9 @@ function renderRun(){
     g+=r.gross;d+=r.deduction;net+=r.net;
     const s=r.surplus_hours;
     const m=MASTER.find(x=>String(x.emp_id)===String(r.emp_id))||{};
-    const roleCell=r.is_full_time?(n(m.mgr_allow)>0?'<b>店長</b>':'正職'):('時薪 '+nf(n(m.wage)));
+    // 計時顯示「該月實際時薪」：工時分頁本月時薪(wage_override)優先，沒填才用主檔——否則調薪後看舊月份會誤顯示新時薪
+    const mw=n((ATT[r.emp_id]||{}).wage_override)>0?n(ATT[r.emp_id].wage_override):n(m.wage);
+    const roleCell=r.is_full_time?(n(m.mgr_allow)>0?'<b>店長</b>':'正職'):('時薪 '+nf(mw));
     h+=`<tr><td><b>${r.name}</b></td>
       <td style="text-align:left"><span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span>
       ${(r.is_full_time&&r.ratio<1)?`<span class="tag draft">折算${Math.round(r.ratio*100)}%</span>`:''}</td>
