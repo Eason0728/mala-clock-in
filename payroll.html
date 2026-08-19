@@ -507,6 +507,7 @@ const AF=[['hours','本店核定時數'],['extra_ot','額外加班 H'],['persona
 function renderAtt(){
   let h='<thead><tr><th>姓名</th>'
     +'<th>全勤津貼<br><span style="font-weight:400;color:var(--muted)">計時＋10</span></th>'
+    +'<th>餐費補助<br><span style="font-weight:400;color:var(--muted)">正職·勾了才算</span></th>'
     +'<th>本月時薪<br><span style="font-weight:400;color:var(--muted)">計時·可逐月改</span></th>'
     +'<th>出勤天數<br><span style="font-weight:400;color:var(--muted)">正職·餐費</span></th>'
     +'<th>本月宿舍費<br><span style="font-weight:400;color:var(--muted)">空白＝主檔</span></th>'
@@ -520,6 +521,11 @@ function renderAtt(){
     h+=`<td style="text-align:center">${isFT(e)?'—':
       `<input type="checkbox" ${A.full_attend?'checked':''}
         onchange="ATT['${e.emp_id}'].full_attend=this.checked"
+        style="width:20px;height:20px;cursor:pointer;accent-color:var(--red)">`}</td>`;
+    // 餐費補助（正職）：勾了才算＝出勤天數×主檔「餐費補助/日」
+    h+=`<td style="text-align:center">${!isFT(e)?'—':
+      `<input type="checkbox" ${A.meal_on?'checked':''}
+        onchange="ATT['${e.emp_id}'].meal_on=this.checked"
         style="width:20px;height:20px;cursor:pointer;accent-color:var(--red)">`}</td>`;
     // 本月時薪（計時）：填了用該月值、預設帶主檔時薪；每月可不同又保留歷史。正職—
     h+=`<td>${isFT(e)?'—':`<input type="number" step="1" value="${n(A.wage_override)>0?n(A.wage_override):n(e.wage)}"
@@ -594,7 +600,7 @@ function renderEmp(){
       EF.filter(([k])=>!( (!ft&&['base','ot_rate','attend_cap','meal_allow','skill_allow','night_allow','mgr_allow'].includes(k))
                         || (ft&&k==='wage') ))
         .map(([k,lb,ty])=>`<div class="fld"><label>${lb}</label>
-          <input type="${ty||'number'}" value="${e[k]??(k==='meal_allow'?100:'')}"
+          <input type="${ty||'number'}" value="${e[k]??''}"
             onchange="MASTER[${i}]['${k}']=${ty==='text'||ty==='date'?'this.value':'n(this.value)'}"></div>`).join('')+
       '</div></div>';
   }).join('');

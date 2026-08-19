@@ -19,7 +19,7 @@ const PAY_SHEETS = {
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
             'ot_paid_hours','gross','deduction','net','status','run_at','support_hours'],
   item:    ['ym','emp_id','item_type','item_key','item_label','qty','rate','amount','source','memo'],
-  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override'],
+  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on'],
   audit:   ['ts','ym','action','operator','reason'],
 };
 const PAY_SHEET_NAME = {
@@ -257,10 +257,10 @@ function payCalcOne(e, ym, att, cfg, redDays) {
       push(earn, 'attend_bonus', '全勤獎金', null, null,
            Math.max(0, payNum(e.attend_cap) * P - att.deduct_days * payNum(cfg.attend_deduct_per_day)));
     }
-    // 餐費補助（正職）：有上班就補，出勤天數 × 餐費補助/日（主檔未填＝預設 100）。按實際上班天數，已內含折算不另乘 P。
-    const mealRate = (e.meal_allow === '' || e.meal_allow == null) ? 100 : payNum(e.meal_allow);
+    // 餐費補助（正職）：工時分頁勾選才算＝出勤天數 × 餐費補助/日（主檔 meal_allow，無預設）。按實際天數不另乘 P。
+    const mealRate = payNum(e.meal_allow);
     const wd = payNum(att.work_days);
-    if (mealRate > 0 && wd > 0) push(earn, 'meal_sub', '餐費補助', wd, mealRate, wd * mealRate);
+    if (payBool(att.meal_on) && mealRate > 0 && wd > 0) push(earn, 'meal_sub', '餐費補助', wd, mealRate, wd * mealRate);
   } else {
     // 計時：本店時數 × 時薪；時薪加給＝滿勤(工時分頁手動打勾)+10、年資(滿半年次月起)+10，可疊加
     // 本月時薪：工時分頁填了 wage_override 就用該月值，否則用主檔 wage（計時每月時薪可不同、又保留歷史）
@@ -490,7 +490,7 @@ function paySavedInputs(ym) {
       hours: payNum(r.hours), extra_ot: payNum(r.extra_ot),
       personal_h: payNum(r.personal_h), sick_h: payNum(r.sick_h), menstrual_h: payNum(r.menstrual_h), disaster_h: payNum(r.disaster_h), annual_h: payNum(r.annual_h),
       deduct_days: payNum(r.deduct_days), support: sup, full_attend: payBool(r.full_attend),
-      work_days: payNum(r.work_days), wage_override: payNum(r.wage_override),
+      work_days: payNum(r.work_days), wage_override: payNum(r.wage_override), meal_on: payBool(r.meal_on),
       dorm_override: (r.dorm_override === '' || r.dorm_override == null) ? '' : payNum(r.dorm_override),
     };
   });
@@ -528,7 +528,7 @@ function handlePayrollInputSet(body) {
       personal_h: payNum(a.personal_h), sick_h: payNum(a.sick_h), menstrual_h: payNum(a.menstrual_h), disaster_h: payNum(a.disaster_h), annual_h: payNum(a.annual_h),
       deduct_days: payNum(a.deduct_days), support: JSON.stringify(a.support || []), updated_at: now,
       full_attend: payBool(a.full_attend) ? 1 : 0,
-      work_days: payNum(a.work_days), wage_override: payNum(a.wage_override),
+      work_days: payNum(a.work_days), wage_override: payNum(a.wage_override), meal_on: payBool(a.meal_on) ? 1 : 0,
       dorm_override: (a.dorm_override === '' || a.dorm_override == null) ? '' : payNum(a.dorm_override),
     };
   });
@@ -573,6 +573,7 @@ function handlePayrollCalc(body) {
       work_days:  o.work_days  !== undefined ? payNum(o.work_days)  : payNum(c.work_days),
       wage_override: o.wage_override !== undefined ? payNum(o.wage_override) : payNum(c.wage_override),
       dorm_override: o.dorm_override !== undefined ? o.dorm_override : (c.dorm_override != null ? c.dorm_override : ''),
+      meal_on:    o.meal_on    !== undefined ? payBool(o.meal_on)   : payBool(c.meal_on),
     };
     return payCalcOne(e, ym, att, cfg, redDays);
   });
