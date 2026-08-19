@@ -1012,34 +1012,47 @@ const MONTHLY_PAIR_WINDOW_HOURS = 12;
 const REJECTED_IN_BREAK_MIN = 60;
 const WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
 // 備註欄中屬於「異常」的字樣（列入異常筆數統計、明細標紅）；假別不算異常
-// 計入月表「異常筆數」的註記開頭。2026-08-19 Eason 定義：忘刷卡、遲到、早退、病假、事假
+// 計入月表「異常筆數」的分類。2026-08-19 Eason 定義：忘刷卡、遲到、早退、病假、事假
 // （＋沿用既有的新裝置待核准）。
 // ⚠ 用「開頭比對」不是完全相等，因為這些字串都帶變動的尾巴：
 //   遲到5分／早退10分（分鐘數）、病假2.5h（時數，沒填時數就只有「病假」）。
-// ⚠ 「超出範圍嘗試」刻意不在這裡（2026-08-19 Eason 指定）：那多半是同仁人在店裡、手機定位
-//   飄掉，一天連按十幾次就把數字灌爆（王禹婕 8/11 一天 12 次），當異常看會失真。
+// ⚠ 分類（key）決定計數單位：**同一天同一類只算 1 筆**。遲到與早退刻意歸同一類
+//   ——Eason 2026-08-19 指定「同一天遲到又早退算 1 筆」。同理一天內多段各自遲到
+//   也只算 1 筆。
+// ⚠ 「超出範圍嘗試」不在這裡（Eason 指定）：那多半是同仁人在店裡、手機定位飄掉，
+//   一天連按十幾次就把數字灌爆（王禹婕 8/11 一天 12 次），當異常看會失真。
 // ⚠ 只列病假與事假：特休假／生理假／家庭照顧假／喪假／婚假是應有的假，不算異常。
-// ⚠ 「該段無打卡」「有多出的打卡段」「上班中」也不列入（Eason 沒指定，且前兩者多半是核定
-//   當下同仁還沒打完卡造成的，隔天 recheckPendingApprovalStatuses 會自動修掉）。
-const ABNORMAL_PREFIXES = ['上班忘刷卡', '下班忘刷卡', '遲到', '早退', '病假', '事假', '新裝置待核准'];
+// ⚠ 「該段無打卡」「有多出的打卡段」「上班中」也不列入。
+const ABNORMAL_CATEGORIES = [
+  { key: '上班忘刷卡', prefixes: ['上班忘刷卡'] },
+  { key: '下班忘刷卡', prefixes: ['下班忘刷卡'] },
+  { key: '遲到早退', prefixes: ['遲到', '早退'] },
+  { key: '病假', prefixes: ['病假'] },
+  { key: '事假', prefixes: ['事假'] },
+  { key: '新裝置待核准', prefixes: ['新裝置待核准'] },
+];
 // 狀態欄要標紅字的：異常那組再加「超出範圍嘗試」——看得到當天有被擋過，只是不進統計。
-const HIGHLIGHT_PREFIXES = ABNORMAL_PREFIXES.concat(['超出範圍嘗試']);
+const HIGHLIGHT_CATEGORIES = ABNORMAL_CATEGORIES.concat([
+  { key: '超出範圍嘗試', prefixes: ['超出範圍嘗試'] },
+]);
 
 /**
- * 數出 notes 裡符合 prefixes 的項數。
+ * 回傳這一格（某人某天）命中的異常類別清單，**同一類重複出現只算一次**。
  * ⚠ 主管核定帶回的狀態是「多項用『、』串成一個字串」（例：'遲到5分、早退10分'），
- *   所以要先拆開再逐項比對，否則同一天遲到又早退只會算成一筆。
+ *   要先拆開再逐項比對，否則整串比不到任何開頭。
  */
-function countNoteMatches(notes, prefixes) {
-  let n = 0;
+function abnormalCategoriesOf(notes, categories) {
+  const hit = {};
   (notes || []).forEach(function (note) {
     String(note).split('、').forEach(function (part) {
       const t = part.trim();
       if (!t) return;
-      if (prefixes.some(function (pre) { return t.indexOf(pre) === 0; })) n++;
+      categories.forEach(function (c) {
+        if (c.prefixes.some(function (pre) { return t.indexOf(pre) === 0; })) hit[c.key] = true;
+      });
     });
   });
-  return n;
+  return Object.keys(hit);
 }
 
 function tsMs(ts) { return new Date(String(ts)).getTime(); }
@@ -1387,7 +1400,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     //   下面渲染明細列時才併進去顯示的，只數 c.notes 會漏掉遲到早退（2026-08-19 實測抓到）。
     const rec = (approvedMap[c.date] || {})[c.emp_id];
     const notesForCount = rec && rec.status_text ? c.notes.concat([String(rec.status_text)]) : c.notes;
-    s.abnormal += countNoteMatches(notesForCount, ABNORMAL_PREFIXES);
+    s.abnormal += abnormalCategoriesOf(notesForCount, ABNORMAL_CATEGORIES).length;
   });
 
   // 核定時數改讀 approved 分頁（每人每月累計＝當月每天最新一筆核定紀錄的 approved_hours 加總）
@@ -1467,7 +1480,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
       if (wd === 0 || wd === 6) weekendRows.push(rowNo);
       // 用 statusNotes（已含核定狀態）而不是 c.notes，跟異常筆數看同一份資料：
       // 遲到/早退既然算異常，那一列就該標紅，不然數字對得起來、眼睛找不到。
-      if (countNoteMatches(statusNotes, HIGHLIGHT_PREFIXES) > 0) abnormalNoteRows.push(rowNo);
+      if (abnormalCategoriesOf(statusNotes, HIGHLIGHT_CATEGORIES).length > 0) abnormalNoteRows.push(rowNo);
     });
 
     const s = empStats[emp] || { total: 0 };
