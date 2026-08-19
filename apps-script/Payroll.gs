@@ -19,7 +19,7 @@ const PAY_SHEETS = {
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
             'ot_paid_hours','gross','deduction','net','status','run_at','support_hours'],
   item:    ['ym','emp_id','item_type','item_key','item_label','qty','rate','amount','source','memo'],
-  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on'],
+  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on','custom_add_label','custom_add_amt','custom_ded_label','custom_ded_amt'],
   audit:   ['ts','ym','action','operator','reason'],
 };
 const PAY_SHEET_NAME = {
@@ -275,6 +275,8 @@ function payCalcOne(e, ym, att, cfg, redDays) {
   if (payNum(e.night_allow))  push(earn, 'night_allow', '夜間津貼', null, null, payNum(e.night_allow) * pr);
   if (payNum(e.mgr_allow))    push(earn, 'mgr_allow', '店長津貼', null, null, payNum(e.mgr_allow) * pr);
   if (payNum(e.editor_allow)) push(earn, 'editor_allow', '小編津貼', null, null, payNum(e.editor_allow));
+  // 自訂加薪／扣款（工時分頁逐月填，名稱自訂）
+  if (payNum(att.custom_add_amt)) push(earn, 'custom_add', String(att.custom_add_label || '自訂加薪'), null, null, payNum(att.custom_add_amt));
 
   /* 跨店支援明細：
      - 計時：支援時數 × 支援門市費率，獨立加項（留空金額＝時數×費率；填了以填的為準）。
@@ -313,6 +315,7 @@ function payCalcOne(e, ym, att, cfg, redDays) {
   if (payNum(e.health_ins)) push(ded, 'health_ins', '健保費', null, null, payNum(e.health_ins));
   if (payNum(e.group_ins))  push(ded, 'group_ins', '團保費', null, null, payNum(e.group_ins));
   if (payNum(e.pension))    push(ded, 'pension', '退休金', null, null, payNum(e.pension));
+  if (payNum(att.custom_ded_amt)) push(ded, 'custom_ded', String(att.custom_ded_label || '自訂扣款'), null, null, payNum(att.custom_ded_amt));
 
   const gross = earn.reduce(function (a, b) { return a + b.amount; }, 0);
   const deduct = ded.reduce(function (a, b) { return a + b.amount; }, 0);
@@ -491,6 +494,8 @@ function paySavedInputs(ym) {
       personal_h: payNum(r.personal_h), sick_h: payNum(r.sick_h), menstrual_h: payNum(r.menstrual_h), disaster_h: payNum(r.disaster_h), annual_h: payNum(r.annual_h),
       deduct_days: payNum(r.deduct_days), support: sup, full_attend: payBool(r.full_attend),
       work_days: payNum(r.work_days), wage_override: payNum(r.wage_override), meal_on: payBool(r.meal_on),
+      custom_add_label: String(r.custom_add_label||''), custom_add_amt: payNum(r.custom_add_amt),
+      custom_ded_label: String(r.custom_ded_label||''), custom_ded_amt: payNum(r.custom_ded_amt),
       dorm_override: (r.dorm_override === '' || r.dorm_override == null) ? '' : payNum(r.dorm_override),
     };
   });
@@ -529,6 +534,8 @@ function handlePayrollInputSet(body) {
       deduct_days: payNum(a.deduct_days), support: JSON.stringify(a.support || []), updated_at: now,
       full_attend: payBool(a.full_attend) ? 1 : 0,
       work_days: payNum(a.work_days), wage_override: payNum(a.wage_override), meal_on: payBool(a.meal_on) ? 1 : 0,
+      custom_add_label: String(a.custom_add_label||''), custom_add_amt: payNum(a.custom_add_amt),
+      custom_ded_label: String(a.custom_ded_label||''), custom_ded_amt: payNum(a.custom_ded_amt),
       dorm_override: (a.dorm_override === '' || a.dorm_override == null) ? '' : payNum(a.dorm_override),
     };
   });
@@ -574,6 +581,10 @@ function handlePayrollCalc(body) {
       wage_override: o.wage_override !== undefined ? payNum(o.wage_override) : payNum(c.wage_override),
       dorm_override: o.dorm_override !== undefined ? o.dorm_override : (c.dorm_override != null ? c.dorm_override : ''),
       meal_on:    o.meal_on    !== undefined ? payBool(o.meal_on)   : payBool(c.meal_on),
+      custom_add_label: o.custom_add_label !== undefined ? o.custom_add_label : (c.custom_add_label||''),
+      custom_add_amt:   o.custom_add_amt   !== undefined ? payNum(o.custom_add_amt) : payNum(c.custom_add_amt),
+      custom_ded_label: o.custom_ded_label !== undefined ? o.custom_ded_label : (c.custom_ded_label||''),
+      custom_ded_amt:   o.custom_ded_amt   !== undefined ? payNum(o.custom_ded_amt) : payNum(c.custom_ded_amt),
     };
     return payCalcOne(e, ym, att, cfg, redDays);
   });

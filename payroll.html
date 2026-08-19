@@ -513,7 +513,9 @@ function renderAtt(){
     +'<th>本月時薪<br><span style="font-weight:400;color:var(--muted)">計時·可逐月改</span></th>'
     +'<th>出勤天數<br><span style="font-weight:400;color:var(--muted)">正職·餐費</span></th>'
     +'<th>本月宿舍費<br><span style="font-weight:400;color:var(--muted)">空白＝主檔</span></th>'
-    +AF.map(f=>`<th>${f[1]}</th>`).join('')+'<th>支援時數</th></tr></thead><tbody>';
+    +AF.map(f=>`<th>${f[1]}</th>`).join('')+'<th>支援時數</th>'
+    +'<th style="text-align:left">自訂加薪<br><span style="font-weight:400;color:var(--muted)">名稱＋金額</span></th>'
+    +'<th style="text-align:left">自訂扣款<br><span style="font-weight:400;color:var(--muted)">名稱＋金額</span></th></tr></thead><tbody>';
   MASTER.filter(e=>String(e.active)==='true').forEach(e=>{
     const A=ATT[e.emp_id]=ATT[e.emp_id]||{};
     A.support=A.support||[];
@@ -544,7 +546,18 @@ function renderAtt(){
       h+=`<td>${dis?'—':`<input type="number" step="0.25" value="${A[k]??0}"
         onchange="ATT['${e.emp_id}']['${k}']=n(this.value)">`}</td>`;
     });
-    h+=`<td>${sh?r2(sh)+' H':'—'}</td></tr>`;
+    h+=`<td>${sh?r2(sh)+' H':'—'}</td>`;
+    // 自訂加薪／扣款：名稱自填＋金額，逐月存於 payroll_input
+    h+=`<td><div style="display:flex;gap:5px;min-width:190px">
+      <input type="text" placeholder="名稱" value="${A.custom_add_label||''}" style="min-width:90px"
+        onchange="ATT['${e.emp_id}'].custom_add_label=this.value">
+      <input type="number" placeholder="金額" value="${n(A.custom_add_amt)||''}" style="min-width:80px"
+        onchange="ATT['${e.emp_id}'].custom_add_amt=n(this.value)"></div></td>`;
+    h+=`<td><div style="display:flex;gap:5px;min-width:190px">
+      <input type="text" placeholder="名稱" value="${A.custom_ded_label||''}" style="min-width:90px"
+        onchange="ATT['${e.emp_id}'].custom_ded_label=this.value">
+      <input type="number" placeholder="金額" value="${n(A.custom_ded_amt)||''}" style="min-width:80px"
+        onchange="ATT['${e.emp_id}'].custom_ded_amt=n(this.value)"></div></td></tr>`;
   });
   $('attTbl').innerHTML=h+'</tbody>';
   renderSup();
