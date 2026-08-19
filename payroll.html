@@ -81,7 +81,8 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 .btn.ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
 .btn.ghost:hover{background:#faf7f3}
 .btn.dark{background:var(--black)}
-.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.done{background:var(--ok)}
+.btn:disabled{opacity:.6;cursor:default}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .tag{display:inline-block;font-size:11px;font-weight:800;padding:2px 9px;border-radius:20px}
 .tag.ft{background:var(--gold-soft);color:#7a5a00}.tag.pt{background:#eef1f4;color:#556}
@@ -186,7 +187,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     </p>
     <div class="scroll"><table id="attTbl"></table></div>
     <div class="row" style="margin-top:14px">
-      <button class="btn" onclick="saveAtt()">儲存工時</button>
+      <button class="btn" id="saveAttBtn" onclick="saveAtt()">儲存工時</button>
       <button class="btn ghost" onclick="clearAtt()">清除本月手動工時（還原成打卡歸集）</button>
     </div>
   </div>
@@ -350,10 +351,14 @@ async function loadAtt(){
   renderAtt();
 }
 async function saveAtt(){
+  const b=$('saveAttBtn');
+  b.disabled=true; b.classList.remove('done'); b.textContent='存取中…';
   const r=await post('payroll_input_set',{ym:ym(),inputs:ATT});
-  if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return}
-  toast(ym()+' 工時已儲存（'+r.count+' 人）');
+  if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.error||''),true);return}
   await doCalc();   // 存完用新工時重算帶出數字
+  b.classList.add('done'); b.textContent='✓ 存檔完成';
+  toast(ym()+' 工時已儲存（'+r.count+' 人）');
+  setTimeout(()=>{b.textContent='儲存工時';b.disabled=false;b.classList.remove('done');},1800);
 }
 async function clearAtt(){
   if(!confirm('清除 '+ym()+' 的手動工時？\n\n會刪掉這個月你手動輸入/儲存的工時，還原成打卡自動歸集的值。')) return;
