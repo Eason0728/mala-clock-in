@@ -19,7 +19,7 @@ const PAY_SHEETS = {
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
             'ot_paid_hours','gross','deduction','net','status','run_at','support_hours'],
   item:    ['ym','emp_id','item_type','item_key','item_label','qty','rate','amount','source','memo'],
-  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h'],
+  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend'],
   audit:   ['ts','ym','action','operator','reason'],
 };
 const PAY_SHEET_NAME = {
@@ -188,6 +188,8 @@ function payCollect(ym) {
 function payR0(v) { return Math.round(v); }
 function payR2(v) { return Math.round(v * 100) / 100; }
 function payNum(v) { const x = parseFloat(v); return isNaN(x) ? 0 : x; }
+/** 布林讀取：接受 true/1/'1'/'true'/'TRUE'（試算表可能存成數字或字串） */
+function payBool(v) { return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true'; }
 
 function payDaysIn(ym) {
   const y = parseInt(ym.slice(0, 4), 10), m = parseInt(ym.slice(5, 7), 10);
@@ -254,10 +256,10 @@ function payCalcOne(e, ym, att, cfg, redDays) {
            Math.max(0, payNum(e.attend_cap) * P - att.deduct_days * payNum(cfg.attend_deduct_per_day)));
     }
   } else {
-    // 計時：本店時數 × 時薪；時薪加給＝滿勤(當月本店滿100H且全勤)+10、年資(滿半年次月起)+10，可疊加
+    // 計時：本店時數 × 時薪；時薪加給＝滿勤(工時分頁手動打勾)+10、年資(滿半年次月起)+10，可疊加
     let w = payNum(e.wage);
-    if (payR2(att.hours) >= 100 && payNum(att.deduct_days) === 0) w += 10;  // E1 滿勤加給
-    w += payTenurePlus(e, ym);                                              // E2 年資加給
+    if (payBool(att.full_attend)) w += 10;   // E1 滿勤加給：管理者於工時分頁手動勾選（滿100H+全勤由管理者判定）
+    w += payTenurePlus(e, ym);               // E2 年資加給
     push(earn, 'hourly_wage', '薪資（時數）', payR2(att.hours), w, att.hours * w);
   }
 
@@ -478,7 +480,7 @@ function paySavedInputs(ym) {
     out[String(r.emp_id)] = {
       hours: payNum(r.hours), extra_ot: payNum(r.extra_ot),
       personal_h: payNum(r.personal_h), sick_h: payNum(r.sick_h), menstrual_h: payNum(r.menstrual_h), disaster_h: payNum(r.disaster_h), annual_h: payNum(r.annual_h),
-      deduct_days: payNum(r.deduct_days), support: sup,
+      deduct_days: payNum(r.deduct_days), support: sup, full_attend: payBool(r.full_attend),
     };
   });
   return out;
@@ -514,6 +516,7 @@ function handlePayrollInputSet(body) {
       hours: payNum(a.hours), extra_ot: payNum(a.extra_ot),
       personal_h: payNum(a.personal_h), sick_h: payNum(a.sick_h), menstrual_h: payNum(a.menstrual_h), disaster_h: payNum(a.disaster_h), annual_h: payNum(a.annual_h),
       deduct_days: payNum(a.deduct_days), support: JSON.stringify(a.support || []), updated_at: now,
+      full_attend: payBool(a.full_attend) ? 1 : 0,
     };
   });
   const others = payRead('input').filter(function (r) { return String(r.ym) !== ym; });
@@ -553,6 +556,7 @@ function handlePayrollCalc(body) {
       annual_h:   o.annual_h   !== undefined ? payNum(o.annual_h)   : payNum(c.annual_h),
       deduct_days:o.deduct_days!== undefined ? payNum(o.deduct_days): payNum(c.deduct_days),
       support:    o.support    !== undefined ? o.support            : (c.support || []),
+      full_attend:o.full_attend!== undefined ? payBool(o.full_attend): payBool(c.full_attend),
     };
     return payCalcOne(e, ym, att, cfg, redDays);
   });

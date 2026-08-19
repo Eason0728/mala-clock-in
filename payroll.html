@@ -10,7 +10,7 @@
  --bg:#f6f4f1;--card:#ffffff;--line:#ece7e1;--muted:#94897f;--ok:#2f7d4f;--bad:#c0392b;
  --shadow:0 1px 2px rgba(35,24,21,.04),0 6px 20px rgba(35,24,21,.05)}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:"Noto Sans TC","PingFang TC",sans-serif;background:var(--bg);color:var(--ink);font-size:14px;line-height:1.6}
+body{font-family:"Noto Sans TC","PingFang TC",sans-serif;background:var(--bg);color:var(--ink);font-size:14px;line-height:1.6;zoom:1.25}
 
 /* ── 版面：側欄 + 主區 ── */
 .app{display:flex;min-height:100vh}
@@ -211,7 +211,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <p class="hint">員工的基本固定資料（底薪／時薪／加班費率／各津貼／勞健保／宿舍／到職日）填一次就固定在這裡，之後只有調薪或新人才要動。正職用「底薪＋加班費率」，計時用「時薪」。填了到職／離職日才會做月中折算。</p>
     <p class="hint">第一次或有新人時按「<b>從打卡名冊建立</b>」——會用打卡系統的名冊自動帶出同仁（含正確員工編號，對得上工時），欄位先給空白／0，你再逐一填上金額後按「儲存主檔」。已存在的人不會被覆蓋。</p>
     <div class="row" style="margin-bottom:14px">
-      <button class="btn" onclick="saveMaster()">儲存主檔</button>
+      <button class="btn" onclick="saveMaster(this)">儲存主檔</button>
       <button class="btn ghost" onclick="bootstrapFromRoster()">從打卡名冊建立</button>
     </div>
     <div id="empList"></div>
@@ -223,13 +223,13 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <h2>全域參數</h2>
     <p class="hint">事假費率 ＝ (底薪＋職能＋夜間＋店長＋全勤上限) ÷ 分母天 ÷ 分母時；病假為其一半。</p>
     <div class="grid2" id="cfgGrid"></div>
-    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">儲存參數</button></div>
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg(this,'儲存參數')">儲存參數</button></div>
   </div>
   <div class="card">
     <h2>公司負擔（每月手動填）</h2>
     <p class="hint">公司負擔的保險支出逐人算不出來，這裡手動填、之後沿用。會顯示在「當月薪資總覽 → 人事成本分類」的公司負擔區，並計入人事總成本。</p>
     <div class="grid2" id="coGrid"></div>
-    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg()">儲存公司負擔</button></div>
+    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg(this,'儲存公司負擔')">儲存公司負擔</button></div>
   </div>
   <div class="card">
     <h2>紅字天數（行政院行事曆）</h2>
@@ -238,7 +238,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <div class="row" style="margin-top:12px">
       <input type="text" id="hy" placeholder="2026-08" style="width:110px;text-align:left">
       <input type="number" id="hd" placeholder="天數" style="width:80px">
-      <button class="btn ghost" onclick="addHol()">新增</button>
+      <button class="btn ghost" onclick="addHol(this)">新增</button>
     </div>
   </div>
 </section>
@@ -479,7 +479,8 @@ async function toggleLock(){
 const AF=[['hours','本店核定時數'],['extra_ot','額外加班 H'],['personal_h','事假 H'],
           ['sick_h','病假 H'],['menstrual_h','生理假 H'],['disaster_h','天災假 H'],['annual_h','特休 H'],['deduct_days','全勤扣減天數']];
 function renderAtt(){
-  let h='<thead><tr><th>姓名</th>'+AF.map(f=>`<th>${f[1]}</th>`).join('')+'<th>支援時數</th></tr></thead><tbody>';
+  let h='<thead><tr><th>姓名</th>'+AF.map(f=>`<th>${f[1]}</th>`).join('')
+    +'<th>全勤津貼<br><span style="font-weight:400;color:var(--muted)">計時＋10</span></th><th>支援時數</th></tr></thead><tbody>';
   MASTER.filter(e=>String(e.active)==='true').forEach(e=>{
     const A=ATT[e.emp_id]=ATT[e.emp_id]||{};
     A.support=A.support||[];
@@ -490,6 +491,11 @@ function renderAtt(){
       h+=`<td>${dis?'—':`<input type="number" step="0.25" value="${A[k]??0}"
         onchange="ATT['${e.emp_id}']['${k}']=n(this.value)">`}</td>`;
     });
+    // 全勤津貼：只有計時可勾（滿100H＋全勤由管理者判定），勾了時薪＋10
+    h+=`<td style="text-align:center">${isFT(e)?'—':
+      `<input type="checkbox" ${A.full_attend?'checked':''}
+        onchange="ATT['${e.emp_id}'].full_attend=this.checked"
+        style="width:20px;height:20px;cursor:pointer;accent-color:var(--red)">`}</td>`;
     h+=`<td>${sh?r2(sh)+' H':'—'}</td></tr>`;
   });
   $('attTbl').innerHTML=h+'</tbody>';
@@ -553,9 +559,22 @@ function renderEmp(){
       '</div></div>';
   }).join('');
 }
-async function saveMaster(){
-  const r=await post('payroll_master_set',{master:MASTER});
-  if(r.ok){toast('主檔已儲存');renderEmp()}
+/* 統一的儲存回饋：按下顯示「存取中…」，成功顯示「✓ 存檔完成」，1.8 秒後還原（同儲存工時） */
+async function saveFX(btn,label,fn){
+  if(btn){btn.disabled=true;btn.classList.remove('done');btn.textContent='存取中…';}
+  let ok=true;
+  try{ ok=await fn(); }catch(e){ ok=false; toast('儲存失敗：'+(e.message||e),true); }
+  if(ok===false){ if(btn){btn.disabled=false;btn.textContent=label;} return false; }
+  if(btn){ btn.classList.add('done'); btn.textContent='✓ 存檔完成';
+    setTimeout(()=>{btn.textContent=label;btn.disabled=false;btn.classList.remove('done');},1800); }
+  return true;
+}
+async function saveMaster(btn){
+  return saveFX(btn,'儲存主檔',async()=>{
+    const r=await post('payroll_master_set',{master:MASTER});
+    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    renderEmp();toast('主檔已儲存');return true;
+  });
 }
 
 /* ═════ 參數 ═════ */
@@ -577,17 +596,28 @@ function renderCfg(){
 }
 async function setMode(k,v){CFG[k]=v;const r=await post('payroll_config_set',{config:CFG});
   if(r.ok){CFG=r.config||CFG;renderCfg();if(RESULTS.length)doCalc()}}
-async function saveCfg(){const r=await post('payroll_config_set',{config:CFG});if(r.ok)toast('參數已儲存')}
-async function saveHol(){
-  // 後端只收陣列 [{ym,red_days,note}]，把物件 HOL 轉成陣列再送
-  const arr=Object.keys(HOL).map(k=>({ym:k,red_days:HOL[k],note:''}));
-  const r=await post('payroll_holiday_set',{holidays:arr});
-  if(r.ok){renderCfg();toast('已更新')} else {toast('儲存失敗：'+(r.error||''),true)}
+async function saveCfg(btn,label){
+  return saveFX(btn,label||'儲存',async()=>{
+    const r=await post('payroll_config_set',{config:CFG});
+    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    toast('已儲存');return true;
+  });
 }
-function addHol(){
+async function saveHol(btn,label){
+  // 後端只收陣列 [{ym,red_days,note}]，把物件 HOL 轉成陣列再送
+  const send=async()=>{
+    const arr=Object.keys(HOL).map(k=>({ym:k,red_days:HOL[k],note:''}));
+    const r=await post('payroll_holiday_set',{holidays:arr});
+    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    renderCfg();toast('已更新');return true;
+  };
+  if(btn) return saveFX(btn,label||'新增',send);
+  return send();
+}
+function addHol(btn){
   const y=$('hy').value.trim(),d=$('hd').value;
   if(!/^\d{4}-\d{2}$/.test(y)){toast('月份格式要像 2026-08',true);return}
-  HOL[y]=n(d);$('hy').value='';$('hd').value='';saveHol();
+  HOL[y]=n(d);$('hy').value='';$('hd').value='';saveHol(btn,'新增');
 }
 
 /* ═════ 薪資單 ═════ */
