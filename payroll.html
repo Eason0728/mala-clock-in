@@ -193,8 +193,13 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
   </div>
   <div class="card">
     <h2>加班費占比</h2>
-    <p class="hint">加班費 ÷ 薪資費用小計。比例持續攀升代表人力吃緊。</p>
+    <p class="hint">加班費 ÷ 薪資費用小計。比例持續攀升代表人力吃緊。<b>支援時數會把正職的超時墊高</b>，可切換是否扣除。</p>
+    <div class="mode" style="margin-bottom:12px">
+      <button id="otModeAll" class="on" onclick="setOtMode(0)">含支援</button>
+      <button id="otModeLocal" onclick="setOtMode(1)">扣除支援</button>
+    </div>
     <div id="dashOt"></div>
+    <div id="dashOtNote" class="hint" style="margin-top:8px"></div>
   </div>
   <div class="card">
     <h2>人數與平均</h2>
@@ -850,7 +855,7 @@ async function saveBonus(btn){
 }
 
 /* ═════ 儀表板：人事成本趨勢 ═════ */
-let DASH=[];
+let DASH=[], OT_LOCAL=0;
 async function loadDash(){
   const box=$('dashCost'); if(!box) return;
   box.innerHTML='<div style="color:var(--muted);padding:14px 2px">載入中…</div>';
@@ -875,6 +880,12 @@ function bars(data,valKey,color,fmtFn){
   });
   return `<div class="scroll"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="max-width:100%">${g}</svg></div>`;
 }
+function setOtMode(local){
+  OT_LOCAL=local?1:0;
+  if($('otModeAll')) $('otModeAll').className=OT_LOCAL?'':'on';
+  if($('otModeLocal')) $('otModeLocal').className=OT_LOCAL?'on':'';
+  renderDash();
+}
 function renderDash(){
   if(!DASH.length) return;
   const has=DASH.filter(d=>d.has);
@@ -886,13 +897,21 @@ function renderDash(){
   $('dashStats').innerHTML = last ? (
      tile('💰','最新月人事總成本','NT$ '+nf(last.total_cost),'',last.ym+'　'+diff(last.total_cost,prev&&prev.total_cost))
     +tile('👥','人數',last.people,'人','正職 '+last.ft+'　計時 '+last.pt)
-    +tile('⏱','加班費占比',last.ot_ratio,'%','加班費 '+nf(last.overtime))
+    +tile('⏱','加班費占比',OT_LOCAL?last.ot_ratio_local:last.ot_ratio,'%',
+          OT_LOCAL?('本店加班費 '+nf(last.overtime_local)):('加班費 '+nf(last.overtime)+(n(last.overtime_support)?'（含支援 '+nf(last.overtime_support)+'）':'')))
     +tile('🎁','獎金',nf(last.bonus),'','當月合計')
     +tile('📊','每人平均實付','NT$ '+nf(last.avg_net),'','平均工時 '+last.avg_hours+' H')
   ) : '<div class="card" style="color:var(--muted)">尚無已結算的月份。</div>';
   $('dashRange').textContent=DASH.length?`（${DASH[0].ym} ～ ${DASH[DASH.length-1].ym}）`:'';
   $('dashCost').innerHTML=bars(DASH,'total_cost','var(--red)',v=>nf(v));
-  $('dashOt').innerHTML=bars(DASH,'ot_ratio','var(--gold)',v=>v+'%');
+  const otKey=OT_LOCAL?'ot_ratio_local':'ot_ratio';
+  $('dashOt').innerHTML=bars(DASH,otKey,'var(--gold)',v=>v+'%');
+  if($('dashOtNote')&&last){
+    const sup=n(last.overtime_support), loc=n(last.overtime_local);
+    $('dashOtNote').innerHTML=OT_LOCAL
+      ? `目前顯示<b>扣除支援</b>：${last.ym} 本店加班費 ${nf(loc)}（已扣掉支援墊高的 ${nf(sup)}，支援 ${r2(last.support_hours||0)} H）`
+      : `目前顯示<b>含支援</b>：${last.ym} 加班費 ${nf(last.overtime)}，其中支援墊高的部分約 ${nf(sup)}（支援 ${r2(last.support_hours||0)} H）`;
+  }
   let h='<thead><tr><th>月份</th><th>人事總成本</th><th>薪資費用</th><th>公司負擔</th><th>加班費</th><th>獎金</th><th>人數</th><th>總工時</th><th>平均實付</th><th style="text-align:left">狀態</th></tr></thead><tbody>';
   DASH.slice().reverse().forEach(d=>{
     h+=`<tr><td>${d.ym}</td>`+(d.has?`<td><b>${nf(d.total_cost)}</b></td><td>${nf(d.salary_cost)}</td><td>${nf(d.company)}</td>

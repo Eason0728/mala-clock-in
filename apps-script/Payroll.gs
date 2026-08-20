@@ -1050,18 +1050,32 @@ function handlePayrollTrend(body) {
   const out = list.map(function (ym) {
     const rs = runByYm[ym] || [], its = itemByYm[ym] || [];
     if (!rs.length) return { ym: ym, has: false };
-    var gross = 0, hours = 0, ft = 0, pt = 0, ot = 0, reduce = 0, bonus = 0;
-    rs.forEach(function (r) {
-      gross += payNum(r.gross); hours += payNum(r.total_hours);
-      if (String(r.is_full_time).toLowerCase() === 'true') ft++; else pt++;
-    });
+    var gross = 0, hours = 0, ft = 0, pt = 0, ot = 0, reduce = 0, bonus = 0, supportH = 0;
+    // 每人的加班費（拆「支援造成的加班」用）
+    const otByEmp = {};
     its.forEach(function (i) {
       const k = String(i.item_key), a = payNum(i.amount);
       if (String(i.item_type) === 'earning') {
-        if (k === 'overtime') ot += a;
+        if (k === 'overtime') { ot += a; otByEmp[String(i.emp_id)] = (otByEmp[String(i.emp_id)] || 0) + a; }
         if (k.indexOf('bonus_') === 0) bonus += a;
       } else if (REDUCE.indexOf(k) >= 0) reduce += a;
     });
+    // 支援造成的加班費：支援時數把超時墊高的那一段，按時數比例攤回金額
+    //   支援造成的加班時數 = max(超時,0) − max(超時−支援時數,0)
+    var otSupport = 0;
+    rs.forEach(function (r) {
+      gross += payNum(r.gross); hours += payNum(r.total_hours);
+      supportH += payNum(r.support_hours);
+      if (String(r.is_full_time).toLowerCase() === 'true') ft++; else pt++;
+      const otPaidH = payNum(r.ot_paid_hours);
+      const amt = otByEmp[String(r.emp_id)] || 0;
+      if (otPaidH > 0 && amt > 0) {
+        const sp = payNum(r.surplus_hours), sup = payNum(r.support_hours);
+        const hSup = Math.max(sp, 0) - Math.max(sp - sup, 0);   // 支援墊高的加班時數
+        if (hSup > 0) otSupport += amt * Math.min(1, hSup / otPaidH);
+      }
+    });
+    const otLocal = ot - otSupport;
     const cfg = payConfig(st);
     const co = payNum(cfg.co_labor) + payNum(cfg.co_health) + payNum(cfg.co_pension) +
                payNum(cfg.co_owner) + payNum(cfg.co_group);
@@ -1069,9 +1083,11 @@ function handlePayrollTrend(body) {
     const people = ft + pt;
     return { ym: ym, has: true,
              salary_cost: payR0(salaryCost), company: payR0(co), total_cost: payR0(salaryCost + co),
-             overtime: payR0(ot), bonus: payR0(bonus),
+             overtime: payR0(ot), overtime_support: payR0(otSupport), overtime_local: payR0(otLocal),
+             support_hours: payR2(supportH), bonus: payR0(bonus),
              people: people, ft: ft, pt: pt, hours: payR2(hours),
              ot_ratio: salaryCost > 0 ? Math.round(ot / salaryCost * 1000) / 10 : 0,
+             ot_ratio_local: salaryCost > 0 ? Math.round(otLocal / salaryCost * 1000) / 10 : 0,
              avg_hours: people ? payR2(hours / people) : 0,
              avg_net: people ? payR0(rs.reduce(function (a, r) { return a + payNum(r.net); }, 0) / people) : 0,
              status: String(rs[0].status || 'draft') };
