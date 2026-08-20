@@ -44,7 +44,7 @@ body{font-family:"Noto Sans TC","PingFang TC",sans-serif;background:var(--bg);co
  border:1px solid var(--line);border-left:5px solid var(--gold);border-radius:14px;
  padding:14px 18px;margin-top:14px;box-shadow:var(--shadow);flex-wrap:wrap}
 .monthbar .mcur{display:flex;align-items:center;gap:12px}
-.monthbar .ml{font-size:13px;color:var(--muted);font-weight:800}
+.monthbar .ml{font-size:13px;color:var(--muted);font-weight:800;white-space:nowrap}
 .monthbar input[type=month]{font:inherit;font-size:24px;font-weight:900;border:0;background:none;color:var(--ink);
  width:auto;min-width:172px;text-align:center;padding:0}
 .monthbar input[type=month]:focus{outline:0}
@@ -143,6 +143,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <nav id="nav">
       <div class="nav-label">總覽</div>
       <button data-p="dash" class="on"><span class="ic">📈</span>儀表板</button>
+      <button data-p="group"><span class="ic">🏢</span>集團總覽</button>
       <div class="nav-label">薪資作業</div>
       <button data-p="run"><span class="ic">📊</span>薪資計算</button>
       <button data-p="att"><span class="ic">🕒</span>出勤資料</button>
@@ -170,6 +171,11 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
         <span id="lock" style="margin-left:auto"></span>
       </div>
       <div class="monthbar">
+        <div class="mcur" style="margin-right:auto">
+          <span class="ml">門市</span>
+          <select id="storeSel" onchange="switchStore(this.value)"
+            style="min-width:190px;font-size:17px;font-weight:800;padding:8px 10px"></select>
+        </div>
         <button class="mstep" onclick="stepMonth(-1)">‹ 上個月</button>
         <div class="mcur"><span class="ml">薪資月份</span><input type="month" id="ym" value="2026-06"><span class="mspin" aria-hidden="true"></span><span class="mload-txt">讀取中…</span></div>
         <button class="mstep" onclick="stepMonth(1)">下個月 ›</button>
@@ -193,6 +199,14 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
   <div class="card">
     <h2>人數與平均</h2>
     <div class="scroll"><table id="dashTbl"></table></div>
+  </div>
+</section>
+
+<section class="panel" id="p-group">
+  <div class="card">
+    <h2>集團總覽 <span id="groupYm" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
+    <p class="hint">各門市當月人事成本並列與合計。口徑與人事成本分類一致：薪資費用＝應收−(請假扣款＋不足倒扣)，加上公司負擔＝人事總成本。</p>
+    <div id="groupBody"></div>
   </div>
 </section>
 
@@ -297,10 +311,24 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 
 <section class="panel" id="p-cfg">
   <div class="card">
-    <h2>全域參數</h2>
+    <h2>門市設定</h2>
+    <p class="hint">一套系統管多家門市。<b>打卡試算表 ID</b> 是薪酬去該店抓工時的來源（留空＝用本系統所在的試算表）；<b>編號前綴</b>會加在該店新建員工的編號前面（如 <code>CF-</code>）。</p>
+    <div class="scroll"><table id="storeTbl"></table></div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn ghost" onclick="addStoreRow()">＋ 新增門市</button>
+      <button class="btn" id="saveStoreBtn" onclick="saveStores(this)">儲存門市</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>全域參數 <span id="cfgScope" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
     <p class="hint">事假費率 ＝ (底薪＋職能＋夜間＋店長＋全勤上限) ÷ 分母天 ÷ 分母時；病假為其一半。</p>
     <div class="grid2" id="cfgGrid"></div>
-    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg(this,'儲存參數')">儲存參數</button></div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn" onclick="saveCfg(this,'儲存參數')">儲存參數</button>
+      <label style="font-size:13px;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="cfgOwn" style="width:18px;height:18px" onchange="renderCfg()"> 只套用到目前門市（不勾＝集團預設，全店共用）
+      </label>
+    </div>
   </div>
   <div class="card">
     <h2>公司負擔（每月手動填）</h2>
@@ -355,7 +383,9 @@ const API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ?
   : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
 const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 
-let MASTER=[], CFG={}, HOL={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE='';
+let MASTER=[], CFG={}, HOL={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
+// 目前操作門市：階段一由門市表全部可見；階段二改讀 dzy 帳號的可見門市清單（UI 與過濾邏輯不變）
+let STORE=localStorage.getItem('pay_store')||'';
 
 const $=id=>document.getElementById(id);
 const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};
@@ -377,7 +407,7 @@ async function post(action,body){
   // Apps Script 跨網域偶爾回 Google HTML 頁（非 JSON）→ res.json() 會爆並中斷整個流程（表面就是「沒反應」）。
   // 改成：讀純文字自己 parse、非 JSON 時重試一次，仍失敗才跳提示、回 {ok:false}，絕不 throw。
   const url=API||location.pathname.replace(/[^/]*$/,'');
-  const payload=JSON.stringify(Object.assign({action,admin_key:ADMIN_KEY},body||{}));
+  const payload=JSON.stringify(Object.assign({action,admin_key:ADMIN_KEY,store:STORE},body||{}));
   for(let attempt=0;attempt<2;attempt++){
     try{
       const res=await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain'},body:payload});
@@ -451,7 +481,12 @@ async function loadMonth(){
   try{
     const r=await post('payroll_month',{ym:ym(),inputs:{}});
     if(!r.ok) return;
-    ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b)); STORE=r.store||STORE;
+    ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
+    STORE=r.store||STORE; CFGSRC=r.config_src||{};
+    if(r.stores&&r.stores.length){STORE_LIST=r.stores;renderStoreSel()}
+    // 主檔與參數都會隨門市不同 → 切換門市時一併更新（否則會看到別店的員工）
+    if(r.master){MASTER=r.master;renderEmp()}
+    if(r.config){CFG=r.config;renderCfg()}
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
     renderAtt();renderRun();renderSlipSel();
     renderBonus();
@@ -656,6 +691,81 @@ function addSupportFor(emp){
   const A=ATT[emp]=ATT[emp]||{}; A.support=A.support||[];
   A.support.push({store:'',hours:0,rate:0,amount:''});
   renderAtt();
+}
+
+
+
+/* ═════ 門市設定 ═════ */
+const SF=[['code','門市代碼'],['name','門市名稱'],['clock_ss_id','打卡試算表 ID'],['dzy_node','dzy 節點'],['emp_prefix','編號前綴'],['sort','順序']];
+function renderStores(){
+  const t=$('storeTbl'); if(!t) return;
+  let h='<thead><tr>'+SF.map(f=>`<th style="text-align:left">${f[1]}</th>`).join('')+'<th>啟用</th><th></th></tr></thead><tbody>';
+  STORE_LIST.forEach((s,i)=>{
+    h+='<tr>'+SF.map(([k])=>`<td style="text-align:left"><input type="${k==='sort'?'number':'text'}" value="${s[k]??''}"
+        style="min-width:${k==='clock_ss_id'?'260':'110'}px"
+        onchange="STORE_LIST[${i}]['${k}']=this.value"></td>`).join('')
+      +`<td style="text-align:center"><input type="checkbox" ${String(s.active).toLowerCase()!=='false'?'checked':''}
+        style="width:18px;height:18px" onchange="STORE_LIST[${i}].active=this.checked?'true':'false'"></td>
+       <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
+        onclick="STORE_LIST.splice(${i},1);renderStores()">移除</button></td></tr>`;
+  });
+  t.innerHTML=h+'</tbody>';
+}
+function addStoreRow(){
+  STORE_LIST.push({code:'',name:'',clock_ss_id:'',dzy_node:'',emp_prefix:'',active:'true',sort:STORE_LIST.length+1});
+  renderStores();
+}
+async function saveStores(btn){
+  return saveFX(btn,'儲存門市',async()=>{
+    const bad=STORE_LIST.filter(s=>!String(s.code||'').trim());
+    if(bad.length){toast('門市代碼不可空白',true);return false}
+    const r=await post('payroll_store_set',{stores:STORE_LIST});
+    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    renderStoreSel();toast('門市已儲存（'+r.count+' 家）');return true;
+  });
+}
+
+/* ═════ 門市切換（階段一：可見清單＝門市表全部；階段二換成帳號的門市）═════ */
+function renderStoreSel(){
+  const sel=$('storeSel'); if(!sel||!STORE_LIST.length) return;
+  if(!STORE||!STORE_LIST.some(s=>String(s.code)===String(STORE))) STORE=String(STORE_LIST[0].code);
+  sel.innerHTML=STORE_LIST.map(s=>`<option value="${s.code}" ${String(s.code)===String(STORE)?'selected':''}>${s.name||s.code}</option>`).join('');
+  sel.style.display=STORE_LIST.length>1?'':'none';
+  const lbl=sel.previousElementSibling; if(lbl) lbl.style.display=STORE_LIST.length>1?'':'none';
+}
+async function switchStore(code){
+  STORE=String(code); localStorage.setItem('pay_store',STORE);
+  await loadMonth();
+  const on=document.querySelector('#nav button.on');
+  if(on&&on.dataset.p==='punch') loadPunch();
+  if(on&&on.dataset.p==='dash') loadDash();
+  if(on&&on.dataset.p==='group') loadGroup();
+  toast('已切換到 '+((STORE_LIST.find(s=>String(s.code)===STORE)||{}).name||STORE));
+}
+
+/* ═════ 集團總覽 ═════ */
+async function loadGroup(){
+  const box=$('groupBody'); if(!box) return;
+  box.innerHTML='<div style="color:var(--muted);padding:14px 2px">載入中…</div>';
+  const r=await post('payroll_group',{ym:ym()});
+  if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+(r.error||'')+'</div>';return}
+  $('groupYm').textContent='（'+r.ym+'）';
+  const rows=r.rows||[], sm=r.sum||{};
+  box.innerHTML=`<div class="scroll"><table>
+    <thead><tr><th style="text-align:left">門市</th><th>人數</th><th>總工時</th><th>加班費</th><th>獎金</th>
+      <th>薪資費用</th><th>公司負擔</th><th>人事總成本</th><th>實付</th><th style="text-align:left">狀態</th></tr></thead>
+    <tbody>${rows.map(x=>`<tr>
+      <td style="text-align:left"><b>${x.name}</b> <span style="color:var(--muted);font-size:11.5px">${x.store}</span></td>`
+      +(x.has?`<td>${x.people}</td><td>${x.hours}</td><td>${nf(x.overtime)}</td><td>${nf(x.bonus)}</td>
+        <td>${nf(x.salary_cost)}</td><td>${nf(x.company)}</td><td class="big">${nf(x.total_cost)}</td><td>${nf(x.net)}</td>
+        <td style="text-align:left"><span class="tag ${x.status==='final'?'final':'draft'}">${x.status==='final'?'已鎖定':'草稿'}</span></td>`
+      :`<td colspan="8" style="color:var(--muted);text-align:left">本月尚未結算${n(x.company)?`（公司負擔 ${nf(x.company)} 已計入合計）`:''}</td>
+        <td style="text-align:left">—</td>`)+`</tr>`).join('')}
+    <tr style="background:#f6f2ee;font-weight:900">
+      <td style="text-align:left">合計 ${rows.length} 店</td><td>${sm.people||0}</td><td>${r2(sm.hours||0)}</td>
+      <td>${nf(sm.overtime||0)}</td><td>${nf(sm.bonus||0)}</td><td>${nf(sm.salary_cost||0)}</td>
+      <td>${nf(sm.company||0)}</td><td>${nf(sm.total_cost||0)}</td><td>${nf(sm.net||0)}</td><td></td></tr>
+    </tbody></table></div>`;
 }
 
 /* ═════ 獎金登記 ═════ */
@@ -904,7 +1014,11 @@ const CF=[['daily_hours','每日基本工時（H）'],['attend_deduct_per_day','
  ['leave_div_days','事假費率分母（天）'],['leave_div_hours','事假費率分母（時）'],
  ['sick_ratio','病假占事假比例'],['payday','發薪日']];
 function renderCfg(){
-  $('cfgGrid').innerHTML=CF.map(([k,lb])=>`<div class="fld"><label>${lb}</label>
+  renderStores();
+  const own=$('cfgOwn')&&$('cfgOwn').checked;
+  if($('cfgScope')) $('cfgScope').textContent=own?'（儲存後只影響目前門市）':'（集團預設，全店共用）';
+  const srcTag=k=>{const v=CFGSRC[k];return v==='own'?' <span class="tag draft" style="font-size:10px">本店</span>':(v==='global'?'':' <span style="color:var(--muted)">預設</span>')};
+  $('cfgGrid').innerHTML=CF.map(([k,lb])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
     <input type="number" step="0.01" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`).join('');
   if($('coGrid')) $('coGrid').innerHTML=CO_ITEMS.map(([k,lb])=>`<div class="fld"><label>${lb}</label>
     <input type="number" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`).join('');
@@ -920,7 +1034,7 @@ async function setMode(k,v){CFG[k]=v;const r=await post('payroll_config_set',{co
   if(r.ok){CFG=r.config||CFG;renderCfg();if(RESULTS.length)doCalc()}}
 async function saveCfg(btn,label){
   return saveFX(btn,label||'儲存',async()=>{
-    const r=await post('payroll_config_set',{config:CFG});
+    const r=await post('payroll_config_set',{config:CFG,store:($('cfgOwn')&&$('cfgOwn').checked)?STORE:''});
     if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
     toast('已儲存');return true;
   });
@@ -1057,6 +1171,7 @@ $('nav').addEventListener('click',ev=>{
   b.classList.add('on');$('p-'+b.dataset.p).classList.add('on');
   if(b.dataset.p==='punch') loadPunch();
   if(b.dataset.p==='dash') loadDash();
+  if(b.dataset.p==='group') loadGroup();
   if(b.dataset.p==='bonus') renderBonus();
 });
 // 預設月份＝開啟當下的月份（台北時區），而非寫死

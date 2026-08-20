@@ -135,15 +135,55 @@ function payConfigSource(store) {
   return src;
 }
 
+/* ═══════════════════ 門市工具（多店：各店打卡各自一份試算表）═══════════════════ */
+
+function payStoreRow(code) {
+  const c = payStore(code);
+  return payRead('store').filter(function (s) { return String(s.code) === c; })[0] || null;
+}
+/** 該門市的打卡試算表；門市表沒填 clock_ss_id 就用本地試算表（＝光復現況，行為不變）。
+ *  同一次請求內快取，避免重複 openById。 */
+var PAY_SS_CACHE = {};
+function payClockSS(store) {
+  const c = payStore(store);
+  if (PAY_SS_CACHE[c]) return PAY_SS_CACHE[c];
+  const row = payStoreRow(c);
+  const id = row ? String(row.clock_ss_id || '') : '';
+  var ss;
+  if (!id) ss = getSS();
+  else {
+    try { ss = SpreadsheetApp.openById(id); }
+    catch (e) { throw new Error('門市 ' + c + ' 的打卡試算表開不起來（clock_ss_id=' + id + '）：' + e.message); }
+  }
+  PAY_SS_CACHE[c] = ss;
+  return ss;
+}
+/** 啟用中的門市清單；門市表是空的就回一個預設店（單店期間） */
+function payStoreList() {
+  const rows = payRead('store').filter(function (s) { return String(s.active).toLowerCase() !== 'false'; });
+  if (rows.length) {
+    return rows.sort(function (a, b) { return (payNum(a.sort) || 99) - (payNum(b.sort) || 99); });
+  }
+  return [{ code: PAY_DEFAULT_STORE, name: '麻的小辛辣 新竹光復店', clock_ss_id: '', dzy_node: 'sxl-gf', emp_prefix: '', active: 'true', sort: 1 }];
+}
+/** 某員工待過的所有門市（跨店調動時特休／年資要跨店累計用） */
+function payEmpStores(empId) {
+  const set = {};
+  payRead('master').forEach(function (m) { if (String(m.emp_id) === String(empId)) set[payStore(m.store)] = true; });
+  payRead('run').forEach(function (r) { if (String(r.emp_id) === String(empId)) set[payStore(r.store)] = true; });
+  payRead('input').forEach(function (r) { if (String(r.emp_id) === String(empId)) set[payStore(r.store)] = true; });
+  return Object.keys(set);
+}
+
 /* ═══════════════════ 工時歸集（重點：直接讀既有打卡資料）═══════════════════ */
 
 /**
  * 從 approved / leave / events 歸集某月每人的薪資輸入。
  * 這就是「不用人工把工時搬進薪資系統」的那一段。
  */
-function payCollect(ym, minH) {
+function payCollect(ym, minH, store) {
   const MEALMIN = (minH === undefined || minH === null || minH === '') ? MEAL_MIN_HOURS : Number(minH);
-  const ss = getSS();
+  const ss = payClockSS(store);
   const roster   = readSheetAsObjects(ss.getSheetByName('roster')).rows.map(stripRowIndex);
   const approved = readSheetAsObjects(ss.getSheetByName('approved')).rows.map(stripRowIndex);
   const events   = readSheetAsObjects(ss.getSheetByName('events')).rows.map(stripRowIndex);
@@ -470,44 +510,19 @@ function handlePayrollSetup(body) {
    ⚠ 排班資料由「前端(payroll.html)在瀏覽器讀 token-free Gist」後 POST 進來（body.employees／body.red_days），
    後端不做 UrlFetch——這樣後端就不需要 external_request 連外權限（免額外授權、攻擊面更小）。
    一鍵帶入：覆蓋排班有的欄位，缺口欄位保留既有(見 payMergeScheduleMaster)，帶入後仍可在薪資頁手動微調。*/
-function handlePayrollImportSchedule(body) {
-  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
-  ensurePayrollSheets();
-
-  var emps = body.employees;
-  if (!Array.isArray(emps) || !emps.length) return { ok: false, error: 'no_employees' };
-
-  // 用打卡 roster 的姓名→emp_id 對映，把排班員工鍵成 roster emp_id（否則工時接不到人）
-  var roster = readSheetAsObjects(getSS().getSheetByName('roster')).rows.map(stripRowIndex);
-  var nameToEmp = {};
-  roster.forEach(function (r) { nameToEmp[String(r.name).trim()] = String(r.emp_id); });
-
-  var merged = payMergeScheduleMaster(payRead('master'), emps, nameToEmp);
-  var now = nowTaipeiIso();
-  payReplaceAll('master', merged.master.map(function (m) { m.updated_at = now; return m; }));
-
-  var redInfo = null;
-  var ym = String(body.ym || '');
-  if (/^\d{4}-\d{2}$/.test(ym) && body.red_days !== undefined && body.red_days !== null && body.red_days !== '') {
-    var red = Number(body.red_days);
-    var others = payRead('holiday').filter(function (h) { return String(h.ym) !== ym; });
-    payReplaceAll('holiday', others.concat([{ ym: ym, red_days: red, note: '排班帶入 ' + now.slice(0, 10) }]));
-    redInfo = { ym: ym, red_days: red };
-  }
-  return { ok: true, added: merged.added, updated: merged.updated, skipped: merged.skipped, count: merged.master.length, red: redInfo };
-}
 
 function handlePayrollBootstrap(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   ensurePayrollSheets();
-  const roster = readSheetAsObjects(getSS().getSheetByName('roster')).rows.map(stripRowIndex);
-  const existing = {};
   const stBs = payStore(body.store);
+  const roster = readSheetAsObjects(payClockSS(stBs).getSheetByName('roster')).rows.map(stripRowIndex);
+  const prefix = (function () { const r = payStoreRow(stBs); return r ? String(r.emp_prefix || '') : ''; })();
+  const existing = {};
   payRead('master').forEach(function (m) { if (payStore(m.store) === stBs) existing[String(m.emp_id)] = true; });
   const add = roster
-    .filter(function (r) { return String(r.active).toLowerCase() === 'true' && !existing[String(r.emp_id)]; })
+    .filter(function (r) { return String(r.active).toLowerCase() === 'true' && !existing[prefix + String(r.emp_id)]; })
     .map(function (r) {
-      return { emp_id: r.emp_id, name: r.name, is_full_time: 'false', wage: 0, base: 0, ot_rate: 0,
+      return { emp_id: prefix + r.emp_id, name: r.name, is_full_time: 'false', wage: 0, base: 0, ot_rate: 0,
                skill_allow: 0, night_allow: 0, mgr_allow: 0, editor_allow: 0, attend_cap: 0,
                labor_ins: 0, health_ins: 0, group_ins: 0, pension: 0, dormitory: 0,
                hire_date: '', leave_date: '', active: 'true', updated_at: nowTaipeiIso(), store: stBs };
@@ -583,7 +598,7 @@ function paySavedInputs(ym, store) {
  *  供「工時分頁顯示」與「計算」共用，確保兩邊一致。 */
 function payInputsBase(ym, store) {
   const st = payStore(store);
-  const base = payCollect(ym, payConfig(st).meal_min_hours);
+  const base = payCollect(ym, payConfig(st).meal_min_hours, st);
   const saved = paySavedInputs(ym, st);
   Object.keys(saved).forEach(function (emp) { base[emp] = saved[emp]; });
   return base;
@@ -806,8 +821,18 @@ function handlePayrollFinalize(body) {
 function payAnnualInfo(ym, store) {
   const stA = payStore(store);
   const master = payRead('master').filter(function (m) { return payStore(m.store) === stA; });
-  const sh = getSS().getSheetByName('leave');
-  const leaves = sh ? readSheetAsObjects(sh).rows.map(stripRowIndex) : [];
+  /** 依門市讀 leave（跨店調動要把歷任門市的特休都算進已用）；同一次請求快取 */
+  const leaveCache = {};
+  function leavesOf(st) {
+    if (leaveCache[st]) return leaveCache[st];
+    var rows = [];
+    try {
+      const sh2 = payClockSS(st).getSheetByName('leave');
+      rows = sh2 ? readSheetAsObjects(sh2).rows.map(stripRowIndex) : [];
+    } catch (e) { rows = []; }   // 某店試算表暫時開不起來不該讓整頁掛掉
+    leaveCache[st] = rows;
+    return rows;
+  }
   const out = {};
   const savedRows = payRead('input');   // 手動工時（打卡上線前的月份特休 key 在這裡，不在 leave 分頁）
   master.forEach(function (e) {
@@ -827,14 +852,16 @@ function payAnnualInfo(ym, store) {
       inputMonths[m] = true;
       used += payNum(r.annual_h);
     });
-    // ② leave 分頁的特休：只算「沒有手動工時覆蓋」的月份，避免同月重複計
-    leaves.forEach(function (l) {
-      if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
-      if (String(l['假別'] || '').indexOf('特') === -1) return;
-      const d = normCellDate(l['日期']);
-      if (!(q.ps && d >= q.ps && d < q.pe)) return;
-      if (inputMonths[d.slice(0, 7)]) return;
-      used += Number(l['時數']) || 0;
+    // ② leave 分頁的特休：掃該員工「歷任門市」的請假紀錄；只算沒有手動工時覆蓋的月份，避免同月重複計
+    payEmpStores(e.emp_id).forEach(function (st2) {
+      leavesOf(st2).forEach(function (l) {
+        if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
+        if (String(l['假別'] || '').indexOf('特') === -1) return;
+        const d = normCellDate(l['日期']);
+        if (!(q.ps && d >= q.ps && d < q.pe)) return;
+        if (inputMonths[d.slice(0, 7)]) return;
+        used += Number(l['時數']) || 0;
+      });
     });
     out[String(e.emp_id)] = { days: q.days, quota_h: q.days * 8, used_h: payR2(used), left_h: payR2(q.days * 8 - used) };
   });
@@ -848,7 +875,8 @@ function handlePayrollPunch(body) {
   const ym = String(body.ym || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
   const only = body.emp_id ? String(body.emp_id) : '';
-  const ss = getSS();
+  const stP = payStore(body.store);
+  const ss = payClockSS(stP);
   const roster = readSheetAsObjects(ss.getSheetByName('roster')).rows.map(stripRowIndex);
   const nameById = {};
   roster.forEach(function (r) { nameById[String(r.emp_id)] = r.name; });
@@ -1044,6 +1072,56 @@ function handlePayrollTrend(body) {
   return { ok: true, store: st, months: out };
 }
 
+/* ═══════════════════ 集團總覽 ═══════════════════ */
+
+/** 某月各門市的人事成本並列＋合計。成本口徑與前端 costRows 一致：
+ *  薪資費用＝應收−(請假扣款+不足倒扣)；公司負擔取該店參數；總成本＝兩者相加。 */
+function handlePayrollGroup(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = String(body.ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  const REDUCE = ['personal_leave','sick_leave','menstrual_leave','disaster_leave','shortfall_hours'];
+  const runs = payRead('run').filter(function (r) { return String(r.ym) === ym; });
+  const items = payRead('item').filter(function (i) { return String(i.ym) === ym; });
+  const runBy = {}, itemBy = {};
+  runs.forEach(function (r) { (runBy[payStore(r.store)] = runBy[payStore(r.store)] || []).push(r); });
+  items.forEach(function (i) { (itemBy[payStore(i.store)] = itemBy[payStore(i.store)] || []).push(i); });
+
+  const rows = payStoreList().map(function (st) {
+    const code = String(st.code), rs = runBy[code] || [], its = itemBy[code] || [];
+    const cfg = payConfig(code);
+    const co = payNum(cfg.co_labor) + payNum(cfg.co_health) + payNum(cfg.co_pension) +
+               payNum(cfg.co_owner) + payNum(cfg.co_group);
+    if (!rs.length) return { store: code, name: String(st.name || code), has: false, company: payR0(co) };
+    var gross = 0, net = 0, hours = 0, ft = 0, pt = 0, ot = 0, bonus = 0, reduce = 0;
+    rs.forEach(function (r) {
+      gross += payNum(r.gross); net += payNum(r.net); hours += payNum(r.total_hours);
+      if (String(r.is_full_time).toLowerCase() === 'true') ft++; else pt++;
+    });
+    its.forEach(function (i) {
+      const k = String(i.item_key), a = payNum(i.amount);
+      if (String(i.item_type) === 'earning') {
+        if (k === 'overtime') ot += a;
+        if (k.indexOf('bonus_') === 0) bonus += a;
+      } else if (REDUCE.indexOf(k) >= 0) reduce += a;
+    });
+    const salaryCost = gross - reduce;
+    return { store: code, name: String(st.name || code), has: true,
+             people: ft + pt, ft: ft, pt: pt, hours: payR2(hours),
+             gross: payR0(gross), net: payR0(net), overtime: payR0(ot), bonus: payR0(bonus),
+             salary_cost: payR0(salaryCost), company: payR0(co), total_cost: payR0(salaryCost + co),
+             status: String(rs[0].status || 'draft') };
+  });
+  const sum = { people: 0, hours: 0, gross: 0, net: 0, overtime: 0, bonus: 0, salary_cost: 0, company: 0, total_cost: 0 };
+  rows.forEach(function (r) {
+    if (!r.has) { sum.company += payNum(r.company); sum.total_cost += payNum(r.company); return; }
+    ['people','hours','gross','net','overtime','bonus','salary_cost','company','total_cost'].forEach(function (k) {
+      sum[k] += payNum(r[k]);
+    });
+  });
+  return { ok: true, ym: ym, rows: rows, sum: sum };
+}
+
 /* ═══════════════════ 一次性遷移：既有資料補門市 ═══════════════════ */
 
 /** 把 store 為空的既有列補成預設門市（只跑一次；重複執行安全）。 */
@@ -1071,14 +1149,23 @@ function handlePayrollMigrateStore(body) {
 function handleMyPayslip(body) {
   const key = String(body.key || '');
   if (!key) return { ok: false, error: 'unauthorized' };
-  const roster = readSheetAsObjects(getSS().getSheetByName('roster')).rows.map(stripRowIndex);
-  const me = findRosterByKey(roster, key);
+  // 跨店驗身分：逐店讀該店打卡名冊比對金鑰，找到即停（各店打卡各自一份試算表）
+  var me = null, meStore = '';
+  const stList = payStoreList();
+  for (var si = 0; si < stList.length; si++) {
+    var code = String(stList[si].code);
+    var rs = [];
+    try { rs = readSheetAsObjects(payClockSS(code).getSheetByName('roster')).rows.map(stripRowIndex); }
+    catch (e) { continue; }
+    var hit = findRosterByKey(rs, key);
+    if (hit) { me = hit; meStore = code; break; }
+  }
   if (!me) return { ok: false, error: 'unauthorized' };
 
   const ym = String(body.ym || currentYmTaipei());
   // 員工所屬門市（主檔為準；找不到就用預設店）
   const mineMaster = payRead('master').filter(function (m) { return String(m.emp_id) === String(me.emp_id); })[0];
-  const stMy = payStore(mineMaster && mineMaster.store);
+  const stMy = payStore((mineMaster && mineMaster.store) || meStore);
   const run = payRead('run').filter(function (r) {
     return String(r.ym) === ym && String(r.emp_id) === String(me.emp_id) && payStore(r.store) === stMy;
   })[0];
@@ -1099,7 +1186,6 @@ function handleMyPayslip(body) {
 const PAYROLL_HANDLERS = {
   payroll_setup:        handlePayrollSetup,
   payroll_bootstrap:    handlePayrollBootstrap,
-  payroll_import_schedule: handlePayrollImportSchedule,
   payroll_master_get:   handlePayrollMasterGet,
   payroll_master_set:   handlePayrollMasterSet,
   payroll_config_set:   handlePayrollConfigSet,
@@ -1118,5 +1204,6 @@ const PAYROLL_HANDLERS = {
   payroll_bonus_get:    handlePayrollBonusGet,
   payroll_bonus_set:    handlePayrollBonusSet,
   payroll_trend:        handlePayrollTrend,
+  payroll_group:        handlePayrollGroup,
   payroll_migrate_store: handlePayrollMigrateStore,
 };
