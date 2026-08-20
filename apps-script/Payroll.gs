@@ -16,7 +16,7 @@ const PAY_SHEETS = {
             'pension','dormitory','hire_date','leave_date','active','updated_at','meal_allow','store'],
   config:  ['key','value','note','store'],
   holiday: ['ym','red_days','note'],
-  store:   ['code','name','clock_ss_id','dzy_node','emp_prefix','active','sort'],
+  store:   ['code','name','clock_ss_id','dzy_node','emp_prefix','active','sort','brand'],
   bonus:   ['ym','store','emp_id','bonus_type','label','amount','memo','updated_at'],
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
             'ot_paid_hours','gross','deduction','net','status','run_at','support_hours','store'],

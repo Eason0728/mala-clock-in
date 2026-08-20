@@ -137,8 +137,8 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="logo"><img src="assets/emblem.png" alt="小辛辣"></div>
-      <div><div class="bt">麻的小辛辣</div><div class="bs">MADE SIAO SIN LA</div></div>
+      <div class="logo" id="brandLogo"><img src="assets/emblem.png" alt="小辛辣"></div>
+      <div><div class="bt" id="brandName">麻的小辛辣</div><div class="bs" id="brandEn">MADE SIAO SIN LA</div></div>
     </div>
     <nav id="nav">
       <div class="nav-label">總覽</div>
@@ -699,11 +699,14 @@ function addSupportFor(emp){
 const SF=[['code','門市代碼'],['name','門市名稱'],['clock_ss_id','打卡試算表 ID'],['dzy_node','dzy 節點'],['emp_prefix','編號前綴'],['sort','順序']];
 function renderStores(){
   const t=$('storeTbl'); if(!t) return;
-  let h='<thead><tr>'+SF.map(f=>`<th style="text-align:left">${f[1]}</th>`).join('')+'<th>啟用</th><th></th></tr></thead><tbody>';
+  let h='<thead><tr>'+SF.map(f=>`<th style="text-align:left">${f[1]}</th>`).join('')+'<th style="text-align:left">品牌圖示</th><th>啟用</th><th></th></tr></thead><tbody>';
   STORE_LIST.forEach((s,i)=>{
     h+='<tr>'+SF.map(([k])=>`<td style="text-align:left"><input type="${k==='sort'?'number':'text'}" value="${s[k]??''}"
         style="min-width:${k==='clock_ss_id'?'260':'110'}px"
         onchange="STORE_LIST[${i}]['${k}']=this.value"></td>`).join('')
+      +`<td style="text-align:left"><select onchange="STORE_LIST[${i}].brand=this.value;applyBrand()">
+          <option value="sxl" ${String(s.brand||'sxl')!=='mzt'?'selected':''}>麻的小辛辣</option>
+          <option value="mzt" ${String(s.brand)==='mzt'?'selected':''}>墨竹亭</option></select></td>`
       +`<td style="text-align:center"><input type="checkbox" ${String(s.active).toLowerCase()!=='false'?'checked':''}
         style="width:18px;height:18px" onchange="STORE_LIST[${i}].active=this.checked?'true':'false'"></td>
        <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
@@ -725,12 +728,27 @@ async function saveStores(btn){
   });
 }
 
+/* 側欄品牌：依目前門市切換（門市表的 brand／brand_en／logo；留空沿用小辛辣）
+   logo 可填：assets 裡的檔名或路徑、完整網址、或直接一個 emoji */
+// 品牌只有兩種：小辛辣／墨竹亭。側欄名稱＝門市名稱，圖示與英文小字依品牌帶出。
+const BRANDS={sxl:{logo:'assets/emblem.png',en:'MADE SIAO SIN LA'},
+              mzt:{logo:'assets/emblem-mzt.png',en:'MO ZHU TING'}};
+function applyBrand(){
+  const st=STORE_LIST.find(s=>String(s.code)===String(STORE))||{};
+  const b=BRANDS[String(st.brand)==='mzt'?'mzt':'sxl'];
+  if($('brandName')) $('brandName').textContent=String(st.name||'麻的小辛辣');
+  if($('brandEn')) $('brandEn').textContent=b.en;
+  const box=$('brandLogo');
+  if(box) box.innerHTML=`<img src="${b.logo}" alt="">`;
+}
+
 /* ═════ 門市切換（階段一：可見清單＝門市表全部；階段二換成帳號的門市）═════ */
 function renderStoreSel(){
   const sel=$('storeSel'); if(!sel||!STORE_LIST.length) return;
   if(!STORE||!STORE_LIST.some(s=>String(s.code)===String(STORE))) STORE=String(STORE_LIST[0].code);
   sel.innerHTML=STORE_LIST.map(s=>`<option value="${s.code}" ${String(s.code)===String(STORE)?'selected':''}>${s.name||s.code}</option>`).join('');
   sel.style.display=STORE_LIST.length>1?'':'none';
+  applyBrand();
   const lbl=sel.previousElementSibling; if(lbl) lbl.style.display=STORE_LIST.length>1?'':'none';
 }
 async function switchStore(code){
