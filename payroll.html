@@ -144,6 +144,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
       <div class="nav-label">薪資作業</div>
       <button data-p="run" class="on"><span class="ic">📊</span>薪資總覽</button>
       <button data-p="att"><span class="ic">🕒</span>工時</button>
+      <button data-p="punch"><span class="ic">📋</span>打卡紀錄</button>
       <div class="nav-label">資料設定</div>
       <button data-p="emp"><span class="ic">👥</span>員工設定</button>
       <button data-p="cfg"><span class="ic">⚙️</span>參數設定</button>
@@ -189,6 +190,20 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <h2>人事成本分類（對應損益表）</h2>
     <p class="hint">依損益表科目彙總本月人事成本。<b>薪資費用＝應收 −（請假扣款＋不足倒扣）</b>；勞健保自付額<b>含在薪資費用內</b>（算人事成本），宿舍自付額列<b>租金收入</b>、不在此表。公司負擔（勞健保、負責人、團險）另計於下方，兩者相加＝人事總成本。</p>
     <div class="scroll"><table id="costTbl"></table></div>
+  </div>
+</section>
+
+<section class="panel" id="p-punch">
+  <div class="card">
+    <h2>打卡紀錄與核定</h2>
+    <p class="hint">同仁當月的原始打卡事件與主管核定結果（唯讀，資料來自打卡系統，與月表同源）。</p>
+    <div class="row" style="margin-bottom:12px">
+      <select id="punchWho" onchange="loadPunch()" style="min-width:160px;font-size:15px;padding:9px 11px">
+        <option value="">全部同仁</option>
+      </select>
+      <button class="btn ghost" onclick="loadPunch()">重新整理</button>
+    </div>
+    <div id="punchBody"></div>
   </div>
 </section>
 
@@ -387,6 +402,7 @@ async function loadMonth(){
     ATT=r.inputs||{}; ANNUAL=r.annual||{};
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
     renderAtt();renderRun();renderSlipSel();
+    if($('p-punch')&&$('p-punch').classList.contains('on')) loadPunch();
   } finally { setBusy(false); }
 }
 async function doCalc(){
@@ -579,6 +595,37 @@ function addSupportFor(emp){
   A.support.push({store:'',hours:0,rate:0,amount:''});
   renderAtt();
 }
+/* ═════ 打卡紀錄（唯讀，讀打卡系統 events/approved）═════ */
+let PUNCH_ROSTER=[];
+async function loadPunch(){
+  const box=$('punchBody'); if(!box) return;
+  box.innerHTML='<div style="color:var(--muted);padding:14px 2px">載入中…</div>';
+  const r=await post('payroll_punch',{ym:ym(),emp_id:$('punchWho').value||''});
+  if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+(r.error||'')+'</div>';return}
+  if(r.roster&&r.roster.length&&PUNCH_ROSTER.length!==r.roster.length){
+    PUNCH_ROSTER=r.roster;
+    $('punchWho').innerHTML='<option value="">全部同仁</option>'+r.roster.map(e=>`<option value="${e.emp_id}">${e.name}</option>`).join('');
+  }
+  const rows=r.rows||[];
+  if(!rows.length){box.innerHTML='<div style="color:var(--muted);padding:14px 2px">'+ym()+' 沒有打卡紀錄。</div>';return}
+  const pill=p=>{
+    const bad=p.status!=='ok';
+    const t=p.type==='in'?'上班':p.type==='out'?'下班':p.type;
+    return `<span class="tag ${bad?'draft':'final'}" style="margin:1px 3px 1px 0">${p.time} ${t}${bad?'·未入帳':''}</span>`;
+  };
+  box.innerHTML=`<div class="scroll"><table>
+    <thead><tr><th>日期</th><th style="text-align:left">姓名</th><th style="text-align:left">打卡事件</th>
+      <th>核定時數</th><th style="text-align:left">核定時段</th><th style="text-align:left">狀態</th><th style="text-align:left">核定人</th></tr></thead>
+    <tbody>${rows.map(x=>`<tr>
+      <td>${x.date}</td><td style="text-align:left"><b>${x.name}</b></td>
+      <td style="text-align:left;white-space:normal;min-width:230px">${x.punches.length?x.punches.map(pill).join(''):'<span style="color:var(--muted)">無打卡</span>'}</td>
+      <td>${x.approved_hours===''?'<span style="color:var(--muted)">未核定</span>':'<b>'+x.approved_hours+'</b> H'}</td>
+      <td style="text-align:left">${x.periods||'—'}</td>
+      <td style="text-align:left">${x.status_text?`<span class="${/遲到|早退|忘刷/.test(x.status_text)?'bad':''}">${x.status_text}</span>`:'—'}</td>
+      <td style="text-align:left">${x.manager_name||'—'}</td></tr>`).join('')}</tbody></table></div>
+    <div class="hint" style="margin-top:10px">共 ${rows.length} 筆</div>`;
+}
+
 function renderSup(){
   const act=MASTER.filter(e=>String(e.active)==='true');
   // 顯眼的新增支援列：選同仁＋大按鈕
@@ -814,6 +861,7 @@ $('nav').addEventListener('click',ev=>{
   document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));
   document.querySelectorAll('.panel').forEach(x=>x.classList.remove('on'));
   b.classList.add('on');$('p-'+b.dataset.p).classList.add('on');
+  if(b.dataset.p==='punch') loadPunch();
 });
 // 預設月份＝開啟當下的月份（台北時區），而非寫死
 (function(){

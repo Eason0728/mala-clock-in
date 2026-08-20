@@ -759,6 +759,54 @@ function payAnnualInfo(ym) {
   return out;
 }
 
+/** 打卡紀錄查詢（管理者）：某月每人每日的原始打卡事件＋主管核定結果。
+ *  只讀不寫，資料直接來自打卡系統的 events／approved 分頁（與月表同源）。*/
+function handlePayrollPunch(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = String(body.ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  const only = body.emp_id ? String(body.emp_id) : '';
+  const ss = getSS();
+  const roster = readSheetAsObjects(ss.getSheetByName('roster')).rows.map(stripRowIndex);
+  const nameById = {};
+  roster.forEach(function (r) { nameById[String(r.emp_id)] = r.name; });
+  const events = readSheetAsObjects(ss.getSheetByName('events')).rows.map(stripRowIndex);
+  const appSh = ss.getSheetByName('approved');
+  const approvedMap = buildLatestApprovedMap(appSh ? readSheetAsObjects(appSh).rows.map(stripRowIndex) : []);
+
+  const byKey = {};
+  function slot(d, emp) {
+    const k = d + '|' + emp;
+    if (!byKey[k]) byKey[k] = { date: d, emp_id: String(emp), name: nameById[emp] || emp,
+      punches: [], approved_hours: '', status_text: '', periods: '', manager_name: '' };
+    return byKey[k];
+  }
+  events.forEach(function (e) {
+    const ts = normCellTs(e.ts), d = tsDateStr(ts);
+    if (d.slice(0, 7) !== ym) return;
+    const emp = String(e.emp_id);
+    if (only && only !== emp) return;
+    slot(d, emp).punches.push({ time: tsHm(ts), type: String(e.type || ''), status: String(e.status || ''),
+      within: String(e.within_range || ''), dist: e.distance_m === '' || e.distance_m == null ? '' : Number(e.distance_m) });
+  });
+  Object.keys(approvedMap).forEach(function (d) {
+    if (String(d).slice(0, 7) !== ym) return;
+    Object.keys(approvedMap[d]).forEach(function (emp) {
+      if (only && only !== String(emp)) return;
+      const rec = approvedMap[d][emp], t = slot(d, emp);
+      t.approved_hours = rec.approved_hours === '' || rec.approved_hours == null ? '' : Number(rec.approved_hours);
+      t.status_text = String(rec.status_text || '');
+      t.periods = String(rec.periods || '');
+      t.manager_name = String(rec.manager_name || '');
+    });
+  });
+  const rows = Object.keys(byKey).sort().map(function (k) { return byKey[k]; });
+  rows.forEach(function (r) { r.punches.sort(function (a, b) { return a.time < b.time ? -1 : 1; }); });
+  return { ok: true, ym: ym, rows: rows,
+    roster: roster.filter(function (r) { return String(r.active).toLowerCase() === 'true'; })
+                  .map(function (r) { return { emp_id: String(r.emp_id), name: r.name }; }) };
+}
+
 function handleMyPayslip(body) {
   const key = String(body.key || '');
   if (!key) return { ok: false, error: 'unauthorized' };
@@ -800,4 +848,5 @@ const PAYROLL_HANDLERS = {
   payroll_item_upsert:  handlePayrollItemUpsert,
   payroll_finalize:     handlePayrollFinalize,
   my_payslip:           handleMyPayslip,
+  payroll_punch:        handlePayrollPunch,
 };
