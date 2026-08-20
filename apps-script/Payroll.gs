@@ -13,23 +13,31 @@
 const PAY_SHEETS = {
   master:  ['emp_id','name','is_full_time','wage','base','ot_rate','skill_allow','night_allow',
             'mgr_allow','editor_allow','attend_cap','labor_ins','health_ins','group_ins',
-            'pension','dormitory','hire_date','leave_date','active','updated_at','meal_allow'],
-  config:  ['key','value','note'],
+            'pension','dormitory','hire_date','leave_date','active','updated_at','meal_allow','store'],
+  config:  ['key','value','note','store'],
   holiday: ['ym','red_days','note'],
+  store:   ['code','name','clock_ss_id','dzy_node','emp_prefix','active','sort'],
+  bonus:   ['ym','store','emp_id','bonus_type','label','amount','memo','updated_at'],
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
-            'ot_paid_hours','gross','deduction','net','status','run_at','support_hours'],
-  item:    ['ym','emp_id','item_type','item_key','item_label','qty','rate','amount','source','memo'],
-  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on','custom_add_label','custom_add_amt','custom_ded_label','custom_ded_amt'],
-  audit:   ['ts','ym','action','operator','reason'],
+            'ot_paid_hours','gross','deduction','net','status','run_at','support_hours','store'],
+  item:    ['ym','emp_id','item_type','item_key','item_label','qty','rate','amount','source','memo','store'],
+  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on','custom_add_label','custom_add_amt','custom_ded_label','custom_ded_amt','store'],
+  audit:   ['ts','ym','action','operator','reason','store'],
 };
 /** 餐費補助門檻：當天「實際核定工時」要達這個時數才認列一天（核定時數＝實際上班時段，
  *  全天請假核定 0、假別另存 leave 分頁，所以特休／請假／出差自然不會被算進來）。*/
-const MEAL_MIN_HOURS = 6;
+const MEAL_MIN_HOURS = 6;   // 預設值；實際以 payroll_config 的 meal_min_hours 為準（可依門市覆寫）
 
 const PAY_SHEET_NAME = {
   master:'payroll_master', config:'payroll_config', holiday:'payroll_holiday',
   run:'payroll_run', item:'payroll_item', input:'payroll_input', audit:'payroll_audit',
+  store:'payroll_store', bonus:'payroll_bonus',
 };
+
+/** 單店期間的預設門市（階段一多店上線後改為必填，屆時移除此預設） */
+const PAY_DEFAULT_STORE = 'SSLGF';
+/** 呼叫端沒帶 store 時一律套用預設店，確保階段 0 行為與單店完全相同 */
+function payStore(v) { return String(v || PAY_DEFAULT_STORE); }
 const PAY_CONFIG_DEFAULT = [
   ['daily_hours', 8, '每日基本工時'],
   ['attend_deduct_per_day', 100, '全勤每日倒扣金額'],
@@ -38,6 +46,7 @@ const PAY_CONFIG_DEFAULT = [
   ['sick_ratio', 0.5, '病假占事假比例'],
   ['payday', 10, '發薪日'],
   ['shortfall_deduct', 'false', '工時不足是否倒扣（Eason 2026-07-20 定案：不倒扣，因缺勤已由請假扣款扣過）'],
+  ['meal_min_hours', 6, '餐費補助門檻：當日核定工時達此時數才認列一天'],
 ];
 
 /* ═══════════════════ 分頁工具 ═══════════════════ */
@@ -93,15 +102,37 @@ function payAppend(kind, rows) {
   sh.getRange(sh.getLastRow() + 1, 1, values.length, cols.length).setValues(values);
 }
 
-function payConfig() {
-  const out = {};
+/** 參數取值順序：該門市覆寫 → 集團預設（store 空白）→ 程式內建 PAY_CONFIG_DEFAULT */
+function payConfig(store) {
+  const st = store ? String(store) : '';
+  const glob = {}, own = {};
+  function cast(v) {
+    const s2 = String(v);
+    return (s2 === 'true') ? true : (s2 === 'false') ? false :
+           (s2 !== '' && isFinite(Number(s2)) ? Number(s2) : s2);
+  }
   payRead('config').forEach(function (r) {
-    const v = String(r.value);
-    out[r.key] = (v === 'true') ? true : (v === 'false') ? false :
-                 (v !== '' && isFinite(Number(v)) ? Number(v) : v);
+    const rs = String(r.store || '');
+    if (rs === '') glob[r.key] = cast(r.value);
+    else if (st && rs === st) own[r.key] = cast(r.value);
   });
-  PAY_CONFIG_DEFAULT.forEach(function (d) { if (out[d[0]] === undefined) out[d[0]] = d[1]; });
+  const out = {};
+  PAY_CONFIG_DEFAULT.forEach(function (d) { out[d[0]] = d[1]; });
+  Object.keys(glob).forEach(function (k) { out[k] = glob[k]; });
+  Object.keys(own).forEach(function (k) { out[k] = own[k]; });
   return out;
+}
+/** 參數來源標示（設定頁用）：回 {key: 'own'|'global'|'builtin'} */
+function payConfigSource(store) {
+  const st = store ? String(store) : '';
+  const src = {};
+  PAY_CONFIG_DEFAULT.forEach(function (d) { src[d[0]] = 'builtin'; });
+  payRead('config').forEach(function (r) {
+    const rs = String(r.store || '');
+    if (rs === '') { if (src[r.key] !== 'own') src[r.key] = 'global'; }
+    else if (st && rs === st) src[r.key] = 'own';
+  });
+  return src;
 }
 
 /* ═══════════════════ 工時歸集（重點：直接讀既有打卡資料）═══════════════════ */
@@ -110,7 +141,8 @@ function payConfig() {
  * 從 approved / leave / events 歸集某月每人的薪資輸入。
  * 這就是「不用人工把工時搬進薪資系統」的那一段。
  */
-function payCollect(ym) {
+function payCollect(ym, minH) {
+  const MEALMIN = (minH === undefined || minH === null || minH === '') ? MEAL_MIN_HOURS : Number(minH);
   const ss = getSS();
   const roster   = readSheetAsObjects(ss.getSheetByName('roster')).rows.map(stripRowIndex);
   const approved = readSheetAsObjects(ss.getSheetByName('approved')).rows.map(stripRowIndex);
@@ -141,7 +173,7 @@ function payCollect(ym) {
       const dayH = Number(rec.approved_hours) || 0;
       slot(emp).hours += dayH;
       // 餐費補助出勤天數：當日實際核定工時滿 MEAL_MIN_HOURS 才算一天（未滿不補、請假/特休/出差核定 0 不算）
-      if (dayH >= MEAL_MIN_HOURS) slot(emp)._wd[d] = true;
+      if (dayH >= MEALMIN) slot(emp)._wd[d] = true;
       const st = String(rec.status_text || '');
       if (st.indexOf('遲到') !== -1 || st.indexOf('早退') !== -1) markDay(emp, d);
     });
@@ -300,6 +332,15 @@ function payCalcOne(e, ym, att, cfg, redDays) {
   if (payNum(e.editor_allow)) push(earn, 'editor_allow', '小編津貼', null, null, payNum(e.editor_allow));
   // 自訂加薪／扣款（工時分頁逐月填，名稱自訂）
   if (payNum(att.custom_add_amt)) push(earn, 'custom_add', String(att.custom_add_label || '自訂加薪'), null, null, payNum(att.custom_add_amt));
+  // 獎金（獎金分頁登記，逐筆併入加項；item_key 帶類型供成本分類歸科目）
+  const BONUS_KEY = { sales: 'bonus_sales', perf: 'bonus_perf', project: 'bonus_project' };
+  const BONUS_DEF = { sales: '業績獎金', perf: '績效獎金', project: '專案獎金' };
+  (att.bonuses || []).forEach(function (b) {
+    const amt = payNum(b.amount);
+    if (!amt) return;
+    const t = String(b.bonus_type || 'project');
+    push(earn, BONUS_KEY[t] || 'bonus_project', String(b.label || BONUS_DEF[t] || '獎金'), null, null, amt);
+  });
 
   /* 跨店支援明細：
      - 計時：支援時數 × 支援門市費率，獨立加項（留空金額＝時數×費率；填了以填的為準）。
@@ -461,14 +502,15 @@ function handlePayrollBootstrap(body) {
   ensurePayrollSheets();
   const roster = readSheetAsObjects(getSS().getSheetByName('roster')).rows.map(stripRowIndex);
   const existing = {};
-  payRead('master').forEach(function (m) { existing[String(m.emp_id)] = true; });
+  const stBs = payStore(body.store);
+  payRead('master').forEach(function (m) { if (payStore(m.store) === stBs) existing[String(m.emp_id)] = true; });
   const add = roster
     .filter(function (r) { return String(r.active).toLowerCase() === 'true' && !existing[String(r.emp_id)]; })
     .map(function (r) {
       return { emp_id: r.emp_id, name: r.name, is_full_time: 'false', wage: 0, base: 0, ot_rate: 0,
                skill_allow: 0, night_allow: 0, mgr_allow: 0, editor_allow: 0, attend_cap: 0,
                labor_ins: 0, health_ins: 0, group_ins: 0, pension: 0, dormitory: 0,
-               hire_date: '', leave_date: '', active: 'true', updated_at: nowTaipeiIso() };
+               hire_date: '', leave_date: '', active: 'true', updated_at: nowTaipeiIso(), store: stBs };
     });
   payAppend('master', add);
   return { ok: true, added: add.length, names: add.map(function (a) { return a.name; }) };
@@ -476,24 +518,34 @@ function handlePayrollBootstrap(body) {
 
 function handlePayrollMasterGet(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
-  return { ok: true, master: payRead('master'), config: payConfig(), holidays: payRead('holiday') };
+  const stG = payStore(body.store);
+  return { ok: true, store: stG,
+           master: payRead('master').filter(function (m) { return payStore(m.store) === stG; }),
+           config: payConfig(stG), config_src: payConfigSource(stG),
+           stores: payRead('store').filter(function (x) { return String(x.active).toLowerCase() !== 'false'; }),
+           holidays: payRead('holiday') };
 }
 
 function handlePayrollMasterSet(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   if (!Array.isArray(body.master)) return { ok: false, error: 'master_required' };
   const now = nowTaipeiIso();
-  payReplaceAll('master', body.master.map(function (m) { m.updated_at = now; return m; }));
-  return { ok: true, count: body.master.length };
+  const stMs = payStore(body.store);
+  const mine = body.master.map(function (m) { m.updated_at = now; m.store = payStore(m.store || stMs); return m; });
+  const others = payRead('master').filter(function (m) { return payStore(m.store) !== stMs; });
+  payReplaceAll('master', others.concat(mine));
+  return { ok: true, count: mine.length, store: stMs };
 }
 
 function handlePayrollConfigSet(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const stC = String(body.store || '');   // 空白＝寫集團預設；有值＝寫該門市覆寫
   const rows = Object.keys(body.config || {}).map(function (k) {
-    return { key: k, value: String(body.config[k]), note: '' };
+    return { key: k, value: String(body.config[k]), note: '', store: stC };
   });
   if (!rows.length) return { ok: false, error: 'config_required' };
-  payReplaceAll('config', rows);
+  const otherCfg = payRead('config').filter(function (r) { return String(r.store || '') !== stC; });
+  payReplaceAll('config', otherCfg.concat(rows));
   return { ok: true };
 }
 
@@ -506,10 +558,12 @@ function handlePayrollHolidaySet(body) {
 
 /** 只歸集不計算——讓管理者先看工時對不對，再按計算 */
 /** 讀 payroll_input 分頁的手動工時覆蓋（某月）→ {emp_id:{hours,extra_ot,...,support:[]}} */
-function paySavedInputs(ym) {
+function paySavedInputs(ym, store) {
+  const st = payStore(store);
   const out = {};
   payRead('input').forEach(function (r) {
     if (String(r.ym) !== ym) return;
+    if (payStore(r.store) !== st) return;
     var sup = [];
     try { sup = r.support ? JSON.parse(r.support) : []; } catch (e) { sup = []; }
     out[String(r.emp_id)] = {
@@ -527,9 +581,10 @@ function paySavedInputs(ym) {
 
 /** 工時基底＝打卡歸集(payCollect) 疊上手動覆蓋(payroll_input)；saved 有該員就整筆蓋掉歸集值。
  *  供「工時分頁顯示」與「計算」共用，確保兩邊一致。 */
-function payInputsBase(ym) {
-  const base = payCollect(ym);
-  const saved = paySavedInputs(ym);
+function payInputsBase(ym, store) {
+  const st = payStore(store);
+  const base = payCollect(ym, payConfig(st).meal_min_hours);
+  const saved = paySavedInputs(ym, st);
   Object.keys(saved).forEach(function (emp) { base[emp] = saved[emp]; });
   return base;
 }
@@ -538,7 +593,9 @@ function handlePayrollInputs(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const ym = String(body.ym || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
-  return { ok: true, ym: ym, inputs: payInputsBase(ym), master: payRead('master') };
+  const st = payStore(body.store);
+  return { ok: true, ym: ym, store: st, inputs: payInputsBase(ym, st),
+           master: payRead('master').filter(function (m) { return payStore(m.store) === st; }) };
 }
 
 /** 儲存/覆蓋某月手動工時；inputs 空＝清除該月手動覆蓋（還原成打卡歸集）。 */
@@ -572,7 +629,7 @@ function handlePayrollCalc(body) {
   const ym = String(body.ym || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
 
-  const runs = payRead('run').filter(function (r) { return String(r.ym) === ym; });
+  const runs = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === payStore(body.store); });
   if (runs.length && String(runs[0].status) === 'final' && !body.force) {
     return { ok: false, error: 'locked', message: ym + ' 已鎖定，請先解鎖再重算' };
   }
@@ -581,9 +638,19 @@ function handlePayrollCalc(body) {
   if (!holiday) return { ok: false, error: 'no_holiday', message: ym + ' 尚未設定紅字天數' };
   const redDays = payNum(holiday.red_days);
 
-  const cfg = payConfig();
-  const master = payRead('master').filter(function (m) { return String(m.active).toLowerCase() === 'true'; });
-  const collected = payInputsBase(ym);   // 打卡歸集＋已儲存的手動覆蓋
+  const st = payStore(body.store);
+  const cfg = payConfig(st);
+  const master = payRead('master').filter(function (m) {
+    return String(m.active).toLowerCase() === 'true' && payStore(m.store) === st;
+  });
+  const collected = payInputsBase(ym, st);   // 打卡歸集＋已儲存的手動覆蓋
+  // 當月該店獎金，依員工分組
+  const bonusBy = {};
+  payRead('bonus').forEach(function (b) {
+    if (String(b.ym) !== ym || payStore(b.store) !== st) return;
+    const k = String(b.emp_id);
+    (bonusBy[k] = bonusBy[k] || []).push({ bonus_type: b.bonus_type, label: b.label, amount: payNum(b.amount) });
+  });
   const override = body.inputs || {};   // 本次前端送來的即時編輯（未存的也要算）
 
   const results = master.map(function (e) {
@@ -608,13 +675,14 @@ function handlePayrollCalc(body) {
       custom_add_amt:   o.custom_add_amt   !== undefined ? payNum(o.custom_add_amt) : payNum(c.custom_add_amt),
       custom_ded_label: o.custom_ded_label !== undefined ? o.custom_ded_label : (c.custom_ded_label||''),
       custom_ded_amt:   o.custom_ded_amt   !== undefined ? payNum(o.custom_ded_amt) : payNum(c.custom_ded_amt),
+      bonuses: bonusBy[String(e.emp_id)] || [],
     };
     return payCalcOne(e, ym, att, cfg, redDays);
   });
 
   // 保留 manual 明細，只重建 auto
   const keptManual = payRead('item').filter(function (i) {
-    return String(i.ym) === ym && String(i.source) === 'manual';
+    return String(i.ym) === ym && payStore(i.store) === st && String(i.source) === 'manual';
   });
   const manualByEmp = {};
   keptManual.forEach(function (i) { (manualByEmp[String(i.emp_id)] = manualByEmp[String(i.emp_id)] || []).push(i); });
@@ -629,30 +697,30 @@ function handlePayrollCalc(body) {
     });
     r.net = r.gross - r.deduction;
 
-    r.earn.forEach(function (x) { itemRows.push(payItemRow(ym, r.emp_id, 'earning', x, 'auto')); });
-    r.ded.forEach(function (x) { itemRows.push(payItemRow(ym, r.emp_id, 'deduction', x, 'auto')); });
+    r.earn.forEach(function (x) { itemRows.push(payItemRow(ym, r.emp_id, 'earning', x, 'auto', st)); });
+    r.ded.forEach(function (x) { itemRows.push(payItemRow(ym, r.emp_id, 'deduction', x, 'auto', st)); });
     mine.forEach(function (i) { itemRows.push(i); });
 
     runRows.push({
       ym: ym, emp_id: r.emp_id, name: r.name, is_full_time: r.is_full_time, ratio: r.ratio,
       total_hours: r.total_hours, support_hours: r.support_hours, base_hours: r.base_hours, surplus_hours: r.surplus_hours,
       ot_paid_hours: r.ot_paid_hours, gross: r.gross, deduction: r.deduction, net: r.net,
-      status: 'draft', run_at: now,
+      status: 'draft', run_at: now, store: st,
     });
   });
 
-  const otherRuns  = payRead('run').filter(function (r) { return String(r.ym) !== ym; });
-  const otherItems = payRead('item').filter(function (i) { return String(i.ym) !== ym; });
+  const otherRuns  = payRead('run').filter(function (r) { return String(r.ym) !== ym || payStore(r.store) !== st; });
+  const otherItems = payRead('item').filter(function (i) { return String(i.ym) !== ym || payStore(i.store) !== st; });
   payReplaceAll('run', otherRuns.concat(runRows));
   payReplaceAll('item', otherItems.concat(itemRows));
 
-  return { ok: true, ym: ym, results: results, config: cfg, red_days: redDays, collected: collected };
+  return { ok: true, ym: ym, store: st, results: results, config: cfg, red_days: redDays, collected: collected };
 }
 
-function payItemRow(ym, empId, type, x, source) {
+function payItemRow(ym, empId, type, x, source, store) {
   return { ym: ym, emp_id: empId, item_type: type, item_key: x.item_key, item_label: x.item_label,
            qty: x.qty == null ? '' : x.qty, rate: x.rate == null ? '' : x.rate,
-           amount: x.amount, source: source, memo: '' };
+           amount: x.amount, source: source, memo: '', store: payStore(store) };
 }
 
 function handlePayrollGet(body) {
@@ -667,10 +735,11 @@ function handlePayrollGet(body) {
 }
 
 /** 從 run 列＋item 列重建 {results, status}（每人用 payRunItemsToResult 還原 earn/ded）；無資料回 null。 */
-function payBuildRunResults(ym) {
-  const runRows = payRead('run').filter(function (r) { return String(r.ym) === ym; });
+function payBuildRunResults(ym, store) {
+  const stB = payStore(store);
+  const runRows = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === stB; });
   if (!runRows.length) return null;
-  const items = payRead('item').filter(function (i) { return String(i.ym) === ym; });
+  const items = payRead('item').filter(function (i) { return String(i.ym) === ym && payStore(i.store) === stB; });
   const byEmp = {};
   items.forEach(function (i) { (byEmp[String(i.emp_id)] = byEmp[String(i.emp_id)] || []).push(i); });
   const results = runRows.map(function (run) { return payRunItemsToResult(run, byEmp[String(run.emp_id)] || []); });
@@ -683,17 +752,22 @@ function handlePayrollMonth(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const ym = String(body.ym || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
-  const inputs = payInputsBase(ym);
-  let run = payBuildRunResults(ym);
+  const stM = payStore(body.store);
+  const inputs = payInputsBase(ym, stM);
+  let run = payBuildRunResults(ym, stM);
   if (!run) {
     const hol = payRead('holiday').filter(function (h) { return String(h.ym) === ym; })[0];
     if (hol) {
-      const calc = handlePayrollCalc({ admin_key: body.admin_key, ym: ym, inputs: body.inputs || {} });
+      const calc = handlePayrollCalc({ admin_key: body.admin_key, ym: ym, store: stM, inputs: body.inputs || {} });
       if (calc && calc.ok) run = { results: calc.results, status: 'draft' };
     }
   }
-  return { ok: true, ym: ym, inputs: inputs, run: run, annual: payAnnualInfo(ym),
-           master: payRead('master'), config: payConfig(), holidays: payRead('holiday') };
+  return { ok: true, ym: ym, store: stM, inputs: inputs, run: run, annual: payAnnualInfo(ym, stM),
+           master: payRead('master').filter(function (m) { return payStore(m.store) === stM; }),
+           config: payConfig(stM), config_src: payConfigSource(stM),
+           bonuses: payRead('bonus').filter(function (b) { return String(b.ym) === ym && payStore(b.store) === stM; }),
+           stores: payRead('store').filter(function (x) { return String(x.active).toLowerCase() !== 'false'; }),
+           holidays: payRead('holiday') };
 }
 
 function handlePayrollItemUpsert(body) {
@@ -715,11 +789,12 @@ function handlePayrollFinalize(body) {
   if (!lock && !body.reason) return { ok: false, error: 'reason_required', message: '解鎖必須填原因' };
   const rows = payRead('run');
   let n = 0;
-  rows.forEach(function (r) { if (String(r.ym) === ym) { r.status = lock ? 'final' : 'draft'; n++; } });
+  const stF = payStore(body.store);
+  rows.forEach(function (r) { if (String(r.ym) === ym && payStore(r.store) === stF) { r.status = lock ? 'final' : 'draft'; n++; } });
   if (!n) return { ok: false, error: 'no_run', message: ym + ' 還沒有月結資料' };
   payReplaceAll('run', rows);
   payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: lock ? 'lock' : 'unlock',
-                        operator: String(body.operator || 'admin'), reason: String(body.reason || '') }]);
+                        operator: String(body.operator || 'admin'), reason: String(body.reason || ''), store: stF }]);
   return { ok: true, ym: ym, status: lock ? 'final' : 'draft', count: n };
 }
 
@@ -728,8 +803,9 @@ function handlePayrollFinalize(body) {
  * 絕不接受前端傳入的 emp_id——否則改網址就能看別人的薪水。
  */
 /** 每人剩餘特休（工時分頁與員工薪資單共用）：額度=payAnnualQuota、已用=當前週年期內 leave 分頁特休時數合計 */
-function payAnnualInfo(ym) {
-  const master = payRead('master');
+function payAnnualInfo(ym, store) {
+  const stA = payStore(store);
+  const master = payRead('master').filter(function (m) { return payStore(m.store) === stA; });
   const sh = getSS().getSheetByName('leave');
   const leaves = sh ? readSheetAsObjects(sh).rows.map(stripRowIndex) : [];
   const out = {};
@@ -867,6 +943,131 @@ function handlePayrollPunch(body) {
                   .map(function (r) { return { emp_id: String(r.emp_id), name: r.name }; }) };
 }
 
+/* ═══════════════════ 門市表 ═══════════════════ */
+
+function handlePayrollStoreGet(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  ensurePayrollSheets();
+  return { ok: true, stores: payRead('store') };
+}
+function handlePayrollStoreSet(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  if (!Array.isArray(body.stores)) return { ok: false, error: 'stores_required' };
+  payReplaceAll('store', body.stores);
+  return { ok: true, count: body.stores.length };
+}
+
+/* ═══════════════════ 獎金登記 ═══════════════════ */
+
+const PAY_BONUS_TYPES = ['sales', 'perf', 'project'];
+
+function handlePayrollBonusGet(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = String(body.ym || ''), st = payStore(body.store);
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  return { ok: true, ym: ym, store: st,
+           bonuses: payRead('bonus').filter(function (b) { return String(b.ym) === ym && payStore(b.store) === st; }) };
+}
+
+/** 覆寫某店某月的全部獎金（前端整批送）。金額 0 或空的列自動略過。 */
+function handlePayrollBonusSet(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = String(body.ym || ''), st = payStore(body.store);
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  if (!Array.isArray(body.bonuses)) return { ok: false, error: 'bonuses_required' };
+  const now = nowTaipeiIso();
+  const rows = body.bonuses
+    .filter(function (b) { return b && String(b.emp_id || '') !== '' && payNum(b.amount) !== 0; })
+    .map(function (b) {
+      const t = PAY_BONUS_TYPES.indexOf(String(b.bonus_type)) >= 0 ? String(b.bonus_type) : 'project';
+      return { ym: ym, store: st, emp_id: String(b.emp_id), bonus_type: t,
+               label: String(b.label || ''), amount: payNum(b.amount),
+               memo: String(b.memo || ''), updated_at: now };
+    });
+  const others = payRead('bonus').filter(function (b) { return String(b.ym) !== ym || payStore(b.store) !== st; });
+  payReplaceAll('bonus', others.concat(rows));
+  return { ok: true, ym: ym, store: st, count: rows.length };
+}
+
+/* ═══════════════════ 儀表板：人事成本趨勢 ═══════════════════ */
+
+/** 回近 N 個月的彙總（依門市）。資料全部取自既有 run／item，不需額外輸入。 */
+function handlePayrollTrend(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const st = payStore(body.store);
+  const months = Math.min(24, Math.max(1, payNum(body.months) || 12));
+  const endYm = /^\d{4}-\d{2}$/.test(String(body.ym || '')) ? String(body.ym) : currentYmTaipei();
+  // 產生月份清單（由舊到新）
+  const list = [];
+  var y = parseInt(endYm.slice(0, 4), 10), m = parseInt(endYm.slice(5, 7), 10);
+  for (var i = months - 1; i >= 0; i--) {
+    var yy = y, mm = m - i;
+    while (mm <= 0) { mm += 12; yy--; }
+    list.push(yy + '-' + pad2(mm));
+  }
+  const runs = payRead('run').filter(function (r) { return payStore(r.store) === st; });
+  const items = payRead('item').filter(function (i) { return payStore(i.store) === st; });
+  const runByYm = {}, itemByYm = {};
+  runs.forEach(function (r) { (runByYm[String(r.ym)] = runByYm[String(r.ym)] || []).push(r); });
+  items.forEach(function (i) { (itemByYm[String(i.ym)] = itemByYm[String(i.ym)] || []).push(i); });
+
+  const REDUCE = ['personal_leave','sick_leave','menstrual_leave','disaster_leave','shortfall_hours'];
+  const out = list.map(function (ym) {
+    const rs = runByYm[ym] || [], its = itemByYm[ym] || [];
+    if (!rs.length) return { ym: ym, has: false };
+    var gross = 0, hours = 0, ft = 0, pt = 0, ot = 0, reduce = 0, bonus = 0;
+    rs.forEach(function (r) {
+      gross += payNum(r.gross); hours += payNum(r.total_hours);
+      if (String(r.is_full_time).toLowerCase() === 'true') ft++; else pt++;
+    });
+    its.forEach(function (i) {
+      const k = String(i.item_key), a = payNum(i.amount);
+      if (String(i.item_type) === 'earning') {
+        if (k === 'overtime') ot += a;
+        if (k.indexOf('bonus_') === 0) bonus += a;
+      } else if (REDUCE.indexOf(k) >= 0) reduce += a;
+    });
+    const cfg = payConfig(st);
+    const co = payNum(cfg.co_labor) + payNum(cfg.co_health) + payNum(cfg.co_pension) +
+               payNum(cfg.co_owner) + payNum(cfg.co_group);
+    const salaryCost = gross - reduce;
+    const people = ft + pt;
+    return { ym: ym, has: true,
+             salary_cost: payR0(salaryCost), company: payR0(co), total_cost: payR0(salaryCost + co),
+             overtime: payR0(ot), bonus: payR0(bonus),
+             people: people, ft: ft, pt: pt, hours: payR2(hours),
+             ot_ratio: salaryCost > 0 ? Math.round(ot / salaryCost * 1000) / 10 : 0,
+             avg_hours: people ? payR2(hours / people) : 0,
+             avg_net: people ? payR0(rs.reduce(function (a, r) { return a + payNum(r.net); }, 0) / people) : 0,
+             status: String(rs[0].status || 'draft') };
+  });
+  return { ok: true, store: st, months: out };
+}
+
+/* ═══════════════════ 一次性遷移：既有資料補門市 ═══════════════════ */
+
+/** 把 store 為空的既有列補成預設門市（只跑一次；重複執行安全）。 */
+function handlePayrollMigrateStore(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  ensurePayrollSheets();
+  const st = payStore(body.store);
+  const done = {};
+  ['master', 'input', 'run', 'item', 'audit'].forEach(function (kind) {
+    const rows = payRead(kind);
+    var n = 0;
+    rows.forEach(function (r) { if (String(r.store || '') === '') { r.store = st; n++; } });
+    if (n) payReplaceAll(kind, rows);
+    done[kind] = n;
+  });
+  // 門市表若空，建立預設門市列
+  if (!payRead('store').length) {
+    payAppend('store', [{ code: st, name: '麻的小辛辣 新竹光復店', clock_ss_id: '',
+                          dzy_node: 'sxl-gf', emp_prefix: '', active: 'true', sort: 1 }]);
+    done.store_created = 1;
+  }
+  return { ok: true, store: st, filled: done };
+}
+
 function handleMyPayslip(body) {
   const key = String(body.key || '');
   if (!key) return { ok: false, error: 'unauthorized' };
@@ -875,16 +1076,19 @@ function handleMyPayslip(body) {
   if (!me) return { ok: false, error: 'unauthorized' };
 
   const ym = String(body.ym || currentYmTaipei());
+  // 員工所屬門市（主檔為準；找不到就用預設店）
+  const mineMaster = payRead('master').filter(function (m) { return String(m.emp_id) === String(me.emp_id); })[0];
+  const stMy = payStore(mineMaster && mineMaster.store);
   const run = payRead('run').filter(function (r) {
-    return String(r.ym) === ym && String(r.emp_id) === String(me.emp_id);
+    return String(r.ym) === ym && String(r.emp_id) === String(me.emp_id) && payStore(r.store) === stMy;
   })[0];
-  const annual = payAnnualInfo(ym)[String(me.emp_id)] || null;
+  const annual = payAnnualInfo(ym, stMy)[String(me.emp_id)] || null;
   if (!run) return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資尚未結算', annual: annual };
   if (String(run.status) !== 'final') {
     return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資結算中，尚未定案', annual: annual };
   }
   const items = payRead('item').filter(function (i) {
-    return String(i.ym) === ym && String(i.emp_id) === String(me.emp_id);
+    return String(i.ym) === ym && String(i.emp_id) === String(me.emp_id) && payStore(i.store) === stMy;
   });
   return { ok: true, ym: ym, name: me.name, ready: true, annual: annual,
            result: payRunItemsToResult(run, items), payday: payConfig().payday };
@@ -909,4 +1113,10 @@ const PAYROLL_HANDLERS = {
   payroll_finalize:     handlePayrollFinalize,
   my_payslip:           handleMyPayslip,
   payroll_punch:        handlePayrollPunch,
+  payroll_store_get:    handlePayrollStoreGet,
+  payroll_store_set:    handlePayrollStoreSet,
+  payroll_bonus_get:    handlePayrollBonusGet,
+  payroll_bonus_set:    handlePayrollBonusSet,
+  payroll_trend:        handlePayrollTrend,
+  payroll_migrate_store: handlePayrollMigrateStore,
 };

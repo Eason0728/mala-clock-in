@@ -141,9 +141,12 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
       <div><div class="bt">麻的小辛辣</div><div class="bs">MADE SIAO SIN LA</div></div>
     </div>
     <nav id="nav">
+      <div class="nav-label">總覽</div>
+      <button data-p="dash" class="on"><span class="ic">📈</span>儀表板</button>
       <div class="nav-label">薪資作業</div>
-      <button data-p="run" class="on"><span class="ic">📊</span>薪資計算</button>
+      <button data-p="run"><span class="ic">📊</span>薪資計算</button>
       <button data-p="att"><span class="ic">🕒</span>出勤資料</button>
+      <button data-p="bonus"><span class="ic">🎁</span>獎金</button>
       <button data-p="punch"><span class="ic">📋</span>打卡紀錄</button>
       <div class="nav-label">資料設定</div>
       <button data-p="emp"><span class="ic">👥</span>員工設定</button>
@@ -175,7 +178,56 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 
 <main>
 
-<section class="panel on" id="p-run">
+<section class="panel on" id="p-dash">
+  <div class="stats" id="dashStats"></div>
+  <div class="card">
+    <h2>人事成本趨勢 <span id="dashRange" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
+    <p class="hint">資料取自各月已計算的薪資結果，不需另外輸入。灰色柱＝該月尚未結算。</p>
+    <div id="dashCost"></div>
+  </div>
+  <div class="card">
+    <h2>加班費占比</h2>
+    <p class="hint">加班費 ÷ 薪資費用小計。比例持續攀升代表人力吃緊。</p>
+    <div id="dashOt"></div>
+  </div>
+  <div class="card">
+    <h2>人數與平均</h2>
+    <div class="scroll"><table id="dashTbl"></table></div>
+  </div>
+</section>
+
+<section class="panel" id="p-bonus">
+  <div class="card">
+    <h2>獎金登記</h2>
+    <p class="hint">三種獎金各自登記，會自動併入當月薪資的加項，薪資單與同仁端都看得到；人事成本分類也會分開列。</p>
+    <div class="row" style="margin-bottom:12px">
+      <select id="bnWho" style="min-width:150px;font-size:15px;padding:9px 11px"></select>
+      <select id="bnType" style="min-width:130px;font-size:15px;padding:9px 11px">
+        <option value="sales">門市業績獎金</option>
+        <option value="perf">個人績效獎金</option>
+        <option value="project">介紹／專案獎金</option>
+      </select>
+      <input type="text" id="bnLabel" placeholder="顯示名稱（薪資單上）" style="min-width:190px">
+      <input type="number" id="bnAmt" placeholder="金額" style="width:110px">
+      <button class="btn" style="font-size:16px;padding:10px 22px" onclick="addBonus()">＋ 新增獎金</button>
+    </div>
+    <div id="bonusList"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn" id="saveBonusBtn" onclick="saveBonus(this)">儲存獎金</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>業績參考（手動記錄）</h2>
+    <p class="hint">僅供你檢核業績獎金金額，不參與計算。</p>
+    <div class="grid2">
+      <div class="fld"><label>當月營收</label><input type="number" id="bnRev" onchange="saveBonusMemo()"></div>
+      <div class="fld"><label>營收目標</label><input type="number" id="bnTgt" onchange="saveBonusMemo()"></div>
+      <div class="fld"><label>達成率</label><input type="text" id="bnRate" readonly style="background:#faf7f3"></div>
+    </div>
+  </div>
+</section>
+
+<section class="panel" id="p-run">
   <div class="stats" id="runStats"></div>
   <div class="card">
     <h2>當月薪資總覽 <span id="baseHint" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
@@ -303,7 +355,7 @@ const API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ?
   : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
 const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 
-let MASTER=[], CFG={}, HOL={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={};
+let MASTER=[], CFG={}, HOL={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE='';
 
 const $=id=>document.getElementById(id);
 const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};
@@ -399,10 +451,12 @@ async function loadMonth(){
   try{
     const r=await post('payroll_month',{ym:ym(),inputs:{}});
     if(!r.ok) return;
-    ATT=r.inputs||{}; ANNUAL=r.annual||{};
+    ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b)); STORE=r.store||STORE;
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
     renderAtt();renderRun();renderSlipSel();
+    renderBonus();
     if($('p-punch')&&$('p-punch').classList.contains('on')) loadPunch();
+    if($('p-dash')&&$('p-dash').classList.contains('on')) loadDash();
   } finally { setBusy(false); }
 }
 async function doCalc(){
@@ -432,12 +486,14 @@ function renderStats(){
 // 薪資費用要扣的只有「真的少領」：請假扣款＋不足倒扣。勞健保自付留在薪資費用內、宿舍當租金收入不在此表。
 const COST_REDUCE_KEYS=['personal_leave','sick_leave','menstrual_leave','disaster_leave','shortfall_hours'];
 function costTotals(){
-  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,meal:0,reduce:0,reduceBy:{}};
+  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{}};
   RESULTS.forEach(r=>{
     r.earn.forEach(x=>{const k=x.item_key,a=x.amount;
       if(k==='base_salary')g.base+=a;else if(k==='overtime')g.ot+=a;else if(k==='attend_bonus')g.attend+=a;
       else if(k==='night_allow'||k==='skill_allow')g.allow+=a;else if(k==='mgr_allow')g.mgr+=a;
-      else if(k==='hourly_wage'||k==='cross_store')g.pt+=a;else if(k==='meal_sub')g.meal+=a;else g.other+=a;});
+      else if(k==='hourly_wage'||k==='cross_store')g.pt+=a;else if(k==='meal_sub')g.meal+=a;
+      else if(k==='bonus_sales')g.bs+=a;else if(k==='bonus_perf')g.bp+=a;else if(k==='bonus_project')g.bj+=a;
+      else g.other+=a;});
     r.ded.forEach(x=>{if(COST_REDUCE_KEYS.indexOf(x.item_key)>=0){
       g.reduce+=x.amount; g.reduceBy[x.item_label]=(g.reduceBy[x.item_label]||0)+x.amount;}});
   });
@@ -447,7 +503,7 @@ function costTotals(){
 const CO_ITEMS=[['co_labor','公司負擔勞保'],['co_health','公司負擔健保'],['co_pension','公司負擔退休金'],['co_owner','負責人勞健保'],['co_group','團險']];
 function costRows(g){
   const co={}; CO_ITEMS.forEach(([k])=>co[k]=n(CFG[k]));
-  const salaryGross=g.base+g.ot+g.attend+g.allow+g.mgr+g.pt+g.other+g.meal;
+  const salaryGross=g.base+g.ot+g.attend+g.allow+g.mgr+g.pt+g.other+g.meal+g.bs+g.bp+g.bj;
   const salaryCost=salaryGross-g.reduce;   // 薪資費用＝應收−(請假+不足倒扣)；勞健保自付留在內、宿舍不計
   const coTotal=CO_ITEMS.reduce((a,[k])=>a+co[k],0);
   const reduceRows=Object.keys(g.reduceBy).map(lb=>[lb,g.reduceBy[lb]]);
@@ -457,6 +513,9 @@ function costRows(g){
     ['薪資費用 夜間津貼／職能津貼／正職',g.allow],['薪資費用 店長津貼',g.mgr],
     ...(g.meal?[['薪資費用 餐費補助／正職',g.meal]]:[]),
     ...(g.other?[['薪資費用 其他津貼',g.other]]:[]),['薪資費用／PT',g.pt],
+    ...(g.bs?[['薪資費用 業績獎金',g.bs]]:[]),
+    ...(g.bp?[['薪資費用 績效獎金',g.bp]]:[]),
+    ...(g.bj?[['薪資費用 專案獎金',g.bj]]:[]),
     ...(g.reduce?[['d','減：請假扣款＋不足倒扣',-g.reduce]]:[]),
     ['s','薪資費用小計',salaryCost],
     ['h','公司負擔保險成本'],
@@ -598,6 +657,119 @@ function addSupportFor(emp){
   A.support.push({store:'',hours:0,rate:0,amount:''});
   renderAtt();
 }
+
+/* ═════ 獎金登記 ═════ */
+const BTYPE={sales:'門市業績獎金',perf:'個人績效獎金',project:'介紹／專案獎金'};
+const BDEF ={sales:'業績獎金',perf:'績效獎金',project:'專案獎金'};
+function bonusWhoOptions(){
+  const act=MASTER.filter(e=>String(e.active)==='true');
+  $('bnWho').innerHTML='<option value="">選擇同仁</option>'+act.map(e=>`<option value="${e.emp_id}">${e.name}</option>`).join('');
+}
+function addBonus(){
+  const emp=$('bnWho').value, t=$('bnType').value, amt=n($('bnAmt').value);
+  if(!emp){toast('請先選擇同仁',true);return}
+  if(!amt){toast('請填金額',true);return}
+  BONUS.push({emp_id:emp,bonus_type:t,label:$('bnLabel').value.trim()||BDEF[t],amount:amt,memo:''});
+  $('bnLabel').value='';$('bnAmt').value='';
+  renderBonus();toast('已加入，記得按「儲存獎金」');
+}
+function renderBonus(){
+  const box=$('bonusList'); if(!box) return;
+  bonusWhoOptions();
+  const nameOf=id=>(MASTER.find(m=>String(m.emp_id)===String(id))||{}).name||id;
+  if(!BONUS.length){box.innerHTML='<div style="color:var(--muted);font-size:13px;padding:6px 2px">本月尚無獎金登記。</div>';return}
+  let h='';
+  ['sales','perf','project'].forEach(t=>{
+    const rows=BONUS.map((b,i)=>({b,i})).filter(x=>String(x.b.bonus_type)===t);
+    if(!rows.length) return;
+    const sub=rows.reduce((a,x)=>a+n(x.b.amount),0);
+    h+=`<div class="card" style="background:#fdfcfb;margin-bottom:12px">
+      <div class="row" style="margin-bottom:8px"><b>${BTYPE[t]}</b>
+        <span style="margin-left:auto;font-weight:900">小計 ${nf(sub)}</span></div>
+      <div class="scroll"><table>
+        <thead><tr><th style="text-align:left">姓名</th><th style="text-align:left">顯示名稱</th><th>金額</th><th style="text-align:left">備註</th><th></th></tr></thead>
+        <tbody>${rows.map(({b,i})=>`<tr>
+          <td style="text-align:left"><b>${nameOf(b.emp_id)}</b></td>
+          <td style="text-align:left"><input type="text" value="${b.label||''}" onchange="BONUS[${i}].label=this.value"></td>
+          <td><input type="number" value="${n(b.amount)}" onchange="BONUS[${i}].amount=n(this.value)"></td>
+          <td style="text-align:left"><input type="text" value="${b.memo||''}" onchange="BONUS[${i}].memo=this.value"></td>
+          <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
+            onclick="BONUS.splice(${i},1);renderBonus()">移除</button></td></tr>`).join('')}</tbody></table></div>
+    </div>`;
+  });
+  const total=BONUS.reduce((a,b)=>a+n(b.amount),0);
+  h+=`<div class="row" style="justify-content:flex-end;font-weight:900;font-size:16px">本月獎金合計 ${nf(total)}</div>`;
+  box.innerHTML=h;
+  const rev=n($('bnRev').value),tgt=n($('bnTgt').value);
+  if($('bnRate')) $('bnRate').value = (rev&&tgt)?(Math.round(rev/tgt*1000)/10+' %'):'—';
+}
+function saveBonusMemo(){
+  const rev=n($('bnRev').value),tgt=n($('bnTgt').value);
+  if($('bnRate')) $('bnRate').value=(rev&&tgt)?(Math.round(rev/tgt*1000)/10+' %'):'—';
+}
+async function saveBonus(btn){
+  return saveFX(btn,'儲存獎金',async()=>{
+    const r=await post('payroll_bonus_set',{ym:ym(),store:STORE,bonuses:BONUS});
+    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    await doCalc();
+    toast('獎金已儲存（'+r.count+' 筆）');return true;
+  });
+}
+
+/* ═════ 儀表板：人事成本趨勢 ═════ */
+let DASH=[];
+async function loadDash(){
+  const box=$('dashCost'); if(!box) return;
+  box.innerHTML='<div style="color:var(--muted);padding:14px 2px">載入中…</div>';
+  const r=await post('payroll_trend',{ym:ym(),store:STORE,months:12});
+  if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+(r.error||'')+'</div>';return}
+  DASH=r.months||[];renderDash();
+}
+function bars(data,valKey,color,fmtFn){
+  const has=data.filter(d=>d.has);
+  if(!has.length) return '<div style="color:var(--muted);padding:14px 2px">尚無已結算的月份。</div>';
+  const max=Math.max.apply(null,has.map(d=>n(d[valKey])))||1;
+  const W=Math.max(560,data.length*74), H=210, PAD=30, bw=Math.floor((W-PAD*2)/data.length*0.62);
+  let g='';
+  data.forEach((d,i)=>{
+    const x=PAD+(W-PAD*2)/data.length*i+((W-PAD*2)/data.length-bw)/2;
+    const v=d.has?n(d[valKey]):0;
+    const h=d.has?Math.max(2,Math.round(v/max*(H-70))):6;
+    const y=H-32-h;
+    g+=`<rect x="${x}" y="${y}" width="${bw}" height="${h}" rx="4" fill="${d.has?color:'#e6e0da'}"></rect>`;
+    if(d.has) g+=`<text x="${x+bw/2}" y="${y-6}" text-anchor="middle" font-size="11" font-weight="800" fill="#231815">${fmtFn(v)}</text>`;
+    g+=`<text x="${x+bw/2}" y="${H-12}" text-anchor="middle" font-size="10.5" fill="#94897f">${d.ym.slice(2).replace('-','/')}</text>`;
+  });
+  return `<div class="scroll"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="max-width:100%">${g}</svg></div>`;
+}
+function renderDash(){
+  if(!DASH.length) return;
+  const has=DASH.filter(d=>d.has);
+  const last=has[has.length-1];
+  const prev=has[has.length-2];
+  const tile=(ic,lb,v,u,sub)=>`<div class="stat"><div class="lb"><span class="ic">${ic}</span>${lb}</div>
+    <div class="v">${v}${u?`<small>${u}</small>`:''}</div>${sub?`<div style="font-size:11.5px;color:var(--muted);margin-top:3px">${sub}</div>`:''}</div>`;
+  const diff=(a,b)=>{if(b==null||!b)return '';const d=Math.round((a-b)/b*1000)/10;return (d>=0?'▲ ':'▼ ')+Math.abs(d)+'%（對上月）'};
+  $('dashStats').innerHTML = last ? (
+     tile('💰','最新月人事總成本','NT$ '+nf(last.total_cost),'',last.ym+'　'+diff(last.total_cost,prev&&prev.total_cost))
+    +tile('👥','人數',last.people,'人','正職 '+last.ft+'　計時 '+last.pt)
+    +tile('⏱','加班費占比',last.ot_ratio,'%','加班費 '+nf(last.overtime))
+    +tile('🎁','獎金',nf(last.bonus),'','當月合計')
+    +tile('📊','每人平均實付','NT$ '+nf(last.avg_net),'','平均工時 '+last.avg_hours+' H')
+  ) : '<div class="card" style="color:var(--muted)">尚無已結算的月份。</div>';
+  $('dashRange').textContent=DASH.length?`（${DASH[0].ym} ～ ${DASH[DASH.length-1].ym}）`:'';
+  $('dashCost').innerHTML=bars(DASH,'total_cost','var(--red)',v=>nf(v));
+  $('dashOt').innerHTML=bars(DASH,'ot_ratio','var(--gold)',v=>v+'%');
+  let h='<thead><tr><th>月份</th><th>人事總成本</th><th>薪資費用</th><th>公司負擔</th><th>加班費</th><th>獎金</th><th>人數</th><th>總工時</th><th>平均實付</th><th style="text-align:left">狀態</th></tr></thead><tbody>';
+  DASH.slice().reverse().forEach(d=>{
+    h+=`<tr><td>${d.ym}</td>`+(d.has?`<td><b>${nf(d.total_cost)}</b></td><td>${nf(d.salary_cost)}</td><td>${nf(d.company)}</td>
+      <td>${nf(d.overtime)}</td><td>${nf(d.bonus)}</td><td>${d.people}</td><td>${d.hours}</td><td>${nf(d.avg_net)}</td>
+      <td style="text-align:left"><span class="tag ${d.status==='final'?'final':'draft'}">${d.status==='final'?'已鎖定':'草稿'}</span></td>`
+      :'<td colspan="9" style="color:var(--muted);text-align:left">尚未結算</td>')+'</tr>';
+  });
+  $('dashTbl').innerHTML=h+'</tbody>';
+}
+
 /* ═════ 打卡紀錄（唯讀，讀打卡系統 events/approved）═════ */
 let PUNCH_ROSTER=[];
 async function loadPunch(){
@@ -884,6 +1056,8 @@ $('nav').addEventListener('click',ev=>{
   document.querySelectorAll('.panel').forEach(x=>x.classList.remove('on'));
   b.classList.add('on');$('p-'+b.dataset.p).classList.add('on');
   if(b.dataset.p==='punch') loadPunch();
+  if(b.dataset.p==='dash') loadDash();
+  if(b.dataset.p==='bonus') renderBonus();
 });
 // 預設月份＝開啟當下的月份（台北時區），而非寫死
 (function(){
