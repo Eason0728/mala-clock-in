@@ -143,7 +143,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <nav id="nav">
       <div class="nav-label">薪資作業</div>
       <button data-p="run" class="on"><span class="ic">📊</span>薪資總覽</button>
-      <button data-p="att"><span class="ic">🕒</span>工時</button>
+      <button data-p="att"><span class="ic">🕒</span>當月工時</button>
       <button data-p="punch"><span class="ic">📋</span>打卡紀錄</button>
       <div class="nav-label">資料設定</div>
       <button data-p="emp"><span class="ic">👥</span>員工設定</button>
@@ -606,14 +606,33 @@ async function loadPunch(){
     PUNCH_ROSTER=r.roster;
     $('punchWho').innerHTML='<option value="">全部同仁</option>'+r.roster.map(e=>`<option value="${e.emp_id}">${e.name}</option>`).join('');
   }
+  // 總表：全體同仁當月出勤統計
+  const sm=r.summary||[];
+  const num=(v,bad)=>v?`<b class="${bad?'bad':''}">${v}</b>`:'<span style="color:var(--muted)">0</span>';
+  const sumHtml=sm.length?`<div class="scroll" style="margin-bottom:18px"><table>
+    <thead><tr><th style="text-align:left">姓名</th><th>出勤工時</th><th>異常筆數</th><th>請假時數</th>
+      <th>忘刷次數</th><th>遲到次數</th><th>早退次數</th></tr></thead>
+    <tbody>${sm.map(x=>`<tr>
+      <td style="text-align:left"><b>${x.name}</b></td>
+      <td><b>${x.hours}</b> H</td><td>${num(x.abnormal)}</td><td>${x.leave_h?'<b>'+x.leave_h+'</b> H':'<span style="color:var(--muted)">0</span>'}</td>
+      <td>${num(x.miss,1)}</td><td>${num(x.late,1)}</td><td>${num(x.early,1)}</td></tr>`).join('')}
+    <tr style="background:#f6f2ee;font-weight:900">
+      <td style="text-align:left">合計 ${sm.length} 人</td>
+      <td>${r2(sm.reduce((a,x)=>a+x.hours,0))} H</td>
+      <td>${sm.reduce((a,x)=>a+x.abnormal,0)}</td>
+      <td>${r2(sm.reduce((a,x)=>a+x.leave_h,0))} H</td>
+      <td>${sm.reduce((a,x)=>a+x.miss,0)}</td>
+      <td>${sm.reduce((a,x)=>a+x.late,0)}</td>
+      <td>${sm.reduce((a,x)=>a+x.early,0)}</td></tr>
+    </tbody></table></div>`:'';
   const rows=r.rows||[];
-  if(!rows.length){box.innerHTML='<div style="color:var(--muted);padding:14px 2px">'+ym()+' 沒有打卡紀錄。</div>';return}
+  if(!rows.length){box.innerHTML=sumHtml+'<div style="color:var(--muted);padding:14px 2px">'+ym()+' 沒有打卡明細。</div>';return}
   const pill=p=>{
     const bad=p.status!=='ok';
     const t=p.type==='in'?'上班':p.type==='out'?'下班':p.type;
     return `<span class="tag ${bad?'draft':'final'}" style="margin:1px 3px 1px 0">${p.time} ${t}${bad?'·未入帳':''}</span>`;
   };
-  box.innerHTML=`<div class="scroll"><table>
+  box.innerHTML=sumHtml+`<h2 style="font-size:15px;font-weight:900;margin:4px 0 10px">每日明細</h2><div class="scroll"><table>
     <thead><tr><th>日期</th><th style="text-align:left">姓名</th><th style="text-align:left">打卡事件</th>
       <th>核定時數</th><th style="text-align:left">核定時段</th><th style="text-align:left">狀態</th><th style="text-align:left">核定人</th></tr></thead>
     <tbody>${rows.map(x=>`<tr>

@@ -802,7 +802,61 @@ function handlePayrollPunch(body) {
   });
   const rows = Object.keys(byKey).sort().map(function (k) { return byKey[k]; });
   rows.forEach(function (r) { r.punches.sort(function (a, b) { return a.time < b.time ? -1 : 1; }); });
-  return { ok: true, ym: ym, rows: rows,
+
+  /* 總表：全體同仁當月統計（不受單人篩選影響）
+     出勤工時＝核定時數合計；異常筆數＝status!=='ok' 的打卡事件數；
+     請假時數＝leave 分頁該月合計；忘刷＝pairShifts 未配對的日數；遲到／早退＝核定狀態字樣的日數 */
+  const sum = {};
+  function box(emp) {
+    if (!sum[emp]) sum[emp] = { emp_id: String(emp), name: nameById[emp] || emp,
+      hours: 0, abnormal: 0, leave_h: 0, miss: 0, late: 0, early: 0 };
+    return sum[emp];
+  }
+  const roster_active = roster.filter(function (r) { return String(r.active).toLowerCase() === 'true'; });
+  roster_active.forEach(function (r) { box(String(r.emp_id)); });
+  Object.keys(approvedMap).forEach(function (d) {
+    if (String(d).slice(0, 7) !== ym) return;
+    Object.keys(approvedMap[d]).forEach(function (emp) {
+      const rec = approvedMap[d][emp], b = box(emp);
+      b.hours += Number(rec.approved_hours) || 0;
+      const st = String(rec.status_text || '');
+      if (st.indexOf('遲到') !== -1) b.late++;
+      if (st.indexOf('早退') !== -1) b.early++;
+    });
+  });
+  events.forEach(function (e) {
+    const d = tsDateStr(normCellTs(e.ts));
+    if (d.slice(0, 7) !== ym) return;
+    if (String(e.status) !== 'ok') box(String(e.emp_id)).abnormal++;
+  });
+  const paired = pairShifts(events);
+  const today = todayTaipeiStr();
+  const missDays = {};
+  function markMiss(e, skipToday) {
+    const d = tsDateStr(e.ts);
+    if (d.slice(0, 7) !== ym) return;
+    if (skipToday && d === today) return;   // 今天未配對＝上班中，不算忘刷（同 payCollect）
+    missDays[String(e.emp_id) + '|' + d] = true;
+  }
+  paired.unmatchedIns.forEach(function (e) { markMiss(e, true); });
+  paired.unmatchedOuts.forEach(function (e) { markMiss(e, false); });
+  Object.keys(missDays).forEach(function (k) { box(k.split('|')[0]).miss++; });
+  const leaveSh2 = ss.getSheetByName('leave');
+  if (leaveSh2) {
+    const nameToEmp = {};
+    roster.forEach(function (r) { nameToEmp[String(r.name).trim()] = String(r.emp_id); });
+    readSheetAsObjects(leaveSh2).rows.map(stripRowIndex).forEach(function (l) {
+      const emp = nameToEmp[String(l['姓名'] || '').trim()];
+      if (!emp) return;
+      if (normCellDate(l['日期']).slice(0, 7) !== ym) return;
+      box(emp).leave_h += Number(l['時數']) || 0;
+    });
+  }
+  const summary = Object.keys(sum).map(function (k) {
+    const b = sum[k]; b.hours = payR2(b.hours); b.leave_h = payR2(b.leave_h); return b;
+  }).sort(function (a, b) { return String(a.emp_id) < String(b.emp_id) ? -1 : 1; });
+
+  return { ok: true, ym: ym, rows: rows, summary: summary,
     roster: roster.filter(function (r) { return String(r.active).toLowerCase() === 'true'; })
                   .map(function (r) { return { emp_id: String(r.emp_id), name: r.name }; }) };
 }
