@@ -22,6 +22,10 @@ const PAY_SHEETS = {
   input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on','custom_add_label','custom_add_amt','custom_ded_label','custom_ded_amt'],
   audit:   ['ts','ym','action','operator','reason'],
 };
+/** 餐費補助門檻：當天「實際核定工時」要達這個時數才認列一天（核定時數＝實際上班時段，
+ *  全天請假核定 0、假別另存 leave 分頁，所以特休／請假／出差自然不會被算進來）。*/
+const MEAL_MIN_HOURS = 6;
+
 const PAY_SHEET_NAME = {
   master:'payroll_master', config:'payroll_config', holiday:'payroll_holiday',
   run:'payroll_run', item:'payroll_item', input:'payroll_input', audit:'payroll_audit',
@@ -134,8 +138,10 @@ function payCollect(ym) {
     if (String(d).slice(0, 7) !== ym) return;
     Object.keys(approvedMap[d]).forEach(function (emp) {
       const rec = approvedMap[d][emp];
-      slot(emp).hours += Number(rec.approved_hours) || 0;
-      slot(emp)._wd[d] = true;   // 有核定紀錄＝這天有上班（供餐費補助數出勤天數）
+      const dayH = Number(rec.approved_hours) || 0;
+      slot(emp).hours += dayH;
+      // 餐費補助出勤天數：當日實際核定工時滿 MEAL_MIN_HOURS 才算一天（未滿不補、請假/特休/出差核定 0 不算）
+      if (dayH >= MEAL_MIN_HOURS) slot(emp)._wd[d] = true;
       const st = String(rec.status_text || '');
       if (st.indexOf('遲到') !== -1 || st.indexOf('早退') !== -1) markDay(emp, d);
     });
