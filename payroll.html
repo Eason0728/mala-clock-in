@@ -731,15 +731,15 @@ async function saveStores(btn){
 /* 側欄品牌：依目前門市切換（門市表的 brand／brand_en／logo；留空沿用小辛辣）
    logo 可填：assets 裡的檔名或路徑、完整網址、或直接一個 emoji */
 // 品牌只有兩種：小辛辣／墨竹亭。側欄名稱＝門市名稱，圖示與英文小字依品牌帶出。
-const BRANDS={sxl:{logo:'assets/emblem.png',en:'MADE SIAO SIN LA'},
-              mzt:{logo:'assets/emblem-mzt.png',en:'MO ZHU TING'}};
+const BRANDS={sxl:{logo:'assets/emblem.png',en:'MADE SIAO SIN LA',bg:'var(--red)'},
+              mzt:{logo:'assets/emblem-mzt.png',en:'MOZHU TING',bg:'#86CBBF'}};
 function applyBrand(){
   const st=STORE_LIST.find(s=>String(s.code)===String(STORE))||{};
   const b=BRANDS[String(st.brand)==='mzt'?'mzt':'sxl'];
   if($('brandName')) $('brandName').textContent=String(st.name||'麻的小辛辣');
   if($('brandEn')) $('brandEn').textContent=b.en;
   const box=$('brandLogo');
-  if(box) box.innerHTML=`<img src="${b.logo}" alt="">`;
+  if(box){ box.style.background=b.bg; box.innerHTML=`<img src="${b.logo}" alt="">`; }
 }
 
 /* ═════ 門市切換（階段一：可見清單＝門市表全部；階段二換成帳號的門市）═════ */
