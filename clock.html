@@ -1064,8 +1064,25 @@
   var sunOn = false, moonOn = false, cloudA = 0, cloudLow = false;
   var rafId = 0, lastTs = 0, clock = 0;
 
+  // ── 效能保護：連續掉幀就自動降解析度（2026-08-19 加）───────────────
+  // 背景吃滿 3 倍解析度後，繪製量是原本 1.75 倍時的約 2.9 倍，舊手機可能撐不住。
+  // 這裡量真實幀距，持續過慢就把上限降一階並重建畫布。**只降不升**——會升就會在
+  // 邊界來回跳，畫面一直重建反而更糟。
+  var DPR_CAP_STEPS = [3, 2.25, 1.75];
+  var dprStep = 0;
+  var PERF_SLOW_MS = 22;     // 單幀超過這個毫秒數算慢（60fps 的預算是 16.7ms）
+  var PERF_RATIO = 0.6;      // 觀察視窗內超過六成是慢幀就降一階
+  var PERF_WINDOW = 90;      // 觀察視窗幀數（約 1.5 秒）
+  var perfGrace = 60;        // 剛啟動／剛降階後先不判斷，避開暖機抖動
+  var perfSlow = 0, perfSeen = 0;
+
   function sizeCanvas() {
-    DPR = Math.min(window.devicePixelRatio || 1, 1.75);   // 背景效果不需要滿版視網膜，省一半算力
+    // 2026-08-19 Eason 指定改用滿解析度：原本夾在 1.75 是為了省算力，但 iPhone 是 3 倍螢幕，
+    // 等於背景只用 58% 的解析度再被放大，雨絲、雲層邊緣、光束都糊掉。
+    // 上限走 DPR_CAP_STEPS 階梯（見 watchPerf）：預設吃滿到 3，掉幀就自動降階。
+    // 保留 3 的上限：部分 Android 回報 4 以上，再往上畫素量暴增而肉眼幾乎無感。
+    // 粒子數量是依 CSS 尺寸（sqrt(W*H)/26）算的、與 DPR 無關，這裡只增加繪製成本。
+    DPR = Math.min(window.devicePixelRatio || 1, DPR_CAP_STEPS[dprStep]);
     W = window.innerWidth || document.documentElement.clientWidth;
     H = window.innerHeight || document.documentElement.clientHeight;
     lastW = W; lastH = H;
@@ -1469,13 +1486,37 @@
     if (bolt) drawBolt();
   }
 
+  /**
+   * 收一幀的實際耗時，必要時降一階解析度。
+   * ⚠ 收的是「未經 clamp 的原始幀距」：frame() 裡的 dt 被夾在 0.05 秒，拿那個判斷會低估卡頓。
+   * ⚠ 分頁切回前景的第一幀會有很大的間隔，用 500ms 上限濾掉，不然一切回來就誤判成卡。
+   */
+  function watchPerf(rawMs) {
+    if (dprStep >= DPR_CAP_STEPS.length - 1) return;   // 已經降到底，不再量
+    if (perfGrace > 0) { perfGrace--; return; }
+    if (rawMs > 500) { perfSlow = 0; perfSeen = 0; return; }
+    perfSeen++;
+    if (rawMs > PERF_SLOW_MS) perfSlow++;
+    if (perfSeen < PERF_WINDOW) return;
+    if (perfSlow / perfSeen > PERF_RATIO) {
+      dprStep++;
+      perfGrace = 60;
+      perfSlow = 0; perfSeen = 0;
+      rebuild();     // 重新 sizeCanvas（吃到新的上限）並重建相依於 DPR 的精靈圖，最後自己 startLoop
+      return;
+    }
+    perfSlow = 0; perfSeen = 0;
+  }
+
   function frame(ts) {
     rafId = window.requestAnimationFrame(frame);
+    var rawMs = lastTs ? (ts - lastTs) : 16;    // 給 watchPerf 用：未經下面 clamp 的原始幀距
     var dt = lastTs ? (ts - lastTs) / 1000 : 0.016;
     lastTs = ts;
     if (dt > 0.05) dt = 0.05;                   // 切回分頁時不要一次跳太多
     step(dt);
     drawFrame();
+    watchPerf(rawMs);
   }
   function startLoop() {
     if (rafId || reduceMotion || !scene || !window.requestAnimationFrame) return;
