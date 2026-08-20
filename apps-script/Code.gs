@@ -56,6 +56,13 @@ const EVENTS_HEADERS = [
   'accuracy_m',
 ];
 
+// 判定「在不在店裡」時，可以拿定位誤差折抵多少距離（公尺）。
+// 起因：誤差 ±120m 卻報距離 80m 時，真實位置很可能就在店裡，拿那個距離擋人並不合理
+// （王禹婕 8/11 連按 12 次全被擋就是這種）。所以改判「距離扣掉誤差後」還超出半徑才擋。
+// 設上限 100 是為了避免誤差爆掉時變成誰都能過；折抵後最遠約落在同一個街廓內。
+// ⚠ 手機沒回報誤差時折抵 0，行為與加這條之前完全相同（舊版前端不受影響）。
+const ACCURACY_CREDIT_CAP_M = 100;
+
 // 定位精確度超過這個值就視為「這次定位不可信」（公尺）。
 // GPS 通常 5–30 m；Wi-Fi／基地台定位常見 50–150 m。門市半徑只有 20 m，
 // 誤差 50 m 以上的座標本來就不足以判斷人在不在店裡，所以拿來提示同仁「定位可能不準」。
@@ -493,11 +500,15 @@ function handleClock(body) {
   const lng = parseFloat(body.lng);
   const deviceId = body.device_id || '';
   const distanceM = Math.round(haversineM(CONFIG.STORE_LAT, CONFIG.STORE_LNG, lat, lng) * 10) / 10;
-  const withinRange = distanceM <= CONFIG.RADIUS_M;
   const ts = nowTaipeiIso();
   // 手機沒給或給了怪值就存空白（舊版前端不會帶這個欄位，不能因此讓打卡失敗）
   const rawAccuracy = parseFloat(body.accuracy);
   const accuracyM = isFinite(rawAccuracy) && rawAccuracy >= 0 ? Math.round(rawAccuracy * 10) / 10 : '';
+  // 距離扣掉定位誤差後才拿來判定（見 ACCURACY_CREDIT_CAP_M）。distance_m 欄位仍存原始距離，
+  // 誤差另存 accuracy_m，兩者都留著，事後要重算判定隨時可以。
+  const accuracyCredit = accuracyM === '' ? 0 : Math.min(accuracyM, ACCURACY_CREDIT_CAP_M);
+  const effectiveDistanceM = Math.max(0, distanceM - accuracyCredit);
+  const withinRange = effectiveDistanceM <= CONFIG.RADIUS_M;
 
   // 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
   // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化，否則交替防呆的回看視窗可能誤判

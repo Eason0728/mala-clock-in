@@ -35,6 +35,8 @@ STORE_LNG = 121.0157448
 RADIUS_M = 20  # 允許打卡半徑（公尺），與 Code.gs 的 CONFIG.RADIUS_M 同步（2026-07-14 Eason 指定收緊為 20）
 # 定位精確度超過這個值＝這次定位不可信（公尺），與 Code.gs 的 LOW_ACCURACY_M 同步
 LOW_ACCURACY_M = 50
+# 判定在不在店裡時，定位誤差最多可折抵多少距離（公尺），與 Code.gs 的 ACCURACY_CREDIT_CAP_M 同步
+ACCURACY_CREDIT_CAP_M = 100
 # 上下班交替判斷的回看視窗（小時）：看得到跨夜班前一晚的上班卡，
 # 但昨天忘打的下班卡（超過視窗）不會鎖死今天的上班卡。
 ALTERNATION_LOOKBACK_HOURS = 12
@@ -800,7 +802,6 @@ def handle_clock(data, body):
     lng = float(body.get("lng"))
 
     distance_m = round(haversine_m(STORE_LAT, STORE_LNG, lat, lng), 1)
-    within_range = distance_m <= RADIUS_M
     ts = iso_now()
     # 手機沒給或給了怪值就存 None（舊版前端不帶這欄，不能因此讓打卡失敗）
     try:
@@ -808,6 +809,10 @@ def handle_clock(data, body):
         accuracy_m = round(raw_acc, 1) if math.isfinite(raw_acc) and raw_acc >= 0 else None
     except (TypeError, ValueError):
         accuracy_m = None
+    # 距離扣掉定位誤差後才判定（與 Code.gs 同步）；distance_m 仍存原始距離
+    accuracy_credit = 0 if accuracy_m is None else min(accuracy_m, ACCURACY_CREDIT_CAP_M)
+    effective_distance_m = max(0, distance_m - accuracy_credit)
+    within_range = effective_distance_m <= RADIUS_M
 
     # 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
     last_counted = last_counted_event(data, roster["emp_id"])

@@ -693,14 +693,52 @@
   var FAKE_LOCATIONS = {
     store: { latitude: 24.7840945, longitude: 121.0157448 }, // 2026-07-13 校正座標，與後端 CONFIG 對齊
     away: { latitude: 25.0330, longitude: 121.5654 },
+    // 模擬「人在店裡但定位飄到店北約 80 公尺」（王禹婕 2026-08-11 的情況），測誤差折抵用
+    drift: { latitude: 24.7848135, longitude: 121.0157448 },
   };
 
-  function getPosition() {
+  // ── 定位取得：不合理就自動再抓（2026-08-21 加）─────────────────────
+  // 實際資料顯示打卡失敗有兩種，不是一種：
+  //   ① 定位不準——誤差很大、位置飄掉（王禹婕 8/11，飄到店北 77m，連按 12 次都被擋）
+  //   ② 定位過時——誤差看起來很小，但位置是舊的（8/20 14:45 同一分鐘先報 1201m 再報 6.6m）
+  // 所以第一次讀到「誤差大」或「時間戳很舊」時不要急著送出，改用 watchPosition 等更好的一次。
+  // ⚠ 只有「這次看起來會被擋」才會多等；誤差小又新鮮就立刻送出，正常打卡完全不會變慢
+  //   （2026-08-19～20 實際 33 筆誤差最大 30.9m，全部低於門檻，一筆都不會被拖到）。
+  // ⚠ 這裡刻意不做「距離門市多遠」的判斷——門市座標若再複製一份到前端，日後校正座標
+  //   要同步的地方就從三處變四處（見 2026-07-13 座標沒同步白測一輪的教訓）。改看「時間戳」，
+  //   過時的定位一樣抓得到，而且不需要知道門市在哪。
+  var GOOD_ACCURACY_M = 40;    // 誤差在這個範圍內就相信這次定位（實測正常值 5～31m）
+  var STALE_FIX_MS = 30000;    // 定位時間戳超過這麼久＝手機給了舊的位置，要重抓
+  var RETRY_BUDGET_MS = 8000;  // 第一次不理想時，最多再花這麼久等更好的
+  var GEO_OPTS = { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 };
+
+  function fixLooksGood(pos) {
+    var acc = pos && pos.coords && isFinite(pos.coords.accuracy) ? pos.coords.accuracy : Infinity;
+    var age = pos && pos.timestamp ? (Date.now() - pos.timestamp) : 0;
+    return acc <= GOOD_ACCURACY_M && age <= STALE_FIX_MS;
+  }
+  function fixAccuracy(pos) {
+    return pos && pos.coords && isFinite(pos.coords.accuracy) ? pos.coords.accuracy : Infinity;
+  }
+  function geoError(err) {
+    if (err && err.code === err.PERMISSION_DENIED) {
+      return new Error('定位權限被拒絕，請到手機設定開啟此頁面的定位權限後再試一次。');
+    }
+    if (err && err.code === err.TIMEOUT) return new Error('定位逾時，請確認 GPS 訊號後重試。');
+    return new Error('定位失敗，請重試。');
+  }
+
+  /**
+   * 取定位。onRetry 會在「決定要多等一下」時被呼叫一次，讓畫面能說明為什麼變慢
+   * （不講的話同仁會以為當掉了——參考 2026-08-03「卡在送出打卡中」那次）。
+   */
+  function getPosition(onRetry) {
     if (isLocalHost && FAKE_LOCATIONS[qs('loc')]) {
-      // localhost 限定：acc=120 可模擬「定位誤差 120 公尺」，用來測「定位可能不準」那段提示
+      // localhost 限定：acc=120 可模擬「定位誤差 120 公尺」，用來測提示與重抓
       var fakeAcc = parseFloat(qs('acc'));
       var c = FAKE_LOCATIONS[qs('loc')];
       return Promise.resolve({
+        timestamp: Date.now(),
         coords: isFinite(fakeAcc) ? { latitude: c.latitude, longitude: c.longitude, accuracy: fakeAcc } : c,
       });
     }
@@ -709,21 +747,44 @@
         reject(new Error('此裝置不支援定位功能，無法打卡。'));
         return;
       }
-      navigator.geolocation.getCurrentPosition(
-        function (pos) { resolve(pos); },
-        function (err) {
-          if (err.code === err.PERMISSION_DENIED) {
-            reject(new Error('定位權限被拒絕，請到手機設定開啟此頁面的定位權限後再試一次。'));
-          } else if (err.code === err.TIMEOUT) {
-            reject(new Error('定位逾時，請確認 GPS 訊號後重試。'));
-          } else {
-            reject(new Error('定位失敗，請重試。'));
-          }
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-      );
+      var best = null, watchId = null, timer = null, settled = false;
+
+      function finish() {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (watchId !== null && navigator.geolocation.clearWatch) navigator.geolocation.clearWatch(watchId);
+        if (best) resolve(best); else reject(new Error('定位失敗，請重試。'));
+      }
+      // ⚠ 不能只比誤差大小（2026-08-21 實測抓到的 bug）：過時的定位常常誤差很小，
+      //   例如 8/20 那筆報 1201m 的誤差只有 ±13.1，比後來新鮮的 ±16.8 還「好」，
+      //   只比誤差就會留下錯的那筆，等於白重抓。先分「合格／不合格」，同級才比誤差。
+      function fixRank(pos) { return fixLooksGood(pos) ? 0 : 1; }
+      function offer(pos) {
+        if (!best) { best = pos; return; }
+        var rp = fixRank(pos), rb = fixRank(best);
+        if (rp !== rb) { if (rp < rb) best = pos; return; }   // 合格的一律贏過不合格的
+        if (fixAccuracy(pos) < fixAccuracy(best)) best = pos; // 同級才比誤差
+      }
+
+      navigator.geolocation.getCurrentPosition(function (pos) {
+        offer(pos);
+        if (fixLooksGood(pos)) { finish(); return; }        // 正常情況：立刻送出，不多等
+        if (typeof onRetry === 'function') { try { onRetry(); } catch (e) {} }
+        if (!navigator.geolocation.watchPosition) { finish(); return; }
+        timer = setTimeout(finish, RETRY_BUDGET_MS);        // 硬上限，絕不無限等
+        watchId = navigator.geolocation.watchPosition(function (p2) {
+          offer(p2);
+          if (fixLooksGood(p2)) finish();                   // 一拿到好的就馬上走，不等滿
+        }, function () { /* 重抓失敗就用手上最好的，交給上面的 timer 收尾 */ }, GEO_OPTS);
+      }, function (err) {
+        if (settled) return;
+        settled = true;
+        reject(geoError(err));
+      }, GEO_OPTS);
     });
   }
+
 
   function doClock(type) {
     if (blockedType === type) {
@@ -734,7 +795,8 @@
     }
     setBusy(true);
     showStatus('status-loading', '定位中…');
-    getPosition()
+    // 第一次定位不理想時會多等幾秒，這裡把原因寫出來，不要讓同仁以為畫面當掉
+    getPosition(function () { showStatus('status-loading', '定位中…（訊號較弱，再抓一次）'); })
       .then(function (pos) {
         showStatus('status-loading', '送出打卡中…');
         return apiPost({
