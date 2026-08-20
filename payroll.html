@@ -21,7 +21,7 @@ body{font-family:"Noto Sans TC","PingFang TC",sans-serif;background:var(--bg);co
  display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.25)}
 .brand .logo img{width:100%;height:100%;object-fit:contain;display:block}
 .brand .bt{font-size:16px;font-weight:900;color:#fff;line-height:1.15;letter-spacing:.01em}
-.brand .bs{font-size:8.5px;letter-spacing:.1em;color:#8a8078;font-weight:700;margin-top:1px}
+.brand .bs{font-size:12px;letter-spacing:.02em;color:#a89e94;font-weight:700;margin-top:2px;line-height:1.15}
 .nav-label{font-size:12px;letter-spacing:.12em;color:#7a6f65;font-weight:800;padding:18px 22px 7px}
 #nav{display:flex;flex-direction:column;padding:0 12px 10px;gap:3px;flex:1}
 #nav button{display:flex;align-items:center;gap:13px;width:100%;text-align:left;background:none;border:0;
@@ -736,8 +736,13 @@ const BRANDS={sxl:{logo:'assets/emblem.png',en:'MADE SIAO SIN LA',bg:'var(--red)
 function applyBrand(){
   const st=STORE_LIST.find(s=>String(s.code)===String(STORE))||{};
   const b=BRANDS[String(st.brand)==='mzt'?'mzt':'sxl'];
-  if($('brandName')) $('brandName').textContent=String(st.name||'麻的小辛辣');
-  if($('brandEn')) $('brandEn').textContent=b.en;
+  // 門市名稱拆兩行：「麻的小辛辣 新竹光復店」→ 第一行品牌、第二行分店；沒有空格就整串放第一行
+  const full=String(st.name||'麻的小辛辣').trim();
+  const sp=full.search(/[\s　]/);
+  const line1=sp>0?full.slice(0,sp):full;
+  const line2=sp>0?full.slice(sp+1).trim():'';
+  if($('brandName')) $('brandName').textContent=line1;
+  if($('brandEn')) $('brandEn').textContent=line2;
   const box=$('brandLogo');
   if(box){ box.style.background=b.bg; box.innerHTML=`<img src="${b.logo}" alt="">`; }
 }
