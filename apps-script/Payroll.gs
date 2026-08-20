@@ -727,6 +727,7 @@ function payAnnualInfo(ym) {
   const sh = getSS().getSheetByName('leave');
   const leaves = sh ? readSheetAsObjects(sh).rows.map(stripRowIndex) : [];
   const out = {};
+  const savedRows = payRead('input');   // 手動工時（打卡上線前的月份特休 key 在這裡，不在 leave 分頁）
   master.forEach(function (e) {
     // 計時同仁沒有特休（Eason 2026-08 定案）——不算也不顯示
     const ft = String(e.is_full_time).toLowerCase() === 'true' || e.is_full_time === true;
@@ -734,11 +735,24 @@ function payAnnualInfo(ym) {
     const q = payAnnualQuota(e.hire_date, ym);
     if (!q) { out[String(e.emp_id)] = null; return; }
     let used = 0;
+    // ① 手動工時的特休（annual_h）：該月落在週年期內就累計；同月以手動為準（覆蓋語意，與計薪一致）
+    const inputMonths = {};
+    savedRows.forEach(function (r) {
+      if (String(r.emp_id) !== String(e.emp_id)) return;
+      const m = String(r.ym);
+      if (!/^\d{4}-\d{2}$/.test(m)) return;
+      if (!q.ps || (m + '-31') < q.ps || (m + '-01') >= q.pe) return;
+      inputMonths[m] = true;
+      used += payNum(r.annual_h);
+    });
+    // ② leave 分頁的特休：只算「沒有手動工時覆蓋」的月份，避免同月重複計
     leaves.forEach(function (l) {
       if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
       if (String(l['假別'] || '').indexOf('特') === -1) return;
       const d = normCellDate(l['日期']);
-      if (q.ps && d >= q.ps && d < q.pe) used += Number(l['時數']) || 0;
+      if (!(q.ps && d >= q.ps && d < q.pe)) return;
+      if (inputMonths[d.slice(0, 7)]) return;
+      used += Number(l['時數']) || 0;
     });
     out[String(e.emp_id)] = { days: q.days, quota_h: q.days * 8, used_h: payR2(used), left_h: payR2(q.days * 8 - used) };
   });
