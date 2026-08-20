@@ -182,7 +182,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <p class="hint">工時直接從打卡系統的核定紀錄歸集，不需人工搬。金額四捨五入到元。</p>
     <div class="row" style="margin-bottom:14px">
       <button class="btn" onclick="doCalc()">重新計算</button>
-      <button class="btn dark" id="lockBtn" onclick="toggleLock()">鎖定本月</button>
+      <button class="btn ghost" id="lockBtn" onclick="toggleLock()">鎖定本月</button>
     </div>
     <div class="scroll"><table id="runTbl"></table></div>
   </div>
@@ -483,7 +483,10 @@ function renderRun(){
   renderCost();
   renderExport();
   $('lock').innerHTML=RESULTS.length?`<span class="tag ${STATUS==='final'?'final':'draft'}">${STATUS==='final'?'已鎖定':'草稿'}</span>`:'';
-  $('lockBtn').textContent=STATUS==='final'?'解鎖本月':'鎖定本月';
+  const lb=$('lockBtn');
+  // 未鎖定＝白底（尚未定案）；已鎖定＝深底（已定案、同仁看得到），一眼區分
+  lb.textContent=STATUS==='final'?'🔒 解鎖本月':'鎖定本月';
+  lb.className='btn '+(STATUS==='final'?'dark':'ghost');
   const t=$('runTbl');
   if(!RESULTS.length){t.innerHTML='<tr><td style="text-align:center;padding:34px;color:#8a817a">按「重新計算」產生本月薪資</td></tr>';
     return}
