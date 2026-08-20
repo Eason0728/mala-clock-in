@@ -150,7 +150,14 @@ function payClockSS(store) {
   const row = payStoreRow(c);
   const id = row ? String(row.clock_ss_id || '') : '';
   var ss;
-  if (!id) ss = getSS();
+  if (!id) {
+    // 只有預設店（光復）留空才代表「用本系統所在的試算表」。其他門市留空一定是漏填，
+    // 若放行會去讀到光復的打卡資料且不會報錯 —— 直接擋下來。
+    if (c !== PAY_DEFAULT_STORE) {
+      throw new Error('門市 ' + c + ' 尚未設定「打卡試算表 ID」，無法取得該店打卡資料。請到 參數設定 → 門市設定 填入。');
+    }
+    ss = getSS();
+  }
   else {
     try { ss = SpreadsheetApp.openById(id); }
     catch (e) { throw new Error('門市 ' + c + ' 的打卡試算表開不起來（clock_ss_id=' + id + '）：' + e.message); }
