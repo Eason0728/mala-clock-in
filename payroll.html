@@ -1157,7 +1157,7 @@ function renderSup(){
 
 /* ═════ 員工設定 ═════ */
 const EF=[['name','姓名','text'],['wage','時薪'],['base','底薪'],['ot_rate','加班費率'],
- ['skill_allow','職能津貼'],['night_allow','夜間津貼'],['mgr_allow','店長津貼'],['editor_allow','小編津貼'],
+ ['skill_allow','職能津貼'],['night_allow','夜間津貼'],['mgr_allow','店長津貼'],
  ['attend_cap','全勤上限'],['meal_allow','餐費補助/日'],['gap_rate','差額費率'],['labor_ins','勞保費'],['health_ins','健保費'],['group_ins','團保費'],
  ['pension','退休金'],['dormitory','宿舍費'],['co_labor','公司負擔勞保'],['co_health','公司負擔健保'],['co_pension','公司負擔退休金'],['hire_date','到職日','date'],['leave_date','離職日','date']];
 /** 手動新增一位同仁（未連打卡的門市必用；有打卡的門市也可以補新人）。
@@ -1172,7 +1172,7 @@ function addEmpRow(){
   });
   const id=(prefix||'E')+String(maxN+1).padStart(2,'0');
   MASTER.push({emp_id:id,name:'',is_full_time:'false',wage:0,base:0,ot_rate:0,
-    skill_allow:0,night_allow:0,mgr_allow:0,editor_allow:0,attend_cap:0,meal_allow:'',gap_rate:0,
+    skill_allow:0,night_allow:0,mgr_allow:0,attend_cap:0,meal_allow:'',gap_rate:0,
     labor_ins:0,health_ins:0,group_ins:0,pension:0,dormitory:0,
     co_labor:0,co_health:0,co_pension:0,
     hire_date:'',leave_date:'',active:'true',store:STORE});
