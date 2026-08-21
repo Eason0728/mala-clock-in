@@ -481,13 +481,34 @@ async function loadRun(){
 }
 /* 切月份一次到位：一個請求回工時＋月結（必要時後端自動算），比原本三次往返快很多 */
 function setBusy(on){ document.body.classList.toggle('loading', !!on); }
+/* 載入失敗時在畫面上方顯示原因；不處理的話畫面會全空、看起來像資料不見 */
+function showLoadError(msg){
+  let el=$('loadErr');
+  if(!el){
+    el=document.createElement('div');
+    el.id='loadErr'; el.className='note warn';
+    el.style.cssText='margin:0 30px 12px;font-size:14px';
+    const m=document.querySelector('main'); m.parentNode.insertBefore(el,m);
+  }
+  el.innerHTML='⚠ <b>這個門市目前讀不到資料</b><br>'+msg
+    +'<br><span style="color:var(--muted)">（其他門市的資料不受影響，用上方門市選單切回即可）</span>';
+  el.style.display='';
+}
+function hideLoadError(){ const el=$('loadErr'); if(el) el.style.display='none'; }
 // 切月份／切門市／任何寫入後都要讓分頁快取失效，否則會看到舊數字
 async function loadMonth(){
   setBusy(true);
   try{
     vClear();
     const r=await post('payroll_month',{ym:ym(),inputs:{}});
-    if(!r.ok) return;
+    if(!r.ok){
+      // ⚠ 不可靜默 return——會讓畫面空白，使用者以為「資料不見了」
+      const msg=String(r.detail||r.message||r.error||'讀取失敗');
+      showLoadError(msg);
+      toast(msg,true);
+      return;
+    }
+    hideLoadError();
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
     STORE=r.store||STORE; CFGSRC=r.config_src||{};
     if(r.stores&&r.stores.length){STORE_LIST=r.stores;renderStoreSel()}
@@ -782,6 +803,16 @@ function renderStores(){
         onclick="STORE_LIST.splice(${i},1);renderStores()">移除</button></td></tr>`;
   });
   t.innerHTML=h+'</tbody>';
+  // 提醒：非第一家門市若沒填打卡試算表 ID，切過去會讀不到資料
+  const bad=STORE_LIST.filter((x,i)=>i>0&&String(x.code||'').trim()&&!String(x.clock_ss_id||'').trim());
+  let warn=$('storeWarn');
+  if(bad.length){
+    if(!warn){ warn=document.createElement('div'); warn.id='storeWarn'; warn.className='note warn'; warn.style.marginTop='12px';
+      t.parentNode.parentNode.insertBefore(warn,t.parentNode.nextSibling); }
+    warn.innerHTML='⚠ 這些門市還沒填「打卡試算表 ID」：<b>'+bad.map(x=>x.name||x.code).join('、')
+      +'</b><br>切到這些門市會讀不到工時資料（第一家門市留空代表用本系統所在的試算表，其他門市必須填）。';
+    warn.style.display='';
+  } else if(warn){ warn.style.display='none'; }
 }
 function addStoreRow(){
   STORE_LIST.push({code:'',name:'',clock_ss_id:'',dzy_node:'',emp_prefix:'',active:'true',sort:STORE_LIST.length+1});
