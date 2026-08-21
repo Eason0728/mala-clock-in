@@ -525,19 +525,44 @@ function renderStats(){
 }
 // 薪資費用要扣的只有「真的少領」：請假扣款＋不足倒扣。勞健保自付留在薪資費用內、宿舍當租金收入不在此表。
 const COST_REDUCE_KEYS=['personal_leave','sick_leave','menstrual_leave','disaster_leave','shortfall_hours'];
+/** 缺口時數由各支援列「平均分擔」；某列時數不夠就把餘額讓給還有餘裕的列 */
+function allocGapHours(hoursArr, gap){
+  const alloc=hoursArr.map(()=>0);
+  let remain=gap, active=hoursArr.map((_,i)=>i);
+  while(remain>1e-6 && active.length){
+    const share=remain/active.length; let used=0; const next=[];
+    active.forEach(i=>{
+      const cap=hoursArr[i]-alloc[i];
+      const take=Math.min(share,cap);
+      alloc[i]+=take; used+=take;
+      if(cap-take>1e-6) next.push(i);
+    });
+    if(used<=1e-9) break;
+    remain-=used; active=next;
+  }
+  return alloc;
+}
 function costTotals(){
   const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},sup:[],supTotal:0};
   RESULTS.forEach(r=>{
-    // 跨店支援請款：向「支援門市」收的錢 ＝ 支援時數 × 支援門市費率（不分正職／計時）。
-    // ⚠ 這與「本店付給同仁的薪資費用」是兩件事，彼此無關：
-    //    薪資是正職併入加班用員工加班費率、計時用支援門市費率；這裡純粹是對他店的請款金額。
+    // 跨店支援請款（向支援門市收款，與本店薪資費用無關）——兩段式：
+    //   缺口＝max(基本工時−本店核定,0)：這段本店已付底薪卻沒拿到工時，用「差額費率」向支援店收
+    //   超過缺口的部分：用該筆的「支援費率」
+    //   同月支援多家店時，缺口時數由各店「平均分擔」（某店時數不夠就把餘額讓給還有餘裕的店）
     const sup=((ATT[r.emp_id]||{}).support||[]).filter(x=>n(x.hours)||n(x.amount));
-    sup.forEach(x=>{
-      const h=n(x.hours), rt=n(x.rate);
-      const amt=n(x.amount)||h*rt;      // 金額欄有填＝以填的為準（特殊協議）
-      g.sup.push({name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',hours:h,rate:rt,amount:amt});
-      g.supTotal+=amt;
-    });
+    if(sup.length){
+      const gapRate=n((MASTER.find(m=>String(m.emp_id)===String(r.emp_id))||{}).gap_rate);
+      const gapH=r.base_hours!=null?Math.max(0,n(r.base_hours)-n(r.total_hours)):0;
+      const alloc=allocGapHours(sup.map(x=>n(x.hours)), gapH);
+      sup.forEach((x,i)=>{
+        const h=n(x.hours), rt=n(x.rate);
+        const t1=gapRate>0?alloc[i]:0, t2=h-t1;
+        const amt=n(x.amount)||(t1*gapRate+t2*rt);   // 金額欄有填＝以填的為準（特殊協議）
+        g.sup.push({name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',
+                    hours:h,rate:rt,gapH:t1,gapRate:gapRate,amount:amt,fixed:!!n(x.amount)});
+        g.supTotal+=amt;
+      });
+    }
     r.earn.forEach(x=>{const k=x.item_key,a=x.amount;
       if(k==='base_salary')g.base+=a;else if(k==='overtime')g.ot+=a;else if(k==='attend_bonus')g.attend+=a;
       else if(k==='night_allow'||k==='skill_allow')g.allow+=a;else if(k==='mgr_allow')g.mgr+=a;
@@ -574,7 +599,11 @@ function costRows(g){
     ['g','人事總成本（薪資費用＋公司負擔）',salaryCost+coTotal],
     ...(reduceRows.length?[['h','（參考）請假／不足扣款明細 · 已在上方扣除']].concat(reduceRows):[]),
     ...(g.sup&&g.sup.length?[['h','跨店支援請款 · 向支援門市收款，與本店薪資費用無關']]
-        .concat(g.sup.map(x=>[`${x.name} → ${x.store}　${r2(x.hours)}H × ${nf(x.rate)}`,x.amount]))
+        .concat(g.sup.map(x=>[x.fixed
+            ? `${x.name} → ${x.store}　${r2(x.hours)}H（金額指定）`
+            : (x.gapH>0
+                ? `${x.name} → ${x.store}　缺口 ${r2(x.gapH)}H×${nf(x.gapRate)} ＋ ${r2(x.hours-x.gapH)}H×${nf(x.rate)}`
+                : `${x.name} → ${x.store}　${r2(x.hours)}H × ${nf(x.rate)}`), x.amount]))
         .concat([['s','請款小計',g.supTotal]]):[]),
   ];
 }
@@ -1025,7 +1054,7 @@ function renderSup(){
 /* ═════ 員工設定 ═════ */
 const EF=[['name','姓名','text'],['wage','時薪'],['base','底薪'],['ot_rate','加班費率'],
  ['skill_allow','職能津貼'],['night_allow','夜間津貼'],['mgr_allow','店長津貼'],['editor_allow','小編津貼'],
- ['attend_cap','全勤上限'],['meal_allow','餐費補助/日'],['labor_ins','勞保費'],['health_ins','健保費'],['group_ins','團保費'],
+ ['attend_cap','全勤上限'],['meal_allow','餐費補助/日'],['gap_rate','差額費率'],['labor_ins','勞保費'],['health_ins','健保費'],['group_ins','團保費'],
  ['pension','退休金'],['dormitory','宿舍費'],['hire_date','到職日','date'],['leave_date','離職日','date']];
 function renderEmp(){
   $('empList').innerHTML=MASTER.map((e,i)=>{
@@ -1038,7 +1067,7 @@ function renderEmp(){
         <label style="font-size:12.5px"><input type="checkbox" ${String(e.active)==='true'?'checked':''}
           onchange="MASTER[${i}].active=this.checked?'true':'false';renderEmp();renderAtt()"> 在職</label>
       </div><div class="grid2">`+
-      EF.filter(([k])=>!( (!ft&&['base','ot_rate','attend_cap','meal_allow','skill_allow','night_allow','mgr_allow'].includes(k))
+      EF.filter(([k])=>!( (!ft&&['base','ot_rate','attend_cap','meal_allow','gap_rate','skill_allow','night_allow','mgr_allow'].includes(k))
                         || (ft&&k==='wage') ))
         .map(([k,lb,ty])=>`<div class="fld"><label>${lb}</label>
           <input type="${ty||'number'}" value="${e[k]??''}"

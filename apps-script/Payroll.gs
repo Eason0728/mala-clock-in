@@ -13,7 +13,7 @@
 const PAY_SHEETS = {
   master:  ['emp_id','name','is_full_time','wage','base','ot_rate','skill_allow','night_allow',
             'mgr_allow','editor_allow','attend_cap','labor_ins','health_ins','group_ins',
-            'pension','dormitory','hire_date','leave_date','active','updated_at','meal_allow','store'],
+            'pension','dormitory','hire_date','leave_date','active','updated_at','meal_allow','store','gap_rate'],
   config:  ['key','value','note','store'],
   holiday: ['ym','red_days','note'],
   store:   ['code','name','clock_ss_id','dzy_node','emp_prefix','active','sort','brand'],
