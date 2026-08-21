@@ -71,7 +71,17 @@ function ensurePayrollSheets() {
   return { ok: true, sheets: Object.keys(PAY_SHEET_NAME).map(function (k) { return PAY_SHEET_NAME[k]; }) };
 }
 
-function payRead(kind) { return readSheetAsObjects(paySheet(kind)).rows.map(stripRowIndex); }
+/** 讀分頁。⚠ 加「本次請求內」快取：Apps Script 每次全表讀取很慢，
+ *  同一請求裡重複讀同一張表（特休／集團總覽／計算都會）會把時間拉到數十秒。
+ *  任何寫入（payReplaceAll／payAppend）都必須讓對應的快取失效。 */
+var PAY_READ_CACHE = {};
+function payRead(kind) {
+  if (PAY_READ_CACHE[kind]) return PAY_READ_CACHE[kind];
+  const rows = readSheetAsObjects(paySheet(kind)).rows.map(stripRowIndex);
+  PAY_READ_CACHE[kind] = rows;
+  return rows;
+}
+function payInvalidate(kind) { delete PAY_READ_CACHE[kind]; }
 
 /* ⚠ Sheets 會把 '2026-08'、'2020-01-01' 這種字串自動轉成日期儲存格，讀回變 Date 物件、比對全失敗
    （ym 對不到 → no_holiday／查不到 run；hire_date 壞 → payRatio 錯）。寫入前把這些字串欄鎖成文字格式 '@'。*/
@@ -84,6 +94,7 @@ function payForceTextCols(sh, cols) {
 
 /** 整張覆寫（保留表頭）——用於 master / holiday / run / item 的重建 */
 function payReplaceAll(kind, rows) {
+  payInvalidate(kind);
   const sh = paySheet(kind), cols = PAY_SHEETS[kind];
   sh.getRange(1, 1, 1, cols.length).setValues([cols]);   // 同步表頭（schema 只 append，補上新欄不動既有資料）
   payForceTextCols(sh, cols);
@@ -95,6 +106,7 @@ function payReplaceAll(kind, rows) {
 }
 
 function payAppend(kind, rows) {
+  payInvalidate(kind);
   if (!rows.length) return;
   const sh = paySheet(kind), cols = PAY_SHEETS[kind];
   payForceTextCols(sh, cols);
@@ -165,6 +177,19 @@ function payClockSS(store) {
   PAY_SS_CACHE[c] = ss;
   return ss;
 }
+/** 讀某門市打卡試算表的某張分頁（請求內快取）。
+ *  ⚠ payCollect、payAnnualInfo、payroll_punch 都會讀同幾張表，不快取就是重複全表讀取。 */
+var PAY_CLOCK_CACHE = {};
+function payClockRead(store, sheetName) {
+  const key = payStore(store) + '|' + sheetName;
+  if (PAY_CLOCK_CACHE[key]) return PAY_CLOCK_CACHE[key];
+  var rows = [];
+  const sh = payClockSS(store).getSheetByName(sheetName);
+  if (sh) rows = readSheetAsObjects(sh).rows.map(stripRowIndex);
+  PAY_CLOCK_CACHE[key] = rows;
+  return rows;
+}
+
 /** 啟用中的門市清單；門市表是空的就回一個預設店（單店期間） */
 function payStoreList() {
   const rows = payRead('store').filter(function (s) { return String(s.active).toLowerCase() !== 'false'; });
@@ -173,14 +198,23 @@ function payStoreList() {
   }
   return [{ code: PAY_DEFAULT_STORE, name: '麻的小辛辣 新竹光復店', clock_ss_id: '', dzy_node: 'sxl-gf', emp_prefix: '', active: 'true', sort: 1 }];
 }
-/** 某員工待過的所有門市（跨店調動時特休／年資要跨店累計用） */
-function payEmpStores(empId) {
-  const set = {};
-  payRead('master').forEach(function (m) { if (String(m.emp_id) === String(empId)) set[payStore(m.store)] = true; });
-  payRead('run').forEach(function (r) { if (String(r.emp_id) === String(empId)) set[payStore(r.store)] = true; });
-  payRead('input').forEach(function (r) { if (String(r.emp_id) === String(empId)) set[payStore(r.store)] = true; });
-  return Object.keys(set);
+/** 一次算出「每個員工待過哪些門市」→ {emp_id:[store,...]}。
+ *  ⚠ 不要寫成「每個員工各掃一次表」，9 人就會變成 27 次全表讀取、請求直接超時。 */
+function payEmpStoresMap() {
+  const map = {};
+  function mark(id, st) {
+    const k = String(id);
+    (map[k] = map[k] || {})[payStore(st)] = true;
+  }
+  payRead('master').forEach(function (m) { mark(m.emp_id, m.store); });
+  payRead('run').forEach(function (r) { mark(r.emp_id, r.store); });
+  payRead('input').forEach(function (r) { mark(r.emp_id, r.store); });
+  const out = {};
+  Object.keys(map).forEach(function (k) { out[k] = Object.keys(map[k]); });
+  return out;
 }
+/** 單一員工的歷任門市（薄包裝，內部走上面那張表） */
+function payEmpStores(empId) { return payEmpStoresMap()[String(empId)] || []; }
 
 /* ═══════════════════ 工時歸集（重點：直接讀既有打卡資料）═══════════════════ */
 
@@ -190,12 +224,10 @@ function payEmpStores(empId) {
  */
 function payCollect(ym, minH, store) {
   const MEALMIN = (minH === undefined || minH === null || minH === '') ? MEAL_MIN_HOURS : Number(minH);
-  const ss = payClockSS(store);
-  const roster   = readSheetAsObjects(ss.getSheetByName('roster')).rows.map(stripRowIndex);
-  const approved = readSheetAsObjects(ss.getSheetByName('approved')).rows.map(stripRowIndex);
-  const events   = readSheetAsObjects(ss.getSheetByName('events')).rows.map(stripRowIndex);
-  const leaveSh  = ss.getSheetByName('leave');
-  const leaves   = leaveSh ? readSheetAsObjects(leaveSh).rows.map(stripRowIndex) : [];
+  const roster   = payClockRead(store, 'roster');
+  const approved = payClockRead(store, 'approved');
+  const events   = payClockRead(store, 'events');
+  const leaves   = payClockRead(store, 'leave');
 
   const approvedMap = buildLatestApprovedMap(approved);   // { date: { emp_id: {...} } }
   const nameToEmp = {};
@@ -522,7 +554,7 @@ function handlePayrollBootstrap(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   ensurePayrollSheets();
   const stBs = payStore(body.store);
-  const roster = readSheetAsObjects(payClockSS(stBs).getSheetByName('roster')).rows.map(stripRowIndex);
+  const roster = payClockRead(stBs, 'roster');
   const prefix = (function () { const r = payStoreRow(stBs); return r ? String(r.emp_prefix || '') : ''; })();
   const existing = {};
   payRead('master').forEach(function (m) { if (payStore(m.store) === stBs) existing[String(m.emp_id)] = true; });
@@ -829,14 +861,13 @@ function payAnnualInfo(ym, store) {
   const stA = payStore(store);
   const master = payRead('master').filter(function (m) { return payStore(m.store) === stA; });
   /** 依門市讀 leave（跨店調動要把歷任門市的特休都算進已用）；同一次請求快取 */
+  const empStores = payEmpStoresMap();   // 一次算完，避免逐人重掃
   const leaveCache = {};
   function leavesOf(st) {
     if (leaveCache[st]) return leaveCache[st];
     var rows = [];
-    try {
-      const sh2 = payClockSS(st).getSheetByName('leave');
-      rows = sh2 ? readSheetAsObjects(sh2).rows.map(stripRowIndex) : [];
-    } catch (e) { rows = []; }   // 某店試算表暫時開不起來不該讓整頁掛掉
+    try { rows = payClockRead(st, 'leave'); }
+    catch (e) { rows = []; }   // 某店試算表暫時開不起來不該讓整頁掛掉
     leaveCache[st] = rows;
     return rows;
   }
@@ -860,7 +891,7 @@ function payAnnualInfo(ym, store) {
       used += payNum(r.annual_h);
     });
     // ② leave 分頁的特休：掃該員工「歷任門市」的請假紀錄；只算沒有手動工時覆蓋的月份，避免同月重複計
-    payEmpStores(e.emp_id).forEach(function (st2) {
+    (empStores[String(e.emp_id)] || [stA]).forEach(function (st2) {
       leavesOf(st2).forEach(function (l) {
         if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
         if (String(l['假別'] || '').indexOf('特') === -1) return;
@@ -883,13 +914,11 @@ function handlePayrollPunch(body) {
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
   const only = body.emp_id ? String(body.emp_id) : '';
   const stP = payStore(body.store);
-  const ss = payClockSS(stP);
-  const roster = readSheetAsObjects(ss.getSheetByName('roster')).rows.map(stripRowIndex);
+  const roster = payClockRead(stP, 'roster');
   const nameById = {};
   roster.forEach(function (r) { nameById[String(r.emp_id)] = r.name; });
-  const events = readSheetAsObjects(ss.getSheetByName('events')).rows.map(stripRowIndex);
-  const appSh = ss.getSheetByName('approved');
-  const approvedMap = buildLatestApprovedMap(appSh ? readSheetAsObjects(appSh).rows.map(stripRowIndex) : []);
+  const events = payClockRead(stP, 'events');
+  const approvedMap = buildLatestApprovedMap(payClockRead(stP, 'approved'));
 
   const byKey = {};
   function slot(d, emp) {
@@ -958,11 +987,10 @@ function handlePayrollPunch(body) {
   paired.unmatchedIns.forEach(function (e) { markMiss(e, true); });
   paired.unmatchedOuts.forEach(function (e) { markMiss(e, false); });
   Object.keys(missDays).forEach(function (k) { box(k.split('|')[0]).miss++; });
-  const leaveSh2 = ss.getSheetByName('leave');
-  if (leaveSh2) {
+  {
     const nameToEmp = {};
     roster.forEach(function (r) { nameToEmp[String(r.name).trim()] = String(r.emp_id); });
-    readSheetAsObjects(leaveSh2).rows.map(stripRowIndex).forEach(function (l) {
+    payClockRead(stP, 'leave').forEach(function (l) {
       const emp = nameToEmp[String(l['姓名'] || '').trim()];
       if (!emp) return;
       if (normCellDate(l['日期']).slice(0, 7) !== ym) return;
@@ -1178,7 +1206,7 @@ function handleMyPayslip(body) {
   for (var si = 0; si < stList.length; si++) {
     var code = String(stList[si].code);
     var rs = [];
-    try { rs = readSheetAsObjects(payClockSS(code).getSheetByName('roster')).rows.map(stripRowIndex); }
+    try { rs = payClockRead(code, 'roster'); }
     catch (e) { continue; }
     var hit = findRosterByKey(rs, key);
     if (hit) { me = hit; meStore = code; break; }
