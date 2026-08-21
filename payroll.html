@@ -543,7 +543,7 @@ function allocGapHours(hoursArr, gap){
   return alloc;
 }
 function costTotals(){
-  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},sup:[],supTotal:0};
+  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},sup:[],supTotal:0};
   RESULTS.forEach(r=>{
     // 跨店支援請款（向支援門市收款，與本店薪資費用無關）——兩段式：
     //   缺口＝max(基本工時−本店核定,0)：這段本店已付底薪卻沒拿到工時，用「差額費率」向支援店收
@@ -568,7 +568,7 @@ function costTotals(){
       else if(k==='night_allow'||k==='skill_allow')g.allow+=a;else if(k==='mgr_allow')g.mgr+=a;
       else if(k==='hourly_wage'||k==='cross_store')g.pt+=a;else if(k==='meal_sub')g.meal+=a;
       else if(k==='bonus_sales')g.bs+=a;else if(k==='bonus_perf')g.bp+=a;else if(k==='bonus_project')g.bj+=a;
-      else g.other+=a;});
+      else { g.other+=a; const lb=String(x.item_label||'其他'); g.otherBy[lb]=(g.otherBy[lb]||0)+a; }});
     r.ded.forEach(x=>{if(COST_REDUCE_KEYS.indexOf(x.item_key)>=0){
       g.reduce+=x.amount; g.reduceBy[x.item_label]=(g.reduceBy[x.item_label]||0)+x.amount;}});
   });
@@ -587,7 +587,9 @@ function costRows(g){
     ['薪資費用／正職',g.base],['薪資費用 加班／正職',g.ot],['薪資費用 全勤／正職',g.attend],
     ['薪資費用 夜間津貼／職能津貼／正職',g.allow],['薪資費用 店長津貼',g.mgr],
     ...(g.meal?[['薪資費用 餐費補助／正職',g.meal]]:[]),
-    ...(g.other?[['薪資費用 其他津貼',g.other]]:[]),['薪資費用／PT',g.pt],
+    ...(g.other?Object.keys(g.otherBy).map(lb=>[`薪資費用 其他津貼／${lb}`,g.otherBy[lb]]):[]),
+    ...(Object.keys(g.otherBy).length>1?[['s','其他津貼小計',g.other]]:[]),
+    ['薪資費用／PT',g.pt],
     ...(g.bs?[['薪資費用 業績獎金',g.bs]]:[]),
     ...(g.bp?[['薪資費用 績效獎金',g.bp]]:[]),
     ...(g.bj?[['薪資費用 專案獎金',g.bj]]:[]),
