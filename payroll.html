@@ -390,7 +390,8 @@ const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 
 let MASTER=[], CFG={}, HOL={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
 // 目前操作門市：階段一由門市表全部可見；階段二改讀 dzy 帳號的可見門市清單（UI 與過濾邏輯不變）
-let STORE=localStorage.getItem('pay_store')||'';
+let STORE=(new URLSearchParams(location.search).get('store')||localStorage.getItem('pay_store')||'');
+if(new URLSearchParams(location.search).get('store')) localStorage.setItem('pay_store',STORE);
 
 const $=id=>document.getElementById(id);
 const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};
@@ -438,6 +439,9 @@ async function boot(){
   const m=await post('payroll_master_get');
   if(!m.ok){toast('讀取主檔失敗',true);return}
   MASTER=m.master; CFG=m.config;
+  // ⚠ 門市下拉一定要在這裡先建好：若等到 loadMonth，該門市讀取失敗就會提早 return，
+  //    下拉永遠是空的 → 使用者被鎖在壞掉的門市、切不回來（踩過）
+  if(m.stores&&m.stores.length){STORE_LIST=m.stores;renderStoreSel()}
   // 後端 holidays 是陣列 [{ym,red_days}]（prod）；轉成前端用的物件 {ym:red_days}。相容舊物件格式。
   HOL={}; const _hs=m.holidays||[];
   if(Array.isArray(_hs)) _hs.forEach(h=>{ if(h&&h.ym!=null) HOL[String(h.ym)]=n(h.red_days); });
@@ -495,6 +499,21 @@ function showLoadError(msg){
   el.style.display='';
 }
 function hideLoadError(){ const el=$('loadErr'); if(el) el.style.display='none'; }
+/* 未連打卡的門市＝手動輸入模式：明講一次，避免以為系統壞了 */
+function showClockMode(){
+  let el=$('clockMode');
+  if(!el){
+    el=document.createElement('div');
+    el.id='clockMode'; el.className='note';
+    el.style.cssText='margin:0 30px 12px;font-size:13.5px';
+    const m=document.querySelector('main'); m.parentNode.insertBefore(el,m);
+  }
+  if(HAS_CLOCK){ el.style.display='none'; return; }
+  el.innerHTML='ℹ️ <b>這個門市尚未連結打卡系統，目前是手動輸入模式</b>：'
+    +'請在「員工設定」手動新增同仁、在「出勤資料」直接填工時後按<b>儲存工時</b>，即可計算薪資。'
+    +'<br><span style="color:var(--muted)">「打卡紀錄」與「從打卡名冊建立」要等填入打卡試算表 ID 後才能用。</span>';
+  el.style.display='';
+}
 // 切月份／切門市／任何寫入後都要讓分頁快取失效，否則會看到舊數字
 async function loadMonth(){
   setBusy(true);
@@ -506,9 +525,16 @@ async function loadMonth(){
       const msg=String(r.detail||r.message||r.error||'讀取失敗');
       showLoadError(msg);
       toast(msg,true);
+      // 失敗也要保證能切回別的門市：下拉是空的就單獨去抓門市表
+      if(!STORE_LIST.length){
+        const sl=await post('payroll_store_get',{});
+        if(sl.ok&&sl.stores&&sl.stores.length){STORE_LIST=sl.stores;renderStoreSel()}
+      }
       return;
     }
     hideLoadError();
+    HAS_CLOCK=(r.has_clock!==false);
+    showClockMode();
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
     STORE=r.store||STORE; CFGSRC=r.config_src||{};
     if(r.stores&&r.stores.length){STORE_LIST=r.stores;renderStoreSel()}
@@ -850,7 +876,7 @@ function applyBrand(){
 /* ═════ 分頁資料快取 ═════
    會抓後端的三個分頁（儀表板／打卡紀錄／集團總覽）抓過就記著，再點是 0 秒。
    切月份、切門市、或任何會改資料的動作（重新計算／存工時／存獎金…）都會清掉。 */
-let VCACHE={};
+let VCACHE={}, HAS_CLOCK=true;
 function vKey(name){ return name+'|'+STORE+'|'+ym(); }
 function vGet(name){ return VCACHE[vKey(name)]; }
 function vSet(name,data){ VCACHE[vKey(name)]=data; }

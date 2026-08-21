@@ -156,17 +156,26 @@ function payStoreRow(code) {
 /** 該門市的打卡試算表；門市表沒填 clock_ss_id 就用本地試算表（＝光復現況，行為不變）。
  *  同一次請求內快取，避免重複 openById。 */
 var PAY_SS_CACHE = {};
-function payClockSS(store) {
+/** 該門市有沒有連打卡系統（預設店永遠有；其他店要填 clock_ss_id） */
+function payHasClock(store) {
+  const c = payStore(store);
+  if (c === PAY_DEFAULT_STORE) return true;
+  const row = payStoreRow(c);
+  return !!(row && String(row.clock_ss_id || ''));
+}
+/** 取該門市的打卡試算表。soft=true 時，未連打卡的門市回 null（＝手動輸入模式），不丟錯。 */
+function payClockSS(store, soft) {
   const c = payStore(store);
   if (PAY_SS_CACHE[c]) return PAY_SS_CACHE[c];
   const row = payStoreRow(c);
   const id = row ? String(row.clock_ss_id || '') : '';
   var ss;
   if (!id) {
-    // 只有預設店（光復）留空才代表「用本系統所在的試算表」。其他門市留空一定是漏填，
-    // 若放行會去讀到光復的打卡資料且不會報錯 —— 直接擋下來。
+    // 預設店（光復）留空＝用本系統所在的試算表。
+    // 其他門市留空＝還沒接打卡：手動輸入模式回 null；真的需要打卡資料的功能才丟錯。
     if (c !== PAY_DEFAULT_STORE) {
-      throw new Error('門市 ' + c + ' 尚未設定「打卡試算表 ID」，無法取得該店打卡資料。請到 參數設定 → 門市設定 填入。');
+      if (soft) return null;
+      throw new Error('門市 ' + c + ' 尚未連結打卡系統（未設定「打卡試算表 ID」）。此門市的工時請在「出勤資料」手動輸入；若要自動歸集，請到 參數設定 → 門市設定 填入試算表 ID。');
     }
     ss = getSS();
   }
@@ -184,7 +193,8 @@ function payClockRead(store, sheetName) {
   const key = payStore(store) + '|' + sheetName;
   if (PAY_CLOCK_CACHE[key]) return PAY_CLOCK_CACHE[key];
   var rows = [];
-  const sh = payClockSS(store).getSheetByName(sheetName);
+  const ss = payClockSS(store, true);          // 未連打卡的門市回 null → 視為沒有資料
+  const sh = ss ? ss.getSheetByName(sheetName) : null;
   if (sh) rows = readSheetAsObjects(sh).rows.map(stripRowIndex);
   PAY_CLOCK_CACHE[key] = rows;
   return rows;
@@ -554,6 +564,8 @@ function handlePayrollBootstrap(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   ensurePayrollSheets();
   const stBs = payStore(body.store);
+  if (!payHasClock(stBs)) return { ok: false, error: 'no_clock',
+    message: '門市 ' + stBs + ' 尚未連結打卡系統，沒有名冊可帶入。請在「員工設定」手動新增同仁，或先到 參數設定 → 門市設定 填入打卡試算表 ID。' };
   const roster = payClockRead(stBs, 'roster');
   const prefix = (function () { const r = payStoreRow(stBs); return r ? String(r.emp_prefix || '') : ''; })();
   const existing = {};
@@ -816,7 +828,7 @@ function handlePayrollMonth(body) {
       if (calc && calc.ok) run = { results: calc.results, status: 'draft' };
     }
   }
-  return { ok: true, ym: ym, store: stM, inputs: inputs, run: run, annual: payAnnualInfo(ym, stM),
+  return { ok: true, ym: ym, store: stM, has_clock: payHasClock(stM), inputs: inputs, run: run, annual: payAnnualInfo(ym, stM),
            master: payRead('master').filter(function (m) { return payStore(m.store) === stM; }),
            config: payConfig(stM), config_src: payConfigSource(stM),
            bonuses: payRead('bonus').filter(function (b) { return String(b.ym) === ym && payStore(b.store) === stM; }),
@@ -914,6 +926,8 @@ function handlePayrollPunch(body) {
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
   const only = body.emp_id ? String(body.emp_id) : '';
   const stP = payStore(body.store);
+  if (!payHasClock(stP)) return { ok: false, error: 'no_clock',
+    message: '門市 ' + stP + ' 尚未連結打卡系統，沒有打卡紀錄可看。' };
   const roster = payClockRead(stP, 'roster');
   const nameById = {};
   roster.forEach(function (r) { nameById[String(r.emp_id)] = r.name; });
