@@ -259,7 +259,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
   </div>
   <div class="card" id="costCard" style="display:none">
     <h2>人事成本分類（對應損益表）</h2>
-    <p class="hint">依損益表科目彙總本月人事成本。<b>薪資費用＝應收 −（請假扣款＋不足倒扣）</b>；勞健保自付額<b>含在薪資費用內</b>（算人事成本），宿舍自付額列<b>租金收入</b>、不在此表。公司負擔（勞健保、負責人、團險）另計於下方，兩者相加＝人事總成本。<br><b>跨店支援請款</b>是另一件事：向支援門市收款＝支援時數×支援門市費率，<b>不影響</b>上方薪資費用。</p>
+    <p class="hint">依損益表科目彙總本月人事成本。<b>薪資費用＝應收 −（請假扣款＋不足倒扣）</b>；勞健保自付額<b>含在薪資費用內</b>（算人事成本），宿舍自付額列<b>租金收入</b>、不在此表。<b>薪資費用／PT</b>＝計時同仁領到的全部（時薪＋跨店支援＋津貼＋自訂加薪）；正職才依項目分科目。獎金三類不分正職計時，一律獨立科目。公司負擔（勞健保、負責人、團險）另計於下方，兩者相加＝人事總成本。<br><b>跨店支援請款</b>是另一件事：向支援門市收款＝支援時數×支援門市費率，<b>不影響</b>上方薪資費用。</p>
     <div class="scroll"><table id="costTbl"></table></div>
   </div>
 </section>
@@ -337,7 +337,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
   </div>
   <div class="card">
     <h2>公司負擔（每月手動填）</h2>
-    <p class="hint">公司負擔的保險支出逐人算不出來，這裡手動填、之後沿用。會顯示在「當月薪資總覽 → 人事成本分類」的公司負擔區，並計入人事總成本。</p>
+    <p class="hint"><b>勞保／健保／退休金已改為依員工主檔逐人自動加總</b>（在員工設定填每人的公司負擔金額，人員增減自動反映；月中到離職按在職比例折算）。這裡的三欄只是<b>備援</b>——當所有人的主檔都沒填時才會採用。<br><b>負責人勞健保、團險</b>不是逐人費用，維持在這裡手動填。</p>
     <div class="grid2" id="coGrid"></div>
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg(this,'儲存公司負擔')">儲存公司負擔</button></div>
   </div>
@@ -543,8 +543,12 @@ function allocGapHours(hoursArr, gap){
   return alloc;
 }
 function costTotals(){
-  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},sup:[],supTotal:0};
+  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},sup:[],supTotal:0,coL:0,coH:0,coP:0};
   RESULTS.forEach(r=>{
+    // 公司負擔逐人加總（依員工主檔）。勞保／退休金按在職比例折算，健保整月——與員工自付的處理一致。
+    const _m=MASTER.find(x=>String(x.emp_id)===String(r.emp_id))||{};
+    const _pr=r.is_full_time?n(r.ratio):1;
+    g.coL+=n(_m.co_labor)*_pr; g.coH+=n(_m.co_health); g.coP+=n(_m.co_pension)*_pr;
     // 跨店支援請款（向支援門市收款，與本店薪資費用無關）——兩段式：
     //   缺口＝max(基本工時−本店核定,0)：這段本店已付底薪卻沒拿到工時，用「差額費率」向支援店收
     //   超過缺口的部分：用該筆的「支援費率」
@@ -564,10 +568,16 @@ function costTotals(){
       });
     }
     r.earn.forEach(x=>{const k=x.item_key,a=x.amount;
+      // 獎金三類永遠獨立科目（不分正職計時）
+      if(k==='bonus_sales'){g.bs+=a;return}
+      if(k==='bonus_perf'){g.bp+=a;return}
+      if(k==='bonus_project'){g.bj+=a;return}
+      // 計時同仁：領到的錢全部歸「薪資費用／PT」（時薪＋支援＋各種津貼＋自訂加薪）
+      if(!r.is_full_time){g.pt+=a;return}
+      // 正職：依項目種類分科目
       if(k==='base_salary')g.base+=a;else if(k==='overtime')g.ot+=a;else if(k==='attend_bonus')g.attend+=a;
       else if(k==='night_allow'||k==='skill_allow')g.allow+=a;else if(k==='mgr_allow')g.mgr+=a;
-      else if(k==='hourly_wage'||k==='cross_store')g.pt+=a;else if(k==='meal_sub')g.meal+=a;
-      else if(k==='bonus_sales')g.bs+=a;else if(k==='bonus_perf')g.bp+=a;else if(k==='bonus_project')g.bj+=a;
+      else if(k==='meal_sub')g.meal+=a;
       else { g.other+=a; const lb=String(x.item_label||'其他'); g.otherBy[lb]=(g.otherBy[lb]||0)+a; }});
     r.ded.forEach(x=>{if(COST_REDUCE_KEYS.indexOf(x.item_key)>=0){
       g.reduce+=x.amount; g.reduceBy[x.item_label]=(g.reduceBy[x.item_label]||0)+x.amount;}});
@@ -578,6 +588,10 @@ function costTotals(){
 const CO_ITEMS=[['co_labor','公司負擔勞保'],['co_health','公司負擔健保'],['co_pension','公司負擔退休金'],['co_owner','負責人勞健保'],['co_group','團險']];
 function costRows(g){
   const co={}; CO_ITEMS.forEach(([k])=>co[k]=n(CFG[k]));
+  // 公司負擔勞保／健保／退休金：改由員工主檔逐人加總（有值就用），全 0 才退回參數設定的手填值
+  const autoCo={co_labor:g.coL,co_health:g.coH,co_pension:g.coP};
+  const coAuto=(g.coL+g.coH+g.coP)>0;
+  if(coAuto) Object.keys(autoCo).forEach(k=>{ if(autoCo[k]>0) co[k]=autoCo[k]; });
   const salaryGross=g.base+g.ot+g.attend+g.allow+g.mgr+g.pt+g.other+g.meal+g.bs+g.bp+g.bj;
   const salaryCost=salaryGross-g.reduce;   // 薪資費用＝應收−(請假+不足倒扣)；勞健保自付留在內、宿舍不計
   const coTotal=CO_ITEMS.reduce((a,[k])=>a+co[k],0);
@@ -596,7 +610,7 @@ function costRows(g){
     ...(g.reduce?[['d','減：請假扣款＋不足倒扣',-g.reduce]]:[]),
     ['s','薪資費用小計',salaryCost],
     ['h','公司負擔保險成本'],
-    ...CO_ITEMS.map(([k,lb])=>[lb,co[k]]),
+    ...CO_ITEMS.map(([k,lb])=>[lb+((coAuto&&autoCo[k]>0)?'（依人員自動加總）':''),co[k]]),
     ['s','公司負擔小計',coTotal],
     ['g','人事總成本（薪資費用＋公司負擔）',salaryCost+coTotal],
     ...(reduceRows.length?[['h','（參考）請假／不足扣款明細 · 已在上方扣除']].concat(reduceRows):[]),
@@ -1057,7 +1071,7 @@ function renderSup(){
 const EF=[['name','姓名','text'],['wage','時薪'],['base','底薪'],['ot_rate','加班費率'],
  ['skill_allow','職能津貼'],['night_allow','夜間津貼'],['mgr_allow','店長津貼'],['editor_allow','小編津貼'],
  ['attend_cap','全勤上限'],['meal_allow','餐費補助/日'],['gap_rate','差額費率'],['labor_ins','勞保費'],['health_ins','健保費'],['group_ins','團保費'],
- ['pension','退休金'],['dormitory','宿舍費'],['hire_date','到職日','date'],['leave_date','離職日','date']];
+ ['pension','退休金'],['dormitory','宿舍費'],['co_labor','公司負擔勞保'],['co_health','公司負擔健保'],['co_pension','公司負擔退休金'],['hire_date','到職日','date'],['leave_date','離職日','date']];
 function renderEmp(){
   $('empList').innerHTML=MASTER.map((e,i)=>{
     const ft=isFT(e);
