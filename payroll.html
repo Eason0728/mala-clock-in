@@ -259,7 +259,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
   </div>
   <div class="card" id="costCard" style="display:none">
     <h2>人事成本分類（對應損益表）</h2>
-    <p class="hint">依損益表科目彙總本月人事成本。<b>薪資費用＝應收 −（請假扣款＋不足倒扣）</b>；勞健保自付額<b>含在薪資費用內</b>（算人事成本），宿舍自付額列<b>租金收入</b>、不在此表。公司負擔（勞健保、負責人、團險）另計於下方，兩者相加＝人事總成本。</p>
+    <p class="hint">依損益表科目彙總本月人事成本。<b>薪資費用＝應收 −（請假扣款＋不足倒扣）</b>；勞健保自付額<b>含在薪資費用內</b>（算人事成本），宿舍自付額列<b>租金收入</b>、不在此表。公司負擔（勞健保、負責人、團險）另計於下方，兩者相加＝人事總成本。<br><b>跨店支援請款</b>是另一件事：向支援門市收款＝支援時數×支援門市費率，<b>不影響</b>上方薪資費用。</p>
     <div class="scroll"><table id="costTbl"></table></div>
   </div>
 </section>
@@ -528,26 +528,16 @@ const COST_REDUCE_KEYS=['personal_leave','sick_leave','menstrual_leave','disaste
 function costTotals(){
   const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},sup:[],supTotal:0};
   RESULTS.forEach(r=>{
-    // 跨店支援明細（僅供會計判斷成本轉撥，不影響薪資費用小計）
-    // 計時＝支援時數×支援費率（獨立加項）；正職＝支援把超時墊高的那段加班費，按時數比例攤回
+    // 跨店支援請款：向「支援門市」收的錢 ＝ 支援時數 × 支援門市費率（不分正職／計時）。
+    // ⚠ 這與「本店付給同仁的薪資費用」是兩件事，彼此無關：
+    //    薪資是正職併入加班用員工加班費率、計時用支援門市費率；這裡純粹是對他店的請款金額。
     const sup=((ATT[r.emp_id]||{}).support||[]).filter(x=>n(x.hours)||n(x.amount));
-    if(sup.length){
-      const supH=sup.reduce((a,x)=>a+n(x.hours),0);
-      let ftShare=0;
-      if(r.is_full_time){
-        const otAmt=(r.earn.find(x=>x.item_key==='overtime')||{}).amount||0;
-        const otH=n(r.ot_paid_hours), sp=n(r.surplus_hours);
-        const hSup=Math.max(sp,0)-Math.max(sp-n(r.support_hours),0);
-        if(otH>0&&otAmt>0&&hSup>0) ftShare=otAmt*Math.min(1,hSup/otH);
-      }
-      sup.forEach(x=>{
-        const h=n(x.hours);
-        const amt=r.is_full_time ? (supH>0?ftShare*h/supH:0)
-                                 : (n(x.amount)||h*n(x.rate));
-        g.sup.push({name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',hours:h,amount:amt});
-        g.supTotal+=amt;
-      });
-    }
+    sup.forEach(x=>{
+      const h=n(x.hours), rt=n(x.rate);
+      const amt=n(x.amount)||h*rt;      // 金額欄有填＝以填的為準（特殊協議）
+      g.sup.push({name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',hours:h,rate:rt,amount:amt});
+      g.supTotal+=amt;
+    });
     r.earn.forEach(x=>{const k=x.item_key,a=x.amount;
       if(k==='base_salary')g.base+=a;else if(k==='overtime')g.ot+=a;else if(k==='attend_bonus')g.attend+=a;
       else if(k==='night_allow'||k==='skill_allow')g.allow+=a;else if(k==='mgr_allow')g.mgr+=a;
@@ -583,9 +573,9 @@ function costRows(g){
     ['s','公司負擔小計',coTotal],
     ['g','人事總成本（薪資費用＋公司負擔）',salaryCost+coTotal],
     ...(reduceRows.length?[['h','（參考）請假／不足扣款明細 · 已在上方扣除']].concat(reduceRows):[]),
-    ...(g.sup&&g.sup.length?[['h','（參考）跨店支援 · 已含在上方薪資費用，供成本轉撥判斷']]
-        .concat(g.sup.map(x=>[`${x.name}（${x.ft?'正職':'計時'}）→ ${x.store}　${r2(x.hours)}H`,x.amount]))
-        .concat([['s','跨店支援小計',g.supTotal]]):[]),
+    ...(g.sup&&g.sup.length?[['h','跨店支援請款 · 向支援門市收款，與本店薪資費用無關']]
+        .concat(g.sup.map(x=>[`${x.name} → ${x.store}　${r2(x.hours)}H × ${nf(x.rate)}`,x.amount]))
+        .concat([['s','請款小計',g.supTotal]]):[]),
   ];
 }
 function renderCost(){
