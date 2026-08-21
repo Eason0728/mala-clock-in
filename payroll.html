@@ -272,7 +272,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
       <select id="punchWho" onchange="loadPunch()" style="min-width:160px;font-size:15px;padding:9px 11px">
         <option value="">全部同仁</option>
       </select>
-      <button class="btn ghost" onclick="loadPunch()">重新整理</button>
+      <button class="btn ghost" onclick="loadPunch(true)">重新整理</button>
     </div>
     <div id="punchBody"></div>
   </div>
@@ -336,8 +336,8 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     </div>
   </div>
   <div class="card">
-    <h2>公司負擔（每月手動填）</h2>
-    <p class="hint"><b>勞保／健保／退休金已改為依員工主檔逐人自動加總</b>（在員工設定填每人的公司負擔金額，人員增減自動反映；月中到離職按在職比例折算）。這裡的三欄只是<b>備援</b>——當所有人的主檔都沒填時才會採用。<br><b>負責人勞健保、團險</b>不是逐人費用，維持在這裡手動填。</p>
+    <h2>公司負擔（非逐人費用）</h2>
+    <p class="hint"><b>勞保／健保／退休金</b>已改到<b>員工設定</b>逐人填，系統自動加總（人員增減自動反映；月中到離職按在職比例折算），這裡不再重複輸入。<br>下面兩項不是逐人費用，維持手動填。</p>
     <div class="grid2" id="coGrid"></div>
     <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg(this,'儲存公司負擔')">儲存公司負擔</button></div>
   </div>
@@ -481,9 +481,11 @@ async function loadRun(){
 }
 /* 切月份一次到位：一個請求回工時＋月結（必要時後端自動算），比原本三次往返快很多 */
 function setBusy(on){ document.body.classList.toggle('loading', !!on); }
+// 切月份／切門市／任何寫入後都要讓分頁快取失效，否則會看到舊數字
 async function loadMonth(){
   setBusy(true);
   try{
+    vClear();
     const r=await post('payroll_month',{ym:ym(),inputs:{}});
     if(!r.ok) return;
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
@@ -505,6 +507,7 @@ async function doCalc(){
     const r=await post('payroll_calc',{ym:ym(),inputs:ATT});
     if(!r.ok)return;
     RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;
+    vClear();   // 重算後儀表板／集團總覽的數字會變
     renderRun();renderSlipSel();toast('已重新計算');
   } finally { setBusy(false); }
 }
@@ -585,7 +588,10 @@ function costTotals(){
   return g;
 }
 /* 成本分類的列定義（label, 值），供月結卡與 Excel 共用 */
+// 成本分類的公司負擔列：前三項改由員工主檔逐人加總，後兩項是非逐人費用（參數設定手填）
 const CO_ITEMS=[['co_labor','公司負擔勞保'],['co_health','公司負擔健保'],['co_pension','公司負擔退休金'],['co_owner','負責人勞健保'],['co_group','團險']];
+// 參數設定「公司負擔」只顯示這兩項——逐人的三項不再手填，避免兩邊數字打架
+const CO_MANUAL=[['co_owner','負責人勞健保'],['co_group','團險']];
 function costRows(g){
   const co={}; CO_ITEMS.forEach(([k])=>co[k]=n(CFG[k]));
   // 公司負擔勞保／健保／退休金：改由員工主檔逐人加總（有值就用），全 0 才退回參數設定的手填值
@@ -676,7 +682,7 @@ async function toggleLock(){
   let reason='';
   if(!lock){reason=prompt('解鎖原因（會寫進稽核紀錄）：')||'';if(!reason)return}
   const r=await post('payroll_finalize',{ym:ym(),lock,reason,operator:'Eason'});
-  if(r.ok){STATUS=r.status;renderRun();toast(lock?'已鎖定':'已解鎖')}
+  if(r.ok){STATUS=r.status;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
 }
 
 /* ═════ 工時 ═════ */
@@ -810,6 +816,15 @@ function applyBrand(){
   if(box){ box.style.background=b.bg; box.innerHTML=`<img src="${b.logo}" alt="">`; }
 }
 
+/* ═════ 分頁資料快取 ═════
+   會抓後端的三個分頁（儀表板／打卡紀錄／集團總覽）抓過就記著，再點是 0 秒。
+   切月份、切門市、或任何會改資料的動作（重新計算／存工時／存獎金…）都會清掉。 */
+let VCACHE={};
+function vKey(name){ return name+'|'+STORE+'|'+ym(); }
+function vGet(name){ return VCACHE[vKey(name)]; }
+function vSet(name,data){ VCACHE[vKey(name)]=data; }
+function vClear(){ VCACHE={}; }
+
 /* ═════ 門市切換（階段一：可見清單＝門市表全部；階段二換成帳號的門市）═════ */
 function renderStoreSel(){
   const sel=$('storeSel'); if(!sel||!STORE_LIST.length) return;
@@ -820,7 +835,7 @@ function renderStoreSel(){
   const lbl=sel.previousElementSibling; if(lbl) lbl.style.display=STORE_LIST.length>1?'':'none';
 }
 async function switchStore(code){
-  STORE=String(code); localStorage.setItem('pay_store',STORE);
+  STORE=String(code); localStorage.setItem('pay_store',STORE); vClear();
   await loadMonth();
   const on=document.querySelector('#nav button.on');
   if(on&&on.dataset.p==='punch') loadPunch();
@@ -830,11 +845,17 @@ async function switchStore(code){
 }
 
 /* ═════ 集團總覽 ═════ */
-async function loadGroup(){
+async function loadGroup(force){
   const box=$('groupBody'); if(!box) return;
+  const c=vGet('group');
+  if(c&&!force){ renderGroup(c); return; }
   box.innerHTML='<div style="color:var(--muted);padding:14px 2px">載入中…</div>';
   const r=await post('payroll_group',{ym:ym()});
   if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+(r.error||'')+'</div>';return}
+  vSet('group',r); renderGroup(r);
+}
+function renderGroup(r){
+  const box=$('groupBody'); if(!box) return;
   $('groupYm').textContent='（'+r.ym+'）';
   const rows=r.rows||[], sm=r.sum||{};
   box.innerHTML=`<div class="scroll"><table>
@@ -914,12 +935,14 @@ async function saveBonus(btn){
 
 /* ═════ 儀表板：人事成本趨勢 ═════ */
 let DASH=[], OT_LOCAL=0;
-async function loadDash(){
+async function loadDash(force){
   const box=$('dashCost'); if(!box) return;
+  const c=vGet('dash');
+  if(c&&!force){ DASH=c; renderDash(); return; }
   box.innerHTML='<div style="color:var(--muted);padding:14px 2px">載入中…</div>';
   const r=await post('payroll_trend',{ym:ym(),store:STORE,months:12});
   if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+(r.error||'')+'</div>';return}
-  DASH=r.months||[];renderDash();
+  DASH=r.months||[];vSet('dash',DASH);renderDash();
 }
 function bars(data,valKey,color,fmtFn){
   const has=data.filter(d=>d.has);
@@ -982,11 +1005,18 @@ function renderDash(){
 
 /* ═════ 打卡紀錄（唯讀，讀打卡系統 events/approved）═════ */
 let PUNCH_ROSTER=[];
-async function loadPunch(){
+async function loadPunch(force){
   const box=$('punchBody'); if(!box) return;
+  const who=$('punchWho').value||'';
+  const c=vGet('punch:'+who);
+  if(c&&!force){ renderPunch(c); return; }
   box.innerHTML='<div style="color:var(--muted);padding:14px 2px">載入中…</div>';
-  const r=await post('payroll_punch',{ym:ym(),emp_id:$('punchWho').value||''});
+  const r=await post('payroll_punch',{ym:ym(),emp_id:who});
   if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+(r.error||'')+'</div>';return}
+  vSet('punch:'+who,r); renderPunch(r);
+}
+function renderPunch(r){
+  const box=$('punchBody'); if(!box) return;
   if(r.roster&&r.roster.length&&PUNCH_ROSTER.length!==r.roster.length){
     PUNCH_ROSTER=r.roster;
     $('punchWho').innerHTML='<option value="">全部同仁</option>'+r.roster.map(e=>`<option value="${e.emp_id}">${e.name}</option>`).join('');
@@ -1120,7 +1150,7 @@ function renderCfg(){
   const srcTag=k=>{const v=CFGSRC[k];return v==='own'?' <span class="tag draft" style="font-size:10px">本店</span>':(v==='global'?'':' <span style="color:var(--muted)">預設</span>')};
   $('cfgGrid').innerHTML=CF.map(([k,lb])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
     <input type="number" step="0.01" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`).join('');
-  if($('coGrid')) $('coGrid').innerHTML=CO_ITEMS.map(([k,lb])=>`<div class="fld"><label>${lb}</label>
+  if($('coGrid')) $('coGrid').innerHTML=CO_MANUAL.map(([k,lb])=>`<div class="fld"><label>${lb}</label>
     <input type="number" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`).join('');
   let h='<thead><tr><th>月份</th><th>紅字天數</th><th></th></tr></thead><tbody>';
   Object.keys(HOL).sort().forEach(k=>{
