@@ -29,9 +29,34 @@ const CONFIG = {
   // 上下班交替判斷的回看視窗（小時）：看得到跨夜班前一晚的上班卡，
   // 但昨天忘打的下班卡（超過視窗）不會鎖死今天的上班卡。
   ALTERNATION_LOOKBACK_HOURS: 12,
+  // 值班核定頁的「預設上下班時間」全店預設（2026-08-23）。個人若在名冊填了 shift_in／shift_out
+  // 就以個人的為準。兩者都留空＝核定頁維持空白，主管自己填（＝改版前的行為）。
+  DEFAULT_SHIFT_IN: '',
+  DEFAULT_SHIFT_OUT: '',
 };
 
-const ROSTER_HEADERS = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active'];
+// shift_in／shift_out（2026-08-23）：值班核定頁「預設上下班時間」。
+// 格式 HH:mm（如 11:00）。留空＝用 CONFIG.DEFAULT_SHIFT_* 的全店預設；兩者都空＝維持空白要主管自己填。
+// ⚠ 只在名冊末尾 append，不可插中間（既有資料會錯位）。
+const ROSTER_HEADERS = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active',
+                        'shift_in', 'shift_out'];
+/** 把班別時間正規化成 'HH:mm'。接受 '11:00'、'0900'、Date 物件（Sheets 會把 11:00 轉成時間物件）。
+ *  不合法一律回空字串——寧可讓核定頁留白，也不要餵一個 <input type="time"> 認不得的值。 */
+function normShiftTime(v) {
+  if (v instanceof Date) {
+    const p = function (n) { return ('0' + n).slice(-2); };
+    return p(v.getHours()) + ':' + p(v.getMinutes());
+  }
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return '';
+  let m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) m = s.match(/^(\d{1,2})(\d{2})$/);
+  if (!m) return '';
+  const h = Number(m[1]), mi = Number(m[2]);
+  if (h < 0 || h > 23 || mi < 0 || mi > 59) return '';
+  return ('0' + h).slice(-2) + ':' + ('0' + mi).slice(-2);
+}
+
 const LEAVE_HEADERS = ['日期', '姓名', '假別', '時數'];
 // 人工備註（Eason 在月表明細右邊那欄手打的忘刷卡原因等）。月表每次重算是 sheet.clear()
 // 整張清空再重寫，手打的字不另外保存就會被擦掉——notes 分頁是這些字的正本。
@@ -157,6 +182,7 @@ function doPost(e) {
     clock: handleClock,
     whoami: handleWhoami,
     sync_roster: handleSyncRoster,
+    set_shifts: handleSetShifts,
     get_roster: handleGetRoster,
     get_events: handleGetEvents,
     approve_device: handleApproveDevice,
@@ -803,6 +829,42 @@ function parsePeriodsStr(s) {
   });
 }
 
+
+/**
+ * API：{action:'set_shifts', admin_key, shifts:[{emp_id?|name?, shift_in, shift_out}]}
+ * → 批次設定名冊的預設上下班時間（值班核定頁會據此預填時段）。
+ * 認 emp_id 優先，沒給就用 name 比對。時間留空＝清掉該人的個人設定（改用全店預設）。
+ * ⚠ 只寫 shift_in／shift_out 兩欄，不動 key／device_id／active——避免誤改綁定或把人停用。
+ */
+function handleSetShifts(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  if (!Array.isArray(body.shifts)) return { ok: false, error: 'shifts_required' };
+  const ss = getSS();
+  const rosterSheet = ss.getSheetByName('roster');
+  if (!rosterSheet) return { ok: false, error: 'no_roster' };
+  const rows = readSheetAsObjects(rosterSheet).rows;
+  const ci = ROSTER_HEADERS.indexOf('shift_in') + 1;
+  const co = ROSTER_HEADERS.indexOf('shift_out') + 1;
+  if (ci <= 0 || co <= 0) return { ok: false, error: 'no_shift_columns', message: '名冊還沒有 shift_in／shift_out 欄，請先跑 setup()' };
+
+  const done = [], missed = [];
+  body.shifts.forEach(function (x) {
+    const wantId = String(x.emp_id || '').trim();
+    const wantNm = String(x.name || '').trim();
+    const hit = rows.filter(function (r) {
+      return wantId ? String(r.emp_id) === wantId : String(r.name).trim() === wantNm;
+    })[0];
+    if (!hit) { missed.push(wantId || wantNm); return; }
+    const si = normShiftTime(x.shift_in), so = normShiftTime(x.shift_out);
+    // 兩欄一起寫。給了值卻正規化失敗（打錯格式）就當成清空，不會寫進髒資料。
+    rosterSheet.getRange(hit.__rowIndex, ci).setValue(si);
+    rosterSheet.getRange(hit.__rowIndex, co).setValue(so);
+    done.push({ emp_id: String(hit.emp_id), name: String(hit.name), shift_in: si, shift_out: so });
+  });
+  // 時間欄鎖成文字，否則 Sheets 會把 11:00 轉成時間物件（讀回來是 Date）
+  rosterSheet.getRange(2, ci, Math.max(1, rosterSheet.getLastRow() - 1), 2).setNumberFormat('@');
+  return { ok: true, updated: done.length, shifts: done, not_found: missed };
+}
 /**
  * API：{action:'mgr_day', mgr_key, date?}（date 缺省＝今天，Asia/Taipei）
  * → 回傳「roster 全部 active 同仁」（2026-07-13 Eason 實測回饋改版：當天沒打卡的也要出現，
@@ -879,6 +941,15 @@ function handleMgrDay(body) {
     return a.rosterIdx - b.rosterIdx;
   });
 
+  /** 名冊裡的個人預設班別；空白就回全店預設。
+   *  ⚠ '11:00' 這種字串會被 Sheets 自動轉成時間物件，讀回來是 Date——要正規化回 HH:mm，
+   *    不然前端 <input type="time"> 收到 "Sat Dec 30 1899..." 會整個不顯示。 */
+  function shiftOf(empId, col, fallback) {
+    const r = findRosterByEmpId(rosterRows, empId);
+    const v = r ? r[col] : '';
+    return normShiftTime(v) || normShiftTime(fallback) || '';
+  }
+
   const employees = listed.map(function (item) {
     const hasPunch = !!firstTs[item.emp_id];
     const punch = hasPunch ? dayPunchSegments(eventRows, item.emp_id, date) : null;
@@ -892,6 +963,9 @@ function handleMgrDay(body) {
       attempts: attemptsCount[item.emp_id] || 0, // A4：未入帳嘗試次數（status!=='ok'，供主管頁透明化）
       leave_type: leaveByName[item.name] || '',
       leave_hours: (leaveHoursByName[item.name] === '' || leaveHoursByName[item.name] == null) ? '' : leaveHoursByName[item.name],
+      // 預設上下班時間：個人（名冊 shift_in／shift_out）優先，沒填才用全店預設
+      shift_in: shiftOf(item.emp_id, 'shift_in', CONFIG.DEFAULT_SHIFT_IN),
+      shift_out: shiftOf(item.emp_id, 'shift_out', CONFIG.DEFAULT_SHIFT_OUT),
     };
     const rec = (approvedMap[date] || {})[item.emp_id];
     if (rec) {

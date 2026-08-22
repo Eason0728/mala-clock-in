@@ -12,18 +12,26 @@ import re, sys, pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
+# mgr_bg／clock_bg：頁面底色。墨竹亭品牌用深綠（logo 主色 #86CBBF 的深色調），
+# 留空＝沿用母版的小辛辣紅。光復不在這份清單裡，所以永遠不受影響。
+MZT_BG = 'radial-gradient(120% 90% at 50% 16%, #3d8f7f 0%, #2a6b5e 55%, #1c4a41 100%) fixed'
 STORES = {
     'cf': {'name': '中央廚房',   'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
-           'clock_home': '央廚打卡', 'mgr_home': '央廚值班'},
+           'clock_home': '央廚打卡', 'mgr_home': '央廚值班',
+           'mgr_bg': MZT_BG, 'clock_bg': None},
     'hq': {'name': '鼎兆元 總部', 'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
-           'clock_home': '總部打卡', 'mgr_home': '總部值班'},
+           'clock_home': '總部打卡', 'mgr_home': '總部值班',
+           'mgr_bg': MZT_BG, 'clock_bg': None},
 }
 PAGES = [
-    ('clock.html',   'clock',   '員工打卡',     'clock_icon', 'clock_home'),
-    ('manager.html', 'manager', '值班主管核定', 'mgr_icon',   'mgr_home'),
+    ('clock.html',   'clock',   '員工打卡',     'clock_icon', 'clock_home', 'clock_bg'),
+    ('manager.html', 'manager', '值班主管核定', 'mgr_icon',   'mgr_home',   'mgr_bg'),
 ]
+# 母版（麻的小辛辣紅）的底色宣告，要被換掉的就是這一行
+RED_BG = ('background: radial-gradient(120% 90% at 50% 16%, '
+          '#c9290b 0%, #a81f08 55%, #8a1906 100%) fixed;')
 
-def build(src_name, prefix, page_title, icon_key, home_key):
+def build(src_name, prefix, page_title, icon_key, home_key, bg_key):
     src = (ROOT / src_name).read_text(encoding='utf-8')
     for code, st in STORES.items():
         out = src
@@ -38,6 +46,13 @@ def build(src_name, prefix, page_title, icon_key, home_key):
         out = re.sub(r"var STORE_CODE = \(function \(\) \{.*?\}\)\(\);",
                      f"var STORE_CODE = '{code}';   // 由 tools/build-store-pages.py 產生，勿手改",
                      out, count=1, flags=re.S)
+        # 4) 底色（墨竹亭品牌換深綠）。找不到母版那行就報錯——母版改了樣式卻沒同步這裡，
+        #    靜靜產出紅底頁面比直接失敗更難發現。
+        bg = st.get(bg_key)
+        if bg:
+            if RED_BG not in out:
+                raise SystemExit(f'✗ {src_name} 找不到母版底色宣告，請同步更新 build-store-pages.py 的 RED_BG')
+            out = out.replace(RED_BG, f'background: {bg};', 1)
         out = out.replace('<!DOCTYPE html>',
                           f'<!-- 本檔由 tools/build-store-pages.py 從 {src_name} 產生，請勿手改 -->\n<!DOCTYPE html>', 1)
         dst = ROOT / f'{prefix}-{code}.html'

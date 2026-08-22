@@ -723,6 +723,10 @@ def handle_mgr_day(data, body):
             "attempts": attempts_count.get(emp_id, 0),  # A4：未入帳嘗試次數（status!='ok'，供主管頁透明化）
             "leave_type": leave_by_name.get(item["name"], ""),
             "leave_hours": leave_hours_by_name.get(item["name"], ""),
+            # 預設上下班時間（2026-08-23）：名冊的 shift_in／shift_out（與 Code.gs handleMgrDay 同步）
+            # ⚠ 一定要用 emp_id 重查名冊——直接用 r 會拿到上一個迴圈殘留的那一筆，全部人變同一個班別
+            "shift_in": (find_roster_by_empid(data, emp_id) or {}).get("shift_in", ""),
+            "shift_out": (find_roster_by_empid(data, emp_id) or {}).get("shift_out", ""),
         }
         if rec:
             out["approved"] = {

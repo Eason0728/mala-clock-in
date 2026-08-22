@@ -546,9 +546,19 @@
 
     var periodRows = document.createElement('div');
     periodRows.className = 'period-rows';
-    var initialPeriods = (emp.approved && emp.approved.periods && emp.approved.periods.length)
-      ? emp.approved.periods
-      : [null];
+    /* 時段預設值（2026-08-23）：
+     *  ① 已核定過 → 帶出既有核定時段（照舊，不覆蓋主管輸入過的東西）
+     *  ② 還沒核定、名冊或全店有設預設班別 → 帶入預設班別，主管只要確認或微調
+     *  ③ 都沒有 → 空白（＝改版前的行為）
+     * 刻意不從當天打卡時間推算——打卡有遲到早退，帶進來等於預設就把異常抹平了。 */
+    var initialPeriods;
+    if (emp.approved && emp.approved.periods && emp.approved.periods.length) {
+      initialPeriods = emp.approved.periods;
+    } else if (emp.shift_in && emp.shift_out) {
+      initialPeriods = [{ start: emp.shift_in, end: emp.shift_out }];
+    } else {
+      initialPeriods = [null];
+    }
     initialPeriods.forEach(function (p) { periodRows.appendChild(buildPeriodRow(p)); });
     card.appendChild(periodRows);
 
