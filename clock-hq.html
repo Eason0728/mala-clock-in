@@ -458,6 +458,13 @@
     return s;
   }
 
+  /* 打完上班卡後的「下班卡冷卻」：同仁常在打上班的當下手滑又按到下班。
+     這段是純前端的防呆——不擋真的要下班的人太久，也不影響後端判定。
+     頁面重新整理也還原得了，因為時間點是從 whoami 的 last_counted 算的。 */
+  var CLOCKOUT_LOCK_MIN = 10;
+  var outLockUntil = 0;      // 毫秒；0＝沒鎖
+  var outLockTimer = null;
+
   // 目前不允許的打卡型別（'in'/'out'/null）。由伺服器 whoami 的 last_counted
   // （12 小時回看視窗，跨日也算）決定，不要自己從 today_events 算。
   var blockedType = null;
@@ -491,6 +498,31 @@
     blockedType = lastCounted ? lastCounted.type : null;
     btnIn.classList.toggle('not-allowed', blockedType === 'in');
     btnOut.classList.toggle('not-allowed', blockedType === 'out');
+    // 最後一筆是上班卡 → 起算冷卻
+    outLockUntil = 0;
+    if (lastCounted && lastCounted.type === 'in') {
+      var t = new Date(String(lastCounted.ts)).getTime();
+      if (!isNaN(t)) outLockUntil = t + CLOCKOUT_LOCK_MIN * 60 * 1000;
+    }
+    refreshOutLock();
+  }
+
+  /** 下班鍵的冷卻顯示：反灰、按不下去、按鈕上顯示還要等多久；時間到自動恢復 */
+  function refreshOutLock() {
+    if (outLockTimer) { clearTimeout(outLockTimer); outLockTimer = null; }
+    var left = outLockUntil - Date.now();
+    if (left > 0) {
+      var mm = Math.floor(left / 60000), ss = Math.floor((left % 60000) / 1000);
+      btnOut.disabled = true;
+      btnOut.classList.add('not-allowed');
+      btnOut.textContent = '下班打卡（' + mm + ':' + ('0' + ss).slice(-2) + ' 後可按）';
+      outLockTimer = setTimeout(refreshOutLock, 1000);
+    } else {
+      outLockUntil = 0;
+      btnOut.textContent = '下班打卡';
+      btnOut.disabled = false;
+      btnOut.classList.toggle('not-allowed', blockedType === 'out');
+    }
   }
 
   function renderTodayEvents(events) {
@@ -751,6 +783,7 @@
   function setBusy(busy) {
     btnIn.disabled = busy;
     btnOut.disabled = busy;
+    if (!busy) refreshOutLock();   // ⚠ 不可無條件解鎖，否則打完卡冷卻立刻失效
   }
 
   function showStatus(cls, text) {
@@ -856,6 +889,11 @@
 
 
   function doClock(type) {
+    if (type === 'out' && outLockUntil > Date.now()) {
+      var s2 = Math.ceil((outLockUntil - Date.now()) / 60000);
+      showStatus('status-warn', '⚠ 剛打完上班卡，' + s2 + ' 分鐘後才能打下班卡（避免手滑誤打）。真的要下班請告知主管補登。');
+      return;
+    }
     if (blockedType === type) {
       // 前端先擋下的重複打卡（不打 API）。這句保留「已打過上班/下班卡」的具體說法：
       // 它不是「打卡沒成功」，而是「這一筆本來就不該打」，用統一失敗句會叫她再打一次、更混亂。
