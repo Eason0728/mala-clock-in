@@ -7,6 +7,24 @@
 <link rel="apple-touch-icon" href="assets/icon-180.png">
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
 <meta name="apple-mobile-web-app-title" content="打卡">
+<script>
+/* ⚠ 主畫面圖示必須在 <head> 解析當下就換掉：iOS 在「加入主畫面」時抓的是它解析 head 時看到的
+   apple-touch-icon，寫在頁尾才換有機會來不及。這段只改標籤，不依賴其他程式。 */
+(function () {
+  var MAP = {
+    'cf': { icon: 'assets/icon-180-mzt.png', home: '央廚打卡' },
+    'hq': { icon: 'assets/icon-180-mzt.png', home: '總部打卡' }
+  };
+  var s = String(new URLSearchParams(location.search).get('s') || '').toLowerCase();
+  var b = MAP[s];
+  if (!b) return;
+  var l = document.querySelector('link[rel="apple-touch-icon"]');
+  if (l) l.setAttribute('href', b.icon);
+  var m = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+  if (m) m.setAttribute('content', b.home);
+})();
+</script>
+
 <style>
   :root {
     --brand-red: #E8380D;
