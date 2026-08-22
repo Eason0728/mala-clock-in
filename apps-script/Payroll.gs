@@ -34,6 +34,8 @@ const PAY_SHEETS = {
                // 2026-08-23 追加：min_unit＝最小請假單位（hour／half／day）；
                // window_before／window_days／window_max＝期限規則（見 payLeaveWindow）
                'min_unit','window_before','window_days','window_max',
+               // 2026-08-23：這天算不算「餐費補助的出勤日」。出差另有差旅費，設 false 不重複給。
+               'count_meal_day',
                // 2026-08-23：這種假對全勤的影響。留空＝沿用 count_absent（遞減）；
                // none＝完全不影響、deduct＝按天遞減、void＝直接讓當月全勤歸零
                'attend_effect'],
@@ -304,6 +306,8 @@ function payCollect(ym, minH, store, holidayDates) {
       const dayH = Number(rec.approved_hours) || 0;
       slot(emp).hours += dayH;
       // 餐費補助出勤天數：當日實際核定工時滿 MEAL_MIN_HOURS 才算一天（未滿不補、請假/特休/出差核定 0 不算）
+      // 餐費補助出勤天數。⚠ 出差當天不算（假別表 count_meal_day=false）——出差另有差旅費，
+      // 不重複給。這裡先記下來，等下面讀完 leave 分頁知道那天是不是出差再決定。
       if (dayH >= MEALMIN) slot(emp)._wd[d] = true;
       // 國定假日當天的出勤時數（計時同仁雙薪的基礎；時數本身照樣算進總時數）
       if (HOLSET[String(d)]) slot(emp).holiday_h += dayH;
@@ -367,6 +371,8 @@ function payCollect(ym, minH, store, holidayDates) {
     const ae = lt ? (lt.attend_effect || (lt.count_absent ? 'deduct' : 'none')) : 'deduct';
     if (ae === 'void') s.attend_void = true;          // 例：央廚／總部「有事假就沒全勤」
     if (ae === 'deduct' || ae === 'void') markDay(emp, d);
+    // 出差之類「不算餐費出勤日」的，把當天從餐費天數扣掉
+    if (lt && lt.count_meal_day === false) delete s._wd[d];
   });
 
   Object.keys(out).forEach(function (emp) {
@@ -872,6 +878,10 @@ const PAY_LEAVE_DEFAULTS = [
   ['official',      '公假',                      1,   false, true, '',  '',         0,   '',        '',   '', '',   'hour', '',  '',   '',   '依事實需要給假，工資照給'],
   ['jobseek',       '謀職假',                    1,   false, true, '',  '',         0,   '',        '',   '', '',   'hour', '',  '',   '',   '勞基法§16 預告終止契約期間，每週不超過 2 日之工作時間，工資照給'],
   ['parental',      '育嬰假',                    0,   false, true, 720, 'child',    0,   '',        '',   '', '',   'day',  '',  '',   '',   '育嬰留停：每一子女 3 歲前最長 2 年（24 個月＝720 日）；另有「以日 30 日」「以月未滿 6 個月 2 次」兩條線'],
+  // ⚠ 出差不是請假，是「在工作、只是人不在店裡」——放在這張表只是為了共用值班核定頁的下拉。
+  //    給薪 100%、不扣全勤，時數走主管核定的時段（照常計薪），所以 offset_shortfall 設 false
+  //    避免與已計入的工時重複折抵。最後一欄 false＝當天不給餐費補助（出差另有差旅費）。
+  ['trip',          '出差',                      1,   false, false, '', '',         0,   '',        '',   '', '',   'hour', '',  '',   '',   '出差：時數照算、工資照給、不扣全勤；當天不計餐費補助（另有差旅費）', false],
 ];
 
 /** 育嬰留停專屬額度（性平法§16＋育嬰留停實施辦法，Eason 2026-08-22 指定）
@@ -920,6 +930,8 @@ function payLeaveTypes(store) {
       window_days:   (r.window_days   === '' || r.window_days   == null) ? null : payNum(r.window_days),
       window_max:    (r.window_max    === '' || r.window_max    == null) ? null : payNum(r.window_max),
       attend_effect: String(r.attend_effect || '').trim(),
+      // 留空一律當 true（＝改版前行為：有核定滿 6H 就算一天）
+      count_meal_day: (String(r.count_meal_day || '').toLowerCase() === 'false') ? false : true,
       sort: payNum(r.sort),
       note: String(r.note || ''),
     };
@@ -937,6 +949,7 @@ function payLeaveTypes(store) {
       window_days:   (d[14] === '' ? null : d[14]),
       window_max:    (d[15] === '' ? null : d[15]),
       attend_effect: '',   // 內建預設一律留空＝沿用 count_absent，避免動到既有全勤計算
+      count_meal_day: (d[17] === false ? false : true),
       sort: (i + 1) * 10, note: d[16],
     };
   });

@@ -111,6 +111,7 @@ const LEAVE_TYPES = [
   '流產假（妊娠2～未滿3個月）', '流產假（妊娠未滿2個月）', '產檢假',
   '陪產檢及陪產假', '公假', '謀職假',
   '育嬰假', '喪假', '產假',
+  '出差',
 ];
 
 /**
@@ -1154,7 +1155,9 @@ function handleMgrApprove(body) {
         outMs: s.out ? hmToMs(outDate, s.out) : null,
       };
     });
-    statusText = computeApprovalStatus(periods, punchWithMs, unrecordedAttemptCount(eventRows, body.emp_id, date) > 0);
+    statusText = computeApprovalStatus(periods, punchWithMs,
+      unrecordedAttemptCount(eventRows, body.emp_id, date) > 0,
+      String(body.leave_type || '').trim() === TRIP_NOTE);
     periodsStr = rawPeriods.map(function (p) { return p.start + '-' + p.end; }).join(',');
   }
   const enteredAt = nowTaipeiIso();
@@ -1433,6 +1436,20 @@ function dayReferenceIncomplete(segments, dateStr, todayStr) {
 //   2. 真的沒打（忘刷卡）→ 沿用原本的說法
 // 分辨依據＝當天有沒有 status!=='ok' 的事件（與 mgr_day 的 attempts 同一口徑）。
 const NO_PUNCH_NOTE = '該段無打卡';
+const TRIP_NOTE = '出差';   // 出差當天打不了卡，狀態標這個而不是「該段無打卡」
+
+/** 某人某天在 leave 分頁是不是登記了出差。⚠ leave 分頁是中文欄位（日期／姓名／假別／時數）。 */
+function isTripDay(ss, dateStr, name) {
+  try {
+    const sh = ss.getSheetByName('leave');
+    if (!sh) return false;
+    return readSheetAsObjects(sh).rows.some(function (l) {
+      return normCellDate(l['日期']) === dateStr
+          && String(l['姓名'] || '').trim() === String(name || '').trim()
+          && String(l['假別'] || '').trim() === TRIP_NOTE;
+    });
+  } catch (e) { return false; }
+}
 const NOT_RECORDED_NOTE = '打卡未入帳，主管補登';
 
 /** 某人某天「送出了但沒入帳」的打卡筆數（status!=='ok'，含超出範圍與待核准，與 mgr_day 的 attempts 同口徑）。 */
@@ -1446,7 +1463,7 @@ function unrecordedAttemptCount(eventRows, empId, dateStr) {
   return n;
 }
 
-function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts) {
+function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip) {
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
   const notes = [];
   const usedIdx = {};
@@ -1459,8 +1476,10 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts) {
       if (overlap > bestOverlap) { bestOverlap = overlap; bestIdx = i; }
     });
     if (bestIdx === -1) {
-      // 舊呼叫端沒傳第三個參數＝undefined＝falsy，行為與改版前相同
-      const note = hadUnrecordedAttempts ? NOT_RECORDED_NOTE : NO_PUNCH_NOTE;
+      // 舊呼叫端沒傳第三／第四個參數＝undefined＝falsy，行為與改版前相同。
+      // ⚠ 出差當天本來就打不了卡（人不在店裡），標「該段無打卡」會被當成忘刷卡去扣全勤，
+      //    所以改標「出差」——時數照算、工資照給，只是提醒看表的人這天不在店。
+      const note = isTrip ? TRIP_NOTE : (hadUnrecordedAttempts ? NOT_RECORDED_NOTE : NO_PUNCH_NOTE);
       if (notes.indexOf(note) === -1) notes.push(note);
       return;
     }
@@ -1972,10 +1991,15 @@ function recheckPendingApprovalStatuses() {
           outMs: s.out ? hmToMs(outDate, s.out) : null,
         };
       });
-      const newStatusText = computeApprovalStatus(periods, punchWithMs, unrecordedAttemptCount(eventRows, empId, date) > 0);
+      // 名冊的名字優先（有人改過名時 approved 上是舊名），查不到才退回 approved 那筆的 name。
+      // ⚠ 下面的 const roster 在這行之後才宣告，不能拿來用（暫時性死區），所以自己查一次。
+      const rosterNow = findRosterByEmpId(rosterRows, empId);
+      const newStatusText = computeApprovalStatus(periods, punchWithMs,
+        unrecordedAttemptCount(eventRows, empId, date) > 0,
+        isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name));
       if (newStatusText === statusText) return; // 還是沒打卡，維持原樣，下次再檢查
 
-      const roster = findRosterByEmpId(rosterRows, empId);
+      const roster = rosterNow;
       approvedSheet.appendRow([
         date, empId, roster ? roster.name : rec.name, rec.periods, rec.approved_hours,
         newStatusText, String(rec.manager_name || '') + RECHECK_MARK, nowTaipeiIso(),
