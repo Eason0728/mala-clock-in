@@ -315,6 +315,57 @@
     return STORE_APIS[v] ? v : '';
   })();
   var API_URL = STORE_APIS[STORE_CODE];
+  // 假別清單與額度住在薪酬系統（全集團共用一份），固定打光復那套後端；
+  // ⚠ 不可跟著門市切換——央廚／總部的後端沒有薪資模組。與 clock.html 的「我的薪資」同一個道理。
+  // 本機測試時 ?api= 會一併覆寫（否則本機頁面會去打正式薪酬後端，mock 金鑰在那邊無效）
+  var PAYROLL_API = qs('api')
+    || 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
+  // 後端拿到的假別表；拿不到時退回這份內建清單（值班核定不能因為薪酬後端掛掉就不能用）
+  var LEAVE_FALLBACK = ['病假', '事假', '特休假', '生理假', '家庭照顧假', '天災假', '喪假', '婚假'];
+  var LEAVE_OPTS = null;   // { types:[...], quotas:{emp_id:{code:{...}}}, day_hours:n }
+  // ⚠ 本頁的門市代碼是小寫（''／'cf'／'hq'，跟 STORE_APIS 一致），
+  //    薪酬系統的門市代碼是大寫（SSLGF／CF／HQ）且比對「完全相等」——不轉換會查不到門市，
+  //    症狀是央廚／總部的假別下拉靜靜退回內建 8 種、額度也不會顯示。
+  var PAYROLL_STORE_MAP = { '': 'SSLGF', 'cf': 'CF', 'hq': 'HQ' };
+  function payrollStoreCode() { return PAYROLL_STORE_MAP[STORE_CODE] || 'SSLGF'; }
+
+  /** 開頁時抓一次假別清單與各人剩餘額度。失敗不擋人——退回內建清單、只是沒有額度提示。 */
+  function loadLeaveOptions() {
+    return fetch(PAYROLL_API, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'payroll_leave_options', store: payrollStoreCode(), mgr_key: mgrKey })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j && j.ok) LEAVE_OPTS = j;
+    }).catch(function () { /* 靜默退回 fallback */ });
+  }
+
+  /** 期限規則檢查（與後端 payLeaveWindowCheck 同一套規則，改這裡兩邊都要改）。
+   *  以事件日為基準：婚假＝結婚登記日、陪產假＝分娩日。事件日沒登記就不擋、只提示。 */
+  function shiftDay(d, n) {
+    var x = new Date(d + 'T00:00:00');
+    x.setDate(x.getDate() + n);
+    var p = function (v) { return (v < 10 ? '0' : '') + v; };
+    return x.getFullYear() + '-' + p(x.getMonth() + 1) + '-' + p(x.getDate());
+  }
+  function windowCheck(def, empId, leaveDate) {
+    if (!def || def.window_days == null) return { ok: true };
+    var ev = ((LEAVE_OPTS && LEAVE_OPTS.events && LEAVE_OPTS.events[empId]) || {})[def.code];
+    if (!ev) return { ok: true, note: def.name + ' 有期限規定，但還沒登記事件日，系統無法檢查' };
+    var from = shiftDay(ev, -(Number(def.window_before) || 0));
+    var to   = shiftDay(from, Number(def.window_days) || 0);
+    var toMax = (def.window_max == null) ? null : shiftDay(from, Number(def.window_max));
+    if (leaveDate < from) return { ok: false, msg: def.name + ' 最早只能從 ' + from + ' 開始請（事件日 ' + ev + '）' };
+    if (leaveDate <= to) return { ok: true };
+    if (toMax && leaveDate <= toMax) return { ok: true, note: def.name + ' 已超過 ' + to + ' 的期限，需雇主同意才可延至 ' + toMax };
+    return { ok: false, msg: def.name + ' 請畢期限是 ' + to + (toMax ? '（經同意最多延至 ' + toMax + '）' : '') + '，已超過' };
+  }
+
+  /** 某人某假別的剩餘額度文字與是否該擋。 */
+  function quotaOf(empId, code) {
+    if (!LEAVE_OPTS || !LEAVE_OPTS.quotas) return null;
+    var q = (LEAVE_OPTS.quotas[empId] || {})[code];
+    return q || null;
+  }
   /* 門市品牌：依 ?s= 換頁面標題與 logo。不帶參數＝光復，畫面與原本完全相同。 */
   var STORE_BRAND = {
     ''  : { title: '麻的🔥小辛辣', logo: null },
@@ -502,7 +553,11 @@
     card.appendChild(periodRows);
 
     // 請假註記：選了假別會寫入 leave 分頁（月表狀態欄顯示），改回「無」重送會清掉
-    var LEAVE_TYPES = ['病假', '事假', '特休假', '生理假', '家庭照顧假', '天災假', '喪假', '婚假'];
+    // 假別清單改由薪酬系統的 payroll_leave_type 決定——在那張表加一列，這裡就多一個選項，
+    // 不必再改三處程式（後端／本頁／mock）。抓不到就用內建 fallback。
+    var LEAVE_TYPES = (LEAVE_OPTS && LEAVE_OPTS.types && LEAVE_OPTS.types.length)
+      ? LEAVE_OPTS.types.map(function (t) { return t.name; })
+      : LEAVE_FALLBACK;
     var leaveRow = document.createElement('div');
     leaveRow.className = 'leave-row';
     var leaveLabel = document.createElement('label');
@@ -512,6 +567,29 @@
       var opt = document.createElement('option');
       opt.value = t === '無' ? '' : t;
       opt.textContent = t;
+      // 額度用完就反灰選不了（曆年制與每子女制才擋；婚喪產檢一年可能發生多次，不擋）
+      if (t !== '無' && LEAVE_OPTS && LEAVE_OPTS.types) {
+        var def = LEAVE_OPTS.types.filter(function (x) { return x.name === t; })[0];
+        var q = def ? quotaOf(String(emp.emp_id), def.code) : null;
+        if (q && q.cap_days != null) {
+          var remain = Math.round((q.remain_days || 0) * 10) / 10;
+          if (q.blocked) {
+            opt.disabled = true;
+            opt.textContent = t + '（額度已用完）';
+          } else if (q.basis === 'event') {
+            // 婚喪產檢是「每次事件」各有額度，一年可能發生多次；顯示「剩 N 日」會誤導
+            // （一月用掉 3 天，十二月不該說只剩 5 天），改標示每次的上限。
+            opt.textContent = t + '（每次上限 ' + q.cap_days + ' 日）';
+          } else if (def.code === 'parental') {
+            // 育嬰留停額度以月計較好懂（730 日＝24 個月）
+            opt.textContent = t + '（剩 ' + (Math.round(remain / 30 * 10) / 10) + ' 個月）';
+          } else {
+            opt.textContent = t + '（剩 ' + remain + ' 日）';
+          }
+        }
+        // 已經選過這個假別的紀錄，即使現在超額也要能顯示，否則重開頁會掉值
+        if (String(emp.leave_type || '') === t) opt.disabled = false;
+      }
       leaveSelect.appendChild(opt);
     });
     leaveSelect.value = emp.leave_type || '';
@@ -559,6 +637,31 @@
     card.appendChild(resultBox);
 
     submitBtn.addEventListener('click', function () {
+      // 硬擋：額度用完的假別不給送出。下拉的 disabled 只擋滑鼠，程式指定仍設得進去，
+      // 所以送出前用同一份額度資料再判一次（Eason 2026-08-22 指定「硬擋，不給送出」）。
+      if (leaveSelect.value && LEAVE_OPTS && LEAVE_OPTS.types) {
+        var d0 = LEAVE_OPTS.types.filter(function (x) { return x.name === leaveSelect.value; })[0];
+        var q0 = d0 ? quotaOf(String(emp.emp_id), d0.code) : null;
+        // 原本就選著這個假別的既有紀錄放行，否則已超額的人連重送核定都做不了
+        // 期限規則（婚假 3 個月內、陪產假前後 15 日內…）
+        if (d0 && String(emp.leave_type || '') !== leaveSelect.value) {
+          var wc = windowCheck(d0, String(emp.emp_id), currentDate);
+          if (!wc.ok) {
+            resultBox.style.display = 'block';
+            resultBox.textContent = '✕ ' + wc.msg + '，無法送出。確有需要請聯絡 Eason。';
+            return;
+          }
+          if (wc.note && !confirm(wc.note + '\n\n仍要送出嗎？')) return;
+        }
+        if (q0 && q0.blocked && String(emp.leave_type || '') !== leaveSelect.value) {
+          resultBox.style.display = 'block';
+          resultBox.textContent = '✕ ' + emp.name + ' 的「' + leaveSelect.value
+            + '」額度已用完（上限 ' + q0.cap_days + ' 日，已用 '
+            + (Math.round((q0.used_days || 0) * 10) / 10) + ' 日），無法送出。'
+            + '確有需要請聯絡 Eason 調整假別設定。';
+          return;
+        }
+      }
       var periods = [];
       var halfFilled = false;
       periodRows.querySelectorAll('.period-row').forEach(function (row) {
@@ -875,7 +978,8 @@
       showError('系統尚未設定完成，請聯絡老闆。');
       return;
     }
-    loadDay(null);
+    // 先抓假別清單與額度，再畫卡片（抓不到就用內建 fallback，不擋值班核定）
+    loadLeaveOptions().then(function () { loadDay(null); });
     loadPendingDevices(); // 與當日核定並行載入，失敗不影響主要功能
   }
 

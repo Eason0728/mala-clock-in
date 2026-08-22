@@ -71,7 +71,19 @@ const LOW_ACCURACY_M = 50;
 const APPROVED_HEADERS = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at'];
 const MANAGERS_HEADERS = ['name', 'key', 'active'];
 // 主管核定頁「請假註記」可選假別（2026-07-13 Eason 定案；改清單前後端 mock 要同步）
-const LEAVE_TYPES = ['病假', '事假', '特休假', '生理假', '家庭照顧假', '天災假', '喪假', '婚假'];
+// ⚠ 2026-08-22 起：值班核定頁的下拉改由薪酬系統的 payroll_leave_type 表決定，
+//   這份清單降級為「送出時的合法性白名單」＋薪酬後端連不上時的 fallback。
+//   在 payroll_leave_type 加新假別時，這一行也要一起放行，否則送出會被擋成 bad_leave_type。
+const LEAVE_TYPES = [
+  '特休假', '事假', '病假',
+  '住院傷病假', '安胎休養假', '生理假',
+  '家庭照顧假', '喪假（父母・配偶）', '喪假（祖父母・子女・配偶父母）',
+  '喪假（曾祖父母・兄弟姊妹）', '婚假', '天災假',
+  '公傷病假', '產假（分娩）', '流產假（妊娠3個月以上）',
+  '流產假（妊娠2～未滿3個月）', '流產假（妊娠未滿2個月）', '產檢假',
+  '陪產檢及陪產假', '公假', '謀職假',
+  '育嬰假', '喪假', '產假',
+];
 
 /**
  * 手動執行一次：建立 roster / events 兩個分頁與表頭。

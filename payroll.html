@@ -328,6 +328,11 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
   <div class="card">
     <h2>全域參數 <span id="cfgScope" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
     <p class="hint">事假費率 ＝ (底薪＋職能＋夜間＋店長＋全勤上限) ÷ 分母天 ÷ 分母時；病假為其一半。</p>
+    <p class="hint"><b>全勤兩段式</b>：先算<b>遞減</b>（全勤上限 − 缺勤天數 × 每日倒扣），再看<b>門檻</b>——
+      忘刷次數／遲到累計分鐘／早退累計分鐘任一達標就<b>整筆歸零</b>，薪資單上會標明原因。
+      三個門檻<b>填 0 就是不啟用</b>（＝純遞減，光復現行做法）。<br>
+      「有某種假就沒全勤」不在這裡設，去下面<b>假別設定</b>把該假的「對全勤」改成<b>歸零</b>。
+      記得勾「只套用到目前門市」，否則會套到全集團。</p>
     <div class="grid2" id="cfgGrid"></div>
     <div class="row" style="margin-top:14px">
       <button class="btn" onclick="saveCfg(this,'儲存參數')">儲存參數</button>
@@ -353,6 +358,40 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
       <label style="font-size:13px;display:flex;align-items:center;gap:6px">
         <input type="checkbox" id="holOwn" style="width:18px;height:18px"> 只套用到目前門市（不勾＝集團共用）
       </label>
+    </div>
+  </div>
+  <div class="card">
+    <h2>假別設定 <span id="ltScope" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
+    <p class="hint">一列一種假。<b>值班核定的下拉、薪資扣款、額度上限全部讀這張表</b>——在這裡加一列就多一種假，不用改程式。<br>
+      <b>給薪</b>：100%＝不扣款、50%＝扣一半、0%＝全額扣。
+      <b>扣全勤</b>：這種假算不算缺勤天數（公司自訂規則，不是法規）。
+      <b>抵不足</b>：請假時數可否抵掉「不足時數倒扣」（那天沒上班就不該再倒扣，通常都要勾）。<br>
+      <b>上限／週期</b>：曆年＝每年 1/1 歸零（病假 30 日、事假 14 日）；事件別＝每次事件各有額度（婚喪產檢，<b>不硬擋</b>，因為一年可能發生多次）；每子女＝育嬰留停；年資＝特休（額度由到職日自動算，不看這裡）。
+      <b>超過後</b>：逾上限那部分的給薪比例（病假逾 30 日→0%）。
+      <b>併入</b>：逾上限後改吃哪種假的額度（家庭照顧假→事假、生理假→病假）。
+      <b>年資門檻／未達給薪</b>：年資未滿 N 個月時改用另一個比例（產假未滿 6 個月→50%）。
+      <b>對全勤</b>：留空＝沿用左邊「扣全勤」欄；<b>整筆歸零</b>＝請了這種假當月全勤就是 0
+      （央廚／總部的事假就是設這個）。</p>
+    <div class="scroll"><table id="ltTbl"></table></div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn ghost" onclick="addLeaveType()">＋ 新增假別</button>
+      <button class="btn" id="saveLtBtn" onclick="saveLeaveTypes(this)">儲存假別設定</button>
+      <button class="btn ghost" onclick="resetLeaveTypes()">還原成法定預設</button>
+      <label style="font-size:13px;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="ltOwn" style="width:18px;height:18px"> 只套用到目前門市（不勾＝集團共用）
+      </label>
+    </div>
+    <div class="note warn" style="margin-top:12px">⚠ 改了假別設定後，<b>已經算過的月份不會自動套用</b>——要到「薪資計算」按重新計算（已鎖定的月份要先解鎖）。</div>
+  </div>
+  <div class="card">
+    <h2>假別事件日</h2>
+    <p class="hint">有<b>期限規定</b>的假別（婚假、陪產檢及陪產假）要先登記「事件那天」，系統才算得出可請期間。<br>
+      婚假填<b>結婚登記日</b>、陪產假填<b>配偶分娩日</b>。沒登記不會擋人，只是值班核定時不做期限檢查。<br>
+      同一人同一種假只留最新一筆；同仁請完假之後這筆可以刪掉。</p>
+    <div class="scroll"><table id="levTbl"></table></div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn ghost" onclick="addLeaveEvent()">＋ 新增事件日</button>
+      <button class="btn" id="saveLevBtn" onclick="saveLeaveEvents(this)">儲存事件日</button>
     </div>
   </div>
 </section>
@@ -542,6 +581,7 @@ async function loadMonth(){
     showClockMode();
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
     STORE=r.store||STORE; CFGSRC=r.config_src||{};
+    LT_LIST=[]; loadLeaveTypes(); LEV_LIST=[]; loadLeaveEvents();   // ⚠ 切門市必須重載，否則沿用上一家店的設定
     if(r.stores&&r.stores.length){STORE_LIST=r.stores;renderStoreSel()}
     // 主檔與參數都會隨門市不同 → 切換門市時一併更新（否則會看到別店的員工）
     if(r.master){MASTER=r.master;renderEmp()}
@@ -579,7 +619,12 @@ function renderStats(){
     +tile('📥','應收總額',nf(d));
 }
 // 薪資費用要扣的只有「真的少領」：請假扣款＋不足倒扣。勞健保自付留在薪資費用內、宿舍當租金收入不在此表。
-const COST_REDUCE_KEYS=['personal_leave','sick_leave','menstrual_leave','disaster_leave','shortfall_hours'];
+/* 薪資費用＝應收 −（請假扣款＋不足倒扣）：只扣「真的少領」的，勞健保自付與宿舍不扣。
+   ⚠ 2026-08-22 假別參數表上線後，扣款 item_key 一律是「假別code + _leave」，
+      新增假別會自動產生新的 key（family_leave、parental_leave…）——所以這裡改成
+      「凡是 _leave 結尾的都算」，不要再逐一列舉，否則每加一種假就會漏扣一次。 */
+const COST_REDUCE_EXTRA=['shortfall_hours'];
+function isCostReduceKey(k){ return /_leave$/.test(String(k)) || COST_REDUCE_EXTRA.indexOf(k)>=0; }
 /** 缺口時數由各支援列「平均分擔」；某列時數不夠就把餘額讓給還有餘裕的列 */
 function allocGapHours(hoursArr, gap){
   const alloc=hoursArr.map(()=>0);
@@ -634,7 +679,7 @@ function costTotals(){
       else if(k==='night_allow'||k==='skill_allow')g.allow+=a;else if(k==='mgr_allow')g.mgr+=a;
       else if(k==='meal_sub')g.meal+=a;
       else { g.other+=a; const lb=String(x.item_label||'其他'); g.otherBy[lb]=(g.otherBy[lb]||0)+a; }});
-    r.ded.forEach(x=>{if(COST_REDUCE_KEYS.indexOf(x.item_key)>=0){
+    r.ded.forEach(x=>{if(isCostReduceKey(x.item_key)){
       g.reduce+=x.amount; g.reduceBy[x.item_label]=(g.reduceBy[x.item_label]||0)+x.amount;}});
   });
   return g;
@@ -819,6 +864,148 @@ function addSupportFor(emp){
 }
 
 
+
+/* ═════ 假別設定（2026-08-22）═════
+ * 這張表是「值班核定下拉／薪資扣款／額度上限」共同的正本。
+ * 改版前假別是寫死在三個地方用關鍵字比對的，新增一種假必漏改；現在改資料驅動。 */
+let LT_LIST = [], LT_IS_DEFAULT = false;
+const LT_BASIS = [['','（無上限）'],['calendar','曆年'],['event','事件別'],['child','每子女'],['tenure','年資']];
+
+function renderLeaveTypes(){
+  const t=$('ltTbl'); if(!t) return;
+  const sc=$('ltScope');
+  if(sc) sc.textContent = LT_IS_DEFAULT ? '（目前使用系統內建的法定預設，尚未自訂）' : '（已自訂）';
+  const cols=[['name','假別名稱',150],['pay_ratio','給薪',70],['count_absent','扣全勤',60],
+              ['offset_shortfall','抵不足',60],['cap_days','上限日',70],['cap_basis','週期',95],
+              ['over_ratio','超過後',70],['merge_into','併入',130],['cap_per_month','每月上限',80],
+              ['tenure_months','年資門檻',80],['under_ratio','未達給薪',80],
+              ['attend_effect','對全勤',110],
+              ['min_unit','最小單位',85],['window_before','事件前N日',80],
+              ['window_days','期限(日)',80],['window_max','可延至(日)',85]];
+  let h='<thead><tr>'+cols.map(c=>`<th style="text-align:left">${c[1]}</th>`).join('')+'<th></th></tr></thead><tbody>';
+  LT_LIST.forEach((r,i)=>{
+    h+='<tr>';
+    cols.forEach(([k,,w])=>{
+      if(k==='count_absent'||k==='offset_shortfall'){
+        h+=`<td style="text-align:center"><input type="checkbox" style="width:18px;height:18px"
+             ${r[k]?'checked':''} onchange="LT_LIST[${i}].${k}=this.checked"></td>`;
+      } else if(k==='pay_ratio'||k==='over_ratio'||k==='under_ratio'){
+        h+=`<td><select onchange="LT_LIST[${i}].${k}=parseFloat(this.value)" style="min-width:${w}px">`
+          +[1,0.8,0.5,0.2,0].map(v=>`<option value="${v}" ${Number(r[k])===v?'selected':''}>${v*100}%</option>`).join('')
+          +'</select></td>';
+      } else if(k==='cap_basis'){
+        h+=`<td><select onchange="LT_LIST[${i}].cap_basis=this.value" style="min-width:${w}px">`
+          +LT_BASIS.map(([v,l])=>`<option value="${v}" ${String(r.cap_basis||'')===v?'selected':''}>${l}</option>`).join('')
+          +'</select></td>';
+      } else if(k==='attend_effect'){
+        h+=`<td><select onchange="LT_LIST[${i}].attend_effect=this.value" style="min-width:${w}px">`
+          +[['','（沿用扣全勤欄）'],['none','不影響'],['deduct','按天遞減'],['void','整筆歸零']]
+            .map(([v,l])=>`<option value="${v}" ${String(r.attend_effect||'')===v?'selected':''}>${l}</option>`).join('')
+          +'</select></td>';
+      } else if(k==='min_unit'){
+        h+=`<td><select onchange="LT_LIST[${i}].min_unit=this.value" style="min-width:${w}px">`
+          +[['hour','小時'],['half','半日'],['day','整日']].map(([v,l])=>`<option value="${v}" ${String(r.min_unit||'hour')===v?'selected':''}>${l}</option>`).join('')
+          +'</select></td>';
+      } else if(k==='merge_into'){
+        h+=`<td><select onchange="LT_LIST[${i}].merge_into=this.value" style="min-width:${w}px">`
+          +'<option value="">（不併入）</option>'
+          +LT_LIST.filter(x=>x.code!==r.code).map(x=>`<option value="${x.code}" ${String(r.merge_into||'')===x.code?'selected':''}>${x.name}</option>`).join('')
+          +'</select></td>';
+      } else {
+        const num = (k!=='name');
+        h+=`<td style="text-align:left"><input type="${num?'number':'text'}" value="${r[k]??''}"
+             style="min-width:${w}px" onchange="LT_LIST[${i}]['${k}']=this.value"></td>`;
+      }
+    });
+    h+=`<td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
+         onclick="LT_LIST.splice(${i},1);renderLeaveTypes()">移除</button></td></tr>`;
+  });
+  t.innerHTML=h+'</tbody>';
+}
+function addLeaveType(){
+  // code 是給程式與薪資明細用的英數代碼，重複會蓋掉既有列，所以自動編一個不重複的
+  let n=1; while(LT_LIST.some(x=>x.code==='custom'+n)) n++;
+  LT_LIST.push({code:'custom'+n,name:'',pay_ratio:0,count_absent:true,offset_shortfall:true,
+    cap_days:'',cap_basis:'',over_ratio:0,merge_into:'',cap_per_month:'',
+    tenure_months:'',under_ratio:0,min_unit:'hour',window_before:'',window_days:'',window_max:'',
+    attend_effect:'',
+    active:true,sort:(LT_LIST.length+1)*10,note:''});
+  renderLeaveTypes();
+}
+async function loadLeaveTypes(){
+  const r=await post('payroll_leave_type_get');   // post() 會自動帶 admin_key 與 store
+  if(!r||!r.ok) return;
+  LT_LIST=r.types||[]; LT_IS_DEFAULT=!!r.is_default;
+  const own=$('ltOwn'); if(own) own.checked=!LT_IS_DEFAULT && !!r.store_specific;
+  renderLeaveTypes();
+}
+async function saveLeaveTypes(btn){
+  return saveFX(btn,'儲存假別設定',async()=>{
+    const bad=LT_LIST.filter(x=>!String(x.name||'').trim()||!String(x.code||'').trim());
+    if(bad.length) throw new Error('有假別的名稱或代碼是空的，請補齊再存');
+    const names=LT_LIST.map(x=>String(x.name).trim());
+    if(new Set(names).size!==names.length) throw new Error('有重複的假別名稱——名稱是 leave 分頁比對的依據，不能重複');
+    const r=await post('payroll_leave_type_set',
+                       {scope_own:$('ltOwn')&&$('ltOwn').checked, types:LT_LIST});
+    if(!r||!r.ok) throw new Error((r&&r.message)||'儲存失敗');
+    await loadLeaveTypes();
+  });
+}
+async function resetLeaveTypes(){
+  if(!confirm('要把假別設定還原成系統內建的法定預設嗎？\n（你自訂的列會被覆蓋，已算過的月份數字不受影響，除非之後按重新計算）')) return;
+  const r=await post('payroll_leave_type_set',{scope_own:false,types:[]});
+  if(r&&r.ok) await loadLeaveTypes();
+}
+
+/* ═════ 假別事件日（期限規則用）═════ */
+let LEV_LIST=[];
+function leaveTypesWithWindow(){ return LT_LIST.filter(t=>t.window_days!=null&&t.window_days!==''); }
+function renderLeaveEvents(){
+  const t=$('levTbl'); if(!t) return;
+  const opts=leaveTypesWithWindow();
+  let h='<thead><tr><th style="text-align:left">同仁</th><th style="text-align:left">假別</th>'
+       +'<th style="text-align:left">事件日</th><th style="text-align:left">可請期間</th>'
+       +'<th style="text-align:left">備註</th><th></th></tr></thead><tbody>';
+  LEV_LIST.forEach((r,i)=>{
+    const def=LT_LIST.find(x=>x.code===r.code);
+    let win='—';
+    if(def&&r.event_date){
+      const bf=Number(def.window_before)||0, wd=Number(def.window_days)||0;
+      const sh=(d,n)=>{const x=new Date(d+'T00:00:00');x.setDate(x.getDate()+n);
+        const p=v=>(v<10?'0':'')+v; return x.getFullYear()+'-'+p(x.getMonth()+1)+'-'+p(x.getDate());};
+      const from=sh(r.event_date,-bf), to=sh(from,wd);
+      win=from+' ～ '+to+(def.window_max?`（可延至 ${sh(from,Number(def.window_max))}）`:'');
+    }
+    h+=`<tr><td style="text-align:left"><select onchange="LEV_LIST[${i}].emp_id=this.value;LEV_LIST[${i}].name=(MASTER.find(m=>String(m.emp_id)===this.value)||{}).name||'';renderLeaveEvents()">`
+      +'<option value="">（選同仁）</option>'
+      +MASTER.map(m=>`<option value="${m.emp_id}" ${String(r.emp_id)===String(m.emp_id)?'selected':''}>${m.name}</option>`).join('')
+      +`</select></td>`
+      +`<td style="text-align:left"><select onchange="LEV_LIST[${i}].code=this.value;renderLeaveEvents()">`
+      +'<option value="">（選假別）</option>'
+      +opts.map(o=>`<option value="${o.code}" ${r.code===o.code?'selected':''}>${o.name}</option>`).join('')
+      +`</select></td>`
+      +`<td style="text-align:left"><input type="date" value="${r.event_date||''}" onchange="LEV_LIST[${i}].event_date=this.value;renderLeaveEvents()"></td>`
+      +`<td style="text-align:left;color:var(--muted);font-size:12.5px">${win}</td>`
+      +`<td style="text-align:left"><input type="text" value="${r.memo||''}" style="min-width:120px" onchange="LEV_LIST[${i}].memo=this.value"></td>`
+      +`<td><button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="LEV_LIST.splice(${i},1);renderLeaveEvents()">移除</button></td></tr>`;
+  });
+  t.innerHTML=h+'</tbody>';
+  if(!opts.length) t.innerHTML='<tbody><tr><td style="color:var(--muted);padding:10px">目前沒有設定期限規則的假別（上方假別設定填了「期限(日)」才會出現在這裡）。</td></tr></tbody>';
+}
+function addLeaveEvent(){ LEV_LIST.push({emp_id:'',name:'',code:'',event_date:'',memo:''}); renderLeaveEvents(); }
+async function loadLeaveEvents(){
+  const r=await post('payroll_leave_event_get');
+  if(r&&r.ok){ LEV_LIST=r.events||[]; renderLeaveEvents(); }
+}
+async function saveLeaveEvents(btn){
+  return saveFX(btn,'儲存事件日',async()=>{
+    const bad=LEV_LIST.filter(x=>!x.emp_id||!x.code||!x.event_date);
+    if(bad.length) throw new Error('有列的同仁／假別／事件日沒填完，請補齊或移除');
+    const r=await post('payroll_leave_event_set',{events:LEV_LIST});
+    if(!r||!r.ok) throw new Error((r&&r.message)||'儲存失敗');
+    await loadLeaveEvents();
+  });
+}
 
 /* ═════ 門市設定 ═════ */
 const SF=[['code','門市代碼'],['name','門市名稱'],['clock_ss_id','打卡試算表 ID'],['dzy_node','dzy 節點'],['emp_prefix','編號前綴'],['sort','順序']];
@@ -1235,9 +1422,15 @@ async function saveMaster(btn){
 /* ═════ 參數 ═════ */
 const CF=[['daily_hours','每日基本工時（H）'],['attend_deduct_per_day','全勤每日倒扣（元）'],
  ['leave_div_days','事假費率分母（天）'],['leave_div_hours','事假費率分母（時）'],
- ['sick_ratio','病假占事假比例'],['payday','發薪日']];
+ ['sick_ratio','病假占事假比例'],['payday','發薪日'],
+ // 全勤門檻式歸零（2026-08-23）：填 0＝不啟用，維持純遞減
+ ['attend_void_forget','忘刷幾次歸零（0=不啟用）'],['attend_void_late_min','遲到累計幾分歸零（0=不啟用）'],
+ ['attend_void_early_min','早退累計幾分歸零（0=不啟用）']];
 function renderCfg(){
   renderStores();
+  // 假別表跟參數一樣依門市覆寫；還沒載入就先抓一次（切門市時 loadMonth 會再抓）
+  if(!LT_LIST.length) loadLeaveTypes(); else renderLeaveTypes();
+  if(!LEV_LIST.length) loadLeaveEvents(); else renderLeaveEvents();
   const own=$('cfgOwn')&&$('cfgOwn').checked;
   if($('cfgScope')) $('cfgScope').textContent=own?'（儲存後只影響目前門市）':'（集團預設，全店共用）';
   const srcTag=k=>{const v=CFGSRC[k];return v==='own'?' <span class="tag draft" style="font-size:10px">本店</span>':(v==='global'?'':' <span style="color:var(--muted)">預設</span>')};
@@ -1292,8 +1485,10 @@ function renderSlipSel(){
 function renderSlip(){
   const r=RESULTS.find(x=>x.emp_id===$('slipSel').value),w=$('slipWrap');
   if(!r){w.innerHTML='<div class="slip" style="text-align:center;color:#8a817a;padding:50px">請先在「月結」頁計算</div>';return}
-  const HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage'];
-  const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${HOURY.includes(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
+  // 以「_leave 結尾」認假別，新增假別自動涵蓋（改版前寫死五個，新假別不會顯示時數×費率）
+  const HOURY_FIX=['overtime','shortfall_hours','hourly_wage'];
+  const isHoury=k=>/_leave$/.test(String(k))||HOURY_FIX.indexOf(k)>=0;
+  const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${isHoury(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   w.innerHTML=`<div class="slip">
     <h3>薪 資 明 細 表</h3>
     <div class="sub">麻的小辛辣 · 新竹光復店 ｜ ${ym().replace('-','年')}月 ｜ 發薪日 每月 ${CFG.payday} 日</div>
@@ -1328,8 +1523,9 @@ function exportCSV(){
 }
 
 /* ═════ 匯出（完整明細）═════ */
-const EXP_HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage','cross_store'];
-function expSub(x){ return x.qty!=null ? `${r2(x.qty)}${EXP_HOURY.includes(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}` : ''; }
+const EXP_HOURY_FIX=['overtime','shortfall_hours','hourly_wage','cross_store'];
+const isExpHoury=k=>/_leave$/.test(String(k))||EXP_HOURY_FIX.indexOf(k)>=0;
+function expSub(x){ return x.qty!=null ? `${r2(x.qty)}${isExpHoury(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}` : ''; }
 function renderExport(){
   if($('expYm')) $('expYm').textContent=ym();
   const w=$('exportDetail'); if(!w) return;

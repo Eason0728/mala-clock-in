@@ -528,7 +528,66 @@ def parse_periods_str(s):
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 # 主管核定頁「請假註記」可選假別（與 Code.gs LEAVE_TYPES 同步）
-LEAVE_TYPES = ["病假", "事假", "特休假", "生理假", "家庭照顧假", "天災假", "喪假", "婚假"]
+# ⚠ 2026-08-22 起正式環境的下拉改由薪酬系統的 payroll_leave_type 表決定（payroll_leave_options），
+#    這份清單只剩兩個用途：①mgr_approve 的合法性檢查 ②薪酬後端連不上時前端的 fallback。
+#    新增假別請改 Payroll.gs 的 PAY_LEAVE_DEFAULTS 或那張表，並記得同步這一行。
+LEAVE_TYPES = [
+    "特休假", "事假", "病假",
+    "住院傷病假", "安胎休養假", "生理假",
+    "家庭照顧假", "喪假（父母・配偶）", "喪假（祖父母・子女・配偶父母）",
+    "喪假（曾祖父母・兄弟姊妹）", "婚假", "天災假",
+    "公傷病假", "產假（分娩）", "流產假（妊娠3個月以上）",
+    "流產假（妊娠2～未滿3個月）", "流產假（妊娠未滿2個月）", "產檢假",
+    "陪產檢及陪產假", "公假", "謀職假",
+    "育嬰假", "喪假", "產假",
+]
+
+
+# ── payroll_leave_options（2026-08-22）：值班核定頁的假別下拉＋額度 ──
+# 正式環境這支在 Payroll.gs，資料來自 payroll_leave_type 表；mock 給固定樣本，
+# 目的是測「剩 N 日」與「額度用完反灰」兩種呈現，數字不必與正式一致。
+MOCK_LEAVE_TYPES = [
+    {"code": "annual",       "name": "特休假",         "cap_days": None, "cap_basis": "tenure"},
+    {"code": "personal",     "name": "事假",           "cap_days": 14,   "cap_basis": "calendar"},
+    {"code": "sick",         "name": "病假",           "cap_days": 30,   "cap_basis": "calendar"},
+    {"code": "menstrual",    "name": "生理假",         "cap_days": 3,    "cap_basis": "calendar"},
+    {"code": "family",       "name": "家庭照顧假",     "cap_days": 7,    "cap_basis": "calendar"},
+    {"code": "funeral",      "name": "喪假",           "cap_days": 8,    "cap_basis": "event"},
+    {"code": "marriage",     "name": "婚假",           "cap_days": 8,    "cap_basis": "event"},
+    {"code": "disaster",     "name": "天災假",         "cap_days": None, "cap_basis": ""},
+    {"code": "occupational", "name": "公傷病假",       "cap_days": None, "cap_basis": ""},
+    {"code": "maternity",    "name": "產假",           "cap_days": 56,   "cap_basis": "event"},
+    {"code": "prenatal",     "name": "產檢假",         "cap_days": 7,    "cap_basis": "event"},
+    {"code": "paternity",    "name": "陪產檢及陪產假", "cap_days": 7,    "cap_basis": "event"},
+    {"code": "official",     "name": "公假",           "cap_days": None, "cap_basis": ""},
+    {"code": "parental",     "name": "育嬰假",         "cap_days": 720,  "cap_basis": "child"},
+]
+
+
+def handle_payroll_leave_options(data, body):
+    # ⚠ mock 的 handler 簽名一律是 (data, body)，別只收 body（踩過：body 收到的其實是 db）
+    if not find_manager_by_key(data, body.get("mgr_key", "")):
+        return {"ok": False, "error": "unauthorized"}
+    quotas = {}
+    for i, emp in enumerate(data.get("roster", [])):
+        q = {}
+        for t in MOCK_LEAVE_TYPES:
+            cap = t["cap_days"]
+            if cap is None or t["cap_basis"] == "tenure":
+                continue
+            # 測試情境：第一位同仁病假只剩 2 日、家庭照顧假已用完，其餘正常
+            used = 0
+            if i == 0 and t["code"] == "sick":
+                used = 28
+            if i == 0 and t["code"] == "family":
+                used = 7
+            blocked = t["cap_basis"] in ("calendar", "child") and used >= cap
+            q[t["code"]] = {"used_days": used, "cap_days": cap,
+                            "remain_days": cap - used, "basis": t["cap_basis"],
+                            "blocked": blocked}
+        quotas[str(emp.get("emp_id"))] = q
+    return {"ok": True, "store": "SSLGF", "types": MOCK_LEAVE_TYPES,
+            "quotas": quotas, "day_hours": 8}
 
 
 def hm_to_ms(date_str, hm):
@@ -1069,6 +1128,7 @@ ACTIONS = {
     "approve_device": handle_approve_device,
     "my_recent": handle_my_recent,
     "mgr_day": handle_mgr_day,
+    "payroll_leave_options": handle_payroll_leave_options,
     "mgr_approve": handle_mgr_approve,
     "mgr_pending_devices": handle_mgr_pending_devices,
     "mgr_device_decision": handle_mgr_device_decision,
