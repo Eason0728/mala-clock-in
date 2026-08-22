@@ -18,10 +18,10 @@ MZT_BG = 'radial-gradient(120% 90% at 50% 16%, #3d8f7f 0%, #2a6b5e 55%, #1c4a41 
 STORES = {
     'cf': {'name': '中央廚房',   'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
            'clock_home': '央廚打卡', 'mgr_home': '央廚值班',
-           'mgr_bg': MZT_BG, 'clock_bg': None},
+           'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
     'hq': {'name': '鼎兆元 總部', 'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
            'clock_home': '總部打卡', 'mgr_home': '總部值班',
-           'mgr_bg': MZT_BG, 'clock_bg': None},
+           'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
 }
 PAGES = [
     ('clock.html',   'clock',   '員工打卡',     'clock_icon', 'clock_home', 'clock_bg'),

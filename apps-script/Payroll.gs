@@ -931,7 +931,11 @@ function payLeaveTypes(store) {
       window_max:    (r.window_max    === '' || r.window_max    == null) ? null : payNum(r.window_max),
       attend_effect: String(r.attend_effect || '').trim(),
       // 留空一律當 true（＝改版前行為：有核定滿 6H 就算一天）
-      count_meal_day: (String(r.count_meal_day || '').toLowerCase() === 'false') ? false : true,
+      // ⚠ Sheets 會把字串 'false' 存成**布林 FALSE**，此時 `r.x || ''` 會把 false 吃成空字串
+      //   → 判成 true，出差就又給餐費了（實際踩過）。布林要先單獨判。
+      count_meal_day: (r.count_meal_day === false
+                       || String(r.count_meal_day == null ? '' : r.count_meal_day).trim().toLowerCase() === 'false')
+                      ? false : true,
       sort: payNum(r.sort),
       note: String(r.note || ''),
     };
@@ -1925,8 +1929,16 @@ function handlePayrollLeaveTypeGet(body) {
   const st = payStore(body.store);
   let raw = [];
   try { raw = payRead('leave_type'); } catch (err) { raw = []; }
+  // ⚠ is_default 要看「這家店」有沒有自訂列——用 raw.length 會在任何一家店存過之後
+  //   讓所有店都顯示「已自訂」（踩過）。空 store 的列是集團共用，也算自訂。
+  const mine = raw.filter(function (r) {
+    const rs = String(r.store || '').trim();
+    return rs === '' || payStore(rs) === st;
+  });
   return { ok: true, store: st, types: payLeaveTypes(st),
-           is_default: raw.length === 0, rule_parental: PAY_PARENTAL };
+           is_default: mine.length === 0,
+           store_specific: raw.some(function (r) { return String(r.store || '').trim() === st; }),
+           rule_parental: PAY_PARENTAL };
 }
 
 /** {action:'payroll_leave_type_set', admin_key, store, types:[...]} → 只換該店範圍，保留他店。
@@ -1945,6 +1957,14 @@ function handlePayrollLeaveTypeSet(body) {
       cap_per_month: (t.cap_per_month === '' || t.cap_per_month == null) ? '' : payNum(t.cap_per_month),
       tenure_months: (t.tenure_months === '' || t.tenure_months == null) ? '' : payNum(t.tenure_months),
       under_ratio: payNum(t.under_ratio),
+      // ⚠ 2026-08-23：這六欄是後來加的，一定要跟著存——漏了會在存檔時把期限規則、
+      //   出差的餐費排除、對全勤的設定全部清成預設值（實際踩過，寫壞過央廚與總部）。
+      min_unit: String(t.min_unit || 'hour').trim(),
+      window_before: (t.window_before === '' || t.window_before == null) ? '' : payNum(t.window_before),
+      window_days:   (t.window_days   === '' || t.window_days   == null) ? '' : payNum(t.window_days),
+      window_max:    (t.window_max    === '' || t.window_max    == null) ? '' : payNum(t.window_max),
+      attend_effect: String(t.attend_effect || '').trim(),
+      count_meal_day: (t.count_meal_day === false ? 'false' : 'true'),
       active: (t.active === false ? 'false' : 'true'), sort: payNum(t.sort),
       note: String(t.note || ''), store: st,
     };
