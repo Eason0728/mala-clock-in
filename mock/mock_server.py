@@ -1105,6 +1105,52 @@ def collect_pending_devices(data):
     return sorted(groups.values(), key=lambda g: g["first_ts"])
 
 
+def next_emp_id(data):
+    """與 Code.gs nextEmpId 同步：抓最常見的「前綴＋數字」格式，取最大值 +1、維持位數。"""
+    import re as _re
+    pat = {}
+    for r in data.get("roster", []):
+        m = _re.match(r"^(.*?)(\d+)$", str(r.get("emp_id", "")))
+        if not m:
+            continue
+        k = (m.group(1), len(m.group(2)))
+        g = pat.setdefault(k, {"max": 0, "n": 0})
+        g["max"] = max(g["max"], int(m.group(2)))
+        g["n"] += 1
+    if not pat:
+        return "E01"
+    (prefix, width), g = sorted(pat.items(), key=lambda kv: -kv[1]["n"])[0]
+    return prefix + str(g["max"] + 1).zfill(width)
+
+
+def handle_mgr_add_employee(data, body):
+    """{action:'mgr_add_employee', mgr_key, name}（與 Code.gs 同步）。"""
+    mgr = find_manager_by_key(data, body.get("mgr_key"))
+    if not mgr:
+        return {"ok": False, "error": "unauthorized"}
+    name = str(body.get("name", "")).strip()
+    if not name:
+        return {"ok": False, "error": "name_required", "message": "請輸入同仁姓名"}
+    if name == str(mgr["name"]).strip():
+        return {"ok": False, "error": "self_add", "message": "不能新增與自己同名的同仁"}
+    dup = next((r for r in data["roster"]
+                if str(r.get("name", "")).strip() == name and r.get("active")), None)
+    if dup:
+        return {"ok": False, "error": "duplicate_name",
+                "message": f"名冊已經有在職的「{name}」（編號 {dup['emp_id']}）。"
+                           "薪資是用姓名對應請假與工時，同名會算錯——"
+                           "如果真的是不同人，請改用可區分的名字。"}
+    emp_id = next_emp_id(data)
+    key = gen_key()
+    now = iso_now()
+    data["roster"].append({"emp_id": emp_id, "name": name, "key": key, "device_id": "",
+                           "device_bound_at": "", "active": True, "shift_in": "", "shift_out": "",
+                           "created_at": now, "created_by": mgr["name"]})
+    save_data(data)
+    return {"ok": True, "emp_id": emp_id, "name": name, "key": key,
+            "created_by": mgr["name"], "created_at": now}
+
+
 def handle_mgr_pending_devices(data, body):
     """{action:'mgr_pending_devices', mgr_key} → 待核准裝置清單（與 Code.gs 同步）。"""
     if not find_manager_by_key(data, body.get("mgr_key")):
@@ -1132,6 +1178,7 @@ ACTIONS = {
     "approve_device": handle_approve_device,
     "my_recent": handle_my_recent,
     "mgr_day": handle_mgr_day,
+    "mgr_add_employee": handle_mgr_add_employee,
     "payroll_leave_options": handle_payroll_leave_options,
     "mgr_approve": handle_mgr_approve,
     "mgr_pending_devices": handle_mgr_pending_devices,

@@ -39,7 +39,10 @@ const CONFIG = {
 // 格式 HH:mm（如 11:00）。留空＝用 CONFIG.DEFAULT_SHIFT_* 的全店預設；兩者都空＝維持空白要主管自己填。
 // ⚠ 只在名冊末尾 append，不可插中間（既有資料會錯位）。
 const ROSTER_HEADERS = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active',
-                        'shift_in', 'shift_out'];
+                        'shift_in', 'shift_out',
+                        // 2026-08-23：值班主管自助開帳號的留痕。created_by 記主管姓名，
+                        // 薪酬系統與每日指揮台據此標示／通知「最近新增了誰」。
+                        'created_at', 'created_by'];
 /** 把班別時間正規化成 'HH:mm'。接受 '11:00'、'0900'、Date 物件（Sheets 會把 11:00 轉成時間物件）。
  *  不合法一律回空字串——寧可讓核定頁留白，也不要餵一個 <input type="time"> 認不得的值。 */
 function normShiftTime(v) {
@@ -183,6 +186,8 @@ function doPost(e) {
     whoami: handleWhoami,
     sync_roster: handleSyncRoster,
     set_shifts: handleSetShifts,
+    mgr_add_employee: handleMgrAddEmployee,
+    recent_hires: handleRecentHires,
     get_roster: handleGetRoster,
     get_events: handleGetEvents,
     approve_device: handleApproveDevice,
@@ -865,6 +870,104 @@ function handleSetShifts(body) {
   rosterSheet.getRange(2, ci, Math.max(1, rosterSheet.getLastRow() - 1), 2).setNumberFormat('@');
   return { ok: true, updated: done.length, shifts: done, not_found: missed };
 }
+/** 依現有名冊推下一個員工編號：抓出「英數前綴＋數字」形式最常見的那種，取最大值 +1，
+ *  並維持原本的位數（E09→E10、CF13→CF14、HQ-01→HQ-02）。名冊全空時用 CONFIG.EMP_PREFIX。 */
+function nextEmpId(rosterRows) {
+  const pat = {};
+  rosterRows.forEach(function (r) {
+    const m = String(r.emp_id || '').match(/^(.*?)(\d+)$/);
+    if (!m) return;
+    const k = m[1] + '|' + m[2].length;
+    if (!pat[k]) pat[k] = { prefix: m[1], width: m[2].length, max: 0, n: 0 };
+    pat[k].max = Math.max(pat[k].max, parseInt(m[2], 10));
+    pat[k].n += 1;
+  });
+  const keys = Object.keys(pat);
+  if (!keys.length) {
+    const pfx = String(CONFIG.EMP_PREFIX || 'E');
+    return pfx + '01';
+  }
+  keys.sort(function (a, b) { return pat[b].n - pat[a].n; });   // 用最多人採用的那種格式
+  const p = pat[keys[0]];
+  let num = String(p.max + 1);
+  while (num.length < p.width) num = '0' + num;
+  return p.prefix + num;
+}
+
+/**
+ * API：{action:'mgr_add_employee', mgr_key, name} → 值班主管自助新增同仁，回傳專屬打卡連結。
+ *
+ * 設計取捨（Eason 2026-08-23 定案）：**不做事前核准，改用事後看得見**。
+ *  - 新增後立刻可打卡、立刻計薪，主管不必等 Eason，Eason 也不會變成瓶頸。
+ *  - 代價由三件事承擔：①名冊記 created_at／created_by ②每日指揮台隔天通知
+ *    ③薪酬系統標「本月新增」。異常才需要處理，正常招募完全不用介入。
+ * 兩條硬性限制：
+ *  - 不能新增與自己同名的人（防自建自用）。
+ *  - 不能與現有在職同仁同名——薪酬的請假與工時是**用姓名**對應的，同名會直接算錯錢。
+ */
+function handleMgrAddEmployee(body) {
+  const ss = getSS();
+  const mgrSheet = ss.getSheetByName('managers');
+  if (!mgrSheet) return { ok: false, error: 'no_managers' };
+  const mgr = findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key);
+  if (!mgr) return { ok: false, error: 'unauthorized' };
+
+  const name = String(body.name || '').trim();
+  if (!name) return { ok: false, error: 'name_required', message: '請輸入同仁姓名' };
+  if (name.length > 20) return { ok: false, error: 'name_too_long', message: '姓名過長' };
+  if (name === String(mgr.name).trim()) {
+    return { ok: false, error: 'self_add', message: '不能新增與自己同名的同仁' };
+  }
+
+  const rosterSheet = ss.getSheetByName('roster');
+  if (!rosterSheet) return { ok: false, error: 'no_roster' };
+  const rows = readSheetAsObjects(rosterSheet).rows;
+  const dup = rows.filter(function (r) {
+    return String(r.name).trim() === name && String(r.active).toLowerCase() === 'true';
+  })[0];
+  if (dup) {
+    return { ok: false, error: 'duplicate_name',
+             message: '名冊已經有在職的「' + name + '」（編號 ' + dup.emp_id + '）。'
+                    + '薪資是用姓名對應請假與工時，同名會算錯——如果真的是不同人，請改用可區分的名字。' };
+  }
+
+  const empId = nextEmpId(rows);
+  const key = genKey();
+  const now = nowTaipeiIso();
+  // 依 ROSTER_HEADERS 順序組列，避免日後欄位增減時錯位
+  const row = ROSTER_HEADERS.map(function (h) {
+    return h === 'emp_id' ? empId : h === 'name' ? name : h === 'key' ? key
+         : h === 'active' ? true : h === 'created_at' ? now
+         : h === 'created_by' ? String(mgr.name || '') : '';
+  });
+  rosterSheet.appendRow(row);
+  // created_at 是純日期時間字串，鎖文字避免被轉成日期物件
+  const ci = ROSTER_HEADERS.indexOf('created_at') + 1;
+  rosterSheet.getRange(rosterSheet.getLastRow(), ci).setNumberFormat('@').setValue(now);
+  return { ok: true, emp_id: empId, name: name, key: key, created_by: String(mgr.name || ''), created_at: now };
+}
+
+/**
+ * API：{action:'recent_hires', admin_key, days?} → 最近 N 天由主管新增的同仁（預設 7 天）。
+ * 給每日指揮台拉來做「今天新增了誰」的通知用；唯讀。
+ */
+function handleRecentHires(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const days = Number(body.days) > 0 ? Number(body.days) : 7;
+  const ss = getSS();
+  const rosterSheet = ss.getSheetByName('roster');
+  if (!rosterSheet) return { ok: true, hires: [] };
+  const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+  const hires = readSheetAsObjects(rosterSheet).rows.filter(function (r) {
+    const c = normCellTs(r.created_at);
+    return c && String(c) >= cutoff;
+  }).map(function (r) {
+    return { emp_id: String(r.emp_id), name: String(r.name),
+             created_at: String(normCellTs(r.created_at)), created_by: String(r.created_by || '') };
+  });
+  return { ok: true, days: days, hires: hires };
+}
+
 /**
  * API：{action:'mgr_day', mgr_key, date?}（date 缺省＝今天，Asia/Taipei）
  * → 回傳「roster 全部 active 同仁」（2026-07-13 Eason 實測回饋改版：當天沒打卡的也要出現，

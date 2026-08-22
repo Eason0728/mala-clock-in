@@ -142,6 +142,20 @@
     box-shadow: 0 1px 3px rgba(0,0,0,0.06);
   }
   .pd-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+  /* 新進同仁區。白底卡片同樣要自己設色（見上方 .pd-card 的註解）*/
+  #addEmpCard { color: var(--brand-black); }
+  .ae-title { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+  .ae-hint { font-size: 13px; color: #6b524a; line-height: 1.6; margin-bottom: 10px; }
+  .ae-row { display: flex; gap: 8px; align-items: center; }
+  .ae-row input { flex: 1; min-width: 0; font-size: 16px; padding: 10px 12px;
+                  border: 1px solid #d8cfc9; border-radius: 10px; }
+  .ae-row .submit-btn { flex: none; }
+  .ae-result { margin-top: 12px; font-size: 14px; line-height: 1.7; }
+  .ae-result.err { color: #c22a12; }
+  .ae-link { display: block; word-break: break-all; background: #fff8ef; border: 1px solid #f0d9b8;
+             border-radius: 8px; padding: 10px; margin: 8px 0; font-size: 13px; color: #6b3f10; }
+  .ae-copy { font-size: 14px; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--brand-orange);
+             background: #fff; color: var(--brand-orange); font-weight: 700; cursor: pointer; }
   .pd-meta { font-size: 13px; color: #6b524a; line-height: 1.6; }
   .pd-warn { font-size: 13px; color: #c22a12; margin-top: 6px; }
   .pd-actions { display: flex; gap: 10px; margin-top: 12px; }
@@ -297,6 +311,17 @@
   <div id="loadingCard" class="card center-msg">載入中…</div>
   <div id="errorCard" class="card center-msg" style="display:none; color:#c22a12;"></div>
   <div id="empList"></div>
+
+  <!-- 新進同仁：主管自助開帳號，當場拿到打卡連結 -->
+  <div class="card" id="addEmpCard">
+    <div class="ae-title">新進同仁報到</div>
+    <div class="ae-hint">輸入姓名就會產生他的專屬打卡連結，當場給他設定手機即可上工。</div>
+    <div class="ae-row">
+      <input type="text" id="aeName" placeholder="同仁姓名" autocomplete="off" maxlength="20">
+      <button type="button" class="submit-btn" id="aeBtn">建立帳號</button>
+    </div>
+    <div class="ae-result" id="aeResult" style="display:none"></div>
+  </div>
 </div>
 
 <script>
@@ -976,6 +1001,63 @@
     if (currentDate) loadDay(addDaysStr(currentDate, 1));
   });
   btnToday.addEventListener('click', function () { loadDay(null); });
+
+  /* ── 新進同仁：主管自助開帳號（2026-08-23）──
+   * 不做事前核准（Eason 定案：不想讓每一筆都經過他），改用事後看得見：
+   * 名冊記 created_at／created_by、每日指揮台隔天通知、薪酬系統標「本月新增」。
+   * 後端另有兩道硬性擋：不能新增與自己同名的人、不能與在職同仁同名（薪資用姓名對應）。 */
+  function clockLinkFor(key) {
+    var page = STORE_CODE ? ('clock-' + STORE_CODE + '.html') : 'clock.html';
+    return 'https://eason0728.github.io/mala-clock-in/' + page + '?k=' + key;
+  }
+  (function initAddEmp() {
+    var btn = document.getElementById('aeBtn');
+    var input = document.getElementById('aeName');
+    var box = document.getElementById('aeResult');
+    if (!btn || !input || !box) return;
+
+    function show(html, isErr) {
+      box.style.display = 'block';
+      box.className = 'ae-result' + (isErr ? ' err' : '');
+      box.innerHTML = html;
+    }
+    function submit() {
+      var name = input.value.trim();
+      if (!name) { show('✕ 請先輸入姓名', true); input.focus(); return; }
+      if (!confirm('要幫「' + name + '」建立打卡帳號嗎？\n建立後他就能開始打卡，紀錄會顯示是由你建立的。')) return;
+      btn.disabled = true; btn.textContent = '建立中…';
+      apiPost({ action: 'mgr_add_employee', mgr_key: mgrKey, name: name }).then(function (res) {
+        btn.disabled = false; btn.textContent = '建立帳號';
+        if (!res || !res.ok) {
+          show('✕ ' + ((res && res.message) || '建立失敗，請再試一次'), true);
+          return;
+        }
+        var link = clockLinkFor(res.key);
+        show('✓ 已建立 <b>' + res.name + '</b>（編號 ' + res.emp_id + '）<br>'
+           + '把下面這條連結給他，請他<b>用 Safari 開 → 加入主畫面</b>，以後都從主畫面進：'
+           + '<span class="ae-link" id="aeLink">' + link + '</span>'
+           + '<button type="button" class="ae-copy" id="aeCopy">複製連結</button>');
+        input.value = '';
+        var cp = document.getElementById('aeCopy');
+        if (cp) cp.addEventListener('click', function () {
+          // navigator.clipboard 在非 https 或舊瀏覽器可能不存在，退回選取讓他自己複製
+          var done = function () { cp.textContent = '✓ 已複製'; setTimeout(function () { cp.textContent = '複製連結'; }, 2000); };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(link).then(done, selectFallback);
+          } else selectFallback();
+          function selectFallback() {
+            var el = document.getElementById('aeLink');
+            var r = document.createRange(); r.selectNodeContents(el);
+            var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+            cp.textContent = '已選取，請長按複製';
+          }
+        });
+        loadDay(currentDate);   // 名單重載，新同仁立刻出現在核定清單裡
+      });
+    }
+    btn.addEventListener('click', submit);
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
+  })();
 
   function init() {
     if (!mgrKey) {
