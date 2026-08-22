@@ -38,6 +38,12 @@
     position: relative;
     z-index: 1;
   }
+  /* 門市品牌：預設光復（純文字），其他門市可帶 logo */
+  .brandLogo {
+    display: block; width: 84px; height: 84px; margin: 0 auto 8px;
+    border-radius: 20px; object-fit: contain; background: #86CBBF; padding: 6px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.28);
+  }
   header {
     text-align: center;
     margin-bottom: 28px;
@@ -326,13 +332,42 @@
      各店打卡各自一份試算表與部署，所以只有網址不同，程式共用一份。 */
   var STORE_APIS = {
     ''  : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec',   // 麻的小辛辣 新竹光復店（預設）
-    'cf': 'https://script.google.com/macros/s/AKfycby-IzOBTrUK-usZxEUVRAcvPqagfAbHpvLevIWnk6drBpIuHwh1IlEun4bdsS9o-CIB/exec'    // 鼎兆元 中央廚房（台中太平）
+    'cf': 'https://script.google.com/macros/s/AKfycby-IzOBTrUK-usZxEUVRAcvPqagfAbHpvLevIWnk6drBpIuHwh1IlEun4bdsS9o-CIB/exec',   // 鼎兆元 中央廚房（台中太平）
+    'hq': 'https://script.google.com/macros/s/AKfycbyiocazNgn9M249CCkPzJsRvMJ35uh_Wjp_ju1y1sB2TZ_IWH3RD6pKUsHXsUJR-4N9TQ/exec'    // 鼎兆元 總部（座標暫用央廚）
   };
   var STORE_CODE = (function () {
     var v = String(new URLSearchParams(window.location.search).get('s') || '').toLowerCase();
     return STORE_APIS[v] ? v : '';
   })();
   var API_URL = STORE_APIS[STORE_CODE];
+  /* 門市品牌：依 ?s= 換頁面標題與 logo。不帶參數＝光復，畫面與原本完全相同。 */
+  var STORE_BRAND = {
+    ''  : { title: '麻的🔥小辛辣', logo: null },
+    'cf': { title: '中央廚房',     logo: 'assets/emblem-mzt.png', doc: '中央廚房',
+            icon: 'assets/icon-180-mzt.png', home: '央廚打卡' },
+    'hq': { title: '鼎兆元 總部', logo: 'assets/emblem-mzt.png', doc: '鼎兆元總部',
+            icon: 'assets/icon-180-mzt.png', home: '總部打卡' }
+  };
+  (function () {
+    var b = STORE_BRAND[STORE_CODE];
+    if (!b || !b.logo) return;                 // 光復維持原樣
+    var h1 = document.querySelector('header h1');
+    if (h1) h1.textContent = b.title;
+    var img = document.createElement('img');
+    img.className = 'brandLogo'; img.src = b.logo; img.alt = b.title;
+    if (h1 && h1.parentNode) h1.parentNode.insertBefore(img, h1);
+    if (b.doc) document.title = b.doc + document.title.replace(/^麻的小辛辣/, '');
+    // 加到主畫面的圖示與名稱：iOS 是在「加入主畫面」當下讀這兩個標籤，所以這裡改得到
+    if (b.icon) {
+      var l = document.querySelector('link[rel="apple-touch-icon"]');
+      if (l) l.setAttribute('href', b.icon);
+    }
+    if (b.home) {
+      var mt = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+      if (mt) mt.setAttribute('content', b.home);
+    }
+  })();
+
   /* ⚠ 薪酬是「全集團共用一套」，永遠掛在光復那個後端；打卡才是每店一份。
      「我的薪資」分頁固定打這個網址，不可以跟著門市切換，否則央廚同仁會打到沒有薪資模組的後端。 */
   var PAYROLL_API = STORE_APIS[''];
