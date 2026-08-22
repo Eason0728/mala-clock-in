@@ -263,6 +263,8 @@ function payCollect(ym, minH, store) {
       slot(emp).hours += dayH;
       // 餐費補助出勤天數：當日實際核定工時滿 MEAL_MIN_HOURS 才算一天（未滿不補、請假/特休/出差核定 0 不算）
       if (dayH >= MEALMIN) slot(emp)._wd[d] = true;
+      // 國定假日當天的出勤時數（計時同仁雙薪的基礎；時數本身照樣算進總時數）
+      if (HOLSET[String(d)]) slot(emp).holiday_h += dayH;
       const st = String(rec.status_text || '');
       if (st.indexOf('遲到') !== -1 || st.indexOf('早退') !== -1) markDay(emp, d);
     });
@@ -412,6 +414,10 @@ function payCalcOne(e, ym, att, cfg, redDays) {
     if (payBool(att.full_attend)) w += 10;   // E1 滿勤加給：管理者於工時分頁手動勾選（滿100H+全勤由管理者判定）
     w += payTenurePlus(e, ym);               // E2 年資加給
     push(earn, 'hourly_wage', '薪資（時數）', payR2(att.hours), w, att.hours * w);
+    // 國定假日出勤：計時同仁時薪雙倍（正職是給假、不另計）。
+    // 時數本身已含在上面的總時數裡，這裡只補「多的那一倍」。
+    const holH = payR2(Math.min(payNum(att.holiday_h), payNum(att.hours)));
+    if (holH > 0) push(earn, 'holiday_double', '國定假日加倍', holH, w, holH * w);
   }
 
   const pr = ft ? P : 1;
@@ -636,7 +642,7 @@ function paySavedInputs(ym, store) {
       hours: payNum(r.hours), extra_ot: payNum(r.extra_ot),
       personal_h: payNum(r.personal_h), sick_h: payNum(r.sick_h), menstrual_h: payNum(r.menstrual_h), disaster_h: payNum(r.disaster_h), annual_h: payNum(r.annual_h),
       deduct_days: payNum(r.deduct_days), support: sup, full_attend: payBool(r.full_attend),
-      work_days: payNum(r.work_days), wage_override: payNum(r.wage_override), meal_on: payBool(r.meal_on),
+      work_days: payNum(r.work_days), wage_override: payNum(r.wage_override), meal_on: payBool(r.meal_on), holiday_h: payNum(r.holiday_h),
       custom_add_label: String(r.custom_add_label||''), custom_add_amt: payNum(r.custom_add_amt),
       custom_ded_label: String(r.custom_ded_label||''), custom_ded_amt: payNum(r.custom_ded_amt),
       dorm_override: (r.dorm_override === '' || r.dorm_override == null) ? '' : payNum(r.dorm_override),
@@ -649,7 +655,9 @@ function paySavedInputs(ym, store) {
  *  供「工時分頁顯示」與「計算」共用，確保兩邊一致。 */
 function payInputsBase(ym, store) {
   const st = payStore(store);
-  const base = payCollect(ym, payConfig(st).meal_min_hours, st);
+  const holRow = payRead('holiday').filter(function (h) { return String(h.ym) === ym; })[0];
+  const holDates = holRow ? String(holRow.dates || '').split(/[,，\s]+/).filter(Boolean) : [];
+  const base = payCollect(ym, payConfig(st).meal_min_hours, st, holDates);
   const saved = paySavedInputs(ym, st);
   Object.keys(saved).forEach(function (emp) { base[emp] = saved[emp]; });
   return base;
@@ -679,7 +687,7 @@ function handlePayrollInputSet(body) {
       personal_h: payNum(a.personal_h), sick_h: payNum(a.sick_h), menstrual_h: payNum(a.menstrual_h), disaster_h: payNum(a.disaster_h), annual_h: payNum(a.annual_h),
       deduct_days: payNum(a.deduct_days), support: JSON.stringify(a.support || []), updated_at: now,
       full_attend: payBool(a.full_attend) ? 1 : 0,
-      work_days: payNum(a.work_days), wage_override: payNum(a.wage_override), meal_on: payBool(a.meal_on) ? 1 : 0,
+      work_days: payNum(a.work_days), wage_override: payNum(a.wage_override), meal_on: payBool(a.meal_on) ? 1 : 0, holiday_h: payNum(a.holiday_h),
       custom_add_label: String(a.custom_add_label||''), custom_add_amt: payNum(a.custom_add_amt),
       custom_ded_label: String(a.custom_ded_label||''), custom_ded_amt: payNum(a.custom_ded_amt),
       dorm_override: (a.dorm_override === '' || a.dorm_override == null) ? '' : payNum(a.dorm_override),
@@ -737,6 +745,7 @@ function handlePayrollCalc(body) {
       wage_override: o.wage_override !== undefined ? payNum(o.wage_override) : payNum(c.wage_override),
       dorm_override: o.dorm_override !== undefined ? o.dorm_override : (c.dorm_override != null ? c.dorm_override : ''),
       meal_on:    o.meal_on    !== undefined ? payBool(o.meal_on)   : payBool(c.meal_on),
+      holiday_h:  o.holiday_h  !== undefined ? payNum(o.holiday_h)  : payNum(c.holiday_h),
       custom_add_label: o.custom_add_label !== undefined ? o.custom_add_label : (c.custom_add_label||''),
       custom_add_amt:   o.custom_add_amt   !== undefined ? payNum(o.custom_add_amt) : payNum(c.custom_add_amt),
       custom_ded_label: o.custom_ded_label !== undefined ? o.custom_ded_label : (c.custom_ded_label||''),
