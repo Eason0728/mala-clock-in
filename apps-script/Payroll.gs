@@ -13,7 +13,10 @@
 const PAY_SHEETS = {
   master:  ['emp_id','name','is_full_time','wage','base','ot_rate','skill_allow','night_allow',
             'mgr_allow','editor_allow','attend_cap','labor_ins','health_ins','group_ins',
-            'pension','dormitory','hire_date','leave_date','active','updated_at','meal_allow','store','gap_rate','co_labor','co_health','co_pension'],
+            'pension','dormitory','hire_date','leave_date','active','updated_at','meal_allow','store','gap_rate','co_labor','co_health','co_pension',
+            // 2026-08-23：年終獎金月數（只影響每月「提列」的人事成本，不影響實付）。
+            // 留空＝用參數設定的全店預設 yearend_months。
+            'yearend_months'],
   config:  ['key','value','note','store'],
   holiday: ['ym','red_days','note','dates','store'],   // store 空白＝集團共用；填了＝該門市專屬（覆寫集團）   // dates＝該月國定假日的具體日期（逗號分隔），計時當天出勤＝時薪雙倍
   store:   ['code','name','clock_ss_id','dzy_node','emp_prefix','active','sort','brand'],
@@ -61,6 +64,8 @@ function payStore(v) { return String(v || PAY_DEFAULT_STORE); }
 const PAY_CONFIG_DEFAULT = [
   ['daily_hours', 8, '每日基本工時'],
   ['attend_deduct_per_day', 100, '全勤每日倒扣金額'],
+  // 年終獎金：每月先提列（成本認列），不進同仁的實付。只有正職提列。
+  ['yearend_months', 1, '年終獎金月數（全店預設，主檔可逐人覆寫）'],
   // ── 全勤「門檻式歸零」參數（2026-08-23，央廚／總部用；填 0 或留空＝不啟用，光復維持純遞減）──
   ['attend_void_forget', 0, '忘刷達幾次(含)以上→全勤歸零，0＝不啟用'],
   ['attend_forget_unit', 'punch', '忘刷計數單位：punch＝每漏一張卡算一次、day＝同一天只算一次'],

@@ -643,12 +643,23 @@ function allocGapHours(hoursArr, gap){
   return alloc;
 }
 function costTotals(){
-  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},sup:[],supTotal:0,coL:0,coH:0,coP:0};
+  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},sup:[],supTotal:0,coL:0,coH:0,coP:0,ye:0};
   RESULTS.forEach(r=>{
     // 公司負擔逐人加總（依員工主檔）。勞保／退休金按在職比例折算，健保整月——與員工自付的處理一致。
     const _m=MASTER.find(x=>String(x.emp_id)===String(r.emp_id))||{};
     const _pr=r.is_full_time?n(r.ratio):1;
     g.coL+=n(_m.co_labor)*_pr; g.coH+=n(_m.co_health); g.coP+=n(_m.co_pension)*_pr;
+    /* 年終獎金提列（2026-08-23）：每月先認列成本，**不進同仁的實付**（他還沒拿到）。
+     *   每月提列 ＝（本薪＋職能＋夜間＋店長＋全勤上限）× 年終月數 ÷ 12 × 在職比例
+     * 基數與「請假費率」同一組欄位，不另立一套。只有正職；月數留空用參數設定的全店預設。
+     * 到職未滿一年自然就是比例的——7 月到職只會提 6 個月，年底剛好半個月。 */
+    if(r.is_full_time){
+      const mo=(_m.yearend_months===''||_m.yearend_months==null)?n(CFG.yearend_months):n(_m.yearend_months);
+      if(mo>0){
+        const bse=n(_m.base)+n(_m.skill_allow)+n(_m.night_allow)+n(_m.mgr_allow)+n(_m.attend_cap);
+        g.ye+=bse*mo/12*_pr;
+      }
+    }
     // 跨店支援請款（向支援門市收款，與本店薪資費用無關）——兩段式：
     //   缺口＝max(基本工時−本店核定,0)：這段本店已付底薪卻沒拿到工時，用「差額費率」向支援店收
     //   超過缺口的部分：用該筆的「支援費率」
@@ -715,7 +726,10 @@ function costRows(g){
     ['h','公司負擔保險成本'],
     ...CO_ITEMS.map(([k,lb])=>[lb+((coAuto&&autoCo[k]>0)?'（依人員自動加總）':''),co[k]]),
     ['s','公司負擔小計',coTotal],
-    ['g','人事總成本（薪資費用＋公司負擔）',salaryCost+coTotal],
+    ...(g.ye?[['h','年終獎金提列 · 每月認列成本，尚未發放'],
+              ['年終獎金提列／正職',Math.round(g.ye)],
+              ['s','提列小計',Math.round(g.ye)]]:[]),
+    ['g','人事總成本（薪資費用＋公司負擔'+(g.ye?'＋年終提列':'')+'）',salaryCost+coTotal+Math.round(g.ye)],
     ...(reduceRows.length?[['h','（參考）請假／不足扣款明細 · 已在上方扣除']].concat(reduceRows):[]),
     ...(g.sup&&g.sup.length?[['h','跨店支援請款 · 向支援門市收款，與本店薪資費用無關']]
         .concat(g.sup.map(x=>[x.fixed
@@ -1354,7 +1368,8 @@ function renderSup(){
 const EF=[['name','姓名','text'],['wage','時薪'],['base','底薪'],['ot_rate','加班費率'],
  ['skill_allow','職能津貼'],['night_allow','夜間津貼'],['mgr_allow','店長津貼'],
  ['attend_cap','全勤上限'],['meal_allow','餐費補助/日'],['gap_rate','差額費率'],['labor_ins','勞保費'],['health_ins','健保費'],['group_ins','團保費'],
- ['pension','退休金'],['dormitory','宿舍費'],['co_labor','公司負擔勞保'],['co_health','公司負擔健保'],['co_pension','公司負擔退休金'],['hire_date','到職日','date'],['leave_date','離職日','date']];
+ ['pension','退休金'],['dormitory','宿舍費'],['co_labor','公司負擔勞保'],['co_health','公司負擔健保'],['co_pension','公司負擔退休金'],
+ ['yearend_months','年終月數'],['hire_date','到職日','date'],['leave_date','離職日','date']];
 /** 手動新增一位同仁（未連打卡的門市必用；有打卡的門市也可以補新人）。
  *  員工編號自動產生＝門市前綴＋流水號，可自行改；改號前提是還沒有該員工的月結資料。 */
 function addEmpRow(){
@@ -1425,7 +1440,8 @@ const CF=[['daily_hours','每日基本工時（H）'],['attend_deduct_per_day','
  ['sick_ratio','病假占事假比例'],['payday','發薪日'],
  // 全勤門檻式歸零（2026-08-23）：填 0＝不啟用，維持純遞減
  ['attend_void_forget','忘刷幾次歸零（0=不啟用）'],['attend_void_late_min','遲到累計幾分歸零（0=不啟用）'],
- ['attend_void_early_min','早退累計幾分歸零（0=不啟用）']];
+ ['attend_void_early_min','早退累計幾分歸零（0=不啟用）'],
+ ['yearend_months','年終獎金月數（全店預設）']];
 function renderCfg(){
   renderStores();
   // 假別表跟參數一樣依門市覆寫；還沒載入就先抓一次（切門市時 loadMonth 會再抓）
