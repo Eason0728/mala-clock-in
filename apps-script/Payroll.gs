@@ -15,13 +15,13 @@ const PAY_SHEETS = {
             'mgr_allow','editor_allow','attend_cap','labor_ins','health_ins','group_ins',
             'pension','dormitory','hire_date','leave_date','active','updated_at','meal_allow','store','gap_rate','co_labor','co_health','co_pension'],
   config:  ['key','value','note','store'],
-  holiday: ['ym','red_days','note'],
+  holiday: ['ym','red_days','note','dates'],   // dates＝該月國定假日的具體日期（逗號分隔），計時當天出勤＝時薪雙倍
   store:   ['code','name','clock_ss_id','dzy_node','emp_prefix','active','sort','brand'],
   bonus:   ['ym','store','emp_id','bonus_type','label','amount','memo','updated_at'],
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
             'ot_paid_hours','gross','deduction','net','status','run_at','support_hours','store'],
   item:    ['ym','emp_id','item_type','item_key','item_label','qty','rate','amount','source','memo','store'],
-  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on','custom_add_label','custom_add_amt','custom_ded_label','custom_ded_amt','store'],
+  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on','custom_add_label','custom_add_amt','custom_ded_label','custom_ded_amt','store','holiday_h'],
   audit:   ['ts','ym','action','operator','reason','store'],
 };
 /** 餐費補助門檻：當天「實際核定工時」要達這個時數才認列一天（核定時數＝實際上班時段，
@@ -86,7 +86,7 @@ function payInvalidate(kind) { delete PAY_READ_CACHE[kind]; }
 /* ⚠ Sheets 會把 '2026-08'、'2020-01-01' 這種字串自動轉成日期儲存格，讀回變 Date 物件、比對全失敗
    （ym 對不到 → no_holiday／查不到 run；hire_date 壞 → payRatio 錯）。寫入前把這些字串欄鎖成文字格式 '@'。*/
 function payForceTextCols(sh, cols) {
-  const TEXT = { ym: 1, hire_date: 1, leave_date: 1 };
+  const TEXT = { ym: 1, hire_date: 1, leave_date: 1, dates: 1 };   // dates 只填一天時會被轉成日期物件
   cols.forEach(function (c, i) {
     if (TEXT[c]) sh.getRange(1, i + 1, sh.getMaxRows(), 1).setNumberFormat('@');
   });
@@ -232,8 +232,11 @@ function payEmpStores(empId) { return payEmpStoresMap()[String(empId)] || []; }
  * 從 approved / leave / events 歸集某月每人的薪資輸入。
  * 這就是「不用人工把工時搬進薪資系統」的那一段。
  */
-function payCollect(ym, minH, store) {
+function payCollect(ym, minH, store, holidayDates) {
   const MEALMIN = (minH === undefined || minH === null || minH === '') ? MEAL_MIN_HOURS : Number(minH);
+  // 國定假日的具體日期（計時同仁雙薪用）；沒給就是空集合，行為與加這個功能之前相同
+  const HOLSET = {};
+  (holidayDates || []).forEach(function (d) { HOLSET[String(d).trim()] = true; });
   const roster   = payClockRead(store, 'roster');
   const approved = payClockRead(store, 'approved');
   const events   = payClockRead(store, 'events');
@@ -248,7 +251,7 @@ function payCollect(ym, minH, store) {
     if (!out[emp]) out[emp] = {
       hours: 0, extra_ot: 0,
       personal_h: 0, sick_h: 0, menstrual_h: 0, annual_h: 0, disaster_h: 0, other_h: 0,
-      deduct_days: 0, _days: {}, work_days: 0, _wd: {},
+      deduct_days: 0, _days: {}, work_days: 0, _wd: {}, holiday_h: 0,
     };
     return out[emp];
   }
@@ -348,6 +351,16 @@ function payAnnualQuota(hireStr, ym) {
   const y = Math.floor(months / 12);
   const days = y < 2 ? 7 : y < 3 ? 10 : y < 5 ? 14 : y < 10 ? 15 : Math.min(30, 15 + (y - 9));
   return { days: days, ps: fmt(addM(h, y * 12)), pe: fmt(addM(h, (y + 1) * 12)) };
+}
+
+/** 解析某月的國定假日日期清單。
+ *  ⚠ 只填一天時 Sheets 會把 '2026-10-10' 存成日期物件，讀回是 Date 而不是字串——
+ *  一律先過 payDateStr 正規化，否則比對不到打卡日期、雙薪會靜默失效。 */
+function payHolidayDates(holRow) {
+  if (!holRow) return [];
+  const v = holRow.dates;
+  if (v instanceof Date) return [payDateStr(v)];
+  return String(v || '').split(/[,，\s]+/).filter(Boolean).map(function (x) { return payDateStr(x); });
 }
 
 /** 在職比例：月中到職／離職才折算，整月在職回 1 */
@@ -642,7 +655,8 @@ function paySavedInputs(ym, store) {
       hours: payNum(r.hours), extra_ot: payNum(r.extra_ot),
       personal_h: payNum(r.personal_h), sick_h: payNum(r.sick_h), menstrual_h: payNum(r.menstrual_h), disaster_h: payNum(r.disaster_h), annual_h: payNum(r.annual_h),
       deduct_days: payNum(r.deduct_days), support: sup, full_attend: payBool(r.full_attend),
-      work_days: payNum(r.work_days), wage_override: payNum(r.wage_override), meal_on: payBool(r.meal_on), holiday_h: payNum(r.holiday_h),
+      work_days: payNum(r.work_days), wage_override: payNum(r.wage_override), meal_on: payBool(r.meal_on),
+      holiday_h: (r.holiday_h === '' || r.holiday_h == null) ? '' : payNum(r.holiday_h),
       custom_add_label: String(r.custom_add_label||''), custom_add_amt: payNum(r.custom_add_amt),
       custom_ded_label: String(r.custom_ded_label||''), custom_ded_amt: payNum(r.custom_ded_amt),
       dorm_override: (r.dorm_override === '' || r.dorm_override == null) ? '' : payNum(r.dorm_override),
@@ -656,10 +670,16 @@ function paySavedInputs(ym, store) {
 function payInputsBase(ym, store) {
   const st = payStore(store);
   const holRow = payRead('holiday').filter(function (h) { return String(h.ym) === ym; })[0];
-  const holDates = holRow ? String(holRow.dates || '').split(/[,，\s]+/).filter(Boolean) : [];
+  const holDates = payHolidayDates(holRow);
   const base = payCollect(ym, payConfig(st).meal_min_hours, st, holDates);
   const saved = paySavedInputs(ym, st);
-  Object.keys(saved).forEach(function (emp) { base[emp] = saved[emp]; });
+  Object.keys(saved).forEach(function (emp) {
+    const col = base[emp] || {}, sv = saved[emp];
+    // 國定假日時數：手動工時沒填就沿用打卡歸集出來的值
+    //（這個欄位是後加的，先前存過的月份都是空白，不 fallback 會全部變 0）
+    if (sv.holiday_h === '' || sv.holiday_h == null) sv.holiday_h = payNum(col.holiday_h);
+    base[emp] = sv;
+  });
   return base;
 }
 
