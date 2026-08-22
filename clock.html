@@ -322,7 +322,20 @@
 (function () {
   'use strict';
 
-  var API_URL = 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
+  /* 多門市後端對照：不帶 ?s= 就是光復（既有連結完全不受影響）。
+     各店打卡各自一份試算表與部署，所以只有網址不同，程式共用一份。 */
+  var STORE_APIS = {
+    ''  : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec',   // 麻的小辛辣 新竹光復店（預設）
+    'cf': 'https://script.google.com/macros/s/AKfycby-IzOBTrUK-usZxEUVRAcvPqagfAbHpvLevIWnk6drBpIuHwh1IlEun4bdsS9o-CIB/exec'    // 鼎兆元 中央廚房（台中太平）
+  };
+  var STORE_CODE = (function () {
+    var v = String(new URLSearchParams(window.location.search).get('s') || '').toLowerCase();
+    return STORE_APIS[v] ? v : '';
+  })();
+  var API_URL = STORE_APIS[STORE_CODE];
+  /* ⚠ 薪酬是「全集團共用一套」，永遠掛在光復那個後端；打卡才是每店一份。
+     「我的薪資」分頁固定打這個網址，不可以跟著門市切換，否則央廚同仁會打到沒有薪資模組的後端。 */
+  var PAYROLL_API = STORE_APIS[''];
 
   function qs(name) {
     var params = new URLSearchParams(window.location.search);
@@ -466,7 +479,7 @@
   // Apps Script 正常回應約 2–3 秒，20 秒已非常寬鬆。
   var API_TIMEOUT_MS = 20000;
 
-  function apiPost(payload) {
+  function apiPost(payload, urlOverride) {
     var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     var timedOut = false;
     var timer = setTimeout(function () {
@@ -486,7 +499,7 @@
     //   ② fetch 本身失敗（沒網路／Wi-Fi 斷線／連線被拒，TypeError）：根本沒送出去 → 可放心叫她直接重打
     //      （原樣顯示會是英文 "Failed to fetch"，同仁看不懂，2026-08-03 Eason 要求改中文）
     //   ③ 回應不是 JSON（伺服器有回應但內容異常）：請求已經到了伺服器 → 不可說「沒送出」
-    return fetch(API_URL, opts)
+    return fetch(urlOverride || API_URL, opts)
       .then(
         function (res) {
           return res.json().catch(function () {
@@ -914,7 +927,7 @@
     if (!force && payLoadedYm === payYm.value) return;
     paySlipEl.innerHTML = '<div class="card center-msg" style="color:#8a817a">載入中…</div>';
     var reqYm = payYm.value;
-    apiPost({ action: 'my_payslip', key: key, ym: reqYm }).then(function (j) {
+    apiPost({ action: 'my_payslip', key: key, ym: reqYm }, PAYROLL_API).then(function (j) {
       payLoadedYm = reqYm;
       renderPay(j);
     }, function () {
