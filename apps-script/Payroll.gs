@@ -15,7 +15,7 @@ const PAY_SHEETS = {
             'mgr_allow','editor_allow','attend_cap','labor_ins','health_ins','group_ins',
             'pension','dormitory','hire_date','leave_date','active','updated_at','meal_allow','store','gap_rate','co_labor','co_health','co_pension'],
   config:  ['key','value','note','store'],
-  holiday: ['ym','red_days','note','dates'],   // dates＝該月國定假日的具體日期（逗號分隔），計時當天出勤＝時薪雙倍
+  holiday: ['ym','red_days','note','dates','store'],   // store 空白＝集團共用；填了＝該門市專屬（覆寫集團）   // dates＝該月國定假日的具體日期（逗號分隔），計時當天出勤＝時薪雙倍
   store:   ['code','name','clock_ss_id','dzy_node','emp_prefix','active','sort','brand'],
   bonus:   ['ym','store','emp_id','bonus_type','label','amount','memo','updated_at'],
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
@@ -353,6 +353,29 @@ function payAnnualQuota(hireStr, ym) {
   return { days: days, ps: fmt(addM(h, y * 12)), pe: fmt(addM(h, (y + 1) * 12)) };
 }
 
+/** 該門市有效的紅字天數清單（每月一筆，該店專屬優先），附 _src 標示來源供前端顯示 */
+function payHolidayList(store) {
+  const st = String(store || '');
+  const rows = payRead('holiday');
+  const byYm = {};
+  rows.forEach(function (h) {
+    const ym = String(h.ym), rs = String(h.store || '');
+    if (rs === '') { if (!byYm[ym] || byYm[ym]._src !== 'own') { h._src = 'global'; byYm[ym] = h; } }
+    else if (st && rs === st) { h._src = 'own'; byYm[ym] = h; }
+  });
+  return Object.keys(byYm).sort().map(function (k) { return byYm[k]; });
+}
+
+/** 取某門市某月的紅字天數設定：先找該門市專屬，沒有才用集團共用（store 空白）。
+ *  ⚠ 這裡不可以用 payStore()——holiday 的空白代表「全集團共用」，不是預設店。 */
+function payHolidayRow(ym, store) {
+  const st = String(store || '');
+  const rows = payRead('holiday').filter(function (h) { return String(h.ym) === String(ym); });
+  const own = rows.filter(function (h) { return String(h.store || '') === st && st !== ''; })[0];
+  if (own) return own;
+  return rows.filter(function (h) { return String(h.store || '') === ''; })[0] || null;
+}
+
 /** 解析某月的國定假日日期清單。
  *  ⚠ 只填一天時 Sheets 會把 '2026-10-10' 存成日期物件，讀回是 Date 而不是字串——
  *  一律先過 payDateStr 正規化，否則比對不到打卡日期、雙薪會靜默失效。 */
@@ -608,7 +631,7 @@ function handlePayrollMasterGet(body) {
            master: payRead('master').filter(function (m) { return payStore(m.store) === stG; }),
            config: payConfig(stG), config_src: payConfigSource(stG),
            stores: payRead('store').filter(function (x) { return String(x.active).toLowerCase() !== 'false'; }),
-           holidays: payRead('holiday') };
+           holidays: payHolidayList(stG) };
 }
 
 function handlePayrollMasterSet(body) {
@@ -637,8 +660,11 @@ function handlePayrollConfigSet(body) {
 function handlePayrollHolidaySet(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   if (!Array.isArray(body.holidays)) return { ok: false, error: 'holidays_required' };
-  payReplaceAll('holiday', body.holidays);
-  return { ok: true, count: body.holidays.length };
+  const stH = String(body.store || '');   // 空白＝集團共用；有值＝該門市專屬
+  const mine = body.holidays.map(function (h) { h.store = stH; return h; });
+  const others = payRead('holiday').filter(function (h) { return String(h.store || '') !== stH; });
+  payReplaceAll('holiday', others.concat(mine));
+  return { ok: true, count: mine.length, store: stH };
 }
 
 /** 只歸集不計算——讓管理者先看工時對不對，再按計算 */
@@ -669,7 +695,7 @@ function paySavedInputs(ym, store) {
  *  供「工時分頁顯示」與「計算」共用，確保兩邊一致。 */
 function payInputsBase(ym, store) {
   const st = payStore(store);
-  const holRow = payRead('holiday').filter(function (h) { return String(h.ym) === ym; })[0];
+  const holRow = payHolidayRow(ym, st);
   const holDates = payHolidayDates(holRow);
   const base = payCollect(ym, payConfig(st).meal_min_hours, st, holDates);
   const saved = paySavedInputs(ym, st);
@@ -728,7 +754,7 @@ function handlePayrollCalc(body) {
     return { ok: false, error: 'locked', message: ym + ' 已鎖定，請先解鎖再重算' };
   }
 
-  const holiday = payRead('holiday').filter(function (h) { return String(h.ym) === ym; })[0];
+  const holiday = payHolidayRow(ym, payStore(body.store));
   if (!holiday) return { ok: false, error: 'no_holiday', message: ym + ' 尚未設定紅字天數' };
   const redDays = payNum(holiday.red_days);
 
@@ -851,7 +877,7 @@ function handlePayrollMonth(body) {
   const inputs = payInputsBase(ym, stM);
   let run = payBuildRunResults(ym, stM);
   if (!run) {
-    const hol = payRead('holiday').filter(function (h) { return String(h.ym) === ym; })[0];
+    const hol = payHolidayRow(ym, stM);
     if (hol) {
       const calc = handlePayrollCalc({ admin_key: body.admin_key, ym: ym, store: stM, inputs: body.inputs || {} });
       if (calc && calc.ok) run = { results: calc.results, status: 'draft' };
@@ -862,7 +888,7 @@ function handlePayrollMonth(body) {
            config: payConfig(stM), config_src: payConfigSource(stM),
            bonuses: payRead('bonus').filter(function (b) { return String(b.ym) === ym && payStore(b.store) === stM; }),
            stores: payRead('store').filter(function (x) { return String(x.active).toLowerCase() !== 'false'; }),
-           holidays: payRead('holiday') };
+           holidays: payHolidayList(stM) };
 }
 
 function handlePayrollItemUpsert(body) {

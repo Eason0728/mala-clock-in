@@ -350,6 +350,9 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
       <input type="text" id="hy" placeholder="2026-08" style="width:110px;text-align:left">
       <input type="number" id="hd" placeholder="天數" style="width:80px">
       <button class="btn ghost" onclick="addHol(this)">新增</button>
+      <label style="font-size:13px;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="holOwn" style="width:18px;height:18px"> 只套用到目前門市（不勾＝集團共用）
+      </label>
     </div>
   </div>
 </section>
@@ -389,7 +392,7 @@ const API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ?
   : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
 const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 
-let MASTER=[], CFG={}, HOL={}, HOLD={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
+let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
 // 目前操作門市：階段一由門市表全部可見；階段二改讀 dzy 帳號的可見門市清單（UI 與過濾邏輯不變）
 let STORE=(new URLSearchParams(location.search).get('store')||localStorage.getItem('pay_store')||'');
 if(new URLSearchParams(location.search).get('store')) localStorage.setItem('pay_store',STORE);
@@ -445,7 +448,8 @@ async function boot(){
   if(m.stores&&m.stores.length){STORE_LIST=m.stores;renderStoreSel()}
   // 後端 holidays 是陣列 [{ym,red_days}]（prod）；轉成前端用的物件 {ym:red_days}。相容舊物件格式。
   HOL={}; HOLD={}; const _hs=m.holidays||[];
-  if(Array.isArray(_hs)) _hs.forEach(h=>{ if(h&&h.ym!=null){ HOL[String(h.ym)]=n(h.red_days); HOLD[String(h.ym)]=String(h.dates||''); } });
+  HOLSRC={};
+  if(Array.isArray(_hs)) _hs.forEach(h=>{ if(h&&h.ym!=null){ HOL[String(h.ym)]=n(h.red_days); HOLD[String(h.ym)]=String(h.dates||''); HOLSRC[String(h.ym)]=h._src||'global'; } });
   else Object.keys(_hs).forEach(k=>HOL[k]=n(_hs[k]));
   renderEmp(); renderCfg();
   await loadMonth();
@@ -1243,7 +1247,8 @@ function renderCfg(){
     <input type="number" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`).join('');
   let h='<thead><tr><th>月份</th><th>紅字天數</th><th style="text-align:left">國定假日日期<br><span style="font-weight:400;color:var(--muted)">計時當天出勤＝時薪雙倍</span></th><th></th></tr></thead><tbody>';
   Object.keys(HOL).sort().forEach(k=>{
-    h+=`<tr><td>${k}</td><td><input type="number" value="${HOL[k]}" onchange="HOL['${k}']=n(this.value)"></td>
+    const tag=HOLSRC[k]==='own'?' <span class="tag draft" style="font-size:10px">本店</span>':' <span style="color:var(--muted);font-size:11px">集團</span>';
+    h+=`<tr><td>${k}${tag}</td><td><input type="number" value="${HOL[k]}" onchange="HOL['${k}']=n(this.value)"></td>
       <td style="text-align:left"><input type="text" value="${HOLD[k]||''}" placeholder="${k}-01, ${k}-02"
         style="min-width:260px" onchange="HOLD['${k}']=this.value.trim()"></td>
       <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
@@ -1264,7 +1269,7 @@ async function saveHol(btn,label){
   // 後端只收陣列 [{ym,red_days,note}]，把物件 HOL 轉成陣列再送
   const send=async()=>{
     const arr=Object.keys(HOL).map(k=>({ym:k,red_days:HOL[k],note:'',dates:(HOLD[k]||'').trim()}));
-    const r=await post('payroll_holiday_set',{holidays:arr});
+    const r=await post('payroll_holiday_set',{holidays:arr,store:($('holOwn')&&$('holOwn').checked)?STORE:''});
     if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
     renderCfg();toast('已更新');return true;
   };
