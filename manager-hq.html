@@ -721,6 +721,13 @@
           resultBox.textContent = '✕ 請至少輸入一段上班時間；若是整天請假，請在「請假註記」選假別再送出。';
           return;
         }
+        // 出差不是請假（2026-08-23）：時數靠核定時段照常計薪，0 小時送出＝那天等於沒上班
+        //（正職月底會被不足倒扣）。後端也會擋（trip_needs_periods），這裡先講清楚。
+        if (leaveSelect.value === '出差') {
+          resultBox.className = 'result-box show result-error';
+          resultBox.textContent = '✕ 出差不是請假：請照常輸入當天實際工作時段（時數照算、工資照給），不能以 0 小時送出。';
+          return;
+        }
         var lmsg = '整天請假：' + emp.name + '\n' + leaveSelect.value
           + (leaveHours.value ? '　' + leaveHours.value + ' 小時' : '')
           + '\n核定時數 0 小時（整天沒上班）\n\n確定送出?';
@@ -781,7 +788,11 @@
         submitBtn.textContent = '重新送出核定';
         if (!res.ok) {
           resultBox.className = 'result-box show result-error';
-          resultBox.textContent = '✕ 核定失敗：' + (res.error || '未知錯誤');
+          var friendly = {
+            trip_needs_periods: '出差要照常輸入當天實際工作時段（時數照算），不能以 0 小時送出。',
+            bad_leave_type: '這個假別尚未在薪酬假別表放行，請聯絡 Eason。',
+          }[res.error];
+          resultBox.textContent = '✕ 核定失敗：' + (friendly || res.error || '未知錯誤');
           return;
         }
         delete dayCache[approveDate]; // 核定改了這天的資料 → 清快取，下次切回會抓新的（用送出當下鎖定的日期）

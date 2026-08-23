@@ -33,6 +33,12 @@ const CONFIG = {
   // 就以個人的為準。兩者都留空＝核定頁維持空白，主管自己填（＝改版前的行為）。
   DEFAULT_SHIFT_IN: '',
   DEFAULT_SHIFT_OUT: '',
+  // 薪酬後端（2026-08-23）：值班核定送出的假別若不在本檔 LEAVE_TYPES 白名單，
+  // 會即時向薪酬假別表（payroll_leave_type，資料驅動的正本）確認一次再放行——
+  // 在表上加新假別不必再改三家店的後端。光復＝薪資模組掛在同一個專案，兩者留空直接查；
+  // 央廚／總部要填薪酬 exec 網址（與 manager.html 的 PAYROLL_API 同一個）與大寫店代碼（CF／HQ）。
+  PAYROLL_API: '',
+  PAYROLL_STORE: '',
 };
 
 // shift_in／shift_out（2026-08-23）：值班核定頁「預設上下班時間」。
@@ -1093,6 +1099,33 @@ function handleMgrDay(body) {
  * 比對規則：每個輸入時段找重疊最大的打卡段；該段無任何打卡→「該段無打卡」；
  *   打卡段多於輸入段→「有多出的打卡段」；早到晚走不加時數、算正常（無寬限：遲到/早退各自標記分鐘數）。
  */
+/** 白名單外的假別 → 向薪酬假別表（payroll_leave_type，資料驅動的正本）即時確認（2026-08-23）。
+ *  背景：LEAVE_TYPES 是寫死的送出白名單，但核定頁的下拉已改為資料驅動——只在表上加新假別、
+ *  忘了同步三家店後端的白名單，主管選了就被擋成 bad_leave_type。改為白名單外自動查表放行。
+ *  查不到／連不上＝照舊擋下（防呆不放水）；白名單內的常用假別完全不走這段，零額外延遲。 */
+function leaveTypeAllowedByPayroll(leaveType, mgrKey) {
+  // 薪資模組掛在同一個專案（光復）→ 直接查函式，不用打網路
+  try {
+    if (typeof payLeaveTypes === 'function') {
+      return payLeaveTypes(CONFIG.PAYROLL_STORE || '').some(function (t) {
+        return String(t.name).trim() === leaveType;
+      });
+    }
+  } catch (err) { /* 掉到下面的跨後端路徑 */ }
+  // 央廚／總部 → 打薪酬後端（帶主管金鑰，薪酬端會反查該店 managers 分頁驗身分）
+  if (!CONFIG.PAYROLL_API) return false;
+  try {
+    const resp = UrlFetchApp.fetch(CONFIG.PAYROLL_API, {
+      method: 'post', contentType: 'text/plain', muteHttpExceptions: true,
+      payload: JSON.stringify({ action: 'payroll_leave_options', store: CONFIG.PAYROLL_STORE, mgr_key: mgrKey }),
+    });
+    const data = JSON.parse(resp.getContentText());
+    return !!(data && data.ok && (data.types || []).some(function (t) {
+      return String(t.name).trim() === leaveType;
+    }));
+  } catch (err) { return false; }
+}
+
 function handleMgrApprove(body) {
   const ss = getSS();
   const mgrSheet = ss.getSheetByName('managers');
@@ -1108,7 +1141,10 @@ function handleMgrApprove(body) {
   if (!roster) return { ok: false, error: 'invalid_emp_id' };
 
   const leaveType = String(body.leave_type || '').trim();
-  if (leaveType && LEAVE_TYPES.indexOf(leaveType) === -1) return { ok: false, error: 'bad_leave_type' };
+  if (leaveType && LEAVE_TYPES.indexOf(leaveType) === -1 &&
+      !leaveTypeAllowedByPayroll(leaveType, String(body.mgr_key || ''))) {
+    return { ok: false, error: 'bad_leave_type' };
+  }
   // 請假時數：可留空（＝只註記假別、不記時數）；有填要是 0 以上的數字，四捨五入到 2 位。
   let leaveHours = '';
   if (leaveType && body.leave_hours !== '' && body.leave_hours != null) {
@@ -1126,6 +1162,9 @@ function handleMgrApprove(body) {
     // 整天請假：沒有任何上班時段，但必須有假別；核定 0 小時、狀態標「全天請假」
     // （沒假別的空送出仍擋掉）。這樣月表那天顯示核定 0h＋假別，而非誤導的「待核定」。
     if (!leaveType) return { ok: false, error: 'bad_periods' };
+    // 出差不是請假（2026-08-23 Eason 定案，修法 A）：時數靠核定時段照常計薪，
+    // 空時段＝當天 0 工時，正職月底會被不足倒扣。硬擋，逼主管填實際工作時段。
+    if (leaveType === TRIP_NOTE) return { ok: false, error: 'trip_needs_periods' };
     approvedHours = 0;
     periodsStr = '';
     statusText = '全天請假';

@@ -618,11 +618,13 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     push(ded, code + '_leave', label, h, (overH > 0 ? null : r1), amt);
   });
 
-  // 勞保與宿舍折算；健保、團保、退休金算整月
-  if (payNum(e.labor_ins))  push(ded, 'labor_ins', '勞保費', null, null, payNum(e.labor_ins) * pr);
+  // 勞保與宿舍折算；健保、團保、退休金算整月。
+  // ⚠ 2026-08-23 修正：規則正本「勞保、宿舍×P」不分正職計時——原本這兩行乘的是 pr（計時恆為 1），
+  //   計時同仁月中到職／離職會被收整月的勞保與宿舍。改乘 P（正職 pr===P，行為不變）。
+  if (payNum(e.labor_ins))  push(ded, 'labor_ins', '勞保費', null, null, payNum(e.labor_ins) * P);
   // 宿舍費隨月：工時分頁填了「本月宿舍費」（含 0＝本月免收）就用該月值，空白＝用主檔
   const dormFee = (att.dorm_override === '' || att.dorm_override == null) ? payNum(e.dormitory) : payNum(att.dorm_override);
-  if (dormFee) push(ded, 'dormitory', '宿舍自付額', null, null, dormFee * pr);
+  if (dormFee) push(ded, 'dormitory', '宿舍自付額', null, null, dormFee * P);
   if (payNum(e.health_ins)) push(ded, 'health_ins', '健保費', null, null, payNum(e.health_ins));
   if (payNum(e.group_ins))  push(ded, 'group_ins', '團保費', null, null, payNum(e.group_ins));
   if (payNum(e.pension))    push(ded, 'pension', '退休金', null, null, payNum(e.pension));
@@ -1742,6 +1744,12 @@ function handlePayrollBonusSet(body) {
 /* ═══════════════════ 儀表板：人事成本趨勢 ═══════════════════ */
 
 /** 回近 N 個月的彙總（依門市）。資料全部取自既有 run／item，不需額外輸入。 */
+/** 成本口徑「要扣回」的扣項（薪資費用小計＝應收−這些）：任何請假扣款（/_leave$/，新假別自動涵蓋）
+ *  ＋不足時數倒扣。與 payroll.html 的 isCostReduceKey、payroll_mock 的 isReduce 同一口徑。
+ *  ⚠ 2026-08-23 前這裡是兩份寫死的五個舊 key——新假別（住院傷病、安胎、家庭照顧…）的扣款
+ *    沒被扣回，儀表板趨勢與集團總覽的薪資費用被高估。改口徑要三處一起：本函式／payroll.html／mock。 */
+function payIsReduceKey(k) { return /_leave$/.test(String(k)) || String(k) === 'shortfall_hours'; }
+
 function handlePayrollTrend(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const st = payStore(body.store);
@@ -1761,7 +1769,6 @@ function handlePayrollTrend(body) {
   runs.forEach(function (r) { (runByYm[String(r.ym)] = runByYm[String(r.ym)] || []).push(r); });
   items.forEach(function (i) { (itemByYm[String(i.ym)] = itemByYm[String(i.ym)] || []).push(i); });
 
-  const REDUCE = ['personal_leave','sick_leave','menstrual_leave','disaster_leave','shortfall_hours'];
   const out = list.map(function (ym) {
     const rs = runByYm[ym] || [], its = itemByYm[ym] || [];
     if (!rs.length) return { ym: ym, has: false };
@@ -1773,7 +1780,7 @@ function handlePayrollTrend(body) {
       if (String(i.item_type) === 'earning') {
         if (k === 'overtime') { ot += a; otByEmp[String(i.emp_id)] = (otByEmp[String(i.emp_id)] || 0) + a; }
         if (k.indexOf('bonus_') === 0) bonus += a;
-      } else if (REDUCE.indexOf(k) >= 0) reduce += a;
+      } else if (payIsReduceKey(k)) reduce += a;
     });
     // 支援造成的加班費：支援時數把超時墊高的那一段，按時數比例攤回金額
     //   支援造成的加班時數 = max(超時,0) − max(超時−支援時數,0)
@@ -1818,7 +1825,6 @@ function handlePayrollGroup(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const ym = String(body.ym || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
-  const REDUCE = ['personal_leave','sick_leave','menstrual_leave','disaster_leave','shortfall_hours'];
   const runs = payRead('run').filter(function (r) { return String(r.ym) === ym; });
   const items = payRead('item').filter(function (i) { return String(i.ym) === ym; });
   const runBy = {}, itemBy = {};
@@ -1841,7 +1847,7 @@ function handlePayrollGroup(body) {
       if (String(i.item_type) === 'earning') {
         if (k === 'overtime') ot += a;
         if (k.indexOf('bonus_') === 0) bonus += a;
-      } else if (REDUCE.indexOf(k) >= 0) reduce += a;
+      } else if (payIsReduceKey(k)) reduce += a;
     });
     const salaryCost = gross - reduce;
     return { store: code, name: String(st.name || code), has: true,
@@ -1969,6 +1975,15 @@ function handlePayrollLeaveTypeSet(body) {
       note: String(t.note || ''), store: st,
     };
   }).filter(function (t) { return t.code && t.name; });
+  // 出差改名鎖（2026-08-23 審查修正）：打卡端的出差判斷寫死「出差」二字
+  // （三家店後端各有一份 TRIP_NOTE／LEAVE_TYPES）。這裡改名的話，核定送出的字串對不上
+  // → 出差保護靜默失效（出差日被當忘刷卡扣全勤），不會報任何錯。要改名得三家店後端一起改，
+  // 所以在寫入端擋下並講清楚，把「靜默壞掉」變成「改不動＋有說明」。
+  const tripRenamed = incoming.filter(function (t) { return t.code === 'trip' && t.name !== '出差'; })[0];
+  if (tripRenamed) {
+    return { ok: false, error: 'trip_name_locked',
+             message: '「出差」不能改名（打卡端核定狀態寫死此名稱）；要改名需同步修改三家店打卡後端，請聯絡 Eason。' };
+  }
   let rows = [];
   try { rows = payRead('leave_type'); } catch (err) { rows = []; }
   const kept = rows.filter(function (r) { return String(r.store || '').trim() !== st; });

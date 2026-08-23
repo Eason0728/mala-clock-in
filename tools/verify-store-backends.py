@@ -32,6 +32,10 @@ EXACT = {
     '名冊有 shift_in／shift_out':            "'shift_in', 'shift_out'",
     '名冊有 created_at／created_by':         "'created_at', 'created_by'",
     'CONFIG 有 DEFAULT_SHIFT_IN':            'DEFAULT_SHIFT_IN',
+    # 2026-08-23 審查修正批：出差空時段硬擋＋假別白名單外查薪酬表
+    '出差空時段要擋':                        "error: 'trip_needs_periods'",
+    '白名單外查薪酬假別表':                  'function leaveTypeAllowedByPayroll',
+    'CONFIG 有 PAYROLL_API':                 'PAYROLL_API',
 }
 
 bad = 0

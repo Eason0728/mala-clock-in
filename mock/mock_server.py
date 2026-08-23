@@ -758,7 +758,10 @@ def handle_mgr_approve(data, body):
         return {"ok": False, "error": "invalid_emp_id"}
 
     leave_type = str(body.get("leave_type") or "").strip()
-    if leave_type and leave_type not in LEAVE_TYPES:
+    # 與 Code.gs leaveTypeAllowedByPayroll 同步（2026-08-23）：白名單外的假別再查一次
+    # 薪酬假別表（mock 用 MOCK_LEAVE_TYPES 代替）才擋——表上加新假別不必改白名單。
+    if leave_type and leave_type not in LEAVE_TYPES \
+            and leave_type not in [t["name"] for t in MOCK_LEAVE_TYPES]:
         return {"ok": False, "error": "bad_leave_type"}
     # 請假時數：可留空；有填要是 0 以上的數字，四捨五入到 2 位（與 Code.gs 同步）
     leave_hours = ""
@@ -781,6 +784,9 @@ def handle_mgr_approve(data, body):
         # 整天請假：沒時段但要有假別；核定 0 小時、狀態「全天請假」（與 Code.gs 同步）
         if not leave_type:
             return {"ok": False, "error": "bad_periods"}
+        # 出差不是請假（2026-08-23，與 Code.gs trip_needs_periods 同步）：空時段＝0 工時，硬擋
+        if leave_type == "出差":
+            return {"ok": False, "error": "trip_needs_periods"}
         approved_hours = 0.0
         periods_str = ""
         status_text = "全天請假"
