@@ -1810,6 +1810,46 @@ function payIsReduceKey(k) {
   return /_leave$/.test(s) || s === 'shortfall_hours' || s === 'dormitory' || payIsInsSelfKey(s);
 }
 
+/* ── 公司負擔勞保／健保／退休金：依員工主檔逐人加總（2026-08-24 修前後端不一致）──
+ * 背景：這三項早就改成「員工設定逐人填、系統自動加總」，但只有 payroll.html 跟上，
+ * 儀表板與集團總覽還在讀參數設定的手填值 → 同一家店在兩個畫面數字不同
+ * （央廚實測差 40,365：主檔加總 63,426 vs 參數 23,061）。
+ * ⚠ 折算方式必須與 payroll.html 的 costTotals 一致：勞保／退休金按在職比例、健保整月。
+ * ⚠ 負責人勞健保（co_owner，全公司一份分攤）與團險（co_group，每店一份）維持參數手填，
+ *   那兩項不是逐人費用。 */
+
+/** 一次讀 master 建「門市 → {emp_id: 公司負擔三項}」對照表（效能鐵則：不可在逐人／逐店迴圈裡 payRead）。 */
+function payMasterInsMap() {
+  const out = {};
+  payRead('master').forEach(function (m) {
+    const st = payStore(m.store);
+    (out[st] = out[st] || {})[String(m.emp_id)] = {
+      l: payNum(m.co_labor), h: payNum(m.co_health), p: payNum(m.co_pension) };
+  });
+  return out;
+}
+
+/** 依該月 run 列逐人加總公司負擔；主檔全沒填（合計 0）回 null，呼叫端退回參數手填值。 */
+function payAutoCompanyIns(runs, insMap) {
+  var L = 0, H = 0, P = 0;
+  (runs || []).forEach(function (r) {
+    const m = (insMap || {})[String(r.emp_id)];
+    if (!m) return;
+    const pr = String(r.is_full_time).toLowerCase() === 'true' ? payNum(r.ratio) : 1;
+    L += m.l * pr; H += m.h; P += m.p * pr;
+  });
+  return (L + H + P) > 0 ? { l: L, h: H, p: P } : null;
+}
+
+/** 公司負擔合計＝(逐人加總或參數值) ＋ 負責人勞健保 ＋ 團險。
+ *  個別項目為 0 時退回參數值——與 payroll.html 的 `if(autoCo[k]>0) co[k]=autoCo[k]` 一致。 */
+function payCompanyTotal(cfg, auto) {
+  const l = (auto && auto.l > 0) ? auto.l : payNum(cfg.co_labor);
+  const h = (auto && auto.h > 0) ? auto.h : payNum(cfg.co_health);
+  const p = (auto && auto.p > 0) ? auto.p : payNum(cfg.co_pension);
+  return l + h + p + payNum(cfg.co_owner) + payNum(cfg.co_group);
+}
+
 function handlePayrollTrend(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const st = payStore(body.store);
@@ -1825,6 +1865,7 @@ function handlePayrollTrend(body) {
   }
   const runs = payRead('run').filter(function (r) { return payStore(r.store) === st; });
   const items = payRead('item').filter(function (i) { return payStore(i.store) === st; });
+  const insMap = (payMasterInsMap())[st] || {};   // 迴圈外先建表
   const runByYm = {}, itemByYm = {};
   runs.forEach(function (r) { (runByYm[String(r.ym)] = runByYm[String(r.ym)] || []).push(r); });
   items.forEach(function (i) { (itemByYm[String(i.ym)] = itemByYm[String(i.ym)] || []).push(i); });
@@ -1862,8 +1903,8 @@ function handlePayrollTrend(body) {
     });
     const otLocal = ot - otSupport;
     const cfg = payConfig(st);
-    const co = payNum(cfg.co_labor) + payNum(cfg.co_health) + payNum(cfg.co_pension) +
-               payNum(cfg.co_owner) + payNum(cfg.co_group);
+    // 公司負擔改為依主檔逐人加總（與成本分類頁一致），主檔沒填才退回參數手填值
+    const co = payCompanyTotal(cfg, payAutoCompanyIns(rs, insMap));
     const salaryCost = gross - reduce;
     // 保險成本＝公司負擔＋代扣的同仁自付額（＝實際繳出去的金額）；總成本因此與改口徑前相同
     const insCost = co + insSelf;
@@ -1897,11 +1938,12 @@ function handlePayrollGroup(body) {
   runs.forEach(function (r) { (runBy[payStore(r.store)] = runBy[payStore(r.store)] || []).push(r); });
   items.forEach(function (i) { (itemBy[payStore(i.store)] = itemBy[payStore(i.store)] || []).push(i); });
 
+  const insMapAll = payMasterInsMap();   // 迴圈外先建表（不可在逐店迴圈裡 payRead）
   const rows = payStoreList().map(function (st) {
     const code = String(st.code), rs = runBy[code] || [], its = itemBy[code] || [];
     const cfg = payConfig(code);
-    const co = payNum(cfg.co_labor) + payNum(cfg.co_health) + payNum(cfg.co_pension) +
-               payNum(cfg.co_owner) + payNum(cfg.co_group);
+    // 公司負擔改為依主檔逐人加總（與成本分類頁一致），主檔沒填才退回參數手填值
+    const co = payCompanyTotal(cfg, payAutoCompanyIns(rs, insMapAll[code] || {}));
     if (!rs.length) return { store: code, name: String(st.name || code), has: false, company: payR0(co) };
     var gross = 0, net = 0, hours = 0, ft = 0, pt = 0, ot = 0, bonus = 0, reduce = 0, insSelf = 0;
     rs.forEach(function (r) {
