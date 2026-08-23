@@ -71,5 +71,13 @@ chk('  payroll.html 有獨立的宿舍收入區塊', /宿舍收入/.test(HTML), 
 chk('  宿舍收入區塊標明勿重複計列', /勿重複計列/.test(HTML), true);
 chk('  mock 兩處都納入 dormitory', (MOCK.match(/k==='dormitory'/g) || []).length, 2);
 
+console.log('\n══ 4) 請假扣款／不足倒扣要扣進所屬科目（2026-08-24 Eason：損益表只認列實際值）══');
+chk('  有分開累計正職／計時的扣款', /reduceFT/.test(HTML) && /reducePT/.test(HTML), true);
+chk('  正職科目扣掉 reduceFT', /g\.base-g\.reduceFT/.test(HTML), true);
+chk('  PT 科目扣掉 reducePT', /g\.pt-g\.reducePT/.test(HTML), true);
+chk('  不再有獨立的「減：請假扣款」列（否則會扣兩次）', /減：請假扣款/.test(HTML), false);
+chk('  小計不再重複減 g.reduce', /salaryGross-g\.reduce\b/.test(HTML), false);
+chk('  參考明細標明已扣在科目內', /已扣在上方各科目內/.test(HTML), true);
+
 console.log(`\n${fail ? '❌ 有失敗' : '✅ 成本口徑三處一致'}（${pass}/${pass + fail}）`);
 process.exit(fail ? 1 : 0);

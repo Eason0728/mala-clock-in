@@ -681,7 +681,7 @@ function costTotals(){
   // dorm／dormBy：宿舍代扣（2026-08-24 Eason 改口徑）——從薪資費用扣除，並在下方獨立列成租金收入。
   // ⚠ 兩邊都看得到是刻意的，但**損益表只能取一邊**：薪資費用已經扣過了，租金收入那區只是明細，
   //    再把它加進收入就等於認列兩次。表頭文字已寫明「已從上方扣除，勿重複計列」。
-  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},dorm:0,dormBy:[],sup:[],supTotal:0,coL:0,coH:0,coP:0,ye:0};
+  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},reduceFT:0,reducePT:0,dorm:0,dormBy:[],sup:[],supTotal:0,coL:0,coH:0,coP:0,ye:0};
   RESULTS.forEach(r=>{
     // 公司負擔逐人加總（依員工主檔）。勞保／退休金按在職比例折算，健保整月——與員工自付的處理一致。
     const _m=MASTER.find(x=>String(x.emp_id)===String(r.emp_id))||{};
@@ -730,7 +730,11 @@ function costTotals(){
       else { g.other+=a; const lb=String(x.item_label||'其他'); g.otherBy[lb]=(g.otherBy[lb]||0)+a; }});
     r.ded.forEach(x=>{
       if(isCostReduceKey(x.item_key)){
-        g.reduce+=x.amount; g.reduceBy[x.item_label]=(g.reduceBy[x.item_label]||0)+x.amount; return; }
+        g.reduce+=x.amount; g.reduceBy[x.item_label]=(g.reduceBy[x.item_label]||0)+x.amount;
+        // 2026-08-24 Eason：請假扣款／不足倒扣直接扣進該員的主要科目，讓每一列都是損益表可直接
+        // 認列的「實際值」，不再單獨列一行減項。正職扣「薪資費用／正職」、計時扣「薪資費用／PT」。
+        if(r.is_full_time) g.reduceFT+=x.amount; else g.reducePT+=x.amount;
+        return; }
       // 宿舍自付額＝同仁付給公司的房租，不是人事成本 → 從薪資費用扣除，另列為租金收入
       if(x.item_key==='dormitory' && x.amount){
         g.dorm+=x.amount; g.dormBy.push([r.name, r.is_full_time, x.amount]); }});
@@ -748,28 +752,31 @@ function costRows(g){
   const autoCo={co_labor:g.coL,co_health:g.coH,co_pension:g.coP};
   const coAuto=(g.coL+g.coH+g.coP)>0;
   if(coAuto) Object.keys(autoCo).forEach(k=>{ if(autoCo[k]>0) co[k]=autoCo[k]; });
-  const salaryGross=g.base+g.ot+g.attend+g.allow+g.mgr+g.pt+g.other+g.meal+g.bs+g.bp+g.bj;
-  // 薪資費用＝應收−(請假+不足倒扣)−宿舍代扣；勞健保自付仍留在內（那是薪資的一部分，只是代扣去繳保費）
-  // 宿舍代扣 2026-08-24 起改為扣除（Eason 指示），並在下方獨立列成租金收入
-  const salaryCost=salaryGross-g.reduce-g.dorm;
+  /* 各科目直接呈現「實際值」（2026-08-24 Eason）：請假扣款／不足倒扣已扣進所屬科目，
+     損益表可以逐列直接抄，不必再自己減。正職扣底薪那列、計時扣 PT 那列。 */
+  const baseNet=g.base-g.reduceFT, ptNet=g.pt-g.reducePT;
+  const salaryGross=baseNet+g.ot+g.attend+g.allow+g.mgr+ptNet+g.other+g.meal+g.bs+g.bp+g.bj;
+  // 薪資費用＝(已扣請假/不足的各科目合計)−宿舍代扣；
+  // 勞健保自付仍留在內（那是薪資的一部分，只是代扣去繳保費）
+  const salaryCost=salaryGross-g.dorm;
   const coTotal=CO_ITEMS.reduce((a,[k])=>a+co[k],0);
   const reduceRows=Object.keys(g.reduceBy).map(lb=>[lb,g.reduceBy[lb]]);
   const dormFT=g.dormBy.filter(x=>x[1]).reduce((a,x)=>a+x[2],0);   // 正職宿舍
   const dormPT=g.dorm-dormFT;                                       // 計時宿舍
   return [
-    ['h','薪資／人事費用成本'],
-    ['薪資費用／正職',g.base],['薪資費用 加班／正職',g.ot],['薪資費用 全勤／正職',g.attend],
+    ['h','薪資／人事費用成本 · 各列已扣請假／不足倒扣，可直接認列'],
+    ['薪資費用／正職'+(g.reduceFT?`（已扣請假／不足 ${nf(g.reduceFT)}）`:''),baseNet],
+    ['薪資費用 加班／正職',g.ot],['薪資費用 全勤／正職',g.attend],
     ['薪資費用 夜間津貼／職能津貼／正職',g.allow],['薪資費用 店長津貼',g.mgr],
     ...(g.meal?[['薪資費用 餐費補助／正職',g.meal]]:[]),
     ...(g.other?Object.keys(g.otherBy).map(lb=>[`薪資費用 其他津貼／${lb}`,g.otherBy[lb]]):[]),
     ...(Object.keys(g.otherBy).length>1?[['s','其他津貼小計',g.other]]:[]),
-    ['薪資費用／PT',g.pt],
+    ['薪資費用／PT'+(g.reducePT?`（已扣請假／不足 ${nf(g.reducePT)}）`:''),ptNet],
     ...(g.bs?[['薪資費用 業績獎金',g.bs]]:[]),
     ...(g.bp?[['薪資費用 績效獎金',g.bp]]:[]),
     ...(g.bj?[['薪資費用 專案獎金',g.bj]]:[]),
-    ...(g.reduce?[['d','減：請假扣款＋不足倒扣',-g.reduce]]:[]),
-    // 宿舍統一在這裡扣（與請假扣款同樣做法）——不分攤回各科目，因為正職的宿舍無法合理歸到
-    // 底薪或加班哪一列。標明正職／計時各多少，才不會誤以為「薪資費用／PT」那列沒扣到。
+    // 請假扣款／不足倒扣已扣進上面各科目，這裡不再重複列一行減項（2026-08-24）。
+    // 宿舍則維持獨立一列：它不是「同仁少領」而是公司的租金收入，損益表另有科目對應。
     ...(g.dorm?[['d',`減：宿舍代扣（正職 ${nf(dormFT)}＋計時 ${nf(dormPT)}，另列租金收入）`,-g.dorm]]:[]),
     ['s','薪資費用小計',salaryCost],
     ['h','公司負擔保險成本'],
@@ -779,7 +786,7 @@ function costRows(g){
               ['年終獎金提列／正職',Math.round(g.ye)],
               ['s','提列小計',Math.round(g.ye)]]:[]),
     ['g','人事總成本（薪資費用＋公司負擔'+(g.ye?'＋年終提列':'')+'）',salaryCost+coTotal+Math.round(g.ye)],
-    ...(reduceRows.length?[['h','（參考）請假／不足扣款明細 · 已在上方扣除']].concat(reduceRows):[]),
+    ...(reduceRows.length?[['h','（參考）請假／不足扣款明細 · 已扣在上方各科目內']].concat(reduceRows):[]),
     ...(g.dorm?[['h','宿舍收入 · 已從上方薪資費用扣除，損益表勿重複計列']]
         .concat(g.dormBy.map(([nm,ft,amt])=>[`${nm}（${ft?'正職':'計時'}）`,amt]))
         .concat([['s','宿舍收入小計',g.dorm]]):[]),
