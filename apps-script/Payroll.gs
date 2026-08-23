@@ -77,6 +77,12 @@ const PAY_CONFIG_DEFAULT = [
   ['leave_div_hours', 8, '事假費率分母（時）'],
   ['sick_ratio', 0.5, '病假占事假比例'],
   ['payday', 10, '發薪日'],
+  // ── 計時同仁的時薪加給（2026-08-24 改為參數，原本寫死在引擎裡）──
+  // 有效時薪 ＝ 基本時薪 ＋ 滿勤加給（勾選才給）＋ 年資加給（滿門檻的次月起），兩者可疊加。
+  // ⚠ 填 0 ＝該門市不給這項加給（0 是合法值，不是「沒設定」）。
+  ['pt_attend_plus', 10, '計時滿勤加給（元/時，勾選才給；0＝不給）'],
+  ['pt_tenure_plus', 10, '計時年資加給（元/時；0＝不給）'],
+  ['pt_tenure_months', 6, '年資加給門檻（滿幾個月之後的次月起）'],
   // ⚠ shortfall_deduct 已於 2026-08-23 移除：2026-08 改版後「不足時數一律倒扣（先抵已請假時數）」，
   //    引擎不再讀這個開關，留著只會讓人以為關得掉。前端存檔會把殘留的 key 一併清掉（CFG_OBSOLETE）。
   ['meal_min_hours', 6, '餐費補助門檻：當日核定工時達此時數才認列一天'],
@@ -469,15 +475,27 @@ function payRatio(e, ym) {
   return Math.min(1, d / D);
 }
 
-/** 計時「年資加給」：任職滿半年「之後的次月」起，時薪 +10。
- *  例：到職 6/5 → 12/5 滿半年 → 隔年 1 月起（該月 1 號晚於滿半年日才算）。 */
-function payTenurePlus(e, ym) {
+/** 參數取值：未設定（欄位不存在／空白）才用預設；**0 是合法值**（例：某店不給加給就填 0），
+ *  所以不能用 `payNum(v) || dflt` ——那會把 0 當成沒設定。 */
+function payCfgNum(cfg, key, dflt) {
+  const v = (cfg || {})[key];
+  return (v === undefined || v === null || String(v).trim() === '') ? dflt : payNum(v);
+}
+
+/** 計時「年資加給」：任職滿指定月數「之後的次月」起，時薪 +N。
+ *  例（預設 6 個月／+10）：到職 6/5 → 12/5 滿半年 → 隔年 1 月起（該月 1 號晚於滿期日才算）。
+ *  ⚠ 2026-08-24 起金額與年資門檻改為門市可覆寫參數（pt_tenure_plus／pt_tenure_months），
+ *    不再寫死——央廚等門市的加給規則可能與光復不同。cfg 沒帶＝用預設，行為與改版前相同。 */
+function payTenurePlus(e, ym, cfg) {
+  const plus = payCfgNum(cfg, 'pt_tenure_plus', 10);
+  const months = payCfgNum(cfg, 'pt_tenure_months', 6);
+  if (!plus) return 0;
   const hs = payDateStr(e.hire_date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(hs)) return 0;
   const h = new Date(hs + 'T00:00:00');
-  const sixMo = new Date(h.getFullYear(), h.getMonth() + 6, h.getDate());
+  const due = new Date(h.getFullYear(), h.getMonth() + months, h.getDate());
   const monthStart = new Date(ym + '-01T00:00:00');
-  return monthStart > sixMo ? 10 : 0;
+  return monthStart > due ? plus : 0;
 }
 
 function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
@@ -533,8 +551,9 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     // 計時：本店時數 × 時薪；時薪加給＝滿勤(工時分頁手動打勾)+10、年資(滿半年次月起)+10，可疊加
     // 本月時薪：工時分頁填了 wage_override 就用該月值，否則用主檔 wage（計時每月時薪可不同、又保留歷史）
     let w = payNum(att.wage_override) > 0 ? payNum(att.wage_override) : payNum(e.wage);
-    if (payBool(att.full_attend)) w += 10;   // E1 滿勤加給：管理者於工時分頁手動勾選（滿100H+全勤由管理者判定）
-    w += payTenurePlus(e, ym);               // E2 年資加給
+    // E1 滿勤加給：管理者於工時分頁手動勾選（滿100H+全勤由管理者判定）。金額門市可覆寫（0＝不給）
+    if (payBool(att.full_attend)) w += payCfgNum(cfg, 'pt_attend_plus', 10);
+    w += payTenurePlus(e, ym, cfg);          // E2 年資加給（金額與年資門檻同樣可依門市覆寫）
     push(earn, 'hourly_wage', '薪資（時數）', payR2(att.hours), w, att.hours * w);
     // 國定假日出勤：計時同仁時薪雙倍（正職是給假、不另計）。
     // 時數本身已含在上面的總時數裡，這裡只補「多的那一倍」。
