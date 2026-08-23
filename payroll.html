@@ -369,10 +369,19 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <div class="note warn" style="margin-top:12px">⚠ 改了之後<b>已經算過的月份不會自動套用</b>——要到「薪資計算」按重新計算（已鎖定的月份要先解鎖）。</div>
   </div>
   <div class="card">
-    <h2>公司負擔（非逐人費用）</h2>
-    <p class="hint"><b>勞保／健保／退休金</b>已改到<b>員工設定</b>逐人填，系統自動加總（人員增減自動反映；月中到離職按在職比例折算），這裡不再重複輸入。<br>下面兩項不是逐人費用，維持手動填。</p>
+    <h2>公司負擔（非逐人費用） <span id="coScope" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
+    <p class="hint"><b>勞保／健保／退休金</b>已改到<b>員工設定</b>逐人填，系統自動加總（人員增減自動反映；月中到離職按在職比例折算），這裡不再重複輸入。<br>
+      下面兩項不是逐人費用，維持手動填：<br>
+      <b>負責人勞健保</b>＝全公司一份，各門市<b>平均分攤</b>（填分攤後的金額，三家店會一樣）。<br>
+      <b>團險</b>＝<b>每店自己投保、金額不同</b> → 改這項一定要勾「只套用到目前門市」，否則會蓋掉別店。</p>
     <div class="grid2" id="coGrid"></div>
-    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveCfg(this,'儲存公司負擔')">儲存公司負擔</button></div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn" onclick="saveCfg(this,'儲存公司負擔')">儲存公司負擔</button>
+      <label style="font-size:13px;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="coOwn" style="width:18px;height:18px"
+          onchange="$('cfgOwn').checked=this.checked;renderCfg()"> 只套用到目前門市（不勾＝集團預設，全店共用）
+      </label>
+    </div>
   </div>
   <div class="card">
     <h2>紅字天數（行政院行事曆）</h2>
@@ -1567,9 +1576,11 @@ function renderCfg(){
   if($('cfgScope')) $('cfgScope').textContent=scopeTxt;
   if($('attScope')) $('attScope').textContent=scopeTxt;
   if($('ptScope'))  $('ptScope').textContent=scopeTxt;
-  // 三張卡共用同一個儲存範圍（都是寫 config），勾選互相同步
+  if($('coScope'))  $('coScope').textContent=scopeTxt;
+  // 四張卡共用同一個儲存範圍（都是寫 config），勾選互相同步
   if($('attOwn')) $('attOwn').checked=own;
   if($('ptOwn'))  $('ptOwn').checked=own;
+  if($('coOwn'))  $('coOwn').checked=own;
   const srcTag=k=>{const v=CFGSRC[k];return v==='own'?' <span class="tag draft" style="font-size:10px">本店</span>':(v==='global'?'':' <span style="color:var(--muted)">預設</span>')};
   const cfgFld=([k,lb])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
     <input type="number" step="0.01" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`;
@@ -1580,8 +1591,9 @@ function renderCfg(){
       +opts.map(([v,l])=>`<option value="${v}" ${String(CFG[k]||'punch')===v?'selected':''}>${l}</option>`).join('')
       +'</select></div>').join('');
   if($('ptGrid')) $('ptGrid').innerHTML=CF_PT.map(cfgFld).join('');
-  if($('coGrid')) $('coGrid').innerHTML=CO_MANUAL.map(([k,lb])=>`<div class="fld"><label>${lb}</label>
-    <input type="number" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`).join('');
+  // 用同一個 cfgFld，才會跟其他三張卡一樣顯示「本店／預設」來源標示
+  //（2026-08-24：這張卡原本沒有來源標示也沒有門市勾選，改團險時很容易誤存成集團預設）
+  if($('coGrid')) $('coGrid').innerHTML=CO_MANUAL.map(cfgFld).join('');
   let h='<thead><tr><th>月份</th><th>紅字天數</th><th style="text-align:left">國定假日日期<br><span style="font-weight:400;color:var(--muted)">計時當天出勤＝時薪雙倍</span></th><th></th></tr></thead><tbody>';
   Object.keys(HOL).sort().forEach(k=>{
     const tag=HOLSRC[k]==='own'?' <span class="tag draft" style="font-size:10px">本店</span>':' <span style="color:var(--muted);font-size:11px">集團</span>';
