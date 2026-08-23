@@ -1798,9 +1798,16 @@ function handlePayrollBonusSet(body) {
  *  與 payroll.html 的 isCostReduceKey＋宿舍、payroll_mock 的 isReduce 同一口徑。
  *  ⚠ 2026-08-23 前這裡是兩份寫死的五個舊 key——新假別（住院傷病、安胎、家庭照顧…）的扣款
  *    沒被扣回，儀表板趨勢與集團總覽的薪資費用被高估。改口徑要三處一起：本函式／payroll.html／mock。 */
+/** 同仁自付的勞健保／團保／退休金（2026-08-24 起從薪資費用扣除）。
+ *  ⚠ 與宿舍不同：這筆錢公司代扣後要繳給勞保局／健保署，**必須加回保險成本**，
+ *    否則人事總成本會少一筆（公司確實付出去了）。宿舍才是真的留在公司（租金收入）。 */
+function payIsInsSelfKey(k) {
+  const s = String(k);
+  return s === 'labor_ins' || s === 'health_ins' || s === 'group_ins' || s === 'pension';
+}
 function payIsReduceKey(k) {
   const s = String(k);
-  return /_leave$/.test(s) || s === 'shortfall_hours' || s === 'dormitory';
+  return /_leave$/.test(s) || s === 'shortfall_hours' || s === 'dormitory' || payIsInsSelfKey(s);
 }
 
 function handlePayrollTrend(body) {
@@ -1825,7 +1832,7 @@ function handlePayrollTrend(body) {
   const out = list.map(function (ym) {
     const rs = runByYm[ym] || [], its = itemByYm[ym] || [];
     if (!rs.length) return { ym: ym, has: false };
-    var gross = 0, hours = 0, ft = 0, pt = 0, ot = 0, reduce = 0, bonus = 0, supportH = 0;
+    var gross = 0, hours = 0, ft = 0, pt = 0, ot = 0, reduce = 0, bonus = 0, supportH = 0, insSelf = 0;
     // 每人的加班費（拆「支援造成的加班」用）
     const otByEmp = {};
     its.forEach(function (i) {
@@ -1833,7 +1840,10 @@ function handlePayrollTrend(body) {
       if (String(i.item_type) === 'earning') {
         if (k === 'overtime') { ot += a; otByEmp[String(i.emp_id)] = (otByEmp[String(i.emp_id)] || 0) + a; }
         if (k.indexOf('bonus_') === 0) bonus += a;
-      } else if (payIsReduceKey(k)) reduce += a;
+      } else if (payIsReduceKey(k)) {
+        reduce += a;
+        if (payIsInsSelfKey(k)) insSelf += a;   // 自付額：從薪資費用扣掉，但下面要加回保險成本
+      }
     });
     // 支援造成的加班費：支援時數把超時墊高的那一段，按時數比例攤回金額
     //   支援造成的加班時數 = max(超時,0) − max(超時−支援時數,0)
@@ -1855,9 +1865,12 @@ function handlePayrollTrend(body) {
     const co = payNum(cfg.co_labor) + payNum(cfg.co_health) + payNum(cfg.co_pension) +
                payNum(cfg.co_owner) + payNum(cfg.co_group);
     const salaryCost = gross - reduce;
+    // 保險成本＝公司負擔＋代扣的同仁自付額（＝實際繳出去的金額）；總成本因此與改口徑前相同
+    const insCost = co + insSelf;
     const people = ft + pt;
     return { ym: ym, has: true,
-             salary_cost: payR0(salaryCost), company: payR0(co), total_cost: payR0(salaryCost + co),
+             salary_cost: payR0(salaryCost), company: payR0(insCost), ins_self: payR0(insSelf),
+             total_cost: payR0(salaryCost + insCost),
              overtime: payR0(ot), overtime_support: payR0(otSupport), overtime_local: payR0(otLocal),
              support_hours: payR2(supportH), bonus: payR0(bonus),
              people: people, ft: ft, pt: pt, hours: payR2(hours),
@@ -1890,7 +1903,7 @@ function handlePayrollGroup(body) {
     const co = payNum(cfg.co_labor) + payNum(cfg.co_health) + payNum(cfg.co_pension) +
                payNum(cfg.co_owner) + payNum(cfg.co_group);
     if (!rs.length) return { store: code, name: String(st.name || code), has: false, company: payR0(co) };
-    var gross = 0, net = 0, hours = 0, ft = 0, pt = 0, ot = 0, bonus = 0, reduce = 0;
+    var gross = 0, net = 0, hours = 0, ft = 0, pt = 0, ot = 0, bonus = 0, reduce = 0, insSelf = 0;
     rs.forEach(function (r) {
       gross += payNum(r.gross); net += payNum(r.net); hours += payNum(r.total_hours);
       if (String(r.is_full_time).toLowerCase() === 'true') ft++; else pt++;
@@ -1900,13 +1913,18 @@ function handlePayrollGroup(body) {
       if (String(i.item_type) === 'earning') {
         if (k === 'overtime') ot += a;
         if (k.indexOf('bonus_') === 0) bonus += a;
-      } else if (payIsReduceKey(k)) reduce += a;
+      } else if (payIsReduceKey(k)) {
+        reduce += a;
+        if (payIsInsSelfKey(k)) insSelf += a;   // 自付額：薪資費用扣掉、保險成本加回
+      }
     });
     const salaryCost = gross - reduce;
+    const insCost = co + insSelf;   // 保險成本＝公司負擔＋代扣自付額
     return { store: code, name: String(st.name || code), has: true,
              people: ft + pt, ft: ft, pt: pt, hours: payR2(hours),
              gross: payR0(gross), net: payR0(net), overtime: payR0(ot), bonus: payR0(bonus),
-             salary_cost: payR0(salaryCost), company: payR0(co), total_cost: payR0(salaryCost + co),
+             salary_cost: payR0(salaryCost), company: payR0(insCost), ins_self: payR0(insSelf),
+             total_cost: payR0(salaryCost + insCost),
              status: String(rs[0].status || 'draft') };
   });
   const sum = { people: 0, hours: 0, gross: 0, net: 0, overtime: 0, bonus: 0, salary_cost: 0, company: 0, total_cost: 0 };

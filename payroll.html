@@ -681,7 +681,7 @@ function costTotals(){
   // dorm／dormBy：宿舍代扣（2026-08-24 Eason 改口徑）——從薪資費用扣除，並在下方獨立列成租金收入。
   // ⚠ 兩邊都看得到是刻意的，但**損益表只能取一邊**：薪資費用已經扣過了，租金收入那區只是明細，
   //    再把它加進收入就等於認列兩次。表頭文字已寫明「已從上方扣除，勿重複計列」。
-  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},reduceFT:0,reducePT:0,dorm:0,dormBy:[],sup:[],supTotal:0,coL:0,coH:0,coP:0,ye:0};
+  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},reduceFT:0,reducePT:0,dorm:0,dormBy:[],ins:0,insFT:0,insPT:0,insBy:{},sup:[],supTotal:0,coL:0,coH:0,coP:0,ye:0};
   RESULTS.forEach(r=>{
     // 公司負擔逐人加總（依員工主檔）。勞保／退休金按在職比例折算，健保整月——與員工自付的處理一致。
     const _m=MASTER.find(x=>String(x.emp_id)===String(r.emp_id))||{};
@@ -737,13 +737,23 @@ function costTotals(){
         return; }
       // 宿舍自付額＝同仁付給公司的房租，不是人事成本 → 從薪資費用扣除，另列為租金收入
       if(x.item_key==='dormitory' && x.amount){
-        g.dorm+=x.amount; g.dormBy.push([r.name, r.is_full_time, x.amount]); }});
+        g.dorm+=x.amount; g.dormBy.push([r.name, r.is_full_time, x.amount]); return; }
+      /* 勞健保／團保／退休金**自付額**（2026-08-24 Eason）：從薪資費用扣除，改列到保險成本區。
+         ⚠ 與宿舍不同——這筆錢公司沒有留下，是代扣後要繳給勞保局／健保署的，
+         所以**必須計入保險成本小計**，否則人事總成本會憑空少一筆。
+         淨效果：總成本不變，只是把「代扣代繳」那段從薪資費用移到保險成本。 */
+      if(INS_SELF_KEYS.indexOf(x.item_key)>=0 && x.amount){
+        g.ins+=x.amount;
+        if(r.is_full_time) g.insFT+=x.amount; else g.insPT+=x.amount;
+        g.insBy[x.item_label]=(g.insBy[x.item_label]||0)+x.amount; }});
   });
   return g;
 }
 /* 成本分類的列定義（label, 值），供月結卡與 Excel 共用 */
 // 成本分類的公司負擔列：前三項改由員工主檔逐人加總，後兩項是非逐人費用（參數設定手填）
 const CO_ITEMS=[['co_labor','公司負擔勞保'],['co_health','公司負擔健保'],['co_pension','公司負擔退休金'],['co_owner','負責人勞健保'],['co_group','團險']];
+// 同仁自付額的 item_key（從薪資費用扣除、改列保險成本；2026-08-24）
+const INS_SELF_KEYS=['labor_ins','health_ins','group_ins','pension'];
 // 參數設定「公司負擔」只顯示這兩項——逐人的三項不再手填，避免兩邊數字打架
 const CO_MANUAL=[['co_owner','負責人勞健保'],['co_group','團險']];
 function costRows(g){
@@ -754,7 +764,7 @@ function costRows(g){
   if(coAuto) Object.keys(autoCo).forEach(k=>{ if(autoCo[k]>0) co[k]=autoCo[k]; });
   /* 各科目直接呈現「實際值」（2026-08-24 Eason）：請假扣款／不足倒扣已扣進所屬科目，
      損益表可以逐列直接抄，不必再自己減。正職扣底薪那列、計時扣 PT 那列。 */
-  const baseNet=g.base-g.reduceFT, ptNet=g.pt-g.reducePT;
+  const baseNet=g.base-g.reduceFT-g.insFT, ptNet=g.pt-g.reducePT-g.insPT;
   const salaryGross=baseNet+g.ot+g.attend+g.allow+g.mgr+ptNet+g.other+g.meal+g.bs+g.bp+g.bj;
   // 薪資費用＝(已扣請假/不足的各科目合計)−宿舍代扣；
   // 勞健保自付仍留在內（那是薪資的一部分，只是代扣去繳保費）
@@ -763,15 +773,18 @@ function costRows(g){
   const reduceRows=Object.keys(g.reduceBy).map(lb=>[lb,g.reduceBy[lb]]);
   const dormFT=g.dormBy.filter(x=>x[1]).reduce((a,x)=>a+x[2],0);   // 正職宿舍
   const dormPT=g.dorm-dormFT;                                       // 計時宿舍
+  // 科目列名的「已扣」註記：請假／不足 與 勞健保自付額
+  const cutNote=(re,ins)=>{const p=[];if(re)p.push('請假／不足 '+nf(re));if(ins)p.push('勞健保自付 '+nf(ins));
+    return p.length?`（已扣 ${p.join('、')}）`:''};
   return [
     ['h','薪資／人事費用成本 · 各列已扣請假／不足倒扣，可直接認列'],
-    ['薪資費用／正職'+(g.reduceFT?`（已扣請假／不足 ${nf(g.reduceFT)}）`:''),baseNet],
+    ['薪資費用／正職'+cutNote(g.reduceFT,g.insFT),baseNet],
     ['薪資費用 加班／正職',g.ot],['薪資費用 全勤／正職',g.attend],
     ['薪資費用 夜間津貼／職能津貼／正職',g.allow],['薪資費用 店長津貼',g.mgr],
     ...(g.meal?[['薪資費用 餐費補助／正職',g.meal]]:[]),
     ...(g.other?Object.keys(g.otherBy).map(lb=>[`薪資費用 其他津貼／${lb}`,g.otherBy[lb]]):[]),
     ...(Object.keys(g.otherBy).length>1?[['s','其他津貼小計',g.other]]:[]),
-    ['薪資費用／PT'+(g.reducePT?`（已扣請假／不足 ${nf(g.reducePT)}）`:''),ptNet],
+    ['薪資費用／PT'+cutNote(g.reducePT,g.insPT),ptNet],
     ...(g.bs?[['薪資費用 業績獎金',g.bs]]:[]),
     ...(g.bp?[['薪資費用 績效獎金',g.bp]]:[]),
     ...(g.bj?[['薪資費用 專案獎金',g.bj]]:[]),
@@ -779,14 +792,19 @@ function costRows(g){
     // 宿舍則維持獨立一列：它不是「同仁少領」而是公司的租金收入，損益表另有科目對應。
     ...(g.dorm?[['d',`減：宿舍代扣（正職 ${nf(dormFT)}＋計時 ${nf(dormPT)}，另列租金收入）`,-g.dorm]]:[]),
     ['s','薪資費用小計',salaryCost],
-    ['h','公司負擔保險成本'],
+    ['h','保險成本 · 公司負擔＋代扣同仁自付，合計＝實際繳出去的金額'],
     ...CO_ITEMS.map(([k,lb])=>[lb+((coAuto&&autoCo[k]>0)?'（依人員自動加總）':''),co[k]]),
-    ['s','公司負擔小計',coTotal],
+    // 同仁自付額：已從上方薪資費用扣除，移到這裡。公司代扣後要繳給勞保局／健保署，
+    // 所以要計入小計——否則人事總成本會少這一筆（那筆錢公司確實付出去了）。
+    ...(g.ins?[[`同仁自付額（代扣代繳．正職 ${nf(g.insFT)}＋計時 ${nf(g.insPT)}）`,g.ins]]:[]),
+    ['s','保險成本小計',coTotal+g.ins],
     ...(g.ye?[['h','年終獎金提列 · 每月認列成本，尚未發放'],
               ['年終獎金提列／正職',Math.round(g.ye)],
               ['s','提列小計',Math.round(g.ye)]]:[]),
-    ['g','人事總成本（薪資費用＋公司負擔'+(g.ye?'＋年終提列':'')+'）',salaryCost+coTotal+Math.round(g.ye)],
+    ['g','人事總成本（薪資費用＋保險成本'+(g.ye?'＋年終提列':'')+'）',salaryCost+coTotal+g.ins+Math.round(g.ye)],
     ...(reduceRows.length?[['h','（參考）請假／不足扣款明細 · 已扣在上方各科目內']].concat(reduceRows):[]),
+    ...(g.ins?[['h','（參考）同仁自付額明細 · 已從薪資費用扣除、計入上方保險成本']]
+        .concat(Object.keys(g.insBy).map(lb=>[lb,g.insBy[lb]])):[]),
     ...(g.dorm?[['h','宿舍收入 · 已從上方薪資費用扣除，損益表勿重複計列']]
         .concat(g.dormBy.map(([nm,ft,amt])=>[`${nm}（${ft?'正職':'計時'}）`,amt]))
         .concat([['s','宿舍收入小計',g.dorm]]):[]),

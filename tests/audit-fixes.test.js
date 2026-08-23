@@ -144,11 +144,16 @@ console.log('\n══ D. 儀表板扣回口徑＋出差改名鎖 ══');
         { ym:'2026-08', store:'SSLGF', emp_id:'Y01', item_key:'overtime',        item_type:'earning',  amount:1000 }];
       return [];
     };`);
+  /* 本段原意是驗「新假別（family_leave）的扣款也會被扣回」——這點仍然成立。
+     ⚠ 期望值 2026-08-24 由 28700 改為 28000：成本口徑再次調整，勞健保自付額也要從薪資費用扣除
+     （改列到保險成本）。所以健保 700 現在也扣：30000−(800+500+700)=28000。
+     口徑本身的完整測試在 cost-basis.test.js，這裡只確認新假別沒被漏掉。 */
   const t = ctx.call('handlePayrollTrend', { admin_key: 'x', store: 'SSLGF', ym: '2026-08', months: 1 });
-  chk('趨勢：新假別扣款也扣回 30000-(800+500)=28700（舊版會算 29500）',
-      t.months[0].salary_cost, 28700);
+  chk('趨勢：新假別扣款也扣回 30000-(800+500+700)=28000（舊版會算 29500）',
+      t.months[0].salary_cost, 28000);
   const gp = ctx.call('handlePayrollGroup', { admin_key: 'x', ym: '2026-08' });
-  chk('集團總覽同口徑 28700', gp.rows[0].salary_cost, 28700);
+  chk('集團總覽同口徑 28000', gp.rows[0].salary_cost, 28000);
+  chk('人事總成本不因自付額改列而變動', t.months[0].total_cost, 28700);
 
   ctx.run('payReplaceAll = function(){}; payAppend = function(){};');
   let r = ctx.call('handlePayrollLeaveTypeSet', { admin_key: 'x', store: '',
