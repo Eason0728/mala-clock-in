@@ -1,13 +1,18 @@
-/* 人事成本口徑（payIsReduceKey）——這條規則 Eason 改過兩次，獨立守住。
+/* 人事成本口徑——Eason 在 2026-08-24 一天內調整了四輪，這支獨立守住最終版。
  *
- * 現行定義（2026-08-24）：薪資費用小計 ＝ 應收 −（請假扣款 ＋ 不足時數倒扣 ＋ 宿舍代扣）
+ * 現行定義：薪資費用小計 ＝ 應收 −（請假扣款 ＋ 不足時數倒扣 ＋ 宿舍代扣 ＋ 勞健保自付額）
  *   ✔ 請假扣款：任何 /_leave$/（新假別自動涵蓋，不必逐一列舉）
  *   ✔ 不足時數倒扣 shortfall_hours
- *   ✔ 宿舍代扣 dormitory —— 同仁付給公司的房租，不是人事成本；另在成本分類下方列成租金收入
- *   ✘ 勞健保／團保／退休金自付額 —— **不扣**，那是薪資的一部分，只是代扣去繳保費
+ *   ✔ 宿舍代扣 dormitory —— 同仁付給公司的房租，錢**留在公司**；下方另列成租金收入
+ *   ✔ 勞健保／團保／退休金自付額 —— 代扣後**要繳給勞保局**，所以扣掉之後**必須加回保險成本**
+ *     （payIsInsSelfKey），否則人事總成本會憑空少一筆。這是它與宿舍的關鍵差異。
+ *
+ * ⚠ 呈現原則：以上四種**全部扣進所屬科目**（正職→薪資費用／正職、計時→薪資費用／PT），
+ *   表上**不再有任何獨立減項列**——列了就會扣兩次。所以「薪資費用／PT」那列
+ *   恰好等於計時同仁的實付總額，每一列都是損益表可直接認列的實際值。
  *
  * 三處必須同口徑：Payroll.gs payIsReduceKey（儀表板趨勢／集團總覽）、
- * payroll.html isCostReduceKey＋宿舍、mock/payroll_mock.js isReduce（兩處）。
+ * payroll.html（cutNote／baseNet／ptNet 那段）、mock/payroll_mock.js isReduce（兩處）。
  */
 'use strict';
 const fs = require('fs'), vm = require('vm'), path = require('path');
@@ -79,7 +84,11 @@ console.log('\n══ 2) 儀表板趨勢／集團總覽用同一口徑 ══');
 
 console.log('\n══ 3) 三處程式碼口徑一致（防止只改一處造成報表打架）══');
 chk('  payroll.html 有把宿舍併入成本扣除', /item_key==='dormitory'/.test(HTML), true);
-chk('  payroll.html 有「減：宿舍代扣」列', /減：宿舍代扣/.test(HTML), true);
+// 2026-08-24 起宿舍也扣進所屬科目，不再有獨立減項列（列了會扣兩次）
+chk('  不再有獨立的「減：宿舍代扣」列', /減：宿舍代扣/.test(HTML), false);
+chk('  正職科目扣掉 dormFT', /g\.base-g\.reduceFT-g\.insFT-g\.dormFT/.test(HTML), true);
+chk('  PT 科目扣掉 dormPT', /g\.pt-g\.reducePT-g\.insPT-g\.dormPT/.test(HTML), true);
+chk('  小計不再重複減 g.dorm', /salaryGross-g\.dorm/.test(HTML), false);
 chk('  payroll.html 有獨立的宿舍收入區塊', /宿舍收入/.test(HTML), true);
 chk('  宿舍收入區塊標明勿重複計列', /勿重複計列/.test(HTML), true);
 chk('  mock 兩處都納入 dormitory', (MOCK.match(/k==='dormitory'/g) || []).length, 2);
