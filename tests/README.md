@@ -27,3 +27,20 @@ node tests/engine-diff.js /tmp/before.gs apps-script/Payroll.gs
 2. **vm 裡要用 vm context 的 `Date`**（`vm.runInContext('Date',sandbox)`）——
    模擬「Sheets 把日期轉成 Date 物件」時，跨 realm 的 `instanceof Date` 會判 false，測出來跟正式環境不一樣。
 3. **leave 分頁的欄位名是中文**（日期／姓名／假別／時數），不是英文 key。
+
+## 改後端之後：驗證三家店一致
+
+```bash
+cd ~/mala-gas/mala-clock-in && clasp pull
+cd ~/mala-gas/cf-clock-in && clasp pull
+cd ~/mala-gas/hq-clock-in && clasp pull
+python3 tools/verify-store-backends.py
+```
+
+央廚／總部各有一份自己的 `程式碼.js`（含各自的試算表 ID／座標／金鑰，還有 repo 沒有的
+`setup_sheets`／`add_manager`），所以改後端要逐份套補丁。這支把「逐一 grep 確認」變成可重跑的檢查。
+
+**2026-08-23 的教訓**：補丁腳本判斷「是否已套用」時用了子字串 `'isTrip' in src`，
+而前一步剛加的 `isTripDay` 就含這個子字串 → 三份全被誤判成已套用而跳過 →
+呼叫端傳了第四個參數但函式簽名沒收 → 出差照樣扣全勤。**`node --check` 完全過**
+（JS 多傳參數合法）。所以 `EXACT` 那一組查的是**完整片段**不是函式名。
