@@ -60,7 +60,9 @@ reset(); approve('2026-07-08',0,'正常','喪假（父母・配偶）',8);
 c=collect();
 chk('  歸集到 funeral8 8H',   c.leaves.funeral8, 8);
 chk('  全薪不扣款',           calc(c).g('funeral8_leave'), 0);
-chk('  仍計缺勤（沿用舊行為）', c.deduct_days, 1);
+// 2026-08-23 Eason 定案：喪假依勞工請假規則§9 不得扣發全勤獎金（改版初期沿用舊慣例扣，已改）
+chk('  不計缺勤（§9 不得扣全勤）', c.deduct_days, 0);
+chk('  全勤獎金全額',         calc(c).g('attend_bonus'), 3000);
 
 console.log('\n══ 3) 家庭照顧假：改版前算全薪，現在應該全扣 ══');
 reset(); approve('2026-07-09',0,'正常','家庭照顧假',8);

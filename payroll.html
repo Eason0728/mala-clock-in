@@ -1452,12 +1452,20 @@ async function saveMaster(btn){
 const CF=[['daily_hours','每日基本工時（H）'],
  ['leave_div_days','事假費率分母（天）'],['leave_div_hours','事假費率分母（時）'],
  ['sick_ratio','病假占事假比例'],['payday','發薪日'],
+ ['meal_min_hours','餐費補助門檻（當日滿幾H算一天）'],
  ['yearend_months','年終獎金月數（全店預設）']];
 const CF_ATTEND=[['attend_deduct_per_day','每日倒扣（元）'],
  // 全勤門檻式歸零（2026-08-23）：填 0＝不啟用，維持純遞減
  ['attend_void_forget','忘刷達幾次→全勤歸零（0=不啟用）'],
  ['attend_void_late_min','遲到累計幾分→全勤歸零（0=不啟用）'],
  ['attend_void_early_min','早退累計幾分→全勤歸零（0=不啟用）']];
+/* 非數字參數（要用下拉，不能用 number input）：忘刷卡的計數單位。
+   Eason 調過三次統計口徑，這種「次／天」的差別一律做成參數。 */
+const CF_ATTEND_SELECT=[['attend_forget_unit','忘刷計數單位',
+  [['punch','每漏一張卡算一次'],['day','同一天只算一次']]]];
+/* 已廢棄的參數：存檔時順手從試算表清掉，避免留一列沒人讀的廢資料誤導。
+   shortfall_deduct＝2026-08 改版前的「工時不足要不要倒扣」開關，現在一律倒扣、引擎不再讀它。 */
+const CFG_OBSOLETE=['shortfall_deduct'];
 function renderCfg(){
   renderStores();
   // 假別表跟參數一樣依門市覆寫；還沒載入就先抓一次（切門市時 loadMonth 會再抓）
@@ -1472,7 +1480,11 @@ function renderCfg(){
   const cfgFld=([k,lb])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
     <input type="number" step="0.01" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`;
   $('cfgGrid').innerHTML=CF.map(cfgFld).join('');
-  if($('attGrid')) $('attGrid').innerHTML=CF_ATTEND.map(cfgFld).join('');
+  if($('attGrid')) $('attGrid').innerHTML=CF_ATTEND.map(cfgFld).join('')
+    +CF_ATTEND_SELECT.map(([k,lb,opts])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
+      <select onchange="CFG['${k}']=this.value" style="font:inherit;padding:8px 11px;border:1px solid var(--line);border-radius:6px">`
+      +opts.map(([v,l])=>`<option value="${v}" ${String(CFG[k]||'punch')===v?'selected':''}>${l}</option>`).join('')
+      +'</select></div>').join('');
   if($('coGrid')) $('coGrid').innerHTML=CO_MANUAL.map(([k,lb])=>`<div class="fld"><label>${lb}</label>
     <input type="number" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`).join('');
   let h='<thead><tr><th>月份</th><th>紅字天數</th><th style="text-align:left">國定假日日期<br><span style="font-weight:400;color:var(--muted)">計時當天出勤＝時薪雙倍</span></th><th></th></tr></thead><tbody>';
@@ -1490,9 +1502,11 @@ async function setMode(k,v){CFG[k]=v;const r=await post('payroll_config_set',{co
   if(r.ok){CFG=r.config||CFG;renderCfg();if(RESULTS.length)doCalc()}}
 async function saveCfg(btn,label){
   return saveFX(btn,label||'儲存',async()=>{
-    const r=await post('payroll_config_set',{config:CFG,store:($('cfgOwn')&&$('cfgOwn').checked)?STORE:''});
+    // 廢棄參數不再送出＝該 scope 整批換掉時自然消失（handlePayrollConfigSet 是整批覆寫）
+    const send={};Object.keys(CFG).forEach(k=>{if(CFG_OBSOLETE.indexOf(k)<0)send[k]=CFG[k]});
+    const r=await post('payroll_config_set',{config:send,store:($('cfgOwn')&&$('cfgOwn').checked)?STORE:''});
     if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
-    toast('已儲存');return true;
+    CFG=send;toast('已儲存');return true;
   });
 }
 async function saveHol(btn,label){
