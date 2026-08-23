@@ -771,10 +771,9 @@ function costRows(g){
   const salaryCost=salaryGross-g.dorm;
   const coTotal=CO_ITEMS.reduce((a,[k])=>a+co[k],0);
   const reduceRows=Object.keys(g.reduceBy).map(lb=>[lb,g.reduceBy[lb]]);
-  const dormFT=g.dormBy.filter(x=>x[1]).reduce((a,x)=>a+x[2],0);   // 正職宿舍
-  const dormPT=g.dorm-dormFT;                                       // 計時宿舍
-  // 科目列名的「已扣」註記：請假／不足 與 勞健保自付額
-  const cutNote=(re,ins)=>{const p=[];if(re)p.push('請假／不足 '+nf(re));if(ins)p.push('勞健保自付 '+nf(ins));
+  // 科目列名的「已扣」註記：只寫扣了什麼，不寫金額（Eason 2026-08-24：備註不顯示金額，
+  // 右邊本來就有金額欄，明細也在下方參考區，寫在列名裡只是雜訊）
+  const cutNote=(re,ins)=>{const p=[];if(re)p.push('請假／不足');if(ins)p.push('勞健保自付');
     return p.length?`（已扣 ${p.join('、')}）`:''};
   return [
     ['h','薪資／人事費用成本 · 各列已扣請假／不足倒扣，可直接認列'],
@@ -790,13 +789,13 @@ function costRows(g){
     ...(g.bj?[['薪資費用 專案獎金',g.bj]]:[]),
     // 請假扣款／不足倒扣已扣進上面各科目，這裡不再重複列一行減項（2026-08-24）。
     // 宿舍則維持獨立一列：它不是「同仁少領」而是公司的租金收入，損益表另有科目對應。
-    ...(g.dorm?[['d',`減：宿舍代扣（正職 ${nf(dormFT)}＋計時 ${nf(dormPT)}，另列租金收入）`,-g.dorm]]:[]),
+    ...(g.dorm?[['d','減：宿舍代扣（另列租金收入）',-g.dorm]]:[]),
     ['s','薪資費用小計',salaryCost],
     ['h','保險成本 · 公司負擔＋代扣同仁自付，合計＝實際繳出去的金額'],
     ...CO_ITEMS.map(([k,lb])=>[lb+((coAuto&&autoCo[k]>0)?'（依人員自動加總）':''),co[k]]),
     // 同仁自付額：已從上方薪資費用扣除，移到這裡。公司代扣後要繳給勞保局／健保署，
     // 所以要計入小計——否則人事總成本會少這一筆（那筆錢公司確實付出去了）。
-    ...(g.ins?[[`同仁自付額（代扣代繳．正職 ${nf(g.insFT)}＋計時 ${nf(g.insPT)}）`,g.ins]]:[]),
+    ...(g.ins?[['同仁自付額（代扣代繳）',g.ins]]:[]),
     ['s','保險成本小計',coTotal+g.ins],
     ...(g.ye?[['h','年終獎金提列 · 每月認列成本，尚未發放'],
               ['年終獎金提列／正職',Math.round(g.ye)],
