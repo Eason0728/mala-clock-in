@@ -533,6 +533,14 @@ async function loadAtt(){
 }
 async function saveAtt(){
   const b=$('saveAttBtn');
+  /* 支援時數若讀取失敗（後端解析不了那段 JSON），此時 ATT 裡是空陣列——
+     直接存檔會把空值寫回去、原始資料永久消失。擋下來，先修資料再存（2026-08-24 加）。*/
+  const broken=Object.keys(ATT||{}).filter(k=>(ATT[k]||{}).support_error);
+  if(broken.length){
+    const names=broken.map(k=>(MASTER.find(m=>String(m.emp_id)===String(k))||{}).name||k);
+    toast('無法儲存：'+names.join('、')+' 的支援時數在試算表裡格式壞了，存檔會覆蓋掉原始資料。請先修正該欄再存。',true);
+    return;
+  }
   b.disabled=true; b.classList.remove('done'); b.textContent='存取中…';
   const r=await post('payroll_input_set',{ym:ym(),inputs:ATT});
   if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.error||''),true);return}
@@ -542,7 +550,7 @@ async function saveAtt(){
   setTimeout(()=>{b.textContent='儲存工時';b.disabled=false;b.classList.remove('done');},1800);
 }
 async function clearAtt(){
-  if(!confirm('清除 '+ym()+' 的手動工時？\n\n會刪掉這個月你手動輸入/儲存的工時，還原成打卡自動歸集的值。')) return;
+  if(!confirm('清除 '+ym()+' 的手動工時？\n\n會刪掉這個月你手動輸入/儲存的工時，還原成打卡自動歸集的值。\n（只影響目前門市，其他門市不受影響）')) return;
   const r=await post('payroll_input_set',{ym:ym(),inputs:{}});
   if(!r.ok){toast('清除失敗：'+(r.error||''),true);return}
   toast(ym()+' 手動工時已清除');
@@ -889,7 +897,11 @@ function renderAtt(){
       h+=`<td>${dis?'—':`<input type="number" step="0.25" value="${A[k]??0}"
         onchange="ATT['${e.emp_id}']['${k}']=n(this.value)">`}</td>`;
     });
-    h+=`<td>${sh?r2(sh)+' H':'—'}</td>`;
+    // 支援時數讀取失敗（後端 JSON 解析不了）要看得見——不然會靜靜當成 0，
+    // 而且一旦按了儲存就把空值寫回去、原始資料永久消失（2026-08-24 加）
+    h+=A.support_error
+      ? `<td style="color:#c0392b;font-weight:800" title="試算表裡的支援資料格式壞了（${A.support_error}），請聯絡 Eason 修正後再儲存">⚠ 讀取失敗</td>`
+      : `<td>${sh?r2(sh)+' H':'—'}</td>`;
     // 自訂加薪／扣款：名稱自填＋金額，逐月存於 payroll_input
     h+=`<td><div style="display:flex;gap:5px;min-width:190px">
       <input type="text" placeholder="名稱" value="${A.custom_add_label||''}" style="min-width:90px"

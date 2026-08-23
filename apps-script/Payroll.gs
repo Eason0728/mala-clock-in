@@ -1294,12 +1294,28 @@ function paySavedInputs(ym, store) {
   payRead('input').forEach(function (r) {
     if (String(r.ym) !== ym) return;
     if (payStore(r.store) !== st) return;
-    var sup = [];
-    try { sup = r.support ? JSON.parse(r.support) : []; } catch (e) { sup = []; }
+    /* 跨店支援是 JSON 字串存在儲存格裡。原本寫 `catch(e){ sup=[] }` **靜默吞掉**——
+       只要字串壞掉（手動編輯、貼上智慧引號、被 Sheets 自動判型、截斷），支援時數就無聲無息
+       變成 0，薪水少算幾萬也沒有任何提示；更糟的是下一次「儲存工時」會把這個空值寫回去，
+       原始資料永久消失。改為：記下原始值與錯誤，回傳 support_error 讓前端擋下並顯示。 */
+    var sup = [], supErr = '';
+    if (r.support !== '' && r.support != null) {
+      try {
+        sup = JSON.parse(r.support);
+        if (!Array.isArray(sup)) { supErr = '不是陣列格式'; sup = []; }
+      } catch (e) {
+        supErr = '無法解析';
+        sup = [];
+        try {
+          Logger.log('⚠ payroll_input 支援時數解析失敗 ym=' + r.ym + ' emp=' + r.emp_id
+                     + ' store=' + r.store + ' 原值=' + String(r.support).slice(0, 200));
+        } catch (e2) { /* Logger 在某些執行環境不存在，不能因此讓整支掛掉 */ }
+      }
+    }
     out[String(r.emp_id)] = {
       hours: payNum(r.hours), extra_ot: payNum(r.extra_ot),
       personal_h: payNum(r.personal_h), sick_h: payNum(r.sick_h), menstrual_h: payNum(r.menstrual_h), disaster_h: payNum(r.disaster_h), annual_h: payNum(r.annual_h),
-      deduct_days: payNum(r.deduct_days), support: sup, full_attend: payBool(r.full_attend),
+      deduct_days: payNum(r.deduct_days), support: sup, support_error: supErr, full_attend: payBool(r.full_attend),
       work_days: payNum(r.work_days), wage_override: payNum(r.wage_override), meal_on: payBool(r.meal_on),
       holiday_h: (r.holiday_h === '' || r.holiday_h == null) ? '' : payNum(r.holiday_h),
       custom_add_label: String(r.custom_add_label||''), custom_add_amt: payNum(r.custom_add_amt),
@@ -1344,10 +1360,18 @@ function handlePayrollInputSet(body) {
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
   const inputs = body.inputs || {};
   const now = nowTaipeiIso();
+  // ⚠ 2026-08-24 修：本支原本**完全沒有門市概念**——寫入不帶 store、刪除只比 ym。
+  //   後果：在 A 店按一次「儲存工時」，會把同月**所有門市**的手動工時整批刪掉，
+  //   而寫進去的列 store 空白（＝payStore('') 回 SSLGF）又被當成光復的資料。
+  //   實際事故：央廚存 2026-07 工時 → 光復 7 月的工時與跨店支援（72H／93H）被洗掉，
+  //   央廚自己的 13 筆卻讀不回來（讀取端有 store 過濾）。
+  //   十一支整批覆寫的 handler 裡，只有這支漏了門市過濾——與 master／config／run／item
+  //   ／bonus／leave_* 的寫法對齊即可。
+  const st = payStore(body.store);
   const rows = Object.keys(inputs).map(function (emp) {
     const a = inputs[emp] || {};
     return {
-      ym: ym, emp_id: emp,
+      ym: ym, emp_id: emp, store: st,
       hours: payNum(a.hours), extra_ot: payNum(a.extra_ot),
       personal_h: payNum(a.personal_h), sick_h: payNum(a.sick_h), menstrual_h: payNum(a.menstrual_h), disaster_h: payNum(a.disaster_h), annual_h: payNum(a.annual_h),
       deduct_days: payNum(a.deduct_days), support: JSON.stringify(a.support || []), updated_at: now,
@@ -1358,9 +1382,12 @@ function handlePayrollInputSet(body) {
       dorm_override: (a.dorm_override === '' || a.dorm_override == null) ? '' : payNum(a.dorm_override),
     };
   });
-  const others = payRead('input').filter(function (r) { return String(r.ym) !== ym; });
+  // 只換「本月＋本店」，其他月份與其他門市原封不動
+  const others = payRead('input').filter(function (r) {
+    return String(r.ym) !== ym || payStore(r.store) !== st;
+  });
   payReplaceAll('input', others.concat(rows));
-  return { ok: true, ym: ym, count: rows.length };
+  return { ok: true, ym: ym, store: st, count: rows.length };
 }
 
 function handlePayrollCalc(body) {
