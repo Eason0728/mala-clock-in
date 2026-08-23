@@ -1791,11 +1791,17 @@ function handlePayrollBonusSet(body) {
 /* ═══════════════════ 儀表板：人事成本趨勢 ═══════════════════ */
 
 /** 回近 N 個月的彙總（依門市）。資料全部取自既有 run／item，不需額外輸入。 */
-/** 成本口徑「要扣回」的扣項（薪資費用小計＝應收−這些）：任何請假扣款（/_leave$/，新假別自動涵蓋）
- *  ＋不足時數倒扣。與 payroll.html 的 isCostReduceKey、payroll_mock 的 isReduce 同一口徑。
+/** 成本口徑「要扣回」的扣項（薪資費用小計＝應收−這些）：
+ *    ①任何請假扣款（/_leave$/，新假別自動涵蓋）②不足時數倒扣
+ *    ③宿舍代扣（2026-08-24 Eason 改口徑：同仁付的房租不是人事成本，從薪資費用扣除、另列租金收入）
+ *  ⚠ 勞健保自付額**不在此列**——那是薪資的一部分，只是代扣去繳保費，仍算人事成本。
+ *  與 payroll.html 的 isCostReduceKey＋宿舍、payroll_mock 的 isReduce 同一口徑。
  *  ⚠ 2026-08-23 前這裡是兩份寫死的五個舊 key——新假別（住院傷病、安胎、家庭照顧…）的扣款
  *    沒被扣回，儀表板趨勢與集團總覽的薪資費用被高估。改口徑要三處一起：本函式／payroll.html／mock。 */
-function payIsReduceKey(k) { return /_leave$/.test(String(k)) || String(k) === 'shortfall_hours'; }
+function payIsReduceKey(k) {
+  const s = String(k);
+  return /_leave$/.test(s) || s === 'shortfall_hours' || s === 'dormitory';
+}
 
 function handlePayrollTrend(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
