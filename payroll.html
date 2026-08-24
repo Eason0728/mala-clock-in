@@ -855,7 +855,9 @@ function renderCost(){
 function ptAttendPlus(){ const v=CFG.pt_attend_plus; return (v===''||v==null)?10:n(v); }
 function ptTenurePlus(m){
   const plus=(CFG.pt_tenure_plus===''||CFG.pt_tenure_plus==null)?10:n(CFG.pt_tenure_plus);
-  const months=(CFG.pt_tenure_months===''||CFG.pt_tenure_months==null)?6:n(CFG.pt_tenure_months);
+  // 門檻 0／負數視為未設定用 6——與後端 payTenurePlus 同一條防護（欄位被清空會存成 0）
+  let months=(CFG.pt_tenure_months===''||CFG.pt_tenure_months==null)?6:n(CFG.pt_tenure_months);
+  if(!(months>0)) months=6;
   if(!plus) return 0;
   const hs=String((m||{}).hire_date||'').slice(0,10);
   if(!/^\d{4}-\d{2}-\d{2}$/.test(hs)) return 0;
@@ -1596,7 +1598,7 @@ const CF_ATTEND_SELECT=[['attend_forget_unit','忘刷計數單位',
 /* 計時同仁的時薪加給（2026-08-24 由寫死改為門市可覆寫參數）。0＝該店不給這項加給。 */
 const CF_PT=[['pt_attend_plus','滿勤加給（元/時，勾選才給）'],
  ['pt_tenure_plus','年資加給（元/時）'],
- ['pt_tenure_months','年資門檻（滿幾個月，次月起生效）']];
+ ['pt_tenure_months','年資門檻（滿幾個月，次月起生效；留空或 0＝用預設 6）']];
 /* 已廢棄的參數：存檔時順手從試算表清掉，避免留一列沒人讀的廢資料誤導。
    shortfall_deduct＝2026-08 改版前的「工時不足要不要倒扣」開關，現在一律倒扣、引擎不再讀它。 */
 const CFG_OBSOLETE=['shortfall_deduct'];

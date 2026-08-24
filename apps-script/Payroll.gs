@@ -488,7 +488,13 @@ function payCfgNum(cfg, key, dflt) {
  *    不再寫死——央廚等門市的加給規則可能與光復不同。cfg 沒帶＝用預設，行為與改版前相同。 */
 function payTenurePlus(e, ym, cfg) {
   const plus = payCfgNum(cfg, 'pt_tenure_plus', 10);
-  const months = payCfgNum(cfg, 'pt_tenure_months', 6);
+  /* ⚠ 門檻 0／負數／非數字一律視為「沒設定」→ 用預設 6（2026-08-24 實際踩到）。
+     金額欄的 0 是合法值（某店不給加給），但**門檻的 0 沒有合理語意**——
+     「到職當天就算年資已滿」等於直接調高基本時薪，不是年資加給。
+     而設定頁的欄位一旦被清空，n('') 就是 0，存進去之後全體計時同仁會被誤加 10 元
+     （光復的 pt_tenure_months 就是這樣變成 0 的，王禹婕 2026-05 因此多算了年資加給）。*/
+  var months = payCfgNum(cfg, 'pt_tenure_months', 6);
+  if (!(months > 0)) months = 6;
   if (!plus) return 0;
   const hs = payDateStr(e.hire_date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(hs)) return 0;
