@@ -849,6 +849,20 @@ function renderCost(){
     return `<tr><td style="padding-left:22px">${r[0]}</td><td>${nf(r[1])}</td></tr>`;
   }).join('')+'</tbody>';
 }
+/* 計時加給的兩個小工具——只用於「顯示組成」，不參與任何金額計算。
+   ⚠ 規則正本在 Payroll.gs 的 payCalcOne／payTenurePlus，這裡是為了說明文字才重算一次；
+     算不出來就回 0，上游會退回「含加給 N」的說法，不會說錯。 */
+function ptAttendPlus(){ const v=CFG.pt_attend_plus; return (v===''||v==null)?10:n(v); }
+function ptTenurePlus(m){
+  const plus=(CFG.pt_tenure_plus===''||CFG.pt_tenure_plus==null)?10:n(CFG.pt_tenure_plus);
+  const months=(CFG.pt_tenure_months===''||CFG.pt_tenure_months==null)?6:n(CFG.pt_tenure_months);
+  if(!plus) return 0;
+  const hs=String((m||{}).hire_date||'').slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(hs)) return 0;
+  const h=new Date(hs+'T00:00:00');
+  const due=new Date(h.getFullYear(), h.getMonth()+months, h.getDate());
+  return (new Date(ym()+'-01T00:00:00') > due) ? plus : 0;
+}
 function renderRun(){
   renderStats();
   renderCost();
@@ -879,13 +893,21 @@ function renderRun(){
     const mw=n((ATT[r.emp_id]||{}).wage_override)>0?n(ATT[r.emp_id].wage_override):n(m.wage);
     const wLine=[].concat(r.earn||[],r.ded||[]).find(i=>i.item_key==='hourly_wage');
     const eff=(wLine&&wLine.rate!=null)?n(wLine.rate):mw;
+    /* 時薪組成的說明文字。⚠ 2026-08-24 修：原本是「用差額反推」——看到差 10 又沒勾全勤，
+       就推斷成年資加給。但 run 是計算當下的快照，之後有人改了工時分頁卻沒重算，
+       差額就對不上實際組成（王禹婕 2026-05 因此被標成「年資10」，她那時到職才兩個月）。
+       改成：滿勤看勾選、年資照規則算，**兩者加總對得上差額才標明細，對不上只說「含加給」**。 */
     let wageNote='';
     const diff=eff-mw;
     if(diff>0){
-      const fa=!!(ATT[r.emp_id]||{}).full_attend, parts=[];
-      if(fa) parts.push('滿勤10');
-      if(diff-(fa?10:0)>=10) parts.push('年資10');
-      wageNote=(parts.length*10===diff)?`${nf(mw)} +${parts.join(' +')}`:`${nf(mw)} +${diff}`;
+      const attPlus=(ATT[r.emp_id]||{}).full_attend ? ptAttendPlus() : 0;
+      const tenPlus=ptTenurePlus(m);
+      const parts=[];
+      if(attPlus) parts.push('滿勤'+attPlus);
+      if(tenPlus) parts.push('年資'+tenPlus);
+      wageNote=(parts.length && attPlus+tenPlus===diff)
+        ? `${nf(mw)} +${parts.join(' +')}`
+        : `${nf(mw)} +加給${nf(diff)}`;   // 組成對不上就不亂猜（多半是改過設定沒重算）
     }
     const roleCell=r.is_full_time?(n(m.mgr_allow)>0?'<b>店長</b>':'正職')
       :(`時薪 <b>${nf(eff)}</b>`+(wageNote?`<span style="color:var(--muted);font-size:11.5px"> (${wageNote})</span>`:''));

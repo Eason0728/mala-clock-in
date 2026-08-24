@@ -70,5 +70,19 @@ console.log('\n══ 6) 正職完全不受影響 ══');
   chk('  正職沒有時薪列', r1.earn.some(i => i.item_key === 'hourly_wage'), false);
 }
 
+console.log('\n══ 7) 前端「時薪組成」不可用差額反推（2026-08-24 修的真實 bug）══');
+{
+  /* 事故：王禹婕 2026-03-01 到職，2026-05 的薪資計算頁把她標成「年資10」——
+     她那時到職才兩個月。原因是顯示邏輯「看到差 10 又沒勾全勤就推斷是年資加給」，
+     而 run 是計算當下的快照，之後有人改了工時分頁沒重算，差額就對不上真實組成。
+     正解：滿勤看勾選、年資照規則算，兩者加總對得上才標明細，對不上只說「含加給」。*/
+  const HTML = fs.readFileSync(path.join(__dirname, '..', 'payroll.html'), 'utf8');
+  chk('  不再有「差額反推年資」的寫法', /diff-\(fa\?10:0\)>=10/.test(HTML), false);
+  chk('  年資改用規則函式判斷', /ptTenurePlus\(m\)/.test(HTML), true);
+  chk('  滿勤改用參數而非寫死 10', /ptAttendPlus\(\)/.test(HTML), true);
+  chk('  組成對不上時退回「加給」不亂猜', /\+加給\$\{nf\(diff\)\}/.test(HTML), true);
+  chk('  年資函式用「該月1號 > 到職+N月」與後端同規則', /h\.getMonth\(\)\+months/.test(HTML), true);
+}
+
 console.log(`\n${fail ? '❌ 有失敗' : '✅ 計時加給參數化全部正確'}（${pass}/${pass + fail}）`);
 process.exit(fail ? 1 : 0);
