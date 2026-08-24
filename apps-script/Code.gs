@@ -17,6 +17,7 @@
  * 另有 GAS 專屬 action（mock_server 不實作，因為依賴試算表分頁）：
  *   rebuild_month {admin_key, ym?}（ym 缺省＝當月，格式 yyyy-MM）→ 重算該月出勤月表分頁
  *   recheck_approvals {admin_key}（2026-07-19 新增）→ 手動觸發「該段無打卡」核定狀態重算
+ *   setup_triggers {admin_key}（2026-08-24 新增）→ 建立／重建月表的兩個時間觸發器（冪等）
  *   （平常由每日 05:00 觸發器 dailyMonthlyRebuild 自動跑，這個 action 只供部署後手動驗證）
  */
 
@@ -200,6 +201,7 @@ function doPost(e) {
     approve_device: handleApproveDevice,
     rebuild_month: handleRebuildMonth,
     recheck_approvals: handleRecheckApprovals,
+    setup_triggers: handleSetupTriggers,
     my_recent: handleMyRecent,
     mgr_day: handleMgrDay,
     mgr_approve: handleMgrApprove,
@@ -2136,6 +2138,39 @@ function refreshCurrentMonth() {
  * 不會自己執行 refreshCurrentMonth。
  * 注意：觸發時刻依 Apps Script「專案設定」的時區，請確認為台北 (GMT+8)。
  */
+/**
+ * {action:'setup_triggers', admin_key} → 建立／重建月表相關的時間觸發器（冪等，可重複呼叫）。
+ *
+ * 為什麼要做成 action：時間觸發器只能由「已授權的執行身分」建立，原本得進 Apps Script 編輯器
+ * 手動跑 setupMonthRefreshTrigger()＋在 UI 上點一個 05:00 的 dailyMonthlyRebuild。
+ * 2026-08-22 新開的央廚／總部就是漏了這步 —— 兩支月表函式都在、卻從來沒被排程執行過，
+ * 所以那兩家的試算表一直沒有 yyyy-MM 月表分頁。做成 action 之後新開店可以直接呼叫。
+ *
+ * ⚠ 月表只是「呈現」：events／approved／leave 才是資料來源，薪資歸集與核定頁都不讀月表，
+ *   所以缺月表不影響時數與算薪，只影響開試算表直接看整月出勤。
+ */
+function handleSetupTriggers(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const WANT = [
+    { fn: 'refreshCurrentMonth', desc: '每 10 分鐘重算當月月表',
+      build: function () { ScriptApp.newTrigger('refreshCurrentMonth').timeBased().everyMinutes(10).create(); } },
+    { fn: 'dailyMonthlyRebuild', desc: '每日 05:00 重算當月＋月初收尾凍結上月',
+      build: function () { ScriptApp.newTrigger('dailyMonthlyRebuild').timeBased().everyDays(1).atHour(5).create(); } },
+  ];
+  const before = ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); });
+  WANT.forEach(function (w) {
+    // 冪等：同名的先刪掉再建，避免重複呼叫後同一支被排兩次
+    ScriptApp.getProjectTriggers().forEach(function (t) {
+      if (t.getHandlerFunction() === w.fn) ScriptApp.deleteTrigger(t);
+    });
+    w.build();
+  });
+  return { ok: true,
+           created: WANT.map(function (w) { return w.fn + '（' + w.desc + '）'; }),
+           before: before,
+           after: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
+}
+
 function setupMonthRefreshTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'refreshCurrentMonth') ScriptApp.deleteTrigger(t);
