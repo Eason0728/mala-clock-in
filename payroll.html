@@ -690,7 +690,7 @@ function costTotals(){
   // dorm／dormBy：宿舍代扣（2026-08-24 Eason 改口徑）——從薪資費用扣除，並在下方獨立列成租金收入。
   // ⚠ 兩邊都看得到是刻意的，但**損益表只能取一邊**：薪資費用已經扣過了，租金收入那區只是明細，
   //    再把它加進收入就等於認列兩次。表頭文字已寫明「已從上方扣除，勿重複計列」。
-  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},reduceFT:0,reducePT:0,dorm:0,dormBy:[],dormFT:0,dormPT:0,ins:0,insFT:0,insPT:0,insBy:{},sup:[],supTotal:0,coL:0,coH:0,coP:0,ye:0};
+  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},reduceFT:0,reducePT:0,custAdd:0,custAddBy:[],custDed:0,custDedBy:[],dorm:0,dormBy:[],dormFT:0,dormPT:0,ins:0,insFT:0,insPT:0,insBy:{},sup:[],supTotal:0,coL:0,coH:0,coP:0,ye:0};
   RESULTS.forEach(r=>{
     // 公司負擔逐人加總（依員工主檔）。勞保／退休金按在職比例折算，健保整月——與員工自付的處理一致。
     const _m=MASTER.find(x=>String(x.emp_id)===String(r.emp_id))||{};
@@ -730,7 +730,10 @@ function costTotals(){
       if(k==='bonus_sales'){g.bs+=a;return}
       if(k==='bonus_perf'){g.bp+=a;return}
       if(k==='bonus_project'){g.bj+=a;return}
-      // 計時同仁：領到的錢全部歸「薪資費用／PT」（時薪＋支援＋各種津貼＋自訂加薪）
+      /* 自訂加薪：**不計入薪資費用**（2026-08-24 Eason）——它可能是行銷、補發之類，
+         科目要自己判斷，所以獨立列出來讓他歸到對的地方。同仁薪資單照舊看得到（那是另一條路徑）。*/
+      if(k==='custom_add'){ g.custAdd+=a; g.custAddBy.push([r.name,r.is_full_time,x.item_label,a]); return; }
+      // 計時同仁：領到的錢全部歸「薪資費用／PT」（時薪＋支援＋各種津貼）
       if(!r.is_full_time){g.pt+=a;return}
       // 正職：依項目種類分科目
       if(k==='base_salary')g.base+=a;else if(k==='overtime')g.ot+=a;else if(k==='attend_bonus')g.attend+=a;
@@ -753,6 +756,9 @@ function costTotals(){
          ⚠ 與宿舍不同——這筆錢公司沒有留下，是代扣後要繳給勞保局／健保署的，
          所以**必須計入保險成本小計**，否則人事總成本會憑空少一筆。
          淨效果：總成本不變，只是把「代扣代繳」那段從薪資費用移到保險成本。 */
+      // 自訂扣款：同樣不計入薪資費用，獨立列（原本沒被任何統計接住，等於看不見）
+      if(x.item_key==='custom_ded' && x.amount){
+        g.custDed+=x.amount; g.custDedBy.push([r.name,r.is_full_time,x.item_label,x.amount]); return; }
       if(INS_SELF_KEYS.indexOf(x.item_key)>=0 && x.amount){
         g.ins+=x.amount;
         if(r.is_full_time) g.insFT+=x.amount; else g.insPT+=x.amount;
@@ -813,6 +819,10 @@ function costRows(g){
               ['s','提列小計',Math.round(g.ye)]]:[]),
     ['g','人事總成本（薪資費用＋保險成本'+(g.ye?'＋年終提列':'')+'）',salaryCost+coTotal+g.ins+Math.round(g.ye)],
     ...(reduceRows.length?[['h','（參考）請假／不足扣款明細 · 已扣在上方各科目內']].concat(reduceRows):[]),
+    ...((g.custAdd||g.custDed)?[['h','自訂加薪／扣款 · 不計入上方薪資費用，請依性質自行歸科目']]
+        .concat(g.custAddBy.map(([nm,ft,lb,amt])=>[`${nm}（${ft?'正職':'計時'}）　${lb}`,amt]))
+        .concat(g.custDedBy.map(([nm,ft,lb,amt])=>[`${nm}（${ft?'正職':'計時'}）　${lb}`,-amt]))
+        .concat([['s','自訂項目淨額',g.custAdd-g.custDed]]):[]),
     ...(g.ins?[['h','（參考）同仁自付額明細 · 已從薪資費用扣除、計入上方保險成本']]
         .concat(Object.keys(g.insBy).map(lb=>[lb,g.insBy[lb]])):[]),
     ...(g.dorm?[['h','宿舍收入 · 已從上方各科目扣除，損益表勿重複計列']]

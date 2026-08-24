@@ -1873,7 +1873,7 @@ function handlePayrollTrend(body) {
   const out = list.map(function (ym) {
     const rs = runByYm[ym] || [], its = itemByYm[ym] || [];
     if (!rs.length) return { ym: ym, has: false };
-    var gross = 0, hours = 0, ft = 0, pt = 0, ot = 0, reduce = 0, bonus = 0, supportH = 0, insSelf = 0;
+    var gross = 0, hours = 0, ft = 0, pt = 0, ot = 0, reduce = 0, bonus = 0, supportH = 0, insSelf = 0, custAdd = 0;
     // 每人的加班費（拆「支援造成的加班」用）
     const otByEmp = {};
     its.forEach(function (i) {
@@ -1881,6 +1881,8 @@ function handlePayrollTrend(body) {
       if (String(i.item_type) === 'earning') {
         if (k === 'overtime') { ot += a; otByEmp[String(i.emp_id)] = (otByEmp[String(i.emp_id)] || 0) + a; }
         if (k.indexOf('bonus_') === 0) bonus += a;
+        // 自訂加薪不計入薪資費用（2026-08-24）：性質不定（行銷／補發…），成本分類獨立列出讓人自己歸科目
+        if (k === 'custom_add') custAdd += a;
       } else if (payIsReduceKey(k)) {
         reduce += a;
         if (payIsInsSelfKey(k)) insSelf += a;   // 自付額：從薪資費用扣掉，但下面要加回保險成本
@@ -1905,7 +1907,7 @@ function handlePayrollTrend(body) {
     const cfg = payConfig(st);
     // 公司負擔改為依主檔逐人加總（與成本分類頁一致），主檔沒填才退回參數手填值
     const co = payCompanyTotal(cfg, payAutoCompanyIns(rs, insMap));
-    const salaryCost = gross - reduce;
+    const salaryCost = gross - reduce - custAdd;
     // 保險成本＝公司負擔＋代扣的同仁自付額（＝實際繳出去的金額）；總成本因此與改口徑前相同
     const insCost = co + insSelf;
     const people = ft + pt;
@@ -1945,7 +1947,7 @@ function handlePayrollGroup(body) {
     // 公司負擔改為依主檔逐人加總（與成本分類頁一致），主檔沒填才退回參數手填值
     const co = payCompanyTotal(cfg, payAutoCompanyIns(rs, insMapAll[code] || {}));
     if (!rs.length) return { store: code, name: String(st.name || code), has: false, company: payR0(co) };
-    var gross = 0, net = 0, hours = 0, ft = 0, pt = 0, ot = 0, bonus = 0, reduce = 0, insSelf = 0;
+    var gross = 0, net = 0, hours = 0, ft = 0, pt = 0, ot = 0, bonus = 0, reduce = 0, insSelf = 0, custAdd = 0;
     rs.forEach(function (r) {
       gross += payNum(r.gross); net += payNum(r.net); hours += payNum(r.total_hours);
       if (String(r.is_full_time).toLowerCase() === 'true') ft++; else pt++;
@@ -1955,12 +1957,13 @@ function handlePayrollGroup(body) {
       if (String(i.item_type) === 'earning') {
         if (k === 'overtime') ot += a;
         if (k.indexOf('bonus_') === 0) bonus += a;
+        if (k === 'custom_add') custAdd += a;   // 不計入薪資費用（同 trend）
       } else if (payIsReduceKey(k)) {
         reduce += a;
         if (payIsInsSelfKey(k)) insSelf += a;   // 自付額：薪資費用扣掉、保險成本加回
       }
     });
-    const salaryCost = gross - reduce;
+    const salaryCost = gross - reduce - custAdd;
     const insCost = co + insSelf;   // 保險成本＝公司負擔＋代扣自付額
     return { store: code, name: String(st.name || code), has: true,
              people: ft + pt, ft: ft, pt: pt, hours: payR2(hours),

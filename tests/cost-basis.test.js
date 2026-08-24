@@ -1,11 +1,14 @@
 /* 人事成本口徑——Eason 在 2026-08-24 一天內調整了四輪，這支獨立守住最終版。
  *
- * 現行定義：薪資費用小計 ＝ 應收 −（請假扣款 ＋ 不足時數倒扣 ＋ 宿舍代扣 ＋ 勞健保自付額）
+ * 現行定義：薪資費用小計 ＝ 應收 −（請假扣款 ＋ 不足時數倒扣 ＋ 宿舍代扣 ＋ 勞健保自付額 ＋ 自訂加薪）
  *   ✔ 請假扣款：任何 /_leave$/（新假別自動涵蓋，不必逐一列舉）
  *   ✔ 不足時數倒扣 shortfall_hours
  *   ✔ 宿舍代扣 dormitory —— 同仁付給公司的房租，錢**留在公司**；下方另列成租金收入
  *   ✔ 勞健保／團保／退休金自付額 —— 代扣後**要繳給勞保局**，所以扣掉之後**必須加回保險成本**
  *     （payIsInsSelfKey），否則人事總成本會憑空少一筆。這是它與宿舍的關鍵差異。
+ *   ✔ 自訂加薪／扣款（custom_add／custom_ded）—— 性質不定（行銷補助、補發…），科目要人自己判斷，
+ *     所以**不計入薪資費用**、在成本分類獨立列出。⚠ 同仁薪資單是另一條路徑（my_payslip 回完整
+ *     earn/ded），**照舊看得到**，不可因為成本口徑而被過濾掉。
  *
  * ⚠ 呈現原則：以上四種**全部扣進所屬科目**（正職→薪資費用／正職、計時→薪資費用／PT），
  *   表上**不再有任何獨立減項列**——列了就會扣兩次。所以「薪資費用／PT」那列
@@ -167,6 +170,37 @@ console.log('\n══ 7) 主檔沒填公司負擔時，退回參數手填值（�
   const t = vm.runInContext('handlePayrollTrend', sb)({ admin_key:'x', store:'HQ', ym:'2026-08', months:1 });
   chk('  退回參數值 1000+400+600+500+300', t.months[0].company, 2800);
 }
+
+console.log('\n══ 8) 自訂加薪／扣款不計入薪資費用，獨立列出（2026-08-24）══');
+{
+  /* Eason：自訂加薪可能是行銷補助、補發之類，科目要自己判斷，不該混進人事費用。
+     ⚠ 同仁薪資單是另一條路徑（my_payslip 回完整 earn/ded），**照舊看得到**，不可因此被過濾掉。*/
+  vm.runInContext(`
+    checkAdmin = function(){ return true; };
+    payRead = function(kind){
+      if (kind === 'run') return [{ ym:'2026-08', store:'SSLGF', emp_id:'Y01', gross:40000, net:39000,
+        total_hours:180, support_hours:0, surplus_hours:0, ot_paid_hours:0, is_full_time:'true', ratio:1, status:'draft' }];
+      if (kind === 'item') return [
+        { ym:'2026-08', store:'SSLGF', emp_id:'Y01', item_key:'custom_add', item_type:'earning',   amount:250 },
+        { ym:'2026-08', store:'SSLGF', emp_id:'Y01', item_key:'custom_ded', item_type:'deduction', amount:300 },
+        { ym:'2026-08', store:'SSLGF', emp_id:'Y01', item_key:'sick_leave', item_type:'deduction', amount:600 }];
+      if (kind === 'master') return [];
+      return [];
+    };
+    payConfig = function(){ return { co_owner:0, co_group:0 }; };
+    payStoreList = function(){ return [{code:'SSLGF',name:'光復'}]; };
+  `, sb);
+  // 應收 40000 − 病假600 − 自訂加薪250 = 39150（自訂扣款 300 不在 gross 裡，不必再扣）
+  const t = vm.runInContext('handlePayrollTrend', sb)({ admin_key:'x', store:'SSLGF', ym:'2026-08', months:1 });
+  chk('  趨勢：自訂加薪不計入薪資費用', t.months[0].salary_cost, 39150);
+  const gp = vm.runInContext('handlePayrollGroup', sb)({ admin_key:'x', ym:'2026-08' });
+  chk('  集團總覽同口徑', gp.rows[0].salary_cost, 39150);
+}
+chk('前端把自訂加薪抽出、不進 PT/其他津貼', /k==='custom_add'\).*custAdd/.test(HTML.replace(/\n/g,' ')), true);
+chk('前端把自訂扣款抽出', /item_key==='custom_ded'/.test(HTML), true);
+chk('成本分類有自訂項目獨立區塊', /自訂加薪／扣款 · 不計入上方薪資費用/.test(HTML), true);
+chk('⚠ 同仁薪資單不受影響（my_payslip 仍回完整明細）',
+    /payRunItemsToResult\(run, items\)/.test(fs.readFileSync(path.join(__dirname,'..','apps-script','Payroll.gs'),'utf8')), true);
 
 console.log(`\n${fail ? '❌ 有失敗' : '✅ 成本口徑三處一致'}（${pass}/${pass + fail}）`);
 process.exit(fail ? 1 : 0);
