@@ -24,7 +24,9 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-PORT = 8899
+# 埠可用環境變數覆寫：8899 常被別的 session 留下的伺服器佔著（實踩過連到舊的 http.server，
+# POST 全回 501），這時用 MOCK_PORT=8912 python3 mock/mock_server.py 換一個埠即可。
+PORT = int(os.environ.get('MOCK_PORT') or 8899)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(BASE_DIR)
 DATA_FILE = os.path.join(BASE_DIR, "mock_data.json")
@@ -1158,6 +1160,58 @@ def handle_mgr_add_employee(data, body):
             "created_by": mgr["name"], "created_at": now}
 
 
+def handle_mgr_roster(data, body):
+    """{action:'mgr_roster', mgr_key} → 名冊清單（不含 key／device_id，與 Code.gs 同步）。"""
+    mgr = find_manager_by_key(data, body.get("mgr_key"))
+    if not mgr:
+        return {"ok": False, "error": "unauthorized"}
+    roster = [{"emp_id": str(r.get("emp_id")), "name": str(r.get("name")),
+               "active": bool(r.get("active")),
+               "created_by": str(r.get("created_by") or ""),
+               "removed_at": str(r.get("removed_at") or ""),
+               "removed_by": str(r.get("removed_by") or "")}
+              for r in data["roster"]]
+    return {"ok": True, "roster": roster, "manager_name": mgr["name"]}
+
+
+def handle_mgr_set_active(data, body):
+    """{action:'mgr_set_active', mgr_key, emp_id, active} → 設為離職／恢復在職（與 Code.gs 同步）。
+
+    停用不是真刪：打卡事件與核定紀錄都用 emp_id／姓名對應，移除名冊列會讓歷史對不到人。
+    """
+    mgr = find_manager_by_key(data, body.get("mgr_key"))
+    if not mgr:
+        return {"ok": False, "error": "unauthorized"}
+    emp_id = str(body.get("emp_id", "")).strip()
+    if not emp_id:
+        return {"ok": False, "error": "emp_id_required", "message": "請先選擇同仁"}
+    row = next((r for r in data["roster"] if str(r.get("emp_id")) == emp_id), None)
+    if not row:
+        return {"ok": False, "error": "not_found", "message": "名冊裡找不到這位同仁"}
+    active = body.get("active") is True or str(body.get("active")).lower() == "true"
+    was_active = bool(row.get("active"))
+    name = str(row.get("name", "")).strip()
+    if not active and name == str(mgr["name"]).strip():
+        return {"ok": False, "error": "self_remove", "message": "不能把自己設為離職"}
+    if active == was_active:
+        return {"ok": True, "unchanged": True, "emp_id": emp_id, "name": name, "active": active}
+    if active:
+        dup = next((r for r in data["roster"]
+                    if str(r.get("emp_id")) != emp_id
+                    and str(r.get("name", "")).strip() == name and r.get("active")), None)
+        if dup:
+            return {"ok": False, "error": "duplicate_name",
+                    "message": f"名冊已經有在職的「{name}」（編號 {dup['emp_id']}），"
+                               "不能同時有兩位同名在職。"}
+    now = iso_now()
+    row["active"] = active
+    row["removed_at"] = "" if active else now
+    row["removed_by"] = "" if active else mgr["name"]
+    save_data(data)
+    return {"ok": True, "emp_id": emp_id, "name": name, "active": active,
+            "removed_at": row["removed_at"], "removed_by": row["removed_by"]}
+
+
 def handle_mgr_pending_devices(data, body):
     """{action:'mgr_pending_devices', mgr_key} → 待核准裝置清單（與 Code.gs 同步）。"""
     if not find_manager_by_key(data, body.get("mgr_key")):
@@ -1186,6 +1240,8 @@ ACTIONS = {
     "my_recent": handle_my_recent,
     "mgr_day": handle_mgr_day,
     "mgr_add_employee": handle_mgr_add_employee,
+    "mgr_roster": handle_mgr_roster,
+    "mgr_set_active": handle_mgr_set_active,
     "payroll_leave_options": handle_payroll_leave_options,
     "mgr_approve": handle_mgr_approve,
     "mgr_pending_devices": handle_mgr_pending_devices,

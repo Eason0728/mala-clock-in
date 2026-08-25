@@ -49,7 +49,9 @@ const ROSTER_HEADERS = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at',
                         'shift_in', 'shift_out',
                         // 2026-08-23：值班主管自助開帳號的留痕。created_by 記主管姓名，
                         // 薪酬系統與每日指揮台據此標示／通知「最近新增了誰」。
-                        'created_at', 'created_by'];
+                        'created_at', 'created_by',
+                        // 2026-08-25：值班主管把同仁設為離職的留痕（停用不是真刪，見 handleMgrSetActive）
+                        'removed_at', 'removed_by'];
 /** 把班別時間正規化成 'HH:mm'。接受 '11:00'、'0900'、Date 物件（Sheets 會把 11:00 轉成時間物件）。
  *  不合法一律回空字串——寧可讓核定頁留白，也不要餵一個 <input type="time"> 認不得的值。 */
 function normShiftTime(v) {
@@ -195,6 +197,8 @@ function doPost(e) {
     sync_roster: handleSyncRoster,
     set_shifts: handleSetShifts,
     mgr_add_employee: handleMgrAddEmployee,
+    mgr_roster: handleMgrRoster,
+    mgr_set_active: handleMgrSetActive,
     recent_hires: handleRecentHires,
     get_roster: handleGetRoster,
     get_events: handleGetEvents,
@@ -954,6 +958,112 @@ function handleMgrAddEmployee(body) {
   const ci = ROSTER_HEADERS.indexOf('created_at') + 1;
   rosterSheet.getRange(rosterSheet.getLastRow(), ci).setNumberFormat('@').setValue(now);
   return { ok: true, emp_id: empId, name: name, key: key, created_by: String(mgr.name || ''), created_at: now };
+}
+
+/**
+ * 依「試算表實際表頭」寫名冊某一格。
+ * ⚠ 不可用 ROSTER_HEADERS.indexOf 當欄號——新欄位是補在表最右邊的，
+ *   實際順序不一定等於常數順序（既有三家店的表都是先建好才加欄位）。
+ */
+function setRosterCell(sheet, rowIndex, header, value, asText) {
+  const head = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(String);
+  const c = head.indexOf(header) + 1;
+  if (!c) return false;
+  const cell = sheet.getRange(rowIndex, c);
+  if (asText) cell.setNumberFormat('@');
+  cell.setValue(value);
+  return true;
+}
+
+/** 名冊缺哪個 ROSTER_HEADERS 欄位就補到最右邊（冪等）。三家店不必手動改表頭。 */
+function ensureRosterHeaders(sheet) {
+  const head = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(String);
+  ROSTER_HEADERS.forEach(function (h) {
+    if (head.indexOf(h) === -1) { sheet.getRange(1, head.length + 1).setValue(h); head.push(h); }
+  });
+}
+
+/**
+ * API：{action:'mgr_roster', mgr_key} → 名冊清單，給主管頁的「同仁異動」用。
+ * 刻意不回 key 與 device_id：主管頁只需要姓名與在職狀態，金鑰沒有理由在這條路徑上流動。
+ */
+function handleMgrRoster(body) {
+  const ss = getSS();
+  const mgrSheet = ss.getSheetByName('managers');
+  if (!mgrSheet) return { ok: false, error: 'no_managers' };
+  const mgr = findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key);
+  if (!mgr) return { ok: false, error: 'unauthorized' };
+  const rosterSheet = ss.getSheetByName('roster');
+  if (!rosterSheet) return { ok: false, error: 'no_roster' };
+  const roster = readSheetAsObjects(rosterSheet).rows.map(function (r) {
+    return { emp_id: String(r.emp_id), name: String(r.name),
+             active: String(r.active).toLowerCase() === 'true',
+             created_by: String(r.created_by || ''),
+             removed_at: String(normCellTs(r.removed_at) || ''),
+             removed_by: String(r.removed_by || '') };
+  });
+  return { ok: true, roster: roster, manager_name: String(mgr.name || '') };
+}
+
+/**
+ * API：{action:'mgr_set_active', mgr_key, emp_id, active} → 值班主管把同仁設為離職／恢復在職。
+ *
+ * 「刪除同仁」在這個系統一律是**停用、不是真刪**：打卡事件、核定紀錄、薪資的請假與工時
+ * 都是用 emp_id／姓名對應的，真的移除名冊列會讓歷史紀錄對不到人。停用後該員打不了卡、
+ * 不再出現在核定清單，但當天若已有打卡，mgr_day 仍會把他補進清單（見該函式的 firstTs 補位），
+ * 所以離職當天的工時照樣核定得到。
+ *
+ * 留痕 removed_at／removed_by，與 created_at／created_by 同一套精神
+ * （Eason 2026-08-22 定調：不做事前核准，改用事後看得見）。
+ */
+function handleMgrSetActive(body) {
+  const ss = getSS();
+  const mgrSheet = ss.getSheetByName('managers');
+  if (!mgrSheet) return { ok: false, error: 'no_managers' };
+  const mgr = findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key);
+  if (!mgr) return { ok: false, error: 'unauthorized' };
+
+  const rosterSheet = ss.getSheetByName('roster');
+  if (!rosterSheet) return { ok: false, error: 'no_roster' };
+  ensureRosterHeaders(rosterSheet);
+
+  const empId = String(body.emp_id || '').trim();
+  if (!empId) return { ok: false, error: 'emp_id_required', message: '請先選擇同仁' };
+  const rows = readSheetAsObjects(rosterSheet).rows;
+  const row = findRosterByEmpId(rows, empId);
+  if (!row) return { ok: false, error: 'not_found', message: '名冊裡找不到這位同仁' };
+
+  const active = body.active === true || String(body.active).toLowerCase() === 'true';
+  const wasActive = String(row.active).toLowerCase() === 'true';
+  const name = String(row.name).trim();
+
+  // 不能把自己設為離職（與 mgr_add_employee 的「不能新增與自己同名」同一道防線）
+  if (!active && name === String(mgr.name).trim()) {
+    return { ok: false, error: 'self_remove', message: '不能把自己設為離職' };
+  }
+  if (active === wasActive) {
+    return { ok: true, unchanged: true, emp_id: empId, name: name, active: active };
+  }
+  // 恢復在職要擋同名：薪資用姓名對應請假與工時，兩位同名同時在職會直接算錯錢
+  if (active) {
+    const dup = rows.filter(function (r) {
+      return String(r.emp_id) !== empId && String(r.name).trim() === name
+          && String(r.active).toLowerCase() === 'true';
+    })[0];
+    if (dup) {
+      return { ok: false, error: 'duplicate_name',
+               message: '名冊已經有在職的「' + name + '」（編號 ' + dup.emp_id + '），'
+                      + '不能同時有兩位同名在職。' };
+    }
+  }
+
+  const now = nowTaipeiIso();
+  setRosterCell(rosterSheet, row.__rowIndex, 'active', active);
+  // removed_at 是純日期時間字串，鎖文字避免被 Sheets 轉成日期物件（同 created_at）
+  setRosterCell(rosterSheet, row.__rowIndex, 'removed_at', active ? '' : now, true);
+  setRosterCell(rosterSheet, row.__rowIndex, 'removed_by', active ? '' : String(mgr.name || ''));
+  return { ok: true, emp_id: empId, name: name, active: active,
+           removed_at: active ? '' : now, removed_by: active ? '' : String(mgr.name || '') };
 }
 
 /**

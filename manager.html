@@ -128,7 +128,32 @@
     border-radius: 999px;
     margin-bottom: 10px;
   }
+  .approved-badge[hidden] { display: none; }   /* inline-block 會蓋掉 hidden，要明寫 */
   .approved-badge.normal { background: #e6f7ec; color: #1a7a3d; }
+  /* 摺疊卡片（2026-08-25）：14 人的清單原本要捲快 5 個螢幕。每人收成一行，
+     今天有打卡又還沒核定的自動展開，其餘點一下才打開。 */
+  .emp-head { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .emp-head .eh-main { flex: 1; min-width: 0; }
+  .emp-head .emp-name { margin-bottom: 2px; }
+  .emp-head .punch-summary { margin-bottom: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .emp-mini { flex: none; font-size: 13px; font-weight: 700; padding: 4px 10px;
+              border-radius: 999px; white-space: nowrap; }
+  .emp-mini.pending { background: #f0e6e2; color: #8a6a5f; }
+  .emp-mini.normal  { background: #e6f7ec; color: #1a7a3d; }
+  .emp-mini.warn    { background: #fff6e0; color: #8a6100; }
+  .emp-chev { flex: none; font-size: 13px; color: #a08f88; transition: transform .15s; }
+  .card.open .emp-chev { transform: rotate(180deg); }
+  .emp-body { margin-top: 12px; }
+  .emp-body[hidden] { display: none; }
+  .emp-head:focus-visible { outline: 2px solid var(--brand-orange); outline-offset: 2px; border-radius: 8px; }
+  /* 清單上方的一行摘要：直接壓在底色上，所以用白字（同 body 文字色） */
+  .list-bar { display: flex; align-items: center; gap: 10px; font-size: 13px;
+              padding: 0 4px 8px; }
+  .list-bar .lb-count { flex: 1; min-width: 0; }
+  .list-bar b { font-size: 15px; }
+  .list-bar button { flex: none; font-size: 13px; font-weight: 700; padding: 6px 12px;
+                     border-radius: 999px; border: 1px solid rgba(255,255,255,.55);
+                     background: transparent; color: #fff; cursor: pointer; }
   .approved-badge.warn { background: #fff6e0; color: #8a6100; }
   /* 待核准裝置區：用品牌橘左邊框與淺橘底和一般核定卡片區隔，一眼看得出是要處理的事 */
   .pd-card {
@@ -156,6 +181,23 @@
              border-radius: 8px; padding: 10px; margin: 8px 0; font-size: 13px; color: #6b3f10; }
   .ae-copy { font-size: 14px; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--brand-orange);
              background: #fff; color: var(--brand-orange); font-weight: 700; cursor: pointer; }
+  /* 同仁異動區（2026-08-25）。白底卡片同樣要自己設色。 */
+  #rosterCard { color: var(--brand-black); }
+  .ae-row select { flex: 1; min-width: 0; font-size: 16px; padding: 10px 12px;
+                   border: 1px solid #d8cfc9; border-radius: 10px; background: #fff;
+                   color: var(--brand-black); }
+  /* ⚠ .submit-btn 的規則定義在本區塊之後，同特異性會蓋掉單一 .re-danger，
+     所以這裡必須用雙 class 選擇器（實測過：只寫 .re-danger 文字會變白色看不見）。 */
+  .submit-btn.re-danger { background: #fff; color: #c22a12; border: 1px solid #e3a99c; }
+  .re-list { margin-top: 12px; }
+  .re-list-title { font-size: 13px; font-weight: 700; color: #6b524a; margin-bottom: 6px; }
+  .re-item { display: flex; align-items: center; gap: 8px; padding: 8px 0;
+             border-top: 1px solid #f0e6e0; font-size: 14px; }
+  .re-item .re-name { flex: 1; min-width: 0; }
+  .re-item .re-when { display: block; font-size: 12px; color: #8a7a72; }
+  .re-restore { flex: none; font-size: 13px; padding: 6px 12px; border-radius: 8px;
+                border: 1px solid var(--brand-orange); background: #fff;
+                color: var(--brand-orange); font-weight: 700; cursor: pointer; }
   .pd-meta { font-size: 13px; color: #6b524a; line-height: 1.6; }
   .pd-warn { font-size: 13px; color: #c22a12; margin-top: 6px; }
   .pd-actions { display: flex; gap: 10px; margin-top: 12px; }
@@ -321,6 +363,18 @@
       <button type="button" class="submit-btn" id="aeBtn">建立帳號</button>
     </div>
     <div class="ae-result" id="aeResult" style="display:none"></div>
+  </div>
+
+  <!-- 同仁異動：離職＝停用（不是真刪，歷史紀錄要留著），設錯可恢復 -->
+  <div class="card" id="rosterCard" style="display:none">
+    <div class="ae-title">同仁異動</div>
+    <div class="ae-hint">同仁離職就在這裡設為離職，他<b>立刻無法打卡</b>、也不再出現在核定清單；<b>過去的打卡紀錄與已核定的工時都會保留</b>。設錯可以按恢復。</div>
+    <div class="ae-row">
+      <select id="reSelect"><option value="">選擇同仁…</option></select>
+      <button type="button" class="submit-btn re-danger" id="reBtn">設為離職</button>
+    </div>
+    <div class="ae-result" id="reResult" style="display:none"></div>
+    <div class="re-list" id="reInactive"></div>
   </div>
 </div>
 
@@ -565,9 +619,27 @@
         badge.className = 'approved-badge pending';
         badge.textContent = '待核定';
       }
+      updateMini(approved, leaveType, leaveHours);
+      // 未核定時頭部的精簡徽章已經寫著「待核定」，展開後不必再重複一顆
+      badge.hidden = !approved;
     }
     setBadge(emp.approved, emp.leave_type, emp.leave_hours);
     card.appendChild(badge);
+
+    // 收合時看得到的精簡徽章（「待核定」／「✓ 8 小時」）。
+    // ⚠ mini 是在下面才建立的 var（hoisting 後這裡是 undefined），所以 updateMini 要自己防呆；
+    //    setBadge 第一次呼叫時還沒有 mini，建立 mini 之後會再補呼叫一次。
+    var mini;
+    function updateMini(approved, leaveType, leaveHours) {
+      if (!mini) return;
+      if (approved) {
+        mini.className = 'emp-mini ' + badgeClass(approved.status_text);
+        mini.textContent = '✓ ' + approved.approved_hours + ' 小時';
+      } else {
+        mini.className = 'emp-mini pending';
+        mini.textContent = '待核定';
+      }
+    }
 
     var periodRows = document.createElement('div');
     periodRows.className = 'period-rows';
@@ -800,6 +872,10 @@
         delete dayCache[approveDate]; // 核定改了這天的資料 → 清快取，下次切回會抓新的（用送出當下鎖定的日期）
         renderResult(resultBox, res);
         setBadge(res, res.leave_type, res.leave_hours);
+        // 核完這位就收起來、自動翻到下一位待核定的（結果看頭部那顆「✓ N 小時」就夠，
+        // 不必留著整張卡片佔版面）。要改就再點開，內容都還在。
+        card.__pending = false;
+        card.dispatchEvent(new CustomEvent('emp-approved', { bubbles: true }));
       }).catch(function () {
         submitBtn.disabled = false;
         submitBtn.textContent = '重新送出核定';
@@ -807,6 +883,48 @@
         resultBox.textContent = '✕ 連線失敗，請檢查網路後再試。';
       });
     });
+
+    /* ── 重組成「頭部一行＋可摺疊的內容」（2026-08-25）──
+     * 刻意用「搬移既有節點」而不是重寫整個卡片：上面每一段（防呆警告、時段列、假別、
+     * 送出邏輯）都還是原本那些元素與閉包，行為完全不變，只是換了掛載位置。 */
+    var head = document.createElement('div');
+    head.className = 'emp-head';
+    head.setAttribute('role', 'button');
+    head.setAttribute('tabindex', '0');
+    var headMain = document.createElement('div');
+    headMain.className = 'eh-main';
+    headMain.appendChild(nameEl);    // appendChild 會把節點從 card 搬過來
+    headMain.appendChild(punchEl);
+    mini = document.createElement('span');
+    var chev = document.createElement('span');
+    chev.className = 'emp-chev';
+    chev.textContent = '▼';
+    head.appendChild(headMain);
+    head.appendChild(mini);
+    head.appendChild(chev);
+    updateMini(emp.approved, emp.leave_type, emp.leave_hours);
+
+    var body = document.createElement('div');
+    body.className = 'emp-body';
+    while (card.firstChild) body.appendChild(card.firstChild);   // 其餘全部進 body
+    card.appendChild(head);
+    card.appendChild(body);
+
+    function setExpanded(on) {
+      body.hidden = !on;
+      card.classList.toggle('open', on);
+      head.setAttribute('aria-expanded', on ? 'true' : 'false');
+    }
+    // 一律先收合；由 renderEmployees 統一決定要開哪一位（一次只開一位，見那裡的註解）。
+    setExpanded(false);
+    // 給清單判斷「還沒核定、而且今天真的有事要核」用
+    card.__pending = !emp.approved;
+    card.__hasPunch = !!(emp.segments && emp.segments.length) || emp.attempts > 0;
+    head.addEventListener('click', function () { setExpanded(body.hidden); });
+    head.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(body.hidden); }
+    });
+    card.__setExpanded = setExpanded;   // 給「全部展開／收合」用
 
     return card;
   }
@@ -820,7 +938,56 @@
       empListEl.appendChild(empty);
       return;
     }
+    // 一行摘要：主管一眼知道今天還有幾個沒核定，不必自己數
+    var pendingCount = employees.filter(function (e) { return !e.approved; }).length;
+    var bar = document.createElement('div');
+    bar.className = 'list-bar';
+    var count = document.createElement('span');
+    count.className = 'lb-count';
+    count.innerHTML = '共 ' + employees.length + ' 人・待核定 <b>' + pendingCount + '</b> 人';
+    var toggleAll = document.createElement('button');
+    toggleAll.type = 'button';
+    var allOpen = false;
+    toggleAll.textContent = '全部展開';
+    toggleAll.addEventListener('click', function () {
+      allOpen = !allOpen;
+      toggleAll.textContent = allOpen ? '全部收合' : '全部展開';
+      [].forEach.call(empListEl.querySelectorAll('.card'), function (c) {
+        if (c.__setExpanded) c.__setExpanded(allOpen);
+      });
+    });
+    bar.appendChild(count);
+    bar.appendChild(toggleAll);
+    empListEl.appendChild(bar);
     employees.forEach(function (emp) { empListEl.appendChild(buildEmployeeCard(emp)); });
+
+    /* 一次只展開一位（2026-08-25）：14 人全部展開等於要捲快 5 個螢幕，全部收合又要一直點。
+     * 折衷＝開著「下一位要核定的人」，核完自動收起來、翻到再下一位，主管可以一路核到底。
+     * 判斷條件與後端一致：還沒核定，而且今天有打卡或有未入帳的嘗試（整天沒打卡的排休不算）。 */
+    function nextPending() {
+      return [].filter.call(empListEl.querySelectorAll('.card'), function (c) {
+        return c.__pending && c.__hasPunch;
+      })[0];
+    }
+    function openNext() {
+      var c = nextPending();
+      if (c && c.__setExpanded) c.__setExpanded(true);
+      return c;
+    }
+    openNext();
+    empListEl.addEventListener('emp-approved', function (e) {
+      var done = e.target;
+      if (done && done.__setExpanded) done.__setExpanded(false);
+      var nx = openNext();
+      // 捲到下一位，但別把已核定的那張推出畫面外（主管還想確認剛才那筆）
+      if (nx && nx.scrollIntoView) nx.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    // 待核定計數要跟著核定即時往下掉，不然主管會以為還有那麼多沒做
+    empListEl.addEventListener('emp-approved', function () {
+      var left = [].filter.call(empListEl.querySelectorAll('.card'), function (c) { return c.__pending; }).length;
+      count.innerHTML = '共 ' + employees.length + ' 人・待核定 <b>' + left + '</b> 人';
+    });
   }
 
   // 日期資料快取：Apps Script 每次請求都要讀 5 張表、有固定延遲，切換日期若每次重打會慢。
@@ -1064,10 +1231,103 @@
           }
         });
         loadDay(currentDate);   // 名單重載，新同仁立刻出現在核定清單裡
+        reloadRosterCard();     // 同仁異動區的下拉也要跟著長出新同仁
       });
     }
     btn.addEventListener('click', submit);
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
+  })();
+
+  /* ── 同仁異動：離職停用／恢復在職（2026-08-25）──
+   * 「刪除」一律是停用不是真刪：打卡事件、核定紀錄、薪資的請假與工時都用 emp_id／姓名對應，
+   * 移除名冊列會讓歷史對不到人。離職當天若已有打卡，mgr_day 仍會把他補進清單，照樣核定得到。
+   * 權限同「新進同仁報到」：凡持有主管金鑰的人都能做，留痕 removed_at／removed_by。 */
+  var reloadRosterCard = function () {};
+  (function initRoster() {
+    var card = document.getElementById('rosterCard');
+    var sel = document.getElementById('reSelect');
+    var btn = document.getElementById('reBtn');
+    var box = document.getElementById('reResult');
+    var listBox = document.getElementById('reInactive');
+    if (!card || !sel || !btn || !box || !listBox) return;
+    var myName = '';
+
+    function show(html, isErr) {
+      box.style.display = 'block';
+      box.className = 'ae-result' + (isErr ? ' err' : '');
+      box.innerHTML = html;
+    }
+    function shortDate(iso) {
+      var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+      return m ? (Number(m[2]) + '/' + Number(m[3])) : '';
+    }
+    function render(rows) {
+      var actives = rows.filter(function (r) { return r.active && r.name !== myName; });
+      var gone = rows.filter(function (r) { return !r.active; });
+      sel.innerHTML = '<option value="">選擇同仁…</option>' + actives.map(function (r) {
+        return '<option value="' + r.emp_id + '">' + r.name + '（' + r.emp_id + '）</option>';
+      }).join('');
+      btn.disabled = actives.length === 0;
+      if (!gone.length) { listBox.innerHTML = ''; return; }
+      listBox.innerHTML = '<div class="re-list-title">已離職（' + gone.length + '）</div>'
+        + gone.map(function (r) {
+            var when = shortDate(r.removed_at);
+            var by = r.removed_by ? ('由 ' + r.removed_by + ' 設定') : '';
+            var meta = (when || by) ? '<span class="re-when">' + [when, by].filter(Boolean).join('・') + '</span>' : '';
+            return '<div class="re-item"><span class="re-name">' + r.name + '（' + r.emp_id + '）' + meta + '</span>'
+                 + '<button type="button" class="re-restore" data-emp="' + r.emp_id
+                 + '" data-name="' + r.name + '">恢復在職</button></div>';
+          }).join('');
+      [].forEach.call(listBox.querySelectorAll('.re-restore'), function (b) {
+        b.addEventListener('click', function () {
+          if (!confirm('要讓「' + b.getAttribute('data-name') + '」恢復在職嗎？\n他會重新能夠打卡。')) return;
+          setActive(b.getAttribute('data-emp'), b.getAttribute('data-name'), true, b);
+        });
+      });
+    }
+    function load() {
+      if (!mgrKey) return;
+      apiPost({ action: 'mgr_roster', mgr_key: mgrKey }).then(function (res) {
+        if (!res || !res.ok) return;          // 舊後端沒有這個 action：整區不顯示，其餘功能不受影響
+        myName = String(res.manager_name || '');
+        card.style.display = 'block';
+        render(res.roster || []);
+      }).catch(function () {});
+    }
+    function setActive(empId, name, active, srcBtn) {
+      var label = srcBtn.textContent;
+      srcBtn.disabled = true; srcBtn.textContent = '處理中…';
+      apiPost({ action: 'mgr_set_active', mgr_key: mgrKey, emp_id: empId, active: active })
+        .then(function (res) {
+          srcBtn.disabled = false; srcBtn.textContent = label;
+          if (!res || !res.ok) {
+            show('✕ ' + ((res && res.message) || '設定失敗，請再試一次'), true);
+            return;
+          }
+          show(active ? ('✓ <b>' + res.name + '</b> 已恢復在職，可以打卡了')
+                      : ('✓ <b>' + res.name + '</b> 已設為離職，他不能再打卡了。'
+                         + '過去的打卡與核定紀錄都還在，設錯的話按下面的「恢復在職」。'));
+          sel.value = '';
+          load();
+          loadDay(currentDate);   // 核定清單同步（離職者當天若已有打卡仍會列出，可補核定）
+        }).catch(function () {
+          srcBtn.disabled = false; srcBtn.textContent = label;
+          show('✕ 連線失敗，請檢查網路後再試一次', true);
+        });
+    }
+    btn.addEventListener('click', function () {
+      var empId = sel.value;
+      if (!empId) { show('✕ 請先選擇同仁', true); return; }
+      var name = sel.options[sel.selectedIndex].text.replace(/（.*$/, '');
+      if (!confirm('要把「' + name + '」設為離職嗎？\n\n'
+                 + '・他從現在起無法打卡\n'
+                 + '・過去的打卡紀錄與已核定工時都會保留\n'
+                 + '・如果今天的工時還沒核定，請先核定再設離職\n\n'
+                 + '設錯可以在下方按「恢復在職」。')) return;
+      setActive(empId, name, false, btn);
+    });
+    reloadRosterCard = load;
+    load();
   })();
 
   function init() {
