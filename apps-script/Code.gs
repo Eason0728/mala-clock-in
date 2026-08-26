@@ -860,7 +860,16 @@ function handleSetShifts(body) {
   const ss = getSS();
   const rosterSheet = ss.getSheetByName('roster');
   if (!rosterSheet) return { ok: false, error: 'no_roster' };
-  const rows = readSheetAsObjects(rosterSheet).rows;
+  /* ⚠ 舊試算表的 roster 只有 6 欄（emp_id…active），沒有 shift_in／shift_out。
+     原本的檢查看的是程式常數 ROSTER_HEADERS（一定有那兩欄），所以檢查永遠通過、
+     值就被寫進「沒有表頭的欄位」——readSheetAsObjects 依表頭取值，於是永遠讀不回來，
+     而且不會報錯（2026-08-26 實際踩到：總部吳佳宜寫進去回查是 undefined，
+     光復也缺這兩欄、預填班別功能等於從沒生效過）。這裡照 handleClock 對 events 的做法就地自癒。*/
+  const rosterRead = readSheetAsObjects(rosterSheet);
+  if (rosterRead.headers.indexOf('shift_in') === -1 || rosterRead.headers.indexOf('shift_out') === -1) {
+    rosterSheet.getRange(1, 1, 1, ROSTER_HEADERS.length).setValues([ROSTER_HEADERS]);
+  }
+  const rows = readSheetAsObjects(rosterSheet).rows;   // 補完表頭再讀，欄位才對得上
   const ci = ROSTER_HEADERS.indexOf('shift_in') + 1;
   const co = ROSTER_HEADERS.indexOf('shift_out') + 1;
   if (ci <= 0 || co <= 0) return { ok: false, error: 'no_shift_columns', message: '名冊還沒有 shift_in／shift_out 欄，請先跑 setup()' };
