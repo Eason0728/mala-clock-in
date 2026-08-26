@@ -79,6 +79,7 @@ function leaveCard(list){
     let remTxt;
     if(cap==null) remTxt='<span style="color:var(--muted)">無上限</span>';
     else if(q.basis==='event') remTxt=`<span style="color:var(--muted)">每次上限<span class="u">${r2(q.cap_h)} H</span></span>`;
+    else if(q.remain_h<0) remTxt=`<span class="out">超出 ${r2(-q.remain_h)} H</span>`;
     else if(q.blocked) remTxt='<span class="out">已用完</span>';
     else remTxt=`<b>${r2(q.remain_h)}</b> H<span class="u">/ 上限 ${r2(q.cap_h)} H</span>`;
     return `<tr><td>${q.name}${bar}</td><td class="r">${usedTxt}</td><td class="r">${remTxt}</td></tr>`;

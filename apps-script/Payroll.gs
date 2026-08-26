@@ -2012,6 +2012,54 @@ function handlePayrollMigrateStore(body) {
   return { ok: true, store: st, filled: done };
 }
 
+/** 請假資料有兩個來源，額度一定要兩邊都算（2026-08-27 Eason 指出 6、7 月沒被算進去）。
+ *
+ *  ① 打卡系統 `leave` 分頁——主管在值班核定頁登記的，打卡上線後的月份走這裡。
+ *  ② 薪資的 `payroll_input` 手動工時——打卡上線前、或還沒裝打卡的門市，請假時數是直接
+ *     填在工時分頁的「事假 H／病假 H…」欄位裡，**不會**進 leave 分頁。
+ *
+ *  ⚠ 只讀 ① 會讓額度嚴重低估：實際踩到的例子是陳盈如病假已用 133.73H（5–8 月），
+ *    只算 leave 分頁卻只有 32.48H；央廚 7 月六位同仁的請假更是一筆都沒算到。
+ *  ⚠ 同一個月兩邊都有資料時「以手動為準」——因為計薪本來就是這個規則
+ *    （payInputsBase 的手動列會整筆蓋掉歸集值），額度跟著計薪走才不會出現
+ *    「薪水扣了但額度沒扣」的矛盾。這也與 payAnnualInfo 算特休的做法一致。 */
+var PAY_INPUT_LEAVE_FIELDS = [
+  { field: 'personal_h',  code: 'personal'  },
+  { field: 'sick_h',      code: 'sick'      },
+  { field: 'menstrual_h', code: 'menstrual' },
+  { field: 'annual_h',    code: 'annual'    },
+  { field: 'disaster_h',  code: 'disaster'  },
+];
+function payLeaveFlatRows(store, types, nameToEmp) {
+  const st = payStore(store);
+  const out = [];
+  const manualMonths = {};   // 'emp_id|yyyy-MM' → 該月由手動工時作主
+  payRead('input').forEach(function (r) {
+    if (payStore(r.store) !== st) return;
+    const m = String(r.ym);
+    if (!/^\d{4}-\d{2}$/.test(m)) return;
+    const emp = String(r.emp_id);
+    manualMonths[emp + '|' + m] = true;
+    PAY_INPUT_LEAVE_FIELDS.forEach(function (f) {
+      const h = payNum(r[f.field]);
+      if (!h) return;
+      // 手動工時只有「整月時數」沒有日期，掛在該月 1 號——曆年與每月上限的判斷都只看年月
+      out.push({ emp_id: emp, date: m + '-01', hours: h, code: f.code });
+    });
+  });
+  let leaveRows = [];
+  try { leaveRows = payClockRead(st, 'leave'); } catch (err) { leaveRows = []; }
+  leaveRows.forEach(function (l) {
+    const emp = nameToEmp[String(l['姓名'] || '').trim()];
+    if (!emp) return;
+    const d = normCellDate(l['日期']);
+    if (manualMonths[emp + '|' + String(d).slice(0, 7)]) return;   // 同月以手動為準，不重複計
+    out.push({ emp_id: emp, date: d, hours: Number(l['時數']) || 0,
+               code: payLeaveCode(String(l['假別'] || ''), types) });
+  });
+  return out;
+}
+
 /** 同仁自己看得到的假別額度（2026-08-27）。
  *  ⚠ 規則與值班核定頁／薪資頁完全同源（都呼叫 payLeaveUsage），不另寫一套，
  *    否則同仁看到的剩餘天數會跟主管看到的對不上，那比不顯示更糟。
@@ -2024,14 +2072,10 @@ function payMyLeaveQuota(empId, empName, ym, store) {
   const types = payLeaveTypes(st);
   const cfg = payConfig(st);
   const dayH = payLeaveDayHours(cfg);
-  let leaveRows = [];
-  try { leaveRows = payClockRead(st, 'leave'); } catch (err) { return []; }
-  const flat = [];
-  leaveRows.forEach(function (l) {
-    if (String(l['姓名'] || '').trim() !== String(empName || '').trim()) return;
-    flat.push({ emp_id: String(empId), date: normCellDate(l['日期']),
-                hours: Number(l['時數']) || 0, code: payLeaveCode(String(l['假別'] || ''), types) });
-  });
+  // 兩個來源都要（leave 分頁＋手動工時），只有本人的列
+  const nameMap = {}; nameMap[String(empName || '').trim()] = String(empId);
+  const flat = payLeaveFlatRows(st, types, nameMap)
+    .filter(function (x) { return String(x.emp_id) === String(empId); });
   let spans = [];
   try { spans = payRead('leave_span'); } catch (err) { spans = []; }
   const q = payLeaveUsage(String(empId), ym, types, cfg, null, flat, spans);
@@ -2039,6 +2083,8 @@ function payMyLeaveQuota(empId, empName, ym, store) {
   types.forEach(function (t) {
     const v = q[t.code] || {};
     const used = Number(v.used_days) || 0;
+    // 特休不列在這裡：它是週年制、額度由 payAnnualQuota 另算，混進來會顯示成「無上限」誤導同仁
+    if (v.basis === 'tenure' || t.cap_basis === 'tenure') return;
     if (!used && MY_LEAVE_ALWAYS.indexOf(t.code) < 0) return;
     // 額度法規是以「日」定的，但畫面統一用時數呈現（Eason 2026-08-27 指定，
     // 與特休、核定工時、薪資單全部同一個單位），所以日與時數兩種都回，前端只顯示時數。
@@ -2232,17 +2278,10 @@ function handlePayrollLeaveOptions(body) {
 
   // 額度要看「整個曆年」，含本月已請的——與計薪的 used_before 不同，這裡是給主管當下判斷用
   const dayH = payLeaveDayHours(cfg);
-  let leaveRows = [];
-  try { leaveRows = payClockRead(st, 'leave'); } catch (err) { leaveRows = []; }
   const nameToEmp = {};
   master.forEach(function (e) { nameToEmp[String(e.name).trim()] = String(e.emp_id); });
-  const flat = [];
-  leaveRows.forEach(function (l) {
-    const emp = nameToEmp[String(l['姓名'] || '').trim()];
-    if (!emp) return;
-    flat.push({ emp_id: emp, date: normCellDate(l['日期']),
-                hours: Number(l['時數']) || 0, code: payLeaveCode(String(l['假別'] || ''), types) });
-  });
+  // leave 分頁 ＋ 手動工時兩個來源（見 payLeaveFlatRows）。同仁端走同一支，兩邊數字保證一致。
+  const flat = payLeaveFlatRows(st, types, nameToEmp);
   const quotas = {};
   master.forEach(function (e) {
     quotas[String(e.emp_id)] = payLeaveUsage(String(e.emp_id), ym, types, cfg, null, flat, spans);

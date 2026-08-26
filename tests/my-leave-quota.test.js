@@ -91,5 +91,47 @@ chk('尚未結算（查沒有 run 的月份）',
 console.log('\n══ 只看得到自己 ══');
 chk('金鑰不對 → unauthorized', call('handleMyPayslip', { key:'亂打的' }).error, 'unauthorized');
 
+/* 打卡上線前的月份，請假是填在薪資「手動工時」的事假H／病假H 欄位，不在 leave 分頁。
+   2026-08-27 實際踩到：陳盈如 5–7 月共 101.25H 病假完全沒被算進額度。 */
+console.log('\n══ 手動工時的請假也要算進額度 ══');
+vm.runInContext(`
+  payRead = function(k){
+    if (k === 'master') return [{ emp_id:'E01', name:'小美', store:'SSLGF', active:'true',
+                                  is_full_time:'true', hire_date:'' }];
+    if (k === 'run')    return [];
+    if (k === 'input')  return globalThis.__INPUT;
+    return [];
+  };
+`, sb);
+// 6 月手動：病假 50H；7 月手動：事假 10H。
+// ⚠ 期望值 130 不是 210：leave 分頁的 6/09 那筆 80H 被 6 月的手動列蓋掉（同月以手動為準），
+//   所以是「3 月 leave 80H ＋ 6 月手動 50H」。第一版我寫 210 是自己算錯，不是程式錯。
+vm.runInContext(`__INPUT = [
+  { ym:'2026-06', emp_id:'E01', store:'SSLGF', sick_h:50, personal_h:0 },
+  { ym:'2026-07', emp_id:'E01', store:'SSLGF', sick_h:0,  personal_h:10 }
+];`, sb);
+let q2 = call('payMyLeaveQuota', 'E01', '小美', '2026-08', 'SSLGF');
+let m2 = {}; q2.forEach(x => m2[x.code] = x);
+chk('病假＝3月leave 80H＋6月手動50H', m2.sick.used_h, 130);
+chk('事假＝手動10H', m2.personal.used_h, 10);
+
+console.log('\n══ 同月兩邊都有 → 以手動為準，不重複計 ══');
+// 3 月同時有 leave 分頁 80H 與手動 8H → 只認手動的 8H
+vm.runInContext(`__INPUT = [{ ym:'2026-03', emp_id:'E01', store:'SSLGF', sick_h:8 }];`, sb);
+q2 = call('payMyLeaveQuota', 'E01', '小美', '2026-08', 'SSLGF');
+m2 = {}; q2.forEach(x => m2[x.code] = x);
+chk('3月只算手動8H，6月leave 80H照算', m2.sick.used_h, 88);
+
+console.log('\n══ 別店的手動工時不可算進來 ══');
+vm.runInContext(`__INPUT = [{ ym:'2026-06', emp_id:'E01', store:'CF', sick_h:999 }];`, sb);
+q2 = call('payMyLeaveQuota', 'E01', '小美', '2026-08', 'SSLGF');
+m2 = {}; q2.forEach(x => m2[x.code] = x);
+chk('央廚的列不影響光復', m2.sick.used_h, 160);
+
+console.log('\n══ 特休不列在這張表（週年制另算）══');
+vm.runInContext(`__INPUT = [{ ym:'2026-06', emp_id:'E01', store:'SSLGF', annual_h:24 }];`, sb);
+q2 = call('payMyLeaveQuota', 'E01', '小美', '2026-08', 'SSLGF');
+chk('沒有特休列', q2.filter(x => x.code === 'annual').length, 0);
+
 console.log(f ? `\n❌ ${f} 項失敗（通過 ${p}）` : `\n✅ 同仁端假別額度全部正確 (${p}/${p})`);
 process.exit(f ? 1 : 0);

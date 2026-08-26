@@ -1060,6 +1060,8 @@ function renderQuota(empId){
   // 婚喪產檢這類「每次事件」各有上限、沒有年度剩餘可言，沒請過就不佔版面。
   const rows=types.map(t=>({t,v:q[t.code]||{}}))
     .filter(x=>{
+      // 特休走下方獨立區塊（週年制，額度另算），列進主表會顯示成「無上限」誤導
+      if(x.v.basis==='tenure'||x.t.cap_basis==='tenure') return false;
       const used=x.v.used_days||0;
       if(used>0) return true;
       return x.v.cap_days!=null&&(x.v.basis==='calendar'||x.v.basis==='child');
@@ -1081,6 +1083,8 @@ function renderQuota(empId){
       let remTxt;
       if(cap==null) remTxt='<span style="color:var(--muted)">無上限</span>';
       else if(v.basis==='event') remTxt=`<span style="color:var(--muted)">每次上限<br>${r2(cap*dayH)} H</span>`;
+      // 超額與「剛好用完」要分開講：超額代表已經請超過法定額度，是要處理的事，不只是沒得請了
+      else if(rem<0) remTxt=`<span class="bad">超出 ${r2(-rem*dayH)} H</span>`;
       else if(v.blocked) remTxt='<span class="bad">已用完</span>';
       // 沒請過時「剩餘＝上限」，兩個都印是重複的，只標「未使用」
       else remTxt=`<b>${r2(rem*dayH)}</b> H<br><span style="color:var(--muted);font-size:11px">`
