@@ -569,7 +569,8 @@ MOCK_LEAVE_TYPES = [
 
 def handle_payroll_leave_options(data, body):
     # ⚠ mock 的 handler 簽名一律是 (data, body)，別只收 body（踩過：body 收到的其實是 db）
-    if not find_manager_by_key(data, body.get("mgr_key", "")):
+    # 身分二擇一（與正式環境一致）：管理金鑰（薪資頁「假別額度」）或值班主管金鑰（核定頁下拉）
+    if not check_admin(body) and not find_manager_by_key(data, body.get("mgr_key", "")):
         return {"ok": False, "error": "unauthorized"}
     quotas = {}
     for i, emp in enumerate(data.get("roster", [])):

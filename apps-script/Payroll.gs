@@ -2012,6 +2012,49 @@ function handlePayrollMigrateStore(body) {
   return { ok: true, store: st, filled: done };
 }
 
+/** 同仁自己看得到的假別額度（2026-08-27）。
+ *  ⚠ 規則與值班核定頁／薪資頁完全同源（都呼叫 payLeaveUsage），不另寫一套，
+ *    否則同仁看到的剩餘天數會跟主管看到的對不上，那比不顯示更糟。
+ *  顯示範圍刻意收斂：事假與病假一律列（同仁最常問的就這兩個），
+ *  其他假別只在「今年真的請過」時才出現——避免每個人都看到育嬰假 720 日、安胎休養假這些
+ *  跟他無關的項目。要放寬就改 MY_LEAVE_ALWAYS。 */
+var MY_LEAVE_ALWAYS = ['personal', 'sick'];
+function payMyLeaveQuota(empId, empName, ym, store) {
+  const st = payStore(store);
+  const types = payLeaveTypes(st);
+  const cfg = payConfig(st);
+  const dayH = payLeaveDayHours(cfg);
+  let leaveRows = [];
+  try { leaveRows = payClockRead(st, 'leave'); } catch (err) { return []; }
+  const flat = [];
+  leaveRows.forEach(function (l) {
+    if (String(l['姓名'] || '').trim() !== String(empName || '').trim()) return;
+    flat.push({ emp_id: String(empId), date: normCellDate(l['日期']),
+                hours: Number(l['時數']) || 0, code: payLeaveCode(String(l['假別'] || ''), types) });
+  });
+  let spans = [];
+  try { spans = payRead('leave_span'); } catch (err) { spans = []; }
+  const q = payLeaveUsage(String(empId), ym, types, cfg, null, flat, spans);
+  const out = [];
+  types.forEach(function (t) {
+    const v = q[t.code] || {};
+    const used = Number(v.used_days) || 0;
+    if (!used && MY_LEAVE_ALWAYS.indexOf(t.code) < 0) return;
+    // 額度法規是以「日」定的，但畫面統一用時數呈現（Eason 2026-08-27 指定，
+    // 與特休、核定工時、薪資單全部同一個單位），所以日與時數兩種都回，前端只顯示時數。
+    out.push({ code: t.code, name: t.name, basis: v.basis || '',
+               used_days: payR2(used), used_h: payR2(used * dayH),
+               cap_days: v.cap_days == null ? null : payR2(v.cap_days),
+               cap_h: v.cap_days == null ? null : payR2(v.cap_days * dayH),
+               remain_days: v.remain_days == null ? null : payR2(v.remain_days),
+               remain_h: v.remain_days == null ? null : payR2(v.remain_days * dayH),
+               blocked: !!v.blocked });
+  });
+  // 請過的排前面，同仁一眼看到自己動用了哪些
+  out.sort(function (a, b) { return (b.used_days || 0) - (a.used_days || 0); });
+  return out;
+}
+
 function handleMyPayslip(body) {
   const key = String(body.key || '');
   if (!key) return { ok: false, error: 'unauthorized' };
@@ -2036,14 +2079,18 @@ function handleMyPayslip(body) {
     return String(r.ym) === ym && String(r.emp_id) === String(me.emp_id) && payStore(r.store) === stMy;
   })[0];
   const annual = payAnnualInfo(ym, stMy)[String(me.emp_id)] || null;
-  if (!run) return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資尚未結算', annual: annual };
+  // 假別額度與薪資結算與否無關（同仁隨時都該查得到自己還剩多少假），所以三個回傳路徑都要帶
+  const leaveQuota = payMyLeaveQuota(me.emp_id, me.name, ym, stMy);
+  if (!run) return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資尚未結算',
+                     annual: annual, leave_quota: leaveQuota };
   if (String(run.status) !== 'final') {
-    return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資結算中，尚未定案', annual: annual };
+    return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資結算中，尚未定案',
+             annual: annual, leave_quota: leaveQuota };
   }
   const items = payRead('item').filter(function (i) {
     return String(i.ym) === ym && String(i.emp_id) === String(me.emp_id) && payStore(i.store) === stMy;
   });
-  return { ok: true, ym: ym, name: me.name, ready: true, annual: annual,
+  return { ok: true, ym: ym, name: me.name, ready: true, annual: annual, leave_quota: leaveQuota,
            result: payRunItemsToResult(run, items), payday: payConfig().payday };
 }
 
@@ -2154,21 +2201,25 @@ function handlePayrollLeaveSpanSet(body) {
   return { ok: true, saved: incoming.length };
 }
 
-/** {action:'payroll_leave_options', store, mgr_key, ym?} → 給值班核定頁用：
- *  假別下拉清單 ＋ 每位同仁的剩餘額度（額度用完的回 blocked，前端把該選項反灰）。
+/** {action:'payroll_leave_options', store, mgr_key|admin_key, ym?} → 假別清單 ＋ 每位同仁的
+ *  已用與剩餘額度（額度用完的回 blocked）。兩個畫面共用：值班核定頁的假別下拉（值班主管金鑰）、
+ *  薪資頁工時分頁的「假別額度」（管理金鑰，2026-08-27 加）。
  *
  *  ⚠ 身分驗證跨後端：薪酬是全集團共用一套，不認得央廚／總部的主管金鑰，
- *    所以反過來開該店自己的打卡試算表比對 managers 分頁——與 my_payslip 跨店驗身分同一招。 */
+ *    所以主管那條反過來開該店自己的打卡試算表比對 managers 分頁——與 my_payslip 跨店驗身分同一招。 */
 function handlePayrollLeaveOptions(body) {
   const st = payStore(body.store);
-  const key = String(body.mgr_key || '').trim();
-  if (!key) return { ok: false, error: 'unauthorized' };
-  let mgrs = [];
-  try { mgrs = payClockRead(st, 'managers'); } catch (err) { return { ok: false, error: 'no_clock_ss' }; }
-  const hit = mgrs.filter(function (m) {
-    return String(m.key) === key && String(m.active).toLowerCase() === 'true';
-  })[0];
-  if (!hit) return { ok: false, error: 'unauthorized' };
+  // 身分二擇一：管理金鑰（薪資頁）直接放行，否則走值班主管金鑰那條。
+  if (!checkAdmin(body)) {
+    const key = String(body.mgr_key || '').trim();
+    if (!key) return { ok: false, error: 'unauthorized' };
+    let mgrs = [];
+    try { mgrs = payClockRead(st, 'managers'); } catch (err) { return { ok: false, error: 'no_clock_ss' }; }
+    const hit = mgrs.filter(function (m) {
+      return String(m.key) === key && String(m.active).toLowerCase() === 'true';
+    })[0];
+    if (!hit) return { ok: false, error: 'unauthorized' };
+  }
 
   const ym = /^\d{4}-\d{2}$/.test(String(body.ym || '')) ? body.ym : nowTaipeiIso().slice(0, 7);
   const types = payLeaveTypes(st);

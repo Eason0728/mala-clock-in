@@ -16,6 +16,17 @@ header h1{font-size:17.5px;font-weight:900}header h1 span{color:var(--gold)}
 header input{font:inherit;margin-left:auto;padding:5px 8px;border:0;border-radius:5px;background:#3a3330;color:#fff}
 main{max-width:560px;margin:0 auto;padding:18px 14px}
 .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:16px}
+/* 假別額度（2026-08-27）：與打卡頁「我的薪資」同一份資料與規則 */
+.lq h4{font-size:15px;margin-bottom:4px}
+.lq .sub{font-size:12.5px;color:var(--muted);margin-bottom:12px;line-height:1.7}
+.lq table{width:100%;border-collapse:collapse;font-size:14px}
+.lq td{padding:11px 4px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
+.lq td.r{text-align:right;white-space:nowrap}
+.lq .u{display:block;font-size:12px;color:var(--muted);font-weight:700}
+.lq .bar{display:block;width:78px;height:6px;border-radius:4px;background:#ece7e1;overflow:hidden;margin-top:6px}
+.lq .bar i{display:block;height:100%;background:#FABE00}
+.lq .bar i.hi{background:#E8380D}
+.lq .out{color:#c0392b;font-weight:900}
 .who{display:flex;justify-content:space-between;align-items:flex-end;
  border-bottom:2px solid var(--black);padding-bottom:11px;margin-bottom:15px}
 .who b{font-size:24px}
@@ -54,6 +65,30 @@ const nf=v=>Math.round(v).toLocaleString('zh-TW');
 const r2=v=>Math.round(v*100)/100;
 const HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage'];
 
+/* 假別額度卡片：資料與規則來自後端 payMyLeaveQuota（＝主管看到的同一份），
+   前端只負責排版，不重算任何額度。沒帶這個欄位的舊後端整張不畫。 */
+function leaveCard(list){
+  if(!list||!list.length) return '';
+  const rows=list.map(q=>{
+    const cap=q.cap_days, used=q.used_days||0;
+    const pct=cap?Math.min(100,Math.round(used/cap*100)):0;
+    const bar=(cap!=null&&q.basis!=='event')
+      ? `<span class="bar"><i class="${pct>=80?'hi':''}" style="width:${pct}%"></i></span>`:'';
+    // 單位統一用時數（Eason 2026-08-27），與打卡頁「我的薪資」同步
+    const usedTxt=used?`<b>${r2(q.used_h)}</b> H`:'<span style="color:var(--muted)">未請過</span>';
+    let remTxt;
+    if(cap==null) remTxt='<span style="color:var(--muted)">無上限</span>';
+    else if(q.basis==='event') remTxt=`<span style="color:var(--muted)">每次上限<span class="u">${r2(q.cap_h)} H</span></span>`;
+    else if(q.blocked) remTxt='<span class="out">已用完</span>';
+    else remTxt=`<b>${r2(q.remain_h)}</b> H<span class="u">/ 上限 ${r2(q.cap_h)} H</span>`;
+    return `<tr><td>${q.name}${bar}</td><td class="r">${usedTxt}</td><td class="r">${remTxt}</td></tr>`;
+  }).join('');
+  return `<div class="card lq"><h4>我的假別額度</h4>`
+    +`<div class="sub">今年（曆年）已請與剩餘。數字來自店長在系統登記的請假紀錄，`
+    +`如果和你記得的不一樣，請找店長確認。</div>`
+    +`<table><tbody>${rows}</tbody></table></div>`;
+}
+
 async function load(){
   const app=document.getElementById('app');
   if(!KEY){app.innerHTML=st('🔒','連結不完整','請用店長給你的專屬打卡連結開啟。');return}
@@ -67,7 +102,8 @@ async function load(){
   }catch(e){app.innerHTML=st('📡','連不上伺服器','請確認網路後重新整理。');return}
 
   if(!j.ok){app.innerHTML=st('🔒','無法驗證身分','這個連結可能已失效，請找店長重新取得。');return}
-  if(!j.ready){app.innerHTML=st('🕒',j.message||'尚未結算','薪資結算後這裡就會顯示明細。');return}
+  const lq=leaveCard(j.leave_quota);
+  if(!j.ready){app.innerHTML=lq+st('🕒',j.message||'尚未結算','薪資結算後這裡就會顯示明細。');return}
 
   const r=j.result||j.run, earn=r.earn||[], ded=r.ded||[];
   const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a;font-size:12px">${r2(x.qty)}${HOURY.includes(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
@@ -87,7 +123,7 @@ async function load(){
       <tr class="sum"><td>應付合計</td><td>${nf(r.deduction)}</td></tr></table>
     <div class="net"><div>實付金額</div><div class="v">NT$ ${nf(r.net)}</div></div>
     <div class="foot">如有疑問請於發薪日起 7 日內向店長反映。<br>本頁只顯示你本人的資料。</div>
-  </div>`;
+  </div>`+lq;
 }
 function st(ic,t,d){return `<div class="card"><div class="state"><div class="ic">${ic}</div>
   <div style="font-weight:900;color:#231815;font-size:16px;margin-bottom:5px">${t}</div><div>${d}</div></div></div>`}

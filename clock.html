@@ -258,6 +258,19 @@
   #payView .pstate { text-align: center; padding: 40px 16px; color: #8a817a; }
   #payView .pstate .ic { font-size: 34px; margin-bottom: 10px; }
   #payView .pstate .t { font-weight: 900; color: var(--brand-black); font-size: 17px; margin-bottom: 5px; }
+  /* 假別額度（2026-08-27）：同仁自己查今年還剩多少假 */
+  #payView .lq h4 { font-size: 15px; margin-bottom: 4px; }
+  #payView .lq .sub { font-size: 12.5px; color: #8a817a; margin-bottom: 12px; line-height: 1.7; }
+  #payView .lq table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  #payView .lq td { padding: 11px 4px; border-bottom: 1px solid #f0ebe5; vertical-align: top; }
+  #payView .lq td:first-child { text-align: left; }
+  #payView .lq td.r { text-align: right; white-space: nowrap; }
+  #payView .lq .u { display: block; font-size: 12px; color: #8a817a; font-weight: 700; }
+  #payView .lq .bar { display: block; width: 78px; height: 6px; border-radius: 4px;
+    background: #ece7e1; overflow: hidden; margin-top: 6px; }
+  #payView .lq .bar i { display: block; height: 100%; background: var(--brand-gold); }
+  #payView .lq .bar i.hi { background: var(--brand-red); }
+  #payView .lq .out { color: #c0392b; font-weight: 900; }
 
   /* ── 天氣動態背景 ─────────────────────────────────────────────
      依門市當下的天氣切換情境：晴天出太陽、雨天下雨、雷雨打閃電、
@@ -996,11 +1009,38 @@
     }
     return '<tr><td>' + x.item_label + sub + '</td><td>' + payNf(x.amount) + '</td></tr>';
   }
+  /* 假別額度卡片：規則與主管看到的同源（後端 payMyLeaveQuota → payLeaveUsage），
+     所以同仁自己算的跟店長講的一定一致。沒資料就整張不畫（舊後端沒這欄位時優雅降級）。 */
+  function payLeaveCard(list) {
+    if (!list || !list.length) return '';
+    var rows = list.map(function (q) {
+      var cap = q.cap_days, used = q.used_days || 0;
+      var pct = cap ? Math.min(100, Math.round(used / cap * 100)) : 0;
+      var bar = (cap != null && q.basis !== 'event')
+        ? '<span class="bar"><i class="' + (pct >= 80 ? 'hi' : '') + '" style="width:' + pct + '%"></i></span>' : '';
+      // 單位統一用時數（Eason 2026-08-27）：同仁在打卡頁看到的核定時數也是 H，一致才不會誤讀
+      var usedTxt = used
+        ? '<b>' + payR2(q.used_h) + '</b> H'
+        : '<span style="color:#8a817a">未請過</span>';
+      var remTxt;
+      if (cap == null) remTxt = '<span style="color:#8a817a">無上限</span>';
+      else if (q.basis === 'event') remTxt = '<span style="color:#8a817a">每次上限<span class="u">' + payR2(q.cap_h) + ' H</span></span>';
+      else if (q.blocked) remTxt = '<span class="out">已用完</span>';
+      else remTxt = '<b>' + payR2(q.remain_h) + '</b> H<span class="u">/ 上限 ' + payR2(q.cap_h) + ' H</span>';
+      return '<tr><td>' + q.name + bar + '</td>'
+        + '<td class="r">' + usedTxt + '</td><td class="r">' + remTxt + '</td></tr>';
+    }).join('');
+    return '<div class="card lq"><h4>我的假別額度</h4>'
+      + '<div class="sub">今年（曆年）已請與剩餘。數字來自店長在系統登記的請假紀錄，'
+      + '如果和你記得的不一樣，請找店長確認。</div>'
+      + '<table><tbody>' + rows + '</tbody></table></div>';
+  }
   function renderPay(j) {
     if (!j || !j.ok) { paySlipEl.innerHTML = payState('🔒', '無法驗證身分', '這個連結可能已失效，請找店長重新取得。'); return; }
+    var lq = payLeaveCard(j.leave_quota);
     if (!j.ready) {
       var an = j.annual ? '<div class="card"><div class="hrs"><div><span>剩餘特休</span><b>' + j.annual.left_h + '</b> H</div></div></div>' : '';
-      paySlipEl.innerHTML = an + payState('🕒', j.message || '尚未結算', '薪資結算後這裡就會顯示明細。'); return; }
+      paySlipEl.innerHTML = an + lq + payState('🕒', j.message || '尚未結算', '薪資結算後這裡就會顯示明細。'); return; }
     var r = j.result || j.run, earn = r.earn || [], ded = r.ded || [];
     paySlipEl.innerHTML = '<div class="card">'
       + '<div class="who"><div><b>' + j.name + '</b><div class="m">' + String(j.ym).replace('-', '年') + '月薪資</div></div>'
@@ -1016,7 +1056,7 @@
       + '<h4 class="d">扣項</h4><table>' + (ded.length ? ded.map(payLine).join('') : '<tr><td colspan="2" style="color:#8a817a">無</td></tr>') + '<tr class="sum"><td>應付合計</td><td>' + payNf(r.deduction) + '</td></tr></table>'
       + '<div class="net"><div>實付金額</div><div class="v">NT$ ' + payNf(r.net) + '</div></div>'
       + '<div class="pfoot">如有疑問請於發薪日起 7 日內向店長反映。<br>本頁只顯示你本人的資料。</div>'
-      + '</div>';
+      + '</div>' + lq;
   }
   function loadPayslip(force) {
     if (!key) { paySlipEl.innerHTML = payState('🔒', '連結不完整', '請用店長給你的專屬連結開啟。'); return; }

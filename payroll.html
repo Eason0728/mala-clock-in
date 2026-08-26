@@ -102,6 +102,32 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 .note{background:#fff8ec;border-left:4px solid var(--gold);padding:12px 14px;border-radius:0 9px 9px 0;font-size:12.5px;margin-bottom:15px}
 .note.warn{background:#fdf0ee;border-left-color:var(--red)}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+/* ── 假別額度彈窗（工時分頁「額度」按鈕開啟）── */
+.qz-mask{position:fixed;inset:0;background:rgba(35,24,21,.42);display:flex;align-items:center;
+  justify-content:center;padding:18px;z-index:60}
+.qz-box{background:var(--card);color:var(--ink);border-radius:16px;width:min(560px,100%);
+  max-height:86vh;display:flex;flex-direction:column;box-shadow:0 18px 50px rgba(35,24,21,.22)}
+.qz-hd{display:flex;align-items:baseline;gap:10px;padding:18px 20px 12px;border-bottom:1px solid var(--line)}
+.qz-hd h3{font-size:17px;font-weight:900}
+.qz-hd .qz-sub{font-size:12px;color:var(--muted);font-weight:700}
+.qz-hd button{margin-left:auto;font:inherit;font-weight:800;border:0;background:none;
+  color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 2px}
+.qz-bd{overflow:auto;padding:6px 20px 18px}
+.qz-bd table{font-size:13px}
+.qz-bd th{color:var(--muted);font-size:11.5px}
+.qz-bd th,.qz-bd td{padding:9px 6px;vertical-align:top}
+/* 假別名要能換行，否則窄螢幕整張表被撐寬、得橫捲才看得到「剩餘」 */
+.qz-bd td:first-child,.qz-bd th:first-child{text-align:left;white-space:normal;line-height:1.45}
+.qz-bar{display:inline-block;width:64px;height:6px;border-radius:4px;background:#ece7e1;
+  overflow:hidden;vertical-align:middle}
+.qz-bar i{display:block;height:100%;background:var(--gold)}
+.qz-bar i.hi{background:var(--red)}
+.qz-none{color:var(--muted);font-size:13px;padding:14px 0}
+/* 制度標籤要整塊換行，不然窄螢幕會斷成「曆年／制」 */
+.qz-basis{white-space:nowrap;color:var(--muted);font-size:11px}
+.qz-sect{font-size:11.5px;font-weight:800;color:var(--muted);padding:14px 0 4px}
+.lnk{font:inherit;font-size:11.5px;font-weight:800;border:0;background:none;padding:2px 0;
+  color:var(--red);cursor:pointer;text-decoration:underline}
 .fld{display:flex;flex-direction:column;gap:3px}
 .fld label{font-size:11.5px;color:var(--muted);font-weight:700}
 .mode{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;width:max-content}
@@ -626,6 +652,7 @@ async function loadMonth(){
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
     STORE=r.store||STORE; CFGSRC=r.config_src||{};
     LT_LIST=[]; loadLeaveTypes(); LEV_LIST=[]; loadLeaveEvents();   // ⚠ 切門市必須重載，否則沿用上一家店的設定
+    QUOTA=null; QUOTA_KEY=''; closeQuota();   // 假別額度同理：換店換年度都要重抓（快取 key 是 店|年）
     if(r.stores&&r.stores.length){STORE_LIST=r.stores;renderStoreSel()}
     // 主檔與參數都會隨門市不同 → 切換門市時一併更新（否則會看到別店的員工）
     if(r.master){MASTER=r.master;renderEmp()}
@@ -954,7 +981,9 @@ function renderAtt(){
     const A=ATT[e.emp_id]=ATT[e.emp_id]||{};
     A.support=A.support||[];
     const sh=A.support.reduce((a,s)=>a+n(s.hours),0);
-    h+=`<tr><td><b>${e.name}</b> <span class="tag ${isFT(e)?'ft':'pt'}">${isFT(e)?'正職':'計時'}</span></td>`;
+    // 姓名底下掛「假別額度」——點了才去抓（Apps Script 每次往返約 2 秒，不放進 loadMonth 拖慢切月份）
+    h+=`<tr><td><b>${e.name}</b> <span class="tag ${isFT(e)?'ft':'pt'}">${isFT(e)?'正職':'計時'}</span>`
+      +`<br><button class="lnk" onclick="openQuota('${e.emp_id}')">假別額度</button></td>`;
     // 全勤津貼：只有計時可勾（滿100H＋全勤由管理者判定），勾了時薪＋10；放在姓名旁第一欄
     h+=`<td style="text-align:center">${isFT(e)?'—':
       `<input type="checkbox" ${A.full_attend?'checked':''}
@@ -1006,6 +1035,84 @@ function renderAtt(){
   $('attTbl').innerHTML=h+'</tbody>';
   renderSup();
 }
+
+/* ── 假別額度彈窗 ──
+   資料來自 payroll_leave_options（與值班核定頁下拉同一支、同一份額度，不另外算一套）。
+   ⚠ 額度是「整個曆年」的累計，跟本月工時無關；切月份只影響哪一年，切門市要重抓。 */
+let QUOTA=null, QUOTA_KEY='';
+async function openQuota(empId){
+  const key=STORE+'|'+ym().slice(0,4);
+  if(QUOTA_KEY!==key){
+    const r=await post('payroll_leave_options',{ym:ym()});
+    if(!r.ok){toast(r.error==='unauthorized'?'額度查詢未授權（後端需更新）':'讀不到假別額度',true);return}
+    QUOTA=r; QUOTA_KEY=key;
+  }
+  renderQuota(empId);
+}
+function closeQuota(){const m=$('qzMask'); if(m) m.remove()}
+function renderQuota(empId){
+  const emp=MASTER.filter(e=>String(e.emp_id)===String(empId))[0]||{};
+  const dayH=QUOTA.day_hours||8, year=(QUOTA.ym||ym()).slice(0,4);
+  const q=(QUOTA.quotas||{})[empId]||{};
+  const types=QUOTA.types||[];
+  const BASIS={calendar:'曆年制',event:'每次事件',child:'每子女',tenure:'年資'};
+  // 列出哪些假別：有年度額度的（曆年制／每子女）一律列，因為「還剩多少」才是要看的；
+  // 婚喪產檢這類「每次事件」各有上限、沒有年度剩餘可言，沒請過就不佔版面。
+  const rows=types.map(t=>({t,v:q[t.code]||{}}))
+    .filter(x=>{
+      const used=x.v.used_days||0;
+      if(used>0) return true;
+      return x.v.cap_days!=null&&(x.v.basis==='calendar'||x.v.basis==='child');
+    })
+    .sort((a,b)=>(b.v.used_days||0)-(a.v.used_days||0));
+  let body='';
+  if(!rows.length){
+    body='<div class="qz-none">今年還沒有任何請假紀錄，各假別都是滿額。</div>';
+  }else{
+    body='<table><thead><tr><th>假別</th><th>已用</th><th>剩餘</th></tr></thead><tbody>';
+    rows.forEach(({t,v})=>{
+      const used=v.used_days||0, cap=v.cap_days, rem=v.remain_days;
+      const pct=cap?Math.min(100,Math.round(used/cap*100)):0;
+      const bar=(cap!=null&&v.basis!=='event')
+        ? `<br><span class="qz-bar"><i class="${pct>=80?'hi':''}" style="width:${pct}%"></i></span>`:'';
+      // 單位統一用時數（Eason 2026-08-27）：與核定工時、剩餘特休、薪資單同一個單位，
+      // 不再並列「日」，避免同一張表兩種單位互換要心算。
+      const usedTxt=used?`<b>${r2(used*dayH)}</b> H`:'<span style="color:var(--muted)">—</span>';
+      let remTxt;
+      if(cap==null) remTxt='<span style="color:var(--muted)">無上限</span>';
+      else if(v.basis==='event') remTxt=`<span style="color:var(--muted)">每次上限<br>${r2(cap*dayH)} H</span>`;
+      else if(v.blocked) remTxt='<span class="bad">已用完</span>';
+      // 沒請過時「剩餘＝上限」，兩個都印是重複的，只標「未使用」
+      else remTxt=`<b>${r2(rem*dayH)}</b> H<br><span style="color:var(--muted);font-size:11px">`
+        +(used?`/ 上限 ${r2(cap*dayH)} H`:'未使用')+'</span>';
+      body+=`<tr><td>${t.name} <span class="qz-basis">${BASIS[v.basis]||''}</span>${bar}</td>`
+        +`<td>${usedTxt}</td><td>${remTxt}</td></tr>`;
+    });
+    body+='</tbody></table>';
+  }
+  // 特休另計：它是「週年制」（依到職日），不是曆年，混在同一張表會誤導
+  const av=ANNUAL[empId];
+  const annual=av
+    ? `<div class="qz-sect">特休（週年制，依到職日另算）</div>`
+      +`<table><tbody><tr><td>特休假</td><td>已用 <b>${r2(av.quota_h-av.left_h)}</b> H</td>`
+      +`<td>額度 ${av.quota_h} H（${av.days} 天）</td><td>剩 <b>${av.left_h}</b> H</td></tr>`
+      +`<tr><td colspan="4" style="text-align:left;color:var(--muted);font-size:11.5px">`
+      +`本週年期 ${av.ps} ～ ${av.pe}・未休完於 ${av.payout_ym} 折算工資</td></tr></tbody></table>`
+    : '';
+  closeQuota();
+  const d=document.createElement('div');
+  d.className='qz-mask'; d.id='qzMask';
+  d.onclick=ev=>{if(ev.target===d)closeQuota()};
+  d.innerHTML=`<div class="qz-box"><div class="qz-hd"><h3>${emp.name||empId}</h3>`
+    +`<span class="qz-sub">${year} 年度假別額度</span>`
+    +`<button onclick="closeQuota()" title="關閉">×</button></div>`
+    +`<div class="qz-bd">${body}${annual}`
+    +`<div style="color:var(--muted);font-size:11.5px;padding-top:12px">`
+    +`已用時數來自打卡系統的 leave（請假）紀錄，主管在值班核定頁登記後即時反映；`
+    +`婚假、喪假、產假這類是「每次事件」各有上限，所以不列剩餘。</div></div></div>`;
+  document.body.appendChild(d);
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeQuota()});
 
 /* ── 跨店支援明細 ── */
 const STORES=['小辛辣光復','墨竹亭金山','墨竹亭光復','墨竹亭六張犁','央廚'];
