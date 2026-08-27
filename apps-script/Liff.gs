@@ -49,3 +49,50 @@ function findRosterByLineUser_(rows, userId) {
         && String(r.active).toLowerCase() === 'true';
   })[0];
 }
+
+/**
+ * 綁定：把 LINE 帳號與員工對上。
+ *
+ * 流程：驗 ID token 拿到可信 userId → 用店長給的啟用碼(key)找到員工 → 寫回 roster。
+ * 啟用碼綁定後**不作廢**——舊連結保留為退路，不強迫同仁同一天全部轉換。
+ *
+ * ⚠ 寫入前一定要 ensureRosterHeaders：setRosterCell 依試算表當下表頭找欄號，
+ *   欄位不存在時它回 false 而不是 throw，會變成「回報成功但沒寫入」的靜默失敗。
+ */
+function handleLiffBind_(body) {
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+
+  var rosterSheet = getSS().getSheetByName('roster');
+  if (!rosterSheet) return { ok: false, error: 'no_roster' };
+  ensureRosterHeaders(rosterSheet);
+  var rows = readSheetAsObjects(rosterSheet).rows;
+
+  // 這個 LINE 帳號是否已經綁在別的員工身上？
+  var existing = findRosterByLineUser_(rows, userId);
+
+  var target = rows.filter(function (r) {
+    return String(r.key) === String(body.key)
+        && String(r.active).toLowerCase() === 'true';
+  })[0];
+  if (!target) return { ok: false, error: 'invalid_key' };
+
+  if (existing && String(existing.emp_id) !== String(target.emp_id)) {
+    return { ok: false, error: 'line_account_in_use' };
+  }
+
+  // 該員工已綁了另一個 LINE 帳號 → 要店長先解綁，避免默默換人
+  if (target.line_user_id && String(target.line_user_id) !== String(userId)) {
+    return { ok: false, error: 'already_bound_other_user' };
+  }
+
+  // 已經是綁好的同一組，直接回成功（同仁重按不該報錯，也不該重寫）
+  if (String(target.line_user_id) === String(userId)) {
+    return { ok: true, name: target.name, emp_id: target.emp_id, already: true };
+  }
+
+  setRosterCell(rosterSheet, target.__rowIndex, 'line_user_id', userId);
+  // 純日期時間字串鎖成文字，避免被 Sheets 轉成 Date 物件（同 removed_at 的處理）
+  setRosterCell(rosterSheet, target.__rowIndex, 'line_bound_at', nowTaipeiIso(), true);
+  return { ok: true, name: target.name, emp_id: target.emp_id };
+}
