@@ -517,6 +517,20 @@
     errorCard.textContent = msg;
   }
 
+  /** LIFF 模式 whoami 失敗時（not_bound 除外）的措辭：情境是在 LINE 裡開的頁面，
+   *  不能沿用舊模式那套「打卡連結」的講法（她的畫面裡根本沒有連結）。
+   *  每一句都要讓看的人知道下一步該做什麼：能自己排除的給操作指示，
+   *  排除不了的直接叫她找主管，不留死路。 */
+  function liffWhoamiErrorMsg(error) {
+    if (error === 'invalid_id_token') {
+      return 'LINE 身分驗證失敗或已過期，請關掉這個畫面，重新從 LINE 開啟一次。';
+    }
+    if (error === 'no_roster') {
+      return '系統設定異常，不是你這邊能排除的問題，請告知主管處理。';
+    }
+    return '發生未預期的錯誤，請告知主管。';
+  }
+
   // ══════ LIFF 綁定畫面：liff_whoami 回 not_bound 時顯示 ══════
   function showBindScreen() {
     loadingCard.style.display = 'none';
@@ -874,9 +888,15 @@
       apiPost(mkPayload('whoami'))
         .then(function (res) {
           if (!res.ok) {
-            // LIFF 帳號驗證成功但還沒綁員工 → 讓她自己輸入啟用碼綁定，不是錯誤
-            if (useLiff && res.error === 'not_bound') {
-              showBindScreen();
+            if (useLiff) {
+              // LIFF 帳號驗證成功但還沒綁員工 → 讓她自己輸入啟用碼綁定，不是錯誤
+              if (res.error === 'not_bound') {
+                showBindScreen();
+                return;
+              }
+              // 其餘 LIFF 錯誤碼（invalid_id_token / no_roster / 未預期）用 LIFF 專屬措辭，
+              // 不能沿用下面那句「打卡連結」的講法——舊模式（?k=）維持完全不變。
+              showError(liffWhoamiErrorMsg(res.error));
               return;
             }
             showError('找不到這個打卡連結對應的員工，請確認連結是否正確。');
