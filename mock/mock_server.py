@@ -11,6 +11,10 @@ admin_key 固定為 'test-admin'（僅供本機測試，正式環境見 apps-scr
 
 本檔與 apps-script/Code.gs 實作同一套 API 合約：clock / whoami /
 sync_roster / get_roster / get_events / approve_device。
+
+LIFF 身分層（liff_bind / liff_whoami / liff_clock / liff_my_recent）與
+apps-script/Liff.gs 實作同一套合約，用假 token（MOCK_ID_TOKEN_<userId>）
+模擬 LINE 登入，不打真的 LINE API。
 """
 
 import json
@@ -90,6 +94,8 @@ def seed_data():
                 "device_id": "",
                 "device_bound_at": "",
                 "active": True,
+                "line_user_id": "",
+                "line_bound_at": "",
             },
             {
                 "emp_id": "E02",
@@ -98,6 +104,8 @@ def seed_data():
                 "device_id": "",
                 "device_bound_at": "",
                 "active": True,
+                "line_user_id": "",
+                "line_bound_at": "",
             },
             {
                 "emp_id": "E03",
@@ -106,6 +114,8 @@ def seed_data():
                 "device_id": "",
                 "device_bound_at": "",
                 "active": True,
+                "line_user_id": "",
+                "line_bound_at": "",
             },
             {
                 "emp_id": "E04",
@@ -114,6 +124,8 @@ def seed_data():
                 "device_id": "",
                 "device_bound_at": "",
                 "active": True,
+                "line_user_id": "",
+                "line_bound_at": "",
             },
         ],
         "events": [],
@@ -140,6 +152,16 @@ def load_data():
     if "leave" not in data:
         data["leave"] = []
         changed = True
+    # LIFF 身分層欄位（2026-08-27）：舊的 mock_data.json 沒有這兩欄，補空字串，
+    # 不補的話 line_user_id 查詢也不會壞（.get 對缺欄回 None，一樣視為未綁定），
+    # 但補上能讓 mgr_roster 等既有畫面顯示欄位一致。
+    for r in data.get("roster", []):
+        if "line_user_id" not in r:
+            r["line_user_id"] = ""
+            changed = True
+        if "line_bound_at" not in r:
+            r["line_bound_at"] = ""
+            changed = True
     if changed:
         save_data(data)
     return data
@@ -1231,6 +1253,101 @@ def handle_mgr_device_decision(data, body):
     return result
 
 
+# ---------------------------------------------------------------------------
+# LIFF 身分層（本機模擬）—— 與 apps-script/Liff.gs 實作同一套合約，行為與
+# 錯誤碼須完全一致。正式環境驗 ID token 要打 LINE API，本機不打，改用假 token
+# 直接解出 userId，其餘（找員工、雙向檢查、轉接既有 handler）邏輯照抄 Liff.gs。
+# ---------------------------------------------------------------------------
+MOCK_TOKEN_PREFIX = "MOCK_ID_TOKEN_"
+
+
+def mock_verify_id_token(id_token):
+    """本機測試用：不打 LINE API，直接從假 token 解出 userId。
+    格式 MOCK_ID_TOKEN_<userId>，不符格式一律回 None（與 Liff.gs verifyLineIdToken_ 同一角色）。"""
+    if not id_token or not id_token.startswith(MOCK_TOKEN_PREFIX):
+        return None
+    uid = id_token[len(MOCK_TOKEN_PREFIX):]
+    return uid or None
+
+
+def find_roster_by_line_user(data, user_id):
+    """用 LINE userId 查在職員工（與 Liff.gs findRosterByLineUser_ 同步）。
+    空 userId 一律查不到，否則會比對到未綁定者的空欄位。"""
+    if not user_id:
+        return None
+    for r in data.get("roster") or []:
+        if str(r.get("line_user_id")) == str(user_id) and r.get("active", False):
+            return r
+    return None
+
+
+def handle_liff_bind(data, body):
+    """{action:'liff_bind', id_token, key} → 把 LINE 帳號與員工對上
+    （與 Liff.gs handleLiffBind_ 同步：驗 token → 用 key 找在職員工 → 雙向檢查 → 寫入）。
+    任何失敗路徑都不可寫入，成功路徑才呼叫 save_data。"""
+    user_id = mock_verify_id_token(body.get("id_token"))
+    if not user_id:
+        return {"ok": False, "error": "invalid_id_token"}
+
+    if data.get("roster") is None:
+        return {"ok": False, "error": "no_roster"}
+
+    # 這個 LINE 帳號是否已經綁在別的員工身上？
+    existing = find_roster_by_line_user(data, user_id)
+
+    target = find_roster_by_key(data, body.get("key"))
+    if not target or not target.get("active", False):
+        return {"ok": False, "error": "invalid_key"}
+
+    if existing and str(existing["emp_id"]) != str(target["emp_id"]):
+        return {"ok": False, "error": "line_account_in_use"}
+
+    # 該員工已綁了另一個 LINE 帳號 → 要店長先解綁，避免默默換人
+    if target.get("line_user_id") and str(target["line_user_id"]) != str(user_id):
+        return {"ok": False, "error": "already_bound_other_user"}
+
+    # 已經是綁好的同一組，直接回成功（同仁重按不該報錯，也不該重寫）
+    if str(target.get("line_user_id")) == str(user_id):
+        return {"ok": True, "name": target["name"], "emp_id": target["emp_id"], "already": True}
+
+    target["line_user_id"] = user_id
+    target["line_bound_at"] = iso_now()
+    save_data(data)
+    return {"ok": True, "name": target["name"], "emp_id": target["emp_id"]}
+
+
+def with_line_identity(data, body, inner_handler):
+    """轉接：把「LINE 身分」換成「既有的 key 身分」，再呼叫原本的 handler
+    （與 Liff.gs withLineIdentity_ 同步）。id_token 與 action 不可流進既有邏輯。
+    唯讀查身分，這條路徑不寫入。"""
+    user_id = mock_verify_id_token(body.get("id_token"))
+    if not user_id:
+        return {"ok": False, "error": "invalid_id_token"}
+
+    if data.get("roster") is None:
+        return {"ok": False, "error": "no_roster"}
+
+    roster = find_roster_by_line_user(data, user_id)
+    if not roster:
+        return {"ok": False, "error": "not_bound"}
+
+    inner = {k: v for k, v in body.items() if k not in ("id_token", "action")}
+    inner["key"] = roster["key"]
+    return inner_handler(data, inner)
+
+
+def handle_liff_whoami(data, body):
+    return with_line_identity(data, body, handle_whoami)
+
+
+def handle_liff_clock(data, body):
+    return with_line_identity(data, body, handle_clock)
+
+
+def handle_liff_my_recent(data, body):
+    return with_line_identity(data, body, handle_my_recent)
+
+
 ACTIONS = {
     "clock": handle_clock,
     "whoami": handle_whoami,
@@ -1247,6 +1364,10 @@ ACTIONS = {
     "mgr_approve": handle_mgr_approve,
     "mgr_pending_devices": handle_mgr_pending_devices,
     "mgr_device_decision": handle_mgr_device_decision,
+    "liff_bind": handle_liff_bind,
+    "liff_whoami": handle_liff_whoami,
+    "liff_clock": handle_liff_clock,
+    "liff_my_recent": handle_liff_my_recent,
 }
 
 MIME_TYPES = {
