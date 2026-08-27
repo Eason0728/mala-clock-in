@@ -993,6 +993,24 @@ cp /Users/guoeason/mala-clock-in/apps-script/Liff.gs ~/mala-gas/mala-clock-in/Li
 cd ~/mala-gas/mala-clock-in && node --check 程式碼.js && node --check Liff.js && echo "語法 OK"
 ```
 
+- [ ] **Step 3-b: ⚠ 由 Eason 授權新的 OAuth scope（非他不可，且一定要在 Step 4 之前）**
+
+`Liff.gs` 用 `UrlFetchApp.fetch` 呼叫 LINE 的 token 驗證 API，這是**這個 Apps Script 專案
+從來沒用過的權限**（`https://www.googleapis.com/auth/script.external_request`）。
+未授權時所有 `liff_*` action 都會回 `server_error`，錯誤訊息是
+「你沒有呼叫『UrlFetchApp.fetch』的權限」。**既有的 `?k=` 路徑不受影響**，照常運作。
+
+Eason 要做的（約 1 分鐘）：
+
+1. 開啟該打卡試算表 → 擴充功能 → Apps Script
+2. 在編輯器左上的函式下拉選單選任一函式（例如 `doGet`），按「執行」
+3. 跳出「需要授權」→ 審查權限 → 選自己的帳號 → 允許
+   （這次會多一項「連線至外部服務」，就是要授權的那一項）
+4. 完成後回報
+
+**驗證方式**：用臨時部署打一次 `liff_whoami`，回 `invalid_id_token` 就是通了
+（回 `server_error` 代表還沒授權）。
+
 - [ ] **Step 4: clasp push 並建立新版本部署**
 
 ```bash
