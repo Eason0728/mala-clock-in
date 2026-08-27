@@ -177,4 +177,54 @@ const okFetch = (sub) => () => ({
   console.log('✓ 沒有 roster 分頁時乾淨回錯，不 throw');
 }
 
+// 11. liff_clock 應轉呼叫 handleClock，且帶入該員工的 key
+{
+  const rows = [{ emp_id: 'E01', name: '測試一', key: 'SECRET_KEY_1', active: 'true', line_user_id: 'Ume' }];
+  let received = null;
+  const src = fs.readFileSync(__dirname + '/../apps-script/Liff.gs', 'utf8');
+  const sandbox = {
+    UrlFetchApp: { fetch: okFetch('Ume') },
+    getSS: () => ({ getSheetByName: (n) => (n === 'roster' ? { __name: 'roster' } : null) }),
+    readSheetAsObjects: () => ({ rows: rows }),
+    ensureRosterHeaders: () => {},
+    setRosterCell: () => true,
+    nowTaipeiIso: () => '2026-08-27T12:00:00+08:00',
+    handleClock: (b) => { received = b; return { ok: true, status: 'ok' }; },
+    console: console,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(src, sandbox);
+
+  const r = sandbox.LIFF_HANDLERS.liff_clock({
+    id_token: 't', type: 'in', lat: 24.784, lng: 121.015, accuracy: 12, device_id: 'D1',
+  });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(received.key, 'SECRET_KEY_1', '必須帶入該員工的 key');
+  assert.strictEqual(received.type, 'in', '原本的參數必須原封傳遞');
+  assert.strictEqual(received.accuracy, 12);
+  assert.strictEqual(received.id_token, undefined, 'id_token 不應傳進既有 handler');
+  console.log('✓ liff_clock 正確轉接');
+}
+
+// 12. 未綁定者打卡 → not_bound，且不可呼叫 handleClock
+{
+  const rows = [{ emp_id: 'E01', key: 'k1', active: 'true', line_user_id: '' }];
+  let called = false;
+  const src = fs.readFileSync(__dirname + '/../apps-script/Liff.gs', 'utf8');
+  const sandbox = {
+    UrlFetchApp: { fetch: okFetch('Ustranger') },
+    getSS: () => ({ getSheetByName: (n) => (n === 'roster' ? { __name: 'roster' } : null) }),
+    readSheetAsObjects: () => ({ rows: rows }),
+    ensureRosterHeaders: () => {}, setRosterCell: () => true, nowTaipeiIso: () => '',
+    handleClock: () => { called = true; return { ok: true }; },
+    console: console,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(src, sandbox);
+  const r = sandbox.LIFF_HANDLERS.liff_clock({ id_token: 't', type: 'in' });
+  assert.strictEqual(r.error, 'not_bound');
+  assert.strictEqual(called, false, '未綁定不可進入既有打卡邏輯');
+  console.log('✓ 未綁定者被擋在轉接層之外');
+}
+
 console.log('\n✅ liff-identity 全部通過');

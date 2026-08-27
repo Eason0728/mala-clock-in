@@ -96,3 +96,38 @@ function handleLiffBind_(body) {
   setRosterCell(rosterSheet, target.__rowIndex, 'line_bound_at', nowTaipeiIso(), true);
   return { ok: true, name: target.name, emp_id: target.emp_id };
 }
+
+/**
+ * 轉接：把「LINE 身分」換成「既有的 key 身分」，然後呼叫原本的 handler。
+ *
+ * 這是整份設計的核心——既有的 handleClock / handleWhoami / handleMyRecent
+ * 一行都不用改，也就不可能被改壞。
+ */
+function withLineIdentity_(body, innerHandler) {
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+
+  // 唯讀查身分，刻意不呼叫 ensureRosterHeaders——這條路徑不寫入。
+  // 若表頭還沒有 line_user_id 欄，讀出來的列就沒有該屬性，findRosterByLineUser_
+  // 自然查不到而回 not_bound，那正是「還沒綁定」的正確答案。
+  var rosterSheet = getSS().getSheetByName('roster');
+  if (!rosterSheet) return { ok: false, error: 'no_roster' };
+
+  var roster = findRosterByLineUser_(readSheetAsObjects(rosterSheet).rows, userId);
+  if (!roster) return { ok: false, error: 'not_bound' };
+
+  // 複製一份 body，換上該員工的 key，並移除 id_token（不讓它流進既有邏輯）
+  var inner = {};
+  Object.keys(body).forEach(function (k) {
+    if (k !== 'id_token' && k !== 'action') inner[k] = body[k];
+  });
+  inner.key = roster.key;
+  return innerHandler(inner);
+}
+
+var LIFF_HANDLERS = {
+  liff_bind: handleLiffBind_,
+  liff_clock: function (body) { return withLineIdentity_(body, handleClock); },
+  liff_whoami: function (body) { return withLineIdentity_(body, handleWhoami); },
+  liff_my_recent: function (body) { return withLineIdentity_(body, handleMyRecent); },
+};

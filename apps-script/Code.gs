@@ -222,6 +222,11 @@ function doPost(e) {
     Object.keys(PAYROLL_HANDLERS).forEach(function (k) { handlers[k] = PAYROLL_HANDLERS[k]; });
   }
 
+  // LIFF 身分層（Liff.gs）的 action 掛載於此；Liff.gs 不存在時完全不影響打卡與核定。
+  if (typeof LIFF_HANDLERS !== 'undefined') {
+    Object.keys(LIFF_HANDLERS).forEach(function (k) { handlers[k] = LIFF_HANDLERS[k]; });
+  }
+
   const handler = handlers[body.action];
   if (!handler) {
     return jsonOut({ ok: false, error: 'unknown_action' });
