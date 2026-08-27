@@ -51,7 +51,11 @@ const ROSTER_HEADERS = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at',
                         // 薪酬系統與每日指揮台據此標示／通知「最近新增了誰」。
                         'created_at', 'created_by',
                         // 2026-08-25：值班主管把同仁設為離職的留痕（停用不是真刪，見 handleMgrSetActive）
-                        'removed_at', 'removed_by'];
+                        'removed_at', 'removed_by',
+                        // 2026-08-27：LIFF 身分層——LINE 帳號與綁定時間戳。只在名冊末尾 append，
+                        // 不可插中間（既有資料會錯位）。handleClock 綁裝置那段用
+                        // ROSTER_HEADERS.indexOf('欄名') + 1 換算欄號。
+                        'line_user_id', 'line_bound_at'];
 /** 把班別時間正規化成 'HH:mm'。接受 '11:00'、'0900'、Date 物件（Sheets 會把 11:00 轉成時間物件）。
  *  不合法一律回空字串——寧可讓核定頁留白，也不要餵一個 <input type="time"> 認不得的值。 */
 function normShiftTime(v) {

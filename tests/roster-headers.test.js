@@ -48,7 +48,8 @@ function makeCtx(headers, rows) {
   vm.runInContext(C, sb);
   vm.runInContext("checkAdmin = function(){ return true; };", sb);
   return { roster, call: (...a) => vm.runInContext('handleSetShifts', sb)(...a),
-           read: () => vm.runInContext('readSheetAsObjects', sb)(roster).rows };
+           read: () => vm.runInContext('readSheetAsObjects', sb)(roster).rows,
+           getRosterHeaders: () => vm.runInContext('(() => ROSTER_HEADERS)', sb)() };
 }
 
 let pass = 0, fail = 0;
@@ -57,7 +58,37 @@ const chk = (n, got, want) => { const ok = JSON.stringify(got) === JSON.stringif
 
 const OLD6 = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active'];
 
-console.log('══ 1) 舊的 6 欄名冊：寫入前要自動補表頭 ══');
+const EXPECTED = [
+  'emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active',
+  'shift_in', 'shift_out', 'created_at', 'created_by', 'removed_at', 'removed_by',
+  'line_user_id', 'line_bound_at'
+];
+
+const assert = require('assert');
+
+console.log('══ 0) 檢查 ROSTER_HEADERS 結構 ══');
+{
+  const c = makeCtx(OLD6, []);
+  const actual = c.getRosterHeaders();
+  chk('  ROSTER_HEADERS 為陣列', Array.isArray(actual), true);
+  chk('  ROSTER_HEADERS 欄數為 14', actual.length, 14);
+  chk('  line_user_id 在第 13 欄（index 12）', actual.indexOf('line_user_id'), 12);
+  chk('  line_bound_at 在第 14 欄（index 13）', actual.indexOf('line_bound_at'), 13);
+  try {
+    assert.strictEqual(actual.length, 14, 'roster 應為 14 欄');
+    assert.strictEqual(actual.indexOf('line_user_id'), 12, 'line_user_id 必須是第 13 欄（index 12）');
+    assert.strictEqual(actual.indexOf('line_bound_at'), 13, 'line_bound_at 必須是第 14 欄（index 13）');
+    for (let i = 0; i < EXPECTED.length; i++) {
+      assert.strictEqual(actual[i], EXPECTED[i], `第 ${i+1} 欄應為 ${EXPECTED[i]}, 但得 ${actual[i]}`);
+    }
+  } catch (e) {
+    console.log(`  ❌ 斷言失敗: ${e.message}`);
+    fail++;
+    throw e;
+  }
+}
+
+console.log('\n══ 1) 舊的 6 欄名冊：寫入前要自動補表頭 ══');
 {
   const c = makeCtx(OLD6, [['HQ-01', '吳佳宜', 'k1', 'd1', '', 'true']]);
   const r = c.call({ admin_key: 'x', shifts: [{ name: '吳佳宜', shift_in: '09:00', shift_out: '17:30' }] });
