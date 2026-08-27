@@ -661,9 +661,14 @@ cd /Users/guoeason/mala-clock-in && node tests/run-all.js
 
 - [ ] **Step 6: 語法檢查（Apps Script 沒有編譯期，這步不能省）**
 
+⚠ `node --check apps-script/Liff.gs` 在本機的 Node 版本會拋 `ERR_UNKNOWN_FILE_EXTENSION`——
+Node 不認得 `.gs` 副檔名。改用 stdin 餵入（已實測可用）：
+
 ```bash
-cd /Users/guoeason/mala-clock-in && node --check apps-script/Liff.gs && node --check apps-script/Code.gs && echo "語法 OK"
+cd /Users/guoeason/mala-clock-in && node --input-type=commonjs --check - < apps-script/Liff.gs && node --input-type=commonjs --check - < apps-script/Code.gs && echo "語法 OK"
 ```
+
+（Task 7 部署時檢查的是 `程式碼.js` 與 `Liff.js`，副檔名是 `.js`，那邊 `node --check <檔案>` 可正常使用。）
 
 - [ ] **Step 7: Commit**
 
