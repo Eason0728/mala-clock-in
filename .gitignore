@@ -5,3 +5,6 @@ monthly-preview-sample.html
 # 薪資 mock 含真實姓名與薪資數字，repo 為 public，絕不 commit
 mock/payroll_mock.js
 mock/payroll_mock_db.json
+
+# subagent-driven-development 工作區（暫存，不進版控）
+.superpowers/
