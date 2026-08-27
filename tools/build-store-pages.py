@@ -18,7 +18,10 @@ MZT_BG = 'radial-gradient(120% 90% at 50% 16%, #3d8f7f 0%, #2a6b5e 55%, #1c4a41 
 STORES = {
     'cf': {'name': '中央廚房',   'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
            'clock_home': '央廚打卡', 'mgr_home': '央廚值班',
-           'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
+           'mgr_bg': MZT_BG, 'clock_bg': MZT_BG,
+           # 央廚每天 12:00–13:00 吃飯休息、不打卡（2026-08-28 Eason 指定）。
+           # 只影響核定頁的預填與標示，不做任何自動扣除——理由見 manager.html 的 BREAK_START 註解。
+           'mgr_break': ('12:00', '13:00')},
     'hq': {'name': '鼎兆元 總部', 'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
            'clock_home': '總部打卡', 'mgr_home': '總部值班',
            'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
@@ -53,6 +56,14 @@ def build(src_name, prefix, page_title, icon_key, home_key, bg_key):
             if RED_BG not in out:
                 raise SystemExit(f'✗ {src_name} 找不到母版底色宣告，請同步更新 build-store-pages.py 的 RED_BG')
             out = out.replace(RED_BG, f'background: {bg};', 1)
+        # 5) 休息時間（不打卡）：只有核定頁有這兩個常數，母版留空＝光復不套用。
+        br = st.get('mgr_break')
+        if br and prefix == 'manager':
+            for var, val in (('BREAK_START', br[0]), ('BREAK_END', br[1])):
+                needle = f"var {var} = '';"
+                if needle not in out:
+                    raise SystemExit(f'✗ {src_name} 找不到 {var} 宣告，請同步更新 build-store-pages.py')
+                out = out.replace(needle, f"var {var} = '{val}';", 1)
         out = out.replace('<!DOCTYPE html>',
                           f'<!-- 本檔由 tools/build-store-pages.py 從 {src_name} 產生，請勿手改 -->\n<!DOCTYPE html>', 1)
         dst = ROOT / f'{prefix}-{code}.html'

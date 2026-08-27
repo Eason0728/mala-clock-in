@@ -115,6 +115,15 @@
     font-weight: 700;
     margin-bottom: 6px;
   }
+  /* 收合行的班別小標（2026-08-28）。⚠ 父層 .emp-name 是 19px/700，
+     子元素要自己壓回小字——雙 class 選擇器特異性足夠蓋過父層繼承。 */
+  .emp-name .emp-shift {
+    font-size: 12px;
+    font-weight: 500;
+    color: #8a7a72;
+    margin-left: 8px;
+    white-space: nowrap;
+  }
   .punch-summary {
     font-size: 13px;
     color: #6b524a;
@@ -225,6 +234,47 @@
     line-height: 1.5;
   }
   .approved-badge.pending { background: #f0e6e2; color: #8a6a5f; }
+  /* 休息帶（2026-08-28）。⚠ display 非 block 的元素要自己寫 [hidden]，
+     否則 hidden 屬性會被 flex/inline-block 蓋掉（見本檔 .approved-badge 的同款教訓）。 */
+  .break-split {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 2px 0 8px;
+    font-size: 12px;
+    color: #8a7a72;
+  }
+  .break-split:before, .break-split:after {
+    content: "";
+    flex: 1;
+    border-top: 1px dashed #d9cec8;
+  }
+  .period-total {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    border-top: 1px solid #f0e6e2;
+    padding-top: 10px;
+    margin-bottom: 10px;
+  }
+  .period-total[hidden] { display: none; }
+  .period-total .pt-lb { flex: 1; font-size: 13px; color: #8a6a5f; }
+  .period-total .pt-val { font-size: 24px; font-weight: 900; color: var(--brand-black); line-height: 1; }
+  .period-total .pt-unit { font-size: 13px; color: #8a6a5f; }
+  .break-toggle {
+    display: inline-block;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--brand-orange);
+    background: #fff;
+    border: 1px solid #f0d9b8;
+    border-radius: 999px;
+    padding: 6px 12px;
+    margin-bottom: 10px;
+    font-family: inherit;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .break-toggle[hidden] { display: none; }
   .period-rows {
     display: flex;
     flex-direction: column;
@@ -397,6 +447,44 @@
   // 本機測試時 ?api= 會一併覆寫（否則本機頁面會去打正式薪酬後端，mock 金鑰在那邊無效）
   var PAYROLL_API = qs('api')
     || 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
+  /* 休息時間＝不打卡的用餐時段（2026-08-28）。留空＝該門市不套用（光復目前留空）。
+     由 tools/build-store-pages.py 依門市覆寫，改格式前先看那支。
+     ⚠ 休息只影響「預填」與「畫面標示」，**絕不影響計算**——核定時數永遠等於畫面上的時段相加。
+        Eason 2026-08-28 指出的破口：同仁晚來或出差（例 08:00–12:00 接 12:00–16:00）當天其實沒休息，
+        任何「自動扣 1 小時」的隱形規則都會少算。所以這裡不做扣除，只在「相鄰兩段之間的空檔
+        剛好等於休息帶」時畫一條說明列；主管把兩段改成相連，那條線自己消失、時數一分鐘都不會少。 */
+  var BREAK_START = '';
+  var BREAK_END = '';
+
+  function hhmmToMin(t) {
+    if (!t) return null;
+    var a = String(t).split(':');
+    if (a.length < 2) return null;
+    var m = (+a[0]) * 60 + (+a[1]);
+    return isFinite(m) ? m : null;
+  }
+  function hasBreak() {
+    if (!BREAK_START || !BREAK_END) return false;
+    var s = hhmmToMin(BREAK_START), e = hhmmToMin(BREAK_END);
+    return s != null && e != null && e > s;
+  }
+  /* 班別要「完整蓋過」休息帶才拆成兩段。半天班（例 范氏秋香 08:30–12:30 只蓋到一半）
+     維持一段交給主管判斷——自作主張挖掉半小時比不挖更難發現。 */
+  function shiftCoversBreak(a, b) {
+    if (!hasBreak()) return false;
+    var s = hhmmToMin(a), e = hhmmToMin(b);
+    if (s == null || e == null || e <= s) return false;
+    return s <= hhmmToMin(BREAK_START) && e >= hhmmToMin(BREAK_END);
+  }
+  // 相鄰兩段之間的空檔是不是就是休息帶（純比字串，主管改成別的時間就不算）
+  function gapIsBreak(prevEnd, nextStart) {
+    return hasBreak() && prevEnd === BREAK_START && nextStart === BREAK_END;
+  }
+  // 休息長度，給收合行的「・休1h」用
+  function breakHoursText() {
+    if (!hasBreak()) return '';
+    return String(Math.round((hhmmToMin(BREAK_END) - hhmmToMin(BREAK_START)) / 60 * 100) / 100);
+  }
   // 後端拿到的假別表；拿不到時退回這份內建清單（值班核定不能因為薪酬後端掛掉就不能用）
   var LEAVE_FALLBACK = ['病假', '事假', '特休假', '生理假', '家庭照顧假', '天災假', '喪假', '婚假'];
   var LEAVE_OPTS = null;   // { types:[...], quotas:{emp_id:{code:{...}}}, day_hours:n }
@@ -532,7 +620,7 @@
     return 'warn';
   }
 
-  function buildPeriodRow(period) {
+  function buildPeriodRow(period, onChange) {
     var row = document.createElement('div');
     row.className = 'period-row';
     var start = document.createElement('input');
@@ -550,7 +638,14 @@
     removeBtn.type = 'button';
     removeBtn.className = 'remove-btn';
     removeBtn.textContent = '－';
-    removeBtn.addEventListener('click', function () { row.remove(); });
+    removeBtn.addEventListener('click', function () { row.remove(); if (onChange) onChange(); });
+    // input 與 change 都綁：桌機邊打邊更新、手機時間選盤是關掉才發 change。refresh 冪等，重複觸發無妨。
+    if (onChange) {
+      ['input', 'change'].forEach(function (ev) {
+        start.addEventListener(ev, onChange);
+        end.addEventListener(ev, onChange);
+      });
+    }
     row.appendChild(start);
     row.appendChild(dash);
     row.appendChild(end);
@@ -578,6 +673,15 @@
     var nameEl = document.createElement('div');
     nameEl.className = 'emp-name';
     nameEl.textContent = emp.name;
+    /* 收合狀態也看得到班別（2026-08-28）：14 人全收合時不必一個個展開，就知道誰是幾點的班、
+       誰的班會套休息。沒設班別的人不顯示，免得多出一排空殼。 */
+    if (emp.shift_in && emp.shift_out) {
+      var shiftEl = document.createElement('span');
+      shiftEl.className = 'emp-shift';
+      shiftEl.textContent = emp.shift_in + '–' + emp.shift_out
+        + (shiftCoversBreak(emp.shift_in, emp.shift_out) ? '・休' + breakHoursText() + 'h' : '');
+      nameEl.appendChild(shiftEl);
+    }
     card.appendChild(nameEl);
 
     var punchEl = document.createElement('div');
@@ -650,12 +754,104 @@
     if (emp.approved && emp.approved.periods && emp.approved.periods.length) {
       initialPeriods = emp.approved.periods;
     } else if (emp.shift_in && emp.shift_out) {
-      initialPeriods = [{ start: emp.shift_in, end: emp.shift_out }];
+      /* 休息不打卡（2026-08-28）：預填時就把休息帶挖成缺口，所以預設一出來**就已經是**
+         扣掉休息的兩段，而不是「一整段之後再偷偷扣 1 小時」。沒有隱形扣除＝主管看到幾段就是幾小時。 */
+      initialPeriods = shiftCoversBreak(emp.shift_in, emp.shift_out)
+        ? [{ start: emp.shift_in, end: BREAK_START }, { start: BREAK_END, end: emp.shift_out }]
+        : [{ start: emp.shift_in, end: emp.shift_out }];
     } else {
       initialPeriods = [null];
     }
-    initialPeriods.forEach(function (p) { periodRows.appendChild(buildPeriodRow(p)); });
+    initialPeriods.forEach(function (p) { periodRows.appendChild(buildPeriodRow(p, refreshPeriodUI)); });
     card.appendChild(periodRows);
+
+    /* 核定時數即時顯示＋休息列＋一顆狀態切換鈕（2026-08-28）。
+       原本總時數只在送出前的 confirm 才看得到，主管改完時段當下無從確認；
+       休息不打卡之後「這天到底核幾小時」變成一定要當場看得見的東西。 */
+    var totalBox = document.createElement('div');
+    totalBox.className = 'period-total';
+    card.appendChild(totalBox);
+    var breakToggle = document.createElement('button');
+    breakToggle.type = 'button';
+    breakToggle.className = 'break-toggle';
+    breakToggle.hidden = true;
+    card.appendChild(breakToggle);
+
+    function readPeriodRows() {
+      return Array.prototype.slice.call(periodRows.querySelectorAll('.period-row')).map(function (r) {
+        return { row: r, start: r.querySelector('.p-start').value, end: r.querySelector('.p-end').value };
+      });
+    }
+    /* 每次時段有變動就整個重算。刻意**不記錄「主管有沒有動過」**這種狀態——
+       休息列純粹依「相鄰兩段之間的空檔是不是剛好等於休息帶」決定，所以：
+         ・預填 08:00–12:00 ＋ 13:00–17:00 → 中間缺口＝休息帶 → 畫線，8 小時
+         ・出差改成 08:00–12:00 ＋ 12:00–16:00 → 沒有缺口 → 不畫線，8 小時（不會少扣）
+         ・晚來併成一段 11:30–17:30 → 只有一段 → 不畫線，6 小時
+       三種情況都是所見即所得，不需要任何額外規則。 */
+    function refreshPeriodUI() {
+      var rows = readPeriodRows();
+      // (1) 休息列：全部清掉重畫
+      Array.prototype.slice.call(periodRows.querySelectorAll('.break-split')).forEach(function (n) { n.remove(); });
+      for (var i = 1; i < rows.length; i++) {
+        if (gapIsBreak(rows[i - 1].end, rows[i].start)) {
+          var sp = document.createElement('div');
+          sp.className = 'break-split';
+          sp.textContent = '休息 ' + BREAK_START + '–' + BREAK_END + '（不打卡・不計入時數）';
+          periodRows.insertBefore(sp, rows[i].row);
+        }
+      }
+      // (2) 核定時數＝畫面上時段相加（跨夜比照後端：end <= start 視為隔天）
+      var total = 0, filled = 0;
+      rows.forEach(function (r) {
+        var s0 = hhmmToMin(r.start), e0 = hhmmToMin(r.end);
+        if (s0 == null || e0 == null) return;
+        if (e0 <= s0) e0 += 1440;
+        total += (e0 - s0) / 60;
+        filled++;
+      });
+      totalBox.textContent = '';
+      totalBox.hidden = !filled;
+      if (filled) {
+        var lb = document.createElement('span');
+        lb.className = 'pt-lb';
+        lb.textContent = '核定時數';
+        var val = document.createElement('span');
+        val.className = 'pt-val';
+        val.textContent = String(Math.round(total * 100) / 100);
+        var unit = document.createElement('span');
+        unit.className = 'pt-unit';
+        unit.textContent = '小時';
+        totalBox.appendChild(lb);
+        totalBox.appendChild(val);
+        totalBox.appendChild(unit);
+      }
+      // (3) 一顆鈕在「併成一段」與「插入休息」之間切換，讓主管兩個方向都回得去
+      breakToggle.hidden = true;
+      if (hasBreak()) {
+        if (rows.length === 2 && gapIsBreak(rows[0].end, rows[1].start)) {
+          breakToggle.hidden = false;
+          breakToggle.dataset.mode = 'merge';
+          breakToggle.textContent = '今天沒休息 → 併成一段';
+        } else if (rows.length === 1 && shiftCoversBreak(rows[0].start, rows[0].end)) {
+          breakToggle.hidden = false;
+          breakToggle.dataset.mode = 'split';
+          breakToggle.textContent = '插入休息 ' + BREAK_START + '–' + BREAK_END;
+        }
+      }
+    }
+    breakToggle.addEventListener('click', function () {
+      var rows = readPeriodRows();
+      if (breakToggle.dataset.mode === 'merge' && rows.length === 2) {
+        rows[0].row.querySelector('.p-end').value = rows[1].end;
+        rows[1].row.remove();
+      } else if (breakToggle.dataset.mode === 'split' && rows.length === 1) {
+        var tail = rows[0].end;
+        rows[0].row.querySelector('.p-end').value = BREAK_START;
+        periodRows.appendChild(buildPeriodRow({ start: BREAK_END, end: tail }, refreshPeriodUI));
+      }
+      refreshPeriodUI();
+    });
+    refreshPeriodUI();
 
     // 請假註記：選了假別會寫入 leave 分頁（月表狀態欄顯示），改回「無」重送會清掉
     // 假別清單改由薪酬系統的 payroll_leave_type 決定——在那張表加一列，這裡就多一個選項，
@@ -728,7 +924,10 @@
     addBtn.type = 'button';
     addBtn.className = 'add-period-btn';
     addBtn.textContent = '＋ 加一段';
-    addBtn.addEventListener('click', function () { periodRows.appendChild(buildPeriodRow(null)); });
+    addBtn.addEventListener('click', function () {
+      periodRows.appendChild(buildPeriodRow(null, refreshPeriodUI));
+      refreshPeriodUI();
+    });
     var submitBtn = document.createElement('button');
     submitBtn.type = 'button';
     submitBtn.className = 'submit-btn';
@@ -839,6 +1038,10 @@
 
         var msg = '即將核定 ' + emp.name + '：\n' + segs.map(function (s) { return s.start + '–' + s.end; }).join('、')
           + '\n核定時數共 ' + totalH + ' 小時';
+        // 畫面上有休息列才提——主管把時段改成相連（出差）時不會出現這行，與實際計算一致
+        if (periodRows.querySelector('.break-split')) {
+          msg += '\n（休息 ' + BREAK_START + '–' + BREAK_END + ' 不計入）';
+        }
         if (leaveSelect.value) msg += '\n請假：' + leaveSelect.value + (leaveHours.value ? ' ' + leaveHours.value + ' 小時' : '');
         if (warnings.length) msg += '\n\n⚠ 請再確認：\n' + warnings.join('\n');
         msg += '\n\n確定送出?';
