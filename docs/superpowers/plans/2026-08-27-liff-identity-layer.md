@@ -1016,14 +1016,41 @@ cd ~/mala-gas/mala-clock-in && clasp push
 
 - [ ] **Step 7: 回退方案（若任何一步出錯，5 分鐘內執行）**
 
+⚠ **回退有兩半，前端先於後端**——前端才是同仁看得到的那一半。
+
+**第一步：前端**（GitHub Pages，同仁直接接觸）
+
+```bash
+cd /Users/guoeason/mala-clock-in
+git revert --no-edit 8d4abe9 69167f2
+python3 tools/build-store-pages.py
+git add -A && git commit -m "回退 LIFF 前端" && git push
+```
+
+**第二步：後端**（Apps Script）
+
 ```bash
 cd ~/mala-gas/mala-clock-in
-# 刪掉 Code.gs 中併入 LIFF_HANDLERS 的三行，或直接刪除 Liff.js
+# 刪掉 Code.gs 中併入 LIFF_HANDLERS 的三行，或直接刪除部署檔（檔名是 Liff.js，
+# 對應 repo 的 apps-script/Liff.gs）
 rm Liff.js && clasp push
 ```
 
 Liff.js 不存在時，`typeof LIFF_HANDLERS !== 'undefined'` 為 false，那三行自動跳過，
-系統完全回到改造前的行為。**舊連結從頭到尾沒有受影響，所以回退不會造成同仁打不了卡。**
+後端完全回到改造前的行為。**舊連結從頭到尾沒有受影響，所以回退不會造成同仁打不了卡。**
+
+只做後端回退而不動前端的話，bare URL 仍會把人導向 LINE 登入，
+且 `?k=` 每次載入仍會動態注入 SDK——所以兩半都要做。
+
+- [ ] **Step 8: ⚠ 推廣到光復以外之前，必須先有「解除綁定」功能**
+
+最終審查指出：啟用碼綁定後不作廢（刻意保留為退路），所以拿到轉傳連結的人可以**搶先**
+用自己的 LINE 帳號綁上去。真正的同仁接著會拿到 `already_bound_other_user` 而卡住，
+目前唯一的解法是 Eason 手動改試算表。裝置綁定這道第二關會把損害限制在
+`pending_device_approval`（代打的卡不會直接生效），所以單店試辦可以接受，
+但**推廣前必須把解綁做進 manager.html**，否則五個站點的復原程序不可能只靠一個人手改試算表。
+
+（綁定稽核紀錄已於最終審查修正中完成：獨立的 `liff_bind_log` 分頁。）
 
 ---
 
