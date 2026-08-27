@@ -1281,6 +1281,20 @@ def find_roster_by_line_user(data, user_id):
     return None
 
 
+def log_liff_bind(data, emp_id, name, user_id):
+    """綁定稽核紀錄（2026-08-27 審查 Important 6，與 Liff.gs logLiffBind_ 同步）。
+    刻意獨立於 events 之外，不塞進去——理由同 Liff.gs 的註解：events 是 pair_shifts／
+    今日時數／今日紀錄的資料來源，混進非打卡列會被那些既有邏輯一起讀到；而且獨立分頁
+    才不會讓「刪除 Liff.gs 即回到原狀」的回退承諾被殘留資料破壞。"""
+    data.setdefault("liff_bind_log", []).append({
+        "ts": iso_now(),
+        "emp_id": emp_id,
+        "name": name,
+        "line_user_id": user_id,
+        "type": "bind",
+    })
+
+
 def handle_liff_bind(data, body):
     """{action:'liff_bind', id_token, key} → 把 LINE 帳號與員工對上
     （與 Liff.gs handleLiffBind_ 同步：驗 token → 用 key 找在職員工 → 雙向檢查 → 寫入）。
@@ -1293,25 +1307,33 @@ def handle_liff_bind(data, body):
         return {"ok": False, "error": "no_roster"}
 
     # 這個 LINE 帳號是否已經綁在別的員工身上？
-    existing = find_roster_by_line_user(data, user_id)
+    # ⚠ 2026-08-27 審查 Important 4：要看「所有列」，不能只看在職——與 Liff.gs 的
+    # anyExisting 同步（原本的 find_roster_by_line_user 只比對 active，離職列上殘留的
+    # userId 之後被復職會變成兩個在職列共用一個 userId，見 Liff.gs 註解的完整情境說明）。
+    any_existing = next(
+        (r for r in (data.get("roster") or [])
+         if r.get("line_user_id") and str(r["line_user_id"]) == str(user_id)),
+        None,
+    )
 
     target = find_roster_by_key(data, body.get("key"))
     if not target or not target.get("active", False):
         return {"ok": False, "error": "invalid_key"}
 
-    if existing and str(existing["emp_id"]) != str(target["emp_id"]):
+    if any_existing and str(any_existing["emp_id"]) != str(target["emp_id"]):
         return {"ok": False, "error": "line_account_in_use"}
 
     # 該員工已綁了另一個 LINE 帳號 → 要店長先解綁，避免默默換人
     if target.get("line_user_id") and str(target["line_user_id"]) != str(user_id):
         return {"ok": False, "error": "already_bound_other_user"}
 
-    # 已經是綁好的同一組，直接回成功（同仁重按不該報錯，也不該重寫）
+    # 已經是綁好的同一組，直接回成功（同仁重按不該報錯，也不該重寫，也不該記稽核紀錄）
     if str(target.get("line_user_id")) == str(user_id):
         return {"ok": True, "name": target["name"], "emp_id": target["emp_id"], "already": True}
 
     target["line_user_id"] = user_id
     target["line_bound_at"] = iso_now()
+    log_liff_bind(data, target["emp_id"], target["name"], user_id)
     save_data(data)
     return {"ok": True, "name": target["name"], "emp_id": target["emp_id"]}
 
@@ -1327,7 +1349,17 @@ def with_line_identity(data, body, inner_handler):
     if data.get("roster") is None:
         return {"ok": False, "error": "no_roster"}
 
-    roster = find_roster_by_line_user(data, user_id)
+    # ⚠ 2026-08-27 審查 Important 4：fail closed，與 Liff.gs withLineIdentity_ 同步——
+    # 一個 userId 命中兩個在職列違反不變量，理論上已被 handle_liff_bind 的 any_existing
+    # 檢查擋住；萬一資料還是壞了，明確回錯，不要悄悄取第一筆。
+    active_matches = [
+        r for r in (data.get("roster") or [])
+        if r.get("line_user_id") and str(r["line_user_id"]) == str(user_id)
+        and r.get("active", False)
+    ]
+    if len(active_matches) > 1:
+        return {"ok": False, "error": "line_identity_conflict"}
+    roster = active_matches[0] if active_matches else None
     if not roster:
         return {"ok": False, "error": "not_bound"}
 

@@ -11,7 +11,9 @@
 <link rel="apple-touch-icon" href="assets/icon-180.png">
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
 <meta name="apple-mobile-web-app-title" content="打卡">
-<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<!-- ⚠ LIFF SDK 不可以放在這裡同步載入！這裡是 <head>，同步 <script src> 會擋住整份文件的解析——
+     ?k= 舊模式從來沒有這支第三方 CDN 依賴，正式載入邏輯在下面 initIdentity()/loadLiffSdk()，
+     只有確定不是 ?k= 模式時才會動態插入。詳見 2026-08-27 審查 Critical 1。 -->
 <script>
 /* ⚠ 主畫面圖示必須在 <head> 解析當下就換掉：iOS 在「加入主畫面」時抓的是它解析 head 時看到的
    apple-touch-icon，寫在頁尾才換有機會來不及。這段只改標籤，不依賴其他程式。 */
@@ -433,15 +435,22 @@
   // ══════ LIFF 身分層（2026-08）：?k= 舊模式與 LIFF 新模式並存 ══════
   // 舊模式優先：網址帶 ?k= 就一律走舊模式、完全不碰 LIFF（向後相容優先，見計畫說明）。
   var LIFF_ID = '2011292256-L6JQCqj0';
-  var idToken = null;             // LIFF 模式下的身分憑證
+  // LIFF 後端（apps-script/Liff.gs）目前只部署給光復（STORE_CODE===''）；
+  // 央廚／總部（cf/hq）的 API_URL 指到各自後端，沒有 LIFF_HANDLERS，開了也只會走到
+  // liff_whoami → unknown_action 的死路（2026-08-27 審查 Important 3）。
+  // cf/hq 頁面的 STORE_CODE 是 tools/build-store-pages.py 寫死的字串，這裡不需要另外維護清單。
+  var LIFF_ENABLED = (STORE_CODE === '');
+  var idToken = null;             // LIFF 模式下的身分憑證（僅供 init 時的存在性判斷，實際送出一律即時重讀，見 identityPayload）
   var useLiff = false;            // true = 走 liff_* action
 
   /** 前綴：舊模式回空字串（action 不變），LIFF 模式回 'liff_' */
   function actionPrefix() { return useLiff ? 'liff_' : ''; }
 
-  /** 身分欄位：舊模式帶 key，LIFF 模式帶 id_token */
+  /** 身分欄位：舊模式帶 key，LIFF 模式即時重讀 liff.getIDToken()。
+   *  ⚠ 不可以回傳 init 當下存的 idToken——LIFF webview 常常開很久不關，token 會過期，
+   *  每次送出前重讀才能保證帶的是當下有效的那一份（2026-08-27 審查 Important 5）。 */
   function identityPayload() {
-    return useLiff ? { id_token: idToken } : { key: key };
+    return useLiff ? { id_token: liff.getIDToken() } : { key: key };
   }
 
   /** 組出這次要送出的 payload：action 依模式加前綴，身分欄位依模式帶 key 或 id_token，
@@ -456,20 +465,38 @@
     return payload;
   }
 
+  /** 動態插入 LIFF SDK，只有確定不是 ?k= 模式（且該店啟用 LIFF）才會被呼叫。
+   *  ⚠ 絕不可以在 <head> 放同步 <script src>——那會擋住整份文件的解析，讓每一筆
+   *  ?k= 舊模式打卡都平白多等一顆不相干的第三方 CDN（2026-08-27 審查 Critical 1）。
+   *  window.liff 已存在就直接跳過，不重複載入。 */
+  function loadLiffSdk() {
+    if (window.liff) return Promise.resolve(true);
+    return new Promise(function (resolve) {
+      var s = document.createElement('script');
+      s.src = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
+      s.onload = function () { resolve(true); };
+      s.onerror = function () { resolve(false); };
+      document.head.appendChild(s);
+    });
+  }
+
   /**
-   * 決定身分模式：網址帶 k → 一律走舊模式，不碰 LIFF。
-   * 否則若在 LIFF 環境內，走 liff.init → 確認登入 → 取 ID token。
+   * 決定身分模式：網址帶 k → 一律走舊模式，完全不碰 LIFF SDK（連載入都不載入）。
+   * 否則若該店啟用 LIFF，才動態載入 SDK → liff.init → 確認登入 → 取 ID token。
    * 回傳 Promise<boolean>：true 表示身分已就緒（舊模式或 LIFF 都算）。
    */
   function initIdentity() {
-    if (key) { useLiff = false; return Promise.resolve(true); }
-    if (!window.liff) return Promise.resolve(false);
-    return liff.init({ liffId: LIFF_ID }).then(function () {
-      if (!liff.isLoggedIn()) { liff.login(); return false; }
-      idToken = liff.getIDToken();
-      useLiff = !!idToken;
-      return useLiff;
-    }).catch(function () { return false; });
+    if (key) { useLiff = false; return Promise.resolve(true); }   // 舊路徑：完全不碰 CDN
+    if (!LIFF_ENABLED) return Promise.resolve(false);
+    return loadLiffSdk().then(function (ok) {
+      if (!ok) return false;
+      return liff.init({ liffId: LIFF_ID }).then(function () {
+        if (!liff.isLoggedIn()) { liff.login(); return false; }
+        idToken = liff.getIDToken();
+        useLiff = !!idToken;
+        return useLiff;
+      }).catch(function () { return false; });
+    });
   }
 
   var DEVICE_KEY = 'mala_clock_device';
@@ -545,13 +572,15 @@
     bindErrorMsg.textContent = msg || '';
   }
   function doBind(code) {
-    return apiPost({ action: 'liff_bind', id_token: idToken, key: code.trim() })
+    // ⚠ 即時重讀 liff.getIDToken()，不要用 init 當下存的 idToken——同一個過期理由見 identityPayload()。
+    return apiPost({ action: 'liff_bind', id_token: liff.getIDToken(), key: code.trim() })
       .then(function (res) {
         if (res && res.ok) { location.reload(); return; }
         var msg = {
           invalid_key: '啟用碼不正確，請跟店長確認',
           already_bound_other_user: '這個員工已綁定其他 LINE 帳號，請店長先解除綁定',
-          line_account_in_use: '你的 LINE 帳號已經綁定另一位員工',
+          // 2026-08-27 審查 Minor 7：原本沒有下一步指示，是最容易讓人卡住的一句——加上去
+          line_account_in_use: '你的 LINE 帳號已經綁定另一位員工，請聯絡店長或主管協助處理',
           invalid_id_token: 'LINE 身分驗證失敗，請關掉重開'
         }[res && res.error] || '綁定失敗，請告知主管';
         showBindError(msg);
@@ -980,15 +1009,25 @@
   var warmFix = null;     // 預熱拿到的最新定位
   var warmWatchId = null;
 
+  // ⚠ 2026-08-27 審查 Important 2：預熱絕對不能自己觸發瀏覽器的定位詢問。
+  //   watchPosition 在「還沒授權」時呼叫就是在問——不管有沒有人按過打卡按鈕。
+  //   這會把詢問時機從「按上班打卡」搬到「一開頁面」，同仁看不懂為什麼跳出來，
+  //   而且瀏覽器會把拒絕記在這個 origin 上：反射性按下「不允許」的人，之後永遠打不了卡。
+  //   所以先用 Permissions API 確認「已經是 granted」才預熱；任何不確定（denied/prompt/
+  //   瀏覽器不支援 Permissions API）一律不預熱，回退成原本「按下打卡才問」的行為。
   function startWarmUp() {
     if (!navigator.geolocation) return;
-    warmWatchId = navigator.geolocation.watchPosition(function (pos) {
-      warmFix = pos;                                  // 持續更新，永遠是最新的
-    }, function () {}, GEO_OPTS);
-    // 3 分鐘後停掉，避免頁面開著一直耗電
-    setTimeout(function () {
-      if (warmWatchId !== null) { navigator.geolocation.clearWatch(warmWatchId); warmWatchId = null; }
-    }, 180000);
+    if (!navigator.permissions || !navigator.permissions.query) return;  // 不確定就不預熱
+    navigator.permissions.query({ name: 'geolocation' }).then(function (st) {
+      if (st.state !== 'granted') return;   // 只在已授權時預熱，絕不由預熱觸發詢問
+      warmWatchId = navigator.geolocation.watchPosition(function (pos) {
+        warmFix = pos;                                  // 持續更新，永遠是最新的
+      }, function () {}, GEO_OPTS);
+      // 3 分鐘後停掉，避免頁面開著一直耗電
+      setTimeout(function () {
+        if (warmWatchId !== null) { navigator.geolocation.clearWatch(warmWatchId); warmWatchId = null; }
+      }, 180000);
+    }).catch(function () {});
   }
 
   /**
@@ -1084,6 +1123,13 @@
         // 只要沒打卡成功就跳同一句提醒，不要讓同仁去讀一堆不同的錯誤訊息）。
         if (res.ok && res.status === 'ok') {
           showStatus('status-ok', '✓ 打卡成功　' + (res.ts || '').substring(11, 16));
+        } else if (useLiff && res && res.error === 'invalid_id_token') {
+          // 2026-08-27 審查 Important 5：LIFF 的 ID token 過期時套用統一失敗句沒有意義——
+          // 「看今日紀錄再打一次」解決不了過期的 token，會一直重複失敗。LIFF webview
+          // 常常開很久不關，直接重新走一次登入才是真的能恢復的路。
+          showStatus('status-warn', 'LINE 身分驗證已過期，正在重新登入…');
+          liff.login();
+          return;
         } else {
           showStatus('status-warn', CLOCK_FAIL_MSG + accuracyHint(res));
         }
