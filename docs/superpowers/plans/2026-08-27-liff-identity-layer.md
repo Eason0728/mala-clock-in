@@ -296,22 +296,51 @@ git commit -m "新增 LIFF 身分層：ID token 驗證與 userId 查詢"
 - Consumes: Task 2 的 `verifyLineIdToken_`、`findRosterByLineUser_`
 - Produces: `handleLiffBind_(body)` → `{ok, name, emp_id}` 或 `{ok:false, error}`
   - 接受 `body.id_token`（LIFF ID token）與 `body.key`（店長給的啟用碼）
-  - 錯誤碼：`invalid_id_token` / `invalid_key` / `already_bound_other_user` / `line_account_in_use`
+  - 錯誤碼：`invalid_id_token` / `no_roster` / `invalid_key` / `already_bound_other_user` / `line_account_in_use`
 
-- [ ] **Step 1: 寫失敗測試（四種錯誤情境 + 成功情境）**
+### ⚠ 本 Task 必須用的既有介面（已查證，照抄不要自創）
 
-在 `tests/liff-identity.test.js` 末尾（`console.log('\n✅ ...')` 之前）加入：
+計畫初稿假設的函式名有誤，以下是 `Code.gs` 的**實際**介面：
+
+| 用途 | 實際函式 | 備註 |
+|---|---|---|
+| 取得試算表 | `getSS()` | 無參數 |
+| 取得分頁 | `ss.getSheetByName('roster')` | 取不到要回 `no_roster` |
+| **補上缺少的欄位** | `ensureRosterHeaders(rosterSheet)` | **不可省略，理由見下** |
+| 讀名冊 | `readSheetAsObjects(rosterSheet).rows` | 每列附 `__rowIndex`（實際列號） |
+| 寫某一格 | `setRosterCell(sheet, rowIndex, header, value, asText)` | **5 個參數**，不是 `(empId, col, val)` |
+| 時間戳 | `nowTaipeiIso()` | 不是 `nowIso_` |
+
+**為什麼 `ensureRosterHeaders` 不可省略**：`setRosterCell` 是依「試算表當下實際表頭」找欄號的
+（Code.gs:981-989），而 Task 1 只改了程式裡的 `ROSTER_HEADERS` 常數，**三家店既有的試算表還沒有
+`line_user_id` / `line_bound_at` 這兩欄**。欄位不存在時 `setRosterCell` **回傳 `false` 而不是 throw**——
+綁定會回報成功但什麼都沒寫入，是最難查的那種 bug。`ensureRosterHeaders` 會把常數裡有、
+表頭沒有的欄位補到最右邊，必須在寫入前呼叫。
+
+**為什麼 `line_bound_at` 要用 `asText = true`**：純日期時間字串若不鎖成文字，Sheets 會轉成 Date 物件，
+之後讀回來型別就不一致。既有的 `removed_at` 就是這樣處理的（Code.gs:1076）。
+
+**同構範本**：`handleMgrSetActive`（Code.gs:1039-1077）做的事跟本 Task 完全同構
+（取 sheet → ensureRosterHeaders → 讀 rows → setRosterCell 改幾格），照它的寫法。
+
+- [ ] **Step 1: 寫失敗測試（六種情境）**
+
+在 `tests/liff-identity.test.js` 末尾（最後那行 `console.log` 之前）加入：
 
 ```javascript
 // ── 綁定 handler ──
 function loadLiffWithSheet(fetchImpl, rows, writes) {
   const src = fs.readFileSync(__dirname + '/../apps-script/Liff.gs', 'utf8');
+  const fakeSheet = { __name: 'roster' };
   const sandbox = {
     UrlFetchApp: { fetch: fetchImpl },
-    CONFIG: { LINE_CHANNEL_ID: '2011292256' },
-    readRosterRows_: () => rows,
-    setRosterCell: (empId, col, val) => writes.push([empId, col, val]),
-    nowIso_: () => '2026-08-27T12:00:00Z',
+    getSS: () => ({ getSheetByName: (n) => (n === 'roster' ? fakeSheet : null) }),
+    readSheetAsObjects: () => ({ rows: rows }),
+    ensureRosterHeaders: (sheet) => { writes.push(['__ensure', sheet === fakeSheet]); },
+    setRosterCell: (sheet, rowIndex, header, val, asText) => {
+      writes.push([rowIndex, header, val, !!asText]); return true;
+    },
+    nowTaipeiIso: () => '2026-08-27T12:00:00+08:00',
     console: console,
   };
   vm.createContext(sandbox);
@@ -323,36 +352,37 @@ const okFetch = (sub) => () => ({
   getContentText: () => JSON.stringify({ sub: sub, aud: '2011292256' }),
 });
 
-// 6. 成功綁定：寫入 line_user_id 與 line_bound_at
+// 6. 成功綁定：先確保欄位存在，再寫入兩欄（line_bound_at 需鎖成文字）
 {
   const writes = [];
-  const rows = [{ emp_id: 'E01', name: '測試一', key: 'k1', active: 'true', line_user_id: '' }];
+  const rows = [{ emp_id: 'E01', name: '測試一', key: 'k1', active: 'true', line_user_id: '', __rowIndex: 5 }];
   const s = loadLiffWithSheet(okFetch('Unew'), rows, writes);
   const r = s.handleLiffBind_({ id_token: 't', key: 'k1' });
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.emp_id, 'E01');
-  assert.deepStrictEqual(writes[0], ['E01', 'line_user_id', 'Unew']);
-  assert.deepStrictEqual(writes[1], ['E01', 'line_bound_at', '2026-08-27T12:00:00Z']);
-  console.log('✓ 綁定成功並寫回兩欄');
+  assert.deepStrictEqual(writes[0], ['__ensure', true], '寫入前必須先呼叫 ensureRosterHeaders');
+  assert.deepStrictEqual(writes[1], [5, 'line_user_id', 'Unew', false]);
+  assert.deepStrictEqual(writes[2], [5, 'line_bound_at', '2026-08-27T12:00:00+08:00', true]);
+  console.log('✓ 綁定成功：先補欄位，再寫回兩欄，時間戳鎖文字');
 }
 
 // 7. 啟用碼錯誤
 {
   const writes = [];
-  const rows = [{ emp_id: 'E01', key: 'k1', active: 'true', line_user_id: '' }];
+  const rows = [{ emp_id: 'E01', key: 'k1', active: 'true', line_user_id: '', __rowIndex: 5 }];
   const s = loadLiffWithSheet(okFetch('Unew'), rows, writes);
   assert.strictEqual(s.handleLiffBind_({ id_token: 't', key: 'WRONG' }).error, 'invalid_key');
-  assert.strictEqual(writes.length, 0, '失敗時不可寫入任何東西');
+  assert.strictEqual(writes.filter(w => w[0] !== '__ensure').length, 0, '失敗時不可寫入任何一格');
   console.log('✓ 錯誤啟用碼被拒絕且未寫入');
 }
 
 // 8. 該員工已綁別的 LINE 帳號 → 需店長解綁
 {
   const writes = [];
-  const rows = [{ emp_id: 'E01', key: 'k1', active: 'true', line_user_id: 'Uold' }];
+  const rows = [{ emp_id: 'E01', key: 'k1', active: 'true', line_user_id: 'Uold', __rowIndex: 5 }];
   const s = loadLiffWithSheet(okFetch('Unew'), rows, writes);
   assert.strictEqual(s.handleLiffBind_({ id_token: 't', key: 'k1' }).error, 'already_bound_other_user');
-  assert.strictEqual(writes.length, 0);
+  assert.strictEqual(writes.filter(w => w[0] !== '__ensure').length, 0);
   console.log('✓ 已綁他人帳號時拒絕');
 }
 
@@ -360,22 +390,43 @@ const okFetch = (sub) => () => ({
 {
   const writes = [];
   const rows = [
-    { emp_id: 'E01', key: 'k1', active: 'true', line_user_id: 'Udup' },
-    { emp_id: 'E02', key: 'k2', active: 'true', line_user_id: '' },
+    { emp_id: 'E01', key: 'k1', active: 'true', line_user_id: 'Udup', __rowIndex: 5 },
+    { emp_id: 'E02', key: 'k2', active: 'true', line_user_id: '', __rowIndex: 6 },
   ];
   const s = loadLiffWithSheet(okFetch('Udup'), rows, writes);
   assert.strictEqual(s.handleLiffBind_({ id_token: 't', key: 'k2' }).error, 'line_account_in_use');
-  assert.strictEqual(writes.length, 0);
+  assert.strictEqual(writes.filter(w => w[0] !== '__ensure').length, 0);
   console.log('✓ 一個 LINE 帳號不可綁兩位員工');
 }
 
-// 10. 重綁自己（同一 userId 同一員工）視為成功，不重複寫入
+// 10. 重綁自己（同一 userId 同一員工）視為成功，且不重複寫入
 {
   const writes = [];
-  const rows = [{ emp_id: 'E01', key: 'k1', active: 'true', line_user_id: 'Usame' }];
+  const rows = [{ emp_id: 'E01', key: 'k1', active: 'true', line_user_id: 'Usame', __rowIndex: 5 }];
   const s = loadLiffWithSheet(okFetch('Usame'), rows, writes);
-  assert.strictEqual(s.handleLiffBind_({ id_token: 't', key: 'k1' }).ok, true);
-  console.log('✓ 重複綁定自己不報錯');
+  const r = s.handleLiffBind_({ id_token: 't', key: 'k1' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.already, true);
+  assert.strictEqual(writes.filter(w => w[0] !== '__ensure').length, 0, '已是同一組時不該重寫');
+  console.log('✓ 重複綁定自己不報錯也不重寫');
+}
+
+// 11. 取不到 roster 分頁 → no_roster，不可 throw
+{
+  const writes = [];
+  const src = fs.readFileSync(__dirname + '/../apps-script/Liff.gs', 'utf8');
+  const sandbox = {
+    UrlFetchApp: { fetch: okFetch('Unew') },
+    getSS: () => ({ getSheetByName: () => null }),
+    readSheetAsObjects: () => { throw new Error('不該被呼叫'); },
+    ensureRosterHeaders: () => { throw new Error('不該被呼叫'); },
+    setRosterCell: () => { throw new Error('不該被呼叫'); },
+    nowTaipeiIso: () => '', console: console,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(src, sandbox);
+  assert.strictEqual(sandbox.handleLiffBind_({ id_token: 't', key: 'k1' }).error, 'no_roster');
+  console.log('✓ 沒有 roster 分頁時乾淨回錯，不 throw');
 }
 ```
 
@@ -395,12 +446,18 @@ cd /Users/guoeason/mala-clock-in && node tests/liff-identity.test.js
  *
  * 流程：驗 ID token 拿到可信 userId → 用店長給的啟用碼(key)找到員工 → 寫回 roster。
  * 啟用碼綁定後**不作廢**——舊連結保留為退路，不強迫同仁同一天全部轉換。
+ *
+ * ⚠ 寫入前一定要 ensureRosterHeaders：setRosterCell 依試算表當下表頭找欄號，
+ *   欄位不存在時它回 false 而不是 throw，會變成「回報成功但沒寫入」的靜默失敗。
  */
 function handleLiffBind_(body) {
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
 
-  var rows = readRosterRows_();
+  var rosterSheet = getSS().getSheetByName('roster');
+  if (!rosterSheet) return { ok: false, error: 'no_roster' };
+  ensureRosterHeaders(rosterSheet);
+  var rows = readSheetAsObjects(rosterSheet).rows;
 
   // 這個 LINE 帳號是否已經綁在別的員工身上？
   var existing = findRosterByLineUser_(rows, userId);
@@ -420,33 +477,41 @@ function handleLiffBind_(body) {
     return { ok: false, error: 'already_bound_other_user' };
   }
 
-  // 已經是綁好的同一組，直接回成功（同仁重按不該報錯）
+  // 已經是綁好的同一組，直接回成功（同仁重按不該報錯，也不該重寫）
   if (String(target.line_user_id) === String(userId)) {
     return { ok: true, name: target.name, emp_id: target.emp_id, already: true };
   }
 
-  setRosterCell(target.emp_id, 'line_user_id', userId);
-  setRosterCell(target.emp_id, 'line_bound_at', nowIso_());
+  setRosterCell(rosterSheet, target.__rowIndex, 'line_user_id', userId);
+  // 純日期時間字串鎖成文字，避免被 Sheets 轉成 Date 物件（同 removed_at 的處理）
+  setRosterCell(rosterSheet, target.__rowIndex, 'line_bound_at', nowTaipeiIso(), true);
   return { ok: true, name: target.name, emp_id: target.emp_id };
 }
 ```
 
-- [ ] **Step 4: 確認 readRosterRows_ / setRosterCell / nowIso_ 在 Code.gs 中的實際名稱**
-
-```bash
-cd /Users/guoeason/mala-clock-in
-grep -n "function readSheetAsObjects\|function setRosterCell\|function nowIso\|function readRosterRows" apps-script/Code.gs
-```
-
-**如果名稱不符**，改 Liff.gs 去配合 Code.gs 的實際名稱（不要反過來改 Code.gs），並同步更新測試的 sandbox 注入名稱。
-
-- [ ] **Step 5: 跑測試，確認 10 項全過**
+- [ ] **Step 4: 跑測試，確認 11 項全過**
 
 ```bash
 cd /Users/guoeason/mala-clock-in && node tests/liff-identity.test.js
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: 故意改壞一行，確認測試會紅**
+
+暫時把 `ensureRosterHeaders(rosterSheet);` 註解掉，重跑測試，**必須看到第 6 項失敗**
+（斷言 `writes[0]` 應為 `['__ensure', true]`）。確認後改回來。
+
+這一步防的正是本 Task 最容易出的錯：漏掉 ensureRosterHeaders 會造成靜默失敗，
+而靜默失敗在單元測試裡看起來跟成功一模一樣——除非你像這樣明確斷言它被呼叫過。
+
+- [ ] **Step 6: 跑全部測試**
+
+```bash
+cd /Users/guoeason/mala-clock-in && node tests/run-all.js
+```
+
+預期：全綠。
+
+- [ ] **Step 7: Commit**
 
 ```bash
 cd /Users/guoeason/mala-clock-in
@@ -466,6 +531,10 @@ git commit -m "LIFF 綁定 handler：一人一帳號雙向檢查，啟用碼不�
 **Interfaces:**
 - Consumes: Task 3 的 `handleLiffBind_`、Task 2 的查詢函式
 - Produces: 全域 `LIFF_HANDLERS` 物件，含 `liff_bind` / `liff_whoami` / `liff_clock` / `liff_my_recent`
+  - 轉接層錯誤碼：`invalid_id_token` / `no_roster` / `not_bound`
+
+**⚠ 本 Task 沿用 Task 3 已查證的實際介面**：`getSS()`、`ss.getSheetByName('roster')`、
+`readSheetAsObjects(sheet).rows`、`nowTaipeiIso()`。不要使用 `readRosterRows_` 或 `nowIso_`，那兩個不存在。
 
 - [ ] **Step 1: 寫失敗測試 —— 轉接層必須把 userId 換成 key 後呼叫既有 handler**
 
@@ -479,10 +548,11 @@ git commit -m "LIFF 綁定 handler：一人一帳號雙向檢查，啟用碼不�
   const src = fs.readFileSync(__dirname + '/../apps-script/Liff.gs', 'utf8');
   const sandbox = {
     UrlFetchApp: { fetch: okFetch('Ume') },
-    CONFIG: { LINE_CHANNEL_ID: '2011292256' },
-    readRosterRows_: () => rows,
-    setRosterCell: () => {},
-    nowIso_: () => '2026-08-27T12:00:00Z',
+    getSS: () => ({ getSheetByName: (n) => (n === 'roster' ? { __name: 'roster' } : null) }),
+    readSheetAsObjects: () => ({ rows: rows }),
+    ensureRosterHeaders: () => {},
+    setRosterCell: () => true,
+    nowTaipeiIso: () => '2026-08-27T12:00:00+08:00',
     handleClock: (b) => { received = b; return { ok: true, status: 'ok' }; },
     console: console,
   };
@@ -507,8 +577,9 @@ git commit -m "LIFF 綁定 handler：一人一帳號雙向檢查，啟用碼不�
   const src = fs.readFileSync(__dirname + '/../apps-script/Liff.gs', 'utf8');
   const sandbox = {
     UrlFetchApp: { fetch: okFetch('Ustranger') },
-    CONFIG: { LINE_CHANNEL_ID: '2011292256' },
-    readRosterRows_: () => rows, setRosterCell: () => {}, nowIso_: () => '',
+    getSS: () => ({ getSheetByName: (n) => (n === 'roster' ? { __name: 'roster' } : null) }),
+    readSheetAsObjects: () => ({ rows: rows }),
+    ensureRosterHeaders: () => {}, setRosterCell: () => true, nowTaipeiIso: () => '',
     handleClock: () => { called = true; return { ok: true }; },
     console: console,
   };
@@ -542,7 +613,13 @@ function withLineIdentity_(body, innerHandler) {
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
 
-  var roster = findRosterByLineUser_(readRosterRows_(), userId);
+  // 唯讀查身分，刻意不呼叫 ensureRosterHeaders——這條路徑不寫入。
+  // 若表頭還沒有 line_user_id 欄，讀出來的列就沒有該屬性，findRosterByLineUser_
+  // 自然查不到而回 not_bound，那正是「還沒綁定」的正確答案。
+  var rosterSheet = getSS().getSheetByName('roster');
+  if (!rosterSheet) return { ok: false, error: 'no_roster' };
+
+  var roster = findRosterByLineUser_(readSheetAsObjects(rosterSheet).rows, userId);
   if (!roster) return { ok: false, error: 'not_bound' };
 
   // 複製一份 body，換上該員工的 key，並移除 id_token（不讓它流進既有邏輯）
