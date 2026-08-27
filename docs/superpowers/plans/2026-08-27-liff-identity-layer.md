@@ -844,7 +844,22 @@ Object.keys(identityPayload()).forEach(function (k2) { payload[k2] = identityPay
 apiPost(payload)
 ```
 
-`whoami`、`my_recent` 比照辦理。**`my_payslip` 這一輪不動**（薪資模組還沒有 LIFF 版 handler，維持走 `PAYROLL_API` + `key`；LIFF 模式下先隱藏薪資分頁，下一個計畫再處理）。
+`whoami`、`my_recent` 比照辦理。**`my_payslip` 這一輪不動**（薪資模組還沒有 LIFF 版 handler，維持走 `PAYROLL_API` + `key`）。
+
+**LIFF 模式下要隱藏「我的薪資」分頁**，因為它沒有 LIFF 版 handler，點了會失敗。做法：
+
+```javascript
+// LIFF 模式沒有薪資 handler（my_payslip 仍走 key），先把分頁藏起來避免點了報錯
+if (useLiff) {
+  var payTab = document.querySelector('.tabbar .tab[data-view="pay"]');
+  if (payTab) payTab.style.display = 'none';
+}
+```
+
+放在 `init()` 決定完身分模式之後。分頁按鈕的實際選擇器已查證：`clock.html:324`
+是 `<button class="tab" data-view="pay" type="button">💰 我的薪資</button>`。
+**只隱藏按鈕即可**，不要刪除 `#payView` 區塊本身，也不要改動 `my_payslip` 的呼叫邏輯——
+下一個計畫要把它接上 LIFF，留著比較好改。
 
 - [ ] **Step 4: 加入綁定畫面**
 
@@ -888,11 +903,20 @@ function startWarmUp() {
 }
 ```
 
-在 `getPosition()` **開頭**加入捷徑（沿用既有的 `fixLooksGood`，所以過時判斷與精準度門檻的行為完全一致）：
+在 `getPosition(onRetry)` 裡加入捷徑（沿用既有的 `fixLooksGood`，所以過時判斷與精準度門檻的行為完全一致）：
 
 ```javascript
 if (warmFix && fixLooksGood(warmFix)) { return Promise.resolve(warmFix); }
 ```
+
+⚠ **插入位置很重要**：必須放在**既有的 localhost 假座標區塊之後**、`return new Promise(function (resolve, reject) {` 之前。
+
+`getPosition` 的第一段是 `if (isLocalHost && FAKE_LOCATIONS[qs('loc')]) { ... return Promise.resolve(...); }`，
+那是本機測試用 `?loc=` 模擬座標的機制（`?acc=120` 還能模擬定位誤差）。
+捷徑若插在它前面，預熱拿到的真實定位會蓋掉模擬座標，**Step 6 的本機測試就失效了**。
+
+型別相容性已查證：`getPosition` 本來就回傳 Promise，且既有的假座標分支同樣用 `Promise.resolve`；
+`fixLooksGood(pos)` 讀的是 `pos.coords.accuracy` 與 `pos.timestamp`，`watchPosition` 給的 position 物件兩者皆有。
 
 - [ ] **Step 6: 本機測舊模式（Global Constraint 1）**
 
