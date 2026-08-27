@@ -721,7 +721,13 @@ def mock_verify_id_token(id_token):
 
 - [ ] **Step 3: 為種子資料加上 line_user_id 欄位**
 
-`mock/mock_data.json` 的種子員工（E01/testkey1、E02/testkey2）各補一個空的 `line_user_id` 與 `line_bound_at` 欄位。
+⚠ `mock/mock_data.json` **是 gitignore 的**（`.gitignore:2`），不能直接改它然後 commit——
+那是每個開發者本機各自產生的檔案。正確做法是改**產生它的程式**：
+
+- 在 `seed_data()` 裡讓新種子員工帶有空的 `line_user_id` 與 `line_bound_at`
+- 在 `load_data()` 加一段 migration，讓**既有的**本機檔案在下次讀取時自動補上這兩個欄位
+
+兩者都要做：前者服務「刪掉檔案重新產生」的人，後者服務「已經有舊檔案」的人。
 
 - [ ] **Step 4: 手動驗證四個 action**
 
@@ -767,9 +773,11 @@ curl -s -X POST http://localhost:8899/api -d '{"action":"whoami","key":"testkey1
 
 ```bash
 cd /Users/guoeason/mala-clock-in
-git add mock/mock_server.py mock/mock_data.json
+git add mock/mock_server.py
 git commit -m "mock server 支援 LIFF action，用假 token 免打 LINE API"
 ```
+
+（`mock/mock_data.json` 是 gitignore 的，不要 `git add -f` 它。）
 
 ---
 
