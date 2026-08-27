@@ -66,4 +66,14 @@ function loadLiff(fetchImpl) {
   console.log('✓ findRosterByLineUser_ 正確');
 }
 
+// 6. HTTP 200 但 body 不是有效 JSON（gateway 異常、API 改版等）→ 回 null 而非 throw
+{
+  const s = loadLiff(() => ({
+    getResponseCode: () => 200,
+    getContentText: () => '<html>oops</html>',
+  }));
+  assert.strictEqual(s.verifyLineIdToken_('malformed-response'), null);
+  console.log('✓ 無效 JSON 的 200 回應回傳 null 而非 throw');
+}
+
 console.log('\n✅ liff-identity 全部通過');

@@ -29,7 +29,13 @@ function verifyLineIdToken_(idToken) {
     muteHttpExceptions: true,
   });
   if (res.getResponseCode() !== 200) return null;
-  var data = JSON.parse(res.getContentText());
+  var data;
+  try {
+    data = JSON.parse(res.getContentText());
+  } catch (e) {
+    // HTTP 200 但 body 不是有效 JSON（gateway 異常、API 改版等）——乾淨失敗
+    return null;
+  }
   if (!data || !data.sub) return null;
   if (String(data.aud) !== String(channelId)) return null;   // 防別的 channel 的 token 冒用
   return String(data.sub);
