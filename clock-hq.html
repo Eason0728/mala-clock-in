@@ -12,6 +12,7 @@
 <link rel="apple-touch-icon" href="assets/icon-180-mzt.png">
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
 <meta name="apple-mobile-web-app-title" content="總部打卡">
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <script>
 /* ⚠ 主畫面圖示必須在 <head> 解析當下就換掉：iOS 在「加入主畫面」時抓的是它解析 head 時看到的
    apple-touch-icon，寫在頁尾才換有機會來不及。這段只改標籤，不依賴其他程式。 */
@@ -343,6 +344,14 @@
 
   <div id="errorCard" class="card center-msg" style="display:none; color:#c22a12;"></div>
 
+  <div id="bindCard" class="card center-msg" style="display:none;">
+    <p style="margin:0 0 14px;">首次使用請輸入店長給你的啟用碼，完成 LINE 帳號綁定。</p>
+    <input type="text" id="bindKeyInput" placeholder="啟用碼" autocomplete="off"
+           style="width:100%;padding:12px;font-size:16px;border:1px solid #ddd;border-radius:10px;box-sizing:border-box;">
+    <div id="bindErrorMsg" style="color:#c22a12;margin-top:10px;font-size:14px;min-height:1.2em;"></div>
+    <button class="btn btn-in" id="btnBindSubmit" type="button" style="margin-top:14px;width:100%;">送出</button>
+  </div>
+
   <div class="btn-group" id="btnGroup" style="display:none;">
     <button class="btn btn-in" id="btnIn" type="button">上班打卡</button>
     <button class="btn btn-out" id="btnOut" type="button">下班打卡</button>
@@ -419,6 +428,48 @@
 
   var key = qs('k');
 
+  // ══════ LIFF 身分層（2026-08）：?k= 舊模式與 LIFF 新模式並存 ══════
+  // 舊模式優先：網址帶 ?k= 就一律走舊模式、完全不碰 LIFF（向後相容優先，見計畫說明）。
+  var LIFF_ID = '2011292256-L6JQCqj0';
+  var idToken = null;             // LIFF 模式下的身分憑證
+  var useLiff = false;            // true = 走 liff_* action
+
+  /** 前綴：舊模式回空字串（action 不變），LIFF 模式回 'liff_' */
+  function actionPrefix() { return useLiff ? 'liff_' : ''; }
+
+  /** 身分欄位：舊模式帶 key，LIFF 模式帶 id_token */
+  function identityPayload() {
+    return useLiff ? { id_token: idToken } : { key: key };
+  }
+
+  /** 組出這次要送出的 payload：action 依模式加前綴，身分欄位依模式帶 key 或 id_token，
+   *  其餘欄位（device_id、type、lat…）由呼叫端用 extra 補上。 */
+  function mkPayload(action, extra) {
+    var payload = { action: actionPrefix() + action, device_id: deviceId };
+    var idp = identityPayload();
+    Object.keys(idp).forEach(function (k2) { payload[k2] = idp[k2]; });
+    if (extra) {
+      Object.keys(extra).forEach(function (k3) { payload[k3] = extra[k3]; });
+    }
+    return payload;
+  }
+
+  /**
+   * 決定身分模式：網址帶 k → 一律走舊模式，不碰 LIFF。
+   * 否則若在 LIFF 環境內，走 liff.init → 確認登入 → 取 ID token。
+   * 回傳 Promise<boolean>：true 表示身分已就緒（舊模式或 LIFF 都算）。
+   */
+  function initIdentity() {
+    if (key) { useLiff = false; return Promise.resolve(true); }
+    if (!window.liff) return Promise.resolve(false);
+    return liff.init({ liffId: LIFF_ID }).then(function () {
+      if (!liff.isLoggedIn()) { liff.login(); return false; }
+      idToken = liff.getIDToken();
+      useLiff = !!idToken;
+      return useLiff;
+    }).catch(function () { return false; });
+  }
+
   var DEVICE_KEY = 'mala_clock_device';
   function fallbackUuid() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
@@ -440,6 +491,10 @@
   var loadingCard = document.getElementById('loadingCard');
   var mainCard = document.getElementById('mainCard');
   var errorCard = document.getElementById('errorCard');
+  var bindCard = document.getElementById('bindCard');
+  var bindKeyInput = document.getElementById('bindKeyInput');
+  var bindErrorMsg = document.getElementById('bindErrorMsg');
+  var btnBindSubmit = document.getElementById('btnBindSubmit');
   var btnGroup = document.getElementById('btnGroup');
   var empNameEl = document.getElementById('empName');
   var deviceHintEl = document.getElementById('deviceHint');
@@ -457,8 +512,46 @@
     loadingCard.style.display = 'none';
     mainCard.style.display = 'none';
     btnGroup.style.display = 'none';
+    bindCard.style.display = 'none';
     errorCard.style.display = 'block';
     errorCard.textContent = msg;
+  }
+
+  // ══════ LIFF 綁定畫面：liff_whoami 回 not_bound 時顯示 ══════
+  function showBindScreen() {
+    loadingCard.style.display = 'none';
+    mainCard.style.display = 'none';
+    btnGroup.style.display = 'none';
+    errorCard.style.display = 'none';
+    bindCard.style.display = 'block';
+  }
+  function showBindError(msg) {
+    bindErrorMsg.textContent = msg || '';
+  }
+  function doBind(code) {
+    return apiPost({ action: 'liff_bind', id_token: idToken, key: code.trim() })
+      .then(function (res) {
+        if (res && res.ok) { location.reload(); return; }
+        var msg = {
+          invalid_key: '啟用碼不正確，請跟店長確認',
+          already_bound_other_user: '這個員工已綁定其他 LINE 帳號，請店長先解除綁定',
+          line_account_in_use: '你的 LINE 帳號已經綁定另一位員工',
+          invalid_id_token: 'LINE 身分驗證失敗，請關掉重開'
+        }[res && res.error] || '綁定失敗，請告知主管';
+        showBindError(msg);
+      })
+      .catch(function () {
+        showBindError('連線失敗，請檢查網路後再試。');
+      });
+  }
+  if (btnBindSubmit) {
+    btnBindSubmit.addEventListener('click', function () {
+      var code = bindKeyInput ? bindKeyInput.value : '';
+      if (!code || !code.trim()) { showBindError('請輸入啟用碼'); return; }
+      btnBindSubmit.disabled = true;
+      showBindError('');
+      doBind(code).then(function () { btnBindSubmit.disabled = false; });
+    });
   }
 
   function typeLabel(t) { return t === 'in' ? '上班' : '下班'; }
@@ -735,7 +828,7 @@
     }
     btnRecent.disabled = true;
     btnRecent.textContent = '載入中…';
-    apiPost({ action: 'my_recent', key: key, device_id: deviceId })
+    apiPost(mkPayload('my_recent'))
       .then(function (res) {
         btnRecent.disabled = false;
         if (!res.ok) {
@@ -756,41 +849,57 @@
   });
 
   function init() {
-    if (!key) {
-      showError('連結錯誤：找不到員工代碼，請確認打卡連結是否完整。');
-      return;
-    }
-    if (API_URL.indexOf('PASTE_') === 0) {
-      showError('系統尚未設定完成，請聯絡老闆。');
-      return;
-    }
-    // 立即顯示外殼與打卡按鈕，不等 whoami（後端約 2.5 秒）——打卡本身只需 key＋GPS＋裝置碼，
-    // 伺服器端有重複打卡防護當安全網，員工一開 app 就能按。姓名／今日紀錄／按鈕灰階待 whoami 補上。
-    loadingCard.style.display = 'none';
-    mainCard.style.display = 'block';
-    btnGroup.style.display = 'flex';
-    empNameEl.textContent = '載入中…';
-    apiPost({ action: 'whoami', key: key, device_id: deviceId })
-      .then(function (res) {
-        if (!res.ok) {
-          showError('找不到這個打卡連結對應的員工，請確認連結是否正確。');
-          return;
-        }
-        empNameEl.textContent = res.name;
-        if (res.device_state === 'unbound') {
-          deviceHintEl.textContent = '本裝置尚未綁定，首次打卡將自動綁定。';
-        } else if (res.device_state === 'mismatch') {
-          deviceHintEl.textContent = '這不是你平常綁定的裝置，打卡將送出待核准。';
-        } else {
-          deviceHintEl.textContent = '';
-        }
-        renderTodayEvents(res.today_events);
-        renderTodayHours(res.today_hours);
-        updateButtonStates(res.last_counted);
-      })
-      .catch(function () {
-        showError('連線失敗，請檢查網路連線後重新整理頁面。');
-      });
+    // 先決定身分模式：網址帶 ?k= → 舊模式（一律不碰 LIFF）；否則嘗試 LIFF 登入。
+    // 兩種模式都失敗（沒有 k，也不在 LIFF 環境內／LIFF 登入失敗）才顯示錯誤畫面。
+    initIdentity().then(function (identityOk) {
+      if (!identityOk) {
+        showError('請用店長給你的專屬打卡連結開啟。');
+        return;
+      }
+      // LIFF 模式沒有薪資 handler（my_payslip 仍走 key），先把分頁藏起來避免點了報錯
+      if (useLiff) {
+        var payTab = document.querySelector('.tabbar .tab[data-view="pay"]');
+        if (payTab) payTab.style.display = 'none';
+      }
+      if (API_URL.indexOf('PASTE_') === 0) {
+        showError('系統尚未設定完成，請聯絡老闆。');
+        return;
+      }
+      // 立即顯示外殼與打卡按鈕，不等 whoami（後端約 2.5 秒）——打卡本身只需身分＋GPS＋裝置碼，
+      // 伺服器端有重複打卡防護當安全網，員工一開 app 就能按。姓名／今日紀錄／按鈕灰階待 whoami 補上。
+      loadingCard.style.display = 'none';
+      mainCard.style.display = 'block';
+      btnGroup.style.display = 'flex';
+      empNameEl.textContent = '載入中…';
+      apiPost(mkPayload('whoami'))
+        .then(function (res) {
+          if (!res.ok) {
+            // LIFF 帳號驗證成功但還沒綁員工 → 讓她自己輸入啟用碼綁定，不是錯誤
+            if (useLiff && res.error === 'not_bound') {
+              showBindScreen();
+              return;
+            }
+            showError('找不到這個打卡連結對應的員工，請確認連結是否正確。');
+            return;
+          }
+          empNameEl.textContent = res.name;
+          if (res.device_state === 'unbound') {
+            deviceHintEl.textContent = '本裝置尚未綁定，首次打卡將自動綁定。';
+          } else if (res.device_state === 'mismatch') {
+            deviceHintEl.textContent = '這不是你平常綁定的裝置，打卡將送出待核准。';
+          } else {
+            deviceHintEl.textContent = '';
+          }
+          renderTodayEvents(res.today_events);
+          renderTodayHours(res.today_hours);
+          updateButtonStates(res.last_counted);
+        })
+        .catch(function () {
+          showError('連線失敗，請檢查網路連線後重新整理頁面。');
+        });
+      // 定位預熱：頁面一確定身分就開始抓，打卡當下才不用整個等定位（見 getPosition 捷徑）。
+      startWarmUp();
+    });
   }
 
   function setBusy(busy) {
@@ -843,6 +952,23 @@
     return new Error('定位失敗，請重試。');
   }
 
+  // ── 定位預熱：頁面一載入就先抓，打卡當下能直接用（2026-08 加）───────────
+  // 階段 0 實測：冷啟動最慢 7,140ms，門檻 8,000ms，同仁按下打卡要等 7 秒會以為當掉。
+  // 只是把 watchPosition 收到的最新定位存起來，不改動既有 getPosition() 的判斷邏輯。
+  var warmFix = null;     // 預熱拿到的最新定位
+  var warmWatchId = null;
+
+  function startWarmUp() {
+    if (!navigator.geolocation) return;
+    warmWatchId = navigator.geolocation.watchPosition(function (pos) {
+      warmFix = pos;                                  // 持續更新，永遠是最新的
+    }, function () {}, GEO_OPTS);
+    // 3 分鐘後停掉，避免頁面開著一直耗電
+    setTimeout(function () {
+      if (warmWatchId !== null) { navigator.geolocation.clearWatch(warmWatchId); warmWatchId = null; }
+    }, 180000);
+  }
+
   /**
    * 取定位。onRetry 會在「決定要多等一下」時被呼叫一次，讓畫面能說明為什麼變慢
    * （不講的話同仁會以為當掉了——參考 2026-08-03「卡在送出打卡中」那次）。
@@ -857,6 +983,9 @@
         coords: isFinite(fakeAcc) ? { latitude: c.latitude, longitude: c.longitude, accuracy: fakeAcc } : c,
       });
     }
+    // 預熱捷徑：startWarmUp() 背景抓的定位如果已經夠好，直接用，不用再等一輪 getCurrentPosition。
+    // 沿用既有的 fixLooksGood，所以過時判斷與精準度門檻的行為完全一致。
+    if (warmFix && fixLooksGood(warmFix)) { return Promise.resolve(warmFix); }
     return new Promise(function (resolve, reject) {
       if (!navigator.geolocation) {
         reject(new Error('此裝置不支援定位功能，無法打卡。'));
@@ -919,17 +1048,14 @@
     getPosition(function () { showStatus('status-loading', '定位中…（訊號較弱，再抓一次）'); })
       .then(function (pos) {
         showStatus('status-loading', '送出打卡中…');
-        return apiPost({
-          action: 'clock',
-          key: key,
+        return apiPost(mkPayload('clock', {
           type: type,
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
           // 手機回報的定位誤差（公尺）。用來分辨「定位準、人真的在店外」與「定位根本不準」。
           // 舊後端收到多的欄位會直接忽略，不影響打卡，所以前後端部署順序不互卡。
           accuracy: pos.coords && isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null,
-          device_id: deviceId,
-        });
+        }));
       })
       .then(function (res) {
         // 只分「成功」與「沒成功」兩種（Eason 2026-08-03 指定：不管什麼狀況，
@@ -939,7 +1065,7 @@
         } else {
           showStatus('status-warn', CLOCK_FAIL_MSG + accuracyHint(res));
         }
-        apiPost({ action: 'whoami', key: key, device_id: deviceId }).then(function (r) {
+        apiPost(mkPayload('whoami')).then(function (r) {
           if (r.ok) {
             renderTodayEvents(r.today_events);
             renderTodayHours(r.today_hours);
@@ -949,7 +1075,7 @@
         // 剛打了卡，快取的最近 40 天已過期：展開中就立刻重抓，收合中則下次展開再抓
         recentLoaded = false;
         if (recentOpen) {
-          apiPost({ action: 'my_recent', key: key, device_id: deviceId }).then(function (r2) {
+          apiPost(mkPayload('my_recent')).then(function (r2) {
             if (r2.ok) {
               recentLoaded = true;
               renderRecentDays(r2.days);
@@ -962,7 +1088,7 @@
         showStatus('status-warn', CLOCK_FAIL_MSG);
         // 主動刷新今日紀錄：逾時/異常不代表沒進伺服器，讓她當場看得到到底有沒有成功，
         // 不用自己猜。這通失敗就算了（本來就是連線有問題），不再另外報錯蓋掉上面的訊息。
-        apiPost({ action: 'whoami', key: key, device_id: deviceId }).then(function (r) {
+        apiPost(mkPayload('whoami')).then(function (r) {
           if (r.ok) {
             renderTodayEvents(r.today_events);
             renderTodayHours(r.today_hours);
