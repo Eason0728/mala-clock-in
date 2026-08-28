@@ -117,6 +117,51 @@ cases.forEach(function (c) {
   }
 });
 
+
+/* ── bindInputHint()：擋下「貼到 LIFF 入口連結」這個必踩的坑 ──────────────
+ * 2026-08-28 實測：綁定畫面要人「貼上連結」，而畫面本身就是從入口連結開進來的，
+ * 手邊最近的那一條就是它。它不帶 ?k=，會被原樣當金鑰送出，後端回 invalid_key，
+ * 畫面顯示「啟用碼不正確，請跟店長確認」——把人推去問一個店長也解不了的問題。
+ * 判斷式只擋「看起來是網址、卻沒有 ?k=」，純金鑰一律放行。 */
+const bindInputHintSrc = extractFunctionSource(clockSrc, 'bindInputHint');
+
+function callBindInputHint(input) {
+  const sandbox = { input: input, result: undefined };
+  vm.createContext(sandbox);
+  vm.runInContext(bindInputHintSrc + '\nresult = bindInputHint(input);', sandbox);
+  return sandbox.result;
+}
+
+console.log('\n══ bindInputHint()：同樣從 clock.html 切出真實函式本體 ══');
+
+const hintCases = [
+  { name: 'LIFF 入口連結 → 給提示',        input: 'https://liff.line.me/2011292256-dNENLDwW', hint: true },
+  { name: '入口連結前後有空白 → 仍給提示',  input: '  https://liff.line.me/2011292256-dNENLDwW  ', hint: true },
+  { name: '大寫 HTTPS → 仍給提示',          input: 'HTTPS://LIFF.LINE.ME/2011292256-dNENLDwW', hint: true },
+  { name: '打卡頁網址但漏掉 ?k= → 給提示',  input: 'https://eason0728.github.io/mala-clock-in/clock.html', hint: true },
+  { name: '專屬連結（含 ?k=）→ 放行',       input: 'https://eason0728.github.io/mala-clock-in/clock.html?k=Ab3xY7mK', hint: false },
+  { name: '專屬連結（k 在後）→ 放行',       input: 'https://eason0728.github.io/mala-clock-in/clock.html?s=cf&k=abc', hint: false },
+  { name: '純啟用碼 → 放行',                input: 'Ab3xY7mK', hint: false },
+  { name: '空字串 → 放行（交給既有的「請輸入啟用碼」）', input: '', hint: false },
+  { name: '只有空白 → 放行',                input: '   ', hint: false },
+  { name: 'null → 放行',                    input: null, hint: false },
+];
+
+hintCases.forEach(function (c) {
+  const actual = callBindInputHint(c.input);
+  const got = !!actual;
+  try {
+    assert.strictEqual(got, c.hint);
+    // 提示只要出現，就必須講出「該貼哪一條」——只說「錯了」等於沒改善。
+    if (c.hint) assert.ok(actual.indexOf('?k=') !== -1, '提示沒有指出 ?k=，同仁還是不知道要貼哪條');
+    console.log('  \u2713 ' + c.name);
+  } catch (e) {
+    failCount++;
+    console.error('  \u2717 ' + c.name + '：預期 ' + (c.hint ? '有提示' : '無提示')
+      + '，實際 ' + JSON.stringify(actual));
+  }
+});
+
 if (failCount > 0) {
   console.error('\n❌ extract-bind-code：' + failCount + ' 項失敗');
   process.exitCode = 1;

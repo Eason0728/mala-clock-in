@@ -370,8 +370,8 @@
   <div id="errorCard" class="card center-msg" style="display:none; color:#c22a12;"></div>
 
   <div id="bindCard" class="card center-msg" style="display:none;">
-    <p style="margin:0 0 14px;">首次使用請輸入店長給你的啟用碼，或直接貼上店長傳的整條連結，完成 LINE 帳號綁定。</p>
-    <input type="text" id="bindKeyInput" placeholder="啟用碼或連結皆可" autocomplete="off"
+    <p style="margin:0 0 14px;">首次使用請輸入店長給你的啟用碼，或直接貼上店長傳的<b>專屬打卡連結</b>（網址裡有 ?k=），完成 LINE 帳號綁定。</p>
+    <input type="text" id="bindKeyInput" placeholder="啟用碼，或含 ?k= 的專屬連結" autocomplete="off"
            style="width:100%;padding:12px;font-size:16px;border:1px solid #ddd;border-radius:10px;box-sizing:border-box;">
     <div id="bindErrorMsg" style="color:#c22a12;margin-top:10px;font-size:14px;min-height:1.2em;"></div>
     <button class="btn btn-in" id="btnBindSubmit" type="button" style="margin-top:14px;width:100%;">送出</button>
@@ -603,6 +603,21 @@
     if (m) { try { return decodeURIComponent(m[1]); } catch (e) { return m[1]; } }
     return s;
   }
+
+  /** 貼錯連結時的專屬提示——沒有這道防線，訊息會把人推去問一個店長也解不了的問題。
+   *  綁定畫面本身就是從 LIFF 入口連結（https://liff.line.me/…）開進來的，所以同仁被要求
+   *  「貼上連結」時，手邊最近、最像答案的那一條就是它。但入口連結不帶 ?k=，
+   *  extractBindCode 會把整條網址原樣當金鑰送出 → 後端查無此 key → invalid_key
+   *  →「啟用碼不正確，請跟店長確認」。連結其實沒壞，只是貼錯條，店長查了也只會說「就是這條啊」。
+   *  這裡在送出前先擋下來，直接說清楚該貼哪一條。
+   *  判斷刻意只擋「看起來是網址、卻沒有 ?k=」：純金鑰一律放行，免得金鑰長得像網址時誤擋真人。 */
+  function bindInputHint(raw) {
+    var s = String(raw || '').trim();
+    if (!s) return '';
+    if (/[?&]k=/.test(s)) return '';             // 專屬連結，正常
+    if (!/^https?:\/\//i.test(s)) return '';     // 純啟用碼，正常
+    return '這是打卡系統的入口連結，不是你的啟用碼。請改貼店長給你的專屬打卡連結（網址裡有 ?k=），或直接輸入啟用碼。';
+  }
   function doBind(code) {
     var key = extractBindCode(code);
     // ⚠ 即時重讀 liff.getIDToken()，不要用 init 當下存的 idToken——同一個過期理由見 identityPayload()。
@@ -624,7 +639,10 @@
   }
   if (btnBindSubmit) {
     btnBindSubmit.addEventListener('click', function () {
-      var code = extractBindCode(bindKeyInput ? bindKeyInput.value : '');
+      var raw = bindKeyInput ? bindKeyInput.value : '';
+      var hint = bindInputHint(raw);
+      if (hint) { showBindError(hint); return; }
+      var code = extractBindCode(raw);
       if (!code) { showBindError('請輸入啟用碼'); return; }
       btnBindSubmit.disabled = true;
       showBindError('');
