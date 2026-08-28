@@ -208,6 +208,28 @@
   .re-restore { flex: none; font-size: 13px; padding: 6px 12px; border-radius: 8px;
                 border: 1px solid var(--brand-orange); background: #fff;
                 color: var(--brand-orange); font-weight: 700; cursor: pointer; }
+  /* 店內公告區（2026-08-28）。白底卡片一樣要自己設色，否則整段白字看不見。 */
+  #noticeCard { color: var(--brand-black); }
+  .nt-input { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px 12px;
+              border: 1px solid #d8cfc9; border-radius: 10px; background: #fff;
+              color: var(--brand-black); font-family: inherit; resize: vertical; min-height: 76px; }
+  .nt-meta { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .nt-meta label { font-size: 13px; color: #6b524a; font-weight: 700; }
+  .nt-meta input[type=date] { font-size: 15px; padding: 8px 10px; border: 1px solid #d8cfc9;
+                              border-radius: 10px; background: #fff; color: var(--brand-black); }
+  .nt-count { font-size: 12px; color: #8a7a72; margin-left: auto; }
+  .nt-count.over { color: #c22a12; font-weight: 700; }
+  .nt-item { padding: 10px 0; border-top: 1px solid #f0e6e0; font-size: 14px;
+             display: flex; gap: 8px; align-items: flex-start; }
+  .nt-item .nt-body { flex: 1; min-width: 0; }
+  .nt-item .nt-text { line-height: 1.65; word-break: break-word; }
+  .nt-item.off .nt-text { color: #8a7a72; }
+  .nt-item .nt-when { display: block; font-size: 12px; color: #8a7a72; margin-top: 3px; }
+  .nt-tag { display: inline-block; font-size: 11px; font-weight: 800; padding: 1px 7px;
+            border-radius: 20px; background: #f0e6e0; color: #6b524a; margin-left: 6px; }
+  .nt-act { flex: none; font-size: 13px; padding: 6px 12px; border-radius: 8px;
+            border: 1px solid var(--brand-orange); background: #fff;
+            color: var(--brand-orange); font-weight: 700; cursor: pointer; }
   .pd-meta { font-size: 13px; color: #6b524a; line-height: 1.6; }
   .pd-warn { font-size: 13px; color: #c22a12; margin-top: 6px; }
   .pd-actions { display: flex; gap: 10px; margin-top: 12px; }
@@ -426,6 +448,24 @@
     </div>
     <div class="ae-result" id="reResult" style="display:none"></div>
     <div class="re-list" id="reInactive"></div>
+  </div>
+
+  <!-- 店內公告：發出去馬上出現在同仁打卡頁最上方。下架＝停用不是真刪，發過什麼要留得住 -->
+  <div class="card" id="noticeCard" style="display:none">
+    <div class="ae-title">店內公告</div>
+    <div class="ae-hint">發布後<b>馬上</b>出現在同仁打卡頁的最上方。多則會每 5 秒輪流顯示，最多顯示 <b id="ntMaxShow">5</b> 則（新的優先）。</div>
+    <textarea class="nt-input" id="ntText" maxlength="120" placeholder="例如：9/1 起中午休息時間為 12:00–13:00，休息不用打卡。"></textarea>
+    <div class="nt-meta">
+      <label for="ntEnds">顯示到</label>
+      <input type="date" id="ntEnds">
+      <span class="nt-count" id="ntCount">0 / 120</span>
+    </div>
+    <div class="nt-meta">
+      <button type="button" class="submit-btn" id="ntBtn">發布公告</button>
+      <span class="ae-hint" style="margin:0">日期留空＝一直顯示，直到手動下架</span>
+    </div>
+    <div class="ae-result" id="ntResult" style="display:none"></div>
+    <div class="re-list" id="ntList"></div>
   </div>
 </div>
 
@@ -1528,6 +1568,135 @@
       setActive(empId, name, false, btn);
     });
     reloadRosterCard = load;
+    load();
+  })();
+
+  /* ── 店內公告（2026-08-28）──
+   * 值班主管在這裡發，同仁一開打卡頁最上方就看得到。權限同「新進同仁報到」：
+   * 凡持有主管金鑰的人都能發，留痕 created_by。
+   * 「下架」是把 active 改 FALSE 不是真刪——發過什麼、誰發的要留得住。 */
+  (function initNotices() {
+    var card = document.getElementById('noticeCard');
+    var ta = document.getElementById('ntText');
+    var ends = document.getElementById('ntEnds');
+    var btn = document.getElementById('ntBtn');
+    var box = document.getElementById('ntResult');
+    var listBox = document.getElementById('ntList');
+    var countEl = document.getElementById('ntCount');
+    if (!card || !ta || !ends || !btn || !box || !listBox || !countEl) return;
+    var maxLen = 120;
+
+    /* 公告是自由文字，塞進 innerHTML 之前一律轉義——同仁端用 textContent，
+       主管端這裡是拼字串建列表，少了這道就等於開一個 XSS。 */
+    function esc(v) {
+      return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function show(html, isErr) {
+      box.style.display = 'block';
+      box.className = 'ae-result' + (isErr ? ' err' : '');
+      box.innerHTML = html;
+    }
+    function shortDate(iso) {
+      var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+      return m ? (Number(m[2]) + '/' + Number(m[3])) : '';
+    }
+    function updateCount() {
+      var n = ta.value.trim().length;
+      countEl.textContent = n + ' / ' + maxLen;
+      countEl.className = 'nt-count' + (n > maxLen ? ' over' : '');
+    }
+
+    function render(rows) {
+      if (!rows.length) {
+        listBox.innerHTML = '<div class="re-list-title">目前沒有任何公告，同仁的打卡頁不會出現公告區。</div>';
+        return;
+      }
+      var live = rows.filter(function (r) { return r.active && !r.expired; });
+      listBox.innerHTML = '<div class="re-list-title">目前顯示中（' + live.length + '）／已發布過（' + rows.length + '）</div>'
+        + rows.map(function (r) {
+            var off = !r.active || r.expired;
+            var tag = !r.active ? '<span class="nt-tag">已下架</span>'
+                    : (r.expired ? '<span class="nt-tag">已過期</span>' : '');
+            var meta = [shortDate(r.created_at) + ' 發布', r.created_by ? ('由 ' + r.created_by) : '',
+                        r.ends_on ? ('顯示到 ' + r.ends_on) : ''].filter(Boolean).join('・');
+            return '<div class="nt-item' + (off ? ' off' : '') + '">'
+                 + '<span class="nt-body"><span class="nt-text">' + esc(r.text) + '</span>' + tag
+                 + '<span class="nt-when">' + esc(meta) + '</span></span>'
+                 + '<button type="button" class="nt-act" data-id="' + esc(r.id)
+                 + '" data-on="' + (r.active ? '0' : '1') + '">'
+                 + (r.active ? '下架' : '重新顯示') + '</button></div>';
+          }).join('');
+      [].forEach.call(listBox.querySelectorAll('.nt-act'), function (b) {
+        b.addEventListener('click', function () {
+          var on = b.getAttribute('data-on') === '1';
+          if (!confirm(on ? '要讓這則公告重新出現在同仁的打卡頁嗎？'
+                          : '要把這則公告從同仁的打卡頁下架嗎？\n紀錄會保留，之後可以再按「重新顯示」。')) return;
+          setActive(b.getAttribute('data-id'), on, b);
+        });
+      });
+    }
+
+    function load() {
+      if (!mgrKey) return;
+      apiPost({ action: 'mgr_notices', mgr_key: mgrKey }).then(function (res) {
+        if (!res || !res.ok) return;   // 舊後端沒有這個 action：整區不顯示，其餘功能不受影響
+        card.style.display = 'block';
+        if (Number(res.max_len) > 0) {
+          maxLen = Number(res.max_len);
+          ta.setAttribute('maxlength', String(maxLen));
+        }
+        var ms = document.getElementById('ntMaxShow');
+        if (ms && Number(res.max_show) > 0) ms.textContent = String(res.max_show);
+        // 下架日不給選過去的日子（後端也會擋，這裡只是先擋在手指上）
+        ends.min = taipeiTodayStr();
+        updateCount();
+        render(res.notices || []);
+      }).catch(function () {});
+    }
+
+    function setActive(id, active, srcBtn) {
+      var label = srcBtn.textContent;
+      srcBtn.disabled = true; srcBtn.textContent = '處理中…';
+      apiPost({ action: 'mgr_set_notice_active', mgr_key: mgrKey, id: id, active: active })
+        .then(function (res) {
+          srcBtn.disabled = false; srcBtn.textContent = label;
+          if (!res || !res.ok) { show('✕ ' + ((res && res.message) || '設定失敗，請再試一次'), true); return; }
+          show(active ? '✓ 已重新顯示，同仁打卡頁會再看到這則公告'
+                      : '✓ 已下架，同仁打卡頁不會再顯示這則公告');
+          load();
+        }).catch(function () {
+          srcBtn.disabled = false; srcBtn.textContent = label;
+          show('✕ 連線失敗，請檢查網路後再試一次', true);
+        });
+    }
+
+    ta.addEventListener('input', updateCount);
+    btn.addEventListener('click', function () {
+      var text = ta.value.trim();
+      if (!text) { show('✕ 請先輸入公告內容', true); return; }
+      if (text.length > maxLen) {
+        show('✕ 公告最多 ' + maxLen + ' 個字（目前 ' + text.length + ' 個字）', true); return;
+      }
+      var until = ends.value ? ('顯示到 ' + ends.value + ' 為止') : '一直顯示，直到你手動下架';
+      if (!confirm('這則公告會馬上出現在所有同仁的打卡頁最上方：\n\n'
+                 + text + '\n\n' + until + '。\n\n確定要發布嗎？')) return;
+      var label = btn.textContent;
+      btn.disabled = true; btn.textContent = '發布中…';
+      apiPost({ action: 'mgr_add_notice', mgr_key: mgrKey, text: text, ends_on: ends.value || '' })
+        .then(function (res) {
+          btn.disabled = false; btn.textContent = label;
+          if (!res || !res.ok) { show('✕ ' + ((res && res.message) || '發布失敗，請再試一次'), true); return; }
+          show('✓ 已發布，同仁下次打開打卡頁就會看到');
+          ta.value = ''; ends.value = ''; updateCount();
+          load();
+        }).catch(function () {
+          btn.disabled = false; btn.textContent = label;
+          show('✕ 連線失敗，請檢查網路後再試一次', true);
+        });
+    });
+
     load();
   })();
 

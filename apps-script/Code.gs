@@ -107,6 +107,14 @@ const LOW_ACCURACY_M = 50;
 // 值班主管核定（2026-07-13 新增）：只追加不覆蓋；同 (date,emp_id) 多筆以 entered_at 最新為準（讀取端處理）
 const APPROVED_HEADERS = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at'];
 const MANAGERS_HEADERS = ['name', 'key', 'active'];
+// 店內公告（2026-08-28 新增）：值班主管在核定頁發布，同仁打卡頁最上方輪播。
+// 只追加不刪除——停用是把 active 改 FALSE，紀錄留著（同「同仁異動」精神）。
+// ends_on 是「顯示到這天為止（含當天）」，留空＝不自動下架。
+const NOTICE_HEADERS = ['id', 'text', 'active', 'ends_on', 'created_at', 'created_by'];
+// 打卡頁最多輪播幾則。輪播一輪 5 秒，超過 5 則同仁根本輪不完，多的直接不送到前端。
+const NOTICE_MAX_SHOW = 5;
+// 單則字數上限。公告寫成長篇沒人看，也會把打卡按鈕擠出畫面。
+const NOTICE_MAX_LEN = 120;
 // 主管核定頁「請假註記」可選假別（2026-07-13 Eason 定案；改清單前後端 mock 要同步）
 // ⚠ 2026-08-22 起：值班核定頁的下拉改由薪酬系統的 payroll_leave_type 表決定，
 //   這份清單降級為「送出時的合法性白名單」＋薪酬後端連不上時的 fallback。
@@ -175,6 +183,13 @@ function setup() {
     managers = ss.insertSheet('managers');
   }
   managers.getRange(1, 1, 1, MANAGERS_HEADERS.length).setValues([MANAGERS_HEADERS]);
+
+  // 店內公告：值班主管在核定頁發布（2026-08-28 新增）
+  let notices = ss.getSheetByName('notices');
+  if (!notices) {
+    notices = ss.insertSheet('notices');
+  }
+  notices.getRange(1, 1, 1, NOTICE_HEADERS.length).setValues([NOTICE_HEADERS]);
 }
 
 function doGet(e) {
@@ -211,6 +226,9 @@ function doPost(e) {
     mgr_approve: handleMgrApprove,
     mgr_pending_devices: handleMgrPendingDevices,
     mgr_device_decision: handleMgrDeviceDecision,
+    mgr_notices: handleMgrNotices,
+    mgr_add_notice: handleMgrAddNotice,
+    mgr_set_notice_active: handleMgrSetNoticeActive,
   };
 
   // 薪資模組（Payroll.gs）的 action 掛載於此；Payroll.gs 不存在時完全不影響打卡與核定。
@@ -668,6 +686,8 @@ function handleWhoami(body) {
     // 不要自己從 today_events 算，避免跨日時兩邊算法不一致。
     last_counted: lastCountedEvent(eventRows, roster.emp_id),
     today_hours: todayHoursSummary(eventRows, roster.emp_id, today),
+    // 店內公告：沒有公告時回空陣列，前端整塊不顯示（畫面與加這功能之前一模一樣）。
+    notices: activeNotices(ss, today),
   };
 }
 
@@ -1073,6 +1093,157 @@ function handleMgrSetActive(body) {
   setRosterCell(rosterSheet, row.__rowIndex, 'removed_by', active ? '' : String(mgr.name || ''));
   return { ok: true, emp_id: empId, name: name, active: active,
            removed_at: active ? '' : now, removed_by: active ? '' : String(mgr.name || '') };
+}
+
+/* ══════════════════════════════════════════════════════════════
+   店內公告（2026-08-28 新增）
+   值班主管在核定頁發布 → 同仁打卡頁最上方輪播。
+   分頁不存在時一律當作「沒有公告」，不報錯——三家店的舊試算表
+   在部署當下都還沒有 notices 分頁，whoami 必須照常運作。
+   ══════════════════════════════════════════════════════════════ */
+
+/** notices 缺哪個欄位就補到最右邊（冪等）。同 ensureRosterHeaders 的精神。 */
+function ensureNoticeHeaders(sheet) {
+  const head = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(String);
+  NOTICE_HEADERS.forEach(function (h) {
+    if (head.indexOf(h) === -1) { sheet.getRange(1, head.length + 1).setValue(h); head.push(h); }
+  });
+}
+
+/** 取得 notices 分頁；create 為真時找不到就自建（免得每加一家店都要記得跑 setup）。 */
+function noticeSheet(ss, create) {
+  let sheet = ss.getSheetByName('notices');
+  if (!sheet && create) {
+    sheet = ss.insertSheet('notices');
+    sheet.getRange(1, 1, 1, NOTICE_HEADERS.length).setValues([NOTICE_HEADERS]);
+  }
+  if (sheet) ensureNoticeHeaders(sheet);
+  return sheet;
+}
+
+/**
+ * 同仁端要顯示的公告：啟用中、未過下架日，新的排前面，最多 NOTICE_MAX_SHOW 則。
+ * ⚠ ends_on／created_at 從儲存格讀回可能是 Date 物件，一律過 normCellDate／normCellTs，
+ *   不可直接 String()（同 2026-07-15 核定日期比對那個坑）。
+ */
+function activeNotices(ss, today) {
+  const sheet = ss.getSheetByName('notices');
+  if (!sheet) return [];
+  const t = String(today || todayTaipeiStr());
+  return readSheetAsObjects(sheet).rows
+    .filter(function (r) {
+      if (String(r.active).toLowerCase() !== 'true') return false;
+      const end = normCellDate(r.ends_on);
+      // yyyy-MM-dd 是等寬格式，字串比較就等於日期比較。留空＝不下架。
+      return !end || end >= t;
+    })
+    .map(function (r) {
+      return { id: String(r.id), text: String(r.text || '').trim(),
+               created_at: normCellTs(r.created_at) };
+    })
+    .filter(function (n) { return !!n.text; })
+    .sort(function (a, b) { return a.created_at < b.created_at ? 1 : (a.created_at > b.created_at ? -1 : 0); })
+    .slice(0, NOTICE_MAX_SHOW)
+    .map(function (n) { return { id: n.id, text: n.text }; });
+}
+
+/** 送出來的下架日：允許空字串，否則必須是 yyyy-MM-dd。回 null 代表格式不合。 */
+function normNoticeEndsOn(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return '';
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+/** 主管金鑰驗證：三支公告 API 共用，回 {ok:false} 或 {ok:true, ss, mgr}。 */
+function noticeAuth(body) {
+  const ss = getSS();
+  const mgrSheet = ss.getSheetByName('managers');
+  if (!mgrSheet) return { ok: false, res: { ok: false, error: 'no_managers' } };
+  const mgr = findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key);
+  if (!mgr) return { ok: false, res: { ok: false, error: 'unauthorized' } };
+  return { ok: true, ss: ss, mgr: mgr };
+}
+
+/**
+ * API：{action:'mgr_notices', mgr_key} → 全部公告（含已停用與已過期），給主管頁管理用。
+ * 與 activeNotices 不同：這裡不過濾、不截斷，主管要看得到自己發過什麼。
+ */
+function handleMgrNotices(body) {
+  const auth = noticeAuth(body);
+  if (!auth.ok) return auth.res;
+
+  const sheet = auth.ss.getSheetByName('notices');
+  if (!sheet) return { ok: true, notices: [], max_len: NOTICE_MAX_LEN, max_show: NOTICE_MAX_SHOW };
+
+  const today = todayTaipeiStr();
+  const notices = readSheetAsObjects(sheet).rows.map(function (r) {
+    const end = normCellDate(r.ends_on);
+    const on = String(r.active).toLowerCase() === 'true';
+    return {
+      id: String(r.id),
+      text: String(r.text || '').trim(),
+      active: on,
+      ends_on: end,
+      expired: !!end && end < today,
+      created_at: normCellTs(r.created_at),
+      created_by: String(r.created_by || ''),
+    };
+  }).filter(function (n) { return !!n.id; });
+
+  notices.sort(function (a, b) { return a.created_at < b.created_at ? 1 : (a.created_at > b.created_at ? -1 : 0); });
+  return { ok: true, notices: notices, max_len: NOTICE_MAX_LEN, max_show: NOTICE_MAX_SHOW };
+}
+
+/** API：{action:'mgr_add_notice', mgr_key, text, ends_on?} → 發布一則公告。 */
+function handleMgrAddNotice(body) {
+  const auth = noticeAuth(body);
+  if (!auth.ok) return auth.res;
+
+  const text = String(body.text == null ? '' : body.text).trim();
+  if (!text) return { ok: false, error: 'text_required', message: '請先輸入公告內容' };
+  if (text.length > NOTICE_MAX_LEN) {
+    return { ok: false, error: 'text_too_long',
+             message: '公告最多 ' + NOTICE_MAX_LEN + ' 個字（目前 ' + text.length + ' 個字）' };
+  }
+  const endsOn = normNoticeEndsOn(body.ends_on);
+  if (endsOn === null) return { ok: false, error: 'bad_ends_on', message: '下架日期格式不對' };
+  const today = todayTaipeiStr();
+  if (endsOn && endsOn < today) {
+    return { ok: false, error: 'ends_on_past', message: '下架日期已經過了，這則公告發出來不會顯示' };
+  }
+
+  const sheet = noticeSheet(auth.ss, true);
+  const id = 'N' + Date.now();
+  const createdAt = nowTaipeiIso();
+  // appendRow 依 NOTICE_HEADERS 的順序；表頭自癒已在 noticeSheet 做過。
+  sheet.appendRow([id, text, true, endsOn, createdAt, String(auth.mgr.name || '')]);
+
+  return { ok: true, id: id, text: text, ends_on: endsOn,
+           created_at: createdAt, created_by: String(auth.mgr.name || '') };
+}
+
+/**
+ * API：{action:'mgr_set_notice_active', mgr_key, id, active} → 下架／重新啟用一則公告。
+ * 刻意不做真刪除：發過什麼、誰發的要留得住（同 mgr_set_active 的處理）。
+ */
+function handleMgrSetNoticeActive(body) {
+  const auth = noticeAuth(body);
+  if (!auth.ok) return auth.res;
+
+  const sheet = auth.ss.getSheetByName('notices');
+  if (!sheet) return { ok: false, error: 'not_found', message: '找不到這則公告' };
+  ensureNoticeHeaders(sheet);
+
+  const id = String(body.id || '').trim();
+  if (!id) return { ok: false, error: 'id_required' };
+  const row = readSheetAsObjects(sheet).rows.filter(function (r) { return String(r.id) === id; })[0];
+  if (!row) return { ok: false, error: 'not_found', message: '找不到這則公告' };
+
+  const active = body.active === true || String(body.active).toLowerCase() === 'true';
+  // setRosterCell 是依「實際表頭」定位的泛用寫格函式（名字沿用歷史），
+  // 不可改用 NOTICE_HEADERS.indexOf——實際欄序未必等於常數順序。
+  setRosterCell(sheet, row.__rowIndex, 'active', active);
+  return { ok: true, id: id, active: active };
 }
 
 /**

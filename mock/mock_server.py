@@ -20,6 +20,7 @@ import random
 import re
 import string
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -139,6 +140,9 @@ def load_data():
         changed = True
     if "leave" not in data:
         data["leave"] = []
+        changed = True
+    if "notices" not in data:
+        data["notices"] = []
         changed = True
     if changed:
         save_data(data)
@@ -980,6 +984,8 @@ def handle_whoami(data, body):
         # 不要自己從 today_events 算，避免跨日時兩邊算法不一致。
         "last_counted": last_counted_event(data, roster["emp_id"]),
         "today_hours": today_hours_summary(data, roster["emp_id"], today),
+        # 店內公告：沒有公告時回空陣列，前端整塊不顯示（與 Code.gs 的 activeNotices 同步）
+        "notices": active_notices(data, today),
     }
 
 
@@ -1213,6 +1219,91 @@ def handle_mgr_set_active(data, body):
             "removed_at": row["removed_at"], "removed_by": row["removed_by"]}
 
 
+# ── 店內公告（2026-08-28，與 Code.gs 的 activeNotices／handleMgrNotices… 同步）──
+NOTICE_MAX_SHOW = 5
+NOTICE_MAX_LEN = 120
+
+
+def active_notices(data, today=None):
+    """同仁端要顯示的公告：啟用中、未過下架日，新的排前面，最多 NOTICE_MAX_SHOW 則。"""
+    t = today or today_str()
+    rows = [
+        n for n in data.get("notices", [])
+        if n.get("active") and str(n.get("text", "")).strip()
+        and (not n.get("ends_on") or str(n["ends_on"]) >= t)
+    ]
+    rows.sort(key=lambda n: str(n.get("created_at", "")), reverse=True)
+    return [{"id": n["id"], "text": str(n["text"]).strip()} for n in rows[:NOTICE_MAX_SHOW]]
+
+
+def _notice_auth(data, body):
+    return find_manager_by_key(data, body.get("mgr_key"))
+
+
+def handle_mgr_notices(data, body):
+    mgr = _notice_auth(data, body)
+    if not mgr:
+        return {"ok": False, "error": "unauthorized"}
+    today = today_str()
+    rows = []
+    for n in data.get("notices", []):
+        ends = str(n.get("ends_on") or "")
+        rows.append({
+            "id": n["id"],
+            "text": str(n.get("text", "")).strip(),
+            "active": bool(n.get("active")),
+            "ends_on": ends,
+            "expired": bool(ends and ends < today),
+            "created_at": n.get("created_at", ""),
+            "created_by": n.get("created_by", ""),
+        })
+    rows.sort(key=lambda n: str(n.get("created_at", "")), reverse=True)
+    return {"ok": True, "notices": rows, "max_len": NOTICE_MAX_LEN, "max_show": NOTICE_MAX_SHOW}
+
+
+def handle_mgr_add_notice(data, body):
+    mgr = _notice_auth(data, body)
+    if not mgr:
+        return {"ok": False, "error": "unauthorized"}
+    text = str(body.get("text") or "").strip()
+    if not text:
+        return {"ok": False, "error": "text_required", "message": "請先輸入公告內容"}
+    if len(text) > NOTICE_MAX_LEN:
+        return {"ok": False, "error": "text_too_long",
+                "message": f"公告最多 {NOTICE_MAX_LEN} 個字（目前 {len(text)} 個字）"}
+    ends_on = str(body.get("ends_on") or "").strip()
+    if ends_on and not re.match(r"^\d{4}-\d{2}-\d{2}$", ends_on):
+        return {"ok": False, "error": "bad_ends_on", "message": "下架日期格式不對"}
+    today = today_str()
+    if ends_on and ends_on < today:
+        return {"ok": False, "error": "ends_on_past", "message": "下架日期已經過了，這則公告發出來不會顯示"}
+
+    nid = "N" + str(int(time.time() * 1000))
+    created_at = iso_now()
+    data.setdefault("notices", []).append({
+        "id": nid, "text": text, "active": True, "ends_on": ends_on,
+        "created_at": created_at, "created_by": mgr.get("name", ""),
+    })
+    save_data(data)
+    return {"ok": True, "id": nid, "text": text, "ends_on": ends_on,
+            "created_at": created_at, "created_by": mgr.get("name", "")}
+
+
+def handle_mgr_set_notice_active(data, body):
+    mgr = _notice_auth(data, body)
+    if not mgr:
+        return {"ok": False, "error": "unauthorized"}
+    nid = str(body.get("id") or "").strip()
+    if not nid:
+        return {"ok": False, "error": "id_required"}
+    for n in data.get("notices", []):
+        if str(n["id"]) == nid:
+            n["active"] = body.get("active") is True or str(body.get("active")).lower() == "true"
+            save_data(data)
+            return {"ok": True, "id": nid, "active": n["active"]}
+    return {"ok": False, "error": "not_found", "message": "找不到這則公告"}
+
+
 def handle_mgr_pending_devices(data, body):
     """{action:'mgr_pending_devices', mgr_key} → 待核准裝置清單（與 Code.gs 同步）。"""
     if not find_manager_by_key(data, body.get("mgr_key")):
@@ -1247,6 +1338,9 @@ ACTIONS = {
     "mgr_approve": handle_mgr_approve,
     "mgr_pending_devices": handle_mgr_pending_devices,
     "mgr_device_decision": handle_mgr_device_decision,
+    "mgr_notices": handle_mgr_notices,
+    "mgr_add_notice": handle_mgr_add_notice,
+    "mgr_set_notice_active": handle_mgr_set_notice_active,
 }
 
 MIME_TYPES = {
