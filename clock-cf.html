@@ -231,6 +231,23 @@
   .status-loading { background: rgba(255, 255, 255, 0.9); color: var(--brand-black); }
   .center-msg { text-align: center; padding: 40px 0; }
   /* ── 分頁列（打卡／我的薪資）── */
+  /* ── 店內公告（2026-08-28）──────────────────────────────
+     值班主管在核定頁發布，這裡只負責顯示。刻意做成「一次一整則」而不是橫向跑馬燈：
+     同仁打完卡就關頁，跑馬燈一輪要 20 秒以上，重點常常還沒捲出來人就走了。 */
+  .notice {
+    background: rgba(255,255,255,.15); border-left: 4px solid var(--brand-gold);
+    border-radius: 12px; padding: 12px 14px; margin-bottom: 18px;
+  }
+  .notice .nc-head { font-size: 12px; font-weight: 900; color: var(--brand-gold);
+    letter-spacing: 1px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
+  .notice .nc-dots { display: flex; gap: 4px; }
+  .notice .nc-dots i { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,.35); display: block; }
+  .notice .nc-dots i.on { background: var(--brand-gold); }
+  .notice .nc-msg { font-size: 14.5px; font-weight: 700; line-height: 1.6; }
+  .notice .nc-msg.fade { animation: ncFade .5s ease; }
+  @keyframes ncFade { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .notice .nc-msg.fade { animation: none; } }
+
   .tabbar { display: flex; gap: 8px; margin-bottom: 20px; }
   .tabbar .tab { flex: 1; border: 0; border-radius: 12px; padding: 12px 0; font: inherit;
     font-size: 16px; font-weight: 800; background: rgba(255,255,255,.14); color: #fff; cursor: pointer; transition: .15s; }
@@ -322,6 +339,13 @@
     <h1>麻的🔥小辛辣</h1>
     <p>員工專區</p>
   </header>
+
+  <!-- 店內公告：值班主管在核定頁發布。沒有公告時整塊不出現，畫面與沒這功能之前一樣。
+       放在分頁列上方＝打卡與我的薪資兩個分頁都看得到。 -->
+  <div class="notice" id="noticeBox" style="display:none;" aria-live="polite">
+    <div class="nc-head"><span>📢 店內公告</span><span class="nc-dots" id="noticeDots"></span></div>
+    <div class="nc-msg" id="noticeMsg"></div>
+  </div>
 
   <nav class="tabbar" id="tabbar">
     <button class="tab on" data-view="clock" type="button">🕐 打卡</button>
@@ -683,6 +707,51 @@
     }
   }
 
+  // ── 店內公告 ────────────────────────────────────────────
+  // 一則就靜靜擺著不動；多則才每 5 秒換一則，每次都是完整的一整則。
+  var NOTICE_ROTATE_MS = 5000;
+  var noticeTimer = null;
+
+  function renderNotices(list) {
+    var box = document.getElementById('noticeBox');
+    var msg = document.getElementById('noticeMsg');
+    var dots = document.getElementById('noticeDots');
+    if (!box || !msg || !dots) return;
+    if (noticeTimer) { clearInterval(noticeTimer); noticeTimer = null; }
+
+    // 舊後端沒有 notices 欄位 → undefined → 整塊不顯示（優雅降級，部署順序不互卡）
+    var items = (list || []).filter(function (n) { return n && String(n.text || '').trim(); });
+    if (!items.length) { box.style.display = 'none'; return; }
+
+    box.style.display = 'block';
+    dots.innerHTML = '';
+    if (items.length > 1) {
+      items.forEach(function (_, i) {
+        var d = document.createElement('i');
+        if (i === 0) d.className = 'on';
+        dots.appendChild(d);
+      });
+    }
+
+    function show(idx) {
+      // ⚠ 一律 textContent，絕不 innerHTML：公告是主管手打的自由文字，
+      //   用 innerHTML 等於讓任何拿得到主管金鑰的人可以往同仁的畫面塞 HTML。
+      msg.textContent = String(items[idx].text).trim();
+      msg.classList.remove('fade');
+      void msg.offsetWidth;   // 強制重排，讓同一個元素能重播淡入動畫
+      msg.classList.add('fade');
+      for (var k = 0; k < dots.children.length; k++) {
+        dots.children[k].className = (k === idx ? 'on' : '');
+      }
+    }
+
+    var i = 0;
+    show(0);
+    if (items.length > 1) {
+      noticeTimer = setInterval(function () { i = (i + 1) % items.length; show(i); }, NOTICE_ROTATE_MS);
+    }
+  }
+
   function renderTodayEvents(events) {
     todayListEl.innerHTML = '';
     if (!events || events.length === 0) {
@@ -951,6 +1020,9 @@
           renderTodayEvents(res.today_events);
           renderTodayHours(res.today_hours);
           updateButtonStates(res.last_counted);
+          // 公告只在開頁時渲染一次：打卡後那兩通 whoami 不重畫，
+          // 否則輪播會被重置回第一則，同仁正在讀的那則會突然跳掉。
+          renderNotices(res.notices);
         })
         .catch(function () {
           showError('連線失敗，請檢查網路連線後重新整理頁面。');
