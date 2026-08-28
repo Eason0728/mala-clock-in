@@ -346,8 +346,8 @@
   <div id="errorCard" class="card center-msg" style="display:none; color:#c22a12;"></div>
 
   <div id="bindCard" class="card center-msg" style="display:none;">
-    <p style="margin:0 0 14px;">首次使用請輸入店長給你的啟用碼，完成 LINE 帳號綁定。</p>
-    <input type="text" id="bindKeyInput" placeholder="啟用碼" autocomplete="off"
+    <p style="margin:0 0 14px;">首次使用請輸入店長給你的啟用碼，或直接貼上店長傳的整條連結，完成 LINE 帳號綁定。</p>
+    <input type="text" id="bindKeyInput" placeholder="啟用碼或連結皆可" autocomplete="off"
            style="width:100%;padding:12px;font-size:16px;border:1px solid #ddd;border-radius:10px;box-sizing:border-box;">
     <div id="bindErrorMsg" style="color:#c22a12;margin-top:10px;font-size:14px;min-height:1.2em;"></div>
     <button class="btn btn-in" id="btnBindSubmit" type="button" style="margin-top:14px;width:100%;">送出</button>
@@ -571,9 +571,18 @@
   function showBindError(msg) {
     bindErrorMsg.textContent = msg || '';
   }
+  /** 同仁多半會把店長給的整條網址貼上來，自動抽出 ?k= 的值；純金鑰則原樣使用。 */
+  function extractBindCode(raw) {
+    var s = String(raw || '').trim();
+    if (!s) return '';
+    var m = s.match(/[?&]k=([^&#\s]+)/);
+    if (m) { try { return decodeURIComponent(m[1]); } catch (e) { return m[1]; } }
+    return s;
+  }
   function doBind(code) {
+    var key = extractBindCode(code);
     // ⚠ 即時重讀 liff.getIDToken()，不要用 init 當下存的 idToken——同一個過期理由見 identityPayload()。
-    return apiPost({ action: 'liff_bind', id_token: liff.getIDToken(), key: code.trim() })
+    return apiPost({ action: 'liff_bind', id_token: liff.getIDToken(), key: key })
       .then(function (res) {
         if (res && res.ok) { location.reload(); return; }
         var msg = {
@@ -591,8 +600,8 @@
   }
   if (btnBindSubmit) {
     btnBindSubmit.addEventListener('click', function () {
-      var code = bindKeyInput ? bindKeyInput.value : '';
-      if (!code || !code.trim()) { showBindError('請輸入啟用碼'); return; }
+      var code = extractBindCode(bindKeyInput ? bindKeyInput.value : '');
+      if (!code) { showBindError('請輸入啟用碼'); return; }
       btnBindSubmit.disabled = true;
       showBindError('');
       doBind(code).then(function () { btnBindSubmit.disabled = false; });
