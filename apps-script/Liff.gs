@@ -177,3 +177,25 @@ var LIFF_HANDLERS = {
   liff_whoami: function (body) { return withLineIdentity_(body, handleWhoami); },
   liff_my_recent: function (body) { return withLineIdentity_(body, handleMyRecent); },
 };
+
+/**
+ * 一次性授權用：讓專案擁有者在 Apps Script 編輯器裡執行這支，
+ * 好觸發 UrlFetchApp（連線至外部服務）的授權對話框。
+ *
+ * 為什麼需要它：Apps Script 是「按需授權」——執行一支用不到外部連線的函式時，
+ * 授權畫面不會要求該權限。而本檔其餘函式都以底線結尾（私有慣例），
+ * 編輯器的執行下拉選單刻意不顯示它們，擁有者無從選取。
+ *
+ * 這支只用一個假 token 打一次 LINE 的驗證端點（必定回 400），不寫入任何資料。
+ * 授權完成後可以留著，日後換人接手或重建專案時還會用到。
+ */
+function liffAuthorizeOnce() {
+  var res = UrlFetchApp.fetch(LIFF_CONFIG.VERIFY_URL, {
+    method: 'post',
+    payload: { id_token: 'dummy-for-authorization', client_id: LIFF_CONFIG.CHANNEL_ID },
+    muteHttpExceptions: true,
+  });
+  var code = res.getResponseCode();
+  Logger.log('LINE verify 回應 HTTP ' + code + '（400 是正常的，代表連得出去、授權已完成）');
+  return code;
+}
