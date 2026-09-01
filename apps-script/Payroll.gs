@@ -69,6 +69,7 @@ const PAY_CONFIG_DEFAULT = [
   // 年終獎金：每月先提列（成本認列），不進同仁的實付。只有正職提列。
   ['yearend_months', 1, '年終獎金月數（全店預設，主檔可逐人覆寫）'],
   // 遲到分鐘不計薪（Eason 2026-08-23 定案）。true＝啟用；遲到「照舊也扣全勤」，兩個都扣。
+  ['pt_attend_min_hours', 100, '計時全勤津貼的最低時數門檻'],
   ['late_deduct', 'true', '遲到分鐘不計薪（true/false）'],
   ['late_div_days', 30, '遲到費率分母（天）'],
   ['late_div_hours', 8, '遲到費率分母（時）'],
@@ -522,6 +523,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
 
   let baseH = null, surplus = null, otPaid = null;
   let ptWage = 0;   // 計時同仁的有效時薪（基本＋滿勤加給＋年資加給），遲到扣款要用
+  let ptAttendInfo = null;   // 計時全勤津貼的判定結果（前端顯示時薪組成用）
   const supportH = (att.support || []).reduce(function (a, s) { return a + payNum(s.hours); }, 0);
 
   if (ft) {
@@ -562,10 +564,14 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     // 計時：本店時數 × 時薪；時薪加給＝滿勤(工時分頁手動打勾)+10、年資(滿半年次月起)+10，可疊加
     // 本月時薪：工時分頁填了 wage_override 就用該月值，否則用主檔 wage（計時每月時薪可不同、又保留歷史）
     let w = payNum(att.wage_override) > 0 ? payNum(att.wage_override) : payNum(e.wage);
-    // E1 滿勤加給：管理者於工時分頁手動勾選（滿100H+全勤由管理者判定）。金額門市可覆寫（0＝不給）
-    if (payBool(att.full_attend)) w += payCfgNum(cfg, 'pt_attend_plus', 10);
+    // E1 全勤津貼（2026-08-23 改）：勾選＝有資格，**實際符不符合由系統自動偵測**
+    //   （時數達門檻且缺勤 0），與餐費補助同一套「勾了才算＋自動判定」的做法。
+    //   改版前是「勾了就給」，管理者要自己判斷條件；現在勾錯也不會多給。
+    const ptAttend = payPtAttendCheck(att, cfg);
+    w += ptAttend.plus;
     w += payTenurePlus(e, ym, cfg);          // E2 年資加給（金額與年資門檻同樣可依門市覆寫）
     ptWage = w;   // 存到外層：下面的「遲到不計薪」要用同一個有效時薪，不另立標準
+    ptAttendInfo = ptAttend;   // 帶到回傳值，前端要顯示「有沒有加到全勤津貼、為什麼」
     push(earn, 'hourly_wage', '薪資（時數）', payR2(att.hours), w, att.hours * w);
     // 國定假日出勤：計時同仁時薪雙倍（正職是給假、不另計）。
     // 時數本身已含在上面的總時數裡，這裡只補「多的那一倍」。
@@ -686,6 +692,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     total_hours: payR2(att.hours), support_hours: payR2(supportH),
     base_hours: baseH, surplus_hours: surplus, ot_paid_hours: otPaid,
     earn: earn, ded: ded, gross: gross, deduction: deduct, net: gross - deduct, leave_rate: rate,
+    pt_attend: ptAttendInfo,
   };
 }
 
@@ -782,6 +789,23 @@ function payAttendVoid(att, cfg) {
   const eCap = payNum((cfg || {}).attend_void_early_min);
   if (eCap > 0 && payNum(att.early_min) >= eCap) return '早退累計' + payR2(att.early_min) + '分';
   return '';
+}
+
+/** 計時全勤津貼是否「實際符合」（Eason 2026-08-23 改成與餐費補助同一套邏輯）：
+ *  勾選＝**有這項補助的資格**，實際給不給由系統自動偵測。兩個條件都成立才加。
+ *    ①當月時數 ≥ 門檻（預設 100H，`pt_attend_min_hours` 可依門市覆寫）
+ *    ②缺勤天數為 0（遲到／早退／忘刷／請假都算在 deduct_days，依假別表的 count_absent）
+ *  ⚠ 手動輸入工時的月份 deduct_days 是人工填的，這裡照樣吃那個值——
+ *    以前改成純手動就是因為那種月份抓不到缺勤，現在等於「你填 0 就算全勤」，語意一致。
+ *  回 { on:是否勾選, qualified:是否符合, hours, deduct_days, min_hours, plus } */
+function payPtAttendCheck(att, cfg) {
+  const on = payBool(att.full_attend);
+  const minH = payCfgNum(cfg, 'pt_attend_min_hours', 100);
+  const h = payNum(att.hours);
+  const dd = payNum(att.deduct_days);
+  const qualified = h >= minH && dd === 0;
+  return { on: on, qualified: qualified, hours: h, deduct_days: dd, min_hours: minH,
+           plus: (on && qualified) ? payCfgNum(cfg, 'pt_attend_plus', 10) : 0 };
 }
 
 /** 把 att 上的請假時數整理成 { 假別code: 時數 }。

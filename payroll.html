@@ -380,7 +380,8 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
   </div>
   <div class="card">
     <h2>計時加給 <span id="ptScope" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
-    <p class="hint">只影響<b>計時同仁</b>。有效時薪 ＝ 基本時薪 ＋ <b>滿勤加給</b>（在「出勤資料」勾了「全勤津貼」才給）
+    <p class="hint">只影響<b>計時同仁</b>。有效時薪 ＝ 基本時薪 ＋ <b>全勤津貼</b>（在「出勤資料」勾了<b>才有資格</b>，
+      實際給不給由系統自動偵測：時數達門檻且缺勤 0，與餐費補助同一套做法）
       ＋ <b>年資加給</b>（到職滿門檻月數<b>之後的次月</b>起），兩者可<b>疊加</b>。<br>
       <b>填 0 ＝該門市不給這項加給</b>。各店規則不同時記得勾「只套用到目前門市」。<br>
       年資門檻的判定看月份：門檻 6 個月、3/1 到職 → 9/1 屆滿 → <b>10 月</b>起才給。</p>
@@ -968,20 +969,31 @@ function renderRun(){
        就推斷成年資加給。但 run 是計算當下的快照，之後有人改了工時分頁卻沒重算，
        差額就對不上實際組成（王禹婕 2026-05 因此被標成「年資10」，她那時到職才兩個月）。
        改成：滿勤看勾選、年資照規則算，**兩者加總對得上差額才標明細，對不上只說「含加給」**。 */
-    let wageNote='';
+    /* 2026-08-23 起：全勤津貼改成「勾選＝資格、實際給不給自動偵測」，引擎直接回 pt_attend
+       判定結果，前端**不再用差額反推**（那是猜的，改過設定沒重算就會標錯）。 */
+    let wageNote='', attNote='';
+    const pa=r.pt_attend;
     const diff=eff-mw;
     if(diff>0){
-      const attPlus=(ATT[r.emp_id]||{}).full_attend ? ptAttendPlus() : 0;
+      const attPlus=pa ? n(pa.plus) : 0;
       const tenPlus=ptTenurePlus(m);
       const parts=[];
-      if(attPlus) parts.push('滿勤'+attPlus);
+      if(attPlus) parts.push('全勤'+attPlus);
       if(tenPlus) parts.push('年資'+tenPlus);
       wageNote=(parts.length && attPlus+tenPlus===diff)
         ? `${nf(mw)} +${parts.join(' +')}`
-        : `${nf(mw)} +加給${nf(diff)}`;   // 組成對不上就不亂猜（多半是改過設定沒重算）
+        : `${nf(mw)} +加給${nf(diff)}`;   // 對不上就不亂猜（多半是改過設定沒重算）
+    }
+    /* 勾了資格卻沒拿到的，要說出「為什麼」——否則管理者會以為系統壞了。
+       沒勾的完全不顯示（那是「本來就沒有這項補助」，不是異常）。*/
+    if(pa && pa.on && !pa.qualified){
+      const why=[];
+      if(n(pa.hours)<n(pa.min_hours)) why.push(`時數 ${r2(pa.hours)}／${r2(pa.min_hours)}H`);
+      if(n(pa.deduct_days)>0) why.push(`缺勤 ${r2(pa.deduct_days)} 天`);
+      attNote=`<span style="color:#b4762a;font-size:11.5px"> ⚠ 全勤津貼未達標（${why.join('、')}）</span>`;
     }
     const roleCell=r.is_full_time?(n(m.mgr_allow)>0?'<b>店長</b>':'正職')
-      :(`時薪 <b>${nf(eff)}</b>`+(wageNote?`<span style="color:var(--muted);font-size:11.5px"> (${wageNote})</span>`:''));
+      :(`時薪 <b>${nf(eff)}</b>`+(wageNote?`<span style="color:var(--muted);font-size:11.5px"> (${wageNote})</span>`:'')+attNote);
     h+=`<tr><td><b>${r.name}</b></td>
       <td style="text-align:left"><span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span>
       ${(r.is_full_time&&r.ratio<1)?`<span class="tag draft">折算${Math.round(r.ratio*100)}%</span>`:''}</td>
