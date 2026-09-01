@@ -3,7 +3,8 @@
  * 改了 schema、讀取、前端卻漏改寫入 handler，存一次檔就把那六欄清成預設值——
  * 實際寫壞過央廚與總部的設定。只測「讀」測不到，一定要測往返。 */
 const fs=require('fs'), vm=require('vm');
-const P=fs.readFileSync('/Users/guoeason/mala-clock-in/apps-script/Payroll.gs','utf8');
+const __ROOT = require('path').join(__dirname, '..');   // CI 上 checkout 路徑不同，不可寫死
+const P=fs.readFileSync(__ROOT + '/apps-script/Payroll.gs','utf8');
 
 // 用一張假的試算表：payRead/payReplaceAll 都接到記憶體
 const SHEETS={};

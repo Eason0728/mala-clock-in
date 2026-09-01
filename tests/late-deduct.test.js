@@ -3,7 +3,8 @@
  * 計時：有效時薪 ÷60 × 遲到分鐘
  * 遲到「照舊也扣全勤」——兩個都扣，不是二擇一 */
 const fs=require('fs');
-const GS=fs.readFileSync('/Users/guoeason/mala-clock-in/apps-script/Payroll.gs','utf8');
+const __ROOT = require('path').join(__dirname, '..');   // CI 上 checkout 路徑不同，不可寫死
+const GS=fs.readFileSync(__ROOT + '/apps-script/Payroll.gs','utf8');
 const a=GS.indexOf('function payR0'),b=GS.indexOf('/* ═══════════════════ Handlers');
 const e={};new Function('exports','function pad2(n){return ("0"+n).slice(-2)}\n'+GS.slice(a,b)
  +'\nexports.payCalcOne=payCalcOne;')(e);

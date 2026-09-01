@@ -4,7 +4,8 @@
  * 「同仁以為還有假、店長說沒有」的爭議。所以規則必須同源（payLeaveUsage），
  * 而且三個回傳路徑（未結算／結算中／已定案）都要帶，否則同仁在月中就查不到。 */
 const fs = require('fs'), vm = require('vm');
-const P = fs.readFileSync('/Users/guoeason/mala-clock-in/apps-script/Payroll.gs', 'utf8');
+const __ROOT = require('path').join(__dirname, '..');   // CI 上 checkout 路徑不同，不可寫死
+const P = fs.readFileSync(__ROOT + '/apps-script/Payroll.gs', 'utf8');
 
 const sb = { console, SpreadsheetApp: {}, Utilities: {}, Logger: { log() {} },
              PropertiesService: {}, LockService: {} };

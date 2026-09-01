@@ -1,9 +1,10 @@
 const fs=require('fs');
+const __ROOT = require('path').join(__dirname, '..');   // CI 上 checkout 路徑不同，不可寫死
 function load(p){const GS=fs.readFileSync(p,'utf8');
   const a=GS.indexOf('function payR0'),b=GS.indexOf('/* ═══════════════════ Handlers');
   const e={};new Function('exports','function pad2(n){return ("0"+n).slice(-2)}\n'+GS.slice(a,b)
    +'\nexports.payCalcOne=payCalcOne;exports.payAttendVoid=payAttendVoid;')(e);return e;}
-const E=load('/Users/guoeason/mala-clock-in/apps-script/Payroll.gs');
+const E=load(__ROOT + '/apps-script/Payroll.gs');
 
 const emp={emp_id:'A',name:'正職',is_full_time:'true',base:30000,skill_allow:3000,night_allow:3000,
  mgr_allow:0,attend_cap:3000,ot_rate:240,wage:0,labor_ins:0,health_ins:0,group_ins:0,pension:0,

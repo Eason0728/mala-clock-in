@@ -1,5 +1,6 @@
 const fs=require('fs');
-const GS=fs.readFileSync('/Users/guoeason/mala-clock-in/apps-script/Payroll.gs','utf8');
+const __ROOT = require('path').join(__dirname, '..');   // CI 上 checkout 路徑不同，不可寫死
+const GS=fs.readFileSync(__ROOT + '/apps-script/Payroll.gs','utf8');
 const a=GS.indexOf('function payR0'),b=GS.indexOf('/* ═══════════════════ Handlers');
 const e={}; new Function('exports',"function pad2(n){return ('0'+n).slice(-2)}\n"+GS.slice(a,b)
   +'\nexports.payCalcOne=payCalcOne;exports.payAnnualQuota=payAnnualQuota;exports.payDayBefore=payDayBefore;')(e);

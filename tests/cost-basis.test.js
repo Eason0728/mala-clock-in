@@ -22,7 +22,14 @@ const fs = require('fs'), vm = require('vm'), path = require('path');
 const C = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Code.gs'), 'utf8');
 const P = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Payroll.gs'), 'utf8');
 const HTML = fs.readFileSync(path.join(__dirname, '..', 'payroll.html'), 'utf8');
-const MOCK = fs.readFileSync(path.join(__dirname, '..', 'mock', 'payroll_mock.js'), 'utf8');
+// ⚠ mock/payroll_mock.js 含真實薪資，是 gitignore 的 → CI（GitHub runner）上不存在。
+//    這支測試依賴它，檔案不在就整支跳過而不是失敗；本機開發照樣會跑到。
+const MOCK_PATH = path.join(__dirname, '..', 'mock', 'payroll_mock.js');
+if (!fs.existsSync(MOCK_PATH)) {
+  console.log('⊘ 略過：mock/payroll_mock.js 不存在（gitignore，CI 上沒有這個檔）');
+  process.exit(0);
+}
+const MOCK = fs.readFileSync(MOCK_PATH, 'utf8');
 
 const sb = { console, Logger: { log() {} },
   SpreadsheetApp: { openById: () => null, getActive: () => null },

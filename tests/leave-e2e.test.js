@@ -1,8 +1,9 @@
 /* 端對端：值班核定寫進 leave 分頁 → payCollect 歸集 → payCalcOne 計薪
  * 這條鏈之前完全沒有測試覆蓋（payCollect 落在 payroll_mock.js 的切片之外）。*/
 const fs=require('fs'), vm=require('vm');
-const P=fs.readFileSync('/Users/guoeason/mala-clock-in/apps-script/Payroll.gs','utf8');
-const C=fs.readFileSync('/Users/guoeason/mala-clock-in/apps-script/Code.gs','utf8');
+const __ROOT = require('path').join(__dirname, '..');   // CI 上 checkout 路徑不同，不可寫死
+const P=fs.readFileSync(__ROOT + '/apps-script/Payroll.gs','utf8');
+const C=fs.readFileSync(__ROOT + '/apps-script/Code.gs','utf8');
 
 const CLOCK={};                       // 假的打卡試算表分頁
 const sandbox={console,

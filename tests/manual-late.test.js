@@ -2,8 +2,9 @@
  * 情境：打卡被擋／未入帳時系統沒有進場時間可比，算不出遲到 → 由主管填。
  * 寫進 status_text 的「遲到N分(認定)」，payCollect 既有的解析器直接吃得到。 */
 const fs=require('fs'), vm=require('vm');
-const P=fs.readFileSync('/Users/guoeason/mala-clock-in/apps-script/Payroll.gs','utf8');
-const C=fs.readFileSync('/Users/guoeason/mala-clock-in/apps-script/Code.gs','utf8');
+const __ROOT = require('path').join(__dirname, '..');   // CI 上 checkout 路徑不同，不可寫死
+const P=fs.readFileSync(__ROOT + '/apps-script/Payroll.gs','utf8');
+const C=fs.readFileSync(__ROOT + '/apps-script/Code.gs','utf8');
 const CLOCK={};
 const sb={console,SpreadsheetApp:{getActive:()=>({getSheetByName:()=>null}),openById:()=>({getSheetByName:()=>null})},
  Utilities:{formatDate:d=>{const p=n=>('0'+n).slice(-2);return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());}},

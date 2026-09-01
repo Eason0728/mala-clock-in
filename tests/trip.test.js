@@ -1,7 +1,8 @@
 /* 出差：時數照算、不扣全勤、不給餐費補助、狀態標「出差」 */
 const fs=require('fs'), vm=require('vm');
-const P=fs.readFileSync('/Users/guoeason/mala-clock-in/apps-script/Payroll.gs','utf8');
-const C=fs.readFileSync('/Users/guoeason/mala-clock-in/apps-script/Code.gs','utf8');
+const __ROOT = require('path').join(__dirname, '..');   // CI 上 checkout 路徑不同，不可寫死
+const P=fs.readFileSync(__ROOT + '/apps-script/Payroll.gs','utf8');
+const C=fs.readFileSync(__ROOT + '/apps-script/Code.gs','utf8');
 const CLOCK={};
 const sb={console,SpreadsheetApp:{getActive:()=>({getSheetByName:()=>null}),openById:()=>({getSheetByName:()=>null})},
  Utilities:{formatDate:(d)=>{const p=n=>('0'+n).slice(-2);return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());}},

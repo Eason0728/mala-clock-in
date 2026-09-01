@@ -1,0 +1,70 @@
+name: 薪資與打卡測試
+
+# 為什麼需要：這個 repo 同時有多個 session 在改（薪資、LIFF、打卡）。
+# 測試本來只有「記得跑才會跑」——2026-09-01 有一次假別存檔漏存六欄，
+# 本機測試沒測到「存了再讀」，是寫壞正式環境的央廚設定才發現的。
+# 現在 push 上來就自動跑，紅了 GitHub 會寄信。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:        # 也可以手動點一次
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ① Apps Script 檔的語法。副檔名是 .gs，node --check 不吃，要先複製成 .js。
+      #    這關擋的是「補丁腳本改壞語法」那一類——推上去打卡系統會整個掛掉。
+      - name: 後端語法檢查
+        run: |
+          set -e
+          for f in apps-script/*.gs; do
+            cp "$f" "/tmp/$(basename "$f" .gs).js"
+            node --check "/tmp/$(basename "$f" .gs).js" && echo "✓ $f"
+          done
+
+      # ② 前端頁面的 <script> 區塊語法
+      - name: 前端語法檢查
+        run: |
+          set -e
+          python3 - <<'PY'
+          import re, subprocess, tempfile, os, glob, sys
+          bad = 0
+          for f in sorted(glob.glob('*.html')):
+              s = open(f, encoding='utf-8').read()
+              blocks = re.findall(r'<script>([\s\S]*?)</script>', s)
+              if not blocks: continue
+              src = max(blocks, key=len)
+              t = tempfile.NamedTemporaryFile('w', suffix='.js', delete=False, encoding='utf-8')
+              t.write(src); t.close()
+              r = subprocess.run(['node', '--check', t.name], capture_output=True, text=True)
+              os.unlink(t.name)
+              print(('✓ ' if r.returncode == 0 else '✗ ') + f)
+              if r.returncode:
+                  print(r.stderr[:600]); bad += 1
+          sys.exit(1 if bad else 0)
+          PY
+
+      # ③ 薪資引擎與打卡邏輯的測試（22 支）
+      - name: 跑測試
+        run: node tests/run-all.js
+
+      # ④ 產生的門市頁面有沒有跟母版同步。
+      #    改完 manager.html／clock.html 忘了重跑產生器是踩過的坑——
+      #    症狀是央廚頁面停在舊版，後端明明改好了畫面卻沒動。
+      - name: 門市頁面是否與母版同步
+        run: |
+          set -e
+          python3 tools/build-store-pages.py > /dev/null
+          if ! git diff --quiet -- 'clock-*.html' 'manager-*.html'; then
+            echo "✗ 產生的門市頁面與母版不同步——改完母版要跑 python3 tools/build-store-pages.py"
+            git diff --stat -- 'clock-*.html' 'manager-*.html'
+            exit 1
+          fi
+          echo "✓ 門市頁面已同步"
