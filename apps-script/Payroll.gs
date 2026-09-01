@@ -68,6 +68,10 @@ const PAY_CONFIG_DEFAULT = [
   ['attend_deduct_per_day', 100, '全勤每日倒扣金額'],
   // 年終獎金：每月先提列（成本認列），不進同仁的實付。只有正職提列。
   ['yearend_months', 1, '年終獎金月數（全店預設，主檔可逐人覆寫）'],
+  // 遲到分鐘不計薪（Eason 2026-08-23 定案）。true＝啟用；遲到「照舊也扣全勤」，兩個都扣。
+  ['late_deduct', 'true', '遲到分鐘不計薪（true/false）'],
+  ['late_div_days', 30, '遲到費率分母（天）'],
+  ['late_div_hours', 8, '遲到費率分母（時）'],
   // ── 全勤「門檻式歸零」參數（2026-08-23，央廚／總部用；填 0 或留空＝不啟用，光復維持純遞減）──
   ['attend_void_forget', 0, '忘刷達幾次(含)以上→全勤歸零，0＝不啟用'],
   ['attend_forget_unit', 'punch', '忘刷計數單位：punch＝每漏一張卡算一次、day＝同一天只算一次'],
@@ -517,6 +521,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   }
 
   let baseH = null, surplus = null, otPaid = null;
+  let ptWage = 0;   // 計時同仁的有效時薪（基本＋滿勤加給＋年資加給），遲到扣款要用
   const supportH = (att.support || []).reduce(function (a, s) { return a + payNum(s.hours); }, 0);
 
   if (ft) {
@@ -560,6 +565,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     // E1 滿勤加給：管理者於工時分頁手動勾選（滿100H+全勤由管理者判定）。金額門市可覆寫（0＝不給）
     if (payBool(att.full_attend)) w += payCfgNum(cfg, 'pt_attend_plus', 10);
     w += payTenurePlus(e, ym, cfg);          // E2 年資加給（金額與年資門檻同樣可依門市覆寫）
+    ptWage = w;   // 存到外層：下面的「遲到不計薪」要用同一個有效時薪，不另立標準
     push(earn, 'hourly_wage', '薪資（時數）', payR2(att.hours), w, att.hours * w);
     // 國定假日出勤：計時同仁時薪雙倍（正職是給假、不另計）。
     // 時數本身已含在上面的總時數裡，這裡只補「多的那一倍」。
@@ -612,6 +618,23 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   if (att.annual && att.annual.payout_ym === ym && payNum(att.annual.left_h) > 0) {
     const ah = payR2(payNum(att.annual.left_h));
     push(earn, 'annual_payout', '特休未休折算', ah, rate, ah * rate);
+  }
+
+  /* 遲到分鐘不計薪（Eason 2026-08-23 定案）
+   *   正職：(底薪＋職能＋夜間＋店長) ÷ 30 ÷ 8 ÷ 60 × 當月實際遲到分鐘
+   *          ⚠ 基數**不含全勤上限**——全勤已經另外因遲到被扣過，不重複算進基數。
+   *   計時：有效時薪 ÷ 60 × 當月實際遲到分鐘（有效時薪＝基本時薪＋滿勤加給＋年資加給，
+   *          與他實際領錢的那個時薪同一個，不另立標準）。
+   *   遲到「照舊也扣全勤」是 Eason 指定的——這兩件事並存，不是二擇一。
+   *   att.late_min 由 payCollect 從核定狀態字串解析（「遲到5分、早退3分」要 split('、')）。 */
+  const lateMin = payNum(att.late_min);
+  if (lateMin > 0 && payBool(cfg.late_deduct)) {
+    const lateBase = ft
+      ? (payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) + payNum(e.mgr_allow))
+        / payNum(cfg.late_div_days) / payNum(cfg.late_div_hours) / 60
+      : ptWage / 60;
+    const lateAmt = payR0(lateBase * lateMin);
+    if (lateAmt > 0) push(ded, 'late_deduct', '遲到不計薪', lateMin, payR2(lateBase), lateAmt);
   }
 
   const LEAVES = payAttLeaves(att);

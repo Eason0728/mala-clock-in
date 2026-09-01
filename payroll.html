@@ -694,7 +694,8 @@ function renderStats(){
    ⚠ 2026-08-22 假別參數表上線後，扣款 item_key 一律是「假別code + _leave」，
       新增假別會自動產生新的 key（family_leave、parental_leave…）——所以這裡改成
       「凡是 _leave 結尾的都算」，不要再逐一列舉，否則每加一種假就會漏扣一次。 */
-const COST_REDUCE_EXTRA=['shortfall_hours'];
+// 遲到不計薪與不足倒扣一樣是「真的少領」，要從薪資費用扣回（請假類靠 /_leave$/ 自動涵蓋）
+const COST_REDUCE_EXTRA=['shortfall_hours','late_deduct'];
 function isCostReduceKey(k){ return /_leave$/.test(String(k)) || COST_REDUCE_EXTRA.indexOf(k)>=0; }
 /** 缺口時數由各支援列「平均分擔」；某列時數不夠就把餘額讓給還有餘裕的列 */
 function allocGapHours(hoursArr, gap){
@@ -1791,7 +1792,7 @@ function renderSlip(){
   const r=RESULTS.find(x=>x.emp_id===$('slipSel').value),w=$('slipWrap');
   if(!r){w.innerHTML='<div class="slip" style="text-align:center;color:#8a817a;padding:50px">請先在「月結」頁計算</div>';return}
   // 以「_leave 結尾」認假別，新增假別自動涵蓋（改版前寫死五個，新假別不會顯示時數×費率）
-  const HOURY_FIX=['overtime','shortfall_hours','hourly_wage'];
+  const HOURY_FIX=['overtime','shortfall_hours','hourly_wage'];   // late_deduct 的 qty 是分鐘，不加 H
   const isHoury=k=>/_leave$/.test(String(k))||HOURY_FIX.indexOf(k)>=0;
   const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${isHoury(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   w.innerHTML=`<div class="slip">
