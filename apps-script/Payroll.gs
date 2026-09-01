@@ -324,7 +324,7 @@ function payCollect(ym, minH, store, holidayDates) {
       // 國定假日當天的出勤時數（計時同仁雙薪的基礎；時數本身照樣算進總時數）
       if (HOLSET[String(d)]) slot(emp).holiday_h += dayH;
       const st = String(rec.status_text || '');
-      if (st.indexOf('遲到') !== -1 || st.indexOf('早退') !== -1) markDay(emp, d);
+      if (payHasLateEarly(st).any) markDay(emp, d);
       // 累計遲到／早退分鐘數（全勤門檻用）。狀態字串是「遲到5分」「早退12分」，多項用「、」串。
       // ⚠ 一定要 split('、') 逐項比對，直接 indexOf 抓不到第二項的數字。
       st.split('、').forEach(function (part) {
@@ -806,6 +806,20 @@ function payPtAttendCheck(att, cfg) {
   const qualified = h >= minH && dd === 0;
   return { on: on, qualified: qualified, hours: h, deduct_days: dd, min_hours: minH,
            plus: (on && qualified) ? payCfgNum(cfg, 'pt_attend_plus', 10) : 0 };
+}
+
+/** 狀態字串裡有沒有「真的」遲到／早退。
+ *  ⚠ 不能用 indexOf('遲到')——「主管認定不計遲到」也含這兩個字，會被誤判成遲到而扣全勤
+ *    （2026-09-01 加那個註記時當場踩到）。狀態是多項用「、」串的，要逐項判**開頭**。 */
+function payHasLateEarly(statusText) {
+  const parts = String(statusText || '').split('、');
+  let late = false, early = false;
+  parts.forEach(function (x) {
+    const t = String(x).trim();
+    if (t.indexOf('遲到') === 0) late = true;
+    if (t.indexOf('早退') === 0) early = true;
+  });
+  return { late: late, early: early, any: late || early };
 }
 
 /** 把 att 上的請假時數整理成 { 假別code: 時數 }。
@@ -1755,8 +1769,9 @@ function handlePayrollPunch(body) {
       const rec = approvedMap[d][emp], b = box(emp);
       b.hours += Number(rec.approved_hours) || 0;
       const st = String(rec.status_text || '');
-      if (st.indexOf('遲到') !== -1) b.late++;
-      if (st.indexOf('早退') !== -1) b.early++;
+      const le = payHasLateEarly(st);
+      if (le.late) b.late++;
+      if (le.early) b.early++;
     });
   });
   events.forEach(function (e) {

@@ -23,8 +23,12 @@ chk('未入帳＋認定3分',        aml('打卡未入帳，主管補登',3), '�
 chk('正常＋認定5分（正常要拿掉）', aml('正常',5), '遲到5分(認定)');
 chk('覆蓋系統判的遲到',        aml('遲到1分',8), '遲到8分(認定)');
 chk('早退保留、只換遲到',      aml('遲到1分、早退4分',8), '早退4分、遲到8分(認定)');
-chk('填 0 → 不覆蓋',          aml('打卡未入帳，主管補登',0), '打卡未入帳，主管補登');
 chk('留空 → 不覆蓋',          aml('正常',''), '正常');
+
+console.log('\n══ 填 0 ＝ 主管認定不算遲到（2026-09-01 加）══');
+chk('系統判遲到5分 → 認定不算', aml('遲到5分',0), '主管認定不計遲到');
+chk('遲到＋早退 → 只免遲到',    aml('遲到5分、早退2分',0), '早退2分、主管認定不計遲到');
+chk('本來就正常 → 加註記',      aml('正常',0), '主管認定不計遲到');
 
 console.log('\n══ 端對端：認定的遲到會流進薪資 ══');
 CLOCK.roster=[{emp_id:'E01',name:'測試',active:true,key:'k'}];CLOCK.leave=[];
@@ -46,6 +50,20 @@ const r=call('payCalcOne',emp,'2026-07',Object.assign({extra_ot:0,support:[],bon
 const gg=k=>{const x=[].concat(r.earn,r.ded).find(i=>i.item_key===k);return x||{};};
 chk('  遲到不計薪 = 36000/30/8/60×3', gg('late_deduct').amount, Math.round(36000/30/8/60*3));
 chk('  全勤只扣一天 100',             gg('attend_bonus').amount, 2900);
+
+console.log('\n══ ⚠「主管認定不計遲到」含「遲到」二字，不可被誤判 ══');
+const hasLE=vm.runInContext('payHasLateEarly',sb);
+chk('  不計遲到 → 不算遲到日',   hasLE('主管認定不計遲到').any, false);
+chk('  遲到3分(認定) → 算',      hasLE('遲到3分(認定)').late, true);
+chk('  早退2分、不計遲到 → 早退算、遲到不算',
+    [hasLE('早退2分、主管認定不計遲到').late, hasLE('早退2分、主管認定不計遲到').early], [false,true]);
+
+CLOCK.approved=[{date:'2026-07-11',name:'測試',emp_id:'E01',approved_hours:8,
+  status_text:'主管認定不計遲到',entered_at:'x',manager_name:'M',periods:'17:30-22:30'}];
+CLOCK.events=[];
+const c2=call('payCollect','2026-07',6,'SSLGF',[])['E01'];
+chk('  歸集：遲到 0 分',        c2.late_min, 0);
+chk('  歸集：缺勤 0 天（不扣全勤）', c2.deduct_days, 0);
 
 console.log(`\n${f?'❌ 有失敗':'✅ 手動認定遲到全部正確'} (${p}/${p+f})`);
 process.exit(f?1:0);

@@ -969,9 +969,10 @@
     lateInput.className = 'leave-hours';
     lateInput.step = '1'; lateInput.min = '0';
     lateInput.placeholder = '自動';
-    // 帶出既有值：只有「(認定)」的才回填，系統自動判的不填（那個由打卡算，改了會被覆蓋）
+    // 帶出既有值：只有主管填過的才回填（系統自動判的不填，那個由打卡算、改了會被覆蓋）
     (function () {
       var st = String((emp.approved && emp.approved.status_text) || '');
+      if (st.indexOf('主管認定不計遲到') !== -1) { lateInput.value = '0'; return; }
       var m = st.split('、').filter(function (x) { return x.indexOf('遲到') === 0 && x.indexOf('(認定)') > 0; })[0];
       if (m) { var g = m.match(/^遲到(\d+(?:\.\d+)?)分/); if (g) lateInput.value = g[1]; }
     })();
@@ -980,7 +981,7 @@
     lateUnit.textContent = '分鐘';
     var lateHint = document.createElement('span');
     lateHint.style.cssText = 'font-size:12px;color:#6b524a;margin-left:6px';
-    lateHint.textContent = '留空＝依打卡自動判定';
+    lateHint.textContent = '留空＝自動判定　填 0＝認定不算遲到';
     lateRow.appendChild(lateLabel);
     lateRow.appendChild(lateInput);
     lateRow.appendChild(lateUnit);

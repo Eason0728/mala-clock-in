@@ -1779,6 +1779,7 @@ function dayReferenceIncomplete(segments, dateStr, todayStr) {
 // 分辨依據＝當天有沒有 status!=='ok' 的事件（與 mgr_day 的 attempts 同一口徑）。
 const NO_PUNCH_NOTE = '該段無打卡';
 const MANUAL_LATE_MARK = '(認定)';   // 主管手動填的遲到，與系統比對出來的區分
+const NO_LATE_NOTE = '主管認定不計遲到';   // 系統判有遲到、但主管判定不算（填 0 觸發）
 const TRIP_NOTE = '出差';   // 出差當天打不了卡，狀態標這個而不是「該段無打卡」
 
 /** 主管手動認定的遲到分鐘，覆蓋進狀態字串（2026-09-01）。
@@ -1795,14 +1796,24 @@ const TRIP_NOTE = '出差';   // 出差當天打不了卡，狀態標這個而�
  *  未入帳、有多出的打卡段…）原樣保留。填 0 或留空＝不覆蓋，用系統的。
  */
 function applyManualLate(statusText, lateMin) {
-  const n = Number(lateMin);
-  if (!isFinite(n) || n <= 0) return statusText;
+  const raw = String(lateMin == null ? '' : lateMin).trim();
+  if (raw === '') return statusText;           // 留空＝不覆蓋，用系統自動判的
+  const n = Number(raw);
+  if (!isFinite(n) || n < 0) return statusText;
   const kept = String(statusText || '').split('、')
     .filter(function (x) { return x && x.indexOf('遲到') !== 0; });
-  kept.push('遲到' + Math.round(n) + '分' + MANUAL_LATE_MARK);
-  // 只剩「正常」＋遲到時，「正常」要拿掉（有遲到就不正常了）
-  return kept.filter(function (x) { return x !== '正常'; }).join('、');
+  if (n === 0) {
+    // 填 0＝主管認定不算遲到（例：交通事故、店裡臨時交辦）。
+    // 系統判的「遲到N分」被移除，那天就不會因遲到計缺勤、也不會扣遲到的錢。
+    // 標一句話留痕，否則月表上看起來像系統沒抓到。
+    kept.push(NO_LATE_NOTE);
+  } else {
+    kept.push('遲到' + Math.round(n) + '分' + MANUAL_LATE_MARK);
+  }
+  const out = kept.filter(function (x) { return x !== '正常'; });
+  return out.length ? out.join('、') : '正常';
 }
+
 
 /** 某人某天在 leave 分頁是不是登記了出差。⚠ leave 分頁是中文欄位（日期／姓名／假別／時數）。 */
 function isTripDay(ss, dateStr, name) {
@@ -2361,7 +2372,8 @@ function recheckPendingApprovalStatuses() {
       // ⚠ 下面的 const roster 在這行之後才宣告，不能拿來用（暫時性死區），所以自己查一次。
       const rosterNow = findRosterByEmpId(rosterRows, empId);
       // ⚠ 主管手動認定的遲到不能被隔天 05:00 的重算洗掉——原狀態帶「(認定)」就整筆跳過。
-      if (String(statusText).indexOf(MANUAL_LATE_MARK) !== -1) return;
+      const st0 = String(statusText);
+      if (st0.indexOf(MANUAL_LATE_MARK) !== -1 || st0.indexOf(NO_LATE_NOTE) !== -1) return;
       const newStatusText = computeApprovalStatus(periods, punchWithMs,
         unrecordedAttemptCount(eventRows, empId, date) > 0,
         isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name));
