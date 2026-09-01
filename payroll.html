@@ -1846,9 +1846,12 @@ function renderSlip(){
   const r=RESULTS.find(x=>x.emp_id===$('slipSel').value),w=$('slipWrap');
   if(!r){w.innerHTML='<div class="slip" style="text-align:center;color:#8a817a;padding:50px">請先在「月結」頁計算</div>';return}
   // 以「_leave 結尾」認假別，新增假別自動涵蓋（改版前寫死五個，新假別不會顯示時數×費率）
-  const HOURY_FIX=['overtime','shortfall_hours','hourly_wage'];   // late_deduct 的 qty 是分鐘，不加 H
+  const HOURY_FIX=['overtime','shortfall_hours','hourly_wage'];
   const isHoury=k=>/_leave$/.test(String(k))||HOURY_FIX.indexOf(k)>=0;
-  const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${isHoury(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
+  // 數量的單位依項目而定：時數類→H、遲到→分鐘、餐費／年終→天，其餘不加單位。
+  // ⚠ late_deduct 的 qty 是「分鐘」，不加單位會被誤讀成小時（Eason 2026-09-01 指出）。
+  const qtyUnit=k=>k==='late_deduct'?' 分鐘':(k==='meal_sub'?' 天':(isHoury(k)?'H':''));
+  const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   w.innerHTML=`<div class="slip">
     <h3>薪 資 明 細 表</h3>
     <div class="sub">麻的小辛辣 · 新竹光復店 ｜ ${ym().replace('-','年')}月 ｜ 發薪日 每月 ${CFG.payday} 日</div>
@@ -1885,7 +1888,9 @@ function exportCSV(){
 /* ═════ 匯出（完整明細）═════ */
 const EXP_HOURY_FIX=['overtime','shortfall_hours','hourly_wage','cross_store'];
 const isExpHoury=k=>/_leave$/.test(String(k))||EXP_HOURY_FIX.indexOf(k)>=0;
-function expSub(x){ return x.qty!=null ? `${r2(x.qty)}${isExpHoury(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}` : ''; }
+// 與上面的 qtyUnit 同一套規則（匯出／列印用）
+const expQtyUnit=k=>k==='late_deduct'?' 分鐘':(k==='meal_sub'?' 天':(isExpHoury(k)?'H':''));
+function expSub(x){ return x.qty!=null ? `${r2(x.qty)}${expQtyUnit(x.item_key)}${x.rate?' × '+nf(x.rate):''}` : ''; }
 function renderExport(){
   if($('expYm')) $('expYm').textContent=ym();
   const w=$('exportDetail'); if(!w) return;

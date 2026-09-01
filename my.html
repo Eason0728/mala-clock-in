@@ -107,7 +107,9 @@ async function load(){
   if(!j.ready){app.innerHTML=lq+st('🕒',j.message||'尚未結算','薪資結算後這裡就會顯示明細。');return}
 
   const r=j.result||j.run, earn=r.earn||[], ded=r.ded||[];
-  const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a;font-size:12px">${r2(x.qty)}${HOURY.includes(x.item_key)?'H':''}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
+  // 數量單位依項目而定：遲到→分鐘、餐費→天、時數類→H（與 payroll.html 同一套規則）
+  const qtyUnit=k=>k==='late_deduct'?' 分鐘':(k==='meal_sub'?' 天':(HOURY.includes(k)||/_leave$/.test(String(k))?'H':''));
+  const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a;font-size:12px">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   app.innerHTML=`<div class="card">
     <div class="who"><div><b>${j.name}</b><div class="m">${j.ym.replace('-','年')}月薪資</div></div>
       <div class="m" style="text-align:right">發薪日<br>每月 ${j.payday} 日</div></div>
