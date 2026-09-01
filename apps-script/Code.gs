@@ -1498,6 +1498,8 @@ function handleMgrApprove(body) {
     statusText = computeApprovalStatus(periods, punchWithMs,
       unrecordedAttemptCount(eventRows, body.emp_id, date) > 0,
       String(body.leave_type || '').trim() === TRIP_NOTE);
+    // 主管手動認定的遲到分鐘覆蓋系統判定（打卡沒入帳時系統算不出來）
+    statusText = applyManualLate(statusText, body.late_min);
     periodsStr = rawPeriods.map(function (p) { return p.start + '-' + p.end; }).join(',');
   }
   const enteredAt = nowTaipeiIso();
@@ -1776,7 +1778,31 @@ function dayReferenceIncomplete(segments, dateStr, todayStr) {
 //   2. 真的沒打（忘刷卡）→ 沿用原本的說法
 // 分辨依據＝當天有沒有 status!=='ok' 的事件（與 mgr_day 的 attempts 同一口徑）。
 const NO_PUNCH_NOTE = '該段無打卡';
+const MANUAL_LATE_MARK = '(認定)';   // 主管手動填的遲到，與系統比對出來的區分
 const TRIP_NOTE = '出差';   // 出差當天打不了卡，狀態標這個而不是「該段無打卡」
+
+/** 主管手動認定的遲到分鐘，覆蓋進狀態字串（2026-09-01）。
+ *
+ *  為什麼需要：打卡被擋（超出範圍）或整批未入帳時，系統**沒有進場時間可以比對**，
+ *  computeApprovalStatus 只會標「打卡未入帳，主管補登」——那天實際遲到幾分鐘算不出來，
+ *  遲到不計薪就扣不到。主管是當場看到人幾點到的人，由他填最準。
+ *
+ *  刻意寫進 status_text 而不是另開欄位：payCollect 已經在解析「遲到N分」了
+ *  （split('、') 後逐項比對），寫進去就自動流進薪資，歸集邏輯一行都不用改。
+ *  標「(認定)」是為了讓月表看得出這筆是人工填的、不是系統比對出來的。
+ *
+ *  規則：手動填了就以手動為準——把系統自動判的「遲到N分」換掉，其餘註記（早退、
+ *  未入帳、有多出的打卡段…）原樣保留。填 0 或留空＝不覆蓋，用系統的。
+ */
+function applyManualLate(statusText, lateMin) {
+  const n = Number(lateMin);
+  if (!isFinite(n) || n <= 0) return statusText;
+  const kept = String(statusText || '').split('、')
+    .filter(function (x) { return x && x.indexOf('遲到') !== 0; });
+  kept.push('遲到' + Math.round(n) + '分' + MANUAL_LATE_MARK);
+  // 只剩「正常」＋遲到時，「正常」要拿掉（有遲到就不正常了）
+  return kept.filter(function (x) { return x !== '正常'; }).join('、');
+}
 
 /** 某人某天在 leave 分頁是不是登記了出差。⚠ leave 分頁是中文欄位（日期／姓名／假別／時數）。 */
 function isTripDay(ss, dateStr, name) {
@@ -2334,6 +2360,8 @@ function recheckPendingApprovalStatuses() {
       // 名冊的名字優先（有人改過名時 approved 上是舊名），查不到才退回 approved 那筆的 name。
       // ⚠ 下面的 const roster 在這行之後才宣告，不能拿來用（暫時性死區），所以自己查一次。
       const rosterNow = findRosterByEmpId(rosterRows, empId);
+      // ⚠ 主管手動認定的遲到不能被隔天 05:00 的重算洗掉——原狀態帶「(認定)」就整筆跳過。
+      if (String(statusText).indexOf(MANUAL_LATE_MARK) !== -1) return;
       const newStatusText = computeApprovalStatus(periods, punchWithMs,
         unrecordedAttemptCount(eventRows, empId, date) > 0,
         isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name));

@@ -958,7 +958,37 @@
     leaveRow.appendChild(leaveSelect);
     leaveRow.appendChild(leaveHours);
     leaveRow.appendChild(hoursUnit);
+
+    /* 遲到分鐘（2026-09-01）：留空＝系統自動比對打卡算。
+       打卡被擋或整批未入帳時系統沒有進場時間可比，算不出遲到——那種情況由主管填。
+       填了就以主管填的為準，狀態會標「遲到N分(認定)」與系統判的區分開。 */
+    var lateRow = document.createElement('div');
+    lateRow.className = 'leave-row';
+    var lateLabel = document.createElement('label');
+    lateLabel.textContent = '遲到分鐘';
+    var lateInput = document.createElement('input');
+    lateInput.type = 'number';
+    lateInput.className = 'leave-hours';
+    lateInput.step = '1'; lateInput.min = '0';
+    lateInput.placeholder = '自動';
+    // 帶出既有值：只有「(認定)」的才回填，系統自動判的不填（那個由打卡算，改了會被覆蓋）
+    (function () {
+      var st = String((emp.approved && emp.approved.status_text) || '');
+      var m = st.split('、').filter(function (x) { return x.indexOf('遲到') === 0 && x.indexOf('(認定)') > 0; })[0];
+      if (m) { var g = m.match(/^遲到(\d+(?:\.\d+)?)分/); if (g) lateInput.value = g[1]; }
+    })();
+    var lateUnit = document.createElement('span');
+    lateUnit.className = 'hours-unit';
+    lateUnit.textContent = '分鐘';
+    var lateHint = document.createElement('span');
+    lateHint.style.cssText = 'font-size:12px;color:#6b524a;margin-left:6px';
+    lateHint.textContent = '留空＝依打卡自動判定';
+    lateRow.appendChild(lateLabel);
+    lateRow.appendChild(lateInput);
+    lateRow.appendChild(lateUnit);
+    lateRow.appendChild(lateHint);
     card.appendChild(leaveRow);
+    card.appendChild(lateRow);
 
     var actions = document.createElement('div');
     actions.className = 'card-actions';
@@ -1098,6 +1128,7 @@
         date: approveDate,
         emp_id: emp.emp_id,
         periods: periods,
+        late_min: lateInput.value,
         leave_type: leaveSelect.value,
         leave_hours: leaveSelect.value ? leaveHours.value : '',
       }).then(function (res) {
