@@ -561,9 +561,49 @@ async function autoCalc(){
   const r=await post('payroll_calc',{ym:ym(),inputs:ATT});
   if(r&&r.ok){RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;renderRun();renderSlipSel()}
 }
+/* ═════ 未儲存提醒（2026-08-23）═════
+ * 出勤資料的所有輸入（含跨店支援明細）都只寫在瀏覽器記憶體，按「儲存工時」才進試算表。
+ * 但下方的試算金額**不需要存檔就會即時更新**，很容易「看到數字對了就以為存好了」，
+ * 然後切月份或關頁面，東西就沒了。這一段就是擋那個。 */
+let ATT_DIRTY = false;
+function markAttDirty(){
+  if(ATT_DIRTY) return;
+  ATT_DIRTY = true;
+  const b=$('saveAttBtn');
+  if(b){ b.classList.remove('done'); b.textContent='儲存工時 ●'; b.title='有尚未儲存的變更'; }
+}
+function clearAttDirty(){
+  ATT_DIRTY = false;
+  const b=$('saveAttBtn');
+  if(b && b.textContent.indexOf('●')>=0){ b.textContent='儲存工時'; b.title=''; }
+}
+/** 有未存變更時問一次。回 true＝可以繼續（已存或使用者選擇捨棄）。 */
+function confirmLeaveAtt(what){
+  if(!ATT_DIRTY) return true;
+  const ok = confirm('出勤資料有尚未儲存的變更（含跨店支援明細）。\n\n'
+                   + (what||'離開') + '會失去這些變更，確定要繼續嗎？\n\n'
+                   + '取消 → 回去按「儲存工時」');
+  if(ok) clearAttDirty();
+  return ok;
+}
+// 出勤資料分頁裡任何輸入都算改動——用事件委派，之後新增欄位也自動涵蓋。
+// 程式改 value 不會觸發 change/input，所以 renderAtt() 重畫不會誤標。
+(function(){
+  const panel=document.getElementById('p-att');
+  if(!panel) return;
+  panel.addEventListener('input', markAttDirty);
+  panel.addEventListener('change', markAttDirty);
+})();
+// 關頁面／重新整理：瀏覽器原生確認框（文字由瀏覽器決定，不能自訂）
+window.addEventListener('beforeunload', function(e){
+  if(!ATT_DIRTY) return;
+  e.preventDefault(); e.returnValue='';
+});
+
 async function loadAtt(){
   const r=await post('payroll_inputs',{ym:ym()});
   ATT=r.ok?(r.inputs||{}):{};
+  clearAttDirty();   // 剛從試算表讀回來，記憶體＝已存狀態
   renderAtt();
 }
 async function saveAtt(){
@@ -580,6 +620,7 @@ async function saveAtt(){
   const r=await post('payroll_input_set',{ym:ym(),inputs:ATT});
   if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.error||''),true);return}
   await doCalc();   // 存完用新工時重算帶出數字
+  ATT_DIRTY=false;   // 存好了，解除未儲存提醒
   b.classList.add('done'); b.textContent='✓ 存檔完成';
   toast(ym()+' 工時已儲存（'+r.count+' 人）');
   setTimeout(()=>{b.textContent='儲存工時';b.disabled=false;b.classList.remove('done');},1800);
@@ -1129,6 +1170,7 @@ function addSupportFor(emp){
   if(!emp){toast('請先選擇同仁',true);return}
   const A=ATT[emp]=ATT[emp]||{}; A.support=A.support||[];
   A.support.push({store:'',hours:0,rate:0,amount:''});
+  markAttDirty();
   renderAtt();
 }
 
@@ -1609,7 +1651,7 @@ function renderSup(){
       <td><input type="number" value="${s.amount??''}" placeholder="自動"
         onchange="ATT['${e.emp_id}'].support[${i}].amount=this.value"></td>
       <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
-        onclick="ATT['${e.emp_id}'].support.splice(${i},1);renderAtt()">移除</button></td></tr>`).join('');
+        onclick="ATT['${e.emp_id}'].support.splice(${i},1);markAttDirty();renderAtt()">移除</button></td></tr>`).join('');
     return `<div class="card" style="background:#fdfcfb;margin-bottom:12px">
       <div class="row" style="margin-bottom:10px"><b>${e.name}</b></div>
       <div class="scroll"><table>
@@ -1908,7 +1950,13 @@ $('nav').addEventListener('click',ev=>{
   const y=p.find(x=>x.type==='year').value, mo=p.find(x=>x.type==='month').value;
   if(y&&mo) $('ym').value=y+'-'+mo;
 })();
-$('ym').addEventListener('change',loadMonth);
+$('ym').addEventListener('change',function(){
+  // 切月份會重載 ATT，未存的東西就沒了——先問。使用者取消就把月份選回去。
+  if(!confirmLeaveAtt('切換月份')){ $('ym').value=YM_LAST||$('ym').value; return; }
+  YM_LAST=$('ym').value;
+  loadMonth();
+});
+let YM_LAST=$('ym').value;
 boot();
 </script>
 </body>
