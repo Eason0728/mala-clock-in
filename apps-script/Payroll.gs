@@ -1393,7 +1393,12 @@ function paySavedInputs(ym, store) {
   return out;
 }
 
-/** 工時基底＝打卡歸集(payCollect) 疊上手動覆蓋(payroll_input)；saved 有該員就整筆蓋掉歸集值。
+/** 只能由打卡核定算出來的欄位：手動列（payroll_input）沒有這些欄，整筆取代時必須 fallback 回歸集值。
+ *  ⚠ 新增這類欄位（來源是 payCollect、schema 沒有對應欄）時要一起加進來，否則會靜靜歸零。 */
+const PAY_PUNCH_ONLY_NUM = ['late_min', 'early_min', 'forget_punch', 'forget_day'];
+
+/** 工時基底＝打卡歸集(payCollect) 疊上手動覆蓋(payroll_input)；saved 有該員就整筆蓋掉歸集值，
+ *  但 PAY_PUNCH_ONLY_NUM 與 attend_void 例外（見函式內註解）。
  *  供「工時分頁顯示」與「計算」共用，確保兩邊一致。 */
 function payInputsBase(ym, store) {
   const st = payStore(store);
@@ -1406,6 +1411,15 @@ function payInputsBase(ym, store) {
     // 國定假日時數：手動工時沒填就沿用打卡歸集出來的值
     //（這個欄位是後加的，先前存過的月份都是空白，不 fallback 會全部變 0）
     if (sv.holiday_h === '' || sv.holiday_h == null) sv.holiday_h = payNum(col.holiday_h);
+    /* ⚠ 打卡才算得出來的四個欄位一律 fallback 回歸集值（2026-09-03 修）。
+       payroll_input 的 schema 根本沒有這幾欄（paySavedInputs／handlePayrollInputSet 都沒寫），
+       所以「整筆取代」會讓它們全部變 0/false —— 而 handlePayrollCalc 的 collected 就是本函式，
+       結果是**只要那個月按過一次「儲存工時」，遲到不計薪與忘刷／遲到門檻歸零就全部失效**。
+       實例：光復 2026-08 打卡有遲到（3／3／8 分）但薪資明細一筆 late_deduct 都沒有。
+       這幾欄的正本永遠是打卡核定，手動列不可能有更好的值，所以無條件取歸集值，
+       不像 hours／deduct_days 那樣「手動優先」。 */
+    PAY_PUNCH_ONLY_NUM.forEach(function (k) { sv[k] = payNum(col[k]); });
+    sv.attend_void = !!col.attend_void;
     base[emp] = sv;
   });
   return base;
