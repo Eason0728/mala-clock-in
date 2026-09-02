@@ -210,7 +210,7 @@ def last_counted_event(data, emp_id):
     return last
 
 
-MONTHLY_PAIR_WINDOW_HOURS = 12  # in 配「12 小時內的下一筆 out」，與 Code.gs 的 MONTHLY_PAIR_WINDOW_HOURS 同步
+MONTHLY_PAIR_WINDOW_HOURS = 16  # in 配「16 小時內的下一筆 out」，與 Code.gs 的 MONTHLY_PAIR_WINDOW_HOURS 同步（2026-09-02 12→16）
 REJECTED_IN_BREAK_MIN = 60  # 被拒的重複上班卡（rejected_duplicate 的 in）距開著的 in 達此分鐘數 → 視為忘打下班的斷點（與 Code.gs 同步）
 
 
