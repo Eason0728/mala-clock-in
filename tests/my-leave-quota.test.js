@@ -93,7 +93,7 @@ console.log('\n══ 只看得到自己 ══');
 chk('金鑰不對 → unauthorized', call('handleMyPayslip', { key:'亂打的' }).error, 'unauthorized');
 
 /* 打卡上線前的月份，請假是填在薪資「手動工時」的事假H／病假H 欄位，不在 leave 分頁。
-   2026-08-27 實際踩到：陳盈如 5–7 月共 101.25H 病假完全沒被算進額度。 */
+   2026-08-27 實際踩到：B 君 5–7 月共 101.25H 病假完全沒被算進額度。 */
 console.log('\n══ 手動工時的請假也要算進額度 ══');
 vm.runInContext(`
   payRead = function(k){
