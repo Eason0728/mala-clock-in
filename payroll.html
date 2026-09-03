@@ -559,7 +559,7 @@ async function boot(){
 /* 切月份/開啟時自動帶出當月數字：未鎖定且尚未算過就靜默試算一次（未設紅字等失敗則安靜略過，不跳錯誤）*/
 async function autoCalc(){
   if(STATUS==='final' || RESULTS.length) return;
-  const r=await post('payroll_calc',{ym:ym(),inputs:ATT});
+  const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
   if(r&&r.ok){RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;renderRun();renderSlipSel()}
 }
 /* ═════ 未儲存提醒（2026-08-23）═════
@@ -578,6 +578,16 @@ function clearAttDirty(){
   const b=$('saveAttBtn');
   if(b && b.textContent.indexOf('●')>=0){ b.textContent='儲存工時'; b.title=''; }
 }
+/* 重算要送什麼工時？（2026-09-03 修，Eason 授權）
+ * 出勤資料在兩個地方：試算表是正本，這個分頁開啟時抓了一份影本（ATT）。
+ * 原本 payroll_calc 一律把 ATT 送上去，而後端 `override = body.inputs || {}` 以送來的為準
+ * → **在別台裝置存好的跨店支援，會被這個分頁的舊影本蓋掉**（八月實例：兩人合計近四萬的加班費）。
+ * 改成只有「這個分頁真的有未存變更」時才送影本，否則送 {} 讓後端以試算表為準。
+ *   ·剛輸入完就按重新計算 → ATT_DIRTY 為真，照送，行為完全不變
+ *   ·開著沒動過的舊分頁誤按 → 送 {}，不會蓋掉別人剛存的東西
+ * ⚠ 兩處都要用：doCalc（手動按）與 autoCalc（切月份時自動試算，更隱蔽）。 */
+const CALC_INPUTS = () => ATT_DIRTY ? ATT : {};
+
 /** 有未存變更時問一次。回 true＝可以繼續（已存或使用者選擇捨棄）。 */
 function confirmLeaveAtt(what){
   if(!ATT_DIRTY) return true;
@@ -709,7 +719,7 @@ async function loadMonth(){
 async function doCalc(){
   setBusy(true);
   try{
-    const r=await post('payroll_calc',{ym:ym(),inputs:ATT});
+    const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
     if(!r.ok)return;
     RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;
     vClear();   // 重算後儀表板／集團總覽的數字會變

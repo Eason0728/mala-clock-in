@@ -114,5 +114,42 @@ console.log('\n══ 6) 支援時數解析失敗要回報，不可靜默歸零 
   chk('  空字串是合法的（沒有支援）', [s.E04.support_error, s.E04.support], ['', []]);
 }
 
+/* ═════ 舊分頁不可用舊工時影本覆蓋試算表（2026-09-03 修）═════
+ * 出勤資料在兩處：試算表是正本、每個分頁開啟時抓一份影本（ATT）。payroll_calc 原本一律
+ * 把 ATT 送上去、後端以送來的為準 → 別台裝置剛存好的跨店支援會被舊分頁蓋掉。
+ * 改成只有這個分頁真的有未存變更（ATT_DIRTY）才送影本。 */
+console.log('\n══ 6) 重算時送出的工時來源（前端）══');
+{
+  const fs2 = require('fs'), vm2 = require('vm');
+  const HTML = fs2.readFileSync(require('path').join(__dirname, '..', 'payroll.html'), 'utf8');
+  const grab = sig => { const i = HTML.indexOf(sig); return HTML.slice(i, HTML.indexOf('\n}', i) + 2); };
+
+  chk('  有 CALC_INPUTS 這個判斷', /const CALC_INPUTS = \(\) => ATT_DIRTY \? ATT : \{\};/.test(HTML), true);
+  chk('  payroll_calc 不可以再直接送 ATT', /payroll_calc',\{ym:ym\(\),inputs:ATT\}/.test(HTML), false);
+  chk('  兩處都改用 CALC_INPUTS（手動重算＋切月份自動試算）',
+      (HTML.match(/payroll_calc',\{ym:ym\(\),inputs:CALC_INPUTS\(\)\}/g) || []).length, 2);
+  chk('  儲存工時仍然要送完整 ATT（那才是存檔）',
+      /payroll_input_set',\{ym:ym\(\),inputs:ATT\}/.test(HTML), true);
+
+  // 實跑：同一份程式碼，只差在有沒有未存變更
+  const SUP = { E02: { support: [{ store: 'MZTJS', hours: 84.75, rate: 0 }] } };
+  /* ⚠ CALC_INPUTS 一定要從 payroll.html 抓出來，不可以在這裡寫死一份——
+     寫死的話這兩條實跑測的是「測試自己寫的邏輯」，把程式改壞也照樣綠（2026-09-03 踩過）。 */
+  const calcLine = (HTML.match(/const CALC_INPUTS = [^\n]+/) || [''])[0];
+  const src = [grab('async function autoCalc(){'), calcLine, grab('async function doCalc(){')].join('\n');
+  const sentWith = dirty => {
+    let sent = null;
+    const ctx = { console, ATT: SUP, ATT_DIRTY: dirty, STATUS: 'draft', RESULTS: [], CFG: {},
+      ym: () => '2026-08', setBusy(){}, vClear(){}, renderRun(){}, renderSlipSel(){}, toast(){},
+      post: async (a2, b2) => { sent = b2.inputs; return { ok: true, results: [], config: {} }; } };
+    vm2.createContext(ctx);
+    vm2.runInContext(src + '\nglobalThis.__d=doCalc;', ctx);
+    ctx.__d();   // post 是同步 resolve，這裡取得的 sent 已經填好
+    return sent;
+  };
+  chk('  沒有未存變更 → 送 {}（以試算表為準）', sentWith(false), {});
+  chk('  有未存變更 → 照送影本（行為不變）', sentWith(true), SUP);
+}
+
 console.log(`\n${fail ? '❌ 有失敗' : '✅ 工時門市隔離與支援防護全部正確'}（${pass}/${pass + fail}）`);
 process.exit(fail ? 1 : 0);
