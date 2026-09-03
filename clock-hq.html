@@ -140,6 +140,32 @@
     -webkit-tap-highlight-color: transparent;
   }
   .recent-toggle:disabled { opacity: 0.5; }
+
+  /* ── 績效評核入口（2026-09-03）──────────────────────────────
+     只有光復（STORE_CODE===''）顯示：央廚／總部同仁不在 mala-eval 名冊內，
+     顯示了也登不進去。判斷沿用下方 LIFF_ENABLED 的寫法，不另外維護門市清單。
+     ⚠ 底色用半透明白＋白字，不要改成白底卡片——白底不自己設 color 會變白字白底
+     （見 manager.html 的 .pd-card 教訓）。 */
+  .eval-link {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 18px;
+    padding: 13px 14px;
+    background: rgba(255,255,255,.15);
+    border: 1px solid rgba(255,255,255,.22);
+    border-left: 4px solid var(--brand-gold);
+    border-radius: 12px;
+    color: #fff;
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .eval-link:active { background: rgba(255,255,255,.26); }
+  .eval-link .el-icon { font-size: 20px; line-height: 1; }
+  .eval-link .el-text { flex: 1; min-width: 0; }
+  .eval-link .el-title { display: block; font-size: 15px; font-weight: 900; letter-spacing: .5px; }
+  .eval-link .el-sub { display: block; font-size: 12.5px; font-weight: 700; opacity: .78; margin-top: 2px; }
+  .eval-link .el-arrow { font-size: 20px; font-weight: 900; opacity: .55; }
   .recent-list li {
     gap: 8px;
   }
@@ -384,6 +410,19 @@
   </div>
 
   <div class="status-box" id="statusBox"></div>
+
+  <!-- 績效評核入口（2026-09-03）：連到同仁績效評核系統（另一個站，各自有自己的登入）。
+       只有光復顯示，由下方的 EVAL_ENABLED 控制；產生出來的央廚／總部頁面留著這段但永遠隱藏。
+       放在打卡分頁底部＝不佔首屏、不影響打卡動線（Eason 2026-09-03 選的位置）。 -->
+  <a class="eval-link" id="evalLink" href="https://eason0728.github.io/mala-eval/"
+     target="_blank" rel="noopener" style="display:none;">
+    <span class="el-icon">⭐</span>
+    <span class="el-text">
+      <span class="el-title">同仁績效評核</span>
+      <span class="el-sub">填寫評鑑・自評・查看我的成績</span>
+    </span>
+    <span class="el-arrow">›</span>
+  </a>
   </div><!-- /clockView -->
 
   <div id="payView" style="display:none;">
@@ -462,6 +501,15 @@
   // liff_whoami → unknown_action 的死路（2026-08-27 審查 Important 3）。
   // cf/hq 頁面的 STORE_CODE 是 tools/build-store-pages.py 寫死的字串，這裡不需要另外維護清單。
   var LIFF_ENABLED = (STORE_CODE === '');
+
+  // 績效評核入口（2026-09-03）：只有光復（STORE_CODE===''）顯示。
+  // 央廚／總部同仁不在 mala-eval 的名冊內，看得到也登不進去，所以那兩頁維持隱藏。
+  // 純外連、不呼叫任何後端，也不參與打卡流程——改壞最多是連結不出現。
+  var EVAL_ENABLED = (STORE_CODE === '');
+  if (EVAL_ENABLED) {
+    var evalLinkEl = document.getElementById('evalLink');
+    if (evalLinkEl) evalLinkEl.style.display = 'flex';
+  }
   var idToken = null;             // LIFF 模式下的身分憑證（僅供 init 時的存在性判斷，實際送出一律即時重讀，見 identityPayload）
   var useLiff = false;            // true = 走 liff_* action
 
