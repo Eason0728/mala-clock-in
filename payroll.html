@@ -851,12 +851,16 @@ function costRows(g){
   if(coAuto) Object.keys(autoCo).forEach(k=>{ if(autoCo[k]>0) co[k]=autoCo[k]; });
   /* 各科目直接呈現「實際值」（2026-08-24 Eason）：請假扣款／不足倒扣已扣進所屬科目，
      損益表可以逐列直接抄，不必再自己減。正職扣底薪那列、計時扣 PT 那列。 */
-  const baseNet=g.base-g.reduceFT-g.insFT-g.dormFT, ptNet=g.pt-g.reducePT-g.insPT-g.dormPT;
+  /* 2026-09-03 Eason：「薪資費用／正職」那一列只放**底薪科目本身**（底薪 − 請假／不足），
+     正職的勞健保自付與宿舍代扣改列成下方的獨立減項，不再扣在這一列裡。
+     ⚠ 只有正職這樣做，PT 那列維持「扣進科目」的舊作法（他指定的，兩列口徑刻意不同）。
+     ⚠ salaryCost 必須把移出來的那兩項減回去，否則薪資費用小計會多 insFT+dormFT。 */
+  const baseNet=g.base-g.reduceFT, ptNet=g.pt-g.reducePT-g.insPT-g.dormPT;
   const salaryGross=baseNet+g.ot+g.attend+g.allow+g.mgr+ptNet+g.other+g.meal+g.bs+g.bp+g.bj;
-  /* 薪資費用＝各科目合計。請假／不足、勞健保自付、宿舍代扣**都已扣進所屬科目**，
-     這裡不可以再減一次（2026-08-24 Eason：每一列都要是損益表可直接認列的實際值，
-     所以 PT 那列就等於計時同仁的實付總額）。 */
-  const salaryCost=salaryGross;
+  /* 薪資費用小計＝各列相加。請假／不足仍扣在所屬科目內，計時的自付額與宿舍也還在 PT 那列內，
+     所以這裡只要把「已改列獨立減項」的正職那兩項扣回來，小計才會與改制前一致。
+     ⚠ 扣的是 g.insFT／g.dormFT，**不可以用 g.ins／g.dorm**——那會把計時的再扣第二次。 */
+  const salaryCost=salaryGross-g.insFT-g.dormFT;   // 正職自付額／宿舍改列獨立減項，這裡扣回來（小計不變）
   const coTotal=CO_ITEMS.reduce((a,[k])=>a+co[k],0);
   const reduceRows=Object.keys(g.reduceBy).map(lb=>[lb,g.reduceBy[lb]]);
   // 科目列名的「已扣」註記：只寫扣了什麼，不寫金額（Eason 2026-08-24：備註不顯示金額，
@@ -865,7 +869,7 @@ function costRows(g){
     if(dorm)p.push('宿舍');return p.length?`（已扣 ${p.join('、')}）`:''};
   return [
     ['h','薪資／人事費用成本 · 每一列都是實際發生金額，可直接認列'],
-    ['薪資費用／正職'+cutNote(g.reduceFT,g.insFT,g.dormFT),baseNet],
+    ['薪資費用／正職'+cutNote(g.reduceFT,0,0),baseNet],
     ['薪資費用 加班／正職',g.ot],['薪資費用 全勤／正職',g.attend],
     ['薪資費用 夜間津貼／職能津貼／正職',g.allow],['薪資費用 店長津貼',g.mgr],
     ...(g.meal?[['薪資費用 餐費補助／正職',g.meal]]:[]),
@@ -875,8 +879,10 @@ function costRows(g){
     ...(g.bs?[['薪資費用 業績獎金',g.bs]]:[]),
     ...(g.bp?[['薪資費用 績效獎金',g.bp]]:[]),
     ...(g.bj?[['薪資費用 專案獎金',g.bj]]:[]),
-    // 請假扣款／不足倒扣／勞健保自付／宿舍代扣**全部已扣進上面各科目**，
-    // 這裡不再列任何減項——列了就會扣兩次（2026-08-24）。
+    /* 正職的勞健保自付與宿舍代扣：2026-09-03 起改列成獨立減項（Eason 要正職那列只顯示底薪）。
+       計時的仍扣在「薪資費用／PT」那一列內，所以這裡只列正職的部分——列了計時的就會扣兩次。 */
+    ...(g.insFT?[['減：勞健保自付（正職，代扣代繳）',-g.insFT]]:[]),
+    ...(g.dormFT?[['減：宿舍代扣（正職）',-g.dormFT]]:[]),
     ['s','薪資費用小計',salaryCost],
     ['h','保險成本 · 公司負擔＋代扣同仁自付，合計＝實際繳出去的金額'],
     ...CO_ITEMS.map(([k,lb])=>[lb+((coAuto&&autoCo[k]>0)?'（依人員自動加總）':''),co[k]]),
@@ -895,7 +901,7 @@ function costRows(g){
         .concat([['s','自訂項目淨額',g.custAdd-g.custDed]]):[]),
     ...(g.ins?[['h','（參考）同仁自付額明細 · 已從薪資費用扣除、計入上方保險成本']]
         .concat(Object.keys(g.insBy).map(lb=>[lb,g.insBy[lb]])):[]),
-    ...(g.dorm?[['h','宿舍收入 · 已從上方各科目扣除，損益表勿重複計列']]
+    ...(g.dorm?[['h','宿舍收入 · 已從上方薪資費用扣除，損益表勿重複計列']]
         .concat(g.dormBy.map(([nm,ft,amt])=>[`${nm}（${ft?'正職':'計時'}）`,amt]))
         .concat([['s','宿舍收入小計',g.dorm]]):[]),
     ...(g.sup&&g.sup.length?[['h','跨店支援請款 · 向支援門市收款，與本店薪資費用無關']]

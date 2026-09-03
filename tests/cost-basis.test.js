@@ -94,10 +94,13 @@ console.log('\n══ 2) 儀表板趨勢／集團總覽用同一口徑 ══');
 
 console.log('\n══ 3) 三處程式碼口徑一致（防止只改一處造成報表打架）══');
 chk('  payroll.html 有把宿舍併入成本扣除', /item_key==='dormitory'/.test(HTML), true);
-// 2026-08-24 起宿舍也扣進所屬科目，不再有獨立減項列（列了會扣兩次）
-chk('  不再有獨立的「減：宿舍代扣」列', /減：宿舍代扣/.test(HTML), false);
-chk('  正職科目扣掉 dormFT', /g\.base-g\.reduceFT-g\.insFT-g\.dormFT/.test(HTML), true);
-chk('  PT 科目扣掉 dormPT', /g\.pt-g\.reducePT-g\.insPT-g\.dormPT/.test(HTML), true);
+/* 2026-09-03 Eason：「薪資費用／正職」那列只顯示底薪科目本身，正職的宿舍代扣改列獨立減項。
+   ⚠ 只有正職——計時的仍扣在「薪資費用／PT」那列內，兩列口徑刻意不同。
+   ⚠ 獨立減項列只能列正職的（g.dormFT），列了 g.dorm 就會把計時的扣第二次。 */
+chk('  有「減：宿舍代扣（正職）」獨立列', /減：宿舍代扣（正職/.test(HTML), true);
+chk('  該減項只取正職（不可用 g.dorm）', /\[.減：宿舍代扣（正職）.,-g\.dormFT\]/.test(HTML), true);
+chk('  正職科目不再扣 dormFT', /g\.base-g\.reduceFT-g\.insFT-g\.dormFT/.test(HTML), false);
+chk('  PT 科目仍扣掉 dormPT', /g\.pt-g\.reducePT-g\.insPT-g\.dormPT/.test(HTML), true);
 chk('  小計不再重複減 g.dorm', /salaryGross-g\.dorm/.test(HTML), false);
 chk('  payroll.html 有獨立的宿舍收入區塊', /宿舍收入/.test(HTML), true);
 chk('  宿舍收入區塊標明勿重複計列', /勿重複計列/.test(HTML), true);
@@ -113,8 +116,12 @@ chk('  參考明細標明已扣在科目內', /已扣在上方各科目內/.test
 
 console.log('\n══ 5) 勞健保自付額：從薪資費用扣除、加回保險成本（2026-08-24）══');
 chk('  前端有自付額 key 清單', /INS_SELF_KEYS/.test(HTML), true);
-chk('  正職科目扣掉 insFT', /g\.base-g\.reduceFT-g\.insFT/.test(HTML), true);
-chk('  PT 科目扣掉 insPT', /g\.pt-g\.reducePT-g\.insPT/.test(HTML), true);
+chk('  有「減：勞健保自付（正職」獨立列', /減：勞健保自付（正職/.test(HTML), true);
+chk('  該減項只取正職（不可用 g.ins）', /\[.減：勞健保自付（正職，代扣代繳）.,-g\.insFT\]/.test(HTML), true);
+chk('  正職科目不再扣 insFT', /g\.base-g\.reduceFT-g\.insFT/.test(HTML), false);
+chk('  正職科目只扣 reduceFT', /const baseNet=g\.base-g\.reduceFT,/.test(HTML), true);
+chk('  小計把移出的兩項扣回（總數不變）', /salaryCost=salaryGross-g\.insFT-g\.dormFT/.test(HTML), true);
+chk('  PT 科目仍扣掉 insPT', /g\.pt-g\.reducePT-g\.insPT/.test(HTML), true);
 chk('  保險成本小計含自付額', /coTotal\+g\.ins/.test(HTML), true);
 chk('  人事總成本含自付額（不可少算）', /salaryCost\+coTotal\+g\.ins/.test(HTML), true);
 chk('  有「同仁自付額（代扣代繳」那一列', /同仁自付額（代扣代繳/.test(HTML), true);
