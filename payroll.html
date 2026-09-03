@@ -508,6 +508,14 @@ const $=id=>document.getElementById(id);
 const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};
 const r2=v=>Math.round(v*100)/100;
 const nf=v=>Math.round(v).toLocaleString('zh-TW');
+/* ⚠ 任何「人打進來的自由文字」進 innerHTML 之前一律過這支：姓名（主管在打卡頁新增同仁時填）、
+   門市名、假別名、自訂加薪／扣款的項目名。不過的話＝拿得到主管金鑰的人可以往管理者的畫面塞 HTML，
+   而管理金鑰就在網址列上（?k=），等於把整套薪資系統的權限交出去。
+   ⚠ 只包「資料」，不要包程式自己產生的標籤（如 <span class="tag">）——包了畫面會變成一串原始碼。
+   2026-09-03 稽核：原本只有 exportExcel() 內有一份局部的 esc，畫面渲染路徑 21 處全裸。*/
+const esc=s=>String(s==null?'':s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const ym=()=>$('ym').value;
 function stepMonth(d){
   const m=/^(\d{4})-(\d{2})$/.exec($('ym').value||''); if(!m)return;
@@ -925,10 +933,10 @@ function costRows(g){
         .concat([['s','宿舍收入小計',g.dorm]]):[]),
     ...(g.sup&&g.sup.length?[['h','跨店支援請款 · 向支援門市收款，與本店薪資費用無關']]
         .concat(g.sup.map(x=>[x.fixed
-            ? `${x.name} → ${x.store}　${r2(x.hours)}H（金額指定）`
+            ? `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H（金額指定）`
             : (x.gapH>0
-                ? `${x.name} → ${x.store}　缺口 ${r2(x.gapH)}H×${nf(x.gapRate)} ＋ ${r2(x.hours-x.gapH)}H×${nf(x.rate)}`
-                : `${x.name} → ${x.store}　${r2(x.hours)}H × ${nf(x.rate)}`), x.amount]))
+                ? `${esc(x.name)} → ${esc(x.store)}　缺口 ${r2(x.gapH)}H×${nf(x.gapRate)} ＋ ${r2(x.hours-x.gapH)}H×${nf(x.rate)}`
+                : `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H × ${nf(x.rate)}`), x.amount]))
         .concat([['s','請款小計',g.supTotal]]):[]),
   ];
 }
@@ -1111,7 +1119,7 @@ function renderRun(){
     }
     const roleCell=r.is_full_time?(n(m.mgr_allow)>0?'<b>店長</b>':'正職')
       :(`時薪 <b>${nf(eff)}</b>`+(wageNote?`<span style="color:var(--muted);font-size:11.5px"> (${wageNote})</span>`:'')+attNote);
-    h+=`<tr><td><b>${r.name}</b></td>
+    h+=`<tr><td><b>${esc(r.name)}</b></td>
       <td style="text-align:left"><span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span>
       ${(r.is_full_time&&r.ratio<1)?`<span class="tag draft">折算${Math.round(r.ratio*100)}%</span>`:''}</td>
       <td style="text-align:left">${roleCell}</td>
@@ -1166,7 +1174,7 @@ function renderAtt(){
     A.support=A.support||[];
     const sh=A.support.reduce((a,s)=>a+n(s.hours),0);
     // 姓名底下掛「假別額度」——點了才去抓（Apps Script 每次往返約 2 秒，不放進 loadMonth 拖慢切月份）
-    h+=`<tr><td><b>${e.name}</b> <span class="tag ${isFT(e)?'ft':'pt'}">${isFT(e)?'正職':'計時'}</span>`
+    h+=`<tr><td><b>${esc(e.name)}</b> <span class="tag ${isFT(e)?'ft':'pt'}">${isFT(e)?'正職':'計時'}</span>`
       +`<br><button class="lnk" onclick="openQuota('${e.emp_id}')">假別額度</button></td>`;
     // 全勤津貼：只有計時可勾（滿100H＋全勤由管理者判定），勾了時薪＋10；放在姓名旁第一欄
     h+=`<td style="text-align:center">${isFT(e)?'—':
@@ -1179,21 +1187,21 @@ function renderAtt(){
         onchange="ATT['${e.emp_id}'].meal_on=this.checked"
         style="width:20px;height:20px;cursor:pointer;accent-color:var(--red)">`}</td>`;
     // 本月時薪（計時）：填了用該月值、預設帶主檔時薪；每月可不同又保留歷史。正職—
-    h+=`<td>${isFT(e)?'—':`<input type="number" step="1" value="${n(A.wage_override)>0?n(A.wage_override):n(e.wage)}"
+    h+=`<td>${isFT(e)?'—':`<input type="number" step="1" value="${esc(n(A.wage_override)>0?n(A.wage_override):n(e.wage))}"
         onchange="ATT['${e.emp_id}'].wage_override=n(this.value)">`}</td>`;
     // 國定假日時數（計時）：當天出勤時薪雙倍；有填國定假日日期就自動帶出，也可手改
-    h+=`<td>${isFT(e)?'—':`<input type="number" step="0.25" value="${n(A.holiday_h)||0}"
+    h+=`<td>${isFT(e)?'—':`<input type="number" step="0.25" value="${esc(n(A.holiday_h)||0)}"
         onchange="ATT['${e.emp_id}'].holiday_h=n(this.value)">`}</td>`;
     // 出勤天數（正職）：餐費補助用，自動帶打卡有核定的天數、可手改。計時—
-    h+=`<td>${!isFT(e)?'—':`<input type="number" step="1" value="${A.work_days??0}"
+    h+=`<td>${!isFT(e)?'—':`<input type="number" step="1" value="${esc(A.work_days??0)}"
         onchange="ATT['${e.emp_id}'].work_days=n(this.value)">`}</td>`;
     // 本月宿舍費：空白＝用主檔（placeholder 顯示主檔值）、填 0＝本月免收、填其他＝本月專屬
-    h+=`<td><input type="number" step="100" value="${(A.dorm_override===''||A.dorm_override==null)?'':A.dorm_override}"
+    h+=`<td><input type="number" step="100" value="${esc((A.dorm_override===''||A.dorm_override==null)?'':A.dorm_override)}"
         placeholder="${n(e.dormitory)||0}"
         onchange="ATT['${e.emp_id}'].dorm_override=this.value===''?'':n(this.value)"></td>`;
     AF.forEach(([k])=>{
       const dis=!isFT(e)&&(k==='extra_ot'||k==='deduct_days');
-      h+=`<td>${dis?'—':`<input type="number" step="0.25" value="${A[k]??0}"
+      h+=`<td>${dis?'—':`<input type="number" step="0.25" value="${esc(A[k]??0)}"
         onchange="ATT['${e.emp_id}']['${k}']=n(this.value)">`}</td>`;
     });
     // 支援時數讀取失敗（後端 JSON 解析不了）要看得見——不然會靜靜當成 0，
@@ -1203,14 +1211,14 @@ function renderAtt(){
       : `<td>${sh?r2(sh)+' H':'—'}</td>`;
     // 自訂加薪／扣款：名稱自填＋金額，逐月存於 payroll_input
     h+=`<td><div style="display:flex;gap:5px;min-width:190px">
-      <input type="text" placeholder="名稱" value="${A.custom_add_label||''}" style="min-width:90px"
+      <input type="text" placeholder="名稱" value="${esc(A.custom_add_label||'')}" style="min-width:90px"
         onchange="ATT['${e.emp_id}'].custom_add_label=this.value">
-      <input type="number" placeholder="金額" value="${n(A.custom_add_amt)||''}" style="min-width:80px"
+      <input type="number" placeholder="金額" value="${esc(n(A.custom_add_amt)||'')}" style="min-width:80px"
         onchange="ATT['${e.emp_id}'].custom_add_amt=n(this.value)"></div></td>`;
     h+=`<td><div style="display:flex;gap:5px;min-width:190px">
-      <input type="text" placeholder="名稱" value="${A.custom_ded_label||''}" style="min-width:90px"
+      <input type="text" placeholder="名稱" value="${esc(A.custom_ded_label||'')}" style="min-width:90px"
         onchange="ATT['${e.emp_id}'].custom_ded_label=this.value">
-      <input type="number" placeholder="金額" value="${n(A.custom_ded_amt)||''}" style="min-width:80px"
+      <input type="number" placeholder="金額" value="${esc(n(A.custom_ded_amt)||'')}" style="min-width:80px"
         onchange="ATT['${e.emp_id}'].custom_ded_amt=n(this.value)"></div></td>`;
     // 剩餘特休：後端依到職日按勞基法(週年制)算額度、扣掉本週年期已用特休(唯讀)
     const av=ANNUAL[e.emp_id];
@@ -1273,7 +1281,7 @@ function renderQuota(empId){
       // 沒請過時「剩餘＝上限」，兩個都印是重複的，只標「未使用」
       else remTxt=`<b>${r2(rem*dayH)}</b> H<br><span style="color:var(--muted);font-size:11px">`
         +(used?`/ 上限 ${r2(cap*dayH)} H`:'未使用')+'</span>';
-      body+=`<tr><td>${t.name} <span class="qz-basis">${BASIS[v.basis]||''}</span>${bar}</td>`
+      body+=`<tr><td>${esc(t.name)} <span class="qz-basis">${BASIS[v.basis]||''}</span>${bar}</td>`
         +`<td>${usedTxt}</td><td>${remTxt}</td></tr>`;
     });
     body+='</tbody></table>';
@@ -1291,7 +1299,7 @@ function renderQuota(empId){
   const d=document.createElement('div');
   d.className='qz-mask'; d.id='qzMask';
   d.onclick=ev=>{if(ev.target===d)closeQuota()};
-  d.innerHTML=`<div class="qz-box"><div class="qz-hd"><h3>${emp.name||empId}</h3>`
+  d.innerHTML=`<div class="qz-box"><div class="qz-hd"><h3>${esc(emp.name||empId)}</h3>`
     +`<span class="qz-sub">${year} 年度假別額度</span>`
     +`<button onclick="closeQuota()" title="關閉">×</button></div>`
     +`<div class="qz-bd">${body}${annual}`
@@ -1344,29 +1352,29 @@ function renderLeaveTypes(){
              ${r[k]?'checked':''} onchange="LT_LIST[${i}].${k}=this.checked"></td>`;
       } else if(k==='pay_ratio'||k==='over_ratio'||k==='under_ratio'){
         h+=`<td><select onchange="LT_LIST[${i}].${k}=parseFloat(this.value)" style="min-width:${w}px">`
-          +[1,0.8,0.5,0.2,0].map(v=>`<option value="${v}" ${Number(r[k])===v?'selected':''}>${v*100}%</option>`).join('')
+          +[1,0.8,0.5,0.2,0].map(v=>`<option value="${esc(v)}" ${Number(r[k])===v?'selected':''}>${v*100}%</option>`).join('')
           +'</select></td>';
       } else if(k==='cap_basis'){
         h+=`<td><select onchange="LT_LIST[${i}].cap_basis=this.value" style="min-width:${w}px">`
-          +LT_BASIS.map(([v,l])=>`<option value="${v}" ${String(r.cap_basis||'')===v?'selected':''}>${l}</option>`).join('')
+          +LT_BASIS.map(([v,l])=>`<option value="${esc(v)}" ${String(r.cap_basis||'')===v?'selected':''}>${l}</option>`).join('')
           +'</select></td>';
       } else if(k==='attend_effect'){
         h+=`<td><select onchange="LT_LIST[${i}].attend_effect=this.value" style="min-width:${w}px">`
           +[['','（沿用扣全勤欄）'],['none','不影響'],['deduct','按天遞減'],['void','整筆歸零']]
-            .map(([v,l])=>`<option value="${v}" ${String(r.attend_effect||'')===v?'selected':''}>${l}</option>`).join('')
+            .map(([v,l])=>`<option value="${esc(v)}" ${String(r.attend_effect||'')===v?'selected':''}>${l}</option>`).join('')
           +'</select></td>';
       } else if(k==='min_unit'){
         h+=`<td><select onchange="LT_LIST[${i}].min_unit=this.value" style="min-width:${w}px">`
-          +[['hour','小時'],['half','半日'],['day','整日']].map(([v,l])=>`<option value="${v}" ${String(r.min_unit||'hour')===v?'selected':''}>${l}</option>`).join('')
+          +[['hour','小時'],['half','半日'],['day','整日']].map(([v,l])=>`<option value="${esc(v)}" ${String(r.min_unit||'hour')===v?'selected':''}>${l}</option>`).join('')
           +'</select></td>';
       } else if(k==='merge_into'){
         h+=`<td><select onchange="LT_LIST[${i}].merge_into=this.value" style="min-width:${w}px">`
           +'<option value="">（不併入）</option>'
-          +LT_LIST.filter(x=>x.code!==r.code).map(x=>`<option value="${x.code}" ${String(r.merge_into||'')===x.code?'selected':''}>${x.name}</option>`).join('')
+          +LT_LIST.filter(x=>x.code!==r.code).map(x=>`<option value="${esc(x.code)}" ${String(r.merge_into||'')===x.code?'selected':''}>${esc(x.name)}</option>`).join('')
           +'</select></td>';
       } else {
         const num = (k!=='name');
-        h+=`<td style="text-align:left"><input type="${num?'number':'text'}" value="${r[k]??''}"
+        h+=`<td style="text-align:left"><input type="${num?'number':'text'}" value="${esc(r[k]??'')}"
              style="min-width:${w}px" onchange="LT_LIST[${i}]['${k}']=this.value"></td>`;
       }
     });
@@ -1431,15 +1439,15 @@ function renderLeaveEvents(){
     }
     h+=`<tr><td style="text-align:left"><select onchange="LEV_LIST[${i}].emp_id=this.value;LEV_LIST[${i}].name=(MASTER.find(m=>String(m.emp_id)===this.value)||{}).name||'';renderLeaveEvents()">`
       +'<option value="">（選同仁）</option>'
-      +MASTER.map(m=>`<option value="${m.emp_id}" ${String(r.emp_id)===String(m.emp_id)?'selected':''}>${m.name}</option>`).join('')
+      +MASTER.map(m=>`<option value="${esc(m.emp_id)}" ${String(r.emp_id)===String(m.emp_id)?'selected':''}>${esc(m.name)}</option>`).join('')
       +`</select></td>`
       +`<td style="text-align:left"><select onchange="LEV_LIST[${i}].code=this.value;renderLeaveEvents()">`
       +'<option value="">（選假別）</option>'
-      +opts.map(o=>`<option value="${o.code}" ${r.code===o.code?'selected':''}>${o.name}</option>`).join('')
+      +opts.map(o=>`<option value="${esc(o.code)}" ${r.code===o.code?'selected':''}>${esc(o.name)}</option>`).join('')
       +`</select></td>`
-      +`<td style="text-align:left"><input type="date" value="${r.event_date||''}" onchange="LEV_LIST[${i}].event_date=this.value;renderLeaveEvents()"></td>`
+      +`<td style="text-align:left"><input type="date" value="${esc(r.event_date||'')}" onchange="LEV_LIST[${i}].event_date=this.value;renderLeaveEvents()"></td>`
       +`<td style="text-align:left;color:var(--muted);font-size:12.5px">${win}</td>`
-      +`<td style="text-align:left"><input type="text" value="${r.memo||''}" style="min-width:120px" onchange="LEV_LIST[${i}].memo=this.value"></td>`
+      +`<td style="text-align:left"><input type="text" value="${esc(r.memo||'')}" style="min-width:120px" onchange="LEV_LIST[${i}].memo=this.value"></td>`
       +`<td><button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="LEV_LIST.splice(${i},1);renderLeaveEvents()">移除</button></td></tr>`;
   });
   t.innerHTML=h+'</tbody>';
@@ -1466,7 +1474,7 @@ function renderStores(){
   const t=$('storeTbl'); if(!t) return;
   let h='<thead><tr>'+SF.map(f=>`<th style="text-align:left">${f[1]}</th>`).join('')+'<th style="text-align:left">品牌圖示</th><th>啟用</th><th></th></tr></thead><tbody>';
   STORE_LIST.forEach((s,i)=>{
-    h+='<tr>'+SF.map(([k])=>`<td style="text-align:left"><input type="${k==='sort'?'number':'text'}" value="${s[k]??''}"
+    h+='<tr>'+SF.map(([k])=>`<td style="text-align:left"><input type="${k==='sort'?'number':'text'}" value="${esc(s[k]??'')}"
         style="min-width:${k==='clock_ss_id'?'260':'110'}px"
         onchange="STORE_LIST[${i}]['${k}']=this.value"></td>`).join('')
       +`<td style="text-align:left"><select onchange="STORE_LIST[${i}].brand=this.value;applyBrand()">
@@ -1535,7 +1543,7 @@ function vClear(){ VCACHE={}; }
 function renderStoreSel(){
   const sel=$('storeSel'); if(!sel||!STORE_LIST.length) return;
   if(!STORE||!STORE_LIST.some(s=>String(s.code)===String(STORE))) STORE=String(STORE_LIST[0].code);
-  sel.innerHTML=STORE_LIST.map(s=>`<option value="${s.code}" ${String(s.code)===String(STORE)?'selected':''}>${s.name||s.code}</option>`).join('');
+  sel.innerHTML=STORE_LIST.map(s=>`<option value="${esc(s.code)}" ${String(s.code)===String(STORE)?'selected':''}>${esc(s.name||s.code)}</option>`).join('');
   sel.style.display=STORE_LIST.length>1?'':'none';
   applyBrand();
   const lbl=sel.previousElementSibling; if(lbl) lbl.style.display=STORE_LIST.length>1?'':'none';
@@ -1571,7 +1579,7 @@ function renderGroup(r){
     <thead><tr><th style="text-align:left">門市</th><th>人數</th><th>總工時</th><th>加班費</th><th>獎金</th>
       <th>薪資費用</th><th>公司負擔</th><th>人事總成本</th><th>實付</th><th style="text-align:left">狀態</th></tr></thead>
     <tbody>${rows.map(x=>`<tr>
-      <td style="text-align:left"><b>${x.name}</b> <span style="color:var(--muted);font-size:11.5px">${x.store}</span></td>`
+      <td style="text-align:left"><b>${esc(x.name)}</b> <span style="color:var(--muted);font-size:11.5px">${esc(x.store)}</span></td>`
       +(x.has?`<td>${x.people}</td><td>${x.hours}</td><td>${nf(x.overtime)}</td><td>${nf(x.bonus)}</td>
         <td>${nf(x.salary_cost)}</td><td>${nf(x.company)}</td><td class="big">${nf(x.total_cost)}</td><td>${nf(x.net)}</td>
         <td style="text-align:left"><span class="tag ${x.status==='final'?'final':'draft'}">${x.status==='final'?'已鎖定':'草稿'}</span></td>`
@@ -1589,7 +1597,7 @@ const BTYPE={sales:'門市業績獎金',perf:'個人績效獎金',project:'介�
 const BDEF ={sales:'業績獎金',perf:'績效獎金',project:'專案獎金'};
 function bonusWhoOptions(){
   const act=MASTER.filter(e=>String(e.active)==='true');
-  $('bnWho').innerHTML='<option value="">選擇同仁</option>'+act.map(e=>`<option value="${e.emp_id}">${e.name}</option>`).join('');
+  $('bnWho').innerHTML='<option value="">選擇同仁</option>'+act.map(e=>`<option value="${esc(e.emp_id)}">${esc(e.name)}</option>`).join('');
 }
 function addBonus(){
   const emp=$('bnWho').value, t=$('bnType').value, amt=n($('bnAmt').value);
@@ -1616,9 +1624,9 @@ function renderBonus(){
         <thead><tr><th style="text-align:left">姓名</th><th style="text-align:left">顯示名稱</th><th>金額</th><th style="text-align:left">備註</th><th></th></tr></thead>
         <tbody>${rows.map(({b,i})=>`<tr>
           <td style="text-align:left"><b>${nameOf(b.emp_id)}</b></td>
-          <td style="text-align:left"><input type="text" value="${b.label||''}" onchange="BONUS[${i}].label=this.value"></td>
-          <td><input type="number" value="${n(b.amount)}" onchange="BONUS[${i}].amount=n(this.value)"></td>
-          <td style="text-align:left"><input type="text" value="${b.memo||''}" onchange="BONUS[${i}].memo=this.value"></td>
+          <td style="text-align:left"><input type="text" value="${esc(b.label||'')}" onchange="BONUS[${i}].label=this.value"></td>
+          <td><input type="number" value="${esc(n(b.amount))}" onchange="BONUS[${i}].amount=n(this.value)"></td>
+          <td style="text-align:left"><input type="text" value="${esc(b.memo||'')}" onchange="BONUS[${i}].memo=this.value"></td>
           <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
             onclick="BONUS.splice(${i},1);renderBonus()">移除</button></td></tr>`).join('')}</tbody></table></div>
     </div>`;
@@ -1728,7 +1736,7 @@ function renderPunch(r){
   const box=$('punchBody'); if(!box) return;
   if(r.roster&&r.roster.length&&PUNCH_ROSTER.length!==r.roster.length){
     PUNCH_ROSTER=r.roster;
-    $('punchWho').innerHTML='<option value="">全部同仁</option>'+r.roster.map(e=>`<option value="${e.emp_id}">${e.name}</option>`).join('');
+    $('punchWho').innerHTML='<option value="">全部同仁</option>'+r.roster.map(e=>`<option value="${esc(e.emp_id)}">${esc(e.name)}</option>`).join('');
   }
   // 總表：全體同仁當月出勤統計
   const sm=r.summary||[];
@@ -1737,7 +1745,7 @@ function renderPunch(r){
     <thead><tr><th style="text-align:left">姓名</th><th>出勤工時</th><th>異常筆數</th><th>請假時數</th>
       <th>忘刷次數</th><th>遲到次數</th><th>早退次數</th></tr></thead>
     <tbody>${sm.map(x=>`<tr>
-      <td style="text-align:left"><b>${x.name}</b></td>
+      <td style="text-align:left"><b>${esc(x.name)}</b></td>
       <td><b>${x.hours}</b> H</td><td>${num(x.abnormal)}</td><td>${x.leave_h?'<b>'+x.leave_h+'</b> H':'<span style="color:var(--muted)">0</span>'}</td>
       <td>${num(x.miss,1)}</td><td>${num(x.late,1)}</td><td>${num(x.early,1)}</td></tr>`).join('')}
     <tr style="background:#f6f2ee;font-weight:900">
@@ -1760,11 +1768,11 @@ function renderPunch(r){
     <thead><tr><th>日期</th><th style="text-align:left">姓名</th><th style="text-align:left">打卡事件</th>
       <th>核定時數</th><th style="text-align:left">核定時段</th><th style="text-align:left">狀態</th><th style="text-align:left">核定人</th></tr></thead>
     <tbody>${rows.map(x=>`<tr>
-      <td>${x.date}</td><td style="text-align:left"><b>${x.name}</b></td>
+      <td>${x.date}</td><td style="text-align:left"><b>${esc(x.name)}</b></td>
       <td style="text-align:left;white-space:normal;min-width:230px">${x.punches.length?x.punches.map(pill).join(''):'<span style="color:var(--muted)">無打卡</span>'}</td>
       <td>${x.approved_hours===''?'<span style="color:var(--muted)">未核定</span>':'<b>'+x.approved_hours+'</b> H'}</td>
       <td style="text-align:left">${x.periods||'—'}</td>
-      <td style="text-align:left">${x.status_text?`<span class="${/遲到|早退|忘刷/.test(x.status_text)?'bad':''}">${x.status_text}</span>`:'—'}</td>
+      <td style="text-align:left">${x.status_text?`<span class="${/遲到|早退|忘刷/.test(x.status_text)?'bad':''}">${esc(x.status_text)}</span>`:'—'}</td>
       <td style="text-align:left">${x.manager_name||'—'}</td></tr>`).join('')}</tbody></table></div>
     <div class="hint" style="margin-top:10px">共 ${rows.length} 筆</div>`;
 }
@@ -1777,7 +1785,7 @@ function renderSup(){
       <b style="font-size:16px">跨店支援</b>
       <select id="supWho" style="min-width:150px;font-size:15px;padding:9px 11px">
         <option value="">選擇同仁</option>
-        ${act.map(e=>`<option value="${e.emp_id}">${e.name}</option>`).join('')}
+        ${act.map(e=>`<option value="${esc(e.emp_id)}">${esc(e.name)}</option>`).join('')}
       </select>
       <button class="btn" style="font-size:16.5px;padding:11px 24px"
         onclick="addSupportFor($('supWho').value)">＋ 新增支援</button>
@@ -1789,16 +1797,16 @@ function renderSup(){
     const A=ATT[e.emp_id];
     const rows=A.support.map((s,i)=>`<tr>
       <td><select onchange="ATT['${e.emp_id}'].support[${i}].store=this.value">${storeOptions(s.store)}</select></td>
-      <td><input type="number" step="0.25" value="${s.hours??''}"
+      <td><input type="number" step="0.25" value="${esc(s.hours??'')}"
         onchange="ATT['${e.emp_id}'].support[${i}].hours=n(this.value);renderAtt()"></td>
-      <td><input type="number" value="${s.rate??''}"
+      <td><input type="number" value="${esc(s.rate??'')}"
         onchange="ATT['${e.emp_id}'].support[${i}].rate=n(this.value)"></td>
-      <td><input type="number" value="${s.amount??''}" placeholder="自動"
+      <td><input type="number" value="${esc(s.amount??'')}" placeholder="自動"
         onchange="ATT['${e.emp_id}'].support[${i}].amount=this.value"></td>
       <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
         onclick="ATT['${e.emp_id}'].support.splice(${i},1);markAttDirty();renderAtt()">移除</button></td></tr>`).join('');
     return `<div class="card" style="background:#fdfcfb;margin-bottom:12px">
-      <div class="row" style="margin-bottom:10px"><b>${e.name}</b></div>
+      <div class="row" style="margin-bottom:10px"><b>${esc(e.name)}</b></div>
       <div class="scroll"><table>
         <thead><tr><th>支援門市</th><th>支援時數</th><th>支援費率</th><th>支援薪資</th><th></th></tr></thead>
         <tbody>${rows}</tbody></table></div>
@@ -1842,9 +1850,9 @@ function renderEmp(){
     return `<div class="card" style="background:#fdfcfb">
       <div class="row" style="margin-bottom:12px">
         <span style="font-size:12px;color:var(--muted);font-weight:700">編號</span>
-        <input type="text" value="${e.emp_id||''}" style="width:96px;text-align:left"
+        <input type="text" value="${esc(e.emp_id||'')}" style="width:96px;text-align:left"
           onchange="MASTER[${i}].emp_id=this.value.trim()">
-        <b style="font-size:15px">${e.name||'（未命名）'}</b>
+        <b style="font-size:15px">${esc(e.name||'（未命名）')}</b>
         <label style="font-size:12.5px"><input type="checkbox" ${ft?'checked':''}
           onchange="MASTER[${i}].is_full_time=this.checked?'true':'false';renderEmp();renderAtt()"> 正職</label>
         <label style="font-size:12.5px"><input type="checkbox" ${String(e.active)==='true'?'checked':''}
@@ -1853,7 +1861,7 @@ function renderEmp(){
       EF.filter(([k])=>!( (!ft&&['base','ot_rate','attend_cap','meal_allow','gap_rate','skill_allow','night_allow','mgr_allow'].includes(k))
                         || (ft&&k==='wage') ))
         .map(([k,lb,ty])=>`<div class="fld"><label>${lb}</label>
-          <input type="${ty||'number'}" value="${e[k]??''}"
+          <input type="${ty||'number'}" value="${esc(e[k]??'')}"
             onchange="MASTER[${i}]['${k}']=${ty==='text'||ty==='date'?'this.value':'n(this.value)'}"></div>`).join('')+
       '</div></div>';
   }).join('');
@@ -1918,12 +1926,12 @@ function renderCfg(){
   if($('coOwn'))  $('coOwn').checked=own;
   const srcTag=k=>{const v=CFGSRC[k];return v==='own'?' <span class="tag draft" style="font-size:10px">本店</span>':(v==='global'?'':' <span style="color:var(--muted)">預設</span>')};
   const cfgFld=([k,lb])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
-    <input type="number" step="0.01" value="${CFG[k]??''}" onchange="CFG['${k}']=n(this.value)"></div>`;
+    <input type="number" step="0.01" value="${esc(CFG[k]??'')}" onchange="CFG['${k}']=n(this.value)"></div>`;
   $('cfgGrid').innerHTML=CF.map(cfgFld).join('');
   if($('attGrid')) $('attGrid').innerHTML=CF_ATTEND.map(cfgFld).join('')
     +CF_ATTEND_SELECT.map(([k,lb,opts])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
       <select onchange="CFG['${k}']=this.value" style="font:inherit;padding:8px 11px;border:1px solid var(--line);border-radius:6px">`
-      +opts.map(([v,l])=>`<option value="${v}" ${String(CFG[k]||'punch')===v?'selected':''}>${l}</option>`).join('')
+      +opts.map(([v,l])=>`<option value="${esc(v)}" ${String(CFG[k]||'punch')===v?'selected':''}>${l}</option>`).join('')
       +'</select></div>').join('');
   if($('ptGrid')) $('ptGrid').innerHTML=CF_PT.map(cfgFld).join('');
   // 用同一個 cfgFld，才會跟其他三張卡一樣顯示「本店／預設」來源標示
@@ -1932,8 +1940,8 @@ function renderCfg(){
   let h='<thead><tr><th>月份</th><th>紅字天數</th><th style="text-align:left">國定假日日期<br><span style="font-weight:400;color:var(--muted)">計時當天出勤＝時薪雙倍</span></th><th></th></tr></thead><tbody>';
   Object.keys(HOL).sort().forEach(k=>{
     const tag=HOLSRC[k]==='own'?' <span class="tag draft" style="font-size:10px">本店</span>':' <span style="color:var(--muted);font-size:11px">集團</span>';
-    h+=`<tr><td>${k}${tag}</td><td><input type="number" value="${HOL[k]}" onchange="HOL['${k}']=n(this.value)"></td>
-      <td style="text-align:left"><input type="text" value="${HOLD[k]||''}" placeholder="${k}-01, ${k}-02"
+    h+=`<tr><td>${k}${tag}</td><td><input type="number" value="${esc(HOL[k])}" onchange="HOL['${k}']=n(this.value)"></td>
+      <td style="text-align:left"><input type="text" value="${esc(HOLD[k]||'')}" placeholder="${k}-01, ${k}-02"
         style="min-width:260px" onchange="HOLD['${k}']=this.value.trim()"></td>
       <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
         onclick="delete HOL['${k}'];delete HOLD['${k}'];saveHol()">移除</button></td></tr>`;
@@ -1971,7 +1979,7 @@ function addHol(btn){
 /* ═════ 薪資單 ═════ */
 function renderSlipSel(){
   const s=$('slipSel'),cur=s.value;
-  s.innerHTML=RESULTS.map(r=>`<option value="${r.emp_id}">${r.name}</option>`).join('');
+  s.innerHTML=RESULTS.map(r=>`<option value="${esc(r.emp_id)}">${esc(r.name)}</option>`).join('');
   if(cur&&RESULTS.some(r=>r.emp_id===cur))s.value=cur;
   renderSlip();
 }
@@ -1984,11 +1992,11 @@ function renderSlip(){
   // 數量的單位依項目而定：時數類→H、遲到→分鐘、餐費／年終→天，其餘不加單位。
   // ⚠ late_deduct 的 qty 是「分鐘」，不加單位會被誤讀成小時（Eason 2026-09-01 指出）。
   const qtyUnit=k=>k==='late_deduct'?' 分鐘':(k==='meal_sub'?' 天':(isHoury(k)?'H':''));
-  const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
+  const line=x=>`<tr><td>${esc(x.item_label)}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   w.innerHTML=`<div class="slip">
     <h3>薪 資 明 細 表</h3>
     <div class="sub">麻的小辛辣 · 新竹光復店 ｜ ${ym().replace('-','年')}月 ｜ 發薪日 每月 ${CFG.payday} 日</div>
-    <div class="who"><div>姓名 <b style="font-size:16px">${r.name}</b>
+    <div class="who"><div>姓名 <b style="font-size:16px">${esc(r.name)}</b>
       <span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span></div>
       <div style="text-align:right;font-size:13px">核定總時數 <b>${r.total_hours}</b> H
       ${r.support_hours?`　支援 <b>${r2(r.support_hours)}</b> H`:''}
@@ -2028,13 +2036,13 @@ function renderExport(){
   if($('expYm')) $('expYm').textContent=ym();
   const w=$('exportDetail'); if(!w) return;
   if(!RESULTS.length){ w.innerHTML='<div class="card"><div style="text-align:center;padding:34px;color:#8a817a">此月份尚無資料，請先到「月結」計算</div></div>'; return; }
-  const row=x=>`<tr><td style="padding:4px 0;border-bottom:1px dotted var(--line)">${x.item_label}${expSub(x)?` <span style="color:#8a817a;font-size:12px">${expSub(x)}</span>`:''}</td><td style="text-align:right;border-bottom:1px dotted var(--line)">${nf(x.amount)}</td></tr>`;
+  const row=x=>`<tr><td style="padding:4px 0;border-bottom:1px dotted var(--line)">${esc(x.item_label)}${expSub(x)?` <span style="color:#8a817a;font-size:12px">${expSub(x)}</span>`:''}</td><td style="text-align:right;border-bottom:1px dotted var(--line)">${nf(x.amount)}</td></tr>`;
   let h=`<div class="card"><div style="font-size:18px;font-weight:900">麻的小辛辣 薪資明細</div>
     <div style="color:#8a817a;margin:4px 0 16px">${ym().replace('-','年')}月　${STATUS==='final'?'已鎖定':'草稿'}　共 ${RESULTS.length} 人</div>`;
   RESULTS.forEach(r=>{
     h+=`<div class="exp-person" style="border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px">
       <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid var(--black);padding-bottom:8px;margin-bottom:8px">
-        <b style="font-size:16px">${r.name}</b>
+        <b style="font-size:16px">${esc(r.name)}</b>
         <span style="color:#8a817a;font-size:12.5px">${r.is_full_time?'正職':'計時'}　核定 ${r.total_hours}H${r.base_hours!=null?'　基本 '+r.base_hours+'H':''}${r.ot_paid_hours?'　加班 '+r2(r.ot_paid_hours)+'H':''}</span>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13.5px">

@@ -63,6 +63,12 @@ const API=(location.hostname==='localhost'||location.hostname==='127.0.0.1')?''
 const KEY=new URLSearchParams(location.search).get('k')||'';
 const nf=v=>Math.round(v).toLocaleString('zh-TW');
 const r2=v=>Math.round(v*100)/100;
+/* ⚠ 自由文字進 innerHTML 前一律過這支：姓名（主管新增同仁時填的）、
+   item_label（管理者在「自訂加薪／扣款」填的項目名，會直接成為薪資單上的項目）。
+   2026-09-03 稽核補上；payroll.html／clock.html 同一套規則，改一邊記得三邊都看。*/
+const esc=s=>String(s==null?'':s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage','pt_attend_plus','pt_tenure_plus'];
 
 /* 假別額度卡片：資料與規則來自後端 payMyLeaveQuota（＝主管看到的同一份），
@@ -82,7 +88,7 @@ function leaveCard(list){
     else if(q.remain_h<0) remTxt=`<span class="out">超出 ${r2(-q.remain_h)} H</span>`;
     else if(q.blocked) remTxt='<span class="out">已用完</span>';
     else remTxt=`<b>${r2(q.remain_h)}</b> H<span class="u">/ 上限 ${r2(q.cap_h)} H</span>`;
-    return `<tr><td>${q.name}${bar}</td><td class="r">${usedTxt}</td><td class="r">${remTxt}</td></tr>`;
+    return `<tr><td>${esc(q.name)}${bar}</td><td class="r">${usedTxt}</td><td class="r">${remTxt}</td></tr>`;
   }).join('');
   return `<div class="card lq"><h4>我的假別額度</h4>`
     +`<div class="sub">今年（曆年）已請與剩餘。數字來自店長在系統登記的請假紀錄，`
@@ -109,9 +115,9 @@ async function load(){
   const r=j.result||j.run, earn=r.earn||[], ded=r.ded||[];
   // 數量單位依項目而定：遲到→分鐘、餐費→天、時數類→H（與 payroll.html 同一套規則）
   const qtyUnit=k=>k==='late_deduct'?' 分鐘':(k==='meal_sub'?' 天':(HOURY.includes(k)||/_leave$/.test(String(k))?'H':''));
-  const line=x=>`<tr><td>${x.item_label}${x.qty!=null?` <span style="color:#8a817a;font-size:12px">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
+  const line=x=>`<tr><td>${esc(x.item_label)}${x.qty!=null?` <span style="color:#8a817a;font-size:12px">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   app.innerHTML=`<div class="card">
-    <div class="who"><div><b>${j.name}</b><div class="m">${j.ym.replace('-','年')}月薪資</div></div>
+    <div class="who"><div><b>${esc(j.name)}</b><div class="m">${j.ym.replace('-','年')}月薪資</div></div>
       <div class="m" style="text-align:right">發薪日<br>每月 ${j.payday} 日</div></div>
     <div class="hrs">
       <div><span>核定總時數</span><b>${r.total_hours}</b> H</div>

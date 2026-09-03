@@ -8,3 +8,9 @@ mock/payroll_mock_db.json
 
 # subagent-driven-development 工作區（暫存，不進版控）
 .superpowers/
+
+# 交付前稽核文件（含權限模型與金鑰位置，repo 為 public，絕不 commit）
+documentation/
+
+# 資安稽核報告（含攻擊路徑細節，repo 為 public，絕不 commit）
+reports/

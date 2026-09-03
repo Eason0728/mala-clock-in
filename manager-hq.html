@@ -473,6 +473,16 @@
 (function () {
   'use strict';
 
+  /* ⚠ 自由文字進 innerHTML 前一律過這支。本檔原本只在公告那一段有個同名的局部版
+     （2026-09-03 稽核發現：名冊的姓名與「由誰設定」也是拼字串進 innerHTML，同樣的洞卻沒防），
+     所以提到最外層讓整個檔案都用得到。公告那份局部的留著不衝突（會遮蔽這份，行為相同）。
+     ⚠ 只包資料，不要包程式自己產生的標籤。清單裡的數字（人數、筆數）不必包。 */
+  function escHtml(v) {
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
   /* 多門市後端對照：不帶 ?s= 就是光復（既有連結完全不受影響）。
      各店打卡各自一份試算表與部署，所以只有網址不同，程式共用一份。 */
   var STORE_APIS = {
@@ -1538,18 +1548,18 @@
       var actives = rows.filter(function (r) { return r.active && r.name !== myName; });
       var gone = rows.filter(function (r) { return !r.active; });
       sel.innerHTML = '<option value="">選擇同仁…</option>' + actives.map(function (r) {
-        return '<option value="' + r.emp_id + '">' + r.name + '（' + r.emp_id + '）</option>';
+        return '<option value="' + escHtml(r.emp_id) + '">' + escHtml(r.name) + '（' + escHtml(r.emp_id) + '）</option>';
       }).join('');
       btn.disabled = actives.length === 0;
       if (!gone.length) { listBox.innerHTML = ''; return; }
       listBox.innerHTML = '<div class="re-list-title">已離職（' + gone.length + '）</div>'
         + gone.map(function (r) {
             var when = shortDate(r.removed_at);
-            var by = r.removed_by ? ('由 ' + r.removed_by + ' 設定') : '';
+            var by = r.removed_by ? ('由 ' + escHtml(r.removed_by) + ' 設定') : '';
             var meta = (when || by) ? '<span class="re-when">' + [when, by].filter(Boolean).join('・') + '</span>' : '';
-            return '<div class="re-item"><span class="re-name">' + r.name + '（' + r.emp_id + '）' + meta + '</span>'
+            return '<div class="re-item"><span class="re-name">' + escHtml(r.name) + '（' + escHtml(r.emp_id) + '）' + meta + '</span>'
                  + '<button type="button" class="re-restore" data-emp="' + r.emp_id
-                 + '" data-name="' + r.name + '">恢復在職</button></div>';
+                 + '" data-name="' + escHtml(r.name) + '">恢復在職</button></div>';
           }).join('');
       [].forEach.call(listBox.querySelectorAll('.re-restore'), function (b) {
         b.addEventListener('click', function () {

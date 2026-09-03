@@ -1307,6 +1307,15 @@
   var HOURY = ['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage','pt_attend_plus','pt_tenure_plus'];
   function payNf(v) { return Math.round(v).toLocaleString('zh-TW'); }
   function payR2(v) { return Math.round(v * 100) / 100; }
+  /* ⚠ 自由文字進 innerHTML 前一律過這支：姓名、假別名、item_label（管理者自訂的項目名）。
+     同頁上方的店內公告走 textContent（見 renderNotices），那條路本來就安全；
+     薪資分頁是後來加的、走 innerHTML，2026-09-03 稽核才補上這支。
+     payroll.html／my.html 有各自同名的一份，三邊規則一致。*/
+  function payEsc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
 
   // 預設月份＝當月（台北時區）
   (function () {
@@ -1326,7 +1335,7 @@
     if (x.qty != null) {
       sub = ' <span style="color:#8a817a;font-size:12px">' + payR2(x.qty) + (HOURY.indexOf(x.item_key) !== -1 ? 'H' : '') + (x.rate ? ' × ' + payNf(x.rate) : '') + '</span>';
     }
-    return '<tr><td>' + x.item_label + sub + '</td><td>' + payNf(x.amount) + '</td></tr>';
+    return '<tr><td>' + payEsc(x.item_label) + sub + '</td><td>' + payNf(x.amount) + '</td></tr>';
   }
   /* 假別額度卡片：規則與主管看到的同源（後端 payMyLeaveQuota → payLeaveUsage），
      所以同仁自己算的跟店長講的一定一致。沒資料就整張不畫（舊後端沒這欄位時優雅降級）。 */
@@ -1347,7 +1356,7 @@
       else if (q.remain_h < 0) remTxt = '<span class="out">超出 ' + payR2(-q.remain_h) + ' H</span>';
       else if (q.blocked) remTxt = '<span class="out">已用完</span>';
       else remTxt = '<b>' + payR2(q.remain_h) + '</b> H<span class="u">/ 上限 ' + payR2(q.cap_h) + ' H</span>';
-      return '<tr><td>' + q.name + bar + '</td>'
+      return '<tr><td>' + payEsc(q.name) + bar + '</td>'
         + '<td class="r">' + usedTxt + '</td><td class="r">' + remTxt + '</td></tr>';
     }).join('');
     return '<div class="card lq"><h4>我的假別額度</h4>'
@@ -1363,7 +1372,7 @@
       paySlipEl.innerHTML = an + lq + payState('🕒', j.message || '尚未結算', '薪資結算後這裡就會顯示明細。'); return; }
     var r = j.result || j.run, earn = r.earn || [], ded = r.ded || [];
     paySlipEl.innerHTML = '<div class="card">'
-      + '<div class="who"><div><b>' + j.name + '</b><div class="m">' + String(j.ym).replace('-', '年') + '月薪資</div></div>'
+      + '<div class="who"><div><b>' + payEsc(j.name) + '</b><div class="m">' + String(j.ym).replace('-', '年') + '月薪資</div></div>'
       + '<div class="m">發薪日<br>每月 ' + j.payday + ' 日</div></div>'
       + '<div class="hrs">'
       + '<div><span>核定總時數</span><b>' + r.total_hours + '</b> H</div>'
