@@ -2213,8 +2213,14 @@ function handleMyPayslip(body) {
     return String(r.ym) === ym && String(r.emp_id) === String(me.emp_id) && payStore(r.store) === stMy;
   })[0];
   const annual = payAnnualInfo(ym, stMy)[String(me.emp_id)] || null;
+  /* 計時同仁一律不顯示假別額度（Eason 2026-09-03 定案，與「計時沒有特休」同一個政策）。
+     回空陣列，前端 payLeaveCard 的 `if (!list || !list.length) return ''` 就整張卡不畫。
+     ⚠ 主檔查不到的人也當計時處理——bootstrap 建出來的預設身分就是計時，
+     寧可不顯示，也不要對還沒設定身分的新人顯示錯的額度。 */
+  const meFullTime = !!mineMaster && (mineMaster.is_full_time === true ||
+    String(mineMaster.is_full_time).toLowerCase() === 'true');
   // 假別額度與薪資結算與否無關（同仁隨時都該查得到自己還剩多少假），所以三個回傳路徑都要帶
-  const leaveQuota = payMyLeaveQuota(me.emp_id, me.name, ym, stMy);
+  const leaveQuota = meFullTime ? payMyLeaveQuota(me.emp_id, me.name, ym, stMy) : [];
   if (!run) return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資尚未結算',
                      annual: annual, leave_quota: leaveQuota };
   if (String(run.status) !== 'final') {

@@ -89,6 +89,35 @@ chk('結算中', (call('handleMyPayslip', { key:'EMPKEY', ym:'2026-08' }).leave_
 chk('尚未結算（查沒有 run 的月份）',
     (call('handleMyPayslip', { key:'EMPKEY', ym:'2026-09' }).leave_quota || []).length, 3);
 
+console.log('\n══ 計時同仁一律看不到假別額度（Eason 2026-09-03）══');
+/* 政策：計時同仁在自己的打卡頁不顯示任何假別額度（含事假、病假）。
+   後端回空陣列，前端 payLeaveCard 的 `if (!list || !list.length)` 就整張卡不畫。
+   ⚠ payMyLeaveQuota 本身「不分身分」是刻意的——主管端要看得到計時同仁的額度，
+   擋的是同仁端 handleMyPayslip 那一層。這兩層分開，改壞任一層這裡都會紅。 */
+const setFt = v => vm.runInContext(`
+  payRead = function(k){
+    if (k === 'master') return [{ emp_id:'E01', name:'小美', store:'SSLGF', active:'true',
+                                  is_full_time:'${v}', hire_date:'' }];
+    if (k === 'run')    return [{ ym:'2026-08', emp_id:'E01', store:'SSLGF', status:globalThis.__STATUS,
+                                  total_hours:160, gross:1, deduction:0, net:1 }];
+    return [];
+  };
+`, sb);
+setFt('false');
+setStatus('final');
+chk('計時・已定案 → 空', (call('handleMyPayslip', { key:'EMPKEY', ym:'2026-08' }).leave_quota || []).length, 0);
+setStatus('draft');
+chk('計時・結算中 → 空', (call('handleMyPayslip', { key:'EMPKEY', ym:'2026-08' }).leave_quota || []).length, 0);
+chk('計時・尚未結算 → 空',
+    (call('handleMyPayslip', { key:'EMPKEY', ym:'2026-09' }).leave_quota || []).length, 0);
+// 擋的是同仁端那一層，主管端拿得到的資料不可以跟著消失
+chk('主管端仍算得到計時同仁的額度',
+    call('payMyLeaveQuota', 'E01', '小美', '2026-08', 'SSLGF').length, 3);
+setFt('true');
+setStatus('final');
+chk('改回正職 → 又看得到 3 筆',
+    (call('handleMyPayslip', { key:'EMPKEY', ym:'2026-08' }).leave_quota || []).length, 3);
+
 console.log('\n══ 只看得到自己 ══');
 chk('金鑰不對 → unauthorized', call('handleMyPayslip', { key:'亂打的' }).error, 'unauthorized');
 
