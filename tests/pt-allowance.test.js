@@ -105,6 +105,12 @@ console.log('\n══ 7) 前端「時薪組成」不可用差額反推（2026-08
   chk('  滿勤改用參數而非寫死 10', /ptAttendPlus\(\)/.test(HTML), true);
   chk('  組成對不上時退回「加給」不亂猜', /\+加給\$\{nf\(diff\)\}/.test(HTML), true);
   chk('  年資函式用「該月1號 > 到職+N月」與後端同規則', /h\.getMonth\(\)\+months/.test(HTML), true);
+  /* 2026-09-03 拆列後踩過的迴歸：管理頁的「實際生效時薪」若只讀 hourly_wage 那一格，
+     拿到的是基本時薪，等於把 08-24「勾了加給卻只看到基本時薪」那個修正打回原形。 */
+  chk('  有效時薪＝三列 rate 相加（不可只讀 hourly_wage）',
+      /wRate\('hourly_wage'\)\+wRate\('pt_attend_plus'\)\+wRate\('pt_tenure_plus'\)/.test(HTML), true);
+  chk('  組成優先讀拆出來的加給列、舊月份才退回規則重算',
+      /wRate\('pt_attend_plus'\)\|\|/.test(HTML) && /wRate\('pt_tenure_plus'\)\|\|/.test(HTML), true);
 }
 
 /* ═════ 時薪拆三列（2026-09-03 Eason：同仁薪資單要看得到組成）═════

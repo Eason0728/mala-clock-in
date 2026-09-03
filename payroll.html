@@ -969,8 +969,13 @@ function renderRun(){
          直接取引擎算出來的單價，用「差額」反推組成；組成加總對不上時（例如剛改勾選還沒重算）
          只標總額不亂猜。 */
     const mw=n((ATT[r.emp_id]||{}).wage_override)>0?n(ATT[r.emp_id].wage_override):n(m.wage);
+    /* ⚠ 2026-09-03 起時薪拆成三列（基本／滿勤加給／年資加給），**有效時薪＝三列 rate 相加**。
+       只讀 hourly_wage 那一格會拿到基本時薪，等於把 08-24 那個修正打回原形（勾了加給卻只看到
+       基本時薪）——我改拆列時就踩過一次。舊月份沒有加給列、相加後仍等於原本的有效時薪，兩種都對。*/
+    const wRate=k=>{const x=[].concat(r.earn||[],r.ded||[]).find(i=>i.item_key===k);
+                    return (x&&x.rate!=null)?n(x.rate):0;};
     const wLine=[].concat(r.earn||[],r.ded||[]).find(i=>i.item_key==='hourly_wage');
-    const eff=(wLine&&wLine.rate!=null)?n(wLine.rate):mw;
+    const eff=wLine?(wRate('hourly_wage')+wRate('pt_attend_plus')+wRate('pt_tenure_plus')):mw;
     /* 時薪組成的說明文字。⚠ 2026-08-24 修：原本是「用差額反推」——看到差 10 又沒勾全勤，
        就推斷成年資加給。但 run 是計算當下的快照，之後有人改了工時分頁卻沒重算，
        差額就對不上實際組成（A 君 2026-05 因此被標成「年資10」，她那時到職才兩個月）。
@@ -981,8 +986,10 @@ function renderRun(){
     const pa=r.pt_attend;
     const diff=eff-mw;
     if(diff>0){
-      const attPlus=pa ? n(pa.plus) : 0;
-      const tenPlus=ptTenurePlus(m);
+      /* 組成優先直接讀拆出來的加給列（那是引擎寫進 item 的值，最準）；
+         舊月份沒有那兩列，才退回「引擎判定＋規則重算」的舊做法。 */
+      const attPlus=wRate('pt_attend_plus')||(pa ? n(pa.plus) : 0);
+      const tenPlus=wRate('pt_tenure_plus')||ptTenurePlus(m);
       const parts=[];
       if(attPlus) parts.push('全勤'+attPlus);
       if(tenPlus) parts.push('年資'+tenPlus);
