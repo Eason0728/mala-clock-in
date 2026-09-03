@@ -147,6 +147,13 @@ console.log('\n══ 6) 重算時送出的工時來源（前端）══');
     ctx.__d();   // post 是同步 resolve，這裡取得的 sent 已經填好
     return sent;
   };
+  /* ATT_DIRTY 現在決定「要不要送影本」，所以每個「把 ATT 整份換掉」的地方都必須清旗標，
+     否則殘留 true 會讓保護失效（切門市時 ATT 已是新的一份，卻被當成有未存變更照送）。 */
+  chk('  loadMonth 換掉 ATT 之後有清旗標',
+      /ATT=r\.inputs\|\|\{\}[\s\S]{0,400}?clearAttDirty\(\);/.test(HTML), true);
+  chk('  loadAtt 也有清（既有）', /ATT=r\.ok\?\(r\.inputs\|\|\{\}\):\{\};\s*\n\s*clearAttDirty\(\);/.test(HTML), true);
+  chk('  切門市會問未存變更（原本只有切月份會問）',
+      /async function switchStore[\s\S]{0,200}?confirmLeaveAtt\('切換門市'\)/.test(HTML), true);
   chk('  沒有未存變更 → 送 {}（以試算表為準）', sentWith(false), {});
   chk('  有未存變更 → 照送影本（行為不變）', sentWith(true), SUP);
 }

@@ -702,6 +702,10 @@ async function loadMonth(){
     HAS_CLOCK=(r.has_clock!==false);
     showClockMode();
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
+    /* ⚠ 這裡把 ATT 換成試算表的內容了，旗標一定要跟著清（與 loadAtt 同一個道理）。
+       2026-09-03 起 ATT_DIRTY 決定「重算要不要送影本」，殘留 true 會讓保護失效：
+       切門市時 ATT 已經是新的一份，卻被當成「有未存變更」照送上去。 */
+    clearAttDirty();
     STORE=r.store||STORE; CFGSRC=r.config_src||{};
     LT_LIST=[]; loadLeaveTypes(); LEV_LIST=[]; loadLeaveEvents();   // ⚠ 切門市必須重載，否則沿用上一家店的設定
     QUOTA=null; QUOTA_KEY=''; closeQuota();   // 假別額度同理：換店換年度都要重抓（快取 key 是 店|年）
@@ -1447,6 +1451,9 @@ function renderStoreSel(){
   const lbl=sel.previousElementSibling; if(lbl) lbl.style.display=STORE_LIST.length>1?'':'none';
 }
 async function switchStore(code){
+  // 切門市和切月份一樣會把 ATT 整份換掉，未存的變更救不回來——先問一次（2026-09-03 補；
+  // 原本只有切月份會問，切門市是靜默丟掉）
+  if(!confirmLeaveAtt('切換門市')){ const sel=$('storeSel'); if(sel) sel.value=STORE; return; }
   STORE=String(code); localStorage.setItem('pay_store',STORE); vClear();
   await loadMonth();
   const on=document.querySelector('#nav button.on');
