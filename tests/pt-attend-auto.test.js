@@ -14,7 +14,11 @@ const PT={emp_id:'B',name:'計時',is_full_time:'false',base:0,skill_allow:0,nig
  hire_date:'2026-08-01',leave_date:'',meal_allow:0,active:'true'};
 const run=att=>e.payCalcOne(PT,'2026-09',Object.assign(
  {hours:120,extra_ot:0,deduct_days:0,support:[],bonuses:[],annual:null,leave_usage:{},late_min:0},att),cfg,4);
-const wage=r=>{const x=(r.earn||[]).find(i=>i.item_key==='hourly_wage');return x?x.rate:null;};
+/* 2026-09-03 起時薪拆成三列（基本／滿勤加給／年資加給），
+   有效時薪＝三列的 rate 相加，不再是 hourly_wage 單獨那一格。 */
+const PT_WAGE_KEYS=['hourly_wage','pt_attend_plus','pt_tenure_plus'];
+const wage=r=>{const b=(r.earn||[]).find(i=>i.item_key==='hourly_wage');if(!b)return null;
+ return PT_WAGE_KEYS.reduce((a,k)=>{const x=(r.earn||[]).find(i=>i.item_key===k);return a+(x?Number(x.rate)||0:0)},0);};
 let p=0,f=0;
 const chk=(n,g,w)=>{const ok=JSON.stringify(g)===JSON.stringify(w);ok?p++:f++;
  console.log((ok?'✓ ':'✗ ')+n+': '+JSON.stringify(g)+(ok?'':' ← 應為 '+JSON.stringify(w)));};

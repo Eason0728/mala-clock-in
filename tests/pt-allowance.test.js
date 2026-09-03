@@ -22,11 +22,17 @@ const pt = (hire) => ({ emp_id: 'P1', name: '計時甲', is_full_time: 'false', 
   group_ins: 0, pension: 0, dormitory: 0, hire_date: hire, leave_date: '', meal_allow: 0, active: 'true' });
 const att = (fa) => ({ hours: 100, extra_ot: 0, deduct_days: 0, support: [], bonuses: [], annual: null,
   leave_usage: {}, work_days: 0, full_attend: fa });
-/** 回傳實際生效時薪（hourly_wage 那列的單價） */
+/* 2026-09-03 起時薪拆成三列（基本／滿勤加給／年資加給），同仁的薪資單才看得到組成。
+   有效時薪＝三列 rate 相加；沒有加給的那一列不會出現。 */
+const PT_WAGE_KEYS = ['hourly_wage', 'pt_attend_plus', 'pt_tenure_plus'];
+const runOf = (emp, cfg, fa, ym) =>
+  calc(emp, ym || '2026-08', att(fa), Object.assign({}, BASE_CFG, cfg || {}), 8, null);
+const rateSum = r => PT_WAGE_KEYS.reduce((a, k) => {
+  const x = r.earn.find(i => i.item_key === k); return a + (x ? Number(x.rate) || 0 : 0); }, 0);
+/** 回傳實際生效時薪（三列相加） */
 const rateOf = (emp, cfg, fa, ym) => {
-  const r = calc(emp, ym || '2026-08', att(fa), Object.assign({}, BASE_CFG, cfg || {}), 8, null);
-  const l = r.earn.find(i => i.item_key === 'hourly_wage');
-  return l ? l.rate : null;
+  const r = runOf(emp, cfg, fa, ym);
+  return r.earn.some(i => i.item_key === 'hourly_wage') ? rateSum(r) : null;
 };
 
 console.log('══ 1) 未設定參數＝沿用改版前行為（各 +10、門檻 6 個月）══');
@@ -99,6 +105,39 @@ console.log('\n══ 7) 前端「時薪組成」不可用差額反推（2026-08
   chk('  滿勤改用參數而非寫死 10', /ptAttendPlus\(\)/.test(HTML), true);
   chk('  組成對不上時退回「加給」不亂猜', /\+加給\$\{nf\(diff\)\}/.test(HTML), true);
   chk('  年資函式用「該月1號 > 到職+N月」與後端同規則', /h\.getMonth\(\)\+months/.test(HTML), true);
+}
+
+/* ═════ 時薪拆三列（2026-09-03 Eason：同仁薪資單要看得到組成）═════
+   守三件事：①基本列的 rate 是**基本時薪**不是有效時薪 ②沒有的加給不出現那一列
+   ③三列金額相加 ＝ 拆列前的「時數 × 有效時薪」，一元都不能差（run 的 gross 不可因為拆列而動）*/
+console.log('\n══ 6) 薪資單的時薪組成拆列 ══');
+{
+  const line = (r, k) => r.earn.find(i => i.item_key === k) || null;
+  const amt = (r, k) => { const x = line(r, k); return x ? x.amount : 0; };
+
+  // 老鳥（早就滿年資）＋勾全勤且符合條件 → 200 基本 ＋10 滿勤 ＋10 年資
+  const rBoth = runOf(pt('2024-01-01'), {}, true);
+  chk('  基本列 rate＝基本時薪 200（不是有效時薪）', line(rBoth, 'hourly_wage').rate, 200);
+  chk('  滿勤加給獨立一列 rate 10', line(rBoth, 'pt_attend_plus').rate, 10);
+  chk('  年資加給獨立一列 rate 10', line(rBoth, 'pt_tenure_plus').rate, 10);
+  chk('  三列 qty 都是同一份時數 100H',
+      PT_WAGE_KEYS.map(k => line(rBoth, k).qty), [100, 100, 100]);
+  chk('  三列金額相加＝100H×220', amt(rBoth,'hourly_wage')+amt(rBoth,'pt_attend_plus')+amt(rBoth,'pt_tenure_plus'), 22000);
+
+  // 新人沒年資、沒勾全勤 → 只有基本那一列
+  const rNone = runOf(pt('2026-08-01'), {}, false, '2026-08');
+  chk('  沒有加給時不出現滿勤列', line(rNone, 'pt_attend_plus'), null);
+  chk('  沒有加給時不出現年資列', line(rNone, 'pt_tenure_plus'), null);
+  chk('  只有基本列、金額＝100H×200', amt(rNone, 'hourly_wage'), 20000);
+
+  /* 四捨五入守恆：時數帶小數、加給是奇數金額時，各列分別 payR0 會差一元。
+     基本列＝總額扣掉加給列，所以無論如何相加都要等於「時數 × 有效時薪」。 */
+  const oddAtt = Object.assign(att(true), { hours: 100.5 });
+  const rOdd = calc(pt('2024-01-01'), '2026-08', oddAtt,
+                    Object.assign({}, BASE_CFG, { pt_attend_plus: 7, pt_tenure_plus: 3 }), 8, null);
+  const sumOdd = PT_WAGE_KEYS.reduce((a2, k) => a2 + amt(rOdd, k), 0);
+  chk('  小數時數＋奇數加給：三列相加＝Math.round(100.5×210)', sumOdd, Math.round(100.5 * 210));
+  chk('  gross 也等於同一個數', rOdd.gross, Math.round(100.5 * 210));
 }
 
 console.log(`\n${fail ? '❌ 有失敗' : '✅ 計時加給參數化全部正確'}（${pass}/${pass + fail}）`);

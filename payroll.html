@@ -1018,8 +1018,21 @@ async function toggleLock(){
   const lock=STATUS!=='final';
   let reason='';
   if(!lock){reason=prompt('解鎖原因（會寫進稽核紀錄）：')||'';if(!reason)return}
-  const r=await post('payroll_finalize',{ym:ym(),lock,reason,operator:'Eason'});
-  if(r.ok){STATUS=r.status;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
+  /* 結轉要跑幾秒（後端要寫 run／item／audit 三張表），按鈕沒有回饋會讓人以為按了沒反應
+     而連按好幾次（Eason 2026-09-03）。按下就 disable ＋ 顯示已經跑了幾秒。
+     ⚠ 結束時的按鈕文字要依 STATUS 重算，不可還原成按下前的字串——成功時 STATUS 已經翻面，
+        還原舊字串會讓按鈕顯示相反的動作。 */
+  const lb=$('lockBtn'); const label=()=>STATUS==='final'?'🔒 解鎖本月':'鎖定本月';
+  let sec=0, timer=null;
+  const tick=()=>{ if(lb) lb.textContent=(lock?'結轉中':'解鎖中')+'… '+sec+' 秒'; };
+  if(lb){ lb.disabled=true; tick(); timer=setInterval(()=>{sec++;tick()},1000); }
+  try{
+    const r=await post('payroll_finalize',{ym:ym(),lock,reason,operator:'Eason'});
+    if(r.ok){STATUS=r.status;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
+  } finally {
+    if(timer) clearInterval(timer);
+    if(lb){ lb.disabled=false; lb.textContent=label(); }
+  }
 }
 
 /* ═════ 工時 ═════ */
@@ -1852,7 +1865,7 @@ function renderSlip(){
   const r=RESULTS.find(x=>x.emp_id===$('slipSel').value),w=$('slipWrap');
   if(!r){w.innerHTML='<div class="slip" style="text-align:center;color:#8a817a;padding:50px">請先在「月結」頁計算</div>';return}
   // 以「_leave 結尾」認假別，新增假別自動涵蓋（改版前寫死五個，新假別不會顯示時數×費率）
-  const HOURY_FIX=['overtime','shortfall_hours','hourly_wage'];
+  const HOURY_FIX=['overtime','shortfall_hours','hourly_wage','pt_attend_plus','pt_tenure_plus'];
   const isHoury=k=>/_leave$/.test(String(k))||HOURY_FIX.indexOf(k)>=0;
   // 數量的單位依項目而定：時數類→H、遲到→分鐘、餐費／年終→天，其餘不加單位。
   // ⚠ late_deduct 的 qty 是「分鐘」，不加單位會被誤讀成小時（Eason 2026-09-01 指出）。
@@ -1892,7 +1905,7 @@ function exportCSV(){
 }
 
 /* ═════ 匯出（完整明細）═════ */
-const EXP_HOURY_FIX=['overtime','shortfall_hours','hourly_wage','cross_store'];
+const EXP_HOURY_FIX=['overtime','shortfall_hours','hourly_wage','cross_store','pt_attend_plus','pt_tenure_plus'];
 const isExpHoury=k=>/_leave$/.test(String(k))||EXP_HOURY_FIX.indexOf(k)>=0;
 // 與上面的 qtyUnit 同一套規則（匯出／列印用）
 const expQtyUnit=k=>k==='late_deduct'?' 分鐘':(k==='meal_sub'?' 天':(isExpHoury(k)?'H':''));

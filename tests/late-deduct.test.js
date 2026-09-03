@@ -37,8 +37,10 @@ chk('遲到 30 分 → 210/60×30',        g(base(PT,{late_min:30,hours:100}),'l
 chk('再勾滿勤 → 有效時薪 220',        g(base(PT,{late_min:60,hours:100,full_attend:true}),'late_deduct'), Math.round(220/60*60));
 // 用實際領到的時薪反推，確認遲到費率與計薪時薪是同一個
 const rPT=base(PT,{late_min:60,hours:100});
-const wageLine=rPT.earn.find(x=>x.item_key==='hourly_wage');
-chk('遲到費率＝計薪用的同一個時薪', Math.round(wageLine.rate/60*60), g(rPT,'late_deduct'));
+// 2026-09-03 起時薪拆三列，有效時薪＝三列 rate 相加（遲到仍用有效時薪，不是基本時薪）
+const effWage=r=>['hourly_wage','pt_attend_plus','pt_tenure_plus']
+  .reduce((a,k)=>{const x=(r.earn||[]).find(i=>i.item_key===k);return a+(x?Number(x.rate)||0:0)},0);
+chk('遲到費率＝計薪用的同一個時薪', Math.round(effWage(rPT)/60*60), g(rPT,'late_deduct'));
 
 console.log('\n兩個都扣（遲到金＋全勤）');
 const r=base(FT,{late_min:30,deduct_days:1});

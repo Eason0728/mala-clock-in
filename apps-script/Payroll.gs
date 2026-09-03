@@ -564,15 +564,27 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     // 計時：本店時數 × 時薪；時薪加給＝滿勤(工時分頁手動打勾)+10、年資(滿半年次月起)+10，可疊加
     // 本月時薪：工時分頁填了 wage_override 就用該月值，否則用主檔 wage（計時每月時薪可不同、又保留歷史）
     let w = payNum(att.wage_override) > 0 ? payNum(att.wage_override) : payNum(e.wage);
+    const wBase = w;                         // 基本時薪（不含加給）——薪資單要單獨顯示這個
     // E1 全勤津貼（2026-08-23 改）：勾選＝有資格，**實際符不符合由系統自動偵測**
     //   （時數達門檻且缺勤 0），與餐費補助同一套「勾了才算＋自動判定」的做法。
     //   改版前是「勾了就給」，管理者要自己判斷條件；現在勾錯也不會多給。
     const ptAttend = payPtAttendCheck(att, cfg);
     w += ptAttend.plus;
-    w += payTenurePlus(e, ym, cfg);          // E2 年資加給（金額與年資門檻同樣可依門市覆寫）
+    const tenPlus = payTenurePlus(e, ym, cfg);   // E2 年資加給（金額與年資門檻同樣可依門市覆寫）
+    w += tenPlus;
     ptWage = w;   // 存到外層：下面的「遲到不計薪」要用同一個有效時薪，不另立標準
     ptAttendInfo = ptAttend;   // 帶到回傳值，前端要顯示「有沒有加到全勤津貼、為什麼」
-    push(earn, 'hourly_wage', '薪資（時數）', payR2(att.hours), w, att.hours * w);
+    /* 薪資單要看得到時薪組成（Eason 2026-09-03）：基本時薪一列，兩個加給各一列，
+       同仁才知道 225 是怎麼來的。三列的 rate 分別是基本／滿勤／年資，qty 都是同一份時數。
+       ⚠ 總額必須與拆列前的「時數 × 有效時薪」**完全相同**——各列分別 payR0 會差 1 元，
+          所以先算兩個加給，基本那列＝總額扣掉加給，run 的 gross 才不會因為拆列而變動。
+       ⚠ holiday_double 與遲到不計薪仍用有效時薪 w，不受拆列影響。 */
+    const totalWage = payR0(att.hours * w);
+    const amtAttend = ptAttend.plus ? payR0(att.hours * ptAttend.plus) : 0;
+    const amtTenure = tenPlus       ? payR0(att.hours * tenPlus)       : 0;
+    push(earn, 'hourly_wage', '薪資（時數）', payR2(att.hours), wBase, totalWage - amtAttend - amtTenure);
+    if (amtAttend) push(earn, 'pt_attend_plus', '滿勤加給', payR2(att.hours), ptAttend.plus, amtAttend);
+    if (amtTenure) push(earn, 'pt_tenure_plus', '年資加給', payR2(att.hours), tenPlus,       amtTenure);
     // 國定假日出勤：計時同仁時薪雙倍（正職是給假、不另計）。
     // 時數本身已含在上面的總時數裡，這裡只補「多的那一倍」。
     const holH = payR2(Math.min(payNum(att.holiday_h), payNum(att.hours)));
