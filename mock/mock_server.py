@@ -20,6 +20,7 @@ apps-script/Liff.gs 實作同一套合約，用假 token（MOCK_ID_TOKEN_<userId
 import json
 import math
 import os
+import sys
 import random
 import re
 import string
@@ -35,6 +36,7 @@ PORT = int(os.environ.get('MOCK_PORT') or 8899)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(BASE_DIR)
 DATA_FILE = os.path.join(BASE_DIR, "mock_data.json")
+sys.path.insert(0, BASE_DIR)   # 讓薪酬假後端 import 得到
 
 ADMIN_KEY = "test-admin"
 STORE_LAT = 24.7840945  # 2026-07-13 依店內實測校正
@@ -1496,6 +1498,14 @@ ACTIONS = {
     "mgr_set_notice_active": handle_mgr_set_notice_active,
 }
 
+# 薪酬模組的假後端（e2e 專用，見 mock/payroll_mock_handlers.py 的說明）。
+# 找不到就略過，讓原本的打卡 mock 照常運作。
+try:
+    from payroll_mock_handlers import PAYROLL_ACTIONS
+    ACTIONS.update(PAYROLL_ACTIONS)
+except ImportError:
+    pass
+
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -1516,7 +1526,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path != "/api":
+        # 打卡頁與核定頁用 ?api=/api；薪酬頁在 localhost 時 API 常數是空字串，
+        # 會 POST 到目錄根（/）。兩種都收，否則薪酬頁在本機完全連不上。
+        if parsed.path not in ("/api", "/", ""):
             self._send_json({"ok": False, "error": "not_found"}, 404)
             return
 

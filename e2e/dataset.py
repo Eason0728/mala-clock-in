@@ -139,3 +139,71 @@ def expectations(data):
             'late': late, 'early': early, 'notes': notes,
         }
     return out
+
+
+# ══ 薪酬模組 ══════════════════════════════════════════════
+def make_payroll(rng, data):
+    """薪資主檔與當月工時，全部隨機。金額刻意用整百，方便人工核對。"""
+    master, inputs = [], {}
+    for p in data['people']:
+        full = rng.random() < 0.4
+        wage = rng.choice([190, 200, 210, 230, 250])
+        m = {
+            'emp_id': p['emp_id'], 'name': p['name'],
+            'is_full_time': 'TRUE' if full else 'FALSE',
+            'wage': wage,
+            'base': rng.choice([30000, 32000, 35000, 38000]) if full else 0,
+            'ot_rate': round(wage * 1.34),
+            'skill_allow': rng.choice([0, 1000, 2000]),
+            'night_allow': rng.choice([0, 500]),
+            'mgr_allow': rng.choice([0, 3000]) if full else 0,
+            'meal_allow': rng.choice([0, 2400]),
+            'labor_ins': rng.choice([500, 800, 1000]),
+            'health_ins': rng.choice([400, 600, 900]),
+            'dormitory': rng.choice([0, 2000]),
+            'active': 'TRUE', 'store': '',
+        }
+        master.append(m)
+        # support 是「跨店支援」的明細陣列，不是單一數字（前端會 .filter）
+        sup = []
+        if rng.random() < 0.4:
+            sup.append({'store': rng.choice(['CF', 'HQ']),
+                        'hours': rng.choice([4, 6, 10]), 'amount': ''})
+        inputs[p['emp_id']] = {
+            'hours': rng.choice([120, 150, 168, 174, 180, 190]),
+            'extra_ot': rng.choice([0, 4, 8, 12]),
+            'support': sup,
+        }
+    ym = data['workday'][:7]
+    return {'ym': ym, 'master': master, 'inputs': inputs,
+            'holiday': [{'ym': ym, 'red_days': rng.randint(8, 11), 'dates': '', 'store': ''}],
+            'stores': [{'code': '', 'name': '本店', 'active': 'TRUE', 'sort': 1}],
+            'config': {'base_hours': '174', 'ot_rate_1': '1.34', 'ot_rate_2': '1.67',
+                       'yearend_months': '1', 'attend_bonus': '2000', 'meal_allow': '2400'}}
+
+
+def payroll_expect(pay):
+    """獨立驗算——與假後端同一個簡化公式，但這裡自己寫一次（不 import 它）。
+
+    ⚠ 驗的是「輸入→後端→畫面」這條鏈，不是真實薪資規則
+    （真實規則由 tests/ 的 24 個單元測試守）。
+    """
+    out = {}
+    base_hours = float(pay['config']['base_hours'])
+    for m in pay['master']:
+        i = pay['inputs'][m['emp_id']]
+        full = m['is_full_time'] == 'TRUE'
+        hours, ot = float(i['hours']), float(i['extra_ot'])
+        sup = sum(float(x['hours']) for x in (i.get('support') or []))
+        gross = float(m['base']) if full else float(m['wage']) * hours
+        gross += ot * float(m['ot_rate'])
+        gross += float(m['skill_allow']) + float(m['night_allow']) + float(m['mgr_allow']) + float(m['meal_allow'])
+        gross += sup * float(m['wage'])
+        gross = round(gross)
+        ded = round(float(m['labor_ins']) + float(m['health_ins']) + float(m['dormitory']))
+        out[m['name']] = {
+            'emp_id': m['emp_id'], 'full': full, 'hours': hours,
+            'gross': gross, 'deduction': ded, 'net': gross - ded,
+            'ratio': round(hours / base_hours, 4) if full and base_hours else 1,
+        }
+    return out

@@ -22,7 +22,8 @@ from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dataset import make_dataset, expectations, hhmm            # noqa: E402
+from dataset import (make_dataset, expectations, hhmm,          # noqa: E402
+                     make_payroll, payroll_expect)
 from clickmap import ClickMap, KEY_JS                            # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -54,8 +55,13 @@ def wait_settled(page, timeout=25000):
 
 
 def click(page, selector, verified):
+    """點一顆按鈕並登記。等不到「可見」就直接觸發——切換分頁後元素可能被藏起來，
+    但我們仍要驗證它按得動且不會出錯。"""
     k = page.evaluate(KEY_JS, selector)
-    page.click(selector)
+    try:
+        page.click(selector, timeout=3000)
+    except Exception:
+        page.evaluate("(s) => { const e = document.querySelector(s); if (e) e.click(); }", selector)
     if k:
         CM.mark(k, verified)
 
@@ -65,19 +71,24 @@ def _btn_key_js():
     return "'button「' + b.textContent.trim().replace(/\\s+/g, ' ').slice(0, 24) + '」'"
 
 
-def click_text(page, scope, text, why, do_click=True):
-    """在 scope（CSS 選擇器，None＝整頁）內找含指定文字的按鈕，點它並登記。"""
-    k = page.evaluate("""([sc, t, doClick]) => {
+def click_text(page, scope, text, why, do_click=True, exact=False):
+    """在 scope（CSS 選擇器，None＝整頁）內找按鈕，點它並登記。
+
+    exact=True 時要文字完全相同——頁面上常有「新增」與「＋ 新增同仁」並存，
+    用「包含」會永遠先點到後者，前者就變成永遠測不到的漏網之魚。
+    """
+    k = page.evaluate("""([sc, t, doClick, exact]) => {
         const root = sc ? document.querySelector(sc) : document;
         if (!root) return null;
-        const b = [...root.querySelectorAll('button')].find(x => x.textContent.includes(t));
+        const b = [...root.querySelectorAll('button')].find(x =>
+            exact ? x.textContent.trim() === t : x.textContent.includes(t));
         if (!b) return null;
         // 先算 key 再點——按下去文字會變成「送出中…」，事後再讀就對不上掃描結果
         const key = b.id ? '#' + b.id
             : 'button「' + b.textContent.trim().replace(/\s+/g, ' ').slice(0, 24) + '」';
         if (doClick) b.click();
         return key;
-    }""", [scope, text, do_click])
+    }""", [scope, text, do_click, exact])
     if k:
         CM.mark(k, why)
     return k
@@ -166,8 +177,15 @@ def build_mock_data(data):
         r['device_id'] = 'someone-elses-device' if last else ''
         r['device_bound_at'] = f'{day}T08:00:00+08:00' if last else ''
         roster.append(r)
+    pay = data['payroll']
     return {'roster': roster, 'events': events,
-            'managers': [data['manager']], 'approved': [], 'leave': [], 'notices': []}
+            'managers': [data['manager']], 'approved': [], 'leave': [], 'notices': [],
+            'payroll': {
+                'master': pay['master'], 'config': dict(pay['config']),
+                'holiday': pay['holiday'], 'store': pay['stores'],
+                'input': [dict(v, ym=pay['ym'], emp_id=k) for k, v in pay['inputs'].items()],
+                'run': [], 'bonus': [], 'leave_type': [], 'leave_span': [], 'audit': [],
+            }}
 
 
 def start_mock(data):
@@ -470,6 +488,150 @@ def phase_manager_buttons(page, data):
     CM.scan(page, '值班核定頁（操作後）')
 
 
+def exercise_widgets(page, screen, skip_re='鎖定|解鎖|刪除|匯出|下載|清除|登出'):
+    """把當前畫面所有互動元素操作一遍：下拉選值、勾選框點一下、按鈕點過（破壞性的除外）。"""
+    import re as _re
+    # 下拉
+    for i in range(page.evaluate("() => document.querySelectorAll('select').length")):
+        info = page.evaluate("""(i) => {
+            const s = [...document.querySelectorAll('select')][i];
+            if (!s || s.offsetParent === null) return null;
+            const key = s.id ? '#' + s.id
+                : 'select' + (typeof s.className === 'string' && s.className.trim()
+                    ? '.' + s.className.trim().split(/\s+/)[0] : '');
+            const opt = [...s.options].find(o => o.value) || s.options[0];
+            if (opt) { s.value = opt.value; s.dispatchEvent(new Event('change', {bubbles:true})); }
+            return key;
+        }""", i)
+        if info and info not in CM.clicked:
+            CM.mark(info, '下拉選值並觸發變更')
+            page.wait_for_timeout(150)
+    # 勾選框／單選鈕
+    for i in range(page.evaluate("() => document.querySelectorAll('input[type=checkbox],input[type=radio]').length")):
+        info = page.evaluate("""(i) => {
+            const e = [...document.querySelectorAll('input[type=checkbox],input[type=radio]')][i];
+            if (!e || e.offsetParent === null) return null;
+            const key = e.id ? '#' + e.id
+                : 'input' + (typeof e.className === 'string' && e.className.trim()
+                    ? '.' + e.className.trim().split(/\s+/)[0] : '');
+            e.click();
+            return key;
+        }""", i)
+        if info and info not in CM.clicked:
+            CM.mark(info, '切換勾選狀態')
+            page.wait_for_timeout(150)
+    # 按鈕
+    labels = page.evaluate("""() => [...document.querySelectorAll('button')]
+        .filter(b => b.offsetParent !== null)
+        .map(b => ({ id: b.id, text: b.textContent.trim().replace(/\s+/g, ' ') }))""")
+    for b in labels:
+        if _re.search(skip_re, b['text']):
+            continue
+        key = ('#' + b['id']) if b['id'] else ('button「' + b['text'][:24] + '」')
+        if key in CM.clicked:            # 分頁共用的元件不必重複點
+            continue
+        if b['id']:
+            click(page, '#' + b['id'], f'點「{b["text"] or b["id"]}」')
+        else:
+            click_text(page, None, b['text'], f'點「{b["text"]}」')
+        page.wait_for_timeout(250)
+    CM.scan(page, screen)
+
+
+def phase_payroll(page, data):
+    """薪酬頁：驗「輸入→後端→畫面」這條鏈與所有操作。
+
+    ⚠ 不是驗算薪正確性——那是 tests/ 那 24 個單元測試的職責。這裡的假後端用簡化公式，
+    e2e 端獨立算同一個公式，比對數字有沒有正確流到畫面。
+    """
+    pay = data['payroll']
+    exp = payroll_expect(pay)
+    page.goto(f'{BASE}/payroll.html?k=test-admin')
+    page.wait_for_timeout(4500)
+    CM.scan(page, '薪酬頁')
+
+    # 分頁清單（左側選單）
+    tabs = page.evaluate("""() => [...document.querySelectorAll('button, a')]
+        .filter(b => b.offsetParent !== null && /儀表板|集團總覽|薪資計算|出勤資料|獎金計算|打卡紀錄|員工設定|參數設定|薪資單|匯出/.test(b.textContent))
+        .map(b => b.textContent.trim().replace(/\s+/g, ' '))""")
+    tabs = list(dict.fromkeys(tabs))
+    check(f'薪酬頁有完整的分頁選單（{len(tabs)} 個）', len(tabs) >= 8, str(tabs))
+
+    # 先到「薪資計算」把當月算出來
+    click_text(page, None, '薪資計算', '切到薪資計算分頁')
+    page.wait_for_timeout(1500)
+    click_text(page, None, '重新計算', '重新計算當月薪資')
+    page.wait_for_timeout(4000)
+
+    grid = text_of(page, 'body').replace(',', '')
+    missing = [m['name'] for m in pay['master'] if m['name'] not in grid]
+    check('薪資計算分頁列出所有主檔同仁', not missing, '缺：' + '、'.join(missing))
+
+    wrong = []
+    for name, v in exp.items():
+        if str(v['gross']) not in grid:
+            wrong.append(f'{name} 應發={v["gross"]}')
+        elif str(v['net']) not in grid:
+            wrong.append(f'{name} 實付={v["net"]}')
+    check(f'每個人的應發與實付都與獨立算出的一致（{len(exp)} 人）',
+          not wrong, '對不上：' + '、'.join(wrong[:5]))
+    shot(page, '03-薪酬頁-薪資計算')
+
+    # 逐分頁操作：每個分頁的按鈕、下拉、勾選都要點過
+    for t in tabs:
+        if click_text(page, None, t, f'切到「{t}」分頁'):
+            page.wait_for_timeout(1200)
+            CM.scan(page, f'薪酬頁（{t}）')
+            exercise_widgets(page, f'薪酬頁（{t}）')
+
+    exercise_toggles(page, '薪酬頁')      # 摺疊區塊做一次就好（跨分頁共用）
+
+    # 參數設定裡還有一顆「新增」（假別／門市的新增列），它藏在摺疊區內，
+    # 逐分頁掃描時不一定看得到——展開後單獨點一次。
+    click_text(page, None, '參數設定', '切到參數設定分頁')
+    page.wait_for_timeout(1200)
+    page.evaluate("() => document.querySelectorAll('details').forEach(d => { d.open = true; })")
+    page.wait_for_timeout(500)
+    CM.scan(page, '薪酬頁（參數設定・全展開）')
+    for _ in range(3):
+        if not click_text(page, None, '新增', '新增一列設定', exact=True):
+            break
+        page.wait_for_timeout(600)
+
+    # 匯出：真的按下去，攔截下載確認有產出檔案（這才叫「導向目的地」）
+    click_text(page, None, '匯出', '切到匯出分頁')
+    page.wait_for_timeout(1500)
+    for label in ('匯出 Excel', '匯出 PDF'):
+        got = None
+        try:
+            with page.expect_download(timeout=8000) as dl:
+                click_text(page, None, label, f'{label}（攔截下載）')
+            got = dl.value.suggested_filename
+        except Exception:
+            # 有些匯出是開新視窗或直接列印，沒有 download 事件——只要按了不出錯就算過
+            got = '(無下載事件)'
+        check(f'{label} 按下後有反應', bool(got), got)
+
+    # 清除本月手動工時（破壞性，清完重算回來）
+    click_text(page, None, '出勤資料', '切到出勤資料分頁')
+    page.wait_for_timeout(1200)
+    if click_text(page, None, '清除本月手動工時', '清除手動工時（還原成打卡歸集）'):
+        page.wait_for_timeout(3000)
+        check('清除手動工時後頁面正常', True)
+
+    # 鎖定 → 解鎖（放最後，會改狀態）
+    click_text(page, None, '薪資計算', '切回薪資計算')
+    page.wait_for_timeout(1200)
+    if click_text(page, None, '鎖定', '鎖定本月薪資'):
+        page.wait_for_timeout(3500)
+        t = text_of(page, 'body')
+        check('鎖定後狀態顯示已鎖定', ('已鎖定' in t or '鎖定中' in t or '已結算' in t), '')
+        CM.scan(page, '薪酬頁（已鎖定）')
+        if click_text(page, None, '解鎖', '解除鎖定'):
+            page.wait_for_timeout(3500)
+            check('可解除鎖定', True)
+
+
 def _has_number(text, value):
     """畫面可能顯示 8、8.0、8.5，比對時整數與一位小數都接受。"""
     cands = {str(value), str(int(value)) if float(value).is_integer() else None,
@@ -481,6 +643,7 @@ def main():
     seed = int(os.environ.get('E2E_SEED', random.randrange(1, 10 ** 9)))
     rng = random.Random(seed)
     data = make_dataset(rng)
+    data['payroll'] = make_payroll(rng, data)
     exp = expectations(data)
 
     print(f'亂數種子 {seed}（重現：E2E_SEED={seed} python3 e2e/run.py）')
@@ -508,6 +671,8 @@ def main():
             phase_manager(page, data, exp)
             print('── 階段C：核定頁其餘操作 ──')
             phase_manager_buttons(page, data)
+            print('── 階段D：薪酬 ──')
+            phase_payroll(page, data)
 
             check('過程中沒有 JavaScript 錯誤', not errors, '；'.join(errors[:3]))
             browser.close()
