@@ -216,5 +216,66 @@ chk('成本分類有自訂項目獨立區塊', /自訂加薪／扣款 · 不計�
 chk('⚠ 同仁薪資單不受影響（my_payslip 仍回完整明細）',
     /payRunItemsToResult\(run, items\)/.test(fs.readFileSync(path.join(__dirname,'..','apps-script','Payroll.gs'),'utf8')), true);
 
+/* ═════ 9) 對帳檢查按鈕（2026-09-03）═════
+   純前端、唯讀，跑的是同一組 costTotals／costRows，所以驗的就是使用者眼前的數字。
+   ⚠ 實跑一定要抽 payroll.html 裡的 costAudit 本體，不可以在測試裡另寫一份判斷邏輯。 */
+console.log('\n══ 9) 對帳檢查按鈕 ══');
+{
+  chk('  成本分類頁有對帳按鈕', /onclick="costAudit\(\)"/.test(HTML), true);
+  chk('  有結果容器', /id="costAuditBox"/.test(HTML), true);
+  chk('  換月份會收起舊結果（數字已變，留著會誤導）',
+      /costAuditBox'\); if\(ab\)\{ ab\.style\.display='none'/.test(HTML), true);
+  chk('  沒有結果時擋下來、不當機', /if\(!RESULTS\.length\)\{ toast/.test(HTML), true);
+
+  const vm2 = require('vm');
+  const a2 = HTML.indexOf('const COST_REDUCE_EXTRA'), b2 = HTML.indexOf('function costRows(g){', a2);
+  const e2 = HTML.indexOf('\n  ];\n}', b2) + '\n  ];\n}'.length;
+  const ai = HTML.indexOf('function costAudit(){');
+  const src = HTML.slice(a2, e2) + '\n' + HTML.slice(ai, HTML.indexOf('\n}\n', ai) + 2);
+
+  /* 一個最小但完整的月份：正職 1 人（底薪 30000、病假扣 1000、勞保自付 700、宿舍 2000）
+     ＋計時 1 人（時薪列 20000、勞保自付 300）。手算：
+       正職那列 30000-1000=29000／PT 20000-300=19700／獨立減項 -(700+2000)
+       小計 = 29000+19700-2700 = 46000 = 兩人實付 (30000-1000-700-2000)+(20000-300) */
+  const mk = () => ([
+    { emp_id:'A1', name:'正職甲', is_full_time:true, ratio:1, gross:30000, deduction:3700, net:26300,
+      total_hours:180,
+      earn:[{item_key:'base_salary',item_label:'底薪',amount:30000}],
+      ded:[{item_key:'sick_leave',item_label:'病假',amount:1000},
+           {item_key:'labor_ins',item_label:'勞保費',amount:700},
+           {item_key:'dormitory',item_label:'宿舍自付額',amount:2000}] },
+    { emp_id:'B1', name:'計時乙', is_full_time:false, ratio:1, gross:20000, deduction:300, net:19700,
+      total_hours:100,
+      earn:[{item_key:'hourly_wage',item_label:'薪資（時數）',amount:20000}],
+      ded:[{item_key:'labor_ins',item_label:'勞保費',amount:300}] },
+  ]);
+  const runAudit = RES => {
+    const box={style:{},innerHTML:''}; let t=null;
+    const ctx={ console, MASTER:[], CFG:{}, RESULTS:RES, ATT:{}, STORE:'SSLGF',
+      n:v=>{const x=parseFloat(v);return isNaN(x)?0:x},
+      nf:v=>Math.round(Number(v)||0).toLocaleString('en-US'),
+      r2:v=>Math.round(Number(v)*100)/100, ym:()=>'2026-08',
+      $:id=>id==='costAuditBox'?box:null, toast:(m,bad)=>{t=[m,!!bad]} };
+    vm2.createContext(ctx); vm2.runInContext(src+'\nglobalThis.__a=costAudit;',ctx); ctx.__a();
+    return { html:box.innerHTML, toast:t };
+  };
+
+  const good = runAudit(mk());
+  chk('  正常資料 → 全部對得上', /全部對得上/.test(good.html), true);
+  chk('  正常資料 → toast 不報錯', good.toast[1], false);
+  chk('  薪資費用小計＝兩人實付合計 46,000', /46,000/.test(good.html), true);
+
+  // 把一個人的實付改掉 → 守恆那條必須紅（這是最關鍵的一條）
+  const broken = mk(); broken[0].net += 1000;
+  const badRun = runAudit(broken);
+  chk('  實付被動過 → 抓得出來', /有 1 項對不上/.test(badRun.html), true);
+  chk('  紅的是「小計＝全體實付」那條', /✗ 薪資費用小計 ＝ 全體實付/.test(badRun.html), true);
+  chk('  toast 標紅', badRun.toast[1], true);
+
+  // 實付負數要提醒（鎖定後同仁看得到）
+  const neg = mk(); neg[1].net = -500;
+  chk('  實付負數會提醒', /實付是負數/.test(runAudit(neg).html), true);
+}
+
 console.log(`\n${fail ? '❌ 有失敗' : '✅ 成本口徑三處一致'}（${pass}/${pass + fail}）`);
 process.exit(fail ? 1 : 0);

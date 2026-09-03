@@ -287,6 +287,11 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <h2>人事成本分類（對應損益表）</h2>
     <p class="hint">依損益表科目彙總本月人事成本，每一列都是可直接認列的實際金額。<b>薪資費用／正職</b>＝底薪 −（請假扣款＋不足倒扣）；正職的勞健保自付與宿舍代扣<b>另列為小計前的兩列減項</b>。<b>薪資費用／PT</b>＝計時同仁領到的全部（時薪＋跨店支援＋津貼），且已扣掉計時的請假／不足、勞健保自付與宿舍。<b>各列相加＝薪資費用小計＝全體實付總額</b>（對不上就是漏算或重複算）。勞健保自付額計入下方<b>保險成本</b>（公司代扣後要繳出去），宿舍代扣列為<b>租金收入</b>。正職才依項目分科目。獎金三類不分正職計時，一律獨立科目。公司負擔（勞健保、負責人、團險）另計於下方，兩者相加＝人事總成本。<br><b>跨店支援請款</b>是另一件事：向支援門市收款＝支援時數×支援門市費率，<b>不影響</b>上方薪資費用。</p>
     <div class="scroll"><table id="costTbl"></table></div>
+    <div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <button class="btn ghost" onclick="costAudit()">🧮 對帳檢查</button>
+      <span class="hint" style="margin:0">鎖定前跑一次：確認每一區的明細加起來等於小計、每一筆錢只出現一次</span>
+    </div>
+    <div id="costAuditBox" style="display:none;margin-top:12px"></div>
   </div>
 </section>
 
@@ -931,6 +936,7 @@ function renderCost(){
   const card=$('costCard'); if(!card) return;
   if(!RESULTS.length){card.style.display='none';return}
   card.style.display='';
+  const ab=$('costAuditBox'); if(ab){ ab.style.display='none'; ab.innerHTML=''; }   // 換月份就收起舊結果
   $('costTbl').innerHTML='<tbody>'+costRows(costTotals()).map(r=>{
     if(r[0]==='h')return `<tr style="background:#faf7f3;font-weight:900"><td colspan="2">${r[1]}</td></tr>`;
     if(r[0]==='s')return `<tr style="font-weight:900"><td>${r[1]}</td><td>${nf(r[2])}</td></tr>`;
@@ -939,6 +945,90 @@ function renderCost(){
     return `<tr><td style="padding-left:22px">${r[0]}</td><td>${nf(r[1])}</td></tr>`;
   }).join('')+'</tbody>';
 }
+/* ═════ 對帳檢查（2026-09-03）═════
+ * 鎖定前按一次，確認成本分類表的加減沒有漏算或重複算。純前端、唯讀，不打後端也不寫任何東西——
+ * 資料就是畫面上這份（RESULTS／MASTER／CFG），跑的也是同一組 costTotals／costRows，
+ * 所以驗的就是使用者眼前看到的數字。
+ * ⚠ 最關鍵的是「錢的總量守恆」那三條：搬動科目時最容易在那裡出錯。 */
+function costAudit(){
+  const box=$('costAuditBox'); if(!box) return;
+  if(!RESULTS.length){ toast('本月還沒有薪資結果，先按「重新計算」',true); return; }
+  const g=costTotals(), rows=costRows(g), out=[]; let bad=0;
+  const ok=(t,a,b,note)=>{ const p=Math.round(n(a))===Math.round(n(b)); if(!p)bad++;
+    out.push(['chk',p,t,n(a),n(b),note||'']); };
+  const head=t=>out.push(['h',t]);
+
+  head('各區塊：明細相加 ＝ 小計');
+  let acc=0, hd='', subs=[];
+  rows.forEach(r=>{
+    if(r[0]==='h'){ acc=0; hd=String(r[1]).split(' ·')[0]; return; }
+    if(r[0]==='s'){ ok(hd+' → '+r[1], acc, r[2]); subs.push([r[1],n(r[2])]); acc=0; return; }
+    if(r[0]==='g') return;
+    acc+=n(r[1]);
+  });
+  const pick=nm=>subs.filter(x=>x[0]===nm).reduce((a,x)=>a+x[1],0);
+
+  const gRow=rows.find(r=>r[0]==='g');
+  if(gRow){ head('小計相加 ＝ 人事總成本');
+    ok('薪資費用＋保險成本＋年終提列', pick('薪資費用小計')+pick('保險成本小計')+pick('提列小計'), gRow[2]); }
+
+  head('錢的總量守恆 · 每一筆只出現一次');
+  const sum=(k,f)=>RESULTS.reduce((a,r)=>a+(f?f(r):n(r[k])),0);
+  const E=sum(null,r=>(r.earn||[]).reduce((x,i)=>x+n(i.amount),0));
+  const D=sum(null,r=>(r.ded ||[]).reduce((x,i)=>x+n(i.amount),0));
+  ok('全部加項 − 全部扣項 ＝ 薪資費用小計', E-D, pick('薪資費用小計'));
+  ok('薪資費用小計 ＝ 全體實付', pick('薪資費用小計'), sum('net'));
+  ok('gross 合計 ＝ 全部加項', sum('gross'), E);
+  ok('扣項合計 ＝ 全部扣項', sum('deduction'), D);
+
+  head('參考區明細對得上上方');
+  const sumObj=o=>Object.keys(o||{}).reduce((a,k)=>a+n(o[k]),0);
+  ok('請假／不足明細 ＝ 正職＋計時', sumObj(g.reduceBy), g.reduceFT+g.reducePT);
+  if(g.ins){ ok('自付額明細 ＝ 保險成本那列', sumObj(g.insBy), g.ins);
+             ok('自付額 ＝ 正職＋計時', g.ins, g.insFT+g.insPT); }
+  if(g.dorm) ok('宿舍收入小計 ＝ 正職＋計時', pick('宿舍收入小計'), g.dormFT+g.dormPT);
+  const cut=rows.filter(r=>String(r[0]).indexOf('減：')===0).reduce((a,r)=>a-n(r[1]),0);
+  if(cut) ok('獨立減項 ＝ 正職自付額＋宿舍', cut, g.insFT+g.dormFT);
+
+  const ftRow=rows.find(r=>String(r[0]).indexOf('薪資費用／正職')===0);
+  if(ftRow){ head('薪資費用／正職的組成');
+    ok('底薪 − 請假／不足（正職）', g.base-g.reduceFT, ftRow[1], '底薪 '+nf(g.base)+' − '+nf(g.reduceFT)); }
+
+  /* 提醒：不影響加減，但值得看一眼的狀況 */
+  const warn=[], ran={};
+  RESULTS.forEach(r=>ran[String(r.emp_id)]=1);
+  const missed=(MASTER||[]).filter(m=>!ran[String(m.emp_id)]
+      && String(m.active).toLowerCase()!=='false' && !String(m.leave_date||'').trim()
+      && (n(m.co_labor)+n(m.co_pension)+n(m.co_health))>0);
+  if(missed.length) warn.push('主檔有公司負擔、但本月沒有結算結果，公司負擔會漏算：'
+      +missed.map(m=>m.name+' '+nf(n(m.co_labor)+n(m.co_pension)+n(m.co_health))).join('、'));
+  const zero=RESULTS.filter(r=>!n(r.total_hours)&&!n(r.gross));
+  if(zero.length) warn.push('整月零工時零金額：'+zero.map(r=>r.name).join('、')
+      +'（零打卡不等於離職，正常也可能發生）');
+  const neg=RESULTS.filter(r=>n(r.net)<0);
+  if(neg.length) warn.push('實付是負數：'+neg.map(r=>r.name+' '+nf(r.net)).join('、')
+      +'　鎖定後同仁會看到，先確認工時是不是漏歸集了');
+
+  box.style.display='';
+  box.innerHTML=
+    `<div style="border:1px solid ${bad?'var(--bad)':'var(--ok)'};border-radius:12px;overflow:hidden">
+      <div style="padding:10px 14px;font-weight:900;color:#fff;background:${bad?'var(--bad)':'var(--ok)'}">
+        ${bad?'✗ 有 '+bad+' 項對不上，先別鎖定':'✓ 全部對得上（'+out.filter(o=>o[0]==='chk').length+' 項）'}
+        <span style="font-weight:400;opacity:.85;font-size:12.5px">　${ym()}　${STORE}　${RESULTS.length} 人</span>
+      </div>
+      <table style="width:100%">${out.map(o=>o[0]==='h'
+        ? `<tr style="background:#faf7f3"><td colspan="2" style="font-weight:900;padding:7px 14px">${o[1]}</td></tr>`
+        : `<tr><td style="padding:5px 14px;${o[1]?'':'color:var(--bad);font-weight:800'}">${o[1]?'✓':'✗'} ${o[2]}${
+            o[5]?`<span style="color:var(--muted);font-size:12px">　${o[5]}</span>`:''}</td>`
+          +`<td style="text-align:right;padding:5px 14px;white-space:nowrap;${o[1]?'':'color:var(--bad);font-weight:800'}">${
+            o[1]?nf(o[3]):nf(o[3])+' ≠ '+nf(o[4])}</td></tr>`).join('')}</table>
+      ${warn.length?`<div style="padding:10px 14px;background:#fffaf0;border-top:1px solid var(--line)">
+        <div style="font-weight:900;margin-bottom:4px">提醒（不影響加減）</div>
+        ${warn.map(w=>`<div style="font-size:13px;color:#8a6d3b">· ${w}</div>`).join('')}</div>`:''}
+    </div>`;
+  toast(bad?('對帳有 '+bad+' 項對不上'):'對帳全部通過', !!bad);
+}
+
 /* 計時加給的兩個小工具——只用於「顯示組成」，不參與任何金額計算。
    ⚠ 規則正本在 Payroll.gs 的 payCalcOne／payTenurePlus，這裡是為了說明文字才重算一次；
      算不出來就回 0，上游會退回「含加給 N」的說法，不會說錯。 */
