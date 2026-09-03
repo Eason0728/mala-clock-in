@@ -14,3 +14,4 @@ documentation/
 
 # 資安稽核報告（含攻擊路徑細節，repo 為 public，絕不 commit）
 reports/
+e2e/artifacts/
