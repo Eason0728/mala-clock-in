@@ -18,12 +18,14 @@ MZT_BG = 'radial-gradient(120% 90% at 50% 16%, #3d8f7f 0%, #2a6b5e 55%, #1c4a41 
 STORES = {
     'cf': {'name': '中央廚房',   'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
            'clock_home': '央廚打卡', 'mgr_home': '央廚值班',
+           'favicon': 'favicon-32-mzt.png',
            'mgr_bg': MZT_BG, 'clock_bg': MZT_BG,
            # 央廚每天 12:00–13:00 吃飯休息、不打卡（2026-08-28 Eason 指定）。
            # 只影響核定頁的預填與標示，不做任何自動扣除——理由見 manager.html 的 BREAK_START 註解。
            'mgr_break': ('12:00', '13:00')},
     'hq': {'name': '鼎兆元 總部', 'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
            'clock_home': '總部打卡', 'mgr_home': '總部值班',
+           'favicon': 'favicon-32-mzt.png',
            'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
 }
 PAGES = [
@@ -45,18 +47,26 @@ def build(src_name, prefix, page_title, icon_key, home_key, bg_key):
                      rf'\1assets/{st[icon_key]}\2', out, count=1)
         out = re.sub(r'(<meta name="apple-mobile-web-app-title" content=")[^"]+(">)',
                      rf'\g<1>{st[home_key]}\2', out, count=1)
-        # 3) 門市代碼寫死，不再依賴網址參數（同仁少複製一段也不會壞）
+        # 3) 瀏覽器分頁小圖示。母版是小辛辣，墨竹亭品牌換成竹葉版；
+        #    找不到母版宣告就報錯，理由同下方底色那段。
+        fav = st.get('favicon')
+        if fav:
+            fav_pat = r'(<link rel="icon" type="image/png" sizes="32x32" href=")[^"]+(">)'
+            if not re.search(fav_pat, out):
+                raise SystemExit(f'✗ {src_name} 找不到 favicon 宣告，請同步更新 build-store-pages.py')
+            out = re.sub(fav_pat, rf'\1assets/{fav}\2', out, count=1)
+        # 4) 門市代碼寫死，不再依賴網址參數（同仁少複製一段也不會壞）
         out = re.sub(r"var STORE_CODE = \(function \(\) \{.*?\}\)\(\);",
                      f"var STORE_CODE = '{code}';   // 由 tools/build-store-pages.py 產生，勿手改",
                      out, count=1, flags=re.S)
-        # 4) 底色（墨竹亭品牌換深綠）。找不到母版那行就報錯——母版改了樣式卻沒同步這裡，
+        # 5) 底色（墨竹亭品牌換深綠）。找不到母版那行就報錯——母版改了樣式卻沒同步這裡，
         #    靜靜產出紅底頁面比直接失敗更難發現。
         bg = st.get(bg_key)
         if bg:
             if RED_BG not in out:
                 raise SystemExit(f'✗ {src_name} 找不到母版底色宣告，請同步更新 build-store-pages.py 的 RED_BG')
             out = out.replace(RED_BG, f'background: {bg};', 1)
-        # 5) 休息時間（不打卡）：只有核定頁有這兩個常數，母版留空＝光復不套用。
+        # 6) 休息時間（不打卡）：只有核定頁有這兩個常數，母版留空＝光復不套用。
         br = st.get('mgr_break')
         if br and prefix == 'manager':
             for var, val in (('BREAK_START', br[0]), ('BREAK_END', br[1])):
