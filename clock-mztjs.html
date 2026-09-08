@@ -8,10 +8,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>中央廚房 員工打卡</title>
+<title>墨竹亭 金山店 員工打卡</title>
 <link rel="apple-touch-icon" href="assets/icon-180-mzt.png">
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32-mzt.png">
-<meta name="apple-mobile-web-app-title" content="央廚打卡">
+<meta name="apple-mobile-web-app-title" content="金山打卡">
 <!-- ⚠ LIFF SDK 不可以放在這裡同步載入！這裡是 <head>，同步 <script src> 會擋住整份文件的解析——
      ?k= 舊模式從來沒有這支第三方 CDN 依賴，正式載入邏輯在下面 initIdentity()/loadLiffSdk()，
      只有確定不是 ?k= 模式時才會動態插入。詳見 2026-08-27 審查 Critical 1。 -->
@@ -447,7 +447,7 @@
     'hq': 'https://script.google.com/macros/s/AKfycbyiocazNgn9M249CCkPzJsRvMJ35uh_Wjp_ju1y1sB2TZ_IWH3RD6pKUsHXsUJR-4N9TQ/exec',   // 鼎兆元 總部（座標暫用央廚）
     'mztjs': 'https://script.google.com/macros/s/AKfycby6Nv7aCGUDsxKA3dwPIYluxk76JaWKp-wqwCCvnE6knthefzGNR8Jyw3uRWds-PwOv/exec'    // 墨竹亭 金山店（2026-09-08 開）
   };
-  var STORE_CODE = 'cf';   // 由 tools/build-store-pages.py 產生，勿手改
+  var STORE_CODE = 'mztjs';   // 由 tools/build-store-pages.py 產生，勿手改
   var API_URL = STORE_APIS[STORE_CODE];
   /* 門市品牌：依 ?s= 換頁面標題與 logo。不帶參數＝光復，畫面與原本完全相同。 */
   var STORE_BRAND = {

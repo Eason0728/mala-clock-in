@@ -20,7 +20,8 @@
 (function () {
   var MAP = {
     'cf': { icon: 'assets/icon-180-mzt.png', home: '央廚打卡' },
-    'hq': { icon: 'assets/icon-180-mzt.png', home: '總部打卡' }
+    'hq': { icon: 'assets/icon-180-mzt.png', home: '總部打卡' },
+    'mztjs': { icon: 'assets/icon-180-mzt.png', home: '金山打卡' }
   };
   var s = String(new URLSearchParams(location.search).get('s') || '').toLowerCase();
   var b = MAP[s];
@@ -442,7 +443,8 @@
   var STORE_APIS = {
     ''  : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec',   // 麻的小辛辣 新竹光復店（預設）
     'cf': 'https://script.google.com/macros/s/AKfycby-IzOBTrUK-usZxEUVRAcvPqagfAbHpvLevIWnk6drBpIuHwh1IlEun4bdsS9o-CIB/exec',   // 鼎兆元 中央廚房（台中太平）
-    'hq': 'https://script.google.com/macros/s/AKfycbyiocazNgn9M249CCkPzJsRvMJ35uh_Wjp_ju1y1sB2TZ_IWH3RD6pKUsHXsUJR-4N9TQ/exec'    // 鼎兆元 總部（座標暫用央廚）
+    'hq': 'https://script.google.com/macros/s/AKfycbyiocazNgn9M249CCkPzJsRvMJ35uh_Wjp_ju1y1sB2TZ_IWH3RD6pKUsHXsUJR-4N9TQ/exec',   // 鼎兆元 總部（座標暫用央廚）
+    'mztjs': 'https://script.google.com/macros/s/AKfycby6Nv7aCGUDsxKA3dwPIYluxk76JaWKp-wqwCCvnE6knthefzGNR8Jyw3uRWds-PwOv/exec'    // 墨竹亭 金山店（2026-09-08 開）
   };
   var STORE_CODE = (function () {
     var v = String(new URLSearchParams(window.location.search).get('s') || '').toLowerCase();
@@ -455,7 +457,9 @@
     'cf': { title: '中央廚房',     logo: 'assets/emblem-mzt.png', doc: '中央廚房',
             icon: 'assets/icon-180-mzt.png', home: '央廚打卡' },
     'hq': { title: '鼎兆元 總部', logo: 'assets/emblem-mzt.png', doc: '鼎兆元總部',
-            icon: 'assets/icon-180-mzt.png', home: '總部打卡' }
+            icon: 'assets/icon-180-mzt.png', home: '總部打卡' },
+    'mztjs': { title: '墨竹亭 金山店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 金山店',
+            icon: 'assets/icon-180-mzt.png', home: '金山打卡' }
   };
   (function () {
     var b = STORE_BRAND[STORE_CODE];

@@ -27,6 +27,12 @@ STORES = {
            'clock_home': '總部打卡', 'mgr_home': '總部值班',
            'favicon': 'favicon-32-mzt.png',
            'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
+    # 墨竹亭金山店（2026-09-08 開）。Eason 指定不設中午休息時段——餐飲門市的休息時間
+    # 跟著客流浮動，設一個固定值反而每次都要改掉它，所以沒有 mgr_break。
+    'mztjs': {'name': '墨竹亭 金山店', 'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
+           'clock_home': '金山打卡', 'mgr_home': '金山值班',
+           'favicon': 'favicon-32-mzt.png',
+           'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
 }
 PAGES = [
     ('clock.html',   'clock',   '員工打卡',     'clock_icon', 'clock_home', 'clock_bg'),
