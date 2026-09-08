@@ -540,7 +540,7 @@
   // 後端拿到的假別表；拿不到時退回這份內建清單（值班核定不能因為薪酬後端掛掉就不能用）
   var LEAVE_FALLBACK = ['病假', '事假', '特休假', '生理假', '家庭照顧假', '天災假', '喪假', '婚假'];
   var LEAVE_OPTS = null;   // { types:[...], quotas:{emp_id:{code:{...}}}, day_hours:n }
-  // ⚠ 本頁的門市代碼是小寫（''／'cf'／'hq'，跟 STORE_APIS 一致），
+  // ⚠ 本頁的門市代碼是小寫（''／'cf'／'hq'／'mztjs'，跟 STORE_APIS 一致），
   //    薪酬系統的門市代碼是大寫（SSLGF／CF／HQ）且比對「完全相等」——不轉換會查不到門市，
   //    症狀是央廚／總部的假別下拉靜靜退回內建 8 種、額度也不會顯示。
   var PAYROLL_STORE_MAP = { '': 'SSLGF', 'cf': 'CF', 'hq': 'HQ', 'mztjs': 'MZTJS' };
@@ -588,8 +588,10 @@
     ''  : { title: '麻的🔥小辛辣', logo: null },
     'cf': { title: '中央廚房',     logo: 'assets/emblem-mzt.png', doc: '中央廚房',
             icon: 'assets/icon-180-mzt-manager.png', home: '央廚值班' },
-    'hq': { title: '鼎兆元 總部', logo: 'assets/emblem-mzt.png', doc: '鼎兆元總部',
-            icon: 'assets/icon-180-mzt-manager.png', home: '總部值班' }
+    'hq': { title: '鼎兆元 總部', logo: 'assets/emblem-mzt.png', doc: '鼎兆元 總部',
+            icon: 'assets/icon-180-mzt-manager.png', home: '總部值班' },
+    'mztjs': { title: '墨竹亭 金山店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 金山店',
+            icon: 'assets/icon-180-mzt-manager.png', home: '金山值班' }
   };
   (function () {
     var b = STORE_BRAND[STORE_CODE];
