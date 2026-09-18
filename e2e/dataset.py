@@ -7,7 +7,7 @@
 """
 import math
 import random
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 SURNAMES = '陳林黃張李王吳劉蔡楊許鄭謝洪郭邱曾廖賴徐簡鍾詹'
 GIVEN = '志明淑芬家豪雅婷俊傑怡君建宏心怡宗翰佩君柏翰欣怡承翰詩涵冠廷之婷宜蓁彥廷'
@@ -139,6 +139,24 @@ def expectations(data):
             'late': late, 'early': early, 'notes': notes,
         }
     return out
+
+
+def expected_pending_approvals(data):
+    """核定頁「本月待核定提醒」卡片的預期值——只適用於「剛進頁面、還沒有任何人被核定」
+    那一刻（e2e 用這個時間點驗提醒卡片的姓名膠囊，一旦有人送出核定，該人就會被即時從
+    提醒卡片移除，不再適用這份預期值）。
+
+    規格照 monthPendingApprovalDates／handleMgrPendingApprovals 重寫一次，不 import
+    後端任何程式：只算「本月（Asia/Taipei 的今天所在月份）」且「早於今天」的有上班紀錄天數，
+    還沒被核定的才算。本次資料只造了一天（workday），所以只要 workday 落在本月、
+    且早於今天，就是全員都待核定；剛好卡在月份邊界（例如在每月 1 號執行、workday 是上月
+    最後一天）這種極少見的情況，後端本來就不會把它算進本月清單，這裡回傳空清單對齊。
+    """
+    taipei_today = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+    workday = data['workday']
+    if workday[:7] != taipei_today[:7] or workday >= taipei_today:
+        return {'date': workday, 'names': []}
+    return {'date': workday, 'names': sorted(p['name'] for p in data['people'])}
 
 
 # ══ 薪酬模組 ══════════════════════════════════════════════

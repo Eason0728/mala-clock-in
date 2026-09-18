@@ -23,7 +23,7 @@ from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dataset import (make_dataset, expectations, hhmm,          # noqa: E402
-                     make_payroll, payroll_expect)
+                     make_payroll, payroll_expect, expected_pending_approvals)
 from clickmap import ClickMap, KEY_JS                            # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -359,6 +359,66 @@ def phase_manager(page, data, exp):
               _has_number(live, e['approved']), live.replace('\n', ' ')[:160])
 
 
+def phase_pending_reminder(page, data):
+    """本月待核定提醒卡片（#pendingApprovals）：驗每一顆姓名膠囊點下去都會正確跳轉——
+    日期框變成那一列的日期、該同仁的核定卡展開、其餘同仁的卡收合。必須在任何人被送出核定
+    之前執行——送出核定會即時把那個人從提醒卡片移除（見 manager.html 的 emp-approved 監聽），
+    這裡驗的正是「剛進頁面、全部人都還沒核定」那一刻的畫面，所以要排在 phase_manager_buttons
+    （會送出第一位同仁的核定）之前呼叫。
+
+    預期名單用 expected_pending_approvals() 照規格獨立算，不讀 mgr_pending_approvals 的回應。
+    """
+    exp = expected_pending_approvals(data)
+    if not exp['names']:
+        # 極少見的月份邊界情況（見 dataset.expected_pending_approvals 的說明），這裡不硬斷言。
+        check('本月待核定提醒卡片（工作日跨月邊界，本次略過姓名膠囊逐一驗證）', True)
+        return
+
+    # 「再顯示 N 天」：本次資料只造了一天，正常不會出現超過 5 天分組。理論上不會出現，
+    # 但還是先檢查一下，出現了才點——不出現的話它本來就不在 DOM 裡，CM.scan 也掃不到它，
+    # 不會被誤報成漏測。
+    has_more = page.evaluate("""() => !![...document.querySelectorAll('#pendingApprovals button')]
+        .find(b => b.textContent.includes('再顯示'))""")
+    if has_more:
+        before = page.evaluate("() => document.querySelectorAll('#pendingApprovals .pa-group').length")
+        click_text(page, '#pendingApprovals', '再顯示', '展開更多待核定天數')
+        page.wait_for_timeout(400)
+        after = page.evaluate("() => document.querySelectorAll('#pendingApprovals .pa-group').length")
+        check('提醒卡片「再顯示」展開後天數增加', after > before, f'{before}→{after}')
+
+    by_name = {p['name']: p['emp_id'] for p in data['people']}
+    for name in exp['names']:
+        emp_id = by_name[name]
+        # 同名要限定在 #pendingApprovals 內找，不要點到別處同名元素（例如核定清單本身也有
+        # 這個姓名）；先算 key 再點，點了之後這顆膠囊文字不會變，但仍照既有慣例保持順序一致。
+        k = page.evaluate("""(nm) => {
+            const b = [...document.querySelectorAll('#pendingApprovals .pa-chip')]
+                .find(x => x.textContent.trim() === nm);
+            if (!b) return null;
+            const key = 'button「' + b.textContent.trim().replace(/\\s+/g, ' ').slice(0, 24) + '」';
+            b.click();
+            return key;
+        }""", name)
+        if not k:
+            check(f'提醒卡片有「{name}」的姓名膠囊可點', False)
+            continue
+        CM.mark(k, f'點提醒卡片姓名膠囊「{name}」：應跳到 {exp["date"]} 並展開他的核定卡')
+        page.wait_for_timeout(400)
+
+        date_val = page.evaluate("() => document.getElementById('dateInput').value")
+        check(f'點「{name}」提醒後日期框跳到 {exp["date"]}', date_val == exp['date'], date_val)
+
+        state = page.evaluate("""(eid) => {
+            const cards = [...document.querySelectorAll('#empList .card')];
+            const target = cards.find(c => c.dataset.empId === String(eid));
+            if (!target) return 'no-card';
+            const targetOpen = target.classList.contains('open');
+            const othersClosed = cards.filter(c => c !== target).every(c => !c.classList.contains('open'));
+            return (targetOpen && othersClosed) ? 'ok' : ('target展開=' + targetOpen + ' 其餘收合=' + othersClosed);
+        }""", emp_id)
+        check(f'點「{name}」提醒後只展開他的核定卡、其餘收合', state == 'ok', state)
+
+
 def phase_manager_buttons(page, data):
     """核定頁其餘按鈕：日期切換、展開收合、假別、刪段、送出核定、待核准裝置、報到、異動、公告。"""
     # 日期切換三顆
@@ -669,6 +729,8 @@ def main():
             page.on('dialog', lambda d: d.accept())      # 送出核定的確認視窗
             print('── 階段B：值班核定（昨天的紀錄）──')
             phase_manager(page, data, exp)
+            print('  ↳ 本月待核定提醒卡片（要在任何人被核定之前驗）')
+            phase_pending_reminder(page, data)
             print('── 階段C：核定頁其餘操作 ──')
             phase_manager_buttons(page, data)
             print('── 階段D：薪酬 ──')
