@@ -98,9 +98,10 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 .tag.ft{background:var(--gold-soft);color:#7a5a00}.tag.pt{background:#eef1f4;color:#556}
 .tag.final{background:#e7f3ec;color:var(--ok)}.tag.draft{background:#fdf0ee;color:var(--red)}
 /* 紅字天數的國定假日：一天一顆（唯讀，由人事行政總處行事曆自動帶入） */
-.hdates{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:260px}
+.hdates{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:260px;max-width:640px}
 .hchip{display:inline-flex;align-items:center;background:var(--gold-soft);color:#7a5a00;font-size:12.5px;font-weight:800;padding:3px 10px;border-radius:20px}
-.hempty{color:var(--muted);font-size:12px}
+.hempty{color:var(--muted);font-size:12px;line-height:1.6}
+.hdates .hchip~.hempty{flex-basis:100%}
 .ok{color:var(--ok);font-weight:700}.bad{color:var(--bad);font-weight:700}
 .big{font-size:20px;font-weight:900}
 .note{background:#fff8ec;border-left:4px solid var(--gold);padding:12px 14px;border-radius:0 9px 9px 0;font-size:12.5px;margin-bottom:15px}
@@ -423,7 +424,8 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <h2>紅字天數（行政院行事曆）</h2>
     <p class="hint">基本工時 ＝ (當月天數 − 紅字天數) × 每日工時。<br>
       紅字天數與國定假日<b>全部自動帶入</b>：每次打開薪資頁都會對照人事行政總處的「政府行政機關辦公日曆表」，
-      今年與明年（公布了就帶）整年填好，不必手動輸入。已經過去的月份不會被改動。</p>
+      今年整年自動填好，不必手動輸入。已經過去的月份不會被改動。<br>
+      國定假日碰到週末、有補假的，<b>雙薪算在補假那天</b>（例：國慶 10/10 週六 → 10/9 週五雙薪）。</p>
     <div id="holSync" style="font-size:12.5px;color:var(--muted);margin:0 0 10px"></div>
     <div class="scroll"><table id="holTbl"></table></div>
   </div>
@@ -1965,16 +1967,28 @@ function holDateLabel(d){
 }
 function renderHol(){
   if(!$('holTbl')) return;
-  const dfrom=HOLSYNC.double_from||'2026-08';
-  let h='<thead><tr><th>月份</th><th style="text-align:center">紅字天數</th><th style="text-align:left">國定假日<br><span style="font-weight:400;color:var(--muted)">計時當天出勤＝時薪雙倍</span></th></tr></thead><tbody>';
-  Object.keys(HOL).sort().forEach(k=>{
+  const dfrom=HOLSYNC.double_from||'2026-08', yr=String(new Date().getFullYear());
+  const moved=HOLSYNC.moved||{}, movedBy={};   // moved＝{週末節日:補假日}，反查補假日是替哪個節日補的
+  Object.keys(moved).forEach(h=>{ movedBy[moved[h]]=h; });
+  const nm=d=>GOVNAMES[d]&&!/補假/.test(GOVNAMES[d])?GOVNAMES[d]:'';
+  let h='<thead><tr><th>月份</th><th style="text-align:center">紅字天數</th><th style="text-align:left">國定假日雙薪日<br><span style="font-weight:400;color:var(--muted)">計時當天出勤＝時薪雙倍</span></th></tr></thead><tbody>';
+  // 只列今年（Eason 2026-09-18）；其他年份的列仍在試算表裡，計算照常讀得到
+  Object.keys(HOL).filter(k=>k.slice(0,4)===yr).sort().forEach(k=>{
     const own=HOLSRC[k]==='own'?' <span class="tag draft" style="font-size:10px">本店</span>':'';
     const ds=holDateList(k);
-    let cell=ds.map(d=>`<span class="hchip">${esc(holDateLabel(d)+(GOVNAMES[d]?' '+GOVNAMES[d]:''))}</span>`).join('');
-    // 行事曆上這個月有名字、卻沒算雙薪的放假日（補假，或雙薪生效前的節日）→ 灰字列出並說明原因
+    let cell=ds.map(d=>{
+      const src=movedBy[d];   // 補假日：標出是替哪個節日補的
+      const lb=src?`${holDateLabel(d)} 補假・${nm(src)||'國定假日'}`:`${holDateLabel(d)} ${nm(d)||(GOVNAMES[d]||'')}`;
+      return `<span class="hchip">${esc(lb.trim())}</span>`;
+    }).join('');
+    // 行事曆上有名字、卻不在雙薪日裡的日子 → 灰字說明原因
     const skip=Object.keys(GOVNAMES).filter(d=>d.slice(0,7)===k&&ds.indexOf(d)<0).sort();
-    if(skip.length) cell+=`<span class="hempty">${esc(skip.map(d=>holDateLabel(d)+GOVNAMES[d]).join('、'))}`
-      +`（${k<dfrom?`國定假日雙薪 ${dfrom} 起才生效`:'公務機關補假，不算國定假日'}）</span>`;
+    // 同一個原因的併成一句，避免長名稱（臺灣光復暨金門古寧頭大捷紀念日）把整列撐爆
+    const why=d=>k<dfrom?`國定假日雙薪 ${dfrom} 起才生效`
+      :moved[d]?'逢週末，雙薪改算在補假日'
+      :/調整放假/.test(GOVNAMES[d])?'調整放假，不算國定假日':'不算雙薪';
+    const grp={}; skip.forEach(d=>{ (grp[why(d)]=grp[why(d)]||[]).push(`${holDateLabel(d)}${GOVNAMES[d]}`); });
+    if(skip.length) cell+=`<span class="hempty">${Object.keys(grp).map(w=>esc(grp[w].join('、')+'：'+w)).join('<br>')}</span>`;
     if(!cell) cell='<span class="hempty">這個月沒有國定假日</span>';
     h+=`<tr><td>${k}${own}</td><td style="text-align:center;font-weight:800">${esc(HOL[k])}</td>
       <td style="text-align:left"><div class="hdates">${cell}</div></td></tr>`;
@@ -1984,12 +1998,12 @@ function renderHol(){
   st.innerHTML=(HOLSYNC.status||[]).map(x=>x.ok
     ? `✓ ${x.year} 年已依人事行政總處《${esc(x.title)}》自動帶入`
     : x.error==='not_published'
-      ? `${x.year} 年行事曆人事行政總處還沒公布（每年約 6 月公布，公布後打開薪資頁就會自動帶入）`
+      ? `${x.year} 年行事曆人事行政總處還沒公布（每年約 6 月公布下一年）`
       : `⚠ ${x.year} 年暫時抓不到（${esc(x.message||x.error)}），先顯示目前的資料，重新整理會再試`).join('<br>');
 }
 async function syncHol(){
   if(HOL_SYNCING) return HOL_SYNCING;
-  const y=new Date().getFullYear(), ys=[...new Set([y,y+1,Number(ym().slice(0,4))])];
+  const ys=[new Date().getFullYear()];   // 只帶今年（Eason 2026-09-18：明年不用）
   const st=$('holSync'); if(st) st.textContent='正在對照人事行政總處的辦公日曆表…';
   HOL_SYNCING=(async()=>{
     const r=await post('payroll_holiday_sync',{years:ys,operator:'auto (薪資頁開啟)'});

@@ -380,31 +380,63 @@ def h_gov_holidays(data, body):
         return {'ok': False, 'error': 'fetch_failed', 'message': f'連不上人事行政總處的資料：{e}'}
 
 
+def _double_plan(days, extra_comp=()):
+    """照抄正式 payHolidayDoublePlan：節日在平日＝當天；在週末且有補假＝改算補假日（前後 7 天內最近、未被配走）。"""
+    import re as _re
+    from datetime import date
+    dn = lambda s: date(*map(int, s.split('-'))).toordinal()
+    weekend = lambda s: date(*map(int, s.split('-'))).weekday() >= 5
+    comp = [d['date'] for d in days if _re.search('補假', d.get('note') or '')]
+    pool, used, moved, dates = comp + list(extra_comp), set(), {}, list(comp)
+    for h in sorted((d for d in days if d.get('note') and not _re.search('補假|調整放假', d['note'])), key=lambda d: d['date']):
+        if not weekend(h['date']):
+            dates.append(h['date']); continue
+        best = None
+        for c in pool:
+            if c in used:
+                continue
+            g = abs(dn(c) - dn(h['date']))
+            if g <= 7 and (best is None or g < best[1]):
+                best = (c, g)
+        if best:
+            used.add(best[0]); moved[h['date']] = best[0]
+        else:
+            dates.append(h['date'])
+    return sorted(set(dates)), moved
+
+
 def h_holiday_sync(data, body):
     """照抄正式 payHolidaySync（規則說明見 Payroll.gs）：本月與未來跟著行事曆、過去已存在的月份不動、
-    補假不算國定假日、2026-08 前不寫日期、只動集團共用列。"""
+    節日逢週末改算補假日、2026-08 前不寫日期、只動集團共用列。"""
     import re as _re
     from datetime import datetime, timedelta, timezone
     SYNC_FROM, DOUBLE_FROM = '2026-05', '2026-08'
     now_ym = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime('%Y-%m')
     years = body.get('years') if isinstance(body.get('years'), list) else [body.get('year')]
-    status, names, want = [], {}, {}
+    status, names, want, moved_all = [], {}, {}, {}
     for y in dict.fromkeys(int(x) for x in years if str(x).isdigit()):
         cal = h_gov_holidays(data, {'year': y})
         if not cal.get('ok'):
             status.append({'year': y, 'ok': False, 'error': cal.get('error'), 'message': cal.get('message')})
             continue
         status.append({'year': y, 'ok': True, 'title': cal['title']})
-        by = {f'{y}-{m:02d}': {'red_days': 0, 'dates': [], 'note': '依人事行政總處' + cal['title']} for m in range(1, 13)}
         for d in cal['days']:
             if d['note']:
                 names[d['date']] = d['note']
-            r = by.get(d['date'][:7])
-            if r is None:
-                continue
-            r['red_days'] += 1
-            if d['note'] and not _re.search('補假|調整放假', d['note']) and d['date'][:7] >= DOUBLE_FROM:
-                r['dates'].append(d['date'])
+        extra = []
+        if any(d['note'] and not _re.search('補假|調整放假', d['note']) and d['date'][5:] <= '01-07' for d in cal['days']):
+            prev = h_gov_holidays(data, {'year': y - 1})
+            if prev.get('ok'):
+                extra = [d['date'] for d in prev['days'] if '補假' in (d['note'] or '') and d['date'][5:] >= '12-25']
+        dates, moved = _double_plan(cal['days'], extra)
+        moved_all.update(moved)
+        by = {f'{y}-{m:02d}': {'red_days': 0, 'dates': [], 'note': '依人事行政總處' + cal['title']} for m in range(1, 13)}
+        for d in cal['days']:
+            if d['date'][:7] in by:
+                by[d['date'][:7]]['red_days'] += 1
+        for d in dates:
+            if d[:7] in by and d[:7] >= DOUBLE_FROM:
+                by[d[:7]]['dates'].append(d)
         for k, r in by.items():
             if k >= SYNC_FROM:
                 want[k] = dict(r, dates=', '.join(sorted(r['dates'])))
@@ -423,7 +455,7 @@ def h_holiday_sync(data, body):
         out.append({'ym': k, 'red_days': w['red_days'], 'note': w['note'], 'dates': w['dates'], 'store': ''})
         changed.append(k)
     data['payroll']['holiday'] = out
-    return {'ok': True, 'changed': changed, 'status': status, 'names': names,
+    return {'ok': True, 'changed': changed, 'status': status, 'names': names, 'moved': moved_all,
             'sync_from': SYNC_FROM, 'double_from': DOUBLE_FROM,
             'holidays': _holiday_list(data, body.get('store', ''))}
 

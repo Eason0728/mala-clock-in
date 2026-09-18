@@ -1418,41 +1418,77 @@ function handlePayrollGovHolidays(body) {
 /* 紅字天數整年自動同步（2026-09-18 Eason：「直接帶入整年度，不用再手動輸入」）。
  * 規則（動任何一條前先讀 skill 的「紅字天數」一節）：
  *  - 紅字天數＝行事曆上該月「是否放假=2」的天數（含週末、補假、調整放假）；Eason 手填的 5～9 月逐月與此相同。
- *  - 國定假日日期＝節日本身（備註非空、且不是補假／調整放假）。補假是公務機關另放的那天，不帶入。
+ *  - 國定假日雙薪日期（Eason 2026-09-18 定案：「有國定假日跟補假，雙薪以補假日期為主」）：
+ *      節日落在平日 → 節日當天；節日落在週末且有對應補假 → 改算補假那天（節日當天不算）；
+ *      落在週末卻找不到補假 → 保留節日當天（不讓雙薪憑空消失）。調整放假不算。
+ *    ⚠ 法律上這是「調移」，需同仁本人同意（勞動部）；同意書由公司處理，程式只照規則算。
  *  - 只動「集團共用」列（store 空白）；本店專屬列照舊優先、不碰。
  *  - ⚠ 只改「本月與未來」的月份；已經過去的月份若已存在就不動——那些月份多半已發薪，
  *    回頭改紅字天數或加國定假日，重算就會改到已發的錢。缺的過去月份才補（且不早於 PAY_HOL_SYNC_FROM）。
  *  - ⚠ 國定假日雙薪 2026-08-22 才上線，PAY_HOL_DOUBLE_FROM 之前的月份不寫日期（比照遲到規則「8 月起生效、不回頭」）。 */
 const PAY_HOL_SYNC_FROM = '2026-05';     // 薪酬系統第一個月；更早的月份不建列（建了會被自動試算出一堆空的薪資）
 const PAY_HOL_DOUBLE_FROM = '2026-08';   // 國定假日計時雙薪的生效月份
-const PAY_HOL_NOT_HOLIDAY = /補假|調整放假/;
+const PAY_HOL_NOT_HOLIDAY = /補假|調整放假/;   // 不是節日本身
+const PAY_HOL_COMP = /補假/;                  // 公務機關的補假日
 
-function payHolidayGovRows(cal) {
+/** 算出雙薪日期：回 { dates:[…], moved:{節日:補假日} }。
+ *  配對＝每個週末節日找「前後 7 天內、還沒被配走、最近的」補假（週六補前一個上班日、週日補後一個，連假會往後推）。
+ *  extraComp＝鄰近年度的補假（元旦逢週六時補假在前一年 12/31），只拿來配對、不加進本年日期。 */
+function payHolidayDoublePlan(days, extraComp) {
+  const dn = function (s) { const p = String(s).split('-'); return Date.UTC(+p[0], +p[1] - 1, +p[2]) / 86400000; };
+  const weekend = function (s) { const w = new Date(dn(s) * 86400000).getUTCDay(); return w === 0 || w === 6; };
+  const comp = days.filter(function (d) { return PAY_HOL_COMP.test(d.note || ''); }).map(function (d) { return d.date; });
+  const pool = comp.concat(extraComp || []), used = {}, moved = {}, dates = comp.slice();
+  days.filter(function (d) { return d.note && !PAY_HOL_NOT_HOLIDAY.test(d.note); })
+    .sort(function (a, b) { return a.date < b.date ? -1 : 1; })
+    .forEach(function (h) {
+      if (!weekend(h.date)) { dates.push(h.date); return; }
+      let best = null;
+      pool.forEach(function (c) {
+        if (used[c]) return;
+        const g = Math.abs(dn(c) - dn(h.date));
+        if (g <= 7 && (!best || g < best.g)) best = { c: c, g: g };
+      });
+      if (best) { used[best.c] = true; moved[h.date] = best.c; } else dates.push(h.date);
+    });
+  return { dates: dates.filter(function (d, i, a) { return a.indexOf(d) === i; }).sort(), moved: moved };
+}
+
+function payHolidayGovRows(cal, extraComp) {
   const by = {};
   for (let m = 1; m <= 12; m++) {
     const ym = cal.year + '-' + ('0' + m).slice(-2);
     by[ym] = { ym: ym, red_days: 0, note: '依人事行政總處' + cal.title, dates: [] };
   }
-  (cal.days || []).forEach(function (d) {
-    const r = by[String(d.date).slice(0, 7)];
-    if (!r) return;
-    r.red_days++;
-    if (d.note && !PAY_HOL_NOT_HOLIDAY.test(d.note) && r.ym >= PAY_HOL_DOUBLE_FROM) r.dates.push(d.date);
-  });
+  (cal.days || []).forEach(function (d) { const r = by[String(d.date).slice(0, 7)]; if (r) r.red_days++; });
+  const plan = payHolidayDoublePlan(cal.days || [], extraComp);
+  plan.dates.forEach(function (d) { const r = by[d.slice(0, 7)]; if (r && r.ym >= PAY_HOL_DOUBLE_FROM) r.dates.push(d); });
   Object.keys(by).forEach(function (k) { by[k].dates = by[k].dates.sort().join(', '); });
-  return by;
+  return { rows: by, moved: plan.moved };
 }
 
 function payHolidaySync(years, operator) {
   const nowYm = currentYmTaipei();
-  const status = [], names = {}, want = {};
+  const status = [], names = {}, want = {}, moved = {};
   (years || []).forEach(function (y) {
     const cal = payGovCalendar(y);
     if (!cal.ok) { status.push({ year: Number(y), ok: false, error: cal.error, message: cal.message }); return; }
     status.push({ year: cal.year, ok: true, title: cal.title });
     (cal.days || []).forEach(function (d) { if (d.note) names[d.date] = d.note; });
-    const rows = payHolidayGovRows(cal);
-    Object.keys(rows).forEach(function (k) { if (k >= PAY_HOL_SYNC_FROM) want[k] = rows[k]; });
+    // 元旦逢週六 → 補假在前一年 12/31，要拿前一年的行事曆來配對，否則元旦當天會被當成「找不到補假」而重複算
+    let extra = [];
+    const edge = (cal.days || []).some(function (d) {
+      return d.note && !PAY_HOL_NOT_HOLIDAY.test(d.note) && String(d.date).slice(5) <= '01-07';
+    });
+    if (edge) {
+      const prev = payGovCalendar(Number(y) - 1);
+      if (prev.ok) extra = prev.days.filter(function (d) {
+        return PAY_HOL_COMP.test(d.note || '') && String(d.date).slice(5) >= '12-25';
+      }).map(function (d) { return d.date; });
+    }
+    const plan = payHolidayGovRows(cal, extra);
+    Object.keys(plan.moved).forEach(function (h) { moved[h] = plan.moved[h]; });
+    Object.keys(plan.rows).forEach(function (k) { if (k >= PAY_HOL_SYNC_FROM) want[k] = plan.rows[k]; });
   });
   const all = payRead('holiday'), changed = [];
   const out = all.map(function (r) {
@@ -1475,7 +1511,7 @@ function payHolidaySync(years, operator) {
     payAppend('audit', [{ ts: nowTaipeiIso(), ym: '', action: 'holiday_sync', operator: String(operator || 'auto'),
       reason: '依人事行政總處辦公日曆表更新紅字天數：' + changed.join('、'), store: '' }]);
   }
-  return { status: status, names: names, changed: changed };
+  return { status: status, names: names, moved: moved, changed: changed };
 }
 
 function handlePayrollHolidaySync(body) {
@@ -1484,7 +1520,7 @@ function handlePayrollHolidaySync(body) {
     .map(Number).filter(function (y, i, a) { return y >= 2017 && y <= 2100 && a.indexOf(y) === i; });
   if (!years.length) return { ok: false, error: 'bad_year' };
   const r = payHolidaySync(years, body.operator);
-  return { ok: true, changed: r.changed, status: r.status, names: r.names,
+  return { ok: true, changed: r.changed, status: r.status, names: r.names, moved: r.moved,
            sync_from: PAY_HOL_SYNC_FROM, double_from: PAY_HOL_DOUBLE_FROM,
            holidays: payHolidayList(payStore(body.store)) };
 }

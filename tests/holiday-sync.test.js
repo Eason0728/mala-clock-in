@@ -3,7 +3,8 @@
  * Eason：「直接帶入整年度，不用再手動輸入」。紅字天數與國定假日日期改由後端依
  * 人事行政總處「政府行政機關辦公日曆表」自動寫入。這支測試守住四條規則：
  *   1. 過去且已存在的月份不動（多半已發薪，重算會改到已發的錢）
- *   2. 補假／調整放假不算國定假日（那是公務機關另放的那天）
+ *   2. 雙薪日：節日在平日＝當天；節日在週末且有補假＝改算補假那天（Eason 2026-09-18 定案）；
+ *      找不到補假就保留節日當天；調整放假不算
  *   3. 國定假日雙薪 2026-08 才生效，更早的月份不寫日期
  *   4. 只動集團共用列，本店專屬列不碰
  * 另守：未來月份翻開不可以自動試算（會先存一份全是 0 的草稿）。
@@ -23,14 +24,20 @@ const NAMED_2026 = {
   '2026-09-28': '孔子誕辰紀念日/教師節', '2026-10-09': '補假', '2026-10-10': '國慶日',
   '2026-10-25': '臺灣光復暨金門古寧頭大捷紀念日', '2026-10-26': '補假', '2026-12-25': '行憲紀念日',
 };
-function cal2026() {
+function calOf(year, named, title) {
   const days = [];
-  for (let d = new Date(Date.UTC(2026, 0, 1)); d.getUTCFullYear() === 2026; d.setUTCDate(d.getUTCDate() + 1)) {
+  for (let d = new Date(Date.UTC(year, 0, 1)); d.getUTCFullYear() === year; d.setUTCDate(d.getUTCDate() + 1)) {
     const iso = d.toISOString().slice(0, 10), wd = d.getUTCDay();
-    if (wd === 0 || wd === 6 || NAMED_2026[iso]) days.push({ date: iso, week: '日一二三四五六'[wd], note: NAMED_2026[iso] || '' });
+    if (wd === 0 || wd === 6 || named[iso]) days.push({ date: iso, week: '日一二三四五六'[wd], note: named[iso] || '' });
   }
-  return { ok: true, year: 2026, title: '115年中華民國政府行政機關辦公日曆表', days };
+  return { ok: true, year, title: title || (year - 1911) + '年中華民國政府行政機關辦公日曆表', days };
 }
+const cal2026 = () => calOf(2026, NAMED_2026);
+/* 116 年（2027）節錄：勞動節 5/1 週六→補假在 4/30（跨月）；12/31 補假是給 2028 元旦（週六）的 */
+const NAMED_2027 = { '2027-01-01': '開國紀念日', '2027-04-30': '補假', '2027-05-01': '勞動節',
+  '2027-10-10': '國慶日', '2027-10-11': '補假', '2027-12-24': '補假', '2027-12-25': '行憲紀念日', '2027-12-31': '補假' };
+/* 2028 假設：元旦週六，補假在前一年 12/31（本年行事曆裡找不到）；另放一個找不到補假的週末節日測保底 */
+const NAMED_2028 = { '2028-01-01': '開國紀念日', '2028-10-15': '測試用節日' };
 
 function makeCtx(seed, nowYm) {
   const sb = { console, Logger: { log() {} },
@@ -42,7 +49,7 @@ function makeCtx(seed, nowYm) {
   vm.runInContext(C + '\n' + P, sb);
   sb.__DB = { holiday: (seed || []).map(r => Object.assign({}, r)), audit: [] };
   sb.__N = { replace: 0, calc: 0 };
-  sb.__CAL = cal2026();
+  sb.__CALS = { 2026: cal2026() };
   sb.__NOW = nowYm || '2026-09';
   vm.runInContext(`
     checkAdmin = function(){ return true; };
@@ -52,8 +59,8 @@ function makeCtx(seed, nowYm) {
     payReplaceAll = function(kind, rows){ globalThis.__N.replace++; globalThis.__DB[kind] = rows.slice(); };
     payAppend = function(kind, rows){ globalThis.__DB[kind] = (globalThis.__DB[kind] || []).concat(rows); };
     payInvalidate = function(){};
-    payGovCalendar = function(y){ return Number(y) === 2026 ? globalThis.__CAL
-      : { ok: false, error: 'not_published', message: '人事行政總處還沒公布 ' + y + ' 年' }; };
+    payGovCalendar = function(y){ return globalThis.__CALS[Number(y)]
+      || { ok: false, error: 'not_published', message: '人事行政總處還沒公布 ' + y + ' 年' }; };
   `, sb);
   const hol = () => sb.__DB.holiday;
   const get = (ym, st) => hol().find(r => r.ym === ym && String(r.store || '') === (st || ''));
@@ -79,7 +86,8 @@ console.log('\n══ 1) 正式環境現況跑一次同步（本月＝2026-09）
   const r = ctx.call('handlePayrollHolidaySync', { years: [2026, 2027], store: 'SSLGF' });
   chk('  回報有變動的月份', r.changed, ['2026-09', '2026-10', '2026-11', '2026-12']);
   chk('  9 月：紅字不變、補上中秋與教師節', [ctx.get('2026-09').red_days, ctx.get('2026-09').dates], [10, '2026-09-25, 2026-09-28']);
-  chk('  10 月：國慶與光復節，補假 10/9、10/26 不帶', [ctx.get('2026-10').red_days, ctx.get('2026-10').dates], [11, '2026-10-10, 2026-10-25']);
+  chk('  10 月：國慶 10/10（六）→補假 10/9、光復節 10/25（日）→補假 10/26', [ctx.get('2026-10').red_days, ctx.get('2026-10').dates], [11, '2026-10-09, 2026-10-26']);
+  chk('  回傳節日→補假的對照', [r.moved['2026-10-10'], r.moved['2026-10-25']], ['2026-10-09', '2026-10-26']);
   chk('  11 月：沒有國定假日', [ctx.get('2026-11').red_days, ctx.get('2026-11').dates], [9, '']);
   chk('  12 月：行憲紀念日', [ctx.get('2026-12').red_days, ctx.get('2026-12').dates], [9, '2026-12-25']);
   chk('  5～8 月原封不動（日期仍空白：5/1、6/19 不回頭補）',
@@ -133,6 +141,35 @@ console.log('\n══ 5) 計算時沒有紅字天數 → 先自動同步；該�
   chk('  沒有回 no_holiday', r && r.error === 'no_holiday', false);
   const r2 = ctx.call('handlePayrollCalc', { ym: '2031-01', store: 'SSLGF' });
   chk('  2031 沒公布 → no_holiday 並說明原因', [r2.error, /還沒公布/.test(r2.message)], ['no_holiday', true]);
+}
+
+console.log('\n══ 5b) 雙薪日＝補假日為主：2026 全年對照（人事行政總處公布的補假逐一配對）══');
+{
+  const plan = vm.runInContext('payHolidayDoublePlan', makeCtx([]).sb)(cal2026().days, []);
+  chk('  2026 全年雙薪日', plan.dates, ['2026-01-01', '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20',
+    '2026-02-27', '2026-04-03', '2026-04-06', '2026-05-01', '2026-06-19', '2026-09-25', '2026-09-28',
+    '2026-10-09', '2026-10-26', '2026-12-25']);
+  chk('  週末節日→補假 對照', plan.moved, { '2026-02-15': '2026-02-20', '2026-02-28': '2026-02-27',
+    '2026-04-04': '2026-04-03', '2026-04-05': '2026-04-06', '2026-10-10': '2026-10-09', '2026-10-25': '2026-10-26' });
+  chk('  週末節日當天不算雙薪', ['2026-02-15', '2026-02-28', '2026-04-04', '2026-04-05', '2026-10-10', '2026-10-25']
+    .filter(d => plan.dates.indexOf(d) >= 0), []);
+}
+
+console.log('\n══ 5c) 補假跨月、跨年 ══');
+{
+  const ctx = makeCtx([], '2027-01');
+  ctx.sb.__CALS[2027] = calOf(2027, NAMED_2027);
+  ctx.sb.__CALS[2028] = calOf(2028, NAMED_2028);
+  ctx.call('handlePayrollHolidaySync', { years: [2027] });
+  chk('  勞動節 5/1（六）的雙薪在 4 月的 4/30', [ctx.get('2027-04').dates, ctx.get('2027-05').dates], ['2027-04-30', '']);
+  chk('  12 月：12/24 補行憲、12/31 補隔年元旦（兩天都算）', ctx.get('2027-12').dates, '2027-12-24, 2027-12-31');
+  const ctx2 = makeCtx([], '2028-01');
+  ctx2.sb.__CALS[2027] = calOf(2027, NAMED_2027);
+  ctx2.sb.__CALS[2028] = calOf(2028, NAMED_2028);
+  const r = ctx2.call('handlePayrollHolidaySync', { years: [2028] });
+  chk('  2028 元旦（六）已由前一年 12/31 補假，不重複算', ctx2.get('2028-01').dates, '');
+  chk('  對照指向前一年的 12/31', r.moved['2028-01-01'], '2027-12-31');
+  chk('  週末節日找不到補假 → 保留節日當天（保底）', ctx2.get('2028-10').dates, '2028-10-15');
 }
 
 console.log('\n══ 6) 翻到未來月份不自動試算（本月照舊會）══');
