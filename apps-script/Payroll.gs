@@ -1365,14 +1365,13 @@ function handlePayrollHolidaySet(body) {
   return { ok: true, count: mine.length, store: stH };
 }
 
-/** 人事行政總處「中華民國政府行政機關辦公日曆表」（政府資料開放平臺 dataset 14718）——
- *  給紅字天數卡的「帶入行事曆」用。只讀不寫，回該年所有放假日（含週末）與備註。
+/** 人事行政總處「中華民國政府行政機關辦公日曆表」（政府資料開放平臺 dataset 14718）。
+ *  回該年所有放假日（含週末）與備註；只讀不寫。
  *  ⚠ 這個 CSV 沒有跨網域授權（CORS），瀏覽器抓不到，所以一定要由後端代抓。
  *  ⚠ 每年的檔案網址不固定（還會出「更新版」），一律先查資料集的檔案清單再挑，不可寫死網址。
  *  CSV 欄位：西元日期(yyyymmdd)／星期／是否放假(2＝放假、0＝上班)／備註。 */
-function handlePayrollGovHolidays(body) {
-  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
-  const year = Number(body.year);
+function payGovCalendar(year) {
+  year = Number(year);
   if (!(year >= 2017 && year <= 2100)) return { ok: false, error: 'bad_year' };
   const roc = year - 1911, cacheKey = 'govcal_' + year;
   const cache = CacheService.getScriptCache();
@@ -1407,9 +1406,87 @@ function handlePayrollGovHolidays(body) {
     try { cache.put(cacheKey, JSON.stringify(out), 21600); } catch (e) {}   // 6 小時；太大放不進去就算了
     return out;
   } catch (e) {
-    Logger.log('payroll_gov_holidays: ' + e);
+    Logger.log('payGovCalendar: ' + e);
     return { ok: false, error: 'fetch_failed', message: '連不上人事行政總處的資料：' + String(e.message || e) };
   }
+}
+function handlePayrollGovHolidays(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  return payGovCalendar(body.year);
+}
+
+/* 紅字天數整年自動同步（2026-09-18 Eason：「直接帶入整年度，不用再手動輸入」）。
+ * 規則（動任何一條前先讀 skill 的「紅字天數」一節）：
+ *  - 紅字天數＝行事曆上該月「是否放假=2」的天數（含週末、補假、調整放假）；Eason 手填的 5～9 月逐月與此相同。
+ *  - 國定假日日期＝節日本身（備註非空、且不是補假／調整放假）。補假是公務機關另放的那天，不帶入。
+ *  - 只動「集團共用」列（store 空白）；本店專屬列照舊優先、不碰。
+ *  - ⚠ 只改「本月與未來」的月份；已經過去的月份若已存在就不動——那些月份多半已發薪，
+ *    回頭改紅字天數或加國定假日，重算就會改到已發的錢。缺的過去月份才補（且不早於 PAY_HOL_SYNC_FROM）。
+ *  - ⚠ 國定假日雙薪 2026-08-22 才上線，PAY_HOL_DOUBLE_FROM 之前的月份不寫日期（比照遲到規則「8 月起生效、不回頭」）。 */
+const PAY_HOL_SYNC_FROM = '2026-05';     // 薪酬系統第一個月；更早的月份不建列（建了會被自動試算出一堆空的薪資）
+const PAY_HOL_DOUBLE_FROM = '2026-08';   // 國定假日計時雙薪的生效月份
+const PAY_HOL_NOT_HOLIDAY = /補假|調整放假/;
+
+function payHolidayGovRows(cal) {
+  const by = {};
+  for (let m = 1; m <= 12; m++) {
+    const ym = cal.year + '-' + ('0' + m).slice(-2);
+    by[ym] = { ym: ym, red_days: 0, note: '依人事行政總處' + cal.title, dates: [] };
+  }
+  (cal.days || []).forEach(function (d) {
+    const r = by[String(d.date).slice(0, 7)];
+    if (!r) return;
+    r.red_days++;
+    if (d.note && !PAY_HOL_NOT_HOLIDAY.test(d.note) && r.ym >= PAY_HOL_DOUBLE_FROM) r.dates.push(d.date);
+  });
+  Object.keys(by).forEach(function (k) { by[k].dates = by[k].dates.sort().join(', '); });
+  return by;
+}
+
+function payHolidaySync(years, operator) {
+  const nowYm = currentYmTaipei();
+  const status = [], names = {}, want = {};
+  (years || []).forEach(function (y) {
+    const cal = payGovCalendar(y);
+    if (!cal.ok) { status.push({ year: Number(y), ok: false, error: cal.error, message: cal.message }); return; }
+    status.push({ year: cal.year, ok: true, title: cal.title });
+    (cal.days || []).forEach(function (d) { if (d.note) names[d.date] = d.note; });
+    const rows = payHolidayGovRows(cal);
+    Object.keys(rows).forEach(function (k) { if (k >= PAY_HOL_SYNC_FROM) want[k] = rows[k]; });
+  });
+  const all = payRead('holiday'), changed = [];
+  const out = all.map(function (r) {
+    const k = String(r.ym);
+    if (String(r.store || '') !== '' || !want[k]) return r;
+    const w = want[k]; delete want[k];
+    if (k < nowYm) return r;   // 已經過去且已存在的月份不動
+    const same = payNum(r.red_days) === w.red_days && payHolidayDates(r).join(', ') === w.dates;
+    if (same) return r;
+    changed.push(k);
+    return { ym: k, red_days: w.red_days, note: w.note, dates: w.dates, store: '' };
+  });
+  Object.keys(want).sort().forEach(function (k) {   // 還沒有的月份：補上
+    const w = want[k];
+    out.push({ ym: k, red_days: w.red_days, note: w.note, dates: w.dates, store: '' });
+    changed.push(k);
+  });
+  if (changed.length) {
+    payReplaceAll('holiday', out);
+    payAppend('audit', [{ ts: nowTaipeiIso(), ym: '', action: 'holiday_sync', operator: String(operator || 'auto'),
+      reason: '依人事行政總處辦公日曆表更新紅字天數：' + changed.join('、'), store: '' }]);
+  }
+  return { status: status, names: names, changed: changed };
+}
+
+function handlePayrollHolidaySync(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const years = (Array.isArray(body.years) ? body.years : [body.year])
+    .map(Number).filter(function (y, i, a) { return y >= 2017 && y <= 2100 && a.indexOf(y) === i; });
+  if (!years.length) return { ok: false, error: 'bad_year' };
+  const r = payHolidaySync(years, body.operator);
+  return { ok: true, changed: r.changed, status: r.status, names: r.names,
+           sync_from: PAY_HOL_SYNC_FROM, double_from: PAY_HOL_DOUBLE_FROM,
+           holidays: payHolidayList(payStore(body.store)) };
 }
 
 /** 只歸集不計算——讓管理者先看工時對不對，再按計算 */
@@ -1540,8 +1617,12 @@ function handlePayrollCalc(body) {
     return { ok: false, error: 'locked', message: ym + ' 已鎖定，請先解鎖再重算' };
   }
 
-  const holiday = payHolidayRow(ym, payStore(body.store));
-  if (!holiday) return { ok: false, error: 'no_holiday', message: ym + ' 尚未設定紅字天數' };
+  let holiday = payHolidayRow(ym, payStore(body.store));
+  if (!holiday) {   // 紅字天數改成自動帶入（2026-09-18）：沒有就先依人事行政總處同步該年再找一次
+    try { payHolidaySync([Number(ym.slice(0, 4))]); } catch (e) { Logger.log('holiday sync in calc: ' + e); }
+    holiday = payHolidayRow(ym, payStore(body.store));
+  }
+  if (!holiday) return { ok: false, error: 'no_holiday', message: ym + ' 沒有紅字天數（人事行政總處可能還沒公布該年行事曆）' };
   const redDays = payNum(holiday.red_days);
 
   const st = payStore(body.store);
@@ -1681,7 +1762,9 @@ function handlePayrollMonth(body) {
   let run = payBuildRunResults(ym, stM);
   if (!run) {
     const hol = payHolidayRow(ym, stM);
-    if (hol) {
+    // ⚠ 紅字天數整年自動帶入後，未來月份也有列了；只是翻到未來月份不可以就自動試算並寫入，
+    //   否則會先存一份全是 0 的草稿，到了那個月打開看到的是那份舊草稿（要按重新計算才會更新）。
+    if (hol && ym <= currentYmTaipei()) {
       const calc = handlePayrollCalc({ admin_key: body.admin_key, ym: ym, store: stM, inputs: body.inputs || {} });
       if (calc && calc.ok) run = { results: calc.results, status: 'draft' };
     }
@@ -2470,6 +2553,7 @@ const PAYROLL_HANDLERS = {
   payroll_config_set:   handlePayrollConfigSet,
   payroll_holiday_set:  handlePayrollHolidaySet,
   payroll_gov_holidays: handlePayrollGovHolidays,
+  payroll_holiday_sync: handlePayrollHolidaySync,
   payroll_inputs:      handlePayrollInputs,
   payroll_input_set:    handlePayrollInputSet,
   payroll_month:        handlePayrollMonth,

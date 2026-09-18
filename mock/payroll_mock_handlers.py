@@ -379,6 +379,54 @@ def h_gov_holidays(data, body):
     except Exception as e:  # noqa: BLE001 — 與正式環境一致：任何連線錯誤都回 fetch_failed
         return {'ok': False, 'error': 'fetch_failed', 'message': f'連不上人事行政總處的資料：{e}'}
 
+
+def h_holiday_sync(data, body):
+    """照抄正式 payHolidaySync（規則說明見 Payroll.gs）：本月與未來跟著行事曆、過去已存在的月份不動、
+    補假不算國定假日、2026-08 前不寫日期、只動集團共用列。"""
+    import re as _re
+    from datetime import datetime, timedelta, timezone
+    SYNC_FROM, DOUBLE_FROM = '2026-05', '2026-08'
+    now_ym = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime('%Y-%m')
+    years = body.get('years') if isinstance(body.get('years'), list) else [body.get('year')]
+    status, names, want = [], {}, {}
+    for y in dict.fromkeys(int(x) for x in years if str(x).isdigit()):
+        cal = h_gov_holidays(data, {'year': y})
+        if not cal.get('ok'):
+            status.append({'year': y, 'ok': False, 'error': cal.get('error'), 'message': cal.get('message')})
+            continue
+        status.append({'year': y, 'ok': True, 'title': cal['title']})
+        by = {f'{y}-{m:02d}': {'red_days': 0, 'dates': [], 'note': '依人事行政總處' + cal['title']} for m in range(1, 13)}
+        for d in cal['days']:
+            if d['note']:
+                names[d['date']] = d['note']
+            r = by.get(d['date'][:7])
+            if r is None:
+                continue
+            r['red_days'] += 1
+            if d['note'] and not _re.search('補假|調整放假', d['note']) and d['date'][:7] >= DOUBLE_FROM:
+                r['dates'].append(d['date'])
+        for k, r in by.items():
+            if k >= SYNC_FROM:
+                want[k] = dict(r, dates=', '.join(sorted(r['dates'])))
+    rows, changed, out = _pay(data, 'holiday'), [], []
+    for r in rows:
+        k = str(r.get('ym'))
+        if str(r.get('store') or '') != '' or k not in want:
+            out.append(r); continue
+        w = want.pop(k)
+        if k < now_ym or (_num(r.get('red_days')) == w['red_days'] and str(r.get('dates') or '') == w['dates']):
+            out.append(r); continue
+        out.append({'ym': k, 'red_days': w['red_days'], 'note': w['note'], 'dates': w['dates'], 'store': ''})
+        changed.append(k)
+    for k in sorted(want):
+        w = want[k]
+        out.append({'ym': k, 'red_days': w['red_days'], 'note': w['note'], 'dates': w['dates'], 'store': ''})
+        changed.append(k)
+    data['payroll']['holiday'] = out
+    return {'ok': True, 'changed': changed, 'status': status, 'names': names,
+            'sync_from': SYNC_FROM, 'double_from': DOUBLE_FROM,
+            'holidays': _holiday_list(data, body.get('store', ''))}
+
 PAYROLL_ACTIONS = {
     'payroll_bootstrap': h_bootstrap,
     'payroll_master_get': h_master_get,
@@ -386,6 +434,7 @@ PAYROLL_ACTIONS = {
     'payroll_config_set': h_config_set,
     'payroll_holiday_set': h_holiday_set,
     'payroll_gov_holidays': h_gov_holidays,
+    'payroll_holiday_sync': h_holiday_sync,
     'payroll_inputs': h_inputs,
     'payroll_input_set': h_input_set,
     'payroll_calc': h_calc,

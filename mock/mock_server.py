@@ -1522,6 +1522,7 @@ try:
             return out
         return run
     ACTIONS['payroll_holiday_set'] = _persist(ACTIONS['payroll_holiday_set'])
+    ACTIONS['payroll_holiday_sync'] = _persist(ACTIONS['payroll_holiday_sync'])
 except ImportError:
     pass
 
