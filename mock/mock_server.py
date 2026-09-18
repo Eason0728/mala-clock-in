@@ -1511,6 +1511,17 @@ ACTIONS = {
 try:
     from payroll_mock_handlers import PAYROLL_ACTIONS
     ACTIONS.update(PAYROLL_ACTIONS)
+
+    # ⚠ 薪酬假後端的寫入原本只改記憶體、不存檔（每個請求都重新 load_data），
+    #   「存了、重新整理就不見」這類 bug 在本機永遠測不出來。紅字天數先補上存檔（2026-09-18）。
+    def _persist(fn):
+        def run(data, body):
+            out = fn(data, body)
+            if isinstance(out, dict) and out.get('ok'):
+                save_data(data)
+            return out
+        return run
+    ACTIONS['payroll_holiday_set'] = _persist(ACTIONS['payroll_holiday_set'])
 except ImportError:
     pass
 

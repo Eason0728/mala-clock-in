@@ -1365,6 +1365,53 @@ function handlePayrollHolidaySet(body) {
   return { ok: true, count: mine.length, store: stH };
 }
 
+/** 人事行政總處「中華民國政府行政機關辦公日曆表」（政府資料開放平臺 dataset 14718）——
+ *  給紅字天數卡的「帶入行事曆」用。只讀不寫，回該年所有放假日（含週末）與備註。
+ *  ⚠ 這個 CSV 沒有跨網域授權（CORS），瀏覽器抓不到，所以一定要由後端代抓。
+ *  ⚠ 每年的檔案網址不固定（還會出「更新版」），一律先查資料集的檔案清單再挑，不可寫死網址。
+ *  CSV 欄位：西元日期(yyyymmdd)／星期／是否放假(2＝放假、0＝上班)／備註。 */
+function handlePayrollGovHolidays(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const year = Number(body.year);
+  if (!(year >= 2017 && year <= 2100)) return { ok: false, error: 'bad_year' };
+  const roc = year - 1911, cacheKey = 'govcal_' + year;
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get(cacheKey);
+  if (hit) return JSON.parse(hit);
+  try {
+    const meta = JSON.parse(UrlFetchApp.fetch('https://data.gov.tw/api/v2/rest/dataset/14718',
+      { muteHttpExceptions: true }).getContentText());
+    const dist = ((meta.result || meta).distribution || []).filter(function (d) {
+      const t = String(d.resourceDescription || '');
+      return t.indexOf(roc + '年') === 0 && t.indexOf('辦公日曆表') >= 0 && t.indexOf('Google') < 0
+        && String(d.resourceFormat || '').toUpperCase() === 'CSV';
+    });
+    if (!dist.length) return { ok: false, error: 'not_published',
+      message: '人事行政總處還沒公布 ' + year + ' 年（民國 ' + roc + ' 年）的辦公日曆表' };
+    // 同一年有「更新版」時取上傳月份最新的那份（網址裡的 dgpa/files/YYYYMM/）
+    const upAt = function (d) { const m = String(d.resourceDownloadUrl || '').match(/files\/(\d{6})\//); return m ? m[1] : ''; };
+    const pick = dist.reduce(function (a, b) { return upAt(b) >= upAt(a) ? b : a; });
+    const blob = UrlFetchApp.fetch(pick.resourceDownloadUrl, { muteHttpExceptions: true }).getBlob();
+    let txt = blob.getDataAsString('UTF-8');
+    if (txt.indexOf('西元日期') < 0) txt = blob.getDataAsString('Big5');   // 舊年度的檔案是 Big5
+    const days = [];
+    txt.replace(/^﻿/, '').split(/\r?\n/).forEach(function (line) {
+      const c = line.split(',');
+      const m = String(c[0] || '').trim().match(/^(\d{4})(\d{2})(\d{2})$/);
+      if (!m || String(c[2] || '').trim() !== '2') return;
+      days.push({ date: m[1] + '-' + m[2] + '-' + m[3], week: String(c[1] || '').trim(),
+                  note: String(c[3] || '').trim() });
+    });
+    if (!days.length) return { ok: false, error: 'parse_failed', message: '人事行政總處的檔案讀不懂（格式可能改了）' };
+    const out = { ok: true, year: year, title: String(pick.resourceDescription || ''), source: pick.resourceDownloadUrl, days: days };
+    try { cache.put(cacheKey, JSON.stringify(out), 21600); } catch (e) {}   // 6 小時；太大放不進去就算了
+    return out;
+  } catch (e) {
+    Logger.log('payroll_gov_holidays: ' + e);
+    return { ok: false, error: 'fetch_failed', message: '連不上人事行政總處的資料：' + String(e.message || e) };
+  }
+}
+
 /** 只歸集不計算——讓管理者先看工時對不對，再按計算 */
 /** 讀 payroll_input 分頁的手動工時覆蓋（某月）→ {emp_id:{hours,extra_ot,...,support:[]}} */
 function paySavedInputs(ym, store) {
@@ -2422,7 +2469,8 @@ const PAYROLL_HANDLERS = {
   payroll_master_set:   handlePayrollMasterSet,
   payroll_config_set:   handlePayrollConfigSet,
   payroll_holiday_set:  handlePayrollHolidaySet,
-  payroll_inputs:       handlePayrollInputs,
+  payroll_gov_holidays: handlePayrollGovHolidays,
+  payroll_inputs:      handlePayrollInputs,
   payroll_input_set:    handlePayrollInputSet,
   payroll_month:        handlePayrollMonth,
   payroll_calc:         handlePayrollCalc,

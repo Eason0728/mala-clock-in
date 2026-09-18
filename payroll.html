@@ -97,6 +97,14 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 .tag{display:inline-block;font-size:11px;font-weight:800;padding:2px 9px;border-radius:20px}
 .tag.ft{background:var(--gold-soft);color:#7a5a00}.tag.pt{background:#eef1f4;color:#556}
 .tag.final{background:#e7f3ec;color:var(--ok)}.tag.draft{background:#fdf0ee;color:var(--red)}
+/* 紅字天數的國定假日日期：一天一顆，從日曆挑（日期欄位本身藏起來，只借它的日曆） */
+.hdates{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:260px}
+.hchip{display:inline-flex;align-items:center;gap:2px;background:var(--gold-soft);color:#7a5a00;font-size:12.5px;font-weight:800;padding:3px 3px 3px 10px;border-radius:20px}
+.hchip button{border:0;background:transparent;color:#7a5a00;font:inherit;font-size:15px;line-height:1;cursor:pointer;padding:1px 6px;border-radius:50%}
+.hchip button:hover{background:rgba(0,0,0,.08)}
+.hempty{color:var(--muted);font-size:12px}
+.hpick{position:relative;display:inline-block}
+.hpick input[type=date]{position:absolute;left:0;bottom:0;width:1px;min-width:0;height:1px;padding:0;border:0;opacity:0;pointer-events:none}
 .ok{color:var(--ok);font-weight:700}.bad{color:var(--bad);font-weight:700}
 .big{font-size:20px;font-weight:900}
 .note{background:#fff8ec;border-left:4px solid var(--gold);padding:12px 14px;border-radius:0 9px 9px 0;font-size:12.5px;margin-bottom:15px}
@@ -417,16 +425,19 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
   </div>
   <div class="card">
     <h2>紅字天數（行政院行事曆）</h2>
-    <p class="hint">基本工時 ＝ (當月天數 − 紅字天數) × 每日工時。沒設定該月就不給計算。</p>
+    <p class="hint">基本工時 ＝ (當月天數 − 紅字天數) × 每日工時。沒設定該月就不給計算。<br>
+      國定假日日期按「📅 選日期」從日曆挑；紅字天數、日期改完都會<b>自動儲存</b>，不必另外按鈕。</p>
     <div class="scroll"><table id="holTbl"></table></div>
     <div class="row" style="margin-top:12px">
-      <input type="text" id="hy" placeholder="2026-08" style="width:110px;text-align:left">
+      <input type="month" id="hy" placeholder="2026-08" style="width:150px;text-align:left"
+        onclick="try{this.showPicker()}catch(e){}" onchange="holMonthPicked()">
       <input type="number" id="hd" placeholder="天數" style="width:80px">
       <button class="btn ghost" onclick="addHol(this)">新增</button>
       <label style="font-size:13px;display:flex;align-items:center;gap:6px">
         <input type="checkbox" id="holOwn" style="width:18px;height:18px"> 只套用到目前門市（不勾＝集團共用）
       </label>
     </div>
+    <div id="hyHint" style="font-size:12.5px;color:var(--muted);margin-top:6px"></div>
   </div>
   <div class="card">
     <h2>假別設定 <span id="ltScope" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
@@ -499,7 +510,7 @@ const API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ?
   : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
 const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 
-let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
+let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
 // 目前操作門市：階段一由門市表全部可見；階段二改讀 dzy 帳號的可見門市清單（UI 與過濾邏輯不變）
 let STORE=(new URLSearchParams(location.search).get('store')||localStorage.getItem('pay_store')||'');
 if(new URLSearchParams(location.search).get('store')) localStorage.setItem('pay_store',STORE);
@@ -561,11 +572,7 @@ async function boot(){
   // ⚠ 門市下拉一定要在這裡先建好：若等到 loadMonth，該門市讀取失敗就會提早 return，
   //    下拉永遠是空的 → 使用者被鎖在壞掉的門市、切不回來（踩過）
   if(m.stores&&m.stores.length){STORE_LIST=m.stores;renderStoreSel()}
-  // 後端 holidays 是陣列 [{ym,red_days}]（prod）；轉成前端用的物件 {ym:red_days}。相容舊物件格式。
-  HOL={}; HOLD={}; const _hs=m.holidays||[];
-  HOLSRC={};
-  if(Array.isArray(_hs)) _hs.forEach(h=>{ if(h&&h.ym!=null){ HOL[String(h.ym)]=n(h.red_days); HOLD[String(h.ym)]=String(h.dates||''); HOLSRC[String(h.ym)]=h._src||'global'; } });
-  else Object.keys(_hs).forEach(k=>HOL[k]=n(_hs[k]));
+  applyHol(m.holidays);
   renderEmp(); renderCfg();
   await loadMonth();
 }
@@ -725,7 +732,10 @@ async function loadMonth(){
     if(r.stores&&r.stores.length){STORE_LIST=r.stores;renderStoreSel()}
     // 主檔與參數都會隨門市不同 → 切換門市時一併更新（否則會看到別店的員工）
     if(r.master){MASTER=r.master;renderEmp()}
-    if(r.config){CFG=r.config;renderCfg()}
+    // 紅字天數也隨門市不同（本店專屬／集團共用），而且「來源」決定存到哪一層 → 切門市一定要重載
+    if(r.holidays) applyHol(r.holidays);
+    if(r.config) CFG=r.config;
+    if(r.config||r.holidays) renderCfg();
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
     renderAtt();renderRun();renderSlipSel();
     renderBonus();
@@ -1937,16 +1947,157 @@ function renderCfg(){
   // 用同一個 cfgFld，才會跟其他三張卡一樣顯示「本店／預設」來源標示
   //（2026-08-24：這張卡原本沒有來源標示也沒有門市勾選，改團險時很容易誤存成集團預設）
   if($('coGrid')) $('coGrid').innerHTML=CO_MANUAL.map(cfgFld).join('');
+  renderHol();
+}
+
+/* ═════ 紅字天數 ═════
+   ⚠ 2026-09-18 修：表格裡的紅字天數、國定假日日期原本 onchange 只改瀏覽器記憶體、沒有存檔，
+   重新整理就不見。現在每一次變更都立刻存。
+   ⚠ 每一列有自己的來源（本店專屬 own／集團共用 global），存檔一律「存回那一列的來源、只送那一層的列」。
+   舊寫法是把畫面上合併後的整份清單，依「只套用到目前門市」勾選框整批存成同一層——
+   沒勾就把本店專屬列複製成集團共用、勾了就把集團共用整份複製成本店專屬。
+   來源因此決定寫入位置，切門市時一定要重載（loadMonth 的 applyHol）。 */
+function applyHol(list){
+  HOL={}; HOLD={}; HOLSRC={}; HOLN={};
+  const add=(k,h)=>{ HOL[k]=n(h.red_days); HOLD[k]=String(h.dates||''); HOLN[k]=String(h.note||'');
+    HOLSRC[k]=h._src==='own'?'own':'global'; };
+  if(Array.isArray(list)) list.forEach(h=>{ if(h&&h.ym!=null) add(String(h.ym),h); });
+  else if(list) Object.keys(list).forEach(k=>add(k,{red_days:list[k]}));   // 相容舊物件格式 {ym:red_days}
+}
+function holDateList(k){
+  // 存法＝逗號分隔（後端 payHolidayDates 用 [,，\s]+ 切）；舊資料寫成 2026/10/10 也轉成標準格式
+  return String(HOLD[k]||'').split(/[,，\s]+/).filter(Boolean).map(x=>{
+    const m=x.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})$/);
+    return m?`${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`:x;
+  });
+}
+function holDateLabel(d){
+  const m=String(d).match(/^(\d{4})-(\d{2})-(\d{2})$/); if(!m) return String(d);
+  return `${+m[2]}/${+m[3]}（${'日一二三四五六'[new Date(+m[1],+m[2]-1,+m[3]).getDay()]}）`;
+}
+function holLastDay(k){ const [y,mo]=String(k).split('-').map(Number); return (y&&mo)?new Date(y,mo,0).getDate():31; }
+function renderHol(){
+  if(!$('holTbl')) return;
   let h='<thead><tr><th>月份</th><th>紅字天數</th><th style="text-align:left">國定假日日期<br><span style="font-weight:400;color:var(--muted)">計時當天出勤＝時薪雙倍</span></th><th></th></tr></thead><tbody>';
   Object.keys(HOL).sort().forEach(k=>{
     const tag=HOLSRC[k]==='own'?' <span class="tag draft" style="font-size:10px">本店</span>':' <span style="color:var(--muted);font-size:11px">集團</span>';
-    h+=`<tr><td>${k}${tag}</td><td><input type="number" value="${esc(HOL[k])}" onchange="HOL['${k}']=n(this.value)"></td>
-      <td style="text-align:left"><input type="text" value="${esc(HOLD[k]||'')}" placeholder="${k}-01, ${k}-02"
-        style="min-width:260px" onchange="HOLD['${k}']=this.value.trim()"></td>
-      <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
-        onclick="delete HOL['${k}'];delete HOLD['${k}'];saveHol()">移除</button></td></tr>`;
+    const ds=holDateList(k), last=String(holLastDay(k)).padStart(2,'0');
+    const chips=ds.length?ds.map((d,i)=>`<span class="hchip">${esc(holDateLabel(d))}<button type="button" title="移除這一天"
+        aria-label="移除 ${esc(d)}" onclick="holDateDel('${k}',${i})">×</button></span>`).join('')
+      :'<span class="hempty">尚未指定</span>';
+    h+=`<tr><td>${k}${tag}</td><td><input type="number" min="0" max="${holLastDay(k)}" step="1" value="${esc(HOL[k])}" onchange="holSetDays('${k}',this)"></td>
+      <td style="text-align:left"><div class="hdates">${chips}
+        <span class="hpick"><button type="button" class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="holPick(this)">📅 選日期</button><input
+          type="date" min="${k}-01" max="${k}-${last}" tabindex="-1" aria-label="${k} 國定假日" onchange="holDateAdd('${k}',this)"></span>
+        <button type="button" class="btn ghost" style="padding:4px 10px;font-size:12px" title="依人事行政總處「政府行政機關辦公日曆表」帶入這個月的國定假日與紅字天數"
+          onclick="holGov('${k}',this)">🏛 帶入行事曆</button></div></td>
+      <td><button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="holRemove('${k}')">移除</button></td></tr>`;
   });
   $('holTbl').innerHTML=h+'</tbody>';
+}
+/* 叫出瀏覽器內建的日曆（日期欄位本身是藏起來的，只借它的日曆）；太舊不支援 showPicker 的瀏覽器就把欄位露出來 */
+function holPick(btn){
+  const i=btn.parentNode.querySelector('input[type=date]');
+  try{ if(typeof i.showPicker==='function'){ i.showPicker(); return; } }catch(e){}
+  i.style.cssText='position:static;width:auto;min-width:140px;height:auto;padding:4px 6px;border:1px solid var(--line);opacity:1;pointer-events:auto';
+  btn.style.display='none'; i.focus();
+}
+async function holDateAdd(k,inp){
+  const d=inp.value; inp.value='';
+  if(!d) return;
+  if(d.slice(0,7)!==k){toast(`請選 ${k} 這個月裡的日期`,true);return}
+  const ds=holDateList(k);
+  if(ds.indexOf(d)>=0){toast(`${holDateLabel(d)} 已經在清單裡了`);return}
+  const prev=HOLD[k];
+  HOLD[k]=ds.concat(d).sort().join(', ');
+  renderHol();
+  if(!await saveHol(HOLSRC[k],`已儲存：${k} 加入 ${holDateLabel(d)}`)){HOLD[k]=prev;renderHol();}
+}
+async function holDateDel(k,i){
+  const ds=holDateList(k), prev=HOLD[k], d=ds[i];
+  ds.splice(i,1); HOLD[k]=ds.join(', ');
+  renderHol();
+  if(!await saveHol(HOLSRC[k],`已儲存：${k} 移除 ${holDateLabel(d)}`)){HOLD[k]=prev;renderHol();}
+}
+async function holSetDays(k,inp){
+  const v=Number(inp.value), prev=HOL[k];
+  if(inp.value===''||!Number.isInteger(v)||v<0||v>holLastDay(k)){
+    toast(`紅字天數要是 0～${holLastDay(k)} 的整數`,true); inp.value=prev; return;
+  }
+  HOL[k]=v;
+  if(!await saveHol(HOLSRC[k],`已儲存：${k} 紅字天數 ${v} 天`)){HOL[k]=prev;inp.value=prev;}
+}
+async function holRemove(k){
+  if(!confirm(`移除 ${k} 的紅字天數設定？\n移除後這個月會因為沒有紅字天數而無法計算薪資。`)) return;
+  const src=HOLSRC[k], keep={d:HOL[k],dt:HOLD[k],n:HOLN[k]};
+  delete HOL[k]; delete HOLD[k]; delete HOLN[k];
+  if(!await saveHol(src,`已移除 ${k}`)){ HOL[k]=keep.d; HOLD[k]=keep.dt; HOLN[k]=keep.n; renderHol(); return; }
+  delete HOLSRC[k];
+  // 移除的是本店專屬列時，底下的集團共用列會重新生效 → 回讀一次才看得到
+  if(src==='own'){ const m=await post('payroll_master_get'); if(m.ok) applyHol(m.holidays); }
+  renderHol();
+}
+/* 人事行政總處「政府行政機關辦公日曆表」：後端代抓（對方網站不給瀏覽器直接抓），同一年只抓一次 */
+const GOVCAL={};
+async function govCal(year){
+  if(GOVCAL[year]) return GOVCAL[year];
+  const r=await post('payroll_gov_holidays',{year});   // 失敗時 post() 會自己跳出原因
+  if(r.ok) GOVCAL[year]=r;
+  return r;
+}
+/* 行事曆上的放假日分三種：週末（沒備註）／節日本身（開國紀念日、國慶日…）／公務機關的補假、調整放假。
+   ⚠ 帶進「國定假日日期」的只有節日本身——那才是勞基法的國定假日，計時當天出勤時薪加倍；
+   補假是節日碰到週末時公務員另外放的那天，民間公司不一定照放，列出來請他自己決定。
+   紅字天數＝三種全部加總（Eason 手填的 5～9 月逐月都與此相符，2026-09-18 核對過）。 */
+const GOV_NOT_HOLIDAY=/補假|調整放假/;
+function govMonth(cal,k){
+  const days=(cal.days||[]).filter(d=>String(d.date).slice(0,7)===k);
+  return { red:days.length,
+    named:days.filter(d=>d.note&&!GOV_NOT_HOLIDAY.test(d.note)),
+    skipped:days.filter(d=>d.note&&GOV_NOT_HOLIDAY.test(d.note)) };
+}
+async function holGov(k,btn){
+  const lb=btn.textContent; btn.disabled=true; btn.textContent='讀取中…';
+  let cal; try{ cal=await govCal(Number(String(k).slice(0,4))); } finally { btn.disabled=false; btn.textContent=lb; }
+  if(!cal||!cal.ok) return;
+  const g=govMonth(cal,k), cur=holDateList(k);
+  const add=g.named.map(d=>d.date).filter(d=>cur.indexOf(d)<0);
+  const msg=[`${k} 依人事行政總處行事曆：`,
+    `・國定假日：${g.named.length?g.named.map(d=>holDateLabel(d.date)+d.note).join('、'):'這個月沒有'}`,
+    `・紅字天數：${g.red} 天${HOL[k]!==g.red?`（目前 ${HOL[k]} 天，會改成 ${g.red} 天）`:'（與目前相同）'}`];
+  if(g.skipped.length) msg.push('',`${g.skipped.map(d=>holDateLabel(d.date)).join('、')} 是公務機關的「補假」，不是國定假日當天，沒有帶入；公司若要算時薪加倍，請用「📅 選日期」自己加。`);
+  if(!add.length&&HOL[k]===g.red){ alert(msg.concat('','目前的設定已經和行事曆一致，不用改。').join('\n')); return; }
+  if(!confirm(msg.concat('','按「確定」帶入並儲存（你自己加的日期會保留）。').join('\n'))) return;
+  const prev={d:HOL[k],dt:HOLD[k]};
+  HOL[k]=g.red; HOLD[k]=cur.concat(add).sort().join(', ');
+  renderHol();
+  if(!await saveHol(HOLSRC[k],`已依行事曆帶入 ${k}`)){HOL[k]=prev.d;HOLD[k]=prev.dt;renderHol();}
+}
+/* 新增列：選好月份就先查行事曆、預填天數；新增時把國定假日一起帶入 */
+async function holMonthPicked(){
+  const y=$('hy').value.trim(), hint=$('hyHint'); hint.textContent='';
+  if(!/^\d{4}-\d{2}$/.test(y)) return;
+  hint.textContent='查詢人事行政總處行事曆中…';
+  const cal=await govCal(Number(y.slice(0,4)));
+  if($('hy').value.trim()!==y) return;   // 查詢期間又換了月份
+  if(!cal||!cal.ok){ hint.textContent='查不到行事曆，天數請自己填'; return; }
+  const g=govMonth(cal,y);
+  if($('hd').value==='') $('hd').value=g.red;
+  hint.textContent=`依人事行政總處：紅字 ${g.red} 天`+(g.named.length?`、國定假日 ${g.named.map(d=>holDateLabel(d.date)).join('、')}（新增時一起帶入）`:'、這個月沒有國定假日');
+}
+async function saveHol(src,okMsg){
+  src=src==='own'?'own':'global';
+  /* ⚠ 畫面上的集團共用列，已經被本店專屬列「蓋掉」的那幾個月看不到；
+     這時整批存集團那一層，被蓋掉的集團列會被當成刪除 → 擋下來，請他到沒有本店設定的門市改。 */
+  if(src==='global'&&Object.keys(HOL).some(k=>HOLSRC[k]==='own')){
+    toast('這家店有「本店」專屬的紅字天數，為了不蓋掉其他門市共用的設定，集團共用的月份請切到別家門市再改',true);
+    return false;
+  }
+  const arr=Object.keys(HOL).filter(k=>(HOLSRC[k]||'global')===src)
+    .map(k=>({ym:k,red_days:HOL[k],note:HOLN[k]||'',dates:(HOLD[k]||'').trim()}));
+  const r=await post('payroll_holiday_set',{holidays:arr,store:src==='own'?STORE:''});
+  if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+  toast(okMsg||'已儲存');return true;
 }
 async function setMode(k,v){CFG[k]=v;const r=await post('payroll_config_set',{config:CFG});
   if(r.ok){CFG=r.config||CFG;renderCfg();if(RESULTS.length)doCalc()}}
@@ -1959,21 +2110,24 @@ async function saveCfg(btn,label){
     CFG=send;toast('已儲存');return true;
   });
 }
-async function saveHol(btn,label){
-  // 後端只收陣列 [{ym,red_days,note}]，把物件 HOL 轉成陣列再送
-  const send=async()=>{
-    const arr=Object.keys(HOL).map(k=>({ym:k,red_days:HOL[k],note:'',dates:(HOLD[k]||'').trim()}));
-    const r=await post('payroll_holiday_set',{holidays:arr,store:($('holOwn')&&$('holOwn').checked)?STORE:''});
-    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
-    renderCfg();toast('已更新');return true;
-  };
-  if(btn) return saveFX(btn,label||'新增',send);
-  return send();
-}
 function addHol(btn){
-  const y=$('hy').value.trim(),d=$('hd').value;
+  const y=$('hy').value.trim(),d=$('hd').value,v=Number(d);
   if(!/^\d{4}-\d{2}$/.test(y)){toast('月份格式要像 2026-08',true);return}
-  HOL[y]=n(d);$('hy').value='';$('hd').value='';saveHol(btn,'新增');
+  if(d===''||!Number.isInteger(v)||v<0||v>holLastDay(y)){toast(`紅字天數要是 0～${holLastDay(y)} 的整數`,true);return}
+  const src=($('holOwn')&&$('holOwn').checked)?'own':'global';
+  // 同一個月已經有集團共用列、這次勾「只套用到目前門市」＝新增本店專屬列，先沿用集團那列的日期
+  const had=Object.prototype.hasOwnProperty.call(HOL,y), prev={d:HOL[y],dt:HOLD[y],n:HOLN[y],s:HOLSRC[y]};
+  if(had&&prev.s==='own'&&src==='global'){toast(`${y} 已經有本店專屬的設定，請直接在上面表格修改`,true);return}
+  HOL[y]=v; HOLSRC[y]=src;
+  if(!had){ HOLN[y]='';
+    // 已經查過行事曆（選月份時 holMonthPicked 查的）就把國定假日一起帶進新的一列
+    const cal=GOVCAL[Number(y.slice(0,4))];
+    HOLD[y]=cal?govMonth(cal,y).named.map(x=>x.date).join(', '):''; }
+  return saveFX(btn,'新增',async()=>{
+    const ok=await saveHol(src,`已新增 ${y}（紅字 ${v} 天）`);
+    if(!ok){ if(had){HOL[y]=prev.d;HOLD[y]=prev.dt;HOLN[y]=prev.n;HOLSRC[y]=prev.s} else {delete HOL[y];delete HOLD[y];delete HOLN[y];delete HOLSRC[y]} renderHol(); return false; }
+    $('hy').value='';$('hd').value='';$('hyHint').textContent='';renderHol();return true;
+  });
 }
 
 /* ═════ 薪資單 ═════ */

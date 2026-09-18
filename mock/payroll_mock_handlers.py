@@ -118,7 +118,7 @@ def h_master_get(data, body):
     return {'ok': True, 'store': body.get('store', ''),
             'master': _pay(data, 'master'), 'config': _cfg(data),
             'config_src': {}, 'stores': _pay(data, 'store'),
-            'holidays': _pay(data, 'holiday')}
+            'holidays': _holiday_list(data, body.get('store', ''))}
 
 
 def h_master_set(data, body):
@@ -131,12 +131,30 @@ def h_config_set(data, body):
     return {'ok': True, 'config': _cfg(data)}
 
 
+def _holiday_list(data, store):
+    """照抄正式 payHolidayList：每月一筆、該店專屬（own）優先於集團共用（global），附 _src。"""
+    st, by = str(store or ''), {}
+    for h in _pay(data, 'holiday'):
+        ym, rs = str(h.get('ym')), str(h.get('store') or '')
+        if rs == '':
+            if ym not in by or by[ym].get('_src') != 'own':
+                by[ym] = dict(h, _src='global')
+        elif st and rs == st:
+            by[ym] = dict(h, _src='own')
+    return [by[k] for k in sorted(by)]
+
+
 def h_holiday_set(data, body):
-    ym, red = str(body.get('ym', '')), body.get('red_days')
-    rows = [h for h in _pay(data, 'holiday') if h.get('ym') != ym]
-    rows.append({'ym': ym, 'red_days': red, 'dates': body.get('dates', ''), 'store': ''})
-    data['payroll']['holiday'] = rows
-    return {'ok': True}
+    """照抄正式 handlePayrollHolidaySet：收整批陣列，只換 body.store 那一層（空白＝集團共用）。
+    ⚠ 2026-09-18 前這裡收的是單筆 {ym, red_days}，跟正式合約不同——前端送陣列進來會寫出 ym 空白的壞列。"""
+    if not isinstance(body.get('holidays'), list):
+        return {'ok': False, 'error': 'holidays_required'}
+    st = str(body.get('store') or '')
+    mine = [{'ym': str(h.get('ym', '')), 'red_days': h.get('red_days'), 'note': h.get('note', ''),
+             'dates': h.get('dates', ''), 'store': st} for h in body['holidays']]
+    others = [h for h in _pay(data, 'holiday') if str(h.get('store') or '') != st]
+    data['payroll']['holiday'] = others + mine
+    return {'ok': True, 'count': len(mine), 'store': st}
 
 
 def h_inputs(data, body):
@@ -187,7 +205,7 @@ def h_month(data, body):
             'inputs': {r['emp_id']: r for r in _pay(data, 'input') if r.get('ym') == ym},
             'run': run, 'annual': {'months': 12, 'total': 0},
             'master': _pay(data, 'master'), 'config': _cfg(data), 'config_src': {},
-            'holidays': _pay(data, 'holiday'), 'stores': _pay(data, 'store'),
+            'holidays': _holiday_list(data, body.get('store', '')), 'stores': _pay(data, 'store'),
             'bonuses': [b for b in _pay(data, 'bonus') if b.get('ym') == ym]}
 
 
@@ -302,12 +320,72 @@ def h_leave_event_set(data, body):
     return {'ok': True, 'saved': len(body.get('events') or [])}
 
 
+_GOV_CACHE = {}
+
+
+def h_gov_holidays(data, body):
+    """照抄正式 handlePayrollGovHolidays：真的去政府資料開放平臺抓人事行政總處的辦公日曆表。
+    本機測試要連網；抓不到就回 fetch_failed，跟正式環境同一個錯誤碼，好測失敗畫面。"""
+    import json as _json, re as _re, urllib.request as _u
+    try:
+        year = int(body.get('year'))
+    except (TypeError, ValueError):
+        return {'ok': False, 'error': 'bad_year'}
+    if not 2017 <= year <= 2100:
+        return {'ok': False, 'error': 'bad_year'}
+    if year in _GOV_CACHE:
+        return _GOV_CACHE[year]
+    roc = year - 1911
+    # ⚠ data.gov.tw 會擋 Python 預設的 User-Agent（回 403），正式環境的 Apps Script UA 不會被擋
+    # ⚠ Python 3.13 起預設 X509 嚴格模式，政府憑證缺 Subject Key Identifier 會被拒；只關嚴格旗標，憑證鏈照驗
+    import ssl as _ssl
+    ctx = _ssl.create_default_context()
+    ctx.verify_flags &= ~getattr(_ssl, 'VERIFY_X509_STRICT', 0)
+    get = lambda url: _u.urlopen(_u.Request(url, headers={'User-Agent': 'Mozilla/5.0 (mala-payroll mock)'}),
+                                 timeout=30, context=ctx)
+    try:
+        meta = _json.load(get('https://data.gov.tw/api/v2/rest/dataset/14718'))
+        dist = [d for d in (meta.get('result', meta).get('distribution') or [])
+                if str(d.get('resourceDescription', '')).startswith(f'{roc}年')
+                and '辦公日曆表' in str(d.get('resourceDescription', ''))
+                and 'Google' not in str(d.get('resourceDescription', ''))
+                and str(d.get('resourceFormat', '')).upper() == 'CSV']
+        if not dist:
+            return {'ok': False, 'error': 'not_published',
+                    'message': f'人事行政總處還沒公布 {year} 年（民國 {roc} 年）的辦公日曆表'}
+        up = lambda d: (_re.search(r'files/(\d{6})/', d.get('resourceDownloadUrl', '')) or [None, ''])[1]
+        pick = dist[0]
+        for d in dist[1:]:
+            if up(d) >= up(pick):
+                pick = d
+        raw = get(pick['resourceDownloadUrl']).read()
+        txt = raw.decode('utf-8', 'replace')
+        if '西元日期' not in txt:
+            txt = raw.decode('big5', 'replace')
+        days = []
+        for line in txt.lstrip('\ufeff').splitlines():
+            c = line.split(',')
+            m = _re.match(r'^(\d{4})(\d{2})(\d{2})$', c[0].strip()) if c else None
+            if not m or len(c) < 3 or c[2].strip() != '2':
+                continue
+            days.append({'date': f'{m[1]}-{m[2]}-{m[3]}', 'week': c[1].strip(),
+                         'note': c[3].strip() if len(c) > 3 else ''})
+        if not days:
+            return {'ok': False, 'error': 'parse_failed', 'message': '人事行政總處的檔案讀不懂（格式可能改了）'}
+        out = {'ok': True, 'year': year, 'title': pick.get('resourceDescription', ''),
+               'source': pick['resourceDownloadUrl'], 'days': days}
+        _GOV_CACHE[year] = out
+        return out
+    except Exception as e:  # noqa: BLE001 — 與正式環境一致：任何連線錯誤都回 fetch_failed
+        return {'ok': False, 'error': 'fetch_failed', 'message': f'連不上人事行政總處的資料：{e}'}
+
 PAYROLL_ACTIONS = {
     'payroll_bootstrap': h_bootstrap,
     'payroll_master_get': h_master_get,
     'payroll_master_set': h_master_set,
     'payroll_config_set': h_config_set,
     'payroll_holiday_set': h_holiday_set,
+    'payroll_gov_holidays': h_gov_holidays,
     'payroll_inputs': h_inputs,
     'payroll_input_set': h_input_set,
     'payroll_calc': h_calc,
