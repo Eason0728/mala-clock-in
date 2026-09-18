@@ -229,6 +229,7 @@ function doPost(e) {
     mgr_day: handleMgrDay,
     mgr_approve: handleMgrApprove,
     mgr_pending_devices: handleMgrPendingDevices,
+    mgr_pending_approvals: handleMgrPendingApprovals,
     mgr_device_decision: handleMgrDeviceDecision,
     mgr_notices: handleMgrNotices,
     mgr_add_notice: handleMgrAddNotice,
@@ -542,16 +543,24 @@ function monthWorkedDays(eventRows, empId, ym) {
 }
 
 /**
- * 某員工某月「有上班但主管還沒核定」的天數——打卡頁合計下方的提示用。
- * 合計只加總已核定的日子，沒這個提示同仁會以為時數被少算（Eason 2026-07-31 指定）。
+ * 某員工某月「有上班但主管還沒核定」的日期陣列（由舊到新）——供打卡頁天數提示與
+ * 主管核定頁置頂提醒共用同一套判斷（2026-09-18 從 monthPendingApprovalDays 抽出，行為不變）。
  * 今天（與未來）不算：當天班還沒結束、主管本來就還不會核，天天顯示只是雜訊
  * （與月表把今天未配對 in 標「上班中」而非忘刷卡同一個精神）。
  */
-function monthPendingApprovalDays(eventRows, approvedMap, empId, ym, todayStr) {
+function monthPendingApprovalDates(eventRows, approvedMap, empId, ym, todayStr) {
   return monthWorkedDays(eventRows, empId, ym).filter(function (d) {
     if (d >= todayStr) return false;
     return !((approvedMap[d] || {})[String(empId)]);
-  }).length;
+  }).sort();
+}
+
+/**
+ * 某員工某月「有上班但主管還沒核定」的天數——打卡頁合計下方的提示用。
+ * 合計只加總已核定的日子，沒這個提示同仁會以為時數被少算（Eason 2026-07-31 指定）。
+ */
+function monthPendingApprovalDays(eventRows, approvedMap, empId, ym, todayStr) {
+  return monthPendingApprovalDates(eventRows, approvedMap, empId, ym, todayStr).length;
 }
 
 /** 打卡頁「本月／上月合計」的成組回傳（current/previous 各含 ym、hours、pending_days）。 */
@@ -838,6 +847,51 @@ function handleMgrPendingDevices(body) {
   if (!mgrSheet) return { ok: false, error: 'managers_sheet_missing' };
   if (!findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key)) return { ok: false, error: 'unauthorized' };
   return { ok: true, pending: collectPendingDevices() };
+}
+
+/**
+ * API：{action:'mgr_pending_approvals', mgr_key} → 本月「有上班但主管還沒核定」清單，
+ * 依日期分組給主管核定頁置頂提醒用（2026-09-18 新增）。
+ * 判斷規則與同仁打卡頁「尚有 N 天待核定」完全同一套（monthPendingApprovalDates），不另寫一套。
+ * 對象：本月 events 裡出現過的所有 emp_id，含已停用／離職——他們漏核的日子一樣影響薪資。
+ * 姓名一律從 roster 對（不論 active），對不到就用 emp_id 頂替。
+ */
+function handleMgrPendingApprovals(body) {
+  const ss = getSS();
+  const mgrSheet = ss.getSheetByName('managers');
+  if (!mgrSheet) return { ok: false, error: 'managers_sheet_missing' };
+  if (!findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key)) return { ok: false, error: 'unauthorized' };
+
+  const ym = currentYmTaipei();
+  const today = todayTaipeiStr();
+  const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
+  // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化（勿自己重寫日期正規化，沿用既有 normCellTs）
+  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  const approvedSheet = ss.getSheetByName('approved');
+  const approvedRows = approvedSheet ? readSheetAsObjects(approvedSheet).rows : [];
+  const approvedMap = buildLatestApprovedMap(approvedRows);
+
+  // 本月 events 出現過的所有 emp_id（含停用／離職；不用 roster 的 active 名單，避免漏掉離職者）
+  const empIds = {};
+  eventRows.forEach(function (e) {
+    if (tsDateStr(e.ts).slice(0, 7) === ym) empIds[String(e.emp_id)] = true;
+  });
+
+  const items = [];
+  Object.keys(empIds).forEach(function (empId) {
+    const roster = findRosterByEmpId(rosterRows, empId);
+    const name = roster ? String(roster.name) : empId;
+    monthPendingApprovalDates(eventRows, approvedMap, empId, ym, today).forEach(function (d) {
+      items.push({ date: d, emp_id: empId, name: name });
+    });
+  });
+
+  items.sort(function (a, b) {
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+  });
+
+  return { ok: true, ym: ym, today: today, items: items };
 }
 
 /**

@@ -246,6 +246,49 @@
   .pd-reject { background: #f0e6e2; color: #8a6a5f; }
   .pd-actions button:disabled { opacity: 0.5; }
   .pd-result { margin-top: 10px; font-size: 14px; }
+  /* 本月待核定提醒（2026-09-18 新增）：白底卡片同樣要自己設 color（見上方 .pd-card 的註解），
+     左側用琥珀色（--brand-gold）與待核准裝置的橘色（--brand-orange）區隔，一眼分得出是兩件事。
+     沒有待核定時整塊不畫（見 renderPendingApprovals），不佔版面。 */
+  .pa-card {
+    background: #fff;
+    color: var(--brand-black);
+    border-radius: 14px;
+    border-left: 4px solid var(--brand-gold);
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .pa-title { font-size: 16px; font-weight: 700; margin-bottom: 2px; }
+  .pa-sub { font-size: 12px; color: #6b524a; margin-bottom: 10px; }
+  .pa-group { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid #f0e6e0; }
+  .pa-group:first-of-type { border-top: none; padding-top: 4px; }
+  .pa-date { flex: none; width: 64px; font-size: 13px; font-weight: 700; color: #6b524a;
+             padding-top: 4px; }
+  .pa-names { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .pa-chip {
+    font-size: 13px;
+    font-weight: 700;
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px solid #f0d090;
+    background: #fff8e6;
+    color: #8a6100;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .pa-more {
+    display: block;
+    width: 100%;
+    margin-top: 10px;
+    padding: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    border: 1px solid #f0d090;
+    border-radius: 10px;
+    background: #fff8e6;
+    color: #8a6100;
+    cursor: pointer;
+  }
   .open-shift-warn {
     font-size: 13px;
     color: #8a6100;
@@ -419,6 +462,9 @@
     <button type="button" id="btnNextDay">›</button>
     <button type="button" id="btnToday">今天</button>
   </div>
+
+  <!-- 本月待核定提醒：只有真的有待核定時才出現，平常完全不佔版面 -->
+  <div id="pendingApprovals"></div>
 
   <!-- 待核准裝置：只有真的有待核准時才出現，平常完全不佔版面 -->
   <div id="pendingDevices"></div>
@@ -634,12 +680,15 @@
   var errorCard = document.getElementById('errorCard');
   var empListEl = document.getElementById('empList');
   var pendingDevicesEl = document.getElementById('pendingDevices');
+  var pendingApprovalsEl = document.getElementById('pendingApprovals');
   var dateInput = document.getElementById('dateInput');
   var btnPrevDay = document.getElementById('btnPrevDay');
   var btnNextDay = document.getElementById('btnNextDay');
   var btnToday = document.getElementById('btnToday');
 
   var currentDate = null; // 'yyyy-mm-dd'，由伺服器回傳值決定（避免依賴裝置時區）
+  // 本月待核定提醒點姓名跳轉用：渲染完成後要展開哪個 emp_id，消費一次就清掉（見 renderEmployees）
+  var focusEmpId = null;
 
   function apiPost(payload) {
     return fetch(API_URL, {
@@ -725,6 +774,8 @@
   function buildEmployeeCard(emp) {
     var card = document.createElement('div');
     card.className = 'card';
+    // 待核定提醒卡片「點姓名跳轉」用：渲染完成後照這個 emp_id 找卡片展開（見 renderEmployees 的 focusEmpId）
+    card.dataset.empId = String(emp.emp_id);
 
     var nameEl = document.createElement('div');
     nameEl.className = 'emp-name';
@@ -1164,7 +1215,12 @@
         // 核完這位就收起來、自動翻到下一位待核定的（結果看頭部那顆「✓ N 小時」就夠，
         // 不必留著整張卡片佔版面）。要改就再點開，內容都還在。
         card.__pending = false;
-        card.dispatchEvent(new CustomEvent('emp-approved', { bubbles: true }));
+        // detail 帶 emp_id／date（用送出當下鎖定的 approveDate，不是回呼當下的 currentDate，
+        // 與上面 C1 註解同一個理由）給本月待核定提醒用，即時把這筆從提醒移除，不必重打後端。
+        card.dispatchEvent(new CustomEvent('emp-approved', {
+          bubbles: true,
+          detail: { emp_id: emp.emp_id, date: approveDate },
+        }));
       }).catch(function () {
         submitBtn.disabled = false;
         submitBtn.textContent = '重新送出核定';
@@ -1263,7 +1319,24 @@
       if (c && c.__setExpanded) c.__setExpanded(true);
       return c;
     }
-    openNext();
+    // 待核定提醒點姓名跳轉（2026-09-18）：這天是被提醒卡片點過來的，改開那張卡片並捲過去，
+    // 不要用「下一位待核定」蓋掉——主管是衝著那個人來的。focusEmpId 消費一次就清掉，
+    // 之後同一天內的核定／換日期照舊回到原本的自動展開邏輯。
+    if (focusEmpId) {
+      var fid = focusEmpId;
+      focusEmpId = null;
+      var focusCard = [].filter.call(empListEl.querySelectorAll('.card'), function (c) {
+        return c.dataset.empId === fid;
+      })[0];
+      if (focusCard && focusCard.__setExpanded) {
+        focusCard.__setExpanded(true);
+        if (focusCard.scrollIntoView) focusCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else {
+        openNext(); // 找不到這個人（例如剛好離職隱藏）就退回原本邏輯，不留空白
+      }
+    } else {
+      openNext();
+    }
     empListEl.addEventListener('emp-approved', function (e) {
       var done = e.target;
       if (done && done.__setExpanded) done.__setExpanded(false);
@@ -1323,6 +1396,133 @@
     dateInput.value = dateStr;
     renderEmployees(employees);
   }
+
+  /**
+   * 本月待核定提醒（2026-09-18 新增）：列出本月「有上班但主管還沒核定」的日期與同仁，
+   * 置頂在核定頁最上方；點姓名直接跳到那天並展開那張卡片。判斷規則與後端
+   * monthPendingApprovalDates 完全同一套（見 handleMgrPendingApprovals），前端不重算。
+   * 沒有待核定、後端是舊版（回 unknown_action）、或請求失敗都優雅降級成整塊不畫、不跳錯誤——
+   * 四家店後端會分批部署，不能讓這個提醒拖累核定頁其他功能。
+   */
+  var pendingApprovalItems = [];       // 目前的提醒清單（後端 items 原始列，已依日期→姓名排序）
+  var pendingApprovalsShowAll = false; // 超過 5 天時是否已展開全部
+
+  function loadPendingApprovals() {
+    apiPost({ action: 'mgr_pending_approvals', mgr_key: mgrKey }).then(function (res) {
+      pendingApprovalItems = (res && res.ok && Array.isArray(res.items)) ? res.items : [];
+      renderPendingApprovals();
+    }).catch(function () {
+      pendingApprovalItems = [];
+      renderPendingApprovals();
+    });
+  }
+
+  // 'yyyy-MM-dd' → 'M/D（週字）'。用 'T00:00:00'（不帶時區）在本地時間解析，
+  // 這樣算出來的星期幾才是「這個日曆日期」本身的星期幾，不受裝置時區影響（與 shiftDay 同一手法）。
+  function weekdayLabel(dateStr) {
+    var d = new Date(dateStr + 'T00:00:00');
+    var wd = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
+    var parts = dateStr.split('-');
+    return parseInt(parts[1], 10) + '/' + parseInt(parts[2], 10) + '（' + wd + '）';
+  }
+
+  // 後端已依日期舊到新、同日依姓名排序回傳，這裡只是依日期分組，不重排。
+  function groupPendingApprovalsByDate() {
+    var groups = [];
+    var byDate = {};
+    pendingApprovalItems.forEach(function (item) {
+      if (!byDate[item.date]) {
+        byDate[item.date] = { date: item.date, names: [] };
+        groups.push(byDate[item.date]);
+      }
+      byDate[item.date].names.push({ emp_id: item.emp_id, name: item.name });
+    });
+    return groups;
+  }
+
+  function buildPendingApprovalGroupRow(g) {
+    var row = document.createElement('div');
+    row.className = 'pa-group';
+
+    var dateEl = document.createElement('div');
+    dateEl.className = 'pa-date';
+    dateEl.textContent = weekdayLabel(g.date);
+    row.appendChild(dateEl);
+
+    var namesEl = document.createElement('div');
+    namesEl.className = 'pa-names';
+    g.names.forEach(function (n) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'pa-chip';
+      chip.textContent = n.name; // 姓名一律用 textContent，不拼進 innerHTML（tests/output-escaping.test.js 在守）
+      chip.addEventListener('click', function () { focusPendingApproval(g.date, n.emp_id); });
+      namesEl.appendChild(chip);
+    });
+    row.appendChild(namesEl);
+
+    return row;
+  }
+
+  function renderPendingApprovals() {
+    pendingApprovalsEl.innerHTML = '';
+    if (!pendingApprovalItems.length) return; // 沒有待核定＝整塊不畫，不佔版面
+
+    var groups = groupPendingApprovalsByDate();
+    var card = document.createElement('div');
+    card.className = 'pa-card';
+
+    var title = document.createElement('div');
+    title.className = 'pa-title';
+    title.textContent = '本月還有 ' + groups.length + ' 天沒核定'; // N＝不重複日期數
+    card.appendChild(title);
+
+    var sub = document.createElement('div');
+    sub.className = 'pa-sub';
+    sub.textContent = '點名字直接跳到那天核定';
+    card.appendChild(sub);
+
+    var shown = pendingApprovalsShowAll ? groups : groups.slice(0, 5);
+    shown.forEach(function (g) { card.appendChild(buildPendingApprovalGroupRow(g)); });
+
+    if (!pendingApprovalsShowAll && groups.length > 5) {
+      var more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'pa-more';
+      more.textContent = '再顯示 ' + (groups.length - 5) + ' 天';
+      more.addEventListener('click', function () {
+        pendingApprovalsShowAll = true;
+        renderPendingApprovals();
+      });
+      card.appendChild(more);
+    }
+
+    pendingApprovalsEl.appendChild(card);
+  }
+
+  /** 點提醒卡片的姓名：切到那一天（沿用既有 loadDay），畫完後只展開那位同仁的卡片並捲過去。 */
+  function focusPendingApproval(date, empId) {
+    focusEmpId = String(empId);
+    loadDay(date);
+  }
+
+  /** 某筆核定成功後即時從提醒移除（見下方 empListEl 的 emp-approved 監聽），不必重打後端；清空了整塊消失。 */
+  function removePendingApproval(date, empId) {
+    if (!pendingApprovalItems.length) return;
+    var before = pendingApprovalItems.length;
+    pendingApprovalItems = pendingApprovalItems.filter(function (it) {
+      return !(it.date === date && String(it.emp_id) === String(empId));
+    });
+    if (pendingApprovalItems.length !== before) renderPendingApprovals();
+  }
+
+  // 綁一次在 empListEl 上就好（事件會從卡片 bubble 上來），不要放進 renderEmployees——
+  // 那裡每次切換日期都會重畫，放進去會重複綁定、同一筆核定觸發好幾次移除。
+  empListEl.addEventListener('emp-approved', function (e) {
+    if (e.detail && e.detail.date && e.detail.emp_id != null) {
+      removePendingApproval(e.detail.date, e.detail.emp_id);
+    }
+  });
 
   /**
    * 待核准裝置區（2026-08-03 新增）。原本核准裝置只能開 Apps Script 編輯器跑函式，
@@ -1762,6 +1962,7 @@
     // 先抓假別清單與額度，再畫卡片（抓不到就用內建 fallback，不擋值班核定）
     loadLeaveOptions().then(function () { loadDay(null); });
     loadPendingDevices(); // 與當日核定並行載入，失敗不影響主要功能
+    loadPendingApprovals(); // 本月待核定提醒，同樣並行載入、失敗不影響主要功能
   }
 
   init();

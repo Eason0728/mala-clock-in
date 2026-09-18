@@ -463,16 +463,22 @@ def month_worked_days(data, emp_id, ym):
     return sorted(days)
 
 
-def month_pending_approval_days(data, emp_id, ym, today):
-    """某月「有上班但主管還沒核定」的天數（與 Code.gs monthPendingApprovalDays 同步）。
-    今天（與未來）不算：當天班還沒結束，主管本來就還不會核。"""
-    n = 0
+def month_pending_approval_dates(data, emp_id, ym, today):
+    """某月「有上班但主管還沒核定」的日期清單，由舊到新（與 Code.gs monthPendingApprovalDates 同步，
+    2026-09-18 從 month_pending_approval_days 抽出）。今天（與未來）不算：當天班還沒結束，
+    主管本來就還不會核。"""
+    out = []
     for d in month_worked_days(data, emp_id, ym):
         if d >= today:
             continue
         if not latest_approved_record(data, d, emp_id):
-            n += 1
-    return n
+            out.append(d)
+    return sorted(out)
+
+
+def month_pending_approval_days(data, emp_id, ym, today):
+    """某月「有上班但主管還沒核定」的天數（與 Code.gs monthPendingApprovalDays 同步）。"""
+    return len(month_pending_approval_dates(data, emp_id, ym, today))
 
 
 def month_totals_for(data, emp_id):
@@ -1343,6 +1349,29 @@ def handle_mgr_pending_devices(data, body):
     return {"ok": True, "pending": collect_pending_devices(data)}
 
 
+def handle_mgr_pending_approvals(data, body):
+    """{action:'mgr_pending_approvals', mgr_key} → 本月「有上班但主管還沒核定」清單，依日期分組
+    （與 Code.gs handleMgrPendingApprovals 同步，2026-09-18 新增）。對象：本月 events 出現過的
+    所有 emp_id（含停用／離職）；姓名一律從 roster 對（不論 active），對不到就用 emp_id 頂替。"""
+    if not find_manager_by_key(data, body.get("mgr_key")):
+        return {"ok": False, "error": "unauthorized"}
+
+    ym = now_taipei().strftime("%Y-%m")
+    today = today_str()
+
+    emp_ids = sorted({e["emp_id"] for e in data["events"] if e["ts"][:7] == ym})
+
+    items = []
+    for emp_id in emp_ids:
+        roster = find_roster_by_empid(data, emp_id)
+        name = roster["name"] if roster else emp_id
+        for d in month_pending_approval_dates(data, emp_id, ym, today):
+            items.append({"date": d, "emp_id": emp_id, "name": name})
+
+    items.sort(key=lambda x: (x["date"], x["name"]))
+    return {"ok": True, "ym": ym, "today": today, "items": items}
+
+
 def handle_mgr_device_decision(data, body):
     """{action:'mgr_device_decision', mgr_key, emp_id, device_id, approve}（與 Code.gs 同步）。"""
     mgr = find_manager_by_key(data, body.get("mgr_key"))
@@ -1496,6 +1525,7 @@ ACTIONS = {
     "payroll_leave_options": handle_payroll_leave_options,
     "mgr_approve": handle_mgr_approve,
     "mgr_pending_devices": handle_mgr_pending_devices,
+    "mgr_pending_approvals": handle_mgr_pending_approvals,
     "mgr_device_decision": handle_mgr_device_decision,
     "liff_bind": handle_liff_bind,
     "liff_whoami": handle_liff_whoami,
