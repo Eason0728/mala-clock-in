@@ -1940,6 +1940,21 @@ function renderCfg(){
   if($('coGrid')) $('coGrid').innerHTML=CO_MANUAL.map(cfgFld).join('');
   renderHol();
 }
+/* ⚠ 參數設定四張卡（基本／全勤／計時加給／公司負擔）的「儲存」都呼叫 saveCfg。
+   2026-09-18 改紅字天數時整段取代「紅字天數」到「薪資單」兩個標記之間的程式，把這兩支一起刪掉了，
+   四顆儲存按鈕全部報錯（2026-09-19 修）。它們跟紅字天數無關，所以放在紅字天數區塊外面；
+   tests/page-handlers.test.js 會檢查頁面上每一個按鈕呼叫的函式都還存在。 */
+async function setMode(k,v){CFG[k]=v;const r=await post('payroll_config_set',{config:CFG});
+  if(r.ok){CFG=r.config||CFG;renderCfg();if(RESULTS.length)doCalc()}}
+async function saveCfg(btn,label){
+  return saveFX(btn,label||'儲存',async()=>{
+    // 廢棄參數不再送出＝該 scope 整批換掉時自然消失（handlePayrollConfigSet 是整批覆寫）
+    const send={};Object.keys(CFG).forEach(k=>{if(CFG_OBSOLETE.indexOf(k)<0)send[k]=CFG[k]});
+    const r=await post('payroll_config_set',{config:send,store:($('cfgOwn')&&$('cfgOwn').checked)?STORE:''});
+    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    CFG=send;toast('已儲存');return true;
+  });
+}
 
 /* ═════ 紅字天數 ═════
    2026-09-18 Eason：「直接帶入整年度，不用再手動輸入，日曆也不需要」→ 這張表改成唯讀。
