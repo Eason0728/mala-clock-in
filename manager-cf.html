@@ -467,6 +467,9 @@
     -webkit-tap-highlight-color: transparent;
   }
   .load-fail .lf-retry:disabled { opacity: 0.5; }
+  /* errorCard 的「重新載入」按鈕（2026-09-19，loadDay 重試用盡才出現）：errorCard 是白底卡片
+     （不是畫在紅底色上），直接沿用 .submit-btn 的橘底白字即可，這裡只補一點間距。 */
+  .error-retry-btn { margin-top: 12px; }
 </style>
 </head>
 <body>
@@ -489,7 +492,11 @@
   <!-- 待核准裝置：只有真的有待核准時才出現，平常完全不佔版面 -->
   <div id="pendingDevices"></div>
 
-  <div id="loadingCard" class="card center-msg">載入中…</div>
+  <div id="loadingCard" class="card center-msg">
+    載入中…
+    <!-- 逾時重試時才顯示，一行小字讓主管知道還在動、不是當掉了（2026-09-19） -->
+    <div id="loadingRetryNote" style="display:none; font-size:13px; color:#8a7a72; margin-top:8px;"></div>
+  </div>
   <div id="errorCard" class="card center-msg" style="display:none; color:#c22a12;"></div>
   <div id="empList"></div>
 
@@ -700,6 +707,7 @@
   var mgrKey = qs('k');
 
   var loadingCard = document.getElementById('loadingCard');
+  var loadingRetryNoteEl = document.getElementById('loadingRetryNote');
   var errorCard = document.getElementById('errorCard');
   var empListEl = document.getElementById('empList');
   var pendingDevicesEl = document.getElementById('pendingDevices');
@@ -755,7 +763,8 @@
    *          → 不重試、安靜隱藏，行為與改版前完全一樣。
    *   暫時性＝其餘所有情況（fetch 失敗、res.json() 丟例外／伺服器忙碌回 HTML 錯誤頁、
    *          逾時、error 是 server_error 或任何其他值）
-   *          → 自動重試 2 次（間隔 3 秒、6 秒，共最多 3 次請求），仍失敗才在 slot 顯示提示條。
+   *          → 自動重試 2 次（間隔見 BG_LOAD_RETRY_DELAYS_MS，共最多 3 次請求），
+   *            仍失敗才在 slot 顯示提示條。
    *
    * @param {object} payload apiPost 的 payload（含 action、mgr_key）
    * @param {function} onOk  res && res.ok 時呼叫，帶 res；呼叫前已先清掉這個 slot 的失敗提示條
@@ -765,8 +774,14 @@
    *          建立新的 bgLoad 之前，先對上一個回傳值呼叫 stop()——擋掉舊那輪還沒送出的重試，
    *          避免舊回應在新資料畫出來之後才回來，反而蓋掉新資料或讓失敗提示條蓋掉成功畫面。
    */
-  var BG_LOAD_TIMEOUT_MS = 20000;
-  var BG_LOAD_RETRY_DELAYS_MS = [3000, 6000]; // 第 1、2 次重試前的等待
+  // 2026-09-19 上線後實測 Apps Script 平台層偶發問題（14% 請求 404 或被轉成 doGet 純文字、
+  // 另有 20–43 秒才回的），依實測分佈調整：正常中位數 2.7–4.8 秒，成功但超過 12 秒的只佔 4%
+  // （那些會被下面的重試接住），所以把逾時從 20 秒收緊到 12 秒、重試間隔從 3/6 秒收緊到 2/4 秒，
+  // 最壞情況（三次都逾時）提示條約 42 秒後出現，比原本的 60 秒快很多。
+  // loadDay（值班核定頁主清單，見下方）刻意讀同一組常數，不要另開一組——時間參數只有一份，
+  // 以後要調也只需要改這裡。
+  var BG_LOAD_TIMEOUT_MS = 12000;
+  var BG_LOAD_RETRY_DELAYS_MS = [2000, 4000]; // 第 1、2 次重試前的等待
 
   function bgLoad(payload, onOk, opts) {
     var label = (opts && opts.label) || '';
@@ -840,11 +855,29 @@
     return { stop: function () { cancelled = true; } };
   }
 
-  function showError(msg) {
+  // onRetry 是選用參數（2026-09-19 新增）：不給就是原本的行為（純文字、無按鈕）——
+  // 「找不到主管代碼」「系統尚未設定完成」這類設定性錯誤重試沒有意義，不要生出按鈕誤導主管。
+  // 只有 loadDay 重試用盡時會帶 onRetry，按下去要重置成「載入中…」再重新走一次。
+  function showError(msg, onRetry) {
     loadingCard.style.display = 'none';
     empListEl.innerHTML = '';
     errorCard.style.display = 'block';
-    errorCard.textContent = msg;
+    errorCard.innerHTML = '';
+    var msgEl = document.createElement('div');
+    msgEl.textContent = msg;
+    errorCard.appendChild(msgEl);
+    if (onRetry) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'submit-btn error-retry-btn';
+      btn.textContent = '重新載入';
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        btn.textContent = '載入中…';
+        onRetry();
+      });
+      errorCard.appendChild(btn);
+    }
   }
 
   function addDaysStr(dateStr, n) {
@@ -1776,7 +1809,35 @@
     return card;
   }
 
+  function setLoadingRetryNote(text) {
+    if (!loadingRetryNoteEl) return;
+    loadingRetryNoteEl.textContent = text || '';
+    loadingRetryNoteEl.style.display = text ? 'block' : 'none';
+  }
+
+  // 遞增的請求代號：每次呼叫 loadDay 都 +1（包含命中快取那條路徑），回應/重試回來時要
+  // 比對自己是不是「最新那一次」，不是就整段作廢（不畫面、不寫 dayCache）。
+  // 為什麼要包含命中快取那條路徑：例如「今天」還在重試中，這時使用者按了「‹」切到已有
+  // 快取的昨天——昨天那次呼叫本身不需要 token 判斷（同步畫完就結束），但它必須讓「今天」
+  // 那個還在重試的舊 token 失效，否則今天遲到的回應仍可能在使用者已經看著昨天時蓋過畫面。
+  var loadDayToken = 0;
+
+  /**
+   * 值班核定頁主清單（2026-09-19 加上重試）。與 bgLoad 共用同一組時間常數
+   * （BG_LOAD_TIMEOUT_MS／BG_LOAD_RETRY_DELAYS_MS，見上方），但重試的「控制流程」刻意不
+   * 抽出來跟 bgLoad 共用——loadDay 需要 bgLoad 沒有的三件事：① request token 防競態、
+   * ② 寫 dayCache、③ 在既有的 loadingCard／errorCard／empListEl 版面上更新「重試中」文字與
+   * 「重新載入」按鈕，而不是像 bgLoad 那樣往一個獨立的 slot 塞一條提示條。硬要共用會把 bgLoad
+   * 已經上線驗證過的邏輯攪進來一起改，改動變大、風險變高，划不來，所以這裡自己寫一個小重試迴圈。
+   *
+   * 分類沿用 bgLoad 的精神，但這裡的「永久性」集合更小：只有 unauthorized（金鑰無效，重試也不會
+   * 變好）立即顯示、不重試；其餘 !res.ok（含 server_error）、網路失敗、非 JSON（Apps Script
+   * 忙碌時被轉成 doGet 回一段純文字）、逾時，通通當暫時性，自動重試。
+   */
   function loadDay(dateOverride) {
+    loadDayToken++;
+    var myToken = loadDayToken;
+
     // 命中快取（過去看過或已預抓的日期）→ 直接畫，不轉圈、不打後端
     if (dateOverride && dayCache[dateOverride]) {
       renderDay(dateOverride, dayCache[dateOverride]);
@@ -1784,22 +1845,46 @@
       return;
     }
     loadingCard.style.display = 'block';
+    setLoadingRetryNote('');
     errorCard.style.display = 'none';
     empListEl.innerHTML = '';
     var payload = { action: 'mgr_day', mgr_key: mgrKey };
     if (dateOverride) payload.date = dateOverride;
-    apiPost(payload).then(function (res) {
-      if (!res.ok) {
-        showError(res.error === 'unauthorized' ? '主管金鑰錯誤，請確認網址是否正確。' : ('讀取失敗：' + res.error));
-        return;
+
+    var attempt = 0;
+    function attemptLoad() {
+      attempt++;
+      apiPost(payload, { timeoutMs: BG_LOAD_TIMEOUT_MS }).then(function (res) {
+        if (myToken !== loadDayToken) return; // 使用者已經切走，這筆結果整段作廢
+        if (res && res.ok) {
+          if (cacheable(res.date)) dayCache[res.date] = res.employees;
+          renderDay(res.date, res.employees);
+          prefetchNeighbors(res.date);
+          return;
+        }
+        if (res && res.error === 'unauthorized') {
+          showError('主管金鑰錯誤，請確認網址是否正確。');
+          return;
+        }
+        retryOrFail();
+      }).catch(function () {
+        if (myToken !== loadDayToken) return;
+        retryOrFail();
+      });
+    }
+    function retryOrFail() {
+      if (myToken !== loadDayToken) return;
+      if (attempt <= BG_LOAD_RETRY_DELAYS_MS.length) {
+        setLoadingRetryNote('連線較慢，重試中（第 ' + attempt + ' 次）…');
+        setTimeout(function () {
+          if (myToken !== loadDayToken) return; // 等待期間又切走了，不要再送這筆
+          attemptLoad();
+        }, BG_LOAD_RETRY_DELAYS_MS[attempt - 1]);
+      } else {
+        showError('讀取失敗（網路或伺服器忙碌）', function () { loadDay(dateOverride); });
       }
-      if (cacheable(res.date)) dayCache[res.date] = res.employees;
-      renderDay(res.date, res.employees);
-      prefetchNeighbors(res.date);
-    }).catch(function () {
-      loadingCard.style.display = 'none';
-      showError('連線失敗，請檢查網路連線後重新整理頁面。');
-    });
+    }
+    attemptLoad();
   }
 
   dateInput.addEventListener('change', function () {
