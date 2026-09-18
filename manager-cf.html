@@ -448,6 +448,25 @@
   .result-ok { background: #e6f7ec; color: #1a7a3d; }
   .result-warn { background: #fff6e0; color: #8a6100; }
   .result-error { background: #fdeceb; color: #c22a12; }
+  /* 背景載入失敗提示條（2026-09-19）：同仁異動／店內公告／待核准裝置／本月待核定提醒
+     四個背景區塊共用（見 bgLoad）。這裡是直接畫在品牌紅底色上（不是白卡片內），
+     所以跟 clock.html 給同仁看的 .notice 用同一套配色：半透明白底＋白字＋金色左框。
+     按鈕刻意不用 .submit-btn——.submit-btn 定義在本檔後段、白底黑字，疊在紅底色上會看不見
+     （旁邊 .re-danger 已經踩過一次同特異性被蓋掉的坑），這裡另開一個 class 避免撞上那個問題。 */
+  .load-fail {
+    background: rgba(255,255,255,.15); border-left: 4px solid var(--brand-gold);
+    border-radius: 12px; padding: 12px 14px; margin-bottom: 16px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    color: #fff; font-size: 14px; line-height: 1.6;
+  }
+  .load-fail .lf-msg { flex: 1 1 auto; min-width: 0; }
+  .load-fail .lf-retry {
+    flex: none; font-size: 13px; font-weight: 700; padding: 6px 14px;
+    border-radius: 999px; border: 1px solid rgba(255,255,255,.7);
+    background: transparent; color: #fff; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .load-fail .lf-retry:disabled { opacity: 0.5; }
 </style>
 </head>
 <body>
@@ -485,6 +504,9 @@
     <div class="ae-result" id="aeResult" style="display:none"></div>
   </div>
 
+  <!-- 同仁異動載入失敗提示條 slot：卡片本身預設隱藏，提示條要能獨立顯示在卡片正前方 -->
+  <div id="rosterFail"></div>
+
   <!-- 同仁異動：離職＝停用（不是真刪，歷史紀錄要留著），設錯可恢復 -->
   <div class="card" id="rosterCard" style="display:none">
     <div class="ae-title">同仁異動</div>
@@ -496,6 +518,9 @@
     <div class="ae-result" id="reResult" style="display:none"></div>
     <div class="re-list" id="reInactive"></div>
   </div>
+
+  <!-- 店內公告載入失敗提示條 slot：卡片本身預設隱藏，提示條要能獨立顯示在卡片正前方 -->
+  <div id="noticeFail"></div>
 
   <!-- 店內公告：發出去馬上出現在同仁打卡頁最上方。下架＝停用不是真刪，發過什麼要留得住 -->
   <div class="card" id="noticeCard" style="display:none">
@@ -688,12 +713,130 @@
   // 本月待核定提醒點姓名跳轉用：渲染完成後要展開哪個 emp_id，消費一次就清掉（見 renderEmployees）
   var focusEmpId = null;
 
-  function apiPost(payload) {
-    return fetch(API_URL, {
+  // opts.timeoutMs 是選用參數：不給就是原本的行為（永不逾時）。核定送出等寫入動作
+  // 一律不要傳這個參數——寫入逾時不代表沒寫入，重送不安全（見 dispatch-details.md §12）。
+  // 只有背景載入（bgLoad）會帶 timeoutMs。沒有 AbortController 的舊瀏覽器就退回不設逾時，
+  // 不讓逾時這個新功能反而擋住原本能用的請求。
+  function apiPost(payload, opts) {
+    var timeoutMs = opts && opts.timeoutMs;
+    if (!timeoutMs) {
+      return fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(payload),
+      }).then(function (res) { return res.json(); });
+    }
+    var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, timeoutMs);
+    var fetchOpts = {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(payload),
-    }).then(function (res) { return res.json(); });
+    };
+    if (ctrl) fetchOpts.signal = ctrl.signal;
+    return fetch(API_URL, fetchOpts)
+      .then(function (res) { return res.json(); })
+      .then(
+        function (v) { clearTimeout(timer); return v; },
+        function (e) { clearTimeout(timer); throw e; }
+      );
+  }
+
+  /**
+   * 背景區塊載入 helper（2026-09-19 新增）。修的缺陷：manager.html 一打開會在背景並行
+   * 載入四個區塊（同仁異動／店內公告／待核准裝置／本月待核定提醒），任何一次請求失敗就整塊
+   * 安靜不畫、沒有任何提示，要重新整理才會回來（Eason 實際遇到央廚與金山的店內公告／同仁異動
+   * 某次打開時不見了）。見 dispatch-details.md §12。
+   *
+   * 分類（只分兩種，不是「所有失敗都重試」）：
+   *   永久性＝res.ok===false 且 error 是 unknown_action（四家店後端分批部署，舊後端沒這個 action）
+   *          或 unauthorized（金鑰無效，主清單 mgr_day 自己會報錯，這裡不用重複講）
+   *          → 不重試、安靜隱藏，行為與改版前完全一樣。
+   *   暫時性＝其餘所有情況（fetch 失敗、res.json() 丟例外／伺服器忙碌回 HTML 錯誤頁、
+   *          逾時、error 是 server_error 或任何其他值）
+   *          → 自動重試 2 次（間隔 3 秒、6 秒，共最多 3 次請求），仍失敗才在 slot 顯示提示條。
+   *
+   * @param {object} payload apiPost 的 payload（含 action、mgr_key）
+   * @param {function} onOk  res && res.ok 時呼叫，帶 res；呼叫前已先清掉這個 slot 的失敗提示條
+   * @param {object} opts    { label: 提示文字用的區塊名稱（例如「店內公告」）,
+   *                           slot: 失敗提示條要畫進去的 DOM 節點 }
+   * @returns {{stop:function}} load() 若會被使用者操作重新呼叫（例如發完公告），呼叫端要在
+   *          建立新的 bgLoad 之前，先對上一個回傳值呼叫 stop()——擋掉舊那輪還沒送出的重試，
+   *          避免舊回應在新資料畫出來之後才回來，反而蓋掉新資料或讓失敗提示條蓋掉成功畫面。
+   */
+  var BG_LOAD_TIMEOUT_MS = 20000;
+  var BG_LOAD_RETRY_DELAYS_MS = [3000, 6000]; // 第 1、2 次重試前的等待
+
+  function bgLoad(payload, onOk, opts) {
+    var label = (opts && opts.label) || '';
+    var slot = opts && opts.slot;
+    var cancelled = false;
+    var attempt = 0; // 已送出的請求數
+
+    function isPermanentError(res) {
+      return !!res && res.ok === false
+        && (res.error === 'unknown_action' || res.error === 'unauthorized');
+    }
+
+    function clearFailBanner() {
+      if (slot) slot.innerHTML = '';
+    }
+
+    function showFailBanner() {
+      if (!slot) return;
+      slot.innerHTML = '';
+      var bar = document.createElement('div');
+      bar.className = 'load-fail';
+      var msg = document.createElement('span');
+      msg.className = 'lf-msg';
+      msg.textContent = label + '沒載入成功（網路或伺服器忙碌）'; // 固定字串，不拼後端訊息
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'lf-retry';
+      btn.textContent = '重新載入';
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        btn.textContent = '載入中…';
+        attempt = 0;
+        run();
+      });
+      bar.appendChild(msg);
+      bar.appendChild(btn);
+      slot.appendChild(bar);
+    }
+
+    function retryOrFail() {
+      if (cancelled) return;
+      if (attempt <= BG_LOAD_RETRY_DELAYS_MS.length) {
+        setTimeout(run, BG_LOAD_RETRY_DELAYS_MS[attempt - 1]);
+      } else {
+        showFailBanner();
+      }
+    }
+
+    function run() {
+      if (cancelled) return;
+      attempt++;
+      apiPost(payload, { timeoutMs: BG_LOAD_TIMEOUT_MS }).then(function (res) {
+        if (cancelled) return; // 逾時後遲到的回應：這輪已經被 stop() 擋掉的話就不要再動畫面
+        if (res && res.ok) {
+          clearFailBanner();
+          onOk(res);
+          return;
+        }
+        if (isPermanentError(res)) {
+          clearFailBanner();
+          return;
+        }
+        retryOrFail();
+      }).catch(function () {
+        if (cancelled) return;
+        retryOrFail();
+      });
+    }
+
+    run();
+    return { stop: function () { cancelled = true; } };
   }
 
   function showError(msg) {
@@ -1406,13 +1549,14 @@
   var pendingApprovalsShowAll = false; // 超過 5 天時是否已展開全部
 
   function loadPendingApprovals() {
-    apiPost({ action: 'mgr_pending_approvals', mgr_key: mgrKey }).then(function (res) {
-      pendingApprovalItems = (res && res.ok && Array.isArray(res.items)) ? res.items : [];
-      renderPendingApprovals();
-    }).catch(function () {
-      pendingApprovalItems = [];
-      renderPendingApprovals();
-    });
+    bgLoad(
+      { action: 'mgr_pending_approvals', mgr_key: mgrKey },
+      function (res) {
+        pendingApprovalItems = Array.isArray(res.items) ? res.items : [];
+        renderPendingApprovals();
+      },
+      { label: '本月待核定提醒', slot: pendingApprovalsEl }
+    );
   }
 
   // 'yyyy-MM-dd' → 'M/D（週字）'。用 'T00:00:00'（不帶時區）在本地時間解析，
@@ -1529,14 +1673,15 @@
    * 沒有待核准時整區不畫，平常不佔版面；載入失敗也靜默略過（不影響主要的核定功能）。
    */
   function loadPendingDevices() {
-    apiPost({ action: 'mgr_pending_devices', mgr_key: mgrKey }).then(function (res) {
-      if (!res.ok || !res.pending || !res.pending.length) {
+    bgLoad(
+      { action: 'mgr_pending_devices', mgr_key: mgrKey },
+      function (res) {
         pendingDevicesEl.innerHTML = '';
-        return;
-      }
-      pendingDevicesEl.innerHTML = '';
-      res.pending.forEach(function (g) { pendingDevicesEl.appendChild(buildPendingCard(g)); });
-    }).catch(function () { /* 靜默：待核准區失敗不該擋住當日核定 */ });
+        if (!res.pending || !res.pending.length) return;
+        res.pending.forEach(function (g) { pendingDevicesEl.appendChild(buildPendingCard(g)); });
+      },
+      { label: '待核准裝置', slot: pendingDevicesEl }
+    );
   }
 
   function tsLabel(ts) {
@@ -1736,8 +1881,10 @@
     var btn = document.getElementById('reBtn');
     var box = document.getElementById('reResult');
     var listBox = document.getElementById('reInactive');
+    var failSlot = document.getElementById('rosterFail');
     if (!card || !sel || !btn || !box || !listBox) return;
     var myName = '';
+    var loadCtrl = null; // 上一輪 bgLoad 的控制器，load() 再被呼叫時要先 stop() 掉它
 
     function show(html, isErr) {
       box.style.display = 'block';
@@ -1774,12 +1921,16 @@
     }
     function load() {
       if (!mgrKey) return;
-      apiPost({ action: 'mgr_roster', mgr_key: mgrKey }).then(function (res) {
-        if (!res || !res.ok) return;          // 舊後端沒有這個 action：整區不顯示，其餘功能不受影響
-        myName = String(res.manager_name || '');
-        card.style.display = 'block';
-        render(res.roster || []);
-      }).catch(function () {});
+      if (loadCtrl) loadCtrl.stop(); // 擋掉上一輪還沒送出的重試，避免舊回應蓋掉新資料
+      loadCtrl = bgLoad(
+        { action: 'mgr_roster', mgr_key: mgrKey },
+        function (res) {
+          myName = String(res.manager_name || '');
+          card.style.display = 'block';
+          render(res.roster || []);
+        },
+        { label: '同仁異動', slot: failSlot }
+      );
     }
     function setActive(empId, name, active, srcBtn) {
       var label = srcBtn.textContent;
@@ -1829,8 +1980,10 @@
     var box = document.getElementById('ntResult');
     var listBox = document.getElementById('ntList');
     var countEl = document.getElementById('ntCount');
+    var failSlot = document.getElementById('noticeFail');
     if (!card || !ta || !ends || !btn || !box || !listBox || !countEl) return;
     var maxLen = 120;
+    var loadCtrl = null; // 上一輪 bgLoad 的控制器，load() 再被呼叫時要先 stop() 掉它
 
     /* 公告是自由文字，塞進 innerHTML 之前一律轉義——同仁端用 textContent，
        主管端這裡是拼字串建列表，少了這道就等於開一個 XSS。 */
@@ -1886,20 +2039,24 @@
 
     function load() {
       if (!mgrKey) return;
-      apiPost({ action: 'mgr_notices', mgr_key: mgrKey }).then(function (res) {
-        if (!res || !res.ok) return;   // 舊後端沒有這個 action：整區不顯示，其餘功能不受影響
-        card.style.display = 'block';
-        if (Number(res.max_len) > 0) {
-          maxLen = Number(res.max_len);
-          ta.setAttribute('maxlength', String(maxLen));
-        }
-        var ms = document.getElementById('ntMaxShow');
-        if (ms && Number(res.max_show) > 0) ms.textContent = String(res.max_show);
-        // 下架日不給選過去的日子（後端也會擋，這裡只是先擋在手指上）
-        ends.min = taipeiTodayStr();
-        updateCount();
-        render(res.notices || []);
-      }).catch(function () {});
+      if (loadCtrl) loadCtrl.stop(); // 擋掉上一輪還沒送出的重試，避免舊回應蓋掉新資料
+      loadCtrl = bgLoad(
+        { action: 'mgr_notices', mgr_key: mgrKey },
+        function (res) {
+          card.style.display = 'block';
+          if (Number(res.max_len) > 0) {
+            maxLen = Number(res.max_len);
+            ta.setAttribute('maxlength', String(maxLen));
+          }
+          var ms = document.getElementById('ntMaxShow');
+          if (ms && Number(res.max_show) > 0) ms.textContent = String(res.max_show);
+          // 下架日不給選過去的日子（後端也會擋，這裡只是先擋在手指上）
+          ends.min = taipeiTodayStr();
+          updateCount();
+          render(res.notices || []);
+        },
+        { label: '店內公告', slot: failSlot }
+      );
     }
 
     function setActive(id, active, srcBtn) {
