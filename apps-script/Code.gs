@@ -1561,6 +1561,7 @@ const MONTHLY_PAIR_WINDOW_HOURS = 16;
 // 被拒的重複上班卡（rejected_duplicate 的 in）距開著的 in 達此分鐘數 → 視為忘打下班的斷點
 // （見 pairShifts）。低於此門檻＝手滑連按，忽略不斷段。
 const REJECTED_IN_BREAK_MIN = 60;
+const REJECTED_IN_MISTAP_SEC = 120;  // 被擋的上班卡若在此秒數內就打了成功的下班卡 → 視為按錯鍵，忽略這張（不當新段起點）
 const WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
 // 備註欄中屬於「異常」的字樣（列入異常筆數統計、明細標紅）；假別不算異常
 // 計入月表「異常筆數」的分類。2026-08-19 Eason 定義：忘刷卡、遲到、早退、病假、事假
@@ -1676,8 +1677,20 @@ function pairShifts(events) {
   Object.keys(byEmp).forEach(function (emp) {
     const evs = byEmp[emp].slice().sort(function (a, b) { return tsMs(a.ts) - tsMs(b.ts); });
     let open = null;
-    evs.forEach(function (e) {
+    evs.forEach(function (e, i) {
       if (String(e.status) === 'rejected_duplicate') {
+        // 按錯鍵：他要下班卻按到上班，被擋下後很快就改按了下班（中間可能還連按了幾次上班）。
+        // 這張不是新一段的起點——忽略它，讓那張下班卡跟原本開著的上班卡配成完整一段。
+        // 只在「已經有開著的上班卡」時才忽略，否則後面那張下班卡會配不到人。
+        let nx = null;
+        for (let j = i + 1; j < evs.length; j++) {
+          if (String(evs[j].status) === 'rejected_duplicate') continue;  // 連按，繼續往後找
+          nx = evs[j]; break;
+        }
+        if (open && nx && nx.type === 'out' && String(nx.status) === 'ok' &&
+            tsMs(nx.ts) - tsMs(e.ts) <= REJECTED_IN_MISTAP_SEC * 1000) {
+          return;
+        }
         // 被擋的重複上班卡：距開著的 in ≥ 門檻 → 前段忘打下班（收未配對），以本卡當新段起點。
         // 未達門檻＝手滑連按，忽略（open 不變）；沒有開著的 in → 也以本卡當新段起點（防禦，
         // 例如視窗外的 ok in 未抓到），讓後面的 out 仍能配成段而非誤判上班忘刷卡。

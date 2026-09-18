@@ -214,6 +214,7 @@ def last_counted_event(data, emp_id):
 
 MONTHLY_PAIR_WINDOW_HOURS = 16  # in 配「16 小時內的下一筆 out」，與 Code.gs 的 MONTHLY_PAIR_WINDOW_HOURS 同步（2026-09-02 12→16）
 REJECTED_IN_BREAK_MIN = 60  # 被拒的重複上班卡（rejected_duplicate 的 in）距開著的 in 達此分鐘數 → 視為忘打下班的斷點（與 Code.gs 同步）
+REJECTED_IN_MISTAP_SEC = 120  # 被擋的上班卡若在此秒數內就打了成功的下班卡 → 視為按錯鍵，忽略這張（與 Code.gs 同步）
 
 
 def approved_hours_of_shift(in_ts, out_ts):
@@ -249,8 +250,15 @@ def pair_shifts(events):
     open_in = None
     window = timedelta(hours=MONTHLY_PAIR_WINDOW_HOURS)
     break_gap = timedelta(minutes=REJECTED_IN_BREAK_MIN)
-    for e in evs:
+    mistap = timedelta(seconds=REJECTED_IN_MISTAP_SEC)
+    for i, e in enumerate(evs):
         if e.get("status") == "rejected_duplicate":
+            # 按錯鍵：要下班卻按到上班，被擋下後很快就改按了下班（中間可能還連按了幾次）。
+            # 忽略這張，讓那張下班卡跟原本開著的上班卡配成完整一段（與 Code.gs 同步）。
+            nx = next((x for x in evs[i + 1:] if x.get("status") != "rejected_duplicate"), None)
+            if (open_in and nx and nx["type"] == "out" and nx.get("status") == "ok"
+                    and (datetime.fromisoformat(nx["ts"]) - datetime.fromisoformat(e["ts"])) <= mistap):
+                continue
             # 被擋的重複上班卡：距開著的 in ≥ 門檻 → 前段忘打下班（收未配對），以本卡當新段起點；
             # 未達門檻＝手滑連按，忽略（open 不變）；沒有開著的 in → 也以本卡當新段起點（防禦）。
             if open_in is None:
