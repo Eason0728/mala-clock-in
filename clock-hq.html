@@ -692,12 +692,20 @@
     return s;
   }
 
-  /* 打完上班卡後的「下班卡冷卻」：同仁常在打上班的當下手滑又按到下班。
-     這段是純前端的防呆——不擋真的要下班的人太久，也不影響後端判定。
-     頁面重新整理也還原得了，因為時間點是從 whoami 的 last_counted 算的。 */
-  var CLOCKOUT_LOCK_MIN = 10;
-  var outLockUntil = 0;      // 毫秒；0＝沒鎖
-  var outLockTimer = null;
+  /* 打卡後的「反向鍵冷卻」：同仁常在打卡的當下連按，手指落到另一顆鍵。
+     - 打完上班卡 → 下班鍵鎖 10 分鐘（2026-08-22）
+     - 打完下班卡 → 上班鍵鎖 10 分鐘（2026-09-19）。起因：央廚同仁 9/9 17:05 下班後連按，
+       8 秒後又「成功」打了一張上班卡——交替防呆看上一張是下班、照規則放行——
+       那張開著的上班卡讓當天被標「下班忘刷卡」、參考時數整天留白。
+     這段是純前端的防呆——不擋真的要打卡的人太久，也不影響後端判定。
+     頁面重新整理也還原得了，因為時間點是從 whoami 的 last_counted 算的；
+     打卡成功當下也會用打卡回應的時間立刻鎖上，不等 whoami 回來
+     （whoami 要 2–5 秒，連按的人在那段空檔裡照樣按得到另一顆鍵）。 */
+  var CLOCK_LOCK_MIN = 10;
+  var lockUntil = { in: 0, out: 0 };   // 各鍵鎖到幾點（毫秒）；0＝沒鎖
+  var lockTimer = null;
+  var clockBusy = false;               // 送出中：兩顆鍵都要停用，倒數結束也不可提早解開
+  var BTN_LABEL = { in: '上班打卡', out: '下班打卡' };
 
   // 目前不允許的打卡型別（'in'/'out'/null）。由伺服器 whoami 的 last_counted
   // （12 小時回看視窗，跨日也算）決定，不要自己從 today_events 算。
@@ -732,31 +740,38 @@
     blockedType = lastCounted ? lastCounted.type : null;
     btnIn.classList.toggle('not-allowed', blockedType === 'in');
     btnOut.classList.toggle('not-allowed', blockedType === 'out');
-    // 最後一筆是上班卡 → 起算冷卻
-    outLockUntil = 0;
-    if (lastCounted && lastCounted.type === 'in') {
+    // 最後一筆是上班卡 → 鎖下班鍵；是下班卡 → 鎖上班鍵
+    lockUntil.in = 0;
+    lockUntil.out = 0;
+    if (lastCounted && (lastCounted.type === 'in' || lastCounted.type === 'out')) {
       var t = new Date(String(lastCounted.ts)).getTime();
-      if (!isNaN(t)) outLockUntil = t + CLOCKOUT_LOCK_MIN * 60 * 1000;
+      var other = lastCounted.type === 'in' ? 'out' : 'in';
+      if (!isNaN(t)) lockUntil[other] = t + CLOCK_LOCK_MIN * 60 * 1000;
     }
-    refreshOutLock();
+    refreshLocks();
   }
 
-  /** 下班鍵的冷卻顯示：反灰、按不下去、按鈕上顯示還要等多久；時間到自動恢復 */
-  function refreshOutLock() {
-    if (outLockTimer) { clearTimeout(outLockTimer); outLockTimer = null; }
-    var left = outLockUntil - Date.now();
-    if (left > 0) {
-      var mm = Math.floor(left / 60000), ss = Math.floor((left % 60000) / 1000);
-      btnOut.disabled = true;
-      btnOut.classList.add('not-allowed');
-      btnOut.textContent = '下班打卡（' + mm + ':' + ('0' + ss).slice(-2) + ' 後可按）';
-      outLockTimer = setTimeout(refreshOutLock, 1000);
-    } else {
-      outLockUntil = 0;
-      btnOut.textContent = '下班打卡';
-      btnOut.disabled = false;
-      btnOut.classList.toggle('not-allowed', blockedType === 'out');
-    }
+  /** 兩顆鍵的冷卻顯示：鎖住的反灰、按不下去、按鈕上顯示還要等多久；時間到自動恢復 */
+  function refreshLocks() {
+    if (lockTimer) { clearTimeout(lockTimer); lockTimer = null; }
+    var ticking = false;
+    ['in', 'out'].forEach(function (type) {
+      var btn = type === 'in' ? btnIn : btnOut;
+      var left = lockUntil[type] - Date.now();
+      if (left > 0) {
+        var mm = Math.floor(left / 60000), ss = Math.floor((left % 60000) / 1000);
+        btn.disabled = true;
+        btn.classList.add('not-allowed');
+        btn.textContent = BTN_LABEL[type] + '（' + mm + ':' + ('0' + ss).slice(-2) + ' 後可按）';
+        ticking = true;
+      } else {
+        lockUntil[type] = 0;
+        btn.textContent = BTN_LABEL[type];
+        btn.disabled = clockBusy;
+        btn.classList.toggle('not-allowed', blockedType === type);
+      }
+    });
+    if (ticking) lockTimer = setTimeout(refreshLocks, 1000);
   }
 
   // ── 店內公告 ────────────────────────────────────────────
@@ -1085,9 +1100,10 @@
   }
 
   function setBusy(busy) {
+    clockBusy = busy;
     btnIn.disabled = busy;
     btnOut.disabled = busy;
-    if (!busy) refreshOutLock();   // ⚠ 不可無條件解鎖，否則打完卡冷卻立刻失效
+    if (!busy) refreshLocks();   // ⚠ 不可無條件解鎖，否則打完卡冷卻立刻失效
   }
 
   function showStatus(cls, text) {
@@ -1223,9 +1239,11 @@
 
 
   function doClock(type) {
-    if (type === 'out' && outLockUntil > Date.now()) {
-      var s2 = Math.ceil((outLockUntil - Date.now()) / 60000);
-      showStatus('status-warn', '⚠ 剛打完上班卡，' + s2 + ' 分鐘後才能打下班卡（避免手滑誤打）。真的要下班請告知主管補登。');
+    if (lockUntil[type] > Date.now()) {
+      var s2 = Math.ceil((lockUntil[type] - Date.now()) / 60000);
+      showStatus('status-warn', type === 'out'
+        ? '⚠ 剛打完上班卡，' + s2 + ' 分鐘後才能打下班卡（避免手滑誤打）。真的要下班請告知主管補登。'
+        : '⚠ 剛打完下班卡，' + s2 + ' 分鐘後才能打上班卡（避免手滑誤打）。真的要上班請告知主管補登。');
       return;
     }
     if (blockedType === type) {
@@ -1254,6 +1272,9 @@
         // 只要沒打卡成功就跳同一句提醒，不要讓同仁去讀一堆不同的錯誤訊息）。
         if (res.ok && res.status === 'ok') {
           showStatus('status-ok', '✓ 打卡成功　' + (res.ts || '').substring(11, 16));
+          // 不等 whoami：用這張卡的伺服器時間當下就鎖住反向鍵、擋同型連打。
+          // whoami 回來後會用伺服器的 last_counted 再算一次（結果相同）。
+          if (res.ts) updateButtonStates({ type: type, ts: res.ts });
         } else if (useLiff && res && res.error === 'invalid_id_token') {
           // 2026-08-27 審查 Important 5：LIFF 的 ID token 過期時套用統一失敗句沒有意義——
           // 「看今日紀錄再打一次」解決不了過期的 token，會一直重複失敗。LIFF webview

@@ -264,6 +264,12 @@ def phase_clock(page, data, exp):
     click(page, '#btnOut', '打下班卡')
     out_msg = wait_settled(page)
     check('下班打卡成功', ('成功' in out_msg or '已記錄' in out_msg or '下班' in out_msg), out_msg)
+    # 上班鍵冷卻（打完下班卡鎖 10 分鐘，2026-09-19 加）
+    page.wait_for_timeout(1200)
+    locked_in = page.evaluate("() => document.getElementById('btnIn').disabled")
+    label_in = page.evaluate("() => document.getElementById('btnIn').textContent")
+    check('打完下班卡後上班鍵鎖住並提示可按時間',
+          locked_in and '後可按' in label_in, f'鎖={locked_in} 字樣「{label_in}」')
     # 打卡頁的兩個分頁
     for sel, why in (('#tabPay', '切到我的薪資分頁'), ('#tabClock', '切回打卡分頁')):
         if page.evaluate("(s) => !!document.querySelector(s)", sel):
