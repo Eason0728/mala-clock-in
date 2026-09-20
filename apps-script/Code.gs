@@ -2490,6 +2490,20 @@ function setupMonthlyTrigger() {
 }
 
 // refreshCurrentMonth 記錄「上次重算時 events 分頁的列數」用的 Script Properties key
+/**
+ * 打烊尖峰不重算月表（2026-09-20 實測後新增）。月表只是「呈現」——events／approved／leave 才是
+ * 資料來源，薪資歸集、核定頁、同仁打卡頁都不讀它，所以晚幾小時更新沒有任何功能影響；
+ * 但整月重寫在十幾人的表上並不便宜，跟同仁下班打卡擠在同一段時間會把整個後端拖慢：
+ * 2026-09-20 21:14–21:42 實測金山有 32–45% 的請求失敗或超過一分鐘，同一時段晚上沒人打卡的央廚 0%。
+ * 這段期間的異動由 23 點之後的下一次、或每日 05:00 的全月重算補上。
+ */
+const MONTH_REFRESH_QUIET_HOURS = [20, 21, 22, 23];
+
+/** 現在（台北）是不是「不重算月表」的時段。傳 nowTaipeiIso() 的字串；抽成函式是為了能單獨測。 */
+function isMonthRefreshQuietHour(taipeiIso) {
+  return MONTH_REFRESH_QUIET_HOURS.indexOf(Number(String(taipeiIso).substring(11, 13))) !== -1;
+}
+
 const REFRESH_LAST_ROW_PROP = 'REFRESH_CURRENT_MONTH_LAST_ROW';
 // 同上，記錄 approved 分頁的列數（2026-07-13 新增：主管核定後 10 分鐘內月表也要反映，
 // 不能只看 events 有沒有新列——主管核定不會新增 events 列）
@@ -2510,6 +2524,8 @@ const REFRESH_LAST_LEAVE_ROW_PROP = 'REFRESH_CURRENT_MONTH_LAST_LEAVE_ROW';
  *   3. 任何例外都吞掉只寫 log，不讓觸發器因丟例外被 Apps Script 自動停用。
  */
 function refreshCurrentMonth() {
+  // 打烊尖峰直接跳過（連鎖都不搶、一張表都不讀）——見 MONTH_REFRESH_QUIET_HOURS 的說明
+  if (isMonthRefreshQuietHour(nowTaipeiIso())) return;
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(0)) {
     console.log('refreshCurrentMonth: 搶不到鎖，跳過本次（可能與 05:00 重算或手動 rebuild_month 重疊）');
@@ -2564,8 +2580,8 @@ function refreshCurrentMonth() {
 function handleSetupTriggers(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const WANT = [
-    { fn: 'refreshCurrentMonth', desc: '每 10 分鐘重算當月月表',
-      build: function () { ScriptApp.newTrigger('refreshCurrentMonth').timeBased().everyMinutes(10).create(); } },
+    { fn: 'refreshCurrentMonth', desc: '每 30 分鐘重算當月月表（台北 20–23 點打烊尖峰不跑）',
+      build: function () { ScriptApp.newTrigger('refreshCurrentMonth').timeBased().everyMinutes(30).create(); } },
     { fn: 'dailyMonthlyRebuild', desc: '每日 05:00 重算當月＋月初收尾凍結上月',
       build: function () { ScriptApp.newTrigger('dailyMonthlyRebuild').timeBased().everyDays(1).atHour(5).create(); } },
   ];
@@ -2587,8 +2603,8 @@ function setupMonthRefreshTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'refreshCurrentMonth') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('refreshCurrentMonth').timeBased().everyMinutes(10).create();
-  Logger.log('已建立 refreshCurrentMonth 每 10 分鐘觸發器');
+  ScriptApp.newTrigger('refreshCurrentMonth').timeBased().everyMinutes(30).create();
+  Logger.log('已建立 refreshCurrentMonth 每 30 分鐘觸發器');
 }
 
 /** API：{action:'rebuild_month', admin_key, ym?}（ym 缺省＝當月）。GAS 專屬，mock 不實作。 */

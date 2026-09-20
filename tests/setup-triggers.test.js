@@ -49,7 +49,9 @@ console.log('══ 1) 全新專案（沒有任何觸發器）══');
   const r = c.call({ admin_key: 'RIGHT' });
   chk('  成功', r.ok, true);
   chk('  建立兩支', c.list(), ['dailyMonthlyRebuild', 'refreshCurrentMonth']);
-  chk('  月表刷新＝每 10 分鐘', c.built.find(b => b.fn === 'refreshCurrentMonth').every, '10min');
+  // 2026-09-21：10 分鐘 → 30 分鐘。原因見 tests/month-refresh-quiet.test.js 與 Code.gs
+  // MONTH_REFRESH_QUIET_HOURS 的說明（整月重寫與同仁下班打卡互搶同一份試算表）。
+  chk('  月表刷新＝每 30 分鐘', c.built.find(b => b.fn === 'refreshCurrentMonth').every, '30min');
   chk('  每日重算＝每天 05:00', [c.built.find(b => b.fn === 'dailyMonthlyRebuild').every,
        c.built.find(b => b.fn === 'dailyMonthlyRebuild').hour], ['1day', 5]);
 }
