@@ -711,6 +711,38 @@
   // （12 小時回看視窗，跨日也算）決定，不要自己從 today_events 算。
   var blockedType = null;
 
+  /* ── 今日紀錄快照（2026-09-21 新增，供 confirmPunch 判斷用）───────────────
+   * ⚠ 不可以用「手機時鐘」跟伺服器時間比（起初 confirmPunch 是拿 Date.now() 當
+   * cutoff，2026-09-21 複查抓到：門市 17 支各式手機，時鐘偏快幾分鐘很常見，快了
+   * 就會把剛寫進去的那筆判成「太舊、不算」，變成「查證後仍然叫她再按一次」——
+   * 正好是我們要消滅的連按行為，比原本沒有 confirmPunch 更糟）。
+   * 改成完全不比時間，只比「送出前後，今日這個 type 的紀錄有沒有變化」：
+   * 筆數變多，或該 type 最新一筆的 ts 字串跟快照不同，就代表是這次那筆。
+   * 快照由 renderTodayEvents 每次成功畫面時同步更新（唯一寫入點），
+   * doClock 送出前讀一份現在的快照當基準，confirmPunch 拿新資料跟這份基準比。 */
+  var todaySnapshot = { in: { count: 0, lastTs: '' }, out: { count: 0, lastTs: '' } };
+
+  /** today_events 裡某個 type 最新一筆（依 ts 排序，不假設陣列本身已排好序）。 */
+  function findLatestByType(events, type) {
+    var best = null, bestMs = -Infinity;
+    (events || []).forEach(function (e) {
+      if (!e || e.type !== type) return;
+      var t = new Date(String(e.ts)).getTime();
+      if (!isNaN(t) && t >= bestMs) { bestMs = t; best = e; }
+    });
+    return best;
+  }
+
+  function computeTypeStat(events, type) {
+    var count = (events || []).filter(function (e) { return e && e.type === type; }).length;
+    var latest = findLatestByType(events, type);
+    return { count: count, lastTs: latest ? String(latest.ts) : '' };
+  }
+
+  function snapshotTodayByType(events) {
+    todaySnapshot = { in: computeTypeStat(events, 'in'), out: computeTypeStat(events, 'out') };
+  }
+
   function duplicateMessage(lastType) {
     return lastType === 'in'
       ? '⚠ 已打過上班卡，下一筆請打下班卡'
@@ -820,6 +852,10 @@
   }
 
   function renderTodayEvents(events) {
+    // 2026-09-21 修正：每次成功渲染今日紀錄就同步更新快照，供 confirmPunch 判斷「這次
+    // 打卡有沒有進去」用——不管是開頁 whoami、打卡後的重新整理，還是 confirmPunch 自己
+    // 查證時拿到的新資料，只要走這個函式畫面，快照就一定跟畫面同步（LIFF／一般模式都涵蓋）。
+    snapshotTodayByType(events);
     todayListEl.innerHTML = '';
     if (!events || events.length === 0) {
       noEventsEl.style.display = 'block';
@@ -1267,25 +1303,14 @@
   var CONFIRM_TIMEOUT_MS = 12000;
   var CONFIRM_RETRY_DELAYS_MS = [2000, 4000]; // 第 1、2 次重試前的等待，最多共 3 次查證
 
-  /** today_events 裡「時間 ≥ 送出前 60 秒、且 type 相同」的最新一筆；60 秒緩衝是因為
-   *  伺服器寫入時間戳可能比前端記的 startedAtMs 略晚一點（定位＋網路來回）。 */
-  function findConfirmedEvent(events, type, startedAtMs) {
-    if (!events || !events.length) return null;
-    var cutoff = startedAtMs - 60000;
-    var best = null, bestTs = -Infinity;
-    events.forEach(function (e) {
-      if (!e || e.type !== type) return;
-      var t = new Date(String(e.ts)).getTime();
-      if (isNaN(t) || t < cutoff) return;
-      if (t > bestTs) { bestTs = t; best = e; }
-    });
-    return best;
-  }
-
   /** 回傳一個一定會 resolve 的 Promise：doClock 用 return 把它接進 promise chain，
    *  讓 setBusy(false) 等查證完全部跑完才解鎖兩顆鍵——查證期間同仁還在等答案，
-   *  不該讓她這時候又按下去。 */
-  function confirmPunch(type, startedAtMs) {
+   *  不該讓她這時候又按下去。
+   *  @param type       打卡型別（'in'/'out'）
+   *  @param beforeSnap doClock 送出「之前」讀到的 todaySnapshot[type] 快照（見上方
+   *                    todaySnapshot 區塊的說明），{count, lastTs}。這是判斷「有沒有
+   *                    送出去」唯一的依據，不看任何時間戳跟手機時鐘比。 */
+  function confirmPunch(type, beforeSnap) {
     showStatus('status-loading', '連線不穩，正在確認這筆有沒有進去…');
     var attempt = 0;
 
@@ -1294,13 +1319,26 @@
       return apiPost(mkPayload('whoami'), null, { timeoutMs: CONFIRM_TIMEOUT_MS }).then(function (res) {
         if (!res || !res.ok) return retryOrGiveUp();
         // 查到了：不論下面判到哪一種，資料都是新的，一律重畫（沿用 doClock 原本
-        // 「主動刷新今日紀錄，讓她眼見為實、不用自己猜」的精神）。
+        // 「主動刷新今日紀錄，讓她眼見為實、不用自己猜」的精神）。renderTodayEvents
+        // 會同步更新 todaySnapshot，但下面比較用的是呼叫前就記好的 after（見下一行），
+        // 不受這次重畫影響。
         renderTodayEvents(res.today_events);
         renderTodayHours(res.today_hours);
         updateButtonStates(res.last_counted);
 
-        var found = findConfirmedEvent(res.today_events, type, startedAtMs);
+        var after = computeTypeStat(res.today_events, type);
+        // 主判準：這個 type 的紀錄「筆數變多」或「最新一筆的 ts 字串跟送出前不同」
+        // 就代表是這次那筆進去了——完全不比對時間戳快慢，避免手機時鐘偏差誤判
+        // （2026-09-21 修正：原本拿 Date.now() 當基準，手機時鐘快幾分鐘會把剛寫進去
+        // 的那筆判成太舊、誤判成「沒有送出」，反而讓她真的再按一次）。
+        var changed = after.count > beforeSnap.count || after.lastTs !== beforeSnap.lastTs;
+        if (!changed) {
+          showStatus('status-warn', '✕ 這次沒有送出，請再按一次');
+          return;
+        }
+        var found = findLatestByType(res.today_events, type);
         if (!found) {
+          // 理論上不會發生（changed 已經代表至少有一筆），純防禦
           showStatus('status-warn', '✕ 這次沒有送出，請再按一次');
           return;
         }
@@ -1348,12 +1386,16 @@
     }
     setBusy(true);
     showStatus('status-loading', '定位中…');
-    var startedAtMs = null; // 送出打卡當下記下來，供結果不明時 confirmPunch 查證用
+    // 送出「之前」先讀一份目前畫面上的快照當基準（見上方 todaySnapshot 說明）。
+    // 開頁 whoami 還沒回來時 todaySnapshot[type] 就是初始值 {count:0, lastTs:''}，
+    // 這樣 confirmPunch 只要查到任何一筆同型紀錄就會判定「有變化」，正確。
+    var beforeSnap = { count: todaySnapshot[type].count, lastTs: todaySnapshot[type].lastTs };
+    var requestSent = false; // 是否已經送出 clock 請求；沒送出就沒有東西可查證
     // 第一次定位不理想時會多等幾秒，這裡把原因寫出來，不要讓同仁以為畫面當掉
     getPosition(function () { showStatus('status-loading', '定位中…（訊號較弱，再抓一次）'); })
       .then(function (pos) {
         showStatus('status-loading', '送出打卡中…');
-        startedAtMs = Date.now();
+        requestSent = true;
         return apiPost(mkPayload('clock', {
           type: type,
           lat: pos.coords.latitude,
@@ -1383,7 +1425,7 @@
           // 例如 invalid_key，伺服器已經明確回答，維持原狀走下面的統一失敗句）。
           // 改用 whoami 查證，不要直接假設失敗；查證會自己重畫今日紀錄，這裡直接 return
           // 跳過下面「一律再刷一次 whoami／my_recent」，避免跟查證流程重複打、互相蓋畫面。
-          return confirmPunch(type, startedAtMs);
+          return confirmPunch(type, beforeSnap);
         } else {
           showStatus('status-warn', CLOCK_FAIL_MSG + accuracyHint(res));
         }
@@ -1406,15 +1448,15 @@
         }
       })
       .catch(function () {
-        // 定位失敗屬於「根本沒送出去」，發生在 apiPost 之前，此時 startedAtMs 還是 null，
+        // 定位失敗屬於「根本沒送出去」，發生在 apiPost 之前，requestSent 還是 false，
         // confirmPunch 沒有意義（沒有東西可查）——維持統一失敗句，同仁可以直接放心重打。
-        if (startedAtMs === null) {
+        if (!requestSent) {
           showStatus('status-warn', CLOCK_FAIL_MSG);
           return;
         }
         // 送出之後才失敗：逾時／斷線／回應不是 JSON，一律「結果不明」，改用 whoami 查證
         // （2026-09-21 新增，見 confirmPunch），不再直接假設失敗。
-        return confirmPunch(type, startedAtMs);
+        return confirmPunch(type, beforeSnap);
       })
       .then(function () { setBusy(false); }, function () { setBusy(false); });
   }
