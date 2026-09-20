@@ -861,14 +861,19 @@
   // Apps Script 正常回應約 2–3 秒，20 秒已非常寬鬆。
   var API_TIMEOUT_MS = 20000;
 
-  function apiPost(payload, urlOverride) {
+  // opts.timeoutMs 是選用參數（2026-09-21 新增，供 confirmPunch 查證用）：不給就沿用
+  // API_TIMEOUT_MS，既有呼叫者（一律不傳第三參數）行為完全不變。
+  function apiPost(payload, urlOverride, callOpts) {
+    var timeoutMs = (callOpts && callOpts.timeoutMs) || API_TIMEOUT_MS;
     var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     var timedOut = false;
     var timer = setTimeout(function () {
       timedOut = true;
       if (ctrl) ctrl.abort();
-    }, API_TIMEOUT_MS);
+    }, timeoutMs);
 
+    // ⚠ 這個 opts 是 fetch() 的選項物件（跟上面的參數 callOpts 是兩件事，故意分開命名
+    // 避免同名變數互相蓋掉——2026-09-21 加第三參數時踩到過一次這個坑）。
     var opts = {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
@@ -1036,6 +1041,55 @@
       });
   });
 
+  // 開頁那通 whoami 只重試「連線失敗」（逾時／斷線／回應不是 JSON），不重試 !res.ok
+  // 的明確答案（not_bound／invalid_id_token／找不到員工…那些重試也不會變好）。
+  // 2026-09-21 新增：正式環境偶發 Apps Script 卡住，重試 2 次（2 秒、4 秒）撐過去；
+  // 三次都失敗才顯示「連線失敗」——姓名／今日紀錄／按鈕灰階維持空白，不影響「不等 whoami
+  // 就先顯示打卡按鈕」的既有設計（打卡按鈕在呼叫這裡之前就已經畫出來了）。
+  var WHOAMI_INIT_RETRY_DELAYS_MS = [2000, 4000];
+
+  function loadWhoamiOnInit(attempt) {
+    apiPost(mkPayload('whoami'))
+      .then(function (res) {
+        if (!res.ok) {
+          if (useLiff) {
+            // LIFF 帳號驗證成功但還沒綁員工 → 讓她自己輸入啟用碼綁定，不是錯誤
+            if (res.error === 'not_bound') {
+              showBindScreen();
+              return;
+            }
+            // 其餘 LIFF 錯誤碼（invalid_id_token / no_roster / 未預期）用 LIFF 專屬措辭，
+            // 不能沿用下面那句「打卡連結」的講法——舊模式（?k=）維持完全不變。
+            showError(liffWhoamiErrorMsg(res.error));
+            return;
+          }
+          showError('找不到這個打卡連結對應的員工，請確認連結是否正確。');
+          return;
+        }
+        empNameEl.textContent = res.name;
+        if (res.device_state === 'unbound') {
+          deviceHintEl.textContent = '本裝置尚未綁定，首次打卡將自動綁定。';
+        } else if (res.device_state === 'mismatch') {
+          deviceHintEl.textContent = '這不是你平常綁定的裝置，打卡將送出待核准。';
+        } else {
+          deviceHintEl.textContent = '';
+        }
+        renderTodayEvents(res.today_events);
+        renderTodayHours(res.today_hours);
+        updateButtonStates(res.last_counted);
+        // 公告只在開頁時渲染一次：打卡後那兩通 whoami 不重畫，
+        // 否則輪播會被重置回第一則，同仁正在讀的那則會突然跳掉。
+        renderNotices(res.notices);
+      })
+      .catch(function () {
+        if (attempt < WHOAMI_INIT_RETRY_DELAYS_MS.length) {
+          setTimeout(function () { loadWhoamiOnInit(attempt + 1); }, WHOAMI_INIT_RETRY_DELAYS_MS[attempt]);
+          return;
+        }
+        showError('連線失敗，請檢查網路連線後重新整理頁面。');
+      });
+  }
+
   function init() {
     // 先決定身分模式：網址帶 ?k= → 舊模式（一律不碰 LIFF）；否則嘗試 LIFF 登入。
     // 兩種模式都失敗（沒有 k，也不在 LIFF 環境內／LIFF 登入失敗）才顯示錯誤畫面。
@@ -1059,41 +1113,7 @@
       mainCard.style.display = 'block';
       btnGroup.style.display = 'flex';
       empNameEl.textContent = '載入中…';
-      apiPost(mkPayload('whoami'))
-        .then(function (res) {
-          if (!res.ok) {
-            if (useLiff) {
-              // LIFF 帳號驗證成功但還沒綁員工 → 讓她自己輸入啟用碼綁定，不是錯誤
-              if (res.error === 'not_bound') {
-                showBindScreen();
-                return;
-              }
-              // 其餘 LIFF 錯誤碼（invalid_id_token / no_roster / 未預期）用 LIFF 專屬措辭，
-              // 不能沿用下面那句「打卡連結」的講法——舊模式（?k=）維持完全不變。
-              showError(liffWhoamiErrorMsg(res.error));
-              return;
-            }
-            showError('找不到這個打卡連結對應的員工，請確認連結是否正確。');
-            return;
-          }
-          empNameEl.textContent = res.name;
-          if (res.device_state === 'unbound') {
-            deviceHintEl.textContent = '本裝置尚未綁定，首次打卡將自動綁定。';
-          } else if (res.device_state === 'mismatch') {
-            deviceHintEl.textContent = '這不是你平常綁定的裝置，打卡將送出待核准。';
-          } else {
-            deviceHintEl.textContent = '';
-          }
-          renderTodayEvents(res.today_events);
-          renderTodayHours(res.today_hours);
-          updateButtonStates(res.last_counted);
-          // 公告只在開頁時渲染一次：打卡後那兩通 whoami 不重畫，
-          // 否則輪播會被重置回第一則，同仁正在讀的那則會突然跳掉。
-          renderNotices(res.notices);
-        })
-        .catch(function () {
-          showError('連線失敗，請檢查網路連線後重新整理頁面。');
-        });
+      loadWhoamiOnInit(0);
       // 定位預熱：頁面一確定身分就開始抓，打卡當下才不用整個等定位（見 getPosition 捷徑）。
       startWarmUp();
     });
@@ -1237,6 +1257,80 @@
     });
   }
 
+  /* ── 打卡結果不明時的自動回頭確認（2026-09-21 新增）───────────────────────
+   * 背景：正式環境實測 Apps Script 平台層偶發卡住或誤送 doGet（見 apiPost 的三種失敗分類），
+   * 同仁按了沒反應就連按，紀錄裡留下「ok＋緊接著被擋」的痕跡（9/20 21:20 連按三次）。
+   * 只在「真的不知道這筆有沒有送進去」時才走這條路——伺服器已經明確回答的情況
+   * （超出範圍／重複／裝置待核准／金鑰錯…）維持現狀，doClock 不會呼叫這裡。
+   * ⚠ 絕對不可以自動重送打卡（會變成重複打卡），這裡只用 whoami 查證，不送 clock。
+   */
+  var CONFIRM_TIMEOUT_MS = 12000;
+  var CONFIRM_RETRY_DELAYS_MS = [2000, 4000]; // 第 1、2 次重試前的等待，最多共 3 次查證
+
+  /** today_events 裡「時間 ≥ 送出前 60 秒、且 type 相同」的最新一筆；60 秒緩衝是因為
+   *  伺服器寫入時間戳可能比前端記的 startedAtMs 略晚一點（定位＋網路來回）。 */
+  function findConfirmedEvent(events, type, startedAtMs) {
+    if (!events || !events.length) return null;
+    var cutoff = startedAtMs - 60000;
+    var best = null, bestTs = -Infinity;
+    events.forEach(function (e) {
+      if (!e || e.type !== type) return;
+      var t = new Date(String(e.ts)).getTime();
+      if (isNaN(t) || t < cutoff) return;
+      if (t > bestTs) { bestTs = t; best = e; }
+    });
+    return best;
+  }
+
+  /** 回傳一個一定會 resolve 的 Promise：doClock 用 return 把它接進 promise chain，
+   *  讓 setBusy(false) 等查證完全部跑完才解鎖兩顆鍵——查證期間同仁還在等答案，
+   *  不該讓她這時候又按下去。 */
+  function confirmPunch(type, startedAtMs) {
+    showStatus('status-loading', '連線不穩，正在確認這筆有沒有進去…');
+    var attempt = 0;
+
+    function attemptCheck() {
+      attempt++;
+      return apiPost(mkPayload('whoami'), null, { timeoutMs: CONFIRM_TIMEOUT_MS }).then(function (res) {
+        if (!res || !res.ok) return retryOrGiveUp();
+        // 查到了：不論下面判到哪一種，資料都是新的，一律重畫（沿用 doClock 原本
+        // 「主動刷新今日紀錄，讓她眼見為實、不用自己猜」的精神）。
+        renderTodayEvents(res.today_events);
+        renderTodayHours(res.today_hours);
+        updateButtonStates(res.last_counted);
+
+        var found = findConfirmedEvent(res.today_events, type, startedAtMs);
+        if (!found) {
+          showStatus('status-warn', '✕ 這次沒有送出，請再按一次');
+          return;
+        }
+        if (found.status === 'ok') {
+          showStatus('status-ok', '✓ 剛才那筆打卡已經完成　' + String(found.ts || '').substring(11, 16)
+            + '，剛剛只是畫面卡住，不用再按一次');
+        } else if (found.status === 'rejected_duplicate') {
+          // 等於本來就打過了：跟前端「同型連打」前置擋的措辭一致（duplicateMessage(type)，
+          // 不是相反的型別——被判重複代表「跟上一筆同型」就是這次嘗試的 type 本身）。
+          showStatus('status-warn', duplicateMessage(type));
+        } else {
+          showStatus('status-warn', CLOCK_FAIL_MSG + accuracyHint(found));
+        }
+      }, function () {
+        return retryOrGiveUp();
+      });
+    }
+
+    function retryOrGiveUp() {
+      if (attempt <= CONFIRM_RETRY_DELAYS_MS.length) {
+        return new Promise(function (resolve) {
+          setTimeout(function () { resolve(attemptCheck()); }, CONFIRM_RETRY_DELAYS_MS[attempt - 1]);
+        });
+      }
+      // 三次都查不到：whoami 本身也失敗，真的無法判斷，不要亂講——維持現有的統一失敗句。
+      showStatus('status-warn', CLOCK_FAIL_MSG);
+    }
+
+    return attemptCheck();
+  }
 
   function doClock(type) {
     if (lockUntil[type] > Date.now()) {
@@ -1254,10 +1348,12 @@
     }
     setBusy(true);
     showStatus('status-loading', '定位中…');
+    var startedAtMs = null; // 送出打卡當下記下來，供結果不明時 confirmPunch 查證用
     // 第一次定位不理想時會多等幾秒，這裡把原因寫出來，不要讓同仁以為畫面當掉
     getPosition(function () { showStatus('status-loading', '定位中…（訊號較弱，再抓一次）'); })
       .then(function (pos) {
         showStatus('status-loading', '送出打卡中…');
+        startedAtMs = Date.now();
         return apiPost(mkPayload('clock', {
           type: type,
           lat: pos.coords.latitude,
@@ -1282,6 +1378,12 @@
           showStatus('status-warn', 'LINE 身分驗證已過期，正在重新登入…');
           liff.login();
           return;
+        } else if (res && res.error === 'server_error') {
+          // 2026-09-21 新增：伺服器丟例外，不知道這筆到底寫進去了沒（其餘 !res.ok，
+          // 例如 invalid_key，伺服器已經明確回答，維持原狀走下面的統一失敗句）。
+          // 改用 whoami 查證，不要直接假設失敗；查證會自己重畫今日紀錄，這裡直接 return
+          // 跳過下面「一律再刷一次 whoami／my_recent」，避免跟查證流程重複打、互相蓋畫面。
+          return confirmPunch(type, startedAtMs);
         } else {
           showStatus('status-warn', CLOCK_FAIL_MSG + accuracyHint(res));
         }
@@ -1304,17 +1406,15 @@
         }
       })
       .catch(function () {
-        // 定位失敗、沒網路、逾時、伺服器異常 → 一律同一句（不再區分原因）
-        showStatus('status-warn', CLOCK_FAIL_MSG);
-        // 主動刷新今日紀錄：逾時/異常不代表沒進伺服器，讓她當場看得到到底有沒有成功，
-        // 不用自己猜。這通失敗就算了（本來就是連線有問題），不再另外報錯蓋掉上面的訊息。
-        apiPost(mkPayload('whoami')).then(function (r) {
-          if (r.ok) {
-            renderTodayEvents(r.today_events);
-            renderTodayHours(r.today_hours);
-            updateButtonStates(r.last_counted);
-          }
-        }).catch(function () {});
+        // 定位失敗屬於「根本沒送出去」，發生在 apiPost 之前，此時 startedAtMs 還是 null，
+        // confirmPunch 沒有意義（沒有東西可查）——維持統一失敗句，同仁可以直接放心重打。
+        if (startedAtMs === null) {
+          showStatus('status-warn', CLOCK_FAIL_MSG);
+          return;
+        }
+        // 送出之後才失敗：逾時／斷線／回應不是 JSON，一律「結果不明」，改用 whoami 查證
+        // （2026-09-21 新增，見 confirmPunch），不再直接假設失敗。
+        return confirmPunch(type, startedAtMs);
       })
       .then(function () { setBusy(false); }, function () { setBusy(false); });
   }
