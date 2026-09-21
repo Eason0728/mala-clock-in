@@ -20,11 +20,12 @@ STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in']
 # 每家店都必須有的 action（doPost 路由）
 ACTIONS = ['clock', 'whoami', 'sync_roster', 'get_roster', 'get_events', 'approve_device',
            'my_recent', 'mgr_day', 'mgr_approve', 'mgr_pending_devices', 'mgr_device_decision',
-           'set_shifts', 'mgr_add_employee', 'recent_hires']
+           'set_shifts', 'mgr_add_employee', 'recent_hires', 'backfill_missing_groups']
 # 每家店都必須有的函式
 FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'isTripDay',
          'nextEmpId', 'handleSetShifts', 'handleMgrAddEmployee', 'handleRecentHires',
-         'computeApprovalStatus', 'pairShifts', 'buildLatestApprovedMap']
+         'computeApprovalStatus', 'pairShifts', 'buildLatestApprovedMap',
+         'recomputeApprovalStatusOf', 'backfillMissingPunchGroups', 'statusDiffIsOnlyMissingGroup']
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
     'computeApprovalStatus 有 isTrip 參數': 'hadUnrecordedAttempts, isTrip)',
@@ -36,6 +37,12 @@ EXACT = {
     '出差空時段要擋':                        "error: 'trip_needs_periods'",
     '白名單外查薪酬假別表':                  'function leaveTypeAllowedByPayroll',
     'CONFIG 有 PAYROLL_API':                 'PAYROLL_API',
+    # 2026-09-21 少刷一組卡（許正昊 9/21）：中間漏刷一組上下班卡，頭尾兩張被配成一長段，
+    # pairShifts 標不出任何忘刷卡。三個片段缺任一個，那家店就是沒套到這批。
+    '少刷：常數':                            "const MISSING_GROUP_PREFIX = '少刷'",
+    '少刷：核定反向檢查':                    "notes.push(MISSING_GROUP_PREFIX + missingGroups + '組卡')",
+    '少刷：列入異常分類':                    "{ key: '少刷卡', prefixes: [MISSING_GROUP_PREFIX] }",
+    '少刷：回填預設 dry-run':                'body.apply === true',
 }
 
 bad = 0

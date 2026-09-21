@@ -346,6 +346,33 @@ function run() { addManager('王經理'); }
   - ⚠ **它只換 `status_text`**，`periods`／`approved_hours` 一律原封不動，核定時數不會因為重算而改變。
   - ⚠ 打卡從頭到尾沒進系統的日子（整批被擋、或忘刷卡沒補），重算後狀態仍然對不到段——但措辭會依上面的規則落在「打卡未入帳，主管補登」或「該段無打卡」，那是事實描述、不是 bug。
 
+### 一次性回填「少刷N組卡」（backfill_missing_groups，2026-09-21）
+
+反向檢查只在**主管按下核定的當下**跑，所以新規則只對之後的核定生效。已經核定完的日子不會自己變（許正昊 9/21 就停在「遲到2分、早退1分」），上面那支 `recheckPendingApprovalStatuses` 的前置篩選只看三種措辭，也篩不到它們。要把歷史補回來就跑這支：
+
+```bash
+# ① 先 dry-run，看它想改什麼（不帶 apply，一列都不會寫）
+curl -s -X POST 'APPS_SCRIPT網址' \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"backfill_missing_groups","admin_key":"你的ADMIN_KEY","from":"2026-09-01","to":"2026-09-30"}'
+
+# ② 確認 hits 沒問題，再帶 apply:true 跑第二次才真的寫入
+curl -s -X POST 'APPS_SCRIPT網址' \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"backfill_missing_groups","admin_key":"你的ADMIN_KEY","from":"2026-09-01","to":"2026-09-30","apply":true}'
+```
+
+- 回傳 `{scanned, fixed, hits:[{date,emp_id,name,from,to,periods,hours}], skipped:[{...,reason}], applied}`。
+- **預設 dry-run**：`apply` 不是 `true` 就只回報、不寫入。
+- **刻意不掛進每日 05:00 觸發器**：那等於在發薪前無聲地整批改寫狀態。這支只給人工跑。
+- 三道保守閘（`backfillMissingPunchGroups`）：
+  1. 只掃「核定時段 ≥2 段」且「狀態還沒有少刷字樣」的紀錄，其餘直接跳過。
+  2. 重算後**只接受「差別僅是多了少刷N組卡」**（`statusDiffIsOnlyMissingGroup`）；遲到分鐘數也跟著變的那種列進 `skipped` 不寫，不趁機改到別的。
+  3. 主管手動認定的遲到（狀態帶 `(認定)` 或「主管認定不計遲到」）一律不動，列進 `skipped`。
+- 寫入方式與 `recheckPendingApprovalStatuses` 相同：append-only、`periods`／`approved_hours` 原封不動只換 `status_text`、`manager_name` 加「（系統重算）」，所以看得出是系統補的，原紀錄也留著。
+- 區間防呆：日期須 `yyyy-MM-dd`、`to >= from`、跨度上限 `BACKFILL_MAX_DAYS`（366 天），違反回 `bad_date`／`bad_range`／`range_too_wide`。
+- ⚠ 補完狀態之後，**全勤的忘刷次數要等薪資那邊重新歸集才會跟著變**（`payCollect` 是每次結算時讀 `approved` 現況算的，不是快照），所以順序是「先回填、再結算」。
+
 ### 試算表分頁
 
 - `approved`：`date, emp_id, name, periods, approved_hours, status_text, manager_name, entered_at`。只追加不覆蓋；同一 (date,emp_id) 若有多筆，一律以 `entered_at` 最新的為準（讀取端處理，分頁本身不刪舊列）。`periods` 欄格式為 `"09:00-13:30,14:00-17:30"`。

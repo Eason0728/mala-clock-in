@@ -17,6 +17,8 @@
  * 另有 GAS 專屬 action（mock_server 不實作，因為依賴試算表分頁）：
  *   rebuild_month {admin_key, ym?}（ym 缺省＝當月，格式 yyyy-MM）→ 重算該月出勤月表分頁
  *   recheck_approvals {admin_key}（2026-07-19 新增）→ 手動觸發「該段無打卡」核定狀態重算
+ *   backfill_missing_groups {admin_key, from, to, apply?}（2026-09-21 新增）→ 一次性回填
+ *     「少刷N組卡」到已核定完的歷史紀錄；不帶 apply 為 dry-run，只回報不寫入
  *   setup_triggers {admin_key}（2026-08-24 新增）→ 建立／重建月表的兩個時間觸發器（冪等）
  *   （平常由每日 05:00 觸發器 dailyMonthlyRebuild 自動跑，這個 action 只供部署後手動驗證）
  */
@@ -224,6 +226,7 @@ function doPost(e) {
     approve_device: handleApproveDevice,
     rebuild_month: handleRebuildMonth,
     recheck_approvals: handleRecheckApprovals,
+    backfill_missing_groups: handleBackfillMissingGroups,
     setup_triggers: handleSetupTriggers,
     my_recent: handleMyRecent,
     mgr_day: handleMgrDay,
@@ -2430,6 +2433,45 @@ const RECHECK_MARK = '（系統重算）';
  * 原封不動照抄，只換 status_text，manager_name 加註記、entered_at 設為現在。
  * 由 dailyMonthlyRebuild（05:00 觸發器）呼叫；也開放 recheck_approvals 管理 API 供手動驗證。
  */
+/**
+ * 單筆核定紀錄的重算（2026-09-21 從 recheckPendingApprovalStatuses 抽出，行為不變）。
+ * recheckPendingApprovalStatuses 與 backfillMissingPunchGroups 共用，禁止各自重寫判斷。
+ * 回 { skip:'no_periods'|'manual_late' } ＝這筆不該動；回 { name, newStatusText } ＝算得出新狀態
+ * （newStatusText 可能與原本相同，由呼叫端決定要不要寫）。
+ */
+function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) {
+  const rawPeriods = parsePeriodsStr(rec.periods);
+  if (!rawPeriods.length) return { skip: 'no_periods' }; // 整天請假無時段，跳過
+
+  const periods = rawPeriods.map(function (p) {
+    const startMs = hmToMs(date, p.start);
+    let endMs = hmToMs(date, p.end);
+    if (endMs <= startMs) endMs += 24 * 3600000; // 跨夜段：end<=start 視為+1天（與 handleMgrApprove 同規則）
+    return { start: p.start, end: p.end, startMs: startMs, endMs: endMs };
+  });
+  const punch = dayPunchSegments(eventRows, empId, date);
+  const punchWithMs = punch.segments.map(function (s) {
+    const outDate = s.cross ? addDaysStr(date, 1) : date;
+    return {
+      in: s.in, out: s.out,
+      inMs: s.in ? hmToMs(date, s.in) : null,
+      outMs: s.out ? hmToMs(outDate, s.out) : null,
+    };
+  });
+  // 名冊的名字優先（有人改過名時 approved 上是舊名），查不到才退回 approved 那筆的 name。
+  const rosterNow = findRosterByEmpId(rosterRows, empId);
+  // ⚠ 主管手動認定的遲到不能被重算洗掉——原狀態帶「(認定)」就整筆跳過。
+  const st0 = String(rec.status_text || '');
+  if (st0.indexOf(MANUAL_LATE_MARK) !== -1 || st0.indexOf(NO_LATE_NOTE) !== -1) return { skip: 'manual_late' };
+
+  return {
+    name: rosterNow ? rosterNow.name : rec.name,
+    newStatusText: computeApprovalStatus(periods, punchWithMs,
+      unrecordedAttemptCount(eventRows, empId, date) > 0,
+      isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name)),
+  };
+}
+
 function recheckPendingApprovalStatuses() {
   const ss = getSS();
   const approvedSheet = ss.getSheetByName('approved');
@@ -2455,45 +2497,134 @@ function recheckPendingApprovalStatuses() {
       // （「少刷N組卡」同理：中間那組卡事後入帳，長段會被拆開，少刷就該自動消失）
       if (statusText.indexOf(NO_PUNCH_NOTE) === -1 && statusText.indexOf(NOT_RECORDED_NOTE) === -1 &&
           statusText.indexOf(MISSING_GROUP_PREFIX) === -1) return;
-      const rawPeriods = parsePeriodsStr(rec.periods);
-      if (!rawPeriods.length) return; // 整天請假無時段，跳過
+      const r = recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec);
+      if (r.skip === 'no_periods') return;
       checked++;
+      if (r.skip) return;
+      if (r.newStatusText === statusText) return; // 還是沒打卡，維持原樣，下次再檢查
 
-      const periods = rawPeriods.map(function (p) {
-        const startMs = hmToMs(date, p.start);
-        let endMs = hmToMs(date, p.end);
-        if (endMs <= startMs) endMs += 24 * 3600000; // 跨夜段：end<=start 視為+1天（與 handleMgrApprove 同規則）
-        return { start: p.start, end: p.end, startMs: startMs, endMs: endMs };
-      });
-      const punch = dayPunchSegments(eventRows, empId, date);
-      const punchWithMs = punch.segments.map(function (s) {
-        const outDate = s.cross ? addDaysStr(date, 1) : date;
-        return {
-          in: s.in, out: s.out,
-          inMs: s.in ? hmToMs(date, s.in) : null,
-          outMs: s.out ? hmToMs(outDate, s.out) : null,
-        };
-      });
-      // 名冊的名字優先（有人改過名時 approved 上是舊名），查不到才退回 approved 那筆的 name。
-      // ⚠ 下面的 const roster 在這行之後才宣告，不能拿來用（暫時性死區），所以自己查一次。
-      const rosterNow = findRosterByEmpId(rosterRows, empId);
-      // ⚠ 主管手動認定的遲到不能被隔天 05:00 的重算洗掉——原狀態帶「(認定)」就整筆跳過。
-      const st0 = String(statusText);
-      if (st0.indexOf(MANUAL_LATE_MARK) !== -1 || st0.indexOf(NO_LATE_NOTE) !== -1) return;
-      const newStatusText = computeApprovalStatus(periods, punchWithMs,
-        unrecordedAttemptCount(eventRows, empId, date) > 0,
-        isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name));
-      if (newStatusText === statusText) return; // 還是沒打卡，維持原樣，下次再檢查
-
-      const roster = rosterNow;
       approvedSheet.appendRow([
-        date, empId, roster ? roster.name : rec.name, rec.periods, rec.approved_hours,
-        newStatusText, String(rec.manager_name || '') + RECHECK_MARK, nowTaipeiIso(),
+        date, empId, r.name, rec.periods, rec.approved_hours,
+        r.newStatusText, String(rec.manager_name || '') + RECHECK_MARK, nowTaipeiIso(),
       ]);
       fixed++;
     });
   });
   return { checked: checked, fixed: fixed };
+}
+
+// 一次性回填的最大天數區間（防呆：手滑打成 2020 年不會把整份 approved 掃爆）
+const BACKFILL_MAX_DAYS = 366;
+
+/**
+ * 判斷「重算前後的差別，是不是只多了少刷N組卡」。
+ * 回填只接受這種差別——其餘（例如遲到分鐘數也跟著變）一律不寫，列進 skipped 讓人自己看。
+ * 這是刻意保守：回填的目的是補上新規則抓到的少刷，不是趁機把舊狀態整批改掉。
+ */
+function statusDiffIsOnlyMissingGroup(oldText, newText) {
+  function strip(t) {
+    const kept = String(t || '').split('、').filter(function (x) {
+      return x && x !== '正常' && x.indexOf(MISSING_GROUP_PREFIX) !== 0;
+    });
+    return kept.length ? kept.join('、') : '正常';
+  }
+  const added = String(newText || '').split('、').some(function (x) {
+    return x.indexOf(MISSING_GROUP_PREFIX) === 0;
+  });
+  return added && strip(newText) === strip(oldText);
+}
+
+/**
+ * 一次性回填「少刷N組卡」（2026-09-21 新增）。
+ *
+ * 為什麼需要：computeApprovalStatus 的反向檢查只在「主管按下核定的當下」跑，所以新規則
+ * 只對**之後**的核定生效。已經核定完的日子（例如許正昊 9/21，狀態停在「遲到2分、早退1分」）
+ * 不會自己變，而 recheckPendingApprovalStatuses 的前置篩選只看三種措辭，也篩不到它們。
+ * 9 月薪資要發，全勤的忘刷次數就會少算——所以需要一支把歷史補回來的。
+ *
+ * 刻意**不**掛進每日 05:00 觸發器：那會在發薪前無聲地整批改寫狀態。這支只給人工跑一次。
+ *
+ * 保守的地方（三道）：
+ *   1. 只掃「核定時段 ≥2 段」且「狀態還沒有少刷字樣」的紀錄——其餘直接跳過，掃得很快。
+ *   2. 重算後只接受「差別僅是多了少刷N組卡」的（statusDiffIsOnlyMissingGroup），
+ *      其他變化列進 skipped 不寫，不趁機改到遲到／早退。
+ *   3. **預設 dry-run**：apply 不是 true 就只回報要改什麼，一列都不寫。
+ *
+ * 寫入方式與 recheckPendingApprovalStatuses 完全相同（append-only、periods／approved_hours
+ * 原封不動、manager_name 加「（系統重算）」），所以看得出來是系統補的、也留得住原紀錄。
+ *
+ * @param {string} fromDate 'yyyy-MM-dd'
+ * @param {string} toDate   'yyyy-MM-dd'（含當天）
+ * @param {boolean} apply   true 才真的寫入；其餘一律 dry-run
+ */
+function backfillMissingPunchGroups(fromDate, toDate, apply) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fromDate)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(toDate))) {
+    return { ok: false, error: 'bad_date' };
+  }
+  if (String(toDate) < String(fromDate)) return { ok: false, error: 'bad_range' };
+  const span = Math.round((new Date(toDate + 'T00:00:00Z').getTime()
+                         - new Date(fromDate + 'T00:00:00Z').getTime()) / 86400000) + 1;
+  if (span > BACKFILL_MAX_DAYS) return { ok: false, error: 'range_too_wide', max_days: BACKFILL_MAX_DAYS };
+
+  const ss = getSS();
+  const approvedSheet = ss.getSheetByName('approved');
+  if (!approvedSheet) return { ok: false, error: 'no_approved_sheet' };
+
+  const approvedMap = buildLatestApprovedMap(readSheetAsObjects(approvedSheet).rows);
+  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
+
+  const hits = [];
+  const skipped = [];
+  let scanned = 0;
+
+  for (let d = String(fromDate); d <= String(toDate); d = addDaysStr(d, 1)) {
+    const dayMap = approvedMap[d];
+    if (!dayMap) continue;
+    const date = d;
+    Object.keys(dayMap).forEach(function (empId) {
+      const rec = dayMap[empId];
+      const statusText = String(rec.status_text || '');
+      if (statusText.indexOf(MISSING_GROUP_PREFIX) !== -1) return;   // 已經標過了
+      if (parsePeriodsStr(rec.periods).length < 2) return;           // 單段班不可能少刷一整組
+      scanned++;
+
+      const r = recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec);
+      if (r.skip) {
+        if (r.skip === 'manual_late') {
+          skipped.push({ date: date, emp_id: empId, name: rec.name, from: statusText, reason: '主管手動認定，不自動改' });
+        }
+        return;
+      }
+      if (r.newStatusText === statusText) return;                    // 沒變，本來就對
+      if (!statusDiffIsOnlyMissingGroup(statusText, r.newStatusText)) {
+        skipped.push({ date: date, emp_id: empId, name: r.name, from: statusText, to: r.newStatusText,
+                       reason: '不只少刷有變，請人工確認' });
+        return;
+      }
+      hits.push({ date: date, emp_id: empId, name: r.name, from: statusText, to: r.newStatusText,
+                  periods: String(rec.periods || ''), hours: rec.approved_hours });
+      if (apply === true) {
+        approvedSheet.appendRow([
+          date, empId, r.name, rec.periods, rec.approved_hours,
+          r.newStatusText, String(rec.manager_name || '') + RECHECK_MARK, nowTaipeiIso(),
+        ]);
+      }
+    });
+  }
+
+  return { ok: true, from: String(fromDate), to: String(toDate), applied: apply === true,
+           scanned: scanned, fixed: hits.length, hits: hits, skipped: skipped };
+}
+
+/**
+ * API：{action:'backfill_missing_groups', admin_key, from, to, apply?}
+ * 一次性回填「少刷N組卡」。**預設 dry-run**——要真的寫入必須明確帶 apply:true。
+ * 先不帶 apply 跑一次看 hits 對不對，再帶 apply:true 跑第二次。
+ */
+function handleBackfillMissingGroups(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  return backfillMissingPunchGroups(body.from, body.to, body.apply === true);
 }
 
 /**
