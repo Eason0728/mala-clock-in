@@ -646,6 +646,7 @@ def hm_to_ms(date_str, hm):
 # 「核定時段對不到打卡段」有兩種成因，措辭要分開（與 Code.gs 同步，2026-08-19）
 NO_PUNCH_NOTE = "該段無打卡"
 NOT_RECORDED_NOTE = "打卡未入帳，主管補登"
+MISSING_GROUP_PREFIX = "少刷"   # 「少刷N組卡」：中間漏刷一組上下班卡（見 compute_approval_status）
 
 
 def unrecorded_attempt_count(data, emp_id, date_str):
@@ -661,6 +662,7 @@ def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=Fal
     full_segs = [s for s in punch_segments if s["in_ms"] is not None and s["out_ms"] is not None]
     notes = []
     used = set()
+    by_idx = {}   # 打卡段 index → 配到它的核定時段（供下方「少刷N組卡」反向檢查）
 
     for p in periods:
         best_i, best_overlap = -1, 0
@@ -674,12 +676,26 @@ def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=Fal
                 notes.append(note)
             continue
         used.add(best_i)
+        by_idx.setdefault(best_i, []).append(p)
         seg = full_segs[best_i]
         # B3：Python round() 是銀行家捨入，與 JS Math.round 不同；改用 floor(x+0.5)（值恆非負，即四捨五入）
         if seg["in_ms"] > p["start_ms"]:
             notes.append("遲到{}分".format(int(math.floor((seg["in_ms"] - p["start_ms"]) / 60000 + 0.5))))
         if seg["out_ms"] < p["end_ms"]:
             notes.append("早退{}分".format(int(math.floor((p["end_ms"] - seg["out_ms"]) / 60000 + 0.5))))
+
+    # 「少刷N組卡」（2026-09-21）：中間有間隔的兩個核定時段配到同一條打卡段 → 中間那組
+    # 上下班卡沒刷。間隔為 0 ＝主管把一段連續班拆成兩段核定，同仁本來就不必刷卡，不算少刷。
+    missing_groups = 0
+    for ps in by_idx.values():
+        ps = sorted(ps, key=lambda x: x["start_ms"])
+        max_end = ps[0]["end_ms"]
+        for prev_i in range(1, len(ps)):
+            if ps[prev_i]["start_ms"] > max_end:
+                missing_groups += 1
+            max_end = max(max_end, ps[prev_i]["end_ms"])
+    if missing_groups:
+        notes.append("{}{}組卡".format(MISSING_GROUP_PREFIX, missing_groups))
 
     if len(full_segs) > len(used):
         notes.append("有多出的打卡段")

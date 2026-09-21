@@ -1452,7 +1452,8 @@ function handleMgrDay(body) {
  * → 驗證格式、計算核定時數與遲到早退判定，append 到 approved 分頁（只追加不覆蓋），
  *   回傳計算結果讓主管頁立即顯示。
  * 比對規則：每個輸入時段找重疊最大的打卡段；該段無任何打卡→「該段無打卡」；
- *   打卡段多於輸入段→「有多出的打卡段」；早到晚走不加時數、算正常（無寬限：遲到/早退各自標記分鐘數）。
+ *   打卡段多於輸入段→「有多出的打卡段」；中間有間隔的兩個輸入段配到同一條打卡段
+ *   →「少刷N組卡」；早到晚走不加時數、算正常（無寬限：遲到/早退各自標記分鐘數）。
  */
 /** 白名單外的假別 → 向薪酬假別表（payroll_leave_type，資料驅動的正本）即時確認（2026-08-23）。
  *  背景：LEAVE_TYPES 是寫死的送出白名單，但核定頁的下拉已改為資料驅動——只在表上加新假別、
@@ -1617,6 +1618,10 @@ const MONTHLY_PAIR_WINDOW_HOURS = 16;
 const REJECTED_IN_BREAK_MIN = 60;
 const REJECTED_IN_MISTAP_SEC = 120;  // 被擋的上班卡若在此秒數內就打了成功的下班卡 → 視為按錯鍵，忽略這張（不當新段起點）
 const WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
+// 「少刷N組卡」的字首。⚠ 宣告位置不可往後搬：ABNORMAL_CATEGORIES 是頂層 const、載入當下就求值，
+// 放到它後面會 TDZ ReferenceError，整支 Code.gs 起不來。語意上它跟 NO_PUNCH_NOTE 同一組，
+// 那邊留了指路註解。
+const MISSING_GROUP_PREFIX = '少刷';
 // 備註欄中屬於「異常」的字樣（列入異常筆數統計、明細標紅）；假別不算異常
 // 計入月表「異常筆數」的分類。2026-08-19 Eason 定義：忘刷卡、遲到、早退、病假、事假
 // （＋沿用既有的新裝置待核准）。
@@ -1633,6 +1638,9 @@ const WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
 const ABNORMAL_CATEGORIES = [
   { key: '上班忘刷卡', prefixes: ['上班忘刷卡'] },
   { key: '下班忘刷卡', prefixes: ['下班忘刷卡'] },
+  // 「少刷N組卡」＝中間漏刷一組上下班卡（見 computeApprovalStatus）。本質就是忘刷卡，
+  // 只是 pairShifts 從打卡事件看不出來、要靠核定時段比對才抓得到，所以跟上面兩類同等對待。
+  { key: '少刷卡', prefixes: [MISSING_GROUP_PREFIX] },
   { key: '遲到早退', prefixes: ['遲到', '早退'] },
   { key: '病假', prefixes: ['病假'] },
   { key: '事假', prefixes: ['事假'] },
@@ -1843,6 +1851,7 @@ function dayReferenceIncomplete(segments, dateStr, todayStr) {
  * 規則（無寬限）：每個輸入時段找重疊最大的打卡段；in 晚於時段起點→「遲到X分」；
  * out 早於時段終點→「早退X分」；早到晚走不標記。該段完全找不到重疊打卡→「該段無打卡」。
  * 打卡的完整段（in+out 皆有）多於被用掉的輸入段數→再加一句「有多出的打卡段」。
+ * 反向（2026-09-21 新增）：中間有間隔的兩個輸入段配到**同一條**打卡段→「少刷N組卡」。
  * @param {Array} periods [{startMs,endMs}]
  * @param {Array} punchSegments dayPunchSegments().segments 各自加上 inMs/outMs（未配對為 null）
  */
@@ -1851,6 +1860,7 @@ function dayReferenceIncomplete(segments, dateStr, todayStr) {
 //   2. 真的沒打（忘刷卡）→ 沿用原本的說法
 // 分辨依據＝當天有沒有 status!=='ok' 的事件（與 mgr_day 的 attempts 同一口徑）。
 const NO_PUNCH_NOTE = '該段無打卡';
+// 「少刷N組卡」的字首 MISSING_GROUP_PREFIX 宣告在 ABNORMAL_CATEGORIES 上方（載入順序所迫，見那裡）。
 const MANUAL_LATE_MARK = '(認定)';   // 主管手動填的遲到，與系統比對出來的區分
 const NO_LATE_NOTE = '主管認定不計遲到';   // 系統判有遲到、但主管判定不算（填 0 觸發）
 const TRIP_NOTE = '出差';   // 出差當天打不了卡，狀態標這個而不是「該段無打卡」
@@ -1917,6 +1927,7 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
   const notes = [];
   const usedIdx = {};
+  const byIdx = {};   // 打卡段 index → 配到它的核定時段（供下方「少刷N組卡」反向檢查）
 
   periods.forEach(function (p) {
     let bestIdx = -1;
@@ -1934,10 +1945,30 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
       return;
     }
     usedIdx[bestIdx] = true;
+    (byIdx[bestIdx] = byIdx[bestIdx] || []).push(p);
     const seg = fullSegs[bestIdx];
     if (seg.inMs > p.startMs) notes.push('遲到' + Math.round((seg.inMs - p.startMs) / 60000) + '分');
     if (seg.outMs < p.endMs) notes.push('早退' + Math.round((p.endMs - seg.outMs) / 60000) + '分');
   });
+
+  // 「少刷N組卡」（2026-09-21 新增，許正昊 9/21 案例）：中間漏刷一組上下班卡時，頭尾那兩張卡
+  // 在 pairShifts 眼裡是完整的一長段（16 小時內的 in 配下一筆 out），unmatchedIns/Outs 都空的
+  // → 整天一個忘刷卡都標不出來。唯一看得出破綻的地方就是這裡：兩個中間有間隔的核定時段，
+  // 重疊最大的打卡段竟然是同一條。
+  // ⚠ 間隔＝0（前一段的終點就是下一段的起點）不算：那是主管把一段連續班拆成兩段核定
+  //   （例：分開算加班時數），同仁中間本來就不必刷卡，標少刷是冤枉人。
+  // ⚠ 只看完整段（fullSegs）。未配對的一端在 pairShifts 已經是忘刷卡了，不在這裡重複標。
+  // ⚠ 遲到／早退照原樣算不動：那兩個數字來自真實的頭尾打卡時間，仍然是對的。
+  let missingGroups = 0;
+  Object.keys(byIdx).forEach(function (k) {
+    const ps = byIdx[k].slice().sort(function (a, b) { return a.startMs - b.startMs; });
+    let maxEnd = ps[0].endMs;
+    for (let i = 1; i < ps.length; i++) {
+      if (ps[i].startMs > maxEnd) missingGroups++;
+      maxEnd = Math.max(maxEnd, ps[i].endMs);
+    }
+  });
+  if (missingGroups) notes.push(MISSING_GROUP_PREFIX + missingGroups + '組卡');
 
   if (fullSegs.length > Object.keys(usedIdx).length) notes.push('有多出的打卡段');
   return notes.length ? notes.join('、') : '正常';
@@ -2393,8 +2424,8 @@ const RECHECK_MARK = '（系統重算）';
  * 核定時若下班段還沒打卡（開著的 in、out 為 null），這段不算「完整段」，主管核定當下比對
  * 不到就會誤判「該段無打卡」——核定時數本身是主管輸入時段直接算的，不受影響，但狀態文字
  * 是錯的，且核定是一次性快照，之後同仁補打卡也不會自動回頭修正（見 2026-07-19 C 君案例）。
- * 此函式用「當下最新」打卡資料，重新比對近 RECHECK_STATUS_DAYS 天內狀態含「該段無打卡」的
- * 核定紀錄；比對得到（新狀態≠舊狀態）就補一筆狀態修正過的核定紀錄——沿用 approved 分頁
+ * 此函式用「當下最新」打卡資料，重新比對近 RECHECK_STATUS_DAYS 天內狀態含「該段無打卡」
+ * （或「打卡未入帳」「少刷N組卡」）的核定紀錄；比對得到（新狀態≠舊狀態）就補一筆狀態修正過的核定紀錄——沿用 approved 分頁
  * append-only、同 (date,emp_id) 取 entered_at 最新為準的既有設計，periods／approved_hours
  * 原封不動照抄，只換 status_text，manager_name 加註記、entered_at 設為現在。
  * 由 dailyMonthlyRebuild（05:00 觸發器）呼叫；也開放 recheck_approvals 管理 API 供手動驗證。
@@ -2420,8 +2451,10 @@ function recheckPendingApprovalStatuses() {
     Object.keys(dayMap).forEach(function (empId) {
       const rec = dayMap[empId];
       const statusText = String(rec.status_text || '');
-      // 兩種措辭都要納入：待核准裝置事後被核准 → 卡會翻成 ok → 那天就真的比對得到了
-      if (statusText.indexOf(NO_PUNCH_NOTE) === -1 && statusText.indexOf(NOT_RECORDED_NOTE) === -1) return;
+      // 三種措辭都要納入：待核准裝置事後被核准 → 卡會翻成 ok → 那天就真的比對得到了
+      // （「少刷N組卡」同理：中間那組卡事後入帳，長段會被拆開，少刷就該自動消失）
+      if (statusText.indexOf(NO_PUNCH_NOTE) === -1 && statusText.indexOf(NOT_RECORDED_NOTE) === -1 &&
+          statusText.indexOf(MISSING_GROUP_PREFIX) === -1) return;
       const rawPeriods = parsePeriodsStr(rec.periods);
       if (!rawPeriods.length) return; // 整天請假無時段，跳過
       checked++;
