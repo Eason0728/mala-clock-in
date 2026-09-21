@@ -346,6 +346,25 @@ function run() { addManager('王經理'); }
   - ⚠ **它只換 `status_text`**，`periods`／`approved_hours` 一律原封不動，核定時數不會因為重算而改變。
   - ⚠ 打卡從頭到尾沒進系統的日子（整批被擋、或忘刷卡沒補），重算後狀態仍然對不到段——但措辭會依上面的規則落在「打卡未入帳，主管補登」或「該段無打卡」，那是事實描述、不是 bug。
 
+### 套補丁到四家店（deploy-to-clasp.py，2026-09-21）
+
+repo 的 `apps-script/Code.gs` 的 `CONFIG` 是 `PASTE_SPREADSHEET_ID_HERE`／`PASTE_ADMIN_KEY_HERE` 佔位符，**整份複製到 clasp 專案會把四家店的正式試算表 ID、ADMIN_KEY、店座標、`PAYROLL_API` 全部洗掉，打卡會整個掛**。所以每次改後端都得逐份手動套補丁——這支把那件事變成可重跑的動作：
+
+```bash
+cd ~/mala-clock-in && git fetch origin main        # 基準版要新，否則整批誤判成漂移
+cd ~/mala-gas/mala-clock-in && clasp pull          # 四個專案都先 pull
+python3 ~/mala-clock-in/tools/deploy-to-clasp.py           # dry-run，看會改什麼
+python3 ~/mala-clock-in/tools/deploy-to-clasp.py --apply   # 真的套進去
+python3 ~/mala-clock-in/tools/verify-store-backends.py     # 四家都要 ✓
+# 確認無誤後，各專案自己 clasp push
+```
+
+- 做法：拿 repo 的新版 `Code.gs`，把**該店現有檔案裡的 `CONFIG` 區塊原封不動接回去**。`Payroll.gs` 沒有店別專屬的值（無 `PASTE_`／`SPREADSHEET_ID`／`ADMIN_KEY`），整份覆蓋；套到哪個專案是用 `grep PAYROLL_HANDLERS` 找出來的，不是寫死的。
+- **預設 dry-run**，要 `--apply` 才寫檔；**不碰 clasp**（不 pull 也不 push——`clasp push` 照守則要先問過 Eason 再自己按）。
+- **漂移防護**：寫之前先確認「該店現有檔案 ＝ 基準版（預設 `origin/main`）＋ 該店 CONFIG」。對不起來就停下來印 diff、不覆蓋，除非 `--force`。這道是 2026-08-23「補丁被誤判成已套用 → 出差保護靜默失效」的解藥。
+- 寫完檢查成品不含 `PASTE_`，含就中止。
+- 「對不起來，沒動」是正常會遇到的：看過 diff 確定那些差異可以丟掉再 `--force`；該保留的先補進 repo 再重跑。**不要無腦 `--force`。**
+
 ### 一次性回填「少刷N組卡」（backfill_missing_groups，2026-09-21）
 
 反向檢查只在**主管按下核定的當下**跑，所以新規則只對之後的核定生效。已經核定完的日子不會自己變（許正昊 9/21 就停在「遲到2分、早退1分」），上面那支 `recheckPendingApprovalStatuses` 的前置篩選只看三種措辭，也篩不到它們。要把歷史補回來就跑這支：
