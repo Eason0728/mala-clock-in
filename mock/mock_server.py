@@ -647,6 +647,9 @@ def hm_to_ms(date_str, hm):
 NO_PUNCH_NOTE = "該段無打卡"
 NOT_RECORDED_NOTE = "打卡未入帳，主管補登"
 MISSING_GROUP_PREFIX = "少刷"   # 「少刷N組卡」：中間漏刷一組上下班卡（見 compute_approval_status）
+# 「不打卡休息帶」（與 Code.gs 的 CONFIG.NO_PUNCH_BREAK_* 同一件事）。mock 模擬的是光復＝沒有，
+# 所以是 None；要測央廚那種店，在測試裡自己傳 break_window 進 compute_approval_status。
+NO_PUNCH_BREAK = None
 
 
 def unrecorded_attempt_count(data, emp_id, date_str):
@@ -655,7 +658,7 @@ def unrecorded_attempt_count(data, emp_id, date_str):
                if e["emp_id"] == emp_id and e["ts"][:10] == date_str and e.get("status") != "ok")
 
 
-def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=False):
+def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=False, break_window=None):
     """比對主管輸入時段 vs 打卡段，回傳狀態字串（與 Code.gs computeApprovalStatus 同步）。
     periods: [{"start_ms","end_ms"}]；punch_segments: [{"in_ms","out_ms"}]（未配對為 None）。
     had_unrecorded_attempts: 當天有沒有送出但沒入帳的打卡，決定對不到段時的措辭。"""
@@ -691,7 +694,9 @@ def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=Fal
         ps = sorted(ps, key=lambda x: x["start_ms"])
         max_end = ps[0]["end_ms"]
         for prev_i in range(1, len(ps)):
-            if ps[prev_i]["start_ms"] > max_end:
+            gap_s, gap_e = max_end, ps[prev_i]["start_ms"]
+            explained = bool(break_window) and gap_s < break_window["end_ms"] and gap_e > break_window["start_ms"]
+            if gap_e > gap_s and not explained:
                 missing_groups += 1
             max_end = max(max_end, ps[prev_i]["end_ms"])
     if missing_groups:

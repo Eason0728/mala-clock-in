@@ -28,7 +28,7 @@ FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'is
          'recomputeApprovalStatusOf', 'backfillMissingPunchGroups', 'statusDiffIsOnlyMissingGroup']
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
-    'computeApprovalStatus 有 isTrip 參數': 'hadUnrecordedAttempts, isTrip)',
+    'computeApprovalStatus 有 isTrip＋休息帶參數': 'hadUnrecordedAttempts, isTrip, breakWindow)',
     '出差在假別白名單':                      "'出差'",
     '名冊有 shift_in／shift_out':            "'shift_in', 'shift_out'",
     '名冊有 created_at／created_by':         "'created_at', 'created_by'",
@@ -43,6 +43,18 @@ EXACT = {
     '少刷：核定反向檢查':                    "notes.push(MISSING_GROUP_PREFIX + missingGroups + '組卡')",
     '少刷：列入異常分類':                    "{ key: '少刷卡', prefixes: [MISSING_GROUP_PREFIX] }",
     '少刷：回填預設 dry-run':                'body.apply === true',
+    # 2026-09-22 不打卡休息帶：央廚每天預填就是兩段，沒有這個排除會被整店冤枉標少刷。
+    '少刷：休息帶排除':                      'gapExplainedByBreak(maxEnd, ps[i].startMs, breakWindow)',
+    '少刷：休息帶由呼叫端算好傳入':          'noPunchBreakWindow(date)',
+}
+
+# 各店專屬設定：CONFIG 的不打卡休息帶必須與 tools/build-store-pages.py 的 mgr_break 一致。
+# 只改一邊＝核定頁照樣挖缺口、後端卻把那個缺口當漏刷（或反過來，真的漏刷抓不到）。
+STORE_BREAK = {
+    'mala-clock-in':  ('', ''),            # 光復：排班浮動，沒有固定不打卡休息
+    'cf-clock-in':    ('12:00', '13:00'),  # 央廚：規定中午休息不打卡
+    'hq-clock-in':    ('', ''),            # 總部
+    'mztjs-clock-in': ('', ''),            # 金山：Eason 2026-09-08 指定不設
 }
 
 bad = 0
@@ -59,6 +71,14 @@ for st in STORES:
     if miss_a: print(f'    缺 action：{"、".join(miss_a)}')
     if miss_f: print(f'    缺函式：{"、".join(miss_f)}')
     if miss_e: print(f'    缺片段：{"、".join(miss_e)}')
+    want_bs, want_be = STORE_BREAK.get(st, ('', ''))
+    for key, want in (('NO_PUNCH_BREAK_START', want_bs), ('NO_PUNCH_BREAK_END', want_be)):
+        m = re.search(rf"^\s*{key}: '([^']*)'", src, re.M)
+        got = m.group(1) if m else None
+        if got != want:
+            print(f'    ⚠ {key} ＝ {got!r}，應為 {want!r}'
+                  f'（要與 build-store-pages.py 的 mgr_break 一致）'); ok = False
+
     # 機敏值必須是真值不是佔位符（覆蓋錯會把正式金鑰洗掉）
     if 'PASTE_' in src:
         print('    ⚠ 有 PASTE_ 佔位符——這份檔案不能推上去，會洗掉正式金鑰'); ok = False

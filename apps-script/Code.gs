@@ -36,6 +36,14 @@ const CONFIG = {
   // 就以個人的為準。兩者都留空＝核定頁維持空白，主管自己填（＝改版前的行為）。
   DEFAULT_SHIFT_IN: '',
   DEFAULT_SHIFT_OUT: '',
+  // 「不打卡休息帶」（2026-09-22）：該店規定休息時間不打卡才填，例：央廚 '12:00'／'13:00'。
+  // **只影響「少刷N組卡」的判定**——核定時段之間的空檔若與這段重疊，視為休息造成的、不算漏刷；
+  // 時數計算一律不碰（核定時數永遠等於畫面上的時段相加，系統不做任何隱形加減）。
+  // 留空＝該店沒有不打卡休息（光復／總部／金山），任何空檔都算少刷。
+  // ⚠ 要與 tools/build-store-pages.py 的 mgr_break 同一組值：那邊管核定頁「預填挖缺口」，
+  //    這邊管「這個缺口算不算漏刷」。只改一邊＝央廚整店每天被冤枉標少刷。
+  NO_PUNCH_BREAK_START: '',
+  NO_PUNCH_BREAK_END: '',
   // 薪酬後端（2026-08-23）：值班核定送出的假別若不在本檔 LEAVE_TYPES 白名單，
   // 會即時向薪酬假別表（payroll_leave_type，資料驅動的正本）確認一次再放行——
   // 在表上加新假別不必再改三家店的後端。光復＝薪資模組掛在同一個專案，兩者留空直接查；
@@ -1555,7 +1563,8 @@ function handleMgrApprove(body) {
     });
     statusText = computeApprovalStatus(periods, punchWithMs,
       unrecordedAttemptCount(eventRows, body.emp_id, date) > 0,
-      String(body.leave_type || '').trim() === TRIP_NOTE);
+      String(body.leave_type || '').trim() === TRIP_NOTE,
+      noPunchBreakWindow(date));
     // 主管手動認定的遲到分鐘覆蓋系統判定（打卡沒入帳時系統算不出來）
     statusText = applyManualLate(statusText, body.late_min);
     periodsStr = rawPeriods.map(function (p) { return p.start + '-' + p.end; }).join(',');
@@ -1926,7 +1935,27 @@ function unrecordedAttemptCount(eventRows, empId, dateStr) {
   return n;
 }
 
-function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip) {
+/**
+ * 該店「不打卡休息帶」在指定日期的毫秒區間；沒設定回 null。
+ * 只給「少刷N組卡」用。呼叫端一律傳這個進 computeApprovalStatus，不要各自算。
+ */
+function noPunchBreakWindow(date) {
+  const bs = String(CONFIG.NO_PUNCH_BREAK_START || '').trim();
+  const be = String(CONFIG.NO_PUNCH_BREAK_END || '').trim();
+  if (!bs || !be) return null;
+  const startMs = hmToMs(date, bs);
+  let endMs = hmToMs(date, be);
+  if (endMs <= startMs) endMs += 24 * 3600000;   // 跨夜休息帶（目前沒有，但別讓它變成負區間）
+  return { startMs: startMs, endMs: endMs };
+}
+
+/** 兩段核定之間的空檔，是不是該店那段「規定不打卡」的休息造成的（有重疊就算）。 */
+function gapExplainedByBreak(gapStartMs, gapEndMs, breakWindow) {
+  if (!breakWindow) return false;
+  return gapStartMs < breakWindow.endMs && gapEndMs > breakWindow.startMs;
+}
+
+function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip, breakWindow) {
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
   const notes = [];
   const usedIdx = {};
@@ -1960,6 +1989,11 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
   // 重疊最大的打卡段竟然是同一條。
   // ⚠ 間隔＝0（前一段的終點就是下一段的起點）不算：那是主管把一段連續班拆成兩段核定
   //   （例：分開算加班時數），同仁中間本來就不必刷卡，標少刷是冤枉人。
+  // ⚠⚠ 該店若有「規定不打卡的休息帶」（CONFIG.NO_PUNCH_BREAK_*，目前只有央廚 12:00–13:00），
+  //   與它重疊的空檔一律不算。央廚同仁**照規定就是不刷中午那組卡**，而核定頁的預填本來就把
+  //   休息帶挖成缺口 → 不排除的話，央廚每一位、每一個上班日都會被標少刷1組卡，全勤直接歸零。
+  //   ⚠ 不能改用「空檔短於 N 分鐘就不算」來閃：央廚休息是 60 分，許正昊漏刷的那格也是 60 分
+  //   （14:30–15:30），長度上完全分不開，只有「這家店規定要不要刷」分得開。
   // ⚠ 只看完整段（fullSegs）。未配對的一端在 pairShifts 已經是忘刷卡了，不在這裡重複標。
   // ⚠ 遲到／早退照原樣算不動：那兩個數字來自真實的頭尾打卡時間，仍然是對的。
   let missingGroups = 0;
@@ -1967,7 +2001,7 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
     const ps = byIdx[k].slice().sort(function (a, b) { return a.startMs - b.startMs; });
     let maxEnd = ps[0].endMs;
     for (let i = 1; i < ps.length; i++) {
-      if (ps[i].startMs > maxEnd) missingGroups++;
+      if (ps[i].startMs > maxEnd && !gapExplainedByBreak(maxEnd, ps[i].startMs, breakWindow)) missingGroups++;
       maxEnd = Math.max(maxEnd, ps[i].endMs);
     }
   });
@@ -2468,7 +2502,8 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) 
     name: rosterNow ? rosterNow.name : rec.name,
     newStatusText: computeApprovalStatus(periods, punchWithMs,
       unrecordedAttemptCount(eventRows, empId, date) > 0,
-      isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name)),
+      isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name),
+      noPunchBreakWindow(date)),
   };
 }
 

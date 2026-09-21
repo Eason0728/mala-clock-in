@@ -33,6 +33,9 @@ const ms=hm=>new Date(D+'T'+hm+':00+08:00').getTime();
 const per=(a,b)=>({startMs:ms(a),endMs:ms(b)});
 const seg=(a,b)=>({inMs:a?ms(a):null,outMs:b?ms(b):null});
 const cas=(periods,segs)=>call('computeApprovalStatus',periods,segs,false,false);
+// 帶「不打卡休息帶」的版本（央廚那種店）。第五參數由呼叫端用 noPunchBreakWindow(date) 算好傳進來。
+const bw=(a,b)=>({startMs:ms(a),endMs:ms(b)});
+const casB=(periods,segs,win)=>call('computeApprovalStatus',periods,segs,false,false,win);
 
 console.log('══ 核定比對：少刷一組卡抓不抓得到 ══');
 // 許正昊案例本尊
@@ -98,6 +101,25 @@ chk('  還是同一天 → 忘刷1天',            c.forget_day, 1);
 c=collect('正常');
 chk('  對照：正常 → 忘刷0次',            c.forget_punch, 0);
 chk('  對照：正常 → 忘刷0天',            c.forget_day, 0);
+
+console.log('\n══ 不打卡休息帶：央廚不可以被冤枉（2026-09-22 補）══');
+/* 央廚規定 12:00–13:00 休息不打卡，而核定頁的預填本來就把休息帶挖成缺口＝每天都是兩段。
+ * 沒有這個排除，央廚每一位同仁、每一個上班日都會被標少刷1組卡，全勤直接歸零。
+ * ⚠ 不能改用「空檔短於 N 分鐘不算」來閃：央廚休息 60 分、許正昊漏刷那格也是 60 分，
+ *   長度上完全分不開，只有「這家店規定要不要刷」分得開——所以判準一定要是門市設定。*/
+const CFBREAK=bw('12:00','13:00');
+chk('  央廚 08:00-12:00＋13:00-17:00 一段打卡 → 正常',
+  casB([per('08:00','12:00'),per('13:00','17:00')],[seg('08:00','17:00')],CFBREAK), '正常');
+chk('  央廚 陳建樺 09:00-12:00＋13:00-17:30 → 正常',
+  casB([per('09:00','12:00'),per('13:00','17:30')],[seg('08:58','17:31')],CFBREAK), '正常');
+chk('  央廚 休息帶以外還有空檔 → 那個照抓',
+  casB([per('08:00','12:00'),per('13:00','15:00'),per('17:00','20:00')],[seg('08:00','20:00')],CFBREAK), '少刷1組卡');
+chk('  央廚 空檔比休息帶長（11:30-13:30）→ 重疊就當休息，不冤枉人',
+  casB([per('08:00','11:30'),per('13:30','17:00')],[seg('08:00','17:00')],CFBREAK), '正常');
+chk('  沒設休息帶的店（光復／金山）12-13 空檔照算',
+  casB([per('08:00','12:00'),per('13:00','17:00')],[seg('08:00','17:00')],null), '少刷1組卡');
+chk('  休息帶不影響遲到早退（數字仍來自真實頭尾卡）',
+  casB([per('08:00','12:00'),per('13:00','17:00')],[seg('08:05','16:50')],CFBREAK), '遲到5分、早退10分');
 
 console.log(`\n${f?'❌ 有失敗':'✅ 少刷一組卡全部正確'} (${p}/${p+f})`);
 process.exit(f?1:0);
