@@ -46,6 +46,15 @@ const PAY_SHEETS = {
   // 假別事件日（2026-08-23）：期限規則要有「事件那天」才算得出可請期間。
   // 例：婚假＝結婚登記日、產假／陪產假＝分娩日、流產假＝流產日。喪假無期限故不必填。
   leave_event: ['emp_id','name','store','code','event_date','memo','updated_at'],
+  // 損益系統快照（T14，mala-pnl-auto#15，2026-09-25 加）：「鎖定本月」時把前端算好的
+  // costTotals() 依穩定鍵整理後存一份，pnlPayroll 端點只讀這張表，不重算。
+  // 不含姓名／員工編號／逐人金額——support_json 只到「門市」層級。只在 handlePayrollFinalize
+  // 的鎖定流程寫入（見 pnlSnapshotUpsert_／pnlSnapshotRemove_），唯讀端點本身零寫入
+  // （見 pnlReadSnapshot_）。
+  cost_snapshot: ['ym','store','base_ft','ot_ft','attend_ft','allow_ft','mgr','meal','other','pt',
+                  'bonus_sales','bonus_perf','bonus_proj','ins_ft_deduct','dorm_ft_deduct','ins_pt_deduct','dorm_pt_deduct',
+                  'co_labor','co_health','co_pension','co_owner','co_group','ins_self','yearend',
+                  'support_json','total','updated_at'],
 };
 /** 餐費補助門檻：當天「實際核定工時」要達這個時數才認列一天（核定時數＝實際上班時段，
  *  全天請假核定 0、假別另存 leave 分頁，所以特休／請假／出差自然不會被算進來）。*/
@@ -57,6 +66,7 @@ const PAY_SHEET_NAME = {
   store:'payroll_store', bonus:'payroll_bonus',
   leave_type:'payroll_leave_type', leave_span:'payroll_leave_span',
   leave_event:'payroll_leave_event',
+  cost_snapshot:'payroll_cost_snapshot',
 };
 
 /** 單店期間的預設門市（階段一多店上線後改為必填，屆時移除此預設） */
@@ -1867,6 +1877,30 @@ function handlePayrollFinalize(body) {
   payReplaceAll('run', rows);
   payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: lock ? 'lock' : 'unlock',
                         operator: String(body.operator || 'admin'), reason: String(body.reason || ''), store: stF }]);
+  /* 損益系統快照（T14，Eason 2026-09-25 選方案 C）：只在「鎖定」（不是解鎖）且前端有送
+     cost_snapshot 時才寫新快照。鎖定本身在上面已經完成了，快照寫入失敗絕對不可以讓鎖定
+     失敗——try/catch 接住，失敗只記一筆稽核方便之後追查，不影響這次呼叫的回應。
+     ⚠ 2026-09-25 審查修正：兩種情況要清掉「舊快照殘留」，否則端點會把上一輪鎖定留下的
+     舊數字誤當成這次的答案繼續回傳——①解鎖時（這個月不再是定案數字）②鎖定但沒送
+     cost_snapshot（沒有新資料可信，寧可讓端點誠實回 NO_SNAPSHOT，也不要用舊資料充數）。
+     移除同樣包 try/catch，失敗不影響鎖定/解鎖本身。 */
+  if (lock && body.cost_snapshot) {
+    try {
+      pnlSnapshotUpsert_(ym, stF, body.cost_snapshot);
+    } catch (snapErr) {
+      payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: 'pnl_snapshot_fail',
+                            operator: String(body.operator || 'admin'),
+                            reason: String((snapErr && snapErr.message) || snapErr), store: stF }]);
+    }
+  } else {
+    try {
+      pnlSnapshotRemove_(ym, stF);
+    } catch (rmErr) {
+      payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: 'pnl_snapshot_remove_fail',
+                            operator: String(body.operator || 'admin'),
+                            reason: String((rmErr && rmErr.message) || rmErr), store: stF }]);
+    }
+  }
   return { ok: true, ym: ym, status: lock ? 'final' : 'draft', count: n };
 }
 
@@ -2650,4 +2684,181 @@ const PAYROLL_HANDLERS = {
   payroll_leave_span_get:  handlePayrollLeaveSpanGet,
   payroll_leave_span_set:  handlePayrollLeaveSpanSet,
   payroll_leave_options:   handlePayrollLeaveOptions,
+  pnlPayroll:              handlePnlPayroll_,
 };
+
+// ---------- 損益系統唯讀端點（T14，mala-pnl-auto#15） ----------
+// 給集團「通用門市自動損益系統」讀某門市當月人事成本（依穩定鍵）用。
+// Eason 2026-09-25 選方案 C：按「鎖定本月」時，前端把算好的 costTotals()（穩定鍵版本，
+// 見 payroll.html 的 costStable()）隨 payroll_finalize(lock:true) 一起送上來，後端只存
+// 進新分頁 payroll_cost_snapshot，不重算——保證這支端點回的數字跟畫面上人事成本分類
+// 逐項一致，不會有前後端各自算一次、口徑慢慢漂移的風險（口徑本身還在調整中，見
+// mala-payroll skill「人事成本分類」那節 2026-09-03 已經改過三次）。
+//
+// ⚠ 快照**不含**：custom_add／custom_ded（自訂加薪／扣款，畫面上本來就獨立列、不計入
+// 薪資費用，性質不定要人自己判斷科目歸屬）、宿舍收入（g.dorm，畫面上是「已從薪資費用
+// 扣除，損益表勿重複計列」的參考區塊，不是損益表的正式科目）。損益系統這兩塊要用其他
+// 管道手動取得，不要假設 pnlPayroll 的 total 已經包含它們——它本來就沒有，跟畫面上
+// 「人事總成本」那個數字的定義完全一致（那個數字本身也不含這兩塊）。
+//
+// 請求（跟既有 payroll_* 動作同一種格式，doPost 把整包 body 原樣傳給 handler，
+// 不是 {action, payload:{...}} 那種巢狀寫法）：
+//   POST {action:'pnlPayroll', key, ym:'YYYY-MM', store}
+//
+// handlePnlPayroll_ 本身完全唯讀：不呼叫任何 setValue/setValues/appendRow/insertSheet/
+// deleteRow/clear/DriveApp.create/PropertiesService...set.../LockService。CacheService 的
+// get/put 只用來記金鑰錯誤次數，不是分頁寫入。讀快照走 pnlReadSnapshot_，直接
+// getSheetByName、分頁不存在就回 null，不透過會在分頁不存在時 insertSheet 的 paySheet()。
+// pnlSnapshotUpsert_／pnlSnapshotRemove_ 才是真正的寫入，只從 handlePayrollFinalize 的
+// 鎖定/解鎖流程呼叫（Eason 核准「鎖定流程可以多一次對新分頁的寫入」），端點本身不會呼叫它們。
+//
+// 不含任何人名、員工編號、逐人金額：rows 全部是科目彙總，support 只到「門市」層級，
+// 而且白名單化（見 pnlSanitizeSupport_）不信任前端傳來的鍵/型別。
+
+/* 損益系統金鑰比對：型別/長度先擋，長度一致才逐字元 XOR 累加、比對到底（定時比較），
+   避免用 === 在第一個不同字元就提早 return 洩漏時間差。連續失敗 20 次鎖 10 分鐘
+   （CacheService，跟 checkAdmin 用的 ADMIN_KEY 是兩把完全不同的鑰匙、互不影響；
+   2026-09-25 審查把門檻從 5 次調高到 20 次——這支端點給自動化系統定期輪詢用，
+   5 次太容易被系統本身的重試/多門市輪詢誤觸發，20 次仍然能擋住真正的暴力猜測）。
+   門檻剛好被跨過的那一刻（第 20 次失敗）記一筆 audit，之後在鎖定期間再打不重複記。
+   回傳 null＝通過；否則回傳要放進 error 欄的字串代碼。 */
+var PNL_KEY_MAX_FAILS = 20;
+function checkPnlKey_(key) {
+  var cache = CacheService.getScriptCache();
+  var CACHE_KEY = 'pnlkeyfail_payroll';
+  var fails = Number(cache.get(CACHE_KEY) || 0);
+  if (fails >= PNL_KEY_MAX_FAILS) return 'AUTH_LOCKED';
+
+  var real = PropertiesService.getScriptProperties().getProperty('PNL_KEY');
+  var match = false;
+  if (real && typeof key === 'string' && key.length === real.length) {
+    var diff = 0;
+    for (var i = 0; i < real.length; i++) diff |= real.charCodeAt(i) ^ key.charCodeAt(i);
+    match = diff === 0;
+  }
+  if (!match) {
+    var next = fails + 1;
+    cache.put(CACHE_KEY, String(next), 600);
+    if (next >= PNL_KEY_MAX_FAILS) {
+      try {
+        payAppend('audit', [{ ts: nowTaipeiIso(), ym: '', action: 'pnl_key_locked',
+                              operator: 'system', reason: 'pnlPayroll 金鑰連續失敗達 ' + PNL_KEY_MAX_FAILS + ' 次，鎖定 10 分鐘', store: '' }]);
+      } catch (auditErr) { /* 記錄失敗也不能擋住原本的 AUTH 回應 */ }
+    }
+    return 'AUTH';
+  }
+  cache.remove(CACHE_KEY);
+  return null;
+}
+
+/* support 白名單化（2026-09-25 審查要求）：不信任前端傳來的物件結構——只留字串鍵、
+   限制鍵長與鍵數，每個值一律 payNum() 轉數字，擋住異常巨大或型別怪異的 payload
+   把快照分頁弄壞（例如鍵是超長字串、值是巢狀物件、或想塞 __proto__ 這種鍵名）。 */
+var PNL_SUPPORT_MAX_KEYS = 50;
+var PNL_SUPPORT_MAX_KEY_LEN = 40;
+function pnlSanitizeSupport_(support) {
+  var out = {};
+  if (!support || typeof support !== 'object') return out;
+  var keys = Object.keys(support).filter(function (k) {
+    return typeof k === 'string' && k.length > 0 && k.length <= PNL_SUPPORT_MAX_KEY_LEN &&
+      k !== '__proto__' && k !== 'constructor' && k !== 'prototype';
+  }).slice(0, PNL_SUPPORT_MAX_KEYS);
+  keys.forEach(function (k) { out[k] = payNum(support[k]); });
+  return out;
+}
+
+/* 寫入：只從 handlePayrollFinalize 的鎖定流程呼叫。同 (ym, store) 覆寫（upsert），
+   跟既有 handlePayrollLeaveEventSet 同一套「讀→濾掉同鍵→append→整表覆寫」手法。
+   金額欄位一律 payNum() 防呆（前端理論上都是數字，但別假設）；support 先過
+   pnlSanitizeSupport_ 白名單化，只到門市層級、不含姓名。 */
+function pnlSnapshotUpsert_(ym, store, snap) {
+  var rows = [];
+  try { rows = payRead('cost_snapshot'); } catch (e) { rows = []; }
+  var kept = rows.filter(function (r) { return !(String(r.ym) === ym && payStore(r.store) === store); });
+  var row = {
+    ym: ym, store: store,
+    base_ft: payNum(snap.base_ft), ot_ft: payNum(snap.ot_ft), attend_ft: payNum(snap.attend_ft),
+    allow_ft: payNum(snap.allow_ft), mgr: payNum(snap.mgr), meal: payNum(snap.meal),
+    other: payNum(snap.other), pt: payNum(snap.pt),
+    bonus_sales: payNum(snap.bonus_sales), bonus_perf: payNum(snap.bonus_perf), bonus_proj: payNum(snap.bonus_proj),
+    ins_ft_deduct: payNum(snap.ins_ft_deduct), dorm_ft_deduct: payNum(snap.dorm_ft_deduct), ins_pt_deduct: payNum(snap.ins_pt_deduct), dorm_pt_deduct: payNum(snap.dorm_pt_deduct),
+    co_labor: payNum(snap.co_labor), co_health: payNum(snap.co_health), co_pension: payNum(snap.co_pension),
+    co_owner: payNum(snap.co_owner), co_group: payNum(snap.co_group),
+    ins_self: payNum(snap.ins_self), yearend: payNum(snap.yearend),
+    support_json: JSON.stringify(pnlSanitizeSupport_(snap.support)),
+    total: payNum(snap.total), updated_at: nowTaipeiIso()
+  };
+  payReplaceAll('cost_snapshot', kept.concat([row]));
+}
+
+/* 移除某 (ym, store) 的快照（2026-09-25 審查加）。用在：①解鎖時——這個月不再是定案
+   數字，舊快照留著會讓端點把上一輪鎖定的答案誤當成現在的答案繼續回傳；②鎖定但沒送
+   cost_snapshot——沒有新資料可信，寧可讓端點誠實回 NO_SNAPSHOT，也不要用舊資料充數。
+   只寫快照分頁，只從 handlePayrollFinalize 呼叫，try/catch 包住不影響鎖定/解鎖本身。
+   沒有東西可刪就不寫（省一次 API 往返）。 */
+function pnlSnapshotRemove_(ym, store) {
+  var rows = [];
+  try { rows = payRead('cost_snapshot'); } catch (e) { rows = []; }
+  var kept = rows.filter(function (r) { return !(String(r.ym) === ym && payStore(r.store) === store); });
+  if (kept.length === rows.length) return;
+  payReplaceAll('cost_snapshot', kept);
+}
+
+/* 只給唯讀端點用：直接 getSheetByName，分頁不存在、或沒有這個 (ym, store) 的快照，
+   一律回 null——絕不透過 payRead()／paySheet()，那條路徑在分頁不存在時會 insertSheet
+   建表頭。理論上同一 (ym, store) 只會有一筆（pnlSnapshotUpsert_ 是 upsert），
+   保險起見取最後一筆命中的。 */
+function pnlReadSnapshot_(ym, store) {
+  var sh = getSS().getSheetByName(PAY_SHEET_NAME.cost_snapshot);
+  if (!sh) return null;
+  var rows = readSheetAsObjects(sh).rows.map(stripRowIndex);
+  var hit = null;
+  rows.forEach(function (r) {
+    if (String(r.ym) === ym && payStore(r.store) === store) hit = r;
+  });
+  return hit;
+}
+
+/** {action:'pnlPayroll', key, ym, store} → 讀「鎖定本月」時存的人事成本快照，完全唯讀。
+ *  該月未鎖定（任何一位同仁的 run 狀態不是 final）→ NOT_FINAL，不回草稿數字。
+ *  已鎖定但找不到快照（鎖定當下沒送 cost_snapshot，或這個月是在本功能上線前鎖的，
+ *  或快照寫入失敗過，或曾經解鎖過而快照被清掉）→ NO_SNAPSHOT，訊息教 Eason 怎麼補
+ *  （解鎖→鎖定）。個人姓名、逐人金額一律不回；support 只到門市層級。 */
+function handlePnlPayroll_(body) {
+  var keyErr = checkPnlKey_(body.key);
+  if (keyErr) return { ok: false, error: keyErr };
+
+  var ym = String(body.ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'BAD_INPUT' };
+  var st = payStore(body.store);
+
+  var runRows = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === st; });
+  if (!runRows.length) return { ok: false, error: 'NOT_FINAL' };
+  var allFinal = runRows.every(function (r) { return r.status === 'final'; });
+  if (!allFinal) return { ok: false, error: 'NOT_FINAL' };
+
+  var snap = pnlReadSnapshot_(ym, st);
+  if (!snap) {
+    return { ok: false, error: 'NO_SNAPSHOT',
+      message: '這個月鎖定時還沒有這支快照功能，或快照寫入失敗，請重新鎖定一次（解鎖→鎖定）補上快照' };
+  }
+
+  var support = {};
+  try { support = JSON.parse(snap.support_json || '{}'); } catch (e) { support = {}; }
+
+  return {
+    ok: true, ym: ym, store: st,
+    rows: {
+      base_ft: payNum(snap.base_ft), ot_ft: payNum(snap.ot_ft), attend_ft: payNum(snap.attend_ft),
+      allow_ft: payNum(snap.allow_ft), mgr: payNum(snap.mgr), meal: payNum(snap.meal),
+      other: payNum(snap.other), pt: payNum(snap.pt),
+      bonus_sales: payNum(snap.bonus_sales), bonus_perf: payNum(snap.bonus_perf), bonus_proj: payNum(snap.bonus_proj),
+      ins_ft_deduct: payNum(snap.ins_ft_deduct), dorm_ft_deduct: payNum(snap.dorm_ft_deduct), ins_pt_deduct: payNum(snap.ins_pt_deduct), dorm_pt_deduct: payNum(snap.dorm_pt_deduct),
+      co_labor: payNum(snap.co_labor), co_health: payNum(snap.co_health), co_pension: payNum(snap.co_pension),
+      co_owner: payNum(snap.co_owner), co_group: payNum(snap.co_group),
+      ins_self: payNum(snap.ins_self), yearend: payNum(snap.yearend)
+    },
+    support: support,
+    total: payNum(snap.total)
+  };
+}

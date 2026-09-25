@@ -941,6 +941,42 @@ function costRows(g){
         .concat([['s','請款小計',g.supTotal]]):[]),
   ];
 }
+/* 損益系統快照（T14，mala-pnl-auto#15，Eason 2026-09-25 選方案 C）：按「鎖定本月」時，
+   把 costTotals() 的統計依「穩定鍵」（不受列名文字影響、不含姓名／員工編號／逐人金額）
+   整理成物件，隨 payroll_finalize(lock:true) 一起送給後端；後端只存不算（見
+   handlePayrollFinalize 裡呼叫 pnlSnapshotUpsert_ 那段與 apps-script/Payroll.gs 的
+   pnlReadSnapshot_），保證 pnlPayroll 端點回的數字跟這裡畫面上看到的人事成本分類逐項一致。
+   ⚠ 這裡的算法完全抄 costRows() 用的變數（co／baseNet／ptNet／salaryCost／coTotal），
+   改 costRows() 的口徑時這裡要一起改，不然快照會跟畫面對不起來——兩處都要看
+   mala-payroll skill「人事成本分類」那節最新的口徑版本。
+   ⚠ 這裡**刻意不含** custom_add／custom_ded（自訂加薪／扣款）與宿舍收入（g.dorm）——
+   畫面上這兩塊本來就是獨立參考區塊、不計入「人事總成本」，快照跟著不含才會跟 total 對得上。
+   支援請款只彙總到「門市」層級的金額（g.sup 逐筆本來含 name，這裡刻意只取 store/amount，
+   不把姓名帶進快照，符合「不含任何人名、員工編號、逐人金額」的要求）。 */
+function costStable(g){
+  const co={}; CO_ITEMS.forEach(([k])=>co[k]=n(CFG[k]));
+  const autoCo={co_labor:g.coL,co_health:g.coH,co_pension:g.coP};
+  const coAuto=(g.coL+g.coH+g.coP)>0;
+  if(coAuto) Object.keys(autoCo).forEach(k=>{ if(autoCo[k]>0) co[k]=autoCo[k]; });
+  const baseNet=g.base-g.reduceFT, ptNet=g.pt-g.reducePT-g.insPT-g.dormPT;
+  const salaryGross=baseNet+g.ot+g.attend+g.allow+g.mgr+ptNet+g.other+g.meal+g.bs+g.bp+g.bj;
+  const salaryCost=salaryGross-g.insFT-g.dormFT;
+  const coTotal=CO_ITEMS.reduce((a,[k])=>a+co[k],0);
+  const yearend=Math.round(g.ye);
+  const total=salaryCost+coTotal+g.ins+yearend;
+  const support={};
+  (g.sup||[]).forEach(x=>{ const st=x.store||'（未指定）'; support[st]=r2((support[st]||0)+x.amount); });
+  return {
+    base_ft:r2(baseNet), ot_ft:r2(g.ot), attend_ft:r2(g.attend), allow_ft:r2(g.allow),
+    mgr:r2(g.mgr), meal:r2(g.meal), other:r2(g.other), pt:r2(g.pt-g.reducePT), ins_pt_deduct:-r2(g.insPT), dorm_pt_deduct:-r2(g.dormPT),
+    bonus_sales:r2(g.bs), bonus_perf:r2(g.bp), bonus_proj:r2(g.bj),
+    ins_ft_deduct:-r2(g.insFT), dorm_ft_deduct:-r2(g.dormFT),
+    co_labor:r2(co.co_labor), co_health:r2(co.co_health), co_pension:r2(co.co_pension),
+    co_owner:r2(co.co_owner), co_group:r2(co.co_group),
+    ins_self:r2(g.ins), yearend:yearend,
+    support:support, total:r2(total)
+  };
+}
 function renderCost(){
   const card=$('costCard'); if(!card) return;
   if(!RESULTS.length){card.style.display='none';return}
@@ -1147,7 +1183,19 @@ async function toggleLock(){
   const tick=()=>{ if(lb) lb.textContent=(lock?'結轉中':'解鎖中')+'… '+sec+' 秒'; };
   if(lb){ lb.disabled=true; tick(); timer=setInterval(()=>{sec++;tick()},1000); }
   try{
-    const r=await post('payroll_finalize',{ym:ym(),lock,reason,operator:'Eason'});
+    const body={ym:ym(),lock,reason,operator:'Eason'};
+    // 損益系統唯讀端點（T14）：只有在「鎖定」（不是解鎖）且畫面上已經有算好的結果時，
+    // 才把 costStable() 的快照隨這次請求一起送出去；後端只存不算，見 costStable() 的註解。
+    // 沒有 RESULTS（還沒按過計算）就不送，後端保持沒有這個月快照，pnlPayroll 端點
+    // 會回 NO_SNAPSHOT，不會回一份憑空湊出來的 0。
+    // ⚠ 2026-09-25 審查加：costStable() 萬一算出例外（不該發生，但別讓它拖垮鎖定這個
+    // 更重要的動作），接住並印警告，照常送出鎖定請求（不帶 cost_snapshot，效果等同
+    // 「沒有算出快照」，跟沒按過計算是同一種安全的退路）。
+    if(lock && RESULTS.length){
+      try{ body.cost_snapshot=costStable(costTotals()); }
+      catch(e){ console.warn('pnlPayroll 快照計算失敗，鎖定照常送出，這次不會有快照可讀：',e); }
+    }
+    const r=await post('payroll_finalize',body);
     if(r.ok){STATUS=r.status;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
   } finally {
     if(timer) clearInterval(timer);
