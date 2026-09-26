@@ -1619,12 +1619,15 @@ const PAY_PUNCH_ONLY_NUM = ['late_min', 'early_min', 'forget_punch', 'forget_day
 
 /** 工時基底＝打卡歸集(payCollect) 疊上手動覆蓋(payroll_input)；saved 有該員就整筆蓋掉歸集值，
  *  但 PAY_PUNCH_ONLY_NUM 與 attend_void 例外（見函式內註解）。
- *  供「工時分頁顯示」與「計算」共用，確保兩邊一致。 */
-function payInputsBase(ym, store) {
+ *  供「工時分頁顯示」與「計算」共用，確保兩邊一致。
+ *  cutoffDate（'YYYY-MM-DD'，選填，T15 估算端點用）：透傳給 payCollect，只影響「打卡歸集」
+ *  那一半；payroll_input 手動覆蓋本來就沒有日期粒度（管理者存檔當下就是整月一筆），不受影響。
+ *  既有唯一呼叫路徑 handlePayrollCalc 不傳第三參數，行為不變。 */
+function payInputsBase(ym, store, cutoffDate) {
   const st = payStore(store);
   const holRow = payHolidayRow(ym, st);
   const holDates = payHolidayDates(holRow);
-  const base = payCollect(ym, payConfig(st).meal_min_hours, st, holDates);
+  const base = payCollect(ym, payConfig(st).meal_min_hours, st, holDates, cutoffDate);
   const saved = paySavedInputs(ym, st);
   Object.keys(saved).forEach(function (emp) {
     const col = base[emp] || {}, sv = saved[emp];
@@ -2731,9 +2734,14 @@ const PAYROLL_HANDLERS = {
    2026-09-25 審查把門檻從 5 次調高到 20 次——這支端點給自動化系統定期輪詢用，
    5 次太容易被系統本身的重試/多門市輪詢誤觸發，20 次仍然能擋住真正的暴力猜測）。
    門檻剛好被跨過的那一刻（第 20 次失敗）記一筆 audit，之後在鎖定期間再打不重複記。
-   回傳 null＝通過；否則回傳要放進 error 欄的字串代碼。 */
+   回傳 null＝通過；否則回傳要放進 error 欄的字串代碼。
+   endpoint（選填，T15 審查加）：只影響第 20 次失敗那筆 audit 的文字，讓稽核表看得出來是
+   哪一支端點被打——pnlPayroll／pnlLaborEstimate 共用同一把 PNL_KEY、同一套失敗計數
+   （CACHE_KEY 不變，鎖定狀態互相影響是刻意的：同一把鑰匙的暴力猜測不分是打哪一支端點），
+   不傳＝沿用舊文字 'pnlPayroll'（既有呼叫路徑 handlePnlPayroll_ 沒有跟著這次一起改，
+   行為與加這個參數之前完全相同）。 */
 var PNL_KEY_MAX_FAILS = 20;
-function checkPnlKey_(key) {
+function checkPnlKey_(key, endpoint) {
   var cache = CacheService.getScriptCache();
   var CACHE_KEY = 'pnlkeyfail_payroll';
   var fails = Number(cache.get(CACHE_KEY) || 0);
@@ -2752,7 +2760,7 @@ function checkPnlKey_(key) {
     if (next >= PNL_KEY_MAX_FAILS) {
       try {
         payAppend('audit', [{ ts: nowTaipeiIso(), ym: '', action: 'pnl_key_locked',
-                              operator: 'system', reason: 'pnlPayroll 金鑰連續失敗達 ' + PNL_KEY_MAX_FAILS + ' 次，鎖定 10 分鐘', store: '' }]);
+                              operator: 'system', reason: (endpoint || 'pnlPayroll') + ' 金鑰連續失敗達 ' + PNL_KEY_MAX_FAILS + ' 次，鎖定 10 分鐘', store: '' }]);
       } catch (auditErr) { /* 記錄失敗也不能擋住原本的 AUTH 回應 */ }
     }
     return 'AUTH';
@@ -2835,7 +2843,7 @@ function pnlReadSnapshot_(ym, store) {
  *  或快照寫入失敗過，或曾經解鎖過而快照被清掉）→ NO_SNAPSHOT，訊息教 Eason 怎麼補
  *  （解鎖→鎖定）。個人姓名、逐人金額一律不回；support 只到門市層級。 */
 function handlePnlPayroll_(body) {
-  var keyErr = checkPnlKey_(body.key);
+  var keyErr = checkPnlKey_(body.key, 'pnlPayroll');
   if (keyErr) return { ok: false, error: keyErr };
 
   var ym = String(body.ym || '');
@@ -2879,8 +2887,13 @@ function handlePnlPayroll_(body) {
 // 的人事成本，鍵與 pnlPayroll 完全相同，另外多回 as_of／days_elapsed／days_in_month／method。
 //
 // ⚠ 這不是另一套算薪水的邏輯——底薪/加班/請假扣款/保險/年終提列全部原封不動呼叫既有的
-// payCalcOne（跟 handlePayrollCalc 用的是同一支函式），估算只做兩件事：
-//   ① 用 payCollect 的新 cutoffDate 參數，只歸集「昨天以前」的核定/打卡/請假資料；
+// payCalcOne（跟 handlePayrollCalc 用的是同一支函式），估算只做這幾件事：
+//   ① 用 payCollect 的新 cutoffDate 參數（透過 payInputsBase 的新 cutoffDate 第三參數傳入），
+//      只歸集「昨天以前」的核定/打卡/請假資料，再疊上 payroll_input 手動覆蓋（support／
+//      meal_on／full_attend／wage_override／手動輸入門市的整月工時），與 handlePayrollCalc
+//      用的 payInputsBase 同一套合併規則（2026-09-27 審查加——原本只呼叫 payCollect，
+//      漏掉手動覆蓋那一半，跨店支援請款、計時全勤/餐費補助勾選、PT 時薪調整、無打卡門市
+//      的工時都會估成 0）；
 //   ② 給 payCalcOne 一份「虛擬離職日＝昨天（或員工原本的到職/離職日，取較早者）」的員工物件，
 //      借用 payRatio 既有的「月中到職／離職才折算」機制算出「已過天數 ÷ 當月天數」的比例——
 //      這跟底薪/固定津貼要求的「月薪×已過天數÷當月天數」是同一條公式，不必另寫一套折算邏輯，
@@ -2889,15 +2902,27 @@ function handlePnlPayroll_(body) {
 // 人事成本分類（base_ft/ot_ft/pt/co_labor…那組穩定鍵）則是 payroll.html costTotals()／
 // costStable() 的逐字 port（見 pnlEstimateClassify_，改動記錄同一份規則正本：
 // mala-payroll skill「人事成本分類」那節）——分類是「怎麼把 payCalcOne 已經算好的 earn/ded
-// 歸科目」，不是重新計算金額，所以不算「另寫一套薪資引擎」。
+// 歸科目」，不是重新計算金額，所以不算「另寫一套薪資引擎」。tests/pnl-labor-estimate-anti-drift
+// .test.js 直接從 payroll.html 抽出 costTotals/costStable/allocGapHours，用同一組輸入跟
+// pnlEstimateClassify_ 比對，兩邊口徑一旦漂移測試就會紅。
 //
-// 估不了／刻意不含（與 pnlPayroll 對齊，見 README「可估／不可估的鍵」）：
+// 估不了／刻意不含（與 pnlPayroll 對齊，見 docs/pnl-labor-estimate.md「可估／不可估的鍵」）：
 //   custom_add／custom_ded（自訂加薪扣款，性質不定要人自己判斷科目）、
 //   宿舍收入 g.dorm（已從薪資費用扣除的參考區塊，不是正式科目）。
+// `red_days_missing:true`（2026-09-27 審查加）：當月紅字天數還沒設定時附上這個旗標，
+// 損益端看到就該顯示提醒——這種情況下 redDays 當 0 計，只影響加班/不足時數門檻，不影響底薪。
 //
-// 完全唯讀：payRead／payClockRead／payCollect／payCalcOne／pnlEstimateClassify_ 全部只讀，
-// 不呼叫 setValue/setValues/appendRow/insertSheet/deleteRow/clear/PropertiesService...set.../
-// LockService；checkPnlKey_ 與 pnlPayroll 共用同一把 PNL_KEY、同一套 20 次鎖 10 分鐘。
+// 完全唯讀：進分頁前先用 pnlEstimateSheetsReady_() 逐一 getSheetByName 確認分頁存在
+// （缺分頁→NO_DATA），絕不透過會在分頁不存在時 insertSheet 的 payRead()/paySheet()——
+// 確認過存在之後才呼叫 payRead／payConfig／payHolidayRow／payLeaveTypes 等既有唯讀 helper，
+// 這些 helper 內部雖然走 payRead()，但因為分頁已確認存在，insertSheet 分支永遠不會被觸發。
+// payRead／payClockRead／payInputsBase／payCollect／payCalcOne／pnlEstimateClassify_ 全部
+// 只讀，不呼叫 setValue/setValues/appendRow/insertSheet/deleteRow/clear/
+// PropertiesService...set.../LockService；CacheService 用在兩處，都不是分頁寫入：
+// checkPnlKey_ 的金鑰失敗計數（與 pnlPayroll 共用同一把 PNL_KEY、同一套 20 次鎖 10 分鐘，
+// 但 audit 文字用 endpoint 參數區分是哪支端點被打）、以及本端點自己按 (ym,store,asOf) 做的
+// 10 分鐘結果快取（cache key 前綴 `pnlestimate|`，與 checkPnlKey_ 的
+// `pnlkeyfail_payroll` 是不同的 cache key，互不影響）。
 //
 // 請求：POST {action:'pnlLaborEstimate', key, ym:'YYYY-MM', store}   // 平面 body，同既有慣例
 // ym 只能是「今天所在月份」或「上個月」——更早的月份本來就該已經鎖定，請改打 pnlPayroll 讀
@@ -3052,8 +3077,23 @@ function pnlEstimateClassify_(results, master, att, cfg) {
 
 /** {action:'pnlLaborEstimate', key, ym, store} → 即時估算「當月 1 日至昨天」的人事成本，
  *  鍵與 pnlPayroll 相同，另回 as_of/days_elapsed/days_in_month/method。完全唯讀，見上方說明。 */
+// T15 審查（Fable）追加：讀分頁一律先確認分頁存在（getSheetByName，缺分頁→NO_DATA），
+// 不透過會在分頁不存在時 insertSheet 的 payRead()/paySheet()。
+var PNL_ESTIMATE_REQUIRED_SHEETS = ['master', 'config', 'holiday', 'leave_type', 'bonus', 'input'];
+function pnlEstimateSheetsReady_() {
+  var ss = getSS();
+  return PNL_ESTIMATE_REQUIRED_SHEETS.every(function (k) { return !!ss.getSheetByName(PAY_SHEET_NAME[k]); });
+}
+
+// T15 審查追加：同 (ym, store, asOf) 10 分鐘內吃快取——asOf 每天才變一次，快取範圍最多是
+// 「今天之內」，損益系統短時間內重複輪詢不用每次都整套重算。CacheService，不是分頁寫入
+// （與 checkPnlKey_ 的失敗計數快取同一種豁免，見 pnlPayroll 的唯讀說明）。
+var PNL_ESTIMATE_CACHE_SEC = 600;
+
+/** {action:'pnlLaborEstimate', key, ym, store} → 即時估算「當月 1 日至昨天」的人事成本，
+ *  鍵與 pnlPayroll 相同，另回 as_of/days_elapsed/days_in_month/method。完全唯讀，見上方說明。 */
 function handlePnlLaborEstimate_(body) {
-  var keyErr = checkPnlKey_(body.key);
+  var keyErr = checkPnlKey_(body.key, 'pnlLaborEstimate');
   if (keyErr) return { ok: false, error: keyErr };
 
   var ym = String(body.ym || '');
@@ -3071,6 +3111,17 @@ function handlePnlLaborEstimate_(body) {
   var daysInMonth = payDaysIn(ym);
   var daysElapsed = Math.min(daysInMonth, parseInt(asOf.slice(8, 10), 10));
 
+  var cache = CacheService.getScriptCache();
+  var cacheKey = 'pnlestimate|' + ym + '|' + st + '|' + asOf;
+  var cached = cache.get(cacheKey);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (parseErr) { /* 壞掉的快取當沒有，往下重算 */ }
+  }
+
+  if (!pnlEstimateSheetsReady_()) {
+    return { ok: false, error: 'NO_DATA', message: '薪資分頁尚未初始化（尚未執行過 payroll_setup）' };
+  }
+
   var master = payRead('master').filter(function (m) {
     return String(m.active).toLowerCase() === 'true' && payStore(m.store) === st;
   });
@@ -3078,16 +3129,25 @@ function handlePnlLaborEstimate_(body) {
 
   var holRow = payHolidayRow(ym, st);
   var holDates = payHolidayDates(holRow);
-  var redDays = holRow ? payNum(holRow.red_days) : 0;   // 沒設定紅字天數＝先當 0（唯讀端點不寫入自動同步）
+  var redDaysMissing = !holRow;
+  var redDays = holRow ? payNum(holRow.red_days) : 0;   // 沒設定紅字天數＝先當 0，見下方 red_days_missing
 
   var cfg = payConfig(st);
-  var att = payCollect(ym, payCfgNum(cfg, 'meal_min_hours', MEAL_MIN_HOURS), st, holDates, asOf);
+  // 打卡歸集（只到 asOf）疊上 payroll_input 手動覆蓋——support/meal_on/full_attend/wage_override
+  // 與手動輸入門市的整月工時都在這裡一起帶進來，跟 handlePayrollCalc 的 collected 同一套合併
+  // 規則（payInputsBase 本身沒有改，只是新增了可選的 cutoffDate 第三參數）。
+  var att = payInputsBase(ym, st, asOf);
 
   var bonusBy = {};
   payRead('bonus').forEach(function (b) {
     if (String(b.ym) !== ym || payStore(b.store) !== st) return;
-    var upd = String(b.updated_at || '').slice(0, 10);
-    if (upd && upd > asOf) return;   // 基準日之後才登記的獎金不計入估算
+    // 「基準日之後才登記的獎金不算」只在 ym＝當月（還在進行中的月份）才有意義；ym＝上個月時
+    // 上個月本來就已經整月過完，獎金常常是次月才補登記，不能因為 updated_at 晚於 as_of 就
+    // 整筆漏掉——那樣上個月的估算永遠少計已經確定屬於上個月的獎金。
+    if (ym === curYm) {
+      var upd = String(b.updated_at || '').slice(0, 10);
+      if (upd && upd > asOf) return;
+    }
     var k = String(b.emp_id);
     (bonusBy[k] = bonusBy[k] || []).push({ bonus_type: b.bonus_type, label: b.label, amount: payNum(b.amount) });
   });
@@ -3103,8 +3163,10 @@ function handlePnlLaborEstimate_(body) {
       personal_h: payNum(c.personal_h), sick_h: payNum(c.sick_h), menstrual_h: payNum(c.menstrual_h),
       disaster_h: payNum(c.disaster_h), annual_h: payNum(c.annual_h), deduct_days: payNum(c.deduct_days),
       support: c.support || [], full_attend: payBool(c.full_attend), work_days: payNum(c.work_days),
-      wage_override: payNum(c.wage_override), dorm_override: '', meal_on: payBool(c.meal_on),
-      holiday_h: payNum(c.holiday_h), custom_add_label: '', custom_add_amt: 0, custom_ded_label: '', custom_ded_amt: 0,
+      wage_override: payNum(c.wage_override), dorm_override: (c.dorm_override === '' || c.dorm_override == null) ? '' : payNum(c.dorm_override),
+      meal_on: payBool(c.meal_on), holiday_h: payNum(c.holiday_h),
+      custom_add_label: c.custom_add_label || '', custom_add_amt: payNum(c.custom_add_amt),
+      custom_ded_label: c.custom_ded_label || '', custom_ded_amt: payNum(c.custom_ded_amt),
       bonuses: bonusBy[String(e.emp_id)] || [], leaves: c.leaves || {},
       leave_usage: USAGE_BEFORE[String(e.emp_id)] || {}, annual: ANNUAL_INFO[String(e.emp_id)] || null,
       forget_punch: payNum(c.forget_punch), forget_day: payNum(c.forget_day),
@@ -3121,15 +3183,18 @@ function handlePnlLaborEstimate_(body) {
   });
 
   var snap = pnlEstimateClassify_(results, master, att, cfg);
-  return {
+  var result = {
     ok: true, ym: ym, store: st,
     as_of: asOf, days_elapsed: daysElapsed, days_in_month: daysInMonth,
     method: (ym === curYm ? 'partial_month_to_date' : 'prior_month_recomputed') +
       '｜底薪與固定津貼＝月薪×(截至 as_of 的在職比例，沿用 payRatio 的到職/離職折算機制，' +
-      '虛擬設一個「離職日＝as_of」)；PT/加班/餐費/全勤＝as_of 前已核定工時×費率（payCalcOne 原生算法）；' +
-      '勞健保公司負擔/退休金按同一在職比例折算；年終提列＝月提列額×在職比例；' +
-      '跨店支援請款＝as_of 前已記錄的支援時數。與 pnlPayroll 定案快照的差異：本端點即時重算、' +
-      '不看鎖定狀態，紅字天數若當月尚未設定則以 0 計。',
+      '虛擬設一個「離職日＝as_of」)；PT/加班/餐費/全勤＝as_of 前已核定工時×費率，並疊上 ' +
+      'payroll_input 手動覆蓋的 support/meal_on/full_attend/wage_override 與手動輸入門市的整月 ' +
+      '工時（同 handlePayrollCalc 的合併規則，手動覆蓋存在時整筆蓋過打卡歸集，與既有系統一致）；' +
+      '勞健保公司負擔/退休金按同一在職比例折算；年終提列＝月提列額×在職比例；跨店支援請款＝' +
+      'as_of 前已記錄或手動填寫的支援時數。獎金：ym＝當月時只計入 as_of 前登記的；ym＝上個月時' +
+      '不論登記日一律計入（次月才登記很常見）。與 pnlPayroll 定案快照的差異：本端點即時重算、' +
+      '不看鎖定狀態。',
     rows: {
       base_ft: snap.base_ft, ot_ft: snap.ot_ft, attend_ft: snap.attend_ft, allow_ft: snap.allow_ft,
       mgr: snap.mgr, meal: snap.meal, other: snap.other, pt: snap.pt,
@@ -3142,4 +3207,8 @@ function handlePnlLaborEstimate_(body) {
     support: snap.support, total: snap.total,
     not_estimated: ['custom_add', 'custom_ded', 'dorm_income（g.dorm，宿舍收入參考區塊）'],
   };
+  if (redDaysMissing) result.red_days_missing = true;   // 損益端看到這個旗標就該顯示提醒（見 issue #46）
+
+  try { cache.put(cacheKey, JSON.stringify(result), PNL_ESTIMATE_CACHE_SEC); } catch (cacheErr) { /* 快取失敗不影響回應 */ }
+  return result;
 }
