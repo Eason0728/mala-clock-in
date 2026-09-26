@@ -3079,7 +3079,11 @@ function pnlEstimateClassify_(results, master, att, cfg) {
  *  鍵與 pnlPayroll 相同，另回 as_of/days_elapsed/days_in_month/method。完全唯讀，見上方說明。 */
 // T15 審查（Fable）追加：讀分頁一律先確認分頁存在（getSheetByName，缺分頁→NO_DATA），
 // 不透過會在分頁不存在時 insertSheet 的 payRead()/paySheet()。
-var PNL_ESTIMATE_REQUIRED_SHEETS = ['master', 'config', 'holiday', 'leave_type', 'bonus', 'input'];
+// 'run'（2026-09-27 第二輪審查加）：雖然本端點自己不讀 payroll_run，但 payroll_setup
+// 一次建齊全部分頁，run 分頁存不存在是「這家店有沒有初始化過薪資系統」最直接的信號——
+// 漏了它，一家從沒跑過薪資的店仍可能因為 master/config/holiday/leave_type/bonus/input
+// 六張都存在（例如只執行過部分初始化）而被判定「就緒」，多列一張更保守。
+var PNL_ESTIMATE_REQUIRED_SHEETS = ['master', 'config', 'holiday', 'leave_type', 'bonus', 'input', 'run'];
 function pnlEstimateSheetsReady_() {
   var ss = getSS();
   return PNL_ESTIMATE_REQUIRED_SHEETS.every(function (k) { return !!ss.getSheetByName(PAY_SHEET_NAME[k]); });

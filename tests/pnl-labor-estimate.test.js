@@ -412,6 +412,18 @@ console.log('\n══ 13) 分頁尚未初始化（缺分頁）→ NO_DATA，且�
   });
   const r = call({ key: 'test-pnl-key-虛構', ym: '2026-09', store: 'SSLGF' });
   chk('  error', r.error, 'NO_DATA');
+
+  // 2026-09-27 第二輪審查加：PNL_ESTIMATE_REQUIRED_SHEETS 補了 'run'，本端點自己不讀
+  // payroll_run，但它是判斷「這家店有沒有初始化過薪資系統」的信號之一，缺這張也該擋下。
+  const sbRun = makeSandbox();
+  const callRun = wire(sbRun, {
+    today: '2026-09-27',
+    payRead: { master: MASTER, config: CONFIG_ROWS, holiday: HOLIDAY_ROWS, bonus: [] },
+    payClockRead: { 'SSLGF:roster': [], 'SSLGF:approved': [], 'SSLGF:events': [], 'SSLGF:leave': [] },
+    missingSheets: ['payroll_run'],
+  });
+  const rRun = callRun({ key: 'test-pnl-key-虛構', ym: '2026-09', store: 'SSLGF' });
+  chk('  缺 payroll_run 也回 NO_DATA', rRun.error, 'NO_DATA');
 }
 
 console.log('\n══ 14) audit 文字區分 pnlPayroll／pnlLaborEstimate ══');

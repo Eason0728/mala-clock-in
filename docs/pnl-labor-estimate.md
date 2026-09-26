@@ -101,6 +101,12 @@ POST {action:'pnlLaborEstimate', key, ym:'YYYY-MM', store}   // 平面 body，�
   計入；當月與上月的過濾規則不同，見上方說明。
 - **紅字天數未依比例調整**：`redDays` 用當月完整設定值（不是「已過天數對應的紅字天數」），
   只影響加班／不足時數的門檻，不影響底薪金額本身；缺列時回應會帶 `red_days_missing:true`。
+- **10 分鐘快取可能吃到「剛設定紅字天數之前」的舊結果**：`(ym, store, as_of)` 三者相同就會
+  命中快取（見下方「效能」），所以如果 Eason 是先打了一次 `pnlLaborEstimate`（那時候紅字
+  天數還沒設定、拿到 `red_days_missing:true`），10 分鐘內才去 `payroll_holiday` 補上當月
+  設定，同一個 `(ym, store, as_of)` 再打一次還是會拿到快取住的舊答案（仍然是
+  `red_days_missing:true`、`redDays` 當 0 算的加班門檻），要等快取過期（最多 10 分鐘）
+  或換一天（`as_of` 變了，cache key 自然不同）才會反映新設定的紅字天數。
 
 ## 唯讀證明
 
@@ -119,8 +125,11 @@ $ awk '/^\/\/ ---------- 損益系統唯讀端點（T15/{f=1} f' apps-script/Pay
 
 **分頁存在性檢查**（2026-09-27 審查加）：`handlePnlLaborEstimate_` 進入任何會讀分頁的邏輯
 之前，先呼叫 `pnlEstimateSheetsReady_()`——直接 `getSS().getSheetByName(...)` 逐一確認
-`master`/`config`/`holiday`/`leave_type`/`bonus`/`input` 六張分頁都存在，缺一張就回
+`master`/`config`/`holiday`/`leave_type`/`bonus`/`input`/`run` 七張分頁都存在，缺一張就回
 `NO_DATA`，**不透過**會在分頁不存在時自動 `insertSheet` 建表頭的 `payRead()`/`paySheet()`。
+`run`（2026-09-27 第二輪審查加）：本端點自己不讀 `payroll_run`，但它是
+`payroll_setup` 一次建齊全部分頁時的其中一張，存不存在是「這家店有沒有初始化過薪資系統」
+最保守的信號，多列一張。
 確認過都存在之後，才呼叫 `payRead`／`payConfig`／`payHolidayRow`／`payLeaveTypes` 等既有
 唯讀 helper——這些 helper 內部雖然還是走 `payRead()`，但因為分頁已經確認存在，
 `insertSheet` 那個分支在這條路徑上永遠不會被觸發（`tests/pnl-labor-estimate.test.js` 第
