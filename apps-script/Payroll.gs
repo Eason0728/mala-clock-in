@@ -289,7 +289,11 @@ function payEmpStores(empId) { return payEmpStoresMap()[String(empId)] || []; }
  * 從 approved / leave / events 歸集某月每人的薪資輸入。
  * 這就是「不用人工把工時搬進薪資系統」的那一段。
  */
-function payCollect(ym, minH, store, holidayDates) {
+/** cutoffDate（'YYYY-MM-DD'，選填）：只給 T15 估算端點用——只歸集「當天 <= cutoffDate」的
+ *  核定／打卡／請假資料，其餘呼叫端（payInputsBase 等既有 11+ 個呼叫路徑其實只有這一個）不傳
+ *  第五個參數，行為與加這個參數之前完全相同。加這個參數是為了「至昨天」的估算口徑要排除
+ *  今天可能還沒核定完的部分日資料，不是為了改變既有的整月歸集邏輯。 */
+function payCollect(ym, minH, store, holidayDates, cutoffDate) {
   const MEALMIN = (minH === undefined || minH === null || minH === '') ? MEAL_MIN_HOURS : Number(minH);
   // 國定假日的具體日期（計時同仁雙薪用）；沒給就是空集合，行為與加這個功能之前相同
   const HOLSET = {};
@@ -323,6 +327,7 @@ function payCollect(ym, minH, store, holidayDates) {
   // 1) 核定時數 ＋ 遲到／早退日
   Object.keys(approvedMap).forEach(function (d) {
     if (String(d).slice(0, 7) !== ym) return;
+    if (cutoffDate && String(d) > cutoffDate) return;
     Object.keys(approvedMap[d]).forEach(function (emp) {
       const rec = approvedMap[d][emp];
       const dayH = Number(rec.approved_hours) || 0;
@@ -358,11 +363,13 @@ function payCollect(ym, minH, store, holidayDates) {
   paired.unmatchedIns.forEach(function (e) {
     const d = tsDateStr(e.ts);
     if (d.slice(0, 7) !== ym || d === todayStr) return;   // 今天未配對＝上班中，不算忘刷
+    if (cutoffDate && d > cutoffDate) return;
     markForget(String(e.emp_id), d);
   });
   paired.unmatchedOuts.forEach(function (e) {
     const d = tsDateStr(e.ts);
     if (d.slice(0, 7) !== ym) return;
+    if (cutoffDate && d > cutoffDate) return;
     markForget(String(e.emp_id), d);
   });
   // 2b) 「少刷N組卡」也算忘刷（2026-09-21，許正昊 9/21 案例）。
@@ -375,6 +382,7 @@ function payCollect(ym, minH, store, holidayDates) {
   //       沒有 unmatchedIns 那種「今天＝還在上班中」的歧義。
   Object.keys(approvedMap).forEach(function (d) {
     if (String(d).slice(0, 7) !== ym) return;
+    if (cutoffDate && String(d) > cutoffDate) return;
     Object.keys(approvedMap[d]).forEach(function (emp) {
       const g = payMissingGroups(approvedMap[d][emp].status_text);
       if (g) markForget(String(emp), d, g * 2);
@@ -390,6 +398,7 @@ function payCollect(ym, minH, store, holidayDates) {
     // leave 日期被 Sheets 存成 Date 物件時，用 normCellDate 正規化（避免日期陷阱）。
     const d = normCellDate(l['日期']);
     if (d.slice(0, 7) !== ym) return;
+    if (cutoffDate && d > cutoffDate) return;
     const h = Number(l['時數']) || 0;
     const t = String(l['假別'] || '');
     const s = slot(emp);
@@ -2685,6 +2694,7 @@ const PAYROLL_HANDLERS = {
   payroll_leave_span_set:  handlePayrollLeaveSpanSet,
   payroll_leave_options:   handlePayrollLeaveOptions,
   pnlPayroll:              handlePnlPayroll_,
+  pnlLaborEstimate:        handlePnlLaborEstimate_,
 };
 
 // ---------- 損益系統唯讀端點（T14，mala-pnl-auto#15） ----------
@@ -2860,5 +2870,276 @@ function handlePnlPayroll_(body) {
     },
     support: support,
     total: payNum(snap.total)
+  };
+}
+
+// ---------- 損益系統唯讀端點（T15，mala-pnl-auto，月中人事成本估算） ----------
+// pnlPayroll（上面）只在「鎖定本月」時回鎖定快照的定案數字；損益系統想在月中就先看一份
+// 估算值（給草稿損益表參考），本端點就是給這個用的：即時重算「當月 1 日至昨天（台北）」
+// 的人事成本，鍵與 pnlPayroll 完全相同，另外多回 as_of／days_elapsed／days_in_month／method。
+//
+// ⚠ 這不是另一套算薪水的邏輯——底薪/加班/請假扣款/保險/年終提列全部原封不動呼叫既有的
+// payCalcOne（跟 handlePayrollCalc 用的是同一支函式），估算只做兩件事：
+//   ① 用 payCollect 的新 cutoffDate 參數，只歸集「昨天以前」的核定/打卡/請假資料；
+//   ② 給 payCalcOne 一份「虛擬離職日＝昨天（或員工原本的到職/離職日，取較早者）」的員工物件，
+//      借用 payRatio 既有的「月中到職／離職才折算」機制算出「已過天數 ÷ 當月天數」的比例——
+//      這跟底薪/固定津貼要求的「月薪×已過天數÷當月天數」是同一條公式，不必另寫一套折算邏輯，
+//      也不會動到 payRatio 本身（leave_date 在 payCalcOne 整條路徑上只有 payRatio 這一處會讀，
+//      改的是傳入的複本，不影響試算表或呼叫端手上的原始 e）。
+// 人事成本分類（base_ft/ot_ft/pt/co_labor…那組穩定鍵）則是 payroll.html costTotals()／
+// costStable() 的逐字 port（見 pnlEstimateClassify_，改動記錄同一份規則正本：
+// mala-payroll skill「人事成本分類」那節）——分類是「怎麼把 payCalcOne 已經算好的 earn/ded
+// 歸科目」，不是重新計算金額，所以不算「另寫一套薪資引擎」。
+//
+// 估不了／刻意不含（與 pnlPayroll 對齊，見 README「可估／不可估的鍵」）：
+//   custom_add／custom_ded（自訂加薪扣款，性質不定要人自己判斷科目）、
+//   宿舍收入 g.dorm（已從薪資費用扣除的參考區塊，不是正式科目）。
+//
+// 完全唯讀：payRead／payClockRead／payCollect／payCalcOne／pnlEstimateClassify_ 全部只讀，
+// 不呼叫 setValue/setValues/appendRow/insertSheet/deleteRow/clear/PropertiesService...set.../
+// LockService；checkPnlKey_ 與 pnlPayroll 共用同一把 PNL_KEY、同一套 20 次鎖 10 分鐘。
+//
+// 請求：POST {action:'pnlLaborEstimate', key, ym:'YYYY-MM', store}   // 平面 body，同既有慣例
+// ym 只能是「今天所在月份」或「上個月」——更早的月份本來就該已經鎖定，請改打 pnlPayroll 讀
+// 定案快照；比 pnlPayroll 更新的月份（下個月以後）沒有意義，一律 BAD_INPUT。
+
+/** 'YYYY-MM' → 上一個月的 'YYYY-MM'（跨年正確：1 月的上個月是去年 12 月）。 */
+function pnlPrevYm_(ym) {
+  var y = parseInt(ym.slice(0, 4), 10), m = parseInt(ym.slice(5, 7), 10);
+  m -= 1;
+  if (m < 1) { m = 12; y -= 1; }
+  return y + '-' + pad2(m);
+}
+
+/** 估算基準日：
+ *   ym＝當月 → 「昨天」（今天是 1 號就沒有昨天可估，回 null，端點回 NO_DATA）；
+ *   ym＝上月 → 上月一定已經整月過完，基準日＝上月最後一天（等同整月估算，只是用即時
+ *     打卡重算、不是鎖定快照——月初 1～10 號左右上月可能還沒按「鎖定本月」時特別有用）。
+ *   純字串運算，不碰 Date 物件的 getDate()/setDate()——那兩個方法讀寫的是「執行環境的
+ *   本地時區」欄位，Apps Script 專案時區設對了沒事，但本機 Node 測試環境不一定是台北時區，
+ *   會導致月初/月底跨日錯位，字串運算才能在任何執行環境下都得到與台北時間一致的答案。 */
+function pnlAsOfDate_(ym, today) {
+  var curYm = String(today).slice(0, 7);
+  if (ym === curYm) {
+    var d = parseInt(String(today).slice(8, 10), 10) - 1;
+    if (d < 1) return null;
+    return ym + '-' + pad2(d);
+  }
+  return ym + '-' + pad2(payDaysIn(ym));
+}
+
+/** 缺口時數由各支援列平均分擔；逐字 port 自 payroll.html 的 allocGapHours（跨店支援請款用）。 */
+function pnlAllocGapHours_(hoursArr, gap) {
+  var alloc = hoursArr.map(function () { return 0; });
+  var remain = gap, active = hoursArr.map(function (_, i) { return i; });
+  while (remain > 1e-6 && active.length) {
+    var share = remain / active.length, used = 0, next = [];
+    active.forEach(function (i) {
+      var cap = hoursArr[i] - alloc[i];
+      var take = Math.min(share, cap);
+      alloc[i] += take; used += take;
+      if (cap - take > 1e-6) next.push(i);
+    });
+    if (used <= 1e-9) break;
+    remain -= used; active = next;
+  }
+  return alloc;
+}
+
+var PNL_CO_ITEMS = ['co_labor', 'co_health', 'co_pension', 'co_owner', 'co_group'];
+var PNL_COST_REDUCE_EXTRA = ['shortfall_hours', 'late_deduct'];
+function pnlIsCostReduceKey_(k) { return /_leave$/.test(String(k)) || PNL_COST_REDUCE_EXTRA.indexOf(k) >= 0; }
+var PNL_INS_SELF_KEYS = ['labor_ins', 'health_ins', 'group_ins', 'pension'];
+
+/** 人事成本分類（估算版）：逐字對照 payroll.html 的 costTotals()＋costStable()，只是資料
+ *  來源從前端 RESULTS/MASTER/ATT/CFG 換成本端點剛算好的 results/master/att/cfg。
+ *  ⚠ costRows()/costStable() 口徑改了，這裡要一起改——三處同一份規則正本
+ *  （見 mala-payroll skill「人事成本分類」那節，2026-09-03 已經改過三次）。
+ *  刻意不含 custom_add／custom_ded／宿舍收入 g.dorm，與 costStable() 對齊。 */
+function pnlEstimateClassify_(results, master, att, cfg) {
+  var g = { base: 0, ot: 0, attend: 0, allow: 0, mgr: 0, pt: 0, other: 0, meal: 0, bs: 0, bp: 0, bj: 0,
+            reduceFT: 0, reducePT: 0, dormFT: 0, dormPT: 0, ins: 0, insFT: 0, insPT: 0,
+            sup: [], coL: 0, coH: 0, coP: 0, ye: 0 };
+  var masterById = {};
+  master.forEach(function (m) { masterById[String(m.emp_id)] = m; });
+
+  results.forEach(function (r) {
+    var mEmp = masterById[String(r.emp_id)] || {};
+    var pr = r.is_full_time ? payNum(r.ratio) : 1;
+    g.coL += payNum(mEmp.co_labor) * pr; g.coH += payNum(mEmp.co_health); g.coP += payNum(mEmp.co_pension) * pr;
+
+    if (r.is_full_time) {
+      var mo = (mEmp.yearend_months === '' || mEmp.yearend_months == null) ? payNum(cfg.yearend_months) : payNum(mEmp.yearend_months);
+      if (mo > 0) {
+        var bse = payNum(mEmp.base) + payNum(mEmp.skill_allow) + payNum(mEmp.night_allow) + payNum(mEmp.mgr_allow) + payNum(mEmp.attend_cap);
+        g.ye += bse * mo / 12 * pr;
+      }
+    }
+
+    var sup = ((att[r.emp_id] || {}).support || []).filter(function (x) { return payNum(x.hours) || payNum(x.amount); });
+    if (sup.length) {
+      var gapRate = payNum(mEmp.gap_rate);
+      var gapH = r.base_hours != null ? Math.max(0, payNum(r.base_hours) - payNum(r.total_hours)) : 0;
+      var alloc = pnlAllocGapHours_(sup.map(function (x) { return payNum(x.hours); }), gapH);
+      sup.forEach(function (x, i) {
+        var h = payNum(x.hours), rt = payNum(x.rate);
+        var t1 = gapRate > 0 ? alloc[i] : 0, t2 = h - t1;
+        var amt = payNum(x.amount) || (t1 * gapRate + t2 * rt);
+        g.sup.push({ store: x.store || '（未指定）', amount: amt });
+      });
+    }
+
+    r.earn.forEach(function (x) {
+      var k = x.item_key, a = x.amount;
+      if (k === 'bonus_sales') { g.bs += a; return; }
+      if (k === 'bonus_perf') { g.bp += a; return; }
+      if (k === 'bonus_project') { g.bj += a; return; }
+      if (k === 'custom_add') { return; }   // 估算不計入，與 costStable() 對齊
+      if (!r.is_full_time) { g.pt += a; return; }
+      if (k === 'base_salary') g.base += a;
+      else if (k === 'overtime') g.ot += a;
+      else if (k === 'attend_bonus') g.attend += a;
+      else if (k === 'night_allow' || k === 'skill_allow') g.allow += a;
+      else if (k === 'mgr_allow') g.mgr += a;
+      else if (k === 'meal_sub') g.meal += a;
+      else g.other += a;
+    });
+    r.ded.forEach(function (x) {
+      if (pnlIsCostReduceKey_(x.item_key)) {
+        if (r.is_full_time) g.reduceFT += x.amount; else g.reducePT += x.amount;
+        return;
+      }
+      if (x.item_key === 'dormitory' && x.amount) {
+        if (r.is_full_time) g.dormFT += x.amount; else g.dormPT += x.amount;
+        return;
+      }
+      if (x.item_key === 'custom_ded' && x.amount) { return; }   // 估算不計入
+      if (PNL_INS_SELF_KEYS.indexOf(x.item_key) >= 0 && x.amount) {
+        g.ins += x.amount;
+        if (r.is_full_time) g.insFT += x.amount; else g.insPT += x.amount;
+      }
+    });
+  });
+
+  var co = {};
+  PNL_CO_ITEMS.forEach(function (k) { co[k] = payNum(cfg[k]); });
+  var autoCo = { co_labor: g.coL, co_health: g.coH, co_pension: g.coP };
+  var coAuto = (g.coL + g.coH + g.coP) > 0;
+  if (coAuto) Object.keys(autoCo).forEach(function (k) { if (autoCo[k] > 0) co[k] = autoCo[k]; });
+
+  var baseNet = g.base - g.reduceFT, ptNet = g.pt - g.reducePT - g.insPT - g.dormPT;
+  var salaryGross = baseNet + g.ot + g.attend + g.allow + g.mgr + ptNet + g.other + g.meal + g.bs + g.bp + g.bj;
+  var salaryCost = salaryGross - g.insFT - g.dormFT;
+  var coTotal = PNL_CO_ITEMS.reduce(function (a, k) { return a + co[k]; }, 0);
+  var yearend = payR0(g.ye);
+  var total = salaryCost + coTotal + g.ins + yearend;
+
+  var support = {};
+  g.sup.forEach(function (x) { support[x.store] = payR2((support[x.store] || 0) + x.amount); });
+
+  return {
+    base_ft: payR2(baseNet), ot_ft: payR2(g.ot), attend_ft: payR2(g.attend), allow_ft: payR2(g.allow),
+    mgr: payR2(g.mgr), meal: payR2(g.meal), other: payR2(g.other), pt: payR2(g.pt - g.reducePT),
+    ins_pt_deduct: -payR2(g.insPT), dorm_pt_deduct: -payR2(g.dormPT),
+    bonus_sales: payR2(g.bs), bonus_perf: payR2(g.bp), bonus_proj: payR2(g.bj),
+    ins_ft_deduct: -payR2(g.insFT), dorm_ft_deduct: -payR2(g.dormFT),
+    co_labor: payR2(co.co_labor), co_health: payR2(co.co_health), co_pension: payR2(co.co_pension),
+    co_owner: payR2(co.co_owner), co_group: payR2(co.co_group),
+    ins_self: payR2(g.ins), yearend: yearend,
+    support: support, total: payR2(total),
+  };
+}
+
+/** {action:'pnlLaborEstimate', key, ym, store} → 即時估算「當月 1 日至昨天」的人事成本，
+ *  鍵與 pnlPayroll 相同，另回 as_of/days_elapsed/days_in_month/method。完全唯讀，見上方說明。 */
+function handlePnlLaborEstimate_(body) {
+  var keyErr = checkPnlKey_(body.key);
+  if (keyErr) return { ok: false, error: keyErr };
+
+  var ym = String(body.ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'BAD_INPUT' };
+  var today = todayTaipeiStr();
+  var curYm = today.slice(0, 7);
+  var prevYm = pnlPrevYm_(curYm);
+  if (ym !== curYm && ym !== prevYm) {
+    return { ok: false, error: 'BAD_INPUT', message: 'ym 只能是當月或上個月；更早的月份請改打 pnlPayroll 讀定案快照' };
+  }
+
+  var st = payStore(body.store);
+  var asOf = pnlAsOfDate_(ym, today);
+  if (!asOf) return { ok: false, error: 'NO_DATA', message: '本月第 1 天，還沒有已過天數可估算' };
+  var daysInMonth = payDaysIn(ym);
+  var daysElapsed = Math.min(daysInMonth, parseInt(asOf.slice(8, 10), 10));
+
+  var master = payRead('master').filter(function (m) {
+    return String(m.active).toLowerCase() === 'true' && payStore(m.store) === st;
+  });
+  if (!master.length) return { ok: false, error: 'NO_DATA', message: st + ' 沒有在職同仁主檔' };
+
+  var holRow = payHolidayRow(ym, st);
+  var holDates = payHolidayDates(holRow);
+  var redDays = holRow ? payNum(holRow.red_days) : 0;   // 沒設定紅字天數＝先當 0（唯讀端點不寫入自動同步）
+
+  var cfg = payConfig(st);
+  var att = payCollect(ym, payCfgNum(cfg, 'meal_min_hours', MEAL_MIN_HOURS), st, holDates, asOf);
+
+  var bonusBy = {};
+  payRead('bonus').forEach(function (b) {
+    if (String(b.ym) !== ym || payStore(b.store) !== st) return;
+    var upd = String(b.updated_at || '').slice(0, 10);
+    if (upd && upd > asOf) return;   // 基準日之後才登記的獎金不計入估算
+    var k = String(b.emp_id);
+    (bonusBy[k] = bonusBy[k] || []).push({ bonus_type: b.bonus_type, label: b.label, amount: payNum(b.amount) });
+  });
+
+  var LTYPES = payLeaveTypes(st);
+  var USAGE_BEFORE = payLeaveUsedBefore(ym, st, LTYPES, cfg, master);
+  var ANNUAL_INFO = payAnnualInfo(ym, st);
+
+  var results = master.map(function (e) {
+    var c = att[String(e.emp_id)] || {};
+    var a = {
+      hours: payNum(c.hours), extra_ot: payNum(c.extra_ot),
+      personal_h: payNum(c.personal_h), sick_h: payNum(c.sick_h), menstrual_h: payNum(c.menstrual_h),
+      disaster_h: payNum(c.disaster_h), annual_h: payNum(c.annual_h), deduct_days: payNum(c.deduct_days),
+      support: c.support || [], full_attend: payBool(c.full_attend), work_days: payNum(c.work_days),
+      wage_override: payNum(c.wage_override), dorm_override: '', meal_on: payBool(c.meal_on),
+      holiday_h: payNum(c.holiday_h), custom_add_label: '', custom_add_amt: 0, custom_ded_label: '', custom_ded_amt: 0,
+      bonuses: bonusBy[String(e.emp_id)] || [], leaves: c.leaves || {},
+      leave_usage: USAGE_BEFORE[String(e.emp_id)] || {}, annual: ANNUAL_INFO[String(e.emp_id)] || null,
+      forget_punch: payNum(c.forget_punch), forget_day: payNum(c.forget_day),
+      late_min: payNum(c.late_min), early_min: payNum(c.early_min), attend_void: !!c.attend_void,
+    };
+    // 虛擬離職日＝昨天，借用 payRatio 既有的「月中到職/離職才折算」機制算出「已過天數÷當月
+    // 天數」；員工本來就有更早的到職日或離職日時，取較早的那個（字串比較，'YYYY-MM-DD' 可直接比大小）。
+    var origLeave = payDateStr(e.leave_date);
+    var virtualLeave = (origLeave && origLeave <= asOf) ? origLeave : asOf;
+    var eEst = {};
+    Object.keys(e).forEach(function (k) { eEst[k] = e[k]; });
+    eEst.leave_date = virtualLeave;
+    return payCalcOne(eEst, ym, a, cfg, redDays, LTYPES);
+  });
+
+  var snap = pnlEstimateClassify_(results, master, att, cfg);
+  return {
+    ok: true, ym: ym, store: st,
+    as_of: asOf, days_elapsed: daysElapsed, days_in_month: daysInMonth,
+    method: (ym === curYm ? 'partial_month_to_date' : 'prior_month_recomputed') +
+      '｜底薪與固定津貼＝月薪×(截至 as_of 的在職比例，沿用 payRatio 的到職/離職折算機制，' +
+      '虛擬設一個「離職日＝as_of」)；PT/加班/餐費/全勤＝as_of 前已核定工時×費率（payCalcOne 原生算法）；' +
+      '勞健保公司負擔/退休金按同一在職比例折算；年終提列＝月提列額×在職比例；' +
+      '跨店支援請款＝as_of 前已記錄的支援時數。與 pnlPayroll 定案快照的差異：本端點即時重算、' +
+      '不看鎖定狀態，紅字天數若當月尚未設定則以 0 計。',
+    rows: {
+      base_ft: snap.base_ft, ot_ft: snap.ot_ft, attend_ft: snap.attend_ft, allow_ft: snap.allow_ft,
+      mgr: snap.mgr, meal: snap.meal, other: snap.other, pt: snap.pt,
+      bonus_sales: snap.bonus_sales, bonus_perf: snap.bonus_perf, bonus_proj: snap.bonus_proj,
+      ins_ft_deduct: snap.ins_ft_deduct, dorm_ft_deduct: snap.dorm_ft_deduct,
+      ins_pt_deduct: snap.ins_pt_deduct, dorm_pt_deduct: snap.dorm_pt_deduct,
+      co_labor: snap.co_labor, co_health: snap.co_health, co_pension: snap.co_pension,
+      co_owner: snap.co_owner, co_group: snap.co_group, ins_self: snap.ins_self, yearend: snap.yearend,
+    },
+    support: snap.support, total: snap.total,
+    not_estimated: ['custom_add', 'custom_ded', 'dorm_income（g.dorm，宿舍收入參考區塊）'],
   };
 }
