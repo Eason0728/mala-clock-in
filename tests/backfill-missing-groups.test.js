@@ -51,7 +51,7 @@ chk('  掃到 1 筆',        r.scanned, 1);
 chk('  該補 1 筆',        r.fixed, 1);
 chk('  applied=false',    r.applied, false);
 chk('  舊狀態',           r.hits[0].from, '遲到2分、早退1分');
-chk('  新狀態',           r.hits[0].to,   '遲到2分、早退1分、少刷1組卡');
+chk('  新狀態',           r.hits[0].to,   '遲到2分、早退1分、第一段下班無打卡、第二段上班無打卡');
 chk('  姓名帶得出來',     r.hits[0].name, '許正昊');
 chk('  dry-run 沒寫入',   appended.length, 0);
 
@@ -63,13 +63,13 @@ chk('  寫了 1 列',        appended.length, 1);
 chk('  日期／工號／姓名', appended[0].slice(0,3), [D,'E01','許正昊']);
 chk('  periods 原封不動', appended[0][3], '11:00-14:30,17:00-21:45');
 chk('  時數原封不動',     appended[0][4], 8.25);
-chk('  狀態換成新的',     appended[0][5], '遲到2分、早退1分、少刷1組卡');
+chk('  狀態換成新的',     appended[0][5], '遲到2分、早退1分、第一段下班無打卡、第二段上班無打卡');
 chk('  主管欄加系統重算', appended[0][6], '店長（系統重算）');
 
 console.log('\n══ 不亂改不該動的 ══');
 install({approved:[rec({periods:'11:00-21:45'})],events:HSU_EVENTS,roster:ROSTER,leave:[]});
 chk('  單段班：不掃',      run(D,D,true).scanned, 0);
-install({approved:[rec({status_text:'少刷1組卡'})],events:HSU_EVENTS,roster:ROSTER,leave:[]});
+install({approved:[rec({status_text:'第一段下班無打卡、第二段上班無打卡'})],events:HSU_EVENTS,roster:ROSTER,leave:[]});
 chk('  已標過：不掃',      run(D,D,true).scanned, 0);
 install({approved:[rec({status_text:'正常'})],events:[
   {emp_id:'E01',type:'in', status:'ok',ts:D+'T11:00:00+08:00'},
@@ -90,12 +90,12 @@ chk('  列進 skipped',        r.skipped[0].reason, '不只少刷有變，請人
 
 console.log('\n══ 安全閘：statusDiffIsOnlyMissingGroup ══');
 const only=vm.runInContext('statusDiffIsOnlyMissingGroup',sb);
-chk('  正常 → 少刷1組卡',          only('正常','少刷1組卡'), true);
-chk('  保留遲到早退只多少刷',      only('遲到2分、早退1分','遲到2分、早退1分、少刷1組卡'), true);
-chk('  遲到分鐘也變了 → 擋',       only('遲到2分','遲到5分、少刷1組卡'), false);
-chk('  多了別的註記 → 擋',         only('遲到2分','遲到2分、有多出的打卡段、少刷1組卡'), false);
+chk('  正常 → 第一段下班無打卡、第二段上班無打卡',          only('正常','第一段下班無打卡、第二段上班無打卡'), true);
+chk('  保留遲到早退只多少刷',      only('遲到2分、早退1分','遲到2分、早退1分、第一段下班無打卡、第二段上班無打卡'), true);
+chk('  遲到分鐘也變了 → 擋',       only('遲到2分','遲到5分、第一段下班無打卡、第二段上班無打卡'), false);
+chk('  多了別的註記 → 擋',         only('遲到2分','遲到2分、有多出的打卡段、第一段下班無打卡、第二段上班無打卡'), false);
 chk('  沒有少刷 → 擋',             only('遲到2分','遲到2分、早退1分'), false);
-chk('  掉了原本的註記 → 擋',       only('遲到2分、早退1分','遲到2分、少刷1組卡'), false);
+chk('  掉了原本的註記 → 擋',       only('遲到2分、早退1分','遲到2分、第一段下班無打卡、第二段上班無打卡'), false);
 
 console.log('\n══ 日期區間防呆 ══');
 install({approved:[],events:[],roster:[],leave:[]});

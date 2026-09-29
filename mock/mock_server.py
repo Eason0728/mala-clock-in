@@ -646,7 +646,15 @@ def hm_to_ms(date_str, hm):
 # 「核定時段對不到打卡段」有兩種成因，措辭要分開（與 Code.gs 同步，2026-08-19）
 NO_PUNCH_NOTE = "該段無打卡"
 NOT_RECORDED_NOTE = "打卡未入帳，主管補登"
-MISSING_GROUP_PREFIX = "少刷"   # 「少刷N組卡」：中間漏刷一組上下班卡（見 compute_approval_status）
+MISSING_GROUP_PREFIX = "第"   # 「第N段下班無打卡／第N段上班無打卡」的字首（2026-09-29 取代「少刷N組卡」）
+SEG_MISS_OUT = "段下班無打卡"
+SEG_MISS_IN = "段上班無打卡"
+SEG_NUM_ZH = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
+
+
+def seg_miss_note(no, tail):
+    """與 Code.gs segMissNote 同步。"""
+    return MISSING_GROUP_PREFIX + (SEG_NUM_ZH[no] if no < len(SEG_NUM_ZH) else str(no)) + tail
 # 「不打卡休息帶」（與 Code.gs 的 CONFIG.NO_PUNCH_BREAK_* 同一件事）。mock 模擬的是光復＝沒有，
 # 所以是 None；要測央廚那種店，在測試裡自己傳 break_window 進 compute_approval_status。
 NO_PUNCH_BREAK = None
@@ -665,7 +673,7 @@ def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=Fal
     full_segs = [s for s in punch_segments if s["in_ms"] is not None and s["out_ms"] is not None]
     notes = []
     used = set()
-    by_idx = {}   # 打卡段 index → 配到它的核定時段（供下方「少刷N組卡」反向檢查）
+    matched_idx = []   # 核定時段 index → 配到的完整打卡段 index（-1＝沒配到）
 
     for p in periods:
         best_i, best_overlap = -1, 0
@@ -673,13 +681,13 @@ def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=Fal
             overlap = min(p["end_ms"], seg["out_ms"]) - max(p["start_ms"], seg["in_ms"])
             if overlap > best_overlap:
                 best_overlap, best_i = overlap, i
+        matched_idx.append(best_i)
         if best_i == -1:
             note = NOT_RECORDED_NOTE if had_unrecorded_attempts else NO_PUNCH_NOTE
             if note not in notes:
                 notes.append(note)
             continue
         used.add(best_i)
-        by_idx.setdefault(best_i, []).append(p)
         seg = full_segs[best_i]
         # B3：Python round() 是銀行家捨入，與 JS Math.round 不同；改用 floor(x+0.5)（值恆非負，即四捨五入）
         if seg["in_ms"] > p["start_ms"]:
@@ -687,20 +695,31 @@ def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=Fal
         if seg["out_ms"] < p["end_ms"]:
             notes.append("早退{}分".format(int(math.floor((p["end_ms"] - seg["out_ms"]) / 60000 + 0.5))))
 
-    # 「少刷N組卡」（2026-09-21）：中間有間隔的兩個核定時段配到同一條打卡段 → 中間那組
-    # 上下班卡沒刷。間隔為 0 ＝主管把一段連續班拆成兩段核定，同仁本來就不必刷卡，不算少刷。
-    missing_groups = 0
-    for ps in by_idx.values():
-        ps = sorted(ps, key=lambda x: x["start_ms"])
-        max_end = ps[0]["end_ms"]
-        for prev_i in range(1, len(ps)):
-            gap_s, gap_e = max_end, ps[prev_i]["start_ms"]
-            explained = bool(break_window) and gap_s < break_window["end_ms"] and gap_e > break_window["start_ms"]
-            if gap_e > gap_s and not explained:
-                missing_groups += 1
-            max_end = max(max_end, ps[prev_i]["end_ms"])
-    if missing_groups:
-        notes.append("{}{}組卡".format(MISSING_GROUP_PREFIX, missing_groups))
+    # 「第N段下班無打卡／第N段上班無打卡」（2026-09-29，取代「少刷N組卡」，與 Code.gs 同步）：
+    # 兩個核定時段之間若有無法用休息帶解釋的間隔，中間本來就該有一張下班卡與一張上班卡；
+    # 有打的證據＝前後兩段各自配到「不同」的完整打卡段。間隔＝0 不算。
+    # ⚠「打卡未入帳」的日子只沿用舊行為（兩段配到同一條完整段才標）。
+    ordered = sorted(zip(periods, matched_idx), key=lambda t: t[0]["start_ms"])
+    max_end = None
+    prev_idx = -1
+    prev_no = 0
+    for i, (p, idx) in enumerate(ordered):
+        no = i + 1
+        if max_end is None:
+            max_end, prev_idx, prev_no = p["end_ms"], idx, no
+            continue
+        gap_s, gap_e = max_end, p["start_ms"]
+        explained = bool(break_window) and gap_s < break_window["end_ms"] and gap_e > break_window["start_ms"]
+        if gap_e > gap_s and not explained:
+            punched = prev_idx != -1 and idx != -1 and idx != prev_idx
+            one_side_unmatched = prev_idx == -1 or idx == -1
+            if not punched and (not one_side_unmatched or not had_unrecorded_attempts):
+                for n in (seg_miss_note(prev_no, SEG_MISS_OUT), seg_miss_note(no, SEG_MISS_IN)):
+                    if n not in notes:
+                        notes.append(n)
+        if p["end_ms"] > max_end:
+            max_end = p["end_ms"]
+        prev_idx, prev_no = idx, no
 
     if len(full_segs) > len(used):
         notes.append("有多出的打卡段")

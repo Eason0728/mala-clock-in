@@ -303,7 +303,7 @@ console.log('\n══ 9) payCollect 新增的 cutoffDate 參數：既有呼叫�
     function pairShifts(){ return { unmatchedIns: [], unmatchedOuts: [] }; }
     function todayTaipeiStr(){ return '2026-09-27'; }
     function tsDateStr(ts){ return String(ts).slice(0,10); }
-    function payMissingGroups(){ return 0; }
+    function payMissingCards(){ return 0; }
     function payHasLateEarly(){ return { any: false }; }
     var APPROVED = [
       {date:'2026-09-01', emp_id:'FT01', approved_hours:8, status_text:'', entered_at:'2026-09-01T20:00:00+08:00'},

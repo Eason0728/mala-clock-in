@@ -372,20 +372,20 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     if (cutoffDate && d > cutoffDate) return;
     markForget(String(e.emp_id), d);
   });
-  // 2b) 「少刷N組卡」也算忘刷（2026-09-21，許正昊 9/21 案例）。
+  // 2b) 「第N段下班／上班無打卡」也算忘刷（2026-09-21 建立，2026-09-29 改成逐段標示）。
   //     中間漏刷一組上下班卡時，頭尾那兩張卡被 pairShifts 配成一長段，unmatchedIns/Outs
   //     都是空的 → 上面兩圈一筆都抓不到。結果是「頭尾各刷一張、中間兩張都沒刷」的人
   //     忘刷次數 0、全勤照領，反而比老實刷四張只漏一張的人少被扣——規則對不老實的人寬鬆。
   //     改從核定狀態把它補回來（判定本身仍然只有 computeApprovalStatus 一套，不重寫規則）。
-  //     一組＝2 張卡，與上面「每漏一張卡算一次」同口徑；forget_day 照樣同一天只算 1 天。
-  //     ⚠ 不跳過今天：少刷是「完整長段吃掉兩個核定時段」才成立，人早就下班了，
+  //     現在一行就是一張卡，與上面「每漏一張卡算一次」同口徑；forget_day 照樣同一天只算 1 天。
+  //     ⚠ 不跳過今天：這是核定時段之間的缺口，主管核定時人早就下班了，
   //       沒有 unmatchedIns 那種「今天＝還在上班中」的歧義。
   Object.keys(approvedMap).forEach(function (d) {
     if (String(d).slice(0, 7) !== ym) return;
     if (cutoffDate && String(d) > cutoffDate) return;
     Object.keys(approvedMap[d]).forEach(function (emp) {
-      const g = payMissingGroups(approvedMap[d][emp].status_text);
-      if (g) markForget(String(emp), d, g * 2);
+      const g = payMissingCards(approvedMap[d][emp].status_text);
+      if (g) markForget(String(emp), d, g);
     });
   });
 
@@ -868,16 +868,17 @@ function payHasLateEarly(statusText) {
   return { late: late, early: early, any: late || early };
 }
 
-/** 狀態字串裡「少刷N組卡」的 N（沒有就 0）。
- *  一組＝中間漏刷的那張下班卡＋那張上班卡，共 2 張（見下方 payCollect 的換算）。
- *  ⚠ 刻意不引用 Code.gs 的 MISSING_GROUP_PREFIX：payHasLateEarly 解析「遲到／早退」也是
- *    在這裡寫字面值，兩邊同一個慣例；真要改字樣，grep '少刷' 兩檔一起改。
- *  ⚠ 與 payHasLateEarly 同理，要 split('、') 逐項判**開頭**，不能整串 indexOf。 */
-function payMissingGroups(statusText) {
+/** 狀態字串裡「第N段下班無打卡／第N段上班無打卡」共幾張（沒有就 0）。
+ *  2026-09-29 起取代舊的「少刷N組卡」：**一行＝漏一張卡**，所以回傳的就是張數，
+ *  呼叫端不必再乘 2（舊版回傳的是組數）。
+ *  ⚠ 刻意不引用 Code.gs 的常數：payHasLateEarly 解析「遲到／早退」也是在這裡寫字面值，
+ *    兩邊同一個慣例；真要改字樣，grep '段下班無打卡' 兩檔一起改。
+ *  ⚠ 與 payHasLateEarly 同理，要 split('、') 逐項判**結尾**，不能整串 indexOf。 */
+function payMissingCards(statusText) {
   let n = 0;
   String(statusText || '').split('、').forEach(function (x) {
-    const m = String(x).trim().match(/^少刷(\d+)組卡/);
-    if (m) n += Number(m[1]);
+    const t = String(x).trim();
+    if (/^第.+段(上班|下班)無打卡$/.test(t)) n += 1;
   });
   return n;
 }
@@ -2058,11 +2059,11 @@ function handlePayrollPunch(body) {
   }
   paired.unmatchedIns.forEach(function (e) { markMiss(e, true); });
   paired.unmatchedOuts.forEach(function (e) { markMiss(e, false); });
-  // 「少刷N組卡」的日子也算忘刷日（與 payCollect 2b) 同一口徑，否則總表跟薪資對不起來）
+  // 「第N段下班／上班無打卡」的日子也算忘刷日（與 payCollect 2b) 同一口徑，否則總表跟薪資對不起來）
   Object.keys(approvedMap).forEach(function (d) {
     if (String(d).slice(0, 7) !== ym) return;
     Object.keys(approvedMap[d]).forEach(function (emp) {
-      if (payMissingGroups(approvedMap[d][emp].status_text)) missDays[String(emp) + '|' + d] = true;
+      if (payMissingCards(approvedMap[d][emp].status_text)) missDays[String(emp) + '|' + d] = true;
     });
   });
   Object.keys(missDays).forEach(function (k) { box(k.split('|')[0]).miss++; });

@@ -1633,7 +1633,14 @@ const WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
 // 「少刷N組卡」的字首。⚠ 宣告位置不可往後搬：ABNORMAL_CATEGORIES 是頂層 const、載入當下就求值，
 // 放到它後面會 TDZ ReferenceError，整支 Code.gs 起不來。語意上它跟 NO_PUNCH_NOTE 同一組，
 // 那邊留了指路註解。
-const MISSING_GROUP_PREFIX = '少刷';
+const MISSING_GROUP_PREFIX = '第';
+// 2026-09-29 Eason 指定：原本整天只標一句「少刷N組卡」，改成逐段標「第N段下班無打卡」
+// 「第N段上班無打卡」——看表的人直接知道是哪一段少了哪一張卡。字首仍沿用這個常數，
+// 所以 backfill 的「已經標過了」與 statusDiffIsOnlyMissingGroup 的比對不必改。
+const SEG_MISS_OUT = '段下班無打卡';
+const SEG_MISS_IN = '段上班無打卡';
+const SEG_NUM_ZH = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+function segMissNote(no, tail) { return MISSING_GROUP_PREFIX + (SEG_NUM_ZH[no] || String(no)) + tail; }
 // 備註欄中屬於「異常」的字樣（列入異常筆數統計、明細標紅）；假別不算異常
 // 計入月表「異常筆數」的分類。2026-08-19 Eason 定義：忘刷卡、遲到、早退、病假、事假
 // （＋沿用既有的新裝置待核准）。
@@ -1652,7 +1659,7 @@ const ABNORMAL_CATEGORIES = [
   { key: '下班忘刷卡', prefixes: ['下班忘刷卡'] },
   // 「少刷N組卡」＝中間漏刷一組上下班卡（見 computeApprovalStatus）。本質就是忘刷卡，
   // 只是 pairShifts 從打卡事件看不出來、要靠核定時段比對才抓得到，所以跟上面兩類同等對待。
-  { key: '少刷卡', prefixes: [MISSING_GROUP_PREFIX] },
+  { key: '段內無打卡', prefixes: [MISSING_GROUP_PREFIX] },
   { key: '遲到早退', prefixes: ['遲到', '早退'] },
   { key: '病假', prefixes: ['病假'] },
   { key: '事假', prefixes: ['事假'] },
@@ -1959,15 +1966,16 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
   const notes = [];
   const usedIdx = {};
-  const byIdx = {};   // 打卡段 index → 配到它的核定時段（供下方「少刷N組卡」反向檢查）
+  const matchedIdx = [];   // 核定時段 index → 配到的完整打卡段 index（-1＝沒配到，供下方逐段檢查）
 
-  periods.forEach(function (p) {
+  periods.forEach(function (p, pi) {
     let bestIdx = -1;
     let bestOverlap = 0;
     fullSegs.forEach(function (seg, i) {
       const overlap = Math.min(p.endMs, seg.outMs) - Math.max(p.startMs, seg.inMs);
       if (overlap > bestOverlap) { bestOverlap = overlap; bestIdx = i; }
     });
+    matchedIdx[pi] = bestIdx;
     if (bestIdx === -1) {
       // 舊呼叫端沒傳第三／第四個參數＝undefined＝falsy，行為與改版前相同。
       // ⚠ 出差當天本來就打不了卡（人不在店裡），標「該段無打卡」會被當成忘刷卡去扣全勤，
@@ -1977,35 +1985,42 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
       return;
     }
     usedIdx[bestIdx] = true;
-    (byIdx[bestIdx] = byIdx[bestIdx] || []).push(p);
     const seg = fullSegs[bestIdx];
     if (seg.inMs > p.startMs) notes.push('遲到' + Math.round((seg.inMs - p.startMs) / 60000) + '分');
     if (seg.outMs < p.endMs) notes.push('早退' + Math.round((p.endMs - seg.outMs) / 60000) + '分');
   });
 
-  // 「少刷N組卡」（2026-09-21 新增，許正昊 9/21 案例）：中間漏刷一組上下班卡時，頭尾那兩張卡
-  // 在 pairShifts 眼裡是完整的一長段（16 小時內的 in 配下一筆 out），unmatchedIns/Outs 都空的
-  // → 整天一個忘刷卡都標不出來。唯一看得出破綻的地方就是這裡：兩個中間有間隔的核定時段，
-  // 重疊最大的打卡段竟然是同一條。
-  // ⚠ 間隔＝0（前一段的終點就是下一段的起點）不算：那是主管把一段連續班拆成兩段核定
-  //   （例：分開算加班時數），同仁中間本來就不必刷卡，標少刷是冤枉人。
-  // ⚠⚠ 該店若有「規定不打卡的休息帶」（CONFIG.NO_PUNCH_BREAK_*，目前只有央廚 12:00–13:00），
-  //   與它重疊的空檔一律不算。央廚同仁**照規定就是不刷中午那組卡**，而核定頁的預填本來就把
-  //   休息帶挖成缺口 → 不排除的話，央廚每一位、每一個上班日都會被標少刷1組卡，全勤直接歸零。
-  //   ⚠ 不能改用「空檔短於 N 分鐘就不算」來閃：央廚休息是 60 分，許正昊漏刷的那格也是 60 分
-  //   （14:30–15:30），長度上完全分不開，只有「這家店規定要不要刷」分得開。
-  // ⚠ 只看完整段（fullSegs）。未配對的一端在 pairShifts 已經是忘刷卡了，不在這裡重複標。
+  // 「第N段下班無打卡／第N段上班無打卡」（2026-09-29 Eason 指定，取代原本的「少刷N組卡」）：
+  // 兩個核定時段之間若有無法用休息帶解釋的間隔，中間本來就該有一張下班卡與一張上班卡。
+  // 有打的證據＝前後兩段各自配到「不同」的完整打卡段；否則把缺的那兩張各標一行，
+  // 讓看表的人知道是哪一段的哪一張沒打，而不是只知道少了幾組。
+  // ⚠ 舊版只在「兩段配到同一條完整段」時抓得到；只有上班卡、沒有下班卡的日子 fullSegs 是空的，
+  //   連中間休息沒刷卡都標不出來（許正昊 2026-09-23、25、26、27 實例）。
+  // ⚠ 間隔＝0 不算：主管把一段連續班拆成兩段核定（例如分開算加班），同仁中間本來就不必刷卡。
+  // ⚠ 出差與「打卡未入帳」的日子只沿用舊行為（兩段配到同一條完整段才標）：前者人不在店裡、
+  //   後者同仁其實有按，把新抓到的那種也標上去是冤枉人。
   // ⚠ 遲到／早退照原樣算不動：那兩個數字來自真實的頭尾打卡時間，仍然是對的。
-  let missingGroups = 0;
-  Object.keys(byIdx).forEach(function (k) {
-    const ps = byIdx[k].slice().sort(function (a, b) { return a.startMs - b.startMs; });
-    let maxEnd = ps[0].endMs;
-    for (let i = 1; i < ps.length; i++) {
-      if (ps[i].startMs > maxEnd && !gapExplainedByBreak(maxEnd, ps[i].startMs, breakWindow)) missingGroups++;
-      maxEnd = Math.max(maxEnd, ps[i].endMs);
+  const ordered = periods.map(function (p, i) { return { p: p, idx: matchedIdx[i] }; })
+    .sort(function (a, b) { return a.p.startMs - b.p.startMs; });
+  let maxEnd = null;
+  let prevIdx = -1;
+  let prevNo = 0;
+  ordered.forEach(function (o, i) {
+    const no = i + 1;
+    if (maxEnd === null) { maxEnd = o.p.endMs; prevIdx = o.idx; prevNo = no; return; }
+    if (o.p.startMs > maxEnd && !gapExplainedByBreak(maxEnd, o.p.startMs, breakWindow)) {
+      const punched = prevIdx !== -1 && o.idx !== -1 && o.idx !== prevIdx;
+      const oneSideUnmatched = prevIdx === -1 || o.idx === -1;
+      if (!punched && (!oneSideUnmatched || (!isTrip && !hadUnrecordedAttempts))) {
+        [segMissNote(prevNo, SEG_MISS_OUT), segMissNote(no, SEG_MISS_IN)].forEach(function (n) {
+          if (notes.indexOf(n) === -1) notes.push(n);
+        });
+      }
     }
+    if (o.p.endMs > maxEnd) maxEnd = o.p.endMs;
+    prevIdx = o.idx;
+    prevNo = no;
   });
-  if (missingGroups) notes.push(MISSING_GROUP_PREFIX + missingGroups + '組卡');
 
   if (fullSegs.length > Object.keys(usedIdx).length) notes.push('有多出的打卡段');
   return notes.length ? notes.join('、') : '正常';
