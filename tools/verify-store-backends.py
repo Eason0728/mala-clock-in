@@ -15,7 +15,7 @@
 import pathlib, re, sys
 
 GAS = pathlib.Path.home() / 'mala-gas'
-STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in']
+STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztgf-clock-in']
 
 # 每家店都必須有的 action（doPost 路由）
 ACTIONS = ['clock', 'whoami', 'sync_roster', 'get_roster', 'get_events', 'approve_device',
@@ -55,6 +55,7 @@ STORE_BREAK = {
     'cf-clock-in':    ('12:00', '13:00'),  # 央廚：規定中午休息不打卡
     'hq-clock-in':    ('', ''),            # 總部
     'mztjs-clock-in': ('', ''),            # 金山：Eason 2026-09-08 指定不設
+    'mztgf-clock-in': ('', ''),            # 墨竹亭光復：2026-09-30 同金山不設
 }
 
 bad = 0

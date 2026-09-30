@@ -32,7 +32,7 @@ Payroll.gs 沒有店別專屬的值（查過：無 PASTE_／SPREADSHEET_ID／ADM
 """
 import argparse, difflib, pathlib, re, subprocess, sys
 
-STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in']
+STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztgf-clock-in']
 STORE_FILE = '程式碼.js'
 CONFIG_RE = re.compile(r'^const CONFIG = \{.*?^\};', re.S | re.M)
 
