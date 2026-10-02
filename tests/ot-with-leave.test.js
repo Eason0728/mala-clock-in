@@ -46,14 +46,17 @@ chk('逐日加班照樣另加：0.5＋2＝2.5', r.ot_paid_hours, 2.5);
 r=run({hours:110,personal_h:24.5,sick_h:16.25,support:[{store:'MZTJS',hours:10,rate:200}]});
 chk('支援併入：110＋10＋40.75＝160.75 → 加班 0.75', r.ot_paid_hours, 0.75);
 
-// 生效月份 2026-08：之前是手動工時（考勤機），加班已另填在 extra_ot，套新口徑會把假重複算成加班
+// 生效月份 2026-09：07 以前是手動工時（考勤機），加班已另填在 extra_ot，套新口徑會把假重複算成加班；
+// 08 已發薪，Eason 2026-10-02 決定不補回、維持舊算法
 const runYm=(ym,att,red)=>e.payCalcOne(FT,ym,Object.assign(
  {hours:0,extra_ot:0,deduct_days:0,support:[],bonuses:[],annual:null,leave_usage:{},late_min:0,
   personal_h:0,sick_h:0,annual_h:0,menstrual_h:0,disaster_h:0},att),cfg,red==null?8:red);
 r=runYm('2026-07',{hours:184,annual_h:16,extra_ot:45.5});
 chk('2026-07 沿用舊口徑：184＋特休16、逐日加班45.5 → 加班仍是 45.5', r.ot_paid_hours, 45.5);
 r=runYm('2026-08',{hours:126.25,sick_h:38.5,menstrual_h:4},10);   // 31−10＝21 天×8＝168
-chk('2026-08 起新口徑：126.25＋42.5−168 → 加班 0.75', r.ot_paid_hours, 0.75);
+chk('2026-08 沿用舊口徑（不補回）：126.25＋42.5−168 → 加班 0', r.ot_paid_hours, 0);
+r=runYm('2026-09',{hours:119.75,personal_h:24.5,sick_h:16.25},10);
+chk('2026-09 起新口徑：119.75＋40.75−160 → 加班 0.5', r.ot_paid_hours, 0.5);
 r=runYm('2026-07',{hours:150,sick_h:20});
 chk('2026-07 不足倒扣照舊（150＋20 vs 184 → 倒扣 14）', (it(r,'shortfall_hours')||{}).qty, 14);
 

@@ -546,8 +546,9 @@ function payTenurePlus(e, ym, cfg) {
 /* 正職加班「上班＋可抵扣假」口徑的生效月份（Eason 2026-10-02）。
  * 更早的月份是打卡上線前，工時從考勤機報表手動填、加班已另填在逐日加班 extra_ot，
  * 那時的 hours 不一定是純上班（有的直接填滿 184）——套新口徑會把假重複算成加班。
+ * 2026-08 已發薪，Eason 決定不補回、維持舊算法 → 生效月份為 2026-09。
  * ⚠ 放在 payR0～Handlers 之間：payroll_mock.js 與測試只切這一段。 */
-const PAY_OT_NET_FROM = '2026-08';
+const PAY_OT_NET_FROM = '2026-09';
 
 function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   // 假別規則一律由 ltypes（payroll_leave_type）決定；不傳時退回內建預設，
