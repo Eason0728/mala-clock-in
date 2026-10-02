@@ -716,6 +716,10 @@
   // 目前不允許的打卡型別（'in'/'out'/null）。由伺服器 whoami 的 last_counted
   // （12 小時回看視窗，跨日也算）決定，不要自己從 today_events 算。
   var blockedType = null;
+  // whoami（或打卡成功回應）是否已經告訴過我們 last_counted。還沒回來前不知道今天打過什麼，
+  // 下方「第一張就按下班」的確認框不跳——說「你今天還沒打上班卡」可能是錯的。
+  var lastCountedKnown = false;
+  var lastCountedNow = null;
 
   /* ── 今日紀錄快照（2026-09-21 新增，供 confirmPunch 判斷用）───────────────
    * ⚠ 不可以用「手機時鐘」跟伺服器時間比（起初 confirmPunch 是拿 Date.now() 當
@@ -775,6 +779,8 @@
   }
 
   function updateButtonStates(lastCounted) {
+    lastCountedKnown = true;
+    lastCountedNow = lastCounted || null;
     blockedType = lastCounted ? lastCounted.type : null;
     btnIn.classList.toggle('not-allowed', blockedType === 'in');
     btnOut.classList.toggle('not-allowed', blockedType === 'out');
@@ -1389,6 +1395,12 @@
       // 它不是「打卡沒成功」，而是「這一筆本來就不該打」，用統一失敗句會叫她再打一次、更混亂。
       showStatus('status-warn', duplicateMessage(blockedType));
       return;
+    }
+    /* 第一張卡就按下班（2026-10-02 Eason 指定）：後端的交替防呆只看「過去 12 小時內最後一張算數的卡」，
+       沒有就兩顆都收，所以每天第一張按錯成下班卡擋不住（吳佳宜 8/25、金山 9/8 都發生過）。
+       刻意只做確認框、不硬擋：真的忘了打上班卡的人，下班卡仍然要打得進去。 */
+    if (type === 'out' && lastCountedKnown && !lastCountedNow) {
+      if (!window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
     }
     setBusy(true);
     showStatus('status-loading', '定位中…');

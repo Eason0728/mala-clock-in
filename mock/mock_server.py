@@ -606,6 +606,8 @@ MOCK_LEAVE_TYPES = [
     {"code": "paternity",    "name": "陪產檢及陪產假", "cap_days": 7,    "cap_basis": "event"},
     {"code": "official",     "name": "公假",           "cap_days": None, "cap_basis": ""},
     {"code": "parental",     "name": "育嬰假",         "cap_days": 720,  "cap_basis": "child"},
+    # 正式假別表（Payroll.gs）有出差；mock 原本漏了，核定頁下拉因此選不到出差（2026-10-02 補）
+    {"code": "trip",         "name": "出差",           "cap_days": None, "cap_basis": ""},
 ]
 
 
@@ -865,16 +867,24 @@ def handle_mgr_approve(data, body):
     if not isinstance(raw_periods, list):
         return {"ok": False, "error": "bad_periods"}
 
+    # 出差時數（2026-10-02，與 Code.gs 同步）：填幾小時認定幾小時，與上班時段相加
+    trip_hours = leave_hours if (leave_type == "出差" and leave_hours != "") else 0.0
+
     if len(raw_periods) == 0:
         # 整天請假：沒時段但要有假別；核定 0 小時、狀態「全天請假」（與 Code.gs 同步）
         if not leave_type:
             return {"ok": False, "error": "bad_periods"}
-        # 出差不是請假（2026-08-23，與 Code.gs trip_needs_periods 同步）：空時段＝0 工時，硬擋
         if leave_type == "出差":
-            return {"ok": False, "error": "trip_needs_periods"}
-        approved_hours = 0.0
-        periods_str = ""
-        status_text = "全天請假"
+            # 整天出差：核定＝出差時數；沒填時數硬擋（與 Code.gs trip_needs_hours 同步）
+            if not trip_hours > 0:
+                return {"ok": False, "error": "trip_needs_hours"}
+            approved_hours = round(trip_hours, 2)
+            periods_str = ""
+            status_text = "出差"
+        else:
+            approved_hours = 0.0
+            periods_str = ""
+            status_text = "全天請假"
     else:
         for p in raw_periods:
             if (
@@ -885,7 +895,7 @@ def handle_mgr_approve(data, body):
                 return {"ok": False, "error": "bad_periods"}
 
         periods = []
-        approved_hours = 0.0
+        approved_hours = float(trip_hours)
         for p in raw_periods:
             start_ms = hm_to_ms(date, p["start"])
             end_ms = hm_to_ms(date, p["end"])

@@ -1524,17 +1524,27 @@ function handleMgrApprove(body) {
   const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
   if (!Array.isArray(rawPeriods)) return { ok: false, error: 'bad_periods' };
 
+  // 出差時數（2026-10-02 Eason 指定）：出差那格填幾小時就認定幾小時，與上班時段相加成核定時數。
+  // ⚠ 出差在薪資假別表是 pay_ratio 1／offset_shortfall false——那格時數本身不扣款也不抵不足，
+  //   所以加進核定時數不會被重複給錢。其他假別的時數仍只是註記，不進核定。
+  const tripHours = (leaveType === TRIP_NOTE && leaveHours !== '') ? leaveHours : 0;
+
   let approvedHours, periodsStr, statusText;
   if (rawPeriods.length === 0) {
     // 整天請假：沒有任何上班時段，但必須有假別；核定 0 小時、狀態標「全天請假」
     // （沒假別的空送出仍擋掉）。這樣月表那天顯示核定 0h＋假別，而非誤導的「待核定」。
     if (!leaveType) return { ok: false, error: 'bad_periods' };
-    // 出差不是請假（2026-08-23 Eason 定案，修法 A）：時數靠核定時段照常計薪，
-    // 空時段＝當天 0 工時，正職月底會被不足倒扣。硬擋，逼主管填實際工作時段。
-    if (leaveType === TRIP_NOTE) return { ok: false, error: 'trip_needs_periods' };
-    approvedHours = 0;
-    periodsStr = '';
-    statusText = '全天請假';
+    if (leaveType === TRIP_NOTE) {
+      // 整天出差：核定＝出差時數。沒填時數＝當天 0 工時（正職月底會被不足倒扣），硬擋。
+      if (!(tripHours > 0)) return { ok: false, error: 'trip_needs_hours' };
+      approvedHours = tripHours;
+      periodsStr = '';
+      statusText = TRIP_NOTE;
+    } else {
+      approvedHours = 0;
+      periodsStr = '';
+      statusText = '全天請假';
+    }
   } else {
     for (let i = 0; i < rawPeriods.length; i++) {
       const p = rawPeriods[i];
@@ -1546,7 +1556,7 @@ function handleMgrApprove(body) {
       if (endMs <= startMs) endMs += 24 * 3600000; // 跨夜段：end<=start 視為+1天
       return { start: p.start, end: p.end, startMs: startMs, endMs: endMs };
     });
-    approvedHours = 0;
+    approvedHours = tripHours;
     periods.forEach(function (p) { approvedHours += (p.endMs - p.startMs) / 3600000; });
     approvedHours = Math.round(approvedHours * 100) / 100;
 

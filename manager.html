@@ -380,6 +380,18 @@
     gap: 8px;
     margin-bottom: 10px;
   }
+  /* 出差時數算法說明（2026-10-02）：卡片是白底，字色要自己設 */
+  .trip-hint {
+    margin: -4px 0 10px;
+    padding: 8px 10px;
+    border-left: 3px solid #e0a100;
+    background: #fff7dc;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #6b4f00;
+  }
+  .trip-hint[hidden] { display: none; }
   .leave-row label {
     flex: 0 0 auto;
     font-size: 14px;
@@ -1041,6 +1053,9 @@
     var initialPeriods;
     if (emp.approved && emp.approved.periods && emp.approved.periods.length) {
       initialPeriods = emp.approved.periods;
+    } else if (emp.approved) {
+      // 已核定但沒有時段（整天請假／整天出差）：維持空白，不可再帶預設班別——重送會多算時數
+      initialPeriods = [null];
     } else if (emp.shift_in && emp.shift_out) {
       /* 休息不打卡（2026-08-28）：預填時就把休息帶挖成缺口，所以預設一出來**就已經是**
          扣掉休息的兩段，而不是「一整段之後再偷偷扣 1 小時」。沒有隱形扣除＝主管看到幾段就是幾小時。 */
@@ -1065,6 +1080,11 @@
     breakToggle.hidden = true;
     card.appendChild(breakToggle);
 
+    function tripHoursValue() {
+      if (!leaveSelect || leaveSelect.value !== '出差' || !leaveHours) return 0;
+      var h = Number(leaveHours.value);
+      return (isFinite(h) && h > 0) ? Math.round(h * 100) / 100 : 0;
+    }
     function readPeriodRows() {
       return Array.prototype.slice.call(periodRows.querySelectorAll('.period-row')).map(function (r) {
         return { row: r, start: r.querySelector('.p-start').value, end: r.querySelector('.p-end').value };
@@ -1097,18 +1117,22 @@
         total += (e0 - s0) / 60;
         filled++;
       });
+      // 出差時數（2026-10-02）：出差那格填幾小時就認定幾小時，與時段相加（與後端 mgr_approve 同規則）
+      var tripH = tripHoursValue();
       totalBox.textContent = '';
-      totalBox.hidden = !filled;
-      if (filled) {
+      totalBox.hidden = !filled && !tripH;
+      if (filled || tripH) {
         var lb = document.createElement('span');
         lb.className = 'pt-lb';
         lb.textContent = '核定時數';
         var val = document.createElement('span');
         val.className = 'pt-val';
-        val.textContent = String(Math.round(total * 100) / 100);
+        val.textContent = String(Math.round((total + tripH) * 100) / 100);
         var unit = document.createElement('span');
         unit.className = 'pt-unit';
-        unit.textContent = '小時';
+        unit.textContent = tripH
+          ? '小時（上班 ' + (Math.round(total * 100) / 100) + '＋出差 ' + tripH + '）'
+          : '小時';
         totalBox.appendChild(lb);
         totalBox.appendChild(val);
         totalBox.appendChild(unit);
@@ -1193,17 +1217,27 @@
     var hoursUnit = document.createElement('span');
     hoursUnit.className = 'hours-unit';
     hoursUnit.textContent = '小時';
+    // 出差的時數算法要寫在畫面上（2026-10-02 Eason 指定）——主管最容易以為「時數格只是註記」
+    var tripHint = document.createElement('div');
+    tripHint.className = 'trip-hint';
+    tripHint.textContent = '出差：時數填幾小時就核定幾小時，會與上方上班時段相加。'
+      + '出差那段不用再填進上班時段（填了會重複算）；整天出差可以不填上班時段。';
     function syncLeaveHoursEnabled() {
       var on = !!leaveSelect.value;
       leaveHours.disabled = !on;
       if (!on) leaveHours.value = '';
+      var trip = leaveSelect.value === '出差';
+      leaveHours.placeholder = trip ? '出差時數' : '時數';
+      tripHint.hidden = !trip;
+      refreshPeriodUI();
     }
     leaveSelect.addEventListener('change', syncLeaveHoursEnabled);
-    syncLeaveHoursEnabled();
+    leaveHours.addEventListener('input', refreshPeriodUI);
     leaveRow.appendChild(leaveLabel);
     leaveRow.appendChild(leaveSelect);
     leaveRow.appendChild(leaveHours);
     leaveRow.appendChild(hoursUnit);
+    syncLeaveHoursEnabled();
 
     /* 遲到分鐘（2026-09-01）：留空＝系統自動比對打卡算。
        打卡被擋或整批未入帳時系統沒有進場時間可比，算不出遲到——那種情況由主管填。
@@ -1235,6 +1269,7 @@
     lateRow.appendChild(lateUnit);
     lateRow.appendChild(lateHint);
     card.appendChild(leaveRow);
+    card.appendChild(tripHint);
     card.appendChild(lateRow);
 
     var actions = document.createElement('div');
@@ -1314,14 +1349,20 @@
         // 出差不是請假（2026-08-23）：時數靠核定時段照常計薪，0 小時送出＝那天等於沒上班
         //（正職月底會被不足倒扣）。後端也會擋（trip_needs_periods），這裡先講清楚。
         if (leaveSelect.value === '出差') {
-          resultBox.className = 'result-box show result-error';
-          resultBox.textContent = '✕ 出差不是請假：請照常輸入當天實際工作時段（時數照算、工資照給），不能以 0 小時送出。';
-          return;
-        }
+          // 整天出差：核定＝出差時數（2026-10-02）。沒填時數＝0 工時，正職月底會被不足倒扣，先擋。
+          var th0 = tripHoursValue();
+          if (!th0) {
+            resultBox.className = 'result-box show result-error';
+            resultBox.textContent = '✕ 整天出差請在出差時數填幾小時（填幾小時就核定幾小時）。';
+            return;
+          }
+          if (!window.confirm('整天出差：' + emp.name + '\n出差 ' + th0 + ' 小時\n核定時數 ' + th0 + ' 小時\n\n確定送出?')) return;
+        } else {
         var lmsg = '整天請假：' + emp.name + '\n' + leaveSelect.value
           + (leaveHours.value ? '　' + leaveHours.value + ' 小時' : '')
           + '\n核定時數 0 小時（整天沒上班）\n\n確定送出?';
         if (!window.confirm(lmsg)) return;
+        }
       } else {
         // 送出前防呆：算總時數（跨夜比照後端 end<=start 視為隔天）、揪出打反與時段重疊，
         // 用確認框把「核定總時數＋提醒」攤給主管看過再寫入（覆蓋前先確認、把打錯攔在寫入前）。
@@ -1355,13 +1396,16 @@
           }
         });
 
+        var tripH2 = tripHoursValue();
         var msg = '即將核定 ' + emp.name + '：\n' + segs.map(function (s) { return s.start + '–' + s.end; }).join('、')
-          + '\n核定時數共 ' + totalH + ' 小時';
+          + (tripH2
+            ? '\n上班 ' + totalH + ' 小時＋出差 ' + tripH2 + ' 小時\n核定時數共 ' + (Math.round((totalH + tripH2) * 100) / 100) + ' 小時'
+            : '\n核定時數共 ' + totalH + ' 小時');
         // 畫面上有休息列才提——主管把時段改成相連（出差）時不會出現這行，與實際計算一致
         if (periodRows.querySelector('.break-split')) {
           msg += '\n（休息 ' + BREAK_START + '–' + BREAK_END + ' 不計入）';
         }
-        if (leaveSelect.value) msg += '\n請假：' + leaveSelect.value + (leaveHours.value ? ' ' + leaveHours.value + ' 小時' : '');
+        if (leaveSelect.value && !tripH2) msg += '\n' + (leaveSelect.value === '出差' ? '註記' : '請假') + '：' + leaveSelect.value + (leaveHours.value ? ' ' + leaveHours.value + ' 小時' : '');
         if (warnings.length) msg += '\n\n⚠ 請再確認：\n' + warnings.join('\n');
         msg += '\n\n確定送出?';
         if (!window.confirm(msg)) return;
@@ -1385,6 +1429,7 @@
           resultBox.className = 'result-box show result-error';
           var friendly = {
             trip_needs_periods: '出差要照常輸入當天實際工作時段（時數照算），不能以 0 小時送出。',
+            trip_needs_hours: '整天出差請填出差時數（填幾小時就核定幾小時）。',
             bad_leave_type: '這個假別尚未在薪酬假別表放行，請聯絡 Eason。',
           }[res.error];
           resultBox.textContent = '✕ 核定失敗：' + (friendly || res.error || '未知錯誤');

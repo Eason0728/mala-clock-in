@@ -1,5 +1,5 @@
 /* 2026-08-23 審查修正批的回歸測試（四個修正各自驗證）：
- *   A. 出差＋空時段 → 硬擋 trip_needs_periods（修法 A）；出差＋填時段照常 ok
+ *   A. 出差＋空時段＋沒填時數 → 硬擋 trip_needs_hours；出差時數與時段相加（2026-10-02 改）
  *   B. 假別白名單外 → 查薪酬假別表放行（同專案直查＋跨後端 UrlFetch 兩條路徑）
  *   C. 計時同仁月中到職 → 勞保／宿舍依在職比例 P 折算（原本收整月）
  *   D. 儀表板趨勢／集團總覽的「要扣回」改 /_leave$/ 正則（新假別扣款不再漏扣）＋出差改名鎖
@@ -55,16 +55,30 @@ const chk = (n, got, want) => { const ok = JSON.stringify(got) === JSON.stringif
   console.log(`${ok ? '✓' : '✗'} ${n}: ${JSON.stringify(got)}${ok ? '' : ' ← 應為 ' + JSON.stringify(want)}`); };
 
 /* ── A. 出差空時段硬擋 ── */
-console.log('══ A. 出差＋空時段 → trip_needs_periods ══');
+console.log('══ A. 出差時數：填幾小時認定幾小時、與時段相加 ══');
 {
   const ctx = makeCtx(C + '\n' + P, newClockSS());
   ctx.run('payRead = function(){ return []; };');   // 假別表空 → 內建預設（含出差）
   let r = ctx.call('handleMgrApprove', { mgr_key: 'mgr-y01', date: '2026-08-18', emp_id: 'Y01',
     periods: [], leave_type: '出差', leave_hours: '' });
-  chk('空時段被擋', [r.ok, r.error], [false, 'trip_needs_periods']);
+  // 2026-10-02 Eason 改規則：出差時數填幾小時就認定幾小時，與時段相加。空時段＋沒填時數仍擋（改名 trip_needs_hours）
+  chk('空時段＋沒填出差時數被擋', [r.ok, r.error], [false, 'trip_needs_hours']);
+  r = ctx.call('handleMgrApprove', { mgr_key: 'mgr-y01', date: '2026-08-18', emp_id: 'Y01',
+    periods: [], leave_type: '出差', leave_hours: 0 });
+  chk('空時段＋出差 0 小時被擋', [r.ok, r.error], [false, 'trip_needs_hours']);
+  r = ctx.call('handleMgrApprove', { mgr_key: 'mgr-y01', date: '2026-08-18', emp_id: 'Y01',
+    periods: [], leave_type: '出差', leave_hours: 3.5 });
+  chk('整天出差：核定＝出差時數 3.5、狀態「出差」、不寫時段',
+    [r.ok, r.approved_hours, r.status_text], [true, 3.5, '出差']);
   r = ctx.call('handleMgrApprove', { mgr_key: 'mgr-y01', date: '2026-08-18', emp_id: 'Y01',
     periods: [{ start: '09:00', end: '17:00' }], leave_type: '出差', leave_hours: '' });
-  chk('填時段照常過：8H＋狀態「出差」', [r.ok, r.approved_hours, r.status_text], [true, 8, '出差']);
+  chk('填時段、出差時數留空：照舊只算時段 8H＋狀態「出差」', [r.ok, r.approved_hours, r.status_text], [true, 8, '出差']);
+  r = ctx.call('handleMgrApprove', { mgr_key: 'mgr-y01', date: '2026-08-18', emp_id: 'Y01',
+    periods: [{ start: '17:30', end: '22:00' }], leave_type: '出差', leave_hours: 0.5 });
+  chk('時段 4.5H＋出差 0.5H＝核定 5H（林宸妤 9/27 情境）', [r.ok, r.approved_hours], [true, 5]);
+  r = ctx.call('handleMgrApprove', { mgr_key: 'mgr-y01', date: '2026-08-18', emp_id: 'Y01',
+    periods: [{ start: '17:30', end: '22:00' }], leave_type: '病假', leave_hours: 2 });
+  chk('其他假別的時數不加進核定（仍只是註記）', [r.ok, r.approved_hours], [true, 4.5]);
   r = ctx.call('handleMgrApprove', { mgr_key: 'mgr-y01', date: '2026-08-18', emp_id: 'Y01',
     periods: [], leave_type: '病假', leave_hours: 8 });
   chk('一般假別整天請假不受影響', [r.ok, r.approved_hours, r.status_text], [true, 0, '全天請假']);
