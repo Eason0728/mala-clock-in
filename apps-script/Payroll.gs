@@ -543,6 +543,12 @@ function payTenurePlus(e, ym, cfg) {
   return monthStart > due ? plus : 0;
 }
 
+/* 正職加班「上班＋可抵扣假」口徑的生效月份（Eason 2026-10-02）。
+ * 更早的月份是打卡上線前，工時從考勤機報表手動填、加班已另填在逐日加班 extra_ot，
+ * 那時的 hours 不一定是純上班（有的直接填滿 184）——套新口徑會把假重複算成加班。
+ * ⚠ 放在 payR0～Handlers 之間：payroll_mock.js 與測試只切這一段。 */
+const PAY_OT_NET_FROM = '2026-08';
+
 function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   // 假別規則一律由 ltypes（payroll_leave_type）決定；不傳時退回內建預設，
   // 這樣 payroll_mock.js 只抽這支函式也算得出來，不必碰試算表。
@@ -563,20 +569,24 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   if (ft) {
     // 正職：加班／不足時數以「本店核定＋支援」的總時數對基本工時判斷（支援併入，用員工加班費率）
     baseH = payR2((D - redDays) * payNum(cfg.daily_hours) * P);
-    surplus = payR2((att.hours + supportH) - baseH);
-    otPaid = payR2((surplus > 0 ? surplus : 0) + payNum(att.extra_ot));
+    surplus = payR2((att.hours + supportH) - baseH);   // 純上班−基本（顯示用，不含假）
+    // 可抵扣的假（假別表 offset_shortfall）。這些假另有扣款／給薪處理，在時數上視同已出勤。
+    const LMAP = payAttLeaves(att);
+    let paidLeave = 0;
+    Object.keys(LMAP).forEach(function (c) {
+      const t = LTM[c];
+      if (!t || t.offset_shortfall) paidLeave += payNum(LMAP[c]);
+    });
+    // 淨時數＝上班＋支援＋可抵扣假 − 基本（Eason 2026-10-02 定案）：正→加班、負→不足倒扣。
+    // 改版前加班只看 surplus，請假只抵不足，抵完多出來的被吃掉——當月有請假的正職，
+    // 某天上 8.5H 那 0.5H 永遠拿不到加班費（A 君 2026-09 實例）。不足倒扣的結果與改版前相同。
+    const netH = payR2(surplus + paidLeave);
+    const otBase = String(ym) >= PAY_OT_NET_FROM ? netH : surplus;   // 生效月份前沿用舊口徑
+    otPaid = payR2((otBase > 0 ? otBase : 0) + payNum(att.extra_ot));
     push(earn, 'base_salary', '底薪', null, null, payNum(e.base) * P);
     if (otPaid > 0) push(earn, 'overtime', '加班', otPaid, payNum(e.ot_rate), otPaid * payNum(e.ot_rate));
-    if (surplus < 0) {
-      // 不足時數倒扣，但先扣掉已請假時數——那些另有處理，不重複倒扣。
-      // 哪些假可以抵扣改讀假別表的 offset_shortfall（改版前是寫死的五種假）。
-      const LMAP = payAttLeaves(att);
-      let paidLeave = 0;
-      Object.keys(LMAP).forEach(function (c) {
-        const t = LTM[c];
-        if (!t || t.offset_shortfall) paidLeave += payNum(LMAP[c]);
-      });
-      const shortH = payR2(Math.max(0, Math.abs(surplus) - paidLeave));
+    if (netH < 0) {
+      const shortH = payR2(-netH);
       if (shortH > 0) push(ded, 'shortfall_hours', '不足時數', shortH, payNum(e.ot_rate), shortH * payNum(e.ot_rate));
     }
     if (payNum(e.attend_cap) > 0) {
