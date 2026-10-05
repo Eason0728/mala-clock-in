@@ -1518,7 +1518,7 @@
   function payLine(x) {
     var sub = '';
     if (x.qty != null) {
-      sub = ' <span style="color:#8a817a;font-size:12px">' + payR2(x.qty) + (HOURY.indexOf(x.item_key) !== -1 ? 'H' : '') + (x.rate ? ' × ' + payNf(x.rate) : '') + '</span>';
+      sub = ' <span style="color:#8a817a;font-size:12px">' + payR2(x.qty) + (HOURY.indexOf(x.item_key) !== -1 ? 'H' : '') + (x.rate ? ' × ' + (+x.rate).toLocaleString('zh-TW', { maximumFractionDigits: 2 }) : '') + '</span>';
     }
     return '<tr><td>' + payEsc(x.item_label) + sub + '</td><td>' + payNf(x.amount) + '</td></tr>';
   }

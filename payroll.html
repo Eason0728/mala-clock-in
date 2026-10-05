@@ -510,6 +510,7 @@ const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};
 const r2=v=>Math.round(v*100)/100;
 const r1=v=>Math.round(v*10)/10;   // 假別時數一律到小數第一位（2026-10-05）
 const nf=v=>Math.round(v).toLocaleString('zh-TW');
+const rf=v=>(+v).toLocaleString('zh-TW',{maximumFractionDigits:2});   // 單價／時薪：保留小數（特休折算 162.5，2026-10-05）
 /* ⚠ 任何「人打進來的自由文字」進 innerHTML 之前一律過這支：姓名（主管在打卡頁新增同仁時填）、
    門市名、假別名、自訂加薪／扣款的項目名。不過的話＝拿得到主管金鑰的人可以往管理者的畫面塞 HTML，
    而管理金鑰就在網址列上（?k=），等於把整套薪資系統的權限交出去。
@@ -2098,7 +2099,7 @@ function renderSlip(){
   // 數量的單位依項目而定：時數類→H、遲到→分鐘、餐費／年終→天，其餘不加單位。
   // ⚠ late_deduct 的 qty 是「分鐘」，不加單位會被誤讀成小時（Eason 2026-09-01 指出）。
   const qtyUnit=k=>k==='late_deduct'?' 分鐘':(k==='meal_sub'?' 天':(isHoury(k)?'H':''));
-  const line=x=>`<tr><td>${esc(x.item_label)}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+nf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
+  const line=x=>`<tr><td>${esc(x.item_label)}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+rf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   w.innerHTML=`<div class="slip">
     <h3>薪 資 明 細 表</h3>
     <div class="sub">麻的小辛辣 · 新竹光復店 ｜ ${ym().replace('-','年')}月 ｜ 發薪日 每月 ${CFG.payday} 日</div>
@@ -2137,7 +2138,7 @@ const EXP_HOURY_FIX=['overtime','shortfall_hours','hourly_wage','cross_store','p
 const isExpHoury=k=>/_leave$/.test(String(k))||EXP_HOURY_FIX.indexOf(k)>=0;
 // 與上面的 qtyUnit 同一套規則（匯出／列印用）
 const expQtyUnit=k=>k==='late_deduct'?' 分鐘':(k==='meal_sub'?' 天':(isExpHoury(k)?'H':''));
-function expSub(x){ return x.qty!=null ? `${r2(x.qty)}${expQtyUnit(x.item_key)}${x.rate?' × '+nf(x.rate):''}` : ''; }
+function expSub(x){ return x.qty!=null ? `${r2(x.qty)}${expQtyUnit(x.item_key)}${x.rate?' × '+rf(x.rate):''}` : ''; }
 function renderExport(){
   if($('expYm')) $('expYm').textContent=ym();
   const w=$('exportDetail'); if(!w) return;
