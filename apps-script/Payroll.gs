@@ -666,10 +666,10 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   }
 
   // 請假扣款：費率用「未折算」的全額（費率是職位時薪，不因月中到職而改變）
-  const rate = payR0(
+  const rateRaw =
     (payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) +
-     payNum(e.mgr_allow) + payNum(e.attend_cap)) / payNum(cfg.leave_div_days) / payNum(cfg.leave_div_hours)
-  );
+     payNum(e.mgr_allow) + payNum(e.attend_cap)) / payNum(cfg.leave_div_days) / payNum(cfg.leave_div_hours);
+  const rate = payR0(rateRaw);
   /* 請假扣款：一律查假別表算，不再逐種假寫死。
    *   扣款率 ＝ rate ×（1 − 給薪比例）：事假 0%→全扣、病假 50%→扣一半、特休 100%→不扣。
    *   年度上限：超過 cap_days 的部分改用 over_ratio（病假逾 30 日→無薪全扣）。
@@ -679,8 +679,9 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
    * 只在「週年期屆滿前一日所在的月份」發一次；折算率用平日每小時工資額（＝下方請假費率同一條）。
    * 計時同仁沒有特休（att.annual 為 null），自然不會進來。 */
   if (att.annual && att.annual.payout_ym === ym && payNum(att.annual.left_h) > 0) {
-    const ah = payR2(payNum(att.annual.left_h));
-    push(earn, 'annual_payout', '特休未休折算', ah, rate, ah * rate);
+    // 折算時薪不先取整（2026-10-05 Eason：39,000÷30÷8＝162.5，不是 163）；只有最後金額四捨五入
+    const ah = payR2(payNum(att.annual.left_h)), aRate = payR2(rateRaw);
+    push(earn, 'annual_payout', '特休未休折算', ah, aRate, ah * aRate);
   }
 
   /* 遲到分鐘不計薪（Eason 2026-08-23 定案）

@@ -8,7 +8,7 @@ const cfg={daily_hours:8,leave_div_days:30,leave_div_hours:8,attend_deduct_per_d
 const emp={emp_id:'A',name:'正職',is_full_time:'true',base:30000,skill_allow:3000,night_allow:3000,mgr_allow:0,
  attend_cap:3000,ot_rate:240,wage:0,labor_ins:0,health_ins:0,group_ins:0,pension:0,dormitory:0,
  hire_date:'2021-10-01',leave_date:'',meal_allow:0,active:'true'};
-const rate=Math.round((30000+3000+3000+0+3000)/30/8);
+const rate=(30000+3000+3000+0+3000)/30/8;   // 162.5，不取整
 const q=e.payAnnualQuota('2021-10-01','2026-09');
 console.log('到職 2021-10-01 → 週年期',q.ps,'~',q.pe,' 額度',q.days,'天');
 console.log('屆滿前一日 =',e.payDayBefore(q.pe),'→ 折算月份',e.payDayBefore(q.pe).slice(0,7));
