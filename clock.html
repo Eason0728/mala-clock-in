@@ -1533,14 +1533,14 @@
         ? '<span class="bar"><i class="' + (pct >= 80 ? 'hi' : '') + '" style="width:' + pct + '%"></i></span>' : '';
       // 單位統一用時數（Eason 2026-08-27）：同仁在打卡頁看到的核定時數也是 H，一致才不會誤讀
       var usedTxt = used
-        ? '<b>' + payR2(q.used_h) + '</b> H'
+        ? '<b>' + (Math.round((q.used_h)*10)/10) + '</b> H'
         : '<span style="color:#8a817a">未請過</span>';
       var remTxt;
       if (cap == null) remTxt = '<span style="color:#8a817a">無上限</span>';
-      else if (q.basis === 'event') remTxt = '<span style="color:#8a817a">每次上限<span class="u">' + payR2(q.cap_h) + ' H</span></span>';
-      else if (q.remain_h < 0) remTxt = '<span class="out">超出 ' + payR2(-q.remain_h) + ' H</span>';
+      else if (q.basis === 'event') remTxt = '<span style="color:#8a817a">每次上限<span class="u">' + (Math.round((q.cap_h)*10)/10) + ' H</span></span>';
+      else if (q.remain_h < 0) remTxt = '<span class="out">超出 ' + (Math.round((-q.remain_h)*10)/10) + ' H</span>';
       else if (q.blocked) remTxt = '<span class="out">已用完</span>';
-      else remTxt = '<b>' + payR2(q.remain_h) + '</b> H<span class="u">/ 上限 ' + payR2(q.cap_h) + ' H</span>';
+      else remTxt = '<b>' + (Math.round((q.remain_h)*10)/10) + '</b> H<span class="u">/ 上限 ' + (Math.round((q.cap_h)*10)/10) + ' H</span>';
       return '<tr><td>' + payEsc(q.name) + bar + '</td>'
         + '<td class="r">' + usedTxt + '</td><td class="r">' + remTxt + '</td></tr>';
     }).join('');

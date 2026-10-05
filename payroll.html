@@ -508,6 +508,7 @@ if(new URLSearchParams(location.search).get('store')) localStorage.setItem('pay_
 const $=id=>document.getElementById(id);
 const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};
 const r2=v=>Math.round(v*100)/100;
+const r1=v=>Math.round(v*10)/10;   // 假別時數一律到小數第一位（2026-10-05）
 const nf=v=>Math.round(v).toLocaleString('zh-TW');
 /* ⚠ 任何「人打進來的自由文字」進 innerHTML 之前一律過這支：姓名（主管在打卡頁新增同仁時填）、
    門市名、假別名、自訂加薪／扣款的項目名。不過的話＝拿得到主管金鑰的人可以往管理者的畫面塞 HTML，
@@ -1320,16 +1321,16 @@ function renderQuota(empId){
         ? `<br><span class="qz-bar"><i class="${pct>=80?'hi':''}" style="width:${pct}%"></i></span>`:'';
       // 單位統一用時數（Eason 2026-08-27）：與核定工時、剩餘特休、薪資單同一個單位，
       // 不再並列「日」，避免同一張表兩種單位互換要心算。
-      const usedTxt=used?`<b>${r2(used*dayH)}</b> H`:'<span style="color:var(--muted)">—</span>';
+      const usedTxt=used?`<b>${r1(v.used_h!=null?v.used_h:used*dayH)}</b> H`:'<span style="color:var(--muted)">—</span>';
       let remTxt;
       if(cap==null) remTxt='<span style="color:var(--muted)">無上限</span>';
-      else if(v.basis==='event') remTxt=`<span style="color:var(--muted)">每次上限<br>${r2(cap*dayH)} H</span>`;
+      else if(v.basis==='event') remTxt=`<span style="color:var(--muted)">每次上限<br>${r1(cap*dayH)} H</span>`;
       // 超額與「剛好用完」要分開講：超額代表已經請超過法定額度，是要處理的事，不只是沒得請了
-      else if(rem<0) remTxt=`<span class="bad">超出 ${r2(-rem*dayH)} H</span>`;
+      else if(rem<0) remTxt=`<span class="bad">超出 ${r1(-(v.remain_h!=null?v.remain_h:rem*dayH))} H</span>`;
       else if(v.blocked) remTxt='<span class="bad">已用完</span>';
       // 沒請過時「剩餘＝上限」，兩個都印是重複的，只標「未使用」
-      else remTxt=`<b>${r2(rem*dayH)}</b> H<br><span style="color:var(--muted);font-size:11px">`
-        +(used?`/ 上限 ${r2(cap*dayH)} H`:'未使用')+'</span>';
+      else remTxt=`<b>${r1(v.remain_h!=null?v.remain_h:rem*dayH)}</b> H<br><span style="color:var(--muted);font-size:11px">`
+        +(used?`/ 上限 ${r1(cap*dayH)} H`:'未使用')+'</span>';
       body+=`<tr><td>${esc(t.name)} <span class="qz-basis">${BASIS[v.basis]||''}</span>${bar}</td>`
         +`<td>${usedTxt}</td><td>${remTxt}</td></tr>`;
     });
@@ -1339,8 +1340,8 @@ function renderQuota(empId){
   const av=ANNUAL[empId];
   const annual=av
     ? `<div class="qz-sect">特休（週年制，依到職日另算）</div>`
-      +`<table><tbody><tr><td>特休假</td><td>已用 <b>${r2(av.quota_h-av.left_h)}</b> H</td>`
-      +`<td>額度 ${av.quota_h} H（${av.days} 天）</td><td>剩 <b>${av.left_h}</b> H</td></tr>`
+      +`<table><tbody><tr><td>特休假</td><td>已用 <b>${r1(av.quota_h-av.left_h)}</b> H</td>`
+      +`<td>額度 ${av.quota_h} H（${av.days} 天）</td><td>剩 <b>${r1(av.left_h)}</b> H</td></tr>`
       +`<tr><td colspan="4" style="text-align:left;color:var(--muted);font-size:11.5px">`
       +`本週年期 ${av.ps} ～ ${av.pe}・未休完於 ${av.payout_ym} 折算工資</td></tr></tbody></table>`
     : '';

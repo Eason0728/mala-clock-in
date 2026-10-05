@@ -63,6 +63,7 @@ const API=(location.hostname==='localhost'||location.hostname==='127.0.0.1')?''
 const KEY=new URLSearchParams(location.search).get('k')||'';
 const nf=v=>Math.round(v).toLocaleString('zh-TW');
 const r2=v=>Math.round(v*100)/100;
+const r1=v=>Math.round(v*10)/10;   // 假別時數一律到小數第一位（2026-10-05）
 /* ⚠ 自由文字進 innerHTML 前一律過這支：姓名（主管新增同仁時填的）、
    item_label（管理者在「自訂加薪／扣款」填的項目名，會直接成為薪資單上的項目）。
    2026-09-03 稽核補上；payroll.html／clock.html 同一套規則，改一邊記得三邊都看。*/
@@ -81,13 +82,13 @@ function leaveCard(list){
     const bar=(cap!=null&&q.basis!=='event')
       ? `<span class="bar"><i class="${pct>=80?'hi':''}" style="width:${pct}%"></i></span>`:'';
     // 單位統一用時數（Eason 2026-08-27），與打卡頁「我的薪資」同步
-    const usedTxt=used?`<b>${r2(q.used_h)}</b> H`:'<span style="color:var(--muted)">未請過</span>';
+    const usedTxt=used?`<b>${r1(q.used_h)}</b> H`:'<span style="color:var(--muted)">未請過</span>';
     let remTxt;
     if(cap==null) remTxt='<span style="color:var(--muted)">無上限</span>';
-    else if(q.basis==='event') remTxt=`<span style="color:var(--muted)">每次上限<span class="u">${r2(q.cap_h)} H</span></span>`;
-    else if(q.remain_h<0) remTxt=`<span class="out">超出 ${r2(-q.remain_h)} H</span>`;
+    else if(q.basis==='event') remTxt=`<span style="color:var(--muted)">每次上限<span class="u">${r1(q.cap_h)} H</span></span>`;
+    else if(q.remain_h<0) remTxt=`<span class="out">超出 ${r1(-q.remain_h)} H</span>`;
     else if(q.blocked) remTxt='<span class="out">已用完</span>';
-    else remTxt=`<b>${r2(q.remain_h)}</b> H<span class="u">/ 上限 ${r2(q.cap_h)} H</span>`;
+    else remTxt=`<b>${r1(q.remain_h)}</b> H<span class="u">/ 上限 ${r1(q.cap_h)} H</span>`;
     return `<tr><td>${esc(q.name)}${bar}</td><td class="r">${usedTxt}</td><td class="r">${remTxt}</td></tr>`;
   }).join('');
   return `<div class="card lq"><h4>我的假別額度</h4>`

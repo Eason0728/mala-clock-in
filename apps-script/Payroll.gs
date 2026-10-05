@@ -435,6 +435,8 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
 
 function payR0(v) { return Math.round(v); }
 function payR2(v) { return Math.round(v * 100) / 100; }
+/** 假別時數一律四捨五入到小數第一位（Eason 2026-10-05） */
+function payR1(v) { return Math.round(v * 10) / 10; }
 function payNum(v) { const x = parseFloat(v); return isNaN(x) ? 0 : x; }
 /** 布林讀取：接受 true/1/'1'/'true'/'TRUE'（試算表可能存成數字或字串） */
 function payBool(v) { return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true'; }
@@ -1264,8 +1266,14 @@ function payLeaveUsage(empId, ym, types, cfg, storesMap, leavesByStore, spans) {
     if (t.cap_basis === 'tenure') cap = null;   // 特休額度另由 payAnnualQuota 算，不在這裡擋
     const basis = t.cap_basis || '';
     const remain = (cap == null) ? null : payR2(cap - u);
+    // 時數直接由「未取整的天數」換算再四捨五入到一位小數——先把天數取到兩位再 ×8
+    // 會出現 44.5H→5.56 天→44.48H 這種誤差（2026-10-05 Eason 陳盈如事假）
+    const uRaw = (used[t.code] || 0) + (merged[t.code] || 0);
     out[t.code] = {
       used_days: u,
+      used_h: payR1(uRaw * dayH),
+      cap_h: (cap == null) ? null : payR1(cap * dayH),
+      remain_h: (cap == null) ? null : payR1((cap - uRaw) * dayH),
       cap_days: cap,
       remain_days: remain,
       basis: basis,
@@ -1980,8 +1988,8 @@ function payAnnualInfo(ym, store) {
     });
     // payout_ym＝週年期「屆滿前一日」所在的月份：勞基法§38 特休因年度終結而未休完者應折算工資，
     // 例到職 10/01 → 週年期到 次年10/01 → 前一日 9/30 → 在 9 月的薪資折算發放。
-    out[String(e.emp_id)] = { days: q.days, quota_h: q.days * 8, used_h: payR2(used),
-                              left_h: payR2(q.days * 8 - used),
+    out[String(e.emp_id)] = { days: q.days, quota_h: q.days * 8, used_h: payR1(used),
+                              left_h: payR1(q.days * 8 - used),
                               ps: q.ps, pe: q.pe, payout_ym: payDayBefore(q.pe).slice(0, 7) };
   });
   return out;
@@ -2439,11 +2447,11 @@ function payMyLeaveQuota(empId, empName, ym, store) {
     // 額度法規是以「日」定的，但畫面統一用時數呈現（Eason 2026-08-27 指定，
     // 與特休、核定工時、薪資單全部同一個單位），所以日與時數兩種都回，前端只顯示時數。
     out.push({ code: t.code, name: t.name, basis: v.basis || '',
-               used_days: payR2(used), used_h: payR2(used * dayH),
+               used_days: payR2(used), used_h: v.used_h,
                cap_days: v.cap_days == null ? null : payR2(v.cap_days),
-               cap_h: v.cap_days == null ? null : payR2(v.cap_days * dayH),
+               cap_h: v.cap_h,
                remain_days: v.remain_days == null ? null : payR2(v.remain_days),
-               remain_h: v.remain_days == null ? null : payR2(v.remain_days * dayH),
+               remain_h: v.remain_h,
                blocked: !!v.blocked });
   });
   // 請過的排前面，同仁一眼看到自己動用了哪些
