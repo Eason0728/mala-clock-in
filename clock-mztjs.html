@@ -1153,6 +1153,17 @@
     // 還沒挑到任何一家店時，姓名欄不要一直顯示「定位中…」（P1 審查 #6）
     if (r.status !== 'ok' && !hubPicked) empNameEl.textContent = '—';
   }
+  /** 這家店不認得這個 LINE 帳號：可能是還沒綁，也可能根本不在這家店的名冊上。
+   *  姓名與今日紀錄一併清掉，不要留著前一家店的（P1 審查 #12）。 */
+  function hubShowNotBound() {
+    empNameEl.textContent = '尚未綁定這家店';
+    deviceHintEl.textContent = '';
+    renderTodayEvents([]);
+    renderTodayHours(null);
+    showStatus('status-warn', '⚠ 你的 LINE 帳號還沒有綁定「' + hubPicked.name +
+      '」。如果你不在這家店的名冊上，請主管把你加進去。');
+  }
+
   /** 用一筆定位挑店、更新畫面；挑到店家且還沒載過那家的 whoami 就載。回傳 pickStore 的結果。 */
   function hubApply(pos, fromClock) {
     var fix = pos && pos.coords ? { lat: pos.coords.latitude, lng: pos.coords.longitude,
@@ -1172,17 +1183,13 @@
     var whoStore = LINE_HUB && hubPicked ? hubPicked.code : null;
     apiPost(mkPayload('whoami'))
       .then(function (res) {
+        // LINE 入口：送出後才換了店，晚到的舊店回應不可以畫上來（P1 審查 #11）
+        if (LINE_HUB && (!hubPicked || hubPicked.code !== whoStore)) return;
         if (!res.ok) {
           if (useLiff) {
             // LIFF 帳號驗證成功但還沒綁員工 → 讓她自己輸入啟用碼綁定，不是錯誤
             if (res.error === 'not_bound') {
-              if (LINE_HUB && hubPicked) {
-                // 這家店不認得這個 LINE 帳號：可能是還沒綁，也可能根本不在這家店的名冊上
-                empNameEl.textContent = '尚未綁定這家店';
-                showStatus('status-warn', '⚠ 你的 LINE 帳號還沒有綁定「' + hubPicked.name +
-                  '」。如果你不在這家店的名冊上，請主管把你加進去。');
-                return;
-              }
+              if (LINE_HUB && hubPicked) { hubShowNotBound(); return; }
               showBindScreen();
               return;
             }
@@ -1536,9 +1543,7 @@
                 return HUB_BLOCKED;
               }
               if (!w || !w.ok) {
-                showStatus('status-warn', w && w.error === 'not_bound'
-                  ? '⚠ 你的 LINE 帳號還沒有綁定「' + hubPicked.name + '」。如果你不在這家店的名冊上，請主管把你加進去。'
-                  : CLOCK_FAIL_MSG);
+                if (w && w.error === 'not_bound') hubShowNotBound(); else showStatus('status-warn', CLOCK_FAIL_MSG);
                 return HUB_BLOCKED;
               }
               empNameEl.textContent = w.name;
@@ -1567,7 +1572,7 @@
       .then(function (res) {
         if (res === undefined) return;
         if (LINE_HUB && res && res.error === 'not_bound') {
-          showStatus('status-warn', '⚠ 你的 LINE 帳號還沒有綁定「' + hubPicked.name + '」。如果你不在這家店的名冊上，請主管把你加進去。');
+          hubShowNotBound();
           return;
         }
         return handleClockResult(res);
@@ -1622,7 +1627,9 @@
         } else {
           showStatus('status-warn', CLOCK_FAIL_MSG + accuracyHint(res));
         }
+        var whoStoreAfter = LINE_HUB && hubPicked ? hubPicked.code : null;
         apiPost(mkPayload('whoami')).then(function (r) {
+          if (LINE_HUB && (!hubPicked || hubPicked.code !== whoStoreAfter)) return;   // 同上 #11
           if (r.ok) {
             renderTodayEvents(r.today_events);
             renderTodayHours(r.today_hours);
