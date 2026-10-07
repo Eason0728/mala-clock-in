@@ -2474,8 +2474,12 @@ function handleMyPayslip(body) {
     if (hit) { me = hit; meStore = code; break; }
   }
   if (!me) return { ok: false, error: 'unauthorized' };
+  return payMyPayslipFor_(me, meStore, String(body.ym || currentYmTaipei()));
+}
 
-  const ym = String(body.ym || currentYmTaipei());
+/** 已確認身分的同仁（名冊列 me、在 meStore 找到）→ 薪資單回應。
+ *  my_payslip（專屬連結金鑰）與 line_my_payslip（LINE 身分，LineHub.gs）共用這一支，回應格式完全相同。 */
+function payMyPayslipFor_(me, meStore, ym) {
   // 員工所屬門市（主檔為準；找不到就用預設店）
   const mineMaster = payRead('master').filter(function (m) { return String(m.emp_id) === String(me.emp_id); })[0];
   const stMy = payStore((mineMaster && mineMaster.store) || meStore);

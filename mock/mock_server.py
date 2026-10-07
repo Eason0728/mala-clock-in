@@ -1606,6 +1606,108 @@ try:
 except ImportError:
     pass
 
+# ── LINE 單一打卡入口的集中服務（對應 apps-script/LineHub.gs，只掛在 /api＝光復）──
+def _hub_store_codes():
+    return [""] + list(STORE_TABLE.keys())
+
+
+def _hub_store_name(code):
+    return "小辛辣 新竹光復" if code == "" else STORE_TABLE[code]["name"]
+
+
+def _hub_all_rosters():
+    out = {}
+    for code in _hub_store_codes():
+        with store_context(code or None):
+            out[code] = load_data().get("roster", [])
+    return out
+
+
+def _hub_active(r):
+    return str(r.get("active")).lower() == "true"
+
+
+def handle_line_my_stores(data, body):
+    uid = mock_verify_id_token(body.get("id_token"))
+    if not uid:
+        return {"ok": False, "error": "invalid_id_token"}
+    stores = []
+    for code, rows in _hub_all_rosters().items():
+        for r in rows:
+            if _hub_active(r) and r.get("line_user_id") and str(r["line_user_id"]) == uid:
+                stores.append({"code": code, "emp_id": r["emp_id"], "name": r["name"]})
+    return {"ok": True, "stores": stores, "unreadable": []}
+
+
+def handle_line_bind_all(data, body):
+    uid = mock_verify_id_token(body.get("id_token"))
+    if not uid:
+        return {"ok": False, "error": "invalid_id_token"}
+    key = str(body.get("key") or "").strip()
+    if not key:
+        return {"ok": False, "error": "invalid_key"}
+    rosters = _hub_all_rosters()
+    me = None
+    for code in _hub_store_codes():
+        for r in rosters[code]:
+            if not me and _hub_active(r) and str(r.get("key")) == key:
+                me = r["name"]
+    if not me:
+        return {"ok": False, "error": "invalid_key"}
+    cands = []
+    for code in _hub_store_codes():
+        rows = [r for r in rosters[code] if _hub_active(r) and r["name"] == me]
+        if not rows:
+            continue
+        if len(rows) > 1:
+            st = "name_conflict"
+        elif not rows[0].get("line_user_id"):
+            st = "free"
+        elif str(rows[0]["line_user_id"]) == uid:
+            st = "bound_self"
+        else:
+            st = "bound_other"
+        cands.append((code, rows[0], st))
+    lst = [{"code": c, "store_name": _hub_store_name(c), "emp_id": r["emp_id"], "state": st} for c, r, st in cands]
+    if body.get("confirm") is not True:
+        return {"ok": True, "name": me, "stores": lst, "unreadable": []}
+    results = []
+    for c, r, st in cands:
+        item = {"code": c, "store_name": _hub_store_name(c), "emp_id": r["emp_id"],
+                "ok": st == "bound_self", "error": "" if st in ("free", "bound_self") else st}
+        if st == "free":
+            with store_context(c or None):
+                res = handle_liff_bind(load_data(), {"action": "liff_bind", "id_token": body["id_token"], "key": r["key"]})
+            item["ok"] = bool(res.get("ok"))
+            item["error"] = "" if res.get("ok") else res.get("error", "server_error")
+        results.append(item)
+    return {"ok": True, "name": me, "results": results, "unreadable": []}
+
+
+def handle_line_my_payslip(data, body):
+    """mock 只回「尚未結算」＋一張假別額度，讓前端畫得出來；薪資計算正確性由 tests/ 守。"""
+    uid = mock_verify_id_token(body.get("id_token"))
+    if not uid:
+        return {"ok": False, "error": "invalid_id_token"}
+    hit = None
+    for code, rows in _hub_all_rosters().items():
+        for r in rows:
+            if not hit and _hub_active(r) and str(r.get("line_user_id") or "") == uid:
+                hit = r
+    if not hit:
+        return {"ok": False, "error": "not_bound"}
+    ym = body.get("ym") or today_str()[:7]
+    return {"ok": True, "ym": ym, "name": hit["name"], "ready": False, "message": "本月薪資尚未結算",
+            "annual": None, "leave_quota": [{"name": "特休假", "cap_days": 7, "used_days": 1, "used_h": 8, "remain_h": 48, "cap_h": 56}]}
+
+
+LINE_HUB_ACTIONS = {
+    "line_my_stores": handle_line_my_stores,
+    "line_bind_all": handle_line_bind_all,
+    "line_my_payslip": handle_line_my_payslip,
+}
+
+
 # ── 多店模擬 ──
 import threading, contextlib
 STORE_LOCK = threading.Lock()   # 切換全域座標／資料檔期間一次只處理一個請求（mock 用，正式後端各店本來就分開）
@@ -1684,6 +1786,8 @@ class Handler(BaseHTTPRequestHandler):
 
         action = body.get("action")
         handler = ACTIONS.get(action)
+        if not handler and store_code is None:
+            handler = LINE_HUB_ACTIONS.get(action)   # 集中服務只在光復（/api）
         if not handler:
             self._send_json({"ok": False, "error": "unknown_action"})
             return

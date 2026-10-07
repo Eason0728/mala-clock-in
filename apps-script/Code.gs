@@ -257,6 +257,11 @@ function doPost(e) {
     Object.keys(LIFF_HANDLERS).forEach(function (k) { handlers[k] = LIFF_HANDLERS[k]; });
   }
 
+  // LINE 單一打卡入口的集中服務（LineHub.gs，只有光復部署）；不存在時完全不影響其他功能。
+  if (typeof LINE_HUB_HANDLERS !== 'undefined') {
+    Object.keys(LINE_HUB_HANDLERS).forEach(function (k) { handlers[k] = LINE_HUB_HANDLERS[k]; });
+  }
+
   const handler = handlers[body.action];
   if (!handler) {
     return jsonOut({ ok: false, error: 'unknown_action' });

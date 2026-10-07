@@ -510,6 +510,8 @@
   if (isLocalHost) {
     var apiOverride = qs('api');
     if (apiOverride && !LINE_HUB) API_URL = apiOverride;
+    // LINE 入口本機測試：集中服務（綁定／查詢）也打 mock 的 /api，不可打到正式光復後端
+    if (apiOverride && LINE_HUB) PAYROLL_API = apiOverride;
   }
   if (LINE_HUB) {
     var hubH1 = document.querySelector('header h1');
@@ -675,6 +677,7 @@
   }
   function showBindError(msg) {
     bindErrorMsg.textContent = msg || '';
+    bindErrorMsg.style.whiteSpace = 'pre-line';
   }
   /** 同仁多半會把店長給的整條網址貼上來，自動抽出 ?k= 的值；純金鑰則原樣使用。 */
   function extractBindCode(raw) {
@@ -709,7 +712,9 @@
       if (!code) { showBindError('請輸入啟用碼'); return; }
       btnBindSubmit.disabled = true;
       showBindError('');
-      doBind(code).then(function () { btnBindSubmit.disabled = false; });
+      (LINE_HUB ? hubBind(code) : doBind(code))
+        .catch(function () { showBindError('連線失敗，請檢查網路後再試。'); })
+        .then(function () { btnBindSubmit.disabled = false; });
     });
   }
 
@@ -1041,7 +1046,7 @@
       info.className = 'day-info';
       var md = parseInt(d.date.slice(5, 7), 10) + '/' + parseInt(d.date.slice(8, 10), 10);
       var segs = d.segments.map(segmentText).join('、');
-      info.textContent = md + '（' + weekdayZh(d.date) + '）　' + segs
+      info.textContent = md + '（' + weekdayZh(d.date) + '）　' + (d.store_name ? '［' + d.store_name + '］' : '') + segs
         + (d.notes && d.notes.length ? '　' + d.notes.join('、') : '');
       var hours = document.createElement('span');
       hours.className = 'day-hours';
@@ -1064,6 +1069,42 @@
       li.appendChild(info);
       li.appendChild(hours);
       recentListEl.appendChild(li);
+    });
+  }
+
+  /** LINE 入口：到每一家綁定的店各查一次最近 40 天（並行），合併成一份；每筆標店名。
+   *  回傳格式與 my_recent 相同（ok／days／month_totals），下面的畫面程式不用分兩套。 */
+  function hubLoadRecentAll() {
+    var storesP = hubMyStores ? Promise.resolve(hubMyStores) : hubLoadMyStores();
+    return storesP.then(function (mine) {
+      if (!mine || !mine.length) return { ok: false };
+      var codes = [];
+      mine.forEach(function (m) { if (codes.indexOf(m.code) === -1) codes.push(m.code); });
+      return Promise.all(codes.map(function (code) {
+        var st = null;
+        LINE_HUB_STORES.forEach(function (x) { if (x.code === code) st = x; });
+        if (!st) return Promise.resolve(null);
+        return apiPost(mkPayload('my_recent'), hubApiFor(st)).then(function (r) { return r && r.ok ? { st: st, r: r } : null; },
+                                                                  function () { return null; });
+      })).then(function (list) {
+        var got = list.filter(Boolean);
+        if (!got.length) return { ok: false };
+        var days = [], tot = null;
+        got.forEach(function (g) {
+          (g.r.days || []).forEach(function (d) { d.store_name = g.st.name; days.push(d); });
+          var mt = g.r.month_totals;
+          if (!mt || !mt.current || !mt.previous) return;
+          if (!tot) tot = { current: { ym: mt.current.ym, hours: 0, pending_days: 0 }, previous: { ym: mt.previous.ym, hours: 0, pending_days: 0 } };
+          ['current', 'previous'].forEach(function (k) {
+            tot[k].hours = Math.round((tot[k].hours + (mt[k].hours || 0)) * 100) / 100;
+            tot[k].pending_days += mt[k].pending_days || 0;
+          });
+        });
+        days.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.store_name < b.store_name ? -1 : 1); });
+        var partial = got.length < codes.length;
+        if (partial) showStatus('status-warn', '⚠ 有一家店暫時查不到，下面只列查得到的店。');
+        return { ok: true, days: days, month_totals: tot };
+      });
     });
   }
 
@@ -1094,7 +1135,7 @@
     }
     btnRecent.disabled = true;
     btnRecent.textContent = '載入中…';
-    apiPost(mkPayload('my_recent'))
+    (LINE_HUB ? hubLoadRecentAll() : apiPost(mkPayload('my_recent')))
       .then(function (res) {
         btnRecent.disabled = false;
         if (!res.ok) {
@@ -1155,6 +1196,53 @@
     // 還沒挑到任何一家店時，姓名欄不要一直顯示「定位中…」（P1 審查 #6）
     if (r.status !== 'ok' && !hubPicked) empNameEl.textContent = '—';
   }
+  var hubMyStores = null;      // line_my_stores 的結果（[{code, emp_id, name}]）；null＝還沒查到
+  /** 問光復後端的集中服務：這個 LINE 帳號在哪幾家店綁定了。失敗回 null（不擋打卡）。 */
+  function hubLoadMyStores() {
+    return apiPost({ action: 'line_my_stores', id_token: liff.getIDToken() }, PAYROLL_API)
+      .then(function (r) {
+        if (r && r.ok) { hubMyStores = r.stores || []; return hubMyStores; }
+        if (r && r.error === 'invalid_id_token') { liff.login(); }
+        return null;
+      }, function () { return null; });
+  }
+  function hubStoreName(code) {
+    for (var i = 0; i < LINE_HUB_STORES.length; i++) if (LINE_HUB_STORES[i].code === code) return LINE_HUB_STORES[i].name;
+    return code;
+  }
+  var HUB_BIND_STATE = { free: '可以綁定', bound_self: '已綁定', bound_other: '已綁定別的 LINE 帳號（請店長先解除）',
+                         name_conflict: '這家店有兩位同名同仁，請找店長處理' };
+  var HUB_BIND_ERR = { invalid_key: '啟用碼不正確，請跟店長確認', invalid_id_token: 'LINE 身分驗證失敗，請關掉重開',
+                       line_account_in_use: '你的 LINE 帳號已經綁定另一位同仁，請聯絡店長或主管',
+                       already_bound_other_user: '這位同仁已綁定別的 LINE 帳號，請店長先解除',
+                       bound_other: '已綁定別的 LINE 帳號（請店長先解除）', name_conflict: '有兩位同名同仁，請找店長處理',
+                       unknown_action: '這家店還沒開放 LINE 打卡', unreachable: '這家店暫時連不上，請晚點再綁一次' };
+  /** 綁定第一步：列出「你在這幾家店」給本人確認；第二步帶 confirm:true 一次綁好。 */
+  function hubBind(code) {
+    return apiPost({ action: 'line_bind_all', id_token: liff.getIDToken(), key: code }, PAYROLL_API).then(function (r) {
+      if (!r || !r.ok) { showBindError(HUB_BIND_ERR[r && r.error] || '綁定失敗，請告知主管'); return; }
+      var lines = (r.stores || []).map(function (x) { return '・' + (x.store_name || hubStoreName(x.code)) + '：' + (HUB_BIND_STATE[x.state] || x.state); });
+      if (!(r.stores || []).some(function (x) { return x.state === 'free'; })) {
+        if ((r.stores || []).some(function (x) { return x.state === 'bound_self'; })) { location.reload(); return; }
+        showBindError('沒有可以綁定的店：\n' + lines.join('\n'));
+        return;
+      }
+      if (!window.confirm(r.name + '，你在這幾家店的名冊上：\n' + lines.join('\n') + '\n\n要把你的 LINE 帳號綁定到這些店嗎？')) {
+        showBindError('已取消，沒有綁定任何一家店。');
+        return;
+      }
+      return apiPost({ action: 'line_bind_all', id_token: liff.getIDToken(), key: code, confirm: true }, PAYROLL_API).then(function (r2) {
+        if (!r2 || !r2.ok) { showBindError(HUB_BIND_ERR[r2 && r2.error] || '綁定失敗，請告知主管'); return; }
+        var failed = (r2.results || []).filter(function (x) { return !x.ok; });
+        if (!failed.length) { location.reload(); return; }
+        var okN = (r2.results || []).length - failed.length;
+        showBindError((okN ? '已綁定 ' + okN + ' 家店；' : '') + '以下沒有綁成功：\n' + failed.map(function (x) {
+          return '・' + (x.store_name || hubStoreName(x.code)) + '：' + (HUB_BIND_ERR[x.error] || x.error); }).join('\n') +
+          (okN ? '\n\n可以先關掉重開開始打卡。' : ''));
+      });
+    });
+  }
+
   /** 這家店不認得這個 LINE 帳號：可能是還沒綁，也可能根本不在這家店的名冊上。
    *  姓名與今日紀錄一併清掉，不要留著前一家店的（P1 審查 #12）。 */
   function hubShowNotBound() {
@@ -1246,8 +1334,9 @@
         showError(LINE_HUB ? '請從 LINE 官方帳號「鼎兆元打卡」的選單打開這一頁。' : '請用店長給你的專屬打卡連結開啟。');
         return;
       }
-      // LIFF 模式沒有薪資 handler（my_payslip 仍走 key），先把分頁藏起來避免點了報錯
-      if (useLiff) {
+      // LIFF 模式沒有薪資 handler（my_payslip 仍走 key），先把分頁藏起來避免點了報錯。
+      // LINE 單一入口例外：光復後端的 line_my_payslip 用 LINE 身分查（LineHub.gs）。
+      if (useLiff && !LINE_HUB) {
         var payTab = document.querySelector('.tabbar .tab[data-view="pay"]');
         if (payTab) payTab.style.display = 'none';
       }
@@ -1265,7 +1354,11 @@
         // 還不知道在哪家店：等定位（預熱或按下打卡）挑出店家，才向那家店要姓名與今日紀錄
         empNameEl.textContent = '定位中…';
         renderHubBanner({ status: 'no_fix' });
-        if (isLocalHost && fakeLocation()) getPosition().then(hubApply, function () {});
+        hubLoadMyStores().then(function (stores) {
+          // 一家都沒綁＝第一次用：先綁定。查詢失敗（null）不擋打卡，照常往下走。
+          if (stores && stores.length === 0) { showBindScreen(); return; }
+          if (isLocalHost && fakeLocation()) getPosition().then(hubApply, function () {});
+        });
       } else {
         loadWhoamiOnInit(0);
       }
@@ -1745,11 +1838,13 @@
       + '</div>' + lq;
   }
   function loadPayslip(force) {
-    if (!key) { paySlipEl.innerHTML = payState('🔒', '連結不完整', '請用店長給你的專屬連結開啟。'); return; }
+    if (!key && !LINE_HUB) { paySlipEl.innerHTML = payState('🔒', '連結不完整', '請用店長給你的專屬連結開啟。'); return; }
     if (!force && payLoadedYm === payYm.value) return;
     paySlipEl.innerHTML = '<div class="card center-msg" style="color:#8a817a">載入中…</div>';
     var reqYm = payYm.value;
-    apiPost({ action: 'my_payslip', key: key, ym: reqYm }, PAYROLL_API).then(function (j) {
+    var payReq = LINE_HUB ? { action: 'line_my_payslip', id_token: liff.getIDToken(), ym: reqYm }
+                          : { action: 'my_payslip', key: key, ym: reqYm };
+    apiPost(payReq, PAYROLL_API).then(function (j) {
       payLoadedYm = reqYm;
       renderPay(j);
     }, function () {
