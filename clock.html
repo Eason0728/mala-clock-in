@@ -410,6 +410,7 @@
     <div id="hubBindList" style="display:none;text-align:left;margin-top:12px;font-size:15px;line-height:1.7;"></div>
     <div id="bindErrorMsg" style="color:#c22a12;margin-top:10px;font-size:14px;min-height:1.2em;"></div>
     <button class="btn btn-in" id="btnBindSubmit" type="button" style="margin-top:14px;width:100%;">送出</button>
+    <button class="recent-toggle" id="hubBindRestart" type="button" style="display:none;margin-top:10px;">重新貼連結</button>
   </div>
 
   <div class="btn-group" id="btnGroup" style="display:none;">
@@ -710,6 +711,10 @@
   }
   var hubBindMoreEl = document.getElementById('hubBindMore');
   if (hubBindMoreEl) hubBindMoreEl.addEventListener('click', function () { hubBindReset(); showBindScreen(); });
+  var hubBindRestartEl = document.getElementById('hubBindRestart');
+  if (hubBindRestartEl) hubBindRestartEl.addEventListener('click', function () {
+    hubBindReset(); showBindError(''); if (bindKeyInput) { bindKeyInput.value = ''; bindKeyInput.focus(); }
+  });
   if (btnBindSubmit) {
     btnBindSubmit.addEventListener('click', function () {
       var code = extractBindCode(bindKeyInput ? bindKeyInput.value : '');
@@ -1238,6 +1243,8 @@
     if (hubBindListEl) { hubBindListEl.style.display = 'none'; hubBindListEl.innerHTML = ''; }
     if (btnBindSubmit) btnBindSubmit.textContent = '送出';
     if (bindKeyInput) bindKeyInput.disabled = false;
+    var rs = document.getElementById('hubBindRestart');
+    if (rs) rs.style.display = 'none';
   }
   function hubBind(code) {
     if (hubBindPending) return hubBindConfirm();
@@ -1280,6 +1287,8 @@
       hubBindListEl.style.display = 'block';
       bindKeyInput.disabled = true;
       btnBindSubmit.textContent = '確認綁定';
+      var rs = document.getElementById('hubBindRestart');
+      if (rs) rs.style.display = 'block';   // 貼錯連結可以回上一步（P2 審查 N4）
       showBindError('');
     });
   }
