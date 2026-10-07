@@ -144,4 +144,13 @@ ok('line_my_payslip：沒綁 → not_bound；token 無效 → invalid_id_token',
   assert.strictEqual(s.handleLineMyPayslip_({ id_token: 'TOK_U1' }).error, 'not_bound');
   assert.strictEqual(s.handleLineMyPayslip_({ id_token: 'x' }).error, 'invalid_id_token');
 });
+ok('line_bind_all confirm＋codes：只綁勾選的店，沒勾的回 skipped；proof_store 標出金鑰所屬店', () => {
+  const rs = rosters(); rs.hq = [R('H01', '甲', 'kH')];
+  const { s, fetched, localBinds } = make({ config: CONFIG, rosters: rs });
+  const pre = s.handleLineBindAll_({ id_token: 'TOK_U1', key: 'kA' });
+  assert.deepStrictEqual(Array.from(pre.stores.map(x => x.code + ':' + x.proof_store)), [':true', 'mztjs:false', 'hq:false']);
+  const r = s.handleLineBindAll_({ id_token: 'TOK_U1', key: 'kA', confirm: true, codes: [''] });
+  assert.strictEqual(localBinds.length, 1); assert.strictEqual(fetched.length, 0);
+  assert.strictEqual(r.results.find(x => x.code === 'hq').error, 'skipped');
+});
 console.log(`\n${n} 項全部通過`);

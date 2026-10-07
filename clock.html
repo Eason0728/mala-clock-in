@@ -391,6 +391,7 @@
       <span class="name" id="empName">—</span>
     </div>
     <div class="hub-store" id="hubStore" style="display:none;"></div>
+    <button class="recent-toggle" id="hubBindMore" type="button" style="display:none;">我也在這家店上班 → 綁定</button>
     <div class="device-hint" id="deviceHint"></div>
     <ul class="today-list" id="todayList"></ul>
     <div class="no-events" id="noEvents" style="display:none;">今天還沒有打卡紀錄</div>
@@ -406,6 +407,7 @@
     <p style="margin:0 0 14px;">首次使用請輸入店長給你的啟用碼，或直接貼上店長傳的整條連結，完成 LINE 帳號綁定。</p>
     <input type="text" id="bindKeyInput" placeholder="啟用碼或連結皆可" autocomplete="off"
            style="width:100%;padding:12px;font-size:16px;border:1px solid #ddd;border-radius:10px;box-sizing:border-box;">
+    <div id="hubBindList" style="display:none;text-align:left;margin-top:12px;font-size:15px;line-height:1.7;"></div>
     <div id="bindErrorMsg" style="color:#c22a12;margin-top:10px;font-size:14px;min-height:1.2em;"></div>
     <button class="btn btn-in" id="btnBindSubmit" type="button" style="margin-top:14px;width:100%;">送出</button>
   </div>
@@ -706,10 +708,12 @@
         showBindError('連線失敗，請檢查網路後再試。');
       });
   }
+  var hubBindMoreEl = document.getElementById('hubBindMore');
+  if (hubBindMoreEl) hubBindMoreEl.addEventListener('click', function () { hubBindReset(); showBindScreen(); });
   if (btnBindSubmit) {
     btnBindSubmit.addEventListener('click', function () {
       var code = extractBindCode(bindKeyInput ? bindKeyInput.value : '');
-      if (!code) { showBindError('請輸入啟用碼'); return; }
+      if (!code && !(LINE_HUB && hubBindPending)) { showBindError('請輸入啟用碼'); return; }
       btnBindSubmit.disabled = true;
       showBindError('');
       (LINE_HUB ? hubBind(code) : doBind(code))
@@ -1100,9 +1104,12 @@
             tot[k].pending_days += mt[k].pending_days || 0;
           });
         });
-        days.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.store_name < b.store_name ? -1 : 1); });
-        var partial = got.length < codes.length;
-        if (partial) showStatus('status-warn', '⚠ 有一家店暫時查不到，下面只列查得到的店。');
+        days.sort(function (a, b) {
+          if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+          return a.store_name === b.store_name ? 0 : (a.store_name < b.store_name ? -1 : 1);
+        });
+        var missN = codes.length - got.length;
+        if (missN > 0) showStatus('status-warn', '⚠ 有 ' + missN + ' 家店暫時查不到，下面只列查得到的店。');
         return { ok: true, days: days, month_totals: tot };
       });
     });
@@ -1201,7 +1208,12 @@
   function hubLoadMyStores() {
     return apiPost({ action: 'line_my_stores', id_token: liff.getIDToken() }, PAYROLL_API)
       .then(function (r) {
-        if (r && r.ok) { hubMyStores = r.stores || []; return hubMyStores; }
+        if (r && r.ok) {
+          // 有店讀不到、又一家都沒查到：不能斷定是「沒綁」，當成查詢失敗（null），不擋打卡（P2 審查 #2）
+          if (!(r.stores || []).length && (r.unreadable || []).length) return null;
+          hubMyStores = r.stores || [];
+          return hubMyStores;
+        }
         if (r && r.error === 'invalid_id_token') { liff.login(); }
         return null;
       }, function () { return null; });
@@ -1217,29 +1229,77 @@
                        already_bound_other_user: '這位同仁已綁定別的 LINE 帳號，請店長先解除',
                        bound_other: '已綁定別的 LINE 帳號（請店長先解除）', name_conflict: '有兩位同名同仁，請找店長處理',
                        unknown_action: '這家店還沒開放 LINE 打卡', unreachable: '這家店暫時連不上，請晚點再綁一次' };
-  /** 綁定第一步：列出「你在這幾家店」給本人確認；第二步帶 confirm:true 一次綁好。 */
+  /** 綁定第一步：列出「你在這幾家店」，可以綁的店預設打勾，同仁可以取消；第二步只綁打勾的店。
+   *  ⚠ 跨店只靠「同名」對人：兩家店若有同名不同人，本人在這裡看得到店名、取消勾選（P2 審查 #1）。 */
+  var hubBindListEl = document.getElementById('hubBindList');
+  var hubBindPending = null;    // 第一步回來的 {code, stores}；有值＝按鈕現在是「確認綁定」
+  function hubBindReset() {
+    hubBindPending = null;
+    if (hubBindListEl) { hubBindListEl.style.display = 'none'; hubBindListEl.innerHTML = ''; }
+    if (btnBindSubmit) btnBindSubmit.textContent = '送出';
+    if (bindKeyInput) bindKeyInput.disabled = false;
+  }
   function hubBind(code) {
+    if (hubBindPending) return hubBindConfirm();
     return apiPost({ action: 'line_bind_all', id_token: liff.getIDToken(), key: code }, PAYROLL_API).then(function (r) {
-      if (!r || !r.ok) { showBindError(HUB_BIND_ERR[r && r.error] || '綁定失敗，請告知主管'); return; }
-      var lines = (r.stores || []).map(function (x) { return '・' + (x.store_name || hubStoreName(x.code)) + '：' + (HUB_BIND_STATE[x.state] || x.state); });
-      if (!(r.stores || []).some(function (x) { return x.state === 'free'; })) {
-        if ((r.stores || []).some(function (x) { return x.state === 'bound_self'; })) { location.reload(); return; }
-        showBindError('沒有可以綁定的店：\n' + lines.join('\n'));
+      if (!r || !r.ok) {
+        if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+        showBindError(HUB_BIND_ERR[r && r.error] || '綁定失敗，請告知主管'); return;
+      }
+      var stores = r.stores || [];
+      var unread = (r.unreadable || []).map(hubStoreName);
+      var lines = stores.map(function (x) { return '・' + (x.store_name || hubStoreName(x.code)) + '：' + (HUB_BIND_STATE[x.state] || x.state); });
+      if (!stores.some(function (x) { return x.state === 'free'; })) {
+        if (stores.some(function (x) { return x.state === 'bound_self'; })) { location.reload(); return; }
+        showBindError('沒有可以綁定的店' + (lines.length ? '：\n' + lines.join('\n') : '。') +
+          (unread.length ? '\n（' + unread.join('、') + ' 暫時查不到，請晚點再試）' : ''));
         return;
       }
-      if (!window.confirm(r.name + '，你在這幾家店的名冊上：\n' + lines.join('\n') + '\n\n要把你的 LINE 帳號綁定到這些店嗎？')) {
-        showBindError('已取消，沒有綁定任何一家店。');
-        return;
-      }
-      return apiPost({ action: 'line_bind_all', id_token: liff.getIDToken(), key: code, confirm: true }, PAYROLL_API).then(function (r2) {
-        if (!r2 || !r2.ok) { showBindError(HUB_BIND_ERR[r2 && r2.error] || '綁定失敗，請告知主管'); return; }
-        var failed = (r2.results || []).filter(function (x) { return !x.ok; });
-        if (!failed.length) { location.reload(); return; }
-        var okN = (r2.results || []).length - failed.length;
-        showBindError((okN ? '已綁定 ' + okN + ' 家店；' : '') + '以下沒有綁成功：\n' + failed.map(function (x) {
-          return '・' + (x.store_name || hubStoreName(x.code)) + '：' + (HUB_BIND_ERR[x.error] || x.error); }).join('\n') +
-          (okN ? '\n\n可以先關掉重開開始打卡。' : ''));
+      hubBindPending = { code: code, stores: stores };
+      hubBindListEl.innerHTML = '';
+      var head = document.createElement('div');
+      head.textContent = r.name + '，你在這幾家店的名冊上。只勾你真的有在那裡上班的店：';
+      hubBindListEl.appendChild(head);
+      stores.forEach(function (x) {
+        var row = document.createElement('label');
+        row.style.display = 'block';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.value = x.code; cb.className = 'hub-bind-cb';
+        cb.checked = x.state === 'free'; cb.disabled = x.state !== 'free';
+        row.appendChild(cb);
+        row.appendChild(document.createTextNode(' ' + (x.store_name || hubStoreName(x.code)) +
+          (x.proof_store ? '（你貼的連結是這家）' : '') + (x.state === 'free' ? '' : '　— ' + (HUB_BIND_STATE[x.state] || x.state))));
+        hubBindListEl.appendChild(row);
       });
+      if (unread.length) {
+        var u = document.createElement('div');
+        u.style.color = '#8a817a';
+        u.textContent = '（' + unread.join('、') + ' 暫時查不到，之後在那家店會再請你綁一次）';
+        hubBindListEl.appendChild(u);
+      }
+      hubBindListEl.style.display = 'block';
+      bindKeyInput.disabled = true;
+      btnBindSubmit.textContent = '確認綁定';
+      showBindError('');
+    });
+  }
+  function hubBindConfirm() {
+    var codes = [];
+    Array.prototype.forEach.call(hubBindListEl.querySelectorAll('.hub-bind-cb'), function (cb) {
+      if (cb.checked && !cb.disabled) codes.push(cb.value);
+    });
+    if (!codes.length) { showBindError('請至少勾一家店。'); return Promise.resolve(); }
+    var p = hubBindPending;
+    return apiPost({ action: 'line_bind_all', id_token: liff.getIDToken(), key: p.code, confirm: true, codes: codes }, PAYROLL_API).then(function (r2) {
+      if (!r2 || !r2.ok) { showBindError(HUB_BIND_ERR[r2 && r2.error] || '綁定失敗，請告知主管'); hubBindReset(); return; }
+      var tried = (r2.results || []).filter(function (x) { return x.error !== 'skipped' && codes.indexOf(x.code) !== -1; });
+      var failed = tried.filter(function (x) { return !x.ok; });
+      if (!failed.length) { location.reload(); return; }
+      var okN = tried.length - failed.length;
+      hubBindReset();
+      showBindError((okN ? '已綁定 ' + okN + ' 家店；' : '') + '以下沒有綁成功：\n' + failed.map(function (x) {
+        return '・' + (x.store_name || hubStoreName(x.code)) + '：' + (HUB_BIND_ERR[x.error] || x.error); }).join('\n') +
+        (okN ? '\n\n可以先關掉重開開始打卡。' : ''));
     });
   }
 
@@ -1252,6 +1312,8 @@
     renderTodayHours(null);
     showStatus('status-warn', '⚠ 你的 LINE 帳號還沒有綁定「' + hubPicked.name +
       '」。如果你不在這家店的名冊上，請主管把你加進去。');
+    var more = document.getElementById('hubBindMore');
+    if (more) more.style.display = 'block';
   }
 
   /** 用一筆定位挑店、更新畫面；挑到店家且還沒載過那家的 whoami 就載。回傳 pickStore 的結果。 */
@@ -1264,7 +1326,12 @@
       var changed = !hubPicked || hubPicked.code !== r.store.code;
       hubPicked = r.store;
       API_URL = hubApiFor(r.store);
-      if (changed) { hubReadyStore = null; if (!fromClock) loadWhoamiOnInit(0); }
+      if (changed) {
+        hubReadyStore = null;
+        var more = document.getElementById('hubBindMore');
+        if (more) more.style.display = 'none';
+        if (!fromClock) loadWhoamiOnInit(0);
+      }
     }
     return r;
   }
@@ -1815,6 +1882,11 @@
       + '<table><tbody>' + rows + '</tbody></table></div>';
   }
   function renderPay(j) {
+    if (LINE_HUB && j && j.error === 'invalid_id_token') { liff.login(); return; }
+    if (LINE_HUB && j && j.error === 'not_bound') {
+      paySlipEl.innerHTML = payState('🔗', '還查不到你的薪資', '你的 LINE 帳號還沒綁定有接薪資系統的店，請先回打卡分頁完成綁定；仍查不到請找店長。');
+      return;
+    }
     if (!j || !j.ok) { paySlipEl.innerHTML = payState('🔒', '無法驗證身分', '這個連結可能已失效，請找店長重新取得。'); return; }
     var lq = payLeaveCard(j.leave_quota);
     if (!j.ready) {

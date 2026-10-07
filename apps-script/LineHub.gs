@@ -69,6 +69,9 @@ function handleLineMyStores_(body) {
  * 用任一家店的專屬連結金鑰證明身分 → 找出這個人在每家店「同名且在職」的那一列。
  *   confirm 不是 true：只回清單讓本人確認（不寫入）。
  *   confirm === true：逐店呼叫那家店自己的 liff_bind（伺服器對伺服器，金鑰不經過手機）。
+ *     codes（選填，陣列）：只綁這幾家店（同仁在確認畫面取消勾選的店不綁）。
+ *     ⚠ 跨店只靠「同名」對人（名冊沒有其他共同欄位）。兩家店若有同名不同人，本人在確認畫面
+ *     看得到店名、可以取消勾選；另有 proof_store 標出金鑰是哪家店的（P2 審查 #1，風險 Eason 接受與否見 spec §2.4）。
  * 每店狀態 state：free（可綁）／bound_self（已綁這個 LINE）／bound_other（已綁別的 LINE，要店長先解除）
  *                 ／name_conflict（同店有兩位在職同名，不自動綁）
  */
@@ -84,7 +87,7 @@ function handleLineBindAll_(body) {
   stores.forEach(function (st) {
     if (me) return;
     (all.rosters[st.code] || []).forEach(function (r) {
-      if (!me && lineHubActive_(r) && String(r.key) === proofKey) me = { name: String(r.name) };
+      if (!me && lineHubActive_(r) && String(r.key) === proofKey) me = { name: String(r.name), store: st.code };
     });
   });
   if (!me) return { ok: false, error: 'invalid_key' };
@@ -103,17 +106,23 @@ function handleLineBindAll_(body) {
     cands.push({ st: st, row: rows[0], state: state });
   });
   var list = cands.map(function (c) {
-    return { code: c.st.code, store_name: c.st.name, emp_id: String(c.row.emp_id), state: c.state };
+    return { code: c.st.code, store_name: c.st.name, emp_id: String(c.row.emp_id), state: c.state,
+             proof_store: c.st.code === me.store };
   });
   if (body.confirm !== true) {
     return { ok: true, name: me.name, stores: list, unreadable: all.unreadable };
   }
+  var only = Array.isArray(body.codes) ? body.codes.map(String) : null;
 
   // 寫入：只綁 free 的店。光復自己直接呼叫，其他店並行打各自的 liff_bind。
-  var results = list.map(function (x) { return { code: x.code, store_name: x.store_name, emp_id: x.emp_id, ok: x.state === 'bound_self', error: x.state === 'free' || x.state === 'bound_self' ? '' : x.state }; });
+  var results = list.map(function (x) {
+    var skipped = only && only.indexOf(x.code) === -1 && x.state === 'free';
+    return { code: x.code, store_name: x.store_name, emp_id: x.emp_id, ok: x.state === 'bound_self',
+             error: skipped ? 'skipped' : (x.state === 'free' || x.state === 'bound_self' ? '' : x.state) };
+  });
   var remote = [];
   cands.forEach(function (c, i) {
-    if (c.state !== 'free') return;
+    if (c.state !== 'free' || results[i].error === 'skipped') return;
     var payload = { action: 'liff_bind', id_token: body.id_token, key: String(c.row.key) };
     if (c.st.code === '') {
       var r = handleLiffBind_(payload);

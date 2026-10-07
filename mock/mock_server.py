@@ -1648,10 +1648,12 @@ def handle_line_bind_all(data, body):
         return {"ok": False, "error": "invalid_key"}
     rosters = _hub_all_rosters()
     me = None
+    me_store = None
     for code in _hub_store_codes():
         for r in rosters[code]:
             if not me and _hub_active(r) and str(r.get("key")) == key:
                 me = r["name"]
+                me_store = code
     if not me:
         return {"ok": False, "error": "invalid_key"}
     cands = []
@@ -1668,14 +1670,18 @@ def handle_line_bind_all(data, body):
         else:
             st = "bound_other"
         cands.append((code, rows[0], st))
-    lst = [{"code": c, "store_name": _hub_store_name(c), "emp_id": r["emp_id"], "state": st} for c, r, st in cands]
+    lst = [{"code": c, "store_name": _hub_store_name(c), "emp_id": r["emp_id"], "state": st,
+            "proof_store": c == me_store} for c, r, st in cands]
     if body.get("confirm") is not True:
         return {"ok": True, "name": me, "stores": lst, "unreadable": []}
+    only = [str(x) for x in body["codes"]] if isinstance(body.get("codes"), list) else None
     results = []
     for c, r, st in cands:
         item = {"code": c, "store_name": _hub_store_name(c), "emp_id": r["emp_id"],
                 "ok": st == "bound_self", "error": "" if st in ("free", "bound_self") else st}
-        if st == "free":
+        if st == "free" and only is not None and c not in only:
+            item["error"] = "skipped"
+        elif st == "free":
             with store_context(c or None):
                 res = handle_liff_bind(load_data(), {"action": "liff_bind", "id_token": body["id_token"], "key": r["key"]})
             item["ok"] = bool(res.get("ok"))
