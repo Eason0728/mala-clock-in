@@ -14,9 +14,11 @@
     return 2 * R * Math.asin(Math.sqrt(h));
   }
 
+  // 後端先把距離與誤差各四捨五入到 0.1m 再比（handleClock），這裡照做，邊界才不會差那 0.05m（P1 審查 #8）
+  function r1(v) { return Math.round(v * 10) / 10; }
   function effectiveDistance(d, accuracy) {
-    var acc = (typeof accuracy === 'number' && isFinite(accuracy) && accuracy > 0) ? accuracy : 0;
-    return Math.max(0, d - Math.min(acc, ACCURACY_CREDIT_CAP_M));
+    var acc = (typeof accuracy === 'number' && isFinite(accuracy) && accuracy >= 0) ? r1(accuracy) : 0;
+    return Math.max(0, r1(d) - Math.min(acc, ACCURACY_CREDIT_CAP_M));
   }
 
   function pickStore(fix, stores) {

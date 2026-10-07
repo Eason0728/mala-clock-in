@@ -929,7 +929,7 @@
 
   // fetch 逾時（毫秒）。⚠ 沒有這道防線時，網路卡住的請求會無限期不 settle：
   // 打卡畫面永遠停在「送出打卡中…」，且 setBusy(true) 讓兩顆按鈕一直停用、
-  // 同仁連重打都不行（2026-08-03 林宸妤實際遇到，上班卡整筆遺失）。
+  // 同仁連重打都不行（2026-08-03 光復一位同仁實際遇到，上班卡整筆遺失）。
   // Apps Script 正常回應約 2–3 秒，20 秒已非常寬鬆。
   var API_TIMEOUT_MS = 20000;
 
@@ -1151,9 +1151,11 @@
       hubStoreEl.className = 'hub-store warn';
       hubStoreEl.textContent = hubBlockMsg(r).replace(/^⚠ /, '📍 ');
     }
+    // 還沒挑到任何一家店時，姓名欄不要一直顯示「定位中…」（P1 審查 #6）
+    if (r.status !== 'ok' && !hubPicked) empNameEl.textContent = '—';
   }
   /** 用一筆定位挑店、更新畫面；挑到店家且還沒載過那家的 whoami 就載。回傳 pickStore 的結果。 */
-  function hubApply(pos) {
+  function hubApply(pos, fromClock) {
     var fix = pos && pos.coords ? { lat: pos.coords.latitude, lng: pos.coords.longitude,
       accuracy_m: isFinite(pos.coords.accuracy) ? pos.coords.accuracy : undefined } : null;
     var r = window.ClockLineCore ? ClockLineCore.pickStore(fix, LINE_HUB_STORES) : { status: 'no_fix' };
@@ -1162,7 +1164,7 @@
       var changed = !hubPicked || hubPicked.code !== r.store.code;
       hubPicked = r.store;
       API_URL = hubApiFor(r.store);
-      if (changed) { hubReadyStore = null; loadWhoamiOnInit(0); }
+      if (changed) { hubReadyStore = null; if (!fromClock) loadWhoamiOnInit(0); }
     }
     return r;
   }
@@ -1183,6 +1185,14 @@
                 return;
               }
               showBindScreen();
+              return;
+            }
+            // LINE 入口：一家店的錯誤不要蓋掉整頁（同仁可能走到另一家就好了），只顯示在狀態列（P1 審查 #7）
+            if (LINE_HUB) {
+              if (res.error === 'invalid_id_token') { liff.login(); return; }
+              showStatus('status-warn', res.error === 'unknown_action'
+                ? '⚠ 「' + (hubPicked ? hubPicked.name : '這家店') + '」還沒開放 LINE 打卡，請先用原本的打卡連結。'
+                : '⚠ ' + liffWhoamiErrorMsg(res.error));
               return;
             }
             // 其餘 LIFF 錯誤碼（invalid_id_token / no_roster / 未預期）用 LIFF 專屬措辭，
@@ -1214,6 +1224,7 @@
           setTimeout(function () { loadWhoamiOnInit(attempt + 1); }, WHOAMI_INIT_RETRY_DELAYS_MS[attempt]);
           return;
         }
+        if (LINE_HUB) { showStatus('status-warn', '⚠ 連線失敗，請檢查網路後再試。'); return; }
         showError('連線失敗，請檢查網路連線後重新整理頁面。');
       });
   }
@@ -1334,7 +1345,9 @@
       if (st.state !== 'granted') return;   // 只在已授權時預熱，絕不由預熱觸發詢問
       warmWatchId = navigator.geolocation.watchPosition(function (pos) {
         warmFix = pos;                                  // 持續更新，永遠是最新的
-        if (LINE_HUB && fixLooksGood(pos)) hubApply(pos);   // LINE 入口：定位一好就先顯示在哪家店
+        // LINE 入口：定位一好就先顯示在哪家店。⚠ 打卡進行中（clockBusy）不可換店——
+        // 否則送出中途 API_URL 被換成別家，這筆會打到另一家店的後端（P1 審查 #1）。
+        if (LINE_HUB && !clockBusy && fixLooksGood(pos)) hubApply(pos);
       }, function () {}, GEO_OPTS);
       // 3 分鐘後停掉，避免頁面開著一直耗電
       setTimeout(function () {
@@ -1495,7 +1508,7 @@
       return;
     }
     /* 第一張卡就按下班（2026-10-02 Eason 指定）：後端的交替防呆只看「過去 12 小時內最後一張算數的卡」，
-       沒有就兩顆都收，所以每天第一張按錯成下班卡擋不住（吳佳宜 8/25、金山 9/8 都發生過）。
+       沒有就兩顆都收，所以每天第一張按錯成下班卡擋不住（央廚 8/25、金山 9/8 都發生過）。
        刻意只做確認框、不硬擋：真的忘了打上班卡的人，下班卡仍然要打得進去。 */
     if (type === 'out' && lastCountedKnown && !lastCountedNow) {
       if (!window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
@@ -1511,13 +1524,18 @@
     getPosition(function () { showStatus('status-loading', '定位中…（訊號較弱，再抓一次）'); })
       .then(function (pos) {
         if (LINE_HUB) {
-          var hr = hubApply(pos);
+          var hr = hubApply(pos, true);
           if (hr.status !== 'ok') { showStatus('status-warn', hubBlockMsg(hr)); return HUB_BLOCKED; }
           if (hubReadyStore !== hubPicked.code) {
             // 還沒拿到這家店的今日紀錄：先補一次 whoami，否則「結果不明時回頭確認」沒有正確的比對基準
             showStatus('status-loading', '確認「' + hubPicked.name + '」的今日紀錄…');
             var storeAtCheck = hubPicked.code;
             return apiPost(mkPayload('whoami')).then(function (w) {
+              if (w && w.error === 'invalid_id_token') { showStatus('status-warn', 'LINE 身分驗證已過期，正在重新登入…'); liff.login(); return HUB_BLOCKED; }
+              if (w && w.error === 'unknown_action') {
+                showStatus('status-warn', '⚠ 「' + hubPicked.name + '」還沒開放 LINE 打卡，請先用原本的打卡連結。');
+                return HUB_BLOCKED;
+              }
               if (!w || !w.ok) {
                 showStatus('status-warn', w && w.error === 'not_bound'
                   ? '⚠ 你的 LINE 帳號還沒有綁定「' + hubPicked.name + '」。如果你不在這家店的名冊上，請主管把你加進去。'
@@ -1530,6 +1548,12 @@
               updateButtonStates(w.last_counted);
               hubReadyStore = storeAtCheck;
               if (lockUntil[type] > Date.now() || blockedType === type) { showStatus('status-warn', '⚠ 這家店今天的紀錄顯示這一筆不能打，請看下方今日紀錄。'); return HUB_BLOCKED; }
+              // 開頁時還不知道是哪家店，「還沒打上班卡」的確認框當時被跳過了，這裡補問一次（P1 審查 #5）
+              if (type === 'out' && lastCountedKnown && !lastCountedNow &&
+                  !window.confirm('你今天在「' + hubPicked.name + '」還沒打上班卡，確定要打下班嗎？')) {
+                showStatus('status-warn', '已取消。');
+                return HUB_BLOCKED;
+              }
               beforeSnap = { count: todaySnapshot[type].count, lastTs: todaySnapshot[type].lastTs };
               return sendClock(pos);
             });

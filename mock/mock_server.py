@@ -1618,7 +1618,14 @@ except FileNotFoundError:
 
 @contextlib.contextmanager
 def store_context(code):
-    """code 為 None＝光復（預設），什麼都不換。其他店：資料檔 mock_data_<code>.json、座標半徑換成該店。"""
+    """code 為 None＝光復（預設），什麼都不換。其他店：資料檔 mock_data_<code>.json、座標半徑換成該店。
+
+    各店資料檔第一次用到時從同一份種子建立（名冊 line_user_id 全空）。要重現「在 A 店綁、B 店不認得」：
+      rm -f mock/mock_data_*.json
+      POST /api/hq   {"action":"liff_bind","id_token":"MOCK_ID_TOKEN_U1","key":"testkey1"}   → ok
+      POST /api/mztjs {"action":"liff_whoami","id_token":"MOCK_ID_TOKEN_U1","device_id":"D1"} → not_bound
+    打卡頁：/clock-line.html?mock_uid=U1&api=/api&loc=<緯度>,<經度>&acc=12
+    """
     global DATA_FILE, STORE_LAT, STORE_LNG, RADIUS_M
     if not code:
         yield
