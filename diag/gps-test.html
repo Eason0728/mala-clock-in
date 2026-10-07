@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LIFF 定位驗證（測試頁）</title>
+<style>
+  :root{
+    --gold:#FABE00; --black:#1a1a1a; --ink:#f5f3f0; --dim:#9a948c;
+    --ok:#3ddc84; --warn:#ffb020; --bad:#ff5c5c; --card:#252525; --line:#3a3a3a;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--black); color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Noto Sans TC","PingFang TC",sans-serif;
+    padding:16px 14px 40px; -webkit-text-size-adjust:100%;
+  }
+  .banner{
+    background:#4a2600; border:1px solid #7a4a00; color:#ffd48a;
+    padding:10px 12px; border-radius:10px; font-size:13px; margin-bottom:16px;
+  }
+  h1{font-size:19px; margin:0 0 4px; letter-spacing:.5px}
+  .sub{color:var(--dim); font-size:13px; margin-bottom:18px}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px}
+  .card h2{font-size:14px; margin:0 0 10px; color:var(--gold); letter-spacing:.5px}
+  .row{display:flex; justify-content:space-between; gap:10px; padding:5px 0; font-size:14px; border-bottom:1px solid rgba(255,255,255,.05)}
+  .row:last-child{border-bottom:0}
+  .row .k{color:var(--dim); flex:none}
+  .row .v{text-align:right; word-break:break-all; font-variant-numeric:tabular-nums}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  button{
+    width:100%; font:inherit; font-weight:600; border:0; border-radius:12px;
+    padding:14px 0; margin-top:8px; cursor:pointer; background:var(--gold); color:var(--black);
+  }
+  button.ghost{background:transparent; color:var(--gold); border:1px solid var(--gold)}
+  button:disabled{opacity:.45}
+  #log{font-size:12px; max-height:200px; overflow-y:auto; background:#161616; border-radius:10px; padding:10px; margin-top:8px}
+  #log div{padding:2px 0; border-bottom:1px solid rgba(255,255,255,.04); font-variant-numeric:tabular-nums}
+  .verdict{font-size:16px; font-weight:700; text-align:center; padding:14px; border-radius:12px; margin-top:8px}
+  input[type=text]{
+    width:100%; font:inherit; background:#161616; color:var(--ink);
+    border:1px solid var(--line); border-radius:10px; padding:12px; margin-top:4px;
+  }
+  input[type=text]:focus{outline:2px solid var(--gold); outline-offset:1px}
+  textarea{width:100%; height:150px; background:#161616; color:var(--ink); border:1px solid var(--line);
+           border-radius:10px; padding:10px; font:12px/1.5 ui-monospace,monospace; margin-top:8px}
+</style>
+</head>
+<body>
+
+<div class="banner">
+  ⚠ 這是<b>測試頁</b>，只驗證定位功能。<br>
+  <b>不會產生任何打卡紀錄</b>，也不會寫入任何系統。
+</div>
+
+<h1>LIFF 定位驗證</h1>
+<div class="sub">麻的小辛辣打卡系統 · LINE 化可行性測試</div>
+
+<div class="card">
+  <h2>① 環境</h2>
+  <div id="env"></div>
+</div>
+
+<div class="card">
+  <h2>② 身分（LIFF）</h2>
+  <div id="idty"><div class="row"><span class="k">狀態</span><span class="v dim">尚未初始化</span></div></div>
+</div>
+
+<div class="card">
+  <h2>③ 定位測試（核心）</h2>
+  <div id="geo"><div class="row"><span class="k">狀態</span><span class="v">請按下方按鈕</span></div></div>
+  <button id="btnOnce">取得目前位置</button>
+  <button id="btnWatch" class="ghost">連續取樣 20 秒</button>
+</div>
+
+<div class="card">
+  <h2>④ 距離測試</h2>
+  <div class="sub" style="margin:0 0 8px">
+    建議用 <b>Google 地圖查到的店門口座標</b>當基準點——比現場定位準，量出來才是真實距離。
+  </div>
+  <input id="coordInput" type="text" inputmode="text" placeholder="24.801234, 120.971234">
+  <div class="sub" style="margin:6px 0 0; font-size:12px">
+    可直接貼：座標、Google 地圖網址、或 24°48'04.4"N 120°58'16.4"E
+  </div>
+  <button id="btnCoord">用這組座標當基準點</button>
+  <div id="dist" style="margin-top:12px"><div class="row"><span class="k">基準點</span><span class="v">未設定</span></div></div>
+  <button id="btnBase" class="ghost">改用目前位置當基準點</button>
+</div>
+
+<div class="card">
+  <h2>⑤ 取樣紀錄</h2>
+  <div id="log"><div style="color:#9a948c">尚無資料</div></div>
+</div>
+
+<div id="verdictBox"></div>
+
+<div class="card">
+  <h2>⑥ 回報</h2>
+  <div class="sub" style="margin:0 0 8px">按下面按鈕產生報告，長按複製後傳給 Eason。</div>
+  <button id="btnReport" class="ghost">產生報告</button>
+  <textarea id="report" readonly placeholder="按上面按鈕產生…"></textarea>
+</div>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+/* ────────────────────────────────────────────────────────────
+   LIFF 定位驗證 spike
+   刻意不做的事（避免污染正式系統）：
+   - 不呼叫任何 Apps Script 後端，不 POST 任何資料
+   - 不使用 localStorage（正式系統用 mala_clock_device，避開它）
+   - 不含任何門市座標／員工金鑰／試算表 ID
+   基準點只存在 sessionStorage，關掉分頁就消失。
+   ──────────────────────────────────────────────────────────── */
+
+var LIFF_ID = '2011292256-L6JQCqj0';   // 鼎兆元打卡登入 / 打卡定位測試
+
+/* 對照現有打卡系統的門檻 */
+var ACC_GOOD = 40;    // 精準度 ≤40m：正式系統會立刻送出
+var ACC_MAX  = 100;   // 誤差折扣上限
+var RADIUS   = 20;    // 門市半徑
+
+var samples = [], base = null, watchId = null, liffReady = false, liffErr = '';
+
+function el(id){ return document.getElementById(id) }
+function row(k,v,cls){ return '<div class="row"><span class="k">'+k+'</span><span class="v '+(cls||'')+'">'+v+'</span></div>' }
+function accClass(a){ return a<=ACC_GOOD ? 'ok' : (a<=ACC_MAX ? 'warn' : 'bad') }
+
+/* ── 環境 ── */
+function showEnv(){
+  var inLine = false, os='—', lineVer='—', liffVer='—';
+  try{
+    if(window.liff){
+      liffVer = liff.getVersion ? liff.getVersion() : '—';
+      inLine  = liff.isInClient ? liff.isInClient() : false;
+      os      = liff.getOS ? liff.getOS() : '—';
+      lineVer = liff.getLineVersion ? (liff.getLineVersion()||'—') : '—';
+    }
+  }catch(e){}
+  el('env').innerHTML =
+    row('開啟方式', inLine ? 'LINE 內（LIFF）' : '一般瀏覽器（對照組）', inLine?'ok':'warn') +
+    row('作業系統', os) +
+    row('LINE 版本', lineVer) +
+    row('LIFF SDK', liffVer) +
+    row('安全連線', location.protocol==='https:' ? 'https ✓' : location.protocol, location.protocol==='https:'?'ok':'bad') +
+    row('定位 API', navigator.geolocation ? '可用' : '不存在', navigator.geolocation?'ok':'bad');
+}
+
+/* ── LIFF 初始化 ── */
+function initLiff(){
+  if(!window.liff){ el('idty').innerHTML = row('狀態','LIFF SDK 載入失敗','bad'); showEnv(); return }
+  if(LIFF_ID.indexOf('__PASTE') === 0){
+    el('idty').innerHTML = row('狀態','尚未填入 LIFF ID','warn') +
+      row('說明','可先用一般瀏覽器測定位');
+    showEnv(); return;
+  }
+  liff.init({ liffId: LIFF_ID })
+    .then(function(){
+      liffReady = true; showEnv();
+      if(!liff.isLoggedIn || !liff.isLoggedIn()){
+        el('idty').innerHTML = row('狀態','未登入 LINE','warn');
+        return;
+      }
+      return liff.getProfile().then(function(p){
+        var uid = p.userId || '';
+        el('idty').innerHTML =
+          row('狀態','取得成功','ok') +
+          row('顯示名稱', p.displayName || '—') +
+          row('userId', uid ? (uid.slice(0,6)+'…'+uid.slice(-4)) : '—') +
+          row('userId 長度', uid.length);
+      });
+    })
+    .catch(function(e){
+      liffErr = (e && e.message) || String(e);
+      el('idty').innerHTML = row('狀態','init 失敗','bad') + row('錯誤', liffErr, 'bad');
+      showEnv();
+    });
+}
+
+/* ── 定位 ── */
+function pushSample(pos, ms){
+  var s = { t:new Date(), acc:Math.round(pos.coords.accuracy), ms:ms,
+            lat:pos.coords.latitude, lng:pos.coords.longitude };
+  samples.push(s);
+  var hh = s.t.toTimeString().slice(0,8);
+  var d = base ? ('　距基準 '+Math.round(haversine(base.lat,base.lng,s.lat,s.lng))+'m') : '';
+  var line = document.createElement('div');
+  line.className = accClass(s.acc);
+  line.textContent = hh+'　±'+s.acc+'m　'+s.ms+'ms'+d;
+  var log = el('log');
+  if(samples.length===1) log.innerHTML='';
+  log.insertBefore(line, log.firstChild);
+  showGeo(s); showDist(s); showVerdict();
+}
+
+function showGeo(s){
+  el('geo').innerHTML =
+    row('精準度', '±'+s.acc+' 公尺', accClass(s.acc)) +
+    row('取得耗時', s.ms+' ms', s.ms<=8000?'ok':'bad') +
+    row('座標', s.lat.toFixed(6)+', '+s.lng.toFixed(6)) +
+    row('正式系統會', s.acc<=ACC_GOOD ? '立刻送出' : (s.acc<=ACC_MAX?'重抓最多 8 秒':'誤差折扣用盡'), accClass(s.acc)) +
+    row('取樣次數', samples.length);
+}
+
+function showDist(s){
+  if(!base){ el('dist').innerHTML = row('基準點','未設定'); return }
+  var head = row('基準點', (base.src||'現場定位') + (base.acc ? '（±'+base.acc+'m）' : '（無誤差）'),
+                 base.acc ? 'warn' : 'ok') +
+             row('基準座標', base.lat.toFixed(6)+', '+base.lng.toFixed(6));
+  if(!s){ el('dist').innerHTML = head + row('距離','等待定位…'); return }
+  var d = haversine(base.lat, base.lng, s.lat, s.lng);
+  var eff = Math.max(0, d - Math.min(s.acc, ACC_MAX));   // 正式系統的誤差折扣算法
+  el('dist').innerHTML = head +
+    row('實際距離', Math.round(d)+' 公尺') +
+    row('折扣後距離', Math.round(eff)+' 公尺') +
+    row('半徑 '+RADIUS+'m 判定', eff<=RADIUS ? '✓ 可打卡' : '✗ 會被擋', eff<=RADIUS?'ok':'bad');
+}
+
+function showVerdict(){
+  if(samples.length < 3) return;
+  var accs = samples.map(function(s){return s.acc}), ms = samples.map(function(s){return s.ms});
+  var med = accs.slice().sort(function(a,b){return a-b})[Math.floor(accs.length/2)];
+  var worst = Math.max.apply(null, accs), slow = Math.max.apply(null, ms);
+  var pass = med<=ACC_GOOD && worst<=ACC_MAX && slow<=8000;
+  var txt = pass ? '✅ 通過：LIFF 內定位足以支撐打卡'
+                 : (med<=ACC_MAX ? '⚠ 勉強：精準度不穩，門市半徑可能要放寬'
+                                 : '❌ 不通過：定位精準度不足');
+  el('verdictBox').innerHTML =
+    '<div class="verdict '+(pass?'ok':(med<=ACC_MAX?'warn':'bad'))+'" '+
+    'style="background:'+(pass?'#0f2e1c':(med<=ACC_MAX?'#3a2a08':'#3a1010'))+'">'+txt+
+    '<div style="font-size:12px;font-weight:400;margin-top:6px;opacity:.85">'+
+    '中位數 ±'+med+'m　最差 ±'+worst+'m　最慢 '+slow+'ms</div></div>';
+}
+
+function getOnce(){
+  if(!navigator.geolocation){ alert('此瀏覽器不支援定位'); return }
+  var btn = el('btnOnce'); btn.disabled = true; btn.textContent = '定位中…';
+  var t0 = Date.now();
+  navigator.geolocation.getCurrentPosition(
+    function(pos){ pushSample(pos, Date.now()-t0); btn.disabled=false; btn.textContent='再取得一次'; },
+    function(err){
+      el('geo').innerHTML = row('狀態','失敗（'+err.code+'）','bad') + row('訊息', err.message, 'bad');
+      btn.disabled=false; btn.textContent='重試';
+    },
+    { enableHighAccuracy:true, timeout:15000, maximumAge:0 }
+  );
+}
+
+function toggleWatch(){
+  var btn = el('btnWatch');
+  if(watchId !== null){ navigator.geolocation.clearWatch(watchId); watchId=null; btn.textContent='連續取樣 20 秒'; return }
+  var t0 = Date.now();
+  watchId = navigator.geolocation.watchPosition(
+    function(pos){ pushSample(pos, Date.now()-t0) },
+    function(err){ el('geo').innerHTML = row('watch 失敗', err.message, 'bad') },
+    { enableHighAccuracy:true, timeout:15000, maximumAge:0 }
+  );
+  btn.textContent = '停止取樣';
+  setTimeout(function(){ if(watchId!==null){ navigator.geolocation.clearWatch(watchId); watchId=null; btn.textContent='連續取樣 20 秒' } }, 20000);
+}
+
+function saveBase(){
+  try{ sessionStorage.setItem('liffspike_base', JSON.stringify(base)) }catch(e){}
+  if(samples.length) showDist(samples[samples.length-1]); else showDist(null);
+}
+
+function setBase(){
+  if(!samples.length){ alert('請先取得一次位置'); return }
+  var s = samples[samples.length-1];
+  base = { lat:s.lat, lng:s.lng, acc:s.acc, src:'現場定位' };
+  saveBase();
+}
+
+/* 支援三種貼法：純座標對、Google 地圖網址(@lat,lng)、度分秒 */
+function parseCoord(str){
+  if(!str) return null;
+  var s = String(str).trim();
+  var m = s.match(/@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);          // 地圖網址
+  if(m) return { lat:parseFloat(m[1]), lng:parseFloat(m[2]) };
+  m = s.match(/[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);          // ?q=lat,lng
+  if(m) return { lat:parseFloat(m[1]), lng:parseFloat(m[2]) };
+  m = s.match(/(\d+)[°\s]+(\d+)['\u2032\s]+([\d.]+)["\u2033]?\s*([NSns])[,\s]+(\d+)[°\s]+(\d+)['\u2032\s]+([\d.]+)["\u2033]?\s*([EWew])/);
+  if(m){                                                                     // 度分秒
+    var la = (+m[1]) + (+m[2])/60 + (+m[3])/3600; if(/[Ss]/.test(m[4])) la = -la;
+    var lo = (+m[5]) + (+m[6])/60 + (+m[7])/3600; if(/[Ww]/.test(m[8])) lo = -lo;
+    return { lat:la, lng:lo };
+  }
+  m = s.match(/(-?\d+\.\d+)\s*[,\s]\s*(-?\d+\.\d+)/);                 // 純座標對
+  if(m) return { lat:parseFloat(m[1]), lng:parseFloat(m[2]) };
+  return null;
+}
+
+function setBaseManual(){
+  var c = parseCoord(el('coordInput').value);
+  if(!c){
+    alert('看不懂這組座標。\n\n可以貼：\n24.801234, 120.971234\n或 Google 地圖分享的網址');
+    return;
+  }
+  /* 台灣範圍防呆——最常見的錯是經緯度貼反 */
+  if(c.lat < 21 || c.lat > 26.5 || c.lng < 118 || c.lng > 122.5){
+    if(!confirm('這組座標不在台灣範圍內：\n緯度 ' + c.lat + '\n經度 ' + c.lng +
+                '\n\n是不是經緯度貼反了？\n仍要使用請按「確定」。')) return;
+  }
+  base = { lat:c.lat, lng:c.lng, acc:0, src:'Google 座標' };
+  saveBase();
+  el('coordInput').value = c.lat.toFixed(6) + ', ' + c.lng.toFixed(6);
+}
+
+function haversine(la1,lo1,la2,lo2){
+  var R=6371000, r=Math.PI/180;
+  var dLa=(la2-la1)*r, dLo=(lo2-lo1)*r;
+  var a=Math.sin(dLa/2)*Math.sin(dLa/2)+Math.cos(la1*r)*Math.cos(la2*r)*Math.sin(dLo/2)*Math.sin(dLo/2);
+  return 2*R*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+function makeReport(){
+  var inLine=false, os='—', lv='—';
+  try{ if(window.liff){ inLine=liff.isInClient&&liff.isInClient(); os=liff.getOS?liff.getOS():'—'; lv=liff.getLineVersion?(liff.getLineVersion()||'—'):'—' } }catch(e){}
+  var accs = samples.map(function(s){return s.acc});
+  var L = [];
+  L.push('【LIFF 定位驗證報告】');
+  L.push('時間：'+new Date().toLocaleString('zh-TW'));
+  L.push('開啟方式：'+(inLine?'LINE 內 (LIFF)':'一般瀏覽器'));
+  L.push('系統：'+os+'　LINE '+lv);
+  L.push('LIFF init：'+(liffReady?'成功':(liffErr?('失敗 - '+liffErr):'未執行')));
+  L.push('取樣次數：'+samples.length);
+  if(accs.length){
+    var sorted = accs.slice().sort(function(a,b){return a-b});
+    L.push('精準度 最好/中位/最差：±'+sorted[0]+' / ±'+sorted[Math.floor(sorted.length/2)]+' / ±'+sorted[sorted.length-1]+' m');
+    L.push('最慢耗時：'+Math.max.apply(null,samples.map(function(s){return s.ms}))+' ms');
+  } else { L.push('精準度：未取得'); }
+  if(base && samples.length){
+    var s=samples[samples.length-1], d=haversine(base.lat,base.lng,s.lat,s.lng);
+    L.push('基準點來源：'+(base.src||'現場定位')+'  '+base.lat.toFixed(6)+','+base.lng.toFixed(6));
+    L.push('距基準點：'+Math.round(d)+' m（折扣後 '+Math.round(Math.max(0,d-Math.min(s.acc,ACC_MAX)))+' m）');
+  }
+  L.push('—— 逐筆 ——');
+  samples.slice(-12).forEach(function(s){ L.push(s.t.toTimeString().slice(0,8)+'  ±'+s.acc+'m  '+s.ms+'ms') });
+  el('report').value = L.join('\n');
+  el('report').select();
+}
+
+el('btnOnce').onclick   = getOnce;
+el('btnWatch').onclick  = toggleWatch;
+el('btnBase').onclick   = setBase;
+el('btnCoord').onclick  = setBaseManual;
+el('coordInput').addEventListener('keydown', function(e){ if(e.key==='Enter') setBaseManual() });
+el('btnReport').onclick = makeReport;
+
+try{
+  var b = sessionStorage.getItem('liffspike_base');
+  if(b){ base = JSON.parse(b); if(!base.src) base.src='現場定位'; showDist(null);
+         el('coordInput').value = base.lat.toFixed(6)+', '+base.lng.toFixed(6); }
+}catch(e){}
+showEnv();
+initLiff();
+</script>
+</body>
+</html>
