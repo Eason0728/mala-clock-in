@@ -1606,6 +1606,33 @@ try:
 except ImportError:
     pass
 
+# ── 多店模擬 ──
+import threading, contextlib
+STORE_LOCK = threading.Lock()   # 切換全域座標／資料檔期間一次只處理一個請求（mock 用，正式後端各店本來就分開）
+try:
+    with open(os.path.join(REPO_ROOT, "tools", "stores.json"), encoding="utf-8") as _f:
+        STORE_TABLE = {x["code"]: x for x in json.load(_f) if x["code"]}
+except FileNotFoundError:
+    STORE_TABLE = {}
+
+
+@contextlib.contextmanager
+def store_context(code):
+    """code 為 None＝光復（預設），什麼都不換。其他店：資料檔 mock_data_<code>.json、座標半徑換成該店。"""
+    global DATA_FILE, STORE_LAT, STORE_LNG, RADIUS_M
+    if not code:
+        yield
+        return
+    saved = (DATA_FILE, STORE_LAT, STORE_LNG, RADIUS_M)
+    st = STORE_TABLE[code]
+    DATA_FILE = os.path.join(BASE_DIR, "mock_data_%s.json" % code)
+    STORE_LAT, STORE_LNG, RADIUS_M = st["lat"], st["lng"], st["radius_m"]
+    try:
+        yield
+    finally:
+        DATA_FILE, STORE_LAT, STORE_LNG, RADIUS_M = saved
+
+
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -1628,7 +1655,15 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         # 打卡頁與核定頁用 ?api=/api；薪酬頁在 localhost 時 API 常數是空字串，
         # 會 POST 到目錄根（/）。兩種都收，否則薪酬頁在本機完全連不上。
-        if parsed.path not in ("/api", "/", ""):
+        # 多店模擬（2026-10-08 LINE 單一打卡入口）：/api/<店代碼> 用該店自己的資料檔與座標
+        # （座標取自 tools/stores.json），模擬「每家店一套後端」。/api 照舊＝光復，行為不變。
+        store_code = None
+        if parsed.path.startswith("/api/"):
+            store_code = parsed.path[len("/api/"):].strip("/")
+            if store_code not in STORE_TABLE:
+                self._send_json({"ok": False, "error": "not_found"}, 404)
+                return
+        elif parsed.path not in ("/api", "/", ""):
             self._send_json({"ok": False, "error": "not_found"}, 404)
             return
 
@@ -1647,8 +1682,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            data = load_data()
-            result = handler(data, body)
+            with STORE_LOCK:
+                with store_context(store_code):
+                    data = load_data()
+                    result = handler(data, body)
         except Exception as exc:  # noqa: BLE001 - 回傳錯誤給前端方便本機除錯
             self._send_json({"ok": False, "error": "server_error", "detail": str(exc)}, 500)
             return
