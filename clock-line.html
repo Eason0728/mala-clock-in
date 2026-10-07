@@ -8,10 +8,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>墨竹亭 光復店 員工打卡</title>
+<title>鼎兆元 LINE 打卡</title>
 <link rel="apple-touch-icon" href="assets/icon-180-mzt.png">
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32-mzt.png">
-<meta name="apple-mobile-web-app-title" content="光復打卡">
+<meta name="apple-mobile-web-app-title" content="鼎兆元打卡">
 <!-- ⚠ LIFF SDK 不可以放在這裡同步載入！這裡是 <head>，同步 <script src> 會擋住整份文件的解析——
      ?k= 舊模式從來沒有這支第三方 CDN 依賴，正式載入邏輯在下面 initIdentity()/loadLiffSdk()，
      只有確定不是 ?k= 模式時才會動態插入。詳見 2026-08-27 審查 Critical 1。 -->
@@ -441,6 +441,7 @@
   </div>
 </div>
 
+<script src="clock-line-core.js"></script>
 <script>
 (function () {
   'use strict';
@@ -454,12 +455,12 @@
     'mztjs': 'https://script.google.com/macros/s/AKfycby6Nv7aCGUDsxKA3dwPIYluxk76JaWKp-wqwCCvnE6knthefzGNR8Jyw3uRWds-PwOv/exec',   // 墨竹亭 金山店（2026-09-08 開）
     'mztgf': 'https://script.google.com/macros/s/AKfycbyGH4ktFmXON443Naibe84rEKeqprkOJO0t7eU4UukTvqLWsfu541x7scHKLvntV6okFw/exec'    // 墨竹亭 光復店（2026-09-30 開）
   };
-  var STORE_CODE = 'mztgf';   // 由 tools/build-store-pages.py 產生，勿手改
+  var STORE_CODE = '';   // 由 tools/build-store-pages.py 產生，勿手改（LINE 入口不固定店家）
   /* LINE 單一打卡入口（2026-10-08，規格 mala-clock-liff/docs/spec.md）：
      tools/build-store-pages.py 產生 clock-line.html 時把下面三行換掉；母版與各門市頁永遠是 false，行為不變。
      打開時：不看 ?k=、不固定店家，打卡當下用 GPS 挑店（clock-line-core.js 的 pickStore），直接打那家店的後端。 */
-  var LINE_HUB = false;
-  var LINE_HUB_STORES = [];
+  var LINE_HUB = true;
+  var LINE_HUB_STORES = [{"code": "", "name": "小辛辣 新竹光復", "api": "https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec", "lat": 24.7840945, "lng": 121.0157448, "radius_m": 20}, {"code": "mztjs", "name": "墨竹亭 新竹金山", "api": "https://script.google.com/macros/s/AKfycby6Nv7aCGUDsxKA3dwPIYluxk76JaWKp-wqwCCvnE6knthefzGNR8Jyw3uRWds-PwOv/exec", "lat": 24.776717902605498, "lng": 121.02188536933596, "radius_m": 50}, {"code": "mztgf", "name": "墨竹亭 新竹光復", "api": "https://script.google.com/macros/s/AKfycbyGH4ktFmXON443Naibe84rEKeqprkOJO0t7eU4UukTvqLWsfu541x7scHKLvntV6okFw/exec", "lat": 24.801160225561624, "lng": 120.98820054417844, "radius_m": 50}, {"code": "hq", "name": "鼎兆元 總部", "api": "https://script.google.com/macros/s/AKfycbyiocazNgn9M249CCkPzJsRvMJ35uh_Wjp_ju1y1sB2TZ_IWH3RD6pKUsHXsUJR-4N9TQ/exec", "lat": 24.776352585623435, "lng": 121.01992421142127, "radius_m": 50}, {"code": "cf", "name": "鼎兆元 中央廚房", "api": "https://script.google.com/macros/s/AKfycby-IzOBTrUK-usZxEUVRAcvPqagfAbHpvLevIWnk6drBpIuHwh1IlEun4bdsS9o-CIB/exec", "lat": 24.12274490856511, "lng": 120.7102176960625, "radius_m": 50}];
   var LINE_HUB_LIFF_ID = '';
   var API_URL = LINE_HUB ? null : STORE_APIS[STORE_CODE];
   /* 門市品牌：依 ?s= 換頁面標題與 logo。不帶參數＝光復，畫面與原本完全相同。 */

@@ -105,6 +105,10 @@
     font-size: 22px;
     font-weight: 700;
   }
+  /* LINE 單一打卡入口：目前判斷出的店家（只有 clock-line.html 會顯示） */
+  .hub-store { margin: 6px 0 2px; padding: 8px 10px; border-radius: 10px; font-size: 14px;
+               background: rgba(0,0,0,.06); color: inherit; }
+  .hub-store.warn { background: #fff4d6; color: #7a4a00; }
   .device-hint {
     font-size: 12px;
     color: #8a6a5f;
@@ -387,6 +391,7 @@
     <div class="name-row">
       <span class="name" id="empName">—</span>
     </div>
+    <div class="hub-store" id="hubStore" style="display:none;"></div>
     <div class="device-hint" id="deviceHint"></div>
     <ul class="today-list" id="todayList"></ul>
     <div class="no-events" id="noEvents" style="display:none;">今天還沒有打卡紀錄</div>
@@ -450,7 +455,13 @@
     'mztgf': 'https://script.google.com/macros/s/AKfycbyGH4ktFmXON443Naibe84rEKeqprkOJO0t7eU4UukTvqLWsfu541x7scHKLvntV6okFw/exec'    // 墨竹亭 光復店（2026-09-30 開）
   };
   var STORE_CODE = 'mztjs';   // 由 tools/build-store-pages.py 產生，勿手改
-  var API_URL = STORE_APIS[STORE_CODE];
+  /* LINE 單一打卡入口（2026-10-08，規格 mala-clock-liff/docs/spec.md）：
+     tools/build-store-pages.py 產生 clock-line.html 時把下面三行換掉；母版與各門市頁永遠是 false，行為不變。
+     打開時：不看 ?k=、不固定店家，打卡當下用 GPS 挑店（clock-line-core.js 的 pickStore），直接打那家店的後端。 */
+  var LINE_HUB = false;
+  var LINE_HUB_STORES = [];
+  var LINE_HUB_LIFF_ID = '';
+  var API_URL = LINE_HUB ? null : STORE_APIS[STORE_CODE];
   /* 門市品牌：依 ?s= 換頁面標題與 logo。不帶參數＝光復，畫面與原本完全相同。 */
   var STORE_BRAND = {
     ''  : { title: '麻的🔥小辛辣', logo: null },
@@ -496,24 +507,28 @@
   var isLocalHost = ['localhost', '127.0.0.1'].indexOf(window.location.hostname) !== -1;
   if (isLocalHost) {
     var apiOverride = qs('api');
-    if (apiOverride) API_URL = apiOverride;
+    if (apiOverride && !LINE_HUB) API_URL = apiOverride;
+  }
+  if (LINE_HUB) {
+    var hubH1 = document.querySelector('header h1');
+    if (hubH1) hubH1.textContent = '鼎兆元打卡';
   }
 
-  var key = qs('k');
+  var key = LINE_HUB ? null : qs('k');   // LINE 入口只認 LINE 身分，不吃專屬連結
 
   // ══════ LIFF 身分層（2026-08）：?k= 舊模式與 LIFF 新模式並存 ══════
   // 舊模式優先：網址帶 ?k= 就一律走舊模式、完全不碰 LIFF（向後相容優先，見計畫說明）。
-  var LIFF_ID = '2011292256-dNENLDwW';
+  var LIFF_ID = LINE_HUB ? LINE_HUB_LIFF_ID : '2011292256-dNENLDwW';
   // LIFF 後端（apps-script/Liff.gs）目前只部署給光復（STORE_CODE===''）；
   // 央廚／總部（cf/hq）的 API_URL 指到各自後端，沒有 LIFF_HANDLERS，開了也只會走到
   // liff_whoami → unknown_action 的死路（2026-08-27 審查 Important 3）。
   // cf/hq 頁面的 STORE_CODE 是 tools/build-store-pages.py 寫死的字串，這裡不需要另外維護清單。
-  var LIFF_ENABLED = (STORE_CODE === '');
+  var LIFF_ENABLED = LINE_HUB || (STORE_CODE === '');
 
   // 績效評核入口（2026-09-03）：只有光復（STORE_CODE===''）顯示。
   // 央廚／總部同仁不在 mala-eval 的名冊內，看得到也登不進去，所以那兩頁維持隱藏。
   // 純外連、不呼叫任何後端，也不參與打卡流程——改壞最多是連結不出現。
-  var EVAL_ENABLED = (STORE_CODE === '');
+  var EVAL_ENABLED = !LINE_HUB && (STORE_CODE === '');
   if (EVAL_ENABLED) {
     var evalLinkEl = document.getElementById('evalLink');
     if (evalLinkEl) evalLinkEl.style.display = 'flex';
@@ -563,9 +578,19 @@
    * 否則若該店啟用 LIFF，才動態載入 SDK → liff.init → 確認登入 → 取 ID token。
    * 回傳 Promise<boolean>：true 表示身分已就緒（舊模式或 LIFF 都算）。
    */
+  /** 本機測試限定：?mock_uid=U1 模擬已登入的 LINE 帳號（mock 後端認 MOCK_ID_TOKEN_<uid>），不載 SDK。
+   *  刻意放在 initIdentity 外面：那支有獨立測試（liff-key-mode-isolation）只給它最小的執行環境。 */
+  function installLocalMockLiff() {
+    if (!isLocalHost || !qs('mock_uid') || key) return;
+    var mockUid = qs('mock_uid');
+    window.liff = { init: function () { return Promise.resolve(); }, isLoggedIn: function () { return true; },
+                    getIDToken: function () { return 'MOCK_ID_TOKEN_' + mockUid; }, login: function () {} };
+  }
+
   function initIdentity() {
     if (key) { useLiff = false; return Promise.resolve(true); }   // 舊路徑：完全不碰 CDN
     if (!LIFF_ENABLED) return Promise.resolve(false);
+    if (!LIFF_ID && !window.liff) return Promise.resolve(false);   // LINE 入口的 LIFF ID 尚未設定（本機 mock 例外）
     return loadLiffSdk().then(function (ok) {
       if (!ok) return false;
       return liff.init({ liffId: LIFF_ID }).then(function () {
@@ -1094,13 +1119,68 @@
   // 就先顯示打卡按鈕」的既有設計（打卡按鈕在呼叫這裡之前就已經畫出來了）。
   var WHOAMI_INIT_RETRY_DELAYS_MS = [2000, 4000];
 
+  /* ══════ LINE 單一打卡入口：依 GPS 挑店 ══════ */
+  var hubStoreEl = document.getElementById('hubStore');
+  var HUB_BLOCKED = { hubBlocked: true };   // doClock 內部記號：前端已擋下、沒有送出打卡
+  var hubPicked = null;        // 目前挑到的店（C1 物件）
+  var hubReadyStore = null;    // 已經拿到 whoami（今日紀錄快照）的店代碼；與 hubPicked 不同時打卡前要先補一次
+  function hubApiFor(store) {
+    // 本機測試：?api=/api → 光復打 /api，其他店打 /api/<代碼>（mock 多店模擬）
+    if (isLocalHost && qs('api')) return qs('api') + (store.code ? '/' + store.code : '');
+    return store.api;
+  }
+  function hubBlockMsg(r) {
+    if (r.status === 'none') {
+      return '⚠ 你不在任何打卡地點範圍內' + (r.nearest ? '（最近的是' + r.nearest.name + '，約 ' + r.distance_m + ' 公尺）' : '') +
+             '。人在店裡的話，請開啟手機的「精確位置」與 Wi‑Fi 後再試。';
+    }
+    if (r.status === 'ambiguous') return '⚠ 定位不夠準，分不出你在哪家店。請開啟「精確位置」與 Wi‑Fi 後再試一次。';
+    return '⚠ 抓不到定位，請確認已允許定位後再試。';
+  }
+  function renderHubBanner(r) {
+    if (!LINE_HUB || !hubStoreEl) return;
+    hubStoreEl.style.display = 'block';
+    if (r.status === 'ok') {
+      hubStoreEl.className = 'hub-store';
+      hubStoreEl.textContent = '📍 你現在在：' + r.store.name;
+    } else if (r.status === 'no_fix') {
+      hubStoreEl.className = 'hub-store';
+      hubStoreEl.textContent = '📍 按上班或下班時會先定位，判斷你在哪家店';
+    } else {
+      hubStoreEl.className = 'hub-store warn';
+      hubStoreEl.textContent = hubBlockMsg(r).replace(/^⚠ /, '📍 ');
+    }
+  }
+  /** 用一筆定位挑店、更新畫面；挑到店家且還沒載過那家的 whoami 就載。回傳 pickStore 的結果。 */
+  function hubApply(pos) {
+    var fix = pos && pos.coords ? { lat: pos.coords.latitude, lng: pos.coords.longitude,
+      accuracy_m: isFinite(pos.coords.accuracy) ? pos.coords.accuracy : undefined } : null;
+    var r = window.ClockLineCore ? ClockLineCore.pickStore(fix, LINE_HUB_STORES) : { status: 'no_fix' };
+    renderHubBanner(r);
+    if (r.status === 'ok') {
+      var changed = !hubPicked || hubPicked.code !== r.store.code;
+      hubPicked = r.store;
+      API_URL = hubApiFor(r.store);
+      if (changed) { hubReadyStore = null; loadWhoamiOnInit(0); }
+    }
+    return r;
+  }
+
   function loadWhoamiOnInit(attempt) {
+    var whoStore = LINE_HUB && hubPicked ? hubPicked.code : null;
     apiPost(mkPayload('whoami'))
       .then(function (res) {
         if (!res.ok) {
           if (useLiff) {
             // LIFF 帳號驗證成功但還沒綁員工 → 讓她自己輸入啟用碼綁定，不是錯誤
             if (res.error === 'not_bound') {
+              if (LINE_HUB && hubPicked) {
+                // 這家店不認得這個 LINE 帳號：可能是還沒綁，也可能根本不在這家店的名冊上
+                empNameEl.textContent = '尚未綁定這家店';
+                showStatus('status-warn', '⚠ 你的 LINE 帳號還沒有綁定「' + hubPicked.name +
+                  '」。如果你不在這家店的名冊上，請主管把你加進去。');
+                return;
+              }
               showBindScreen();
               return;
             }
@@ -1113,6 +1193,7 @@
           return;
         }
         empNameEl.textContent = res.name;
+        if (LINE_HUB) hubReadyStore = whoStore;
         if (res.device_state === 'unbound') {
           deviceHintEl.textContent = '本裝置尚未綁定，首次打卡將自動綁定。';
         } else if (res.device_state === 'mismatch') {
@@ -1139,9 +1220,10 @@
   function init() {
     // 先決定身分模式：網址帶 ?k= → 舊模式（一律不碰 LIFF）；否則嘗試 LIFF 登入。
     // 兩種模式都失敗（沒有 k，也不在 LIFF 環境內／LIFF 登入失敗）才顯示錯誤畫面。
+    installLocalMockLiff();
     initIdentity().then(function (identityOk) {
       if (!identityOk) {
-        showError('請用店長給你的專屬打卡連結開啟。');
+        showError(LINE_HUB ? '請從 LINE 官方帳號「鼎兆元打卡」的選單打開這一頁。' : '請用店長給你的專屬打卡連結開啟。');
         return;
       }
       // LIFF 模式沒有薪資 handler（my_payslip 仍走 key），先把分頁藏起來避免點了報錯
@@ -1149,7 +1231,7 @@
         var payTab = document.querySelector('.tabbar .tab[data-view="pay"]');
         if (payTab) payTab.style.display = 'none';
       }
-      if (API_URL.indexOf('PASTE_') === 0) {
+      if (API_URL && API_URL.indexOf('PASTE_') === 0) {
         showError('系統尚未設定完成，請聯絡老闆。');
         return;
       }
@@ -1159,7 +1241,14 @@
       mainCard.style.display = 'block';
       btnGroup.style.display = 'flex';
       empNameEl.textContent = '載入中…';
-      loadWhoamiOnInit(0);
+      if (LINE_HUB) {
+        // 還不知道在哪家店：等定位（預熱或按下打卡）挑出店家，才向那家店要姓名與今日紀錄
+        empNameEl.textContent = '定位中…';
+        renderHubBanner({ status: 'no_fix' });
+        if (isLocalHost && fakeLocation()) getPosition().then(hubApply, function () {});
+      } else {
+        loadWhoamiOnInit(0);
+      }
       // 定位預熱：頁面一確定身分就開始抓，打卡當下才不用整個等定位（見 getPosition 捷徑）。
       startWarmUp();
     });
@@ -1195,6 +1284,15 @@
   // ⚠ 這裡刻意不做「距離門市多遠」的判斷——門市座標若再複製一份到前端，日後校正座標
   //   要同步的地方就從三處變四處（見 2026-07-13 座標沒同步白測一輪的教訓）。改看「時間戳」，
   //   過時的定位一樣抓得到，而且不需要知道門市在哪。
+  /** localhost 限定：?loc=store|away|drift，或直接給座標 ?loc=24.77,121.02 */
+  function fakeLocation() {
+    var v = qs('loc');
+    if (!v) return null;
+    if (FAKE_LOCATIONS[v]) return FAKE_LOCATIONS[v];
+    var m = String(v).match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+    return m ? { latitude: parseFloat(m[1]), longitude: parseFloat(m[2]) } : null;
+  }
+
   var GOOD_ACCURACY_M = 40;    // 誤差在這個範圍內就相信這次定位（實測正常值 5～31m）
   var STALE_FIX_MS = 30000;    // 定位時間戳超過這麼久＝手機給了舊的位置，要重抓
   var RETRY_BUDGET_MS = 8000;  // 第一次不理想時，最多再花這麼久等更好的
@@ -1235,6 +1333,7 @@
       if (st.state !== 'granted') return;   // 只在已授權時預熱，絕不由預熱觸發詢問
       warmWatchId = navigator.geolocation.watchPosition(function (pos) {
         warmFix = pos;                                  // 持續更新，永遠是最新的
+        if (LINE_HUB && fixLooksGood(pos)) hubApply(pos);   // LINE 入口：定位一好就先顯示在哪家店
       }, function () {}, GEO_OPTS);
       // 3 分鐘後停掉，避免頁面開著一直耗電
       setTimeout(function () {
@@ -1248,10 +1347,10 @@
    * （不講的話同仁會以為當掉了——參考 2026-08-03「卡在送出打卡中」那次）。
    */
   function getPosition(onRetry) {
-    if (isLocalHost && FAKE_LOCATIONS[qs('loc')]) {
+    if (isLocalHost && fakeLocation()) {
       // localhost 限定：acc=120 可模擬「定位誤差 120 公尺」，用來測提示與重抓
       var fakeAcc = parseFloat(qs('acc'));
-      var c = FAKE_LOCATIONS[qs('loc')];
+      var c = fakeLocation();
       return Promise.resolve({
         timestamp: Date.now(),
         coords: isFinite(fakeAcc) ? { latitude: c.latitude, longitude: c.longitude, accuracy: fakeAcc } : c,
@@ -1410,6 +1509,59 @@
     // 第一次定位不理想時會多等幾秒，這裡把原因寫出來，不要讓同仁以為畫面當掉
     getPosition(function () { showStatus('status-loading', '定位中…（訊號較弱，再抓一次）'); })
       .then(function (pos) {
+        if (LINE_HUB) {
+          var hr = hubApply(pos);
+          if (hr.status !== 'ok') { showStatus('status-warn', hubBlockMsg(hr)); return HUB_BLOCKED; }
+          if (hubReadyStore !== hubPicked.code) {
+            // 還沒拿到這家店的今日紀錄：先補一次 whoami，否則「結果不明時回頭確認」沒有正確的比對基準
+            showStatus('status-loading', '確認「' + hubPicked.name + '」的今日紀錄…');
+            var storeAtCheck = hubPicked.code;
+            return apiPost(mkPayload('whoami')).then(function (w) {
+              if (!w || !w.ok) {
+                showStatus('status-warn', w && w.error === 'not_bound'
+                  ? '⚠ 你的 LINE 帳號還沒有綁定「' + hubPicked.name + '」。如果你不在這家店的名冊上，請主管把你加進去。'
+                  : CLOCK_FAIL_MSG);
+                return HUB_BLOCKED;
+              }
+              empNameEl.textContent = w.name;
+              renderTodayEvents(w.today_events);
+              renderTodayHours(w.today_hours);
+              updateButtonStates(w.last_counted);
+              hubReadyStore = storeAtCheck;
+              if (lockUntil[type] > Date.now() || blockedType === type) { showStatus('status-warn', '⚠ 這家店今天的紀錄顯示這一筆不能打，請看下方今日紀錄。'); return HUB_BLOCKED; }
+              beforeSnap = { count: todaySnapshot[type].count, lastTs: todaySnapshot[type].lastTs };
+              return sendClock(pos);
+            });
+          }
+        }
+        return sendClock(pos);
+      })
+      .then(function (res) {
+        if (res === HUB_BLOCKED) return;
+        return res;
+      })
+      .then(function (res) {
+        if (res === undefined) return;
+        if (LINE_HUB && res && res.error === 'not_bound') {
+          showStatus('status-warn', '⚠ 你的 LINE 帳號還沒有綁定「' + hubPicked.name + '」。如果你不在這家店的名冊上，請主管把你加進去。');
+          return;
+        }
+        return handleClockResult(res);
+      })
+      .catch(function () {
+        // 定位失敗屬於「根本沒送出去」，發生在 apiPost 之前，requestSent 還是 false，
+        // confirmPunch 沒有意義（沒有東西可查）——維持統一失敗句，同仁可以直接放心重打。
+        if (!requestSent) {
+          showStatus('status-warn', CLOCK_FAIL_MSG);
+          return;
+        }
+        // 送出之後才失敗：逾時／斷線／回應不是 JSON，一律「結果不明」，改用 whoami 查證
+        // （2026-09-21 新增，見 confirmPunch），不再直接假設失敗。
+        return confirmPunch(type, beforeSnap);
+      })
+      .then(function () { setBusy(false); }, function () { setBusy(false); });
+
+    function sendClock(pos) {
         showStatus('status-loading', '送出打卡中…');
         requestSent = true;
         return apiPost(mkPayload('clock', {
@@ -1420,8 +1572,9 @@
           // 舊後端收到多的欄位會直接忽略，不影響打卡，所以前後端部署順序不互卡。
           accuracy: pos.coords && isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null,
         }));
-      })
-      .then(function (res) {
+    }
+
+    function handleClockResult(res) {
         // 只分「成功」與「沒成功」兩種（Eason 2026-08-03 指定：不管什麼狀況，
         // 只要沒打卡成功就跳同一句提醒，不要讓同仁去讀一堆不同的錯誤訊息）。
         if (res.ok && res.status === 'ok') {
@@ -1462,19 +1615,7 @@
             }
           });
         }
-      })
-      .catch(function () {
-        // 定位失敗屬於「根本沒送出去」，發生在 apiPost 之前，requestSent 還是 false，
-        // confirmPunch 沒有意義（沒有東西可查）——維持統一失敗句，同仁可以直接放心重打。
-        if (!requestSent) {
-          showStatus('status-warn', CLOCK_FAIL_MSG);
-          return;
-        }
-        // 送出之後才失敗：逾時／斷線／回應不是 JSON，一律「結果不明」，改用 whoami 查證
-        // （2026-09-21 新增，見 confirmPunch），不再直接假設失敗。
-        return confirmPunch(type, beforeSnap);
-      })
-      .then(function () { setBusy(false); }, function () { setBusy(false); });
+    }
   }
 
   btnIn.addEventListener('click', function () { doClock('in'); });
