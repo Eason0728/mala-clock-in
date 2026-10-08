@@ -286,13 +286,18 @@ function liffGreeting_(type, ts) {
   return list[sum % list.length];
 }
 
-/** 簡單節流：同一個 LINE 帳號在 windowSec 秒內最多 max 次（CacheService，鍵 lfq:<kind>:<uid>）。 */
+/** 簡單節流：同一個 LINE 帳號在固定時間窗（windowSec 秒，依時間切格）內最多 max 次（CacheService，鍵 lfq:<kind>:<uid>:<格>）。
+ *  固定窗不是滑動窗：每次計數都重設 TTL 的寫法會讓持續慢慢按的人永遠解不了鎖（階段 1 審查 #2）。 */
 function liffThrottled_(kind, userId, max, windowSec) {
-  var c = CacheService.getScriptCache(), k = 'lfq:' + kind + ':' + userId;
+  var c = CacheService.getScriptCache();
+  var k = 'lfq:' + kind + ':' + userId + ':' + Math.floor(Date.now() / (windowSec * 1000));
   var n = parseInt(c.get(k) || '0', 10) + 1;
-  c.put(k, String(n), windowSec);
+  c.put(k, String(n), windowSec + 5);
   return n > max;
 }
+
+/** 全站節流：驗 LINE 身分前先擋（驗身分要打 LINE API，吃 UrlFetch 配額；階段 1 審查 #3）。 */
+function liffSiteThrottled_() { return liffThrottled_('site', 'all', 600, 60); }
 
 function liffEvents_(ss) {
   var sh = ss.getSheetByName('events');
@@ -305,6 +310,7 @@ function liffEvents_(ss) {
  * 沒綁定回 {ok:false, error:'not_bound'}（畫面改問光復走綁定流程）。
  */
 function handleLiffStatus_(body) {
+  if (liffSiteThrottled_()) return { ok: false, error: 'too_many' };
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
   if (liffThrottled_('st', userId, 30, 60)) return { ok: false, error: 'too_many' };
@@ -334,13 +340,27 @@ var LIFF_PUNCH_REASONS_ = {
 function handleLiffPunch_(body) {
   var type = body.type;
   if (type !== 'in' && type !== 'out') return { ok: false, error: 'bad_type' };
+  if (liffSiteThrottled_()) return { ok: false, error: 'too_many' };
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
   if (liffThrottled_('pu', userId, 10, 60)) return { ok: false, error: 'too_many' };
   var found = liffRosterByLine_(userId);
   if (found.error) return { ok: false, error: found.error };
   var me = found.roster;
-  var stop = liffGuardReject_(liffGuard_(liffEvents_(found.ss), me.emp_id), type);
+  // 雙擊防護（審查 #7）：上一筆還在處理就不再進場。不是原子鎖（ScriptLock 會跟月表重算搶、讓打卡卡住），
+  // 只把「兩次請求都讀到舊紀錄、都通過防呆」的視窗縮到幾毫秒；handleClock 自己的 rejected_duplicate 是最後一道。
+  var cache = CacheService.getScriptCache(), busyKey = 'lfp:' + userId;
+  if (cache.get(busyKey)) return { ok: false, type: type, reason: '上一筆還在處理中', hint: '請等幾秒，看出勤紀錄有沒有這筆再決定要不要重按' };
+  cache.put(busyKey, '1', 20);
+  try {
+    return liffPunchFor_(userId, me, found.ss, type, body);
+  } finally {
+    cache.remove(busyKey);
+  }
+}
+
+function liffPunchFor_(userId, me, ss, type, body) {
+  var stop = liffGuardReject_(liffGuard_(liffEvents_(ss), me.emp_id), type);
   if (stop) return { ok: false, type: type, reason: stop.reason, hint: stop.hint };
   var j = handleClock({ key: me.key, type: type, lat: body.lat, lng: body.lng,
                         accuracy: body.accuracy === undefined ? null : body.accuracy,
@@ -354,16 +374,18 @@ function handleLiffPunch_(body) {
 /* ══ 方案 C：Mac mini 每天 04:30 備份（唯讀，管理金鑰）══
    放在 Liff.gs 是因為這份檔案五家店整檔共用，加動作不必改各店的 程式碼.js。 */
 var LIFF_EXPORT_TABLES_ = ['events', 'approved', 'leave', 'roster'];
-var LIFF_EXPORT_DROP_ = { roster: ['key', 'device_id', 'line_user_id'] };   // 備份不該變成萬能鑰匙、也不該對得到 LINE 帳號
+// 備份不該變成萬能鑰匙、也不該對得到 LINE 帳號：events.device_id 沒綁裝置時存的是 'line:<LINE 帳號>'（階段 1 審查 #1）
+var LIFF_EXPORT_DROP_ = { roster: ['key', 'device_id', 'line_user_id'], events: ['device_id'] };
 
 function liffExportCell_(v) {
   if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX");
   return v;
 }
 
-/** {action:'export_tables', admin_key} → {ok, exported_at, tables:{events, approved, leave, roster}}；不寫入任何東西。 */
+/** {action:'export_tables', admin_key} → {ok, exported_at, tables:{events, approved, leave, roster}}；不寫入任何東西。
+ *  admin_key 空字串一律擋（CONFIG.ADMIN_KEY 萬一漏設，checkAdmin 會讓空金鑰通過；審查 #9）。 */
 function handleExportTables_(body) {
-  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   var ss = getSS(), out = {};
   LIFF_EXPORT_TABLES_.forEach(function (name) {
     var sh = ss.getSheetByName(name), drop = LIFF_EXPORT_DROP_[name] || [];

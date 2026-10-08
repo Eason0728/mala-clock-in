@@ -1805,8 +1805,9 @@ def _liff_greetings():
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "apps-script", "Liff.gs"), encoding="utf-8").read()
     blk = src[src.index("var LIFF_GREETINGS = {") + len("var LIFF_GREETINGS = "):]
     blk = blk[:blk.index("\n};") + 2]
-    blk = _re.sub(r"(\b(?:in|out|morning|afternoon|evening)):", r'"\1":', blk).replace("'", '"')
-    return json.loads(blk)
+    blk = _re.sub(r"(\b(?:in|out|morning|afternoon|evening)):", r'"\1":', blk)
+    import ast
+    return ast.literal_eval(blk)   # 字句含撇號也不會壞（審查 #6）
 
 
 LIFF_GREETINGS = _liff_greetings()
@@ -1889,9 +1890,9 @@ def handle_liff_punch(data, body):
 
 
 def handle_export_tables(data, body):
-    if body.get("admin_key") != ADMIN_KEY:
+    if not body.get("admin_key") or body.get("admin_key") != ADMIN_KEY:
         return {"ok": False, "error": "unauthorized"}
-    drop = {"roster": ("key", "device_id", "line_user_id")}
+    drop = {"roster": ("key", "device_id", "line_user_id"), "events": ("device_id",)}
     out = {}
     for name in ("events", "approved", "leave", "roster"):
         rows = data.get(name) or []

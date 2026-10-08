@@ -23,7 +23,8 @@ function make(opts) {
   const clockCalls = [], cache = {}, writes = [];
   const sheets = opts.sheets || {};
   const sheet = (name) => sheets[name] ? { rows: sheets[name], appendRow: () => writes.push(name), getRange: () => { writes.push(name); return { setValue() {}, setValues() {} }; } } : null;
-  class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(NOW); } static now() { return NOW; } }
+  const clock = { now: NOW };
+  class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(clock.now); } static now() { return clock.now; } }
   const sb = {
     console, Date: FakeDate, JSON, Math, String, Number, isNaN, isFinite, parseInt, parseFloat, Object, Array,
     CONFIG: { LINE_CHANNEL_ID: '2011292256', ALTERNATION_LOOKBACK_HOURS: 12, ADMIN_KEY: 'ADM' },
@@ -35,15 +36,15 @@ function make(opts) {
     getSS: () => ({ getSheetByName: sheet }),
     readSheetAsObjects: (sh) => ({ rows: sh.rows.map((r, i) => Object.assign({ __rowIndex: i + 2 }, r)) }),
     normCellTs: (v) => v,
-    checkAdmin: (b) => b.admin_key === 'ADM',
-    handleClock: (b) => { clockCalls.push(b); return opts.clockReply ? opts.clockReply(b) : { ok: true, status: 'ok', ts: iso(0) }; },
+    checkAdmin: (b) => b.admin_key === (opts.adminKey === undefined ? 'ADM' : opts.adminKey),   // 與 Code.gs checkAdmin 同：比對 CONFIG.ADMIN_KEY
+    handleClock: (b) => { clockCalls.push(b); if (opts.onClock) opts.onClock(); return opts.clockReply ? opts.clockReply(b) : { ok: true, status: 'ok', ts: iso(0) }; },
     Utilities: { formatDate: (d, tz, f) => {
       const s = new Date(d.getTime() + 8 * 3600000).toISOString();
       return f === 'yyyy-MM-dd' ? s.slice(0, 10) : s.slice(0, 19) + '+08:00';
     } },
   };
   vm.createContext(sb); vm.runInContext(SRC, sb);
-  return { sb, clockCalls, cache, writes, H: sb.LIFF_HANDLERS };
+  return { sb, clockCalls, cache, writes, clock, H: sb.LIFF_HANDLERS };
 }
 const R = (extra) => Object.assign({ emp_id: 'E1', name: '甲', key: 'k1', active: 'true', line_user_id: 'U1', device_id: 'DEV-SAFARI', shift_in: '09:00', shift_out: '18:00' }, extra || {});
 const EV = (minAgo, type, status, emp) => ({ emp_id: emp || 'E1', ts: iso(minAgo), type, status: status || 'ok' });
@@ -187,6 +188,42 @@ ok('舊 liff_clock 仍照舊：換成本人 key 呼叫 handleClock、不經防�
   const { H, clockCalls } = make({ sheets: { roster: [R()], events: [EV(1, 'in')] } });
   H.liff_clock({ id_token: 'TOK_U1', type: 'in', device_id: 'D' });
   assert.deepStrictEqual(J(clockCalls), [{ type: 'in', device_id: 'D', key: 'k1' }]);
+});
+
+// ── 階段 1 審查（mala-clock-mini#1）修正 ──
+ok('審查#1 export：events.device_id 不備份（沒綁裝置時是 line:<LINE 帳號>）', () => {
+  const { H } = make({ sheets: { roster: [], events: [Object.assign(EV(3, 'in'), { device_id: 'line:Uabc' })] } });
+  const r = J(H.export_tables({ admin_key: 'ADM' }));
+  assert.ok(!('device_id' in r.tables.events[0])); assert.ok(JSON.stringify(r).indexOf('Uabc') < 0);
+});
+ok('審查#2 節流是固定窗：被擋後下一分鐘就解，不會因為持續慢慢按而永遠擋住', () => {
+  const { H, clock } = make({ sheets: { roster: [R()], events: [] } });
+  for (let i = 0; i < 31; i++) H.liff_status({ id_token: 'TOK_U1' });
+  assert.strictEqual(H.liff_status({ id_token: 'TOK_U1' }).error, 'too_many');
+  clock.now = NOW + 50000; assert.strictEqual(H.liff_status({ id_token: 'TOK_U1' }).error, 'too_many');
+  clock.now = NOW + 61000; assert.strictEqual(H.liff_status({ id_token: 'TOK_U1' }).ok, true);
+});
+ok('審查#3 全站節流在驗身分之前：每分鐘 600 次後連 LINE 都不打', () => {
+  let verifies = 0;
+  const { H, sb } = make({ sheets: { roster: [R()], events: [] } });
+  const orig = sb.UrlFetchApp.fetch; sb.UrlFetchApp.fetch = (u, o) => { verifies++; return orig(u, o); };
+  for (let i = 0; i < 600; i++) H.liff_status({ id_token: 'TOK_X' + i });
+  const before = verifies;
+  assert.strictEqual(H.liff_punch({ id_token: 'TOK_U1', type: 'in' }).error, 'too_many');
+  assert.strictEqual(verifies, before);
+});
+ok('審查#7 上一筆處理中 → 第二筆不進場；處理完會清掉標記', () => {
+  let inner = null;
+  const env = make({ sheets: { roster: [R()], events: [] }, onClock: () => { inner = env.H.liff_punch({ id_token: 'TOK_U1', type: 'in', lat: 1, lng: 2 }); } });
+  const r = env.H.liff_punch({ id_token: 'TOK_U1', type: 'in', lat: 1, lng: 2 });
+  assert.strictEqual(r.ok, true); assert.strictEqual(inner.reason, '上一筆還在處理中');
+  assert.strictEqual(env.clockCalls.length, 1);
+  assert.ok(!env.cache['lfp:U1'], '標記要清掉');
+});
+ok('審查#9 CONFIG.ADMIN_KEY 漏設時，空金鑰也不能匯出', () => {
+  const { H } = make({ adminKey: '', sheets: { roster: [R()], events: [] } });
+  assert.strictEqual(H.export_tables({}).error, 'unauthorized');
+  assert.strictEqual(H.export_tables({ admin_key: '' }).error, 'unauthorized');
 });
 
 console.log('\n✅ LINE 直打店家後端 全部正確 (' + n + '/' + n + ')');
