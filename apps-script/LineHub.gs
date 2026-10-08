@@ -471,7 +471,7 @@ function lineHubFlexRow_(label, value, opts) {
   opts = opts || {};
   var left = { type: 'box', layout: 'vertical', flex: 5, contents: [
     { type: 'text', text: lineHubTxt_(label), size: 'sm', color: opts.muted ? '#8a817a' : '#222222', wrap: true }] };
-  if (opts.sub) left.contents.push({ type: 'text', text: opts.sub, size: 'xxs', color: '#8a817a' });
+  if (opts.sub) left.contents.push({ type: 'text', text: opts.sub, size: 'xxs', color: '#8a817a', wrap: true });
   return { type: 'box', layout: 'horizontal', margin: 'sm', contents: [left,
     { type: 'text', text: lineHubTxt_(value), size: 'sm', align: 'end', flex: 3, wrap: true, color: opts.muted ? '#8a817a' : '#222222',
       weight: opts.bold ? 'bold' : 'regular' }] };
@@ -520,7 +520,7 @@ function lineHubPayFlex_(j) {
     },
   };
 }
-/** 「薪資明細」：已定案 → 卡片；其他情況 → 文字 */
+/** （2026-10-08 起 webhook 改用 lineHubPayCard_；這支留作文字版備用與測試用）「薪資明細」：已定案 → 卡片；其他情況 → 文字 */
 function lineHubPayMessage_(userId) {
   var j = lineHubPayslipFor_(userId);
   if (j && j.ok && j.ready) return lineHubPayFlex_(j);
@@ -575,10 +575,13 @@ function lineHubCard_(spec) {
   });
   if (spec.foot) { body.push({ type: 'separator', margin: 'md' }); body.push(lineHubFlexText_(spec.foot, { color: '#8a817a', margin: 'md', size: 'xs' })); }
   if (!body.length) body.push(lineHubFlexText_('—'));
-  return { type: 'flex', altText: lineHubTxt_(spec.alt || spec.title).slice(0, 380),
+  var card = { type: 'flex', altText: lineHubTxt_(String(spec.alt || spec.title).trim()).slice(0, 380),
     contents: { type: 'bubble', size: 'mega',
       header: { type: 'box', layout: 'horizontal', backgroundColor: tone[0], paddingAll: '12px', contents: head },
       body: { type: 'box', layout: 'vertical', paddingAll: '14px', contents: body } } };
+  // LINE 單張卡片上限 30KB，超過整則被拒收、同仁什麼都收不到：留 2KB 餘裕，超過就退回文字版（審查 #6-2）
+  if (JSON.stringify(card).length > 28000 && spec.fallbackText) return spec.fallbackText;
+  return card;
 }
 /** 簡短提示（沒綁定、準備中、按選單…） */
 function lineHubNoticeCard_(title, text, tone) {
@@ -612,7 +615,8 @@ function lineHubAttendanceCard_(userId) {
     blocks.push({ type: 'row', l: a.tot.curLabel.replace('核定合計', ''), r: a.tot.curH + ' 小時', sub: a.tot.curP ? '尚有 ' + a.tot.curP + ' 天待核定' : '', bold: true });
     blocks.push({ type: 'row', l: a.tot.prevLabel.replace('核定合計', ''), r: a.tot.prevH + ' 小時', sub: a.tot.prevP ? '尚有 ' + a.tot.prevP + ' 天待核定' : '' });
   }
-  return lineHubCard_({ title: '最近 7 天出勤', tone: 'info', alt: '最近 7 天出勤紀錄', blocks: blocks });
+  return lineHubCard_({ title: '最近 7 天出勤', tone: 'info', alt: '最近 7 天出勤紀錄', blocks: blocks,
+                        fallbackText: lineHubAttendanceText_(userId) });
 }
 function lineHubLeaveCard_(userId) {
   var j = lineHubPayslipFor_(userId);
@@ -628,7 +632,7 @@ function lineHubLeaveCard_(userId) {
     return { type: 'row', l: q.name, r: rem, sub: sub, bold: true };
   });
   return lineHubCard_({ title: '今年假別額度', tone: 'info', alt: '今年假別額度', blocks: blocks,
-                        foot: '數字來自店長登記的請假紀錄，有出入請找店長。' });
+                        foot: '數字來自店長登記的請假紀錄，有出入請找店長。', fallbackText: lineHubLeaveText_(userId) });
 }
 /** 薪資：已定案＝明細卡片；其他（未結算、沒綁定、沒接薪資）＝提示卡片 */
 function lineHubPayCard_(userId) {
