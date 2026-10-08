@@ -38,7 +38,7 @@ function make(opts) {
     normCellTs: (v) => v,
     checkAdmin: (b) => b.admin_key === (opts.adminKey === undefined ? 'ADM' : opts.adminKey),   // 與 Code.gs checkAdmin 同：比對 CONFIG.ADMIN_KEY
     handleClock: (b) => { clockCalls.push(b); if (opts.onClock) opts.onClock(); return opts.clockReply ? opts.clockReply(b) : { ok: true, status: 'ok', ts: iso(0) }; },
-    Utilities: { formatDate: (d, tz, f) => {
+    Utilities: { DigestAlgorithm: { MD5: 'md5' }, computeDigest: (a, t) => [...require('crypto').createHash('md5').update(t).digest()], base64Encode: (b) => Buffer.from(b).toString('base64'), formatDate: (d, tz, f) => {
       const s = new Date(d.getTime() + 8 * 3600000).toISOString();
       return f === 'yyyy-MM-dd' ? s.slice(0, 10) : s.slice(0, 19) + '+08:00';
     } },
@@ -218,7 +218,23 @@ ok('審查#7 上一筆處理中 → 第二筆不進場；處理完會清掉標�
   const r = env.H.liff_punch({ id_token: 'TOK_U1', type: 'in', lat: 1, lng: 2 });
   assert.strictEqual(r.ok, true); assert.strictEqual(inner.reason, '上一筆還在處理中');
   assert.strictEqual(env.clockCalls.length, 1);
-  assert.ok(!env.cache['lfp:U1'], '標記要清掉');
+  assert.ok(!Object.keys(env.cache).some(k => k.indexOf('lfp:') === 0), '標記要清掉');
+});
+ok('審查#10 第一筆還在驗 LINE 身分時，第二筆就被擋（標記在驗身分之前）', () => {
+  let inner = null, fired = false;
+  const env = make({ sheets: { roster: [R()], events: [] } });
+  const orig = env.sb.UrlFetchApp.fetch;
+  env.sb.UrlFetchApp.fetch = (u, o) => { if (!fired) { fired = true; inner = env.H.liff_punch({ id_token: 'TOK_U1', type: 'in', lat: 1, lng: 2 }); } return orig(u, o); };
+  assert.strictEqual(env.H.liff_punch({ id_token: 'TOK_U1', type: 'in', lat: 1, lng: 2 }).ok, true);
+  assert.strictEqual(inner.reason, '上一筆還在處理中'); assert.strictEqual(env.clockCalls.length, 1);
+});
+ok('審查#10 handleClock 丟例外也會清標記；擋下（防呆）也清', () => {
+  const env = make({ sheets: { roster: [R()], events: [] }, onClock: () => { throw new Error('boom'); } });
+  assert.throws(() => env.H.liff_punch({ id_token: 'TOK_U1', type: 'in', lat: 1, lng: 2 }));
+  assert.ok(!Object.keys(env.cache).some(k => k.indexOf('lfp:') === 0));
+  const e2 = make({ sheets: { roster: [R()], events: [EV(60, 'in')] } });
+  e2.H.liff_punch({ id_token: 'TOK_U1', type: 'in' });
+  assert.ok(!Object.keys(e2.cache).some(k => k.indexOf('lfp:') === 0));
 });
 ok('審查#9 CONFIG.ADMIN_KEY 漏設時，空金鑰也不能匯出', () => {
   const { H } = make({ adminKey: '', sheets: { roster: [R()], events: [] } });

@@ -296,7 +296,9 @@ function liffThrottled_(kind, userId, max, windowSec) {
   return n > max;
 }
 
-/** 全站節流：驗 LINE 身分前先擋（驗身分要打 LINE API，吃 UrlFetch 配額；階段 1 審查 #3）。 */
+/** 全站節流：驗 LINE 身分前先擋（驗身分要打 LINE API，吃 UrlFetch 配額；階段 1 審查 #3）。
+ *  取捨（審查 #11）：有人拿網址灌無效請求，這家店整分鐘都會回 too_many；不擋的話是把整天的 UrlFetch 配額燒光，傷害更大。
+ *  正常尖峰（每店每分鐘 ≤10 人 × 2–3 次）遠低於 600。 */
 function liffSiteThrottled_() { return liffThrottled_('site', 'all', 600, 60); }
 
 function liffEvents_(ss) {
@@ -341,22 +343,27 @@ function handleLiffPunch_(body) {
   var type = body.type;
   if (type !== 'in' && type !== 'out') return { ok: false, error: 'bad_type' };
   if (liffSiteThrottled_()) return { ok: false, error: 'too_many' };
+  if (!body.id_token) return { ok: false, error: 'invalid_id_token' };
+  // 雙擊防護（審查 #7、#10）：同一個畫面連按兩下送的是同一張 id_token，在驗身分（打 LINE API，數百毫秒）之前就標記，
+  // 第二筆一進來就擋。不用 ScriptLock：它會跟月表重算搶鎖、讓打卡卡住。handleClock 的 rejected_duplicate 是最後一道。
+  var cache = CacheService.getScriptCache();
+  var busyKey = 'lfp:' + Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, String(body.id_token)));
+  if (cache.get(busyKey)) return { ok: false, type: type, reason: '上一筆還在處理中', hint: '請等幾秒，看出勤紀錄有沒有這筆再決定要不要重按' };
+  cache.put(busyKey, '1', 20);
+  try {
+    return liffPunchVerified_(type, body);
+  } finally {
+    cache.remove(busyKey);
+  }
+}
+
+function liffPunchVerified_(type, body) {
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
   if (liffThrottled_('pu', userId, 10, 60)) return { ok: false, error: 'too_many' };
   var found = liffRosterByLine_(userId);
   if (found.error) return { ok: false, error: found.error };
-  var me = found.roster;
-  // 雙擊防護（審查 #7）：上一筆還在處理就不再進場。不是原子鎖（ScriptLock 會跟月表重算搶、讓打卡卡住），
-  // 只把「兩次請求都讀到舊紀錄、都通過防呆」的視窗縮到幾毫秒；handleClock 自己的 rejected_duplicate 是最後一道。
-  var cache = CacheService.getScriptCache(), busyKey = 'lfp:' + userId;
-  if (cache.get(busyKey)) return { ok: false, type: type, reason: '上一筆還在處理中', hint: '請等幾秒，看出勤紀錄有沒有這筆再決定要不要重按' };
-  cache.put(busyKey, '1', 20);
-  try {
-    return liffPunchFor_(userId, me, found.ss, type, body);
-  } finally {
-    cache.remove(busyKey);
-  }
+  return liffPunchFor_(userId, found.roster, found.ss, type, body);
 }
 
 function liffPunchFor_(userId, me, ss, type, body) {
