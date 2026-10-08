@@ -1,5 +1,8 @@
 // v2：全部在 LINE 聊天室完成（LineHub.gs 的 line_quick_clock 與 webhook）。
 const assert = require('assert');
+// 回覆可能是文字或卡片（Flex）：把卡片裡所有 text 串起來比對
+function msgText(m) { if (!m) return ''; if (m.type === 'text') return m.text; const out = []; (function w(x) { if (Array.isArray(x)) x.forEach(w); else if (x && typeof x === 'object') { if (x.type === 'text') out.push(x.text); Object.values(x).forEach(w); } })(m.contents); return out.join('\n'); }
+
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
@@ -166,15 +169,15 @@ ok('webhook「打卡」：有暫存 → 回結果並清掉暫存；沒有 → �
   const { sb, replies, cache } = make({ sheets: { hq: { roster: [R()], events: [] } } });
   sb.handleLineQuickClock_({ id_token: 'TOK_U1', lat: hq.lat, lng: hq.lng, accuracy: 10 });
   sb.handleLineWebhook_(ev('打卡'));
-  assert(/上班打卡成功/.test(replies[0].messages[0].text)); assert.strictEqual(replies[0].replyToken, 'RT');
+  assert(/上班打卡成功/.test(msgText(replies[0].messages[0]))); assert.strictEqual(replies[0].replyToken, 'RT');
   assert(!cache['lhq:U1']);
   sb.handleLineWebhook_(ev('打卡'));
-  assert(/請按下方選單/.test(replies[1].messages[0].text));
+  assert(/請按下方選單/.test(msgText(replies[1].messages[0])));
 });
 ok('webhook：沒綁定的人查出勤 → 教他先按打卡綁定；加班／請假申請 → 準備中', () => {
   const { sb, replies } = make({ sheets: { hq: { roster: [R({ line_user_id: '' })] } } });
-  sb.handleLineWebhook_(ev('出勤紀錄', 'U9')); assert(/還沒綁定/.test(replies[0].messages[0].text));
-  sb.handleLineWebhook_(ev('請假申請')); assert(/準備中/.test(replies[1].messages[0].text));
+  sb.handleLineWebhook_(ev('出勤紀錄', 'U9')); assert(/還沒綁定/.test(msgText(replies[0].messages[0])));
+  sb.handleLineWebhook_(ev('請假申請')); assert(/準備中/.test(msgText(replies[1].messages[0])));
 });
 ok('webhook：其他文字、貼圖、驗證用的空 events 都不回、不出錯', () => {
   const { sb, replies } = make({ sheets: {} });
