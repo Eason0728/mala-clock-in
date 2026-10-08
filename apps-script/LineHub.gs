@@ -320,11 +320,12 @@ function lineHubReply_(replyToken, texts) {
 }
 
 /** 這個 LINE 帳號綁了哪幾家店 → [{st, row}]（webhook 沒有 id_token，用 LINE 送來的 userId） */
-function lineHubMine_(userId) {
+/** info（選填）：有店名冊讀不到時設 info.unreadable = true（機器人「打卡」不能因此說沒打卡——階段 2 審查 #9）。 */
+function lineHubMine_(userId, info) {
   var out = [];
   lineHubStores_().forEach(function (st) {
     var rows = null;
-    try { rows = lineHubRoster_(st); } catch (e) { rows = null; }
+    try { rows = lineHubRoster_(st); } catch (e) { rows = null; if (info) info.unreadable = true; }
     (rows || []).forEach(function (r) {
       if (lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId)) out.push({ st: st, row: r });
     });
@@ -353,8 +354,10 @@ function lineHubTailRows_(ss, name, n) {
   });
 }
 function lineHubLatestPunch_(userId) {
-  var best = null, unreadable = false, cutoff = Date.now() - LINE_HUB_LATEST_SEC * 1000;
-  lineHubMine_(userId).forEach(function (m) {
+  var best = null, info = {}, unreadable = false, cutoff = Date.now() - LINE_HUB_LATEST_SEC * 1000;
+  var mine = lineHubMine_(userId, info);
+  unreadable = !!info.unreadable;
+  mine.forEach(function (m) {
     var rows;
     try { rows = lineHubTailRows_(lineHubSS_(m.st), 'events', LINE_HUB_TAIL_ROWS); } catch (e) { unreadable = true; return; }
     rows.forEach(function (e) {

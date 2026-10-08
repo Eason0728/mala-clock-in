@@ -264,4 +264,12 @@ ok('webhook「打卡」沒暫存：有店讀不到、又沒找到 → 說「暫�
   const t = msgText(replies[0].messages[0]);
   assert(/暫時查不到/.test(t) && !/直接打字/.test(t), t);
 });
+ok('webhook「打卡」沒暫存：某店試算表整份打不開（openById 丟錯）→ 也說「暫時查不到」（審查 #9）', () => {
+  const { sb, replies } = make({ sheets: { hq: { roster: [R()], events: [] }, mztjs: { roster: [R({ emp_id: 'J01', key: 'kJ' })], events: [] } } });
+  const orig = sb.SpreadsheetApp.openById;
+  sb.SpreadsheetApp.openById = (id) => { if (id === 'SS_mztjs') throw new Error('忙碌'); return orig(id); };
+  sb.handleLineWebhook_(ev('打卡'));
+  const t = msgText(replies[0].messages[0]);
+  assert(/暫時查不到/.test(t) && !/直接打字/.test(t), t);
+});
 console.log(`\n${n} 項全部通過`);
