@@ -582,9 +582,10 @@ function lineHubCard_(spec) {
       body: { type: 'box', layout: 'vertical', paddingAll: '14px', contents: body } } };
   // 按鈕（選填）：每顆按下去＝同仁替自己送出那句文字（message action），機器人再回對應的卡片
   if (spec.buttons && spec.buttons.length) {
-    card.contents.footer = { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '12px',
+    // 按鈕用標準高度、按鈕之間留 12px（2026-10-09 Eason：每一格大一點避免誤按）
+    card.contents.footer = { type: 'box', layout: 'vertical', spacing: 'lg', paddingAll: '14px',
       contents: spec.buttons.map(function (b) {
-        return { type: 'button', style: 'secondary', height: 'sm',
+        return { type: 'button', style: 'secondary', height: 'md',
                  action: { type: 'message', label: lineHubTxt_(b.label).slice(0, 20), text: lineHubTxt_(b.text).slice(0, 300) } };
       }) };
   }
