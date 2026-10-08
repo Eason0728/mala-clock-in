@@ -73,6 +73,7 @@
     <div class="msg" id="msg"></div>
     <div class="hint" id="hint"></div>
     <button class="ghost" id="btnRetry" type="button" hidden>重新定位</button>
+    <button class="ghost" id="btnHelp" type="button" hidden>看排除步驟</button>
   </div>
 </main>
 
@@ -229,7 +230,17 @@
 
   /* ── 畫面狀態 ── */
   var status = null, busy = false, suggested = '', clockSkew = 0;   // clockSkew＝伺服器時間 − 手機時間（倒數用伺服器時鐘）
-  function say(text, cls, hint) { $('msg').textContent = text || ''; $('msg').className = 'msg' + (cls ? ' ' + cls : ''); $('hint').textContent = hint || ''; }
+  function say(text, cls, hint) { $('msg').textContent = text || ''; $('msg').className = 'msg' + (cls ? ' ' + cls : ''); $('hint').textContent = hint || ''; offerHelp(null); }
+  /* 打卡求助（2026-10-09）：失敗時多一顆「看排除步驟」→ 代同仁送出「打卡求助：<類別>」，機器人回步驟卡片。
+     ⚠ 類別名稱與 LineHub.gs 的 LINE_HUB_HELP 一致，改一邊要改另一邊。say() 會先收起按鈕，所以 offerHelp 要在 say 之後呼叫。 */
+  var helpKey = null;
+  function offerHelp(key) { helpKey = key; $('btnHelp').hidden = !key; }
+  function sendHelp() {
+    var text = '打卡求助：' + helpKey;
+    if (!liff.isInClient || !liff.isInClient() || !liff.sendMessages) { $('hint').textContent = '請到「鼎兆元打卡」聊天室輸入「打卡求助」看排除步驟。'; return; }
+    liff.sendMessages([{ type: 'text', text: text }])
+      .then(function () { setTimeout(function () { liff.closeWindow(); }, 800); }, function () { $('hint').textContent = '送不出去，請到聊天室輸入「打卡求助」。'; });
+  }
   function refreshButtons() {
     var ready = !!(status && status.status === 'ready' && !busy);
     ['in', 'out'].forEach(function (t) {
@@ -260,7 +271,10 @@
       $('who').textContent = '';
       if (r.nearest) showStore(r.nearest);
       if (r.code === 'not_bound') { showBind(r.store_name, r.suggest_name); }
-      else { say(r.reason, 'warn', r.hint); $('btnRetry').hidden = false; }
+      else {
+        say(r.reason, 'warn', r.hint); $('btnRetry').hidden = false;
+        offerHelp({ no_fix: '定位抓不到', ambiguous: '定位不準', out_of_range: '不在範圍' }[r.code] || null);
+      }
     }
     refreshButtons();
   }
@@ -275,12 +289,12 @@
       hint: '人在店裡的話，請開啟「精確位置」與 Wi‑Fi 後再試一次',
       nearest: n ? { name: n.name, lat: n.lat, lng: n.lng, radius_m: n.radius_m } : null } };
   }
-  function noReply() { say('系統沒有正常回應', 'warn', '請稍後按「重新定位」再試一次。'); $('btnRetry').hidden = false; }
-  function connFail() { say('連線失敗', 'warn', '請檢查網路後按「重新定位」再試一次。'); $('btnRetry').hidden = false; }
+  function noReply() { say('系統沒有正常回應', 'warn', '請稍後按「重新定位」再試一次。'); $('btnRetry').hidden = false; offerHelp('網路不穩'); }
+  function connFail() { say('連線失敗', 'warn', '請檢查網路後按「重新定位」再試一次。'); $('btnRetry').hidden = false; offerHelp('網路不穩'); }
   /** 店家說沒綁定、光復卻說綁著（兩邊資料對不上）：不亮鍵，請同仁找主管，避免一直按一直失敗（階段 2 審查 #2）。 */
   function mismatch() {
     status = null; refreshButtons();
-    say('這家店的系統沒有認得你的 LINE 帳號', 'warn', '請按「重新定位」再試一次；一直這樣請告知主管。'); $('btnRetry').hidden = false;
+    say('這家店的系統沒有認得你的 LINE 帳號', 'warn', '請按「重新定位」再試一次；一直這樣請告知主管。'); $('btnRetry').hidden = false; offerHelp('綁定');
   }
   function tooMany() { say('按太多次了', 'warn', '請等一分鐘後再試；先按選單「出勤紀錄」確認有沒有打到。'); $('btnRetry').hidden = false; }
   function loadStatus() {
@@ -338,7 +352,7 @@
         if (r && r.error === 'not_bound') { mismatch(); return; }   // 開頁時已確認綁著，打卡時卻說沒綁＝資料對不上
         if (r && r.error === 'too_many') { status = null; tooMany(); return; }   // 不亮鍵：等一分鐘後按「重新定位」（審查 #4）
         if (!r || (r.ok === false && !r.reason)) {
-          say('系統沒有正常回應', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。'); return;
+          say('系統沒有正常回應', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。'); offerHelp('網路不穩'); return;
         }
         var hm = String(r.ts || '').slice(11, 16);
         if (r.ok) {
@@ -354,7 +368,8 @@
         var failText = label + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
         // 失敗：重讀狀態；重讀也失敗就維持鍵停用（不拿舊狀態重新亮鍵），訊息保留（審查 L4）
         status = null; refreshButtons();
-        return loadStatus().then(function () { say(failText, 'warn'); });
+        var hk = { rejected_out_of_range: '定位不準', pending_device_approval: '新手機' }[r.status] || null;
+        return loadStatus().then(function () { say(failText, 'warn'); offerHelp(hk); });
       }, function () { return confirmPunch(type, st, before); })
       .then(function () { if (!keepBusy) { busy = false; refreshButtons(); } });
   }
@@ -378,6 +393,7 @@
       say('這次' + label + '卡沒有送出', 'warn', '請再按一次「' + label + '」。');
     }).catch(function () {
       say('連線不穩，不確定這筆有沒有進去', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。不要連按。');
+      offerHelp('網路不穩');
     });
   }
   var keepBusy = false;   // 已送進聊天室、畫面即將關閉：不要再把鍵解開
@@ -417,6 +433,7 @@
   $('btnIn').addEventListener('click', function () { punch('in'); });
   $('btnOut').addEventListener('click', function () { punch('out'); });
   $('btnRetry').addEventListener('click', function () { $('btnRetry').hidden = true; start(); });
+  $('btnHelp').addEventListener('click', sendHelp);
 
   function start() {
     say('定位中…', '', '');
@@ -424,6 +441,7 @@
       function (err) {
         say(err.message, 'warn', '請允許 LINE 使用定位（手機設定 → LINE → 位置），開啟「精確位置」與 Wi‑Fi 後按「重新定位」。');
         $('btnRetry').hidden = false;
+        offerHelp(/權限/.test(err.message) ? '定位權限' : '定位抓不到');
       });
   }
 

@@ -272,4 +272,34 @@ ok('webhook「打卡」沒暫存：某店試算表整份打不開（openById 丟
   const t = msgText(replies[0].messages[0]);
   assert(/暫時查不到/.test(t) && !/直接打字/.test(t), t);
 });
+ok('打卡求助：只打「打卡求助」→ 目錄卡（每類一顆按鈕，按下送「打卡求助：類別」）', () => {
+  const { sb, replies } = make({ sheets: { hq: { roster: [R()], events: [] } } });
+  sb.handleLineWebhook_(ev('打卡求助'));
+  const card = replies[0].messages[0];
+  assert.strictEqual(card.type, 'flex');
+  const btns = card.contents.footer.contents.map(b => b.action);
+  assert.strictEqual(btns.length, sb.LINE_HUB_HELP_ORDER.length);
+  btns.forEach(a => { assert.strictEqual(a.type, 'message'); assert(/^打卡求助：/.test(a.text)); assert(a.label.length <= 20, a.label); });
+  assert(JSON.stringify(card).length < 28000);
+});
+ok('打卡求助：指定類別 → 那類的步驟卡；不認得的類別 → 目錄；沒綁定的人也能看', () => {
+  const { sb, replies } = make({ sheets: { hq: { roster: [R({ line_user_id: '' })], events: [] } } });
+  sb.handleLineWebhook_(ev('打卡求助：定位不準', 'U9'));
+  const t = msgText(replies[0].messages[0]);
+  assert(/定位不準/.test(t) && /Wi‑Fi 偏移/.test(t) && /舊的專屬打卡連結/.test(t), t);
+  sb.handleLineWebhook_(ev('打卡求助：亂打', 'U9'));
+  assert(/選一個最像你遇到的狀況/.test(msgText(replies[1].messages[0])));
+});
+ok('打卡求助：打卡畫面用到的每個類別，機器人都有對應的步驟卡（兩邊名稱一致）', () => {
+  const { sb } = make({ sheets: {} });
+  const html = fs.readFileSync(ROOT + '/clock-line.html', 'utf8');
+  const keys = new Set();
+  // 只看「offerHelp(…)」那幾行與 var hk 對照表裡的字串：這些全部都是類別名稱
+  html.split('\n').filter(l => /offerHelp\(|var hk = /.test(l) && !/function offerHelp/.test(l))
+    .map(l => l.indexOf('offerHelp(') >= 0 ? l.slice(l.lastIndexOf('offerHelp(')) : l)   // 同一行前面的 say(...) 字句不算
+    .forEach(l => (l.match(/'([^']+)'/g) || []).forEach(m => keys.add(m.slice(1, -1))));
+  assert(keys.size >= 6, [...keys].join(','));
+  keys.forEach(k => assert(sb.LINE_HUB_HELP[k], '機器人沒有「' + k + '」的步驟卡'));
+  sb.LINE_HUB_HELP_ORDER.forEach(k => assert(sb.LINE_HUB_HELP[k]));
+});
 console.log(`\n${n} 項全部通過`);

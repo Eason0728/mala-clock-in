@@ -580,6 +580,14 @@ function lineHubCard_(spec) {
     contents: { type: 'bubble', size: 'mega',
       header: { type: 'box', layout: 'horizontal', backgroundColor: tone[0], paddingAll: '12px', contents: head },
       body: { type: 'box', layout: 'vertical', paddingAll: '14px', contents: body } } };
+  // 按鈕（選填）：每顆按下去＝同仁替自己送出那句文字（message action），機器人再回對應的卡片
+  if (spec.buttons && spec.buttons.length) {
+    card.contents.footer = { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '12px',
+      contents: spec.buttons.map(function (b) {
+        return { type: 'button', style: 'secondary', height: 'sm',
+                 action: { type: 'message', label: lineHubTxt_(b.label).slice(0, 20), text: lineHubTxt_(b.text).slice(0, 300) } };
+      }) };
+  }
   // LINE 單張卡片上限 30KB，超過整則被拒收、同仁什麼都收不到：留 2KB 餘裕，超過就退回文字版（審查 #6-2）
   if (JSON.stringify(card).length > 28000 && spec.fallbackText) return spec.fallbackText;
   return card;
@@ -645,6 +653,62 @@ function lineHubPayCard_(userId) {
                         blocks: [{ type: 'text', text: j.message || '本月薪資尚未結算' }, { type: 'text', text: '結算定案後這裡就會顯示明細。', muted: true }] });
 }
 
+/* ── 打卡求助：故障排除步驟（2026-10-09 Eason 指定：打卡失敗時自動回覆簡易操作手冊）──
+   打卡畫面失敗時多一顆「看排除步驟」，按下＝同仁送出「打卡求助：<類別>」，機器人回對應那張卡；
+   只打「打卡求助」＝回目錄（每類一顆按鈕）。⚠ 類別名稱與 clock-line.html 的 offerHelp() 一致，改一邊要改另一邊。 */
+var LINE_HUB_HELP = {
+  '定位權限': { title: 'LINE 沒有定位權限', steps: [
+    ['iPhone', '設定 › LINE › 位置 → 選「使用 App 期間」，並打開「精確位置」'],
+    ['安卓', '設定 › 應用程式 › LINE › 權限 › 位置 → 「僅在使用時允許」，並打開「使用精確位置」'],
+    ['然後', '回到聊天室，重新按選單「打卡」'] ] },
+  '定位抓不到': { title: '定位抓不到', steps: [
+    ['1', '確認手機的「定位服務」是開的（iPhone：設定 › 隱私權與安全性 › 定位服務；安卓：下拉選單的「位置」）'],
+    ['2', '打開 Wi‑Fi（不用連上任何網路，有開就能幫忙定位）'],
+    ['3', '關掉「低耗電／省電模式」，走到門口或窗邊'],
+    ['4', '等 10 秒，按畫面上的「重新定位」'] ] },
+  '定位不準': { title: '定位不準（位置飄、誤差大）', steps: [
+    ['1', '打開「精確位置」（iPhone：設定 › LINE › 位置；安卓：LINE 權限 › 位置）'],
+    ['2', '打開 Wi‑Fi：室內靠 Wi‑Fi 定位比較準，不用連線'],
+    ['3', '地圖上你的點跳到很遠（Wi‑Fi 偏移）：改成關掉 Wi‑Fi、走到門口用 GPS 再試'],
+    ['4', '等 10～20 秒讓定位穩定，再按「重新定位」'] ] },
+  '不在範圍': { title: '系統說你不在打卡範圍', steps: [
+    ['1', '確認人真的在店裡（不是停車場、隔壁或路上）'],
+    ['2', '人在店裡還是不行：照「定位不準」的步驟開精確位置與 Wi‑Fi，再按「重新定位」'],
+    ['3', '一直不行：先用舊的專屬打卡連結打卡，或請值班主管在核定時補登，不要連按'] ] },
+  '網路不穩': { title: '連線失敗／網路不穩', steps: [
+    ['1', '先看「出勤紀錄」今天有沒有剛才那筆，有就不用再打'],
+    ['2', '換網路：Wi‑Fi 不穩就關掉改用行動網路，反過來也一樣；有開 VPN 先關掉'],
+    ['3', '關掉打卡畫面，從選單重新按「打卡」'],
+    ['4', '還是不行：先用舊的專屬打卡連結打卡，並告訴值班主管'] ] },
+  '新手機': { title: '這支手機還沒被核准', steps: [
+    ['原因', '系統第一次看到這支手機（換手機、重灌 LINE 都會發生），要主管核准'],
+    ['怎麼辦', '請值班主管打開值班核定頁，在「待核准裝置」按核准'],
+    ['這筆卡', '已經記下來了（待核准），核准後就算數，不用重打'] ] },
+  '綁定': { title: 'LINE 帳號綁定有問題', steps: [
+    ['1', '關掉打卡畫面，從選單重新按「打卡」再試一次'],
+    ['2', '還是說「沒有認得你的 LINE 帳號」：請值班主管在值班核定頁的「LINE 綁定紀錄」解除綁定，再重新輸入全名綁一次'],
+    ['3', '這段時間先用舊的專屬打卡連結打卡'] ] },
+};
+var LINE_HUB_HELP_ORDER = ['網路不穩', '定位抓不到', '定位不準', '不在範圍', '定位權限', '新手機', '綁定'];
+
+function lineHubHelpCard_(key) {
+  var h = LINE_HUB_HELP[key];
+  if (!h) {
+    return lineHubCard_({ title: '🛠 打卡遇到問題？', tone: 'info', alt: '打卡求助',
+      blocks: [{ type: 'text', text: '選一個最像你遇到的狀況，會告訴你怎麼排除：' }],
+      buttons: LINE_HUB_HELP_ORDER.map(function (k) { return { label: LINE_HUB_HELP[k].title, text: '打卡求助：' + k }; }) });
+  }
+  var blocks = [];
+  h.steps.forEach(function (st, i) {
+    if (i) blocks.push({ type: 'sep' });
+    blocks.push({ type: 'heading', text: st[0] });
+    blocks.push({ type: 'text', text: st[1], margin: 'xs' });
+  });
+  return lineHubCard_({ title: '🛠 ' + h.title, tone: 'warn', alt: '打卡求助：' + h.title, blocks: blocks,
+    foot: '都試過還是不行：先用舊的專屬打卡連結，並告訴值班主管。',
+    buttons: [{ label: '其他狀況', text: '打卡求助' }] });
+}
+
 var LINE_HUB_TEXT_COMMANDS = {
   '出勤紀錄': lineHubAttendanceCard_,
   '薪資明細': lineHubPayCard_,
@@ -692,6 +756,10 @@ function handleLineWebhook_(body) {
           r && r.unreadable ? lineHubNoticeCard_('打卡', '剛才那筆暫時查不到（店家系統忙碌）。打卡畫面顯示成功就是成功，可按選單「出勤紀錄」確認。', 'warn')
           : r ? lineHubPunchCard_(r)
           : lineHubNoticeCard_('打卡', '請按下方選單的「打卡」，打卡要用手機定位，直接打字不會記錄。')]);
+        return;
+      }
+      if (text === '打卡求助' || text.indexOf('打卡求助：') === 0) {
+        lineHubReply_(ev.replyToken, [lineHubHelpCard_(text.slice('打卡求助：'.length).trim())]);
         return;
       }
       var fn = LINE_HUB_TEXT_COMMANDS[text];
