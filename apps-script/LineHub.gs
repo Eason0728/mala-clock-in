@@ -40,7 +40,6 @@ function lineHubActive_(r) { return String(r.active).toLowerCase() === 'true'; }
  * LIFF 代同仁送出「打卡」→ webhook（handleLineWebhook_）取暫存結果用「回覆」送進聊天室（免費）。
  * 不分上班／下班：自動判斷（往回 16 小時＝配對視窗內最後一張算數的卡是上班→這次是下班，反之上班），
  * 距離那張卡不到 CLOCK_LOCK_MIN 分鐘就擋（原本網頁版的 10 分鐘鎖，搬到伺服器端）。 */
-var LINE_HUB_LOCK_MIN = 10;
 var LINE_HUB_ACC_CAP_M = 100;      // 與各店後端 ACCURACY_CREDIT_CAP_M、clock-line-core.js 相同
 var LINE_HUB_STASH_SEC = 300;
 
@@ -163,29 +162,9 @@ function lineHubTakeStash_(userId) {
   try { return JSON.parse(v); } catch (e) { return null; }
 }
 
-/* 打卡成功問候語（2026-10-08 Eason 指定）：依伺服器打卡時間分早安／午安／晚上，上下班各三時段各三句隨機。
-   ⚠ 字句正本在 mala-clock-in repo 的 clock.html（CLOCK_GREETINGS），這裡是同一份，改一邊要改另一邊
-   （tests/clock-greeting.test.js 只守得到五份網頁，守不到這裡）。
-   時段：05:00–11:59 早安／12:00–17:59 午安／18:00–隔天 04:59 晚上（上班「晚上好」，「晚安」只給下班）。 */
-var LINE_HUB_GREETINGS = {
-  in: {
-    morning: ['早安！今天也謝謝你來，有你在真好 ☀️', '早安！有你一起努力，今天一定很順 💪', '早安！新的一天，祝你一切順利 🌱'],
-    afternoon: ['午安！謝謝你來接力，下午一起加油 💪', '午安！有你在就安心，下午也順順利利 ☀️', '午安！吃飽了嗎？下午也要元氣滿滿 😊'],
-    evening: ['晚上好！謝謝你今晚的付出，有你超放心 🌙', '晚上好！今晚也一起加油，辛苦你了 💪', '晚上好！謝謝有你，今晚一切順利 ✨']
-  },
-  out: {
-    morning: ['早安！忙完這一段辛苦了，好好休息 ☀️', '辛苦了！謝謝你一早的付出，接下來好好照顧自己 ❤️', '收工了！今天的你超棒，記得補充體力 💪'],
-    afternoon: ['午安！辛苦了，謝謝你今天的用心 ❤️', '辛苦了！接下來的時間留給自己，好好放鬆 ☀️', '今天的努力大家都看得到，辛苦了，好好休息 ✨'],
-    evening: ['辛苦了！今天的你超棒，好好休息，明天見 ❤️', '晚安！謝謝你今天的用心，回家好好犒賞自己 🌙', '今天也辛苦了，路上小心，好好睡一覺 🌙']
-  }
-};
-function lineHubGreeting_(type, ts) {
-  var set = LINE_HUB_GREETINGS[type];
-  var h = parseInt(String(ts || '').substring(11, 13), 10);
-  if (!set || !(h >= 0 && h <= 23)) return '';
-  var list = (h >= 5 && h < 12) ? set.morning : (h >= 12 && h < 18) ? set.afternoon : set.evening;
-  return list[Math.floor(Math.random() * list.length) % list.length];
-}
+/* 打卡成功問候語：字句與挑法搬到 Liff.gs（LIFF_GREETINGS／liffGreeting_），五家店的 liff_punch 與這裡共用，
+   同一筆打卡（同一個 ts）在打卡畫面與聊天室卡片一定是同一句。 */
+function lineHubGreeting_(type, ts) { return liffGreeting_(type, ts); }
 
 /** 打卡結果 → 聊天室文字。r：{ok, type, ts, store_name, reason, hint, note} */
 function lineHubPunchText_(r) {
@@ -255,15 +234,7 @@ function lineHubResolve_(userId, body) {
 /** 選上班／下班的防呆，與網頁版 clock.html updateButtonStates 同規則：
  *  最後一張算數的卡（lastCountedEvent，往回 12 小時）是什麼型別，就不能再打同型（blocked）；
  *  打完那張後 10 分鐘內不能打另一型（lock_until）。 */
-function lineHubGuard_(events, empId) {
-  var last = lastCountedEvent(events, empId);
-  var g = { last: last ? { type: last.type, hm: lineHubHm_(last.ts), ts: last.ts } : null, blocked: last ? last.type : null, lock: {} };
-  if (last) {
-    var t = new Date(String(last.ts)).getTime();
-    if (!isNaN(t)) g.lock[last.type === 'in' ? 'out' : 'in'] = t + LINE_HUB_LOCK_MIN * 60000;
-  }
-  return g;
-}
+function lineHubGuard_(events, empId) { return liffGuard_(events, empId); }
 
 /**
  * {action:'line_hub_status', id_token, lat, lng, accuracy}（打卡畫面開啟時）
@@ -294,24 +265,15 @@ function lineHubQuickClockFor_(userId, body) {
   if (body.type === 'in' || body.type === 'out') {
     // 同仁自己選上班／下班（Eason 2026-10-08 改回手選）：防呆與網頁版相同
     type = body.type;
-    var g = lineHubGuard_(events, me.emp_id);
-    var label = type === 'in' ? '上班' : '下班';
-    if (g.blocked === type) {
-      return { ok: false, type: type, store_name: st.name, reason: '你 ' + g.last.hm + ' 已經打過' + label + '卡了',
-               hint: '要' + (type === 'in' ? '下班' : '上班') + '請按另一顆；真的要補打請告知主管' };
-    }
-    if (g.lock[type] && g.lock[type] > Date.now()) {
-      return { ok: false, type: type, store_name: st.name,
-               reason: '你 ' + g.last.hm + ' 剛打過' + (g.last.type === 'in' ? '上班' : '下班') + '卡，' + Math.ceil((g.lock[type] - Date.now()) / 60000) + ' 分鐘內不能打' + label + '卡（避免連按誤打）',
-               hint: '真的要' + label + '請告知主管補登' };
-    }
+    var stop = liffGuardReject_(lineHubGuard_(events, me.emp_id), type);
+    if (stop) return { ok: false, type: type, store_name: st.name, reason: stop.reason, hint: stop.hint };
   } else {
     // 舊版前端（沒帶 type）：自動判斷
     var last = lineHubLastCounted_(events, me.emp_id);
     type = last && last.type === 'in' ? 'out' : 'in';
     if (last) {
       var lastMs = new Date(String(last.ts)).getTime();
-      var leftMs = lastMs + LINE_HUB_LOCK_MIN * 60000 - Date.now();
+      var leftMs = lastMs + LIFF_LOCK_MIN * 60000 - Date.now();
       if (!isNaN(lastMs) && leftMs > 0) {
         var lastLabel = last.type === 'in' ? '上班' : '下班';
         return { ok: false, type: type, store_name: st.name,

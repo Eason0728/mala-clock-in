@@ -135,21 +135,14 @@ function logLiffBind_(empId, name, userId, type) {
   sheet.appendRow([nowTaipeiIso(), empId, name, userId, type || 'bind']);
 }
 
-/**
- * 轉接：把「LINE 身分」換成「既有的 key 身分」，然後呼叫原本的 handler。
- *
- * 這是整份設計的核心——既有的 handleClock / handleWhoami / handleMyRecent
- * 一行都不用改，也就不可能被改壞。
- */
-function withLineIdentity_(body, innerHandler) {
-  var userId = verifyLineIdToken_(body.id_token);
-  if (!userId) return { ok: false, error: 'invalid_id_token' };
-
+/** 用 LINE 帳號找本店名冊上的在職同仁 → {roster, ss} 或 {error}（no_roster／line_identity_conflict／not_bound）。 */
+function liffRosterByLine_(userId) {
   // 唯讀查身分，刻意不呼叫 ensureRosterHeaders——這條路徑不寫入。
   // 若表頭還沒有 line_user_id 欄，讀出來的列就沒有該屬性，篩出來自然是查不到而回 not_bound，
   // 那正是「還沒綁定」的正確答案。
-  var rosterSheet = getSS().getSheetByName('roster');
-  if (!rosterSheet) return { ok: false, error: 'no_roster' };
+  var ss = getSS();
+  var rosterSheet = ss.getSheetByName('roster');
+  if (!rosterSheet) return { error: 'no_roster' };
 
   // ⚠ 2026-08-27 審查 Important 4：一個 LINE 帳號綁兩個在職員工違反「一帳號一員工」的不變量，
   // 理論上已經被 handleLiffBind_ 的衝突檢查（anyExisting）擋住。萬一資料還是壞了
@@ -160,9 +153,25 @@ function withLineIdentity_(body, innerHandler) {
     return r.line_user_id && String(r.line_user_id) === String(userId)
         && String(r.active).toLowerCase() === 'true';
   });
-  if (activeMatches.length > 1) return { ok: false, error: 'line_identity_conflict' };
+  if (activeMatches.length > 1) return { error: 'line_identity_conflict' };
   var roster = activeMatches[0];
-  if (!roster) return { ok: false, error: 'not_bound' };
+  if (!roster) return { error: 'not_bound' };
+  return { roster: roster, ss: ss };
+}
+
+/**
+ * 轉接：把「LINE 身分」換成「既有的 key 身分」，然後呼叫原本的 handler。
+ *
+ * 這是整份設計的核心——既有的 handleClock / handleWhoami / handleMyRecent
+ * 一行都不用改，也就不可能被改壞。
+ */
+function withLineIdentity_(body, innerHandler) {
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+
+  var found = liffRosterByLine_(userId);
+  if (found.error) return { ok: false, error: found.error };
+  var roster = found.roster;
 
   // 複製一份 body，換上該員工的 key，並移除 id_token（不讓它流進既有邏輯）
   var inner = {};
@@ -216,6 +225,157 @@ function handleMgrLineUnbind_(body) {
   return { ok: true };
 }
 
+/* ══ 方案 C（2026-10-08）：LINE 打卡畫面直接打這家店，不再經光復轉一手 ══
+   打卡畫面（clock-line.html）用 GPS 自己挑店，直接呼叫該店的 liff_status／liff_punch。
+   防呆（同型擋、10 分鐘鎖）由各店自己在伺服器端擋——規則與網頁版 clock.html、光復 LineHub.gs 共用 liffGuard_。
+   舊動作 liff_whoami／liff_clock／liff_bind 一律不動。 */
+var LIFF_LOCK_MIN = 10;
+
+function liffHm_(ts) { return String(ts || '').slice(11, 16); }
+
+/** 選上班／下班的防呆，與網頁版 clock.html updateButtonStates 同規則：
+ *  最後一張算數的卡（lastCountedEvent，往回 12 小時）是什麼型別，就不能再打同型（blocked）；
+ *  打完那張後 10 分鐘內不能打另一型（lock[另一型]＝解鎖時刻 ms）。 */
+function liffGuard_(events, empId) {
+  var last = lastCountedEvent(events, empId);
+  var g = { last: last ? { type: last.type, hm: liffHm_(last.ts), ts: last.ts } : null, blocked: last ? last.type : null, lock: {} };
+  if (last) {
+    var t = new Date(String(last.ts)).getTime();
+    if (!isNaN(t)) g.lock[last.type === 'in' ? 'out' : 'in'] = t + LIFF_LOCK_MIN * 60000;
+  }
+  return g;
+}
+
+/** 防呆擋下時的白話原因；沒擋回 null。 */
+function liffGuardReject_(g, type) {
+  var label = type === 'in' ? '上班' : '下班';
+  if (g.blocked === type) {
+    return { reason: '你 ' + g.last.hm + ' 已經打過' + label + '卡了',
+             hint: '要' + (type === 'in' ? '下班' : '上班') + '請按另一顆；真的要補打請告知主管' };
+  }
+  if (g.lock[type] && g.lock[type] > Date.now()) {
+    return { reason: '你 ' + g.last.hm + ' 剛打過' + (g.last.type === 'in' ? '上班' : '下班') + '卡，' + Math.ceil((g.lock[type] - Date.now()) / 60000) + ' 分鐘內不能打' + label + '卡（避免連按誤打）',
+             hint: '真的要' + label + '請告知主管補登' };
+  }
+  return null;
+}
+
+/* 打卡成功問候語（2026-10-08 Eason 指定）：依伺服器打卡時間分早安／午安／晚上，上下班各三時段各三句。
+   ⚠ 字句正本在 mala-clock-in repo 的 clock.html（CLOCK_GREETINGS），這裡是同一份，改一邊要改另一邊。
+   時段：05:00–11:59 早安／12:00–17:59 午安／18:00–隔天 04:59 晚上（上班「晚上好」，「晚安」只給下班）。
+   挑哪一句由打卡時間（含秒）決定：打卡畫面（各店 liff_punch）與聊天室卡片（光復 webhook）各自算也會是同一句。 */
+var LIFF_GREETINGS = {
+  in: {
+    morning: ['早安！今天也謝謝你來，有你在真好 ☀️', '早安！有你一起努力，今天一定很順 💪', '早安！新的一天，祝你一切順利 🌱'],
+    afternoon: ['午安！謝謝你來接力，下午一起加油 💪', '午安！有你在就安心，下午也順順利利 ☀️', '午安！吃飽了嗎？下午也要元氣滿滿 😊'],
+    evening: ['晚上好！謝謝你今晚的付出，有你超放心 🌙', '晚上好！今晚也一起加油，辛苦你了 💪', '晚上好！謝謝有你，今晚一切順利 ✨']
+  },
+  out: {
+    morning: ['早安！忙完這一段辛苦了，好好休息 ☀️', '辛苦了！謝謝你一早的付出，接下來好好照顧自己 ❤️', '收工了！今天的你超棒，記得補充體力 💪'],
+    afternoon: ['午安！辛苦了，謝謝你今天的用心 ❤️', '辛苦了！接下來的時間留給自己，好好放鬆 ☀️', '今天的努力大家都看得到，辛苦了，好好休息 ✨'],
+    evening: ['辛苦了！今天的你超棒，好好休息，明天見 ❤️', '晚安！謝謝你今天的用心，回家好好犒賞自己 🌙', '今天也辛苦了，路上小心，好好睡一覺 🌙']
+  }
+};
+function liffGreeting_(type, ts) {
+  var set = LIFF_GREETINGS[type], s = String(ts || '');
+  var h = parseInt(s.substring(11, 13), 10);
+  if (!set || !(h >= 0 && h <= 23)) return '';
+  var list = (h >= 5 && h < 12) ? set.morning : (h >= 12 && h < 18) ? set.afternoon : set.evening;
+  var sum = 0;
+  for (var i = 0; i < s.length; i++) sum += s.charCodeAt(i);
+  return list[sum % list.length];
+}
+
+/** 簡單節流：同一個 LINE 帳號在 windowSec 秒內最多 max 次（CacheService，鍵 lfq:<kind>:<uid>）。 */
+function liffThrottled_(kind, userId, max, windowSec) {
+  var c = CacheService.getScriptCache(), k = 'lfq:' + kind + ':' + userId;
+  var n = parseInt(c.get(k) || '0', 10) + 1;
+  c.put(k, String(n), windowSec);
+  return n > max;
+}
+
+function liffEvents_(ss) {
+  var sh = ss.getSheetByName('events');
+  return sh ? readSheetAsObjects(sh).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; }) : [];
+}
+
+/**
+ * {action:'liff_status', id_token} → 打卡畫面開啟時要的全部資料（一次呼叫）
+ * {ok, status:'ready', name, shift_in, shift_out, today:[{type,hm,status}], guard:{blocked, lock, last, now}}
+ * 沒綁定回 {ok:false, error:'not_bound'}（畫面改問光復走綁定流程）。
+ */
+function handleLiffStatus_(body) {
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+  if (liffThrottled_('st', userId, 30, 60)) return { ok: false, error: 'too_many' };
+  var found = liffRosterByLine_(userId);
+  if (found.error) return { ok: false, error: found.error };
+  var me = found.roster, events = liffEvents_(found.ss);
+  var today = todayTaipeiStr();
+  var mine = events.filter(function (e) { return String(e.emp_id) === String(me.emp_id) && String(e.ts).slice(0, 10) === today; })
+    .map(function (e) { return { type: String(e.type), hm: liffHm_(e.ts), status: String(e.status) }; });
+  var g = liffGuard_(events, me.emp_id);
+  return { ok: true, status: 'ready', name: String(me.name),
+           shift_in: normShiftTime(me.shift_in), shift_out: normShiftTime(me.shift_out),
+           today: mine, guard: { blocked: g.blocked, lock: g.lock, last: g.last, now: Date.now() } };
+}
+
+var LIFF_PUNCH_REASONS_ = {
+  pending_device_approval: ['這支手機還沒被核准', '已送出待核准，請主管在值班核定頁核准'],
+  rejected_out_of_range: ['店家判定你不在範圍內', '請開啟「精確位置」與 Wi‑Fi 後再按一次'],
+  rejected_duplicate: ['這一筆和上一筆重複', '請按「出勤紀錄」確認今天的紀錄'],
+};
+
+/**
+ * {action:'liff_punch', id_token, type:'in'|'out', lat, lng, accuracy}
+ * → {ok:true, type, ts, greeting} 或 {ok:false, type, reason, hint}（error：invalid_id_token／too_many／not_bound…）
+ * 防呆在伺服器端擋（不信前端）；裝置碼沿用名冊已綁定的（LINE 身分已擋住連結轉傳代打），沒綁用 'line:<userId>'。
+ */
+function handleLiffPunch_(body) {
+  var type = body.type;
+  if (type !== 'in' && type !== 'out') return { ok: false, error: 'bad_type' };
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+  if (liffThrottled_('pu', userId, 10, 60)) return { ok: false, error: 'too_many' };
+  var found = liffRosterByLine_(userId);
+  if (found.error) return { ok: false, error: found.error };
+  var me = found.roster;
+  var stop = liffGuardReject_(liffGuard_(liffEvents_(found.ss), me.emp_id), type);
+  if (stop) return { ok: false, type: type, reason: stop.reason, hint: stop.hint };
+  var j = handleClock({ key: me.key, type: type, lat: body.lat, lng: body.lng,
+                        accuracy: body.accuracy === undefined ? null : body.accuracy,
+                        device_id: me.device_id ? String(me.device_id) : 'line:' + userId });
+  if (j && j.ok && j.status === 'ok') return { ok: true, type: type, ts: j.ts, greeting: liffGreeting_(type, j.ts) };
+  var st = j && (j.status || j.error);
+  var rr = LIFF_PUNCH_REASONS_[st] || ['系統回覆：' + (st || '未知'), '請告知主管'];
+  return { ok: false, type: type, status: st || '', reason: rr[0], hint: rr[1] };
+}
+
+/* ══ 方案 C：Mac mini 每天 04:30 備份（唯讀，管理金鑰）══
+   放在 Liff.gs 是因為這份檔案五家店整檔共用，加動作不必改各店的 程式碼.js。 */
+var LIFF_EXPORT_TABLES_ = ['events', 'approved', 'leave', 'roster'];
+var LIFF_EXPORT_DROP_ = { roster: ['key', 'device_id', 'line_user_id'] };   // 備份不該變成萬能鑰匙、也不該對得到 LINE 帳號
+
+function liffExportCell_(v) {
+  if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX");
+  return v;
+}
+
+/** {action:'export_tables', admin_key} → {ok, exported_at, tables:{events, approved, leave, roster}}；不寫入任何東西。 */
+function handleExportTables_(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  var ss = getSS(), out = {};
+  LIFF_EXPORT_TABLES_.forEach(function (name) {
+    var sh = ss.getSheetByName(name), drop = LIFF_EXPORT_DROP_[name] || [];
+    out[name] = sh ? readSheetAsObjects(sh).rows.map(function (r) {
+      var o = {};
+      Object.keys(r).forEach(function (k) { if (k !== '__rowIndex' && drop.indexOf(k) < 0) o[k] = liffExportCell_(r[k]); });
+      return o;
+    }) : [];
+  });
+  return { ok: true, exported_at: Utilities.formatDate(new Date(), 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX"), tables: out };
+}
+
 var LIFF_HANDLERS = {
   mgr_line_binds: handleMgrLineBinds_,
   mgr_line_unbind: handleMgrLineUnbind_,
@@ -223,6 +383,9 @@ var LIFF_HANDLERS = {
   liff_clock: function (body) { return withLineIdentity_(body, handleClock); },
   liff_whoami: function (body) { return withLineIdentity_(body, handleWhoami); },
   liff_my_recent: function (body) { return withLineIdentity_(body, handleMyRecent); },
+  liff_status: handleLiffStatus_,
+  liff_punch: handleLiffPunch_,
+  export_tables: handleExportTables_,
 };
 
 /**

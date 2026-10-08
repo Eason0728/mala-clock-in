@@ -1797,6 +1797,112 @@ def handle_line_hub_status(data, body):
                           "now": time.time() * 1000}}
 
 
+
+# ── 方案 C（2026-10-08）：打卡畫面直接打各店（與 Liff.gs liff_status／liff_punch／export_tables 同步）──
+def _liff_greetings():
+    """問候語字句直接從 Liff.gs 讀，避免 mock 自己抄一份而漂移。"""
+    import re as _re
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "apps-script", "Liff.gs"), encoding="utf-8").read()
+    blk = src[src.index("var LIFF_GREETINGS = {") + len("var LIFF_GREETINGS = "):]
+    blk = blk[:blk.index("\n};") + 2]
+    blk = _re.sub(r"(\b(?:in|out|morning|afternoon|evening)):", r'"\1":', blk).replace("'", '"')
+    return json.loads(blk)
+
+
+LIFF_GREETINGS = _liff_greetings()
+
+
+def liff_greeting(typ, ts):
+    s = str(ts or "")
+    try:
+        h = int(s[11:13])
+    except ValueError:
+        return ""
+    st = LIFF_GREETINGS.get(typ)
+    if not st:
+        return ""
+    lst = st["morning"] if 5 <= h < 12 else st["afternoon"] if 12 <= h < 18 else st["evening"]
+    return lst[sum(ord(c) for c in s) % len(lst)]   # JS charCodeAt 對 BMP 內字元相同；ts 只有 ASCII
+
+
+def _liff_me(data, body):
+    uid = mock_verify_id_token(body.get("id_token"))
+    if not uid:
+        return None, None, {"ok": False, "error": "invalid_id_token"}
+    hits = [r for r in (data.get("roster") or []) if r.get("line_user_id") == uid and r.get("active", False)]
+    if len(hits) > 1:
+        return None, None, {"ok": False, "error": "line_identity_conflict"}
+    if not hits:
+        return None, None, {"ok": False, "error": "not_bound"}
+    return uid, hits[0], None
+
+
+def _liff_guard(data, emp_id):
+    last = last_counted_event(data, emp_id)
+    lock = {}
+    if last:
+        t = datetime.fromisoformat(last["ts"]).timestamp() * 1000
+        lock["out" if last["type"] == "in" else "in"] = t + 600000
+    return {"blocked": last["type"] if last else None, "lock": lock,
+            "last": {"type": last["type"], "hm": last["ts"][11:16], "ts": last["ts"]} if last else None}
+
+
+def handle_liff_status(data, body):
+    uid, me, err = _liff_me(data, body)
+    if err:
+        return err
+    today = today_str()
+    evs = [{"type": e["type"], "hm": e["ts"][11:16], "status": e["status"]} for e in data["events"]
+           if e["emp_id"] == me["emp_id"] and e["ts"][:10] == today]
+    g = _liff_guard(data, me["emp_id"])
+    g["now"] = time.time() * 1000
+    return {"ok": True, "status": "ready", "name": me["name"], "shift_in": me.get("shift_in", ""),
+            "shift_out": me.get("shift_out", ""), "today": evs, "guard": g}
+
+
+def handle_liff_punch(data, body):
+    typ = body.get("type")
+    if typ not in ("in", "out"):
+        return {"ok": False, "error": "bad_type"}
+    uid, me, err = _liff_me(data, body)
+    if err:
+        return err
+    g = _liff_guard(data, me["emp_id"])
+    label = "上班" if typ == "in" else "下班"
+    if g["blocked"] == typ:
+        return {"ok": False, "type": typ, "reason": f"你 {g['last']['hm']} 已經打過{label}卡了",
+                "hint": "要" + ("下班" if typ == "in" else "上班") + "請按另一顆；真的要補打請告知主管"}
+    until = g["lock"].get(typ)
+    if until and until > time.time() * 1000:
+        left = math.ceil((until - time.time() * 1000) / 60000)
+        return {"ok": False, "type": typ, "reason": f"你 {g['last']['hm']} 剛打過{'上班' if g['last']['type'] == 'in' else '下班'}卡，{left} 分鐘內不能打{label}卡（避免連按誤打）",
+                "hint": f"真的要{label}請告知主管補登"}
+    j = handle_clock(data, {"key": me["key"], "type": typ, "lat": body.get("lat"), "lng": body.get("lng"),
+                            "accuracy": body.get("accuracy"), "device_id": me.get("device_id") or ("line:" + uid)})
+    if j.get("ok") and j.get("status") == "ok":
+        return {"ok": True, "type": typ, "ts": j.get("ts"), "greeting": liff_greeting(typ, j.get("ts"))}
+    st = j.get("status") or j.get("error") or ""
+    rr = {"pending_device_approval": ["這支手機還沒被核准", "已送出待核准，請主管在值班核定頁核准"],
+          "rejected_out_of_range": ["店家判定你不在範圍內", "請開啟「精確位置」與 Wi‑Fi 後再按一次"],
+          "rejected_duplicate": ["這一筆和上一筆重複", "請按「出勤紀錄」確認今天的紀錄"]}.get(st, ["系統回覆：" + (st or "未知"), "請告知主管"])
+    return {"ok": False, "type": typ, "status": st, "reason": rr[0], "hint": rr[1]}
+
+
+def handle_export_tables(data, body):
+    if body.get("admin_key") != ADMIN_KEY:
+        return {"ok": False, "error": "unauthorized"}
+    drop = {"roster": ("key", "device_id", "line_user_id")}
+    out = {}
+    for name in ("events", "approved", "leave", "roster"):
+        rows = data.get(name) or []
+        out[name] = [{k: v for k, v in r.items() if k not in drop.get(name, ())} for r in rows]
+    return {"ok": True, "exported_at": iso_now(), "tables": out}
+
+
+ACTIONS["liff_status"] = handle_liff_status
+ACTIONS["liff_punch"] = handle_liff_punch
+ACTIONS["export_tables"] = handle_export_tables
+
 LINE_HUB_ACTIONS = {
     "line_hub_status": handle_line_hub_status,
     "line_quick_clock": handle_line_quick_clock,
