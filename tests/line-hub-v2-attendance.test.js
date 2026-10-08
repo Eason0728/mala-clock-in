@@ -26,12 +26,13 @@ const sb = {
   UrlFetchApp: { fetch: (u, o) => { if (u.indexOf('/reply') >= 0) replies.push(JSON.parse(o.payload)); return { getContentText: () => '{}', getResponseCode: () => 200 }; } },
   SpreadsheetApp: { openById: (id) => ssOf(id.replace('SS_', '')) },
   Utilities: { formatDate: (d, tz, f) => { const t = new Date(d.getTime() + 8 * 3600000).toISOString(); return f === 'yyyy-MM-dd' ? t.slice(0, 10) : t.slice(0, 7); } },
+  CacheService: { getScriptCache: () => { const m = {}; return { get: k => m[k] || null, put: (k, v) => { m[k] = v; }, remove: k => { delete m[k]; } }; } },
   PropertiesService: { getScriptProperties: () => ({ getProperty: () => null }) },
 };
 vm.createContext(sb); vm.runInContext(SRC, sb);
 sb.getSS = () => ssOf('');
 sb.readSheetAsObjects = (sh) => ({ rows: sh.__rows.map(r => Object.assign({}, r)) });
-sb.handleLineWebhook_({ events: [{ type: 'message', replyToken: 'RT', source: { userId: 'U1' }, message: { type: 'text', text: '出勤紀錄' } }] });
+sb.handleLineWebhook_({ events: [{ type: 'message', replyToken: 'RT', source: { type: 'user', userId: 'U1' }, message: { type: 'text', text: '出勤紀錄' } }] });
 const t = replies[0] && replies[0].messages[0].text;
 console.log(t);
 assert(t, '要有回覆');

@@ -80,11 +80,17 @@
   }
   function showButtons(retry, close) { $('btnRetry').hidden = !retry; $('btnClose').hidden = !close; }
 
-  /** POST JSON（text/plain 避開 CORS 預檢）。打卡是寫入動作：刻意不設逾時、不自動重送（重送會變重複打卡）。 */
+  /** POST JSON（text/plain 避開 CORS 預檢）。25 秒沒回應就放棄等待（Apps Script 偶爾卡住，不設上限畫面會永遠停在
+   *  「送出中」，v2 審查 #8）——但**不自動重送**：逾時不代表沒寫進去，重送會變重複打卡，由呼叫端告訴同仁去查。 */
+  var POST_TIMEOUT_MS = 25000;
   function post(body) {
-    return fetch(HUB_API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, POST_TIMEOUT_MS) : null;
+    return fetch(HUB_API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body),
+                            signal: ctrl ? ctrl.signal : undefined })
       .then(function (r) { return r.text(); })
-      .then(function (t) { return JSON.parse(t); });
+      .then(function (t) { if (timer) clearTimeout(timer); return JSON.parse(t); },
+            function (e) { if (timer) clearTimeout(timer); throw e; });
   }
 
   /* ── LINE 身分 ── */
@@ -169,7 +175,7 @@
             return;
           }
           var res = r.result || {};
-          if (res.code === 'not_bound') { showBind(res.store_name); return; }
+          if (res.code === 'not_bound') { showBind(res.store_name, res.suggest_name); return; }
           show(res.ok ? '✅' : '❌', String(r.text || '').replace(/^[✅❌]\s*/, ''), res.ok ? 'ok' : 'warn');
           showButtons(!res.ok, true);
           return sendToChat();
@@ -193,12 +199,18 @@
   }
 
   /* ── 第一次使用：輸入全名綁定 ── */
-  function showBind(storeName) {
+  var suggested = '';
+  function showBind(storeName, suggest) {
+    suggested = suggest || '';
     show('👋', '還沒綁定' + (storeName ? '「' + storeName + '」' : ''), '', '');
-    $('bindStoreHint').textContent = storeName ? '綁定「' + storeName + '」：要人在店裡，名字要和店裡名冊一樣' : '要人在你上班的店裡才能綁定';
+    $('bindStoreHint').textContent = suggested
+      ? '你在別家店已綁定為「' + suggested + '」。「' + storeName + '」的名冊上也有這個名字——是你本人就按下面的按鈕。'
+      : (storeName ? '綁定「' + storeName + '」：要人在店裡，名字要和店裡名冊一樣' : '要人在你上班的店裡才能綁定');
+    $('bindName').value = suggested;
+    $('btnBind').textContent = suggested ? '是我，綁定並打卡' : '綁定並打卡';
     $('bindCard').hidden = false;
     $('bindError').textContent = '';
-    $('bindName').focus();
+    if (!suggested) $('bindName').focus();
   }
   $('btnBind').addEventListener('click', function () {
     var name = $('bindName').value.trim();
@@ -207,6 +219,7 @@
     $('btnBind').disabled = true;
     $('bindError').textContent = '';
     post({ action: 'line_bind_name', id_token: liff.getIDToken(), name: name,
+           via: suggested && name === suggested ? 'auto' : 'name',
            lat: lastPos.coords.latitude, lng: lastPos.coords.longitude,
            accuracy: isFinite(lastPos.coords.accuracy) ? lastPos.coords.accuracy : null })
       .then(function (r) {

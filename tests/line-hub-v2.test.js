@@ -37,6 +37,7 @@ function make(opts) {
           return { getResponseCode: () => good ? 200 : 400, getContentText: () => JSON.stringify(good ? { sub: t.slice(4), aud: '2011292256' } : {}) };
         }
         if (url.indexOf('/message/reply') >= 0) { replies.push(JSON.parse(o.payload)); return { getContentText: () => '{}' }; }
+        if (url.indexOf('/v2/bot/info') >= 0) return { getContentText: () => JSON.stringify({ userId: 'BOTU' }) };
         storeCalls.push({ url, body: JSON.parse(o.payload) });
         return { getContentText: () => JSON.stringify(opts.storeReply ? opts.storeReply(url, JSON.parse(o.payload)) : { ok: true, status: 'ok', ts: iso(0) }) };
       },
@@ -86,19 +87,32 @@ ok('上一張是 5 分鐘前 → 10 分鐘鎖擋下、不送打卡，說明幾�
   assert.strictEqual(storeCalls.length, 0); assert.strictEqual(r.result.ok, false);
   assert(/5 分鐘內不能再打/.test(r.text), r.text);
 });
-ok('被擋下的卡不算上一張（rejected_*）；超過 12 小時的也不算 → 記成上班', () => {
+ok('被擋下的卡不算上一張（rejected_*）；超過 16 小時的也不算 → 記成上班', () => {
   const { sb, storeCalls } = make({ sheets: { hq: { roster: [R()], events: [
-    { ts: iso(800), emp_id: 'H01', type: 'in', status: 'ok' }, { ts: iso(3), emp_id: 'H01', type: 'in', status: 'rejected_out_of_range' }] } } });
+    { ts: iso(1000), emp_id: 'H01', type: 'in', status: 'ok' }, { ts: iso(3), emp_id: 'H01', type: 'in', status: 'rejected_out_of_range' }] } } });
   sb.handleLineQuickClock_({ id_token: 'TOK_U1', lat: hq.lat, lng: hq.lng, accuracy: 10 });
   assert.strictEqual(storeCalls[0].body.type, 'in');
 });
-ok('站在金山、只綁了總部、金山名冊有同名未綁 → 自動綁定金山再打卡，回覆註明', () => {
+ok('站在金山、只綁了總部、金山名冊有同名未綁 → 不靜默自動綁：回 not_bound＋suggest_name，不送任何請求', () => {
   const { sb, storeCalls } = make({ sheets: { hq: { roster: [R()] }, mztjs: { roster: [R({ emp_id: 'J1', key: 'kJ', line_user_id: '', device_id: '' })], events: [] } } });
   const r = sb.handleLineQuickClock_({ id_token: 'TOK_U1', lat: js.lat, lng: js.lng, accuracy: 10 });
-  assert.strictEqual(storeCalls.length, 2);
-  assert.deepStrictEqual(Object.assign({}, storeCalls[0].body), { action: 'liff_bind', id_token: 'TOK_U1', key: 'kJ', via: 'auto' });
-  assert.strictEqual(storeCalls[1].body.action, 'liff_clock'); assert.strictEqual(storeCalls[1].body.device_id, 'line:U1');
-  assert(/上班打卡成功/.test(r.text) && /已自動綁定「墨竹亭 新竹金山」/.test(r.text), r.text);
+  assert.strictEqual(storeCalls.length, 0);
+  assert.strictEqual(r.result.code, 'not_bound'); assert.strictEqual(r.result.suggest_name, '甲');
+});
+ok('line_bind_name via=auto（本人按「是我」）→ liff_bind 帶 via auto；同一帳號 10 分鐘內第 6 次 → too_many', () => {
+  const { sb, storeCalls } = make({ sheets: { mztjs: { roster: [R({ emp_id: 'J1', key: 'kJ', line_user_id: '' })] } } });
+  assert.strictEqual(sb.handleLineBindName_({ id_token: 'TOK_U1', name: '甲', via: 'auto', lat: js.lat, lng: js.lng, accuracy: 10 }).ok, true);
+  assert.strictEqual(storeCalls[0].body.via, 'auto');
+  for (let i = 0; i < 4; i++) sb.handleLineBindName_({ id_token: 'TOK_U1', name: '丙', lat: js.lat, lng: js.lng, accuracy: 10 });
+  assert.strictEqual(sb.handleLineBindName_({ id_token: 'TOK_U1', name: '丙', lat: js.lat, lng: js.lng, accuracy: 10 }).error, 'too_many');
+});
+ok('長班：14 小時前的上班卡、之後沒下班卡 → 這次記下班；17 小時前 → 視為忘打下班，記上班', () => {
+  let m = make({ sheets: { hq: { roster: [R()], events: [{ ts: iso(14 * 60), emp_id: 'H01', type: 'in', status: 'ok' }] } } });
+  m.sb.handleLineQuickClock_({ id_token: 'TOK_U1', lat: hq.lat, lng: hq.lng, accuracy: 10 });
+  assert.strictEqual(m.storeCalls[0].body.type, 'out');
+  m = make({ sheets: { hq: { roster: [R()], events: [{ ts: iso(17 * 60), emp_id: 'H01', type: 'in', status: 'ok' }] } } });
+  m.sb.handleLineQuickClock_({ id_token: 'TOK_U1', lat: hq.lat, lng: hq.lng, accuracy: 10 });
+  assert.strictEqual(m.storeCalls[0].body.type, 'in');
 });
 ok('站在金山、金山名冊沒有同名（或已被別人綁） → code=not_bound、不送打卡，提示輸入全名', () => {
   const a = make({ sheets: { hq: { roster: [R()] }, mztjs: { roster: [R({ emp_id: 'J1', name: '乙', line_user_id: '' })] } } });
@@ -147,7 +161,7 @@ ok('token 無效 → invalid_id_token，不暫存', () => {
   assert.strictEqual(sb.handleLineQuickClock_({ id_token: 'bad', lat: hq.lat, lng: hq.lng }).error, 'invalid_id_token');
   assert.strictEqual(Object.keys(cache).length, 0);
 });
-const ev = (text, uid) => ({ events: [{ type: 'message', replyToken: 'RT', source: { userId: uid || 'U1' }, message: { type: 'text', text } }] });
+const ev = (text, uid, extra) => Object.assign({ destination: 'BOTU', events: [{ type: 'message', replyToken: 'RT', source: { type: 'user', userId: uid || 'U1' }, message: { type: 'text', text } }] }, extra || {});
 ok('webhook「打卡」：有暫存 → 回結果並清掉暫存；沒有 → 提醒要按選單', () => {
   const { sb, replies, cache } = make({ sheets: { hq: { roster: [R()], events: [] } } });
   sb.handleLineQuickClock_({ id_token: 'TOK_U1', lat: hq.lat, lng: hq.lng, accuracy: 10 });
@@ -167,5 +181,13 @@ ok('webhook：其他文字、貼圖、驗證用的空 events 都不回、不出�
   sb.handleLineWebhook_(ev('你好')); sb.handleLineWebhook_({ events: [] });
   sb.handleLineWebhook_({ events: [{ type: 'message', replyToken: 'RT', source: { userId: 'U1' }, message: { type: 'sticker' } }] });
   assert.strictEqual(replies.length, 0);
+});
+ok('webhook：群組裡打「薪資明細」不回；destination 不是本帳號不回；同一人一分鐘超過 20 則不回', () => {
+  const { sb, replies } = make({ sheets: { hq: { roster: [R()] } } });
+  sb.handleLineWebhook_({ destination: 'BOTU', events: [{ type: 'message', replyToken: 'RT', source: { type: 'group', groupId: 'G', userId: 'U1' }, message: { type: 'text', text: '薪資明細' } }] });
+  sb.handleLineWebhook_(ev('請假申請', 'U1', { destination: 'OTHER' }));
+  assert.strictEqual(replies.length, 0);
+  for (let i = 0; i < 25; i++) sb.handleLineWebhook_(ev('請假申請'));
+  assert.strictEqual(replies.length, 20);
 });
 console.log(`\n${n} 項全部通過`);

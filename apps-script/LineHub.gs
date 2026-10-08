@@ -44,7 +44,7 @@ var LINE_HUB_LOCK_MIN = 10;
 var LINE_HUB_ACC_CAP_M = 100;      // 與各店後端 ACCURACY_CREDIT_CAP_M、clock-line-core.js 相同
 var LINE_HUB_STASH_SEC = 300;
 
-/** 與 clock-line-core.js 的 pickStore 同一套規則（tests/pick-store-parity.test.js 逐點比對兩邊結果）。 */
+/** 與 clock-line-core.js 的 pickStore 同一套規則（tests/line-hub-v2.test.js 第一項逐點比對兩邊結果）。 */
 function lineHubDistanceM_(lat1, lng1, lat2, lng2) {
   var toRad = Math.PI / 180, R = 6371000;
   var dLat = (lat2 - lat1) * toRad, dLng = (lng2 - lng1) * toRad;
@@ -89,6 +89,9 @@ function lineHubCallStore_(st, payload) {
 function handleLineBindName_(body) {
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
+  if (lineHubThrottled_('bind', userId, 5, 600)) {
+    return { ok: false, error: 'too_many', message: '嘗試太多次了，請 10 分鐘後再試；名字確定沒錯還是不行，請找主管。' };
+  }
   var want = lineHubNormName_(body.name);
   if (!want) return { ok: false, error: 'empty_name', message: '請輸入你的全名' };
   var pick = lineHubPickStore_({ lat: Number(body.lat), lng: Number(body.lng),
@@ -107,12 +110,37 @@ function handleLineBindName_(body) {
   var row = hit[0];
   if (row.line_user_id && String(row.line_user_id) === String(userId)) return { ok: true, already: true, store_name: st.name, name: String(row.name) };
   if (row.line_user_id) return { ok: false, error: 'name_taken', message: '「' + String(row.name) + '」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管在值班核定頁解除。' };
-  var j = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(row.key), via: 'name' });
+  // via：本人手動輸入＝name；畫面帶出的跨店同名（本人按「是我」）＝auto，主管頁分開標示
+  var j = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(row.key), via: body.via === 'auto' ? 'auto' : 'name' });
   if (!j || !j.ok) {
     var m = { line_account_in_use: '你的 LINE 帳號已經綁定這家店的另一位同仁，請找主管處理。' }[j && j.error];
     return { ok: false, error: (j && j.error) || 'unreachable', message: m || '綁定沒有成功，請稍後再試；一直不行請告知主管。' };
   }
   return { ok: true, store_name: st.name, name: String(row.name) };
+}
+
+/** 上／下班自動判斷用的「最後一張算數的卡」：與 lastCountedEvent 同規則（排除 rejected_*），但回看
+ *  LINE_HUB_TYPE_LOOKBACK_H 小時＝配對視窗 MONTHLY_PAIR_WINDOW_HOURS（16）。用交替防呆的 12 小時會把
+ *  10:30 上、22:45 下這種超過 12 小時的長班，下班卡記成上班（v2 審查 #3）。超過 16 小時的上班卡本來就配不成一段，
+ *  視為忘打下班，這次記上班。 */
+var LINE_HUB_TYPE_LOOKBACK_H = (typeof MONTHLY_PAIR_WINDOW_HOURS !== 'undefined') ? MONTHLY_PAIR_WINDOW_HOURS : 16;
+function lineHubLastCounted_(eventRows, empId) {
+  var cutoff = Date.now() - LINE_HUB_TYPE_LOOKBACK_H * 3600000, last = null;
+  eventRows.forEach(function (e) {
+    if (String(e.emp_id) !== String(empId) || String(e.status).indexOf('rejected_') === 0) return;
+    var t = new Date(String(e.ts)).getTime();
+    if (isNaN(t) || t < cutoff) return;
+    if (!last || t >= last.ms) last = { ts: String(e.ts), type: String(e.type), ms: t };
+  });
+  return last;
+}
+
+/** 簡單節流：同一個 LINE 帳號在 windowSec 秒內最多 max 次（CacheService，鍵 lht:<kind>:<uid>）。 */
+function lineHubThrottled_(kind, userId, max, windowSec) {
+  var c = CacheService.getScriptCache(), k = 'lht:' + kind + ':' + userId;
+  var n = parseInt(c.get(k) || '0', 10) + 1;
+  c.put(k, String(n), windowSec);
+  return n > max;
 }
 
 function lineHubSS_(st) { return st.code === '' ? getSS() : SpreadsheetApp.openById(st.ss_id); }
@@ -171,24 +199,23 @@ function lineHubQuickClockFor_(userId, body) {
   })[0];
   var autoNote = '';
   if (!me) {
-    // 跨店自動綁定：這個 LINE 在別家店已綁定、名字唯一，而這家店名冊有同名且還沒被綁的在職同仁 → 自動綁（人已在店裡）
+    // 跨店：這個 LINE 在別家店已綁定、名字唯一，這家店名冊有同名且還沒被綁的在職同仁 → 帶出名字請本人確認
+    // （v2 審查 #7：不靜默自動綁，避免同名不同人時直接替別人記一張卡）
     var names = {};
     lineHubMine_(userId).forEach(function (m) { names[lineHubNormName_(m.row.name)] = String(m.row.name); });
-    var nameKeys = Object.keys(names);
-    var cand = nameKeys.length === 1 ? lineHubSheetRows_(ss, 'roster').filter(function (r) {
-      return lineHubActive_(r) && lineHubNormName_(r.name) === nameKeys[0];
-    }) : [];
-    if (cand.length === 1 && !cand[0].line_user_id) {
-      var jb = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(cand[0].key), via: 'auto' });
-      if (jb && jb.ok) { me = cand[0]; me.line_user_id = userId; autoNote = '（第一次在這家店打卡，已自動綁定「' + st.name + '」）'; }
+    var nameKeys = Object.keys(names), suggest = '';
+    if (nameKeys.length === 1) {
+      var cand = lineHubSheetRows_(ss, 'roster').filter(function (r) {
+        return lineHubActive_(r) && lineHubNormName_(r.name) === nameKeys[0];
+      });
+      if (cand.length === 1 && !cand[0].line_user_id) suggest = names[nameKeys[0]];
     }
-  }
-  if (!me) {
-    return { ok: false, code: 'not_bound', store_name: st.name, reason: '你的 LINE 帳號還沒有綁定「' + st.name + '」',
+    return { ok: false, code: 'not_bound', store_name: st.name, suggest_name: suggest,
+             reason: '你的 LINE 帳號還沒有綁定「' + st.name + '」',
              hint: '請在打卡畫面輸入你的全名完成綁定；名冊上沒有你請主管把你加進去' };
   }
   var events = lineHubSheetRows_(ss, 'events').map(function (e) { e.ts = normCellTs(e.ts); return e; });
-  var last = lastCountedEvent(events, me.emp_id);
+  var last = lineHubLastCounted_(events, me.emp_id);
   var type = last && last.type === 'in' ? 'out' : 'in';
   if (last) {
     var lastMs = new Date(String(last.ts)).getTime();
@@ -298,9 +325,10 @@ function lineHubPayslipFor_(userId, ym) {
   return payMyPayslipFor_(pick.me, pick.store, ym || currentYmTaipei());
 }
 
+var LINE_HUB_NO_PAYROLL_TEXT = '你上班的店還沒接上薪資系統，薪資與假別請先找店長確認。';
 function lineHubPayText_(userId) {
   var j = lineHubPayslipFor_(userId);
-  if (!j) return LINE_HUB_NOT_BOUND_TEXT;
+  if (!j) return lineHubMine_(userId).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
   if (!j.ok) return '查不到你的薪資資料，請找店長確認。';
   var t = '💰 ' + j.ym.replace('-', ' 年 ') + ' 月薪資\n';
   if (!j.ready) return t + (j.message || '尚未結算') + '\n（結算定案後這裡就會顯示明細）';
@@ -313,7 +341,7 @@ function lineHubPayText_(userId) {
 
 function lineHubLeaveText_(userId) {
   var j = lineHubPayslipFor_(userId);
-  if (!j) return LINE_HUB_NOT_BOUND_TEXT;
+  if (!j) return lineHubMine_(userId).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
   if (!j.ok) return '查不到你的假別資料，請找店長確認。';
   var list = j.leave_quota || [];
   if (!list.length) return '📅 假別額度\n你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。';
@@ -335,12 +363,32 @@ var LINE_HUB_TEXT_COMMANDS = {
 };
 
 /** LINE webhook（Code.gs doPost 看到 body.events 就轉來這裡）。 */
+/** 本官方帳號的 bot userId（webhook 的 destination 必須等於它）；查一次快取 6 小時。 */
+function lineHubBotUserId_() {
+  var c = CacheService.getScriptCache(), v = c.get('lh_bot_uid');
+  if (v) return v;
+  var token = (typeof LINE_HUB_BOT_TOKEN !== 'undefined') ? LINE_HUB_BOT_TOKEN : '';
+  if (!token) return '';
+  try {
+    var r = UrlFetchApp.fetch('https://api.line.me/v2/bot/info', { headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true });
+    v = String((JSON.parse(r.getContentText()) || {}).userId || '');
+  } catch (e) { v = ''; }
+  if (v) c.put('lh_bot_uid', v, 21600);
+  return v;
+}
+
 function handleLineWebhook_(body) {
+  // Apps Script 讀不到 LINE 簽章標頭，所以：destination 要是本帳號、只回 1 對 1 私訊（群組裡打「薪資明細」不能回到群組）、
+  // 每人每分鐘最多 20 則（偽造請求也只能拿無效的回覆權杖，什麼都送不出去；節流是防它拖垮後端）（v2 審查 #4）
+  var bot = lineHubBotUserId_();
+  if (bot && body.destination && String(body.destination) !== bot) return { ok: true, ignored: 'destination' };
   (body.events || []).forEach(function (ev) {
     try {
       if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
-      var userId = ev.source && ev.source.userId;
+      if (!ev.source || ev.source.type !== 'user') return;
+      var userId = ev.source.userId;
       if (!userId) return;
+      if (lineHubThrottled_('wh', userId, 20, 60)) return;
       var text = String(ev.message.text || '').trim();
       if (text === '打卡') {
         var r = lineHubTakeStash_(userId);

@@ -1716,6 +1716,11 @@ def handle_line_bind_name(data, body):
         j = handle_liff_bind(sd, {"action": "liff_bind", "id_token": body["id_token"], "key": row["key"]})
         if not j.get("ok"):
             return {"ok": False, "error": j.get("error"), "message": "綁定沒有成功：" + str(j.get("error"))}
+        # 與 Liff.gs 同步：綁定紀錄標註怎麼綁的（主管頁顯示「輸入全名綁定」／「跨店自動綁定」）
+        sd2 = load_data()
+        if sd2.get("liff_bind_log"):
+            sd2["liff_bind_log"][-1]["type"] = "bind_auto" if body.get("via") == "auto" else "bind_name"
+            save_data(sd2)
         return {"ok": True, "store_name": st["name"], "name": row["name"]}
 
 
