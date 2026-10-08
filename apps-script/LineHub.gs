@@ -246,6 +246,7 @@ function lineHubGuard_(events, empId) {
 function handleLineHubStatus_(body) {
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
+  if (lineHubThrottled_('st', userId, 30, 60)) return { ok: false, error: 'too_many' };   // 每人每分鐘 30 次（審查 L7）
   var r = lineHubResolve_(userId, body);
   if (r.fail) return { ok: true, status: 'fail', result: r.fail };
   var today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');

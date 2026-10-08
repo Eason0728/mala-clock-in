@@ -1675,7 +1675,7 @@ def handle_line_quick_clock(data, body):
                     typ = body["type"]   # 同仁手選（與 LineHub.gs 同：同型擋、另一型 10 分鐘鎖）
                     if last and last["type"] == typ:
                         res = {"ok": False, "type": typ, "store_name": st["name"],
-                               "reason": f"你 {last['ts'][11:16]} 已經打過{'上班' if typ == 'in' else '下班'}卡了", "hint": "要另一種請按另一顆"}
+                               "reason": f"你 {last['ts'][11:16]} 已經打過{'上班' if typ == 'in' else '下班'}卡了", "hint": "要" + ("下班" if typ == "in" else "上班") + "請按另一顆；真的要補打請告知主管"}
                         label = {"in": "上班", "out": "下班"}[typ]
                         return {"ok": True, "result": res, "text": f"❌ {label}打卡失敗\n原因：{res['reason']}\n怎麼辦：{res['hint']}"}
                 left = None

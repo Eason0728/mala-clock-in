@@ -100,7 +100,7 @@
   function initMap() {
     if (!window.L) return;
     map = L.map('map', { zoomControl: false, attributionControl: true }).setView([24.7863, 121.0157], 15);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(map);
   }
   function showMe(lat, lng) {
     if (!map) return;
@@ -165,13 +165,18 @@
       }
       if (!navigator.geolocation) { reject(new Error('這支手機不支援定位')); return; }
       if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-      var settled = false, timer = setTimeout(function () { if (!settled && lastFix) { settled = true; resolve(lastFix); } }, 8000);
+      // 8 秒後有什麼就用什麼（定位不夠準交給後端判斷）；20 秒還一筆都沒有才算失敗（審查 M2）
+      var settled = false, expired = false;
+      function done(fn, v) { if (settled) return; settled = true; clearTimeout(soft); clearTimeout(hard); fn(v); }
+      var soft = setTimeout(function () { expired = true; if (lastFix) done(resolve, lastFix); }, 8000);
+      var hard = setTimeout(function () { if (!lastFix) done(reject, new Error('定位逾時')); }, 20000);
       watchId = navigator.geolocation.watchPosition(function (p) {
         better(p);
         showMe(lastFix.coords.latitude, lastFix.coords.longitude);
-        if (!settled && good(p)) { settled = true; clearTimeout(timer); resolve(lastFix); }
+        if (good(p) || expired) done(resolve, lastFix);
       }, function (err) {
-        if (!settled && !lastFix) { settled = true; clearTimeout(timer); reject(new Error(err && err.code === 1 ? '定位權限被拒絕' : '定位失敗')); }
+        // 只有「權限被拒」立刻放棄；暫時抓不到（code 2/3）繼續等，交給 20 秒上限（審查 M3）
+        if (err && err.code === 1) done(reject, new Error('定位權限被拒絕'));
       }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
     });
   }
@@ -203,12 +208,14 @@
       $('who').textContent = s.name;
       $('shift').textContent = '上班時間 ' + (s.shift_in || '--') + ' / 下班時間 ' + (s.shift_out || '--');
       var ok = (s.today || []).filter(function (e) { return e.status === 'ok' || e.status === 'pending_device_approval'; });
-      $('today').textContent = ok.length ? '今天：' + ok.map(function (e) { return (e.type === 'in' ? '上班 ' : '下班 ') + e.hm; }).join('、') : '今天還沒有打卡紀錄';
+      $('today').textContent = ok.length ? '今天：' + ok.map(function (e) {
+        return (e.type === 'in' ? '上班 ' : '下班 ') + e.hm + (e.status === 'pending_device_approval' ? '（待核准）' : '');
+      }).join('、') : '今天還沒有打卡紀錄';
       showStore(s.store);
       say('', '', '');
     } else {
       var r = s.result || {};
-      $('storeName').textContent = r.store_name || '不在打卡範圍';
+      $('storeName').textContent = r.store_name || (r.code === 'ambiguous' ? '分不出在哪一家店' : '不在打卡範圍');
       $('who').textContent = '';
       if (r.nearest) showStore(r.nearest);
       if (r.code === 'not_bound') { showBind(r.store_name, r.suggest_name); }
@@ -232,7 +239,8 @@
   function punch(type) {
     if (busy || !status || status.status !== 'ready') return;
     var label = type === 'in' ? '上班' : '下班';
-    if (type === 'out' && !status.guard.last && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
+    var hasIn = (status.today || []).some(function (e) { return e.type === 'in' && (e.status === 'ok' || e.status === 'pending_device_approval'); });
+    if (type === 'out' && !status.guard.last && !hasIn && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
     busy = true; refreshButtons();
     say('送出' + label + '打卡中…', '', '大約需要幾秒，請不要關閉');
     post(Object.assign({ action: 'line_quick_clock', id_token: liff.getIDToken(), type: type }, fixPayload()))
@@ -243,19 +251,31 @@
         }
         var res = r.result || {};
         if (res.code === 'not_bound') { showBind(res.store_name, res.suggest_name); return; }
-        say(String(r.text || '').replace(/^[✅❌]\s*/, ''), res.ok ? 'ok' : 'warn');
-        if (res.ok) return sendToChat();
-        return loadStatus().then(function () { say(String(r.text || '').replace(/^[✅❌]\s*/, ''), 'warn'); });
+        var shown = String(r.text || '').replace(/^[✅❌]\s*/, '');
+        say(shown, res.ok ? 'ok' : 'warn');
+        if (res.ok) {
+          // 就地鎖鍵（同網頁版 updateButtonStates({type, ts})）：同型不能再按、另一型 10 分鐘鎖（審查 M1）
+          var nowSrv = Date.now() + clockSkew, hm = String(res.ts || '').slice(11, 16);
+          status.guard = { blocked: type, lock: {}, last: { type: type, hm: hm }, now: nowSrv };
+          status.guard.lock[type === 'in' ? 'out' : 'in'] = nowSrv + 10 * 60000;
+          status.today = (status.today || []).concat([{ type: type, hm: hm, status: 'ok' }]);
+          render(status); say(shown, 'ok');
+          return sendToChat().then(function (closing) { if (closing) keepBusy = true; });
+        }
+        // 失敗：重讀狀態；重讀也失敗就維持鍵停用（不拿舊狀態重新亮鍵），訊息保留（審查 L4）
+        status = null; refreshButtons();
+        return loadStatus().then(function () { say(shown, 'warn'); });
       }, function () {
         say('連線不穩，不確定這筆有沒有進去', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。不要連按。');
       })
-      .then(function () { busy = false; refreshButtons(); });
+      .then(function () { if (!keepBusy) { busy = false; refreshButtons(); } });
   }
+  var keepBusy = false;   // 已送進聊天室、畫面即將關閉：不要再把鍵解開
   /** 代同仁在聊天室送出「打卡」→ 機器人回覆結果 → 關閉。沒有 chat_message.write 或不在 LINE 裡：結果留在畫面上。 */
-  function sendToChat() {
-    if (!liff.isInClient || !liff.isInClient() || !liff.sendMessages) return;
+  function sendToChat() {   // 回傳 Promise<是否即將關閉>
+    if (!liff.isInClient || !liff.isInClient() || !liff.sendMessages) return Promise.resolve(false);
     return liff.sendMessages([{ type: 'text', text: '打卡' }])
-      .then(function () { setTimeout(function () { liff.closeWindow(); }, 1500); }, function () {});
+      .then(function () { setTimeout(function () { liff.closeWindow(); }, 1500); return true; }, function () { return false; });
   }
 
   /* ── 第一次使用：輸入全名綁定 ── */
