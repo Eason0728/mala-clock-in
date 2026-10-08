@@ -256,7 +256,10 @@ function lineHubReply_(replyToken, texts) {
     method: 'post', contentType: 'application/json', muteHttpExceptions: true,
     headers: { Authorization: 'Bearer ' + token },
     payload: JSON.stringify({ replyToken: replyToken,
-      messages: texts.slice(0, 5).map(function (t) { return { type: 'text', text: String(t).slice(0, 4900) }; }) }),
+      // 字串＝文字訊息；物件＝已組好的 LINE 訊息（例如薪資卡片 Flex），原樣送出
+      messages: texts.slice(0, 5).map(function (t) {
+        return (t && typeof t === 'object') ? t : { type: 'text', text: String(t).slice(0, 4900) };
+      }) }),
   });
 }
 
@@ -328,8 +331,8 @@ function lineHubPayslipFor_(userId, ym) {
 }
 
 var LINE_HUB_NO_PAYROLL_TEXT = '你上班的店還沒接上薪資系統，薪資與假別請先找店長確認。';
-function lineHubPayText_(userId) {
-  var j = lineHubPayslipFor_(userId);
+function lineHubPayText_(userId, pre) {
+  var j = pre === undefined ? lineHubPayslipFor_(userId) : pre;
   if (!j) return lineHubMine_(userId).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
   if (!j.ok) return '查不到你的薪資資料，請找店長確認。';
   var t = '💰 ' + j.ym.replace('-', ' 年 ') + ' 月薪資\n';
@@ -339,6 +342,75 @@ function lineHubPayText_(userId) {
   t += '實付：' + nf(res.net) + ' 元\n應發：' + nf(res.gross) + ' 元｜扣款：' + nf(res.deduction) + ' 元';
   if (j.payday) t += '\n發薪日：' + j.payday;
   return t + '\n（完整明細請找店長或從打卡頁「我的薪資」查看）';
+}
+
+/* ── 薪資卡片（Eason 2026-10-08 選 C：LINE Flex 卡片，實付放最上面、金額靠右）──
+ * 項目與網頁版「我的薪資」（clock.html payLine）同一份資料、同一套小字（數量 H × 單價）。
+ * 尚未結算／定案、沒綁定、店家沒接薪資 → 照舊回文字。 */
+var LINE_HUB_HOURLY_KEYS = ['overtime', 'shortfall_hours', 'personal_leave', 'sick_leave', 'menstrual_leave',
+                            'disaster_leave', 'hourly_wage', 'pt_attend_plus', 'pt_tenure_plus'];   // 與 clock.html HOURY 相同
+function lineHubNf_(v) { return Math.round(Number(v) || 0).toLocaleString('en-US'); }
+function lineHubR2_(v) { return Math.round((Number(v) || 0) * 100) / 100; }
+function lineHubPayLineSub_(x) {
+  if (x.qty === null || x.qty === undefined) return '';
+  return lineHubR2_(x.qty) + (LINE_HUB_HOURLY_KEYS.indexOf(x.item_key) !== -1 ? 'H' : '') +
+         (x.rate ? ' × ' + lineHubR2_(x.rate) : '');
+}
+function lineHubFlexRow_(label, value, opts) {
+  opts = opts || {};
+  var left = { type: 'box', layout: 'vertical', flex: 5, contents: [
+    { type: 'text', text: String(label), size: 'sm', color: opts.muted ? '#8a817a' : '#222222', wrap: true }] };
+  if (opts.sub) left.contents.push({ type: 'text', text: opts.sub, size: 'xxs', color: '#8a817a' });
+  return { type: 'box', layout: 'horizontal', margin: 'sm', contents: [left,
+    { type: 'text', text: String(value), size: 'sm', align: 'end', flex: 3, color: opts.muted ? '#8a817a' : '#222222',
+      weight: opts.bold ? 'bold' : 'regular' }] };
+}
+function lineHubPayFlex_(j) {
+  var res = j.result || {};
+  var ymLabel = parseInt(String(j.ym).slice(5, 7), 10) + ' 月薪資';
+  var body = [
+    { type: 'text', text: '實付金額', size: 'xs', color: '#8a817a' },
+    { type: 'text', text: 'NT$ ' + lineHubNf_(res.net), size: 'xxl', weight: 'bold', color: '#1e7d4f' },
+    { type: 'separator', margin: 'md' },
+    lineHubFlexRow_('核定工時', lineHubR2_(res.total_hours) + ' H'),
+  ];
+  if (res.support_hours) body.push(lineHubFlexRow_('跨店支援時數', lineHubR2_(res.support_hours) + ' H'));
+  if (res.ot_paid_hours) body.push(lineHubFlexRow_('計薪加班', lineHubR2_(res.ot_paid_hours) + ' H'));
+  body.push({ type: 'text', text: '加項', size: 'xs', color: '#8a817a', margin: 'lg' });
+  (res.earn || []).forEach(function (x) {
+    if (!Number(x.amount)) return;   // 0 元的不列
+    body.push(lineHubFlexRow_(x.item_label, lineHubNf_(x.amount), { sub: lineHubPayLineSub_(x) }));
+  });
+  body.push(lineHubFlexRow_('應收合計', lineHubNf_(res.gross), { bold: true }));
+  body.push({ type: 'text', text: '扣項', size: 'xs', color: '#8a817a', margin: 'lg' });
+  var deds = (res.ded || []).filter(function (x) { return Number(x.amount); });
+  if (!deds.length) body.push(lineHubFlexRow_('無', '', { muted: true }));
+  deds.forEach(function (x) {
+    body.push(lineHubFlexRow_(x.item_label, '-' + lineHubNf_(Math.abs(Number(x.amount))), { sub: lineHubPayLineSub_(x) }));
+  });
+  body.push(lineHubFlexRow_('應付合計', '-' + lineHubNf_(Math.abs(Number(res.deduction) || 0)), { bold: true }));
+  if (j.payday) {
+    body.push({ type: 'separator', margin: 'md' });
+    var pd = String(j.payday);
+    body.push(lineHubFlexRow_('發薪日', /^\d+$/.test(pd) ? '每月 ' + pd + ' 日' : pd, { muted: true }));
+  }
+  return {
+    type: 'flex',
+    altText: ymLabel + '　實付 NT$ ' + lineHubNf_(res.net),
+    contents: {
+      type: 'bubble', size: 'mega',
+      header: { type: 'box', layout: 'horizontal', backgroundColor: '#e3f1e8', paddingAll: '12px', contents: [
+        { type: 'text', text: ymLabel, weight: 'bold', color: '#1e7d4f', size: 'md' },
+        { type: 'text', text: '已定案', align: 'end', color: '#1e7d4f', size: 'sm' }] },
+      body: { type: 'box', layout: 'vertical', paddingAll: '14px', contents: body },
+    },
+  };
+}
+/** 「薪資明細」：已定案 → 卡片；其他情況 → 文字 */
+function lineHubPayMessage_(userId) {
+  var j = lineHubPayslipFor_(userId);
+  if (j && j.ok && j.ready) return lineHubPayFlex_(j);
+  return lineHubPayText_(userId, j);
 }
 
 function lineHubLeaveText_(userId) {
@@ -358,7 +430,7 @@ function lineHubLeaveText_(userId) {
 
 var LINE_HUB_TEXT_COMMANDS = {
   '出勤紀錄': lineHubAttendanceText_,
-  '薪資明細': lineHubPayText_,
+  '薪資明細': lineHubPayMessage_,
   '假別額度': lineHubLeaveText_,
   '加班申請': function () { return '加班申請功能還在準備中，目前請先找店長辦理。'; },
   '請假申請': function () { return '請假申請功能還在準備中，目前請先找店長辦理。'; },
