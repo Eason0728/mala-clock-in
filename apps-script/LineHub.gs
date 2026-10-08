@@ -1,10 +1,13 @@
 /**
  * LINE 單一打卡入口的集中服務（2026-10-08，規格 mala-clock-liff/docs/spec.md §2.4）。
  *
- * 只部署在光復後端（薪資也在這裡）。**打卡本身不經過這裡**——打卡頁直接打各店後端的 liff_clock，
- * 所以這支壞掉只影響「綁定」與「查詢」，不影響任何人打卡。
+ * 只部署在光復後端（薪資也在這裡）。各店的專屬打卡連結（clock*.html?k=）完全不經過這裡，
+ * 這支壞掉時同仁仍可用原本的連結打卡。
  *
- * 依賴：Liff.gs 的 verifyLineIdToken_／handleLiffBind_、Payroll.gs 的 payMyPayslipFor_、
+ * v2（2026-10-08）：打卡改經過這裡（line_quick_clock）以便把結果交給聊天室機器人回覆；第一次使用輸入全名綁定
+ * （line_bind_name）；出勤／薪資／假別查詢由 webhook（handleLineWebhook_）在聊天室回覆。v1 的 line_my_stores／
+ * line_bind_all／line_my_payslip（貼連結綁定、網頁查詢）已移除。
+ * 依賴：Liff.gs 的 verifyLineIdToken_／handleLiffBind_／LIFF_HANDLERS、Payroll.gs 的 payMyPayslipFor_、
  *       Code.gs 的 getSS／readSheetAsObjects。
  * 各店試算表 ID 與後端網址放在 LineHubConfig.gs（變數 LINE_HUB_STORES_CONFIG）——
  * 那支只在部署目錄 ~/mala-gas/mala-clock-in，**不進公開 repo**（同 Code.gs 的 SPREADSHEET_ID 不進 repo 的理由）。
@@ -32,125 +35,254 @@ function lineHubRoster_(st) {
 
 function lineHubActive_(r) { return String(r.active).toLowerCase() === 'true'; }
 
-/** 一次讀完全部店的名冊 → {rosters:{code:rows|null}, unreadable:[code]} */
-function lineHubAllRosters_() {
-  var rosters = {}, unreadable = [];
+/* ══════════════ v2：全部在 LINE 聊天室完成（spec v2，2026-10-08）══════════════
+ * 選單「打卡」→ LIFF 小畫面抓 GPS → line_quick_clock（這裡）→ 結果暫存 →
+ * LIFF 代同仁送出「打卡」→ webhook（handleLineWebhook_）取暫存結果用「回覆」送進聊天室（免費）。
+ * 不分上班／下班：照原本規則自動判斷（往回 12 小時內最後一張算數的卡是上班→這次是下班，反之上班），
+ * 距離那張卡不到 CLOCK_LOCK_MIN 分鐘就擋（原本網頁版的 10 分鐘鎖，搬到伺服器端）。 */
+var LINE_HUB_LOCK_MIN = 10;
+var LINE_HUB_ACC_CAP_M = 100;      // 與各店後端 ACCURACY_CREDIT_CAP_M、clock-line-core.js 相同
+var LINE_HUB_STASH_SEC = 300;
+
+/** 與 clock-line-core.js 的 pickStore 同一套規則（tests/pick-store-parity.test.js 逐點比對兩邊結果）。 */
+function lineHubDistanceM_(lat1, lng1, lat2, lng2) {
+  var toRad = Math.PI / 180, R = 6371000;
+  var dLat = (lat2 - lat1) * toRad, dLng = (lng2 - lng1) * toRad;
+  var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function lineHubPickStore_(fix, stores) {
+  if (!fix || typeof fix.lat !== 'number' || typeof fix.lng !== 'number' ||
+      !isFinite(fix.lat) || !isFinite(fix.lng)) return { status: 'no_fix' };
+  var r1 = function (v) { return Math.round(v * 10) / 10; };
+  var acc = (typeof fix.accuracy_m === 'number' && isFinite(fix.accuracy_m) && fix.accuracy_m >= 0) ? r1(fix.accuracy_m) : 0;
+  var hits = [], nearest = null, nearestD = Infinity;
+  (stores || []).forEach(function (s) {
+    if (typeof s.lat !== 'number') return;
+    var d = lineHubDistanceM_(fix.lat, fix.lng, s.lat, s.lng);
+    if (d < nearestD) { nearestD = d; nearest = s; }
+    if (Math.max(0, r1(d) - Math.min(acc, LINE_HUB_ACC_CAP_M)) <= s.radius_m) hits.push({ store: s, d: d });
+  });
+  if (hits.length === 1) return { status: 'ok', store: hits[0].store, distance_m: Math.round(hits[0].d * 10) / 10 };
+  if (hits.length > 1) return { status: 'ambiguous', candidates: hits.map(function (h) { return h.store.code; }) };
+  return { status: 'none', nearest: nearest, distance_m: nearest ? Math.round(nearestD) : null };
+}
+
+/** 姓名比對：去掉所有空白（半形、全形）。 */
+function lineHubNormName_(s) { return String(s || '').replace(/[\s\u3000]/g, ''); }
+
+/** 呼叫某家店自己的 handler（光復本機直接呼叫，其他店伺服器對伺服器）；失敗回 null。 */
+function lineHubCallStore_(st, payload) {
+  try {
+    if (st.code === '') return LIFF_HANDLERS[payload.action](payload);
+    return JSON.parse(UrlFetchApp.fetch(st.api, { method: 'post', contentType: 'text/plain', payload: JSON.stringify(payload),
+                                                  muteHttpExceptions: true, followRedirects: true }).getContentText());
+  } catch (e) { return null; }
+}
+
+/**
+ * {action:'line_bind_name', id_token, name, lat, lng, accuracy}（Eason 2026-10-08：第一次使用輸入全名，不給連結或啟用碼）
+ * 防代綁三道：①手機定位必須在「名冊上有這個名字」的那家店範圍內 ②只能綁還沒被綁的名字
+ *             ③綁定寫進那家店的 liff_bind_log（type=bind_name），值班核定頁看得到、可解除。
+ */
+function handleLineBindName_(body) {
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+  var want = lineHubNormName_(body.name);
+  if (!want) return { ok: false, error: 'empty_name', message: '請輸入你的全名' };
+  var pick = lineHubPickStore_({ lat: Number(body.lat), lng: Number(body.lng),
+    accuracy_m: body.accuracy === null || body.accuracy === undefined || body.accuracy === '' ? undefined : Number(body.accuracy) }, lineHubStores_());
+  if (pick.status !== 'ok') {
+    return { ok: false, error: 'not_at_store', message: pick.status === 'ambiguous'
+      ? '定位不夠準，分不出你在哪一家店。請開啟「精確位置」與 Wi‑Fi 後再試。'
+      : '綁定要人在店裡：請到你上班的店再試一次（目前定位不在任何打卡地點範圍內）。' };
+  }
+  var st = pick.store, rows;
+  try { rows = lineHubSheetRows_(lineHubSS_(st), 'roster'); } catch (e) { return { ok: false, error: 'unreachable', message: '「' + st.name + '」的系統暫時連不上，請稍後再試。' }; }
+  var hit = rows.filter(function (r) { return lineHubActive_(r) && lineHubNormName_(r.name) === want; });
+  if (!hit.length) return { ok: false, error: 'name_not_found', store_name: st.name,
+                            message: '「' + st.name + '」的名冊上沒有「' + String(body.name).trim() + '」。請確認是全名、沒有錯字；名冊上沒有你請主管把你加進去。' };
+  if (hit.length > 1) return { ok: false, error: 'name_conflict', message: '「' + st.name + '」有兩位同名同仁，請找主管協助綁定。' };
+  var row = hit[0];
+  if (row.line_user_id && String(row.line_user_id) === String(userId)) return { ok: true, already: true, store_name: st.name, name: String(row.name) };
+  if (row.line_user_id) return { ok: false, error: 'name_taken', message: '「' + String(row.name) + '」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管在值班核定頁解除。' };
+  var j = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(row.key), via: 'name' });
+  if (!j || !j.ok) {
+    var m = { line_account_in_use: '你的 LINE 帳號已經綁定這家店的另一位同仁，請找主管處理。' }[j && j.error];
+    return { ok: false, error: (j && j.error) || 'unreachable', message: m || '綁定沒有成功，請稍後再試；一直不行請告知主管。' };
+  }
+  return { ok: true, store_name: st.name, name: String(row.name) };
+}
+
+function lineHubSS_(st) { return st.code === '' ? getSS() : SpreadsheetApp.openById(st.ss_id); }
+function lineHubSheetRows_(ss, name) {
+  var sh = ss.getSheetByName(name);
+  return sh ? readSheetAsObjects(sh).rows : [];
+}
+function lineHubHm_(ts) { return String(ts || '').slice(11, 16); }
+
+/** 暫存「這個 LINE 帳號剛才的打卡結果」，給 webhook 回覆用。 */
+function lineHubStash_(userId, obj) {
+  CacheService.getScriptCache().put('lhq:' + userId, JSON.stringify(obj), LINE_HUB_STASH_SEC);
+}
+function lineHubTakeStash_(userId) {
+  var c = CacheService.getScriptCache(), k = 'lhq:' + userId, v = c.get(k);
+  if (!v) return null;
+  c.remove(k);
+  try { return JSON.parse(v); } catch (e) { return null; }
+}
+
+/** 打卡結果 → 聊天室文字。r：{ok, type, ts, store_name, reason, hint, note} */
+function lineHubPunchText_(r) {
+  var label = r.type === 'out' ? '下班' : (r.type === 'in' ? '上班' : '');
+  if (r.ok) {
+    return '✅ ' + label + '打卡成功 ' + lineHubHm_(r.ts) + '\n地點：' + r.store_name + (r.note ? '\n' + r.note : '');
+  }
+  return '❌ ' + (label ? label : '') + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
+}
+
+/**
+ * {action:'line_quick_clock', id_token, lat, lng, accuracy} → {ok, result:{ok,type,ts,store_name,reason,hint,note}, text}
+ * 挑店 → 讀那家店的名冊與打卡紀錄決定上／下班與 10 分鐘鎖 → 伺服器對伺服器打那家店的 liff_clock → 暫存結果。
+ */
+function handleLineQuickClock_(body) {
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+  var res = lineHubQuickClockFor_(userId, body);
+  lineHubStash_(userId, res);
+  return { ok: true, result: res, text: lineHubPunchText_(res) };
+}
+
+function lineHubQuickClockFor_(userId, body) {
+  var fix = { lat: Number(body.lat), lng: Number(body.lng),
+              accuracy_m: body.accuracy === null || body.accuracy === undefined || body.accuracy === '' ? undefined : Number(body.accuracy) };
+  var pick = lineHubPickStore_(fix, lineHubStores_());
+  if (pick.status === 'no_fix') return { ok: false, reason: '抓不到手機定位', hint: '請允許 LINE 使用定位後再按一次「打卡」' };
+  if (pick.status === 'ambiguous') return { ok: false, reason: '定位不夠準，分不出你在哪一家店', hint: '請開啟手機的「精確位置」與 Wi‑Fi 後再按一次' };
+  if (pick.status === 'none') {
+    return { ok: false, reason: '你不在任何打卡地點範圍內（最近的是' + (pick.nearest ? pick.nearest.name : '—') + '，約 ' + pick.distance_m + ' 公尺）',
+             hint: '人在店裡的話，請開啟「精確位置」與 Wi‑Fi 後再按一次' };
+  }
+  var st = pick.store, ss;
+  try { ss = lineHubSS_(st); } catch (e) { return { ok: false, store_name: st.name, reason: '「' + st.name + '」的系統暫時連不上', hint: '請稍後再按一次；一直不行請告知主管' }; }
+  var me = lineHubSheetRows_(ss, 'roster').filter(function (r) {
+    return lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId);
+  })[0];
+  var autoNote = '';
+  if (!me) {
+    // 跨店自動綁定：這個 LINE 在別家店已綁定、名字唯一，而這家店名冊有同名且還沒被綁的在職同仁 → 自動綁（人已在店裡）
+    var names = {};
+    lineHubMine_(userId).forEach(function (m) { names[lineHubNormName_(m.row.name)] = String(m.row.name); });
+    var nameKeys = Object.keys(names);
+    var cand = nameKeys.length === 1 ? lineHubSheetRows_(ss, 'roster').filter(function (r) {
+      return lineHubActive_(r) && lineHubNormName_(r.name) === nameKeys[0];
+    }) : [];
+    if (cand.length === 1 && !cand[0].line_user_id) {
+      var jb = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(cand[0].key), via: 'auto' });
+      if (jb && jb.ok) { me = cand[0]; me.line_user_id = userId; autoNote = '（第一次在這家店打卡，已自動綁定「' + st.name + '」）'; }
+    }
+  }
+  if (!me) {
+    return { ok: false, code: 'not_bound', store_name: st.name, reason: '你的 LINE 帳號還沒有綁定「' + st.name + '」',
+             hint: '請在打卡畫面輸入你的全名完成綁定；名冊上沒有你請主管把你加進去' };
+  }
+  var events = lineHubSheetRows_(ss, 'events').map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  var last = lastCountedEvent(events, me.emp_id);
+  var type = last && last.type === 'in' ? 'out' : 'in';
+  if (last) {
+    var lastMs = new Date(String(last.ts)).getTime();
+    var leftMs = lastMs + LINE_HUB_LOCK_MIN * 60000 - Date.now();
+    if (!isNaN(lastMs) && leftMs > 0) {
+      var lastLabel = last.type === 'in' ? '上班' : '下班';
+      return { ok: false, type: type, store_name: st.name,
+               reason: '你 ' + lineHubHm_(last.ts) + ' 剛打過' + lastLabel + '卡，' + Math.ceil(leftMs / 60000) + ' 分鐘內不能再打（避免連按誤打）',
+               hint: '真的要' + (type === 'out' ? '下班' : '上班') + '請告知主管補登' };
+    }
+  }
+  // 裝置碼：LINE 身分已經擋住「連結轉傳代打」（LINE 帳號綁在本人手機上），所以沿用名冊上已綁定的裝置碼，
+  // 否則同仁第一次從 LINE 打卡（LINE 內建瀏覽器與 Safari 是不同裝置碼）會整批變成「新裝置待核准」。
+  // 名冊還沒綁裝置的人，用 'line:<userId>' 讓後端照原本規則自動綁定。
+  var deviceId = me.device_id ? String(me.device_id) : 'line:' + userId;
+  var payload = { action: 'liff_clock', id_token: body.id_token, type: type, lat: fix.lat, lng: fix.lng,
+                  accuracy: fix.accuracy_m === undefined ? null : fix.accuracy_m, device_id: deviceId };
+  var j = lineHubCallStore_(st, payload);
+  if (!j) return { ok: false, type: type, store_name: st.name, reason: '「' + st.name + '」的系統沒有回應，不確定這筆有沒有進去',
+                   hint: '請先按選單「出勤紀錄」看今天有沒有這筆；沒有再按一次「打卡」' };
+  if (j.ok && j.status === 'ok') return { ok: true, type: type, ts: j.ts, store_name: st.name, note: autoNote };
+  var reasons = {
+    pending_device_approval: ['這支手機還沒被核准', '已送出待核准，請主管在值班核定頁核准'],
+    rejected_out_of_range: ['店家判定你不在範圍內', '請開啟「精確位置」與 Wi‑Fi 後再按一次'],
+    rejected_duplicate: ['這一筆和上一筆重複', '請按「出勤紀錄」確認今天的紀錄'],
+  };
+  var rr = reasons[j.status] || reasons[j.error] || ['系統回覆：' + (j.status || j.error || '未知'), '請告知主管'];
+  return { ok: false, type: type, store_name: st.name, reason: rr[0], hint: rr[1] };
+}
+
+/* ── webhook：只做「讀暫存回覆」與「查詢回覆」，不做綁定（綁定在 LIFF 頁，需要 LINE 身分憑證）── */
+function lineHubReply_(replyToken, texts) {
+  var token = (typeof LINE_HUB_BOT_TOKEN !== 'undefined') ? LINE_HUB_BOT_TOKEN : '';
+  if (!token || !replyToken) return;
+  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
+    method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + token },
+    payload: JSON.stringify({ replyToken: replyToken,
+      messages: texts.slice(0, 5).map(function (t) { return { type: 'text', text: String(t).slice(0, 4900) }; }) }),
+  });
+}
+
+/** 這個 LINE 帳號綁了哪幾家店 → [{st, row}]（webhook 沒有 id_token，用 LINE 送來的 userId） */
+function lineHubMine_(userId) {
+  var out = [];
   lineHubStores_().forEach(function (st) {
     var rows = null;
     try { rows = lineHubRoster_(st); } catch (e) { rows = null; }
-    rosters[st.code] = rows;
-    if (!rows) unreadable.push(st.code);
+    (rows || []).forEach(function (r) {
+      if (lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId)) out.push({ st: st, row: r });
+    });
   });
-  return { rosters: rosters, unreadable: unreadable };
+  return out;
 }
 
-/**
- * {action:'line_my_stores', id_token}
- * → {ok, stores:[{code, emp_id, name}], unreadable:[code]}
- * 這個 LINE 帳號在哪幾家店綁定了。**不回 key**。
- */
-function handleLineMyStores_(body) {
-  var userId = verifyLineIdToken_(body.id_token);
-  if (!userId) return { ok: false, error: 'invalid_id_token' };
-  var all = lineHubAllRosters_();
-  var out = [];
-  lineHubStores_().forEach(function (st) {
-    (all.rosters[st.code] || []).forEach(function (r) {
-      if (lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId)) {
-        out.push({ code: st.code, emp_id: String(r.emp_id), name: String(r.name) });
-      }
+var LINE_HUB_NOT_BOUND_TEXT = '你的 LINE 帳號還沒綁定打卡系統。\n請到你上班的店，按選單的「打卡」，第一次會請你輸入全名完成綁定。';
+
+function lineHubAttendanceText_(userId) {
+  var mine = lineHubMine_(userId);
+  if (!mine.length) return LINE_HUB_NOT_BOUND_TEXT;
+  var today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
+  var cut = Utilities.formatDate(new Date(Date.now() - 6 * 86400000), 'Asia/Taipei', 'yyyy-MM-dd');
+  var lines = [], tot = null, wk = ['日', '一', '二', '三', '四', '五', '六'];
+  mine.forEach(function (m) {
+    var ss = lineHubSS_(m.st);
+    var events = lineHubSheetRows_(ss, 'events').map(function (e) { e.ts = normCellTs(e.ts); return e; });
+    var amap = buildLatestApprovedMap(lineHubSheetRows_(ss, 'approved'));
+    buildRecentDays(events, m.row.emp_id, today, amap).forEach(function (d) {
+      if (d.date < cut) return;
+      var segs = (d.segments || []).map(function (g) { return (g.in || '？') + '–' + (g.out || '？'); }).join('、');
+      var hrs = (d.approved === null || d.approved === undefined) ? '待核定' : '核定 ' + d.approved + 'h';
+      lines.push({ k: d.date + m.st.name, t: parseInt(d.date.slice(5, 7), 10) + '/' + parseInt(d.date.slice(8, 10), 10) +
+        '（' + wk[new Date(d.date + 'T12:00:00Z').getUTCDay()] + '）' + m.st.name + '\n　' + (segs || '—') + '｜' + hrs +
+        (d.approved_status && d.approved_status !== '正常' ? '｜' + d.approved_status : '') });
     });
-  });
-  return { ok: true, stores: out, unreadable: all.unreadable };
-}
-
-/**
- * {action:'line_bind_all', id_token, key, confirm?}
- * 用任一家店的專屬連結金鑰證明身分 → 找出這個人在每家店「同名且在職」的那一列。
- *   confirm 不是 true：只回清單讓本人確認（不寫入）。
- *   confirm === true：逐店呼叫那家店自己的 liff_bind（伺服器對伺服器，金鑰不經過手機）。
- *     codes（選填，陣列）：只綁這幾家店（同仁在確認畫面取消勾選的店不綁）。
- *     ⚠ 跨店只靠「同名」對人（名冊沒有其他共同欄位）。兩家店若有同名不同人，本人在確認畫面
- *     看得到店名、可以取消勾選；另有 proof_store 標出金鑰是哪家店的（P2 審查 #1，風險 Eason 接受與否見 spec §2.4）。
- * 每店狀態 state：free（可綁）／bound_self（已綁這個 LINE）／bound_other（已綁別的 LINE，要店長先解除）
- *                 ／name_conflict（同店有兩位在職同名，不自動綁）
- */
-function handleLineBindAll_(body) {
-  var userId = verifyLineIdToken_(body.id_token);
-  if (!userId) return { ok: false, error: 'invalid_id_token' };
-  var proofKey = String(body.key || '').trim();
-  if (!proofKey) return { ok: false, error: 'invalid_key' };
-
-  var stores = lineHubStores_();
-  var all = lineHubAllRosters_();
-  var me = null;
-  stores.forEach(function (st) {
-    if (me) return;
-    (all.rosters[st.code] || []).forEach(function (r) {
-      if (!me && lineHubActive_(r) && String(r.key) === proofKey) me = { name: String(r.name), store: st.code };
-    });
-  });
-  if (!me) return { ok: false, error: 'invalid_key' };
-
-  var cands = [];
-  stores.forEach(function (st) {
-    var rows = (all.rosters[st.code] || []).filter(function (r) {
-      return lineHubActive_(r) && String(r.name) === me.name;
-    });
-    if (!rows.length) return;
-    var state;
-    if (rows.length > 1) state = 'name_conflict';
-    else if (!rows[0].line_user_id) state = 'free';
-    else if (String(rows[0].line_user_id) === String(userId)) state = 'bound_self';
-    else state = 'bound_other';
-    cands.push({ st: st, row: rows[0], state: state });
-  });
-  var list = cands.map(function (c) {
-    return { code: c.st.code, store_name: c.st.name, emp_id: String(c.row.emp_id), state: c.state,
-             proof_store: c.st.code === me.store };
-  });
-  if (body.confirm !== true) {
-    return { ok: true, name: me.name, stores: list, unreadable: all.unreadable };
-  }
-  var only = Array.isArray(body.codes) ? body.codes.map(String) : null;
-
-  // 寫入：只綁 free 的店。光復自己直接呼叫，其他店並行打各自的 liff_bind。
-  var results = list.map(function (x) {
-    var skipped = only && only.indexOf(x.code) === -1 && x.state === 'free';
-    return { code: x.code, store_name: x.store_name, emp_id: x.emp_id, ok: x.state === 'bound_self',
-             error: skipped ? 'skipped' : (x.state === 'free' || x.state === 'bound_self' ? '' : x.state) };
-  });
-  var remote = [];
-  cands.forEach(function (c, i) {
-    if (c.state !== 'free' || results[i].error === 'skipped') return;
-    var payload = { action: 'liff_bind', id_token: body.id_token, key: String(c.row.key) };
-    if (c.st.code === '') {
-      var r = handleLiffBind_(payload);
-      results[i].ok = !!(r && r.ok); results[i].error = r && r.ok ? '' : String((r && r.error) || 'server_error');
-    } else {
-      remote.push({ i: i, req: { url: c.st.api, method: 'post', contentType: 'text/plain',
-                                  payload: JSON.stringify(payload), muteHttpExceptions: true, followRedirects: true } });
+    var mt = monthTotalsFor(amap, m.row.emp_id, events, today);
+    if (mt && mt.current) {
+      if (!tot) tot = { cur: { ym: mt.current.ym, h: 0, p: 0 }, prev: { ym: mt.previous.ym, h: 0, p: 0 } };
+      tot.cur.h += mt.current.hours || 0; tot.cur.p += mt.current.pending_days || 0;
+      tot.prev.h += mt.previous.hours || 0; tot.prev.p += mt.previous.pending_days || 0;
     }
   });
-  if (remote.length) {
-    var resps = UrlFetchApp.fetchAll(remote.map(function (x) { return x.req; }));
-    resps.forEach(function (resp, k) {
-      var i = remote[k].i, j = null;
-      try { j = JSON.parse(resp.getContentText()); } catch (e) { j = null; }
-      results[i].ok = !!(j && j.ok);
-      results[i].error = results[i].ok ? '' : String((j && j.error) || 'unreachable');
-    });
+  lines.sort(function (a, b) { return a.k < b.k ? -1 : a.k > b.k ? 1 : 0; });
+  var body = '📋 最近 7 天出勤\n' + (lines.length ? lines.map(function (l) { return l.t; }).join('\n') : '最近 7 天沒有打卡紀錄');
+  if (tot) {
+    var r2 = function (v) { return Math.round(v * 100) / 100; };
+    body += '\n\n本月（' + parseInt(tot.cur.ym.slice(5), 10) + ' 月）核定合計 ' + r2(tot.cur.h) + ' 小時' + (tot.cur.p ? '，尚有 ' + tot.cur.p + ' 天待核定' : '') +
+            '\n上月（' + parseInt(tot.prev.ym.slice(5), 10) + ' 月）核定合計 ' + r2(tot.prev.h) + ' 小時' + (tot.prev.p ? '，尚有 ' + tot.prev.p + ' 天待核定' : '');
   }
-  return { ok: true, name: me.name, results: results, unreadable: all.unreadable };
+  return body;
 }
 
-/**
- * {action:'line_my_payslip', id_token, ym} → 與 my_payslip 相同的回應。
- * 用 LINE 身分在薪資有接的各店名冊找人；同一人在多店時，優先取「薪資主檔有這個 emp_id」的那一家。
- */
-function handleLineMyPayslip_(body) {
-  var userId = verifyLineIdToken_(body.id_token);
-  if (!userId) return { ok: false, error: 'invalid_id_token' };
+/** 薪資／假別：用 LINE 身分在薪資有接的店找人（與 line_my_payslip 同一套挑法） */
+function lineHubPayslipFor_(userId, ym) {
   var hits = [];
   payStoreList().forEach(function (s) {
     var code = String(s.code), rs = [];
@@ -159,15 +291,72 @@ function handleLineMyPayslip_(body) {
       if (lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId)) hits.push({ me: r, store: code });
     });
   });
-  if (!hits.length) return { ok: false, error: 'not_bound' };
+  if (!hits.length) return null;
   var masterIds = {};
   payRead('master').forEach(function (m) { masterIds[String(m.emp_id)] = true; });
   var pick = hits.filter(function (h) { return masterIds[String(h.me.emp_id)]; })[0] || hits[0];
-  return payMyPayslipFor_(pick.me, pick.store, String(body.ym || currentYmTaipei()));
+  return payMyPayslipFor_(pick.me, pick.store, ym || currentYmTaipei());
+}
+
+function lineHubPayText_(userId) {
+  var j = lineHubPayslipFor_(userId);
+  if (!j) return LINE_HUB_NOT_BOUND_TEXT;
+  if (!j.ok) return '查不到你的薪資資料，請找店長確認。';
+  var t = '💰 ' + j.ym.replace('-', ' 年 ') + ' 月薪資\n';
+  if (!j.ready) return t + (j.message || '尚未結算') + '\n（結算定案後這裡就會顯示明細）';
+  var res = j.result || {};
+  var nf = function (v) { return Math.round(Number(v) || 0).toLocaleString('en-US'); };
+  t += '實付：' + nf(res.net) + ' 元\n應發：' + nf(res.gross) + ' 元｜扣款：' + nf(res.deduction) + ' 元';
+  if (j.payday) t += '\n發薪日：' + j.payday;
+  return t + '\n（完整明細請找店長或從打卡頁「我的薪資」查看）';
+}
+
+function lineHubLeaveText_(userId) {
+  var j = lineHubPayslipFor_(userId);
+  if (!j) return LINE_HUB_NOT_BOUND_TEXT;
+  if (!j.ok) return '查不到你的假別資料，請找店長確認。';
+  var list = j.leave_quota || [];
+  if (!list.length) return '📅 假別額度\n你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。';
+  var r1 = function (v) { return Math.round((Number(v) || 0) * 10) / 10; };
+  return '📅 今年假別額度（已請／剩餘）\n' + list.map(function (q) {
+    var used = q.used_days ? r1(q.used_h) + 'H' : '未請過';
+    var rem = q.cap_days == null ? '無上限' : (q.basis === 'event' ? '每次上限 ' + r1(q.cap_h) + 'H'
+      : (q.remain_h < 0 ? '超出 ' + r1(-q.remain_h) + 'H' : r1(q.remain_h) + 'H／上限 ' + r1(q.cap_h) + 'H'));
+    return '・' + q.name + '：' + used + '｜' + rem;
+  }).join('\n') + '\n（數字來自店長登記的請假紀錄，有出入請找店長）';
+}
+
+var LINE_HUB_TEXT_COMMANDS = {
+  '出勤紀錄': lineHubAttendanceText_,
+  '薪資明細': lineHubPayText_,
+  '假別額度': lineHubLeaveText_,
+  '加班申請': function () { return '加班申請功能還在準備中，目前請先找店長辦理。'; },
+  '請假申請': function () { return '請假申請功能還在準備中，目前請先找店長辦理。'; },
+};
+
+/** LINE webhook（Code.gs doPost 看到 body.events 就轉來這裡）。 */
+function handleLineWebhook_(body) {
+  (body.events || []).forEach(function (ev) {
+    try {
+      if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
+      var userId = ev.source && ev.source.userId;
+      if (!userId) return;
+      var text = String(ev.message.text || '').trim();
+      if (text === '打卡') {
+        var r = lineHubTakeStash_(userId);
+        lineHubReply_(ev.replyToken, [r ? lineHubPunchText_(r) : '請按下方選單的「打卡」，打卡要用手機定位，直接打字不會記錄。']);
+        return;
+      }
+      var fn = LINE_HUB_TEXT_COMMANDS[text];
+      if (fn) { lineHubReply_(ev.replyToken, [fn(userId)]); return; }
+    } catch (e) {
+      try { lineHubReply_(ev.replyToken, ['系統忙碌，請稍後再試一次。']); } catch (e2) {}
+    }
+  });
+  return { ok: true };
 }
 
 var LINE_HUB_HANDLERS = {
-  line_my_stores: handleLineMyStores_,
-  line_bind_all: handleLineBindAll_,
-  line_my_payslip: handleLineMyPayslip_,
+  line_quick_clock: handleLineQuickClock_,
+  line_bind_name: handleLineBindName_,
 };

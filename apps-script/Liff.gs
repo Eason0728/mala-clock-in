@@ -104,7 +104,9 @@ function handleLiffBind_(body) {
   setRosterCell(rosterSheet, target.__rowIndex, 'line_user_id', userId);
   // 純日期時間字串鎖成文字，避免被 Sheets 轉成 Date 物件（同 removed_at 的處理）
   setRosterCell(rosterSheet, target.__rowIndex, 'line_bound_at', nowTaipeiIso(), true);
-  logLiffBind_(target.emp_id, target.name, userId);
+  // via：LINE 單一打卡入口（LineHub.gs）代綁時標註是「輸入姓名」還是「跨店自動」綁的，給主管看綁定紀錄用
+  logLiffBind_(target.emp_id, target.name, userId,
+               body.via === 'name' ? 'bind_name' : body.via === 'auto' ? 'bind_auto' : 'bind');
   return { ok: true, name: target.name, emp_id: target.emp_id };
 }
 
@@ -123,14 +125,14 @@ function handleLiffBind_(body) {
  */
 var LIFF_BIND_LOG_SHEET_ = 'liff_bind_log';
 var LIFF_BIND_LOG_HEADERS_ = ['ts', 'emp_id', 'name', 'line_user_id', 'type'];
-function logLiffBind_(empId, name, userId) {
+function logLiffBind_(empId, name, userId, type) {
   var ss = getSS();
   var sheet = ss.getSheetByName(LIFF_BIND_LOG_SHEET_);
   if (!sheet) {
     sheet = ss.insertSheet(LIFF_BIND_LOG_SHEET_);
     sheet.getRange(1, 1, 1, LIFF_BIND_LOG_HEADERS_.length).setValues([LIFF_BIND_LOG_HEADERS_]);
   }
-  sheet.appendRow([nowTaipeiIso(), empId, name, userId, 'bind']);
+  sheet.appendRow([nowTaipeiIso(), empId, name, userId, type || 'bind']);
 }
 
 /**
@@ -171,7 +173,52 @@ function withLineIdentity_(body, innerHandler) {
   return innerHandler(inner);
 }
 
+/* ── 值班主管看得到誰綁了 LINE、綁錯可以解除（2026-10-08，LINE 單一打卡入口改成「輸入全名」綁定）── */
+function liffMgr_(body) {
+  var sh = getSS().getSheetByName('managers');
+  return sh ? findManagerByKey(readSheetAsObjects(sh).rows, body.mgr_key) : null;
+}
+
+/** {action:'mgr_line_binds', mgr_key, days?} → 最近 N 天（預設 30）的綁定／解除紀錄＋現在是否仍綁著。不回 LINE userId 全文。 */
+function handleMgrLineBinds_(body) {
+  if (!liffMgr_(body)) return { ok: false, error: 'unauthorized' };
+  var days = Math.min(Math.max(parseInt(body.days, 10) || 30, 1), 180);
+  var cutoff = Date.now() - days * 86400000;
+  var ss = getSS();
+  var roster = readSheetAsObjects(ss.getSheetByName('roster')).rows;
+  var nowBound = {};
+  roster.forEach(function (r) { if (r.line_user_id) nowBound[String(r.emp_id)] = String(r.line_user_id); });
+  var sh = ss.getSheetByName(LIFF_BIND_LOG_SHEET_);
+  var rows = sh ? readSheetAsObjects(sh).rows : [];
+  var items = rows.map(function (r) { return { ts: String(normCellTs(r.ts) || ''), emp_id: String(r.emp_id), name: String(r.name),
+                                              type: String(r.type || 'bind'), uid: String(r.line_user_id || '') }; })
+    .filter(function (r) { var t = new Date(r.ts).getTime(); return !isNaN(t) && t >= cutoff; })
+    .map(function (r) {
+      return { ts: r.ts, emp_id: r.emp_id, name: r.name, type: r.type,
+               still_bound: r.type.indexOf('bind') === 0 && nowBound[r.emp_id] === r.uid };
+    })
+    .reverse();
+  return { ok: true, days: days, items: items };
+}
+
+/** {action:'mgr_line_unbind', mgr_key, emp_id} → 清掉該同仁的 LINE 綁定（他下次打卡要重新輸入姓名綁定）。 */
+function handleMgrLineUnbind_(body) {
+  var mgr = liffMgr_(body);
+  if (!mgr) return { ok: false, error: 'unauthorized' };
+  var sheet = getSS().getSheetByName('roster');
+  ensureRosterHeaders(sheet);
+  var row = readSheetAsObjects(sheet).rows.filter(function (r) { return String(r.emp_id) === String(body.emp_id); })[0];
+  if (!row) return { ok: false, error: 'not_found' };
+  if (!row.line_user_id) return { ok: true, already: true };
+  setRosterCell(sheet, row.__rowIndex, 'line_user_id', '');
+  setRosterCell(sheet, row.__rowIndex, 'line_bound_at', '', true);
+  logLiffBind_(row.emp_id, row.name, String(row.line_user_id), 'unbind_by:' + String(mgr.name || ''));
+  return { ok: true };
+}
+
 var LIFF_HANDLERS = {
+  mgr_line_binds: handleMgrLineBinds_,
+  mgr_line_unbind: handleMgrLineUnbind_,
   liff_bind: handleLiffBind_,
   liff_clock: function (body) { return withLineIdentity_(body, handleClock); },
   liff_whoami: function (body) { return withLineIdentity_(body, handleWhoami); },

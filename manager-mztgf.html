@@ -195,6 +195,7 @@
              background: #fff; color: var(--brand-orange); font-weight: 700; cursor: pointer; }
   /* 同仁異動區（2026-08-25）。白底卡片同樣要自己設色。 */
   #rosterCard { color: var(--brand-black); }
+  #lineBindCard { color: var(--brand-black); }
   .ae-row select { flex: 1; min-width: 0; font-size: 16px; padding: 10px 12px;
                    border: 1px solid #d8cfc9; border-radius: 10px; background: #fff;
                    color: var(--brand-black); }
@@ -537,6 +538,15 @@
     </div>
     <div class="ae-result" id="reResult" style="display:none"></div>
     <div class="re-list" id="reInactive"></div>
+  </div>
+
+  <!-- LINE 綁定紀錄（2026-10-08）：同仁在 LINE「鼎兆元打卡」輸入全名綁定，主管在這裡看得到、綁錯可以解除 -->
+  <div id="lineBindFail"></div>
+  <div class="card" id="lineBindCard" style="display:none">
+    <div class="ae-title">LINE 綁定紀錄</div>
+    <div class="ae-hint">同仁第一次用 LINE「鼎兆元打卡」打卡時，要<b>人在店裡</b>並輸入全名才能綁定。下面是最近 30 天的紀錄；<b>不是本人綁的請立刻按「解除」</b>，那位同仁下次打卡要重新輸入全名。</div>
+    <div class="ae-result" id="lbResult" style="display:none"></div>
+    <div class="re-list" id="lbList"></div>
   </div>
 
   <!-- 店內公告載入失敗提示條 slot：卡片本身預設隱藏，提示條要能獨立顯示在卡片正前方 -->
@@ -2100,6 +2110,55 @@
       setActive(empId, name, false, btn);
     });
     reloadRosterCard = load;
+    load();
+  })();
+
+  /* ── LINE 綁定紀錄（2026-10-08）──
+   * 後端 mgr_line_binds／mgr_line_unbind（Liff.gs）。舊後端沒有這兩個 action 時 bgLoad 會安靜不畫。 */
+  (function initLineBinds() {
+    var card = document.getElementById('lineBindCard');
+    var listBox = document.getElementById('lbList');
+    var box = document.getElementById('lbResult');
+    var failSlot = document.getElementById('lineBindFail');
+    if (!card || !listBox || !box) return;
+    var TYPE = { bind_name: '輸入全名綁定', bind_auto: '跨店自動綁定', bind: '用打卡連結綁定' };
+    function when(iso) {
+      var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+      return m ? (Number(m[2]) + '/' + Number(m[3]) + ' ' + m[4] + ':' + m[5]) : '';
+    }
+    function render(items) {
+      if (!items.length) { listBox.innerHTML = '<div class="ae-hint">最近 30 天沒有人綁定或解除。</div>'; return; }
+      listBox.innerHTML = items.map(function (it) {
+        var label = it.type.indexOf('unbind_by:') === 0 ? ('由 ' + escHtml(it.type.slice(10)) + ' 解除') : escHtml(TYPE[it.type] || it.type);
+        var btn = it.still_bound ? '<button type="button" class="re-restore" data-emp="' + escHtml(it.emp_id) + '" data-name="' + escHtml(it.name) + '">解除</button>' : '';
+        return '<div class="re-item"><span class="re-name">' + escHtml(it.name) + '（' + escHtml(it.emp_id) + '）'
+             + '<span class="re-when">' + when(it.ts) + '・' + label + (it.type.indexOf('bind') === 0 && !it.still_bound ? '・已不是目前綁定' : '') + '</span></span>' + btn + '</div>';
+      }).join('');
+      [].forEach.call(listBox.querySelectorAll('.re-restore'), function (b) {
+        b.addEventListener('click', function () {
+          var name = b.getAttribute('data-name');
+          if (!confirm('要解除「' + name + '」的 LINE 綁定嗎？\n\n解除後他下次用 LINE 打卡要重新輸入全名綁定（要人在店裡）。\n不影響他原本的打卡連結，也不影響過去的打卡紀錄。')) return;
+          b.disabled = true; b.textContent = '處理中…';
+          apiPost({ action: 'mgr_line_unbind', mgr_key: mgrKey, emp_id: b.getAttribute('data-emp') }).then(function (res) {
+            box.style.display = 'block';
+            box.className = 'ae-result' + (res && res.ok ? '' : ' err');
+            box.innerHTML = res && res.ok ? ('✓ 已解除 <b>' + escHtml(name) + '</b> 的 LINE 綁定') : '✕ 解除失敗，請再試一次';
+            load();
+          }, function () {
+            b.disabled = false; b.textContent = '解除';
+            box.style.display = 'block'; box.className = 'ae-result err'; box.innerHTML = '✕ 連線失敗，請檢查網路後再試一次';
+          });
+        });
+      });
+    }
+    var ctrl = null;
+    function load() {
+      if (!mgrKey) return;
+      if (ctrl) ctrl.stop();
+      ctrl = bgLoad({ action: 'mgr_line_binds', mgr_key: mgrKey },
+        function (res) { card.style.display = 'block'; render(res.items || []); },
+        { label: 'LINE 綁定紀錄', slot: failSlot });
+    }
     load();
   })();
 

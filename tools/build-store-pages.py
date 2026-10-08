@@ -91,46 +91,8 @@ def build(src_name, prefix, page_title, icon_key, home_key, bg_key):
         dst.write_text(out, encoding='utf-8')
         print(f'  產生 {dst.name}  ← {src_name}（{st["name"]}）')
 
-# ── LINE 單一打卡入口（2026-10-08，規格 mala-clock-liff/docs/spec.md）──
-# clock-line.html：不固定店家，打卡當下用 GPS 從 tools/stores.json 挑店。
-# LIFF ID 等 Eason 在 LINE Developers 建好 LIFF app（任務 T12）才填；空字串＝頁面會顯示「請從 LINE 打開」。
-LINE_HUB_LIFF_ID = '2011292256-QFXEwFh4'   # 鼎兆元打卡登入 channel，2026-10-08 Eason 建立
-
-def build_line():
-    import json
-    src = (ROOT / 'clock.html').read_text(encoding='utf-8')
-    stores = json.loads((ROOT / 'tools' / 'stores.json').read_text(encoding='utf-8'))
-    table = [{k: st[k] for k in ('code', 'name', 'api', 'lat', 'lng', 'radius_m')} for st in stores]
-    out = src
-    out = re.sub(r'<title>[^<]*</title>', '<title>鼎兆元 LINE 打卡</title>', out, count=1)
-    out = re.sub(r'(<link rel="apple-touch-icon" href=")[^"]+(">)', r'\1assets/icon-180-mzt.png\2', out, count=1)
-    out = re.sub(r'(<meta name="apple-mobile-web-app-title" content=")[^"]+(">)', r'\g<1>鼎兆元打卡\2', out, count=1)
-    out = re.sub(r'(<link rel="icon" type="image/png" sizes="32x32" href=")[^"]+(">)', r'\1assets/favicon-32-mzt.png\2', out, count=1)
-    out = re.sub(r"var STORE_CODE = \(function \(\) \{.*?\}\)\(\);",
-                 "var STORE_CODE = '';   // 由 tools/build-store-pages.py 產生，勿手改（LINE 入口不固定店家）",
-                 out, count=1, flags=re.S)
-    if RED_BG not in out:
-        raise SystemExit('✗ clock.html 找不到母版底色宣告，請同步更新 build-store-pages.py 的 RED_BG')
-    out = out.replace(RED_BG, f'background: {MZT_BG};', 1)
-    for needle, val in (("  var LINE_HUB = false;\n", "  var LINE_HUB = true;\n"),
-                        ("  var LINE_HUB_STORES = [];\n",
-                         "  var LINE_HUB_STORES = " + json.dumps(table, ensure_ascii=False) + ";\n"),
-                        ("  var LINE_HUB_LIFF_ID = '';\n", f"  var LINE_HUB_LIFF_ID = '{LINE_HUB_LIFF_ID}';\n")):
-        if out.count(needle) != 1:
-            raise SystemExit(f'✗ clock.html 找不到 {needle.strip()}，請同步更新 build-store-pages.py')
-        out = out.replace(needle, val, 1)
-    main_js = '<script>\n(function () {\n'
-    if out.count(main_js) != 1:
-        raise SystemExit('✗ clock.html 找不到主程式 <script>，請同步更新 build-store-pages.py')
-    out = out.replace(main_js, '<script src="clock-line-core.js"></script>\n' + main_js, 1)
-    out = out.replace('<!DOCTYPE html>',
-                      '<!-- 本檔由 tools/build-store-pages.py 從 clock.html 產生，請勿手改 -->\n<!DOCTYPE html>', 1)
-    (ROOT / 'clock-line.html').write_text(out, encoding='utf-8')
-    print(f'  產生 clock-line.html  ← clock.html（LINE 單一入口，{len(table)} 個地點）')
-
 if __name__ == '__main__':
     print('產生各門市靜態頁面：')
     for a in PAGES:
         build(*a)
-    build_line()
     print('完成。')

@@ -220,6 +220,11 @@ function doPost(e) {
     return jsonOut({ ok: false, error: 'bad_json' });
   }
 
+  // LINE 官方帳號「鼎兆元打卡」的 webhook（LineHub.gs，只有光復部署）：LINE 送來的是 {destination, events}，沒有 action。
+  if (body && Array.isArray(body.events) && typeof handleLineWebhook_ === 'function') {
+    return jsonOut(handleLineWebhook_(body));
+  }
+
   const handlers = {
     clock: handleClock,
     whoami: handleWhoami,

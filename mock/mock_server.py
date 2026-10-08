@@ -1627,90 +1627,134 @@ def _hub_active(r):
     return str(r.get("active")).lower() == "true"
 
 
-def handle_line_my_stores(data, body):
+def _hub_pick(lat, lng, acc):
+    """與 clock-line-core.js／LineHub.gs 同一套挑店規則。"""
+    stores = [{"code": "", "name": _hub_store_name(""), "lat": STORE_LAT, "lng": STORE_LNG, "radius_m": RADIUS_M}] + \
+             [dict(v, code=k) for k, v in STORE_TABLE.items()]
+    r1 = lambda v: math.floor(v * 10 + 0.5) / 10
+    a = r1(acc) if isinstance(acc, (int, float)) and acc >= 0 else 0
+    hits, nearest, nd = [], None, float("inf")
+    for st in stores:
+        d = haversine_m(lat, lng, st["lat"], st["lng"])
+        if d < nd:
+            nd, nearest = d, st
+        if max(0, r1(d) - min(a, ACCURACY_CREDIT_CAP_M)) <= st["radius_m"]:
+            hits.append(st)
+    if len(hits) == 1:
+        return "ok", hits[0], nd
+    if len(hits) > 1:
+        return "ambiguous", None, nd
+    return "none", nearest, nd
+
+
+def _norm_name(s):
+    return "".join(str(s or "").split()).replace("\u3000", "")
+
+
+def handle_line_quick_clock(data, body):
     uid = mock_verify_id_token(body.get("id_token"))
     if not uid:
         return {"ok": False, "error": "invalid_id_token"}
-    stores = []
-    for code, rows in _hub_all_rosters().items():
-        for r in rows:
-            if _hub_active(r) and r.get("line_user_id") and str(r["line_user_id"]) == uid:
-                stores.append({"code": code, "emp_id": r["emp_id"], "name": r["name"]})
-    return {"ok": True, "stores": stores, "unreadable": []}
+    status, st, d = _hub_pick(float(body["lat"]), float(body["lng"]), body.get("accuracy"))
+    if status == "ambiguous":
+        res = {"ok": False, "reason": "定位不夠準，分不出你在哪一家店", "hint": "請開啟手機的「精確位置」與 Wi‑Fi 後再按一次"}
+    elif status == "none":
+        res = {"ok": False, "reason": f"你不在任何打卡地點範圍內（最近的是{st['name']}，約 {round(d)} 公尺）",
+               "hint": "人在店裡的話，請開啟「精確位置」與 Wi‑Fi 後再按一次"}
+    else:
+        with store_context(st["code"] or None):
+            sd = load_data()
+            me = next((r for r in sd["roster"] if _hub_active(r) and r.get("line_user_id") == uid), None)
+            if not me:
+                res = {"ok": False, "code": "not_bound", "store_name": st["name"],
+                       "reason": f"你的 LINE 帳號還沒有綁定「{st['name']}」", "hint": "請在打卡畫面輸入你的全名完成綁定"}
+            else:
+                last = last_counted_event(sd, me["emp_id"])
+                typ = "out" if last and last["type"] == "in" else "in"
+                left = None
+                if last:
+                    lt = datetime.fromisoformat(last["ts"])
+                    left = (lt + timedelta(minutes=10) - now_taipei()).total_seconds()
+                if left is not None and left > 0:
+                    res = {"ok": False, "type": typ, "store_name": st["name"],
+                           "reason": f"你 {last['ts'][11:16]} 剛打過{'上班' if last['type'] == 'in' else '下班'}卡，{math.ceil(left / 60)} 分鐘內不能再打（避免連按誤打）",
+                           "hint": "真的要" + ("下班" if typ == "out" else "上班") + "請告知主管補登"}
+                else:
+                    j = handle_liff_clock(sd, {"action": "liff_clock", "id_token": body["id_token"], "type": typ,
+                                               "lat": body["lat"], "lng": body["lng"], "accuracy": body.get("accuracy"),
+                                               "device_id": me.get("device_id") or ("line:" + uid)})
+                    res = ({"ok": True, "type": typ, "ts": j.get("ts"), "store_name": st["name"]} if j.get("ok") and j.get("status") == "ok"
+                           else {"ok": False, "type": typ, "store_name": st["name"], "reason": "系統回覆：" + str(j.get("status") or j.get("error")), "hint": "請告知主管"})
+    label = {"in": "上班", "out": "下班"}.get(res.get("type"), "")
+    text = (f"✅ {label}打卡成功 {str(res.get('ts'))[11:16]}\n地點：{res['store_name']}" if res["ok"]
+            else f"❌ {label}打卡失敗\n原因：{res['reason']}" + (f"\n怎麼辦：{res['hint']}" if res.get("hint") else ""))
+    return {"ok": True, "result": res, "text": text}
 
 
-def handle_line_bind_all(data, body):
+def handle_line_bind_name(data, body):
     uid = mock_verify_id_token(body.get("id_token"))
     if not uid:
         return {"ok": False, "error": "invalid_id_token"}
-    key = str(body.get("key") or "").strip()
-    if not key:
-        return {"ok": False, "error": "invalid_key"}
-    rosters = _hub_all_rosters()
-    me = None
-    me_store = None
-    for code in _hub_store_codes():
-        for r in rosters[code]:
-            if not me and _hub_active(r) and str(r.get("key")) == key:
-                me = r["name"]
-                me_store = code
-    if not me:
-        return {"ok": False, "error": "invalid_key"}
-    cands = []
-    for code in _hub_store_codes():
-        rows = [r for r in rosters[code] if _hub_active(r) and r["name"] == me]
-        if not rows:
-            continue
-        if len(rows) > 1:
-            st = "name_conflict"
-        elif not rows[0].get("line_user_id"):
-            st = "free"
-        elif str(rows[0]["line_user_id"]) == uid:
-            st = "bound_self"
-        else:
-            st = "bound_other"
-        cands.append((code, rows[0], st))
-    lst = [{"code": c, "store_name": _hub_store_name(c), "emp_id": r["emp_id"], "state": st,
-            "proof_store": c == me_store} for c, r, st in cands]
-    if body.get("confirm") is not True:
-        return {"ok": True, "name": me, "stores": lst, "unreadable": []}
-    only = [str(x) for x in body["codes"]] if isinstance(body.get("codes"), list) else None
-    results = []
-    for c, r, st in cands:
-        item = {"code": c, "store_name": _hub_store_name(c), "emp_id": r["emp_id"],
-                "ok": st == "bound_self", "error": "" if st in ("free", "bound_self") else st}
-        if st == "free" and only is not None and c not in only:
-            item["error"] = "skipped"
-        elif st == "free":
-            with store_context(c or None):
-                res = handle_liff_bind(load_data(), {"action": "liff_bind", "id_token": body["id_token"], "key": r["key"]})
-            item["ok"] = bool(res.get("ok"))
-            item["error"] = "" if res.get("ok") else res.get("error", "server_error")
-        results.append(item)
-    return {"ok": True, "name": me, "results": results, "unreadable": []}
+    want = _norm_name(body.get("name"))
+    if not want:
+        return {"ok": False, "error": "empty_name", "message": "請輸入你的全名"}
+    status, st, _d = _hub_pick(float(body["lat"]), float(body["lng"]), body.get("accuracy"))
+    if status != "ok":
+        return {"ok": False, "error": "not_at_store", "message": "綁定要人在店裡：請到你上班的店再試一次。"}
+    with store_context(st["code"] or None):
+        sd = load_data()
+        hit = [r for r in sd["roster"] if _hub_active(r) and _norm_name(r["name"]) == want]
+        if not hit:
+            return {"ok": False, "error": "name_not_found", "message": f"「{st['name']}」的名冊上沒有「{body.get('name','').strip()}」。"}
+        if len(hit) > 1:
+            return {"ok": False, "error": "name_conflict", "message": "有兩位同名同仁，請找主管協助綁定。"}
+        row = hit[0]
+        if row.get("line_user_id") and row["line_user_id"] != uid:
+            return {"ok": False, "error": "name_taken", "message": f"「{row['name']}」已經綁定別的 LINE 帳號，請告知主管。"}
+        if row.get("line_user_id") == uid:
+            return {"ok": True, "already": True, "store_name": st["name"], "name": row["name"]}
+        j = handle_liff_bind(sd, {"action": "liff_bind", "id_token": body["id_token"], "key": row["key"]})
+        if not j.get("ok"):
+            return {"ok": False, "error": j.get("error"), "message": "綁定沒有成功：" + str(j.get("error"))}
+        return {"ok": True, "store_name": st["name"], "name": row["name"]}
 
 
-def handle_line_my_payslip(data, body):
-    """mock 只回「尚未結算」＋一張假別額度，讓前端畫得出來；薪資計算正確性由 tests/ 守。"""
-    uid = mock_verify_id_token(body.get("id_token"))
-    if not uid:
-        return {"ok": False, "error": "invalid_id_token"}
-    hit = None
-    for code, rows in _hub_all_rosters().items():
-        for r in rows:
-            if not hit and _hub_active(r) and str(r.get("line_user_id") or "") == uid:
-                hit = r
-    if not hit:
-        return {"ok": False, "error": "not_bound"}
-    ym = body.get("ym") or today_str()[:7]
-    return {"ok": True, "ym": ym, "name": hit["name"], "ready": False, "message": "本月薪資尚未結算",
-            "annual": None, "leave_quota": [{"name": "特休假", "cap_days": 7, "used_days": 1, "used_h": 8, "remain_h": 48, "cap_h": 56}]}
+def handle_mgr_line_binds(data, body):
+    """與 Liff.gs handleMgrLineBinds_ 同步（mock 不篩 30 天）。"""
+    mgr = find_manager_by_key(data, body.get("mgr_key"))
+    if not mgr:
+        return {"ok": False, "error": "unauthorized"}
+    bound = {r["emp_id"]: r.get("line_user_id") for r in data["roster"] if r.get("line_user_id")}
+    items = [{"ts": x["ts"], "emp_id": x["emp_id"], "name": x["name"], "type": x.get("type", "bind"),
+              "still_bound": str(x.get("type", "bind")).startswith("bind") and bound.get(x["emp_id"]) == x.get("line_user_id")}
+             for x in data.get("liff_bind_log", [])]
+    return {"ok": True, "days": 30, "items": list(reversed(items))}
+
+
+def handle_mgr_line_unbind(data, body):
+    mgr = find_manager_by_key(data, body.get("mgr_key"))
+    if not mgr:
+        return {"ok": False, "error": "unauthorized"}
+    row = find_roster_by_empid(data, body.get("emp_id"))
+    if not row:
+        return {"ok": False, "error": "not_found"}
+    if not row.get("line_user_id"):
+        return {"ok": True, "already": True}
+    data.setdefault("liff_bind_log", []).append({"ts": iso_now(), "emp_id": row["emp_id"], "name": row["name"],
+                                                 "line_user_id": row["line_user_id"], "type": "unbind_by:" + mgr["name"]})
+    row["line_user_id"] = ""
+    row["line_bound_at"] = ""
+    save_data(data)
+    return {"ok": True}
+
+
+ACTIONS["mgr_line_binds"] = handle_mgr_line_binds
+ACTIONS["mgr_line_unbind"] = handle_mgr_line_unbind
 
 
 LINE_HUB_ACTIONS = {
-    "line_my_stores": handle_line_my_stores,
-    "line_bind_all": handle_line_bind_all,
-    "line_my_payslip": handle_line_my_payslip,
+    "line_quick_clock": handle_line_quick_clock,
+    "line_bind_name": handle_line_bind_name,
 }
 
 
