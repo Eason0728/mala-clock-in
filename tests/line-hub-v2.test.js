@@ -230,4 +230,20 @@ ok('line_hub_status：回姓名、店家座標、班別、今天的卡、防呆�
   const f = m.sb.handleLineHubStatus_({ id_token: 'TOK_U1', lat: 25.03, lng: 121.56, accuracy: 10 });
   assert.strictEqual(f.status, 'fail'); assert.strictEqual(f.result.code, 'out_of_range'); assert(f.result.nearest.name);
 });
+// 方案 C：打卡畫面直接打店家，光復沒有暫存 → webhook 查已綁定各店最近 5 分鐘最新一筆成功的卡
+ok('webhook「打卡」沒暫存：查已綁定各店 5 分鐘內最新一筆成功的卡；問候語與 liffGreeting_ 同一句', () => {
+  const ts = iso(2);
+  const { sb, replies } = make({ sheets: {
+    hq: { roster: [R()], events: [{ emp_id: 'H01', ts: iso(4), type: 'in', status: 'ok' }, { emp_id: 'H01', ts: iso(1), type: 'out', status: 'rejected_out_of_range' }, { emp_id: 'H99', ts: iso(0), type: 'out', status: 'ok' }] },
+    mztjs: { roster: [R({ emp_id: 'J01', key: 'kJ' })], events: [{ emp_id: 'J01', ts, type: 'out', status: 'ok' }] } } });
+  sb.handleLineWebhook_(ev('打卡'));
+  const t = msgText(replies[0].messages[0]);
+  assert(/下班打卡成功/.test(t), t); assert(t.indexOf(js.name) >= 0, t); assert(t.indexOf(ts.slice(11, 16)) >= 0, t);
+  assert(t.indexOf(sb.liffGreeting_('out', ts)) >= 0, '問候語要與打卡畫面同一句');
+});
+ok('webhook「打卡」沒暫存：最新一筆超過 5 分鐘、或只有被擋的卡 → 提醒要按選單', () => {
+  const { sb, replies } = make({ sheets: { hq: { roster: [R()], events: [{ emp_id: 'H01', ts: iso(6), type: 'in', status: 'ok' }, { emp_id: 'H01', ts: iso(1), type: 'in', status: 'rejected_duplicate' }] } } });
+  sb.handleLineWebhook_(ev('打卡'));
+  assert(/請按下方選單/.test(msgText(replies[0].messages[0])));
+});
 console.log(`\n${n} 項全部通過`);

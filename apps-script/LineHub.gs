@@ -332,6 +332,25 @@ function lineHubMine_(userId) {
   return out;
 }
 
+/** 方案 C（2026-10-08）：打卡畫面改成直接打各店、光復不再有暫存 → 機器人收到「打卡」時，
+ *  查這個 LINE 帳號在已綁定各店最近 LINE_HUB_LATEST_SEC 秒內最新一筆成功的卡（打卡畫面只在成功時才代送「打卡」）。
+ *  問候語用同一個打卡時間算（liffGreeting_），與畫面上那句相同。 */
+var LINE_HUB_LATEST_SEC = 300;
+function lineHubLatestPunch_(userId) {
+  var best = null, cutoff = Date.now() - LINE_HUB_LATEST_SEC * 1000;
+  lineHubMine_(userId).forEach(function (m) {
+    var rows;
+    try { rows = lineHubSheetRows_(lineHubSS_(m.st), 'events'); } catch (e) { return; }
+    rows.forEach(function (e) {
+      if (String(e.emp_id) !== String(m.row.emp_id) || String(e.status) !== 'ok') return;
+      var ts = String(normCellTs(e.ts)), t = new Date(ts).getTime();
+      if (isNaN(t) || t < cutoff) return;
+      if (!best || t > best.ms) best = { ms: t, ts: ts, type: String(e.type), store_name: m.st.name };
+    });
+  });
+  return best ? { ok: true, type: best.type, ts: best.ts, store_name: best.store_name, greeting: liffGreeting_(best.type, best.ts) } : null;
+}
+
 var LINE_HUB_NOT_BOUND_TEXT = '你的 LINE 帳號還沒綁定打卡系統。\n請到你上班的店，按選單的「打卡」，第一次會請你輸入全名完成綁定。';
 
 function lineHubAttendanceText_(userId) {
@@ -648,7 +667,7 @@ function handleLineWebhook_(body) {
       if (lineHubThrottled_('wh', userId, 20, 60)) return;
       var text = String(ev.message.text || '').trim();
       if (text === '打卡') {
-        var r = lineHubTakeStash_(userId);
+        var r = lineHubTakeStash_(userId) || lineHubLatestPunch_(userId);
         lineHubReply_(ev.replyToken, [r ? lineHubPunchCard_(r) : lineHubNoticeCard_('打卡', '請按下方選單的「打卡」，打卡要用手機定位，直接打字不會記錄。')]);
         return;
       }

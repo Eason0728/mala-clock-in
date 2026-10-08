@@ -9,9 +9,10 @@
 <!--
   LINE 單一打卡入口（v3 畫面，2026-10-08 Eason 指定：仿傳統打卡 App——日期、大時鐘、地圖、店家、班別、上班／下班兩顆鍵）
   官方帳號「鼎兆元打卡」選單「打卡」打開這頁（LIFF 2011292256-QFXEwFh4，Tall）。
-    開頁：定位 → 光復後端 line_hub_status（挑店、姓名、班別、今天的卡、防呆狀態）
-    按上班／下班：line_quick_clock {type} → 結果顯示在畫面 → 代同仁送出「打卡」讓機器人回覆 → 關閉
-  第一次使用：輸入全名綁定（line_bind_name，人要在那家店的範圍內）。
+    開頁：定位 → 這頁自己挑店（clock-line-core.js，規則與各店後端相同）→ 直接問那家店 liff_status（姓名、班別、今天的卡、防呆狀態）
+    按上班／下班：直接打那家店 liff_punch {type}（防呆在店家後端再擋一次）→ 結果顯示在畫面 → 代同仁送出「打卡」讓機器人回覆 → 關閉
+    （方案 C，2026-10-08：不再經光復轉一手。店家表由 tools/build-line-page.py 從 tools/stores.json 產生。）
+  第一次使用：那家店回「沒綁定」→ 改問光復 line_hub_status／line_bind_name（輸入全名綁定、跨店同名確認，人要在那家店的範圍內）。
   ⚠ 獨立檔，不是由 clock.html 產生；各門市的 clock*.html 與這頁互不影響。
 -->
 <style>
@@ -76,6 +77,7 @@
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="clock-line-core.js"></script>
 <script>
 (function () {
   'use strict';
@@ -84,6 +86,20 @@
   function qs(n) { return new URLSearchParams(location.search).get(n); }
   var isLocalHost = ['localhost', '127.0.0.1'].indexOf(location.hostname) !== -1;
   if (isLocalHost && qs('api')) HUB_API = qs('api');
+  /* STORES:BEGIN（tools/build-line-page.py 產生，勿手改）*/
+  var STORES = [
+    {"code": "", "name": "小辛辣 新竹光復", "lat": 24.7840945, "lng": 121.0157448, "radius_m": 20, "api": "https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec"},
+    {"code": "mztjs", "name": "墨竹亭 新竹金山", "lat": 24.776717902605498, "lng": 121.02188536933596, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycby6Nv7aCGUDsxKA3dwPIYluxk76JaWKp-wqwCCvnE6knthefzGNR8Jyw3uRWds-PwOv/exec"},
+    {"code": "mztgf", "name": "墨竹亭 新竹光復", "lat": 24.801160225561624, "lng": 120.98820054417844, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycbyGH4ktFmXON443Naibe84rEKeqprkOJO0t7eU4UukTvqLWsfu541x7scHKLvntV6okFw/exec"},
+    {"code": "hq", "name": "鼎兆元 總部", "lat": 24.776352585623435, "lng": 121.01992421142127, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycbyiocazNgn9M249CCkPzJsRvMJ35uh_Wjp_ju1y1sB2TZ_IWH3RD6pKUsHXsUJR-4N9TQ/exec"},
+    {"code": "cf", "name": "鼎兆元 中央廚房", "lat": 24.12274490856511, "lng": 120.7102176960625, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycby-IzOBTrUK-usZxEUVRAcvPqagfAbHpvLevIWnk6drBpIuHwh1IlEun4bdsS9o-CIB/exec"}
+  ];
+  /* STORES:END */
+  /** 那家店的後端網址；本機測試（?api=）時對到 mock 的 /api/<店代碼>。 */
+  function storeApi(st) {
+    if (isLocalHost && qs('api')) return String(qs('api')).replace(/\/$/, '') + (st.code ? '/' + st.code : '');
+    return st.api;
+  }
   var $ = function (id) { return document.getElementById(id); };
   var WK = ['日', '一', '二', '三', '四', '五', '六'];
 
@@ -117,10 +133,10 @@
 
   /* ── 後端 ── */
   var POST_TIMEOUT_MS = 25000;
-  function post(body) {   // 25 秒沒回應就放棄等待，但不自動重送（打卡重送會變重複）
+  function post(url, body) {   // 25 秒沒回應就放棄等待，但不自動重送（打卡重送會變重複）
     var ctrl = window.AbortController ? new AbortController() : null;
     var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, POST_TIMEOUT_MS) : null;
-    return fetch(HUB_API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body),
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body),
                             signal: ctrl ? ctrl.signal : undefined })
       .then(function (r) { return r.text(); })
       .then(function (t) { if (timer) clearTimeout(timer); return JSON.parse(t); },
@@ -181,6 +197,10 @@
       }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
     });
   }
+  function fixForPick() {
+    return { lat: lastFix.coords.latitude, lng: lastFix.coords.longitude,
+             accuracy_m: isFinite(lastFix.coords.accuracy) ? lastFix.coords.accuracy : undefined };
+  }
   function fixPayload() {
     if (isLocalHost && qs('loc')) lastFix.timestamp = Date.now();
     return { lat: lastFix.coords.latitude, lng: lastFix.coords.longitude,
@@ -224,16 +244,51 @@
     }
     refreshButtons();
   }
+  var curStore = null;   // 這次畫面挑到、要直接打的那家店
+  /** 挑不到店時的畫面（字句與光復 LineHub.gs lineHubResolve_ 相同）。 */
+  function pickFail(pick) {
+    if (pick.status === 'no_fix') return { status: 'fail', result: { ok: false, code: 'no_fix', reason: '抓不到手機定位', hint: '請允許 LINE 使用定位後再試一次' } };
+    if (pick.status === 'ambiguous') return { status: 'fail', result: { ok: false, code: 'ambiguous', reason: '定位不夠準，分不出你在哪一家店', hint: '請開啟手機的「精確位置」與 Wi‑Fi 後再試一次' } };
+    var n = pick.nearest;
+    return { status: 'fail', result: { ok: false, code: 'out_of_range',
+      reason: '你不在任何打卡地點範圍內（最近的是' + (n ? n.name : '—') + '，約 ' + pick.distance_m + ' 公尺）',
+      hint: '人在店裡的話，請開啟「精確位置」與 Wi‑Fi 後再試一次',
+      nearest: n ? { name: n.name, lat: n.lat, lng: n.lng, radius_m: n.radius_m } : null } };
+  }
+  function noReply() { say('系統沒有正常回應', 'warn', '請稍後按「重新定位」再試一次。'); $('btnRetry').hidden = false; }
+  function connFail() { say('連線失敗', 'warn', '請檢查網路後按「重新定位」再試一次。'); $('btnRetry').hidden = false; }
+  function tooMany() { say('按太多次了', 'warn', '請等一分鐘後再試；先按選單「出勤紀錄」確認有沒有打到。'); $('btnRetry').hidden = false; }
   function loadStatus() {
     say('讀取中…', '', '');
-    return post(Object.assign({ action: 'line_hub_status', id_token: liff.getIDToken() }, fixPayload()))
+    var pick = ClockLineCore.pickStore(fixForPick(), STORES);
+    if (pick.status !== 'ok') { curStore = null; render(pickFail(pick)); return Promise.resolve(); }
+    var st = pick.store;
+    curStore = st;
+    return post(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() })
+      .then(function (r) {
+        if (r && r.ok && r.status === 'ready') {
+          r.store = { code: st.code, name: st.name, lat: st.lat, lng: st.lng, radius_m: st.radius_m };
+          render(r); return;
+        }
+        if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+        if (r && r.error === 'not_bound') return loadViaHub();   // 綁定（輸入全名、跨店同名確認）仍由光復處理
+        if (r && r.error === 'too_many') { tooMany(); return; }
+        if (r && r.error === 'line_identity_conflict') { say('你的 LINE 帳號在這家店對到兩位同仁', 'warn', '請告知主管處理。'); return; }
+        noReply();
+      }, connFail);
+  }
+  /** 這家店說還沒綁定：問光復（它會帶出跨店同名建議），畫面照舊顯示綁定框。 */
+  function loadViaHub() {
+    return post(HUB_API, Object.assign({ action: 'line_hub_status', id_token: liff.getIDToken() }, fixPayload()))
       .then(function (r) {
         if (!r || !r.ok) {
           if (r && r.error === 'invalid_id_token') { liff.login(); return; }
-          say('系統沒有正常回應', 'warn', '請稍後按「重新定位」再試一次。'); $('btnRetry').hidden = false; return;
+          if (r && r.error === 'too_many') { tooMany(); return; }
+          noReply(); return;
         }
+        if (r.status === 'ready' && r.store) curStore = STORES.filter(function (x) { return x.code === r.store.code; })[0] || curStore;
         render(r);
-      }, function () { say('連線失敗', 'warn', '請檢查網路後按「重新定位」再試一次。'); $('btnRetry').hidden = false; });
+      }, connFail);
   }
 
   /* ── 打卡 ── */
@@ -242,30 +297,38 @@
     var label = type === 'in' ? '上班' : '下班';
     var hasIn = (status.today || []).some(function (e) { return e.type === 'in' && (e.status === 'ok' || e.status === 'pending_device_approval'); });
     if (type === 'out' && !status.guard.last && !hasIn && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
+    // 送出前用最新定位再挑一次店：位置變了就重讀，不把卡打到畫面上沒顯示的那家店
+    var pick = ClockLineCore.pickStore(fixForPick(), STORES);
+    if (pick.status !== 'ok' || !curStore || pick.store.code !== curStore.code) {
+      status = null; refreshButtons();
+      return loadStatus().then(function () { if (status && status.status === 'ready') say('你的位置變了，請確認店家後再按一次', 'warn'); });
+    }
+    var st = curStore;
     busy = true; refreshButtons();
     say('送出' + label + '打卡中…', '', '大約需要幾秒，請不要關閉');
-    post(Object.assign({ action: 'line_quick_clock', id_token: liff.getIDToken(), type: type }, fixPayload()))
+    post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, fixPayload()))
       .then(function (r) {
-        if (!r || !r.ok) {
-          if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+        if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+        if (r && r.error === 'not_bound') { status = null; refreshButtons(); return loadViaHub(); }
+        if (r && r.error === 'too_many') { say('按太多次了', 'warn', '請等一分鐘；先按選單「出勤紀錄」確認有沒有打到。'); return; }
+        if (!r || (r.ok === false && !r.reason)) {
           say('系統沒有正常回應', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。'); return;
         }
-        var res = r.result || {};
-        if (res.code === 'not_bound') { showBind(res.store_name, res.suggest_name); return; }
-        var shown = String(r.text || '').replace(/^[✅❌]\s*/, '');
-        say(shown, res.ok ? 'ok' : 'warn');
-        if (res.ok) {
+        var hm = String(r.ts || '').slice(11, 16);
+        if (r.ok) {
+          var shown = label + '打卡成功 ' + hm + '\n地點：' + st.name + (r.greeting ? '\n\n' + r.greeting : '');
           // 就地鎖鍵（同網頁版 updateButtonStates({type, ts})）：同型不能再按、另一型 10 分鐘鎖（審查 M1）
-          var nowSrv = Date.now() + clockSkew, hm = String(res.ts || '').slice(11, 16);
+          var nowSrv = Date.now() + clockSkew;
           status.guard = { blocked: type, lock: {}, last: { type: type, hm: hm }, now: nowSrv };
           status.guard.lock[type === 'in' ? 'out' : 'in'] = nowSrv + 10 * 60000;
           status.today = (status.today || []).concat([{ type: type, hm: hm, status: 'ok' }]);
           render(status); say(shown, 'ok');
           return sendToChat().then(function (closing) { if (closing) keepBusy = true; });
         }
+        var failText = label + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
         // 失敗：重讀狀態；重讀也失敗就維持鍵停用（不拿舊狀態重新亮鍵），訊息保留（審查 L4）
         status = null; refreshButtons();
-        return loadStatus().then(function () { say(shown, 'warn'); });
+        return loadStatus().then(function () { say(failText, 'warn'); });
       }, function () {
         say('連線不穩，不確定這筆有沒有進去', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。不要連按。');
       })
@@ -297,7 +360,7 @@
     var name = $('bindName').value.trim();
     if (!name) { $('bindError').textContent = '請輸入你的全名'; return; }
     $('btnBind').disabled = true; $('bindError').textContent = '';
-    post(Object.assign({ action: 'line_bind_name', id_token: liff.getIDToken(), name: name }, fixPayload()))
+    post(HUB_API, Object.assign({ action: 'line_bind_name', id_token: liff.getIDToken(), name: name }, fixPayload()))
       .then(function (r) {
         $('btnBind').disabled = false;
         if (r && r.ok) { loadStatus(); return; }
