@@ -51,7 +51,7 @@ function make(opts) {
         return { getContentText: () => JSON.stringify(opts.storeReply ? opts.storeReply(url, JSON.parse(o.payload)) : { ok: true, status: 'ok', ts: iso(0) }) };
       },
     },
-    CacheService: { getScriptCache: () => ({ put: (k, v) => { cache[k] = v; }, get: (k) => cache[k] || null, remove: (k) => { delete cache[k]; } }) },
+    CacheService: { getScriptCache: () => ({ put: (k, v) => { cache[k] = v; }, get: (k) => cache[k] || null, remove: (k) => { delete cache[k]; }, removeAll: (ks) => ks.forEach(k => { delete cache[k]; }) }) },
     getSS: () => ssOf(''),
     SpreadsheetApp: { openById: (id) => ssOf(id.replace('SS_', '')) },
     readSheetAsObjects: (sh) => ({ rows: sh.rows.map(r => Object.assign({}, r)) }),
@@ -301,5 +301,29 @@ ok('打卡求助：打卡畫面用到的每個類別，機器人都有對應的�
   assert(keys.size >= 6, [...keys].join(','));
   keys.forEach(k => assert(sb.LINE_HUB_HELP[k], '機器人沒有「' + k + '」的步驟卡'));
   sb.LINE_HUB_HELP_ORDER.forEach(k => assert(sb.LINE_HUB_HELP[k]));
+});
+ok('速度：「你綁了哪幾家店」記 5 分鐘——第二次查不再開各店試算表；綁定成功會清掉；有店讀不到不記', () => {
+  const env = make({ sheets: { hq: { roster: [R()], events: [] }, mztjs: { roster: [], events: [] } } });
+  let opens = 0; const orig = env.sb.SpreadsheetApp.openById;
+  env.sb.SpreadsheetApp.openById = (id) => { opens++; return orig(id); };
+  assert.strictEqual(env.sb.lineHubMine_('U1').length, 1);
+  const first = opens;
+  assert.strictEqual(env.sb.lineHubMine_('U1').length, 1);
+  assert.strictEqual(opens, first, '第二次不該再開試算表');
+  assert.strictEqual(env.sb.lineHubMine_('U1')[0].row.emp_id, 'H01');
+  assert(!/kH|DEV-SAFARI/.test(env.cache['lhm:U1']), '快取不可記金鑰或裝置碼');
+  env.sb.lineHubForget_('U1');
+  env.sb.lineHubMine_('U1'); assert(opens > first, '清掉後要重查');
+  const e2 = make({ brokenEvents: [], sheets: { hq: { roster: [R()], events: [] } } });
+  const o2 = e2.sb.SpreadsheetApp.openById; e2.sb.SpreadsheetApp.openById = (id) => { if (id === 'SS_cf') throw new Error('忙'); return o2(id); };
+  e2.sb.lineHubMine_('U1'); assert(!e2.cache['lhm:U1'], '有店讀不到時不記');
+});
+ok('速度：選單指令先顯示「輸入中」動畫；閒聊不顯示', () => {
+  const env = make({ sheets: { hq: { roster: [R()], events: [] } } });
+  const loads = []; const orig = env.sb.UrlFetchApp.fetch;
+  env.sb.UrlFetchApp.fetch = (u, o) => { if (u.indexOf('/chat/loading/start') >= 0) { loads.push(JSON.parse(o.payload)); return { getResponseCode: () => 202, getContentText: () => '{}' }; } return orig(u, o); };
+  env.sb.handleLineWebhook_(ev('出勤紀錄'));
+  env.sb.handleLineWebhook_(ev('你好'));
+  assert.strictEqual(loads.length, 1); assert.strictEqual(loads[0].chatId, 'U1');
 });
 console.log(`\n${n} 項全部通過`);

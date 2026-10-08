@@ -10,16 +10,15 @@ const PAY = { ok: true, ready: true, payday: '5', result: { total_hours: 160, gr
 function make(opts) {
   const replies = [], calls = { buildRecentDays: [] };
   const sb = { console, JSON, Math, String, Number, Date, Object, Array, parseInt, isFinite,
-    CacheService: { getScriptCache: () => ({ get: () => null, put: () => {}, remove: () => {} }) },
+    CacheService: { getScriptCache: () => ({ get: () => null, put: () => {}, remove: () => {}, removeAll: () => {} }) },
     Utilities: { formatDate: () => opts.today },
     currentYmTaipei: () => opts.today.slice(0, 7),
     prevYm: (ym) => { const y = +ym.slice(0, 4), m = +ym.slice(5, 7); return m === 1 ? (y - 1) + '-12' : y + '-' + ('0' + (m - 1)).slice(-2); },
     payStore: (v) => String(v || ''),
-    payRead: (k) => k === 'master' ? [{ emp_id: 'E1', store: '' }] : (opts.runs || []),
-    payMyPayslipFor_: (me, st, ym) => {
-      const r = (opts.runs || []).find(x => x.ym === ym && x.status === 'final');
-      return r ? Object.assign({ ym }, PAY) : { ok: true, ym, ready: false, message: '本月薪資尚未結算' };
-    },
+    payRead: (k) => k === 'master' ? [{ emp_id: 'E1', store: '' }] : k === 'item' ? [] : (opts.runs || []),
+    payMyPayslipFor_: () => { throw new Error('薪資卡不該再走 payMyPayslipFor_（會算特休與年資，太慢）'); },
+    payRunItemsToResult: () => PAY.result,
+    payConfig: () => ({ payday: '5' }),
     normCellTs: (v) => v,
     buildLatestApprovedMap: () => ({}),
     monthlyApprovedTotal: (amap, emp, ym) => (opts.monthHours || {})[ym] || 0,

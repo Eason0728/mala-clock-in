@@ -116,6 +116,7 @@ function handleLineBindName_(body) {
     var m = { line_account_in_use: '你的 LINE 帳號已經綁定這家店的另一位同仁，請找主管處理。' }[j && j.error];
     return { ok: false, error: (j && j.error) || 'unreachable', message: m || '綁定沒有成功，請稍後再試；一直不行請告知主管。' };
   }
+  lineHubForget_(userId);   // 剛綁好：機器人那邊記的「綁了哪幾家」要重查
   return { ok: true, store_name: st.name, name: String(row.name) };
 }
 
@@ -302,6 +303,16 @@ function lineHubQuickClockFor_(userId, body) {
 }
 
 /* ── webhook：只做「讀暫存回覆」與「查詢回覆」，不做綁定（綁定在 LIFF 頁，需要 LINE 身分憑證）── */
+/** 聊天室顯示「輸入中」動畫（LINE 免費功能，不算訊息額度）：同仁按選單後馬上看到有反應。失敗不影響回覆。 */
+function lineHubLoading_(userId) {
+  var token = (typeof LINE_HUB_BOT_TOKEN !== 'undefined') ? LINE_HUB_BOT_TOKEN : '';
+  if (!token || !userId) return;
+  try {
+    UrlFetchApp.fetch('https://api.line.me/v2/bot/chat/loading/start', {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      headers: { Authorization: 'Bearer ' + token }, payload: JSON.stringify({ chatId: userId, loadingSeconds: 20 }) });
+  } catch (e) { /* 只是動畫 */ }
+}
 function lineHubReply_(replyToken, texts) {
   var token = (typeof LINE_HUB_BOT_TOKEN !== 'undefined') ? LINE_HUB_BOT_TOKEN : '';
   if (!token || !replyToken) return;
@@ -321,15 +332,37 @@ function lineHubReply_(replyToken, texts) {
 
 /** 這個 LINE 帳號綁了哪幾家店 → [{st, row}]（webhook 沒有 id_token，用 LINE 送來的 userId） */
 /** info（選填）：有店名冊讀不到時設 info.unreadable = true（機器人「打卡」不能因此說沒打卡——階段 2 審查 #9）。 */
+/* 速度（2026-10-09 Eason：點選單要 10 秒）：每次都要開五家店試算表找人，是最慢的一段。
+   找到的結果記 5 分鐘（只記店代碼＋emp_id／姓名，不記金鑰）；綁定成功時 lineHubForget_ 立刻清掉。
+   代價：主管在店家那邊「解除綁定」後，最多 5 分鐘內機器人還認得這個 LINE 帳號（打卡畫面不受影響，它直接問店家）。
+   有店讀不到時不記，下次重查。 */
+var LINE_HUB_MINE_TTL = 300;
+function lineHubForget_(userId) {
+  CacheService.getScriptCache().removeAll(['lhm:' + userId, 'lhp:' + userId]);
+}
 function lineHubMine_(userId, info) {
-  var out = [];
+  var cache = CacheService.getScriptCache(), key = 'lhm:' + userId, hit = cache.get(key);
+  if (hit) {
+    try {
+      var stores = lineHubStores_(), got = [];
+      JSON.parse(hit).forEach(function (x) {
+        var st = stores.filter(function (s) { return String(s.code) === String(x.c); })[0];
+        if (st) got.push({ st: st, row: { emp_id: x.e, name: x.n } });
+      });
+      return got;
+    } catch (e) { /* 壞掉就重查 */ }
+  }
+  var out = [], bad = false;
   lineHubStores_().forEach(function (st) {
     var rows = null;
-    try { rows = lineHubRoster_(st); } catch (e) { rows = null; if (info) info.unreadable = true; }
+    try { rows = lineHubRoster_(st); } catch (e) { rows = null; bad = true; if (info) info.unreadable = true; }
     (rows || []).forEach(function (r) {
       if (lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId)) out.push({ st: st, row: r });
     });
   });
+  if (!bad) {
+    cache.put(key, JSON.stringify(out.map(function (m) { return { c: m.st.code, e: String(m.row.emp_id), n: String(m.row.name) }; })), LINE_HUB_MINE_TTL);
+  }
   return out;
 }
 
@@ -430,6 +463,13 @@ function lineHubPayslipFor_(userId, ym) {
 }
 /** 用 LINE 身分在薪資有接的店找人：{me, store} 或 null（有薪資主檔的那家優先） */
 function lineHubPayPick_(userId) {
+  var cache = CacheService.getScriptCache(), key = 'lhp:' + userId, hit = cache.get(key);
+  if (hit) { try { return JSON.parse(hit); } catch (e) { /* 重查 */ } }
+  var found = lineHubPayPickFresh_(userId);
+  if (found) cache.put(key, JSON.stringify({ me: { emp_id: String(found.me.emp_id), name: String(found.me.name) }, store: found.store }), LINE_HUB_MINE_TTL);
+  return found;
+}
+function lineHubPayPickFresh_(userId) {
   var hits = [];
   payStoreList().forEach(function (s) {
     var code = String(s.code), rs = [];
@@ -442,6 +482,20 @@ function lineHubPayPick_(userId) {
   var masterIds = {};
   payRead('master').forEach(function (m) { masterIds[String(m.emp_id)] = true; });
   return hits.filter(function (h) { return masterIds[String(h.me.emp_id)]; })[0] || hits[0];
+}
+/** 薪資卡只要「那個月的薪資單」：不像 payMyPayslipFor_ 還算特休額度與年資（那兩樣最慢，卡片又用不到）。
+ *  回傳形狀與 payMyPayslipFor_ 已定案時相同（lineHubPayFlex_ 吃得下）。 */
+function lineHubPayslipLite_(pick, ym) {
+  var mm = payRead('master').filter(function (m) { return String(m.emp_id) === String(pick.me.emp_id); })[0];
+  var st = payStore((mm && mm.store) || pick.store);
+  var run = payRead('run').filter(function (r) {
+    return String(r.ym) === ym && String(r.emp_id) === String(pick.me.emp_id) && payStore(r.store) === st;
+  })[0];
+  if (!run || String(run.status) !== 'final') return { ok: true, ym: ym, name: pick.me.name, ready: false, message: run ? '本月薪資結算中，尚未定案' : '本月薪資尚未結算' };
+  var items = payRead('item').filter(function (i) {
+    return String(i.ym) === ym && String(i.emp_id) === String(pick.me.emp_id) && payStore(i.store) === st;
+  });
+  return { ok: true, ym: ym, name: pick.me.name, ready: true, result: payRunItemsToResult(run, items), payday: payConfig().payday };
 }
 /** 這個人已定案的薪資月份（新到舊，最多 LINE_HUB_PAY_MONTHS 個）。店別照 payMyPayslipFor_：主檔為準。 */
 var LINE_HUB_PAY_MONTHS = 12;
@@ -672,7 +726,7 @@ function lineHubPayCard_(userId, wantYm) {
   if (!pick) return lineHubMine_(userId).length ? lineHubNoticeCard_('薪資明細', LINE_HUB_NO_PAYROLL_TEXT, 'warn') : lineHubNoticeCard_('還沒綁定', LINE_HUB_NOT_BOUND_TEXT);
   var months = lineHubPayFinalMonths_(pick), cur = currentYmTaipei();
   if (!months.length) {
-    var j0 = payMyPayslipFor_(pick.me, pick.store, cur);
+    var j0 = lineHubPayslipLite_(pick, cur);
     return lineHubCard_({ title: parseInt(cur.slice(5, 7), 10) + ' 月薪資', right: '尚未定案', tone: 'info', alt: '薪資明細',
                           blocks: [{ type: 'text', text: (j0 && j0.message) || '本月薪資尚未結算' }, { type: 'text', text: '目前還沒有已定案的薪資單，結算定案後這裡就會顯示明細。', muted: true }] });
   }
@@ -682,7 +736,7 @@ function lineHubPayCard_(userId, wantYm) {
       blocks: [{ type: 'text', text: lineHubYmLabel_(ym, cur) + '的薪資還沒定案，或不在可查詢的範圍（最近 ' + LINE_HUB_PAY_MONTHS + ' 個已定案月份）。' }],
       buttons: months.slice(0, 6).map(function (y) { return { label: lineHubYmLabel_(y, cur), text: '薪資明細 ' + y }; }) });
   }
-  var j = payMyPayslipFor_(pick.me, pick.store, ym);
+  var j = lineHubPayslipLite_(pick, ym);
   if (!j || !j.ok || !j.ready) return lineHubNoticeCard_('薪資明細', '查不到 ' + lineHubYmLabel_(ym, cur) + '的薪資單，請找店長確認。', 'warn');
   var card = lineHubPayFlex_(j);
   if (!wantYm && months[0] !== cur) {
@@ -863,6 +917,7 @@ function handleLineWebhook_(body) {
       if (!userId) return;
       if (lineHubThrottled_('wh', userId, 20, 60)) return;
       var text = String(ev.message.text || '').trim();
+      if (text === '打卡' || LINE_HUB_TEXT_COMMANDS[text] || /^(出勤紀錄|薪資明細)\s*\d{4}-\d{2}$/.test(text)) lineHubLoading_(userId);
       if (text === '打卡') {
         var r = lineHubTakeStash_(userId) || lineHubLatestPunch_(userId);
         lineHubReply_(ev.replyToken, [
