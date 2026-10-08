@@ -2123,7 +2123,7 @@
     var box = document.getElementById('lbResult');
     var failSlot = document.getElementById('lineBindFail');
     if (!card || !listBox || !box) return;
-    var TYPE = { bind_name: '輸入全名綁定', bind_auto: '跨店自動綁定', bind: '用打卡連結綁定' };
+    var TYPE = { bind_name: '輸入全名綁定', bind_auto: '跨店同名（本人確認）', bind: '用打卡連結綁定' };
     function when(iso) {
       var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
       return m ? (Number(m[2]) + '/' + Number(m[3]) + ' ' + m[4] + ':' + m[5]) : '';

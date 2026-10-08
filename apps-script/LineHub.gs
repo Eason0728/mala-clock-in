@@ -387,8 +387,9 @@ function handleLineWebhook_(body) {
   // fail-closed：查不到本帳號 userId、或請求沒帶／帶錯 destination，一律不處理（v2 審查 N1）
   var bot = lineHubBotUserId_();
   if (!bot || String(body.destination || '') !== bot) return { ok: true, ignored: 'destination' };
-  if (lineHubThrottled_('wh', 'ALL', 300, 60)) return { ok: true, ignored: 'busy' };   // 全站每分鐘上限，防亂數 userId 灌請求
-  (body.events || []).forEach(function (ev) {
+  // 全站每分鐘上限按「事件」算，單一請求最多處理 10 個事件（LINE 正常一次只送幾個），防一個請求塞上百個放大（v2 審查 N6）
+  (body.events || []).slice(0, 10).forEach(function (ev) {
+    if (lineHubThrottled_('wh', '*all*', 300, 60)) return;
     try {
       if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
       if (!ev.source || ev.source.type !== 'user') return;
