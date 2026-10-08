@@ -94,7 +94,7 @@ def build(src_name, prefix, page_title, icon_key, home_key, bg_key):
 # ── LINE 單一打卡入口（2026-10-08，規格 mala-clock-liff/docs/spec.md）──
 # clock-line.html：不固定店家，打卡當下用 GPS 從 tools/stores.json 挑店。
 # LIFF ID 等 Eason 在 LINE Developers 建好 LIFF app（任務 T12）才填；空字串＝頁面會顯示「請從 LINE 打開」。
-LINE_HUB_LIFF_ID = ''
+LINE_HUB_LIFF_ID = '2011292256-QFXEwFh4'   # 鼎兆元打卡登入 channel，2026-10-08 Eason 建立
 
 def build_line():
     import json
