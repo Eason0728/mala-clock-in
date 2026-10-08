@@ -1267,7 +1267,7 @@ function payLeaveUsage(empId, ym, types, cfg, storesMap, leavesByStore, spans) {
     const basis = t.cap_basis || '';
     const remain = (cap == null) ? null : payR2(cap - u);
     // 時數直接由「未取整的天數」換算再四捨五入到一位小數——先把天數取到兩位再 ×8
-    // 會出現 44.5H→5.56 天→44.48H 這種誤差（2026-10-05 Eason 陳盈如事假）
+    // 會出現 44.5H→5.56 天→44.48H 這種誤差（2026-10-05 光復一位同仁事假）
     const uRaw = (used[t.code] || 0) + (merged[t.code] || 0);
     out[t.code] = {
       used_days: u,

@@ -1,7 +1,7 @@
 /* 一次性回填「少刷N組卡」（2026-09-21）
  *
  * 反向檢查（computeApprovalStatus）只在主管按下核定的當下跑，所以新規則只對**之後**的核定
- * 生效。已經核定完的日子（許正昊 9/21 停在「遲到2分、早退1分」）不會自己變，
+ * 生效。已經核定完的日子（金山案例 9/21 停在「遲到2分、早退1分」）不會自己變，
  * recheckPendingApprovalStatuses 的前置篩選也篩不到它。這支把歷史補回來。
  *
  * 這個測試驗三件事：抓得到該補的、不亂改不該動的、dry-run 真的不寫。 */
@@ -35,12 +35,12 @@ function install(sheets){
   `,sb);
 }
 const run=(from,to,apply)=>vm.runInContext('backfillMissingPunchGroups',sb)(from,to,apply);
-// 許正昊：只刷了第一段的上班卡與第二段的下班卡
+// 金山案例：只刷了第一段的上班卡與第二段的下班卡
 const HSU_EVENTS=[
   {emp_id:'E01',type:'in', status:'ok',ts:D+'T11:02:00+08:00'},
   {emp_id:'E01',type:'out',status:'ok',ts:D+'T21:44:00+08:00'}];
-const ROSTER=[{emp_id:'E01',name:'許正昊',active:'true'}];
-const rec=(over)=>Object.assign({date:D,emp_id:'E01',name:'許正昊',
+const ROSTER=[{emp_id:'E01',name:'測試一',active:'true'}];
+const rec=(over)=>Object.assign({date:D,emp_id:'E01',name:'測試一',
   periods:'11:00-14:30,17:00-21:45',approved_hours:8.25,
   status_text:'遲到2分、早退1分',manager_name:'店長',entered_at:'2026-09-21T22:00:00+08:00'},over||{});
 
@@ -52,7 +52,7 @@ chk('  該補 1 筆',        r.fixed, 1);
 chk('  applied=false',    r.applied, false);
 chk('  舊狀態',           r.hits[0].from, '遲到2分、早退1分');
 chk('  新狀態',           r.hits[0].to,   '遲到2分、早退1分、第一段下班無打卡、第二段上班無打卡');
-chk('  姓名帶得出來',     r.hits[0].name, '許正昊');
+chk('  姓名帶得出來',     r.hits[0].name, '測試一');
 chk('  dry-run 沒寫入',   appended.length, 0);
 
 console.log('\n══ apply:true：才真的寫，且只換 status_text ══');
@@ -60,7 +60,7 @@ install({approved:[rec()],events:HSU_EVENTS,roster:ROSTER,leave:[]});
 r=run(D,D,true);
 chk('  applied=true',     r.applied, true);
 chk('  寫了 1 列',        appended.length, 1);
-chk('  日期／工號／姓名', appended[0].slice(0,3), [D,'E01','許正昊']);
+chk('  日期／工號／姓名', appended[0].slice(0,3), [D,'E01','測試一']);
 chk('  periods 原封不動', appended[0][3], '11:00-14:30,17:00-21:45');
 chk('  時數原封不動',     appended[0][4], 8.25);
 chk('  狀態換成新的',     appended[0][5], '遲到2分、早退1分、第一段下班無打卡、第二段上班無打卡');

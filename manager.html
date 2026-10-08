@@ -614,7 +614,7 @@
     var s = hhmmToMin(BREAK_START), e = hhmmToMin(BREAK_END);
     return s != null && e != null && e > s;
   }
-  /* 班別要「完整蓋過」休息帶才拆成兩段。半天班（例 范氏秋香 08:30–12:30 只蓋到一半）
+  /* 班別要「完整蓋過」休息帶才拆成兩段。半天班（例 央廚某半天班同仁 08:30–12:30 只蓋到一半）
      維持一段交給主管判斷——自作主張挖掉半小時比不挖更難發現。 */
   function shiftCoversBreak(a, b) {
     if (!hasBreak()) return false;

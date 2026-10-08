@@ -71,7 +71,7 @@ const escFns = {
 
 /* 正常資料必須「完全不變」——這是「修完畫面不會變」的保證。
    只要有一項變了，就代表轉義過頭，畫面會出現 &amp; 之類的雜訊。 */
-const UNCHANGED = ['陳盈如', '王禹婕', 'Wang Yu Chieh', 'CF01', 'HQ-01', '（未命名）', '麻的小辛辣 光復', '2026-08', '0'];
+const UNCHANGED = ['測試一', '測試二', 'Test User', 'CF01', 'HQ-01', '（未命名）', '麻的小辛辣 光復', '2026-08', '0'];
 /* 危險輸入必須被轉義成無法執行的形式 */
 const MUST_ESCAPE = [
   ['<svg onload=f()>', '&lt;svg onload=f()&gt;'],
@@ -92,7 +92,7 @@ for (const [label, fn] of Object.entries(escFns)) {
 }
 
 /* 四份行為必須一致：同一輸入、四份輸出相同。不一致代表有人只改了一邊。 */
-const probes = ['陳盈如', '<img src=x>', '" onfocus="f()', "'", '&', '<>'];
+const probes = ['測試一', '<img src=x>', '" onfocus="f()', "'", '&', '<>'];
 const sigs = Object.entries(escFns).map(([k, fn]) => [k, probes.map(p => fn(p)).join('|')]);
 chk('  四份轉義函式行為完全一致', new Set(sigs.map(s => s[1])).size, 1);
 
@@ -127,9 +127,9 @@ function renderEmpHtml(names) {
   return captured;
 }
 
-const h1 = renderEmpHtml(['陳盈如', PAYLOAD_TAG]);
+const h1 = renderEmpHtml(['測試一', PAYLOAD_TAG]);
 chk('  產出非空（切片真的跑起來了）', h1.length > 100, true);
-chk('  正常姓名原樣出現', h1.includes('陳盈如'), true);
+chk('  正常姓名原樣出現', h1.includes('測試一'), true);
 chk('  標籤酬載不以可執行形式出現', h1.includes('<img src=x'), false);
 /* ⚠ 這裡要斷言「整串酬載都以轉義形式出現」，不可以寫成 /\sonerror=/ 之類——
    轉義後的字串裡本來就含有 `onerror=` 這幾個**字**（在 &lt;img src=x onerror=&quot;… 裡面），
@@ -137,7 +137,7 @@ chk('  標籤酬載不以可執行形式出現', h1.includes('<img src=x'), fals
 chk('  標籤酬載整串被完整轉義',
   h1.includes('&lt;img src=x onerror=&quot;__FIRED=1&quot;&gt;'), true);
 
-const h2 = renderEmpHtml(['陳盈如', PAYLOAD_ATTR]);
+const h2 = renderEmpHtml(['測試一', PAYLOAD_ATTR]);
 /* 這條才是屬性注入的真正判準：value 屬性有沒有被提前關閉、後面接上事件處理器。 */
 chk('  屬性逃逸酬載未關閉 value 屬性', /value="[^"]*"\s+onmouseover/.test(h2), false);
 chk('  屬性逃逸酬載整串被完整轉義',

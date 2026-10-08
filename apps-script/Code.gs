@@ -962,7 +962,7 @@ function handleSetShifts(body) {
   /* ⚠ 舊試算表的 roster 只有 6 欄（emp_id…active），沒有 shift_in／shift_out。
      原本的檢查看的是程式常數 ROSTER_HEADERS（一定有那兩欄），所以檢查永遠通過、
      值就被寫進「沒有表頭的欄位」——readSheetAsObjects 依表頭取值，於是永遠讀不回來，
-     而且不會報錯（2026-08-26 實際踩到：總部吳佳宜寫進去回查是 undefined，
+     而且不會報錯（2026-08-26 實際踩到：總部一位同仁寫進去回查是 undefined，
      光復也缺這兩欄、預填班別功能等於從沒生效過）。這裡照 handleClock 對 events 的做法就地自癒。*/
   const rosterRead = readSheetAsObjects(rosterSheet);
   if (rosterRead.headers.indexOf('shift_in') === -1 || rosterRead.headers.indexOf('shift_out') === -1) {
@@ -2010,7 +2010,7 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
   // 有打的證據＝前後兩段各自配到「不同」的完整打卡段；否則把缺的那兩張各標一行，
   // 讓看表的人知道是哪一段的哪一張沒打，而不是只知道少了幾組。
   // ⚠ 舊版只在「兩段配到同一條完整段」時抓得到；只有上班卡、沒有下班卡的日子 fullSegs 是空的，
-  //   連中間休息沒刷卡都標不出來（許正昊 2026-09-23、25、26、27 實例）。
+  //   連中間休息沒刷卡都標不出來（金山一位同仁 2026-09-23、25、26、27 實例）。
   // ⚠ 間隔＝0 不算：主管把一段連續班拆成兩段核定（例如分開算加班），同仁中間本來就不必刷卡。
   // ⚠ 出差與「打卡未入帳」的日子只沿用舊行為（兩段配到同一條完整段才標）：前者人不在店裡、
   //   後者同仁其實有按，把新抓到的那種也標上去是冤枉人。
@@ -2603,7 +2603,7 @@ function statusDiffIsOnlyMissingGroup(oldText, newText) {
  * 一次性回填「少刷N組卡」（2026-09-21 新增）。
  *
  * 為什麼需要：computeApprovalStatus 的反向檢查只在「主管按下核定的當下」跑，所以新規則
- * 只對**之後**的核定生效。已經核定完的日子（例如許正昊 9/21，狀態停在「遲到2分、早退1分」）
+ * 只對**之後**的核定生效。已經核定完的日子（例如金山一位同仁 9/21，狀態停在「遲到2分、早退1分」）
  * 不會自己變，而 recheckPendingApprovalStatuses 的前置篩選只看三種措辭，也篩不到它們。
  * 9 月薪資要發，全勤的忘刷次數就會少算——所以需要一支把歷史補回來的。
  *

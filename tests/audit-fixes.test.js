@@ -75,7 +75,7 @@ console.log('══ A. 出差時數：填幾小時認定幾小時、與時段相
   chk('填時段、出差時數留空：照舊只算時段 8H＋狀態「出差」', [r.ok, r.approved_hours, r.status_text], [true, 8, '出差']);
   r = ctx.call('handleMgrApprove', { mgr_key: 'mgr-y01', date: '2026-08-18', emp_id: 'Y01',
     periods: [{ start: '17:30', end: '22:00' }], leave_type: '出差', leave_hours: 0.5 });
-  chk('時段 4.5H＋出差 0.5H＝核定 5H（林宸妤 9/27 情境）', [r.ok, r.approved_hours], [true, 5]);
+  chk('時段 4.5H＋出差 0.5H＝核定 5H（光復一位同仁 9/27 情境）', [r.ok, r.approved_hours], [true, 5]);
   r = ctx.call('handleMgrApprove', { mgr_key: 'mgr-y01', date: '2026-08-18', emp_id: 'Y01',
     periods: [{ start: '17:30', end: '22:00' }], leave_type: '病假', leave_hours: 2 });
   chk('其他假別的時數不加進核定（仍只是註記）', [r.ok, r.approved_hours], [true, 4.5]);

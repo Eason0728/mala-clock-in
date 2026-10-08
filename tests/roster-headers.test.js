@@ -90,21 +90,21 @@ console.log('══ 0) 檢查 ROSTER_HEADERS 結構 ══');
 
 console.log('\n══ 1) 舊的 6 欄名冊：寫入前要自動補表頭 ══');
 {
-  const c = makeCtx(OLD6, [['HQ-01', '吳佳宜', 'k1', 'd1', '', 'true']]);
-  const r = c.call({ admin_key: 'x', shifts: [{ name: '吳佳宜', shift_in: '09:00', shift_out: '17:30' }] });
+  const c = makeCtx(OLD6, [['HQ-01', '測試一', 'k1', 'd1', '', 'true']]);
+  const r = c.call({ admin_key: 'x', shifts: [{ name: '測試一', shift_in: '09:00', shift_out: '17:30' }] });
   chk('  回報成功', [r.ok, r.updated], [true, 1]);
   chk('  表頭已補上 shift 兩欄',
       [c.roster.headers.indexOf('shift_in') >= 0, c.roster.headers.indexOf('shift_out') >= 0], [true, true]);
   const row = c.read()[0];
   chk('  ⚠ 讀得回來（事故的核心：原本是 undefined）', [row.shift_in, row.shift_out], ['09:00', '17:30']);
-  chk('  既有欄位沒被動到', [row.emp_id, row.name, row.key], ['HQ-01', '吳佳宜', 'k1']);
+  chk('  既有欄位沒被動到', [row.emp_id, row.name, row.key], ['HQ-01', '測試一', 'k1']);
 }
 
 console.log('\n══ 2) 已有 shift 欄的名冊（央廚）：行為不變、不重複補 ══');
 {
   const full = OLD6.concat(['shift_in', 'shift_out']);
-  const c = makeCtx(full, [['CF01', '陳建樺', 'k', 'd', '', 'true', '08:30', '17:00']]);
-  const r = c.call({ admin_key: 'x', shifts: [{ name: '陳建樺', shift_in: '09:00', shift_out: '17:30' }] });
+  const c = makeCtx(full, [['CF01', '測試二', 'k', 'd', '', 'true', '08:30', '17:00']]);
+  const r = c.call({ admin_key: 'x', shifts: [{ name: '測試二', shift_in: '09:00', shift_out: '17:30' }] });
   chk('  更新成功', r.updated, 1);
   chk('  欄數沒有暴增', c.roster.headers.filter(h => h === 'shift_in').length, 1);
   chk('  值已更新', [c.read()[0].shift_in, c.read()[0].shift_out], ['09:00', '17:30']);
@@ -112,7 +112,7 @@ console.log('\n══ 2) 已有 shift 欄的名冊（央廚）：行為不變、
 
 console.log('\n══ 3) 找不到的人要回報，不可靜默 ══');
 {
-  const c = makeCtx(OLD6, [['HQ-01', '吳佳宜', 'k1', 'd1', '', 'true']]);
+  const c = makeCtx(OLD6, [['HQ-01', '測試一', 'k1', 'd1', '', 'true']]);
   const r = c.call({ admin_key: 'x', shifts: [{ name: '不存在的人', shift_in: '09:00', shift_out: '17:30' }] });
   chk('  not_found 有列出', r.not_found, ['不存在的人']);
   chk('  updated 為 0', r.updated, 0);
