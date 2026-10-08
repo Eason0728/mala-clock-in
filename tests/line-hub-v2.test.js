@@ -100,7 +100,7 @@ ok('站在金山、只綁了總部、金山名冊有同名未綁 → 不靜默�
   assert.strictEqual(r.result.code, 'not_bound'); assert.strictEqual(r.result.suggest_name, '甲');
 });
 ok('line_bind_name via=auto（本人按「是我」）→ liff_bind 帶 via auto；同一帳號 10 分鐘內第 6 次 → too_many', () => {
-  const { sb, storeCalls } = make({ sheets: { mztjs: { roster: [R({ emp_id: 'J1', key: 'kJ', line_user_id: '' })] } } });
+  const { sb, storeCalls } = make({ sheets: { hq: { roster: [R()] }, mztjs: { roster: [R({ emp_id: 'J1', key: 'kJ', line_user_id: '' })] } } });
   assert.strictEqual(sb.handleLineBindName_({ id_token: 'TOK_U1', name: '甲', via: 'auto', lat: js.lat, lng: js.lng, accuracy: 10 }).ok, true);
   assert.strictEqual(storeCalls[0].body.via, 'auto');
   for (let i = 0; i < 4; i++) sb.handleLineBindName_({ id_token: 'TOK_U1', name: '丙', lat: js.lat, lng: js.lng, accuracy: 10 });
@@ -181,6 +181,19 @@ ok('webhook：其他文字、貼圖、驗證用的空 events 都不回、不出�
   sb.handleLineWebhook_(ev('你好')); sb.handleLineWebhook_({ events: [] });
   sb.handleLineWebhook_({ events: [{ type: 'message', replyToken: 'RT', source: { userId: 'U1' }, message: { type: 'sticker' } }] });
   assert.strictEqual(replies.length, 0);
+});
+ok('webhook fail-closed：沒帶 destination、或查不到本帳號 userId → 一律不處理（不吃暫存、不回覆）', () => {
+  const { sb, replies, cache } = make({ sheets: { hq: { roster: [R()], events: [] } } });
+  sb.handleLineQuickClock_({ id_token: 'TOK_U1', lat: hq.lat, lng: hq.lng, accuracy: 10 });
+  sb.handleLineWebhook_({ events: ev('打卡').events });
+  assert.strictEqual(replies.length, 0); assert(cache['lhq:U1'], '暫存不可被偽造請求吃掉');
+  const m2 = make({ sheets: {} }); m2.sb.LINE_HUB_BOT_TOKEN = '';
+  m2.sb.handleLineWebhook_(ev('請假申請')); assert.strictEqual(m2.replies.length, 0);
+});
+ok('line_bind_name 的 via 由伺服器判斷：前端送 auto 但別家店沒有同名綁定 → 記成 name', () => {
+  const { sb, storeCalls } = make({ sheets: { mztjs: { roster: [R({ emp_id: 'J1', key: 'kJ', line_user_id: '' })] } } });
+  sb.handleLineBindName_({ id_token: 'TOK_U1', name: '甲', via: 'auto', lat: js.lat, lng: js.lng, accuracy: 10 });
+  assert.strictEqual(storeCalls[0].body.via, 'name');
 });
 ok('webhook：群組裡打「薪資明細」不回；destination 不是本帳號不回；同一人一分鐘超過 20 則不回', () => {
   const { sb, replies } = make({ sheets: { hq: { roster: [R()] } } });

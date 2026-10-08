@@ -38,7 +38,7 @@ function lineHubActive_(r) { return String(r.active).toLowerCase() === 'true'; }
 /* ══════════════ v2：全部在 LINE 聊天室完成（spec v2，2026-10-08）══════════════
  * 選單「打卡」→ LIFF 小畫面抓 GPS → line_quick_clock（這裡）→ 結果暫存 →
  * LIFF 代同仁送出「打卡」→ webhook（handleLineWebhook_）取暫存結果用「回覆」送進聊天室（免費）。
- * 不分上班／下班：照原本規則自動判斷（往回 12 小時內最後一張算數的卡是上班→這次是下班，反之上班），
+ * 不分上班／下班：自動判斷（往回 16 小時＝配對視窗內最後一張算數的卡是上班→這次是下班，反之上班），
  * 距離那張卡不到 CLOCK_LOCK_MIN 分鐘就擋（原本網頁版的 10 分鐘鎖，搬到伺服器端）。 */
 var LINE_HUB_LOCK_MIN = 10;
 var LINE_HUB_ACC_CAP_M = 100;      // 與各店後端 ACCURACY_CREDIT_CAP_M、clock-line-core.js 相同
@@ -110,8 +110,9 @@ function handleLineBindName_(body) {
   var row = hit[0];
   if (row.line_user_id && String(row.line_user_id) === String(userId)) return { ok: true, already: true, store_name: st.name, name: String(row.name) };
   if (row.line_user_id) return { ok: false, error: 'name_taken', message: '「' + String(row.name) + '」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管在值班核定頁解除。' };
-  // via：本人手動輸入＝name；畫面帶出的跨店同名（本人按「是我」）＝auto，主管頁分開標示
-  var j = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(row.key), via: body.via === 'auto' ? 'auto' : 'name' });
+  // via：伺服器自己判斷（不信前端，v2 審查 N2）——這個 LINE 在別家店已綁定同名＝跨店（auto），否則＝輸入全名（name）
+  var sameNameElsewhere = lineHubMine_(userId).some(function (m) { return lineHubNormName_(m.row.name) === want; });
+  var j = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(row.key), via: sameNameElsewhere ? 'auto' : 'name' });
   if (!j || !j.ok) {
     var m = { line_account_in_use: '你的 LINE 帳號已經綁定這家店的另一位同仁，請找主管處理。' }[j && j.error];
     return { ok: false, error: (j && j.error) || 'unreachable', message: m || '綁定沒有成功，請稍後再試；一直不行請告知主管。' };
@@ -120,12 +121,13 @@ function handleLineBindName_(body) {
 }
 
 /** 上／下班自動判斷用的「最後一張算數的卡」：與 lastCountedEvent 同規則（排除 rejected_*），但回看
- *  LINE_HUB_TYPE_LOOKBACK_H 小時＝配對視窗 MONTHLY_PAIR_WINDOW_HOURS（16）。用交替防呆的 12 小時會把
+ *  配對視窗 MONTHLY_PAIR_WINDOW_HOURS（16）小時。用交替防呆的 12 小時會把
  *  10:30 上、22:45 下這種超過 12 小時的長班，下班卡記成上班（v2 審查 #3）。超過 16 小時的上班卡本來就配不成一段，
  *  視為忘打下班，這次記上班。 */
-var LINE_HUB_TYPE_LOOKBACK_H = (typeof MONTHLY_PAIR_WINDOW_HOURS !== 'undefined') ? MONTHLY_PAIR_WINDOW_HOURS : 16;
 function lineHubLastCounted_(eventRows, empId) {
-  var cutoff = Date.now() - LINE_HUB_TYPE_LOOKBACK_H * 3600000, last = null;
+  // 執行時才取值：Apps Script 檔案載入順序不保證 程式碼.js 在前（v2 審查 N3）
+  var lookbackH = (typeof MONTHLY_PAIR_WINDOW_HOURS !== 'undefined') ? MONTHLY_PAIR_WINDOW_HOURS : 16;
+  var cutoff = Date.now() - lookbackH * 3600000, last = null;
   eventRows.forEach(function (e) {
     if (String(e.emp_id) !== String(empId) || String(e.status).indexOf('rejected_') === 0) return;
     var t = new Date(String(e.ts)).getTime();
@@ -363,8 +365,10 @@ var LINE_HUB_TEXT_COMMANDS = {
 };
 
 /** LINE webhook（Code.gs doPost 看到 body.events 就轉來這裡）。 */
-/** 本官方帳號的 bot userId（webhook 的 destination 必須等於它）；查一次快取 6 小時。 */
+/** 本官方帳號的 bot userId（webhook 的 destination 必須等於它）。部署時由 patch_line_hub.py 寫進
+ *  LineHubConfig.js（LINE_HUB_BOT_USER_ID）；沒有才即時查一次並快取 6 小時。 */
 function lineHubBotUserId_() {
+  if (typeof LINE_HUB_BOT_USER_ID !== 'undefined' && LINE_HUB_BOT_USER_ID) return String(LINE_HUB_BOT_USER_ID);
   var c = CacheService.getScriptCache(), v = c.get('lh_bot_uid');
   if (v) return v;
   var token = (typeof LINE_HUB_BOT_TOKEN !== 'undefined') ? LINE_HUB_BOT_TOKEN : '';
@@ -380,8 +384,10 @@ function lineHubBotUserId_() {
 function handleLineWebhook_(body) {
   // Apps Script 讀不到 LINE 簽章標頭，所以：destination 要是本帳號、只回 1 對 1 私訊（群組裡打「薪資明細」不能回到群組）、
   // 每人每分鐘最多 20 則（偽造請求也只能拿無效的回覆權杖，什麼都送不出去；節流是防它拖垮後端）（v2 審查 #4）
+  // fail-closed：查不到本帳號 userId、或請求沒帶／帶錯 destination，一律不處理（v2 審查 N1）
   var bot = lineHubBotUserId_();
-  if (bot && body.destination && String(body.destination) !== bot) return { ok: true, ignored: 'destination' };
+  if (!bot || String(body.destination || '') !== bot) return { ok: true, ignored: 'destination' };
+  if (lineHubThrottled_('wh', 'ALL', 300, 60)) return { ok: true, ignored: 'busy' };   // 全站每分鐘上限，防亂數 userId 灌請求
   (body.events || []).forEach(function (ev) {
     try {
       if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;

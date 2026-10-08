@@ -22,7 +22,7 @@ class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); els
 const sb = {
   console, Date: FakeDate,
   LINE_HUB_STORES_CONFIG: STORES.map(s => ({ code: s.code, name: s.name, api: 'x', ss_id: 'SS_' + s.code, lat: s.lat, lng: s.lng, radius_m: s.radius_m })),
-  LINE_HUB_BOT_TOKEN: 'BOT',
+  LINE_HUB_BOT_TOKEN: 'BOT', LINE_HUB_BOT_USER_ID: 'BOTU',
   UrlFetchApp: { fetch: (u, o) => { if (u.indexOf('/reply') >= 0) replies.push(JSON.parse(o.payload)); return { getContentText: () => '{}', getResponseCode: () => 200 }; } },
   SpreadsheetApp: { openById: (id) => ssOf(id.replace('SS_', '')) },
   Utilities: { formatDate: (d, tz, f) => { const t = new Date(d.getTime() + 8 * 3600000).toISOString(); return f === 'yyyy-MM-dd' ? t.slice(0, 10) : t.slice(0, 7); } },
@@ -32,7 +32,7 @@ const sb = {
 vm.createContext(sb); vm.runInContext(SRC, sb);
 sb.getSS = () => ssOf('');
 sb.readSheetAsObjects = (sh) => ({ rows: sh.__rows.map(r => Object.assign({}, r)) });
-sb.handleLineWebhook_({ events: [{ type: 'message', replyToken: 'RT', source: { type: 'user', userId: 'U1' }, message: { type: 'text', text: '出勤紀錄' } }] });
+sb.handleLineWebhook_({ destination: 'BOTU', events: [{ type: 'message', replyToken: 'RT', source: { type: 'user', userId: 'U1' }, message: { type: 'text', text: '出勤紀錄' } }] });
 const t = replies[0] && replies[0].messages[0].text;
 console.log(t);
 assert(t, '要有回覆');
