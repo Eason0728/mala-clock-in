@@ -102,5 +102,29 @@ for st in STORES:
     for m_ in msgs: print(m_)
     if not ok: bad += 1
 
+# 2026-10-08 方案 C：光復 LineHubConfig.js（綁定、webhook 用）的店家表必須與 tools/stores.json（打卡畫面挑店用）一致，
+# 否則畫面挑 A 店、光復綁到 B 店。只印店代碼與欄位名，不印內容（檔案含試算表 ID 與機器人 token）。
+cfg_file = GAS / 'mala-clock-in' / 'LineHubConfig.js'
+if cfg_file.exists():
+    src = cfg_file.read_text(encoding='utf-8')
+    m = re.search(r'var LINE_HUB_STORES_CONFIG = (\[.*?\]);', src, re.S)
+    hub = {x['code']: x for x in json.loads(m.group(1))} if m else None
+    probs = []
+    if hub is None:
+        probs.append('讀不到 LINE_HUB_STORES_CONFIG')
+    else:
+        sj_by_code = {x['code']: x for x in STORES_JSON.values()}
+        for code in sorted(set(sj_by_code) | set(hub)):
+            if code not in hub or code not in sj_by_code:
+                probs.append(f'店代碼 {code!r} 只在一邊'); continue
+            for k in ('name', 'api', 'lat', 'lng', 'radius_m'):
+                if hub[code].get(k) != sj_by_code[code].get(k):
+                    probs.append(f'{code or "光復"} 的 {k} 不一致')
+    print(('✓' if not probs else '✗') + ' LineHubConfig.js 店家表與 tools/stores.json')
+    for x in probs: print('    ⚠ ' + x)
+    if probs: bad += 1
+else:
+    print('－ 沒有 ~/mala-gas/mala-clock-in/LineHubConfig.js，略過店家表比對')
+
 print('\n' + ('✅ 各門市後端功能一致' if bad == 0 else f'❌ {bad} 家有問題'))
 sys.exit(1 if bad else 0)

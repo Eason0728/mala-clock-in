@@ -26,7 +26,13 @@ const iso = (minAgo) => new Date(NOW - minAgo * 60000 + 8 * 3600000).toISOString
 function make(opts) {
   const replies = [], storeCalls = [], cache = {};
   const sheets = opts.sheets;   // {code: {roster:[], events:[], approved:[]}}
-  const ssOf = (code) => ({ getSheetByName: (n) => (sheets[code] && sheets[code][n]) ? { rows: sheets[code][n] } : null });
+  // 假工作表：readSheetAsObjects 用 rows；lineHubTailRows_ 用 getLastRow／getRange（表頭＝所有列的欄位聯集）
+  const fakeSheet = (rows) => { const H = [...new Set(rows.flatMap(o => Object.keys(o)))];
+    return { rows, getLastRow: () => rows.length + 1, getLastColumn: () => H.length,
+             getRange: (r, c, nr) => ({ getValues: () => r === 1 ? [H] : rows.slice(r - 2, r - 2 + nr).map(o => H.map(h => o[h])) }) }; };
+  const ssOf = (code) => ({ getSheetByName: (n) => {
+    if (opts.brokenEvents && opts.brokenEvents.indexOf(code) >= 0 && n === 'events') throw new Error('試算表忙碌');
+    return (sheets[code] && sheets[code][n]) ? fakeSheet(sheets[code][n]) : null; } });
   class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(NOW); } static now() { return NOW; } }
   const sb = {
     console, Date: FakeDate, JSON, Math, String, Number, isNaN, isFinite, parseInt,
@@ -245,5 +251,17 @@ ok('webhook「打卡」沒暫存：最新一筆超過 5 分鐘、或只有被擋
   const { sb, replies } = make({ sheets: { hq: { roster: [R()], events: [{ emp_id: 'H01', ts: iso(6), type: 'in', status: 'ok' }, { emp_id: 'H01', ts: iso(1), type: 'in', status: 'rejected_duplicate' }] } } });
   sb.handleLineWebhook_(ev('打卡'));
   assert(/請按下方選單/.test(msgText(replies[0].messages[0])));
+});
+ok('webhook「打卡」沒暫存：只讀 events 尾端（超過 200 列時最前面的不讀）', () => {
+  const old = Array.from({ length: 300 }, (_, i) => ({ emp_id: 'H01', ts: iso(1), type: 'in', status: i === 0 ? 'ok' : 'rejected_duplicate' }));
+  const { sb, replies } = make({ sheets: { hq: { roster: [R()], events: old } } });
+  sb.handleLineWebhook_(ev('打卡'));
+  assert(/請按下方選單/.test(msgText(replies[0].messages[0])), '第 1 列在尾端 200 列之外，不該被讀到');
+});
+ok('webhook「打卡」沒暫存：有店讀不到、又沒找到 → 說「暫時查不到、畫面成功就是成功」，不說「直接打字不會記錄」', () => {
+  const { sb, replies } = make({ brokenEvents: ['mztjs'], sheets: { hq: { roster: [R()], events: [] }, mztjs: { roster: [R({ emp_id: 'J01', key: 'kJ' })], events: [] } } });
+  sb.handleLineWebhook_(ev('打卡'));
+  const t = msgText(replies[0].messages[0]);
+  assert(/暫時查不到/.test(t) && !/直接打字/.test(t), t);
 });
 console.log(`\n${n} 項全部通過`);

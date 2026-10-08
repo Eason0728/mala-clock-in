@@ -2,7 +2,7 @@
 """LINE 打卡畫面（clock-line.html）方案 C 端對端：畫面自己挑店、直接打那家店的後端。
 
 用法：/usr/bin/python3 e2e/clock_line.py
-會清掉本 worktree 的 mock/mock_data*.json、在 E2E_MOCK_PORT（預設 8931）起 mock，跑完關掉。
+會清掉本 worktree 的 mock/mock_data*.json、在 E2E_MOCK_PORT（預設 8947）起 mock，跑完關掉。
 """
 import glob
 import json
@@ -62,14 +62,17 @@ window.fetch = function (url, o) {
   window.__calls.push({ url: String(url), action: a, t: Date.now() });
   const fk = window.__fake[a];
   if (fk === 'abort') return Promise.reject(new TypeError('Failed to fetch'));
+  if (fk === 'hang') return new Promise(function (res, rej) {   // 永不回應，只在頁面自己的逾時 abort 時結束
+    if (o.signal) o.signal.addEventListener('abort', function () { rej(new DOMException('aborted', 'AbortError')); });
+  });
   if (fk) return Promise.resolve(new Response(JSON.stringify(fk)));
   return _f.apply(this, arguments);
 };
 """
 
 
-def url(loc, acc=10, uid='U1', in_client=False):
-    q = f'mock_uid={uid}&api=/api&loc={loc[0]},{loc[1]}&acc={acc}' + ('&in_client=1' if in_client else '')
+def url(loc, acc=10, uid='U1', in_client=False, extra=''):
+    q = f'mock_uid={uid}&api=/api&loc={loc[0]},{loc[1]}&acc={acc}' + ('&in_client=1' if in_client else '') + extra
     return BASE + '/clock-line.html?' + q
 
 
@@ -157,16 +160,61 @@ def main():
             no_undefined(p, '後端擋下')
             ok('後端擋下：顯示原因與怎麼辦', '7 分鐘內不能打下班卡' in msg(p) and '怎麼辦：真的要下班請告知主管補登' in msg(p), msg(p))
 
-            # 5. 處理中、太頻繁、無回應、連線中斷
+            # 5. 處理中、無回應、連線中斷：每按一次只送一次 liff_punch（不自動重送）
             for fake, needle in [({'ok': False, 'type': 'out', 'reason': '上一筆還在處理中', 'hint': '請等幾秒'}, '上一筆還在處理中'),
-                                 ({'ok': False, 'error': 'too_many'}, '按太多次了'),
                                  ({'ok': False, 'error': 'server_error'}, '系統沒有正常回應'),
                                  ('abort', '連線不穩，不確定這筆有沒有進去')]:
                 p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
+                before = sum(1 for x in calls(p) if x['action'] == 'liff_punch')
                 p.evaluate('(f) => { window.__fake.liff_punch = f; }', fake)
                 force_out(p)
                 wait_msg(p, needle)
-                ok('失敗路徑：' + needle, True)
+                p.wait_for_timeout(300)
+                sent = sum(1 for x in calls(p) if x['action'] == 'liff_punch') - before
+                ok('失敗路徑：' + needle + '（只送 1 次）', sent == 1, sent)
+            # 太頻繁：鍵不亮、出現「重新定位」（審查 #4）
+            p.evaluate("window.__fake.liff_punch = {ok:false, error:'too_many'}")
+            force_out(p)
+            wait_msg(p, '按太多次了')
+            p.wait_for_timeout(300)
+            ok('太頻繁：兩顆鍵停用、可按重新定位', p.is_disabled('#btnIn') and p.is_disabled('#btnOut') and p.is_visible('#btnRetry'))
+            p.close()
+
+            # 5b. 25 秒逾時（本機用 post_timeout 縮短）：只送 1 次、說不確定有沒有進去
+            p = open_page(ctx, url(hq, extra='&post_timeout=1500'))
+            p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
+            p.evaluate("window.__fake.liff_punch = 'hang'")
+            force_out(p)
+            wait_msg(p, '連線不穩，不確定這筆有沒有進去', timeout=6000)
+            ok('逾時：只送 1 次、不重送', sum(1 for x in calls(p) if x['action'] == 'liff_punch') == 1)
+            p.close()
+
+            # 5c. 打卡時店家說沒綁定（開頁時明明綁著＝資料對不上）→ 不轉光復、不亮鍵、請找主管（審查 #2）
+            p = open_page(ctx, url(hq))
+            p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
+            p.evaluate("window.__fake.liff_punch = {ok:false, error:'not_bound'}")
+            force_out(p)
+            wait_msg(p, '沒有認得你的 LINE 帳號')
+            ok('資料對不上：鍵停用、不轉光復', p.is_disabled('#btnIn') and p.is_disabled('#btnOut')
+               and not any(x['action'] == 'line_hub_status' for x in calls(p)))
+            p.close()
+
+            # 5d. 店家 liff_status 說沒綁、光復卻說綁著 → 一樣不亮鍵
+            p = open_page(ctx, url(hq, extra=''))
+            p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
+            p.evaluate("window.__fake.liff_status = {ok:false, error:'not_bound'}")
+            p.evaluate("() => { document.getElementById('btnRetry').hidden = false; document.getElementById('btnRetry').click(); }")
+            wait_msg(p, '沒有認得你的 LINE 帳號')
+            ok('開頁兩邊對不上：鍵停用', p.is_disabled('#btnIn') and p.is_disabled('#btnOut'))
+            p.close()
+
+            # 5e. LINE 登入逾時：不停在「送出中」（審查 #5）
+            p = open_page(ctx, url(hq))
+            p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
+            p.evaluate("window.__fake.liff_punch = {ok:false, error:'invalid_id_token'}")
+            force_out(p)
+            wait_msg(p, 'LINE 登入逾時')
+            ok('登入逾時：訊息改掉、不停在送出中', '打卡中' not in msg(p), msg(p))
             p.close()
 
             # 6. 不在任何店範圍：不打任何後端

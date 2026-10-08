@@ -334,13 +334,29 @@ function lineHubMine_(userId) {
 
 /** 方案 C（2026-10-08）：打卡畫面改成直接打各店、光復不再有暫存 → 機器人收到「打卡」時，
  *  查這個 LINE 帳號在已綁定各店最近 LINE_HUB_LATEST_SEC 秒內最新一筆成功的卡（打卡畫面只在成功時才代送「打卡」）。
- *  問候語用同一個打卡時間算（liffGreeting_），與畫面上那句相同。 */
+ *  問候語用同一個打卡時間算（liffGreeting_），與畫面上那句相同。
+ *  每家店只讀 events 尾端 LINE_HUB_TAIL_ROWS 列（appendRow 一定加在最後；光復 events 上萬列，整張讀太慢——階段 2 審查 #1）。
+ *  回傳：打卡結果物件／null（真的沒有）／{unreadable:true}（有店讀不到、又沒找到，不能說「沒有打卡」——審查 #8）。 */
 var LINE_HUB_LATEST_SEC = 300;
+var LINE_HUB_TAIL_ROWS = 200;
+function lineHubTailRows_(ss, name, n) {
+  var sh = ss.getSheetByName(name);
+  if (!sh) return [];
+  var last = sh.getLastRow(), cols = sh.getLastColumn();
+  if (last < 2 || cols < 1) return [];
+  var headers = sh.getRange(1, 1, 1, cols).getValues()[0];
+  var from = Math.max(2, last - n + 1);
+  return sh.getRange(from, 1, last - from + 1, cols).getValues().map(function (row) {
+    var o = {};
+    headers.forEach(function (h, i) { o[h] = row[i]; });
+    return o;
+  });
+}
 function lineHubLatestPunch_(userId) {
-  var best = null, cutoff = Date.now() - LINE_HUB_LATEST_SEC * 1000;
+  var best = null, unreadable = false, cutoff = Date.now() - LINE_HUB_LATEST_SEC * 1000;
   lineHubMine_(userId).forEach(function (m) {
     var rows;
-    try { rows = lineHubSheetRows_(lineHubSS_(m.st), 'events'); } catch (e) { return; }
+    try { rows = lineHubTailRows_(lineHubSS_(m.st), 'events', LINE_HUB_TAIL_ROWS); } catch (e) { unreadable = true; return; }
     rows.forEach(function (e) {
       if (String(e.emp_id) !== String(m.row.emp_id) || String(e.status) !== 'ok') return;
       var ts = String(normCellTs(e.ts)), t = new Date(ts).getTime();
@@ -348,7 +364,8 @@ function lineHubLatestPunch_(userId) {
       if (!best || t > best.ms) best = { ms: t, ts: ts, type: String(e.type), store_name: m.st.name };
     });
   });
-  return best ? { ok: true, type: best.type, ts: best.ts, store_name: best.store_name, greeting: liffGreeting_(best.type, best.ts) } : null;
+  if (best) return { ok: true, type: best.type, ts: best.ts, store_name: best.store_name, greeting: liffGreeting_(best.type, best.ts) };
+  return unreadable ? { unreadable: true } : null;
 }
 
 var LINE_HUB_NOT_BOUND_TEXT = '你的 LINE 帳號還沒綁定打卡系統。\n請到你上班的店，按選單的「打卡」，第一次會請你輸入全名完成綁定。';
@@ -668,7 +685,10 @@ function handleLineWebhook_(body) {
       var text = String(ev.message.text || '').trim();
       if (text === '打卡') {
         var r = lineHubTakeStash_(userId) || lineHubLatestPunch_(userId);
-        lineHubReply_(ev.replyToken, [r ? lineHubPunchCard_(r) : lineHubNoticeCard_('打卡', '請按下方選單的「打卡」，打卡要用手機定位，直接打字不會記錄。')]);
+        lineHubReply_(ev.replyToken, [
+          r && r.unreadable ? lineHubNoticeCard_('打卡', '剛才那筆暫時查不到（店家系統忙碌）。打卡畫面顯示成功就是成功，可按選單「出勤紀錄」確認。', 'warn')
+          : r ? lineHubPunchCard_(r)
+          : lineHubNoticeCard_('打卡', '請按下方選單的「打卡」，打卡要用手機定位，直接打字不會記錄。')]);
         return;
       }
       var fn = LINE_HUB_TEXT_COMMANDS[text];

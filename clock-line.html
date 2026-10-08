@@ -133,6 +133,7 @@
 
   /* ── 後端 ── */
   var POST_TIMEOUT_MS = 25000;
+  if (isLocalHost && qs('post_timeout')) POST_TIMEOUT_MS = +qs('post_timeout');   // 本機測試逾時路徑用
   function post(url, body) {   // 25 秒沒回應就放棄等待，但不自動重送（打卡重送會變重複）
     var ctrl = window.AbortController ? new AbortController() : null;
     var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, POST_TIMEOUT_MS) : null;
@@ -257,6 +258,11 @@
   }
   function noReply() { say('系統沒有正常回應', 'warn', '請稍後按「重新定位」再試一次。'); $('btnRetry').hidden = false; }
   function connFail() { say('連線失敗', 'warn', '請檢查網路後按「重新定位」再試一次。'); $('btnRetry').hidden = false; }
+  /** 店家說沒綁定、光復卻說綁著（兩邊資料對不上）：不亮鍵，請同仁找主管，避免一直按一直失敗（階段 2 審查 #2）。 */
+  function mismatch() {
+    status = null; refreshButtons();
+    say('這家店的系統沒有認得你的 LINE 帳號', 'warn', '請按「重新定位」再試一次；一直這樣請告知主管。'); $('btnRetry').hidden = false;
+  }
   function tooMany() { say('按太多次了', 'warn', '請等一分鐘後再試；先按選單「出勤紀錄」確認有沒有打到。'); $('btnRetry').hidden = false; }
   function loadStatus() {
     say('讀取中…', '', '');
@@ -286,7 +292,7 @@
           if (r && r.error === 'too_many') { tooMany(); return; }
           noReply(); return;
         }
-        if (r.status === 'ready' && r.store) curStore = STORES.filter(function (x) { return x.code === r.store.code; })[0] || curStore;
+        if (r.status === 'ready') { mismatch(); return; }   // 只有店家回 not_bound 才會走到這裡
         render(r);
       }, connFail);
   }
@@ -308,9 +314,9 @@
     say('送出' + label + '打卡中…', '', '大約需要幾秒，請不要關閉');
     post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, fixPayload()))
       .then(function (r) {
-        if (r && r.error === 'invalid_id_token') { liff.login(); return; }
-        if (r && r.error === 'not_bound') { status = null; refreshButtons(); return loadViaHub(); }
-        if (r && r.error === 'too_many') { say('按太多次了', 'warn', '請等一分鐘；先按選單「出勤紀錄」確認有沒有打到。'); return; }
+        if (r && r.error === 'invalid_id_token') { say('LINE 登入逾時，正在重新登入…', 'warn', '登入後請再按一次。'); liff.login(); return; }
+        if (r && r.error === 'not_bound') { mismatch(); return; }   // 開頁時已確認綁著，打卡時卻說沒綁＝資料對不上
+        if (r && r.error === 'too_many') { status = null; tooMany(); return; }   // 不亮鍵：等一分鐘後按「重新定位」（審查 #4）
         if (!r || (r.ok === false && !r.reason)) {
           say('系統沒有正常回應', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。'); return;
         }
