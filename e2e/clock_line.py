@@ -60,7 +60,10 @@ const _f = window.fetch;
 window.fetch = function (url, o) {
   let a = ''; try { a = JSON.parse(o.body).action; } catch (e) {}
   window.__calls.push({ url: String(url), action: a, t: Date.now() });
-  const fk = window.__fake[a];
+  let fk = window.__fake[a];
+  if (Array.isArray(fk)) fk = fk.length > 1 ? fk.shift() : fk[0];   // 陣列＝依序回，最後一個一直回
+  if (fk === 'real') fk = null;
+  if (fk === 'lost') return _f.apply(this, arguments).then(function () { throw new TypeError('Failed to fetch'); });   // 伺服器收到了、回應弄丟
   if (fk === 'abort') return Promise.reject(new TypeError('Failed to fetch'));
   if (fk === 'hang') return new Promise(function (res, rej) {   // 永不回應，只在頁面自己的逾時 abort 時結束
     if (o.signal) o.signal.addEventListener('abort', function () { rej(new DOMException('aborted', 'AbortError')); });
@@ -76,9 +79,11 @@ def url(loc, acc=10, uid='U1', in_client=False, extra=''):
     return BASE + '/clock-line.html?' + q
 
 
-def open_page(ctx, u):
+def open_page(ctx, u, pre=None):
     p = ctx.new_page()
     p.add_init_script(LOG_JS)
+    if pre:
+        p.add_init_script(pre)   # 開頁前就設好假回應（第一次讀取在頁面載入時就發生）
     p.goto(u)
     return p
 
@@ -163,7 +168,7 @@ def main():
             # 5. 處理中、無回應、連線中斷：每按一次只送一次 liff_punch（不自動重送）
             for fake, needle in [({'ok': False, 'type': 'out', 'reason': '上一筆還在處理中', 'hint': '請等幾秒'}, '上一筆還在處理中'),
                                  ({'ok': False, 'error': 'server_error'}, '系統沒有正常回應'),
-                                 ('abort', '連線不穩，不確定這筆有沒有進去')]:
+                                 ('abort', '卡沒有送出')]:   # 斷線 → 回頭確認（2026-10-09）
                 p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
                 before = sum(1 for x in calls(p) if x['action'] == 'liff_punch')
                 p.evaluate('(f) => { window.__fake.liff_punch = f; }', fake)
@@ -185,8 +190,8 @@ def main():
             p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
             p.evaluate("window.__fake.liff_punch = 'hang'")
             force_out(p)
-            wait_msg(p, '連線不穩，不確定這筆有沒有進去', timeout=6000)
-            ok('逾時：只送 1 次、不重送', sum(1 for x in calls(p) if x['action'] == 'liff_punch') == 1)
+            wait_msg(p, '卡沒有送出', timeout=15000)
+            ok('逾時：只送 1 次、不重送，回頭確認說沒有送出', sum(1 for x in calls(p) if x['action'] == 'liff_punch') == 1)
             p.close()
 
             # 5c. 打卡時店家說沒綁定（開頁時明明綁著＝資料對不上）→ 不轉光復、不亮鍵、請找主管（審查 #2）
@@ -250,6 +255,47 @@ def main():
             c = calls(p)
             ok('位置變了：沒有送出打卡，改問新那家店（金山）', not any(x['action'] == 'liff_punch' for x in c) and any(x['url'].endswith('/api/mztjs') for x in c), c)
             gctx.close()
+            # 10. 讀取自動重試（2026-10-09 央廚同仁開頁「連線失敗」）
+            p = open_page(ctx, url(hq, extra='&retry_ms=50'), "window.__fake.liff_status = ['abort', {ok:false, error:'server_error'}, 'real']")
+            p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=15000)
+            ok('讀取：斷線、server_error 各一次後第 3 次成功', sum(1 for x in calls(p) if x['action'] == 'liff_status') == 3, calls(p))
+            p.close()
+            p = open_page(ctx, url(hq, extra='&retry_ms=50'), "window.__fake.liff_status = ['abort']")
+            wait_msg(p, '連線失敗', timeout=15000)
+            n_status = sum(1 for x in calls(p) if x['action'] == 'liff_status')
+            ok('讀取：三次都失敗 → 才說連線失敗（共送 3 次）', n_status == 3, calls(p))
+            p.close()
+            p = open_page(ctx, url(hq, extra='&retry_ms=50'), "window.__fake.liff_status = [{ok:false, error:'not_bound'}, 'real']")
+            wait_msg(p, '沒有認得你的 LINE 帳號', timeout=10000)   # U1 在光復眼中綁著總部 → 兩邊對不上
+            c = calls(p)
+            ok('讀取：店家明確回沒綁定 → 不重試，直接轉光復', sum(1 for x in c if x['action'] == 'liff_status') == 1 and any(x['action'] == 'line_hub_status' for x in c), c)
+            p.close()
+
+            # 11. 打卡結果不明時回頭確認（絕不重送打卡）
+            mid_hq = (HQ['lat'], HQ['lng'])
+            gctx2 = br.new_context()
+            p = gctx2.new_page(); p.add_init_script(LOG_JS)
+            p.goto(url(mid_hq, uid='U2', extra='&retry_ms=50'))
+            p.wait_for_selector('#bindBox:not([hidden])', timeout=10000)
+            p.fill('#bindName', '測試二'); p.click('#btnBind')
+            p.wait_for_function('document.getElementById("who").textContent === "測試二"', timeout=10000)
+            p.evaluate("window.__fake.liff_punch = 'lost'")
+            p.click('#btnIn')
+            wait_msg(p, '剛才那筆已經進去了', timeout=15000)
+            ok('打卡：伺服器收到但回應弄丟 → 回頭確認說已經進去、只送 1 次打卡', sum(1 for x in calls(p) if x['action'] == 'liff_punch') == 1 and p.is_disabled('#btnIn'), msg(p))
+            p.close()
+            p = gctx2.new_page(); p.add_init_script(LOG_JS)
+            p.goto(url(mid_hq, uid='U2', extra='&retry_ms=50'))
+            p.wait_for_function('document.getElementById("who").textContent === "測試二"', timeout=10000)
+            p.evaluate("window.__fake.liff_punch = 'abort'")
+            force_out(p)
+            wait_msg(p, '這次下班卡沒有送出', timeout=15000)
+            ok('打卡：根本沒送到 → 回頭確認說沒有送出、請再按', sum(1 for x in calls(p) if x['action'] == 'liff_punch') == 1, msg(p))
+            p.evaluate("window.__fake.liff_punch = 'abort'; window.__fake.liff_status = ['abort']")
+            force_out(p)
+            wait_msg(p, '連線不穩，不確定這筆有沒有進去', timeout=15000)
+            ok('打卡：連確認也失敗 → 說不確定、請看出勤紀錄', True)
+            p.close(); gctx2.close()
             br.close()
     finally:
         proc.kill()

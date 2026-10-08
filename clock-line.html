@@ -134,14 +134,33 @@
   /* ── 後端 ── */
   var POST_TIMEOUT_MS = 25000;
   if (isLocalHost && qs('post_timeout')) POST_TIMEOUT_MS = +qs('post_timeout');   // 本機測試逾時路徑用
-  function post(url, body) {   // 25 秒沒回應就放棄等待，但不自動重送（打卡重送會變重複）
+  function post(url, body, timeoutMs) {   // 預設 25 秒沒回應就放棄等待；打卡不自動重送（重送會變重複）
     var ctrl = window.AbortController ? new AbortController() : null;
-    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, POST_TIMEOUT_MS) : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs || POST_TIMEOUT_MS) : null;
     return fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body),
                             signal: ctrl ? ctrl.signal : undefined })
       .then(function (r) { return r.text(); })
       .then(function (t) { if (timer) clearTimeout(timer); return JSON.parse(t); },
             function (e) { if (timer) clearTimeout(timer); throw e; });
+  }
+
+  /* 讀取（liff_status／line_hub_status，唯讀、可安全重送）：Apps Script 偶發很慢或回非 JSON（2026-10-09 央廚同仁開頁就「連線失敗」），
+     每次 12 秒、最多 3 次（間隔 2／4 秒）。後端明確回的錯誤（沒綁定、太頻繁…）是最終答案，不重試。同 clock.html 的 whoami 重試。 */
+  var READ_TIMEOUT_MS = 12000, READ_RETRY_MS = [2000, 4000];
+  if (isLocalHost && qs('read_timeout')) READ_TIMEOUT_MS = +qs('read_timeout');
+  if (isLocalHost && qs('retry_ms')) READ_RETRY_MS = [+qs('retry_ms'), +qs('retry_ms')];
+  function readRetry(url, body, attempt) {
+    attempt = attempt || 1;
+    var again = function () {
+      if (attempt > READ_RETRY_MS.length) return Promise.reject(new Error('read_failed'));
+      $('hint').textContent = '連線較慢，重試中（第 ' + attempt + ' 次）…';
+      return new Promise(function (res) { setTimeout(res, READ_RETRY_MS[attempt - 1]); })
+        .then(function () { return readRetry(url, body, attempt + 1); });
+    };
+    return post(url, body, READ_TIMEOUT_MS).then(function (r) {
+      if (!r || (r.ok === false && (!r.error || r.error === 'server_error'))) return again();
+      return r;
+    }, again);
   }
 
   /* ── LINE 身分 ── */
@@ -270,7 +289,7 @@
     if (pick.status !== 'ok') { curStore = null; render(pickFail(pick)); return Promise.resolve(); }
     var st = pick.store;
     curStore = st;
-    return post(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() })
+    return readRetry(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() })
       .then(function (r) {
         if (r && r.ok && r.status === 'ready') {
           r.store = { code: st.code, name: st.name, lat: st.lat, lng: st.lng, radius_m: st.radius_m };
@@ -285,7 +304,7 @@
   }
   /** 這家店說還沒綁定：問光復（它會帶出跨店同名建議），畫面照舊顯示綁定框。 */
   function loadViaHub() {
-    return post(HUB_API, Object.assign({ action: 'line_hub_status', id_token: liff.getIDToken() }, fixPayload()))
+    return readRetry(HUB_API, Object.assign({ action: 'line_hub_status', id_token: liff.getIDToken() }, fixPayload()))
       .then(function (r) {
         if (!r || !r.ok) {
           if (r && r.error === 'invalid_id_token') { liff.login(); return; }
@@ -310,6 +329,7 @@
       return loadStatus().then(function () { if (status && status.status === 'ready') say('你的位置變了，請確認店家後再按一次', 'warn'); });
     }
     var st = curStore;
+    var before = countToday(status, type);   // 結果不明時回頭確認用：比「今天這型的卡有沒有多一張」，不比時鐘（clock.html 2026-09-21 同一招）
     busy = true; refreshButtons();
     say('送出' + label + '打卡中…', '', '大約需要幾秒，請不要關閉');
     post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, fixPayload()))
@@ -335,10 +355,30 @@
         // 失敗：重讀狀態；重讀也失敗就維持鍵停用（不拿舊狀態重新亮鍵），訊息保留（審查 L4）
         status = null; refreshButtons();
         return loadStatus().then(function () { say(failText, 'warn'); });
-      }, function () {
-        say('連線不穩，不確定這筆有沒有進去', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。不要連按。');
-      })
+      }, function () { return confirmPunch(type, st, before); })
       .then(function () { if (!keepBusy) { busy = false; refreshButtons(); } });
+  }
+  function countToday(s, type) {
+    return ((s && s.today) || []).filter(function (e) { return e.type === type && (e.status === 'ok' || e.status === 'pending_device_approval'); }).length;
+  }
+  /** 打卡送出後結果不明（逾時、斷線、回應不是 JSON）：重讀今天的紀錄確認，絕不自動重送打卡。 */
+  function confirmPunch(type, st, before) {
+    var label = type === 'in' ? '上班' : '下班';
+    say('連線不穩，正在確認剛才那筆有沒有進去…', '', '請不要關閉，也不要再按');
+    return readRetry(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() }).then(function (r) {
+      if (!r || !r.ok || r.status !== 'ready') throw new Error('confirm_failed');
+      r.store = { code: st.code, name: st.name, lat: st.lat, lng: st.lng, radius_m: st.radius_m };
+      if (countToday(r, type) > before) {
+        var mine = r.today.filter(function (e) { return e.type === type && (e.status === 'ok' || e.status === 'pending_device_approval'); });
+        render(r);
+        say(label + '打卡成功 ' + mine[mine.length - 1].hm + '（剛才那筆已經進去了，不用再按）\n地點：' + st.name, 'ok');
+        return sendToChat().then(function (closing) { if (closing) keepBusy = true; });
+      }
+      render(r);
+      say('這次' + label + '卡沒有送出', 'warn', '請再按一次「' + label + '」。');
+    }).catch(function () {
+      say('連線不穩，不確定這筆有沒有進去', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。不要連按。');
+    });
   }
   var keepBusy = false;   // 已送進聊天室、畫面即將關閉：不要再把鍵解開
   /** 代同仁在聊天室送出「打卡」→ 機器人回覆結果 → 關閉。沒有 chat_message.write 或不在 LINE 裡：結果留在畫面上。 */
