@@ -165,6 +165,7 @@
       }
       if (!navigator.geolocation) { reject(new Error('這支手機不支援定位')); return; }
       if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      lastFix = null;   // 重新定位不沿用上一輪的座標（審查 #5 N1）
       // 8 秒後有什麼就用什麼（定位不夠準交給後端判斷）；20 秒還一筆都沒有才算失敗（審查 M2）
       var settled = false, expired = false;
       function done(fn, v) { if (settled) return; settled = true; clearTimeout(soft); clearTimeout(hard); fn(v); }
