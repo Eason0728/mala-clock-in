@@ -163,11 +163,36 @@ function lineHubTakeStash_(userId) {
   try { return JSON.parse(v); } catch (e) { return null; }
 }
 
+/* 打卡成功問候語（2026-10-08 Eason 指定）：依伺服器打卡時間分早安／午安／晚上，上下班各三時段各三句隨機。
+   ⚠ 字句正本在 mala-clock-in repo 的 clock.html（CLOCK_GREETINGS），這裡是同一份，改一邊要改另一邊
+   （tests/clock-greeting.test.js 只守得到五份網頁，守不到這裡）。
+   時段：05:00–11:59 早安／12:00–17:59 午安／18:00–隔天 04:59 晚上（上班「晚上好」，「晚安」只給下班）。 */
+var LINE_HUB_GREETINGS = {
+  in: {
+    morning: ['早安！今天也謝謝你來，有你在真好 ☀️', '早安！有你一起努力，今天一定很順 💪', '早安！新的一天，祝你一切順利 🌱'],
+    afternoon: ['午安！謝謝你來接力，下午一起加油 💪', '午安！有你在就安心，下午也順順利利 ☀️', '午安！吃飽了嗎？下午也要元氣滿滿 😊'],
+    evening: ['晚上好！謝謝你今晚的付出，有你超放心 🌙', '晚上好！今晚也一起加油，辛苦你了 💪', '晚上好！謝謝有你，今晚一切順利 ✨']
+  },
+  out: {
+    morning: ['早安！忙完這一段辛苦了，好好休息 ☀️', '辛苦了！謝謝你一早的付出，接下來好好照顧自己 ❤️', '收工了！今天的你超棒，記得補充體力 💪'],
+    afternoon: ['午安！辛苦了，謝謝你今天的用心 ❤️', '辛苦了！接下來的時間留給自己，好好放鬆 ☀️', '今天的努力大家都看得到，辛苦了，好好休息 ✨'],
+    evening: ['辛苦了！今天的你超棒，好好休息，明天見 ❤️', '晚安！謝謝你今天的用心，回家好好犒賞自己 🌙', '今天也辛苦了，路上小心，好好睡一覺 🌙']
+  }
+};
+function lineHubGreeting_(type, ts) {
+  var set = LINE_HUB_GREETINGS[type];
+  var h = parseInt(String(ts || '').substring(11, 13), 10);
+  if (!set || !(h >= 0 && h <= 23)) return '';
+  var list = (h >= 5 && h < 12) ? set.morning : (h >= 12 && h < 18) ? set.afternoon : set.evening;
+  return list[Math.floor(Math.random() * list.length) % list.length];
+}
+
 /** 打卡結果 → 聊天室文字。r：{ok, type, ts, store_name, reason, hint, note} */
 function lineHubPunchText_(r) {
   var label = r.type === 'out' ? '下班' : (r.type === 'in' ? '上班' : '');
   if (r.ok) {
-    return '✅ ' + label + '打卡成功 ' + lineHubHm_(r.ts) + '\n地點：' + r.store_name + (r.note ? '\n' + r.note : '');
+    return '✅ ' + label + '打卡成功 ' + lineHubHm_(r.ts) + '\n地點：' + r.store_name + (r.note ? '\n' + r.note : '')
+      + (r.greeting ? '\n\n' + r.greeting : '');
   }
   return '❌ ' + (label ? label : '') + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
 }
@@ -180,6 +205,8 @@ function handleLineQuickClock_(body) {
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
   var res = lineHubQuickClockFor_(userId, body);
+  // 問候語在這裡抽一次存進結果：小畫面顯示的 text 與 webhook 回覆用同一份暫存，兩邊才會是同一句
+  if (res && res.ok) res.greeting = lineHubGreeting_(res.type, res.ts);
   lineHubStash_(userId, res);
   return { ok: true, result: res, text: lineHubPunchText_(res) };
 }

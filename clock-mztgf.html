@@ -764,6 +764,37 @@
   //   直接叫她重打會產生重複卡；今日紀錄會顯示「待核准」等狀態，看了就知道。
   var CLOCK_FAIL_MSG = '⚠ 打卡未完成。請看下方今日紀錄確認，若沒有出現請再打一次；仍然不行請告知主管。';
 
+  /* 打卡成功後的問候語（2026-10-08 Eason 指定）：依「伺服器記下的打卡時間」分早安／午安／晚上，
+     上班、下班各三時段、每時段三句隨機挑一句。刻意用伺服器時間不用手機時鐘（門市手機時鐘會不準）。
+     通用字句，不帶任何門市／品牌視角（央廚、總部、墨竹亭共用）。
+     ⚠ 同一份字句在光復 GAS 的 LineHub.js（LINE 打卡回覆）也有一份，改一邊要改另一邊。
+     時段：05:00–11:59 早安／12:00–17:59 午安／18:00–隔天 04:59 晚上（上班用「晚上好」，「晚安」只給下班——晚安在台灣是道別）。 */
+  var CLOCK_GREETINGS = {
+    in: {
+      morning: ['早安！今天也謝謝你來，有你在真好 ☀️', '早安！有你一起努力，今天一定很順 💪', '早安！新的一天，祝你一切順利 🌱'],
+      afternoon: ['午安！謝謝你來接力，下午一起加油 💪', '午安！有你在就安心，下午也順順利利 ☀️', '午安！吃飽了嗎？下午也要元氣滿滿 😊'],
+      evening: ['晚上好！謝謝你今晚的付出，有你超放心 🌙', '晚上好！今晚也一起加油，辛苦你了 💪', '晚上好！謝謝有你，今晚一切順利 ✨']
+    },
+    out: {
+      morning: ['早安！忙完這一段辛苦了，好好休息 ☀️', '辛苦了！謝謝你一早的付出，接下來好好照顧自己 ❤️', '收工了！今天的你超棒，記得補充體力 💪'],
+      afternoon: ['午安！辛苦了，謝謝你今天的用心 ❤️', '辛苦了！接下來的時間留給自己，好好放鬆 ☀️', '今天的努力大家都看得到，辛苦了，好好休息 ✨'],
+      evening: ['辛苦了！今天的你超棒，好好休息，明天見 ❤️', '晚安！謝謝你今天的用心，回家好好犒賞自己 🌙', '今天也辛苦了，路上小心，好好睡一覺 🌙']
+    }
+  };
+  /** type：'in'/'out'；ts：伺服器時間字串（台北，第 11–12 字是小時）；rnd：測試用，省略＝Math.random()。認不得就回空字串。 */
+  function clockGreeting(type, ts, rnd) {
+    var set = CLOCK_GREETINGS[type];
+    var h = parseInt(String(ts || '').substring(11, 13), 10);
+    if (!set || !(h >= 0 && h <= 23)) return '';
+    var list = (h >= 5 && h < 12) ? set.morning : (h >= 12 && h < 18) ? set.afternoon : set.evening;
+    var r = typeof rnd === 'number' ? rnd : Math.random();
+    return list[Math.floor(r * list.length) % list.length];
+  }
+  function withGreeting(text, type, ts) {
+    var g = clockGreeting(type, ts);
+    return g ? text + '\n' + g : text;
+  }
+
   // 被判「超出範圍」而且手機回報的定位誤差很大時，多附這一段（2026-08-19 新增）。
   // 起因：A 君一天按了 12 次都被擋，畫面只寫「超出範圍」，她不知道該怎麼辦——
   // 實際上她人在店裡，是手機改用 Wi-Fi 定位、位置飄到店北邊 80 公尺。
@@ -1353,8 +1384,8 @@
           return;
         }
         if (found.status === 'ok') {
-          showStatus('status-ok', '✓ 剛才那筆打卡已經完成　' + String(found.ts || '').substring(11, 16)
-            + '，剛剛只是畫面卡住，不用再按一次');
+          showStatus('status-ok', withGreeting('✓ 剛才那筆打卡已經完成　' + String(found.ts || '').substring(11, 16)
+            + '，剛剛只是畫面卡住，不用再按一次', type, found.ts));
         } else if (found.status === 'rejected_duplicate') {
           // 等於本來就打過了：跟前端「同型連打」前置擋的措辭一致（duplicateMessage(type)，
           // 不是相反的型別——被判重複代表「跟上一筆同型」就是這次嘗試的 type 本身）。
@@ -1425,7 +1456,7 @@
         // 只分「成功」與「沒成功」兩種（Eason 2026-08-03 指定：不管什麼狀況，
         // 只要沒打卡成功就跳同一句提醒，不要讓同仁去讀一堆不同的錯誤訊息）。
         if (res.ok && res.status === 'ok') {
-          showStatus('status-ok', '✓ 打卡成功　' + (res.ts || '').substring(11, 16));
+          showStatus('status-ok', withGreeting('✓ 打卡成功　' + (res.ts || '').substring(11, 16), type, res.ts));
           // 不等 whoami：用這張卡的伺服器時間當下就鎖住反向鍵、擋同型連打。
           // whoami 回來後會用伺服器的 last_counted 再算一次（結果相同）。
           if (res.ts) updateButtonStates({ type: type, ts: res.ts });
