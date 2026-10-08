@@ -1671,6 +1671,13 @@ def handle_line_quick_clock(data, body):
             else:
                 last = last_counted_event(sd, me["emp_id"])
                 typ = "out" if last and last["type"] == "in" else "in"
+                if body.get("type") in ("in", "out"):
+                    typ = body["type"]   # 同仁手選（與 LineHub.gs 同：同型擋、另一型 10 分鐘鎖）
+                    if last and last["type"] == typ:
+                        res = {"ok": False, "type": typ, "store_name": st["name"],
+                               "reason": f"你 {last['ts'][11:16]} 已經打過{'上班' if typ == 'in' else '下班'}卡了", "hint": "要另一種請按另一顆"}
+                        label = {"in": "上班", "out": "下班"}[typ]
+                        return {"ok": True, "result": res, "text": f"❌ {label}打卡失敗\n原因：{res['reason']}\n怎麼辦：{res['hint']}"}
                 left = None
                 if last:
                     lt = datetime.fromisoformat(last["ts"])
@@ -1757,7 +1764,41 @@ ACTIONS["mgr_line_binds"] = handle_mgr_line_binds
 ACTIONS["mgr_line_unbind"] = handle_mgr_line_unbind
 
 
+def handle_line_hub_status(data, body):
+    uid = mock_verify_id_token(body.get("id_token"))
+    if not uid:
+        return {"ok": False, "error": "invalid_id_token"}
+    status, st, d = _hub_pick(float(body["lat"]), float(body["lng"]), body.get("accuracy"))
+    if status == "ambiguous":
+        return {"ok": True, "status": "fail", "result": {"ok": False, "code": "ambiguous", "reason": "定位不夠準，分不出你在哪一家店", "hint": "請開啟精確位置"}}
+    if status == "none":
+        return {"ok": True, "status": "fail", "result": {"ok": False, "code": "out_of_range",
+                "reason": f"你不在任何打卡地點範圍內（最近的是{st['name']}，約 {round(d)} 公尺）", "hint": "人在店裡的話請開啟精確位置",
+                "nearest": {"name": st["name"], "lat": st["lat"], "lng": st["lng"], "radius_m": st["radius_m"]}}}
+    with store_context(st["code"] or None):
+        sd = load_data()
+        me = next((r for r in sd["roster"] if _hub_active(r) and r.get("line_user_id") == uid), None)
+        if not me:
+            return {"ok": True, "status": "fail", "result": {"ok": False, "code": "not_bound", "store_name": st["name"], "suggest_name": "",
+                    "reason": f"你的 LINE 帳號還沒有綁定「{st['name']}」", "hint": "請輸入全名綁定"}}
+        today = today_str()
+        evs = [{"type": e["type"], "hm": e["ts"][11:16], "status": e["status"]} for e in sd["events"]
+               if e["emp_id"] == me["emp_id"] and e["ts"][:10] == today]
+        last = last_counted_event(sd, me["emp_id"])
+        lock = {}
+        if last:
+            t = datetime.fromisoformat(last["ts"]).timestamp() * 1000
+            lock["out" if last["type"] == "in" else "in"] = t + 600000
+        return {"ok": True, "status": "ready", "name": me["name"],
+                "store": {"code": st["code"], "name": st["name"], "lat": st["lat"], "lng": st["lng"], "radius_m": st["radius_m"]},
+                "shift_in": me.get("shift_in", ""), "shift_out": me.get("shift_out", ""), "today": evs,
+                "guard": {"blocked": last["type"] if last else None, "lock": lock,
+                          "last": {"type": last["type"], "hm": last["ts"][11:16], "ts": last["ts"]} if last else None,
+                          "now": time.time() * 1000}}
+
+
 LINE_HUB_ACTIONS = {
+    "line_hub_status": handle_line_hub_status,
     "line_quick_clock": handle_line_quick_clock,
     "line_bind_name": handle_line_bind_name,
 }

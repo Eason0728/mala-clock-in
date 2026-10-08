@@ -5,85 +5,119 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>鼎兆元打卡</title>
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32-mzt.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <!--
-  LINE 單一打卡入口（v2，2026-10-08，規格 mala-clock-liff/docs/spec.md「v2 補充」）
-  官方帳號「鼎兆元打卡」選單的「打卡」打開這頁（LIFF 2011292256-QFXEwFh4）：
-    抓 GPS → 光復後端 line_quick_clock（挑店、自動判斷上／下班、10 分鐘鎖、打那家店）
-    → 代同仁在聊天室送出「打卡」→ 關閉；機器人用「回覆」把結果送進聊天室（webhook，LineHub.gs）。
+  LINE 單一打卡入口（v3 畫面，2026-10-08 Eason 指定：仿傳統打卡 App——日期、大時鐘、地圖、店家、班別、上班／下班兩顆鍵）
+  官方帳號「鼎兆元打卡」選單「打卡」打開這頁（LIFF 2011292256-QFXEwFh4，Tall）。
+    開頁：定位 → 光復後端 line_hub_status（挑店、姓名、班別、今天的卡、防呆狀態）
+    按上班／下班：line_quick_clock {type} → 結果顯示在畫面 → 代同仁送出「打卡」讓機器人回覆 → 關閉
   第一次使用：輸入全名綁定（line_bind_name，人要在那家店的範圍內）。
-  ⚠ 這頁是獨立檔，不是由 clock.html 產生；各門市的 clock*.html 與這頁互不影響。
+  ⚠ 獨立檔，不是由 clock.html 產生；各門市的 clock*.html 與這頁互不影響。
 -->
 <style>
-  :root { --ink: #1f2a27; --muted: #6b7a75; --ok: #1e7d4f; --warn: #a15a00; --brand: #2a6b5e; }
+  :root { --ink: #1f2a27; --muted: #6b7a75; --line: #dfe6e3; --ok: #1e7d4f; --warn: #a15a00; --err: #c22a12;
+          --in: #2a6b5e; --out: #c0561f; --dis: #c9cfcd; }
   * { box-sizing: border-box; }
-  html, body { margin: 0; min-height: 100%; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", sans-serif; color: #fff;
-         background: radial-gradient(120% 90% at 50% 16%, #3d8f7f 0%, #2a6b5e 55%, #1c4a41 100%) fixed; }
-  main { max-width: 480px; margin: 0 auto; padding: 32px 16px 40px; }
-  h1 { margin: 0 0 4px; text-align: center; font-size: 26px; letter-spacing: 2px; }
-  .sub { text-align: center; opacity: .8; margin: 0 0 20px; font-size: 14px; }
-  .card { background: #fff; color: var(--ink); border-radius: 18px; padding: 22px 18px; text-align: center;
-          box-shadow: 0 8px 24px rgba(0,0,0,.18); }
-  .icon { font-size: 44px; line-height: 1; margin-bottom: 10px; }
-  .msg { font-size: 17px; line-height: 1.6; white-space: pre-line; }
+  html, body { margin: 0; background: #f4f6f5; color: var(--ink);
+               font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", sans-serif; }
+  main { max-width: 480px; margin: 0 auto; padding: 14px 16px 28px; }
+  .card { background: #fff; border-radius: 16px; padding: 16px; }
+  .date { text-align: center; font-size: 18px; font-weight: 600; }
+  .clock { text-align: center; font-size: 64px; font-weight: 700; letter-spacing: 2px; line-height: 1.1; margin: 4px 0 10px;
+           font-variant-numeric: tabular-nums; }
+  #map { height: 210px; border-radius: 10px; background: #e8ecea; }
+  .store { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 16px;
+           display: flex; justify-content: space-between; align-items: center; }
+  .store .who { color: var(--muted); font-size: 13px; }
+  .shift { text-align: center; color: var(--muted); font-size: 13px; margin-top: 10px; line-height: 1.7; }
+  .today { text-align: center; font-size: 13px; margin-top: 2px; }
+  .btns { display: flex; gap: 12px; margin-top: 16px; }
+  .btns button { flex: 1; padding: 16px 0; font-size: 19px; font-weight: 700; border: 0; border-radius: 12px; color: #fff; }
+  #btnIn { background: var(--in); } #btnOut { background: var(--out); }
+  #btnIn:disabled, #btnOut:disabled { background: var(--dis); color: #fff; }   /* 要用 id 選擇器才蓋得過上一行的底色 */
+  .msg { margin-top: 14px; text-align: center; font-size: 15px; line-height: 1.6; white-space: pre-line; min-height: 1.6em; }
   .msg.ok { color: var(--ok); } .msg.warn { color: var(--warn); }
-  .hint { color: var(--muted); font-size: 13px; margin-top: 10px; white-space: pre-line; }
-  input { width: 100%; padding: 12px; font-size: 17px; border: 1px solid #ccd5d2; border-radius: 10px; margin-top: 12px; }
-  button { width: 100%; margin-top: 14px; padding: 14px; font-size: 17px; font-weight: 700; border: 0; border-radius: 12px;
-           background: var(--brand); color: #fff; }
-  button.ghost { background: #eef3f1; color: var(--brand); }
-  button:disabled { opacity: .5; }
+  .hint { color: var(--muted); font-size: 13px; text-align: center; white-space: pre-line; margin-top: 4px; }
+  input { width: 100%; padding: 12px; font-size: 17px; border: 1px solid var(--line); border-radius: 10px; margin-top: 10px; }
+  .primary { width: 100%; margin-top: 12px; padding: 14px; font-size: 17px; font-weight: 700; border: 0; border-radius: 12px;
+             background: var(--in); color: #fff; }
+  .ghost { width: 100%; margin-top: 10px; padding: 12px; font-size: 15px; border: 1px solid var(--line); border-radius: 12px;
+           background: #fff; color: var(--in); }
+  .primary:disabled { opacity: .5; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>鼎兆元打卡</h1>
-  <p class="sub">在店裡按選單「打卡」就好，結果會回到聊天室</p>
+  <div class="card">
+    <div class="date" id="date">—</div>
+    <div class="clock" id="clock">--:--</div>
+    <div id="map"></div>
+    <div class="store"><span id="storeName">定位中…</span><span class="who" id="who"></span></div>
+    <div class="shift" id="shift">上班時間 -- / 下班時間 --</div>
+    <div class="today" id="today"></div>
 
-  <div class="card" id="statusCard">
-    <div class="icon" id="statusIcon">⏳</div>
-    <div class="msg" id="statusMsg">準備中…</div>
-    <div class="hint" id="statusHint"></div>
-    <button class="ghost" id="btnRetry" type="button" hidden>再打一次</button>
-    <button class="ghost" id="btnClose" type="button" hidden>關閉</button>
-  </div>
+    <div id="bindBox" hidden>
+      <div class="msg" id="bindTitle">第一次使用，請輸入你的全名</div>
+      <div class="hint" id="bindHint">要人在你上班的店裡，名字要和店裡名冊一樣</div>
+      <input id="bindName" type="text" placeholder="例如：王小明" autocomplete="name">
+      <div class="hint" id="bindError" style="color:var(--err)"></div>
+      <button class="primary" id="btnBind" type="button">綁定</button>
+    </div>
 
-  <div class="card" id="bindCard" hidden style="margin-top:14px;">
-    <div class="msg">第一次使用，請輸入你的<b>全名</b></div>
-    <div class="hint" id="bindStoreHint">要人在你上班的店裡才能綁定</div>
-    <input id="bindName" type="text" placeholder="例如：王小明" autocomplete="name">
-    <div class="hint" id="bindError" style="color:#c22a12;"></div>
-    <button id="btnBind" type="button">綁定並打卡</button>
+    <div class="btns" id="btns">
+      <button id="btnIn" type="button" disabled>上班</button>
+      <button id="btnOut" type="button" disabled>下班</button>
+    </div>
+    <div class="msg" id="msg"></div>
+    <div class="hint" id="hint"></div>
+    <button class="ghost" id="btnRetry" type="button" hidden>重新定位</button>
   </div>
 </main>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 (function () {
   'use strict';
   var LIFF_ID = '2011292256-QFXEwFh4';
-  // 集中服務（光復打卡後端，LineHub.gs）
   var HUB_API = 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
-
   function qs(n) { return new URLSearchParams(location.search).get(n); }
   var isLocalHost = ['localhost', '127.0.0.1'].indexOf(location.hostname) !== -1;
-  if (isLocalHost && qs('api')) HUB_API = qs('api');      // 本機 mock
-
+  if (isLocalHost && qs('api')) HUB_API = qs('api');
   var $ = function (id) { return document.getElementById(id); };
-  var lastPos = null;
+  var WK = ['日', '一', '二', '三', '四', '五', '六'];
 
-  function show(icon, msg, cls, hint) {
-    $('statusIcon').textContent = icon;
-    $('statusMsg').textContent = msg;
-    $('statusMsg').className = 'msg' + (cls ? ' ' + cls : '');
-    $('statusHint').textContent = hint || '';
+  /* ── 日期與大時鐘（台北時間）── */
+  function tick() {
+    var d = new Date(Date.now() + (8 * 60 + new Date().getTimezoneOffset()) * 60000);
+    $('date').textContent = (d.getMonth() + 1) + '月' + d.getDate() + '日 星期' + WK[d.getDay()];
+    $('clock').textContent = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    refreshButtons();
   }
-  function showButtons(retry, close) { $('btnRetry').hidden = !retry; $('btnClose').hidden = !close; }
 
-  /** POST JSON（text/plain 避開 CORS 預檢）。25 秒沒回應就放棄等待（Apps Script 偶爾卡住，不設上限畫面會永遠停在
-   *  「送出中」，v2 審查 #8）——但**不自動重送**：逾時不代表沒寫進去，重送會變重複打卡，由呼叫端告訴同仁去查。 */
+  /* ── 地圖（OpenStreetMap，不需要金鑰）── */
+  var map = null, meMarker = null, storeCircle = null;
+  function initMap() {
+    if (!window.L) return;
+    map = L.map('map', { zoomControl: false, attributionControl: true }).setView([24.7863, 121.0157], 15);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+  }
+  function showMe(lat, lng) {
+    if (!map) return;
+    if (!meMarker) meMarker = L.circleMarker([lat, lng], { radius: 8, color: '#fff', weight: 3, fillColor: '#d93025', fillOpacity: 1 }).addTo(map);
+    else meMarker.setLatLng([lat, lng]);
+    if (!storeCircle) map.setView([lat, lng], 17);
+  }
+  function showStore(st) {
+    if (!map || !st || typeof st.lat !== 'number') return;
+    if (storeCircle) map.removeLayer(storeCircle);
+    storeCircle = L.circle([st.lat, st.lng], { radius: st.radius_m, color: '#2a6b5e', weight: 2, fillOpacity: 0.12 }).addTo(map);
+    if (meMarker) map.fitBounds(L.featureGroup([meMarker, storeCircle]).getBounds(), { padding: [24, 24], maxZoom: 18 });
+  }
+
+  /* ── 後端 ── */
   var POST_TIMEOUT_MS = 25000;
-  function post(body) {
+  function post(body) {   // 25 秒沒回應就放棄等待，但不自動重送（打卡重送會變重複）
     var ctrl = window.AbortController ? new AbortController() : null;
     var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, POST_TIMEOUT_MS) : null;
     return fetch(HUB_API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body),
@@ -95,7 +129,7 @@
 
   /* ── LINE 身分 ── */
   function initLiff() {
-    if (isLocalHost && qs('mock_uid')) {   // 本機測試：模擬已登入（mock 認 MOCK_ID_TOKEN_<uid>）
+    if (isLocalHost && qs('mock_uid')) {
       var uid = qs('mock_uid');
       window.liff = { init: function () { return Promise.resolve(); }, isLoggedIn: function () { return true; },
         getIDToken: function () { return 'MOCK_ID_TOKEN_' + uid; }, login: function () {}, isInClient: function () { return !!qs('in_client'); },
@@ -118,126 +152,156 @@
     });
   }
 
-  /* ── 定位：與 clock.html getPosition 同一套規則（誤差 >40m 或 30 秒前的舊位置就多等最多 8 秒）── */
-  var GOOD_ACCURACY_M = 40, STALE_FIX_MS = 30000, RETRY_BUDGET_MS = 8000;
-  var GEO_OPTS = { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 };
-  function good(p) {
-    var acc = p && p.coords && isFinite(p.coords.accuracy) ? p.coords.accuracy : Infinity;
-    return acc <= GOOD_ACCURACY_M && (Date.now() - (p.timestamp || 0)) <= STALE_FIX_MS;
-  }
-  function getPosition() {
-    if (isLocalHost && qs('loc')) {
-      var m = String(qs('loc')).split(',');
-      var acc = parseFloat(qs('acc'));
-      return Promise.resolve({ timestamp: Date.now(), coords: { latitude: +m[0], longitude: +m[1], accuracy: isFinite(acc) ? acc : 10 } });
-    }
+  /* ── 定位：開頁就持續追蹤，送出時用手上最好的那筆（合格＝誤差 ≤40m 且 30 秒內；合格的一律勝過不合格的）── */
+  var GOOD_ACC = 40, STALE_MS = 30000, lastFix = null, watchId = null;
+  function good(p) { return p && p.coords.accuracy <= GOOD_ACC && Date.now() - p.timestamp <= STALE_MS; }
+  function better(p) { if (!lastFix || good(p) || (!good(lastFix) && p.coords.accuracy < lastFix.coords.accuracy)) lastFix = p; }
+  function startGeo() {
     return new Promise(function (resolve, reject) {
+      if (isLocalHost && qs('loc')) {
+        var m = String(qs('loc')).split(','), acc = parseFloat(qs('acc'));
+        lastFix = { timestamp: Date.now(), coords: { latitude: +m[0], longitude: +m[1], accuracy: isFinite(acc) ? acc : 10 } };
+        resolve(lastFix); return;
+      }
       if (!navigator.geolocation) { reject(new Error('這支手機不支援定位')); return; }
-      var best = null, watchId = null, timer = null, done = false;
-      function finish() {
-        if (done) return; done = true;
-        if (timer) clearTimeout(timer);
-        if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-        if (best) resolve(best); else reject(new Error('定位失敗'));
-      }
-      function offer(p) {   // 合格的一律贏過不合格的；同級才比誤差（過時定位常常誤差反而小，見 clock.html 註解）
-        if (!best || (good(p) && !good(best)) || (good(p) === good(best) && p.coords.accuracy < best.coords.accuracy)) best = p;
-      }
-      navigator.geolocation.getCurrentPosition(function (p) {
-        offer(p);
-        if (good(p)) { finish(); return; }
-        show('📡', '定位中…（訊號較弱，再抓一次）');
-        timer = setTimeout(finish, RETRY_BUDGET_MS);
-        watchId = navigator.geolocation.watchPosition(function (p2) { offer(p2); if (good(p2)) finish(); }, function () {}, GEO_OPTS);
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      var settled = false, timer = setTimeout(function () { if (!settled && lastFix) { settled = true; resolve(lastFix); } }, 8000);
+      watchId = navigator.geolocation.watchPosition(function (p) {
+        better(p);
+        showMe(lastFix.coords.latitude, lastFix.coords.longitude);
+        if (!settled && good(p)) { settled = true; clearTimeout(timer); resolve(lastFix); }
       }, function (err) {
-        if (done) return; done = true;
-        reject(new Error(err && err.code === 1 ? '定位權限被拒絕' : '定位失敗'));
-      }, GEO_OPTS);
+        if (!settled && !lastFix) { settled = true; clearTimeout(timer); reject(new Error(err && err.code === 1 ? '定位權限被拒絕' : '定位失敗')); }
+      }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
     });
+  }
+  function fixPayload() {
+    if (isLocalHost && qs('loc')) lastFix.timestamp = Date.now();
+    return { lat: lastFix.coords.latitude, lng: lastFix.coords.longitude,
+             accuracy: isFinite(lastFix.coords.accuracy) ? lastFix.coords.accuracy : null };
+  }
+
+  /* ── 畫面狀態 ── */
+  var status = null, busy = false, suggested = '', clockSkew = 0;   // clockSkew＝伺服器時間 − 手機時間（倒數用伺服器時鐘）
+  function say(text, cls, hint) { $('msg').textContent = text || ''; $('msg').className = 'msg' + (cls ? ' ' + cls : ''); $('hint').textContent = hint || ''; }
+  function refreshButtons() {
+    var ready = !!(status && status.status === 'ready' && !busy);
+    ['in', 'out'].forEach(function (t) {
+      var b = t === 'in' ? $('btnIn') : $('btnOut'), label = t === 'in' ? '上班' : '下班';
+      var g = ready ? status.guard : null, left = 0;
+      if (g && g.lock && g.lock[t]) left = g.lock[t] - (Date.now() + clockSkew);
+      b.disabled = !ready || (g && g.blocked === t) || left > 0;
+      b.textContent = left > 0 ? label + '（' + Math.ceil(left / 60000) + ' 分後）' : label;
+    });
+  }
+  function render(s) {
+    status = s;
+    $('bindBox').hidden = true; $('btns').hidden = false; $('btnRetry').hidden = true;
+    if (s.status === 'ready') {
+      clockSkew = s.guard && s.guard.now ? s.guard.now - Date.now() : 0;
+      $('storeName').textContent = s.store.name;
+      $('who').textContent = s.name;
+      $('shift').textContent = '上班時間 ' + (s.shift_in || '--') + ' / 下班時間 ' + (s.shift_out || '--');
+      var ok = (s.today || []).filter(function (e) { return e.status === 'ok' || e.status === 'pending_device_approval'; });
+      $('today').textContent = ok.length ? '今天：' + ok.map(function (e) { return (e.type === 'in' ? '上班 ' : '下班 ') + e.hm; }).join('、') : '今天還沒有打卡紀錄';
+      showStore(s.store);
+      say('', '', '');
+    } else {
+      var r = s.result || {};
+      $('storeName').textContent = r.store_name || '不在打卡範圍';
+      $('who').textContent = '';
+      if (r.nearest) showStore(r.nearest);
+      if (r.code === 'not_bound') { showBind(r.store_name, r.suggest_name); }
+      else { say(r.reason, 'warn', r.hint); $('btnRetry').hidden = false; }
+    }
+    refreshButtons();
+  }
+  function loadStatus() {
+    say('讀取中…', '', '');
+    return post(Object.assign({ action: 'line_hub_status', id_token: liff.getIDToken() }, fixPayload()))
+      .then(function (r) {
+        if (!r || !r.ok) {
+          if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+          say('系統沒有正常回應', 'warn', '請稍後按「重新定位」再試一次。'); $('btnRetry').hidden = false; return;
+        }
+        render(r);
+      }, function () { say('連線失敗', 'warn', '請檢查網路後按「重新定位」再試一次。'); $('btnRetry').hidden = false; });
   }
 
   /* ── 打卡 ── */
-  function clock() {
-    showButtons(false, false);
-    $('bindCard').hidden = true;
-    show('📡', '定位中…');
-    getPosition().then(function (pos) {
-      lastPos = pos;
-      show('⏳', '送出打卡中…', '', '大約需要幾秒，請不要關閉');
-      return post({ action: 'line_quick_clock', id_token: liff.getIDToken(),
-                    lat: pos.coords.latitude, lng: pos.coords.longitude,
-                    accuracy: isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null })
-        .then(function (r) {
-          if (!r || !r.ok) {
-            if (r && r.error === 'invalid_id_token') { show('🔄', 'LINE 身分已過期，正在重新登入…'); liff.login(); return; }
-            show('⚠️', '系統沒有正常回應', 'warn', '請關掉後按選單「出勤紀錄」看今天有沒有這筆；沒有再按一次「打卡」。');
-            showButtons(true, true);
-            return;
-          }
-          var res = r.result || {};
-          if (res.code === 'not_bound') { showBind(res.store_name, res.suggest_name); return; }
-          show(res.ok ? '✅' : '❌', String(r.text || '').replace(/^[✅❌]\s*/, ''), res.ok ? 'ok' : 'warn');
-          showButtons(!res.ok, true);
-          return sendToChat();
-        }, function () {
-          // 送出之後才斷線：不知道這筆有沒有進去，不可自動重送
-          show('⚠️', '連線不穩，不確定這筆有沒有進去', 'warn', '請關掉後按選單「出勤紀錄」看今天有沒有這筆；沒有再按一次「打卡」。');
-          showButtons(false, true);
-        });
-    }, function (err) {
-      show('📍', err.message, 'warn', '請允許 LINE 使用定位（手機設定 → LINE → 位置），開啟「精確位置」與 Wi‑Fi 後再按一次。');
-      showButtons(true, true);
-    });
+  function punch(type) {
+    if (busy || !status || status.status !== 'ready') return;
+    var label = type === 'in' ? '上班' : '下班';
+    if (type === 'out' && !status.guard.last && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
+    busy = true; refreshButtons();
+    say('送出' + label + '打卡中…', '', '大約需要幾秒，請不要關閉');
+    post(Object.assign({ action: 'line_quick_clock', id_token: liff.getIDToken(), type: type }, fixPayload()))
+      .then(function (r) {
+        if (!r || !r.ok) {
+          if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+          say('系統沒有正常回應', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。'); return;
+        }
+        var res = r.result || {};
+        if (res.code === 'not_bound') { showBind(res.store_name, res.suggest_name); return; }
+        say(String(r.text || '').replace(/^[✅❌]\s*/, ''), res.ok ? 'ok' : 'warn');
+        if (res.ok) return sendToChat();
+        return loadStatus().then(function () { say(String(r.text || '').replace(/^[✅❌]\s*/, ''), 'warn'); });
+      }, function () {
+        say('連線不穩，不確定這筆有沒有進去', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。不要連按。');
+      })
+      .then(function () { busy = false; refreshButtons(); });
   }
-
-  /** 代同仁在聊天室送出「打卡」→ 機器人用回覆送出結果 → 關閉這頁。
-   *  不在 LINE 裡開、或 LIFF 沒有 chat_message.write 權限：結果留在畫面上（打卡本身已完成）。 */
+  /** 代同仁在聊天室送出「打卡」→ 機器人回覆結果 → 關閉。沒有 chat_message.write 或不在 LINE 裡：結果留在畫面上。 */
   function sendToChat() {
     if (!liff.isInClient || !liff.isInClient() || !liff.sendMessages) return;
     return liff.sendMessages([{ type: 'text', text: '打卡' }])
-      .then(function () { setTimeout(function () { liff.closeWindow(); }, 600); }, function () {});
+      .then(function () { setTimeout(function () { liff.closeWindow(); }, 1500); }, function () {});
   }
 
   /* ── 第一次使用：輸入全名綁定 ── */
-  var suggested = '';
   function showBind(storeName, suggest) {
     suggested = suggest || '';
-    show('👋', '還沒綁定' + (storeName ? '「' + storeName + '」' : ''), '', '');
-    $('bindStoreHint').textContent = suggested
-      ? '你在別家店已綁定為「' + suggested + '」。「' + storeName + '」的名冊上也有這個名字——是你本人就按下面的按鈕。'
-      : (storeName ? '綁定「' + storeName + '」：要人在店裡，名字要和店裡名冊一樣' : '要人在你上班的店裡才能綁定');
+    $('btns').hidden = true;
+    $('bindBox').hidden = false;
+    $('bindTitle').textContent = suggested ? '你在別家店已綁定為「' + suggested + '」' : '第一次使用，請輸入你的全名';
+    $('bindHint').textContent = suggested
+      ? '「' + storeName + '」的名冊上也有這個名字，是你本人就按下面的按鈕。'
+      : '綁定「' + (storeName || '你上班的店') + '」：要人在店裡，名字要和店裡名冊一樣';
     $('bindName').value = suggested;
-    $('btnBind').textContent = suggested ? '是我，綁定並打卡' : '綁定並打卡';
-    $('bindCard').hidden = false;
+    $('btnBind').textContent = suggested ? '是我，綁定' : '綁定';
     $('bindError').textContent = '';
-    if (!suggested) $('bindName').focus();
+    say('', '', '');
   }
   $('btnBind').addEventListener('click', function () {
     var name = $('bindName').value.trim();
     if (!name) { $('bindError').textContent = '請輸入你的全名'; return; }
-    if (!lastPos) { clock(); return; }
-    $('btnBind').disabled = true;
-    $('bindError').textContent = '';
-    post({ action: 'line_bind_name', id_token: liff.getIDToken(), name: name,
-           via: suggested && name === suggested ? 'auto' : 'name',
-           lat: lastPos.coords.latitude, lng: lastPos.coords.longitude,
-           accuracy: isFinite(lastPos.coords.accuracy) ? lastPos.coords.accuracy : null })
+    $('btnBind').disabled = true; $('bindError').textContent = '';
+    post(Object.assign({ action: 'line_bind_name', id_token: liff.getIDToken(), name: name }, fixPayload()))
       .then(function (r) {
         $('btnBind').disabled = false;
-        if (r && r.ok) { $('bindCard').hidden = true; clock(); return; }
+        if (r && r.ok) { loadStatus(); return; }
         if (r && r.error === 'invalid_id_token') { liff.login(); return; }
         $('bindError').textContent = (r && r.message) || '綁定沒有成功，請稍後再試；一直不行請告知主管。';
-      }, function () {
-        $('btnBind').disabled = false;
-        $('bindError').textContent = '連線失敗，請檢查網路後再試。';
-      });
+      }, function () { $('btnBind').disabled = false; $('bindError').textContent = '連線失敗，請檢查網路後再試。'; });
   });
-  $('btnRetry').addEventListener('click', clock);
-  $('btnClose').addEventListener('click', function () { if (window.liff && liff.closeWindow) liff.closeWindow(); });
+  $('btnIn').addEventListener('click', function () { punch('in'); });
+  $('btnOut').addEventListener('click', function () { punch('out'); });
+  $('btnRetry').addEventListener('click', function () { $('btnRetry').hidden = true; start(); });
 
+  function start() {
+    say('定位中…', '', '');
+    startGeo().then(function (p) { showMe(p.coords.latitude, p.coords.longitude); return loadStatus(); },
+      function (err) {
+        say(err.message, 'warn', '請允許 LINE 使用定位（手機設定 → LINE → 位置），開啟「精確位置」與 Wi‑Fi 後按「重新定位」。');
+        $('btnRetry').hidden = false;
+      });
+  }
+
+  tick(); setInterval(tick, 1000);
+  initMap();
   initLiff().then(function (ok) {
-    if (!ok) { show('💬', '請從 LINE 官方帳號「鼎兆元打卡」的選單打開這一頁。'); return; }
-    clock();
+    if (!ok) { say('請從 LINE 官方帳號「鼎兆元打卡」的選單打開這一頁。', 'warn'); return; }
+    start();
   });
 })();
 </script>

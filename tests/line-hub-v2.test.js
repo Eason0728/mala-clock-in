@@ -12,7 +12,7 @@ function extract(src, name) {
   return src.slice(i, j);
 }
 const SRC = [fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8'), fs.readFileSync(ROOT + '/apps-script/LineHub.gs', 'utf8'),
-             extract(codeSrc, 'lastCountedEvent')].join('\n');
+             extract(codeSrc, 'lastCountedEvent'), extract(codeSrc, 'normShiftTime')].join('\n');
 const core = require(ROOT + '/clock-line-core.js');
 const STORES = require(ROOT + '/tools/stores.json');
 let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
@@ -202,5 +202,29 @@ ok('webhook：群組裡打「薪資明細」不回；destination 不是本帳號
   assert.strictEqual(replies.length, 0);
   for (let i = 0; i < 25; i++) sb.handleLineWebhook_(ev('請假申請'));
   assert.strictEqual(replies.length, 20);
+});
+ok('手選上班／下班：已經打過上班卡又按上班 → 擋；30 分鐘前上班、按下班 → 送 out', () => {
+  let m = make({ sheets: { hq: { roster: [R()], events: [{ ts: iso(30), emp_id: 'H01', type: 'in', status: 'ok' }] } } });
+  let r = m.sb.handleLineQuickClock_({ id_token: 'TOK_U1', type: 'in', lat: hq.lat, lng: hq.lng, accuracy: 10 });
+  assert.strictEqual(m.storeCalls.length, 0); assert(/已經打過上班卡/.test(r.text), r.text);
+  r = m.sb.handleLineQuickClock_({ id_token: 'TOK_U1', type: 'out', lat: hq.lat, lng: hq.lng, accuracy: 10 });
+  assert.strictEqual(m.storeCalls[0].body.type, 'out');
+});
+ok('手選：5 分鐘前上班、按下班 → 10 分鐘鎖擋下；沒有任何卡、按下班 → 照送（真的忘打上班卡的人要打得進去）', () => {
+  let m = make({ sheets: { hq: { roster: [R()], events: [{ ts: iso(5), emp_id: 'H01', type: 'in', status: 'ok' }] } } });
+  assert(/分鐘內不能打下班卡/.test(m.sb.handleLineQuickClock_({ id_token: 'TOK_U1', type: 'out', lat: hq.lat, lng: hq.lng, accuracy: 10 }).text));
+  assert.strictEqual(m.storeCalls.length, 0);
+  m = make({ sheets: { hq: { roster: [R()], events: [] } } });
+  m.sb.handleLineQuickClock_({ id_token: 'TOK_U1', type: 'out', lat: hq.lat, lng: hq.lng, accuracy: 10 });
+  assert.strictEqual(m.storeCalls[0].body.type, 'out');
+});
+ok('line_hub_status：回姓名、店家座標、班別、今天的卡、防呆狀態；不在範圍 → fail＋最近的店', () => {
+  const m = make({ sheets: { hq: { roster: [R({ shift_in: '08:00', shift_out: '17:00' })], events: [{ ts: iso(30), emp_id: 'H01', type: 'in', status: 'ok' }] } } });
+  const r = m.sb.handleLineHubStatus_({ id_token: 'TOK_U1', lat: hq.lat, lng: hq.lng, accuracy: 10 });
+  assert.strictEqual(r.status, 'ready'); assert.strictEqual(r.name, '甲'); assert.strictEqual(r.store.code, 'hq');
+  assert.strictEqual(r.shift_in, '08:00'); assert.strictEqual(r.today.length, 1); assert.strictEqual(r.guard.blocked, 'in');
+  assert(!/kH|DEV-SAFARI/.test(JSON.stringify(r)), '不可回金鑰或裝置碼');
+  const f = m.sb.handleLineHubStatus_({ id_token: 'TOK_U1', lat: 25.03, lng: 121.56, accuracy: 10 });
+  assert.strictEqual(f.status, 'fail'); assert.strictEqual(f.result.code, 'out_of_range'); assert(f.result.nearest.name);
 });
 console.log(`\n${n} 項全部通過`);

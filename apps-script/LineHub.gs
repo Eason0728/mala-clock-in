@@ -184,22 +184,27 @@ function handleLineQuickClock_(body) {
   return { ok: true, result: res, text: lineHubPunchText_(res) };
 }
 
-function lineHubQuickClockFor_(userId, body) {
+/**
+ * 共用：依定位挑店、找出這個 LINE 在那家店的名冊列與打卡紀錄。
+ * 回傳 {fail: <打卡結果物件>} 或 {fix, st, ss, me, events}。
+ */
+function lineHubResolve_(userId, body) {
   var fix = { lat: Number(body.lat), lng: Number(body.lng),
               accuracy_m: body.accuracy === null || body.accuracy === undefined || body.accuracy === '' ? undefined : Number(body.accuracy) };
   var pick = lineHubPickStore_(fix, lineHubStores_());
-  if (pick.status === 'no_fix') return { ok: false, reason: '抓不到手機定位', hint: '請允許 LINE 使用定位後再按一次「打卡」' };
-  if (pick.status === 'ambiguous') return { ok: false, reason: '定位不夠準，分不出你在哪一家店', hint: '請開啟手機的「精確位置」與 Wi‑Fi 後再按一次' };
+  if (pick.status === 'no_fix') return { fail: { ok: false, code: 'no_fix', reason: '抓不到手機定位', hint: '請允許 LINE 使用定位後再試一次' } };
+  if (pick.status === 'ambiguous') return { fail: { ok: false, code: 'ambiguous', reason: '定位不夠準，分不出你在哪一家店', hint: '請開啟手機的「精確位置」與 Wi‑Fi 後再試一次' } };
   if (pick.status === 'none') {
-    return { ok: false, reason: '你不在任何打卡地點範圍內（最近的是' + (pick.nearest ? pick.nearest.name : '—') + '，約 ' + pick.distance_m + ' 公尺）',
-             hint: '人在店裡的話，請開啟「精確位置」與 Wi‑Fi 後再按一次' };
+    return { fail: { ok: false, code: 'out_of_range',
+      reason: '你不在任何打卡地點範圍內（最近的是' + (pick.nearest ? pick.nearest.name : '—') + '，約 ' + pick.distance_m + ' 公尺）',
+      hint: '人在店裡的話，請開啟「精確位置」與 Wi‑Fi 後再試一次',
+      nearest: pick.nearest ? { name: pick.nearest.name, lat: pick.nearest.lat, lng: pick.nearest.lng, radius_m: pick.nearest.radius_m } : null } };
   }
   var st = pick.store, ss;
-  try { ss = lineHubSS_(st); } catch (e) { return { ok: false, store_name: st.name, reason: '「' + st.name + '」的系統暫時連不上', hint: '請稍後再按一次；一直不行請告知主管' }; }
+  try { ss = lineHubSS_(st); } catch (e) { return { fail: { ok: false, store_name: st.name, reason: '「' + st.name + '」的系統暫時連不上', hint: '請稍後再試；一直不行請告知主管' } }; }
   var me = lineHubSheetRows_(ss, 'roster').filter(function (r) {
     return lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId);
   })[0];
-  var autoNote = '';
   if (!me) {
     // 跨店：這個 LINE 在別家店已綁定、名字唯一，這家店名冊有同名且還沒被綁的在職同仁 → 帶出名字請本人確認
     // （v2 審查 #7：不靜默自動綁，避免同名不同人時直接替別人記一張卡）
@@ -212,21 +217,79 @@ function lineHubQuickClockFor_(userId, body) {
       });
       if (cand.length === 1 && !cand[0].line_user_id) suggest = names[nameKeys[0]];
     }
-    return { ok: false, code: 'not_bound', store_name: st.name, suggest_name: suggest,
+    return { fail: { ok: false, code: 'not_bound', store_name: st.name, suggest_name: suggest,
              reason: '你的 LINE 帳號還沒有綁定「' + st.name + '」',
-             hint: '請在打卡畫面輸入你的全名完成綁定；名冊上沒有你請主管把你加進去' };
+             hint: '請在打卡畫面輸入你的全名完成綁定；名冊上沒有你請主管把你加進去' } };
   }
   var events = lineHubSheetRows_(ss, 'events').map(function (e) { e.ts = normCellTs(e.ts); return e; });
-  var last = lineHubLastCounted_(events, me.emp_id);
-  var type = last && last.type === 'in' ? 'out' : 'in';
+  return { fix: fix, st: st, ss: ss, me: me, events: events };
+}
+
+/** 選上班／下班的防呆，與網頁版 clock.html updateButtonStates 同規則：
+ *  最後一張算數的卡（lastCountedEvent，往回 12 小時）是什麼型別，就不能再打同型（blocked）；
+ *  打完那張後 10 分鐘內不能打另一型（lock_until）。 */
+function lineHubGuard_(events, empId) {
+  var last = lastCountedEvent(events, empId);
+  var g = { last: last ? { type: last.type, hm: lineHubHm_(last.ts), ts: last.ts } : null, blocked: last ? last.type : null, lock: {} };
   if (last) {
-    var lastMs = new Date(String(last.ts)).getTime();
-    var leftMs = lastMs + LINE_HUB_LOCK_MIN * 60000 - Date.now();
-    if (!isNaN(lastMs) && leftMs > 0) {
-      var lastLabel = last.type === 'in' ? '上班' : '下班';
+    var t = new Date(String(last.ts)).getTime();
+    if (!isNaN(t)) g.lock[last.type === 'in' ? 'out' : 'in'] = t + LINE_HUB_LOCK_MIN * 60000;
+  }
+  return g;
+}
+
+/**
+ * {action:'line_hub_status', id_token, lat, lng, accuracy}（打卡畫面開啟時）
+ * → {ok, status:'ready', name, store:{code,name,lat,lng,radius_m}, shift_in, shift_out, today:[{type,hm,status}], guard}
+ *   或 {ok, status:'fail', result:<同打卡失敗格式，含 code>}
+ */
+function handleLineHubStatus_(body) {
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+  var r = lineHubResolve_(userId, body);
+  if (r.fail) return { ok: true, status: 'fail', result: r.fail };
+  var today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
+  var mine = r.events.filter(function (e) { return String(e.emp_id) === String(r.me.emp_id) && String(e.ts).slice(0, 10) === today; })
+    .map(function (e) { return { type: String(e.type), hm: lineHubHm_(e.ts), status: String(e.status) }; });
+  var g = lineHubGuard_(r.events, r.me.emp_id);
+  return { ok: true, status: 'ready', name: String(r.me.name),
+           store: { code: r.st.code, name: r.st.name, lat: r.st.lat, lng: r.st.lng, radius_m: r.st.radius_m },
+           shift_in: normShiftTime(r.me.shift_in), shift_out: normShiftTime(r.me.shift_out),
+           today: mine, guard: { blocked: g.blocked, lock: g.lock, last: g.last, now: Date.now() } };
+}
+
+function lineHubQuickClockFor_(userId, body) {
+  var r = lineHubResolve_(userId, body);
+  if (r.fail) return r.fail;
+  var fix = r.fix, st = r.st, me = r.me, events = r.events, autoNote = '';
+  var type;
+  if (body.type === 'in' || body.type === 'out') {
+    // 同仁自己選上班／下班（Eason 2026-10-08 改回手選）：防呆與網頁版相同
+    type = body.type;
+    var g = lineHubGuard_(events, me.emp_id);
+    var label = type === 'in' ? '上班' : '下班';
+    if (g.blocked === type) {
+      return { ok: false, type: type, store_name: st.name, reason: '你 ' + g.last.hm + ' 已經打過' + label + '卡了',
+               hint: '要' + (type === 'in' ? '下班' : '上班') + '請按另一顆；真的要補打請告知主管' };
+    }
+    if (g.lock[type] && g.lock[type] > Date.now()) {
       return { ok: false, type: type, store_name: st.name,
-               reason: '你 ' + lineHubHm_(last.ts) + ' 剛打過' + lastLabel + '卡，' + Math.ceil(leftMs / 60000) + ' 分鐘內不能再打（避免連按誤打）',
-               hint: '真的要' + (type === 'out' ? '下班' : '上班') + '請告知主管補登' };
+               reason: '你 ' + g.last.hm + ' 剛打過' + (g.last.type === 'in' ? '上班' : '下班') + '卡，' + Math.ceil((g.lock[type] - Date.now()) / 60000) + ' 分鐘內不能打' + label + '卡（避免連按誤打）',
+               hint: '真的要' + label + '請告知主管補登' };
+    }
+  } else {
+    // 舊版前端（沒帶 type）：自動判斷
+    var last = lineHubLastCounted_(events, me.emp_id);
+    type = last && last.type === 'in' ? 'out' : 'in';
+    if (last) {
+      var lastMs = new Date(String(last.ts)).getTime();
+      var leftMs = lastMs + LINE_HUB_LOCK_MIN * 60000 - Date.now();
+      if (!isNaN(lastMs) && leftMs > 0) {
+        var lastLabel = last.type === 'in' ? '上班' : '下班';
+        return { ok: false, type: type, store_name: st.name,
+                 reason: '你 ' + lineHubHm_(last.ts) + ' 剛打過' + lastLabel + '卡，' + Math.ceil(leftMs / 60000) + ' 分鐘內不能再打（避免連按誤打）',
+                 hint: '真的要' + (type === 'out' ? '下班' : '上班') + '請告知主管補登' };
+      }
     }
   }
   // 裝置碼：LINE 身分已經擋住「連結轉傳代打」（LINE 帳號綁在本人手機上），所以沿用名冊上已綁定的裝置碼，
@@ -485,5 +548,6 @@ function handleLineWebhook_(body) {
 
 var LINE_HUB_HANDLERS = {
   line_quick_clock: handleLineQuickClock_,
+  line_hub_status: handleLineHubStatus_,
   line_bind_name: handleLineBindName_,
 };
