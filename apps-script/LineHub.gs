@@ -424,6 +424,12 @@ function lineHubAttendanceData_(userId) {
 
 /** 薪資／假別：用 LINE 身分在薪資有接的店找人（與 line_my_payslip 同一套挑法） */
 function lineHubPayslipFor_(userId, ym) {
+  var pick = lineHubPayPick_(userId);
+  if (!pick) return null;
+  return payMyPayslipFor_(pick.me, pick.store, ym || currentYmTaipei());
+}
+/** 用 LINE 身分在薪資有接的店找人：{me, store} 或 null（有薪資主檔的那家優先） */
+function lineHubPayPick_(userId) {
   var hits = [];
   payStoreList().forEach(function (s) {
     var code = String(s.code), rs = [];
@@ -435,8 +441,18 @@ function lineHubPayslipFor_(userId, ym) {
   if (!hits.length) return null;
   var masterIds = {};
   payRead('master').forEach(function (m) { masterIds[String(m.emp_id)] = true; });
-  var pick = hits.filter(function (h) { return masterIds[String(h.me.emp_id)]; })[0] || hits[0];
-  return payMyPayslipFor_(pick.me, pick.store, ym || currentYmTaipei());
+  return hits.filter(function (h) { return masterIds[String(h.me.emp_id)]; })[0] || hits[0];
+}
+/** 這個人已定案的薪資月份（新到舊，最多 LINE_HUB_PAY_MONTHS 個）。店別照 payMyPayslipFor_：主檔為準。 */
+var LINE_HUB_PAY_MONTHS = 12;
+function lineHubPayFinalMonths_(pick) {
+  var mm = payRead('master').filter(function (m) { return String(m.emp_id) === String(pick.me.emp_id); })[0];
+  var st = payStore((mm && mm.store) || pick.store), seen = {};
+  return payRead('run').filter(function (r) {
+    return String(r.emp_id) === String(pick.me.emp_id) && payStore(r.store) === st && String(r.status) === 'final' && /^\d{4}-\d{2}$/.test(String(r.ym));
+  }).map(function (r) { return String(r.ym); })
+    .filter(function (y) { if (seen[y]) return false; seen[y] = true; return true; })
+    .sort().reverse().slice(0, LINE_HUB_PAY_MONTHS);
 }
 
 var LINE_HUB_NO_PAYROLL_TEXT = '你上班的店還沒接上薪資系統，薪資與假別請先找店長確認。';
@@ -625,8 +641,9 @@ function lineHubAttendanceCard_(userId) {
     blocks.push({ type: 'row', l: a.tot.curLabel.replace('核定合計', ''), r: a.tot.curH + ' 小時', sub: a.tot.curP ? '尚有 ' + a.tot.curP + ' 天待核定' : '', bold: true });
     blocks.push({ type: 'row', l: a.tot.prevLabel.replace('核定合計', ''), r: a.tot.prevH + ' 小時', sub: a.tot.prevP ? '尚有 ' + a.tot.prevP + ' 天待核定' : '' });
   }
-  return lineHubCard_({ title: '最近 7 天出勤', tone: 'info', alt: '最近 7 天出勤紀錄', blocks: blocks,
-                        fallbackText: lineHubAttendanceText_(userId) });
+  var card = lineHubCard_({ title: '最近 7 天出勤', tone: 'info', alt: '最近 7 天出勤紀錄', blocks: blocks,
+                            fallbackText: lineHubAttendanceText_(userId) });
+  return typeof card === 'string' ? card : lineHubAttendanceMonthButtons_(card, '');
 }
 function lineHubLeaveCard_(userId) {
   var j = lineHubPayslipFor_(userId);
@@ -644,14 +661,109 @@ function lineHubLeaveCard_(userId) {
   return lineHubCard_({ title: '今年假別額度', tone: 'info', alt: '今年假別額度', blocks: blocks,
                         foot: '數字來自店長登記的請假紀錄，有出入請找店長。', fallbackText: lineHubLeaveText_(userId) });
 }
-/** 薪資：已定案＝明細卡片；其他（未結算、沒綁定、沒接薪資）＝提示卡片 */
-function lineHubPayCard_(userId) {
-  var j = lineHubPayslipFor_(userId);
-  if (j && j.ok && j.ready) return lineHubPayFlex_(j);
-  if (!j) return lineHubMine_(userId).length ? lineHubNoticeCard_('薪資明細', LINE_HUB_NO_PAYROLL_TEXT, 'warn') : lineHubNoticeCard_('還沒綁定', LINE_HUB_NOT_BOUND_TEXT);
-  if (!j.ok) return lineHubNoticeCard_('薪資明細', '查不到你的薪資資料，請找店長確認。', 'warn');
-  return lineHubCard_({ title: parseInt(String(j.ym).slice(5, 7), 10) + ' 月薪資', right: '尚未定案', tone: 'info', alt: '薪資明細',
-                        blocks: [{ type: 'text', text: j.message || '本月薪資尚未結算' }, { type: 'text', text: '結算定案後這裡就會顯示明細。', muted: true }] });
+/** 薪資明細（2026-10-09 Eason：可看歷月）：預設＝最新已定案月份的明細，底下按鈕列出其他已定案月份；
+ *  「薪資明細 yyyy-MM」＝那個月（只給已定案的）。一個月都還沒定案＝提示卡片。 */
+function lineHubYmLabel_(ym, curYm) {
+  return String(ym).slice(0, 4) === String(curYm).slice(0, 4) ? parseInt(String(ym).slice(5, 7), 10) + ' 月'
+       : String(ym).slice(0, 4) + '/' + parseInt(String(ym).slice(5, 7), 10);
+}
+function lineHubPayCard_(userId, wantYm) {
+  var pick = lineHubPayPick_(userId);
+  if (!pick) return lineHubMine_(userId).length ? lineHubNoticeCard_('薪資明細', LINE_HUB_NO_PAYROLL_TEXT, 'warn') : lineHubNoticeCard_('還沒綁定', LINE_HUB_NOT_BOUND_TEXT);
+  var months = lineHubPayFinalMonths_(pick), cur = currentYmTaipei();
+  if (!months.length) {
+    var j0 = payMyPayslipFor_(pick.me, pick.store, cur);
+    return lineHubCard_({ title: parseInt(cur.slice(5, 7), 10) + ' 月薪資', right: '尚未定案', tone: 'info', alt: '薪資明細',
+                          blocks: [{ type: 'text', text: (j0 && j0.message) || '本月薪資尚未結算' }, { type: 'text', text: '目前還沒有已定案的薪資單，結算定案後這裡就會顯示明細。', muted: true }] });
+  }
+  var ym = wantYm || months[0];
+  if (months.indexOf(ym) < 0) {
+    return lineHubCard_({ title: '薪資明細', tone: 'warn', alt: '薪資明細',
+      blocks: [{ type: 'text', text: lineHubYmLabel_(ym, cur) + '的薪資還沒定案，或不在可查詢的範圍（最近 ' + LINE_HUB_PAY_MONTHS + ' 個已定案月份）。' }],
+      buttons: months.slice(0, 6).map(function (y) { return { label: lineHubYmLabel_(y, cur), text: '薪資明細 ' + y }; }) });
+  }
+  var j = payMyPayslipFor_(pick.me, pick.store, ym);
+  if (!j || !j.ok || !j.ready) return lineHubNoticeCard_('薪資明細', '查不到 ' + lineHubYmLabel_(ym, cur) + '的薪資單，請找店長確認。', 'warn');
+  var card = lineHubPayFlex_(j);
+  if (!wantYm && months[0] !== cur) {
+    card.contents.body.contents.unshift({ type: 'text', text: parseInt(cur.slice(5, 7), 10) + ' 月薪資還沒定案，先給你最近一個已定案的月份。', size: 'xs', color: '#a15a00', wrap: true, margin: 'none' });
+  }
+  var others = months.filter(function (y) { return y !== ym; });
+  if (others.length) lineHubAddMonthButtons_(card, others.map(function (y) { return { label: lineHubYmLabel_(y, cur), text: '薪資明細 ' + y }; }), '看其他月份');
+  return card;
+}
+/** 卡片底部加月份按鈕：每列 3 顆、標準高度（2026-10-09 Eason：按鈕大一點避免誤按） */
+function lineHubAddMonthButtons_(card, btns, heading) {
+  var rows = [{ type: 'text', text: heading, size: 'xs', color: '#8a817a' }];
+  for (var i = 0; i < btns.length; i += 3) {
+    var row = btns.slice(i, i + 3).map(function (b) {
+      return { type: 'button', style: 'secondary', height: 'md', flex: 1,
+               action: { type: 'message', label: lineHubTxt_(b.label).slice(0, 20), text: lineHubTxt_(b.text).slice(0, 300) } };
+    });
+    while (row.length < 3) row.push({ type: 'filler' });
+    rows.push({ type: 'box', layout: 'horizontal', spacing: 'md', contents: row });
+  }
+  card.contents.footer = { type: 'box', layout: 'vertical', spacing: 'md', paddingAll: '14px', contents: rows };
+  return card;
+}
+
+/* 出勤紀錄的月份（2026-10-09 Eason：最久看到上個月）：「出勤紀錄 yyyy-MM」＝那個月每天的打卡與核定。
+   每天的資料用 buildRecentDays（40 天視窗）：本月用今天當終點，上個月用月底當終點，一定涵蓋整個月。 */
+function lineHubLastDay_(ym) {
+  var y = parseInt(ym.slice(0, 4), 10), m = parseInt(ym.slice(5, 7), 10);
+  return ym + '-' + ('0' + new Date(Date.UTC(y, m, 0)).getUTCDate()).slice(-2);
+}
+function lineHubAttendanceMonthData_(userId, ym) {
+  var mine = lineHubMine_(userId);
+  if (!mine.length) return null;
+  var today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
+  var end = ym === today.slice(0, 7) ? today : lineHubLastDay_(ym);
+  var wk = ['日', '一', '二', '三', '四', '五', '六'], lines = [], hours = 0, pending = 0;
+  mine.forEach(function (m) {
+    var ss = lineHubSS_(m.st);
+    var events = lineHubSheetRows_(ss, 'events').map(function (e) { e.ts = normCellTs(e.ts); return e; });
+    var amap = buildLatestApprovedMap(lineHubSheetRows_(ss, 'approved'));
+    buildRecentDays(events, m.row.emp_id, end, amap).forEach(function (d) {
+      if (d.date.slice(0, 7) !== ym) return;
+      var segs = (d.segments || []).map(function (g) { return (g.in || '？') + '–' + (g.out || '？'); }).join('、');
+      if (d.approved === null || d.approved === undefined) { if (d.date !== today) pending++; }
+      lines.push({ k: d.date + m.st.name, store: m.st.name, segs: segs,
+        hrs: (d.approved === null || d.approved === undefined) ? '待核定' : '核定 ' + d.approved + 'h',
+        day: parseInt(d.date.slice(5, 7), 10) + '/' + parseInt(d.date.slice(8, 10), 10) + '（' + wk[new Date(d.date + 'T12:00:00Z').getUTCDay()] + '）',
+        status: d.approved_status && d.approved_status !== '正常' ? String(d.approved_status) : '' });
+    });
+    hours += monthlyApprovedTotal(amap, m.row.emp_id, ym);
+  });
+  lines.sort(function (a, b) { return a.k < b.k ? -1 : a.k > b.k ? 1 : 0; });
+  return { ym: ym, lines: lines, hours: Math.round(hours * 100) / 100, pending: pending };
+}
+function lineHubAttendanceMonthButtons_(card, exceptYm) {
+  var cur = currentYmTaipei(), prev = prevYm(cur);
+  var b = [{ label: '最近 7 天', text: '出勤紀錄' }, { label: parseInt(cur.slice(5), 10) + ' 月', text: '出勤紀錄 ' + cur },
+           { label: parseInt(prev.slice(5), 10) + ' 月', text: '出勤紀錄 ' + prev }];
+  // exceptYm：'' ＝目前在「最近 7 天」那張；'yyyy-MM'＝目前在那個月；null＝全部列出
+  return lineHubAddMonthButtons_(card, b.filter(function (x) { return x.text !== '出勤紀錄 ' + exceptYm && !(exceptYm === '' && x.text === '出勤紀錄'); }), '看其他期間');
+}
+function lineHubAttendanceMonthCard_(userId, ym) {
+  var cur = currentYmTaipei();
+  if (ym !== cur && ym !== prevYm(cur)) {
+    return lineHubAttendanceMonthButtons_(lineHubNoticeCard_('出勤紀錄', '出勤紀錄可以查本月和上個月；更早的請找店長。'), null);
+  }
+  var a = lineHubAttendanceMonthData_(userId, ym);
+  if (!a) return lineHubNoticeCard_('還沒綁定', LINE_HUB_NOT_BOUND_TEXT);
+  var mLabel = parseInt(ym.slice(5), 10) + ' 月';
+  var blocks = [];
+  if (!a.lines.length) blocks.push({ type: 'text', text: mLabel + '沒有打卡紀錄', muted: true });
+  a.lines.forEach(function (l, i) {
+    if (i) blocks.push({ type: 'sep' });
+    blocks.push({ type: 'row', l: l.day + ' ' + (l.segs || '—'), r: l.hrs, sub: l.store + (l.status ? '｜' + l.status : ''), bold: l.hrs !== '待核定' });
+  });
+  blocks.push({ type: 'heading', text: '核定合計' });
+  blocks.push({ type: 'row', l: mLabel, r: a.hours + ' 小時', sub: a.pending ? '尚有 ' + a.pending + ' 天待核定' : '', bold: true });
+  var text = '📋 ' + mLabel + '出勤\n' + (a.lines.length ? a.lines.map(function (l) { return l.day + ' ' + (l.segs || '—') + '｜' + l.hrs; }).join('\n') : '沒有打卡紀錄') +
+             '\n\n核定合計 ' + a.hours + ' 小時' + (a.pending ? '，尚有 ' + a.pending + ' 天待核定' : '');
+  var card = lineHubCard_({ title: mLabel + '出勤', tone: 'info', alt: mLabel + '出勤紀錄', blocks: blocks, fallbackText: text });
+  return typeof card === 'string' ? card : lineHubAttendanceMonthButtons_(card, ym);
 }
 
 /* ── 打卡求助：故障排除步驟（2026-10-09 Eason 指定：打卡失敗時自動回覆簡易操作手冊）──
@@ -761,6 +873,11 @@ function handleLineWebhook_(body) {
       }
       if (text === '打卡求助' || text.indexOf('打卡求助：') === 0) {
         lineHubReply_(ev.replyToken, [lineHubHelpCard_(text.slice('打卡求助：'.length).trim())]);
+        return;
+      }
+      var mm = /^(出勤紀錄|薪資明細)\s*(\d{4}-\d{2})$/.exec(text);
+      if (mm) {
+        lineHubReply_(ev.replyToken, [mm[1] === '出勤紀錄' ? lineHubAttendanceMonthCard_(userId, mm[2]) : lineHubPayCard_(userId, mm[2])]);
         return;
       }
       var fn = LINE_HUB_TEXT_COMMANDS[text];
