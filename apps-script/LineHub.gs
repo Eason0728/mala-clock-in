@@ -315,7 +315,7 @@ function lineHubQuickClockFor_(userId, body) {
 function lineHubReply_(replyToken, texts) {
   var token = (typeof LINE_HUB_BOT_TOKEN !== 'undefined') ? LINE_HUB_BOT_TOKEN : '';
   if (!token || !replyToken) return;
-  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
+  var resp = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
     method: 'post', contentType: 'application/json', muteHttpExceptions: true,
     headers: { Authorization: 'Bearer ' + token },
     payload: JSON.stringify({ replyToken: replyToken,
@@ -324,6 +324,9 @@ function lineHubReply_(replyToken, texts) {
         return (t && typeof t === 'object') ? t : { type: 'text', text: String(t).slice(0, 4900) };
       }) }),
   });
+  // 回覆失敗（例如卡片格式被 LINE 拒收）要留 log，否則線上完全看不出同仁為什麼沒收到（Flex 審查 #8）
+  var code = resp && resp.getResponseCode ? resp.getResponseCode() : 200;
+  if (code < 200 || code >= 300) console.error('LINE reply ' + code + ': ' + String(resp.getContentText()).slice(0, 200));
 }
 
 /** 這個 LINE 帳號綁了哪幾家店 → [{st, row}]（webhook 沒有 id_token，用 LINE 送來的 userId） */
@@ -417,15 +420,18 @@ function lineHubR2_(v) { return Math.round((Number(v) || 0) * 100) / 100; }
 function lineHubPayLineSub_(x) {
   if (x.qty === null || x.qty === undefined) return '';
   return lineHubR2_(x.qty) + (LINE_HUB_HOURLY_KEYS.indexOf(x.item_key) !== -1 ? 'H' : '') +
-         (x.rate ? ' × ' + lineHubR2_(x.rate) : '');
+         (x.rate ? ' × ' + (+x.rate).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '');
 }
+/** LINE Flex 的 text 不收空字串（整則回覆會 400、同仁收不到），所有顯示字串都過這支 */
+function lineHubTxt_(v) { var t = (v === null || v === undefined) ? '' : String(v); return t === '' ? '—' : t; }
+function lineHubHours_(v) { var n = Number(v); return isFinite(n) ? lineHubR2_(n) + ' H' : '—'; }
 function lineHubFlexRow_(label, value, opts) {
   opts = opts || {};
   var left = { type: 'box', layout: 'vertical', flex: 5, contents: [
-    { type: 'text', text: String(label), size: 'sm', color: opts.muted ? '#8a817a' : '#222222', wrap: true }] };
+    { type: 'text', text: lineHubTxt_(label), size: 'sm', color: opts.muted ? '#8a817a' : '#222222', wrap: true }] };
   if (opts.sub) left.contents.push({ type: 'text', text: opts.sub, size: 'xxs', color: '#8a817a' });
   return { type: 'box', layout: 'horizontal', margin: 'sm', contents: [left,
-    { type: 'text', text: String(value), size: 'sm', align: 'end', flex: 3, color: opts.muted ? '#8a817a' : '#222222',
+    { type: 'text', text: lineHubTxt_(value), size: 'sm', align: 'end', flex: 3, color: opts.muted ? '#8a817a' : '#222222',
       weight: opts.bold ? 'bold' : 'regular' }] };
 }
 function lineHubPayFlex_(j) {
@@ -435,23 +441,26 @@ function lineHubPayFlex_(j) {
     { type: 'text', text: '實付金額', size: 'xs', color: '#8a817a' },
     { type: 'text', text: 'NT$ ' + lineHubNf_(res.net), size: 'xxl', weight: 'bold', color: '#1e7d4f' },
     { type: 'separator', margin: 'md' },
-    lineHubFlexRow_('核定工時', lineHubR2_(res.total_hours) + ' H'),
+    lineHubFlexRow_('核定工時', lineHubHours_(res.total_hours)),
   ];
-  if (res.support_hours) body.push(lineHubFlexRow_('跨店支援時數', lineHubR2_(res.support_hours) + ' H'));
-  if (res.ot_paid_hours) body.push(lineHubFlexRow_('計薪加班', lineHubR2_(res.ot_paid_hours) + ' H'));
+  if (res.support_hours) body.push(lineHubFlexRow_('跨店支援時數', lineHubHours_(res.support_hours)));
+  if (res.base_hours !== null && res.base_hours !== undefined && res.base_hours !== '') body.push(lineHubFlexRow_('基本工時', lineHubHours_(res.base_hours)));
+  if (res.ot_paid_hours) body.push(lineHubFlexRow_('計薪加班', lineHubHours_(res.ot_paid_hours)));
   body.push({ type: 'text', text: '加項', size: 'xs', color: '#8a817a', margin: 'lg' });
+  // 與網頁「我的薪資」（clock.html payLine）一致：0 元也照列——薪資引擎刻意保留「事假 8H $0」「全勤獎金（遲到 N 次）$0」
+  // 這類資訊列（Payroll.gs 註解：該扣卻扣到 0 必須照印），兩邊才對得起來（Flex 審查 #3）
   (res.earn || []).forEach(function (x) {
-    if (!Number(x.amount)) return;   // 0 元的不列
     body.push(lineHubFlexRow_(x.item_label, lineHubNf_(x.amount), { sub: lineHubPayLineSub_(x) }));
   });
   body.push(lineHubFlexRow_('應收合計', lineHubNf_(res.gross), { bold: true }));
   body.push({ type: 'text', text: '扣項', size: 'xs', color: '#8a817a', margin: 'lg' });
-  var deds = (res.ded || []).filter(function (x) { return Number(x.amount); });
-  if (!deds.length) body.push(lineHubFlexRow_('無', '', { muted: true }));
+  // 扣項金額與網頁一致：不加負號、不取絕對值（手動補發是負的扣項，取絕對值會變成多扣）（Flex 審查 #4）
+  var deds = res.ded || [];
+  if (!deds.length) body.push(lineHubFlexRow_('無', '—', { muted: true }));
   deds.forEach(function (x) {
-    body.push(lineHubFlexRow_(x.item_label, '-' + lineHubNf_(Math.abs(Number(x.amount))), { sub: lineHubPayLineSub_(x) }));
+    body.push(lineHubFlexRow_(x.item_label, lineHubNf_(x.amount), { sub: lineHubPayLineSub_(x) }));
   });
-  body.push(lineHubFlexRow_('應付合計', '-' + lineHubNf_(Math.abs(Number(res.deduction) || 0)), { bold: true }));
+  body.push(lineHubFlexRow_('應付合計', lineHubNf_(res.deduction), { bold: true }));
   if (j.payday) {
     body.push({ type: 'separator', margin: 'md' });
     var pd = String(j.payday);
@@ -459,7 +468,7 @@ function lineHubPayFlex_(j) {
   }
   return {
     type: 'flex',
-    altText: ymLabel + '　實付 NT$ ' + lineHubNf_(res.net),
+    altText: ymLabel + '明細已送達',   // 推播預覽／鎖屏不露金額（Flex 審查 #9）
     contents: {
       type: 'bubble', size: 'mega',
       header: { type: 'box', layout: 'horizontal', backgroundColor: '#e3f1e8', paddingAll: '12px', contents: [

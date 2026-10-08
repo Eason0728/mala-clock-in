@@ -5,22 +5,33 @@ let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 const sb = { console, CacheService: { getScriptCache: () => ({ get: () => null, put: () => {}, remove: () => {} }) } };
 vm.createContext(sb); vm.runInContext(SRC, sb);
 const J = { ok: true, ready: true, ym: '2026-09', payday: '5', result: {
-  total_hours: 152, support_hours: 8, ot_paid_hours: 0, gross: 28000, deduction: 1011, net: 26989,
+  total_hours: 152, support_hours: 8, base_hours: 160, ot_paid_hours: 0, gross: 25700, deduction: 1011, net: 24689,
   earn: [{ item_key: 'hourly_wage', item_label: '時薪', qty: 152, rate: 162.5, amount: 24700 },
          { item_key: 'pt_attend_plus', item_label: '計時滿勤加給', qty: null, rate: null, amount: 1000 },
-         { item_key: 'night', item_label: '夜班津貼', qty: null, rate: null, amount: 0 }],
-  ded: [{ item_key: 'labor', item_label: '勞保自付', qty: null, rate: null, amount: 621 }] } };
-module.exports = { sample: () => sb.lineHubPayFlex_(J) };
-ok('已定案 → Flex 卡片：altText 含月份與實付、實付在最上面', () => {
-  const f = sb.lineHubPayFlex_(J);
-  assert.strictEqual(f.type, 'flex'); assert(/9 月薪資.*26,989/.test(f.altText));
-  const texts = JSON.stringify(f.contents.body.contents);
-  assert(texts.indexOf('NT$ 26,989') < texts.indexOf('加項'), '實付要在加項前面');
+         { item_key: 'personal_leave', item_label: '事假', qty: 8, rate: 0, amount: 0 }],
+  ded: [{ item_key: 'labor', item_label: '勞保自付', qty: null, rate: null, amount: 621 },
+        { item_key: 'health', item_label: '健保自付', qty: null, rate: null, amount: 390 }] } };
+module.exports = { sample: () => sb.lineHubPayFlex_(J), sampleEmpty: () => { const J2 = JSON.parse(JSON.stringify(J)); J2.result.ded = []; J2.result.deduction = 0; return sb.lineHubPayFlex_(J2); } };
+const texts = (o) => { const out = []; (function walk(x) { if (Array.isArray(x)) x.forEach(walk); else if (x && typeof x === 'object') { if (x.type === 'text') out.push(x.text); Object.values(x).forEach(walk); } })(o); return out; };
+ok('fixture 自洽（加項相加＝應收、扣項相加＝應付、應收−應付＝實付）', () => {
+  const r = J.result; const sum = (a) => a.reduce((t, x) => t + x.amount, 0);
+  assert.strictEqual(sum(r.earn), r.gross); assert.strictEqual(sum(r.ded), r.deduction); assert.strictEqual(r.gross - r.deduction, r.net);
 });
-ok('項目與網頁同格式：時薪列小字「152H × 162.5」；0 元的不列；扣項帶負號', () => {
-  const s = JSON.stringify(sb.lineHubPayFlex_(J));
-  assert(s.includes('152H × 162.5')); assert(!s.includes('夜班津貼')); assert(s.includes('-621')); assert(s.includes('-1,011'));
-  assert(s.includes('每月 5 日')); assert(s.includes('跨店支援時數'));
+ok('已定案 → Flex 卡片：實付在最上面；altText 不露金額', () => {
+  const f = sb.lineHubPayFlex_(J);
+  assert.strictEqual(f.type, 'flex'); assert(!/\d/.test(f.altText.replace(/9 月/, '')), f.altText);
+  const t = texts(f.contents.body); assert(t.indexOf('NT$ 24,689') < t.indexOf('加項'));
+});
+ok('與網頁同格式：小字「152H × 162.5」、0 元的事假照列、扣項不加負號', () => {
+  const t = texts(sb.lineHubPayFlex_(J));
+  assert(t.includes('152H × 162.5')); assert(t.includes('事假')); assert(t.includes('8H'));
+  assert(t.includes('621') && !t.some(x => /^-/.test(x))); assert(t.includes('每月 5 日')); assert(t.includes('基本工時'));
+});
+ok('沒有任何扣項、項目名空白、時數非數字 → 卡片裡沒有任何空字串（LINE 會整則拒收）', () => {
+  const J2 = JSON.parse(JSON.stringify(J)); J2.result.ded = []; J2.result.deduction = 0; J2.result.earn[1].item_label = ''; J2.result.total_hours = 'x';
+  const t = texts(sb.lineHubPayFlex_(J2));
+  assert(t.every(x => typeof x === 'string' && x.length > 0), JSON.stringify(t));
+  assert(t.includes('—'));
 });
 ok('未定案／沒綁定 → 文字，不送卡片', () => {
   sb.lineHubPayslipFor_ = () => ({ ok: true, ready: false, ym: '2026-10', message: '本月薪資尚未結算' });
