@@ -519,10 +519,115 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             p.wait_for_selector('#reqView .rq-chip', timeout=5000)
             ok('補休：計時同仁沒有「補休」假別', p.locator('#reqView .rq-chip:has-text("補休")').count() == 0 and p.locator('#reqView .rq-comp-bal').count() == 0)
             p.close()
+            phase_sched(ctx)
             br.close()
     finally:
         proc.kill()
     print(f'\n✅ LINE 打卡畫面（直打店家）全部通過 ({n}/{n})')
+
+
+def phase_sched(ctx):
+    """出勤班表（2026-10-10）：?view=sched 讀光復 line_hub_sched（mock/sched_mock.py），月曆、明細、切上月、摘要、各種狀態。"""
+    fg = os.path.join(ROOT, 'mock', 'mock_data.json')
+    d = json.load(open(fg, encoding='utf-8'))
+    bind = {'測試一': 'U1', '測試二': 'U6', '測試三': 'U7', '測試四': ''}
+    for r in d['roster']:
+        if r['name'] in bind:
+            r['line_user_id'] = bind[r['name']]
+    d.pop('mock_sched', None)
+    json.dump(d, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
+
+    def api(uid, ym=''):
+        b = {'action': 'line_hub_sched', 'id_token': 'MOCK_ID_TOKEN_' + uid}
+        if ym:
+            b['ym'] = ym
+        return json.loads(urllib.request.urlopen(urllib.request.Request(BASE + '/api', data=json.dumps(b).encode()), timeout=5).read())
+
+    def page(uid):
+        p = open_page(ctx, f'{BASE}/clock-line.html?mock_uid={uid}&api=/api&view=sched')
+        p.set_viewport_size({'width': 375, 'height': 812})
+        p.wait_for_selector('#schedView .sc-cal, #schedView .sc-box', timeout=10000)
+        return p
+
+    r = api('U1')
+    p = page('U1')
+    ok('班表：不定位、只打光復 line_hub_sched', [x['action'] for x in calls(p)] == ['line_hub_sched'] and calls(p)[0]['url'].endswith('/api'), calls(p))
+    ok('班表：打卡卡片隱藏', p.locator('#punchCard').is_hidden())
+    ok('班表：月曆每一天都有格子', p.locator('#schedView .sc-day').count() == len(r['days']), p.locator('#schedView .sc-day').count())
+    first_work = next(x for x in r['days'] if x['work'] and len(x['segs']) == 2)
+    cell = p.inner_text(f'#schedView .sc-day[data-d="{first_work["d"]}"]').split()
+    ok('班表：兩段班格子寫第一段上班～最後一段下班', cell == [str(first_work['d']), first_work['segs'][0][0], first_work['segs'][-1][1]], cell)
+    off = next(x for x in r['days'] if x['code'] and not x['work'])
+    ok('班表：休假格寫班別代碼', p.inner_text(f'#schedView .sc-day[data-d="{off["d"]}"]').split()[-1] == off['code'])
+    td = int(r['today'][8:10])
+    ok('班表：本月預設選今天、今天有外框', p.locator(f'#schedView .sc-day.sel.today[data-d="{td}"]').count() == 1)
+    p.click(f'#schedView .sc-day[data-d="{first_work["d"]}"]')
+    det = p.inner_text('#scDet')
+    ok('班表：點兩段班看第一段、第二段、合計', '第一段' in det and '第二段' in det and ('合計\n%s 小時' % (int(first_work['hours']) if first_work['hours'] == int(first_work['hours']) else first_work['hours'])) in det, det)
+    blank = next((x for x in r['days'] if not x['code']), None)
+    if blank:
+        p.click(f'#schedView .sc-day[data-d="{blank["d"]}"]')
+        ok('班表：空白天寫「這天沒有排班」', '這天沒有排班' in p.inner_text('#scDet'))
+    p.click(f'#schedView .sc-day[data-d="{off["d"]}"]')
+    ok('班表：休假天明細寫班別名稱', off['label'] in p.inner_text('#scDet'))
+    ok('班表：本月時「›」不能按', p.locator('#scNext').is_disabled())
+    no_undefined(p, '班表月曆')
+    ok('班表：375px 沒有橫向捲動', p.evaluate('document.documentElement.scrollWidth <= window.innerWidth'))
+    p.screenshot(path=os.path.join(SHOTS, '班表_月曆.jpg'), type='jpeg', quality=80)
+    # 摘要
+    p.click('#schedView .rq-tabs button[data-tab=sum]')
+    nums = p.locator('#schedView .sc-sum b').all_inner_texts()
+    sm = r['summary']
+    ok('班表：摘要三個數字＝後端', nums == [str(sm['work_days']), str(sm['off_days']), ('%g' % sm['hours'])], (nums, sm))
+    nx = p.inner_text('#scNextShift')
+    want = '本月沒有接下來的班' if not r['next'] else '%d/%d' % (int(r['next']['date'][5:7]), int(r['next']['date'][8:10]))
+    ok('班表：下一個班', want in nx, nx)
+    p.screenshot(path=os.path.join(SHOTS, '班表_摘要.jpg'), type='jpeg', quality=80)
+    # 切上個月
+    p.click('#schedView .rq-tabs button[data-tab=cal]')
+    n_calls = len(calls(p))
+    p.click('#scPrev')
+    p.wait_for_function('document.querySelector("#schedView .sc-mon b") && document.querySelector("#schedView .sc-mon b").textContent.indexOf(" %d 月") >= 0' % int(r['months'][0][5:7]), timeout=8000)
+    c = calls(p)
+    ok('班表：切上個月帶 ym', c[n_calls]['action'] == 'line_hub_sched' and len(c) == n_calls + 1, c[n_calls:])
+    ok('班表：上個月不預選日期、「‹」不能按', p.locator('#schedView .sc-day.sel').count() == 0 and p.locator('#scPrev').is_disabled())
+    p.click('#scNext')
+    ok('班表：切回本月不再打後端（用已讀的）', len(calls(p)) == n_calls + 1)
+    p.close()
+    # 各種看不到的狀態
+    p = page('U6'); p.click('#scPrev')
+    p.wait_for_selector('#schedView .sc-box.info', timeout=8000)
+    ok('班表：上個月沒有他的班 → no_schedule 字句', '的班表沒有你的班' in p.inner_text('#schedView'))
+    p.close()
+    p = page('U7')
+    ok('班表：同名兩位 → not_matched 字句', '你的班表還沒對上，請找店長確認' in p.inner_text('#schedView'))
+    p.close()
+    p = page('U8')
+    ok('班表：沒綁光復 → not_bound 字句', '你目前沒有光復店的班表' in p.inner_text('#schedView'))
+    p.close()
+    d = json.load(open(fg, encoding='utf-8'))
+    cy, cm = int(r['months'][1][:4]), int(r['months'][1][5:7])
+    d['mock_sched'] = {'unlock': ['%d_%d' % (cy, cm)]}
+    json.dump(d, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
+    p = page('U1')
+    ok('班表：沒鎖定 → 還在排、不畫月曆', '的班表還在排' in p.inner_text('#schedView') and p.locator('#schedView .sc-cal').count() == 0)
+    p.click('#schedView .rq-tabs button[data-tab=sum]')
+    ok('班表：沒鎖定時摘要頁也只顯示提示', p.locator('#schedView .sc-sum').count() == 0 and '還在排' in p.inner_text('#schedView'))
+    p.close()
+    d['mock_sched'] = {'fail': True}
+    json.dump(d, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
+    p = page('U1')
+    ok('班表：Gist 讀不到 → 錯誤字句＋重新整理、不畫空月曆', '班表暫時讀不到' in p.inner_text('#schedView')
+       and p.locator('#scReload').count() == 1 and p.locator('#schedView .sc-cal').count() == 0)
+    d.pop('mock_sched'); json.dump(d, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
+    p.click('#scReload')
+    p.wait_for_selector('#schedView .sc-cal', timeout=8000)
+    ok('班表：按重新整理後讀得到', p.locator('#schedView .sc-day').count() > 27)
+    p.close()
+    p = open_page(ctx, f'{BASE}/clock-line.html?mock_uid=U1&api=/api&view=sched', pre="window.__fake = { line_hub_sched: 'abort' };")
+    p.wait_for_selector('#schedView .sc-box.err', timeout=40000)
+    ok('班表：斷線重試三次後顯示連線不穩', '連線不穩' in p.inner_text('#schedView') and len([x for x in calls(p) if x['action'] == 'line_hub_sched']) == 3, calls(p))
+    p.close()
 
 
 if __name__ == '__main__':

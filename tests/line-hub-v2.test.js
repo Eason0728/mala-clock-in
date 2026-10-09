@@ -187,10 +187,10 @@ ok('webhook：沒綁定的人查出勤 → 教他先按打卡綁定；請假申�
   const a = replies[1].messages[0].contents.footer.contents[0].action;
   assert.strictEqual(a.type, 'uri'); assert(/view=req&tab=leave$/.test(a.uri), a.uri);
 });
-ok('webhook：2026-10-09 新選單——加班請假 → 申請頁卡片、出勤班表 → 準備中；佈告欄 → 卡片附開網頁按鈕；舊字句「假別額度」仍可打字查', () => {
+ok('webhook：2026-10-09 新選單——加班請假 → 申請頁卡片、出勤班表 → 班表卡片；佈告欄 → 卡片附開網頁按鈕；舊字句「假別額度」仍可打字查', () => {
   const { sb, replies } = make({ sheets: { hq: { roster: [R({ line_user_id: '' })] } } });
   sb.handleLineWebhook_(ev('加班請假')); assert(/view=req/.test(JSON.stringify(replies[0].messages[0])));
-  sb.handleLineWebhook_(ev('出勤班表')); assert(/班表.*準備中/.test(msgText(replies[1].messages[0])));
+  sb.handleLineWebhook_(ev('出勤班表')); assert(/view=sched/.test(replies[1].messages[0].contents.footer.contents[0].action.uri));   // 2026-10-10 接排班系統
   sb.handleLineWebhook_(ev('佈告欄'));
   const card = replies[2].messages[0];
   const btn = card.contents.footer.contents[0].action;

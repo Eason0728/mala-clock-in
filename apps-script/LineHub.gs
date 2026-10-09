@@ -1013,7 +1013,7 @@ var LINE_HUB_TEXT_COMMANDS = {
   '我的申請': function () { return lineHubReqCard_('mine'); },
   '加班請假': function () { return lineHubReqCard_(''); },
   '意見回饋': function () { return lineHubNoticeCard_('意見回饋', '有任何建議，直接在聊天室打「建議：」加上你的想法送出就可以，例如：\n建議：打卡畫面字可以再大一點'); },
-  '出勤班表': function () { return lineHubNoticeCard_('出勤班表', '出勤班表功能還在準備中，目前請看店內公告的班表。'); },
+  '出勤班表': function () { return lineHubSchedCard_(); },   // 2026-10-10 接排班系統（Sched.gs）
   '佈告欄': lineHubBulletinCard_,
 };
 
@@ -1095,6 +1095,7 @@ var LINE_HUB_HANDLERS = {
   line_hub_req_init: function (b) { return handleLineHubReqInit_(b); },
   line_hub_attach_put: function (b) { return handleLineHubAttachPut_(b); },
   line_hub_attach_get: function (b) { return handleLineHubAttachGet_(b); },
+  line_hub_sched: function (b) { return handleLineHubSched_(b); },   // 出勤班表（Sched.gs）
 };
 
 /* ══ 加班請假／忘打卡申請（2026-10-09，規格 mala-clock-liff docs/requests-spec.md）══
@@ -1106,6 +1107,13 @@ function lineHubReqCard_(tab) {
   return lineHubCard_({ title: '📝 加班請假', tone: 'info', alt: '加班請假申請',
     blocks: [{ type: 'text', text: '請假、加班、出差、忘打卡都在這裡申請，送出後由值班主管審核。結果會在「我的申請」，下次打卡時也會告訴你。' }],
     buttons: [{ label: '打開' + (tab ? LINE_HUB_REQ_TABS[t] : '申請頁'), uri: LINE_HUB_LIFF_URL + '?view=req&tab=' + t }] });
+}
+/** 選單「出勤班表」：只回入口卡片，班表內容在 LIFF 頁讀（卡片裡算班要讀 Gist＋查人，回覆會變慢） */
+function lineHubSchedCard_() {
+  return lineHubCard_({ title: '📅 出勤班表', tone: 'info', alt: '出勤班表',
+    blocks: [{ type: 'text', text: '看你自己這個月和上個月的班：每天幾點上班、幾點下班，還有本月排班天數、時數和下一個班。' },
+             { type: 'text', text: '目前只有新竹光復店。班表由店長排好、鎖定後才看得到。', muted: true, size: 'xs', margin: 'md' }],
+    buttons: [{ label: '打開我的班表', uri: LINE_HUB_LIFF_URL + '?view=sched' }] });
 }
 var LINE_HUB_COMMON_LEAVES = ['特休假', '事假', '病假', '生理假', '家庭照顧假'];
 /** {action:'line_hub_req_init', id_token} → {ok, stores:[{code,name,emp_id,emp_name}], leave_types:{common,special}, quota:[…]} */

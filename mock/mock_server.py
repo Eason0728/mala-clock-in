@@ -2086,6 +2086,9 @@ def store_context(code):
 sys.path.insert(0, BASE_DIR)
 import requests_mock as _requests_mock  # noqa: E402
 _requests_mock.register(globals())
+# 出勤班表（2026-10-10）：與 Sched.gs line_hub_sched 同合約
+import sched_mock as _sched_mock  # noqa: E402
+_sched_mock.register(globals())
 
 
 MIME_TYPES = {
