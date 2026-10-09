@@ -133,6 +133,21 @@ def main():
             c = calls(p)
             ok('綁定走光復 line_bind_name', any(x['action'] == 'line_bind_name' and x['url'].endswith('/api') for x in c), c)
             ok('綁定後重讀直接問總部', c[-1]['action'] == 'liff_status' and c[-1]['url'].endswith('/api/hq'), c[-1])
+
+            # 1b. 店內公告（2026-10-09）：主管在核定頁發的公告，LINE 打卡頁最上方也看得到；沒公告整塊不顯示；HTML 一律當純文字；多則輪播
+            ok('店內公告：沒有公告時整塊不顯示', p.locator('#noticeBox').is_hidden())
+            for t in ['第一則：<b>花椒粉</b>用完換辣椒粉', '第二則：今晚盤點']:
+                r = p.evaluate("t => fetch('/api/hq', {method:'POST', body: JSON.stringify({action:'mgr_add_notice', mgr_key:'testmgr1', text:t, ends_on:''})}).then(r => r.json())", t)
+                ok('店內公告：主管發布「%s」' % t[:6], r.get('ok') is True, r)
+            p.reload(); p.wait_for_selector('#noticeBox:not([hidden])', timeout=10000)
+            first = p.inner_text('#noticeMsg')
+            ok('店內公告：LINE 打卡頁最上方顯示', first in ('第二則：今晚盤點', '第一則：<b>花椒粉</b>用完換辣椒粉'), first)
+            ok('店內公告：兩則有輪播點', p.locator('#noticeDots i').count() == 2)
+            p.wait_for_function("t => document.getElementById('noticeMsg').textContent !== t", arg=first, timeout=8000)
+            second = p.inner_text('#noticeMsg')
+            ok('店內公告：5 秒換下一則、兩則都輪得到', {first, second} == {'第二則：今晚盤點', '第一則：<b>花椒粉</b>用完換辣椒粉'}, (first, second))
+            ok('店內公告：HTML 當純文字顯示（不會變成粗體標籤）', p.locator('#noticeMsg b').count() == 0)
+            ok('店內公告：在日期上方', p.evaluate("() => !!(document.getElementById('noticeBox').compareDocumentPosition(document.getElementById('date')) & Node.DOCUMENT_POSITION_FOLLOWING)"))
             ok('店名顯示總部', p.inner_text('#storeName') == HQ['name'], p.inner_text('#storeName'))
             no_undefined(p, '綁定後')
             p.close()

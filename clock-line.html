@@ -46,6 +46,13 @@
            background: #fff; color: var(--in); }
   .primary:disabled { opacity: .5; }
   [hidden] { display: none !important; }
+  /* 店內公告（2026-10-09）：主管在值班核定發的公告，放在打卡卡片最上方；多則每 5 秒換一則 */
+  .notice { background: #fff8e6; border: 1px solid #f3d999; border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }
+  .notice .nc-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 700; color: #8a6100; margin-bottom: 4px; }
+  .notice .nc-dots { display: flex; gap: 4px; }
+  .notice .nc-dots i { width: 5px; height: 5px; border-radius: 50%; background: #e6cf9a; display: block; }
+  .notice .nc-dots i.on { background: #a15a00; }
+  .notice .nc-msg { font-size: 15px; font-weight: 600; line-height: 1.6; white-space: pre-line; }
   .qr-banner { margin-top: 10px; background: #eef5f2; color: var(--in); border-radius: 10px; padding: 8px 10px; font-size: 13px; text-align: center; }
   /* 加班請假／忘打卡申請頁（req-line.js，2026-10-09）*/
   .rq-head { font-size: 16px; margin-bottom: 10px; display: flex; gap: 8px; align-items: center; }
@@ -87,6 +94,7 @@
 <body>
 <main>
   <div class="card" id="punchCard">
+    <div class="notice" id="noticeBox" hidden><div class="nc-head"><span>📢 店內公告</span><span class="nc-dots" id="noticeDots"></span></div><div class="nc-msg" id="noticeMsg"></div></div>
     <div class="date" id="date">—</div>
     <div class="clock" id="clock">--:--</div>
     <div id="map"></div>
@@ -302,8 +310,25 @@
       b.textContent = left > 0 ? label + '（' + Math.ceil(left / 60000) + ' 分後）' : label;
     });
   }
+  /* 店內公告：一則就擺著不動，多則每 5 秒換一則（同舊連結 clock.html）。一律 textContent——公告是主管手打的自由文字。 */
+  var noticeTimer = null;
+  function renderNotices(list) {
+    if (noticeTimer) { clearInterval(noticeTimer); noticeTimer = null; }
+    var items = (list || []).filter(function (n) { return n && String(n.text || '').trim(); });
+    $('noticeBox').hidden = !items.length;
+    if (!items.length) return;
+    var dots = $('noticeDots'); dots.innerHTML = '';
+    if (items.length > 1) items.forEach(function (_, k) { var d = document.createElement('i'); dots.appendChild(d); });
+    var show = function (k) {
+      $('noticeMsg').textContent = String(items[k].text).trim();
+      for (var j = 0; j < dots.children.length; j++) dots.children[j].className = j === k ? 'on' : '';
+    };
+    var i = 0; show(0);
+    if (items.length > 1) noticeTimer = setInterval(function () { i = (i + 1) % items.length; show(i); }, 5000);
+  }
   function render(s) {
     status = s;
+    if (s.status === 'ready' && s.notices) renderNotices(s.notices);
     $('bindBox').hidden = true; $('btns').hidden = false; $('btnRetry').hidden = true;
     if (s.status === 'ready') {
       clockSkew = s.guard && s.guard.now ? s.guard.now - Date.now() : 0;

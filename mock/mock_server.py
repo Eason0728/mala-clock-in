@@ -1954,7 +1954,7 @@ def handle_liff_status(data, body):
     g = _liff_guard(data, me["emp_id"])
     g["now"] = time.time() * 1000
     return {"ok": True, "status": "ready", "name": me["name"], "shift_in": me.get("shift_in", ""),
-            "shift_out": me.get("shift_out", ""), "today": evs, "guard": g}
+            "shift_out": me.get("shift_out", ""), "today": evs, "guard": g, "notices": active_notices(data, today)}
 
 
 def liff_missed_note(events, emp_id, typ, ts):

@@ -365,7 +365,10 @@ function handleLiffStatus_(body) {
   var mine = events.filter(function (e) { return String(e.emp_id) === String(me.emp_id) && String(e.ts).slice(0, 10) === today; })
     .map(function (e) { return { type: String(e.type), hm: liffHm_(e.ts), status: String(e.status) }; });
   var g = liffGuard_(events, me.emp_id);
-  return { ok: true, status: 'ready', name: String(me.name),
+  // 店內公告（2026-10-09）：主管在核定頁發的公告，LINE 打卡頁也顯示（原本只有舊連結 clock.html 看得到）；讀不到不擋打卡
+  var notices = [];
+  try { if (typeof activeNotices === 'function') notices = activeNotices(found.ss, today); } catch (e) { notices = []; }
+  return { ok: true, status: 'ready', name: String(me.name), notices: notices,
            shift_in: normShiftTime(me.shift_in), shift_out: normShiftTime(me.shift_out),
            today: mine, guard: { blocked: g.blocked, lock: g.lock, last: g.last, now: Date.now() } };
 }
