@@ -34,6 +34,15 @@ function lineHubRoster_(st) {
 }
 
 function lineHubActive_(r) { return String(r.active).toLowerCase() === 'true'; }
+/* 離職後查詢（2026-10-09 Eason 定案）：打卡一離職就關；自己的薪資單、打卡紀錄、假別額度離職後 60 天內還能查
+   （涵蓋最後一次發薪），超過就關。依名冊 removed_at（主管設離職時寫入）；沒有 removed_at 的舊離職者視為已超過。
+   ⚠ 舊的個人薪資連結（Payroll.gs handleMyPayslip）呼叫同一支，兩邊規則一致。 */
+var LINE_HUB_LEFT_VIEW_DAYS = 60;
+function lineHubCanView_(r) {
+  if (lineHubActive_(r)) return true;
+  var t = new Date(String(normCellTs(r.removed_at) || '')).getTime();
+  return isFinite(t) && t > 0 && Date.now() - t <= LINE_HUB_LEFT_VIEW_DAYS * 86400000;
+}
 
 /* ══════════════ v2：全部在 LINE 聊天室完成（spec v2，2026-10-08）══════════════
  * 選單「打卡」→ LIFF 小畫面抓 GPS → line_quick_clock（這裡）→ 結果暫存 →
@@ -338,10 +347,11 @@ function lineHubReply_(replyToken, texts) {
    有店讀不到時不記，下次重查。 */
 var LINE_HUB_MINE_TTL = 300;
 function lineHubForget_(userId) {
-  CacheService.getScriptCache().removeAll(['lhm:' + userId, 'lhp:' + userId]);
+  CacheService.getScriptCache().removeAll(['lhm:' + userId, 'lhv:' + userId, 'lhp:' + userId]);
 }
-function lineHubMine_(userId, info) {
-  var cache = CacheService.getScriptCache(), key = 'lhm:' + userId, hit = cache.get(key);
+/** view＝true：查詢用，含離職 60 天內（lineHubCanView_）；預設只算在職（綁定、打卡相關） */
+function lineHubMine_(userId, info, view) {
+  var cache = CacheService.getScriptCache(), key = (view ? 'lhv:' : 'lhm:') + userId, hit = cache.get(key);
   if (hit) {
     try {
       var stores = lineHubStores_(), got = [];
@@ -357,7 +367,7 @@ function lineHubMine_(userId, info) {
     var rows = null;
     try { rows = lineHubRoster_(st); } catch (e) { rows = null; bad = true; if (info) info.unreadable = true; }
     (rows || []).forEach(function (r) {
-      if (lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId)) out.push({ st: st, row: r });
+      if ((view ? lineHubCanView_(r) : lineHubActive_(r)) && r.line_user_id && String(r.line_user_id) === String(userId)) out.push({ st: st, row: r });
     });
   });
   if (!bad) {
@@ -418,7 +428,7 @@ function lineHubAttendanceText_(userId) {
 
 /** 出勤資料（文字與卡片共用）：null＝沒綁定；{lines:[{day,store,segs,hrs,status}], tot:{curText,prevText,curLabel,curH,curP,prevLabel,prevH,prevP}} */
 function lineHubAttendanceData_(userId) {
-  var mine = lineHubMine_(userId);
+  var mine = lineHubMine_(userId, null, true);
   if (!mine.length) return null;
   var today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
   var cut = Utilities.formatDate(new Date(Date.now() - 6 * 86400000), 'Asia/Taipei', 'yyyy-MM-dd');
@@ -475,7 +485,7 @@ function lineHubPayPickFresh_(userId) {
     var code = String(s.code), rs = [];
     try { rs = payClockRead(code, 'roster'); } catch (e) { return; }
     rs.forEach(function (r) {
-      if (lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId)) hits.push({ me: r, store: code });
+      if (lineHubCanView_(r) && r.line_user_id && String(r.line_user_id) === String(userId)) hits.push({ me: r, store: code });
     });
   });
   if (!hits.length) return null;
@@ -512,7 +522,7 @@ function lineHubPayFinalMonths_(pick) {
 var LINE_HUB_NO_PAYROLL_TEXT = '你上班的店還沒接上薪資系統，薪資與假別請先找店長確認。';
 function lineHubPayText_(userId, pre) {
   var j = pre === undefined ? lineHubPayslipFor_(userId) : pre;
-  if (!j) return lineHubMine_(userId).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
+  if (!j) return lineHubMine_(userId, null, true).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
   if (!j.ok) return '查不到你的薪資資料，請找店長確認。';
   var t = '💰 ' + j.ym.replace('-', ' 年 ') + ' 月薪資\n';
   if (!j.ready) return t + (j.message || '尚未結算') + '\n（結算定案後這裡就會顯示明細）';
@@ -600,7 +610,7 @@ function lineHubPayMessage_(userId) {
 
 function lineHubLeaveText_(userId) {
   var j = lineHubPayslipFor_(userId);
-  if (!j) return lineHubMine_(userId).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
+  if (!j) return lineHubMine_(userId, null, true).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
   if (!j.ok) return '查不到你的假別資料，請找店長確認。';
   var list = j.leave_quota || [];
   if (!list.length) return '📅 假別額度\n你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。';
@@ -701,7 +711,7 @@ function lineHubAttendanceCard_(userId) {
 }
 function lineHubLeaveCard_(userId) {
   var j = lineHubPayslipFor_(userId);
-  if (!j) return lineHubMine_(userId).length ? lineHubNoticeCard_('假別額度', LINE_HUB_NO_PAYROLL_TEXT, 'warn') : lineHubNoticeCard_('還沒綁定', LINE_HUB_NOT_BOUND_TEXT);
+  if (!j) return lineHubMine_(userId, null, true).length ? lineHubNoticeCard_('假別額度', LINE_HUB_NO_PAYROLL_TEXT, 'warn') : lineHubNoticeCard_('還沒綁定', LINE_HUB_NOT_BOUND_TEXT);
   if (!j.ok) return lineHubNoticeCard_('假別額度', '查不到你的假別資料，請找店長確認。', 'warn');
   var list = j.leave_quota || [];
   if (!list.length) return lineHubNoticeCard_('假別額度', '你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。');
@@ -723,7 +733,7 @@ function lineHubYmLabel_(ym, curYm) {
 }
 function lineHubPayCard_(userId, wantYm) {
   var pick = lineHubPayPick_(userId);
-  if (!pick) return lineHubMine_(userId).length ? lineHubNoticeCard_('薪資明細', LINE_HUB_NO_PAYROLL_TEXT, 'warn') : lineHubNoticeCard_('還沒綁定', LINE_HUB_NOT_BOUND_TEXT);
+  if (!pick) return lineHubMine_(userId, null, true).length ? lineHubNoticeCard_('薪資明細', LINE_HUB_NO_PAYROLL_TEXT, 'warn') : lineHubNoticeCard_('還沒綁定', LINE_HUB_NOT_BOUND_TEXT);
   var months = lineHubPayFinalMonths_(pick), cur = currentYmTaipei();
   if (!months.length) {
     var j0 = lineHubPayslipLite_(pick, cur);
@@ -768,7 +778,7 @@ function lineHubLastDay_(ym) {
   return ym + '-' + ('0' + new Date(Date.UTC(y, m, 0)).getUTCDate()).slice(-2);
 }
 function lineHubAttendanceMonthData_(userId, ym) {
-  var mine = lineHubMine_(userId);
+  var mine = lineHubMine_(userId, null, true);
   if (!mine.length) return null;
   var today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
   var end = ym === today.slice(0, 7) ? today : lineHubLastDay_(ym);

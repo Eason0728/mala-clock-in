@@ -2474,6 +2474,10 @@ function handleMyPayslip(body) {
     if (hit) { me = hit; meStore = code; break; }
   }
   if (!me) return { ok: false, error: 'unauthorized' };
+  // 離職後 60 天內還能查自己的薪資單，超過就關（2026-10-09 Eason；規則在 LineHub.gs lineHubCanView_，與 LINE 一致）。
+  // 沒部署 LineHub 的環境（不該發生）一律只給在職的人查。
+  if (String(me.active).toLowerCase() !== 'true' &&
+      !(typeof lineHubCanView_ === 'function' && lineHubCanView_(me))) return { ok: false, error: 'left_expired' };
   return payMyPayslipFor_(me, meStore, String(body.ym || currentYmTaipei()));
 }
 

@@ -110,6 +110,7 @@ async function load(){
     j=await res.json();
   }catch(e){app.innerHTML=st('📡','連不上伺服器','請確認網路後重新整理。');return}
 
+  if(!j.ok&&j.error==='left_expired'){app.innerHTML=st('🔒','已超過查詢期限','離職超過 60 天後就不能再從這裡查詢薪資單，需要的話請找店長索取。');return}
   if(!j.ok){app.innerHTML=st('🔒','無法驗證身分','這個連結可能已失效，請找店長重新取得。');return}
   const lq=leaveCard(j.leave_quota);
   if(!j.ready){app.innerHTML=lq+st('🕒',j.message||'尚未結算','薪資結算後這裡就會顯示明細。');return}
