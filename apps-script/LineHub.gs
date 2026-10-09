@@ -427,7 +427,9 @@ function lineHubAnnualNote_(userId, ts) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
     var c = CacheService.getScriptCache(), key = 'lha:' + userId + ':' + today;
     if (c.get(key)) return '';
-    var note = lineHubAnnualNoteText_(lineHubPayslipFor_(userId), today);
+    var j = lineHubPayslipFor_(userId);
+    // 特休與補休的到期提醒共用同一個「一天一次」記號（2026-10-09 加補休）
+    var note = [lineHubAnnualNoteText_(j, today), lineHubCompNoteText_(j, today)].filter(function (x) { return x; }).join('\n');
     var midnight = new Date(today + 'T00:00:00+08:00').getTime() + 86400000;
     var ttl = Math.max(60, Math.min(21600, Math.floor((midnight - Date.now()) / 1000)));
     c.put(key, note ? '1' : '0', ttl);
@@ -442,6 +444,25 @@ function lineHubAnnualNoteText_(j, today) {
                          Date.UTC(+today.slice(0, 4), +today.slice(5, 7) - 1, +today.slice(8, 10))) / 86400000);
   if (days < 0 || days > LINE_HUB_ANNUAL_WARN_DAYS) return '';
   return '🗓 你的特休還剩 ' + an.left_h + ' 小時，' + an.md + ' 到期，記得跟店長排休';
+}
+
+/** 補休到期提醒（純計算）：最早一批補休在 30 天內到期 → 一句話；沒有就空字串。 */
+function lineHubCompNoteText_(j, today) {
+  var c = lineHubComp_(j);
+  if (!c || !c.earliest) return '';
+  var days = Math.round((Date.UTC(+c.earliest.slice(0, 4), +c.earliest.slice(5, 7) - 1, +c.earliest.slice(8, 10)) -
+                         Date.UTC(+today.slice(0, 4), +today.slice(5, 7) - 1, +today.slice(8, 10))) / 86400000);
+  if (days < 0 || days > LINE_HUB_ANNUAL_WARN_DAYS) return '';
+  return '🗓 你的補休還剩 ' + c.balance_h + ' 小時，最早一批 ' + c.md + ' 到期（沒休完會照加班費折算），記得跟店長排休';
+}
+/** payMyPayslipFor_ 的 comp → {balance_h, earliest, md, history}；計時同仁、或沒有餘額也沒有紀錄回 null。 */
+function lineHubComp_(j) {
+  var c = j && j.ok ? j.comp : null;
+  if (!c || !c.allowed) return null;
+  var bal = Math.round((Number(c.balance_h) || 0) * 100) / 100;
+  if (!(bal > 0) && !c.history) return null;
+  var e = /^\d{4}-\d{2}-\d{2}$/.test(String(c.earliest_expiry || '')) && bal > 0 ? String(c.earliest_expiry) : '';
+  return { balance_h: bal, earliest: e, md: e ? lineHubMd_(e) : '', history: !!c.history };
 }
 
 var LINE_HUB_NOT_BOUND_TEXT = '你的 LINE 帳號還沒綁定打卡系統。\n請到你上班的店，按選單的「打卡」，第一次會請你輸入全名完成綁定。';
@@ -578,7 +599,8 @@ function lineHubPayText_(userId, pre) {
  * 項目與網頁版「我的薪資」（clock.html payLine）同一份資料、同一套小字（數量 H × 單價）。
  * 尚未結算／定案、沒綁定、店家沒接薪資 → 照舊回文字。 */
 var LINE_HUB_HOURLY_KEYS = ['overtime', 'shortfall_hours', 'personal_leave', 'sick_leave', 'menstrual_leave',
-                            'disaster_leave', 'hourly_wage', 'pt_attend_plus', 'pt_tenure_plus'];   // 與 clock.html HOURY 相同
+                            'disaster_leave', 'hourly_wage', 'pt_attend_plus', 'pt_tenure_plus',
+                            'comp_bank', 'comp_expire'];   // 與 clock.html HOURY 相同（補休兩列 2026-10-09 加）
 function lineHubNf_(v) { return Math.round(Number(v) || 0).toLocaleString('en-US'); }
 function lineHubR2_(v) { return Math.round((Number(v) || 0) * 100) / 100; }
 function lineHubPayLineSub_(x) {
@@ -677,10 +699,11 @@ function lineHubLeaveText_(userId) {
   var j = lineHubPayslipFor_(userId);
   if (!j) return lineHubMine_(userId, null, true).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
   if (!j.ok) return '查不到你的假別資料，請找店長確認。';
-  var list = j.leave_quota || [], an = lineHubAnnual_(j.annual);
-  if (!list.length && !an) return '📅 假別額度\n你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。';
+  var list = j.leave_quota || [], an = lineHubAnnual_(j.annual), cp = lineHubComp_(j);
+  if (!list.length && !an && !cp) return '📅 假別額度\n你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。';
   var r1 = function (v) { return Math.round((Number(v) || 0) * 10) / 10; };
   var head = an ? '・特休假：剩 ' + an.left_h + ' 小時（共 ' + an.quota_h + ' 小時，' + an.md + ' 到期，未休完依法折算工資）\n' : '';
+  if (cp) head += '・補休：剩 ' + cp.balance_h + ' 小時' + (cp.earliest ? '（最早 ' + cp.md + ' 到期，沒休完照加班費折算）' : '') + '\n';
   return '📅 今年假別額度（已請／剩餘）\n' + head + list.map(function (q) {
     var used = q.used_days ? r1(q.used_h) + 'H' : '未請過';
     var rem = q.cap_days == null ? '無上限' : (q.basis === 'event' ? '每次上限 ' + r1(q.cap_h) + 'H'
@@ -784,8 +807,8 @@ function lineHubLeaveCard_(userId) {
   var j = lineHubPayslipFor_(userId);
   if (!j) return lineHubMine_(userId, null, true).length ? lineHubNoticeCard_('假別額度', LINE_HUB_NO_PAYROLL_TEXT, 'warn') : lineHubNoticeCard_('還沒綁定', LINE_HUB_NOT_BOUND_TEXT);
   if (!j.ok) return lineHubNoticeCard_('假別額度', '查不到你的假別資料，請找店長確認。', 'warn');
-  var list = j.leave_quota || [], an = lineHubAnnual_(j.annual);
-  if (!list.length && !an) return lineHubNoticeCard_('假別額度', '你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。');
+  var list = j.leave_quota || [], an = lineHubAnnual_(j.annual), cp = lineHubComp_(j);
+  if (!list.length && !an && !cp) return lineHubNoticeCard_('假別額度', '你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。');
   var r1 = function (v) { return Math.round((Number(v) || 0) * 10) / 10; };
   var blocks = list.map(function (q) {
     var rem = q.cap_days == null ? '無上限' : (q.basis === 'event' ? '每次上限 ' + r1(q.cap_h) + 'H'
@@ -793,6 +816,8 @@ function lineHubLeaveCard_(userId) {
     var sub = (q.used_days ? '已請 ' + r1(q.used_h) + 'H' : '未請過') + (q.cap_days != null && q.basis !== 'event' ? '・上限 ' + r1(q.cap_h) + 'H' : '');
     return { type: 'row', l: q.name, r: rem, sub: sub, bold: true };
   });
+  // 補休（2026-10-09）：正職、有餘額或用過才出現；放在特休下面
+  if (cp) blocks.unshift({ type: 'row', l: '補休', r: '剩 ' + cp.balance_h + ' 小時', sub: cp.earliest ? '最早 ' + cp.md + ' 到期（沒休完照加班費折算）' : '目前沒有可休的補休', bold: true });
   if (an) blocks.unshift({ type: 'row', l: '特休假', r: '剩 ' + an.left_h + ' 小時', sub: '共 ' + an.quota_h + ' 小時・' + an.md + ' 到期（未休完依法折算工資）', bold: true });
   return lineHubCard_({ title: '今年假別額度', tone: 'info', alt: '今年假別額度', blocks: blocks,
                         foot: '數字來自店長登記的請假紀錄，有出入請找店長。', fallbackText: lineHubLeaveText_(userId) });
@@ -1098,10 +1123,17 @@ function handleLineHubReqInit_(body) {
   } catch (e) { names = []; }
   if (!names.length) names = LEAVE_TYPES.slice();
   names = names.filter(function (n) { return n && n !== '出差' && LEAVE_TYPES.indexOf(n) >= 0; });
-  var quota = [];
-  try { var j = lineHubPayslipFor_(userId); quota = (j && j.ok && j.leave_quota) || []; } catch (e) { quota = []; }
-  return { ok: true, stores: stores,
-           leave_types: { common: LINE_HUB_COMMON_LEAVES.filter(function (n) { return names.indexOf(n) >= 0; }),
+  var quota = [], comp = { allowed: false, balance_h: 0, earliest_expiry: '' };
+  try {
+    var j = lineHubPayslipFor_(userId);
+    quota = (j && j.ok && j.leave_quota) || [];
+    // 補休（2026-10-09）：正職才能換（加班分頁的「加班費／換補休」只在 allowed 時出現）；餘額＞0 才有「補休」假別
+    if (j && j.ok && j.comp) comp = { allowed: !!j.comp.allowed, balance_h: Number(j.comp.balance_h) || 0, earliest_expiry: String(j.comp.earliest_expiry || '') };
+  } catch (e) { quota = []; }
+  var common = LINE_HUB_COMMON_LEAVES.filter(function (n) { return names.indexOf(n) >= 0; });
+  if (comp.allowed && comp.balance_h > 0) common.push('補休');   // 與 Payroll.gs PAY_COMP_NAME、Requests.gs REQ_COMP_LEAVE_ 同一個字
+  return { ok: true, stores: stores, comp: comp,
+           leave_types: { common: common,
                           special: names.filter(function (n) { return LINE_HUB_COMMON_LEAVES.indexOf(n) < 0; }) },
            quota: quota.map(function (q) { return { name: q.name, cap_days: q.cap_days, cap_h: q.cap_h, remain_h: q.remain_h, used_h: q.used_h, basis: q.basis }; }) };
 }

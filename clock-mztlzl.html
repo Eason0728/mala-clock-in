@@ -1522,7 +1522,7 @@
   var payYm = document.getElementById('payYm');
   var paySlipEl = document.getElementById('paySlip');
   var payLoadedYm = null;
-  var HOURY = ['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage','pt_attend_plus','pt_tenure_plus'];
+  var HOURY = ['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage','pt_attend_plus','pt_tenure_plus','comp_bank','comp_expire'];
   function payNf(v) { return Math.round(v).toLocaleString('zh-TW'); }
   function payR2(v) { return Math.round(v * 100) / 100; }
   /* ⚠ 自由文字進 innerHTML 前一律過這支：姓名、假別名、item_label（管理者自訂的項目名）。

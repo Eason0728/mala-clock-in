@@ -1251,7 +1251,12 @@
       if (t !== '無' && LEAVE_OPTS && LEAVE_OPTS.types) {
         var def = LEAVE_OPTS.types.filter(function (x) { return x.name === t; })[0];
         var q = def ? quotaOf(String(emp.emp_id), def.code) : null;
-        if (q && q.cap_days != null) {
+        if (q && q.comp) {
+          // 補休（2026-10-09）：只有正職、只能用已定案月份換到的餘額
+          if (!q.allowed) { opt.disabled = true; opt.textContent = t + '（只有正職）'; }
+          else if (!(q.balance_h > 0)) { opt.disabled = true; opt.textContent = t + '（沒有餘額）'; }
+          else opt.textContent = t + '（剩 ' + q.balance_h + ' 小時）';
+        } else if (q && q.cap_days != null) {
           var remain = Math.round((q.remain_days || 0) * 10) / 10;
           if (q.blocked) {
             opt.disabled = true;
@@ -1378,7 +1383,15 @@
           }
           if (wc.note && !confirm(wc.note + '\n\n仍要送出嗎？')) return;
         }
-        if (q0 && q0.blocked && String(emp.leave_type || '') !== leaveSelect.value) {
+        // 補休：時數不能超過餘額（同一天重送原本的補休紀錄放行，否則改不動）
+        if (q0 && q0.comp && String(emp.leave_type || '') !== leaveSelect.value &&
+            (!q0.allowed || Number(leaveHours.value || 0) > Number(q0.balance_h || 0))) {
+          resultBox.style.display = 'block';
+          resultBox.textContent = '✕ ' + emp.name + (q0.allowed ? ' 的補休餘額只剩 ' + (q0.balance_h || 0) + ' 小時，不夠請 ' + (leaveHours.value || 0) + ' 小時' : ' 是計時同仁，沒有補休')
+            + '，無法送出。';
+          return;
+        }
+        if (q0 && q0.blocked && !q0.comp && String(emp.leave_type || '') !== leaveSelect.value) {
           resultBox.style.display = 'block';
           resultBox.textContent = '✕ ' + emp.name + ' 的「' + leaveSelect.value
             + '」額度已用完（上限 ' + q0.cap_days + ' 日，已用 '
@@ -1831,6 +1844,14 @@
     var wrap = document.createElement('div'); wrap.appendChild(bar); wrap.appendChild(msg);
     return wrap;
   }
+  /** 補休申請：附上這位同仁目前的補休餘額（薪酬後端算的；查不到就不顯示） */
+  function compBalanceNote(it) {
+    if (it.kind !== 'leave' || it.leave_type !== '補休' || !LEAVE_OPTS || !LEAVE_OPTS.types) return '';
+    var def = LEAVE_OPTS.types.filter(function (x) { return x.name === '補休'; })[0];
+    var q = def ? quotaOf(String(it.emp_id), def.code) : null;
+    if (!q || !q.comp) return '';
+    return '\n補休餘額：' + (q.allowed ? q.balance_h + ' 小時' + (Number(it.hours) > q.balance_h ? '（不夠）' : '') : '計時同仁沒有補休');
+  }
   function buildReqItem(it, card, title) {
     var el = document.createElement('div'); el.className = 'rq-item';
     el.__req = it;
@@ -1845,7 +1866,7 @@
     var d = document.createElement('span'); d.textContent = parseInt(it.date.slice(5, 7), 10) + '/' + parseInt(it.date.slice(8, 10), 10);
     l1.appendChild(who); l1.appendChild(d); el.appendChild(l1);
     var l2 = document.createElement('div'); l2.className = 'rq-l2';
-    l2.textContent = it.summary + (it.reason ? '\n原因：' + it.reason : '') + '\n送出：' + tsLabel(it.created_at);
+    l2.textContent = it.summary + (it.reason ? '\n原因：' + it.reason : '') + compBalanceNote(it) + '\n送出：' + tsLabel(it.created_at);
     el.appendChild(l2);
     var ev = punchEvidence(it);
     if (ev) { var e = document.createElement('div'); e.className = 'rq-evid'; e.textContent = ev; el.appendChild(e); }

@@ -9,8 +9,10 @@
  */
 
 var REQ_SHEET_ = 'requests';
+// ⚠ 只能往後加欄（2026-10-09 加 comp）：上線前建的 requests 分頁只有前 18 欄，寫入時 reqHeads_ 會自動補表頭
 var REQ_HEADERS_ = ['id', 'created_at', 'emp_id', 'name', 'kind', 'date', 'leave_type', 'start', 'end', 'hours',
-                    'miss_type', 'reason', 'attach_id', 'status', 'decided_at', 'decided_by', 'reject_reason', 'seen_at'];
+                    'miss_type', 'reason', 'attach_id', 'status', 'decided_at', 'decided_by', 'reject_reason', 'seen_at', 'comp'];
+var REQ_COMP_LEAVE_ = '補休';   // 補休（2026-10-09）：不在 Code.gs LEAVE_TYPES 白名單裡，請假申請另外放行
 var REQ_KINDS_ = { leave: '請假', ot: '加班', trip: '出差', miss: '忘打卡' };
 var REQ_MISS_DAYS = 7;          // 忘打卡只能申請 7 天內（含今天）
 var REQ_LEAVE_PAST_DAYS = 31;   // 請假可補申請到 31 天前
@@ -26,9 +28,22 @@ function reqSheet_(ss, create) {
   if (!sh && create) {
     sh = ss.insertSheet(REQ_SHEET_);
     sh.getRange(1, 1, 1, REQ_HEADERS_.length).setValues([REQ_HEADERS_]);
-    sh.getRange('A:R').setNumberFormat('@');   // 日期、時間存成文字，避免 Sheets 自動轉成日期物件（2026-07-15 那個坑）
+    sh.getRange('A:' + reqColLetter_(REQ_HEADERS_.length)).setNumberFormat('@');   // 日期、時間存成文字，避免 Sheets 自動轉成日期物件（2026-07-15 那個坑）
   }
   return sh;
+}
+function reqColLetter_(n) { var s = ''; while (n > 0) { var m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
+/** 實際表頭；缺 REQ_HEADERS_ 的欄（舊分頁沒有 comp）就補在最後面（只補表頭、舊列留空＝當作加班費）。 */
+function reqHeads_(sh) {
+  var last = sh.getLastColumn();
+  var heads = last ? sh.getRange(1, 1, 1, last).getValues()[0].map(String) : [];
+  var missing = REQ_HEADERS_.filter(function (h) { return heads.indexOf(h) < 0; });
+  if (missing.length) {
+    sh.getRange(1, heads.length + 1, 1, missing.length).setValues([missing]);
+    for (var i = 0; i < missing.length; i++) { var L = reqColLetter_(heads.length + 1 + i); sh.getRange(L + ':' + L).setNumberFormat('@'); }
+    heads = heads.concat(missing);
+  }
+  return heads;
 }
 function reqRows_(ss) {
   var sh = reqSheet_(ss, false);
@@ -66,7 +81,7 @@ function reqPublic_(r) {
            hours: r.hours === '' || r.hours === null || r.hours === undefined ? null : Number(r.hours),
            miss_type: String(r.miss_type || ''), reason: String(r.reason || ''), has_attach: !!r.attach_id,
            status: String(r.status), decided_at: String(normCellTs(r.decided_at) || ''), decided_by: String(r.decided_by || ''),
-           reject_reason: String(r.reject_reason || '') };
+           reject_reason: String(r.reject_reason || ''), comp: r.kind === 'ot' ? (String(r.comp || '') === 'comp' ? 'comp' : 'pay') : '' };
 }
 function reqSetCells_(sh, rowIndex, patch) {
   var heads = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
@@ -79,7 +94,7 @@ function reqSetCells_(sh, rowIndex, patch) {
 function reqSummary_(r) {
   var md = parseInt(String(r.date).slice(5, 7), 10) + '/' + parseInt(String(r.date).slice(8, 10), 10);
   if (r.kind === 'leave') return md + ' ' + r.leave_type + (r.start ? ' ' + r.start + '–' + r.end : ' 整天') + ' ' + Number(r.hours) + ' 小時';
-  if (r.kind === 'ot') return md + ' 加班 ' + r.start + '–' + r.end + '（' + Number(r.hours) + ' 小時）';
+  if (r.kind === 'ot') return md + ' 加班 ' + r.start + '–' + r.end + '（' + Number(r.hours) + ' 小時）' + (String(r.comp || '') === 'comp' ? '（換補休）' : '');
   if (r.kind === 'trip') {
     var place = reqTripPlace_(r.reason);
     return md + ' 出差' + (r.start ? ' ' + r.start + '–' + r.end : ' 整天') + ' ' + Number(r.hours) + ' 小時' + (place ? '（地點：' + place + '）' : '');
@@ -180,12 +195,12 @@ function reqValidate_(b, me, events, today, existing) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: 'bad_date', message: '請選日期' };
   var diff = reqDayDiff_(date, today);
   var reason = reqClean_(b.reason, REQ_REASON_MAX);
-  var row = { kind: kind, date: date, leave_type: '', start: '', end: '', hours: '', miss_type: '', reason: reason };
+  var row = { kind: kind, date: date, leave_type: '', start: '', end: '', hours: '', miss_type: '', reason: reason, comp: '' };
 
   if (kind === 'leave') {
     if (diff < -REQ_LEAVE_PAST_DAYS || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '請假只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
     var lt = reqClean_(b.leave_type, 30);
-    if (!lt || lt === '出差' || LEAVE_TYPES.indexOf(lt) < 0) return { error: 'bad_leave_type', message: '請選假別' };
+    if (!lt || lt === '出差' || (LEAVE_TYPES.indexOf(lt) < 0 && lt !== REQ_COMP_LEAVE_)) return { error: 'bad_leave_type', message: '請選假別' };
     row.leave_type = lt;
     if (b.start || b.end) {
       row.start = reqHm_(b.start); row.end = reqHm_(b.end);
@@ -203,6 +218,8 @@ function reqValidate_(b, me, events, today, existing) {
     row.hours = reqSpanHours_(row.start, row.end);
     if (row.hours > 12) return { error: 'bad_time', message: '加班時段超過 12 小時，請確認時間' };
     if (!reason) return { error: 'need_reason', message: '加班要寫原因' };
+    // 補休（2026-10-09）：加班費／換補休（預設加班費）。店家後端不知道誰是正職——計時同仁就算送了 comp，薪資也一律當加班費。
+    row.comp = String(b.comp || '') === 'comp' ? 'comp' : 'pay';
   } else if (kind === 'trip') {
     // 出差（2026-10-09）：存成 leave_type＝出差；核准後核定頁預填「出差」＋時數（出差時數與上班時段相加，整天出差可以沒有時段）
     if (diff < -REQ_LEAVE_PAST_DAYS || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '出差只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
@@ -272,14 +289,30 @@ function handleReqSubmit_(body) {
     var v = reqValidate_(body, who.me, liffEvents_(who.ss), todayTaipeiStr(), reqRows_(who.ss));
     if (v.error) return { ok: false, error: v.error, message: v.message };
     var r = v.row;
+    // 補休餘額：只有和薪資同一個專案的店（光復）查得到，盡量擋；其他店靠 LINE 申請頁（光復算餘額）與值班主管核定時再擋一次
+    if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_) {
+      var cb = reqCompBalance_(who.me);
+      if (cb && !cb.allowed) return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
+      if (cb && Number(r.hours) > cb.balance_h) return { ok: false, error: 'comp_not_enough', message: '補休餘額只剩 ' + cb.balance_h + ' 小時，不夠請 ' + Number(r.hours) + ' 小時' };
+    }
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
     r.created_at = nowTaipeiIso(); r.emp_id = String(who.me.emp_id); r.name = String(who.me.name);
     r.attach_id = /^[A-Za-z0-9_-]{10,80}$/.test(String(body.attach_id || '')) ? String(body.attach_id) : '';
     r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
     var sh = reqSheet_(who.ss, true);
-    sh.appendRow(REQ_HEADERS_.map(function (h) { return r[h] === undefined ? '' : r[h]; }));
+    sh.appendRow(reqHeads_(sh).map(function (h) { return r[h] === undefined ? '' : r[h]; }));   // 照實際表頭寫（舊分頁沒有 comp 欄會先補）
     return { ok: true, request: reqPublic_(r), summary: reqSummary_(r) };
   } finally { lock.releaseLock(); }
+}
+
+/** 補休餘額（盡量擋）：和薪資同專案（光復）才查得到 → {allowed, balance_h}；查不到／出錯回 null＝不擋（交給申請頁與主管）。 */
+function reqCompBalance_(me) {
+  try {
+    if (typeof payCompStatus !== 'function' || typeof payRead !== 'function') return null;
+    var m = payRead('master').filter(function (x) { return String(x.emp_id) === String(me.emp_id); })[0];
+    if (!m) return null;
+    return payCompStatus(payCompBook(), m, m.store, payCompToday());
+  } catch (e) { return null; }
 }
 
 /** {action:'req_cancel', id_token, id} → 只能取消自己的、還在審核中的。 */

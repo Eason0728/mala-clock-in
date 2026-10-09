@@ -46,7 +46,7 @@
     st.tab = TABS.some(function (t) { return t[0] === opts.tab; }) ? opts.tab : 'leave';
     st.missDate = opts.date || ''; st.missType = opts.miss || '';
     // 下班打卡提示加班（opts.start／end）：預填加班分頁，原因留給同仁寫
-    if (st.tab === 'ot' && opts.date && opts.start && opts.end) ot = { date: opts.date, start: opts.start, end: opts.end, reason: '' };
+    if (st.tab === 'ot' && opts.date && opts.start && opts.end) ot = { date: opts.date, start: opts.start, end: opts.end, reason: '', comp: 'pay' };
     $root.hidden = false;
     $root.innerHTML = '';
     $root.appendChild(h('div', { class: 'rq-loading', text: '讀取中…' }));
@@ -101,7 +101,14 @@
     });
     return wrap;
   }
+  /* 補休（2026-10-09）：光復 line_hub_req_init 回 comp {allowed（正職）, balance_h, earliest_expiry}。 */
+  function comp() { return (st.init && st.init.comp) || { allowed: false, balance_h: 0, earliest_expiry: '' }; }
+  function compText() {
+    var c = comp(), e = c.earliest_expiry;
+    return '剩 ' + (Math.round((Number(c.balance_h) || 0) * 100) / 100) + ' 小時' + (e ? '・最早 ' + (+e.slice(5, 7)) + '/' + (+e.slice(8, 10)) + ' 到期' : '');
+  }
   function quotaText(name) {
+    if (name === '補休') return '';   // 補休的餘額另外一行一直顯示（見 renderLeave）
     var q = (st.init.quota || []).filter(function (x) { return x.name === name; })[0];
     if (!q || q.cap_days == null) return '';
     var r1 = function (v) { return Math.round((Number(v) || 0) * 10) / 10; };
@@ -124,7 +131,10 @@
       typeBox.appendChild(sp);
     }
     var q = lv.type ? quotaText(lv.type) : '';
-    p.appendChild(field('假別', typeBox, q ? [h('div', { class: 'rq-quota', text: lv.type + '：' + q })] : []));
+    var qx = q ? [h('div', { class: 'rq-quota', text: lv.type + '：' + q })] : [];
+    // 補休有餘額才會出現在假別裡；餘額與最早到期日一直顯示，選之前就看得到
+    if (lt.common.indexOf('補休') >= 0) qx.push(h('div', { class: 'rq-quota rq-comp-bal', text: '補休：' + compText() }));
+    p.appendChild(field('假別', typeBox, qx));
     var modeBox = h('div', {}, [chips(['整天', '只請一段'], lv.mode === 'day' ? '整天' : '只請一段', function (v) { lv.mode = v === '整天' ? 'day' : 'span'; render(); })]);
     if (lv.mode === 'day') {
       var hr = h('input', { type: 'number', min: '0.5', max: '24', step: '0.5', value: lv.hours, class: 'rq-hours', on: { input: function () { lv.hours = hr.value; } } });
@@ -146,6 +156,13 @@
       if (!lv.type) return Promise.reject(new Error('請選假別'));
       var body = { kind: 'leave', date: lv.date, leave_type: lv.type, reason: lv.reason };
       if (lv.mode === 'day') body.hours = lv.hours; else { body.start = lv.start; body.end = lv.end; }
+      // 補休不能超過餘額（只能用已定案月份換到的時數）
+      if (lv.type === '補休') {
+        var need = lv.mode === 'day' ? Number(lv.hours) : spanHours(lv.start, lv.end);
+        var bal = Number(comp().balance_h) || 0;
+        if (!comp().allowed) return Promise.reject(new Error('補休只有正職可以請'));
+        if (need > bal) return Promise.reject(new Error('補休餘額只剩 ' + bal + ' 小時，不夠請 ' + need + ' 小時'));
+      }
       return withAttach(lv.file).then(function (aid) { if (aid) body.attach_id = aid; return body; });
     }, function () { lv = { date: '', type: '', mode: 'day', hours: '8', start: '', end: '', reason: '', file: null }; }));
     p.appendChild(out);
@@ -153,7 +170,7 @@
   }
 
   /* 加班（不分事前事後） */
-  var ot = { date: '', start: '', end: '', reason: '' };
+  var ot = { date: '', start: '', end: '', reason: '', comp: 'pay' };
   function renderOt(p) {
     if (!ot.date) ot.date = taipeiToday(0);
     var dateIn = h('input', { type: 'date', value: ot.date, on: { change: function () { ot.date = dateIn.value; } } });
@@ -165,10 +182,25 @@
     p.appendChild(field('加班時段', h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot])));
     var rs = h('input', { type: 'text', maxlength: '100', value: ot.reason, placeholder: '例如：週六晚上外送訂單多', on: { input: function () { ot.reason = rs.value; } } });
     p.appendChild(field('原因（必填）', rs));
+    // 加班費／換補休（2026-10-09）：只有正職看得到；計時同仁不顯示、一律加班費
+    if (comp().allowed) {
+      var cw = h('div', { class: 'rq-comp' });
+      [['pay', '加班費'], ['comp', '換補休']].forEach(function (o) {
+        var rb = h('input', { type: 'radio', name: 'rqComp', value: o[0], checked: (ot.comp || 'pay') === o[0],
+                              on: { change: function () { if (rb.checked) { ot.comp = o[0]; cnote.textContent = noteOf(); } } } });
+        cw.appendChild(h('label', { class: 'rq-radio' }, [rb, ' ' + o[1]]));
+      });
+      var noteOf = function () { return ot.comp === 'comp'
+        ? '1 小時換 1 小時補休，薪資定案後入帳，6 個月內要休完（沒休完照加班費折算）；最多換到當月實際加班時數'
+        : '照加班費率發給'; };
+      var cnote = h('div', { class: 'rq-muted', text: noteOf() });
+      p.appendChild(field('要加班費還是換補休', cw, [cnote]));
+    }
     var out = h('div', {});
     p.appendChild(submitBtn(out, function () {
-      return Promise.resolve({ kind: 'ot', date: ot.date, start: ot.start, end: ot.end, reason: ot.reason });
-    }, function () { ot = { date: '', start: '', end: '', reason: '' }; }));
+      return Promise.resolve({ kind: 'ot', date: ot.date, start: ot.start, end: ot.end, reason: ot.reason,
+                               comp: comp().allowed && ot.comp === 'comp' ? 'comp' : 'pay' });
+    }, function () { ot = { date: '', start: '', end: '', reason: '', comp: 'pay' }; }));
     p.appendChild(out);
     p.appendChild(h('div', { class: 'rq-note', text: '已經加過班或還沒加班都可以申請。實際時數以主管當天核定為準。' }));
   }
@@ -261,7 +293,7 @@
     list.forEach(function (r) {
       var s = STATUS[r.status] || [r.status, 'off'];
       var title = r.kind === 'leave' ? r.leave_type + ' ' + r.hours + ' 小時'
-                : r.kind === 'ot' ? '加班 ' + r.hours + ' 小時'
+                : r.kind === 'ot' ? '加班 ' + r.hours + ' 小時' + (r.comp === 'comp' ? '（換補休）' : '')
                 : r.kind === 'trip' ? '出差 ' + r.hours + ' 小時'
                 : '忘打卡・補' + (r.miss_type === 'both' ? '上下班卡' : r.miss_type === 'in' ? '上班卡 ' + r.start : '下班卡 ' + r.end);
       var sub = md(r.date) + (r.start && r.kind !== 'miss' ? ' ' + r.start + '–' + r.end : (r.kind === 'leave' || r.kind === 'trip') ? ' 整天' : '')

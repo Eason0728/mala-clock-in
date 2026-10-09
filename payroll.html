@@ -880,6 +880,8 @@ function costTotals(){
       /* 自訂加薪：**不計入薪資費用**（2026-08-24 Eason）——它可能是行銷、補發之類，
          科目要自己判斷，所以獨立列出來讓他歸到對的地方。同仁薪資單照舊看得到（那是另一條路徑）。*/
       if(k==='custom_add'){ g.custAdd+=a; g.custAddBy.push([r.name,r.is_full_time,x.item_label,a]); return; }
+      // 補休「本月換補休」是 0 元資訊列（2026-10-09），不進任何科目；「補休到期折算」照一般加項歸其他
+      if(k==='comp_bank') return;
       // 計時同仁：領到的錢全部歸「薪資費用／PT」（時薪＋支援＋各種津貼）
       if(!r.is_full_time){g.pt+=a;return}
       // 正職：依項目種類分科目
@@ -2141,7 +2143,7 @@ function renderSlip(){
   const r=RESULTS.find(x=>x.emp_id===$('slipSel').value),w=$('slipWrap');
   if(!r){w.innerHTML='<div class="slip" style="text-align:center;color:#8a817a;padding:50px">請先在「月結」頁計算</div>';return}
   // 以「_leave 結尾」認假別，新增假別自動涵蓋（改版前寫死五個，新假別不會顯示時數×費率）
-  const HOURY_FIX=['overtime','shortfall_hours','hourly_wage','pt_attend_plus','pt_tenure_plus'];
+  const HOURY_FIX=['overtime','shortfall_hours','hourly_wage','pt_attend_plus','pt_tenure_plus','comp_bank','comp_expire'];
   const isHoury=k=>/_leave$/.test(String(k))||HOURY_FIX.indexOf(k)>=0;
   // 數量的單位依項目而定：時數類→H、遲到→分鐘、餐費／年終→天，其餘不加單位。
   // ⚠ late_deduct 的 qty 是「分鐘」，不加單位會被誤讀成小時（Eason 2026-09-01 指出）。
@@ -2181,7 +2183,7 @@ function exportCSV(){
 }
 
 /* ═════ 匯出（完整明細）═════ */
-const EXP_HOURY_FIX=['overtime','shortfall_hours','hourly_wage','cross_store','pt_attend_plus','pt_tenure_plus'];
+const EXP_HOURY_FIX=['overtime','shortfall_hours','hourly_wage','cross_store','pt_attend_plus','pt_tenure_plus','comp_bank','comp_expire'];
 const isExpHoury=k=>/_leave$/.test(String(k))||EXP_HOURY_FIX.indexOf(k)>=0;
 // 與上面的 qtyUnit 同一套規則（匯出／列印用）
 const expQtyUnit=k=>k==='late_deduct'?' 分鐘':(k==='meal_sub'?' 天':(isExpHoury(k)?'H':''));

@@ -576,6 +576,22 @@ def phase_manager_buttons(page, data):
         CM.mark(sel_info['key'], f'選假別「{sel_info["picked"]}」')
         check('假別下拉可選取', bool(sel_info['picked']), sel_info)
 
+    # 補休（2026-10-09）：下拉標餘額（第一位 mock 剩 6 小時）、沒有餘額的反灰；硬塞超過餘額的補休送出會被擋
+    comp_opts = page.evaluate("""(names) => names.map((nm) => { const h = [...document.querySelectorAll('#empList .emp-head')]
+          .find(x => x.textContent.includes(nm)); const c = h && h.closest('.card'); const s = c && c.querySelector('select');
+          const o = s && [...s.options].find(o => o.value === '補休'); return o ? [o.textContent, o.disabled] : null; })""",
+          [data['people'][0]['name'], data['people'][1]['name']])
+    check('補休：值班核定下拉「補休（剩 6 小時）」、沒有餘額的「補休（沒有餘額）」反灰',
+          comp_opts == [['補休（剩 6 小時）', False], ['補休（沒有餘額）', True]], comp_opts)
+    second = data['people'][1]['name']
+    blocked = page.evaluate("""(nm) => { const h = [...document.querySelectorAll('#empList .emp-head')].find(x => x.textContent.includes(nm));
+          const c = h.closest('.card'); const s = c.querySelector('select'); const hrs = c.querySelector('.leave-hours');
+          const keep = s.value; s.value = '補休'; s.dispatchEvent(new Event('change', {bubbles:true})); hrs.value = '2';
+          const btn = [...c.querySelectorAll('button')].find(b => /送出核定|更新核定/.test(b.textContent)); btn.click();
+          const msg = (c.querySelector('.result-box') || {}).textContent || '';
+          s.value = keep; s.dispatchEvent(new Event('change', {bubbles:true})); return msg; }""", second)
+    check('補休：時數超過餘額 → 擋下不送出', '補休餘額只剩 0 小時' in blocked and '無法送出' in blocked, blocked)
+
     # 加一段再刪掉（驗證「－」）
     click_in_card(page, first['name'], '加一段', '新增一列時段（稍後刪除）')
     page.wait_for_timeout(300)

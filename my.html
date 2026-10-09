@@ -71,7 +71,7 @@ const r1=v=>Math.round(v*10)/10;   // 假別時數一律到小數第一位（202
 const esc=s=>String(s==null?'':s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
   .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-const HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage','pt_attend_plus','pt_tenure_plus'];
+const HOURY=['overtime','shortfall_hours','personal_leave','sick_leave','menstrual_leave','disaster_leave','hourly_wage','pt_attend_plus','pt_tenure_plus','comp_bank','comp_expire'];
 
 /* 假別額度卡片：資料與規則來自後端 payMyLeaveQuota（＝主管看到的同一份），
    前端只負責排版，不重算任何額度。沒帶這個欄位的舊後端整張不畫。 */

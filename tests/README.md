@@ -12,6 +12,9 @@ node tests/run-all.js
 | `attend-bonus.test.js` | 全勤兩段式（遞減＋門檻歸零），含各店不同設定 | 光復必須與改版前完全一致 |
 | `annual-payout.test.js` | 特休週年期屆滿當月折算工資 | 一年只會發生一次，出錯很難發現 |
 | `engine-diff.js` | 拿改動前後兩版引擎跑 2160 組情境逐項對拆 | 改公式時確認既有數字沒動 |
+| `comp-leave.test.js` | 補休：到期日定義、換補休上限、計時忽略、先換先用、到期／離職折算、只認定案月份、假別表內建列 | 2026-10-09 動到薪資，期望值全部手算 |
+| `comp-regression.test.js` | 同一份假資料餵補休上線前（git 3668329）與現在的 `handlePayrollCalc`，沒有補休的人 results／run／item 逐列相同 | 補休不可以動到任何沒有補休的人；含一位有補休的對照組證明比對有效 |
+| `line-hub-comp.test.js` | LINE：申請頁 comp 資訊、假別額度卡補休列、到期提醒、薪資卡數量帶 H | |
 
 ## 改引擎之前先跑 engine-diff
 

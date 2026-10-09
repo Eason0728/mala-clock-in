@@ -60,7 +60,7 @@ def register(ns):
         if r["kind"] == "leave":
             return f"{md} {r['leave_type']} " + (f"{r['start']}–{r['end']}" if r["start"] else "整天") + f" {r['hours']:g} 小時"
         if r["kind"] == "ot":
-            return f"{md} 加班 {r['start']}–{r['end']}（{r['hours']:g} 小時）"
+            return f"{md} 加班 {r['start']}–{r['end']}（{r['hours']:g} 小時）" + ("（換補休）" if r.get("comp") == "comp" else "")
         if r["kind"] == "trip":
             place = trip_place(r.get("reason"))
             return (f"{md} 出差 " + (f"{r['start']}–{r['end']}" if r["start"] else "整天") + f" {r['hours']:g} 小時"
@@ -77,6 +77,7 @@ def register(ns):
                                          "miss_type", "reason", "status", "decided_at", "decided_by", "reject_reason")}
         o["hours"] = r.get("hours")
         o["has_attach"] = bool(r.get("attach_id"))
+        o["comp"] = ("comp" if r.get("comp") == "comp" else "pay") if r.get("kind") == "ot" else ""
         return o
 
     def day_info(data, emp_id, d):
@@ -155,7 +156,7 @@ def register(ns):
             return None, ("bad_date", "請選日期")
         diff = ddiff(d, today_str())
         reason = str(b.get("reason") or "").strip()[:100]
-        row = {"kind": kind, "date": d, "leave_type": "", "start": "", "end": "", "hours": "", "miss_type": "", "reason": reason}
+        row = {"kind": kind, "date": d, "leave_type": "", "start": "", "end": "", "hours": "", "miss_type": "", "reason": reason, "comp": ""}
         if kind == "leave":
             lt = str(b.get("leave_type") or "")
             if not lt or lt == "出差" or lt not in LEAVE_TYPES:
@@ -183,6 +184,7 @@ def register(ns):
                 return None, ("bad_time", "加班時段超過 12 小時，請確認時間")
             if not reason:
                 return None, ("need_reason", "加班要寫原因")
+            row["comp"] = "comp" if b.get("comp") == "comp" else "pay"   # 補休（2026-10-09）
         elif kind == "trip":
             if diff < -31 or diff > 90:
                 return None, ("bad_date", "出差只能申請 31 天前到 90 天後")
@@ -472,9 +474,13 @@ def register(ns):
                                    "emp_id": me["emp_id"], "emp_name": me["name"]})
         if not stores:
             return {"ok": False, "error": "not_bound"}
-        names = [t for t in LEAVE_TYPES if t != "出差"]
-        return {"ok": True, "stores": stores,
-                "leave_types": {"common": [n for n in COMMON if n in names], "special": [n for n in names if n not in COMMON]},
+        names = [t for t in LEAVE_TYPES if t not in ("出差", "補休")]
+        # 補休（2026-10-09）：光復 mock 資料的 mock_comp 可改（e2e 用來切正職／計時、有無餘額）；預設正職剩 6 小時、20 天後到期
+        comp = data.get("mock_comp") or {"allowed": True, "balance_h": 6,
+                                         "earliest_expiry": (date.today() + timedelta(days=20)).isoformat()}
+        common = [n for n in COMMON if n in names] + (["補休"] if comp.get("allowed") and comp.get("balance_h", 0) > 0 else [])
+        return {"ok": True, "stores": stores, "comp": comp,
+                "leave_types": {"common": common, "special": [n for n in names if n not in COMMON]},
                 "quota": [{"name": "特休假", "cap_days": 7, "cap_h": 56, "remain_h": 40, "used_h": 16, "basis": "tenure"},
                           {"name": "事假", "cap_days": 14, "cap_h": 112, "remain_h": 112, "used_h": 0, "basis": "calendar"}]}
 

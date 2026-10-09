@@ -585,6 +585,8 @@ LEAVE_TYPES = [
     "陪產檢及陪產假", "公假", "謀職假",
     "育嬰假", "喪假", "產假",
     "出差",
+    # 補休（2026-10-09）：正式環境 Code.gs 白名單沒有它，是 mgr_approve 查薪酬假別表放行；mock 直接列進白名單
+    "補休",
 ]
 
 
@@ -608,6 +610,8 @@ MOCK_LEAVE_TYPES = [
     {"code": "parental",     "name": "育嬰假",         "cap_days": 720,  "cap_basis": "child"},
     # 正式假別表（Payroll.gs）有出差；mock 原本漏了，核定頁下拉因此選不到出差（2026-10-02 補）
     {"code": "trip",         "name": "出差",           "cap_days": None, "cap_basis": ""},
+    # 補休（2026-10-09）：正式環境是 Payroll.gs 內建補上的那列；額度另外回 quotas[emp].comp
+    {"code": "comp",         "name": "補休",           "cap_days": None, "cap_basis": ""},
 ]
 
 
@@ -633,6 +637,9 @@ def handle_payroll_leave_options(data, body):
             q[t["code"]] = {"used_days": used, "cap_days": cap,
                             "remain_days": cap - used, "basis": t["cap_basis"],
                             "blocked": blocked}
+        # 補休餘額：第一位同仁正職剩 6 小時，其餘沒有餘額（下拉反灰）
+        bal = 6 if i == 0 else 0
+        q["comp"] = {"comp": True, "allowed": True, "balance_h": bal, "earliest_expiry": "", "cap_days": None, "blocked": bal <= 0}
         quotas[str(emp.get("emp_id"))] = q
     return {"ok": True, "store": "SSLGF", "types": MOCK_LEAVE_TYPES,
             "quotas": quotas, "day_hours": 8}
