@@ -366,6 +366,21 @@ def phase_manager(page, data, exp):
               _has_number(live, e['approved']), live.replace('\n', ' ')[:160])
 
 
+def phase_qr(page):
+    """打卡 QR（2026-10-09）：主管按「打卡 QR」→ 跳出 QR，內容是 LIFF 網址帶本店簽章字串；按關閉後整個遮罩要真的消失
+    （第一版 display:flex 蓋掉 hidden，看不見的遮罩擋住整頁按鈕——這裡驗「關掉後核定頁按得到」）。"""
+    page.click('#btnQr')
+    page.wait_for_function("() => (document.getElementById('qrBox').dataset.url || '').length > 0", timeout=15000)
+    url = page.evaluate("() => document.getElementById('qrBox').dataset.url")
+    ok_url = url.startswith('https://liff.line.me/') and '?qr=gk~' in url
+    check('打卡 QR：顯示本店（光復＝gk）的簽章 QR', ok_url, url[:80])
+    mark_el(page, '#btnQr', ok_url)
+    page.click('#btnQrClose')
+    page.wait_for_timeout(200)
+    gone = page.evaluate("() => getComputedStyle(document.getElementById('qrOverlay')).display === 'none'")
+    check('打卡 QR：關閉後遮罩真的消失（不擋住核定頁按鈕）', gone)
+
+
 def phase_pending_reminder(page, data):
     """本月待核定提醒卡片（#pendingApprovals）：驗每一顆姓名膠囊點下去都會正確跳轉——
     日期框變成那一列的日期、該同仁的核定卡展開、其餘同仁的卡收合。必須在任何人被送出核定
@@ -830,6 +845,8 @@ def main():
             phase_manager(page, data, exp)
             print('  ↳ 本月待核定提醒卡片（要在任何人被核定之前驗）')
             phase_pending_reminder(page, data)
+            print('  ↳ 打卡 QR')
+            phase_qr(page)
             print('── 階段C：核定頁其餘操作 ──')
             phase_manager_buttons(page, data)
             print('── 階段D：薪酬 ──')

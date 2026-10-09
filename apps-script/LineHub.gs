@@ -861,16 +861,20 @@ var LINE_HUB_HELP = {
     ['1', '確認手機的「定位服務」是開的（iPhone：設定 › 隱私權與安全性 › 定位服務；安卓：下拉選單的「位置」）'],
     ['2', '打開 Wi‑Fi（不用連上任何網路，有開就能幫忙定位）'],
     ['3', '關掉「低耗電／省電模式」，走到門口或窗邊'],
-    ['4', '等 10 秒，按畫面上的「重新定位」'] ] },
+    ['4', '等 10 秒，按畫面上的「重新定位」'],
+    ['5', '還是一直「定位中」：把手機重新開機，再從選單按「打卡」'],
+    ['6', '都不行：請值班主管在核定頁按「打卡 QR」，用 LINE 掃描打卡'] ] },
   '定位不準': { title: '定位不準（位置飄、誤差大）', steps: [
     ['1', '打開「精確位置」（iPhone：設定 › LINE › 位置；安卓：LINE 權限 › 位置）'],
     ['2', '打開 Wi‑Fi：室內靠 Wi‑Fi 定位比較準，不用連線'],
     ['3', '地圖上你的點跳到很遠（Wi‑Fi 偏移）：改成關掉 Wi‑Fi、走到門口用 GPS 再試'],
-    ['4', '等 10～20 秒讓定位穩定，再按「重新定位」'] ] },
+    ['4', '等 10～20 秒讓定位穩定，再按「重新定位」'],
+    ['5', '還是不準：把手機重新開機再試一次'],
+    ['6', '都不行：請值班主管在核定頁按「打卡 QR」，用 LINE 掃描打卡'] ] },
   '不在範圍': { title: '系統說你不在打卡範圍', steps: [
     ['1', '確認人真的在店裡（不是停車場、隔壁或路上）'],
     ['2', '人在店裡還是不行：照「定位不準」的步驟開精確位置與 Wi‑Fi，再按「重新定位」'],
-    ['3', '一直不行：先用舊的專屬打卡連結打卡，或請值班主管在核定時補登，不要連按'] ] },
+    ['3', '一直不行：請值班主管在核定頁按「打卡 QR」，用 LINE 掃描打卡，不要連按'] ] },
   '網路不穩': { title: '連線失敗／網路不穩', steps: [
     ['1', '先看「出勤紀錄」今天有沒有剛才那筆，有就不用再打'],
     ['2', '換網路：Wi‑Fi 不穩就關掉改用行動網路，反過來也一樣；有開 VPN 先關掉'],
@@ -884,8 +888,12 @@ var LINE_HUB_HELP = {
     ['1', '關掉打卡畫面，從選單重新按「打卡」再試一次'],
     ['2', '還是說「沒有認得你的 LINE 帳號」：請值班主管在值班核定頁的「LINE 綁定紀錄」解除綁定，再重新輸入全名綁一次'],
     ['3', '這段時間先用舊的專屬打卡連結打卡'] ] },
+  '置頂': { title: '把「鼎兆元打卡」置頂', steps: [
+    ['為什麼', '聊天室很多時，置頂後每次打卡不用再找'],
+    ['iPhone', '聊天列表把「鼎兆元打卡」往右滑 → 點圖釘'],
+    ['安卓', '聊天列表長按「鼎兆元打卡」→ 選「置頂」'] ] },
 };
-var LINE_HUB_HELP_ORDER = ['網路不穩', '定位抓不到', '定位不準', '不在範圍', '定位權限', '新手機', '綁定'];
+var LINE_HUB_HELP_ORDER = ['網路不穩', '定位抓不到', '定位不準', '不在範圍', '定位權限', '新手機', '綁定', '置頂'];
 
 function lineHubHelpCard_(key) {
   var h = LINE_HUB_HELP[key];
@@ -918,9 +926,13 @@ var LINE_HUB_TEXT_COMMANDS = {
   '出勤紀錄': lineHubAttendanceCard_,
   '薪資明細': lineHubPayCard_,
   '假別額度': lineHubLeaveCard_,
-  '加班申請': function () { return lineHubNoticeCard_('加班申請', '加班申請功能還在準備中，目前請先找店長辦理。'); },
-  '請假申請': function () { return lineHubNoticeCard_('請假申請', '請假申請功能還在準備中，目前請先找店長辦理。'); },
-  '加班請假': function () { return lineHubNoticeCard_('加班請假', '加班／請假申請功能還在準備中，目前請先找店長辦理。\n想看假別剩餘，可以直接打「假別額度」。'); },
+  '加班申請': function () { return lineHubReqCard_('ot'); },
+  '請假申請': function () { return lineHubReqCard_('leave'); },
+  '忘打卡': function () { return lineHubReqCard_('miss'); },
+  '忘打卡申請': function () { return lineHubReqCard_('miss'); },
+  '我的申請': function () { return lineHubReqCard_('mine'); },
+  '加班請假': function () { return lineHubReqCard_(''); },
+  '意見回饋': function () { return lineHubNoticeCard_('意見回饋', '有任何建議，直接在聊天室打「建議：」加上你的想法送出就可以，例如：\n建議：打卡畫面字可以再大一點'); },
   '出勤班表': function () { return lineHubNoticeCard_('出勤班表', '出勤班表功能還在準備中，目前請看店內公告的班表。'); },
   '佈告欄': lineHubBulletinCard_,
 };
@@ -971,6 +983,16 @@ function handleLineWebhook_(body) {
         lineHubReply_(ev.replyToken, [lineHubHelpCard_(text.slice('打卡求助：'.length).trim())]);
         return;
       }
+      if (text.indexOf('申請已送出：') === 0) {   // 申請頁送出後代同仁傳的（只回給他自己看，內容照抄不另查）
+        lineHubReply_(ev.replyToken, [lineHubCard_({ title: '⏳ 申請已送出', tone: 'warn', alt: '申請已送出，等主管審核',
+          blocks: [{ type: 'text', text: text.slice('申請已送出：'.length).slice(0, 120) }, { type: 'text', text: '等值班主管審核。結果在「我的申請」，下次打卡時也會告訴你。', muted: true }],
+          buttons: [{ label: '我的申請', uri: LINE_HUB_LIFF_URL + '?view=req&tab=mine' }] })]);
+        return;
+      }
+      if (/^建議\s*[:：]/.test(text)) {
+        lineHubReply_(ev.replyToken, [lineHubFeedback_(userId, text.replace(/^建議\s*[:：]\s*/, ''))]);
+        return;
+      }
       var mm = /^(出勤紀錄|薪資明細)\s*(\d{4}-\d{2})$/.exec(text);
       if (mm) {
         lineHubReply_(ev.replyToken, [mm[1] === '出勤紀錄' ? lineHubAttendanceMonthCard_(userId, mm[2]) : lineHubPayCard_(userId, mm[2])]);
@@ -989,4 +1011,103 @@ var LINE_HUB_HANDLERS = {
   line_quick_clock: handleLineQuickClock_,
   line_hub_status: handleLineHubStatus_,
   line_bind_name: handleLineBindName_,
+  line_hub_req_init: function (b) { return handleLineHubReqInit_(b); },
+  line_hub_attach_put: function (b) { return handleLineHubAttachPut_(b); },
+  line_hub_attach_get: function (b) { return handleLineHubAttachGet_(b); },
 };
+
+/* ══ 加班請假／忘打卡申請（2026-10-09，規格 mala-clock-liff docs/requests-spec.md）══
+   申請本身存各店（Requests.gs）；這裡只做：選單入口卡片、申請頁開頁資料（綁哪些店＋假別＋額度）、附件（只存光復的雲端硬碟）、意見回饋。 */
+var LINE_HUB_LIFF_URL = 'https://liff.line.me/2011292256-QFXEwFh4';
+var LINE_HUB_REQ_TABS = { leave: '請假', ot: '加班', miss: '忘打卡', mine: '我的申請' };
+function lineHubReqCard_(tab) {
+  var t = LINE_HUB_REQ_TABS[tab] ? tab : 'leave';
+  return lineHubCard_({ title: '📝 加班請假', tone: 'info', alt: '加班請假申請',
+    blocks: [{ type: 'text', text: '請假、加班、忘打卡都在這裡申請，送出後由值班主管審核。結果會在「我的申請」，下次打卡時也會告訴你。' }],
+    buttons: [{ label: '打開' + (tab ? LINE_HUB_REQ_TABS[t] : '申請頁'), uri: LINE_HUB_LIFF_URL + '?view=req&tab=' + t }] });
+}
+var LINE_HUB_COMMON_LEAVES = ['特休假', '事假', '病假', '生理假', '家庭照顧假'];
+/** {action:'line_hub_req_init', id_token} → {ok, stores:[{code,name,emp_id,emp_name}], leave_types:{common,special}, quota:[…]} */
+function handleLineHubReqInit_(body) {
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+  if (lineHubThrottled_('rqi', userId, 20, 60)) return { ok: false, error: 'too_many' };
+  var mine = lineHubMine_(userId, null, false);
+  if (!mine.length) return { ok: false, error: 'not_bound' };
+  var stores = mine.map(function (x) { return { code: String(x.st.code), name: String(x.st.name), emp_id: String(x.row.emp_id), emp_name: String(x.row.name) }; });
+  var names = [];
+  try {
+    var pick = lineHubPayPick_(userId);
+    names = payLeaveTypes(pick ? pick.store : '').map(function (t) { return String(t.name); });
+  } catch (e) { names = []; }
+  if (!names.length) names = LEAVE_TYPES.slice();
+  names = names.filter(function (n) { return n && n !== '出差' && LEAVE_TYPES.indexOf(n) >= 0; });
+  var quota = [];
+  try { var j = lineHubPayslipFor_(userId); quota = (j && j.ok && j.leave_quota) || []; } catch (e) { quota = []; }
+  return { ok: true, stores: stores,
+           leave_types: { common: LINE_HUB_COMMON_LEAVES.filter(function (n) { return names.indexOf(n) >= 0; }),
+                          special: names.filter(function (n) { return LINE_HUB_COMMON_LEAVES.indexOf(n) < 0; }) },
+           quota: quota.map(function (q) { return { name: q.name, cap_days: q.cap_days, cap_h: q.cap_h, remain_h: q.remain_h, used_h: q.used_h, basis: q.basis }; }) };
+}
+
+var LINE_HUB_ATTACH_FOLDER = '打卡申請附件';
+var LINE_HUB_ATTACH_MAX = 3 * 1024 * 1024;   // 解碼後 3MB（前端會先壓成 1600px JPEG，一般 200–500KB）
+function lineHubAttachFolder_() {
+  var p = PropertiesService.getScriptProperties(), id = p.getProperty('REQ_ATTACH_FOLDER');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) { /* 被刪了就重建 */ } }
+  var f = DriveApp.createFolder(LINE_HUB_ATTACH_FOLDER);
+  p.setProperty('REQ_ATTACH_FOLDER', f.getId());
+  return f;
+}
+/** {action:'line_hub_attach_put', id_token, data_url} → {ok, attach_id}。只收圖片與 PDF；檔案不公開分享。 */
+function handleLineHubAttachPut_(body) {
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+  if (lineHubThrottled_('att', userId, 10, 600)) return { ok: false, error: 'too_many', message: '上傳太多次了，請 10 分鐘後再試' };
+  if (!lineHubMine_(userId, null, false).length) return { ok: false, error: 'not_bound' };
+  var m = /^data:(image\/jpeg|image\/png|application\/pdf);base64,([A-Za-z0-9+\/=]+)$/.exec(String(body.data_url || ''));
+  if (!m) return { ok: false, error: 'bad_file', message: '只能上傳照片或 PDF' };
+  var bytes = Utilities.base64Decode(m[2]);
+  if (bytes.length > LINE_HUB_ATTACH_MAX) return { ok: false, error: 'too_big', message: '檔案太大（上限 3MB）' };
+  var ext = m[1] === 'application/pdf' ? 'pdf' : m[1] === 'image/png' ? 'png' : 'jpg';
+  var name = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd-HHmmss') + '-' + Utilities.getUuid().slice(0, 8) + '.' + ext;
+  var file = lineHubAttachFolder_().createFile(Utilities.newBlob(bytes, m[1], name));
+  return { ok: true, attach_id: file.getId() };
+}
+/** {action:'line_hub_attach_get', store, mgr_key, attach_id} → {ok, mime, data}。
+ *  驗：那家店的值班主管金鑰＋這個附件真的掛在那家店的某筆申請上（不能拿 ID 亂撈別店或別人的檔）。 */
+function handleLineHubAttachGet_(body) {
+  if (lineHubThrottled_('atg', '*all*', 120, 60)) return { ok: false, error: 'too_many' };
+  var code = String(body.store || ''), st = lineHubStores_().filter(function (x) { return String(x.code) === code; })[0];
+  if (!st) return { ok: false, error: 'bad_store' };
+  var ss = code === '' ? getSS() : (st.ss_id ? SpreadsheetApp.openById(st.ss_id) : null);
+  if (!ss) return { ok: false, error: 'bad_store' };
+  var msh = ss.getSheetByName('managers');
+  if (!msh || !findManagerByKey(readSheetAsObjects(msh).rows, body.mgr_key)) return { ok: false, error: 'unauthorized' };
+  var rsh = ss.getSheetByName('requests'), id = String(body.attach_id || '');
+  if (!id || !rsh || !readSheetAsObjects(rsh).rows.some(function (r) { return String(r.attach_id) === id; })) return { ok: false, error: 'not_found' };
+  // 只給附件資料夾裡的檔（審查 #1）：attach_id 是同仁送申請時自己帶的，不檢查的話可以填任何本帳號讀得到的雲端檔 ID
+  var file = DriveApp.getFileById(id), folderId = PropertiesService.getScriptProperties().getProperty('REQ_ATTACH_FOLDER'), inFolder = false;
+  var parents = file.getParents();
+  while (parents.hasNext()) if (parents.next().getId() === folderId) inFolder = true;
+  if (!folderId || !inFolder) return { ok: false, error: 'not_found' };
+  var blob = file.getBlob();
+  return { ok: true, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
+}
+/** 一次性授權（Eason 在光復編輯器執行）：讓附件存得進雲端硬碟。只建／讀資料夾，不動其他檔案。 */
+function reqAuthorizeDrive() {
+  var f = lineHubAttachFolder_();
+  Logger.log('附件資料夾：' + f.getName() + '（' + f.getId() + '）授權完成');
+  return f.getId();
+}
+
+/* 意見回饋（2026-10-09）：同仁打「建議：…」→ 存光復試算表 feedback 分頁（時間、店、工號、姓名、內容），回一張謝謝卡片。 */
+function lineHubFeedback_(userId, text) {
+  var t = String(text || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 300);
+  if (!t) return lineHubNoticeCard_('意見回饋', '請在「建議：」後面寫上你的想法再送出。');
+  var mine = lineHubMine_(userId, null, true), who = mine[0];
+  var ss = getSS(), sh = ss.getSheetByName('feedback');
+  if (!sh) { sh = ss.insertSheet('feedback'); sh.getRange(1, 1, 1, 5).setValues([['ts', 'store', 'emp_id', 'name', 'text']]); }
+  sh.appendRow([nowTaipeiIso(), who ? String(who.st.name) : '', who ? String(who.row.emp_id) : '', who ? String(who.row.name) : '', t]);
+  return lineHubNoticeCard_('收到你的建議', '謝謝！你的建議已經記下來，會轉給負責的主管。', 'ok');
+}

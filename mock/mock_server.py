@@ -2075,6 +2075,12 @@ def store_context(code):
         DATA_FILE, STORE_LAT, STORE_LNG, RADIUS_M = saved
 
 
+# 加班請假／忘打卡申請＋主管 QR（2026-10-09）：本機模擬在 requests_mock.py，與 Requests.gs 同合約
+sys.path.insert(0, BASE_DIR)
+import requests_mock as _requests_mock  # noqa: E402
+_requests_mock.register(globals())
+
+
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",

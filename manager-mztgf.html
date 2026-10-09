@@ -180,6 +180,39 @@
     box-shadow: 0 1px 3px rgba(0,0,0,0.06);
   }
   .pd-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+  /* 加班請假／忘打卡申請（2026-10-09）：沿用待核准裝置的卡片樣式，左框改金黃 */
+  .rq-card { border-left-color: var(--brand-gold); }
+  .rq-item { border-top: 1px dashed #e7ddd8; padding: 10px 0; }
+  .rq-item:first-of-type { border-top: 0; padding-top: 0; }
+  .rq-l1 { display: flex; justify-content: space-between; gap: 8px; font-size: 15px; font-weight: 700; }
+  .rq-kind { font-size: 12px; border-radius: 6px; padding: 1px 7px; margin-right: 4px; font-weight: 700; }
+  .rq-kind.leave { background: #e7eefc; color: #2b4f9a; } .rq-kind.ot { background: #ffe9d6; color: #a14a00; }
+  .rq-kind.miss { background: #efe4fb; color: #6a3a9a; }
+  .rq-l2 { font-size: 13px; color: #6b524a; margin: 4px 0 8px; line-height: 1.6; white-space: pre-line; }
+  .rq-evid { background: #f7f2ef; border-radius: 8px; padding: 7px 9px; font-size: 12px; color: #5a463f; line-height: 1.6; margin: 0 0 8px; white-space: pre-line; }
+  .rq-acts { display: flex; gap: 8px; }
+  .rq-acts button { flex: 1; padding: 9px 0; border-radius: 9px; font-size: 14px; font-weight: 700; cursor: pointer; }
+  .rq-ok { background: var(--brand-red); color: #fff; border: 0; }
+  .rq-no { background: #fff; color: var(--brand-red); border: 1px solid var(--brand-red); }
+  .rq-att { background: #fff; color: #2b4f9a; border: 1px solid #b9c8e8; }
+  .rq-reason { width: 100%; margin: 8px 0; font-size: 15px; padding: 9px 10px; border: 1px solid #d8cfc9; border-radius: 9px; }
+  .rq-msg { font-size: 13px; margin-top: 6px; }
+  .rq-img { max-width: 100%; border-radius: 8px; margin-top: 8px; display: block; }
+  .req-box { background: #e6f7ec; color: #1a5a33; border-radius: 8px; padding: 8px 10px; font-size: 13px; line-height: 1.6; margin: 8px 0; }
+  .req-box.warn { background: #fff6e0; color: #6b4c00; }
+  .req-box button { margin-top: 6px; font-size: 13px; font-weight: 700; padding: 6px 12px; border-radius: 8px; border: 1px solid #a15a00; background: #fff; color: #a15a00; cursor: pointer; }
+  .from-req { font-size: 11px; color: #1a7a3d; background: #e6f7ec; border-radius: 6px; padding: 1px 6px; margin-left: 6px; }
+  /* 打卡 QR（同仁定位抓不到時，主管手機出示）*/
+  .qr-open { width: 100%; margin: 0 0 12px; padding: 11px 0; font-size: 15px; font-weight: 700; border-radius: 12px;
+             border: 1px solid rgba(255,255,255,.6); background: rgba(255,255,255,.12); color: #fff; cursor: pointer; }
+  .qr-overlay { position: fixed; inset: 0; background: rgba(20,10,8,.86); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .qr-overlay[hidden] { display: none; }   /* display:flex 會蓋掉 hidden，不加這行整頁按鈕都按不到（2026-10-09 e2e 抓到）*/
+  .qr-panel { background: #fff; color: var(--brand-black); border-radius: 18px; padding: 18px; width: 100%; max-width: 360px; text-align: center; }
+  .qr-panel h3 { margin: 0 0 4px; font-size: 18px; }
+  .qr-sub { font-size: 13px; color: #6b524a; line-height: 1.6; }
+  #qrBox { margin: 14px auto 8px; width: 260px; height: 260px; display: flex; align-items: center; justify-content: center; }
+  .qr-count { font-size: 13px; color: #8a7a72; }
+  .qr-close { margin-top: 12px; width: 100%; padding: 11px 0; font-size: 15px; font-weight: 700; border-radius: 10px; border: 1px solid #d8cfc9; background: #fff; cursor: pointer; }
   /* 新進同仁區。白底卡片同樣要自己設色（見上方 .pd-card 的註解）*/
   #addEmpCard { color: var(--brand-black); }
   .ae-title { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
@@ -494,6 +527,16 @@
     <p>值班主管核定</p>
   </header>
 
+  <button type="button" class="qr-open" id="btnQr">📱 打卡 QR（同仁定位抓不到時給他掃）</button>
+  <div class="qr-overlay" id="qrOverlay" hidden>
+    <div class="qr-panel">
+      <h3>打卡 QR</h3>
+      <div class="qr-sub">請同仁用 LINE 掃描（LINE 主頁搜尋列旁的掃描圖示，或手機相機），掃完直接按上班／下班。<br>QR 每 30 秒換一次，拍照傳出去也很快失效。</div>
+      <div id="qrBox">產生中…</div>
+      <div class="qr-count" id="qrCount"></div>
+      <button type="button" class="qr-close" id="btnQrClose">關閉</button>
+    </div>
+  </div>
   <div class="date-bar">
     <button type="button" id="btnPrevDay">‹</button>
     <input type="date" id="dateInput">
@@ -506,6 +549,9 @@
 
   <!-- 待核准裝置：只有真的有待核准時才出現，平常完全不佔版面 -->
   <div id="pendingDevices"></div>
+
+  <!-- 加班請假／忘打卡申請（2026-10-09）：只有真的有待審時才出現 -->
+  <div id="pendingRequests"></div>
 
   <div id="loadingCard" class="card center-msg">
     載入中…
@@ -572,6 +618,7 @@
   </div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
 (function () {
   'use strict';
@@ -1509,6 +1556,49 @@
     });
     card.__setExpanded = setExpanded;   // 給「全部展開／收合」用
 
+    /* 已核准的加班請假／忘打卡申請（2026-10-09）：在卡片上顯示，還沒核定就幫主管預填；已核定過不覆蓋，改給一顆「依申請重新填」。
+       預填只是畫面上的值，主管按送出核定才算數（核准申請本身不寫 approved）。 */
+    card.__applyReq = function (reqs) {
+      if (!reqs || !reqs.length || card.__reqApplied) return;
+      card.__reqApplied = true;
+      var box = document.createElement('div');
+      box.className = 'req-box' + (emp.approved ? ' warn' : '');
+      box.textContent = reqs.map(function (r) { return '✓ 已核准的申請：' + r.summary + '（' + r.decided_by + ' 核准）'; }).join('\n');
+      box.style.whiteSpace = 'pre-line';
+      function fill() {
+        reqs.forEach(function (r) {
+          if (r.kind === 'leave') {
+            leaveSelect.value = r.leave_type; syncLeaveHoursEnabled(); leaveHours.value = r.hours;
+            if (!r.start) { periodRows.innerHTML = ''; periodRows.appendChild(buildPeriodRow(null, refreshPeriodUI)); }
+          } else if (r.kind === 'miss') {
+            // 打卡時間照參考時數的規則取整到 15 分（上班進位、下班捨去）；申請填的時間照填（主管看完再改）
+            var r15 = function (hm, up) { if (!hm) return hm; var m = hhmmToMin(hm); m = up ? Math.ceil(m / 15) * 15 : Math.floor(m / 15) * 15; m = m % 1440; return ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2); };
+            var segs = (emp.segments || []).map(function (x) { return { in: r15(x.in, true), out: r15(x.out, false) }; });
+            if (r.miss_type === 'both') segs.push({ in: r.start, out: r.end });
+            else if (r.miss_type === 'out') { var o = segs.filter(function (x) { return x.in && !x.out; }).pop(); if (o) o.out = r.end; else segs.push({ in: null, out: r.end }); }
+            else { var q = segs.filter(function (x) { return x.out && !x.in; })[0]; if (q) q.in = r.start; else segs.push({ in: r.start, out: null }); }
+            var full = segs.filter(function (x) { return x.in && x.out; });
+            if (full.length) {
+              periodRows.innerHTML = '';
+              full.forEach(function (x) { periodRows.appendChild(buildPeriodRow({ start: x.in, end: x.out }, refreshPeriodUI)); });
+              var tag = document.createElement('span'); tag.className = 'from-req'; tag.textContent = '來自申請';
+              periodRows.appendChild(tag);
+            }
+          }
+        });
+        refreshPeriodUI();
+      }
+      var fillable = reqs.some(function (r) { return r.kind !== 'ot'; });
+      if (fillable && emp.approved) {
+        var b = document.createElement('button'); b.type = 'button'; b.textContent = '這天已核定過，依申請重新填';
+        b.addEventListener('click', function () { fill(); b.remove(); box.appendChild(document.createTextNode('\n已依申請填好，確認後按送出核定。')); });
+        box.appendChild(document.createElement('br')); box.appendChild(b);
+      } else if (fillable) {
+        fill();
+      }
+      // ⚠ renderEmployees 會把卡片內容搬進收合用的 head／body，periodRows 已經不是 card 的直接子節點
+      periodRows.parentNode.insertBefore(box, periodRows);
+    };
     return card;
   }
 
@@ -1633,7 +1723,131 @@
     currentDate = dateStr;
     dateInput.value = dateStr;
     renderEmployees(employees);
+    applyDayRequests(dateStr);
   }
+
+  /* ══ 加班請假／忘打卡申請（2026-10-09）══ */
+  var pendingRequestsEl = document.getElementById('pendingRequests');
+  var REQ_KIND_LABEL = { leave: '請假', ot: '加班', miss: '忘打卡' };
+  /** 那天已核准的申請 → 對應同仁卡片預填（不快取：主管剛核准完切回來要看得到）。失敗就安靜略過，不擋核定。 */
+  function applyDayRequests(dateStr) {
+    apiPost({ action: 'mgr_req_day', mgr_key: mgrKey, date: dateStr }, { timeoutMs: BG_LOAD_TIMEOUT_MS }).then(function (res) {
+      if (!res || !res.ok || currentDate !== dateStr) return;
+      Object.keys(res.by_emp || {}).forEach(function (id) {
+        var card = empListEl.querySelector('[data-emp-id="' + CSS.escape(id) + '"]');
+        if (card && card.__applyReq) card.__applyReq(res.by_emp[id]);
+      });
+    }, function () {});
+  }
+  function loadPendingRequests() {
+    bgLoad({ action: 'mgr_req_pending', mgr_key: mgrKey }, function (res) {
+      pendingRequestsEl.innerHTML = '';
+      if (!res.items || !res.items.length) return;
+      var card = document.createElement('div');
+      card.className = 'pd-card rq-card';
+      var t = document.createElement('div'); t.className = 'pd-title';
+      t.textContent = '待審申請 ' + res.items.length + ' 筆（最舊的在上面）';
+      card.appendChild(t);
+      res.items.forEach(function (it) { card.appendChild(buildReqItem(it, card, t)); });
+      pendingRequestsEl.appendChild(card);
+    }, { label: '待審申請', slot: pendingRequestsEl });
+  }
+  function punchEvidence(it) {
+    if (!it.punches) return '';
+    if (!it.punches.length) return '當天打卡紀錄：沒有任何打卡';
+    return '當天打卡紀錄：\n' + it.punches.map(function (p) {
+      var bad = p.status.indexOf('rejected_') === 0;
+      return p.hm + ' ' + (p.type === 'in' ? '上班' : '下班') + (bad ? '（被擋'
+        + (p.status === 'rejected_out_of_range' ? '：離店 ' + p.distance_m + 'm' + (p.accuracy_m != null ? '、定位誤差 ±' + p.accuracy_m + 'm' : '') : '') + '）'
+        : p.status === 'pending_device_approval' ? '（待核准裝置）' : ' ✓');
+    }).join('\n') + (it.kind === 'miss' && it.punches.some(function (p) { return p.status === 'rejected_out_of_range' && p.accuracy_m >= 500; })
+      ? '\n→ 有按但被擋，而且定位誤差很大＝多半是手機定位失準，申請時間合理' : '');
+  }
+  function buildReqItem(it, card, title) {
+    var el = document.createElement('div'); el.className = 'rq-item';
+    var l1 = document.createElement('div'); l1.className = 'rq-l1';
+    var who = document.createElement('span');
+    var k = document.createElement('span'); k.className = 'rq-kind ' + it.kind; k.textContent = REQ_KIND_LABEL[it.kind] || it.kind;
+    who.appendChild(k); who.appendChild(document.createTextNode(it.name));
+    var d = document.createElement('span'); d.textContent = parseInt(it.date.slice(5, 7), 10) + '/' + parseInt(it.date.slice(8, 10), 10);
+    l1.appendChild(who); l1.appendChild(d); el.appendChild(l1);
+    var l2 = document.createElement('div'); l2.className = 'rq-l2';
+    l2.textContent = it.summary + (it.reason ? '\n原因：' + it.reason : '') + '\n送出：' + tsLabel(it.created_at);
+    el.appendChild(l2);
+    var ev = punchEvidence(it);
+    if (ev) { var e = document.createElement('div'); e.className = 'rq-evid'; e.textContent = ev; el.appendChild(e); }
+    var acts = document.createElement('div'); acts.className = 'rq-acts';
+    var ok = document.createElement('button'); ok.type = 'button'; ok.className = 'rq-ok'; ok.textContent = '核准';
+    var no = document.createElement('button'); no.type = 'button'; no.className = 'rq-no'; no.textContent = '退回';
+    acts.appendChild(ok); acts.appendChild(no);
+    if (it.attach_id) {
+      var at = document.createElement('button'); at.type = 'button'; at.className = 'rq-att'; at.textContent = '看附件';
+      at.addEventListener('click', function () {
+        at.disabled = true; at.textContent = '載入中…';
+        fetch(PAYROLL_API, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({ action: 'line_hub_attach_get', store: STORE_CODE, mgr_key: mgrKey, attach_id: it.attach_id }) })
+          .then(function (r) { return r.json(); }).then(function (r) {
+            if (!r || !r.ok) { at.disabled = false; at.textContent = '附件讀不到，再試一次'; return; }
+            at.remove();
+            if (/^image\//.test(r.mime)) { var img = document.createElement('img'); img.className = 'rq-img'; img.src = 'data:' + r.mime + ';base64,' + r.data; el.appendChild(img); }
+            else { var a = document.createElement('a'); a.href = 'data:' + r.mime + ';base64,' + r.data; a.download = 'attachment.pdf'; a.textContent = '下載附件（PDF）'; el.appendChild(a); }
+          }, function () { at.disabled = false; at.textContent = '附件讀不到，再試一次'; });
+      });
+      acts.appendChild(at);
+    }
+    el.appendChild(acts);
+    var reason = null, msg = document.createElement('div'); msg.className = 'rq-msg'; el.appendChild(msg);
+    function decide(decision) {
+      var payload = { action: 'mgr_req_decide', mgr_key: mgrKey, id: it.id, decision: decision };
+      if (decision === 'reject') {
+        if (!reason) {
+          reason = document.createElement('input'); reason.className = 'rq-reason'; reason.maxLength = 100;
+          reason.placeholder = '退回理由（必填，會原文給同仁看）';
+          el.insertBefore(reason, acts); no.textContent = '確定退回'; reason.focus(); return;
+        }
+        if (!reason.value.trim()) { msg.style.color = '#c22a12'; msg.textContent = '請寫退回理由'; return; }
+        payload.reason = reason.value.trim();
+      } else if (!confirm('核准 ' + it.name + '：' + it.summary + '？\n核准後，那天的核定會先幫你填好，你核定那天時確認送出才算數。')) return;
+      ok.disabled = no.disabled = true; msg.style.color = ''; msg.textContent = '送出中…';
+      apiPost(payload).then(function (r) {
+        if (!r || !r.ok) { ok.disabled = no.disabled = false; msg.style.color = '#c22a12'; msg.textContent = '✕ ' + ((r && r.message) || '沒有成功，請再試一次'); return; }
+        el.innerHTML = ''; var done = document.createElement('div'); done.className = 'rq-l2';
+        done.textContent = (decision === 'approve' ? '✓ 已核准：' : '✕ 已退回：') + it.name + ' ' + it.summary;
+        el.appendChild(done);
+        var left = card.querySelectorAll('.rq-acts').length;
+        title.textContent = left ? '待審申請 ' + left + ' 筆（最舊的在上面）' : '待審申請都處理完了';
+        if (decision === 'approve') { delete dayCache[it.date]; if (currentDate === it.date) loadDay(it.date); }
+      }, function () { ok.disabled = no.disabled = false; msg.style.color = '#c22a12'; msg.textContent = '✕ 連線失敗，請再試一次'; });
+    }
+    ok.addEventListener('click', function () { decide('approve'); });
+    no.addEventListener('click', function () { decide('reject'); });
+    return el;
+  }
+
+  /* 打卡 QR：主管手機出示、每 30 秒換一次（後端 mgr_qr_token 簽章）。同仁 LINE 掃描 → 打卡頁不需定位直接打這家店。 */
+  var QR_LIFF = 'https://liff.line.me/2011292256-QFXEwFh4';
+  var qrTimer = null, qrTick = null;
+  function qrShowToken() {
+    apiPost({ action: 'mgr_qr_token', mgr_key: mgrKey, store: STORE_CODE || 'gk' }, { timeoutMs: BG_LOAD_TIMEOUT_MS }).then(function (r) {
+      var box = document.getElementById('qrBox');
+      if (!r || !r.ok) { box.textContent = '產生失敗，' + (r && r.error === 'unauthorized' ? '主管金鑰無效' : '5 秒後重試'); qrTimer = setTimeout(qrShowToken, 5000); return; }
+      box.innerHTML = '';
+      var url = QR_LIFF + '?qr=' + encodeURIComponent(r.token);
+      box.dataset.url = url;
+      if (window.QRCode) new QRCode(box, { text: url, width: 250, height: 250, correctLevel: QRCode.CorrectLevel.M });
+      else box.textContent = url;
+      var until = Date.now() + r.expires_in;
+      clearInterval(qrTick);
+      qrTick = setInterval(function () { document.getElementById('qrCount').textContent = r.manager + ' 出示・' + Math.max(0, Math.ceil((until - Date.now()) / 1000)) + ' 秒後換新'; }, 500);
+      qrTimer = setTimeout(qrShowToken, r.expires_in + 300);
+    }, function () { qrTimer = setTimeout(qrShowToken, 5000); });
+  }
+  document.getElementById('btnQr').addEventListener('click', function () {
+    document.getElementById('qrOverlay').hidden = false; document.getElementById('qrBox').textContent = '產生中…'; qrShowToken();
+  });
+  document.getElementById('btnQrClose').addEventListener('click', function () {
+    document.getElementById('qrOverlay').hidden = true; clearTimeout(qrTimer); clearInterval(qrTick);
+  });
 
   /**
    * 本月待核定提醒（2026-09-18 新增）：列出本月「有上班但主管還沒核定」的日期與同仁，
@@ -2316,6 +2530,7 @@
     loadLeaveOptions().then(function () { loadDay(null); });
     loadPendingDevices(); // 與當日核定並行載入，失敗不影響主要功能
     loadPendingApprovals(); // 本月待核定提醒，同樣並行載入、失敗不影響主要功能
+    loadPendingRequests(); // 加班請假／忘打卡待審申請，同樣並行載入、失敗不影響主要功能
   }
 
   init();

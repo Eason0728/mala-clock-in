@@ -268,9 +268,12 @@ function liffGuardReject_(g, type) {
    算數＝非 rejected_*（同 lastCountedEvent，pending 也算）。events 不必含這次這筆：只看 ts 之前的卡。 */
 var LIFF_MISSED_DAYS = 7;
 var LIFF_MISSED_PAIR_HOURS = 16;
-function liffMissedNote_(events, empId, type, ts) {
+function liffMissedNote_(events, empId, type, ts) { return liffMissedDetail_(events, empId, type, ts).text; }
+/** 同 liffMissedNote_，另外回漏的是哪天哪張卡（打卡畫面的「申請補登」按鈕用）：{text, date, miss_type}；沒漏 text＝''。 */
+function liffMissedDetail_(events, empId, type, ts) {
+  var none = { text: '', date: '', miss_type: '' };
   var nowMs = new Date(String(ts)).getTime();
-  if (isNaN(nowMs) || (type !== 'in' && type !== 'out')) return '';
+  if (isNaN(nowMs) || (type !== 'in' && type !== 'out')) return none;
   var span = (type === 'in' ? LIFF_MISSED_DAYS * 24 : LIFF_MISSED_PAIR_HOURS) * 3600000;
   var mine = [];
   events.forEach(function (e) {
@@ -288,15 +291,15 @@ function liffMissedNote_(events, empId, type, ts) {
     return e.type === other && e.status === 'rejected_out_of_range' && (!prev || e.t > prev.t);
   });
   if (type === 'in') {
-    if (!prev || prev.type !== 'in') return '';
-    return failedOther
+    if (!prev || prev.type !== 'in') return none;
+    return { date: prev.ts.slice(0, 10), miss_type: 'out', text: failedOther
       ? '你 ' + md(prev.ts) + ' ' + liffHm_(prev.ts) + ' 上班後的下班卡沒有打成功（不在範圍內），請跟主管說實際下班時間'
-      : '你 ' + md(prev.ts) + ' ' + liffHm_(prev.ts) + ' 上班後沒有打下班卡，請跟主管說實際下班時間';
+      : '你 ' + md(prev.ts) + ' ' + liffHm_(prev.ts) + ' 上班後沒有打下班卡，請跟主管說實際下班時間' };
   }
-  if (prev && prev.type === 'in') return '';
-  return failedOther
+  if (prev && prev.type === 'in') return none;
+  return { date: String(ts).slice(0, 10), miss_type: 'in', text: failedOther
     ? '你這次的上班卡沒有打成功（不在範圍內），請跟主管說實際上班時間'
-    : '你這次沒有打上班卡，請跟主管說實際上班時間';
+    : '你這次沒有打上班卡，請跟主管說實際上班時間' };
 }
 
 /* 打卡成功問候語（2026-10-08 Eason 指定）：依伺服器打卡時間分早安／午安／晚上，上下班各三時段各三句。
@@ -409,12 +412,23 @@ function liffPunchFor_(userId, me, ss, type, body) {
   var events = liffEvents_(ss);
   var stop = liffGuardReject_(liffGuard_(events, me.emp_id), type);
   if (stop) return { ok: false, type: type, reason: stop.reason, hint: stop.hint };
-  var j = handleClock({ key: me.key, type: type, lat: body.lat, lng: body.lng,
-                        accuracy: body.accuracy === undefined ? null : body.accuracy,
+  // 主管手機出示的動態 QR（2026-10-09，定位抓不準的備案）：驗過就用店家座標打卡，另記一列 qr_punch（誰出示的）
+  var qr = null, lat = body.lat, lng = body.lng, acc = body.accuracy === undefined ? null : body.accuracy;
+  if (body.qr) {
+    qr = reqQrVerify_(body.qr);
+    if (!qr.ok) return { ok: false, type: type, status: 'qr_invalid', reason: qr.reason, hint: '請值班主管在核定頁按「打卡 QR」重新顯示' };
+    lat = CONFIG.STORE_LAT; lng = CONFIG.STORE_LNG; acc = 0;
+  }
+  var j = handleClock({ key: me.key, type: type, lat: lat, lng: lng, accuracy: acc,
                         device_id: me.device_id ? String(me.device_id) : 'line:' + userId });
   // 忘打卡提醒用打卡前讀的那份 events（只看這次之前的卡），不多讀一次表
-  if (j && j.ok && j.status === 'ok') return { ok: true, type: type, ts: j.ts, greeting: liffGreeting_(type, j.ts),
-                                               missed: liffMissedNote_(events, me.emp_id, type, j.ts) };
+  if (j && j.ok && j.status === 'ok') {
+    if (qr) reqQrLog_(ss, j.ts, me.emp_id, type, qr.mgr);
+    var md = liffMissedDetail_(events, me.emp_id, type, j.ts), notes = [];
+    try { notes = reqUnseenNotes_(ss, me.emp_id); } catch (e) { notes = []; }   // 申請結果告知壞了不能讓打卡失敗
+    return { ok: true, type: type, ts: j.ts, greeting: liffGreeting_(type, j.ts), missed: md.text,
+             missed_date: md.date, missed_type: md.miss_type, req_notes: notes, via_qr: !!qr };
+  }
   var st = j && (j.status || j.error);
   var rr = LIFF_PUNCH_REASONS_[st] || ['系統回覆：' + (st || '未知'), '請告知主管'];
   return { ok: false, type: type, status: st || '', reason: rr[0], hint: rr[1] };
@@ -457,6 +471,14 @@ var LIFF_HANDLERS = {
   liff_status: handleLiffStatus_,
   liff_punch: handleLiffPunch_,
   export_tables: handleExportTables_,
+  // 加班請假／忘打卡申請＋主管 QR（Requests.gs）。包一層函式：檔案載入順序不保證 Requests.js 在前
+  req_info: function (b) { return handleReqInfo_(b); },
+  req_submit: function (b) { return handleReqSubmit_(b); },
+  req_cancel: function (b) { return handleReqCancel_(b); },
+  mgr_req_pending: function (b) { return handleMgrReqPending_(b); },
+  mgr_req_decide: function (b) { return handleMgrReqDecide_(b); },
+  mgr_req_day: function (b) { return handleMgrReqDay_(b); },
+  mgr_qr_token: function (b) { return handleMgrQrToken_(b); },
 };
 
 /**

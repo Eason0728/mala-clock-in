@@ -46,11 +46,43 @@
            background: #fff; color: var(--in); }
   .primary:disabled { opacity: .5; }
   [hidden] { display: none !important; }
+  .qr-banner { margin-top: 10px; background: #eef5f2; color: var(--in); border-radius: 10px; padding: 8px 10px; font-size: 13px; text-align: center; }
+  /* 加班請假／忘打卡申請頁（req-line.js，2026-10-09）*/
+  .rq-head { font-size: 16px; margin-bottom: 10px; display: flex; gap: 8px; align-items: center; }
+  .rq-store, .rq-special, .rq-date { padding: 8px; font-size: 15px; border: 1px solid var(--line); border-radius: 8px; background: #fff; max-width: 100%; }
+  .rq-tabs { display: flex; background: #e6eeeb; border-radius: 10px; padding: 3px; margin-bottom: 12px; }
+  .rq-tabs button { flex: 1; border: 0; background: transparent; padding: 9px 0; font-size: 14px; border-radius: 8px; color: var(--muted); }
+  .rq-tabs button.on { background: #fff; color: var(--in); font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .rq-fld { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
+  .rq-fld > label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .rq-fld input[type=date], .rq-fld input[type=time], .rq-fld input[type=text], .rq-fld input[type=number] { margin-top: 0; padding: 9px; font-size: 16px; }
+  .rq-fld input[type=time] { width: auto; }
+  .rq-hours { width: 90px !important; }
+  .rq-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .rq-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .rq-chip { border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; font-size: 14px; background: #fff; color: var(--ink); }
+  .rq-chip.on { border-color: var(--in); background: #eef5f2; color: var(--in); font-weight: 700; }
+  .rq-special { margin-top: 8px; width: 100%; }
+  .rq-quota { font-size: 12px; color: var(--ok); margin-top: 6px; }
+  .rq-muted { color: var(--muted); font-size: 13px; }
+  .rq-note { color: var(--muted); font-size: 12px; text-align: center; margin-top: 8px; line-height: 1.6; }
+  .rq-rec { font-size: 13px; color: var(--muted); margin: -2px 2px 10px; }
+  .rq-fixed { font-size: 15px; }
+  .rq-box { border-radius: 10px; padding: 10px 12px; font-size: 14px; line-height: 1.6; margin: 8px 0; white-space: pre-line; }
+  .rq-box.err { background: #fdeceb; color: var(--err); } .rq-box.ok { background: #e6f7ec; color: #1a5a33; }
+  .rq-item { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 8px; }
+  .rq-t { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
+  .rq-s { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.6; }
+  .rq-pill { font-size: 12px; border-radius: 999px; padding: 2px 9px; font-weight: 600; white-space: nowrap; }
+  .rq-pill.wait { background: #fff6e0; color: #8a6100; } .rq-pill.ok { background: #e6f7ec; color: #1a7a3d; }
+  .rq-pill.no { background: #fdeceb; color: var(--err); } .rq-pill.off { background: #eef0ef; color: #6b7a75; }
+  .rq-link { border: 0; background: transparent; color: #2b6cb0; padding: 4px 0 0; font-size: 13px; }
+  .rq-empty, .rq-loading { text-align: center; color: var(--muted); padding: 24px 0; }
 </style>
 </head>
 <body>
 <main>
-  <div class="card">
+  <div class="card" id="punchCard">
     <div class="date" id="date">—</div>
     <div class="clock" id="clock">--:--</div>
     <div id="map"></div>
@@ -74,17 +106,29 @@
     <div class="hint" id="hint"></div>
     <button class="ghost" id="btnRetry" type="button" hidden>重新定位</button>
     <button class="ghost" id="btnHelp" type="button" hidden>看排除步驟</button>
+    <button class="ghost" id="btnMissReq" type="button" hidden>申請補登</button>
+    <div class="qr-banner" id="qrBanner" hidden>用值班主管出示的 QR 打卡（不需要定位）</div>
   </div>
+  <div class="card" id="reqView" hidden></div>
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="clock-line-core.js"></script>
+<script src="req-line.js"></script>
 <script>
 (function () {
   'use strict';
   var LIFF_ID = '2011292256-QFXEwFh4';
   var HUB_API = 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
   function qs(n) { return new URLSearchParams(location.search).get(n); }
+  /** 網址參數；從 liff.line.me/…?x=y 開進來時參數可能還包在 liff.state 裡（LIFF 轉址前），一併看。 */
+  function param(n) {
+    var v = qs(n);
+    if (v !== null) return v;
+    var st = qs('liff.state');
+    if (!st) return null;
+    try { return new URLSearchParams(st.replace(/^[^?]*\?/, '')).get(n); } catch (e) { return null; }
+  }
   var isLocalHost = ['localhost', '127.0.0.1'].indexOf(location.hostname) !== -1;
   if (isLocalHost && qs('api')) HUB_API = qs('api');
   /* STORES:BEGIN（tools/build-line-page.py 產生，勿手改）*/
@@ -300,10 +344,13 @@
   function tooMany() { say('按太多次了', 'warn', '請等一分鐘後再試；先按選單「出勤紀錄」確認有沒有打到。'); $('btnRetry').hidden = false; }
   function loadStatus() {
     say('讀取中…', '', '');
+    if (qrToken) return loadStatusFor(curStore);
     var pick = ClockLineCore.pickStore(fixForPick(), STORES);
     if (pick.status !== 'ok') { curStore = null; render(pickFail(pick)); return Promise.resolve(); }
-    var st = pick.store;
-    curStore = st;
+    curStore = pick.store;
+    return loadStatusFor(pick.store);
+  }
+  function loadStatusFor(st) {
     return readRetry(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() })
       .then(function (r) {
         if (r && r.ok && r.status === 'ready') {
@@ -311,6 +358,7 @@
           render(r); return;
         }
         if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+        if (r && r.error === 'not_bound' && qrToken) { say('你還沒在這家店綁定打卡', 'warn', '第一次要在店裡用定位綁定：關掉這頁，從選單按「打卡」。'); return; }
         if (r && r.error === 'not_bound') return loadViaHub();   // 綁定（輸入全名、跨店同名確認）仍由光復處理
         if (r && r.error === 'too_many') { tooMany(); return; }
         if (r && r.error === 'line_identity_conflict') { say('你的 LINE 帳號在這家店對到兩位同仁', 'warn', '請告知主管處理。'); return; }
@@ -337,8 +385,8 @@
     var label = type === 'in' ? '上班' : '下班';
     var hasIn = (status.today || []).some(function (e) { return e.type === 'in' && (e.status === 'ok' || e.status === 'pending_device_approval'); });
     if (type === 'out' && !status.guard.last && !hasIn && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
-    // 送出前用最新定位再挑一次店：位置變了就重讀，不把卡打到畫面上沒顯示的那家店
-    var pick = ClockLineCore.pickStore(fixForPick(), STORES);
+    // 送出前用最新定位再挑一次店：位置變了就重讀，不把卡打到畫面上沒顯示的那家店（QR 打卡不看定位）
+    var pick = qrToken ? { status: 'ok', store: curStore } : ClockLineCore.pickStore(fixForPick(), STORES);
     if (pick.status !== 'ok' || !curStore || pick.store.code !== curStore.code) {
       status = null; refreshButtons();
       return loadStatus().then(function () { if (status && status.status === 'ready') say('你的位置變了，請確認店家後再按一次', 'warn'); });
@@ -347,7 +395,7 @@
     var before = countToday(status, type);   // 結果不明時回頭確認用：比「今天這型的卡有沒有多一張」，不比時鐘（clock.html 2026-09-21 同一招）
     busy = true; refreshButtons();
     say('送出' + label + '打卡中…', '', '大約需要幾秒，請不要關閉');
-    post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, fixPayload()))
+    post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, qrToken ? { qr: qrToken } : fixPayload()))
       .then(function (r) {
         if (r && r.error === 'invalid_id_token') { say('LINE 登入逾時，正在重新登入…', 'warn', '登入後請再按一次。'); liff.login(); return; }
         if (r && r.error === 'not_bound') { mismatch(); return; }   // 開頁時已確認綁著，打卡時卻說沒綁＝資料對不上
@@ -357,19 +405,24 @@
         }
         var hm = String(r.ts || '').slice(11, 16);
         if (r.ok) {
-          var shown = label + '打卡成功 ' + hm + '\n地點：' + st.name + (r.missed ? '\n\n⚠️ ' + r.missed : '') + (r.greeting ? '\n\n' + r.greeting : '');
+          var notes = (r.req_notes || []).join('\n');
+          var shown = label + '打卡成功 ' + hm + '\n地點：' + st.name + (r.via_qr ? '（主管 QR）' : '') + (r.missed ? '\n\n⚠️ ' + r.missed : '')
+            + (notes ? '\n\n' + notes : '') + (r.greeting ? '\n\n' + r.greeting : '');
           // 就地鎖鍵（同網頁版 updateButtonStates({type, ts})）：同型不能再按、另一型 10 分鐘鎖（審查 M1）
           var nowSrv = Date.now() + clockSkew;
           status.guard = { blocked: type, lock: {}, last: { type: type, hm: hm }, now: nowSrv };
           status.guard.lock[type === 'in' ? 'out' : 'in'] = nowSrv + 10 * 60000;
           status.today = (status.today || []).concat([{ type: type, hm: hm, status: 'ok' }]);
           render(status); say(shown, 'ok');
-          return sendToChat().then(function (closing) { if (closing) keepBusy = true; });
+          // 有漏卡：多一顆「申請補登」直接開申請頁，畫面不自動關（要讓同仁按得到）
+          if (r.missed_date) { missReq = { date: r.missed_date, miss: r.missed_type }; $('btnMissReq').hidden = false; }
+          return sendToChat(!!(r.missed_date || notes)).then(function (closing) { if (closing) keepBusy = true; });
         }
         var failText = label + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
         // 失敗：重讀狀態；重讀也失敗就維持鍵停用（不拿舊狀態重新亮鍵），訊息保留（審查 L4）
         status = null; refreshButtons();
         var hk = { rejected_out_of_range: '定位不準', pending_device_approval: '新手機' }[r.status] || null;
+        if (r.status === 'qr_invalid') { say(failText, 'warn'); return; }   // QR 過期：不重讀，請主管重新顯示再掃
         return loadStatus().then(function () { say(failText, 'warn'); offerHelp(hk); });
       }, function () { return confirmPunch(type, st, before); })
       .then(function () { if (!keepBusy) { busy = false; refreshButtons(); } });
@@ -399,11 +452,18 @@
   }
   var keepBusy = false;   // 已送進聊天室、畫面即將關閉：不要再把鍵解開
   /** 代同仁在聊天室送出「打卡」→ 機器人回覆結果 → 關閉。沒有 chat_message.write 或不在 LINE 裡：結果留在畫面上。 */
-  function sendToChat() {   // 回傳 Promise<是否即將關閉>
+  function sendToChat(stayOpen) {   // 回傳 Promise<是否即將關閉>；stayOpen＝畫面上還有要同仁看或按的東西，不自動關
     if (!liff.isInClient || !liff.isInClient() || !liff.sendMessages) return Promise.resolve(false);
     return liff.sendMessages([{ type: 'text', text: '打卡' }])
-      .then(function () { setTimeout(function () { liff.closeWindow(); }, 1500); return true; }, function () { return false; });
+      .then(function () { if (stayOpen) return false; setTimeout(function () { liff.closeWindow(); }, 1500); return true; }, function () { return false; });
   }
+  var missReq = null;
+  function showReq(opts) {
+    $('punchCard').hidden = true;
+    if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
+    window.ReqLine.open(opts);
+  }
+  $('btnMissReq').addEventListener('click', function () { showReq({ tab: 'miss', date: missReq.date, miss: missReq.miss }); });
 
   /* ── 第一次使用：輸入全名綁定 ── */
   function showBind(storeName, suggest) {
@@ -446,10 +506,27 @@
       });
   }
 
+  /* QR 打卡（2026-10-09）：值班主管在核定頁出示動態 QR，同仁用 LINE 掃描開到這頁（?qr=…）→ 不定位，直接打那家店。
+     QR 字串第一段是店碼（光復＝gk），後端驗簽章與時效（90 秒）。 */
+  var qrToken = null;
+  function startQr(tok) {
+    var tag = String(tok).split('~')[0], code = tag === 'gk' ? '' : tag;
+    var st = STORES.filter(function (x) { return x.code === code; })[0];
+    if (!st) { say('看不懂這個 QR 碼', 'warn', '請值班主管在核定頁按「打卡 QR」重新顯示。'); return; }
+    qrToken = String(tok); curStore = st;
+    $('qrBanner').hidden = false;
+    showStore(st);
+    say('讀取中…', '', '');
+    loadStatus();
+  }
+  window.ClockLineEnv = { post: post, readRetry: readRetry, storeApi: storeApi, STORES: STORES, HUB_API: HUB_API };
+
   tick(); setInterval(tick, 1000);
-  initMap();
   initLiff().then(function (ok) {
-    if (!ok) { say('請從 LINE 官方帳號「鼎兆元打卡」的選單打開這一頁。', 'warn'); return; }
+    if (!ok) { initMap(); say('請從 LINE 官方帳號「鼎兆元打卡」的選單打開這一頁。', 'warn'); return; }
+    if (param('view') === 'req') { showReq({ tab: param('tab'), date: param('date'), miss: param('miss') }); return; }
+    initMap();
+    if (param('qr')) { startQr(param('qr')); return; }
     start();
   });
 })();
