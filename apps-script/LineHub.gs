@@ -665,6 +665,9 @@ function lineHubCard_(spec) {
     // 按鈕用標準高度、按鈕之間留 12px（2026-10-09 Eason：每一格大一點避免誤按）
     card.contents.footer = { type: 'box', layout: 'vertical', spacing: 'lg', paddingAll: '14px',
       contents: spec.buttons.map(function (b) {
+        // b.uri＝開網頁（佈告欄）；其餘是 message action
+        if (b.uri) return { type: 'button', style: 'primary', color: '#1F4E8C', height: 'md',
+                            action: { type: 'uri', label: lineHubTxt_(b.label).slice(0, 20), uri: String(b.uri) } };
         return { type: 'button', style: 'secondary', height: 'md',
                  action: { type: 'message', label: lineHubTxt_(b.label).slice(0, 20), text: lineHubTxt_(b.text).slice(0, 300) } };
       }) };
@@ -886,12 +889,24 @@ function lineHubHelpCard_(key) {
     buttons: [{ label: '其他狀況', text: '打卡求助' }] });
 }
 
+/** 電子佈告欄入口。選單「佈告欄」若仍是傳文字，機器人回這張卡片給連結（2026-10-09 選單改版）。 */
+var LINE_HUB_BULLETIN_URL = 'https://dzy-bulletin.github.io/';
+function lineHubBulletinCard_() {
+  return lineHubCard_({ title: '📌 電子佈告欄', tone: 'info', alt: '電子佈告欄',
+    blocks: [{ type: 'text', text: '公司公告都在這裡，看完要手寫簽名確認已讀。' }],
+    buttons: [{ label: '打開佈告欄', uri: LINE_HUB_BULLETIN_URL }] });
+}
+
+// 2026-10-09 選單改版（打卡／出勤紀錄／出勤班表／加班請假／薪資明細／佈告欄）；舊選單的字句仍保留可打字查
 var LINE_HUB_TEXT_COMMANDS = {
   '出勤紀錄': lineHubAttendanceCard_,
   '薪資明細': lineHubPayCard_,
   '假別額度': lineHubLeaveCard_,
   '加班申請': function () { return lineHubNoticeCard_('加班申請', '加班申請功能還在準備中，目前請先找店長辦理。'); },
   '請假申請': function () { return lineHubNoticeCard_('請假申請', '請假申請功能還在準備中，目前請先找店長辦理。'); },
+  '加班請假': function () { return lineHubNoticeCard_('加班請假', '加班／請假申請功能還在準備中，目前請先找店長辦理。\n想看假別剩餘，可以直接打「假別額度」。'); },
+  '出勤班表': function () { return lineHubNoticeCard_('出勤班表', '出勤班表功能還在準備中，目前請看店內公告的班表。'); },
+  '佈告欄': lineHubBulletinCard_,
 };
 
 /** LINE webhook（Code.gs doPost 看到 body.events 就轉來這裡）。 */
