@@ -23,7 +23,8 @@
     'cf': { icon: 'assets/icon-180-mzt.png', home: '央廚打卡' },
     'hq': { icon: 'assets/icon-180-mzt.png', home: '總部打卡' },
     'mztjs': { icon: 'assets/icon-180-mzt.png', home: '金山打卡' },
-    'mztgf': { icon: 'assets/icon-180-mzt.png', home: '光復打卡' }
+    'mztgf': { icon: 'assets/icon-180-mzt.png', home: '光復打卡' },
+    'mztlzl': { icon: 'assets/icon-180-mzt.png', home: '六張犁打卡' }
   };
   var s = String(new URLSearchParams(location.search).get('s') || '').toLowerCase();
   var b = MAP[s];
@@ -447,7 +448,8 @@
     'cf': 'https://script.google.com/macros/s/AKfycby-IzOBTrUK-usZxEUVRAcvPqagfAbHpvLevIWnk6drBpIuHwh1IlEun4bdsS9o-CIB/exec',   // 鼎兆元 中央廚房（台中太平）
     'hq': 'https://script.google.com/macros/s/AKfycbyiocazNgn9M249CCkPzJsRvMJ35uh_Wjp_ju1y1sB2TZ_IWH3RD6pKUsHXsUJR-4N9TQ/exec',   // 鼎兆元 總部（座標暫用央廚）
     'mztjs': 'https://script.google.com/macros/s/AKfycby6Nv7aCGUDsxKA3dwPIYluxk76JaWKp-wqwCCvnE6knthefzGNR8Jyw3uRWds-PwOv/exec',   // 墨竹亭 金山店（2026-09-08 開）
-    'mztgf': 'https://script.google.com/macros/s/AKfycbyGH4ktFmXON443Naibe84rEKeqprkOJO0t7eU4UukTvqLWsfu541x7scHKLvntV6okFw/exec'    // 墨竹亭 光復店（2026-09-30 開）
+    'mztgf': 'https://script.google.com/macros/s/AKfycbyGH4ktFmXON443Naibe84rEKeqprkOJO0t7eU4UukTvqLWsfu541x7scHKLvntV6okFw/exec',   // 墨竹亭 光復店（2026-09-30 開）
+    'mztlzl': 'https://script.google.com/macros/s/AKfycby7AwHFGZMckF84gtFVUklcV8nFkVqdyK69Yz2-g6p83VEX4WpDutZFTxFfbGQ2-On24Q/exec'    // 墨竹亭 台北六張犁店（2026-10-09 開）
   };
   var STORE_CODE = 'cf';   // 由 tools/build-store-pages.py 產生，勿手改
   var API_URL = STORE_APIS[STORE_CODE];
@@ -461,7 +463,9 @@
     'mztjs': { title: '墨竹亭 金山店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 金山店',
             icon: 'assets/icon-180-mzt.png', home: '金山打卡' },
     'mztgf': { title: '墨竹亭 光復店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 光復店',
-            icon: 'assets/icon-180-mzt.png', home: '光復打卡' }
+            icon: 'assets/icon-180-mzt.png', home: '光復打卡' },
+    'mztlzl': { title: '墨竹亭 六張犁店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 六張犁店',
+            icon: 'assets/icon-180-mzt.png', home: '六張犁打卡' }
   };
   (function () {
     var b = STORE_BRAND[STORE_CODE];

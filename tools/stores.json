@@ -30,6 +30,16 @@
     "radius_m": 50
   },
   {
+    "code": "mztlzl",
+    "name": "墨竹亭 台北六張犁",
+    "page": "clock-mztlzl.html",
+    "gas_dir": "mztlzl-clock-in",
+    "api": "https://script.google.com/macros/s/AKfycby7AwHFGZMckF84gtFVUklcV8nFkVqdyK69Yz2-g6p83VEX4WpDutZFTxFfbGQ2-On24Q/exec",
+    "lat": 25.022272780810678,
+    "lng": 121.55487005744799,
+    "radius_m": 50
+  },
+  {
     "code": "hq",
     "name": "鼎兆元 總部",
     "page": "clock-hq.html",

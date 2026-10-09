@@ -20,7 +20,8 @@
     'cf': { icon: 'assets/icon-180-mzt-manager.png', home: '央廚值班' },
     'hq': { icon: 'assets/icon-180-mzt-manager.png', home: '總部值班' },
     'mztjs': { icon: 'assets/icon-180-mzt-manager.png', home: '金山值班' },
-    'mztgf': { icon: 'assets/icon-180-mzt-manager.png', home: '光復值班' }
+    'mztgf': { icon: 'assets/icon-180-mzt-manager.png', home: '光復值班' },
+    'mztlzl': { icon: 'assets/icon-180-mzt-manager.png', home: '六張犁值班' }
   };
   var s = String(new URLSearchParams(location.search).get('s') || '').toLowerCase();
   var b = MAP[s];
@@ -592,7 +593,8 @@
     'cf': 'https://script.google.com/macros/s/AKfycby-IzOBTrUK-usZxEUVRAcvPqagfAbHpvLevIWnk6drBpIuHwh1IlEun4bdsS9o-CIB/exec',   // 鼎兆元 中央廚房（台中太平）
     'hq': 'https://script.google.com/macros/s/AKfycbyiocazNgn9M249CCkPzJsRvMJ35uh_Wjp_ju1y1sB2TZ_IWH3RD6pKUsHXsUJR-4N9TQ/exec',   // 鼎兆元 總部（座標暫用央廚）
     'mztjs': 'https://script.google.com/macros/s/AKfycby6Nv7aCGUDsxKA3dwPIYluxk76JaWKp-wqwCCvnE6knthefzGNR8Jyw3uRWds-PwOv/exec',   // 墨竹亭 金山店（2026-09-08 開）
-    'mztgf': 'https://script.google.com/macros/s/AKfycbyGH4ktFmXON443Naibe84rEKeqprkOJO0t7eU4UukTvqLWsfu541x7scHKLvntV6okFw/exec'    // 墨竹亭 光復店（2026-09-30 開）
+    'mztgf': 'https://script.google.com/macros/s/AKfycbyGH4ktFmXON443Naibe84rEKeqprkOJO0t7eU4UukTvqLWsfu541x7scHKLvntV6okFw/exec',   // 墨竹亭 光復店（2026-09-30 開）
+    'mztlzl': 'https://script.google.com/macros/s/AKfycby7AwHFGZMckF84gtFVUklcV8nFkVqdyK69Yz2-g6p83VEX4WpDutZFTxFfbGQ2-On24Q/exec'    // 墨竹亭 台北六張犁店（2026-10-09 開）
   };
   var STORE_CODE = 'hq';   // 由 tools/build-store-pages.py 產生，勿手改
   var API_URL = STORE_APIS[STORE_CODE];
@@ -642,10 +644,10 @@
   // 後端拿到的假別表；拿不到時退回這份內建清單（值班核定不能因為薪酬後端掛掉就不能用）
   var LEAVE_FALLBACK = ['病假', '事假', '特休假', '生理假', '家庭照顧假', '天災假', '喪假', '婚假'];
   var LEAVE_OPTS = null;   // { types:[...], quotas:{emp_id:{code:{...}}}, day_hours:n }
-  // ⚠ 本頁的門市代碼是小寫（''／'cf'／'hq'／'mztjs'／'mztgf'，跟 STORE_APIS 一致），
+  // ⚠ 本頁的門市代碼是小寫（''／'cf'／'hq'／'mztjs'／'mztgf'／'mztlzl'，跟 STORE_APIS 一致），
   //    薪酬系統的門市代碼是大寫（SSLGF／CF／HQ）且比對「完全相等」——不轉換會查不到門市，
   //    症狀是央廚／總部的假別下拉靜靜退回內建 8 種、額度也不會顯示。
-  var PAYROLL_STORE_MAP = { '': 'SSLGF', 'cf': 'CF', 'hq': 'HQ', 'mztjs': 'MZTJS', 'mztgf': 'MZTGF' };
+  var PAYROLL_STORE_MAP = { '': 'SSLGF', 'cf': 'CF', 'hq': 'HQ', 'mztjs': 'MZTJS', 'mztgf': 'MZTGF', 'mztlzl': 'MZTLZL' };
   function payrollStoreCode() { return PAYROLL_STORE_MAP[STORE_CODE] || 'SSLGF'; }
 
   /** 開頁時抓一次假別清單與各人剩餘額度。失敗不擋人——退回內建清單、只是沒有額度提示。 */
@@ -695,7 +697,9 @@
     'mztjs': { title: '墨竹亭 金山店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 金山店',
             icon: 'assets/icon-180-mzt-manager.png', home: '金山值班' },
     'mztgf': { title: '墨竹亭 光復店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 光復店',
-            icon: 'assets/icon-180-mzt-manager.png', home: '光復值班' }
+            icon: 'assets/icon-180-mzt-manager.png', home: '光復值班' },
+    'mztlzl': { title: '墨竹亭 六張犁店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 六張犁店',
+            icon: 'assets/icon-180-mzt-manager.png', home: '六張犁值班' }
   };
   (function () {
     var b = STORE_BRAND[STORE_CODE];

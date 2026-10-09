@@ -11,6 +11,7 @@ var LINE_HUB_STORES_CONFIG = [
   { code: '',      name: '小辛辣 新竹光復', ss_id: '',                        api: 'PASTE_光復後端網址',       lat: 0, lng: 0, radius_m: 20 },
   { code: 'mztjs', name: '墨竹亭 新竹金山', ss_id: 'PASTE_金山打卡試算表ID', api: 'PASTE_金山後端網址',       lat: 0, lng: 0, radius_m: 50 },
   { code: 'mztgf', name: '墨竹亭 新竹光復', ss_id: 'PASTE_墨竹亭光復試算表ID', api: 'PASTE_墨竹亭光復後端網址', lat: 0, lng: 0, radius_m: 50 },
+  { code: 'mztlzl', name: '墨竹亭 台北六張犁', ss_id: 'PASTE_墨竹亭六張犁試算表ID', api: 'PASTE_墨竹亭六張犁後端網址', lat: 0, lng: 0, radius_m: 50 },
   { code: 'hq',    name: '鼎兆元 總部',     ss_id: 'PASTE_總部試算表ID',     api: 'PASTE_總部後端網址',       lat: 0, lng: 0, radius_m: 50 },
   { code: 'cf',    name: '鼎兆元 中央廚房', ss_id: 'PASTE_央廚試算表ID',     api: 'PASTE_央廚後端網址',       lat: 0, lng: 0, radius_m: 50 },
 ];
