@@ -522,3 +522,31 @@ function reqOtHint_(events, empId, outTs, rows) {
   var start = ('0' + Math.floor(startMin / 60)).slice(-2) + ':' + ('0' + (startMin % 60)).slice(-2);
   return { date: date, hours: hours, start: start, end: end };
 }
+
+/* ── 本月待核定提醒：補上「已核准的申請、那天還沒核定」（2026-10-10 Codex 審查）──
+   原本 mgr_pending_approvals 只看有打卡的日子；整天請假／整天出差核准後當天沒有卡，主管不核定那天就不會進薪資，也不會被提醒。
+   包在 Code.gs handleMgrPendingApprovals 外面（LIFF_HANDLERS 會覆蓋同名動作），各店程式碼.js 不用改。加班申請不算（加班一定有卡）。 */
+function reqPendingApprovalsPlus_(body) {
+  var r = handleMgrPendingApprovals(body);
+  if (!r || !r.ok) return r;
+  try {
+    var ss = getSS();
+    var ash = ss.getSheetByName('approved');
+    var approvedMap = buildLatestApprovedMap(ash ? readSheetAsObjects(ash).rows : []);
+    var have = {};
+    r.items.forEach(function (x) { have[x.date + '|' + x.emp_id] = true; });
+    reqRows_(ss).forEach(function (q) {
+      var d = String(q.date || ''), id = String(q.emp_id || '');
+      if (q.status !== 'approved' || q.kind === 'ot' || !d || !id) return;
+      if (d.slice(0, 7) !== r.ym || d >= r.today || have[d + '|' + id]) return;
+      if ((approvedMap[d] || {})[id]) return;
+      have[d + '|' + id] = true;
+      r.items.push({ date: d, emp_id: id, name: String(q.name || id), from_request: true });
+    });
+    r.items.sort(function (a, b) {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+    });
+  } catch (e) { /* 讀申請失敗不影響原本的提醒 */ }
+  return r;
+}

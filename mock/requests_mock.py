@@ -510,9 +510,30 @@ def register(ns):
         mime, b64 = ATTACH[aid]
         return {"ok": True, "mime": mime, "data": b64}
 
+    orig_pending = ns["ACTIONS"]["mgr_pending_approvals"]
+    latest_approved_record = ns["latest_approved_record"]
+
+    def pending_plus(data, body):
+        """同 Requests.gs reqPendingApprovalsPlus_（2026-10-10）：已核准的申請（加班除外）那天還沒核定，也列入本月待核定。"""
+        r = orig_pending(data, body)
+        if not r.get("ok"):
+            return r
+        have = {(x["date"], x["emp_id"]) for x in r["items"]}
+        for q in reqs(data):
+            d, eid = str(q.get("date") or ""), str(q.get("emp_id") or "")
+            if q.get("status") != "approved" or q.get("kind") == "ot" or not d or not eid:
+                continue
+            if d[:7] != r["ym"] or d >= r["today"] or (d, eid) in have or latest_approved_record(data, d, eid):
+                continue
+            have.add((d, eid))
+            r["items"].append({"date": d, "emp_id": eid, "name": str(q.get("name") or eid), "from_request": True})
+        r["items"].sort(key=lambda x: (x["date"], x["name"]))
+        return r
+
     ns["ACTIONS"].update({"req_info": req_info, "req_submit": req_submit, "req_cancel": req_cancel,
                           "mgr_req_pending": mgr_pending, "mgr_req_decide": mgr_decide, "mgr_req_day": mgr_day,
                           "mgr_req_decide_batch": mgr_decide_batch,
-                          "mgr_qr_token": mgr_qr, "liff_punch": liff_punch})
+                          "mgr_qr_token": mgr_qr, "liff_punch": liff_punch,
+                          "mgr_pending_approvals": pending_plus})
     ns["LINE_HUB_ACTIONS"].update({"line_hub_req_init": hub_init, "line_hub_attach_put": hub_attach_put,
                                    "line_hub_attach_get": hub_attach_get})

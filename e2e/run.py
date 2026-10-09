@@ -476,9 +476,10 @@ def phase_requests(page, data):
     info = page.evaluate("""(nm) => { const h = [...document.querySelectorAll('#empList .emp-head')].find(x => x.textContent.includes(nm));
           const c = h.closest('.card'); const hrs = [...c.querySelectorAll('input')].find(i => i.placeholder === '出差時數');
           return { hours: hrs ? hrs.value : null, fromReq: !!c.querySelector('.from-req'), box: (c.querySelector('.req-box') || {}).textContent || '',
-                   text: c.innerText }; }""", p1['name'])
-    check('出差核准後：核定卡片預填「出差」、出差時數 3、時段不動、顯示已核准的申請',
-          info['hours'] == '3' and not info['fromReq'] and '出差 整天 3 小時' in info['box'], info)
+                   text: c.innerText, times: [...c.querySelectorAll('input[type=time]')].map(i => i.value) }; }""", p1['name'])
+    # 這位當天有打卡：預設時段留著（沒打卡的整天出差才清空，2026-10-10 Codex 審查；清空那一路由營運系統 e2e 驗）
+    check('出差核准後：核定卡片預填「出差」、出差時數 3、當天有打卡所以時段不動、顯示已核准的申請',
+          info['hours'] == '3' and not info['fromReq'] and '出差 整天 3 小時' in info['box'] and any(v for v in info['times']), info)
 
 
 def phase_pending_reminder(page, data):

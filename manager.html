@@ -1596,6 +1596,9 @@
           } else if (r.kind === 'trip') {
             // 出差（2026-10-09）：只填「出差」＋時數，上班時段不動——出差時數會與時段相加；整天出差本來就可以沒有時段
             leaveSelect.value = '出差'; syncLeaveHoursEnabled(); leaveHours.value = r.hours;
+            // 整天出差（申請沒填時段、那天也沒有打卡）：預設班別要清掉，否則班別 8 小時＋出差 8 小時＝16 小時（2026-10-10 Codex 審查）。
+            // 那天有打卡＝有在店裡的時段，班別留著給主管調，不替他清掉
+            if (!r.start && !(emp.segments || []).length) { periodRows.innerHTML = ''; periodRows.appendChild(buildPeriodRow(null, refreshPeriodUI)); }
           } else if (r.kind === 'miss') {
             // 打卡時間照參考時數的規則取整到 15 分（上班進位、下班捨去）；申請填的時間照填（主管看完再改）
             var r15 = function (hm, up) { if (!hm) return hm; var m = hhmmToMin(hm); m = up ? Math.ceil(m / 15) * 15 : Math.floor(m / 15) * 15; m = m % 1440; return ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2); };

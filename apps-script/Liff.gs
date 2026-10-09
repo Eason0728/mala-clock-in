@@ -501,6 +501,7 @@ var LIFF_HANDLERS = {
   export_tables: handleExportTables_,
   // 加班請假／忘打卡申請＋主管 QR（Requests.gs）。包一層函式：檔案載入順序不保證 Requests.js 在前
   req_info: function (b) { return handleReqInfo_(b); },
+  mgr_pending_approvals: function (b) { return reqPendingApprovalsPlus_(b); },   // 覆蓋 Code.gs 同名動作：多算已核准申請（2026-10-10）
   req_submit: function (b) { return handleReqSubmit_(b); },
   req_cancel: function (b) { return handleReqCancel_(b); },
   mgr_req_pending: function (b) { return handleMgrReqPending_(b); },

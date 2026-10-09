@@ -384,3 +384,22 @@ ok('LIFF_HANDLERS 有掛 mgr_req_decide_batch（包一層，載入順序不影�
   assert(/mgr_req_decide_batch: function \(b\) \{ return handleMgrReqDecideBatch_\(b\); \}/.test(src));
 });
 if (require.main === module) console.log(`\n${n} 項全部通過`);
+
+ok('Codex 2026-10-10：已核准的整天請假、那天沒打卡也沒核定 → 出現在本月待核定提醒；加班、未來、已核定、未核准不算', () => {
+  const sb = makeEnv({});
+  const ids = {};
+  for (const [k, b] of Object.entries({
+    leave: { kind: 'leave', date: '2026-10-05', leave_type: '病假', hours: 8, reason: '發燒' },
+    done: { kind: 'leave', date: '2026-10-06', leave_type: '事假', hours: 8, reason: 'x' },
+    future: { kind: 'leave', date: '2026-10-20', leave_type: '特休假', hours: 8, reason: 'x' },
+    ot: { kind: 'ot', date: '2026-10-07', start: '18:00', end: '20:00', reason: '盤點' },
+    pend: { kind: 'leave', date: '2026-10-08', leave_type: '事假', hours: 8, reason: 'x' },
+  })) { const r = submit(sb, b); assert(r.ok, k + JSON.stringify(r)); ids[k] = r.request.id; }
+  for (const k of ['leave', 'done', 'future', 'ot']) assert(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: ids[k], decision: 'approve' }).ok);
+  sb.handleMgrPendingApprovals = (b) => b.mgr_key === 'MK' ? { ok: true, ym: '2026-10', today: '2026-10-09', items: [{ date: '2026-10-07', emp_id: 'E01', name: '測試一' }] } : { ok: false, error: 'unauthorized' };
+  sb.buildLatestApprovedMap = () => ({ '2026-10-06': { E01: { approved_hours: 0 } } });
+  const r = sb.reqPendingApprovalsPlus_({ mgr_key: 'MK' });
+  assert.deepStrictEqual(r.items.map(x => x.date + ' ' + x.emp_id), ['2026-10-05 E01', '2026-10-07 E01'], JSON.stringify(r.items));
+  assert.strictEqual(r.items[0].from_request, true);
+  assert.strictEqual(sb.reqPendingApprovalsPlus_({ mgr_key: 'BAD' }).error, 'unauthorized');
+});
