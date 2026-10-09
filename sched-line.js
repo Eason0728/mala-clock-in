@@ -5,7 +5,7 @@
  * 所有文字一律 textContent（班別名稱是店長手打的）。 */
 (function () {
   'use strict';
-  var E, $root, st = { ym: '', months: [], data: {}, tab: 'cal', sel: 0, busy: false };
+  var E, $root, st = { ym: '', want: '', months: [], data: {}, tab: 'cal', sel: 0, busy: false };
   var WK = ['日', '一', '二', '三', '四', '五', '六'];
   var CN = ['一', '二', '三', '四', '五', '六'];
   var STATUS_TEXT = {
@@ -44,15 +44,19 @@
   function load(ym) {
     if (st.busy) return;
     if (ym && st.data[ym]) { st.ym = ym; st.sel = defaultSel(st.data[ym]); render(); return; }
-    st.busy = true;
+    st.busy = true; st.want = ym || '';
     $root.innerHTML = '';
     $root.appendChild(h('div', { class: 'sc-loading', text: '讀取中…' }));
     var body = { action: 'line_hub_sched', id_token: liff.getIDToken() };
     if (ym) body.ym = ym;
     E.readRetry(E.HUB_API, body).then(function (r) {
       st.busy = false;
-      if (r && r.error === 'invalid_id_token') { liff.login(); return; }
-      if (!r || !r.ok) { fail(r && r.error === 'too_many' ? '查太多次了，請過一分鐘再試。' : '班表暫時讀不到，請稍後再試。'); return; }
+      if (r && r.error === 'invalid_id_token') { $root.innerHTML = ''; $root.appendChild(box('LINE 登入已過期，正在重新登入…', 'info')); liff.login(); return; }
+      if (!r || !r.ok) {
+        fail(r && r.error === 'too_many' ? '查太多次了，請過一分鐘再試。'
+          : r && r.error === 'bad_month' ? '只能看本月和上個月的班表。' : '班表暫時讀不到，請稍後再試。');
+        return;
+      }
       st.months = r.months || [];
       st.ym = r.ym; st.data[r.ym] = r; st.sel = defaultSel(r);
       render();
@@ -64,7 +68,7 @@
     $root.innerHTML = '';
     $root.appendChild(box(text, 'err'));
     $root.appendChild(h('button', { class: 'ghost', type: 'button', id: 'scReload', text: '重新整理',
-      on: { click: function () { st.data = {}; load(st.ym); } } }));
+      on: { click: function () { var w = st.want; st.data = {}; load(w); } } }));   // 重讀「這次想看的月份」（審查 P2#1）
   }
 
   /* ── 畫面 ── */
@@ -103,7 +107,7 @@
         kids.push(h('span', { class: 'sc-t', text: d.segs[d.segs.length - 1][1] }));
       } else if (d.work) kids.push(h('span', { class: 'sc-t', text: d.code }));
       else if (d.code) kids.push(h('span', { class: 'sc-o', text: d.code }));
-      grid.appendChild(h('button', { type: 'button', class: cls, 'data-d': d.d,
+      grid.appendChild(h('button', { type: 'button', class: cls, 'data-d': d.d, id: 'scD' + d.d,
         on: { click: function () { st.sel = d.d; render(); } } }, kids));
     });
     return grid;
@@ -116,7 +120,6 @@
     else if (!d.work) rows.push(h('div', { class: 'sc-row' }, [h('span', { text: d.label })]));
     else {
       rows.push(h('div', { class: 'sc-row' }, [h('span', { text: '班別' }), h('span', { text: d.label })]));
-      if (!d.segs.length) rows.push(h('div', { class: 'sc-row' }, [h('span', { text: '時間' }), h('span', { text: '時間未設定，請問店長' })]));
       d.segs.forEach(function (s, i) {
         rows.push(h('div', { class: 'sc-row' }, [h('span', { text: d.segs.length > 1 ? '第' + CN[i] + '段' : '上班時間' }), h('span', { text: s[0] + '–' + s[1] })]));
       });
@@ -132,14 +135,14 @@
     $root.appendChild(h('div', { class: 'sc-sum' }, [
       [s.work_days, '排班天數'], [s.off_days, '休假天數'], [Math.round(s.hours * 100) / 100, '排班時數']
     ].map(function (x) { return h('div', {}, [h('b', { text: String(x[0]) }), h('small', { text: x[1] })]); })));
-    var isCur = r.ym === st.months[st.months.length - 1];
+    var isCur = r.ym === String(r.today).slice(0, 7);
     var nx = h('div', { class: 'sc-next', id: 'scNextShift' }, [h('b', { class: 'sc-nh', text: '下一個班' })]);
     if (!isCur) nx.appendChild(h('div', { class: 'sc-muted', text: '「下一個班」只看本月。' }));
     else if (!r.next) nx.appendChild(h('div', { class: 'sc-muted', text: '本月沒有接下來的班。' }));
     else {
       var rel = r.next.date === r.today ? '今天 ' : '';
       nx.appendChild(h('div', { class: 'sc-nd', text: rel + md(r.next.date) }));
-      nx.appendChild(h('div', { class: 'sc-ns', text: r.next.label + '　' + (r.next.segs.length ? segText(r.next.segs) : '時間未設定') }));
+      nx.appendChild(h('div', { class: 'sc-ns', text: r.next.label + '　' + segText(r.next.segs) }));
     }
     $root.appendChild(nx);
     $root.appendChild(h('div', { class: 'rq-note', text: '班表由店長在排班系統排好、鎖定後才會顯示；有異動以店長通知為準。' }));

@@ -14,6 +14,10 @@ import urllib.request
 
 from playwright.sync_api import sync_playwright
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from clickmap import ClickMap, KEY_JS  # noqa: E402
+CM = ClickMap()   # 只用在班表頁（2026-10-10）
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = int(os.environ.get('E2E_MOCK_PORT', '8947'))
 BASE = f'http://localhost:{PORT}'
@@ -41,8 +45,10 @@ def start_mock():
     for f in glob.glob(os.path.join(ROOT, 'mock', 'mock_data*.json')):
         os.remove(f)
     env = dict(os.environ, MOCK_PORT=str(PORT))
+    os.makedirs(SHOTS, exist_ok=True)
+    log = open(os.path.join(SHOTS, 'mock_server.log'), 'w')   # mock 中途死掉時查得到原因（審查 P2#11）
     proc = subprocess.Popen([sys.executable, os.path.join(ROOT, 'mock', 'mock_server.py')], env=env,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            stdout=log, stderr=subprocess.STDOUT)
     for _ in range(50):
         try:
             urllib.request.urlopen(BASE + '/clock-line.html', timeout=1)
@@ -55,6 +61,11 @@ def start_mock():
 
 # 頁面內記錄每個請求打到哪個網址、什麼 action（Apps Script 的 302 會讓 Playwright 讀不到 body，所以在頁內包 fetch）
 LOG_JS = """
+window.__geo = 0;   // 班表頁不該碰定位（審查 P2#3）
+if (navigator.geolocation) ['getCurrentPosition', 'watchPosition'].forEach(function (f) {
+  const o = navigator.geolocation[f].bind(navigator.geolocation);
+  navigator.geolocation[f] = function () { window.__geo++; return o.apply(null, arguments); };
+});
 window.__calls = [];
 window.__fake = {};   // action → 假回應（物件）或 'abort'
 const _f = window.fetch;
@@ -520,6 +531,8 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             ok('補休：計時同仁沒有「補休」假別', p.locator('#reqView .rq-chip:has-text("補休")').count() == 0 and p.locator('#reqView .rq-comp-bal').count() == 0)
             p.close()
             phase_sched(ctx)
+            rep = CM.report()
+            ok('班表：可點元素零漏測（共 %d 個）' % rep['total'], not rep['missed'] and not rep['extra'], rep)
             br.close()
     finally:
         proc.kill()
@@ -530,10 +543,12 @@ def phase_sched(ctx):
     """出勤班表（2026-10-10）：?view=sched 讀光復 line_hub_sched（mock/sched_mock.py），月曆、明細、切上月、摘要、各種狀態。"""
     fg = os.path.join(ROOT, 'mock', 'mock_data.json')
     d = json.load(open(fg, encoding='utf-8'))
-    bind = {'測試一': 'U1', '測試二': 'U6', '測試三': 'U7', '測試四': ''}
+    bind = {'測試一': 'U1', '測試二': 'U6', '測試三': 'U7', '測試四': 'U8'}
     for r in d['roster']:
         if r['name'] in bind:
             r['line_user_id'] = bind[r['name']]
+        if r['name'] == '測試四':
+            r['active'] = False   # 已離職＝綁過也看不到（審查 P2#10）
     d.pop('mock_sched', None)
     json.dump(d, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
 
@@ -553,6 +568,7 @@ def phase_sched(ctx):
     p = page('U1')
     ok('班表：不定位、只打光復 line_hub_sched', [x['action'] for x in calls(p)] == ['line_hub_sched'] and calls(p)[0]['url'].endswith('/api'), calls(p))
     ok('班表：打卡卡片隱藏', p.locator('#punchCard').is_hidden())
+    ok('班表：沒有呼叫定位', p.evaluate('window.__geo') == 0, p.evaluate('window.__geo'))
     ok('班表：月曆每一天都有格子', p.locator('#schedView .sc-day').count() == len(r['days']), p.locator('#schedView .sc-day').count())
     first_work = next(x for x in r['days'] if x['work'] and len(x['segs']) == 2)
     cell = p.inner_text(f'#schedView .sc-day[data-d="{first_work["d"]}"]').split()
@@ -561,7 +577,15 @@ def phase_sched(ctx):
     ok('班表：休假格寫班別代碼', p.inner_text(f'#schedView .sc-day[data-d="{off["d"]}"]').split()[-1] == off['code'])
     td = int(r['today'][8:10])
     ok('班表：本月預設選今天、今天有外框', p.locator(f'#schedView .sc-day.sel.today[data-d="{td}"]').count() == 1)
-    p.click(f'#schedView .sc-day[data-d="{first_work["d"]}"]')
+    CM.scan(p, '班表月曆（本月）')
+    for x in r['days']:   # 每一格都點，明細日期要對（審查 P2#2）
+        p.click(f'#scD{x["d"]}')
+        dt = p.inner_text('#scDet').split('\n')[0]
+        if not dt.startswith('%d/%d（' % (int(r['ym'][5:7]), x['d'])):
+            raise AssertionError('點 %d 號明細日期不對：%s' % (x['d'], dt))
+        CM.mark(p.evaluate(KEY_JS, f'#scD{x["d"]}'), '明細日期正確')
+    ok('班表：每一天都點過、明細日期都對', True)
+    p.click(f'#scD{first_work["d"]}')
     det = p.inner_text('#scDet')
     ok('班表：點兩段班看第一段、第二段、合計', '第一段' in det and '第二段' in det and ('合計\n%s 小時' % (int(first_work['hours']) if first_work['hours'] == int(first_work['hours']) else first_work['hours'])) in det, det)
     blank = next((x for x in r['days'] if not x['code']), None)
@@ -575,7 +599,10 @@ def phase_sched(ctx):
     ok('班表：375px 沒有橫向捲動', p.evaluate('document.documentElement.scrollWidth <= window.innerWidth'))
     p.screenshot(path=os.path.join(SHOTS, '班表_月曆.jpg'), type='jpeg', quality=80)
     # 摘要
+    CM.mark(p.evaluate(KEY_JS, '#scNext'), '本月時停用（已驗）')
     p.click('#schedView .rq-tabs button[data-tab=sum]')
+    CM.mark(p.evaluate(KEY_JS, '#schedView .rq-tabs button[data-tab=sum]'), '切到摘要')
+    CM.scan(p, '班表摘要')
     nums = p.locator('#schedView .sc-sum b').all_inner_texts()
     sm = r['summary']
     ok('班表：摘要三個數字＝後端', nums == [str(sm['work_days']), str(sm['off_days']), ('%g' % sm['hours'])], (nums, sm))
@@ -585,12 +612,18 @@ def phase_sched(ctx):
     p.screenshot(path=os.path.join(SHOTS, '班表_摘要.jpg'), type='jpeg', quality=80)
     # 切上個月
     p.click('#schedView .rq-tabs button[data-tab=cal]')
+    CM.mark(p.evaluate(KEY_JS, '#schedView .rq-tabs button[data-tab=cal]'), '切回月曆')
     n_calls = len(calls(p))
+    CM.mark(p.evaluate(KEY_JS, '#scPrev'), '切上個月帶 ym')
     p.click('#scPrev')
     p.wait_for_function('document.querySelector("#schedView .sc-mon b") && document.querySelector("#schedView .sc-mon b").textContent.indexOf(" %d 月") >= 0' % int(r['months'][0][5:7]), timeout=8000)
     c = calls(p)
     ok('班表：切上個月帶 ym', c[n_calls]['action'] == 'line_hub_sched' and len(c) == n_calls + 1, c[n_calls:])
     ok('班表：上個月不預選日期、「‹」不能按', p.locator('#schedView .sc-day.sel').count() == 0 and p.locator('#scPrev').is_disabled())
+    CM.scan(p, '班表月曆（上個月）')
+    for k in p.evaluate("() => [...document.querySelectorAll('#schedView .sc-day')].map(e => e.id)"):
+        p.click('#' + k)
+        CM.mark(p.evaluate(KEY_JS, '#' + k), '上個月明細')
     p.click('#scNext')
     ok('班表：切回本月不再打後端（用已讀的）', len(calls(p)) == n_calls + 1)
     p.close()
@@ -603,7 +636,7 @@ def phase_sched(ctx):
     ok('班表：同名兩位 → not_matched 字句', '你的班表還沒對上，請找店長確認' in p.inner_text('#schedView'))
     p.close()
     p = page('U8')
-    ok('班表：沒綁光復 → not_bound 字句', '你目前沒有光復店的班表' in p.inner_text('#schedView'))
+    ok('班表：已離職（綁過光復）→ not_bound 字句', '你目前沒有光復店的班表' in p.inner_text('#schedView'))
     p.close()
     d = json.load(open(fg, encoding='utf-8'))
     cy, cm = int(r['months'][1][:4]), int(r['months'][1][5:7])
@@ -620,9 +653,19 @@ def phase_sched(ctx):
     ok('班表：Gist 讀不到 → 錯誤字句＋重新整理、不畫空月曆', '班表暫時讀不到' in p.inner_text('#schedView')
        and p.locator('#scReload').count() == 1 and p.locator('#schedView .sc-cal').count() == 0)
     d.pop('mock_sched'); json.dump(d, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
+    CM.scan(p, '班表讀取失敗')
+    CM.mark(p.evaluate(KEY_JS, '#scReload'), '重讀成功')
     p.click('#scReload')
     p.wait_for_selector('#schedView .sc-cal', timeout=8000)
     ok('班表：按重新整理後讀得到', p.locator('#schedView .sc-day').count() > 27)
+    # 上個月讀失敗 → 重新整理要重讀上個月，不是本月（審查 P2#1）
+    p.evaluate("window.__fake = { line_hub_sched: [{ ok: false, error: 'sched_unreadable' }, 'real'] }")
+    p.click('#scPrev')
+    p.wait_for_selector('#scReload', timeout=8000)
+    p.click('#scReload')
+    p.wait_for_selector('#schedView .sc-cal', timeout=8000)
+    c = [x for x in calls(p) if x['action'] == 'line_hub_sched']
+    ok('班表：上個月讀失敗後重新整理仍是上個月', ' %d 月' % int(r['months'][0][5:7]) in p.inner_text('#schedView .sc-mon b'), p.inner_text('#schedView .sc-mon b'))
     p.close()
     p = open_page(ctx, f'{BASE}/clock-line.html?mock_uid=U1&api=/api&view=sched', pre="window.__fake = { line_hub_sched: 'abort' };")
     p.wait_for_selector('#schedView .sc-box.err', timeout=40000)

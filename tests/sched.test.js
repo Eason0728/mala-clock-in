@@ -18,21 +18,24 @@ let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 function gist(extra) {
   return Object.assign({
     mala_employees: [
-      { id: 'a1', name: '測試一', wage: 999, phone: '0900', birthday: '01-01', insurance: 1 },
-      { id: 'a2', name: '測試 二', wage: 888 },
+      { id: 'a1', name: '測試一', isFullTime: true, wage: 999, phone: '0900', birthday: '01-01', insurance: 1 },
+      { id: 'a2', name: '測試 二', isFullTime: true, wage: 888 },
+      { id: 'p1', name: '計時一', isFullTime: false },
       { id: 'a3', name: '測試三' }, { id: 'a4', name: '測試三' },
     ],
     mala_shifts: {
-      F: { name: 'F班', time: '11:00～14:0017:30～22:30', hours: 8 },
-      C1: { name: 'C1班', time: '1700~2100', hours: 4 },
-      '事': { name: '事假', time: '', hours: 0 },
-      X: { name: '奇怪班', time: '1730到2200', hours: 5 },
+      F: { name: 'F班', time: '11:00～14:0017:30～22:30', hours: 8, breakH: 0, isOff: false },
+      F1: { name: 'F1班', time: '11:00～14:00\n17:00～22:00', hours: 8, breakH: 0, isOff: false },
+      C1: { name: 'C1班', time: '1700~2100', hours: 4, breakH: 0, isOff: false },
+      '事': { name: '事假', time: '', hours: 0, breakH: 0, isOff: true },
+      '公休': { name: '公休', time: '－', hours: 8, breakH: 0, isOff: false },   // 真資料：公休被設成要算 8 小時
+      X: { name: '奇怪班', time: '1730到2200', hours: 5, breakH: 0, isOff: false },
     },
     mala_hidden_shifts: ['H1'],
     mala_locks: ['2026_9', '2026_10'],
     mala_sch_2026_9: { a1: { 1: 'A', 2: '休' } },
     mala_sch_2026_10: { a1: { 1: 'F', 2: 'C1', 3: '休', 4: '事', 5: '國', 6: 'E', 10: 'C', 12: 'H1', 13: 'ZZ', 31: 'A' },
-                        a2: { 1: '休' } },
+                        a2: { 1: '休' }, p1: { 2: 'C', 3: '休' } },
   }, extra || {});
 }
 
@@ -52,7 +55,7 @@ vm.createContext(sb);
 vm.runInContext([fs.readFileSync(ROOT + '/apps-script/Sched.gs', 'utf8'), extract(hubSrc, 'lineHubNormName_')].join('\n'), sb);
 // vm 內建出來的陣列／物件跨 realm，deepStrictEqual 會判不等 → 一律過一次 JSON
 const J = (x) => (x === undefined ? x : JSON.parse(JSON.stringify(x)));
-['schedParseTime_', 'schedShifts_', 'schedSubset_', 'schedMonth_'].forEach((f) => { const o = sb[f]; sb[f] = (...a) => J(o(...a)); });
+['schedParseTime_', 'schedShifts_', 'schedSubset_', 'schedMonth_', 'schedDayOf_'].forEach((f) => { const o = sb[f]; sb[f] = (...a) => J(o(...a)); });
 const reset = (g) => { fetchCalls = 0; fetchCode = 200; fetchBody = JSON.stringify(g || gist()); cacheStore = {}; props = {}; };
 const bind = (name, empId, code) => { mine = [{ st: { code: code === undefined ? '' : code }, row: { emp_id: empId || 'E01', name: name } }]; };
 const call = (b) => JSON.parse(JSON.stringify(sb.handleLineHubSched_(Object.assign({ id_token: 'good' }, b || {}))));
@@ -62,6 +65,21 @@ ok('時間解析：標準單段補零', () => assert.deepStrictEqual(sb.schedPar
 ok('時間解析：兩段以換行分隔', () => assert.deepStrictEqual(sb.schedParseTime_('11:00～14:00\n17:30～22:30'), [['11:00', '14:00'], ['17:30', '22:30']]));
 ok('時間解析：兩段相連沒分隔（真資料的 F）', () => assert.deepStrictEqual(sb.schedParseTime_('11:00～14:0017:30～22:30'), [['11:00', '14:00'], ['17:30', '22:30']]));
 ok('時間解析：沒冒號＋半形波浪（真資料的 C1）', () => assert.deepStrictEqual(sb.schedParseTime_('1700~2100'), [['17:00', '21:00']]));
+ok('預設班別與排班系統 index.html 的 DEFAULT_SHIFTS 一致（找得到排班系統原始碼時才比）', () => {
+  const f = path.join(process.env.HOME || '', 'mala-schedule', 'index.html');
+  if (!fs.existsSync(f)) { console.log('  （略過：本機沒有 ~/mala-schedule）'); return; }
+  const src = fs.readFileSync(f, 'utf8'); const i = src.indexOf('const DEFAULT_SHIFTS = {');
+  const blk = src.slice(i, src.indexOf('};', i));
+  const re = /^\s*'?([^':\s]+)'?\s*:\s*\{name:'([^']*)',\s*time:'([^']*)',\s*hours:([\d.]+),\s*breakH:([\d.]+)[^}]*isOff:(true|false)/gm;
+  let m, cnt = 0;
+  while ((m = re.exec(blk))) {
+    cnt++;
+    const d = sb.SCHED_DEFAULT_SHIFTS[m[1]];
+    assert.ok(d, '少了 ' + m[1]);
+    assert.deepStrictEqual([d.name, d.time, d.hours, d.breakH, d.isOff], [m[2], m[3].replace(/\\n/g, '\n'), +m[4], +m[5], m[6] === 'true'], m[1]);
+  }
+  assert.strictEqual(cnt, Object.keys(sb.SCHED_DEFAULT_SHIFTS).length);
+});
 ok('時間解析：休假類沒時段', () => { ['－', '特休假', '', null].forEach((t) => assert.deepStrictEqual(sb.schedParseTime_(t), [])); });
 ok('班別表：預設＋覆蓋−隱藏', () => {
   const s = sb.schedShifts_(gist());
@@ -87,23 +105,45 @@ ok('月曆列滿 31 天、各類日子', () => {
   assert.strictEqual(r.days.length, 31);
   const d = (i) => r.days[i - 1];
   assert.deepStrictEqual([d(1).work, d(1).segs.length, d(1).hours], [true, 2, 8]);
+  assert.deepStrictEqual([d(6).work, d(6).hours], [true, 8], 'E 班 8.5 扣休息 0.5');
   assert.deepStrictEqual([d(2).work, d(2).segs, d(2).hours], [true, [['17:00', '21:00']], 4]);
-  assert.deepStrictEqual([d(3).work, d(3).label], [false, '休假']);
-  assert.deepStrictEqual([d(4).work, d(4).label], [false, '事假']);
-  assert.deepStrictEqual([d(5).work, d(5).label], [false, '國定假日']);
-  assert.deepStrictEqual([d(7).code, d(7).work], ['', false]);
-  assert.deepStrictEqual([d(12).label, d(12).work], ['H1', false], '被隱藏的班別＝未知代碼');
-  assert.deepStrictEqual([d(13).label, d(13).work], ['ZZ', false]);
+  assert.deepStrictEqual([d(3).work, d(3).rest, d(3).label], [false, true, '休假']);
+  assert.deepStrictEqual([d(4).work, d(4).rest, d(4).label], [false, true, '事假']);
+  assert.deepStrictEqual([d(5).work, d(5).rest, d(5).label], [false, true, '國定假日']);
+  assert.deepStrictEqual([d(7).code, d(7).work, d(7).rest], ['', false, false], '正職的空白天不算休假');
+  assert.deepStrictEqual([d(12).label, d(12).work, d(12).rest], ['H1', false, false], '被隱藏的班別＝未知代碼，兩邊都不算');
+  assert.deepStrictEqual([d(13).label, d(13).work, d(13).rest], ['ZZ', false, false]);
 });
-ok('摘要：上班天／休假天（空白不算）／時數', () => {
+ok('摘要：照排班畫面——上班天／休假天（休假類＋國）／時數扣休息', () => {
   const r = sb.schedMonth_(sub10(), 'a1', 2026, 10, null);
-  // 上班：1 F8、2 C1 4、6 E8.5、10 C5.5、31 A8.5 → 5 天 34.5；休假：3 休、4 事、5 國、12 H1、13 ZZ → 5 天
-  assert.deepStrictEqual(r.summary, { work_days: 5, off_days: 5, hours: 34.5 });
+  // 上班：1 F8、2 C1 4、6 E8.5−0.5、10 C5.5、31 A8.5−0.5 → 5 天 33.5；休假：3 休、4 事、5 國 → 3 天（H1、ZZ 不認得，兩邊都不算）
+  assert.deepStrictEqual(r.summary, { work_days: 5, off_days: 3, hours: 33.5 });
 });
-ok('有時鐘字但解析不出時段：算上班、標時間未設定', () => {
-  const g = gist(); g.mala_sch_2026_10.a1[20] = 'X';
-  const r = sb.schedMonth_(sb.schedSubset_(g, [{ y: 2026, m: 10 }]), 'a1', 2026, 10, null);
-  assert.deepStrictEqual([r.days[19].work, r.days[19].time_unknown, r.days[19].hours], [true, true, 5]);
+ok('計時同仁：本月已排班後，空白天算「休」（排班畫面同一條）', () => {
+  const r = sb.schedMonth_(sub10(), 'p1', 2026, 10, null);
+  assert.deepStrictEqual([r.days[0].code, r.days[0].rest, r.days[30].label], ['休', true, '休假']);
+  assert.deepStrictEqual(r.summary, { work_days: 1, off_days: 30, hours: 5.5 });
+});
+ok('每個預設與自訂班別代碼：上班／休假／時段／時數', () => {
+  const s = sub10();
+  const T = { A: [true, false, [['15:00', '23:30']], 8], B: [true, false, [['16:00', '23:30']], 7.5], C: [true, false, [['17:00', '22:30']], 5.5],
+    C2: [true, false, [['17:30', '23:30']], 6], D: [true, false, [['18:00', '22:30']], 4.5], D1: [true, false, [['18:30', '22:30']], 4],
+    E: [true, false, [['09:00', '17:30']], 8], F: [true, false, [['11:00', '14:00'], ['17:30', '22:30']], 8],
+    F1: [true, false, [['11:00', '14:00'], ['17:00', '22:00']], 8], C1: [true, false, [['17:00', '21:00']], 4],
+    '公休': [true, false, [], 8], '休': [false, true, [], 0], '特': [false, true, [], 0], '指': [false, true, [], 0],
+    '國': [false, true, [], 0], '事': [false, true, [], 0] };
+  Object.keys(T).forEach((c) => {
+    const d = sb.schedDayOf_(s, c);
+    assert.deepStrictEqual([d.work, d.rest, J(d.segs), d.hours], T[c], c);
+  });
+  assert.strictEqual(sb.schedDayOf_(s, '公休').no_time, true, '要上班但沒有時段 → 只寫班別名稱');
+});
+ok('要上班但時間抓不到時段：算上班、時數照算、不當成「下一個班」', () => {
+  const g = gist(); g.mala_sch_2026_10.a1[20] = 'X'; g.mala_sch_2026_10.a1[21] = '公休';
+  const s = sb.schedSubset_(g, [{ y: 2026, m: 10 }]);
+  const r = sb.schedMonth_(s, 'a1', 2026, 10, { date: '2026-10-20', hm: '00:00' });
+  assert.deepStrictEqual([r.days[19].work, r.days[19].no_time, r.days[19].hours], [true, true, 5]);
+  assert.strictEqual(r.next.date, '2026-10-31');
 });
 
 // ── 下一個班 ──
@@ -138,6 +178,12 @@ ok('API 只收本月與上月', () => { reset(); bind('測試一'); ['2026-11', 
 ok('API 假 id_token', () => assert.strictEqual(call({ id_token: 'bad' }).error, 'invalid_id_token'));
 ok('API 沒綁光復（只綁別店）→ not_bound，不讀 Gist', () => { reset(); bind('測試一', 'X1', 'mztjs'); const r = call(); assert.strictEqual(r.status, 'not_bound'); assert.strictEqual(fetchCalls, 0); });
 ok('API 離職＝lineHubMine_ 只認在職，沒拿到 → not_bound', () => { reset(); mine = []; assert.strictEqual(call().status, 'not_bound'); });
+ok('API 名冊讀不到（有店 unreadable）且沒找到人 → sched_unreadable，不說沒綁', () => {
+  reset(); mine = []; const orig = sb.lineHubMine_;
+  sb.lineHubMine_ = (u, info) => { if (info) info.unreadable = true; return []; };
+  const r = call(); sb.lineHubMine_ = orig;
+  assert.deepStrictEqual([r.ok, r.error], [false, 'sched_unreadable']);
+});
 ok('API 該月沒鎖 → not_locked、不回班表', () => {
   reset(gist({ mala_locks: ['2026_9'] })); bind('測試一');
   const r = call(); assert.strictEqual(r.status, 'not_locked'); assert.ok(!r.days);

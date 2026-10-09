@@ -9,13 +9,15 @@ from datetime import date, datetime, timedelta, timezone
 
 TZ = timezone(timedelta(hours=8))
 SHIFTS = {
-    "A": {"name": "A班", "time": "15:00～23:30", "hours": 8.5},
-    "C": {"name": "C班", "time": "17:00～22:30", "hours": 5.5},
-    "E": {"name": "E班", "time": "09:00～17:30", "hours": 8.5},
-    "F": {"name": "F班", "time": "11:00～14:0017:30～22:30", "hours": 8.0},   # 真資料的怪寫法：兩段相連
-    "C1": {"name": "C1班", "time": "1700~2100", "hours": 4.0},              # 真資料的怪寫法：沒冒號
-    "休": {"name": "休假", "time": "－", "hours": 0}, "特": {"name": "特休", "time": "特休假", "hours": 0},
-    "國": {"name": "國定假日", "time": "國定假日", "hours": 0}, "事": {"name": "事假", "time": "", "hours": 0},
+    "A": {"name": "A班", "time": "15:00～23:30", "hours": 8.5, "breakH": 0.5, "isOff": False},
+    "C": {"name": "C班", "time": "17:00～22:30", "hours": 5.5, "breakH": 0, "isOff": False},
+    "E": {"name": "E班", "time": "09:00～17:30", "hours": 8.5, "breakH": 0.5, "isOff": False},
+    "F": {"name": "F班", "time": "11:00～14:0017:30～22:30", "hours": 8.0, "breakH": 0, "isOff": False},   # 真資料的怪寫法：兩段相連
+    "C1": {"name": "C1班", "time": "1700~2100", "hours": 4.0, "breakH": 0, "isOff": False},              # 真資料的怪寫法：沒冒號
+    "休": {"name": "休假", "time": "－", "hours": 0, "breakH": 0, "isOff": True},
+    "特": {"name": "特休", "time": "特休假", "hours": 0, "breakH": 0, "isOff": True},
+    "國": {"name": "國定假日", "time": "國定假日", "hours": 0, "breakH": 0, "isOff": False},
+    "事": {"name": "事假", "time": "", "hours": 0, "breakH": 0, "isOff": True},
 }
 PATTERN = ["F", "C1", "休", "A", "E", "休", "C", "F", "特", "A", "", "E", "國", "事"]
 
@@ -42,15 +44,17 @@ def _parse(t):
 
 
 def _day(code):
+    """照排班畫面：上班＝!isOff 且不是國；休假＝isOff 或國；時數＝hours−breakH（與 Sched.gs schedDayOf_ 同）"""
     if not code:
-        return {"code": "", "label": "", "segs": [], "hours": 0, "work": False}
+        return {"code": "", "label": "", "segs": [], "hours": 0, "work": False, "rest": False}
     sh = SHIFTS.get(code)
     if not sh:
-        return {"code": code, "label": code, "segs": [], "hours": 0, "work": False}
-    work = bool(re.search(r"\d{1,2}[:：]?\d{2}", sh["time"]))
-    d = {"code": code, "label": sh["name"], "segs": _parse(sh["time"]), "hours": sh["hours"] if work else 0, "work": work}
+        return {"code": code, "label": code, "segs": [], "hours": 0, "work": False, "rest": False}
+    work = not sh["isOff"] and code != "國"
+    d = {"code": code, "label": sh["name"], "segs": _parse(sh["time"]) if work else [],
+         "hours": max(sh["hours"] - sh["breakH"], 0) if work else 0, "work": work, "rest": sh["isOff"] or code == "國"}
     if work and not d["segs"]:
-        d["time_unknown"] = True
+        d["no_time"] = True
     return d
 
 
@@ -114,12 +118,12 @@ def register(ns):
             if x["work"]:
                 wd += 1
                 hrs += x["hours"]
-            elif x["code"]:
+            if x["rest"]:
                 od += 1
         nxt = None
         if today[:7] == ym:
             for x in days[int(today[8:10]) - 1:]:
-                if not x["work"]:
+                if not x["work"] or not x["segs"]:
                     continue
                 if x["d"] == int(today[8:10]) and x["segs"]:
                     a, b = x["segs"][-1]
