@@ -356,7 +356,7 @@
         }
         var hm = String(r.ts || '').slice(11, 16);
         if (r.ok) {
-          var shown = label + '打卡成功 ' + hm + '\n地點：' + st.name + (r.greeting ? '\n\n' + r.greeting : '');
+          var shown = label + '打卡成功 ' + hm + '\n地點：' + st.name + (r.missed ? '\n\n⚠️ ' + r.missed : '') + (r.greeting ? '\n\n' + r.greeting : '');
           // 就地鎖鍵（同網頁版 updateButtonStates({type, ts})）：同型不能再按、另一型 10 分鐘鎖（審查 M1）
           var nowSrv = Date.now() + clockSkew;
           status.guard = { blocked: type, lock: {}, last: { type: type, hm: hm }, now: nowSrv };

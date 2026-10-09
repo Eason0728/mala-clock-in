@@ -181,7 +181,7 @@ function lineHubPunchText_(r) {
   var label = r.type === 'out' ? '下班' : (r.type === 'in' ? '上班' : '');
   if (r.ok) {
     return '✅ ' + label + '打卡成功 ' + lineHubHm_(r.ts) + '\n地點：' + r.store_name + (r.note ? '\n' + r.note : '')
-      + (r.greeting ? '\n\n' + r.greeting : '');
+      + (r.missed ? '\n\n⚠️ ' + r.missed : '') + (r.greeting ? '\n\n' + r.greeting : '');
   }
   return '❌ ' + (label ? label : '') + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
 }
@@ -407,10 +407,12 @@ function lineHubLatestPunch_(userId) {
       if (String(e.emp_id) !== String(m.row.emp_id) || String(e.status) !== 'ok') return;
       var ts = String(normCellTs(e.ts)), t = new Date(ts).getTime();
       if (isNaN(t) || t < cutoff) return;
-      if (!best || t > best.ms) best = { ms: t, ts: ts, type: String(e.type), store_name: m.st.name };
+      if (!best || t > best.ms) best = { ms: t, ts: ts, type: String(e.type), store_name: m.st.name, rows: rows, emp_id: m.row.emp_id };
     });
   });
-  if (best) return { ok: true, type: best.type, ts: best.ts, store_name: best.store_name, greeting: liffGreeting_(best.type, best.ts) };
+  // 忘打卡提醒：用同一家店讀到的尾端列判斷（與打卡畫面 liff_punch 同一支 liffMissedNote_）；尾端沒涵蓋到就不提
+  if (best) return { ok: true, type: best.type, ts: best.ts, store_name: best.store_name, greeting: liffGreeting_(best.type, best.ts),
+                     missed: liffMissedNote_(best.rows, best.emp_id, best.type, best.ts) };
   return unreadable ? { unreadable: true } : null;
 }
 
@@ -686,6 +688,7 @@ function lineHubPunchCard_(r) {
   if (r.ok) {
     var blocks = [{ type: 'heading', text: '地點' }, { type: 'text', text: r.store_name, margin: 'xs', size: 'md' }];
     if (r.note) blocks.push({ type: 'text', text: r.note, muted: true });
+    if (r.missed) blocks.push({ type: 'sep' }, { type: 'heading', text: '⚠️ 上次漏打卡' }, { type: 'text', text: r.missed, margin: 'xs' });
     if (r.greeting) blocks.push({ type: 'sep' }, { type: 'text', text: r.greeting, margin: 'md', size: 'md' });
     return lineHubCard_({ title: label + '打卡成功', right: '✓', tone: 'ok', alt: label + '打卡成功 ' + lineHubHm_(r.ts),
                           hero: { label: '打卡時間', value: lineHubHm_(r.ts) }, blocks: blocks });

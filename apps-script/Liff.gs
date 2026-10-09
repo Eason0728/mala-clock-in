@@ -260,6 +260,45 @@ function liffGuardReject_(g, type) {
   return null;
 }
 
+/* 忘打卡提醒（2026-10-09 Eason 指定）：不主動推播，同仁「下一次打卡成功時」順便告知上一次漏了哪張卡。
+   打卡畫面（各店 liff_punch）與聊天室卡片（光復 lineHubLatestPunch_）共用這一支，兩邊字句一致。
+   - 這次打上班、往前 7 天內最後一張算數的卡也是上班 → 那張上班卡之後沒有下班卡
+   - 這次打下班、往前 16 小時（＝配對視窗）內沒有算數的上班卡 → 這次沒有上班卡
+   中間若有同型被「超出範圍」擋下的卡，改說「沒有打成功」（同仁有按，只是沒入帳）。
+   算數＝非 rejected_*（同 lastCountedEvent，pending 也算）。events 不必含這次這筆：只看 ts 之前的卡。 */
+var LIFF_MISSED_DAYS = 7;
+var LIFF_MISSED_PAIR_HOURS = 16;
+function liffMissedNote_(events, empId, type, ts) {
+  var nowMs = new Date(String(ts)).getTime();
+  if (isNaN(nowMs) || (type !== 'in' && type !== 'out')) return '';
+  var span = (type === 'in' ? LIFF_MISSED_DAYS * 24 : LIFF_MISSED_PAIR_HOURS) * 3600000;
+  var mine = [];
+  events.forEach(function (e) {
+    if (String(e.emp_id) !== String(empId)) return;
+    var s = String(normCellTs(e.ts)), t = new Date(s).getTime();
+    if (isNaN(t) || t >= nowMs || t < nowMs - span) return;
+    mine.push({ t: t, ts: s, type: String(e.type), status: String(e.status) });
+  });
+  mine.sort(function (a, b) { return a.t - b.t; });
+  var prev = null;
+  mine.forEach(function (e) { if (e.status.indexOf('rejected_') !== 0) prev = e; });
+  var md = function (s) { return parseInt(s.slice(5, 7), 10) + '/' + parseInt(s.slice(8, 10), 10); };
+  var other = type === 'in' ? 'out' : 'in';
+  var failedOther = mine.some(function (e) {
+    return e.type === other && e.status === 'rejected_out_of_range' && (!prev || e.t > prev.t);
+  });
+  if (type === 'in') {
+    if (!prev || prev.type !== 'in') return '';
+    return failedOther
+      ? '你 ' + md(prev.ts) + ' ' + liffHm_(prev.ts) + ' 上班後的下班卡沒有打成功（不在範圍內），請跟主管說實際下班時間'
+      : '你 ' + md(prev.ts) + ' ' + liffHm_(prev.ts) + ' 上班後沒有打下班卡，請跟主管說實際下班時間';
+  }
+  if (prev && prev.type === 'in') return '';
+  return failedOther
+    ? '你這次的上班卡沒有打成功（不在範圍內），請跟主管說實際上班時間'
+    : '你這次沒有打上班卡，請跟主管說實際上班時間';
+}
+
 /* 打卡成功問候語（2026-10-08 Eason 指定）：依伺服器打卡時間分早安／午安／晚上，上下班各三時段各三句。
    ⚠ 字句正本在 mala-clock-in repo 的 clock.html（CLOCK_GREETINGS），這裡是同一份，改一邊要改另一邊。
    時段：05:00–11:59 早安／12:00–17:59 午安／18:00–隔天 04:59 晚上（上班「晚上好」，「晚安」只給下班）。
@@ -367,12 +406,15 @@ function liffPunchVerified_(type, body) {
 }
 
 function liffPunchFor_(userId, me, ss, type, body) {
-  var stop = liffGuardReject_(liffGuard_(liffEvents_(ss), me.emp_id), type);
+  var events = liffEvents_(ss);
+  var stop = liffGuardReject_(liffGuard_(events, me.emp_id), type);
   if (stop) return { ok: false, type: type, reason: stop.reason, hint: stop.hint };
   var j = handleClock({ key: me.key, type: type, lat: body.lat, lng: body.lng,
                         accuracy: body.accuracy === undefined ? null : body.accuracy,
                         device_id: me.device_id ? String(me.device_id) : 'line:' + userId });
-  if (j && j.ok && j.status === 'ok') return { ok: true, type: type, ts: j.ts, greeting: liffGreeting_(type, j.ts) };
+  // 忘打卡提醒用打卡前讀的那份 events（只看這次之前的卡），不多讀一次表
+  if (j && j.ok && j.status === 'ok') return { ok: true, type: type, ts: j.ts, greeting: liffGreeting_(type, j.ts),
+                                               missed: liffMissedNote_(events, me.emp_id, type, j.ts) };
   var st = j && (j.status || j.error);
   var rr = LIFF_PUNCH_REASONS_[st] || ['系統回覆：' + (st || '未知'), '請告知主管'];
   return { ok: false, type: type, status: st || '', reason: rr[0], hint: rr[1] };

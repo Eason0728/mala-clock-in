@@ -1861,6 +1861,45 @@ def handle_liff_status(data, body):
             "shift_out": me.get("shift_out", ""), "today": evs, "guard": g}
 
 
+def liff_missed_note(events, emp_id, typ, ts):
+    """忘打卡提醒（與 Liff.gs liffMissedNote_ 同規則，2026-10-09）。events 只看 ts 之前的卡。"""
+    try:
+        now = datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return ""
+    if typ not in ("in", "out"):
+        return ""
+    span = timedelta(hours=7 * 24 if typ == "in" else 16)
+    mine = []
+    for e in events:
+        if e["emp_id"] != emp_id:
+            continue
+        try:
+            t = datetime.fromisoformat(e["ts"])
+        except ValueError:
+            continue
+        if t >= now or t < now - span:
+            continue
+        mine.append((t, e["ts"], e["type"], str(e["status"])))
+    mine.sort(key=lambda x: x[0])
+    prev = None
+    for m in mine:
+        if not m[3].startswith("rejected_"):
+            prev = m
+    other = "out" if typ == "in" else "in"
+    failed = any(m[2] == other and m[3] == "rejected_out_of_range" and (prev is None or m[0] > prev[0]) for m in mine)
+    if typ == "in":
+        if not prev or prev[2] != "in":
+            return ""
+        d = f"{int(prev[1][5:7])}/{int(prev[1][8:10])} {prev[1][11:16]}"
+        return (f"你 {d} 上班後的下班卡沒有打成功（不在範圍內），請跟主管說實際下班時間" if failed
+                else f"你 {d} 上班後沒有打下班卡，請跟主管說實際下班時間")
+    if prev and prev[2] == "in":
+        return ""
+    return ("你這次的上班卡沒有打成功（不在範圍內），請跟主管說實際上班時間" if failed
+            else "你這次沒有打上班卡，請跟主管說實際上班時間")
+
+
 def handle_liff_punch(data, body):
     typ = body.get("type")
     if typ not in ("in", "out"):
@@ -1878,10 +1917,12 @@ def handle_liff_punch(data, body):
         left = math.ceil((until - time.time() * 1000) / 60000)
         return {"ok": False, "type": typ, "reason": f"你 {g['last']['hm']} 剛打過{'上班' if g['last']['type'] == 'in' else '下班'}卡，{left} 分鐘內不能打{label}卡（避免連按誤打）",
                 "hint": f"真的要{label}請告知主管補登"}
+    before = list(data["events"])
     j = handle_clock(data, {"key": me["key"], "type": typ, "lat": body.get("lat"), "lng": body.get("lng"),
                             "accuracy": body.get("accuracy"), "device_id": me.get("device_id") or ("line:" + uid)})
     if j.get("ok") and j.get("status") == "ok":
-        return {"ok": True, "type": typ, "ts": j.get("ts"), "greeting": liff_greeting(typ, j.get("ts"))}
+        return {"ok": True, "type": typ, "ts": j.get("ts"), "greeting": liff_greeting(typ, j.get("ts")),
+                "missed": liff_missed_note(before, me["emp_id"], typ, j.get("ts"))}
     st = j.get("status") or j.get("error") or ""
     rr = {"pending_device_approval": ["這支手機還沒被核准", "已送出待核准，請主管在值班核定頁核准"],
           "rejected_out_of_range": ["店家判定你不在範圍內", "請開啟「精確位置」與 Wi‑Fi 後再按一次"],

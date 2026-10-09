@@ -145,6 +145,7 @@ def main():
             ok('按上班只打 1 次後端（店家 liff_punch）', len(c) == 1 and c[0]['action'] == 'liff_punch' and c[0]['url'].endswith('/api/hq'), c)
             m = msg(p)
             ok('成功訊息含時間、地點、問候語', '地點：' + HQ['name'] in m and any(w in m for w in ('早安', '午安', '晚上好')), m)
+            ok('第一次打卡沒有漏卡：不顯示忘打卡提醒', '⚠️' not in m, m)
             ok('畫面即將關閉：兩顆鍵都停用', p.is_disabled('#btnIn') and p.is_disabled('#btnOut'))
             p.wait_for_function('window.__closed === true', timeout=4000)
             ok('代同仁送出「打卡」給機器人並關閉', p.evaluate('window.__sent') == [{'type': 'text', 'text': '打卡'}])
@@ -164,6 +165,16 @@ def main():
             wait_msg(p, '下班打卡失敗')
             no_undefined(p, '後端擋下')
             ok('後端擋下：顯示原因與怎麼辦', '7 分鐘內不能打下班卡' in msg(p) and '怎麼辦：真的要下班請告知主管補登' in msg(p), msg(p))
+
+            # 4b. 忘打卡提醒（2026-10-09）：成功回應帶 missed → 畫面在問候語前多一段 ⚠️
+            q = open_page(ctx, url(hq))
+            q.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
+            q.evaluate("window.__fake.liff_punch = {ok:true, type:'out', ts:'2026-10-08T17:00:00+08:00', greeting:'辛苦了', missed:'你這次沒有打上班卡，請跟主管說實際上班時間'}")
+            force_out(q)
+            wait_msg(q, '下班打卡成功')
+            m = msg(q)
+            ok('忘打卡提醒：顯示在問候語之前', '⚠️ 你這次沒有打上班卡' in m and m.index('⚠️') < m.index('辛苦了'), m)
+            q.close()
 
             # 5. 處理中、無回應、連線中斷：每按一次只送一次 liff_punch（不自動重送）
             for fake, needle in [({'ok': False, 'type': 'out', 'reason': '上一筆還在處理中', 'hint': '請等幾秒'}, '上一筆還在處理中'),
