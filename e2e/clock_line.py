@@ -66,6 +66,10 @@ window.fetch = function (url, o) {
   if (fk === 'real') fk = null;
   if (fk === 'lost') return _f.apply(this, arguments).then(function () { throw new TypeError('Failed to fetch'); });   // 伺服器收到了、回應弄丟
   if (fk === 'abort') return Promise.reject(new TypeError('Failed to fetch'));
+  if (fk === 'midnight') return _f.apply(this, arguments).then(function (r) { return r.json(); }).then(function (j) {   // 重讀時已跨午夜：今天清空、最後一張卡是剛才那筆
+    j.today = []; if (j.guard) j.guard.last = { type: 'out', hm: '00:00', ts: '2099-01-01T00:00:05+08:00' };
+    return new Response(JSON.stringify(j));
+  });
   if (fk === 'hang') return new Promise(function (res, rej) {   // 永不回應，只在頁面自己的逾時 abort 時結束
     if (o.signal) o.signal.addEventListener('abort', function () { rej(new DOMException('aborted', 'AbortError')); });
   });
@@ -323,7 +327,50 @@ def main():
             force_out(p)
             wait_msg(p, '連線不穩，不確定這筆有沒有進去', timeout=15000)
             ok('打卡：連確認也失敗 → 說不確定、請看出勤紀錄', True)
+            # Codex#14（2026-10-10）：23:59 送出、回頭確認時已跨午夜（今天的紀錄清空）→ 靠「最後一張卡變了」判定已進去
+            p.evaluate("window.__fake.liff_punch = 'abort'; window.__fake.liff_status = ['midnight', 'real']")
+            force_out(p)
+            wait_msg(p, '剛才那筆已經進去了', timeout=15000)
+            ok('打卡：確認時已跨午夜 → 看最後一張卡，說已經進去（不誤報沒有送出）', '00:00' in msg(p), msg(p))
             p.close(); gctx2.close()
+            # 11b. Codex#4（2026-10-10）：手上那筆位置已過時（>30 秒）→ 按打卡先重新定位；抓不到不送、人已離店不送
+            GEO_JS = """
+window.__geo = { mode: 'store', calls: 0 };
+Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
+  watchPosition: function (ok) {
+    window.__geo.calls++;
+    var m = window.__geo.mode;
+    if (m === 'none') return 1;   // 定位被關、什麼都不回
+    var at = m === 'away' ? [24.70, 121.10] : [%s, %s];
+    var ts = m === 'store' ? Date.now() - 27000 : Date.now();   // 開頁那筆：還在 30 秒內，幾秒後就過時
+    setTimeout(function () { ok({ timestamp: ts, coords: { latitude: at[0], longitude: at[1], accuracy: 5 } }); }, 50);
+    return 1;
+  },
+  clearWatch: function () {}, getCurrentPosition: function () {}
+} });
+""" % (HQ['lat'], HQ['lng'])
+            for mode, expect, name in [('none', '抓不到目前位置', '定位被關 → 說抓不到、不送打卡'),
+                                       ('away', '不在任何打卡地點範圍內', '已走出店外 → 重新定位後判定不在範圍、不送打卡')]:
+                gctx3 = br.new_context()
+                p = gctx3.new_page(); p.add_init_script(LOG_JS); p.add_init_script(GEO_JS)
+                p.goto(BASE + '/clock-line.html?mock_uid=U1&api=/api&refix_ms=1500')
+                p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
+                p.wait_for_timeout(4000)   # 開頁那筆變成過時
+                p.evaluate("m => { window.__geo.mode = m; }", mode)
+                p.evaluate('() => { for (const id of ["btnIn", "btnOut"]) { const b = document.getElementById(id); if (!b.disabled) { b.click(); return; } } const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
+                wait_msg(p, expect, timeout=15000)
+                ok('舊位置：' + name, sum(1 for x in calls(p) if x['action'] == 'liff_punch') == 0 and p.evaluate('window.__geo.calls') >= 2, msg(p))
+                p.close(); gctx3.close()
+            # 對照：位置還新（30 秒內）→ 不重新定位、照常送出
+            gctx3 = br.new_context()
+            p = gctx3.new_page(); p.add_init_script(LOG_JS); p.add_init_script(GEO_JS.replace('Date.now() - 27000', 'Date.now()'))
+            p.goto(BASE + '/clock-line.html?mock_uid=U1&api=/api&refix_ms=1500')
+            p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
+            p.evaluate("window.__fake.liff_punch = {ok: false, type: 'in', reason: '測試假回應', hint: ''}")
+            p.evaluate('() => { const b = document.getElementById("btnIn").disabled ? document.getElementById("btnOut") : document.getElementById("btnIn"); b.disabled = false; b.click(); }')
+            p.wait_for_function('window.__calls.some(c => c.action === "liff_punch")', timeout=10000)
+            ok('舊位置對照：位置還新 → 不重新定位、直接送出', p.evaluate('window.__geo.calls') == 1)
+            p.close(); gctx3.close()
             # 12. 打卡求助（2026-10-09）：失敗時「看排除步驟」→ 代送「打卡求助：類別」並關閉；成功時不出現
             p = open_page(ctx, url((24.70, 121.10), in_client=True))
             wait_msg(p, '不在任何打卡地點範圍內')

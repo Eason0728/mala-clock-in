@@ -184,10 +184,24 @@ ok('export：沒有的表回空陣列', () => {
 });
 
 // ── 舊動作沒被改壞 ──
-ok('舊 liff_clock 仍照舊：換成本人 key 呼叫 handleClock、不經防呆', () => {
+ok('舊 liff_clock：沒被擋時換成本人 key 呼叫 handleClock', () => {
+  const { H, clockCalls } = make({ sheets: { roster: [R()], events: [EV(30, 'in')] } });
+  H.liff_clock({ id_token: 'TOK_U1', type: 'out', device_id: 'D' });
+  assert.deepStrictEqual(J(clockCalls), [{ type: 'out', device_id: 'D', key: 'k1' }]);
+});
+ok('Codex#5 舊 liff_clock 也擋 10 分鐘鎖：上班 1 分鐘後打下班 → 不呼叫 handleClock', () => {
   const { H, clockCalls } = make({ sheets: { roster: [R()], events: [EV(1, 'in')] } });
-  H.liff_clock({ id_token: 'TOK_U1', type: 'in', device_id: 'D' });
-  assert.deepStrictEqual(J(clockCalls), [{ type: 'in', device_id: 'D', key: 'k1' }]);
+  const r = H.liff_clock({ id_token: 'TOK_U1', type: 'out', device_id: 'D' });
+  assert.strictEqual(r.ok, false); assert.strictEqual(r.error, 'guard_blocked'); assert.strictEqual(clockCalls.length, 0);
+});
+ok('Codex#5 舊 liff_clock 也擋同型：剛打過上班再打上班 → 擋', () => {
+  const { H, clockCalls } = make({ sheets: { roster: [R()], events: [EV(30, 'in')] } });
+  const r = H.liff_clock({ id_token: 'TOK_U1', type: 'in', device_id: 'D' });
+  assert.strictEqual(r.error, 'guard_blocked'); assert.strictEqual(clockCalls.length, 0);
+});
+ok('Codex#5 舊 liff_clock 擋 in／out 以外的 type', () => {
+  const { H, clockCalls } = make({ sheets: { roster: [R()], events: [] } });
+  assert.strictEqual(H.liff_clock({ id_token: 'TOK_U1', type: 'xx' }).error, 'bad_type'); assert.strictEqual(clockCalls.length, 0);
 });
 
 // ── 階段 1 審查（mala-clock-mini#1）修正 ──

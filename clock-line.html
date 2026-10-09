@@ -251,7 +251,9 @@
   /* ── 定位：開頁就持續追蹤，送出時用手上最好的那筆（合格＝誤差 ≤40m 且 30 秒內；合格的一律勝過不合格的）── */
   var GOOD_ACC = 40, STALE_MS = 30000, lastFix = null, watchId = null;
   function good(p) { return p && p.coords.accuracy <= GOOD_ACC && Date.now() - p.timestamp <= STALE_MS; }
-  function better(p) { if (!lastFix || good(p) || (!good(lastFix) && p.coords.accuracy < lastFix.coords.accuracy)) lastFix = p; }
+  // 手上那筆已經超過 30 秒＝過時，新的一筆再不準也換掉（2026-10-10 Codex 審查 #4：原本會留著店裡那筆準的舊位置，走出店外照樣打得進去）
+  function stale(p) { return !p || Date.now() - p.timestamp > STALE_MS; }
+  function better(p) { if (!lastFix || good(p) || stale(lastFix) || (!good(lastFix) && p.coords.accuracy < lastFix.coords.accuracy)) lastFix = p; }
   function startGeo() {
     return new Promise(function (resolve, reject) {
       if (isLocalHost && qs('loc')) {
@@ -413,9 +415,29 @@
   /* ── 打卡 ── */
   function punch(type) {
     if (busy || !status || status.status !== 'ready') return;
-    var label = type === 'in' ? '上班' : '下班';
     var hasIn = (status.today || []).some(function (e) { return e.type === 'in' && (e.status === 'ok' || e.status === 'pending_device_approval'); });
     if (type === 'out' && !status.guard.last && !hasIn && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
+    // 送出前位置一定要是 30 秒內的（定位被關掉、手機在背景停止更新時，手上那筆可能是剛才在店裡的位置）：
+    // 過時就重新定位，最多等 10 秒；抓不到就不送（2026-10-10 Codex 審查 #4）。QR 打卡不看定位。
+    if (!qrToken && stale(lastFix)) {
+      busy = true; refreshButtons();
+      say('確認目前位置中…', '', '大約幾秒，請不要關閉');
+      var cap = new Promise(function (res, rej) { setTimeout(function () { rej(new Error('定位逾時')); }, REFIX_MS); });
+      return Promise.race([startGeo(), cap]).then(function () { if (stale(lastFix)) throw new Error('定位逾時'); }).then(function () {
+        busy = false;
+        showMe(lastFix.coords.latitude, lastFix.coords.longitude);
+        sendPunch(type);
+      }, function () {
+        busy = false; refreshButtons();
+        say('抓不到目前位置，這次沒有送出', 'warn', '請到店內、開啟定位與 Wi‑Fi 後再按一次。');
+        offerHelp('定位抓不到');
+      });
+    }
+    sendPunch(type);
+  }
+  var REFIX_MS = (isLocalHost && +qs('refix_ms')) || 10000;
+  function sendPunch(type) {
+    var label = type === 'in' ? '上班' : '下班';
     // 送出前用最新定位再挑一次店：位置變了就重讀，不把卡打到畫面上沒顯示的那家店（QR 打卡不看定位）
     var pick = qrToken ? { status: 'ok', store: curStore } : ClockLineCore.pickStore(fixForPick(), STORES);
     if (pick.status !== 'ok' || !curStore || pick.store.code !== curStore.code) {
@@ -423,7 +445,9 @@
       return loadStatus().then(function () { if (status && status.status === 'ready') say('你的位置變了，請確認店家後再按一次', 'warn'); });
     }
     var st = curStore;
-    var before = countToday(status, type);   // 結果不明時回頭確認用：比「今天這型的卡有沒有多一張」，不比時鐘（clock.html 2026-09-21 同一招）
+    // 結果不明時回頭確認用：比「今天這型的卡有沒有多一張」，不比時鐘（clock.html 2026-09-21 同一招）；
+    // 另記最後一張算數的卡（guard.last，往回 12 小時、不分日期）——23:59 送出、重讀時已跨午夜，「今天」換了一天筆數比不出來（2026-10-10 Codex 審查 #14）
+    var before = { n: countToday(status, type), lastTs: status.guard && status.guard.last ? String(status.guard.last.ts) : '' };
     busy = true; refreshButtons();
     say('送出' + label + '打卡中…', '', '大約需要幾秒，請不要關閉');
     post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, qrToken ? { qr: qrToken } : fixPayload()))
@@ -474,10 +498,13 @@
     return readRetry(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() }).then(function (r) {
       if (!r || !r.ok || r.status !== 'ready') throw new Error('confirm_failed');
       r.store = { code: st.code, name: st.name, lat: st.lat, lng: st.lng, radius_m: st.radius_m };
-      if (countToday(r, type) > before) {
+      var gl = r.guard && r.guard.last;
+      var viaLast = !!(gl && gl.type === type && String(gl.ts) !== before.lastTs);
+      if (countToday(r, type) > before.n || viaLast) {
         var mine = r.today.filter(function (e) { return e.type === type && (e.status === 'ok' || e.status === 'pending_device_approval'); });
+        var hm = viaLast ? gl.hm : mine[mine.length - 1].hm;
         render(r);
-        say(label + '打卡成功 ' + mine[mine.length - 1].hm + '（剛才那筆已經進去了，不用再按）\n地點：' + st.name, 'ok');
+        say(label + '打卡成功 ' + hm + '（剛才那筆已經進去了，不用再按）\n地點：' + st.name, 'ok');
         return sendToChat().then(function (closing) { if (closing) keepBusy = true; });
       }
       render(r);

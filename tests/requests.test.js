@@ -295,6 +295,9 @@ ok('出差：整天填時數／只一段算時數；地點、事由必填，地�
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-14', hours: 8, place: '字'.repeat(41), why: 'x' }).error, 'bad_place');
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-14', place: '總部', why: 'x' }).error, 'bad_hours');
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2027-02-01', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');   // 超過 90 天
+  assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-32', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');   // Codex#13 不存在的日子
+  assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-11-31', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');
+  assert.strictEqual(submit(sb, { kind: 'trip', date: '2027-02-29', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-09-01', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');   // 超過 31 天前
   assert(submit(sb, { kind: 'trip', date: '2026-09-10', hours: 8, place: '總部', why: 'x' }).ok);   // 31 天內可補
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-12', hours: 4, place: '總部', why: 'x' }).error, 'duplicate');

@@ -180,11 +180,19 @@ function handleReqInfo_(body) {
   }).sort(function (a, b) { return a.created_at < b.created_at ? 1 : -1; }).map(reqPublic_);
   var out = { ok: true, name: String(who.me.name), emp_id: String(who.me.emp_id), today: today, requests: mine,
               miss_days: REQ_MISS_DAYS, leave_types: LEAVE_TYPES.filter(function (t) { return t !== '出差'; }) };
-  if (/^\d{4}-\d{2}-\d{2}$/.test(String(body.date || ''))) {
+  if (reqIsDate_(body.date)) {
     var di = reqDayInfo_(liffEvents_(who.ss), who.me.emp_id, String(body.date));
     out.day = { date: String(body.date), punches: di.punches, missing: di.missing };
   }
   return out;
+}
+
+/** yyyy-MM-dd 而且是真的存在的日子（2026-10-10 Codex 審查 #13：只看外形會收 2026-11-31，範圍判斷當 12/1、表裡卻寫 11/31）。 */
+function reqIsDate_(s) {
+  s = String(s || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  var d = new Date(Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10)));
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
 
 /** 驗證一筆申請，回 {row} 或 {error, message}。now＝台北日期字串（測試可注入）。 */
@@ -192,7 +200,7 @@ function reqValidate_(b, me, events, today, existing) {
   var kind = String(b.kind || '');
   if (!REQ_KINDS_[kind]) return { error: 'bad_kind', message: '申請類別不對' };
   var date = String(b.date || '');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: 'bad_date', message: '請選日期' };
+  if (!reqIsDate_(date)) return { error: 'bad_date', message: '請選日期' };
   var diff = reqDayDiff_(date, today);
   var reason = reqClean_(b.reason, REQ_REASON_MAX);
   var row = { kind: kind, date: date, leave_type: '', start: '', end: '', hours: '', miss_type: '', reason: reason, comp: '' };
@@ -420,7 +428,7 @@ function handleMgrReqDecideBatch_(body) {
 function handleMgrReqDay_(body) {
   if (!reqMgr_(body)) return { ok: false, error: 'unauthorized' };
   var date = String(body.date || '');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: 'bad_date' };
+  if (!reqIsDate_(date)) return { ok: false, error: 'bad_date' };
   var by = {};
   reqRows_(getSS()).forEach(function (r) {
     if (r.date !== date || r.status !== 'approved') return;

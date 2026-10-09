@@ -209,6 +209,7 @@ const okFetch = (sub) => () => ({
     setRosterCell: () => true,
     nowTaipeiIso: () => '2026-08-27T12:00:00+08:00',
     handleClock: (b) => { received = b; return { ok: true, status: 'ok' }; },
+    lastCountedEvent: () => null, normCellTs: (v) => v,   // 2026-10-10 起 liff_clock 先過 liffGuard_（沒有 events 分頁＝沒有上一張卡）
     console: console,
   };
   vm.createContext(sandbox);

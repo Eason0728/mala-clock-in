@@ -228,7 +228,7 @@ function handleMgrLineUnbind_(body) {
 /* ══ 方案 C（2026-10-08）：LINE 打卡畫面直接打這家店，不再經光復轉一手 ══
    打卡畫面（clock-line.html）用 GPS 自己挑店，直接呼叫該店的 liff_status／liff_punch。
    防呆（同型擋、10 分鐘鎖）由各店自己在伺服器端擋——規則與網頁版 clock.html、光復 LineHub.gs 共用 liffGuard_。
-   舊動作 liff_whoami／liff_clock／liff_bind 一律不動。 */
+   舊動作 liff_whoami／liff_bind 一律不動；liff_clock 2026-10-10 起也過 liffGuard_（見 handleLiffClockGuarded_）。 */
 var LIFF_LOCK_MIN = 10;
 
 function liffHm_(ts) { return String(ts || '').slice(11, 16); }
@@ -411,6 +411,23 @@ function liffPunchVerified_(type, body) {
   return liffPunchFor_(userId, found.roster, found.ss, type, body);
 }
 
+/** 舊動作 liff_clock（光復 LineHub line_quick_clock 伺服器對伺服器呼叫）也要過同一道防呆（2026-10-10 Codex 審查 #5）：
+ *  原本直接轉 handleClock，只有交替防呆、沒有 10 分鐘鎖，也不擋 in／out 以外的 type。 */
+function handleLiffClockGuarded_(body) {
+  var type = body.type;
+  if (type !== 'in' && type !== 'out') return { ok: false, error: 'bad_type' };
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+  var found = liffRosterByLine_(userId);
+  if (found.error) return { ok: false, error: found.error };
+  var stop = liffGuardReject_(liffGuard_(liffEvents_(found.ss), found.roster.emp_id), type);
+  if (stop) return { ok: false, type: type, error: 'guard_blocked', reason: stop.reason, hint: stop.hint };
+  var inner = {};
+  Object.keys(body).forEach(function (k) { if (k !== 'id_token' && k !== 'action') inner[k] = body[k]; });
+  inner.key = found.roster.key;
+  return handleClock(inner);
+}
+
 function liffPunchFor_(userId, me, ss, type, body) {
   var events = liffEvents_(ss);
   var stop = liffGuardReject_(liffGuard_(events, me.emp_id), type);
@@ -476,7 +493,7 @@ var LIFF_HANDLERS = {
   mgr_line_binds: handleMgrLineBinds_,
   mgr_line_unbind: handleMgrLineUnbind_,
   liff_bind: handleLiffBind_,
-  liff_clock: function (body) { return withLineIdentity_(body, handleClock); },
+  liff_clock: handleLiffClockGuarded_,
   liff_whoami: function (body) { return withLineIdentity_(body, handleWhoami); },
   liff_my_recent: function (body) { return withLineIdentity_(body, handleMyRecent); },
   liff_status: handleLiffStatus_,
