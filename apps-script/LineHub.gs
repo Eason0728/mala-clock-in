@@ -559,47 +559,59 @@ function lineHubFlexRow_(label, value, opts) {
     { type: 'text', text: lineHubTxt_(value), size: 'sm', align: 'end', flex: 3, wrap: true, color: opts.muted ? '#8a817a' : '#222222',
       weight: opts.bold ? 'bold' : 'regular' }] };
 }
+/* 2026-10-09 Eason 選 A：分區塊＋淡色系（實付淡綠／工時淡藍／加項淡黃／扣項淡紅／其他淡灰），每區整塊淡色底。
+ * 項目、金額、小字規則都不變（與網頁「我的薪資」一致），只改排版。 */
+var LINE_HUB_PAY_TONE = {
+  net:   { bg: '#eaf6ee', fg: '#1e7d4f', sub: '#5f7a6b' },
+  hours: { bg: '#edf3fa', fg: '#2b5c8a' },
+  earn:  { bg: '#fdf7e6', fg: '#8a6100', line: '#ecdcae' },
+  ded:   { bg: '#fcefed', fg: '#b03a26', line: '#efc9c2' },
+  misc:  { bg: '#f4f4f2', fg: '#6b6b66' },
+};
+function lineHubPaySection_(key, title, rows) {
+  var t = LINE_HUB_PAY_TONE[key];
+  return { type: 'box', layout: 'vertical', margin: 'md', backgroundColor: t.bg, cornerRadius: '10px', paddingAll: '10px',
+           contents: [{ type: 'text', text: title, size: 'xs', weight: 'bold', color: t.fg }].concat(rows) };
+}
 function lineHubPayFlex_(j) {
   var res = j.result || {};
   var ymLabel = parseInt(String(j.ym).slice(5, 7), 10) + ' 月薪資';
-  var body = [
-    { type: 'text', text: '實付金額', size: 'xs', color: '#8a817a' },
-    { type: 'text', text: 'NT$ ' + lineHubNf_(res.net), size: 'xxl', weight: 'bold', color: '#1e7d4f' },
-    { type: 'separator', margin: 'md' },
-    lineHubFlexRow_('核定工時', lineHubHours_(res.total_hours)),
-  ];
-  if (res.support_hours) body.push(lineHubFlexRow_('跨店支援時數', lineHubHours_(res.support_hours)));
-  if (res.base_hours !== null && res.base_hours !== undefined && res.base_hours !== '') body.push(lineHubFlexRow_('基本工時', lineHubHours_(res.base_hours)));
-  if (res.ot_paid_hours) body.push(lineHubFlexRow_('計薪加班', lineHubHours_(res.ot_paid_hours)));
-  body.push({ type: 'text', text: '加項', size: 'xs', color: '#8a817a', margin: 'lg' });
+  var T = LINE_HUB_PAY_TONE;
+  var body = [{ type: 'box', layout: 'vertical', margin: 'none', backgroundColor: T.net.bg, cornerRadius: '10px', paddingAll: '12px', contents: [
+    { type: 'text', text: '實付金額', size: 'xs', color: T.net.fg },
+    { type: 'text', text: 'NT$ ' + lineHubNf_(res.net), size: 'xxl', weight: 'bold', color: T.net.fg },
+    { type: 'text', text: '應收 ' + lineHubNf_(res.gross) + '　－　應付 ' + lineHubNf_(res.deduction), size: 'xxs', color: T.net.sub, margin: 'xs' }] }];
+  var hours = [lineHubFlexRow_('核定工時', lineHubHours_(res.total_hours))];
+  if (res.support_hours) hours.push(lineHubFlexRow_('跨店支援時數', lineHubHours_(res.support_hours)));
+  if (res.base_hours !== null && res.base_hours !== undefined && res.base_hours !== '') hours.push(lineHubFlexRow_('基本工時', lineHubHours_(res.base_hours)));
+  if (res.ot_paid_hours) hours.push(lineHubFlexRow_('計薪加班', lineHubHours_(res.ot_paid_hours)));
+  body.push(lineHubPaySection_('hours', '工時', hours));
   // 與網頁「我的薪資」（clock.html payLine）一致：0 元也照列——薪資引擎刻意保留「事假 8H $0」「全勤獎金（遲到 N 次）$0」
   // 這類資訊列（Payroll.gs 註解：該扣卻扣到 0 必須照印），兩邊才對得起來（Flex 審查 #3）
-  (res.earn || []).forEach(function (x) {
-    body.push(lineHubFlexRow_(x.item_label, lineHubNf_(x.amount), { sub: lineHubPayLineSub_(x) }));
-  });
-  body.push(lineHubFlexRow_('應收合計', lineHubNf_(res.gross), { bold: true }));
-  body.push({ type: 'text', text: '扣項', size: 'xs', color: '#8a817a', margin: 'lg' });
+  var earn = (res.earn || []).map(function (x) { return lineHubFlexRow_(x.item_label, lineHubNf_(x.amount), { sub: lineHubPayLineSub_(x) }); });
+  earn.push({ type: 'separator', margin: 'md', color: T.earn.line });
+  earn.push(lineHubFlexRow_('應收合計', lineHubNf_(res.gross), { bold: true }));
+  body.push(lineHubPaySection_('earn', '加項', earn));
   // 扣項金額與網頁一致：不加負號、不取絕對值（手動補發是負的扣項，取絕對值會變成多扣）（Flex 審查 #4）
   var deds = res.ded || [];
-  if (!deds.length) body.push(lineHubFlexRow_('無', '—', { muted: true }));
-  deds.forEach(function (x) {
-    body.push(lineHubFlexRow_(x.item_label, lineHubNf_(x.amount), { sub: lineHubPayLineSub_(x) }));
-  });
-  body.push(lineHubFlexRow_('應付合計', lineHubNf_(res.deduction), { bold: true }));
+  var ded = deds.length ? deds.map(function (x) { return lineHubFlexRow_(x.item_label, lineHubNf_(x.amount), { sub: lineHubPayLineSub_(x) }); })
+                        : [lineHubFlexRow_('無', '—', { muted: true })];
+  ded.push({ type: 'separator', margin: 'md', color: T.ded.line });
+  ded.push(lineHubFlexRow_('應付合計', lineHubNf_(res.deduction), { bold: true }));
+  body.push(lineHubPaySection_('ded', '扣項', ded));
   if (j.payday) {
-    body.push({ type: 'separator', margin: 'md' });
     var pd = String(j.payday);
-    body.push(lineHubFlexRow_('發薪日', /^\d+$/.test(pd) ? '每月 ' + pd + ' 日' : pd, { muted: true }));
+    body.push(lineHubPaySection_('misc', '其他', [lineHubFlexRow_('發薪日', /^\d+$/.test(pd) ? '每月 ' + pd + ' 日' : pd, { muted: true })]));
   }
   return {
     type: 'flex',
     altText: ymLabel + '明細已送達',   // 推播預覽／鎖屏不露金額（Flex 審查 #9）
     contents: {
       type: 'bubble', size: 'mega',
-      header: { type: 'box', layout: 'horizontal', backgroundColor: '#e3f1e8', paddingAll: '12px', contents: [
-        { type: 'text', text: ymLabel, weight: 'bold', color: '#1e7d4f', size: 'md' },
+      header: { type: 'box', layout: 'horizontal', backgroundColor: '#ffffff', paddingAll: '12px', paddingBottom: '4px', contents: [
+        { type: 'text', text: ymLabel, weight: 'bold', color: '#222222', size: 'md' },
         { type: 'text', text: '已定案', align: 'end', color: '#1e7d4f', size: 'sm' }] },
-      body: { type: 'box', layout: 'vertical', paddingAll: '14px', contents: body },
+      body: { type: 'box', layout: 'vertical', paddingAll: '14px', paddingTop: '6px', contents: body },
     },
   };
 }
@@ -757,6 +769,7 @@ function lineHubPayCard_(userId, wantYm) {
   var card = lineHubPayFlex_(j);
   if (!wantYm && months[0] !== cur) {
     card.contents.body.contents.unshift({ type: 'text', text: parseInt(cur.slice(5, 7), 10) + ' 月薪資還沒定案，先給你最近一個已定案的月份。', size: 'xs', color: '#a15a00', wrap: true, margin: 'none' });
+    card.contents.body.contents[1].margin = 'md';   // 說明字與實付色塊之間留空
   }
   var others = months.filter(function (y) { return y !== ym; });
   if (others.length) lineHubAddMonthButtons_(card, others.map(function (y) { return { label: lineHubYmLabel_(y, cur), text: '薪資明細 ' + y }; }), '看其他月份');

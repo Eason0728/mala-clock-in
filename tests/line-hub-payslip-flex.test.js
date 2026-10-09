@@ -41,4 +41,18 @@ ok('未定案／沒綁定 → 文字，不送卡片', () => {
   sb.lineHubPayslipFor_ = () => J;
   assert.strictEqual(sb.lineHubPayMessage_('U1').type, 'flex');
 });
+ok('分區塊＋淡色系（2026-10-09 Eason 選 A）：實付／工時／加項／扣項／其他五區依序、各自淡色底，加項區含應收合計、扣項區含應付合計', () => {
+  const body = sb.lineHubPayFlex_(J).contents.body.contents;
+  const boxes = body.filter(x => x.type === 'box' && x.backgroundColor);
+  assert.strictEqual(JSON.stringify(boxes.map(x => x.backgroundColor)), JSON.stringify(['#eaf6ee', '#edf3fa', '#fdf7e6', '#fcefed', '#f4f4f2']));
+  assert.strictEqual(boxes.slice(1).map(x => x.contents[0].text).join(), '工時,加項,扣項,其他');
+  assert(texts(boxes[0]).includes('應收 25,700　－　應付 1,011'));
+  assert(texts(boxes[2]).includes('應收合計') && texts(boxes[2]).includes('事假'));
+  assert(texts(boxes[3]).includes('應付合計') && texts(boxes[3]).includes('621'));
+  assert(texts(boxes[1]).includes('跨店支援時數'));
+});
+ok('沒有發薪日 → 不出現「其他」區', () => {
+  const J2 = JSON.parse(JSON.stringify(J)); delete J2.payday;
+  assert(!texts(sb.lineHubPayFlex_(J2)).includes('其他'));
+});
 if (require.main === module) console.log(`\n${n} 項全部通過`);
