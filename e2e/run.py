@@ -12,6 +12,7 @@
 import json
 import os
 import random
+import re
 import shutil
 import signal
 import subprocess
@@ -604,7 +605,97 @@ def exercise_widgets(page, screen, skip_re='鎖定|解鎖|刪除|匯出|下載|�
     CM.scan(page, screen)
 
 
-def phase_payroll(page, data):
+def phase_attexp(page, data, exp):
+    """出勤紀錄表（匯出）：整月每天都列、一人一張、當天資料與獨立算出的預期一致；
+    Excel 真的下載並用 openpyxl 讀回驗證；PDF 按鈕把列印版面掛上（無頭瀏覽器的 print() 是空操作）。"""
+    import calendar
+    ym = data['workday'][:7]
+    y, m = int(ym[:4]), int(ym[5:7])
+    ndays = calendar.monthrange(y, m)[1]
+    page.click('button[data-p="attexp"]')
+    page.wait_for_timeout(800)
+    CM.mark('button「🗂️出勤紀錄表」', '切到出勤紀錄表')
+    page.fill('#axYm', ym)
+    page.dispatch_event('#axYm', 'change')
+    page.wait_for_selector('.att-sheet', timeout=15000)
+    page.wait_for_timeout(500)
+    n = page.locator('.att-sheet').count()
+    # 前面的階段會新增一位同仁（新進同仁報到），所以只要求「至少」每位資料集同仁各一張
+    names_ok = all(page.locator('.att-sheet').filter(has_text=p['name']).count() >= 1 for p in data['people'])
+    check(f'出勤紀錄表：每位同仁一張（資料集 {len(data["people"])} 人，畫面共 {n} 張）', n >= len(data['people']) and names_ok)
+    rows_ok = all(page.locator('.att-sheet').nth(i).locator('tbody tr').count() == ndays for i in range(n))
+    check(f'出勤紀錄表：整月每天都列（{ndays} 天）', rows_ok)
+    body = text_of(page, '#axBody')
+    check('出勤紀錄表：畫面沒有 undefined／null', not any(w in body for w in ('undefined', 'null', 'NaN')))
+    bad = []
+    for p in data['people']:
+        e = exp[p['name']]
+        sheet = page.locator('.att-sheet').filter(has_text=p['name']).first
+        row = sheet.locator('tbody tr').filter(has_text=data['workday'][5:]).first
+        cells = row.locator('td').all_inner_texts()
+        want_in = hhmm(p['segments'][0][0])
+        if want_in not in cells[2]:
+            bad.append(f'{p["name"]} 打卡欄少了 {want_in}：{cells[2]!r}')
+        if cells[5].strip() and abs(float(cells[5]) - e['approved']) > 0.001:
+            bad.append(f'{p["name"]} 核定 {cells[5]} ≠ {e["approved"]}')
+    check('出勤紀錄表：當天打卡時間與核定時數對得上獨立算出的預期', not bad, '；'.join(bad[:3]))
+    # 選單一同仁
+    first = data['people'][0]
+    page.select_option('#axWho', first['emp_id'])
+    page.wait_for_timeout(300)
+    check('出勤紀錄表：選單一同仁只顯示他', page.locator('.att-sheet').count() == 1)
+    # Excel：真的下載並讀回
+    got = None
+    try:
+        with page.expect_download(timeout=30000) as dl:
+            click(page, '#axXlsx', '匯出出勤 Excel（攔截下載）')
+        got = dl.value
+    except Exception as ex:                                  # 需要連網載入 SheetJS（cdnjs）
+        check('出勤紀錄表：匯出 Excel 有下載（需連網載入 SheetJS）', False, str(ex)[:120])
+    if got:
+        import openpyxl
+        path = os.path.join(SHOTS, 'att-export.xlsx')
+        os.makedirs(SHOTS, exist_ok=True)
+        got.save_as(path)
+        wb = openpyxl.load_workbook(path)
+        ws = wb[wb.sheetnames[0]]
+        rows = list(ws.iter_rows(values_only=True))
+        hdr = [i for i, r in enumerate(rows) if r and r[0] == '日期'][0]
+        day_rows = [r for r in rows[hdr + 1: hdr + 1 + ndays]]
+        okx = (len(wb.sheetnames) == 1 and len(day_rows) == ndays
+               and day_rows[0][0] == f'{ym}-01' and day_rows[-1][0] == f'{ym}-{ndays:02d}')
+        wd = next(r for r in day_rows if r[0] == data['workday'])
+        okx = okx and hhmm(first['segments'][0][0]) in str(wd[2])
+        check(f'出勤紀錄表：Excel 讀回 {ndays} 天、當天打卡時間正確', okx, str(wd))
+        flat = ' '.join(str(c) for r in rows for c in r if c is not None)
+        check('出勤紀錄表：Excel 沒有 undefined／null', 'undefined' not in flat and 'null' not in flat)
+    # PDF：列印版面
+    page.select_option('#axWho', '')
+    page.wait_for_timeout(300)
+    click(page, '#axPdf', '匯出出勤 PDF（掛上列印版面）')
+    page.wait_for_timeout(500)
+    page.evaluate("document.body.classList.add('att-printing')")   # 無頭下 afterprint 會立刻拿掉
+    page.emulate_media(media='print')
+    pdf = os.path.join(SHOTS, 'att-export.pdf')
+    page.pdf(path=pdf, prefer_css_page_size=True, print_background=True)
+    page.emulate_media(media='screen')
+    page.evaluate("document.body.classList.remove('att-printing')")
+    raw = open(pdf, 'rb').read()
+    pages = len(re.findall(rb'/Type\s*/Page[^s]', raw))
+    check(f'出勤紀錄表：PDF 一人一頁（{page.locator(".att-sheet").count()} 張 → {pages} 頁）',
+          pages == page.locator('.att-sheet').count())
+    CM.scan(page, '薪酬頁（出勤紀錄表）')
+    # 門市下拉與「重新載入」：真的操作一次，並確認資料仍在
+    page.select_option('#axStore', index=0)
+    page.wait_for_timeout(1200)
+    mark_el(page, '#axStore', '換門市（只有一家時重選同一家）會重新載入')
+    click(page, 'button.btn.ghost[onclick="loadAttExp(true)"]', '重新載入出勤紀錄')
+    page.wait_for_timeout(1200)
+    mark_el(page, '#axWho', '選同仁／選回全部')
+    check('出勤紀錄表：重新載入後資料仍在', page.locator('.att-sheet').count() >= len(data['people']))
+
+
+def phase_payroll(page, data, exp_att):
     """薪酬頁：驗「輸入→後端→畫面」這條鏈與所有操作。
 
     ⚠ 不是驗算薪正確性——那是 tests/ 那 24 個單元測試的職責。這裡的假後端用簡化公式，
@@ -678,6 +769,8 @@ def phase_payroll(page, data):
             got = '(無下載事件)'
         check(f'{label} 按下後有反應', bool(got), got)
 
+    phase_attexp(page, data, exp_att)
+
     # 清除本月手動工時（破壞性，清完重算回來）
     click_text(page, None, '出勤資料', '切到出勤資料分頁')
     page.wait_for_timeout(1200)
@@ -740,7 +833,7 @@ def main():
             print('── 階段C：核定頁其餘操作 ──')
             phase_manager_buttons(page, data)
             print('── 階段D：薪酬 ──')
-            phase_payroll(page, data)
+            phase_payroll(page, data, exp)
 
             check('過程中沒有 JavaScript 錯誤', not errors, '；'.join(errors[:3]))
             browser.close()

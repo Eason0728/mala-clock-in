@@ -638,6 +638,94 @@ def handle_payroll_leave_options(data, body):
             "quotas": quotas, "day_hours": 8}
 
 
+ATT_STATUS_LABEL = {
+    "rejected_out_of_range": "超出範圍，未入帳",
+    "pending_device_approval": "新裝置待核准，未入帳",
+    "rejected_duplicate": "重複打卡，被系統擋下",
+    "rejected_device": "裝置不符，被系統擋下",
+}
+
+
+def handle_payroll_attendance_export(data, body):
+    """{action:'payroll_attendance_export', admin_key, store, ym, emp_id?}（唯讀）。
+    與 Payroll.gs payAttendanceBuild 同步：整月每天都列、跨夜歸上班那天（沿用 day_punch_segments）、
+    被擋／待核准的卡不當有效卡但列出並標註、核定取最新、請假依姓名對應。"""
+    if not check_admin(body):
+        return {"ok": False, "error": "unauthorized"}
+    ym = str(body.get("ym", ""))
+    if not re.match(r"^\d{4}-(0[1-9]|1[0-2])$", ym):
+        return {"ok": False, "error": "bad_ym"}
+    only = str(body.get("emp_id") or "")
+    y, m = int(ym[:4]), int(ym[5:7])
+    nxt = datetime(y + (m == 12), m % 12 + 1, 1)
+    dim = (nxt - datetime(y, m, 1)).days
+    dates = ["%s-%02d" % (ym, d) for d in range(1, dim + 1)]
+    wk = ["日", "一", "二", "三", "四", "五", "六"]
+    roster = data.get("roster", [])
+    name_to_emp = {str(r.get("name", "")).strip(): str(r["emp_id"]) for r in roster}
+    has = set()
+    for e in data["events"]:
+        if e["ts"][:7] == ym:
+            has.add(e["emp_id"])
+    for a in data["approved"]:
+        if str(a["date"])[:7] == ym:
+            has.add(a["emp_id"])
+    leave_by = {}
+    for l in data.get("leave", []):
+        emp = name_to_emp.get(str(l.get("name", "")).strip())
+        dt = str(l.get("date", ""))[:10]
+        if not emp or dt[:7] != ym:
+            continue
+        has.add(emp)
+        h = l.get("hours", "")
+        h = None if h == "" or h is None else float(h)
+        leave_by.setdefault(emp, {}).setdefault(dt, []).append({"type": str(l.get("type", "")), "hours": h})
+    people = [r for r in roster
+              if (not only or str(r["emp_id"]) == only)
+              and (str(r.get("active", True)).lower() == "true" or str(r["emp_id"]) in has)]
+    people.sort(key=lambda r: str(r["emp_id"]))
+    employees = []
+    for r in people:
+        emp = str(r["emp_id"])
+        appr_h = leave_h = 0.0
+        work_days = pending_days = 0
+        days = []
+        for dt in dates:
+            seg = day_punch_segments(data, emp, dt)["segments"]
+            invalid = [{"time": e["ts"][11:16], "type": e["type"], "status": e["status"],
+                        "label": ATT_STATUS_LABEL.get(e["status"], "未入帳（%s）" % e["status"])}
+                       for e in sorted(data["events"], key=lambda x: x["ts"])
+                       if e["emp_id"] == emp and e["ts"][:10] == dt and e["status"] != "ok"]
+            rec = latest_approved_record(data, dt, emp)
+            lv = leave_by.get(emp, {}).get(dt, [])
+            lv_h = sum((x["hours"] or 0) for x in lv)
+            ah = None
+            if rec and rec.get("approved_hours") not in ("", None):
+                ah = float(rec["approved_hours"])
+            row = {"date": dt, "weekday": wk[(datetime.strptime(dt, "%Y-%m-%d").weekday() + 1) % 7],
+                   "segments": seg, "invalid": invalid, "approved": bool(rec),
+                   "periods": str(rec.get("periods", "")) if rec else "",
+                   "approved_hours": ah, "status_text": str(rec.get("status_text", "")) if rec else "",
+                   "manager": str(rec.get("manager_name", "")) if rec else "",
+                   "leave": lv, "leave_hours": round(lv_h, 2)}
+            if ah is not None:
+                appr_h += ah
+                if ah > 0:
+                    work_days += 1
+            elif seg:
+                pending_days += 1
+            leave_h += lv_h
+            days.append(row)
+        employees.append({"emp_id": emp, "name": str(r.get("name", "")),
+                          "active": str(r.get("active", True)).lower() == "true", "days": days,
+                          "totals": {"approved_hours": round(appr_h, 2), "leave_hours": round(leave_h, 2),
+                                     "work_days": work_days, "pending_days": pending_days}})
+    st = str(body.get("store") or "SSLGF")
+    name = next((s.get("name") for s in data.get("payroll", {}).get("store", []) if str(s.get("code")) == st), None)
+    return {"ok": True, "store": st, "store_name": name or ("麻的小辛辣 新竹光復店" if st == "SSLGF" else st),
+            "ym": ym, "generated_at": iso_now(), "employees": employees}
+
+
 def hm_to_ms(date_str, hm):
     """'yyyy-MM-dd' + 'HH:mm' → 該台北時刻的 epoch ms（明寫 +08:00）。"""
     h, m = hm.split(":")
@@ -1605,6 +1693,7 @@ try:
     ACTIONS['payroll_holiday_sync'] = _persist(ACTIONS['payroll_holiday_sync'])
 except ImportError:
     pass
+ACTIONS['payroll_attendance_export'] = handle_payroll_attendance_export
 
 # ── LINE 單一打卡入口的集中服務（對應 apps-script/LineHub.gs，只掛在 /api＝光復）──
 def _hub_store_codes():

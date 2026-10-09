@@ -151,9 +151,38 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 .slipcols td{border-bottom:1px dotted var(--line);padding:5px 2px;font-size:12.5px}
 .slipnet{margin-top:22px;background:var(--black);color:#fff;border-radius:10px;padding:14px 20px;display:flex;justify-content:space-between;align-items:center}
 .slipnet .big{font-size:25px;color:var(--gold)}
+/* ── 出勤紀錄匯出（正式出勤紀錄：一人一頁、A4、可列印）── */
+.att-sheet{background:#fff;border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px}
+.att-sheet h3{font-size:18px;font-weight:900;text-align:center;letter-spacing:3px;margin-bottom:10px}
+.att-meta{display:grid;grid-template-columns:repeat(3,1fr);gap:2px 14px;font-size:12.5px;border-top:2px solid var(--black);
+ border-bottom:1px solid var(--line);padding:8px 0;margin-bottom:8px}
+.att-meta b{color:#7a7067;font-weight:700}
+.att-tbl{table-layout:fixed;width:100%;border-collapse:collapse;font-size:11.5px}
+.att-tbl th,.att-tbl td{border:1px solid #cfc7bf;padding:2px 4px;text-align:center;white-space:normal;word-break:break-all;line-height:1.35;vertical-align:middle}
+.att-tbl th{background:#f3eee9;color:var(--ink);font-size:11px}
+.att-tbl td.l{text-align:left}
+.att-tbl tr.off td{background:#faf7f3;color:#8a817a}
+.att-tbl tr.wk td{background:#f8f5f1}
+.att-tbl .mute{color:#b3aaa1}
+.att-tbl .warn{color:var(--bad);font-weight:700}
+.att-sum{display:flex;gap:26px;flex-wrap:wrap;font-size:12.5px;margin:9px 0 4px;font-weight:700}
+.att-note{font-size:10.5px;color:#7a7067;margin:2px 0 0}
+.att-sign{display:flex;gap:40px;margin-top:22px;font-size:13px}
+.att-sign div{flex:1;border-bottom:1px solid var(--black);padding-bottom:26px;white-space:nowrap}
 @media print{.sidebar,.topbar,.noprint{display:none!important}body{background:#fff}.app{display:block}
  main{padding:0}.panel{display:none!important}.panel.on{display:block!important}.card{border:0;padding:0;box-shadow:none}
- .exp-person{page-break-inside:avoid}}
+ .exp-person{page-break-inside:avoid}
+ body.att-printing{zoom:1}
+ body.att-printing .att-sheet{border:0;border-radius:0;padding:0;margin:0;page-break-after:always;break-after:page;page:attpage}
+ body.att-printing .att-sheet:last-child{page-break-after:auto;break-after:auto}
+ body.att-printing #msg{display:none!important}
+ body.att-printing .att-tbl{font-size:9px}body.att-printing .att-tbl th{font-size:8.5px}
+ body.att-printing .att-tbl th,body.att-printing .att-tbl td{padding:1px 3px;line-height:1.2}
+ body.att-printing .att-sheet h3{font-size:16px;margin-bottom:6px}
+ body.att-printing .att-meta{font-size:11px;padding:5px 0;margin-bottom:5px}
+ body.att-printing .att-sign{margin-top:14px}
+ body.att-printing .att-sign div{padding-bottom:20px}}
+@page attpage{size:A4 portrait;margin:9mm 9mm}
 @media(max-width:860px){
  .app{flex-direction:column}
  .sidebar{width:100%;height:auto;position:static;flex-direction:row;align-items:center;overflow-x:auto}
@@ -180,6 +209,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
       <button data-p="att"><span class="ic">🕒</span>出勤資料</button>
       <button data-p="bonus"><span class="ic">🎁</span>獎金計算</button>
       <button data-p="punch"><span class="ic">📋</span>打卡紀錄</button>
+      <button data-p="attexp"><span class="ic">🗂️</span>出勤紀錄表</button>
       <div class="nav-label">資料設定</div>
       <button data-p="emp"><span class="ic">👥</span>員工設定</button>
       <button data-p="cfg"><span class="ic">⚙️</span>參數設定</button>
@@ -312,6 +342,23 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     </div>
     <div id="punchBody"></div>
   </div>
+</section>
+
+<section class="panel" id="p-attexp">
+  <div class="card noprint">
+    <h2>出勤紀錄匯出</h2>
+    <p class="hint">正式出勤紀錄（勞基法施行細則第 21 條：逐日記載至分鐘），供勞檢、稽核、同仁索取。資料來自打卡系統，唯讀；選門市與月份，再選一位同仁或「全部」。每人每月一張表，整月每天都列，Excel 一人一個工作表，PDF 一人一頁（A4，底部留員工／主管簽名）。</p>
+    <div class="row" style="margin-bottom:12px;align-items:flex-end">
+      <div class="fld"><label for="axStore">門市</label><select id="axStore" onchange="loadAttExp(true)" style="min-width:170px"></select></div>
+      <div class="fld"><label for="axYm">月份</label><input type="month" id="axYm" onchange="loadAttExp(true)" style="min-width:150px"></div>
+      <div class="fld"><label for="axWho">同仁</label><select id="axWho" onchange="renderAttExp()" style="min-width:160px"><option value="">全部</option></select></div>
+      <button class="btn ghost" onclick="loadAttExp(true)">重新載入</button>
+      <button class="btn" id="axXlsx" onclick="exportAttExcel()">匯出出勤 Excel</button>
+      <button class="btn dark" id="axPdf" onclick="exportAttPDF()">匯出出勤 PDF</button>
+    </div>
+    <div class="hint" id="axStat" style="margin:0"></div>
+  </div>
+  <div id="axBody"></div>
 </section>
 
 <section class="panel" id="p-att">
@@ -2198,6 +2245,162 @@ function exportPDF(){
   window.print();   // @media print 只印目前(匯出)面板的明細；.noprint 控制列自動隱藏
 }
 
+/* ═════ 出勤紀錄匯出（2026-10-09）═════
+ * 後端 payroll_attendance_export（唯讀）一次回該店該月全部同仁逐日資料；選單人只是前端過濾。
+ * 下面 ATTX-PURE 區的純函式由 tests/attendance-export-front.test.js 抽出實跑。 */
+/* ATTX-PURE-BEGIN */
+const ATT_COMPANY='鼎兆元';   // 表頭「公司」名稱（正式法人全名待 Eason 確認）
+function attSegText(s){
+  if(s.in&&s.out) return s.in+'–'+s.out+(s.cross?'(+1)':'');
+  if(s.in) return s.in+'–（未打下班卡）';
+  return '（未打上班卡）–'+s.out;
+}
+function attInvalidText(x){ return x.time+' '+(x.type==='in'?'上班':x.type==='out'?'下班':x.type)+'（'+x.label+'）'; }
+function attLeaveText(d){
+  return (d.leave||[]).map(l=>l.type+(l.hours!=null?' '+l.hours+'H':'')).join('；');
+}
+function attPeriodsText(d,sep){ return d.periods?String(d.periods).split(',').join(sep==null?'\n':sep):''; }
+function attStatusText(d){
+  if(d.status_text) return d.status_text;
+  if(!d.approved&&(d.segments||[]).length) return '待主管核定';
+  return '';
+}
+/* 一天 → 表格各欄的純文字（Excel 與畫面共用同一份，避免兩邊不一致）。
+   sep＝同一格內多筆的分隔：畫面用換行（預設）；Excel 用「、」——社群版 SheetJS 不能設儲存格自動換行，
+   換行字元在 Excel 裡會看起來擠成一行。 */
+function attDayCells(d,sep){
+  const j=sep==null?'\n':sep;
+  return {
+    date:d.date, weekday:d.weekday,
+    punch:(d.segments||[]).map(attSegText).join(j),
+    invalid:(d.invalid||[]).map(attInvalidText).join(j),
+    periods:attPeriodsText(d,j),
+    hours:d.approved_hours==null?'':d.approved_hours,
+    leave:attLeaveText(d),
+    status:attStatusText(d)
+  };
+}
+function attSheetName(e,used){
+  let nm=(e.emp_id+' '+e.name).replace(/[\[\]:*?\/\\]/g,'_').slice(0,31)||'sheet';
+  let k=nm,i=2; while(used[k]){ k=nm.slice(0,28)+'_'+i++; }
+  used[k]=1; return k;
+}
+/* ATTX-PURE-END */
+let ATTX={key:'',data:null};
+function attStoreOptions(){
+  const sel=$('axStore'); if(!sel||sel.options.length) return;
+  const list=(STORE_LIST||[]).filter((s,i)=>i===0||String(s.clock_ss_id||'').trim());
+  const opts=list.length?list:[{code:STORE||'',name:'本店'}];
+  sel.innerHTML=opts.map(s=>`<option value="${esc(s.code)}">${esc(s.name||s.code)}</option>`).join('');
+  const cur=opts.find(s=>String(s.code)===String(STORE)); if(cur) sel.value=String(cur.code);
+}
+async function loadAttExp(force){
+  attStoreOptions();
+  if(!$('axYm').value) $('axYm').value=ym();
+  const store=$('axStore').value, month=$('axYm').value;
+  if(!/^\d{4}-\d{2}$/.test(month)) return;
+  const key=store+'|'+month;
+  if(!force&&ATTX.key===key&&ATTX.data){ renderAttExp(); return; }
+  $('axStat').textContent='載入中…'; $('axBody').innerHTML='';
+  const r=await post('payroll_attendance_export',{store,ym:month});
+  if(!r.ok){ ATTX={key:'',data:null}; $('axStat').innerHTML='<span class="bad">讀取失敗：'+esc(r.message||r.error||'')+'</span>'; return; }
+  ATTX={key,data:r};
+  const prev=$('axWho').value;
+  $('axWho').innerHTML='<option value="">全部（'+r.employees.length+' 人）</option>'+r.employees.map(e=>`<option value="${esc(e.emp_id)}">${esc(e.name)}${e.active?'':'（已離職）'}</option>`).join('');
+  if(prev&&r.employees.some(e=>e.emp_id===prev)) $('axWho').value=prev;
+  renderAttExp();
+}
+function attSelected(){
+  const d=ATTX.data; if(!d) return [];
+  const w=$('axWho').value;
+  return d.employees.filter(e=>!w||e.emp_id===w);
+}
+function attSheetHtml(e){
+  const d=ATTX.data;
+  const rows=e.days.map(day=>{
+    const c=attDayCells(day), wk=(c.weekday==='六'||c.weekday==='日');
+    const nl=t=>esc(t).replace(/\n/g,'<br>');
+    return `<tr class="${wk?'wk':''}"><td>${esc(c.date.slice(5))}</td><td>${esc(c.weekday)}</td>
+      <td>${nl(c.punch)||'<span class="mute"></span>'}</td>
+      <td class="warn">${nl(c.invalid)}</td>
+      <td>${nl(c.periods)}</td><td>${c.hours===''?'':esc(c.hours)}</td>
+      <td>${esc(c.leave)}</td><td class="l">${esc(c.status)}</td></tr>`;
+  }).join('');
+  const t=e.totals;
+  return `<div class="att-sheet">
+    <h3>員工出勤紀錄表</h3>
+    <div class="att-meta">
+      <div><b>公司　</b>${esc(ATT_COMPANY)}</div><div><b>門市　</b>${esc(d.store_name)}</div><div><b>年月　</b>${esc(d.ym)}</div>
+      <div><b>姓名　</b>${esc(e.name)}${e.active?'':'（已離職）'}</div><div><b>工號　</b>${esc(e.emp_id)}</div><div><b>匯出時間　</b>${esc(d.generated_at.replace('T',' ').slice(0,16))}</div>
+    </div>
+    <table class="att-tbl"><colgroup><col style="width:7.5%"><col style="width:5%"><col style="width:17%"><col style="width:17%"><col style="width:15%"><col style="width:7%"><col style="width:12%"><col style="width:19.5%"></colgroup>
+      <thead><tr><th>日期</th><th>星期</th><th>實際打卡</th><th>未入帳的卡（不計）</th><th>主管核定時段</th><th>核定時數</th><th>請假</th><th>狀態</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    <div class="att-sum"><span>核定時數合計：${esc(t.approved_hours)} 小時</span><span>請假時數合計：${esc(t.leave_hours)} 小時</span><span>出勤天數：${esc(t.work_days)} 天</span>${t.pending_days?`<span class="warn">尚有 ${esc(t.pending_days)} 天有打卡未核定</span>`:''}</div>
+    <div class="att-note">出勤天數＝核定時數大於 0 的天數。未入帳的卡（超出範圍、待核准裝置、被系統擋下）不計入工時。本表依打卡系統紀錄與主管核定產生。</div>
+    <div class="att-sign"><div>員工簽名：</div><div>主管簽名：</div></div>
+  </div>`;
+}
+function renderAttExp(){
+  const list=attSelected(), d=ATTX.data;
+  if(!d){ return; }
+  $('axStat').textContent=d.store_name+'　'+d.ym+'　共 '+d.employees.length+' 人'+(list.length!==d.employees.length?'，目前顯示 1 人':'');   // textContent：不是 HTML，不需 esc
+  $('axBody').innerHTML=list.length?list.map(attSheetHtml).join(''):'<div class="hint">這個月沒有同仁資料。</div>';
+}
+async function attEnsure(){
+  await loadAttExp(false);
+  const list=attSelected();
+  if(!ATTX.data||!list.length){ toast('沒有可匯出的資料',true); return null; }
+  return list;
+}
+function attLoadXlsxLib(){
+  if(window.XLSX) return Promise.resolve();
+  return new Promise((res,rej)=>{
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.integrity='sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw';
+    s.crossOrigin='anonymous';
+    s.onload=res; s.onerror=()=>rej(new Error('lib'));
+    document.head.appendChild(s);
+  });
+}
+async function exportAttExcel(){
+  const list=await attEnsure(); if(!list) return;
+  try{ await attLoadXlsxLib(); }catch(e){ toast('無法載入 Excel 元件（需要連網），請稍後再試',true); return; }
+  const d=ATTX.data, wb=XLSX.utils.book_new(), used={};
+  list.forEach(e=>{
+    const aoa=[
+      ['員工出勤紀錄表'],
+      ['公司',ATT_COMPANY,'門市',d.store_name,'年月',d.ym],
+      ['姓名',e.name+(e.active?'':'（已離職）'),'工號',e.emp_id,'匯出時間',d.generated_at.replace('T',' ').slice(0,16)],
+      [],
+      ['日期','星期','實際打卡','未入帳的卡（不計）','主管核定時段','核定時數','請假','狀態']
+    ];
+    e.days.forEach(day=>{ const c=attDayCells(day,'、');
+      aoa.push([c.date,c.weekday,c.punch,c.invalid,c.periods,c.hours,c.leave,c.status]); });
+    aoa.push([]);
+    aoa.push(['核定時數合計',e.totals.approved_hours,'請假時數合計',e.totals.leave_hours,'出勤天數',e.totals.work_days]);
+    if(e.totals.pending_days) aoa.push(['尚有有打卡未核定的天數',e.totals.pending_days]);
+    aoa.push(['出勤天數＝核定時數大於 0 的天數；未入帳的卡不計入工時。']);
+    aoa.push([]);
+    aoa.push(['員工簽名：','','','主管簽名：']);
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols']=[{wch:12},{wch:6},{wch:24},{wch:30},{wch:22},{wch:10},{wch:16},{wch:26}];
+    XLSX.utils.book_append_sheet(wb,ws,attSheetName(e,used));
+  });
+  const who=list.length===1?list[0].name:'全部';
+  XLSX.writeFile(wb,('出勤紀錄_'+d.store_name+'_'+d.ym+'_'+who+'.xlsx').replace(/[\\\/:*?"<>|]/g,'_'));   // 檔名：不是 HTML
+  toast('已匯出 Excel（'+list.length+' 人）');
+}
+async function exportAttPDF(){
+  const list=await attEnsure(); if(!list) return;
+  renderAttExp();
+  document.body.classList.add('att-printing');
+  const done=()=>{ document.body.classList.remove('att-printing'); window.removeEventListener('afterprint',done); };
+  window.addEventListener('afterprint',done);
+  window.print();
+}
+
 /* ═════ 啟動 ═════ */
 $('nav').addEventListener('click',ev=>{
   const b=ev.target.closest('button[data-p]');if(!b)return;
@@ -2205,6 +2408,7 @@ $('nav').addEventListener('click',ev=>{
   document.querySelectorAll('.panel').forEach(x=>x.classList.remove('on'));
   b.classList.add('on');$('p-'+b.dataset.p).classList.add('on');
   if(b.dataset.p==='punch') loadPunch();
+  if(b.dataset.p==='attexp') loadAttExp();
   if(b.dataset.p==='dash') loadDash();
   if(b.dataset.p==='group') loadGroup();
   if(b.dataset.p==='bonus') renderBonus();

@@ -2106,6 +2106,103 @@ function handlePayrollPunch(body) {
                   .map(function (r) { return { emp_id: String(r.emp_id), name: r.name }; }) };
 }
 
+/* ═══════════════════ 出勤紀錄匯出（2026-10-09，唯讀）═══════════════════
+ * 用途：正式出勤紀錄（勞基法施行細則第 21 條，逐日記載至分鐘），給勞檢／稽核／同仁索取。
+ * 依人、依月，整月每一天都列（沒上班的日子也列、空白）。
+ * 純函式 payAttendanceBuild 不碰試算表，供 tests/attendance-export.test.js 用 vm 抽出實跑。
+ * ⚠ 日期／時間一律過 normCellDate／normCellTs（Sheets 會把日期轉成 Date 物件）；
+ *   核定取最新沿用 buildLatestApprovedMap、跨夜歸上班那天沿用 dayPunchSegments（pairShifts），不自己重寫。 */
+var PAY_ATT_WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
+function payAttStatusLabel(status) {
+  const s = String(status || '');
+  if (s === 'rejected_out_of_range') return '超出範圍，未入帳';
+  if (s === 'pending_device_approval') return '新裝置待核准，未入帳';
+  if (s === 'rejected_duplicate') return '重複打卡，被系統擋下';
+  if (s === 'rejected_device') return '裝置不符，被系統擋下';
+  return '未入帳（' + s + '）';
+}
+function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, onlyEmp) {
+  const y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
+  const dim = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  const dates = [];
+  for (var d = 1; d <= dim; d++) dates.push(ym + '-' + (d < 10 ? '0' : '') + d);
+
+  const events = eventRows.map(function (e) {
+    return { ts: normCellTs(e.ts), emp_id: String(e.emp_id), type: String(e.type || ''), status: String(e.status || '') };
+  });
+  const approvedMap = buildLatestApprovedMap(approvedRows);
+  const nameToEmp = {};
+  rosterRows.forEach(function (r) { nameToEmp[String(r.name || '').trim()] = String(r.emp_id); });
+
+  // 同仁：在職者＋當月有任何紀錄者（離職前的最後一個月也要匯得出來）
+  const has = {};
+  events.forEach(function (e) { if (tsDateStr(e.ts).slice(0, 7) === ym) has[e.emp_id] = true; });
+  Object.keys(approvedMap).forEach(function (dt) {
+    if (dt.slice(0, 7) !== ym) return;
+    Object.keys(approvedMap[dt]).forEach(function (emp) { has[String(emp)] = true; });
+  });
+  const leaveBy = {};      // emp -> date -> [{type,hours}]
+  leaveRows.forEach(function (l) {
+    const emp = nameToEmp[String(l['姓名'] || '').trim()];
+    const dt = normCellDate(l['日期']);
+    if (!emp || dt.slice(0, 7) !== ym) return;
+    has[emp] = true;
+    const hrs = l['時數'] === '' || l['時數'] == null ? null : Number(l['時數']);
+    ((leaveBy[emp] = leaveBy[emp] || {})[dt] = (leaveBy[emp][dt] || [])).push({ type: String(l['假別'] || ''), hours: isNaN(hrs) ? null : hrs });
+  });
+  const people = rosterRows.filter(function (r) {
+    const emp = String(r.emp_id);
+    if (onlyEmp && onlyEmp !== emp) return false;
+    return String(r.active).toLowerCase() === 'true' || has[emp];
+  }).sort(function (a, b) { return String(a.emp_id) < String(b.emp_id) ? -1 : 1; });
+
+  const employees = people.map(function (r) {
+    const emp = String(r.emp_id);
+    const mine = events.filter(function (e) { return e.emp_id === emp; });
+    var apprH = 0, leaveH = 0, workDays = 0, pendingDays = 0;
+    const days = dates.map(function (dt) {
+      const seg = dayPunchSegments(mine, emp, dt).segments;
+      const invalid = mine.filter(function (e) { return tsDateStr(e.ts) === dt && e.status !== 'ok'; })
+        .sort(function (a, b) { return a.ts < b.ts ? -1 : 1; })
+        .map(function (e) { return { time: tsHm(e.ts), type: e.type, status: e.status, label: payAttStatusLabel(e.status) }; });
+      const rec = (approvedMap[dt] || {})[emp];
+      const lv = ((leaveBy[emp] || {})[dt] || []);
+      const lvH = lv.reduce(function (a, x) { return a + (x.hours || 0); }, 0);
+      var row = {
+        date: dt, weekday: PAY_ATT_WEEKDAYS[new Date(dt + 'T00:00:00Z').getUTCDay()],
+        segments: seg, invalid: invalid, approved: !!rec,
+        periods: rec ? String(rec.periods || '') : '',
+        approved_hours: rec && rec.approved_hours !== '' && rec.approved_hours != null ? Number(rec.approved_hours) : null,
+        status_text: rec ? String(rec.status_text || '') : '',
+        manager: rec ? String(rec.manager_name || '') : '',
+        leave: lv, leave_hours: Math.round(lvH * 100) / 100
+      };
+      if (row.approved_hours != null) { apprH += row.approved_hours; if (row.approved_hours > 0) workDays++; }
+      else if (seg.length) pendingDays++;
+      leaveH += lvH;
+      return row;
+    });
+    return { emp_id: emp, name: String(r.name || ''), active: String(r.active).toLowerCase() === 'true',
+      days: days, totals: { approved_hours: Math.round(apprH * 100) / 100, leave_hours: Math.round(leaveH * 100) / 100,
+        work_days: workDays, pending_days: pendingDays } };
+  });
+  return { employees: employees };
+}
+/** 管理者：某店某月出勤紀錄（逐日、整月）。{admin_key, store, ym, emp_id?} 唯讀，不寫任何東西。 */
+function handlePayrollAttendanceExport(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = String(body.ym || '');
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  const st = payStore(body.store);
+  if (!payHasClock(st)) return { ok: false, error: 'no_clock',
+    message: '門市 ' + st + ' 尚未連結打卡系統，沒有出勤紀錄可匯出。' };
+  const srow = payStoreRow(st) || {};
+  const built = payAttendanceBuild(ym, payClockRead(st, 'roster'), payClockRead(st, 'events'),
+    payClockRead(st, 'approved'), payClockRead(st, 'leave'), body.emp_id ? String(body.emp_id) : '');
+  return { ok: true, store: st, store_name: String(srow.name || st), ym: ym,
+    generated_at: nowTaipeiIso(), employees: built.employees };
+}
+
 /* ═══════════════════ 門市表 ═══════════════════ */
 
 function handlePayrollStoreGet(body) {
@@ -2711,6 +2808,7 @@ const PAYROLL_HANDLERS = {
   payroll_finalize:     handlePayrollFinalize,
   my_payslip:           handleMyPayslip,
   payroll_punch:        handlePayrollPunch,
+  payroll_attendance_export: handlePayrollAttendanceExport,
   payroll_store_get:    handlePayrollStoreGet,
   payroll_store_set:    handlePayrollStoreSet,
   payroll_bonus_get:    handlePayrollBonusGet,
