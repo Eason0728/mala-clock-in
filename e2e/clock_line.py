@@ -19,6 +19,7 @@ PORT = int(os.environ.get('E2E_MOCK_PORT', '8947'))
 BASE = f'http://localhost:{PORT}'
 STORES = {s['code']: s for s in json.load(open(os.path.join(ROOT, 'tools', 'stores.json'), encoding='utf-8'))}
 HQ, JS = STORES['hq'], STORES['mztjs']
+SHOTS = os.path.join(ROOT, 'e2e', 'artifacts')
 
 n = 0
 
@@ -112,6 +113,7 @@ def calls(p):
 
 
 def main():
+    os.makedirs(SHOTS, exist_ok=True)
     proc = start_mock()
     try:
         with sync_playwright() as pw:
@@ -331,6 +333,74 @@ def main():
             p.click('#btnHelp')
             p.wait_for_function('window.__closed === true', timeout=4000)
             ok('店家判定超出範圍 → 求助類別「定位不準」', p.evaluate('window.__sent') == [{'type': 'text', 'text': '打卡求助：定位不準'}], p.evaluate('window.__sent'))
+            p.close()
+            # 13. 下班超時提示加班（2026-10-09）：把測試一今天的上班卡改成 9.5 小時前 → 按下班（真的 mock）→
+            #     提示「今天出勤 9.5 小時」＋「申請加班」，畫面不自動關；按下去開加班分頁、日期／時段預填；送出成功
+            from datetime import datetime, timedelta, timezone
+            tz = timezone(timedelta(hours=8))
+            f = os.path.join(ROOT, 'mock', 'mock_data_hq.json')
+            d = json.load(open(f, encoding='utf-8'))
+            emp = next(r['emp_id'] for r in d['roster'] if r.get('line_user_id') == 'U1')
+            d['events'] = [e for e in d['events'] if e['emp_id'] != emp]
+            t_in = (datetime.now(tz) - timedelta(hours=9, minutes=30)).replace(second=0, microsecond=0)
+            d['events'].append({'ts': t_in.isoformat(), 'emp_id': emp, 'type': 'in', 'status': 'ok', 'lat': HQ['lat'], 'lng': HQ['lng'],
+                                'distance_m': 1, 'accuracy_m': 10, 'device_id': 'line:U1', 'device_match': True, 'within_range': True})
+            d['requests'] = [r for r in d.get('requests', []) if r.get('emp_id') != emp]
+            json.dump(d, open(f, 'w', encoding='utf-8'), ensure_ascii=False)
+            p = open_page(ctx, url(hq, in_client=True))
+            p.set_viewport_size({'width': 375, 'height': 812})
+            p.wait_for_function('!document.getElementById("btnOut").disabled', timeout=10000)
+            p.click('#btnOut')
+            wait_msg(p, '下班打卡成功')
+            r = [x for x in calls(p) if x['action'] == 'liff_punch']
+            ok('下班超時：只送 1 次 liff_punch', len(r) == 1, r)
+            p.wait_for_selector('#btnOtReq:not([hidden])', timeout=5000)
+            hint = p.inner_text('#otHint')
+            import re
+            end_hm = re.search(r'下班打卡成功 (\d\d:\d\d)', msg(p)).group(1)   # 伺服器記下的下班時間
+            ok('下班超時：顯示「今天出勤 X 小時，超過 8 小時。要申請加班嗎？」', hint.startswith('今天出勤 9.5') and hint.endswith('超過 8 小時。要申請加班嗎？'), hint)
+            p.wait_for_timeout(2000)
+            ok('下班超時：代送「打卡」但畫面不自動關（要讓同仁按得到）', p.evaluate('window.__sent') == [{'type': 'text', 'text': '打卡'}] and not p.evaluate('window.__closed === true'))
+            p.screenshot(path=os.path.join(SHOTS, '加班提示_1.png'))
+            p.click('#btnOtReq')
+            p.wait_for_selector('#reqView .rq-tabs button.on', timeout=10000)
+            hrs = float(re.search(r'今天出勤 ([\d.]+) 小時', hint).group(1))
+            exp_start_min = int(((int(end_hm[:2]) * 60 + int(end_hm[3:])) - (hrs - 8) * 60) // 15 * 15) % 1440
+            vals = p.evaluate("() => [...document.querySelectorAll('#reqView input')].map(i => i.value)")
+            ok('申請加班 → 開「加班」分頁', p.inner_text('#reqView .rq-tabs button.on') == '加班', p.inner_text('#reqView .rq-tabs button.on'))
+            ok('加班分頁預填：日期＝上班那天、時段＝滿 8 小時（取整 15 分）到下班', vals[0] == t_in.strftime('%Y-%m-%d')
+               and vals[1] == '%02d:%02d' % (exp_start_min // 60, exp_start_min % 60) and vals[2] == end_hm, vals)
+            p.fill('#reqView input[type=text]', 'e2e 外送訂單多')
+            p.click('#reqView button.primary')
+            p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)
+            ok('加班申請送出成功、跳到我的申請', '加班 ' in p.inner_text('#reqView') and '審核中' in p.inner_text('#reqView'), p.inner_text('#reqView')[:200])
+            # 14. 出差分頁（2026-10-09）：五個分頁在 375 寬放得下；地點、事由必填；送出後「我的申請」看得到
+            tabs = p.evaluate("""() => [...document.querySelectorAll('#reqView .rq-tabs button')].map(b => ({ t: b.textContent,
+                  fit: b.scrollWidth <= b.clientWidth + 1 }))""")
+            ok('申請頁分頁：請假｜加班｜出差｜忘打卡｜我的申請，375 寬每個字都放得下', [x['t'] for x in tabs] == ['請假', '加班', '出差', '忘打卡', '我的申請'] and all(x['fit'] for x in tabs), tabs)
+            ok('申請頁：375 寬沒有橫向捲動', p.evaluate('document.documentElement.scrollWidth <= 375'), p.evaluate('document.documentElement.scrollWidth'))
+            p.click('#reqView .rq-tabs button[data-tab=trip]')
+            p.click('#reqView button.primary')
+            p.wait_for_selector('#reqView .rq-box.err', timeout=5000)
+            ok('出差：沒填地點 → 擋下「請填出差地點」', '請填出差地點' in p.inner_text('#reqView .rq-box.err'))
+            p.fill('#reqView .rq-place', '台中央廚')
+            p.click('#reqView button.primary')
+            p.wait_for_function('document.querySelector("#reqView .rq-box.err") && document.querySelector("#reqView .rq-box.err").textContent.indexOf("事由") >= 0', timeout=5000)
+            ok('出差：沒填事由 → 擋下', True)
+            p.click('#reqView .rq-chips .rq-chip:nth-child(2)')   # 只一段
+            p.fill('#reqView input[type=time] >> nth=0', '13:00')
+            p.fill('#reqView input[type=time] >> nth=1', '17:30')
+            p.fill('#reqView .rq-place', '台中央廚')
+            p.fill('#reqView .rq-why', '支援盤點')
+            p.wait_for_timeout(200)
+            ok('出差只一段：即時顯示共 4.5 小時', '共 4.5 小時' in p.inner_text('#reqView'), p.inner_text('#reqView')[:300])
+            p.screenshot(path=os.path.join(SHOTS, '出差單_2.png'))
+            p.click('#reqView button.primary')
+            p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)
+            t = p.inner_text('#reqView')
+            ok('出差送出：摘要「出差 13:00–17:30 4.5 小時（地點：台中央廚）」、我的申請列出', '出差 13:00–17:30 4.5 小時（地點：台中央廚）' in t and '出差 4.5 小時' in t, t[:300])
+            sent = [x for x in calls(p) if x['action'] == 'req_submit']
+            ok('出差：送到挑到的那家店（總部 /api/hq req_submit）', sent and sent[-1]['url'].endswith('/api/hq'), sent)
             p.close()
             br.close()
     finally:

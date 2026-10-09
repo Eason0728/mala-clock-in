@@ -16,7 +16,10 @@ QR_SECRET = "mock-qr-secret"
 QR_WINDOW_MS = 30000
 COMMON = ["特休假", "事假", "病假", "生理假", "家庭照顧假"]
 ATTACH = {}   # attach_id → (mime, base64)；重啟 mock 就清掉
-KIND = {"leave": "請假", "ot": "加班", "miss": "忘打卡"}
+KIND = {"leave": "請假", "ot": "加班", "trip": "出差", "miss": "忘打卡"}
+TRIP_PLACE_MAX = 40
+BATCH_MAX = 30
+OT_HINT_H = 8
 
 
 def register(ns):
@@ -45,12 +48,23 @@ def register(ns):
     def ddiff(a, b):
         return (date.fromisoformat(a) - date.fromisoformat(b)).days
 
+    def trip_place(reason):
+        """同 Requests.gs reqTripPlace_：reason＝'地點：<地點>；事由：<事由>'"""
+        s = str(reason or "")
+        if s.startswith("地點：") and "；事由：" in s:
+            return s[3:s.index("；事由：")]
+        return ""
+
     def summary(r):
         md = f"{int(r['date'][5:7])}/{int(r['date'][8:10])}"
         if r["kind"] == "leave":
             return f"{md} {r['leave_type']} " + (f"{r['start']}–{r['end']}" if r["start"] else "整天") + f" {r['hours']:g} 小時"
         if r["kind"] == "ot":
             return f"{md} 加班 {r['start']}–{r['end']}（{r['hours']:g} 小時）"
+        if r["kind"] == "trip":
+            place = trip_place(r.get("reason"))
+            return (f"{md} 出差 " + (f"{r['start']}–{r['end']}" if r["start"] else "整天") + f" {r['hours']:g} 小時"
+                    + (f"（地點：{place}）" if place else ""))
         parts = []
         if r["miss_type"] in ("in", "both"):
             parts.append("上班 " + r["start"])
@@ -169,6 +183,32 @@ def register(ns):
                 return None, ("bad_time", "加班時段超過 12 小時，請確認時間")
             if not reason:
                 return None, ("need_reason", "加班要寫原因")
+        elif kind == "trip":
+            if diff < -31 or diff > 90:
+                return None, ("bad_date", "出差只能申請 31 天前到 90 天後")
+            row["leave_type"] = "出差"
+            if b.get("start") or b.get("end"):
+                row["start"], row["end"] = hm_ok(b.get("start")), hm_ok(b.get("end"))
+                if not row["start"] or not row["end"]:
+                    return None, ("bad_time", "請填完整的出差時段")
+                row["hours"] = span(row["start"], row["end"])
+            else:
+                try:
+                    h = float(b.get("hours"))
+                except (TypeError, ValueError):
+                    h = 0
+                if not (0 < h <= 24):
+                    return None, ("bad_hours", "請填出差時數")
+                row["hours"] = round(h * 4) / 4
+            place = str(b.get("place") or "").strip().replace("；", "，")
+            if not place:
+                return None, ("need_place", "請填出差地點")
+            if len(place) > TRIP_PLACE_MAX:
+                return None, ("bad_place", f"地點最多 {TRIP_PLACE_MAX} 個字")
+            why = str(b.get("why") or "").strip()[:100]
+            if not why:
+                return None, ("need_reason", "請填出差事由")
+            row["reason"] = f"地點：{place}；事由：{why}"
         else:
             if diff > 0:
                 return None, ("bad_date", "不能補登還沒到的日期")
@@ -271,6 +311,70 @@ def register(ns):
         save_data(data)
         return {"ok": True, "id": r["id"], "status": r["status"]}
 
+    def mgr_decide_batch(data, body):
+        """同 Requests.gs handleMgrReqDecideBatch_：只能核准、最多 30 筆，不是審核中的略過並說明。"""
+        mgr = find_manager_by_key(data, body.get("mgr_key"))
+        if not mgr:
+            return {"ok": False, "error": "unauthorized"}
+        if body.get("decision") != "approve":
+            return {"ok": False, "error": "bad_decision", "message": "批次只能核准；退回請一筆一筆處理"}
+        ids = []
+        for x in body.get("ids") or []:
+            x = str(x)
+            if x and x not in ids:
+                ids.append(x)
+        if not ids:
+            return {"ok": False, "error": "no_ids", "message": "請先勾選要核准的申請"}
+        if len(ids) > BATCH_MAX:
+            return {"ok": False, "error": "too_many_ids", "message": f"一次最多核准 {BATCH_MAX} 筆"}
+        done, skipped, now = [], [], iso_now()
+        for i in ids:
+            r = next((x for x in reqs(data) if x["id"] == i), None)
+            if not r:
+                skipped.append({"id": i, "reason": "找不到這筆申請"})
+            elif r["status"] != "pending":
+                skipped.append({"id": i, "reason": "同仁已經取消這筆申請" if r["status"] == "cancelled" else "這筆已經處理過了"})
+            else:
+                r.update({"status": "approved", "decided_at": now, "decided_by": mgr["name"], "reject_reason": ""})
+                done.append(i)
+        save_data(data)
+        return {"ok": True, "done": done, "skipped": skipped}
+
+    def ot_hint(events, emp_id, out_ts, rows):
+        """同 Requests.gs reqOtHint_：那天（這張下班卡配到的上班卡那天）完整段加總 > 8 小時、沒有審核中／已核准的加班申請才提示。"""
+        from datetime import datetime
+        out_t = datetime.fromisoformat(out_ts).timestamp()
+        ps = []
+        for e in events:
+            if e["emp_id"] != emp_id or str(e["status"]).startswith("rejected_"):
+                continue
+            t = datetime.fromisoformat(e["ts"]).timestamp()
+            if out_t - 3 * 16 * 3600 <= t <= out_t:
+                ps.append((t, e["type"], e["ts"][:10]))
+        ps.sort(key=lambda x: x[0])
+        segs, open_ = [], None
+        for p in ps:
+            if p[1] == "in":
+                open_ = p
+                continue
+            if open_ and p[0] - open_[0] <= 16 * 3600:
+                segs.append((open_, p))
+            open_ = None
+        mine = next((x for x in segs if x[1][0] == out_t), None)
+        if not mine:
+            return None
+        d = mine[0][2]
+        secs = sum(x[1][0] - x[0][0] for x in segs if x[0][2] == d)
+        hours = round(secs / 3600, 2)
+        if hours <= OT_HINT_H:
+            return None
+        if any(r["emp_id"] == emp_id and r["kind"] == "ot" and r["date"] == d and r["status"] in ("pending", "approved") for r in rows):
+            return None
+        end = out_ts[11:16]
+        sm = mins(end) - (secs - OT_HINT_H * 3600) / 60
+        sm = int((sm // 15) * 15) % 1440
+        return {"date": d, "hours": hours, "start": f"{sm // 60:02d}:{sm % 60:02d}", "end": end}
+
     def mgr_day(data, body):
         if not find_manager_by_key(data, body.get("mgr_key")):
             return {"ok": False, "error": "unauthorized"}
@@ -346,6 +450,10 @@ def register(ns):
                                  else ("✕ 申請被退回：" + summary(x) + (f"（{x['reject_reason']}）" if x["reject_reason"] else "")))
                     x["seen_at"] = iso_now()
             r["req_notes"] = notes
+            if body["type"] == "out":
+                h = ot_hint(data["events"], me["emp_id"], r["ts"], reqs(data))
+                if h:
+                    r["ot_hint"] = h
             save_data(data)
         return r
 
@@ -398,6 +506,7 @@ def register(ns):
 
     ns["ACTIONS"].update({"req_info": req_info, "req_submit": req_submit, "req_cancel": req_cancel,
                           "mgr_req_pending": mgr_pending, "mgr_req_decide": mgr_decide, "mgr_req_day": mgr_day,
+                          "mgr_req_decide_batch": mgr_decide_batch,
                           "mgr_qr_token": mgr_qr, "liff_punch": liff_punch})
     ns["LINE_HUB_ACTIONS"].update({"line_hub_req_init": hub_init, "line_hub_attach_put": hub_attach_put,
                                    "line_hub_attach_get": hub_attach_get})

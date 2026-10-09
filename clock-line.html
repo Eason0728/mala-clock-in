@@ -51,7 +51,8 @@
   .rq-head { font-size: 16px; margin-bottom: 10px; display: flex; gap: 8px; align-items: center; }
   .rq-store, .rq-special, .rq-date { padding: 8px; font-size: 15px; border: 1px solid var(--line); border-radius: 8px; background: #fff; max-width: 100%; }
   .rq-tabs { display: flex; background: #e6eeeb; border-radius: 10px; padding: 3px; margin-bottom: 12px; }
-  .rq-tabs button { flex: 1; border: 0; background: transparent; padding: 9px 0; font-size: 14px; border-radius: 8px; color: var(--muted); }
+  .rq-tabs button { flex: 1; min-width: 0; border: 0; background: transparent; padding: 9px 0; font-size: 13px; border-radius: 8px; color: var(--muted); white-space: nowrap; }
+  .ot-hint { margin-top: 10px; background: #fff6e0; color: #6b4c00; border-radius: 10px; padding: 9px 12px; font-size: 14px; line-height: 1.6; }
   .rq-tabs button.on { background: #fff; color: var(--in); font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
   .rq-fld { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
   .rq-fld > label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
@@ -107,6 +108,8 @@
     <button class="ghost" id="btnRetry" type="button" hidden>重新定位</button>
     <button class="ghost" id="btnHelp" type="button" hidden>看排除步驟</button>
     <button class="ghost" id="btnMissReq" type="button" hidden>申請補登</button>
+    <div class="ot-hint" id="otHint" hidden></div>
+    <button class="ghost" id="btnOtReq" type="button" hidden>申請加班</button>
     <div class="qr-banner" id="qrBanner" hidden>用值班主管出示的 QR 打卡（不需要定位）</div>
   </div>
   <div class="card" id="reqView" hidden></div>
@@ -416,7 +419,13 @@
           render(status); say(shown, 'ok');
           // 有漏卡：多一顆「申請補登」直接開申請頁，畫面不自動關（要讓同仁按得到）
           if (r.missed_date) { missReq = { date: r.missed_date, miss: r.missed_type }; $('btnMissReq').hidden = false; }
-          return sendToChat(!!(r.missed_date || notes)).then(function (closing) { if (closing) keepBusy = true; });
+          // 下班後當天超過 8 小時（2026-10-09）：提示一句＋「申請加班」直接開加班分頁並預填時段，畫面不自動關
+          if (r.ot_hint && r.ot_hint.date) {
+            otReq = r.ot_hint;
+            $('otHint').textContent = '今天出勤 ' + r.ot_hint.hours + ' 小時，超過 8 小時。要申請加班嗎？';
+            $('otHint').hidden = false; $('btnOtReq').hidden = false;
+          }
+          return sendToChat(!!(r.missed_date || notes || (r.ot_hint && r.ot_hint.date))).then(function (closing) { if (closing) keepBusy = true; });
         }
         var failText = label + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
         // 失敗：重讀狀態；重讀也失敗就維持鍵停用（不拿舊狀態重新亮鍵），訊息保留（審查 L4）
@@ -464,6 +473,8 @@
     window.ReqLine.open(opts);
   }
   $('btnMissReq').addEventListener('click', function () { showReq({ tab: 'miss', date: missReq.date, miss: missReq.miss }); });
+  var otReq = null;
+  $('btnOtReq').addEventListener('click', function () { showReq({ tab: 'ot', date: otReq.date, start: otReq.start, end: otReq.end }); });
 
   /* ── 第一次使用：輸入全名綁定 ── */
   function showBind(storeName, suggest) {

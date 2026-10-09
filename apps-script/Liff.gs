@@ -426,8 +426,16 @@ function liffPunchFor_(userId, me, ss, type, body) {
     if (qr) reqQrLog_(ss, j.ts, me.emp_id, type, qr.mgr);
     var md = liffMissedDetail_(events, me.emp_id, type, j.ts), notes = [];
     try { notes = reqUnseenNotes_(ss, me.emp_id); } catch (e) { notes = []; }   // 申請結果告知壞了不能讓打卡失敗
-    return { ok: true, type: type, ts: j.ts, greeting: liffGreeting_(type, j.ts), missed: md.text,
-             missed_date: md.date, missed_type: md.miss_type, req_notes: notes, via_qr: !!qr };
+    var res = { ok: true, type: type, ts: j.ts, greeting: liffGreeting_(type, j.ts), missed: md.text,
+                missed_date: md.date, missed_type: md.miss_type, req_notes: notes, via_qr: !!qr };
+    // 下班後當天超過 8 小時 → 提示申請加班（2026-10-09，Requests.gs reqOtHint_）；算不出來就不提，不能讓打卡失敗
+    if (type === 'out') {
+      try {
+        var hint = reqOtHint_(events.concat([{ ts: j.ts, emp_id: me.emp_id, type: 'out', status: 'ok' }]), me.emp_id, j.ts, reqRows_(ss));
+        if (hint) res.ot_hint = hint;
+      } catch (e) {}
+    }
+    return res;
   }
   var st = j && (j.status || j.error);
   var rr = LIFF_PUNCH_REASONS_[st] || ['系統回覆：' + (st || '未知'), '請告知主管'];
@@ -477,6 +485,7 @@ var LIFF_HANDLERS = {
   req_cancel: function (b) { return handleReqCancel_(b); },
   mgr_req_pending: function (b) { return handleMgrReqPending_(b); },
   mgr_req_decide: function (b) { return handleMgrReqDecide_(b); },
+  mgr_req_decide_batch: function (b) { return handleMgrReqDecideBatch_(b); },
   mgr_req_day: function (b) { return handleMgrReqDay_(b); },
   mgr_qr_token: function (b) { return handleMgrQrToken_(b); },
 };

@@ -34,6 +34,7 @@ BASE = f'http://localhost:{PORT}'
 
 RESULTS = []
 CM = ClickMap()
+DIALOGS = []   # confirm／alert 的內容（批次核准要驗確認視窗列了哪幾筆）
 
 
 def check(name, ok, detail=''):
@@ -179,7 +180,7 @@ def build_mock_data(data):
         r['device_bound_at'] = f'{day}T08:00:00+08:00' if last else ''
         roster.append(r)
     pay = data['payroll']
-    return {'roster': roster, 'events': events,
+    return {'roster': roster, 'events': events, 'requests': seed_requests(data),
             'managers': [data['manager']], 'approved': [], 'leave': [], 'notices': [],
             'payroll': {
                 'master': pay['master'], 'config': dict(pay['config']),
@@ -187,6 +188,26 @@ def build_mock_data(data):
                 'input': [dict(v, ym=pay['ym'], emp_id=k) for k, v in pay['inputs'].items()],
                 'run': [], 'bonus': [], 'leave_type': [], 'leave_span': [], 'audit': [],
             }}
+
+
+def seed_requests(data):
+    """待審申請（2026-10-09 批次簽核＋出差單）：
+    A 第一位的加班、B 第二位的出差（工作日當天，核准後核定卡片預填「出差」＋時數）、
+    C 第二位 20 天後的事假（單筆核准）、D 第一位的忘打卡（單筆退回）。
+    第一位稍後會在階段 C 被送出核定，所以會預填的（請假、忘打卡、出差）都不核准在第一位工作日上。"""
+    p0, p1 = data['people'][0], data['people'][1]
+    day = data['workday']
+    fut = (datetime.fromisoformat(day) + timedelta(days=20)).strftime('%Y-%m-%d')
+    base = {'leave_type': '', 'start': '', 'end': '', 'hours': '', 'miss_type': '', 'reason': '', 'attach_id': '',
+            'status': 'pending', 'decided_at': '', 'decided_by': '', 'reject_reason': '', 'seen_at': ''}
+
+    def rq(i, p, kind, d, **kw):
+        return dict(base, id='rqE2E' + i, created_at=f'{day}T2{"ABCD".index(i)}:00:00+08:00',
+                    emp_id=p['emp_id'], name=p['name'], kind=kind, date=d, **kw)
+    return [rq('A', p0, 'ot', day, start='21:00', end='22:30', hours=1.5, reason='e2e 外送訂單多'),
+            rq('B', p1, 'trip', day, leave_type='出差', hours=3, reason='地點：台中央廚；事由：e2e 支援盤點'),
+            rq('C', p1, 'leave', fut, leave_type='事假', hours=4, reason='e2e 家裡有事'),
+            rq('D', p0, 'miss', day, miss_type='in', start='09:00', reason='忘記按')]
 
 
 def start_mock(data):
@@ -379,6 +400,85 @@ def phase_qr(page):
     page.wait_for_timeout(200)
     gone = page.evaluate("() => getComputedStyle(document.getElementById('qrOverlay')).display === 'none'")
     check('打卡 QR：關閉後遮罩真的消失（不擋住核定頁按鈕）', gone)
+
+
+def _req_item_js():
+    return """([needle, sel]) => { const el = [...document.querySelectorAll('#pendingRequests .rq-item')]
+          .find(x => x.textContent.includes(needle)); if (!el) return null;
+          const b = sel ? el.querySelector(sel) : el; return b; }"""
+
+
+def phase_requests(page, data):
+    """待審申請（2026-10-09）：全選切換、單筆退回、單筆核准、勾兩筆批次核准（確認視窗列出摘要），
+    批次後標題數字更新、後端真的變成已核准；出差核准後第二位的核定卡片預填「出差」＋時數、時段不動。"""
+    p0, p1 = data['people'][0], data['people'][1]
+    page.fill('#dateInput', data['workday'])
+    page.dispatch_event('#dateInput', 'change')
+    page.wait_for_selector('#btnReqBatch', timeout=20000)
+    CM.scan(page, '值班核定頁（待審申請）')
+    title = text_of(page, '#pendingRequests .pd-title')
+    check('待審申請：4 筆、批次鈕初始停用「核准勾選的 0 筆」',
+          '待審申請 4 筆' in title and page.is_disabled('#btnReqBatch') and text_of(page, '#btnReqBatch') == '核准勾選的 0 筆',
+          title + '｜' + text_of(page, '#btnReqBatch'))
+    kinds = page.evaluate("() => [...document.querySelectorAll('#pendingRequests .rq-kind')].map(x => x.textContent)")
+    check('待審申請：出差單顯示類別「出差」與地點', '出差' in kinds and '地點：台中央廚' in text_of(page, '#pendingRequests'), kinds)
+
+    # 全選 → 4 筆；再按一次 → 0 筆
+    page.click('#rqAll')
+    n_on = page.evaluate("() => [...document.querySelectorAll('#pendingRequests .rq-pick')].filter(x => x.checked).length")
+    ok_all = n_on == 4 and text_of(page, '#btnReqBatch') == '核准勾選的 4 筆' and not page.is_disabled('#btnReqBatch')
+    page.click('#rqAll')
+    n_off = page.evaluate("() => [...document.querySelectorAll('#pendingRequests .rq-pick')].filter(x => x.checked).length")
+    ok_all = ok_all and n_off == 0 and page.is_disabled('#btnReqBatch')
+    check('全選：勾滿 4 筆、按鈕變「核准勾選的 4 筆」；再按一次全部取消、按鈕停用', ok_all, f'{n_on}/{n_off}')
+    mark_el(page, '#rqAll', '全選／全部取消，按鈕筆數跟著變')
+
+    # 單筆退回（D，第一位的忘打卡）：第一下長出理由欄，第二下送出
+    page.evaluate("([n, s]) => (" + _req_item_js() + ")([n, s]).click()", ['忘打卡補登', '.rq-no'])
+    page.wait_for_timeout(200)
+    CM.scan(page, '值班核定頁（退回理由）')
+    page.evaluate("([n, s]) => { const i = (" + _req_item_js() + ")([n, s]); i.value = 'e2e：當天有打卡'; }", ['忘打卡補登', '.rq-reason'])
+    click_text(page, '#pendingRequests', '確定退回', '送出退回（含理由）')
+    page.wait_for_function("() => document.getElementById('pendingRequests').textContent.includes('✕ 已退回')", timeout=10000)
+    CM.mark('button「退回」', '第一下長出退回理由欄')
+    check('單筆退回：寫理由後送出，該筆收成「✕ 已退回」、標題剩 3 筆', '待審申請 3 筆' in text_of(page, '#pendingRequests .pd-title'),
+          text_of(page, '#pendingRequests .pd-title'))
+
+    # 單筆核准（C，第二位 20 天後的事假）
+    page.evaluate("([n, s]) => (" + _req_item_js() + ")([n, s]).click()", ['事假', '.rq-ok'])
+    page.wait_for_function("() => document.getElementById('pendingRequests').textContent.includes('✓ 已核准：')", timeout=10000)
+    CM.mark('button「核准」', '單筆核准（確認後送出）')
+    check('單筆核准：該筆收成「✓ 已核准」、標題剩 2 筆', '待審申請 2 筆' in text_of(page, '#pendingRequests .pd-title'))
+
+    # 勾 A、B → 批次核准
+    page.evaluate("([n, s]) => (" + _req_item_js() + ")([n, s]).click()", ['加班', '.rq-pick'])
+    page.evaluate("([n, s]) => (" + _req_item_js() + ")([n, s]).click()", ['出差', '.rq-pick'])
+    mark_el(page, '#pendingRequests .rq-pick', '逐筆勾選，按鈕筆數跟著變')
+    check('勾剩下的兩筆 → 按鈕「核准勾選的 2 筆」、全選跟著變成已勾',
+          text_of(page, '#btnReqBatch') == '核准勾選的 2 筆' and page.evaluate("() => document.getElementById('rqAll').indeterminate === false && document.getElementById('rqAll').checked === true"),
+          text_of(page, '#btnReqBatch'))
+    shot(page, '02b-待審申請批次')
+    n_dlg = len(DIALOGS)
+    click(page, '#btnReqBatch', '批次核准勾選的申請')
+    page.wait_for_function("() => document.querySelector('#pendingRequests .pd-title').textContent.includes('處理完了')", timeout=15000)
+    msg = DIALOGS[n_dlg] if len(DIALOGS) > n_dlg else ''
+    check('批次核准：確認視窗列出 2 筆的姓名與摘要', '核准以下 2 筆申請' in msg and p0['name'] in msg and p1['name'] in msg and '出差 整天 3 小時（地點：台中央廚）' in msg, msg)
+    t = text_of(page, '#pendingRequests')
+    check('批次核准後：兩筆都「✓ 已核准」、標題「待審申請都處理完了」、批次列收起',
+          t.count('✓ 已核准') == 3 and '待審申請都處理完了' in t and not visible(page, '.rq-batch'), t[:200])
+    left = page.evaluate("""async (k) => { const r = await fetch('/api', { method: 'POST', body: JSON.stringify({ action: 'mgr_req_pending', mgr_key: k }) });
+          return (await r.json()).items.length; }""", data['manager']['key'])
+    check('批次核准後：後端待審清單是 0 筆', left == 0, left)
+
+    # 出差核准 → 第二位工作日的核定卡片預填「出差」＋3 小時，時段不動（沒有「來自申請」標籤）
+    page.wait_for_function("""(nm) => { const h = [...document.querySelectorAll('#empList .emp-head')].find(x => x.textContent.includes(nm));
+          const c = h && h.closest('.card'); const s = c && c.querySelector('select'); return s && s.value === '出差'; }""", arg=p1['name'], timeout=15000)
+    info = page.evaluate("""(nm) => { const h = [...document.querySelectorAll('#empList .emp-head')].find(x => x.textContent.includes(nm));
+          const c = h.closest('.card'); const hrs = [...c.querySelectorAll('input')].find(i => i.placeholder === '出差時數');
+          return { hours: hrs ? hrs.value : null, fromReq: !!c.querySelector('.from-req'), box: (c.querySelector('.req-box') || {}).textContent || '',
+                   text: c.innerText }; }""", p1['name'])
+    check('出差核准後：核定卡片預填「出差」、出差時數 3、時段不動、顯示已核准的申請',
+          info['hours'] == '3' and not info['fromReq'] and '出差 整天 3 小時' in info['box'], info)
 
 
 def phase_pending_reminder(page, data):
@@ -840,13 +940,15 @@ def main():
 
             print('── 階段A：真打卡（今天）──')
             phase_clock(page, data, exp)
-            page.on('dialog', lambda d: d.accept())      # 送出核定的確認視窗
+            page.on('dialog', lambda d: (DIALOGS.append(d.message), d.accept()))      # 送出核定等確認視窗（內容留給批次核准驗）
             print('── 階段B：值班核定（昨天的紀錄）──')
             phase_manager(page, data, exp)
             print('  ↳ 本月待核定提醒卡片（要在任何人被核定之前驗）')
             phase_pending_reminder(page, data)
             print('  ↳ 打卡 QR')
             phase_qr(page)
+            print('  ↳ 待審申請：全選、單筆退回／核准、批次核准、出差預填')
+            phase_requests(page, data)
             print('── 階段C：核定頁其餘操作 ──')
             phase_manager_buttons(page, data)
             print('── 階段D：薪酬 ──')

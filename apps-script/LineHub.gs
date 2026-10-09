@@ -181,7 +181,7 @@ function lineHubPunchText_(r) {
   var label = r.type === 'out' ? '下班' : (r.type === 'in' ? '上班' : '');
   if (r.ok) {
     return '✅ ' + label + '打卡成功 ' + lineHubHm_(r.ts) + '\n地點：' + r.store_name + (r.note ? '\n' + r.note : '')
-      + (r.missed ? '\n\n⚠️ ' + r.missed : '') + (r.greeting ? '\n\n' + r.greeting : '');
+      + (r.missed ? '\n\n⚠️ ' + r.missed : '') + (r.greeting ? '\n\n' + r.greeting : '') + (r.annual_note ? '\n\n' + r.annual_note : '');
   }
   return '❌ ' + (label ? label : '') + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
 }
@@ -416,13 +416,52 @@ function lineHubLatestPunch_(userId) {
   return unreadable ? { unreadable: true } : null;
 }
 
+/* 打卡後特休到期提醒（2026-10-09 Eason）：特休還有剩、最後一天在 30 天內 → 打卡回覆卡片多一行。
+   每人每天最多算一次（CacheService 'lha:<userId>:<日期>'，要提醒／不用提醒都記，避免每次打卡都去算薪資）；
+   CacheService 最長 6 小時，所以 TTL 取「到今天午夜」與 6 小時的較小者——早晚班相隔超過 6 小時可能再提醒一次（可接受）。
+   查薪資失敗一律不提，絕不能讓打卡回覆壞掉。 */
+var LINE_HUB_ANNUAL_WARN_DAYS = 30;
+function lineHubAnnualNote_(userId, ts) {
+  try {
+    var today = String(ts || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
+    var c = CacheService.getScriptCache(), key = 'lha:' + userId + ':' + today;
+    if (c.get(key)) return '';
+    var note = lineHubAnnualNoteText_(lineHubPayslipFor_(userId), today);
+    var midnight = new Date(today + 'T00:00:00+08:00').getTime() + 86400000;
+    var ttl = Math.max(60, Math.min(21600, Math.floor((midnight - Date.now()) / 1000)));
+    c.put(key, note ? '1' : '0', ttl);
+    return note;
+  } catch (e) { return ''; }
+}
+/** 純計算（測試用）：j＝payMyPayslipFor_ 結果；today＝台北日期。 */
+function lineHubAnnualNoteText_(j, today) {
+  var an = j && j.ok ? lineHubAnnual_(j.annual) : null;
+  if (!an || !(an.left_h > 0)) return '';
+  var days = Math.round((Date.UTC(+an.last.slice(0, 4), +an.last.slice(5, 7) - 1, +an.last.slice(8, 10)) -
+                         Date.UTC(+today.slice(0, 4), +today.slice(5, 7) - 1, +today.slice(8, 10))) / 86400000);
+  if (days < 0 || days > LINE_HUB_ANNUAL_WARN_DAYS) return '';
+  return '🗓 你的特休還剩 ' + an.left_h + ' 小時，' + an.md + ' 到期，記得跟店長排休';
+}
+
 var LINE_HUB_NOT_BOUND_TEXT = '你的 LINE 帳號還沒綁定打卡系統。\n請到你上班的店，按選單的「打卡」，第一次會請你輸入全名完成綁定。';
+
+/** 出勤異常字樣（2026-10-09 Eason：同仁看得到紅字）：已核定＝核定狀態（不是「正常」才列）；還沒核定＝那天的打卡註記
+ *  （下班忘刷卡／上班忘刷卡；「上班中」不算異常）。回空字串＝沒異常。 */
+function lineHubDayStatus_(d) {
+  var parts = [];
+  if (d.approved_status && d.approved_status !== '正常') parts.push(String(d.approved_status));
+  if (d.approved === null || d.approved === undefined) {
+    (d.notes || []).forEach(function (x) { x = String(x); if (x && x !== '上班中' && parts.indexOf(x) < 0) parts.push(x); });
+  }
+  return parts.join('、');
+}
 
 function lineHubAttendanceText_(userId) {
   var a = lineHubAttendanceData_(userId);
   if (!a) return LINE_HUB_NOT_BOUND_TEXT;
   var body = '📋 最近 7 天出勤\n' + (a.lines.length ? a.lines.map(function (l) {
-    return l.day + l.store + '\n　' + (l.segs || '—') + '｜' + l.hrs + (l.status ? '｜' + l.status : '');
+    return l.day + l.store + '\n　' + (l.segs || '—') + '｜' + l.hrs + (l.status ? '｜⚠️ ' + l.status : '');
   }).join('\n') : '最近 7 天沒有打卡紀錄');
   if (a.tot) body += '\n\n' + a.tot.curText + '\n' + a.tot.prevText;
   return body;
@@ -445,7 +484,7 @@ function lineHubAttendanceData_(userId) {
       var hrs = (d.approved === null || d.approved === undefined) ? '待核定' : '核定 ' + d.approved + 'h';
       lines.push({ k: d.date + m.st.name, store: m.st.name, segs: segs, hrs: hrs,
         day: parseInt(d.date.slice(5, 7), 10) + '/' + parseInt(d.date.slice(8, 10), 10) + '（' + wk[new Date(d.date + 'T12:00:00Z').getUTCDay()] + '）',
-        status: d.approved_status && d.approved_status !== '正常' ? String(d.approved_status) : '' });
+        status: lineHubDayStatus_(d) });
     });
     var mt = monthTotalsFor(amap, m.row.emp_id, events, today);
     if (mt && mt.current) {
@@ -550,11 +589,13 @@ function lineHubPayLineSub_(x) {
 /** LINE Flex 的 text 不收空字串（整則回覆會 400、同仁收不到），所有顯示字串都過這支 */
 function lineHubTxt_(v) { var t = (v === null || v === undefined) ? '' : String(v); return t === '' ? '—' : t; }
 function lineHubHours_(v) { var n = Number(v); return isFinite(n) ? lineHubR2_(n) + ' H' : '—'; }
+var LINE_HUB_WARN_COLOR = '#c22a12';
 function lineHubFlexRow_(label, value, opts) {
   opts = opts || {};
   var left = { type: 'box', layout: 'vertical', flex: 5, contents: [
     { type: 'text', text: lineHubTxt_(label), size: 'sm', color: opts.muted ? '#8a817a' : '#222222', wrap: true }] };
-  if (opts.sub) left.contents.push({ type: 'text', text: opts.sub, size: 'xxs', color: '#8a817a', wrap: true });
+  // warn：小字改紅色（出勤異常，2026-10-09）
+  if (opts.sub) left.contents.push({ type: 'text', text: opts.sub, size: 'xxs', color: opts.warn ? LINE_HUB_WARN_COLOR : '#8a817a', wrap: true, weight: opts.warn ? 'bold' : 'regular' });
   return { type: 'box', layout: 'horizontal', margin: 'sm', contents: [left,
     { type: 'text', text: lineHubTxt_(value), size: 'sm', align: 'end', flex: 3, wrap: true, color: opts.muted ? '#8a817a' : '#222222',
       weight: opts.bold ? 'bold' : 'regular' }] };
@@ -622,14 +663,25 @@ function lineHubPayMessage_(userId) {
   return lineHubPayText_(userId, j);
 }
 
+/* 特休（2026-10-09 Eason）：payMyPayslipFor_ 的 annual {days, quota_h, used_h, left_h, ps, pe}，pe 不含（最後一天＝pe 前一天）。
+   假別額度卡第一列放特休；正職只有特休額度時，舊版會說「沒有需要顯示的額度」——改掉。 */
+function lineHubMd_(d) { return parseInt(String(d).slice(5, 7), 10) + '/' + parseInt(String(d).slice(8, 10), 10); }
+/** annual → {left_h, quota_h, last, md}；沒有特休（計時同仁、或資料不全）回 null。 */
+function lineHubAnnual_(a) {
+  if (!a || !/^\d{4}-\d{2}-\d{2}/.test(String(a.pe || ''))) return null;
+  var r1 = function (v) { return Math.round((Number(v) || 0) * 10) / 10; };
+  var last = payDayBefore(String(a.pe).slice(0, 10));
+  return { left_h: r1(a.left_h), quota_h: r1(a.quota_h), last: last, md: lineHubMd_(last) };
+}
 function lineHubLeaveText_(userId) {
   var j = lineHubPayslipFor_(userId);
   if (!j) return lineHubMine_(userId, null, true).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
   if (!j.ok) return '查不到你的假別資料，請找店長確認。';
-  var list = j.leave_quota || [];
-  if (!list.length) return '📅 假別額度\n你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。';
+  var list = j.leave_quota || [], an = lineHubAnnual_(j.annual);
+  if (!list.length && !an) return '📅 假別額度\n你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。';
   var r1 = function (v) { return Math.round((Number(v) || 0) * 10) / 10; };
-  return '📅 今年假別額度（已請／剩餘）\n' + list.map(function (q) {
+  var head = an ? '・特休假：剩 ' + an.left_h + ' 小時（共 ' + an.quota_h + ' 小時，' + an.md + ' 到期，未休完依法折算工資）\n' : '';
+  return '📅 今年假別額度（已請／剩餘）\n' + head + list.map(function (q) {
     var used = q.used_days ? r1(q.used_h) + 'H' : '未請過';
     var rem = q.cap_days == null ? '無上限' : (q.basis === 'event' ? '每次上限 ' + r1(q.cap_h) + 'H'
       : (q.remain_h < 0 ? '超出 ' + r1(-q.remain_h) + 'H' : r1(q.remain_h) + 'H／上限 ' + r1(q.cap_h) + 'H'));
@@ -648,7 +700,7 @@ function lineHubFlexText_(text, opts) {
   if (opts.bold) t.weight = 'bold';
   return t;
 }
-/** spec：{title, right?, tone?, alt, hero?:{label,value}, blocks:[ {type:'row',l,r,sub,bold,muted} | {type:'text',text,muted,margin} | {type:'heading',text} | {type:'sep'} ], foot?} */
+/** spec：{title, right?, tone?, alt, hero?:{label,value}, blocks:[ {type:'row',l,r,sub,bold,muted,warn} | {type:'text',text,muted,margin} | {type:'heading',text} | {type:'sep'} ], foot?} */
 function lineHubCard_(spec) {
   var tone = LINE_HUB_TONE[spec.tone || 'info'];
   var head = [{ type: 'text', text: lineHubTxt_(spec.title), weight: 'bold', color: tone[1], size: 'md', wrap: true, flex: 3 }];
@@ -666,7 +718,7 @@ function lineHubCard_(spec) {
       body.push(hd);
     }
     else if (b.type === 'text') body.push(lineHubFlexText_(b.text, { color: b.muted ? '#8a817a' : '#222222', margin: b.margin || 'sm', size: b.size }));
-    else body.push(lineHubFlexRow_(b.l, b.r, { sub: b.sub, bold: b.bold, muted: b.muted }));
+    else body.push(lineHubFlexRow_(b.l, b.r, { sub: b.sub, bold: b.bold, muted: b.muted, warn: b.warn }));
   });
   if (spec.foot) { body.push({ type: 'separator', margin: 'md' }); body.push(lineHubFlexText_(spec.foot, { color: '#8a817a', margin: 'md', size: 'xs' })); }
   if (!body.length) body.push(lineHubFlexText_('—'));
@@ -702,6 +754,7 @@ function lineHubPunchCard_(r) {
     if (r.note) blocks.push({ type: 'text', text: r.note, muted: true });
     if (r.missed) blocks.push({ type: 'sep' }, { type: 'heading', text: '⚠️ 上次漏打卡' }, { type: 'text', text: r.missed, margin: 'xs' });
     if (r.greeting) blocks.push({ type: 'sep' }, { type: 'text', text: r.greeting, margin: 'md', size: 'md' });
+    if (r.annual_note) blocks.push({ type: 'text', text: r.annual_note, margin: 'md' });
     return lineHubCard_({ title: label + '打卡成功', right: '✓', tone: 'ok', alt: label + '打卡成功 ' + lineHubHm_(r.ts),
                           hero: { label: '打卡時間', value: lineHubHm_(r.ts) }, blocks: blocks });
   }
@@ -716,7 +769,7 @@ function lineHubAttendanceCard_(userId) {
   if (!a.lines.length) blocks.push({ type: 'text', text: '最近 7 天沒有打卡紀錄', muted: true });
   a.lines.forEach(function (l, i) {
     if (i) blocks.push({ type: 'sep' });
-    blocks.push({ type: 'row', l: l.day + ' ' + (l.segs || '—'), r: l.hrs, sub: l.store + (l.status ? '｜' + l.status : ''), bold: l.hrs !== '待核定' });
+    blocks.push({ type: 'row', l: l.day + ' ' + (l.segs || '—'), r: l.hrs, sub: l.store + (l.status ? '｜⚠️ ' + l.status : ''), bold: l.hrs !== '待核定', warn: !!l.status });
   });
   if (a.tot) {
     blocks.push({ type: 'heading', text: '核定合計' });
@@ -731,8 +784,8 @@ function lineHubLeaveCard_(userId) {
   var j = lineHubPayslipFor_(userId);
   if (!j) return lineHubMine_(userId, null, true).length ? lineHubNoticeCard_('假別額度', LINE_HUB_NO_PAYROLL_TEXT, 'warn') : lineHubNoticeCard_('還沒綁定', LINE_HUB_NOT_BOUND_TEXT);
   if (!j.ok) return lineHubNoticeCard_('假別額度', '查不到你的假別資料，請找店長確認。', 'warn');
-  var list = j.leave_quota || [];
-  if (!list.length) return lineHubNoticeCard_('假別額度', '你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。');
+  var list = j.leave_quota || [], an = lineHubAnnual_(j.annual);
+  if (!list.length && !an) return lineHubNoticeCard_('假別額度', '你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。');
   var r1 = function (v) { return Math.round((Number(v) || 0) * 10) / 10; };
   var blocks = list.map(function (q) {
     var rem = q.cap_days == null ? '無上限' : (q.basis === 'event' ? '每次上限 ' + r1(q.cap_h) + 'H'
@@ -740,6 +793,7 @@ function lineHubLeaveCard_(userId) {
     var sub = (q.used_days ? '已請 ' + r1(q.used_h) + 'H' : '未請過') + (q.cap_days != null && q.basis !== 'event' ? '・上限 ' + r1(q.cap_h) + 'H' : '');
     return { type: 'row', l: q.name, r: rem, sub: sub, bold: true };
   });
+  if (an) blocks.unshift({ type: 'row', l: '特休假', r: '剩 ' + an.left_h + ' 小時', sub: '共 ' + an.quota_h + ' 小時・' + an.md + ' 到期（未休完依法折算工資）', bold: true });
   return lineHubCard_({ title: '今年假別額度', tone: 'info', alt: '今年假別額度', blocks: blocks,
                         foot: '數字來自店長登記的請假紀錄，有出入請找店長。', fallbackText: lineHubLeaveText_(userId) });
 }
@@ -813,7 +867,7 @@ function lineHubAttendanceMonthData_(userId, ym) {
       lines.push({ k: d.date + m.st.name, store: m.st.name, segs: segs,
         hrs: (d.approved === null || d.approved === undefined) ? '待核定' : '核定 ' + d.approved + 'h',
         day: parseInt(d.date.slice(5, 7), 10) + '/' + parseInt(d.date.slice(8, 10), 10) + '（' + wk[new Date(d.date + 'T12:00:00Z').getUTCDay()] + '）',
-        status: d.approved_status && d.approved_status !== '正常' ? String(d.approved_status) : '' });
+        status: lineHubDayStatus_(d) });
     });
     hours += monthlyApprovedTotal(amap, m.row.emp_id, ym);
   });
@@ -839,11 +893,11 @@ function lineHubAttendanceMonthCard_(userId, ym) {
   if (!a.lines.length) blocks.push({ type: 'text', text: mLabel + '沒有打卡紀錄', muted: true });
   a.lines.forEach(function (l, i) {
     if (i) blocks.push({ type: 'sep' });
-    blocks.push({ type: 'row', l: l.day + ' ' + (l.segs || '—'), r: l.hrs, sub: l.store + (l.status ? '｜' + l.status : ''), bold: l.hrs !== '待核定' });
+    blocks.push({ type: 'row', l: l.day + ' ' + (l.segs || '—'), r: l.hrs, sub: l.store + (l.status ? '｜⚠️ ' + l.status : ''), bold: l.hrs !== '待核定', warn: !!l.status });
   });
   blocks.push({ type: 'heading', text: '核定合計' });
   blocks.push({ type: 'row', l: mLabel, r: a.hours + ' 小時', sub: a.pending ? '尚有 ' + a.pending + ' 天待核定' : '', bold: true });
-  var text = '📋 ' + mLabel + '出勤\n' + (a.lines.length ? a.lines.map(function (l) { return l.day + ' ' + (l.segs || '—') + '｜' + l.hrs; }).join('\n') : '沒有打卡紀錄') +
+  var text = '📋 ' + mLabel + '出勤\n' + (a.lines.length ? a.lines.map(function (l) { return l.day + ' ' + (l.segs || '—') + '｜' + l.hrs + (l.status ? '｜⚠️ ' + l.status : ''); }).join('\n') : '沒有打卡紀錄') +
              '\n\n核定合計 ' + a.hours + ' 小時' + (a.pending ? '，尚有 ' + a.pending + ' 天待核定' : '');
   var card = lineHubCard_({ title: mLabel + '出勤', tone: 'info', alt: mLabel + '出勤紀錄', blocks: blocks, fallbackText: text });
   return typeof card === 'string' ? card : lineHubAttendanceMonthButtons_(card, ym);
@@ -928,6 +982,7 @@ var LINE_HUB_TEXT_COMMANDS = {
   '假別額度': lineHubLeaveCard_,
   '加班申請': function () { return lineHubReqCard_('ot'); },
   '請假申請': function () { return lineHubReqCard_('leave'); },
+  '出差申請': function () { return lineHubReqCard_('trip'); },
   '忘打卡': function () { return lineHubReqCard_('miss'); },
   '忘打卡申請': function () { return lineHubReqCard_('miss'); },
   '我的申請': function () { return lineHubReqCard_('mine'); },
@@ -973,6 +1028,7 @@ function handleLineWebhook_(body) {
       if (text === '打卡' || LINE_HUB_TEXT_COMMANDS[text] || /^(出勤紀錄|薪資明細)\s*\d{4}-\d{2}$/.test(text)) lineHubLoading_(userId);
       if (text === '打卡') {
         var r = lineHubTakeStash_(userId) || lineHubLatestPunch_(userId);
+        if (r && r.ok) r.annual_note = lineHubAnnualNote_(userId, r.ts);   // 特休快到期提醒（一天最多一次；查不到就不提）
         lineHubReply_(ev.replyToken, [
           r && r.unreadable ? lineHubNoticeCard_('打卡', '剛才那筆暫時查不到（店家系統忙碌）。打卡畫面顯示成功就是成功，可按選單「出勤紀錄」確認。', 'warn')
           : r ? lineHubPunchCard_(r)
@@ -1019,11 +1075,11 @@ var LINE_HUB_HANDLERS = {
 /* ══ 加班請假／忘打卡申請（2026-10-09，規格 mala-clock-liff docs/requests-spec.md）══
    申請本身存各店（Requests.gs）；這裡只做：選單入口卡片、申請頁開頁資料（綁哪些店＋假別＋額度）、附件（只存光復的雲端硬碟）、意見回饋。 */
 var LINE_HUB_LIFF_URL = 'https://liff.line.me/2011292256-QFXEwFh4';
-var LINE_HUB_REQ_TABS = { leave: '請假', ot: '加班', miss: '忘打卡', mine: '我的申請' };
+var LINE_HUB_REQ_TABS = { leave: '請假', ot: '加班', trip: '出差', miss: '忘打卡', mine: '我的申請' };
 function lineHubReqCard_(tab) {
   var t = LINE_HUB_REQ_TABS[tab] ? tab : 'leave';
   return lineHubCard_({ title: '📝 加班請假', tone: 'info', alt: '加班請假申請',
-    blocks: [{ type: 'text', text: '請假、加班、忘打卡都在這裡申請，送出後由值班主管審核。結果會在「我的申請」，下次打卡時也會告訴你。' }],
+    blocks: [{ type: 'text', text: '請假、加班、出差、忘打卡都在這裡申請，送出後由值班主管審核。結果會在「我的申請」，下次打卡時也會告訴你。' }],
     buttons: [{ label: '打開' + (tab ? LINE_HUB_REQ_TABS[t] : '申請頁'), uri: LINE_HUB_LIFF_URL + '?view=req&tab=' + t }] });
 }
 var LINE_HUB_COMMON_LEAVES = ['特休假', '事假', '病假', '生理假', '家庭照顧假'];

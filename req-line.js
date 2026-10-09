@@ -1,11 +1,12 @@
 /* 加班請假／忘打卡申請頁（2026-10-09，規格 mala-clock-liff docs/requests-spec.md）
- * 由 clock-line.html 載入：同一個 LIFF，網址帶 ?view=req&tab=leave|ot|miss|mine 就顯示這頁，不顯示打卡。
+ * 由 clock-line.html 載入：同一個 LIFF，網址帶 ?view=req&tab=leave|ot|trip|miss|mine 就顯示這頁，不顯示打卡。
+ * 2026-10-09 加「出差」分頁；下班打卡超過 8 小時的「申請加班」按鈕會帶 tab=ot＋date／start／end 預填。
  * 開頁資料：光復 line_hub_req_init（綁了哪些店、假別、額度）＋那家店 req_info（我的申請、某天缺哪張卡）。
  * 送出：那家店 req_submit；附件先傳光復 line_hub_attach_put 拿 ID。結果不推播，回「我的申請」看。 */
 (function () {
   'use strict';
   var E, $root, st = { init: null, store: null, info: null, tab: 'leave', busy: false };
-  var TABS = [['leave', '請假'], ['ot', '加班'], ['miss', '忘打卡'], ['mine', '我的申請']];
+  var TABS = [['leave', '請假'], ['ot', '加班'], ['trip', '出差'], ['miss', '忘打卡'], ['mine', '我的申請']];
   var MISS_REASONS = ['忘記按', '手機沒電', '定位抓不到被擋', '按錯上下班', '其他'];
   var STATUS = { pending: ['審核中', 'wait'], approved: ['已核准', 'ok'], rejected: ['已退回', 'no'], cancelled: ['已取消', 'off'] };
 
@@ -44,6 +45,8 @@
     $root = document.getElementById('reqView');
     st.tab = TABS.some(function (t) { return t[0] === opts.tab; }) ? opts.tab : 'leave';
     st.missDate = opts.date || ''; st.missType = opts.miss || '';
+    // 下班打卡提示加班（opts.start／end）：預填加班分頁，原因留給同仁寫
+    if (st.tab === 'ot' && opts.date && opts.start && opts.end) ot = { date: opts.date, start: opts.start, end: opts.end, reason: '' };
     $root.hidden = false;
     $root.innerHTML = '';
     $root.appendChild(h('div', { class: 'rq-loading', text: '讀取中…' }));
@@ -87,7 +90,7 @@
     })));
     var panel = h('div', { class: 'rq-panel' });
     $root.appendChild(panel);
-    ({ leave: renderLeave, ot: renderOt, miss: renderMiss, mine: renderMine })[st.tab](panel);
+    ({ leave: renderLeave, ot: renderOt, trip: renderTrip, miss: renderMiss, mine: renderMine })[st.tab](panel);
   }
 
   function chips(list, value, onPick) {
@@ -170,6 +173,41 @@
     p.appendChild(h('div', { class: 'rq-note', text: '已經加過班或還沒加班都可以申請。實際時數以主管當天核定為準。' }));
   }
 
+  /* 出差（2026-10-09）：日期 31 天前到 90 天後；整天填時數或只一段填起訖；地點、事由必填。
+     存成 leave_type＝出差、reason＝'地點：…；事由：…'；核准後核定頁預填「出差」＋時數（與上班時段相加）。 */
+  var tp = { date: '', mode: 'day', hours: '8', start: '', end: '', place: '', why: '' };
+  function renderTrip(p) {
+    if (!tp.date) tp.date = taipeiToday(0);
+    var dateIn = h('input', { type: 'date', value: tp.date, min: taipeiToday(-31), max: taipeiToday(90), on: { change: function () { tp.date = dateIn.value; } } });
+    p.appendChild(field('日期', dateIn));
+    var modeBox = h('div', {}, [chips(['整天', '只一段'], tp.mode === 'day' ? '整天' : '只一段', function (v) { tp.mode = v === '整天' ? 'day' : 'span'; render(); })]);
+    if (tp.mode === 'day') {
+      var hr = h('input', { type: 'number', min: '0.5', max: '24', step: '0.5', value: tp.hours, class: 'rq-hours', on: { input: function () { tp.hours = hr.value; } } });
+      modeBox.appendChild(h('div', { class: 'rq-row' }, ['共 ', hr, ' 小時']));
+    } else {
+      var s1 = h('input', { type: 'time', value: tp.start, on: { change: function () { tp.start = s1.value; upd(); } } });
+      var e1 = h('input', { type: 'time', value: tp.end, on: { change: function () { tp.end = e1.value; upd(); } } });
+      var tot = h('span', { class: 'rq-muted' });
+      var upd = function () { var x = spanHours(tp.start, tp.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; };
+      modeBox.appendChild(h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot])); upd();
+    }
+    p.appendChild(field('時段', modeBox));
+    var pl = h('input', { type: 'text', maxlength: '40', value: tp.place, placeholder: '例如：台中央廚', class: 'rq-place', on: { input: function () { tp.place = pl.value; } } });
+    p.appendChild(field('地點（必填）', pl));
+    var wy = h('input', { type: 'text', maxlength: '100', value: tp.why, placeholder: '例如：支援月初盤點', class: 'rq-why', on: { input: function () { tp.why = wy.value; } } });
+    p.appendChild(field('事由（必填）', wy));
+    var out = h('div', {});
+    p.appendChild(submitBtn(out, function () {
+      if (!tp.place.trim()) return Promise.reject(new Error('請填出差地點'));
+      if (!tp.why.trim()) return Promise.reject(new Error('請填出差事由'));
+      var body = { kind: 'trip', date: tp.date, place: tp.place.trim(), why: tp.why.trim() };
+      if (tp.mode === 'day') body.hours = tp.hours; else { body.start = tp.start; body.end = tp.end; }
+      return Promise.resolve(body);
+    }, function () { tp = { date: '', mode: 'day', hours: '8', start: '', end: '', place: '', why: '' }; }));
+    p.appendChild(out);
+    p.appendChild(h('div', { class: 'rq-note', text: '出差時數會算進當天工時，由值班主管核定。' }));
+  }
+
   /* 忘打卡 */
   function renderMiss(p) {
     var days = [];
@@ -224,8 +262,9 @@
       var s = STATUS[r.status] || [r.status, 'off'];
       var title = r.kind === 'leave' ? r.leave_type + ' ' + r.hours + ' 小時'
                 : r.kind === 'ot' ? '加班 ' + r.hours + ' 小時'
+                : r.kind === 'trip' ? '出差 ' + r.hours + ' 小時'
                 : '忘打卡・補' + (r.miss_type === 'both' ? '上下班卡' : r.miss_type === 'in' ? '上班卡 ' + r.start : '下班卡 ' + r.end);
-      var sub = md(r.date) + (r.start && r.kind !== 'miss' ? ' ' + r.start + '–' + r.end : r.kind === 'leave' ? ' 整天' : '')
+      var sub = md(r.date) + (r.start && r.kind !== 'miss' ? ' ' + r.start + '–' + r.end : (r.kind === 'leave' || r.kind === 'trip') ? ' 整天' : '')
         + (r.reason ? '・' + r.reason : '');
       var item = h('div', { class: 'rq-item' }, [
         h('div', { class: 'rq-t' }, [h('span', { text: title }), h('span', { class: 'rq-pill ' + s[1], text: s[0] })]),

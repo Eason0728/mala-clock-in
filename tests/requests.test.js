@@ -229,4 +229,104 @@ ok('審查 #3 今天：跨夜的下班時間（＝明天）或還沒到的時間
   assert.strictEqual(submit(sb, { kind: 'miss', date: '2026-10-09', miss_type: 'both', start: '10:00', end: '17:00', reason: '忘記按' }).error, 'bad_time');
   assert(submit(sb, { kind: 'miss', date: '2026-10-09', miss_type: 'both', start: '10:00', end: '15:00', reason: '忘記按' }).ok);
 });
+
+/* ── 2026-10-09 第二批：出差單、批次核准、下班超時提示加班 ── */
+ok('出差：整天填時數／只一段算時數；地點、事由必填，地點最多 40 字；存成 leave_type＝出差、reason＝地點＋事由', () => {
+  const sb = makeEnv({});
+  let r = submit(sb, { kind: 'trip', date: '2026-10-12', hours: 8, place: '台中央廚', why: '支援盤點' });
+  assert(r.ok, JSON.stringify(r));
+  assert.strictEqual(r.summary, '10/12 出差 整天 8 小時（地點：台中央廚）');
+  assert.strictEqual(r.request.leave_type, '出差'); assert.strictEqual(r.request.reason, '地點：台中央廚；事由：支援盤點');
+  r = submit(sb, { kind: 'trip', date: '2026-10-13', start: '13:00', end: '17:30', place: '總部', why: '開會' });
+  assert(r.ok); assert.strictEqual(r.request.hours, 4.5); assert.strictEqual(r.summary, '10/13 出差 13:00–17:30 4.5 小時（地點：總部）');
+  assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-14', hours: 8, why: 'x' }).error, 'need_place');
+  assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-14', hours: 8, place: '總部' }).error, 'need_reason');
+  assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-14', hours: 8, place: '字'.repeat(41), why: 'x' }).error, 'bad_place');
+  assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-14', place: '總部', why: 'x' }).error, 'bad_hours');
+  assert.strictEqual(submit(sb, { kind: 'trip', date: '2027-02-01', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');   // 超過 90 天
+  assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-09-01', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');   // 超過 31 天前
+  assert(submit(sb, { kind: 'trip', date: '2026-09-10', hours: 8, place: '總部', why: 'x' }).ok);   // 31 天內可補
+  assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-12', hours: 4, place: '總部', why: 'x' }).error, 'duplicate');
+  // 地點裡的全形分號換掉，reason 才拆得回來
+  r = submit(sb, { kind: 'trip', date: '2026-10-20', hours: 8, place: '台中；美村', why: 'x' });
+  assert.strictEqual(sb.reqTripPlace_(r.request.reason), '台中，美村');
+  // 核准後核定頁拿得到（mgr_req_day），請假欄位＝出差
+  sb.handleMgrReqDecide_({ mgr_key: 'MK', id: r.request.id, decision: 'approve' });
+  const d = sb.handleMgrReqDay_({ mgr_key: 'MK', date: '2026-10-20' });
+  assert.strictEqual(d.by_emp.E01[0].kind, 'trip'); assert.strictEqual(d.by_emp.E01[0].leave_type, '出差'); assert.strictEqual(d.by_emp.E01[0].hours, 8);
+});
+ok('批次核准：一次核准多筆；已處理／已取消／找不到的略過並說原因；只能核准、最多 30 筆、要主管金鑰', () => {
+  const sb = makeEnv({});
+  const a = submit(sb, { kind: 'leave', date: '2026-10-15', leave_type: '特休假', hours: 8 });
+  const b = submit(sb, { kind: 'ot', date: '2026-10-11', start: '21:00', end: '22:30', reason: '外送多' });
+  const c = submit(sb, { kind: 'trip', date: '2026-10-12', hours: 8, place: '總部', why: '開會' });
+  const d = submit(sb, { kind: 'leave', date: '2026-10-16', leave_type: '事假', hours: 4 });
+  sb.handleMgrReqDecide_({ mgr_key: 'MK', id: b.request.id, decision: 'reject', reason: '人力已足' });
+  sb.handleReqCancel_({ id_token: 'TOK_U1', id: d.request.id });
+  assert.strictEqual(sb.handleMgrReqDecideBatch_({ mgr_key: 'OLD', ids: [a.request.id], decision: 'approve' }).error, 'unauthorized');
+  assert.strictEqual(sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids: [a.request.id], decision: 'reject' }).error, 'bad_decision');
+  assert.strictEqual(sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids: [], decision: 'approve' }).error, 'no_ids');
+  assert.strictEqual(sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids: Array.from({ length: 31 }, (_, i) => 'x' + i), decision: 'approve' }).error, 'too_many_ids');
+  const r = sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids: [a.request.id, b.request.id, c.request.id, d.request.id, 'nope', a.request.id], decision: 'approve' });
+  assert(r.ok);
+  assert.deepStrictEqual(Array.from(r.done), [a.request.id, c.request.id]);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r.skipped)), [
+    { id: b.request.id, reason: '這筆已經處理過了' }, { id: d.request.id, reason: '同仁已經取消這筆申請' }, { id: 'nope', reason: '找不到這筆申請' }]);
+  assert.strictEqual(sb.handleMgrReqPending_({ mgr_key: 'MK' }).items.length, 0);
+  const day = sb.handleMgrReqDay_({ mgr_key: 'MK', date: '2026-10-15' });
+  assert.strictEqual(day.by_emp.E01[0].decided_by, '測試主管');
+});
+ok('下班超時提示：當天完整段加總 > 8 小時才提示；start＝滿 8 小時的時刻往前取整到 15 分', () => {
+  const sb = makeEnv({});
+  // 10:00 上班、19:40 下班＝9.67 小時 → 滿 8 小時在 18:00 → start 18:00
+  let h = sb.reqOtHint_([ev('2026-10-09T10:00:00+08:00', 'in'), ev('2026-10-09T19:40:00+08:00', 'out')], 'E01', '2026-10-09T19:40:00+08:00', []);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(h)), { date: '2026-10-09', hours: 9.67, start: '18:00', end: '19:40' });
+  // 10:07 上班、19:20 下班＝9.22 小時 → 滿 8 小時在 18:07 → 取整 18:00
+  h = sb.reqOtHint_([ev('2026-10-09T10:07:00+08:00', 'in'), ev('2026-10-09T19:20:00+08:00', 'out')], 'E01', '2026-10-09T19:20:00+08:00', []);
+  assert.strictEqual(h.start, '18:00'); assert.strictEqual(h.hours, 9.22);
+  // 剛好 8 小時不提示
+  assert.strictEqual(sb.reqOtHint_([ev('2026-10-09T10:00:00+08:00', 'in'), ev('2026-10-09T18:00:00+08:00', 'out')], 'E01', '2026-10-09T18:00:00+08:00', []), null);
+  // 中間休息兩段：10–14 + 15–20:30 ＝ 9.5 小時 → 滿 8 小時在 19:00
+  h = sb.reqOtHint_([ev('2026-10-09T10:00:00+08:00', 'in'), ev('2026-10-09T14:00:00+08:00', 'out'), ev('2026-10-09T15:00:00+08:00', 'in'), ev('2026-10-09T20:30:00+08:00', 'out')], 'E01', '2026-10-09T20:30:00+08:00', []);
+  assert.strictEqual(h.hours, 9.5); assert.strictEqual(h.start, '19:00'); assert.strictEqual(h.end, '20:30');
+  // 被擋的卡不算；別人的卡不算
+  assert.strictEqual(sb.reqOtHint_([ev('2026-10-09T08:00:00+08:00', 'in', 'rejected_out_of_range'), ev('2026-10-09T13:30:00+08:00', 'in'), ev('2026-10-09T21:00:00+08:00', 'out')], 'E01', '2026-10-09T21:00:00+08:00', []), null);   // 7.5 小時（08:00 被擋的不算）
+  assert.strictEqual(sb.reqOtHint_([Object.assign(ev('2026-10-09T08:00:00+08:00', 'in'), { emp_id: 'E02' }), ev('2026-10-09T13:30:00+08:00', 'in'), ev('2026-10-09T21:00:00+08:00', 'out')], 'E01', '2026-10-09T21:00:00+08:00', []), null);
+  // 沒配到上班卡（忘了上班卡）不提示
+  assert.strictEqual(sb.reqOtHint_([ev('2026-10-09T21:00:00+08:00', 'out')], 'E01', '2026-10-09T21:00:00+08:00', []), null);
+});
+ok('下班超時提示：跨夜班歸上班那天、start 跨午夜；那天已有審核中／已核准加班就不提示，退回或取消的不算', () => {
+  const sb = makeEnv({});
+  const evs = [ev('2026-10-08T16:00:00+08:00', 'in'), ev('2026-10-09T01:30:00+08:00', 'out')];   // 9.5 小時，滿 8 小時在 00:00
+  let h = sb.reqOtHint_(evs, 'E01', '2026-10-09T01:30:00+08:00', []);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(h)), { date: '2026-10-08', hours: 9.5, start: '00:00', end: '01:30' });
+  const evs2 = [ev('2026-10-08T15:50:00+08:00', 'in'), ev('2026-10-09T01:00:00+08:00', 'out')];   // 9.17 小時 → 23:50 → 23:45
+  assert.strictEqual(sb.reqOtHint_(evs2, 'E01', '2026-10-09T01:00:00+08:00', []).start, '23:45');
+  const row = (status) => ({ emp_id: 'E01', kind: 'ot', date: '2026-10-08', status });
+  assert.strictEqual(sb.reqOtHint_(evs, 'E01', '2026-10-09T01:30:00+08:00', [row('pending')]), null);
+  assert.strictEqual(sb.reqOtHint_(evs, 'E01', '2026-10-09T01:30:00+08:00', [row('approved')]), null);
+  assert(sb.reqOtHint_(evs, 'E01', '2026-10-09T01:30:00+08:00', [row('rejected'), row('cancelled'), { emp_id: 'E02', kind: 'ot', date: '2026-10-08', status: 'pending' }]));
+});
+ok('liff_punch 下班成功：超過 8 小時回 ot_hint；上班卡不回；算壞了也不影響打卡', () => {
+  const evs = [ev('2026-10-09T09:00:00+08:00', 'in')];
+  const sb = makeEnv({ events: evs });
+  const keep = ['verifyLineIdToken_', 'liffRosterByLine_', 'liffThrottled_', 'liffSiteThrottled_', 'liffEvents_'].map((k) => [k, sb[k]]);
+  vm.runInContext(fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8') + '\n' + extract(codeSrc, 'lastCountedEvent'), sb);
+  keep.forEach(([k, v]) => { sb[k] = v; });
+  sb.handleClock = () => ({ ok: true, status: 'ok', ts: '2026-10-09T19:05:00+08:00' });
+  sb.CacheService = { getScriptCache: () => ({ get: () => null, put() {}, remove() {} }) };
+  sb.lastCountedEvent = () => null;   // 這裡不測同型擋
+  const me = { emp_id: 'E01', name: '測試一', key: 'k1', device_id: 'D1' };
+  let r = sb.liffPunchFor_('U1', me, sb.getSS(), 'out', { lat: 24.78, lng: 121.01, accuracy: 10 });
+  assert(r.ok); assert.deepStrictEqual(JSON.parse(JSON.stringify(r.ot_hint)), { date: '2026-10-09', hours: 10.08, start: '17:00', end: '19:05' });
+  r = sb.liffPunchFor_('U1', me, sb.getSS(), 'in', { lat: 24.78, lng: 121.01, accuracy: 10 });
+  assert(r.ok && !r.ot_hint);
+  sb.reqOtHint_ = () => { throw new Error('壞了'); };
+  r = sb.liffPunchFor_('U1', me, sb.getSS(), 'out', { lat: 24.78, lng: 121.01, accuracy: 10 });
+  assert(r.ok && !r.ot_hint);
+});
+ok('LIFF_HANDLERS 有掛 mgr_req_decide_batch（包一層，載入順序不影響）', () => {
+  const src = fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8');
+  assert(/mgr_req_decide_batch: function \(b\) \{ return handleMgrReqDecideBatch_\(b\); \}/.test(src));
+});
 if (require.main === module) console.log(`\n${n} 項全部通過`);

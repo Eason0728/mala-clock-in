@@ -11,12 +11,14 @@
 var REQ_SHEET_ = 'requests';
 var REQ_HEADERS_ = ['id', 'created_at', 'emp_id', 'name', 'kind', 'date', 'leave_type', 'start', 'end', 'hours',
                     'miss_type', 'reason', 'attach_id', 'status', 'decided_at', 'decided_by', 'reject_reason', 'seen_at'];
-var REQ_KINDS_ = { leave: '請假', ot: '加班', miss: '忘打卡' };
+var REQ_KINDS_ = { leave: '請假', ot: '加班', trip: '出差', miss: '忘打卡' };
 var REQ_MISS_DAYS = 7;          // 忘打卡只能申請 7 天內（含今天）
 var REQ_LEAVE_PAST_DAYS = 31;   // 請假可補申請到 31 天前
 var REQ_FUTURE_DAYS = 90;       // 請假／加班最遠申請到 90 天後
 var REQ_LIST_DAYS = 60;         // 「我的申請」看 60 天
 var REQ_REASON_MAX = 100;
+var REQ_TRIP_PLACE_MAX = 40;    // 出差地點上限（2026-10-09 Eason）
+var REQ_BATCH_MAX = 30;         // 主管批次核准一次最多幾筆
 
 /* ── 工具 ── */
 function reqSheet_(ss, create) {
@@ -78,11 +80,19 @@ function reqSummary_(r) {
   var md = parseInt(String(r.date).slice(5, 7), 10) + '/' + parseInt(String(r.date).slice(8, 10), 10);
   if (r.kind === 'leave') return md + ' ' + r.leave_type + (r.start ? ' ' + r.start + '–' + r.end : ' 整天') + ' ' + Number(r.hours) + ' 小時';
   if (r.kind === 'ot') return md + ' 加班 ' + r.start + '–' + r.end + '（' + Number(r.hours) + ' 小時）';
+  if (r.kind === 'trip') {
+    var place = reqTripPlace_(r.reason);
+    return md + ' 出差' + (r.start ? ' ' + r.start + '–' + r.end : ' 整天') + ' ' + Number(r.hours) + ' 小時' + (place ? '（地點：' + place + '）' : '');
+  }
   var parts = [];
   if (r.miss_type === 'in' || r.miss_type === 'both') parts.push('上班 ' + r.start);
   if (r.miss_type === 'out' || r.miss_type === 'both') parts.push('下班 ' + r.end);
   return md + ' 忘打卡補登（' + parts.join('、') + '）';
 }
+
+/** 出差單的地點、事由存在 reason 欄：'地點：<地點>；事由：<事由>'（沿用既有欄位，不加欄）。 */
+function reqTripReason_(place, why) { return '地點：' + place + '；事由：' + why; }
+function reqTripPlace_(reason) { var m = /^地點：(.*?)；事由：/.exec(String(reason || '')); return m ? m[1] : ''; }
 
 /* ── 那一天的打卡：算數的卡與缺哪張（忘打卡用）──
    跨夜班要跨天一起配對（審查 #2）：上班卡後 16 小時內的下班卡算同一段（同 pairShifts／liffMissedDetail_ 的配對視窗），
@@ -193,6 +203,25 @@ function reqValidate_(b, me, events, today, existing) {
     row.hours = reqSpanHours_(row.start, row.end);
     if (row.hours > 12) return { error: 'bad_time', message: '加班時段超過 12 小時，請確認時間' };
     if (!reason) return { error: 'need_reason', message: '加班要寫原因' };
+  } else if (kind === 'trip') {
+    // 出差（2026-10-09）：存成 leave_type＝出差；核准後核定頁預填「出差」＋時數（出差時數與上班時段相加，整天出差可以沒有時段）
+    if (diff < -REQ_LEAVE_PAST_DAYS || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '出差只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
+    row.leave_type = '出差';
+    if (b.start || b.end) {
+      row.start = reqHm_(b.start); row.end = reqHm_(b.end);
+      if (!row.start || !row.end) return { error: 'bad_time', message: '請填完整的出差時段' };
+      row.hours = reqSpanHours_(row.start, row.end);
+    } else {
+      var th = Number(b.hours);
+      if (!isFinite(th) || th <= 0 || th > 24) return { error: 'bad_hours', message: '請填出差時數' };
+      row.hours = Math.round(th * 4) / 4;
+    }
+    var place = reqClean_(b.place, 200).replace(/；/g, '，');
+    if (!place) return { error: 'need_place', message: '請填出差地點' };
+    if (place.length > REQ_TRIP_PLACE_MAX) return { error: 'bad_place', message: '地點最多 ' + REQ_TRIP_PLACE_MAX + ' 個字' };
+    var why = reqClean_(b.why, REQ_REASON_MAX);
+    if (!why) return { error: 'need_reason', message: '請填出差事由' };
+    row.reason = reqTripReason_(place, why);
   } else {   // miss
     if (diff > 0) return { error: 'bad_date', message: '不能補登還沒到的日期' };
     if (diff < -REQ_MISS_DAYS) return { error: 'too_old', message: '超過 ' + REQ_MISS_DAYS + ' 天不能申請，請找值班主管直接核定' };
@@ -326,6 +355,34 @@ function handleMgrReqDecide_(body) {
   } finally { lock.releaseLock(); }
 }
 
+/** {action:'mgr_req_decide_batch', mgr_key, ids:[…], decision:'approve'} → {ok, done:[ids], skipped:[{id, reason}]}
+ *  批次只能核准（2026-10-09 Eason）：退回要寫理由，一筆一筆退。一把鎖、鎖內重讀，不是審核中的就略過並說明原因。 */
+function handleMgrReqDecideBatch_(body) {
+  var mgr = reqMgr_(body);
+  if (!mgr) return { ok: false, error: 'unauthorized' };
+  if (String(body.decision || '') !== 'approve') return { ok: false, error: 'bad_decision', message: '批次只能核准；退回請一筆一筆處理' };
+  var ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+  ids = ids.filter(function (x, i) { return x && ids.indexOf(x) === i; });
+  if (!ids.length) return { ok: false, error: 'no_ids', message: '請先勾選要核准的申請' };
+  if (ids.length > REQ_BATCH_MAX) return { ok: false, error: 'too_many_ids', message: '一次最多核准 ' + REQ_BATCH_MAX + ' 筆' };
+  var ss = getSS(), sh = reqSheet_(ss, false);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
+  try {
+    var byId = {};
+    reqRows_(ss).forEach(function (x) { byId[String(x.id)] = x; });
+    var now = nowTaipeiIso(), done = [], skipped = [];
+    ids.forEach(function (id) {
+      var r = byId[id];
+      if (!sh || !r) { skipped.push({ id: id, reason: '找不到這筆申請' }); return; }
+      if (r.status !== 'pending') { skipped.push({ id: id, reason: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' }); return; }
+      reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: String(mgr.name), reject_reason: '' });
+      done.push(id);
+    });
+    return { ok: true, done: done, skipped: skipped };
+  } finally { lock.releaseLock(); }
+}
+
 /** {action:'mgr_req_day', mgr_key, date} → {ok, by_emp:{emp_id:[已核准的申請…]}}（核定頁預填用） */
 function handleMgrReqDay_(body) {
   if (!reqMgr_(body)) return { ok: false, error: 'unauthorized' };
@@ -387,4 +444,40 @@ function reqQrLog_(ss, ts, empId, type, mgrName) {
   var sh = ss.getSheetByName(REQ_QR_LOG_SHEET_);
   if (!sh) { sh = ss.insertSheet(REQ_QR_LOG_SHEET_); sh.getRange(1, 1, 1, 4).setValues([['ts', 'emp_id', 'type', 'qr_manager']]); }
   sh.appendRow([ts, empId, type, mgrName]);
+}
+
+/* ── 下班打卡後提示申請加班（2026-10-09 Eason）──
+   當天出勤超過 8 小時（全部門市一律 8 小時，先不看班表）、這天還沒有審核中／已核准的加班申請 → 打卡畫面多一顆「申請加班」，預填時段。
+   「那天」＝這張下班卡配到的上班卡那天（跨夜班歸上班那天，同 reqDayInfo_ 的 16 小時配對）；那天所有完整的上班→下班段加總（含這一段）。
+   預填：end＝這次下班時間；start＝end 往前推（總時數−8）＝剛好滿 8 小時的時刻，往前取整到 :00／:15／:30／:45。
+   events 要含這次這張下班卡。回 {date, hours, start, end} 或 null。 */
+var REQ_OT_HINT_H = 8;
+function reqOtHint_(events, empId, outTs, rows) {
+  var outMs = new Date(String(outTs)).getTime();
+  if (isNaN(outMs)) return null;
+  var counted = events.filter(function (e) {
+    return String(e.emp_id) === String(empId) && String(e.status).indexOf('rejected_') !== 0;
+  }).map(reqPunchObj_).filter(function (p) { return !isNaN(p.t) && p.t <= outMs && p.t >= outMs - 3 * REQ_PAIR_MS; })
+    .sort(function (a, b) { return a.t - b.t; });
+  var segs = [], open = null;
+  counted.forEach(function (p) {
+    if (p.type === 'in') { open = p; return; }
+    if (open && p.t - open.t <= REQ_PAIR_MS) segs.push({ inp: open, outp: p });
+    open = null;
+  });
+  var mine = segs.filter(function (x) { return x.outp.t === outMs; })[0];
+  if (!mine) return null;
+  var date = mine.inp.date, ms = 0;
+  segs.forEach(function (x) { if (x.inp.date === date) ms += x.outp.t - x.inp.t; });
+  var hours = Math.round(ms / 36000) / 100;
+  if (hours <= REQ_OT_HINT_H) return null;
+  var has = (rows || []).some(function (r) {
+    return String(r.emp_id) === String(empId) && r.kind === 'ot' && r.date === date && (r.status === 'pending' || r.status === 'approved');
+  });
+  if (has) return null;
+  var end = String(outTs).slice(11, 16);
+  var startMin = reqMin_(end) - (ms - REQ_OT_HINT_H * 3600000) / 60000;
+  startMin = ((Math.floor(startMin / 15) * 15) % 1440 + 1440) % 1440;
+  var start = ('0' + Math.floor(startMin / 60)).slice(-2) + ':' + ('0' + (startMin % 60)).slice(-2);
+  return { date: date, hours: hours, start: start, end: end };
 }

@@ -187,7 +187,15 @@
   .rq-l1 { display: flex; justify-content: space-between; gap: 8px; font-size: 15px; font-weight: 700; }
   .rq-kind { font-size: 12px; border-radius: 6px; padding: 1px 7px; margin-right: 4px; font-weight: 700; }
   .rq-kind.leave { background: #e7eefc; color: #2b4f9a; } .rq-kind.ot { background: #ffe9d6; color: #a14a00; }
-  .rq-kind.miss { background: #efe4fb; color: #6a3a9a; }
+  .rq-kind.miss { background: #efe4fb; color: #6a3a9a; } .rq-kind.trip { background: #e2f3ef; color: #1f6b5a; }
+  /* 批次核准（2026-10-09）：每筆前面一個勾選框＋上方「全選」與「核准勾選的 N 筆」 */
+  .rq-batch { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #f7f2ef; border-radius: 9px; padding: 8px 10px; margin: 0 0 10px; }
+  .rq-batch[hidden] { display: none; }   /* display:flex 會蓋掉 hidden（打卡 QR 遮罩同一個坑） */
+  .rq-batch label { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; color: #5a463f; cursor: pointer; }
+  .rq-batch input, .rq-pick { width: 20px; height: 20px; margin: 0; accent-color: var(--brand-red); cursor: pointer; flex: none; }
+  .rq-batch button { padding: 8px 12px; border-radius: 9px; font-size: 14px; font-weight: 700; border: 0; background: var(--brand-red); color: #fff; cursor: pointer; }
+  .rq-batch button:disabled { background: #d8cfc9; cursor: default; }
+  .rq-who { display: flex; align-items: center; gap: 6px; }
   .rq-l2 { font-size: 13px; color: #6b524a; margin: 4px 0 8px; line-height: 1.6; white-space: pre-line; }
   .rq-evid { background: #f7f2ef; border-radius: 8px; padding: 7px 9px; font-size: 12px; color: #5a463f; line-height: 1.6; margin: 0 0 8px; white-space: pre-line; }
   .rq-acts { display: flex; gap: 8px; }
@@ -1570,6 +1578,9 @@
           if (r.kind === 'leave') {
             leaveSelect.value = r.leave_type; syncLeaveHoursEnabled(); leaveHours.value = r.hours;
             if (!r.start) { periodRows.innerHTML = ''; periodRows.appendChild(buildPeriodRow(null, refreshPeriodUI)); }
+          } else if (r.kind === 'trip') {
+            // 出差（2026-10-09）：只填「出差」＋時數，上班時段不動——出差時數會與時段相加；整天出差本來就可以沒有時段
+            leaveSelect.value = '出差'; syncLeaveHoursEnabled(); leaveHours.value = r.hours;
           } else if (r.kind === 'miss') {
             // 打卡時間照參考時數的規則取整到 15 分（上班進位、下班捨去）；申請填的時間照填（主管看完再改）
             var r15 = function (hm, up) { if (!hm) return hm; var m = hhmmToMin(hm); m = up ? Math.ceil(m / 15) * 15 : Math.floor(m / 15) * 15; m = m % 1440; return ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2); };
@@ -1728,7 +1739,7 @@
 
   /* ══ 加班請假／忘打卡申請（2026-10-09）══ */
   var pendingRequestsEl = document.getElementById('pendingRequests');
-  var REQ_KIND_LABEL = { leave: '請假', ot: '加班', miss: '忘打卡' };
+  var REQ_KIND_LABEL = { leave: '請假', ot: '加班', trip: '出差', miss: '忘打卡' };
   /** 那天已核准的申請 → 對應同仁卡片預填（不快取：主管剛核准完切回來要看得到）。失敗就安靜略過，不擋核定。 */
   function applyDayRequests(dateStr) {
     apiPost({ action: 'mgr_req_day', mgr_key: mgrKey, date: dateStr }, { timeoutMs: BG_LOAD_TIMEOUT_MS }).then(function (res) {
@@ -1748,8 +1759,10 @@
       var t = document.createElement('div'); t.className = 'pd-title';
       t.textContent = '待審申請 ' + res.items.length + ' 筆（最舊的在上面）';
       card.appendChild(t);
+      card.appendChild(buildReqBatchBar(card, t));
       res.items.forEach(function (it) { card.appendChild(buildReqItem(it, card, t)); });
       pendingRequestsEl.appendChild(card);
+      syncReqBatch(card);
     }, { label: '待審申請', slot: pendingRequestsEl });
   }
   function punchEvidence(it) {
@@ -1763,10 +1776,70 @@
     }).join('\n') + (it.kind === 'miss' && it.punches.some(function (p) { return p.status === 'rejected_out_of_range' && p.accuracy_m >= 500; })
       ? '\n→ 有按但被擋，而且定位誤差很大＝多半是手機定位失準，申請時間合理' : '');
   }
+  /* 批次核准（2026-10-09 Eason）：只能核准（退回要寫理由，一筆一筆退）；一次最多 30 筆（後端 mgr_req_decide_batch 同上限）。 */
+  var REQ_BATCH_MAX = 30;
+  function reqTitleRefresh(card, title) {
+    var left = card.querySelectorAll('.rq-acts').length;
+    title.textContent = left ? '待審申請 ' + left + ' 筆（最舊的在上面）' : '待審申請都處理完了';
+    if (!left) { var bar = card.querySelector('.rq-batch'); if (bar) bar.hidden = true; }
+  }
+  function syncReqBatch(card) {
+    var picks = [].slice.call(card.querySelectorAll('.rq-pick'));
+    var on = picks.filter(function (x) { return x.checked; }).length;
+    var all = card.querySelector('#rqAll'), btn = card.querySelector('#btnReqBatch');
+    if (!all || !btn) return;
+    all.checked = picks.length > 0 && on === picks.length;
+    all.indeterminate = on > 0 && on < picks.length;
+    btn.textContent = '核准勾選的 ' + on + ' 筆';
+    btn.disabled = on === 0;
+  }
+  function buildReqBatchBar(card, title) {
+    var bar = document.createElement('div'); bar.className = 'rq-batch';
+    var lab = document.createElement('label');
+    var all = document.createElement('input'); all.type = 'checkbox'; all.id = 'rqAll';
+    lab.appendChild(all); lab.appendChild(document.createTextNode('全選'));
+    var btn = document.createElement('button'); btn.type = 'button'; btn.id = 'btnReqBatch'; btn.disabled = true; btn.textContent = '核准勾選的 0 筆';
+    var msg = document.createElement('div'); msg.className = 'rq-msg'; msg.id = 'rqBatchMsg';
+    bar.appendChild(lab); bar.appendChild(btn);
+    all.addEventListener('change', function () {
+      [].slice.call(card.querySelectorAll('.rq-pick')).forEach(function (x) { x.checked = all.checked; });
+      syncReqBatch(card);
+    });
+    btn.addEventListener('click', function () {
+      var items = [].slice.call(card.querySelectorAll('.rq-item')).filter(function (el) { var c = el.querySelector('.rq-pick'); return c && c.checked; });
+      if (!items.length) return;
+      if (items.length > REQ_BATCH_MAX) { msg.style.color = '#c22a12'; msg.textContent = '一次最多核准 ' + REQ_BATCH_MAX + ' 筆，請少勾幾筆'; return; }
+      var list = items.map(function (el) { return '・' + el.__req.name + '：' + el.__req.summary; }).join('\n');
+      if (!confirm('核准以下 ' + items.length + ' 筆申請？\n' + list + '\n\n核准後，那幾天的核定會先幫你填好，你核定那天時確認送出才算數。')) return;
+      btn.disabled = true; all.disabled = true; msg.style.color = ''; msg.textContent = '送出中…';
+      apiPost({ action: 'mgr_req_decide_batch', mgr_key: mgrKey, ids: items.map(function (el) { return el.__req.id; }), decision: 'approve' }).then(function (r) {
+        all.disabled = false;
+        if (!r || !r.ok) { syncReqBatch(card); msg.style.color = '#c22a12'; msg.textContent = '✕ ' + ((r && r.message) || '沒有成功，請再試一次'); return; }
+        var dates = {};
+        items.forEach(function (el) {
+          var it = el.__req;
+          if ((r.done || []).indexOf(it.id) >= 0) { el.__markDone('✓ 已核准：' + it.name + ' ' + it.summary); dates[it.date] = true; return; }
+          var sk = (r.skipped || []).filter(function (x) { return x.id === it.id; })[0];
+          if (sk) el.__markDone('— 略過：' + it.name + ' ' + it.summary + '（' + sk.reason + '）');
+        });
+        msg.textContent = '';
+        reqTitleRefresh(card, title); syncReqBatch(card);
+        Object.keys(dates).forEach(function (d) { delete dayCache[d]; });
+        if (dates[currentDate]) loadDay(currentDate);
+      }, function () { all.disabled = false; syncReqBatch(card); msg.style.color = '#c22a12'; msg.textContent = '✕ 連線失敗，請再試一次'; });
+    });
+    var wrap = document.createElement('div'); wrap.appendChild(bar); wrap.appendChild(msg);
+    return wrap;
+  }
   function buildReqItem(it, card, title) {
     var el = document.createElement('div'); el.className = 'rq-item';
+    el.__req = it;
     var l1 = document.createElement('div'); l1.className = 'rq-l1';
-    var who = document.createElement('span');
+    var who = document.createElement('span'); who.className = 'rq-who';
+    var pick = document.createElement('input'); pick.type = 'checkbox'; pick.className = 'rq-pick';
+    pick.setAttribute('aria-label', '勾選 ' + it.name + ' ' + it.summary);
+    pick.addEventListener('change', function () { syncReqBatch(card); });
+    who.appendChild(pick);
     var k = document.createElement('span'); k.className = 'rq-kind ' + it.kind; k.textContent = REQ_KIND_LABEL[it.kind] || it.kind;
     who.appendChild(k); who.appendChild(document.createTextNode(it.name));
     var d = document.createElement('span'); d.textContent = parseInt(it.date.slice(5, 7), 10) + '/' + parseInt(it.date.slice(8, 10), 10);
@@ -1811,14 +1884,15 @@
       ok.disabled = no.disabled = true; msg.style.color = ''; msg.textContent = '送出中…';
       apiPost(payload).then(function (r) {
         if (!r || !r.ok) { ok.disabled = no.disabled = false; msg.style.color = '#c22a12'; msg.textContent = '✕ ' + ((r && r.message) || '沒有成功，請再試一次'); return; }
-        el.innerHTML = ''; var done = document.createElement('div'); done.className = 'rq-l2';
-        done.textContent = (decision === 'approve' ? '✓ 已核准：' : '✕ 已退回：') + it.name + ' ' + it.summary;
-        el.appendChild(done);
-        var left = card.querySelectorAll('.rq-acts').length;
-        title.textContent = left ? '待審申請 ' + left + ' 筆（最舊的在上面）' : '待審申請都處理完了';
+        el.__markDone((decision === 'approve' ? '✓ 已核准：' : '✕ 已退回：') + it.name + ' ' + it.summary);
+        reqTitleRefresh(card, title); syncReqBatch(card);
         if (decision === 'approve') { delete dayCache[it.date]; if (currentDate === it.date) loadDay(it.date); }
       }, function () { ok.disabled = no.disabled = false; msg.style.color = '#c22a12'; msg.textContent = '✕ 連線失敗，請再試一次'; });
     }
+    el.__markDone = function (text) {   // 單筆與批次共用：處理完就收成一行（勾選框、按鈕一起拿掉）
+      el.innerHTML = ''; var done = document.createElement('div'); done.className = 'rq-l2';
+      done.textContent = text; el.appendChild(done);
+    };
     ok.addEventListener('click', function () { decide('approve'); });
     no.addEventListener('click', function () { decide('reject'); });
     return el;
