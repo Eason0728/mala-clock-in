@@ -5,7 +5,7 @@
  * ⚠ Gist 裡有薪資、電話、生日：這裡只取班表需要的欄位，回應只有這位同仁自己的日期／班別／時段／時數。
  * ⚠ 四週變形版（mala-schedule-4w）是另一顆 Gist，這裡不讀。 */
 var SCHED_GIST_URL = 'https://gist.githubusercontent.com/Eason0728/1f7ecf0be418990e24d7b2351572e4aa/raw/mala-schedule.json';
-var SCHED_CACHE_KEY = 'sched:v1';
+var SCHED_CACHE_KEY = 'sched:v2';   // 內容形狀改了就換版號（v2：加 ft／breakH／isOff），免得部署後讀到舊形狀
 var SCHED_CACHE_SEC = 120;
 var SCHED_STORE_CODE = '';   // 只接光復（lineHubStores_ 裡光復的 code 是空字串）
 
@@ -89,7 +89,7 @@ function schedDayOf_(sub, code) {
   code = String(code || '');
   if (!code) return { code: '', label: '', segs: [], hours: 0, work: false, rest: false };
   var sh = sub.shifts[code];
-  if (!sh) return { code: code, label: code, segs: [], hours: 0, work: false, rest: false };
+  if (!sh) return { code: code, label: code === '國' ? '國定假日' : code, segs: [], hours: 0, work: false, rest: code === '國' };   // 排班畫面：「國」就算被隱藏也算休假
   var work = !sh.isOff && code !== '國', rest = !!sh.isOff || code === '國';
   var segs = work ? schedParseTime_(sh.time) : [];
   var d = { code: code, label: String(sh.name || code), segs: segs, hours: work ? Math.max((Number(sh.hours) || 0) - (Number(sh.breakH) || 0), 0) : 0,

@@ -119,6 +119,12 @@ ok('摘要：照排班畫面——上班天／休假天（休假類＋國）／�
   // 上班：1 F8、2 C1 4、6 E8.5−0.5、10 C5.5、31 A8.5−0.5 → 5 天 33.5；休假：3 休、4 事、5 國 → 3 天（H1、ZZ 不認得，兩邊都不算）
   assert.deepStrictEqual(r.summary, { work_days: 5, off_days: 3, hours: 33.5 });
 });
+ok('「國」被隱藏也算休假（排班畫面同一條）', () => {
+  const g = gist({ mala_hidden_shifts: ['H1', '國'] });
+  const d = sb.schedDayOf_(sb.schedSubset_(g, [{ y: 2026, m: 10 }]), '國');
+  assert.deepStrictEqual([d.work, d.rest, d.label], [false, true, '國定假日']);
+});
+ok('快取鍵是 v2（內容形狀改過，不能讀到舊形狀）', () => assert.strictEqual(vm.runInContext('SCHED_CACHE_KEY', sb), 'sched:v2'));
 ok('計時同仁：本月已排班後，空白天算「休」（排班畫面同一條）', () => {
   const r = sb.schedMonth_(sub10(), 'p1', 2026, 10, null);
   assert.deepStrictEqual([r.days[0].code, r.days[0].rest, r.days[30].label], ['休', true, '休假']);

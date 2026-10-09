@@ -1,8 +1,9 @@
 """出勤班表本機模擬（2026-10-10，與 apps-script/Sched.gs 的 line_hub_sched 同合約）。
 mock_server.py 最後呼叫 register(globals()) 掛到光復（/api）的 LINE_HUB_ACTIONS。
 假班表依今天日期產生（本月＋上個月），測試一～四對應 mock 名冊：
-  測試一＝有班（含兩段班、沒冒號的班別、休假類、空白天）／測試二＝本月有班、上個月沒有（no_schedule）
-  測試三＝排班系統有兩位同名（not_matched）／測試四＝排班系統沒有這個人（not_matched）
+  測試一＝正職有班（含兩段班、沒冒號的班別、休假類、要上班但沒時段的「公休」、空白天）
+  測試二＝計時、本月有班（已排班後空白天＝休）、上個月沒有（no_schedule）
+  測試三＝排班系統有兩位同名（not_matched）／測試四＝已離職（e2e 設 active=false → not_bound）
 光復 mock 資料可加 "mock_sched": {"unlock": ["2026_10"], "fail": true} 控制鎖定與讀取失敗（e2e 用）。"""
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -18,8 +19,9 @@ SHIFTS = {
     "特": {"name": "特休", "time": "特休假", "hours": 0, "breakH": 0, "isOff": True},
     "國": {"name": "國定假日", "time": "國定假日", "hours": 0, "breakH": 0, "isOff": False},
     "事": {"name": "事假", "time": "", "hours": 0, "breakH": 0, "isOff": True},
+    "公休": {"name": "公休", "time": "－", "hours": 8, "breakH": 0, "isOff": False},   # 真資料：公休被設成要算 8 小時
 }
-PATTERN = ["F", "C1", "休", "A", "E", "休", "C", "F", "特", "A", "", "E", "國", "事"]
+PATTERN = ["F", "C1", "休", "A", "E", "休", "C", "F", "特", "A", "", "E", "國", "事", "公休"]
 
 
 def _prev(y, m):
@@ -69,6 +71,7 @@ def _schedule(y, m, cur):
 
 
 EMPS = {"s1": "測試一", "s2": "測試 二", "s3a": "測試三", "s3b": "測試三"}
+FULL_TIME = {"s1": True, "s2": False, "s3a": True, "s3b": True}
 
 
 def register(ns):
@@ -110,9 +113,10 @@ def register(ns):
         if not row:
             base["status"] = "no_schedule"
             return base
+        blank_rest = not FULL_TIME.get(hits[0]) and bool(row)   # 計時已排班後空白天＝休（同 Sched.gs）
         days, wd, od, hrs = [], 0, 0, 0.0
         for d in range(1, _last_day(y, m) + 1):
-            x = _day(row.get(str(d), ""))
+            x = _day(row.get(str(d), "") or ("休" if blank_rest else ""))
             x["d"] = d
             days.append(x)
             if x["work"]:

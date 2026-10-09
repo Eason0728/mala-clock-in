@@ -578,13 +578,23 @@ def phase_sched(ctx):
     td = int(r['today'][8:10])
     ok('班表：本月預設選今天、今天有外框', p.locator(f'#schedView .sc-day.sel.today[data-d="{td}"]').count() == 1)
     CM.scan(p, '班表月曆（本月）')
+    wrong = []
     for x in r['days']:   # 每一格都點，明細日期要對（審查 P2#2）
         p.click(f'#scD{x["d"]}')
-        dt = p.inner_text('#scDet').split('\n')[0]
-        if not dt.startswith('%d/%d（' % (int(r['ym'][5:7]), x['d'])):
-            raise AssertionError('點 %d 號明細日期不對：%s' % (x['d'], dt))
-        CM.mark(p.evaluate(KEY_JS, f'#scD{x["d"]}'), '明細日期正確')
-    ok('班表：每一天都點過、明細日期都對', True)
+        det = p.inner_text('#scDet')
+        bad = []
+        if not det.split('\n')[0].startswith('%d/%d（' % (int(r['ym'][5:7]), x['d'])):
+            bad.append('日期')
+        if x['code'] and x['label'] not in det:
+            bad.append('班別')
+        if any(a + '–' + b not in det for a, b in x['segs']):
+            bad.append('時段')
+        if not x['code'] and '這天沒有排班' not in det:
+            bad.append('空白')
+        if bad:
+            wrong.append((x['d'], bad))
+        CM.mark(p.evaluate(KEY_JS, f'#scD{x["d"]}'), '明細日期／班別／時段正確')
+    ok('班表：每一天都點過，明細日期、班別、時段都對', not wrong, wrong)
     p.click(f'#scD{first_work["d"]}')
     det = p.inner_text('#scDet')
     ok('班表：點兩段班看第一段、第二段、合計', '第一段' in det and '第二段' in det and ('合計\n%s 小時' % (int(first_work['hours']) if first_work['hours'] == int(first_work['hours']) else first_work['hours'])) in det, det)
@@ -594,12 +604,16 @@ def phase_sched(ctx):
         ok('班表：空白天寫「這天沒有排班」', '這天沒有排班' in p.inner_text('#scDet'))
     p.click(f'#schedView .sc-day[data-d="{off["d"]}"]')
     ok('班表：休假天明細寫班別名稱', off['label'] in p.inner_text('#scDet'))
+    nt = next(x for x in r['days'] if x.get('no_time'))
+    p.click(f'#scD{nt["d"]}')
+    det = p.inner_text('#scDet')
+    ok('班表：要上班但沒時段（公休）→ 格子寫代碼、明細只寫班別與合計', p.inner_text(f'#scD{nt["d"]}').split()[-1] == nt['code']
+       and '公休' in det and '合計\n8 小時' in det and '上班時間' not in det and '第一段' not in det, det)
     ok('班表：本月時「›」不能按', p.locator('#scNext').is_disabled())
     no_undefined(p, '班表月曆')
     ok('班表：375px 沒有橫向捲動', p.evaluate('document.documentElement.scrollWidth <= window.innerWidth'))
     p.screenshot(path=os.path.join(SHOTS, '班表_月曆.jpg'), type='jpeg', quality=80)
     # 摘要
-    CM.mark(p.evaluate(KEY_JS, '#scNext'), '本月時停用（已驗）')
     p.click('#schedView .rq-tabs button[data-tab=sum]')
     CM.mark(p.evaluate(KEY_JS, '#schedView .rq-tabs button[data-tab=sum]'), '切到摘要')
     CM.scan(p, '班表摘要')
@@ -614,9 +628,9 @@ def phase_sched(ctx):
     p.click('#schedView .rq-tabs button[data-tab=cal]')
     CM.mark(p.evaluate(KEY_JS, '#schedView .rq-tabs button[data-tab=cal]'), '切回月曆')
     n_calls = len(calls(p))
-    CM.mark(p.evaluate(KEY_JS, '#scPrev'), '切上個月帶 ym')
     p.click('#scPrev')
     p.wait_for_function('document.querySelector("#schedView .sc-mon b") && document.querySelector("#schedView .sc-mon b").textContent.indexOf(" %d 月") >= 0' % int(r['months'][0][5:7]), timeout=8000)
+    CM.mark(p.evaluate(KEY_JS, '#scPrev'), '切上個月帶 ym（點完、畫好後登記）')
     c = calls(p)
     ok('班表：切上個月帶 ym', c[n_calls]['action'] == 'line_hub_sched' and len(c) == n_calls + 1, c[n_calls:])
     ok('班表：上個月不預選日期、「‹」不能按', p.locator('#schedView .sc-day.sel').count() == 0 and p.locator('#scPrev').is_disabled())
@@ -625,32 +639,37 @@ def phase_sched(ctx):
         p.click('#' + k)
         CM.mark(p.evaluate(KEY_JS, '#' + k), '上個月明細')
     p.click('#scNext')
+    CM.mark(p.evaluate(KEY_JS, '#scNext'), '切回本月（用已讀的）')
     ok('班表：切回本月不再打後端（用已讀的）', len(calls(p)) == n_calls + 1)
     p.close()
     # 各種看不到的狀態
-    p = page('U6'); p.click('#scPrev')
+    p = page('U6')
+    ok('班表：計時同仁已排班後空白天寫「休」', p.inner_text('#scD1').split()[-1] == '休' and p.inner_text('#scD3').split()[1:] == ['09:00', '17:30'],
+       (p.inner_text('#scD1'), p.inner_text('#scD3')))
+    p.click('#scPrev')
     p.wait_for_selector('#schedView .sc-box.info', timeout=8000)
-    ok('班表：上個月沒有他的班 → no_schedule 字句', '的班表沒有你的班' in p.inner_text('#schedView'))
+    pm = int(r['months'][0][5:7])
+    ok('班表：上個月沒有他的班 → no_schedule 字句（逐字）', p.inner_text('#schedView .sc-box') == '%d 月的班表沒有你的班。' % pm, p.inner_text('#schedView .sc-box'))
     p.close()
     p = page('U7')
-    ok('班表：同名兩位 → not_matched 字句', '你的班表還沒對上，請找店長確認' in p.inner_text('#schedView'))
+    ok('班表：同名兩位 → not_matched 字句（逐字）', p.inner_text('#schedView .sc-box') == '你的班表還沒對上，請找店長確認。')
     p.close()
     p = page('U8')
-    ok('班表：已離職（綁過光復）→ not_bound 字句', '你目前沒有光復店的班表' in p.inner_text('#schedView'))
+    ok('班表：已離職（綁過光復）→ not_bound 字句（逐字）', p.inner_text('#schedView .sc-box') == '你目前沒有光復店的班表。')
     p.close()
     d = json.load(open(fg, encoding='utf-8'))
     cy, cm = int(r['months'][1][:4]), int(r['months'][1][5:7])
     d['mock_sched'] = {'unlock': ['%d_%d' % (cy, cm)]}
     json.dump(d, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
     p = page('U1')
-    ok('班表：沒鎖定 → 還在排、不畫月曆', '的班表還在排' in p.inner_text('#schedView') and p.locator('#schedView .sc-cal').count() == 0)
+    ok('班表：沒鎖定 → 還在排（逐字）、不畫月曆', p.inner_text('#schedView .sc-box') == '%d 月的班表還在排，排好後就看得到。' % cm and p.locator('#schedView .sc-cal').count() == 0)
     p.click('#schedView .rq-tabs button[data-tab=sum]')
     ok('班表：沒鎖定時摘要頁也只顯示提示', p.locator('#schedView .sc-sum').count() == 0 and '還在排' in p.inner_text('#schedView'))
     p.close()
     d['mock_sched'] = {'fail': True}
     json.dump(d, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
     p = page('U1')
-    ok('班表：Gist 讀不到 → 錯誤字句＋重新整理、不畫空月曆', '班表暫時讀不到' in p.inner_text('#schedView')
+    ok('班表：Gist 讀不到 → 錯誤字句（逐字）＋重新整理、不畫空月曆', p.inner_text('#schedView .sc-box') == '班表暫時讀不到，請稍後再試。'
        and p.locator('#scReload').count() == 1 and p.locator('#schedView .sc-cal').count() == 0)
     d.pop('mock_sched'); json.dump(d, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
     CM.scan(p, '班表讀取失敗')
@@ -664,12 +683,11 @@ def phase_sched(ctx):
     p.wait_for_selector('#scReload', timeout=8000)
     p.click('#scReload')
     p.wait_for_selector('#schedView .sc-cal', timeout=8000)
-    c = [x for x in calls(p) if x['action'] == 'line_hub_sched']
     ok('班表：上個月讀失敗後重新整理仍是上個月', ' %d 月' % int(r['months'][0][5:7]) in p.inner_text('#schedView .sc-mon b'), p.inner_text('#schedView .sc-mon b'))
     p.close()
     p = open_page(ctx, f'{BASE}/clock-line.html?mock_uid=U1&api=/api&view=sched', pre="window.__fake = { line_hub_sched: 'abort' };")
     p.wait_for_selector('#schedView .sc-box.err', timeout=40000)
-    ok('班表：斷線重試三次後顯示連線不穩', '連線不穩' in p.inner_text('#schedView') and len([x for x in calls(p) if x['action'] == 'line_hub_sched']) == 3, calls(p))
+    ok('班表：斷線重試三次後顯示連線不穩（逐字）', p.inner_text('#schedView .sc-box') == '連線不穩，班表沒有讀到。' and len([x for x in calls(p) if x['action'] == 'line_hub_sched']) == 3, calls(p))
     p.close()
 
 

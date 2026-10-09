@@ -251,6 +251,8 @@
     var again = function () {
       if (attempt > READ_RETRY_MS.length) return Promise.reject(new Error('read_failed'));
       $('hint').textContent = '連線較慢，重試中（第 ' + attempt + ' 次）…';
+      var scl = document.querySelector('#schedView .sc-loading');   // 班表頁的打卡卡片是隱藏的，進度寫在班表頁
+      if (scl) scl.textContent = '連線較慢，重試中（第 ' + attempt + ' 次）…';
       return new Promise(function (res) { setTimeout(res, READ_RETRY_MS[attempt - 1]); })
         .then(function () { return readRetry(url, body, attempt + 1); });
     };
