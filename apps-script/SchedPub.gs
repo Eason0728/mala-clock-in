@@ -77,6 +77,16 @@ function schedPubLoad_() {
   var cache = CacheService.getScriptCache();
   var hit = cache.get(SCHED_PUB_CACHE_KEY);
   if (hit) { try { return JSON.parse(hit); } catch (e) { /* 重讀 */ } }
+  // 沒快取：跟寫入用同一把鎖再讀表、寫快取，避免「讀到舊的 → 寫入者清快取 → 再把舊的塞回快取」（GPT 上線前審查 5）
+  var lock = LockService.getScriptLock();
+  var locked = false;
+  try { locked = lock.tryLock(10000); } catch (e) { locked = false; }
+  try {
+    if (locked) { hit = cache.get(SCHED_PUB_CACHE_KEY); if (hit) { try { return JSON.parse(hit); } catch (e) { /* 重讀 */ } } }
+    return schedPubReadSheet_(cache, locked);
+  } finally { if (locked) lock.releaseLock(); }
+}
+function schedPubReadSheet_(cache, mayCache) {
   var sh = getSS().getSheetByName(SCHED_PUB_SHEET);
   var out = {};
   if (sh) {
@@ -88,7 +98,7 @@ function schedPubLoad_() {
     }
   }
   var s = JSON.stringify(out);
-  if (unescape(encodeURIComponent(s)).length < 90000) { try { cache.put(SCHED_PUB_CACHE_KEY, s, SCHED_PUB_CACHE_SEC); } catch (e) { /* 快取失敗照樣回應 */ } }
+  if (mayCache && unescape(encodeURIComponent(s)).length < 90000) { try { cache.put(SCHED_PUB_CACHE_KEY, s, SCHED_PUB_CACHE_SEC); } catch (e) { /* 快取失敗照樣回應 */ } }   // 沒拿到鎖就只讀不寫快取
   return out;
 }
 

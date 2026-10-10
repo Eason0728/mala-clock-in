@@ -284,6 +284,18 @@ ok('10 月仍完全照舊（月曆版）；SCHED_STORE_FROM 改晚 → 11 月也
   const r2 = call(); sb.__date = '2026-10-10';
   assert.deepStrictEqual([r2.status, r2.days[0].code], ['ready', 'A']);
 });
+ok('GPT 5：讀發布資料時拿不到鎖就只讀不寫快取（不會把舊班表塞回快取）', () => {
+  reset(); props.SCHED_SVC_KEY = 'k1'; pub();
+  cacheStore = {};
+  const orig = sb.LockService;
+  sb.LockService = { getScriptLock: () => ({ tryLock: () => false, releaseLock() {} }) };
+  const out = J(sb.schedPubLoad_());
+  sb.LockService = orig;
+  assert.ok(out['|T01'], '照樣讀得到');
+  assert.strictEqual(cacheStore['schedpub:v1'], undefined, '沒拿到鎖不寫快取');
+  J(sb.schedPubLoad_());
+  assert.ok(cacheStore['schedpub:v1'], '拿到鎖才寫快取');
+});
 ok('期別換算與營運系統一致', () => {
   assert.strictEqual(sb.schedPubPeriodOf_('2026-10-04'), 'T00');
   assert.strictEqual(sb.schedPubPeriodOf_('2026-11-28'), 'T01');
