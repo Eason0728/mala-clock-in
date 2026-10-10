@@ -45,18 +45,28 @@ const sb = {
   verifyLineIdToken_: (t) => (t === 'good' ? 'U1' : null),
   lineHubThrottled_: () => false,
   lineHubMine_: () => mine,
-  CacheService: { getScriptCache: () => ({ get: (k) => cacheStore[k] || null, put: (k, v) => { cacheStore[k] = v; }, remove() {} }) },
+  CacheService: { getScriptCache: () => ({ get: (k) => cacheStore[k] || null, put: (k, v) => { cacheStore[k] = v; }, remove: (k) => { delete cacheStore[k]; } }) },
   PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => props[k] || null }) },
   UrlFetchApp: { fetch: () => { fetchCalls++; return { getResponseCode: () => fetchCode, getContentText: () => fetchBody }; } },
   Utilities: { formatDate: (d, tz, f) => (f === 'yyyy-MM-dd' ? sb.__date : sb.__hm) },
   __date: '2026-10-10', __hm: '12:00',
+  LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
+  getSS: () => fakeSS,
 };
+// 假試算表（sched_pub 分頁）：getDataRange().getValues()、getRange(r,c,1,n).setNumberFormat().setValues()
+let pubRows = null;
+const fakeSheet = {
+  getDataRange: () => ({ getValues: () => pubRows.map((r) => r.slice()) }),
+  getLastRow: () => pubRows.length,
+  getRange: (r, c, nr, nc) => { const o = { setNumberFormat: () => o, setValues: (v) => { pubRows[r - 1] = v[0].slice(); } }; return o; },
+};
+const fakeSS = { getSheetByName: (n) => (n === 'sched_pub' && pubRows ? fakeSheet : null), insertSheet: () => { pubRows = []; return fakeSheet; } };
 vm.createContext(sb);
-vm.runInContext([fs.readFileSync(ROOT + '/apps-script/Sched.gs', 'utf8'), extract(hubSrc, 'lineHubNormName_')].join('\n'), sb);
+vm.runInContext([fs.readFileSync(ROOT + '/apps-script/Sched.gs', 'utf8'), fs.readFileSync(ROOT + '/apps-script/SchedPub.gs', 'utf8'), extract(hubSrc, 'lineHubNormName_')].join('\n'), sb);
 // vm 內建出來的陣列／物件跨 realm，deepStrictEqual 會判不等 → 一律過一次 JSON
 const J = (x) => (x === undefined ? x : JSON.parse(JSON.stringify(x)));
 ['schedParseTime_', 'schedShifts_', 'schedSubset_', 'schedMonth_', 'schedDayOf_'].forEach((f) => { const o = sb[f]; sb[f] = (...a) => J(o(...a)); });
-const reset = (g) => { fetchCalls = 0; fetchCode = 200; fetchBody = JSON.stringify(g || gist()); cacheStore = {}; props = {}; };
+const reset = (g) => { fetchCalls = 0; fetchCode = 200; fetchBody = JSON.stringify(g || gist()); cacheStore = {}; props = {}; pubRows = null; };
 const bind = (name, empId, code) => { mine = [{ st: { code: code === undefined ? '' : code }, row: { emp_id: empId || 'E01', name: name } }]; };
 const call = (b) => JSON.parse(JSON.stringify(sb.handleLineHubSched_(Object.assign({ id_token: 'good' }, b || {}))));
 
@@ -174,13 +184,13 @@ ok('對照表優先，且對照到不存在的人不算', () => {
 ok('API ready：本月、只有自己的資料', () => {
   reset(); bind('測試一');
   const r = call();
-  assert.deepStrictEqual([r.ok, r.status, r.ym, r.months, r.name], [true, 'ready', '2026-10', ['2026-09', '2026-10'], '測試一']);
+  assert.deepStrictEqual([r.ok, r.status, r.ym, r.months, r.name], [true, 'ready', '2026-10', ['2026-09', '2026-10', '2026-11'], '測試一']);
   assert.strictEqual(r.days.length, 31); assert.strictEqual(r.next.date, '2026-10-10');
   const s = JSON.stringify(r);
   ['wage', 'phone', 'birthday', 'insurance', 'a2', 'a3', '測試三', '測試 二'].forEach((w) => assert.ok(s.indexOf(w) < 0, '回應不該有 ' + w));
 });
 ok('API 上個月', () => { reset(); bind('測試一'); const r = call({ ym: '2026-09' }); assert.deepStrictEqual([r.status, r.days.length, r.next], ['ready', 30, null]); });
-ok('API 只收本月與上月', () => { reset(); bind('測試一'); ['2026-11', '2026-08', 'abc'].forEach((ym) => assert.strictEqual(call({ ym }).error, 'bad_month')); });
+ok('API 只收上個月、本月、下個月', () => { reset(); bind('測試一'); ['2026-12', '2026-08', 'abc'].forEach((ym) => assert.strictEqual(call({ ym }).error, 'bad_month')); });
 ok('API 假 id_token', () => assert.strictEqual(call({ id_token: 'bad' }).error, 'invalid_id_token'));
 ok('API 沒綁光復（只綁別店）→ not_bound，不讀 Gist', () => { reset(); bind('測試一', 'X1', 'mztjs'); const r = call(); assert.strictEqual(r.status, 'not_bound'); assert.strictEqual(fetchCalls, 0); });
 ok('API 離職＝lineHubMine_ 只認在職，沒拿到 → not_bound', () => { reset(); mine = []; assert.strictEqual(call().status, 'not_bound'); });
@@ -205,12 +215,80 @@ ok('API Gist 不是 JSON → sched_unreadable', () => { reset(); fetchBody = '<h
 ok('API 快取：第二次不再讀 Gist；跨月快取作廢', () => {
   reset(); bind('測試一'); call(); call(); assert.strictEqual(fetchCalls, 1);
   sb.__date = '2026-11-01'; const r = call(); sb.__date = '2026-10-10';
-  assert.strictEqual(fetchCalls, 2); assert.deepStrictEqual(r.months, ['2026-10', '2026-11']); assert.strictEqual(r.status, 'not_locked');
+  // 11 月起改讀營運系統發布的班表（SCHED_STORE_FROM 預設 2026-11-01）：不再讀 Gist；還沒發布 → not_locked
+  assert.strictEqual(fetchCalls, 1); assert.deepStrictEqual(r.months, ['2026-10', '2026-11', '2026-12']); assert.strictEqual(r.status, 'not_locked');
 });
 ok('API 1 月的上個月是去年 12 月', () => {
   reset(gist({ mala_locks: ['2025_12'], mala_sch_2025_12: { a1: { 1: 'A' } } })); bind('測試一');
   sb.__date = '2026-01-05'; const r = call({ ym: '2025-12' }); sb.__date = '2026-10-10';
-  assert.deepStrictEqual([r.status, r.months], ['ready', ['2025-12', '2026-01']]);
+  assert.deepStrictEqual([r.status, r.months], ['ready', ['2025-12', '2026-01', '2026-02']]);
+});
+
+// ── 自動排班發布（SchedPub.gs，2026-10-11）：營運系統送來的 payload v1 ──
+// 範例檔與營運系統共用同一份格式（~/mala-store-ops/test/fixtures/sched-payload-v1.json；這裡有一份相同內容的副本）
+const FIX = JSON.parse(fs.readFileSync(ROOT + '/tests/fixtures/sched-payload-v1.json', 'utf8'));
+const pub = (o) => J(sb.handleSchedPublish_(Object.assign(JSON.parse(JSON.stringify(FIX)), { svcKey: 'k1' }, o || {})));
+const unpub = (o) => J(sb.handleSchedUnpublish_(Object.assign({ v: 1, action: 'sched_unpublish', store: '', period: 'T01', svcKey: 'k1' }, o || {})));
+ok('發布：沒設金鑰或金鑰錯 → unauthorized；v 不是 1 → bad_version；格子不是 28 格 → bad_input', () => {
+  reset(); assert.strictEqual(pub().error, 'unauthorized');
+  props.SCHED_SVC_KEY = 'k1';
+  assert.strictEqual(pub({ svcKey: 'x' }).error, 'unauthorized');
+  assert.strictEqual(pub({ v: 2 }).error, 'bad_version');
+  const bad = JSON.parse(JSON.stringify(FIX)); bad.rows[0].cells.pop();
+  assert.strictEqual(pub({ rows: bad.rows }).error, 'bad_input');
+  assert.strictEqual(pubRows, null, '失敗不能建分頁或寫入');
+});
+ok('發布：寫入、同 op_id 重送回同結果、較舊 seq 回 stale、撤回留墓碑、舊發布晚到不復活', () => {
+  reset(); props.SCHED_SVC_KEY = 'k1';
+  assert.deepStrictEqual(pub(), { ok: true, seq: FIX.seq });
+  assert.deepStrictEqual(pub(), { ok: true, seq: FIX.seq });                       // 同 op_id
+  assert.strictEqual(pubRows.length, 2);
+  assert.deepStrictEqual(pub({ op_id: 'other' }).error, 'stale');                  // 同 seq 不同 op
+  assert.deepStrictEqual(unpub({ seq: FIX.seq + 1, op_id: 'u1' }), { ok: true, seq: FIX.seq + 1 });
+  assert.strictEqual(pubRows[1][3], '');                                            // 墓碑：資料清空
+  assert.strictEqual(pub({ op_id: 'late' }).error, 'stale');                        // 舊的發布晚到
+  assert.strictEqual(pubRows[1][3], '');
+  assert.deepStrictEqual(pub({ seq: FIX.seq + 2, op_id: 'p2' }), { ok: true, seq: FIX.seq + 2 });
+  const stored = JSON.parse(pubRows[1][3]);
+  assert.deepStrictEqual(Object.keys(stored.rows[0]).sort(), ['cells', 'emp_id', 'name']);   // 多送的欄位被丟掉
+});
+ok('11 月起讀發布的班表：用 emp_id 對人、每家店都接、還沒發布 → not_locked', () => {
+  reset(); props.SCHED_SVC_KEY = 'k1';
+  sb.__date = '2026-11-02'; sb.__hm = '08:00';
+  bind('不同名字也沒關係', 'E001', '');
+  assert.strictEqual(call().status, 'not_locked');
+  pub();
+  const r = call();
+  assert.deepStrictEqual([r.status, r.ym, r.months], ['ready', '2026-11', ['2026-10', '2026-11', '2026-12']]);
+  assert.strictEqual(r.days.length, 30);
+  assert.deepStrictEqual([r.days[0].label, r.days[0].segs, r.days[0].hours, r.days[0].work], ['早班', [['10:00', '19:00']], 8, true]);
+  assert.deepStrictEqual([r.days[1].label, r.days[1].rest], ['例假', true]);
+  assert.strictEqual(r.days[3].label, '晚班（休息日出勤）');
+  assert.strictEqual(r.days[4].label, '特休');
+  assert.strictEqual(r.next.date, '2026-11-03');                                  // 11/2 是例假，下一個班是 11/3
+  assert.strictEqual(fetchCalls, 0, '11 月不讀月曆版 Gist');
+  assert.ok(JSON.stringify(r).indexOf('E002') < 0, '不能看到別人的班');
+  // 墨竹亭金山的同仁（只綁 mztjs）也看得到自己店發布的班表
+  bind('金山同仁', 'E001', 'mztjs');
+  assert.strictEqual(call().status, 'not_locked');
+  pub({ store: 'mztjs', op_id: 'js1' });
+  assert.strictEqual(call().status, 'ready');
+  sb.__date = '2026-10-10'; sb.__hm = '12:00';
+});
+ok('10 月仍完全照舊（月曆版）；SCHED_STORE_FROM 改晚 → 11 月也讀月曆版（回退用）', () => {
+  reset(); bind('測試一');
+  const r = call(); assert.strictEqual(r.status, 'ready'); assert.strictEqual(r.days[0].code, 'F');
+  reset(gist({ mala_locks: ['2026_11'], mala_sch_2026_11: { a1: { 1: 'A' } } })); bind('測試一'); props.SCHED_STORE_FROM = '2026-11-29';
+  sb.__date = '2026-11-02';
+  const r2 = call(); sb.__date = '2026-10-10';
+  assert.deepStrictEqual([r2.status, r2.days[0].code], ['ready', 'A']);
+});
+ok('期別換算與營運系統一致', () => {
+  assert.strictEqual(sb.schedPubPeriodOf_('2026-10-04'), 'T00');
+  assert.strictEqual(sb.schedPubPeriodOf_('2026-11-28'), 'T01');
+  assert.strictEqual(sb.schedPubPeriodOf_('2026-11-29'), 'T02');
+  assert.strictEqual(sb.schedPubIndex_('2026-11-29'), 0);
+  assert.strictEqual(sb.schedPubIndex_('2026-12-26'), 27);
 });
 
 // ── LineHub 接線 ──
@@ -219,6 +297,8 @@ ok('選單「出勤班表」回卡片、按鈕開 ?view=sched；handler 已掛',
   assert.ok(/line_hub_sched: function \(b\) \{ return handleLineHubSched_\(b\); \}/.test(hubSrc));
   assert.ok(extract(hubSrc, 'lineHubSchedCard_').indexOf("LINE_HUB_LIFF_URL + '?view=sched'") > 0);
   assert.ok(hubSrc.indexOf('出勤班表功能還在準備中') < 0);
+  assert.ok(/sched_publish: function \(b\) \{ return handleSchedPublish_\(b\); \}/.test(hubSrc));
+  assert.ok(/sched_unpublish: function \(b\) \{ return handleSchedUnpublish_\(b\); \}/.test(hubSrc));
 });
 
 console.log('\n' + n + ' 項全過');

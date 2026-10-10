@@ -1096,6 +1096,8 @@ var LINE_HUB_HANDLERS = {
   line_hub_attach_put: function (b) { return handleLineHubAttachPut_(b); },
   line_hub_attach_get: function (b) { return handleLineHubAttachGet_(b); },
   line_hub_sched: function (b) { return handleLineHubSched_(b); },   // 出勤班表（Sched.gs）
+  sched_publish: function (b) { return handleSchedPublish_(b); },     // 自動排班發布（SchedPub.gs，2026-10-11）
+  sched_unpublish: function (b) { return handleSchedUnpublish_(b); },
 };
 
 /* ══ 加班請假／忘打卡申請（2026-10-09，規格 mala-clock-liff docs/requests-spec.md）══

@@ -168,35 +168,100 @@ function schedNameMap_() {
   catch (e) { return {}; }
 }
 
+/** 自動排班接手日（指令碼屬性 SCHED_STORE_FROM，預設 2026-11-01）：比它早的日子讀月曆版 Gist，從它開始讀營運系統發布的班表（SchedPub.gs） */
+function schedStoreFrom_() {
+  var v = '';
+  try { v = String(PropertiesService.getScriptProperties().getProperty('SCHED_STORE_FROM') || ''); } catch (e) { v = ''; }
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '2026-11-01';
+}
+function schedNext_(y, m) { return m === 12 ? { y: y + 1, m: 1 } : { y: y, m: m + 1 }; }
+/** 摘要與下一個班（與 schedMonth_ 同一套規則，給「營運系統發布」的月份用） */
+function schedSummarize_(days, ym, today) {
+  var wd = 0, od = 0, hrs = 0;
+  days.forEach(function (x) { if (x.work) { wd++; hrs += x.hours; } if (x.rest) od++; });
+  var next = null;
+  if (today && String(today.date).slice(0, 7) === ym) {
+    var td = parseInt(String(today.date).slice(8, 10), 10);
+    for (var i = td - 1; i < days.length && !next; i++) {
+      var day = days[i];
+      if (!day.work || !day.segs.length) continue;
+      if (day.d === td) {
+        var lastSeg = day.segs[day.segs.length - 1];
+        if (!(lastSeg[1] <= lastSeg[0]) && lastSeg[1] <= today.hm) continue;
+      }
+      next = { date: ym + '-' + ('0' + day.d).slice(-2), label: day.label, segs: day.segs, hours: day.hours };
+    }
+  }
+  return { summary: { work_days: wd, off_days: od, hours: Math.round(hrs * 100) / 100 }, next: next };
+}
+
 /**
- * {action:'line_hub_sched', id_token, ym?} → 規格 §3.1
+ * {action:'line_hub_sched', id_token, ym?} → 規格 §3.1（2026-10-11 起月份＝上個月、本月、下個月）
  *   ok:true＋status ready／not_locked／not_bound／not_matched／no_schedule；
  *   ok:false＋error invalid_id_token／too_many／bad_month／sched_unreadable
+ *   月份整個在 SCHED_STORE_FROM 之前 → 完全照舊（月曆版 Gist、只接光復）；
+ *   月份碰到 SCHED_STORE_FROM 之後 → 那些日子讀營運系統發布的班表（每家有 LINE 打卡的店都接，用 emp_id 對人）。
  */
 function handleLineHubSched_(body) {
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
   if (lineHubThrottled_('sch', userId, 20, 60)) return { ok: false, error: 'too_many' };
   var today = schedNow_();
-  var cy = parseInt(today.date.slice(0, 4), 10), cm = parseInt(today.date.slice(5, 7), 10), pv = schedPrev_(cy, cm);
-  var months = [schedYm_(pv.y, pv.m), schedYm_(cy, cm)];
+  var cy = parseInt(today.date.slice(0, 4), 10), cm = parseInt(today.date.slice(5, 7), 10), pv = schedPrev_(cy, cm), nx = schedNext_(cy, cm);
+  var months = [schedYm_(pv.y, pv.m), schedYm_(cy, cm), schedYm_(nx.y, nx.m)];
   var ym = body.ym ? String(body.ym) : months[1];
   if (months.indexOf(ym) < 0) return { ok: false, error: 'bad_month' };
   var y = parseInt(ym.slice(0, 4), 10), m = parseInt(ym.slice(5, 7), 10);
   var base = { ok: true, ym: ym, months: months, today: today.date };
+  var from = schedStoreFrom_();
+  var last = new Date(y, m, 0).getDate();
+  var monthEnd = ym + '-' + ('0' + last).slice(-2);
   var info = {};
-  var me = lineHubMine_(userId, info, false).filter(function (x) { return String(x.st.code) === SCHED_STORE_CODE; })[0];
-  if (!me && info.unreadable) return { ok: false, error: 'sched_unreadable' };   // 名冊讀不到≠沒綁（審查 P1#4）
-  if (!me) { base.status = 'not_bound'; return base; }
-  base.name = String(me.row.name);
-  var sub;
-  try { sub = schedLoad_(today); } catch (e) { return { ok: false, error: 'sched_unreadable' }; }
-  if (sub.locks.indexOf(y + '_' + m) < 0) { base.status = 'not_locked'; return base; }
-  var sid = schedMatch_(sub, me.row.emp_id, me.row.name, schedNameMap_());
-  if (!sid) { base.status = 'not_matched'; return base; }
-  var row = (sub.sch[y + '_' + m] || {})[sid];
-  if (!row || !Object.keys(row).length) { base.status = 'no_schedule'; return base; }
-  var r = schedMonth_(sub, sid, y, m, today);
-  base.status = 'ready'; base.days = r.days; base.summary = r.summary; base.next = r.next;
+  var all = lineHubMine_(userId, info, false);
+  if (!all.length && info.unreadable) return { ok: false, error: 'sched_unreadable' };   // 名冊讀不到≠沒綁（審查 P1#4）
+  var me = all.filter(function (x) { return String(x.st.code) === SCHED_STORE_CODE; })[0];
+
+  if (monthEnd < from) {                                   // ── 整個月都在接手日之前：照舊 ──
+    if (!me) { base.status = 'not_bound'; return base; }
+    base.name = String(me.row.name);
+    var sub;
+    try { sub = schedLoad_(today); } catch (e) { return { ok: false, error: 'sched_unreadable' }; }
+    if (sub.locks.indexOf(y + '_' + m) < 0) { base.status = 'not_locked'; return base; }
+    var sid = schedMatch_(sub, me.row.emp_id, me.row.name, schedNameMap_());
+    if (!sid) { base.status = 'not_matched'; return base; }
+    var row = (sub.sch[y + '_' + m] || {})[sid];
+    if (!row || !Object.keys(row).length) { base.status = 'no_schedule'; return base; }
+    var r = schedMonth_(sub, sid, y, m, today);
+    base.status = 'ready'; base.days = r.days; base.summary = r.summary; base.next = r.next;
+    return base;
+  }
+
+  // ── 月份碰到接手日之後：接手日以後讀營運系統發布的班表；同一個月接手日之前的日子仍讀月曆版 ──
+  if (!all.length) { base.status = 'not_bound'; return base; }
+  base.name = String((me || all[0]).row.name);
+  var dates = [];
+  for (var d = 1; d <= last; d++) dates.push(ym + '-' + ('0' + d).slice(-2));
+  var pubDays;
+  try { pubDays = schedPubDaysFor_(schedPubLoad_(), all, dates.filter(function (x) { return x >= from; })); }
+  catch (e) { return { ok: false, error: 'sched_unreadable' }; }
+  var gistDays = {};
+  if (me && dates[0] < from) {
+    try {
+      var sub2 = schedLoad_(today);
+      var sid2 = sub2.locks.indexOf(y + '_' + m) >= 0 ? schedMatch_(sub2, me.row.emp_id, me.row.name, schedNameMap_()) : null;
+      if (sid2) schedMonth_(sub2, sid2, y, m, null).days.forEach(function (x) { gistDays[ym + '-' + ('0' + x.d).slice(-2)] = x; });
+    } catch (e) { /* 月曆版讀不到：那幾天留白 */ }
+  }
+  var any = false;
+  var days = dates.map(function (date, i) {
+    var x = date < from ? gistDays[date] : pubDays[date];
+    if (x && (x.code || x.label)) any = true;
+    x = x ? JSON.parse(JSON.stringify(x)) : { code: '', label: '', segs: [], hours: 0, work: false, rest: false };
+    x.d = i + 1;
+    return x;
+  });
+  if (!any) { base.status = 'not_locked'; return base; }
+  var s = schedSummarize_(days, ym, today);
+  base.status = 'ready'; base.days = days; base.summary = s.summary; base.next = s.next;
   return base;
 }
