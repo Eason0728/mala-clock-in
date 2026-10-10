@@ -413,9 +413,9 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <p class="hint">事假費率 ＝ (底薪＋職能＋夜間＋店長＋全勤上限) ÷ 分母天 ÷ 分母時；病假為其一半。</p>
     <div class="grid2" id="cfgGrid"></div>
     <div class="row" style="margin-top:14px">
-      <button class="btn" onclick="saveCfg(this,'儲存參數')">儲存參數</button>
+      <button class="btn" onclick="saveCfg(this,'儲存參數','cfg')">儲存參數</button>
       <label style="font-size:13px;display:flex;align-items:center;gap:6px">
-        <input type="checkbox" id="cfgOwn" style="width:18px;height:18px" onchange="renderCfg()"> 只套用到目前門市（不勾＝集團預設，全店共用）
+        <input type="checkbox" id="cfgOwn" style="width:18px;height:18px" onchange="renderCfgScope()"> 只套用到目前門市（不勾＝集團預設，全店共用）
       </label>
     </div>
   </div>
@@ -428,10 +428,9 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
       記得勾「只套用到目前門市」，否則會套到全集團。</p>
     <div class="grid2" id="attGrid"></div>
     <div class="row" style="margin-top:14px">
-      <button class="btn" onclick="saveCfg(this,'儲存全勤參數')">儲存全勤參數</button>
+      <button class="btn" onclick="saveCfg(this,'儲存全勤參數','att')">儲存全勤參數</button>
       <label style="font-size:13px;display:flex;align-items:center;gap:6px">
-        <input type="checkbox" id="attOwn" style="width:18px;height:18px"
-          onchange="$('cfgOwn').checked=this.checked;renderCfg()"> 只套用到目前門市（不勾＝集團預設，全店共用）
+        <input type="checkbox" id="attOwn" style="width:18px;height:18px" onchange="renderCfgScope()"> 只套用到目前門市（不勾＝集團預設，全店共用）
       </label>
     </div>
   </div>
@@ -444,10 +443,9 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
       年資門檻的判定看月份：門檻 6 個月、3/1 到職 → 9/1 屆滿 → <b>10 月</b>起才給。</p>
     <div class="grid2" id="ptGrid"></div>
     <div class="row" style="margin-top:14px">
-      <button class="btn" onclick="saveCfg(this,'儲存計時加給')">儲存計時加給</button>
+      <button class="btn" onclick="saveCfg(this,'儲存計時加給','pt')">儲存計時加給</button>
       <label style="font-size:13px;display:flex;align-items:center;gap:6px">
-        <input type="checkbox" id="ptOwn" style="width:18px;height:18px"
-          onchange="$('cfgOwn').checked=this.checked;renderCfg()"> 只套用到目前門市（不勾＝集團預設，全店共用）
+        <input type="checkbox" id="ptOwn" style="width:18px;height:18px" onchange="renderCfgScope()"> 只套用到目前門市（不勾＝集團預設，全店共用）
       </label>
     </div>
     <div class="note warn" style="margin-top:12px">⚠ 改了之後<b>已經算過的月份不會自動套用</b>——要到「薪資計算」按重新計算（已鎖定的月份要先解鎖）。</div>
@@ -460,10 +458,9 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
       <b>團險</b>＝<b>每店自己投保、金額不同</b> → 改這項一定要勾「只套用到目前門市」，否則會蓋掉別店。</p>
     <div class="grid2" id="coGrid"></div>
     <div class="row" style="margin-top:14px">
-      <button class="btn" onclick="saveCfg(this,'儲存公司負擔')">儲存公司負擔</button>
+      <button class="btn" onclick="saveCfg(this,'儲存公司負擔','co')">儲存公司負擔</button>
       <label style="font-size:13px;display:flex;align-items:center;gap:6px">
-        <input type="checkbox" id="coOwn" style="width:18px;height:18px"
-          onchange="$('cfgOwn').checked=this.checked;renderCfg()"> 只套用到目前門市（不勾＝集團預設，全店共用）
+        <input type="checkbox" id="coOwn" style="width:18px;height:18px" onchange="renderCfgScope()"> 只套用到目前門市（不勾＝集團預設，全店共用）
       </label>
     </div>
   </div>
@@ -607,7 +604,7 @@ async function bootstrapFromRoster(){
 async function boot(){
   const m=await post('payroll_master_get');
   if(!m.ok){toast('讀取主檔失敗',true);return}
-  MASTER=m.master; CFG=m.config;
+  MASTER=m.master; CFG=m.config; CFG_DIRTY={};
   // ⚠ 門市下拉一定要在這裡先建好：若等到 loadMonth，該門市讀取失敗就會提早 return，
   //    下拉永遠是空的 → 使用者被鎖在壞掉的門市、切不回來（踩過）
   if(m.stores&&m.stores.length){STORE_LIST=m.stores;renderStoreSel()}
@@ -774,7 +771,7 @@ async function loadMonth(){
     if(r.master){MASTER=r.master;renderEmp()}
     // 紅字天數也隨門市不同（本店專屬／集團共用），而且「來源」決定存到哪一層 → 切門市一定要重載
     if(r.holidays) applyHol(r.holidays);
-    if(r.config) CFG=r.config;
+    if(r.config){CFG=r.config;CFG_DIRTY={}}
     if(r.config||r.holidays) renderCfg();
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
     renderAtt();renderRun();renderSlipSel();
@@ -1986,8 +1983,13 @@ async function saveMaster(btn){
 
 /* ═════ 參數 ═════ */
 /* 2026-08-23 Eason 指示：原「全域參數」一張卡混了全勤與非全勤的參數，字面會誤會，
-   拆成「基本參數」＋「全勤參數」兩張卡。兩張共用同一份 CFG 與 saveCfg（儲存都是整份送出、
-   範圍看 cfgOwn），attOwn 只是 cfgOwn 的鏡像。 */
+   拆成「基本參數」＋「全勤參數」兩張卡。
+   2026-10-10 Eason：「只套用到目前門市要一次單獨儲存一項，不要全部項目連動」→
+   四張卡各自一個範圍勾選（不再互相同步），按儲存只送「這張卡裡改過的欄位」（CFG_DIRTY），
+   後端 keys:true 只換這幾個鍵、其他參數原樣保留。改版前是整份 CFG 送出：在某店勾選後存團險，
+   會把該店畫面上看到的全部參數（含從集團預設繼承來的）一起寫成本店專屬。 */
+let CFG_DIRTY={};   // {key: 改之前畫面上的值}
+function cfgEdit(k,v){ if(!(k in CFG_DIRTY)) CFG_DIRTY[k]=CFG[k]; CFG[k]=v; }
 const CF=[['daily_hours','每日基本工時（H）'],
  ['leave_div_days','事假費率分母（天）'],['leave_div_hours','事假費率分母（時）'],
  ['sick_ratio','病假占事假比例'],['payday','發薪日'],
@@ -2014,23 +2016,14 @@ function renderCfg(){
   // 假別表跟參數一樣依門市覆寫；還沒載入就先抓一次（切門市時 loadMonth 會再抓）
   if(!LT_LIST.length) loadLeaveTypes(); else renderLeaveTypes();
   if(!LEV_LIST.length) loadLeaveEvents(); else renderLeaveEvents();
-  const own=$('cfgOwn')&&$('cfgOwn').checked;
-  const scopeTxt=own?'（儲存後只影響目前門市）':'（集團預設，全店共用）';
-  if($('cfgScope')) $('cfgScope').textContent=scopeTxt;
-  if($('attScope')) $('attScope').textContent=scopeTxt;
-  if($('ptScope'))  $('ptScope').textContent=scopeTxt;
-  if($('coScope'))  $('coScope').textContent=scopeTxt;
-  // 四張卡共用同一個儲存範圍（都是寫 config），勾選互相同步
-  if($('attOwn')) $('attOwn').checked=own;
-  if($('ptOwn'))  $('ptOwn').checked=own;
-  if($('coOwn'))  $('coOwn').checked=own;
+  renderCfgScope();
   const srcTag=k=>{const v=CFGSRC[k];return v==='own'?' <span class="tag draft" style="font-size:10px">本店</span>':(v==='global'?'':' <span style="color:var(--muted)">預設</span>')};
   const cfgFld=([k,lb])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
-    <input type="number" step="0.01" value="${esc(CFG[k]??'')}" onchange="CFG['${k}']=n(this.value)"></div>`;
+    <input type="number" step="0.01" value="${esc(CFG[k]??'')}" onchange="cfgEdit('${k}',n(this.value))"></div>`;
   $('cfgGrid').innerHTML=CF.map(cfgFld).join('');
   if($('attGrid')) $('attGrid').innerHTML=CF_ATTEND.map(cfgFld).join('')
     +CF_ATTEND_SELECT.map(([k,lb,opts])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
-      <select onchange="CFG['${k}']=this.value" style="font:inherit;padding:8px 11px;border:1px solid var(--line);border-radius:6px">`
+      <select onchange="cfgEdit('${k}',this.value)" style="font:inherit;padding:8px 11px;border:1px solid var(--line);border-radius:6px">`
       +opts.map(([v,l])=>`<option value="${esc(v)}" ${String(CFG[k]||'punch')===v?'selected':''}>${l}</option>`).join('')
       +'</select></div>').join('');
   if($('ptGrid')) $('ptGrid').innerHTML=CF_PT.map(cfgFld).join('');
@@ -2045,13 +2038,36 @@ function renderCfg(){
    tests/page-handlers.test.js 會檢查頁面上每一個按鈕呼叫的函式都還存在。 */
 async function setMode(k,v){CFG[k]=v;const r=await post('payroll_config_set',{config:CFG});
   if(r.ok){CFG=r.config||CFG;renderCfg();if(RESULTS.length)doCalc()}}
-async function saveCfg(btn,label){
+/* 每張卡的欄位與範圍勾選（各卡獨立，不互相連動） */
+const CFG_CARDS={cfg:{own:'cfgOwn',scope:'cfgScope',keys:()=>CF.map(x=>x[0])},
+  att:{own:'attOwn',scope:'attScope',keys:()=>CF_ATTEND.concat(CF_ATTEND_SELECT).map(x=>x[0])},
+  pt:{own:'ptOwn',scope:'ptScope',keys:()=>CF_PT.map(x=>x[0])},
+  co:{own:'coOwn',scope:'coScope',keys:()=>CO_MANUAL.map(x=>x[0])}};
+function renderCfgScope(){
+  Object.keys(CFG_CARDS).forEach(c=>{const d=CFG_CARDS[c];
+    const own=$(d.own)&&$(d.own).checked;
+    if($(d.scope)) $(d.scope).textContent=own?'（儲存後只影響目前門市）':'（集團預設，全店共用）';});
+}
+async function saveCfg(btn,label,card){
+  const d=CFG_CARDS[card||'cfg'];
+  const keys=d.keys().filter(k=>(k in CFG_DIRTY)&&CFG_OBSOLETE.indexOf(k)<0);
+  if(!keys.length){toast('這張卡沒有改過的欄位，不需要儲存');return}
+  const own=!!($(d.own)&&$(d.own).checked);
   return saveFX(btn,label||'儲存',async()=>{
-    // 廢棄參數不再送出＝該 scope 整批換掉時自然消失（handlePayrollConfigSet 是整批覆寫）
-    const send={};Object.keys(CFG).forEach(k=>{if(CFG_OBSOLETE.indexOf(k)<0)send[k]=CFG[k]});
-    const r=await post('payroll_config_set',{config:send,store:($('cfgOwn')&&$('cfgOwn').checked)?STORE:''});
+    const send={};keys.forEach(k=>send[k]=CFG[k]);
+    const r=await post('payroll_config_set',{config:send,store:own?STORE:'',keys:true});
     if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
-    CFG=send;toast('已儲存');return true;
+    // 存成集團預設、但本店另有專屬值的鍵：本店照用專屬值，畫面要說清楚，不然會以為存了沒生效
+    const shadow=own?[]:keys.filter(k=>CFGSRC[k]==='own');
+    keys.forEach(k=>{
+      if(shadow.indexOf(k)>=0) CFG[k]=CFG_DIRTY[k];   // 本店實際生效的仍是專屬值，畫面還原回它
+      else CFGSRC[k]=own?'own':'global';
+      delete CFG_DIRTY[k];
+    });
+    renderCfg();
+    toast(shadow.length?`已存成集團預設（${shadow.length} 項本店另有專屬值，本店仍用本店的）`:
+      `已儲存 ${keys.length} 項${own?'（只套用目前門市）':'（集團預設）'}`);
+    return true;
   });
 }
 

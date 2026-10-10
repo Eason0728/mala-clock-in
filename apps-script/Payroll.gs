@@ -1564,6 +1564,18 @@ function handlePayrollConfigSet(body) {
     return { key: k, value: String(body.config[k]), note: '', store: stC };
   });
   if (!rows.length) return { ok: false, error: 'config_required' };
+  /* 單項儲存（2026-10-10 Eason：「只套用到目前門市要一次單獨儲存一項，不要全部項目連動」）：
+     帶 keys:true 時只換送來的這幾個鍵，同一 scope 的其他參數原樣保留。
+     不帶＝舊行為（整批覆寫該 scope），setMode 等舊呼叫不受影響。 */
+  if (body.keys === true) {
+    const ks = {};
+    rows.forEach(function (r) { ks[r.key] = true; });
+    const keep = payRead('config').filter(function (r) {
+      return !(String(r.store || '') === stC && ks[r.key]);
+    });
+    payReplaceAll('config', keep.concat(rows));
+    return { ok: true, keys: Object.keys(ks), store: stC };
+  }
   const otherCfg = payRead('config').filter(function (r) { return String(r.store || '') !== stC; });
   payReplaceAll('config', otherCfg.concat(rows));
   return { ok: true };
