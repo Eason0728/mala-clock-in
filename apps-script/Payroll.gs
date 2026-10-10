@@ -24,7 +24,7 @@ const PAY_SHEETS = {
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
             'ot_paid_hours','gross','deduction','net','status','run_at','support_hours','store'],
   item:    ['ym','emp_id','item_type','item_key','item_label','qty','rate','amount','source','memo','store'],
-  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on','custom_add_label','custom_add_amt','custom_ded_label','custom_ded_amt','store','holiday_h'],
+  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on','custom_add_label','custom_add_amt','custom_ded_label','custom_ded_amt','store','holiday_h','custom_add_more'],
   audit:   ['ts','ym','action','operator','reason','store'],
   // 假別參數表（2026-08-22）：一列一種假，值班核定下拉／薪資扣款／額度上限共用同一份正本。
   // store 空白＝集團共用；填了＝該門市專屬（覆寫集團），與 payroll_config 同一套覆寫規則。
@@ -81,6 +81,8 @@ const PAY_CONFIG_DEFAULT = [
   // 遲到分鐘不計薪（Eason 2026-08-23 定案）。true＝啟用；遲到「照舊也扣全勤」，兩個都扣。
   ['pt_attend_min_hours', 100, '計時全勤津貼的最低時數門檻'],
   ['late_deduct', 'true', '遲到分鐘不計薪（true/false）'],
+  // 從哪個月開始按分鐘扣（YYYY-MM，空白＝一直都扣）。2026-10-10 Eason：央廚九月先不扣、十月起扣。
+  ['late_deduct_from', '', '遲到按分鐘扣的起始月份（YYYY-MM，空白＝不限）'],
   ['late_div_days', 30, '遲到費率分母（天）'],
   ['late_div_hours', 8, '遲到費率分母（時）'],
   // ── 全勤「門檻式歸零」參數（2026-08-23，央廚／總部用；填 0 或留空＝不啟用，光復維持純遞減）──
@@ -318,7 +320,7 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     if (!out[emp]) out[emp] = {
       hours: 0, extra_ot: 0,
       personal_h: 0, sick_h: 0, menstrual_h: 0, annual_h: 0, disaster_h: 0, other_h: 0,
-      deduct_days: 0, _days: {}, _ld: {}, work_days: 0, _wd: {}, holiday_h: 0,
+      deduct_days: 0, _days: {}, _ld: {}, work_days: 0, _wd: {}, _dh: {}, _trip: {}, holiday_h: 0,
       leaves: {},   // { 假別code: 時數 }＝新的正本；上面五個舊欄位同步維護供手動輸入與既有報表用
       // 全勤門檻式歸零用（2026-08-23）：忘刷次數／忘刷天數／遲到累計分鐘／早退累計分鐘／假別觸發歸零
       forget_punch: 0, forget_day: 0, _fd: {}, late_min: 0, early_min: 0, attend_void: false,
@@ -336,9 +338,10 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
       const dayH = Number(rec.approved_hours) || 0;
       slot(emp).hours += dayH;
       // 餐費補助出勤天數：當日實際核定工時滿 MEAL_MIN_HOURS 才算一天（未滿不補、請假/特休/出差核定 0 不算）
-      // 餐費補助出勤天數。⚠ 出差當天不算（假別表 count_meal_day=false）——出差另有差旅費，
-      // 不重複給。這裡先記下來，等下面讀完 leave 分頁知道那天是不是出差再決定。
+      // 餐費補助出勤天數。出差日（假別表 count_meal_day=false）要扣掉出差時數再判斷門檻，
+      // 這裡先記下核定時數，等下面讀完 leave 分頁知道出差幾小時再決定（見函式尾端）。
       if (dayH >= MEALMIN) slot(emp)._wd[d] = true;
+      slot(emp)._dh[d] = (slot(emp)._dh[d] || 0) + dayH;
       // 國定假日當天的出勤時數（計時同仁雙薪的基礎；時數本身照樣算進總時數）
       if (HOLSET[String(d)]) slot(emp).holiday_h += dayH;
       const st = String(rec.status_text || '');
@@ -421,17 +424,28 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     if (ae === 'void') s.attend_void = true;          // 例：央廚／總部「有事假就沒全勤」
     if (ae === 'deduct' || ae === 'void') { markDay(emp, d); s._ld[d] = true; }
     // 出差之類「不算餐費出勤日」的，把當天從餐費天數扣掉
-    if (lt && lt.count_meal_day === false) delete s._wd[d];
+    // 時數留白＝整天出差（出差是整天的旗標，舊資料多半不填時數）→ 記成 Infinity，當天一定不算
+    if (lt && lt.count_meal_day === false) s._trip[d] = (s._trip[d] || 0) + (h > 0 ? h : Infinity);
   });
 
   // attend_deduct_basis='leave'：缺勤天數只算請假日（央廚／總部）；忘刷／遲到只走門檻歸零
   let leaveOnly = false;
   try { leaveOnly = String(payConfig(store).attend_deduct_basis || 'all') === 'leave'; } catch (e) {}
+  /* 出差日的餐費（2026-10-10 Eason：當天有打卡時數＋出差時數時，以打卡時數計算）：
+     打卡時數＝當天核定 − 出差時數，滿門檻才算一天。整天出差（核定就是出差時段）＝0，不算；
+     出差 1.5H、其餘上班 8.5H＝算。出差時數留白＝整天出差，不算。改版前只要當天有出差就整天不算。 */
+  Object.keys(out).forEach(function (emp) {
+    const o = out[emp];
+    Object.keys(o._trip).forEach(function (d) {
+      if ((o._dh[d] || 0) - o._trip[d] < MEALMIN) delete o._wd[d];
+    });
+  });
   Object.keys(out).forEach(function (emp) {
     out[emp].deduct_days = Object.keys(leaveOnly ? out[emp]._ld : out[emp]._days).length;
     out[emp].work_days = Object.keys(out[emp]._wd).length;
     out[emp].forget_day = Object.keys(out[emp]._fd).length;
     delete out[emp]._days; delete out[emp]._ld; delete out[emp]._wd; delete out[emp]._fd;
+    delete out[emp]._dh; delete out[emp]._trip;
   });
   return out;
 }
@@ -774,6 +788,10 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   if (payNum(e.editor_allow)) push(earn, 'editor_allow', '小編津貼', null, null, payNum(e.editor_allow));
   // 自訂加薪／扣款（工時分頁逐月填，名稱自訂）
   if (payNum(att.custom_add_amt)) push(earn, 'custom_add', String(att.custom_add_label || '自訂加薪'), null, null, payNum(att.custom_add_amt));
+  // 第二筆以後（2026-10-10 Eason：同一人同月要能有多筆自訂加薪，例：8月分紅＋AI種子計畫補助）
+  (att.custom_add_more || []).forEach(function (x) {
+    if (x && payNum(x.amt)) push(earn, 'custom_add', String(x.label || '自訂加薪'), null, null, payNum(x.amt));
+  });
   // 獎金（獎金分頁登記，逐筆併入加項；item_key 帶類型供成本分類歸科目）
   const BONUS_KEY = { sales: 'bonus_sales', perf: 'bonus_perf', project: 'bonus_project' };
   const BONUS_DEF = { sales: '業績獎金', perf: '績效獎金', project: '專案獎金' };
@@ -829,7 +847,8 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
    *   遲到「照舊也扣全勤」是 Eason 指定的——這兩件事並存，不是二擇一。
    *   att.late_min 由 payCollect 從核定狀態字串解析（「遲到5分、早退3分」要 split('、')）。 */
   const lateMin = payNum(att.late_min);
-  if (lateMin > 0 && payBool(cfg.late_deduct)) {
+  const lateFrom = String(cfg.late_deduct_from || '').trim();
+  if (lateMin > 0 && payBool(cfg.late_deduct) && !(lateFrom && String(ym) < lateFrom)) {
     const lateBase = ft
       ? (payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) + payNum(e.mgr_allow))
         / payNum(cfg.late_div_days) / payNum(cfg.late_div_hours) / 60
@@ -1783,6 +1802,17 @@ function paySavedInputs(ym, store) {
         } catch (e2) { /* Logger 在某些執行環境不存在，不能因此讓整支掛掉 */ }
       }
     }
+    // 第二筆以後的自訂加薪（JSON），比照支援時數：解析失敗要回報、不可靜默歸零
+    var addMore = [], addMoreErr = '';
+    if (r.custom_add_more !== '' && r.custom_add_more != null) {
+      try {
+        addMore = JSON.parse(r.custom_add_more);
+        if (!Array.isArray(addMore)) { addMoreErr = '不是陣列格式'; addMore = []; }
+      } catch (e) {
+        addMoreErr = '無法解析'; addMore = [];
+        try { Logger.log('⚠ payroll_input 自訂加薪解析失敗 ym=' + r.ym + ' emp=' + r.emp_id + ' 原值=' + String(r.custom_add_more).slice(0, 200)); } catch (e2) {}
+      }
+    }
     out[String(r.emp_id)] = {
       hours: payNum(r.hours), extra_ot: payNum(r.extra_ot),
       personal_h: payNum(r.personal_h), sick_h: payNum(r.sick_h), menstrual_h: payNum(r.menstrual_h), disaster_h: payNum(r.disaster_h), annual_h: payNum(r.annual_h),
@@ -1790,6 +1820,7 @@ function paySavedInputs(ym, store) {
       work_days: payNum(r.work_days), wage_override: payNum(r.wage_override), meal_on: payBool(r.meal_on),
       holiday_h: (r.holiday_h === '' || r.holiday_h == null) ? '' : payNum(r.holiday_h),
       custom_add_label: String(r.custom_add_label||''), custom_add_amt: payNum(r.custom_add_amt),
+      custom_add_more: addMore, custom_add_more_error: addMoreErr,
       custom_ded_label: String(r.custom_ded_label||''), custom_ded_amt: payNum(r.custom_ded_amt),
       dorm_override: (r.dorm_override === '' || r.dorm_override == null) ? '' : payNum(r.dorm_override),
     };
@@ -1875,6 +1906,9 @@ function handlePayrollInputSet(body) {
       custom_add_label: String(a.custom_add_label||''), custom_add_amt: payNum(a.custom_add_amt),
       custom_ded_label: String(a.custom_ded_label||''), custom_ded_amt: payNum(a.custom_ded_amt),
       dorm_override: (a.dorm_override === '' || a.dorm_override == null) ? '' : payNum(a.dorm_override),
+      custom_add_more: JSON.stringify((a.custom_add_more || []).filter(function (x) {
+        return x && (String(x.label || '').trim() || payNum(x.amt));
+      }).map(function (x) { return { label: String(x.label || ''), amt: payNum(x.amt) }; })),
     };
   });
   // 只換「本月＋本店」，其他月份與其他門市原封不動
@@ -1945,6 +1979,7 @@ function handlePayrollCalc(body) {
       holiday_h:  o.holiday_h  !== undefined ? payNum(o.holiday_h)  : payNum(c.holiday_h),
       custom_add_label: o.custom_add_label !== undefined ? o.custom_add_label : (c.custom_add_label||''),
       custom_add_amt:   o.custom_add_amt   !== undefined ? payNum(o.custom_add_amt) : payNum(c.custom_add_amt),
+      custom_add_more:  o.custom_add_more  !== undefined ? (o.custom_add_more || []) : (c.custom_add_more || []),
       custom_ded_label: o.custom_ded_label !== undefined ? o.custom_ded_label : (c.custom_ded_label||''),
       custom_ded_amt:   o.custom_ded_amt   !== undefined ? payNum(o.custom_ded_amt) : payNum(c.custom_ded_amt),
       bonuses: bonusBy[String(e.emp_id)] || [],

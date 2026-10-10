@@ -678,10 +678,10 @@ async function saveAtt(){
   const b=$('saveAttBtn');
   /* 支援時數若讀取失敗（後端解析不了那段 JSON），此時 ATT 裡是空陣列——
      直接存檔會把空值寫回去、原始資料永久消失。擋下來，先修資料再存（2026-08-24 加）。*/
-  const broken=Object.keys(ATT||{}).filter(k=>(ATT[k]||{}).support_error);
+  const broken=Object.keys(ATT||{}).filter(k=>(ATT[k]||{}).support_error||(ATT[k]||{}).custom_add_more_error);
   if(broken.length){
     const names=broken.map(k=>(MASTER.find(m=>String(m.emp_id)===String(k))||{}).name||k);
-    toast('無法儲存：'+names.join('、')+' 的支援時數在試算表裡格式壞了，存檔會覆蓋掉原始資料。請先修正該欄再存。',true);
+    toast('無法儲存：'+names.join('、')+' 的支援時數或自訂加薪在試算表裡格式壞了，存檔會覆蓋掉原始資料。請先修正該欄再存。',true);
     return;
   }
   b.disabled=true; b.classList.remove('done'); b.textContent='存取中…';
@@ -1254,6 +1254,27 @@ async function toggleLock(){
 /* ═════ 工時 ═════ */
 const AF=[['hours','本店核定時數'],['extra_ot','額外加班 H'],['personal_h','事假 H'],
           ['sick_h','病假 H'],['menstrual_h','生理假 H'],['disaster_h','天災假 H'],['annual_h','特休 H'],['deduct_days','全勤扣減天數']];
+/* 自訂加薪（多筆）。第一筆＝custom_add_label/amt（舊欄位，既有月份不用搬），其後＝custom_add_more。 */
+function customAddCell(id,A){
+  if(A.custom_add_more_error)
+    return `<span style="color:#c0392b;font-weight:800" title="試算表裡的自訂加薪格式壞了（${esc(A.custom_add_more_error)}），請聯絡 Eason 修正後再儲存">⚠ 讀取失敗</span>`;
+  const sid=esc(String(id));
+  const row=(lb,amt,onL,onA)=>`<div style="display:flex;gap:5px;min-width:190px;margin-bottom:4px">
+      <input type="text" placeholder="名稱" value="${esc(lb||'')}" style="min-width:90px" onchange="${onL}">
+      <input type="number" placeholder="金額" value="${esc(n(amt)||'')}" style="min-width:80px" onchange="${onA}"></div>`;
+  let h=row(A.custom_add_label,A.custom_add_amt,
+    `ATT['${sid}'].custom_add_label=this.value`,`ATT['${sid}'].custom_add_amt=n(this.value)`);
+  (A.custom_add_more||[]).forEach((x,i)=>{
+    h+=row(x.label,x.amt,`ATT['${sid}'].custom_add_more[${i}].label=this.value`,`ATT['${sid}'].custom_add_more[${i}].amt=n(this.value)`);
+  });
+  return h+`<button type="button" class="btn ghost" style="padding:2px 10px;font-size:12px" onclick="addCustomAdd('${sid}')">＋ 再加一筆</button>`;
+}
+function addCustomAdd(id){
+  const A=ATT[id]||(ATT[id]={});
+  if(!Array.isArray(A.custom_add_more)) A.custom_add_more=[];
+  A.custom_add_more.push({label:'',amt:0});
+  markAttDirty(); renderAtt();
+}
 function renderAtt(){
   let h='<thead><tr><th>姓名</th>'
     +'<th>全勤津貼<br><span style="font-weight:400;color:var(--muted)">計時＋10</span></th>'
@@ -1307,11 +1328,8 @@ function renderAtt(){
       ? `<td style="color:#c0392b;font-weight:800" title="試算表裡的支援資料格式壞了（${A.support_error}），請聯絡 Eason 修正後再儲存">⚠ 讀取失敗</td>`
       : `<td>${sh?r2(sh)+' H':'—'}</td>`;
     // 自訂加薪／扣款：名稱自填＋金額，逐月存於 payroll_input
-    h+=`<td><div style="display:flex;gap:5px;min-width:190px">
-      <input type="text" placeholder="名稱" value="${esc(A.custom_add_label||'')}" style="min-width:90px"
-        onchange="ATT['${e.emp_id}'].custom_add_label=this.value">
-      <input type="number" placeholder="金額" value="${esc(n(A.custom_add_amt)||'')}" style="min-width:80px"
-        onchange="ATT['${e.emp_id}'].custom_add_amt=n(this.value)"></div></td>`;
+    // 2026-10-10 起可多筆：第一筆照舊存 custom_add_label/amt，第二筆以後存 custom_add_more（JSON）
+    h+=`<td>${customAddCell(e.emp_id,A)}</td>`;
     h+=`<td><div style="display:flex;gap:5px;min-width:190px">
       <input type="text" placeholder="名稱" value="${esc(A.custom_ded_label||'')}" style="min-width:90px"
         onchange="ATT['${e.emp_id}'].custom_ded_label=this.value">
@@ -2007,6 +2025,8 @@ const CF_ATTEND_SELECT=[['attend_forget_unit','忘刷計數單位',
  // 2026-10-10：央廚／總部只有請假日倒扣，忘刷／遲到只看門檻
  ['attend_deduct_basis','每日倒扣算哪些日子',
   [['all','遲到／早退／忘刷／請假都算'],['leave','只算請假日（病假等）']]]];
+/* 文字參數（2026-10-10）：遲到按分鐘扣從哪個月開始。央廚九月先不扣、十月起扣。 */
+const CF_ATTEND_TEXT=[['late_deduct_from','遲到按分鐘扣：從哪個月開始','YYYY-MM，空白＝一直都扣']];
 /* 計時同仁的時薪加給（2026-08-24 由寫死改為門市可覆寫參數）。0＝該店不給這項加給。 */
 const CF_PT=[['pt_attend_plus','滿勤加給（元/時，勾選才給）'],
  ['pt_tenure_plus','年資加給（元/時）'],
@@ -2024,7 +2044,10 @@ function renderCfg(){
   const cfgFld=([k,lb])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
     <input type="number" step="0.01" value="${esc(CFG[k]??'')}" onchange="cfgEdit('${k}',n(this.value))"></div>`;
   $('cfgGrid').innerHTML=CF.map(cfgFld).join('');
+  const cfgTxt=([k,lb,ph])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
+    <input type="text" placeholder="${ph}" value="${esc(CFG[k]??'')}" onchange="cfgEdit('${k}',this.value.trim())"></div>`;
   if($('attGrid')) $('attGrid').innerHTML=CF_ATTEND.map(cfgFld).join('')
+    +CF_ATTEND_TEXT.map(cfgTxt).join('')
     +CF_ATTEND_SELECT.map(([k,lb,opts])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
       <select onchange="cfgEdit('${k}',this.value)" style="font:inherit;padding:8px 11px;border:1px solid var(--line);border-radius:6px">`
       +opts.map(([v,l])=>`<option value="${esc(v)}" ${String(CFG[k]||opts[0][0])===v?'selected':''}>${l}</option>`).join('')
@@ -2043,7 +2066,7 @@ async function setMode(k,v){CFG[k]=v;const r=await post('payroll_config_set',{co
   if(r.ok){CFG=r.config||CFG;renderCfg();if(RESULTS.length)doCalc()}}
 /* 每張卡的欄位與範圍勾選（各卡獨立，不互相連動） */
 const CFG_CARDS={cfg:{own:'cfgOwn',scope:'cfgScope',keys:()=>CF.map(x=>x[0])},
-  att:{own:'attOwn',scope:'attScope',keys:()=>CF_ATTEND.concat(CF_ATTEND_SELECT).map(x=>x[0])},
+  att:{own:'attOwn',scope:'attScope',keys:()=>CF_ATTEND.concat(CF_ATTEND_SELECT,CF_ATTEND_TEXT).map(x=>x[0])},
   pt:{own:'ptOwn',scope:'ptScope',keys:()=>CF_PT.map(x=>x[0])},
   co:{own:'coOwn',scope:'coScope',keys:()=>CO_MANUAL.map(x=>x[0])}};
 function renderCfgScope(){
