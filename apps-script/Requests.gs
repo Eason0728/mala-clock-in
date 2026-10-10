@@ -21,6 +21,17 @@ var REQ_LIST_DAYS = 60;         // 「我的申請」看 60 天
 var REQ_REASON_MAX = 100;
 var REQ_TRIP_PLACE_MAX = 40;    // 出差地點上限（2026-10-09 Eason）
 var REQ_BATCH_MAX = 30;         // 主管批次核准一次最多幾筆
+/* 要附證明的假別（2026-10-10 Eason：病假、婚假、喪假、產假相關一定要附證明）。
+   可以先送出（看醫生前就得請假），但沒附就不能核准；同仁在「我的申請」補附（req_attach）。
+   名稱要與 Code.gs LEAVE_TYPES 一字不差（tests/leave-proof.test.js 會比對）。 */
+var REQ_PROOF_TYPES_ = ['病假', '住院傷病假', '公傷病假', '婚假',
+  '喪假（父母・配偶）', '喪假（祖父母・子女・配偶父母）', '喪假（曾祖父母・兄弟姊妹）', '喪假',
+  '產假（分娩）', '產假', '流產假（妊娠3個月以上）', '流產假（妊娠2～未滿3個月）', '流產假（妊娠未滿2個月）',
+  '產檢假', '陪產檢及陪產假', '安胎休養假'];
+var REQ_ATTACH_RE_ = /^[A-Za-z0-9_-]{10,80}$/;
+function reqProofType_(r) { return String(r.kind) === 'leave' && REQ_PROOF_TYPES_.indexOf(String(r.leave_type || '')) >= 0; }
+/** 這筆還缺證明（要附、還沒附）→ 不能核准 */
+function reqNeedsProof_(r) { return reqProofType_(r) && !r.attach_id; }
 
 /* ── 工具 ── */
 function reqSheet_(ss, create) {
@@ -81,7 +92,8 @@ function reqPublic_(r) {
            hours: r.hours === '' || r.hours === null || r.hours === undefined ? null : Number(r.hours),
            miss_type: String(r.miss_type || ''), reason: String(r.reason || ''), has_attach: !!r.attach_id,
            status: String(r.status), decided_at: String(normCellTs(r.decided_at) || ''), decided_by: String(r.decided_by || ''),
-           reject_reason: String(r.reject_reason || ''), comp: r.kind === 'ot' ? (String(r.comp || '') === 'comp' ? 'comp' : 'pay') : '' };
+           reject_reason: String(r.reject_reason || ''), comp: r.kind === 'ot' ? (String(r.comp || '') === 'comp' ? 'comp' : 'pay') : '',
+           proof_required: reqProofType_(r), need_proof: reqNeedsProof_(r) };
 }
 function reqSetCells_(sh, rowIndex, patch) {
   var heads = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
@@ -179,7 +191,8 @@ function handleReqInfo_(body) {
     return String(r.emp_id) === String(who.me.emp_id) && reqDayDiff_(today, String(r.created_at).slice(0, 10) || r.date) <= REQ_LIST_DAYS;
   }).sort(function (a, b) { return a.created_at < b.created_at ? 1 : -1; }).map(reqPublic_);
   var out = { ok: true, name: String(who.me.name), emp_id: String(who.me.emp_id), today: today, requests: mine,
-              miss_days: REQ_MISS_DAYS, leave_types: LEAVE_TYPES.filter(function (t) { return t !== '出差'; }) };
+              miss_days: REQ_MISS_DAYS, leave_types: LEAVE_TYPES.filter(function (t) { return t !== '出差'; }),
+              proof_types: REQ_PROOF_TYPES_.slice() };
   if (reqIsDate_(body.date)) {
     var di = reqDayInfo_(liffEvents_(who.ss), who.me.emp_id, String(body.date));
     out.day = { date: String(body.date), punches: di.punches, missing: di.missing };
@@ -305,7 +318,7 @@ function handleReqSubmit_(body) {
     }
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
     r.created_at = nowTaipeiIso(); r.emp_id = String(who.me.emp_id); r.name = String(who.me.name);
-    r.attach_id = /^[A-Za-z0-9_-]{10,80}$/.test(String(body.attach_id || '')) ? String(body.attach_id) : '';
+    r.attach_id = REQ_ATTACH_RE_.test(String(body.attach_id || '')) ? String(body.attach_id) : '';
     r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
     var sh = reqSheet_(who.ss, true);
     sh.appendRow(reqHeads_(sh).map(function (h) { return r[h] === undefined ? '' : r[h]; }));   // 照實際表頭寫（舊分頁沒有 comp 欄會先補）
@@ -336,6 +349,27 @@ function handleReqCancel_(body) {
     if (r.status !== 'pending') return { ok: false, error: 'not_pending', message: '主管已經處理過這筆，不能取消；要改請找主管' };
     reqSetCells_(sh, r.__rowIndex, { status: 'cancelled', decided_at: nowTaipeiIso(), decided_by: '本人取消' });
     return { ok: true };
+  } finally { lock.releaseLock(); }
+}
+
+/** {action:'req_attach', id_token, id, attach_id} → 補附證明：只能補自己的、審核中的請假（附件先傳光復 line_hub_attach_put 拿 ID）。
+ *  已經有附件的也可以換一張（主管看最新的）。與主管審核同一把鎖。 */
+function handleReqAttach_(body) {
+  var who = reqStaff_(body);
+  if (who.error) return { ok: false, error: who.error };
+  var aid = String(body.attach_id || '');
+  if (!REQ_ATTACH_RE_.test(aid)) return { ok: false, error: 'bad_attach', message: '附件沒有上傳成功，請再試一次' };
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
+  try {
+    var sh = reqSheet_(who.ss, false);
+    var r = reqRows_(who.ss).filter(function (x) { return String(x.id) === String(body.id) && String(x.emp_id) === String(who.me.emp_id); })[0];
+    if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
+    if (r.kind !== 'leave') return { ok: false, error: 'not_leave', message: '只有請假可以補附證明' };
+    if (r.status !== 'pending') return { ok: false, error: 'not_pending', message: '主管已經處理過這筆，不能再補附' };
+    reqSetCells_(sh, r.__rowIndex, { attach_id: aid });
+    r.attach_id = aid;
+    return { ok: true, request: reqPublic_(r) };
   } finally { lock.releaseLock(); }
 }
 
@@ -390,6 +424,7 @@ function handleMgrReqDecide_(body) {
     var r = reqRows_(ss).filter(function (x) { return String(x.id) === String(body.id); })[0];
     if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
     if (r.status !== 'pending') return { ok: false, error: 'not_pending', message: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' };
+    if (decision === 'approve' && reqNeedsProof_(r)) return { ok: false, error: 'need_proof', message: r.leave_type + '要附證明，同仁補上後才能核准（退回不受影響）' };
     reqSetCells_(sh, r.__rowIndex, { status: decision === 'approve' ? 'approved' : 'rejected', decided_at: nowTaipeiIso(),
                                      decided_by: String(mgr.name), reject_reason: decision === 'reject' ? reason : '' });
     return { ok: true, id: String(r.id), status: decision === 'approve' ? 'approved' : 'rejected' };
@@ -417,6 +452,7 @@ function handleMgrReqDecideBatch_(body) {
       var r = byId[id];
       if (!sh || !r) { skipped.push({ id: id, reason: '找不到這筆申請' }); return; }
       if (r.status !== 'pending') { skipped.push({ id: id, reason: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' }); return; }
+      if (reqNeedsProof_(r)) { skipped.push({ id: id, reason: r.leave_type + '還沒附證明' }); return; }
       reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: String(mgr.name), reject_reason: '' });
       done.push(id);
     });

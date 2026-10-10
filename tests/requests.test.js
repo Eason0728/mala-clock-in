@@ -389,7 +389,7 @@ ok('Codex 2026-10-10：已核准的整天請假、那天沒打卡也沒核定 �
   const sb = makeEnv({});
   const ids = {};
   for (const [k, b] of Object.entries({
-    leave: { kind: 'leave', date: '2026-10-05', leave_type: '病假', hours: 8, reason: '發燒' },
+    leave: { kind: 'leave', date: '2026-10-05', leave_type: '病假', hours: 8, reason: '發燒', attach_id: 'att_0123456789' },   // 病假要附證明才能核准（2026-10-10）
     done: { kind: 'leave', date: '2026-10-06', leave_type: '事假', hours: 8, reason: 'x' },
     future: { kind: 'leave', date: '2026-10-20', leave_type: '特休假', hours: 8, reason: 'x' },
     ot: { kind: 'ot', date: '2026-10-07', start: '18:00', end: '20:00', reason: '盤點' },

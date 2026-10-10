@@ -72,12 +72,24 @@ def register(ns):
             parts.append("下班 " + r["end"])
         return f"{md} 忘打卡補登（{'、'.join(parts)}）"
 
+    # 要附證明的假別（同 Requests.gs REQ_PROOF_TYPES_，2026-10-10）
+    PROOF = ["病假", "住院傷病假", "公傷病假", "婚假", "喪假（父母・配偶）", "喪假（祖父母・子女・配偶父母）", "喪假（曾祖父母・兄弟姊妹）", "喪假",
+             "產假（分娩）", "產假", "流產假（妊娠3個月以上）", "流產假（妊娠2～未滿3個月）", "流產假（妊娠未滿2個月）",
+             "產檢假", "陪產檢及陪產假", "安胎休養假"]
+
+    def proof_type(r):
+        return r.get("kind") == "leave" and r.get("leave_type", "") in PROOF
+
+    def needs_proof(r):
+        return proof_type(r) and not r.get("attach_id")
+
     def public(r):
         o = {k: r.get(k, "") for k in ("id", "created_at", "emp_id", "name", "kind", "date", "leave_type", "start", "end",
                                          "miss_type", "reason", "status", "decided_at", "decided_by", "reject_reason")}
         o["hours"] = r.get("hours")
         o["has_attach"] = bool(r.get("attach_id"))
         o["comp"] = ("comp" if r.get("comp") == "comp" else "pay") if r.get("kind") == "ot" else ""
+        o["proof_required"], o["need_proof"] = proof_type(r), needs_proof(r)
         return o
 
     def day_info(data, emp_id, d):
@@ -141,7 +153,7 @@ def register(ns):
         today = today_str()
         mine = sorted([public(r) for r in reqs(data) if r["emp_id"] == me["emp_id"]], key=lambda r: r["created_at"], reverse=True)
         out = {"ok": True, "name": me["name"], "emp_id": me["emp_id"], "today": today, "requests": mine,
-               "miss_days": REQ_MISS_DAYS, "leave_types": [t for t in LEAVE_TYPES if t != "出差"]}
+               "miss_days": REQ_MISS_DAYS, "leave_types": [t for t in LEAVE_TYPES if t != "出差"], "proof_types": list(PROOF)}
         d = str(body.get("date") or "")
         if len(d) == 10:
             p, m = day_info(data, me["emp_id"], d)
@@ -281,6 +293,25 @@ def register(ns):
         save_data(data)
         return {"ok": True}
 
+    def req_attach(data, body):
+        uid, me, err = liff_me(data, body)
+        if err:
+            return err
+        aid = str(body.get("attach_id") or "")
+        import re as _re
+        if not _re.match(r"^[A-Za-z0-9_-]{10,80}$", aid):
+            return {"ok": False, "error": "bad_attach", "message": "附件沒有上傳成功，請再試一次"}
+        r = next((x for x in reqs(data) if x["id"] == body.get("id") and x["emp_id"] == me["emp_id"]), None)
+        if not r:
+            return {"ok": False, "error": "not_found", "message": "找不到這筆申請"}
+        if r.get("kind") != "leave":
+            return {"ok": False, "error": "not_leave", "message": "只有請假可以補附證明"}
+        if r["status"] != "pending":
+            return {"ok": False, "error": "not_pending", "message": "主管已經處理過這筆，不能再補附"}
+        r["attach_id"] = aid
+        save_data(data)
+        return {"ok": True, "request": public(r)}
+
     # ── 主管 ──
     def mgr_pending(data, body):
         if not find_manager_by_key(data, body.get("mgr_key")):
@@ -308,6 +339,8 @@ def register(ns):
             return {"ok": False, "error": "not_found", "message": "找不到這筆申請"}
         if r["status"] != "pending":
             return {"ok": False, "error": "not_pending", "message": "同仁已經取消這筆申請" if r["status"] == "cancelled" else "這筆已經處理過了"}
+        if dec == "approve" and needs_proof(r):
+            return {"ok": False, "error": "need_proof", "message": r["leave_type"] + "要附證明，同仁補上後才能核准（退回不受影響）"}
         r.update({"status": "approved" if dec == "approve" else "rejected", "decided_at": iso_now(), "decided_by": mgr["name"],
                   "reject_reason": reason if dec == "reject" else ""})
         save_data(data)
@@ -336,6 +369,8 @@ def register(ns):
                 skipped.append({"id": i, "reason": "找不到這筆申請"})
             elif r["status"] != "pending":
                 skipped.append({"id": i, "reason": "同仁已經取消這筆申請" if r["status"] == "cancelled" else "這筆已經處理過了"})
+            elif needs_proof(r):
+                skipped.append({"id": i, "reason": r["leave_type"] + "還沒附證明"})
             else:
                 r.update({"status": "approved", "decided_at": now, "decided_by": mgr["name"], "reject_reason": ""})
                 done.append(i)
@@ -530,7 +565,7 @@ def register(ns):
         r["items"].sort(key=lambda x: (x["date"], x["name"]))
         return r
 
-    ns["ACTIONS"].update({"req_info": req_info, "req_submit": req_submit, "req_cancel": req_cancel,
+    ns["ACTIONS"].update({"req_info": req_info, "req_submit": req_submit, "req_cancel": req_cancel, "req_attach": req_attach,
                           "mgr_req_pending": mgr_pending, "mgr_req_decide": mgr_decide, "mgr_req_day": mgr_day,
                           "mgr_req_decide_batch": mgr_decide_batch,
                           "mgr_qr_token": mgr_qr, "liff_punch": liff_punch,

@@ -187,6 +187,7 @@
   .rq-kind { font-size: 12px; border-radius: 6px; padding: 1px 7px; margin-right: 4px; font-weight: 700; }
   .rq-kind.leave { background: #e7eefc; color: #2b4f9a; } .rq-kind.ot { background: #ffe9d6; color: #a14a00; }
   .rq-kind.miss { background: #efe4fb; color: #6a3a9a; } .rq-kind.trip { background: #e2f3ef; color: #1f6b5a; }
+  .rq-proof { margin: 6px 0 2px; color: #a15a00; background: #fff6e0; border-radius: 8px; padding: 6px 9px; font-size: 13px; line-height: 1.5; }
   /* 批次核准（2026-10-09）：每筆前面一個勾選框＋上方「全選」與「核准勾選的 N 筆」 */
   .rq-batch { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #f7f2ef; border-radius: 9px; padding: 8px 10px; margin: 0 0 10px; }
   .rq-batch[hidden] { display: none; }   /* display:flex 會蓋掉 hidden（打卡 QR 遮罩同一個坑） */
@@ -1862,7 +1863,8 @@
     el.__req = it;
     var l1 = document.createElement('div'); l1.className = 'rq-l1';
     var who = document.createElement('span'); who.className = 'rq-who';
-    var pick = document.createElement('input'); pick.type = 'checkbox'; pick.className = 'rq-pick';
+    var pick = document.createElement('input'); pick.type = 'checkbox'; pick.className = it.need_proof ? 'rq-pick-off' : 'rq-pick';
+    if (it.need_proof) { pick.disabled = true; pick.title = '還沒附證明，不能核准'; }   // 不參加全選／批次核准
     pick.setAttribute('aria-label', '勾選 ' + it.name + ' ' + it.summary);
     pick.addEventListener('change', function () { syncReqBatch(card); });
     who.appendChild(pick);
@@ -1875,8 +1877,15 @@
     el.appendChild(l2);
     var ev = punchEvidence(it);
     if (ev) { var e = document.createElement('div'); e.className = 'rq-evid'; e.textContent = ev; el.appendChild(e); }
+    /* 證明文件（2026-10-10 Eason：病假、婚假、喪假、產假相關一定要附）：沒附就不能核准，可以退回；同仁在 LINE「我的申請」補附 */
+    if (it.need_proof) {
+      var pf = document.createElement('div'); pf.className = 'rq-proof';
+      pf.textContent = '⚠ ' + it.leave_type + '要附證明，同仁還沒附；補上後才能核准（可以先退回）';
+      el.appendChild(pf);
+    }
     var acts = document.createElement('div'); acts.className = 'rq-acts';
-    var ok = document.createElement('button'); ok.type = 'button'; ok.className = 'rq-ok'; ok.textContent = '核准';
+    var ok = document.createElement('button'); ok.type = 'button'; ok.className = 'rq-ok'; ok.textContent = it.need_proof ? '待補證明' : '核准';
+    if (it.need_proof) ok.disabled = true;
     var no = document.createElement('button'); no.type = 'button'; no.className = 'rq-no'; no.textContent = '退回';
     acts.appendChild(ok); acts.appendChild(no);
     if (it.attach_id) {
@@ -1909,7 +1918,7 @@
       } else if (!confirm('核准 ' + it.name + '：' + it.summary + '？\n核准後，那天的核定會先幫你填好，你核定那天時確認送出才算數。')) return;
       ok.disabled = no.disabled = true; msg.style.color = ''; msg.textContent = '送出中…';
       apiPost(payload).then(function (r) {
-        if (!r || !r.ok) { ok.disabled = no.disabled = false; msg.style.color = '#c22a12'; msg.textContent = '✕ ' + ((r && r.message) || '沒有成功，請再試一次'); return; }
+        if (!r || !r.ok) { ok.disabled = !!it.need_proof || (r && r.error === 'need_proof'); no.disabled = false; msg.style.color = '#c22a12'; msg.textContent = '✕ ' + ((r && r.message) || '沒有成功，請再試一次'); return; }
         el.__markDone((decision === 'approve' ? '✓ 已核准：' : '✕ 已退回：') + it.name + ' ' + it.summary);
         reqTitleRefresh(card, title); syncReqBatch(card);
         if (decision === 'approve') { delete dayCache[it.date]; if (currentDate === it.date) loadDay(it.date); }

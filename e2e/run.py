@@ -210,6 +210,59 @@ def seed_requests(data):
             rq('D', p0, 'miss', day, miss_type='in', start='09:00', reason='忘記按')]
 
 
+def phase_leave_proof(page, data):
+    """請假證明（2026-10-10 Eason：病假、婚假、喪假、產假相關一定要附證明）：
+    沒附 → 核准鍵鎖住寫「待補證明」、勾選框不能勾（不參加全選／批次）、有黃色提醒；後端也擋。
+    同仁補附（這裡直接把附件 ID 寫進 mock 資料，等同 req_attach）→ 核准鍵恢復、可以核准、看得到附件。"""
+    import urllib.request
+    p1 = data['people'][1]
+    fut = (datetime.fromisoformat(data['workday']) + timedelta(days=25)).strftime('%Y-%m-%d')
+    path = os.path.join(ROOT, 'mock', 'mock_data.json')
+    d = json.load(open(path, encoding='utf-8'))
+    d.setdefault('requests', []).append({'id': 'rqE2EP', 'created_at': data['workday'] + 'T23:00:00+08:00', 'emp_id': p1['emp_id'],
+        'name': p1['name'], 'kind': 'leave', 'date': fut, 'leave_type': '病假', 'start': '', 'end': '', 'hours': 8, 'miss_type': '',
+        'reason': 'e2e 發燒', 'attach_id': '', 'status': 'pending', 'decided_at': '', 'decided_by': '', 'reject_reason': '', 'seen_at': ''})
+    json.dump(d, open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    page.reload()
+    page.wait_for_selector('#pendingRequests .rq-item', timeout=20000)
+    CM.scan(page, '值班核定頁（待補證明）')
+    t = text_of(page, '#pendingRequests')
+    st = page.evaluate("""() => { const i = [...document.querySelectorAll('#pendingRequests .rq-item')].find(x => x.textContent.includes('病假'));
+          const ok = i.querySelector('.rq-ok'), pk = i.querySelector('input[type=checkbox]');
+          return { okText: ok.textContent, okDis: ok.disabled, pickCls: pk.className, pickDis: pk.disabled, warn: (i.querySelector('.rq-proof') || {}).textContent || '' }; }""")
+    check('請假證明：病假沒附 → 黃色提醒、核准鍵「待補證明」且停用、勾選框停用',
+          st['okText'] == '待補證明' and st['okDis'] and st['pickDis'] and st['pickCls'] == 'rq-pick-off' and '病假要附證明' in st['warn'], st)
+    mark_el(page, '#pendingRequests .rq-pick-off', '沒附證明時停用（已驗）')
+    CM.mark('button「待補證明」', '沒附證明時停用（已驗）')
+    if page.query_selector('#rqAll'):
+        page.click('#rqAll')
+        check('請假證明：全選不會勾到待補證明那筆、批次鈕仍停用', page.is_disabled('#btnReqBatch'), text_of(page, '#btnReqBatch'))
+    # 後端直接打核准也擋
+    r = page.evaluate("""async (k) => (await fetch('/api', { method: 'POST', body: JSON.stringify({ action: 'mgr_req_decide', mgr_key: k, id: 'rqE2EP', decision: 'approve' }) })).json()""",
+                      data['manager']['key'])
+    check('請假證明：後端核准回 need_proof', r.get('error') == 'need_proof' and '病假要附證明' in r.get('message', ''), r)
+    # 同仁補附：先上傳一張 1×1 PNG 拿 attach_id，再寫進那筆申請
+    png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    up = json.loads(urllib.request.urlopen(urllib.request.Request(BASE + '/api', data=json.dumps(
+        {'action': 'line_hub_attach_put', 'id_token': 'MOCK_ID_TOKEN_E2E', 'data_url': png}).encode()), timeout=10).read())
+    d = json.load(open(path, encoding='utf-8'))
+    next(x for x in d['requests'] if x['id'] == 'rqE2EP')['attach_id'] = up['attach_id']
+    json.dump(d, open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    page.reload()
+    page.wait_for_selector('#pendingRequests .rq-item .rq-att', timeout=20000)
+    st = page.evaluate("""() => { const i = [...document.querySelectorAll('#pendingRequests .rq-item')].find(x => x.textContent.includes('病假'));
+          return { okText: i.querySelector('.rq-ok').textContent, okDis: i.querySelector('.rq-ok').disabled, warn: !!i.querySelector('.rq-proof') }; }""")
+    check('請假證明：補附後提醒消失、核准鍵恢復', st == {'okText': '核准', 'okDis': False, 'warn': False}, st)
+    page.click('#pendingRequests .rq-att')
+    page.wait_for_selector('#pendingRequests .rq-img', timeout=10000)
+    mark_el(page, '#pendingRequests .rq-att', '看附件（顯示圖片）') if page.query_selector('#pendingRequests .rq-att') else CM.mark('button「看附件」', '看附件（顯示圖片）')
+    page.evaluate("""() => [...document.querySelectorAll('#pendingRequests .rq-item')].find(x => x.textContent.includes('病假')).querySelector('.rq-ok').click()""")
+    page.wait_for_function("() => document.getElementById('pendingRequests').textContent.includes('✓ 已核准：')", timeout=10000)
+    left = page.evaluate("""async (k) => (await (await fetch('/api', { method: 'POST', body: JSON.stringify({ action: 'mgr_req_pending', mgr_key: k }) })).json()).items.length""",
+                         data['manager']['key'])
+    check('請假證明：補附後核准成功、後端待審 0 筆', left == 0, left)
+
+
 def start_mock(data):
     path = os.path.join(ROOT, 'mock', 'mock_data.json')
     with open(path, 'w', encoding='utf-8') as f:
@@ -966,6 +1019,8 @@ def main():
             phase_qr(page)
             print('  ↳ 待審申請：全選、單筆退回／核准、批次核准、出差預填')
             phase_requests(page, data)
+            print('  ↳ 請假證明：沒附不能核准、補附後可以')
+            phase_leave_proof(page, data)
             print('── 階段C：核定頁其餘操作 ──')
             phase_manager_buttons(page, data)
             print('── 階段D：薪酬 ──')

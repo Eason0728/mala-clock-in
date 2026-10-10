@@ -150,10 +150,16 @@
     var rs = h('input', { type: 'text', maxlength: '100', value: lv.reason, placeholder: '例如：家裡有事', on: { input: function () { lv.reason = rs.value; } } });
     p.appendChild(field('原因（選填）', rs));
     var fi = h('input', { type: 'file', accept: 'image/*,application/pdf', on: { change: function () { lv.file = fi.files[0] || null; } } });
-    p.appendChild(field('附件（選填，病假證明、訃聞等）', fi, [h('div', { class: 'rq-muted', text: '照片或 PDF，只有值班主管看得到' })]));
+    var mustProof = proofType(lv.type);
+    p.appendChild(field(mustProof ? '證明文件（' + lv.type + '一定要附）' : '附件（選填，病假證明、訃聞等）', fi,
+      [h('div', { class: mustProof ? 'rq-proof-note' : 'rq-muted', id: 'rqProofNote',
+                  text: mustProof ? '可以拍照或選照片／PDF。手上還沒有證明也能先送出，但主管要等你在「我的申請」補上才能核准。'
+                                  : '照片或 PDF，只有值班主管看得到' })]));
     var out = h('div', {});
     p.appendChild(submitBtn(out, function () {
       if (!lv.type) return Promise.reject(new Error('請選假別'));
+      if (proofType(lv.type) && !lv.file && !confirm(lv.type + '要附證明。\n\n沒附也可以先送出，但主管要等你在「我的申請」補上證明才能核准。\n\n確定先送出？'))
+        return Promise.reject(new Error('還沒送出：請先選證明照片或 PDF'));
       var body = { kind: 'leave', date: lv.date, leave_type: lv.type, reason: lv.reason };
       if (lv.mode === 'day') body.hours = lv.hours; else { body.start = lv.start; body.end = lv.end; }
       // 補休不能超過餘額（只能用已定案月份換到的時數）
@@ -304,6 +310,7 @@
       ]);
       if (r.status === 'rejected' && r.reject_reason) item.appendChild(h('div', { class: 'rq-s', text: '主管：' + r.reject_reason }));
       if (r.status === 'approved') item.appendChild(h('div', { class: 'rq-s', text: r.decided_by + ' 核准' }));
+      if (r.status === 'pending' && r.kind === 'leave' && (r.need_proof || r.proof_required)) item.appendChild(proofBox(r));
       if (r.status === 'pending') {
         var c = h('button', { type: 'button', class: 'rq-link', text: '取消這筆申請', on: { click: function () {
           if (!confirm('確定要取消這筆申請？')) return;
@@ -317,6 +324,34 @@
       }
       p.appendChild(item);
     });
+  }
+
+  /* 證明文件（2026-10-10 Eason：病假、婚假、喪假、產假相關一定要附；可先送出、核准前補附）。清單由各店 req_info 的 proof_types 給。 */
+  function proofType(t) { return !!t && ((st.info && st.info.proof_types) || []).indexOf(t) >= 0; }
+  function proofBox(r) {
+    var wrap = h('div', { class: 'rq-proof' });
+    if (r.need_proof) wrap.appendChild(h('div', { class: 'rq-proof-note', text: '⚠ 還沒附證明：主管要等你補上才能核准' }));
+    else wrap.appendChild(h('div', { class: 'rq-s', text: '已附證明（要換一張可以重新上傳）' }));
+    var fi = h('input', { type: 'file', accept: 'image/*,application/pdf', hidden: true });
+    var btn = h('button', { type: 'button', class: 'ghost rq-proof-btn', 'data-id': r.id, text: r.need_proof ? '📎 補附證明（拍照或選檔）' : '重新上傳證明',
+      on: { click: function () { fi.click(); } } });
+    var msg = h('div', {});
+    fi.addEventListener('change', function () {
+      var f = fi.files[0]; if (!f || st.busy) return;
+      st.busy = true; btn.disabled = true; msg.innerHTML = ''; msg.appendChild(h('div', { class: 'rq-muted', text: '上傳中…' }));
+      withAttach(f).then(function (aid) {
+        return E.post(E.storeApi(storeDef()), { action: 'req_attach', id_token: liff.getIDToken(), id: r.id, attach_id: aid });
+      }).then(function (x) {
+        st.busy = false; btn.disabled = false;
+        if (x && x.ok) return loadInfo().then(function () { render(); $root.insertBefore(msgBox('✓ 證明已補上，等值班主管審核', 'ok'), $root.children[2]); });
+        msg.innerHTML = ''; msg.appendChild(msgBox((x && x.message) || '補附沒有成功，請再試一次', 'err'));
+      }, function (e) {
+        st.busy = false; btn.disabled = false; msg.innerHTML = '';
+        msg.appendChild(msgBox(e && e.message && !/fetch|network|abort/i.test(e.message) ? e.message : '連線失敗，請再試一次', 'err'));
+      });
+    });
+    wrap.appendChild(btn); wrap.appendChild(fi); wrap.appendChild(msg);
+    return wrap;
   }
 
   /* ── 送出 ── */

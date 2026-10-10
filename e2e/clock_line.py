@@ -531,6 +531,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             ok('補休：計時同仁沒有「補休」假別', p.locator('#reqView .rq-chip:has-text("補休")').count() == 0 and p.locator('#reqView .rq-comp-bal').count() == 0)
             p.close()
             phase_sched(ctx)
+            phase_leave_proof(ctx, (HQ['lat'], HQ['lng']))
             rep = CM.report()
             ok('班表：可點元素零漏測（共 %d 個）' % rep['total'], not rep['missed'] and not rep['extra'], rep)
             br.close()
@@ -688,6 +689,48 @@ def phase_sched(ctx):
     p = open_page(ctx, f'{BASE}/clock-line.html?mock_uid=U1&api=/api&view=sched', pre="window.__fake = { line_hub_sched: 'abort' };")
     p.wait_for_selector('#schedView .sc-box.err', timeout=40000)
     ok('班表：斷線重試三次後顯示連線不穩（逐字）', p.inner_text('#schedView .sc-box') == '連線不穩，班表沒有讀到。' and len([x for x in calls(p) if x['action'] == 'line_hub_sched']) == 3, calls(p))
+    p.close()
+
+
+def phase_leave_proof(ctx, hq):
+    """請假證明（2026-10-10 Eason）：病假選了要附證明 → 欄位標「一定要附」；沒附送出要確認（取消＝不送）；
+    送出後「我的申請」顯示還沒附＋補附按鈕；補附＝先傳光復 line_hub_attach_put、再打那家店 req_attach。"""
+    import base64
+    p = open_page(ctx, url(hq, in_client=True, extra='&view=req&tab=leave'))
+    p.set_viewport_size({'width': 375, 'height': 812})
+    p.wait_for_selector('#reqView .rq-chip', timeout=10000)
+    p.click('#reqView .rq-chips >> nth=0 >> .rq-chip:has-text("病假")')
+    p.wait_for_selector('#reqView .rq-chip.on:has-text("病假")', timeout=3000)
+    ok('證明：選病假 → 欄位寫「病假一定要附」＋可以先送出的說明', '證明文件（病假一定要附）' in p.inner_text('#reqView')
+       and '還沒有證明也能先送出' in p.inner_text('#rqProofNote'), p.inner_text('#reqView')[:300])
+    n0 = len([x for x in calls(p) if x['action'] == 'req_submit'])
+    msgs = []
+    p.once('dialog', lambda d: (msgs.append(d.message), d.dismiss()))
+    p.click('#reqView button.primary')
+    p.wait_for_selector('#reqView .rq-box.err', timeout=5000)
+    ok('證明：沒附按送出 → 跳確認；按取消就不送', msgs and '病假要附證明' in msgs[0] and '還沒送出' in p.inner_text('#reqView .rq-box.err')
+       and len([x for x in calls(p) if x['action'] == 'req_submit']) == n0, (msgs, p.inner_text('#reqView .rq-box.err')))
+    p.once('dialog', lambda d: d.accept())
+    p.click('#reqView button.primary')
+    p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)
+    item = p.locator('#reqView .rq-item').filter(has_text='病假').first
+    ok('證明：確定先送出 → 我的申請顯示「還沒附證明」＋補附按鈕', '還沒附證明' in item.inner_text() and item.locator('.rq-proof-btn').count() == 1,
+       item.inner_text())
+    png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+    item.locator('input[type=file]').set_input_files(files=[{'name': 'proof.png', 'mimeType': 'image/png', 'buffer': png}])
+    p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 證明已補上") >= 0', timeout=15000)
+    c = calls(p)
+    up = [x for x in c if x['action'] == 'line_hub_attach_put']
+    at = [x for x in c if x['action'] == 'req_attach']
+    sub = [x for x in c if x['action'] == 'req_submit']
+    ok('證明：補附先傳光復 line_hub_attach_put、再打送出那家店的 req_attach', up and up[-1]['url'].endswith('/api') and at and sub
+       and at[-1]['url'] == sub[-1]['url'] and up[-1]['t'] <= at[-1]['t'], c[-4:])
+    item = p.locator('#reqView .rq-item').filter(has_text='病假').first
+    ok('證明：補附後顯示「已附證明」、不再警告', '已附證明' in item.inner_text() and '還沒附證明' not in item.inner_text(), item.inner_text())
+    p.screenshot(path=os.path.join(SHOTS, '請假證明_補附.jpg'), type='jpeg', quality=80)
+    p.click('#reqView .rq-tabs button[data-tab=leave]')
+    p.click('#reqView .rq-chips >> nth=0 >> .rq-chip:has-text("事假")')
+    ok('證明：事假不要求證明（欄位維持選填）', '附件（選填' in p.inner_text('#reqView'))
     p.close()
 
 

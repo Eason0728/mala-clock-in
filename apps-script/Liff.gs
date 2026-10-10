@@ -504,6 +504,7 @@ var LIFF_HANDLERS = {
   mgr_pending_approvals: function (b) { return reqPendingApprovalsPlus_(b); },   // 覆蓋 Code.gs 同名動作：多算已核准申請（2026-10-10）
   req_submit: function (b) { return handleReqSubmit_(b); },
   req_cancel: function (b) { return handleReqCancel_(b); },
+  req_attach: function (b) { return handleReqAttach_(b); },   // 補附證明（2026-10-10）
   mgr_req_pending: function (b) { return handleMgrReqPending_(b); },
   mgr_req_decide: function (b) { return handleMgrReqDecide_(b); },
   mgr_req_decide_batch: function (b) { return handleMgrReqDecideBatch_(b); },
