@@ -10,7 +10,7 @@
   var CN = ['一', '二', '三', '四', '五', '六'];
   var STATUS_TEXT = {
     not_locked: function (ym) { return mLabel(ym) + '的班表還在排，排好後就看得到。'; },
-    not_bound: function () { return '你目前沒有光復店的班表。'; },
+    not_bound: function () { return '出勤班表目前只開放小辛辣新竹光復店，你的店還沒接上。'; },   // 2026-10-10：墨竹亭光復同仁會誤以為是自己店
     not_matched: function () { return '你的班表還沒對上，請找店長確認。'; },
     no_schedule: function (ym) { return mLabel(ym) + '的班表沒有你的班。'; }
   };

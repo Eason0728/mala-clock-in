@@ -656,7 +656,7 @@ def phase_sched(ctx):
     ok('班表：同名兩位 → not_matched 字句（逐字）', p.inner_text('#schedView .sc-box') == '你的班表還沒對上，請找店長確認。')
     p.close()
     p = page('U8')
-    ok('班表：已離職（綁過光復）→ not_bound 字句（逐字）', p.inner_text('#schedView .sc-box') == '你目前沒有光復店的班表。')
+    ok('班表：已離職（綁過光復）→ not_bound 字句（逐字）', p.inner_text('#schedView .sc-box') == '出勤班表目前只開放小辛辣新竹光復店，你的店還沒接上。')
     p.close()
     d = json.load(open(fg, encoding='utf-8'))
     cy, cm = int(r['months'][1][:4]), int(r['months'][1][5:7])
