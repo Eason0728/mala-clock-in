@@ -421,7 +421,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
   </div>
   <div class="card">
     <h2>全勤參數 <span id="attScope" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
-    <p class="hint"><b>全勤獎金兩段式</b>：先算<b>遞減</b>（全勤上限 − 缺勤天數 × 每日倒扣），再看<b>門檻</b>——
+    <p class="hint"><b>全勤獎金兩段式</b>：先算<b>遞減</b>（全勤上限 − 缺勤天數 × 每日倒扣；「每日倒扣算哪些日子」選<b>只算請假日</b>時，忘刷／遲到那天不倒扣），再看<b>門檻</b>——
       忘刷次數／遲到累計分鐘／早退累計分鐘任一達標，該月全勤獎金就<b>整筆歸零</b>，薪資單上會標明原因。
       三個門檻<b>填 0 就是不啟用</b>（＝純遞減，光復現行做法）。<br>
       「有某種假就沒全勤」不在這裡設，去下面<b>假別設定</b>把該假的「對全勤」改成<b>歸零</b>。
@@ -2003,7 +2003,10 @@ const CF_ATTEND=[['attend_deduct_per_day','每日倒扣（元）'],
 /* 非數字參數（要用下拉，不能用 number input）：忘刷卡的計數單位。
    Eason 調過三次統計口徑，這種「次／天」的差別一律做成參數。 */
 const CF_ATTEND_SELECT=[['attend_forget_unit','忘刷計數單位',
-  [['punch','每漏一張卡算一次'],['day','同一天只算一次']]]];
+  [['punch','每漏一張卡算一次'],['day','同一天只算一次']]],
+ // 2026-10-10：央廚／總部只有請假日倒扣，忘刷／遲到只看門檻
+ ['attend_deduct_basis','每日倒扣算哪些日子',
+  [['all','遲到／早退／忘刷／請假都算'],['leave','只算請假日（病假等）']]]];
 /* 計時同仁的時薪加給（2026-08-24 由寫死改為門市可覆寫參數）。0＝該店不給這項加給。 */
 const CF_PT=[['pt_attend_plus','滿勤加給（元/時，勾選才給）'],
  ['pt_tenure_plus','年資加給（元/時）'],
@@ -2024,7 +2027,7 @@ function renderCfg(){
   if($('attGrid')) $('attGrid').innerHTML=CF_ATTEND.map(cfgFld).join('')
     +CF_ATTEND_SELECT.map(([k,lb,opts])=>`<div class="fld"><label>${lb}${srcTag(k)}</label>
       <select onchange="cfgEdit('${k}',this.value)" style="font:inherit;padding:8px 11px;border:1px solid var(--line);border-radius:6px">`
-      +opts.map(([v,l])=>`<option value="${esc(v)}" ${String(CFG[k]||'punch')===v?'selected':''}>${l}</option>`).join('')
+      +opts.map(([v,l])=>`<option value="${esc(v)}" ${String(CFG[k]||opts[0][0])===v?'selected':''}>${l}</option>`).join('')
       +'</select></div>').join('');
   if($('ptGrid')) $('ptGrid').innerHTML=CF_PT.map(cfgFld).join('');
   // 用同一個 cfgFld，才會跟其他三張卡一樣顯示「本店／預設」來源標示

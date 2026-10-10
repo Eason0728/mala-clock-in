@@ -85,6 +85,9 @@ const PAY_CONFIG_DEFAULT = [
   ['late_div_hours', 8, '遲到費率分母（時）'],
   // ── 全勤「門檻式歸零」參數（2026-08-23，央廚／總部用；填 0 或留空＝不啟用，光復維持純遞減）──
   ['attend_void_forget', 0, '忘刷達幾次(含)以上→全勤歸零，0＝不啟用'],
+  // 哪些日子算進「每日倒扣」（2026-10-10 Eason：央廚／總部全勤是全有全無，只有病假一天扣 100，
+  // 忘刷／遲到／早退只看上面的門檻歸零、當天不倒扣）。all＝改版前行為（光復）；leave＝只算請假日。
+  ['attend_deduct_basis', 'all', '每日倒扣算哪些日子：all＝遲到早退忘刷請假都算、leave＝只算請假日'],
   ['attend_forget_unit', 'punch', '忘刷計數單位：punch＝每漏一張卡算一次、day＝同一天只算一次'],
   ['attend_void_late_min', 0, '遲到累計達幾分鐘(含)以上→全勤歸零，0＝不啟用'],
   ['attend_void_early_min', 0, '早退累計達幾分鐘(含)以上→全勤歸零，0＝不啟用'],
@@ -315,7 +318,7 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     if (!out[emp]) out[emp] = {
       hours: 0, extra_ot: 0,
       personal_h: 0, sick_h: 0, menstrual_h: 0, annual_h: 0, disaster_h: 0, other_h: 0,
-      deduct_days: 0, _days: {}, work_days: 0, _wd: {}, holiday_h: 0,
+      deduct_days: 0, _days: {}, _ld: {}, work_days: 0, _wd: {}, holiday_h: 0,
       leaves: {},   // { 假別code: 時數 }＝新的正本；上面五個舊欄位同步維護供手動輸入與既有報表用
       // 全勤門檻式歸零用（2026-08-23）：忘刷次數／忘刷天數／遲到累計分鐘／早退累計分鐘／假別觸發歸零
       forget_punch: 0, forget_day: 0, _fd: {}, late_min: 0, early_min: 0, attend_void: false,
@@ -416,16 +419,19 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     // 這種假對全勤的影響：attend_effect 留空＝沿用 count_absent（改版前行為）
     const ae = lt ? (lt.attend_effect || (lt.count_absent ? 'deduct' : 'none')) : 'deduct';
     if (ae === 'void') s.attend_void = true;          // 例：央廚／總部「有事假就沒全勤」
-    if (ae === 'deduct' || ae === 'void') markDay(emp, d);
+    if (ae === 'deduct' || ae === 'void') { markDay(emp, d); s._ld[d] = true; }
     // 出差之類「不算餐費出勤日」的，把當天從餐費天數扣掉
     if (lt && lt.count_meal_day === false) delete s._wd[d];
   });
 
+  // attend_deduct_basis='leave'：缺勤天數只算請假日（央廚／總部）；忘刷／遲到只走門檻歸零
+  let leaveOnly = false;
+  try { leaveOnly = String(payConfig(store).attend_deduct_basis || 'all') === 'leave'; } catch (e) {}
   Object.keys(out).forEach(function (emp) {
-    out[emp].deduct_days = Object.keys(out[emp]._days).length;
+    out[emp].deduct_days = Object.keys(leaveOnly ? out[emp]._ld : out[emp]._days).length;
     out[emp].work_days = Object.keys(out[emp]._wd).length;
     out[emp].forget_day = Object.keys(out[emp]._fd).length;
-    delete out[emp]._days; delete out[emp]._wd; delete out[emp]._fd;
+    delete out[emp]._days; delete out[emp]._ld; delete out[emp]._wd; delete out[emp]._fd;
   });
   return out;
 }
@@ -1805,8 +1811,14 @@ function payInputsBase(ym, store, cutoffDate) {
   const st = payStore(store);
   const holRow = payHolidayRow(ym, st);
   const holDates = payHolidayDates(holRow);
-  const base = payCollect(ym, payConfig(st).meal_min_hours, st, holDates, cutoffDate);
+  const cfgSt = payConfig(st);
+  const base = payCollect(ym, cfgSt.meal_min_hours, st, holDates, cutoffDate);
   const saved = paySavedInputs(ym, st);
+  /* 每日倒扣只算請假日的門市（央廚／總部，2026-10-10）：有打卡資料的人，缺勤天數一律取歸集值。
+     手動列存的 deduct_days 是按「儲存工時」當下、用舊口徑（忘刷／遲到也算）算出的快照，
+     沿用會讓忘刷那天照樣扣 100（陳建樺 2026-09 實例：手動列 1 天、新口徑 0 天）。
+     沒有打卡資料的人（純手動月份）照舊用手填值。 */
+  const leaveOnly = String(cfgSt.attend_deduct_basis || 'all') === 'leave';
   Object.keys(saved).forEach(function (emp) {
     const col = base[emp] || {}, sv = saved[emp];
     // 國定假日時數：手動工時沒填就沿用打卡歸集出來的值
@@ -1821,6 +1833,7 @@ function payInputsBase(ym, store, cutoffDate) {
        不像 hours／deduct_days 那樣「手動優先」。 */
     PAY_PUNCH_ONLY_NUM.forEach(function (k) { sv[k] = payNum(col[k]); });
     sv.attend_void = !!col.attend_void;
+    if (leaveOnly && base[emp]) sv.deduct_days = payNum(col.deduct_days);
     base[emp] = sv;
   });
   return base;
