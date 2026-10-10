@@ -82,7 +82,7 @@ ok('按鈕每列 3 顆、標準高度（避免誤按）', () => {
   rows.forEach(r => { assert.strictEqual(r.contents.length, 3); r.contents.filter(b => b.type === 'button').forEach(b => assert.strictEqual(b.height, 'md')); });
 });
 ok('沒接薪資／沒綁定 → 原本的提示卡', () => {
-  assert(texts(make({ today: '2026-10-09', noPick: true }).sb.lineHubPayCard_('U1')).some(t => /薪資系統/.test(t)));
+  assert(texts(make({ today: '2026-10-09', noPick: true }).sb.lineHubPayCard_('U1')).some(t => /沒有開放在 LINE 查薪資/.test(t)));   // 2026-10-10 字句改（也涵蓋不開放的門市）
   assert(texts(make({ today: '2026-10-09', noPick: true, noBind: true }).sb.lineHubPayCard_('U1')).some(t => /還沒綁定/.test(t)));
 });
 
