@@ -60,7 +60,7 @@ function schedPubWrite_(b, kind) {
     if (at > 0) {
       var cur = Number(vals[at][2]) || 0;
       if (String(vals[at][4]) === b.op_id) return { ok: true, seq: cur };
-      if (b.seq <= cur) return { ok: false, error: 'stale' };
+      if (b.seq <= cur) return { ok: false, error: 'stale', seq: cur };   // 附目前的 seq：營運系統資料庫從備份還原時能跳號重送
     }
     var row = [b.store, b.period, b.seq, data, b.op_id, new Date().toISOString()];
     var rng = at > 0 ? sh.getRange(at + 1, 1, 1, row.length) : sh.getRange(sh.getLastRow() + 1, 1, 1, row.length);

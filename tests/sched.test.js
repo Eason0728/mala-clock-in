@@ -243,7 +243,7 @@ ok('發布：寫入、同 op_id 重送回同結果、較舊 seq 回 stale、撤�
   assert.deepStrictEqual(pub(), { ok: true, seq: FIX.seq });
   assert.deepStrictEqual(pub(), { ok: true, seq: FIX.seq });                       // 同 op_id
   assert.strictEqual(pubRows.length, 2);
-  assert.deepStrictEqual(pub({ op_id: 'other' }).error, 'stale');                  // 同 seq 不同 op
+  assert.deepStrictEqual(pub({ op_id: 'other' }), { ok: false, error: 'stale', seq: FIX.seq });   // 同 seq 不同 op：回目前 seq
   assert.deepStrictEqual(unpub({ seq: FIX.seq + 1, op_id: 'u1' }), { ok: true, seq: FIX.seq + 1 });
   assert.strictEqual(pubRows[1][3], '');                                            // 墓碑：資料清空
   assert.strictEqual(pub({ op_id: 'late' }).error, 'stale');                        // 舊的發布晚到
@@ -265,7 +265,8 @@ ok('11 月起讀發布的班表：用 emp_id 對人、每家店都接、還沒�
   assert.deepStrictEqual([r.days[1].label, r.days[1].rest], ['例假', true]);
   assert.strictEqual(r.days[3].label, '晚班（休息日出勤）');
   assert.strictEqual(r.days[4].label, '特休');
-  assert.strictEqual(r.next.date, '2026-11-03');                                  // 11/2 是例假，下一個班是 11/3
+  assert.strictEqual(r.next.date, '2026-11-03');
+  assert.deepStrictEqual([r.days[28].label, r.days[28].pending], ['尚未發布', true]);           // 11/29 屬 T02、還沒發布：明講尚未發布，不留白                                  // 11/2 是例假，下一個班是 11/3
   assert.strictEqual(fetchCalls, 0, '11 月不讀月曆版 Gist');
   assert.ok(JSON.stringify(r).indexOf('E002') < 0, '不能看到別人的班');
   // 墨竹亭金山的同仁（只綁 mztjs）也看得到自己店發布的班表

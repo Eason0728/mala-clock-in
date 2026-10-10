@@ -256,7 +256,9 @@ function handleLineHubSched_(body) {
   var days = dates.map(function (date, i) {
     var x = date < from ? gistDays[date] : pubDays[date];
     if (x && (x.code || x.label)) any = true;
-    x = x ? JSON.parse(JSON.stringify(x)) : { code: '', label: '', segs: [], hours: 0, work: false, rest: false };
+    // 接手日以後、那一期還沒發布：明講「尚未發布」，不要留白讓人誤以為是休假（2026-10-11 Fable 審查）
+    x = x ? JSON.parse(JSON.stringify(x)) : (date >= from ? { code: '', label: '尚未發布', segs: [], hours: 0, work: false, rest: false, pending: true }
+                                                          : { code: '', label: '', segs: [], hours: 0, work: false, rest: false });
     x.d = i + 1;
     return x;
   });
