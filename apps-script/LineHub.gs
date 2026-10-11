@@ -347,7 +347,7 @@ function lineHubReply_(replyToken, texts) {
    有店讀不到時不記，下次重查。 */
 var LINE_HUB_MINE_TTL = 300;
 function lineHubForget_(userId) {
-  CacheService.getScriptCache().removeAll(['lhm:' + userId, 'lhv:' + userId, 'lhp:' + userId]);
+  CacheService.getScriptCache().removeAll(['lhm:' + userId, 'lhv:' + userId, 'lhp2:' + userId]);
 }
 /** view＝true：查詢用，含離職 60 天內（lineHubCanView_）；預設只算在職（綁定、打卡相關） */
 function lineHubMine_(userId, info, view) {
@@ -533,9 +533,13 @@ function lineHubPayslipFor_(userId, ym) {
   if (!pick) return null;
   return payMyPayslipFor_(pick.me, pick.store, ym || currentYmTaipei());
 }
-/** 用 LINE 身分在薪資有接的店找人：{me, store} 或 null（有薪資主檔的那家優先） */
+/* LINE 上查薪資明細／假別額度只開放這幾家（薪酬店代碼；2026-10-10 Eason：墨竹亭光復、金山、六張犁、總部不開放）。
+   擋在這裡＝薪資卡、假別額度卡、打卡回覆的特休／補休到期提醒、申請頁的額度與補休，全部一起擋（都經過 lineHubPayPick_）。
+   薪資系統本身照算，管理頁照看。判斷用「主檔的店」，主檔沒有才用打卡名冊那家店（與 lineHubPayslipLite_ 同一個來源）。 */
+var LINE_HUB_PAY_STORES = ['SSLGF', 'CF'];
+/** 用 LINE 身分在薪資有接的店找人：{me, store} 或 null（有薪資主檔的那家優先；不在開放名單＝null） */
 function lineHubPayPick_(userId) {
-  var cache = CacheService.getScriptCache(), key = 'lhp:' + userId, hit = cache.get(key);
+  var cache = CacheService.getScriptCache(), key = 'lhp2:' + userId, hit = cache.get(key);   // lhp2：加開放名單後換鍵，舊快取不沿用
   if (hit) { try { return JSON.parse(hit); } catch (e) { /* 重查 */ } }
   var found = lineHubPayPickFresh_(userId);
   if (found) cache.put(key, JSON.stringify({ me: { emp_id: String(found.me.emp_id), name: String(found.me.name) }, store: found.store }), LINE_HUB_MINE_TTL);
@@ -551,9 +555,11 @@ function lineHubPayPickFresh_(userId) {
     });
   });
   if (!hits.length) return null;
-  var masterIds = {};
-  payRead('master').forEach(function (m) { masterIds[String(m.emp_id)] = true; });
-  return hits.filter(function (h) { return masterIds[String(h.me.emp_id)]; })[0] || hits[0];
+  var masterStore = {};
+  payRead('master').forEach(function (m) { masterStore[String(m.emp_id)] = String(m.store || ''); });
+  var pick = hits.filter(function (h) { return masterStore[String(h.me.emp_id)] !== undefined; })[0] || hits[0];
+  var eff = payStore(masterStore[String(pick.me.emp_id)] || pick.store);
+  return LINE_HUB_PAY_STORES.indexOf(eff) >= 0 ? pick : null;
 }
 /** 薪資卡只要「那個月的薪資單」：不像 payMyPayslipFor_ 還算特休額度與年資（那兩樣最慢，卡片又用不到）。
  *  回傳形狀與 payMyPayslipFor_ 已定案時相同（lineHubPayFlex_ 吃得下）。 */
@@ -581,7 +587,7 @@ function lineHubPayFinalMonths_(pick) {
     .sort().reverse().slice(0, LINE_HUB_PAY_MONTHS);
 }
 
-var LINE_HUB_NO_PAYROLL_TEXT = '你上班的店還沒接上薪資系統，薪資與假別請先找店長確認。';
+var LINE_HUB_NO_PAYROLL_TEXT = '你的門市目前沒有開放在 LINE 查薪資與假別額度，有問題請找店長。';
 function lineHubPayText_(userId, pre) {
   var j = pre === undefined ? lineHubPayslipFor_(userId) : pre;
   if (!j) return lineHubMine_(userId, null, true).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
