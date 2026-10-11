@@ -1031,7 +1031,21 @@ function nextEmpId(rosterRows) {
  *  - 不能新增與自己同名的人（防自建自用）。
  *  - 不能與現有在職同仁同名——薪酬的請假與工時是**用姓名**對應的，同名會直接算錯錢。
  */
+/**
+ * 新增同仁加鎖（2026-10-12，營運系統 Codex 審查）：兩台同時新增時，取號（nextEmpId）與寫入要在同一把鎖裡，
+ * 否則兩邊都讀到同一份名冊、拿到同一個員工編號。鎖等不到回 busy，請稍後再按。
+ */
 function handleMgrAddEmployee(body) {
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(15000); } catch (e) { return { ok: false, error: 'busy', message: '有人同時在新增同仁，請稍等幾秒再按一次' }; }
+  try {
+    const r = handleMgrAddEmployeeUnlocked_(body);
+    SpreadsheetApp.flush();
+    return r;
+  } finally { lock.releaseLock(); }
+}
+
+function handleMgrAddEmployeeUnlocked_(body) {
   const ss = getSS();
   const mgrSheet = ss.getSheetByName('managers');
   if (!mgrSheet) return { ok: false, error: 'no_managers' };
