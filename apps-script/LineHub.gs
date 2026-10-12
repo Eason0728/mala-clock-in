@@ -1134,6 +1134,24 @@ function handleLinePunchTiming_(body) {
   return { ok: true };
 }
 
+/** {action:'punch_timing_get', admin_key, from:'yyyy-MM-dd', to:'yyyy-MM-dd'} → {ok, rows:[{ts, store, emp_id, type, outcome, status, total_ms, geo_ms, server_ms, refix, qr, accuracy_m}]}
+ *  唯讀，給每日指揮台算前一天的打卡秒數（2026-10-12，看到 10/31）。日期依 ts 前 10 字（台北時間）比，含頭含尾。 */
+function handlePunchTimingGet_(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  var re = /^\d{4}-\d{2}-\d{2}$/;
+  if (!re.test(String(body.from || '')) || !re.test(String(body.to || ''))) return { ok: false, error: 'bad_range' };
+  var sh = getSS().getSheetByName(LINE_PUNCH_TIMING_SHEET);
+  if (!sh) return { ok: true, rows: [] };
+  var rows = readSheetAsObjects(sh).rows.map(function (r) {
+    var o = {};
+    LINE_PUNCH_TIMING_HEADERS.forEach(function (h) { o[h] = r[h] === undefined ? '' : r[h]; });
+    o.ts = normCellTs(o.ts);
+    o.store = String(o.store); o.emp_id = String(o.emp_id);
+    return o;
+  }).filter(function (o) { var d = String(o.ts).slice(0, 10); return d >= body.from && d <= body.to; });
+  return { ok: true, rows: rows };
+}
+
 var LINE_HUB_HANDLERS = {
   line_quick_clock: handleLineQuickClock_,
   line_hub_status: handleLineHubStatus_,
@@ -1145,6 +1163,7 @@ var LINE_HUB_HANDLERS = {
   sched_publish: function (b) { return handleSchedPublish_(b); },     // 自動排班發布（SchedPub.gs，2026-10-11）
   sched_unpublish: function (b) { return handleSchedUnpublish_(b); },
   line_punch_timing: function (b) { return handleLinePunchTiming_(b); },   // 打卡等待秒數（2026-10-12）
+  punch_timing_get: function (b) { return handlePunchTimingGet_(b); },     // 指揮台讀打卡秒數（唯讀、管理金鑰）
 };
 
 /* ══ 加班請假／忘打卡申請（2026-10-09，規格 mala-clock-liff docs/requests-spec.md）══

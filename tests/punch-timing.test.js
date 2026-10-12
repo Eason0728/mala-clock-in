@@ -79,6 +79,35 @@ ok('全站一分鐘超過 300 次 → too_many（擋在驗身分之前，不燒 
   for (let i = 0; i < 300; i++) t.call({ id_token: 'BAD' });
   assert.strictEqual(t.call({ id_token: 'BAD' }).error, 'too_many'); assert.strictEqual(calls, 300);
 });
+// 指揮台讀取（punch_timing_get，唯讀、管理金鑰）
+function makeGet(rows) {
+  const t = make();
+  t.sb.checkAdmin = (b) => b.admin_key === 'ADMIN';
+  t.sb.normCellTs = (v) => String(v);
+  t.sb.readSheetAsObjects = (sh) => ({ rows: sh.objs });
+  if (rows) t.sheets.punch_timing = { objs: rows };
+  return t;
+}
+ok('讀取：管理金鑰錯 → unauthorized', () => {
+  assert.strictEqual(makeGet([]).sb.handlePunchTimingGet_({ admin_key: 'x', from: '2026-10-12', to: '2026-10-12' }).error, 'unauthorized');
+});
+ok('讀取：日期格式不對 → bad_range', () => {
+  assert.strictEqual(makeGet([]).sb.handlePunchTimingGet_({ admin_key: 'ADMIN', from: '10/12', to: '2026-10-12' }).error, 'bad_range');
+});
+ok('讀取：還沒有分頁 → 空陣列不報錯', () => {
+  const r = makeGet(null).sb.handlePunchTimingGet_({ admin_key: 'ADMIN', from: '2026-10-12', to: '2026-10-12' });
+  assert.strictEqual(r.ok, true); assert.strictEqual(r.rows.length, 0);
+});
+ok('讀取：只回日期範圍內（含頭含尾）、只回固定欄位', () => {
+  const rows = [{ ts: '2026-10-11T23:59:00+08:00', store: 'hq', total_ms: 1 },
+                { ts: '2026-10-12T00:00:01+08:00', store: '', total_ms: 2, name: '不該出現' },
+                { ts: '2026-10-13T08:00:00+08:00', store: 'cf', total_ms: 3 },
+                { ts: '2026-10-14T08:00:00+08:00', store: 'cf', total_ms: 4 }];
+  const r = makeGet(rows).sb.handlePunchTimingGet_({ admin_key: 'ADMIN', from: '2026-10-12', to: '2026-10-13' });
+  assert.strictEqual(JSON.stringify(r.rows.map(x => x.total_ms)), '[2,3]');
+  assert.ok(!('name' in r.rows[0])); assert.strictEqual(Object.keys(r.rows[0]).length, 12);
+});
+ok('讀取：已掛進 LINE_HUB_HANDLERS', () => { assert.strictEqual(typeof make().sb.LINE_HUB_HANDLERS.punch_timing_get, 'function'); });
 // 前端：結果顯示之後才送、每條結束路徑都有記
 const html = fs.readFileSync(ROOT + '/clock-line.html', 'utf8');
 ok('前端：成功時先 say(shown) 再送秒數、再代送「打卡」', () => {
