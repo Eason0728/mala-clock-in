@@ -331,6 +331,48 @@ function readSheetAsObjects(sheet) {
   return { headers: headers, rows: rows };
 }
 
+/**
+ * 只讀 events 最底下「夠用」的那一段（2026-10-12，Eason：「打卡只讀最低需求的列數」）。
+ * 原本每打一次卡都把整張 events 從頭讀一遍，表一年會長到幾萬列、打卡跟著越來越慢。
+ * 做法：appendRow 一定加在最後，所以從最後一列往上一段一段讀（300 列起、每次加倍），
+ * 讀到某一段的第一列已經早於 sinceMs 就停——再往上都比需要的更舊。
+ * stopFn（選填）：每讀完一段就問一次「這段裡已經有需要的東西了嗎」，回 true 也停（例：找到這個人上一張有效的卡）。
+ * 回傳形狀與 readSheetAsObjects 相同（headers 是真的第 1 列、每列帶正確的 __rowIndex）。
+ * 沒有 ts 欄、sinceMs 不合理、或讀的過程出錯 → 退回整張讀（寧可慢，不能少讀）。
+ * ⚠ 前提是列依時間排序；手動在中間插入舊日期的列，可能讓那一列之前的資料沒被讀到。
+ */
+function readEventsSince(sheet, sinceMs, stopFn) {
+  try {
+    const lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
+    if (lastRow < 1 || lastCol < 1) return { headers: [], rows: [] };
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    if (lastRow < 2) return { headers: headers, rows: [] };
+    const tsCol = headers.indexOf('ts');
+    if (tsCol < 0 || !(Number(sinceMs) > 0)) return readSheetAsObjects(sheet);
+    const chunks = [];
+    let end = lastRow, size = 300;
+    while (end >= 2) {
+      const start = Math.max(2, end - size + 1);
+      const vals = sheet.getRange(start, 1, end - start + 1, lastCol).getValues();
+      const objs = vals.map(function (row, i) {
+        const obj = {};
+        headers.forEach(function (h, j) { obj[h] = row[j]; });
+        obj.__rowIndex = start + i;
+        return obj;
+      });
+      chunks.unshift(objs);
+      const firstMs = new Date(String(normCellTs(vals[0][tsCol]))).getTime();
+      if (!isNaN(firstMs) && firstMs < sinceMs) break;   // 時間空白／讀不懂就繼續往上，不提早停
+      if (stopFn && stopFn(objs)) break;
+      end = start - 1;
+      size *= 2;
+    }
+    return { headers: headers, rows: [].concat.apply([], chunks) };
+  } catch (e) {
+    return readSheetAsObjects(sheet);
+  }
+}
+
 function findRosterByKey(rows, key) {
   return rows.filter(function (r) { return String(r.key) === String(key); })[0];
 }
@@ -598,7 +640,7 @@ function monthTotalsFor(approvedMap, empId, eventRows, todayStr) {
   return { current: box(ym), previous: box(prev) };
 }
 
-function handleClock(body) {
+function handleClock(body, preRead) {   // preRead：LINE 打卡已經讀好的 events（{headers, rows}），給了就不再讀一次（2026-10-12）
   const ss = getSS();
   const rosterSheet = ss.getSheetByName('roster');
   const eventsSheet = ss.getSheetByName('events');
@@ -625,7 +667,8 @@ function handleClock(body) {
 
   // 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
   // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化，否則交替防呆的回看視窗可能誤判
-  const eventsRead = readSheetAsObjects(eventsSheet);
+  const eventsRead = (preRead && preRead.headers && preRead.headers.length) ? preRead
+    : readEventsSince(eventsSheet, Date.now() - (CONFIG.ALTERNATION_LOOKBACK_HOURS + 1) * 3600000);   // 交替防呆只回看 12 小時，多留 1 小時
   // 既有 events 分頁的表頭只有 10 欄，沒補表頭的話新寫入的第 11 欄會因為 readSheetAsObjects
   // 是照表頭取值而永遠讀不回來。這裡就地自癒，不必請 Eason 去編輯器跑 setup()。
   if (eventsRead.headers.indexOf('accuracy_m') === -1) {

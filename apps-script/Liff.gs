@@ -343,9 +343,35 @@ function liffThrottled_(kind, userId, max, windowSec) {
  *  正常尖峰（每店每分鐘 ≤10 人 × 2–3 次）遠低於 600。 */
 function liffSiteThrottled_() { return liffThrottled_('site', 'all', 600, 60); }
 
-function liffEvents_(ss) {
+/** 讀 events；給 sinceMs 就只讀最底下夠用的那段（Code.gs readEventsSince，2026-10-12），不給＝整張（申請頁等非打卡路徑照舊）。
+ *  店家 程式碼.js 還沒有 readEventsSince（分批部署）時自動退回整張讀。 */
+function liffReadEvents_(ss, sinceMs, stopFn) {
   var sh = ss.getSheetByName('events');
-  return sh ? readSheetAsObjects(sh).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; }) : [];
+  if (!sh) return { headers: [], rows: [] };
+  var read = (sinceMs && typeof readEventsSince === 'function') ? readEventsSince(sh, sinceMs, stopFn) : readSheetAsObjects(sh);
+  read.rows.forEach(function (e) { e.ts = normCellTs(e.ts); });
+  return read;
+}
+function liffEvents_(ss, sinceMs) { return liffReadEvents_(ss, sinceMs).rows; }
+function liffLookbackH_() { return (typeof CONFIG !== 'undefined' && Number(CONFIG.ALTERNATION_LOOKBACK_HOURS)) || 12; }
+/** 開頁／防呆要的範圍：今天 00:00 與「現在往前 12 小時」取較早者，再多留 1 小時。 */
+function liffStatusSince_() {
+  var now = Date.now(), midnight = Math.floor((now + 8 * 3600000) / 86400000) * 86400000 - 8 * 3600000;   // 台北今天 00:00（台灣沒有夏令時間）
+  return Math.min(midnight, now - liffLookbackH_() * 3600000) - 3600000;
+}
+/** 按打卡要讀的 events（讀一次，防呆、寫入、忘打卡提醒、超時提示共用；2026-10-12 Eason：「找到就停＋只讀一次」）。
+ *  上班：只要找到這個人上一張有效的卡就停（忘打卡提醒與防呆都只看那張以後）；7 天內都沒有才讀滿 7 天。
+ *  下班：超時提示要把當天每一段加起來，固定讀 3×16 小時（也涵蓋忘打卡 16 小時、防呆 12 小時）。都多留 1 小時。 */
+function liffPunchRead_(ss, empId, type) {
+  if (type === 'in') {
+    return liffReadEvents_(ss, Date.now() - Math.max(LIFF_MISSED_DAYS * 86400000, liffLookbackH_() * 3600000) - 3600000,
+      function (objs) {
+        return objs.some(function (e) { return String(e.emp_id) === String(empId) && String(e.status).indexOf('rejected_') !== 0; });
+      });
+  }
+  var spans = [LIFF_MISSED_PAIR_HOURS * 3600000, liffLookbackH_() * 3600000];
+  if (typeof REQ_PAIR_MS !== 'undefined') spans.push(3 * REQ_PAIR_MS);
+  return liffReadEvents_(ss, Date.now() - Math.max.apply(null, spans) - 3600000);
 }
 
 /**
@@ -360,7 +386,7 @@ function handleLiffStatus_(body) {
   if (liffThrottled_('st', userId, 30, 60)) return { ok: false, error: 'too_many' };
   var found = liffRosterByLine_(userId);
   if (found.error) return { ok: false, error: found.error };
-  var me = found.roster, events = liffEvents_(found.ss);
+  var me = found.roster, events = liffEvents_(found.ss, liffStatusSince_());
   var today = todayTaipeiStr();
   var mine = events.filter(function (e) { return String(e.emp_id) === String(me.emp_id) && String(e.ts).slice(0, 10) === today; })
     .map(function (e) { return { type: String(e.type), hm: liffHm_(e.ts), status: String(e.status) }; });
@@ -420,16 +446,17 @@ function handleLiffClockGuarded_(body) {
   if (!userId) return { ok: false, error: 'invalid_id_token' };
   var found = liffRosterByLine_(userId);
   if (found.error) return { ok: false, error: found.error };
-  var stop = liffGuardReject_(liffGuard_(liffEvents_(found.ss), found.roster.emp_id), type);
+  var read = liffReadEvents_(found.ss, liffStatusSince_());
+  var stop = liffGuardReject_(liffGuard_(read.rows, found.roster.emp_id), type);
   if (stop) return { ok: false, type: type, error: 'guard_blocked', reason: stop.reason, hint: stop.hint };
   var inner = {};
   Object.keys(body).forEach(function (k) { if (k !== 'id_token' && k !== 'action') inner[k] = body[k]; });
   inner.key = found.roster.key;
-  return handleClock(inner);
+  return handleClock(inner, read);
 }
 
 function liffPunchFor_(userId, me, ss, type, body) {
-  var events = liffEvents_(ss);
+  var read = liffPunchRead_(ss, me.emp_id, type), events = read.rows;
   var stop = liffGuardReject_(liffGuard_(events, me.emp_id), type);
   if (stop) return { ok: false, type: type, reason: stop.reason, hint: stop.hint };
   // 主管手機出示的動態 QR（2026-10-09，定位抓不準的備案）：驗過就用店家座標打卡，另記一列 qr_punch（誰出示的）
@@ -440,7 +467,7 @@ function liffPunchFor_(userId, me, ss, type, body) {
     lat = CONFIG.STORE_LAT; lng = CONFIG.STORE_LNG; acc = 0;
   }
   var j = handleClock({ key: me.key, type: type, lat: lat, lng: lng, accuracy: acc,
-                        device_id: me.device_id ? String(me.device_id) : 'line:' + userId });
+                        device_id: me.device_id ? String(me.device_id) : 'line:' + userId }, read);   // 用同一份，不再讀第二次
   // 忘打卡提醒用打卡前讀的那份 events（只看這次之前的卡），不多讀一次表
   if (j && j.ok && j.status === 'ok') {
     if (qr) reqQrLog_(ss, j.ts, me.emp_id, type, qr.mgr);

@@ -58,6 +58,7 @@ function makeEnv(opts) {
                          : uid === 'U2' ? { roster: { emp_id: 'E02', name: '測試二', key: 'k2' }, ss: sb.getSS() } : { error: 'not_bound' },
     liffThrottled_: () => false, liffSiteThrottled_: () => false,
     liffEvents_: () => events,
+    liffPunchRead_: () => ({ headers: ['ts'], rows: events }),   // 2026-10-12 起 liffPunchFor_ 讀一次
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
     PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => props[k] || null, setProperty: (k, v) => { props[k] = v; } }) },
     Utilities: {
@@ -238,7 +239,7 @@ ok('補休：和薪資同專案（光復）時，餘額不夠或計時同仁就�
 });
 ok('liff_punch 帶 QR：驗過才用店家座標打卡（距離 0）、記 qr_punch；QR 錯就不打卡；打卡成功回申請結果告知', () => {
   const sb = makeEnv({});
-  const keep = ['verifyLineIdToken_', 'liffRosterByLine_', 'liffThrottled_', 'liffSiteThrottled_', 'liffEvents_'].map((k) => [k, sb[k]]);
+  const keep = ['verifyLineIdToken_', 'liffRosterByLine_', 'liffThrottled_', 'liffSiteThrottled_', 'liffEvents_', 'liffPunchRead_'].map((k) => [k, sb[k]]);
   vm.runInContext(fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8') + '\n' + extract(codeSrc, 'lastCountedEvent'), sb);
   keep.forEach(([k, v]) => { sb[k] = v; });   // Liff.gs 會蓋掉這幾支假的，蓋回來
   // Liff.gs 會重新定義 liffThrottled_ 等；這裡只測 liffPunchFor_，打卡本身用假的 handleClock 接住參數
@@ -364,7 +365,7 @@ ok('下班超時提示：跨夜班歸上班那天、start 跨午夜；那天已�
 ok('liff_punch 下班成功：超過 8 小時回 ot_hint；上班卡不回；算壞了也不影響打卡', () => {
   const evs = [ev('2026-10-09T09:00:00+08:00', 'in')];
   const sb = makeEnv({ events: evs });
-  const keep = ['verifyLineIdToken_', 'liffRosterByLine_', 'liffThrottled_', 'liffSiteThrottled_', 'liffEvents_'].map((k) => [k, sb[k]]);
+  const keep = ['verifyLineIdToken_', 'liffRosterByLine_', 'liffThrottled_', 'liffSiteThrottled_', 'liffEvents_', 'liffPunchRead_'].map((k) => [k, sb[k]]);
   vm.runInContext(fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8') + '\n' + extract(codeSrc, 'lastCountedEvent'), sb);
   keep.forEach(([k, v]) => { sb[k] = v; });
   sb.handleClock = () => ({ ok: true, status: 'ok', ts: '2026-10-09T19:05:00+08:00' });

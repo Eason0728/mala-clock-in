@@ -82,7 +82,7 @@ ok('ts 壞掉或型別不對 → 不提', () => {
 
 ok('liffPunchFor_ 打卡成功回傳 missed（用打卡前讀的 events，不多讀一次）', () => {
   let reads = 0;
-  sb.liffEvents_ = () => { reads++; return [ev('2026-10-07T08:30:00+08:00', 'in')]; };
+  sb.liffPunchRead_ = () => { reads++; return { headers: ['ts'], rows: [ev('2026-10-07T08:30:00+08:00', 'in')] }; };   // 2026-10-12 起打卡改讀一次（找到就停）
   sb.lastCountedEvent = () => null;   // 防呆放行（這裡只測回傳）
   sb.handleClock = () => ({ ok: true, status: 'ok', ts: NOW_TS });
   const r = sb.liffPunchFor_('U1', { emp_id: 'E01', key: 'k', device_id: 'd' }, {}, 'in', {});

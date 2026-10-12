@@ -237,7 +237,7 @@ function lineHubResolve_(userId, body) {
              reason: '你的 LINE 帳號還沒有綁定「' + st.name + '」',
              hint: '請在打卡畫面輸入你的全名完成綁定；名冊上沒有你請主管把你加進去' } };
   }
-  var events = lineHubSheetRows_(ss, 'events').map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  var events = liffEvents_(ss, liffStatusSince_());   // 只讀今天＋前 12 小時（2026-10-12）
   return { fix: fix, st: st, ss: ss, me: me, events: events };
 }
 
