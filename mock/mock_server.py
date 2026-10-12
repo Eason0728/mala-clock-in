@@ -2041,10 +2041,37 @@ ACTIONS["liff_status"] = handle_liff_status
 ACTIONS["liff_punch"] = handle_liff_punch
 ACTIONS["export_tables"] = handle_export_tables
 
+def handle_line_punch_timing(data, body):
+    """打卡等待秒數（2026-10-12，與 LineHub.gs line_punch_timing 同合約；只記在光復資料檔 punch_timing）。"""
+    uid = mock_verify_id_token(body.get("id_token"))
+    if not uid:
+        return {"ok": False, "error": "invalid_id_token"}
+    code = str(body.get("store") or "")
+    if code and code not in STORE_TABLE:
+        return {"ok": False, "error": "bad_store"}
+    if body.get("outcome") not in ("ok", "fail", "error", "geo_fail", "unclear_ok", "unclear_not", "unclear_unknown"):
+        return {"ok": False, "error": "bad_outcome"}
+
+    def ms(v):
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            return ""
+        return round(n) if math.isfinite(n) and 0 <= n <= 600000 else ""
+    data.setdefault("punch_timing", []).append({
+        "ts": iso_now(), "store": code, "uid": uid, "type": body.get("type") if body.get("type") in ("in", "out") else "",
+        "outcome": body["outcome"], "status": str(body.get("status") or "")[:40],
+        "total_ms": ms(body.get("total_ms")), "geo_ms": ms(body.get("geo_ms")), "server_ms": ms(body.get("server_ms")),
+        "refix": body.get("refix") is True, "qr": body.get("qr") is True})
+    save_data(data)
+    return {"ok": True}
+
+
 LINE_HUB_ACTIONS = {
     "line_hub_status": handle_line_hub_status,
     "line_quick_clock": handle_line_quick_clock,
     "line_bind_name": handle_line_bind_name,
+    "line_punch_timing": handle_line_punch_timing,
 }
 
 

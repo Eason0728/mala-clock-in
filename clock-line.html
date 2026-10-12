@@ -454,11 +454,35 @@
       }, connFail);
   }
 
+  /* ── 打卡等待秒數（2026-10-12）──
+     按下（過了「還沒打上班卡」確認框之後）開始計時，畫面顯示結果那一刻停表；
+     停表後才用 sendBeacon 背景送到光復 line_punch_timing，不等回應、關掉頁面也送得出去，所以同仁不會多等。
+     任何一步出錯都吞掉——量秒數絕不能害打卡失敗。 */
+  var tm = null;
+  function tmNow() { return (window.performance && performance.now) ? performance.now() : Date.now(); }
+  function tmStart(type) { tm = { t0: tmNow(), type: type, geo: 0, refix: false, sent: null, got: null }; }
+  function tmGot() { if (tm && tm.sent !== null && tm.got === null) tm.got = tmNow(); }
+  function tmReport(outcome, st) {
+    var t = tm; tm = null;
+    if (!t) return;
+    try {
+      var body = JSON.stringify({ action: 'line_punch_timing', id_token: liff.getIDToken(),
+        store: t.store !== undefined ? t.store : (curStore ? curStore.code : ''), type: t.type, outcome: outcome, status: st || '',
+        total_ms: Math.round(tmNow() - t.t0), geo_ms: Math.round(t.geo),
+        server_ms: (t.sent !== null && t.got !== null) ? Math.round(t.got - t.sent) : null,
+        refix: t.refix, qr: !!t.qr, accuracy_m: t.acc === undefined ? null : t.acc });
+      if (isLocalHost) window.__timing = (window.__timing || []).concat([JSON.parse(body)]);   // 本機測試看得到送了什麼
+      if (navigator.sendBeacon && navigator.sendBeacon(HUB_API, new Blob([body], { type: 'text/plain' }))) return;
+      fetch(HUB_API, { method: 'POST', body: body, mode: 'no-cors', keepalive: true }).catch(function () {});
+    } catch (e) { /* 量不到就算了 */ }
+  }
+
   /* ── 打卡 ── */
   function punch(type) {
     if (busy || !status || status.status !== 'ready') return;
     var hasIn = (status.today || []).some(function (e) { return e.type === 'in' && (e.status === 'ok' || e.status === 'pending_device_approval'); });
     if (type === 'out' && !status.guard.last && !hasIn && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
+    tmStart(type);
     // 送出前位置一定要是 30 秒內的（定位被關掉、手機在背景停止更新時，手上那筆可能是剛才在店裡的位置）：
     // 過時就重新定位，最多等 10 秒；抓不到就不送（2026-10-10 Codex 審查 #4）。QR 打卡不看定位。
     if (!qrToken && stale(lastFix)) {
@@ -467,12 +491,15 @@
       var cap = new Promise(function (res, rej) { setTimeout(function () { rej(new Error('定位逾時')); }, REFIX_MS); });
       return Promise.race([startGeo(), cap]).then(function () { if (stale(lastFix)) throw new Error('定位逾時'); }).then(function () {
         busy = false;
+        if (tm) { tm.refix = true; tm.geo = tmNow() - tm.t0; }
         showMe(lastFix.coords.latitude, lastFix.coords.longitude);
         sendPunch(type);
       }, function () {
         busy = false; refreshButtons();
+        if (tm) { tm.refix = true; tm.geo = tmNow() - tm.t0; }
         say('抓不到目前位置，這次沒有送出', 'warn', '請到店內、開啟定位與 Wi‑Fi 後再按一次。');
         offerHelp('定位抓不到');
+        tmReport('geo_fail', '');
       });
     }
     sendPunch(type);
@@ -483,6 +510,7 @@
     // 送出前用最新定位再挑一次店：位置變了就重讀，不把卡打到畫面上沒顯示的那家店（QR 打卡不看定位）
     var pick = qrToken ? { status: 'ok', store: curStore } : ClockLineCore.pickStore(fixForPick(), STORES);
     if (pick.status !== 'ok' || !curStore || pick.store.code !== curStore.code) {
+      tm = null;   // 位置變了、沒有送出：不算一次打卡
       status = null; refreshButtons();
       return loadStatus().then(function () { if (status && status.status === 'ready') say('你的位置變了，請確認店家後再按一次', 'warn'); });
     }
@@ -492,13 +520,16 @@
     var before = { n: countToday(status, type), lastTs: status.guard && status.guard.last ? String(status.guard.last.ts) : '' };
     busy = true; refreshButtons();
     say('送出' + label + '打卡中…', '', '大約需要幾秒，請不要關閉');
+    if (tm) { tm.store = st.code; tm.qr = !!qrToken; tm.acc = qrToken ? null : fixForPick().accuracy_m; tm.sent = tmNow(); }
     post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, qrToken ? { qr: qrToken } : fixPayload()))
       .then(function (r) {
-        if (r && r.error === 'invalid_id_token') { say('LINE 登入逾時，正在重新登入…', 'warn', '登入後請再按一次。'); liff.login(); return; }
-        if (r && r.error === 'not_bound') { mismatch(); return; }   // 開頁時已確認綁著，打卡時卻說沒綁＝資料對不上
-        if (r && r.error === 'too_many') { status = null; tooMany(); return; }   // 不亮鍵：等一分鐘後按「重新定位」（審查 #4）
+        tmGot();
+        if (r && r.error === 'invalid_id_token') { tmReport('error', 'invalid_id_token'); say('LINE 登入逾時，正在重新登入…', 'warn', '登入後請再按一次。'); liff.login(); return; }
+        if (r && r.error === 'not_bound') { mismatch(); tmReport('error', 'not_bound'); return; }   // 開頁時已確認綁著，打卡時卻說沒綁＝資料對不上
+        if (r && r.error === 'too_many') { status = null; tooMany(); tmReport('error', 'too_many'); return; }   // 不亮鍵：等一分鐘後按「重新定位」（審查 #4）
         if (!r || (r.ok === false && !r.reason)) {
-          say('系統沒有正常回應', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。'); offerHelp('網路不穩'); return;
+          say('系統沒有正常回應', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。'); offerHelp('網路不穩');
+          tmReport('error', (r && r.error) || 'bad_reply'); return;
         }
         var hm = String(r.ts || '').slice(11, 16);
         if (r.ok) {
@@ -511,6 +542,7 @@
           status.guard.lock[type === 'in' ? 'out' : 'in'] = nowSrv + 10 * 60000;
           status.today = (status.today || []).concat([{ type: type, hm: hm, status: 'ok' }]);
           render(status); say(shown, 'ok');
+          tmReport('ok', 'ok');   // 畫面已經顯示成功才送，同仁不會多等
           // 有漏卡：多一顆「申請補登」直接開申請頁，畫面不自動關（要讓同仁按得到）
           if (r.missed_date) { missReq = { date: r.missed_date, miss: r.missed_type }; $('btnMissReq').hidden = false; }
           // 下班後當天超過 8 小時（2026-10-09）：提示一句＋「申請加班」直接開加班分頁並預填時段，畫面不自動關
@@ -525,9 +557,10 @@
         // 失敗：重讀狀態；重讀也失敗就維持鍵停用（不拿舊狀態重新亮鍵），訊息保留（審查 L4）
         status = null; refreshButtons();
         var hk = { rejected_out_of_range: '定位不準', pending_device_approval: '新手機' }[r.status] || null;
-        if (r.status === 'qr_invalid') { say(failText, 'warn'); return; }   // QR 過期：不重讀，請主管重新顯示再掃
+        if (r.status === 'qr_invalid') { say(failText, 'warn'); tmReport('fail', 'qr_invalid'); return; }   // QR 過期：不重讀，請主管重新顯示再掃
+        tmReport('fail', r.status || 'guard');   // 失敗原因已經回來就算數；後面重讀狀態是另一件事
         return loadStatus().then(function () { say(failText, 'warn'); offerHelp(hk); });
-      }, function () { return confirmPunch(type, st, before); })
+      }, function () { tmGot(); return confirmPunch(type, st, before); })
       .then(function () { if (!keepBusy) { busy = false; refreshButtons(); } });
   }
   function countToday(s, type) {
@@ -547,13 +580,16 @@
         var hm = viaLast ? gl.hm : mine[mine.length - 1].hm;
         render(r);
         say(label + '打卡成功 ' + hm + '（剛才那筆已經進去了，不用再按）\n地點：' + st.name, 'ok');
+        tmReport('unclear_ok', 'ok');
         return sendToChat().then(function (closing) { if (closing) keepBusy = true; });
       }
       render(r);
       say('這次' + label + '卡沒有送出', 'warn', '請再按一次「' + label + '」。');
+      tmReport('unclear_not', '');
     }).catch(function () {
       say('連線不穩，不確定這筆有沒有進去', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。不要連按。');
       offerHelp('網路不穩');
+      tmReport('unclear_unknown', '');
     });
   }
   var keepBusy = false;   // 已送進聊天室、畫面即將關閉：不要再把鍵解開

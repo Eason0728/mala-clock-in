@@ -1094,6 +1094,46 @@ function handleLineWebhook_(body) {
   return { ok: true };
 }
 
+/* ══ 打卡等待秒數（2026-10-12 Eason 要量「按下打卡到看到成功」實際要幾秒）══
+   打卡畫面在「已經顯示結果之後」用 sendBeacon 背景送一筆過來（不等回應），同仁不會多等。
+   一律寫光復試算表 punch_timing 分頁，不寫各店打卡表（各店打烊尖峰會互搶同一份試算表）。
+   只記工號不記姓名；毫秒數只收 0～10 分鐘的整數，其他欄位走白名單，網址被拿去亂灌也只會多幾列沒意義的數字。 */
+var LINE_PUNCH_TIMING_SHEET = 'punch_timing';
+var LINE_PUNCH_TIMING_HEADERS = ['ts', 'store', 'emp_id', 'type', 'outcome', 'status', 'total_ms', 'geo_ms', 'server_ms', 'refix', 'qr', 'accuracy_m'];
+var LINE_PUNCH_TIMING_OUTCOMES = ['ok', 'fail', 'error', 'geo_fail', 'unclear_ok', 'unclear_not', 'unclear_unknown'];
+function linePunchTimingMs_(v) {
+  if (v === null || v === undefined || v === '') return '';   // Number(null) 是 0：沒送到後端不能記成「等了 0 秒」
+  var n = Number(v);
+  return (isFinite(n) && n >= 0 && n <= 600000) ? Math.round(n) : '';
+}
+function handleLinePunchTiming_(body) {
+  if (lineHubThrottled_('tm', '*all*', 300, 60)) return { ok: false, error: 'too_many' };
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+  if (lineHubThrottled_('tm', userId, 20, 60)) return { ok: false, error: 'too_many' };
+  var code = String(body.store === undefined || body.store === null ? '' : body.store);
+  if (!lineHubStores_().some(function (s) { return String(s.code) === code; })) return { ok: false, error: 'bad_store' };
+  var outcome = String(body.outcome || '');
+  if (LINE_PUNCH_TIMING_OUTCOMES.indexOf(outcome) < 0) return { ok: false, error: 'bad_outcome' };
+  var type = body.type === 'in' || body.type === 'out' ? body.type : '';
+  var status = /^[a-z_]{1,40}$/.test(String(body.status || '')) ? String(body.status) : '';
+  var empId = '';
+  try {   // 機器人回覆「打卡」也會查同一份（5 分鐘快取），這裡先查等於幫它暖好；查不到就留白，不影響記錄
+    var mine = lineHubMine_(userId).filter(function (m) { return String(m.st.code) === code; })[0];
+    if (mine) empId = String(mine.row.emp_id);
+  } catch (e) { empId = ''; }
+  var acc = body.accuracy_m === null || body.accuracy_m === undefined || body.accuracy_m === '' ? NaN : Number(body.accuracy_m);
+  var ss = getSS(), sh = ss.getSheetByName(LINE_PUNCH_TIMING_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(LINE_PUNCH_TIMING_SHEET);
+    sh.getRange(1, 1, 1, LINE_PUNCH_TIMING_HEADERS.length).setValues([LINE_PUNCH_TIMING_HEADERS]);
+  }
+  sh.appendRow([nowTaipeiIso(), code, empId, type, outcome, status,
+                linePunchTimingMs_(body.total_ms), linePunchTimingMs_(body.geo_ms), linePunchTimingMs_(body.server_ms),
+                body.refix === true, body.qr === true, (isFinite(acc) && acc >= 0 && acc < 100000) ? Math.round(acc) : '']);
+  return { ok: true };
+}
+
 var LINE_HUB_HANDLERS = {
   line_quick_clock: handleLineQuickClock_,
   line_hub_status: handleLineHubStatus_,
@@ -1104,6 +1144,7 @@ var LINE_HUB_HANDLERS = {
   line_hub_sched: function (b) { return handleLineHubSched_(b); },   // 出勤班表（Sched.gs）
   sched_publish: function (b) { return handleSchedPublish_(b); },     // 自動排班發布（SchedPub.gs，2026-10-11）
   sched_unpublish: function (b) { return handleSchedUnpublish_(b); },
+  line_punch_timing: function (b) { return handleLinePunchTiming_(b); },   // 打卡等待秒數（2026-10-12）
 };
 
 /* ══ 加班請假／忘打卡申請（2026-10-09，規格 mala-clock-liff docs/requests-spec.md）══

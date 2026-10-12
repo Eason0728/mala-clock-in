@@ -67,6 +67,10 @@ if (navigator.geolocation) ['getCurrentPosition', 'watchPosition'].forEach(funct
   navigator.geolocation[f] = function () { window.__geo++; return o.apply(null, arguments); };
 });
 window.__calls = [];
+window.__beacons = [];   // 打卡等待秒數（2026-10-12）：記下送出當下畫面上已經寫什麼，證明是「顯示結果之後」才送
+if (navigator.sendBeacon) { const _b = navigator.sendBeacon.bind(navigator);
+  navigator.sendBeacon = function (u, d) { const m = document.getElementById('msg');
+    window.__beacons.push({ url: String(u), msg: m ? m.textContent : '' }); return _b(u, d); }; }
 window.__fake = {};   // action → 假回應（物件）或 'abort'
 const _f = window.fetch;
 window.fetch = function (url, o) {
@@ -178,6 +182,20 @@ def main():
             m = msg(p)
             ok('成功訊息含時間、地點、問候語', '地點：' + HQ['name'] in m and any(w in m for w in ('早安', '午安', '晚上好')), m)
             ok('第一次打卡沒有漏卡：不顯示忘打卡提醒', '⚠️' not in m, m)
+            tmg = p.evaluate('window.__timing') or []
+            ok('等待秒數：成功打卡記 1 筆（ok、總部、上班、有總秒數與等後端秒數）',
+               len(tmg) == 1 and tmg[0]['outcome'] == 'ok' and tmg[0]['store'] == 'hq' and tmg[0]['type'] == 'in'
+               and tmg[0]['total_ms'] > 0 and tmg[0]['server_ms'] is not None and tmg[0]['total_ms'] >= tmg[0]['server_ms'] and tmg[0]['refix'] is False, tmg)
+            bc = p.evaluate('window.__beacons')
+            ok('等待秒數：背景送出時畫面已經顯示「打卡成功」（同仁不用多等）', len(bc) == 1 and '上班打卡成功' in bc[0]['msg'] and bc[0]['url'].endswith('/api'), bc)
+            ok('等待秒數：不走一般請求、不會被算成多打一次後端', not any(x['action'] == 'line_punch_timing' for x in calls(p)), calls(p))
+            for _ in range(40):   # sendBeacon 是背景送，等 mock 寫進光復資料檔
+                rows = json.load(open(os.path.join(ROOT, 'mock', 'mock_data.json'), encoding='utf-8')).get('punch_timing', [])
+                if rows: break
+                time.sleep(0.1)
+            ok('等待秒數：光復收到並記下（總部的卡、記在光復）', len(rows) == 1 and rows[0]['store'] == 'hq' and rows[0]['outcome'] == 'ok' and isinstance(rows[0]['total_ms'], int), rows)
+            hq_rows = json.load(open(os.path.join(ROOT, 'mock', 'mock_data_hq.json'), encoding='utf-8')).get('punch_timing')
+            ok('等待秒數：不寫進總部自己的打卡資料', hq_rows is None, hq_rows)
             ok('畫面即將關閉：兩顆鍵都停用', p.is_disabled('#btnIn') and p.is_disabled('#btnOut'))
             p.wait_for_function('window.__closed === true', timeout=4000)
             ok('代同仁送出「打卡」給機器人並關閉', p.evaluate('window.__sent') == [{'type': 'text', 'text': '打卡'}])
@@ -326,6 +344,8 @@ def main():
             p.click('#btnIn')
             wait_msg(p, '剛才那筆已經進去了', timeout=15000)
             ok('打卡：伺服器收到但回應弄丟 → 回頭確認說已經進去、只送 1 次打卡', sum(1 for x in calls(p) if x['action'] == 'liff_punch') == 1 and p.is_disabled('#btnIn'), msg(p))
+            tmg = p.evaluate('window.__timing') or []
+            ok('等待秒數：回應弄丟、回頭確認已進去 → 記 unclear_ok，總秒數含確認時間', len(tmg) == 1 and tmg[0]['outcome'] == 'unclear_ok' and tmg[0]['total_ms'] > tmg[0]['server_ms'], tmg)
             p.close()
             p = gctx2.new_page(); p.add_init_script(LOG_JS)
             p.goto(url(mid_hq, uid='U2', extra='&retry_ms=50'))
@@ -334,10 +354,12 @@ def main():
             force_out(p)
             wait_msg(p, '這次下班卡沒有送出', timeout=15000)
             ok('打卡：根本沒送到 → 回頭確認說沒有送出、請再按', sum(1 for x in calls(p) if x['action'] == 'liff_punch') == 1, msg(p))
+            ok('等待秒數：沒送到 → 記 unclear_not', (p.evaluate('window.__timing') or [{}])[-1].get('outcome') == 'unclear_not', p.evaluate('window.__timing'))
             p.evaluate("window.__fake.liff_punch = 'abort'; window.__fake.liff_status = ['abort']")
             force_out(p)
             wait_msg(p, '連線不穩，不確定這筆有沒有進去', timeout=15000)
             ok('打卡：連確認也失敗 → 說不確定、請看出勤紀錄', True)
+            ok('等待秒數：連確認也失敗 → 記 unclear_unknown、每次按只記 1 筆', [x['outcome'] for x in p.evaluate('window.__timing')] == ['unclear_not', 'unclear_unknown'], p.evaluate('window.__timing'))
             # Codex#14（2026-10-10）：23:59 送出、回頭確認時已跨午夜（今天的紀錄清空）→ 靠「最後一張卡變了」判定已進去
             p.evaluate("window.__fake.liff_punch = 'abort'; window.__fake.liff_status = ['midnight', 'real']")
             force_out(p)
@@ -371,6 +393,11 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
                 p.evaluate('() => { for (const id of ["btnIn", "btnOut"]) { const b = document.getElementById(id); if (!b.disabled) { b.click(); return; } } const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
                 wait_msg(p, expect, timeout=15000)
                 ok('舊位置：' + name, sum(1 for x in calls(p) if x['action'] == 'liff_punch') == 0 and p.evaluate('window.__geo.calls') >= 2, msg(p))
+                tmg = p.evaluate('window.__timing') or []
+                if mode == 'none':
+                    ok('等待秒數：定位抓不到 → 記 geo_fail、有重新定位、定位秒數約等於上限', len(tmg) == 1 and tmg[0]['outcome'] == 'geo_fail' and tmg[0]['refix'] is True and tmg[0]['geo_ms'] >= 1400 and tmg[0]['server_ms'] is None, tmg)
+                else:
+                    ok('等待秒數：人已離店、沒有送出 → 不記', tmg == [], tmg)
                 p.close(); gctx3.close()
             # 對照：位置還新（30 秒內）→ 不重新定位、照常送出
             gctx3 = br.new_context()
