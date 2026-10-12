@@ -11,7 +11,7 @@ let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 function make(opts) {
   opts = opts || {};
   const sheets = {}, cache = {}, opened = [];
-  const sheet = (name) => ({ name, rows: [], getRange: function () { const self = this; return { setValues: (v) => { self.header = v[0]; } }; },
+  const sheet = (name) => ({ name, rows: [], getLastColumn: function () { return this.header ? this.header.length : (this.oldCols || 0); }, getRange: function () { const self = this; return { setValues: (v) => { self.header = v[0]; } }; },
                              appendRow: function (r) { this.rows.push(r); } });
   const sb = {
     console, JSON, Math, String, Number, isNaN, isFinite, parseInt, Date,
@@ -37,9 +37,17 @@ ok('成功：寫光復 punch_timing 一列（第一次自動建分頁＋表頭�
   const t = make(); const r = t.call({});
   assert.strictEqual(JSON.stringify(r), JSON.stringify({ ok: true }));
   const sh = t.sheets.punch_timing;
-  assert.strictEqual(JSON.stringify(sh.header), JSON.stringify(['ts', 'store', 'emp_id', 'type', 'outcome', 'status', 'total_ms', 'geo_ms', 'server_ms', 'refix', 'qr', 'accuracy_m']));
-  assert.strictEqual(JSON.stringify(sh.rows[0]), JSON.stringify(['2026-10-12T21:30:00+08:00', 'mztjs', 'MZTJS05', 'out', 'ok', 'ok', 2346, 0, 2100, false, false, 12]));
+  assert.strictEqual(JSON.stringify(sh.header), JSON.stringify(['ts', 'store', 'emp_id', 'type', 'outcome', 'status', 'total_ms', 'geo_ms', 'server_ms', 'refix', 'qr', 'accuracy_m', 'srv_verify_ms', 'srv_roster_ms', 'srv_read_ms', 'srv_write_ms', 'srv_extra_ms']));
+  assert.strictEqual(JSON.stringify(sh.rows[0]), JSON.stringify(['2026-10-12T21:30:00+08:00', 'mztjs', 'MZTJS05', 'out', 'ok', 'ok', 2346, 0, 2100, false, false, 12, '', '', '', '', '']));
   assert.deepStrictEqual(t.opened, []);   // 沒有開任何一家店的試算表
+});
+ok('後端各步驟毫秒數記在最後五欄（不合理的留白）', () => {
+  const t = make(); t.call({ steps: { verify: 150.4, roster: 320, read: 210, write: 1800, extra: -3 } });
+  assert.strictEqual(JSON.stringify(t.sheets.punch_timing.rows[0].slice(12)), JSON.stringify([150, 320, 210, 1800, '']));
+});
+ok('舊分頁只有 12 欄 → 補齊表頭到 17 欄', () => {
+  const t = make(); const old = t.sb.getSS().insertSheet('punch_timing'); old.oldCols = 12;
+  t.call({}); assert.strictEqual(old.header.length, 17);
 });
 ok('光復店代碼是空字串也收、工號取光復那筆', () => {
   const t = make(); t.call({ store: '' }); assert.strictEqual(t.sheets.punch_timing.rows[0][2], 'E03');
@@ -105,7 +113,7 @@ ok('讀取：只回日期範圍內（含頭含尾）、只回固定欄位', () =
                 { ts: '2026-10-14T08:00:00+08:00', store: 'cf', total_ms: 4 }];
   const r = makeGet(rows).sb.handlePunchTimingGet_({ admin_key: 'ADMIN', from: '2026-10-12', to: '2026-10-13' });
   assert.strictEqual(JSON.stringify(r.rows.map(x => x.total_ms)), '[2,3]');
-  assert.ok(!('name' in r.rows[0])); assert.strictEqual(Object.keys(r.rows[0]).length, 12);
+  assert.ok(!('name' in r.rows[0])); assert.strictEqual(Object.keys(r.rows[0]).length, 17);
 });
 ok('讀取：已掛進 LINE_HUB_HANDLERS', () => { assert.strictEqual(typeof make().sb.LINE_HUB_HANDLERS.punch_timing_get, 'function'); });
 // 前端：結果顯示之後才送、每條結束路徑都有記

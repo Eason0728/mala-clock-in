@@ -93,10 +93,10 @@ ok('handleClock 改用 readEventsSince（交替防呆 12＋1 小時）', () => {
 ok('Liff：開頁、舊 liff_clock 帶範圍；打卡用 liffPunchRead_ 讀一次、交給 handleClock 共用', () => {
   assert.ok(extract(liff, 'handleLiffStatus_').indexOf('liffEvents_(found.ss, liffStatusSince_())') > 0);
   const g = extract(liff, 'handleLiffClockGuarded_');
-  assert.ok(g.indexOf('liffReadEvents_(found.ss, liffStatusSince_())') > 0 && g.indexOf('handleClock(inner, read)') > 0);
+  assert.ok(g.indexOf('liffReadEvents_(found.ss, liffStatusSince_())') > 0 && g.indexOf('handleClock(inner, read, found.rows)') > 0);
   const p = extract(liff, 'liffPunchFor_');
-  assert.ok(p.indexOf('liffPunchRead_(ss, me.emp_id, type)') > 0 && /handleClock\(\{[\s\S]*?\}, read\)/.test(p));
-  assert.ok(/function handleClock\(body, preRead\)/.test(code) && extract(code, 'handleClock').indexOf('preRead && preRead.headers && preRead.headers.length') > 0);
+  assert.ok(p.indexOf('liffPunchRead_(ss, me.emp_id, type)') > 0 && /handleClock\(\{[\s\S]*?\}, read, rosterRows\)/.test(p));
+  assert.ok(/function handleClock\(body, preRead, preRoster\)/.test(code) && extract(code, 'handleClock').indexOf('preRead && preRead.headers && preRead.headers.length') > 0);
 });
 ok('開頁範圍涵蓋今天 00:00 與前 12 小時', () => {
   const s2 = { Date: { now: () => NOW }, Math, Number, CONFIG: { ALTERNATION_LOOKBACK_HOURS: 12 } };

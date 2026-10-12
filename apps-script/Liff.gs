@@ -21,6 +21,15 @@ var LIFF_CONFIG = {
  */
 function verifyLineIdToken_(idToken) {
   if (!idToken) return null;
+  // 同一張 token 幾分鐘內不重複問 LINE（2026-10-12：開頁驗過一次、按打卡又驗一次，同一張）。
+  // 快取鍵是 token 的雜湊、存驗過的 userId，最多 10 分鐘且不超過 token 到期前 30 秒；快取壞了就照常問 LINE。
+  var cache = null, ck = '';
+  try {
+    cache = CacheService.getScriptCache();
+    ck = 'lidt:' + Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(idToken)));
+    var hit = cache.get(ck);
+    if (hit) return hit;
+  } catch (e) { cache = null; }
   var channelId = (typeof CONFIG !== 'undefined' && CONFIG.LINE_CHANNEL_ID)
     ? CONFIG.LINE_CHANNEL_ID : LIFF_CONFIG.CHANNEL_ID;
   var res = UrlFetchApp.fetch(LIFF_CONFIG.VERIFY_URL, {
@@ -38,6 +47,10 @@ function verifyLineIdToken_(idToken) {
   }
   if (!data || !data.sub) return null;
   if (String(data.aud) !== String(channelId)) return null;   // 防別的 channel 的 token 冒用
+  if (cache) {
+    var ttl = Math.min(600, Math.floor(Number(data.exp) - Date.now() / 1000) - 30);
+    try { if (ttl >= 5) cache.put(ck, String(data.sub), ttl); } catch (e) { /* 存不了就下次再問 */ }
+  }
   return String(data.sub);
 }
 
@@ -149,14 +162,15 @@ function liffRosterByLine_(userId) {
   // （例如試算表被人手動改過、或衝突檢查本身有漏洞），這裡不可以像 findRosterByLineUser_
   // 原本那樣悄悄取 [0]——那會把打卡算到「剛好排第一筆」的員工頭上，錯得無聲無息。
   // 寧可整條 fail closed 明確回錯，也不要用不變量已經被違反的資料繼續動作。
-  var activeMatches = readSheetAsObjects(rosterSheet).rows.filter(function (r) {
+  var rosterRows = readSheetAsObjects(rosterSheet).rows;
+  var activeMatches = rosterRows.filter(function (r) {
     return r.line_user_id && String(r.line_user_id) === String(userId)
         && String(r.active).toLowerCase() === 'true';
   });
   if (activeMatches.length > 1) return { error: 'line_identity_conflict' };
   var roster = activeMatches[0];
   if (!roster) return { error: 'not_bound' };
-  return { roster: roster, ss: ss };
+  return { roster: roster, ss: ss, rows: rosterRows };   // rows：打卡寫入時共用，不再讀第二次名冊（2026-10-12）
 }
 
 /**
@@ -428,13 +442,28 @@ function handleLiffPunch_(body) {
   }
 }
 
+/* 打卡各步驟花幾毫秒（2026-10-12，先量清楚 5 秒花在哪）：驗身分／讀名冊／讀打卡表／寫入／事後提醒。
+   每次請求是獨立執行，用全域變數不會跟別人的打卡混在一起。回在 liff_punch 的 steps，打卡畫面再一起送到光復 punch_timing。 */
+var LIFF_STEPS_ = null;
+function liffStepStart_() { LIFF_STEPS_ = { t: Date.now(), out: {} }; }
+function liffStep_(name) {
+  if (!LIFF_STEPS_) return;
+  var now = Date.now(); LIFF_STEPS_.out[name] = now - LIFF_STEPS_.t; LIFF_STEPS_.t = now;
+}
+function liffSteps_() { return LIFF_STEPS_ ? LIFF_STEPS_.out : undefined; }
+
 function liffPunchVerified_(type, body) {
+  liffStepStart_();
   var userId = verifyLineIdToken_(body.id_token);
+  liffStep_('verify');
   if (!userId) return { ok: false, error: 'invalid_id_token' };
   if (liffThrottled_('pu', userId, 10, 60)) return { ok: false, error: 'too_many' };
   var found = liffRosterByLine_(userId);
+  liffStep_('roster');
   if (found.error) return { ok: false, error: found.error };
-  return liffPunchFor_(userId, found.roster, found.ss, type, body);
+  var res = liffPunchFor_(userId, found.roster, found.ss, type, body, found.rows);
+  if (res && typeof res === 'object') res.steps = liffSteps_();
+  return res;
 }
 
 /** 舊動作 liff_clock（光復 LineHub line_quick_clock 伺服器對伺服器呼叫）也要過同一道防呆（2026-10-10 Codex 審查 #5）：
@@ -452,11 +481,12 @@ function handleLiffClockGuarded_(body) {
   var inner = {};
   Object.keys(body).forEach(function (k) { if (k !== 'id_token' && k !== 'action') inner[k] = body[k]; });
   inner.key = found.roster.key;
-  return handleClock(inner, read);
+  return handleClock(inner, read, found.rows);
 }
 
-function liffPunchFor_(userId, me, ss, type, body) {
+function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows：已讀好的名冊（選填，給了寫入時不再讀）
   var read = liffPunchRead_(ss, me.emp_id, type), events = read.rows;
+  liffStep_('read');
   var stop = liffGuardReject_(liffGuard_(events, me.emp_id), type);
   if (stop) return { ok: false, type: type, reason: stop.reason, hint: stop.hint };
   // 主管手機出示的動態 QR（2026-10-09，定位抓不準的備案）：驗過就用店家座標打卡，另記一列 qr_punch（誰出示的）
@@ -467,21 +497,24 @@ function liffPunchFor_(userId, me, ss, type, body) {
     lat = CONFIG.STORE_LAT; lng = CONFIG.STORE_LNG; acc = 0;
   }
   var j = handleClock({ key: me.key, type: type, lat: lat, lng: lng, accuracy: acc,
-                        device_id: me.device_id ? String(me.device_id) : 'line:' + userId }, read);   // 用同一份，不再讀第二次
+                        device_id: me.device_id ? String(me.device_id) : 'line:' + userId }, read, rosterRows);   // 用同一份，不再讀第二次
+  liffStep_('write');
   // 忘打卡提醒用打卡前讀的那份 events（只看這次之前的卡），不多讀一次表
   if (j && j.ok && j.status === 'ok') {
     if (qr) reqQrLog_(ss, j.ts, me.emp_id, type, qr.mgr);
-    var md = liffMissedDetail_(events, me.emp_id, type, j.ts), notes = [];
-    try { notes = reqUnseenNotes_(ss, me.emp_id); } catch (e) { notes = []; }   // 申請結果告知壞了不能讓打卡失敗
+    var md = liffMissedDetail_(events, me.emp_id, type, j.ts), notes = [], rq = null;
+    try { rq = reqRows_(ss); } catch (e) { rq = null; }   // 申請表讀一次，結果告知與超時提示共用（2026-10-12）
+    try { notes = reqUnseenNotes_(ss, me.emp_id, rq); } catch (e) { notes = []; }   // 申請結果告知壞了不能讓打卡失敗
     var res = { ok: true, type: type, ts: j.ts, greeting: liffGreeting_(type, j.ts), missed: md.text,
                 missed_date: md.date, missed_type: md.miss_type, req_notes: notes, via_qr: !!qr };
     // 下班後當天超過 8 小時 → 提示申請加班（2026-10-09，Requests.gs reqOtHint_）；算不出來就不提，不能讓打卡失敗
     if (type === 'out') {
       try {
-        var hint = reqOtHint_(events.concat([{ ts: j.ts, emp_id: me.emp_id, type: 'out', status: 'ok' }]), me.emp_id, j.ts, reqRows_(ss));
+        var hint = reqOtHint_(events.concat([{ ts: j.ts, emp_id: me.emp_id, type: 'out', status: 'ok' }]), me.emp_id, j.ts, rq || reqRows_(ss));
         if (hint) res.ot_hint = hint;
       } catch (e) {}
     }
+    liffStep_('extra');
     return res;
   }
   var st = j && (j.status || j.error);

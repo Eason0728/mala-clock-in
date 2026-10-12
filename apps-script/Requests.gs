@@ -374,11 +374,11 @@ function handleReqAttach_(body) {
 }
 
 /** 打卡成功時順便告知：主管處理過、同仁還沒看過的結果（看過就標 seen_at，只告知一次）。 */
-function reqUnseenNotes_(ss, empId) {
+function reqUnseenNotes_(ss, empId, rows) {   // rows：已讀好的申請表（選填，2026-10-12 打卡時與超時提示共用）
   var sh = reqSheet_(ss, false);
   if (!sh) return [];
   var now = nowTaipeiIso(), notes = [];
-  reqRows_(ss).forEach(function (r) {
+  (rows || reqRows_(ss)).forEach(function (r) {
     if (String(r.emp_id) !== String(empId) || r.seen_at || (r.status !== 'approved' && r.status !== 'rejected')) return;
     notes.push(r.status === 'approved' ? '✓ 主管已核准：' + reqSummary_(r)
                                        : '✕ 申請被退回：' + reqSummary_(r) + (r.reject_reason ? '（' + r.reject_reason + '）' : ''));

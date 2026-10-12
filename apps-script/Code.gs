@@ -640,11 +640,11 @@ function monthTotalsFor(approvedMap, empId, eventRows, todayStr) {
   return { current: box(ym), previous: box(prev) };
 }
 
-function handleClock(body, preRead) {   // preRead：LINE 打卡已經讀好的 events（{headers, rows}），給了就不再讀一次（2026-10-12）
+function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE 打卡已經讀好的 events（{headers, rows}）與名冊列，給了就不再讀一次（2026-10-12）
   const ss = getSS();
   const rosterSheet = ss.getSheetByName('roster');
   const eventsSheet = ss.getSheetByName('events');
-  const rosterRows = readSheetAsObjects(rosterSheet).rows;
+  const rosterRows = (preRoster && preRoster.length) ? preRoster : readSheetAsObjects(rosterSheet).rows;
 
   const roster = findRosterByKey(rosterRows, body.key);
   if (!roster || String(roster.active).toLowerCase() !== 'true') {

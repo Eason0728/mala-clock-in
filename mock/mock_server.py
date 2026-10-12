@@ -2018,7 +2018,8 @@ def handle_liff_punch(data, body):
                             "accuracy": body.get("accuracy"), "device_id": me.get("device_id") or ("line:" + uid)})
     if j.get("ok") and j.get("status") == "ok":
         return {"ok": True, "type": typ, "ts": j.get("ts"), "greeting": liff_greeting(typ, j.get("ts")),
-                "missed": liff_missed_note(before, me["emp_id"], typ, j.get("ts"))}
+                "missed": liff_missed_note(before, me["emp_id"], typ, j.get("ts")),
+                "steps": {"verify": 120, "roster": 300, "read": 250, "write": 900, "extra": 400}}   # 與 Liff.gs 同：後端各步驟毫秒數（mock 用固定值）
     st = j.get("status") or j.get("error") or ""
     rr = {"pending_device_approval": ["這支手機還沒被核准", "已送出待核准，請主管在值班核定頁核准"],
           "rejected_out_of_range": ["店家判定你不在範圍內", "請開啟「精確位置」與 Wi‑Fi 後再按一次"],
@@ -2062,7 +2063,8 @@ def handle_line_punch_timing(data, body):
         "ts": iso_now(), "store": code, "uid": uid, "type": body.get("type") if body.get("type") in ("in", "out") else "",
         "outcome": body["outcome"], "status": str(body.get("status") or "")[:40],
         "total_ms": ms(body.get("total_ms")), "geo_ms": ms(body.get("geo_ms")), "server_ms": ms(body.get("server_ms")),
-        "refix": body.get("refix") is True, "qr": body.get("qr") is True})
+        "refix": body.get("refix") is True, "qr": body.get("qr") is True,
+        "steps": {k: ms((body.get("steps") or {}).get(k)) for k in ("verify", "roster", "read", "write", "extra")}})
     save_data(data)
     return {"ok": True}
 

@@ -194,6 +194,7 @@ def main():
                 if rows: break
                 time.sleep(0.1)
             ok('等待秒數：光復收到並記下（總部的卡、記在光復）', len(rows) == 1 and rows[0]['store'] == 'hq' and rows[0]['outcome'] == 'ok' and isinstance(rows[0]['total_ms'], int), rows)
+            ok('等待秒數：後端各步驟毫秒數跟著送、光復記下', tmg[0].get('steps', {}).get('write') == 900 and rows[0]['steps'] == {'verify': 120, 'roster': 300, 'read': 250, 'write': 900, 'extra': 400}, (tmg[0].get('steps'), rows[0].get('steps')))
             hq_rows = json.load(open(os.path.join(ROOT, 'mock', 'mock_data_hq.json'), encoding='utf-8')).get('punch_timing')
             ok('等待秒數：不寫進總部自己的打卡資料', hq_rows is None, hq_rows)
             ok('畫面即將關閉：兩顆鍵都停用', p.is_disabled('#btnIn') and p.is_disabled('#btnOut'))

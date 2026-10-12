@@ -1099,7 +1099,10 @@ function handleLineWebhook_(body) {
    一律寫光復試算表 punch_timing 分頁，不寫各店打卡表（各店打烊尖峰會互搶同一份試算表）。
    只記工號不記姓名；毫秒數只收 0～10 分鐘的整數，其他欄位走白名單，網址被拿去亂灌也只會多幾列沒意義的數字。 */
 var LINE_PUNCH_TIMING_SHEET = 'punch_timing';
-var LINE_PUNCH_TIMING_HEADERS = ['ts', 'store', 'emp_id', 'type', 'outcome', 'status', 'total_ms', 'geo_ms', 'server_ms', 'refix', 'qr', 'accuracy_m'];
+var LINE_PUNCH_TIMING_HEADERS = ['ts', 'store', 'emp_id', 'type', 'outcome', 'status', 'total_ms', 'geo_ms', 'server_ms', 'refix', 'qr', 'accuracy_m',
+  // 後端各步驟毫秒數（2026-10-12 加在最後，舊列留白）：驗身分／讀名冊／讀打卡表／寫入／事後提醒
+  'srv_verify_ms', 'srv_roster_ms', 'srv_read_ms', 'srv_write_ms', 'srv_extra_ms'];
+var LINE_PUNCH_TIMING_STEPS = ['verify', 'roster', 'read', 'write', 'extra'];
 var LINE_PUNCH_TIMING_OUTCOMES = ['ok', 'fail', 'error', 'geo_fail', 'unclear_ok', 'unclear_not', 'unclear_unknown'];
 function linePunchTimingMs_(v) {
   if (v === null || v === undefined || v === '') return '';   // Number(null) 是 0：沒送到後端不能記成「等了 0 秒」
@@ -1124,13 +1127,15 @@ function handleLinePunchTiming_(body) {
   } catch (e) { empId = ''; }
   var acc = body.accuracy_m === null || body.accuracy_m === undefined || body.accuracy_m === '' ? NaN : Number(body.accuracy_m);
   var ss = getSS(), sh = ss.getSheetByName(LINE_PUNCH_TIMING_SHEET);
-  if (!sh) {
-    sh = ss.insertSheet(LINE_PUNCH_TIMING_SHEET);
+  if (!sh) sh = ss.insertSheet(LINE_PUNCH_TIMING_SHEET);
+  if (sh.getLastColumn() < LINE_PUNCH_TIMING_HEADERS.length) {   // 新分頁、或舊分頁少了後面幾欄 → 補齊表頭（只加在最後，既有資料不位移）
     sh.getRange(1, 1, 1, LINE_PUNCH_TIMING_HEADERS.length).setValues([LINE_PUNCH_TIMING_HEADERS]);
   }
+  var steps = body.steps && typeof body.steps === 'object' ? body.steps : {};
   sh.appendRow([nowTaipeiIso(), code, empId, type, outcome, status,
                 linePunchTimingMs_(body.total_ms), linePunchTimingMs_(body.geo_ms), linePunchTimingMs_(body.server_ms),
-                body.refix === true, body.qr === true, (isFinite(acc) && acc >= 0 && acc < 100000) ? Math.round(acc) : '']);
+                body.refix === true, body.qr === true, (isFinite(acc) && acc >= 0 && acc < 100000) ? Math.round(acc) : '']
+                .concat(LINE_PUNCH_TIMING_STEPS.map(function (k) { return linePunchTimingMs_(steps[k]); })));
   return { ok: true };
 }
 

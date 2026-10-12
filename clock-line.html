@@ -470,7 +470,7 @@
         store: t.store !== undefined ? t.store : (curStore ? curStore.code : ''), type: t.type, outcome: outcome, status: st || '',
         total_ms: Math.round(tmNow() - t.t0), geo_ms: Math.round(t.geo),
         server_ms: (t.sent !== null && t.got !== null) ? Math.round(t.got - t.sent) : null,
-        refix: t.refix, qr: !!t.qr, accuracy_m: t.acc === undefined ? null : t.acc });
+        refix: t.refix, qr: !!t.qr, accuracy_m: t.acc === undefined ? null : t.acc, steps: t.steps || null });
       if (isLocalHost) window.__timing = (window.__timing || []).concat([JSON.parse(body)]);   // 本機測試看得到送了什麼
       if (navigator.sendBeacon && navigator.sendBeacon(HUB_API, new Blob([body], { type: 'text/plain' }))) return;
       fetch(HUB_API, { method: 'POST', body: body, mode: 'no-cors', keepalive: true }).catch(function () {});
@@ -524,6 +524,7 @@
     post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, qrToken ? { qr: qrToken } : fixPayload()))
       .then(function (r) {
         tmGot();
+        if (tm && r && r.steps) tm.steps = r.steps;   // 後端各步驟毫秒數，跟著秒數一起送
         if (r && r.error === 'invalid_id_token') { tmReport('error', 'invalid_id_token'); say('LINE 登入逾時，正在重新登入…', 'warn', '登入後請再按一次。'); liff.login(); return; }
         if (r && r.error === 'not_bound') { mismatch(); tmReport('error', 'not_bound'); return; }   // 開頁時已確認綁著，打卡時卻說沒綁＝資料對不上
         if (r && r.error === 'too_many') { status = null; tooMany(); tmReport('error', 'too_many'); return; }   // 不亮鍵：等一分鐘後按「重新定位」（審查 #4）
