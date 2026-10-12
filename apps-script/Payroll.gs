@@ -3033,19 +3033,24 @@ function handlePayrollLeaveSpanSet(body) {
  *
  *  ⚠ 身分驗證跨後端：薪酬是全集團共用一套，不認得央廚／總部的主管金鑰，
  *    所以主管那條反過來開該店自己的打卡試算表比對 managers 分頁——與 my_payslip 跨店驗身分同一招。 */
+/** payroll_leave_options／payroll_annual_left 共用的身分驗證：管理金鑰（薪資頁）直接放行，否則走值班主管金鑰那條。
+ *  通過回 null，不通過回錯誤物件。 */
+function payLeaveAuth_(body, st) {
+  if (checkAdmin(body)) return null;
+  const key = String(body.mgr_key || '').trim();
+  if (!key) return { ok: false, error: 'unauthorized' };
+  let mgrs = [];
+  try { mgrs = payClockRead(st, 'managers'); } catch (err) { return { ok: false, error: 'no_clock_ss' }; }
+  const hit = mgrs.filter(function (m) {
+    return String(m.key) === key && String(m.active).toLowerCase() === 'true';
+  })[0];
+  return hit ? null : { ok: false, error: 'unauthorized' };
+}
+
 function handlePayrollLeaveOptions(body) {
   const st = payStore(body.store);
-  // 身分二擇一：管理金鑰（薪資頁）直接放行，否則走值班主管金鑰那條。
-  if (!checkAdmin(body)) {
-    const key = String(body.mgr_key || '').trim();
-    if (!key) return { ok: false, error: 'unauthorized' };
-    let mgrs = [];
-    try { mgrs = payClockRead(st, 'managers'); } catch (err) { return { ok: false, error: 'no_clock_ss' }; }
-    const hit = mgrs.filter(function (m) {
-      return String(m.key) === key && String(m.active).toLowerCase() === 'true';
-    })[0];
-    if (!hit) return { ok: false, error: 'unauthorized' };
-  }
+  const deny = payLeaveAuth_(body, st);
+  if (deny) return deny;
 
   const ym = /^\d{4}-\d{2}$/.test(String(body.ym || '')) ? body.ym : nowTaipeiIso().slice(0, 7);
   const types = payLeaveTypes(st);
@@ -3082,6 +3087,24 @@ function handlePayrollLeaveOptions(body) {
            day_hours: dayH, rule_parental: PAY_PARENTAL,
            // 期限規則要用：某人某假別的事件日（結婚登記日／分娩日…），前端據此擋過期的假
            events: payLeaveEventMap(st) };
+}
+
+/** {action:'payroll_annual_left', store, mgr_key|admin_key, ym?} → 每位正職的剩餘特休（唯讀）。
+ *  給門市營運系統「自動排班」班表在名字下方顯示（2026-10-12 Eason）。數字跟薪資頁工時分頁、
+ *  同仁薪資單同一支 payAnnualInfo，計時同仁沒有特休回 null。另開一支、不併進 payroll_leave_options，
+ *  是因為 payAnnualInfo 要掃各店 leave 分頁，併進去會拖慢核定頁的假別下拉。 */
+function handlePayrollAnnualLeft(body) {
+  const st = payStore(body.store);
+  const deny = payLeaveAuth_(body, st);
+  if (deny) return deny;
+  const ym = /^\d{4}-\d{2}$/.test(String(body.ym || '')) ? body.ym : nowTaipeiIso().slice(0, 7);
+  const info = payAnnualInfo(ym, st);
+  const annual = {};
+  Object.keys(info).forEach(function (e) {
+    const a = info[e];
+    annual[e] = a ? { left_days: Math.round(a.left_h / 8 * 10) / 10, left_h: a.left_h, days: a.days, used_h: a.used_h, pe: a.pe } : null;
+  });
+  return { ok: true, store: st, ym: ym, annual: annual };
 }
 
 /** {action:'payroll_leave_event_get', admin_key, store?} → 該店的假別事件日。 */
@@ -3146,6 +3169,7 @@ const PAYROLL_HANDLERS = {
   payroll_leave_span_get:  handlePayrollLeaveSpanGet,
   payroll_leave_span_set:  handlePayrollLeaveSpanSet,
   payroll_leave_options:   handlePayrollLeaveOptions,
+  payroll_annual_left:     handlePayrollAnnualLeft,
   pnlPayroll:              handlePnlPayroll_,
   pnlLaborEstimate:        handlePnlLaborEstimate_,
 };
