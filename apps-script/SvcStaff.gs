@@ -12,7 +12,8 @@
  *   ‧寫名冊一律依試算表「實際表頭」定位欄位，不用位置 appendRow（欄序被打亂也寫得對）。
  * 回退：刪掉 Code.gs 分派表那三行＋本檔即回到原狀。 */
 
-var SVC_STAFF_EXTRA_HEADERS = ['src_store', 'src_emp_id', 'origin_op'];
+var SVC_STAFF_EXTRA_HEADERS = ['src_store', 'src_emp_id', 'origin_op', 'last_op'];   // last_op＝svc_set_active 最後一次執行的 op_id（冪等用）
+var SVC_BY_MAX = 40;   // created_by／by 長度上限
 
 function svcFail_(error, message) { return { ok: false, error: error, message: message }; }
 
@@ -34,7 +35,7 @@ function svcAuth_(body) {
   return null;
 }
 
-/** 名冊右側只補 src_store, src_emp_id, origin_op（只補不改） */
+/** 名冊右側只補 src_store, src_emp_id, origin_op, last_op（只補不改） */
 function svcEnsureHeaders_(sheet) {
   var head = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(String);
   SVC_STAFF_EXTRA_HEADERS.forEach(function (h) {
@@ -130,7 +131,7 @@ function handleSvcAdd_(body) {
   var name = typeof body.name === 'string' ? body.name.trim() : '';
   if (!name || name.length > 20) return svcFail_('bad_input', '姓名不可空白且最多 20 字');
   if (typeof body.op_id !== 'string' || !body.op_id || body.op_id.length > 80) return svcFail_('bad_input', 'op_id 不正確');
-  if (typeof body.created_by !== 'string' || !body.created_by.trim()) return svcFail_('bad_input', 'created_by 不可空白');
+  if (typeof body.created_by !== 'string' || !body.created_by.trim() || body.created_by.length > SVC_BY_MAX) return svcFail_('bad_input', 'created_by 不可空白且最多 ' + SVC_BY_MAX + ' 字');
   var lock = LockService.getScriptLock();   // 與 handleMgrAddEmployee 同一把
   try { lock.waitLock(15000); } catch (e) { return svcFail_('busy', '另一個新增動作進行中，請稍後再試'); }
   try { return svcAddLocked_(body, name); } finally { lock.releaseLock(); }
@@ -143,15 +144,19 @@ function handleSvcSetActive_(body) {
   if (!empId || typeof body.op_id !== 'string' || !body.op_id ||
       !(a === true || a === false || a === 'true' || a === 'false')) return svcFail_('bad_input', '輸入不正確');
   var active = (a === true || a === 'true');
+  if (body.by !== undefined && (typeof body.by !== 'string' || body.by.length > SVC_BY_MAX)) return svcFail_('bad_input', 'by 最多 ' + SVC_BY_MAX + ' 字');
   var lock = LockService.getScriptLock();
   try { lock.waitLock(15000); } catch (e) { return svcFail_('busy', '另一個名冊動作進行中，請稍後再試'); }
   try {
     var sh = getSS().getSheetByName('roster');
     if (!sh) return svcFail_('not_found', '找不到名冊分頁');
     ensureRosterHeaders(sh);
+    svcEnsureHeaders_(sh);
     var rows = readSheetAsObjects(sh).rows;
     var row = findRosterByEmpId(rows, empId);
     if (!row) return svcFail_('not_found', '名冊裡找不到這位同仁');
+    // 冪等：這個 op_id 就是這位同仁最後一次執行的 op → 回當時的結果，不再動（即使之後被別的 op 改過）
+    if (String(row.last_op) === body.op_id) return { ok: true, emp_id: empId, active: active };
     if (svcIsTrue_(row.active) === active) return { ok: true, emp_id: empId, active: active };   // 已是目標狀態
     var name = String(row.name).trim();
     if (active) {
@@ -164,6 +169,7 @@ function handleSvcSetActive_(body) {
     setRosterCell(sh, row.__rowIndex, 'active', active);
     setRosterCell(sh, row.__rowIndex, 'removed_at', active ? '' : now, true);
     setRosterCell(sh, row.__rowIndex, 'removed_by', active ? '' : String(body.by || ''));
+    setRosterCell(sh, row.__rowIndex, 'last_op', body.op_id, true);
     SpreadsheetApp.flush();
     return { ok: true, emp_id: empId, active: active };
   } finally { lock.releaseLock(); }

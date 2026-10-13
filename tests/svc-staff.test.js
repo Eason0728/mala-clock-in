@@ -167,10 +167,10 @@ ok('A3 新增：取號沿用 nextEmpId、寫齊欄位、回 emp_id 且不回 key
   assert.strictEqual(row.src_store, 'mztjs'); assert.strictEqual(row.src_emp_id, 'S-007'); assert.strictEqual(row.origin_op, 'dzy:J20261014093015-a3f0');
   assert.ok(!JSON.stringify(r).includes(row.key));
 });
-ok('A3 ensure 表頭：只在右側補 src_store, src_emp_id, origin_op，原欄不動', () => {
+ok('A3 ensure 表頭：只在右側補 src_store, src_emp_id, origin_op, last_op，原欄不動', () => {
   const e = rosterEnv(people());
   e.svc('svc_add', addArgs());
-  assert.deepStrictEqual(e.sheets.roster.data[0], ROSTER_H.concat(['src_store', 'src_emp_id', 'origin_op']));
+  assert.deepStrictEqual(e.sheets.roster.data[0], ROSTER_H.concat(['src_store', 'src_emp_id', 'origin_op', 'last_op']));
   const before = JSON.stringify(e.sheets.roster.data[0]); e.svc('svc_add', addArgs({ op_id: 'dzy:J9', name: '測試丁' }));
   assert.strictEqual(JSON.stringify(e.sheets.roster.data[0]), before, '第二次不再補');
   const e2 = rosterEnv(people()); e2.svc('svc_roster'); e2.svc('svc_link', { emp_id: 'E01' });
@@ -287,6 +287,34 @@ ok('A4 op_id 冪等：已是目標狀態直接回 ok，不改 removed_at', () =>
   assert.deepStrictEqual(e.svc('svc_set_active', { emp_id: 'E02', active: false, op_id: 'o9', by: 'b' }), { ok: true, emp_id: 'E02', active: false });
   assert.strictEqual(e.svc('svc_set_active', { emp_id: 'E01', active: 'maybe', op_id: 'o', by: 'b' }).error, 'bad_input');
   assert.strictEqual(e.svc('svc_set_active', { emp_id: 'E01', active: false, by: 'b' }).error, 'bad_input');
+});
+ok('審查#8 同 op_id 重送回同結果（即使狀態已被別的 op 改過）；不同 op_id 照常執行', () => {
+  const e = rosterEnv(people());
+  const A = { emp_id: 'E01', active: false, op_id: 'opA', by: 'b' };
+  assert.deepStrictEqual(e.svc('svc_set_active', A), { ok: true, emp_id: 'E01', active: false });
+  assert.strictEqual(rowOf(e, 'E01').last_op, 'opA');
+  // 別的管道（舊的 mgr_set_active 手動恢復）改回在職，last_op 仍是 opA
+  const h = e.sheets.roster.data[0]; e.sheets.roster.data[1][h.indexOf('active')] = true;
+  // opA 重送：回 opA 的結果，不可再把人停用
+  assert.deepStrictEqual(e.svc('svc_set_active', A), { ok: true, emp_id: 'E01', active: false });
+  assert.strictEqual(rowOf(e, 'E01').active, true, '重送不得再翻一次');
+  // 不同 op_id 照常執行
+  e.svc('svc_set_active', { emp_id: 'E01', active: false, op_id: 'opC', by: 'b' });
+  assert.strictEqual(rowOf(e, 'E01').active, false); assert.strictEqual(rowOf(e, 'E01').last_op, 'opC');
+});
+ok('審查#9 created_by／by 超過 40 字 → bad_input（40 字可過）', () => {
+  const e = rosterEnv(people());
+  assert.strictEqual(e.svc('svc_add', addArgs({ created_by: 'x'.repeat(41), op_id: 'l1' })).error, 'bad_input');
+  assert.strictEqual(e.sheets.roster.data.length, 3);
+  assert.strictEqual(e.svc('svc_add', addArgs({ created_by: 'x'.repeat(40), op_id: 'l2' })).ok, true);
+  assert.strictEqual(e.svc('svc_set_active', { emp_id: 'E01', active: false, op_id: 'l3', by: 'y'.repeat(41) }).error, 'bad_input');
+  assert.strictEqual(rowOf(e, 'E01').active, true, '被拒不得改名冊');
+  assert.strictEqual(e.svc('svc_set_active', { emp_id: 'E01', active: false, op_id: 'l4', by: 'y'.repeat(40) }).ok, true);
+});
+ok('審查#2 姓名上限維持 20（21 字 bad_input）', () => {
+  const e = rosterEnv(people());
+  assert.strictEqual(e.svc('svc_add', addArgs({ name: '甲'.repeat(21), op_id: 'm1' })).error, 'bad_input');
+  assert.strictEqual(e.svc('svc_add', addArgs({ name: '甲'.repeat(20), op_id: 'm2' })).ok, true);
 });
 ok('A4 svc_link 只回該人 key、不寫任何東西', () => {
   const e = rosterEnv(people());
