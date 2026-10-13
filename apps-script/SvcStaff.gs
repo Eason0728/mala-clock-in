@@ -43,6 +43,9 @@ function svcEnsureHeaders_(sheet) {
   });
 }
 
+/** 去頭空白後以 = + - @ 開頭 → 試算表會當公式執行（公式注入），一律拒收 */
+function svcFormulaLike_(v) { return /^\s*[=+\-@]/.test(String(v)); }
+
 function svcIsTrue_(v) { return v === true || String(v).toLowerCase() === 'true'; }
 
 /** 儲存格時間 → 'yyyy-MM-dd HH:mm:ss'（契約格式；台北時間，去掉 T 與時區尾巴） */
@@ -104,7 +107,7 @@ function svcAddLocked_(body, name) {
   var rows = readSheetAsObjects(sh).rows;
   // 冪等：名冊已有這個 op_id 建的列 → 回那列（崩潰後重送也找得回）
   for (var i = 0; i < rows.length; i++) {
-    if (String(rows[i].origin_op) === body.op_id) return { ok: true, emp_id: String(rows[i].emp_id) };
+    if (String(rows[i].origin_op) === body.op_id) return { ok: true, emp_id: String(rows[i].emp_id), active: svcIsTrue_(rows[i].active) };
   }
   var dup = rows.filter(function (r) { return String(r.name).trim() === name && svcIsTrue_(r.active); })[0];
   if (dup) return svcFail_('duplicate_name', '本店已有在職同仁同名');
@@ -117,19 +120,20 @@ function svcAddLocked_(body, name) {
   var head = sh.getRange(1, 1, 1, Math.max(1, sh.getLastColumn())).getValues()[0].map(String);
   var row = head.map(function (h) { return Object.prototype.hasOwnProperty.call(vals, h) ? vals[h] : ''; });
   var at = sh.getLastRow() + 1;
-  ['created_at', 'src_store', 'src_emp_id', 'origin_op'].forEach(function (h) {
+  ['emp_id', 'name', 'key', 'created_at', 'created_by', 'src_store', 'src_emp_id', 'origin_op'].forEach(function (h) {
     var c = head.indexOf(h) + 1;
     if (c) sh.getRange(at, c).setNumberFormat('@');
   });
   sh.getRange(at, 1, 1, row.length).setValues([row]);   // 一次寫完整列：寫入成功＝origin_op 同時落地
   SpreadsheetApp.flush();
-  return { ok: true, emp_id: empId };
+  return { ok: true, emp_id: empId, active: true };
 }
 
 function handleSvcAdd_(body) {
   var bad = svcAuth_(body); if (bad) return bad;
   var name = typeof body.name === 'string' ? body.name.trim() : '';
   if (!name || name.length > 20) return svcFail_('bad_input', '姓名不可空白且最多 20 字');
+  if (svcFormulaLike_(name) || svcFormulaLike_(body.created_by) || svcFormulaLike_(body.src_store) || svcFormulaLike_(body.src_emp_id)) return svcFail_('bad_input', '欄位不可以 = + - @ 開頭');
   if (typeof body.op_id !== 'string' || !body.op_id || body.op_id.length > 80) return svcFail_('bad_input', 'op_id 不正確');
   if (typeof body.created_by !== 'string' || !body.created_by.trim() || body.created_by.length > SVC_BY_MAX) return svcFail_('bad_input', 'created_by 不可空白且最多 ' + SVC_BY_MAX + ' 字');
   var lock = LockService.getScriptLock();   // 與 handleMgrAddEmployee 同一把
@@ -145,6 +149,7 @@ function handleSvcSetActive_(body) {
       !(a === true || a === false || a === 'true' || a === 'false')) return svcFail_('bad_input', '輸入不正確');
   var active = (a === true || a === 'true');
   if (body.by !== undefined && (typeof body.by !== 'string' || body.by.length > SVC_BY_MAX)) return svcFail_('bad_input', 'by 最多 ' + SVC_BY_MAX + ' 字');
+  if (svcFormulaLike_(body.by)) return svcFail_('bad_input', 'by 不可以 = + - @ 開頭');
   var lock = LockService.getScriptLock();
   try { lock.waitLock(15000); } catch (e) { return svcFail_('busy', '另一個名冊動作進行中，請稍後再試'); }
   try {

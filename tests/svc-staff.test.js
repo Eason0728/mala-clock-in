@@ -159,7 +159,7 @@ const addArgs = (o) => Object.assign({ name: '測試丙', op_id: 'dzy:J202610140
 ok('A3 新增：取號沿用 nextEmpId、寫齊欄位、回 emp_id 且不回 key', () => {
   const e = rosterEnv(people());
   const r = e.svc('svc_add', addArgs());
-  assert.deepStrictEqual(r, { ok: true, emp_id: 'E03' });
+  assert.deepStrictEqual(r, { ok: true, emp_id: 'E03', active: true });
   const row = rowOf(e, 'E03');
   assert.strictEqual(row.name, '測試丙'); assert.strictEqual(row.active, true); assert.strictEqual(row.created_by, '管理系統:DZY014');
   assert.ok(/^[A-Za-z0-9]{20}$/.test(row.key), 'key 用 genKey 的 20 碼');
@@ -190,7 +190,7 @@ ok('A3 寫名冊後、回應前丟例外，重送仍回同一 emp_id 且名冊�
   assert.strictEqual(e.sheets.roster.data.length, 4, '例外前已落地');
   assert.ok(e.lockLog.released >= 1, '例外也要放鎖');
   const r = e.svc('svc_add', addArgs());
-  assert.deepStrictEqual(r, { ok: true, emp_id: 'E03' }); assert.strictEqual(e.sheets.roster.data.length, 4);
+  assert.deepStrictEqual(r, { ok: true, emp_id: 'E03', active: true }); assert.strictEqual(e.sheets.roster.data.length, 4);
 });
 ok('A3 回應與任何非名冊分頁都找不到 key 字串；root 名冊也只有該人自己那格', () => {
   const e = rosterEnv(people()); e.add('payroll_master', ['emp_id', 'name', 'wage', 'store'], [['E01', '測試甲', 40000, 'SSLGF']]);
@@ -239,7 +239,7 @@ ok('A3 依實際表頭定位：欄序打亂（含新欄在中間）仍寫對欄'
                 ['', '測試乙', '主管', false, 'HQ-06', '', 'K2', '', '2026-08-01T09:00:00+08:00', '', '', '']];
   const e = rosterEnv(rows, shuffled);
   const r = e.svc('svc_add', addArgs());
-  assert.deepStrictEqual(r, { ok: true, emp_id: 'HQ-07' });
+  assert.deepStrictEqual(r, { ok: true, emp_id: 'HQ-07', active: true });
   const o = rowOf(e, 'HQ-07');
   assert.strictEqual(o.name, '測試丙'); assert.strictEqual(o.active, true); assert.strictEqual(o.created_by, '管理系統:DZY014');
   assert.strictEqual(o.origin_op, 'dzy:J20261014093015-a3f0'); assert.strictEqual(o.src_store, 'mztjs'); assert.strictEqual(o.src_emp_id, 'S-007');
@@ -315,6 +315,30 @@ ok('審查#2 姓名上限維持 20（21 字 bad_input）', () => {
   const e = rosterEnv(people());
   assert.strictEqual(e.svc('svc_add', addArgs({ name: '甲'.repeat(21), op_id: 'm1' })).error, 'bad_input');
   assert.strictEqual(e.svc('svc_add', addArgs({ name: '甲'.repeat(20), op_id: 'm2' })).ok, true);
+});
+ok('F2 name／created_by／by 以 = + - @ 開頭（含前導空白）→ bad_input，名冊不動', () => {
+  const e = rosterEnv(people());
+  ['=1+1', '+1', '-B', '@x', '  =cmd', '\t@x'].forEach((v, i) => {
+    assert.strictEqual(e.svc('svc_add', addArgs({ name: v, op_id: 'f' + i })).error, 'bad_input', 'name ' + v);
+    assert.strictEqual(e.svc('svc_add', addArgs({ created_by: v, op_id: 'g' + i })).error, 'bad_input', 'created_by ' + v);
+    assert.strictEqual(e.svc('svc_set_active', { emp_id: 'E01', active: false, op_id: 'h' + i, by: v }).error, 'bad_input', 'by ' + v);
+  });
+  assert.strictEqual(e.sheets.roster.data.length, 3); assert.strictEqual(rowOf(e, 'E01').active, true);
+  assert.strictEqual(e.svc('svc_add', addArgs({ name: '測試-B', op_id: 'ok1' })).ok, true, '中間有減號可以');
+});
+ok('F2 svc_add 寫列前文字欄設純文字格式 @', () => {
+  const e = rosterEnv(people()); e.svc('svc_add', addArgs());
+  const h = e.sheets.roster.data[0];
+  ['emp_id', 'name', 'key', 'created_at', 'created_by', 'src_store', 'src_emp_id', 'origin_op'].forEach(c =>
+    assert.strictEqual(e.sheets.roster.formats['4,' + (h.indexOf(c) + 1)], '@', c));
+});
+ok('F6 svc_add 回應帶 active 布林（新增＝true；冪等命中帶該列現況）', () => {
+  const e = rosterEnv(people());
+  assert.strictEqual(e.svc('svc_add', addArgs()).active, true);
+  e.svc('svc_set_active', { emp_id: 'E03', active: false, op_id: 'z1', by: 'b' });
+  const r = e.svc('svc_add', addArgs());
+  assert.deepStrictEqual(r, { ok: true, emp_id: 'E03', active: false });
+  assert.strictEqual(e.sheets.roster.data.length, 4);
 });
 ok('A4 svc_link 只回該人 key、不寫任何東西', () => {
   const e = rosterEnv(people());
