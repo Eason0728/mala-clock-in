@@ -1230,6 +1230,7 @@ var LINE_HUB_HANDLERS = {
   line_hub_attach_put: function (b) { return handleLineHubAttachPut_(b); },
   line_hub_attach_get: function (b) { return handleLineHubAttachGet_(b); },
   line_hub_sched: function (b) { return handleLineHubSched_(b); },   // 出勤班表（Sched.gs）
+  sched_day_roster: function (b) { return handleSchedDayRoster_(b); },   // 訂貨小幫手讀光復某天班表（Sched.gs，2026-10-13，金鑰 SCHED_READ_KEY）
   sched_publish: function (b) { return handleSchedPublish_(b); },     // 自動排班發布（SchedPub.gs，2026-10-11）
   sched_unpublish: function (b) { return handleSchedUnpublish_(b); },
   line_punch_timing: function (b) { return handleLinePunchTiming_(b); },   // 打卡等待秒數（2026-10-12）

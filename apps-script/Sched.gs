@@ -267,3 +267,30 @@ function handleLineHubSched_(body) {
   base.status = 'ready'; base.days = days; base.summary = s.summary; base.next = s.next;
   return base;
 }
+
+/* ══ 訂貨小幫手讀光復班表（2026-10-13）══
+ * 訂貨小幫手（line-oa-scheduler）的 {{今日班表}}／{{明日班表}} 要知道某一天光復誰上班。
+ * {action:'sched_day_roster', key, date:'yyyy-MM-dd'}
+ *   date 早於 SCHED_STORE_FROM → {ok:true, date, from, source:'gist'}（呼叫端照舊讀月曆版 Gist，這裡不讀）
+ *   否則 → {ok:true, date, from, source:'store', published, people:[{name, label, segs:[["HH:MM","HH:MM"]]}]}
+ *          published:false＝那一期營運系統還沒鎖定發布。people 只列當天上班的人，照發布資料的順序。
+ * 金鑰＝指令碼屬性 SCHED_READ_KEY（沒設就一律 unauthorized；跟發布用的 SCHED_SVC_KEY 分開，這把只能讀）。
+ * 只回光復（SCHED_STORE_CODE）、只回姓名與時段，不回員工編號、工時、請假別。 */
+function handleSchedDayRoster_(b) {
+  if (lineHubThrottled_('sdr', '*all*', 60, 60)) return { ok: false, error: 'too_many' };
+  var key = PropertiesService.getScriptProperties().getProperty('SCHED_READ_KEY');
+  if (!key || typeof b.key !== 'string' || b.key !== key) return { ok: false, error: 'unauthorized' };
+  var date = String(b.date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: 'bad_date' };
+  var from = schedStoreFrom_();
+  if (date < from) return { ok: true, date: date, from: from, source: 'gist' };
+  var p = schedPubPeriodOf_(date);
+  var data = p ? schedPubLoad_()[SCHED_STORE_CODE + '|' + p] : null;
+  if (!data) return { ok: true, date: date, from: from, source: 'store', published: false, people: [] };
+  var idx = schedPubIndex_(date), people = [];
+  (data.rows || []).forEach(function (r) {
+    var day = schedPubDay_((r.cells || [])[idx], data.shifts || []);
+    if (day && day.work) people.push({ name: String(r.name || ''), label: day.label, segs: day.segs });
+  });
+  return { ok: true, date: date, from: from, source: 'store', published: true, people: people };
+}
