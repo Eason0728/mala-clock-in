@@ -204,7 +204,7 @@ function handleLineQuickClock_(body) {
  * 共用：依定位挑店、找出這個 LINE 在那家店的名冊列與打卡紀錄。
  * 回傳 {fail: <打卡結果物件>} 或 {fix, st, ss, me, events}。
  */
-function lineHubResolve_(userId, body) {
+function lineHubResolve_(userId, body, opts) {
   var fix = { lat: Number(body.lat), lng: Number(body.lng),
               accuracy_m: body.accuracy === null || body.accuracy === undefined || body.accuracy === '' ? undefined : Number(body.accuracy) };
   var pick = lineHubPickStore_(fix, lineHubStores_());
@@ -232,6 +232,17 @@ function lineHubResolve_(userId, body) {
         return lineHubActive_(r) && lineHubNormName_(r.name) === nameKeys[0];
       });
       if (cand.length === 1 && !cand[0].line_user_id) suggest = names[nameKeys[0]];
+      // 7A（spec §4.4）：這家店名冊完全沒有這個名字、這個 LINE 只在另一家恰好綁了一位 → 請管理系統（mini）把關後自動加入
+      var mine = lineHubMine_(userId);
+      if (cand.length === 0 && opts && opts.autoSupport && mine.length === 1 && mine[0].st.code !== st.code) {
+        var auto = lineHubAutoSupport_(userId, st, mine[0], names[nameKeys[0]], body);
+        if (auto) {
+          var me2 = lineHubSheetRows_(ss, 'roster').filter(function (r) {
+            return lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId);
+          })[0];
+          if (me2) return { fix: fix, st: st, ss: ss, me: me2, events: liffEvents_(ss, liffStatusSince_()), first_support: true };
+        }
+      }
     }
     return { fail: { ok: false, code: 'not_bound', store_name: st.name, suggest_name: suggest,
              reason: '你的 LINE 帳號還沒有綁定「' + st.name + '」',
@@ -239,6 +250,41 @@ function lineHubResolve_(userId, body) {
   }
   var events = liffEvents_(ss, liffStatusSince_());   // 只讀今天＋前 12 小時（2026-10-12）
   return { fix: fix, st: st, ss: ss, me: me, events: events };
+}
+
+/* ── 7A 首次跨店自動加入（spec §4.4 v2）──
+ * 光復只持有 STAFF_HUB_URL（mini 的 auto-support 完整網址）與 STAFF_HUB_KEY（HUB_SVC_KEY）；任何一家店的 svc 金鑰都不在這裡。
+ * 兩個屬性有任一個沒設＝整段跳過，行為與沒有這個功能時完全相同。 */
+var LINE_HUB_STAFF_CODE_MAP = { '': 'gf', mztjs: 'mztjs', mztgf: 'mztgf', mztlzl: 'mztlzl', hq: 'hq', cf: 'cf' };
+
+/** op_id 照契約：hub:<store_code>:<sha256(userId) 前 12 碼>:<台北日期 yyyyMMdd> */
+function lineHubSupportOpId_(storeCode, userId) {
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(userId), Utilities.Charset.UTF_8);
+  var hex = bytes.map(function (b) { return ('0' + ((b < 0 ? b + 256 : b) & 255).toString(16)).slice(-2); }).join('');
+  return 'hub:' + storeCode + ':' + hex.slice(0, 12) + ':' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyyMMdd');
+}
+
+/** 通過 mini 把關並完成綁定才回 true；任何一步不成立回 false（呼叫端照原本「名冊上沒有你」處理）。 */
+function lineHubAutoSupport_(userId, st, home, name, body) {
+  var url, key;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    url = props.getProperty('STAFF_HUB_URL'); key = props.getProperty('STAFF_HUB_KEY');
+  } catch (e) { return false; }
+  if (!url || !key) return false;   // 沒設＝整段跳過，行為與沒有這個功能時完全相同
+  var storeCode = LINE_HUB_STAFF_CODE_MAP[String(st.code)], srcStore = LINE_HUB_STAFF_CODE_MAP[String(home.st.code)];
+  if (storeCode === undefined || srcStore === undefined || !String(home.row.emp_id || '')) return false;
+  if (lineHubThrottled_('support', userId, 3, 600)) return false;
+  var j = null;
+  try {
+    var resp = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', muteHttpExceptions: true, followRedirects: true,
+      payload: JSON.stringify({ hub_key: key, store_code: storeCode, src_store: srcStore, src_emp_id: String(home.row.emp_id),
+                                op_id: lineHubSupportOpId_(storeCode, userId) }) });
+    j = JSON.parse(resp.getContentText());
+  } catch (e) { return false; }
+  if (!j || j.ok !== true) return false;
+  var b = handleLineBindName_({ id_token: body.id_token, name: name, lat: body.lat, lng: body.lng, accuracy: body.accuracy });
+  return !!(b && b.ok);
 }
 
 /** 選上班／下班的防呆，與網頁版 clock.html updateButtonStates 同規則：
@@ -268,9 +314,10 @@ function handleLineHubStatus_(body) {
 }
 
 function lineHubQuickClockFor_(userId, body) {
-  var r = lineHubResolve_(userId, body);
+  var r = lineHubResolve_(userId, body, { autoSupport: true });
   if (r.fail) return r.fail;
   var fix = r.fix, st = r.st, me = r.me, events = r.events, autoNote = '';
+  if (r.first_support) autoNote = '已幫你加入「' + st.name + '」名冊，第一次支援請跟值班主管說一聲';
   var type;
   if (body.type === 'in' || body.type === 'out') {
     // 同仁自己選上班／下班（Eason 2026-10-08 改回手選）：防呆與網頁版相同

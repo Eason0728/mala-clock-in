@@ -126,6 +126,9 @@
     margin-left: 8px;
     white-space: nowrap;
   }
+  /* 7A 首次支援（2026-10-13）：LINE 自動加入、還沒有核定紀錄的人 */
+  .emp-name .emp-first { font-size: 12px; font-weight: 600; color: #b45309; background: #fef3c7; border-radius: 6px; padding: 1px 6px; margin-left: 8px; white-space: nowrap; }
+  .emp-first-rm { font-size: 13px; color: #c22a12; background: none; border: 1px solid #c22a12; border-radius: 8px; padding: 4px 10px; margin: 2px 0 6px; }
   .punch-summary {
     font-size: 13px;
     color: #6b524a;
@@ -1053,7 +1056,29 @@
         + (shiftCoversBreak(emp.shift_in, emp.shift_out) ? '・休' + breakHoursText() + 'h' : '');
       nameEl.appendChild(shiftEl);
     }
+    if (emp.first_support) {
+      var firstEl = document.createElement('span');
+      firstEl.className = 'emp-first';
+      firstEl.textContent = '首次支援';
+      nameEl.appendChild(firstEl);
+    }
     card.appendChild(nameEl);
+    if (emp.first_support) {
+      var rmBtn = document.createElement('button');
+      rmBtn.type = 'button'; rmBtn.className = 'emp-first-rm';
+      rmBtn.textContent = '不是本店支援，移除';
+      rmBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        if (!window.confirm('「' + emp.name + '」不是來本店支援的嗎？\n\n按確定會把他設為離職（不能再打卡），之後也不會再被自動加入。\n過去的紀錄會保留；設錯可在「同仁異動」恢復在職。')) return;
+        rmBtn.disabled = true; rmBtn.textContent = '處理中…';
+        apiPost({ action: 'mgr_set_active', mgr_key: mgrKey, emp_id: String(emp.emp_id), active: false }).then(function (res) {
+          if (!res || !res.ok) { rmBtn.disabled = false; rmBtn.textContent = '不是本店支援，移除'; window.alert((res && res.message) || '移除失敗，請再試一次'); return; }
+          loadDay(currentDate);
+          reloadRosterCard();
+        }).catch(function () { rmBtn.disabled = false; rmBtn.textContent = '不是本店支援，移除'; window.alert('連線失敗，請檢查網路後再試一次'); });
+      });
+      card.appendChild(rmBtn);
+    }
 
     var punchEl = document.createElement('div');
     punchEl.className = 'punch-summary';
@@ -2293,6 +2318,17 @@
     var page = STORE_CODE ? ('clock-' + STORE_CODE + '.html') : 'clock.html';
     return 'https://eason0728.github.io/mala-clock-in/' + page + '?k=' + key;
   }
+  /* 4.7：新增同仁改由管理系統做（後端回 add_redirect＝true 時）。網址是常數，沒設的店保持原按鈕。 */
+  var MGMT_SYSTEM_URL = 'https://PASTE_管理系統網址';   // ⚠ 佔位：管理系統的實際網址要在這裡填
+  function applyAddRedirect(on) {
+    if (!on) return false;
+    var cardEl = document.getElementById('addEmpCard');
+    if (!cardEl) return false;
+    cardEl.innerHTML = '<div class="ae-title">新進同仁報到</div>'
+      + '<div class="ae-hint">請到管理系統 → 我的資料 → 我的單位 新增，當天就能打卡。<br>'
+      + '<a href="' + MGMT_SYSTEM_URL + '" target="_blank" rel="noopener">' + MGMT_SYSTEM_URL + '</a></div>';
+    return true;
+  }
   (function initAddEmp() {
     var btn = document.getElementById('aeBtn');
     var input = document.getElementById('aeName');
@@ -2400,6 +2436,7 @@
         function (res) {
           myName = String(res.manager_name || '');
           card.style.display = 'block';
+          applyAddRedirect(!!res.add_redirect);
           render(res.roster || []);
         },
         { label: '同仁異動', slot: failSlot }

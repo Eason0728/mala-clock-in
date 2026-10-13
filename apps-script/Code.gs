@@ -1177,7 +1177,7 @@ function handleMgrRoster(body) {
              removed_at: String(normCellTs(r.removed_at) || ''),
              removed_by: String(r.removed_by || '') };
   });
-  return { ok: true, roster: roster, manager_name: String(mgr.name || '') };
+  return { ok: true, roster: roster, manager_name: String(mgr.name || ''), add_redirect: staffMasterAddRedirect_() };
 }
 
 /**
@@ -1423,6 +1423,17 @@ function handleRecentHires(body) {
  *   排序：有打卡的在前（依當日第一筆打卡時間），沒打卡的在後（依名冊順序）。
  *   名冊外（或已離職）但當天有事件的 emp_id 補在最後，防禦用。
  */
+/** 7A 自動加入的人（LineHub.gs → 管理系統同步員 svc_add）在名冊的 created_by（與同步員的 SUPPORT_CREATED_BY 同字串） */
+const FIRST_SUPPORT_CREATED_BY = 'LINE 自動（首次支援）';
+
+/** 值班核定頁「新增同仁」是否改成導向管理系統：指令碼屬性 STAFF_MASTER_ADD_REDIRECT＝'1'，或 CONFIG 同名欄位＝'1'。未設＝false（完全照舊）。 */
+function staffMasterAddRedirect_() {
+  try {
+    if (String(CONFIG.STAFF_MASTER_ADD_REDIRECT || '') === '1') return true;
+    return PropertiesService.getScriptProperties().getProperty('STAFF_MASTER_ADD_REDIRECT') === '1';
+  } catch (e) { return false; }
+}
+
 function handleMgrDay(body) {
   const ss = getSS();
   const mgrSheet = ss.getSheetByName('managers');
@@ -1463,13 +1474,17 @@ function handleMgrDay(body) {
     if (String(e.status) !== 'ok') attemptsCount[emp] = (attemptsCount[emp] || 0) + 1;
   });
 
+  // 「首次支援」標記：7A 自動加入、且從來沒有任何核定紀錄（主管核定過一次＝本店已認這個人，標記就消失）
+  const everApproved = {};
+  approvedRows.forEach(function (a) { everApproved[String(a.emp_id)] = true; });
   // roster 全部 active 同仁都列；名冊外但當天有事件者補最後（防禦，理論上不會發生）
   const listed = [];
   const seen = {};
   rosterRows.forEach(function (r) {
     if (String(r.active).toLowerCase() !== 'true') return;
     const emp = String(r.emp_id);
-    listed.push({ emp_id: emp, name: String(r.name), rosterIdx: listed.length });
+    listed.push({ emp_id: emp, name: String(r.name), rosterIdx: listed.length,
+                  first_support: String(r.created_by) === FIRST_SUPPORT_CREATED_BY && !everApproved[emp] });
     seen[emp] = true;
   });
   Object.keys(firstTs).sort().forEach(function (emp) {
@@ -1515,6 +1530,7 @@ function handleMgrDay(body) {
       shift_in: shiftOf(item.emp_id, 'shift_in', CONFIG.DEFAULT_SHIFT_IN),
       shift_out: shiftOf(item.emp_id, 'shift_out', CONFIG.DEFAULT_SHIFT_OUT),
     };
+    if (item.first_support) out.first_support = true;
     const rec = (approvedMap[date] || {})[item.emp_id];
     if (rec) {
       out.approved = {
@@ -1527,7 +1543,7 @@ function handleMgrDay(body) {
     return out;
   });
 
-  return { ok: true, date: date, employees: employees };
+  return { ok: true, date: date, employees: employees, add_redirect: staffMasterAddRedirect_() };
 }
 
 /**
