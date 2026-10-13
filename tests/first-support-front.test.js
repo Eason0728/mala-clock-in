@@ -95,4 +95,14 @@ ok('applyAddRedirect：on＝說明＋管理系統網址並拿掉建立帳號鈕�
   const h = fs.readFileSync(path.join(ROOT, 'manager.html'), 'utf8');
   assert(/applyAddRedirect\(!!res\.add_redirect\)/.test(h), '載入名冊後要套用旗標');
 });
+ok('#28 移除確認文字請主管聯絡總部（不教他自己去同仁異動恢復）；#33 沒有過期的「佔位」註解', () => {
+  PAGES.forEach(f => {
+    const h = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    const click = extractFn(h, 'buildEmployeeCard');
+    const msg = click.slice(click.indexOf('window.confirm('), click.indexOf('return;', click.indexOf('window.confirm(')));
+    assert(msg.includes('移除後若要恢復，請聯絡總部處理'), f);
+    assert(!msg.includes('同仁異動'), f);
+    assert(!/佔位/.test(h), f + ' 還有「佔位」註解');
+  });
+});
 console.log(`\n✅ ${n} 項通過`);

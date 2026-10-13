@@ -295,10 +295,15 @@ ok('審查#8 同 op_id 重送回同結果（即使狀態已被別的 op 改過�
   assert.strictEqual(rowOf(e, 'E01').last_op, 'opA');
   // 別的管道（舊的 mgr_set_active 手動恢復）改回在職，last_op 仍是 opA
   const h = e.sheets.roster.data[0]; e.sheets.roster.data[1][h.indexOf('active')] = true;
-  // opA 重送：回 opA 的結果，不可再把人停用
-  assert.deepStrictEqual(e.svc('svc_set_active', A), { ok: true, emp_id: 'E01', active: false });
+  // opA 重送但現況（被別的管道恢復）與目標不同 → conflict，不得回成功、不得再翻
+  const cf = e.svc('svc_set_active', A);
+  assert.deepStrictEqual(cf.ok, false); assert.strictEqual(cf.error, 'conflict'); assert.strictEqual(cf.active, true);
   assert.strictEqual(rowOf(e, 'E01').active, true, '重送不得再翻一次');
+  // 現況與目標一致時重送 → ok 且帶 active
+  e.sheets.roster.data[1][h.indexOf('active')] = false;
+  assert.deepStrictEqual(e.svc('svc_set_active', A), { ok: true, emp_id: 'E01', active: false });
   // 不同 op_id 照常執行
+  e.sheets.roster.data[1][h.indexOf('active')] = true;
   e.svc('svc_set_active', { emp_id: 'E01', active: false, op_id: 'opC', by: 'b' });
   assert.strictEqual(rowOf(e, 'E01').active, false); assert.strictEqual(rowOf(e, 'E01').last_op, 'opC');
 });

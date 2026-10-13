@@ -235,7 +235,7 @@ function lineHubResolve_(userId, body, opts) {
       // 7A（spec §4.4）：這家店名冊完全沒有這個名字、這個 LINE 只在另一家恰好綁了一位 → 請管理系統（mini）把關後自動加入
       var mine = lineHubMine_(userId);
       if (cand.length === 0 && opts && opts.autoSupport && mine.length === 1 && mine[0].st.code !== st.code) {
-        var auto = lineHubAutoSupport_(userId, st, mine[0], names[nameKeys[0]], body);
+        var auto = lineHubAutoSupport_(userId, st, mine[0], body, ss);
         if (auto) {
           var me2 = lineHubSheetRows_(ss, 'roster').filter(function (r) {
             return lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId);
@@ -265,7 +265,7 @@ function lineHubSupportOpId_(storeCode, userId) {
 }
 
 /** 通過 mini 把關並完成綁定才回 true；任何一步不成立回 false（呼叫端照原本「名冊上沒有你」處理）。 */
-function lineHubAutoSupport_(userId, st, home, name, body) {
+function lineHubAutoSupport_(userId, st, home, body, ss) {
   var url, key;
   try {
     var props = PropertiesService.getScriptProperties();
@@ -274,6 +274,15 @@ function lineHubAutoSupport_(userId, st, home, name, body) {
   if (!url || !key) return false;   // 沒設＝整段跳過，行為與沒有這個功能時完全相同
   var storeCode = LINE_HUB_STAFF_CODE_MAP[String(st.code)], srcStore = LINE_HUB_STAFF_CODE_MAP[String(home.st.code)];
   if (storeCode === undefined || srcStore === undefined || !String(home.row.emp_id || '')) return false;
+  // G10：不採用 lineHubMine_ 的快取——即時重讀來源列，確認仍在職且仍綁同一個 LINE
+  var homeRows;
+  try { homeRows = lineHubRoster_(home.st); } catch (e) { return false; }
+  var homeNow = (homeRows || []).filter(function (r) { return String(r.emp_id) === String(home.row.emp_id); })[0];
+  if (!homeNow || !lineHubActive_(homeNow) || String(homeNow.line_user_id || '') !== String(userId)) return false;
+  // #27：B 店名冊「全部」列（含離職）只要有任何一列已綁這個 LINE 就不自動加（被移除過的人不能繞回來）
+  var bRows;
+  try { bRows = lineHubSheetRows_(ss, 'roster'); } catch (e) { return false; }
+  if (bRows.some(function (r) { return String(r.line_user_id || '') === String(userId); })) return false;
   if (lineHubThrottled_('support', userId, 3, 600)) return false;
   var j = null;
   try {
@@ -283,8 +292,17 @@ function lineHubAutoSupport_(userId, st, home, name, body) {
     j = JSON.parse(resp.getContentText());
   } catch (e) { return false; }
   if (!j || j.ok !== true) return false;
-  var b = handleLineBindName_({ id_token: body.id_token, name: name, lat: body.lat, lng: body.lng, accuracy: body.accuracy });
-  return !!(b && b.ok);
+  // #26：不靠姓名——用 mini 回的 emp_id 在 B 店名冊找那一列，用該列的 key 直接綁定
+  var empId = typeof j.emp_id === 'string' ? j.emp_id.trim() : '';
+  if (!empId) return false;
+  var fresh;
+  try { fresh = lineHubSheetRows_(ss, 'roster'); } catch (e) { return false; }
+  var row = fresh.filter(function (r) { return String(r.emp_id) === empId; })[0];
+  if (!row || !lineHubActive_(row) || row.line_user_id || !String(row.key || '')) return false;
+  var bj = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(row.key), via: 'auto' });
+  if (!bj || !bj.ok) return false;
+  lineHubForget_(userId);
+  return true;
 }
 
 /** 選上班／下班的防呆，與網頁版 clock.html updateButtonStates 同規則：

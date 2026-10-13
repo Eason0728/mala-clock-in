@@ -7,7 +7,7 @@
  *   svc_payroll_names  薪資主檔的 store／emp_id／name（不含任何金額欄）
  * 規則：
  *   ‧svc_key 要等於指令碼屬性 STAFF_SVC_KEY（沒設就全部拒絕 unauthorized），固定時間比對；v 不是 1 → bad_version。
- *   ‧回應失敗格式 {ok:false, error:<代碼>, message:<中文>}；代碼只用 unauthorized bad_version bad_input busy duplicate_name not_found disabled（svc_link 對停用者）；doPost 層另可能回 unknown_action／bad_json／server_error。
+ *   ‧回應失敗格式 {ok:false, error:<代碼>, message:<中文>}；代碼只用 unauthorized bad_version bad_input busy duplicate_name not_found disabled（svc_link 對停用者）conflict（set_active 同 op_id 重送但名冊現況與目標不同，附 active＝現況）；doPost 層另可能回 unknown_action／bad_json／server_error。
  *   ‧svc_add 不回 key、不另存結果：冪等以名冊上的 origin_op 為準，寫名冊那一刻就是唯一的「已做」紀錄。
  *   ‧寫名冊一律依試算表「實際表頭」定位欄位，不用位置 appendRow（欄序被打亂也寫得對）。
  * 回退：刪掉 Code.gs 分派表那三行＋本檔即回到原狀。 */
@@ -161,7 +161,11 @@ function handleSvcSetActive_(body) {
     var row = findRosterByEmpId(rows, empId);
     if (!row) return svcFail_('not_found', '名冊裡找不到這位同仁');
     // 冪等：這個 op_id 就是這位同仁最後一次執行的 op → 回當時的結果，不再動（即使之後被別的 op 改過）
-    if (String(row.last_op) === body.op_id) return { ok: true, emp_id: empId, active: active };
+    if (String(row.last_op) === body.op_id) {
+      var cur = svcIsTrue_(row.active);
+      if (cur !== active) return { ok: false, error: 'conflict', message: '這個 op_id 執行過，但名冊現況已被別的動作改變', active: cur };
+      return { ok: true, emp_id: empId, active: active };
+    }
     if (svcIsTrue_(row.active) === active) return { ok: true, emp_id: empId, active: active };   // 已是目標狀態
     var name = String(row.name).trim();
     if (active) {

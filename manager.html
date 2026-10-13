@@ -1069,7 +1069,7 @@
       rmBtn.textContent = '不是本店支援，移除';
       rmBtn.addEventListener('click', function (ev) {
         ev.stopPropagation();
-        if (!window.confirm('「' + emp.name + '」不是來本店支援的嗎？\n\n按確定會把他設為離職（不能再打卡），之後也不會再被自動加入。\n過去的紀錄會保留；設錯可在「同仁異動」恢復在職。')) return;
+        if (!window.confirm('「' + emp.name + '」不是來本店支援的嗎？\n\n按確定會把他設為離職（不能再打卡），之後也不會再被自動加入。\n過去的紀錄會保留；移除後若要恢復，請聯絡總部處理。')) return;
         rmBtn.disabled = true; rmBtn.textContent = '處理中…';
         apiPost({ action: 'mgr_set_active', mgr_key: mgrKey, emp_id: String(emp.emp_id), active: false }).then(function (res) {
           if (!res || !res.ok) { rmBtn.disabled = false; rmBtn.textContent = '不是本店支援，移除'; window.alert((res && res.message) || '移除失敗，請再試一次'); return; }
@@ -2319,7 +2319,7 @@
     return 'https://eason0728.github.io/mala-clock-in/' + page + '?k=' + key;
   }
   /* 4.7：新增同仁改由管理系統做（後端回 add_redirect＝true 時）。網址是常數，沒設的店保持原按鈕。 */
-  var MGMT_SYSTEM_URL = 'https://dzy.mozhuting.com/';   // ⚠ 佔位：管理系統的實際網址要在這裡填
+  var MGMT_SYSTEM_URL = 'https://dzy.mozhuting.com/';
   function applyAddRedirect(on) {
     if (!on) return false;
     var cardEl = document.getElementById('addEmpCard');

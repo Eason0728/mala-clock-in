@@ -81,8 +81,8 @@ const punch = (m, store) => m.sb.handleLineQuickClock_({ id_token: 'TOK_U1', lat
 function scene(extra) {
   const sheets = { hq: { roster: [R()], events: [] }, mztjs: { roster: [], events: [] } };
   const o = Object.assign({ sheets, props: P }, extra || {});
-  if (!o.hubReply) o.hubReply = () => { sheets.mztjs.roster.push({ emp_id: 'J1', name: '測試甲', key: 'kJ', active: 'true', line_user_id: '', created_by: 'LINE 自動（首次支援）' }); return { ok: true, emp_id: 'J1' }; };
-  return make(o);
+  if (!o.hubReply) o.hubReply = () => { sheets.mztjs.roster.push({ emp_id: 'J1', name: '測試甲（平台姓名）', key: 'kJ', active: 'true', line_user_id: '', created_by: 'LINE 自動（首次支援）' }); return { ok: true, emp_id: 'J1' }; };
+  return Object.assign(make(o), { sheets });
 }
 const NOT_BOUND = (r) => assert.strictEqual(r.result.code, 'not_bound');
 
@@ -146,6 +146,37 @@ ok('條件不成立（各一）→ 不呼叫 mini，走回原流程', () => {
   const i = scene(); const st = i.sb.lineHubResolve_('U1', { lat: js.lat, lng: js.lng, accuracy: 10 });
   assert.strictEqual(i.hubCalls.length, 0); assert.strictEqual(st.fail.code, 'not_bound');
 });
+ok('#26 綁定靠 mini 回的 emp_id 與該列 key，不靠姓名（平台姓名與 home 不同也綁得上；綁的是 mini 指的那一列）', () => {
+  const sheets = { hq: { roster: [R()], events: [] }, mztjs: { roster: [{ emp_id: 'J7', name: '測試丙', key: 'kOLD', active: 'true', line_user_id: 'U_OTHER' }], events: [] } };
+  const m = make({ props: P, sheets, hubReply: () => { sheets.mztjs.roster.push({ emp_id: 'J8', name: '完全不同的平台姓名', key: 'kNEW', active: 'true', line_user_id: '', created_by: 'LINE 自動（首次支援）' }); return { ok: true, emp_id: 'J8' }; } });
+  const r = punch(m);
+  assert.strictEqual(m.hubCalls.length, 1);
+  assert.strictEqual(m.storeCalls[0].body.action, 'liff_bind'); assert.strictEqual(m.storeCalls[0].body.key, 'kNEW');
+  assert.strictEqual(r.result.ok, true);
+});
+ok('#26 mini 回 ok 但沒給 emp_id／給的列不存在／已離職／已綁別人 → 不綁、不打卡', () => {
+  [{ ok: true }, { ok: true, emp_id: 'NOPE' }, { ok: true, emp_id: 'J1', _row: { active: 'false' } }, { ok: true, emp_id: 'J1', _row: { line_user_id: 'U_X' } }].forEach((rep, k) => {
+    const sheets = { hq: { roster: [R()], events: [] }, mztjs: { roster: [], events: [] } };
+    const m = make({ props: P, sheets, hubReply: () => { sheets.mztjs.roster.push(Object.assign({ emp_id: 'J1', name: '測試甲', key: 'kJ', active: 'true', line_user_id: '' }, rep._row)); return { ok: rep.ok, emp_id: rep.emp_id }; } });
+    const r = punch(m);
+    assert(!m.storeCalls.some(c => c.body.action === 'liff_bind' || c.body.action === 'liff_clock'), '情況 ' + k);
+    NOT_BOUND(r);
+  });
+});
+ok('#27 B 店名冊有任何列（含離職）已綁這個 LINE → 不問 mini，回原訊息', () => {
+  const m = make({ props: P, sheets: { hq: { roster: [R()], events: [] }, mztjs: { roster: [{ emp_id: 'J1', name: '測試甲', key: 'kJ', active: 'false', line_user_id: 'U1' }], events: [] } } });
+  const r = punch(m); assert.strictEqual(m.hubCalls.length, 0); NOT_BOUND(r);
+  assert.strictEqual(m.storeCalls.length, 0);
+});
+ok('G10 不採用 lineHubMine_ 快取：來源列已離職／已改綁別的 LINE → 不問 mini', () => {
+  [{ active: 'false' }, { line_user_id: 'U_NEW' }].forEach((chg, k) => {
+    const m = scene();
+    assert.strictEqual(m.sb.lineHubMine_('U1').length, 1, '先把快取養起來');
+    Object.assign(m.sheets.hq.roster[0], chg);   // 快取仍說「已綁」，但來源列實際已變
+    const r = punch(m);
+    assert.strictEqual(m.hubCalls.length, 0, '情況 ' + k); NOT_BOUND(r);
+  });
+});
 ok('mini 不通／denied／回壞資料／ok 但綁不起來 → 回原本「名冊上沒有你」訊息，不打卡', () => {
   [{ hubReply: () => ({ ok: false, error: 'not_confirmed' }) }, { hubThrow: true }, { hubReply: () => '<html>502</html>' },
    { hubReply: () => ({ ok: false }) }, { hubReply: () => ({}) }, { hubReply: () => ({ ok: 'true' }) },
@@ -167,7 +198,7 @@ ok('store_code 對照表：光復（空字串）→ gf，其餘同名；涵蓋 s
 ok('光復端從光復店出發也能用 gf（B 店＝光復、home＝金山）', () => {
   const sheets = { '': { roster: [], events: [] }, mztjs: { roster: [R({ emp_id: 'J1', key: 'kJ' })] } };
   const gf = STORES.find(s => s.code === '');
-  const m = make({ props: P, sheets, hubReply: () => { sheets[''].roster.push({ emp_id: 'E01', name: '測試甲', key: 'kE', active: 'true', line_user_id: '', created_by: 'LINE 自動（首次支援）' }); return { ok: true }; } });
+  const m = make({ props: P, sheets, hubReply: () => { sheets[''].roster.push({ emp_id: 'E01', name: '測試甲（平台姓名）', key: 'kE', active: 'true', line_user_id: '', created_by: 'LINE 自動（首次支援）' }); return { ok: true, emp_id: 'E01' }; } });
   const r = punch(m, gf);
   assert.strictEqual(m.hubCalls[0].body.store_code, 'gf'); assert.strictEqual(m.hubCalls[0].body.src_store, 'mztjs');
   assert(/^hub:gf:/.test(m.hubCalls[0].body.op_id)); assert.strictEqual(r.result.ok, true);
