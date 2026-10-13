@@ -267,6 +267,11 @@ function doPost(e) {
     Object.keys(LINE_HUB_HANDLERS).forEach(function (k) { handlers[k] = LINE_HUB_HANDLERS[k]; });
   }
 
+  // 管理系統呼叫的名冊服務（SvcStaff.gs）；不存在時完全不影響其他功能。
+  if (typeof SVC_STAFF_HANDLERS !== 'undefined') {
+    Object.keys(SVC_STAFF_HANDLERS).forEach(function (k) { handlers[k] = SVC_STAFF_HANDLERS[k]; });
+  }
+
   const handler = handlers[body.action];
   if (!handler) {
     return jsonOut({ ok: false, error: 'unknown_action' });

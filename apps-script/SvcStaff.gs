@@ -1,0 +1,201 @@
+/* ══ 管理系統呼叫的名冊服務端點（2026-10-13，規格 ~/dzy docs/personnel/master-data/spec.md 第 3 節）══
+ * 管理系統（Mac mini 同步員）POST {action, v:1, svc_key, ...}，這裡提供：
+ *   svc_roster         唯讀名冊＋每人最近打卡日（絕不回 key、device_id、line_user_id）
+ *   svc_add            新增同仁（與 mgr_add_employee 同一把 ScriptLock；冪等靠名冊 origin_op 欄）
+ *   svc_set_active     停用／恢復在職（寫法同 mgr_set_active）
+ *   svc_link           只回該人的打卡連結金鑰（不寫任何紀錄）
+ *   svc_payroll_names  薪資主檔的 store／emp_id／name（不含任何金額欄）
+ * 規則：
+ *   ‧svc_key 要等於指令碼屬性 STAFF_SVC_KEY（沒設就全部拒絕 unauthorized），固定時間比對；v 不是 1 → bad_version。
+ *   ‧回應失敗格式 {ok:false, error:<代碼>, message:<中文>}；代碼只用 unauthorized bad_version bad_input busy duplicate_name not_found。
+ *   ‧svc_add 不回 key、不另存結果：冪等以名冊上的 origin_op 為準，寫名冊那一刻就是唯一的「已做」紀錄。
+ *   ‧寫名冊一律依試算表「實際表頭」定位欄位，不用位置 appendRow（欄序被打亂也寫得對）。
+ * 回退：刪掉 Code.gs 分派表那三行＋本檔即回到原狀。 */
+
+var SVC_STAFF_EXTRA_HEADERS = ['src_store', 'src_emp_id', 'origin_op'];
+
+function svcFail_(error, message) { return { ok: false, error: error, message: message }; }
+
+/** 固定時間字串比對（逐字元 XOR 累加，長度不同也跑完整個迴圈） */
+function svcEq_(a, b) {
+  a = String(a); b = String(b);
+  var n = Math.max(a.length, b.length), diff = a.length ^ b.length;
+  for (var i = 0; i < n; i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  return diff === 0;
+}
+
+/** 驗金鑰與版本；通過回 null，否則回錯誤物件 */
+function svcAuth_(body) {
+  var key = PropertiesService.getScriptProperties().getProperty('STAFF_SVC_KEY');
+  if (!key || typeof body.svc_key !== 'string' || !svcEq_(body.svc_key, key)) {
+    return svcFail_('unauthorized', '金鑰不正確或服務未啟用');
+  }
+  if (body.v !== 1) return svcFail_('bad_version', '協定版本不支援');
+  return null;
+}
+
+/** 名冊右側只補 src_store, src_emp_id, origin_op（只補不改） */
+function svcEnsureHeaders_(sheet) {
+  var head = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(String);
+  SVC_STAFF_EXTRA_HEADERS.forEach(function (h) {
+    if (head.indexOf(h) === -1) { sheet.getRange(1, head.length + 1).setValue(h); head.push(h); }
+  });
+}
+
+function svcIsTrue_(v) { return v === true || String(v).toLowerCase() === 'true'; }
+
+/** 儲存格時間 → 'yyyy-MM-dd HH:mm:ss'（契約格式；台北時間，去掉 T 與時區尾巴） */
+function svcTime_(v) {
+  var s = String(normCellTs(v) || '');
+  var m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
+  return m ? m[1] + ' ' + m[2] : s;
+}
+
+/** 每人最近一次打卡日（只讀 events 底部分段；全部在職者都見到就停，最多回溯約 400 天） */
+function svcLastPunch_(ss, empIds) {
+  var out = {};
+  var sh = ss.getSheetByName('events');
+  if (!sh || !empIds.length) return out;
+  var want = {}, seen = {}; empIds.forEach(function (e) { want[e] = true; });
+  var left = empIds.length;
+  var since = Date.now() - 400 * 86400000;
+  var data = readEventsSince(sh, since, function (objs) {
+    objs.forEach(function (e) {
+      var id = String(e.emp_id);
+      if (want[id] && !seen[id] && String(e.status).indexOf('rejected') !== 0) { seen[id] = true; left--; }
+    });
+    return left <= 0;
+  });
+  data.rows.forEach(function (e) {
+    var id = String(e.emp_id);
+    if (!want[id] || String(e.status).indexOf('rejected') === 0) return;
+    var d = String(normCellTs(e.ts)).slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d) && (!out[id] || d > out[id])) out[id] = d;
+  });
+  return out;
+}
+
+function handleSvcRoster_(body) {
+  var bad = svcAuth_(body); if (bad) return bad;
+  var ss = getSS();
+  var sh = ss.getSheetByName('roster');
+  if (!sh) return { ok: true, rows: [] };
+  var rows = readSheetAsObjects(sh).rows.filter(function (r) { return String(r.emp_id) !== ''; });
+  var last = svcLastPunch_(ss, rows.map(function (r) { return String(r.emp_id); }));
+  return { ok: true, rows: rows.map(function (r) {
+    var id = String(r.emp_id);
+    return { emp_id: id, name: String(r.name),
+             active: svcIsTrue_(r.active),
+             created_at: svcTime_(r.created_at),
+             removed_at: svcTime_(r.removed_at),
+             line_bound: String(r.line_user_id || '') !== '',
+             last_punch: last[id] || '',
+             src_store: String(r.src_store || ''),
+             src_emp_id: String(r.src_emp_id || '') };
+  }) };
+}
+
+function svcAddLocked_(body, name) {
+  var ss = getSS();
+  var sh = ss.getSheetByName('roster');
+  if (!sh) return svcFail_('not_found', '找不到名冊分頁');
+  svcEnsureHeaders_(sh);
+  var rows = readSheetAsObjects(sh).rows;
+  // 冪等：名冊已有這個 op_id 建的列 → 回那列（崩潰後重送也找得回）
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i].origin_op) === body.op_id) return { ok: true, emp_id: String(rows[i].emp_id) };
+  }
+  var dup = rows.filter(function (r) { return String(r.name).trim() === name && svcIsTrue_(r.active); })[0];
+  if (dup) return svcFail_('duplicate_name', '本店已有在職同仁同名');
+  var empId = nextEmpId(rows);
+  var now = nowTaipeiIso();
+  var vals = { emp_id: empId, name: name, key: genKey(), active: true, created_at: now,
+               created_by: body.created_by, src_store: String(body.src_store || ''),
+               src_emp_id: String(body.src_emp_id || ''), origin_op: body.op_id };
+  // 依「實際表頭」組列：表頭是什麼順序就照什麼順序放
+  var head = sh.getRange(1, 1, 1, Math.max(1, sh.getLastColumn())).getValues()[0].map(String);
+  var row = head.map(function (h) { return Object.prototype.hasOwnProperty.call(vals, h) ? vals[h] : ''; });
+  var at = sh.getLastRow() + 1;
+  ['created_at', 'src_store', 'src_emp_id', 'origin_op'].forEach(function (h) {
+    var c = head.indexOf(h) + 1;
+    if (c) sh.getRange(at, c).setNumberFormat('@');
+  });
+  sh.getRange(at, 1, 1, row.length).setValues([row]);   // 一次寫完整列：寫入成功＝origin_op 同時落地
+  SpreadsheetApp.flush();
+  return { ok: true, emp_id: empId };
+}
+
+function handleSvcAdd_(body) {
+  var bad = svcAuth_(body); if (bad) return bad;
+  var name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name || name.length > 20) return svcFail_('bad_input', '姓名不可空白且最多 20 字');
+  if (typeof body.op_id !== 'string' || !body.op_id || body.op_id.length > 80) return svcFail_('bad_input', 'op_id 不正確');
+  if (typeof body.created_by !== 'string' || !body.created_by.trim()) return svcFail_('bad_input', 'created_by 不可空白');
+  var lock = LockService.getScriptLock();   // 與 handleMgrAddEmployee 同一把
+  try { lock.waitLock(15000); } catch (e) { return svcFail_('busy', '另一個新增動作進行中，請稍後再試'); }
+  try { return svcAddLocked_(body, name); } finally { lock.releaseLock(); }
+}
+
+function handleSvcSetActive_(body) {
+  var bad = svcAuth_(body); if (bad) return bad;
+  var empId = typeof body.emp_id === 'string' ? body.emp_id.trim() : '';
+  var a = body.active;
+  if (!empId || typeof body.op_id !== 'string' || !body.op_id ||
+      !(a === true || a === false || a === 'true' || a === 'false')) return svcFail_('bad_input', '輸入不正確');
+  var active = (a === true || a === 'true');
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(15000); } catch (e) { return svcFail_('busy', '另一個名冊動作進行中，請稍後再試'); }
+  try {
+    var sh = getSS().getSheetByName('roster');
+    if (!sh) return svcFail_('not_found', '找不到名冊分頁');
+    ensureRosterHeaders(sh);
+    var rows = readSheetAsObjects(sh).rows;
+    var row = findRosterByEmpId(rows, empId);
+    if (!row) return svcFail_('not_found', '名冊裡找不到這位同仁');
+    if (svcIsTrue_(row.active) === active) return { ok: true, emp_id: empId, active: active };   // 已是目標狀態
+    var name = String(row.name).trim();
+    if (active) {
+      var dup = rows.filter(function (r) {
+        return String(r.emp_id) !== empId && String(r.name).trim() === name && svcIsTrue_(r.active);
+      })[0];
+      if (dup) return svcFail_('duplicate_name', '本店已有在職同仁同名');
+    }
+    var now = nowTaipeiIso();
+    setRosterCell(sh, row.__rowIndex, 'active', active);
+    setRosterCell(sh, row.__rowIndex, 'removed_at', active ? '' : now, true);
+    setRosterCell(sh, row.__rowIndex, 'removed_by', active ? '' : String(body.by || ''));
+    SpreadsheetApp.flush();
+    return { ok: true, emp_id: empId, active: active };
+  } finally { lock.releaseLock(); }
+}
+
+function handleSvcLink_(body) {
+  var bad = svcAuth_(body); if (bad) return bad;
+  var empId = typeof body.emp_id === 'string' ? body.emp_id.trim() : '';
+  if (!empId) return svcFail_('bad_input', '缺少 emp_id');
+  var sh = getSS().getSheetByName('roster');
+  var row = sh ? findRosterByEmpId(readSheetAsObjects(sh).rows, empId) : null;
+  if (!row || !String(row.key || '')) return svcFail_('not_found', '名冊裡找不到這位同仁');
+  return { ok: true, key: String(row.key) };
+}
+
+function handleSvcPayrollNames_(body) {
+  var bad = svcAuth_(body); if (bad) return bad;
+  var sh = getSS().getSheetByName('payroll_master');
+  if (!sh) return { ok: true, rows: [] };
+  var def = (typeof PAY_DEFAULT_STORE !== 'undefined') ? PAY_DEFAULT_STORE : '';
+  var rows = [];
+  readSheetAsObjects(sh).rows.forEach(function (r) {
+    if (String(r.emp_id) === '' && String(r.name) === '') return;
+    rows.push({ store: String(r.store || '') || def, emp_id: String(r.emp_id), name: String(r.name) });   // 只取三欄，絕不帶金額
+  });
+  return { ok: true, rows: rows };
+}
+
+var SVC_STAFF_HANDLERS = {
+  svc_roster: handleSvcRoster_,
+  svc_add: handleSvcAdd_,
+  svc_set_active: handleSvcSetActive_,
+  svc_link: handleSvcLink_,
+  svc_payroll_names: handleSvcPayrollNames_,
+};
