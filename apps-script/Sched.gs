@@ -4,7 +4,7 @@
  * 規則（Eason 2026-10-10 定）：只看光復、只看自己、本月＋上個月、排班系統「鎖定」的月份才算發布、離職就看不到。
  * ⚠ Gist 裡有薪資、電話、生日：這裡只取班表需要的欄位，回應只有這位同仁自己的日期／班別／時段／時數。
  * ⚠ 四週變形版（mala-schedule-4w）是另一顆 Gist，這裡不讀。 */
-var SCHED_GIST_URL = 'https://gist.githubusercontent.com/Eason0728/1f7ecf0be418990e24d7b2351572e4aa/raw/mala-schedule.json';
+var SCHED_GIST_URL = 'https://gist.githubusercontent.com/Eason0728/47c876cc1cad57a1735e6a9c68d19103/raw/mala-schedule.json';
 var SCHED_CACHE_KEY = 'sched:v2';   // 內容形狀改了就換版號（v2：加 ft／breakH／isOff），免得部署後讀到舊形狀
 var SCHED_CACHE_SEC = 120;
 var SCHED_STORE_CODE = '';   // 只接光復（lineHubStores_ 裡光復的 code 是空字串）
