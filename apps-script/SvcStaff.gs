@@ -176,6 +176,7 @@ function handleSvcLink_(body) {
   var sh = getSS().getSheetByName('roster');
   var row = sh ? findRosterByEmpId(readSheetAsObjects(sh).rows, empId) : null;
   if (!row || !String(row.key || '')) return svcFail_('not_found', '名冊裡找不到這位同仁');
+  if (String(row.active).toLowerCase() !== 'true') return svcFail_('disabled', '這位同仁已停用，不提供打卡連結');
   return { ok: true, key: String(row.key) };
 }
 

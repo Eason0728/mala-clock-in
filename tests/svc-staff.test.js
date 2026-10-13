@@ -255,6 +255,11 @@ ok('A4 不存在 → not_found（set_active／link 都是）', () => {
   assert.strictEqual(e.svc('svc_set_active', { emp_id: 'E99', active: false, op_id: 'o', by: 'b' }).error, 'not_found');
   assert.strictEqual(e.svc('svc_link', { emp_id: 'E99' }).error, 'not_found');
 });
+ok('A4 svc_link 對已停用的人回 disabled，不給金鑰', () => {
+  const e = rosterEnv(people());
+  const r = e.svc('svc_link', { emp_id: 'E02' });
+  assert.strictEqual(r.error, 'disabled'); assert.strictEqual(r.key, undefined);
+});
 ok('A4 停用寫 active／removed_at／removed_by；回 {ok,emp_id,active}', () => {
   const e = rosterEnv(people());
   const r = e.svc('svc_set_active', { emp_id: 'E01', active: false, op_id: 'o1', by: '管理系統:DZY014' });
@@ -286,8 +291,9 @@ ok('A4 op_id 冪等：已是目標狀態直接回 ok，不改 removed_at', () =>
 ok('A4 svc_link 只回該人 key、不寫任何東西', () => {
   const e = rosterEnv(people());
   const snap = JSON.stringify(e.sheets);
-  const r = e.svc('svc_link', { emp_id: 'E02' });
-  assert.deepStrictEqual(r, { ok: true, key: 'KEYYI00000000000BBBB' });
+  const r = e.svc('svc_link', { emp_id: 'E01' });
+  assert.ok(r.ok && typeof r.key === 'string' && r.key.length >= 10, '在職者拿得到金鑰');
+  assert.strictEqual(r.key, rowOf(e, 'E01').key);
   assert.strictEqual(JSON.stringify(e.sheets), snap, '不得改動任何分頁（含表頭）');
   assert.deepStrictEqual(Object.keys(e.sheets).sort(), ['events', 'roster']);
 });
