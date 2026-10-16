@@ -100,3 +100,44 @@ ok('回 now（台北時間字串），mini 拿來判斷副本新不新', () => {
 });
 
 console.log('\nrelay-snapshot: ' + n + ' 項通過');
+
+// ── relay_setup（2026-10-16，P5）：一次性設定 RELAY_KEY 並取回（連同 QR_SECRET），給 Mac mini 的設定檔用。
+// 守：只認管理金鑰；RELAY_KEY 已設（≥16 字）就拒絕、不回任何金鑰；產生的金鑰 ≥32 字；設好後 relay_snapshot 用得了。
+function makeSetup(opts) {
+  opts = opts || {};
+  const props = Object.assign({}, opts.props || {});
+  let uuidN = 0;
+  const sb = {
+    console, Date, JSON, Math, String, Number, isNaN, isFinite, parseInt, parseFloat, Object, Array,
+    CONFIG: { ADMIN_KEY: 'ADM-test' },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => (k in props ? props[k] : null), setProperty: (k, v) => { props[k] = String(v); } }) },
+    Utilities: { getUuid: () => '11111111-2222-3333-4444-' + String(++uuidN).padStart(12, '0') },
+    checkAdmin: (b) => b.admin_key === 'ADM-test',
+    reqQrSecret_: () => { if (!props.QR_SECRET) props.QR_SECRET = 'qr-generated'; return props.QR_SECRET; },
+  };
+  vm.createContext(sb);
+  vm.runInContext(fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8'), sb);
+  return { sb, props, call: (b) => sb.LIFF_HANDLERS.relay_setup(Object.assign({ action: 'relay_setup' }, b)) };
+}
+ok('relay_setup：已掛進 LIFF_HANDLERS', () => { assert.strictEqual(typeof makeSetup().sb.LIFF_HANDLERS.relay_setup, 'function'); });
+ok('relay_setup：管理金鑰不對 → unauthorized，不設任何東西', () => {
+  const t = makeSetup(); assert.strictEqual(t.call({ admin_key: 'x' }).error, 'unauthorized'); assert.ok(!('RELAY_KEY' in t.props));
+});
+ok('relay_setup：第一次 → 設好並回 relay_key（≥32 字、無連字號）與 qr_secret', () => {
+  const t = makeSetup({ props: { QR_SECRET: 'qr-existing' } }); const r = t.call({ admin_key: 'ADM-test' });
+  assert.strictEqual(r.ok, true); assert.ok(/^[0-9a-f]{32,}$/.test(r.relay_key), r.relay_key);
+  assert.strictEqual(t.props.RELAY_KEY, r.relay_key); assert.strictEqual(r.qr_secret, 'qr-existing');
+});
+ok('relay_setup：已設過 → already_set，不回金鑰、不改值（只能用一次）', () => {
+  const t = makeSetup({ props: { RELAY_KEY: 'existing-key-0123456789' } }); const r = t.call({ admin_key: 'ADM-test' });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), { ok: false, error: 'already_set' });
+  assert.strictEqual(t.props.RELAY_KEY, 'existing-key-0123456789');
+});
+ok('relay_setup：舊值太短（<16，等於沒開）→ 視為沒設，可以重設', () => {
+  const t = makeSetup({ props: { RELAY_KEY: 'short' } }); const r = t.call({ admin_key: 'ADM-test' });
+  assert.strictEqual(r.ok, true); assert.notStrictEqual(t.props.RELAY_KEY, 'short');
+});
+ok('relay_setup：QR_SECRET 還沒有 → 照現行規則產生（reqQrSecret_）再回', () => {
+  const t = makeSetup(); const r = t.call({ admin_key: 'ADM-test' }); assert.strictEqual(r.qr_secret, 'qr-generated');
+});
+console.log('relay-setup：完成');
