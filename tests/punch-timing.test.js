@@ -135,7 +135,7 @@ ok('快速通道：三種 route、四種 predict 都收', () => {
 // 前端：結果顯示之後才送、每條結束路徑都有記
 const html = fs.readFileSync(ROOT + '/clock-line.html', 'utf8');
 ok('前端：成功時先 say(shown) 再送秒數、再代送「打卡」', () => {
-  const i = html.indexOf("render(status); say(okText, 'ok');"), j = html.indexOf("tmReport('ok', 'ok')"), k = html.indexOf('return sendToChat(!!(r.missed_date');
+  const i = html.indexOf("render(status); say(okText, 'ok');"), j = html.indexOf("report('ok', 'ok')"), k = html.indexOf('return sendToChat(!!(r.missed_date');
   assert.ok(i > 0 && j > i && k > j);
 });
 ok('前端：用 sendBeacon 背景送、打光復 HUB_API、出錯一律吞掉', () => {
@@ -143,6 +143,6 @@ ok('前端：用 sendBeacon 背景送、打光復 HUB_API、出錯一律吞掉',
   assert.ok(/navigator\.sendBeacon\(HUB_API/.test(f) && /keepalive: true/.test(f) && /catch \(e\)/.test(f));
 });
 ok('前端：七種結果都有記錄點', () => {
-  ['ok', 'fail', 'error', 'geo_fail', 'unclear_ok', 'unclear_not', 'unclear_unknown'].forEach(o => assert.ok(html.indexOf("tmReport('" + o + "'") > 0, o));
+  ['ok', 'fail', 'error', 'geo_fail', 'unclear_ok', 'unclear_not', 'unclear_unknown'].forEach(o => assert.ok(html.indexOf("tmReport('" + o + "'") > 0 || html.indexOf(" report('" + o + "'") > 0, o));
 });
 console.log('\n✅ 打卡等待秒數 ' + n + ' 項通過');

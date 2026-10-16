@@ -11,6 +11,9 @@ FIELDS = ("code", "name", "lat", "lng", "radius_m", "api", "relay")   # relay：
 
 def block():
     stores = json.load(open(os.path.join(ROOT, "tools", "stores.json"), encoding="utf-8"))
+    for s in stores:   # 快速通道開關只收 false／"shadow"／true；寫成 "true" 字串會被頁面當成關閉，直接擋（審查 P3 #10）
+        if s.get("relay", False) not in (False, True, "shadow"):
+            sys.exit("stores.json 的 relay 只能是 false、\"shadow\"、true：%r → %r" % (s.get("code"), s.get("relay")))
     rows = [{k: s.get(k, False) if k == "relay" else s[k] for k in FIELDS} for s in stores]
     body = ",\n".join("    " + json.dumps(r, ensure_ascii=False) for r in rows)
     return "/* STORES:BEGIN（tools/build-line-page.py 產生，勿手改）*/\n  var STORES = [\n" + body + "\n  ];\n  /* STORES:END */"

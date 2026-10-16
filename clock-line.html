@@ -468,16 +468,17 @@
   var tm = null;
   function tmNow() { return (window.performance && performance.now) ? performance.now() : Date.now(); }
   function tmStart(type) { tm = { t0: tmNow(), type: type, geo: 0, refix: false, sent: null, got: null,
-                                  req_id: null, route: 'off', predict: 'none', predict_ms: null, shownAt: null }; }
+                                  req_id: null, route: 'off', predict: 'none', predict_ms: null }; }
   function tmGot() { if (tm && tm.sent !== null && tm.got === null) tm.got = tmNow(); }
-  function tmReport(outcome, st) {
-    var t = tm; tm = null;
+  function tmReport(outcome, st, tObj) {   // tObj：快速通道等 mini 回來才送，用當時那一次的計時物件
+    var t = tObj || tm;
+    if (tm === t) tm = null;
     if (!t) return;
     try {
       var body = JSON.stringify({ action: 'line_punch_timing', id_token: liff.getIDToken(),
         store: t.store !== undefined ? t.store : (curStore ? curStore.code : ''), type: t.type, outcome: outcome, status: st || '',
-        // 快速通道先顯示成功時，同仁等的時間＝到「先顯示」那一刻；Google 那趟另記在 server_ms
-        total_ms: Math.round((t.shownAt !== null ? t.shownAt : tmNow()) - t.t0), geo_ms: Math.round(t.geo),
+        // total_ms 維持「到 Google 結果出來」（指揮台照舊算）；快速通道先顯示的那一刻＝geo_ms＋predict_ms（審查 P3 #3）
+        total_ms: Math.round(tmNow() - t.t0), geo_ms: Math.round(t.geo),
         server_ms: (t.sent !== null && t.got !== null) ? Math.round(t.got - t.sent) : null,
         refix: t.refix, qr: !!t.qr, accuracy_m: t.acc === undefined ? null : t.acc, steps: t.steps || null,
         req_id: t.req_id, route: t.route, predict: t.predict, predict_ms: t.predict_ms });
@@ -561,23 +562,35 @@
     // 先送 Google（正本），同一刻再問 mini；mini 永遠不會讓 Google 那份晚送
     var gp = post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, qrToken ? { qr: qrToken } : fixPayload()),
                   undefined, true);
-    if (mode) askRelay(st, type, reqId, mode).then(function (p) {
-      if (t) { t.predict = p.predict; t.predict_ms = p.ms; }
-      if (mode !== true || settled || p.predict !== 'ok') return;
-      shown = p;
-      if (t) { t.route = 'predicted'; t.shownAt = tmNow(); }
-      say(label + '打卡成功 ' + p.ts.slice(11, 16) + '\n地點：' + st.name + (p.greeting ? '\n\n' + p.greeting : ''), 'ok', '正在寫入紀錄…');
-    });
+    var rp = Promise.resolve();
+    try {   // mini 這段出任何錯都不能影響 Google 那份（審查 P3 #7）
+      if (mode) rp = askRelay(st, type, reqId, mode).then(function (p) {
+        if (t) { t.predict = p.predict; t.predict_ms = p.ms; }
+        if (mode !== true || settled || p.predict !== 'ok') return;
+        // 開頁時的防呆已經說這型不能打（同型、10 分鐘鎖）就不採用 mini，等 Google（審查 P3 #6）
+        var g = status && status.guard;
+        if (g && (g.blocked === type || (g.lock && g.lock[type] && g.lock[type] > Date.now() + clockSkew))) return;
+        shown = p;
+        if (t) t.route = 'predicted';
+        say(label + '打卡成功 ' + p.ts.slice(11, 16) + '\n地點：' + st.name + (p.greeting ? '\n\n' + p.greeting : ''), 'ok', '正在寫入紀錄…');
+      }).catch(function () {});
+    } catch (e) { rp = Promise.resolve(); }
+    // 秒數等 mini 也回來（最多再等 1.5 秒）才送，才記得到 mini 預判與花了幾毫秒（審查 P3 #2）
+    function report(outcome, stt) {
+      Promise.race([rp, new Promise(function (res) { setTimeout(res, 1500); })]).then(function () { tmReport(outcome, stt, t); });
+    }
+    // 先顯示成功、Google 卻沒成功：任何錯誤訊息前面都要先更正（審查 P3 #1）
+    function unshow() { if (shown) $('msg').textContent = '剛才顯示成功有誤。\n' + $('msg').textContent; }
     gp.then(function (r) {
         settled = true;
         tmGot();
-        if (tm && r && r.steps) tm.steps = r.steps;   // 後端各步驟毫秒數，跟著秒數一起送
-        if (r && r.error === 'invalid_id_token') { tmReport('error', 'invalid_id_token'); say('LINE 登入逾時，正在重新登入…', 'warn', '登入後請再按一次。'); liff.login(); return; }
-        if (r && r.error === 'not_bound') { mismatch(); tmReport('error', 'not_bound'); return; }   // 開頁時已確認綁著，打卡時卻說沒綁＝資料對不上
-        if (r && r.error === 'too_many') { status = null; tooMany(); tmReport('error', 'too_many'); return; }   // 不亮鍵：等一分鐘後按「重新定位」（審查 #4）
+        if (t && r && r.steps) t.steps = r.steps;   // 後端各步驟毫秒數，跟著秒數一起送
+        if (r && r.error === 'invalid_id_token') { report('error', 'invalid_id_token'); say('LINE 登入逾時，正在重新登入…', 'warn', '登入後請再按一次。'); unshow(); liff.login(); return; }
+        if (r && r.error === 'not_bound') { mismatch(); unshow(); report('error', 'not_bound'); return; }   // 開頁時已確認綁著，打卡時卻說沒綁＝資料對不上
+        if (r && r.error === 'too_many') { status = null; tooMany(); unshow(); report('error', 'too_many'); return; }   // 不亮鍵：等一分鐘後按「重新定位」（審查 #4）
         if (!r || (r.ok === false && !r.reason)) {
-          say('系統沒有正常回應', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。'); offerHelp('網路不穩');
-          tmReport('error', (r && r.error) || 'bad_reply'); return;
+          say('系統沒有正常回應', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。'); unshow(); offerHelp('網路不穩');
+          report('error', (r && r.error) || 'bad_reply'); return;
         }
         var hm = String(r.ts || '').slice(11, 16);
         if (r.ok) {
@@ -590,7 +603,7 @@
           status.guard.lock[type === 'in' ? 'out' : 'in'] = nowSrv + 10 * 60000;
           status.today = (status.today || []).concat([{ type: type, hm: hm, status: 'ok' }]);
           render(status); say(okText, 'ok');
-          tmReport('ok', 'ok');   // 畫面已經顯示成功才送，同仁不會多等
+          report('ok', 'ok');   // 畫面已經顯示成功才送，同仁不會多等
           // 有漏卡：多一顆「申請補登」直接開申請頁，畫面不自動關（要讓同仁按得到）
           if (r.missed_date) { missReq = { date: r.missed_date, miss: r.missed_type }; $('btnMissReq').hidden = false; }
           // 下班後當天超過 8 小時（2026-10-09）：提示一句＋「申請加班」直接開加班分頁並預填時段，畫面不自動關
@@ -605,17 +618,17 @@
         // 失敗：重讀狀態；重讀也失敗就維持鍵停用（不拿舊狀態重新亮鍵），訊息保留（審查 L4）
         status = null; refreshButtons();
         var hk = { rejected_out_of_range: '定位不準', pending_device_approval: '新手機' }[r.status] || null;
-        if (r.status === 'qr_invalid') { say(failText, 'warn'); tmReport('fail', 'qr_invalid'); return; }   // QR 過期：不重讀，請主管重新顯示再掃
-        tmReport('fail', r.status || 'guard');   // 失敗原因已經回來就算數；後面重讀狀態是另一件事
+        if (r.status === 'qr_invalid') { say(failText, 'warn'); report('fail', 'qr_invalid'); return; }   // QR 過期：不重讀，請主管重新顯示再掃
+        report('fail', r.status || 'guard');   // 失敗原因已經回來就算數；後面重讀狀態是另一件事
         return loadStatus().then(function () { say(failText, 'warn'); offerHelp(hk); });
-      }, function () { settled = true; tmGot(); return confirmPunch(type, st, before, shown); })
+      }, function () { settled = true; tmGot(); return confirmPunch(type, st, before, shown, report); })
       .then(function () { if (!keepBusy) { busy = false; refreshButtons(); } });
   }
   function countToday(s, type) {
     return ((s && s.today) || []).filter(function (e) { return e.type === type && (e.status === 'ok' || e.status === 'pending_device_approval'); }).length;
   }
   /** 打卡送出後結果不明（逾時、斷線、回應不是 JSON）：重讀今天的紀錄確認，絕不自動重送打卡。 */
-  function confirmPunch(type, st, before, shown) {   // shown：畫面已先顯示 mini 預判的成功（快速通道）
+  function confirmPunch(type, st, before, shown, report) {   // shown：畫面已先顯示 mini 預判的成功（快速通道）；report：送秒數
     var label = type === 'in' ? '上班' : '下班';
     if (shown) $('hint').textContent = '正在確認紀錄…請不要關閉，也不要再按';
     else say('連線不穩，正在確認剛才那筆有沒有進去…', '', '請不要關閉，也不要再按');
@@ -629,21 +642,21 @@
         var hm = viaLast ? gl.hm : mine[mine.length - 1].hm;
         render(r);
         say(label + '打卡成功 ' + hm + '（剛才那筆已經進去了，不用再按）\n地點：' + st.name, 'ok');
-        tmReport('unclear_ok', 'ok');
+        report('unclear_ok', 'ok');
         return sendToChat().then(function (closing) { if (closing) keepBusy = true; });
       }
       render(r);
       say((shown ? '剛才顯示成功有誤，' : '') + '這次' + label + '卡沒有送出', 'warn', '請再按一次「' + label + '」。');
-      tmReport('unclear_not', '');
+      report('unclear_not', '');
     }).catch(function () {
-      if (shown) {   // mini 已判斷會成功、Google 那份也已送出：維持成功畫面；萬一沒寫進去，mini 10 分鐘內會私訊通知
-        $('hint').textContent = '網路較慢，系統還在確認。如果這筆沒有寫進去，會用 LINE 通知你。';
-        tmReport('unclear_unknown', '');
+      if (shown) {   // mini 已判斷會成功、Google 那份也已送出：維持成功畫面、請同仁稍後自己確認（審查 P3 #4：私訊預設關、翻盤也不私訊，不能承諾會通知）
+        $('hint').textContent = '網路較慢，還在確認這筆有沒有寫進去。等一下請到選單「出勤紀錄」看有沒有這筆；沒有請告知主管補登。';
+        report('unclear_unknown', '');
         return;
       }
       say('連線不穩，不確定這筆有沒有進去', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。不要連按。');
       offerHelp('網路不穩');
-      tmReport('unclear_unknown', '');
+      report('unclear_unknown', '');
     });
   }
   var keepBusy = false;   // 已送進聊天室、畫面即將關閉：不要再把鍵解開
