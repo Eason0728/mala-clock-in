@@ -6,12 +6,12 @@
       python3 tools/build-line-page.py --check  # 只比對，不一致就失敗（測試用）"""
 import json, os, re, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIELDS = ("code", "name", "lat", "lng", "radius_m", "api")
+FIELDS = ("code", "name", "lat", "lng", "radius_m", "api", "relay")   # relay：LINE 打卡快速通道開關 false／"shadow"／true（2026-10-16）
 
 
 def block():
     stores = json.load(open(os.path.join(ROOT, "tools", "stores.json"), encoding="utf-8"))
-    rows = [{k: s[k] for k in FIELDS} for s in stores]
+    rows = [{k: s.get(k, False) if k == "relay" else s[k] for k in FIELDS} for s in stores]
     body = ",\n".join("    " + json.dumps(r, ensure_ascii=False) for r in rows)
     return "/* STORES:BEGIN（tools/build-line-page.py 產生，勿手改）*/\n  var STORES = [\n" + body + "\n  ];\n  /* STORES:END */"
 

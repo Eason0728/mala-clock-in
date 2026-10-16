@@ -185,14 +185,20 @@
   }
   var isLocalHost = ['localhost', '127.0.0.1'].indexOf(location.hostname) !== -1;
   if (isLocalHost && qs('api')) HUB_API = qs('api');
+  /* LINE 打卡快速通道（2026-10-16，規格 Eason0728/mala-clock-relay docs/spec.md v2）：
+     按打卡時同一刻送兩份——各店 liff_punch（唯一寫入者，照舊）＋ Mac mini 預判（只讀副本，不寫）。
+     店家 relay＝true 時，mini 1.5 秒內說「會成功」就先顯示；"shadow"＝只送去比對、畫面不採用；false＝不送。 */
+  var RELAY_API = 'https://dingzhaoyuandemac-mini.tailc27c34.ts.net/clock/predict';
+  if (isLocalHost && qs('relay_api')) RELAY_API = qs('relay_api');
+  var RELAY_WAIT_MS = 1500, RELAY_SHADOW_WAIT_MS = 5000;   // shadow 等久一點，才量得到門市網路下 mini 實際要幾秒
   /* STORES:BEGIN（tools/build-line-page.py 產生，勿手改）*/
   var STORES = [
-    {"code": "", "name": "小辛辣 新竹光復", "lat": 24.7840945, "lng": 121.0157448, "radius_m": 20, "api": "https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec"},
-    {"code": "mztjs", "name": "墨竹亭 新竹金山", "lat": 24.776717902605498, "lng": 121.02188536933596, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycby6Nv7aCGUDsxKA3dwPIYluxk76JaWKp-wqwCCvnE6knthefzGNR8Jyw3uRWds-PwOv/exec"},
-    {"code": "mztgf", "name": "墨竹亭 新竹光復", "lat": 24.801160225561624, "lng": 120.98820054417844, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycbyGH4ktFmXON443Naibe84rEKeqprkOJO0t7eU4UukTvqLWsfu541x7scHKLvntV6okFw/exec"},
-    {"code": "mztlzl", "name": "墨竹亭 台北六張犁", "lat": 25.022272780810678, "lng": 121.55487005744799, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycby7AwHFGZMckF84gtFVUklcV8nFkVqdyK69Yz2-g6p83VEX4WpDutZFTxFfbGQ2-On24Q/exec"},
-    {"code": "hq", "name": "鼎兆元 總部", "lat": 24.776352585623435, "lng": 121.01992421142127, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycbyiocazNgn9M249CCkPzJsRvMJ35uh_Wjp_ju1y1sB2TZ_IWH3RD6pKUsHXsUJR-4N9TQ/exec"},
-    {"code": "cf", "name": "鼎兆元 中央廚房", "lat": 24.12274490856511, "lng": 120.7102176960625, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycby-IzOBTrUK-usZxEUVRAcvPqagfAbHpvLevIWnk6drBpIuHwh1IlEun4bdsS9o-CIB/exec"}
+    {"code": "", "name": "小辛辣 新竹光復", "lat": 24.7840945, "lng": 121.0157448, "radius_m": 20, "api": "https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec", "relay": false},
+    {"code": "mztjs", "name": "墨竹亭 新竹金山", "lat": 24.776717902605498, "lng": 121.02188536933596, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycby6Nv7aCGUDsxKA3dwPIYluxk76JaWKp-wqwCCvnE6knthefzGNR8Jyw3uRWds-PwOv/exec", "relay": false},
+    {"code": "mztgf", "name": "墨竹亭 新竹光復", "lat": 24.801160225561624, "lng": 120.98820054417844, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycbyGH4ktFmXON443Naibe84rEKeqprkOJO0t7eU4UukTvqLWsfu541x7scHKLvntV6okFw/exec", "relay": false},
+    {"code": "mztlzl", "name": "墨竹亭 台北六張犁", "lat": 25.022272780810678, "lng": 121.55487005744799, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycby7AwHFGZMckF84gtFVUklcV8nFkVqdyK69Yz2-g6p83VEX4WpDutZFTxFfbGQ2-On24Q/exec", "relay": false},
+    {"code": "hq", "name": "鼎兆元 總部", "lat": 24.776352585623435, "lng": 121.01992421142127, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycbyiocazNgn9M249CCkPzJsRvMJ35uh_Wjp_ju1y1sB2TZ_IWH3RD6pKUsHXsUJR-4N9TQ/exec", "relay": false},
+    {"code": "cf", "name": "鼎兆元 中央廚房", "lat": 24.12274490856511, "lng": 120.7102176960625, "radius_m": 50, "api": "https://script.google.com/macros/s/AKfycby-IzOBTrUK-usZxEUVRAcvPqagfAbHpvLevIWnk6drBpIuHwh1IlEun4bdsS9o-CIB/exec", "relay": false}
   ];
   /* STORES:END */
   /** 那家店的後端網址；本機測試（?api=）時對到 mock 的 /api/<店代碼>。 */
@@ -234,11 +240,12 @@
   /* ── 後端 ── */
   var POST_TIMEOUT_MS = 25000;
   if (isLocalHost && qs('post_timeout')) POST_TIMEOUT_MS = +qs('post_timeout');   // 本機測試逾時路徑用
-  function post(url, body, timeoutMs) {   // 預設 25 秒沒回應就放棄等待；打卡不自動重送（重送會變重複）
+  function post(url, body, timeoutMs, keepalive) {   // 預設 25 秒沒回應就放棄等待；打卡不自動重送（重送會變重複）
     var ctrl = window.AbortController ? new AbortController() : null;
     var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs || POST_TIMEOUT_MS) : null;
+    // keepalive：打卡那一筆在同仁看到「成功」就關掉畫面時也要送完（快速通道會比 Google 先顯示成功）
     return fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body),
-                            signal: ctrl ? ctrl.signal : undefined })
+                            signal: ctrl ? ctrl.signal : undefined, keepalive: !!keepalive })
       .then(function (r) { return r.text(); })
       .then(function (t) { if (timer) clearTimeout(timer); return JSON.parse(t); },
             function (e) { if (timer) clearTimeout(timer); throw e; });
@@ -460,7 +467,8 @@
      任何一步出錯都吞掉——量秒數絕不能害打卡失敗。 */
   var tm = null;
   function tmNow() { return (window.performance && performance.now) ? performance.now() : Date.now(); }
-  function tmStart(type) { tm = { t0: tmNow(), type: type, geo: 0, refix: false, sent: null, got: null }; }
+  function tmStart(type) { tm = { t0: tmNow(), type: type, geo: 0, refix: false, sent: null, got: null,
+                                  req_id: null, route: 'off', predict: 'none', predict_ms: null, shownAt: null }; }
   function tmGot() { if (tm && tm.sent !== null && tm.got === null) tm.got = tmNow(); }
   function tmReport(outcome, st) {
     var t = tm; tm = null;
@@ -468,13 +476,40 @@
     try {
       var body = JSON.stringify({ action: 'line_punch_timing', id_token: liff.getIDToken(),
         store: t.store !== undefined ? t.store : (curStore ? curStore.code : ''), type: t.type, outcome: outcome, status: st || '',
-        total_ms: Math.round(tmNow() - t.t0), geo_ms: Math.round(t.geo),
+        // 快速通道先顯示成功時，同仁等的時間＝到「先顯示」那一刻；Google 那趟另記在 server_ms
+        total_ms: Math.round((t.shownAt !== null ? t.shownAt : tmNow()) - t.t0), geo_ms: Math.round(t.geo),
         server_ms: (t.sent !== null && t.got !== null) ? Math.round(t.got - t.sent) : null,
-        refix: t.refix, qr: !!t.qr, accuracy_m: t.acc === undefined ? null : t.acc, steps: t.steps || null });
+        refix: t.refix, qr: !!t.qr, accuracy_m: t.acc === undefined ? null : t.acc, steps: t.steps || null,
+        req_id: t.req_id, route: t.route, predict: t.predict, predict_ms: t.predict_ms });
       if (isLocalHost) window.__timing = (window.__timing || []).concat([JSON.parse(body)]);   // 本機測試看得到送了什麼
       if (navigator.sendBeacon && navigator.sendBeacon(HUB_API, new Blob([body], { type: 'text/plain' }))) return;
       fetch(HUB_API, { method: 'POST', body: body, mode: 'no-cors', keepalive: true }).catch(function () {});
     } catch (e) { /* 量不到就算了 */ }
+  }
+
+  /* ── 快速通道（mini 預判）── */
+  function newReqId() {
+    var a = new Uint8Array(8);
+    if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a);
+    else for (var i = 0; i < 8; i++) a[i] = Math.floor(Math.random() * 256);
+    return 'r' + Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+  }
+  function relayMode(st) {
+    var m = st && st.relay;
+    if (isLocalHost && qs('relay_mode')) m = { 'true': true, shadow: 'shadow' }[qs('relay_mode')] || false;   // 本機測試用
+    return m === true || m === 'shadow' ? m : false;
+  }
+  /** 問 mini 這張卡會不會成功。只認 {predict:'ok', ts:台北時間, greeting:字串}；其他任何回應、錯誤、逾時都不是「ok」。永不 reject。 */
+  function askRelay(st, type, reqId, mode) {
+    var t0 = tmNow();
+    var body = Object.assign({ id_token: liff.getIDToken(), store: st.code, type: type, req_id: reqId }, qrToken ? { qr: qrToken } : fixPayload());
+    return post(RELAY_API, body, mode === 'shadow' ? RELAY_SHADOW_WAIT_MS : RELAY_WAIT_MS).then(function (r) {
+      var ms = Math.round(tmNow() - t0);
+      if (r && r.predict === 'ok' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$/.test(String(r.ts)) && typeof r.greeting === 'string') {
+        return { predict: 'ok', ts: String(r.ts), greeting: r.greeting, ms: ms };
+      }
+      return { predict: r && r.predict === 'blocked' ? 'blocked' : 'unknown', ms: ms };
+    }).catch(function () { return { predict: 'none', ms: null }; });
   }
 
   /* ── 打卡 ── */
@@ -520,9 +555,21 @@
     var before = { n: countToday(status, type), lastTs: status.guard && status.guard.last ? String(status.guard.last.ts) : '' };
     busy = true; refreshButtons();
     say('送出' + label + '打卡中…', '', '大約需要幾秒，請不要關閉');
-    if (tm) { tm.store = st.code; tm.qr = !!qrToken; tm.acc = qrToken ? null : fixForPick().accuracy_m; tm.sent = tmNow(); }
-    post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, qrToken ? { qr: qrToken } : fixPayload()))
-      .then(function (r) {
+    var mode = relayMode(st), reqId = newReqId(), t = tm, settled = false, shown = null;   // shown＝畫面已採用的 mini 預判
+    if (t) { t.store = st.code; t.qr = !!qrToken; t.acc = qrToken ? null : fixForPick().accuracy_m; t.sent = tmNow();
+             t.req_id = reqId; t.route = mode ? 'plain' : 'off'; }
+    // 先送 Google（正本），同一刻再問 mini；mini 永遠不會讓 Google 那份晚送
+    var gp = post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, qrToken ? { qr: qrToken } : fixPayload()),
+                  undefined, true);
+    if (mode) askRelay(st, type, reqId, mode).then(function (p) {
+      if (t) { t.predict = p.predict; t.predict_ms = p.ms; }
+      if (mode !== true || settled || p.predict !== 'ok') return;
+      shown = p;
+      if (t) { t.route = 'predicted'; t.shownAt = tmNow(); }
+      say(label + '打卡成功 ' + p.ts.slice(11, 16) + '\n地點：' + st.name + (p.greeting ? '\n\n' + p.greeting : ''), 'ok', '正在寫入紀錄…');
+    });
+    gp.then(function (r) {
+        settled = true;
         tmGot();
         if (tm && r && r.steps) tm.steps = r.steps;   // 後端各步驟毫秒數，跟著秒數一起送
         if (r && r.error === 'invalid_id_token') { tmReport('error', 'invalid_id_token'); say('LINE 登入逾時，正在重新登入…', 'warn', '登入後請再按一次。'); liff.login(); return; }
@@ -536,7 +583,7 @@
         if (r.ok) {
           var notes = (r.req_notes || []).join('\n');
           var shown = label + '打卡成功 ' + hm + '\n地點：' + st.name + (r.via_qr ? '（主管 QR）' : '') + (r.missed ? '\n\n⚠️ ' + r.missed : '')
-            + (notes ? '\n\n' + notes : '') + (r.greeting ? '\n\n' + r.greeting : '');
+            + (notes ? '\n\n' + notes : '') + ((shown ? shown.greeting : r.greeting) ? '\n\n' + (shown ? shown.greeting : r.greeting) : '');   // 已先顯示 mini 的問候語就沿用，不換句
           // 就地鎖鍵（同網頁版 updateButtonStates({type, ts})）：同型不能再按、另一型 10 分鐘鎖（審查 M1）
           var nowSrv = Date.now() + clockSkew;
           status.guard = { blocked: type, lock: {}, last: { type: type, hm: hm }, now: nowSrv };
@@ -554,23 +601,24 @@
           }
           return sendToChat(!!(r.missed_date || notes || (r.ot_hint && r.ot_hint.date))).then(function (closing) { if (closing) keepBusy = true; });
         }
-        var failText = label + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
+        var failText = (shown ? '剛才顯示成功有誤。\n' : '') + label + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
         // 失敗：重讀狀態；重讀也失敗就維持鍵停用（不拿舊狀態重新亮鍵），訊息保留（審查 L4）
         status = null; refreshButtons();
         var hk = { rejected_out_of_range: '定位不準', pending_device_approval: '新手機' }[r.status] || null;
         if (r.status === 'qr_invalid') { say(failText, 'warn'); tmReport('fail', 'qr_invalid'); return; }   // QR 過期：不重讀，請主管重新顯示再掃
         tmReport('fail', r.status || 'guard');   // 失敗原因已經回來就算數；後面重讀狀態是另一件事
         return loadStatus().then(function () { say(failText, 'warn'); offerHelp(hk); });
-      }, function () { tmGot(); return confirmPunch(type, st, before); })
+      }, function () { settled = true; tmGot(); return confirmPunch(type, st, before, shown); })
       .then(function () { if (!keepBusy) { busy = false; refreshButtons(); } });
   }
   function countToday(s, type) {
     return ((s && s.today) || []).filter(function (e) { return e.type === type && (e.status === 'ok' || e.status === 'pending_device_approval'); }).length;
   }
   /** 打卡送出後結果不明（逾時、斷線、回應不是 JSON）：重讀今天的紀錄確認，絕不自動重送打卡。 */
-  function confirmPunch(type, st, before) {
+  function confirmPunch(type, st, before, shown) {   // shown：畫面已先顯示 mini 預判的成功（快速通道）
     var label = type === 'in' ? '上班' : '下班';
-    say('連線不穩，正在確認剛才那筆有沒有進去…', '', '請不要關閉，也不要再按');
+    if (shown) $('hint').textContent = '正在確認紀錄…請不要關閉，也不要再按';
+    else say('連線不穩，正在確認剛才那筆有沒有進去…', '', '請不要關閉，也不要再按');
     return readRetry(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() }).then(function (r) {
       if (!r || !r.ok || r.status !== 'ready') throw new Error('confirm_failed');
       r.store = { code: st.code, name: st.name, lat: st.lat, lng: st.lng, radius_m: st.radius_m };
@@ -585,9 +633,14 @@
         return sendToChat().then(function (closing) { if (closing) keepBusy = true; });
       }
       render(r);
-      say('這次' + label + '卡沒有送出', 'warn', '請再按一次「' + label + '」。');
+      say((shown ? '剛才顯示成功有誤，' : '') + '這次' + label + '卡沒有送出', 'warn', '請再按一次「' + label + '」。');
       tmReport('unclear_not', '');
     }).catch(function () {
+      if (shown) {   // mini 已判斷會成功、Google 那份也已送出：維持成功畫面；萬一沒寫進去，mini 10 分鐘內會私訊通知
+        $('hint').textContent = '網路較慢，系統還在確認。如果這筆沒有寫進去，會用 LINE 通知你。';
+        tmReport('unclear_unknown', '');
+        return;
+      }
       say('連線不穩，不確定這筆有沒有進去', 'warn', '請按選單「出勤紀錄」看今天有沒有這筆；沒有再打一次。不要連按。');
       offerHelp('網路不穩');
       tmReport('unclear_unknown', '');
