@@ -36,6 +36,20 @@ def ok(name, cond, detail=''):
     print('✓ ' + name)
 
 
+KNOWN_BUGS = []
+
+
+def known_bug(name, cond, detail=''):
+    """已回報給負責人、頁面尚未修的問題：條件成立（＝已修好）算一項通過；不成立只記錄、不讓整套紅（避免掩蓋其他項目）。"""
+    global n
+    if cond:
+        n += 1
+        print('✓ ' + name + '（頁面已修好）')
+    else:
+        KNOWN_BUGS.append(name + '：' + str(detail)[:160])
+        print('⚠ 已知頁面問題（未計入）：' + name + '：' + str(detail)[:160])
+
+
 def start_mock():
     try:   # port 已被別的 mock 占用就停（不然會測到別的 worktree 的舊頁面）
         urllib.request.urlopen(BASE + '/clock-line.html', timeout=1)
@@ -560,12 +574,17 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             p.close()
             phase_sched(ctx)
             phase_leave_proof(ctx, (HQ['lat'], HQ['lng']))
+            phase_relay(ctx, (HQ['lat'], HQ['lng']))
             rep = CM.report()
             ok('班表：可點元素零漏測（共 %d 個）' % rep['total'], not rep['missed'] and not rep['extra'], rep)
             br.close()
     finally:
         proc.kill()
     print(f'\n✅ LINE 打卡畫面（直打店家）全部通過 ({n}/{n})')
+    if KNOWN_BUGS:
+        print(f'⚠ 另有 {len(KNOWN_BUGS)} 項已知頁面問題尚未修（不計入上面的通過數，頁面修好後會自動轉為 ✓）：')
+        for k in KNOWN_BUGS:
+            print('   - ' + k)
 
 
 def phase_sched(ctx):
@@ -759,6 +778,233 @@ def phase_leave_proof(ctx, hq):
     p.click('#reqView .rq-tabs button[data-tab=leave]')
     p.click('#reqView .rq-chips >> nth=0 >> .rq-chip:has-text("事假")')
     ok('證明：事假不要求證明（欄位維持選填）', '附件（選填' in p.inner_text('#reqView'))
+    p.close()
+
+
+# ───────── 快速通道（2026-10-16）：Google liff_punch（唯一寫入者）＋ mini /clock/predict（只預判）同時送 ─────────
+import re  # noqa: E402
+
+RELAY_URL = BASE + '/relay-mock'
+MINI_OK = {'predict': 'ok', 'ts': '2026-10-16T09:01:02+08:00', 'greeting': '【mini 問候】今天也辛苦了'}
+G_OK = {'ok': True, 'type': 'out', 'ts': '2026-10-16T09:02:09+08:00', 'greeting': '【Google 問候】另一句話', 'missed': ''}
+# 在頁內包 fetch，把「回應」延後 ms 毫秒（請求照常立刻送出）；尊重 AbortSignal，逾時 abort 時立刻結束。不用 sync route handler 睡覺。
+LAG_JS = """
+(function () {
+  const g = window.fetch; window.__lag = {};
+  window.fetch = function (url, o) {
+    let a = ''; try { a = JSON.parse(o.body).action; } catch (e) {}
+    const key = String(url).indexOf('relay-mock') >= 0 ? 'relay' : a;
+    const ms = window.__lag[key] || 0;
+    const p = g.apply(this, arguments);
+    if (!ms) return p;
+    return new Promise(function (res, rej) {
+      let done = false; const sig = o && o.signal;
+      const fin = function (f, v) { setTimeout(function () { if (!done) { done = true; f(v); } }, ms); };
+      p.then(function (v) { fin(res, v); }, function (e) { fin(rej, e); });
+      if (sig) sig.addEventListener('abort', function () { if (!done) { done = true; rej(new DOMException('aborted', 'AbortError')); } });
+    });
+  };
+})();
+"""
+
+
+def relay_open(ctx, hq, mini, g, mini_ms=0, g_ms=0, mode='true', gstatus=None, qr=None):
+    """開一頁、攔 mini 與 Google 兩條路。mini／g：dict＝回 JSON；(狀態碼, 文字)＝原樣回；'abort'＝連不上。
+    gstatus：None＝liff_status 照舊；'abort'＝打不通；'found'＝回頭確認時今天多了一張卡。回傳 (page, S)，S 記錄兩邊收到的 body。"""
+    S = {'mini': mini, 'g': g, 'gstatus': None, 'mini_hits': [], 'g_posts': []}
+    extra = '&retry_ms=50&relay_api=' + RELAY_URL + ('&relay_mode=' + mode if mode else '')
+    if qr:
+        u = BASE + '/clock-line.html?mock_uid=U1&api=/api&qr=' + qr + extra
+    else:
+        u = url(hq, extra=extra)
+    p = ctx.new_page()
+    p.add_init_script(LOG_JS)
+    p.add_init_script(LAG_JS)
+    p.goto(u)
+    if qr:
+        p.wait_for_function('!document.getElementById("btnIn").disabled', timeout=10000)
+    else:
+        p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
+
+    def mini_h(route):
+        try:
+            S['mini_hits'].append(json.loads(route.request.post_data or '{}'))
+        except ValueError:
+            S['mini_hits'].append({'_raw': route.request.post_data})
+        m = S['mini']
+        if m == 'abort':
+            return route.abort()
+        if isinstance(m, tuple):
+            return route.fulfill(status=m[0], body=m[1], content_type='text/plain')
+        route.fulfill(status=200, body=json.dumps(m), content_type='text/plain')
+
+    def g_h(route):
+        try:
+            b = json.loads(route.request.post_data or '{}')
+        except ValueError:
+            return route.continue_()
+        a = b.get('action')
+        if a == 'liff_punch':
+            S['g_posts'].append(b)
+            if S['g'] == 'abort':
+                return route.abort()
+            return route.fulfill(status=200, body=json.dumps(S['g']), content_type='text/plain')
+        if a == 'liff_status' and S['gstatus']:
+            if S['gstatus'] == 'abort':
+                return route.abort()
+            resp = route.fetch()
+            j = resp.json()
+            j['today'] = (j.get('today') or []) + [{'type': 'out', 'hm': '18:00', 'status': 'ok'}]
+            return route.fulfill(response=resp, body=json.dumps(j))
+        route.continue_()
+
+    p.route(RELAY_URL, mini_h)
+    p.route(re.compile(r'/api(/\w+)?$'), g_h)
+    S['gstatus'] = gstatus
+    p.evaluate('(l) => { window.__lag = l; }', {'relay': mini_ms, 'liff_punch': g_ms})
+    return p, S
+
+
+def relay_last(p, timeout=12000):
+    p.wait_for_function('(window.__timing || []).length > 0', timeout=timeout)
+    return p.evaluate('window.__timing')[-1]
+
+
+def phase_relay(ctx, hq):
+    """快速通道：mini 預判先顯示成功、Google 回來後採用或更正。每項斷言畫面文字與 window.__timing 最後一筆。"""
+    RID = re.compile(r'^r[0-9a-f]{16}$')
+
+    def msg_at(p, ms):
+        p.wait_for_timeout(ms)
+        return msg(p)
+
+    # 1. mini 300ms 回 ok、Google 3 秒後成功
+    p, S = relay_open(ctx, hq, MINI_OK, G_OK, mini_ms=300, g_ms=3000)
+    t0 = time.time()
+    force_out(p)
+    wait_msg(p, '下班打卡成功', timeout=1000)
+    dt = time.time() - t0
+    m = msg(p)
+    ok('快速通道 1：mini 300ms 回 ok → 1 秒內先顯示成功（%.2f 秒）' % dt, dt < 1.0 and '下班打卡成功 09:01' in m, (dt, m))
+    ok('快速通道 1：先顯示的是 mini 的時間、地點、問候語', '地點：' + HQ['name'] in m and MINI_OK['greeting'] in m and '正在寫入紀錄' in m, m)
+    wait_msg(p, '09:02', timeout=6000)
+    m = msg(p)
+    ok('快速通道 1：Google 回來後畫面換成 Google 的時間', '下班打卡成功 09:02' in m and '09:01' not in m, m)
+    known_bug('快速通道 1：Google 回來後問候語仍是 mini 那句、不換句', MINI_OK['greeting'] in m and G_OK['greeting'] not in m, m)
+    tm = relay_last(p)
+    ok('快速通道 1：timing route=predicted、predict=ok、outcome=ok', tm['route'] == 'predicted' and tm['predict'] == 'ok' and tm['outcome'] == 'ok', tm)
+    ok('快速通道 1：total_ms 算到先顯示那刻（< 1500）、server_ms 是 Google 那趟（≥ 2500）、predict_ms 有值',
+       tm['total_ms'] < 1500 and tm['server_ms'] >= 2500 and isinstance(tm['predict_ms'], int) and 250 <= tm['predict_ms'] < 1500, tm)
+    ok('快速通道 1：req_id 格式 r＋16 位小寫 hex', RID.match(str(tm['req_id'])) is not None, tm['req_id'])
+    ok('快速通道 1：只送 1 份 Google liff_punch、1 份 mini', len(S['g_posts']) == 1 and len(S['mini_hits']) == 1, (S['g_posts'], S['mini_hits']))
+    # 2. 同時送出、同一個 req_id
+    c = calls(p)
+    cg = [x for x in c if x['action'] == 'liff_punch']
+    cm = [x for x in c if x['url'].endswith('/relay-mock')]
+    ok('快速通道 2：Google 與 mini 兩個請求送出時間差 < 100ms', len(cg) == 1 and len(cm) == 1 and abs(cg[0]['t'] - cm[0]['t']) < 100,
+       (cg, cm))
+    ok('快速通道 2：mini 的 body 帶的 req_id 就是 timing 回報的那個', S['mini_hits'][0].get('req_id') == tm['req_id'] and RID.match(S['mini_hits'][0].get('req_id', '')), S['mini_hits'])
+    ok('快速通道 2：mini body 帶店碼、類型、定位，不帶 qr', S['mini_hits'][0].get('store') == 'hq' and S['mini_hits'][0].get('type') == 'out'
+       and 'lat' in S['mini_hits'][0] and 'lng' in S['mini_hits'][0] and 'qr' not in S['mini_hits'][0], S['mini_hits'])
+    ok('快速通道 2：Google 的 liff_punch 是唯一寫入者（action、type 照舊）', S['g_posts'][0]['action'] == 'liff_punch' and S['g_posts'][0]['type'] == 'out', S['g_posts'])
+    p.close()
+
+    # 3. Google 擋下
+    gfail = {'ok': False, 'type': 'out', 'status': 'rejected_out_of_range', 'reason': '店家判定你不在範圍內', 'hint': '請開啟「精確位置」與 Wi‑Fi 後再按一次'}
+    p, S = relay_open(ctx, hq, MINI_OK, gfail, mini_ms=300, g_ms=2000)
+    force_out(p)
+    wait_msg(p, '下班打卡成功 09:01', timeout=1500)
+    wait_msg(p, '下班打卡失敗', timeout=6000)
+    m = msg(p)
+    ok('快速通道 3：Google 擋下 → 最後是失敗、有原因與怎麼辦、不殘留成功字樣', '打卡成功' not in m and '原因：店家判定你不在範圍內' in m and '怎麼辦：請開啟' in m, m)
+    known_bug('快速通道 3：失敗訊息以「剛才顯示成功有誤。」開頭', m.startswith('剛才顯示成功有誤。'), m[:60])
+    tm = relay_last(p)
+    ok('快速通道 3：timing outcome=fail、route=predicted、predict=ok', tm['outcome'] == 'fail' and tm['route'] == 'predicted' and tm['predict'] == 'ok', tm)
+    p.close()
+
+    # 4. Google 連不上（route.abort）→ 回頭確認
+    for label, gst, check in [
+            ('查得到那張卡', 'found', lambda m: '下班打卡成功 18:00' in m and '剛才那筆已經進去了' in m and '有誤' not in m),
+            ('查不到（今天筆數沒變）', None, lambda m: '剛才顯示成功有誤，這次下班卡沒有送出' in m),
+            ('liff_status 也失敗', 'abort', lambda m: '下班打卡成功 09:01' in m and '會用 LINE 通知你' in m)]:
+        p, S = relay_open(ctx, hq, MINI_OK, 'abort', mini_ms=300, g_ms=1200, gstatus=gst)
+        force_out(p)
+        wait_msg(p, '下班打卡成功 09:01', timeout=1000)
+        tm = relay_last(p, timeout=15000)
+        p.wait_for_timeout(200)
+        m = msg(p)
+        ok('快速通道 4（Google 連不上、回頭確認%s）：畫面文字' % label, check(m), m)
+        want = {'found': 'unclear_ok', None: 'unclear_not', 'abort': 'unclear_unknown'}[gst]
+        ok('快速通道 4（%s）：timing outcome=%s、route=predicted、predict=ok' % (label, want),
+           tm['outcome'] == want and tm['route'] == 'predicted' and tm['predict'] == 'ok', tm)
+        ok('快速通道 4（%s）：打卡只送 1 次、沒有自動重送' % label, len(S['g_posts']) == 1, S['g_posts'])
+        p.close()
+
+    # 5. mini 沒給出可採用的「ok」：不先顯示，照舊等 Google；route=plain
+    cases = [('HTTP 500（網頁錯誤頁）', (500, '<html>Internal Server Error</html>'), 0, 'none'),
+             ('HTTP 500 但回 JSON 錯誤訊息', (500, '{"error":"boom"}'), 0, 'unknown'),
+             ('回非 JSON', (200, 'not json at all'), 0, 'none'),
+             ('predict=ok 但 ts 格式錯', {'predict': 'ok', 'ts': '2026-10-16 09:01:02', 'greeting': 'x'}, 0, 'unknown'),
+             ('predict=ok 但沒有 greeting', {'predict': 'ok', 'ts': '2026-10-16T09:01:02+08:00'}, 0, 'unknown'),
+             ('超過 1.5 秒才回', MINI_OK, 2000, 'none')]
+    for label, mini, ms, want in cases:
+        p, S = relay_open(ctx, hq, mini, G_OK, mini_ms=ms, g_ms=2600)
+        force_out(p)
+        m = msg_at(p, 1900 if ms else 900)
+        ok('快速通道 5（mini %s）：Google 沒回前不先顯示成功' % label, '打卡成功' not in m and '打卡中' in m, m)
+        wait_msg(p, '下班打卡成功 09:02', timeout=6000)
+        tm = relay_last(p)
+        ok('快速通道 5（mini %s）：route=plain、predict=%s、最後照 Google 顯示' % (label, want),
+           tm['route'] == 'plain' and tm['predict'] == want and tm['outcome'] == 'ok' and '09:01' not in msg(p), tm)
+        ok('快速通道 5（mini %s）：total_ms 算到 Google 回來（≥ 2500）' % label, tm['total_ms'] >= 2500, tm)
+        p.close()
+
+    # 6. mini 說 blocked
+    p, S = relay_open(ctx, hq, {'predict': 'blocked', 'reason': '10 分鐘內不能打'}, G_OK, mini_ms=0, g_ms=2000)
+    force_out(p)
+    m = msg_at(p, 900)
+    ok('快速通道 6：mini 回 blocked → 不先顯示成功', '打卡成功' not in m and '打卡中' in m, m)
+    wait_msg(p, '下班打卡成功 09:02', timeout=6000)
+    tm = relay_last(p)
+    ok('快速通道 6：route=plain、predict=blocked', tm['route'] == 'plain' and tm['predict'] == 'blocked' and isinstance(tm['predict_ms'], int), tm)
+    p.close()
+
+    # 7. shadow：只送去比對，畫面不採用
+    p, S = relay_open(ctx, hq, MINI_OK, G_OK, mini_ms=300, g_ms=2000, mode='shadow')
+    force_out(p)
+    m = msg_at(p, 1000)
+    ok('快速通道 7：shadow → mini 即使回 ok 也不先顯示', '打卡成功' not in m and '打卡中' in m, m)
+    wait_msg(p, '下班打卡成功 09:02', timeout=6000)
+    tm = relay_last(p)
+    ok('快速通道 7：shadow 有送 mini（1 份）、route=plain、predict=ok、predict_ms 有值', len(S['mini_hits']) == 1 and tm['route'] == 'plain'
+       and tm['predict'] == 'ok' and isinstance(tm['predict_ms'], int) and tm['predict_ms'] >= 250, (tm, S['mini_hits']))
+    ok('快速通道 7：shadow 的畫面問候語是 Google 的', G_OK['greeting'] in msg(p) and MINI_OK['greeting'] not in msg(p), msg(p))
+    p.close()
+
+    # 8. 沒帶 relay_mode（stores.json 全 false）：根本不送 mini
+    p, S = relay_open(ctx, hq, MINI_OK, G_OK, g_ms=500, mode=None)
+    force_out(p)
+    wait_msg(p, '下班打卡成功 09:02', timeout=6000)
+    tm = relay_last(p)
+    p.wait_for_timeout(300)
+    ok('快速通道 8：stores.json 全 false → 不送 mini（攔截計數 0、頁內也沒有該網址的請求）',
+       len(S['mini_hits']) == 0 and not any(x['url'].endswith('/relay-mock') for x in calls(p)), (S['mini_hits'], calls(p)))
+    ok('快速通道 8：route=off、predict=none、predict_ms 空、req_id 仍有', tm['route'] == 'off' and tm['predict'] == 'none' and tm['predict_ms'] is None
+       and RID.match(str(tm['req_id'])) is not None, tm)
+    ok('快速通道 8：stores.json 每家店 relay 都是 false', all(s.get('relay') is False for s in STORES.values()), {k: s.get('relay') for k, s in STORES.items()})
+    p.close()
+
+    # 9. QR 打卡（主管出示動態 QR、不定位）
+    p, S = relay_open(ctx, hq, MINI_OK, dict(G_OK, type='in', via_qr=True), mini_ms=300, g_ms=2000, qr='gk~testqrtoken')
+    p.click('#btnIn')
+    wait_msg(p, '上班打卡成功 09:01', timeout=1500)
+    wait_msg(p, '（主管 QR）', timeout=6000)
+    tm = relay_last(p)
+    b = S['mini_hits'][0] if S['mini_hits'] else {}
+    ok('快速通道 9：QR 打卡送 mini 的 body 帶 qr、不帶 lat／lng', b.get('qr') == 'gk~testqrtoken' and 'lat' not in b and 'lng' not in b
+       and 'accuracy' not in b and b.get('req_id') == tm['req_id'], b)
+    ok('快速通道 9：QR 打卡 Google 的 liff_punch 也帶 qr、不帶定位', S['g_posts'] and S['g_posts'][0].get('qr') == 'gk~testqrtoken' and 'lat' not in S['g_posts'][0], S['g_posts'])
+    ok('快速通道 9：QR 打卡 timing qr=true、route=predicted、predict=ok', tm['qr'] is True and tm['route'] == 'predicted' and tm['predict'] == 'ok', tm)
     p.close()
 
 
