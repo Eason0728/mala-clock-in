@@ -591,21 +591,27 @@ function handleRelaySnapshot_(body) {
   return { ok: true, now: relayIsoNow_(), roster: roster, events: events };
 }
 
-/** {action:'relay_setup', admin_key} → 一次性：產生並設定 RELAY_KEY，回 {ok, relay_key, qr_secret}（2026-10-16，P5）。
+/** {action:'relay_setup', admin_key} → 一次性：產生並設定 RELAY_KEY，回 {ok, relay_key}（2026-10-16，P5）。
  *  給 MacBook 上的 Claude 用管理金鑰一次取回、寫進 Mac mini 的設定檔，免去 Eason 開六個編輯器手動設。
  *  只能用一次：RELAY_KEY 已設（≥16 字）就回 already_set、不回任何金鑰；要換鑰請在編輯器刪掉 RELAY_KEY 再呼叫。
- *  qr_secret 讓 mini 能預判主管 QR 打卡（Q7）；沒有就照現行 reqQrSecret_ 產生。管理金鑰本來就能讀全部打卡資料，不新增風險面。 */
+ *  刻意不回 QR_SECRET（審查：mini 有了它就能偽造主管 QR、讓人在店外打卡成功）；mini 遇到 QR 打卡一律不預判，照舊等 Google。 */
 function handleRelaySetup_(body) {
-  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
-  if (relayKey_().length >= 16) return { ok: false, error: 'already_set' };
-  var key = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '').toLowerCase();
-  PropertiesService.getScriptProperties().setProperty('RELAY_KEY', key);
-  return { ok: true, relay_key: key, qr_secret: reqQrSecret_() };
+  if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };   // 擋 ADMIN_KEY 留空時空字串也過（同 export_tables）
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return { ok: false, error: 'busy' };
+  try {   // 鎖內重讀：兩次同時呼叫只有一次會真的設、另一次 already_set（不然先回的那把是死鑰）
+    if (relayKey_().length >= 16) return { ok: false, error: 'already_set' };
+    var key = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '').toLowerCase();
+    PropertiesService.getScriptProperties().setProperty('RELAY_KEY', key);
+    return { ok: true, relay_key: key };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 var LIFF_HANDLERS = {
   relay_snapshot: handleRelaySnapshot_,   // LINE 打卡快速通道：mini 唯讀副本（2026-10-16）
-  relay_setup: function (b) { return handleRelaySetup_(b); },   // 一次性設定 RELAY_KEY（包一層：reqQrSecret_ 在 Requests.js）
+  relay_setup: handleRelaySetup_,   // 一次性設定 RELAY_KEY（2026-10-16）
   mgr_line_binds: handleMgrLineBinds_,
   mgr_line_unbind: handleMgrLineUnbind_,
   liff_bind: handleLiffBind_,
