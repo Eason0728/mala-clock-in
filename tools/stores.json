@@ -8,7 +8,7 @@
     "lat": 24.7840945,
     "lng": 121.0157448,
     "radius_m": 20,
-    "relay": false
+    "relay": "shadow"
   },
   {
     "code": "mztjs",
@@ -19,7 +19,7 @@
     "lat": 24.776717902605498,
     "lng": 121.02188536933596,
     "radius_m": 50,
-    "relay": false
+    "relay": "shadow"
   },
   {
     "code": "mztgf",
@@ -30,7 +30,7 @@
     "lat": 24.801160225561624,
     "lng": 120.98820054417844,
     "radius_m": 50,
-    "relay": false
+    "relay": "shadow"
   },
   {
     "code": "mztlzl",
@@ -41,7 +41,7 @@
     "lat": 25.022272780810678,
     "lng": 121.55487005744799,
     "radius_m": 50,
-    "relay": false
+    "relay": "shadow"
   },
   {
     "code": "hq",
@@ -52,7 +52,7 @@
     "lat": 24.776352585623435,
     "lng": 121.01992421142127,
     "radius_m": 50,
-    "relay": false
+    "relay": "shadow"
   },
   {
     "code": "cf",
@@ -63,6 +63,6 @@
     "lat": 24.12274490856511,
     "lng": 120.7102176960625,
     "radius_m": 50,
-    "relay": false
+    "relay": "shadow"
   }
 ]

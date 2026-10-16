@@ -976,17 +976,17 @@ def phase_relay(ctx, hq):
     ok('快速通道 7：shadow 的畫面問候語是 Google 的', G_OK['greeting'] in msg(p) and MINI_OK['greeting'] not in msg(p), msg(p))
     p.close()
 
-    # 8. 沒帶 relay_mode（stores.json 全 false）：根本不送 mini
-    p, S = relay_open(ctx, hq, MINI_OK, G_OK, g_ms=500, mode=None)
+    # 8. 開關關閉（relay_mode=off，等同 stores.json 該店 false）：根本不送 mini
+    p, S = relay_open(ctx, hq, MINI_OK, G_OK, g_ms=500, mode='off')
     force_out(p)
     wait_msg(p, '下班打卡成功 09:02', timeout=6000)
     tm = relay_last(p)
     p.wait_for_timeout(300)
-    ok('快速通道 8：stores.json 全 false → 不送 mini（攔截計數 0、頁內也沒有該網址的請求）',
+    ok('快速通道 8：開關關閉 → 不送 mini（攔截計數 0、頁內也沒有該網址的請求）',
        len(S['mini_hits']) == 0 and not any(x['url'].endswith('/relay-mock') for x in calls(p)), (S['mini_hits'], calls(p)))
     ok('快速通道 8：route=off、predict=none、predict_ms 空、req_id 仍有', tm['route'] == 'off' and tm['predict'] == 'none' and tm['predict_ms'] is None
        and RID.match(str(tm['req_id'])) is not None, tm)
-    ok('快速通道 8：stores.json 每家店 relay 都是 false', all(s.get('relay') is False for s in STORES.values()), {k: s.get('relay') for k, s in STORES.items()})
+    ok('快速通道 8：stores.json 每家店 relay 只會是 false／"shadow"／true', all(s.get('relay') in (False, True, 'shadow') and s.get('relay') is not 1 for s in STORES.values()), {k: s.get('relay') for k, s in STORES.items()})
     p.close()
 
     # 3b. 先顯示成功後 Google 回 too_many／bad_reply／not_bound：訊息前面加「剛才顯示成功有誤。」
