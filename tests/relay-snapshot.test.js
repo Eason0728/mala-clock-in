@@ -17,6 +17,8 @@ function make(opts) {
   const roster = [
     { emp_id: 'T01', name: '測試一', key: 'SECRET1', active: true, device_id: 'dev1', line_user_id: 'Uaaa', line_bound_at: 'x', shift_in: '09:00' },
     { emp_id: 'T02', name: '測試二', key: 'SECRET2', active: 'FALSE', device_id: '', line_user_id: '', line_bound_at: '' },
+    { emp_id: '', name: '', key: '', active: '', line_user_id: '' },   // 空白列（試算表常見）
+    { name: '缺工號' },
   ];
   const events = [
     { ts: iso(50), emp_id: 'T01', type: 'in', lat: 24.1, lng: 121.1, distance_m: 3, within_range: true, device_id: 'line:Uaaa', device_match: true, status: 'ok', accuracy_m: 9 },
@@ -34,6 +36,7 @@ function make(opts) {
     readSheetAsObjects: (sh) => ({ headers: [], rows: (sh.name === 'roster' ? roster : events).map(r => Object.assign({}, r)) }),
     readEventsSince: (sh, sinceMs) => { sinceSeen.push(sinceMs); return { headers: ['ts'], rows: events.map(r => Object.assign({}, r)) }; },
     normCellTs: (v) => String(v),
+    Utilities: { computeHmacSha256Signature: (msg, key) => Array.from(require('crypto').createHmac('sha256', key).update(msg).digest()).map(b => b > 127 ? b - 256 : b) },
   };
   vm.createContext(sb);
   vm.runInContext(fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8'), sb);
@@ -62,13 +65,19 @@ ok('太短的 RELAY_KEY 視為沒設（避免設成好猜的值）', () => {
   const t = make({ relayKey: 'abc' });
   assert.strictEqual(t.call({ relay_key: 'abc' }).error, 'unauthorized');
 });
-ok('成功：名冊只回 emp_id／name／active／line_user_id，active 一律布林', () => {
+const hmacHex = (msg) => require('crypto').createHmac('sha256', 'RK-test-0123456789').update(msg).digest('hex');
+ok('成功：名冊只回 emp_id／name／active／line_uid_h，active 一律布林；沒工號的列不回（審查 P1 #3）', () => {
   const r = make().call({ relay_key: 'RK-test-0123456789' });
   assert.strictEqual(r.ok, true);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(r.roster)), [
-    { emp_id: 'T01', name: '測試一', active: true, line_user_id: 'Uaaa' },
-    { emp_id: 'T02', name: '測試二', active: false, line_user_id: '' },
+    { emp_id: 'T01', name: '測試一', active: true, line_uid_h: hmacHex('Uaaa') },
+    { emp_id: 'T02', name: '測試二', active: false, line_uid_h: '' },
   ]);
+});
+ok('LINE 帳號只回 HMAC-SHA256(RELAY_KEY, line_user_id) 小寫十六進位，原文不回（審查 P1 #4）', () => {
+  const s = JSON.stringify(make().call({ relay_key: 'RK-test-0123456789' }));
+  assert.ok(s.indexOf('Uaaa') < 0 && s.indexOf('line_user_id') < 0);
+  assert.ok(/"line_uid_h":"[0-9a-f]{64}"/.test(s));
 });
 ok('成功：events 只回 ts／emp_id／type／status，48 小時外的不回', () => {
   const r = make().call({ relay_key: 'RK-test-0123456789' });

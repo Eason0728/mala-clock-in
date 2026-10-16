@@ -554,20 +554,32 @@ function handleExportTables_(body) {
    寫入仍然只有手機直接送的 liff_punch。所以這裡唯讀，而且只給預判用得到的欄位（不給金鑰、裝置碼、座標）。
    金鑰：指令碼屬性 RELAY_KEY（每店一把，只能打這個動作）；沒設或太短＝功能關閉。 */
 var RELAY_SNAPSHOT_HOURS = 48;
+function relayKey_() {
+  try { return String(PropertiesService.getScriptProperties().getProperty('RELAY_KEY') || ''); } catch (e) { return ''; }
+}
 function relayKeyOk_(given) {
-  var want = '';
-  try { want = String(PropertiesService.getScriptProperties().getProperty('RELAY_KEY') || ''); } catch (e) { want = ''; }
+  var want = relayKey_();
   return want.length >= 16 && typeof given === 'string' && given === want;
+}
+/** LINE 帳號不回原文，回 HMAC-SHA256(RELAY_KEY, line_user_id) 小寫十六進位（審查 P1 #4）：
+ *  mini 驗完 id_token 拿到 userId 後用同一把金鑰算一次來比對；mini 的資料庫外洩也拿不到「LINE 帳號↔姓名」對照。 */
+function relayUidHash_(uid, key) {
+  if (!uid) return '';
+  return Utilities.computeHmacSha256Signature(String(uid), key).map(function (b) {
+    return ('0' + (b & 255).toString(16)).slice(-2);
+  }).join('');
 }
 function relayIsoNow_() {   // 台北時間 yyyy-MM-ddTHH:mm:ss+08:00（同 nowTaipeiIso；這裡不依賴 程式碼.js）
   return new Date(Date.now() + 8 * 3600000).toISOString().replace(/\.\d+Z$/, '+08:00');
 }
 function handleRelaySnapshot_(body) {
   if (!relayKeyOk_(body.relay_key)) return { ok: false, error: 'unauthorized' };
-  var ss = getSS(), rs = ss.getSheetByName('roster');
-  var roster = rs ? readSheetAsObjects(rs).rows.map(function (r) {
-    return { emp_id: String(r.emp_id), name: String(r.name), active: String(r.active).toLowerCase() === 'true',
-             line_user_id: r.line_user_id ? String(r.line_user_id) : '' };
+  var ss = getSS(), rs = ss.getSheetByName('roster'), key = relayKey_();
+  var roster = rs ? readSheetAsObjects(rs).rows.filter(function (r) {
+    return r.emp_id !== undefined && r.emp_id !== null && String(r.emp_id).trim() !== '';   // 空白列不回假工號（審查 P1 #3）
+  }).map(function (r) {
+    return { emp_id: String(r.emp_id), name: String(r.name || ''), active: String(r.active).toLowerCase() === 'true',
+             line_uid_h: relayUidHash_(r.line_user_id, key) };
   }) : [];
   var since = Date.now() - RELAY_SNAPSHOT_HOURS * 3600000;
   var events = liffReadEvents_(ss, since - 3600000).rows.filter(function (e) {
