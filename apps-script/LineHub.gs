@@ -1166,7 +1166,11 @@ function handleLineWebhook_(body) {
 var LINE_PUNCH_TIMING_SHEET = 'punch_timing';
 var LINE_PUNCH_TIMING_HEADERS = ['ts', 'store', 'emp_id', 'type', 'outcome', 'status', 'total_ms', 'geo_ms', 'server_ms', 'refix', 'qr', 'accuracy_m',
   // 後端各步驟毫秒數（2026-10-12 加在最後，舊列留白）：驗身分／讀名冊／讀打卡表／寫入／事後提醒
-  'srv_verify_ms', 'srv_roster_ms', 'srv_read_ms', 'srv_write_ms', 'srv_extra_ms'];
+  'srv_verify_ms', 'srv_roster_ms', 'srv_read_ms', 'srv_write_ms', 'srv_extra_ms',
+  // LINE 打卡快速通道（2026-10-16 加在最後，~/mala-clock-relay plan v2）：這次按鍵編號、畫面有沒有採用 mini 預判、mini 預判結果與花幾毫秒
+  'req_id', 'route', 'predict', 'predict_ms'];
+var LINE_PUNCH_TIMING_ROUTES = ['predicted', 'plain', 'off'];
+var LINE_PUNCH_TIMING_PREDICTS = ['ok', 'blocked', 'unknown', 'none'];
 var LINE_PUNCH_TIMING_STEPS = ['verify', 'roster', 'read', 'write', 'extra'];
 var LINE_PUNCH_TIMING_OUTCOMES = ['ok', 'fail', 'error', 'geo_fail', 'unclear_ok', 'unclear_not', 'unclear_unknown'];
 function linePunchTimingMs_(v) {
@@ -1200,7 +1204,11 @@ function handleLinePunchTiming_(body) {
   sh.appendRow([nowTaipeiIso(), code, empId, type, outcome, status,
                 linePunchTimingMs_(body.total_ms), linePunchTimingMs_(body.geo_ms), linePunchTimingMs_(body.server_ms),
                 body.refix === true, body.qr === true, (isFinite(acc) && acc >= 0 && acc < 100000) ? Math.round(acc) : '']
-                .concat(LINE_PUNCH_TIMING_STEPS.map(function (k) { return linePunchTimingMs_(steps[k]); })));
+                .concat(LINE_PUNCH_TIMING_STEPS.map(function (k) { return linePunchTimingMs_(steps[k]); }))
+                .concat([/^r[0-9a-f]{16}$/.test(String(body.req_id || '')) ? String(body.req_id) : '',
+                         LINE_PUNCH_TIMING_ROUTES.indexOf(String(body.route)) >= 0 ? String(body.route) : '',
+                         LINE_PUNCH_TIMING_PREDICTS.indexOf(String(body.predict)) >= 0 ? String(body.predict) : '',
+                         linePunchTimingMs_(body.predict_ms)]));
   return { ok: true };
 }
 

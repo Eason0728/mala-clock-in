@@ -549,7 +549,38 @@ function handleExportTables_(body) {
   return { ok: true, exported_at: Utilities.formatDate(new Date(), 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX"), tables: out };
 }
 
+/* ══ LINE 打卡快速通道（2026-10-16，~/mala-clock-relay spec v2 §3）══
+   Mac mini 每 2 分鐘來讀一次名冊對照與近 48 小時打卡，只拿來「預判」這張卡會不會成功、讓畫面先顯示；
+   寫入仍然只有手機直接送的 liff_punch。所以這裡唯讀，而且只給預判用得到的欄位（不給金鑰、裝置碼、座標）。
+   金鑰：指令碼屬性 RELAY_KEY（每店一把，只能打這個動作）；沒設或太短＝功能關閉。 */
+var RELAY_SNAPSHOT_HOURS = 48;
+function relayKeyOk_(given) {
+  var want = '';
+  try { want = String(PropertiesService.getScriptProperties().getProperty('RELAY_KEY') || ''); } catch (e) { want = ''; }
+  return want.length >= 16 && typeof given === 'string' && given === want;
+}
+function relayIsoNow_() {   // 台北時間 yyyy-MM-ddTHH:mm:ss+08:00（同 nowTaipeiIso；這裡不依賴 程式碼.js）
+  return new Date(Date.now() + 8 * 3600000).toISOString().replace(/\.\d+Z$/, '+08:00');
+}
+function handleRelaySnapshot_(body) {
+  if (!relayKeyOk_(body.relay_key)) return { ok: false, error: 'unauthorized' };
+  var ss = getSS(), rs = ss.getSheetByName('roster');
+  var roster = rs ? readSheetAsObjects(rs).rows.map(function (r) {
+    return { emp_id: String(r.emp_id), name: String(r.name), active: String(r.active).toLowerCase() === 'true',
+             line_user_id: r.line_user_id ? String(r.line_user_id) : '' };
+  }) : [];
+  var since = Date.now() - RELAY_SNAPSHOT_HOURS * 3600000;
+  var events = liffReadEvents_(ss, since - 3600000).rows.filter(function (e) {
+    var t = new Date(String(e.ts)).getTime();
+    return !isNaN(t) && t >= since;
+  }).map(function (e) {
+    return { ts: String(e.ts), emp_id: String(e.emp_id), type: String(e.type), status: String(e.status) };
+  });
+  return { ok: true, now: relayIsoNow_(), roster: roster, events: events };
+}
+
 var LIFF_HANDLERS = {
+  relay_snapshot: handleRelaySnapshot_,   // LINE 打卡快速通道：mini 唯讀副本（2026-10-16）
   mgr_line_binds: handleMgrLineBinds_,
   mgr_line_unbind: handleMgrLineUnbind_,
   liff_bind: handleLiffBind_,

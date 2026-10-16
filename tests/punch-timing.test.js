@@ -37,17 +37,17 @@ ok('成功：寫光復 punch_timing 一列（第一次自動建分頁＋表頭�
   const t = make(); const r = t.call({});
   assert.strictEqual(JSON.stringify(r), JSON.stringify({ ok: true }));
   const sh = t.sheets.punch_timing;
-  assert.strictEqual(JSON.stringify(sh.header), JSON.stringify(['ts', 'store', 'emp_id', 'type', 'outcome', 'status', 'total_ms', 'geo_ms', 'server_ms', 'refix', 'qr', 'accuracy_m', 'srv_verify_ms', 'srv_roster_ms', 'srv_read_ms', 'srv_write_ms', 'srv_extra_ms']));
-  assert.strictEqual(JSON.stringify(sh.rows[0]), JSON.stringify(['2026-10-12T21:30:00+08:00', 'mztjs', 'MZTJS05', 'out', 'ok', 'ok', 2346, 0, 2100, false, false, 12, '', '', '', '', '']));
+  assert.strictEqual(JSON.stringify(sh.header), JSON.stringify(['ts', 'store', 'emp_id', 'type', 'outcome', 'status', 'total_ms', 'geo_ms', 'server_ms', 'refix', 'qr', 'accuracy_m', 'srv_verify_ms', 'srv_roster_ms', 'srv_read_ms', 'srv_write_ms', 'srv_extra_ms', 'req_id', 'route', 'predict', 'predict_ms']));
+  assert.strictEqual(JSON.stringify(sh.rows[0]), JSON.stringify(['2026-10-12T21:30:00+08:00', 'mztjs', 'MZTJS05', 'out', 'ok', 'ok', 2346, 0, 2100, false, false, 12, '', '', '', '', '', '', '', '', '']));
   assert.deepStrictEqual(t.opened, []);   // 沒有開任何一家店的試算表
 });
 ok('後端各步驟毫秒數記在最後五欄（不合理的留白）', () => {
   const t = make(); t.call({ steps: { verify: 150.4, roster: 320, read: 210, write: 1800, extra: -3 } });
-  assert.strictEqual(JSON.stringify(t.sheets.punch_timing.rows[0].slice(12)), JSON.stringify([150, 320, 210, 1800, '']));
+  assert.strictEqual(JSON.stringify(t.sheets.punch_timing.rows[0].slice(12, 17)), JSON.stringify([150, 320, 210, 1800, '']));
 });
-ok('舊分頁只有 12 欄 → 補齊表頭到 17 欄', () => {
+ok('舊分頁只有 12 欄 → 補齊表頭到 21 欄', () => {
   const t = make(); const old = t.sb.getSS().insertSheet('punch_timing'); old.oldCols = 12;
-  t.call({}); assert.strictEqual(old.header.length, 17);
+  t.call({}); assert.strictEqual(old.header.length, 21);
 });
 ok('光復店代碼是空字串也收、工號取光復那筆', () => {
   const t = make(); t.call({ store: '' }); assert.strictEqual(t.sheets.punch_timing.rows[0][2], 'E03');
@@ -113,9 +113,25 @@ ok('讀取：只回日期範圍內（含頭含尾）、只回固定欄位', () =
                 { ts: '2026-10-14T08:00:00+08:00', store: 'cf', total_ms: 4 }];
   const r = makeGet(rows).sb.handlePunchTimingGet_({ admin_key: 'ADMIN', from: '2026-10-12', to: '2026-10-13' });
   assert.strictEqual(JSON.stringify(r.rows.map(x => x.total_ms)), '[2,3]');
-  assert.ok(!('name' in r.rows[0])); assert.strictEqual(Object.keys(r.rows[0]).length, 17);
+  assert.ok(!('name' in r.rows[0])); assert.strictEqual(Object.keys(r.rows[0]).length, 21);
 });
 ok('讀取：已掛進 LINE_HUB_HANDLERS', () => { assert.strictEqual(typeof make().sb.LINE_HUB_HANDLERS.punch_timing_get, 'function'); });
+// LINE 打卡快速通道（2026-10-16，~/mala-clock-relay plan v2 共用契約）：多記 req_id／route／predict／predict_ms，試跑時精準配對「mini 預判 vs 實際結果」
+ok('快速通道：四欄合格值照存', () => {
+  const t = make(); t.call({ req_id: 'r3f9a0c11d2e4b7a8', route: 'predicted', predict: 'ok', predict_ms: 412.4 });
+  assert.strictEqual(JSON.stringify(t.sheets.punch_timing.rows[0].slice(17)), JSON.stringify(['r3f9a0c11d2e4b7a8', 'predicted', 'ok', 412]));
+});
+ok('快速通道：格式不合一律留白（req_id 長度／大寫、route 與 predict 白名單、毫秒負數）', () => {
+  [{ req_id: 'r3F9a0c11d2e4b7a8' }, { req_id: 'r3f9a0c11d2e4b7a' }, { req_id: "x'+=1" }].forEach(b => {
+    const t = make(); t.call(b); assert.strictEqual(t.sheets.punch_timing.rows[0][17], '', JSON.stringify(b));
+  });
+  const t = make(); t.call({ route: 'mini', predict: 'yes', predict_ms: -5 });
+  assert.strictEqual(JSON.stringify(t.sheets.punch_timing.rows[0].slice(18)), JSON.stringify(['', '', '']));
+});
+ok('快速通道：三種 route、四種 predict 都收', () => {
+  ['predicted', 'plain', 'off'].forEach(v => { const t = make(); t.call({ route: v }); assert.strictEqual(t.sheets.punch_timing.rows[0][18], v); });
+  ['ok', 'blocked', 'unknown', 'none'].forEach(v => { const t = make(); t.call({ predict: v }); assert.strictEqual(t.sheets.punch_timing.rows[0][19], v); });
+});
 // 前端：結果顯示之後才送、每條結束路徑都有記
 const html = fs.readFileSync(ROOT + '/clock-line.html', 'utf8');
 ok('前端：成功時先 say(shown) 再送秒數、再代送「打卡」', () => {
