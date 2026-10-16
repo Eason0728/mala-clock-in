@@ -890,7 +890,7 @@ def phase_relay(ctx, hq):
     wait_msg(p, '09:02', timeout=6000)
     m = msg(p)
     ok('快速通道 1：Google 回來後畫面換成 Google 的時間', '下班打卡成功 09:02' in m and '09:01' not in m, m)
-    known_bug('快速通道 1：Google 回來後問候語仍是 mini 那句、不換句', MINI_OK['greeting'] in m and G_OK['greeting'] not in m, m)
+    ok('快速通道 1：Google 回來後問候語仍是 mini 那句、不換句', MINI_OK['greeting'] in m and G_OK['greeting'] not in m, m)
     tm = relay_last(p)
     ok('快速通道 1：timing route=predicted、predict=ok、outcome=ok', tm['route'] == 'predicted' and tm['predict'] == 'ok' and tm['outcome'] == 'ok', tm)
     ok('快速通道 1：total_ms 算到先顯示那刻（< 1500）、server_ms 是 Google 那趟（≥ 2500）、predict_ms 有值',
@@ -917,7 +917,7 @@ def phase_relay(ctx, hq):
     wait_msg(p, '下班打卡失敗', timeout=6000)
     m = msg(p)
     ok('快速通道 3：Google 擋下 → 最後是失敗、有原因與怎麼辦、不殘留成功字樣', '打卡成功' not in m and '原因：店家判定你不在範圍內' in m and '怎麼辦：請開啟' in m, m)
-    known_bug('快速通道 3：失敗訊息以「剛才顯示成功有誤。」開頭', m.startswith('剛才顯示成功有誤。'), m[:60])
+    ok('快速通道 3：失敗訊息以「剛才顯示成功有誤。」開頭', m.startswith('剛才顯示成功有誤。'), m[:60])
     tm = relay_last(p)
     ok('快速通道 3：timing outcome=fail、route=predicted、predict=ok', tm['outcome'] == 'fail' and tm['route'] == 'predicted' and tm['predict'] == 'ok', tm)
     p.close()

@@ -582,14 +582,14 @@
         var hm = String(r.ts || '').slice(11, 16);
         if (r.ok) {
           var notes = (r.req_notes || []).join('\n');
-          var shown = label + '打卡成功 ' + hm + '\n地點：' + st.name + (r.via_qr ? '（主管 QR）' : '') + (r.missed ? '\n\n⚠️ ' + r.missed : '')
+          var okText = label + '打卡成功 ' + hm + '\n地點：' + st.name + (r.via_qr ? '（主管 QR）' : '') + (r.missed ? '\n\n⚠️ ' + r.missed : '')
             + (notes ? '\n\n' + notes : '') + ((shown ? shown.greeting : r.greeting) ? '\n\n' + (shown ? shown.greeting : r.greeting) : '');   // 已先顯示 mini 的問候語就沿用，不換句
           // 就地鎖鍵（同網頁版 updateButtonStates({type, ts})）：同型不能再按、另一型 10 分鐘鎖（審查 M1）
           var nowSrv = Date.now() + clockSkew;
           status.guard = { blocked: type, lock: {}, last: { type: type, hm: hm }, now: nowSrv };
           status.guard.lock[type === 'in' ? 'out' : 'in'] = nowSrv + 10 * 60000;
           status.today = (status.today || []).concat([{ type: type, hm: hm, status: 'ok' }]);
-          render(status); say(shown, 'ok');
+          render(status); say(okText, 'ok');
           tmReport('ok', 'ok');   // 畫面已經顯示成功才送，同仁不會多等
           // 有漏卡：多一顆「申請補登」直接開申請頁，畫面不自動關（要讓同仁按得到）
           if (r.missed_date) { missReq = { date: r.missed_date, miss: r.missed_type }; $('btnMissReq').hidden = false; }
