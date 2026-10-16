@@ -43,8 +43,12 @@ function makeEnv(opts) {
   const props = {};
   let nowIso = opts.now || '2026-10-09T16:00:00+08:00';
   const events = opts.events || [];
+  // 申請編號＝'r'＋Date.now()＋Math.random 兩碼：同一毫秒送多筆時有 1/1296 會撞號（正式環境每筆隔好幾秒、又在鎖內，碰不到）。
+  // 測試一毫秒內連送好幾筆，撞號就找錯列（2026-10-16 抓到 12 次失敗 2 次）→ 沙盒裡 random 改成依序遞增，編號一定不同。
+  let rnd = 0;
+  const seqMath = Object.assign(Object.create(Math), { random: () => (rnd++ % 1296) / 1296 });
   const sb = {
-    console, Date, JSON, Math, String, Number, isNaN, isFinite, parseInt, Object, Array, RegExp,
+    console, Date, JSON, Math: seqMath, String, Number, isNaN, isFinite, parseInt, Object, Array, RegExp,
     CONFIG: { STORE_LAT: 24.78, STORE_LNG: 121.01 },
     getSS: () => ({ getSheetByName: (n) => sheets[n] || null, insertSheet: (n) => (sheets[n] = sheet(n)) }),
     readSheetAsObjects: (sh) => {
