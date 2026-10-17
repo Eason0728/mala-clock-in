@@ -228,6 +228,8 @@ function handleMgrLineBinds_(body) {
 function handleMgrLineUnbind_(body) {
   var mgr = liffMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
+  var actor = actingName_(body, mgr);
+  if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
   var sheet = getSS().getSheetByName('roster');
   ensureRosterHeaders(sheet);
   var row = readSheetAsObjects(sheet).rows.filter(function (r) { return String(r.emp_id) === String(body.emp_id); })[0];
@@ -235,7 +237,7 @@ function handleMgrLineUnbind_(body) {
   if (!row.line_user_id) return { ok: true, already: true };
   setRosterCell(sheet, row.__rowIndex, 'line_user_id', '');
   setRosterCell(sheet, row.__rowIndex, 'line_bound_at', '', true);
-  logLiffBind_(row.emp_id, row.name, String(row.line_user_id), 'unbind_by:' + String(mgr.name || ''));
+  logLiffBind_(row.emp_id, row.name, String(row.line_user_id), 'unbind_by:' + actor);
   return { ok: true };
 }
 

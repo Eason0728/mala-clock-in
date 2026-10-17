@@ -11,6 +11,7 @@ let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 
 const sb = { console, Date, JSON, Math, String, Number, isNaN, parseInt, Object, Array, RegExp };
 vm.createContext(sb);
+vm.runInContext(codeSrc.match(/function actingName_\([\s\S]*?\n\}\n/)[0], sb);   // Requests.gs 寫審核人時呼叫（Code.gs）
 vm.runInContext(fs.readFileSync(ROOT + '/apps-script/Requests.gs', 'utf8'), sb);
 const LEAVE_TYPES = vm.runInContext(codeSrc.slice(codeSrc.indexOf('const LEAVE_TYPES = ['), codeSrc.indexOf('];', codeSrc.indexOf('const LEAVE_TYPES = [')) + 2) + ' LEAVE_TYPES', vm.createContext({}));
 const PROOF = vm.runInContext('REQ_PROOF_TYPES_', sb);

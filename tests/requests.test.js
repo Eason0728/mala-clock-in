@@ -73,7 +73,7 @@ function makeEnv(opts) {
     },
   };
   vm.createContext(sb);
-  vm.runInContext([extractConst(codeSrc, 'LEAVE_TYPES'), extract(codeSrc, 'findManagerByKey'),
+  vm.runInContext([extractConst(codeSrc, 'LEAVE_TYPES'), extract(codeSrc, 'findManagerByKey'), extract(codeSrc, 'actingName_'),
                    fs.readFileSync(ROOT + '/apps-script/Requests.gs', 'utf8')].join('\n'), sb);
   sb.__sheets = sheets; sb.__setNow = (v) => { nowIso = v; }; sb.__props = props;
   return sb;
@@ -388,7 +388,6 @@ ok('LIFF_HANDLERS 有掛 mgr_req_decide_batch（包一層，載入順序不影�
   const src = fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8');
   assert(/mgr_req_decide_batch: function \(b\) \{ return handleMgrReqDecideBatch_\(b\); \}/.test(src));
 });
-if (require.main === module) console.log(`\n${n} 項全部通過`);
 
 ok('Codex 2026-10-10：已核准的整天請假、那天沒打卡也沒核定 → 出現在本月待核定提醒；加班、未來、已核定、未核准不算', () => {
   const sb = makeEnv({});
@@ -408,3 +407,24 @@ ok('Codex 2026-10-10：已核准的整天請假、那天沒打卡也沒核定 �
   assert.strictEqual(r.items[0].from_request, true);
   assert.strictEqual(sb.reqPendingApprovalsPlus_({ mgr_key: 'BAD' }).error, 'unauthorized');
 });
+
+ok('實際核定人（2026-10-18）：營運系統那把鑰匙（allow_acting）帶 acting_name → decided_by 寫實際人；舊鑰匙帶了也不採用；格式不合整筆擋', () => {
+  const sb = makeEnv({});
+  const m = sb.__sheets.managers.data;
+  m[0].push('allow_acting'); m[1].push(''); m[2].push('');
+  m.push(['營運系統代管', 'SVC', 'true', 'TRUE']);
+  const a = submit(sb, { kind: 'leave', date: '2026-10-15', leave_type: '特休假', hours: 8 });
+  const b = submit(sb, { kind: 'leave', date: '2026-10-16', leave_type: '事假', hours: 4 });
+  const c = submit(sb, { kind: 'leave', date: '2026-10-17', leave_type: '事假', hours: 4 });
+  const rowOf = (id) => { const sh = sb.__sheets.requests; const h = sh.data[0]; const r = sh.data.find((x) => x[h.indexOf('id')] === id); return (k) => r[h.indexOf(k)]; };
+  assert.strictEqual(sb.handleMgrReqDecide_({ mgr_key: 'SVC', id: a.request.id, decision: 'approve', acting_name: 'x'.repeat(41) }).error, 'bad_acting_name');
+  assert.strictEqual(rowOf(a.request.id)('status'), 'pending');
+  assert(sb.handleMgrReqDecide_({ mgr_key: 'SVC', id: a.request.id, decision: 'approve', acting_name: '陳小明（DZY023）' }).ok);
+  assert.strictEqual(rowOf(a.request.id)('decided_by'), '陳小明（DZY023）');
+  assert(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: b.request.id, decision: 'approve', acting_name: '冒名者' }).ok);
+  assert.strictEqual(rowOf(b.request.id)('decided_by'), '測試主管');
+  const r = sb.handleMgrReqDecideBatch_({ mgr_key: 'SVC', ids: [c.request.id], decision: 'approve', acting_name: '林督導（DZY051）' });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r.done)), [c.request.id]);
+  assert.strictEqual(rowOf(c.request.id)('decided_by'), '林督導（DZY051）');
+});
+if (require.main === module) console.log(`\n${n} 項全部通過`);

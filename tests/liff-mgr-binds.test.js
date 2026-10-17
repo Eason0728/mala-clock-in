@@ -18,6 +18,7 @@ function make() {
     normCellTs: (v) => v, ensureRosterHeaders: () => {}, nowTaipeiIso: () => '2026-10-08T10:00:00+08:00',
     setRosterCell: (sh, row, h, v) => cells.push([row, h, v]) };
   vm.createContext(sb); vm.runInContext(SRC, sb);
+  vm.runInContext(fs.readFileSync(__dirname + '/../apps-script/Code.gs', 'utf8').match(/function actingName_\([\s\S]*?\n\}\n/)[0], sb);
   return { sb, cells, log };
 }
 ok('mgr_line_binds：金鑰錯 → unauthorized', () => assert.strictEqual(make().sb.handleMgrLineBinds_({ mgr_key: 'x' }).error, 'unauthorized'));

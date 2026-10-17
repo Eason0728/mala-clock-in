@@ -974,8 +974,10 @@ function handleMgrDeviceDecision(body) {
   if (!mgrSheet) return { ok: false, error: 'managers_sheet_missing' };
   const mgr = findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key);
   if (!mgr) return { ok: false, error: 'unauthorized' };
+  const actor = actingName_(body, mgr);
+  if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
   const result = applyDeviceDecision(body.emp_id, body.device_id, !!body.approve);
-  if (result.ok) result.manager_name = mgr.name;
+  if (result.ok) result.manager_name = actor;
   return result;
 }
 
@@ -988,6 +990,22 @@ function handleMgrDeviceDecision(body) {
 
 function findManagerByKey(rows, key) {
   return rows.filter(function (r) { return String(r.key) === String(key) && String(r.active).toLowerCase() === 'true'; })[0];
+}
+
+/**
+ * 實際操作人（2026-10-18，營運系統改個人帳號）：寫進「核定人／審核人／建立者／移除者」欄的名字。
+ * 只有 managers 列 allow_acting＝TRUE（營運系統代管的那把主管鑰匙）才採用 body.acting_name；
+ * 其他主管連結一律照舊回該主管名字（拿舊連結的人不能冒名）。
+ * 採用時格式不合（非字串、去空白後空的、超過 40 字）回 null，呼叫端要整筆拒絕，不要默默退回主管名字。
+ */
+function actingName_(body, mgr) {
+  const own = String((mgr && mgr.name) || '');
+  if (String((mgr && mgr.allow_acting) || '').toLowerCase() !== 'true') return own;
+  const v = body ? body.acting_name : undefined;
+  if (v === undefined || v === null || v === '') return own;
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  return s && s.length <= 40 ? s : null;
 }
 
 /** 'HH:mm-HH:mm,HH:mm-HH:mm' → [{start,end}] */
@@ -1099,6 +1117,8 @@ function handleMgrAddEmployeeUnlocked_(body) {
   if (!mgrSheet) return { ok: false, error: 'no_managers' };
   const mgr = findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key);
   if (!mgr) return { ok: false, error: 'unauthorized' };
+  const actor = actingName_(body, mgr);
+  if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
 
   const name = String(body.name || '').trim();
   if (!name) return { ok: false, error: 'name_required', message: '請輸入同仁姓名' };
@@ -1126,13 +1146,13 @@ function handleMgrAddEmployeeUnlocked_(body) {
   const row = ROSTER_HEADERS.map(function (h) {
     return h === 'emp_id' ? empId : h === 'name' ? name : h === 'key' ? key
          : h === 'active' ? true : h === 'created_at' ? now
-         : h === 'created_by' ? String(mgr.name || '') : '';
+         : h === 'created_by' ? actor : '';
   });
   rosterSheet.appendRow(row);
   // created_at 是純日期時間字串，鎖文字避免被轉成日期物件
   const ci = ROSTER_HEADERS.indexOf('created_at') + 1;
   rosterSheet.getRange(rosterSheet.getLastRow(), ci).setNumberFormat('@').setValue(now);
-  return { ok: true, emp_id: empId, name: name, key: key, created_by: String(mgr.name || ''), created_at: now };
+  return { ok: true, emp_id: empId, name: name, key: key, created_by: actor, created_at: now };
 }
 
 /**
@@ -1197,6 +1217,8 @@ function handleMgrSetActive(body) {
   if (!mgrSheet) return { ok: false, error: 'no_managers' };
   const mgr = findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key);
   if (!mgr) return { ok: false, error: 'unauthorized' };
+  const actor = actingName_(body, mgr);
+  if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
 
   const rosterSheet = ss.getSheetByName('roster');
   if (!rosterSheet) return { ok: false, error: 'no_roster' };
@@ -1236,9 +1258,9 @@ function handleMgrSetActive(body) {
   setRosterCell(rosterSheet, row.__rowIndex, 'active', active);
   // removed_at 是純日期時間字串，鎖文字避免被 Sheets 轉成日期物件（同 created_at）
   setRosterCell(rosterSheet, row.__rowIndex, 'removed_at', active ? '' : now, true);
-  setRosterCell(rosterSheet, row.__rowIndex, 'removed_by', active ? '' : String(mgr.name || ''));
+  setRosterCell(rosterSheet, row.__rowIndex, 'removed_by', active ? '' : actor);
   return { ok: true, emp_id: empId, name: name, active: active,
-           removed_at: active ? '' : now, removed_by: active ? '' : String(mgr.name || '') };
+           removed_at: active ? '' : now, removed_by: active ? '' : actor };
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -1344,6 +1366,8 @@ function handleMgrNotices(body) {
 function handleMgrAddNotice(body) {
   const auth = noticeAuth(body);
   if (!auth.ok) return auth.res;
+  const actor = actingName_(body, auth.mgr);
+  if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
 
   const text = String(body.text == null ? '' : body.text).trim();
   if (!text) return { ok: false, error: 'text_required', message: '請先輸入公告內容' };
@@ -1362,10 +1386,10 @@ function handleMgrAddNotice(body) {
   const id = 'N' + Date.now();
   const createdAt = nowTaipeiIso();
   // appendRow 依 NOTICE_HEADERS 的順序；表頭自癒已在 noticeSheet 做過。
-  sheet.appendRow([id, text, true, endsOn, createdAt, String(auth.mgr.name || '')]);
+  sheet.appendRow([id, text, true, endsOn, createdAt, actor]);
 
   return { ok: true, id: id, text: text, ends_on: endsOn,
-           created_at: createdAt, created_by: String(auth.mgr.name || '') };
+           created_at: createdAt, created_by: actor };
 }
 
 /**
@@ -1587,6 +1611,8 @@ function handleMgrApprove(body) {
   if (!mgrSheet) return { ok: false, error: 'managers_sheet_missing' };
   const mgr = findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key);
   if (!mgr) return { ok: false, error: 'unauthorized' };
+  const actor = actingName_(body, mgr);
+  if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
 
   const date = String(body.date || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: 'bad_date' };
@@ -1671,13 +1697,13 @@ function handleMgrApprove(body) {
 
   const approvedSheet = ss.getSheetByName('approved');
   if (!approvedSheet) return { ok: false, error: 'approved_sheet_missing' };
-  approvedSheet.appendRow([date, body.emp_id, roster.name, periodsStr, approvedHours, statusText, mgr.name, enteredAt]);
+  approvedSheet.appendRow([date, body.emp_id, roster.name, periodsStr, approvedHours, statusText, actor, enteredAt]);
   upsertLeaveRow(ss, date, String(roster.name), leaveType, leaveHours);
 
   return {
     ok: true, date: date, emp_id: body.emp_id, name: roster.name,
     periods: rawPeriods, approved_hours: approvedHours, leave_type: leaveType, leave_hours: leaveHours,
-    status_text: statusText, manager_name: mgr.name, entered_at: enteredAt,
+    status_text: statusText, manager_name: actor, entered_at: enteredAt,
   };
 }
 

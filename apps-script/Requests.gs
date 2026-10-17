@@ -413,6 +413,8 @@ function handleMgrReqPending_(body) {
 function handleMgrReqDecide_(body) {
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
+  var actor = actingName_(body, mgr);
+  if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
   var decision = String(body.decision || '');
   if (decision !== 'approve' && decision !== 'reject') return { ok: false, error: 'bad_decision' };
   var reason = reqClean_(body.reason, REQ_REASON_MAX);
@@ -426,7 +428,7 @@ function handleMgrReqDecide_(body) {
     if (r.status !== 'pending') return { ok: false, error: 'not_pending', message: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' };
     if (decision === 'approve' && reqNeedsProof_(r)) return { ok: false, error: 'need_proof', message: r.leave_type + '要附證明，同仁補上後才能核准（退回不受影響）' };
     reqSetCells_(sh, r.__rowIndex, { status: decision === 'approve' ? 'approved' : 'rejected', decided_at: nowTaipeiIso(),
-                                     decided_by: String(mgr.name), reject_reason: decision === 'reject' ? reason : '' });
+                                     decided_by: actor, reject_reason: decision === 'reject' ? reason : '' });
     return { ok: true, id: String(r.id), status: decision === 'approve' ? 'approved' : 'rejected' };
   } finally { lock.releaseLock(); }
 }
@@ -436,6 +438,8 @@ function handleMgrReqDecide_(body) {
 function handleMgrReqDecideBatch_(body) {
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
+  var actor = actingName_(body, mgr);
+  if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
   if (String(body.decision || '') !== 'approve') return { ok: false, error: 'bad_decision', message: '批次只能核准；退回請一筆一筆處理' };
   var ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
   ids = ids.filter(function (x, i) { return x && ids.indexOf(x) === i; });
@@ -453,7 +457,7 @@ function handleMgrReqDecideBatch_(body) {
       if (!sh || !r) { skipped.push({ id: id, reason: '找不到這筆申請' }); return; }
       if (r.status !== 'pending') { skipped.push({ id: id, reason: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' }); return; }
       if (reqNeedsProof_(r)) { skipped.push({ id: id, reason: r.leave_type + '還沒附證明' }); return; }
-      reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: String(mgr.name), reject_reason: '' });
+      reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: actor, reject_reason: '' });
       done.push(id);
     });
     return { ok: true, done: done, skipped: skipped };
