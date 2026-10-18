@@ -190,7 +190,7 @@
      店家 relay＝true 時，mini 1.5 秒內說「會成功」就先顯示；"shadow"＝只送去比對、畫面不採用；false＝不送。 */
   var RELAY_API = 'https://dingzhaoyuandemac-mini.tailc27c34.ts.net/clock/predict';
   if (isLocalHost) RELAY_API = qs('relay_api') || '';   // 本機測試只准打 ?relay_api= 給的假 mini；沒給就不送（絕不打正式 mini）
-  var RELAY_WAIT_MS = 1500, RELAY_SHADOW_WAIT_MS = 5000;   // shadow 等久一點，才量得到門市網路下 mini 實際要幾秒
+  var RELAY_WAIT_MS = 2500, RELAY_SHADOW_WAIT_MS = 5000;   // 2026-10-19 1.5→2.5 秒：10/18 開通首日 23% 的 mini 回應超過 1.5 秒被放棄（試跑期 28–33% 超過，多為門市網路首連 DNS＋TLS）；shadow 等久一點，量得到 mini 實際要幾秒
   /* STORES:BEGIN（tools/build-line-page.py 產生，勿手改）*/
   var STORES = [
     {"code": "", "name": "小辛辣 新竹光復", "lat": 24.7840945, "lng": 121.0157448, "radius_m": 20, "api": "https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec", "relay": true},
@@ -576,9 +576,9 @@
         say(label + '打卡成功 ' + p.ts.slice(11, 16) + '\n地點：' + st.name + (p.greeting ? '\n\n' + p.greeting : ''), 'ok', '正在寫入紀錄…');
       }).catch(function () {});
     } catch (e) { rp = Promise.resolve(); }
-    // 秒數等 mini 也回來（最多再等 1.5 秒）才送，才記得到 mini 預判與花了幾毫秒（審查 P3 #2）
+    // 秒數等 mini 也回來（最多再等 RELAY_WAIT_MS）才送，才記得到 mini 預判與花了幾毫秒（審查 P3 #2）
     function report(outcome, stt) {
-      Promise.race([rp, new Promise(function (res) { setTimeout(res, 1500); })]).then(function () { tmReport(outcome, stt, t); });
+      Promise.race([rp, new Promise(function (res) { setTimeout(res, RELAY_WAIT_MS); })]).then(function () { tmReport(outcome, stt, t); });
     }
     // 先顯示成功、Google 卻沒成功：任何錯誤訊息前面都要先更正（審查 P3 #1）
     function unshow() { if (shown) $('msg').textContent = '剛才顯示成功有誤。\n' + $('msg').textContent; }

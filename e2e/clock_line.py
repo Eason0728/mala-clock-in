@@ -941,11 +941,11 @@ def phase_relay(ctx, hq):
              ('回非 JSON', (200, 'not json at all'), 0, 'none'),
              ('predict=ok 但 ts 格式錯', {'predict': 'ok', 'ts': '2026-10-16 09:01:02', 'greeting': 'x'}, 0, 'unknown'),
              ('predict=ok 但沒有 greeting', {'predict': 'ok', 'ts': '2026-10-16T09:01:02+08:00'}, 0, 'unknown'),
-             ('超過 1.5 秒才回', MINI_OK, 2000, 'none')]
+             ('超過 2.5 秒才回', MINI_OK, 3000, 'none')]   # 2026-10-19 等待上限 1.5→2.5 秒
     for label, mini, ms, want in cases:
-        p, S = relay_open(ctx, hq, mini, G_OK, mini_ms=ms, g_ms=2600)
+        p, S = relay_open(ctx, hq, mini, G_OK, mini_ms=ms, g_ms=3600 if ms else 2600)
         force_out(p)
-        m = msg_at(p, 1900 if ms else 900)
+        m = msg_at(p, 2800 if ms else 900)
         ok('快速通道 5（mini %s）：Google 沒回前不先顯示成功' % label, '打卡成功' not in m and '打卡中' in m, m)
         wait_msg(p, '下班打卡成功 09:02', timeout=6000)
         tm = relay_last(p)
@@ -953,6 +953,16 @@ def phase_relay(ctx, hq):
            tm['route'] == 'plain' and tm['predict'] == want and tm['outcome'] == 'ok' and '09:01' not in msg(p), tm)
         ok('快速通道 5（mini %s）：total_ms 算到 Google 回來（≥ 2500）' % label, tm['total_ms'] >= 2500, tm)
         p.close()
+
+    # 5b. mini 2 秒才回（舊上限 1.5 秒會放棄，新上限 2.5 秒內）：要先顯示成功（2026-10-19）
+    p, S = relay_open(ctx, hq, MINI_OK, G_OK, mini_ms=2000, g_ms=3600)
+    force_out(p)
+    m = msg_at(p, 2700)
+    ok('快速通道 5b：mini 2 秒才回 ok → 2.5 秒上限內仍先顯示成功', '下班打卡成功 09:01' in m, m)
+    wait_msg(p, '下班打卡成功 09:02', timeout=6000)
+    tm = relay_last(p)
+    ok('快速通道 5b：timing route=predicted、predict=ok、predict_ms 約 2 秒', tm['route'] == 'predicted' and tm['predict'] == 'ok' and 1800 <= float(tm['predict_ms']) < 2500, tm)
+    p.close()
 
     # 6. mini 說 blocked
     p, S = relay_open(ctx, hq, {'predict': 'blocked', 'reason': '10 分鐘內不能打'}, G_OK, mini_ms=0, g_ms=2000)
