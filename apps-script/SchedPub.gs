@@ -33,7 +33,7 @@ function schedPubClean_(b) {
       var o = { t: String((c && c.t) || '') };
       if (c && c.s) o.s = String(c.s);
       if (c && c.l) o.l = String(c.l);
-      if (c && c.w) o.w = String(c.w).slice(0, SCHED_PUB_STATION_ID_MAX);
+      if (c && c.s && c.w) o.w = String(c.w).slice(0, SCHED_PUB_STATION_ID_MAX);   // 站別只跟著上班格（有班別）存
       return o;
     }) };
   });

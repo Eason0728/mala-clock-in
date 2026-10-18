@@ -417,4 +417,12 @@ ok('站別：營運系統產出的 v2 範例可收、每個有站的上班格都
   sb.__date = '2026-10-10'; sb.__hm = '12:00';
 });
 
+ok('站別：休假格帶來的 w 不存（只有上班格存站別）', () => {
+  reset(); props.SCHED_SVC_KEY = 'k1';
+  const b = JSON.parse(JSON.stringify(FIX2)); b.rows[0].cells[0] = { t: 'R', w: 'ST1' }; b.rows[0].cells[1] = { t: '', w: 'ST9' };
+  assert.strictEqual(J(sb.handleSchedPublish_(Object.assign(b, { svcKey: 'k1' }))).ok, true);
+  const stored = JSON.parse(pubRows[1][3]);
+  assert.ok(!('w' in stored.rows[0].cells[0]) && !('w' in stored.rows[0].cells[1]));
+});
+
 console.log('\n' + n + ' 項全過');
