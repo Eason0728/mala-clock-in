@@ -398,4 +398,23 @@ ok('選單「出勤班表」回卡片、按鈕開 ?view=sched；handler 已掛',
   assert.ok(/sched_unpublish: function \(b\) \{ return handleSchedUnpublish_\(b\); \}/.test(hubSrc));
 });
 
+// 營運系統實際產出的 v2 範例（~/mala-store-ops test/fixtures/sched-payload-v2-stations.json 的複本，兩邊要一致）
+ok('站別：營運系統產出的 v2 範例可收、每個有站的上班格都顯示站名', () => {
+  const FX = JSON.parse(fs.readFileSync(ROOT + '/tests/fixtures/sched-payload-v2-from-store-ops.json', 'utf8'));
+  reset(); props.SCHED_SVC_KEY = 'k1'; sb.__date = '2026-11-02'; sb.__hm = '08:00';
+  const res = J(sb.handleSchedPublish_(Object.assign(JSON.parse(JSON.stringify(FX)), { svcKey: 'k1' })));
+  assert.strictEqual(res.ok, true);
+  const name = {}; FX.stations.forEach((x) => { name[x.id] = x.name; });
+  let hit = 0;
+  FX.rows.forEach((row) => {
+    bind('x', row.emp_id, ''); const r = call();
+    row.cells.forEach((c, i) => {
+      if (c.s && c.w) { assert.strictEqual(r.days[i].station, name[c.w], row.emp_id + ' 第 ' + (i + 1) + ' 天'); hit++; }
+      else if (r.days[i]) assert.ok(!('station' in r.days[i]), row.emp_id + ' 第 ' + (i + 1) + ' 天不該有站');
+    });
+  });
+  assert.ok(hit > 0, '範例裡要有站別格');
+  sb.__date = '2026-10-10'; sb.__hm = '12:00';
+});
+
 console.log('\n' + n + ' 項全過');
