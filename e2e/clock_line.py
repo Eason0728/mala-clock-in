@@ -621,6 +621,14 @@ def phase_sched(ctx):
             bad.append('時段')
         if not x['code'] and '這天沒有排班' not in det:
             bad.append('空白')
+        # 工作站別（2026-10-19）：有站才多一列「工作站／炒鍋」，且排在「班別」下一列；沒站、休假、空白都不能出現
+        if x.get('station'):
+            if '工作站\n' + x['station'] not in det or p.locator('#scStation').count() != 1:
+                bad.append('工作站')
+            elif det.split('\n').index('工作站') != det.split('\n').index('班別') + 2:
+                bad.append('工作站位置')
+        elif '工作站' in det or p.locator('#scStation').count():
+            bad.append('不該有工作站')
         if bad:
             wrong.append((x['d'], bad))
         CM.mark(p.evaluate(KEY_JS, f'#scD{x["d"]}'), '明細日期／班別／時段正確')
@@ -653,6 +661,10 @@ def phase_sched(ctx):
     nx = p.inner_text('#scNextShift')
     want = '本月沒有接下來的班' if not r['next'] else '%d/%d' % (int(r['next']['date'][5:7]), int(r['next']['date'][8:10]))
     ok('班表：下一個班', want in nx, nx)
+    if r['next']:
+        ns = p.inner_text('#scNextShift .sc-ns')
+        ok('班表：下一個班站別（有才加「　站：炒鍋」，沒有就不出現）',
+           (ns.endswith('　站：' + r['next']['station']) if r['next'].get('station') else '站：' not in ns), (ns, r['next']))
     p.screenshot(path=os.path.join(SHOTS, '班表_摘要.jpg'), type='jpeg', quality=80)
     # 切上個月
     p.click('#schedView .rq-tabs button[data-tab=cal]')

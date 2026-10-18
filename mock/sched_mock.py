@@ -21,6 +21,7 @@ SHIFTS = {
     "事": {"name": "事假", "time": "", "hours": 0, "breakH": 0, "isOff": True},
     "公休": {"name": "公休", "time": "－", "hours": 8, "breakH": 0, "isOff": False},   # 真資料：公休被設成要算 8 小時
 }
+STATION = {"F": "炒鍋", "A": "外場", "E": "炒鍋"}   # 2026-10-19 站別：與 SchedPub.gs 的 station 同形；C／C1／公休 沒排站（驗「有才顯示」）
 PATTERN = ["F", "C1", "休", "A", "E", "休", "C", "F", "特", "A", "", "E", "國", "事", "公休"]
 
 
@@ -57,6 +58,8 @@ def _day(code):
          "hours": max(sh["hours"] - sh["breakH"], 0) if work else 0, "work": work, "rest": sh["isOff"] or code == "國"}
     if work and not d["segs"]:
         d["no_time"] = True
+    if work and code in STATION:
+        d["station"] = STATION[code]
     return d
 
 
@@ -134,6 +137,8 @@ def register(ns):
                     if b > a and b <= hm:
                         continue
                 nxt = {"date": "%s-%02d" % (ym, x["d"]), "label": x["label"], "segs": x["segs"], "hours": x["hours"]}
+                if x.get("station"):
+                    nxt["station"] = x["station"]
                 break
         base.update({"status": "ready", "days": days, "summary": {"work_days": wd, "off_days": od, "hours": round(hrs, 2)}, "next": nxt})
         return base

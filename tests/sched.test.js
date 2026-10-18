@@ -229,11 +229,13 @@ ok('API 1 月的上個月是去年 12 月', () => {
 const FIX = JSON.parse(fs.readFileSync(ROOT + '/tests/fixtures/sched-payload-v1.json', 'utf8'));
 const pub = (o) => J(sb.handleSchedPublish_(Object.assign(JSON.parse(JSON.stringify(FIX)), { svcKey: 'k1' }, o || {})));
 const unpub = (o) => J(sb.handleSchedUnpublish_(Object.assign({ v: 1, action: 'sched_unpublish', store: '', period: 'T01', svcKey: 'k1' }, o || {})));
-ok('發布：沒設金鑰或金鑰錯 → unauthorized；v 不是 1 → bad_version；格子不是 28 格 → bad_input', () => {
+ok('發布：沒設金鑰或金鑰錯 → unauthorized；v 不是 1 或 2 → bad_version；格子不是 28 格 → bad_input', () => {
   reset(); assert.strictEqual(pub().error, 'unauthorized');
   props.SCHED_SVC_KEY = 'k1';
   assert.strictEqual(pub({ svcKey: 'x' }).error, 'unauthorized');
-  assert.strictEqual(pub({ v: 2 }).error, 'bad_version');
+  assert.strictEqual(pub({ v: 3 }).error, 'bad_version');
+  assert.strictEqual(pub({ v: 0 }).error, 'bad_version');
+  assert.strictEqual(pub({ v: '2' }).error, 'bad_version');
   const bad = JSON.parse(JSON.stringify(FIX)); bad.rows[0].cells.pop();
   assert.strictEqual(pub({ rows: bad.rows }).error, 'bad_input');
   assert.strictEqual(pubRows, null, '失敗不能建分頁或寫入');
@@ -276,6 +278,88 @@ ok('11 月起讀發布的班表：用 emp_id 對人、每家店都接、還沒�
   assert.strictEqual(call().status, 'ready');
   sb.__date = '2026-10-10'; sb.__hm = '12:00';
 });
+// ── 工作站別（2026-10-19）：payload v2 = v1 + cell.w + 頂層 stations；沒有站別仍送 v1 ──
+const FIX2 = JSON.parse(fs.readFileSync(ROOT + '/tests/fixtures/sched-payload-v2-stations.json', 'utf8'));
+const pub2 = (o) => J(sb.handleSchedPublish_(Object.assign(JSON.parse(JSON.stringify(FIX2)), { svcKey: 'k1' }, o || {})));
+ok('站別：v1 舊資料照舊（接受、不帶 w／stations、day 沒有 station）', () => {
+  reset(); props.SCHED_SVC_KEY = 'k1'; sb.__date = '2026-11-02'; sb.__hm = '08:00'; bind('x', 'E001', '');
+  assert.deepStrictEqual(pub(), { ok: true, seq: 1 });
+  const stored = JSON.parse(pubRows[1][3]);
+  assert.strictEqual(stored.stations, undefined);
+  assert.ok(JSON.stringify(stored).indexOf('"w"') < 0);
+  const r = call(); assert.strictEqual(r.status, 'ready');
+  assert.ok(!r.days.some((d) => 'station' in d), 'v1 不該有 station');
+  assert.ok(!('station' in r.next));
+  sb.__date = '2026-10-10'; sb.__hm = '12:00';
+});
+ok('站別：v2 接受；清理保留 cell.w 與頂層 stations（其他欄位照舊被丟掉）', () => {
+  reset(); props.SCHED_SVC_KEY = 'k1';
+  assert.deepStrictEqual(pub2(), { ok: true, seq: 1 });
+  const stored = JSON.parse(pubRows[1][3]);
+  assert.deepStrictEqual(stored.stations, FIX2.stations);
+  assert.deepStrictEqual(stored.rows[0].cells.map((c) => c.w), FIX2.rows[0].cells.map((c) => c.w));
+  assert.deepStrictEqual(stored.rows[2].cells.filter((c) => c.w).length, 1);
+  assert.deepStrictEqual(Object.keys(stored).sort(), ['rows', 'shifts', 'start', 'stations']);
+  assert.deepStrictEqual(Object.keys(stored.rows[0]).sort(), ['cells', 'emp_id', 'name']);
+});
+ok('站別：清理的格式與長度上限（站名、站別 id 截斷；壞項目丟掉；空陣列不留 stations）', () => {
+  reset(); props.SCHED_SVC_KEY = 'k1';
+  const long = 'x'.repeat(100);
+  const rows = JSON.parse(JSON.stringify(FIX2.rows)); rows[0].cells[0].w = long;
+  pub2({ rows: rows, stations: [{ id: 'ST1', name: long }, { id: '', name: '空id' }, null, { id: 'ST2' }, { id: 'ST3', name: 123 }] });
+  const st = JSON.parse(pubRows[1][3]);
+  assert.deepStrictEqual(st.stations.map((s) => s.id), ['ST1', 'ST3']);
+  assert.strictEqual(st.stations[0].name.length, 20);
+  assert.strictEqual(st.stations[1].name, '123');
+  assert.strictEqual(st.rows[0].cells[0].w.length, 32);
+  reset(); props.SCHED_SVC_KEY = 'k1';
+  pub2({ op_id: 'e', stations: [] });
+  assert.strictEqual(JSON.parse(pubRows[1][3]).stations, undefined);
+  reset(); props.SCHED_SVC_KEY = 'k1';
+  const many = []; for (let i = 0; i < 50; i++) many.push({ id: 'S' + i, name: 'n' + i });
+  pub2({ stations: many });
+  assert.strictEqual(JSON.parse(pubRows[1][3]).stations.length, 30);
+});
+ok('站別：schedPubDay_ 有站／沒站／找不到站／非上班格', () => {
+  const shifts = FIX2.shifts, stations = FIX2.stations;
+  const d1 = J(sb.schedPubDay_({ t: 'W', s: 'S1', w: 'ST1' }, shifts, stations));
+  assert.strictEqual(d1.station, '炒鍋'); assert.strictEqual(d1.label, '早班'); assert.strictEqual(d1.work, true);
+  assert.ok(!('station' in J(sb.schedPubDay_({ t: 'W', s: 'S1' }, shifts, stations))), '沒站');
+  assert.ok(!('station' in J(sb.schedPubDay_({ t: 'W', s: 'S1', w: 'GONE' }, shifts, stations))), '找不到站');
+  assert.ok(!('station' in J(sb.schedPubDay_({ t: 'W', s: 'S1', w: 'ST1' }, shifts, []))), 'stations 空');
+  assert.ok(!('station' in J(sb.schedPubDay_({ t: 'W', s: 'S1', w: 'ST1' }, shifts))), '舊呼叫沒傳 stations');
+  assert.ok(!('station' in J(sb.schedPubDay_({ t: 'R', w: 'ST1' }, shifts, stations))), '休假格不帶');
+  assert.ok(!('station' in J(sb.schedPubDay_({ t: 'W', s: 'NOPE', w: 'ST1' }, shifts, stations))), '班別不存在');
+  assert.strictEqual(J(sb.schedPubDay_({ t: 'H', s: 'S2', w: 'ST2' }, shifts, stations)).station, '外場');
+});
+ok('站別：一路到 LIFF 回應（days 與 next 都帶 station；沒站的人沒有）', () => {
+  reset(); props.SCHED_SVC_KEY = 'k1'; sb.__date = '2026-11-02'; sb.__hm = '08:00';
+  pub2();
+  bind('甲', 'E001', '');
+  let r = call();
+  assert.strictEqual(r.days[0].station, '炒鍋');            // 11/1 S1 ST1
+  assert.strictEqual(r.days[5].station, '外場');            // 11/6 S2 ST2
+  assert.ok(!('station' in r.days[1]), '例假不帶');
+  assert.deepStrictEqual([r.next.date, r.next.station], ['2026-11-03', '炒鍋']);
+  bind('乙', 'E002', ''); r = call();
+  assert.deepStrictEqual([r.days[1].station, r.days[3].station, r.next.date, r.next.station], ['炒鍋', '外場', '2026-11-02', '炒鍋']);   // E002：11/1 例假，11/2 晚班在炒鍋
+  bind('丙', 'E003', ''); r = call();
+  assert.strictEqual(r.days[0].station, '炒鍋'); assert.ok(!('station' in r.days[2]), '沒排站的格子');
+  assert.ok(!('station' in r.next), '下一個班沒站就不帶');
+  // 站別被刪掉（找不到）：日子仍在，只是沒站
+  reset(); props.SCHED_SVC_KEY = 'k1'; pub2({ stations: [{ id: 'ST2', name: '外場' }] }); bind('甲', 'E001', '');
+  r = call(); assert.ok(!('station' in r.days[0])); assert.strictEqual(r.days[5].station, '外場'); assert.ok(!('station' in r.next));
+  sb.__date = '2026-10-10'; sb.__hm = '12:00';
+});
+ok('站別：schedSummarize_ 的 next 有站才帶；訂貨小幫手名單不受影響', () => {
+  const days = [{ d: 1, work: true, rest: false, segs: [['10:00', '19:00']], hours: 8, label: '早班', station: '炒鍋' },
+                { d: 2, work: true, rest: false, segs: [['10:00', '19:00']], hours: 8, label: '早班' }];
+  const a = J(sb.schedSummarize_(days, '2026-11', { date: '2026-11-01', hm: '08:00' }));
+  assert.strictEqual(a.next.station, '炒鍋');
+  const b = J(sb.schedSummarize_(days, '2026-11', { date: '2026-11-02', hm: '08:00' }));
+  assert.ok(!('station' in b.next));
+});
+
 ok('10 月仍完全照舊（月曆版）；SCHED_STORE_FROM 改晚 → 11 月也讀月曆版（回退用）', () => {
   reset(); bind('測試一');
   const r = call(); assert.strictEqual(r.status, 'ready'); assert.strictEqual(r.days[0].code, 'F');
