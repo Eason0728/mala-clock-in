@@ -12,7 +12,6 @@ var SCHED_PUB_SHEET = 'sched_pub';
 var SCHED_PUB_HEAD = ['store', 'period', 'seq', 'data', 'last_op', 'updated_at'];
 var SCHED_PUB_CACHE_KEY = 'schedpub:v1';
 var SCHED_PUB_CACHE_SEC = 120;
-var SCHED_PUB_STATIONS_MAX = 30;      // 站別數上限
 var SCHED_PUB_STATION_ID_MAX = 32;
 var SCHED_PUB_STATION_NAME_MAX = 20;
 var SCHED_PUB_MAX_CHARS = 45000;   // 試算表一格上限 50000 字元
@@ -39,7 +38,7 @@ function schedPubClean_(b) {
   });
   var out = { start: String(b.start || ''), shifts: shifts, rows: rows };
   if (Array.isArray(b.stations) && b.stations.length) {
-    out.stations = b.stations.slice(0, SCHED_PUB_STATIONS_MAX).filter(function (s) { return s && s.id && s.name; }).map(function (s) {
+    out.stations = b.stations.filter(function (s) { return s && s.id && s.name; }).map(function (s) {
       return { id: String(s.id).slice(0, SCHED_PUB_STATION_ID_MAX), name: String(s.name).slice(0, SCHED_PUB_STATION_NAME_MAX) };
     });
   }

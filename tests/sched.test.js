@@ -318,7 +318,17 @@ ok('站別：清理的格式與長度上限（站名、站別 id 截斷；壞項
   reset(); props.SCHED_SVC_KEY = 'k1';
   const many = []; for (let i = 0; i < 50; i++) many.push({ id: 'S' + i, name: 'n' + i });
   pub2({ stations: many });
-  assert.strictEqual(JSON.parse(pubRows[1][3]).stations.length, 30);
+  assert.strictEqual(JSON.parse(pubRows[1][3]).stations.length, 50, '不再有筆數上限（上線前審查）：由整體 45,000 字上限保護');
+});
+ok('站別：31 個站都收、都能顯示（第 31 站的格子顯示站名）', () => {
+  reset(); props.SCHED_SVC_KEY = 'k1';
+  const many = []; for (let i = 1; i <= 31; i++) many.push({ id: 'ST' + i, name: '站' + i });
+  const rows = JSON.parse(JSON.stringify(FIX2.rows)); rows[0].cells[0].w = 'ST31';
+  pub2({ rows: rows, stations: many });
+  const st = JSON.parse(pubRows[1][3]);
+  assert.strictEqual(st.stations.length, 31);
+  assert.strictEqual(st.stations[30].name, '站31');
+  assert.strictEqual(J(sb.schedPubDay_({ t: 'W', s: 'S1', w: 'ST31' }, FIX2.shifts, st.stations)).station, '站31');
 });
 ok('站別：schedPubDay_ 有站／沒站／找不到站／非上班格', () => {
   const shifts = FIX2.shifts, stations = FIX2.stations;
