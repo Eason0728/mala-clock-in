@@ -544,6 +544,35 @@ const API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ?
   : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
 const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 
+/* ═════ 嵌在集團管理系統裡（2026-10-19，dzy 人資部門 → 薪酬系統）═════
+   網址 ?embed=dzy、沒有 ?k=、而且真的被框起來時：本頁不拿任何金鑰，每次呼叫都 postMessage 給父頁（管理系統），
+   由管理系統依登入者的「薪酬系統」權限經 Mac mini 代轉到後端（管理金鑰只在 mini）；操作人也由管理系統依登入身分決定。
+   只收「父頁」且 origin＝管理系統的回覆；送出時 targetOrigin 寫死管理系統網址，別的網站框這頁也拿不到任何資料。 */
+const LOCAL_HOST=(location.hostname==='localhost'||location.hostname==='127.0.0.1');
+const EMBED=!ADMIN_KEY && new URLSearchParams(location.search).get('embed')==='dzy' && window.parent!==window;
+const DZY_ORIGIN=(function(){
+  if(!LOCAL_HOST) return 'https://dzy.mozhuting.com';
+  // 本機開發：管理系統也跑在本機（任一埠），從 referrer 取它的 origin
+  try{ const o=new URL(document.referrer).origin; if(/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(o)) return o; }catch(e){}
+  return 'http://localhost:8777';
+})();
+const BR_WAIT={}; let BR_SEQ=0;
+window.addEventListener('message',e=>{
+  if(!EMBED||e.source!==window.parent||e.origin!==DZY_ORIGIN) return;
+  const d=e.data; if(!d||d.type!=='dzy-payroll-result'||d.v!==1||typeof d.id!=='string') return;
+  const f=BR_WAIT[d.id]; if(!f) return; delete BR_WAIT[d.id];
+  f(d.result&&typeof d.result==='object'?d.result:{ok:false,error:'bad_response'});
+});
+function bridgeCall(action,body){
+  return new Promise(resolve=>{
+    const id='c'+(++BR_SEQ)+'_'+Date.now().toString(36);
+    const t=setTimeout(()=>{ delete BR_WAIT[id]; resolve({ok:false,error:'timeout',message:'等候逾時，請稍後再試'}); },130000);
+    BR_WAIT[id]=r=>{ clearTimeout(t); resolve(r); };
+    window.parent.postMessage({type:'dzy-payroll-call',v:1,id,action,body},DZY_ORIGIN);
+  });
+}
+if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
+
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
 // 目前操作門市：階段一由門市表全部可見；階段二改讀 dzy 帳號的可見門市清單（UI 與過濾邏輯不變）
 let STORE=(new URLSearchParams(location.search).get('store')||localStorage.getItem('pay_store')||'');
@@ -576,6 +605,11 @@ function toast(t,bad){const m=$('msg');m.textContent=t;m.style.background=bad?'#
   m.style.display='block';clearTimeout(m._t);m._t=setTimeout(()=>m.style.display='none',2600)}
 
 async function post(action,body){
+  if(EMBED){
+    const j=await bridgeCall(action,Object.assign({store:STORE},body||{}));
+    if(!j.ok&&j.message) toast(j.message,true);
+    return j;
+  }
   // Apps Script 跨網域偶爾回 Google HTML 頁（非 JSON）→ res.json() 會爆並中斷整個流程（表面就是「沒反應」）。
   // 改成：讀純文字自己 parse、非 JSON 時重試一次，仍失敗才跳提示、回 {ok:false}，絕不 throw。
   const url=API||location.pathname.replace(/[^/]*$/,'');
@@ -602,6 +636,10 @@ async function bootstrapFromRoster(){
 
 /* ═════ 載入 ═════ */
 async function boot(){
+  if(!EMBED&&!ADMIN_KEY&&!LOCAL_HOST){
+    document.body.insertAdjacentHTML('afterbegin','<div style="padding:24px;margin:16px;border:1px solid #c0392b;border-radius:10px;background:#fff;font-size:16px;line-height:1.7">薪酬系統已搬進集團管理系統：請登入 <a href="https://dzy.mozhuting.com/">https://dzy.mozhuting.com/</a> → 人資部門 → 薪酬系統。<br>沒有看到這一項＝還沒開通權限，請找 Eason。</div>');
+    return;
+  }
   const m=await post('payroll_master_get');
   if(!m.ok){toast('讀取主檔失敗',true);return}
   MASTER=m.master; CFG=m.config; CFG_DIRTY={};
