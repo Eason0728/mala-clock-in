@@ -653,7 +653,11 @@ async function boot(){
     document.body.insertAdjacentHTML('afterbegin','<div style="padding:24px;margin:16px;border:1px solid #c0392b;border-radius:10px;background:#fff;font-size:16px;line-height:1.7">薪酬管理已搬進集團管理系統：請登入 <a href="https://dzy.mozhuting.com/">https://dzy.mozhuting.com/</a> → 人資部門 → 薪酬管理。<br>沒有看到這一項＝還沒開通權限，請找 Eason。</div>');
     return;
   }
-  const m=await post('payroll_master_get');
+  // 開頁三支同時發出（2026-10-20：原本依序打要 11～14 秒），回來後仍照原本順序套用：主檔 → 本月 → 儀表板
+  const mP=post('payroll_master_get');
+  const monP=post('payroll_month',{ym:ym(),inputs:{}});
+  DASH_PREFETCH={key:STORE+'|'+ym(),p:post('payroll_trend',{ym:ym(),store:STORE,months:12})};
+  const m=await mP;
   if(!m.ok){toast('讀取主檔失敗',true);return}
   MASTER=m.master; CFG=m.config; CFG_DIRTY={};
   // ⚠ 門市下拉一定要在這裡先建好：若等到 loadMonth，該門市讀取失敗就會提早 return，
@@ -661,7 +665,7 @@ async function boot(){
   if(m.stores&&m.stores.length){STORE_LIST=m.stores;renderStoreSel()}
   applyHol(m.holidays);
   renderEmp(); renderCfg();
-  await loadMonth();
+  await loadMonth(monP);
   syncHol();   // 紅字天數整年自動帶入（背景跑，不擋畫面）
 }
 /* 切月份/開啟時自動帶出當月數字：未鎖定且尚未算過就靜默試算一次（未設紅字等失敗則安靜略過，不跳錯誤）*/
@@ -789,11 +793,11 @@ function showClockMode(){
   el.style.display='';
 }
 // 切月份／切門市／任何寫入後都要讓分頁快取失效，否則會看到舊數字
-async function loadMonth(){
+async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month（boot 用）；其他時候自己打
   setBusy(true);
   try{
     vClear();
-    const r=await post('payroll_month',{ym:ym(),inputs:{}});
+    const r=await (pre||post('payroll_month',{ym:ym(),inputs:{}}));
     if(!r.ok){
       // ⚠ 不可靜默 return——會讓畫面空白，使用者以為「資料不見了」
       const msg=String(r.detail||r.message||r.error||'讀取失敗');
@@ -1559,7 +1563,16 @@ function addLeaveType(){
     active:true,sort:(LT_LIST.length+1)*10,note:''});
   renderLeaveTypes();
 }
-async function loadLeaveTypes(){
+// 同一家店正在讀就共用同一份（2026-10-20：開頁時 renderCfg／loadMonth 會各叫一次，原本同時打 3 支）
+const ONCE={};
+function onceFor(name,fn){
+  const k=name+'|'+STORE, hit=ONCE[name];
+  if(hit&&hit.k===k) return hit.p;
+  const p=fn().finally(()=>{ if(ONCE[name]&&ONCE[name].p===p) delete ONCE[name]; });
+  ONCE[name]={k,p}; return p;
+}
+function loadLeaveTypes(){ return onceFor('lt',loadLeaveTypes1); }
+async function loadLeaveTypes1(){
   const r=await post('payroll_leave_type_get');   // post() 會自動帶 admin_key 與 store
   if(!r||!r.ok) return;
   LT_LIST=r.types||[]; LT_IS_DEFAULT=!!r.is_default;
@@ -1620,7 +1633,8 @@ function renderLeaveEvents(){
   if(!opts.length) t.innerHTML='<tbody><tr><td style="color:var(--muted);padding:10px">目前沒有設定期限規則的假別（上方假別設定填了「期限(日)」才會出現在這裡）。</td></tr></tbody>';
 }
 function addLeaveEvent(){ LEV_LIST.push({emp_id:'',name:'',code:'',event_date:'',memo:''}); renderLeaveEvents(); }
-async function loadLeaveEvents(){
+function loadLeaveEvents(){ return onceFor('lev',loadLeaveEvents1); }
+async function loadLeaveEvents1(){
   const r=await post('payroll_leave_event_get');
   if(r&&r.ok){ LEV_LIST=r.events||[]; renderLeaveEvents(); }
 }
@@ -1818,12 +1832,15 @@ async function saveBonus(btn){
 
 /* ═════ 儀表板：人事成本趨勢 ═════ */
 let DASH=[], OT_LOCAL=0;
+let DASH_PREFETCH=null;   // { key:'門市|月份', p: Promise }
 async function loadDash(force){
   const box=$('dashCost'); if(!box) return;
   const c=vGet('dash');
   if(c&&!force){ DASH=c; renderDash(); return; }
   box.innerHTML='<div style="color:var(--muted);padding:14px 2px">載入中…</div>';
-  const r=await post('payroll_trend',{ym:ym(),store:STORE,months:12});
+  // 開頁時已先發出的趨勢：門市與月份都沒變才用（loadMonth 可能把 STORE 換成後端回的門市），只用一次
+  const pf=DASH_PREFETCH; DASH_PREFETCH=null;
+  const r=await (pf&&!force&&pf.key===STORE+'|'+ym()?pf.p:post('payroll_trend',{ym:ym(),store:STORE,months:12}));
   if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+(r.error||'')+'</div>';return}
   DASH=r.months||[];vSet('dash',DASH);renderDash();
 }
