@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>鼎兆元集團｜薪酬系統</title>
+<title>鼎兆元集團｜薪酬管理</title>
 <style>
 :root{--red:#E8380D;--black:#231815;--ink:#231815;--orange:#F08300;--gold:#FABE00;--gold-soft:#fff4d1;--cream:#FFE893;
  --sidebar:#1b1917;--sidebar-2:#2a2623;--sidebar-line:#332e2a;--side-txt:#b8afa5;
@@ -190,6 +190,20 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
  #nav{flex-direction:row;padding:0 10px;gap:4px}#nav button{white-space:nowrap;padding:9px 13px}
  .topbar{padding:16px 16px 6px}main{padding:12px 16px 60px}
  .slipcols{grid-template-columns:1fr}}
+/* 嵌在集團管理系統裡（2026-10-20 Eason）：左側深色選單改成上方分頁列，樣式比照管理系統自己的分頁（白底、選中紅字＋底線） */
+html.embed .app{flex-direction:column}
+html.embed .sidebar{width:100%;height:auto;position:sticky;top:0;z-index:30;flex-direction:row;align-items:stretch;
+ background:#fff;border-bottom:1px solid #e2dbd4;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
+html.embed .brand,html.embed .side-user{display:none}
+html.embed #nav{flex-direction:row;flex:none;padding:0 14px;gap:0}
+html.embed .nav-label{display:block;font-size:0;width:1px;padding:0;margin:12px 8px;background:#e2dbd4;flex:none}
+html.embed .nav-label:first-child{display:none}
+html.embed #nav button{width:auto;flex:none;gap:0;white-space:nowrap;padding:13px 14px;border-radius:0;border-bottom:3px solid transparent;
+ color:#8a8079;font-size:15px;font-weight:700;box-shadow:none}
+html.embed #nav button .ic{display:none}
+html.embed #nav button:hover{background:none;color:#1c1a19}
+html.embed #nav button.on{background:none;color:#c8402c;border-bottom-color:#EF856D;font-weight:900;box-shadow:none}
+html.embed .topbar{padding-top:16px}
 </style>
 </head>
 <body>
@@ -226,7 +240,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <div class="topbar">
       <div class="tbrow">
         <div>
-          <h1>薪酬系統</h1>
+          <h1>薪酬管理</h1>
           <div class="sub" id="topSub">選擇月份，計算與匯出同仁薪資</div>
         </div>
         <span id="lock" style="margin-left:auto"></span>
@@ -550,6 +564,7 @@ const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
    只收「父頁」且 origin＝管理系統的回覆；送出時 targetOrigin 寫死管理系統網址，別的網站框這頁也拿不到任何資料。 */
 const LOCAL_HOST=(location.hostname==='localhost'||location.hostname==='127.0.0.1');
 const EMBED=!ADMIN_KEY && new URLSearchParams(location.search).get('embed')==='dzy' && window.parent!==window;
+if(EMBED&&document.documentElement) document.documentElement.classList.add('embed');   // 上方分頁列（CSS html.embed）
 const DZY_ORIGIN=(function(){
   if(!LOCAL_HOST) return 'https://dzy.mozhuting.com';
   // 本機開發：管理系統也跑在本機（任一埠），從 referrer 取它的 origin
@@ -637,7 +652,7 @@ async function bootstrapFromRoster(){
 /* ═════ 載入 ═════ */
 async function boot(){
   if(!EMBED&&!ADMIN_KEY&&!LOCAL_HOST){
-    document.body.insertAdjacentHTML('afterbegin','<div style="padding:24px;margin:16px;border:1px solid #c0392b;border-radius:10px;background:#fff;font-size:16px;line-height:1.7">薪酬系統已搬進集團管理系統：請登入 <a href="https://dzy.mozhuting.com/">https://dzy.mozhuting.com/</a> → 人資部門 → 薪酬系統。<br>沒有看到這一項＝還沒開通權限，請找 Eason。</div>');
+    document.body.insertAdjacentHTML('afterbegin','<div style="padding:24px;margin:16px;border:1px solid #c0392b;border-radius:10px;background:#fff;font-size:16px;line-height:1.7">薪酬管理已搬進集團管理系統：請登入 <a href="https://dzy.mozhuting.com/">https://dzy.mozhuting.com/</a> → 人資部門 → 薪酬管理。<br>沒有看到這一項＝還沒開通權限，請找 Eason。</div>');
     return;
   }
   const m=await post('payroll_master_get');
