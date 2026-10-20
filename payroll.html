@@ -190,20 +190,11 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
  #nav{flex-direction:row;padding:0 10px;gap:4px}#nav button{white-space:nowrap;padding:9px 13px}
  .topbar{padding:16px 16px 6px}main{padding:12px 16px 60px}
  .slipcols{grid-template-columns:1fr}}
-/* 嵌在集團管理系統裡（2026-10-20 Eason）：左側深色選單改成上方分頁列，樣式比照管理系統自己的分頁（白底、選中紅字＋底線） */
-html.embed .app{flex-direction:column}
-html.embed .sidebar{width:100%;height:auto;position:sticky;top:0;z-index:30;flex-direction:row;align-items:stretch;
- background:#fff;border-bottom:1px solid #e2dbd4;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
-html.embed .brand,html.embed .side-user{display:none}
-html.embed #nav{flex-direction:row;flex:none;padding:0 14px;gap:0}
-html.embed .nav-label{display:block;font-size:0;width:1px;padding:0;margin:12px 8px;background:#e2dbd4;flex:none}
-html.embed .nav-label:first-child{display:none}
-html.embed #nav button{width:auto;flex:none;gap:0;white-space:nowrap;padding:13px 14px;border-radius:0;border-bottom:3px solid transparent;
- color:#8a8079;font-size:15px;font-weight:700;box-shadow:none}
-html.embed #nav button .ic{display:none}
-html.embed #nav button:hover{background:none;color:#1c1a19}
-html.embed #nav button.on{background:none;color:#c8402c;border-bottom-color:#EF856D;font-weight:900;box-shadow:none}
+/* 嵌在集團管理系統裡（2026-10-20 Eason）：選單跟「薪酬管理」同一列＝由管理系統的分頁列畫（dzy modules/payroll），
+   本頁自己的側欄整排隱藏；管理系統換分頁時送 dzy-payroll-nav 過來切換 */
+html.embed .sidebar{display:none}
 html.embed .topbar{padding-top:16px}
+html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬管理」 */
 </style>
 </head>
 <body>
@@ -577,6 +568,13 @@ window.addEventListener('message',e=>{
   const d=e.data; if(!d||d.type!=='dzy-payroll-result'||d.v!==1||typeof d.id!=='string') return;
   const f=BR_WAIT[d.id]; if(!f) return; delete BR_WAIT[d.id];
   f(d.result&&typeof d.result==='object'?d.result:{ok:false,error:'bad_response'});
+});
+// 管理系統換分頁（它的分頁列＝本頁選單）→ 照點本頁對應的那顆隱藏按鈕，切換與載入邏輯完全沿用原本的
+window.addEventListener('message',e=>{
+  if(!EMBED||e.source!==window.parent||e.origin!==DZY_ORIGIN) return;
+  const d=e.data; if(!d||d.type!=='dzy-payroll-nav'||d.v!==1||typeof d.p!=='string'||!/^[a-z]{1,12}$/.test(d.p)) return;
+  const b=document.querySelector('#nav button[data-p="'+d.p+'"]');
+  if(b&&!b.classList.contains('on')) b.click();
 });
 function bridgeCall(action,body){
   return new Promise(resolve=>{
