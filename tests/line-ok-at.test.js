@@ -21,14 +21,16 @@ const ISO = '2026-10-25T09:30:00+08:00';
 const iso = (minAgo) => new Date(NOW - minAgo * 60000 + 8 * 3600000).toISOString().replace(/\.\d+Z$/, '+08:00');
 
 // 有格子的假工作表（roster 要看得到表頭與格子；events 只提供 rows）
-function Grid(data) { this.data = data.map(r => r.slice()); this.formats = {}; this.setCalls = 0; }
+function Grid(data, maxCols) { this.data = data.map(r => r.slice()); this.formats = {}; this.setCalls = 0; this.maxCols = maxCols || 1000; this.inserts = 0; }
+Grid.prototype.getMaxColumns = function () { return this.maxCols; };
+Grid.prototype.insertColumnAfter = function () { this.maxCols++; this.inserts++; };
 Grid.prototype.getLastRow = function () { return this.data.length; };
 Grid.prototype.getLastColumn = function () { return this.data.reduce((m, r) => Math.max(m, r.length), 0); };
 Grid.prototype.getRange = function (r, c, nr, nc) {
   const g = this; nr = nr || 1; nc = nc || 1;
   return {
     getValues() { const o = []; for (let i = 0; i < nr; i++) { const row = []; for (let j = 0; j < nc; j++) { const v = (g.data[r - 1 + i] || [])[c - 1 + j]; row.push(v === undefined ? '' : v); } o.push(row); } return o; },
-    setValue(v) { g.setCalls++; while (g.data.length < r) g.data.push([]); const row = g.data[r - 1]; while (row.length < c - 1) row.push(''); row[c - 1] = v; },
+    setValue(v) { if (c > g.maxCols) throw new Error('超出格線'); g.setCalls++; while (g.data.length < r) g.data.push([]); const row = g.data[r - 1]; while (row.length < c - 1) row.push(''); row[c - 1] = v; },
     setNumberFormat(f) { g.formats[r + ',' + c] = f; return this; },
   };
 };
@@ -46,19 +48,20 @@ const rosterRows = (withOk) => {
 
 function make(opts) {
   opts = opts || {};
-  const roster = new Grid(opts.roster || rosterRows(false));
+  const roster = new Grid(opts.roster || rosterRows(false), opts.maxCols);
   const bindLog = [];
   const logSheet = { getRange: () => ({ setValues() {} }), appendRow: (r) => bindLog.push(r) };
   const eventsRows = opts.events || [];
   const ss = { getSheetByName: (nm) => nm === 'roster' ? roster : nm === 'events' ? { rows: eventsRows } : nm === 'liff_bind_log' ? logSheet : null, insertSheet: () => logSheet };
-  const cache = {};
+  const cache = opts.cache || {};
+  const cacheSvc = opts.cacheSvc || { getScriptCache: () => ({ put: (k, v) => { cache[k] = v; }, get: (k) => cache[k] || null, remove: (k) => { delete cache[k]; } }) };
   class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(NOW); } static now() { return NOW; } }
   const sb = {
     console, Date: FakeDate, JSON, Math, String, Number, isNaN, isFinite, parseInt, parseFloat, Object, Array,
     CONFIG: { LINE_CHANNEL_ID: '2011292256', ALTERNATION_LOOKBACK_HOURS: 12 },
     UrlFetchApp: { fetch: (url, o) => { const t = o.payload.id_token; const good = String(t).indexOf('TOK_') === 0;
       return { getResponseCode: () => good ? 200 : 400, getContentText: () => JSON.stringify(good ? { sub: t.slice(4), aud: '2011292256' } : {}) }; } },
-    CacheService: { getScriptCache: () => ({ put: (k, v) => { cache[k] = v; }, get: (k) => cache[k] || null, remove: (k) => { delete cache[k]; } }) },
+    CacheService: cacheSvc,
     getSS: () => ss,
     readSheetAsObjects: (sh) => sh === roster ? { rows: roster.objs() } : { rows: sh.rows.map((r, i) => Object.assign({ __rowIndex: i + 2 }, r)) },
     ensureRosterHeaders: () => {},
@@ -171,5 +174,43 @@ ok('成功打卡只多寫一格（不拖慢）：已有欄時 setValue 只 1 次
   const { H, roster } = make({ roster: rosterRows(true) });
   punch(H);
   assert.strictEqual(roster.setCalls, 1);
+});
+ok('列號錯位（排序／插列後）：核對 emp_id 不符就改依 emp_id 重找，寫到正確的人', () => {
+  const { sb, roster } = make({ roster: rosterRows(true) });
+  const ss = { getSheetByName: () => roster };
+  assert.strictEqual(sb.liffMarkLineOk_(ss, 'E1', 3), true);   // 給的列號 3 其實是 E2
+  assert.strictEqual(col(roster, 'line_ok_at', 2), ISO);
+  assert.strictEqual(col(roster, 'line_ok_at', 3), '2026-10-01T08:00:00+08:00', 'E2 不該被寫');
+  assert.strictEqual(sb.liffMarkLineOk_(ss, 'NOPE', 3), false);
+});
+ok('同一天第二次不寫試算表（快取）；隔天鍵不同', () => {
+  const { sb, roster } = make({ roster: rosterRows(true) });
+  const ss = { getSheetByName: () => roster };
+  assert.strictEqual(sb.liffMarkLineOk_(ss, 'E1', 2), true);
+  const before = roster.setCalls;
+  let touched = false; const ss2 = { getSheetByName: () => { touched = true; return roster; } };
+  assert.strictEqual(sb.liffMarkLineOk_(ss2, 'E1', 2), true);
+  assert.strictEqual(roster.setCalls, before);
+  assert.strictEqual(touched, false, '不碰試算表');
+  assert.strictEqual(sb.liffMarkLineOk_(ss, 'E2', 3), true, '別人照寫');
+  assert.strictEqual(roster.setCalls, before + 1);
+});
+ok('快取丟錯：仍照常寫', () => {
+  const bad = { getScriptCache: () => { throw new Error('cache down'); } };
+  const { sb, roster } = make({ roster: rosterRows(true), cacheSvc: bad });
+  assert.strictEqual(sb.liffMarkLineOk_({ getSheetByName: () => roster }, 'E1', 2), true);
+  assert.strictEqual(col(roster, 'line_ok_at', 2), ISO);
+  const bad2 = { getScriptCache: () => ({ get: () => { throw new Error('g'); }, put: () => { throw new Error('p'); } }) };
+  const m = make({ roster: rosterRows(true), cacheSvc: bad2 });
+  assert.strictEqual(m.sb.liffMarkLineOk_({ getSheetByName: () => m.roster }, 'E2', 3), true);
+  assert.strictEqual(col(m.roster, 'line_ok_at', 3), ISO);
+});
+ok('格線欄滿：缺欄補表頭前先 insertColumnAfter', () => {
+  const rows = rosterRows(false);
+  const { sb, roster } = make({ roster: rows, maxCols: rows[0].length });
+  assert.strictEqual(sb.liffMarkLineOk_({ getSheetByName: () => roster }, 'E1', 2), true);
+  assert.strictEqual(roster.inserts, 1);
+  assert.strictEqual(roster.data[0][roster.data[0].length - 1], 'line_ok_at');
+  assert.strictEqual(col(roster, 'line_ok_at', 2), ISO);
 });
 console.log('\nline-ok-at: ' + n + ' 項通過');

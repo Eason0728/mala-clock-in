@@ -70,7 +70,8 @@ function env(opts) {
   vm.runInContext("CONFIG.LINE_CHANNEL_ID = '2011292256'; CONFIG.STORE_LAT = 24; CONFIG.STORE_LNG = 121; CONFIG.RADIUS_M = 50;", sb);   // CONFIG 是 const，不在 sb 上
   return { sb, log, fetches, cache, sheets };
 }
-const reads = (log, name) => log.filter(x => x.indexOf(name + ':') === 0 && x !== name + ':寫入').length;
+// 名冊另有 line_ok_at 寫入前核對列號的單格 emp_id 讀取（'roster:1列'），不算「讀整張名冊」
+const reads = (log, name) => log.filter(x => x.indexOf(name + ':') === 0 && x !== name + ':寫入' && !(name === 'roster' && x === 'roster:1列')).length;
 
 ok('按上班：名冊、打卡表、申請表各只讀一次，寫入一筆', () => {
   const e = env();

@@ -130,14 +130,25 @@ function handleLiffBind_(body) {
  *  ‧綁定（liff_bind）與解綁（mgr_line_unbind）會把它清空，重綁後重新累積。 */
 function liffMarkLineOk_(ss, empId, rowIndex) {
   try {
+    // 一天只寫一次：快取有值就不碰試算表（每張卡少一次寫入）。快取取不到或丟錯就照常寫。
+    var cache = null, ckey = '';
+    try { cache = CacheService.getScriptCache(); ckey = 'lok:' + empId + ':' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd'); if (cache && cache.get(ckey)) return true; } catch (ce) { cache = null; }
     var sh = ss.getSheetByName('roster');
     if (!sh) return false;
-    var head = sh.getRange(1, 1, 1, Math.max(1, sh.getLastColumn())).getValues()[0].map(String);
+    var used = Math.max(1, sh.getLastColumn());
+    var head = sh.getRange(1, 1, 1, used).getValues()[0].map(String);
     var c = head.indexOf('line_ok_at') + 1;
-    if (!c) { c = head.length + 1; sh.getRange(1, c).setValue('line_ok_at'); }
+    if (!c) {
+      c = head.length + 1;
+      // 格線欄滿時先擴一欄，否則寫表頭會丟例外被吞、永遠寫不進去
+      if (typeof sh.getMaxColumns === 'function' && sh.getMaxColumns() <= head.length) sh.insertColumnAfter(sh.getMaxColumns());
+      sh.getRange(1, c).setValue('line_ok_at');
+    }
+    var ec = head.indexOf('emp_id') + 1, last = sh.getLastRow();
     var r = Number(rowIndex) || 0;
+    // 呼叫端給的列號要先核對 emp_id（防排序／插列後寫到別人名下），不符就依 emp_id 重找
+    if (r && ec && String(sh.getRange(r, ec).getValues()[0][0]) !== String(empId)) r = 0;
     if (!r) {
-      var ec = head.indexOf('emp_id') + 1, last = sh.getLastRow();
       if (!ec || last < 2) return false;
       var col = sh.getRange(2, ec, last - 1, 1).getValues();
       for (var i = 0; i < col.length; i++) { if (String(col[i][0]) === String(empId)) { r = i + 2; break; } }
@@ -146,6 +157,7 @@ function liffMarkLineOk_(ss, empId, rowIndex) {
     var cell = sh.getRange(r, c);
     cell.setNumberFormat('@');   // 純日期時間字串鎖成文字，避免被 Sheets 轉成 Date
     cell.setValue(nowTaipeiIso());
+    try { if (cache) cache.put(ckey, '1', 21600); } catch (pe) {}
     return true;
   } catch (e) { return false; }
 }
