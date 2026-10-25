@@ -98,7 +98,10 @@ function handleSvcRoster_(body) {
   var last = svcLastPunch_(ss, rows.map(function (r) { return String(r.emp_id); }));
   var props = PropertiesService.getScriptProperties();
   var mapKey = props.getProperty('LINE_MAP_KEY') || '', mapKid = props.getProperty('LINE_MAP_KID') || '';
-  return { ok: true, rows: rows.map(function (r) {
+  return { ok: true,
+    line_probe: svcLineHash_('dzy-line-probe', mapKey),   // 平台每晚比對：真 Apps Script 的 HMAC 要與 node 相同、各店金鑰一致
+    line_kid: String(mapKid),
+    rows: rows.map(function (r) {
     var id = String(r.emp_id);
     var bound = String(r.line_user_id || '') !== '';
     return { emp_id: id, name: String(r.name),

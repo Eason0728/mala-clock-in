@@ -213,4 +213,23 @@ ok('格線欄滿：缺欄補表頭前先 insertColumnAfter', () => {
   assert.strictEqual(roster.data[0][roster.data[0].length - 1], 'line_ok_at');
   assert.strictEqual(col(roster, 'line_ok_at', 2), ISO);
 });
+ok('同日打卡→解綁→重綁→再打卡：line_ok_at 重新寫入（當日快取鍵被清）', () => {
+  const { H, roster } = make({ roster: rosterRows(true), mgr: true });
+  punch(H);
+  assert.strictEqual(col(roster, 'line_ok_at', 2), ISO);
+  assert.strictEqual(J(H.mgr_line_unbind({ mgr_key: 'x', emp_id: 'E1' })).ok, true);
+  assert.strictEqual(col(roster, 'line_ok_at', 2), '');
+  assert.strictEqual(J(H.liff_bind({ id_token: 'TOK_U1', key: 'k1' })).ok, true);
+  assert.strictEqual(col(roster, 'line_ok_at', 2), '');
+  assert.strictEqual(punch(H).ok, true);
+  assert.strictEqual(col(roster, 'line_ok_at', 2), ISO, '重綁後同日再打卡要重寫');
+});
+ok('liff_bind 新綁定本身也清當日快取（不經 unbind 的路徑）', () => {
+  const { H, roster, sb } = make({ roster: rosterRows(true) });
+  punch(H);                                   // 寫入並設快取
+  roster.data[1][5] = ''; roster.data[1][7] = '';   // 模擬後台直接清掉綁定
+  assert.strictEqual(J(H.liff_bind({ id_token: 'TOK_U1', key: 'k1' })).ok, true);
+  assert.strictEqual(punch(H).ok, true);
+  assert.strictEqual(col(roster, 'line_ok_at', 2), ISO);
+});
 console.log('\nline-ok-at: ' + n + ' 項通過');

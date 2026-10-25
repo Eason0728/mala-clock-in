@@ -117,11 +117,19 @@ function handleLiffBind_(body) {
   setRosterCell(rosterSheet, target.__rowIndex, 'line_user_id', userId);
   // 純日期時間字串鎖成文字，避免被 Sheets 轉成 Date 物件（同 removed_at 的處理）
   setRosterCell(rosterSheet, target.__rowIndex, 'line_bound_at', nowTaipeiIso(), true);
+  liffClearLineOkCache_(target.emp_id);   // 當日快取鍵一併刪，否則重綁後同日打卡會被快取擋掉、line_ok_at 不重寫
   setRosterCell(rosterSheet, target.__rowIndex, 'line_ok_at', '', true);   // 重綁重新計算「LINE 打卡成功過」（沒有這欄時 setRosterCell 回 false，無妨）
   // via：LINE 單一打卡入口（LineHub.gs）代綁時標註是「輸入姓名」還是「跨店自動」綁的，給主管看綁定紀錄用
   logLiffBind_(target.emp_id, target.name, userId,
                body.via === 'name' ? 'bind_name' : body.via === 'auto' ? 'bind_auto' : 'bind');
   return { ok: true, name: target.name, emp_id: target.emp_id };
+}
+
+/** 刪掉 liffMarkLineOk_ 當日快取鍵（綁定／解綁清 line_ok_at 時呼叫）。失敗無妨。 */
+function liffClearLineOkCache_(empId) {
+  try {
+    CacheService.getScriptCache().remove('lok:' + empId + ':' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd'));
+  } catch (e) { /* 快取取不到無妨 */ }
 }
 
 /** 平台「LINE 開通管理系統」的可信度依據（2026-10-25）：LINE 打卡成功（events 寫入且 status ok）後，在 roster 寫一格 line_ok_at（台北 ISO）。
@@ -277,6 +285,7 @@ function handleMgrLineUnbind_(body) {
   setRosterCell(sheet, row.__rowIndex, 'line_user_id', '');
   setRosterCell(sheet, row.__rowIndex, 'line_bound_at', '', true);
   setRosterCell(sheet, row.__rowIndex, 'line_ok_at', '', true);
+  liffClearLineOkCache_(row.emp_id);
   logLiffBind_(row.emp_id, row.name, String(row.line_user_id), 'unbind_by:' + actor);
   return { ok: true };
 }

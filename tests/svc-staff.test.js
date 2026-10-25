@@ -146,7 +146,7 @@ ok('A2 last_punch 取 events 該人最大日期；無紀錄／只有被拒的卡
   assert.strictEqual(r.rows[0].last_punch, day(3)); assert.strictEqual(r.rows[1].last_punch, '');
 });
 ok('A2 空名冊回 []；沒有 roster 分頁也回 []', () => {
-  assert.deepStrictEqual(rosterEnv([]).svc('svc_roster'), { ok: true, rows: [] });
+  assert.deepStrictEqual(rosterEnv([]).svc('svc_roster'), { ok: true, line_probe: '', line_kid: '', rows: [] });
   const e = makeEnv(); assert.deepStrictEqual(e.svc('svc_roster'), { ok: true, rows: [] });
 });
 ok('A2 Date 物件的儲存格也正規化成 yyyy-MM-dd HH:mm:ss', () => {

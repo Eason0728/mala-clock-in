@@ -104,4 +104,13 @@ ok('Date 型態的時間格（Sheets 轉成 Date）→ 台北 ISO 字串', () =>
   sh.data[1][14] = d;
   assert.strictEqual(e.call().rows[0].line_ok_at, '2026-10-21T09:00:00+08:00');
 });
+ok('最上層 line_probe＝HMAC(key,"dzy-line-probe")、line_kid；未設金鑰皆空', () => {
+  const r = env({ LINE_MAP_KEY: VEC.key, LINE_MAP_KID: 'k1' }).call();
+  assert.strictEqual(r.line_probe, crypto.createHmac('sha256', VEC.key).update('dzy-line-probe', 'utf8').digest('hex'));
+  assert.strictEqual(r.line_kid, 'k1');
+  assert.ok(!JSON.stringify(r).includes(VEC.key), '洩漏金鑰');
+  const e = env({}).call();
+  assert.strictEqual(e.line_probe, '');
+  assert.strictEqual(e.line_kid, '');
+});
 console.log('\nsvc-roster-line: ' + n + ' 項通過');
