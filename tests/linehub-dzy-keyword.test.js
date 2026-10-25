@@ -1,4 +1,4 @@
-// 光復 LineHub：文字「開通管理系統」「重設密碼」→ 回 Flex 按鈕卡片（LIFF ?m=claim|reset）；屬性未設回「這個功能準備中」；絕不用 push。
+// 光復 LineHub：文字「重設密碼」→ 回 Flex 按鈕卡片（LIFF ?m=reset）；「開通管理系統」已取消、不觸發；屬性未設回「這個功能準備中」；絕不用 push。
 const assert = require('assert');
 const fs = require('fs');
 const vm = require('vm');
@@ -39,22 +39,22 @@ function make(props) {
 const flatUris = (m) => { const o = []; (function w(x) { if (Array.isArray(x)) x.forEach(w); else if (x && typeof x === 'object') { if (x.type === 'uri') o.push(x.uri); Object.values(x).forEach(w); } })(m); return o; };
 const LIFF = 'https://liff.line.me/2000000000-AbCdEfGh';
 
-ok('「開通管理系統」→ 一張 flex 卡片，按鈕 uri＝DZY_LINE_LIFF_URL?m=claim', () => {
+ok('「重設密碼」→ 一張 flex 卡片，按鈕 uri＝DZY_LINE_LIFF_URL?m=reset', () => {
   const { say, replies } = make({ DZY_LINE_LIFF_URL: LIFF });
-  say('開通管理系統');
+  say('重設密碼');
   assert.strictEqual(replies.length, 1);
   const m = replies[0].messages;
   assert.strictEqual(m.length, 1); assert.strictEqual(m[0].type, 'flex');
-  assert.deepStrictEqual(flatUris(m[0]), [LIFF + '?m=claim']);
+  assert.deepStrictEqual(flatUris(m[0]), [LIFF + '?m=reset']);
 });
-ok('「重設密碼」→ ?m=reset', () => {
+ok('「開通管理系統」不再觸發卡片（沒有任何回覆）', () => {
   const { say, replies } = make({ DZY_LINE_LIFF_URL: LIFF });
-  say('重設密碼');
-  assert.deepStrictEqual(flatUris(replies[0].messages[0]), [LIFF + '?m=reset']);
+  say('開通管理系統');
+  assert.strictEqual(replies.length, 0);
 });
 ok('前後空白 trim 後相等也算；多一個字（例如「重設密碼嗎」）不觸發', () => {
   const a = make({ DZY_LINE_LIFF_URL: LIFF });
-  a.say('  開通管理系統\n'); assert.strictEqual(a.replies.length, 1);
+  a.say('  重設密碼\n'); assert.strictEqual(a.replies.length, 1);
   const b = make({ DZY_LINE_LIFF_URL: LIFF });
   b.say('重設密碼嗎'); b.say('我要開通管理系統'); b.say('開通');
   assert.strictEqual(b.replies.length, 0);
@@ -62,8 +62,8 @@ ok('前後空白 trim 後相等也算；多一個字（例如「重設密碼嗎�
 ok('DZY_LINE_LIFF_URL 未設（或空白）→ 回文字「這個功能準備中」，沒有按鈕', () => {
   [{}, { DZY_LINE_LIFF_URL: '' }, { DZY_LINE_LIFF_URL: '   ' }].forEach((p) => {
     const { say, replies } = make(p);
-    say('開通管理系統'); say('重設密碼');
-    assert.strictEqual(replies.length, 2);
+    say('重設密碼');
+    assert.strictEqual(replies.length, 1);
     replies.forEach((r) => { assert.deepStrictEqual(r.messages, [{ type: 'text', text: '這個功能準備中' }]); });
   });
 });
@@ -74,7 +74,7 @@ ok('網址已帶 ? 時用 & 接 m 參數', () => {
 });
 ok('完全不呼叫 push／multicast／broadcast（只有 reply，加上 loading 動畫）', () => {
   const { say, urls } = make({ DZY_LINE_LIFF_URL: LIFF });
-  say('開通管理系統'); say('重設密碼'); say('');
+  say('重設密碼'); say('');
   assert.ok(urls.length > 0);
   urls.forEach((u) => assert.ok(!/\/message\/(push|multicast|broadcast|narrowcast)/.test(u), '不該呼叫 ' + u));
   assert.ok(urls.some((u) => u.indexOf('/message/reply') >= 0));
