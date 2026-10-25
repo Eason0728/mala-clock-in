@@ -79,6 +79,16 @@ function svcLastPunch_(ss, empIds) {
   return out;
 }
 
+/** 小寫 hex HMAC-SHA256(key=LINE_MAP_KEY, msg=userId)。GAS 回有號 byte（-128..127），要 &0xff。
+ *  金鑰未設或沒綁 → ''。平台只拿雜湊比對，絕不回原始 line_user_id。 */
+function svcLineHash_(uid, key) {
+  uid = String(uid || '');
+  if (!uid || !key) return '';
+  return Utilities.computeHmacSha256Signature(uid, key).map(function (b) {
+    return ('0' + (b & 0xff).toString(16)).slice(-2);
+  }).join('');
+}
+
 function handleSvcRoster_(body) {
   var bad = svcAuth_(body); if (bad) return bad;
   var ss = getSS();
@@ -86,13 +96,23 @@ function handleSvcRoster_(body) {
   if (!sh) return { ok: true, rows: [] };
   var rows = readSheetAsObjects(sh).rows.filter(function (r) { return String(r.emp_id) !== ''; });
   var last = svcLastPunch_(ss, rows.map(function (r) { return String(r.emp_id); }));
-  return { ok: true, rows: rows.map(function (r) {
+  var props = PropertiesService.getScriptProperties();
+  var mapKey = props.getProperty('LINE_MAP_KEY') || '', mapKid = props.getProperty('LINE_MAP_KID') || '';
+  return { ok: true,
+    line_probe: svcLineHash_('dzy-line-probe', mapKey),   // 平台每晚比對：真 Apps Script 的 HMAC 要與 node 相同、各店金鑰一致
+    line_kid: String(mapKid),
+    rows: rows.map(function (r) {
     var id = String(r.emp_id);
+    var bound = String(r.line_user_id || '') !== '';
     return { emp_id: id, name: String(r.name),
              active: svcIsTrue_(r.active),
              created_at: svcTime_(r.created_at),
              removed_at: svcTime_(r.removed_at),
-             line_bound: String(r.line_user_id || '') !== '',
+             line_bound: bound,
+             line_h: bound ? svcLineHash_(r.line_user_id, mapKey) : '',
+             line_kid: bound ? String(mapKid) : '',
+             line_bound_at: bound ? String(normCellTs(r.line_bound_at) || '') : '',
+             line_ok_at: bound ? String(normCellTs(r.line_ok_at) || '') : '',
              last_punch: last[id] || '',
              src_store: String(r.src_store || ''),
              src_emp_id: String(r.src_emp_id || '') };

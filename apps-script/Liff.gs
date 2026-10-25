@@ -117,10 +117,57 @@ function handleLiffBind_(body) {
   setRosterCell(rosterSheet, target.__rowIndex, 'line_user_id', userId);
   // 純日期時間字串鎖成文字，避免被 Sheets 轉成 Date 物件（同 removed_at 的處理）
   setRosterCell(rosterSheet, target.__rowIndex, 'line_bound_at', nowTaipeiIso(), true);
+  liffClearLineOkCache_(target.emp_id);   // 當日快取鍵一併刪，否則重綁後同日打卡會被快取擋掉、line_ok_at 不重寫
+  setRosterCell(rosterSheet, target.__rowIndex, 'line_ok_at', '', true);   // 重綁重新計算「LINE 打卡成功過」（沒有這欄時 setRosterCell 回 false，無妨）
   // via：LINE 單一打卡入口（LineHub.gs）代綁時標註是「輸入姓名」還是「跨店自動」綁的，給主管看綁定紀錄用
   logLiffBind_(target.emp_id, target.name, userId,
                body.via === 'name' ? 'bind_name' : body.via === 'auto' ? 'bind_auto' : 'bind');
   return { ok: true, name: target.name, emp_id: target.emp_id };
+}
+
+/** 刪掉 liffMarkLineOk_ 當日快取鍵（綁定／解綁清 line_ok_at 時呼叫）。失敗無妨。 */
+function liffClearLineOkCache_(empId) {
+  try {
+    CacheService.getScriptCache().remove('lok:' + empId + ':' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd'));
+  } catch (e) { /* 快取取不到無妨 */ }
+}
+
+/** 平台「LINE 開通管理系統」的可信度依據（2026-10-25）：LINE 打卡成功（events 寫入且 status ok）後，在 roster 寫一格 line_ok_at（台北 ISO）。
+ *  ‧只寫一格；整段 try/catch，失敗回 false、絕不影響打卡回應。roster 沒有 line_ok_at 欄就在表頭尾端補。
+ *  ‧rowIndex（選填）：呼叫端手上已有名冊列的 __rowIndex 就傳，省一次讀表；沒給就依 emp_id 欄找。
+ *  ‧綁定（liff_bind）與解綁（mgr_line_unbind）會把它清空，重綁後重新累積。 */
+function liffMarkLineOk_(ss, empId, rowIndex) {
+  try {
+    // 一天只寫一次：快取有值就不碰試算表（每張卡少一次寫入）。快取取不到或丟錯就照常寫。
+    var cache = null, ckey = '';
+    try { cache = CacheService.getScriptCache(); ckey = 'lok:' + empId + ':' + Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd'); if (cache && cache.get(ckey)) return true; } catch (ce) { cache = null; }
+    var sh = ss.getSheetByName('roster');
+    if (!sh) return false;
+    var used = Math.max(1, sh.getLastColumn());
+    var head = sh.getRange(1, 1, 1, used).getValues()[0].map(String);
+    var c = head.indexOf('line_ok_at') + 1;
+    if (!c) {
+      c = head.length + 1;
+      // 格線欄滿時先擴一欄，否則寫表頭會丟例外被吞、永遠寫不進去
+      if (typeof sh.getMaxColumns === 'function' && sh.getMaxColumns() <= head.length) sh.insertColumnAfter(sh.getMaxColumns());
+      sh.getRange(1, c).setValue('line_ok_at');
+    }
+    var ec = head.indexOf('emp_id') + 1, last = sh.getLastRow();
+    var r = Number(rowIndex) || 0;
+    // 呼叫端給的列號要先核對 emp_id（防排序／插列後寫到別人名下），不符就依 emp_id 重找
+    if (r && ec && String(sh.getRange(r, ec).getValues()[0][0]) !== String(empId)) r = 0;
+    if (!r) {
+      if (!ec || last < 2) return false;
+      var col = sh.getRange(2, ec, last - 1, 1).getValues();
+      for (var i = 0; i < col.length; i++) { if (String(col[i][0]) === String(empId)) { r = i + 2; break; } }
+      if (!r) return false;
+    }
+    var cell = sh.getRange(r, c);
+    cell.setNumberFormat('@');   // 純日期時間字串鎖成文字，避免被 Sheets 轉成 Date
+    cell.setValue(nowTaipeiIso());
+    try { if (cache) cache.put(ckey, '1', 21600); } catch (pe) {}
+    return true;
+  } catch (e) { return false; }
 }
 
 /**
@@ -237,6 +284,8 @@ function handleMgrLineUnbind_(body) {
   if (!row.line_user_id) return { ok: true, already: true };
   setRosterCell(sheet, row.__rowIndex, 'line_user_id', '');
   setRosterCell(sheet, row.__rowIndex, 'line_bound_at', '', true);
+  setRosterCell(sheet, row.__rowIndex, 'line_ok_at', '', true);
+  liffClearLineOkCache_(row.emp_id);
   logLiffBind_(row.emp_id, row.name, String(row.line_user_id), 'unbind_by:' + actor);
   return { ok: true };
 }
@@ -483,7 +532,9 @@ function handleLiffClockGuarded_(body) {
   var inner = {};
   Object.keys(body).forEach(function (k) { if (k !== 'id_token' && k !== 'action') inner[k] = body[k]; });
   inner.key = found.roster.key;
-  return handleClock(inner, read, found.rows);
+  var j = handleClock(inner, read, found.rows);
+  if (j && j.ok && j.status === 'ok') liffMarkLineOk_(found.ss, found.roster.emp_id, found.roster.__rowIndex);   // 寫失敗已在 helper 內吞掉
+  return j;
 }
 
 function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows：已讀好的名冊（選填，給了寫入時不再讀）
@@ -503,6 +554,7 @@ function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows
   liffStep_('write');
   // 忘打卡提醒用打卡前讀的那份 events（只看這次之前的卡），不多讀一次表
   if (j && j.ok && j.status === 'ok') {
+    liffMarkLineOk_(ss, me.emp_id, me.__rowIndex);   // 一格寫入；失敗在 helper 內吞掉，不影響打卡回應
     if (qr) reqQrLog_(ss, j.ts, me.emp_id, type, qr.mgr);
     var md = liffMissedDetail_(events, me.emp_id, type, j.ts), notes = [], rq = null;
     try { rq = reqRows_(ss); } catch (e) { rq = null; }   // 申請表讀一次，結果告知與超時提示共用（2026-10-12）

@@ -30,7 +30,7 @@ ok('mgr_line_binds：只列 30 天內、新的在前、標出是否仍綁著、�
 ok('mgr_line_unbind：清空兩欄並記一筆 unbind_by:主管名；沒綁的回 already', () => {
   const { sb, cells, log } = make();
   assert.strictEqual(sb.handleMgrLineUnbind_({ mgr_key: 'mk', emp_id: 'E1' }).ok, true);
-  assert.deepStrictEqual(cells.map(c => c.join('|')), ['2|line_user_id|', '2|line_bound_at|']);
+  assert.deepStrictEqual(cells.map(c => c.join('|')), ['2|line_user_id|', '2|line_bound_at|', '2|line_ok_at|']);
   assert.strictEqual(log[0][4], 'unbind_by:主管A');
   assert.strictEqual(sb.handleMgrLineUnbind_({ mgr_key: 'mk', emp_id: 'E2' }).already, true);
   assert.strictEqual(sb.handleMgrLineUnbind_({ mgr_key: 'bad', emp_id: 'E1' }).error, 'unauthorized');
