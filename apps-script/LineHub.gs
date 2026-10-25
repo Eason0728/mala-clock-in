@@ -1071,6 +1071,19 @@ function lineHubBulletinCard_() {
     buttons: [{ label: '打開佈告欄', uri: LINE_HUB_BULLETIN_URL }] });
 }
 
+/** 「開通管理系統」「重設密碼」（2026-10-25，LINE 登入管理系統）：回一張按鈕卡片，按鈕開 LIFF（?m=claim|reset）。
+ *  LIFF 網址在指令碼屬性 DZY_LINE_LIFF_URL；沒設＝回文字「這個功能準備中」。只用 reply（不吃推播額度）。 */
+function lineHubDzyCard_(mode) {
+  var base = '';
+  try { base = String(PropertiesService.getScriptProperties().getProperty('DZY_LINE_LIFF_URL') || '').trim(); } catch (e) { base = ''; }
+  if (!base) return '這個功能準備中';
+  var uri = base + (base.indexOf('?') >= 0 ? '&' : '?') + 'm=' + mode;
+  var claim = mode === 'claim';
+  return lineHubCard_({ title: claim ? '🔑 開通管理系統' : '🔑 重設密碼', tone: 'info', alt: claim ? '開通管理系統' : '重設密碼',
+    blocks: [{ type: 'text', text: claim ? '按下面的按鈕，用這個 LINE 帳號開通鼎兆元管理系統。' : '按下面的按鈕，用這個 LINE 帳號重設管理系統密碼。' }],
+    buttons: [{ label: claim ? '開通管理系統' : '重設密碼', uri: uri }] });
+}
+
 // 2026-10-09 選單改版（打卡／出勤紀錄／出勤班表／加班請假／薪資明細／佈告欄）；舊選單的字句仍保留可打字查
 var LINE_HUB_TEXT_COMMANDS = {
   '出勤紀錄': lineHubAttendanceCard_,
@@ -1086,6 +1099,8 @@ var LINE_HUB_TEXT_COMMANDS = {
   '意見回饋': function () { return lineHubNoticeCard_('意見回饋', '有任何建議，直接在聊天室打「建議：」加上你的想法送出就可以，例如：\n建議：打卡畫面字可以再大一點'); },
   '出勤班表': function () { return lineHubSchedCard_(); },   // 2026-10-10 接排班系統（Sched.gs）
   '佈告欄': lineHubBulletinCard_,
+  '開通管理系統': function () { return lineHubDzyCard_('claim'); },
+  '重設密碼': function () { return lineHubDzyCard_('reset'); },
 };
 
 /** LINE webhook（Code.gs doPost 看到 body.events 就轉來這裡）。 */

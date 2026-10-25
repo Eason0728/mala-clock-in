@@ -126,7 +126,7 @@ ok('A2 只回規格欄位；布林；不含 key／device_id／line_user_id', () 
   const e = rosterEnv(people());
   const r = e.svc('svc_roster');
   assert.strictEqual(r.ok, true); assert.strictEqual(r.rows.length, 2);
-  const want = ['emp_id', 'name', 'active', 'created_at', 'removed_at', 'line_bound', 'last_punch', 'src_store', 'src_emp_id'].sort();
+  const want = ['emp_id', 'name', 'active', 'created_at', 'removed_at', 'line_bound', 'line_h', 'line_kid', 'line_bound_at', 'line_ok_at', 'last_punch', 'src_store', 'src_emp_id'].sort();
   r.rows.forEach(x => assert.deepStrictEqual(Object.keys(x).sort(), want));
   const [a, b] = r.rows;
   assert.strictEqual(a.active, true); assert.strictEqual(b.active, false);
