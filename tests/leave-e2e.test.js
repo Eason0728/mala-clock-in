@@ -98,6 +98,19 @@ chk('  忘刷 3 天',            c.forget_day, 3);
 chk('  未啟用門檻→只按天扣',  calc(c).g('attend_bonus'), 3000-3*100);
 chk('  門檻3次→歸零',         calc(c,{attend_void_forget:3}).g('attend_bonus'), 0);
 
+console.log('\n══ 6b) 一天多種假別（2026-10-26）：同一天兩列 → 各自歸集、缺勤只算一天 ══');
+reset();
+approve('2026-07-16',4,'出差','出差',4);
+CLOCK.leave.push({'日期':'2026-07-16','姓名':'張三','假別':'病假','時數':4});
+approve('2026-07-17',4,'正常','事假',2);
+CLOCK.leave.push({'日期':'2026-07-17','姓名':'張三','假別':'病假','時數':2});
+c=collect();
+chk('  病假兩天合計 6H',      c.sick_h, 6);
+chk('  事假 2H',              c.leaves.personal, 2);
+chk('  缺勤天數 2（同一天兩種假只算一天）', c.deduct_days, 2);
+chk('  病假扣款＝6H×半薪',    calc(c).g('sick_leave'), 6*Math.round(rate*0.5));
+chk('  事假扣款＝2H 全扣',    calc(c).g('personal_leave'), 2*rate);
+
 console.log('\n══ 7) 事假設成 void → 全勤整筆歸零 ══');
 reset(); approve('2026-07-15',0,'正常','事假',8);
 c=collect();

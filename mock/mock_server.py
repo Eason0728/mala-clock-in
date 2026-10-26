@@ -880,15 +880,16 @@ def handle_mgr_day(data, body):
         + [x for x in listed if x["emp_id"] not in first_ts]
     )
 
-    # 該日 leave 的假別＋時數（姓名→值；同日同人多筆時最後一筆為準，與 upsert_leave 保留邏輯一致）
-    leave_by_name = {}
-    leave_hours_by_name = {}
+    # 該日 leave 的假別＋時數（姓名→[{type,hours}]；2026-10-26 起一天可多種，與 Code.gs handleMgrDay 同步）
+    leaves_by_name = {}
     for l in data.get("leave", []):
         if str(l.get("date", ""))[:10] == date:
             nm = str(l.get("name", "")).strip()
-            leave_by_name[nm] = str(l.get("type", "")).strip()
+            t = str(l.get("type", "")).strip()
+            if not t:
+                continue
             h = l.get("hours", "")
-            leave_hours_by_name[nm] = "" if h == "" or h is None else h
+            leaves_by_name.setdefault(nm, []).append({"type": t, "hours": "" if h == "" or h is None else h})
 
     employees = []
     for item in listed:
@@ -904,8 +905,9 @@ def handle_mgr_day(data, body):
             "segments": punch["segments"] if has_punch else [],
             "reference": punch["reference"] if (has_punch and not incomplete) else None,  # 沒打卡或忘刷卡整天＝參考空白
             "attempts": attempts_count.get(emp_id, 0),  # A4：未入帳嘗試次數（status!='ok'，供主管頁透明化）
-            "leave_type": leave_by_name.get(item["name"], ""),
-            "leave_hours": leave_hours_by_name.get(item["name"], ""),
+            "leaves": leaves_by_name.get(item["name"], []),
+            "leave_type": (leaves_by_name.get(item["name"]) or [{}])[0].get("type", ""),
+            "leave_hours": (leaves_by_name.get(item["name"]) or [{}])[0].get("hours", ""),
             # 預設上下班時間（2026-08-23）：名冊的 shift_in／shift_out（與 Code.gs handleMgrDay 同步）
             # ⚠ 一定要用 emp_id 重查名冊——直接用 r 會拿到上一個迴圈殘留的那一筆，全部人變同一個班別
             "shift_in": (find_roster_by_empid(data, emp_id) or {}).get("shift_in", ""),
@@ -939,37 +941,51 @@ def handle_mgr_approve(data, body):
     if not roster:
         return {"ok": False, "error": "invalid_emp_id"}
 
-    leave_type = str(body.get("leave_type") or "").strip()
-    # 與 Code.gs leaveTypeAllowedByPayroll 同步（2026-08-23）：白名單外的假別再查一次
-    # 薪酬假別表（mock 用 MOCK_LEAVE_TYPES 代替）才擋——表上加新假別不必改白名單。
-    if leave_type and leave_type not in LEAVE_TYPES \
-            and leave_type not in [t["name"] for t in MOCK_LEAVE_TYPES]:
-        return {"ok": False, "error": "bad_leave_type"}
-    # 請假時數：可留空；有填要是 0 以上的數字，四捨五入到 2 位（與 Code.gs 同步）
-    leave_hours = ""
-    lh_raw = body.get("leave_hours")
-    if leave_type and lh_raw not in ("", None):
-        try:
-            h = float(lh_raw)
-        except (TypeError, ValueError):
-            return {"ok": False, "error": "bad_leave_hours"}
-        # B2：float() 對 "nan"/"inf" 字串不會丟例外，要另外擋（與 Code.gs 726-731 的 isFinite 對齊）
-        if not math.isfinite(h) or h < 0:
-            return {"ok": False, "error": "bad_leave_hours"}
-        leave_hours = round(h, 2)
+    # 請假註記（2026-10-26 起一天可多種，與 Code.gs handleMgrApprove 同步）：新版送 leaves，舊呼叫端送 leave_type
+    multi_leave = isinstance(body.get("leaves"), list)
+    raw_leaves = body.get("leaves") if multi_leave else [{"type": body.get("leave_type"), "hours": body.get("leave_hours")}]
+    if len(raw_leaves) > 4:
+        return {"ok": False, "error": "too_many_leaves", "message": "一天最多記 4 種假別"}
+    leaves = []
+    for x in raw_leaves:
+        x = x or {}
+        t = str(x.get("type") or "").strip()
+        if not t:
+            continue
+        # 白名單外的假別再查一次薪酬假別表（mock 用 MOCK_LEAVE_TYPES 代替）才擋
+        if t not in LEAVE_TYPES and t not in [m["name"] for m in MOCK_LEAVE_TYPES]:
+            return {"ok": False, "error": "bad_leave_type"}
+        if any(y["type"] == t for y in leaves):
+            return {"ok": False, "error": "dup_leave_type", "message": "同一個假別選了兩次：" + t}
+        hv = ""
+        if x.get("hours") not in ("", None):
+            try:
+                hv = float(x.get("hours"))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "bad_leave_hours"}
+            # B2：float() 對 "nan"/"inf" 字串不會丟例外，要另外擋
+            if not math.isfinite(hv) or hv < 0:
+                return {"ok": False, "error": "bad_leave_hours"}
+            hv = round(hv, 2)
+        leaves.append({"type": t, "hours": hv})
+    same_day = [l for l in data.get("leave", [])
+                if str(l.get("date", ""))[:10] == date and str(l.get("name", "")).strip() == roster["name"]]
+    if not multi_leave and len(same_day) > 1:
+        return {"ok": False, "error": "multi_leave_day", "message": "這天記了多種假別，請到打卡系統的值班核定頁修改"}
+    has_trip = any(x["type"] == "出差" for x in leaves)
 
     raw_periods = body.get("periods") or []
     if not isinstance(raw_periods, list):
         return {"ok": False, "error": "bad_periods"}
 
     # 出差時數（2026-10-02，與 Code.gs 同步）：填幾小時認定幾小時，與上班時段相加
-    trip_hours = leave_hours if (leave_type == "出差" and leave_hours != "") else 0.0
+    trip_hours = sum(x["hours"] for x in leaves if x["type"] == "出差" and x["hours"] != "")
 
     if len(raw_periods) == 0:
         # 整天請假：沒時段但要有假別；核定 0 小時、狀態「全天請假」（與 Code.gs 同步）
-        if not leave_type:
+        if not leaves:
             return {"ok": False, "error": "bad_periods"}
-        if leave_type == "出差":
+        if has_trip:
             # 整天出差：核定＝出差時數；沒填時數硬擋（與 Code.gs trip_needs_hours 同步）
             if not trip_hours > 0:
                 return {"ok": False, "error": "trip_needs_hours"}
@@ -1030,8 +1046,8 @@ def handle_mgr_approve(data, body):
         l for l in data.get("leave", [])
         if not (str(l.get("date", ""))[:10] == date and str(l.get("name", "")).strip() == roster["name"])
     ]
-    if leave_type:
-        data["leave"].append({"date": date, "name": roster["name"], "type": leave_type, "hours": leave_hours})
+    for x in leaves:
+        data["leave"].append({"date": date, "name": roster["name"], "type": x["type"], "hours": x["hours"]})
     save_data(data)
 
     return {
@@ -1041,8 +1057,9 @@ def handle_mgr_approve(data, body):
         "name": roster["name"],
         "periods": raw_periods,
         "approved_hours": approved_hours,
-        "leave_type": leave_type,
-        "leave_hours": leave_hours,
+        "leaves": leaves,
+        "leave_type": leaves[0]["type"] if leaves else "",
+        "leave_hours": leaves[0]["hours"] if leaves else "",
         "status_text": status_text,
         "manager_name": mgr["name"],
         "entered_at": entered_at,

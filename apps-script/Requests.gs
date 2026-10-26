@@ -11,7 +11,8 @@
 var REQ_SHEET_ = 'requests';
 // ⚠ 只能往後加欄（2026-10-09 加 comp）：上線前建的 requests 分頁只有前 18 欄，寫入時 reqHeads_ 會自動補表頭
 var REQ_HEADERS_ = ['id', 'created_at', 'emp_id', 'name', 'kind', 'date', 'leave_type', 'start', 'end', 'hours',
-                    'miss_type', 'reason', 'attach_id', 'status', 'decided_at', 'decided_by', 'reject_reason', 'seen_at', 'comp'];
+                    'miss_type', 'reason', 'attach_id', 'status', 'decided_at', 'decided_by', 'reject_reason', 'seen_at', 'comp',
+                    'voided_at', 'voided_by', 'void_reason'];   // 作廢已核准的申請（2026-10-26）：decided_* 保留原核准紀錄
 var REQ_COMP_LEAVE_ = '補休';   // 補休（2026-10-09）：不在 Code.gs LEAVE_TYPES 白名單裡，請假申請另外放行
 var REQ_KINDS_ = { leave: '請假', ot: '加班', trip: '出差', miss: '忘打卡' };
 var REQ_MISS_DAYS = 7;          // 忘打卡只能申請 7 天內（含今天）
@@ -93,7 +94,8 @@ function reqPublic_(r) {
            miss_type: String(r.miss_type || ''), reason: String(r.reason || ''), has_attach: !!r.attach_id,
            status: String(r.status), decided_at: String(normCellTs(r.decided_at) || ''), decided_by: String(r.decided_by || ''),
            reject_reason: String(r.reject_reason || ''), comp: r.kind === 'ot' ? (String(r.comp || '') === 'comp' ? 'comp' : 'pay') : '',
-           proof_required: reqProofType_(r), need_proof: reqNeedsProof_(r) };
+           proof_required: reqProofType_(r), need_proof: reqNeedsProof_(r),
+           voided_at: String(normCellTs(r.voided_at) || ''), voided_by: String(r.voided_by || ''), void_reason: String(r.void_reason || '') };
 }
 function reqSetCells_(sh, rowIndex, patch) {
   var heads = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
@@ -430,6 +432,30 @@ function handleMgrReqDecide_(body) {
     reqSetCells_(sh, r.__rowIndex, { status: decision === 'approve' ? 'approved' : 'rejected', decided_at: nowTaipeiIso(),
                                      decided_by: actor, reject_reason: decision === 'reject' ? reason : '' });
     return { ok: true, id: String(r.id), status: decision === 'approve' ? 'approved' : 'rejected' };
+  } finally { lock.releaseLock(); }
+}
+
+/** {action:'mgr_req_void', mgr_key, id, reason} → 作廢一筆已核准的申請（2026-10-26 Eason 選）。
+ *  起因：同仁改申請（例：整天出差 8h 改成出差 4h＋天災假 4h）時舊單已核准，沒人能撤，核定頁會一直帶出舊單。
+ *  只改申請的狀態；那天若已經送過核定，核定紀錄不動——要改時數請主管重新核定那天。 */
+function handleMgrReqVoid_(body) {
+  var mgr = reqMgr_(body);
+  if (!mgr) return { ok: false, error: 'unauthorized' };
+  var actor = actingName_(body, mgr);
+  if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
+  var reason = reqClean_(body.reason, REQ_REASON_MAX);
+  if (!reason) return { ok: false, error: 'need_reason', message: '作廢要寫理由' };
+  var ss = getSS(), sh = reqSheet_(ss, false);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
+  try {
+    var r = reqRows_(ss).filter(function (x) { return String(x.id) === String(body.id); })[0];
+    if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
+    if (r.status !== 'approved') return { ok: false, error: 'not_approved',
+      message: r.status === 'voided' ? '這筆已經作廢了' : r.status === 'pending' ? '這筆還在審核中，請用退回' : '只有已核准的申請可以作廢' };
+    reqHeads_(sh);   // 舊分頁沒有 voided_* 欄，先補表頭
+    reqSetCells_(sh, r.__rowIndex, { status: 'voided', voided_at: nowTaipeiIso(), voided_by: actor, void_reason: reason });
+    return { ok: true, id: String(r.id), status: 'voided' };
   } finally { lock.releaseLock(); }
 }
 

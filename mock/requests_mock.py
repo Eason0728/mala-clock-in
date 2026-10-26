@@ -346,6 +346,24 @@ def register(ns):
         save_data(data)
         return {"ok": True, "id": r["id"], "status": r["status"]}
 
+    def mgr_void(data, body):
+        """同 Requests.gs handleMgrReqVoid_：只能作廢已核准的，理由必填，decided_* 保留。"""
+        mgr = find_manager_by_key(data, body.get("mgr_key"))
+        if not mgr:
+            return {"ok": False, "error": "unauthorized"}
+        reason = str(body.get("reason") or "").strip()[:100]
+        if not reason:
+            return {"ok": False, "error": "need_reason", "message": "作廢要寫理由"}
+        r = next((x for x in reqs(data) if x["id"] == body.get("id")), None)
+        if not r:
+            return {"ok": False, "error": "not_found", "message": "找不到這筆申請"}
+        if r["status"] != "approved":
+            msg = "這筆已經作廢了" if r["status"] == "voided" else ("這筆還在審核中，請用退回" if r["status"] == "pending" else "只有已核准的申請可以作廢")
+            return {"ok": False, "error": "not_approved", "message": msg}
+        r.update({"status": "voided", "voided_at": iso_now(), "voided_by": mgr["name"], "void_reason": reason})
+        save_data(data)
+        return {"ok": True, "id": r["id"], "status": "voided"}
+
     def mgr_decide_batch(data, body):
         """同 Requests.gs handleMgrReqDecideBatch_：只能核准、最多 30 筆，不是審核中的略過並說明。"""
         mgr = find_manager_by_key(data, body.get("mgr_key"))
@@ -567,7 +585,7 @@ def register(ns):
 
     ns["ACTIONS"].update({"req_info": req_info, "req_submit": req_submit, "req_cancel": req_cancel, "req_attach": req_attach,
                           "mgr_req_pending": mgr_pending, "mgr_req_decide": mgr_decide, "mgr_req_day": mgr_day,
-                          "mgr_req_decide_batch": mgr_decide_batch,
+                          "mgr_req_decide_batch": mgr_decide_batch, "mgr_req_void": mgr_void,
                           "mgr_qr_token": mgr_qr, "liff_punch": liff_punch,
                           "mgr_pending_approvals": pending_plus})
     ns["LINE_HUB_ACTIONS"].update({"line_hub_req_init": hub_init, "line_hub_attach_put": hub_attach_put,

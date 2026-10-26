@@ -213,6 +213,16 @@
   .req-box { background: #e6f7ec; color: #1a5a33; border-radius: 8px; padding: 8px 10px; font-size: 13px; line-height: 1.6; margin: 8px 0; }
   .req-box.warn { background: #fff6e0; color: #6b4c00; }
   .req-box button { margin-top: 6px; font-size: 13px; font-weight: 700; padding: 6px 12px; border-radius: 8px; border: 1px solid #a15a00; background: #fff; color: #a15a00; cursor: pointer; }
+  .req-box .req-lead { font-weight: 700; margin-bottom: 4px; }
+  .req-box .req-row { padding: 4px 0; }
+  .req-box .req-row + .req-row { border-top: 1px dashed rgba(107,76,0,.25); }
+  .req-box .req-old { color: #c22a12; font-size: 12px; }
+  .req-box .req-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .req-box .req-acts button { margin-top: 4px; }
+  .req-box button.req-void { border-color: #c22a12; color: #c22a12; }
+  .req-box button:disabled { opacity: .5; cursor: default; }
+  .req-box .req-note { margin-top: 6px; font-weight: 700; }
+  .req-box .req-note[hidden] { display: none; }
   .from-req { font-size: 11px; color: #1a7a3d; background: #e6f7ec; border-radius: 6px; padding: 1px 6px; margin-left: 6px; }
   /* 打卡 QR（同仁定位抓不到時，主管手機出示）*/
   .qr-open { width: 100%; margin: 0 0 12px; padding: 11px 0; font-size: 15px; font-weight: 700; border-radius: 12px;
@@ -427,6 +437,28 @@
     align-items: center;
     gap: 8px;
     margin-bottom: 10px;
+  }
+  /* 一天多種假別（2026-10-26）：每種一列，可加可移除 */
+  .leave-box { margin-bottom: 10px; }
+  .leave-box .leave-row { margin-bottom: 8px; }
+  .add-leave-btn {
+    display: block;
+    width: 100%;
+    background: none;
+    border: 1px dashed #d9b8ae;
+    color: #8a6a5f;
+    border-radius: 10px;
+    padding: 8px;
+    font-size: 13px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .add-leave-btn[hidden] { display: none; }
+  .leave-row .leave-rm {
+    flex: 0 0 auto;
+    width: 32px; height: 32px;
+    border: 1px solid #e3cfc8; border-radius: 8px;
+    background: #fff; color: #c22a12;
+    font-size: 14px; line-height: 1;
   }
   /* 出差時數算法說明（2026-10-02）：卡片是白底，字色要自己設 */
   .trip-hint {
@@ -1032,10 +1064,19 @@
     return '・' + type + (h != null && isFinite(h) ? h + 'h' : '');
   }
 
+  // 一天多種假別（2026-10-26）：後端回 leaves:[{type, hours}]；舊後端只有 leave_type／leave_hours
+  function leavesOf(o) {
+    if (o && o.leaves && o.leaves.length) return o.leaves;
+    return (o && o.leave_type) ? [{ type: o.leave_type, hours: o.leave_hours }] : [];
+  }
+  function leavesSuffix(list) {
+    return (list || []).map(function (x) { return leaveSuffix(x.type, x.hours); }).join('');
+  }
+
   function renderResult(resultBox, res) {
     resultBox.className = 'result-box show ' + (badgeClass(res.status_text) === 'normal' ? 'result-ok' : 'result-warn');
     resultBox.textContent = '✓ 已核定 ' + res.approved_hours + ' 小時・' + res.status_text
-      + leaveSuffix(res.leave_type, res.leave_hours) + '（' + res.manager_name + '）';
+      + leavesSuffix(leavesOf(res)) + '（' + res.manager_name + '）';
   }
 
   function buildEmployeeCard(emp) {
@@ -1108,27 +1149,27 @@
 
     // 狀態徽章抽成可重設的元素：核定成功後當場翻成「已核定」，不用重新整理才看得到
     var badge = document.createElement('div');
-    function setBadge(approved, leaveType, leaveHours) {
+    function setBadge(approved, leaves) {
       if (approved) {
         badge.className = 'approved-badge ' + badgeClass(approved.status_text);
         badge.textContent = '已核定 ' + approved.approved_hours + ' 小時・' + approved.status_text
-          + leaveSuffix(leaveType, leaveHours) + '（' + approved.manager_name + '）';
+          + leavesSuffix(leaves) + '（' + approved.manager_name + '）';
       } else {
         badge.className = 'approved-badge pending';
         badge.textContent = '待核定';
       }
-      updateMini(approved, leaveType, leaveHours);
+      updateMini(approved);
       // 未核定時頭部的精簡徽章已經寫著「待核定」，展開後不必再重複一顆
       badge.hidden = !approved;
     }
-    setBadge(emp.approved, emp.leave_type, emp.leave_hours);
+    setBadge(emp.approved, leavesOf(emp));
     card.appendChild(badge);
 
     // 收合時看得到的精簡徽章（「待核定」／「✓ 8 小時」）。
     // ⚠ mini 是在下面才建立的 var（hoisting 後這裡是 undefined），所以 updateMini 要自己防呆；
     //    setBadge 第一次呼叫時還沒有 mini，建立 mini 之後會再補呼叫一次。
     var mini;
-    function updateMini(approved, leaveType, leaveHours) {
+    function updateMini(approved) {
       if (!mini) return;
       if (approved) {
         mini.className = 'emp-mini ' + badgeClass(approved.status_text);
@@ -1176,10 +1217,16 @@
     breakToggle.hidden = true;
     card.appendChild(breakToggle);
 
+    // ⚠ leaveLines 在下面才建立（refreshPeriodUI 第一次呼叫時還是 undefined），要防呆
     function tripHoursValue() {
-      if (!leaveSelect || leaveSelect.value !== '出差' || !leaveHours) return 0;
-      var h = Number(leaveHours.value);
-      return (isFinite(h) && h > 0) ? Math.round(h * 100) / 100 : 0;
+      if (!leaveLines) return 0;
+      var t = 0;
+      leaveLines.forEach(function (l) {
+        if (l.select.value !== '出差') return;
+        var h = Number(l.hours.value);
+        if (isFinite(h) && h > 0) t += h;
+      });
+      return Math.round(t * 100) / 100;
     }
     function readPeriodRows() {
       return Array.prototype.slice.call(periodRows.querySelectorAll('.period-row')).map(function (r) {
@@ -1267,78 +1314,125 @@
     var LEAVE_TYPES = (LEAVE_OPTS && LEAVE_OPTS.types && LEAVE_OPTS.types.length)
       ? LEAVE_OPTS.types.map(function (t) { return t.name; })
       : LEAVE_FALLBACK;
-    var leaveRow = document.createElement('div');
-    leaveRow.className = 'leave-row';
-    var leaveLabel = document.createElement('label');
-    leaveLabel.textContent = '請假註記';
-    var leaveSelect = document.createElement('select');
-    ['無'].concat(LEAVE_TYPES).forEach(function (t) {
-      var opt = document.createElement('option');
-      opt.value = t === '無' ? '' : t;
-      opt.textContent = t;
-      // 額度用完就反灰選不了（曆年制與每子女制才擋；婚喪產檢一年可能發生多次，不擋）
-      if (t !== '無' && LEAVE_OPTS && LEAVE_OPTS.types) {
-        var def = LEAVE_OPTS.types.filter(function (x) { return x.name === t; })[0];
-        var q = def ? quotaOf(String(emp.emp_id), def.code) : null;
-        if (q && q.comp) {
-          // 補休（2026-10-09）：只有正職、只能用已定案月份換到的餘額
-          if (!q.allowed) { opt.disabled = true; opt.textContent = t + '（只有正職）'; }
-          else if (!(q.balance_h > 0)) { opt.disabled = true; opt.textContent = t + '（沒有餘額）'; }
-          else opt.textContent = t + '（剩 ' + q.balance_h + ' 小時）';
-        } else if (q && q.cap_days != null) {
-          var remain = Math.round((q.remain_days || 0) * 10) / 10;
-          if (q.blocked) {
-            opt.disabled = true;
-            opt.textContent = t + '（額度已用完）';
-          } else if (q.basis === 'event') {
-            // 婚喪產檢是「每次事件」各有額度，一年可能發生多次；顯示「剩 N 日」會誤導
-            // （一月用掉 3 天，十二月不該說只剩 5 天），改標示每次的上限。
-            opt.textContent = t + '（每次上限 ' + q.cap_days + ' 日）';
-          } else if (def.code === 'parental') {
-            // 育嬰留停額度以月計較好懂（730 日＝24 個月）
-            opt.textContent = t + '（剩 ' + (Math.round(remain / 30 * 10) / 10) + ' 個月）';
-          } else {
-            opt.textContent = t + '（剩 ' + remain + ' 日）';
+    /* 一天多種假別（2026-10-26 Eason）：假別一列一種，可以「＋ 再加一種假別」，最多 4 種；
+       送出時 leaves:[{type, hours}]，後端一種寫一列。出差的時數照舊加進核定時數，其他假別只是註記。 */
+    var MAX_LEAVE_LINES = 4;
+    var initLeaves = leavesOf(emp);
+    // 已經記過的假別，即使現在額度用完也要能顯示、重送，否則重開頁會掉值
+    function prevHad(t) { return initLeaves.some(function (x) { return x.type === t; }); }
+    function fillLeaveOptions(sel) {
+      ['無'].concat(LEAVE_TYPES).forEach(function (t) {
+        var opt = document.createElement('option');
+        opt.value = t === '無' ? '' : t;
+        opt.textContent = t;
+        // 額度用完就反灰選不了（曆年制與每子女制才擋；婚喪產檢一年可能發生多次，不擋）
+        if (t !== '無' && LEAVE_OPTS && LEAVE_OPTS.types) {
+          var def = LEAVE_OPTS.types.filter(function (x) { return x.name === t; })[0];
+          var q = def ? quotaOf(String(emp.emp_id), def.code) : null;
+          if (q && q.comp) {
+            // 補休（2026-10-09）：只有正職、只能用已定案月份換到的餘額
+            if (!q.allowed) { opt.disabled = true; opt.textContent = t + '（只有正職）'; }
+            else if (!(q.balance_h > 0)) { opt.disabled = true; opt.textContent = t + '（沒有餘額）'; }
+            else opt.textContent = t + '（剩 ' + q.balance_h + ' 小時）';
+          } else if (q && q.cap_days != null) {
+            var remain = Math.round((q.remain_days || 0) * 10) / 10;
+            if (q.blocked) {
+              opt.disabled = true;
+              opt.textContent = t + '（額度已用完）';
+            } else if (q.basis === 'event') {
+              // 婚喪產檢是「每次事件」各有額度，一年可能發生多次；顯示「剩 N 日」會誤導
+              // （一月用掉 3 天，十二月不該說只剩 5 天），改標示每次的上限。
+              opt.textContent = t + '（每次上限 ' + q.cap_days + ' 日）';
+            } else if (def.code === 'parental') {
+              // 育嬰留停額度以月計較好懂（730 日＝24 個月）
+              opt.textContent = t + '（剩 ' + (Math.round(remain / 30 * 10) / 10) + ' 個月）';
+            } else {
+              opt.textContent = t + '（剩 ' + remain + ' 日）';
+            }
           }
+          // 已經選過這個假別的紀錄，即使現在超額也要能顯示，否則重開頁會掉值
+          if (prevHad(t)) opt.disabled = false;
         }
-        // 已經選過這個假別的紀錄，即使現在超額也要能顯示，否則重開頁會掉值
-        if (String(emp.leave_type || '') === t) opt.disabled = false;
-      }
-      leaveSelect.appendChild(opt);
-    });
-    leaveSelect.value = emp.leave_type || '';
-    // 時數：只在有選假別時可填（選「無」時鎖住並清空），單位小時、以 0.25（15 分鐘）為刻度
-    var leaveHours = document.createElement('input');
-    leaveHours.type = 'number';
-    leaveHours.className = 'leave-hours';
-    leaveHours.step = '0.25';
-    leaveHours.min = '0';
-    leaveHours.placeholder = '時數';
-    leaveHours.value = (emp.leave_hours === 0 || emp.leave_hours) ? emp.leave_hours : '';
-    var hoursUnit = document.createElement('span');
-    hoursUnit.className = 'hours-unit';
-    hoursUnit.textContent = '小時';
+        sel.appendChild(opt);
+      });
+    }
     // 出差的時數算法要寫在畫面上（2026-10-02 Eason 指定）——主管最容易以為「時數格只是註記」
     var tripHint = document.createElement('div');
     tripHint.className = 'trip-hint';
     tripHint.textContent = '出差：時數填幾小時就核定幾小時，會與上方上班時段相加。'
       + '出差那段不用再填進上班時段（填了會重複算）；整天出差可以不填上班時段。';
-    function syncLeaveHoursEnabled() {
-      var on = !!leaveSelect.value;
-      leaveHours.disabled = !on;
-      if (!on) leaveHours.value = '';
-      var trip = leaveSelect.value === '出差';
-      leaveHours.placeholder = trip ? '出差時數' : '時數';
-      tripHint.hidden = !trip;
+    var leaveBox = document.createElement('div');
+    leaveBox.className = 'leave-box';
+    var leaveLines = [];
+    var addLeaveBtn = document.createElement('button');
+    addLeaveBtn.type = 'button';
+    addLeaveBtn.className = 'add-leave-btn';
+    addLeaveBtn.textContent = '＋ 再加一種假別';
+    leaveBox.appendChild(addLeaveBtn);
+    function syncLeaveLines() {
+      leaveLines.forEach(function (l) {
+        var on = !!l.select.value;
+        l.hours.disabled = !on;
+        if (!on) l.hours.value = '';
+        l.hours.placeholder = l.select.value === '出差' ? '出差時數' : '時數';
+      });
+      tripHint.hidden = !leaveLines.some(function (l) { return l.select.value === '出差'; });
+      addLeaveBtn.hidden = leaveLines.length >= MAX_LEAVE_LINES;
       refreshPeriodUI();
     }
-    leaveSelect.addEventListener('change', syncLeaveHoursEnabled);
-    leaveHours.addEventListener('input', refreshPeriodUI);
-    leaveRow.appendChild(leaveLabel);
-    leaveRow.appendChild(leaveSelect);
-    leaveRow.appendChild(leaveHours);
-    leaveRow.appendChild(hoursUnit);
-    syncLeaveHoursEnabled();
+    function buildLeaveLine(type, hours) {
+      var row = document.createElement('div');
+      row.className = 'leave-row';
+      var label = document.createElement('label');
+      label.textContent = leaveLines.length ? '再一種' : '請假註記';
+      // 時數：只在有選假別時可填（選「無」時鎖住並清空），單位小時、以 0.25（15 分鐘）為刻度
+      var sel = document.createElement('select');
+      fillLeaveOptions(sel);
+      sel.value = type || '';
+      var inp = document.createElement('input');
+      inp.type = 'number';
+      inp.className = 'leave-hours';
+      inp.step = '0.25';
+      inp.min = '0';
+      inp.placeholder = '時數';
+      inp.value = (hours === 0 || hours) ? hours : '';
+      var unit = document.createElement('span');
+      unit.className = 'hours-unit';
+      unit.textContent = '小時';
+      row.appendChild(label); row.appendChild(sel); row.appendChild(inp); row.appendChild(unit);
+      var line = { row: row, select: sel, hours: inp };
+      if (leaveLines.length) {
+        var rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'leave-rm';
+        rm.textContent = '✕';
+        rm.setAttribute('aria-label', '移除這種假別');
+        rm.addEventListener('click', function () {
+          row.remove();
+          leaveLines.splice(leaveLines.indexOf(line), 1);
+          syncLeaveLines();
+        });
+        row.appendChild(rm);
+      }
+      sel.addEventListener('change', syncLeaveLines);
+      inp.addEventListener('input', refreshPeriodUI);
+      leaveLines.push(line);
+      leaveBox.insertBefore(row, addLeaveBtn);
+      syncLeaveLines();
+      return line;
+    }
+    // 整組換掉（申請預填用）；空清單＝留一列「無」
+    function setLeaveLines(list) {
+      leaveLines.forEach(function (l) { l.row.remove(); });
+      leaveLines.length = 0;
+      (list && list.length ? list : [{ type: '', hours: '' }]).forEach(function (x) { buildLeaveLine(x.type, x.hours); });
+    }
+    function leaveList() {
+      return leaveLines.filter(function (l) { return l.select.value; })
+        .map(function (l) { return { type: l.select.value, hours: l.hours.value }; });
+    }
+    addLeaveBtn.addEventListener('click', function () { buildLeaveLine('', '').select.focus(); });
+    setLeaveLines(initLeaves);
 
     /* 遲到分鐘（2026-09-01）：留空＝系統自動比對打卡算。
        打卡被擋或整批未入帳時系統沒有進場時間可比，算不出遲到——那種情況由主管填。
@@ -1369,7 +1463,7 @@
     lateRow.appendChild(lateInput);
     lateRow.appendChild(lateUnit);
     lateRow.appendChild(lateHint);
-    card.appendChild(leaveRow);
+    card.appendChild(leaveBox);
     card.appendChild(tripHint);
     card.appendChild(lateRow);
 
@@ -1398,12 +1492,21 @@
     submitBtn.addEventListener('click', function () {
       // 硬擋：額度用完的假別不給送出。下拉的 disabled 只擋滑鼠，程式指定仍設得進去，
       // 所以送出前用同一份額度資料再判一次（Eason 2026-08-22 指定「硬擋，不給送出」）。
-      if (leaveSelect.value && LEAVE_OPTS && LEAVE_OPTS.types) {
-        var d0 = LEAVE_OPTS.types.filter(function (x) { return x.name === leaveSelect.value; })[0];
+      var lv = leaveList();
+      // 一天多種假別（2026-10-26）：同一個假別不能選兩次（後端也擋 dup_leave_type）
+      var dupT = lv.map(function (x) { return x.type; }).filter(function (t, k, a) { return a.indexOf(t) !== k; })[0];
+      if (dupT) {
+        resultBox.className = 'result-box show result-error';
+        resultBox.textContent = '✕ 「' + dupT + '」選了兩次，同一種假別請合併成一列（時數加起來）。';
+        return;
+      }
+      for (var li = 0; li < lv.length && LEAVE_OPTS && LEAVE_OPTS.types; li++) {
+        var L = lv[li];
+        var d0 = LEAVE_OPTS.types.filter(function (x) { return x.name === L.type; })[0];
         var q0 = d0 ? quotaOf(String(emp.emp_id), d0.code) : null;
-        // 原本就選著這個假別的既有紀錄放行，否則已超額的人連重送核定都做不了
+        // 原本就記著這個假別的既有紀錄放行，否則已超額的人連重送核定都做不了
         // 期限規則（婚假 3 個月內、陪產假前後 15 日內…）
-        if (d0 && String(emp.leave_type || '') !== leaveSelect.value) {
+        if (d0 && !prevHad(L.type)) {
           var wc = windowCheck(d0, String(emp.emp_id), currentDate);
           if (!wc.ok) {
             resultBox.style.display = 'block';
@@ -1413,22 +1516,25 @@
           if (wc.note && !confirm(wc.note + '\n\n仍要送出嗎？')) return;
         }
         // 補休：時數不能超過餘額（同一天重送原本的補休紀錄放行，否則改不動）
-        if (q0 && q0.comp && String(emp.leave_type || '') !== leaveSelect.value &&
-            (!q0.allowed || Number(leaveHours.value || 0) > Number(q0.balance_h || 0))) {
+        if (q0 && q0.comp && !prevHad(L.type) &&
+            (!q0.allowed || Number(L.hours || 0) > Number(q0.balance_h || 0))) {
           resultBox.style.display = 'block';
-          resultBox.textContent = '✕ ' + emp.name + (q0.allowed ? ' 的補休餘額只剩 ' + (q0.balance_h || 0) + ' 小時，不夠請 ' + (leaveHours.value || 0) + ' 小時' : ' 是計時同仁，沒有補休')
+          resultBox.textContent = '✕ ' + emp.name + (q0.allowed ? ' 的補休餘額只剩 ' + (q0.balance_h || 0) + ' 小時，不夠請 ' + (L.hours || 0) + ' 小時' : ' 是計時同仁，沒有補休')
             + '，無法送出。';
           return;
         }
-        if (q0 && q0.blocked && !q0.comp && String(emp.leave_type || '') !== leaveSelect.value) {
+        // 硬擋：額度用完的假別不給送出（Eason 2026-08-22 指定「硬擋，不給送出」）
+        if (q0 && q0.blocked && !q0.comp && !prevHad(L.type)) {
           resultBox.style.display = 'block';
-          resultBox.textContent = '✕ ' + emp.name + ' 的「' + leaveSelect.value
+          resultBox.textContent = '✕ ' + emp.name + ' 的「' + L.type
             + '」額度已用完（上限 ' + q0.cap_days + ' 日，已用 '
             + (Math.round((q0.used_days || 0) * 10) / 10) + ' 日），無法送出。'
             + '確有需要請聯絡 Eason 調整假別設定。';
           return;
         }
       }
+      var lvText = lv.map(function (x) { return x.type + (x.hours !== '' ? ' ' + x.hours + ' 小時' : ''); }).join('、');
+      var hasTripLv = lv.some(function (x) { return x.type === '出差'; });
       var periods = [];
       var halfFilled = false;
       periodRows.querySelectorAll('.period-row').forEach(function (row) {
@@ -1443,21 +1549,21 @@
         return;
       }
       // C4：請假時數負數在送出前（confirm 之前）直接擋下，不用等後端回 bad_leave_hours
-      if (leaveHours.value !== '' && Number(leaveHours.value) < 0) {
+      if (lv.some(function (x) { return x.hours !== '' && Number(x.hours) < 0; })) {
         resultBox.className = 'result-box show result-error';
         resultBox.textContent = '✕ 請假時數不能是負數，請修正後再送出。';
         return;
       }
       if (periods.length === 0) {
         // 沒填任何上班時段：有選假別＝整天請假（核定 0 小時）；否則就是漏填
-        if (!leaveSelect.value) {
+        if (!lv.length) {
           resultBox.className = 'result-box show result-error';
           resultBox.textContent = '✕ 請至少輸入一段上班時間；若是整天請假，請在「請假註記」選假別再送出。';
           return;
         }
         // 出差不是請假（2026-08-23）：時數靠核定時段照常計薪，0 小時送出＝那天等於沒上班
         //（正職月底會被不足倒扣）。後端也會擋（trip_needs_periods），這裡先講清楚。
-        if (leaveSelect.value === '出差') {
+        if (hasTripLv) {
           // 整天出差：核定＝出差時數（2026-10-02）。沒填時數＝0 工時，正職月底會被不足倒扣，先擋。
           var th0 = tripHoursValue();
           if (!th0) {
@@ -1465,10 +1571,9 @@
             resultBox.textContent = '✕ 整天出差請在出差時數填幾小時（填幾小時就核定幾小時）。';
             return;
           }
-          if (!window.confirm('整天出差：' + emp.name + '\n出差 ' + th0 + ' 小時\n核定時數 ' + th0 + ' 小時\n\n確定送出?')) return;
+          if (!window.confirm('整天出差：' + emp.name + '\n' + lvText + '\n核定時數 ' + th0 + ' 小時（只有出差時數算進核定）\n\n確定送出?')) return;
         } else {
-        var lmsg = '整天請假：' + emp.name + '\n' + leaveSelect.value
-          + (leaveHours.value ? '　' + leaveHours.value + ' 小時' : '')
+        var lmsg = '整天請假：' + emp.name + '\n' + lvText
           + '\n核定時數 0 小時（整天沒上班）\n\n確定送出?';
         if (!window.confirm(lmsg)) return;
         }
@@ -1514,7 +1619,9 @@
         if (periodRows.querySelector('.break-split')) {
           msg += '\n（休息 ' + BREAK_START + '–' + BREAK_END + ' 不計入）';
         }
-        if (leaveSelect.value && !tripH2) msg += '\n' + (leaveSelect.value === '出差' ? '註記' : '請假') + '：' + leaveSelect.value + (leaveHours.value ? ' ' + leaveHours.value + ' 小時' : '');
+        // 沒算進核定的假別（出差以外、或沒填時數的出差）列出來給主管看
+        var noted = lv.filter(function (x) { return !(x.type === '出差' && Number(x.hours) > 0); });
+        if (noted.length) msg += '\n假別：' + noted.map(function (x) { return x.type + (x.hours !== '' ? ' ' + x.hours + ' 小時' : ''); }).join('、');
         if (warnings.length) msg += '\n\n⚠ 請再確認：\n' + warnings.join('\n');
         msg += '\n\n確定送出?';
         if (!window.confirm(msg)) return;
@@ -1529,8 +1636,10 @@
         emp_id: emp.emp_id,
         periods: periods,
         late_min: lateInput.value,
-        leave_type: leaveSelect.value,
-        leave_hours: leaveSelect.value ? leaveHours.value : '',
+        leaves: lv,
+        // 舊欄位留著第一種（後端認 leaves；只認得一種的舊後端仍可用）
+        leave_type: lv[0] ? lv[0].type : '',
+        leave_hours: lv[0] ? lv[0].hours : '',
       }).then(function (res) {
         submitBtn.disabled = false;
         submitBtn.textContent = '重新送出核定';
@@ -1540,13 +1649,15 @@
             trip_needs_periods: '出差要照常輸入當天實際工作時段（時數照算），不能以 0 小時送出。',
             trip_needs_hours: '整天出差請填出差時數（填幾小時就核定幾小時）。',
             bad_leave_type: '這個假別尚未在薪酬假別表放行，請聯絡 Eason。',
+            dup_leave_type: '同一種假別選了兩次，請合併成一列。',
+            too_many_leaves: '一天最多記 4 種假別。',
           }[res.error];
-          resultBox.textContent = '✕ 核定失敗：' + (friendly || res.error || '未知錯誤');
+          resultBox.textContent = '✕ 核定失敗：' + (friendly || res.message || res.error || '未知錯誤');
           return;
         }
         delete dayCache[approveDate]; // 核定改了這天的資料 → 清快取，下次切回會抓新的（用送出當下鎖定的日期）
         renderResult(resultBox, res);
-        setBadge(res, res.leave_type, res.leave_hours);
+        setBadge(res, leavesOf(res));
         // 核完這位就收起來、自動翻到下一位待核定的（結果看頭部那顆「✓ N 小時」就夠，
         // 不必留著整張卡片佔版面）。要改就再點開，內容都還在。
         card.__pending = false;
@@ -1582,7 +1693,7 @@
     head.appendChild(headMain);
     head.appendChild(mini);
     head.appendChild(chev);
-    updateMini(emp.approved, emp.leave_type, emp.leave_hours);
+    updateMini(emp.approved);
 
     var body = document.createElement('div');
     body.className = 'emp-body';
@@ -1611,18 +1722,76 @@
     card.__applyReq = function (reqs) {
       if (!reqs || !reqs.length || card.__reqApplied) return;
       card.__reqApplied = true;
+      // 同一天多張申請（2026-10-26）：不同假別（出差＋天災假）一起填、各成一列；
+      // 同一種假別兩張（多半一張是舊單）或兩張忘打卡，自動填會互蓋——不自動填，逐張列出給主管選，舊單可作廢。
+      var fillables = reqs.filter(function (r) { return r.kind !== 'ot'; });
+      function reqKey(r) { return r.kind === 'trip' ? '出差' : r.kind === 'leave' ? String(r.leave_type) : 'miss'; }
+      var keys = fillables.map(reqKey);
+      var multi = keys.some(function (k, i) { return keys.indexOf(k) !== i; })
+        || keys.filter(function (k) { return k !== 'miss'; }).length > MAX_LEAVE_LINES;
       var box = document.createElement('div');
-      box.className = 'req-box' + (emp.approved ? ' warn' : '');
-      box.textContent = reqs.map(function (r) { return '✓ 已核准的申請：' + r.summary + '（' + r.decided_by + ' 核准）'; }).join('\n');
-      box.style.whiteSpace = 'pre-line';
-      function fill() {
-        reqs.forEach(function (r) {
+      box.className = 'req-box' + (emp.approved || multi ? ' warn' : '');
+      if (multi) {
+        var lead = document.createElement('div'); lead.className = 'req-lead';
+        lead.textContent = '⚠ 這天有 ' + fillables.length + ' 張已核准的申請，其中有同一種的（多半一張是舊單），系統不自動填：請把舊的或重複的按「作廢」，剩下的會自動填好；或按「依這張填」只填那一張。';
+        box.appendChild(lead);
+      }
+      function newerSameKind(r) {
+        return fillables.some(function (q) {
+          return q !== r && reqKey(q) === reqKey(r) && (r.kind !== 'miss' || q.miss_type === r.miss_type)
+            && String(q.created_at) > String(r.created_at);
+        });
+      }
+      reqs.forEach(function (r) {
+        var row = document.createElement('div'); row.className = 'req-row';
+        var t = document.createElement('div');
+        t.textContent = '✓ 已核准的申請：' + r.summary + '（' + r.decided_by + ' 核准）';
+        row.appendChild(t);
+        if (r.kind !== 'ot' && newerSameKind(r)) {
+          var w = document.createElement('div'); w.className = 'req-old'; w.textContent = '同類還有一張較晚送出的申請，這張可能是舊單';
+          row.appendChild(w);
+        }
+        var acts = document.createElement('div'); acts.className = 'req-acts';
+        if (multi && r.kind !== 'ot') {
+          var fb = document.createElement('button'); fb.type = 'button'; fb.textContent = '依這張填';
+          fb.addEventListener('click', function () { fill([r]); setNote('已依「' + r.summary + '」填好，其他申請沒有填進去，確認後按送出核定。'); });
+          acts.appendChild(fb);
+        }
+        var vb = document.createElement('button'); vb.type = 'button'; vb.className = 'req-void'; vb.textContent = '作廢';
+        vb.addEventListener('click', function () { voidReq(r, vb); });
+        acts.appendChild(vb);
+        row.appendChild(acts);
+        box.appendChild(row);
+      });
+      var note = document.createElement('div'); note.className = 'req-note'; note.hidden = true; box.appendChild(note);
+      function setNote(text) { note.textContent = text; note.hidden = !text; }
+      function voidReq(r, btn) {
+        var why = window.prompt('作廢這張已核准的申請：\n' + emp.name + ' ' + r.summary + '\n\n作廢理由（必填，同仁在 LINE「我的申請」看得到）：', '');
+        if (why === null) return;
+        why = why.trim();
+        if (!why) { setNote('✕ 作廢要寫理由'); return; }
+        btn.disabled = true; setNote('作廢中…');
+        apiPost({ action: 'mgr_req_void', mgr_key: mgrKey, id: r.id, reason: why }).then(function (res) {
+          if (!res || !res.ok) { btn.disabled = false; setNote('✕ ' + ((res && res.message) || (res && res.error === 'unknown_action' ? '後端還沒更新，暫時不能作廢' : '沒有成功，請再試一次'))); return; }
+          var rest = reqs.filter(function (q) { return q.id !== r.id; });
+          var wasSingle = !multi && r.kind !== 'ot' && !emp.approved;
+          box.remove(); card.__reqApplied = false;
+          card.__applyReq(rest);
+          var done = document.createElement('div'); done.className = 'req-box warn';
+          done.textContent = '已作廢：' + r.summary + (wasSingle ? '。畫面上已經預填的內容沒有清掉，請確認後再送出核定。' : '');
+          periodRows.parentNode.insertBefore(done, periodRows);
+        }, function () { btn.disabled = false; setNote('✕ 網路不穩，沒有作廢，請再試一次'); });
+      }
+      function fill(list) {
+        // 一天多種假別（2026-10-26）：請假、出差各成一列，一起填進去（同一種假別兩張的情況上面已經擋成手動選）
+        var lvFill = [];
+        list.forEach(function (r) {
           if (r.kind === 'leave') {
-            leaveSelect.value = r.leave_type; syncLeaveHoursEnabled(); leaveHours.value = r.hours;
+            lvFill.push({ type: r.leave_type, hours: r.hours });
             if (!r.start) { periodRows.innerHTML = ''; periodRows.appendChild(buildPeriodRow(null, refreshPeriodUI)); }
           } else if (r.kind === 'trip') {
             // 出差（2026-10-09）：只填「出差」＋時數，上班時段不動——出差時數會與時段相加；整天出差本來就可以沒有時段
-            leaveSelect.value = '出差'; syncLeaveHoursEnabled(); leaveHours.value = r.hours;
+            lvFill.push({ type: '出差', hours: r.hours });
             // 整天出差（申請沒填時段、那天也沒有打卡）：預設班別要清掉，否則班別 8 小時＋出差 8 小時＝16 小時（2026-10-10 Codex 審查）。
             // 那天有打卡＝有在店裡的時段，班別留著給主管調，不替他清掉
             if (!r.start && !(emp.segments || []).length) { periodRows.innerHTML = ''; periodRows.appendChild(buildPeriodRow(null, refreshPeriodUI)); }
@@ -1642,15 +1811,15 @@
             }
           }
         });
+        if (lvFill.length) setLeaveLines(lvFill);
         refreshPeriodUI();
       }
-      var fillable = reqs.some(function (r) { return r.kind !== 'ot'; });
-      if (fillable && emp.approved) {
+      if (!multi && fillables.length && emp.approved) {
         var b = document.createElement('button'); b.type = 'button'; b.textContent = '這天已核定過，依申請重新填';
-        b.addEventListener('click', function () { fill(); b.remove(); box.appendChild(document.createTextNode('\n已依申請填好，確認後按送出核定。')); });
-        box.appendChild(document.createElement('br')); box.appendChild(b);
-      } else if (fillable) {
-        fill();
+        b.addEventListener('click', function () { fill(fillables); b.remove(); setNote('已依申請填好，確認後按送出核定。'); });
+        box.insertBefore(b, note);
+      } else if (!multi && fillables.length) {
+        fill(fillables);
       }
       // ⚠ renderEmployees 會把卡片內容搬進收合用的 head／body，periodRows 已經不是 card 的直接子節點
       periodRows.parentNode.insertBefore(box, periodRows);

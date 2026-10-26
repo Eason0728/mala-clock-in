@@ -684,6 +684,7 @@ var LIFF_HANDLERS = {
   mgr_req_pending: function (b) { return handleMgrReqPending_(b); },
   mgr_req_decide: function (b) { return handleMgrReqDecide_(b); },
   mgr_req_decide_batch: function (b) { return handleMgrReqDecideBatch_(b); },
+  mgr_req_void: function (b) { return handleMgrReqVoid_(b); },   // 作廢已核准的申請（2026-10-26）
   mgr_req_day: function (b) { return handleMgrReqDay_(b); },
   mgr_qr_token: function (b) { return handleMgrQrToken_(b); },
 };
