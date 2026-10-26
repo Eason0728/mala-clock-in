@@ -5,6 +5,8 @@
  *   ‧ScriptLock 包住「讀→比→寫」；seq ≤ 已存的 → stale（不寫）；同一列最後一次的 op_id 重送 → 回上次結果（冪等）。
  *   ‧unpublish 留墓碑：seq 保留、資料清空，比它舊的 publish 晚到會因 seq 較小被擋，不會復活。
  *   ‧人員只收 emp_id、name、cells（營運系統那端已白名單；這裡再丟掉其他欄位，不寫進試算表）。
+ *   ‧每天的午餐／晚餐備註（2026-10-26，全店共用）：notes [{d, lunch, dinner}] 選填，舊版營運系統不帶也照收；
+ *     只收本期 28 天內的日期、每格最多 SCHED_PUB_NOTE_MAX 字，存成 { 'yyyy-MM-dd': {lunch, dinner} }。
  * 存放：光復打卡試算表分頁 sched_pub，一店一期一列：store｜period｜seq｜data｜last_op｜updated_at。
  * 讀取（出勤班表）：schedPubLoad_()，快取 SCHED_PUB_CACHE_SEC 秒，寫入時清快取。 */
 var SCHED_PUB_SHEET = 'sched_pub';
@@ -12,6 +14,7 @@ var SCHED_PUB_HEAD = ['store', 'period', 'seq', 'data', 'last_op', 'updated_at']
 var SCHED_PUB_CACHE_KEY = 'schedpub:v1';
 var SCHED_PUB_CACHE_SEC = 120;
 var SCHED_PUB_MAX_CHARS = 45000;   // 試算表一格上限 50000 字元
+var SCHED_PUB_NOTE_MAX = 60;       // 午餐／晚餐備註每格字數（營運系統那端同一個上限）
 
 function schedPubSheet_() {
   var ss = getSS();
@@ -32,7 +35,26 @@ function schedPubClean_(b) {
       return o;
     }) };
   });
-  return { start: String(b.start || ''), shifts: shifts, rows: rows };
+  var out = { start: String(b.start || ''), shifts: shifts, rows: rows };
+  var notes = schedPubCleanNotes_(b.notes, out.start);
+  if (notes) out.notes = notes;
+  return out;
+}
+/** notes [{d, lunch, dinner}] → { 'yyyy-MM-dd': {lunch?, dinner?} }；沒有任何備註回 null（不寫這個欄位） */
+function schedPubCleanNotes_(list, start) {
+  if (!Array.isArray(list) || !/^\d{4}-\d{2}-\d{2}$/.test(start)) return null;
+  var end = schedPubAddDays_(start, 27), out = {}, any = false;
+  list.forEach(function (n) {
+    var d = n && String(n.d || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < start || d > end) return;
+    var o = {};
+    ['lunch', 'dinner'].forEach(function (k) {
+      var v = n[k] == null ? '' : String(n[k]).trim().slice(0, SCHED_PUB_NOTE_MAX);
+      if (v) o[k] = v;
+    });
+    if (o.lunch || o.dinner) { out[d] = o; any = true; }
+  });
+  return any ? out : null;
 }
 
 function schedPubWrite_(b, kind) {
@@ -137,16 +159,17 @@ function schedPubDaysFor_(pub, mine, dates) {
   dates.forEach(function (d) {
     var p = schedPubPeriodOf_(d);
     if (!p) return;
-    var idx = schedPubIndex_(d), best = null;
+    var idx = schedPubIndex_(d), best = null, bestNote = null;
     mine.forEach(function (x) {
       var data = pub[String(x.st.code) + '|' + p];
       if (!data) return;
       for (var i = 0; i < data.rows.length; i++) {
         if (String(data.rows[i].emp_id) !== String(x.row.emp_id)) continue;
         var day = schedPubDay_(data.rows[i].cells[idx], data.shifts || []);
-        if (day && (!best || (day.work && !best.work))) best = day;
+        if (day && (!best || (day.work && !best.work))) { best = day; bestNote = data.notes && data.notes[d] || null; }   // 備註跟著當天上班的那家店
       }
     });
+    if (best && bestNote) { best = JSON.parse(JSON.stringify(best)); best.note = bestNote; }
     if (best) out[d] = best;
   });
   return out;

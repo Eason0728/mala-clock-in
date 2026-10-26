@@ -125,6 +125,10 @@
       });
       rows.push(h('div', { class: 'sc-row sc-total' }, [h('span', { text: '合計' }), h('span', { text: hrs(d.hours) })]));
     }
+    // 店長寫的當天午餐／晚餐備註（全店共用，2026-10-26）
+    if (d.note) [['lunch', '午餐備註'], ['dinner', '晚餐備註']].forEach(function (k) {
+      if (d.note[k[0]]) rows.push(h('div', { class: 'sc-row sc-note', id: 'scNote-' + k[0] }, [h('span', { text: k[1] }), h('span', { text: d.note[k[0]] })]));
+    });
     return h('div', { class: 'sc-det', id: 'scDet' }, rows);
   }
   function renderSum() {

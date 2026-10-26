@@ -276,6 +276,28 @@ ok('11 月起讀發布的班表：用 emp_id 對人、每家店都接、還沒�
   assert.strictEqual(call().status, 'ready');
   sb.__date = '2026-10-10'; sb.__hm = '12:00';
 });
+ok('午餐／晚餐備註：選填、只收本期日期、裁成 60 字、跟著當天上班的店顯示（2026-10-26）', () => {
+  reset(); props.SCHED_SVC_KEY = 'k1';
+  sb.__date = '2026-11-02'; sb.__hm = '08:00';
+  bind('不同名字也沒關係', 'E001', '');
+  assert.deepStrictEqual(pub(), { ok: true, seq: FIX.seq });                              // 舊版沒帶 notes 照收
+  assert.strictEqual(JSON.parse(pubRows[1][3]).notes, undefined);
+  const long = '團'.repeat(80);
+  assert.deepStrictEqual(pub({ seq: FIX.seq + 1, op_id: 'n1', notes: [
+    { d: '2026-11-01', lunch: ' 30 人團體訂位 ', dinner: '' },
+    { d: '2026-11-03', dinner: long },
+    { d: '2026-12-31', lunch: '期外不收' }, { d: 'x', lunch: '壞日期' }, { d: '2026-11-05', lunch: '   ' }, null,
+  ] }), { ok: true, seq: FIX.seq + 1 });
+  const st = JSON.parse(pubRows[1][3]).notes;
+  assert.deepStrictEqual(Object.keys(st).sort(), ['2026-11-01', '2026-11-03']);
+  assert.deepStrictEqual(st['2026-11-01'], { lunch: '30 人團體訂位' });
+  assert.strictEqual(st['2026-11-03'].dinner.length, 60);
+  const r = call();
+  assert.deepStrictEqual(r.days[0].note, { lunch: '30 人團體訂位' });
+  assert.strictEqual(r.days[1].note, undefined);
+  assert.strictEqual(r.days[2].note.dinner.length, 60);
+  sb.__date = '2026-10-10'; sb.__hm = '12:00';
+});
 ok('10 月仍完全照舊（月曆版）；SCHED_STORE_FROM 改晚 → 11 月也讀月曆版（回退用）', () => {
   reset(); bind('測試一');
   const r = call(); assert.strictEqual(r.status, 'ready'); assert.strictEqual(r.days[0].code, 'F');
