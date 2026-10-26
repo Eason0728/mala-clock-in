@@ -121,6 +121,8 @@ def register(ns):
         for d in range(1, _last_day(y, m) + 1):
             x = _day(row.get(str(d), "") or ("休" if blank_rest else ""))
             x["d"] = d
+            if d == 1:   # 午餐／晚餐備註（2026-10-26，同 SchedPub.gs 帶出的 note）
+                x["note"] = {"lunch": "12:00 有 30 人團體訂位", "dinner": "提早 30 分鐘盤點"}
             days.append(x)
             if x["work"]:
                 wd += 1
