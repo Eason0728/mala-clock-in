@@ -126,7 +126,7 @@ ok('A2 只回規格欄位；布林；不含 key／device_id／line_user_id', () 
   const e = rosterEnv(people());
   const r = e.svc('svc_roster');
   assert.strictEqual(r.ok, true); assert.strictEqual(r.rows.length, 2);
-  const want = ['emp_id', 'name', 'active', 'created_at', 'removed_at', 'line_bound', 'last_punch', 'src_store', 'src_emp_id'].sort();
+  const want = ['emp_id', 'name', 'active', 'created_at', 'removed_at', 'line_bound', 'line_h', 'line_kid', 'line_bound_at', 'line_ok_at', 'last_punch', 'src_store', 'src_emp_id'].sort();
   r.rows.forEach(x => assert.deepStrictEqual(Object.keys(x).sort(), want));
   const [a, b] = r.rows;
   assert.strictEqual(a.active, true); assert.strictEqual(b.active, false);
@@ -146,7 +146,7 @@ ok('A2 last_punch 取 events 該人最大日期；無紀錄／只有被拒的卡
   assert.strictEqual(r.rows[0].last_punch, day(3)); assert.strictEqual(r.rows[1].last_punch, '');
 });
 ok('A2 空名冊回 []；沒有 roster 分頁也回 []', () => {
-  assert.deepStrictEqual(rosterEnv([]).svc('svc_roster'), { ok: true, rows: [] });
+  assert.deepStrictEqual(rosterEnv([]).svc('svc_roster'), { ok: true, line_probe: '', line_kid: '', rows: [] });
   const e = makeEnv(); assert.deepStrictEqual(e.svc('svc_roster'), { ok: true, rows: [] });
 });
 ok('A2 Date 物件的儲存格也正規化成 yyyy-MM-dd HH:mm:ss', () => {

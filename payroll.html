@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>鼎兆元集團｜薪酬系統</title>
+<title>鼎兆元集團｜薪酬管理</title>
 <style>
 :root{--red:#E8380D;--black:#231815;--ink:#231815;--orange:#F08300;--gold:#FABE00;--gold-soft:#fff4d1;--cream:#FFE893;
  --sidebar:#1b1917;--sidebar-2:#2a2623;--sidebar-line:#332e2a;--side-txt:#b8afa5;
@@ -189,7 +189,19 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
  .brand{padding:14px 16px}.nav-label{display:none}.side-user{display:none}
  #nav{flex-direction:row;padding:0 10px;gap:4px}#nav button{white-space:nowrap;padding:9px 13px}
  .topbar{padding:16px 16px 6px}main{padding:12px 16px 60px}
- .slipcols{grid-template-columns:1fr}}
+ .slipcols{grid-template-columns:1fr}
+ /* 手機版面（2026-10-26 巡檢）：body 有 zoom:1.25（字體放大，保留），窄螢幕要讓寬元素自己收縮，不可撐破整頁 */
+ .monthbar .mcur{flex-wrap:wrap;justify-content:center;min-width:0;max-width:100%}
+ .monthbar input[type=month]{font-size:19px;min-width:0;max-width:100%}
+ .grid2{grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr))}
+ #exportDetail{overflow-x:auto;max-width:100%} #exportDetail table{min-width:100%}
+ .qz-bd{min-height:0}
+ .qz-box{max-height:calc(86vh / 1.25)}}   /* vh 也會被 body zoom 放大 1.25 倍，這裡抵銷 */
+/* 嵌在集團管理系統裡（2026-10-20 Eason）：選單跟「薪酬管理」同一列＝由管理系統的分頁列畫（dzy modules/payroll），
+   本頁自己的側欄整排隱藏；管理系統換分頁時送 dzy-payroll-nav 過來切換 */
+html.embed .sidebar{display:none}
+html.embed .topbar{padding-top:16px}
+html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬管理」 */
 </style>
 </head>
 <body>
@@ -226,7 +238,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
     <div class="topbar">
       <div class="tbrow">
         <div>
-          <h1>薪酬系統</h1>
+          <h1>薪酬管理</h1>
           <div class="sub" id="topSub">選擇月份，計算與匯出同仁薪資</div>
         </div>
         <span id="lock" style="margin-left:auto"></span>
@@ -544,6 +556,43 @@ const API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ?
   : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
 const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 
+/* ═════ 嵌在集團管理系統裡（2026-10-19，dzy 人資部門 → 薪酬系統）═════
+   網址 ?embed=dzy、沒有 ?k=、而且真的被框起來時：本頁不拿任何金鑰，每次呼叫都 postMessage 給父頁（管理系統），
+   由管理系統依登入者的「薪酬系統」權限經 Mac mini 代轉到後端（管理金鑰只在 mini）；操作人也由管理系統依登入身分決定。
+   只收「父頁」且 origin＝管理系統的回覆；送出時 targetOrigin 寫死管理系統網址，別的網站框這頁也拿不到任何資料。 */
+const LOCAL_HOST=(location.hostname==='localhost'||location.hostname==='127.0.0.1');
+const EMBED=!ADMIN_KEY && new URLSearchParams(location.search).get('embed')==='dzy' && window.parent!==window;
+if(EMBED&&document.documentElement) document.documentElement.classList.add('embed');   // 上方分頁列（CSS html.embed）
+const DZY_ORIGIN=(function(){
+  if(!LOCAL_HOST) return 'https://dzy.mozhuting.com';
+  // 本機開發：管理系統也跑在本機（任一埠），從 referrer 取它的 origin
+  try{ const o=new URL(document.referrer).origin; if(/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(o)) return o; }catch(e){}
+  return 'http://localhost:8777';
+})();
+const BR_WAIT={}; let BR_SEQ=0;
+window.addEventListener('message',e=>{
+  if(!EMBED||e.source!==window.parent||e.origin!==DZY_ORIGIN) return;
+  const d=e.data; if(!d||d.type!=='dzy-payroll-result'||d.v!==1||typeof d.id!=='string') return;
+  const f=BR_WAIT[d.id]; if(!f) return; delete BR_WAIT[d.id];
+  f(d.result&&typeof d.result==='object'?d.result:{ok:false,error:'bad_response'});
+});
+// 管理系統換分頁（它的分頁列＝本頁選單）→ 照點本頁對應的那顆隱藏按鈕，切換與載入邏輯完全沿用原本的
+window.addEventListener('message',e=>{
+  if(!EMBED||e.source!==window.parent||e.origin!==DZY_ORIGIN) return;
+  const d=e.data; if(!d||d.type!=='dzy-payroll-nav'||d.v!==1||typeof d.p!=='string'||!/^[a-z]{1,12}$/.test(d.p)) return;
+  const b=document.querySelector('#nav button[data-p="'+d.p+'"]');
+  if(b&&!b.classList.contains('on')) b.click();
+});
+function bridgeCall(action,body){
+  return new Promise(resolve=>{
+    const id='c'+(++BR_SEQ)+'_'+Date.now().toString(36);
+    const t=setTimeout(()=>{ delete BR_WAIT[id]; resolve({ok:false,error:'timeout',message:'等候逾時，請稍後再試'}); },130000);
+    BR_WAIT[id]=r=>{ clearTimeout(t); resolve(r); };
+    window.parent.postMessage({type:'dzy-payroll-call',v:1,id,action,body},DZY_ORIGIN);
+  });
+}
+if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
+
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
 // 目前操作門市：階段一由門市表全部可見；階段二改讀 dzy 帳號的可見門市清單（UI 與過濾邏輯不變）
 let STORE=(new URLSearchParams(location.search).get('store')||localStorage.getItem('pay_store')||'');
@@ -576,6 +625,11 @@ function toast(t,bad){const m=$('msg');m.textContent=t;m.style.background=bad?'#
   m.style.display='block';clearTimeout(m._t);m._t=setTimeout(()=>m.style.display='none',2600)}
 
 async function post(action,body){
+  if(EMBED){
+    const j=await bridgeCall(action,Object.assign({store:STORE},body||{}));
+    if(!j.ok&&j.message) toast(j.message,true);
+    return j;
+  }
   // Apps Script 跨網域偶爾回 Google HTML 頁（非 JSON）→ res.json() 會爆並中斷整個流程（表面就是「沒反應」）。
   // 改成：讀純文字自己 parse、非 JSON 時重試一次，仍失敗才跳提示、回 {ok:false}，絕不 throw。
   const url=API||location.pathname.replace(/[^/]*$/,'');
@@ -602,7 +656,15 @@ async function bootstrapFromRoster(){
 
 /* ═════ 載入 ═════ */
 async function boot(){
-  const m=await post('payroll_master_get');
+  if(!EMBED&&!ADMIN_KEY&&!LOCAL_HOST){
+    document.body.insertAdjacentHTML('afterbegin','<div style="padding:24px;margin:16px;border:1px solid #c0392b;border-radius:10px;background:#fff;font-size:16px;line-height:1.7">薪酬管理已搬進集團管理系統：請登入 <a href="https://dzy.mozhuting.com/">https://dzy.mozhuting.com/</a> → 人資部門 → 薪酬管理。<br>沒有看到這一項＝還沒開通權限，請找 Eason。</div>');
+    return;
+  }
+  // 開頁三支同時發出（2026-10-20：原本依序打要 11～14 秒），回來後仍照原本順序套用：主檔 → 本月 → 儀表板
+  const mP=post('payroll_master_get');
+  const monP=post('payroll_month',{ym:ym(),inputs:{}});
+  DASH_PREFETCH={key:STORE+'|'+ym(),p:post('payroll_trend',{ym:ym(),store:STORE,months:12})};
+  const m=await mP;
   if(!m.ok){toast('讀取主檔失敗',true);return}
   MASTER=m.master; CFG=m.config; CFG_DIRTY={};
   // ⚠ 門市下拉一定要在這裡先建好：若等到 loadMonth，該門市讀取失敗就會提早 return，
@@ -610,7 +672,7 @@ async function boot(){
   if(m.stores&&m.stores.length){STORE_LIST=m.stores;renderStoreSel()}
   applyHol(m.holidays);
   renderEmp(); renderCfg();
-  await loadMonth();
+  await loadMonth(monP);
   syncHol();   // 紅字天數整年自動帶入（背景跑，不擋畫面）
 }
 /* 切月份/開啟時自動帶出當月數字：未鎖定且尚未算過就靜默試算一次（未設紅字等失敗則安靜略過，不跳錯誤）*/
@@ -738,11 +800,11 @@ function showClockMode(){
   el.style.display='';
 }
 // 切月份／切門市／任何寫入後都要讓分頁快取失效，否則會看到舊數字
-async function loadMonth(){
+async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month（boot 用）；其他時候自己打
   setBusy(true);
   try{
     vClear();
-    const r=await post('payroll_month',{ym:ym(),inputs:{}});
+    const r=await (pre||post('payroll_month',{ym:ym(),inputs:{}}));
     if(!r.ok){
       // ⚠ 不可靜默 return——會讓畫面空白，使用者以為「資料不見了」
       const msg=String(r.detail||r.message||r.error||'讀取失敗');
@@ -1508,7 +1570,16 @@ function addLeaveType(){
     active:true,sort:(LT_LIST.length+1)*10,note:''});
   renderLeaveTypes();
 }
-async function loadLeaveTypes(){
+// 同一家店正在讀就共用同一份（2026-10-20：開頁時 renderCfg／loadMonth 會各叫一次，原本同時打 3 支）
+const ONCE={};
+function onceFor(name,fn){
+  const k=name+'|'+STORE, hit=ONCE[name];
+  if(hit&&hit.k===k) return hit.p;
+  const p=fn().finally(()=>{ if(ONCE[name]&&ONCE[name].p===p) delete ONCE[name]; });
+  ONCE[name]={k,p}; return p;
+}
+function loadLeaveTypes(){ return onceFor('lt',loadLeaveTypes1); }
+async function loadLeaveTypes1(){
   const r=await post('payroll_leave_type_get');   // post() 會自動帶 admin_key 與 store
   if(!r||!r.ok) return;
   LT_LIST=r.types||[]; LT_IS_DEFAULT=!!r.is_default;
@@ -1569,7 +1640,8 @@ function renderLeaveEvents(){
   if(!opts.length) t.innerHTML='<tbody><tr><td style="color:var(--muted);padding:10px">目前沒有設定期限規則的假別（上方假別設定填了「期限(日)」才會出現在這裡）。</td></tr></tbody>';
 }
 function addLeaveEvent(){ LEV_LIST.push({emp_id:'',name:'',code:'',event_date:'',memo:''}); renderLeaveEvents(); }
-async function loadLeaveEvents(){
+function loadLeaveEvents(){ return onceFor('lev',loadLeaveEvents1); }
+async function loadLeaveEvents1(){
   const r=await post('payroll_leave_event_get');
   if(r&&r.ok){ LEV_LIST=r.events||[]; renderLeaveEvents(); }
 }
@@ -1767,12 +1839,15 @@ async function saveBonus(btn){
 
 /* ═════ 儀表板：人事成本趨勢 ═════ */
 let DASH=[], OT_LOCAL=0;
+let DASH_PREFETCH=null;   // { key:'門市|月份', p: Promise }
 async function loadDash(force){
   const box=$('dashCost'); if(!box) return;
   const c=vGet('dash');
   if(c&&!force){ DASH=c; renderDash(); return; }
   box.innerHTML='<div style="color:var(--muted);padding:14px 2px">載入中…</div>';
-  const r=await post('payroll_trend',{ym:ym(),store:STORE,months:12});
+  // 開頁時已先發出的趨勢：門市與月份都沒變才用（loadMonth 可能把 STORE 換成後端回的門市），只用一次
+  const pf=DASH_PREFETCH; DASH_PREFETCH=null;
+  const r=await (pf&&!force&&pf.key===STORE+'|'+ym()?pf.p:post('payroll_trend',{ym:ym(),store:STORE,months:12}));
   if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+(r.error||'')+'</div>';return}
   DASH=r.months||[];vSet('dash',DASH);renderDash();
 }
