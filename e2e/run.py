@@ -550,6 +550,16 @@ def phase_requests(page, data):
           '作廢要寫理由' in blocked and after == 0 and still == ['出差', '3'], [blocked[-30:], after, still])
     CM.mark('button「作廢」', '作廢已核准的申請（空理由擋下、寫理由後後端變 voided）')
 
+    # 一天多種假別（2026-10-26）：「＋ 再加一種假別」多一列、✕ 移除那一列
+    n0 = page.evaluate("(nm) => (" + card_js + ")(nm).querySelectorAll('.leave-box .leave-row').length", p1['name'])
+    page.evaluate("(nm) => (" + card_js + ")(nm).querySelector('.add-leave-btn').click()", p1['name'])
+    n1 = page.evaluate("(nm) => (" + card_js + ")(nm).querySelectorAll('.leave-box .leave-row').length", p1['name'])
+    lab = page.evaluate("(nm) => [...(" + card_js + ")(nm).querySelectorAll('.leave-box .leave-row label')].map(x => x.textContent)", p1['name'])
+    page.evaluate("(nm) => (" + card_js + ")(nm).querySelector('.leave-box .leave-rm').click()", p1['name'])
+    n2 = page.evaluate("(nm) => (" + card_js + ")(nm).querySelectorAll('.leave-box .leave-row').length", p1['name'])
+    check('再加一種假別：多一列「再一種」、按 ✕ 移除回原本列數', n1 == n0 + 1 and lab[-1] == '再一種' and n2 == n0, [n0, n1, n2, lab])
+    CM.mark('button「＋ 再加一種假別」', '多一列假別')
+
 
 def phase_pending_reminder(page, data):
     """本月待核定提醒卡片（#pendingApprovals）：驗每一顆姓名膠囊點下去都會正確跳轉——
