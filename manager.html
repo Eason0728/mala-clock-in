@@ -213,6 +213,16 @@
   .req-box { background: #e6f7ec; color: #1a5a33; border-radius: 8px; padding: 8px 10px; font-size: 13px; line-height: 1.6; margin: 8px 0; }
   .req-box.warn { background: #fff6e0; color: #6b4c00; }
   .req-box button { margin-top: 6px; font-size: 13px; font-weight: 700; padding: 6px 12px; border-radius: 8px; border: 1px solid #a15a00; background: #fff; color: #a15a00; cursor: pointer; }
+  .req-box .req-lead { font-weight: 700; margin-bottom: 4px; }
+  .req-box .req-row { padding: 4px 0; }
+  .req-box .req-row + .req-row { border-top: 1px dashed rgba(107,76,0,.25); }
+  .req-box .req-old { color: #c22a12; font-size: 12px; }
+  .req-box .req-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .req-box .req-acts button { margin-top: 4px; }
+  .req-box button.req-void { border-color: #c22a12; color: #c22a12; }
+  .req-box button:disabled { opacity: .5; cursor: default; }
+  .req-box .req-note { margin-top: 6px; font-weight: 700; }
+  .req-box .req-note[hidden] { display: none; }
   .from-req { font-size: 11px; color: #1a7a3d; background: #e6f7ec; border-radius: 6px; padding: 1px 6px; margin-left: 6px; }
   /* 打卡 QR（同仁定位抓不到時，主管手機出示）*/
   .qr-open { width: 100%; margin: 0 0 12px; padding: 11px 0; font-size: 15px; font-weight: 700; border-radius: 12px;
@@ -1611,12 +1621,62 @@
     card.__applyReq = function (reqs) {
       if (!reqs || !reqs.length || card.__reqApplied) return;
       card.__reqApplied = true;
+      // 同一天兩張以上會填進假別欄的申請（2026-10-26）：核定一天只能記一種假別，逐張預填會一張蓋一張（最後一張贏），
+      // 還可能把時段清掉變成「全天請假 0 小時」——所以多張時不自動填，逐張列出給主管選，舊單可作廢。
+      var fillables = reqs.filter(function (r) { return r.kind !== 'ot'; });
+      var multi = fillables.length > 1;
       var box = document.createElement('div');
-      box.className = 'req-box' + (emp.approved ? ' warn' : '');
-      box.textContent = reqs.map(function (r) { return '✓ 已核准的申請：' + r.summary + '（' + r.decided_by + ' 核准）'; }).join('\n');
-      box.style.whiteSpace = 'pre-line';
-      function fill() {
-        reqs.forEach(function (r) {
+      box.className = 'req-box' + (emp.approved || multi ? ' warn' : '');
+      if (multi) {
+        var lead = document.createElement('div'); lead.className = 'req-lead';
+        lead.textContent = '⚠ 這天有 ' + fillables.length + ' 張已核准的申請。核定一天只能記一種假別，系統不自動填：請看完按其中一張的「依這張填」，舊的或重複的請按「作廢」。';
+        box.appendChild(lead);
+      }
+      function newerSameKind(r) {
+        return fillables.some(function (q) { return q !== r && q.kind === r.kind && String(q.created_at) > String(r.created_at); });
+      }
+      reqs.forEach(function (r) {
+        var row = document.createElement('div'); row.className = 'req-row';
+        var t = document.createElement('div');
+        t.textContent = '✓ 已核准的申請：' + r.summary + '（' + r.decided_by + ' 核准）';
+        row.appendChild(t);
+        if (r.kind !== 'ot' && newerSameKind(r)) {
+          var w = document.createElement('div'); w.className = 'req-old'; w.textContent = '同類還有一張較晚送出的申請，這張可能是舊單';
+          row.appendChild(w);
+        }
+        var acts = document.createElement('div'); acts.className = 'req-acts';
+        if (multi && r.kind !== 'ot') {
+          var fb = document.createElement('button'); fb.type = 'button'; fb.textContent = '依這張填';
+          fb.addEventListener('click', function () { fill([r]); setNote('已依「' + r.summary + '」填好，其他申請沒有填進去，確認後按送出核定。'); });
+          acts.appendChild(fb);
+        }
+        var vb = document.createElement('button'); vb.type = 'button'; vb.className = 'req-void'; vb.textContent = '作廢';
+        vb.addEventListener('click', function () { voidReq(r, vb); });
+        acts.appendChild(vb);
+        row.appendChild(acts);
+        box.appendChild(row);
+      });
+      var note = document.createElement('div'); note.className = 'req-note'; note.hidden = true; box.appendChild(note);
+      function setNote(text) { note.textContent = text; note.hidden = !text; }
+      function voidReq(r, btn) {
+        var why = window.prompt('作廢這張已核准的申請：\n' + emp.name + ' ' + r.summary + '\n\n作廢理由（必填，同仁在 LINE「我的申請」看得到）：', '');
+        if (why === null) return;
+        why = why.trim();
+        if (!why) { setNote('✕ 作廢要寫理由'); return; }
+        btn.disabled = true; setNote('作廢中…');
+        apiPost({ action: 'mgr_req_void', mgr_key: mgrKey, id: r.id, reason: why }).then(function (res) {
+          if (!res || !res.ok) { btn.disabled = false; setNote('✕ ' + ((res && res.message) || (res && res.error === 'unknown_action' ? '後端還沒更新，暫時不能作廢' : '沒有成功，請再試一次'))); return; }
+          var rest = reqs.filter(function (q) { return q.id !== r.id; });
+          var wasSingle = !multi && r.kind !== 'ot' && !emp.approved;
+          box.remove(); card.__reqApplied = false;
+          card.__applyReq(rest);
+          var done = document.createElement('div'); done.className = 'req-box warn';
+          done.textContent = '已作廢：' + r.summary + (wasSingle ? '。畫面上已經預填的內容沒有清掉，請確認後再送出核定。' : '');
+          periodRows.parentNode.insertBefore(done, periodRows);
+        }, function () { btn.disabled = false; setNote('✕ 網路不穩，沒有作廢，請再試一次'); });
+      }
+      function fill(list) {
+        list.forEach(function (r) {
           if (r.kind === 'leave') {
             leaveSelect.value = r.leave_type; syncLeaveHoursEnabled(); leaveHours.value = r.hours;
             if (!r.start) { periodRows.innerHTML = ''; periodRows.appendChild(buildPeriodRow(null, refreshPeriodUI)); }
@@ -1644,13 +1704,12 @@
         });
         refreshPeriodUI();
       }
-      var fillable = reqs.some(function (r) { return r.kind !== 'ot'; });
-      if (fillable && emp.approved) {
+      if (fillables.length === 1 && emp.approved) {
         var b = document.createElement('button'); b.type = 'button'; b.textContent = '這天已核定過，依申請重新填';
-        b.addEventListener('click', function () { fill(); b.remove(); box.appendChild(document.createTextNode('\n已依申請填好，確認後按送出核定。')); });
-        box.appendChild(document.createElement('br')); box.appendChild(b);
-      } else if (fillable) {
-        fill();
+        b.addEventListener('click', function () { fill(fillables); b.remove(); setNote('已依申請填好，確認後按送出核定。'); });
+        box.insertBefore(b, note);
+      } else if (fillables.length === 1) {
+        fill(fillables);
       }
       // ⚠ renderEmployees 會把卡片內容搬進收合用的 head／body，periodRows 已經不是 card 的直接子節點
       periodRows.parentNode.insertBefore(box, periodRows);

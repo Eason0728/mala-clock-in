@@ -188,7 +188,7 @@ ok('requests 分頁第一次送出才建立，表頭固定', () => {
   const sb = makeEnv({});
   assert(!sb.__sheets.requests);
   submit(sb, { kind: 'leave', date: '2026-10-15', leave_type: '特休假', hours: 8 });
-  assert.strictEqual(sb.__sheets.requests.data[0].join(','), 'id,created_at,emp_id,name,kind,date,leave_type,start,end,hours,miss_type,reason,attach_id,status,decided_at,decided_by,reject_reason,seen_at,comp');
+  assert.strictEqual(sb.__sheets.requests.data[0].join(','), 'id,created_at,emp_id,name,kind,date,leave_type,start,end,hours,miss_type,reason,attach_id,status,decided_at,decided_by,reject_reason,seen_at,comp,voided_at,voided_by,void_reason');
 });
 /* ── 補休（2026-10-09）── */
 ok('補休：加班申請可選換補休（存 comp 欄、摘要標「（換補休）」）；預設與亂填都當加班費', () => {
@@ -214,7 +214,7 @@ ok('補休：舊的 18 欄 requests 分頁——讀得到（沒有 comp＝加班
   const r = submit(sb, { kind: 'ot', date: '2026-10-11', start: '18:00', end: '21:00', reason: '盤點', comp: 'comp' });
   assert(r.ok, JSON.stringify(r));
   const d = sb.__sheets.requests.data;
-  assert.strictEqual(d[0].length, 19); assert.strictEqual(d[0][18], 'comp');
+  assert.strictEqual(d[0].length, 22); assert.strictEqual(d[0][18], 'comp'); assert.strictEqual(d[0][21], 'void_reason');   // 2026-10-26 起多 voided_* 三欄
   assert.strictEqual(d[2][18], 'comp'); assert.strictEqual(d[2][4], 'ot'); assert.strictEqual(d[2][13], 'pending');
   assert.strictEqual(d[1].length, 18);   // 舊列原封不動
   // 主管審核（header-aware 寫入）照常
@@ -426,5 +426,53 @@ ok('實際核定人（2026-10-18）：營運系統那把鑰匙（allow_acting）
   const r = sb.handleMgrReqDecideBatch_({ mgr_key: 'SVC', ids: [c.request.id], decision: 'approve', acting_name: '林督導（DZY051）' });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(r.done)), [c.request.id]);
   assert.strictEqual(rowOf(c.request.id)('decided_by'), '林督導（DZY051）');
+});
+ok('作廢（2026-10-26）：只能作廢已核准的、理由必填；作廢後 mgr_req_day 不再帶出，原核准紀錄保留', () => {
+  const sb = makeEnv({});
+  const a = submit(sb, { kind: 'trip', date: '2026-10-23', hours: 8, place: '台中', why: '商拍' });
+  const b = submit(sb, { kind: 'leave', date: '2026-10-23', leave_type: '事假', hours: 4 });
+  assert(a.ok && b.ok, JSON.stringify([a, b]));
+  assert(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: a.request.id, decision: 'approve' }).ok);
+  assert(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: b.request.id, decision: 'approve' }).ok);
+  assert.strictEqual(sb.handleMgrReqVoid_({ mgr_key: 'OLD', id: a.request.id, reason: '舊單' }).error, 'unauthorized');
+  assert.strictEqual(sb.handleMgrReqVoid_({ mgr_key: 'MK', id: a.request.id, reason: '  ' }).error, 'need_reason');
+  assert.strictEqual(sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'nope', reason: '舊單' }).error, 'not_found');
+  const v = sb.handleMgrReqVoid_({ mgr_key: 'MK', id: a.request.id, reason: '改成半天出差' });
+  assert(v.ok && v.status === 'voided', JSON.stringify(v));
+  const again = sb.handleMgrReqVoid_({ mgr_key: 'MK', id: a.request.id, reason: '再一次' });
+  assert.strictEqual(again.error, 'not_approved'); assert(/已經作廢/.test(again.message));
+  const day = sb.handleMgrReqDay_({ mgr_key: 'MK', date: '2026-10-23' });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(day.by_emp.E01.map((x) => x.id))), [b.request.id]);
+  const sh = sb.__sheets.requests, h = sh.data[0], row = sh.data.find((r) => r[0] === a.request.id);
+  const col = (k) => row[h.indexOf(k)];
+  assert.strictEqual(col('status'), 'voided');
+  assert.strictEqual(col('decided_by'), '測試主管');   // 原核准人保留
+  assert.strictEqual(col('voided_by'), '測試主管'); assert.strictEqual(col('void_reason'), '改成半天出差');
+  // 同仁「我的申請」看得到作廢理由
+  const pub = sb.reqPublic_(sb.reqRows_(sb.getSS()).find((r) => r.id === a.request.id));
+  assert.strictEqual(pub.status, 'voided'); assert.strictEqual(pub.void_reason, '改成半天出差');
+});
+ok('作廢：審核中的不能作廢（要用退回）、退回的不能作廢', () => {
+  const sb = makeEnv({});
+  const a = submit(sb, { kind: 'leave', date: '2026-10-15', leave_type: '特休假', hours: 8 });
+  assert(/退回/.test(sb.handleMgrReqVoid_({ mgr_key: 'MK', id: a.request.id, reason: 'x' }).message));
+  sb.handleMgrReqDecide_({ mgr_key: 'MK', id: a.request.id, decision: 'reject', reason: '人力不足' });
+  assert.strictEqual(sb.handleMgrReqVoid_({ mgr_key: 'MK', id: a.request.id, reason: 'x' }).error, 'not_approved');
+});
+ok('作廢：舊分頁沒有 voided_* 欄時先補表頭再寫，不會寫丟', () => {
+  const sb = makeEnv({});
+  const a = submit(sb, { kind: 'leave', date: '2026-10-15', leave_type: '特休假', hours: 8 });
+  sb.handleMgrReqDecide_({ mgr_key: 'MK', id: a.request.id, decision: 'approve' });
+  const sh = sb.__sheets.requests;
+  const keep = sh.data[0].indexOf('voided_at');
+  sh.data.forEach((r) => { r.length = keep; });   // 模擬 2026-10-26 前建的分頁（只到 comp）
+  assert(sb.handleMgrReqVoid_({ mgr_key: 'MK', id: a.request.id, reason: '重複申請' }).ok);
+  const h = sh.data[0], row = sh.data[1];
+  assert.strictEqual(row[h.indexOf('void_reason')], '重複申請');
+  assert.strictEqual(row[h.indexOf('status')], 'voided');
+});
+ok('LIFF_HANDLERS 有掛 mgr_req_void（包一層）', () => {
+  const src = fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8');
+  assert(/mgr_req_void: function \(b\) \{ return handleMgrReqVoid_\(b\); \}/.test(src));
 });
 if (require.main === module) console.log(`\n${n} 項全部通過`);
