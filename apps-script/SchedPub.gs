@@ -1,9 +1,10 @@
 /* ══ 自動排班發布（2026-10-11，規格 ~/mala-store-ops docs/autoschedule/spec.md 第 8、10.2 節）══
  * 營運系統（Mac mini）鎖定一期班表 → POST sched_publish；解鎖 → sched_unpublish。只有光復這套部署（LINE Hub）收。
  * 規則：
- *   ‧svcKey 要等於指令碼屬性 SCHED_SVC_KEY（沒設就全部拒絕）；v 不是 1 → bad_version。
+ *   ‧svcKey 要等於指令碼屬性 SCHED_SVC_KEY（沒設就全部拒絕）；v 不是 1 或 2 → bad_version。
  *   ‧ScriptLock 包住「讀→比→寫」；seq ≤ 已存的 → stale（不寫）；同一列最後一次的 op_id 重送 → 回上次結果（冪等）。
  *   ‧unpublish 留墓碑：seq 保留、資料清空，比它舊的 publish 晚到會因 seq 較小被擋，不會復活。
+ *   ‧v:2（2026-10-19 工作站別）＝v1 加 cell 選填 w（站別 id，只在上班格）、頂層 stations:[{id,name}]；沒有站別時營運系統仍送 v:1。
  *   ‧人員只收 emp_id、name、cells（營運系統那端已白名單；這裡再丟掉其他欄位，不寫進試算表）。
  *   ‧每天的午餐／晚餐備註（2026-10-26，全店共用）：notes [{d, lunch, dinner}] 選填，舊版營運系統不帶也照收；
  *     只收本期 28 天內的日期、每格最多 SCHED_PUB_NOTE_MAX 字，存成 { 'yyyy-MM-dd': {lunch, dinner} }。
@@ -13,6 +14,8 @@ var SCHED_PUB_SHEET = 'sched_pub';
 var SCHED_PUB_HEAD = ['store', 'period', 'seq', 'data', 'last_op', 'updated_at'];
 var SCHED_PUB_CACHE_KEY = 'schedpub:v1';
 var SCHED_PUB_CACHE_SEC = 120;
+var SCHED_PUB_STATION_ID_MAX = 32;
+var SCHED_PUB_STATION_NAME_MAX = 20;
 var SCHED_PUB_MAX_CHARS = 45000;   // 試算表一格上限 50000 字元
 var SCHED_PUB_NOTE_MAX = 60;       // 午餐／晚餐備註每格字數（營運系統那端同一個上限）
 
@@ -32,10 +35,16 @@ function schedPubClean_(b) {
       var o = { t: String((c && c.t) || '') };
       if (c && c.s) o.s = String(c.s);
       if (c && c.l) o.l = String(c.l);
+      if (c && c.s && c.w) o.w = String(c.w).slice(0, SCHED_PUB_STATION_ID_MAX);   // 站別只跟著上班格（有班別）存
       return o;
     }) };
   });
   var out = { start: String(b.start || ''), shifts: shifts, rows: rows };
+  if (Array.isArray(b.stations) && b.stations.length) {
+    out.stations = b.stations.filter(function (s) { return s && s.id && s.name; }).map(function (s) {
+      return { id: String(s.id).slice(0, SCHED_PUB_STATION_ID_MAX), name: String(s.name).slice(0, SCHED_PUB_STATION_NAME_MAX) };
+    });
+  }
   var notes = schedPubCleanNotes_(b.notes, out.start);
   if (notes) out.notes = notes;
   return out;
@@ -60,7 +69,7 @@ function schedPubCleanNotes_(list, start) {
 function schedPubWrite_(b, kind) {
   var key = PropertiesService.getScriptProperties().getProperty('SCHED_SVC_KEY');
   if (!key || b.svcKey !== key) return { ok: false, error: 'unauthorized' };
-  if (b.v !== 1) return { ok: false, error: 'bad_version' };
+  if (b.v !== 1 && b.v !== 2) return { ok: false, error: 'bad_version' };
   if (typeof b.store !== 'string' || b.store.length > 12 || !/^T\d{2,}$/.test(String(b.period || '')) ||
       typeof b.seq !== 'number' || b.seq < 1 || Math.floor(b.seq) !== b.seq || typeof b.op_id !== 'string' || !b.op_id || b.op_id.length > 64) {
     return { ok: false, error: 'bad_input' };
@@ -139,7 +148,7 @@ function schedPubIndex_(d) {
 var SCHED_PUB_OFF_LABEL = { R: '例假', H: '休息日', W: '', L: '請假' };
 var SCHED_PUB_LEAVE_LABEL = { '特': '特休', '補': '補休', '國': '國定假日' };
 /** 一格 → 出勤班表的一天（與 schedDayOf_ 同形：code／label／segs／hours／work／rest） */
-function schedPubDay_(cell, shifts) {
+function schedPubDay_(cell, shifts, stations) {
   if (!cell || !cell.t) return null;
   if (cell.s) {
     var sh = null;
@@ -148,7 +157,11 @@ function schedPubDay_(cell, shifts) {
     var a = +sh.start.slice(0, 2) * 60 + +sh.start.slice(3), b = +sh.end.slice(0, 2) * 60 + +sh.end.slice(3);
     var span = b > a ? b - a : b + 1440 - a;
     var label = sh.name + (cell.t === 'H' ? '（休息日出勤）' : '');
-    return { code: cell.s, label: label, segs: [[sh.start, sh.end]], hours: Math.round(Math.max(0, span - (sh.break_min || 0)) / 60 * 100) / 100, work: true, rest: false };
+    var day = { code: cell.s, label: label, segs: [[sh.start, sh.end]], hours: Math.round(Math.max(0, span - (sh.break_min || 0)) / 60 * 100) / 100, work: true, rest: false };
+    if (cell.w) {
+      for (var j = 0; j < (stations || []).length; j++) if (stations[j].id === cell.w) { day.station = stations[j].name; break; }
+    }
+    return day;
   }
   var lab = cell.t === 'L' ? (SCHED_PUB_LEAVE_LABEL[cell.l] || '請假') : (SCHED_PUB_OFF_LABEL[cell.t] || '');
   return { code: cell.t === 'L' ? String(cell.l || 'L') : cell.t, label: lab, segs: [], hours: 0, work: false, rest: true };
@@ -165,7 +178,7 @@ function schedPubDaysFor_(pub, mine, dates) {
       if (!data) return;
       for (var i = 0; i < data.rows.length; i++) {
         if (String(data.rows[i].emp_id) !== String(x.row.emp_id)) continue;
-        var day = schedPubDay_(data.rows[i].cells[idx], data.shifts || []);
+        var day = schedPubDay_(data.rows[i].cells[idx], data.shifts || [], data.stations || []);
         if (day && (!best || (day.work && !best.work))) { best = day; bestNote = data.notes && data.notes[d] || null; }   // 備註跟著當天上班的那家店
       }
     });

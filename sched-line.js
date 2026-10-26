@@ -120,6 +120,7 @@
     else if (!d.work) rows.push(h('div', { class: 'sc-row' }, [h('span', { text: d.label })]));
     else {
       rows.push(h('div', { class: 'sc-row' }, [h('span', { text: '班別' }), h('span', { text: d.label })]));
+      if (d.station) rows.push(h('div', { class: 'sc-row', id: 'scStation' }, [h('span', { text: '工作站' }), h('span', { text: d.station })]));
       d.segs.forEach(function (s, i) {
         rows.push(h('div', { class: 'sc-row' }, [h('span', { text: d.segs.length > 1 ? '第' + CN[i] + '段' : '上班時間' }), h('span', { text: s[0] + '–' + s[1] })]));
       });
@@ -146,7 +147,7 @@
     else {
       var rel = r.next.date === r.today ? '今天 ' : '';
       nx.appendChild(h('div', { class: 'sc-nd', text: rel + md(r.next.date) }));
-      nx.appendChild(h('div', { class: 'sc-ns', text: r.next.label + '　' + segText(r.next.segs) }));
+      nx.appendChild(h('div', { class: 'sc-ns', text: r.next.label + '　' + segText(r.next.segs) + (r.next.station ? '　站：' + r.next.station : '') }));
     }
     $root.appendChild(nx);
     $root.appendChild(h('div', { class: 'rq-note', text: '班表由店長在排班系統排好、鎖定後才會顯示；有異動以店長通知為準。' }));

@@ -534,6 +534,32 @@ def phase_requests(page, data):
     check('出差核准後：核定卡片預填「出差」、出差時數 3、當天有打卡所以時段不動、顯示已核准的申請',
           info['hours'] == '3' and not info['fromReq'] and '出差 整天 3 小時' in info['box'] and any(v for v in info['times']), info)
 
+    # 作廢已核准的申請（2026-10-26）：理由必填（空白擋下、不送）；寫了理由才送，後端變 voided、mgr_req_day 不再帶出；
+    # 畫面上已預填的出差與時數不清掉（主管自己決定），卡片改顯示「已作廢」提醒
+    card_js = "(nm) => [...document.querySelectorAll('#empList .emp-head')].find(x => x.textContent.includes(nm)).closest('.card')"
+    page.evaluate("(nm) => { window.prompt = () => '  '; (" + card_js + ")(nm).querySelector('.req-box .req-void').click(); }", p1['name'])
+    blocked = page.evaluate("(nm) => (" + card_js + ")(nm).querySelector('.req-box').textContent", p1['name'])
+    page.evaluate("(nm) => { window.prompt = () => 'e2e：改申請，舊單作廢'; (" + card_js + ")(nm).querySelector('.req-box .req-void').click(); }", p1['name'])
+    page.wait_for_function("(nm) => (" + card_js + ")(nm).textContent.includes('已作廢：')", arg=p1['name'], timeout=10000)
+    after = page.evaluate("async ([k, d, id]) => { const r = await fetch('/api', { method: 'POST', body: JSON.stringify({ action: 'mgr_req_day', mgr_key: k, date: d }) });"
+                          " return ((await r.json()).by_emp[id] || []).filter(x => x.kind === 'trip').length; }",
+                          [data['manager']['key'], data['workday'], p1['emp_id']])
+    still = page.evaluate("(nm) => { const c = (" + card_js + ")(nm); return [c.querySelector('select').value,"
+                          " [...c.querySelectorAll('input')].find(i => i.placeholder === '出差時數').value]; }", p1['name'])
+    check('作廢已核准的出差單：空理由擋下；寫理由後後端不再帶出這張、卡片顯示已作廢、已預填的出差 3 小時不被清掉',
+          '作廢要寫理由' in blocked and after == 0 and still == ['出差', '3'], [blocked[-30:], after, still])
+    CM.mark('button「作廢」', '作廢已核准的申請（空理由擋下、寫理由後後端變 voided）')
+
+    # 一天多種假別（2026-10-26）：「＋ 再加一種假別」多一列、✕ 移除那一列
+    n0 = page.evaluate("(nm) => (" + card_js + ")(nm).querySelectorAll('.leave-box .leave-row').length", p1['name'])
+    page.evaluate("(nm) => (" + card_js + ")(nm).querySelector('.add-leave-btn').click()", p1['name'])
+    n1 = page.evaluate("(nm) => (" + card_js + ")(nm).querySelectorAll('.leave-box .leave-row').length", p1['name'])
+    lab = page.evaluate("(nm) => [...(" + card_js + ")(nm).querySelectorAll('.leave-box .leave-row label')].map(x => x.textContent)", p1['name'])
+    page.evaluate("(nm) => (" + card_js + ")(nm).querySelector('.leave-box .leave-rm').click()", p1['name'])
+    n2 = page.evaluate("(nm) => (" + card_js + ")(nm).querySelectorAll('.leave-box .leave-row').length", p1['name'])
+    check('再加一種假別：多一列「再一種」、按 ✕ 移除回原本列數', n1 == n0 + 1 and lab[-1] == '再一種' and n2 == n0, [n0, n1, n2, lab])
+    CM.mark('button「＋ 再加一種假別」', '多一列假別')
+
 
 def phase_pending_reminder(page, data):
     """本月待核定提醒卡片（#pendingApprovals）：驗每一顆姓名膠囊點下去都會正確跳轉——

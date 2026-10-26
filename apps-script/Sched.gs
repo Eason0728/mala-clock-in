@@ -190,6 +190,7 @@ function schedSummarize_(days, ym, today) {
         if (!(lastSeg[1] <= lastSeg[0]) && lastSeg[1] <= today.hm) continue;
       }
       next = { date: ym + '-' + ('0' + day.d).slice(-2), label: day.label, segs: day.segs, hours: day.hours };
+      if (day.station) next.station = day.station;
     }
   }
   return { summary: { work_days: wd, off_days: od, hours: Math.round(hrs * 100) / 100 }, next: next };
