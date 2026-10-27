@@ -89,6 +89,15 @@ function svcLineHash_(uid, key) {
   }).join('');
 }
 
+/** 有值班主管的店，managers 分頁有沒有啟用中的營運系統專用列（allow_acting＝TRUE）：值班主管本人的申請只能從這列核決 */
+function svcHasActingRow_(ss) {
+  var sh = ss.getSheetByName('managers');
+  if (!sh) return true;   // 沒有 managers 分頁＝沒有值班主管，不用報
+  var act = readSheetAsObjects(sh).rows.filter(function (m) { return reqTrue_(m.active); });
+  if (!act.some(function (m) { return !reqTrue_(m.allow_acting); })) return true;   // 沒有值班主管（人）就不用營運系統列
+  return act.some(function (m) { return reqTrue_(m.allow_acting); });
+}
+
 function handleSvcRoster_(body) {
   var bad = svcAuth_(body); if (bad) return bad;
   var ss = getSS();
@@ -100,7 +109,8 @@ function handleSvcRoster_(body) {
   var mapKey = props.getProperty('LINE_MAP_KEY') || '', mapKid = props.getProperty('LINE_MAP_KID') || '';
   var duty = reqLocalDutyMgrs_(ss);   // 值班主管本人的申請改由上層審（只看本店判斷，不含跨店名單）
   return { ok: true,
-    mgr_warn: duty.warn.map(function (w) { return { name_len: String(w.name).length, reason: w.reason }; }),   // 不回姓名，只回字數與原因（給 mini 記 log）
+    mgr_warn: duty.warn.map(function (w) { return { name_len: String(w.name).length, reason: w.reason }; })
+      .concat(svcHasActingRow_(ss) ? [] : [{ name_len: 0, reason: 'no_acting_row' }]),   // 不回姓名；no_acting_row＝沒有營運系統專用列，上層在營運系統核不了值班主管本人的單
     line_probe: svcLineHash_('dzy-line-probe', mapKey),   // 平台每晚比對：真 Apps Script 的 HMAC 要與 node 相同、各店金鑰一致
     line_kid: String(mapKid),
     rows: rows.map(function (r) {

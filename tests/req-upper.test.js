@@ -231,7 +231,15 @@ ok('總開關關著：svc_roster 的 duty_mgr／mgr_warn 照常回', () => {
   const e = base({ off: true, managers: [['測試一', 'MK', 'true', ''], ['沒有這人', 'M2', 'true', '']] });
   const r = e.svc('svc_roster');
   assert.strictEqual(r.rows.find(x => x.emp_id === 'E01').duty_mgr, true);
-  assert.deepStrictEqual(r.mgr_warn, [{ name_len: 4, reason: 'no_match' }]);
+  assert.deepStrictEqual(r.mgr_warn, [{ name_len: 4, reason: 'no_match' }, { name_len: 0, reason: 'no_acting_row' }]);
+});
+ok('svc_roster：有值班主管但沒有營運系統專用列 → mgr_warn 多 no_acting_row；營運系統列停用也算沒有', () => {
+  const e1 = base({ managers: [['測試一', 'MK', 'true', '']] });
+  assert.deepStrictEqual(e1.svc('svc_roster').mgr_warn, [{ name_len: 0, reason: 'no_acting_row' }]);
+  const e2 = base({ managers: [['測試一', 'MK', 'true', ''], ['營運系統', 'OPS', 'false', 'TRUE']] });
+  assert.deepStrictEqual(e2.svc('svc_roster').mgr_warn, [{ name_len: 0, reason: 'no_acting_row' }]);
+  const e3 = base({ managers: [['營運系統', 'OPS', 'true', 'TRUE']] });
+  assert.deepStrictEqual(e3.svc('svc_roster').mgr_warn, []);
 });
 ok('svc_set_upper on:true 開、on:false 關、沒帶 on 不動；回應帶 on', () => {
   const e = base({ off: true });
