@@ -446,7 +446,13 @@ function reqIsUpper_(empId, ss, cache) {
 }
 function reqUpperCache_(ss) { return reqUpperOn_() ? { local: reqLocalDutyMgrs_(ss).emps, extra: reqUpperExtra_() } : { local: {}, extra: {} }; }
 /** 這把主管鑰匙是不是營運系統專用（allow_acting＝TRUE）：是就放行，營運系統依管理系統名單把關 */
-function reqMgrActing_(mgr) { return reqTrue_(mgr && mgr.allow_acting); }
+/** 放行條件：主管列 allow_acting＝TRUE 且帶了合法 acting_name（trim 後非空、≤40 字，同 actingName_）。
+ *  營運系統「門市帳號登入（舊路）」雖用同一把鑰匙但不帶 acting_name、不依人過濾，一律不放行。 */
+function reqMgrActing_(mgr, body) {
+  if (!reqTrue_(mgr && mgr.allow_acting)) return false;
+  var v = body ? body.acting_name : undefined;
+  return typeof v === 'string' && v.trim() !== '' && actingName_(body, mgr) !== null;
+}
 
 /* ── 主管 ── */
 function reqMgr_(body) {
@@ -488,7 +494,7 @@ function handleMgrReqDecide_(body) {
     var r = reqRows_(ss).filter(function (x) { return String(x.id) === String(body.id); })[0];
     if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
     if (r.status !== 'pending') return { ok: false, error: 'not_pending', message: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' };
-    if (!reqMgrActing_(mgr) && reqIsUpper_(r.emp_id, ss)) return { ok: false, error: 'upper_review', message: REQ_UPPER_MSG_ };
+    if (!reqMgrActing_(mgr, body) && reqIsUpper_(r.emp_id, ss)) return { ok: false, error: 'upper_review', message: REQ_UPPER_MSG_ };
     if (decision === 'approve' && reqNeedsProof_(r)) return { ok: false, error: 'need_proof', message: r.leave_type + '要附證明，同仁補上後才能核准（退回不受影響）' };
     reqSetCells_(sh, r.__rowIndex, { status: decision === 'approve' ? 'approved' : 'rejected', decided_at: nowTaipeiIso(),
                                      decided_by: actor, reject_reason: decision === 'reject' ? reason : '' });
@@ -514,7 +520,7 @@ function handleMgrReqVoid_(body) {
     if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
     if (r.status !== 'approved') return { ok: false, error: 'not_approved',
       message: r.status === 'voided' ? '這筆已經作廢了' : r.status === 'pending' ? '這筆還在審核中，請用退回' : '只有已核准的申請可以作廢' };
-    if (!reqMgrActing_(mgr) && reqIsUpper_(r.emp_id, ss)) return { ok: false, error: 'upper_review', message: REQ_UPPER_MSG_ };
+    if (!reqMgrActing_(mgr, body) && reqIsUpper_(r.emp_id, ss)) return { ok: false, error: 'upper_review', message: REQ_UPPER_MSG_ };
     reqHeads_(sh);   // 舊分頁沒有 voided_* 欄，先補表頭
     reqSetCells_(sh, r.__rowIndex, { status: 'voided', voided_at: nowTaipeiIso(), voided_by: actor, void_reason: reason });
     return { ok: true, id: String(r.id), status: 'voided' };
@@ -540,7 +546,7 @@ function handleMgrReqDecideBatch_(body) {
     var byId = {};
     reqRows_(ss).forEach(function (x) { byId[String(x.id)] = x; });
     var now = nowTaipeiIso(), done = [], skipped = [];
-    var upc = reqMgrActing_(mgr) ? null : reqUpperCache_(ss);
+    var upc = reqMgrActing_(mgr, body) ? null : reqUpperCache_(ss);
     ids.forEach(function (id) {
       var r = byId[id];
       if (!sh || !r) { skipped.push({ id: id, reason: '找不到這筆申請' }); return; }
@@ -556,13 +562,15 @@ function handleMgrReqDecideBatch_(body) {
 
 /** {action:'mgr_req_day', mgr_key, date} → {ok, by_emp:{emp_id:[已核准的申請…]}}（核定頁預填用） */
 function handleMgrReqDay_(body) {
-  if (!reqMgr_(body)) return { ok: false, error: 'unauthorized' };
+  var mgr = reqMgr_(body);
+  if (!mgr) return { ok: false, error: 'unauthorized' };
   var date = String(body.date || '');
   if (!reqIsDate_(date)) return { ok: false, error: 'bad_date' };
-  var by = {};
-  reqRows_(getSS()).forEach(function (r) {
+  var by = {}, ss = getSS(), upc = reqMgrActing_(mgr, body) ? null : reqUpperCache_(ss);
+  reqRows_(ss).forEach(function (r) {
     if (r.date !== date || r.status !== 'approved') return;
     var o = reqPublic_(r); o.summary = reqSummary_(r);
+    o.upper = !!upc && reqIsUpper_(r.emp_id, ss, upc);   // 值班主管本人的申請：作廢也要上層處理
     (by[String(r.emp_id)] = by[String(r.emp_id)] || []).push(o);
   });
   return { ok: true, date: date, by_emp: by };

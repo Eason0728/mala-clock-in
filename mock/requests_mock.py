@@ -337,8 +337,12 @@ def register(ns):
                     out.add(str(r["emp_id"]))
         return out
 
-    def blocked_upper(data, mgr, r):
-        return data.get("req_upper_on") == "1" and (not _t(mgr.get("allow_acting"))) and str(r["emp_id"]) in upper_emps(data)
+    def acting_pass(mgr, body):
+        v = body.get("acting_name")
+        return _t(mgr.get("allow_acting")) and isinstance(v, str) and v.strip() != "" and len(v.strip()) <= 40
+
+    def blocked_upper(data, mgr, r, body):
+        return data.get("req_upper_on") == "1" and (not acting_pass(mgr, body)) and str(r["emp_id"]) in upper_emps(data)
 
     # ── 主管 ──
     def mgr_pending(data, body):
@@ -368,7 +372,7 @@ def register(ns):
             return {"ok": False, "error": "not_found", "message": "找不到這筆申請"}
         if r["status"] != "pending":
             return {"ok": False, "error": "not_pending", "message": "同仁已經取消這筆申請" if r["status"] == "cancelled" else "這筆已經處理過了"}
-        if blocked_upper(data, mgr, r):
+        if blocked_upper(data, mgr, r, body):
             return {"ok": False, "error": "upper_review", "message": UPPER_MSG}
         if dec == "approve" and needs_proof(r):
             return {"ok": False, "error": "need_proof", "message": r["leave_type"] + "要附證明，同仁補上後才能核准（退回不受影響）"}
@@ -391,7 +395,7 @@ def register(ns):
         if r["status"] != "approved":
             msg = "這筆已經作廢了" if r["status"] == "voided" else ("這筆還在審核中，請用退回" if r["status"] == "pending" else "只有已核准的申請可以作廢")
             return {"ok": False, "error": "not_approved", "message": msg}
-        if blocked_upper(data, mgr, r):
+        if blocked_upper(data, mgr, r, body):
             return {"ok": False, "error": "upper_review", "message": UPPER_MSG}
         r.update({"status": "voided", "voided_at": iso_now(), "voided_by": mgr["name"], "void_reason": reason})
         save_data(data)
@@ -420,7 +424,7 @@ def register(ns):
                 skipped.append({"id": i, "reason": "找不到這筆申請"})
             elif r["status"] != "pending":
                 skipped.append({"id": i, "reason": "同仁已經取消這筆申請" if r["status"] == "cancelled" else "這筆已經處理過了"})
-            elif blocked_upper(data, mgr, r):
+            elif blocked_upper(data, mgr, r, body):
                 skipped.append({"id": i, "reason": "值班主管本人的申請，送上層審核"})
             elif needs_proof(r):
                 skipped.append({"id": i, "reason": r["leave_type"] + "還沒附證明"})
@@ -469,10 +473,13 @@ def register(ns):
         if not find_manager_by_key(data, body.get("mgr_key")):
             return {"ok": False, "error": "unauthorized"}
         by = {}
+        mgr = find_manager_by_key(data, body.get("mgr_key"))
+        ups = upper_emps(data) if (data.get("req_upper_on") == "1" and not acting_pass(mgr, body)) else set()
         for r in reqs(data):
             if r["date"] == body.get("date") and r["status"] == "approved":
                 o = public(r)
                 o["summary"] = summary(r)
+                o["upper"] = str(r["emp_id"]) in ups
                 by.setdefault(r["emp_id"], []).append(o)
         return {"ok": True, "date": body.get("date"), "by_emp": by}
 

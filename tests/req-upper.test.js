@@ -113,13 +113,13 @@ ok('一般同仁的申請不受影響（核准／退回／作廢）', () => {
 ok('allow_acting 營運系統鑰匙放行（核准／作廢／批次）', () => {
   const e = base();
   assert(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'r1', decision: 'approve', acting_name: '測試代理' }).ok);
-  assert(e.fn('handleMgrReqVoid_', { mgr_key: 'OPS', id: 'r4', reason: '改單' }).ok);
-  const b = e.fn('handleMgrReqDecideBatch_', { mgr_key: 'OPS', ids: ['r3'], decision: 'approve' });
+  assert(e.fn('handleMgrReqVoid_', { mgr_key: 'OPS', id: 'r4', reason: '改單', acting_name: '測試代理' }).ok);
+  const b = e.fn('handleMgrReqDecideBatch_', { mgr_key: 'OPS', ids: ['r3'], decision: 'approve', acting_name: '測試代理' });
   assert.deepStrictEqual(b.done, ['r3']);
 });
 ok('allow_acting 寫成布林 true 也放行（Sheets 讀回型別）', () => {
   const e = base({ managers: [['測試一', 'MK', true, ''], ['營運系統', 'OPS', true, true]] });
-  assert(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'r1', decision: 'approve' }).ok);
+  assert(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'r1', decision: 'approve', acting_name: '測試代理' }).ok);
   assert.strictEqual(e.fn('handleMgrReqDecide_', Object.assign({ id: 'r3', decision: 'approve' }, MGR)).error, UP);
 });
 ok('pending 每筆帶 upper', () => {
@@ -173,8 +173,8 @@ ok('need_proof 仍擋（一般同仁）且本人的申請先回 upper_review', (
 });
 ok('need_proof 仍擋上層：營運系統鑰匙核准本人的病假單照樣被 need_proof 擋', () => {
   const e = base({ reqs: [rq('p2', 'E01', '測試一')] }); e.sheets.requests.data[1][6] = '病假';
-  assert.strictEqual(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'p2', decision: 'approve' }).error, 'need_proof');
-  assert(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'p2', decision: 'reject', reason: '補件' }).ok);
+  assert.strictEqual(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'p2', decision: 'approve', acting_name: '測試代理' }).error, 'need_proof');
+  assert(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'p2', decision: 'reject', reason: '補件', acting_name: '測試代理' }).ok);
 });
 ok('金鑰錯仍是 unauthorized', () => {
   const e = base();
@@ -244,5 +244,30 @@ ok('svc_set_upper on:true 開、on:false 關、沒帶 on 不動；回應帶 on',
   assert.strictEqual(e.svc('svc_set_upper', { emp_ids: [], on: false }).on, false); assert.strictEqual(e.props.REQ_UPPER_ON, undefined);
   assert(e.fn('handleMgrReqDecide_', A).ok);
   assert.strictEqual(e.svc('svc_set_upper', { emp_ids: [] }).on, false);   // 沒帶 on：維持關
+});
+ok('allow_acting 沒帶 acting_name（舊路）→ 擋；空白／超長／非字串也擋；帶了放行且 decided_by＝acting_name', () => {
+  for (const bad of [undefined, '', '   ', 'x'.repeat(41), 123]) {
+    const e = base(); const b = { mgr_key: 'OPS', id: 'r1', decision: 'approve' }; if (bad !== undefined) b.acting_name = bad;
+    const fmtBad = bad === 123 || bad === 'x'.repeat(41) || bad === '   ';   // 格式不合：actingName_ 先整筆拒絕
+    assert.strictEqual(e.fn('handleMgrReqDecide_', b).error, fmtBad ? 'bad_acting_name' : UP, String(bad));
+    assert.strictEqual(e.fn('handleMgrReqVoid_', { mgr_key: 'OPS', id: 'r4', reason: 'x', acting_name: bad }).error, fmtBad ? 'bad_acting_name' : UP);
+    const r = e.fn('handleMgrReqDecideBatch_', { mgr_key: 'OPS', ids: ['r1', 'r2'], decision: 'approve', acting_name: bad });
+    if (fmtBad) assert.strictEqual(r.error, 'bad_acting_name');
+    else { assert.deepStrictEqual(r.done, ['r2']); assert.deepStrictEqual(r.skipped.map(x => x.id), ['r1']); }
+    assert.strictEqual(e.status('r1'), 'pending');
+  }
+  const e = base();
+  assert(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'r1', decision: 'approve', acting_name: ' 測試代理 ' }).ok);
+  const h = e.sheets.requests.data[0], row = e.sheets.requests.data.find(r => r[0] === 'r1');
+  assert.strictEqual(row[h.indexOf('decided_by')], '測試代理');
+});
+ok('mgr_req_day 帶 upper（同開關）；allow_acting＋acting_name 時全 false', () => {
+  const mk = () => base({ reqs: [rq('d1', 'E01', '測試一', 'approved'), rq('d2', 'E02', '測試二', 'approved')] });
+  const up = r => { const o = {}; Object.keys(r.by_emp).forEach(k => r.by_emp[k].forEach(x => (o[x.id] = x.upper))); return o; };
+  assert.deepStrictEqual(up(mk().fn('handleMgrReqDay_', Object.assign({ date: '2026-10-21' }, MGR))), { d1: true, d2: false });
+  assert.deepStrictEqual(up(mk().fn('handleMgrReqDay_', { mgr_key: 'OPS', date: '2026-10-21', acting_name: '測試代理' })), { d1: false, d2: false });
+  assert.deepStrictEqual(up(mk().fn('handleMgrReqDay_', { mgr_key: 'OPS', date: '2026-10-21' })), { d1: true, d2: false });
+  const off = makeEnv({ off: true, roster: [ros('E01', '測試一')], managers: [['測試一', 'MK', 'true', '']], reqs: [rq('d1', 'E01', '測試一', 'approved')] });
+  assert.deepStrictEqual(up(off.fn('handleMgrReqDay_', Object.assign({ date: '2026-10-21' }, MGR))), { d1: false });
 });
 console.log('\n' + n + ' 項通過');

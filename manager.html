@@ -1759,6 +1759,7 @@
         }
         var vb = document.createElement('button'); vb.type = 'button'; vb.className = 'req-void'; vb.textContent = '作廢';
         vb.addEventListener('click', function () { voidReq(r, vb); });
+        if (r.upper) { vb.disabled = true; vb.textContent = '送上層處理'; vb.title = '值班主管本人的申請，由上層主管在管理系統處理'; }
         acts.appendChild(vb);
         row.appendChild(acts);
         box.appendChild(row);
