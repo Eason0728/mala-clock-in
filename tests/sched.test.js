@@ -467,4 +467,21 @@ ok('站別：休假格帶來的 w 不存（只有上班格存站別）', () => {
   assert.ok(!('w' in stored.rows[0].cells[0]) && !('w' in stored.rows[0].cells[1]));
 });
 
+ok('分段班：segs 收進來、LINE 一天顯示多段；格式不對整個丟掉照舊一整段', () => {
+  reset(); props.SCHED_SVC_KEY = 'k1';
+  const b = JSON.parse(JSON.stringify(FIX2));
+  const TWO = [{ start: '11:00', end: '14:00', break_min: 0 }, { start: '17:30', end: '22:30', break_min: 0 }];
+  b.shifts[0].segs = TWO; b.shifts[0].start = '11:00'; b.shifts[0].end = '22:30'; b.shifts[0].break_min = 210;
+  if (b.shifts[1]) b.shifts[1].segs = [{ start: 'x', end: '14:00' }, { start: '17:00', end: '21:00' }];
+  assert.strictEqual(J(sb.handleSchedPublish_(Object.assign(b, { svcKey: 'k1' }))).ok, true);
+  const stored = JSON.parse(pubRows[1][3]);
+  assert.deepStrictEqual(stored.shifts[0].segs, TWO);
+  if (stored.shifts[1]) assert.ok(!('segs' in stored.shifts[1]), '格式不對不收');
+  const d = J(sb.schedPubDay_({ t: 'W', s: stored.shifts[0].id }, stored.shifts, []));
+  assert.deepStrictEqual(d.segs, [['11:00', '14:00'], ['17:30', '22:30']]);
+  assert.strictEqual(d.hours, 8);
+  const one = J(sb.schedPubDay_({ t: 'W', s: 'S1' }, FIX2.shifts, []));
+  assert.strictEqual(one.segs.length, 1);
+});
+
 console.log('\n' + n + ' 項全過');

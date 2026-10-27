@@ -26,9 +26,23 @@ function schedPubSheet_() {
   return sh;
 }
 
+/** 分段班（二段班、三段班，營運系統 2026-10-27）：segs＝[{start,end,break_min}] 2～3 段，格式不對就整個不收（照舊顯示一整段） */
+function schedPubCleanSegs_(segs) {
+  if (!Array.isArray(segs) || segs.length < 2 || segs.length > 3) return null;
+  var out = [];
+  for (var i = 0; i < segs.length; i++) {
+    var x = segs[i] || {};
+    if (!/^\d{2}:\d{2}$/.test(String(x.start)) || !/^\d{2}:\d{2}$/.test(String(x.end))) return null;
+    out.push({ start: String(x.start), end: String(x.end), break_min: Number(x.break_min) || 0 });
+  }
+  return out;
+}
 function schedPubClean_(b) {
   var shifts = (Array.isArray(b.shifts) ? b.shifts : []).map(function (s) {
-    return { id: String(s.id), name: String(s.name || s.id), start: String(s.start), end: String(s.end), break_min: Number(s.break_min) || 0 };
+    var o = { id: String(s.id), name: String(s.name || s.id), start: String(s.start), end: String(s.end), break_min: Number(s.break_min) || 0 };
+    var g = schedPubCleanSegs_(s.segs);
+    if (g) o.segs = g;
+    return o;
   });
   var rows = (Array.isArray(b.rows) ? b.rows : []).map(function (r) {
     return { emp_id: String(r.emp_id), name: String(r.name || ''), cells: (Array.isArray(r.cells) ? r.cells : []).map(function (c) {
@@ -157,7 +171,7 @@ function schedPubDay_(cell, shifts, stations) {
     var a = +sh.start.slice(0, 2) * 60 + +sh.start.slice(3), b = +sh.end.slice(0, 2) * 60 + +sh.end.slice(3);
     var span = b > a ? b - a : b + 1440 - a;
     var label = sh.name + (cell.t === 'H' ? '（休息日出勤）' : '');
-    var day = { code: cell.s, label: label, segs: [[sh.start, sh.end]], hours: Math.round(Math.max(0, span - (sh.break_min || 0)) / 60 * 100) / 100, work: true, rest: false };
+    var day = { code: cell.s, label: label, segs: sh.segs ? sh.segs.map(function (x) { return [x.start, x.end]; }) : [[sh.start, sh.end]], hours: Math.round(Math.max(0, span - (sh.break_min || 0)) / 60 * 100) / 100, work: true, rest: false };
     if (cell.w) {
       for (var j = 0; j < (stations || []).length; j++) if (stations[j].id === cell.w) { day.station = stations[j].name; break; }
     }
