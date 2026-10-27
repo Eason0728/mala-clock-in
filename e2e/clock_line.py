@@ -560,6 +560,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             p.close()
             phase_sched(ctx)
             phase_leave_proof(ctx, (HQ['lat'], HQ['lng']))
+            phase_miss_store(ctx)
             phase_relay(ctx, (HQ['lat'], HQ['lng']))
             rep = CM.report()
             ok('班表：可點元素零漏測（共 %d 個）' % rep['total'], not rep['missed'] and not rep['extra'], rep)
@@ -730,6 +731,91 @@ def phase_sched(ctx):
     p = open_page(ctx, f'{BASE}/clock-line.html?mock_uid=U1&api=/api&view=sched', pre="window.__fake = { line_hub_sched: 'abort' };")
     p.wait_for_selector('#schedView .sc-box.err', timeout=40000)
     ok('班表：斷線重試三次後顯示連線不穩（逐字）', p.inner_text('#schedView .sc-box') == '連線不穩，班表沒有讀到。' and len([x for x in calls(p) if x['action'] == 'line_hub_sched']) == 3, calls(p))
+    p.close()
+
+
+def phase_miss_store(ctx):
+    """忘打卡自動選店（2026-10-28）：綁光復＋金山的同仁，選好日期後依「那天哪家有卡」選店。
+    只有金山有卡 → 換到金山＋一行說明，送出到金山；手動改回光復照樣可以；兩家都有卡 → 不換、提醒確認；
+    都沒卡 → 維持光復、不說明；金山問不到（斷線、舊後端）→ 不換。"""
+    from datetime import datetime, timedelta, timezone
+    tz = timezone(timedelta(hours=8))
+    dd = lambda k: (datetime.now(tz) - timedelta(days=k)).strftime('%Y-%m-%d')
+    D1, D2, D3 = dd(1), dd(2), dd(3)
+    md = lambda d: '%d/%d' % (int(d[5:7]), int(d[8:10]))
+    files = {'': os.path.join(ROOT, 'mock', 'mock_data.json'), 'mztjs': os.path.join(ROOT, 'mock', 'mock_data_mztjs.json')}
+    p = open_page(ctx, BASE + '/clock-line.html?mock_uid=U9&api=/api&view=sched')   # 只為了讓兩家 mock 資料檔先建好
+    for api in ('/api', '/api/mztjs'):
+        p.evaluate("u => fetch(u, {method:'POST', body: JSON.stringify({action:'req_info', id_token:'MOCK_ID_TOKEN_U9'})})", api)
+    p.close()
+    def ev(ts, t, status='ok'):
+        return {'ts': ts, 'emp_id': 'E09', 'type': t, 'status': status, 'lat': 0, 'lng': 0, 'distance_m': 1, 'accuracy_m': 10,
+                'device_id': 'line:U9', 'device_match': True, 'within_range': status == 'ok'}
+    seed_ev = {'': [ev(D2 + 'T11:00:00+08:00', 'in'), ev(D2 + 'T15:00:00+08:00', 'out')],
+               'mztjs': [ev(D1 + 'T17:00:00+08:00', 'in'), ev(D2 + 'T17:00:00+08:00', 'in'), ev(D2 + 'T21:30:00+08:00', 'out')]}
+    for code, f in files.items():
+        d = json.load(open(f, encoding='utf-8'))
+        d['roster'] = [r for r in d['roster'] if r['emp_id'] != 'E09'] + [{'emp_id': 'E09', 'name': '測試九', 'key': 'testkey9', 'device_id': '',
+                       'device_bound_at': '', 'active': True, 'line_user_id': 'U9'}]
+        d['events'] = [e for e in d['events'] if e['emp_id'] != 'E09'] + seed_ev[code]
+        d['requests'] = [r for r in d.get('requests', []) if r.get('emp_id') != 'E09']
+        json.dump(d, open(f, 'w', encoding='utf-8'), ensure_ascii=False)
+    js_name = JS['name']
+    u = BASE + '/clock-line.html?mock_uid=U9&api=/api&in_client=1&retry_ms=100&view=req&tab=miss'
+    p = open_page(ctx, u)
+    p.set_viewport_size({'width': 375, 'height': 812})
+    p.wait_for_selector('#reqView select.rq-date', timeout=10000)
+    store_txt = lambda: p.evaluate("() => { const s = document.querySelector('#reqView select.rq-store'); return s.options[s.selectedIndex].text; }")
+    ok('忘打卡選店：開頁預設第一家（小辛辣光復）', store_txt() == '小辛辣 新竹光復', store_txt())
+    # 1. 只有金山有卡 → 自動換金山
+    p.select_option('#reqView select.rq-date', D1)
+    p.wait_for_selector('#reqView .rq-auto-store', timeout=10000)
+    note = p.inner_text('#reqView .rq-auto-store')
+    ok('忘打卡選店：只有金山有卡 → 換到金山', store_txt() == js_name, store_txt())
+    ok('忘打卡選店：說明「M/D 你在金山有打卡，已幫你選這家」', note.startswith(md(D1) + ' 你在' + js_name + '有打卡，已幫你選這家'), note)
+    ok('忘打卡選店：紀錄是金山那天的卡', '17:00 上班 ✓' in p.inner_text('#reqView .rq-rec'), p.inner_text('#reqView .rq-rec'))
+    c = [x for x in calls(p) if x['action'] == 'req_info']
+    ok('忘打卡選店：兩家店都問了（光復 /api、金山 /api/mztjs）', {x['url'].rsplit('/api', 1)[1] for x in c} >= {'', '/mztjs'}, c)
+    p.screenshot(path=os.path.join(SHOTS, '忘打卡_自動選店.jpg'), type='jpeg', quality=80)
+    p.fill('#reqView input[type=time]', '22:00')
+    p.click('#reqView .rq-chip:has-text("忘記按")')
+    p.click('#reqView button.primary')
+    p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)
+    sent = [x for x in calls(p) if x['action'] == 'req_submit']
+    ok('忘打卡選店：送到金山（/api/mztjs req_submit）', sent and sent[-1]['url'].endswith('/api/mztjs'), sent)
+    dj = json.load(open(files['mztjs'], encoding='utf-8'))
+    ok('忘打卡選店：金山 requests 多一筆、光復沒有', any(r['emp_id'] == 'E09' and r['date'] == D1 for r in dj['requests'])
+       and not any(r.get('emp_id') == 'E09' for r in json.load(open(files[''], encoding='utf-8')).get('requests', [])))
+    p.close()
+    # 2. 手動改回光復：說明消失、顯示光復那天沒有卡
+    p = open_page(ctx, u)
+    p.wait_for_selector('#reqView select.rq-date', timeout=10000)
+    p.select_option('#reqView select.rq-date', D1)
+    p.wait_for_selector('#reqView .rq-auto-store', timeout=10000)
+    p.select_option('#reqView select.rq-store', '0')
+    p.wait_for_function("() => document.querySelector('#reqView .rq-rec') && !document.querySelector('#reqView .rq-auto-store')", timeout=10000)
+    ok('忘打卡選店：同仁可以手動改回光復（說明消失、顯示光復那天的紀錄）', store_txt() == '小辛辣 新竹光復'
+       and '沒有任何打卡' in p.inner_text('#reqView .rq-rec'), p.inner_text('#reqView .rq-rec'))
+    # 3. 兩家都有卡 → 不換、提醒確認
+    p.select_option('#reqView select.rq-date', D2)
+    p.wait_for_selector('#reqView .rq-auto-store.warn', timeout=10000)
+    w = p.inner_text('#reqView .rq-auto-store.warn')
+    ok('忘打卡選店：兩家都有卡 → 店別不動、提醒確認', store_txt() == '小辛辣 新竹光復' and w.startswith(md(D2) + ' 你在小辛辣 新竹光復、' + js_name + '都有打卡'), w)
+    # 4. 都沒卡 → 不動、不說明
+    p.select_option('#reqView select.rq-date', D3)
+    p.wait_for_selector('#reqView .rq-rec', timeout=10000)
+    ok('忘打卡選店：都沒卡 → 維持光復、不說明', store_txt() == '小辛辣 新竹光復' and p.locator('#reqView .rq-auto-store').count() == 0)
+    no_undefined(p, '忘打卡選店')
+    p.close()
+    # 5. 金山問不到（斷線或舊後端）→ 不換，照舊用第一家
+    p = ctx.new_page(); p.add_init_script(LOG_JS)
+    p.route('**/api/mztjs', lambda r: r.abort() if 'day_only' in (r.request.post_data or '') else r.continue_())
+    p.goto(u)
+    p.wait_for_selector('#reqView select.rq-date', timeout=10000)
+    p.select_option('#reqView select.rq-date', D1)
+    p.wait_for_selector('#reqView .rq-rec', timeout=15000)
+    ok('忘打卡選店：金山問不到 → 不換店、照舊顯示光復那天', store_txt() == '小辛辣 新竹光復' and p.locator('#reqView .rq-auto-store').count() == 0
+       and '沒有任何打卡' in p.inner_text('#reqView .rq-rec'), p.inner_text('#reqView')[:200])
     p.close()
 
 

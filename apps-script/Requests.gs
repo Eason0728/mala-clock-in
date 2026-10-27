@@ -184,22 +184,32 @@ function reqStaff_(body) {
   return { userId: userId, me: found.roster, ss: found.ss };
 }
 
-/** {action:'req_info', id_token, date?} → {ok, name, today, requests:[…], day?:{date, punches, missing}} */
+/** {action:'req_info', id_token, date?, day_only?} → {ok, name, today, requests:[…], day?:{date, punches, missing}}
+ *  day_only（2026-10-28，忘打卡自動選店）：申請頁選好日期後同時問每家已綁定的店「那天有沒有卡」，
+ *  只要 day、不讀申請表（回 requests:[]、day_only:true）。舊後端不認得這個參數＝照舊整包回，前端一樣能用。
+ *  有 date 時 events 只讀尾端（date 前一天 00:00 起，reqDayInfo_ 只看前後一天），不整張讀。 */
 function handleReqInfo_(body) {
   var who = reqStaff_(body);
   if (who.error) return { ok: false, error: who.error };
   var today = todayTaipeiStr();
-  var mine = reqRows_(who.ss).filter(function (r) {
+  var dayOnly = body.day_only === true && reqIsDate_(body.date);
+  var mine = dayOnly ? [] : reqRows_(who.ss).filter(function (r) {
     return String(r.emp_id) === String(who.me.emp_id) && reqDayDiff_(today, String(r.created_at).slice(0, 10) || r.date) <= REQ_LIST_DAYS;
   }).sort(function (a, b) { return a.created_at < b.created_at ? 1 : -1; }).map(reqPublic_);
   var out = { ok: true, name: String(who.me.name), emp_id: String(who.me.emp_id), today: today, requests: mine,
               miss_days: REQ_MISS_DAYS, leave_types: LEAVE_TYPES.filter(function (t) { return t !== '出差'; }),
               proof_types: REQ_PROOF_TYPES_.slice() };
+  if (dayOnly) out.day_only = true;
   if (reqIsDate_(body.date)) {
-    var di = reqDayInfo_(liffEvents_(who.ss), who.me.emp_id, String(body.date));
+    var di = reqDayInfo_(liffEvents_(who.ss, reqDaySince_(String(body.date))), who.me.emp_id, String(body.date));
     out.day = { date: String(body.date), punches: di.punches, missing: di.missing };
   }
   return out;
+}
+
+/** reqDayInfo_ 要的 events 範圍起點：date 前一天台北 00:00 再早 1 小時（台灣沒有夏令時間）。 */
+function reqDaySince_(date) {
+  return Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10)) - 86400000 - 8 * 3600000 - 3600000;
 }
 
 /** yyyy-MM-dd 而且是真的存在的日子（2026-10-10 Codex 審查 #13：只看外形會收 2026-11-31，範圍判斷當 12/1、表裡卻寫 11/31）。 */

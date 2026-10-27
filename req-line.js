@@ -2,7 +2,9 @@
  * 由 clock-line.html 載入：同一個 LIFF，網址帶 ?view=req&tab=leave|ot|trip|miss|mine 就顯示這頁，不顯示打卡。
  * 2026-10-09 加「出差」分頁；下班打卡超過 8 小時的「申請加班」按鈕會帶 tab=ot＋date／start／end 預填。
  * 開頁資料：光復 line_hub_req_init（綁了哪些店、假別、額度）＋那家店 req_info（我的申請、某天缺哪張卡）。
- * 送出：那家店 req_submit；附件先傳光復 line_hub_attach_put 拿 ID。結果不推播，回「我的申請」看。 */
+ * 送出：那家店 req_submit；附件先傳光復 line_hub_attach_put 拿 ID。結果不推播，回「我的申請」看。
+ * 2026-10-28 忘打卡自動選店：綁兩家以上的同仁選好日期後，同時問每家店那天有沒有卡（req_info day_only）；
+ * 剛好只有一家有卡（含被擋的卡）就幫他切到那家並寫一行說明，兩家以上都有卡提醒確認，都沒有或有店問不到就不動。 */
 (function () {
   'use strict';
   var E, $root, st = { init: null, store: null, info: null, tab: 'leave', busy: false };
@@ -62,14 +64,36 @@
       return loadInfo().then(render);
     }, function () { $root.innerHTML = ''; $root.appendChild(msgBox('連線失敗，請檢查網路後重新打開。', 'err')); });
   }
-  function storeDef() { return E.STORES.filter(function (s) { return s.code === st.store.code; })[0]; }
-  function loadInfo(date) {
-    var body = { action: 'req_info', id_token: liff.getIDToken() };
-    if (date) body.date = date;
-    return E.readRetry(E.storeApi(storeDef()), body).then(function (r) {
-      if (r && r.ok) { if (!date) st.info = r; return r; }
+  function storeDef(code) { if (code === undefined) code = st.store.code; return E.STORES.filter(function (s) { return s.code === code; })[0]; }
+  function loadInfo() {
+    return E.readRetry(E.storeApi(storeDef()), { action: 'req_info', id_token: liff.getIDToken() }).then(function (r) {
+      if (r && r.ok) { st.info = r; return r; }
       throw new Error((r && r.error) || 'failed');
     });
+  }
+  /** 那家店那天的卡（忘打卡用）。day_only：新後端只讀尾端、不讀申請表；舊後端不認得就照舊整包回，一樣有 day。 */
+  function loadDay(code, date) {
+    var def = storeDef(code);
+    if (!def) return Promise.reject(new Error('no_store'));
+    return E.readRetry(E.storeApi(def), { action: 'req_info', id_token: liff.getIDToken(), date: date, day_only: true }).then(function (r) {
+      if (r && r.ok && r.day && r.day.date === date) return r.day;
+      throw new Error((r && r.error) || 'failed');
+    });
+  }
+  function shortMd(date) { return (+date.slice(5, 7)) + '/' + (+date.slice(8, 10)); }
+  /** 依各店那天的卡決定店別（純函式，tests/req-auto-store.test.js 測）。
+   *  results：[{code, name, day|null}]（null＝那家問不到）。回 {pick:code|null, note:{kind, date, code?, names?}|null}
+   *  - 每家都問到、剛好一家有卡（含被擋的卡）→ pick 那家；跟目前同一家就不寫說明
+   *  - 兩家以上有卡 → 不換，提醒確認
+   *  - 都沒卡、或有店問不到（不能確定只有一家）→ 不換、不說明 */
+  function decideStore(results, curCode, date) {
+    var hit = results.filter(function (x) { return x.day && x.day.punches && x.day.punches.length; });
+    if (hit.length >= 2) return { pick: null, note: { kind: 'multi', date: date, names: hit.map(function (x) { return x.name; }) } };
+    if (hit.length === 1 && results.every(function (x) { return !!x.day; })) {
+      var c = hit[0].code;
+      return c === curCode ? { pick: null, note: null } : { pick: c, note: { kind: 'switched', date: date, code: c, name: hit[0].name } };
+    }
+    return { pick: null, note: null };
   }
 
   /* ── 畫面 ── */
@@ -79,6 +103,7 @@
     if (st.init.stores.length > 1) {
       var sel = h('select', { class: 'rq-store', on: { change: function () {
         st.store = st.init.stores[+sel.value]; st.info = null;
+        if (st.tab === 'miss') render();   // 忘打卡：各店那天的卡已經一起查好了，先換畫面
         loadInfo().then(render, function () { alert('讀不到這家店的資料'); });
       } } }, st.init.stores.map(function (s, i) { return h('option', { value: i, text: s.name, selected: s === st.store }); }));
       head.appendChild(sel);
@@ -251,17 +276,42 @@
     var days = [];
     for (var i = 0; i <= 7; i++) days.push(taipeiToday(-i));
     if (days.indexOf(st.missDate) < 0) st.missDate = '';
-    var sel = h('select', { class: 'rq-date', on: { change: function () { st.missDate = sel.value; st.missType = ''; st.day = null; render(); } } },
+    var sel = h('select', { class: 'rq-date', on: { change: function () { st.missDate = sel.value; st.missType = ''; st.days = null; render(); } } },
       [h('option', { value: '', text: '選日期（只能選 7 天內）' })].concat(days.map(function (d) { return h('option', { value: d, text: md(d), selected: d === st.missDate }); })));
     p.appendChild(field('日期', sel));
     if (!st.missDate) return;
-    if (!st.day || st.day.date !== st.missDate) {
+    // st.days＝{date, by:{店代碼: day|null}, note}：選日期後一次問完每家已綁定的店（只綁一家就只問那家）
+    if (!st.days || st.days.date !== st.missDate) {
       var wait = h('div', { class: 'rq-muted', text: '查這天的打卡紀錄…' });
       p.appendChild(wait);
-      loadInfo(st.missDate).then(function (r) { st.day = r.day; render(); }, function () { wait.textContent = '查不到這天的紀錄，請稍後再試'; });
+      var date = st.missDate, list = st.init.stores.length > 1 ? st.init.stores : [st.store];
+      st.days = { date: date, by: null, note: null };
+      Promise.all(list.map(function (s) {
+        return loadDay(s.code, date).then(function (d) { return { code: s.code, name: s.name, day: d }; },
+                                          function () { return { code: s.code, name: s.name, day: null }; });
+      })).then(function (res) {
+        if (!st.days || st.days.date !== date || st.missDate !== date) return;   // 等的時候改了日期
+        var by = {}; res.forEach(function (x) { by[x.code] = x.day; });
+        var dc = list.length > 1 ? decideStore(res, st.store.code, date) : { pick: null, note: null };
+        st.days = { date: date, by: by, note: dc.note };
+        if (dc.pick !== null) {
+          st.store = st.init.stores.filter(function (s) { return s.code === dc.pick; })[0];
+          st.info = null; st.missType = '';
+          loadInfo().then(function () { if (st.tab !== 'miss') render(); }, function () {});   // 「我的申請」、證明清單跟著換店
+        }
+        render();
+      });
       return;
     }
-    var day = st.day, rec = day.punches.length ? day.punches.map(function (x) {
+    if (!st.days.by) { p.appendChild(h('div', { class: 'rq-muted', text: '查這天的打卡紀錄…' })); return; }
+    var note = st.days.note;
+    if (note && note.kind === 'switched' && note.code === st.store.code)
+      p.appendChild(h('div', { class: 'rq-auto-store', text: shortMd(note.date) + ' 你在' + note.name + '有打卡，已幫你選這家（不對可以在上面改）' }));
+    if (note && note.kind === 'multi')
+      p.appendChild(h('div', { class: 'rq-auto-store warn', text: shortMd(note.date) + ' 你在' + note.names.join('、') + '都有打卡，請確認上面選的店是你要補登的那家' }));
+    var day = st.days.by[st.store.code];
+    if (!day) { p.appendChild(msgBox('查不到這天的紀錄，請稍後再試', 'err')); return; }
+    var rec = day.punches.length ? day.punches.map(function (x) {
       return x.hm + ' ' + (x.type === 'in' ? '上班' : '下班') + (x.status.indexOf('rejected_') === 0 ? '（沒有打成功）' : ' ✓');
     }).join('、') : '沒有任何打卡';
     p.appendChild(h('div', { class: 'rq-rec', text: '當天紀錄：' + rec }));
@@ -286,7 +336,7 @@
       if (!mv.reason) return Promise.reject(new Error('請選原因'));
       return Promise.resolve({ kind: 'miss', date: st.missDate, miss_type: st.missType, start: mv.start, end: mv.end,
                                reason: mv.reason === '其他' ? ('其他：' + (mv.other || '')).slice(0, 100) : mv.reason });
-    }, function () { st.mv = null; st.day = null; st.missDate = ''; }));
+    }, function () { st.mv = null; st.days = null; st.missDate = ''; }));
     p.appendChild(out);
     p.appendChild(h('div', { class: 'rq-note', text: '補登後當天仍算一次忘刷卡（全勤規則不變）。' }));
   }

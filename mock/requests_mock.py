@@ -151,10 +151,13 @@ def register(ns):
         if err:
             return err
         today = today_str()
-        mine = sorted([public(r) for r in reqs(data) if r["emp_id"] == me["emp_id"]], key=lambda r: r["created_at"], reverse=True)
+        d = str(body.get("date") or "")
+        day_only = body.get("day_only") is True and len(d) == 10   # 同 Requests.gs：只要那天的卡、不回申請清單
+        mine = [] if day_only else sorted([public(r) for r in reqs(data) if r["emp_id"] == me["emp_id"]], key=lambda r: r["created_at"], reverse=True)
         out = {"ok": True, "name": me["name"], "emp_id": me["emp_id"], "today": today, "requests": mine,
                "miss_days": REQ_MISS_DAYS, "leave_types": [t for t in LEAVE_TYPES if t != "出差"], "proof_types": list(PROOF)}
-        d = str(body.get("date") or "")
+        if day_only:
+            out["day_only"] = True
         if len(d) == 10:
             p, m = day_info(data, me["emp_id"], d)
             out["day"] = {"date": d, "punches": p, "missing": m}
