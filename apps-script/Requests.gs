@@ -399,6 +399,53 @@ function reqUnseenNotes_(ss, empId, rows) {   // rows：已讀好的申請表（
   return notes;
 }
 
+/* ── 值班主管本人的申請改由上層審（2026-10-28 Eason 照推薦，規格 req-upper）──
+   值班主管＝managers 分頁 active=TRUE 且 allow_acting 不是 TRUE 的列（營運系統專用列不是人）。
+   對應到人：先看可選欄 emp_id；沒有就用姓名（去所有空白）比對 roster 在職同名。
+   跨店名單（REQ_UPPER_EMPS，管理系統每日同步）：在別家店也拿主管鑰匙的人，在本店的 emp_id。 */
+var REQ_UPPER_MSG_ = '這是值班主管本人的申請，請由上層主管在管理系統（人資部門 → 考勤管理 → 申請審核）審核';
+function reqTrue_(v) { return v === true || String(v).toLowerCase() === 'true'; }
+function reqNameKey_(s) { return String(s == null ? '' : s).replace(/\s+/g, ''); }
+/** 本店值班主管 → { emps: {emp_id:true}, warn: [{name, reason:'same_name'|'no_match'}] } */
+function reqLocalDutyMgrs_(ss) {
+  var emps = {}, warn = [];
+  var msh = ss.getSheetByName('managers');
+  if (!msh) return { emps: emps, warn: warn };
+  var mgrs = readSheetAsObjects(msh).rows.filter(function (m) { return reqTrue_(m.active) && !reqTrue_(m.allow_acting); });
+  if (!mgrs.length) return { emps: emps, warn: warn };
+  var rsh = ss.getSheetByName('roster');
+  var roster = rsh ? readSheetAsObjects(rsh).rows.filter(function (r) { return reqTrue_(r.active) && String(r.emp_id) !== ''; }) : [];
+  mgrs.forEach(function (m) {
+    var eid = String(m.emp_id == null ? '' : m.emp_id).trim();
+    if (eid) { emps[eid] = true; return; }
+    var nk = reqNameKey_(m.name);
+    var hit = nk ? roster.filter(function (r) { return reqNameKey_(r.name) === nk; }) : [];
+    if (hit.length === 0) { warn.push({ name: String(m.name || ''), reason: 'no_match' }); return; }
+    if (hit.length > 1) warn.push({ name: String(m.name || ''), reason: 'same_name' });
+    hit.forEach(function (r) { emps[String(r.emp_id)] = true; });
+  });
+  return { emps: emps, warn: warn };
+}
+/** 跨店名單：Script Property REQ_UPPER_EMPS（JSON 陣列的 emp_id 字串）；讀壞＝空 */
+function reqUpperExtra_() {
+  var out = {};
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty('REQ_UPPER_EMPS');
+    var arr = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(arr)) arr.forEach(function (x) { if (typeof x === 'string' && x) out[x] = true; });
+  } catch (e) {}
+  return out;
+}
+/** emp_id 是不是值班主管（本店判斷 ∪ 跨店名單）。cache 可傳入 {local, extra} 避免批次重讀 */
+function reqIsUpper_(empId, ss, cache) {
+  var c = cache || { local: reqLocalDutyMgrs_(ss || getSS()).emps, extra: reqUpperExtra_() };
+  var id = String(empId == null ? '' : empId);
+  return !!(id && (c.local[id] || c.extra[id]));
+}
+function reqUpperCache_(ss) { return { local: reqLocalDutyMgrs_(ss).emps, extra: reqUpperExtra_() }; }
+/** 這把主管鑰匙是不是營運系統專用（allow_acting＝TRUE）：是就放行，營運系統依管理系統名單把關 */
+function reqMgrActing_(mgr) { return reqTrue_(mgr && mgr.allow_acting); }
+
 /* ── 主管 ── */
 function reqMgr_(body) {
   var sh = getSS().getSheetByName('managers');
@@ -410,10 +457,11 @@ function handleMgrReqPending_(body) {
   if (!reqMgr_(body)) return { ok: false, error: 'unauthorized' };
   var ss = getSS(), rows = reqRows_(ss).filter(function (r) { return r.status === 'pending'; });
   if (!rows.length) return { ok: true, items: [] };
-  var events = liffEvents_(ss);
+  var events = liffEvents_(ss), upc = reqUpperCache_(ss);
   var items = rows.sort(function (a, b) { return a.created_at < b.created_at ? -1 : 1; }).map(function (r) {
     var o = reqPublic_(r);
     o.summary = reqSummary_(r);
+    o.upper = reqIsUpper_(r.emp_id, ss, upc);   // 值班主管本人的申請：送上層審，這把鑰匙不能處理
     o.attach_id = String(r.attach_id || '');   // 主管看附件用（經光復 line_hub_attach_get，會再核對主管金鑰）
     if (reqDayDiff_(r.date, todayTaipeiStr()) <= 0) o.punches = reqDayPunches_(events, r.emp_id, r.date);   // 還沒到的日期沒有打卡可看，不顯示「沒有任何打卡」
     return o;
@@ -438,6 +486,7 @@ function handleMgrReqDecide_(body) {
     var r = reqRows_(ss).filter(function (x) { return String(x.id) === String(body.id); })[0];
     if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
     if (r.status !== 'pending') return { ok: false, error: 'not_pending', message: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' };
+    if (!reqMgrActing_(mgr) && reqIsUpper_(r.emp_id, ss)) return { ok: false, error: 'upper_review', message: REQ_UPPER_MSG_ };
     if (decision === 'approve' && reqNeedsProof_(r)) return { ok: false, error: 'need_proof', message: r.leave_type + '要附證明，同仁補上後才能核准（退回不受影響）' };
     reqSetCells_(sh, r.__rowIndex, { status: decision === 'approve' ? 'approved' : 'rejected', decided_at: nowTaipeiIso(),
                                      decided_by: actor, reject_reason: decision === 'reject' ? reason : '' });
@@ -463,6 +512,7 @@ function handleMgrReqVoid_(body) {
     if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
     if (r.status !== 'approved') return { ok: false, error: 'not_approved',
       message: r.status === 'voided' ? '這筆已經作廢了' : r.status === 'pending' ? '這筆還在審核中，請用退回' : '只有已核准的申請可以作廢' };
+    if (!reqMgrActing_(mgr) && reqIsUpper_(r.emp_id, ss)) return { ok: false, error: 'upper_review', message: REQ_UPPER_MSG_ };
     reqHeads_(sh);   // 舊分頁沒有 voided_* 欄，先補表頭
     reqSetCells_(sh, r.__rowIndex, { status: 'voided', voided_at: nowTaipeiIso(), voided_by: actor, void_reason: reason });
     return { ok: true, id: String(r.id), status: 'voided' };
@@ -488,10 +538,12 @@ function handleMgrReqDecideBatch_(body) {
     var byId = {};
     reqRows_(ss).forEach(function (x) { byId[String(x.id)] = x; });
     var now = nowTaipeiIso(), done = [], skipped = [];
+    var upc = reqMgrActing_(mgr) ? null : reqUpperCache_(ss);
     ids.forEach(function (id) {
       var r = byId[id];
       if (!sh || !r) { skipped.push({ id: id, reason: '找不到這筆申請' }); return; }
       if (r.status !== 'pending') { skipped.push({ id: id, reason: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' }); return; }
+      if (upc && reqIsUpper_(r.emp_id, ss, upc)) { skipped.push({ id: id, reason: '值班主管本人的申請，送上層審核' }); return; }
       if (reqNeedsProof_(r)) { skipped.push({ id: id, reason: r.leave_type + '還沒附證明' }); return; }
       reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: actor, reject_reason: '' });
       done.push(id);

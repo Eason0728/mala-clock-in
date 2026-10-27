@@ -263,6 +263,49 @@ def phase_leave_proof(page, data):
     check('請假證明：補附後核准成功、後端待審 0 筆', left == 0, left)
 
 
+def phase_upper(page, data):
+    """值班主管本人申請改由上層審（2026-10-28）：managers 列帶 emp_id 指到某位同仁 → 他的待審單標「送上層審核中」、
+    核准／退回鈕停用、勾選框 rq-pick-off 不參加全選；後端直接打核准／退回／批次也擋。測完還原，不影響後面階段。"""
+    p1 = data['people'][1]
+    path = os.path.join(ROOT, 'mock', 'mock_data.json')
+    d = json.load(open(path, encoding='utf-8'))
+    base = {'leave_type': '', 'start': '', 'end': '', 'hours': '', 'miss_type': '', 'reason': '', 'attach_id': '',
+            'status': 'pending', 'decided_at': '', 'decided_by': '', 'reject_reason': '', 'seen_at': ''}
+    d.setdefault('requests', []).append(dict(base, id='rqE2EU', created_at=data['workday'] + 'T23:30:00+08:00', emp_id=p1['emp_id'],
+        name=p1['name'], kind='ot', date=data['workday'], start='21:00', end='22:00', hours=1, reason='e2e 值班主管本人加班'))
+    d['managers'][0]['emp_id'] = p1['emp_id']
+    json.dump(d, open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    page.reload()
+    page.wait_for_selector('#pendingRequests .rq-item', timeout=20000)
+    CM.scan(page, '值班核定頁（值班主管本人的申請）')
+    st = page.evaluate("""() => { const i = [...document.querySelectorAll('#pendingRequests .rq-item')].find(x => x.textContent.includes('值班主管本人加班') || x.querySelector('.rq-upper'));
+          if (!i) return null; const pk = i.querySelector('input[type=checkbox]');
+          return { ok: i.querySelector('.rq-ok').disabled, no: i.querySelector('.rq-no').disabled, pickCls: pk.className, pickDis: pk.disabled,
+                   tag: (i.querySelector('.rq-upper') || {}).textContent || '' }; }""")
+    check('值班主管本人申請：送上層審核中、核准／退回鈕停用、勾選框 rq-pick-off 且停用',
+          bool(st) and st['ok'] and st['no'] and st['pickCls'] == 'rq-pick-off' and st['pickDis'] and '送上層審核中' in st['tag'], st)
+    mark_el(page, '#pendingRequests .rq-upper', '送上層審核中標示（已驗）')
+    n_pick = page.evaluate("() => document.querySelectorAll('#pendingRequests .rq-pick').length")
+    if page.query_selector('#rqAll') and n_pick:
+        page.click('#rqAll')
+    on = page.evaluate("() => [...document.querySelectorAll('#pendingRequests .rq-item')].filter(x => x.querySelector('.rq-upper') && x.querySelector('input[type=checkbox]').checked).length")
+    check('值班主管本人申請：全選不會勾到它', on == 0, on)
+    api = """async ([k, b]) => (await fetch('/api', { method: 'POST', body: JSON.stringify(Object.assign({ mgr_key: k }, b)) })).json()"""
+    k = data['manager']['key']
+    r1 = page.evaluate(api, [k, {'action': 'mgr_req_decide', 'id': 'rqE2EU', 'decision': 'approve'}])
+    r2 = page.evaluate(api, [k, {'action': 'mgr_req_decide', 'id': 'rqE2EU', 'decision': 'reject', 'reason': 'x'}])
+    r3 = page.evaluate(api, [k, {'action': 'mgr_req_decide_batch', 'ids': ['rqE2EU'], 'decision': 'approve'}])
+    check('值班主管本人申請：後端核准／退回回 upper_review、批次略過',
+          r1.get('error') == 'upper_review' and r2.get('error') == 'upper_review' and r3.get('done') == [] and len(r3.get('skipped', [])) == 1, [r1, r2, r3])
+    # 還原：拿掉 emp_id、刪掉這筆
+    d = json.load(open(path, encoding='utf-8'))
+    d['managers'][0].pop('emp_id', None)
+    d['requests'] = [x for x in d['requests'] if x['id'] != 'rqE2EU']
+    json.dump(d, open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    page.reload()
+    page.wait_for_selector('#pendingRequests', state='attached', timeout=20000)
+
+
 def start_mock(data):
     path = os.path.join(ROOT, 'mock', 'mock_data.json')
     with open(path, 'w', encoding='utf-8') as f:
@@ -1047,6 +1090,8 @@ def main():
             phase_requests(page, data)
             print('  ↳ 請假證明：沒附不能核准、補附後可以')
             phase_leave_proof(page, data)
+            print('  ↳ 值班主管本人的申請：送上層審核中、停用、不參加全選')
+            phase_upper(page, data)
             print('── 階段C：核定頁其餘操作 ──')
             phase_manager_buttons(page, data)
             print('── 階段D：薪酬 ──')

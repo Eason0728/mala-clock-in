@@ -2058,8 +2058,9 @@
     el.__req = it;
     var l1 = document.createElement('div'); l1.className = 'rq-l1';
     var who = document.createElement('span'); who.className = 'rq-who';
-    var pick = document.createElement('input'); pick.type = 'checkbox'; pick.className = it.need_proof ? 'rq-pick-off' : 'rq-pick';
+    var pick = document.createElement('input'); pick.type = 'checkbox'; pick.className = (it.need_proof || it.upper) ? 'rq-pick-off' : 'rq-pick';
     if (it.need_proof) { pick.disabled = true; pick.title = '還沒附證明，不能核准'; }   // 不參加全選／批次核准
+    if (it.upper) { pick.disabled = true; pick.title = '值班主管本人的申請，送上層審核'; }   // 同上
     pick.setAttribute('aria-label', '勾選 ' + it.name + ' ' + it.summary);
     pick.addEventListener('change', function () { syncReqBatch(card); });
     who.appendChild(pick);
@@ -2078,10 +2079,17 @@
       pf.textContent = '⚠ ' + it.leave_type + '要附證明，同仁還沒附；補上後才能核准（可以先退回）';
       el.appendChild(pf);
     }
+    /* 值班主管本人的申請（2026-10-28）：這把鑰匙不能核准／退回，由上層主管在管理系統審 */
+    if (it.upper) {
+      var up = document.createElement('div'); up.className = 'rq-proof rq-upper';
+      up.textContent = '送上層審核中：值班主管本人的申請，請由上層主管在管理系統（人資部門 → 考勤管理 → 申請審核）審核';
+      el.appendChild(up);
+    }
     var acts = document.createElement('div'); acts.className = 'rq-acts';
     var ok = document.createElement('button'); ok.type = 'button'; ok.className = 'rq-ok'; ok.textContent = it.need_proof ? '待補證明' : '核准';
-    if (it.need_proof) ok.disabled = true;
+    if (it.need_proof || it.upper) ok.disabled = true;
     var no = document.createElement('button'); no.type = 'button'; no.className = 'rq-no'; no.textContent = '退回';
+    if (it.upper) no.disabled = true;
     acts.appendChild(ok); acts.appendChild(no);
     if (it.attach_id) {
       var at = document.createElement('button'); at.type = 'button'; at.className = 'rq-att'; at.textContent = '看附件';
@@ -2113,7 +2121,7 @@
       } else if (!confirm('核准 ' + it.name + '：' + it.summary + '？\n核准後，那天的核定會先幫你填好，你核定那天時確認送出才算數。')) return;
       ok.disabled = no.disabled = true; msg.style.color = ''; msg.textContent = '送出中…';
       apiPost(payload).then(function (r) {
-        if (!r || !r.ok) { ok.disabled = !!it.need_proof || (r && r.error === 'need_proof'); no.disabled = false; msg.style.color = '#c22a12'; msg.textContent = '✕ ' + ((r && r.message) || '沒有成功，請再試一次'); return; }
+        if (!r || !r.ok) { var lockUp = !!it.upper || (r && r.error === 'upper_review'); ok.disabled = !!it.need_proof || lockUp || (r && r.error === 'need_proof'); no.disabled = lockUp; msg.style.color = '#c22a12'; msg.textContent = '✕ ' + ((r && r.message) || '沒有成功，請再試一次'); return; }
         el.__markDone((decision === 'approve' ? '✓ 已核准：' : '✕ 已退回：') + it.name + ' ' + it.summary);
         reqTitleRefresh(card, title); syncReqBatch(card);
         if (decision === 'approve') { delete dayCache[it.date]; if (currentDate === it.date) loadDay(it.date); }
