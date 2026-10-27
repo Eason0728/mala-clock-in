@@ -34,12 +34,13 @@ function makeEnv(o) {
   const sheets = {};
   const add = (n, h, rows) => (sheets[n] = new FakeSheet(n, h, rows));
   const props = { STAFF_SVC_KEY: 'TESTSVCKEY-abc123' };
+  if (!o.off) props.REQ_UPPER_ON = '1';   // 總開關：既有測試都在開著的狀態下跑
   const lock = { waitLock() {}, tryLock() { return true; }, releaseLock() {} };
   const ss = { getSheetByName: n => sheets[n] || null, insertSheet: n => add(n, [], []) };
   const sb = {
     console, Logger: { log() {} }, Date, Math, JSON, String, Number, Object, Array, isNaN, RegExp, Error,
     SpreadsheetApp: { openById: () => ss, getActive: () => ss, flush() {} },
-    PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in props ? props[k] : null), setProperty(k, v) { props[k] = v; } }) },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in props ? props[k] : null), setProperty(k, v) { props[k] = v; }, deleteProperty(k) { delete props[k]; } }) },
     LockService: { getScriptLock: () => lock },
     CacheService: { getScriptCache: () => ({ get() { return null; }, put() {}, remove() {} }) },
     Utilities: { getUuid: () => 'u', formatDate: (d, tz, f) => { const s = new Date(d.getTime() + 8 * 3600000).toISOString();
@@ -198,9 +199,9 @@ ok('svc_roster：沒有 managers 分頁也不炸', () => {
 ok('svc_set_upper：去重、只收非空字串、寫入屬性', () => {
   const e = base();
   const r = e.svc('svc_set_upper', { emp_ids: ['E02', 'E02', '', ' E03 ', 5, null, 'E04'] });
-  assert.deepStrictEqual(r, { ok: true, n: 3 });
+  assert.deepStrictEqual(r, { ok: true, n: 3, on: true });
   assert.deepStrictEqual(JSON.parse(e.props.REQ_UPPER_EMPS), ['E02', 'E03', 'E04']);
-  assert.deepStrictEqual(e.svc('svc_set_upper', { emp_ids: [] }), { ok: true, n: 0 });
+  assert.deepStrictEqual(e.svc('svc_set_upper', { emp_ids: [] }), { ok: true, n: 0, on: true });
 });
 ok('svc_set_upper：上限 500；501 個整筆拒絕、不改原值', () => {
   const e = base(); e.props.REQ_UPPER_EMPS = '["E01"]';
@@ -214,5 +215,34 @@ ok('svc_set_upper：金鑰錯回 unauthorized、不寫入', () => {
   const e = base();
   const r = e.J(vm.runInContext('SVC_STAFF_HANDLERS', e.sb).svc_set_upper({ action: 'svc_set_upper', v: 1, svc_key: 'WRONG', emp_ids: ['E01'] }));
   assert.strictEqual(r.error, 'unauthorized'); assert.strictEqual(e.props.REQ_UPPER_EMPS, undefined);
+});
+ok('總開關關著：本人申請照舊可核／退回／作廢／批次，pending upper 全 false', () => {
+  for (const v of [undefined, '0', 'true', 'TRUE', 1]) {
+    const e = base({ off: true }); if (v !== undefined) e.props.REQ_UPPER_ON = v;
+    assert.strictEqual(e.fn('handleMgrReqPending_', MGR).items.every(x => x.upper === false), true, String(v));
+    assert(e.fn('handleMgrReqDecide_', Object.assign({ id: 'r1', decision: 'approve' }, MGR)).ok, String(v));
+    assert(e.fn('handleMgrReqDecide_', Object.assign({ id: 'r3', decision: 'reject', reason: 'x' }, MGR)).ok);
+    assert(e.fn('handleMgrReqVoid_', Object.assign({ id: 'r4', reason: 'x' }, MGR)).ok);
+  }
+  const e = base({ off: true });
+  assert.deepStrictEqual(e.fn('handleMgrReqDecideBatch_', Object.assign({ ids: ['r1', 'r2'], decision: 'approve' }, MGR)).done, ['r1', 'r2']);
+});
+ok('總開關關著：svc_roster 的 duty_mgr／mgr_warn 照常回', () => {
+  const e = base({ off: true, managers: [['測試一', 'MK', 'true', ''], ['沒有這人', 'M2', 'true', '']] });
+  const r = e.svc('svc_roster');
+  assert.strictEqual(r.rows.find(x => x.emp_id === 'E01').duty_mgr, true);
+  assert.deepStrictEqual(r.mgr_warn, [{ name_len: 4, reason: 'no_match' }]);
+});
+ok('svc_set_upper on:true 開、on:false 關、沒帶 on 不動；回應帶 on', () => {
+  const e = base({ off: true });
+  const A = Object.assign({ id: 'r1', decision: 'approve' }, MGR);
+  assert.strictEqual(e.svc('svc_set_upper', { emp_ids: [] }).on, false); assert.strictEqual(e.props.REQ_UPPER_ON, undefined);
+  assert.strictEqual(e.svc('svc_set_upper', { emp_ids: [], on: true }).on, true); assert.strictEqual(e.props.REQ_UPPER_ON, '1');
+  assert.strictEqual(e.fn('handleMgrReqDecide_', A).error, UP);
+  assert.strictEqual(e.svc('svc_set_upper', { emp_ids: ['E02'] }).on, true);   // 沒帶 on：維持開
+  assert.strictEqual(e.fn('handleMgrReqDecide_', A).error, UP);
+  assert.strictEqual(e.svc('svc_set_upper', { emp_ids: [], on: false }).on, false); assert.strictEqual(e.props.REQ_UPPER_ON, undefined);
+  assert(e.fn('handleMgrReqDecide_', A).ok);
+  assert.strictEqual(e.svc('svc_set_upper', { emp_ids: [] }).on, false);   // 沒帶 on：維持關
 });
 console.log('\n' + n + ' 項通過');

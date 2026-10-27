@@ -242,8 +242,11 @@ function handleSvcSetUpper_(body) {
     if (s && !seen[s]) { seen[s] = true; out.push(s); }
   });
   if (out.length > 500) return svcFail_('too_many', '最多 500 個 emp_id');
-  PropertiesService.getScriptProperties().setProperty('REQ_UPPER_EMPS', JSON.stringify(out));
-  return { ok: true, n: out.length };
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty('REQ_UPPER_EMPS', JSON.stringify(out));
+  if (body.on === true) props.setProperty('REQ_UPPER_ON', '1');
+  else if (body.on === false) props.deleteProperty('REQ_UPPER_ON');   // 沒帶 on＝不動開關
+  return { ok: true, n: out.length, on: props.getProperty('REQ_UPPER_ON') === '1' };
 }
 
 var SVC_STAFF_HANDLERS = {

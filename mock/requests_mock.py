@@ -338,13 +338,13 @@ def register(ns):
         return out
 
     def blocked_upper(data, mgr, r):
-        return (not _t(mgr.get("allow_acting"))) and str(r["emp_id"]) in upper_emps(data)
+        return data.get("req_upper_on") == "1" and (not _t(mgr.get("allow_acting"))) and str(r["emp_id"]) in upper_emps(data)
 
     # ── 主管 ──
     def mgr_pending(data, body):
         if not find_manager_by_key(data, body.get("mgr_key")):
             return {"ok": False, "error": "unauthorized"}
-        items, ups = [], upper_emps(data)
+        items, ups = [], (upper_emps(data) if data.get("req_upper_on") == "1" else set())
         for r in sorted([x for x in reqs(data) if x["status"] == "pending"], key=lambda x: x["created_at"]):
             o = public(r)
             o["upper"] = str(r["emp_id"]) in ups

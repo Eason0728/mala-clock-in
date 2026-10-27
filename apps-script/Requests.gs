@@ -437,12 +437,14 @@ function reqUpperExtra_() {
   return out;
 }
 /** emp_id 是不是值班主管（本店判斷 ∪ 跨店名單）。cache 可傳入 {local, extra} 避免批次重讀 */
+function reqUpperOn_() { return PropertiesService.getScriptProperties().getProperty('REQ_UPPER_ON') === '1'; }   // 總開關，預設關：只有恰好 '1' 才開
 function reqIsUpper_(empId, ss, cache) {
+  if (!cache && !reqUpperOn_()) return false;
   var c = cache || { local: reqLocalDutyMgrs_(ss || getSS()).emps, extra: reqUpperExtra_() };
   var id = String(empId == null ? '' : empId);
   return !!(id && (c.local[id] || c.extra[id]));
 }
-function reqUpperCache_(ss) { return { local: reqLocalDutyMgrs_(ss).emps, extra: reqUpperExtra_() }; }
+function reqUpperCache_(ss) { return reqUpperOn_() ? { local: reqLocalDutyMgrs_(ss).emps, extra: reqUpperExtra_() } : { local: {}, extra: {} }; }
 /** 這把主管鑰匙是不是營運系統專用（allow_acting＝TRUE）：是就放行，營運系統依管理系統名單把關 */
 function reqMgrActing_(mgr) { return reqTrue_(mgr && mgr.allow_acting); }
 

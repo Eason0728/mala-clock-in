@@ -274,6 +274,7 @@ def phase_upper(page, data):
     d.setdefault('requests', []).append(dict(base, id='rqE2EU', created_at=data['workday'] + 'T23:30:00+08:00', emp_id=p1['emp_id'],
         name=p1['name'], kind='ot', date=data['workday'], start='21:00', end='22:00', hours=1, reason='e2e 值班主管本人加班'))
     d['managers'][0]['emp_id'] = p1['emp_id']
+    d['req_upper_on'] = '1'   # 總開關 REQ_UPPER_ON（預設關）
     json.dump(d, open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
     page.reload()
     page.wait_for_selector('#pendingRequests .rq-item', timeout=20000)
@@ -300,6 +301,7 @@ def phase_upper(page, data):
     # 還原：拿掉 emp_id、刪掉這筆
     d = json.load(open(path, encoding='utf-8'))
     d['managers'][0].pop('emp_id', None)
+    d.pop('req_upper_on', None)
     d['requests'] = [x for x in d['requests'] if x['id'] != 'rqE2EU']
     json.dump(d, open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
     page.reload()

@@ -24,6 +24,7 @@ const mk = (o) => Object.assign({ id: 'r' + (rows.length + 1), created_at: '2026
   decided_at: '', decided_by: '', reject_reason: '', seen_at: '', comp: '' }, o);
 Object.assign(sb, {
   LEAVE_TYPES,
+  PropertiesService: { getScriptProperties: () => ({ getProperty: () => null }) },   // REQ_UPPER_ON 未設＝關
   normCellTs: (v) => String(v || ''), nowTaipeiIso: () => '2026-10-10T10:00:00+08:00', todayTaipeiStr: () => '2026-10-10',
   LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
   getSS: () => ({ getSheetByName: () => null }), reqSheet_: () => ({}),
