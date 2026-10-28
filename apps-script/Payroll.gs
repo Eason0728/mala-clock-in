@@ -3039,6 +3039,9 @@ function payLeaveAuth_(body, st) {
   if (checkAdmin(body)) return null;
   const key = String(body.mgr_key || '').trim();
   if (!key) return { ok: false, error: 'unauthorized' };
+  // 薪酬門市表沒有這家店（或沒填 clock_ss_id）＝薪資還沒接這家店的打卡：回 no_clock_ss，不要讀到空的 managers 再回 unauthorized
+  // （2026-10-28：墨竹亭光復 MZTGF 不在門市表，營運系統一直記成「主管金鑰無效」，其實金鑰是對的）
+  if (!payHasClock(st)) return { ok: false, error: 'no_clock_ss' };
   let mgrs = [];
   try { mgrs = payClockRead(st, 'managers'); } catch (err) { return { ok: false, error: 'no_clock_ss' }; }
   const hit = mgrs.filter(function (m) {
