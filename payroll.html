@@ -625,6 +625,7 @@ function applyScopeUi(){
   const hide=el=>{ if(el) el.style.display='none'; };
   hide(document.querySelector('#nav button[data-p="group"]'));
   hide($('storeCard')); hide($('holSync'));
+  hide($('bootstrapBtn'));   // 從打卡名冊建立：會把整個打卡名冊寫進主檔，限系統管理者（後端回 admin_only，fix2-3）
   SCOPE_OWN_IDS.forEach(id=>{ const e=$(id); if(e){ e.checked=true; e.disabled=true; } });
   if(typeof renderCfgScope==='function') renderCfgScope();
 }
@@ -682,8 +683,10 @@ async function bootstrapFromRoster(){
   if(!confirm('從打卡名冊建立主檔？\n\n會把打卡系統名冊裡、還沒在主檔的同仁自動加進來（含正確員工編號），金額欄位先給空白／0。\n已存在的人不會被覆蓋。\n\n建立後請逐一填上金額，再按「儲存主檔」。')) return;
   const r=await post('payroll_bootstrap',{});
   if(!r.ok){toast('建立失敗：'+(r.error||''),true);return}
-  if(!r.added||!r.added.length){toast('名冊裡的同仁都已在主檔，沒有新增。');await boot();return}
-  toast('已從打卡名冊新增 '+r.added.length+' 人：'+r.added.join('、')+'。請填上金額後儲存主檔。');
+  // 後端回 {added:<人數>, names:[姓名...]}（payroll-scope fix2-3 修正：以前當成陣列讀 r.added.length，永遠顯示「沒有新增」）
+  const names=Array.isArray(r.names)?r.names:[], cnt=Number(r.added)||names.length;
+  if(!cnt){toast('名冊裡的同仁都已在主檔，沒有新增。');await boot();return}
+  toast('已從打卡名冊新增 '+cnt+' 人'+(names.length?'：'+names.join('、'):'')+'。請填上金額後儲存主檔。');
   await boot();
 }
 
@@ -2171,14 +2174,16 @@ function staffDiff(master,roster,store){
        對不到、狀態不明、單位沒填或沒對應薪酬門市＝名單資料不完整、系統無法判斷 → check（待確認，沒有按鈕）。 */
     if(!x){ items.push({kind:'check',row:e,x,store,why:'同仁名單對不到這個打卡編號，請先到同仁名單補打卡對照'}); return; }
     let why='';
+    /* 負責門市（payroll-scope fix2-2）：平台對薪資不歸負責門市的編號只回 {state, pay_store, pay_none}，
+       沒有 name／unit_name／here → 文字一律可缺（不印 undefined、不印空單位） */
     if(x.state!=='active'){
       const nm=(SYNC_STATE[x.state]||x.state)+(x.name?'（'+x.name+'）':'');
       if(x.state==='disabled'||x.state==='left') why=nm;
       else { items.push({kind:'check',row:e,x,store,why:nm+'，無法判斷是否在職，請先到同仁名單確認'}); return; }
     }
-    else if(x.pay_none) why='一悟品牌辦公室尚未設薪資門市（'+(x.unit_name||'—')+'）';   // Eason 2026-10-28：一悟薪資先不建
+    else if(x.pay_none) why='一悟品牌辦公室尚未設薪資門市'+(x.unit_name?'（'+x.unit_name+'）':'');   // Eason 2026-10-28：一悟薪資先不建
     else if(!x.pay_store){ items.push({kind:'check',row:e,x,store,why:'所屬單位是「'+(x.unit_name||'未填')+'」，沒有對應的薪酬門市，請先到同仁名單補所屬單位'}); return; }
-    else if(x.pay_store!==store) why='所屬單位是「'+(x.unit_name||'—')+'」，薪資應歸 '+x.pay_store;
+    else if(x.pay_store!==store) why=(x.unit_name?'所屬單位是「'+x.unit_name+'」，':'')+'薪資應歸 '+x.pay_store;
     if(why){ items.push({kind:'stop',row:e,x,why,store}); return; }
     if(syncNorm(x.name)!==syncNorm(e.name)) items.push({kind:'name',row:e,x,store});
   });
@@ -2192,7 +2197,9 @@ async function loadStaffSync(force){
   if(force||!SYNC_ROSTER||SYNC_KEY!==key){
     // 換門市：舊門市的清單與按鈕先拿掉（讀取期間按到＝把 A 店的人寫進 B 店，mala-clock-in#11 審查）
     if(SYNC_KEY!==key){ SYNC_ROSTER=null; SYNC_KEY=''; SYNC_ITEMS=[]; box.style.display=''; box.innerHTML='<span style="color:var(--muted);font-size:13px">同仁名單比對讀取中…</span>'; }
-    const r=await post('payroll_dzy_staff',{store:key});   // 薪資後端 payStore('')＝SSLGF，同一個慣例
+    // emp_ids＝本店主檔的編號：平台 ids 只回這些（payroll-scope fix2-2，少傳別店對照）；差異清單 act 只查主檔的人
+    const empIds=[]; (MASTER||[]).forEach(e=>{ const k=String(e&&e.emp_id!=null?e.emp_id:'').trim(); if(k&&empIds.indexOf(k)<0) empIds.push(k); });
+    const r=await post('payroll_dzy_staff',{store:key,emp_ids:empIds});   // 薪資後端 payStore('')＝SSLGF，同一個慣例
     if(syncCurStore()!==key) return;   // 等的時候切了門市
     if(!r.ok){ SYNC_ROSTER=null; SYNC_KEY='';
       box.style.display=''; box.innerHTML='<span style="color:var(--muted);font-size:13px">同仁名單比對暫時讀不到（'+esc(r.message||r.error||'')+'）</span>'; return; }

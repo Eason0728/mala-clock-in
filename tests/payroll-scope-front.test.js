@@ -135,6 +135,27 @@ function load({ EMBED, SCOPE, master, perCall }) {
     ok((await run(false, ['CF'])).join('|') === '3,PUNCH9,T001,T002', 'saveAttScoped：非嵌入 → 照舊全送');
   }
 
+  // bootstrapHidden（fix2-3）：有範圍時藏「從打卡名冊建立」（後端也擋 admin_only）
+  t = load({ EMBED: true, SCOPE: ['CF'] }); t.els.bootstrapBtn = mkEl(); t.api.applyScopeUi();
+  ok(t.els.bootstrapBtn.style.display === 'none', 'bootstrapHidden：有範圍 → 藏「從打卡名冊建立」');
+  t = load({ EMBED: true, SCOPE: '*' }); t.els.bootstrapBtn = mkEl(); t.api.applyScopeUi();
+  ok(!t.els.bootstrapBtn.style.display, "bootstrapHidden：SCOPE='*' → 照常顯示");
+
+  // bootstrapResult（fix2-3，既有契約錯誤）：後端回 {added:<人數>, names:[...]}，不是 added 陣列
+  {
+    const bsSrc = fn('bootstrapFromRoster');
+    const runBs = async (resp) => {
+      const c = { toasts: [], confirm: () => true, boot: async () => {}, post: async () => resp };
+      c.toast = (m) => c.toasts.push(m);
+      vm.createContext(c); vm.runInContext(bsSrc + '\nthis.go=bootstrapFromRoster;', c);
+      await c.go(); return c.toasts.join('|');
+    };
+    const m1 = await runBs({ ok: true, added: 2, names: ['測試甲', '測試乙'] });
+    ok(/新增 2 人：測試甲、測試乙/.test(m1) && !/沒有新增/.test(m1), 'bootstrapResult：added=2 → 「新增 2 人：測試甲、測試乙」（' + m1 + '）');
+    const m0 = await runBs({ ok: true, added: 0, names: [] });
+    ok(/沒有新增/.test(m0), 'bootstrapResult：added=0 → 「沒有新增」');
+  }
+
   console.log((fail ? 'FAIL ' : '全部通過 ') + pass + '/' + (pass + fail));
   process.exit(fail ? 1 : 0);
 })();
