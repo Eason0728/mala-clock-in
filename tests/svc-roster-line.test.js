@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const SRC = path.join(__dirname, '..', 'apps-script');
 const CODE = fs.readFileSync(path.join(SRC, 'Code.gs'), 'utf8');
 const SVC = fs.readFileSync(path.join(SRC, 'SvcStaff.gs'), 'utf8');
+const REQ = fs.readFileSync(path.join(SRC, 'Requests.gs'), 'utf8');   // svc_roster 用到 reqLocalDutyMgrs_（部署時同專案全域）
 const VEC = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'line-h-vector.json'), 'utf8'));
 
 function FakeSheet(headers, rows) { this.data = [headers.slice()].concat(rows.map(r => r.slice())); }
@@ -44,7 +45,7 @@ function env(props, roster) {
       formatDate: (d, tz, f) => { const s = new Date(d.getTime() + 8 * 3600000).toISOString(); return f === 'yyyy-MM-dd' ? s.slice(0, 10) : s.slice(0, 19) + '+08:00'; } },
     ContentService: { MimeType: { JSON: 'json', TEXT: 'text' }, createTextOutput: s => ({ s, setMimeType() { return this; }, getContent() { return this.s; } }) },
   };
-  vm.createContext(sb); vm.runInContext(CODE, sb); vm.runInContext(SVC, sb);
+  vm.createContext(sb); vm.runInContext(CODE, sb); vm.runInContext(REQ, sb); vm.runInContext(SVC, sb);
   const call = () => JSON.parse(JSON.stringify(vm.runInContext('(function(b){return SVC_STAFF_HANDLERS.svc_roster(b);})', sb)({ action: 'svc_roster', v: 1, svc_key: all.STAFF_SVC_KEY })));
   return { call, sb };
 }

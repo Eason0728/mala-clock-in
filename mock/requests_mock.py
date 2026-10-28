@@ -315,13 +315,43 @@ def register(ns):
         save_data(data)
         return {"ok": True, "request": public(r)}
 
+    # ── 值班主管本人的申請改由上層審（同 Requests.gs reqLocalDutyMgrs_／reqIsUpper_）──
+    UPPER_MSG = "這是值班主管本人的申請，請由上層主管在管理系統（人資部門 → 考勤管理 → 申請審核）審核"
+
+    def _t(v):
+        return v is True or str(v).lower() == "true"
+
+    def upper_emps(data):
+        out = set(str(x) for x in data.get("req_upper_emps", []) if isinstance(x, str) and x)
+        roster = [r for r in data.get("roster", []) if _t(r.get("active")) and str(r.get("emp_id", "")) != ""]
+        for m in data.get("managers", []):
+            if not _t(m.get("active")) or _t(m.get("allow_acting")):
+                continue
+            eid = str(m.get("emp_id") or "").strip()
+            if eid:
+                out.add(eid)
+                continue
+            nk = "".join(str(m.get("name", "")).split())
+            for r in roster:
+                if nk and "".join(str(r.get("name", "")).split()) == nk:
+                    out.add(str(r["emp_id"]))
+        return out
+
+    def acting_pass(mgr, body):
+        v = body.get("acting_name")
+        return _t(mgr.get("allow_acting")) and isinstance(v, str) and v.strip() != "" and len(v.strip()) <= 40
+
+    def blocked_upper(data, mgr, r, body):
+        return data.get("req_upper_on") == "1" and (not acting_pass(mgr, body)) and str(r["emp_id"]) in upper_emps(data)
+
     # ── 主管 ──
     def mgr_pending(data, body):
         if not find_manager_by_key(data, body.get("mgr_key")):
             return {"ok": False, "error": "unauthorized"}
-        items = []
+        items, ups = [], (upper_emps(data) if data.get("req_upper_on") == "1" else set())
         for r in sorted([x for x in reqs(data) if x["status"] == "pending"], key=lambda x: x["created_at"]):
             o = public(r)
+            o["upper"] = str(r["emp_id"]) in ups
             o["summary"], o["attach_id"] = summary(r), r.get("attach_id", "")
             if ddiff(r["date"], today_str()) <= 0:
                 o["punches"] = day_punches(data, r["emp_id"], r["date"])
@@ -342,6 +372,8 @@ def register(ns):
             return {"ok": False, "error": "not_found", "message": "找不到這筆申請"}
         if r["status"] != "pending":
             return {"ok": False, "error": "not_pending", "message": "同仁已經取消這筆申請" if r["status"] == "cancelled" else "這筆已經處理過了"}
+        if blocked_upper(data, mgr, r, body):
+            return {"ok": False, "error": "upper_review", "message": UPPER_MSG}
         if dec == "approve" and needs_proof(r):
             return {"ok": False, "error": "need_proof", "message": r["leave_type"] + "要附證明，同仁補上後才能核准（退回不受影響）"}
         r.update({"status": "approved" if dec == "approve" else "rejected", "decided_at": iso_now(), "decided_by": mgr["name"],
@@ -363,6 +395,8 @@ def register(ns):
         if r["status"] != "approved":
             msg = "這筆已經作廢了" if r["status"] == "voided" else ("這筆還在審核中，請用退回" if r["status"] == "pending" else "只有已核准的申請可以作廢")
             return {"ok": False, "error": "not_approved", "message": msg}
+        if blocked_upper(data, mgr, r, body):
+            return {"ok": False, "error": "upper_review", "message": UPPER_MSG}
         r.update({"status": "voided", "voided_at": iso_now(), "voided_by": mgr["name"], "void_reason": reason})
         save_data(data)
         return {"ok": True, "id": r["id"], "status": "voided"}
@@ -390,6 +424,8 @@ def register(ns):
                 skipped.append({"id": i, "reason": "找不到這筆申請"})
             elif r["status"] != "pending":
                 skipped.append({"id": i, "reason": "同仁已經取消這筆申請" if r["status"] == "cancelled" else "這筆已經處理過了"})
+            elif blocked_upper(data, mgr, r, body):
+                skipped.append({"id": i, "reason": "值班主管本人的申請，送上層審核"})
             elif needs_proof(r):
                 skipped.append({"id": i, "reason": r["leave_type"] + "還沒附證明"})
             else:
@@ -437,10 +473,13 @@ def register(ns):
         if not find_manager_by_key(data, body.get("mgr_key")):
             return {"ok": False, "error": "unauthorized"}
         by = {}
+        mgr = find_manager_by_key(data, body.get("mgr_key"))
+        ups = upper_emps(data) if (data.get("req_upper_on") == "1" and not acting_pass(mgr, body)) else set()
         for r in reqs(data):
             if r["date"] == body.get("date") and r["status"] == "approved":
                 o = public(r)
                 o["summary"] = summary(r)
+                o["upper"] = str(r["emp_id"]) in ups
                 by.setdefault(r["emp_id"], []).append(o)
         return {"ok": True, "date": body.get("date"), "by_emp": by}
 
