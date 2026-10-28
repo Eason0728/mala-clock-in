@@ -56,5 +56,18 @@ vm.runInContext(`payClockRead = function(st, sheet){ return sheet === 'managers'
 chk('active=false → unauthorized',
     call('handlePayrollLeaveOptions', { mgr_key: 'MGRKEY', store: '' }).error, 'unauthorized');
 
+console.log('\n══ 薪酬門市表沒有這家店（未接打卡）══');
+vm.runInContext(`payClockRead = function(st, sheet){ return sheet === 'managers'
+    ? [{ key:'MGRKEY', name:'值班主管', active:'true' }] : []; };`, sb);
+chk('未建門市 + 主管金鑰 → no_clock_ss（不是 unauthorized）',
+    call('handlePayrollLeaveOptions', { mgr_key: 'MGRKEY', store: 'MZTGF' }).error, 'no_clock_ss');
+chk('未建門市 + 沒帶金鑰 → 仍是 unauthorized',
+    call('handlePayrollLeaveOptions', { store: 'MZTGF' }).error, 'unauthorized');
+chk('剩餘特休同一條驗證 → no_clock_ss',
+    call('handlePayrollAnnualLeft', { mgr_key: 'MGRKEY', store: 'MZTGF' }).error, 'no_clock_ss');
+setAdmin(true);
+chk('未建門市 + 管理金鑰 → 照舊放行', call('handlePayrollLeaveOptions', { admin_key: 'ADMINKEY', store: 'MZTGF' }).ok, true);
+setAdmin(false);
+
 console.log(f ? `\n❌ ${f} 項失敗（通過 ${p}）` : `\n✅ 假別額度身分驗證全部正確 (${p}/${p})`);
 process.exit(f ? 1 : 0);
