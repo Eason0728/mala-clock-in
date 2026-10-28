@@ -243,7 +243,11 @@ function payClockSS(store, soft) {
   }
   else {
     try { ss = SpreadsheetApp.openById(id); }
-    catch (e) { throw new Error('門市 ' + c + ' 的打卡試算表開不起來（clock_ss_id=' + id + '）：' + e.message); }
+    catch (e) {
+      // 試算表 ID 不回給呼叫端（Code.gs 會把例外字串當 detail 回傳）；只寫進執行紀錄給系統管理者查（payroll-scope fix2-5）
+      Logger.log('payClockSS 開不起來：門市 ' + c + ' clock_ss_id=' + id + '：' + (e && e.message));
+      throw new Error('門市 ' + c + ' 的打卡試算表開不起來，請找系統管理者檢查門市設定');
+    }
   }
   PAY_SS_CACHE[c] = ss;
   return ss;
@@ -3173,6 +3177,8 @@ function payScopeGuard_(action, body) {
   if (sc === 'BAD') return { ok: false, error: 'scope_bad', detail: 'scope 必須是 * 或門市代碼陣列' };
   if (sc === null || sc === '*') return null;
   if (PAY_SCOPE_ADMIN_ONLY.indexOf(action) >= 0) return payScopeDeny_('集團功能，限系統管理者');
+  /* 從打卡名冊建立：會把整個打卡名冊（共用打卡表時含別店的人）寫進主檔，不經 emp_out_of_scope 檢查 → 限系統管理者（fix2-3） */
+  if (action === 'payroll_bootstrap') return payScopeDeny_('admin_only');
   if (action === 'payroll_store_get') return null;
   const st = payScopeNorm_(body.store);
   const inL = function (s) { return sc.indexOf(s) >= 0; };
@@ -3201,12 +3207,14 @@ function payScopeGuard_(action, body) {
       if (k && !here[k] && foreign[k]) return payScopeDeny_('emp_out_of_scope', [k]);
     }
   }
-  /* 工時／假別事件日：每個 emp_id 都要在負責門市的主檔裡（final review I2）。
-     前端 saveAtt 有範圍時只送本店主檔的人（工時表裡也有只打卡、未建主檔的編號）。 */
-  if (action === 'payroll_input_set' || action === 'payroll_leave_event_set') {
+  /* 工時／假別事件日／獎金：每個 emp_id 都要在負責門市的主檔裡（final review I2；獎金 fix2-4）。
+     前端 saveAtt 有範圍時只送本店主檔的人（工時表裡也有只打卡、未建主檔的編號）。
+     獎金 bonuses:[{emp_id,amount,...}]：金額 0 的列 handler 會略過，但這裡照樣檢查（每個非空 emp_id）。 */
+  if (action === 'payroll_input_set' || action === 'payroll_leave_event_set' || action === 'payroll_bonus_set') {
+    const listOf = function (arr) { return (Array.isArray(arr) ? arr : []).map(function (r) { return r && r.emp_id; }); };
     const ids = action === 'payroll_input_set'
       ? Object.keys(body.inputs && typeof body.inputs === 'object' ? body.inputs : {})
-      : (Array.isArray(body.events) ? body.events : []).map(function (r) { return r && r.emp_id; });
+      : listOf(action === 'payroll_bonus_set' ? body.bonuses : body.events);
     const own = {};
     payRead('master').forEach(function (m) { if (inL(payScopeNorm_(m && m.store))) own[payScopeId_(m && m.emp_id)] = true; });
     const bad = [];
@@ -3236,6 +3244,9 @@ function payScopeWrap_(handlers) {
   Object.keys(handlers).forEach(function (action) {
     const orig = handlers[action];
     handlers[action] = function (body) {
+      /* 帶 scope 的請求先驗管理金鑰再守門（fix2-1）：守門會讀主檔／工時、回 emp_ids，
+         不先驗金鑰的話，沒金鑰的人能拿 scope_forbidden／emp_out_of_scope 探出員工編號。 */
+      if (body && typeof body === 'object' && body.scope !== undefined && !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
       const deny = payScopeGuard_(action, body);
       if (deny) return deny;
       /* 有範圍時 store 先正規化（trim＋大寫）再交給 handler（final review I3）：
