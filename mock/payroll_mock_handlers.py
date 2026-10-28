@@ -459,7 +459,37 @@ def h_holiday_sync(data, body):
             'sync_from': SYNC_FROM, 'double_from': DOUBLE_FROM,
             'holidays': _holiday_list(data, body.get('store', ''))}
 
+def h_dzy_staff(data, body):
+    """管理系統同仁名單（正式由平台後端 payrollStaffRoster 回，嵌入時管理系統改道；這裡只給本機 mock 用）。
+    由主檔在職的人推出一份假名單，刻意做出四種差異讓畫面每一類都看得到：
+    第 1 位已停用、第 2 位姓名不同、第 3 位對不到編號、另加兩位假新人（一位沒有打卡編號，帶入鈕會鎖住）。"""
+    store = str(body.get('store') or 'SSLGF').upper()
+    act = [m for m in _pay(data, 'master') if str(m.get('active')).lower() == 'true']
+    staff, ids = [], {}
+    for i, m in enumerate(act):
+        eid = str(m.get('emp_id') or '').strip()
+        name = str(m.get('name') or '')
+        state = 'disabled' if i == 0 else 'active'
+        if i == 1:
+            name = name + '二'
+        if i == 2 or not eid:
+            continue
+        ids[eid] = {'emp_no': 'DZY9%02d' % i, 'name': name, 'state': state, 'unit_name': '測試門市',
+                    'pay_store': store, 'store_code': 'gf', 'here': True}
+        staff.append({'emp_no': 'DZY9%02d' % i, 'name': name, 'state': state, 'last_day': '', 'hire_date': '',
+                      'unit': 'test', 'unit_name': '測試門市', 'title': 'pt', 'title_name': '計時', 'emp_id': eid})
+    have = {str(m.get('emp_id') or '').strip() for m in _pay(data, 'master')}
+    for j, (nm, eid, title) in enumerate([('測試新人甲', 'T901', 'ft'), ('測試新人乙', '', 'pt')]):
+        staff.append({'emp_no': 'DZY99%d' % j, 'name': nm, 'state': 'active', 'last_day': '', 'hire_date': '2026-10-20',
+                      'unit': 'test', 'unit_name': '測試門市', 'title': title, 'title_name': '正職' if title == 'ft' else '計時', 'emp_id': eid})
+        if eid:
+            ids[eid] = {'emp_no': 'DZY99%d' % j, 'name': nm, 'state': 'active', 'unit_name': '測試門市',
+                        'pay_store': store, 'store_code': 'gf', 'here': True}
+    return {'ok': True, 'store': store, 'clock_store': 'gf', 'clock_store_name': '測試門市', 'staff': staff, 'ids': ids, 'unit_none': ['yiwu-hq']}
+
+
 PAYROLL_ACTIONS = {
+    'payroll_dzy_staff': h_dzy_staff,
     'payroll_bootstrap': h_bootstrap,
     'payroll_master_get': h_master_get,
     'payroll_master_set': h_master_set,

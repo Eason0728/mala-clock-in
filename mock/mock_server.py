@@ -1715,6 +1715,8 @@ try:
         return run
     ACTIONS['payroll_holiday_set'] = _persist(ACTIONS['payroll_holiday_set'])
     ACTIONS['payroll_holiday_sync'] = _persist(ACTIONS['payroll_holiday_sync'])
+    # 差異清單「帶入／停用」要看得到寫入結果（2026-10-28）
+    ACTIONS['payroll_master_set'] = _persist(ACTIONS['payroll_master_set'])
 except ImportError:
     pass
 ACTIONS['payroll_attendance_export'] = handle_payroll_attendance_export
