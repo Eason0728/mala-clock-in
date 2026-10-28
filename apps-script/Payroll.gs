@@ -3139,6 +3139,85 @@ function handlePayrollLeaveEventSet(body) {
   return { ok: true, saved: incoming.length };
 }
 
+/* ═══════════════════ 門市範圍（body.scope）守門與回應裁切 ═══════════════════
+ * 管理系統（平台）負責門市權限，經 Mac mini 代轉時每個薪資請求都帶 body.scope：
+ *   沒有欄位／'*' → 不限制（舊路與系統管理者）；字串陣列 → 只能碰名單內的門市；其他形狀 → scope_bad。
+ * 只守門與裁切，不改任何計算。比較前門市代碼一律 trim＋大寫（payStore 再補預設店）。 */
+const PAY_SCOPE_ADMIN_ONLY = ['payroll_group', 'payroll_store_set', 'payroll_holiday_sync', 'payroll_get'];
+
+function payScopeNorm_(v) { return payStore(String(v == null ? '' : v).trim()).toUpperCase(); }
+
+/** 回 null（沒欄位）｜'*'｜正規化後的門市陣列｜'BAD' */
+function payScopeOf_(body) {
+  if (!body || typeof body !== 'object' || body.scope === undefined) return null;
+  const s = body.scope;
+  if (s === '*') return '*';
+  if (!Array.isArray(s)) return 'BAD';
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    if (typeof s[i] !== 'string' || !s[i].trim()) return 'BAD';
+    out.push(payScopeNorm_(s[i]));
+  }
+  return out;
+}
+
+function payScopeDeny_(detail) { return { ok: false, error: 'scope_forbidden', detail: detail }; }
+
+/** 請求端守門：通過回 null，否則回要直接回給呼叫端的錯誤物件 */
+function payScopeGuard_(action, body) {
+  const sc = payScopeOf_(body);
+  if (sc === 'BAD') return { ok: false, error: 'scope_bad', detail: 'scope 必須是 * 或門市代碼陣列' };
+  if (sc === null || sc === '*') return null;
+  if (PAY_SCOPE_ADMIN_ONLY.indexOf(action) >= 0) return payScopeDeny_('集團功能，限系統管理者');
+  if (action === 'payroll_store_get') return null;
+  const st = payScopeNorm_(body.store);
+  const inL = function (s) { return sc.indexOf(s) >= 0; };
+  if (action === 'payroll_master_get' && sc.length === 0) return null;   // 空名單：回空殼（見 trim）
+  if (action === 'payroll_config_set' && !String(body.store || '').trim()) return payScopeDeny_('集團預設參數限系統管理者');
+  if (action === 'payroll_leave_type_set' && !String(body.store || '').trim()) return payScopeDeny_('集團共用假別限系統管理者');
+  if (!inL(st)) return payScopeDeny_('門市 ' + st + ' 不在負責範圍');
+  if (action === 'payroll_master_set') {
+    const rows = Array.isArray(body.master) ? body.master : [];
+    for (let i = 0; i < rows.length; i++) {
+      const to = payScopeNorm_((rows[i] && rows[i].store) || st);
+      if (!inL(to)) return payScopeDeny_('不能把人員移到負責範圍外的門市 ' + to);
+    }
+  }
+  return null;
+}
+
+/** 回應端裁切：scope 為陣列時，stores 只留名單內且去掉 clock_ss_id；master_get 一律多回 scope */
+function payScopeTrim_(action, body, res) {
+  if (!res || typeof res !== 'object') return res;
+  const sc = payScopeOf_(body);
+  if (action === 'payroll_master_get' && res.ok) res.scope = (Array.isArray(sc) ? sc : '*');
+  if (!Array.isArray(sc)) return res;
+  if (['payroll_master_get', 'payroll_month', 'payroll_store_get'].indexOf(action) >= 0 && Array.isArray(res.stores)) {
+    res.stores = res.stores.filter(function (s) { return sc.indexOf(payScopeNorm_(s && s.code)) >= 0; })
+      .map(function (s) { const c = {}; Object.keys(s).forEach(function (k) { if (k !== 'clock_ss_id') c[k] = s[k]; }); return c; });
+  }
+  return res;
+}
+
+/** 就地把每個 handler 包成 guard → 原 handler → trim（Code.gs 於請求時才複製 PAYROLL_HANDLERS，所以就地包有效） */
+function payScopeWrap_(handlers) {
+  Object.keys(handlers).forEach(function (action) {
+    const orig = handlers[action];
+    handlers[action] = function (body) {
+      const deny = payScopeGuard_(action, body);
+      if (deny) return deny;
+      if (action === 'payroll_master_get') {
+        const sc = payScopeOf_(body);
+        if (Array.isArray(sc) && sc.length === 0) {
+          if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+          return { ok: true, stores: [], master: [], config: {}, scope: [] };
+        }
+      }
+      return payScopeTrim_(action, body, orig(body));
+    };
+  });
+}
+
 const PAYROLL_HANDLERS = {
   payroll_setup:        handlePayrollSetup,
   payroll_bootstrap:    handlePayrollBootstrap,
@@ -3176,6 +3255,7 @@ const PAYROLL_HANDLERS = {
   pnlPayroll:              handlePnlPayroll_,
   pnlLaborEstimate:        handlePnlLaborEstimate_,
 };
+payScopeWrap_(PAYROLL_HANDLERS);
 
 // ---------- 損益系統唯讀端點（T14，mala-pnl-auto#15） ----------
 // 給集團「通用門市自動損益系統」讀某門市當月人事成本（依穩定鍵）用。
