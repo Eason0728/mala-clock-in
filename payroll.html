@@ -257,6 +257,9 @@ html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬管理
 
 <main>
 
+<!-- 同仁名單 ↔ 薪資主檔差異（2026-10-28，Eason 選 B：不自動建檔，財務按了才寫入）；只在管理系統裡顯示 -->
+<div class="card" id="staffSync" style="display:none;padding:14px 18px"></div>
+
 <section class="panel on" id="p-dash">
   <div class="stats" id="dashStats"></div>
   <div class="card">
@@ -831,6 +834,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     if(r.stores&&r.stores.length){STORE_LIST=r.stores;renderStoreSel()}
     // 主檔與參數都會隨門市不同 → 切換門市時一併更新（否則會看到別店的員工）
     if(r.master){MASTER=r.master;renderEmp()}
+    loadStaffSync();   // 背景跑，不擋畫面
     // 紅字天數也隨門市不同（本店專屬／集團共用），而且「來源」決定存到哪一層 → 切門市一定要重載
     if(r.holidays) applyHol(r.holidays);
     if(r.config){CFG=r.config;CFG_DIRTY={}}
@@ -2071,6 +2075,143 @@ async function saveMaster(btn){
     const r=await post('payroll_master_set',{master:MASTER});
     if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
     renderEmp();toast('主檔已儲存');return true;
+  });
+}
+
+/* ═════ 同仁名單 ↔ 薪資主檔差異（2026-10-28，Eason 選 B 方案）═════
+   管理系統的同仁名單是正本：選一家門市就比對「同仁名單在職的人」和「薪資主檔在職的人」，逐人列出
+   ①新人（名單在職、主檔沒有）②該停用（主檔在職、名單已停用／離職／不屬於這家店）③姓名不一致。
+   ⚠ 絕不自動建檔：財務按「帶入／停用」才寫入，而且寫之前重新讀一次主檔、原樣送回再改那一列（payroll_master_set 是整批覆寫該店）。
+   ⚠ 「屬於哪家店」看同仁名單的所屬單位（平台後端 payrollStaffRoster 算好），不看打卡名冊——
+      去別店支援、共用打卡機的人在打卡名冊裡，但不是這家店的新人（同一人兩份主檔＝領兩份薪水）。
+   名單只有管理系統拿得到：嵌入模式由管理系統改送平台後端；本機 mock 由 mock_server 回假資料；舊 ?k= 直連不顯示。 */
+let SYNC_ROSTER=null, SYNC_KEY='', SYNC_OPEN=false, SYNC_ITEMS=[], SYNC_BUSY=false;
+const syncNorm=v=>String(v==null?'':v).replace(/[\s　]+/g,'');
+const SYNC_STATE={disabled:'同仁名單已停用',left:'已離職',missing:'同仁名單查無此人'};
+/* 純函式（tests/staff-sync.test.js 直接抽出來跑）：master＝該店主檔、roster＝payrollStaffRoster 的 data */
+function staffDiff(master,roster,store){
+  const items=[];
+  const act=master.filter(e=>String(e.active)==='true'||e.active===true);
+  const byId={}; master.forEach(e=>{ const k=String(e.emp_id||'').trim(); if(k) byId[k]=e; });
+  const staff=(roster&&roster.staff)||[], ids=(roster&&roster.ids)||{};
+  const here=staff.filter(p=>p.state==='active');
+  here.forEach(p=>{
+    const row=p.emp_id?byId[p.emp_id]:null;
+    if(row&&(String(row.active)==='true'||row.active===true)) return;
+    const same=act.filter(e=>syncNorm(e.name)&&syncNorm(e.name)===syncNorm(p.name)&&String(e.emp_id||'').trim()!==p.emp_id);
+    items.push({kind:row?'reactivate':'new',p,row,
+      block:!p.emp_id?'還沒有本店打卡帳號（打卡編號），等打卡名冊建好再帶入':
+            (same.length?'主檔已有同名「'+same[0].name+'」（編號 '+same[0].emp_id+'），請先確認是不是同一人':'')});
+  });
+  act.forEach(e=>{
+    const id=String(e.emp_id||'').trim(), x=id?ids[id]:null;
+    let why='';
+    if(!x) why='同仁名單對不到這個打卡編號';
+    else if(x.state!=='active') why=(SYNC_STATE[x.state]||x.state)+(x.name?'（'+x.name+'）':'');
+    else if(x.pay_store!==store) why='所屬單位是「'+(x.unit_name||'—')+'」，'+(x.pay_store?'薪資應歸 '+x.pay_store:'目前沒有對應的薪酬門市');
+    if(why){ items.push({kind:'stop',row:e,x,why}); return; }
+    if(syncNorm(x.name)!==syncNorm(e.name)) items.push({kind:'name',row:e,x});
+  });
+  return {n:here.length,m:act.length,items};
+}
+async function loadStaffSync(force){
+  const box=$('staffSync'); if(!box) return;
+  if(!EMBED&&!LOCAL_HOST){ box.style.display='none'; return; }
+  const key=STORE;
+  if(force||!SYNC_ROSTER||SYNC_KEY!==key){
+    const r=await post('payroll_dzy_staff',{store:String(STORE||'SSLGF')});   // 薪資後端 payStore('')＝SSLGF，同一個慣例
+    if(STORE!==key) return;   // 等的時候切了門市
+    if(!r.ok){ SYNC_ROSTER=null; SYNC_KEY='';
+      box.style.display=''; box.innerHTML='<span style="color:var(--muted);font-size:13px">同仁名單比對暫時讀不到（'+esc(r.message||r.error||'')+'）</span>'; return; }
+    SYNC_ROSTER=r; SYNC_KEY=key;
+  }
+  renderStaffSync();
+}
+function renderStaffSync(){
+  const box=$('staffSync'); if(!box||!SYNC_ROSTER) return;
+  const d=staffDiff(MASTER,SYNC_ROSTER,String(SYNC_ROSTER.store||STORE||'SSLGF').toUpperCase());
+  SYNC_ITEMS=d.items;
+  const cnt={new:0,stop:0,nm:0}; d.items.forEach(it=>{cnt[it.kind==="reactivate"?"new":(it.kind==="name"?"nm":it.kind)]++});
+  box.style.display='';
+  const head=`<div class="row" style="gap:14px;align-items:center;flex-wrap:wrap">
+    <b style="font-size:15px">同仁名單 ${d.n} 人／薪資主檔 ${d.m} 人</b>
+    ${d.items.length?`<span style="font-size:13px">新人 <b>${cnt.new}</b>・該停用 <b>${cnt.stop}</b>・姓名不一致 <b>${cnt.nm}</b></span>
+      <button class="btn ghost" style="padding:5px 12px" onclick="SYNC_OPEN=!SYNC_OPEN;renderStaffSync()">${SYNC_OPEN?'收起':'看清單'}</button>`
+      :'<span style="color:var(--ok);font-size:13px;font-weight:800">✓ 對得上</span>'}
+    <button class="btn ghost" style="padding:5px 12px" onclick="loadStaffSync(true)">重新比對</button></div>`;
+  if(!SYNC_OPEN||!d.items.length){ box.innerHTML=head; return; }
+  const sec=(title,hint,rows)=>rows.length?`<div style="margin-top:12px"><div style="font-weight:800">${title}</div>
+    <div style="color:var(--muted);font-size:12px;margin:2px 0 6px">${hint}</div>${rows.join('')}</div>`:'';
+  const line=(main,btn)=>`<div class="row" style="gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--line)">
+    <div style="flex:1;min-width:220px;font-size:13.5px">${main}</div>${btn}</div>`;
+  const rowsNew=[], rowsStop=[], rowsName=[];
+  d.items.forEach((it,i)=>{
+    if(it.kind==='new'||it.kind==='reactivate'){
+      const p=it.p;
+      const main=`<b>${esc(p.name)}</b> <span style="color:var(--muted)">${esc(p.emp_no)}・${esc(p.unit_name)}・${esc(p.title_name)}・打卡編號 ${esc(p.emp_id||'—')}</span>`
+        +(it.kind==='reactivate'?' <span class="tag">主檔裡是停用</span>':'')
+        +(it.block?`<div class="bad" style="font-size:12px">${esc(it.block)}</div>`:'');
+      rowsNew.push(line(main,`<button class="btn" style="padding:5px 14px" ${it.block?'disabled':''} onclick="syncAdd(${i},this)">${it.kind==='reactivate'?'重新啟用':'帶入'}</button>`));
+    } else if(it.kind==='stop'){
+      rowsStop.push(line(`<b>${esc(it.row.name)}</b> <span style="color:var(--muted)">編號 ${esc(it.row.emp_id||'—')}</span><div style="font-size:12px">${esc(it.why)}</div>`,
+        `<button class="btn ghost" style="padding:5px 14px" onclick="syncStop(${i},this)">停用</button>`));
+    } else {
+      rowsName.push(line(`編號 ${esc(it.row.emp_id)}：主檔「<b>${esc(it.row.name)}</b>」／同仁名單「<b>${esc(it.x.name)}</b>」`,
+        `<span style="color:var(--muted);font-size:12px">請到「員工設定」改成一致</span>`));
+    }
+  });
+  box.innerHTML=head
+    +sec('① 新人：同仁名單在職、薪資主檔沒有','按「帶入」只加一列（姓名、編號、到職日、正職／計時），底薪／時薪等金額留空，請到「員工設定」填好再儲存。',rowsNew)
+    +sec('② 該停用：薪資主檔還在職，但同仁名單已停用、離職或不屬於這家店','按「停用」只把「在職」取消勾選，不刪資料、不改離職日。',rowsStop)
+    +sec('③ 姓名不一致','同一個打卡編號，兩邊姓名不同（請假紀錄靠姓名對人，名字不一樣會漏扣）。',rowsName);
+}
+/* 寫入前一律重新讀主檔、原樣送回只改那一列（payroll_master_set 整批覆寫該店） */
+async function syncWrite(btn,label,mutate){
+  if(SYNC_BUSY) return; SYNC_BUSY=true;
+  if(btn){btn.disabled=true;btn.textContent='處理中…';}
+  try{
+    const g=await post('payroll_master_get',{});
+    if(!g.ok||!Array.isArray(g.master)){ toast('讀取主檔失敗，沒有寫入',true); return; }
+    const rows=g.master.map(e=>Object.assign({},e));
+    const msg=mutate(rows); if(typeof msg!=='string'){ return; }
+    const r=await post('payroll_master_set',{master:rows});
+    if(!r.ok){ toast('寫入失敗：'+(r.message||r.error||''),true); return; }
+    const g2=await post('payroll_master_get',{});
+    MASTER=g2.ok&&Array.isArray(g2.master)?g2.master:rows;
+    renderEmp(); renderAtt(); vClear(); renderStaffSync(); toast(msg);
+  } finally { SYNC_BUSY=false; if(btn&&btn.isConnected){btn.disabled=false;btn.textContent=label;} }
+}
+function syncAdd(i,btn){
+  const it=SYNC_ITEMS[i]; if(!it||it.block) return;
+  const p=it.p, ft=['pt'].indexOf(p.title)===-1;
+  if(!confirm((it.kind==='reactivate'?'把「'+p.name+'」在薪資主檔重新啟用？':'把「'+p.name+'」帶入薪資主檔？')
+    +'\n\n編號 '+p.emp_id+'・'+(ft?'正職':'計時')+(p.hire_date?'・到職 '+p.hire_date:'')
+    +'\n底薪／時薪、加班費率、勞健保等金額都留空，請到「員工設定」填好後按「儲存主檔」。'
+    +'\n\n⚠ 員工設定頁如果有還沒儲存的修改，會被重新載入蓋掉。')) return;
+  return syncWrite(btn,it.kind==='reactivate'?'重新啟用':'帶入',rows=>{
+    const ex=rows.find(e=>String(e.emp_id||'').trim()===p.emp_id);
+    if(ex){
+      if(String(ex.active)==='true'||ex.active===true){ toast('主檔已經有這個編號（可能別的分頁剛加過），沒有寫入',true); return null; }
+      ex.active='true'; return '已重新啟用 '+p.name+'，請確認金額欄位';
+    }
+    rows.push({emp_id:p.emp_id,name:p.name,is_full_time:ft?'true':'false',
+      base:'',wage:'',ot_rate:'',skill_allow:'',night_allow:'',mgr_allow:'',attend_cap:'',meal_allow:'',gap_rate:'',
+      labor_ins:'',health_ins:'',group_ins:'',pension:'',dormitory:'',co_labor:'',co_health:'',co_pension:'',
+      hire_date:p.hire_date||'',leave_date:'',active:'true',store:String(STORE)});
+    return '已帶入 '+p.name+'（'+p.emp_id+'），請到「員工設定」填金額';
+  });
+}
+function syncStop(i,btn){
+  const it=SYNC_ITEMS[i]; if(!it||it.kind!=='stop') return;
+  const e=it.row;
+  if(!confirm('把「'+e.name+'」（編號 '+e.emp_id+'）在薪資主檔停用？\n\n原因：'+it.why
+    +'\n\n只取消「在職」勾選，不刪資料、不填離職日；月中離職要折算請到「員工設定」填離職日。'
+    +'\n⚠ 停用後，之後解鎖重算的月份就不會再算到這個人。'
+    +'\n⚠ 員工設定頁如果有還沒儲存的修改，會被重新載入蓋掉。')) return;
+  return syncWrite(btn,'停用',rows=>{
+    const ex=rows.find(x=>String(x.emp_id||'').trim()===String(e.emp_id||'').trim()&&String(x.name)===String(e.name));
+    if(!ex){ toast('主檔裡找不到這一列（可能剛被改過），沒有寫入',true); return null; }
+    ex.active='false'; return '已停用 '+e.name;
   });
 }
 
