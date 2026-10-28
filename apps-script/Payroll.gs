@@ -3161,7 +3161,11 @@ function payScopeOf_(body) {
   return out;
 }
 
-function payScopeDeny_(detail) { return { ok: false, error: 'scope_forbidden', detail: detail }; }
+function payScopeDeny_(detail, empIds) {
+  const r = { ok: false, error: 'scope_forbidden', detail: detail };
+  if (empIds) r.emp_ids = empIds;
+  return r;
+}
 
 /** 請求端守門：通過回 null，否則回要直接回給呼叫端的錯誤物件 */
 function payScopeGuard_(action, body) {
@@ -3182,9 +3186,37 @@ function payScopeGuard_(action, body) {
       const to = payScopeNorm_((rows[i] && rows[i].store) || st);
       if (!inL(to)) return payScopeDeny_('不能把人員移到負責範圍外的門市 ' + to);
     }
+    /* 新加進本店主檔的編號，若已出現在範圍外門市的主檔或工時 → 擋（final review I2：
+       特休／假別統計以 emp_id 跨店讀工時，借別店員工的編號建檔就能動到別店的人）。本店主檔原有的人照常。 */
+    const here = {}, foreign = {};
+    payRead('master').forEach(function (m) {
+      const k = payScopeId_(m && m.emp_id), s = payScopeNorm_(m && m.store);
+      if (s === st) here[k] = true; else if (!inL(s)) foreign[k] = true;
+    });
+    let inp = [];
+    try { inp = payRead('input'); } catch (err) { inp = []; }
+    inp.forEach(function (r) { if (!inL(payScopeNorm_(r && r.store))) foreign[payScopeId_(r && r.emp_id)] = true; });
+    for (let j = 0; j < rows.length; j++) {
+      const k = payScopeId_(rows[j] && rows[j].emp_id);
+      if (k && !here[k] && foreign[k]) return payScopeDeny_('emp_out_of_scope', [k]);
+    }
+  }
+  /* 工時／假別事件日：每個 emp_id 都要在負責門市的主檔裡（final review I2）。
+     前端 saveAtt 有範圍時只送本店主檔的人（工時表裡也有只打卡、未建主檔的編號）。 */
+  if (action === 'payroll_input_set' || action === 'payroll_leave_event_set') {
+    const ids = action === 'payroll_input_set'
+      ? Object.keys(body.inputs && typeof body.inputs === 'object' ? body.inputs : {})
+      : (Array.isArray(body.events) ? body.events : []).map(function (r) { return r && r.emp_id; });
+    const own = {};
+    payRead('master').forEach(function (m) { if (inL(payScopeNorm_(m && m.store))) own[payScopeId_(m && m.emp_id)] = true; });
+    const bad = [];
+    ids.forEach(function (id) { const k = payScopeId_(id); if (k && !own[k] && bad.indexOf(k) < 0) bad.push(k); });
+    if (bad.length) return payScopeDeny_('emp_out_of_scope', bad);
   }
   return null;
 }
+
+function payScopeId_(v) { return String(v == null ? '' : v).trim(); }
 
 /** 回應端裁切：scope 為陣列時，stores 只留名單內且去掉 clock_ss_id；master_get 一律多回 scope */
 function payScopeTrim_(action, body, res) {
@@ -3206,6 +3238,14 @@ function payScopeWrap_(handlers) {
     handlers[action] = function (body) {
       const deny = payScopeGuard_(action, body);
       if (deny) return deny;
+      /* 有範圍時 store 先正規化（trim＋大寫）再交給 handler（final review I3）：
+         守門比的是正規化後的代碼，handler 不正規化，' cf ' 會寫成另一家「店」。'*'／沒欄位不動。 */
+      if (Array.isArray(payScopeOf_(body))) {
+        body.store = payScopeNorm_(body.store);
+        if (action === 'payroll_master_set' && Array.isArray(body.master)) {
+          body.master.forEach(function (m) { if (m && String(m.store == null ? '' : m.store).trim()) m.store = payScopeNorm_(m.store); });
+        }
+      }
       if (action === 'payroll_master_get') {
         const sc = payScopeOf_(body);
         if (Array.isArray(sc) && sc.length === 0) {

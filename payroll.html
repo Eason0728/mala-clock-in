@@ -658,6 +658,7 @@ function toast(t,bad){const m=$('msg');m.textContent=t;m.style.background=bad?'#
 async function post(action,body,opt){   // opt.quiet：被擋（scope_forbidden）時不跳提示（boot 的平行呼叫用）
   if(EMBED){
     const j=await bridgeCall(action,Object.assign({store:STORE},body||{}));
+    if(!j.ok&&j.error==='scope_forbidden'&&j.detail==='emp_out_of_scope'){ toast('編號 '+(j.emp_ids||[]).join('、')+' 不在你負責門市的薪資主檔，無法儲存',true); return j; }
     if(!j.ok&&j.error==='scope_forbidden'){ if(!(opt&&opt.quiet)) toast('這家門市不在你的負責範圍',true); return j; }
     if(!j.ok&&j.message) toast(j.message,true);
     return j;
@@ -800,7 +801,12 @@ async function saveAtt(){
     return;
   }
   b.disabled=true; b.classList.remove('done'); b.textContent='存取中…';
-  const r=await post('payroll_input_set',{ym:ym(),inputs:ATT});
+  /* 有負責門市範圍時只送本店主檔的人：ATT 也含只打卡、未建主檔或別店的編號（計薪只看主檔，不送不影響本店），
+     後端會擋 emp_out_of_scope（payroll-scope final review I2）。系統管理者／非嵌入照舊全送。 */
+  let sendAtt=ATT;
+  if(scopeLimited()){ const own={}; MASTER.forEach(m=>{own[String(m.emp_id).trim()]=1}); sendAtt={};
+    Object.keys(ATT||{}).forEach(k=>{ if(own[String(k).trim()]) sendAtt[k]=ATT[k]; }); }
+  const r=await post('payroll_input_set',{ym:ym(),inputs:sendAtt});
   if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.error||''),true);return}
   await doCalc();   // 存完用新工時重算帶出數字
   ATT_DIRTY=false;   // 存好了，解除未儲存提醒

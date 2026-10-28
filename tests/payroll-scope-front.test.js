@@ -111,7 +111,29 @@ function load({ EMBED, SCOPE, master, perCall }) {
   // post 對 scope_forbidden 的提示
   const postSrc = fn('post');
   ok(/scope_forbidden[\s\S]{0,120}這家門市不在你的負責範圍/.test(postSrc), 'post：scope_forbidden → 「這家門市不在你的負責範圍」');
+  ok(/emp_out_of_scope[\s\S]{0,160}不在你負責門市的薪資主檔/.test(postSrc), 'post：emp_out_of_scope → 說明是哪些編號不在負責門市主檔');
   ok(/if\(b\.dataset\.p==='group'&&!scopeLimited\(\)\) loadGroup/.test(html) && /on&&on\.dataset\.p==='group'&&!scopeLimited\(\)/.test(html), '切店與 nav 點擊不觸發 loadGroup（有限制時）');
+
+  // saveAttScoped（final review I2 配套）：有範圍時只送本店主檔的人（工時表含只打卡、未建主檔或別店的編號，後端會 emp_out_of_scope）
+  {
+    const saveSrc = fn('saveAtt');
+    ok(!!saveSrc, '找得到 saveAtt');
+    const run = async (embed, scope) => {
+      const sent = [];
+      const c = { $: () => ({ classList: { add() {}, remove() {} }, style: {} }), toast() {}, ym: () => '2026-10', doCalc: async () => {}, setTimeout() {},
+        post: async (a, b) => { sent.push({ a, b }); return { ok: true, count: 0 }; } };
+      vm.createContext(c);
+      vm.runInContext(`let EMBED=${embed}; let SCOPE=${JSON.stringify(scope)}; let ATT_DIRTY=true;
+        let MASTER=[{emp_id:'T002',name:'測試乙'},{emp_id:3,name:'數字編號'}];
+        let ATT={T002:{hours:8},'3':{hours:1},PUNCH9:{hours:5},T001:{hours:2}};
+        ${fn('scopeLimited')}\n${saveSrc}\nthis.go=saveAtt;`, c);
+      await c.go();
+      return sent.filter(x => x.a === 'payroll_input_set').map(x => Object.keys(x.b.inputs).sort().join());
+    };
+    ok((await run(true, ['CF'])).join('|') === '3,T002', 'saveAttScoped：有範圍 → 只送主檔的 T002 與 3');
+    ok((await run(true, '*')).join('|') === '3,PUNCH9,T001,T002', "saveAttScoped：SCOPE='*' → 照舊全送");
+    ok((await run(false, ['CF'])).join('|') === '3,PUNCH9,T001,T002', 'saveAttScoped：非嵌入 → 照舊全送');
+  }
 
   console.log((fail ? 'FAIL ' : '全部通過 ') + pass + '/' + (pass + fail));
   process.exit(fail ? 1 : 0);

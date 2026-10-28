@@ -128,8 +128,9 @@ console.log('\n══ 6) 重算時送出的工時來源（前端）══');
   chk('  payroll_calc 不可以再直接送 ATT', /payroll_calc',\{ym:ym\(\),inputs:ATT\}/.test(HTML), false);
   chk('  兩處都改用 CALC_INPUTS（手動重算＋切月份自動試算）',
       (HTML.match(/payroll_calc',\{ym:ym\(\),inputs:CALC_INPUTS\(\)\}/g) || []).length, 2);
+  // 2026-10-29 負責門市（payroll-scope final review I2）：有範圍時只送本店主檔的人；沒有範圍＝sendAtt 就是完整 ATT（行為見 payroll-scope-front saveAttScoped）
   chk('  儲存工時仍然要送完整 ATT（那才是存檔）',
-      /payroll_input_set',\{ym:ym\(\),inputs:ATT\}/.test(HTML), true);
+      /let sendAtt=ATT;/.test(HTML) && /payroll_input_set',\{ym:ym\(\),inputs:sendAtt\}/.test(HTML) && !/inputs:CALC_INPUTS\(\)\}\);\s*\n?\s*if\(!r\.ok\)\{b\.disabled=false;b\.textContent='儲存工時'/.test(HTML), true);
 
   // 實跑：同一份程式碼，只差在有沒有未存變更
   const SUP = { E02: { support: [{ store: 'MZTJS', hours: 84.75, rate: 0 }] } };

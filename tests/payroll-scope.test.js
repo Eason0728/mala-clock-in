@@ -110,6 +110,52 @@ chk('master_get 回空殼', call('payroll_master_get', { store: 'CF', scope: [] 
 chk('payroll_month 被擋', forbidden(call('payroll_month', { store: 'CF', scope: [], ym: '2026-10' })), true);
 chk('payroll_store_get 回空清單', call('payroll_store_get', { scope: [] }).stores, []);
 
+/* 回傳 handler 結果＋呼叫後的假資料庫；seed 可改初始資料 */
+function callDb(action, body, seed) {
+  const sb = makeCtx();
+  if (seed) seed(sb.__DB);
+  sb.__body = JSON.parse(JSON.stringify(body));
+  sb.__action = action;
+  let r;
+  try { r = vm.runInContext('PAYROLL_HANDLERS[__action](__body)', sb); } catch (e) { r = { threw: String(e && e.message) }; }
+  return { r, db: sb.__DB };
+}
+const empOut = r => forbidden(r) && r.detail === 'emp_out_of_scope';
+
+console.log('\n══ empScope（final review I2）：工時／假別事件日只能寫負責門市主檔裡的人 ══');
+chk('input_set 本店人 T002 放行', forbidden(call('payroll_input_set', { store: 'CF', scope: L, ym: '2026-10', inputs: { T002: { hours: 8 } } })), false);
+chk('input_set 夾帶別店人 T001 → emp_out_of_scope', empOut(call('payroll_input_set', { store: 'CF', scope: L, ym: '2026-10', inputs: { T002: {}, T001: { annual_h: 80 } } })), true);
+chk('input_set 主檔沒有的編號 → emp_out_of_scope', empOut(call('payroll_input_set', { store: 'CF', scope: L, ym: '2026-10', inputs: { NOPE9: { hours: 1 } } })), true);
+chk('input_set 兩家都負責 → T001 放行', forbidden(call('payroll_input_set', { store: 'CF', scope: ['CF', 'SSLGF'], ym: '2026-10', inputs: { T001: {} } })), false);
+chk('input_set 被擋時沒有寫入', callDb('payroll_input_set', { store: 'CF', scope: L, ym: '2026-10', inputs: { T001: { annual_h: 80 } } }).db.input, []);
+chk('input_set 清除（inputs:{}）放行', forbidden(call('payroll_input_set', { store: 'CF', scope: L, ym: '2026-10', inputs: {} })), false);
+chk("input_set scope '*' 不檢查員工", forbidden(call('payroll_input_set', { store: 'CF', scope: '*', ym: '2026-10', inputs: { T001: {} } })), false);
+const ev = (emp) => ({ emp_id: emp, code: 'marriage', event_date: '2026-10-01' });
+chk('leave_event_set 本店人放行', forbidden(call('payroll_leave_event_set', { store: 'CF', scope: L, events: [ev('T002')] })), false);
+chk('leave_event_set 別店人 → emp_out_of_scope', empOut(call('payroll_leave_event_set', { store: 'CF', scope: L, events: [ev('T002'), ev('T001')] })), true);
+chk('leave_event_set 主檔沒有的編號 → emp_out_of_scope', empOut(call('payroll_leave_event_set', { store: 'CF', scope: L, events: [ev(' X77 ')] })), true);
+chk('leave_event_set 空白編號列（handler 本來就丟掉）不擋', forbidden(call('payroll_leave_event_set', { store: 'CF', scope: L, events: [ev('')] })), false);
+chk('master_set 新加別店主檔裡的人 → emp_out_of_scope', empOut(call('payroll_master_set', { store: 'CF', scope: L, master: [{ emp_id: 'T002', store: 'CF' }, { emp_id: 'T001', store: 'CF' }] })), true);
+chk('master_set 新加只出現在別店工時的人 → emp_out_of_scope', empOut(callDb('payroll_master_set', { store: 'CF', scope: L, master: [{ emp_id: 'T077', store: 'CF' }] },
+  db => { db.input.push({ ym: '2026-09', emp_id: 'T077', store: 'SSLGF' }); }).r), true);
+chk('master_set 全新編號放行', forbidden(call('payroll_master_set', { store: 'CF', scope: L, master: [{ emp_id: 'T002', store: 'CF' }, { emp_id: 'N001', store: 'CF' }] })), false);
+chk('master_set 本店已有的人（別店也出現過）照常放行', forbidden(callDb('payroll_master_set', { store: 'CF', scope: L, master: [{ emp_id: 'T002', store: 'CF' }] },
+  db => { db.input.push({ ym: '2026-09', emp_id: 'T002', store: 'SSLGF' }); }).r), false);
+chk('master_set 新加負責範圍內另一家的人放行', forbidden(call('payroll_master_set', { store: 'CF', scope: ['CF', 'SSLGF'], master: [{ emp_id: 'T001', store: 'CF' }] })), false);
+chk("master_set scope '*' 不檢查", forbidden(call('payroll_master_set', { store: 'CF', scope: '*', master: [{ emp_id: 'T001', store: 'CF' }] })), false);
+
+console.log('\n══ storeNorm（final review I3）：有範圍時 store 先正規化再交給 handler ══');
+{
+  const a = callDb('payroll_input_set', { store: ' cf ', scope: L, ym: '2026-10', inputs: { T002: { hours: 3 } } });
+  chk("input_set store ' cf ' 寫在 CF", [a.r.ok, a.r.store, a.db.input.map(x => x.store)], [true, 'CF', ['CF']]);
+  const b = callDb('payroll_master_set', { store: ' cf ', scope: L, master: [{ emp_id: 'T002', name: '測試乙', store: ' cf ' }] });
+  chk("master_set store ' cf ' 覆寫 CF 原列（不重複）", [b.r.ok, b.db.master.filter(m => m.emp_id === 'T002').map(m => m.store)], [true, ['CF']]);
+  const c = callDb('payroll_master_set', { store: 'CF', scope: L, master: [{ emp_id: 'T002', store: 'cf' }] });
+  chk("master_set 列 store 'cf' 正規化成 CF", c.db.master.filter(m => m.emp_id === 'T002').map(m => m.store), ['CF']);
+  const d = callDb('payroll_leave_event_set', { store: 'cf', scope: L, events: [ev('T002')] });
+  chk("leave_event_set store 'cf' 寫在 CF", d.db.leave_event.map(x => x.store), ['CF']);
+}
+
 console.log("\n══ starIdentical：scope '*' 與沒有 scope 欄位，回應逐欄相同 ══");
 ALL.forEach(a => {
   const b = { store: 'CF', ym: '2026-10', master: [{ emp_id: 'T9', store: 'CF' }], config: { daily_hours: 8 },
