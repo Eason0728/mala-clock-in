@@ -26,7 +26,8 @@ function sandbox(over) {
   }, over || {});
   vm.createContext(sb);
   vm.runInContext(src + '\n;this.staffDiff=staffDiff;this.syncAdd=syncAdd;this.syncStop=syncStop;'
-    + 'this._set=(k,v)=>{ if(k==="items") SYNC_ITEMS=v; if(k==="roster") SYNC_ROSTER=v; };', sb);
+    + 'this._set=(k,v)=>{ if(k==="items") SYNC_ITEMS=v; if(k==="roster"){ SYNC_ROSTER=v; SYNC_KEY=v.store; } };'
+    + 'this._getItems=()=>SYNC_ITEMS;this.loadStaffSync=loadStaffSync;', sb);
   sb._calls = calls;
   return sb;
 }
@@ -109,7 +110,7 @@ async function run() {
   await sb2.syncAdd(iNew, null);
   ok(sent.length === 2 && sb2._calls.some((c) => c[0] === 'toast' && c[2] && /已經有這個編號/.test(c[1])), '2f: 主檔已有這個編號就不寫（不會建出兩列）');
   // 停用
-  const its2 = [{ kind: 'stop', row: { emp_id: 'MZTJS05', name: '甲一' }, why: '同仁名單已停用' }];
+  const its2 = [{ kind: 'stop', store: 'MZTJS', row: { emp_id: 'MZTJS05', name: '甲一' }, why: '同仁名單已停用' }];
   sb2._set('items', its2);
   await sb2.syncStop(0, null);
   ok(sent.length === 3 && sent[2].length === 3 && sent[2].find((e) => e.emp_id === 'MZTJS05').active === 'false' && sent[2].find((e) => e.emp_id === 'MZTJS05').base === 30000, '2g: 停用只改 active、列數不變');
@@ -131,6 +132,76 @@ async function run() {
   ok(sent.length === b4, '2i: 帶入鎖住的人直接呼叫也不寫');
   // 從不呼叫 bootstrap
   ok(src.indexOf('payroll_bootstrap') === -1, '2j: 差異清單這段沒有呼叫「從打卡名冊建立」');
+
+  // ── 3. 切換門市的競態（mala-clock-in#11 審查必修）：A 店清單不可寫進 B 店 ──
+  // 假 post 照正式 post 的行為：body 沒帶 store 就用「當下」的 STORE（Object.assign({store:STORE}, body)）
+  function storeSb(over) {
+    const log = [];
+    const db = { MZTJS: [{ emp_id: 'MZTJS05', name: '甲一', active: 'true', store: 'MZTJS' }], CF: [{ emp_id: 'CF01', name: '央一', active: 'true', store: 'CF' }] };
+    const box = { style: {}, innerHTML: '' };
+    let x;
+    x = sandbox(Object.assign({
+      $: (id) => (id === 'staffSync' ? box : null),
+      post: async (action, body) => {
+        const st = Object.assign({ store: x.STORE }, body || {}).store;
+        log.push([action, st]);
+        if (action === 'payroll_master_get') return { ok: true, master: JSON.parse(JSON.stringify(db[st] || [])) };
+        if (action === 'payroll_master_set') { db[st] = JSON.parse(JSON.stringify(body.master)); return { ok: true }; }
+        return { ok: false };
+      }
+    }, over || {}));
+    x._log = log; x._db = db; x._box = box;
+    return x;
+  }
+  const rosterJs = { store: 'MZTJS', staff: [{ emp_no: 'DZY002', name: '乙二', state: 'active', emp_id: 'MZTJS08', title: 'pt', hire_date: '' }], ids: {} };
+  // 3a：按下「帶入」後、確認框還開著時切到 CF
+  const s3 = storeSb();
+  s3.STORE = 'MZTJS'; s3._set('roster', rosterJs);
+  const it3 = s3.staffDiff(s3._db.MZTJS, rosterJs, 'MZTJS').items;
+  s3._set('items', it3);
+  s3.confirm = () => { s3.STORE = 'CF'; return true; };
+  await s3.syncAdd(0, null);
+  ok(s3._db.CF.length === 1 && s3._db.CF[0].emp_id === 'CF01', '3a: 確認框開著時切門市 → B 店主檔不被寫入', s3._db.CF);
+  ok(!s3._log.some((l) => l[0] === 'payroll_master_set'), '3b: 確認框開著時切門市 → 完全沒有 master_set', s3._log);
+  ok(s3._calls.some((c) => c[0] === 'toast' && /門市已切換/.test(c[1])), '3c: 提示「門市已切換，沒有寫入」');
+  // 3d：STORE 已換成 CF、畫面上還是 MZTJS 的清單（名單還在讀）就按下
+  const s4 = storeSb();
+  s4.STORE = 'MZTJS'; s4._set('roster', rosterJs);
+  s4._set('items', s4.staffDiff(s4._db.MZTJS, rosterJs, 'MZTJS').items);
+  try { s4._tag && s4._tag('MZTJS'); } catch (e) {}
+  s4.STORE = 'CF';
+  await s4.syncAdd(0, null);
+  ok(s4._db.CF.length === 1 && !s4._log.some((l) => l[0] === 'payroll_master_set'), '3d: 清單屬 A 店、目前是 B 店 → 不寫', s4._log);
+  // 3e：停用同樣守住
+  const s5 = storeSb();
+  s5.STORE = 'MZTJS';
+  s5._set('items', [{ kind: 'stop', store: 'MZTJS', row: { emp_id: 'MZTJS05', name: '甲一' }, why: 'x' }]);
+  s5.confirm = () => { s5.STORE = 'CF'; return true; };
+  await s5.syncStop(0, null);
+  ok(s5._db.MZTJS[0].active === 'true' && !s5._log.some((l) => l[0] === 'payroll_master_set'), '3e: 停用時切門市 → 不寫', s5._log);
+  // 3f：正常情況，get／set 都明確帶清單所屬門市，新列 store 也是它
+  const s6 = storeSb();
+  s6.STORE = 'MZTJS'; s6._set('roster', rosterJs);
+  s6._set('items', s6.staffDiff(s6._db.MZTJS, rosterJs, 'MZTJS').items);
+  await s6.syncAdd(0, null);
+  ok(s6._log.filter((l) => /master/.test(l[0])).every((l) => l[1] === 'MZTJS') && s6._db.MZTJS.length === 2 && s6._db.MZTJS[1].store === 'MZTJS', '3f: 正常帶入寫在清單所屬門市', s6._log);
+  // 3g：切門市後重新讀名單的期間，舊清單要先清掉
+  let release;
+  const s7 = storeSb({ });
+  s7.STORE = 'MZTJS'; s7._set('roster', rosterJs);
+  s7._set('items', s7.staffDiff(s7._db.MZTJS, rosterJs, 'MZTJS').items);
+  s7._box.innerHTML = '<button>帶入</button>';
+  s7.post = (action) => new Promise((res) => { release = () => res({ ok: true, store: 'CF', staff: [], ids: {} }); });
+  s7.STORE = 'CF';
+  const pend = s7.loadStaffSync();
+  ok(s7._getItems().length === 0 && s7._box.innerHTML.indexOf('帶入') === -1, '3g: 讀取新門市名單期間，舊門市的按鈕與清單已清掉', s7._box.innerHTML);
+  release(); await pend;
+  // 3h：職稱空白不給帶入
+  const d8 = s7.staffDiff([], { store: 'CF', staff: [{ emp_no: 'DZY050', name: '未知', state: 'active', emp_id: 'CF50', title: '' }], ids: {} }, 'CF');
+  const m9 = /function empPayBlank\(e\)\{[^\n]*\}/.exec(html);
+  const ctx9 = { n: (v) => { const x = parseFloat(v); return isNaN(x) ? 0 : x; } }; vm.createContext(ctx9); vm.runInContext(m9[0] + ';this.f=empPayBlank;', ctx9);
+  ok(ctx9.f({ active: 'true', base: '', wage: '' }) && !ctx9.f({ active: 'true', base: 30000, wage: '' }) && !ctx9.f({ active: 'false', base: '', wage: '' }) && /empPayBlank\(e\)\?/.test(html), '3i: 在職且底薪時薪都空白 → 員工設定標紅');
+  ok(d8.items.length === 1 && /職稱/.test(d8.items[0].block), '3h: 職稱空白 → 帶入鎖住（不猜正職／計時）');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed ? 1 : 0);

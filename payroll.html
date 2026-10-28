@@ -2036,6 +2036,8 @@ function addEmpRow(){
   if(el) el.focus();
 }
 function renderEmp(){
+  // 在職但底薪、時薪都空白（差異清單「帶入」的新人就是這樣）：結算會是 0 元，標紅提醒（2026-10-29；放在函式裡，output-escaping 測試會單獨抽 renderEmp 跑）
+  function empPayBlank(e){ return (String(e.active)==='true'||e.active===true)&&!n(e.base)&&!n(e.wage); }
   // 未連打卡的門市：從名冊建立按不了，明講原因
   const bb=$('bootstrapBtn');
   if(bb){ bb.disabled=!HAS_CLOCK; bb.title=HAS_CLOCK?'':'此門市尚未連結打卡系統，請用「＋ 新增同仁」手動建立'; }
@@ -2047,6 +2049,7 @@ function renderEmp(){
         <input type="text" value="${esc(e.emp_id||'')}" style="width:96px;text-align:left"
           onchange="MASTER[${i}].emp_id=this.value.trim()">
         <b style="font-size:15px">${esc(e.name||'（未命名）')}</b>
+        ${empPayBlank(e)?'<span class="tag" style="background:#c0392b;color:#fff">金額未填：底薪、時薪都空白，結算會是 0 元</span>':''}
         <label style="font-size:12.5px"><input type="checkbox" ${ft?'checked':''}
           onchange="MASTER[${i}].is_full_time=this.checked?'true':'false';renderEmp();renderAtt()"> 正職</label>
         <label style="font-size:12.5px"><input type="checkbox" ${String(e.active)==='true'?'checked':''}
@@ -2099,8 +2102,9 @@ function staffDiff(master,roster,store){
     const row=p.emp_id?byId[p.emp_id]:null;
     if(row&&(String(row.active)==='true'||row.active===true)) return;
     const same=act.filter(e=>syncNorm(e.name)&&syncNorm(e.name)===syncNorm(p.name)&&String(e.emp_id||'').trim()!==p.emp_id);
-    items.push({kind:row?'reactivate':'new',p,row,
+    items.push({kind:row?'reactivate':'new',p,row,store,
       block:!p.emp_id?'還沒有本店打卡帳號（打卡編號），等打卡名冊建好再帶入':
+            (!row&&!String(p.title||'').trim()?'同仁名單沒有職稱，無法判斷正職／計時，請先到同仁名單補職稱':'')||
             (same.length?'主檔已有同名「'+same[0].name+'」（編號 '+same[0].emp_id+'），請先確認是不是同一人':'')});
   });
   act.forEach(e=>{
@@ -2110,27 +2114,32 @@ function staffDiff(master,roster,store){
     else if(x.state!=='active') why=(SYNC_STATE[x.state]||x.state)+(x.name?'（'+x.name+'）':'');
     else if(x.pay_none) why='一悟品牌辦公室尚未設薪資門市（'+(x.unit_name||'—')+'）';   // Eason 2026-10-28：一悟薪資先不建
     else if(x.pay_store!==store) why='所屬單位是「'+(x.unit_name||'—')+'」，'+(x.pay_store?'薪資應歸 '+x.pay_store:'目前沒有對應的薪酬門市');
-    if(why){ items.push({kind:'stop',row:e,x,why}); return; }
-    if(syncNorm(x.name)!==syncNorm(e.name)) items.push({kind:'name',row:e,x});
+    if(why){ items.push({kind:'stop',row:e,x,why,store}); return; }
+    if(syncNorm(x.name)!==syncNorm(e.name)) items.push({kind:'name',row:e,x,store});
   });
   return {n:here.length,m:act.length,items};
 }
 async function loadStaffSync(force){
   const box=$('staffSync'); if(!box) return;
   if(!EMBED&&!LOCAL_HOST){ box.style.display='none'; return; }
-  const key=STORE;
+  const key=syncCurStore();
   if(force||!SYNC_ROSTER||SYNC_KEY!==key){
-    const r=await post('payroll_dzy_staff',{store:String(STORE||'SSLGF')});   // 薪資後端 payStore('')＝SSLGF，同一個慣例
-    if(STORE!==key) return;   // 等的時候切了門市
+    // 換門市：舊門市的清單與按鈕先拿掉（讀取期間按到＝把 A 店的人寫進 B 店，mala-clock-in#11 審查）
+    if(SYNC_KEY!==key){ SYNC_ROSTER=null; SYNC_KEY=''; SYNC_ITEMS=[]; box.style.display=''; box.innerHTML='<span style="color:var(--muted);font-size:13px">同仁名單比對讀取中…</span>'; }
+    const r=await post('payroll_dzy_staff',{store:key});   // 薪資後端 payStore('')＝SSLGF，同一個慣例
+    if(syncCurStore()!==key) return;   // 等的時候切了門市
     if(!r.ok){ SYNC_ROSTER=null; SYNC_KEY='';
       box.style.display=''; box.innerHTML='<span style="color:var(--muted);font-size:13px">同仁名單比對暫時讀不到（'+esc(r.message||r.error||'')+'）</span>'; return; }
     SYNC_ROSTER=r; SYNC_KEY=key;
   }
   renderStaffSync();
 }
+/* 目前操作的門市（薪資後端 payStore('')＝SSLGF，同一個慣例；一律大寫比對） */
+function syncCurStore(){ return String(STORE||'SSLGF').toUpperCase(); }
 function renderStaffSync(){
   const box=$('staffSync'); if(!box||!SYNC_ROSTER) return;
-  const d=staffDiff(MASTER,SYNC_ROSTER,String(SYNC_ROSTER.store||STORE||'SSLGF').toUpperCase());
+  if(SYNC_KEY!==syncCurStore()){ SYNC_ITEMS=[]; return; }   // 名單是別家店的：不畫按鈕
+  const d=staffDiff(MASTER,SYNC_ROSTER,String(SYNC_ROSTER.store||SYNC_KEY).toUpperCase());
   SYNC_ITEMS=d.items;
   const cnt={new:0,stop:0,nm:0}; d.items.forEach(it=>{cnt[it.kind==="reactivate"?"new":(it.kind==="name"?"nm":it.kind)]++});
   box.style.display='';
@@ -2166,30 +2175,42 @@ function renderStaffSync(){
     +sec('② 該停用：薪資主檔還在職，但同仁名單已停用、離職或不屬於這家店','按「停用」只把「在職」取消勾選，不刪資料、不改離職日。',rowsStop)
     +sec('③ 姓名不一致','同一個打卡編號，兩邊姓名不同（請假紀錄靠姓名對人，名字不一樣會漏扣）。',rowsName);
 }
-/* 寫入前一律重新讀主檔、原樣送回只改那一列（payroll_master_set 整批覆寫該店） */
-async function syncWrite(btn,label,mutate){
+/* 寫入前一律重新讀主檔、原樣送回只改那一列（payroll_master_set 整批覆寫該店）。
+   ⚠ st＝這筆差異所屬的門市，get／set 都明確帶它，不靠 post 自動帶的「目前」STORE——
+     名單還在讀、或確認框開著時切了門市，post 帶的會是另一家店（mala-clock-in#11 審查）。 */
+function syncStoreGuard(st){
+  if(st&&st===syncCurStore()) return true;
+  toast('門市已切換，沒有寫入',true); return false;
+}
+async function syncWrite(btn,label,st,mutate){
   if(SYNC_BUSY) return; SYNC_BUSY=true;
   if(btn){btn.disabled=true;btn.textContent='處理中…';}
   try{
-    const g=await post('payroll_master_get',{});
+    if(!syncStoreGuard(st)) return;
+    const g=await post('payroll_master_get',{store:st});
     if(!g.ok||!Array.isArray(g.master)){ toast('讀取主檔失敗，沒有寫入',true); return; }
+    if(!syncStoreGuard(st)) return;
     const rows=g.master.map(e=>Object.assign({},e));
     const msg=mutate(rows); if(typeof msg!=='string'){ return; }
-    const r=await post('payroll_master_set',{master:rows});
+    const r=await post('payroll_master_set',{store:st,master:rows});
     if(!r.ok){ toast('寫入失敗：'+(r.message||r.error||''),true); return; }
-    const g2=await post('payroll_master_get',{});
+    if(st!==syncCurStore()){ toast(msg+'（已寫入 '+st+'；目前畫面是別家店）'); return; }
+    const g2=await post('payroll_master_get',{store:st});
     MASTER=g2.ok&&Array.isArray(g2.master)?g2.master:rows;
     renderEmp(); renderAtt(); vClear(); renderStaffSync(); toast(msg);
   } finally { SYNC_BUSY=false; if(btn&&btn.isConnected){btn.disabled=false;btn.textContent=label;} }
 }
 function syncAdd(i,btn){
   const it=SYNC_ITEMS[i]; if(!it||it.block) return;
+  const st=it.store;   // 按下當下記住：這筆是哪一家店的差異
+  if(!syncStoreGuard(st)) return;
   const p=it.p, ft=['pt'].indexOf(p.title)===-1;
-  if(!confirm((it.kind==='reactivate'?'把「'+p.name+'」在薪資主檔重新啟用？':'把「'+p.name+'」帶入薪資主檔？')
-    +'\n\n編號 '+p.emp_id+'・'+(ft?'正職':'計時')+(p.hire_date?'・到職 '+p.hire_date:'')
+  if(!confirm((it.kind==='reactivate'?'把「'+p.name+'」在薪資主檔重新啟用？':'把「'+p.name+'」帶入 '+st+' 的薪資主檔？')
+    +'\n\n編號 '+p.emp_id+'・'+(ft?'正職':'計時')+'（依職稱「'+(p.title_name||p.title)+'」）'+(p.hire_date?'・到職 '+p.hire_date:'')
     +'\n底薪／時薪、加班費率、勞健保等金額都留空，請到「員工設定」填好後按「儲存主檔」。'
     +'\n\n⚠ 員工設定頁如果有還沒儲存的修改，會被重新載入蓋掉。')) return;
-  return syncWrite(btn,it.kind==='reactivate'?'重新啟用':'帶入',rows=>{
+  if(!syncStoreGuard(st)) return;   // 確認框開著時切了門市
+  return syncWrite(btn,it.kind==='reactivate'?'重新啟用':'帶入',st,rows=>{
     const ex=rows.find(e=>String(e.emp_id||'').trim()===p.emp_id);
     if(ex){
       if(String(ex.active)==='true'||ex.active===true){ toast('主檔已經有這個編號（可能別的分頁剛加過），沒有寫入',true); return null; }
@@ -2198,18 +2219,21 @@ function syncAdd(i,btn){
     rows.push({emp_id:p.emp_id,name:p.name,is_full_time:ft?'true':'false',
       base:'',wage:'',ot_rate:'',skill_allow:'',night_allow:'',mgr_allow:'',attend_cap:'',meal_allow:'',gap_rate:'',
       labor_ins:'',health_ins:'',group_ins:'',pension:'',dormitory:'',co_labor:'',co_health:'',co_pension:'',
-      hire_date:p.hire_date||'',leave_date:'',active:'true',store:String(STORE)});
+      hire_date:p.hire_date||'',leave_date:'',active:'true',store:st});
     return '已帶入 '+p.name+'（'+p.emp_id+'），請到「員工設定」填金額';
   });
 }
 function syncStop(i,btn){
   const it=SYNC_ITEMS[i]; if(!it||it.kind!=='stop') return;
+  const st=it.store;
+  if(!syncStoreGuard(st)) return;
   const e=it.row;
   if(!confirm('把「'+e.name+'」（編號 '+e.emp_id+'）在薪資主檔停用？\n\n原因：'+it.why
     +'\n\n只取消「在職」勾選，不刪資料、不填離職日；月中離職要折算請到「員工設定」填離職日。'
     +'\n⚠ 停用後，之後解鎖重算的月份就不會再算到這個人。'
     +'\n⚠ 員工設定頁如果有還沒儲存的修改，會被重新載入蓋掉。')) return;
-  return syncWrite(btn,'停用',rows=>{
+  if(!syncStoreGuard(st)) return;
+  return syncWrite(btn,'停用',st,rows=>{
     const ex=rows.find(x=>String(x.emp_id||'').trim()===String(e.emp_id||'').trim()&&String(x.name)===String(e.name));
     if(!ex){ toast('主檔裡找不到這一列（可能剛被改過），沒有寫入',true); return null; }
     ex.active='false'; return '已停用 '+e.name;
