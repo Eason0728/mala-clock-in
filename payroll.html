@@ -2108,6 +2108,7 @@ function staffDiff(master,roster,store){
     let why='';
     if(!x) why='同仁名單對不到這個打卡編號';
     else if(x.state!=='active') why=(SYNC_STATE[x.state]||x.state)+(x.name?'（'+x.name+'）':'');
+    else if(x.pay_none) why='一悟品牌辦公室尚未設薪資門市（'+(x.unit_name||'—')+'）';   // Eason 2026-10-28：一悟薪資先不建
     else if(x.pay_store!==store) why='所屬單位是「'+(x.unit_name||'—')+'」，'+(x.pay_store?'薪資應歸 '+x.pay_store:'目前沒有對應的薪酬門市');
     if(why){ items.push({kind:'stop',row:e,x,why}); return; }
     if(syncNorm(x.name)!==syncNorm(e.name)) items.push({kind:'name',row:e,x});

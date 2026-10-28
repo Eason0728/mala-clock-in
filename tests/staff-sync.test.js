@@ -74,6 +74,8 @@ ok(stop.length === 4 && /MZTJS30:.*對不到/.test(stop[3]) && /MZTJS09:同仁�
 ok(by('name').map((x) => x.row.emp_id).join() === 'MZTJS13', '1h: 姓名不一致（空白不算差異）');
 ok(!d.items.some((x) => x.row && x.row.emp_id === 'MZTJS31'), '1i: 主檔已停用的人不列');
 ok(!d.items.some((x) => x.p && x.p.emp_no === 'DZY003'), '1j: 名單已停用的人不當新人');
+const yw = sb.staffDiff([{ emp_id: 'HQ-09', name: '壬九', active: 'true' }], { staff: [], ids: { 'HQ-09': { name: '壬九', state: 'active', pay_store: '', pay_none: true, unit_name: '一悟燒肉品牌辦公室' } } }, 'HQ');
+ok(yw.n === 0 && yw.items.length === 1 && /一悟品牌辦公室尚未設薪資門市/.test(yw.items[0].why), '1l: 一悟品牌辦公室的人不算新人；若被誤建在別家主檔，標「尚未設薪資門市」');
 const clean = sb.staffDiff([{ emp_id: 'MZTJS05', name: '甲一', active: 'true' }], { staff: [roster.staff[0]], ids: { MZTJS05: roster.ids.MZTJS05 } }, 'MZTJS');
 ok(clean.items.length === 0 && clean.n === 1 && clean.m === 1, '1k: 對得上時沒有任何差異');
 
