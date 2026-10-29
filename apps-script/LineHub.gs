@@ -255,7 +255,7 @@ function lineHubResolve_(userId, body, opts) {
 /* ── 7A 首次跨店自動加入（spec §4.4 v2）──
  * 光復只持有 STAFF_HUB_URL（mini 的 auto-support 完整網址）與 STAFF_HUB_KEY（HUB_SVC_KEY）；任何一家店的 svc 金鑰都不在這裡。
  * 兩個屬性有任一個沒設＝整段跳過，行為與沒有這個功能時完全相同。 */
-var LINE_HUB_STAFF_CODE_MAP = { '': 'gf', mztjs: 'mztjs', mztgf: 'mztgf', mztlzl: 'mztlzl', hq: 'hq', cf: 'cf' };
+var LINE_HUB_STAFF_CODE_MAP = { '': 'gf', mztjs: 'mztjs', mztgf: 'mztgf', mztlzl: 'mztlzl', mztmc: 'mztmc', hq: 'hq', cf: 'cf' };
 
 /** op_id 照契約：hub:<store_code>:<sha256(userId) 前 12 碼>:<台北日期 yyyyMMdd> */
 function lineHubSupportOpId_(storeCode, userId) {

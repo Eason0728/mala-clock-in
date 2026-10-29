@@ -1,0 +1,2867 @@
+<!-- ⚠ 這是「母版」。各門市（央廚 clock-cf.html／總部 clock-hq.html…）的頁面是從本檔產生的，
+     改完本檔請務必重跑：  python3 tools/build-store-pages.py
+     否則各門市頁面會停在舊版。原因：LINE 連結預覽卡與 iOS 加入主畫面都只讀原始 HTML、不執行 JS，
+     所以標題與圖示必須寫死在各自的檔案裡。 -->
+<!-- 本檔由 tools/build-store-pages.py 從 manager.html 產生，請勿手改 -->
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>墨竹亭 台中美村店 值班主管核定</title>
+<link rel="apple-touch-icon" href="assets/icon-180-mzt-manager.png">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32-mzt.png">
+<meta name="apple-mobile-web-app-title" content="美村值班">
+<script>
+/* ⚠ 主畫面圖示必須在 <head> 解析當下就換掉：iOS 在「加入主畫面」時抓的是它解析 head 時看到的
+   apple-touch-icon，寫在頁尾才換有機會來不及。這段只改標籤，不依賴其他程式。 */
+(function () {
+  var MAP = {
+    'cf': { icon: 'assets/icon-180-mzt-manager.png', home: '央廚值班' },
+    'hq': { icon: 'assets/icon-180-mzt-manager.png', home: '總部值班' },
+    'mztjs': { icon: 'assets/icon-180-mzt-manager.png', home: '金山值班' },
+    'mztgf': { icon: 'assets/icon-180-mzt-manager.png', home: '光復值班' },
+    'mztlzl': { icon: 'assets/icon-180-mzt-manager.png', home: '六張犁值班' },
+    'mztmc': { icon: 'assets/icon-180-mzt-manager.png', home: '美村值班' }
+  };
+  var s = String(new URLSearchParams(location.search).get('s') || '').toLowerCase();
+  var b = MAP[s];
+  if (!b) return;
+  var l = document.querySelector('link[rel="apple-touch-icon"]');
+  if (l) l.setAttribute('href', b.icon);
+  var m = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+  if (m) m.setAttribute('content', b.home);
+})();
+</script>
+
+<style>
+  :root {
+    --brand-red: #E8380D;
+    --brand-pink: #EF856D;
+    --brand-black: #231815;
+    --brand-orange: #F08300;
+    --brand-gold: #FABE00;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: radial-gradient(120% 90% at 50% 16%, #3d8f7f 0%, #2a6b5e 55%, #1c4a41 100%) fixed;
+    color: #fff;
+    min-height: 100vh;
+  }
+  .container {
+    max-width: 520px;
+    margin: 0 auto;
+    min-height: 100vh;
+    padding: 24px 16px 40px;
+  }
+  /* 門市品牌：預設光復（純文字），其他門市可帶 logo */
+  .brandLogo {
+    display: block; width: 84px; height: 84px; margin: 0 auto 8px;
+    border-radius: 20px; object-fit: contain; background: #86CBBF; padding: 6px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.28);
+  }
+  header {
+    text-align: center;
+    margin-bottom: 20px;
+  }
+  header h1 {
+    font-size: 22px;
+    font-weight: 900;
+    margin: 0 0 4px;
+    letter-spacing: 1px;
+  }
+  header p {
+    margin: 0;
+    opacity: 0.85;
+    font-size: 13px;
+  }
+  .date-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 18px;
+  }
+  .date-bar button {
+    flex: 0 0 auto;
+    background: rgba(255,255,255,0.15);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 16px;
+    font-weight: 700;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .date-bar input[type=date] {
+    flex: 1 1 auto;
+    padding: 10px 8px;
+    border-radius: 10px;
+    border: none;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--brand-black);
+    text-align: center;
+  }
+  .card {
+    background: #fff;
+    color: var(--brand-black);
+    border-radius: 16px;
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  }
+  .center-msg { text-align: center; padding: 40px 0; }
+  .emp-name {
+    font-size: 19px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  /* 收合行的班別小標（2026-08-28）。⚠ 父層 .emp-name 是 19px/700，
+     子元素要自己壓回小字——雙 class 選擇器特異性足夠蓋過父層繼承。 */
+  .emp-name .emp-shift {
+    font-size: 12px;
+    font-weight: 500;
+    color: #8a7a72;
+    margin-left: 8px;
+    white-space: nowrap;
+  }
+  /* 7A 首次支援（2026-10-13）：LINE 自動加入、還沒有核定紀錄的人 */
+  .emp-name .emp-first { font-size: 12px; font-weight: 600; color: #b45309; background: #fef3c7; border-radius: 6px; padding: 1px 6px; margin-left: 8px; white-space: nowrap; }
+  .emp-first-rm { font-size: 13px; color: #c22a12; background: none; border: 1px solid #c22a12; border-radius: 8px; padding: 4px 10px; margin: 2px 0 6px; }
+  .punch-summary {
+    font-size: 13px;
+    color: #6b524a;
+    margin-bottom: 4px;
+    line-height: 1.5;
+  }
+  .approved-badge {
+    display: inline-block;
+    font-size: 13px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 999px;
+    margin-bottom: 10px;
+  }
+  .approved-badge[hidden] { display: none; }   /* inline-block 會蓋掉 hidden，要明寫 */
+  .approved-badge.normal { background: #e6f7ec; color: #1a7a3d; }
+  /* 摺疊卡片（2026-08-25）：14 人的清單原本要捲快 5 個螢幕。每人收成一行，
+     今天有打卡又還沒核定的自動展開，其餘點一下才打開。 */
+  .emp-head { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .emp-head .eh-main { flex: 1; min-width: 0; }
+  .emp-head .emp-name { margin-bottom: 2px; }
+  .emp-head .punch-summary { margin-bottom: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .emp-mini { flex: none; font-size: 13px; font-weight: 700; padding: 4px 10px;
+              border-radius: 999px; white-space: nowrap; }
+  .emp-mini.pending { background: #f0e6e2; color: #8a6a5f; }
+  .emp-mini.normal  { background: #e6f7ec; color: #1a7a3d; }
+  .emp-mini.warn    { background: #fff6e0; color: #8a6100; }
+  .emp-chev { flex: none; font-size: 13px; color: #a08f88; transition: transform .15s; }
+  .card.open .emp-chev { transform: rotate(180deg); }
+  .emp-body { margin-top: 12px; }
+  .emp-body[hidden] { display: none; }
+  .emp-head:focus-visible { outline: 2px solid var(--brand-orange); outline-offset: 2px; border-radius: 8px; }
+  /* 清單上方的一行摘要：直接壓在底色上，所以用白字（同 body 文字色） */
+  .list-bar { display: flex; align-items: center; gap: 10px; font-size: 13px;
+              padding: 0 4px 8px; }
+  .list-bar .lb-count { flex: 1; min-width: 0; }
+  .list-bar b { font-size: 15px; }
+  .list-bar button { flex: none; font-size: 13px; font-weight: 700; padding: 6px 12px;
+                     border-radius: 999px; border: 1px solid rgba(255,255,255,.55);
+                     background: transparent; color: #fff; cursor: pointer; }
+  .approved-badge.warn { background: #fff6e0; color: #8a6100; }
+  /* 待核准裝置區：用品牌橘左邊框與淺橘底和一般核定卡片區隔，一眼看得出是要處理的事 */
+  .pd-card {
+    background: #fff;
+    /* 必要：頁面底色是品牌紅、body 文字色為白，白卡片上不設色會變成白字看不見（2026-08-03 實測踩到） */
+    color: var(--brand-black);
+    border-radius: 14px;
+    border-left: 4px solid var(--brand-orange);
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .pd-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+  /* 加班請假／忘打卡申請（2026-10-09）：沿用待核准裝置的卡片樣式，左框改金黃 */
+  .rq-card { border-left-color: var(--brand-gold); }
+  .rq-item { border-top: 1px dashed #e7ddd8; padding: 10px 0; }
+  .rq-item:first-of-type { border-top: 0; padding-top: 0; }
+  .rq-l1 { display: flex; justify-content: space-between; gap: 8px; font-size: 15px; font-weight: 700; }
+  .rq-kind { font-size: 12px; border-radius: 6px; padding: 1px 7px; margin-right: 4px; font-weight: 700; }
+  .rq-kind.leave { background: #e7eefc; color: #2b4f9a; } .rq-kind.ot { background: #ffe9d6; color: #a14a00; }
+  .rq-kind.miss { background: #efe4fb; color: #6a3a9a; } .rq-kind.trip { background: #e2f3ef; color: #1f6b5a; }
+  .rq-proof { margin: 6px 0 2px; color: #a15a00; background: #fff6e0; border-radius: 8px; padding: 6px 9px; font-size: 13px; line-height: 1.5; }
+  /* 批次核准（2026-10-09）：每筆前面一個勾選框＋上方「全選」與「核准勾選的 N 筆」 */
+  .rq-batch { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #f7f2ef; border-radius: 9px; padding: 8px 10px; margin: 0 0 10px; }
+  .rq-batch[hidden] { display: none; }   /* display:flex 會蓋掉 hidden（打卡 QR 遮罩同一個坑） */
+  .rq-batch label { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; color: #5a463f; cursor: pointer; }
+  .rq-batch input, .rq-pick { width: 20px; height: 20px; margin: 0; accent-color: var(--brand-red); cursor: pointer; flex: none; }
+  .rq-batch button { padding: 8px 12px; border-radius: 9px; font-size: 14px; font-weight: 700; border: 0; background: var(--brand-red); color: #fff; cursor: pointer; }
+  .rq-batch button:disabled { background: #d8cfc9; cursor: default; }
+  .rq-who { display: flex; align-items: center; gap: 6px; }
+  .rq-l2 { font-size: 13px; color: #6b524a; margin: 4px 0 8px; line-height: 1.6; white-space: pre-line; }
+  .rq-evid { background: #f7f2ef; border-radius: 8px; padding: 7px 9px; font-size: 12px; color: #5a463f; line-height: 1.6; margin: 0 0 8px; white-space: pre-line; }
+  .rq-acts { display: flex; gap: 8px; }
+  .rq-acts button { flex: 1; padding: 9px 0; border-radius: 9px; font-size: 14px; font-weight: 700; cursor: pointer; }
+  .rq-ok { background: var(--brand-red); color: #fff; border: 0; }
+  .rq-ok:disabled { background: #d8d0cb; color: #6b5f59; cursor: not-allowed; }   /* 待補證明／送出中：看得出按不下去 */
+  .rq-no { background: #fff; color: var(--brand-red); border: 1px solid var(--brand-red); }
+  .rq-att { background: #fff; color: #2b4f9a; border: 1px solid #b9c8e8; }
+  .rq-reason { width: 100%; margin: 8px 0; font-size: 15px; padding: 9px 10px; border: 1px solid #d8cfc9; border-radius: 9px; }
+  .rq-msg { font-size: 13px; margin-top: 6px; }
+  .rq-img { max-width: 100%; border-radius: 8px; margin-top: 8px; display: block; }
+  .req-box { background: #e6f7ec; color: #1a5a33; border-radius: 8px; padding: 8px 10px; font-size: 13px; line-height: 1.6; margin: 8px 0; }
+  .req-box.warn { background: #fff6e0; color: #6b4c00; }
+  .req-box button { margin-top: 6px; font-size: 13px; font-weight: 700; padding: 6px 12px; border-radius: 8px; border: 1px solid #a15a00; background: #fff; color: #a15a00; cursor: pointer; }
+  .req-box .req-lead { font-weight: 700; margin-bottom: 4px; }
+  .req-box .req-row { padding: 4px 0; }
+  .req-box .req-row + .req-row { border-top: 1px dashed rgba(107,76,0,.25); }
+  .req-box .req-old { color: #c22a12; font-size: 12px; }
+  .req-box .req-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .req-box .req-acts button { margin-top: 4px; }
+  .req-box button.req-void { border-color: #c22a12; color: #c22a12; }
+  .req-box button:disabled { opacity: .5; cursor: default; }
+  .req-box .req-note { margin-top: 6px; font-weight: 700; }
+  .req-box .req-note[hidden] { display: none; }
+  .from-req { font-size: 11px; color: #1a7a3d; background: #e6f7ec; border-radius: 6px; padding: 1px 6px; margin-left: 6px; }
+  /* 打卡 QR（同仁定位抓不到時，主管手機出示）*/
+  .qr-open { width: 100%; margin: 0 0 12px; padding: 11px 0; font-size: 15px; font-weight: 700; border-radius: 12px;
+             border: 1px solid rgba(255,255,255,.6); background: rgba(255,255,255,.12); color: #fff; cursor: pointer; }
+  .qr-overlay { position: fixed; inset: 0; background: rgba(20,10,8,.86); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .qr-overlay[hidden] { display: none; }   /* display:flex 會蓋掉 hidden，不加這行整頁按鈕都按不到（2026-10-09 e2e 抓到）*/
+  .qr-panel { background: #fff; color: var(--brand-black); border-radius: 18px; padding: 18px; width: 100%; max-width: 360px; text-align: center; }
+  .qr-panel h3 { margin: 0 0 4px; font-size: 18px; }
+  .qr-sub { font-size: 13px; color: #6b524a; line-height: 1.6; }
+  #qrBox { margin: 14px auto 8px; width: 260px; height: 260px; display: flex; align-items: center; justify-content: center; }
+  .qr-count { font-size: 13px; color: #8a7a72; }
+  .qr-close { margin-top: 12px; width: 100%; padding: 11px 0; font-size: 15px; font-weight: 700; border-radius: 10px; border: 1px solid #d8cfc9; background: #fff; cursor: pointer; }
+  /* 新進同仁區。白底卡片同樣要自己設色（見上方 .pd-card 的註解）*/
+  #addEmpCard { color: var(--brand-black); }
+  .ae-title { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+  .ae-hint { font-size: 13px; color: #6b524a; line-height: 1.6; margin-bottom: 10px; }
+  .ae-row { display: flex; gap: 8px; align-items: center; }
+  .ae-row input { flex: 1; min-width: 0; font-size: 16px; padding: 10px 12px;
+                  border: 1px solid #d8cfc9; border-radius: 10px; }
+  .ae-row .submit-btn { flex: none; }
+  .ae-result { margin-top: 12px; font-size: 14px; line-height: 1.7; }
+  .ae-result.err { color: #c22a12; }
+  .ae-link { display: block; word-break: break-all; background: #fff8ef; border: 1px solid #f0d9b8;
+             border-radius: 8px; padding: 10px; margin: 8px 0; font-size: 13px; color: #6b3f10; }
+  .ae-copy { font-size: 14px; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--brand-orange);
+             background: #fff; color: var(--brand-orange); font-weight: 700; cursor: pointer; }
+  /* 同仁異動區（2026-08-25）。白底卡片同樣要自己設色。 */
+  #rosterCard { color: var(--brand-black); }
+  #lineBindCard { color: var(--brand-black); }
+  .ae-row select { flex: 1; min-width: 0; font-size: 16px; padding: 10px 12px;
+                   border: 1px solid #d8cfc9; border-radius: 10px; background: #fff;
+                   color: var(--brand-black); }
+  /* ⚠ .submit-btn 的規則定義在本區塊之後，同特異性會蓋掉單一 .re-danger，
+     所以這裡必須用雙 class 選擇器（實測過：只寫 .re-danger 文字會變白色看不見）。 */
+  .submit-btn.re-danger { background: #fff; color: #c22a12; border: 1px solid #e3a99c; }
+  .re-list { margin-top: 12px; }
+  .re-list-title { font-size: 13px; font-weight: 700; color: #6b524a; margin-bottom: 6px; }
+  .re-item { display: flex; align-items: center; gap: 8px; padding: 8px 0;
+             border-top: 1px solid #f0e6e0; font-size: 14px; }
+  .re-item .re-name { flex: 1; min-width: 0; }
+  .re-item .re-when { display: block; font-size: 12px; color: #8a7a72; }
+  .re-restore { flex: none; font-size: 13px; padding: 6px 12px; border-radius: 8px;
+                border: 1px solid var(--brand-orange); background: #fff;
+                color: var(--brand-orange); font-weight: 700; cursor: pointer; }
+  /* 店內公告區（2026-08-28）。白底卡片一樣要自己設色，否則整段白字看不見。 */
+  #noticeCard { color: var(--brand-black); }
+  .nt-input { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px 12px;
+              border: 1px solid #d8cfc9; border-radius: 10px; background: #fff;
+              color: var(--brand-black); font-family: inherit; resize: vertical; min-height: 76px; }
+  .nt-meta { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .nt-meta label { font-size: 13px; color: #6b524a; font-weight: 700; }
+  .nt-meta input[type=date] { font-size: 15px; padding: 8px 10px; border: 1px solid #d8cfc9;
+                              border-radius: 10px; background: #fff; color: var(--brand-black); }
+  .nt-count { font-size: 12px; color: #8a7a72; margin-left: auto; }
+  .nt-count.over { color: #c22a12; font-weight: 700; }
+  .nt-item { padding: 10px 0; border-top: 1px solid #f0e6e0; font-size: 14px;
+             display: flex; gap: 8px; align-items: flex-start; }
+  .nt-item .nt-body { flex: 1; min-width: 0; }
+  .nt-item .nt-text { line-height: 1.65; word-break: break-word; }
+  .nt-item.off .nt-text { color: #8a7a72; }
+  .nt-item .nt-when { display: block; font-size: 12px; color: #8a7a72; margin-top: 3px; }
+  .nt-tag { display: inline-block; font-size: 11px; font-weight: 800; padding: 1px 7px;
+            border-radius: 20px; background: #f0e6e0; color: #6b524a; margin-left: 6px; }
+  .nt-act { flex: none; font-size: 13px; padding: 6px 12px; border-radius: 8px;
+            border: 1px solid var(--brand-orange); background: #fff;
+            color: var(--brand-orange); font-weight: 700; cursor: pointer; }
+  .pd-meta { font-size: 13px; color: #6b524a; line-height: 1.6; }
+  .pd-warn { font-size: 13px; color: #c22a12; margin-top: 6px; }
+  .pd-actions { display: flex; gap: 10px; margin-top: 12px; }
+  .pd-actions button {
+    flex: 1;
+    padding: 10px;
+    font-size: 15px;
+    font-weight: 700;
+    border: none;
+    border-radius: 10px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .pd-approve { background: var(--brand-orange); color: #fff; }
+  .pd-reject { background: #f0e6e2; color: #8a6a5f; }
+  .pd-actions button:disabled { opacity: 0.5; }
+  .pd-result { margin-top: 10px; font-size: 14px; }
+  /* 本月待核定提醒（2026-09-18 新增）：白底卡片同樣要自己設 color（見上方 .pd-card 的註解），
+     左側用琥珀色（--brand-gold）與待核准裝置的橘色（--brand-orange）區隔，一眼分得出是兩件事。
+     沒有待核定時整塊不畫（見 renderPendingApprovals），不佔版面。 */
+  .pa-card {
+    background: #fff;
+    color: var(--brand-black);
+    border-radius: 14px;
+    border-left: 4px solid var(--brand-gold);
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .pa-title { font-size: 16px; font-weight: 700; margin-bottom: 2px; }
+  .pa-sub { font-size: 12px; color: #6b524a; margin-bottom: 10px; }
+  .pa-group { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid #f0e6e0; }
+  .pa-group:first-of-type { border-top: none; padding-top: 4px; }
+  .pa-date { flex: none; width: 64px; font-size: 13px; font-weight: 700; color: #6b524a;
+             padding-top: 4px; }
+  .pa-names { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .pa-chip {
+    font-size: 13px;
+    font-weight: 700;
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px solid #f0d090;
+    background: #fff8e6;
+    color: #8a6100;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .pa-more {
+    display: block;
+    width: 100%;
+    margin-top: 10px;
+    padding: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    border: 1px solid #f0d090;
+    border-radius: 10px;
+    background: #fff8e6;
+    color: #8a6100;
+    cursor: pointer;
+  }
+  .open-shift-warn {
+    font-size: 13px;
+    color: #8a6100;
+    background: #fff6e0;
+    border-radius: 8px;
+    padding: 6px 10px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
+  .approved-badge.pending { background: #f0e6e2; color: #8a6a5f; }
+  /* 休息帶（2026-08-28）。⚠ display 非 block 的元素要自己寫 [hidden]，
+     否則 hidden 屬性會被 flex/inline-block 蓋掉（見本檔 .approved-badge 的同款教訓）。 */
+  .break-split {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 2px 0 8px;
+    font-size: 12px;
+    color: #8a7a72;
+  }
+  .break-split:before, .break-split:after {
+    content: "";
+    flex: 1;
+    border-top: 1px dashed #d9cec8;
+  }
+  .period-total {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    border-top: 1px solid #f0e6e2;
+    padding-top: 10px;
+    margin-bottom: 10px;
+  }
+  .period-total[hidden] { display: none; }
+  .period-total .pt-lb { flex: 1; font-size: 13px; color: #8a6a5f; }
+  .period-total .pt-val { font-size: 24px; font-weight: 900; color: var(--brand-black); line-height: 1; }
+  .period-total .pt-unit { font-size: 13px; color: #8a6a5f; }
+  .break-toggle {
+    display: inline-block;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--brand-orange);
+    background: #fff;
+    border: 1px solid #f0d9b8;
+    border-radius: 999px;
+    padding: 6px 12px;
+    margin-bottom: 10px;
+    font-family: inherit;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .break-toggle[hidden] { display: none; }
+  .period-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .period-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .period-row input[type=time] {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 8px 6px;
+    border-radius: 8px;
+    border: 1px solid #f0e6e2;
+    font-size: 15px;
+    color: var(--brand-black);
+  }
+  .period-row .dash { color: #8a6a5f; }
+  .period-row .remove-btn {
+    flex: 0 0 auto;
+    background: none;
+    border: 1px solid #f0e6e2;
+    color: #c22a12;
+    border-radius: 8px;
+    width: 34px;
+    height: 34px;
+    font-size: 16px;
+    line-height: 1;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .leave-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  /* 一天多種假別（2026-10-26）：每種一列，可加可移除 */
+  .leave-box { margin-bottom: 10px; }
+  .leave-box .leave-row { margin-bottom: 8px; }
+  .add-leave-btn {
+    display: block;
+    width: 100%;
+    background: none;
+    border: 1px dashed #d9b8ae;
+    color: #8a6a5f;
+    border-radius: 10px;
+    padding: 8px;
+    font-size: 13px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .add-leave-btn[hidden] { display: none; }
+  .leave-row .leave-rm {
+    flex: 0 0 auto;
+    width: 32px; height: 32px;
+    border: 1px solid #e3cfc8; border-radius: 8px;
+    background: #fff; color: #c22a12;
+    font-size: 14px; line-height: 1;
+  }
+  /* 出差時數算法說明（2026-10-02）：卡片是白底，字色要自己設 */
+  .trip-hint {
+    margin: -4px 0 10px;
+    padding: 8px 10px;
+    border-left: 3px solid #e0a100;
+    background: #fff7dc;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #6b4f00;
+  }
+  .trip-hint[hidden] { display: none; }
+  .leave-row label {
+    flex: 0 0 auto;
+    font-size: 14px;
+    color: #8a6a5f;
+  }
+  .leave-row select {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 8px 6px;
+    border-radius: 8px;
+    border: 1px solid #f0e6e2;
+    font-size: 15px;
+    color: var(--brand-black);
+    background: #fff;
+  }
+  .leave-row input.leave-hours {
+    flex: 0 0 88px;
+    width: 88px;
+    min-width: 0;
+    padding: 8px 6px;
+    border-radius: 8px;
+    border: 1px solid #f0e6e2;
+    font-size: 15px;
+    color: var(--brand-black);
+  }
+  .leave-row input.leave-hours:disabled {
+    background: #f4efec;
+    color: #b7a9a2;
+  }
+  .leave-row .hours-unit { flex: 0 0 auto; font-size: 14px; color: #8a6a5f; }
+  .card-actions {
+    display: flex;
+    gap: 10px;
+  }
+  .add-period-btn {
+    flex: 1 1 auto;
+    background: none;
+    border: 1px dashed #d9b8ae;
+    color: #8a6a5f;
+    border-radius: 10px;
+    padding: 10px;
+    font-size: 14px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .submit-btn {
+    flex: 1 1 auto;
+    background: var(--brand-orange);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 10px;
+    font-size: 15px;
+    font-weight: 700;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .submit-btn:disabled { opacity: 0.5; }
+  .result-box {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 14px;
+    line-height: 1.6;
+    display: none;
+  }
+  .result-box.show { display: block; }
+  .result-ok { background: #e6f7ec; color: #1a7a3d; }
+  .result-warn { background: #fff6e0; color: #8a6100; }
+  .result-error { background: #fdeceb; color: #c22a12; }
+  /* 背景載入失敗提示條（2026-09-19）：同仁異動／店內公告／待核准裝置／本月待核定提醒
+     四個背景區塊共用（見 bgLoad）。這裡是直接畫在品牌紅底色上（不是白卡片內），
+     所以跟 clock.html 給同仁看的 .notice 用同一套配色：半透明白底＋白字＋金色左框。
+     按鈕刻意不用 .submit-btn——.submit-btn 定義在本檔後段、白底黑字，疊在紅底色上會看不見
+     （旁邊 .re-danger 已經踩過一次同特異性被蓋掉的坑），這裡另開一個 class 避免撞上那個問題。 */
+  .load-fail {
+    background: rgba(255,255,255,.15); border-left: 4px solid var(--brand-gold);
+    border-radius: 12px; padding: 12px 14px; margin-bottom: 16px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    color: #fff; font-size: 14px; line-height: 1.6;
+  }
+  .load-fail .lf-msg { flex: 1 1 auto; min-width: 0; }
+  .load-fail .lf-retry {
+    flex: none; font-size: 13px; font-weight: 700; padding: 6px 14px;
+    border-radius: 999px; border: 1px solid rgba(255,255,255,.7);
+    background: transparent; color: #fff; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .load-fail .lf-retry:disabled { opacity: 0.5; }
+  /* errorCard 的「重新載入」按鈕（2026-09-19，loadDay 重試用盡才出現）：errorCard 是白底卡片
+     （不是畫在紅底色上），直接沿用 .submit-btn 的橘底白字即可，這裡只補一點間距。 */
+  .error-retry-btn { margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>麻的🔥小辛辣</h1>
+    <p>值班主管核定</p>
+  </header>
+
+  <button type="button" class="qr-open" id="btnQr">📱 打卡 QR（同仁定位抓不到時給他掃）</button>
+  <div class="qr-overlay" id="qrOverlay" hidden>
+    <div class="qr-panel">
+      <h3>打卡 QR</h3>
+      <div class="qr-sub">請同仁用 LINE 掃描（LINE 主頁搜尋列旁的掃描圖示，或手機相機），掃完直接按上班／下班。<br>QR 每 30 秒換一次，拍照傳出去也很快失效。</div>
+      <div id="qrBox">產生中…</div>
+      <div class="qr-count" id="qrCount"></div>
+      <button type="button" class="qr-close" id="btnQrClose">關閉</button>
+    </div>
+  </div>
+  <div class="date-bar">
+    <button type="button" id="btnPrevDay">‹</button>
+    <input type="date" id="dateInput">
+    <button type="button" id="btnNextDay">›</button>
+    <button type="button" id="btnToday">今天</button>
+  </div>
+
+  <!-- 本月待核定提醒：只有真的有待核定時才出現，平常完全不佔版面 -->
+  <div id="pendingApprovals"></div>
+
+  <!-- 待核准裝置：只有真的有待核准時才出現，平常完全不佔版面 -->
+  <div id="pendingDevices"></div>
+
+  <!-- 加班請假／忘打卡申請（2026-10-09）：只有真的有待審時才出現 -->
+  <div id="pendingRequests"></div>
+
+  <div id="loadingCard" class="card center-msg">
+    載入中…
+    <!-- 逾時重試時才顯示，一行小字讓主管知道還在動、不是當掉了（2026-09-19） -->
+    <div id="loadingRetryNote" style="display:none; font-size:13px; color:#8a7a72; margin-top:8px;"></div>
+  </div>
+  <div id="errorCard" class="card center-msg" style="display:none; color:#c22a12;"></div>
+  <div id="empList"></div>
+
+  <!-- 新進同仁：主管自助開帳號，當場拿到打卡連結 -->
+  <div class="card" id="addEmpCard">
+    <div class="ae-title">新進同仁報到</div>
+    <div class="ae-hint">輸入姓名就會產生他的專屬打卡連結，當場給他設定手機即可上工。</div>
+    <div class="ae-row">
+      <input type="text" id="aeName" placeholder="同仁姓名" autocomplete="off" maxlength="20">
+      <button type="button" class="submit-btn" id="aeBtn">建立帳號</button>
+    </div>
+    <div class="ae-result" id="aeResult" style="display:none"></div>
+  </div>
+
+  <!-- 同仁異動載入失敗提示條 slot：卡片本身預設隱藏，提示條要能獨立顯示在卡片正前方 -->
+  <div id="rosterFail"></div>
+
+  <!-- 同仁異動：離職＝停用（不是真刪，歷史紀錄要留著），設錯可恢復 -->
+  <div class="card" id="rosterCard" style="display:none">
+    <div class="ae-title">同仁異動</div>
+    <div class="ae-hint">同仁離職就在這裡設為離職，他<b>立刻無法打卡</b>、也不再出現在核定清單；<b>過去的打卡紀錄與已核定的工時都會保留</b>。設錯可以按恢復。</div>
+    <div class="ae-row">
+      <select id="reSelect"><option value="">選擇同仁…</option></select>
+      <button type="button" class="submit-btn re-danger" id="reBtn">設為離職</button>
+    </div>
+    <div class="ae-result" id="reResult" style="display:none"></div>
+    <div class="re-list" id="reInactive"></div>
+  </div>
+
+  <!-- LINE 綁定紀錄（2026-10-08）：同仁在 LINE「鼎兆元打卡」輸入全名綁定，主管在這裡看得到、綁錯可以解除 -->
+  <div id="lineBindFail"></div>
+  <div class="card" id="lineBindCard" style="display:none">
+    <div class="ae-title">LINE 綁定紀錄</div>
+    <div class="ae-hint">同仁第一次用 LINE「鼎兆元打卡」打卡時，要<b>人在店裡</b>並輸入全名才能綁定。下面是最近 30 天的紀錄；<b>不是本人綁的請立刻按「解除」</b>，那位同仁下次打卡要重新輸入全名。</div>
+    <div class="ae-result" id="lbResult" style="display:none"></div>
+    <div class="re-list" id="lbList"></div>
+  </div>
+
+  <!-- 店內公告載入失敗提示條 slot：卡片本身預設隱藏，提示條要能獨立顯示在卡片正前方 -->
+  <div id="noticeFail"></div>
+
+  <!-- 店內公告：發出去馬上出現在同仁打卡頁最上方。下架＝停用不是真刪，發過什麼要留得住 -->
+  <div class="card" id="noticeCard" style="display:none">
+    <div class="ae-title">店內公告</div>
+    <div class="ae-hint">發布後<b>馬上</b>出現在同仁打卡頁的最上方。多則會每 5 秒輪流顯示，最多顯示 <b id="ntMaxShow">5</b> 則（新的優先）。</div>
+    <textarea class="nt-input" id="ntText" maxlength="120" placeholder="例如：9/1 起中午休息時間為 12:00–13:00，休息不用打卡。"></textarea>
+    <div class="nt-meta">
+      <label for="ntEnds">顯示到</label>
+      <input type="date" id="ntEnds">
+      <span class="nt-count" id="ntCount">0 / 120</span>
+    </div>
+    <div class="nt-meta">
+      <button type="button" class="submit-btn" id="ntBtn">發布公告</button>
+      <span class="ae-hint" style="margin:0">日期留空＝一直顯示，直到手動下架</span>
+    </div>
+    <div class="ae-result" id="ntResult" style="display:none"></div>
+    <div class="re-list" id="ntList"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  /* ⚠ 自由文字進 innerHTML 前一律過這支。本檔原本只在公告那一段有個同名的局部版
+     （2026-09-03 稽核發現：名冊的姓名與「由誰設定」也是拼字串進 innerHTML，同樣的洞卻沒防），
+     所以提到最外層讓整個檔案都用得到。公告那份局部的留著不衝突（會遮蔽這份，行為相同）。
+     ⚠ 只包資料，不要包程式自己產生的標籤。清單裡的數字（人數、筆數）不必包。 */
+  function escHtml(v) {
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  /* 多門市後端對照：不帶 ?s= 就是光復（既有連結完全不受影響）。
+     各店打卡各自一份試算表與部署，所以只有網址不同，程式共用一份。 */
+  var STORE_APIS = {
+    ''  : 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec',   // 麻的小辛辣 新竹光復店（預設）
+    'cf': 'https://script.google.com/macros/s/AKfycby-IzOBTrUK-usZxEUVRAcvPqagfAbHpvLevIWnk6drBpIuHwh1IlEun4bdsS9o-CIB/exec',   // 鼎兆元 中央廚房（台中太平）
+    'hq': 'https://script.google.com/macros/s/AKfycbyiocazNgn9M249CCkPzJsRvMJ35uh_Wjp_ju1y1sB2TZ_IWH3RD6pKUsHXsUJR-4N9TQ/exec',   // 鼎兆元 總部（座標暫用央廚）
+    'mztjs': 'https://script.google.com/macros/s/AKfycby6Nv7aCGUDsxKA3dwPIYluxk76JaWKp-wqwCCvnE6knthefzGNR8Jyw3uRWds-PwOv/exec',   // 墨竹亭 金山店（2026-09-08 開）
+    'mztgf': 'https://script.google.com/macros/s/AKfycbyGH4ktFmXON443Naibe84rEKeqprkOJO0t7eU4UukTvqLWsfu541x7scHKLvntV6okFw/exec',   // 墨竹亭 光復店（2026-09-30 開）
+    'mztlzl': 'https://script.google.com/macros/s/AKfycby7AwHFGZMckF84gtFVUklcV8nFkVqdyK69Yz2-g6p83VEX4WpDutZFTxFfbGQ2-On24Q/exec',    // 墨竹亭 台北六張犁店（2026-10-09 開）
+    'mztmc': 'https://script.google.com/macros/s/AKfycbz3gBxmrVxSJ6LmT0__Vl5fg1DMPX4TlunXw6bUFmk8PUl19ZKkQ2M7D9cgb0-xUr9hWw/exec'    // 墨竹亭 台中美村店（2026-10-29 開）
+  };
+  var STORE_CODE = 'mztmc';   // 由 tools/build-store-pages.py 產生，勿手改
+  var API_URL = STORE_APIS[STORE_CODE];
+  // 假別清單與額度住在薪酬系統（全集團共用一份），固定打光復那套後端；
+  // ⚠ 不可跟著門市切換——央廚／總部的後端沒有薪資模組。與 clock.html 的「我的薪資」同一個道理。
+  // 本機測試時 ?api= 會一併覆寫（否則本機頁面會去打正式薪酬後端，mock 金鑰在那邊無效）
+  var PAYROLL_API = qs('api')
+    || 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
+  /* 休息時間＝不打卡的用餐時段（2026-08-28）。留空＝該門市不套用（光復目前留空）。
+     由 tools/build-store-pages.py 依門市覆寫，改格式前先看那支。
+     ⚠ 休息只影響「預填」與「畫面標示」，**絕不影響計算**——核定時數永遠等於畫面上的時段相加。
+        Eason 2026-08-28 指出的破口：同仁晚來或出差（例 08:00–12:00 接 12:00–16:00）當天其實沒休息，
+        任何「自動扣 1 小時」的隱形規則都會少算。所以這裡不做扣除，只在「相鄰兩段之間的空檔
+        剛好等於休息帶」時畫一條說明列；主管把兩段改成相連，那條線自己消失、時數一分鐘都不會少。 */
+  var BREAK_START = '';
+  var BREAK_END = '';
+
+  function hhmmToMin(t) {
+    if (!t) return null;
+    var a = String(t).split(':');
+    if (a.length < 2) return null;
+    var m = (+a[0]) * 60 + (+a[1]);
+    return isFinite(m) ? m : null;
+  }
+  function hasBreak() {
+    if (!BREAK_START || !BREAK_END) return false;
+    var s = hhmmToMin(BREAK_START), e = hhmmToMin(BREAK_END);
+    return s != null && e != null && e > s;
+  }
+  /* 班別要「完整蓋過」休息帶才拆成兩段。半天班（例 央廚某半天班同仁 08:30–12:30 只蓋到一半）
+     維持一段交給主管判斷——自作主張挖掉半小時比不挖更難發現。 */
+  function shiftCoversBreak(a, b) {
+    if (!hasBreak()) return false;
+    var s = hhmmToMin(a), e = hhmmToMin(b);
+    if (s == null || e == null || e <= s) return false;
+    return s <= hhmmToMin(BREAK_START) && e >= hhmmToMin(BREAK_END);
+  }
+  // 相鄰兩段之間的空檔是不是就是休息帶（純比字串，主管改成別的時間就不算）
+  function gapIsBreak(prevEnd, nextStart) {
+    return hasBreak() && prevEnd === BREAK_START && nextStart === BREAK_END;
+  }
+  // 休息長度，給收合行的「・休1h」用
+  function breakHoursText() {
+    if (!hasBreak()) return '';
+    return String(Math.round((hhmmToMin(BREAK_END) - hhmmToMin(BREAK_START)) / 60 * 100) / 100);
+  }
+  // 後端拿到的假別表；拿不到時退回這份內建清單（值班核定不能因為薪酬後端掛掉就不能用）
+  var LEAVE_FALLBACK = ['病假', '事假', '特休假', '生理假', '家庭照顧假', '天災假', '喪假', '婚假'];
+  var LEAVE_OPTS = null;   // { types:[...], quotas:{emp_id:{code:{...}}}, day_hours:n }
+  // ⚠ 本頁的門市代碼是小寫（''／'cf'／'hq'／'mztjs'／'mztgf'／'mztlzl'／'mztmc'，跟 STORE_APIS 一致），
+  //    薪酬系統的門市代碼是大寫（SSLGF／CF／HQ）且比對「完全相等」——不轉換會查不到門市，
+  //    症狀是央廚／總部的假別下拉靜靜退回內建 8 種、額度也不會顯示。
+  var PAYROLL_STORE_MAP = { '': 'SSLGF', 'cf': 'CF', 'hq': 'HQ', 'mztjs': 'MZTJS', 'mztgf': 'MZTGF', 'mztlzl': 'MZTLZL', 'mztmc': 'MZTMC' };
+  function payrollStoreCode() { return PAYROLL_STORE_MAP[STORE_CODE] || 'SSLGF'; }
+
+  /** 開頁時抓一次假別清單與各人剩餘額度。失敗不擋人——退回內建清單、只是沒有額度提示。 */
+  function loadLeaveOptions() {
+    return fetch(PAYROLL_API, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'payroll_leave_options', store: payrollStoreCode(), mgr_key: mgrKey })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j && j.ok) LEAVE_OPTS = j;
+    }).catch(function () { /* 靜默退回 fallback */ });
+  }
+
+  /** 期限規則檢查（與後端 payLeaveWindowCheck 同一套規則，改這裡兩邊都要改）。
+   *  以事件日為基準：婚假＝結婚登記日、陪產假＝分娩日。事件日沒登記就不擋、只提示。 */
+  function shiftDay(d, n) {
+    var x = new Date(d + 'T00:00:00');
+    x.setDate(x.getDate() + n);
+    var p = function (v) { return (v < 10 ? '0' : '') + v; };
+    return x.getFullYear() + '-' + p(x.getMonth() + 1) + '-' + p(x.getDate());
+  }
+  function windowCheck(def, empId, leaveDate) {
+    if (!def || def.window_days == null) return { ok: true };
+    var ev = ((LEAVE_OPTS && LEAVE_OPTS.events && LEAVE_OPTS.events[empId]) || {})[def.code];
+    if (!ev) return { ok: true, note: def.name + ' 有期限規定，但還沒登記事件日，系統無法檢查' };
+    var from = shiftDay(ev, -(Number(def.window_before) || 0));
+    var to   = shiftDay(from, Number(def.window_days) || 0);
+    var toMax = (def.window_max == null) ? null : shiftDay(from, Number(def.window_max));
+    if (leaveDate < from) return { ok: false, msg: def.name + ' 最早只能從 ' + from + ' 開始請（事件日 ' + ev + '）' };
+    if (leaveDate <= to) return { ok: true };
+    if (toMax && leaveDate <= toMax) return { ok: true, note: def.name + ' 已超過 ' + to + ' 的期限，需雇主同意才可延至 ' + toMax };
+    return { ok: false, msg: def.name + ' 請畢期限是 ' + to + (toMax ? '（經同意最多延至 ' + toMax + '）' : '') + '，已超過' };
+  }
+
+  /** 某人某假別的剩餘額度文字與是否該擋。 */
+  function quotaOf(empId, code) {
+    if (!LEAVE_OPTS || !LEAVE_OPTS.quotas) return null;
+    var q = (LEAVE_OPTS.quotas[empId] || {})[code];
+    return q || null;
+  }
+  /* 門市品牌：依 ?s= 換頁面標題與 logo。不帶參數＝光復，畫面與原本完全相同。 */
+  var STORE_BRAND = {
+    ''  : { title: '麻的🔥小辛辣', logo: null },
+    'cf': { title: '中央廚房',     logo: 'assets/emblem-mzt.png', doc: '中央廚房',
+            icon: 'assets/icon-180-mzt-manager.png', home: '央廚值班' },
+    'hq': { title: '鼎兆元 總部', logo: 'assets/emblem-mzt.png', doc: '鼎兆元 總部',
+            icon: 'assets/icon-180-mzt-manager.png', home: '總部值班' },
+    'mztjs': { title: '墨竹亭 金山店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 金山店',
+            icon: 'assets/icon-180-mzt-manager.png', home: '金山值班' },
+    'mztgf': { title: '墨竹亭 光復店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 光復店',
+            icon: 'assets/icon-180-mzt-manager.png', home: '光復值班' },
+    'mztlzl': { title: '墨竹亭 六張犁店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 六張犁店',
+            icon: 'assets/icon-180-mzt-manager.png', home: '六張犁值班' },
+    'mztmc': { title: '墨竹亭 台中美村店', logo: 'assets/emblem-mzt.png', doc: '墨竹亭 台中美村店',
+            icon: 'assets/icon-180-mzt-manager.png', home: '美村值班' }
+  };
+  (function () {
+    var b = STORE_BRAND[STORE_CODE];
+    if (!b || !b.logo) return;                 // 光復維持原樣
+    var h1 = document.querySelector('header h1');
+    if (h1) h1.textContent = b.title;
+    var img = document.createElement('img');
+    img.className = 'brandLogo'; img.src = b.logo; img.alt = b.title;
+    if (h1 && h1.parentNode) h1.parentNode.insertBefore(img, h1);
+    // 各門市的靜態頁（clock-cf.html…）標題已寫死，這裡要冪等，不然會變「中央廚房中央廚房 …」
+    if (b.doc && document.title.indexOf(b.doc) !== 0) document.title = b.doc + document.title.replace(/^麻的小辛辣/, '');
+    // 加到主畫面的圖示與名稱：iOS 是在「加入主畫面」當下讀這兩個標籤，所以這裡改得到
+    if (b.icon) {
+      var l = document.querySelector('link[rel="apple-touch-icon"]');
+      if (l) l.setAttribute('href', b.icon);
+    }
+    if (b.home) {
+      var mt = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+      if (mt) mt.setAttribute('content', b.home);
+    }
+  })();
+
+
+  function qs(name) {
+    var params = new URLSearchParams(window.location.search);
+    return params.get(name);
+  }
+
+  var isLocalHost = ['localhost', '127.0.0.1'].indexOf(window.location.hostname) !== -1;
+  if (isLocalHost) {
+    var apiOverride = qs('api');
+    if (apiOverride) API_URL = apiOverride;
+  }
+
+  var mgrKey = qs('k');
+
+  var loadingCard = document.getElementById('loadingCard');
+  var loadingRetryNoteEl = document.getElementById('loadingRetryNote');
+  var errorCard = document.getElementById('errorCard');
+  var empListEl = document.getElementById('empList');
+  var pendingDevicesEl = document.getElementById('pendingDevices');
+  var pendingApprovalsEl = document.getElementById('pendingApprovals');
+  var dateInput = document.getElementById('dateInput');
+  var btnPrevDay = document.getElementById('btnPrevDay');
+  var btnNextDay = document.getElementById('btnNextDay');
+  var btnToday = document.getElementById('btnToday');
+
+  var currentDate = null; // 'yyyy-mm-dd'，由伺服器回傳值決定（避免依賴裝置時區）
+  // 本月待核定提醒點姓名跳轉用：渲染完成後要展開哪個 emp_id，消費一次就清掉（見 renderEmployees）
+  var focusEmpId = null;
+
+  // opts.timeoutMs 是選用參數：不給就是原本的行為（永不逾時）。核定送出等寫入動作
+  // 一律不要傳這個參數——逾時只代表「我們放棄等回應」，不代表伺服器沒收到或沒寫入；
+  // 若對寫入動作也設逾時，逾時後重送可能造成同一筆核定被送兩次，不安全。
+  // 只有背景載入（bgLoad）會帶 timeoutMs。沒有 AbortController 的舊瀏覽器就退回不設逾時，
+  // 不讓逾時這個新功能反而擋住原本能用的請求。
+  function apiPost(payload, opts) {
+    var timeoutMs = opts && opts.timeoutMs;
+    if (!timeoutMs) {
+      return fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(payload),
+      }).then(function (res) { return res.json(); });
+    }
+    var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, timeoutMs);
+    var fetchOpts = {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(payload),
+    };
+    if (ctrl) fetchOpts.signal = ctrl.signal;
+    return fetch(API_URL, fetchOpts)
+      .then(function (res) { return res.json(); })
+      .then(
+        function (v) { clearTimeout(timer); return v; },
+        function (e) { clearTimeout(timer); throw e; }
+      );
+  }
+
+  /**
+   * 背景區塊載入 helper（2026-09-19 新增）。修的缺陷：manager.html 一打開會在背景並行
+   * 載入四個區塊（同仁異動／店內公告／待核准裝置／本月待核定提醒），任何一次請求失敗就整塊
+   * 安靜不畫、沒有任何提示，要重新整理才會回來（Eason 實際遇到央廚與金山的店內公告／同仁異動
+   * 某次打開時不見了）。
+   *
+   * 分類（只分兩種，不是「所有失敗都重試」）：
+   *   永久性＝res.ok===false 且 error 是 unknown_action（四家店後端分批部署，舊後端沒這個 action）
+   *          或 unauthorized（金鑰無效，主清單 mgr_day 自己會報錯，這裡不用重複講）
+   *          → 不重試、安靜隱藏，行為與改版前完全一樣。
+   *   暫時性＝其餘所有情況（fetch 失敗、res.json() 丟例外／伺服器忙碌回 HTML 錯誤頁、
+   *          逾時、error 是 server_error 或任何其他值）
+   *          → 自動重試 2 次（間隔見 BG_LOAD_RETRY_DELAYS_MS，共最多 3 次請求），
+   *            仍失敗才在 slot 顯示提示條。
+   *
+   * @param {object} payload apiPost 的 payload（含 action、mgr_key）
+   * @param {function} onOk  res && res.ok 時呼叫，帶 res；呼叫前已先清掉這個 slot 的失敗提示條
+   * @param {object} opts    { label: 提示文字用的區塊名稱（例如「店內公告」）,
+   *                           slot: 失敗提示條要畫進去的 DOM 節點 }
+   * @returns {{stop:function}} load() 若會被使用者操作重新呼叫（例如發完公告），呼叫端要在
+   *          建立新的 bgLoad 之前，先對上一個回傳值呼叫 stop()——擋掉舊那輪還沒送出的重試，
+   *          避免舊回應在新資料畫出來之後才回來，反而蓋掉新資料或讓失敗提示條蓋掉成功畫面。
+   */
+  // 2026-09-19 上線後實測 Apps Script 平台層偶發問題（14% 請求 404 或被轉成 doGet 純文字、
+  // 另有 20–43 秒才回的），依實測分佈調整：正常中位數 2.7–4.8 秒，成功但超過 12 秒的只佔 4%
+  // （那些會被下面的重試接住），所以把逾時從 20 秒收緊到 12 秒、重試間隔從 3/6 秒收緊到 2/4 秒，
+  // 最壞情況（三次都逾時）提示條約 42 秒後出現，比原本的 60 秒快很多。
+  // loadDay（值班核定頁主清單，見下方）刻意讀同一組常數，不要另開一組——時間參數只有一份，
+  // 以後要調也只需要改這裡。
+  var BG_LOAD_TIMEOUT_MS = 12000;
+  var BG_LOAD_RETRY_DELAYS_MS = [2000, 4000]; // 第 1、2 次重試前的等待
+
+  function bgLoad(payload, onOk, opts) {
+    var label = (opts && opts.label) || '';
+    var slot = opts && opts.slot;
+    var cancelled = false;
+    var attempt = 0; // 已送出的請求數
+
+    function isPermanentError(res) {
+      return !!res && res.ok === false
+        && (res.error === 'unknown_action' || res.error === 'unauthorized');
+    }
+
+    function clearFailBanner() {
+      if (slot) slot.innerHTML = '';
+    }
+
+    function showFailBanner() {
+      if (!slot) return;
+      slot.innerHTML = '';
+      var bar = document.createElement('div');
+      bar.className = 'load-fail';
+      var msg = document.createElement('span');
+      msg.className = 'lf-msg';
+      msg.textContent = label + '沒載入成功（網路或伺服器忙碌）'; // 固定字串，不拼後端訊息
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'lf-retry';
+      btn.textContent = '重新載入';
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        btn.textContent = '載入中…';
+        attempt = 0;
+        run();
+      });
+      bar.appendChild(msg);
+      bar.appendChild(btn);
+      slot.appendChild(bar);
+    }
+
+    function retryOrFail() {
+      if (cancelled) return;
+      if (attempt <= BG_LOAD_RETRY_DELAYS_MS.length) {
+        setTimeout(run, BG_LOAD_RETRY_DELAYS_MS[attempt - 1]);
+      } else {
+        showFailBanner();
+      }
+    }
+
+    function run() {
+      if (cancelled) return;
+      attempt++;
+      apiPost(payload, { timeoutMs: BG_LOAD_TIMEOUT_MS }).then(function (res) {
+        if (cancelled) return; // 逾時後遲到的回應：這輪已經被 stop() 擋掉的話就不要再動畫面
+        if (res && res.ok) {
+          clearFailBanner();
+          onOk(res);
+          return;
+        }
+        if (isPermanentError(res)) {
+          clearFailBanner();
+          return;
+        }
+        retryOrFail();
+      }).catch(function () {
+        if (cancelled) return;
+        retryOrFail();
+      });
+    }
+
+    run();
+    return { stop: function () { cancelled = true; } };
+  }
+
+  // onRetry 是選用參數（2026-09-19 新增）：不給就是原本的行為（純文字、無按鈕）——
+  // 「找不到主管代碼」「系統尚未設定完成」這類設定性錯誤重試沒有意義，不要生出按鈕誤導主管。
+  // 只有 loadDay 重試用盡時會帶 onRetry，按下去要重置成「載入中…」再重新走一次。
+  function showError(msg, onRetry) {
+    loadingCard.style.display = 'none';
+    empListEl.innerHTML = '';
+    errorCard.style.display = 'block';
+    errorCard.innerHTML = '';
+    var msgEl = document.createElement('div');
+    msgEl.textContent = msg;
+    errorCard.appendChild(msgEl);
+    if (onRetry) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'submit-btn error-retry-btn';
+      btn.textContent = '重新載入';
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        btn.textContent = '載入中…';
+        onRetry();
+      });
+      errorCard.appendChild(btn);
+    }
+  }
+
+  function addDaysStr(dateStr, n) {
+    var d = new Date(dateStr + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+
+  function weekdayZh(dateStr) {
+    var WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'];
+    return WEEKDAY_ZH[new Date(dateStr + 'T00:00:00Z').getUTCDay()];
+  }
+
+  function segmentText(s) {
+    return (s.in || '？') + '–' + (s.out || '？') + (s.cross ? '(+1)' : '');
+  }
+
+  function badgeClass(statusText) {
+    if (!statusText || statusText === '正常') return 'normal';
+    return 'warn';
+  }
+
+  function buildPeriodRow(period, onChange) {
+    var row = document.createElement('div');
+    row.className = 'period-row';
+    var start = document.createElement('input');
+    start.type = 'time';
+    start.className = 'p-start';
+    start.value = (period && period.start) || '';
+    var dash = document.createElement('span');
+    dash.className = 'dash';
+    dash.textContent = '–';
+    var end = document.createElement('input');
+    end.type = 'time';
+    end.className = 'p-end';
+    end.value = (period && period.end) || '';
+    var removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'remove-btn';
+    removeBtn.textContent = '－';
+    removeBtn.addEventListener('click', function () { row.remove(); if (onChange) onChange(); });
+    // input 與 change 都綁：桌機邊打邊更新、手機時間選盤是關掉才發 change。refresh 冪等，重複觸發無妨。
+    if (onChange) {
+      ['input', 'change'].forEach(function (ev) {
+        start.addEventListener(ev, onChange);
+        end.addEventListener(ev, onChange);
+      });
+    }
+    row.appendChild(start);
+    row.appendChild(dash);
+    row.appendChild(end);
+    row.appendChild(removeBtn);
+    return row;
+  }
+
+  // 假別＋時數的顯示後綴，如「・病假2.5h」「・病假」；沒假別回空字串
+  function leaveSuffix(type, hours) {
+    if (!type) return '';
+    var h = (hours === 0 || hours) && hours !== '' ? Number(hours) : null;
+    return '・' + type + (h != null && isFinite(h) ? h + 'h' : '');
+  }
+
+  // 一天多種假別（2026-10-26）：後端回 leaves:[{type, hours}]；舊後端只有 leave_type／leave_hours
+  function leavesOf(o) {
+    if (o && o.leaves && o.leaves.length) return o.leaves;
+    return (o && o.leave_type) ? [{ type: o.leave_type, hours: o.leave_hours }] : [];
+  }
+  function leavesSuffix(list) {
+    return (list || []).map(function (x) { return leaveSuffix(x.type, x.hours); }).join('');
+  }
+
+  function renderResult(resultBox, res) {
+    resultBox.className = 'result-box show ' + (badgeClass(res.status_text) === 'normal' ? 'result-ok' : 'result-warn');
+    resultBox.textContent = '✓ 已核定 ' + res.approved_hours + ' 小時・' + res.status_text
+      + leavesSuffix(leavesOf(res)) + '（' + res.manager_name + '）';
+  }
+
+  function buildEmployeeCard(emp) {
+    var card = document.createElement('div');
+    card.className = 'card';
+    // 待核定提醒卡片「點姓名跳轉」用：渲染完成後照這個 emp_id 找卡片展開（見 renderEmployees 的 focusEmpId）
+    card.dataset.empId = String(emp.emp_id);
+
+    var nameEl = document.createElement('div');
+    nameEl.className = 'emp-name';
+    nameEl.textContent = emp.name;
+    /* 收合狀態也看得到班別（2026-08-28）：14 人全收合時不必一個個展開，就知道誰是幾點的班、
+       誰的班會套休息。沒設班別的人不顯示，免得多出一排空殼。 */
+    if (emp.shift_in && emp.shift_out) {
+      var shiftEl = document.createElement('span');
+      shiftEl.className = 'emp-shift';
+      shiftEl.textContent = emp.shift_in + '–' + emp.shift_out
+        + (shiftCoversBreak(emp.shift_in, emp.shift_out) ? '・休' + breakHoursText() + 'h' : '');
+      nameEl.appendChild(shiftEl);
+    }
+    if (emp.first_support) {
+      var firstEl = document.createElement('span');
+      firstEl.className = 'emp-first';
+      firstEl.textContent = '首次支援';
+      nameEl.appendChild(firstEl);
+    }
+    card.appendChild(nameEl);
+    if (emp.first_support) {
+      var rmBtn = document.createElement('button');
+      rmBtn.type = 'button'; rmBtn.className = 'emp-first-rm';
+      rmBtn.textContent = '不是本店支援，移除';
+      rmBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        if (!window.confirm('「' + emp.name + '」不是來本店支援的嗎？\n\n按確定會把他設為離職（不能再打卡），之後也不會再被自動加入。\n過去的紀錄會保留；移除後若要恢復，請聯絡總部處理。')) return;
+        rmBtn.disabled = true; rmBtn.textContent = '處理中…';
+        apiPost({ action: 'mgr_set_active', mgr_key: mgrKey, emp_id: String(emp.emp_id), active: false }).then(function (res) {
+          if (!res || !res.ok) { rmBtn.disabled = false; rmBtn.textContent = '不是本店支援，移除'; window.alert((res && res.message) || '移除失敗，請再試一次'); return; }
+          loadDay(currentDate);
+          reloadRosterCard();
+        }).catch(function () { rmBtn.disabled = false; rmBtn.textContent = '不是本店支援，移除'; window.alert('連線失敗，請檢查網路後再試一次'); });
+      });
+      card.appendChild(rmBtn);
+    }
+
+    var punchEl = document.createElement('div');
+    punchEl.className = 'punch-summary';
+    if (emp.segments && emp.segments.length) {
+      // C2：後端忘刷卡整天回 reference=null（與月表空白同義），不可直接串接成字面 "null"
+      var refText = (emp.reference === null || emp.reference === undefined) ? '參考 —' : ('參考 ' + emp.reference + ' 小時');
+      punchEl.textContent = '打卡：' + emp.segments.map(segmentText).join('、') + '　' + refText;
+    } else if (emp.attempts > 0) {
+      // C3：有嘗試打卡但全部沒入帳（如被裝置/範圍擋下）——與「真的沒打卡」分開講清楚
+      punchEl.textContent = '今天沒有入帳的打卡（有 ' + emp.attempts + ' 筆未入帳嘗試）';
+    } else {
+      // 沒打卡的同仁也列出（整天忘刷卡的人才核得到）；參考空白不顯示數字
+      punchEl.textContent = '今天沒有打卡紀錄';
+    }
+    card.appendChild(punchEl);
+
+    // 防呆：這天若有打卡段還沒配對完成（有上班沒下班，out===null），現在核定會比對不到
+    // 這段（未配對的段不算「完整段」），核定結果卻是核定當下寫死，之後打卡補上也不會
+    // 自動重算——常見於跨夜班還沒打完就核定。跨天下班卡本身配對正常，這只是時機問題。
+    var hasOpenSeg = (emp.segments || []).some(function (s) { return s.in && !s.out; });
+    if (hasOpenSeg) {
+      var openWarn = document.createElement('div');
+      openWarn.className = 'open-shift-warn';
+      openWarn.textContent = '⚠ 有打卡段還沒打下班卡（可能還在上班或跨夜還沒打完），現在核定會核不到這段、且之後補打卡也不會自動更新。請同仁立即打卡避免忘刷卡。';
+      card.appendChild(openWarn);
+    }
+
+    // 狀態徽章抽成可重設的元素：核定成功後當場翻成「已核定」，不用重新整理才看得到
+    var badge = document.createElement('div');
+    function setBadge(approved, leaves) {
+      if (approved) {
+        badge.className = 'approved-badge ' + badgeClass(approved.status_text);
+        badge.textContent = '已核定 ' + approved.approved_hours + ' 小時・' + approved.status_text
+          + leavesSuffix(leaves) + '（' + approved.manager_name + '）';
+      } else {
+        badge.className = 'approved-badge pending';
+        badge.textContent = '待核定';
+      }
+      updateMini(approved);
+      // 未核定時頭部的精簡徽章已經寫著「待核定」，展開後不必再重複一顆
+      badge.hidden = !approved;
+    }
+    setBadge(emp.approved, leavesOf(emp));
+    card.appendChild(badge);
+
+    // 收合時看得到的精簡徽章（「待核定」／「✓ 8 小時」）。
+    // ⚠ mini 是在下面才建立的 var（hoisting 後這裡是 undefined），所以 updateMini 要自己防呆；
+    //    setBadge 第一次呼叫時還沒有 mini，建立 mini 之後會再補呼叫一次。
+    var mini;
+    function updateMini(approved) {
+      if (!mini) return;
+      if (approved) {
+        mini.className = 'emp-mini ' + badgeClass(approved.status_text);
+        mini.textContent = '✓ ' + approved.approved_hours + ' 小時';
+      } else {
+        mini.className = 'emp-mini pending';
+        mini.textContent = '待核定';
+      }
+    }
+
+    var periodRows = document.createElement('div');
+    periodRows.className = 'period-rows';
+    /* 時段預設值（2026-08-23）：
+     *  ① 已核定過 → 帶出既有核定時段（照舊，不覆蓋主管輸入過的東西）
+     *  ② 還沒核定、名冊或全店有設預設班別 → 帶入預設班別，主管只要確認或微調
+     *  ③ 都沒有 → 空白（＝改版前的行為）
+     * 刻意不從當天打卡時間推算——打卡有遲到早退，帶進來等於預設就把異常抹平了。 */
+    var initialPeriods;
+    if (emp.approved && emp.approved.periods && emp.approved.periods.length) {
+      initialPeriods = emp.approved.periods;
+    } else if (emp.approved) {
+      // 已核定但沒有時段（整天請假／整天出差）：維持空白，不可再帶預設班別——重送會多算時數
+      initialPeriods = [null];
+    } else if (emp.shift_in && emp.shift_out) {
+      /* 休息不打卡（2026-08-28）：預填時就把休息帶挖成缺口，所以預設一出來**就已經是**
+         扣掉休息的兩段，而不是「一整段之後再偷偷扣 1 小時」。沒有隱形扣除＝主管看到幾段就是幾小時。 */
+      initialPeriods = shiftCoversBreak(emp.shift_in, emp.shift_out)
+        ? [{ start: emp.shift_in, end: BREAK_START }, { start: BREAK_END, end: emp.shift_out }]
+        : [{ start: emp.shift_in, end: emp.shift_out }];
+    } else {
+      initialPeriods = [null];
+    }
+    initialPeriods.forEach(function (p) { periodRows.appendChild(buildPeriodRow(p, refreshPeriodUI)); });
+    card.appendChild(periodRows);
+
+    /* 核定時數即時顯示＋休息列＋一顆狀態切換鈕（2026-08-28）。
+       原本總時數只在送出前的 confirm 才看得到，主管改完時段當下無從確認；
+       休息不打卡之後「這天到底核幾小時」變成一定要當場看得見的東西。 */
+    var totalBox = document.createElement('div');
+    totalBox.className = 'period-total';
+    card.appendChild(totalBox);
+    var breakToggle = document.createElement('button');
+    breakToggle.type = 'button';
+    breakToggle.className = 'break-toggle';
+    breakToggle.hidden = true;
+    card.appendChild(breakToggle);
+
+    // ⚠ leaveLines 在下面才建立（refreshPeriodUI 第一次呼叫時還是 undefined），要防呆
+    function tripHoursValue() {
+      if (!leaveLines) return 0;
+      var t = 0;
+      leaveLines.forEach(function (l) {
+        if (l.select.value !== '出差') return;
+        var h = Number(l.hours.value);
+        if (isFinite(h) && h > 0) t += h;
+      });
+      return Math.round(t * 100) / 100;
+    }
+    function readPeriodRows() {
+      return Array.prototype.slice.call(periodRows.querySelectorAll('.period-row')).map(function (r) {
+        return { row: r, start: r.querySelector('.p-start').value, end: r.querySelector('.p-end').value };
+      });
+    }
+    /* 每次時段有變動就整個重算。刻意**不記錄「主管有沒有動過」**這種狀態——
+       休息列純粹依「相鄰兩段之間的空檔是不是剛好等於休息帶」決定，所以：
+         ・預填 08:00–12:00 ＋ 13:00–17:00 → 中間缺口＝休息帶 → 畫線，8 小時
+         ・出差改成 08:00–12:00 ＋ 12:00–16:00 → 沒有缺口 → 不畫線，8 小時（不會少扣）
+         ・晚來併成一段 11:30–17:30 → 只有一段 → 不畫線，6 小時
+       三種情況都是所見即所得，不需要任何額外規則。 */
+    function refreshPeriodUI() {
+      var rows = readPeriodRows();
+      // (1) 休息列：全部清掉重畫
+      Array.prototype.slice.call(periodRows.querySelectorAll('.break-split')).forEach(function (n) { n.remove(); });
+      for (var i = 1; i < rows.length; i++) {
+        if (gapIsBreak(rows[i - 1].end, rows[i].start)) {
+          var sp = document.createElement('div');
+          sp.className = 'break-split';
+          sp.textContent = '休息 ' + BREAK_START + '–' + BREAK_END + '（不打卡・不計入時數）';
+          periodRows.insertBefore(sp, rows[i].row);
+        }
+      }
+      // (2) 核定時數＝畫面上時段相加（跨夜比照後端：end <= start 視為隔天）
+      var total = 0, filled = 0;
+      rows.forEach(function (r) {
+        var s0 = hhmmToMin(r.start), e0 = hhmmToMin(r.end);
+        if (s0 == null || e0 == null) return;
+        if (e0 <= s0) e0 += 1440;
+        total += (e0 - s0) / 60;
+        filled++;
+      });
+      // 出差時數（2026-10-02）：出差那格填幾小時就認定幾小時，與時段相加（與後端 mgr_approve 同規則）
+      var tripH = tripHoursValue();
+      totalBox.textContent = '';
+      totalBox.hidden = !filled && !tripH;
+      if (filled || tripH) {
+        var lb = document.createElement('span');
+        lb.className = 'pt-lb';
+        lb.textContent = '核定時數';
+        var val = document.createElement('span');
+        val.className = 'pt-val';
+        val.textContent = String(Math.round((total + tripH) * 100) / 100);
+        var unit = document.createElement('span');
+        unit.className = 'pt-unit';
+        unit.textContent = tripH
+          ? '小時（上班 ' + (Math.round(total * 100) / 100) + '＋出差 ' + tripH + '）'
+          : '小時';
+        totalBox.appendChild(lb);
+        totalBox.appendChild(val);
+        totalBox.appendChild(unit);
+      }
+      // (3) 一顆鈕在「併成一段」與「插入休息」之間切換，讓主管兩個方向都回得去
+      breakToggle.hidden = true;
+      if (hasBreak()) {
+        if (rows.length === 2 && gapIsBreak(rows[0].end, rows[1].start)) {
+          breakToggle.hidden = false;
+          breakToggle.dataset.mode = 'merge';
+          breakToggle.textContent = '今天沒休息 → 併成一段';
+        } else if (rows.length === 1 && shiftCoversBreak(rows[0].start, rows[0].end)) {
+          breakToggle.hidden = false;
+          breakToggle.dataset.mode = 'split';
+          breakToggle.textContent = '插入休息 ' + BREAK_START + '–' + BREAK_END;
+        }
+      }
+    }
+    breakToggle.addEventListener('click', function () {
+      var rows = readPeriodRows();
+      if (breakToggle.dataset.mode === 'merge' && rows.length === 2) {
+        rows[0].row.querySelector('.p-end').value = rows[1].end;
+        rows[1].row.remove();
+      } else if (breakToggle.dataset.mode === 'split' && rows.length === 1) {
+        var tail = rows[0].end;
+        rows[0].row.querySelector('.p-end').value = BREAK_START;
+        periodRows.appendChild(buildPeriodRow({ start: BREAK_END, end: tail }, refreshPeriodUI));
+      }
+      refreshPeriodUI();
+    });
+    refreshPeriodUI();
+
+    // 請假註記：選了假別會寫入 leave 分頁（月表狀態欄顯示），改回「無」重送會清掉
+    // 假別清單改由薪酬系統的 payroll_leave_type 決定——在那張表加一列，這裡就多一個選項，
+    // 不必再改三處程式（後端／本頁／mock）。抓不到就用內建 fallback。
+    var LEAVE_TYPES = (LEAVE_OPTS && LEAVE_OPTS.types && LEAVE_OPTS.types.length)
+      ? LEAVE_OPTS.types.map(function (t) { return t.name; })
+      : LEAVE_FALLBACK;
+    /* 一天多種假別（2026-10-26 Eason）：假別一列一種，可以「＋ 再加一種假別」，最多 4 種；
+       送出時 leaves:[{type, hours}]，後端一種寫一列。出差的時數照舊加進核定時數，其他假別只是註記。 */
+    var MAX_LEAVE_LINES = 4;
+    var initLeaves = leavesOf(emp);
+    // 已經記過的假別，即使現在額度用完也要能顯示、重送，否則重開頁會掉值
+    function prevHad(t) { return initLeaves.some(function (x) { return x.type === t; }); }
+    function fillLeaveOptions(sel) {
+      ['無'].concat(LEAVE_TYPES).forEach(function (t) {
+        var opt = document.createElement('option');
+        opt.value = t === '無' ? '' : t;
+        opt.textContent = t;
+        // 額度用完就反灰選不了（曆年制與每子女制才擋；婚喪產檢一年可能發生多次，不擋）
+        if (t !== '無' && LEAVE_OPTS && LEAVE_OPTS.types) {
+          var def = LEAVE_OPTS.types.filter(function (x) { return x.name === t; })[0];
+          var q = def ? quotaOf(String(emp.emp_id), def.code) : null;
+          if (q && q.comp) {
+            // 補休（2026-10-09）：只有正職、只能用已定案月份換到的餘額
+            if (!q.allowed) { opt.disabled = true; opt.textContent = t + '（只有正職）'; }
+            else if (!(q.balance_h > 0)) { opt.disabled = true; opt.textContent = t + '（沒有餘額）'; }
+            else opt.textContent = t + '（剩 ' + q.balance_h + ' 小時）';
+          } else if (q && q.cap_days != null) {
+            var remain = Math.round((q.remain_days || 0) * 10) / 10;
+            if (q.blocked) {
+              opt.disabled = true;
+              opt.textContent = t + '（額度已用完）';
+            } else if (q.basis === 'event') {
+              // 婚喪產檢是「每次事件」各有額度，一年可能發生多次；顯示「剩 N 日」會誤導
+              // （一月用掉 3 天，十二月不該說只剩 5 天），改標示每次的上限。
+              opt.textContent = t + '（每次上限 ' + q.cap_days + ' 日）';
+            } else if (def.code === 'parental') {
+              // 育嬰留停額度以月計較好懂（730 日＝24 個月）
+              opt.textContent = t + '（剩 ' + (Math.round(remain / 30 * 10) / 10) + ' 個月）';
+            } else {
+              opt.textContent = t + '（剩 ' + remain + ' 日）';
+            }
+          }
+          // 已經選過這個假別的紀錄，即使現在超額也要能顯示，否則重開頁會掉值
+          if (prevHad(t)) opt.disabled = false;
+        }
+        sel.appendChild(opt);
+      });
+    }
+    // 出差的時數算法要寫在畫面上（2026-10-02 Eason 指定）——主管最容易以為「時數格只是註記」
+    var tripHint = document.createElement('div');
+    tripHint.className = 'trip-hint';
+    tripHint.textContent = '出差：時數填幾小時就核定幾小時，會與上方上班時段相加。'
+      + '出差那段不用再填進上班時段（填了會重複算）；整天出差可以不填上班時段。';
+    var leaveBox = document.createElement('div');
+    leaveBox.className = 'leave-box';
+    var leaveLines = [];
+    var addLeaveBtn = document.createElement('button');
+    addLeaveBtn.type = 'button';
+    addLeaveBtn.className = 'add-leave-btn';
+    addLeaveBtn.textContent = '＋ 再加一種假別';
+    leaveBox.appendChild(addLeaveBtn);
+    function syncLeaveLines() {
+      leaveLines.forEach(function (l) {
+        var on = !!l.select.value;
+        l.hours.disabled = !on;
+        if (!on) l.hours.value = '';
+        l.hours.placeholder = l.select.value === '出差' ? '出差時數' : '時數';
+      });
+      tripHint.hidden = !leaveLines.some(function (l) { return l.select.value === '出差'; });
+      addLeaveBtn.hidden = leaveLines.length >= MAX_LEAVE_LINES;
+      refreshPeriodUI();
+    }
+    function buildLeaveLine(type, hours) {
+      var row = document.createElement('div');
+      row.className = 'leave-row';
+      var label = document.createElement('label');
+      label.textContent = leaveLines.length ? '再一種' : '請假註記';
+      // 時數：只在有選假別時可填（選「無」時鎖住並清空），單位小時、以 0.25（15 分鐘）為刻度
+      var sel = document.createElement('select');
+      fillLeaveOptions(sel);
+      sel.value = type || '';
+      var inp = document.createElement('input');
+      inp.type = 'number';
+      inp.className = 'leave-hours';
+      inp.step = '0.25';
+      inp.min = '0';
+      inp.placeholder = '時數';
+      inp.value = (hours === 0 || hours) ? hours : '';
+      var unit = document.createElement('span');
+      unit.className = 'hours-unit';
+      unit.textContent = '小時';
+      row.appendChild(label); row.appendChild(sel); row.appendChild(inp); row.appendChild(unit);
+      var line = { row: row, select: sel, hours: inp };
+      if (leaveLines.length) {
+        var rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'leave-rm';
+        rm.textContent = '✕';
+        rm.setAttribute('aria-label', '移除這種假別');
+        rm.addEventListener('click', function () {
+          row.remove();
+          leaveLines.splice(leaveLines.indexOf(line), 1);
+          syncLeaveLines();
+        });
+        row.appendChild(rm);
+      }
+      sel.addEventListener('change', syncLeaveLines);
+      inp.addEventListener('input', refreshPeriodUI);
+      leaveLines.push(line);
+      leaveBox.insertBefore(row, addLeaveBtn);
+      syncLeaveLines();
+      return line;
+    }
+    // 整組換掉（申請預填用）；空清單＝留一列「無」
+    function setLeaveLines(list) {
+      leaveLines.forEach(function (l) { l.row.remove(); });
+      leaveLines.length = 0;
+      (list && list.length ? list : [{ type: '', hours: '' }]).forEach(function (x) { buildLeaveLine(x.type, x.hours); });
+    }
+    function leaveList() {
+      return leaveLines.filter(function (l) { return l.select.value; })
+        .map(function (l) { return { type: l.select.value, hours: l.hours.value }; });
+    }
+    addLeaveBtn.addEventListener('click', function () { buildLeaveLine('', '').select.focus(); });
+    setLeaveLines(initLeaves);
+
+    /* 遲到分鐘（2026-09-01）：留空＝系統自動比對打卡算。
+       打卡被擋或整批未入帳時系統沒有進場時間可比，算不出遲到——那種情況由主管填。
+       填了就以主管填的為準，狀態會標「遲到N分(認定)」與系統判的區分開。 */
+    var lateRow = document.createElement('div');
+    lateRow.className = 'leave-row';
+    var lateLabel = document.createElement('label');
+    lateLabel.textContent = '遲到分鐘';
+    var lateInput = document.createElement('input');
+    lateInput.type = 'number';
+    lateInput.className = 'leave-hours';
+    lateInput.step = '1'; lateInput.min = '0';
+    lateInput.placeholder = '自動';
+    // 帶出既有值：只有主管填過的才回填（系統自動判的不填，那個由打卡算、改了會被覆蓋）
+    (function () {
+      var st = String((emp.approved && emp.approved.status_text) || '');
+      if (st.indexOf('主管認定不計遲到') !== -1) { lateInput.value = '0'; return; }
+      var m = st.split('、').filter(function (x) { return x.indexOf('遲到') === 0 && x.indexOf('(認定)') > 0; })[0];
+      if (m) { var g = m.match(/^遲到(\d+(?:\.\d+)?)分/); if (g) lateInput.value = g[1]; }
+    })();
+    var lateUnit = document.createElement('span');
+    lateUnit.className = 'hours-unit';
+    lateUnit.textContent = '分鐘';
+    var lateHint = document.createElement('span');
+    lateHint.style.cssText = 'font-size:12px;color:#6b524a;margin-left:6px';
+    lateHint.textContent = '留空＝自動判定　填 0＝認定不算遲到';
+    lateRow.appendChild(lateLabel);
+    lateRow.appendChild(lateInput);
+    lateRow.appendChild(lateUnit);
+    lateRow.appendChild(lateHint);
+    card.appendChild(leaveBox);
+    card.appendChild(tripHint);
+    card.appendChild(lateRow);
+
+    var actions = document.createElement('div');
+    actions.className = 'card-actions';
+    var addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'add-period-btn';
+    addBtn.textContent = '＋ 加一段';
+    addBtn.addEventListener('click', function () {
+      periodRows.appendChild(buildPeriodRow(null, refreshPeriodUI));
+      refreshPeriodUI();
+    });
+    var submitBtn = document.createElement('button');
+    submitBtn.type = 'button';
+    submitBtn.className = 'submit-btn';
+    submitBtn.textContent = emp.approved ? '重新送出核定' : '送出核定';
+    actions.appendChild(addBtn);
+    actions.appendChild(submitBtn);
+    card.appendChild(actions);
+
+    var resultBox = document.createElement('div');
+    resultBox.className = 'result-box';
+    card.appendChild(resultBox);
+
+    submitBtn.addEventListener('click', function () {
+      // 硬擋：額度用完的假別不給送出。下拉的 disabled 只擋滑鼠，程式指定仍設得進去，
+      // 所以送出前用同一份額度資料再判一次（Eason 2026-08-22 指定「硬擋，不給送出」）。
+      var lv = leaveList();
+      // 一天多種假別（2026-10-26）：同一個假別不能選兩次（後端也擋 dup_leave_type）
+      var dupT = lv.map(function (x) { return x.type; }).filter(function (t, k, a) { return a.indexOf(t) !== k; })[0];
+      if (dupT) {
+        resultBox.className = 'result-box show result-error';
+        resultBox.textContent = '✕ 「' + dupT + '」選了兩次，同一種假別請合併成一列（時數加起來）。';
+        return;
+      }
+      for (var li = 0; li < lv.length && LEAVE_OPTS && LEAVE_OPTS.types; li++) {
+        var L = lv[li];
+        var d0 = LEAVE_OPTS.types.filter(function (x) { return x.name === L.type; })[0];
+        var q0 = d0 ? quotaOf(String(emp.emp_id), d0.code) : null;
+        // 原本就記著這個假別的既有紀錄放行，否則已超額的人連重送核定都做不了
+        // 期限規則（婚假 3 個月內、陪產假前後 15 日內…）
+        if (d0 && !prevHad(L.type)) {
+          var wc = windowCheck(d0, String(emp.emp_id), currentDate);
+          if (!wc.ok) {
+            resultBox.style.display = 'block';
+            resultBox.textContent = '✕ ' + wc.msg + '，無法送出。確有需要請聯絡 Eason。';
+            return;
+          }
+          if (wc.note && !confirm(wc.note + '\n\n仍要送出嗎？')) return;
+        }
+        // 補休：時數不能超過餘額（同一天重送原本的補休紀錄放行，否則改不動）
+        if (q0 && q0.comp && !prevHad(L.type) &&
+            (!q0.allowed || Number(L.hours || 0) > Number(q0.balance_h || 0))) {
+          resultBox.style.display = 'block';
+          resultBox.textContent = '✕ ' + emp.name + (q0.allowed ? ' 的補休餘額只剩 ' + (q0.balance_h || 0) + ' 小時，不夠請 ' + (L.hours || 0) + ' 小時' : ' 是計時同仁，沒有補休')
+            + '，無法送出。';
+          return;
+        }
+        // 硬擋：額度用完的假別不給送出（Eason 2026-08-22 指定「硬擋，不給送出」）
+        if (q0 && q0.blocked && !q0.comp && !prevHad(L.type)) {
+          resultBox.style.display = 'block';
+          resultBox.textContent = '✕ ' + emp.name + ' 的「' + L.type
+            + '」額度已用完（上限 ' + q0.cap_days + ' 日，已用 '
+            + (Math.round((q0.used_days || 0) * 10) / 10) + ' 日），無法送出。'
+            + '確有需要請聯絡 Eason 調整假別設定。';
+          return;
+        }
+      }
+      var lvText = lv.map(function (x) { return x.type + (x.hours !== '' ? ' ' + x.hours + ' 小時' : ''); }).join('、');
+      var hasTripLv = lv.some(function (x) { return x.type === '出差'; });
+      var periods = [];
+      var halfFilled = false;
+      periodRows.querySelectorAll('.period-row').forEach(function (row) {
+        var s = row.querySelector('.p-start').value;
+        var e = row.querySelector('.p-end').value;
+        if (s && e) periods.push({ start: s, end: e });
+        else if (s || e) halfFilled = true; // 只填了上班或下班一邊
+      });
+      if (halfFilled) {
+        resultBox.className = 'result-box show result-error';
+        resultBox.textContent = '✕ 有一段只填了上班或下班時間，請補齊兩邊，或按該段的 － 移除。';
+        return;
+      }
+      // C4：請假時數負數在送出前（confirm 之前）直接擋下，不用等後端回 bad_leave_hours
+      if (lv.some(function (x) { return x.hours !== '' && Number(x.hours) < 0; })) {
+        resultBox.className = 'result-box show result-error';
+        resultBox.textContent = '✕ 請假時數不能是負數，請修正後再送出。';
+        return;
+      }
+      if (periods.length === 0) {
+        // 沒填任何上班時段：有選假別＝整天請假（核定 0 小時）；否則就是漏填
+        if (!lv.length) {
+          resultBox.className = 'result-box show result-error';
+          resultBox.textContent = '✕ 請至少輸入一段上班時間；若是整天請假，請在「請假註記」選假別再送出。';
+          return;
+        }
+        // 出差不是請假（2026-08-23）：時數靠核定時段照常計薪，0 小時送出＝那天等於沒上班
+        //（正職月底會被不足倒扣）。後端也會擋（trip_needs_periods），這裡先講清楚。
+        if (hasTripLv) {
+          // 整天出差：核定＝出差時數（2026-10-02）。沒填時數＝0 工時，正職月底會被不足倒扣，先擋。
+          var th0 = tripHoursValue();
+          if (!th0) {
+            resultBox.className = 'result-box show result-error';
+            resultBox.textContent = '✕ 整天出差請在出差時數填幾小時（填幾小時就核定幾小時）。';
+            return;
+          }
+          if (!window.confirm('整天出差：' + emp.name + '\n' + lvText + '\n核定時數 ' + th0 + ' 小時（只有出差時數算進核定）\n\n確定送出?')) return;
+        } else {
+        var lmsg = '整天請假：' + emp.name + '\n' + lvText
+          + '\n核定時數 0 小時（整天沒上班）\n\n確定送出?';
+        if (!window.confirm(lmsg)) return;
+        }
+      } else {
+        // 送出前防呆：算總時數（跨夜比照後端 end<=start 視為隔天）、揪出打反與時段重疊，
+        // 用確認框把「核定總時數＋提醒」攤給主管看過再寫入（覆蓋前先確認、把打錯攔在寫入前）。
+        var hm2min = function (t) { var a = t.split(':'); return (+a[0]) * 60 + (+a[1]); };
+        var segs = periods.map(function (p) {
+          var sm = hm2min(p.start), em = hm2min(p.end), overnight = em <= sm;
+          if (overnight) em += 1440;
+          return { start: p.start, end: p.end, sm: sm, em: em, overnight: overnight };
+        });
+        var totalH = Math.round(segs.reduce(function (a, s) { return a + (s.em - s.sm) / 60; }, 0) * 100) / 100;
+
+        var warnings = [];
+        segs.forEach(function (s) {
+          if (s.overnight) warnings.push('・' + s.start + '–' + s.end + ' 會算成跨夜到隔天（' + (Math.round((s.em - s.sm) / 60 * 100) / 100) + ' 小時），若是打錯請改回。');
+        });
+        if (hasOpenSeg) {
+          warnings.push('・這天有打卡段還沒打下班卡，現在核定可能會核不到那一段，且之後補打卡不會自動重算——請同仁立即打卡避免忘刷卡。');
+        }
+        // C5：只比相鄰兩段會漏報「長段包兩短段」（3 段以上時）；改為維護 runningMaxEnd 的掃描——
+        // 依起點排序後，任一段起點 < 目前為止看過的最大終點，就與那個「目前最長」的段標重疊。
+        var sorted = segs.slice().sort(function (a, b) { return a.sm - b.sm; });
+        var runningMaxEnd = -Infinity;
+        var runningMaxSeg = null;
+        sorted.forEach(function (s, i) {
+          if (i > 0 && s.sm < runningMaxEnd) {
+            warnings.push('・' + runningMaxSeg.start + '–' + runningMaxSeg.end + ' 與 ' + s.start + '–' + s.end + ' 時段重疊，會重複計算。');
+          }
+          if (s.em > runningMaxEnd) {
+            runningMaxEnd = s.em;
+            runningMaxSeg = s;
+          }
+        });
+
+        var tripH2 = tripHoursValue();
+        var msg = '即將核定 ' + emp.name + '：\n' + segs.map(function (s) { return s.start + '–' + s.end; }).join('、')
+          + (tripH2
+            ? '\n上班 ' + totalH + ' 小時＋出差 ' + tripH2 + ' 小時\n核定時數共 ' + (Math.round((totalH + tripH2) * 100) / 100) + ' 小時'
+            : '\n核定時數共 ' + totalH + ' 小時');
+        // 畫面上有休息列才提——主管把時段改成相連（出差）時不會出現這行，與實際計算一致
+        if (periodRows.querySelector('.break-split')) {
+          msg += '\n（休息 ' + BREAK_START + '–' + BREAK_END + ' 不計入）';
+        }
+        // 沒算進核定的假別（出差以外、或沒填時數的出差）列出來給主管看
+        var noted = lv.filter(function (x) { return !(x.type === '出差' && Number(x.hours) > 0); });
+        if (noted.length) msg += '\n假別：' + noted.map(function (x) { return x.type + (x.hours !== '' ? ' ' + x.hours + ' 小時' : ''); }).join('、');
+        if (warnings.length) msg += '\n\n⚠ 請再確認：\n' + warnings.join('\n');
+        msg += '\n\n確定送出?';
+        if (!window.confirm(msg)) return;
+      }
+      submitBtn.disabled = true;
+      submitBtn.textContent = '送出中…';
+      var approveDate = currentDate; // C1：送出當下鎖定日期，避免回呼觸發時 currentDate 已切到別天
+      apiPost({
+        action: 'mgr_approve',
+        mgr_key: mgrKey,
+        date: approveDate,
+        emp_id: emp.emp_id,
+        periods: periods,
+        late_min: lateInput.value,
+        leaves: lv,
+        // 舊欄位留著第一種（後端認 leaves；只認得一種的舊後端仍可用）
+        leave_type: lv[0] ? lv[0].type : '',
+        leave_hours: lv[0] ? lv[0].hours : '',
+      }).then(function (res) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '重新送出核定';
+        if (!res.ok) {
+          resultBox.className = 'result-box show result-error';
+          var friendly = {
+            trip_needs_periods: '出差要照常輸入當天實際工作時段（時數照算），不能以 0 小時送出。',
+            trip_needs_hours: '整天出差請填出差時數（填幾小時就核定幾小時）。',
+            bad_leave_type: '這個假別尚未在薪酬假別表放行，請聯絡 Eason。',
+            dup_leave_type: '同一種假別選了兩次，請合併成一列。',
+            too_many_leaves: '一天最多記 4 種假別。',
+          }[res.error];
+          resultBox.textContent = '✕ 核定失敗：' + (friendly || res.message || res.error || '未知錯誤');
+          return;
+        }
+        delete dayCache[approveDate]; // 核定改了這天的資料 → 清快取，下次切回會抓新的（用送出當下鎖定的日期）
+        renderResult(resultBox, res);
+        setBadge(res, leavesOf(res));
+        // 核完這位就收起來、自動翻到下一位待核定的（結果看頭部那顆「✓ N 小時」就夠，
+        // 不必留著整張卡片佔版面）。要改就再點開，內容都還在。
+        card.__pending = false;
+        // detail 帶 emp_id／date（用送出當下鎖定的 approveDate，不是回呼當下的 currentDate，
+        // 與上面 C1 註解同一個理由）給本月待核定提醒用，即時把這筆從提醒移除，不必重打後端。
+        card.dispatchEvent(new CustomEvent('emp-approved', {
+          bubbles: true,
+          detail: { emp_id: emp.emp_id, date: approveDate },
+        }));
+      }).catch(function () {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '重新送出核定';
+        resultBox.className = 'result-box show result-error';
+        resultBox.textContent = '✕ 連線失敗，請檢查網路後再試。';
+      });
+    });
+
+    /* ── 重組成「頭部一行＋可摺疊的內容」（2026-08-25）──
+     * 刻意用「搬移既有節點」而不是重寫整個卡片：上面每一段（防呆警告、時段列、假別、
+     * 送出邏輯）都還是原本那些元素與閉包，行為完全不變，只是換了掛載位置。 */
+    var head = document.createElement('div');
+    head.className = 'emp-head';
+    head.setAttribute('role', 'button');
+    head.setAttribute('tabindex', '0');
+    var headMain = document.createElement('div');
+    headMain.className = 'eh-main';
+    headMain.appendChild(nameEl);    // appendChild 會把節點從 card 搬過來
+    headMain.appendChild(punchEl);
+    mini = document.createElement('span');
+    var chev = document.createElement('span');
+    chev.className = 'emp-chev';
+    chev.textContent = '▼';
+    head.appendChild(headMain);
+    head.appendChild(mini);
+    head.appendChild(chev);
+    updateMini(emp.approved);
+
+    var body = document.createElement('div');
+    body.className = 'emp-body';
+    while (card.firstChild) body.appendChild(card.firstChild);   // 其餘全部進 body
+    card.appendChild(head);
+    card.appendChild(body);
+
+    function setExpanded(on) {
+      body.hidden = !on;
+      card.classList.toggle('open', on);
+      head.setAttribute('aria-expanded', on ? 'true' : 'false');
+    }
+    // 一律先收合；由 renderEmployees 統一決定要開哪一位（一次只開一位，見那裡的註解）。
+    setExpanded(false);
+    // 給清單判斷「還沒核定、而且今天真的有事要核」用
+    card.__pending = !emp.approved;
+    card.__hasPunch = !!(emp.segments && emp.segments.length) || emp.attempts > 0;
+    head.addEventListener('click', function () { setExpanded(body.hidden); });
+    head.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(body.hidden); }
+    });
+    card.__setExpanded = setExpanded;   // 給「全部展開／收合」用
+
+    /* 已核准的加班請假／忘打卡申請（2026-10-09）：在卡片上顯示，還沒核定就幫主管預填；已核定過不覆蓋，改給一顆「依申請重新填」。
+       預填只是畫面上的值，主管按送出核定才算數（核准申請本身不寫 approved）。 */
+    card.__applyReq = function (reqs) {
+      if (!reqs || !reqs.length || card.__reqApplied) return;
+      card.__reqApplied = true;
+      // 同一天多張申請（2026-10-26）：不同假別（出差＋天災假）一起填、各成一列；
+      // 同一種假別兩張（多半一張是舊單）或兩張忘打卡，自動填會互蓋——不自動填，逐張列出給主管選，舊單可作廢。
+      var fillables = reqs.filter(function (r) { return r.kind !== 'ot'; });
+      function reqKey(r) { return r.kind === 'trip' ? '出差' : r.kind === 'leave' ? String(r.leave_type) : 'miss'; }
+      var keys = fillables.map(reqKey);
+      var multi = keys.some(function (k, i) { return keys.indexOf(k) !== i; })
+        || keys.filter(function (k) { return k !== 'miss'; }).length > MAX_LEAVE_LINES;
+      var box = document.createElement('div');
+      box.className = 'req-box' + (emp.approved || multi ? ' warn' : '');
+      if (multi) {
+        var lead = document.createElement('div'); lead.className = 'req-lead';
+        lead.textContent = '⚠ 這天有 ' + fillables.length + ' 張已核准的申請，其中有同一種的（多半一張是舊單），系統不自動填：請把舊的或重複的按「作廢」，剩下的會自動填好；或按「依這張填」只填那一張。';
+        box.appendChild(lead);
+      }
+      function newerSameKind(r) {
+        return fillables.some(function (q) {
+          return q !== r && reqKey(q) === reqKey(r) && (r.kind !== 'miss' || q.miss_type === r.miss_type)
+            && String(q.created_at) > String(r.created_at);
+        });
+      }
+      reqs.forEach(function (r) {
+        var row = document.createElement('div'); row.className = 'req-row';
+        var t = document.createElement('div');
+        t.textContent = '✓ 已核准的申請：' + r.summary + '（' + r.decided_by + ' 核准）';
+        row.appendChild(t);
+        if (r.kind !== 'ot' && newerSameKind(r)) {
+          var w = document.createElement('div'); w.className = 'req-old'; w.textContent = '同類還有一張較晚送出的申請，這張可能是舊單';
+          row.appendChild(w);
+        }
+        var acts = document.createElement('div'); acts.className = 'req-acts';
+        if (multi && r.kind !== 'ot') {
+          var fb = document.createElement('button'); fb.type = 'button'; fb.textContent = '依這張填';
+          fb.addEventListener('click', function () { fill([r]); setNote('已依「' + r.summary + '」填好，其他申請沒有填進去，確認後按送出核定。'); });
+          acts.appendChild(fb);
+        }
+        var vb = document.createElement('button'); vb.type = 'button'; vb.className = 'req-void'; vb.textContent = '作廢';
+        vb.addEventListener('click', function () { voidReq(r, vb); });
+        if (r.upper) { vb.disabled = true; vb.textContent = '送上層處理'; vb.title = '值班主管本人的申請，由上層主管在管理系統處理'; }
+        acts.appendChild(vb);
+        row.appendChild(acts);
+        box.appendChild(row);
+      });
+      var note = document.createElement('div'); note.className = 'req-note'; note.hidden = true; box.appendChild(note);
+      function setNote(text) { note.textContent = text; note.hidden = !text; }
+      function voidReq(r, btn) {
+        var why = window.prompt('作廢這張已核准的申請：\n' + emp.name + ' ' + r.summary + '\n\n作廢理由（必填，同仁在 LINE「我的申請」看得到）：', '');
+        if (why === null) return;
+        why = why.trim();
+        if (!why) { setNote('✕ 作廢要寫理由'); return; }
+        btn.disabled = true; setNote('作廢中…');
+        apiPost({ action: 'mgr_req_void', mgr_key: mgrKey, id: r.id, reason: why }).then(function (res) {
+          if (!res || !res.ok) { btn.disabled = false; setNote('✕ ' + ((res && res.message) || (res && res.error === 'unknown_action' ? '後端還沒更新，暫時不能作廢' : '沒有成功，請再試一次'))); return; }
+          var rest = reqs.filter(function (q) { return q.id !== r.id; });
+          var wasSingle = !multi && r.kind !== 'ot' && !emp.approved;
+          box.remove(); card.__reqApplied = false;
+          card.__applyReq(rest);
+          var done = document.createElement('div'); done.className = 'req-box warn';
+          done.textContent = '已作廢：' + r.summary + (wasSingle ? '。畫面上已經預填的內容沒有清掉，請確認後再送出核定。' : '');
+          periodRows.parentNode.insertBefore(done, periodRows);
+        }, function () { btn.disabled = false; setNote('✕ 網路不穩，沒有作廢，請再試一次'); });
+      }
+      function fill(list) {
+        // 一天多種假別（2026-10-26）：請假、出差各成一列，一起填進去（同一種假別兩張的情況上面已經擋成手動選）
+        var lvFill = [];
+        list.forEach(function (r) {
+          if (r.kind === 'leave') {
+            lvFill.push({ type: r.leave_type, hours: r.hours });
+            if (!r.start) { periodRows.innerHTML = ''; periodRows.appendChild(buildPeriodRow(null, refreshPeriodUI)); }
+          } else if (r.kind === 'trip') {
+            // 出差（2026-10-09）：只填「出差」＋時數，上班時段不動——出差時數會與時段相加；整天出差本來就可以沒有時段
+            lvFill.push({ type: '出差', hours: r.hours });
+            // 整天出差（申請沒填時段、那天也沒有打卡）：預設班別要清掉，否則班別 8 小時＋出差 8 小時＝16 小時（2026-10-10 Codex 審查）。
+            // 那天有打卡＝有在店裡的時段，班別留著給主管調，不替他清掉
+            if (!r.start && !(emp.segments || []).length) { periodRows.innerHTML = ''; periodRows.appendChild(buildPeriodRow(null, refreshPeriodUI)); }
+          } else if (r.kind === 'miss') {
+            // 打卡時間照參考時數的規則取整到 15 分（上班進位、下班捨去）；申請填的時間照填（主管看完再改）
+            var r15 = function (hm, up) { if (!hm) return hm; var m = hhmmToMin(hm); m = up ? Math.ceil(m / 15) * 15 : Math.floor(m / 15) * 15; m = m % 1440; return ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2); };
+            var segs = (emp.segments || []).map(function (x) { return { in: r15(x.in, true), out: r15(x.out, false) }; });
+            if (r.miss_type === 'both') segs.push({ in: r.start, out: r.end });
+            else if (r.miss_type === 'out') { var o = segs.filter(function (x) { return x.in && !x.out; }).pop(); if (o) o.out = r.end; else segs.push({ in: null, out: r.end }); }
+            else { var q = segs.filter(function (x) { return x.out && !x.in; })[0]; if (q) q.in = r.start; else segs.push({ in: r.start, out: null }); }
+            var full = segs.filter(function (x) { return x.in && x.out; });
+            if (full.length) {
+              periodRows.innerHTML = '';
+              full.forEach(function (x) { periodRows.appendChild(buildPeriodRow({ start: x.in, end: x.out }, refreshPeriodUI)); });
+              var tag = document.createElement('span'); tag.className = 'from-req'; tag.textContent = '來自申請';
+              periodRows.appendChild(tag);
+            }
+          }
+        });
+        if (lvFill.length) setLeaveLines(lvFill);
+        refreshPeriodUI();
+      }
+      if (!multi && fillables.length && emp.approved) {
+        var b = document.createElement('button'); b.type = 'button'; b.textContent = '這天已核定過，依申請重新填';
+        b.addEventListener('click', function () { fill(fillables); b.remove(); setNote('已依申請填好，確認後按送出核定。'); });
+        box.insertBefore(b, note);
+      } else if (!multi && fillables.length) {
+        fill(fillables);
+      }
+      // ⚠ renderEmployees 會把卡片內容搬進收合用的 head／body，periodRows 已經不是 card 的直接子節點
+      periodRows.parentNode.insertBefore(box, periodRows);
+    };
+    return card;
+  }
+
+  function renderEmployees(employees) {
+    empListEl.innerHTML = '';
+    if (!employees || employees.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'card center-msg';
+      empty.textContent = '這天沒有任何同仁打卡紀錄。';
+      empListEl.appendChild(empty);
+      return;
+    }
+    // 一行摘要：主管一眼知道今天還有幾個沒核定，不必自己數
+    var pendingCount = employees.filter(function (e) { return !e.approved; }).length;
+    var bar = document.createElement('div');
+    bar.className = 'list-bar';
+    var count = document.createElement('span');
+    count.className = 'lb-count';
+    count.innerHTML = '共 ' + employees.length + ' 人・待核定 <b>' + pendingCount + '</b> 人';
+    var toggleAll = document.createElement('button');
+    toggleAll.type = 'button';
+    var allOpen = false;
+    toggleAll.textContent = '全部展開';
+    toggleAll.addEventListener('click', function () {
+      allOpen = !allOpen;
+      toggleAll.textContent = allOpen ? '全部收合' : '全部展開';
+      [].forEach.call(empListEl.querySelectorAll('.card'), function (c) {
+        if (c.__setExpanded) c.__setExpanded(allOpen);
+      });
+    });
+    bar.appendChild(count);
+    bar.appendChild(toggleAll);
+    empListEl.appendChild(bar);
+    employees.forEach(function (emp) { empListEl.appendChild(buildEmployeeCard(emp)); });
+
+    /* 一次只展開一位（2026-08-25）：14 人全部展開等於要捲快 5 個螢幕，全部收合又要一直點。
+     * 折衷＝開著「下一位要核定的人」，核完自動收起來、翻到再下一位，主管可以一路核到底。
+     * 判斷條件與後端一致：還沒核定，而且今天有打卡或有未入帳的嘗試（整天沒打卡的排休不算）。 */
+    function nextPending() {
+      return [].filter.call(empListEl.querySelectorAll('.card'), function (c) {
+        return c.__pending && c.__hasPunch;
+      })[0];
+    }
+    function openNext() {
+      var c = nextPending();
+      if (c && c.__setExpanded) c.__setExpanded(true);
+      return c;
+    }
+    // 待核定提醒點姓名跳轉（2026-09-18）：這天是被提醒卡片點過來的，改開那張卡片並捲過去，
+    // 不要用「下一位待核定」蓋掉——主管是衝著那個人來的。focusEmpId 消費一次就清掉，
+    // 之後同一天內的核定／換日期照舊回到原本的自動展開邏輯。
+    if (focusEmpId) {
+      var fid = focusEmpId;
+      focusEmpId = null;
+      var focusCard = [].filter.call(empListEl.querySelectorAll('.card'), function (c) {
+        return c.dataset.empId === fid;
+      })[0];
+      if (focusCard && focusCard.__setExpanded) {
+        focusCard.__setExpanded(true);
+        if (focusCard.scrollIntoView) focusCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else {
+        openNext(); // 找不到這個人（例如剛好離職隱藏）就退回原本邏輯，不留空白
+      }
+    } else {
+      openNext();
+    }
+    empListEl.addEventListener('emp-approved', function (e) {
+      var done = e.target;
+      if (done && done.__setExpanded) done.__setExpanded(false);
+      var nx = openNext();
+      // 捲到下一位，但別把已核定的那張推出畫面外（主管還想確認剛才那筆）
+      if (nx && nx.scrollIntoView) nx.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    // 待核定計數要跟著核定即時往下掉，不然主管會以為還有那麼多沒做
+    empListEl.addEventListener('emp-approved', function () {
+      var left = [].filter.call(empListEl.querySelectorAll('.card'), function (c) { return c.__pending; }).length;
+      count.innerHTML = '共 ' + employees.length + ' 人・待核定 <b>' + left + '</b> 人';
+    });
+  }
+
+  // 日期資料快取：Apps Script 每次請求都要讀 5 張表、有固定延遲，切換日期若每次重打會慢。
+  // 只快取「今天之前」的日期（過去資料不會變——除了主管當下核定，核定成功會清掉該日快取）；
+  // 今天/未來一律即時抓（會有新打卡）。載入某天時背景預抓前後一天，讓 ‹ › 幾乎瞬間。
+  var dayCache = {};      // 'yyyy-mm-dd' -> employees 陣列
+  var prefetching = {};   // 進行中的背景預抓，避免同一天重複打
+
+  // C6：「今天」一律以台北時區為準（與後端 todayTaipeiStr 對齊），不用裝置本地時區——
+  // 裝置在異地或跨時區時，本地日期可能與台北日期差一天，會讓快取邊界誤判。
+  function taipeiTodayStr() {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
+  }
+  function cacheable(dateStr) { return !!dateStr && dateStr < taipeiTodayStr(); } // 嚴格早於今天（台北時區）才快取
+
+  // 背景預抓中心日往前 N 天（近一週），讓手機翻閱近日幾乎都命中快取、不用等後端 ~2 秒。
+  // Apps Script 每請求固定 ~2 秒，所以循序一次抓一天（近的先），避免手機同時開一堆連線互相拖慢。
+  var PREFETCH_PAST_DAYS = 6;
+
+  function prefetchNeighbors(dateStr) {
+    var targets = [];
+    for (var i = 1; i <= PREFETCH_PAST_DAYS; i++) targets.push(addDaysStr(dateStr, -i)); // 往前近→遠
+    targets.push(addDaysStr(dateStr, 1)); // 往後一天（多半是今天/未來，會被 cacheable 擋掉）
+    (function next() {
+      var d = null;
+      while (targets.length) {
+        var cand = targets.shift();
+        if (cacheable(cand) && !dayCache[cand] && !prefetching[cand]) { d = cand; break; }
+      }
+      if (!d) return;
+      prefetching[d] = true;
+      apiPost({ action: 'mgr_day', mgr_key: mgrKey, date: d }).then(function (res) {
+        delete prefetching[d];
+        if (res && res.ok) dayCache[res.date] = res.employees;
+        next();
+      }).catch(function () { delete prefetching[d]; next(); });
+    })();
+  }
+
+  function renderDay(dateStr, employees) {
+    loadingCard.style.display = 'none';
+    errorCard.style.display = 'none';
+    currentDate = dateStr;
+    dateInput.value = dateStr;
+    renderEmployees(employees);
+    applyDayRequests(dateStr);
+  }
+
+  /* ══ 加班請假／忘打卡申請（2026-10-09）══ */
+  var pendingRequestsEl = document.getElementById('pendingRequests');
+  var REQ_KIND_LABEL = { leave: '請假', ot: '加班', trip: '出差', miss: '忘打卡' };
+  /** 那天已核准的申請 → 對應同仁卡片預填（不快取：主管剛核准完切回來要看得到）。失敗就安靜略過，不擋核定。 */
+  function applyDayRequests(dateStr) {
+    apiPost({ action: 'mgr_req_day', mgr_key: mgrKey, date: dateStr }, { timeoutMs: BG_LOAD_TIMEOUT_MS }).then(function (res) {
+      if (!res || !res.ok || currentDate !== dateStr) return;
+      Object.keys(res.by_emp || {}).forEach(function (id) {
+        var card = empListEl.querySelector('[data-emp-id="' + CSS.escape(id) + '"]');
+        if (card && card.__applyReq) card.__applyReq(res.by_emp[id]);
+      });
+    }, function () {});
+  }
+  function loadPendingRequests() {
+    bgLoad({ action: 'mgr_req_pending', mgr_key: mgrKey }, function (res) {
+      pendingRequestsEl.innerHTML = '';
+      if (!res.items || !res.items.length) return;
+      var card = document.createElement('div');
+      card.className = 'pd-card rq-card';
+      var t = document.createElement('div'); t.className = 'pd-title';
+      t.textContent = '待審申請 ' + res.items.length + ' 筆（最舊的在上面）';
+      card.appendChild(t);
+      card.appendChild(buildReqBatchBar(card, t));
+      res.items.forEach(function (it) { card.appendChild(buildReqItem(it, card, t)); });
+      pendingRequestsEl.appendChild(card);
+      syncReqBatch(card);
+    }, { label: '待審申請', slot: pendingRequestsEl });
+  }
+  function punchEvidence(it) {
+    if (!it.punches) return '';
+    if (!it.punches.length) return '當天打卡紀錄：沒有任何打卡';
+    return '當天打卡紀錄：\n' + it.punches.map(function (p) {
+      var bad = p.status.indexOf('rejected_') === 0;
+      return p.hm + ' ' + (p.type === 'in' ? '上班' : '下班') + (bad ? '（被擋'
+        + (p.status === 'rejected_out_of_range' ? '：離店 ' + p.distance_m + 'm' + (p.accuracy_m != null ? '、定位誤差 ±' + p.accuracy_m + 'm' : '') : '') + '）'
+        : p.status === 'pending_device_approval' ? '（待核准裝置）' : ' ✓');
+    }).join('\n') + (it.kind === 'miss' && it.punches.some(function (p) { return p.status === 'rejected_out_of_range' && p.accuracy_m >= 500; })
+      ? '\n→ 有按但被擋，而且定位誤差很大＝多半是手機定位失準，申請時間合理' : '');
+  }
+  /* 批次核准（2026-10-09 Eason）：只能核准（退回要寫理由，一筆一筆退）；一次最多 30 筆（後端 mgr_req_decide_batch 同上限）。 */
+  var REQ_BATCH_MAX = 30;
+  function reqTitleRefresh(card, title) {
+    var left = card.querySelectorAll('.rq-acts').length;
+    title.textContent = left ? '待審申請 ' + left + ' 筆（最舊的在上面）' : '待審申請都處理完了';
+    if (!left) { var bar = card.querySelector('.rq-batch'); if (bar) bar.hidden = true; }
+  }
+  function syncReqBatch(card) {
+    var picks = [].slice.call(card.querySelectorAll('.rq-pick'));
+    var on = picks.filter(function (x) { return x.checked; }).length;
+    var all = card.querySelector('#rqAll'), btn = card.querySelector('#btnReqBatch');
+    if (!all || !btn) return;
+    all.checked = picks.length > 0 && on === picks.length;
+    all.indeterminate = on > 0 && on < picks.length;
+    btn.textContent = '核准勾選的 ' + on + ' 筆';
+    btn.disabled = on === 0;
+  }
+  function buildReqBatchBar(card, title) {
+    var bar = document.createElement('div'); bar.className = 'rq-batch';
+    var lab = document.createElement('label');
+    var all = document.createElement('input'); all.type = 'checkbox'; all.id = 'rqAll';
+    lab.appendChild(all); lab.appendChild(document.createTextNode('全選'));
+    var btn = document.createElement('button'); btn.type = 'button'; btn.id = 'btnReqBatch'; btn.disabled = true; btn.textContent = '核准勾選的 0 筆';
+    var msg = document.createElement('div'); msg.className = 'rq-msg'; msg.id = 'rqBatchMsg';
+    bar.appendChild(lab); bar.appendChild(btn);
+    all.addEventListener('change', function () {
+      [].slice.call(card.querySelectorAll('.rq-pick')).forEach(function (x) { x.checked = all.checked; });
+      syncReqBatch(card);
+    });
+    btn.addEventListener('click', function () {
+      var items = [].slice.call(card.querySelectorAll('.rq-item')).filter(function (el) { var c = el.querySelector('.rq-pick'); return c && c.checked; });
+      if (!items.length) return;
+      if (items.length > REQ_BATCH_MAX) { msg.style.color = '#c22a12'; msg.textContent = '一次最多核准 ' + REQ_BATCH_MAX + ' 筆，請少勾幾筆'; return; }
+      var list = items.map(function (el) { return '・' + el.__req.name + '：' + el.__req.summary; }).join('\n');
+      if (!confirm('核准以下 ' + items.length + ' 筆申請？\n' + list + '\n\n核准後，那幾天的核定會先幫你填好，你核定那天時確認送出才算數。')) return;
+      btn.disabled = true; all.disabled = true; msg.style.color = ''; msg.textContent = '送出中…';
+      apiPost({ action: 'mgr_req_decide_batch', mgr_key: mgrKey, ids: items.map(function (el) { return el.__req.id; }), decision: 'approve' }).then(function (r) {
+        all.disabled = false;
+        if (!r || !r.ok) { syncReqBatch(card); msg.style.color = '#c22a12'; msg.textContent = '✕ ' + ((r && r.message) || '沒有成功，請再試一次'); return; }
+        var dates = {};
+        items.forEach(function (el) {
+          var it = el.__req;
+          if ((r.done || []).indexOf(it.id) >= 0) { el.__markDone('✓ 已核准：' + it.name + ' ' + it.summary); dates[it.date] = true; return; }
+          var sk = (r.skipped || []).filter(function (x) { return x.id === it.id; })[0];
+          if (sk) el.__markDone('— 略過：' + it.name + ' ' + it.summary + '（' + sk.reason + '）');
+        });
+        msg.textContent = '';
+        reqTitleRefresh(card, title); syncReqBatch(card);
+        Object.keys(dates).forEach(function (d) { delete dayCache[d]; });
+        if (dates[currentDate]) loadDay(currentDate);
+      }, function () { all.disabled = false; syncReqBatch(card); msg.style.color = '#c22a12'; msg.textContent = '✕ 連線失敗，請再試一次'; });
+    });
+    var wrap = document.createElement('div'); wrap.appendChild(bar); wrap.appendChild(msg);
+    return wrap;
+  }
+  /** 補休申請：附上這位同仁目前的補休餘額（薪酬後端算的；查不到就不顯示） */
+  function compBalanceNote(it) {
+    if (it.kind !== 'leave' || it.leave_type !== '補休' || !LEAVE_OPTS || !LEAVE_OPTS.types) return '';
+    var def = LEAVE_OPTS.types.filter(function (x) { return x.name === '補休'; })[0];
+    var q = def ? quotaOf(String(it.emp_id), def.code) : null;
+    if (!q || !q.comp) return '';
+    return '\n補休餘額：' + (q.allowed ? q.balance_h + ' 小時' + (Number(it.hours) > q.balance_h ? '（不夠）' : '') : '計時同仁沒有補休');
+  }
+  function buildReqItem(it, card, title) {
+    var el = document.createElement('div'); el.className = 'rq-item';
+    el.__req = it;
+    var l1 = document.createElement('div'); l1.className = 'rq-l1';
+    var who = document.createElement('span'); who.className = 'rq-who';
+    var pick = document.createElement('input'); pick.type = 'checkbox'; pick.className = (it.need_proof || it.upper) ? 'rq-pick-off' : 'rq-pick';
+    if (it.need_proof) { pick.disabled = true; pick.title = '還沒附證明，不能核准'; }   // 不參加全選／批次核准
+    if (it.upper) { pick.disabled = true; pick.title = '值班主管本人的申請，送上層審核'; }   // 同上
+    pick.setAttribute('aria-label', '勾選 ' + it.name + ' ' + it.summary);
+    pick.addEventListener('change', function () { syncReqBatch(card); });
+    who.appendChild(pick);
+    var k = document.createElement('span'); k.className = 'rq-kind ' + it.kind; k.textContent = REQ_KIND_LABEL[it.kind] || it.kind;
+    who.appendChild(k); who.appendChild(document.createTextNode(it.name));
+    var d = document.createElement('span'); d.textContent = parseInt(it.date.slice(5, 7), 10) + '/' + parseInt(it.date.slice(8, 10), 10);
+    l1.appendChild(who); l1.appendChild(d); el.appendChild(l1);
+    var l2 = document.createElement('div'); l2.className = 'rq-l2';
+    l2.textContent = it.summary + (it.reason ? '\n原因：' + it.reason : '') + compBalanceNote(it) + '\n送出：' + tsLabel(it.created_at);
+    el.appendChild(l2);
+    var ev = punchEvidence(it);
+    if (ev) { var e = document.createElement('div'); e.className = 'rq-evid'; e.textContent = ev; el.appendChild(e); }
+    /* 證明文件（2026-10-10 Eason：病假、婚假、喪假、產假相關一定要附）：沒附就不能核准，可以退回；同仁在 LINE「我的申請」補附 */
+    if (it.need_proof) {
+      var pf = document.createElement('div'); pf.className = 'rq-proof';
+      pf.textContent = '⚠ ' + it.leave_type + '要附證明，同仁還沒附；補上後才能核准（可以先退回）';
+      el.appendChild(pf);
+    }
+    /* 值班主管本人的申請（2026-10-28）：這把鑰匙不能核准／退回，由上層主管在管理系統審 */
+    if (it.upper) {
+      var up = document.createElement('div'); up.className = 'rq-proof rq-upper';
+      up.textContent = '送上層審核中：值班主管本人的申請，請由上層主管在管理系統（人資部門 → 考勤管理 → 申請審核）審核';
+      el.appendChild(up);
+    }
+    var acts = document.createElement('div'); acts.className = 'rq-acts';
+    var ok = document.createElement('button'); ok.type = 'button'; ok.className = 'rq-ok'; ok.textContent = it.need_proof ? '待補證明' : '核准';
+    if (it.need_proof || it.upper) ok.disabled = true;
+    var no = document.createElement('button'); no.type = 'button'; no.className = 'rq-no'; no.textContent = '退回';
+    if (it.upper) no.disabled = true;
+    acts.appendChild(ok); acts.appendChild(no);
+    if (it.attach_id) {
+      var at = document.createElement('button'); at.type = 'button'; at.className = 'rq-att'; at.textContent = '看附件';
+      at.addEventListener('click', function () {
+        at.disabled = true; at.textContent = '載入中…';
+        fetch(PAYROLL_API, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({ action: 'line_hub_attach_get', store: STORE_CODE, mgr_key: mgrKey, attach_id: it.attach_id }) })
+          .then(function (r) { return r.json(); }).then(function (r) {
+            if (!r || !r.ok) { at.disabled = false; at.textContent = '附件讀不到，再試一次'; return; }
+            at.remove();
+            if (/^image\//.test(r.mime)) { var img = document.createElement('img'); img.className = 'rq-img'; img.src = 'data:' + r.mime + ';base64,' + r.data; el.appendChild(img); }
+            else { var a = document.createElement('a'); a.href = 'data:' + r.mime + ';base64,' + r.data; a.download = 'attachment.pdf'; a.textContent = '下載附件（PDF）'; el.appendChild(a); }
+          }, function () { at.disabled = false; at.textContent = '附件讀不到，再試一次'; });
+      });
+      acts.appendChild(at);
+    }
+    el.appendChild(acts);
+    var reason = null, msg = document.createElement('div'); msg.className = 'rq-msg'; el.appendChild(msg);
+    function decide(decision) {
+      var payload = { action: 'mgr_req_decide', mgr_key: mgrKey, id: it.id, decision: decision };
+      if (decision === 'reject') {
+        if (!reason) {
+          reason = document.createElement('input'); reason.className = 'rq-reason'; reason.maxLength = 100;
+          reason.placeholder = '退回理由（必填，會原文給同仁看）';
+          el.insertBefore(reason, acts); no.textContent = '確定退回'; reason.focus(); return;
+        }
+        if (!reason.value.trim()) { msg.style.color = '#c22a12'; msg.textContent = '請寫退回理由'; return; }
+        payload.reason = reason.value.trim();
+      } else if (!confirm('核准 ' + it.name + '：' + it.summary + '？\n核准後，那天的核定會先幫你填好，你核定那天時確認送出才算數。')) return;
+      ok.disabled = no.disabled = true; msg.style.color = ''; msg.textContent = '送出中…';
+      apiPost(payload).then(function (r) {
+        if (!r || !r.ok) { var lockUp = !!it.upper || (r && r.error === 'upper_review'); ok.disabled = !!it.need_proof || lockUp || (r && r.error === 'need_proof'); no.disabled = lockUp; msg.style.color = '#c22a12'; msg.textContent = '✕ ' + ((r && r.message) || '沒有成功，請再試一次'); return; }
+        el.__markDone((decision === 'approve' ? '✓ 已核准：' : '✕ 已退回：') + it.name + ' ' + it.summary);
+        reqTitleRefresh(card, title); syncReqBatch(card);
+        if (decision === 'approve') { delete dayCache[it.date]; if (currentDate === it.date) loadDay(it.date); }
+      }, function () { ok.disabled = no.disabled = false; msg.style.color = '#c22a12'; msg.textContent = '✕ 連線失敗，請再試一次'; });
+    }
+    el.__markDone = function (text) {   // 單筆與批次共用：處理完就收成一行（勾選框、按鈕一起拿掉）
+      el.innerHTML = ''; var done = document.createElement('div'); done.className = 'rq-l2';
+      done.textContent = text; el.appendChild(done);
+    };
+    ok.addEventListener('click', function () { decide('approve'); });
+    no.addEventListener('click', function () { decide('reject'); });
+    return el;
+  }
+
+  /* 打卡 QR：主管手機出示、每 30 秒換一次（後端 mgr_qr_token 簽章）。同仁 LINE 掃描 → 打卡頁不需定位直接打這家店。 */
+  var QR_LIFF = 'https://liff.line.me/2011292256-QFXEwFh4';
+  var qrTimer = null, qrTick = null;
+  function qrShowToken() {
+    apiPost({ action: 'mgr_qr_token', mgr_key: mgrKey, store: STORE_CODE || 'gk' }, { timeoutMs: BG_LOAD_TIMEOUT_MS }).then(function (r) {
+      var box = document.getElementById('qrBox');
+      if (!r || !r.ok) { box.textContent = '產生失敗，' + (r && r.error === 'unauthorized' ? '主管金鑰無效' : '5 秒後重試'); qrTimer = setTimeout(qrShowToken, 5000); return; }
+      box.innerHTML = '';
+      var url = QR_LIFF + '?qr=' + encodeURIComponent(r.token);
+      box.dataset.url = url;
+      if (window.QRCode) new QRCode(box, { text: url, width: 250, height: 250, correctLevel: QRCode.CorrectLevel.M });
+      else box.textContent = url;
+      var until = Date.now() + r.expires_in;
+      clearInterval(qrTick);
+      qrTick = setInterval(function () { document.getElementById('qrCount').textContent = r.manager + ' 出示・' + Math.max(0, Math.ceil((until - Date.now()) / 1000)) + ' 秒後換新'; }, 500);
+      qrTimer = setTimeout(qrShowToken, r.expires_in + 300);
+    }, function () { qrTimer = setTimeout(qrShowToken, 5000); });
+  }
+  document.getElementById('btnQr').addEventListener('click', function () {
+    document.getElementById('qrOverlay').hidden = false; document.getElementById('qrBox').textContent = '產生中…'; qrShowToken();
+  });
+  document.getElementById('btnQrClose').addEventListener('click', function () {
+    document.getElementById('qrOverlay').hidden = true; clearTimeout(qrTimer); clearInterval(qrTick);
+  });
+
+  /**
+   * 本月待核定提醒（2026-09-18 新增）：列出本月「有上班但主管還沒核定」的日期與同仁，
+   * 置頂在核定頁最上方；點姓名直接跳到那天並展開那張卡片。判斷規則與後端
+   * monthPendingApprovalDates 完全同一套（見 handleMgrPendingApprovals），前端不重算。
+   * 沒有待核定、後端是舊版（回 unknown_action）、或請求失敗都優雅降級成整塊不畫、不跳錯誤——
+   * 四家店後端會分批部署，不能讓這個提醒拖累核定頁其他功能。
+   */
+  var pendingApprovalItems = [];       // 目前的提醒清單（後端 items 原始列，已依日期→姓名排序）
+  var pendingApprovalsShowAll = false; // 超過 5 天時是否已展開全部
+
+  function loadPendingApprovals() {
+    bgLoad(
+      { action: 'mgr_pending_approvals', mgr_key: mgrKey },
+      function (res) {
+        pendingApprovalItems = Array.isArray(res.items) ? res.items : [];
+        renderPendingApprovals();
+      },
+      { label: '本月待核定提醒', slot: pendingApprovalsEl }
+    );
+  }
+
+  // 'yyyy-MM-dd' → 'M/D（週字）'。用 'T00:00:00'（不帶時區）在本地時間解析，
+  // 這樣算出來的星期幾才是「這個日曆日期」本身的星期幾，不受裝置時區影響（與 shiftDay 同一手法）。
+  function weekdayLabel(dateStr) {
+    var d = new Date(dateStr + 'T00:00:00');
+    var wd = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
+    var parts = dateStr.split('-');
+    return parseInt(parts[1], 10) + '/' + parseInt(parts[2], 10) + '（' + wd + '）';
+  }
+
+  // 後端已依日期舊到新、同日依姓名排序回傳，這裡只是依日期分組，不重排。
+  function groupPendingApprovalsByDate() {
+    var groups = [];
+    var byDate = {};
+    pendingApprovalItems.forEach(function (item) {
+      if (!byDate[item.date]) {
+        byDate[item.date] = { date: item.date, names: [] };
+        groups.push(byDate[item.date]);
+      }
+      byDate[item.date].names.push({ emp_id: item.emp_id, name: item.name });
+    });
+    return groups;
+  }
+
+  function buildPendingApprovalGroupRow(g) {
+    var row = document.createElement('div');
+    row.className = 'pa-group';
+
+    var dateEl = document.createElement('div');
+    dateEl.className = 'pa-date';
+    dateEl.textContent = weekdayLabel(g.date);
+    row.appendChild(dateEl);
+
+    var namesEl = document.createElement('div');
+    namesEl.className = 'pa-names';
+    g.names.forEach(function (n) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'pa-chip';
+      chip.textContent = n.name; // 姓名一律用 textContent，不拼進 innerHTML（tests/output-escaping.test.js 在守）
+      chip.addEventListener('click', function () { focusPendingApproval(g.date, n.emp_id); });
+      namesEl.appendChild(chip);
+    });
+    row.appendChild(namesEl);
+
+    return row;
+  }
+
+  function renderPendingApprovals() {
+    pendingApprovalsEl.innerHTML = '';
+    if (!pendingApprovalItems.length) return; // 沒有待核定＝整塊不畫，不佔版面
+
+    var groups = groupPendingApprovalsByDate();
+    var card = document.createElement('div');
+    card.className = 'pa-card';
+
+    var title = document.createElement('div');
+    title.className = 'pa-title';
+    title.textContent = '本月還有 ' + groups.length + ' 天沒核定'; // N＝不重複日期數
+    card.appendChild(title);
+
+    var sub = document.createElement('div');
+    sub.className = 'pa-sub';
+    sub.textContent = '點名字直接跳到那天核定';
+    card.appendChild(sub);
+
+    var shown = pendingApprovalsShowAll ? groups : groups.slice(0, 5);
+    shown.forEach(function (g) { card.appendChild(buildPendingApprovalGroupRow(g)); });
+
+    if (!pendingApprovalsShowAll && groups.length > 5) {
+      var more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'pa-more';
+      more.textContent = '再顯示 ' + (groups.length - 5) + ' 天';
+      more.addEventListener('click', function () {
+        pendingApprovalsShowAll = true;
+        renderPendingApprovals();
+      });
+      card.appendChild(more);
+    }
+
+    pendingApprovalsEl.appendChild(card);
+  }
+
+  /** 點提醒卡片的姓名：切到那一天（沿用既有 loadDay），畫完後只展開那位同仁的卡片並捲過去。 */
+  function focusPendingApproval(date, empId) {
+    focusEmpId = String(empId);
+    loadDay(date);
+  }
+
+  /** 某筆核定成功後即時從提醒移除（見下方 empListEl 的 emp-approved 監聽），不必重打後端；清空了整塊消失。 */
+  function removePendingApproval(date, empId) {
+    if (!pendingApprovalItems.length) return;
+    var before = pendingApprovalItems.length;
+    pendingApprovalItems = pendingApprovalItems.filter(function (it) {
+      return !(it.date === date && String(it.emp_id) === String(empId));
+    });
+    if (pendingApprovalItems.length !== before) renderPendingApprovals();
+  }
+
+  // 綁一次在 empListEl 上就好（事件會從卡片 bubble 上來），不要放進 renderEmployees——
+  // 那裡每次切換日期都會重畫，放進去會重複綁定、同一筆核定觸發好幾次移除。
+  empListEl.addEventListener('emp-approved', function (e) {
+    if (e.detail && e.detail.date && e.detail.emp_id != null) {
+      removePendingApproval(e.detail.date, e.detail.emp_id);
+    }
+  });
+
+  /**
+   * 待核准裝置區（2026-08-03 新增）。原本核准裝置只能開 Apps Script 編輯器跑函式，
+   * 現在主管頁點兩下就好。核准邏輯全在後端 applyDeviceDecision（含「核准只解裝置這關、
+   * 店外打的卡仍不入帳」的分流），這裡只負責顯示與送出。
+   * 沒有待核准時整區不畫，平常不佔版面；載入失敗也靜默略過（不影響主要的核定功能）。
+   */
+  function loadPendingDevices() {
+    bgLoad(
+      { action: 'mgr_pending_devices', mgr_key: mgrKey },
+      function (res) {
+        pendingDevicesEl.innerHTML = '';
+        if (!res.pending || !res.pending.length) return;
+        res.pending.forEach(function (g) { pendingDevicesEl.appendChild(buildPendingCard(g)); });
+      },
+      { label: '待核准裝置', slot: pendingDevicesEl }
+    );
+  }
+
+  function tsLabel(ts) {
+    // '2026-08-01T21:43:12+08:00' → '8/1 21:43'
+    return parseInt(ts.slice(5, 7), 10) + '/' + parseInt(ts.slice(8, 10), 10) + ' ' + ts.slice(11, 16);
+  }
+
+  function buildPendingCard(g) {
+    var card = document.createElement('div');
+    card.className = 'pd-card';
+
+    var title = document.createElement('div');
+    title.className = 'pd-title';
+    title.textContent = '⚠ ' + g.name + '　新裝置待核准';
+    card.appendChild(title);
+
+    var meta = document.createElement('div');
+    meta.className = 'pd-meta';
+    var range = g.count > 1 ? (tsLabel(g.first_ts) + ' ～ ' + tsLabel(g.last_ts)) : tsLabel(g.first_ts);
+    meta.textContent = g.count + ' 筆待核准打卡・' + range
+      + '　最遠 ' + g.max_distance_m + ' 公尺'
+      + '\n裝置碼 …' + String(g.device_id).slice(-6);
+    meta.style.whiteSpace = 'pre-line';
+    card.appendChild(meta);
+
+    // 全部都在範圍內＝人確實在店裡打的，可安心核准；有超出範圍的要主管自己判斷
+    if (!g.all_within_range) {
+      var warn = document.createElement('div');
+      warn.className = 'pd-warn';
+      warn.textContent = '有打卡超出門市範圍。核准只會解除「裝置」這一關，超出範圍的那幾筆仍然不會入帳。';
+      card.appendChild(warn);
+    }
+
+    var actions = document.createElement('div');
+    actions.className = 'pd-actions';
+    var btnOk = document.createElement('button');
+    btnOk.type = 'button';
+    btnOk.className = 'pd-approve';
+    btnOk.textContent = '核准';
+    var btnNo = document.createElement('button');
+    btnNo.type = 'button';
+    btnNo.className = 'pd-reject';
+    btnNo.textContent = '拒絕';
+    actions.appendChild(btnOk);
+    actions.appendChild(btnNo);
+    card.appendChild(actions);
+
+    var result = document.createElement('div');
+    result.className = 'pd-result';
+    card.appendChild(result);
+
+    function decide(approve) {
+      var msg = approve
+        ? ('核准 ' + g.name + ' 的新裝置？\n\n這 ' + g.count + ' 筆打卡會開始計入出勤，'
+           + '且她之後只能用這個裝置打卡。')
+        : ('拒絕 ' + g.name + ' 的新裝置？\n\n這 ' + g.count + ' 筆打卡將不予計入，原本綁定的裝置維持不變。');
+      if (!window.confirm(msg + '\n\n確定?')) return;
+      btnOk.disabled = true;
+      btnNo.disabled = true;
+      result.textContent = '處理中…';
+      apiPost({
+        action: 'mgr_device_decision', mgr_key: mgrKey,
+        emp_id: g.emp_id, device_id: g.device_id, approve: approve,
+      }).then(function (res) {
+        if (!res.ok) {
+          btnOk.disabled = false;
+          btnNo.disabled = false;
+          // no_pending_device＝這批已被別人（或另一個分頁）處理掉了，重新整理就會消失
+          result.style.color = '#c22a12';
+          result.textContent = res.error === 'no_pending_device'
+            ? '✕ 這批待核准已被處理過了，請重新整理頁面。'
+            : ('✕ 失敗：' + res.error);
+          return;
+        }
+        result.style.color = '#1a7a3d';
+        result.textContent = (approve ? '✓ 已核准' : '✓ 已拒絕') + '，更新 ' + res.changed + ' 筆打卡';
+        actions.style.display = 'none';
+        // 核准會讓當日打卡狀態改變（pending→ok），清快取讓核定卡片拿到新的打卡段
+        dayCache = {};
+        if (currentDate) loadDay(currentDate);
+      }).catch(function () {
+        btnOk.disabled = false;
+        btnNo.disabled = false;
+        result.style.color = '#c22a12';
+        result.textContent = '✕ 連線失敗，請再試一次。';
+      });
+    }
+
+    btnOk.addEventListener('click', function () { decide(true); });
+    btnNo.addEventListener('click', function () { decide(false); });
+    return card;
+  }
+
+  function setLoadingRetryNote(text) {
+    if (!loadingRetryNoteEl) return;
+    loadingRetryNoteEl.textContent = text || '';
+    loadingRetryNoteEl.style.display = text ? 'block' : 'none';
+  }
+
+  // 遞增的請求代號：每次呼叫 loadDay 都 +1（包含命中快取那條路徑），回應/重試回來時要
+  // 比對自己是不是「最新那一次」，不是就整段作廢（不畫面、不寫 dayCache）。
+  // 為什麼要包含命中快取那條路徑：例如「今天」還在重試中，這時使用者按了「‹」切到已有
+  // 快取的昨天——昨天那次呼叫本身不需要 token 判斷（同步畫完就結束），但它必須讓「今天」
+  // 那個還在重試的舊 token 失效，否則今天遲到的回應仍可能在使用者已經看著昨天時蓋過畫面。
+  var loadDayToken = 0;
+
+  /**
+   * 值班核定頁主清單（2026-09-19 加上重試）。與 bgLoad 共用同一組時間常數
+   * （BG_LOAD_TIMEOUT_MS／BG_LOAD_RETRY_DELAYS_MS，見上方），但重試的「控制流程」刻意不
+   * 抽出來跟 bgLoad 共用——loadDay 需要 bgLoad 沒有的三件事：① request token 防競態、
+   * ② 寫 dayCache、③ 在既有的 loadingCard／errorCard／empListEl 版面上更新「重試中」文字與
+   * 「重新載入」按鈕，而不是像 bgLoad 那樣往一個獨立的 slot 塞一條提示條。硬要共用會把 bgLoad
+   * 已經上線驗證過的邏輯攪進來一起改，改動變大、風險變高，划不來，所以這裡自己寫一個小重試迴圈。
+   *
+   * 分類沿用 bgLoad 的精神，但這裡的「永久性」集合更小：只有 unauthorized（金鑰無效，重試也不會
+   * 變好）立即顯示、不重試；其餘 !res.ok（含 server_error）、網路失敗、非 JSON（Apps Script
+   * 忙碌時被轉成 doGet 回一段純文字）、逾時，通通當暫時性，自動重試。
+   */
+  function loadDay(dateOverride) {
+    loadDayToken++;
+    var myToken = loadDayToken;
+
+    // 命中快取（過去看過或已預抓的日期）→ 直接畫，不轉圈、不打後端
+    if (dateOverride && dayCache[dateOverride]) {
+      renderDay(dateOverride, dayCache[dateOverride]);
+      prefetchNeighbors(dateOverride);
+      return;
+    }
+    loadingCard.style.display = 'block';
+    setLoadingRetryNote('');
+    errorCard.style.display = 'none';
+    empListEl.innerHTML = '';
+    var payload = { action: 'mgr_day', mgr_key: mgrKey };
+    if (dateOverride) payload.date = dateOverride;
+
+    var attempt = 0;
+    function attemptLoad() {
+      attempt++;
+      apiPost(payload, { timeoutMs: BG_LOAD_TIMEOUT_MS }).then(function (res) {
+        if (myToken !== loadDayToken) return; // 使用者已經切走，這筆結果整段作廢
+        if (res && res.ok) {
+          if (cacheable(res.date)) dayCache[res.date] = res.employees;
+          renderDay(res.date, res.employees);
+          prefetchNeighbors(res.date);
+          return;
+        }
+        if (res && res.error === 'unauthorized') {
+          showError('主管金鑰錯誤，請確認網址是否正確。');
+          return;
+        }
+        retryOrFail();
+      }).catch(function () {
+        if (myToken !== loadDayToken) return;
+        retryOrFail();
+      });
+    }
+    function retryOrFail() {
+      if (myToken !== loadDayToken) return;
+      if (attempt <= BG_LOAD_RETRY_DELAYS_MS.length) {
+        setLoadingRetryNote('連線較慢，重試中（第 ' + attempt + ' 次）…');
+        setTimeout(function () {
+          if (myToken !== loadDayToken) return; // 等待期間又切走了，不要再送這筆
+          attemptLoad();
+        }, BG_LOAD_RETRY_DELAYS_MS[attempt - 1]);
+      } else {
+        showError('讀取失敗（網路或伺服器忙碌）', function () { loadDay(dateOverride); });
+      }
+    }
+    attemptLoad();
+  }
+
+  dateInput.addEventListener('change', function () {
+    if (dateInput.value) loadDay(dateInput.value);
+  });
+  btnPrevDay.addEventListener('click', function () {
+    if (currentDate) loadDay(addDaysStr(currentDate, -1));
+  });
+  btnNextDay.addEventListener('click', function () {
+    if (currentDate) loadDay(addDaysStr(currentDate, 1));
+  });
+  btnToday.addEventListener('click', function () { loadDay(null); });
+
+  /* ── 新進同仁：主管自助開帳號（2026-08-23）──
+   * 不做事前核准（Eason 定案：不想讓每一筆都經過他），改用事後看得見：
+   * 名冊記 created_at／created_by、每日指揮台隔天通知、薪酬系統標「本月新增」。
+   * 後端另有兩道硬性擋：不能新增與自己同名的人、不能與在職同仁同名（薪資用姓名對應）。 */
+  function clockLinkFor(key) {
+    var page = STORE_CODE ? ('clock-' + STORE_CODE + '.html') : 'clock.html';
+    return 'https://eason0728.github.io/mala-clock-in/' + page + '?k=' + key;
+  }
+  /* 4.7：新增同仁改由管理系統做（後端回 add_redirect＝true 時）。網址是常數，沒設的店保持原按鈕。 */
+  var MGMT_SYSTEM_URL = 'https://dzy.mozhuting.com/';
+  function applyAddRedirect(on) {
+    if (!on) return false;
+    var cardEl = document.getElementById('addEmpCard');
+    if (!cardEl) return false;
+    cardEl.innerHTML = '<div class="ae-title">新進同仁報到</div>'
+      + '<div class="ae-hint">請到管理系統 → 我的資料 → 我的單位 新增，當天就能打卡。<br>'
+      + '<a href="' + MGMT_SYSTEM_URL + '" target="_blank" rel="noopener">' + MGMT_SYSTEM_URL + '</a></div>';
+    return true;
+  }
+  (function initAddEmp() {
+    var btn = document.getElementById('aeBtn');
+    var input = document.getElementById('aeName');
+    var box = document.getElementById('aeResult');
+    if (!btn || !input || !box) return;
+
+    function show(html, isErr) {
+      box.style.display = 'block';
+      box.className = 'ae-result' + (isErr ? ' err' : '');
+      box.innerHTML = html;
+    }
+    function submit() {
+      var name = input.value.trim();
+      if (!name) { show('✕ 請先輸入姓名', true); input.focus(); return; }
+      if (!confirm('要幫「' + name + '」建立打卡帳號嗎？\n建立後他就能開始打卡，紀錄會顯示是由你建立的。')) return;
+      btn.disabled = true; btn.textContent = '建立中…';
+      apiPost({ action: 'mgr_add_employee', mgr_key: mgrKey, name: name }).then(function (res) {
+        btn.disabled = false; btn.textContent = '建立帳號';
+        if (!res || !res.ok) {
+          show('✕ ' + ((res && res.message) || '建立失敗，請再試一次'), true);
+          return;
+        }
+        var link = clockLinkFor(res.key);
+        show('✓ 已建立 <b>' + res.name + '</b>（編號 ' + res.emp_id + '）<br>'
+           + '把下面這條連結給他，請他<b>用 Safari 開 → 加入主畫面</b>，以後都從主畫面進：'
+           + '<span class="ae-link" id="aeLink">' + link + '</span>'
+           + '<button type="button" class="ae-copy" id="aeCopy">複製連結</button>');
+        input.value = '';
+        var cp = document.getElementById('aeCopy');
+        if (cp) cp.addEventListener('click', function () {
+          // navigator.clipboard 在非 https 或舊瀏覽器可能不存在，退回選取讓他自己複製
+          var done = function () { cp.textContent = '✓ 已複製'; setTimeout(function () { cp.textContent = '複製連結'; }, 2000); };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(link).then(done, selectFallback);
+          } else selectFallback();
+          function selectFallback() {
+            var el = document.getElementById('aeLink');
+            var r = document.createRange(); r.selectNodeContents(el);
+            var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+            cp.textContent = '已選取，請長按複製';
+          }
+        });
+        loadDay(currentDate);   // 名單重載，新同仁立刻出現在核定清單裡
+        reloadRosterCard();     // 同仁異動區的下拉也要跟著長出新同仁
+      });
+    }
+    btn.addEventListener('click', submit);
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
+  })();
+
+  /* ── 同仁異動：離職停用／恢復在職（2026-08-25）──
+   * 「刪除」一律是停用不是真刪：打卡事件、核定紀錄、薪資的請假與工時都用 emp_id／姓名對應，
+   * 移除名冊列會讓歷史對不到人。離職當天若已有打卡，mgr_day 仍會把他補進清單，照樣核定得到。
+   * 權限同「新進同仁報到」：凡持有主管金鑰的人都能做，留痕 removed_at／removed_by。 */
+  var reloadRosterCard = function () {};
+  (function initRoster() {
+    var card = document.getElementById('rosterCard');
+    var sel = document.getElementById('reSelect');
+    var btn = document.getElementById('reBtn');
+    var box = document.getElementById('reResult');
+    var listBox = document.getElementById('reInactive');
+    var failSlot = document.getElementById('rosterFail');
+    if (!card || !sel || !btn || !box || !listBox) return;
+    var myName = '';
+    var loadCtrl = null; // 上一輪 bgLoad 的控制器，load() 再被呼叫時要先 stop() 掉它
+
+    function show(html, isErr) {
+      box.style.display = 'block';
+      box.className = 'ae-result' + (isErr ? ' err' : '');
+      box.innerHTML = html;
+    }
+    function shortDate(iso) {
+      var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+      return m ? (Number(m[2]) + '/' + Number(m[3])) : '';
+    }
+    function render(rows) {
+      var actives = rows.filter(function (r) { return r.active && r.name !== myName; });
+      var gone = rows.filter(function (r) { return !r.active; });
+      sel.innerHTML = '<option value="">選擇同仁…</option>' + actives.map(function (r) {
+        return '<option value="' + escHtml(r.emp_id) + '">' + escHtml(r.name) + '（' + escHtml(r.emp_id) + '）</option>';
+      }).join('');
+      btn.disabled = actives.length === 0;
+      if (!gone.length) { listBox.innerHTML = ''; return; }
+      listBox.innerHTML = '<div class="re-list-title">已離職（' + gone.length + '）</div>'
+        + gone.map(function (r) {
+            var when = shortDate(r.removed_at);
+            var by = r.removed_by ? ('由 ' + escHtml(r.removed_by) + ' 設定') : '';
+            var meta = (when || by) ? '<span class="re-when">' + [when, by].filter(Boolean).join('・') + '</span>' : '';
+            return '<div class="re-item"><span class="re-name">' + escHtml(r.name) + '（' + escHtml(r.emp_id) + '）' + meta + '</span>'
+                 + '<button type="button" class="re-restore" data-emp="' + r.emp_id
+                 + '" data-name="' + escHtml(r.name) + '">恢復在職</button></div>';
+          }).join('');
+      [].forEach.call(listBox.querySelectorAll('.re-restore'), function (b) {
+        b.addEventListener('click', function () {
+          if (!confirm('要讓「' + b.getAttribute('data-name') + '」恢復在職嗎？\n他會重新能夠打卡。')) return;
+          setActive(b.getAttribute('data-emp'), b.getAttribute('data-name'), true, b);
+        });
+      });
+    }
+    function load() {
+      if (!mgrKey) return;
+      if (loadCtrl) loadCtrl.stop(); // 擋掉上一輪還沒送出的重試，避免舊回應蓋掉新資料
+      loadCtrl = bgLoad(
+        { action: 'mgr_roster', mgr_key: mgrKey },
+        function (res) {
+          myName = String(res.manager_name || '');
+          card.style.display = 'block';
+          applyAddRedirect(!!res.add_redirect);
+          render(res.roster || []);
+        },
+        { label: '同仁異動', slot: failSlot }
+      );
+    }
+    function setActive(empId, name, active, srcBtn) {
+      var label = srcBtn.textContent;
+      srcBtn.disabled = true; srcBtn.textContent = '處理中…';
+      apiPost({ action: 'mgr_set_active', mgr_key: mgrKey, emp_id: empId, active: active })
+        .then(function (res) {
+          srcBtn.disabled = false; srcBtn.textContent = label;
+          if (!res || !res.ok) {
+            show('✕ ' + ((res && res.message) || '設定失敗，請再試一次'), true);
+            return;
+          }
+          show(active ? ('✓ <b>' + res.name + '</b> 已恢復在職，可以打卡了')
+                      : ('✓ <b>' + res.name + '</b> 已設為離職，他不能再打卡了。'
+                         + '過去的打卡與核定紀錄都還在，設錯的話按下面的「恢復在職」。'));
+          sel.value = '';
+          load();
+          loadDay(currentDate);   // 核定清單同步（離職者當天若已有打卡仍會列出，可補核定）
+        }).catch(function () {
+          srcBtn.disabled = false; srcBtn.textContent = label;
+          show('✕ 連線失敗，請檢查網路後再試一次', true);
+        });
+    }
+    btn.addEventListener('click', function () {
+      var empId = sel.value;
+      if (!empId) { show('✕ 請先選擇同仁', true); return; }
+      var name = sel.options[sel.selectedIndex].text.replace(/（.*$/, '');
+      if (!confirm('要把「' + name + '」設為離職嗎？\n\n'
+                 + '・他從現在起無法打卡\n'
+                 + '・過去的打卡紀錄與已核定工時都會保留\n'
+                 + '・如果今天的工時還沒核定，請先核定再設離職\n\n'
+                 + '設錯可以在下方按「恢復在職」。')) return;
+      setActive(empId, name, false, btn);
+    });
+    reloadRosterCard = load;
+    load();
+  })();
+
+  /* ── LINE 綁定紀錄（2026-10-08）──
+   * 後端 mgr_line_binds／mgr_line_unbind（Liff.gs）。舊後端沒有這兩個 action 時 bgLoad 會安靜不畫。 */
+  (function initLineBinds() {
+    var card = document.getElementById('lineBindCard');
+    var listBox = document.getElementById('lbList');
+    var box = document.getElementById('lbResult');
+    var failSlot = document.getElementById('lineBindFail');
+    if (!card || !listBox || !box) return;
+    var TYPE = { bind_name: '輸入全名綁定', bind_auto: '跨店同名（本人確認）', bind: '用打卡連結綁定' };
+    function when(iso) {
+      var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+      return m ? (Number(m[2]) + '/' + Number(m[3]) + ' ' + m[4] + ':' + m[5]) : '';
+    }
+    function render(items) {
+      if (!items.length) { listBox.innerHTML = '<div class="ae-hint">最近 30 天沒有人綁定或解除。</div>'; return; }
+      listBox.innerHTML = items.map(function (it) {
+        var label = it.type.indexOf('unbind_by:') === 0 ? ('由 ' + escHtml(it.type.slice(10)) + ' 解除') : escHtml(TYPE[it.type] || it.type);
+        var btn = it.still_bound ? '<button type="button" class="re-restore" data-emp="' + escHtml(it.emp_id) + '" data-name="' + escHtml(it.name) + '">解除</button>' : '';
+        return '<div class="re-item"><span class="re-name">' + escHtml(it.name) + '（' + escHtml(it.emp_id) + '）'
+             + '<span class="re-when">' + when(it.ts) + '・' + label + (it.type.indexOf('bind') === 0 && !it.still_bound ? '・已不是目前綁定' : '') + '</span></span>' + btn + '</div>';
+      }).join('');
+      [].forEach.call(listBox.querySelectorAll('.re-restore'), function (b) {
+        b.addEventListener('click', function () {
+          var name = b.getAttribute('data-name');
+          if (!confirm('要解除「' + name + '」的 LINE 綁定嗎？\n\n解除後他下次用 LINE 打卡要重新輸入全名綁定（要人在店裡）。\n不影響他原本的打卡連結，也不影響過去的打卡紀錄。')) return;
+          b.disabled = true; b.textContent = '處理中…';
+          apiPost({ action: 'mgr_line_unbind', mgr_key: mgrKey, emp_id: b.getAttribute('data-emp') }).then(function (res) {
+            box.style.display = 'block';
+            box.className = 'ae-result' + (res && res.ok ? '' : ' err');
+            box.innerHTML = res && res.ok ? ('✓ 已解除 <b>' + escHtml(name) + '</b> 的 LINE 綁定') : '✕ 解除失敗，請再試一次';
+            load();
+          }, function () {
+            b.disabled = false; b.textContent = '解除';
+            box.style.display = 'block'; box.className = 'ae-result err'; box.innerHTML = '✕ 連線失敗，請檢查網路後再試一次';
+          });
+        });
+      });
+    }
+    var ctrl = null;
+    function load() {
+      if (!mgrKey) return;
+      if (ctrl) ctrl.stop();
+      ctrl = bgLoad({ action: 'mgr_line_binds', mgr_key: mgrKey },
+        function (res) { card.style.display = 'block'; render(res.items || []); },
+        { label: 'LINE 綁定紀錄', slot: failSlot });
+    }
+    load();
+  })();
+
+  /* ── 店內公告（2026-08-28）──
+   * 值班主管在這裡發，同仁一開打卡頁最上方就看得到。權限同「新進同仁報到」：
+   * 凡持有主管金鑰的人都能發，留痕 created_by。
+   * 「下架」是把 active 改 FALSE 不是真刪——發過什麼、誰發的要留得住。 */
+  (function initNotices() {
+    var card = document.getElementById('noticeCard');
+    var ta = document.getElementById('ntText');
+    var ends = document.getElementById('ntEnds');
+    var btn = document.getElementById('ntBtn');
+    var box = document.getElementById('ntResult');
+    var listBox = document.getElementById('ntList');
+    var countEl = document.getElementById('ntCount');
+    var failSlot = document.getElementById('noticeFail');
+    if (!card || !ta || !ends || !btn || !box || !listBox || !countEl) return;
+    var maxLen = 120;
+    var loadCtrl = null; // 上一輪 bgLoad 的控制器，load() 再被呼叫時要先 stop() 掉它
+
+    /* 公告是自由文字，塞進 innerHTML 之前一律轉義——同仁端用 textContent，
+       主管端這裡是拼字串建列表，少了這道就等於開一個 XSS。 */
+    function esc(v) {
+      return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function show(html, isErr) {
+      box.style.display = 'block';
+      box.className = 'ae-result' + (isErr ? ' err' : '');
+      box.innerHTML = html;
+    }
+    function shortDate(iso) {
+      var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+      return m ? (Number(m[2]) + '/' + Number(m[3])) : '';
+    }
+    function updateCount() {
+      var n = ta.value.trim().length;
+      countEl.textContent = n + ' / ' + maxLen;
+      countEl.className = 'nt-count' + (n > maxLen ? ' over' : '');
+    }
+
+    function render(rows) {
+      if (!rows.length) {
+        listBox.innerHTML = '<div class="re-list-title">目前沒有任何公告，同仁的打卡頁不會出現公告區。</div>';
+        return;
+      }
+      var live = rows.filter(function (r) { return r.active && !r.expired; });
+      listBox.innerHTML = '<div class="re-list-title">目前顯示中（' + live.length + '）／已發布過（' + rows.length + '）</div>'
+        + rows.map(function (r) {
+            var off = !r.active || r.expired;
+            var tag = !r.active ? '<span class="nt-tag">已下架</span>'
+                    : (r.expired ? '<span class="nt-tag">已過期</span>' : '');
+            var meta = [shortDate(r.created_at) + ' 發布', r.created_by ? ('由 ' + r.created_by) : '',
+                        r.ends_on ? ('顯示到 ' + r.ends_on) : ''].filter(Boolean).join('・');
+            return '<div class="nt-item' + (off ? ' off' : '') + '">'
+                 + '<span class="nt-body"><span class="nt-text">' + esc(r.text) + '</span>' + tag
+                 + '<span class="nt-when">' + esc(meta) + '</span></span>'
+                 + '<button type="button" class="nt-act" data-id="' + esc(r.id)
+                 + '" data-on="' + (r.active ? '0' : '1') + '">'
+                 + (r.active ? '下架' : '重新顯示') + '</button></div>';
+          }).join('');
+      [].forEach.call(listBox.querySelectorAll('.nt-act'), function (b) {
+        b.addEventListener('click', function () {
+          var on = b.getAttribute('data-on') === '1';
+          if (!confirm(on ? '要讓這則公告重新出現在同仁的打卡頁嗎？'
+                          : '要把這則公告從同仁的打卡頁下架嗎？\n紀錄會保留，之後可以再按「重新顯示」。')) return;
+          setActive(b.getAttribute('data-id'), on, b);
+        });
+      });
+    }
+
+    function load() {
+      if (!mgrKey) return;
+      if (loadCtrl) loadCtrl.stop(); // 擋掉上一輪還沒送出的重試，避免舊回應蓋掉新資料
+      loadCtrl = bgLoad(
+        { action: 'mgr_notices', mgr_key: mgrKey },
+        function (res) {
+          card.style.display = 'block';
+          if (Number(res.max_len) > 0) {
+            maxLen = Number(res.max_len);
+            ta.setAttribute('maxlength', String(maxLen));
+          }
+          var ms = document.getElementById('ntMaxShow');
+          if (ms && Number(res.max_show) > 0) ms.textContent = String(res.max_show);
+          // 下架日不給選過去的日子（後端也會擋，這裡只是先擋在手指上）
+          ends.min = taipeiTodayStr();
+          updateCount();
+          render(res.notices || []);
+        },
+        { label: '店內公告', slot: failSlot }
+      );
+    }
+
+    function setActive(id, active, srcBtn) {
+      var label = srcBtn.textContent;
+      srcBtn.disabled = true; srcBtn.textContent = '處理中…';
+      apiPost({ action: 'mgr_set_notice_active', mgr_key: mgrKey, id: id, active: active })
+        .then(function (res) {
+          srcBtn.disabled = false; srcBtn.textContent = label;
+          if (!res || !res.ok) { show('✕ ' + ((res && res.message) || '設定失敗，請再試一次'), true); return; }
+          show(active ? '✓ 已重新顯示，同仁打卡頁會再看到這則公告'
+                      : '✓ 已下架，同仁打卡頁不會再顯示這則公告');
+          load();
+        }).catch(function () {
+          srcBtn.disabled = false; srcBtn.textContent = label;
+          show('✕ 連線失敗，請檢查網路後再試一次', true);
+        });
+    }
+
+    ta.addEventListener('input', updateCount);
+    btn.addEventListener('click', function () {
+      var text = ta.value.trim();
+      if (!text) { show('✕ 請先輸入公告內容', true); return; }
+      if (text.length > maxLen) {
+        show('✕ 公告最多 ' + maxLen + ' 個字（目前 ' + text.length + ' 個字）', true); return;
+      }
+      var until = ends.value ? ('顯示到 ' + ends.value + ' 為止') : '一直顯示，直到你手動下架';
+      if (!confirm('這則公告會馬上出現在所有同仁的打卡頁最上方：\n\n'
+                 + text + '\n\n' + until + '。\n\n確定要發布嗎？')) return;
+      var label = btn.textContent;
+      btn.disabled = true; btn.textContent = '發布中…';
+      apiPost({ action: 'mgr_add_notice', mgr_key: mgrKey, text: text, ends_on: ends.value || '' })
+        .then(function (res) {
+          btn.disabled = false; btn.textContent = label;
+          if (!res || !res.ok) { show('✕ ' + ((res && res.message) || '發布失敗，請再試一次'), true); return; }
+          show('✓ 已發布，同仁下次打開打卡頁就會看到');
+          ta.value = ''; ends.value = ''; updateCount();
+          load();
+        }).catch(function () {
+          btn.disabled = false; btn.textContent = label;
+          show('✕ 連線失敗，請檢查網路後再試一次', true);
+        });
+    });
+
+    load();
+  })();
+
+  function init() {
+    if (!mgrKey) {
+      loadingCard.style.display = 'none';
+      showError('連結錯誤：找不到主管代碼，請確認網址是否完整。');
+      return;
+    }
+    if (API_URL.indexOf('PASTE_') === 0) {
+      loadingCard.style.display = 'none';
+      showError('系統尚未設定完成，請聯絡老闆。');
+      return;
+    }
+    // 先抓假別清單與額度，再畫卡片（抓不到就用內建 fallback，不擋值班核定）
+    loadLeaveOptions().then(function () { loadDay(null); });
+    loadPendingDevices(); // 與當日核定並行載入，失敗不影響主要功能
+    loadPendingApprovals(); // 本月待核定提醒，同樣並行載入、失敗不影響主要功能
+    loadPendingRequests(); // 加班請假／忘打卡待審申請，同樣並行載入、失敗不影響主要功能
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

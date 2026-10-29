@@ -37,7 +37,7 @@ Sched.gs 的 SCHED_GIST_URL 已改成線上用的那顆（10-13 換的 47c876cc�
 """
 import argparse, difflib, pathlib, re, subprocess, sys
 
-STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztgf-clock-in', 'mztlzl-clock-in']   # 2026-10-29 補六張犁（verify-store-backends.py 早就有）
+STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztgf-clock-in', 'mztlzl-clock-in', 'mztmc-clock-in']   # 2026-10-29 補六張犁（verify-store-backends.py 早就有）
 # 沒有店別專屬值、整份覆蓋的檔案：repo 檔名 → clasp 專案裡的檔名
 WHOLE_FILES = [('Requests.gs', 'Requests.js'), ('Liff.gs', 'Liff.js'), ('LineHub.gs', 'LineHub.js'),
                ('SvcStaff.gs', 'SvcStaff.js'), ('Sched.gs', 'Sched.js'), ('SchedPub.gs', 'SchedPub.js'), ('Mirror.gs', 'Mirror.js')]

@@ -43,6 +43,11 @@ STORES = {
            'clock_home': '六張犁打卡', 'mgr_home': '六張犁值班',
            'favicon': 'favicon-32-mzt.png',
            'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
+    # 墨竹亭台中美村店（2026-10-29 開）。同金山不設中午休息時段。
+    'mztmc': {'name': '墨竹亭 台中美村店', 'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
+           'clock_home': '美村打卡', 'mgr_home': '美村值班',
+           'favicon': 'favicon-32-mzt.png',
+           'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
 }
 PAGES = [
     ('clock.html',   'clock',   '員工打卡',     'clock_icon', 'clock_home', 'clock_bg'),
