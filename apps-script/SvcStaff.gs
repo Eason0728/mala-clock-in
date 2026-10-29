@@ -244,8 +244,9 @@ function handleSvcPayrollNames_(body) {
 /** {svc_key, emp_ids:[…]} → 寫 Script Property REQ_UPPER_EMPS（跨店值班主管的本店 emp_id；管理系統每日同步） */
 function handleSvcSetUpper_(body) {
   var bad = svcAuth_(body); if (bad) return bad;
-  var hasUp = Array.isArray(body.emp_ids), hasDept = Array.isArray(body.dept_emp_ids);   // 至少帶一份；沒帶的那份不動
-  if (!hasUp && !hasDept) return svcFail_('bad_request', 'emp_ids 要是陣列');
+  // 至少帶一份；沒帶的那份不動。dept_emp_ids／home_emp_ids（2026-10-29）由管理系統每日同步一起推
+  var hasUp = Array.isArray(body.emp_ids), hasDept = Array.isArray(body.dept_emp_ids), hasHome = Array.isArray(body.home_emp_ids);
+  if (!hasUp && !hasDept && !hasHome) return svcFail_('bad_request', 'emp_ids 要是陣列');
   function clean(list) {
     var seen = {}, out = [];
     list.forEach(function (x) {
@@ -255,15 +256,21 @@ function handleSvcSetUpper_(body) {
     });
     return out;
   }
-  var up = hasUp ? clean(body.emp_ids) : null, dept = hasDept ? clean(body.dept_emp_ids) : null;
-  if ((up && up.length > 500) || (dept && dept.length > 500)) return svcFail_('too_many', '最多 500 個 emp_id');
+  var up = hasUp ? clean(body.emp_ids) : null, dept = hasDept ? clean(body.dept_emp_ids) : null, home = hasHome ? clean(body.home_emp_ids) : null;
+  if ([up, dept, home].some(function (l) { return l && l.length > 500; })) return svcFail_('too_many', '最多 500 個 emp_id');
   var props = PropertiesService.getScriptProperties();
+  function put(name, list) {   // 空陣列＝刪屬性；同時更新讀壞時用的快照
+    if (list.length) { var v = JSON.stringify(list); props.setProperty(name, v); props.setProperty(name + '_LAST', v); }
+    else { props.deleteProperty(name); props.deleteProperty(name + '_LAST'); }
+  }
   if (up) props.setProperty('REQ_UPPER_EMPS', JSON.stringify(up));
-  if (dept) { if (dept.length) props.setProperty('REQ_DEPT_EMPS', JSON.stringify(dept)); else props.deleteProperty('REQ_DEPT_EMPS'); }   // 部門同仁名單（2026-10-29）
+  if (dept) put('REQ_DEPT_EMPS', dept);
+  if (home) put('REQ_HOME_EMPS', home);
   if (body.on === true) props.setProperty('REQ_UPPER_ON', '1');
   else if (body.on === false) props.deleteProperty('REQ_UPPER_ON');   // 沒帶 on＝不動開關
-  var res = { ok: true, n: up ? up.length : JSON.parse(props.getProperty('REQ_UPPER_EMPS') || '[]').length, on: props.getProperty('REQ_UPPER_ON') === '1' };
+  var res = { ok: true, n: up ? up.length : Object.keys(reqUpperExtra_()).length, on: props.getProperty('REQ_UPPER_ON') === '1' };
   if (dept) res.dept_n = dept.length;
+  if (home) res.home_n = home.length;
   return res;
 }
 

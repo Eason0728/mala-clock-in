@@ -452,19 +452,35 @@ function reqUpperOn_() { return PropertiesService.getScriptProperties().getPrope
    名單＝Script Property REQ_DEPT_EMPS（JSON 陣列的本店 emp_id），由 svc_set_upper 的 dept_emp_ids 寫入。
    不看 REQ_UPPER_ON：名單非空就生效；緊急關＝刪掉 REQ_DEPT_EMPS。 */
 var REQ_DEPT_MSG_ = '這是部門同仁的申請（在本店上班算支援），請由部門主管在管理系統（人資部門 → 考勤管理 → 申請審核）審核';
-function reqEmpListProp_(name) {
+/** 保護名單（JSON 陣列的 emp_id）。讀壞時不當空名單（2026-10-29 審查：不能靜默放行）：
+ *  先退回上一份讀成功的快照（<name>_LAST）；連快照都沒有 → {'*':true}＝全部人都當在名單上（本店主管全擋，管理系統照常）。 */
+var REQ_ALL_ = '*';
+function reqParseList_(raw) {
+  var arr = JSON.parse(raw);
+  if (!Array.isArray(arr)) throw new Error('not_array');
   var out = {};
-  try {
-    var raw = PropertiesService.getScriptProperties().getProperty(name);
-    var arr = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(arr)) arr.forEach(function (x) { if (typeof x === 'string' && x) out[x] = true; });
-  } catch (e) {}
+  arr.forEach(function (x) { if (typeof x === 'string' && x) out[x] = true; });
   return out;
 }
+function reqEmpListProp_(name) {
+  var props = PropertiesService.getScriptProperties(), raw = null;
+  try {
+    raw = props.getProperty(name);
+    if (!raw) return {};
+    var out = reqParseList_(raw);
+    try { if (props.getProperty(name + '_LAST') !== raw) props.setProperty(name + '_LAST', raw); } catch (e2) {}
+    return out;
+  } catch (e) {
+    try { var last = props.getProperty(name + '_LAST'); if (last) return reqParseList_(last); } catch (e3) {}
+    var all = {}; all[REQ_ALL_] = true; return all;
+  }
+}
+function reqInList_(map, id) { return !!(map && (map[REQ_ALL_] || map[id])); }
 function reqDeptEmps_() { return reqEmpListProp_('REQ_DEPT_EMPS'); }
 /* 不算本店支援的人（2026-10-29 Eason：財務部一位同仁固定在央廚上班，不算支援、薪水算總部）：
    工時與申請都由所屬部門在管理系統核（管理系統 allow_acting＋acting_name 放行），本店值班核定頁看不到、核不了。
    名單＝Script Property REQ_HOME_EMPS（JSON 陣列的本店 emp_id），手動設；緊急關＝刪屬性。申請部分自動算進部門同仁。 */
+var REQ_LIST_BAD_MSG_ = '本店的部門同仁名單讀不到，暫時不能在這裡核定，請通知系統管理者（指令碼屬性 REQ_HOME_EMPS／REQ_DEPT_EMPS）';
 var REQ_HOME_MSG_ = '這位同仁在本店上班不算支援，工時由所屬部門在管理系統（人資部門 → 考勤管理）核定';
 function reqHomeEmps_() { return reqEmpListProp_('REQ_HOME_EMPS'); }
 /** 本店值班主管（非管理系統）要看不到的人：{emp_id:true}；管理系統代核時回 null */
@@ -473,18 +489,18 @@ function reqHomeHide_(body) {
   var mgr = sh ? findManagerByKey(readSheetAsObjects(sh).rows, body.mgr_key) : null;
   if (!mgr || reqMgrActing_(mgr, body)) return null;
   var h = reqHomeEmps_();
-  return Object.keys(h).length ? h : null;
+  return Object.keys(h).length ? h : null;   // 可能含 '*'（名單讀壞）：用 reqInList_ 判斷
 }
 /** mgr_day：拿掉不算支援的人（管理系統代核照常） */
 function reqMgrDayHome_(body) {
   var r = handleMgrDay(body), hide = (r && r.ok) ? reqHomeHide_(body) : null;
-  if (hide && Array.isArray(r.employees)) r.employees = r.employees.filter(function (e) { return !hide[String(e.emp_id)]; });
+  if (hide && Array.isArray(r.employees)) r.employees = r.employees.filter(function (e) { return !reqInList_(hide, String(e.emp_id)); });
   return r;
 }
 /** mgr_approve：不算支援的人擋掉（管理系統代核照常） */
 function reqMgrApproveHome_(body) {
   var hide = reqHomeHide_(body);
-  if (hide && hide[String(body.emp_id == null ? '' : body.emp_id)]) return { ok: false, error: 'home_review', message: REQ_HOME_MSG_ };
+  if (hide && reqInList_(hide, String(body.emp_id == null ? '' : body.emp_id))) return { ok: false, error: 'home_review', message: hide[REQ_ALL_] ? REQ_LIST_BAD_MSG_ : REQ_HOME_MSG_ };
   return handleMgrApprove(body);
 }
 /** 為什麼這筆申請不能由本店值班主管處理：'mgr'＝值班主管本人、'dept'＝部門同仁、''＝可以處理 */
@@ -493,15 +509,15 @@ function reqUpperWhy_(empId, ss, cache) {
   var id = String(empId == null ? '' : empId);
   if (!id) return '';
   if (c.local[id] || c.extra[id]) return 'mgr';
-  return (c.dept && c.dept[id]) ? 'dept' : '';
+  if (c.home && reqInList_(c.home, id)) return 'home';
+  return (c.dept && reqInList_(c.dept, id)) ? 'dept' : '';
 }
 function reqIsUpper_(empId, ss, cache) { return !!reqUpperWhy_(empId, ss, cache); }
-function reqUpperMsg_(why) { return why === 'dept' ? REQ_DEPT_MSG_ : REQ_UPPER_MSG_; }
+function reqUpperMsg_(why) { return why === 'home' ? REQ_HOME_REQ_MSG_ : why === 'dept' ? REQ_DEPT_MSG_ : REQ_UPPER_MSG_; }
+var REQ_HOME_REQ_MSG_ = '這位同仁在本店上班不算支援，申請由所屬部門在管理系統（人資部門 → 考勤管理 → 申請審核）審核';
 function reqUpperCache_(ss) {
   var on = reqUpperOn_();   // 值班主管那份看總開關；部門同仁名單不看（見上）
-  var dept = reqDeptEmps_(), home = reqHomeEmps_();
-  Object.keys(home).forEach(function (k) { dept[k] = true; });   // 不算支援的人，申請也一樣不歸本店
-  return { local: on ? reqLocalDutyMgrs_(ss).emps : {}, extra: on ? reqUpperExtra_() : {}, dept: dept };
+  return { local: on ? reqLocalDutyMgrs_(ss).emps : {}, extra: on ? reqUpperExtra_() : {}, dept: reqDeptEmps_(), home: reqHomeEmps_() };
 }
 /** 這把主管鑰匙是不是營運系統專用（allow_acting＝TRUE）：是就放行，營運系統依管理系統名單把關 */
 /** 放行條件：主管列 allow_acting＝TRUE 且帶了合法 acting_name（trim 後非空、≤40 字，同 actingName_）。
@@ -524,6 +540,8 @@ function handleMgrReqPending_(body) {
   var ss = getSS(), rows = reqRows_(ss).filter(function (r) { return r.status === 'pending'; });
   if (!rows.length) return { ok: true, items: [] };
   var events = liffEvents_(ss), upc = reqUpperCache_(ss);
+  var hideHome = !reqMgrActing_(reqMgr_(body), body);   // 不算支援的人：本店主管連申請都看不到（2026-10-29）
+  if (hideHome) rows = rows.filter(function (r) { return reqUpperWhy_(r.emp_id, ss, upc) !== 'home'; });
   var items = rows.sort(function (a, b) { return a.created_at < b.created_at ? -1 : 1; }).map(function (r) {
     var o = reqPublic_(r);
     o.summary = reqSummary_(r);
@@ -614,7 +632,7 @@ function handleMgrReqDecideBatch_(body) {
       if (!sh || !r) { skipped.push({ id: id, reason: '找不到這筆申請' }); return; }
       if (r.status !== 'pending') { skipped.push({ id: id, reason: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' }); return; }
       var why = upc ? reqUpperWhy_(r.emp_id, ss, upc) : '';
-      if (why) { skipped.push({ id: id, reason: why === 'dept' ? '部門同仁的申請，由部門主管審核' : '值班主管本人的申請，送上層審核' }); return; }
+      if (why) { skipped.push({ id: id, reason: why === 'mgr' ? '值班主管本人的申請，送上層審核' : '部門同仁的申請，由部門主管審核' }); return; }
       if (reqNeedsProof_(r)) { skipped.push({ id: id, reason: r.leave_type + '還沒附證明' }); return; }
       reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: actor, reject_reason: '' });
       done.push(id);
@@ -632,8 +650,9 @@ function handleMgrReqDay_(body) {
   var by = {}, ss = getSS(), upc = reqMgrActing_(mgr, body) ? null : reqUpperCache_(ss);
   reqRows_(ss).forEach(function (r) {
     if (r.date !== date || r.status !== 'approved') return;
-    var o = reqPublic_(r); o.summary = reqSummary_(r);
     var why = upc ? reqUpperWhy_(r.emp_id, ss, upc) : '';
+    if (why === 'home') return;   // 不算支援的人：本店主管看不到（2026-10-29）
+    var o = reqPublic_(r); o.summary = reqSummary_(r);
     o.upper = !!why;   // 值班主管本人／部門同仁的申請：作廢也要上層處理
     if (why) o.upper_kind = why;
     (by[String(r.emp_id)] = by[String(r.emp_id)] || []).push(o);
