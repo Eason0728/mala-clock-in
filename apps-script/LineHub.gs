@@ -1367,6 +1367,10 @@ function handleLineHubAttachGet_(body) {
   var parents = file.getParents();
   while (parents.hasNext()) if (parents.next().getId() === folderId) inFolder = true;
   if (!folderId || !inFolder) return { ok: false, error: 'not_found' };
+  // 只給這把鑰匙在待審清單看得到的申請附件（2026-10-29 審查：不算本店支援的人，本店主管看不到；營運系統代核帶 acting_name 照常）
+  var pend = lineHubCallStore_(st, { action: 'mgr_req_pending', mgr_key: body.mgr_key, acting_name: body.acting_name });
+  if (!pend || !pend.ok || !Array.isArray(pend.items)) return { ok: false, error: 'busy', message: '暫時讀不到申請清單，請再試一次' };
+  if (!pend.items.some(function (x) { return String(x.attach_id || '') === id; })) return { ok: false, error: 'not_found' };
   var blob = file.getBlob();
   return { ok: true, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
 }
