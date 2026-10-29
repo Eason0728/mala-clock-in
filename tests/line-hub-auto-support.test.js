@@ -96,7 +96,7 @@ ok('成立：mini 恰好呼叫一次（op_id 照契約）→ liff_bind → liff_
   assert.strictEqual(b.hub_key, P.STAFF_HUB_KEY); assert.strictEqual(b.store_code, 'mztjs');
   assert.strictEqual(b.src_store, 'hq'); assert.strictEqual(b.src_emp_id, 'H01');
   assert.strictEqual(b.op_id, 'hub:mztjs:' + sha12 + ':20261008');
-  assert(/^hub:(gf|mztjs|mztgf|mztlzl|hq|cf):[0-9a-f]{12}:\d{8}$/.test(b.op_id));
+  assert(/^hub:(gf|mztjs|mztgf|mztlzl|mztmc|hq|cf):[0-9a-f]{12}:\d{8}$/.test(b.op_id));
   assert.deepStrictEqual(m.storeCalls.map(c => c.body.action), ['liff_bind', 'liff_clock']);
   assert.strictEqual(m.storeCalls[0].body.key, 'kJ');
   assert.strictEqual(r.result.ok, true);
@@ -191,9 +191,9 @@ ok('mini 不通／denied／回壞資料／ok 但綁不起來 → 回原本「名
 ok('store_code 對照表：光復（空字串）→ gf，其餘同名；涵蓋 stores.json 全部店且只用契約的六個', () => {
   const { sb } = make({ sheets: {} });
   const map = vm.runInContext('LINE_HUB_STAFF_CODE_MAP', sb);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(map)), { '': 'gf', mztjs: 'mztjs', mztgf: 'mztgf', mztlzl: 'mztlzl', hq: 'hq', cf: 'cf' });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(map)), { '': 'gf', mztjs: 'mztjs', mztgf: 'mztgf', mztlzl: 'mztlzl', mztmc: 'mztmc', hq: 'hq', cf: 'cf' });
   STORES.forEach(s => assert(map[s.code] !== undefined, s.code));
-  assert.deepStrictEqual(Object.values(map).sort(), ['cf', 'gf', 'hq', 'mztgf', 'mztjs', 'mztlzl']);
+  assert.deepStrictEqual(Object.values(map).sort(), ['cf', 'gf', 'hq', 'mztgf', 'mztjs', 'mztlzl', 'mztmc']);
 });
 ok('光復端從光復店出發也能用 gf（B 店＝光復、home＝金山）', () => {
   const sheets = { '': { roster: [], events: [] }, mztjs: { roster: [R({ emp_id: 'J1', key: 'kJ' })] } };

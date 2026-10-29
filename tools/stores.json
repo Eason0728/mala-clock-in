@@ -44,6 +44,17 @@
     "relay": true
   },
   {
+    "code": "mztmc",
+    "name": "墨竹亭 台中美村",
+    "page": "clock-mztmc.html",
+    "gas_dir": "mztmc-clock-in",
+    "api": "https://script.google.com/macros/s/AKfycbz3gBxmrVxSJ6LmT0__Vl5fg1DMPX4TlunXw6bUFmk8PUl19ZKkQ2M7D9cgb0-xUr9hWw/exec",
+    "lat": 24.154611576488247,
+    "lng": 120.66215239004248,
+    "radius_m": 50,
+    "relay": false
+  },
+  {
     "code": "hq",
     "name": "鼎兆元 總部",
     "page": "clock-hq.html",
