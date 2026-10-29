@@ -447,13 +447,34 @@ function reqUpperExtra_() {
 }
 /** emp_id 是不是值班主管（本店判斷 ∪ 跨店名單）。cache 可傳入 {local, extra} 避免批次重讀 */
 function reqUpperOn_() { return PropertiesService.getScriptProperties().getProperty('REQ_UPPER_ON') === '1'; }   // 總開關，預設關：只有恰好 '1' 才開
-function reqIsUpper_(empId, ss, cache) {
-  if (!cache && !reqUpperOn_()) return false;
-  var c = cache || { local: reqLocalDutyMgrs_(ss || getSS()).emps, extra: reqUpperExtra_() };
-  var id = String(empId == null ? '' : empId);
-  return !!(id && (c.local[id] || c.extra[id]));
+/* 部門同仁在門市打卡的申請由部門主管審（2026-10-29 Eason 選 1）：部門同仁在門市上班＝支援，
+   工時照舊由門市值班主管核；請假、加班、忘打卡、出差申請一律由部門主管在管理系統審，值班核定頁不能核准／退回／作廢。
+   名單＝Script Property REQ_DEPT_EMPS（JSON 陣列的本店 emp_id），由 svc_set_upper 的 dept_emp_ids 寫入。
+   不看 REQ_UPPER_ON：名單非空就生效；緊急關＝刪掉 REQ_DEPT_EMPS。 */
+var REQ_DEPT_MSG_ = '這是部門同仁的申請（在本店上班算支援），請由部門主管在管理系統（人資部門 → 考勤管理 → 申請審核）審核';
+function reqDeptEmps_() {
+  var out = {};
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty('REQ_DEPT_EMPS');
+    var arr = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(arr)) arr.forEach(function (x) { if (typeof x === 'string' && x) out[x] = true; });
+  } catch (e) {}
+  return out;
 }
-function reqUpperCache_(ss) { return reqUpperOn_() ? { local: reqLocalDutyMgrs_(ss).emps, extra: reqUpperExtra_() } : { local: {}, extra: {} }; }
+/** 為什麼這筆申請不能由本店值班主管處理：'mgr'＝值班主管本人、'dept'＝部門同仁、''＝可以處理 */
+function reqUpperWhy_(empId, ss, cache) {
+  var c = cache || reqUpperCache_(ss || getSS());
+  var id = String(empId == null ? '' : empId);
+  if (!id) return '';
+  if (c.local[id] || c.extra[id]) return 'mgr';
+  return (c.dept && c.dept[id]) ? 'dept' : '';
+}
+function reqIsUpper_(empId, ss, cache) { return !!reqUpperWhy_(empId, ss, cache); }
+function reqUpperMsg_(why) { return why === 'dept' ? REQ_DEPT_MSG_ : REQ_UPPER_MSG_; }
+function reqUpperCache_(ss) {
+  var on = reqUpperOn_();   // 值班主管那份看總開關；部門同仁名單不看（見上）
+  return { local: on ? reqLocalDutyMgrs_(ss).emps : {}, extra: on ? reqUpperExtra_() : {}, dept: reqDeptEmps_() };
+}
 /** 這把主管鑰匙是不是營運系統專用（allow_acting＝TRUE）：是就放行，營運系統依管理系統名單把關 */
 /** 放行條件：主管列 allow_acting＝TRUE 且帶了合法 acting_name（trim 後非空、≤40 字，同 actingName_）。
  *  營運系統「門市帳號登入（舊路）」雖用同一把鑰匙但不帶 acting_name、不依人過濾，一律不放行。 */
@@ -478,7 +499,9 @@ function handleMgrReqPending_(body) {
   var items = rows.sort(function (a, b) { return a.created_at < b.created_at ? -1 : 1; }).map(function (r) {
     var o = reqPublic_(r);
     o.summary = reqSummary_(r);
-    o.upper = reqIsUpper_(r.emp_id, ss, upc);   // 值班主管本人的申請：送上層審，這把鑰匙不能處理
+    var why = reqUpperWhy_(r.emp_id, ss, upc);
+    o.upper = !!why;   // 值班主管本人／部門同仁的申請：送上層審，這把鑰匙不能處理
+    if (why) o.upper_kind = why;
     o.attach_id = String(r.attach_id || '');   // 主管看附件用（經光復 line_hub_attach_get，會再核對主管金鑰）
     if (reqDayDiff_(r.date, todayTaipeiStr()) <= 0) o.punches = reqDayPunches_(events, r.emp_id, r.date);   // 還沒到的日期沒有打卡可看，不顯示「沒有任何打卡」
     return o;
@@ -503,7 +526,8 @@ function handleMgrReqDecide_(body) {
     var r = reqRows_(ss).filter(function (x) { return String(x.id) === String(body.id); })[0];
     if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
     if (r.status !== 'pending') return { ok: false, error: 'not_pending', message: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' };
-    if (!reqMgrActing_(mgr, body) && reqIsUpper_(r.emp_id, ss)) return { ok: false, error: 'upper_review', message: REQ_UPPER_MSG_ };
+    var why = reqMgrActing_(mgr, body) ? '' : reqUpperWhy_(r.emp_id, ss);
+    if (why) return { ok: false, error: 'upper_review', message: reqUpperMsg_(why) };
     if (decision === 'approve' && reqNeedsProof_(r)) return { ok: false, error: 'need_proof', message: r.leave_type + '要附證明，同仁補上後才能核准（退回不受影響）' };
     reqSetCells_(sh, r.__rowIndex, { status: decision === 'approve' ? 'approved' : 'rejected', decided_at: nowTaipeiIso(),
                                      decided_by: actor, reject_reason: decision === 'reject' ? reason : '' });
@@ -529,7 +553,8 @@ function handleMgrReqVoid_(body) {
     if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
     if (r.status !== 'approved') return { ok: false, error: 'not_approved',
       message: r.status === 'voided' ? '這筆已經作廢了' : r.status === 'pending' ? '這筆還在審核中，請用退回' : '只有已核准的申請可以作廢' };
-    if (!reqMgrActing_(mgr, body) && reqIsUpper_(r.emp_id, ss)) return { ok: false, error: 'upper_review', message: REQ_UPPER_MSG_ };
+    var why = reqMgrActing_(mgr, body) ? '' : reqUpperWhy_(r.emp_id, ss);
+    if (why) return { ok: false, error: 'upper_review', message: reqUpperMsg_(why) };
     reqHeads_(sh);   // 舊分頁沒有 voided_* 欄，先補表頭
     reqSetCells_(sh, r.__rowIndex, { status: 'voided', voided_at: nowTaipeiIso(), voided_by: actor, void_reason: reason });
     return { ok: true, id: String(r.id), status: 'voided' };
@@ -560,7 +585,8 @@ function handleMgrReqDecideBatch_(body) {
       var r = byId[id];
       if (!sh || !r) { skipped.push({ id: id, reason: '找不到這筆申請' }); return; }
       if (r.status !== 'pending') { skipped.push({ id: id, reason: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' }); return; }
-      if (upc && reqIsUpper_(r.emp_id, ss, upc)) { skipped.push({ id: id, reason: '值班主管本人的申請，送上層審核' }); return; }
+      var why = upc ? reqUpperWhy_(r.emp_id, ss, upc) : '';
+      if (why) { skipped.push({ id: id, reason: why === 'dept' ? '部門同仁的申請，由部門主管審核' : '值班主管本人的申請，送上層審核' }); return; }
       if (reqNeedsProof_(r)) { skipped.push({ id: id, reason: r.leave_type + '還沒附證明' }); return; }
       reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: actor, reject_reason: '' });
       done.push(id);
@@ -579,7 +605,9 @@ function handleMgrReqDay_(body) {
   reqRows_(ss).forEach(function (r) {
     if (r.date !== date || r.status !== 'approved') return;
     var o = reqPublic_(r); o.summary = reqSummary_(r);
-    o.upper = !!upc && reqIsUpper_(r.emp_id, ss, upc);   // 值班主管本人的申請：作廢也要上層處理
+    var why = upc ? reqUpperWhy_(r.emp_id, ss, upc) : '';
+    o.upper = !!why;   // 值班主管本人／部門同仁的申請：作廢也要上層處理
+    if (why) o.upper_kind = why;
     (by[String(r.emp_id)] = by[String(r.emp_id)] || []).push(o);
   });
   return { ok: true, date: date, by_emp: by };

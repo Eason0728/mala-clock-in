@@ -278,4 +278,47 @@ ok('mgr_req_day 帶 upper（同開關）；allow_acting＋acting_name 時全 fal
   const off = makeEnv({ off: true, roster: [ros('E01', '測試一')], managers: [['測試一', 'MK', 'true', '']], reqs: [rq('d1', 'E01', '測試一', 'approved')] });
   assert.deepStrictEqual(up(off.fn('handleMgrReqDay_', Object.assign({ date: '2026-10-21' }, MGR))), { d1: false });
 });
+// ── 部門同仁的申請由部門主管審（2026-10-29）：REQ_DEPT_EMPS，不看 REQ_UPPER_ON ──
+const dept = (extra) => { const e = base(extra); e.props.REQ_DEPT_EMPS = JSON.stringify(['E03']);
+  e.sheets.requests.data.push(rq('p1', 'E03', '測試三'), rq('p2', 'E03', '測試三', 'approved')); return e; };
+ok('部門同仁：核准／退回／作廢都被擋，訊息講部門主管、不寫任何東西', () => {
+  const e = dept(); const before = JSON.stringify(e.sheets.requests.data);
+  const a = e.fn('handleMgrReqDecide_', Object.assign({ id: 'p1', decision: 'approve' }, MGR));
+  assert.strictEqual(a.error, UP); assert(/部門主管/.test(a.message) && !/值班主管本人/.test(a.message));
+  assert.strictEqual(e.fn('handleMgrReqDecide_', Object.assign({ id: 'p1', decision: 'reject', reason: '不行' }, MGR)).error, UP);
+  assert.strictEqual(e.fn('handleMgrReqVoid_', Object.assign({ id: 'p2', reason: '改單' }, MGR)).error, UP);
+  assert.strictEqual(JSON.stringify(e.sheets.requests.data), before);
+});
+ok('部門同仁：總開關關著也擋（名單非空就生效）', () => {
+  const e = makeEnv({ off: true, roster: [ros('E03', '測試三')], managers: [['測試一', 'MK', 'true', '']], reqs: [rq('p1', 'E03', '測試三')] });
+  e.props.REQ_DEPT_EMPS = '["E03"]';
+  assert.strictEqual(e.fn('handleMgrReqDecide_', Object.assign({ id: 'p1', decision: 'approve' }, MGR)).error, UP);
+  delete e.props.REQ_DEPT_EMPS;   // 緊急關＝刪屬性
+  assert(e.fn('handleMgrReqDecide_', Object.assign({ id: 'p1', decision: 'approve' }, MGR)).ok);
+});
+ok('部門同仁：批次略過並說明、pending／mgr_req_day 帶 upper_kind', () => {
+  const e = dept();
+  const b = e.fn('handleMgrReqDecideBatch_', Object.assign({ ids: ['r2', 'p1'], decision: 'approve' }, MGR));
+  assert.deepStrictEqual(b.done, ['r2']); assert.deepStrictEqual(b.skipped, [{ id: 'p1', reason: '部門同仁的申請，由部門主管審核' }]);
+  const items = e.fn('handleMgrReqPending_', MGR).items, k = {}; items.forEach(x => (k[x.id] = [x.upper, x.upper_kind]));
+  assert.deepStrictEqual(k.p1, [true, 'dept']); assert.deepStrictEqual(k.r1, [true, 'mgr']); assert.strictEqual(k.r2, undefined);   // r2 剛被批次核准，不在待審
+  const k2 = {}; dept().fn('handleMgrReqPending_', MGR).items.forEach(x => (k2[x.id] = [x.upper, x.upper_kind])); assert.deepStrictEqual(k2.r2, [false, undefined]);
+  const d = e.fn('handleMgrReqDay_', Object.assign({ date: '2026-10-21' }, MGR)).by_emp.E03[0];
+  assert.strictEqual(d.upper, true); assert.strictEqual(d.upper_kind, 'dept');
+});
+ok('部門同仁：管理系統（allow_acting＋acting_name）照常可核、工時核定不受影響', () => {
+  const e = dept();
+  assert(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'p1', decision: 'approve', acting_name: '人資主管' }).ok);
+  assert(e.fn('handleMgrReqVoid_', { mgr_key: 'OPS', id: 'p2', reason: '改單', acting_name: '人資主管' }).ok);
+  assert.strictEqual(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'p1', decision: 'approve' }).error, 'not_pending');
+});
+ok('svc_set_upper：dept_emp_ids 單獨帶不動 REQ_UPPER_EMPS；空陣列刪屬性；兩份都沒帶回 bad_request', () => {
+  const e = base(); e.props.REQ_UPPER_EMPS = '["X1"]';
+  const r = e.svc('svc_set_upper', { dept_emp_ids: [' HQ-01 ', 'HQ-01', 3] });
+  assert(r.ok); assert.strictEqual(r.dept_n, 1); assert.strictEqual(r.n, 1);
+  assert.strictEqual(e.props.REQ_DEPT_EMPS, '["HQ-01"]'); assert.strictEqual(e.props.REQ_UPPER_EMPS, '["X1"]');
+  e.svc('svc_set_upper', { emp_ids: ['Y'] }); assert.strictEqual(e.props.REQ_DEPT_EMPS, '["HQ-01"]');   // 只帶舊的那份：部門名單不動
+  e.svc('svc_set_upper', { dept_emp_ids: [] }); assert.strictEqual(e.props.REQ_DEPT_EMPS, undefined);
+  assert.strictEqual(e.svc('svc_set_upper', {}).error, 'bad_request');
+});
 console.log('\n' + n + ' 項通過');
