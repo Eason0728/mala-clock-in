@@ -321,4 +321,27 @@ ok('svc_set_upper：dept_emp_ids 單獨帶不動 REQ_UPPER_EMPS；空陣列刪�
   e.svc('svc_set_upper', { dept_emp_ids: [] }); assert.strictEqual(e.props.REQ_DEPT_EMPS, undefined);
   assert.strictEqual(e.svc('svc_set_upper', {}).error, 'bad_request');
 });
+// ── 不算本店支援的人（REQ_HOME_EMPS，2026-10-29）：本店主管看不到、核不了工時；申請同部門同仁；管理系統照常 ──
+ok('不算支援：mgr_day／待核定提醒拿掉、mgr_approve 擋；管理系統代核照常；申請鎖住', () => {
+  const e = base(); e.props.REQ_HOME_EMPS = '["E03"]';
+  e.sheets.requests.data.push(rq('h1', 'E03', '測試三'));
+  vm.runInContext(`handleMgrDay = function () { return { ok: true, employees: [{ emp_id: 'E02' }, { emp_id: 'E03' }] }; };
+    handleMgrApprove = function (b) { return { ok: true, emp_id: b.emp_id }; };
+    handleMgrPendingApprovals = function () { return { ok: true, ym: '2026-10', today: '2026-10-29', items: [{ date: '2026-10-21', emp_id: 'E03', name: 'x' }, { date: '2026-10-21', emp_id: 'E02', name: 'y' }] }; };`, e.sb);
+  const ids = r => r.employees.map(x => x.emp_id);
+  assert.deepStrictEqual(ids(e.fn('reqMgrDayHome_', MGR)), ['E02']);
+  assert.deepStrictEqual(ids(e.fn('reqMgrDayHome_', { mgr_key: 'OPS', acting_name: '人資主管' })), ['E02', 'E03']);
+  assert.deepStrictEqual(ids(e.fn('reqMgrDayHome_', { mgr_key: 'OPS' })), ['E02']);   // 營運系統舊路（不帶 acting_name）也當本店主管
+  const a = e.fn('reqMgrApproveHome_', Object.assign({ emp_id: 'E03' }, MGR));
+  assert.strictEqual(a.error, 'home_review'); assert(/管理系統/.test(a.message));
+  assert(e.fn('reqMgrApproveHome_', Object.assign({ emp_id: 'E02' }, MGR)).ok);
+  assert(e.fn('reqMgrApproveHome_', { mgr_key: 'OPS', acting_name: '人資主管', emp_id: 'E03' }).ok);
+  assert.deepStrictEqual(e.fn('reqPendingApprovalsPlus_', MGR).items.map(x => x.emp_id).sort(), ['E01', 'E02']);   // E01 來自已核准申請 r4
+  assert.deepStrictEqual(e.fn('reqPendingApprovalsPlus_', { mgr_key: 'OPS', acting_name: '人資主管' }).items.map(x => x.emp_id).sort(), ['E01', 'E02', 'E03']);
+  const d = e.fn('handleMgrReqDecide_', Object.assign({ id: 'h1', decision: 'approve' }, MGR));
+  assert.strictEqual(d.error, UP); assert(/部門主管/.test(d.message));
+  delete e.props.REQ_HOME_EMPS;   // 緊急關
+  assert.deepStrictEqual(ids(e.fn('reqMgrDayHome_', MGR)), ['E02', 'E03']);
+  assert(e.fn('reqMgrApproveHome_', Object.assign({ emp_id: 'E03' }, MGR)).ok);
+});
 console.log('\n' + n + ' 項通過');
