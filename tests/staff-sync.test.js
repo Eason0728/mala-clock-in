@@ -26,8 +26,8 @@ function sandbox(over) {
   }, over || {});
   vm.createContext(sb);
   vm.runInContext(src + '\n;this.staffDiff=staffDiff;this.syncAdd=syncAdd;this.syncStop=syncStop;'
-    + 'this._set=(k,v)=>{ if(k==="items") SYNC_ITEMS=v; if(k==="roster"){ SYNC_ROSTER=v; SYNC_KEY=v.store; } };'
-    + 'this._getItems=()=>SYNC_ITEMS;this.loadStaffSync=loadStaffSync;', sb);
+    + 'this._set=(k,v)=>{ if(k==="items") SYNC_ITEMS=v; if(k==="roster"){ SYNC_ROSTER=v; SYNC_KEY=v.store; } if(k==="open") SYNC_OPEN=v; };'
+    + 'this.renderStaffSync=renderStaffSync;this._getItems=()=>SYNC_ITEMS;this.loadStaffSync=loadStaffSync;', sb);
   sb._calls = calls;
   return sb;
 }
@@ -71,7 +71,9 @@ ok(by('new').find((x) => x.p.emp_no === 'DZY013').block.indexOf('同名') >= 0, 
 ok(!by('new').find((x) => x.p.emp_no === 'DZY002').block, '1e: 一般新人可以帶入');
 ok(by('reactivate').map((x) => x.p.emp_no).join() === 'DZY012', '1f: 主檔停用中、名單在職 → 重新啟用');
 const stop = by('stop').map((x) => x.row.emp_id + ':' + x.why);
-ok(stop.length === 4 && /MZTJS30:.*對不到/.test(stop[3]) && /MZTJS09:同仁名單已停用/.test(stop[0]) && /MZTJS12:.*薪資應歸 SSLGF/.test(stop[1]) && /MZTJS77:.*對不到/.test(stop[2]), '1g: 該停用＝名單停用／屬別店／對不到', stop);
+ok(stop.length === 2 && /MZTJS09:同仁名單已停用/.test(stop[0]) && /MZTJS12:.*薪資應歸 SSLGF/.test(stop[1]), '1g: 該停用＝只剩有正面證據的（名單停用／屬別店）', stop);
+const chk = by('check').map((x) => x.row.emp_id + ':' + x.why);
+ok(chk.length === 2 && /MZTJS77:.*對不到/.test(chk[0]) && /MZTJS30:.*對不到/.test(chk[1]), '1g2: 對不到打卡編號 → 待確認，不是該停用', chk);
 ok(by('name').map((x) => x.row.emp_id).join() === 'MZTJS13', '1h: 姓名不一致（空白不算差異）');
 ok(!d.items.some((x) => x.row && x.row.emp_id === 'MZTJS31'), '1i: 主檔已停用的人不列');
 ok(!d.items.some((x) => x.p && x.p.emp_no === 'DZY003'), '1j: 名單已停用的人不當新人');
@@ -202,6 +204,43 @@ async function run() {
   const ctx9 = { n: (v) => { const x = parseFloat(v); return isNaN(x) ? 0 : x; } }; vm.createContext(ctx9); vm.runInContext(m9[0] + ';this.f=empPayBlank;', ctx9);
   ok(ctx9.f({ active: 'true', base: '', wage: '' }) && !ctx9.f({ active: 'true', base: 30000, wage: '' }) && !ctx9.f({ active: 'false', base: '', wage: '' }) && /empPayBlank\(e\)\?/.test(html), '3i: 在職且底薪時薪都空白 → 員工設定標紅');
   ok(d8.items.length === 1 && /職稱/.test(d8.items[0].block), '3h: 職稱空白 → 帶入鎖住（不猜正職／計時）');
+
+  // ── 4. 資料不完整不等於該停用：只有正面證據才進「該停用」，其餘進「待確認」（無按鈕）──
+  const r4 = { store: 'MZTJS', staff: [], ids: {
+    A1: { name: '假甲', state: 'active', pay_store: '', unit_name: '' },
+    A2: { name: '假乙', state: 'active', pay_store: '', unit_name: '某未對應單位' },
+    A3: { name: '假丙', state: 'missing' },
+    A4: { name: '假丁', state: 'disabled', pay_store: 'MZTJS' },
+    A5: { name: '假戊', state: 'left', pay_store: 'MZTJS' },
+    A6: { name: '假己', state: 'active', pay_store: 'SSLGF', unit_name: '他店' },
+    A7: { name: '假庚', state: 'active', pay_store: '', pay_none: true, unit_name: '一悟品牌辦公室' },
+    A8: { name: '假辛', state: 'active', pay_store: 'MZTJS' }
+  } };
+  const m4 = ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8'].map((id) => ({ emp_id: id, name: id === 'A0' ? '假無' : (r4.ids[id].name), active: 'true' }));
+  const d4 = sb.staffDiff(m4, r4, 'MZTJS');
+  const k4 = {}; d4.items.forEach((x) => { k4[x.row.emp_id] = x.kind; });
+  ok(k4.A0 === 'check' && k4.A1 === 'check' && k4.A2 === 'check' && k4.A3 === 'check', '4a: 對不到／單位空白／單位未對應／查無此人 → check', k4);
+  ok(k4.A4 === 'stop' && k4.A5 === 'stop' && k4.A6 === 'stop' && k4.A7 === 'stop', '4b: 已停用／已離職／別家店／一悟品牌辦公室 → 仍是 stop', k4);
+  ok(k4.A8 === undefined, '4c: 正常在職且屬本店 → 不列');
+  const w = (id) => d4.items.find((x) => x.row.emp_id === id).why;
+  ok(/未填/.test(w('A1')) && /某未對應單位/.test(w('A2')) && /補/.test(w('A1')), '4d: check 說明有單位名稱或「未填」，並叫人去補同仁名單', [w('A1'), w('A2')]);
+  // 渲染：check 區塊沒有按鈕／onclick；stop 仍有停用鈕；摘要有「待確認」
+  const box4 = { style: {}, innerHTML: '' };
+  const s8 = sandbox({ $: (id) => (id === 'staffSync' ? box4 : null), MASTER: m4 });
+  s8._set('roster', r4); s8._set('open', true);
+  s8.renderStaffSync();
+  const h = box4.innerHTML;
+  const secCheck = h.slice(h.indexOf('④ 待確認'));
+  ok(h.indexOf('④ 待確認') >= 0 && h.indexOf('這裡不能停用') >= 0 && /待確認 <b>4<\/b>/.test(h) && /該停用 <b>4<\/b>/.test(h), '4e: 摘要與「④ 待確認」區塊文字', h.slice(0, 400));
+  ok(secCheck.indexOf('onclick') === -1 && secCheck.indexOf('<button') === -1 && secCheck.indexOf('A1') >= 0, '4f: 待確認列沒有按鈕、沒有 onclick');
+  ok((h.match(/syncStop\(/g) || []).length === 4, '4g: 停用鈕只有 4 個（stop 項）', (h.match(/syncStop\(/g) || []).length);
+  // syncStop 拒絕 check（直接用 check 的 index 呼叫）
+  const sent4 = [];
+  const s9 = sandbox({ MASTER: m4, post: async (a, b) => { sent4.push(a); return { ok: true, master: m4 }; } });
+  s9._set('items', d4.items);
+  const iChk = d4.items.findIndex((x) => x.kind === 'check');
+  await s9.syncStop(iChk, null);
+  ok(sent4.length === 0, '4h: syncStop 對 check 項目什麼都不做（不呼叫後端）', sent4);
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed ? 1 : 0);

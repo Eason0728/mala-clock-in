@@ -2083,7 +2083,7 @@ async function saveMaster(btn){
 
 /* ═════ 同仁名單 ↔ 薪資主檔差異（2026-10-28，Eason 選 B 方案）═════
    管理系統的同仁名單是正本：選一家門市就比對「同仁名單在職的人」和「薪資主檔在職的人」，逐人列出
-   ①新人（名單在職、主檔沒有）②該停用（主檔在職、名單已停用／離職／不屬於這家店）③姓名不一致。
+   ①新人（名單在職、主檔沒有）②該停用（主檔在職、名單已停用／離職／確定屬於別家店）④待確認（名單對不到、單位沒填，不能停用）③姓名不一致。
    ⚠ 絕不自動建檔：財務按「帶入／停用」才寫入，而且寫之前重新讀一次主檔、原樣送回再改那一列（payroll_master_set 是整批覆寫該店）。
    ⚠ 「屬於哪家店」看同仁名單的所屬單位（平台後端 payrollStaffRoster 算好），不看打卡名冊——
       去別店支援、共用打卡機的人在打卡名冊裡，但不是這家店的新人（同一人兩份主檔＝領兩份薪水）。
@@ -2109,11 +2109,18 @@ function staffDiff(master,roster,store){
   });
   act.forEach(e=>{
     const id=String(e.emp_id||'').trim(), x=id?ids[id]:null;
+    /* 只有「正面證據」才是 stop（可按停用）：名單已停用／離職、一悟品牌辦公室、確定屬於別家店。
+       對不到、狀態不明、單位沒填或沒對應薪酬門市＝名單資料不完整、系統無法判斷 → check（待確認，沒有按鈕）。 */
+    if(!x){ items.push({kind:'check',row:e,x,store,why:'同仁名單對不到這個打卡編號，請先到同仁名單補打卡對照'}); return; }
     let why='';
-    if(!x) why='同仁名單對不到這個打卡編號';
-    else if(x.state!=='active') why=(SYNC_STATE[x.state]||x.state)+(x.name?'（'+x.name+'）':'');
+    if(x.state!=='active'){
+      const nm=(SYNC_STATE[x.state]||x.state)+(x.name?'（'+x.name+'）':'');
+      if(x.state==='disabled'||x.state==='left') why=nm;
+      else { items.push({kind:'check',row:e,x,store,why:nm+'，無法判斷是否在職，請先到同仁名單確認'}); return; }
+    }
     else if(x.pay_none) why='一悟品牌辦公室尚未設薪資門市（'+(x.unit_name||'—')+'）';   // Eason 2026-10-28：一悟薪資先不建
-    else if(x.pay_store!==store) why='所屬單位是「'+(x.unit_name||'—')+'」，'+(x.pay_store?'薪資應歸 '+x.pay_store:'目前沒有對應的薪酬門市');
+    else if(!x.pay_store){ items.push({kind:'check',row:e,x,store,why:'所屬單位是「'+(x.unit_name||'未填')+'」，沒有對應的薪酬門市，請先到同仁名單補所屬單位'}); return; }
+    else if(x.pay_store!==store) why='所屬單位是「'+(x.unit_name||'—')+'」，薪資應歸 '+x.pay_store;
     if(why){ items.push({kind:'stop',row:e,x,why,store}); return; }
     if(syncNorm(x.name)!==syncNorm(e.name)) items.push({kind:'name',row:e,x,store});
   });
@@ -2141,11 +2148,11 @@ function renderStaffSync(){
   if(SYNC_KEY!==syncCurStore()){ SYNC_ITEMS=[]; return; }   // 名單是別家店的：不畫按鈕
   const d=staffDiff(MASTER,SYNC_ROSTER,String(SYNC_ROSTER.store||SYNC_KEY).toUpperCase());
   SYNC_ITEMS=d.items;
-  const cnt={new:0,stop:0,nm:0}; d.items.forEach(it=>{cnt[it.kind==="reactivate"?"new":(it.kind==="name"?"nm":it.kind)]++});
+  const cnt={new:0,stop:0,check:0,nm:0}; d.items.forEach(it=>{cnt[it.kind==="reactivate"?"new":(it.kind==="name"?"nm":it.kind)]++});
   box.style.display='';
   const head=`<div class="row" style="gap:14px;align-items:center;flex-wrap:wrap">
     <b style="font-size:15px">同仁名單 ${d.n} 人／薪資主檔 ${d.m} 人</b>
-    ${d.items.length?`<span style="font-size:13px">新人 <b>${cnt.new}</b>・該停用 <b>${cnt.stop}</b>・姓名不一致 <b>${cnt.nm}</b></span>
+    ${d.items.length?`<span style="font-size:13px">新人 <b>${cnt.new}</b>・該停用 <b>${cnt.stop}</b>・待確認 <b>${cnt.check}</b>・姓名不一致 <b>${cnt.nm}</b></span>
       <button class="btn ghost" style="padding:5px 12px" onclick="SYNC_OPEN=!SYNC_OPEN;renderStaffSync()">${SYNC_OPEN?'收起':'看清單'}</button>`
       :'<span style="color:var(--ok);font-size:13px;font-weight:800">✓ 對得上</span>'}
     <button class="btn ghost" style="padding:5px 12px" onclick="loadStaffSync(true)">重新比對</button></div>`;
@@ -2154,7 +2161,7 @@ function renderStaffSync(){
     <div style="color:var(--muted);font-size:12px;margin:2px 0 6px">${hint}</div>${rows.join('')}</div>`:'';
   const line=(main,btn)=>`<div class="row" style="gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--line)">
     <div style="flex:1;min-width:220px;font-size:13.5px">${main}</div>${btn}</div>`;
-  const rowsNew=[], rowsStop=[], rowsName=[];
+  const rowsNew=[], rowsStop=[], rowsCheck=[], rowsName=[];
   d.items.forEach((it,i)=>{
     if(it.kind==='new'||it.kind==='reactivate'){
       const p=it.p;
@@ -2165,6 +2172,8 @@ function renderStaffSync(){
     } else if(it.kind==='stop'){
       rowsStop.push(line(`<b>${esc(it.row.name)}</b> <span style="color:var(--muted)">編號 ${esc(it.row.emp_id||'—')}</span><div style="font-size:12px">${esc(it.why)}</div>`,
         `<button class="btn ghost" style="padding:5px 14px" onclick="syncStop(${i},this)">停用</button>`));
+    } else if(it.kind==='check'){
+      rowsCheck.push(line(`<b>${esc(it.row.name)}</b> <span style="color:var(--muted)">編號 ${esc(it.row.emp_id||'—')}</span><div style="font-size:12px">${esc(it.why)}</div>`,''));   // 不給按鈕
     } else {
       rowsName.push(line(`編號 ${esc(it.row.emp_id)}：主檔「<b>${esc(it.row.name)}</b>」／同仁名單「<b>${esc(it.x.name)}</b>」`,
         `<span style="color:var(--muted);font-size:12px">請到「員工設定」改成一致</span>`));
@@ -2173,7 +2182,8 @@ function renderStaffSync(){
   box.innerHTML=head
     +sec('① 新人：同仁名單在職、薪資主檔沒有','按「帶入」只加一列（姓名、編號、到職日、正職／計時），底薪／時薪等金額留空，請到「員工設定」填好再儲存。',rowsNew)
     +sec('② 該停用：薪資主檔還在職，但同仁名單已停用、離職或不屬於這家店','按「停用」只把「在職」取消勾選，不刪資料、不改離職日。',rowsStop)
-    +sec('③ 姓名不一致','同一個打卡編號，兩邊姓名不同（請假紀錄靠姓名對人，名字不一樣會漏扣）。',rowsName);
+    +sec('③ 姓名不一致','同一個打卡編號，兩邊姓名不同（請假紀錄靠姓名對人，名字不一樣會漏扣）。',rowsName)
+    +sec('④ 待確認：同仁名單資料不完整，系統無法判斷','同仁名單資料不完整，系統無法判斷，請先到同仁名單補所屬單位或打卡對照；這裡不能停用。',rowsCheck);
 }
 /* 寫入前一律重新讀主檔、原樣送回只改那一列（payroll_master_set 整批覆寫該店）。
    ⚠ st＝這筆差異所屬的門市，get／set 都明確帶它，不靠 post 自動帶的「目前」STORE——
