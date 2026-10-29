@@ -39,6 +39,27 @@
     return Math.round((e - s) / 60 * 100) / 100;
   }
   function field(label, input, extra) { return h('div', { class: 'rq-fld' }, [h('label', { text: label }), input].concat(extra || [])); }
+  /** 時間欄（2026-10-29）：「時」「分」兩個下拉選單，取代 <input type="time">。
+   *  部分 Android 的 LINE 一叫出內建時間轉盤就閃退（下拉選單是一般清單，不會）。
+   *  step＝分鐘間隔：加班／請假／出差 15（後台時數也是取到 0.25 小時），忘打卡 1（填實際時間）。
+   *  預填的時間不在間隔上（例如下班卡 17:43）照樣留在選項裡，不偷改。回傳值一樣是 'HH:MM' 或 ''。 */
+  function timePick(value, step, onChange) {
+    var m0 = /^(\d{2}):(\d{2})$/.exec(value || '');
+    var pad = function (n) { return ('0' + n).slice(-2); };
+    var hs = [], ms = [];
+    for (var i = 0; i < 24; i++) hs.push(pad(i));
+    for (var j = 0; j < 60; j += step) ms.push(pad(j));
+    if (m0 && ms.indexOf(m0[2]) < 0) { ms.push(m0[2]); ms.sort(); }
+    var opt = function (v, t, cur) { return h('option', { value: v, text: t, selected: v === cur }); };
+    var hh = h('select', { class: 'rq-hh', 'aria-label': '時' }, [opt('', '--', m0 ? m0[1] : '')].concat(hs.map(function (v) { return opt(v, v, m0 && m0[1]); })));
+    var mm = h('select', { class: 'rq-mm', 'aria-label': '分' }, [opt('', '--', m0 ? m0[2] : '')].concat(ms.map(function (v) { return opt(v, v, m0 && m0[2]); })));
+    var fire = function () {
+      if (hh.value && !mm.value) mm.value = '00';   // 只選了「時」就當整點，少點一次
+      onChange(hh.value && mm.value ? hh.value + ':' + mm.value : '');
+    };
+    hh.addEventListener('change', fire); mm.addEventListener('change', fire);
+    return h('span', { class: 'rq-time' }, [hh, ' : ', mm]);
+  }
   function msgBox(text, cls) { return h('div', { class: 'rq-box ' + (cls || ''), text: text }); }
 
   /* ── 開頁 ── */
@@ -165,8 +186,8 @@
       var hr = h('input', { type: 'number', min: '0.5', max: '24', step: '0.5', value: lv.hours, class: 'rq-hours', on: { input: function () { lv.hours = hr.value; } } });
       modeBox.appendChild(h('div', { class: 'rq-row' }, ['共 ', hr, ' 小時']));
     } else {
-      var s1 = h('input', { type: 'time', value: lv.start, on: { change: function () { lv.start = s1.value; upd(); } } });
-      var e1 = h('input', { type: 'time', value: lv.end, on: { change: function () { lv.end = e1.value; upd(); } } });
+      var s1 = timePick(lv.start, 15, function (v) { lv.start = v; upd(); });
+      var e1 = timePick(lv.end, 15, function (v) { lv.end = v; upd(); });
       var tot = h('span', { class: 'rq-muted' });
       var upd = function () { var x = spanHours(lv.start, lv.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; };
       modeBox.appendChild(h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot])); upd();
@@ -206,8 +227,8 @@
     if (!ot.date) ot.date = taipeiToday(0);
     var dateIn = h('input', { type: 'date', value: ot.date, on: { change: function () { ot.date = dateIn.value; } } });
     p.appendChild(field('日期', dateIn));
-    var s1 = h('input', { type: 'time', value: ot.start, on: { change: function () { ot.start = s1.value; upd(); } } });
-    var e1 = h('input', { type: 'time', value: ot.end, on: { change: function () { ot.end = e1.value; upd(); } } });
+    var s1 = timePick(ot.start, 15, function (v) { ot.start = v; upd(); });
+    var e1 = timePick(ot.end, 15, function (v) { ot.end = v; upd(); });
     var tot = h('span', { class: 'rq-muted' });
     var upd = function () { var x = spanHours(ot.start, ot.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; }; upd();
     p.appendChild(field('加班時段', h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot])));
@@ -248,8 +269,8 @@
       var hr = h('input', { type: 'number', min: '0.5', max: '24', step: '0.5', value: tp.hours, class: 'rq-hours', on: { input: function () { tp.hours = hr.value; } } });
       modeBox.appendChild(h('div', { class: 'rq-row' }, ['共 ', hr, ' 小時']));
     } else {
-      var s1 = h('input', { type: 'time', value: tp.start, on: { change: function () { tp.start = s1.value; upd(); } } });
-      var e1 = h('input', { type: 'time', value: tp.end, on: { change: function () { tp.end = e1.value; upd(); } } });
+      var s1 = timePick(tp.start, 15, function (v) { tp.start = v; upd(); });
+      var e1 = timePick(tp.end, 15, function (v) { tp.end = v; upd(); });
       var tot = h('span', { class: 'rq-muted' });
       var upd = function () { var x = spanHours(tp.start, tp.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; };
       modeBox.appendChild(h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot])); upd();
@@ -323,8 +344,8 @@
       st.missType = Object.keys(LBL).filter(function (k) { return LBL[k] === v; })[0]; render(); })));
     else p.appendChild(field('缺哪張卡', h('div', { class: 'rq-fixed', text: LBL[st.missType] + '（系統查到的）' })));
     var mv = st.mv = st.mv && st.mv.k === st.missDate + st.missType ? st.mv : { k: st.missDate + st.missType, start: '', end: '', reason: '', other: '' };
-    if (st.missType !== 'out') { var a = h('input', { type: 'time', value: mv.start, on: { change: function () { mv.start = a.value; } } }); p.appendChild(field('實際上班時間', a)); }
-    if (st.missType !== 'in') { var b = h('input', { type: 'time', value: mv.end, on: { change: function () { mv.end = b.value; } } }); p.appendChild(field('實際下班時間', b)); }
+    if (st.missType !== 'out') { var a = timePick(mv.start, 1, function (v) { mv.start = v; }); p.appendChild(field('實際上班時間', a)); }
+    if (st.missType !== 'in') { var b = timePick(mv.end, 1, function (v) { mv.end = v; }); p.appendChild(field('實際下班時間', b)); }
     var rbox = h('div', {}, [chips(MISS_REASONS, mv.reason, function (v) { mv.reason = v; render(); })]);
     if (mv.reason === '其他') {
       var oth = h('input', { type: 'text', maxlength: '80', value: mv.other, placeholder: '說明一下', on: { input: function () { mv.other = oth.value; } } });
