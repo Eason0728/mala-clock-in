@@ -678,9 +678,9 @@
     if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
     window.ReqLine.open(opts);
   }
-  $('btnMissReq').addEventListener('click', function () { showReq({ tab: 'miss', date: missReq.date, miss: missReq.miss }); });
+  $('btnMissReq').addEventListener('click', function () { showReq({ tab: 'miss', date: missReq.date, miss: missReq.miss, store: curStore ? curStore.code : null }); });
   var otReq = null;
-  $('btnOtReq').addEventListener('click', function () { showReq({ tab: 'ot', date: otReq.date, start: otReq.start, end: otReq.end }); });
+  $('btnOtReq').addEventListener('click', function () { showReq({ tab: 'ot', date: otReq.date, start: otReq.start, end: otReq.end, store: curStore ? curStore.code : null }); });
 
   /* ── 第一次使用：輸入全名綁定 ── */
   function showBind(storeName, suggest) {

@@ -53,8 +53,14 @@ ok('問不到的店不影響「兩家以上有卡」的提醒', () => {
 
 /* ── 前端：其他分頁不受影響、單店不多打 ── */
 const reqJs = fs.readFileSync(ROOT + '/req-line.js', 'utf8');
-ok('開頁預設仍是第一家（請假、加班、出差、我的申請照舊）', () => {
-  assert(/st\.store = r\.stores\[0\];/.test(reqJs));
+ok('開頁預設店別＝打卡的店（2026-10-29 改）：打卡畫面帶的店 → 後台 punch_store → 第一家', () => {
+  assert(/st\.store = pickStore\(r\.stores, \[opts\.store, r\.punch_store\]\);/.test(reqJs));
+  const ctx = {}; vm.createContext(ctx); vm.runInContext(extract(reqJs, 'pickStore'), ctx);
+  const S = [{ code: '', name: '光復' }, { code: 'mztjs', name: '金山' }];
+  assert.strictEqual(ctx.pickStore(S, ['mztjs', '']).name, '金山');      // 打卡畫面帶的店優先
+  assert.strictEqual(ctx.pickStore(S, [undefined, '']).name, '光復');   // 光復代碼是空字串也要認得
+  assert.strictEqual(ctx.pickStore(S, [null, 'mztjs']).name, '金山');
+  assert.strictEqual(ctx.pickStore(S, ['hq', null]).name, '光復');      // 沒綁那家／都沒有 → 第一家
   assert.strictEqual((reqJs.match(/decideStore\(/g) || []).length, 2, '只在忘打卡分頁呼叫（定義＋一處呼叫）');
 });
 ok('只綁一家時只問那一家（不多打後端）', () => {

@@ -4,7 +4,8 @@
  * 開頁資料：光復 line_hub_req_init（綁了哪些店、假別、額度）＋那家店 req_info（我的申請、某天缺哪張卡）。
  * 送出：那家店 req_submit；附件先傳光復 line_hub_attach_put 拿 ID。結果不推播，回「我的申請」看。
  * 2026-10-28 忘打卡自動選店：綁兩家以上的同仁選好日期後，同時問每家店那天有沒有卡（req_info day_only）；
- * 剛好只有一家有卡（含被擋的卡）就幫他切到那家並寫一行說明，兩家以上都有卡提醒確認，都沒有或有店問不到就不動。 */
+ * 剛好只有一家有卡（含被擋的卡）就幫他切到那家並寫一行說明，兩家以上都有卡提醒確認，都沒有或有店問不到就不動。
+ * 2026-10-29 預設店別＝打卡的那家：opts.store（打卡畫面剛打卡的店）→ line_hub_req_init 的 punch_store（最近一張卡）→ 第一家。 */
 (function () {
   'use strict';
   var E, $root, st = { init: null, store: null, info: null, tab: 'leave', busy: false };
@@ -81,9 +82,20 @@
         return;
       }
       st.init = r;
-      st.store = r.stores[0];
+      // 預設店別＝打卡的那家（2026-10-29）：從打卡畫面按進來用剛打卡的店，從選單開用後台查到最近一張卡的店；都沒有才用第一家
+      st.store = pickStore(r.stores, [opts.store, r.punch_store]);
       return loadInfo().then(render);
     }, function () { $root.innerHTML = ''; $root.appendChild(msgBox('連線失敗，請檢查網路後重新打開。', 'err')); });
+  }
+  /** 依序找第一個對得上的店代碼（光復的代碼是空字串，所以不能用 truthy 判斷）；都沒有回第一家。 */
+  function pickStore(stores, codes) {
+    for (var i = 0; i < codes.length; i++) {
+      var c = codes[i];
+      if (c === undefined || c === null) continue;
+      var hit = stores.filter(function (s) { return String(s.code) === String(c); })[0];
+      if (hit) return hit;
+    }
+    return stores[0];
   }
   function storeDef(code) { if (code === undefined) code = st.store.code; return E.STORES.filter(function (s) { return s.code === code; })[0]; }
   function loadInfo() {

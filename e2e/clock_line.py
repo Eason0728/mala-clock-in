@@ -769,12 +769,22 @@ def phase_miss_store(ctx):
         d['requests'] = [r for r in d.get('requests', []) if r.get('emp_id') != 'E09']
         json.dump(d, open(f, 'w', encoding='utf-8'), ensure_ascii=False)
     js_name = JS['name']
+    store_of = lambda pg: pg.evaluate("() => { const s = document.querySelector('#reqView select.rq-store'); return s.options[s.selectedIndex].text; }")
+    # 0. 預設店別＝打卡的店（2026-10-29）：最近一張卡在金山（昨天）→ 請假頁直接選好金山，不再固定光復
+    p = open_page(ctx, BASE + '/clock-line.html?mock_uid=U9&api=/api&in_client=1&retry_ms=100&view=req&tab=leave')
+    p.wait_for_selector('#reqView select.rq-store', timeout=10000)
+    ok('預設店別：最近一張卡在金山 → 請假頁預設金山', store_of(p) == js_name, store_of(p))
+    p.close()
+    # 接下來的忘打卡選店測試要從「預設光復」開始 → 補一張今天在光復的卡（不影響 D1～D3 那幾天）
+    d = json.load(open(files[''], encoding='utf-8'))
+    d['events'].append(ev(dd(0) + 'T00:00:01+08:00', 'in'))
+    json.dump(d, open(files[''], 'w', encoding='utf-8'), ensure_ascii=False)
     u = BASE + '/clock-line.html?mock_uid=U9&api=/api&in_client=1&retry_ms=100&view=req&tab=miss'
     p = open_page(ctx, u)
     p.set_viewport_size({'width': 375, 'height': 812})
     p.wait_for_selector('#reqView select.rq-date', timeout=10000)
-    store_txt = lambda: p.evaluate("() => { const s = document.querySelector('#reqView select.rq-store'); return s.options[s.selectedIndex].text; }")
-    ok('忘打卡選店：開頁預設第一家（小辛辣光復）', store_txt() == '小辛辣 新竹光復', store_txt())
+    store_txt = lambda: store_of(p)
+    ok('預設店別：今天在光復打過卡 → 預設光復', store_txt() == '小辛辣 新竹光復', store_txt())
     # 1. 只有金山有卡 → 自動換金山
     p.select_option('#reqView select.rq-date', D1)
     p.wait_for_selector('#reqView .rq-auto-store', timeout=10000)
