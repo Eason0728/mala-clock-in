@@ -244,19 +244,27 @@ function handleSvcPayrollNames_(body) {
 /** {svc_key, emp_ids:[…]} → 寫 Script Property REQ_UPPER_EMPS（跨店值班主管的本店 emp_id；管理系統每日同步） */
 function handleSvcSetUpper_(body) {
   var bad = svcAuth_(body); if (bad) return bad;
-  if (!Array.isArray(body.emp_ids)) return svcFail_('bad_request', 'emp_ids 要是陣列');
-  var seen = {}, out = [];
-  body.emp_ids.forEach(function (x) {
-    if (typeof x !== 'string') return;
-    var s = x.trim();
-    if (s && !seen[s]) { seen[s] = true; out.push(s); }
-  });
-  if (out.length > 500) return svcFail_('too_many', '最多 500 個 emp_id');
+  var hasUp = Array.isArray(body.emp_ids), hasDept = Array.isArray(body.dept_emp_ids);   // 至少帶一份；沒帶的那份不動
+  if (!hasUp && !hasDept) return svcFail_('bad_request', 'emp_ids 要是陣列');
+  function clean(list) {
+    var seen = {}, out = [];
+    list.forEach(function (x) {
+      if (typeof x !== 'string') return;
+      var s = x.trim();
+      if (s && !seen[s]) { seen[s] = true; out.push(s); }
+    });
+    return out;
+  }
+  var up = hasUp ? clean(body.emp_ids) : null, dept = hasDept ? clean(body.dept_emp_ids) : null;
+  if ((up && up.length > 500) || (dept && dept.length > 500)) return svcFail_('too_many', '最多 500 個 emp_id');
   var props = PropertiesService.getScriptProperties();
-  props.setProperty('REQ_UPPER_EMPS', JSON.stringify(out));
+  if (up) props.setProperty('REQ_UPPER_EMPS', JSON.stringify(up));
+  if (dept) { if (dept.length) props.setProperty('REQ_DEPT_EMPS', JSON.stringify(dept)); else props.deleteProperty('REQ_DEPT_EMPS'); }   // 部門同仁名單（2026-10-29）
   if (body.on === true) props.setProperty('REQ_UPPER_ON', '1');
   else if (body.on === false) props.deleteProperty('REQ_UPPER_ON');   // 沒帶 on＝不動開關
-  return { ok: true, n: out.length, on: props.getProperty('REQ_UPPER_ON') === '1' };
+  var res = { ok: true, n: up ? up.length : JSON.parse(props.getProperty('REQ_UPPER_EMPS') || '[]').length, on: props.getProperty('REQ_UPPER_ON') === '1' };
+  if (dept) res.dept_n = dept.length;
+  return res;
 }
 
 var SVC_STAFF_HANDLERS = {

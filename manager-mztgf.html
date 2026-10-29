@@ -1761,7 +1761,7 @@
         }
         var vb = document.createElement('button'); vb.type = 'button'; vb.className = 'req-void'; vb.textContent = '作廢';
         vb.addEventListener('click', function () { voidReq(r, vb); });
-        if (r.upper) { vb.disabled = true; vb.textContent = '送上層處理'; vb.title = '值班主管本人的申請，由上層主管在管理系統處理'; }
+        if (r.upper) { vb.disabled = true; vb.textContent = r.upper_kind === 'dept' ? '部門主管處理' : '送上層處理'; vb.title = r.upper_kind === 'dept' ? '部門同仁的申請，由部門主管在管理系統處理' : '值班主管本人的申請，由上層主管在管理系統處理'; }
         acts.appendChild(vb);
         row.appendChild(acts);
         box.appendChild(row);
@@ -2063,7 +2063,7 @@
     var who = document.createElement('span'); who.className = 'rq-who';
     var pick = document.createElement('input'); pick.type = 'checkbox'; pick.className = (it.need_proof || it.upper) ? 'rq-pick-off' : 'rq-pick';
     if (it.need_proof) { pick.disabled = true; pick.title = '還沒附證明，不能核准'; }   // 不參加全選／批次核准
-    if (it.upper) { pick.disabled = true; pick.title = '值班主管本人的申請，送上層審核'; }   // 同上
+    if (it.upper) { pick.disabled = true; pick.title = it.upper_kind === 'dept' ? '部門同仁的申請，由部門主管審核' : '值班主管本人的申請，送上層審核'; }   // 同上
     pick.setAttribute('aria-label', '勾選 ' + it.name + ' ' + it.summary);
     pick.addEventListener('change', function () { syncReqBatch(card); });
     who.appendChild(pick);
@@ -2085,7 +2085,9 @@
     /* 值班主管本人的申請（2026-10-28）：這把鑰匙不能核准／退回，由上層主管在管理系統審 */
     if (it.upper) {
       var up = document.createElement('div'); up.className = 'rq-proof rq-upper';
-      up.textContent = '送上層審核中：值班主管本人的申請，請由上層主管在管理系統（人資部門 → 考勤管理 → 申請審核）審核';
+      up.textContent = it.upper_kind === 'dept'
+        ? '由部門主管審核：部門同仁在本店上班算支援，工時照常由你核定；這筆申請請由部門主管在管理系統（人資部門 → 考勤管理 → 申請審核）審核'
+        : '送上層審核中：值班主管本人的申請，請由上層主管在管理系統（人資部門 → 考勤管理 → 申請審核）審核';
       el.appendChild(up);
     }
     var acts = document.createElement('div'); acts.className = 'rq-acts';
