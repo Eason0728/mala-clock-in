@@ -2,9 +2,10 @@
  * LINE 選單「出勤班表」→ LIFF clock-line.html?view=sched → line_hub_sched（這裡）。
  * 班表正本＝排班系統「月曆版」（eason0728.github.io/mala-schedule）的 GitHub Gist，公開 raw 網址免權杖。
  * 規則（Eason 2026-10-10 定）：只看光復、只看自己、本月＋上個月、排班系統「鎖定」的月份才算發布、離職就看不到。
- * ⚠ Gist 裡有薪資、電話、生日：這裡只取班表需要的欄位，回應只有這位同仁自己的日期／班別／時段／時數。
+ * Gist 是公開讀取（ID 寫在排班網站原始碼裡）。2026-10-13 起排班系統上傳前會拿掉薪資、電話、生日等 11 個私密欄位（mala-schedule EMP_PRIVATE_FIELDS），
+ * 剩姓名、到職日、正職／兼職、特休天數、班表、營業額（Eason 2026-10-29：營業額公開不影響）。這裡仍只取班表需要的欄位，回應只有這位同仁自己的日期／班別／時段／時數。
  * ⚠ 四週變形版（mala-schedule-4w）是另一顆 Gist，這裡不讀。 */
-var SCHED_GIST_URL = 'https://gist.githubusercontent.com/Eason0728/1f7ecf0be418990e24d7b2351572e4aa/raw/mala-schedule.json';
+var SCHED_GIST_URL = 'https://gist.githubusercontent.com/Eason0728/47c876cc1cad57a1735e6a9c68d19103/raw/mala-schedule.json';
 var SCHED_CACHE_KEY = 'sched:v2';   // 內容形狀改了就換版號（v2：加 ft／breakH／isOff），免得部署後讀到舊形狀
 var SCHED_CACHE_SEC = 120;
 var SCHED_STORE_CODE = '';   // 只接光復（lineHubStores_ 裡光復的 code 是空字串）

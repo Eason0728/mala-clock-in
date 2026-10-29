@@ -362,7 +362,7 @@ python3 ~/mala-clock-in/tools/verify-store-backends.py     # 四家都要 ✓
 # 確認無誤後，各專案自己 clasp push
 ```
 
-- 2026-10-29 補：除了 `Code.gs`、`Payroll.gs`，`Requests`／`Liff`／`LineHub`／`SvcStaff`／`SchedPub`／`Mirror` 也一起整份覆蓋（只更新專案裡已經有的同名 `.js`，不新增檔案）；店家清單補上六張犁 `mztlzl-clock-in`。`Sched.gs` 不套：各店 `SCHED_GIST_URL` 跟 repo 不同。
+- 2026-10-29 補：除了 `Code.gs`、`Payroll.gs`，`Requests`／`Liff`／`LineHub`／`Sched`／`SchedPub`／`SvcStaff`／`Mirror` 也一起整份覆蓋（只更新專案裡已經有的同名 `.js`，不新增檔案）；店家清單補上六張犁 `mztlzl-clock-in`。`Sched.gs` 的 Gist 網址已改成線上那顆。
 - `--base` 要指**目前線上那一版**的 commit：預設 `origin/main` 只在「部署前還沒推上 main」時對；已經合併到 main 再部署，要改指上一版，不然每份有改的檔都會被當成漂移。
 - 做法：拿 repo 的新版 `Code.gs`，把**該店現有檔案裡的 `CONFIG` 區塊原封不動接回去**。`Payroll.gs` 沒有店別專屬的值（無 `PASTE_`／`SPREADSHEET_ID`／`ADMIN_KEY`），整份覆蓋；套到哪個專案是用 `grep PAYROLL_HANDLERS` 找出來的，不是寫死的。
 - **預設 dry-run**，要 `--apply` 才寫檔；**不碰 clasp**（不 pull 也不 push——`clasp push` 照守則要先問過 Eason 再自己按）。
