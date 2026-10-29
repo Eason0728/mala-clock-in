@@ -19,7 +19,7 @@ function ok(c, label, extra) {
 function sandbox(over) {
   const calls = [];
   const sb = Object.assign({
-    console, STORE: 'MZTJS', MASTER: [], EMBED: true, LOCAL_HOST: false,
+    console, STORE: 'MZTJS', MASTER: [], EMBED: true, LOCAL_HOST: false, SCOPE: '*', scopeLimited: () => false,
     $: () => null, esc: (s) => String(s), toast: (m, bad) => calls.push(['toast', m, !!bad]),
     renderEmp() {}, renderAtt() {}, vClear() {}, confirm: () => true,
     post: async () => ({ ok: false })
@@ -242,6 +242,41 @@ async function run() {
   await s9.syncStop(iChk, null);
   ok(sent4.length === 0, '4h: syncStop 對 check 項目什麼都不做（不呼叫後端）', sent4);
 
+
+  // ── 5. 負責門市（payroll-scope fix2-2）：平台對範圍外的編號只回 {state, pay_store, pay_none}（沒有姓名、單位、here）──
+  {
+    const thin = { staff: [], ids: {
+      CF01: { name: '央一', emp_no: 'DZY101', state: 'active', pay_store: 'CF', pay_none: false, unit_name: '央廚', store_code: 'cf', here: true },
+      'HQ-10': { state: 'active', pay_store: 'HQ', pay_none: false },     // 別家薪資門市來支援：只剩三欄
+      'HQ-09': { state: 'active', pay_store: '', pay_none: true },        // 一悟
+      'HQ-11': { state: 'active', pay_store: '', pay_none: false },       // 單位沒對應薪酬門市
+      'HQ-12': { state: 'left', pay_store: 'HQ', pay_none: false } } };
+    const m4 = [{ emp_id: 'CF01', name: '央一', active: 'true' }, { emp_id: 'HQ-10', name: '誤建甲', active: 'true' },
+      { emp_id: 'HQ-09', name: '誤建乙', active: 'true' }, { emp_id: 'HQ-11', name: '誤建丙', active: 'true' }, { emp_id: 'HQ-12', name: '誤建丁', active: 'true' }];
+    const d4 = sb.staffDiff(m4, thin, 'CF');
+    const why = Object.fromEntries(d4.items.map((x) => [x.row.emp_id, x.why || '']));
+    ok(/薪資應歸 HQ/.test(why['HQ-10']) && !/undefined|所屬單位/.test(why['HQ-10']), '5a: 範圍外編號沒有 unit_name → 只寫「薪資應歸 HQ」，不印 undefined／空單位', why['HQ-10']);
+    ok(/一悟品牌辦公室尚未設薪資門市/.test(why['HQ-09']) && !/undefined|（—）/.test(why['HQ-09']), '5b: 一悟（沒有 unit_name）不印空括號', why['HQ-09']);
+    ok(!!why['HQ-11'] && !/undefined/.test(why['HQ-11']), '5c: 沒有對應薪酬門市也不印 undefined', why['HQ-11']);
+    ok(/已離職/.test(why['HQ-12']) && !/undefined/.test(why['HQ-12']), '5d: 狀態欄照常判斷（沒有姓名就不加括號）', why['HQ-12']);
+    ok(!d4.items.some((x) => x.row.emp_id === 'CF01'), '5e: 本店完整的編號照常比對（對得上不列）');
+    ok(!d4.items.some((x) => x.kind === 'name'), '5f: 範圍外沒有姓名 → 不會被當成「姓名不一致」');
+    // 畫出來也沒有 undefined
+    const box = { style: {}, innerHTML: '' };
+    const s9 = sandbox({ $: (id) => (id === 'staffSync' ? box : null), STORE: 'CF', MASTER: m4 });
+    s9._set('roster', Object.assign({ store: 'CF' }, thin));
+    vm.runInContext('SYNC_OPEN=true; renderStaffSync();', s9);
+    ok(box.innerHTML.length > 0 && box.innerHTML.indexOf('undefined') === -1 && /薪資應歸 HQ/.test(box.innerHTML), '5g: renderStaffSync 畫面不出現 undefined', box.innerHTML.match(/.{0,40}undefined.{0,40}/g));
+    // loadStaffSync 帶本店主檔的 emp_ids（平台只回這些編號的對照）
+    const sentBody = [];
+    const box2 = { style: {}, innerHTML: '' };
+    const s10 = sandbox({ $: (id) => (id === 'staffSync' ? box2 : null), STORE: 'CF',
+      MASTER: [{ emp_id: ' CF01 ' }, { emp_id: 'CF02' }, { emp_id: '' }, { emp_id: 7 }, { emp_id: 'CF02' }],
+      post: async (a, b) => { sentBody.push([a, b]); return { ok: true, store: 'CF', staff: [], ids: {} }; } });
+    await s10.loadStaffSync(true);
+    const ds = sentBody.find((x) => x[0] === 'payroll_dzy_staff');
+    ok(ds && ds[1].store === 'CF' && JSON.stringify(ds[1].emp_ids) === JSON.stringify(['CF01', 'CF02', '7']), '5h: payroll_dzy_staff 帶 store＋本店主檔 emp_ids（trim、去空白、去重、轉字串）', ds && ds[1]);
+  }
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed ? 1 : 0);
 }

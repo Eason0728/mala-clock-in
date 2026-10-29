@@ -414,7 +414,7 @@ html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬管理
 </section>
 
 <section class="panel" id="p-cfg">
-  <div class="card">
+  <div class="card" id="storeCard">
     <h2>門市設定</h2>
     <p class="hint">一套系統管多家門市。<b>打卡試算表 ID</b> 是薪酬去該店抓工時的來源（留空＝用本系統所在的試算表）；<b>編號前綴</b>會加在該店新建員工的編號前面（如 <code>CF-</code>）。</p>
     <div class="scroll"><table id="storeTbl"></table></div>
@@ -601,6 +601,35 @@ let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], 
 let STORE=(new URLSearchParams(location.search).get('store')||localStorage.getItem('pay_store')||'');
 if(new URLSearchParams(location.search).get('store')) localStorage.setItem('pay_store',STORE);
 
+/* ═════ 負責門市範圍（2026-10-29）═════
+ * 嵌入管理系統時，後端 payroll_master_get 會回 scope：'*'＝不限；陣列＝只能看／改名單內門市。
+ * 後端才是真正的守門員，這裡只負責畫面：不給看的功能直接藏起來、不去呼叫會被擋的 API。
+ * 非嵌入（?k= 舊連結）恆為 '*'，行為與改動前完全相同。 */
+let SCOPE='*';
+function scopeLimited(){ return !!EMBED && Array.isArray(SCOPE); }
+/* 名單內有 wanted 就用 wanted，否則用名單第一家；空名單回 '' */
+function pickScopedStore(list,wanted){
+  list=list||[];
+  if(list.some(s=>String(s.code)===String(wanted))) return String(wanted);
+  return list.length?String(list[0].code):'';
+}
+const SCOPE_OWN_IDS=['cfgOwn','attOwn','ptOwn','coOwn','ltOwn'];
+function applyScopeUi(){
+  if(!scopeLimited()) return;
+  if(!SCOPE.length){
+    const nav=$('nav'); if(nav) nav.style.display='none';
+    const mn=document.querySelector('main');
+    if(mn) mn.innerHTML='<div style="padding:32px 16px;font-size:16px;line-height:1.7;text-align:center">尚未指派負責門市，請洽系統管理者</div>';
+    return;
+  }
+  const hide=el=>{ if(el) el.style.display='none'; };
+  hide(document.querySelector('#nav button[data-p="group"]'));
+  hide($('storeCard')); hide($('holSync'));
+  hide($('bootstrapBtn'));   // 從打卡名冊建立：會把整個打卡名冊寫進主檔，限系統管理者（後端回 admin_only，fix2-3）
+  SCOPE_OWN_IDS.forEach(id=>{ const e=$(id); if(e){ e.checked=true; e.disabled=true; } });
+  if(typeof renderCfgScope==='function') renderCfgScope();
+}
+
 const $=id=>document.getElementById(id);
 const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};
 const r2=v=>Math.round(v*100)/100;
@@ -627,9 +656,11 @@ const isFT=e=>String(e.is_full_time)==='true'||e.is_full_time===true;
 function toast(t,bad){const m=$('msg');m.textContent=t;m.style.background=bad?'#c0392b':'#231815';
   m.style.display='block';clearTimeout(m._t);m._t=setTimeout(()=>m.style.display='none',2600)}
 
-async function post(action,body){
+async function post(action,body,opt){   // opt.quiet：被擋（scope_forbidden）時不跳提示（boot 的平行呼叫用）
   if(EMBED){
     const j=await bridgeCall(action,Object.assign({store:STORE},body||{}));
+    if(!j.ok&&j.error==='scope_forbidden'&&j.detail==='emp_out_of_scope'){ toast('編號 '+(j.emp_ids||[]).join('、')+' 不在你負責門市的薪資主檔，無法儲存',true); return j; }
+    if(!j.ok&&j.error==='scope_forbidden'){ if(!(opt&&opt.quiet)) toast('這家門市不在你的負責範圍',true); return j; }
     if(!j.ok&&j.message) toast(j.message,true);
     return j;
   }
@@ -652,8 +683,10 @@ async function bootstrapFromRoster(){
   if(!confirm('從打卡名冊建立主檔？\n\n會把打卡系統名冊裡、還沒在主檔的同仁自動加進來（含正確員工編號），金額欄位先給空白／0。\n已存在的人不會被覆蓋。\n\n建立後請逐一填上金額，再按「儲存主檔」。')) return;
   const r=await post('payroll_bootstrap',{});
   if(!r.ok){toast('建立失敗：'+(r.error||''),true);return}
-  if(!r.added||!r.added.length){toast('名冊裡的同仁都已在主檔，沒有新增。');await boot();return}
-  toast('已從打卡名冊新增 '+r.added.length+' 人：'+r.added.join('、')+'。請填上金額後儲存主檔。');
+  // 後端回 {added:<人數>, names:[姓名...]}（payroll-scope fix2-3 修正：以前當成陣列讀 r.added.length，永遠顯示「沒有新增」）
+  const names=Array.isArray(r.names)?r.names:[], cnt=Number(r.added)||names.length;
+  if(!cnt){toast('名冊裡的同仁都已在主檔，沒有新增。');await boot();return}
+  toast('已從打卡名冊新增 '+cnt+' 人'+(names.length?'：'+names.join('、'):'')+'。請填上金額後儲存主檔。');
   await boot();
 }
 
@@ -664,19 +697,40 @@ async function boot(){
     return;
   }
   // 開頁三支同時發出（2026-10-20：原本依序打要 11～14 秒），回來後仍照原本順序套用：主檔 → 本月 → 儀表板
-  const mP=post('payroll_master_get');
-  const monP=post('payroll_month',{ym:ym(),inputs:{}});
-  DASH_PREFETCH={key:STORE+'|'+ym(),p:post('payroll_trend',{ym:ym(),store:STORE,months:12})};
-  const m=await mP;
-  if(!m.ok){toast('讀取主檔失敗',true);return}
+  const Q={quiet:true};   // 負責門市有限制時，記住的門市可能已不在範圍內，平行呼叫被擋是預期內的事
+  const usedStore=STORE;
+  const mP=post('payroll_master_get',{},Q);
+  let monP=post('payroll_month',{ym:ym(),inputs:{}},Q);
+  DASH_PREFETCH={key:STORE+'|'+ym(),p:post('payroll_trend',{ym:ym(),store:STORE,months:12},Q)};
+  let m=await mP;
+  if(EMBED&&!m.ok&&m.error==='scope_forbidden'){
+    // 記住的門市不在負責範圍 → 後端連主檔都不給（也就拿不到 scope）。先用門市清單（後端已裁切）挑一家再重打
+    const sl=await post('payroll_store_get',{},Q);
+    const pick=pickScopedStore((sl&&sl.stores)||[],STORE);
+    if(pick){ STORE=pick; localStorage.setItem('pay_store',STORE); m=await post('payroll_master_get'); }
+  }
+  if(!m.ok){toast(m.error==='scope_forbidden'?'這家門市不在你的負責範圍':'讀取主檔失敗',true);return}
+  if(EMBED){
+    SCOPE=(m.scope===undefined?'*':m.scope);
+    if(scopeLimited()){
+      if(!SCOPE.length){ applyScopeUi(); return; }   // 尚未指派：只顯示說明，不發其他呼叫
+      const pick=pickScopedStore(m.stores||[],STORE);
+      if(pick&&pick!==STORE){ STORE=pick; localStorage.setItem('pay_store',STORE); }
+    }
+  }
+  if(STORE!==usedStore){   // 平行發出的 month／trend 是用舊門市打的 → 改用選定的門市重載
+    monP=post('payroll_month',{ym:ym(),inputs:{}});
+    DASH_PREFETCH={key:STORE+'|'+ym(),p:post('payroll_trend',{ym:ym(),store:STORE,months:12})};
+  }
   MASTER=m.master; CFG=m.config; CFG_DIRTY={};
   // ⚠ 門市下拉一定要在這裡先建好：若等到 loadMonth，該門市讀取失敗就會提早 return，
   //    下拉永遠是空的 → 使用者被鎖在壞掉的門市、切不回來（踩過）
   if(m.stores&&m.stores.length){STORE_LIST=m.stores;renderStoreSel()}
   applyHol(m.holidays);
   renderEmp(); renderCfg();
+  applyScopeUi();
   await loadMonth(monP);
-  syncHol();   // 紅字天數整年自動帶入（背景跑，不擋畫面）
+  if(!scopeLimited()) syncHol();   // 紅字天數整年自動帶入（背景跑，不擋畫面）；有負責門市限制時後端會擋，不呼叫
 }
 /* 切月份/開啟時自動帶出當月數字：未鎖定且尚未算過就靜默試算一次（未設紅字等失敗則安靜略過，不跳錯誤）*/
 async function autoCalc(){
@@ -750,7 +804,12 @@ async function saveAtt(){
     return;
   }
   b.disabled=true; b.classList.remove('done'); b.textContent='存取中…';
-  const r=await post('payroll_input_set',{ym:ym(),inputs:ATT});
+  /* 有負責門市範圍時只送本店主檔的人：ATT 也含只打卡、未建主檔或別店的編號（計薪只看主檔，不送不影響本店），
+     後端會擋 emp_out_of_scope（payroll-scope final review I2）。系統管理者／非嵌入照舊全送。 */
+  let sendAtt=ATT;
+  if(scopeLimited()){ const own={}; MASTER.forEach(m=>{own[String(m.emp_id).trim()]=1}); sendAtt={};
+    Object.keys(ATT||{}).forEach(k=>{ if(own[String(k).trim()]) sendAtt[k]=ATT[k]; }); }
+  const r=await post('payroll_input_set',{ym:ym(),inputs:sendAtt});
   if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.error||''),true);return}
   await doCalc();   // 存完用新工時重算帶出數字
   ATT_DIRTY=false;   // 存好了，解除未儲存提醒
@@ -810,7 +869,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     const r=await (pre||post('payroll_month',{ym:ym(),inputs:{}}));
     if(!r.ok){
       // ⚠ 不可靜默 return——會讓畫面空白，使用者以為「資料不見了」
-      const msg=String(r.detail||r.message||r.error||'讀取失敗');
+      const msg=r.error==='scope_forbidden'?'這家門市不在你的負責範圍':String(r.detail||r.message||r.error||'讀取失敗');
       showLoadError(msg);
       toast(msg,true);
       // 失敗也要保證能切回別的門市：下拉是空的就單獨去抓門市表
@@ -1589,6 +1648,7 @@ async function loadLeaveTypes1(){
   LT_LIST=r.types||[]; LT_IS_DEFAULT=!!r.is_default;
   const own=$('ltOwn'); if(own) own.checked=!LT_IS_DEFAULT && !!r.store_specific;
   renderLeaveTypes();
+  applyScopeUi();   // 有負責門市限制時「只套用到目前門市」強制勾選
 }
 async function saveLeaveTypes(btn){
   return saveFX(btn,'儲存假別設定',async()=>{
@@ -1748,12 +1808,13 @@ async function switchStore(code){
   const on=document.querySelector('#nav button.on');
   if(on&&on.dataset.p==='punch') loadPunch();
   if(on&&on.dataset.p==='dash') loadDash();
-  if(on&&on.dataset.p==='group') loadGroup();
+  if(on&&on.dataset.p==='group'&&!scopeLimited()) loadGroup();
   toast('已切換到 '+((STORE_LIST.find(s=>String(s.code)===STORE)||{}).name||STORE));
 }
 
 /* ═════ 集團總覽 ═════ */
 async function loadGroup(force){
+  if(scopeLimited()) return;   // 集團功能限系統管理者
   const box=$('groupBody'); if(!box) return;
   const c=vGet('group');
   if(c&&!force){ renderGroup(c); return; }
@@ -2113,14 +2174,16 @@ function staffDiff(master,roster,store){
        對不到、狀態不明、單位沒填或沒對應薪酬門市＝名單資料不完整、系統無法判斷 → check（待確認，沒有按鈕）。 */
     if(!x){ items.push({kind:'check',row:e,x,store,why:'同仁名單對不到這個打卡編號，請先到同仁名單補打卡對照'}); return; }
     let why='';
+    /* 負責門市（payroll-scope fix2-2）：平台對薪資不歸負責門市的編號只回 {state, pay_store, pay_none}，
+       沒有 name／unit_name／here → 文字一律可缺（不印 undefined、不印空單位） */
     if(x.state!=='active'){
       const nm=(SYNC_STATE[x.state]||x.state)+(x.name?'（'+x.name+'）':'');
       if(x.state==='disabled'||x.state==='left') why=nm;
       else { items.push({kind:'check',row:e,x,store,why:nm+'，無法判斷是否在職，請先到同仁名單確認'}); return; }
     }
-    else if(x.pay_none) why='一悟品牌辦公室尚未設薪資門市（'+(x.unit_name||'—')+'）';   // Eason 2026-10-28：一悟薪資先不建
+    else if(x.pay_none) why='一悟品牌辦公室尚未設薪資門市'+(x.unit_name?'（'+x.unit_name+'）':'');   // Eason 2026-10-28：一悟薪資先不建
     else if(!x.pay_store){ items.push({kind:'check',row:e,x,store,why:'所屬單位是「'+(x.unit_name||'未填')+'」，沒有對應的薪酬門市，請先到同仁名單補所屬單位'}); return; }
-    else if(x.pay_store!==store) why='所屬單位是「'+(x.unit_name||'—')+'」，薪資應歸 '+x.pay_store;
+    else if(x.pay_store!==store) why=(x.unit_name?'所屬單位是「'+x.unit_name+'」，':'')+'薪資應歸 '+x.pay_store;
     if(why){ items.push({kind:'stop',row:e,x,why,store}); return; }
     if(syncNorm(x.name)!==syncNorm(e.name)) items.push({kind:'name',row:e,x,store});
   });
@@ -2128,12 +2191,15 @@ function staffDiff(master,roster,store){
 }
 async function loadStaffSync(force){
   const box=$('staffSync'); if(!box) return;
+  if(scopeLimited()&&!SCOPE.length) return;   // 尚未指派負責門市：不發呼叫
   if(!EMBED&&!LOCAL_HOST){ box.style.display='none'; return; }
   const key=syncCurStore();
   if(force||!SYNC_ROSTER||SYNC_KEY!==key){
     // 換門市：舊門市的清單與按鈕先拿掉（讀取期間按到＝把 A 店的人寫進 B 店，mala-clock-in#11 審查）
     if(SYNC_KEY!==key){ SYNC_ROSTER=null; SYNC_KEY=''; SYNC_ITEMS=[]; box.style.display=''; box.innerHTML='<span style="color:var(--muted);font-size:13px">同仁名單比對讀取中…</span>'; }
-    const r=await post('payroll_dzy_staff',{store:key});   // 薪資後端 payStore('')＝SSLGF，同一個慣例
+    // emp_ids＝本店主檔的編號：平台 ids 只回這些（payroll-scope fix2-2，少傳別店對照）；差異清單 act 只查主檔的人
+    const empIds=[]; (MASTER||[]).forEach(e=>{ const k=String(e&&e.emp_id!=null?e.emp_id:'').trim(); if(k&&empIds.indexOf(k)<0) empIds.push(k); });
+    const r=await post('payroll_dzy_staff',{store:key,emp_ids:empIds});   // 薪資後端 payStore('')＝SSLGF，同一個慣例
     if(syncCurStore()!==key) return;   // 等的時候切了門市
     if(!r.ok){ SYNC_ROSTER=null; SYNC_KEY='';
       box.style.display=''; box.innerHTML='<span style="color:var(--muted);font-size:13px">同仁名單比對暫時讀不到（'+esc(r.message||r.error||'')+'）</span>'; return; }
@@ -2308,6 +2374,7 @@ function renderCfg(){
   //（2026-08-24：這張卡原本沒有來源標示也沒有門市勾選，改團險時很容易誤存成集團預設）
   if($('coGrid')) $('coGrid').innerHTML=CO_MANUAL.map(cfgFld).join('');
   renderHol();
+  applyScopeUi();
 }
 /* ⚠ 參數設定四張卡（基本／全勤／計時加給／公司負擔）的「儲存」都呼叫 saveCfg。
    2026-09-18 改紅字天數時整段取代「紅字天數」到「薪資單」兩個標記之間的程式，把這兩支一起刪掉了，
@@ -2705,7 +2772,7 @@ $('nav').addEventListener('click',ev=>{
   if(b.dataset.p==='punch') loadPunch();
   if(b.dataset.p==='attexp') loadAttExp();
   if(b.dataset.p==='dash') loadDash();
-  if(b.dataset.p==='group') loadGroup();
+  if(b.dataset.p==='group'&&!scopeLimited()) loadGroup();
   if(b.dataset.p==='bonus') renderBonus();
 });
 // 預設月份＝開啟當下的月份（台北時區），而非寫死

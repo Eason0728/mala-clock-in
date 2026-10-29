@@ -243,7 +243,11 @@ function payClockSS(store, soft) {
   }
   else {
     try { ss = SpreadsheetApp.openById(id); }
-    catch (e) { throw new Error('門市 ' + c + ' 的打卡試算表開不起來（clock_ss_id=' + id + '）：' + e.message); }
+    catch (e) {
+      // 試算表 ID 不回給呼叫端（Code.gs 會把例外字串當 detail 回傳）；只寫進執行紀錄給系統管理者查（payroll-scope fix2-5）
+      Logger.log('payClockSS 開不起來：門市 ' + c + ' clock_ss_id=' + id + '：' + (e && e.message));
+      throw new Error('門市 ' + c + ' 的打卡試算表開不起來，請找系統管理者檢查門市設定');
+    }
   }
   PAY_SS_CACHE[c] = ss;
   return ss;
@@ -3139,6 +3143,132 @@ function handlePayrollLeaveEventSet(body) {
   return { ok: true, saved: incoming.length };
 }
 
+/* ═══════════════════ 門市範圍（body.scope）守門與回應裁切 ═══════════════════
+ * 管理系統（平台）負責門市權限，經 Mac mini 代轉時每個薪資請求都帶 body.scope：
+ *   沒有欄位／'*' → 不限制（舊路與系統管理者）；字串陣列 → 只能碰名單內的門市；其他形狀 → scope_bad。
+ * 只守門與裁切，不改任何計算。比較前門市代碼一律 trim＋大寫（payStore 再補預設店）。 */
+const PAY_SCOPE_ADMIN_ONLY = ['payroll_group', 'payroll_store_set', 'payroll_holiday_sync', 'payroll_get'];
+
+function payScopeNorm_(v) { return payStore(String(v == null ? '' : v).trim()).toUpperCase(); }
+
+/** 回 null（沒欄位）｜'*'｜正規化後的門市陣列｜'BAD' */
+function payScopeOf_(body) {
+  if (!body || typeof body !== 'object' || body.scope === undefined) return null;
+  const s = body.scope;
+  if (s === '*') return '*';
+  if (!Array.isArray(s)) return 'BAD';
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    if (typeof s[i] !== 'string' || !s[i].trim()) return 'BAD';
+    out.push(payScopeNorm_(s[i]));
+  }
+  return out;
+}
+
+function payScopeDeny_(detail, empIds) {
+  const r = { ok: false, error: 'scope_forbidden', detail: detail };
+  if (empIds) r.emp_ids = empIds;
+  return r;
+}
+
+/** 請求端守門：通過回 null，否則回要直接回給呼叫端的錯誤物件 */
+function payScopeGuard_(action, body) {
+  const sc = payScopeOf_(body);
+  if (sc === 'BAD') return { ok: false, error: 'scope_bad', detail: 'scope 必須是 * 或門市代碼陣列' };
+  if (sc === null || sc === '*') return null;
+  if (PAY_SCOPE_ADMIN_ONLY.indexOf(action) >= 0) return payScopeDeny_('集團功能，限系統管理者');
+  /* 從打卡名冊建立：會把整個打卡名冊（共用打卡表時含別店的人）寫進主檔，不經 emp_out_of_scope 檢查 → 限系統管理者（fix2-3） */
+  if (action === 'payroll_bootstrap') return payScopeDeny_('admin_only');
+  if (action === 'payroll_store_get') return null;
+  const st = payScopeNorm_(body.store);
+  const inL = function (s) { return sc.indexOf(s) >= 0; };
+  if (action === 'payroll_master_get' && sc.length === 0) return null;   // 空名單：回空殼（見 trim）
+  if (action === 'payroll_config_set' && !String(body.store || '').trim()) return payScopeDeny_('集團預設參數限系統管理者');
+  if (action === 'payroll_leave_type_set' && !String(body.store || '').trim()) return payScopeDeny_('集團共用假別限系統管理者');
+  if (!inL(st)) return payScopeDeny_('門市 ' + st + ' 不在負責範圍');
+  if (action === 'payroll_master_set') {
+    const rows = Array.isArray(body.master) ? body.master : [];
+    for (let i = 0; i < rows.length; i++) {
+      const to = payScopeNorm_((rows[i] && rows[i].store) || st);
+      if (!inL(to)) return payScopeDeny_('不能把人員移到負責範圍外的門市 ' + to);
+    }
+    /* 新加進本店主檔的編號，若已出現在範圍外門市的主檔或工時 → 擋（final review I2：
+       特休／假別統計以 emp_id 跨店讀工時，借別店員工的編號建檔就能動到別店的人）。本店主檔原有的人照常。 */
+    const here = {}, foreign = {};
+    payRead('master').forEach(function (m) {
+      const k = payScopeId_(m && m.emp_id), s = payScopeNorm_(m && m.store);
+      if (s === st) here[k] = true; else if (!inL(s)) foreign[k] = true;
+    });
+    let inp = [];
+    try { inp = payRead('input'); } catch (err) { inp = []; }
+    inp.forEach(function (r) { if (!inL(payScopeNorm_(r && r.store))) foreign[payScopeId_(r && r.emp_id)] = true; });
+    for (let j = 0; j < rows.length; j++) {
+      const k = payScopeId_(rows[j] && rows[j].emp_id);
+      if (k && !here[k] && foreign[k]) return payScopeDeny_('emp_out_of_scope', [k]);
+    }
+  }
+  /* 工時／假別事件日／獎金：每個 emp_id 都要在負責門市的主檔裡（final review I2；獎金 fix2-4）。
+     前端 saveAtt 有範圍時只送本店主檔的人（工時表裡也有只打卡、未建主檔的編號）。
+     獎金 bonuses:[{emp_id,amount,...}]：金額 0 的列 handler 會略過，但這裡照樣檢查（每個非空 emp_id）。 */
+  if (action === 'payroll_input_set' || action === 'payroll_leave_event_set' || action === 'payroll_bonus_set') {
+    const listOf = function (arr) { return (Array.isArray(arr) ? arr : []).map(function (r) { return r && r.emp_id; }); };
+    const ids = action === 'payroll_input_set'
+      ? Object.keys(body.inputs && typeof body.inputs === 'object' ? body.inputs : {})
+      : listOf(action === 'payroll_bonus_set' ? body.bonuses : body.events);
+    const own = {};
+    payRead('master').forEach(function (m) { if (inL(payScopeNorm_(m && m.store))) own[payScopeId_(m && m.emp_id)] = true; });
+    const bad = [];
+    ids.forEach(function (id) { const k = payScopeId_(id); if (k && !own[k] && bad.indexOf(k) < 0) bad.push(k); });
+    if (bad.length) return payScopeDeny_('emp_out_of_scope', bad);
+  }
+  return null;
+}
+
+function payScopeId_(v) { return String(v == null ? '' : v).trim(); }
+
+/** 回應端裁切：scope 為陣列時，stores 只留名單內且去掉 clock_ss_id；master_get 一律多回 scope */
+function payScopeTrim_(action, body, res) {
+  if (!res || typeof res !== 'object') return res;
+  const sc = payScopeOf_(body);
+  if (action === 'payroll_master_get' && res.ok) res.scope = (Array.isArray(sc) ? sc : '*');
+  if (!Array.isArray(sc)) return res;
+  if (['payroll_master_get', 'payroll_month', 'payroll_store_get'].indexOf(action) >= 0 && Array.isArray(res.stores)) {
+    res.stores = res.stores.filter(function (s) { return sc.indexOf(payScopeNorm_(s && s.code)) >= 0; })
+      .map(function (s) { const c = {}; Object.keys(s).forEach(function (k) { if (k !== 'clock_ss_id') c[k] = s[k]; }); return c; });
+  }
+  return res;
+}
+
+/** 就地把每個 handler 包成 guard → 原 handler → trim（Code.gs 於請求時才複製 PAYROLL_HANDLERS，所以就地包有效） */
+function payScopeWrap_(handlers) {
+  Object.keys(handlers).forEach(function (action) {
+    const orig = handlers[action];
+    handlers[action] = function (body) {
+      /* 帶 scope 的請求先驗管理金鑰再守門（fix2-1）：守門會讀主檔／工時、回 emp_ids，
+         不先驗金鑰的話，沒金鑰的人能拿 scope_forbidden／emp_out_of_scope 探出員工編號。 */
+      if (body && typeof body === 'object' && body.scope !== undefined && !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+      const deny = payScopeGuard_(action, body);
+      if (deny) return deny;
+      /* 有範圍時 store 先正規化（trim＋大寫）再交給 handler（final review I3）：
+         守門比的是正規化後的代碼，handler 不正規化，' cf ' 會寫成另一家「店」。'*'／沒欄位不動。 */
+      if (Array.isArray(payScopeOf_(body))) {
+        body.store = payScopeNorm_(body.store);
+        if (action === 'payroll_master_set' && Array.isArray(body.master)) {
+          body.master.forEach(function (m) { if (m && String(m.store == null ? '' : m.store).trim()) m.store = payScopeNorm_(m.store); });
+        }
+      }
+      if (action === 'payroll_master_get') {
+        const sc = payScopeOf_(body);
+        if (Array.isArray(sc) && sc.length === 0) {
+          if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+          return { ok: true, stores: [], master: [], config: {}, scope: [] };
+        }
+      }
+      return payScopeTrim_(action, body, orig(body));
+    };
+  });
+}
+
 const PAYROLL_HANDLERS = {
   payroll_setup:        handlePayrollSetup,
   payroll_bootstrap:    handlePayrollBootstrap,
@@ -3176,6 +3306,7 @@ const PAYROLL_HANDLERS = {
   pnlPayroll:              handlePnlPayroll_,
   pnlLaborEstimate:        handlePnlLaborEstimate_,
 };
+payScopeWrap_(PAYROLL_HANDLERS);
 
 // ---------- 損益系統唯讀端點（T14，mala-pnl-auto#15） ----------
 // 給集團「通用門市自動損益系統」讀某門市當月人事成本（依穩定鍵）用。
