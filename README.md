@@ -354,14 +354,16 @@ function run() { addManager('王經理'); }
 repo 的 `apps-script/Code.gs` 的 `CONFIG` 是 `PASTE_SPREADSHEET_ID_HERE`／`PASTE_ADMIN_KEY_HERE` 佔位符，**整份複製到 clasp 專案會把四家店的正式試算表 ID、ADMIN_KEY、店座標、`PAYROLL_API` 全部洗掉，打卡會整個掛**。所以每次改後端都得逐份手動套補丁——這支把那件事變成可重跑的動作：
 
 ```bash
-cd ~/mala-clock-in && git fetch origin main        # 基準版要新，否則整批誤判成漂移
-cd ~/mala-gas/mala-clock-in && clasp pull          # 四個專案都先 pull
-python3 ~/mala-clock-in/tools/deploy-to-clasp.py           # dry-run，看會改什麼
-python3 ~/mala-clock-in/tools/deploy-to-clasp.py --apply   # 真的套進去
+cd ~/mala-clock-in && git pull origin main         # 新版程式碼從工作目錄讀，要先 pull
+cd ~/mala-gas/mala-clock-in && clasp pull          # 每個專案都先 pull
+python3 ~/mala-clock-in/tools/deploy-to-clasp.py --base <線上那版的 commit>           # dry-run，看會改什麼
+python3 ~/mala-clock-in/tools/deploy-to-clasp.py --base <線上那版的 commit> --apply   # 真的套進去
 python3 ~/mala-clock-in/tools/verify-store-backends.py     # 四家都要 ✓
 # 確認無誤後，各專案自己 clasp push
 ```
 
+- 2026-10-29 補：除了 `Code.gs`、`Payroll.gs`，`Requests`／`Liff`／`LineHub`／`SvcStaff`／`SchedPub`／`Mirror` 也一起整份覆蓋（只更新專案裡已經有的同名 `.js`，不新增檔案）；店家清單補上六張犁 `mztlzl-clock-in`。`Sched.gs` 不套：各店 `SCHED_GIST_URL` 跟 repo 不同。
+- `--base` 要指**目前線上那一版**的 commit：預設 `origin/main` 只在「部署前還沒推上 main」時對；已經合併到 main 再部署，要改指上一版，不然每份有改的檔都會被當成漂移。
 - 做法：拿 repo 的新版 `Code.gs`，把**該店現有檔案裡的 `CONFIG` 區塊原封不動接回去**。`Payroll.gs` 沒有店別專屬的值（無 `PASTE_`／`SPREADSHEET_ID`／`ADMIN_KEY`），整份覆蓋；套到哪個專案是用 `grep PAYROLL_HANDLERS` 找出來的，不是寫死的。
 - **預設 dry-run**，要 `--apply` 才寫檔；**不碰 clasp**（不 pull 也不 push——`clasp push` 照守則要先問過 Eason 再自己按）。
 - **漂移防護**：寫之前先確認「該店現有檔案 ＝ 基準版（預設 `origin/main`）＋ 該店 CONFIG」。對不起來就停下來印 diff、不覆蓋，除非 `--force`。這道是 2026-08-23「補丁被誤判成已套用 → 出差保護靜默失效」的解藥。
