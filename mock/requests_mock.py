@@ -569,12 +569,20 @@ def register(ns):
                                    "emp_id": me["emp_id"], "emp_name": me["name"]})
         if not stores:
             return {"ok": False, "error": "not_bound"}
+        # 預設店別（2026-10-29，同 LineHub.gs lineHubLastPunchStore_）：綁兩家以上 → 最近一張卡（被擋的不算）在哪家
+        punch_store, best = None, ""
+        if len(stores) > 1:
+            for s in stores:
+                with store_context(s["code"] or None):
+                    for e in load_data().get("events", []):
+                        if str(e.get("emp_id")) == str(s["emp_id"]) and not str(e.get("status", "")).startswith("rejected") and str(e.get("ts", "")) > best:
+                            best, punch_store = str(e.get("ts", "")), s["code"]
         names = [t for t in LEAVE_TYPES if t not in ("出差", "補休")]
         # 補休（2026-10-09）：光復 mock 資料的 mock_comp 可改（e2e 用來切正職／計時、有無餘額）；預設正職剩 6 小時、20 天後到期
         comp = data.get("mock_comp") or {"allowed": True, "balance_h": 6,
                                          "earliest_expiry": (date.today() + timedelta(days=20)).isoformat()}
         common = [n for n in COMMON if n in names] + (["補休"] if comp.get("allowed") and comp.get("balance_h", 0) > 0 else [])
-        return {"ok": True, "stores": stores, "comp": comp,
+        return {"ok": True, "stores": stores, "punch_store": punch_store, "comp": comp,
                 "leave_types": {"common": common, "special": [n for n in names if n not in COMMON]},
                 "quota": [{"name": "特休假", "cap_days": 7, "cap_h": 56, "remain_h": 40, "used_h": 16, "basis": "tenure"},
                           {"name": "事假", "cap_days": 14, "cap_h": 112, "remain_h": 112, "used_h": 0, "basis": "calendar"}]}

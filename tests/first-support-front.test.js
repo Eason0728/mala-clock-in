@@ -60,7 +60,7 @@ ok('mgr_add_employee 後端沒被動到（導向開著也照舊能新增）', ()
   assert.strictEqual(r.ok, true); assert.strictEqual(r.emp_id, 'E05');
 });
 
-const PAGES = ['manager.html', 'manager-cf.html', 'manager-hq.html', 'manager-mztgf.html', 'manager-mztjs.html', 'manager-mztlzl.html'];
+const PAGES = ['manager.html', 'manager-cf.html', 'manager-hq.html', 'manager-mztgf.html', 'manager-mztjs.html', 'manager-mztlzl.html', 'manager-mztmc.html'];
 function extractFn(src, name) {
   const i = src.indexOf('function ' + name + '('); if (i < 0) throw new Error('找不到 ' + name);
   let d = 0, j = src.indexOf('{', i);

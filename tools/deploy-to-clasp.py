@@ -8,6 +8,10 @@ repo 裡的 Code.gs 的 CONFIG 是 PASTE_SPREADSHEET_ID_HERE / PASTE_ADMIN_KEY_H
 
 做法：拿 repo 的新版 Code.gs，把**該店現有檔案裡的 CONFIG 區塊**原封不動接回去。
 Payroll.gs 沒有店別專屬的值（查過：無 PASTE_／SPREADSHEET_ID／ADMIN_KEY），整份覆蓋。
+2026-10-29 補：Requests／Liff／LineHub／Sched／SchedPub／SvcStaff／Mirror 也是整份覆蓋（WHOLE_FILES），
+原本這支只套 Code.gs、Payroll.gs，這幾份改了都要自己手貼，容易漏（10-25 的 LineHub「重設密碼」就沒上線）。
+只更新專案裡**已經有**的同名 .js（LineHub 只在光復、Mirror 只在總部），不會替哪家店新增檔案。
+Sched.gs 的 SCHED_GIST_URL 已改成線上用的那顆（10-13 換的 47c876cc…），repo 與光復一致才放進清單。
 
 安全設計：
   * **預設 dry-run**，要 --apply 才真的寫檔。
@@ -19,7 +23,8 @@ Payroll.gs 沒有店別專屬的值（查過：無 PASTE_／SPREADSHEET_ID／ADM
     （repo 守則：任何 clasp push 都要先問 Eason）。
 
 用法：
-    cd ~/mala-clock-in && git fetch origin main   # ⚠ 基準版要是新的，不然整批誤判成漂移
+    cd ~/mala-clock-in && git pull origin main    # 新版程式碼從工作目錄讀，要先 pull
+    # --base 要指「目前線上那一版」的 commit（預設 origin/main 只適合部署前還沒推上 main 的情況）
     cd ~/mala-gas/mala-clock-in && clasp pull     # 四個專案都先 pull
     python3 ~/mala-clock-in/tools/deploy-to-clasp.py            # 看會改什麼
     python3 ~/mala-clock-in/tools/deploy-to-clasp.py --apply    # 真的套進去
@@ -32,7 +37,10 @@ Payroll.gs 沒有店別專屬的值（查過：無 PASTE_／SPREADSHEET_ID／ADM
 """
 import argparse, difflib, pathlib, re, subprocess, sys
 
-STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztgf-clock-in']
+STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztgf-clock-in', 'mztlzl-clock-in', 'mztmc-clock-in']   # 2026-10-29 補六張犁（verify-store-backends.py 早就有）
+# 沒有店別專屬值、整份覆蓋的檔案：repo 檔名 → clasp 專案裡的檔名
+WHOLE_FILES = [('Requests.gs', 'Requests.js'), ('Liff.gs', 'Liff.js'), ('LineHub.gs', 'LineHub.js'),
+               ('SvcStaff.gs', 'SvcStaff.js'), ('Sched.gs', 'Sched.js'), ('SchedPub.gs', 'SchedPub.js'), ('Mirror.gs', 'Mirror.js')]
 STORE_FILE = '程式碼.js'
 CONFIG_RE = re.compile(r'^const CONFIG = \{.*?^\};', re.S | re.M)
 
@@ -141,6 +149,19 @@ def main():
         base = splice(code_base, cfg, a.base) if code_base else None
         res[st], _ = process(f'{st}/{STORE_FILE}', p, splice(code_new, cfg, 'repo Code.gs'),
                              base, a.apply, a.force, a.full)
+
+    # 整份覆蓋的檔案：哪家專案有這個檔就更新哪家，沒有就跳過（不新增）
+    for src_name, dst_name in WHOLE_FILES:
+        new = (repo / 'apps-script' / src_name).read_text(encoding='utf-8')
+        base = git_show(repo, a.base, 'apps-script/' + src_name)
+        targets = [st for st in STORES if (gas / st / dst_name).exists()]
+        if not targets:
+            print(f'\n▶ {dst_name}\n    ⚠ 每家專案都沒有 {dst_name}，沒有套')
+            res[dst_name] = 'missing'
+            continue
+        for st in targets:
+            res[f'{st}/{dst_name}'], _ = process(f'{st}/{dst_name}', gas / st / dst_name, new,
+                                                 base, a.apply, a.force, a.full)
 
     # Payroll.gs：只在「掛著 PAYROLL_HANDLERS」的那個專案，不用猜是哪一家
     pay_files = [f for st in STORES if (gas / st).is_dir()

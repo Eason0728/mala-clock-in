@@ -658,9 +658,12 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
     return { ok: false, error: 'invalid_key' };
   }
 
+  // 2026-10-29 審查：舊 clock 動作原本不擋 type，也不管 device_id 內容——= 開頭的字串寫進 events／名冊會被 Sheets 當公式跑。
+  // 所有呼叫端（clock.html、LINE 打卡）只送 in／out；device_id 是 UUID 或 line:<userId>，第一個字是 = + - @ 就換成全形（不擋，免得舊手機打不了卡）。
+  if (body.type !== 'in' && body.type !== 'out') return { ok: false, error: 'bad_type' };
   const lat = parseFloat(body.lat);
   const lng = parseFloat(body.lng);
-  const deviceId = body.device_id || '';
+  const deviceId = String(body.device_id || '').replace(/^[=+\-@]/, function (c) { return { '=': '＝', '+': '＋', '-': '－', '@': '＠' }[c]; });
   const distanceM = Math.round(haversineM(CONFIG.STORE_LAT, CONFIG.STORE_LNG, lat, lng) * 10) / 10;
   const ts = nowTaipeiIso();
   // 手機沒給或給了怪值就存空白（舊版前端不會帶這個欄位，不能因此讓打卡失敗）

@@ -86,6 +86,15 @@ function reqSpanHours_(start, end) {
 function reqDayDiff_(a, b) {   // 日期字串 a − b 的天數
   return Math.round((Date.UTC(+a.slice(0, 4), +a.slice(5, 7) - 1, +a.slice(8, 10)) - Date.UTC(+b.slice(0, 4), +b.slice(5, 7) - 1, +b.slice(8, 10))) / 86400000);
 }
+/** 寫進試算表前的文字防護（2026-10-29 審查）：= + - @ 開頭的字串 Sheets 會當公式跑（例如原因欄填 =IMPORTDATA(...) 就能把名冊送出去）。
+ *  第一個字換成全形（＝＋－＠），同仁看得懂、讀回來也不會變；數字、空值照舊。寫入點（appendRow／reqSetCells_）都要過這關。
+ *  attach_id 例外：雲端硬碟檔案 ID 可能是 - 開頭，換掉就找不到檔案；它已經過 REQ_ATTACH_RE_，只有英數 _ -，不會是公式。 */
+var REQ_SHEET_WIDE_ = { '=': '＝', '+': '＋', '-': '－', '@': '＠' };
+function reqSheetText_(v, key) {
+  if (typeof v !== 'string' || key === 'attach_id') return v;
+  var m = /^(\s*)([=+\-@])/.exec(v);
+  return m ? m[1] + REQ_SHEET_WIDE_[m[2]] + v.slice(m[0].length) : v;
+}
 function reqClean_(v, max) { return String(v === null || v === undefined ? '' : v).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max); }
 function reqPublic_(r) {
   return { id: String(r.id), created_at: String(r.created_at), emp_id: String(r.emp_id), name: String(r.name), kind: String(r.kind),
@@ -101,7 +110,7 @@ function reqSetCells_(sh, rowIndex, patch) {
   var heads = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
   Object.keys(patch).forEach(function (k) {
     var c = heads.indexOf(k);
-    if (c >= 0) sh.getRange(rowIndex, c + 1).setValue(patch[k]);
+    if (c >= 0) sh.getRange(rowIndex, c + 1).setValue(reqSheetText_(patch[k], k));
   });
 }
 /** 一句話描述一筆申請（主管頁、我的申請、打卡後告知共用）。 */
@@ -333,7 +342,7 @@ function handleReqSubmit_(body) {
     r.attach_id = REQ_ATTACH_RE_.test(String(body.attach_id || '')) ? String(body.attach_id) : '';
     r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
     var sh = reqSheet_(who.ss, true);
-    sh.appendRow(reqHeads_(sh).map(function (h) { return r[h] === undefined ? '' : r[h]; }));   // 照實際表頭寫（舊分頁沒有 comp 欄會先補）
+    sh.appendRow(reqHeads_(sh).map(function (h) { return r[h] === undefined ? '' : reqSheetText_(r[h], h); }));   // 照實際表頭寫（舊分頁沒有 comp 欄會先補）
     return { ok: true, request: reqPublic_(r), summary: reqSummary_(r) };
   } finally { lock.releaseLock(); }
 }

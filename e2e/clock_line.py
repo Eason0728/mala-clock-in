@@ -131,6 +131,13 @@ def calls(p):
     return p.evaluate('window.__calls')
 
 
+def pick_time(p, nth, hm):
+    """申請頁時間欄是「時」「分」兩個下拉（2026-10-29，取代 input[type=time]，LINE Android 叫轉盤會閃退）"""
+    box = p.locator('#reqView .rq-time').nth(nth)
+    box.locator('select.rq-hh').select_option(hm[:2])
+    box.locator('select.rq-mm').select_option(hm[3:])
+
+
 def main():
     os.makedirs(SHOTS, exist_ok=True)
     proc = start_mock()
@@ -467,10 +474,10 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             p.wait_for_selector('#reqView .rq-tabs button.on', timeout=10000)
             hrs = float(re.search(r'今天出勤 ([\d.]+) 小時', hint).group(1))
             exp_start_min = int(((int(end_hm[:2]) * 60 + int(end_hm[3:])) - (hrs - 8) * 60) // 15 * 15) % 1440
-            vals = p.evaluate("() => [...document.querySelectorAll('#reqView input')].map(i => i.value)")
+            vals = p.evaluate("() => [...document.querySelectorAll('#reqView input[type=date], #reqView .rq-time')].map(i => i.tagName === 'INPUT' ? i.value : [...i.querySelectorAll('select')].map(s => s.value).join(':'))")   # 時間欄是「時」「分」下拉，下班卡不在 15 分格上也要原樣帶入
             ok('申請加班 → 開「加班」分頁', p.inner_text('#reqView .rq-tabs button.on') == '加班', p.inner_text('#reqView .rq-tabs button.on'))
             ok('加班分頁預填：日期＝上班那天、時段＝滿 8 小時（取整 15 分）到下班', vals[0] == t_in.strftime('%Y-%m-%d')
-               and vals[1] == '%02d:%02d' % (exp_start_min // 60, exp_start_min % 60) and vals[2] == end_hm, vals)
+               and vals[1] == '%02d:%02d' % (exp_start_min // 60, exp_start_min % 60) and vals[2] == end_hm, [vals, end_hm, exp_start_min, hint])
             p.fill('#reqView input[type=text]', 'e2e 外送訂單多')
             p.click('#reqView button.primary')
             p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)
@@ -489,8 +496,9 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             p.wait_for_function('document.querySelector("#reqView .rq-box.err") && document.querySelector("#reqView .rq-box.err").textContent.indexOf("事由") >= 0', timeout=5000)
             ok('出差：沒填事由 → 擋下', True)
             p.click('#reqView .rq-chips .rq-chip:nth-child(2)')   # 只一段
-            p.fill('#reqView input[type=time] >> nth=0', '13:00')
-            p.fill('#reqView input[type=time] >> nth=1', '17:30')
+            ok('出差只一段：時間欄是下拉選單、整頁沒有 input[type=time]（LINE Android 會閃退）', p.locator('#reqView input[type=time]').count() == 0 and p.locator('#reqView .rq-time').count() == 2)
+            pick_time(p, 0, '13:00')
+            pick_time(p, 1, '17:30')
             p.fill('#reqView .rq-place', '台中央廚')
             p.fill('#reqView .rq-why', '支援盤點')
             p.wait_for_timeout(200)
@@ -509,8 +517,8 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             radios = p.evaluate("() => [...document.querySelectorAll('#reqView input[name=rqComp]')].map(r => [r.value, r.checked])")
             ok('補休：正職的加班分頁有「加班費／換補休」、預設加班費', radios == [['pay', True], ['comp', False]], radios)
             p.fill('#reqView input[type=date]', d3)
-            p.fill('#reqView input[type=time] >> nth=0', '18:00')
-            p.fill('#reqView input[type=time] >> nth=1', '20:30')
+            pick_time(p, 0, '18:00')
+            pick_time(p, 1, '20:30')
             p.fill('#reqView input[type=text]', '月底盤點')
             p.check('#reqView input[name=rqComp][value=comp]')
             ok('補休：選換補休 → 說明改成 1:1、6 個月到期', '6 個月內要休完' in p.inner_text('#reqView'), p.inner_text('#reqView')[:400])
@@ -761,12 +769,22 @@ def phase_miss_store(ctx):
         d['requests'] = [r for r in d.get('requests', []) if r.get('emp_id') != 'E09']
         json.dump(d, open(f, 'w', encoding='utf-8'), ensure_ascii=False)
     js_name = JS['name']
+    store_of = lambda pg: pg.evaluate("() => { const s = document.querySelector('#reqView select.rq-store'); return s.options[s.selectedIndex].text; }")
+    # 0. 預設店別＝打卡的店（2026-10-29）：最近一張卡在金山（昨天）→ 請假頁直接選好金山，不再固定光復
+    p = open_page(ctx, BASE + '/clock-line.html?mock_uid=U9&api=/api&in_client=1&retry_ms=100&view=req&tab=leave')
+    p.wait_for_selector('#reqView select.rq-store', timeout=10000)
+    ok('預設店別：最近一張卡在金山 → 請假頁預設金山', store_of(p) == js_name, store_of(p))
+    p.close()
+    # 接下來的忘打卡選店測試要從「預設光復」開始 → 補一張今天在光復的卡（不影響 D1～D3 那幾天）
+    d = json.load(open(files[''], encoding='utf-8'))
+    d['events'].append(ev(dd(0) + 'T00:00:01+08:00', 'in'))
+    json.dump(d, open(files[''], 'w', encoding='utf-8'), ensure_ascii=False)
     u = BASE + '/clock-line.html?mock_uid=U9&api=/api&in_client=1&retry_ms=100&view=req&tab=miss'
     p = open_page(ctx, u)
     p.set_viewport_size({'width': 375, 'height': 812})
     p.wait_for_selector('#reqView select.rq-date', timeout=10000)
-    store_txt = lambda: p.evaluate("() => { const s = document.querySelector('#reqView select.rq-store'); return s.options[s.selectedIndex].text; }")
-    ok('忘打卡選店：開頁預設第一家（小辛辣光復）', store_txt() == '小辛辣 新竹光復', store_txt())
+    store_txt = lambda: store_of(p)
+    ok('預設店別：今天在光復打過卡 → 預設光復', store_txt() == '小辛辣 新竹光復', store_txt())
     # 1. 只有金山有卡 → 自動換金山
     p.select_option('#reqView select.rq-date', D1)
     p.wait_for_selector('#reqView .rq-auto-store', timeout=10000)
@@ -777,7 +795,7 @@ def phase_miss_store(ctx):
     c = [x for x in calls(p) if x['action'] == 'req_info']
     ok('忘打卡選店：兩家店都問了（光復 /api、金山 /api/mztjs）', {x['url'].rsplit('/api', 1)[1] for x in c} >= {'', '/mztjs'}, c)
     p.screenshot(path=os.path.join(SHOTS, '忘打卡_自動選店.jpg'), type='jpeg', quality=80)
-    p.fill('#reqView input[type=time]', '22:00')
+    pick_time(p, 0, '22:00')
     p.click('#reqView .rq-chip:has-text("忘記按")')
     p.click('#reqView button.primary')
     p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)
