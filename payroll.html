@@ -666,7 +666,7 @@ async function post(action,body,opt){   // opt.quiet：被擋（scope_forbidden�
     const j=await bridgeCall(action,Object.assign({store:STORE},body||{}));
     if(!j.ok&&j.error==='scope_forbidden'&&j.detail==='emp_out_of_scope'){ toast('編號 '+(j.emp_ids||[]).join('、')+' 不在你負責門市的薪資主檔，無法儲存',true); return j; }
     if(!j.ok&&j.error==='scope_forbidden'){ if(!(opt&&opt.quiet)) toast('這家門市不在你的負責範圍',true); return j; }
-    if(!j.ok&&j.message) toast(j.message,true);
+    if(!j.ok&&j.message&&!(opt&&opt.noToast)) toast(j.message,true);
     return j;
   }
   // Apps Script 跨網域偶爾回 Google HTML 頁（非 JSON）→ res.json() 會爆並中斷整個流程（表面就是「沒反應」）。
@@ -2662,7 +2662,12 @@ function attStoreOptions(){
   sel.innerHTML=opts.map(s=>`<option value="${esc(s.code)}">${esc(s.name||s.code)}</option>`).join('');
   const cur=opts.find(s=>String(s.code)===String(STORE)); if(cur) sel.value=String(cur.code);
 }
+/* 開頁時停在「出勤紀錄表」：管理系統一 ready 就切分頁，這裡會跟 boot 的三支平行呼叫撞在一起，
+   超過薪酬代轉同時 3 件的上限就被擋（「系統忙碌」），門市下拉也只剩「本店」——先等 boot 做完（2026-10-30） */
+const ATTX_BUSY_RE=/忙碌|PROXY_BUSY|RATE_LIMIT/, ATTX_BUSY_RETRY=2;
+let ATTX_BUSY_WAIT_MS=5000;
 async function loadAttExp(force){
+  try{ await BOOT_P; }catch(e){}
   attStoreOptions();
   if(!$('axYm').value) $('axYm').value=ym();
   const store=$('axStore').value, month=$('axYm').value;
@@ -2670,7 +2675,15 @@ async function loadAttExp(force){
   const key=store+'|'+month;
   if(!force&&ATTX.key===key&&ATTX.data){ renderAttExp(); return; }
   $('axStat').textContent='載入中…'; $('axBody').innerHTML='';
-  const r=await post('payroll_attendance_export',{store,ym:month});
+  let r=await post('payroll_attendance_export',{store,ym:month},{noToast:true});
+  // 被代轉擋下「系統忙碌」（薪酬同時最多 3 件，2026-10-30）：等 5 秒再試，最多 2 次
+  for(let i=1;i<=ATTX_BUSY_RETRY&&!r.ok&&ATTX_BUSY_RE.test(String(r.error||'')+String(r.message||''));i++){
+    $('axStat').textContent='系統忙碌，5 秒後重試（第 '+i+' 次）…';
+    await new Promise(res=>setTimeout(res,ATTX_BUSY_WAIT_MS));
+    if($('axStore').value!==store||$('axYm').value!==month) return;   // 等的時候換了門市／月份：交給新的那次
+    $('axStat').textContent='載入中…';
+    r=await post('payroll_attendance_export',{store,ym:month},{noToast:true});
+  }
   if(!r.ok){ ATTX={key:'',data:null}; $('axStat').innerHTML='<span class="bad">讀取失敗：'+esc(r.message||r.error||'')+'</span>'; return; }
   ATTX={key,data:r};
   const prev=$('axWho').value;
@@ -2818,7 +2831,7 @@ $('ym').addEventListener('change',function(){
   loadMonth();
 });
 let YM_LAST=$('ym').value;
-boot();
+const BOOT_P=boot();
 </script>
 </body>
 </html>
