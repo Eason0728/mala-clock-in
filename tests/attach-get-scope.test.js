@@ -6,7 +6,7 @@ const vm = require('vm');
 const path = require('path');
 const read = f => fs.readFileSync(path.join(__dirname, '..', 'apps-script', f), 'utf8');
 
-function env(pendItems) {
+function env(pendItems, dayBy) {
   const calls = [];
   const sheet = rows => ({ rows });
   const ss = { getSheetByName: n => ({ name: n }) };
@@ -20,14 +20,14 @@ function env(pendItems) {
   };
   vm.createContext(sb);
   vm.runInContext(read('LineHub.gs'), sb);
-  sb.__pend = pendItems; sb.__calls = calls;
+  sb.__pend = pendItems; sb.__day = dayBy === undefined ? {} : dayBy; sb.__calls = calls;
   vm.runInContext(`
     lineHubThrottled_ = function () { return false; };
     lineHubStores_ = function () { return [{ code: 'cf', name: '測試央廚', ss_id: 'X', api: 'https://example.invalid' }]; };
     getSS = function () { return null; };
     findManagerByKey = function (rows, k) { return k === 'MK' || k === 'OPS' ? { name: 'm' } : null; };
     readSheetAsObjects = function (sh) { return { rows: sh.name === 'requests' ? [{ attach_id: 'A1', emp_id: 'E02' }, { attach_id: 'A2', emp_id: 'E03' }] : [] }; };
-    lineHubCallStore_ = function (st, p) { __calls.push(p); return __pend === null ? null : { ok: true, items: __pend }; };
+    lineHubCallStore_ = function (st, p) { __calls.push(p); if (p.action === 'mgr_req_day') return __day === null ? null : { ok: true, date: p.date, by_emp: __day }; return __pend === null ? null : { ok: true, items: __pend }; };
   `, sb);
   return { get: b => JSON.parse(JSON.stringify(vm.runInContext('handleLineHubAttachGet_', sb)(b))), calls };
 }
@@ -52,5 +52,25 @@ ok('讀不到待審清單 → busy，不給檔', () => {
 });
 ok('鑰匙錯 → unauthorized，不問店家', () => {
   const e = env([]); assert.strictEqual(e.get({ store: 'cf', mgr_key: 'BAD', attach_id: 'A1' }).error, 'unauthorized'); assert.strictEqual(e.calls.length, 0);
+});
+// 核定工時看某天已核准申請的證明（2026-10-30）：帶 date → 問那天的 mgr_req_day
+ok('帶 date：那天已核准的申請有這個附件 → 給檔', () => {
+  const e = env([], { E02: [{ id: 'r1', emp_id: 'E02', attach_id: 'A1', status: 'approved' }] });
+  const r = e.get({ store: 'cf', mgr_key: 'OPS', acting_name: '店長', attach_id: 'A1', date: '2026-10-20' });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual([e.calls[0].action, e.calls[0].date, e.calls[0].acting_name], ['mgr_req_day', '2026-10-20', '店長']);
+  assert.strictEqual(e.calls.length, 1);   // 不再問待審清單
+});
+ok('帶 date：那天看不到（別天、或不算支援的人被藏）→ not_found', () => {
+  const e = env([{ id: 'r9', emp_id: 'E03', attach_id: 'A2' }], { E02: [{ id: 'r1', emp_id: 'E02', attach_id: 'A1' }] });
+  assert.strictEqual(e.get({ store: 'cf', mgr_key: 'MK', attach_id: 'A2', date: '2026-10-20' }).error, 'not_found');
+});
+ok('帶 date：舊店家後端沒回 attach_id → not_found（不誤放）', () => {
+  const e = env([], { E02: [{ id: 'r1', emp_id: 'E02', has_attach: true }] });
+  assert.strictEqual(e.get({ store: 'cf', mgr_key: 'MK', attach_id: 'A1', date: '2026-10-20' }).error, 'not_found');
+});
+ok('帶 date：日期格式不對 → bad_date；讀不到 → busy', () => {
+  assert.strictEqual(env([], {}).get({ store: 'cf', mgr_key: 'MK', attach_id: 'A1', date: '2026/10/20' }).error, 'bad_date');
+  assert.strictEqual(env([], null).get({ store: 'cf', mgr_key: 'MK', attach_id: 'A1', date: '2026-10-20' }).error, 'busy');
 });
 console.log('\n' + n + ' 項通過');

@@ -109,5 +109,37 @@ const body = src.slice(0, src.indexOf('\n}\n') + 2);
 chk('handler 與 builder 全程唯讀（沒有任何寫入呼叫）', /appendRow|setValue|payReplaceAll|payAppend|deleteRow|clear\(/.test(body + SRC.slice(SRC.indexOf('function payAttendanceBuild'), SRC.indexOf('function handlePayrollAttendanceExport'))), false);
 chk('已註冊進 PAYROLL_HANDLERS', /payroll_attendance_export:\s*handlePayrollAttendanceExport/.test(SRC), true);
 
+// ── 已核准申請附的證明（2026-10-30）──
+const reqs = [
+  { id: 'R1', emp_id: 'E1', kind: 'leave', date: '2026-09-03', leave_type: '病假', status: 'approved', attach_id: 'F1' },
+  { id: 'R2', emp_id: 'E1', kind: 'leave', date: new VmDate(Date.UTC(2026, 8, 20) - 8 * 3600000), leave_type: '特休假', status: 'approved', attach_id: 'F2' },  // Date 物件
+  { id: 'R3', emp_id: 'E1', kind: 'leave', date: '2026-09-21', leave_type: '病假', status: 'voided', attach_id: 'F3' },     // 作廢不算
+  { id: 'R4', emp_id: 'E1', kind: 'leave', date: '2026-09-22', leave_type: '病假', status: 'pending', attach_id: 'F4' },    // 審核中不算
+  { id: 'R5', emp_id: 'E1', kind: 'leave', date: '2026-09-23', leave_type: '病假', status: 'approved', attach_id: '' },     // 沒附
+  { id: 'R6', emp_id: 'E2', kind: 'trip', date: '2026-08-31', leave_type: '出差', status: 'approved', attach_id: 'F6' },    // 上個月
+];
+const wa = build('2026-09', roster, events, approved, leave, '', reqs);
+chk('病假那天帶附件', day(wa, 'E1', '2026-09-03').attach, [{ label: '病假', attach_id: 'F1' }]);
+chk('Date 物件日期也對得上', day(wa, 'E1', '2026-09-20').attach, [{ label: '特休假', attach_id: 'F2' }]);
+chk('作廢、審核中、沒附的不帶', ['2026-09-21', '2026-09-22', '2026-09-23'].map(d => day(wa, 'E1', d).attach.length), [0, 0, 0]);
+chk('別月份的不帶', wa.employees.find(x => x.emp_id === 'E2').days.every(x => !x.attach.length), true);
+chk('沒傳申請表（舊呼叫）每天 attach 都是空陣列', build('2026-09', roster, events, approved, leave, 'E1').employees[0].days.every(x => Array.isArray(x.attach) && !x.attach.length), true);
+
+const AK = vm.runInContext('CONFIG.ADMIN_KEY', sb);
+sb.payHasClock = () => true;
+sb.payClockRead = (st, name) => (name === 'requests' && st === 'SSLGF' ? reqs : []);
+sb.payStore = (s) => String(s || 'SSLGF');
+sb.reqAttachFile_ = (id) => (id === 'F9' ? null : { getBlob: () => ({ getContentType: () => 'image/jpeg', getBytes: () => [1, 2] }) });
+sb.Utilities.base64Encode = () => 'QUJD';
+chk('看證明：沒有管理金鑰 → unauthorized', sb.handlePayrollAttachGet({ store: 'SSLGF', attach_id: 'F1' }).error, 'unauthorized');
+chk('看證明：已核准的附件 → 回圖', sb.handlePayrollAttachGet({ admin_key: AK, store: 'SSLGF', attach_id: 'F1' }), { ok: true, mime: 'image/jpeg', data: 'QUJD' });
+chk('看證明：作廢那張的附件 → not_found', sb.handlePayrollAttachGet({ admin_key: AK, store: 'SSLGF', attach_id: 'F3' }).error, 'not_found');
+chk('看證明：別店的附件 → not_found', sb.handlePayrollAttachGet({ admin_key: AK, store: 'CF', attach_id: 'F1' }).error, 'not_found');
+chk('看證明：不在附件資料夾 → not_found', (sb.payClockRead = () => [{ attach_id: 'F9', status: 'approved' }], sb.handlePayrollAttachGet({ admin_key: AK, store: 'SSLGF', attach_id: 'F9' }).error), 'not_found');
+chk('看證明：沒帶 attach_id → not_found', sb.handlePayrollAttachGet({ admin_key: AK, store: 'SSLGF' }).error, 'not_found');
+chk('看證明已註冊進 PAYROLL_HANDLERS', /payroll_attach_get:\s*handlePayrollAttachGet/.test(SRC), true);
+const ag = SRC.slice(SRC.indexOf('function handlePayrollAttachGet')); 
+chk('看證明全程唯讀', /appendRow|setValue|payReplaceAll|payAppend|deleteRow|clear\(/.test(ag.slice(0, ag.indexOf('\n}\n'))), false);
+
 console.log(`\n${fail ? '❌' : '✅'} ${pass} 通過／${fail} 失敗`);
 process.exit(fail ? 1 : 0);

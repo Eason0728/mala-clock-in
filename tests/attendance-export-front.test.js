@@ -19,7 +19,7 @@ chk('只有下班卡', sb.attSegText({ in: null, out: '18:00', cross: false }), 
 chk('未入帳的卡文字', sb.attInvalidText({ time: '08:10', type: 'in', label: '超出範圍，未入帳' }), '08:10 上班（超出範圍，未入帳）');
 
 const base = { date: '2026-09-03', weekday: '四', segments: [], invalid: [], approved: false, periods: '', approved_hours: null, status_text: '', leave: [] };
-chk('空白日：各欄皆空', sb.attDayCells(base), { date: '2026-09-03', weekday: '四', punch: '', invalid: '', periods: '', hours: '', leave: '', status: '' });
+chk('空白日：各欄皆空', sb.attDayCells(base), { date: '2026-09-03', weekday: '四', punch: '', invalid: '', periods: '', hours: '', leave: '', status: '', proof: '' });
 chk('整天請假：核定 0 顯示 0（不是空白）＋假別時數',
   (c => [c.hours, c.leave, c.status])(sb.attDayCells(Object.assign({}, base, { approved: true, approved_hours: 0, status_text: '全天請假', leave: [{ type: '病假', hours: 8 }] }))), [0, '病假 8H', '全天請假']);
 chk('有打卡沒核定 → 待主管核定', sb.attDayCells(Object.assign({}, base, { segments: [{ in: '08:00', out: '17:00', cross: false }] })).status, '待主管核定');
@@ -27,6 +27,7 @@ chk('兩段 → 換行分隔', sb.attDayCells(Object.assign({}, base, { segments
 chk('核定時段（畫面）換行分隔', sb.attPeriodsText({ periods: '08:30-12:00,13:00-17:30' }), '08:30-12:00\n13:00-17:30');
 chk('核定時段（Excel）用「、」', sb.attPeriodsText({ periods: '08:30-12:00,13:00-17:30' }, '、'), '08:30-12:00、13:00-17:30');
 chk('Excel 版整天格：兩段打卡用「、」不含換行', sb.attDayCells(Object.assign({}, base, { segments: [{ in: '08:30', out: '12:00', cross: false }, { in: '13:00', out: '17:30', cross: false }] }), '、').punch, '08:30–12:00、13:00–17:30');
+chk('有附證明 → proof', sb.attDayCells(Object.assign({}, base, { attach: [{ label: '病假', attach_id: 'F1' }] })).proof, '附證明');
 chk('請假無時數', sb.attLeaveText({ leave: [{ type: '事假', hours: null }] }), '事假');
 
 const used = {};

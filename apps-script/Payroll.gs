@@ -2430,7 +2430,7 @@ function payAttStatusLabel(status) {
   if (s === 'rejected_device') return '裝置不符，被系統擋下';
   return '未入帳（' + s + '）';
 }
-function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, onlyEmp) {
+function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, onlyEmp, requestRows) {
   const y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
   const dim = new Date(Date.UTC(y, mo, 0)).getUTCDate();
   const dates = [];
@@ -2459,6 +2459,14 @@ function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, 
     const hrs = l['時數'] === '' || l['時數'] == null ? null : Number(l['時數']);
     ((leaveBy[emp] = leaveBy[emp] || {})[dt] = (leaveBy[emp][dt] || [])).push({ type: String(l['假別'] || ''), hours: isNaN(hrs) ? null : hrs });
   });
+  // 已核准申請附的證明（2026-10-30）：emp -> date -> [{label, attach_id}]；作廢、退回、審核中不算
+  const attachBy = {};
+  (requestRows || []).forEach(function (q) {
+    const aid = String(q.attach_id || ''), dt = normCellDate(q.date);
+    if (!aid || String(q.status) !== 'approved' || dt.slice(0, 7) !== ym) return;
+    const emp = String(q.emp_id);
+    ((attachBy[emp] = attachBy[emp] || {})[dt] = (attachBy[emp][dt] || [])).push({ label: String(q.leave_type || q.kind || ''), attach_id: aid });
+  });
   const people = rosterRows.filter(function (r) {
     const emp = String(r.emp_id);
     if (onlyEmp && onlyEmp !== emp) return false;
@@ -2484,7 +2492,8 @@ function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, 
         approved_hours: rec && rec.approved_hours !== '' && rec.approved_hours != null ? Number(rec.approved_hours) : null,
         status_text: rec ? String(rec.status_text || '') : '',
         manager: rec ? String(rec.manager_name || '') : '',
-        leave: lv, leave_hours: Math.round(lvH * 100) / 100
+        leave: lv, leave_hours: Math.round(lvH * 100) / 100,
+        attach: (attachBy[emp] || {})[dt] || []
       };
       if (row.approved_hours != null) { apprH += row.approved_hours; if (row.approved_hours > 0) workDays++; }
       else if (seg.length) pendingDays++;
@@ -2507,9 +2516,22 @@ function handlePayrollAttendanceExport(body) {
     message: '門市 ' + st + ' 尚未連結打卡系統，沒有出勤紀錄可匯出。' };
   const srow = payStoreRow(st) || {};
   const built = payAttendanceBuild(ym, payClockRead(st, 'roster'), payClockRead(st, 'events'),
-    payClockRead(st, 'approved'), payClockRead(st, 'leave'), body.emp_id ? String(body.emp_id) : '');
+    payClockRead(st, 'approved'), payClockRead(st, 'leave'), body.emp_id ? String(body.emp_id) : '', payClockRead(st, 'requests'));
   return { ok: true, store: st, store_name: String(srow.name || st), ym: ym,
     generated_at: nowTaipeiIso(), employees: built.employees };
+}
+/** 管理者：出勤紀錄表上的申請證明（2026-10-30）。{admin_key, store, attach_id} → {ok, mime, data}。
+ *  驗：這個附件掛在那家店某筆已核准的申請上、而且檔案在附件資料夾裡（不能拿 ID 撈任意雲端檔）。唯讀。 */
+function handlePayrollAttachGet(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const st = payStore(body.store), id = String(body.attach_id || '');
+  if (!id || !payHasClock(st)) return { ok: false, error: 'not_found' };
+  if (!payClockRead(st, 'requests').some(function (q) { return String(q.attach_id || '') === id && String(q.status) === 'approved'; }))
+    return { ok: false, error: 'not_found' };
+  const file = reqAttachFile_(id);
+  if (!file) return { ok: false, error: 'not_found' };
+  const blob = file.getBlob();
+  return { ok: true, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
 }
 
 /* ═══════════════════ 門市表 ═══════════════════ */
@@ -3288,6 +3310,7 @@ const PAYROLL_HANDLERS = {
   my_payslip:           handleMyPayslip,
   payroll_punch:        handlePayrollPunch,
   payroll_attendance_export: handlePayrollAttendanceExport,
+  payroll_attach_get: handlePayrollAttachGet,
   payroll_store_get:    handlePayrollStoreGet,
   payroll_store_set:    handlePayrollStoreSet,
   payroll_bonus_get:    handlePayrollBonusGet,

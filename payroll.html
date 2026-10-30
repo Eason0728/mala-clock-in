@@ -165,6 +165,11 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 .att-tbl tr.wk td{background:#f8f5f1}
 .att-tbl .mute{color:#b3aaa1}
 .att-tbl .warn{color:var(--bad);font-weight:700}
+.att-proof{border:0;background:none;cursor:pointer;font-size:13px;padding:0 2px;line-height:1}
+.att-proof-view{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50;display:flex;align-items:center;justify-content:center;padding:16px}
+.att-proof-view .apv-card{background:#fff;color:var(--ink);border-radius:10px;padding:12px;max-width:min(720px,100%);max-height:100%;overflow:auto;text-align:right}
+.att-proof-view .apv-body{text-align:center;margin-top:8px}
+.att-proof-view img{max-width:100%;height:auto;display:block;margin:0 auto}
 .att-sum{display:flex;gap:26px;flex-wrap:wrap;font-size:12.5px;margin:9px 0 4px;font-weight:700}
 .att-note{font-size:10.5px;color:#7a7067;margin:2px 0 0}
 .att-sign{display:flex;gap:40px;margin-top:22px;font-size:13px}
@@ -2639,7 +2644,8 @@ function attDayCells(d,sep){
     periods:attPeriodsText(d,j),
     hours:d.approved_hours==null?'':d.approved_hours,
     leave:attLeaveText(d),
-    status:attStatusText(d)
+    status:attStatusText(d),
+    proof:(d.attach||[]).length?'附證明':''   // 已核准申請有附證明（2026-10-30）
   };
 }
 function attSheetName(e,used){
@@ -2686,7 +2692,7 @@ function attSheetHtml(e){
       <td>${nl(c.punch)||'<span class="mute"></span>'}</td>
       <td class="warn">${nl(c.invalid)}</td>
       <td>${nl(c.periods)}</td><td>${c.hours===''?'':esc(c.hours)}</td>
-      <td>${esc(c.leave)}</td><td class="l">${esc(c.status)}</td></tr>`;
+      <td>${esc(c.leave)}${(day.attach||[]).map(a=>`<button type="button" class="att-proof" data-aid="${esc(a.attach_id)}" title="看${esc(a.label)}的證明" aria-label="看${esc(a.label)}的證明">📎</button>`).join('')}</td><td class="l">${esc(c.status)}</td></tr>`;
   }).join('');
   const t=e.totals;
   return `<div class="att-sheet">
@@ -2703,11 +2709,35 @@ function attSheetHtml(e){
     <div class="att-sign"><div>員工簽名：</div><div>主管簽名：</div></div>
   </div>`;
 }
+/* 出勤紀錄表的 📎：看已核准申請附的證明（2026-10-30，後端 payroll_attach_get 唯讀，會核對附件掛在該店已核准的申請上） */
+async function attOpenProof(btn){
+  const d=ATTX.data; if(!d||btn.disabled) return;
+  btn.disabled=true; const old=btn.textContent; btn.textContent='…';
+  const r=await post('payroll_attach_get',{store:d.store,attach_id:btn.dataset.aid});
+  btn.disabled=false; btn.textContent=old;
+  const mime=String(r.mime||''), data=String(r.data||'');
+  if(!r.ok||!data){ if(!r.message) toast('證明讀不到，請再試一次',true); return; }
+  const box=document.createElement('div'); box.className='att-proof-view noprint';
+  box.innerHTML='<div class="apv-card"><button type="button" class="btn ghost apv-close">關閉</button><div class="apv-body"></div></div>';
+  const body=box.querySelector('.apv-body');
+  if(/^image\/(png|jpe?g|gif|webp|heic|heif)$/i.test(mime)){
+    const img=document.createElement('img'); img.alt='申請附件'; img.src='data:'+mime+';base64,'+data; body.appendChild(img);
+  }else{
+    const KNOWN={'application/pdf':['pdf','PDF']};
+    const k=KNOWN[mime.toLowerCase()], a=document.createElement('a');
+    a.className='btn'; a.download='attachment.'+(k?k[0]:'bin'); a.href='data:'+(k?mime:'application/octet-stream')+';base64,'+data;
+    a.textContent=k?'下載證明（'+k[1]+'）':'下載證明（格式無法預覽，下載後用對應的程式開）'; body.appendChild(a);
+  }
+  const close=()=>box.remove();
+  box.addEventListener('click',ev=>{ if(ev.target===box||ev.target.closest('.apv-close')) close(); });
+  document.body.appendChild(box);
+}
 function renderAttExp(){
   const list=attSelected(), d=ATTX.data;
   if(!d){ return; }
   $('axStat').textContent=d.store_name+'　'+d.ym+'　共 '+d.employees.length+' 人'+(list.length!==d.employees.length?'，目前顯示 1 人':'');   // textContent：不是 HTML，不需 esc
   $('axBody').innerHTML=list.length?list.map(attSheetHtml).join(''):'<div class="hint">這個月沒有同仁資料。</div>';
+  $('axBody').querySelectorAll('.att-proof').forEach(b=>b.onclick=()=>attOpenProof(b));
 }
 async function attEnsure(){
   await loadAttExp(false);
@@ -2739,7 +2769,7 @@ async function exportAttExcel(){
       ['日期','星期','實際打卡','未入帳的卡（不計）','主管核定時段','核定時數','請假','狀態']
     ];
     e.days.forEach(day=>{ const c=attDayCells(day,'、');
-      aoa.push([c.date,c.weekday,c.punch,c.invalid,c.periods,c.hours,c.leave,c.status]); });
+      aoa.push([c.date,c.weekday,c.punch,c.invalid,c.periods,c.hours,c.leave+(c.proof?'（'+c.proof+'）':''),c.status]); });
     aoa.push([]);
     aoa.push(['核定時數合計',e.totals.approved_hours,'請假時數合計',e.totals.leave_hours,'出勤天數',e.totals.work_days]);
     if(e.totals.pending_days) aoa.push(['尚有有打卡未核定的天數',e.totals.pending_days]);

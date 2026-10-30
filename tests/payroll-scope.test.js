@@ -9,7 +9,7 @@ const P = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Payroll.gs'
 /* 代轉白名單（平台 PROXY_READ_ACTIONS.payroll ＋ PROXY_WRITE_ACTIONS.payroll），共 23 支 */
 const READ_ACTIONS = ['payroll_month', 'payroll_get', 'payroll_group', 'payroll_trend', 'payroll_inputs', 'payroll_punch',
   'payroll_master_get', 'payroll_store_get', 'payroll_leave_type_get', 'payroll_leave_event_get', 'payroll_leave_options',
-  'payroll_attendance_export'];
+  'payroll_attendance_export', 'payroll_attach_get'];
 const WRITE_ACTIONS = ['payroll_calc', 'payroll_finalize', 'payroll_bootstrap', 'payroll_master_set', 'payroll_config_set',
   'payroll_holiday_sync', 'payroll_input_set', 'payroll_bonus_set', 'payroll_store_set', 'payroll_leave_type_set',
   'payroll_leave_event_set'];
@@ -68,7 +68,7 @@ const forbidden = r => !!r && r.error === 'scope_forbidden';
 /* 放行的斷言要證明 handler 真的跑完：ok === true，或該 handler 在這份假資料下「應有的業務錯誤」（不是 scope 錯誤） */
 const passed = (r, bizErr) => !!r && !r.threw && (bizErr ? (r.ok === false && r.error === bizErr) : r.ok === true);
 /* 放行時各 action 的預期（假資料下）：沒列＝ok:true */
-const IN_SCOPE_BIZ = { payroll_calc: 'no_holiday', payroll_finalize: 'reason_required' };
+const IN_SCOPE_BIZ = { payroll_calc: 'no_holiday', payroll_finalize: 'reason_required', payroll_attach_get: 'not_found' };   // 看證明：假資料沒有申請表，放行後由 handler 回 not_found
 
 const chk = (n, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); ok ? pass++ : fail++;
   console.log(`${ok ? '✓' : '✗'} ${n}${ok ? '' : ': ' + JSON.stringify(got) + ' ← 應為 ' + JSON.stringify(want)}`); };

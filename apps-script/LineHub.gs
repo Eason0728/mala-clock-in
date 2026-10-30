@@ -1350,8 +1350,17 @@ function handleLineHubAttachPut_(body) {
   var file = lineHubAttachFolder_().createFile(Utilities.newBlob(bytes, m[1], name));
   return { ok: true, attach_id: file.getId() };
 }
-/** {action:'line_hub_attach_get', store, mgr_key, attach_id} → {ok, mime, data}。
- *  驗：那家店的值班主管金鑰＋這個附件真的掛在那家店的某筆申請上（不能拿 ID 亂撈別店或別人的檔）。 */
+/** 附件檔案（只給附件資料夾裡的檔；attach_id 是同仁送申請時自己帶的，不檢查的話可以填任何本帳號讀得到的雲端檔 ID）。不在資料夾回 null。 */
+function reqAttachFile_(id) {
+  var folderId = PropertiesService.getScriptProperties().getProperty('REQ_ATTACH_FOLDER');
+  if (!folderId || !id) return null;
+  var file = DriveApp.getFileById(id), parents = file.getParents();
+  while (parents.hasNext()) if (parents.next().getId() === folderId) return file;
+  return null;
+}
+/** {action:'line_hub_attach_get', store, mgr_key, attach_id, date?} → {ok, mime, data}。
+ *  驗：那家店的值班主管金鑰＋這個附件真的掛在那家店的某筆申請上（不能拿 ID 亂撈別店或別人的檔）。
+ *  date：核定工時看某天已核准申請的證明（2026-10-30）——那天的 mgr_req_day 看得到這個附件也放行。 */
 function handleLineHubAttachGet_(body) {
   if (lineHubThrottled_('atg', '*all*', 120, 60)) return { ok: false, error: 'too_many' };
   var code = String(body.store || ''), st = lineHubStores_().filter(function (x) { return String(x.code) === code; })[0];
@@ -1362,15 +1371,25 @@ function handleLineHubAttachGet_(body) {
   if (!msh || !findManagerByKey(readSheetAsObjects(msh).rows, body.mgr_key)) return { ok: false, error: 'unauthorized' };
   var rsh = ss.getSheetByName('requests'), id = String(body.attach_id || '');
   if (!id || !rsh || !readSheetAsObjects(rsh).rows.some(function (r) { return String(r.attach_id) === id; })) return { ok: false, error: 'not_found' };
-  // 只給附件資料夾裡的檔（審查 #1）：attach_id 是同仁送申請時自己帶的，不檢查的話可以填任何本帳號讀得到的雲端檔 ID
-  var file = DriveApp.getFileById(id), folderId = PropertiesService.getScriptProperties().getProperty('REQ_ATTACH_FOLDER'), inFolder = false;
-  var parents = file.getParents();
-  while (parents.hasNext()) if (parents.next().getId() === folderId) inFolder = true;
-  if (!folderId || !inFolder) return { ok: false, error: 'not_found' };
-  // 只給這把鑰匙在待審清單看得到的申請附件（2026-10-29 審查：不算本店支援的人，本店主管看不到；營運系統代核帶 acting_name 照常）
-  var pend = lineHubCallStore_(st, { action: 'mgr_req_pending', mgr_key: body.mgr_key, acting_name: body.acting_name });
-  if (!pend || !pend.ok || !Array.isArray(pend.items)) return { ok: false, error: 'busy', message: '暫時讀不到申請清單，請再試一次' };
-  if (!pend.items.some(function (x) { return String(x.attach_id || '') === id; })) return { ok: false, error: 'not_found' };
+  // 只給附件資料夾裡的檔（審查 #1）
+  var file = reqAttachFile_(id);
+  if (!file) return { ok: false, error: 'not_found' };
+  // 只給這把鑰匙看得到的申請附件（2026-10-29 審查：不算本店支援的人，本店主管看不到；營運系統代核帶 acting_name 照常）：
+  // 帶 date＝那天已核准的申請（mgr_req_day），沒帶＝待審清單（mgr_req_pending）
+  var date = String(body.date || ''), seen;
+  if (date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: 'bad_date' };
+    var day = lineHubCallStore_(st, { action: 'mgr_req_day', mgr_key: body.mgr_key, acting_name: body.acting_name, date: date });
+    if (!day || !day.ok || !day.by_emp || typeof day.by_emp !== 'object') return { ok: false, error: 'busy', message: '暫時讀不到申請清單，請再試一次' };
+    seen = Object.keys(day.by_emp).some(function (k) {
+      return (day.by_emp[k] || []).some(function (x) { return String(x.attach_id || '') === id; });
+    });
+  } else {
+    var pend = lineHubCallStore_(st, { action: 'mgr_req_pending', mgr_key: body.mgr_key, acting_name: body.acting_name });
+    if (!pend || !pend.ok || !Array.isArray(pend.items)) return { ok: false, error: 'busy', message: '暫時讀不到申請清單，請再試一次' };
+    seen = pend.items.some(function (x) { return String(x.attach_id || '') === id; });
+  }
+  if (!seen) return { ok: false, error: 'not_found' };
   var blob = file.getBlob();
   return { ok: true, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
 }
