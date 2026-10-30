@@ -15,16 +15,17 @@ Sched.gs 的 SCHED_GIST_URL 已改成線上用的那顆（10-13 換的 47c876cc�
 
 安全設計：
   * **預設 dry-run**，要 --apply 才真的寫檔。
-  * 寫之前先確認「該店現有檔案 ＝ 基準版(預設 origin/main) ＋ 該店 CONFIG」。
-    對不起來＝那份檔案有沒進 git 的本機改動（或已是更新的版本），停下來印 diff，
+  * 寫之前先確認「該店現有檔案 ＝ git 歷史裡某一版 ＋ 該店 CONFIG」（2026-10-30 起自動找：
+    沿著 HEAD 往回最多 300 個改過該檔的 commit，找到一模一樣的就印「線上是 xxx 那版」）。
+    找不到＝那份檔案有沒進 git 的本機改動，停下來印 diff（對最新一版），
     不覆蓋——沒有 --force 一律不動。這道就是 2026-08-23「補丁被誤判成已套用」的解藥。
+    要指定單一基準版仍可用 --base <commit>（舊行為）。
   * 寫完檢查成品不含 PASTE_ 佔位符。
   * **不碰 clasp**：不 pull 也不 push。pull 請先自己跑，push 請看過 diff 再自己按
     （repo 守則：任何 clasp push 都要先問 Eason）。
 
 用法：
-    cd ~/mala-clock-in && git pull origin main    # 新版程式碼從工作目錄讀，要先 pull
-    # --base 要指「目前線上那一版」的 commit（預設 origin/main 只適合部署前還沒推上 main 的情況）
+    cd ~/mala-clock-in && git checkout main && git pull origin main    # 新版程式碼從工作目錄讀，要先 pull
     cd ~/mala-gas/mala-clock-in && clasp pull     # 四個專案都先 pull
     python3 ~/mala-clock-in/tools/deploy-to-clasp.py            # 看會改什麼
     python3 ~/mala-clock-in/tools/deploy-to-clasp.py --apply    # 真的套進去
@@ -35,7 +36,7 @@ Sched.gs 的 SCHED_GIST_URL 已改成線上用的那顆（10-13 換的 47c876cc�
 手動微調過、或基準版太舊。它會把差異印出來——看過確定那些差異可以丟掉，再加 --force；
 如果那些差異該保留，先把它們補進 repo 再重跑。不要無腦 --force。
 """
-import argparse, difflib, pathlib, re, subprocess, sys
+import argparse, difflib, functools, pathlib, re, subprocess, sys
 
 STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztgf-clock-in', 'mztlzl-clock-in', 'mztmc-clock-in']   # 2026-10-29 補六張犁（verify-store-backends.py 早就有）
 # 沒有店別專屬值、整份覆蓋的檔案：repo 檔名 → clasp 專案裡的檔名
@@ -58,6 +59,7 @@ def splice(new_src, cfg, where):
     return CONFIG_RE.sub(lambda _: cfg, new_src, count=1)
 
 
+@functools.lru_cache(maxsize=None)
 def git_show(repo, ref, path):
     r = subprocess.run(['git', '-C', str(repo), 'show', f'{ref}:{path}'],
                        capture_output=True, text=True)
@@ -80,8 +82,22 @@ def show_diff(old, new, name, full=False):
     return len(body)
 
 
+def history(repo, ref, path, xf=lambda t: t, n=300):
+    """git 歷史裡改過 path 的各版（新→舊），[(標籤, 取內容的函式)]；內容用到才讀，找到就停。"""
+    r = subprocess.run(['git', '-C', str(repo), 'log', f'-n{n}', '--format=%h %cs', ref, '--', path],
+                       capture_output=True, text=True)
+    out = []
+    for line in r.stdout.split('\n'):
+        if not line.strip():
+            continue
+        h = line.split()[0]
+        out.append((line.strip(), (lambda h=h: (lambda t: xf(t) if t is not None else None)(git_show(repo, h, path)))))
+    return out
+
+
 def process(name, cur_path, new_src, base_src, apply_, force, full):
-    """回 (狀態, 變動行數)。狀態：'updated' / 'uptodate' / 'drift' / 'missing'"""
+    """回 (狀態, 變動行數)。狀態：'updated' / 'uptodate' / 'drift' / 'missing'
+    base_src：字串（單一基準版）、[(標籤, 取內容的函式)]（自動找線上是哪一版）或 None（不檢查）。"""
     print(f'\n▶ {name}')
     if not cur_path.exists():
         print(f'    ✗ 找不到 {cur_path}')
@@ -94,8 +110,17 @@ def process(name, cur_path, new_src, base_src, apply_, force, full):
         print('    ✓ 已經是最新版，不用動')
         return 'uptodate', 0
 
+    if isinstance(base_src, list):
+        hit = next((lab for lab, get in base_src if get() == cur), None)
+        if hit:
+            print(f'    線上是 {hit} 那版')
+            base_src = None
+        else:
+            base_src = base_src[0][1]() if base_src else None
+            if base_src is None:
+                print('    ⚠ git 歷史裡沒有這個檔，跳過「本機改動」檢查')
     if base_src is not None and cur != base_src:
-        print('    ⚠ 這份檔案跟基準版對不起來——有沒進 git 的本機改動，或已是更新的版本。')
+        print('    ⚠ 這份檔案跟 git 裡的每一版都對不起來——有沒進 git 的本機改動（下面是跟最新一版的差異）。')
         print('      不覆蓋（要強制請加 --force，但先弄清楚差在哪）：')
         show_diff(base_src, cur, name + ' vs 基準版', full)
         if not force:
@@ -117,10 +142,12 @@ def process(name, cur_path, new_src, base_src, apply_, force, full):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--apply', action='store_true', help='真的寫檔（預設只 dry-run）')
-    ap.add_argument('--force', action='store_true', help='目標檔與基準版對不起來時照樣覆蓋')
+    ap.add_argument('--force', action='store_true', help='目標檔與基準版對不起來時照樣覆蓋（全部）')
+    ap.add_argument('--force-only', action='append', default=[], metavar='店/檔名',
+                    help='只對這一份強制覆蓋，例：--force-only mala-clock-in/Sched.js（可重複；其他檔照樣擋）')
     ap.add_argument('--full', action='store_true', help='印完整 diff')
     ap.add_argument('--gas-root', default=str(pathlib.Path.home() / 'mala-gas'))
-    ap.add_argument('--base', default='origin/main', help='比對用的基準 ref（預設 origin/main）')
+    ap.add_argument('--base', default=None, help='指定單一基準版 commit（預設：自動在 git 歷史裡找線上是哪一版）')
     a = ap.parse_args()
 
     repo = pathlib.Path(__file__).resolve().parent.parent
@@ -130,12 +157,14 @@ def main():
 
     code_new = (repo / 'apps-script' / 'Code.gs').read_text(encoding='utf-8')
     pay_new = (repo / 'apps-script' / 'Payroll.gs').read_text(encoding='utf-8')
-    code_base = git_show(repo, a.base, 'apps-script/Code.gs')
-    pay_base = git_show(repo, a.base, 'apps-script/Payroll.gs')
-    if code_base is None:
-        print(f'⚠ 取不到基準版 {a.base}:apps-script/Code.gs，跳過「本機改動」檢查')
+    def bases(path, xf=lambda t: t):
+        if a.base:
+            t = git_show(repo, a.base, path)
+            return xf(t) if t is not None else None
+        return history(repo, 'HEAD', path, xf)
+    pay_base = bases('apps-script/Payroll.gs')
 
-    print(f'repo：{repo}\nclasp 專案：{gas}\n基準版：{a.base}'
+    print(f'repo：{repo}\nclasp 專案：{gas}\n基準版：{a.base or "自動（git 歷史裡找線上是哪一版）"}'
           + ('\n模式：套用（會寫檔）' if a.apply else '\n模式：dry-run（不寫檔）'))
 
     res = {}
@@ -146,14 +175,14 @@ def main():
             res[st] = 'missing'
             continue
         cfg = config_block(p.read_text(encoding='utf-8'), f'{st}/{STORE_FILE}')
-        base = splice(code_base, cfg, a.base) if code_base else None
+        base = bases('apps-script/Code.gs', lambda t, cfg=cfg: splice(t, cfg, 'git 歷史 Code.gs') if CONFIG_RE.search(t) else None)
         res[st], _ = process(f'{st}/{STORE_FILE}', p, splice(code_new, cfg, 'repo Code.gs'),
-                             base, a.apply, a.force, a.full)
+                             base, a.apply, a.force or f'{st}/{STORE_FILE}' in a.force_only, a.full)
 
     # 整份覆蓋的檔案：哪家專案有這個檔就更新哪家，沒有就跳過（不新增）
     for src_name, dst_name in WHOLE_FILES:
         new = (repo / 'apps-script' / src_name).read_text(encoding='utf-8')
-        base = git_show(repo, a.base, 'apps-script/' + src_name)
+        base = bases('apps-script/' + src_name)
         targets = [st for st in STORES if (gas / st / dst_name).exists()]
         if not targets:
             print(f'\n▶ {dst_name}\n    ⚠ 每家專案都沒有 {dst_name}，沒有套')
@@ -161,7 +190,7 @@ def main():
             continue
         for st in targets:
             res[f'{st}/{dst_name}'], _ = process(f'{st}/{dst_name}', gas / st / dst_name, new,
-                                                 base, a.apply, a.force, a.full)
+                                                 base, a.apply, a.force or f'{st}/{dst_name}' in a.force_only, a.full)
 
     # Payroll.gs：只在「掛著 PAYROLL_HANDLERS」的那個專案，不用猜是哪一家
     pay_files = [f for st in STORES if (gas / st).is_dir()
@@ -178,7 +207,7 @@ def main():
     else:
         f = pay_files[0]
         res['Payroll'], _ = process(f'Payroll（{f.relative_to(gas)}）', f, pay_new,
-                                    pay_base, a.apply, a.force, a.full)
+                                    pay_base, a.apply, a.force or str(f.relative_to(gas)) in a.force_only, a.full)
 
     print('\n' + '─' * 60)
     bad = [k for k, v in res.items() if v in ('drift', 'missing')]
