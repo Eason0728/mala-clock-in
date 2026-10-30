@@ -217,6 +217,15 @@ def process(name, cur_path, new_src, base_src, apply_, force, full):
     return 'updated', n
 
 
+def hq_mirror_patch(src):
+    """套 tools/patch_hq_mirror.py 的補丁（掛 MIRROR_HANDLERS＋兩處跳過鏡像列），冪等。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('patch_hq_mirror', pathlib.Path(__file__).resolve().parent / 'patch_hq_mirror.py')
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.patch(src, True)[0]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--apply', action='store_true', help='真的寫檔（預設只 dry-run）')
@@ -253,8 +262,23 @@ def main():
             res[st] = 'missing'
             continue
         cfg = config_block(p.read_text(encoding='utf-8'), f'{st}/{STORE_FILE}')
-        base = bases('apps-script/Code.gs', lambda t, cfg=cfg: splice(t, cfg, 'git 歷史 Code.gs') if CONFIG_RE.search(t) else None)
-        res[st], _ = process(f'{st}/{STORE_FILE}', p, splice(code_new, cfg, 'repo Code.gs'),
+        # 總部（專案裡有 Mirror.js）的 程式碼.js 另外掛了鏡像補丁（tools/patch_hq_mirror.py）：
+        # 新版與歷史版都先套同一個補丁再比、再寫，不然部署會把鏡像掛載洗掉（2026-10-30）
+        mirror = (gas / st / 'Mirror.js').exists()
+        def xf(t, cfg=cfg, mirror=mirror):
+            if not CONFIG_RE.search(t):
+                return None
+            t = splice(t, cfg, 'Code.gs')
+            if mirror:
+                try:
+                    t = hq_mirror_patch(t)
+                except AssertionError:
+                    return None   # 太舊的版本套不上補丁，就不拿來比
+            return t
+        if mirror:
+            print(f'\n（{st} 有 Mirror.js → 程式碼.js 會套 patch_hq_mirror 補丁）')
+        base = bases('apps-script/Code.gs', xf)
+        res[st], _ = process(f'{st}/{STORE_FILE}', p, xf(code_new),
                              base, a.apply, a.force or f'{st}/{STORE_FILE}' in a.force_only, a.full)
 
     # 整份覆蓋的檔案：哪家專案有這個檔就更新哪家，沒有就跳過（不新增）

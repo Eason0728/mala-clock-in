@@ -230,6 +230,27 @@ function doPost(e) {
   const handlers = {
     clock: handleClock,
     whoami: handleWhoami,
+    // 開新店用的兩個管理動作（2026-10-30 補進 repo）：各分店線上早就有（開店時手動加的），repo 一直沒有，
+    // 部署時會被洗掉。setup_sheets＝建分頁；add_manager＝加值班主管（同名在職的就回原本那把鑰匙）。
+    setup_sheets: function (body) {
+      if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+      setup();
+      return { ok: true, message: '分頁已建立' };
+    },
+    add_manager: function (body) {
+      if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+      const nm = String(body.name || '').trim();
+      if (!nm) return { ok: false, error: 'name_required' };
+      const ss = getSS();
+      const sh = ss.getSheetByName('managers');
+      if (!sh) return { ok: false, error: 'no_managers_sheet', message: '請先跑 setup_sheets' };
+      const rows = readSheetAsObjects(sh).rows;
+      const exist = rows.filter(function (r) { return String(r.name).trim() === nm && String(r.active).toLowerCase() === 'true'; })[0];
+      if (exist) return { ok: true, name: nm, key: String(exist.key), existed: true };
+      const key = genKey();
+      sh.appendRow([nm, key, true]);
+      return { ok: true, name: nm, key: key, existed: false };
+    },
     sync_roster: handleSyncRoster,
     set_shifts: handleSetShifts,
     mgr_add_employee: handleMgrAddEmployee,
