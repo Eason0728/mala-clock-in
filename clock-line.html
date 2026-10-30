@@ -422,6 +422,32 @@
       hint: '人在店裡的話，請開啟「精確位置」與 Wi‑Fi 後再試一次',
       nearest: n ? { name: n.name, lat: n.lat, lng: n.lng, radius_m: n.radius_m } : null } };
   }
+  /* LINE 登入逾時（後端回 invalid_id_token，2026-10-30 審查）：LINE 裡 liff.login() 不能用（不是沒反應就是丟錯），
+     原本畫面會卡在「讀取中」或兩個鍵一直灰、只能找主管。現在統一走這裡：
+     - LINE 裡：自動重新整理一次（重開時 LINE 會給新的登入）；10 分鐘內重整過還是逾時就不再重整（免得一直跳），回 'stuck'
+     - 外部瀏覽器：liff.login 登入完回到同一頁
+     sessionStorage 不能用（記不住重整過）就不自動重整，直接回 'stuck'。回傳 'reload'／'login'／'stuck'。 */
+  var RELOGIN_KEY = 'clr:relogin', RELOGIN_GAP_MS = 10 * 60000;
+  function relogin() {
+    try {
+      if (!(window.liff && liff.isInClient && liff.isInClient())) { liff.login({ redirectUri: location.href }); return 'login'; }
+      var last = Number(sessionStorage.getItem(RELOGIN_KEY)) || 0;
+      if (Date.now() - last < RELOGIN_GAP_MS) return 'stuck';
+      var now = String(Date.now());
+      sessionStorage.setItem(RELOGIN_KEY, now);
+      if (sessionStorage.getItem(RELOGIN_KEY) !== now) return 'stuck';   // 記不住就不重整，免得重整後又逾時、一直跳
+      location.reload();
+      return 'reload';
+    } catch (e) { return 'stuck'; }
+  }
+  var RELOGIN_STUCK = ['LINE 登入逾時', '請關掉這頁，再從選單按「打卡」重新打開；一直這樣請告知主管。'];
+  /** 開頁／重讀狀態時登入逾時：重整或登入；重整過還是不行就停在說明，兩個鍵維持停用 */
+  function loginExpired() {
+    status = null; refreshButtons();
+    var r = relogin();
+    if (r === 'stuck') say(RELOGIN_STUCK[0], 'warn', RELOGIN_STUCK[1]);
+    else say('LINE 登入逾時，正在重新連線…', 'warn', '');
+  }
   function noReply() { say('系統沒有正常回應', 'warn', '請稍後按「重新定位」再試一次。'); $('btnRetry').hidden = false; offerHelp('網路不穩'); }
   function connFail() { say('連線失敗', 'warn', '請檢查網路後按「重新定位」再試一次。'); $('btnRetry').hidden = false; offerHelp('網路不穩'); }
   /** 店家說沒綁定、光復卻說綁著（兩邊資料對不上）：不亮鍵，請同仁找主管，避免一直按一直失敗（階段 2 審查 #2）。 */
@@ -445,7 +471,7 @@
           r.store = { code: st.code, name: st.name, lat: st.lat, lng: st.lng, radius_m: st.radius_m };
           render(r); return;
         }
-        if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+        if (r && r.error === 'invalid_id_token') { loginExpired(); return; }
         if (r && r.error === 'not_bound' && qrToken) { say('你還沒在這家店綁定打卡', 'warn', '第一次要在店裡用定位綁定：關掉這頁，從選單按「打卡」。'); return; }
         if (r && r.error === 'not_bound') return loadViaHub();   // 綁定（輸入全名、跨店同名確認）仍由光復處理
         if (r && r.error === 'too_many') { tooMany(); return; }
@@ -458,7 +484,7 @@
     return readRetry(HUB_API, Object.assign({ action: 'line_hub_status', id_token: liff.getIDToken() }, fixPayload()))
       .then(function (r) {
         if (!r || !r.ok) {
-          if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+          if (r && r.error === 'invalid_id_token') { loginExpired(); return; }
           if (r && r.error === 'too_many') { tooMany(); return; }
           noReply(); return;
         }
@@ -592,7 +618,13 @@
         settled = true;
         tmGot();
         if (t && r && r.steps) t.steps = r.steps;   // 後端各步驟毫秒數，跟著秒數一起送
-        if (r && r.error === 'invalid_id_token') { report('error', 'invalid_id_token'); say('LINE 登入逾時，正在重新登入…', 'warn', '登入後請再按一次。'); unshow(); liff.login(); return; }
+        if (r && r.error === 'invalid_id_token') {   // 後端驗不過身分就不會寫入：這次打卡沒有送出
+          report('error', 'invalid_id_token'); status = null;
+          var how = relogin();
+          if (how === 'stuck') say('LINE 登入逾時，這次打卡沒有送出', 'warn', RELOGIN_STUCK[1]);
+          else say('LINE 登入逾時，這次打卡沒有送出', 'warn', '正在重新連線，畫面好了請再按一次。');
+          unshow(); return;
+        }
         if (r && r.error === 'not_bound') { mismatch(); unshow(); report('error', 'not_bound'); return; }   // 開頁時已確認綁著，打卡時卻說沒綁＝資料對不上
         if (r && r.error === 'too_many') { status = null; tooMany(); unshow(); report('error', 'too_many'); return; }   // 不亮鍵：等一分鐘後按「重新定位」（審查 #4）
         if (!r || (r.ok === false && !r.reason)) {
@@ -705,7 +737,10 @@
       .then(function (r) {
         $('btnBind').disabled = false;
         if (r && r.ok) { loadStatus(); return; }
-        if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+        if (r && r.error === 'invalid_id_token') {
+          $('bindError').textContent = relogin() === 'stuck' ? 'LINE 登入逾時，還沒綁定。' + RELOGIN_STUCK[1] : 'LINE 登入逾時，正在重新連線，好了請再輸入一次。';
+          return;
+        }
         $('bindError').textContent = (r && r.message) || '綁定沒有成功，請稍後再試；一直不行請告知主管。';
       }, function () { $('btnBind').disabled = false; $('bindError').textContent = '連線失敗，請檢查網路後再試。'; });
   });
@@ -737,7 +772,8 @@
     say('讀取中…', '', '');
     loadStatus();
   }
-  window.ClockLineEnv = { post: post, readRetry: readRetry, storeApi: storeApi, STORES: STORES, HUB_API: HUB_API };
+  window.ClockLineEnv = { post: post, readRetry: readRetry, storeApi: storeApi, STORES: STORES, HUB_API: HUB_API,
+                          relogin: relogin, RELOGIN_STUCK: RELOGIN_STUCK };
 
   tick(); setInterval(tick, 1000);
   initLiff().then(function (ok) {

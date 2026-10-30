@@ -51,7 +51,11 @@
     if (ym) body.ym = ym;
     E.readRetry(E.HUB_API, body).then(function (r) {
       st.busy = false;
-      if (r && r.error === 'invalid_id_token') { $root.innerHTML = ''; $root.appendChild(box('LINE 登入已過期，正在重新登入…', 'info')); liff.login(); return; }
+      if (r && r.error === 'invalid_id_token') {   // 登入逾時：重整一次；重整過還是不行就停在說明（2026-10-30）
+        $root.innerHTML = '';
+        $root.appendChild(E.relogin() === 'stuck' ? box('LINE 登入逾時。請關掉這頁，再從選單按「出勤班表」重新打開。', 'info') : box('LINE 登入逾時，正在重新連線…', 'info'));
+        return;
+      }
       if (!r || !r.ok) {
         fail(r && r.error === 'too_many' ? '查太多次了，請過一分鐘再試。'
           : r && r.error === 'bad_month' ? '只能看本月和上個月的班表。' : '班表暫時讀不到，請稍後再試。');

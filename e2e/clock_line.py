@@ -570,6 +570,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             phase_leave_proof(ctx, (HQ['lat'], HQ['lng']))
             phase_miss_store(ctx)
             phase_relay(ctx, (HQ['lat'], HQ['lng']))
+            phase_relogin(ctx, (HQ['lat'], HQ['lng']))
             rep = CM.report()
             ok('班表：可點元素零漏測（共 %d 個）' % rep['total'], not rep['missed'] and not rep['extra'], rep)
             br.close()
@@ -977,6 +978,57 @@ def relay_open(ctx, hq, mini, g, mini_ms=0, g_ms=0, mode='true', gstatus=None, q
 def relay_last(p, timeout=12000):
     p.wait_for_function('(window.__timing || []).length > 0', timeout=timeout)
     return p.evaluate('window.__timing')[-1]
+
+
+def phase_relogin(ctx, hq):
+    """LINE 登入逾時（2026-10-30 審查）：後端回 invalid_id_token。LINE 裡 liff.login() 不能用，原本畫面卡住。
+    現在：LINE 裡自動重整一次；10 分鐘內重整過還是逾時 → 停在「請關掉這頁重開」，不再重整、鍵維持停用。
+    申請單送出時逾時不自動重整（填的內容會不見），給「重新連線」鍵。"""
+    INV = "{ok:false,error:'invalid_id_token'}"
+    LOADS = "sessionStorage.setItem('__loads', String((+sessionStorage.getItem('__loads') || 0) + 1));"
+    loads = lambda p: int(p.evaluate("+sessionStorage.getItem('__loads') || 0"))
+    # 1. 開頁就逾時（每次重讀都逾時）：重整一次，第二次停在說明
+    p = open_page(ctx, url(hq, in_client=True), pre=LOADS + "window.__fake.liff_status = " + INV + ";")
+    p.wait_for_function("document.getElementById('hint').textContent.indexOf('請關掉這頁') >= 0", timeout=15000)
+    p.wait_for_timeout(1500)
+    ok('登入逾時：開頁逾時 → 自動重整 1 次，第 2 次停在說明（不會一直跳）', loads(p) == 2, loads(p))
+    ok('登入逾時：停住時寫「LINE 登入逾時／請關掉這頁…重新打開」、兩個鍵停用',
+       'LINE 登入逾時' in msg(p) and p.evaluate("document.getElementById('btnIn').disabled && document.getElementById('btnOut').disabled"), msg(p))
+    no_undefined(p, '登入逾時（開頁）')
+    p.close()
+    # 2. 打卡時逾時：說「這次打卡沒有送出」並重整；重整後畫面正常可再按；10 分鐘內再逾時就停住
+    p = open_page(ctx, url(hq, in_client=True), pre=LOADS + "window.__fake.liff_punch = " + INV + ";")
+    who_ready = 'document.getElementById("who").textContent === "測試一"'
+    p.wait_for_function(who_ready, timeout=10000)
+    force_out(p)
+    p.wait_for_function("+sessionStorage.getItem('__loads') === 2", timeout=10000)
+    p.wait_for_function(who_ready + " && window.__calls.some(c => c.action === 'liff_status')", timeout=15000)
+    ok('登入逾時：打卡時逾時 → 重整後畫面恢復（重新讀到狀態）', 'LINE 登入逾時' not in msg(p), msg(p))
+    force_out(p)
+    p.wait_for_function("document.getElementById('msg').textContent.indexOf('這次打卡沒有送出') >= 0", timeout=10000)
+    p.wait_for_timeout(1500)
+    ok('登入逾時：10 分鐘內再逾時 → 寫「這次打卡沒有送出」＋請關掉重開、不再重整、鍵停用',
+       loads(p) == 2 and '請關掉這頁' in msg(p) and p.evaluate("document.getElementById('btnOut').disabled"), (loads(p), msg(p)))
+    p.close()
+    # 3. 班表：逾時重整一次，再逾時停在說明
+    p = open_page(ctx, f'{BASE}/clock-line.html?mock_uid=U1&api=/api&in_client=1&view=sched', pre=LOADS + "window.__fake.line_hub_sched = " + INV + ";")
+    p.wait_for_function("document.getElementById('schedView').textContent.indexOf('請關掉這頁') >= 0", timeout=15000)
+    ok('登入逾時：班表逾時 → 重整 1 次後停在「請關掉這頁…出勤班表」', loads(p) == 2, loads(p))
+    p.close()
+    # 4. 申請單送出時逾時：不自動重整，顯示「這張還沒送出」＋重新連線鍵；按了才重整
+    p = open_page(ctx, url(hq, in_client=True, extra='&view=req&tab=ot'), pre=LOADS + "window.__fake.req_submit = " + INV + ";")
+    p.wait_for_selector('#reqView .rq-time', timeout=10000)
+    pick_time(p, 0, '18:00'); pick_time(p, 1, '19:00')
+    p.fill('#reqView input[type=text]', 'e2e 逾時')
+    p.click('#reqView button.primary')
+    p.wait_for_function("document.getElementById('reqView').textContent.indexOf('這張還沒送出') >= 0", timeout=10000)
+    p.wait_for_timeout(1000)
+    ok('登入逾時：申請送出時逾時 → 不自動重整（填的內容還在）、有「重新連線」鍵',
+       loads(p) == 1 and p.locator('#reqView button:has-text("重新連線")').count() == 1, loads(p))
+    p.click('#reqView button:has-text("重新連線")')
+    p.wait_for_function("+sessionStorage.getItem('__loads') === 2", timeout=10000)
+    ok('登入逾時：按「重新連線」才重整', True)
+    p.close()
 
 
 def phase_relay(ctx, hq):

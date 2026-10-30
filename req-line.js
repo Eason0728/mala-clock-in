@@ -75,7 +75,11 @@
     $root.innerHTML = '';
     $root.appendChild(h('div', { class: 'rq-loading', text: '讀取中…' }));
     E.readRetry(E.HUB_API, { action: 'line_hub_req_init', id_token: liff.getIDToken() }).then(function (r) {
-      if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+      if (r && r.error === 'invalid_id_token') {   // 開頁就逾時：還沒填東西，直接重整（2026-10-30）
+        $root.innerHTML = '';
+        $root.appendChild(msgBox(E.relogin() === 'stuck' ? 'LINE 登入逾時。請關掉這頁，再從選單按「申請」重新打開。' : 'LINE 登入逾時，正在重新連線…', 'err'));
+        return;
+      }
       if (!r || !r.ok) {
         $root.innerHTML = '';
         $root.appendChild(msgBox(r && r.error === 'not_bound' ? '你還沒綁定打卡。請先到店裡按選單「打卡」完成綁定，再來申請。' : '讀不到資料，請稍後再試。', 'err'));
@@ -453,7 +457,14 @@
         return E.post(E.storeApi(storeDef()), body);
       }).then(function (r) {
         st.busy = false; btn.disabled = false; out.innerHTML = '';
-        if (r && r.error === 'invalid_id_token') { liff.login(); return; }
+        if (r && r.error === 'invalid_id_token') {   // 送出時逾時：不自動重整（填的內容會不見），讓同仁自己按（2026-10-30）
+          out.appendChild(msgBox('LINE 登入逾時，這張還沒送出。\n按「重新連線」後要再填一次。', 'err'));
+          var rb = h('button', { type: 'button', class: 'rq-link', text: '重新連線', on: { click: function () {
+            if (E.relogin() === 'stuck') { out.innerHTML = ''; out.appendChild(msgBox('請關掉這頁，再從選單按「申請」重新打開；一直這樣請告知主管。', 'err')); }
+          } } });
+          out.appendChild(rb);
+          return;
+        }
         if (!r || !r.ok) { out.appendChild(msgBox((r && r.message) || '送出沒有成功，請再試一次', 'err')); return; }
         reset();
         tellChat('申請已送出：' + r.summary);
