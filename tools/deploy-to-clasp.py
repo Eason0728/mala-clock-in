@@ -43,6 +43,7 @@ STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztg
 WHOLE_FILES = [('Requests.gs', 'Requests.js'), ('Liff.gs', 'Liff.js'), ('LineHub.gs', 'LineHub.js'),
                ('SvcStaff.gs', 'SvcStaff.js'), ('Sched.gs', 'Sched.js'), ('SchedPub.gs', 'SchedPub.js'), ('Mirror.gs', 'Mirror.js')]
 STORE_FILE = '程式碼.js'
+CODE_SCAN = 120   # 只比程式時，往回看幾個版本
 CONFIG_RE = re.compile(r'^const CONFIG = \{.*?^\};', re.S | re.M)
 
 
@@ -59,6 +60,60 @@ def splice(new_src, cfg, where):
     return CONFIG_RE.sub(lambda _: cfg, new_src, count=1)
 
 
+_CODE_CACHE = {}
+def code_lines(src):
+    """只留程式：拿掉 // 與 /* */ 註解、CONFIG 區塊、空行，連續空白壓成一個（2026-10-30）。
+    各店 程式碼.js 以前手貼過補丁，註解跟 git 版對不上（檔名寫 .js／.gs、說明重貼兩次），
+    但註解不影響運作——只差註解就可以放心覆蓋；有程式差異才要停下來。
+    字串（'…' \"…\" `…`）與正規表示式裡的 // 不當註解。"""
+    key = hash(src)
+    if key in _CODE_CACHE:
+        return _CODE_CACHE[key]
+    src = CONFIG_RE.sub('', src)
+    out, i, n, prev = [], 0, len(src), ''
+    while i < n:
+        c = src[i]
+        if c in '"\'`':
+            j = i + 1
+            while j < n and src[j] != c:
+                if src[j] == '\\':
+                    j += 2
+                    continue
+                if c != '`' and src[j] == '\n':
+                    break
+                j += 1
+            out.append(src[i:j + 1]); i = j + 1; prev = c
+            continue
+        if c == '/' and src[i + 1:i + 2] == '/':
+            j = src.find('\n', i); i = n if j < 0 else j
+            continue
+        if c == '/' and src[i + 1:i + 2] == '*':
+            j = src.find('*/', i + 2); i = n if j < 0 else j + 2; out.append(' ')
+            continue
+        if c == '/' and (prev == '' or prev in '(,=:[!&|?{};+-*%<>~^'):   # 正規表示式
+            j, cls = i + 1, False
+            while j < n and src[j] != '\n':
+                if src[j] == '\\':
+                    j += 2
+                    continue
+                if src[j] == '[':
+                    cls = True
+                elif src[j] == ']':
+                    cls = False
+                elif src[j] == '/' and not cls:
+                    break
+                j += 1
+            out.append(src[i:j + 1]); i = j + 1; prev = '/'
+            continue
+        out.append(c)
+        if not c.isspace():
+            prev = c
+        i += 1
+    lines = [re.sub(r'\s+', ' ', l).strip() for l in ''.join(out).split('\n')]
+    _CODE_CACHE[key] = [l for l in lines if l]
+    return _CODE_CACHE[key]
+
+
 @functools.lru_cache(maxsize=None)
 def git_show(repo, ref, path):
     r = subprocess.run(['git', '-C', str(repo), 'show', f'{ref}:{path}'],
@@ -66,9 +121,12 @@ def git_show(repo, ref, path):
     return r.stdout if r.returncode == 0 else None
 
 
-def show_diff(old, new, name, full=False):
-    d = list(difflib.unified_diff(old.splitlines(True), new.splitlines(True),
-                                  fromfile=name + '（現在）', tofile=name + '（套完）', n=2))
+def show_diff(old, new, name, full=False, labels=('（現在）', '（套完）')):
+    if isinstance(old, list):   # 已經是「只剩程式」的行
+        old, new = [l + '\n' for l in old], [l + '\n' for l in new]
+    else:
+        old, new = old.splitlines(True), new.splitlines(True)
+    d = list(difflib.unified_diff(old, new, fromfile=name + labels[0], tofile=name + labels[1], n=2))
     if not d:
         print('    （無變化）')
         return 0
@@ -110,6 +168,7 @@ def process(name, cur_path, new_src, base_src, apply_, force, full):
         print('    ✓ 已經是最新版，不用動')
         return 'uptodate', 0
 
+    cand_list = base_src if isinstance(base_src, list) else None
     if isinstance(base_src, list):
         hit = next((lab for lab, get in base_src if get() == cur), None)
         if hit:
@@ -120,12 +179,31 @@ def process(name, cur_path, new_src, base_src, apply_, force, full):
             if base_src is None:
                 print('    ⚠ git 歷史裡沒有這個檔，跳過「本機改動」檢查')
     if base_src is not None and cur != base_src:
-        print('    ⚠ 這份檔案跟 git 裡的每一版都對不起來——有沒進 git 的本機改動（下面是跟最新一版的差異）。')
-        print('      不覆蓋（要強制請加 --force，但先弄清楚差在哪）：')
-        show_diff(base_src, cur, name + ' vs 基準版', full)
-        if not force:
-            return 'drift', 0
-        print('    ⚠ --force：照樣覆蓋')
+        # 逐字對不上 → 只比程式（拿掉註解）：跟 git 某一版程式一樣＝只差註解，照樣覆蓋
+        cands = cand_list if cand_list is not None else [('指定的基準版', lambda b=base_src: b)]
+        cur_code = code_lines(cur)
+        hit = next((lab for lab, get in cands[:CODE_SCAN] if get() is not None and code_lines(get()) == cur_code), None)
+        if hit:
+            print(f'    只差註解：程式跟 {hit} 那版一樣（註解不影響運作）→ 照樣覆蓋')
+            base_src = None
+        else:
+            # 找程式最接近的一版，只列程式行的差異（註解不列）
+            best, best_r = None, -1.0
+            for lab, get in cands[:CODE_SCAN]:
+                t = get()
+                if t is None:
+                    continue
+                r = difflib.SequenceMatcher(None, code_lines(t), cur_code, autojunk=False).quick_ratio()
+                if r > best_r:
+                    best, best_r = (lab, code_lines(t)), r
+            print('    ⚠ 線上這份有「程式」跟 git 裡每一版都不一樣（不只是註解）——可能有人在線上手改過程式。')
+            print('      不覆蓋（要強制請加 --force，但先弄清楚差在哪）。下面只列程式行，- 是 git 有線上沒有，+ 是線上才有：')
+            if best:
+                print(f'      最接近的是 {best[0]} 那版')
+                show_diff(best[1], cur_code, name, True, ('（git）', '（線上）'))
+            if not force:
+                return 'drift', 0
+            print('    ⚠ --force：照樣覆蓋')
 
     if 'PASTE_' in new_src:
         raise SystemExit(f'✗ {name}：套完的內容仍含 PASTE_ 佔位符，推上去會洗掉正式金鑰。中止。')
