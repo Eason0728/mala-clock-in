@@ -544,7 +544,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             p.wait_for_selector('#reqView .rq-chip.on:has-text("補休")', timeout=3000)
             p.click('#reqView button.primary')   # 預設整天 8 小時 > 餘額 6
             p.wait_for_selector('#reqView .rq-box.err', timeout=5000)
-            ok('補休：超過餘額擋下（不送出）', '補休餘額只剩 6 小時，不夠請 8 小時' in p.inner_text('#reqView .rq-box.err')
+            ok('補休：超過餘額擋下（不送出）', '補休可用只剩 6 小時，不夠請 8 小時' in p.inner_text('#reqView .rq-box.err')
                and len([x for x in calls(p) if x['action'] == 'req_submit']) == len(sent), p.inner_text('#reqView .rq-box.err'))
             p.fill('#reqView .rq-hours', '4')
             p.evaluate("document.querySelector('#reqView .rq-box.err').remove()")

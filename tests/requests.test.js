@@ -502,4 +502,33 @@ ok('寫入防護（2026-10-29 審查）：= + - @ 開頭的文字寫進試算表
   assert.strictEqual(sb.reqSheetText_('  =1+1'), '  ＝1+1');
   assert.strictEqual(sb.reqSheetText_(8), 8);
 });
+ok('請假／出差時數（2026-10-30 審查）：先取 0.25 再檢查；起訖一樣、超過 12 小時擋；跨夜照算', () => {
+  const sb = makeEnv({});
+  const L = (o) => submit(sb, Object.assign({ kind: 'leave', date: '2026-10-15', leave_type: '事假' }, o));
+  assert.strictEqual(L({ hours: 0.1 }).error, 'bad_hours');            // 原本存成 0 小時
+  let r = L({ hours: 0.2 }); assert(r.ok, JSON.stringify(r)); assert.strictEqual(r.request.hours, 0.25);
+  assert.strictEqual(L({ date: '2026-10-16', start: '09:00', end: '09:00' }).error, 'bad_time');   // 原本算 24 小時
+  assert.strictEqual(L({ date: '2026-10-16', start: '09:00', end: '08:45' }).error, 'bad_time');   // 原本 23.75 小時
+  assert.strictEqual(L({ date: '2026-10-16', start: '09:00', end: '22:00' }).error, 'bad_time');   // 13 小時
+  r = L({ date: '2026-10-16', start: '22:00', end: '02:00' }); assert(r.ok); assert.strictEqual(r.request.hours, 4);   // 跨夜班
+  const T = (o) => submit(sb, Object.assign({ kind: 'trip', date: '2026-10-17', place: '央廚', why: '盤點' }, o));
+  assert.strictEqual(T({ hours: 0.1 }).error, 'bad_hours');
+  assert.strictEqual(T({ start: '10:00', end: '10:00' }).error, 'bad_time');
+  assert(T({ start: '10:00', end: '14:30' }).ok);
+});
+ok('補休超額（2026-10-30 審查）：光復查得到餘額時，扣掉審核中／已核准還沒到的補休才是可用', () => {
+  const sb = makeEnv({});
+  sb.payRead = () => [{ emp_id: 'E01', store: 'SSLGF' }]; sb.payCompBook = () => ({}); sb.payCompToday = () => '2026-10-09';
+  sb.payCompStatus = () => ({ allowed: true, balance_h: 3 });
+  const C = (date, hours) => submit(sb, { kind: 'leave', date, leave_type: '補休', hours });
+  assert(C('2026-10-15', 3).ok);                                   // 第一張用完 3 小時
+  const second = C('2026-10-16', 3);
+  assert.strictEqual(second.error, 'comp_not_enough');              // 原本會過
+  assert(/可用只剩 0 小時/.test(second.message) && /已有 3 小時/.test(second.message), second.message);
+  // 主管審核清單：附上「其他申請已占」的時數（不含自己這張）
+  sb.payCompStatus = () => ({ allowed: true, balance_h: 8 });
+  assert(C('2026-10-17', 2).ok);
+  const items = sb.handleMgrReqPending_({ mgr_key: 'MK' }).items.filter((x) => x.leave_type === '補休');
+  assert.deepStrictEqual(items.map((x) => x.comp_reserved_h), [2, 3]);
+});
 if (require.main === module) console.log(`\n${n} 項全部通過`);

@@ -161,9 +161,13 @@
   }
   /* 補休（2026-10-09）：光復 line_hub_req_init 回 comp {allowed（正職）, balance_h, earliest_expiry}。 */
   function comp() { return (st.init && st.init.comp) || { allowed: false, balance_h: 0, earliest_expiry: '' }; }
+  /** 可用＝餘額扣掉審核中／已核准還沒入帳的補休（2026-10-30；舊後端沒有 available_h 就用餘額） */
+  function compAvail() { var c = comp(); return c.available_h !== undefined ? Number(c.available_h) || 0 : Number(c.balance_h) || 0; }
   function compText() {
-    var c = comp(), e = c.earliest_expiry;
-    return '剩 ' + (Math.round((Number(c.balance_h) || 0) * 100) / 100) + ' 小時' + (e ? '・最早 ' + (+e.slice(5, 7)) + '/' + (+e.slice(8, 10)) + ' 到期' : '');
+    var c = comp(), e = c.earliest_expiry, held = Number(c.reserved_h) || 0;
+    return (held > 0 ? '可用 ' + compAvail() + ' 小時（另有 ' + held + ' 小時已申請、還沒入帳）'
+                     : '剩 ' + (Math.round((Number(c.balance_h) || 0) * 100) / 100) + ' 小時')
+      + (e ? '・最早 ' + (+e.slice(5, 7)) + '/' + (+e.slice(8, 10)) + ' 到期' : '');
   }
   function quotaText(name) {
     if (name === '補休') return '';   // 補休的餘額另外一行一直顯示（見 renderLeave）
@@ -223,9 +227,9 @@
       // 補休不能超過餘額（只能用已定案月份換到的時數）
       if (lv.type === '補休') {
         var need = lv.mode === 'day' ? Number(lv.hours) : spanHours(lv.start, lv.end);
-        var bal = Number(comp().balance_h) || 0;
+        var bal = compAvail();
         if (!comp().allowed) return Promise.reject(new Error('補休只有正職可以請'));
-        if (need > bal) return Promise.reject(new Error('補休餘額只剩 ' + bal + ' 小時，不夠請 ' + need + ' 小時'));
+        if (need > bal) return Promise.reject(new Error('補休可用只剩 ' + bal + ' 小時' + ((Number(comp().reserved_h) || 0) > 0 ? '（有 ' + comp().reserved_h + ' 小時已申請、還沒入帳）' : '') + '，不夠請 ' + need + ' 小時'));
       }
       return withAttach(lv.file).then(function (aid) { if (aid) body.attach_id = aid; return body; });
     }, function () { lv = { date: '', type: '', mode: 'day', hours: '8', start: '', end: '', reason: '', file: null }; }));

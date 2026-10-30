@@ -1315,6 +1315,15 @@ function handleLineHubReqInit_(body) {
     quota = (j && j.ok && j.leave_quota) || [];
     // 補休（2026-10-09）：正職才能換（加班分頁的「加班費／換補休」只在 allowed 時出現）；餘額＞0 才有「補休」假別
     if (j && j.ok && j.comp) comp = { allowed: !!j.comp.allowed, balance_h: Number(j.comp.balance_h) || 0, earliest_expiry: String(j.comp.earliest_expiry || '') };
+    // 已預約（2026-10-30）：各家綁定店裡審核中／已核准還沒入帳的補休，從餘額扣掉才是真的「可用」
+    if (comp.allowed && comp.balance_h > 0) {
+      var held = 0, today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
+      mine.forEach(function (m) {
+        try { held += reqCompReserved_(reqRows_(lineHubSS_(m.st)), m.row.emp_id, today); } catch (e) { /* 讀不到那家就不扣，交給主管核定時再擋 */ }
+      });
+      comp.reserved_h = Math.round(held * 100) / 100;
+      comp.available_h = Math.max(0, Math.round((comp.balance_h - held) * 100) / 100);
+    }
   } catch (e) { quota = []; }
   var common = LINE_HUB_COMMON_LEAVES.filter(function (n) { return names.indexOf(n) >= 0; });
   if (comp.allowed && comp.balance_h > 0) common.push('補休');   // 與 Payroll.gs PAY_COMP_NAME、Requests.gs REQ_COMP_LEAVE_ 同一個字

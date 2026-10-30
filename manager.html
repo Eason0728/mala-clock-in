@@ -2056,7 +2056,11 @@
     var def = LEAVE_OPTS.types.filter(function (x) { return x.name === '補休'; })[0];
     var q = def ? quotaOf(String(it.emp_id), def.code) : null;
     if (!q || !q.comp) return '';
-    return '\n補休餘額：' + (q.allowed ? q.balance_h + ' 小時' + (Number(it.hours) > q.balance_h ? '（不夠）' : '') : '計時同仁沒有補休');
+    if (!q.allowed) return '\n補休餘額：計時同仁沒有補休';
+    // 2026-10-30：餘額只算已核定入帳的；同一人其他審核中／已核准還沒入帳的補休也要扣（後端 comp_reserved_h）
+    var held = Number(it.comp_reserved_h) || 0, avail = Math.max(0, Math.round((Number(q.balance_h) - held) * 100) / 100);
+    return '\n補休餘額：' + q.balance_h + ' 小時' + (held > 0 ? '，其他申請已占 ' + held + ' 小時、可用 ' + avail + ' 小時' : '')
+      + (Number(it.hours) > avail ? '（不夠，核准前請先跟同仁確認）' : '');
   }
   function buildReqItem(it, card, title) {
     var el = document.createElement('div'); el.className = 'rq-item';

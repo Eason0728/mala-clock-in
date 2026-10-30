@@ -29,13 +29,19 @@ function make(pay) {
   sb.lineHubPayPick_ = () => ({ me: { emp_id: 'E1', name: '甲君' }, store: 'SSLGF' });
   sb.payLeaveTypes = () => sb.LEAVE_TYPES.map((x) => ({ name: x })).concat([{ name: '補休' }]);
   sb.lineHubPayslipFor_ = () => pay;
+  // 已預約補休（2026-10-30）：用 Requests.gs 真的 reqCompReserved_；各店申請列由 sb.__reqRows 決定
+  const RQ = fs.readFileSync(ROOT + '/apps-script/Requests.gs', 'utf8');
+  vm.runInContext("var REQ_COMP_LEAVE_ = '補休';\n" + extract(RQ, 'reqCompReserved_'), sb);
+  sb.__reqRows = [];
+  sb.lineHubSS_ = (st) => st;
+  sb.reqRows_ = () => sb.__reqRows;
   return sb;
 }
 const FT = { allowed: true, balance_h: 6.5, earliest_expiry: '2026-11-01', history: true };
 
 ok('申請頁開頁：正職有餘額 → comp 回傳、「補休」放進常用假別', () => {
   const r = make({ ok: true, leave_quota: [], comp: FT }).handleLineHubReqInit_({ id_token: 't' });
-  assert.strictEqual(JSON.stringify(r.comp), JSON.stringify({ allowed: true, balance_h: 6.5, earliest_expiry: '2026-11-01' }));
+  assert.strictEqual(JSON.stringify(r.comp), JSON.stringify({ allowed: true, balance_h: 6.5, earliest_expiry: '2026-11-01', reserved_h: 0, available_h: 6.5 }));
   assert(r.leave_types.common.indexOf('補休') >= 0, JSON.stringify(r.leave_types));
   assert(r.leave_types.special.indexOf('補休') < 0);
 });
@@ -44,6 +50,19 @@ ok('申請頁開頁：正職沒餘額 → allowed 但沒有「補休」假別；
   assert.strictEqual(r.comp.allowed, true); assert(r.leave_types.common.indexOf('補休') < 0);
   r = make({ ok: true, leave_quota: [], comp: { allowed: false, balance_h: 0, earliest_expiry: '', history: false } }).handleLineHubReqInit_({ id_token: 't' });
   assert.strictEqual(r.comp.allowed, false); assert(r.leave_types.common.indexOf('補休') < 0);
+});
+ok('申請頁開頁：審核中、已核准還沒到的補休從餘額扣掉＝可用；已過去的、別人的、別的假不扣', () => {
+  const sb = make({ ok: true, leave_quota: [], comp: FT });   // 餘額 6.5；Utilities.formatDate 回 2026-10-09＝今天
+  const R = (o) => Object.assign({ emp_id: 'E1', kind: 'leave', leave_type: '補休', status: 'pending', date: '2026-10-20', hours: 3, id: 'x' }, o);
+  sb.__reqRows = [R({}), R({ status: 'approved', date: '2026-10-12', hours: 2 }),
+                  R({ status: 'approved', date: '2026-10-08', hours: 4 }),   // 已過去：多半已核定進 leave、餘額已扣過
+                  R({ status: 'rejected' }), R({ status: 'cancelled' }), R({ emp_id: 'E9' }), R({ leave_type: '特休假' }), R({ kind: 'ot' })];
+  const r = sb.handleLineHubReqInit_({ id_token: 't' });
+  assert.strictEqual(r.comp.reserved_h, 5); assert.strictEqual(r.comp.available_h, 1.5);
+  sb.__reqRows = [R({ hours: 8 })];
+  assert.strictEqual(sb.handleLineHubReqInit_({ id_token: 't' }).comp.available_h, 0);   // 不會變負數
+  sb.reqRows_ = () => { throw new Error('讀不到'); };
+  assert.strictEqual(sb.handleLineHubReqInit_({ id_token: 't' }).comp.available_h, 6.5);   // 讀不到就不扣（主管核定時再擋）
 });
 ok('申請頁開頁：薪資讀不到（j=null）→ comp 預設不開放，申請頁照常', () => {
   const r = make(null).handleLineHubReqInit_({ id_token: 't' });
