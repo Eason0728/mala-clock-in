@@ -653,6 +653,7 @@ function handleMgrReqDay_(body) {
     var why = upc ? reqUpperWhy_(r.emp_id, ss, upc) : '';
     if (why === 'home') return;   // 不算支援的人：本店主管看不到（2026-10-29）
     var o = reqPublic_(r); o.summary = reqSummary_(r);
+    o.attach_id = String(r.attach_id || '');   // 核定工時看已核准申請的證明（2026-10-30；經光復 line_hub_attach_get 帶 date，會再核對主管金鑰）
     o.upper = !!why;   // 值班主管本人／部門同仁的申請：作廢也要上層處理
     if (why) o.upper_kind = why;
     (by[String(r.emp_id)] = by[String(r.emp_id)] || []).push(o);

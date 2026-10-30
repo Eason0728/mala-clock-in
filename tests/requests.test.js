@@ -153,6 +153,14 @@ ok('核定頁預填：mgr_req_day 只回那天「已核准」的，依工號分�
   sb.handleMgrReqDecide_({ mgr_key: 'MK', id: a.request.id, decision: 'approve' });
   const d = sb.handleMgrReqDay_({ mgr_key: 'MK', date: '2026-10-15' });
   assert.strictEqual(d.by_emp.E01.length, 1); assert.strictEqual(d.by_emp.E01[0].leave_type, '特休假');
+  assert.strictEqual(d.by_emp.E01[0].attach_id, '');   // 沒附證明＝空字串
+});
+ok('核定工時看證明（2026-10-30）：mgr_req_day 帶已核准申請的 attach_id', () => {
+  const sb = makeEnv({});
+  const a = submit(sb, { kind: 'leave', date: '2026-10-16', leave_type: '病假', hours: 8, attach_id: 'FILE_abc-123' });
+  sb.handleMgrReqDecide_({ mgr_key: 'MK', id: a.request.id, decision: 'approve' });
+  const d = sb.handleMgrReqDay_({ mgr_key: 'MK', date: '2026-10-16' });
+  assert.strictEqual(d.by_emp.E01[0].attach_id, 'FILE_abc-123'); assert.strictEqual(d.by_emp.E01[0].has_attach, true);
 });
 ok('打卡後告知：核准／退回各告知一次，看過就不再出現', () => {
   const sb = makeEnv({});
