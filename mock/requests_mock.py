@@ -60,7 +60,7 @@ def register(ns):
         if r["kind"] == "leave":
             return f"{md} {r['leave_type']} " + (f"{r['start']}–{r['end']}" if r["start"] else "整天") + f" {r['hours']:g} 小時"
         if r["kind"] == "ot":
-            return f"{md} 加班 {r['start']}–{r['end']}（{r['hours']:g} 小時）" + ("（換補休）" if r.get("comp") == "comp" else "")
+            return f"{md} 加班 {r['start']}–{r['end']}（{r['hours']:g} 小時）"
         if r["kind"] == "trip":
             place = trip_place(r.get("reason"))
             return (f"{md} 出差 " + (f"{r['start']}–{r['end']}" if r["start"] else "整天") + f" {r['hours']:g} 小時"
@@ -88,7 +88,6 @@ def register(ns):
                                          "miss_type", "reason", "status", "decided_at", "decided_by", "reject_reason")}
         o["hours"] = r.get("hours")
         o["has_attach"] = bool(r.get("attach_id"))
-        o["comp"] = ("comp" if r.get("comp") == "comp" else "pay") if r.get("kind") == "ot" else ""
         o["proof_required"], o["need_proof"] = proof_type(r), needs_proof(r)
         return o
 
@@ -199,7 +198,7 @@ def register(ns):
                 return None, ("bad_time", "加班時段超過 12 小時，請確認時間")
             if not reason:
                 return None, ("need_reason", "加班要寫原因")
-            row["comp"] = "comp" if b.get("comp") == "comp" else "pay"   # 補休（2026-10-09）
+            # 補休（2026-11-01 改每月加減結算）：加班不再分加班費／換補休，comp 欄留空
         elif kind == "trip":
             if diff < -31 or diff > 90:
                 return None, ("bad_date", "出差只能申請 31 天前到 90 天後")
@@ -578,10 +577,10 @@ def register(ns):
                         if str(e.get("emp_id")) == str(s["emp_id"]) and not str(e.get("status", "")).startswith("rejected") and str(e.get("ts", "")) > best:
                             best, punch_store = str(e.get("ts", "")), s["code"]
         names = [t for t in LEAVE_TYPES if t not in ("出差", "補休")]
-        # 補休（2026-10-09）：光復 mock 資料的 mock_comp 可改（e2e 用來切正職／計時、有無餘額）；預設正職剩 6 小時、20 天後到期
-        comp = data.get("mock_comp") or {"allowed": True, "balance_h": 6,
-                                         "earliest_expiry": (date.today() + timedelta(days=20)).isoformat()}
-        common = [n for n in COMMON if n in names] + (["補休"] if comp.get("allowed") and comp.get("balance_h", 0) > 0 else [])
+        # 補休（2026-11-01 改每月加減結算）：光復 mock 資料的 mock_comp 可改（e2e 用來切正職／計時）；
+        # 預設正職本月加班 2、補休 4 → 欠 2 小時（負的照樣能請：先休後補）
+        comp = data.get("mock_comp") or {"allowed": True, "ot_h": 2, "used_h": 4, "balance_h": -2, "ym": date.today().strftime("%Y-%m")}
+        common = [n for n in COMMON if n in names] + (["補休"] if comp.get("allowed") else [])
         return {"ok": True, "stores": stores, "punch_store": punch_store, "comp": comp,
                 "leave_types": {"common": common, "special": [n for n in names if n not in COMMON]},
                 "quota": [{"name": "特休假", "cap_days": 7, "cap_h": 56, "remain_h": 40, "used_h": 16, "basis": "tenure"},
