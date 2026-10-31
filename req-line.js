@@ -44,6 +44,40 @@
    *  部分 Android 的 LINE 一叫出內建時間轉盤就閃退（下拉選單是一般清單，不會）。
    *  step＝分鐘間隔：加班／請假／出差 15（後台時數也是取到 0.25 小時），忘打卡 1（填實際時間）。
    *  預填的時間不在間隔上（例如下班卡 17:43）照樣留在選項裡，不偷改。回傳值一樣是 'HH:MM' 或 ''。 */
+  /** 日期欄（2026-10-31）：「月」「日」兩個下拉，取代 <input type="date">（跟時間欄同一個原因：LINE Android 叫內建轉盤可能閃退）。
+   *  範圍＝後端規則：31 天前到 90 天後（Requests.gs REQ_LEAVE_PAST_DAYS／REQ_FUTURE_DAYS，請假／加班／出差都一樣），
+   *  以前的轉盤選得到範圍外、送出才被擋，現在選不到。預填的日期在範圍外（不太會發生）照樣留著不偷改。
+   *  「日」附星期、今天標「今天」；換月時盡量留同一天，那個月沒有就取最近的一天。回傳 'YYYY-MM-DD'。 */
+  var DATE_PAST = 31, DATE_FUT = 90;
+  function datePick(value, onChange) {
+    var today = taipeiToday(0), days = [];
+    var endMs = Date.parse(taipeiToday(DATE_FUT) + 'T00:00:00Z');
+    for (var t = Date.parse(taipeiToday(-DATE_PAST) + 'T00:00:00Z'); t <= endMs; t += 86400000) days.push(new Date(t).toISOString().slice(0, 10));
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value || '') && days.indexOf(value) < 0) { days.push(value); days.sort(); }
+    var cur = days.indexOf(value) >= 0 ? value : today;
+    var months = [];
+    days.forEach(function (x) { if (months.indexOf(x.slice(0, 7)) < 0) months.push(x.slice(0, 7)); });
+    var mSel = h('select', { class: 'rq-dm', 'aria-label': '月' }, months.map(function (ym) {
+      return h('option', { value: ym, selected: ym === cur.slice(0, 7),
+                           text: (ym.slice(0, 4) !== today.slice(0, 4) ? +ym.slice(0, 4) + '/' : '') + (+ym.slice(5, 7)) + ' 月' });
+    }));
+    var dSel = h('select', { class: 'rq-dd', 'aria-label': '日' });
+    function fill(ym) {
+      var list = days.filter(function (x) { return x.slice(0, 7) === ym; });
+      var pick = list.filter(function (x) { return x.slice(8) === cur.slice(8); })[0]
+              || (ym > cur.slice(0, 7) ? list[0] : list[list.length - 1]);
+      dSel.innerHTML = '';
+      list.forEach(function (x) {
+        dSel.appendChild(h('option', { value: x, selected: x === pick,
+          text: (+x.slice(8)) + '（' + WK[new Date(x + 'T00:00:00Z').getUTCDay()] + '）' + (x === today ? ' 今天' : '') }));
+      });
+      cur = pick;
+    }
+    fill(cur.slice(0, 7));
+    mSel.addEventListener('change', function () { fill(mSel.value); onChange(cur); });
+    dSel.addEventListener('change', function () { cur = dSel.value; onChange(cur); });
+    return h('span', { class: 'rq-dpick' }, [mSel, ' ', dSel]);
+  }
   function timePick(value, step, onChange) {
     var m0 = /^(\d{2}):(\d{2})$/.exec(value || '');
     var pad = function (n) { return ('0' + n).slice(-2); };
@@ -187,8 +221,7 @@
   function renderLeave(p) {
     if (!lv.date) lv.date = taipeiToday(0);
     var lt = st.init.leave_types || { common: [], special: [] };
-    var dateIn = h('input', { type: 'date', value: lv.date, on: { change: function () { lv.date = dateIn.value; } } });
-    p.appendChild(field('日期', dateIn));
+    p.appendChild(field('日期', datePick(lv.date, function (v) { lv.date = v; })));
     var typeBox = h('div', {});
     typeBox.appendChild(chips(lt.common, lv.type, function (v) { lv.type = v; render(); }));
     if (lt.special.length) {
@@ -245,8 +278,7 @@
   var ot = { date: '', start: '', end: '', reason: '', comp: 'pay' };
   function renderOt(p) {
     if (!ot.date) ot.date = taipeiToday(0);
-    var dateIn = h('input', { type: 'date', value: ot.date, on: { change: function () { ot.date = dateIn.value; } } });
-    p.appendChild(field('日期', dateIn));
+    p.appendChild(field('日期', datePick(ot.date, function (v) { ot.date = v; })));
     var s1 = timePick(ot.start, 15, function (v) { ot.start = v; upd(); });
     var e1 = timePick(ot.end, 15, function (v) { ot.end = v; upd(); });
     var tot = h('span', { class: 'rq-muted' });
@@ -282,8 +314,7 @@
   var tp = { date: '', mode: 'day', hours: '8', start: '', end: '', place: '', why: '' };
   function renderTrip(p) {
     if (!tp.date) tp.date = taipeiToday(0);
-    var dateIn = h('input', { type: 'date', value: tp.date, min: taipeiToday(-31), max: taipeiToday(90), on: { change: function () { tp.date = dateIn.value; } } });
-    p.appendChild(field('日期', dateIn));
+    p.appendChild(field('日期', datePick(tp.date, function (v) { tp.date = v; })));
     var modeBox = h('div', {}, [chips(['整天', '只一段'], tp.mode === 'day' ? '整天' : '只一段', function (v) { tp.mode = v === '整天' ? 'day' : 'span'; render(); })]);
     if (tp.mode === 'day') {
       var hr = h('input', { type: 'number', min: '0.5', max: '24', step: '0.5', value: tp.hours, class: 'rq-hours', on: { input: function () { tp.hours = hr.value; } } });

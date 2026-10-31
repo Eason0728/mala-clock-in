@@ -131,6 +131,13 @@ def calls(p):
     return p.evaluate('window.__calls')
 
 
+def pick_date(p, ymd, nth=0):
+    """申請頁日期欄是「月」「日」兩個下拉（2026-10-31，取代 input[type=date]）"""
+    box = p.locator('#reqView .rq-dpick').nth(nth)
+    box.locator('select.rq-dm').select_option(ymd[:7])
+    box.locator('select.rq-dd').select_option(ymd)
+
+
 def pick_time(p, nth, hm):
     """申請頁時間欄是「時」「分」兩個下拉（2026-10-29，取代 input[type=time]，LINE Android 叫轉盤會閃退）"""
     box = p.locator('#reqView .rq-time').nth(nth)
@@ -474,7 +481,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             p.wait_for_selector('#reqView .rq-tabs button.on', timeout=10000)
             hrs = float(re.search(r'今天出勤 ([\d.]+) 小時', hint).group(1))
             exp_start_min = int(((int(end_hm[:2]) * 60 + int(end_hm[3:])) - (hrs - 8) * 60) // 15 * 15) % 1440
-            vals = p.evaluate("() => [...document.querySelectorAll('#reqView input[type=date], #reqView .rq-time')].map(i => i.tagName === 'INPUT' ? i.value : [...i.querySelectorAll('select')].map(s => s.value).join(':'))")   # 時間欄是「時」「分」下拉，下班卡不在 15 分格上也要原樣帶入
+            vals = p.evaluate("() => [...document.querySelectorAll('#reqView .rq-dpick, #reqView .rq-time')].map(i => i.classList.contains('rq-dpick') ? i.querySelector('select.rq-dd').value : [...i.querySelectorAll('select')].map(s => s.value).join(':'))")   # 時間欄是「時」「分」下拉，下班卡不在 15 分格上也要原樣帶入
             ok('申請加班 → 開「加班」分頁', p.inner_text('#reqView .rq-tabs button.on') == '加班', p.inner_text('#reqView .rq-tabs button.on'))
             ok('加班分頁預填：日期＝上班那天、時段＝滿 8 小時（取整 15 分）到下班', vals[0] == t_in.strftime('%Y-%m-%d')
                and vals[1] == '%02d:%02d' % (exp_start_min // 60, exp_start_min % 60) and vals[2] == end_hm, [vals, end_hm, exp_start_min, hint])
@@ -516,7 +523,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             p.wait_for_selector('#reqView input[name=rqComp]', timeout=5000)
             radios = p.evaluate("() => [...document.querySelectorAll('#reqView input[name=rqComp]')].map(r => [r.value, r.checked])")
             ok('補休：正職的加班分頁有「加班費／換補休」、預設加班費', radios == [['pay', True], ['comp', False]], radios)
-            p.fill('#reqView input[type=date]', d3)
+            pick_date(p, d3)
             pick_time(p, 0, '18:00')
             pick_time(p, 1, '20:30')
             p.fill('#reqView input[type=text]', '月底盤點')
@@ -539,7 +546,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             ok('補休：請假分頁顯示「補休：剩 6 小時・最早 M/D 到期」', bal == '補休：剩 6 小時・最早 %d/%d 到期' % (exp.month, exp.day), bal)
             chips = p.evaluate("() => [...document.querySelectorAll('#reqView .rq-chips')[0].querySelectorAll('.rq-chip')].map(c => c.textContent)")
             ok('補休：常用假別多一個「補休」', chips[-1] == '補休', chips)
-            p.fill('#reqView input[type=date]', (datetime.now(tz) + timedelta(days=5)).strftime('%Y-%m-%d'))
+            pick_date(p, (datetime.now(tz) + timedelta(days=5)).strftime('%Y-%m-%d'))
             p.click('#reqView .rq-chips >> nth=0 >> .rq-chip:has-text("補休")')
             p.wait_for_selector('#reqView .rq-chip.on:has-text("補休")', timeout=3000)
             p.click('#reqView button.primary')   # 預設整天 8 小時 > 餘額 6
@@ -1028,6 +1035,27 @@ def phase_relogin(ctx, hq):
     p.click('#reqView button:has-text("重新連線")')
     p.wait_for_function("+sessionStorage.getItem('__loads') === 2", timeout=10000)
     ok('登入逾時：按「重新連線」才重整', True)
+    p.close()
+    # 5. 日期欄（2026-10-31）：請假／加班／出差都是「月」「日」下拉、沒有 input[type=date]；範圍 31 天前到 90 天後；附星期與今天
+    from datetime import datetime, timedelta, timezone
+    tz = timezone(timedelta(hours=8)); now = datetime.now(tz)
+    d = lambda k: (now + timedelta(days=k)).strftime('%Y-%m-%d')
+    p = open_page(ctx, url(hq, in_client=True, extra='&view=req&tab=leave'))
+    p.wait_for_selector('#reqView .rq-dpick', timeout=10000)
+    for tab in ('leave', 'ot', 'trip'):
+        p.click('#reqView .rq-tabs button[data-tab=%s]' % tab)
+        p.wait_for_selector('#reqView .rq-dpick', timeout=5000)
+        info = p.evaluate("""() => { const ms = [...document.querySelectorAll('#reqView .rq-dm option')].map(o => o.value);
+            const dd = document.querySelector('#reqView .rq-dd'); return { dateInputs: document.querySelectorAll('#reqView input[type=date]').length,
+            months: ms, sel: dd.value, selText: dd.options[dd.selectedIndex].text }; }""")
+        ok('日期欄（%s）：月日下拉、沒有日期轉盤、預設今天且標「今天」' % tab, info['dateInputs'] == 0 and info['sel'] == d(0)
+           and '今天' in info['selText'] and info['months'][0] == d(-31)[:7] and info['months'][-1] == d(90)[:7], info)
+    pick_date(p, d(-31)); first = p.evaluate("[...document.querySelectorAll('#reqView .rq-dd option')].map(o => o.value)")
+    pick_date(p, d(90)); last = p.evaluate("[...document.querySelectorAll('#reqView .rq-dd option')].map(o => o.value)")
+    ok('日期欄：最早只到 31 天前、最晚只到 90 天後', first[0] == d(-31) and last[-1] == d(90), (first[:2], last[-2:]))
+    p.select_option('#reqView select.rq-dm', d(0)[:7])
+    ok('日期欄：換回這個月 → 日留在同一號（有就留）', p.evaluate("document.querySelector('#reqView .rq-dd').value")[8:] == d(90)[8:]
+       or p.evaluate("document.querySelector('#reqView .rq-dd').value")[:7] == d(0)[:7], p.evaluate("document.querySelector('#reqView .rq-dd').value"))
     p.close()
 
 
