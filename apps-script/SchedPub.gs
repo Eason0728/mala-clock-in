@@ -160,7 +160,8 @@ function schedPubIndex_(d) {
   return k < 0 ? k + 28 : k;
 }
 var SCHED_PUB_OFF_LABEL = { R: '例假', H: '休息日', W: '', L: '請假' };
-var SCHED_PUB_LEAVE_LABEL = { '特': '特休', '補': '補休', '國': '國定假日' };
+// 假別代號與營運系統 web/modules/schedule/rules.js 的 LEAVES 同一份（2026-10-31 營運系統指定休假可選事假、病假…）；不認得的照舊顯示「請假」
+var SCHED_PUB_LEAVE_LABEL = { '特': '特休', '事': '事假', '病': '病假', '婚': '婚假', '喪': '喪假', '公': '公假', '產': '產假', '陪': '陪產假', '生': '生理假', '家': '家庭照顧假', '補': '補休', '國': '國定假日' };
 /** 一格 → 出勤班表的一天（與 schedDayOf_ 同形：code／label／segs／hours／work／rest） */
 function schedPubDay_(cell, shifts, stations) {
   if (!cell || !cell.t) return null;

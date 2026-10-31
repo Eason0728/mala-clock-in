@@ -485,3 +485,12 @@ ok('分段班：segs 收進來、LINE 一天顯示多段；格式不對整個丟
 });
 
 console.log('\n' + n + ' 項全過');
+
+ok('假別：營運系統送來的事假、病假等顯示假別名稱，不認得的仍是「請假」（2026-10-31）', () => {
+  const lab = (l) => J(sb.schedPubDay_({ t: 'L', l }, [], [])).label;
+  assert.deepStrictEqual(['特', '事', '病', '婚', '喪', '公', '產', '陪', '生', '家', '補', '國'].map(lab),
+    ['特休', '事假', '病假', '婚假', '喪假', '公假', '產假', '陪產假', '生理假', '家庭照顧假', '補休', '國定假日']);
+  assert.strictEqual(lab('X'), '請假');
+  const d = J(sb.schedPubDay_({ t: 'L', l: '事' }, [], []));
+  assert.strictEqual(d.code, '事'); assert.strictEqual(d.rest, true); assert.strictEqual(d.work, false);
+});
