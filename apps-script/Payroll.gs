@@ -569,110 +569,42 @@ function payTenurePlus(e, ym, cfg) {
   return monthStart > due ? plus : 0;
 }
 
-/* ═══════════════════ 補休（2026-10-09 Eason 定案，規格 ~/Desktop/Claude/補休制度_規格_20261009.md）═══════════════════
- * ①只有正職能把加班換成補休（計時同仁的「換補休」一律當加班費）②1:1 小時 ③期限 6 個月
- * ④每月最多換到「當月算出來的加班時數」為止——換的時數從加班費裡扣掉，所以不會造成不足時數倒扣。
- *
- * 存入（正本）：薪資定案月份的 item 列 comp_bank（qty＝當月實際換到的時數，memo＝哪幾張加班申請、加班日、時數）。
- * 使用（正本）：各店打卡試算表 leave 分頁假別「補休」的時數（同特休跨店、用姓名對）。
- * 餘額＝存入－使用－到期折算，隨時算出來，不另外記帳。只認「已定案」月份的存入（避免月底結算前就先休掉）。
- *
- * 到期日（定義）：加班日＋6 個月（沒有那一天就用該月最後一天）再往前一天＝最後可休日，
- *   例 2026-10-11 → 2027-04-10、2026-08-31 → 2027-02-27（2/28 往前一天）。
- *   過了最後可休日還沒休完的時數，在「最後可休日所在月份」的薪資照加班費率發（comp_expire「補休到期折算」）。
- * 先換的先用：休補休時先扣最早到期的那批（同到期日依加班日）；已過期的那批不能再拿來休。
- * 離職：主檔有填離職日（leave_date）且就是本月 → 本月把剩下的全部折算，本月的「換補休」申請不再換（直接付加班費）。
- *   ⚠ 只把主檔 active 改 false、沒填離職日的人根本不會被結算（handlePayrollCalc 只算在職者），系統無從折算——要人工處理。
+/* ═══════════════════ 補休：每月加減結算（2026-11-01 Eason 改制，取代 2026-10-09 的存入＋6 個月到期）═══════════════════
+ * ①只有正職能請補休 ②每人每月一本帳：本月核准的加班申請時數是正的、本月的補休時數是負的，相減＝補休帳
+ *   （不跨月、沒有到期）。所有核准的加班都算，加班申請不再分「加班費／換補休」。
+ * ③可以先休後補、不設上限（LINE、值班核定頁、營運系統都不擋餘額）；補休帳是負的：
+ *   每月 20、25 號檢查通知（通知匣＋該店值班主管），**有負數就不能鎖定本月**（不自動扣）。
+ * ④薪資：補休不再算成出勤時數（不抵不足），月底淨加班照加班費率發——休掉的補休直接從加班時數裡扣。
+ *   PAY_COMP_MONTHLY_FROM 以前的月份照舊算法（那時沒有補休，留著只是保險）。
+ * 補休時數＝每天取「leave 分頁假別補休的時數」與「審核中／已核准的補休申請時數」較大者（核定進 leave 之後不重算）。
  * ⚠ 放在 payR0～Handlers 之間：純函式，測試與 payroll_mock.js 會切這一段。 */
 var PAY_COMP_CODE = 'comp';
 var PAY_COMP_NAME = '補休';
-var PAY_COMP_MONTHS = 6;
+var PAY_COMP_MONTHLY_FROM = '2026-10';
 /** 這種假是不是補休（假別表沒有這列時，程式內建也認得「補休」二字） */
 function payIsCompType(t) { return !!t && (String(t.code) === PAY_COMP_CODE || String(t.name).trim() === PAY_COMP_NAME); }
-/** 程式內建的補休假別（Eason 還沒在 payroll_leave_type 加這列時用）：比照特休——全薪、不扣全勤、算進不足時數抵扣。 */
+/** 程式內建的補休假別（Eason 還沒在 payroll_leave_type 加這列時用）：全薪、不扣全勤；時數不抵不足（從當月加班扣）。 */
 function payCompDefaultType() {
-  return { code: PAY_COMP_CODE, name: PAY_COMP_NAME, pay_ratio: 1, count_absent: false, offset_shortfall: true,
+  return { code: PAY_COMP_CODE, name: PAY_COMP_NAME, pay_ratio: 1, count_absent: false, offset_shortfall: false,
            cap_days: null, cap_basis: '', over_ratio: 0, merge_into: '', cap_per_month: null,
            tenure_months: null, under_ratio: 0, min_unit: 'hour', window_before: null, window_days: null, window_max: null,
            attend_effect: '', count_meal_day: true, sort: 9990,
-           note: '補休（加班換的）：全薪、不扣全勤、算進不足時數抵扣；只能用已定案月份換到的時數，6 個月到期照加班費率折算（程式內建）' };
+           note: '補休：用當月核准的加班抵（每月加減結算，不跨月）；全薪、不扣全勤，時數不抵不足（程式內建）' };
 }
-/** 加班日 → 最後可休日（'yyyy-MM-dd'）。見上方定義。 */
-function payCompExpireDay(otDate) {
-  const d = payDateStr(otDate);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return '';
-  let y = +d.slice(0, 4), m = +d.slice(5, 7) + PAY_COMP_MONTHS;
-  while (m > 12) { m -= 12; y++; }
-  const last = new Date(y, m, 0).getDate();
-  const dd = Math.min(+d.slice(8, 10), last);
-  return payDayBefore(y + '-' + pad2(m) + '-' + pad2(dd));
-}
-/** 當月可換的時數依加班日先後分給各張申請（先到先換），回 [{id, date, h}]（h>0 才留）。 */
-function payCompAllocate(lots, convH) {
-  let left = payR2(convH);
-  return (lots || []).slice().sort(function (a, b) { return String(a.date) < String(b.date) ? -1 : String(a.date) > String(b.date) ? 1 : 0; })
-    .map(function (l) {
-      const h = payR2(Math.max(0, Math.min(payNum(l.h), left)));
-      left = payR2(left - h);
-      return { id: String(l.id || ''), date: String(l.date), h: h };
-    }).filter(function (l) { return l.h > 0; });
-}
-/** comp_bank 的 memo：'申請id@加班日=時數;…'（追得到是哪幾張加班申請） */
-function payCompMemo(lots) {
-  return (lots || []).map(function (l) { return String(l.id || '').replace(/[@=;]/g, '') + '@' + l.date + '=' + payR2(l.h); }).join(';');
-}
-/** 讀回 comp_bank 一列 → 各批 [{id, date, h, expire}]。memo 讀不懂（手動改過）就整筆當成該月 1 號加班（到期日只會更早、不會多給期限）。 */
-function payCompParseBank(memo, ym, qty) {
-  const out = [];
-  String(memo || '').split(';').forEach(function (p) {
-    const m = /^([^@]*)@(\d{4}-\d{2}-\d{2})=([\d.]+)$/.exec(String(p).trim());
-    if (m && payNum(m[3]) > 0) out.push({ id: m[1], date: m[2], h: payR2(payNum(m[3])) });
-  });
-  const sum = payR2(out.reduce(function (a, l) { return a + l.h; }, 0));
-  if (!out.length || Math.abs(sum - payR2(payNum(qty))) > 0.001) {
-    return payNum(qty) > 0 ? [{ id: '', date: String(ym) + '-01', h: payR2(payNum(qty)), expire: payCompExpireDay(String(ym) + '-01') }] : [];
-  }
-  return out.map(function (l) { l.expire = payCompExpireDay(l.date); return l; });
-}
-/** 先換的先用、先到期：依日期順序走過每一筆補休，扣「已存入（加班日 ≤ 那天）且還沒過期」的批，最早到期的先扣。
- *  lots：[{id,date,h,expire}]；uses：[{date,h}]。
- *  回 { lots:[{…, used, left}], used_h, overdraw_h }——left＝扣完所有已知補休後還剩的（過期與否由呼叫端依日期判斷）。
- *  overdraw_h＝找不到可扣的批（餘額不夠還是被登記了補休），不會變成負餘額，另外回報。 */
-function payCompSimulate(lots, uses) {
-  const L = (lots || []).map(function (l) { return { id: l.id, date: l.date, h: payR2(payNum(l.h)), expire: l.expire || payCompExpireDay(l.date), used: 0, left: payR2(payNum(l.h)) }; })
-    .sort(function (a, b) { return a.expire < b.expire ? -1 : a.expire > b.expire ? 1 : (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); });
-  let usedH = 0, over = 0;
-  (uses || []).slice().sort(function (a, b) { return String(a.date) < String(b.date) ? -1 : String(a.date) > String(b.date) ? 1 : 0; })
-    .forEach(function (u) {
-      let need = payR2(payNum(u.h));
-      if (!(need > 0)) return;
-      usedH = payR2(usedH + need);
-      L.forEach(function (l) {
-        if (need <= 0 || l.left <= 0) return;
-        if (!(l.date <= u.date && u.date <= l.expire)) return;
-        const take = payR2(Math.min(l.left, need));
-        l.left = payR2(l.left - take); l.used = payR2(l.used + take); need = payR2(need - take);
-      });
-      if (need > 0) over = payR2(over + need);
-    });
-  return { lots: L, used_h: usedH, overdraw_h: over };
-}
-/** 截至 asOf（含）的餘額：還沒過期的批剩下的時數加總；最早到期日＝還有剩的批裡最早的那天。 */
-function payCompBalanceFromSim(sim, asOf) {
-  let bal = 0, earliest = '';
-  (sim.lots || []).forEach(function (l) {
-    if (l.left > 0 && l.expire >= asOf) { bal = payR2(bal + l.left); if (!earliest || l.expire < earliest) earliest = l.expire; }
-  });
-  return { balance_h: bal, earliest_expiry: earliest };
-}
-/** 本月要折算的時數：一般＝最後可休日落在本月、還沒休完的；離職當月＝還沒過期的全部。 */
-function payCompExpireHours(sim, ym, finalMonth) {
-  let h = 0;
-  (sim.lots || []).forEach(function (l) {
-    if (!(l.left > 0)) return;
-    if (finalMonth ? l.expire >= ym + '-01' : String(l.expire).slice(0, 7) === ym) h = payR2(h + l.left);
-  });
-  return h;
+/** 某人某月的補休帳（純計算）：ots＝[{date,h}] 本月核准加班；leaves＝[{date,h}] leave 分頁補休；reqs＝[{date,h}] 審核中／已核准補休申請。
+ *  回 {ot_h, used_h, balance_h}（balance 可為負）。 */
+function payCompMonthCalc(ots, leaves, reqs) {
+  const sumBy = function (xs) {
+    const m = {};
+    (xs || []).forEach(function (x) { const h = payNum(x.h); if (h > 0) m[String(x.date)] = payR2((m[String(x.date)] || 0) + h); });
+    return m;
+  };
+  const L = sumBy(leaves), R = sumBy(reqs);
+  let used = 0;
+  Object.keys(L).concat(Object.keys(R)).filter(function (d, i, a) { return a.indexOf(d) === i; })
+    .forEach(function (d) { used = payR2(used + Math.max(L[d] || 0, R[d] || 0)); });
+  const ot = payR2((ots || []).reduce(function (a, x) { return a + Math.max(0, payNum(x.h)); }, 0));
+  return { ot_h: ot, used_h: used, balance_h: payR2(ot - used) };
 }
 
 /* 正職加班「上班＋可抵扣假」口徑的生效月份（Eason 2026-10-02）。
@@ -697,8 +629,6 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   let baseH = null, surplus = null, otPaid = null;
   let ptWage = 0;   // 計時同仁的有效時薪（基本＋滿勤加給＋年資加給），遲到扣款要用
   let ptAttendInfo = null;   // 計時全勤津貼的判定結果（前端顯示時薪組成用）
-  const comp = att.comp || null;   // 補休（handlePayrollCalc 的 payCompInfo 帶進來；沒有就是 null）
-  let compConv = 0, compOtBefore = 0;
   const supportH = (att.support || []).reduce(function (a, s) { return a + payNum(s.hours); }, 0);
 
   if (ft) {
@@ -708,8 +638,12 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     // 可抵扣的假（假別表 offset_shortfall）。這些假另有扣款／給薪處理，在時數上視同已出勤。
     const LMAP = payAttLeaves(att);
     let paidLeave = 0;
+    const compMonthly = String(ym) >= PAY_COMP_MONTHLY_FROM;
     Object.keys(LMAP).forEach(function (c) {
       const t = LTM[c];
+      // 補休（2026-11-01 改制）：不算出勤時數，休掉的時數直接從當月加班扣（假別表就算勾了可抵不足也一樣）；
+      // 改制前的月份照舊制（補休視同出勤），不看內建列已經改成不抵
+      if (c === PAY_COMP_CODE || payIsCompType(t)) { if (!compMonthly) paidLeave += payNum(LMAP[c]); return; }
       if (!t || t.offset_shortfall) paidLeave += payNum(LMAP[c]);
     });
     // 淨時數＝上班＋支援＋可抵扣假 − 基本（Eason 2026-10-02 定案）：正→加班、負→不足倒扣。
@@ -718,23 +652,8 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     const netH = payR2(surplus + paidLeave);
     const otBase = String(ym) >= PAY_OT_NET_FROM ? netH : surplus;   // 生效月份前沿用舊口徑
     otPaid = payR2((otBase > 0 ? otBase : 0) + payNum(att.extra_ot));
-    /* 補休（2026-10-09）：本月核准的「換補休」加班申請，最多換到本月算出來的加班時數為止；
-       換掉的時數從加班費扣掉（不付錢），所以永遠不會造成不足時數倒扣。離職當月不換（直接付加班費）。
-       att.comp 沒帶（沒有任何換補休申請）＝與改版前完全相同。 */
-    const compReqH = (comp && !comp.final_month) ? payR2(payNum(comp.req_h)) : 0;
-    if (compReqH > 0) {
-      compOtBefore = otPaid;
-      compConv = payR2(Math.min(compReqH, otPaid));
-      otPaid = payR2(otPaid - compConv);
-    }
     push(earn, 'base_salary', '底薪', null, null, payNum(e.base) * P);
     if (otPaid > 0) push(earn, 'overtime', '加班', otPaid, payNum(e.ot_rate), otPaid * payNum(e.ot_rate));
-    if (compReqH > 0) {
-      // 資訊列（0 元）：qty＝本月實際換到的時數；memo 記哪幾張申請、加班日（餘額與到期日的正本）
-      earn.push({ item_key: 'comp_bank',
-                  item_label: '本月換補休' + (compReqH > compConv ? '（申請 ' + compReqH + ' 小時，當月加班只有 ' + compOtBefore + ' 小時）' : ''),
-                  qty: compConv, rate: null, amount: 0, memo: payCompMemo(payCompAllocate(comp.lots, compConv)) });
-    }
     if (netH < 0) {
       const shortH = payR2(-netH);
       if (shortH > 0) push(ded, 'shortfall_hours', '不足時數', shortH, payNum(e.ot_rate), shortH * payNum(e.ot_rate));
@@ -837,12 +756,6 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     push(earn, 'annual_payout', '特休未休折算', ah, aRate, ah * aRate);
   }
 
-  /* 補休到期折算（2026-10-09）：最後可休日落在本月、還沒休完的時數，照本人加班費率發；離職當月＝剩下的全部。 */
-  const compExpH = comp ? payR2(payNum(comp.expire_h)) : 0;
-  if (compExpH > 0) {
-    push(earn, 'comp_expire', '補休到期折算' + (comp.final_month ? '（離職結清）' : ''), compExpH, payNum(e.ot_rate), compExpH * payNum(e.ot_rate));
-  }
-
   /* 遲到分鐘不計薪（Eason 2026-08-23 定案）
    *   正職：(底薪＋職能＋夜間＋店長) ÷ 30 ÷ 8 ÷ 60 × 當月實際遲到分鐘
    *          ⚠ 基數**不含全勤上限**——全勤已經另外因遲到被扣過，不重複算進基數。
@@ -912,8 +825,6 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     earn: earn, ded: ded, gross: gross, deduction: deduct, net: gross - deduct, leave_rate: rate,
     pt_attend: ptAttendInfo,
   };
-  // 有補休才多帶這兩欄（沒有補休的人回傳形狀與改版前完全相同）
-  if (comp && (compConv > 0 || payNum(comp.req_h) > 0 || compExpH > 0)) { out.comp_bank_h = compConv; out.comp_expire_h = compExpH; }
   return out;
 }
 
@@ -1960,7 +1871,6 @@ function handlePayrollCalc(body) {
   const LTYPES_FOR_CALC = payLeaveTypes(st);
   const USAGE_BEFORE = payLeaveUsedBefore(ym, st, LTYPES_FOR_CALC, cfg, master);
   const ANNUAL_INFO = payAnnualInfo(ym, st);   // 特休額度／已用／週年期，折算工資要用（迴圈外算一次）
-  const COMP_INFO = payCompInfo(ym, st, master);   // 補休：本月換多少、到期折算多少（沒有補休的人不在裡面）
 
   const results = master.map(function (e) {
     const c = collected[String(e.emp_id)] || {};
@@ -2000,7 +1910,6 @@ function handlePayrollCalc(body) {
       early_min:    o.early_min    !== undefined ? payNum(o.early_min)    : payNum(c.early_min),
       attend_void:  o.attend_void  !== undefined ? payBool(o.attend_void) : !!c.attend_void,
     };
-    if (COMP_INFO[String(e.emp_id)]) att.comp = COMP_INFO[String(e.emp_id)];   // 沒有補休就不帶（引擎行為與改版前相同）
     return payCalcOne(e, ym, att, cfg, redDays, LTYPES_FOR_CALC);
   });
 
@@ -2044,7 +1953,7 @@ function handlePayrollCalc(body) {
 function payItemRow(ym, empId, type, x, source, store) {
   return { ym: ym, emp_id: empId, item_type: type, item_key: x.item_key, item_label: x.item_label,
            qty: x.qty == null ? '' : x.qty, rate: x.rate == null ? '' : x.rate,
-           amount: x.amount, source: source, memo: x.memo || '', store: payStore(store) };   // memo 目前只有補休 comp_bank 會帶
+           amount: x.amount, source: source, memo: x.memo || '', store: payStore(store) };   // memo：舊制補休 comp_bank 會帶（2026-11-01 改制後已不產生）
 }
 
 function handlePayrollGet(body) {
@@ -2113,9 +2022,15 @@ function handlePayrollFinalize(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const ym = String(body.ym || ''), lock = !!body.lock;
   if (!lock && !body.reason) return { ok: false, error: 'reason_required', message: '解鎖必須填原因' };
+  const stF = payStore(body.store);
+  /* 補休帳是負的不能鎖定（Eason 2026-11-01：不自動扣，擋住鎖定）。解鎖不擋。 */
+  if (lock && ym >= PAY_COMP_MONTHLY_FROM) {
+    const neg = payCompNegatives(ym, stF);
+    if (neg.length) return { ok: false, error: 'comp_negative', list: neg,
+      message: '補休帳是負的，不能鎖定（請補核准加班申請，或把多請的補休改成其他假別）：\n' + neg.map(payCompNegLine).join('\n') };
+  }
   const rows = payRead('run');
   let n = 0;
-  const stF = payStore(body.store);
   rows.forEach(function (r) { if (String(r.ym) === ym && payStore(r.store) === stF) { r.status = lock ? 'final' : 'draft'; n++; } });
   if (!n) return { ok: false, error: 'no_run', message: ym + ' 還沒有月結資料' };
   payReplaceAll('run', rows);
@@ -2206,44 +2121,43 @@ function payAnnualInfo(ym, store) {
   return out;
 }
 
-/* ═══════════════════ 補休：讀資料（規則本身在引擎區段的 payComp* 純函式）═══════════════════ */
+/* ═══════════════════ 補休：讀資料（規則本身在引擎區段的 payCompMonthCalc）═══════════════════ */
 
-/** 一次把補休要的表讀完（效能鐵則：逐人迴圈裡不准 payRead／payClockRead）。
- *  lotsOf(emp_id)＝已定案月份的 comp_bank 各批；usesOf(emp_id, 姓名, 門市)＝歷任門市 leave 分頁假別「補休」。 */
-function payCompBook() {
-  const finals = {};
-  payRead('run').forEach(function (r) {
-    if (String(r.status) === 'final') finals[String(r.ym) + '|' + String(r.emp_id) + '|' + payStore(r.store)] = true;
-  });
-  const lots = {};
-  payRead('item').forEach(function (i) {
-    if (String(i.item_key) !== 'comp_bank' || !(payNum(i.qty) > 0)) return;
-    if (!finals[String(i.ym) + '|' + String(i.emp_id) + '|' + payStore(i.store)]) return;   // 只認已定案月份
-    const k = String(i.emp_id);
-    lots[k] = (lots[k] || []).concat(payCompParseBank(i.memo, String(i.ym), i.qty));
-  });
+/** 一次把補休帳要的表讀好（效能鐵則：逐人迴圈裡不准 payRead／payClockRead）：各店 requests、leave 分頁，用到才讀、讀過快取。
+ *  forEmp(e, store)＝{allowed, ym, ot_h, used_h, balance_h}。對人：歷任門市（payEmpStoresMap）＋本店，用姓名對（同 leave 分頁的對法）。 */
+function payCompMonthBook(ym) {
   const empStores = payEmpStoresMap();
-  const leaveCache = {};
-  function leavesOf(st) {
-    if (leaveCache[st]) return leaveCache[st];
-    let rows = [];
-    try { rows = payClockRead(st, 'leave'); } catch (e) { rows = []; }   // 某店暫時開不起來不該讓整頁掛掉
-    leaveCache[st] = rows;
-    return rows;
+  const cache = {};
+  function rowsOf(st, sheet) {
+    const k = st + '|' + sheet;
+    if (!(k in cache)) { try { cache[k] = payClockRead(st, sheet); } catch (e) { cache[k] = []; } }   // 某店暫時開不起來不該讓整頁掛掉
+    return cache[k];
   }
   return {
-    lotsOf: function (emp) { return lots[String(emp)] || []; },
-    usesOf: function (emp, name, store) {
-      const out = [];
-      (empStores[String(emp)] || [payStore(store)]).forEach(function (st2) {
-        leavesOf(st2).forEach(function (l) {
-          if (String(l['姓名'] || '').trim() !== String(name || '').trim()) return;
-          if (String(l['假別'] || '').trim() !== PAY_COMP_NAME) return;
-          const h = Number(l['時數']) || 0;
-          if (h > 0) out.push({ date: normCellDate(l['日期']), h: h });
+    forEmp: function (e, store) {
+      const name = String(e.name || '').trim();
+      const sts = (empStores[String(e.emp_id)] || []).slice();
+      if (sts.indexOf(payStore(store)) < 0) sts.push(payStore(store));
+      const ots = [], leaves = [], reqs = [];
+      sts.forEach(function (st) {
+        rowsOf(st, 'requests').forEach(function (r) {
+          if (String(r.name || '').trim() !== name) return;
+          const d = normCellDate(r.date), h = payNum(r.hours);
+          if (String(d).slice(0, 7) !== ym || !(h > 0)) return;
+          const status = String(r.status);
+          if (String(r.kind) === 'ot' && status === 'approved') ots.push({ date: d, h: h });
+          else if (String(r.kind) === 'leave' && String(r.leave_type || '').trim() === PAY_COMP_NAME &&
+                   (status === 'pending' || status === 'approved')) reqs.push({ date: d, h: h });
+        });
+        rowsOf(st, 'leave').forEach(function (l) {
+          if (String(l['姓名'] || '').trim() !== name || String(l['假別'] || '').trim() !== PAY_COMP_NAME) return;
+          const d = normCellDate(l['日期']), h = Number(l['時數']) || 0;
+          if (String(d).slice(0, 7) === ym && h > 0) leaves.push({ date: d, h: h });
         });
       });
-      return out;
+      const c = payCompMonthCalc(ots, leaves, reqs);
+      c.allowed = payIsFt(e); c.ym = ym;
+      return c;
     },
   };
 }
@@ -2255,53 +2169,126 @@ function payCompToday() {
 /** 正職判斷（與 payCalcOne 同一條） */
 function payIsFt(e) { return !!e && (String(e.is_full_time).toLowerCase() === 'true' || e.is_full_time === true); }
 
-/** 某人截至 asOf 的補休狀況（同仁卡片、申請頁、值班核定頁共用）：
- *  {allowed:是否正職, balance_h, earliest_expiry, banked_h, used_h, expired_h, history:有沒有存過或用過} */
-function payCompStatus(book, e, store, asOf) {
-  const lots = book.lotsOf(e.emp_id), uses = book.usesOf(e.emp_id, e.name, store);
-  const sim = payCompSimulate(lots, uses);
-  const b = payCompBalanceFromSim(sim, asOf);
-  let banked = 0, expired = 0;
-  sim.lots.forEach(function (l) { banked = payR2(banked + l.h); if (l.expire < asOf) expired = payR2(expired + l.left); });
-  return { allowed: payIsFt(e), balance_h: b.balance_h, earliest_expiry: b.earliest_expiry,
-           banked_h: banked, used_h: sim.used_h, expired_h: expired, history: lots.length > 0 || uses.length > 0 };
+/** 某店某月補休帳是負的正職：[{emp_id, name, ot_h, used_h, balance_h}]（鎖定前、20／25 號檢查共用）。 */
+function payCompNegatives(ym, store, book) {
+  const st = payStore(store);
+  const bk = book || payCompMonthBook(ym);
+  const out = [];
+  payRead('master').forEach(function (e) {
+    if (String(e.active).toLowerCase() !== 'true' || payStore(e.store) !== st || !payIsFt(e)) return;
+    const c = bk.forEmp(e, st);
+    if (c.balance_h < 0) out.push({ emp_id: String(e.emp_id), name: String(e.name), ot_h: c.ot_h, used_h: c.used_h, balance_h: c.balance_h });
+  });
+  return out;
+}
+/** 一行字：「A 君：加班 4 − 補休 8 ＝ −4 小時」 */
+function payCompNegLine(x) {
+  return x.name + '：加班 ' + x.ot_h + ' − 補休 ' + x.used_h + ' ＝ ' + x.balance_h + ' 小時';
 }
 
-/** 結算某月要帶進 payCalcOne 的 att.comp：{emp_id:{req_h, lots:[{id,date,h}], expire_h, final_month}}；沒有補休的人不出現。
- *  req＝本店 requests 分頁、本月（加班日）已核准、comp＝'comp' 的加班申請（計時同仁一律不換，當加班費）。
- *  ⚠ 出錯一律回 {}＝全部照付加班費（不會少付），並留 Logger。 */
-function payCompInfo(ym, store, master) {
-  try {
-    const st = payStore(store);
-    const reqBy = {};
-    payClockRead(st, 'requests').forEach(function (r) {
-      if (String(r.kind) !== 'ot' || String(r.status) !== 'approved' || String(r.comp || '') !== 'comp') return;
-      const d = normCellDate(r.date);
-      if (String(d).slice(0, 7) !== ym) return;
-      const h = payNum(r.hours);
-      if (!(h > 0)) return;
-      (reqBy[String(r.emp_id)] = reqBy[String(r.emp_id)] || []).push({ id: String(r.id || ''), date: d, h: payR2(h) });
-    });
-    const book = payCompBook();
-    const out = {};
-    (master || []).forEach(function (e) {
-      const emp = String(e.emp_id);
-      const ft = payIsFt(e);
-      const reqs = ft ? (reqBy[emp] || []) : [];
-      const lots = book.lotsOf(emp);
-      if (!reqs.length && !lots.length) return;
-      const finalMonth = payDateStr(e.leave_date).slice(0, 7) === ym;
-      const sim = payCompSimulate(lots, book.usesOf(emp, e.name, st));
-      const expH = payCompExpireHours(sim, ym, finalMonth);
-      const reqH = payR2(reqs.reduce(function (a, x) { return a + x.h; }, 0));
-      if (!(reqH > 0) && !(expH > 0)) return;
-      out[emp] = { req_h: reqH, lots: reqs, expire_h: expH, final_month: finalMonth };
-    });
-    return out;
-  } catch (err) {
-    try { Logger.log('⚠ payCompInfo ' + ym + ' ' + store + '：' + err); } catch (e2) {}
-    return {};
+/** {action:'payroll_comp_check', admin_key, ym?} → 各店補休帳是負的正職（唯讀，給管理者與排程用）。 */
+function handlePayrollCompCheck(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = /^\d{4}-\d{2}$/.test(String(body.ym || '')) ? String(body.ym) : payCompToday().slice(0, 7);
+  return { ok: true, ym: ym, stores: payCompCheckAll_(ym) };
+}
+function payCompCheckAll_(ym) {
+  const book = payCompMonthBook(ym);
+  const out = [];
+  payStoreList().forEach(function (s) {
+    const list = payCompNegatives(ym, s.code, book);
+    if (list.length) out.push({ store: payStore(s.code), name: String(s.name || s.code), list: list });
+  });
+  return out;
+}
+
+/* 20／25 號檢查（Eason 2026-11-01）：每天 09:00 觸發器跑，只有 20、25 號真的做事。
+   有負數 → 通知匣一般件（key 同一天同一件）＋ LINE 私訊該店值班主管（打卡官方帳號，會花推播額度，Eason 選的）。
+   觸發器用 payroll_comp_trigger_setup 建（重跑不疊）。通知匣密碼＝指令碼屬性 NOTIFY_INBOX_TOKEN（Eason 自己貼）。 */
+var PAY_COMP_CHECK_DAYS = [20, 25];
+var PAY_NOTIFY_INBOX_URL = 'https://script.google.com/macros/s/AKfycbyZ-sVl9KbKhotjsFhKg9Id7j4qgNRf6wSlSCacoBe7lATkuJFb9_ShCaicAJuLOak/exec';
+function payCompCheckDaily() {
+  const today = payCompToday();
+  if (PAY_COMP_CHECK_DAYS.indexOf(+today.slice(8, 10)) < 0) return;
+  payCompCheckRun_(today);
+}
+/** 實際檢查＋通知（today 可指定，給手動補跑）。回 {stores, inbox, pushed}。任何一步失敗都不拋例外。 */
+function payCompCheckRun_(today) {
+  const ym = String(today).slice(0, 7), md = (+today.slice(5, 7)) + '/' + (+today.slice(8, 10));
+  let stores = [];
+  try { stores = payCompCheckAll_(ym); } catch (err) {
+    payInboxNotify_('補休檢查讀不到資料', md + ' 補休帳檢查失敗：' + err, 'compcheck-fail-' + today);
+    return { stores: [], inbox: false, pushed: 0, error: String(err) };
   }
+  if (!stores.length) return { stores: [], inbox: false, pushed: 0 };
+  let pushed = 0;
+  const lines = [];
+  stores.forEach(function (s) {
+    const body = s.list.map(payCompNegLine).join('\n');
+    const n = payCompPushManagers_(s.store, '⚠ 補休帳是負的（' + md + ' 檢查）\n' + body +
+      '\n\n請在月底前補核准加班申請，或把多請的補休改成其他假別；有負數的話這個月薪資不能鎖定。');
+    pushed += n;
+    lines.push('【' + s.name + '】' + (n ? '' : '（沒有可私訊的值班主管）') + '\n' + body);
+  });
+  const inbox = payInboxNotify_('補休帳有負數：' + stores.map(function (s) { return s.name; }).join('、'),
+    md + ' 檢查 ' + ym + ' 補休帳（核准加班 − 補休）：\n' + lines.join('\n') + '\n\n有負數的店不能鎖定本月薪資。',
+    'compcheck-' + today);
+  return { stores: stores, inbox: inbox, pushed: pushed };
+}
+/** 通知匣一般件；成功判準 ok===true && added===true。任何情況都不拋例外。 */
+function payInboxNotify_(title, text, keyEvent) {
+  try {
+    const tok = PropertiesService.getScriptProperties().getProperty('NOTIFY_INBOX_TOKEN');
+    if (!tok) { Logger.log('通知匣沒設密碼（NOTIFY_INBOX_TOKEN）：' + title); return false; }
+    const payload = JSON.stringify({ action: 'add', token: tok, from: '補休檢查', title: String(title).slice(0, 60),
+      text: String(text).slice(0, 1000), level: 'normal', key: 'compcheck:' + String(keyEvent).toLowerCase().replace(/[^a-z0-9-]/g, '') });
+    for (let i = 0; i < 3; i++) {
+      try {
+        const res = UrlFetchApp.fetch(PAY_NOTIFY_INBOX_URL, { method: 'post', contentType: 'application/json', payload: payload,
+          muteHttpExceptions: true, followRedirects: true });
+        if (res.getResponseCode() === 200) {
+          const d = JSON.parse(res.getContentText());
+          if (d && d.ok === true && d.added === true) return true;
+        }
+      } catch (err) { Logger.log('通知匣第 ' + (i + 1) + ' 次寫入失敗：' + err); }
+      if (i < 2) Utilities.sleep(i ? 15000 : 5000);
+    }
+    return false;
+  } catch (err) { return false; }
+}
+/** 私訊某店值班主管（managers 分頁 active＝TRUE、不是營運系統鑰匙列；emp_id 有填為準，沒填用姓名對名冊）→ 送出幾個人。 */
+function payCompPushManagers_(store, text) {
+  try {
+    const token = (typeof LINE_HUB_BOT_TOKEN !== 'undefined') ? LINE_HUB_BOT_TOKEN : '';
+    if (!token) return 0;
+    const roster = payClockRead(store, 'roster'), uids = {};
+    payClockRead(store, 'managers').forEach(function (m) {
+      if (String(m.active).toLowerCase() !== 'true' || String(m.allow_acting).toLowerCase() === 'true') return;
+      const id = String(m.emp_id || '').trim(), nm = String(m.name || '').replace(/\s/g, '');
+      roster.forEach(function (r) {
+        if (String(r.active).toLowerCase() !== 'true' || !r.line_user_id) return;
+        if (id ? String(r.emp_id) === id : String(r.name || '').replace(/\s/g, '') === nm) uids[String(r.line_user_id)] = true;
+      });
+    });
+    let n = 0;
+    Object.keys(uids).forEach(function (uid) {
+      try {
+        const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', { method: 'post', contentType: 'application/json',
+          muteHttpExceptions: true, headers: { Authorization: 'Bearer ' + token },
+          payload: JSON.stringify({ to: uid, messages: [{ type: 'text', text: String(text).slice(0, 4900) }] }) });
+        if (res.getResponseCode() === 200) n++;
+        else Logger.log('補休檢查私訊失敗 ' + store + '：' + res.getResponseCode());
+      } catch (err) { Logger.log('補休檢查私訊失敗 ' + store + '：' + err); }
+    });
+    return n;
+  } catch (err) { return 0; }
+}
+/** {action:'payroll_comp_trigger_setup', admin_key} → 建每天 09:00 的 payCompCheckDaily（同名先刪，重跑不疊）。 */
+function handlePayrollCompTriggerSetup(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'payCompCheckDaily') ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('payCompCheckDaily').timeBased().everyDays(1).atHour(9).inTimezone('Asia/Taipei').create();
+  return { ok: true, triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
 }
 
 /** 打卡紀錄查詢（管理者）：某月每人每日的原始打卡事件＋主管核定結果。
@@ -2928,10 +2915,10 @@ function payMyPayslipFor_(me, meStore, ym) {
     String(mineMaster.is_full_time).toLowerCase() === 'true');
   // 假別額度與薪資結算與否無關（同仁隨時都該查得到自己還剩多少假），所以三個回傳路徑都要帶
   const leaveQuota = meFullTime ? payMyLeaveQuota(me.emp_id, me.name, ym, stMy) : [];
-  // 補休（2026-10-09）：餘額以「今天」為準（不是查詢的月份）；計時同仁回 allowed:false。出錯就不顯示，不影響薪資單。
+  // 補休（2026-11-01 改每月加減結算）：看「今天這個月」的補休帳（不是查詢的月份）；計時同仁回 allowed:false。出錯就不顯示，不影響薪資單。
   let comp = null;
   try {
-    comp = mineMaster ? payCompStatus(payCompBook(), mineMaster, stMy, payCompToday()) : { allowed: false, balance_h: 0, earliest_expiry: '', history: false };
+    comp = mineMaster ? payCompMonthBook(payCompToday().slice(0, 7)).forEmp(mineMaster, stMy) : { allowed: false, ot_h: 0, used_h: 0, balance_h: 0 };
   } catch (err) { comp = null; }
   if (!run) return { ok: true, ym: ym, name: me.name, ready: false, message: '本月薪資尚未結算',
                      annual: annual, leave_quota: leaveQuota, comp: comp };
@@ -3098,16 +3085,15 @@ function handlePayrollLeaveOptions(body) {
   const flat = payLeaveFlatRows(st, types, nameToEmp);
   const quotas = {};
   let compBook = null;
-  try { compBook = payCompBook(); } catch (err) { compBook = null; }
-  const today = payCompToday();
+  try { compBook = payCompMonthBook(ym); } catch (err) { compBook = null; }
   const compCode = (types.filter(payIsCompType)[0] || {}).code || PAY_COMP_CODE;   // 表上自訂的補休列 code 可能不是 comp
   master.forEach(function (e) {
     quotas[String(e.emp_id)] = payLeaveUsage(String(e.emp_id), ym, types, cfg, null, flat, spans);
-    // 補休餘額（2026-10-09）：值班核定頁的下拉標「剩 N 小時」、計時或沒有餘額就反灰；送出前再判一次時數夠不夠
+    // 補休帳（2026-11-01 改每月加減結算）：值班核定頁的下拉標「本月剩 N 小時」；只有計時反灰，餘額不夠也照常核定（可以先休後補）
     if (compBook) {
       try {
-        const cs = payCompStatus(compBook, e, st, today);
-        cs.comp = true; cs.cap_days = null; cs.blocked = !cs.allowed || !(cs.balance_h > 0);
+        const cs = compBook.forEmp(e, st);
+        cs.comp = true; cs.monthly = true; cs.cap_days = null; cs.blocked = !cs.allowed;
         quotas[String(e.emp_id)][compCode] = cs;
       } catch (err) { /* 算不出來就沒有額度提示，不擋核定 */ }
     }
@@ -3169,7 +3155,8 @@ function handlePayrollLeaveEventSet(body) {
  * 管理系統（平台）負責門市權限，經 Mac mini 代轉時每個薪資請求都帶 body.scope：
  *   沒有欄位／'*' → 不限制（舊路與系統管理者）；字串陣列 → 只能碰名單內的門市；其他形狀 → scope_bad。
  * 只守門與裁切，不改任何計算。比較前門市代碼一律 trim＋大寫（payStore 再補預設店）。 */
-const PAY_SCOPE_ADMIN_ONLY = ['payroll_group', 'payroll_store_set', 'payroll_holiday_sync', 'payroll_get'];
+const PAY_SCOPE_ADMIN_ONLY = ['payroll_group', 'payroll_store_set', 'payroll_holiday_sync', 'payroll_get',
+                              'payroll_comp_check', 'payroll_comp_trigger_setup'];   // 補休檢查看全部門市（2026-11-01）
 
 function payScopeNorm_(v) { return payStore(String(v == null ? '' : v).trim()).toUpperCase(); }
 
@@ -3325,6 +3312,8 @@ const PAYROLL_HANDLERS = {
   payroll_leave_span_get:  handlePayrollLeaveSpanGet,
   payroll_leave_span_set:  handlePayrollLeaveSpanSet,
   payroll_leave_options:   handlePayrollLeaveOptions,
+  payroll_comp_check:      handlePayrollCompCheck,
+  payroll_comp_trigger_setup: handlePayrollCompTriggerSetup,
   payroll_annual_left:     handlePayrollAnnualLeft,
   pnlPayroll:              handlePnlPayroll_,
   pnlLaborEstimate:        handlePnlLaborEstimate_,

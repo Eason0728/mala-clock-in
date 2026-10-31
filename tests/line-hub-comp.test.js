@@ -1,6 +1,6 @@
-// 補休（2026-10-09，LineHub.gs）：①申請頁開頁資料 comp {allowed, balance_h, earliest_expiry}、有餘額才出現「補休」假別
-// ②假別額度卡多一列補休（正職、有餘額或有紀錄才出現）③打卡回覆的到期提醒（30 天內、與特休共用一天一次）
-// ④薪資卡兩列補休的數量帶 H
+// 補休（LineHub.gs；2026-10-09 加，2026-11-01 改每月加減結算＋開放全部門市）：
+// ①申請頁開頁資料 comp {allowed, ot_h, used_h, balance_h, ym}——正職就有「補休」假別、不看餘額、不受 LINE_HUB_PAY_STORES 限制
+// ②假別額度卡的「本月補休」列（加班 − 補休，欠的標紅）③不再有到期提醒 ④舊制薪資卡兩列補休的數量仍帶 H
 const assert = require('assert'); const fs = require('fs'); const vm = require('vm');
 const ROOT = __dirname + '/..';
 const SRC = ['Liff.gs', 'LineHub.gs'].map(f => fs.readFileSync(ROOT + '/apps-script/' + f, 'utf8')).join('\n');
@@ -14,7 +14,7 @@ function extract(src, name) {
 let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 const texts = (o) => { const out = []; (function walk(x) { if (Array.isArray(x)) x.forEach(walk); else if (x && typeof x === 'object') { if (x.type === 'text') out.push(x.text); Object.values(x).forEach(walk); } })(o); return out; };
 
-function make(pay) {
+function make(pay, compFor) {
   const cache = {};
   const sb = { console, JSON, Math, String, Number, Date, Object, Array, parseInt, isFinite, RegExp,
     CacheService: { getScriptCache: () => ({ get: (k) => cache[k] || null, put: (k, v) => { cache[k] = v; }, remove: (k) => { delete cache[k]; } }) },
@@ -23,73 +23,79 @@ function make(pay) {
     LEAVE_TYPES: ['特休假', '事假', '病假', '生理假', '家庭照顧假', '婚假', '出差'],
   };
   vm.createContext(sb); vm.runInContext(SRC + '\n' + extract(PAYSRC, 'payDayBefore'), sb);
-  sb.lineHubMine_ = () => [{ st: { code: '', name: '小辛辣 新竹光復' }, row: { emp_id: 'E1', name: '甲君' } }];
+  sb.lineHubMine_ = () => [{ st: { code: 'MZTJS', name: '墨竹亭 金山店' }, row: { emp_id: 'MZTJS06', name: '甲君' } }];
   sb.verifyLineIdToken_ = (t) => (t ? 'U1' : null);
   sb.lineHubThrottled_ = () => false;
-  sb.lineHubPayPick_ = () => ({ me: { emp_id: 'E1', name: '甲君' }, store: 'SSLGF' });
+  sb.lineHubPayPick_ = () => null;   // 金山不在 LINE_HUB_PAY_STORES：假別額度、薪資卡不開放
   sb.payLeaveTypes = () => sb.LEAVE_TYPES.map((x) => ({ name: x })).concat([{ name: '補休' }]);
   sb.lineHubPayslipFor_ = () => pay;
-  // 已預約補休（2026-10-30）：用 Requests.gs 真的 reqCompReserved_；各店申請列由 sb.__reqRows 決定
-  const RQ = fs.readFileSync(ROOT + '/apps-script/Requests.gs', 'utf8');
-  vm.runInContext("var REQ_COMP_LEAVE_ = '補休';\n" + extract(RQ, 'reqCompReserved_'), sb);
-  sb.__reqRows = [];
-  sb.lineHubSS_ = (st) => st;
-  sb.reqRows_ = () => sb.__reqRows;
+  sb.lineHubCompFor_ = compFor || (() => ({ allowed: false }));
   return sb;
 }
-const FT = { allowed: true, balance_h: 6.5, earliest_expiry: '2026-11-01', history: true };
+const FT = { allowed: true, ot_h: 6, used_h: 2, balance_h: 4, ym: '2026-11' };
 
-ok('申請頁開頁：正職有餘額 → comp 回傳、「補休」放進常用假別', () => {
-  const r = make({ ok: true, leave_quota: [], comp: FT }).handleLineHubReqInit_({ id_token: 't' });
-  assert.strictEqual(JSON.stringify(r.comp), JSON.stringify({ allowed: true, balance_h: 6.5, earliest_expiry: '2026-11-01', reserved_h: 0, available_h: 6.5 }));
+ok('申請頁開頁：正職（金山，不在 LINE 薪資開放名單）→ comp 是本月補休帳、「補休」放進常用假別', () => {
+  const r = make(null, () => FT).handleLineHubReqInit_({ id_token: 't' });
+  assert.strictEqual(JSON.stringify(r.comp), JSON.stringify({ allowed: true, ot_h: 6, used_h: 2, balance_h: 4, ym: '2026-11' }));
   assert(r.leave_types.common.indexOf('補休') >= 0, JSON.stringify(r.leave_types));
   assert(r.leave_types.special.indexOf('補休') < 0);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r.quota)), []);   // 假別額度仍只開放光復、央廚
 });
-ok('申請頁開頁：正職沒餘額 → allowed 但沒有「補休」假別；計時 → allowed false', () => {
-  let r = make({ ok: true, leave_quota: [], comp: { allowed: true, balance_h: 0, earliest_expiry: '', history: true } }).handleLineHubReqInit_({ id_token: 't' });
-  assert.strictEqual(r.comp.allowed, true); assert(r.leave_types.common.indexOf('補休') < 0);
-  r = make({ ok: true, leave_quota: [], comp: { allowed: false, balance_h: 0, earliest_expiry: '', history: false } }).handleLineHubReqInit_({ id_token: 't' });
+ok('申請頁開頁：正職本月沒加班也是負的 → 照樣有「補休」（先休後補）；計時 → 沒有', () => {
+  let r = make(null, () => ({ allowed: true, ot_h: 0, used_h: 8, balance_h: -8, ym: '2026-11' })).handleLineHubReqInit_({ id_token: 't' });
+  assert.strictEqual(r.comp.balance_h, -8); assert(r.leave_types.common.indexOf('補休') >= 0);
+  r = make(null, () => ({ allowed: false, ot_h: 0, used_h: 0, balance_h: 0 })).handleLineHubReqInit_({ id_token: 't' });
   assert.strictEqual(r.comp.allowed, false); assert(r.leave_types.common.indexOf('補休') < 0);
 });
-ok('申請頁開頁：審核中、已核准還沒到的補休從餘額扣掉＝可用；已過去的、別人的、別的假不扣', () => {
-  const sb = make({ ok: true, leave_quota: [], comp: FT });   // 餘額 6.5；Utilities.formatDate 回 2026-10-09＝今天
-  const R = (o) => Object.assign({ emp_id: 'E1', kind: 'leave', leave_type: '補休', status: 'pending', date: '2026-10-20', hours: 3, id: 'x' }, o);
-  sb.__reqRows = [R({}), R({ status: 'approved', date: '2026-10-12', hours: 2 }),
-                  R({ status: 'approved', date: '2026-10-08', hours: 4 }),   // 已過去：多半已核定進 leave、餘額已扣過
-                  R({ status: 'rejected' }), R({ status: 'cancelled' }), R({ emp_id: 'E9' }), R({ leave_type: '特休假' }), R({ kind: 'ot' })];
-  const r = sb.handleLineHubReqInit_({ id_token: 't' });
-  assert.strictEqual(r.comp.reserved_h, 5); assert.strictEqual(r.comp.available_h, 1.5);
-  sb.__reqRows = [R({ hours: 8 })];
-  assert.strictEqual(sb.handleLineHubReqInit_({ id_token: 't' }).comp.available_h, 0);   // 不會變負數
-  sb.reqRows_ = () => { throw new Error('讀不到'); };
-  assert.strictEqual(sb.handleLineHubReqInit_({ id_token: 't' }).comp.available_h, 6.5);   // 讀不到就不扣（主管核定時再擋）
+ok('申請頁開頁：補休帳算不出來（拋例外）→ 不開補休，申請頁照常', () => {
+  const r = make(null, () => { throw new Error('讀不到'); }).handleLineHubReqInit_({ id_token: 't' });
+  assert(r.ok); assert.strictEqual(r.comp.allowed, false); assert(r.leave_types.common.indexOf('補休') < 0);
 });
-ok('申請頁開頁：薪資讀不到（j=null）→ comp 預設不開放，申請頁照常', () => {
-  const r = make(null).handleLineHubReqInit_({ id_token: 't' });
-  assert(r.ok); assert.strictEqual(r.comp.allowed, false);
+ok('lineHubCompFor_：不看 LINE_HUB_PAY_STORES——金山正職也算得到；沒有主檔＝不開放', () => {
+  const sb = make(null);
+  vm.runInContext(extract(SRC, 'lineHubCompFor_'), sb);
+  sb.lineHubPayPickAny_ = () => ({ me: { emp_id: 'MZTJS06', name: '甲君' }, store: 'MZTJS' });
+  sb.payStore = (v) => String(v || 'SSLGF'); sb.payCompToday = () => '2026-11-03';
+  let master = [{ emp_id: 'MZTJS06', name: '甲君', store: 'MZTJS', is_full_time: true }];
+  sb.payRead = () => master;
+  sb.payCompMonthBook = (ym) => ({ forEmp: (e, st) => ({ allowed: true, ym: ym, st: st, emp: e.emp_id }) });
+  const c = sb.lineHubCompFor_('U1');
+  assert.strictEqual(c.ym, '2026-11'); assert.strictEqual(c.st, 'MZTJS'); assert.strictEqual(c.emp, 'MZTJS06');
+  master = [];
+  assert.strictEqual(sb.lineHubCompFor_('U1').allowed, false);
+  sb.lineHubPayPickAny_ = () => null;
+  assert.strictEqual(sb.lineHubCompFor_('U1').allowed, false);
 });
-ok('假別額度卡：特休下面多一列「補休 剩 6.5 小時・最早 11/1 到期」；文字版同步', () => {
-  const sb = make({ ok: true, annual: null, leave_quota: [], comp: FT });
-  const t = texts(sb.lineHubLeaveCard_('U1'));
-  assert(t.indexOf('補休') >= 0 && t.indexOf('剩 6.5 小時') >= 0, JSON.stringify(t));
-  assert(t.some((x) => /最早 11\/1 到期/.test(x)), JSON.stringify(t));
-  assert(/・補休：剩 6\.5 小時（最早 11\/1 到期/.test(sb.lineHubLeaveText_('U1')));
+ok('lineHubPayPickFresh_：any＝true 時不套開放名單，否則照舊只回光復、央廚', () => {
+  const sb = make(null);
+  sb.payStoreList = () => [{ code: 'MZTJS' }];
+  sb.payClockRead = () => [{ emp_id: 'MZTJS06', name: '甲君', line_user_id: 'U1', active: 'TRUE' }];
+  sb.lineHubCanView_ = () => true;
+  sb.payRead = () => [{ emp_id: 'MZTJS06', store: 'MZTJS' }];
+  sb.payStore = (v) => String(v || 'SSLGF');
+  assert.strictEqual(sb.lineHubPayPickFresh_('U1'), null);
+  assert.strictEqual(sb.lineHubPayPickFresh_('U1', true).store, 'MZTJS');
 });
-ok('假別額度卡：計時、或正職沒餘額也沒紀錄 → 不出現補休列；有紀錄但用完 → 剩 0', () => {
-  assert(!texts(make({ ok: true, annual: null, leave_quota: [], comp: { allowed: false, balance_h: 0, history: true } }).lineHubLeaveCard_('U1')).includes('補休'));
-  assert(!texts(make({ ok: true, annual: null, leave_quota: [], comp: { allowed: true, balance_h: 0, history: false } }).lineHubLeaveCard_('U1')).includes('補休'));
-  const t = texts(make({ ok: true, annual: null, leave_quota: [], comp: { allowed: true, balance_h: 0, earliest_expiry: '', history: true } }).lineHubLeaveCard_('U1'));
-  assert(t.includes('補休') && t.includes('剩 0 小時') && t.includes('目前沒有可休的補休'), JSON.stringify(t));
+ok('假別額度卡：特休下面一列「本月補休 剩 4 小時」＋加班 − 補休；欠的標紅；文字版同步', () => {
+  let sb = make({ ok: true, annual: null, leave_quota: [], comp: FT });
+  let t = texts(sb.lineHubLeaveCard_('U1'));
+  assert(t.indexOf('本月補休') >= 0 && t.indexOf('剩 4 小時') >= 0, JSON.stringify(t));
+  assert(t.some((x) => /^加班 6 − 補休 2・每月結算/.test(x)), JSON.stringify(t));
+  assert(/・本月補休：加班 6 − 補休 2 ＝ 剩 4 小時/.test(sb.lineHubLeaveText_('U1')));
+  sb = make({ ok: true, annual: null, leave_quota: [], comp: { allowed: true, ot_h: 0, used_h: 3, balance_h: -3 } });
+  t = texts(sb.lineHubLeaveCard_('U1'));
+  assert(t.indexOf('欠 3 小時') >= 0, JSON.stringify(t));
+  assert(/欠 3 小時/.test(sb.lineHubLeaveText_('U1')));
 });
-ok('打卡回覆到期提醒：最早一批 30 天內到期才提，與特休共用一天一次', () => {
+ok('假別額度卡：計時 → 不出現補休列', () => {
+  assert(!texts(make({ ok: true, annual: null, leave_quota: [], comp: { allowed: false, balance_h: 0 } }).lineHubLeaveCard_('U1')).join().includes('補休'));
+});
+ok('打卡回覆：補休沒有到期日，不再提醒（只剩特休）', () => {
   const sb = make({ ok: true, annual: null, comp: FT });
-  assert.strictEqual(sb.lineHubCompNoteText_({ ok: true, comp: FT }, '2026-10-09'), '🗓 你的補休還剩 6.5 小時，最早一批 11/1 到期（沒休完會照加班費折算），記得跟店長排休');
-  assert.strictEqual(sb.lineHubCompNoteText_({ ok: true, comp: Object.assign({}, FT, { earliest_expiry: '2026-12-01' }) }, '2026-10-09'), '');
-  assert.strictEqual(sb.lineHubCompNoteText_({ ok: true, comp: Object.assign({}, FT, { allowed: false }) }, '2026-10-09'), '');
-  assert.strictEqual(sb.lineHubAnnualNote_('U1', '2026-10-09T19:00:00+08:00').indexOf('🗓 你的補休'), 0);
-  assert.strictEqual(sb.lineHubAnnualNote_('U1', '2026-10-09T21:00:00+08:00'), '');   // 同一天第二次不提
+  assert.strictEqual(typeof sb.lineHubCompNoteText_, 'undefined');
+  assert.strictEqual(sb.lineHubAnnualNote_('U1', '2026-10-09T19:00:00+08:00'), '');
 });
-ok('薪資卡：本月換補休／補休到期折算的數量帶 H', () => {
+ok('薪資卡：舊制的本月換補休／補休到期折算（2026-10 以前若有）數量仍帶 H', () => {
   const sb = make(null);
   assert.strictEqual(sb.lineHubPayLineSub_({ item_key: 'comp_bank', qty: 4, rate: null }), '4H');
   assert.strictEqual(sb.lineHubPayLineSub_({ item_key: 'comp_expire', qty: 3, rate: 240 }), '3H × 240');
