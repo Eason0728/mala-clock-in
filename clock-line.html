@@ -362,9 +362,24 @@
       var b = t === 'in' ? $('btnIn') : $('btnOut'), label = t === 'in' ? '上班' : '下班';
       var g = ready ? status.guard : null, left = 0;
       if (g && g.lock && g.lock[t]) left = g.lock[t] - (Date.now() + clockSkew);
-      b.disabled = !ready || (g && g.blocked === t) || left > 0;
-      b.textContent = left > 0 ? label + '（' + Math.ceil(left / 60000) + ' 分後）' : label;
+      var rb = t === 'in' && restBlocked();
+      b.disabled = !ready || (g && g.blocked === t) || left > 0 || rb;
+      b.textContent = left > 0 ? label + '（' + Math.ceil(left / 60000) + ' 分後）'
+        : rb && status.rest.until ? label + '（' + hmOf(status.rest.until) + ' 後）' : label;
     });
+    var r = status && status.rest;   // 時間到、解開了：拿掉「幾點以後才能打」那句
+    if (r && r.blocked && !restBlocked() && $('msg').textContent === r.reason) say('', '', '');
+  }
+  /* 休息不足（2026-11-01，後端 Rest.gs）：兩班間隔不到 12 小時、或今天已滿 10 小時，上班鍵鎖住；
+     間隔那種到時間自動解開（tick 每次重算），10 小時那種今天都不解。伺服器打卡時會再判一次，這裡只是先講。 */
+  function restBlocked() {
+    var r = status && status.rest;
+    if (!r || !r.blocked) return false;
+    return !r.until || Date.now() + clockSkew < r.until;
+  }
+  function hmOf(ms) {
+    var d = new Date(ms + (8 * 60 + new Date().getTimezoneOffset()) * 60000);
+    return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
   }
   /* 店內公告：一則就擺著不動，多則每 5 秒換一則（同舊連結 clock.html）。一律 textContent——公告是主管手打的自由文字。 */
   var noticeTimer = null;
@@ -397,6 +412,7 @@
       }).join('、') : '今天還沒有打卡紀錄';
       showStore(s.store);
       say('', '', '');
+      if (restBlocked()) say(s.rest.reason, 'warn', s.rest.hint);
     } else {
       var r = s.result || {};
       $('storeName').textContent = r.store_name || (r.code === 'ambiguous' ? '分不出在哪一家店' : '不在打卡範圍');

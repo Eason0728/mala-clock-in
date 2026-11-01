@@ -572,6 +572,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             phase_miss_store(ctx)
             phase_relay(ctx, (HQ['lat'], HQ['lng']))
             phase_relogin(ctx, (HQ['lat'], HQ['lng']))
+            phase_rest(ctx, (HQ['lat'], HQ['lng']))
             rep = CM.report()
             ok('班表：可點元素零漏測（共 %d 個）' % rep['total'], not rep['missed'] and not rep['extra'], rep)
             br.close()
@@ -1050,6 +1051,44 @@ def phase_relogin(ctx, hq):
     p.select_option('#reqView select.rq-dm', d(0)[:7])
     ok('日期欄：換回這個月 → 日留在同一號（有就留）', p.evaluate("document.querySelector('#reqView .rq-dd').value")[8:] == d(90)[8:]
        or p.evaluate("document.querySelector('#reqView .rq-dd').value")[:7] == d(0)[:7], p.evaluate("document.querySelector('#reqView .rq-dd').value"))
+    p.close()
+
+
+def phase_rest(ctx, hq):
+    """休息不足（2026-11-01，Rest.gs）：liff_status 回 rest.blocked → 上班鍵鎖住、按鈕寫幾點後、訊息講原因；
+    時間到自動解開並拿掉那句；下班鍵不受影響。伺服器擋下的上班卡（rejected_rest）照後端字句顯示。"""
+    S = {'until': 0, 'punch': None}
+    reason = '你 11/1 22:40 下班，兩班要隔 12 小時，10:40 以後才能打上班卡'
+    def h(route):
+        try:
+            b = json.loads(route.request.post_data or '{}')
+        except ValueError:
+            return route.continue_()
+        if b.get('action') == 'liff_status':
+            j = route.fetch().json()
+            if j.get('guard') is not None:
+                j['guard'] = {'blocked': 'out', 'lock': {}, 'last': {'type': 'out', 'hm': '22:40', 'ts': '2026-11-01T22:40:00+08:00'},
+                              'now': int(time.time() * 1000)}
+                j['rest'] = {'blocked': True, 'code': 'gap', 'reason': reason, 'hint': '有問題請找值班主管', 'until': S['until']}
+            return route.fulfill(status=200, body=json.dumps(j), content_type='text/plain')
+        if b.get('action') == 'liff_punch' and S['punch']:
+            return route.fulfill(status=200, body=json.dumps(S['punch']), content_type='text/plain')
+        return route.continue_()
+    S['until'] = int(time.time() * 1000) + 4000
+    p = open_page(ctx, url(hq, in_client=True))
+    p.route('**/api/hq', h)
+    p.reload()
+    p.wait_for_function('document.getElementById("who").textContent.length > 0', timeout=10000)
+    p.wait_for_timeout(300)
+    ok('休息不足：上班鍵鎖住、寫幾點後', p.is_disabled('#btnIn') and '後）' in p.inner_text('#btnIn'), p.inner_text('#btnIn'))
+    ok('休息不足：畫面講原因（幾點以後才能打）', reason in msg(p), msg(p))
+    p.wait_for_function('!document.getElementById("btnIn").disabled', timeout=12000)
+    ok('休息不足：時間到上班鍵自動解開、按鈕恢復「上班」、拿掉那句', p.inner_text('#btnIn') == '上班' and reason not in msg(p), (p.inner_text('#btnIn'), msg(p)))
+    # 伺服器擋下（例如別家店剛打下班卡，開頁時還不知道）
+    S['punch'] = {'ok': False, 'type': 'in', 'status': 'rejected_rest', 'reason': '你今天已經上班 10.5 小時（一天最多 10 小時），不能再打上班卡', 'hint': '有問題請找值班主管'}
+    p.click('#btnIn')
+    wait_msg(p, '一天最多 10 小時')
+    ok('休息不足：伺服器擋下的上班卡照後端字句顯示', '一天最多 10 小時' in msg(p) and '有問題請找值班主管' in msg(p), msg(p))
     p.close()
 
 

@@ -708,6 +708,8 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   const clockEventRows = eventsRead.rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
   const lastCounted = lastCountedEvent(clockEventRows, roster.emp_id);
   const isDuplicate = lastCounted !== null && lastCounted.type === String(body.type);
+  // 單日 10 小時／兩班間隔 12 小時（2026-11-01，Rest.gs）：只擋上班卡；沒部署 Rest.gs 或總開關關著＝null
+  const restBlock = (body.type === 'in' && !isDuplicate && typeof restCheckIn_ === 'function') ? restCheckIn_(ss, roster) : null;
 
   let deviceMatch;
   if (!roster.device_id) {
@@ -720,10 +722,12 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
     deviceMatch = false;
   }
 
-  // status 優先序：重複 > 裝置不符 > 超出範圍 > ok
+  // status 優先序：重複 > 休息不足（rejected_rest，Rest.gs）> 裝置不符 > 超出範圍 > ok
   let status;
   if (isDuplicate) {
     status = 'rejected_duplicate';
+  } else if (restBlock) {
+    status = 'rejected_rest';
   } else if (!deviceMatch) {
     status = 'pending_device_approval';
   } else if (!withinRange) {
@@ -748,6 +752,7 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   if (status === 'rejected_duplicate') {
     result.last_type = lastCounted.type;
   }
+  if (restBlock) result.rest = restBlock;
   return result;
 }
 

@@ -461,7 +461,9 @@ function handleLiffStatus_(body) {
   try { if (typeof activeNotices === 'function') notices = activeNotices(found.ss, today); } catch (e) { notices = []; }
   return { ok: true, status: 'ready', name: String(me.name), notices: notices,
            shift_in: normShiftTime(me.shift_in), shift_out: normShiftTime(me.shift_out),
-           today: mine, guard: { blocked: g.blocked, lock: g.lock, last: g.last, now: Date.now() } };
+           today: mine, guard: { blocked: g.blocked, lock: g.lock, last: g.last, now: Date.now() },
+           // 休息不足（2026-11-01，Rest.gs）：開頁就告訴同仁幾點以後才能打上班卡；正在上班中（上一張是上班卡）不用算
+           rest: (g.blocked !== 'in' && typeof restStatus_ === 'function') ? restStatus_(found.ss, me) : { blocked: false } };
 }
 
 var LIFF_PUNCH_REASONS_ = {
@@ -573,6 +575,7 @@ function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows
   }
   var st = j && (j.status || j.error);
   var rr = LIFF_PUNCH_REASONS_[st] || ['系統回覆：' + (st || '未知'), '請告知主管'];
+  if (st === 'rejected_rest' && j.rest) rr = [j.rest.reason, j.rest.hint];   // Rest.gs：講幾點以後才能打
   return { ok: false, type: type, status: st || '', reason: rr[0], hint: rr[1] };
 }
 
@@ -675,6 +678,7 @@ var LIFF_HANDLERS = {
   liff_status: handleLiffStatus_,
   liff_punch: handleLiffPunch_,
   export_tables: handleExportTables_,
+  rest_rule_set: function (b) { return handleRestRuleSet_(b); },   // Rest.gs（2026-11-01）；包一層，免得檔案載入順序問題
   // 加班請假／忘打卡申請＋主管 QR（Requests.gs）。包一層函式：檔案載入順序不保證 Requests.js 在前
   req_info: function (b) { return handleReqInfo_(b); },
   mgr_pending_approvals: function (b) { return reqPendingApprovalsPlus_(b); },   // 覆蓋 Code.gs 同名動作：多算已核准申請（2026-10-10）
