@@ -388,6 +388,9 @@
   .period-total .pt-lb { flex: 1; font-size: 13px; color: #8a6a5f; }
   .period-total .pt-val { font-size: 24px; font-weight: 900; color: var(--brand-black); line-height: 1; }
   .period-total .pt-unit { font-size: 13px; color: #8a6a5f; }
+  .period-total { flex-wrap: wrap; }
+  .period-total.over .pt-val { color: #c0392b; }
+  .period-total .pt-over { flex-basis: 100%; font-size: 13px; font-weight: 700; color: #c0392b; }
   .break-toggle {
     display: inline-block;
     font-size: 13px;
@@ -705,6 +708,7 @@
         Eason 2026-08-28 指出的破口：同仁晚來或出差（例 08:00–12:00 接 12:00–16:00）當天其實沒休息，
         任何「自動扣 1 小時」的隱形規則都會少算。所以這裡不做扣除，只在「相鄰兩段之間的空檔
         剛好等於休息帶」時畫一條說明列；主管把兩段改成相連，那條線自己消失、時數一分鐘都不會少。 */
+  var DAY_MAX_H = 10;   // 單日上限（2026-11-01，與 Rest.gs、排班 rules.js 同一個數字）
   var BREAK_START = '';
   var BREAK_END = '';
 
@@ -1285,6 +1289,15 @@
         totalBox.appendChild(lb);
         totalBox.appendChild(val);
         totalBox.appendChild(unit);
+        // 單日上限 10 小時（2026-11-01 Eason）：照實核定、標紅提醒，不擋送出；光復每天 09:00 會把超過的列進通知匣
+        var over = total + tripH > DAY_MAX_H;
+        totalBox.classList.toggle('over', over);
+        if (over) {
+          var ow = document.createElement('div');
+          ow.className = 'pt-over';
+          ow.textContent = '超過一天 ' + DAY_MAX_H + ' 小時上限（照實核定，會列進每日通知）';
+          totalBox.appendChild(ow);
+        }
       }
       // (3) 一顆鈕在「併成一段」與「插入休息」之間切換，讓主管兩個方向都回得去
       breakToggle.hidden = true;
@@ -1618,6 +1631,7 @@
           + (tripH2
             ? '\n上班 ' + totalH + ' 小時＋出差 ' + tripH2 + ' 小時\n核定時數共 ' + (Math.round((totalH + tripH2) * 100) / 100) + ' 小時'
             : '\n核定時數共 ' + totalH + ' 小時');
+        if (totalH + tripH2 > DAY_MAX_H) msg += '\n⚠ 超過一天 ' + DAY_MAX_H + ' 小時上限（照實核定，會列進每日通知）';
         // 畫面上有休息列才提——主管把時段改成相連（出差）時不會出現這行，與實際計算一致
         if (periodRows.querySelector('.break-split')) {
           msg += '\n（休息 ' + BREAK_START + '–' + BREAK_END + ' 不計入）';
