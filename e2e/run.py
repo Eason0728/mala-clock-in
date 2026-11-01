@@ -963,6 +963,11 @@ def phase_payroll(page, data, exp_att):
     exp = payroll_expect(pay)
     page.goto(f'{BASE}/payroll.html?k=test-admin')
     page.wait_for_timeout(4500)
+    # 薪酬頁預設開「今天的月份」，資料造在昨天（workday）：每月 1 號跑會差一個月、整頁對不上（2026-11-01 抓到）
+    if page.input_value('#ym') != pay['ym']:
+        page.fill('#ym', pay['ym'])
+        page.dispatch_event('#ym', 'change')
+        page.wait_for_timeout(3000)
     CM.scan(page, '薪酬頁')
 
     # 分頁清單（左側選單）
@@ -1047,6 +1052,31 @@ def phase_payroll(page, data, exp_att):
         if click_text(page, None, '解鎖', '解除鎖定'):
             page.wait_for_timeout(3500)
             check('可解除鎖定', True)
+
+    phase_staff_sync(page)
+
+
+def phase_staff_sync(page):
+    """同仁名單↔薪資主檔差異清單：「帶入」「重新啟用」要展開清單才出現，逐分頁掃描點不到
+    （2026-11-01 前一直列漏測）。放在薪酬頁最後——按了會真的寫進主檔，不能影響前面的金額檢查。"""
+    import re as _re
+    def new_count():
+        m = _re.search(r'新人\s*(\d+)', text_of(page, '#staffSync'))
+        return int(m.group(1)) if m else None
+    before = new_count()
+    if before is None or not click_text(page, '#staffSync', '看清單', '展開差異清單', exact=True):
+        check('差異清單：有新人可帶入', False, text_of(page, '#staffSync')[:80])
+        return
+    page.wait_for_timeout(400)
+    for label, done in (('帶入', '已帶入'), ('重新啟用', '已重新啟用')):
+        if not click_text(page, '#staffSync', label, f'差異清單「{label}」（寫入主檔）', exact=True):
+            check(f'差異清單：有「{label}」可按', False)
+            continue
+        page.wait_for_timeout(2500)
+        msg = text_of(page, '#msg')
+        check(f'差異清單：按「{label}」後提示「{done}…」', done in msg, msg)
+    after = new_count()
+    check(f'差異清單：新人數減 2（{before} → {after}）', after == before - 2, str(after))
 
 
 def _has_number(text, value):
