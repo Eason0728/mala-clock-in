@@ -110,12 +110,19 @@ function restStatus_(ss, roster) {
   return r ? { blocked: true, code: r.code, reason: r.reason, hint: r.hint, until: r.until } : { blocked: false };
 }
 
-/** {action:'rest_rule_set', admin_key, on?:true|false} → 開／關這家店的擋卡（指令碼屬性 REST_RULE_ON）；不帶 on＝只查。
+/** {action:'rest_rule_set', admin_key, on?:true|false, probe?:true} → 開／關這家店的擋卡（指令碼屬性 REST_RULE_ON）；不帶 on＝只查；
+ *  probe＝順便實際開一次別家店的表，回 peer_ok／peer_bad（店代碼）。
  *  給上線腳本七店一起開關用（Eason 2026-11-01：先通知店長再開）。管理金鑰空字串一律擋（同 export_tables）。 */
 function handleRestRuleSet_(body) {
   if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   var props = PropertiesService.getScriptProperties();
   if (body.on === true) props.setProperty('REST_RULE_ON', '1');
   else if (body.on === false) props.deleteProperty('REST_RULE_ON');
-  return { ok: true, on: restOn_(), peers: (typeof REST_PEERS_ === 'undefined') ? 0 : REST_PEERS_.length };
+  var peers = (typeof REST_PEERS_ === 'undefined') ? [] : REST_PEERS_, ok = [], bad = [], selfId = '';
+  try { selfId = getSS().getId(); } catch (e) {}
+  if (body.probe) peers.forEach(function (p) {   // 實際開一次別家店的表（跨店讀得到才算數）；只回店代碼，不回試算表 ID
+    if (p.ss === selfId) return;
+    try { SpreadsheetApp.openById(p.ss).getSheetByName('events'); ok.push(p.code); } catch (e) { bad.push(p.code); }
+  });
+  return { ok: true, on: restOn_(), peers: peers.length, peer_ok: ok, peer_bad: bad };
 }
