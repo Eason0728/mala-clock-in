@@ -703,6 +703,7 @@
     if (s === 'rejected_out_of_range') return '超出範圍';
     if (s === 'rejected_device') return '裝置被拒';
     if (s === 'rejected_duplicate') return '重複打卡';
+    if (s === 'rejected_rest') return '休息不足';
     return s;
   }
 
@@ -1477,6 +1478,9 @@
           showStatus('status-warn', 'LINE 身分驗證已過期，正在重新登入…');
           liff.login();
           return;
+        } else if (res && res.status === 'rejected_rest' && res.rest) {
+          // 單日 10 小時／兩班間隔 12 小時（2026-11-01）：講清楚幾點以後才能打，不套統一失敗句
+          showStatus('status-warn', res.rest.reason + '。' + res.rest.hint);
         } else if (res && res.error === 'server_error') {
           // 2026-09-21 新增：伺服器丟例外，不知道這筆到底寫進去了沒（其餘 !res.ok，
           // 例如 invalid_key，伺服器已經明確回答，維持原狀走下面的統一失敗句）。

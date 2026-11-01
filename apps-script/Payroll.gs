@@ -2236,12 +2236,12 @@ function payCompCheckRun_(today) {
   return { stores: stores, inbox: inbox, pushed: pushed };
 }
 /** 通知匣一般件；成功判準 ok===true && added===true。任何情況都不拋例外。 */
-function payInboxNotify_(title, text, keyEvent) {
+function payInboxNotify_(title, text, keyEvent, from, prefix) {
   try {
     const tok = PropertiesService.getScriptProperties().getProperty('NOTIFY_INBOX_TOKEN');
     if (!tok) { Logger.log('通知匣沒設密碼（NOTIFY_INBOX_TOKEN）：' + title); return false; }
-    const payload = JSON.stringify({ action: 'add', token: tok, from: '補休檢查', title: String(title).slice(0, 60),
-      text: String(text).slice(0, 1000), level: 'normal', key: 'compcheck:' + String(keyEvent).toLowerCase().replace(/[^a-z0-9-]/g, '') });
+    const payload = JSON.stringify({ action: 'add', token: tok, from: from || '補休檢查', title: String(title).slice(0, 60),
+      text: String(text).slice(0, 1000), level: 'normal', key: (prefix || 'compcheck') + ':' + String(keyEvent).toLowerCase().replace(/[^a-z0-9-]/g, '') });
     for (let i = 0; i < 3; i++) {
       try {
         const res = UrlFetchApp.fetch(PAY_NOTIFY_INBOX_URL, { method: 'post', contentType: 'application/json', payload: payload,
@@ -2288,6 +2288,63 @@ function handlePayrollCompTriggerSetup(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'payCompCheckDaily') ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('payCompCheckDaily').timeBased().everyDays(1).atHour(9).inTimezone('Asia/Taipei').create();
+  return { ok: true, triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
+}
+
+/* 單日核定超過 10 小時（2026-11-01 Eason）：照實核定、不擋，每天 09:00 把各店「前一天」核定超過 10 小時的人列進通知匣（一般件）。
+   打卡端的上班卡擋法在 Rest.gs；這裡只看主管實際核了幾小時（approved 分頁，同一天多筆取最新）。
+   總部的 HQ- 同仁由央廚表鏡像過去（Mirror.js），兩家店同一人同一天只列一次。觸發器用 payroll_rest_trigger_setup 建。 */
+var PAY_DAY_MAX_H = 10;
+function payRestOverList_(date) {
+  const out = [], seen = {};
+  payStoreList().forEach(function (s) {
+    if (!payHasClock(s.code)) return;
+    const day = buildLatestApprovedMap(payClockRead(s.code, 'approved'))[date] || {};
+    Object.keys(day).forEach(function (emp) {
+      const r = day[emp], h = payNum(r.approved_hours);
+      const nm = String(r.name || emp).replace(/\s/g, ''), k = nm + '|' + date;
+      if (h <= PAY_DAY_MAX_H || seen[k]) return;
+      seen[k] = true;
+      out.push({ store: payStore(s.code), store_name: String(s.name || s.code), emp_id: emp, name: String(r.name || emp),
+                 hours: h, periods: String(r.periods || '') });
+    });
+  });
+  return out;
+}
+function payYesterday_() {
+  return Utilities.formatDate(new Date(Date.now() - 86400000), 'Asia/Taipei', 'yyyy-MM-dd');
+}
+/** {action:'payroll_rest_check', admin_key, date?} → 那天（預設昨天）各店核定超過 10 小時的人（唯讀）。 */
+function handlePayrollRestCheck(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : payYesterday_();
+  return { ok: true, date: date, list: payRestOverList_(date) };
+}
+function payRestOverDaily() { payRestOverRun_(payYesterday_()); }
+/** 實際檢查＋通知（date 可指定，給手動補跑）。任何一步失敗都不拋例外。 */
+function payRestOverRun_(date) {
+  const md = (+date.slice(5, 7)) + '/' + (+date.slice(8, 10));
+  let list = [];
+  try { list = payRestOverList_(date); } catch (err) {
+    payInboxNotify_('超時檢查讀不到資料', md + ' 核定工時檢查失敗：' + err, 'restover-fail-' + date, '超時檢查', 'restover');
+    return { list: [], inbox: false, error: String(err) };
+  }
+  if (!list.length) return { list: [], inbox: false };
+  const by = {};
+  list.forEach(function (x) { (by[x.store_name] = by[x.store_name] || []).push(x); });
+  const lines = Object.keys(by).map(function (st) {
+    return '【' + st + '】\n' + by[st].map(function (x) { return x.name + ' ' + x.hours + ' 小時（' + x.periods + '）'; }).join('\n');
+  });
+  const inbox = payInboxNotify_(md + ' 核定超過 ' + PAY_DAY_MAX_H + ' 小時：' + list.length + ' 人',
+    md + ' 各店核定工時超過一天 ' + PAY_DAY_MAX_H + ' 小時（照實核定、已照付）：\n' + lines.join('\n') +
+    '\n\n請提醒店長排班與下班時間控制在 ' + PAY_DAY_MAX_H + ' 小時內。', 'restover-' + date, '超時檢查', 'restover');
+  return { list: list, inbox: inbox };
+}
+/** {action:'payroll_rest_trigger_setup', admin_key} → 建每天 09:00 的 payRestOverDaily（同名先刪，重跑不疊）。 */
+function handlePayrollRestTriggerSetup(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'payRestOverDaily') ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('payRestOverDaily').timeBased().everyDays(1).atHour(9).inTimezone('Asia/Taipei').create();
   return { ok: true, triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
 }
 
@@ -3156,7 +3213,8 @@ function handlePayrollLeaveEventSet(body) {
  *   沒有欄位／'*' → 不限制（舊路與系統管理者）；字串陣列 → 只能碰名單內的門市；其他形狀 → scope_bad。
  * 只守門與裁切，不改任何計算。比較前門市代碼一律 trim＋大寫（payStore 再補預設店）。 */
 const PAY_SCOPE_ADMIN_ONLY = ['payroll_group', 'payroll_store_set', 'payroll_holiday_sync', 'payroll_get',
-                              'payroll_comp_check', 'payroll_comp_trigger_setup'];   // 補休檢查看全部門市（2026-11-01）
+                              'payroll_comp_check', 'payroll_comp_trigger_setup',   // 補休檢查看全部門市（2026-11-01）
+                              'payroll_rest_check', 'payroll_rest_trigger_setup'];  // 超時檢查看全部門市（2026-11-01）
 
 function payScopeNorm_(v) { return payStore(String(v == null ? '' : v).trim()).toUpperCase(); }
 
@@ -3314,6 +3372,8 @@ const PAYROLL_HANDLERS = {
   payroll_leave_options:   handlePayrollLeaveOptions,
   payroll_comp_check:      handlePayrollCompCheck,
   payroll_comp_trigger_setup: handlePayrollCompTriggerSetup,
+  payroll_rest_check:      handlePayrollRestCheck,
+  payroll_rest_trigger_setup: handlePayrollRestTriggerSetup,
   payroll_annual_left:     handlePayrollAnnualLeft,
   pnlPayroll:              handlePnlPayroll_,
   pnlLaborEstimate:        handlePnlLaborEstimate_,
