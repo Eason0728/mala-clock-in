@@ -262,8 +262,9 @@ html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬管理
 
 <main>
 
-<!-- 同仁名單 ↔ 薪資主檔差異（2026-10-28，Eason 選 B：不自動建檔，財務按了才寫入）；只在管理系統裡顯示 -->
-<div class="card" id="staffSync" style="display:none;padding:14px 18px"></div>
+<!-- 同仁名單 ↔ 薪資主檔差異（2026-10-28，Eason 選 B：不自動建檔，財務按了才寫入）；只在管理系統裡顯示。
+     noprint：放在分頁外面，列印出勤紀錄表、薪資 PDF 時原本會多印一頁這個框（2026-11-01 e2e 抓到） -->
+<div class="card noprint" id="staffSync" style="display:none;padding:14px 18px"></div>
 
 <section class="panel on" id="p-dash">
   <div class="stats" id="dashStats"></div>
