@@ -198,56 +198,52 @@ ok('requests 分頁第一次送出才建立，表頭固定', () => {
   submit(sb, { kind: 'leave', date: '2026-10-15', leave_type: '特休假', hours: 8 });
   assert.strictEqual(sb.__sheets.requests.data[0].join(','), 'id,created_at,emp_id,name,kind,date,leave_type,start,end,hours,miss_type,reason,attach_id,status,decided_at,decided_by,reject_reason,seen_at,comp,voided_at,voided_by,void_reason');
 });
-/* ── 補休（2026-10-09）── */
-ok('補休：加班申請可選換補休（存 comp 欄、摘要標「（換補休）」）；預設與亂填都當加班費', () => {
+/* ── 補休（2026-10-09 加；2026-11-01 改每月加減結算：加班不分換補休、補休不看餘額）── */
+ok('補休：加班申請不再分加班費／換補休——comp 欄留空、摘要沒有「（換補休）」，送了 comp 也不存', () => {
   const sb = makeEnv({});
   let r = submit(sb, { kind: 'ot', date: '2026-10-11', start: '18:00', end: '21:00', reason: '盤點', comp: 'comp' });
-  assert(r.ok, JSON.stringify(r)); assert.strictEqual(r.request.comp, 'comp'); assert(/（換補休）$/.test(r.summary), r.summary);
+  assert(r.ok, JSON.stringify(r)); assert.strictEqual(r.request.comp, undefined); assert(!/換補休/.test(r.summary), r.summary);
   const sh = sb.__sheets.requests, ci = sh.data[0].indexOf('comp');
-  assert.strictEqual(ci, 18); assert.strictEqual(sh.data[1][ci], 'comp');
-  r = submit(sb, { kind: 'ot', date: '2026-10-12', start: '18:00', end: '20:00', reason: '外送' });
-  assert.strictEqual(r.request.comp, 'pay'); assert(!/換補休/.test(r.summary));
-  r = submit(sb, { kind: 'ot', date: '2026-10-13', start: '18:00', end: '20:00', reason: '外送', comp: 'xx' });
-  assert.strictEqual(r.request.comp, 'pay');
+  assert.strictEqual(ci, 18); assert.strictEqual(sh.data[1][ci], '');
   r = submit(sb, { kind: 'leave', date: '2026-10-15', leave_type: '事假', hours: 8, comp: 'comp' });
-  assert.strictEqual(r.request.comp, '');   // 只有加班有這個欄位
+  assert.strictEqual(sh.data[2][ci], '');
 });
-ok('補休：舊的 18 欄 requests 分頁——讀得到（沒有 comp＝加班費）、寫入時自動補表頭、欄位不錯位', () => {
+ok('補休：舊的 18 欄 requests 分頁——讀得到、寫入時自動補表頭、欄位不錯位', () => {
   const sb = makeEnv({});
   const H18 = ['id', 'created_at', 'emp_id', 'name', 'kind', 'date', 'leave_type', 'start', 'end', 'hours', 'miss_type', 'reason', 'attach_id', 'status', 'decided_at', 'decided_by', 'reject_reason', 'seen_at'];
   const old = ['rold1', '2026-10-01T10:00:00+08:00', 'E01', '測試一', 'ot', '2026-10-01', '', '18:00', '20:00', 2, '', '舊的', '', 'approved', '2026-10-01T22:00:00+08:00', '測試主管', '', ''];
   sb.__sheets.requests = sheet('requests', [H18, old]);
   const info = sb.handleReqInfo_({ id_token: 'TOK_U1' });
-  assert(info.ok); assert.strictEqual(info.requests[0].comp, 'pay');
-  const r = submit(sb, { kind: 'ot', date: '2026-10-11', start: '18:00', end: '21:00', reason: '盤點', comp: 'comp' });
+  assert(info.ok); assert.strictEqual(info.requests[0].kind, 'ot');
+  const r = submit(sb, { kind: 'ot', date: '2026-10-11', start: '18:00', end: '21:00', reason: '盤點' });
   assert(r.ok, JSON.stringify(r));
   const d = sb.__sheets.requests.data;
   assert.strictEqual(d[0].length, 22); assert.strictEqual(d[0][18], 'comp'); assert.strictEqual(d[0][21], 'void_reason');   // 2026-10-26 起多 voided_* 三欄
-  assert.strictEqual(d[2][18], 'comp'); assert.strictEqual(d[2][4], 'ot'); assert.strictEqual(d[2][13], 'pending');
+  assert.strictEqual(d[2][18], ''); assert.strictEqual(d[2][4], 'ot'); assert.strictEqual(d[2][13], 'pending');
   assert.strictEqual(d[1].length, 18);   // 舊列原封不動
-  // 主管審核（header-aware 寫入）照常
   assert(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: r.request.id, decision: 'approve' }).ok);
   assert.strictEqual(sb.__sheets.requests.data[2][13], 'approved');
   const day = sb.handleMgrReqDay_({ mgr_key: 'MK', date: '2026-10-11' });
-  assert(/（換補休）/.test(day.by_emp.E01[0].summary));
+  assert(!/換補休/.test(day.by_emp.E01[0].summary));
 });
-ok('補休：請假假別「補休」放行（不在 LEAVE_TYPES 白名單）；店家後端沒有薪資時不擋餘額', () => {
+ok('補休：請假假別「補休」放行（不在 LEAVE_TYPES 白名單）；店家後端沒有薪資時不擋', () => {
   const sb = makeEnv({});
   const r = submit(sb, { kind: 'leave', date: '2026-10-20', leave_type: '補休', hours: 4 });
   assert(r.ok, JSON.stringify(r)); assert.strictEqual(r.request.leave_type, '補休');
 });
-ok('補休：和薪資同專案（光復）時，餘額不夠或計時同仁就擋', () => {
+ok('補休：和薪資同專案（光復）時——正職不看餘額照收（先休後補），計時同仁擋', () => {
   const sb = makeEnv({});
-  let st = { allowed: true, balance_h: 3 };
-  sb.payRead = () => [{ emp_id: 'E01', store: 'SSLGF' }];
-  sb.payCompStatus = () => st; sb.payCompBook = () => ({}); sb.payCompToday = () => '2026-10-09';
-  let r = submit(sb, { kind: 'leave', date: '2026-10-20', leave_type: '補休', hours: 4 });
-  assert.strictEqual(r.error, 'comp_not_enough'); assert(/只剩 3 小時/.test(r.message));
-  r = submit(sb, { kind: 'leave', date: '2026-10-20', leave_type: '補休', hours: 3 });
+  let ft = true;
+  sb.payRead = () => [{ emp_id: 'E01', store: 'SSLGF', is_full_time: ft }];
+  sb.payIsFt = (m) => m.is_full_time === true;
+  let r = submit(sb, { kind: 'leave', date: '2026-10-20', leave_type: '補休', hours: 8 });   // 沒有任何加班也收
   assert(r.ok, JSON.stringify(r));
-  st = { allowed: false, balance_h: 0 };
+  ft = false;
   r = submit(sb, { kind: 'leave', date: '2026-10-21', leave_type: '補休', hours: 1 });
   assert.strictEqual(r.error, 'comp_not_allowed');
+  sb.payRead = () => [];   // 主檔查不到＝不擋，交給主管
+  r = submit(sb, { kind: 'leave', date: '2026-10-22', leave_type: '補休', hours: 1 });
+  assert(r.ok, JSON.stringify(r));
 });
 ok('liff_punch 帶 QR：驗過才用店家座標打卡（距離 0）、記 qr_punch；QR 錯就不打卡；打卡成功回申請結果告知', () => {
   const sb = makeEnv({});
@@ -516,19 +512,13 @@ ok('請假／出差時數（2026-10-30 審查）：先取 0.25 再檢查；起�
   assert.strictEqual(T({ start: '10:00', end: '10:00' }).error, 'bad_time');
   assert(T({ start: '10:00', end: '14:30' }).ok);
 });
-ok('補休超額（2026-10-30 審查）：光復查得到餘額時，扣掉審核中／已核准還沒到的補休才是可用', () => {
+ok('補休先休後補（2026-11-01 改制，取代 10-30 的超額擋）：同一人連送好幾張補休都收；待審清單不再帶 comp_reserved_h', () => {
   const sb = makeEnv({});
-  sb.payRead = () => [{ emp_id: 'E01', store: 'SSLGF' }]; sb.payCompBook = () => ({}); sb.payCompToday = () => '2026-10-09';
-  sb.payCompStatus = () => ({ allowed: true, balance_h: 3 });
+  sb.payRead = () => [{ emp_id: 'E01', store: 'SSLGF', is_full_time: true }]; sb.payIsFt = () => true;
   const C = (date, hours) => submit(sb, { kind: 'leave', date, leave_type: '補休', hours });
-  assert(C('2026-10-15', 3).ok);                                   // 第一張用完 3 小時
-  const second = C('2026-10-16', 3);
-  assert.strictEqual(second.error, 'comp_not_enough');              // 原本會過
-  assert(/可用只剩 0 小時/.test(second.message) && /已有 3 小時/.test(second.message), second.message);
-  // 主管審核清單：附上「其他申請已占」的時數（不含自己這張）
-  sb.payCompStatus = () => ({ allowed: true, balance_h: 8 });
-  assert(C('2026-10-17', 2).ok);
+  assert(C('2026-10-15', 8).ok); assert(C('2026-10-16', 8).ok); assert(C('2026-10-17', 2).ok);
   const items = sb.handleMgrReqPending_({ mgr_key: 'MK' }).items.filter((x) => x.leave_type === '補休');
-  assert.deepStrictEqual(items.map((x) => x.comp_reserved_h), [2, 3]);
+  assert.strictEqual(items.length, 3);
+  assert(items.every((x) => x.comp_reserved_h === undefined));
 });
 if (require.main === module) console.log(`\n${n} 項全部通過`);

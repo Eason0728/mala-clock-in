@@ -695,7 +695,7 @@ async function post(action,body,opt){   // opt.quiet：被擋（scope_forbidden�
       const res=await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain'},body:payload});
       const txt=await res.text();
       let j; try{ j=JSON.parse(txt); }catch(e){ if(attempt===0) continue; toast('連線異常（伺服器忙碌），請再試一次',true); return {ok:false,error:'bad_response'}; }
-      if(!j.ok&&j.message) toast(j.message,true);
+      if(!j.ok&&j.message&&!(opt&&opt.noToast)) toast(j.message,true);
       return j;
     }catch(e){ if(attempt===0) continue; toast('連不上伺服器，請稍後再試',true); return {ok:false,error:'network'}; }
   }
@@ -1024,7 +1024,7 @@ function costTotals(){
       /* 自訂加薪：**不計入薪資費用**（2026-08-24 Eason）——它可能是行銷、補發之類，
          科目要自己判斷，所以獨立列出來讓他歸到對的地方。同仁薪資單照舊看得到（那是另一條路徑）。*/
       if(k==='custom_add'){ g.custAdd+=a; g.custAddBy.push([r.name,r.is_full_time,x.item_label,a]); return; }
-      // 補休「本月換補休」是 0 元資訊列（2026-10-09），不進任何科目；「補休到期折算」照一般加項歸其他
+      // 舊制補休（2026-10-09～10-31）「本月換補休」是 0 元資訊列，不進任何科目；「補休到期折算」照一般加項歸其他（2026-11-01 改制後不再產生）
       if(k==='comp_bank') return;
       // 計時同仁：領到的錢全部歸「薪資費用／PT」（時薪＋支援＋各種津貼）
       if(!r.is_full_time){g.pt+=a;return}
@@ -1390,8 +1390,11 @@ async function toggleLock(){
       try{ body.cost_snapshot=costStable(costTotals()); }
       catch(e){ console.warn('pnlPayroll 快照計算失敗，鎖定照常送出，這次不會有快照可讀：',e); }
     }
-    const r=await post('payroll_finalize',body);
+    const r=await post('payroll_finalize',body,lock?{noToast:true}:undefined);
     if(r.ok){STATUS=r.status;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
+    // 補休帳是負的不能鎖定（2026-11-01）：名單可能好幾行，用對話框列清楚
+    else if(lock&&r.error==='comp_negative') alert(r.message);
+    else if(lock&&r.message) toast(r.message,true);
   } finally {
     if(timer) clearInterval(timer);
     if(lb){ lb.disabled=false; lb.textContent=label(); }

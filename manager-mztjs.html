@@ -1332,10 +1332,9 @@
           var def = LEAVE_OPTS.types.filter(function (x) { return x.name === t; })[0];
           var q = def ? quotaOf(String(emp.emp_id), def.code) : null;
           if (q && q.comp) {
-            // 補休（2026-10-09）：只有正職、只能用已定案月份換到的餘額
+            // 補休（2026-11-01 改每月加減結算）：只有正職；不看餘額（可以先休後補），標本月補休帳
             if (!q.allowed) { opt.disabled = true; opt.textContent = t + '（只有正職）'; }
-            else if (!(q.balance_h > 0)) { opt.disabled = true; opt.textContent = t + '（沒有餘額）'; }
-            else opt.textContent = t + '（剩 ' + q.balance_h + ' 小時）';
+            else opt.textContent = t + '（本月' + compBalWord(q) + '）';
           } else if (q && q.cap_days != null) {
             var remain = Math.round((q.remain_days || 0) * 10) / 10;
             if (q.blocked) {
@@ -1517,12 +1516,10 @@
           }
           if (wc.note && !confirm(wc.note + '\n\n仍要送出嗎？')) return;
         }
-        // 補休：時數不能超過餘額（同一天重送原本的補休紀錄放行，否則改不動）
-        if (q0 && q0.comp && !prevHad(L.type) &&
-            (!q0.allowed || Number(L.hours || 0) > Number(q0.balance_h || 0))) {
+        // 補休：只擋計時同仁（2026-11-01 起可以先休後補，不看餘額；同一天重送原本的補休紀錄放行，否則改不動）
+        if (q0 && q0.comp && !prevHad(L.type) && !q0.allowed) {
           resultBox.style.display = 'block';
-          resultBox.textContent = '✕ ' + emp.name + (q0.allowed ? ' 的補休餘額只剩 ' + (q0.balance_h || 0) + ' 小時，不夠請 ' + (L.hours || 0) + ' 小時' : ' 是計時同仁，沒有補休')
-            + '，無法送出。';
+          resultBox.textContent = '✕ ' + emp.name + ' 是計時同仁，沒有補休，無法送出。';
           return;
         }
         // 硬擋：額度用完的假別不給送出（Eason 2026-08-22 指定「硬擋，不給送出」）
@@ -2048,17 +2045,21 @@
     var wrap = document.createElement('div'); wrap.appendChild(bar); wrap.appendChild(msg);
     return wrap;
   }
-  /** 補休申請：附上這位同仁目前的補休餘額（薪酬後端算的；查不到就不顯示） */
+  /** 本月補休帳的短字：「剩 4 小時」／「欠 4 小時」（2026-11-01：本月核准加班 − 本月補休，含審核中） */
+  function compBalWord(q) {
+    var b = Math.round((Number(q.balance_h) || 0) * 100) / 100;
+    return b < 0 ? '欠 ' + (-b) + ' 小時' : '剩 ' + b + ' 小時';
+  }
+  /** 補休申請：附上這位同仁本月的補休帳（薪酬後端算的；查不到就不顯示） */
   function compBalanceNote(it) {
     if (it.kind !== 'leave' || it.leave_type !== '補休' || !LEAVE_OPTS || !LEAVE_OPTS.types) return '';
     var def = LEAVE_OPTS.types.filter(function (x) { return x.name === '補休'; })[0];
     var q = def ? quotaOf(String(it.emp_id), def.code) : null;
     if (!q || !q.comp) return '';
-    if (!q.allowed) return '\n補休餘額：計時同仁沒有補休';
-    // 2026-10-30：餘額只算已核定入帳的；同一人其他審核中／已核准還沒入帳的補休也要扣（後端 comp_reserved_h）
-    var held = Number(it.comp_reserved_h) || 0, avail = Math.max(0, Math.round((Number(q.balance_h) - held) * 100) / 100);
-    return '\n補休餘額：' + q.balance_h + ' 小時' + (held > 0 ? '，其他申請已占 ' + held + ' 小時、可用 ' + avail + ' 小時' : '')
-      + (Number(it.hours) > avail ? '（不夠，核准前請先跟同仁確認）' : '');
+    if (!q.allowed) return '\n補休：計時同仁沒有補休';
+    // 2026-11-01 改每月加減結算：審核中的這筆已經算在「補休」裡；欠的要在當月用加班補平，有負數不能鎖定薪資
+    return '\n本月補休帳：加班 ' + (Number(q.ot_h) || 0) + ' − 補休 ' + (Number(q.used_h) || 0) + ' ＝ ' + compBalWord(q)
+      + (Number(q.balance_h) < 0 ? '（當月要用加班補平）' : '');
   }
   function buildReqItem(it, card, title) {
     var el = document.createElement('div'); el.className = 'rq-item';

@@ -637,9 +637,10 @@ def handle_payroll_leave_options(data, body):
             q[t["code"]] = {"used_days": used, "cap_days": cap,
                             "remain_days": cap - used, "basis": t["cap_basis"],
                             "blocked": blocked}
-        # 補休餘額：第一位同仁正職剩 6 小時，其餘沒有餘額（下拉反灰）
-        bal = 6 if i == 0 else 0
-        q["comp"] = {"comp": True, "allowed": True, "balance_h": bal, "earliest_expiry": "", "cap_days": None, "blocked": bal <= 0}
+        # 補休帳（2026-11-01 改每月加減結算）：第一位本月加班 8、補休 2 → 剩 6；其餘加班 0、補休 4 → 欠 4（負的也能選）
+        ot, used = (8, 2) if i == 0 else (0, 4)
+        q["comp"] = {"comp": True, "monthly": True, "allowed": True, "ot_h": ot, "used_h": used, "balance_h": ot - used,
+                     "cap_days": None, "blocked": False}
         quotas[str(emp.get("emp_id"))] = q
     return {"ok": True, "store": "SSLGF", "types": MOCK_LEAVE_TYPES,
             "quotas": quotas, "day_hours": 8}

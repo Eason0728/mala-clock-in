@@ -103,18 +103,6 @@ function reqSpanCheck_(start, end, what) {
   if (hrs > 12) return { error: 'bad_time', message: what + '時段超過 12 小時，請確認時間；一整天請選「整天」填時數' };
   return { hours: hrs };
 }
-/** 補休「已預約」的時數（2026-10-30 審查）：餘額只算主管核定進 leave 分頁的，審核中／已核准還沒核定的單不會扣，
- *  同一份餘額可以申請好幾次。算這個人：審核中的補休（不分日期）＋已核准、日期在今天之後的補休（今天以前的多半已核定進 leave，避免重扣）。
- *  rows＝reqRows_ 讀出的申請列；excludeId＝主管審這一筆時不算它自己。 */
-function reqCompReserved_(rows, empId, today, excludeId) {
-  var sum = 0;
-  (rows || []).forEach(function (r) {
-    if (String(r.emp_id) !== String(empId) || r.kind !== 'leave' || r.leave_type !== REQ_COMP_LEAVE_) return;
-    if (excludeId && String(r.id) === String(excludeId)) return;
-    if (r.status === 'pending' || (r.status === 'approved' && String(r.date) > today)) sum += Number(r.hours) || 0;
-  });
-  return Math.round(sum * 100) / 100;
-}
 function reqClean_(v, max) { return String(v === null || v === undefined ? '' : v).replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max); }
 function reqPublic_(r) {
   return { id: String(r.id), created_at: String(r.created_at), emp_id: String(r.emp_id), name: String(r.name), kind: String(r.kind),
@@ -122,7 +110,7 @@ function reqPublic_(r) {
            hours: r.hours === '' || r.hours === null || r.hours === undefined ? null : Number(r.hours),
            miss_type: String(r.miss_type || ''), reason: String(r.reason || ''), has_attach: !!r.attach_id,
            status: String(r.status), decided_at: String(normCellTs(r.decided_at) || ''), decided_by: String(r.decided_by || ''),
-           reject_reason: String(r.reject_reason || ''), comp: r.kind === 'ot' ? (String(r.comp || '') === 'comp' ? 'comp' : 'pay') : '',
+           reject_reason: String(r.reject_reason || ''),
            proof_required: reqProofType_(r), need_proof: reqNeedsProof_(r),
            voided_at: String(normCellTs(r.voided_at) || ''), voided_by: String(r.voided_by || ''), void_reason: String(r.void_reason || '') };
 }
@@ -137,7 +125,7 @@ function reqSetCells_(sh, rowIndex, patch) {
 function reqSummary_(r) {
   var md = parseInt(String(r.date).slice(5, 7), 10) + '/' + parseInt(String(r.date).slice(8, 10), 10);
   if (r.kind === 'leave') return md + ' ' + r.leave_type + (r.start ? ' ' + r.start + '–' + r.end : ' 整天') + ' ' + Number(r.hours) + ' 小時';
-  if (r.kind === 'ot') return md + ' 加班 ' + r.start + '–' + r.end + '（' + Number(r.hours) + ' 小時）' + (String(r.comp || '') === 'comp' ? '（換補休）' : '');
+  if (r.kind === 'ot') return md + ' 加班 ' + r.start + '–' + r.end + '（' + Number(r.hours) + ' 小時）';
   if (r.kind === 'trip') {
     var place = reqTripPlace_(r.reason);
     return md + ' 出差' + (r.start ? ' ' + r.start + '–' + r.end : ' 整天') + ' ' + Number(r.hours) + ' 小時' + (place ? '（地點：' + place + '）' : '');
@@ -282,8 +270,7 @@ function reqValidate_(b, me, events, today, existing) {
     row.hours = reqSpanHours_(row.start, row.end);
     if (row.hours > 12) return { error: 'bad_time', message: '加班時段超過 12 小時，請確認時間' };
     if (!reason) return { error: 'need_reason', message: '加班要寫原因' };
-    // 補休（2026-10-09）：加班費／換補休（預設加班費）。店家後端不知道誰是正職——計時同仁就算送了 comp，薪資也一律當加班費。
-    row.comp = String(b.comp || '') === 'comp' ? 'comp' : 'pay';
+    // 補休（2026-11-01 改每月加減結算）：加班不再分「加班費／換補休」，核准的加班都算進當月補休帳；comp 欄留空（舊列的值不再使用）
   } else if (kind === 'trip') {
     // 出差（2026-10-09）：存成 leave_type＝出差；核准後核定頁預填「出差」＋時數（出差時數與上班時段相加，整天出差可以沒有時段）
     if (diff < -REQ_LEAVE_PAST_DAYS || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '出差只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
@@ -355,15 +342,9 @@ function handleReqSubmit_(body) {
     var v = reqValidate_(body, who.me, liffEvents_(who.ss), todayTaipeiStr(), reqRows_(who.ss));
     if (v.error) return { ok: false, error: v.error, message: v.message };
     var r = v.row;
-    // 補休餘額：只有和薪資同一個專案的店（光復）查得到，盡量擋；其他店靠 LINE 申請頁（光復算餘額）與值班主管核定時再擋一次
-    if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_) {
-      var cb = reqCompBalance_(who.me);
-      if (cb && !cb.allowed) return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
-      if (cb) {
-        var held = reqCompReserved_(reqRows_(who.ss), who.me.emp_id, todayTaipeiStr());
-        var avail = Math.max(0, Math.round((cb.balance_h - held) * 100) / 100);
-        if (Number(r.hours) > avail) return { ok: false, error: 'comp_not_enough', message: '補休可用只剩 ' + avail + ' 小時' + (held > 0 ? '（餘額 ' + cb.balance_h + ' 小時，已有 ' + held + ' 小時在申請中或已核准還沒入帳）' : '') + '，不夠請 ' + Number(r.hours) + ' 小時' };
-      }
+    // 補休（2026-11-01 改每月加減結算）：可以先休後補、不看餘額；只擋計時同仁（和薪資同專案的店〔光復〕查得到主檔才擋，其他店靠 LINE 申請頁與主管）
+    if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_ && reqCompAllowed_(who.me) === false) {
+      return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
     }
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
     r.created_at = nowTaipeiIso(); r.emp_id = String(who.me.emp_id); r.name = String(who.me.name);
@@ -375,13 +356,12 @@ function handleReqSubmit_(body) {
   } finally { lock.releaseLock(); }
 }
 
-/** 補休餘額（盡量擋）：和薪資同專案（光復）才查得到 → {allowed, balance_h}；查不到／出錯回 null＝不擋（交給申請頁與主管）。 */
-function reqCompBalance_(me) {
+/** 能不能請補休（正職才行）：和薪資同專案（光復）才查得到 → true／false；查不到／出錯回 null＝不擋（交給申請頁與主管）。 */
+function reqCompAllowed_(me) {
   try {
-    if (typeof payCompStatus !== 'function' || typeof payRead !== 'function') return null;
+    if (typeof payIsFt !== 'function' || typeof payRead !== 'function') return null;
     var m = payRead('master').filter(function (x) { return String(x.emp_id) === String(me.emp_id); })[0];
-    if (!m) return null;
-    return payCompStatus(payCompBook(), m, m.store, payCompToday());
+    return m ? payIsFt(m) : null;
   } catch (e) { return null; }
 }
 
@@ -567,7 +547,6 @@ function handleMgrReqPending_(body) {
   if (!reqMgr_(body)) return { ok: false, error: 'unauthorized' };
   var ss = getSS(), all = reqRows_(ss), rows = all.filter(function (r) { return r.status === 'pending'; });
   if (!rows.length) return { ok: true, items: [] };
-  var todayP = todayTaipeiStr();
   var events = liffEvents_(ss), upc = reqUpperCache_(ss);
   var hideHome = !reqMgrActing_(reqMgr_(body), body);   // 不算支援的人：本店主管連申請都看不到（2026-10-29）
   if (hideHome) rows = rows.filter(function (r) { return reqUpperWhy_(r.emp_id, ss, upc) !== 'home'; });
@@ -577,8 +556,6 @@ function handleMgrReqPending_(body) {
     var why = reqUpperWhy_(r.emp_id, ss, upc);
     o.upper = !!why;   // 值班主管本人／部門同仁的申請：送上層審，這把鑰匙不能處理
     if (why) o.upper_kind = why;
-    // 補休：同一人在本店其他審核中／已核准還沒入帳的補休時數，核定頁拿餘額扣掉這個才知道夠不夠（2026-10-30）
-    if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_) o.comp_reserved_h = reqCompReserved_(all, r.emp_id, todayP, r.id);
     o.attach_id = String(r.attach_id || '');   // 主管看附件用（經光復 line_hub_attach_get，會再核對主管金鑰）
     if (reqDayDiff_(r.date, todayTaipeiStr()) <= 0) o.punches = reqDayPunches_(events, r.emp_id, r.date);   // 還沒到的日期沒有打卡可看，不顯示「沒有任何打卡」
     return o;

@@ -1,15 +1,15 @@
-/* 補休回歸守門（2026-10-09）：沒有補休的人，薪資結果必須一毛不差、逐項相同。
+/* 補休回歸守門（2026-10-09 建；2026-11-01 改每月加減結算時換基準）：沒有補休的人，薪資結果必須一毛不差、逐項相同。
  *
  * 做法：同一份假資料（打卡核定／請假／加班申請／手動工時／獎金／支援，多人多月）分別餵
- *   ①改版前的 Payroll.gs（git 基準 3668329，補休上線前最後一版）②現在的 Payroll.gs
+ *   ①改版前的 Payroll.gs（git 基準 2b73b12，每月加減結算改制前最後一版）②現在的 Payroll.gs
  * 都跑 handlePayrollCalc（整條鏈：payCollect → payInputsBase → payCalcOne → 寫 run／item），
  * 逐人比對回傳的 results 與寫進 run／item 的每一列（run_at 時間戳除外）。
- * 另外放一位「有換補休」的同仁當對照：只有他會變，其他人一律相同——證明比對真的有在比。
+ * 另外放一位「有換補休加班＋請補休」的同仁當對照：只有他會變，其他人一律相同——證明比對真的有在比。
  * 沒有 git（例如只拿到單一檔案）時跳過並說明，不算失敗。 */
 'use strict';
 const fs = require('fs'), vm = require('vm'), path = require('path'), cp = require('child_process');
 const ROOT = path.join(__dirname, '..');
-const BASE = '3668329';
+const BASE = '2b73b12';
 let OLD;
 try { OLD = cp.execFileSync('git', ['-C', ROOT, 'show', BASE + ':apps-script/Payroll.gs'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
 catch (e) { console.log('⚠ 取不到 git 基準 ' + BASE + '，跳過回歸比對'); process.exit(0); }
@@ -80,6 +80,8 @@ master.forEach((e, ei) => {
     }
   });
 });
+// 對照那位 10、11 月各請兩天補休（新制：不算出勤、從加班扣）
+['2026-10-14', '2026-10-21', '2026-11-12', '2026-11-19'].forEach((date) => leave.push({ '日期': date, '姓名': '換補休對照', '假別': '補休', '時數': 8 }));
 // 計時同仁也送「換補休」（應被忽略）
 requests.push({ id: 'rPT', kind: 'ot', date: '2026-10-08', start: '19:00', end: '22:00', hours: 3, status: 'approved', emp_id: 'E03', comp: 'comp' });
 const CLOCK = { roster: master.map((e) => ({ emp_id: e.emp_id, name: e.name, active: true })), approved, events, leave, requests };
