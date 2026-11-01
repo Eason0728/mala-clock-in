@@ -55,6 +55,17 @@
     "relay": false
   },
   {
+    "code": "mztrg",
+    "name": "墨竹亭 內湖瑞光",
+    "page": "clock-mztrg.html",
+    "gas_dir": "mztrg-clock-in",
+    "api": "https://script.google.com/macros/s/AKfycbycCVHMW6nLzNvVN5nt6V12pQ-7cZO4vVPQEEvVZiX9Jng1gfUuPZzxgpOl1wmRYqCG/exec",
+    "lat": 25.07576149513664,
+    "lng": 121.57662528711998,
+    "radius_m": 50,
+    "relay": false
+  },
+  {
     "code": "hq",
     "name": "鼎兆元 總部",
     "page": "clock-hq.html",
