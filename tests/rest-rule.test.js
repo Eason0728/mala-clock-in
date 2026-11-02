@@ -1,4 +1,4 @@
-// 單日 10 小時／兩班間隔 12 小時（2026-11-01，Rest.gs）：判斷規則、跨店、總開關、handleClock 寫 rejected_rest。
+// 單日 10 小時／兩班間隔 11 小時（2026-11-01；11-02 由 12 改 11，Rest.gs）：判斷規則、跨店、總開關、handleClock 寫 rejected_rest。
 const assert = require('assert');
 const fs = require('fs');
 const vm = require('vm');
@@ -60,17 +60,18 @@ const judge = (evs, now, peers) => {
   return m.sb.restCheckIn_(self, { emp_id: 'E01', name: '王 小明' });
 };
 
-ok('昨天 22:40 下班、今天 10:00 打上班 → 擋，10:40 以後才能打', () => {
-  const r = judge([['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T22:40:00', 'E01', 'out']], '2026-11-02T10:00:00');
+ok('昨天 22:40 下班、今天 09:00 打上班 → 擋，09:40 以後才能打', () => {
+  const r = judge([['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T22:40:00', 'E01', 'out']], '2026-11-02T09:00:00');
   assert.strictEqual(r.code, 'gap');
-  assert.strictEqual(r.until, T('2026-11-02T10:40:00'));
-  assert.ok(r.reason.includes('11/1 22:40') && r.reason.includes('10:40'), r.reason);
+  assert.strictEqual(r.until, T('2026-11-02T09:40:00'));
+  assert.ok(r.reason.includes('11/1 22:40') && r.reason.includes('09:40') && r.reason.includes('11 小時'), r.reason);
 });
-ok('昨天 22:00 下班、今天 10:05 → 可以打（剛好過 12 小時也可以）', () => {
+ok('昨天 22:00 下班、今天 09:05 → 可以打（剛好過 11 小時也可以，08:59 擋）', () => {
   const ev = [['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T22:00:00', 'E01', 'out']];
-  assert.strictEqual(judge(ev, '2026-11-02T10:05:00'), null);
-  assert.strictEqual(judge(ev, '2026-11-02T10:00:00'), null);
-  assert.strictEqual(judge(ev, '2026-11-02T09:59:00').code, 'gap');
+  assert.strictEqual(judge(ev, '2026-11-02T09:05:00'), null);
+  assert.strictEqual(judge(ev, '2026-11-02T09:00:00'), null);
+  assert.strictEqual(judge(ev, '2026-11-02T08:59:00').code, 'gap');
+  assert.strictEqual(judge(ev, '2026-11-02T10:00:00'), null);   // 舊規則（12 小時）會擋到 10:00，現在放行
 });
 ok('二段班：11:00–14:00 下班、17:00 回來打上班 → 不看間隔，可以打', () => {
   assert.strictEqual(judge([['2026-11-02T11:00:00', 'E01', 'in'], ['2026-11-02T14:00:00', 'E01', 'out']], '2026-11-02T17:00:00'), null);
@@ -81,9 +82,9 @@ ok('當天已打卡滿 10 小時再打上班 → 擋（cap，沒有解開時間�
   assert.strictEqual(r.code, 'cap'); assert.strictEqual(r.until, null);
   assert.strictEqual(judge([['2026-11-02T08:00:00', 'E01', 'in'], ['2026-11-02T17:30:00', 'E01', 'out']], '2026-11-02T18:00:00'), null);
 });
-ok('跨夜班 22:00–02:00 歸前一天：同一天 10:00 打上班 → 距離 02:00 不到 12 小時，擋到 14:00', () => {
+ok('跨夜班 22:00–02:00 歸前一天：同一天 10:00 打上班 → 距離 02:00 不到 11 小時，擋到 13:00', () => {
   const r = judge([['2026-11-01T22:00:00', 'E01', 'in'], ['2026-11-02T02:00:00', 'E01', 'out']], '2026-11-02T10:00:00');
-  assert.strictEqual(r.code, 'gap'); assert.strictEqual(r.until, T('2026-11-02T14:00:00'));
+  assert.strictEqual(r.code, 'gap'); assert.strictEqual(r.until, T('2026-11-02T13:00:00'));
   assert.ok(r.reason.includes('今天 02:00'), r.reason);
 });
 ok('忘了打下班卡（只有上班卡）→ 算不出間隔，不擋', () => {
@@ -93,10 +94,10 @@ ok('被擋下的卡（rejected_*）不算；別人的卡不算', () => {
   assert.strictEqual(judge([['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T23:00:00', 'E01', 'out', 'rejected_out_of_range'],
     ['2026-11-01T11:00:00', 'E02', 'in'], ['2026-11-01T23:30:00', 'E02', 'out']], '2026-11-02T09:00:00'), null);
 });
-ok('跨店：金山 23:00 下班（姓名去空白相同）、隔天 09:00 光復打上班 → 擋到 11:00；別家同名停用的不算', () => {
+ok('跨店：金山 23:00 下班（姓名去空白相同）、隔天 09:00 光復打上班 → 擋到 10:00；別家同名停用的不算', () => {
   const js = book('JS', [['M05', '王小明', 'x', 'TRUE', '']], [['2026-11-01T15:00:00', 'M05', 'in'], ['2026-11-01T23:00:00', 'M05', 'out']]);
   const r = judge([], '2026-11-02T09:00:00', { JS: js });
-  assert.strictEqual(r.code, 'gap'); assert.strictEqual(r.until, T('2026-11-02T11:00:00'));
+  assert.strictEqual(r.code, 'gap'); assert.strictEqual(r.until, T('2026-11-02T10:00:00'));
   const off = book('JS', [['M05', '王小明', 'x', 'FALSE', '']], [['2026-11-01T15:00:00', 'M05', 'in'], ['2026-11-01T23:00:00', 'M05', 'out']]);
   assert.strictEqual(judge([], '2026-11-02T09:00:00', { JS: off }), null);
 });
@@ -113,12 +114,12 @@ ok('跨店：別家店名冊快取起來，第二次只開有同名的店；讀�
   assert.ok(first >= 3);
 });
 ok('總開關關著（REST_RULE_ON 不是 1）→ 一律不擋', () => {
-  const self = book('SELF', [ME], [['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T22:40:00', 'E01', 'out']]);
+  const self = book('SELF', [ME], [['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T23:40:00', 'E01', 'out']]);
   const m = make({ now: T('2026-11-02T10:00:00'), self, peers: {}, on: false });
   assert.strictEqual(m.sb.restCheckIn_(self, { emp_id: 'E01', name: '王 小明' }), null);
 });
 ok('handleClock：上班卡被擋 → 寫一列 rejected_rest、回 rest；下班卡照收', () => {
-  const self = book('SELF', [ME], [['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T22:40:00', 'E01', 'out']]);
+  const self = book('SELF', [ME], [['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T23:40:00', 'E01', 'out']]);
   const m = make({ now: T('2026-11-02T10:00:00'), self, peers: {} });
   const r = m.sb.handleClock({ key: 'K1', type: 'in', lat: 24.78, lng: 121.01, device_id: 'D1' });
   assert.strictEqual(r.status, 'rejected_rest'); assert.strictEqual(r.rest.code, 'gap');
@@ -135,7 +136,7 @@ ok('handleClock：重複上班卡照舊回 rejected_duplicate（不先講休息�
   assert.strictEqual(m.sb.handleClock({ key: 'K1', type: 'in', lat: 24.78, lng: 121.01, device_id: 'D1' }).status, 'rejected_duplicate');
 });
 ok('restStatus_：被擋回 blocked＋until；沒擋回 blocked:false', () => {
-  const self = book('SELF', [ME], [['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T22:40:00', 'E01', 'out']]);
+  const self = book('SELF', [ME], [['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T23:40:00', 'E01', 'out']]);
   const m = make({ now: T('2026-11-02T10:00:00'), self, peers: {} });
   const s = m.sb.restStatus_(self, { emp_id: 'E01', name: '王 小明' });
   assert.strictEqual(s.blocked, true); assert.strictEqual(s.until, T('2026-11-02T10:40:00'));
@@ -143,7 +144,7 @@ ok('restStatus_：被擋回 blocked＋until；沒擋回 blocked:false', () => {
   assert.strictEqual(m.sb.restStatus_(self, { emp_id: 'E01', name: '王 小明' }).blocked, false);
 });
 ok('rest_rule_set：管理金鑰才能開關；不帶 on 只查；開了才擋', () => {
-  const self = book('SELF', [ME], [['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T22:40:00', 'E01', 'out']]);
+  const self = book('SELF', [ME], [['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T23:40:00', 'E01', 'out']]);
   const m = make({ now: T('2026-11-02T10:00:00'), self, peers: {}, on: false });
   assert.strictEqual(m.sb.handleRestRuleSet_({ admin_key: '', on: true }).error, 'unauthorized');
   assert.strictEqual(m.sb.handleRestRuleSet_({ admin_key: 'bad', on: true }).error, 'unauthorized');

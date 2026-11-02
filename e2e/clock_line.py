@@ -1058,7 +1058,7 @@ def phase_rest(ctx, hq):
     """休息不足（2026-11-01，Rest.gs）：liff_status 回 rest.blocked → 上班鍵鎖住、按鈕寫幾點後、訊息講原因；
     時間到自動解開並拿掉那句；下班鍵不受影響。伺服器擋下的上班卡（rejected_rest）照後端字句顯示。"""
     S = {'until': 0, 'punch': None}
-    reason = '你 11/1 22:40 下班，兩班要隔 12 小時，10:40 以後才能打上班卡'
+    reason = '你 11/1 22:40 下班，兩班要隔 11 小時，09:40 以後才能打上班卡'
     def h(route):
         try:
             b = json.loads(route.request.post_data or '{}')

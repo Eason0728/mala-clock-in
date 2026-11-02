@@ -708,7 +708,7 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   const clockEventRows = eventsRead.rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
   const lastCounted = lastCountedEvent(clockEventRows, roster.emp_id);
   const isDuplicate = lastCounted !== null && lastCounted.type === String(body.type);
-  // 單日 10 小時／兩班間隔 12 小時（2026-11-01，Rest.gs）：只擋上班卡；沒部署 Rest.gs 或總開關關著＝null
+  // 單日 10 小時／兩班間隔 11 小時（2026-11-01，11-02 由 12 改 11；Rest.gs）：只擋上班卡；沒部署 Rest.gs 或總開關關著＝null
   const restBlock = (body.type === 'in' && !isDuplicate && typeof restCheckIn_ === 'function') ? restCheckIn_(ss, roster) : null;
 
   let deviceMatch;
