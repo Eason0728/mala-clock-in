@@ -30,7 +30,7 @@ check() {
   local bad=0
   while read -r dir id name; do
     out=$(curl -sL -d '{"action":"whoami","key":"test-not-a-real-key"}' "https://script.google.com/macros/s/$id/exec" | head -c 120)
-    if [ "$out" = '{"ok":false,"error":"invalid_key"}' ]; then echo "✓ $name（$dir）"; else echo "✗ $name（$dir）：$out"; bad=1; fi
+    if [ "$out" = '{"ok":false,"error":"invalid_key"}' ]; then echo "✓ ${name}（${dir}）"; else echo "✗ ${name}（${dir}）：$out"; bad=1; fi
   done < <(ids)
   [ $bad = 0 ] && echo "✅ 每家後台都有回應" || echo "❌ 有店沒正常回應：用那家記下的舊版本號 clasp redeploy 退回"
   return $bad
@@ -44,14 +44,14 @@ one() {
   cd "$GAS/$dir" || return 1
   echo "===== $dir 目前的部署（記下 ${id:0:16}… 這行的版本號，出事時退回用）"
   clasp list-deployments | grep -E "$id|HEAD"
-  clasp push || { echo "❌ $dir：push 失敗，停"; return 1; }
+  clasp push || { echo "❌ ${dir}：push 失敗，停"; return 1; }
   local vout v
-  vout="$(clasp version "$MSG")" || { echo "❌ $dir：clasp version 失敗，停"; return 1; }
+  vout="$(clasp version "$MSG")" || { echo "❌ ${dir}：clasp version 失敗，停"; return 1; }
   echo "$vout"
   v="$(printf '%s' "$vout" | grep -oE '[0-9]+' | tail -1)"
-  [ -n "$v" ] || { echo "❌ $dir：抓不到新版本號，停"; return 1; }
+  [ -n "$v" ] || { echo "❌ ${dir}：抓不到新版本號，停"; return 1; }
   echo "===== $dir 新版本 ${v}（請對一下上面 clasp version 印的號碼一樣），切換部署"
-  clasp redeploy "$id" -V "$v" || { echo "❌ $dir：redeploy 失敗，停"; return 1; }
+  clasp redeploy "$id" -V "$v" || { echo "❌ ${dir}：redeploy 失敗，停"; return 1; }
 }
 
 [ $# -gt 0 ] || { sed -n '2,16p' "$0"; exit 2; }
