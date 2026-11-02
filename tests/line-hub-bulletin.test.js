@@ -70,6 +70,14 @@ ok('格式不對 bad_input、不寫快取', () => {
   });
 });
 
+ok('標題超過 40 字以碼點截斷，不留半個 emoji', () => {
+  const { sb } = make();
+  sb.handleLineHubBulletinPut_(body({ [bulletinHash('Ue')]: { n: 1, titles: ['😀'.repeat(50)] } }));
+  const t = sb.lineHubBulletinFor_('Ue').titles[0];
+  assert.strictEqual(Array.from(t).length, 40);
+  assert.ok(Array.from(t).every((c) => c === '😀'));
+});
+
 ok('太大 too_big', () => {
   const { sb, store } = make();
   const map = {};

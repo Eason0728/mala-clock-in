@@ -1306,7 +1306,7 @@ function handleLineHubBulletinPut_(b) {
     var e = map[h];
     if (!/^[0-9a-f]{64}$/.test(h) || !e || typeof e.n !== 'number' || !(e.n >= 1) || Math.floor(e.n) !== e.n || !Array.isArray(e.titles)
         || e.titles.some(function (t) { return typeof t !== 'string'; })) { bad = true; return; }
-    clean[h] = { n: e.n, titles: e.titles.slice(0, 3).map(function (t) { return t.slice(0, 40); }) };
+    clean[h] = { n: e.n, titles: e.titles.slice(0, 3).map(function (t) { return Array.from(t).slice(0, 40).join(''); }) };   // 以碼點切，不切壞 emoji
     people++;
   });
   if (bad) return { ok: false, error: 'bad_input' };
