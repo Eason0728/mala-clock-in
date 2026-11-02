@@ -50,7 +50,7 @@ one() {
   echo "$vout"
   v="$(printf '%s' "$vout" | grep -oE '[0-9]+' | tail -1)"
   [ -n "$v" ] || { echo "❌ $dir：抓不到新版本號，停"; return 1; }
-  echo "===== $dir 新版本 $v（請對一下上面 clasp version 印的號碼一樣），切換部署"
+  echo "===== $dir 新版本 ${v}（請對一下上面 clasp version 印的號碼一樣），切換部署"
   clasp redeploy "$id" -V "$v" || { echo "❌ $dir：redeploy 失敗，停"; return 1; }
 }
 
