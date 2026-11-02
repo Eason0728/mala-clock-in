@@ -857,10 +857,18 @@ function lineHubPunchCard_(r) {
     var blocks = [{ type: 'heading', text: '地點' }, { type: 'text', text: r.store_name, margin: 'xs', size: 'md' }];
     if (r.note) blocks.push({ type: 'text', text: r.note, muted: true });
     if (r.missed) blocks.push({ type: 'sep' }, { type: 'heading', text: '⚠️ 上次漏打卡' }, { type: 'text', text: r.missed, margin: 'xs' });
+    var bl = r.bulletin && r.bulletin.titles && r.bulletin.titles.length ? r.bulletin : null;   // 還沒簽的公告（lineHubBulletinFor_）
+    if (bl) {
+      blocks.push({ type: 'sep' }, { type: 'heading', text: '📢 還沒簽的公告' });
+      bl.titles.forEach(function (t) { blocks.push({ type: 'text', text: '・' + t, margin: 'xs' }); });
+      if (bl.n > bl.titles.length) blocks.push({ type: 'text', text: '還有 ' + (bl.n - bl.titles.length) + ' 則', muted: true, margin: 'xs' });
+    }
     if (r.greeting) blocks.push({ type: 'sep' }, { type: 'text', text: r.greeting, margin: 'md', size: 'md' });
     if (r.annual_note) blocks.push({ type: 'text', text: r.annual_note, margin: 'md' });
-    return lineHubCard_({ title: label + '打卡成功', right: '✓', tone: 'ok', alt: label + '打卡成功 ' + lineHubHm_(r.ts),
-                          hero: { label: '打卡時間', value: lineHubHm_(r.ts) }, blocks: blocks });
+    var spec = { title: label + '打卡成功', right: '✓', tone: 'ok', alt: label + '打卡成功 ' + lineHubHm_(r.ts),
+                 hero: { label: '打卡時間', value: lineHubHm_(r.ts) }, blocks: blocks };
+    if (bl) spec.buttons = [{ label: '去佈告欄簽名', uri: LINE_HUB_BULLETIN_LIFF }];
+    return lineHubCard_(spec);
   }
   var fb = [{ type: 'heading', text: '原因' }, { type: 'text', text: r.reason }];
   if (r.hint) fb.push({ type: 'heading', text: '怎麼辦' }, { type: 'text', text: r.hint });
@@ -1148,7 +1156,10 @@ function handleLineWebhook_(body) {
       if (text === '打卡' || LINE_HUB_TEXT_COMMANDS[text] || /^(出勤紀錄|薪資明細)\s*\d{4}-\d{2}$/.test(text)) lineHubLoading_(userId);
       if (text === '打卡') {
         var r = lineHubTakeStash_(userId) || lineHubLatestPunch_(userId);
-        if (r && r.ok) r.annual_note = lineHubAnnualNote_(userId, r.ts);   // 特休快到期提醒（一天最多一次；查不到就不提）
+        if (r && r.ok) {
+          r.annual_note = lineHubAnnualNote_(userId, r.ts);   // 特休快到期提醒（一天最多一次；查不到就不提）
+          r.bulletin = lineHubBulletinFor_(userId);           // 還沒簽的公告（佈告欄每 5 分鐘送來；讀不到就不提）
+        }
         lineHubReply_(ev.replyToken, [
           r && r.unreadable ? lineHubNoticeCard_('打卡', '剛才那筆暫時查不到（店家系統忙碌）。打卡畫面顯示成功就是成功，可按選單「出勤紀錄」確認。', 'warn')
           : r ? lineHubPunchCard_(r)
@@ -1267,7 +1278,55 @@ var LINE_HUB_HANDLERS = {
   sched_unpublish: function (b) { return handleSchedUnpublish_(b); },
   line_punch_timing: function (b) { return handleLinePunchTiming_(b); },   // 打卡等待秒數（2026-10-12）
   punch_timing_get: function (b) { return handlePunchTimingGet_(b); },     // 指揮台讀打卡秒數（唯讀、管理金鑰）
+  line_hub_bulletin_put: function (b) { return handleLineHubBulletinPut_(b); },   // 佈告欄送來的未簽公告（2026-11-02）
 };
+
+/* ══ 打卡回覆帶出未簽公告（2026-11-02 Eason；規格在佈告欄 repo docs/punch-remind.md）══
+ * 佈告欄 Mac mini 每 5 分鐘算好「每個 LINE 帳號還沒簽的公告」整包送來（line_hub_bulletin_put），存 CacheService；
+ * 機器人回覆「打卡」時只讀這包、不即時連 mini（UrlFetch 不能設逾時，mini 卡住會讓整張回覆送不出去）。
+ * 對人鍵＝sha256('dzyb-line:' + LINE userId)，與佈告欄 staff.lineHash 同一個算法；這裡不存任何姓名。
+ * 資料超過 30 分鐘沒更新就不提醒（mini 停了不會拿舊資料催已簽的人）。任何錯誤一律不提醒，絕不影響打卡回覆。
+ * 金鑰：Script Property BULLETIN_PUSH_KEY（≥32 字；沒設＝一律拒收）＝ mini server/.env PUNCH_REMIND_KEY。 */
+var LINE_HUB_BULLETIN_LIFF = 'https://liff.line.me/2011292256-iTZEbOWG';   // 佈告欄 LIFF（用打卡綁定的 LINE 自動登入）
+var LINE_HUB_BULLETIN_STALE_MS = 30 * 60 * 1000;
+var LINE_HUB_BULLETIN_MAX = 90000;                                          // CacheService 單一值上限 100KB
+var LINE_HUB_BULLETIN_TTL = 21600;
+function lineHubSha256Hex_(s) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(s), Utilities.Charset.UTF_8)
+    .map(function (b) { return ('0' + ((b < 0 ? b + 256 : b) & 255).toString(16)).slice(-2); }).join('');
+}
+function handleLineHubBulletinPut_(b) {
+  var want = '';
+  try { want = String(PropertiesService.getScriptProperties().getProperty('BULLETIN_PUSH_KEY') || ''); } catch (e) { want = ''; }
+  if (want.length < 32 || String((b && b.key) || '') !== want) return { ok: false, error: 'unauthorized' };
+  var map = b.map;
+  if (b.v !== 1 || typeof b.at !== 'string' || isNaN(Date.parse(b.at)) || !map || typeof map !== 'object' || Array.isArray(map)) return { ok: false, error: 'bad_input' };
+  var clean = {}, people = 0, bad = false;
+  Object.keys(map).forEach(function (h) {
+    var e = map[h];
+    if (!/^[0-9a-f]{64}$/.test(h) || !e || typeof e.n !== 'number' || !(e.n >= 1) || Math.floor(e.n) !== e.n || !Array.isArray(e.titles)
+        || e.titles.some(function (t) { return typeof t !== 'string'; })) { bad = true; return; }
+    clean[h] = { n: e.n, titles: e.titles.slice(0, 3).map(function (t) { return t.slice(0, 40); }) };
+    people++;
+  });
+  if (bad) return { ok: false, error: 'bad_input' };
+  var json = JSON.stringify(clean);
+  if (unescape(encodeURIComponent(json)).length > LINE_HUB_BULLETIN_MAX) return { ok: false, error: 'too_big' };
+  CacheService.getScriptCache().putAll({ 'lhb:v1': json, 'lhb:at': b.at }, LINE_HUB_BULLETIN_TTL);
+  return { ok: true, people: people };
+}
+/** 這個 LINE 帳號還沒簽的公告 → {n, titles}｜null（沒有、資料太舊、讀不到） */
+function lineHubBulletinFor_(userId) {
+  try {
+    var v = CacheService.getScriptCache().getAll(['lhb:v1', 'lhb:at']) || {};
+    var at = Date.parse(v['lhb:at'] || '');
+    if (isNaN(at) || Date.now() - at > LINE_HUB_BULLETIN_STALE_MS) return null;
+    var m = JSON.parse(v['lhb:v1'] || 'null');
+    var e = m && m[lineHubSha256Hex_('dzyb-line:' + userId)];
+    if (!e || !(e.n >= 1) || !Array.isArray(e.titles) || !e.titles.length) return null;
+    return { n: e.n, titles: e.titles.slice(0, 3).map(String) };
+  } catch (err) { return null; }
+}
 
 /* ══ 加班請假／忘打卡申請（2026-10-09，規格 mala-clock-liff docs/requests-spec.md）══
    申請本身存各店（Requests.gs）；這裡只做：選單入口卡片、申請頁開頁資料（綁哪些店＋假別＋額度）、附件（只存光復的雲端硬碟）、意見回饋。 */
