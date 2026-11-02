@@ -224,10 +224,14 @@ ok('webhook：群組裡打「薪資明細」不回；destination 不是本帳號
   for (let i = 0; i < 25; i++) sb.handleLineWebhook_(ev('請假申請'));
   assert.strictEqual(replies.length, 20);
 });
-ok('手選上班／下班：已經打過上班卡又按上班 → 擋；30 分鐘前上班、按下班 → 送 out', () => {
-  let m = make({ sheets: { hq: { roster: [R()], events: [{ ts: iso(30), emp_id: 'H01', type: 'in', status: 'ok' }] } } });
+ok('手選上班／下班：5 分鐘前上班又按上班 → 擋；30 分鐘前上班、按上班 → 照送（2026-11-02）；按下班 → 送 out', () => {
+  let m = make({ sheets: { hq: { roster: [R()], events: [{ ts: iso(5), emp_id: 'H01', type: 'in', status: 'ok' }] } } });
   let r = m.sb.handleLineQuickClock_({ id_token: 'TOK_U1', type: 'in', lat: hq.lat, lng: hq.lng, accuracy: 10 });
-  assert.strictEqual(m.storeCalls.length, 0); assert(/已經打過上班卡/.test(r.text), r.text);
+  assert.strictEqual(m.storeCalls.length, 0); assert(/剛打過上班卡/.test(r.text), r.text);
+  m = make({ sheets: { hq: { roster: [R()], events: [{ ts: iso(30), emp_id: 'H01', type: 'in', status: 'ok' }] } } });
+  m.sb.handleLineQuickClock_({ id_token: 'TOK_U1', type: 'in', lat: hq.lat, lng: hq.lng, accuracy: 10 });
+  assert.strictEqual(m.storeCalls[0].body.type, 'in');
+  m = make({ sheets: { hq: { roster: [R()], events: [{ ts: iso(30), emp_id: 'H01', type: 'in', status: 'ok' }] } } });
   r = m.sb.handleLineQuickClock_({ id_token: 'TOK_U1', type: 'out', lat: hq.lat, lng: hq.lng, accuracy: 10 });
   assert.strictEqual(m.storeCalls[0].body.type, 'out');
 });
@@ -243,7 +247,7 @@ ok('line_hub_status：回姓名、店家座標、班別、今天的卡、防呆�
   const m = make({ sheets: { hq: { roster: [R({ shift_in: '08:00', shift_out: '17:00' })], events: [{ ts: iso(30), emp_id: 'H01', type: 'in', status: 'ok' }] } } });
   const r = m.sb.handleLineHubStatus_({ id_token: 'TOK_U1', lat: hq.lat, lng: hq.lng, accuracy: 10 });
   assert.strictEqual(r.status, 'ready'); assert.strictEqual(r.name, '甲'); assert.strictEqual(r.store.code, 'hq');
-  assert.strictEqual(r.shift_in, '08:00'); assert.strictEqual(r.today.length, 1); assert.strictEqual(r.guard.blocked, 'in');
+  assert.strictEqual(r.shift_in, '08:00'); assert.strictEqual(r.today.length, 1); assert.strictEqual(r.guard.blocked, null); assert.strictEqual(r.guard.last.type, 'in');   // 2026-11-02：過了 10 分鐘不再擋同型
   assert(!/kH|DEV-SAFARI/.test(JSON.stringify(r)), '不可回金鑰或裝置碼');
   const f = m.sb.handleLineHubStatus_({ id_token: 'TOK_U1', lat: 25.03, lng: 121.56, accuracy: 10 });
   assert.strictEqual(f.status, 'fail'); assert.strictEqual(f.result.code, 'out_of_range'); assert(f.result.nearest.name);

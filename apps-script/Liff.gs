@@ -298,15 +298,20 @@ var LIFF_LOCK_MIN = 10;
 
 function liffHm_(ts) { return String(ts || '').slice(11, 16); }
 
-/** 選上班／下班的防呆，與網頁版 clock.html updateButtonStates 同規則：
- *  最後一張算數的卡（lastCountedEvent，往回 12 小時）是什麼型別，就不能再打同型（blocked）；
- *  打完那張後 10 分鐘內不能打另一型（lock[另一型]＝解鎖時刻 ms）。 */
+/** 選上班／下班的防呆，與網頁版 clock.html updateButtonStates 同規則（2026-11-02 改）：
+ *  最後一張算數的卡（lastCountedEvent，往回 12 小時）打完後 10 分鐘內兩顆都鎖（lock.in／lock.out＝解鎖時刻 ms）；
+ *  之後兩顆都能按。blocked 只在 10 分鐘內＝同型（舊版前端靠它鎖同型鍵，過了 10 分鐘就給 null 讓舊畫面也能按）。
+ *  前端按同一顆時看 last.type 跳確認框。 */
 function liffGuard_(events, empId) {
   var last = lastCountedEvent(events, empId);
-  var g = { last: last ? { type: last.type, hm: liffHm_(last.ts), ts: last.ts } : null, blocked: last ? last.type : null, lock: {} };
+  var g = { last: last ? { type: last.type, hm: liffHm_(last.ts), ts: last.ts } : null, blocked: null, lock: {} };
   if (last) {
     var t = new Date(String(last.ts)).getTime();
-    if (!isNaN(t)) g.lock[last.type === 'in' ? 'out' : 'in'] = t + LIFF_LOCK_MIN * 60000;
+    if (!isNaN(t)) {
+      var until = t + LIFF_LOCK_MIN * 60000;
+      g.lock.in = until; g.lock.out = until;
+      if (until > Date.now()) g.blocked = last.type;
+    }
   }
   return g;
 }
@@ -314,10 +319,6 @@ function liffGuard_(events, empId) {
 /** 防呆擋下時的白話原因；沒擋回 null。 */
 function liffGuardReject_(g, type) {
   var label = type === 'in' ? '上班' : '下班';
-  if (g.blocked === type) {
-    return { reason: '你 ' + g.last.hm + ' 已經打過' + label + '卡了',
-             hint: '要' + (type === 'in' ? '下班' : '上班') + '請按另一顆；真的要補打請告知主管' };
-  }
   if (g.lock[type] && g.lock[type] > Date.now()) {
     return { reason: '你 ' + g.last.hm + ' 剛打過' + (g.last.type === 'in' ? '上班' : '下班') + '卡，' + Math.ceil((g.lock[type] - Date.now()) / 60000) + ' 分鐘內不能打' + label + '卡（避免連按誤打）',
              hint: '真的要' + label + '請告知主管補登' };

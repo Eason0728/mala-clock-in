@@ -563,10 +563,16 @@
   }
 
   /* ── 打卡 ── */
+  function sameTypeMsg(hm, type) {
+    var a = type === 'in' ? '上班' : '下班', b = type === 'in' ? '下班' : '上班';
+    return '你 ' + hm + ' 已經打過' + a + '卡，中間沒有' + b + '卡。確定要再打' + a + '嗎？\n漏打的' + b + '卡請到「加班請假 → 忘打卡」補。';
+  }
   function punch(type) {
     if (busy || !status || status.status !== 'ready') return;
     var hasIn = (status.today || []).some(function (e) { return e.type === 'in' && (e.status === 'ok' || e.status === 'pending_device_approval'); });
     if (type === 'out' && !status.guard.last && !hasIn && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
+    // 同一顆再按一次（2026-11-02 Eason：只鎖 10 分鐘，之後放行但先確認；漏的那張請用忘打卡補）
+    if (status.guard.last && status.guard.last.type === type && !window.confirm(sameTypeMsg(status.guard.last.hm, type))) return;
     tmStart(type);
     // 送出前位置一定要是 30 秒內的（定位被關掉、手機在背景停止更新時，手上那筆可能是剛才在店裡的位置）：
     // 過時就重新定位，最多等 10 秒；抓不到就不送（2026-10-10 Codex 審查 #4）。QR 打卡不看定位。
@@ -652,10 +658,9 @@
           var notes = (r.req_notes || []).join('\n');
           var okText = label + '打卡成功 ' + hm + '\n地點：' + st.name + (r.via_qr ? '（主管 QR）' : '') + (r.missed ? '\n\n⚠️ ' + r.missed : '')
             + (notes ? '\n\n' + notes : '') + ((shown ? shown.greeting : r.greeting) ? '\n\n' + (shown ? shown.greeting : r.greeting) : '');   // 已先顯示 mini 的問候語就沿用，不換句
-          // 就地鎖鍵（同網頁版 updateButtonStates({type, ts})）：同型不能再按、另一型 10 分鐘鎖（審查 M1）
+          // 就地鎖鍵（同網頁版 updateButtonStates({type, ts})）：10 分鐘內兩顆都鎖（審查 M1；2026-11-02 改兩顆）
           var nowSrv = Date.now() + clockSkew;
-          status.guard = { blocked: type, lock: {}, last: { type: type, hm: hm }, now: nowSrv };
-          status.guard.lock[type === 'in' ? 'out' : 'in'] = nowSrv + 10 * 60000;
+          status.guard = { blocked: type, lock: { in: nowSrv + 10 * 60000, out: nowSrv + 10 * 60000 }, last: { type: type, hm: hm }, now: nowSrv };
           status.today = (status.today || []).concat([{ type: type, hm: hm, status: 'ok' }]);
           render(status); say(okText, 'ok');
           report('ok', 'ok');   // 畫面已經顯示成功才送，同仁不會多等

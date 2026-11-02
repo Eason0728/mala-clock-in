@@ -422,6 +422,10 @@ function stripRowIndex(row) {
  * status 非 rejected_* 的最後一筆事件（跨日也算）。回傳 {ts, type} 或 null。
  * pending_device_approval 也算數：核准後會翻成 ok，若不算數會造成核准後同型重複。
  */
+/** 同型（上班後又上班、下班後又下班）只在這幾分鐘內擋成 rejected_duplicate（2026-11-02，原本 12 小時內都擋）。
+ *  與 Liff.gs LIFF_LOCK_MIN、clock.html CLOCK_LOCK_MIN、mock_server.py 同步。 */
+const SAME_TYPE_LOCK_MIN = 10;
+
 function lastCountedEvent(eventRows, empId) {
   const cutoffMs = Date.now() - CONFIG.ALTERNATION_LOOKBACK_HOURS * 60 * 60 * 1000;
   let last = null;
@@ -707,7 +711,9 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   }
   const clockEventRows = eventsRead.rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
   const lastCounted = lastCountedEvent(clockEventRows, roster.emp_id);
-  const isDuplicate = lastCounted !== null && lastCounted.type === String(body.type);
+  // 同型只擋 10 分鐘（2026-11-02 Eason：中午忘打下班卡，晚上回來要能打上班卡）；超過就收，前一張由配對標忘刷卡
+  const isDuplicate = lastCounted !== null && lastCounted.type === String(body.type)
+    && Date.now() - new Date(lastCounted.ts).getTime() < SAME_TYPE_LOCK_MIN * 60000;
   // 單日 10 小時／兩班間隔 11 小時（2026-11-01，11-02 由 12 改 11；Rest.gs）：只擋上班卡；沒部署 Rest.gs 或總開關關著＝null
   const restBlock = (body.type === 'in' && !isDuplicate && typeof restCheckIn_ === 'function') ? restCheckIn_(ss, roster) : null;
 

@@ -43,7 +43,7 @@ function make(opts) {
     SpreadsheetApp: { openById: (id) => { opened.push(id); const b = opts.peers[id]; if (!b) throw new Error('沒權限'); return b; } },
     Utilities: { formatDate: fmt }, REST_PEERS_: Object.keys(opts.peers || {}).map((id, i) => ({ code: 'p' + i, ss: id })).concat([{ code: 'self', ss: 'SELF' }]),
     ACCURACY_CREDIT_CAP_M: 30, LOW_ACCURACY_M: 50, ROSTER_HEADERS: ['emp_id', 'name', 'key', 'active', 'device_id', 'device_bound_at'],
-    EVENTS_HEADERS: EH, haversineM: () => 5 };
+    EVENTS_HEADERS: EH, haversineM: () => 5, SAME_TYPE_LOCK_MIN: 10 };
   sb.Date = class extends Date { constructor(...a) { if (a.length) super(...a); else super(sb.__now); } static now() { return sb.__now; } };
   sb.__now = opts.now;
   vm.createContext(sb);
@@ -130,10 +130,15 @@ ok('handleClock：上班卡被擋 → 寫一列 rejected_rest、回 rest；下�
   m.sb.__now = T('2026-11-02T22:00:00');
   assert.strictEqual(m.sb.handleClock({ key: 'K1', type: 'out', lat: 24.78, lng: 121.01, device_id: 'D1' }).status, 'ok');
 });
-ok('handleClock：重複上班卡照舊回 rejected_duplicate（不先講休息不足）', () => {
+ok('handleClock：10 分鐘內重複上班卡照舊回 rejected_duplicate（不先講休息不足）', () => {
   const self = book('SELF', [ME], [['2026-11-02T09:00:00', 'E01', 'in']]);
-  const m = make({ now: T('2026-11-02T10:00:00'), self, peers: {} });
+  const m = make({ now: T('2026-11-02T09:05:00'), self, peers: {} });
   assert.strictEqual(m.sb.handleClock({ key: 'K1', type: 'in', lat: 24.78, lng: 121.01, device_id: 'D1' }).status, 'rejected_duplicate');
+});
+ok('handleClock：超過 10 分鐘的同型上班卡照收（2026-11-02）；前一張沒下班卡，休息規則不誤擋', () => {
+  const self = book('SELF', [ME], [['2026-11-02T08:49:00', 'E01', 'in']]);
+  const m = make({ now: T('2026-11-02T18:00:00'), self, peers: {} });
+  assert.strictEqual(m.sb.handleClock({ key: 'K1', type: 'in', lat: 24.78, lng: 121.01, device_id: 'D1' }).status, 'ok');
 });
 ok('restStatus_：被擋回 blocked＋until；沒擋回 blocked:false', () => {
   const self = book('SELF', [ME], [['2026-11-01T11:00:00', 'E01', 'in'], ['2026-11-01T23:40:00', 'E01', 'out']]);
