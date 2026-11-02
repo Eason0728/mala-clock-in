@@ -371,7 +371,7 @@
     var r = status && status.rest;   // 時間到、解開了：拿掉「幾點以後才能打」那句
     if (r && r.blocked && !restBlocked() && $('msg').textContent === r.reason) say('', '', '');
   }
-  /* 休息不足（2026-11-01，後端 Rest.gs）：兩班間隔不到 12 小時、或今天已滿 10 小時，上班鍵鎖住；
+  /* 休息不足（2026-11-01，後端 Rest.gs）：兩班間隔不到 11 小時、或今天已滿 10 小時，上班鍵鎖住；
      間隔那種到時間自動解開（tick 每次重算），10 小時那種今天都不解。伺服器打卡時會再判一次，這裡只是先講。 */
   function restBlocked() {
     var r = status && status.rest;

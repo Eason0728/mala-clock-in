@@ -1481,7 +1481,7 @@
           liff.login();
           return;
         } else if (res && res.status === 'rejected_rest' && res.rest) {
-          // 單日 10 小時／兩班間隔 12 小時（2026-11-01）：講清楚幾點以後才能打，不套統一失敗句
+          // 單日 10 小時／兩班間隔 11 小時（2026-11-01，11-02 由 12 改 11）：講清楚幾點以後才能打，不套統一失敗句
           showStatus('status-warn', res.rest.reason + '。' + res.rest.hint);
         } else if (res && res.error === 'server_error') {
           // 2026-09-21 新增：伺服器丟例外，不知道這筆到底寫進去了沒（其餘 !res.ok，
