@@ -351,11 +351,10 @@ def phase_clock(page, data, exp):
           locked and ('後可按' in label or '分' in label), f'鎖={locked} 字樣「{label}」')
     mark_el(page, '#btnOut', '冷卻期間停用（另以第二位同仁驗證真的能打下班）')
 
-    # 交替防呆：再按一次上班要被擋
-    click(page, '#btnIn', '同型連打（交替防呆）')
-    page.wait_for_timeout(1000)
-    msg2 = wait_settled(page)
-    check('連按上班被交替防呆擋下', ('已' in msg2 or '擋' in msg2 or '重複' in msg2 or '不' in msg2), msg2)
+    # 2026-11-02 起打完任一張 10 分鐘內兩顆都鎖（取代原本「同型一直擋」）：上班鍵也要鎖住
+    locked_in = page.evaluate("() => document.getElementById('btnIn').disabled")
+    label_in = page.evaluate("() => document.getElementById('btnIn').textContent")
+    check('打完上班卡後上班鍵也鎖 10 分鐘（防連按）', locked_in and '後可按' in label_in, f'鎖={locked_in} 字樣「{label_in}」')
 
     # 今日紀錄有出現
     check('今日紀錄顯示剛才那筆', '上班' in text_of(page, 'body'))
