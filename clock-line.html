@@ -108,7 +108,7 @@
   .sc-day .sc-d { font-size: 13px; font-weight: 600; }
   .sc-day.wkend .sc-d { color: #c0561f; }
   .sc-day .sc-t { font-size: 11px; line-height: 1.25; color: var(--in); font-variant-numeric: tabular-nums; }
-  .sc-day .sc-o { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .sc-day .sc-o { font-size: 11px; line-height: 1.25; color: var(--muted); max-width: 100%; padding: 0 2px; word-break: break-all; }   /* 中文假別（國定假日、家庭照顧假）可換兩行 */
   .sc-day.work { background: #e9f3ef; }
   .sc-day.today { border-color: var(--in); }
   .sc-day.sel { background: var(--in); } .sc-day.sel .sc-d, .sc-day.sel .sc-t, .sc-day.sel .sc-o { color: #fff; }

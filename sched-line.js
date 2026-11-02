@@ -98,6 +98,9 @@
     $root.appendChild(calendar(r));
     $root.appendChild(detail(r));
   }
+  // 休假一律顯示中文（2026-11-02 Eason：同仁看不懂 R、H）：例假、休假；請假與國定假日用後端的 label（病假、特休、國定假日…）
+  var OFF_TEXT = { R: '例假', H: '休假' };
+  function offText(d) { return OFF_TEXT[d.code] || d.label || d.code; }
   function calendar(r) {
     var grid = h('div', { class: 'sc-cal' }, WK.map(function (w) { return h('div', { class: 'sc-wk', text: w }); }));
     var first = new Date(dateOf(r.ym, 1) + 'T00:00:00').getDay();
@@ -111,7 +114,7 @@
         kids.push(h('span', { class: 'sc-t', text: d.segs[0][0] }));
         kids.push(h('span', { class: 'sc-t', text: d.segs[d.segs.length - 1][1] }));
       } else if (d.work) kids.push(h('span', { class: 'sc-t', text: d.code }));
-      else if (d.code) kids.push(h('span', { class: 'sc-o', text: d.code }));
+      else if (d.code) kids.push(h('span', { class: 'sc-o', text: offText(d) }));
       grid.appendChild(h('button', { type: 'button', class: cls, 'data-d': d.d, id: 'scD' + d.d,
         on: { click: function () { st.sel = d.d; render(); } } }, kids));
     });
@@ -122,7 +125,7 @@
     if (!d) return h('div', { class: 'sc-det sc-muted', id: 'scDet', text: '點某一天看當天的班。' });
     var date = dateOf(r.ym, d.d), rows = [h('b', { text: md(date) })];
     if (!d.code) rows.push(h('div', { class: 'sc-row' }, [h('span', { text: '這天沒有排班' })]));
-    else if (!d.work) rows.push(h('div', { class: 'sc-row' }, [h('span', { text: d.label })]));
+    else if (!d.work) rows.push(h('div', { class: 'sc-row' }, [h('span', { text: offText(d) })]));
     else {
       rows.push(h('div', { class: 'sc-row' }, [h('span', { text: '班別' }), h('span', { text: d.label })]));
       if (d.station) rows.push(h('div', { class: 'sc-row', id: 'scStation' }, [h('span', { text: '工作站' }), h('span', { text: d.station })]));

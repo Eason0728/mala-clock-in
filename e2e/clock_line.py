@@ -616,7 +616,41 @@ def phase_sched(ctx):
     cell = p.inner_text(f'#schedView .sc-day[data-d="{first_work["d"]}"]').split()
     ok('班表：兩段班格子寫第一段上班～最後一段下班', cell == [str(first_work['d']), first_work['segs'][0][0], first_work['segs'][-1][1]], cell)
     off = next(x for x in r['days'] if x['code'] and not x['work'])
-    ok('班表：休假格寫班別代碼', p.inner_text(f'#schedView .sc-day[data-d="{off["d"]}"]').split()[-1] == off['code'])
+    ok('班表：休假格寫中文名稱（不寫代碼）', ''.join(p.inner_text(f'#schedView .sc-day[data-d="{off["d"]}"]').split()[1:]) == (off['label'] or off['code']),
+       (p.inner_text(f'#schedView .sc-day[data-d="{off["d"]}"]'), off))
+    p.close()
+    # 營運系統排班（11/1 起）：例假 R、休息日 H、請假、國定假日 → 格子與明細都寫中文（2026-11-02 Eason）
+    fake = {'R': '例假', 'H': '休息日', '病': '病假', '國': '國定假日'}
+    def sched_h(route):
+        try:
+            b = json.loads(route.request.post_data or '{}')
+        except ValueError:
+            return route.continue_()
+        if b.get('action') != 'line_hub_sched':
+            return route.continue_()
+        j = route.fetch().json()
+        n = 0
+        for d in j.get('days') or []:
+            if not d.get('work') and n < len(fake):
+                k = list(fake)[n]; d.update({'code': k, 'label': fake[k], 'segs': [], 'work': False, 'rest': True}); n += 1
+        route.fulfill(json=j)
+    p = open_page(ctx, f'{BASE}/clock-line.html?mock_uid=U1&api=/api&view=sched')
+    p.set_viewport_size({'width': 375, 'height': 812})
+    p.route('**/api', sched_h)
+    p.reload()
+    p.wait_for_selector('#schedView .sc-cal', timeout=10000)
+    want = {'R': '例假', 'H': '休假', '病': '病假', '國': '國定假日'}
+    got = {}
+    for d in p.evaluate("Array.from(document.querySelectorAll('#schedView .sc-day .sc-o')).map(e => e.textContent)"):
+        got[d] = 1
+    ok('班表：例假／休假／病假／國定假日寫中文、沒有 R／H', all(v in got for v in want.values()) and 'R' not in got and 'H' not in got, sorted(got))
+    cells = [x for x in p.query_selector_all('#schedView .sc-day.off') if x.inner_text().split()[-1] == '休假']
+    if cells:
+        cells[0].click(); p.wait_for_timeout(200)
+    ok('班表：點休假那天明細寫「休假」', bool(cells) and '休假' in p.inner_text('#schedView'), bool(cells))
+    ok('班表：國定假日格子在 375 寬不超出格子', p.evaluate("""Array.from(document.querySelectorAll('#schedView .sc-day .sc-o')).every(e => e.scrollWidth <= e.parentElement.clientWidth + 1)"""))
+    p.close()
+    p = page('U1')
     td = int(r['today'][8:10])
     ok('班表：本月預設選今天、今天有外框', p.locator(f'#schedView .sc-day.sel.today[data-d="{td}"]').count() == 1)
     CM.scan(p, '班表月曆（本月）')
@@ -698,7 +732,7 @@ def phase_sched(ctx):
     p.close()
     # 各種看不到的狀態
     p = page('U6')
-    ok('班表：計時同仁已排班後空白天寫「休」', p.inner_text('#scD1').split()[-1] == '休' and p.inner_text('#scD3').split()[1:] == ['09:00', '17:30'],
+    ok('班表：計時同仁已排班後空白天寫「休假」', ''.join(p.inner_text('#scD1').split()[1:]) == '休假' and p.inner_text('#scD3').split()[1:] == ['09:00', '17:30'],
        (p.inner_text('#scD1'), p.inner_text('#scD3')))
     p.click('#scPrev')
     p.wait_for_selector('#schedView .sc-box.info', timeout=8000)
