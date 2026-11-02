@@ -714,6 +714,8 @@
      - 打完下班卡 → 上班鍵鎖 10 分鐘（2026-09-19）。起因：央廚同仁 9/9 17:05 下班後連按，
        8 秒後又「成功」打了一張上班卡——交替防呆看上一張是下班、照規則放行——
        那張開著的上班卡讓當天被標「下班忘刷卡」、參考時數整天留白。
+     - 2026-11-02 起：打完任一張，10 分鐘內兩顆都鎖；之後兩顆都能按，按同一顆先跳確認框
+       （起因：六張犁同仁中午忘打下班卡，晚上回來上班卡一直按不了。後端同型也只擋 10 分鐘）。
      這段是純前端的防呆——不擋真的要打卡的人太久，也不影響後端判定。
      頁面重新整理也還原得了，因為時間點是從 whoami 的 last_counted 算的；
      打卡成功當下也會用打卡回應的時間立刻鎖上，不等 whoami 回來
@@ -823,16 +825,15 @@
   function updateButtonStates(lastCounted) {
     lastCountedKnown = true;
     lastCountedNow = lastCounted || null;
-    blockedType = lastCounted ? lastCounted.type : null;
-    btnIn.classList.toggle('not-allowed', blockedType === 'in');
-    btnOut.classList.toggle('not-allowed', blockedType === 'out');
-    // 最後一筆是上班卡 → 鎖下班鍵；是下班卡 → 鎖上班鍵
+    blockedType = null;   // 2026-11-02 起不再一直擋同型，只靠下面 10 分鐘鎖
+    btnIn.classList.remove('not-allowed');
+    btnOut.classList.remove('not-allowed');
+    // 最後一筆打完後 10 分鐘內兩顆都鎖
     lockUntil.in = 0;
     lockUntil.out = 0;
     if (lastCounted && (lastCounted.type === 'in' || lastCounted.type === 'out')) {
       var t = new Date(String(lastCounted.ts)).getTime();
-      var other = lastCounted.type === 'in' ? 'out' : 'in';
-      if (!isNaN(t)) lockUntil[other] = t + CLOCK_LOCK_MIN * 60 * 1000;
+      if (!isNaN(t)) { lockUntil.in = t + CLOCK_LOCK_MIN * 60 * 1000; lockUntil.out = lockUntil.in; }
     }
     refreshLocks();
   }
@@ -1427,16 +1428,16 @@
   function doClock(type) {
     if (lockUntil[type] > Date.now()) {
       var s2 = Math.ceil((lockUntil[type] - Date.now()) / 60000);
-      showStatus('status-warn', type === 'out'
-        ? '⚠ 剛打完上班卡，' + s2 + ' 分鐘後才能打下班卡（避免手滑誤打）。真的要下班請告知主管補登。'
-        : '⚠ 剛打完下班卡，' + s2 + ' 分鐘後才能打上班卡（避免手滑誤打）。真的要上班請告知主管補登。');
+      var lastLbl = lastCountedNow && lastCountedNow.type === 'out' ? '下班' : '上班';
+      showStatus('status-warn', '⚠ 剛打完' + lastLbl + '卡，' + s2 + ' 分鐘後才能再打卡（避免手滑誤打）。真的要' +
+        (type === 'in' ? '上班' : '下班') + '請告知主管補登。');
       return;
     }
-    if (blockedType === type) {
-      // 前端先擋下的重複打卡（不打 API）。這句保留「已打過上班/下班卡」的具體說法：
-      // 它不是「打卡沒成功」，而是「這一筆本來就不該打」，用統一失敗句會叫她再打一次、更混亂。
-      showStatus('status-warn', duplicateMessage(blockedType));
-      return;
+    // 同一顆再按一次（2026-11-02）：放行但先確認，漏的那張請用忘打卡補
+    if (lastCountedNow && lastCountedNow.type === type) {
+      var a = type === 'in' ? '上班' : '下班', b = type === 'in' ? '下班' : '上班';
+      if (!window.confirm('你 ' + String(lastCountedNow.ts).slice(11, 16) + ' 已經打過' + a + '卡，中間沒有' + b +
+        '卡。確定要再打' + a + '嗎？\n漏打的' + b + '卡請找值班主管補登。')) return;
     }
     /* 第一張卡就按下班（2026-10-02 Eason 指定）：後端的交替防呆只看「過去 12 小時內最後一張算數的卡」，
        沒有就兩顆都收，所以每天第一張按錯成下班卡擋不住（央廚 8/25、金山 9/8 都發生過）。

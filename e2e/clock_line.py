@@ -124,7 +124,7 @@ def no_undefined(p, where):
 
 def force_out(p):
     """模擬「畫面沒擋到」：鍵被畫面停用（10 分鐘鎖）時，同一個 tick 內解開並點下去，測後端擋下時畫面怎麼顯示。"""
-    p.evaluate('() => { const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
+    p.evaluate('() => { window.confirm = () => true; const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
 
 
 def calls(p):
@@ -326,7 +326,7 @@ def main():
             p.wait_for_function('document.getElementById("storeName").textContent === %s' % json.dumps(HQ['name']), timeout=20000)
             gctx.set_geolocation({'latitude': JS['lat'], 'longitude': JS['lng'], 'accuracy': 10})
             p.wait_for_timeout(1500)
-            p.evaluate('() => { const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
+            p.evaluate('() => { window.confirm = () => true; const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
             p.wait_for_selector('#bindBox:not([hidden])', timeout=10000)
             c = calls(p)
             ok('位置變了：沒有送出打卡，改問新那家店（金山）', not any(x['action'] == 'liff_punch' for x in c) and any(x['url'].endswith('/api/mztjs') for x in c), c)
@@ -405,7 +405,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
                 p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
                 p.wait_for_timeout(4000)   # 開頁那筆變成過時
                 p.evaluate("m => { window.__geo.mode = m; }", mode)
-                p.evaluate('() => { for (const id of ["btnIn", "btnOut"]) { const b = document.getElementById(id); if (!b.disabled) { b.click(); return; } } const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
+                p.evaluate('() => { window.confirm = () => true; for (const id of ["btnIn", "btnOut"]) { const b = document.getElementById(id); if (!b.disabled) { b.click(); return; } } const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
                 wait_msg(p, expect, timeout=15000)
                 ok('舊位置：' + name, sum(1 for x in calls(p) if x['action'] == 'liff_punch') == 0 and p.evaluate('window.__geo.calls') >= 2, msg(p))
                 tmg = p.evaluate('window.__timing') or []
@@ -573,6 +573,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             phase_relay(ctx, (HQ['lat'], HQ['lng']))
             phase_relogin(ctx, (HQ['lat'], HQ['lng']))
             phase_rest(ctx, (HQ['lat'], HQ['lng']))
+            phase_same_type(ctx, (HQ['lat'], HQ['lng']))
             rep = CM.report()
             ok('班表：可點元素零漏測（共 %d 個）' % rep['total'], not rep['missed'] and not rep['extra'], rep)
             br.close()
@@ -1086,6 +1087,53 @@ def phase_relogin(ctx, hq):
     p.select_option('#reqView select.rq-dm', d(0)[:7])
     ok('日期欄：換回這個月 → 日留在同一號（有就留）', p.evaluate("document.querySelector('#reqView .rq-dd').value")[8:] == d(90)[8:]
        or p.evaluate("document.querySelector('#reqView .rq-dd').value")[:7] == d(0)[:7], p.evaluate("document.querySelector('#reqView .rq-dd').value"))
+    p.close()
+
+
+def phase_same_type(ctx, hq):
+    """打卡後 10 分鐘兩顆都鎖、之後同一顆再按跳確認框（2026-11-02 Eason：六張犁同仁中午忘打下班卡，晚上上班卡按不了）。"""
+    S = {'guard': None}
+    def h(route):
+        try:
+            b = json.loads(route.request.post_data or '{}')
+        except ValueError:
+            return route.continue_()
+        if b.get('action') == 'liff_status' and S['guard']:
+            j = route.fetch().json()
+            if j.get('guard') is not None:
+                j['guard'] = dict(S['guard'], now=int(time.time() * 1000))
+            return route.fulfill(status=200, body=json.dumps(j), content_type='text/plain')
+        return route.continue_()
+    now = int(time.time() * 1000)
+    S['guard'] = {'blocked': 'in', 'lock': {'in': now + 6 * 60000, 'out': now + 6 * 60000},
+                  'last': {'type': 'in', 'hm': '08:49', 'ts': '2026-11-02T08:49:00+08:00'}}
+    p = open_page(ctx, url(hq, in_client=True))
+    p.route('**/api/hq', h)
+    p.reload()
+    p.wait_for_function('document.getElementById("who").textContent.length > 0', timeout=10000)
+    p.wait_for_timeout(300)
+    ok('同型：打卡後 10 分鐘內兩顆都鎖、都寫幾分後', p.is_disabled('#btnIn') and p.is_disabled('#btnOut')
+       and '分後' in p.inner_text('#btnIn') and '分後' in p.inner_text('#btnOut'), (p.inner_text('#btnIn'), p.inner_text('#btnOut')))
+    S['guard'] = {'blocked': None, 'lock': {'in': now - 60000, 'out': now - 60000},
+                  'last': {'type': 'in', 'hm': '08:49', 'ts': '2026-11-02T08:49:00+08:00'}}
+    p.reload()
+    p.wait_for_function('document.getElementById("who").textContent.length > 0', timeout=10000)
+    p.wait_for_timeout(300)
+    ok('同型：過了 10 分鐘，上班鍵也能按（中午忘打下班卡，晚上回來要打得了）', not p.is_disabled('#btnIn') and not p.is_disabled('#btnOut'),
+       p.inner_text('#btnIn'))
+    n0 = len([x for x in calls(p) if x['action'] == 'liff_punch'])
+    msgs = []
+    p.once('dialog', lambda d: (msgs.append(d.message), d.dismiss()))
+    p.click('#btnIn')
+    p.wait_for_timeout(500)
+    ok('同型：再按上班 → 跳確認框講「08:49 已經打過上班卡、中間沒有下班卡、漏的去忘打卡補」；按取消不送',
+       bool(msgs) and '你 08:49 已經打過上班卡，中間沒有下班卡' in msgs[0] and '忘打卡' in msgs[0]
+       and len([x for x in calls(p) if x['action'] == 'liff_punch']) == n0, msgs)
+    p.once('dialog', lambda d: d.accept())
+    p.click('#btnIn')
+    p.wait_for_function('window.__calls.filter(c => c.action === "liff_punch").length > %d' % n0, timeout=10000)
+    wait_msg(p, '上班打卡')
+    ok('同型：確認框按確定 → 送出上班卡', '上班打卡' in msg(p), msg(p))
     p.close()
 
 

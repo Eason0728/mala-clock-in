@@ -49,6 +49,7 @@ ACCURACY_CREDIT_CAP_M = 100
 # 上下班交替判斷的回看視窗（小時）：看得到跨夜班前一晚的上班卡，
 # 但昨天忘打的下班卡（超過視窗）不會鎖死今天的上班卡。
 ALTERNATION_LOOKBACK_HOURS = 12
+SAME_TYPE_LOCK_MIN = 10  # 同型（上班後又上班）只在這幾分鐘內擋（與 Code.gs 同步，2026-11-02）
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
 
@@ -1094,7 +1095,9 @@ def handle_clock(data, body):
 
     # 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
     last_counted = last_counted_event(data, roster["emp_id"])
-    is_duplicate = last_counted is not None and last_counted["type"] == type_
+    # 同型只擋 10 分鐘（與 Code.gs SAME_TYPE_LOCK_MIN 同步，2026-11-02）
+    is_duplicate = (last_counted is not None and last_counted["type"] == type_
+                    and (now_taipei() - datetime.fromisoformat(last_counted["ts"])).total_seconds() < SAME_TYPE_LOCK_MIN * 60)
 
     if not roster.get("device_id"):
         roster["device_id"] = device_id
@@ -1788,12 +1791,7 @@ def handle_line_quick_clock(data, body):
                 last = last_counted_event(sd, me["emp_id"])
                 typ = "out" if last and last["type"] == "in" else "in"
                 if body.get("type") in ("in", "out"):
-                    typ = body["type"]   # 同仁手選（與 LineHub.gs 同：同型擋、另一型 10 分鐘鎖）
-                    if last and last["type"] == typ:
-                        res = {"ok": False, "type": typ, "store_name": st["name"],
-                               "reason": f"你 {last['ts'][11:16]} 已經打過{'上班' if typ == 'in' else '下班'}卡了", "hint": "要" + ("下班" if typ == "in" else "上班") + "請按另一顆；真的要補打請告知主管"}
-                        label = {"in": "上班", "out": "下班"}[typ]
-                        return {"ok": True, "result": res, "text": f"❌ {label}打卡失敗\n原因：{res['reason']}\n怎麼辦：{res['hint']}"}
+                    typ = body["type"]   # 同仁手選（與 LineHub.gs 同：打完任一張 10 分鐘內兩顆都鎖，2026-11-02）
                 left = None
                 if last:
                     lt = datetime.fromisoformat(last["ts"])
@@ -1900,17 +1898,11 @@ def handle_line_hub_status(data, body):
         today = today_str()
         evs = [{"type": e["type"], "hm": e["ts"][11:16], "status": e["status"]} for e in sd["events"]
                if e["emp_id"] == me["emp_id"] and e["ts"][:10] == today]
-        last = last_counted_event(sd, me["emp_id"])
-        lock = {}
-        if last:
-            t = datetime.fromisoformat(last["ts"]).timestamp() * 1000
-            lock["out" if last["type"] == "in" else "in"] = t + 600000
+        g = _liff_guard(sd, me["emp_id"])
         return {"ok": True, "status": "ready", "name": me["name"],
                 "store": {"code": st["code"], "name": st["name"], "lat": st["lat"], "lng": st["lng"], "radius_m": st["radius_m"]},
                 "shift_in": me.get("shift_in", ""), "shift_out": me.get("shift_out", ""), "today": evs,
-                "guard": {"blocked": last["type"] if last else None, "lock": lock,
-                          "last": {"type": last["type"], "hm": last["ts"][11:16], "ts": last["ts"]} if last else None,
-                          "now": time.time() * 1000}}
+                "guard": dict(g, now=time.time() * 1000)}
 
 
 
@@ -1956,11 +1948,13 @@ def _liff_me(data, body):
 
 def _liff_guard(data, emp_id):
     last = last_counted_event(data, emp_id)
-    lock = {}
+    lock, blocked = {}, None
     if last:
-        t = datetime.fromisoformat(last["ts"]).timestamp() * 1000
-        lock["out" if last["type"] == "in" else "in"] = t + 600000
-    return {"blocked": last["type"] if last else None, "lock": lock,
+        until = datetime.fromisoformat(last["ts"]).timestamp() * 1000 + 600000
+        lock = {"in": until, "out": until}   # 打完任一張，10 分鐘內兩顆都鎖（Liff.gs liffGuard_，2026-11-02）
+        if until > time.time() * 1000:
+            blocked = last["type"]
+    return {"blocked": blocked, "lock": lock,
             "last": {"type": last["type"], "hm": last["ts"][11:16], "ts": last["ts"]} if last else None}
 
 
@@ -2025,9 +2019,6 @@ def handle_liff_punch(data, body):
         return err
     g = _liff_guard(data, me["emp_id"])
     label = "上班" if typ == "in" else "下班"
-    if g["blocked"] == typ:
-        return {"ok": False, "type": typ, "reason": f"你 {g['last']['hm']} 已經打過{label}卡了",
-                "hint": "要" + ("下班" if typ == "in" else "上班") + "請按另一顆；真的要補打請告知主管"}
     until = g["lock"].get(typ)
     if until and until > time.time() * 1000:
         left = math.ceil((until - time.time() * 1000) / 60000)

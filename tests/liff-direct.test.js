@@ -94,11 +94,16 @@ ok('punch：名冊沒綁裝置 → device_id 用 line:<userId>', () => {
   assert.strictEqual(clockCalls[0].device_id, 'line:U1');
   assert.strictEqual(clockCalls[0].accuracy, null);
 });
-ok('punch：同型擋（伺服器端，不信前端）且不呼叫 handleClock', () => {
-  const { H, clockCalls } = make({ sheets: { roster: [R()], events: [EV(120, 'in')] } });
+ok('punch：同型 10 分鐘內擋（伺服器端，不信前端）且不呼叫 handleClock', () => {
+  const { H, clockCalls } = make({ sheets: { roster: [R()], events: [EV(5, 'in')] } });
   const r = H.liff_punch({ id_token: 'TOK_U1', type: 'in', lat: 1, lng: 2 });
-  assert.strictEqual(r.ok, false); assert.ok(/已經打過上班卡/.test(r.reason), r.reason);
+  assert.strictEqual(r.ok, false); assert.ok(/剛打過上班卡，\d+ 分鐘內不能打上班卡/.test(r.reason), r.reason);
   assert.strictEqual(clockCalls.length, 0);
+});
+ok('punch：同型超過 10 分鐘放行（2026-11-02：中午忘打下班卡，晚上回來要打得了上班卡）', () => {
+  const { H, clockCalls } = make({ sheets: { roster: [R()], events: [EV(120, 'in')] } });
+  H.liff_punch({ id_token: 'TOK_U1', type: 'in', lat: 1, lng: 2 });
+  assert.strictEqual(clockCalls.length, 1); assert.strictEqual(clockCalls[0].type, 'in');
 });
 ok('punch：上班後 10 分鐘內按下班 → 擋，說還剩幾分鐘', () => {
   const { H, clockCalls } = make({ sheets: { roster: [R()], events: [EV(3, 'in')] } });
@@ -194,8 +199,8 @@ ok('Codex#5 舊 liff_clock 也擋 10 分鐘鎖：上班 1 分鐘後打下班 →
   const r = H.liff_clock({ id_token: 'TOK_U1', type: 'out', device_id: 'D' });
   assert.strictEqual(r.ok, false); assert.strictEqual(r.error, 'guard_blocked'); assert.strictEqual(clockCalls.length, 0);
 });
-ok('Codex#5 舊 liff_clock 也擋同型：剛打過上班再打上班 → 擋', () => {
-  const { H, clockCalls } = make({ sheets: { roster: [R()], events: [EV(30, 'in')] } });
+ok('Codex#5 舊 liff_clock 也擋同型：剛打過上班（10 分鐘內）再打上班 → 擋', () => {
+  const { H, clockCalls } = make({ sheets: { roster: [R()], events: [EV(3, 'in')] } });
   const r = H.liff_clock({ id_token: 'TOK_U1', type: 'in', device_id: 'D' });
   assert.strictEqual(r.error, 'guard_blocked'); assert.strictEqual(clockCalls.length, 0);
 });
