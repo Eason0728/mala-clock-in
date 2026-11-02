@@ -10,7 +10,8 @@
   var CN = ['一', '二', '三', '四', '五', '六'];
   var STATUS_TEXT = {
     not_locked: function (ym) { return mLabel(ym) + '的班表還在排，排好後就看得到。'; },
-    not_bound: function () { return '出勤班表目前只開放小辛辣新竹光復店，你的店還沒接上。'; },   // 2026-10-10：墨竹亭光復同仁會誤以為是自己店
+    // 2026-11-02：11/1 起各店都接營運系統排班，not_bound＝沒有在職的打卡門市；10 月以前的月份仍只有光復（月曆版）
+    not_bound: function (ym) { return ym && ym < '2026-11' ? mLabel(ym) + '的班表只有小辛辣新竹光復店。' : '找不到你在職的打卡門市，請找店長確認。'; },
     not_matched: function () { return '你的班表還沒對上，請找店長確認。'; },
     no_schedule: function (ym) { return mLabel(ym) + '的班表沒有你的班。'; }
   };

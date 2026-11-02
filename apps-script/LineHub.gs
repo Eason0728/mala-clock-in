@@ -1341,8 +1341,9 @@ function lineHubReqCard_(tab) {
 /** 選單「出勤班表」：只回入口卡片，班表內容在 LIFF 頁讀（卡片裡算班要讀 Gist＋查人，回覆會變慢） */
 function lineHubSchedCard_() {
   return lineHubCard_({ title: '📅 出勤班表', tone: 'info', alt: '出勤班表',
-    blocks: [{ type: 'text', text: '看你自己這個月和上個月的班：每天幾點上班、幾點下班，還有本月排班天數、時數和下一個班。' },
-             { type: 'text', text: '目前只有小辛辣新竹光復店。班表由店長排好、鎖定後才看得到。', muted: true, size: 'xs', margin: 'md' }],
+    blocks: [{ type: 'text', text: '看你自己上個月、這個月和下個月的班：每天幾點上班、幾點下班，還有本月排班天數、時數和下一個班。' },
+             // 2026-11-02 Eason：11/1 起每家有 LINE 打卡的店都接營運系統排班（Sched.gs SCHED_STORE_FROM），拿掉「只有光復」
+             { type: 'text', text: '各門市都看得到。班表由店長排好、鎖定後才看得到。', muted: true, size: 'xs', margin: 'md' }],
     buttons: [{ label: '打開我的班表', uri: LINE_HUB_LIFF_URL + '?view=sched' }] });
 }
 var LINE_HUB_COMMON_LEAVES = ['特休假', '事假', '病假', '生理假', '家庭照顧假'];
