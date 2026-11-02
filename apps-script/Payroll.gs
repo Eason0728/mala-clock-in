@@ -390,11 +390,21 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
   //     現在一行就是一張卡，與上面「每漏一張卡算一次」同口徑；forget_day 照樣同一天只算 1 天。
   //     ⚠ 不跳過今天：這是核定時段之間的缺口，主管核定時人早就下班了，
   //       沒有 unmatchedIns 那種「今天＝還在上班中」的歧義。
+  //     中間休息沒打卡（2026-11-02 Eason）：同仁用忘打卡申請補「休息開始下班＋回來上班」一組、主管核准了，
+  //     核定狀態會寫「第一段下班無打卡、第二段上班無打卡」兩張——這一組只算 1 次。
+  const breakReq = {};
+  payClockRead(store, 'requests').forEach(function (r) {
+    if (String(r.kind) !== 'miss' || String(r.miss_type) !== 'break' || String(r.status) !== 'approved') return;
+    const k = String(r.emp_id) + '|' + String(normCellDate(r.date));
+    breakReq[k] = (breakReq[k] || 0) + 1;
+  });
   Object.keys(approvedMap).forEach(function (d) {
     if (String(d).slice(0, 7) !== ym) return;
     if (cutoffDate && String(d) > cutoffDate) return;
     Object.keys(approvedMap[d]).forEach(function (emp) {
-      const g = payMissingCards(approvedMap[d][emp].status_text);
+      let g = payMissingCards(approvedMap[d][emp].status_text);
+      const nb = breakReq[String(emp) + '|' + d] || 0;
+      if (g >= 2 && nb) g = Math.max(1, g - Math.min(nb, Math.floor(g / 2)));
       if (g) markForget(String(emp), d, g);
     });
   });

@@ -97,7 +97,7 @@ ok('day_only：不讀申請表、回 requests 空、day 照算', () => {
   const r = J(sb.handleReqInfo_({ id_token: 't', date: '2026-10-27', day_only: true }));
   assert.strictEqual(reads.requests, 0); assert.deepStrictEqual(r.requests, []); assert.strictEqual(r.day_only, true);
   assert.deepStrictEqual(r.day.punches.map((x) => x.hm), ['01:10', '17:00']);   // 畫面列出當天日期的每張卡（01:10 配給前一天的班）
-  assert.deepStrictEqual(r.day.missing.options, ['out']);
+  assert.deepStrictEqual(r.day.missing.options, ['out', 'break']);   // 有上班卡就能補中間休息（2026-11-02）
 });
 ok('有 date 時 events 只讀尾端：從前一天台北 00:00 再早 1 小時起', () => {
   const { sb, reads } = makeBackend(evs);

@@ -65,6 +65,8 @@ def register(ns):
             place = trip_place(r.get("reason"))
             return (f"{md} 出差 " + (f"{r['start']}–{r['end']}" if r["start"] else "整天") + f" {r['hours']:g} 小時"
                     + (f"（地點：{place}）" if place else ""))
+        if r["miss_type"] == "break":
+            return f"{md} 忘打卡補登（中間休息：下班 {r['end']}、回來上班 {r['start']}）"
         parts = []
         if r["miss_type"] in ("in", "both"):
             parts.append("上班 " + r["start"])
@@ -134,9 +136,14 @@ def register(ns):
             opts = ["both"]
         else:
             opts = (["in"] if mine_outs else []) + (["out"] if mine_ins else [])
+        # 中間休息（同 Requests.gs，2026-11-02）
+        spans = [{"in": x[0]["hm"], "out": x[1]["hm"], "out_next": x[1]["date"] != d} for x in mine_segs] + \
+                [{"in": p["hm"], "out": None, "out_next": False} for p in mine_ins]
+        if spans:
+            opts = opts + ["break"]
         lo1 = mine_outs[0] if mine_outs else None
         return punches, {"options": opts, "open_in": mine_ins[-1]["hm"] if mine_ins else None,
-                         "lone_out": lo1["hm"] if lo1 else None, "lone_out_next": bool(lo1 and lo1["date"] != d)}
+                         "lone_out": lo1["hm"] if lo1 else None, "lone_out_next": bool(lo1 and lo1["date"] != d), "spans": spans}
 
     def day_punches(data, emp_id, d):
         return day_info(data, emp_id, d)[0]
@@ -237,6 +244,17 @@ def register(ns):
             if mt not in info["options"]:
                 return None, ("not_missing", "這天的上班卡有打成功，不用補登" if mt == "in" else "這天的下班卡有打成功，不用補登" if mt == "out" else "請選要補哪一張卡")
             row["miss_type"] = mt
+            if mt == "break":
+                row["end"], row["start"] = hm_ok(b.get("end")), hm_ok(b.get("start"))
+                if not row["end"] or not row["start"]:
+                    return None, ("bad_time", "請填休息開始和回來上班時間")
+                rel = lambda hm, base: (mins(hm) - mins(base)) % 1440
+                hit = [sp for sp in info["spans"] if 0 < rel(row["end"], sp["in"]) < rel(row["start"], sp["in"])
+                       < ((rel(sp["out"], sp["in"]) or 1440) if sp["out"] else 1440)]
+                if not hit:
+                    return None, ("bad_time", "休息時間要在當天其中一段班之內，回來上班要比休息開始晚")
+                if diff == 0 and mins(row["start"]) > mins(iso_now()[11:16]):
+                    return None, ("bad_time", "不能補登還沒到的時間")
             if mt in ("in", "both"):
                 row["start"] = hm_ok(b.get("start"))
                 if not row["start"]:

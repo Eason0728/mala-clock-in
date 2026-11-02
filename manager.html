@@ -1819,7 +1819,13 @@
             // 打卡時間照參考時數的規則取整到 15 分（上班進位、下班捨去）；申請填的時間照填（主管看完再改）
             var r15 = function (hm, up) { if (!hm) return hm; var m = hhmmToMin(hm); m = up ? Math.ceil(m / 15) * 15 : Math.floor(m / 15) * 15; m = m % 1440; return ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2); };
             var segs = (emp.segments || []).map(function (x) { return { in: r15(x.in, true), out: r15(x.out, false) }; });
-            if (r.miss_type === 'both') segs.push({ in: r.start, out: r.end });
+            if (r.miss_type === 'break') {
+              // 中間休息（2026-11-02）：把含休息時間的那段拆兩段——上班卡～休息開始（end）、回來上班（start）～下班卡
+              var rel = function (hm, base) { return (hhmmToMin(hm) - hhmmToMin(base) + 1440) % 1440; };
+              var bi = -1;
+              segs.forEach(function (x, i) { if (x.in && rel(r.end, x.in) > 0 && (!x.out || rel(r.end, x.in) < rel(x.out, x.in))) bi = i; });
+              if (bi >= 0) segs.splice(bi, 1, { in: segs[bi].in, out: r.end }, { in: r.start, out: segs[bi].out });
+            } else if (r.miss_type === 'both') segs.push({ in: r.start, out: r.end });
             else if (r.miss_type === 'out') { var o = segs.filter(function (x) { return x.in && !x.out; }).pop(); if (o) o.out = r.end; else segs.push({ in: null, out: r.end }); }
             else { var q = segs.filter(function (x) { return x.out && !x.in; })[0]; if (q) q.in = r.start; else segs.push({ in: r.start, out: null }); }
             var full = segs.filter(function (x) { return x.in && x.out; });

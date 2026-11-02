@@ -270,10 +270,10 @@ ok('liff_punch 帶 QR：驗過才用店家座標打卡（距離 0）、記 qr_pu
 ok('審查 #2 跨夜班：D 晚上上班、D+1 凌晨下班＝D 不缺卡；D+1 只缺下班卡，不會多報上班卡', () => {
   const sb = makeEnv({ events: [ev('2026-10-06T18:00:00+08:00', 'in'), ev('2026-10-07T01:00:00+08:00', 'out'), ev('2026-10-07T18:00:00+08:00', 'in')] });
   const d6 = sb.handleReqInfo_({ id_token: 'TOK_U1', date: '2026-10-06' }).day;
-  assert.strictEqual(d6.missing.options.length, 0, JSON.stringify(d6.missing));
+  assert.strictEqual(d6.missing.options.join(), 'break', JSON.stringify(d6.missing));   // 卡都齊了，只剩「中間休息」可補（2026-11-02）
   assert(d6.punches.some((p) => p.hm === '01:00(+1)'), JSON.stringify(d6.punches));
   const d7 = sb.handleReqInfo_({ id_token: 'TOK_U1', date: '2026-10-07' }).day;
-  assert.strictEqual(d7.missing.options.join(), 'out', JSON.stringify(d7.missing));
+  assert.strictEqual(d7.missing.options.join(), 'out,break', JSON.stringify(d7.missing));
   assert(submit(sb, { kind: 'miss', date: '2026-10-07', miss_type: 'out', end: '01:30', reason: '忘記按' }).ok);   // 補隔天凌晨下班
   assert.strictEqual(submit(sb, { kind: 'miss', date: '2026-10-07', miss_type: 'out', end: '02:00', reason: '忘記按' }).error, 'duplicate');
 });
@@ -288,6 +288,34 @@ ok('審查 #3 今天：跨夜的下班時間（＝明天）或還沒到的時間
   assert.strictEqual(submit(sb, { kind: 'miss', date: '2026-10-09', miss_type: 'both', start: '10:00', end: '02:00', reason: '忘記按' }).error, 'bad_time');
   assert.strictEqual(submit(sb, { kind: 'miss', date: '2026-10-09', miss_type: 'both', start: '10:00', end: '17:00', reason: '忘記按' }).error, 'bad_time');
   assert(submit(sb, { kind: 'miss', date: '2026-10-09', miss_type: 'both', start: '10:00', end: '15:00', reason: '忘記按' }).ok);
+});
+
+ok('中間休息沒打卡（2026-11-02）：整段班可補「下班＋回來上班」一組；要在那段班之內、回來晚於下班；摘要寫清楚', () => {
+  const sb = makeEnv({ events: [ev('2026-10-08T08:49:00+08:00', 'in'), ev('2026-10-08T21:55:00+08:00', 'out')] });
+  const d = sb.handleReqInfo_({ id_token: 'TOK_U1', date: '2026-10-08' }).day;
+  assert.strictEqual(d.missing.options.join(), 'break');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(d.missing.spans)), [{ in: '08:49', out: '21:55', out_next: false }]);
+  const B = (end, start, o) => submit(sb, Object.assign({ kind: 'miss', date: '2026-10-08', miss_type: 'break', end, start, reason: '忘記按' }, o || {}));
+  assert.strictEqual(B('', '18:00').error, 'bad_time');
+  assert.strictEqual(B('12:00', '').error, 'bad_time');
+  assert.strictEqual(B('18:00', '12:00').message, '回來上班時間要比休息開始晚');
+  assert.strictEqual(B('08:00', '12:00').message, '休息時間要在 08:49 上班到 21:55 下班之間');
+  assert.strictEqual(B('12:00', '22:30').message, '休息時間要在 08:49 上班到 21:55 下班之間');
+  assert.strictEqual(B('12:00', '18:00', { reason: '' }).error, 'need_reason');
+  const r = B('12:00', '18:00');
+  assert(r.ok, JSON.stringify(r)); assert.strictEqual(r.summary, '10/8 忘打卡補登（中間休息：下班 12:00、回來上班 18:00）');
+  assert.strictEqual(r.request.miss_type, 'break'); assert.strictEqual(r.request.end, '12:00'); assert.strictEqual(r.request.start, '18:00');
+  assert.strictEqual(B('13:00', '17:00').error, 'duplicate');
+});
+ok('中間休息：還在上班中（只有上班卡）也能補；今天不能補還沒到的回來時間；跨夜班用上班卡起算', () => {
+  const sb = makeEnv({ now: '2026-10-09T18:30:00+08:00', events: [ev('2026-10-09T08:49:00+08:00', 'in'), ev('2026-10-06T18:00:00+08:00', 'in'), ev('2026-10-07T03:00:00+08:00', 'out')] });
+  const d = sb.handleReqInfo_({ id_token: 'TOK_U1', date: '2026-10-09' }).day;
+  assert.strictEqual(d.missing.options.join(), 'out,break');
+  assert.strictEqual(submit(sb, { kind: 'miss', date: '2026-10-09', miss_type: 'break', end: '12:00', start: '19:00', reason: '忘記按' }).message, '不能補登還沒到的時間');
+  assert(submit(sb, { kind: 'miss', date: '2026-10-09', miss_type: 'break', end: '12:00', start: '18:00', reason: '忘記按' }).ok);
+  // 10/6 18:00–10/7 03:00：休息 23:00、回來 00:30（跨午夜）要收；回來 04:00 超出下班卡要擋
+  assert.strictEqual(submit(sb, { kind: 'miss', date: '2026-10-06', miss_type: 'break', end: '23:00', start: '04:00', reason: '忘記按' }).error, 'bad_time');
+  assert(submit(sb, { kind: 'miss', date: '2026-10-06', miss_type: 'break', end: '23:00', start: '00:30', reason: '忘記按' }).ok);
 });
 
 /* ── 2026-10-09 第二批：出差單、批次核准、下班超時提示加班 ── */

@@ -570,6 +570,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             phase_sched(ctx)
             phase_leave_proof(ctx, (HQ['lat'], HQ['lng']))
             phase_miss_store(ctx)
+            phase_miss_break(ctx)
             phase_relay(ctx, (HQ['lat'], HQ['lng']))
             phase_relogin(ctx, (HQ['lat'], HQ['lng']))
             phase_rest(ctx, (HQ['lat'], HQ['lng']))
@@ -873,6 +874,46 @@ def phase_miss_store(ctx):
     p.wait_for_selector('#reqView .rq-rec', timeout=15000)
     ok('忘打卡選店：金山問不到 → 不換店、照舊顯示光復那天', store_txt() == '小辛辣 新竹光復' and p.locator('#reqView .rq-auto-store').count() == 0
        and '沒有任何打卡' in p.inner_text('#reqView .rq-rec'), p.inner_text('#reqView')[:200])
+    p.close()
+
+
+def phase_miss_break(ctx):
+    """忘打卡「中間休息沒打卡」（2026-11-02 Eason）：那天有整段班 → 只剩這個選項；填休息開始、回來上班兩個時間送出；
+    回來早於休息開始被擋；送出後「我的申請」寫「忘打卡・補休息 12:00–18:00」。用 U9（phase_miss_store 建的）在光復。"""
+    from datetime import datetime, timedelta, timezone
+    D = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=4)).strftime('%Y-%m-%d')
+    f = os.path.join(ROOT, 'mock', 'mock_data.json')
+    d = json.load(open(f, encoding='utf-8'))
+    mk = lambda hm, t: {'ts': D + 'T' + hm + ':00+08:00', 'emp_id': 'E09', 'type': t, 'status': 'ok', 'lat': 0, 'lng': 0, 'distance_m': 1,
+                        'accuracy_m': 10, 'device_id': 'line:U9', 'device_match': True, 'within_range': True}
+    d['events'] = [e for e in d['events'] if not (e['emp_id'] == 'E09' and e['ts'][:10] == D)] + [mk('08:49', 'in'), mk('21:55', 'out')]
+    json.dump(d, open(f, 'w', encoding='utf-8'), ensure_ascii=False)
+    p = open_page(ctx, BASE + '/clock-line.html?mock_uid=U9&api=/api&in_client=1&retry_ms=100&view=req&tab=miss')
+    p.set_viewport_size({'width': 375, 'height': 812})
+    p.wait_for_selector('#reqView select.rq-date', timeout=10000)
+    p.select_option('#reqView select.rq-date', D)
+    p.wait_for_function("() => document.getElementById('reqView').textContent.includes('中間休息沒打卡')", timeout=10000)
+    t = p.inner_text('#reqView')
+    ok('休息：整段班那天只剩「中間休息沒打卡（系統查到的）」、有休息開始／回來上班兩格、說明算一次',
+       '中間休息沒打卡（系統查到的）' in t and '休息開始（下班）' in t and '回來上班' in t and '兩張一起補，算一次' in t, t[:300])
+    times = p.locator('#reqView .rq-time')
+    def put(i, hh, mm):
+        times.nth(i).locator('select.rq-hh').select_option(hh); times.nth(i).locator('select.rq-mm').select_option(mm)
+    put(0, '18', '00'); put(1, '12', '00')
+    p.click('#reqView .rq-chip:has-text("忘記")') if p.locator('#reqView .rq-chip:has-text("忘記")').count() else p.locator('#reqView .rq-chips .rq-chip').first.click()
+    p.click('#reqView button.primary')
+    p.wait_for_selector('#reqView .rq-box.err', timeout=10000)
+    ok('休息：回來早於休息開始 → 擋下、說明原因', '晚' in p.inner_text('#reqView .rq-box.err') or '之內' in p.inner_text('#reqView .rq-box.err'),
+       p.inner_text('#reqView .rq-box.err'))
+    put(0, '12', '00'); put(1, '18', '00')
+    p.click('#reqView button.primary')
+    p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)
+    d = json.load(open(f, encoding='utf-8'))
+    r = [x for x in d.get('requests', []) if x.get('emp_id') == 'E09' and x.get('date') == D and x.get('miss_type') == 'break']
+    ok('休息：送出存成 miss_type＝break、end＝12:00（下班）、start＝18:00（回來上班）', len(r) == 1 and r[0]['end'] == '12:00' and r[0]['start'] == '18:00', r)
+    p.click('#reqView .rq-tabs button:has-text("我的申請")')
+    p.wait_for_function("() => document.getElementById('reqView').textContent.includes('補休息')", timeout=10000)
+    ok('休息：我的申請寫「忘打卡・補休息 12:00–18:00」', '忘打卡・補休息 12:00–18:00' in p.inner_text('#reqView'), p.inner_text('#reqView')[:200])
     p.close()
 
 
