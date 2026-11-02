@@ -670,7 +670,7 @@ function handleMgrReqDay_(body) {
 }
 
 /** {action:'mgr_req_month', mgr_key, ym:'YYYY-MM', acting_name?} → {ok, ym, items, leaves, unmatched}（申請單彙整列印，2026-11-02）
- *  純讀。items＝該月（依 date＝開始日）全部狀態的申請；leaves＝leave 分頁該月的核定結果（薪資讀這份），姓名唯一對到 roster 才給 emp_id。
+ *  純讀。items＝該月（依 date＝開始日）全部狀態的申請；leaves＝leave 分頁該月的核定結果（薪資讀這份），姓名對 roster 照薪資規則，對不到 emp_id＝''。
  *  不算本店支援的人（home）：不帶 acting 時兩邊都不列。不回 attach_id、comp。型別：has_attach／upper 布林、hours 數字或 null（leaves 一律數字，空白＝0 同薪資）。 */
 function handleMgrReqMonth_(body) {
   var mgr = reqMgr_(body);
@@ -678,32 +678,41 @@ function handleMgrReqMonth_(body) {
   var ym = String(body.ym || '');
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) return { ok: false, error: 'bad_ym' };
   var ss = getSS(), upc = reqUpperCache_(ss), acting = reqMgrActing_(mgr, body);
+  // 'YYYY-M-D' 補零（手填的 leave 日期；薪資照前 7 字算進當月，這裡跟它一樣，對帳鍵也才對得上）
+  var pad = function (d) { var m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(d || '').trim()); return m ? m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2) : String(d || ''); };
   var inMonth = function (d) { return String(d || '').slice(0, 7) === ym; };
-  var isHome = function (id) { return !acting && reqUpperWhy_(id, ss, upc) === 'home'; };
+  // 不算本店支援的人：直接看 home 名單（優先於 reqUpperWhy_ 的值班主管本人，2026-11-02 審查）；帶 acting 的營運系統鑰匙照列
+  var isHome = function (id) { return !acting && !!upc.home && reqInList_(upc.home, String(id == null ? '' : id)); };
   var cmp = function (x, y) { return x < y ? -1 : x > y ? 1 : 0; };
-  var items = reqRows_(ss).filter(function (r) { return inMonth(r.date) && !isHome(r.emp_id); })
+  var items = reqRows_(ss).filter(function (r) { return String(r.emp_id == null ? '' : r.emp_id) !== '' && inMonth(r.date) && !isHome(r.emp_id); })
     .sort(function (a, b) { return cmp(a.date, b.date) || cmp(a.created_at, b.created_at); })
     .map(function (r) {
-      var o = reqPublic_(r), why = reqUpperWhy_(r.emp_id, ss, upc);
+      var o = reqPublic_(r), why = acting ? '' : reqUpperWhy_(r.emp_id, ss, upc);   // 帶 acting 時同 mgr_req_day：不算 upper
       o.summary = reqSummary_(r); o.upper = !!why; o.upper_kind = why || '';
       return o;
     });
-  var rsh = ss.getSheetByName('roster'), byName = {};
+  // 姓名→員編照薪資（Payroll.gs payCollect 的 nameToEmp）：去頭尾空白後完全相同、同名算給名冊最後一位——核定時數才跟薪資對得起來。
+  // 同名的人裡只要有 home，本店主管就整組看不到（避免 home 的假別掛到別人名下被看到）
+  var rsh = ss.getSheetByName('roster'), byName = {}, homeName = {};
   (rsh ? readSheetAsObjects(rsh).rows : []).forEach(function (r) {
-    var k = reqNameKey_(r.name), id = String(r.emp_id == null ? '' : r.emp_id);
+    var k = String(r.name == null ? '' : r.name).trim(), id = String(r.emp_id == null ? '' : r.emp_id);
     if (!k || !id) return;
-    byName[k] = Object.prototype.hasOwnProperty.call(byName, k) && byName[k] !== id ? '' : id;   // 同名兩人＝對不到
+    byName[k] = id;
+    if (isHome(id)) homeName[k] = true;
   });
-  var lsh = ss.getSheetByName('leave'), leaves = [], unmatched = 0;
+  var lsh = ss.getSheetByName('leave'), leaves = [], unmatched = 0, seen = {};
   (lsh ? readSheetAsObjects(lsh).rows : []).forEach(function (r) {
-    var date = normCellDate(r['日期']);
+    var date = pad(normCellDate(r['日期']));
     if (!inMonth(date)) return;
-    var name = String(r['姓名'] == null ? '' : r['姓名']).trim(), k = reqNameKey_(name);
+    var name = String(r['姓名'] == null ? '' : r['姓名']).trim();
     var type = String(r['假別'] == null ? '' : r['假別']).trim();
-    var emp = Object.prototype.hasOwnProperty.call(byName, k) ? byName[k] : '';
-    if (emp && isHome(emp)) return;
+    if (Object.prototype.hasOwnProperty.call(homeName, name)) return;
+    var emp = Object.prototype.hasOwnProperty.call(byName, name) ? byName[name] : '';
     if (!emp) unmatched++;
-    leaves.push({ id: 'L|' + date + '|' + k + '|' + type, emp_id: emp, name: name, date: date, type: type, hours: Number(r['時數']) || 0 });
+    var id = 'L|' + date + '|' + name + '|' + type;
+    seen[id] = (seen[id] || 0) + 1;
+    if (seen[id] > 1) id += '|' + seen[id];   // 同日同人同假別兩列（手填）：加序號，id 不重複
+    leaves.push({ id: id, emp_id: emp, name: name, date: date, type: type, hours: Number(r['時數']) || 0 });
   });
   leaves.sort(function (a, b) { return cmp(a.date, b.date); });
   return { ok: true, ym: ym, items: items, leaves: leaves, unmatched: unmatched };

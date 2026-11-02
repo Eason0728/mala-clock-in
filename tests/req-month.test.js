@@ -110,13 +110,23 @@ ok('型別嚴格：has_attach／upper 布林、hours 數字或 null、不回 att
   assert.strictEqual(typeof r.leaves[0].hours, 'number'); assert.strictEqual(r.leaves[0].hours, 0);
   assert.strictEqual(typeof r.unmatched, 'number');
 });
-ok('leave 姓名對員編：去空白；同名兩人與查無此人＝空字串並計 unmatched；id 穩定', () => {
-  const e = base({ leaves: [['2026-10-02', '測試三', '特休', 8], ['2026-10-02', '同名', '事假', 4], ['2026-10-03', '路人', '事假', 2], ['2026-10-04', ' 測試二 ', '出差', 8]] });
+ok('leave 姓名對員編照薪資：去頭尾空白完全相同、同名算最後一位；中間空白不同＝對不到；id 穩定且不重複', () => {
+  const e = base({ leaves: [['2026-10-02', '測試三', '特休', 8], ['2026-10-02', '同名', '事假', 4], ['2026-10-03', '路人', '事假', 2], ['2026-10-04', ' 測試二 ', '出差', 8],
+    ['2026-10-05', '測試 三', '事假', 1], ['2026-10-05', '測試 三', '事假', 2]] });
   const r = e.fn('handleMgrReqMonth_', M);
-  assert.deepStrictEqual(r.leaves.map(x => x.emp_id), ['E03', '', '', 'E02']);
+  assert.deepStrictEqual(r.leaves.map(x => x.emp_id), ['', 'E05', '', 'E02', 'E03', 'E03']);
   assert.strictEqual(r.unmatched, 2);
   assert.strictEqual(r.leaves[3].name, '測試二');
   assert.strictEqual(r.leaves[0].id, 'L|2026-10-02|測試三|特休');
+  assert.deepStrictEqual(r.leaves.slice(4).map(x => x.id), ['L|2026-10-05|測試 三|事假', 'L|2026-10-05|測試 三|事假|2']);
+});
+ok('手填日期 2026-10-5 補零並算進當月；斜線日期同薪資不算', () => {
+  const r = base({ leaves: [['2026-10-5', '測試一', '事假', 8], ['2026/10/06', '測試一', '事假', 8]] }).fn('handleMgrReqMonth_', M);
+  assert.deepStrictEqual(r.leaves.map(x => x.date), ['2026-10-05']);
+});
+ok('申請列 emp_id 空白：不回（不讓整月讀取因一列壞資料失敗）', () => {
+  const r = base({ reqs: [rq('ok1', 'E01', '測試一', '2026-10-05'), rq('bad', '', '無名', '2026-10-05')] }).fn('handleMgrReqMonth_', M);
+  assert.deepStrictEqual(r.items.map(x => x.id), ['ok1']);
 });
 ok('Sheets 日期物件正常化（leave 與 requests）', () => {
   const d = new Date('2026-10-09T00:00:00+08:00');
@@ -132,7 +142,20 @@ ok('home：本店主管兩邊都看不到，營運系統帶 acting 看得到', (
   assert.deepStrictEqual(r.items.map(x => x.id), ['h2']); assert.deepStrictEqual(r.leaves.map(x => x.emp_id), ['E01']);
   const a = base(o).fn('handleMgrReqMonth_', OPS);
   assert.deepStrictEqual(a.items.map(x => x.id).sort(), ['h1', 'h2']); assert.strictEqual(a.leaves.length, 2);
-  assert.strictEqual(a.items.find(x => x.id === 'h1').upper_kind, 'home');
+  assert.strictEqual(a.items.find(x => x.id === 'h1').upper, false, '帶 acting 同 mgr_req_day：不算 upper');
+  assert.strictEqual(a.items.find(x => x.id === 'h1').upper_kind, '');
+});
+ok('home 同時是本店值班主管：仍然藏（home 優先）', () => {
+  const o = { off: false, props: { REQ_HOME_EMPS: '["E02"]' }, managers: [['測試二', 'MK', 'true', '']],
+    reqs: [rq('h1', 'E02', '測試二', '2026-10-06')], leaves: [['2026-10-06', '測試二', '事假', 8]] };
+  const r = base(o).fn('handleMgrReqMonth_', M);
+  assert.deepStrictEqual([r.items.length, r.leaves.length], [0, 0]);
+});
+ok('home 與別人同名：核定列整組藏，不會以別人或對不到的身分露出', () => {
+  const o = { props: { REQ_HOME_EMPS: '["E04"]' }, leaves: [['2026-10-06', '同名', '病假', 8]] };
+  const r = base(o).fn('handleMgrReqMonth_', M);
+  assert.deepStrictEqual([r.leaves.length, r.unmatched], [0, 0]);
+  assert.deepStrictEqual(base(o).fn('handleMgrReqMonth_', OPS).leaves.map(x => x.emp_id), ['E05']);
 });
 ok('home 名單讀壞（*）：本店主管全部看不到有員編的，對不到的照列', () => {
   const r = base({ props: { REQ_HOME_EMPS: 'not json' }, reqs: [rq('z', 'E01', '測試一', '2026-10-07')],
