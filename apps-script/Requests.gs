@@ -130,6 +130,7 @@ function reqSummary_(r) {
     var place = reqTripPlace_(r.reason);
     return md + ' 出差' + (r.start ? ' ' + r.start + '–' + r.end : ' 整天') + ' ' + Number(r.hours) + ' 小時' + (place ? '（地點：' + place + '）' : '');
   }
+  if (r.miss_type === 'break') return md + ' 忘打卡補登（中間休息：下班 ' + r.end + '、回來上班 ' + r.start + '）';
   var parts = [];
   if (r.miss_type === 'in' || r.miss_type === 'both') parts.push('上班 ' + r.start);
   if (r.miss_type === 'out' || r.miss_type === 'both') parts.push('下班 ' + r.end);
@@ -184,11 +185,31 @@ function reqDayInfo_(events, empId, date) {
   var opts = [];
   if (!mineSegs.length && !mineIns.length && !mineOuts.length) opts = ['both'];
   else { if (mineOuts.length) opts.push('in'); if (mineIns.length) opts.push('out'); }
+  // 中間休息沒打卡（2026-11-02 Eason）：那天有上班卡（整段，或還在上班中）就能補「下班＋回來上班」一組
+  var spans = mineSegs.map(function (x) { return { in: x.inp.hm, out: x.outp.hm, out_next: x.outp.date !== date }; })
+    .concat(mineIns.map(function (p) { return { in: p.hm, out: null, out_next: false }; }));
+  if (spans.length) opts.push('break');
   var lo1 = mineOuts[0], oi = mineIns[mineIns.length - 1];
   return { punches: punches, missing: { options: opts, open_in: oi ? oi.hm : null,
-           lone_out: lo1 ? lo1.hm : null, lone_out_next: !!(lo1 && lo1.date !== date) } };
+           lone_out: lo1 ? lo1.hm : null, lone_out_next: !!(lo1 && lo1.date !== date), spans: spans } };
 }
 function reqDayPunches_(events, empId, date) { return reqDayInfo_(events, empId, date).punches; }
+
+/** 中間休息：休息開始 out、回來上班 inn 要落在某一段班裡（上班卡之後、下班卡之前），而且 out 早於 inn。
+ *  用「從上班卡起算幾分鐘」比，跨夜班也對。回 {span, next}（next＝回來時間在隔天）或 {error, message}。 */
+function reqBreakSpan_(spans, out, inn) {
+  var rel = function (hm, base) { return (reqMin_(hm) - reqMin_(base) + 1440) % 1440; };
+  for (var i = spans.length - 1; i >= 0; i--) {
+    var sp = spans[i], a = rel(out, sp.in), b = rel(inn, sp.in), len = sp.out ? rel(sp.out, sp.in) || 1440 : 1440;
+    if (a > 0 && b > a && b < len) return { span: sp, next: reqMin_(sp.in) + b >= 1440 };
+  }
+  if (spans.length === 1) {
+    var s0 = spans[0], a0 = rel(out, s0.in), b0 = rel(inn, s0.in), l0 = s0.out ? rel(s0.out, s0.in) || 1440 : 1440;
+    if (a0 > 0 && a0 < l0 && b0 > 0 && b0 < l0) return { error: 'bad_time', message: '回來上班時間要比休息開始晚' };
+    return { error: 'bad_time', message: '休息時間要在 ' + s0.in + (s0.out ? ' 上班到 ' + s0.out + ' 下班之間' : ' 上班之後') };
+  }
+  return { error: 'bad_time', message: '休息時間要在當天其中一段班之內（上班卡之後、下班卡之前）' };
+}
 
 /* ── 同仁：身分 ── */
 function reqStaff_(body) {
@@ -300,6 +321,15 @@ function reqValidate_(b, me, events, today, existing) {
     if (!info.options.length) return { error: 'not_missing', message: '這天的上班卡和下班卡都有打成功，不用補登；時間記錯請直接跟值班主管說' };
     if (info.options.indexOf(mt) < 0) return { error: 'not_missing', message: mt === 'in' ? '這天的上班卡有打成功，不用補登' : mt === 'out' ? '這天的下班卡有打成功，不用補登' : '請選要補哪一張卡' };
     row.miss_type = mt;
+    if (mt === 'break') {
+      // start＝回來上班（補的上班卡）、end＝休息開始（補的下班卡），與 in／out 用同兩欄
+      row.end = reqHm_(b.end); if (!row.end) return { error: 'bad_time', message: '請填休息開始（下班）時間' };
+      row.start = reqHm_(b.start); if (!row.start) return { error: 'bad_time', message: '請填回來上班時間' };
+      var bk = reqBreakSpan_(info.spans, row.end, row.start);
+      if (bk.error) return bk;
+      if (diff === 0 && (bk.next || reqMin_(row.start) > reqMin_(nowTaipeiIso().slice(11, 16)))) return { error: 'bad_time', message: '不能補登還沒到的時間' };
+      if (!reason) return { error: 'need_reason', message: '請選原因' };
+    } else {
     if (mt === 'in' || mt === 'both') { row.start = reqHm_(b.start); if (!row.start) return { error: 'bad_time', message: '請填實際上班時間' }; }
     if (mt === 'out' || mt === 'both') { row.end = reqHm_(b.end); if (!row.end) return { error: 'bad_time', message: '請填實際下班時間' }; }
     // 時間要合理（跨夜：補的下班時間早於上班卡、且在凌晨 06:00 前＝隔天凌晨下班）
@@ -322,6 +352,7 @@ function reqValidate_(b, me, events, today, existing) {
       }
     }
     if (!reason) return { error: 'need_reason', message: '請選原因' };
+    }
   }
   // 同一天同一類（忘打卡再加同一張卡）不能有兩筆審核中的
   var dup = existing.filter(function (r) {

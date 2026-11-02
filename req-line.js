@@ -371,14 +371,20 @@
     p.appendChild(h('div', { class: 'rq-rec', text: '當天紀錄：' + rec }));
     var opts = day.missing.options;
     if (!opts.length) { p.appendChild(msgBox('這天的上班卡和下班卡都有打成功，不用補登。時間記錯請直接跟值班主管說。', 'err')); return; }
-    var LBL = { in: '上班卡', out: '下班卡', both: '上班和下班都沒打' };
+    var LBL = { in: '上班卡', out: '下班卡', both: '上班和下班都沒打', break: '中間休息沒打卡' };
     if (opts.indexOf(st.missType) < 0) st.missType = opts[0];
     if (opts.length > 1) p.appendChild(field('缺哪張卡', chips(opts.map(function (o) { return LBL[o]; }), LBL[st.missType], function (v) {
       st.missType = Object.keys(LBL).filter(function (k) { return LBL[k] === v; })[0]; render(); })));
     else p.appendChild(field('缺哪張卡', h('div', { class: 'rq-fixed', text: LBL[st.missType] + '（系統查到的）' })));
     var mv = st.mv = st.mv && st.mv.k === st.missDate + st.missType ? st.mv : { k: st.missDate + st.missType, start: '', end: '', reason: '', other: '' };
-    if (st.missType !== 'out') { var a = timePick(mv.start, 1, function (v) { mv.start = v; }); p.appendChild(field('實際上班時間', a)); }
-    if (st.missType !== 'in') { var b = timePick(mv.end, 1, function (v) { mv.end = v; }); p.appendChild(field('實際下班時間', b)); }
+    if (st.missType === 'break') {   // 中間休息（2026-11-02）：一次補「休息開始的下班卡＋回來的上班卡」；end＝下班、start＝回來上班
+      p.appendChild(h('div', { class: 'rq-muted', text: '例如中午 12:00 下班去休息、18:00 回來上班，兩張都忘了打。' }));
+      p.appendChild(field('休息開始（下班）', timePick(mv.end, 1, function (v) { mv.end = v; })));
+      p.appendChild(field('回來上班', timePick(mv.start, 1, function (v) { mv.start = v; })));
+    } else {
+      if (st.missType !== 'out') { var a = timePick(mv.start, 1, function (v) { mv.start = v; }); p.appendChild(field('實際上班時間', a)); }
+      if (st.missType !== 'in') { var b = timePick(mv.end, 1, function (v) { mv.end = v; }); p.appendChild(field('實際下班時間', b)); }
+    }
     var rbox = h('div', {}, [chips(MISS_REASONS, mv.reason, function (v) { mv.reason = v; render(); })]);
     if (mv.reason === '其他') {
       var oth = h('input', { type: 'text', maxlength: '80', value: mv.other, placeholder: '說明一下', on: { input: function () { mv.other = oth.value; } } });
@@ -392,7 +398,7 @@
                                reason: mv.reason === '其他' ? ('其他：' + (mv.other || '')).slice(0, 100) : mv.reason });
     }, function () { st.mv = null; st.days = null; st.missDate = ''; }));
     p.appendChild(out);
-    p.appendChild(h('div', { class: 'rq-note', text: '補登後當天仍算一次忘刷卡（全勤規則不變）。' }));
+    p.appendChild(h('div', { class: 'rq-note', text: '補登後當天仍算一次忘刷卡（全勤規則不變）' + (st.missType === 'break' ? '；中間休息兩張一起補，算一次。' : '。') }));
   }
 
   /* 我的申請 */
@@ -405,6 +411,7 @@
       var title = r.kind === 'leave' ? r.leave_type + ' ' + r.hours + ' 小時'
                 : r.kind === 'ot' ? '加班 ' + r.hours + ' 小時'
                 : r.kind === 'trip' ? '出差 ' + r.hours + ' 小時'
+                : r.miss_type === 'break' ? '忘打卡・補休息 ' + r.end + '–' + r.start
                 : '忘打卡・補' + (r.miss_type === 'both' ? '上下班卡' : r.miss_type === 'in' ? '上班卡 ' + r.start : '下班卡 ' + r.end);
       var sub = md(r.date) + (r.start && r.kind !== 'miss' ? ' ' + r.start + '–' + r.end : (r.kind === 'leave' || r.kind === 'trip') ? ' 整天' : '')
         + (r.reason ? '・' + r.reason : '');
