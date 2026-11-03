@@ -1080,7 +1080,7 @@ def handle_clock(data, body):
     lat = float(body.get("lat"))
     lng = float(body.get("lng"))
 
-    distance_m = round(haversine_m(STORE_LAT, STORE_LNG, lat, lng), 1)
+    distance_m = math.floor(haversine_m(STORE_LAT, STORE_LNG, lat, lng) * 10 + 0.5) / 10   # 同 Code.gs Math.round(x*10)/10（.5 進位，不是 Python 的銀行家捨入）
     ts = iso_now()
     # 手機沒給或給了怪值就存 None（舊版前端不帶這欄，不能因此讓打卡失敗）
     try:
@@ -1098,6 +1098,8 @@ def handle_clock(data, body):
     # 同型只擋 10 分鐘（與 Code.gs SAME_TYPE_LOCK_MIN 同步，2026-11-02）
     is_duplicate = (last_counted is not None and last_counted["type"] == type_
                     and (now_taipei() - datetime.fromisoformat(last_counted["ts"])).total_seconds() < SAME_TYPE_LOCK_MIN * 60)
+    # 單日 10 小時／兩班間隔 11 小時（Rest.gs，與 Code.gs handleClock 的 restBlock 同位置）：只擋上班卡；總開關關著＝None
+    rest_block = rest_check_in(data, roster) if (type_ == "in" and not is_duplicate) else None
 
     if not roster.get("device_id"):
         roster["device_id"] = device_id
@@ -1108,9 +1110,11 @@ def handle_clock(data, body):
     else:
         device_match = False
 
-    # status 優先序：重複 > 裝置不符 > 超出範圍 > ok
+    # status 優先序：重複 > 休息不足（rejected_rest，Rest.gs）> 裝置不符 > 超出範圍 > ok（與 Code.gs 同步）
     if is_duplicate:
         status = "rejected_duplicate"
+    elif rest_block:
+        status = "rejected_rest"
     elif not device_match:
         status = "pending_device_approval"
     elif not within_range:
@@ -1147,6 +1151,8 @@ def handle_clock(data, body):
     }
     if status == "rejected_duplicate":
         result["last_type"] = last_counted["type"]
+    if rest_block:
+        result["rest"] = rest_block   # 同 Code.gs：回 {code:gap|cap, reason, hint, until}
     return result
 
 
@@ -1737,7 +1743,7 @@ def _hub_store_name(code):
 def _hub_all_rosters():
     out = {}
     for code in _hub_store_codes():
-        with store_context(code or None):
+        with store_context(code):   # '' 明確切到光復（在別家店的請求裡呼叫時才不會讀到那家店自己的檔）
             out[code] = load_data().get("roster", [])
     return out
 
@@ -1820,27 +1826,31 @@ def handle_line_bind_name(data, body):
     if not want:
         return {"ok": False, "error": "empty_name", "message": "請輸入你的全名"}
     status, st, _d = _hub_pick(float(body["lat"]), float(body["lng"]), body.get("accuracy"))
-    if status != "ok":
-        return {"ok": False, "error": "not_at_store", "message": "綁定要人在店裡：請到你上班的店再試一次。"}
+    if status != "ok":   # 字句同 LineHub.gs handleLineBindName_（2026-11-03 對齊）
+        return {"ok": False, "error": "not_at_store", "message": "定位不夠準，分不出你在哪一家店。請開啟「精確位置」與 Wi‑Fi 後再試。" if status == "ambiguous"
+                else "綁定要人在店裡：請到你上班的店再試一次（目前定位不在任何打卡地點範圍內）。"}
     with store_context(st["code"] or None):
         sd = load_data()
         hit = [r for r in sd["roster"] if _hub_active(r) and _norm_name(r["name"]) == want]
         if not hit:
-            return {"ok": False, "error": "name_not_found", "message": f"「{st['name']}」的名冊上沒有「{body.get('name','').strip()}」。"}
+            return {"ok": False, "error": "name_not_found", "store_name": st["name"],
+                    "message": f"「{st['name']}」的名冊上沒有「{str(body.get('name') or '').strip()}」。請確認是全名、沒有錯字；名冊上沒有你請主管把你加進去。"}
         if len(hit) > 1:
-            return {"ok": False, "error": "name_conflict", "message": "有兩位同名同仁，請找主管協助綁定。"}
+            return {"ok": False, "error": "name_conflict", "message": f"「{st['name']}」有兩位同名同仁，請找主管協助綁定。"}
         row = hit[0]
         if row.get("line_user_id") and row["line_user_id"] != uid:
-            return {"ok": False, "error": "name_taken", "message": f"「{row['name']}」已經綁定別的 LINE 帳號，請告知主管。"}
+            return {"ok": False, "error": "name_taken", "message": f"「{row['name']}」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管在值班核定頁解除。"}
         if row.get("line_user_id") == uid:
             return {"ok": True, "already": True, "store_name": st["name"], "name": row["name"]}
         j = handle_liff_bind(sd, {"action": "liff_bind", "id_token": body["id_token"], "key": row["key"]})
         if not j.get("ok"):
             return {"ok": False, "error": j.get("error"), "message": "綁定沒有成功：" + str(j.get("error"))}
-        # 與 Liff.gs 同步：綁定紀錄標註怎麼綁的（主管頁顯示「輸入全名綁定」／「跨店自動綁定」）
+        # 與 LineHub.gs handleLineBindName_ 同步：via 由伺服器自己判斷（不信前端）——這個 LINE 在別家店已綁定同名＝跨店（auto），否則＝輸入全名（name）
+        same_elsewhere = any(_hub_active(r) and r.get("line_user_id") == uid and _norm_name(r["name"]) == want
+                             for code, rows in _hub_all_rosters().items() if code != (st["code"] or "") for r in rows)
         sd2 = load_data()
         if sd2.get("liff_bind_log"):
-            sd2["liff_bind_log"][-1]["type"] = "bind_auto" if body.get("via") == "auto" else "bind_name"
+            sd2["liff_bind_log"][-1]["type"] = "bind_auto" if same_elsewhere else "bind_name"
             save_data(sd2)
         return {"ok": True, "store_name": st["name"], "name": row["name"]}
 
@@ -1893,8 +1903,20 @@ def handle_line_hub_status(data, body):
         sd = load_data()
         me = next((r for r in sd["roster"] if _hub_active(r) and r.get("line_user_id") == uid), None)
         if not me:
-            return {"ok": True, "status": "fail", "result": {"ok": False, "code": "not_bound", "store_name": st["name"], "suggest_name": "",
-                    "reason": f"你的 LINE 帳號還沒有綁定「{st['name']}」", "hint": "請輸入全名綁定"}}
+            # 跨店同名建議（同 LineHub.gs lineHubResolve_）：這個 LINE 在別家店已綁定、名字唯一，這家店名冊有同名且還沒被綁的在職同仁 → 帶出名字請本人確認
+            suggest = ""
+            names = {}
+            for code, rows in _hub_all_rosters().items():
+                for r in rows:
+                    if _hub_active(r) and r.get("line_user_id") == uid:
+                        names[_norm_name(r["name"])] = r["name"]
+            if len(names) == 1:
+                key = next(iter(names))
+                cand = [r for r in sd["roster"] if _hub_active(r) and _norm_name(r["name"]) == key]
+                if len(cand) == 1 and not cand[0].get("line_user_id"):
+                    suggest = names[key]
+            return {"ok": True, "status": "fail", "result": {"ok": False, "code": "not_bound", "store_name": st["name"], "suggest_name": suggest,
+                    "reason": f"你的 LINE 帳號還沒有綁定「{st['name']}」", "hint": "請在打卡畫面輸入你的全名完成綁定；名冊上沒有你請主管把你加進去"}}
         today = today_str()
         evs = [{"type": e["type"], "hm": e["ts"][11:16], "status": e["status"]} for e in sd["events"]
                if e["emp_id"] == me["emp_id"] and e["ts"][:10] == today]
@@ -1958,6 +1980,166 @@ def _liff_guard(data, emp_id):
             "last": {"type": last["type"], "hm": last["ts"][11:16], "ts": last["ts"]} if last else None}
 
 
+# ── 單日 10 小時／兩班間隔 11 小時擋上班卡（2026-11-03 補進 mock，對應 apps-script/Rest.gs）──
+# 正式版：restSegments_／restJudge_／restPeerEvents_／restCheckIn_／restStatus_／handleRestRuleSet_。
+# 總開關：正式版是各店指令碼屬性 REST_RULE_ON＝'1'；mock 用各店資料檔的 "rest_rule_on": "1"（rest_rule_set 動作可開關）。
+# 跨店：正式版照姓名去空白讀 RestConfig 的各店試算表；mock 讀其他店的 mock_data*.json 名冊同名在職者的 events。
+REST_DAY_MAX_H = 10
+REST_GAP_H = 11
+REST_PAIR_H = 16
+REST_LOOKBACK_H = 40
+
+
+def _rest_on(data):
+    return str(data.get("rest_rule_on") or "") == "1"
+
+
+def _rest_ms(ts):
+    try:
+        return datetime.fromisoformat(str(ts)).timestamp() * 1000
+    except (TypeError, ValueError):
+        return None
+
+
+def _rest_day(ms):
+    return datetime.fromtimestamp(ms / 1000, TAIPEI_TZ).strftime("%Y-%m-%d")
+
+
+def _rest_hm(ms):
+    return datetime.fromtimestamp(ms / 1000, TAIPEI_TZ).strftime("%H:%M")
+
+
+def _rest_md(ms):
+    d = datetime.fromtimestamp(ms / 1000, TAIPEI_TZ)
+    return f"{d.month}/{d.day}"
+
+
+def _js_round1(h):
+    """JS Math.round(h*10)/10 再照 JS 數字顯示（整數不帶 .0）"""
+    v = math.floor(h * 10 + 0.5) / 10
+    return str(int(v)) if v == int(v) else str(v)
+
+
+def rest_segments(evs):
+    """同 Rest.gs restSegments_：算數＝非 rejected_*；上班接上班＝前一張沒下班（不成立）；16 小時內的下班卡才配成一段。"""
+    lst = []
+    for e in evs:
+        if e.get("type") not in ("in", "out") or str(e.get("status") or "").startswith("rejected_"):
+            continue
+        ms = _rest_ms(e.get("ts"))
+        if ms is None:
+            continue
+        lst.append((ms, e["type"]))
+    lst.sort(key=lambda x: x[0])
+    segs, open_ = [], None
+    for ms, typ in lst:
+        if typ == "in":
+            open_ = ms
+            continue
+        if open_ is not None and ms - open_ <= REST_PAIR_H * 3600000:
+            segs.append({"in": open_, "out": ms})
+        open_ = None
+    return segs
+
+
+def rest_judge(segs, now_ms):
+    """同 Rest.gs restJudge_：回 None（可以打）或 {code:'cap'|'gap', reason, hint, until}。"""
+    today = _rest_day(now_ms)
+    done = [s for s in segs if s["out"] <= now_ms]
+    if not done:
+        return None
+    todays = [s for s in done if _rest_day(s["in"]) == today]
+    if todays:
+        h = sum(s["out"] - s["in"] for s in todays) / 3600000
+        if h >= REST_DAY_MAX_H:
+            return {"code": "cap", "reason": f"你今天已經上班 {_js_round1(h)} 小時（一天最多 {REST_DAY_MAX_H} 小時），不能再打上班卡",
+                    "hint": "有問題請找值班主管", "until": None}
+        return None   # 同一天的第二段不看間隔
+    last = done[-1]
+    until = last["out"] + REST_GAP_H * 3600000
+    if now_ms >= until:
+        return None
+    same_day = _rest_day(until) == today
+    when = "今天 " if _rest_day(last["out"]) == today else " " + _rest_md(last["out"]) + " "
+    return {"code": "gap", "reason": f"你{when}{_rest_hm(last['out'])} 下班，兩班要隔 {REST_GAP_H} 小時，"
+                                     f"{'' if same_day else _rest_md(until) + ' '}{_rest_hm(until)} 以後才能打上班卡",
+            "hint": "有問題請找值班主管", "until": until}
+
+
+def _current_store_code():
+    """store_context 目前切到哪家店（'' ＝光復）。"""
+    base = os.path.basename(DATA_FILE)
+    return base[len("mock_data_"):-len(".json")] if base.startswith("mock_data_") else ""
+
+
+def rest_peer_events(name, since_ms):
+    """同 Rest.gs restPeerEvents_：別家店同名（去空白）在職同仁近 40 小時的打卡；哪家讀不到就跳過。"""
+    out, nm, me_code = [], _norm_name(name), _current_store_code()
+    if not nm:
+        return out
+    for code in _hub_store_codes():
+        if code == me_code:
+            continue
+        try:
+            with store_context(code):
+                sd = load_data()
+                ids = [str(r["emp_id"]) for r in sd.get("roster", []) if _hub_active(r) and _norm_name(r.get("name")) == nm]
+                if not ids:
+                    continue
+                for e in sd.get("events", []):
+                    ms = _rest_ms(e.get("ts"))
+                    if str(e.get("emp_id")) in ids and ms is not None and ms >= since_ms:
+                        out.append({"ts": e["ts"], "type": e["type"], "status": e.get("status"), "store": code})
+        except Exception:   # noqa: BLE001 - 讀不到的店跳過（同正式版）
+            continue
+    return out
+
+
+def rest_check_in(data, roster, now_ms=None):
+    """同 Rest.gs restCheckIn_：總開關關著、或任何錯誤都回 None（不擋）。"""
+    if not _rest_on(data):
+        return None
+    try:
+        now = now_ms or time.time() * 1000
+        since = now - REST_LOOKBACK_H * 3600000
+        mine = [e for e in data.get("events", []) if str(e.get("emp_id")) == str(roster["emp_id"])
+                and (_rest_ms(e.get("ts")) or 0) >= since]
+        return rest_judge(rest_segments(mine + rest_peer_events(roster.get("name"), since)), now)
+    except Exception:   # noqa: BLE001
+        return None
+
+
+def rest_status(data, roster):
+    """同 Rest.gs restStatus_（liff_status 用）。"""
+    r = rest_check_in(data, roster)
+    return {"blocked": True, "code": r["code"], "reason": r["reason"], "hint": r["hint"], "until": r["until"]} if r else {"blocked": False}
+
+
+def handle_rest_rule_set(data, body):
+    """同 Rest.gs handleRestRuleSet_：{admin_key, on?, probe?} → 開／關這家店的擋卡；probe 回 peer_ok／peer_bad。"""
+    if not body.get("admin_key") or body.get("admin_key") != ADMIN_KEY:
+        return {"ok": False, "error": "unauthorized"}
+    if body.get("on") is True:
+        data["rest_rule_on"] = "1"
+    elif body.get("on") is False:
+        data.pop("rest_rule_on", None)
+    save_data(data)
+    peers = [c for c in _hub_store_codes() if c != _current_store_code()]
+    ok, bad = [], []
+    if body.get("probe"):
+        for c in peers:
+            try:
+                with store_context(c):
+                    load_data()
+                ok.append(c)
+            except Exception:   # noqa: BLE001
+                bad.append(c)
+    return {"ok": True, "on": _rest_on(data), "peers": len(peers), "peer_ok": ok, "peer_bad": bad}
+
+
+ACTIONS["rest_rule_set"] = handle_rest_rule_set
+
+
 def handle_liff_status(data, body):
     uid, me, err = _liff_me(data, body)
     if err:
@@ -1967,8 +2149,10 @@ def handle_liff_status(data, body):
            if e["emp_id"] == me["emp_id"] and e["ts"][:10] == today]
     g = _liff_guard(data, me["emp_id"])
     g["now"] = time.time() * 1000
+    # 休息不足（Rest.gs）：開頁就告訴同仁幾點以後才能打上班卡；正在上班中（上一張是上班卡、10 分鐘內）不用算（同 Liff.gs handleLiffStatus_）
+    rest = rest_status(data, me) if g["blocked"] != "in" else {"blocked": False}
     return {"ok": True, "status": "ready", "name": me["name"], "shift_in": me.get("shift_in", ""),
-            "shift_out": me.get("shift_out", ""), "today": evs, "guard": g, "notices": active_notices(data, today)}
+            "shift_out": me.get("shift_out", ""), "today": evs, "guard": g, "notices": active_notices(data, today), "rest": rest}
 
 
 def liff_missed_note(events, emp_id, typ, ts):
@@ -2035,6 +2219,8 @@ def handle_liff_punch(data, body):
     rr = {"pending_device_approval": ["這支手機還沒被核准", "已送出待核准，請主管在值班核定頁核准"],
           "rejected_out_of_range": ["店家判定你不在範圍內", "請開啟「精確位置」與 Wi‑Fi 後再按一次"],
           "rejected_duplicate": ["這一筆和上一筆重複", "請按「出勤紀錄」確認今天的紀錄"]}.get(st, ["系統回覆：" + (st or "未知"), "請告知主管"])
+    if st == "rejected_rest" and j.get("rest"):   # 同 Liff.gs liffPunchFor_：Rest.gs 講幾點以後才能打
+        rr = [j["rest"]["reason"], j["rest"]["hint"]]
     return {"ok": False, "type": typ, "status": st, "reason": rr[0], "hint": rr[1]}
 
 
@@ -2098,9 +2284,13 @@ except FileNotFoundError:
     STORE_TABLE = {}
 
 
+HUB_STORE_ = (DATA_FILE, STORE_LAT, STORE_LNG, RADIUS_M)   # 光復（集中服務）自己的資料檔與座標
+
+
 @contextlib.contextmanager
 def store_context(code):
-    """code 為 None＝光復（預設），什麼都不換。其他店：資料檔 mock_data_<code>.json、座標半徑換成該店。
+    """code 為 None＝什麼都不換（/api 進來本來就是光復）。'' ＝明確切到光復（在別家店的請求裡要讀光復名冊時用，2026-11-03）。
+    其他店：資料檔 mock_data_<code>.json、座標半徑換成該店。
 
     各店資料檔第一次用到時從同一份種子建立（名冊 line_user_id 全空）。要重現「在 A 店綁、B 店不認得」：
       rm -f mock/mock_data_*.json
@@ -2109,13 +2299,16 @@ def store_context(code):
     打卡頁：/clock-line.html?mock_uid=U1&api=/api&loc=<緯度>,<經度>&acc=12
     """
     global DATA_FILE, STORE_LAT, STORE_LNG, RADIUS_M
-    if not code:
+    if code is None:
         yield
         return
     saved = (DATA_FILE, STORE_LAT, STORE_LNG, RADIUS_M)
-    st = STORE_TABLE[code]
-    DATA_FILE = os.path.join(BASE_DIR, "mock_data_%s.json" % code)
-    STORE_LAT, STORE_LNG, RADIUS_M = st["lat"], st["lng"], st["radius_m"]
+    if code == "":
+        DATA_FILE, STORE_LAT, STORE_LNG, RADIUS_M = HUB_STORE_
+    else:
+        st = STORE_TABLE[code]
+        DATA_FILE = os.path.join(BASE_DIR, "mock_data_%s.json" % code)
+        STORE_LAT, STORE_LNG, RADIUS_M = st["lat"], st["lng"], st["radius_m"]
     try:
         yield
     finally:

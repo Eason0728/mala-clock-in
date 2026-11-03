@@ -46,11 +46,13 @@ def _parse(t):
     return [[pad(a), pad(b)] for a, b in (r.split("～") for r in rs)]
 
 
-def _day(code):
+def _day(code, shifts=None, station=None):
     """照排班畫面：上班＝!isOff 且不是國；休假＝isOff 或國；時數＝hours−breakH（與 Sched.gs schedDayOf_ 同）"""
+    shifts = SHIFTS if shifts is None else shifts
+    station = STATION if station is None else station
     if not code:
         return {"code": "", "label": "", "segs": [], "hours": 0, "work": False, "rest": False}
-    sh = SHIFTS.get(code)
+    sh = shifts.get(code)
     if not sh:
         return {"code": code, "label": code, "segs": [], "hours": 0, "work": False, "rest": False}
     work = not sh["isOff"] and code != "國"
@@ -58,8 +60,8 @@ def _day(code):
          "hours": max(sh["hours"] - sh["breakH"], 0) if work else 0, "work": work, "rest": sh["isOff"] or code == "國"}
     if work and not d["segs"]:
         d["no_time"] = True
-    if work and code in STATION:
-        d["station"] = STATION[code]
+    if work and code in station:
+        d["station"] = station[code]
     return d
 
 
@@ -108,21 +110,40 @@ def register(ns):
         if "%d_%d" % (y, m) in (ctl.get("unlock") or []):
             base["status"] = "not_locked"
             return base
-        hits = [k for k, v in EMPS.items() if norm(v) == norm(me["name"])]
-        if len(hits) != 1:
-            base["status"] = "not_matched"
-            return base
-        row = _schedule(y, m, ym == months[1]).get(hits[0])
+        # 資料帶入（2026-11-03 e2e/line_ddt.py）：光復 mock 資料 mock_sched.custom＝
+        #   {"shifts": {代碼: {name,time,hours,breakH,isOff}}, "station": {代碼: 站名},
+        #    "people": [{"name", "full_time", "months": {"YYYY-MM": {"日": 代碼}}}], "notes": {"YYYY-MM": {"日": {"lunch","dinner"}}}}
+        # 沒有 custom 就照舊用固定的測試一～四假班表。認人規則同 Sched.gs：名冊姓名去空白後，排班系統剛好一人同名才對上。
+        custom = ctl.get("custom") or None
+        shifts, station, notes = SHIFTS, STATION, {}
+        if custom:
+            shifts = custom.get("shifts") or SHIFTS
+            station = custom.get("station") or {}
+            hits = [p for p in (custom.get("people") or []) if norm(p.get("name")) == norm(me["name"])]
+            if len(hits) != 1:
+                base["status"] = "not_matched"
+                return base
+            row = (hits[0].get("months") or {}).get(ym)
+            full_time = bool(hits[0].get("full_time"))
+            notes = (custom.get("notes") or {}).get(ym) or {}
+        else:
+            hits = [k for k, v in EMPS.items() if norm(v) == norm(me["name"])]
+            if len(hits) != 1:
+                base["status"] = "not_matched"
+                return base
+            row = _schedule(y, m, ym == months[1]).get(hits[0])
+            full_time = bool(FULL_TIME.get(hits[0]))
+            notes = {"1": {"lunch": "12:00 有 30 人團體訂位", "dinner": "提早 30 分鐘盤點"}}   # 午餐／晚餐備註（2026-10-26，同 SchedPub.gs 帶出的 note）
         if not row:
             base["status"] = "no_schedule"
             return base
-        blank_rest = not FULL_TIME.get(hits[0]) and bool(row)   # 計時已排班後空白天＝休（同 Sched.gs）
+        blank_rest = not full_time and bool(row)   # 計時已排班後空白天＝休（同 Sched.gs）
         days, wd, od, hrs = [], 0, 0, 0.0
         for d in range(1, _last_day(y, m) + 1):
-            x = _day(row.get(str(d), "") or ("休" if blank_rest else ""))
+            x = _day(row.get(str(d), "") or ("休" if blank_rest else ""), shifts, station)
             x["d"] = d
-            if d == 1:   # 午餐／晚餐備註（2026-10-26，同 SchedPub.gs 帶出的 note）
-                x["note"] = {"lunch": "12:00 有 30 人團體訂位", "dinner": "提早 30 分鐘盤點"}
+            if notes.get(str(d)):
+                x["note"] = notes[str(d)]
             days.append(x)
             if x["work"]:
                 wd += 1

@@ -4,6 +4,7 @@ mock_server.py 最後呼叫 register(globals()) 掛上：各店 req_*／mgr_req_
 並包住 liff_punch（QR 打卡、申請結果告知、漏卡日期）。邏輯照抄正式版，但只求本機能點得動，驗證規則以 Requests.gs 的測試為準。
 """
 import base64
+import math
 import hashlib
 import hmac
 import random
@@ -87,7 +88,8 @@ def register(ns):
 
     def public(r):
         o = {k: r.get(k, "") for k in ("id", "created_at", "emp_id", "name", "kind", "date", "leave_type", "start", "end",
-                                         "miss_type", "reason", "status", "decided_at", "decided_by", "reject_reason")}
+                                         "miss_type", "reason", "status", "decided_at", "decided_by", "reject_reason",
+                                         "voided_at", "voided_by", "void_reason")}   # voided_*：同 Requests.gs reqPublic_（2026-11-03 補）
         o["hours"] = r.get("hours")
         o["has_attach"] = bool(r.get("attach_id"))
         o["proof_required"], o["need_proof"] = proof_type(r), needs_proof(r)
@@ -178,6 +180,28 @@ def register(ns):
         diff = ddiff(d, today_str())
         reason = str(b.get("reason") or "").strip()[:100]
         row = {"kind": kind, "date": d, "leave_type": "", "start": "", "end": "", "hours": "", "miss_type": "", "reason": reason, "comp": ""}
+
+        def span_check(start, end, what):
+            """同 Requests.gs reqSpanCheck_（2026-11-03 對齊）：起訖一樣擋、超過 12 小時擋；跨夜照舊"""
+            if start == end:
+                return None, ("bad_time", what + "的開始和結束時間一樣，請確認")
+            hrs = span(start, end)
+            if hrs > 12:
+                return None, ("bad_time", what + "時段超過 12 小時，請確認時間；一整天請選「整天」填時數")
+            return hrs, None
+
+        def day_hours(v, what):
+            """同 Requests.gs：先取到 0.25 再檢查（0.1 小時原本會變 0）"""
+            try:
+                h = math.floor(float(v) * 4 + 0.5) / 4
+            except (TypeError, ValueError):
+                h = float("nan")
+            if not (h == h) or h <= 0 or h > 24:
+                return None, ("bad_hours", f"請填{what}時數（最少 0.25 小時）")
+            return h, None
+
+        if kind in ("leave", "ot", "trip") and (diff < -31 or diff > 90):   # 同 Requests.gs REQ_LEAVE_PAST_DAYS／REQ_FUTURE_DAYS
+            return None, ("bad_date", f"{KIND[kind]}只能申請 31 天前到 90 天後")
         if kind == "leave":
             lt = str(b.get("leave_type") or "")
             if not lt or lt == "出差" or lt not in LEAVE_TYPES:
@@ -187,15 +211,13 @@ def register(ns):
                 row["start"], row["end"] = hm_ok(b.get("start")), hm_ok(b.get("end"))
                 if not row["start"] or not row["end"]:
                     return None, ("bad_time", "請填完整的請假時段")
-                row["hours"] = span(row["start"], row["end"])
+                row["hours"], e = span_check(row["start"], row["end"], "請假")
+                if e:
+                    return None, e
             else:
-                try:
-                    h = float(b.get("hours"))
-                except (TypeError, ValueError):
-                    h = 0
-                if not (0 < h <= 24):
-                    return None, ("bad_hours", "請填請假時數")
-                row["hours"] = round(h * 4) / 4
+                row["hours"], e = day_hours(b.get("hours"), "請假")
+                if e:
+                    return None, e
         elif kind == "ot":
             row["start"], row["end"] = hm_ok(b.get("start")), hm_ok(b.get("end"))
             if not row["start"] or not row["end"]:
@@ -207,22 +229,18 @@ def register(ns):
                 return None, ("need_reason", "加班要寫原因")
             # 補休（2026-11-01 改每月加減結算）：加班不再分加班費／換補休，comp 欄留空
         elif kind == "trip":
-            if diff < -31 or diff > 90:
-                return None, ("bad_date", "出差只能申請 31 天前到 90 天後")
             row["leave_type"] = "出差"
             if b.get("start") or b.get("end"):
                 row["start"], row["end"] = hm_ok(b.get("start")), hm_ok(b.get("end"))
                 if not row["start"] or not row["end"]:
                     return None, ("bad_time", "請填完整的出差時段")
-                row["hours"] = span(row["start"], row["end"])
+                row["hours"], e = span_check(row["start"], row["end"], "出差")
+                if e:
+                    return None, e
             else:
-                try:
-                    h = float(b.get("hours"))
-                except (TypeError, ValueError):
-                    h = 0
-                if not (0 < h <= 24):
-                    return None, ("bad_hours", "請填出差時數")
-                row["hours"] = round(h * 4) / 4
+                row["hours"], e = day_hours(b.get("hours"), "出差")
+                if e:
+                    return None, e
             place = str(b.get("place") or "").strip().replace("；", "，")
             if not place:
                 return None, ("need_place", "請填出差地點")
@@ -245,16 +263,34 @@ def register(ns):
                 return None, ("not_missing", "這天的上班卡有打成功，不用補登" if mt == "in" else "這天的下班卡有打成功，不用補登" if mt == "out" else "請選要補哪一張卡")
             row["miss_type"] = mt
             if mt == "break":
-                row["end"], row["start"] = hm_ok(b.get("end")), hm_ok(b.get("start"))
-                if not row["end"] or not row["start"]:
-                    return None, ("bad_time", "請填休息開始和回來上班時間")
-                rel = lambda hm, base: (mins(hm) - mins(base)) % 1440
-                hit = [sp for sp in info["spans"] if 0 < rel(row["end"], sp["in"]) < rel(row["start"], sp["in"])
-                       < ((rel(sp["out"], sp["in"]) or 1440) if sp["out"] else 1440)]
-                if not hit:
-                    return None, ("bad_time", "休息時間要在當天其中一段班之內，回來上班要比休息開始晚")
-                if diff == 0 and mins(row["start"]) > mins(iso_now()[11:16]):
+                # 同 Requests.gs reqValidate_（break）＋ reqBreakSpan_：字句與順序照正式版（2026-11-03 對齊）
+                row["end"] = hm_ok(b.get("end"))
+                if not row["end"]:
+                    return None, ("bad_time", "請填休息開始（下班）時間")
+                row["start"] = hm_ok(b.get("start"))
+                if not row["start"]:
+                    return None, ("bad_time", "請填回來上班時間")
+                rel = lambda hm, base: (mins(hm) - mins(base) + 1440) % 1440
+                bk = None
+                for sp in reversed(info["spans"]):
+                    a, bb = rel(row["end"], sp["in"]), rel(row["start"], sp["in"])
+                    ln = (rel(sp["out"], sp["in"]) or 1440) if sp["out"] else 1440
+                    if a > 0 and bb > a and bb < ln:
+                        bk = {"span": sp, "next": mins(sp["in"]) + bb >= 1440}
+                        break
+                if bk is None:
+                    if len(info["spans"]) == 1:
+                        s0 = info["spans"][0]
+                        a0, b0 = rel(row["end"], s0["in"]), rel(row["start"], s0["in"])
+                        l0 = (rel(s0["out"], s0["in"]) or 1440) if s0["out"] else 1440
+                        if a0 > 0 and a0 < l0 and b0 > 0 and b0 < l0:
+                            return None, ("bad_time", "回來上班時間要比休息開始晚")
+                        return None, ("bad_time", f"休息時間要在 {s0['in']}" + (f" 上班到 {s0['out']} 下班之間" if s0["out"] else " 上班之後"))
+                    return None, ("bad_time", "休息時間要在當天其中一段班之內（上班卡之後、下班卡之前）")
+                if diff == 0 and (bk["next"] or mins(row["start"]) > mins(iso_now()[11:16])):
                     return None, ("bad_time", "不能補登還沒到的時間")
+                if not reason:
+                    return None, ("need_reason", "請選原因")
             if mt in ("in", "both"):
                 row["start"] = hm_ok(b.get("start"))
                 if not row["start"]:
@@ -599,10 +635,12 @@ def register(ns):
         # 預設正職本月加班 2、補休 4 → 欠 2 小時（負的照樣能請：先休後補）
         comp = data.get("mock_comp") or {"allowed": True, "ot_h": 2, "used_h": 4, "balance_h": -2, "ym": date.today().strftime("%Y-%m")}
         common = [n for n in COMMON if n in names] + (["補休"] if comp.get("allowed") else [])
+        # 假別額度：光復 mock 資料的 mock_quota 可改（e2e 資料帶入用）；沒有就用固定樣本
+        quota = data.get("mock_quota") or [{"name": "特休假", "cap_days": 7, "cap_h": 56, "remain_h": 40, "used_h": 16, "basis": "tenure"},
+                                           {"name": "事假", "cap_days": 14, "cap_h": 112, "remain_h": 112, "used_h": 0, "basis": "calendar"}]
         return {"ok": True, "stores": stores, "punch_store": punch_store, "comp": comp,
                 "leave_types": {"common": common, "special": [n for n in names if n not in COMMON]},
-                "quota": [{"name": "特休假", "cap_days": 7, "cap_h": 56, "remain_h": 40, "used_h": 16, "basis": "tenure"},
-                          {"name": "事假", "cap_days": 14, "cap_h": 112, "remain_h": 112, "used_h": 0, "basis": "calendar"}]}
+                "quota": quota}
 
     def hub_attach_put(data, body):
         if not verify(body.get("id_token")):
