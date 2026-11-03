@@ -457,7 +457,7 @@ ok('mgr_add_employee：created_at 鎖文字、active 布林、key（英數 20 �
   const sh = m.sheet('roster'), H = m.c('ROSTER_HEADERS');
   assert.strictEqual(describe(sh, 2, H.indexOf('created_at') + 1), 'text(@)');
   assert.strictEqual(describe(sh, 2, H.indexOf('active') + 1), 'bool');
-  assert.ok(/^[A-Za-z0-9]{20}$/.test(e.key) && describe(sh, 2, H.indexOf('key') + 1) === 'text');
+  assert.ok(/^[A-Za-z0-9]{20}$/.test(e.key) && /^text/.test(describe(sh, 2, H.indexOf('key') + 1)));   // 2026-11-04 起 key 欄整欄鎖 '@'（text(@)）
   assert.strictEqual(punch(m, e.key, 'in').status, 'ok');
   assert.strictEqual(m.rows('roster')[0].device_bound_at, '2026-07-14T10:00:00+08:00');
   assert.strictEqual(m.rows('roster')[0].device_id, 'D1');
@@ -496,7 +496,7 @@ ok("名冊 shift_in 由人直接打 '11:00'（讀回 Date）：mgr_day 預填 '1
   const emp = m.sb.handleMgrDay({ mgr_key: 'MK', date: '2026-07-14' }).employees[0];
   assert.strictEqual(emp.shift_in + '-' + emp.shift_out, '11:00-20:00');
 });
-KNOWN("set_shifts 第一次執行：先 setValue('11:00') 再把整欄設 '@' → 值已被轉成時間序號 0.4583（推定規則 15），normShiftTime 認不得 → mgr_day 預填空白（應為 '11:00'）", () => {
+ok("set_shifts 第一次執行：先 setValue('11:00') 再把整欄設 '@' → 值已被轉成時間序號 0.4583（推定規則 15），normShiftTime 認不得 → mgr_day 預填空白（應為 '11:00'）", () => {
   const m = make(); const e = hire(m);
   const r = m.sb.handleSetShifts({ admin_key: 'ADM', shifts: [{ emp_id: e.emp_id, shift_in: '11:00', shift_out: '20:00' }] });
   assert.ok(r.ok, JSON.stringify(r));
@@ -529,7 +529,7 @@ ok("mgr_add_notice：ends_on '2026-07-20' 變 Date、active 布林、created_at 
   assert.strictEqual(m.sb.activeNotices(m.ss, '2026-07-14').length, 0);
   assert.strictEqual(m.sb.handleMgrNotices({ mgr_key: 'MK' }).notices[0].active, false);
 });
-KNOWN("公告內容若剛好是數字樣式（例：'0800'）：notices.text 沒鎖文字，Sheets 轉成數字 800，打卡頁輪播顯示 '800'（應原樣 '0800'）", () => {
+ok("公告內容若剛好是數字樣式（例：'0800'）：notices.text 沒鎖文字，Sheets 轉成數字 800，打卡頁輪播顯示 '800'（應原樣 '0800'）", () => {
   const m = make();
   const r = m.sb.handleMgrAddNotice({ mgr_key: 'MK', text: '0800', ends_on: '' });
   assert.ok(r.ok);
@@ -662,12 +662,12 @@ ok("payroll_config：late_deduct 'true' 變布林，payBool 認得；數字參�
   const cfg = m.sb.payConfig('SSLGF');
   assert.strictEqual(m.sb.payBool(cfg.late_deduct), true); assert.strictEqual(cfg.meal_min_hours, 6); assert.strictEqual(cfg.attend_deduct_basis, 'leave');
 });
-KNOWN("payroll_config 的 late_deduct_from 存 '2026-10'：value 欄沒鎖文字 → Sheets 轉成日期（Payroll.gs 自己註解的正式環境觀察）→ payConfig 讀到 Date 字串，應為 '2026-10'", () => {
+ok("payroll_config 的 late_deduct_from 存 '2026-10'：value 欄沒鎖文字 → Sheets 轉成日期（Payroll.gs 自己註解的正式環境觀察）→ payConfig 讀到 Date 字串，應為 '2026-10'", () => {
   const m = make();
   assert.ok(m.sb.handlePayrollConfigSet({ admin_key: 'ADM', store: '', config: { late_deduct: 'true', late_deduct_from: '2026-10' } }).ok);
   assert.strictEqual(m.sb.payConfig('SSLGF').late_deduct_from, '2026-10', '讀到的是：' + m.sb.payConfig('SSLGF').late_deduct_from);
 });
-KNOWN("（後果）late_deduct_from='2026-10' 後，2026-10／2026-11 的遲到分鐘應扣款（late_deduct 項目）；因 '2026-10' < 'Thu Oct 01 2026…' 比對失真，遲到不計薪整個失效", () => {
+ok("（後果）late_deduct_from='2026-10' 後，2026-10／2026-11 的遲到分鐘應扣款（late_deduct 項目）；因 '2026-10' < 'Thu Oct 01 2026…' 比對失真，遲到不計薪整個失效", () => {
   const m = make();
   m.sb.handlePayrollConfigSet({ admin_key: 'ADM', store: '', config: { late_deduct: 'true', late_deduct_from: '2026-10' } });
   const emp = { emp_id: 'E01', name: '測試一', is_full_time: 'true', base: 30000, skill_allow: 3000, night_allow: 3000, mgr_allow: 0, attend_cap: 3000, ot_rate: 240, wage: 0,
@@ -715,7 +715,7 @@ ok('rebuildMonth 兩次：第 7 欄手打的備註（對應的日期格已是 Da
    12. 條件性問題：系統自己不會這樣寫，但人工在試算表輸入、或呼叫端送純數字時會發生
    ════════════════════════════════════════════════════════════════════════ */
 console.log('\n━━ 12. 條件性（要有人手動輸入或呼叫端送純數字才會發生）━━');
-KNOWN("events.ts 被人手動貼成 '2026-07-15 09:00:00'（空白分隔→Date）：核定頁看得到那張卡，但 payCollect 的忘刷卡用原始 ts 切字串（tsDateStr），這天的忘刷算不到（應為 1）", () => {
+ok("events.ts 被人手動貼成 '2026-07-15 09:00:00'（空白分隔→Date）：核定頁看得到那張卡，但 payCollect 的忘刷卡用原始 ts 切字串（tsDateStr），這天的忘刷算不到（應為 1）", () => {
   const m = make(); const e = hire(m);
   m.ss.getSheetByName('events').appendRow(['2026-07-15 09:00:00', e.emp_id, 'in', 24.78, 121.01, 0, true, 'D1', true, 'ok', 5]);
   m.setNow('2026-07-20T10:00:00');
@@ -725,7 +725,7 @@ KNOWN("events.ts 被人手動貼成 '2026-07-15 09:00:00'（空白分隔→Date�
   const c = m.sb.payCollect('2026-07', 6, 'SSLGF', [])[e.emp_id] || {};
   assert.strictEqual(c.forget_punch || 0, 1, '薪資忘刷次數＝' + (c.forget_punch || 0));
 });
-KNOWN("同上，handlePayrollPunch 總表的 miss（忘刷日數）也漏算（rows 用 normCellTs、summary 的 markMiss 用原始 ts，同一支函式兩種口徑）", () => {
+ok("同上，handlePayrollPunch 總表的 miss（忘刷日數）也漏算（rows 用 normCellTs、summary 的 markMiss 用原始 ts，同一支函式兩種口徑）", () => {
   const m = make(); const e = hire(m);
   m.ss.getSheetByName('events').appendRow(['2026-07-15 09:00:00', e.emp_id, 'in', 24.78, 121.01, 0, true, 'D1', true, 'ok', 5]);
   m.setNow('2026-07-20T10:00:00');
@@ -733,13 +733,13 @@ KNOWN("同上，handlePayrollPunch 總表的 miss（忘刷日數）也漏算（r
   assert.strictEqual(pp.rows[0].punches[0].time, '09:00', 'rows 讀得到');
   assert.strictEqual(pp.summary.filter((x) => x.emp_id === e.emp_id)[0].miss, 1);
 });
-KNOWN("sync_roster 送純數字工號（'0007'）：appendRow 存成數字 7，第二次同步 findRosterByEmpId('0007') 對不到 → 每次同步多一列（應只有一列）", () => {
+ok("sync_roster 送純數字工號（'0007'）：appendRow 存成數字 7，第二次同步 findRosterByEmpId('0007') 對不到 → 每次同步多一列（應只有一列）", () => {
   const m = make();
   m.sb.handleSyncRoster({ admin_key: 'ADM', employees: [{ emp_id: '0007', name: '測試七', active: true }] });
   m.sb.handleSyncRoster({ admin_key: 'ADM', employees: [{ emp_id: '0007', name: '測試七', active: true }] });
   assert.strictEqual(m.rows('roster').length, 1, '名冊列數＝' + m.rows('roster').length + '，emp_id 讀回＝' + JSON.stringify(m.rows('roster')[0].emp_id));
 });
-KNOWN("名冊 key 由人手填純數字／前導零（'00123'）：存成數字 123，同仁連結帶 k=00123 → findRosterByKey 對不到 → invalid_key（應能打卡）", () => {
+ok("名冊 key 由人手填純數字／前導零（'00123'）：存成數字 123，同仁連結帶 k=00123 → findRosterByKey 對不到 → invalid_key（應能打卡）", () => {
   const m = make();
   m.ss.getSheetByName('roster').appendRow(['E09', '測試九', '00123', '', '', 'TRUE']);
   const r = punch(m, '00123', 'in');

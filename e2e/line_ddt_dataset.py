@@ -547,6 +547,13 @@ class Gen:
         b = (a + self.rng.choice([8 * 60, 8 * 60 + 30, 9 * 60])) % 1440
         return min_hm(a), min_hm(b)
 
+    def today_at(self, t):
+        """「今天的某個時刻」：凌晨跑時「3 小時前」會落到昨天、汙染「昨天沒卡」那類日子（2026-11-04 00:49 實踩）。
+        早於今天 00:01 就改成 00:01；現在還不到 00:02 就取 30 秒前。"""
+        floor = self.now.replace(hour=0, minute=1, second=0)
+        if t >= floor: return t
+        return floor if floor < self.now else self.now - timedelta(seconds=30)
+
     def at(self, **kw):
         """now 往前推 kw（hours／minutes／days）的時刻"""
         return self.now - timedelta(**kw)
@@ -628,6 +635,16 @@ class Gen:
                 p['events'] = [self.ev(end - timedelta(minutes=total), 'in'), self.ev(end, 'out')]
             return
         if s == 'two_shift':   # 今天一段 3～5 小時、30～90 分前結束 → 同一天第二段不看間隔，可以打上班
+            # 第一段必須整段落在「今天」：凌晨跑（2026-11-04 00:43 實踩）那段會跨到昨天，照規格就要看班距、被擋是對的。
+            # 現在太早排不進今天時，改成從 00:01 起、11～15 分鐘前結束的短段（過了 10 分鐘鎖，仍是今天的段落）。
+            midnight = self.now.replace(hour=0, minute=0, second=0)
+            if self.at(minutes=90 + 5 * 60 + 59) < midnight:
+                if self.now - midnight < timedelta(minutes=20):   # 00:20 前連一段都排不進今天：退成一般情境
+                    p['scenario'] = 'fresh'; p['events'] = []
+                    return
+                end = self.at(minutes=r.randint(11, 15))
+                p['events'] = [self.ev(midnight + timedelta(minutes=1), 'in'), self.ev(end, 'out')]
+                return
             end = self.at(minutes=r.randint(30, 90))
             p['events'] = [self.ev(end - timedelta(hours=r.randint(3, 5), minutes=r.randint(0, 59)), 'in'), self.ev(end, 'out')]
             return
@@ -713,7 +730,7 @@ class Gen:
                         ev(4, '09:%02d' % r.randint(0, 59), 'in'), ev(4, '18:%02d' % r.randint(0, 59), 'out'),
                         ev(5, '08:05', 'out'), ev(5, '09:10', 'in'), ev(5, '13:20', 'out'), ev(5, '18:00', 'in'),
                         ev(6, '17:30', 'in'), ev(5, '01:30', 'out')]   # 跨夜：6 天前晚上上班、5 天前凌晨下班 → 歸 6 天前，5 天前的凌晨卡標 (+1)
-        p['events'].append(self.ev(self.at(hours=3, minutes=r.randint(0, 30)), 'in'))   # 今天上班中（補休息要擋還沒到的時間）
+        p['events'].append(self.ev(self.today_at(self.at(hours=3, minutes=r.randint(0, 30))), 'in'))   # 今天上班中（補休息要擋還沒到的時間）
 
     def seed_dual_days(self, pa, pb):
         """綁兩家店的人：D1 只有 B 店有卡（自動換店）、D2 兩家都有、D3 都沒有；最近一張卡在 B（預設店別＝B）。"""
@@ -722,7 +739,7 @@ class Gen:
         pa['dual_days'] = {'b_only': self.at(days=1).strftime('%Y-%m-%d'), 'both': self.at(days=2).strftime('%Y-%m-%d'), 'none': self.at(days=3).strftime('%Y-%m-%d')}
         pb['events'] += [self.ev(t(1, '17:%02d' % r.randint(0, 59)), 'in'), self.ev(t(2, '17:00'), 'in'), self.ev(t(2, '21:30'), 'out')]
         # 最近一張卡在 A（1 小時前）→ 申請頁預設店別＝A；自動選店才看得出「換到 B」
-        pa['events'] += [self.ev(t(2, '11:00'), 'in'), self.ev(t(2, '15:00'), 'out'), self.ev(self.at(hours=1), 'in')]
+        pa['events'] += [self.ev(t(2, '11:00'), 'in'), self.ev(t(2, '15:00'), 'out'), self.ev(self.today_at(self.at(hours=1)), 'in')]
 
     def build_sched(self, sched_people):
         r = self.rng

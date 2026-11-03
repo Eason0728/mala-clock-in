@@ -168,7 +168,7 @@ def main():
                 count_injected(p, '#rosterCard') == 0 and p.evaluate('window.__xss') is None and '<img' in p.inner_text('#rosterCard'))
             rec('M1e 離職名單的 data-emp 沒被 " 逃脫（manager.html 2634 的 r.emp_id 要過 escHtml）',
                 on_attrs(p, '#reInactive') == 0 and p.evaluate("document.querySelector('#reInactive .re-restore').getAttribute('data-emp')") == ATTR,
-                p.evaluate("document.querySelector('#reInactive .re-restore').outerHTML.slice(0, 160)"), known=True)
+                p.evaluate("document.querySelector('#reInactive .re-restore').outerHTML.slice(0, 160)"))
             restore_btn_attrs = on_attrs(p, '#reInactive')   # 上面那條 KNOWN 的那顆按鈕，整頁掃描時扣掉
             no_html(p, '#lbList', 'M1f LINE 綁定紀錄（姓名／解除者）')
             rec('M1f 綁定紀錄的 data-emp 沒被逃脫', on_attrs(p, '#lbList') == 0)

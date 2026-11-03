@@ -2565,7 +2565,7 @@
           return;
         }
         var link = clockLinkFor(res.key);
-        show('✓ 已建立 <b>' + res.name + '</b>（編號 ' + res.emp_id + '）<br>'
+        show('✓ 已建立 <b>' + escHtml(res.name) + '</b>（編號 ' + escHtml(res.emp_id) + '）<br>'   // 名字是主管打的自由文字，當文字顯示（2026-11-04）
            + '把下面這條連結給他，請他<b>用 Safari 開 → 加入主畫面</b>，以後都從主畫面進：'
            + '<span class="ae-link" id="aeLink">' + link + '</span>'
            + '<button type="button" class="ae-copy" id="aeCopy">複製連結</button>');
@@ -2631,7 +2631,7 @@
             var by = r.removed_by ? ('由 ' + escHtml(r.removed_by) + ' 設定') : '';
             var meta = (when || by) ? '<span class="re-when">' + [when, by].filter(Boolean).join('・') + '</span>' : '';
             return '<div class="re-item"><span class="re-name">' + escHtml(r.name) + '（' + escHtml(r.emp_id) + '）' + meta + '</span>'
-                 + '<button type="button" class="re-restore" data-emp="' + r.emp_id
+                 + '<button type="button" class="re-restore" data-emp="' + escHtml(r.emp_id)
                  + '" data-name="' + escHtml(r.name) + '">恢復在職</button></div>';
           }).join('');
       [].forEach.call(listBox.querySelectorAll('.re-restore'), function (b) {
@@ -2665,8 +2665,8 @@
             show('✕ ' + ((res && res.message) || '設定失敗，請再試一次'), true);
             return;
           }
-          show(active ? ('✓ <b>' + res.name + '</b> 已恢復在職，可以打卡了')
-                      : ('✓ <b>' + res.name + '</b> 已設為離職，他不能再打卡了。'
+          show(active ? ('✓ <b>' + escHtml(res.name) + '</b> 已恢復在職，可以打卡了')   // 名冊上別人建的名字，當文字顯示（2026-11-04）
+                      : ('✓ <b>' + escHtml(res.name) + '</b> 已設為離職，他不能再打卡了。'
                          + '過去的打卡與核定紀錄都還在，設錯的話按下面的「恢復在職」。'));
           sel.value = '';
           load();
