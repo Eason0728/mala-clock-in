@@ -101,6 +101,7 @@ function loadLiffWithSheet(fetchImpl, rows, writes, bindLog) {
     setRosterCell: (sheet, rowIndex, header, val, asText) => {
       writes.push([rowIndex, header, val, !!asText]); return true;
     },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} }) }, SpreadsheetApp: { flush: () => {} },   // 綁定 2026-11-03 起包鎖
     nowTaipeiIso: () => '2026-08-27T12:00:00+08:00',
     console: console,
   };
@@ -188,6 +189,7 @@ const okFetch = (sub) => () => ({
     readSheetAsObjects: () => { throw new Error('不該被呼叫'); },
     ensureRosterHeaders: () => { throw new Error('不該被呼叫'); },
     setRosterCell: () => { throw new Error('不該被呼叫'); },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} }) }, SpreadsheetApp: { flush: () => {} },   // 綁定 2026-11-03 起包鎖
     nowTaipeiIso: () => '', console: console,
   };
   vm.createContext(sandbox);
@@ -207,6 +209,7 @@ const okFetch = (sub) => () => ({
     readSheetAsObjects: () => ({ rows: rows }),
     ensureRosterHeaders: () => {},
     setRosterCell: () => true,
+    LockService: { getScriptLock: () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} }) }, SpreadsheetApp: { flush: () => {} },   // 綁定 2026-11-03 起包鎖
     nowTaipeiIso: () => '2026-08-27T12:00:00+08:00',
     handleClock: (b) => { received = b; return { ok: true, status: 'ok' }; },
     lastCountedEvent: () => null, normCellTs: (v) => v,   // 2026-10-10 起 liff_clock 先過 liffGuard_（沒有 events 分頁＝沒有上一張卡）
@@ -346,6 +349,7 @@ const okFetch = (sub) => () => ({
     readSheetAsObjects: () => ({ rows: rows }),
     ensureRosterHeaders: () => {},
     setRosterCell: () => true,
+    LockService: { getScriptLock: () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} }) }, SpreadsheetApp: { flush: () => {} },   // 綁定 2026-11-03 起包鎖
     nowTaipeiIso: () => '2026-08-27T12:00:00+08:00',
     console: console,
   };

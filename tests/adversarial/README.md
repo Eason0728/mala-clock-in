@@ -12,3 +12,7 @@
 - 設 `ADV_STRICT=1` 時 KNOWN 失敗也讓程序非零結束（修完驗收用）。
 - 兩支都不能和 `e2e/run.py`、`e2e/clock_line.py` 在同一個 worktree 同時跑（共用 `mock/mock_data*.json`）。
 - 修法與嚴重度寫在交付報告（不進 repo）；測試檔只用假名、不含金鑰與試算表 ID。
+
+## 2026-11-03 修正後
+當初確認的 7 條都已修（分支 fix/line-adv），對應的 `KNOWN` 已改成 `ok`、另補對照組（不重疊的第二段加班照收、不同假別照收、第一筆沒算數時記號還原等）。
+`node tests/adversarial-line.test.js` 現在 31 項全過、0 KNOWN。之後再找到新問題，照原本的方式用 `KNOWN` 先記下。

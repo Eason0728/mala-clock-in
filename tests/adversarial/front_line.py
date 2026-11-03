@@ -203,8 +203,25 @@ def main():
             m = p.inner_text('#msg')
             data = json.load(open(fp, encoding='utf-8'))
             ins = [e for e in data['events'] if e['emp_id'] == 'E01' and e['type'] == 'in' and e['status'] == 'ok']
-            rec('T5b 舊狀態頁面按上班：應先跳「已經打過上班卡」確認框（目前沒跳，而且後端收下第二張 ok 上班卡）',
-                len(dialogs) == 1 and len(ins) == 1, {'dialogs': dialogs, 'ok_ins': len(ins), 'msg': m[:80]}, known=True)
+            # 2026-11-03 修：後端看到同型回 need_confirm → 畫面重讀、跳確認框；這裡按確定，所以第二張照規則（11-02）收下
+            rec('T5b 舊狀態頁面按上班：後端要求確認 → 跳「已經打過上班卡」確認框一次，按確定才寫進第二張',
+                len(dialogs) == 1 and '已經打過上班卡' in dialogs[0] and len(ins) == 2 and '打卡成功' in m,
+                {'dialogs': dialogs, 'ok_ins': len(ins), 'msg': m[:80]})
+            # T5d：同樣情境按「取消」→ 不送出、不多一張卡
+            for e in data['events']:
+                if e['emp_id'] == 'E01' and e['type'] == 'in':
+                    e['ts'] = (datetime.now(tz) - timedelta(minutes=20)).strftime('%Y-%m-%dT%H:%M:%S+08:00')
+            json.dump(data, open(fp, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+            p3 = ctx.new_page(); p3.add_init_script(FAKE_JS)
+            d3 = []
+            p3.on('dialog', lambda d: (d3.append(d.message), d.dismiss()))
+            p3.goto(url(uid='U5'))
+            p3.wait_for_function('!document.getElementById("btnIn").disabled')
+            p3.click('#btnIn'); time.sleep(1.5)
+            data = json.load(open(fp, encoding='utf-8'))
+            ins3 = [e for e in data['events'] if e['emp_id'] == 'E01' and e['type'] == 'in' and e['status'] == 'ok']
+            rec('T5d 開頁就看到已打過上班卡 → 按上班先跳確認框，取消就不送出、卡數不變', len(d3) == 1 and len(ins3) == len(ins), {'dialogs': d3, 'ok_ins': len(ins3)})
+            p3.close()
             p2 = ctx.new_page(); p2.add_init_script(FAKE_JS)
             d2 = []
             p2.on('dialog', lambda d: (d2.append(d.message), d.dismiss()))

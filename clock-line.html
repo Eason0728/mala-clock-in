@@ -567,12 +567,17 @@
     var a = type === 'in' ? '上班' : '下班', b = type === 'in' ? '下班' : '上班';
     return '你 ' + hm + ' 已經打過' + a + '卡，中間沒有' + b + '卡。確定要再打' + a + '嗎？\n漏打的' + b + '卡請到「加班請假 → 忘打卡」補。';
   }
-  function punch(type) {
+  function punch(type, preConfirmed) {   // preConfirmed：後端回 need_confirm、同仁已在確認框按確定
     if (busy || !status || status.status !== 'ready') return;
     var hasIn = (status.today || []).some(function (e) { return e.type === 'in' && (e.status === 'ok' || e.status === 'pending_device_approval'); });
-    if (type === 'out' && !status.guard.last && !hasIn && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
+    if (!preConfirmed && type === 'out' && !status.guard.last && !hasIn && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
     // 同一顆再按一次（2026-11-02 Eason：只鎖 10 分鐘，之後放行但先確認；漏的那張請用忘打卡補）
-    if (status.guard.last && status.guard.last.type === type && !window.confirm(sameTypeMsg(status.guard.last.hm, type))) return;
+    // confirm_same：同仁確認過才帶給後端；畫面看的是開頁時的狀態，後端會再用最新的卡判斷一次（2026-11-03 對抗驗證 #1）
+    var sameOk = !!preConfirmed;
+    if (!sameOk && status.guard.last && status.guard.last.type === type) {
+      if (!window.confirm(sameTypeMsg(status.guard.last.hm, type))) return;
+      sameOk = true;
+    }
     tmStart(type);
     // 送出前位置一定要是 30 秒內的（定位被關掉、手機在背景停止更新時，手上那筆可能是剛才在店裡的位置）：
     // 過時就重新定位，最多等 10 秒；抓不到就不送（2026-10-10 Codex 審查 #4）。QR 打卡不看定位。
@@ -584,7 +589,7 @@
         busy = false;
         if (tm) { tm.refix = true; tm.geo = tmNow() - tm.t0; }
         showMe(lastFix.coords.latitude, lastFix.coords.longitude);
-        sendPunch(type);
+        return sendPunch(type, sameOk);
       }, function () {
         busy = false; refreshButtons();
         if (tm) { tm.refix = true; tm.geo = tmNow() - tm.t0; }
@@ -593,10 +598,10 @@
         tmReport('geo_fail', '');
       });
     }
-    sendPunch(type);
+    return sendPunch(type, sameOk);
   }
   var REFIX_MS = (isLocalHost && +qs('refix_ms')) || 10000;
-  function sendPunch(type) {
+  function sendPunch(type, sameOk) {
     var label = type === 'in' ? '上班' : '下班';
     // 送出前用最新定位再挑一次店：位置變了就重讀，不把卡打到畫面上沒顯示的那家店（QR 打卡不看定位）
     var pick = qrToken ? { status: 'ok', store: curStore } : ClockLineCore.pickStore(fixForPick(), STORES);
@@ -615,7 +620,8 @@
     if (t) { t.store = st.code; t.qr = !!qrToken; t.acc = qrToken ? null : fixForPick().accuracy_m; t.sent = tmNow();
              t.req_id = reqId; t.route = mode ? 'plain' : 'off'; }
     // 先送 Google（正本），同一刻再問 mini；mini 永遠不會讓 Google 那份晚送
-    var gp = post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, qrToken ? { qr: qrToken } : fixPayload()),
+    var gp = post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, sameOk ? { confirm_same: true } : {},
+                                              qrToken ? { qr: qrToken } : fixPayload()),
                   undefined, true);
     var rp = Promise.resolve();
     try {   // mini 這段出任何錯都不能影響 Google 那份（審查 P3 #7）
@@ -636,7 +642,7 @@
     }
     // 先顯示成功、Google 卻沒成功：任何錯誤訊息前面都要先更正（審查 P3 #1）
     function unshow() { if (shown) $('msg').textContent = '剛才顯示成功有誤。\n' + $('msg').textContent; }
-    gp.then(function (r) {
+    return gp.then(function (r) {
         settled = true;
         tmGot();
         if (t && r && r.steps) t.steps = r.steps;   // 後端各步驟毫秒數，跟著秒數一起送
@@ -673,6 +679,17 @@
             $('otHint').hidden = false; $('btnOtReq').hidden = false;
           }
           return sendToChat(!!(r.missed_date || notes || (r.ot_hint && r.ot_hint.date))).then(function (closing) { if (closing) keepBusy = true; });
+        }
+        // 後端看到最新的卡是同一型（畫面開著時別處打過）→ 重讀狀態、問同仁一次，確定才帶 confirm_same 再送（2026-11-03 對抗驗證 #1）
+        if (r.need_confirm) {
+          report('fail', 'need_confirm'); unshow();
+          status = null; refreshButtons();
+          return loadStatus().then(function () {
+            if (!status || status.status !== 'ready') return;
+            if (!window.confirm(sameTypeMsg((r.last && r.last.hm) || '', type))) { say(label + '打卡沒有送出', 'warn', '你剛才按了取消。'); return; }
+            busy = false;
+            return punch(type, true);
+          });
         }
         var failText = (shown ? '剛才顯示成功有誤。\n' : '') + label + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
         // 失敗：重讀狀態；重讀也失敗就維持鍵停用（不拿舊狀態重新亮鍵），訊息保留（審查 L4）

@@ -73,11 +73,27 @@ function findRosterByLineUser_(rows, userId) {
  *   欄位不存在時它回 false 而不是 throw，會變成「回報成功但沒寫入」的靜默失敗。
  */
 function handleLiffBind_(body) {
+  // 沒帶啟用碼一律擋（2026-11-03 對抗驗證 #5）：名冊若有手動加、key 空白的在職列，key:'' 會比對成功、綁成那個人
+  if (!body || body.key === undefined || body.key === null || String(body.key).trim() === '') return { ok: false, error: 'invalid_key' };
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
 
   var rosterSheet = getSS().getSheetByName('roster');
   if (!rosterSheet) return { ok: false, error: 'no_roster' };
+  // 讀名冊到寫入包一把鎖（2026-11-03 對抗驗證 #6）：兩個 LINE 同時綁同一列，原本都讀到「還沒綁」都回成功、後寫的蓋掉先寫的。
+  // 綁定很少發生，與 handleMgrAddEmployee 同做法；打卡（liff_punch）刻意不用這把鎖（會跟月表重算搶）。
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請幾秒後再試一次' };
+  try {
+    var res = liffBindLocked_(body, userId, rosterSheet);
+    SpreadsheetApp.flush();   // 寫入落地後才放鎖，下一筆鎖內重讀才看得到
+    return res;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function liffBindLocked_(body, userId, rosterSheet) {
   ensureRosterHeaders(rosterSheet);
   var rows = readSheetAsObjects(rosterSheet).rows;
 
@@ -530,21 +546,68 @@ function handleLiffClockGuarded_(body) {
   var found = liffRosterByLine_(userId);
   if (found.error) return { ok: false, error: found.error };
   var read = liffReadEvents_(found.ss, liffStatusSince_());
-  var stop = liffGuardReject_(liffGuard_(read.rows, found.roster.emp_id), type);
+  var stop = liffGuardReject_(liffGuard_(liffWithMark_(read.rows, found.roster.emp_id), found.roster.emp_id), type);
   if (stop) return { ok: false, type: type, error: 'guard_blocked', reason: stop.reason, hint: stop.hint };
   var inner = {};
   Object.keys(body).forEach(function (k) { if (k !== 'id_token' && k !== 'action') inner[k] = body[k]; });
   inner.key = found.roster.key;
+  var prevMark = liffPutMark_(found.roster.emp_id, type, nowTaipeiIso());
   var j = handleClock(inner, read, found.rows);
+  liffSettleMark_(found.roster.emp_id, type, j, prevMark);
   if (j && j.ok && j.status === 'ok') liffMarkLineOk_(found.ss, found.roster.emp_id, found.roster.__rowIndex);   // 寫失敗已在 helper 內吞掉
   return j;
+}
+
+/* 同一人同時兩筆打卡（2026-11-03 對抗驗證 #1）：busy 鍵只綁同一張 id_token，handleClock 用「打卡前讀的 events」判重複——
+   兩個畫面（或 Google 慢、同仁關掉重開再按）同時送上班卡，兩筆都讀到「還沒打」就兩張都 ok，前一張變「下班忘刷卡」、全勤被扣。
+   不用 ScriptLock（會跟月表重算搶鎖、讓打卡卡住）：改在 CacheService 記「這個人剛送出哪一型、幾點」，
+   讀完 events 之後、寫入之前先看這筆記號，當成最後一張卡併進防呆；寫入沒算數（rejected_*）就還原。
+   剩下的空窗只有兩筆在幾十毫秒內同時取放記號，比原本「讀表 1–3 秒」小很多。舊連結 clock.html 直接打 handleClock，不經過這裡。 */
+function liffMarkKey_(empId) { return 'lfl:' + empId; }
+/** events 再併上記號（記號比 events 裡最後一張算數的卡新才併）；讀不到記號原樣回。 */
+function liffWithMark_(events, empId) {
+  try {
+    var v = CacheService.getScriptCache().get(liffMarkKey_(empId));
+    if (!v) return events;
+    var m = JSON.parse(v), last = lastCountedEvent(events, empId);
+    if (!m || (m.type !== 'in' && m.type !== 'out') || isNaN(new Date(String(m.ts)).getTime())) return events;
+    if (last && new Date(String(last.ts)).getTime() >= new Date(String(m.ts)).getTime()) return events;
+    return events.concat([{ ts: String(m.ts), emp_id: empId, type: m.type, status: 'ok' }]);
+  } catch (e) { return events; }
+}
+/** 寫入前放記號，回原本的記號（字串或 null）給 liffSettleMark_ 還原用。 */
+function liffPutMark_(empId, type, ts) {
+  try {
+    var c = CacheService.getScriptCache(), k = liffMarkKey_(empId), prev = c.get(k);
+    c.put(k, JSON.stringify({ type: type, ts: ts }), LIFF_LOCK_MIN * 60 + 60);
+    return prev;
+  } catch (e) { return null; }
+}
+/** 寫入後：算數（不是 rejected_*）就把記號改成伺服器記下的時間；沒算數就還原成原本的記號。 */
+function liffSettleMark_(empId, type, j, prevMark) {
+  try {
+    var c = CacheService.getScriptCache(), k = liffMarkKey_(empId), st = String((j && (j.status || j.error)) || '');
+    if (j && j.ts && st && st.indexOf('rejected_') !== 0 && st !== 'qr_invalid' && !j.error) {
+      c.put(k, JSON.stringify({ type: type, ts: String(j.ts) }), LIFF_LOCK_MIN * 60 + 60);
+    } else if (prevMark) c.put(k, prevMark, LIFF_LOCK_MIN * 60 + 60);
+    else c.remove(k);
+  } catch (e) { /* 快取壞了：handleClock 的 rejected_duplicate 仍是最後一道 */ }
 }
 
 function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows：已讀好的名冊（選填，給了寫入時不再讀）
   var read = liffPunchRead_(ss, me.emp_id, type), events = read.rows;
   liffStep_('read');
-  var stop = liffGuardReject_(liffGuard_(events, me.emp_id), type);
+  var g = liffGuard_(liffWithMark_(events, me.emp_id), me.emp_id);   // 併上「剛送出」的記號（同一人兩筆同時到）
+  var stop = liffGuardReject_(g, type);
   if (stop) return { ok: false, type: type, reason: stop.reason, hint: stop.hint };
+  // 同一顆再按（過了 10 分鐘）要同仁確認過才收（2026-11-03 對抗驗證 #1）：畫面上的確認框只看開頁時的狀態，
+  // 頁面開著不動、中間從別的地方打過同型卡，再按就不會問。伺服器看到同型、畫面沒帶 confirm_same 就回 need_confirm，畫面問完再送一次。
+  if (g.last && g.last.type === type && body.confirm_same !== true) {
+    var lbl = type === 'in' ? '上班' : '下班', oth = type === 'in' ? '下班' : '上班';
+    return { ok: false, type: type, status: 'need_confirm', need_confirm: true, last: { type: g.last.type, hm: g.last.hm },
+             reason: '你 ' + g.last.hm + ' 已經打過' + lbl + '卡，中間沒有' + oth + '卡',
+             hint: '確定要再打' + lbl + '請重新整理打卡頁再按一次；漏打的' + oth + '卡請到「加班請假 → 忘打卡」補' };
+  }
   // 主管手機出示的動態 QR（2026-10-09，定位抓不準的備案）：驗過就用店家座標打卡，另記一列 qr_punch（誰出示的）
   var qr = null, lat = body.lat, lng = body.lng, acc = body.accuracy === undefined ? null : body.accuracy;
   if (body.qr) {
@@ -552,8 +615,10 @@ function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows
     if (!qr.ok) return { ok: false, type: type, status: 'qr_invalid', reason: qr.reason, hint: '請值班主管在核定頁按「打卡 QR」重新顯示' };
     lat = CONFIG.STORE_LAT; lng = CONFIG.STORE_LNG; acc = 0;
   }
+  var prevMark = liffPutMark_(me.emp_id, type, nowTaipeiIso());
   var j = handleClock({ key: me.key, type: type, lat: lat, lng: lng, accuracy: acc,
                         device_id: me.device_id ? String(me.device_id) : 'line:' + userId }, read, rosterRows);   // 用同一份，不再讀第二次
+  liffSettleMark_(me.emp_id, type, j, prevMark);
   liffStep_('write');
   // 忘打卡提醒用打卡前讀的那份 events（只看這次之前的卡），不多讀一次表
   if (j && j.ok && j.status === 'ok') {
