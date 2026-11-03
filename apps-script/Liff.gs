@@ -551,18 +551,16 @@ function handleLiffClockGuarded_(body) {
   var inner = {};
   Object.keys(body).forEach(function (k) { if (k !== 'id_token' && k !== 'action') inner[k] = body[k]; });
   inner.key = found.roster.key;
-  var prevMark = liffPutMark_(found.roster.emp_id, type, nowTaipeiIso());
-  var j = handleClock(inner, read, found.rows);
-  liffSettleMark_(found.roster.emp_id, type, j, prevMark);
+  var j = handleClock(inner, read, found.rows);   // 「剛送出」記號由 handleClock 自己放與還原（Code.gs clockMarkPut_）
   if (j && j.ok && j.status === 'ok') liffMarkLineOk_(found.ss, found.roster.emp_id, found.roster.__rowIndex);   // 寫失敗已在 helper 內吞掉
   return j;
 }
 
 /* 同一人同時兩筆打卡（2026-11-03 對抗驗證 #1）：busy 鍵只綁同一張 id_token，handleClock 用「打卡前讀的 events」判重複——
    兩個畫面（或 Google 慢、同仁關掉重開再按）同時送上班卡，兩筆都讀到「還沒打」就兩張都 ok，前一張變「下班忘刷卡」、全勤被扣。
-   不用 ScriptLock（會跟月表重算搶鎖、讓打卡卡住）：改在 CacheService 記「這個人剛送出哪一型、幾點」，
-   讀完 events 之後、寫入之前先看這筆記號，當成最後一張卡併進防呆；寫入沒算數（rejected_*）就還原。
-   剩下的空窗只有兩筆在幾十毫秒內同時取放記號，比原本「讀表 1–3 秒」小很多。舊連結 clock.html 直接打 handleClock，不經過這裡。 */
+   不用 ScriptLock（會跟月表重算搶鎖、讓打卡卡住）：在 CacheService 記「這個人剛送出哪一型、幾點」（鍵 lfl:<emp_id>）。
+   2026-11-03 晚起記號由 Code.gs handleClock 判完重複後自己放、被擋或寫入失敗就還原（clockMarkPut_／clockMarkRestore_），
+   舊連結 clock.html 也受保護；這裡只讀記號，給 10 分鐘鎖的字句與同型確認（need_confirm）用。 */
 function liffMarkKey_(empId) { return 'lfl:' + empId; }
 /** events 再併上記號（記號比 events 裡最後一張算數的卡新才併）；讀不到記號原樣回。 */
 function liffWithMark_(events, empId) {
@@ -575,25 +573,6 @@ function liffWithMark_(events, empId) {
     return events.concat([{ ts: String(m.ts), emp_id: empId, type: m.type, status: 'ok' }]);
   } catch (e) { return events; }
 }
-/** 寫入前放記號，回原本的記號（字串或 null）給 liffSettleMark_ 還原用。 */
-function liffPutMark_(empId, type, ts) {
-  try {
-    var c = CacheService.getScriptCache(), k = liffMarkKey_(empId), prev = c.get(k);
-    c.put(k, JSON.stringify({ type: type, ts: ts }), LIFF_LOCK_MIN * 60 + 60);
-    return prev;
-  } catch (e) { return null; }
-}
-/** 寫入後：算數（不是 rejected_*）就把記號改成伺服器記下的時間；沒算數就還原成原本的記號。 */
-function liffSettleMark_(empId, type, j, prevMark) {
-  try {
-    var c = CacheService.getScriptCache(), k = liffMarkKey_(empId), st = String((j && (j.status || j.error)) || '');
-    if (j && j.ts && st && st.indexOf('rejected_') !== 0 && st !== 'qr_invalid' && !j.error) {
-      c.put(k, JSON.stringify({ type: type, ts: String(j.ts) }), LIFF_LOCK_MIN * 60 + 60);
-    } else if (prevMark) c.put(k, prevMark, LIFF_LOCK_MIN * 60 + 60);
-    else c.remove(k);
-  } catch (e) { /* 快取壞了：handleClock 的 rejected_duplicate 仍是最後一道 */ }
-}
-
 function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows：已讀好的名冊（選填，給了寫入時不再讀）
   var read = liffPunchRead_(ss, me.emp_id, type), events = read.rows;
   liffStep_('read');
@@ -615,10 +594,8 @@ function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows
     if (!qr.ok) return { ok: false, type: type, status: 'qr_invalid', reason: qr.reason, hint: '請值班主管在核定頁按「打卡 QR」重新顯示' };
     lat = CONFIG.STORE_LAT; lng = CONFIG.STORE_LNG; acc = 0;
   }
-  var prevMark = liffPutMark_(me.emp_id, type, nowTaipeiIso());
   var j = handleClock({ key: me.key, type: type, lat: lat, lng: lng, accuracy: acc,
-                        device_id: me.device_id ? String(me.device_id) : 'line:' + userId }, read, rosterRows);   // 用同一份，不再讀第二次
-  liffSettleMark_(me.emp_id, type, j, prevMark);
+                        device_id: me.device_id ? String(me.device_id) : 'line:' + userId }, read, rosterRows);   // 用同一份，不再讀第二次；「剛送出」記號由 handleClock 自己放與還原
   liffStep_('write');
   // 忘打卡提醒用打卡前讀的那份 events（只看這次之前的卡），不多讀一次表
   if (j && j.ok && j.status === 'ok') {
