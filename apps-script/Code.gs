@@ -1609,7 +1609,8 @@ function handleMgrDay(body) {
   const seen = {};
   rosterRows.forEach(function (r) {
     if (String(r.active).toLowerCase() !== 'true') return;
-    const emp = String(r.emp_id);
+    const emp = String(r.emp_id == null ? '' : r.emp_id);
+    if (!emp.trim() || seen[emp]) return;   // 手動加列漏填員編／複製列重複員編：不列（營運系統個人登入會因空員編整店擋下、重複員編畫兩張卡）2026-11-04 QA
     listed.push({ emp_id: emp, name: String(r.name), rosterIdx: listed.length,
                   first_support: String(r.created_by) === FIRST_SUPPORT_CREATED_BY && !everApproved[emp] });
     seen[emp] = true;
