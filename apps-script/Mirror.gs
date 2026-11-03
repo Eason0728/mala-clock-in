@@ -43,7 +43,7 @@ function mirrorSources_() {
     var s = MIRROR_SOURCES[i] || {};
     var code = String(s.code || '').trim();
     var id = String(s.ss_id || '').trim();
-    var prefix = String(s.emp_prefix || '');
+    var prefix = String(s.emp_prefix || '').trim();   // 去空白（2026-11-04 對抗驗證：' HQ-' 對不到任何人，會把上次鏡像整批清掉）
     if (!code) return { ok: false, error: 'bad_mirror_config', detail: '第 ' + (i + 1) + ' 個來源沒有 code' };
     if (seen[code]) return { ok: false, error: 'bad_mirror_config', detail: '來源 code 重複：' + code };
     seen[code] = true;
@@ -126,6 +126,8 @@ function mirrorPlan_(sources, ss) {
       var nm = String(r.cells[iRname] == null ? '' : r.cells[iRname]).trim();
       if (id.indexOf(src.emp_prefix) === 0 && nm) names[nm] = true;
     });
+    // 名冊（含已離職的列）連一個符合前綴的人都沒有＝設定打錯，照跑會把目標上次鏡像的列整批刪掉、加 0 筆——停下來（2026-11-04）
+    if (!Object.keys(names).length) throw new Error(src.code + ' 名冊沒有任何工號以「' + src.emp_prefix + '」開頭的人，請檢查 MirrorConfig 的 emp_prefix（為免清掉上次的鏡像，這次不執行）');
     picked[src.code] = {};
     MIRROR_TABLES.forEach(function (t) {
       var sh = sss.getSheetByName(t.sheet);

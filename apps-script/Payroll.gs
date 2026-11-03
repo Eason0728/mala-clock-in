@@ -147,8 +147,10 @@ function payInvalidate(kind) { delete PAY_READ_CACHE[kind]; }
 function payForceTextCols(sh, cols) {
   // ⚠ 純日期字串一定要鎖文字格式，否則 Sheets 轉成 Date 物件、之後比對全失敗。
   //   event_date／start／end 是 2026-08-23 新增的假別事件日與留停區間，漏了就會踩同一個坑。
+  // value：payroll_config 的參數值（2026-11-04 唯讀證實：央廚 late_deduct_from '2026-10' 被轉成日期，遲到按分鐘扣從沒生效）。
+  //   鎖文字後讀回一律是字串，payConfig 的 cast 會把 'true'／'false'／數字字串轉回來。
   const TEXT = { ym: 1, hire_date: 1, leave_date: 1, dates: 1,
-                 event_date: 1, start: 1, end: 1 };
+                 event_date: 1, start: 1, end: 1, value: 1 };
   cols.forEach(function (c, i) {
     if (TEXT[c]) sh.getRange(1, i + 1, sh.getMaxRows(), 1).setNumberFormat('@');
   });
@@ -262,6 +264,8 @@ function payClockRead(store, sheetName) {
   const ss = payClockSS(store, true);          // 未連打卡的門市回 null → 視為沒有資料
   const sh = ss ? ss.getSheetByName(sheetName) : null;
   if (sh) rows = readSheetAsObjects(sh).rows.map(stripRowIndex);
+  // events.ts 有人手貼成「2026-07-15 09:00:00」時 Sheets 會轉成 Date：先正規化，忘刷卡統計與總表才切得到日期（2026-11-04 仿試算表測試；Code.gs 每條路徑都這樣做）
+  if (sheetName === 'events') rows.forEach(function (r) { r.ts = normCellTs(r.ts); });
   PAY_CLOCK_CACHE[key] = rows;
   return rows;
 }
@@ -480,6 +484,14 @@ function payDaysIn(ym) {
   return new Date(y, m, 0).getDate();
 }
 
+/** d 加 m 個月；目標月份沒有那一天就取該月最後一天（8/31＋6＝2/28、1/31＋1＝2/28）。JS 的 setMonth 會溢位到下個月。 */
+function payAddMonthsClamp_(d, m) {
+  const y = d.getFullYear(), mo = d.getMonth() + m, day = d.getDate();
+  const last = new Date(y, mo + 1, 0).getDate();
+  return new Date(y, mo, Math.min(day, last));
+}
+
+
 /** 到職／離職日字串（相容 Sheets 把純日期存成 Date 物件的陷阱）→ 'yyyy-MM-dd' */
 function payDateStr(v) {
   if (v instanceof Date) return v.getFullYear() + '-' + pad2(v.getMonth() + 1) + '-' + pad2(v.getDate());
@@ -495,7 +507,7 @@ function payAnnualQuota(hireStr, ym) {
   let months = (asof.getFullYear() - h.getFullYear()) * 12 + (asof.getMonth() - h.getMonth());
   if (asof.getDate() < h.getDate()) months--;
   if (months < 6) return { days: 0, ps: '', pe: '' };
-  function addM(d, m) { const x = new Date(d); x.setMonth(x.getMonth() + m); return x; }
+  function addM(d, m) { return payAddMonthsClamp_(d, m); }   // 月底到職不溢位（8/31＋6 個月＝2/28，不是 3/3；2026-11-04 對抗驗證）
   const fmt = function (d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
   if (months < 12) return { days: 3, ps: fmt(addM(h, 6)), pe: fmt(addM(h, 12)) };
   const y = Math.floor(months / 12);
@@ -574,7 +586,7 @@ function payTenurePlus(e, ym, cfg) {
   const hs = payDateStr(e.hire_date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(hs)) return 0;
   const h = new Date(hs + 'T00:00:00');
-  const due = new Date(h.getFullYear(), h.getMonth() + months, h.getDate());
+  const due = payAddMonthsClamp_(h, months);   // 月底到職不溢位（8/31 到職＋6 個月＝2/28；原本溢位成 3/3、晚一個月才加，2026-11-04 對抗驗證）
   const monthStart = new Date(ym + '-01T00:00:00');
   return monthStart > due ? plus : 0;
 }

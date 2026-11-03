@@ -165,6 +165,7 @@ function setup() {
     roster = ss.insertSheet('roster');
   }
   roster.getRange(1, 1, 1, ROSTER_HEADERS.length).setValues([ROSTER_HEADERS]);
+  rosterLockTextCols_(roster);   // 工號、金鑰欄鎖文字（2026-11-04）：之後手打的純數字金鑰也不會被轉成數字
 
   let events = ss.getSheetByName('events');
   if (!events) {
@@ -861,17 +862,19 @@ function handleSyncRoster(body) {
 
   const ss = getSS();
   const rosterSheet = ss.getSheetByName('roster');
+  rosterLockTextCols_(rosterSheet);   // 工號、金鑰欄鎖文字：'0007' 不會變成 7（2026-11-04 仿試算表測試）
   const rosterRows = readSheetAsObjects(rosterSheet).rows;
   const employees = body.employees || [];
 
   employees.forEach(function (emp) {
     const existing = findRosterByEmpId(rosterRows, emp.emp_id);
+    const nm = sheetSafeText_(String(emp.name == null ? '' : emp.name));   // = + - @ 開頭換全形（2026-11-04 對抗驗證）
     if (existing) {
       // 只更新 name/active，絕不覆蓋 key/device_id/device_bound_at
-      rosterSheet.getRange(existing.__rowIndex, ROSTER_HEADERS.indexOf('name') + 1).setValue(emp.name);
+      rosterSheet.getRange(existing.__rowIndex, ROSTER_HEADERS.indexOf('name') + 1).setValue(nm);
       rosterSheet.getRange(existing.__rowIndex, ROSTER_HEADERS.indexOf('active') + 1).setValue(!!emp.active);
     } else {
-      rosterSheet.appendRow([emp.emp_id, emp.name, genKey(), '', '', !!emp.active]);
+      rosterSheet.appendRow([sheetSafeText_(String(emp.emp_id)), nm, genKey(), '', '', !!emp.active]);
     }
   });
 
@@ -1136,8 +1139,10 @@ function handleSetShifts(body) {
     if (!hit) { missed.push(wantId || wantNm); return; }
     const si = normShiftTime(x.shift_in), so = normShiftTime(x.shift_out);
     // 兩欄一起寫。給了值卻正規化失敗（打錯格式）就當成清空，不會寫進髒資料。
-    rosterSheet.getRange(hit.__rowIndex, ci).setValue(si);
-    rosterSheet.getRange(hit.__rowIndex, co).setValue(so);
+    // 每格先鎖文字再寫（2026-11-04 仿試算表測試）：原本整欄最後才鎖，第一次寫入的 11:00 已被轉成時間，核定頁預填空白
+    const cIn = rosterSheet.getRange(hit.__rowIndex, ci), cOut = rosterSheet.getRange(hit.__rowIndex, co);
+    cIn.setNumberFormat('@'); cIn.setValue(si);
+    cOut.setNumberFormat('@'); cOut.setValue(so);
     done.push({ emp_id: String(hit.emp_id), name: String(hit.name), shift_in: si, shift_out: so });
   });
   // 時間欄鎖成文字，否則 Sheets 會把 11:00 轉成時間物件（讀回來是 Date）
@@ -1230,6 +1235,7 @@ function handleMgrAddEmployeeUnlocked_(body) {
          : h === 'active' ? true : h === 'created_at' ? now
          : h === 'created_by' ? actor : '';
   });
+  rosterLockTextCols_(rosterSheet);   // 工號、金鑰欄鎖文字（2026-11-04）
   rosterSheet.appendRow(row);
   // created_at 是純日期時間字串，鎖文字避免被轉成日期物件
   const ci = ROSTER_HEADERS.indexOf('created_at') + 1;
@@ -1253,6 +1259,18 @@ function setRosterCell(sheet, rowIndex, header, value, asText) {
 }
 
 /** 名冊缺哪個 ROSTER_HEADERS 欄位就補到最右邊（冪等）。三家店不必手動改表頭。 */
+/** 名冊的 emp_id、key 兩欄整欄鎖成文字（依實際表頭找欄）：純數字工號／金鑰（'0007'、'00123'）才不會被 Sheets 轉成數字、吃掉前導零。
+ *  只影響之後寫入或手打的格子；已經被轉成數字的舊格要人工改回。失敗不擋呼叫端。 */
+function rosterLockTextCols_(sheet) {
+  try {
+    const head = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(String);
+    ['emp_id', 'key'].forEach(function (h) {
+      const c = head.indexOf(h);
+      if (c >= 0) sheet.getRange(1, c + 1, sheet.getMaxRows(), 1).setNumberFormat('@');
+    });
+  } catch (e) { /* 鎖不上照常寫，只是回到原本行為 */ }
+}
+
 function ensureRosterHeaders(sheet) {
   const head = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(String);
   ROSTER_HEADERS.forEach(function (h) {
@@ -1368,6 +1386,8 @@ function noticeSheet(ss, create) {
     sheet.getRange(1, 1, 1, NOTICE_HEADERS.length).setValues([NOTICE_HEADERS]);
   }
   if (sheet) ensureNoticeHeaders(sheet);
+  // 公告內容欄鎖文字（2026-11-04 仿試算表測試）：'0800' 這種內容原本會被轉成數字 800
+  if (sheet && create) { try { sheet.getRange(1, NOTICE_HEADERS.indexOf('text') + 1, sheet.getMaxRows(), 1).setNumberFormat('@'); } catch (e) {} }
   return sheet;
 }
 
@@ -1631,9 +1651,10 @@ function handleMgrDay(body) {
       segments: hasPunch ? punch.segments : [],
       reference: hasPunch && !incomplete ? punch.reference : null, // 沒打卡或忘刷卡整天＝參考空白
       attempts: attemptsCount[item.emp_id] || 0, // A4：未入帳嘗試次數（status!=='ok'，供主管頁透明化）
-      leaves: leavesByName[item.name] || [],
-      leave_type: (leavesByName[item.name] || [])[0] ? leavesByName[item.name][0].type : '',
-      leave_hours: (leavesByName[item.name] || [])[0] ? leavesByName[item.name][0].hours : '',
+      // 名冊姓名可能帶尾端空白：leave 分頁那邊已 trim，這邊也 trim 才對得到（2026-11-04 對抗驗證）
+      leaves: leavesByName[String(item.name || '').trim()] || [],
+      leave_type: (leavesByName[String(item.name || '').trim()] || [])[0] ? leavesByName[String(item.name || '').trim()][0].type : '',
+      leave_hours: (leavesByName[String(item.name || '').trim()] || [])[0] ? leavesByName[String(item.name || '').trim()][0].hours : '',
       // 預設上下班時間：個人（名冊 shift_in／shift_out）優先，沒填才用全店預設
       shift_in: shiftOf(item.emp_id, 'shift_in', CONFIG.DEFAULT_SHIFT_IN),
       shift_out: shiftOf(item.emp_id, 'shift_out', CONFIG.DEFAULT_SHIFT_OUT),
@@ -1699,7 +1720,7 @@ function handleMgrApprove(body) {
   if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
 
   const date = String(body.date || '');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: 'bad_date' };
+  if (!isRealDateStr_(date)) return { ok: false, error: 'bad_date' };   // 擋 2026-11-31、2026-13-01（2026-11-04 對抗驗證）
 
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
   const roster = findRosterByEmpId(rosterRows, body.emp_id);
@@ -1765,6 +1786,8 @@ function handleMgrApprove(body) {
     for (let i = 0; i < rawPeriods.length; i++) {
       const p = rawPeriods[i];
       if (!p || !timeRe.test(p.start) || !timeRe.test(p.end)) return { ok: false, error: 'bad_periods' };
+      // 起訖一樣原本當成跨夜算 24 小時（營運系統直送沒有確認框）；同 Requests.gs reqSpanCheck_（2026-11-04 對抗驗證）
+      if (p.start === p.end) return { ok: false, error: 'bad_periods', message: '上班時段 ' + p.start + '–' + p.end + ' 開始和結束一樣，請確認' };
     }
     const periods = rawPeriods.map(function (p) {
       const startMs = hmToMs(date, p.start);
@@ -1810,12 +1833,21 @@ function handleMgrApprove(body) {
   };
 }
 
+/** 'yyyy-MM-dd' 而且真的有這天（同 Requests.gs reqIsDate_）。 */
+function isRealDateStr_(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ''));
+  if (!m) return false;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return d.getUTCFullYear() === +m[1] && d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3];
+}
+
 /** 某人某天在 leave 分頁的列號（由上而下）。 */
 function leaveRowsOf(ss, date, name) {
   const sheet = ss.getSheetByName('leave');
   if (!sheet) return [];
   return readSheetAsObjects(sheet).rows
-    .filter(function (r) { return normCellDate(r['日期']) === date && String(r['姓名'] || '').trim() === name; })
+    // 兩邊都去空白（2026-11-04 對抗驗證）：名冊姓名帶尾端空白時原本永遠對不到，重送核定請假列就越疊越多（薪資照列數加總、多扣）
+    .filter(function (r) { return normCellDate(r['日期']) === date && String(r['姓名'] || '').trim() === String(name || '').trim(); })
     .map(function (r) { return r.__rowIndex; });
 }
 
@@ -2261,7 +2293,8 @@ function buildLatestApprovedMap(approvedRecords) {
     const emp = String(r.emp_id);
     if (!map[d]) map[d] = {};
     const existing = map[d][emp];
-    if (!existing || normCellTs(r.entered_at) > normCellTs(existing.entered_at)) {
+    // >=：同一秒內兩筆（主管連按、營運系統連送更正）取後寫的那列（2026-11-04 對抗驗證；原本 > 會留住先寫的那筆）
+    if (!existing || normCellTs(r.entered_at) >= normCellTs(existing.entered_at)) {
       map[d][emp] = r;
     }
   });
