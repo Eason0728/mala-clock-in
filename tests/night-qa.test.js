@@ -118,7 +118,7 @@ function payFixture() {
   m.setNow('2026-11-15T10:00:00');
   return { m, e };
 }
-KNOWN('儲存工時（payroll_input_set 原樣回存 payroll_inputs）後再重算：家庭照顧假扣款與婚假抵不足時數都還在、實付不變', () => {
+ok('儲存工時（payroll_input_set 原樣回存 payroll_inputs）後再重算：家庭照顧假扣款與婚假抵不足時數都還在、實付不變', () => {
   const { m, e } = payFixture();
   const before = m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' });
   assert.ok(before.ok, JSON.stringify(before));
@@ -133,7 +133,7 @@ KNOWN('儲存工時（payroll_input_set 原樣回存 payroll_inputs）後再重�
   assert.strictEqual(dedA, dedB, '存檔後扣項變了：' + dedA + '（存檔前 ' + dedB + '）');
   assert.strictEqual(a0.net, b0.net, '實付變了 ' + a0.net + ' vs ' + b0.net);
 });
-KNOWN('月底到職年資：到職 2025-08-31，2026-02 月特休額度應與 payTenurePlus 同口徑（2/28 視為滿 6 個月）', () => {
+ok('月底到職年資：到職 2025-08-31，2026-02 月特休額度應與 payTenurePlus 同口徑（2/28 視為滿 6 個月）', () => {
   const m = make();
   const q = m.sb.payAnnualQuota('2025-08-31', '2026-02');
   const tm = m.sb.payTenureMonths('2025-08-31', '2026-02');
@@ -144,17 +144,17 @@ ok('對照：同一人 2026-03 的 payAnnualQuota 週年期起日已算到 2026-
   const m = make();
   assert.strictEqual(m.sb.payAnnualQuota('2025-08-31', '2026-03').ps, '2026-02-28');
 });
-KNOWN('已鎖定（final）的月份：payroll_item_upsert 應拒絕寫入', () => {
+ok('已鎖定（final）的月份：payroll_item_upsert 應拒絕寫入', () => {
   const { m, e } = payFixture();
   assert.ok(m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' }).ok);
-  assert.ok(m.sb.handlePayrollLock({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', status: 'final', reason: '測試鎖定' }).ok);
+  assert.ok(m.sb.handlePayrollFinalize({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', lock: true }).ok);
   const up = m.sb.handlePayrollItemUpsert({ admin_key: 'ADM', item: { ym: '2026-11', emp_id: e.emp_id, item_type: 'earning', item_key: 'x', item_label: '測試加項', amount: 99999, store: 'SSLGF' } });
   assert.strictEqual(up.ok, false, '鎖定後 upsert 仍 ok：' + JSON.stringify(up));
 });
-KNOWN('已鎖定（final）的月份：payroll_calc 帶 force:true 不應跳過鎖定直接重算', () => {
+ok('已鎖定（final）的月份：payroll_calc 帶 force:true 不應跳過鎖定直接重算', () => {
   const { m } = payFixture();
   assert.ok(m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' }).ok);
-  assert.ok(m.sb.handlePayrollLock({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', status: 'final', reason: '測試鎖定' }).ok);
+  assert.ok(m.sb.handlePayrollFinalize({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', lock: true }).ok);
   const r = m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', force: true });
   assert.strictEqual(r.ok, false, 'force 跳過鎖定：' + JSON.stringify(r).slice(0, 120));
 });
@@ -196,17 +196,21 @@ KNOWN("純數字工號 '0007'（sync_roster 同步進來）：打卡 events／�
   const my = m.sb.handleMyRecent({ key });
   assert.strictEqual(my.month_totals.current.hours, 9, '本月合計 ' + JSON.stringify(my.month_totals));
 });
-KNOWN('值班核定：不應接受未來日期（今天 11/4 核定 11/30 09:00–21:00）', () => {
+ok('值班核定：不應接受未來日期（今天 11/4 核定 11/30 09:00–21:00）', () => {
   const m = make({ now: T('2026-11-04T10:00:00') });
   const e = hire(m);
   const r = m.sb.handleMgrApprove({ mgr_key: 'MK', date: '2026-11-30', emp_id: e.emp_id, periods: [{ start: '09:00', end: '21:00' }] });
   assert.strictEqual(r.ok, false, '未來日期核定成功：' + JSON.stringify(r));
 });
-ok('對照：未來日期核定後 12 小時立刻進本月合計（錢先於出勤入帳的證據）', () => {
+ok('整天請假（periods 空、有假別）的未來日期照收（主管可能預先記特休）；有上班時段才擋，錯誤碼 future_date', () => {
   const m = make({ now: T('2026-11-04T10:00:00') });
   const e = hire(m);
-  m.sb.handleMgrApprove({ mgr_key: 'MK', date: '2026-11-30', emp_id: e.emp_id, periods: [{ start: '09:00', end: '21:00' }] });
-  assert.strictEqual(m.sb.handleMyRecent({ key: e.key }).month_totals.current.hours, 12);
+  const r1 = m.sb.handleMgrApprove({ mgr_key: 'MK', date: '2026-11-30', emp_id: e.emp_id, periods: [{ start: '09:00', end: '21:00' }] });
+  assert.strictEqual(r1.error, 'future_date', JSON.stringify(r1));
+  const r2 = m.sb.handleMgrApprove({ mgr_key: 'MK', date: '2026-11-30', emp_id: e.emp_id, periods: [], leaves: [{ type: '特休假', hours: 8 }] });
+  assert.ok(r2.ok, JSON.stringify(r2));
+  const r3 = m.sb.handleMgrApprove({ mgr_key: 'MK', date: '2026-11-04', emp_id: e.emp_id, periods: [{ start: '09:00', end: '18:00' }] });   // 今天照收
+  assert.ok(r3.ok, JSON.stringify(r3));
 });
 ok('推翻候選：replaceLeaveRows 自己重讀 leaveRowsOf（第 4 參數不用），兩位主管接連核定不同人不會刪錯請假列', () => {
   const m = make({ now: T('2026-11-04T20:00:00') });
@@ -221,14 +225,14 @@ ok('推翻候選：replaceLeaveRows 自己重讀 leaveRowsOf（第 4 參數不�
   const lv = m.rows('leave').map((r) => r['姓名'] + ':' + r['假別'] + ':' + r['時數']).sort();
   eq(lv, ['測試乙:事假:4', '測試甲:病假:4'], '請假表變成 ' + JSON.stringify(lv));
 });
-KNOWN('名冊同步 sync_roster：呼叫端沒帶 active 欄位時，既有在職同仁不應被停用', () => {
+ok('名冊同步 sync_roster：呼叫端沒帶 active 欄位時，既有在職同仁不應被停用', () => {
   const m = make();
   const e = hire(m, '測試甲');
   assert.strictEqual(m.rows('roster')[0].active, true);
   assert.ok(m.sb.handleSyncRoster({ admin_key: 'ADM', employees: [{ emp_id: e.emp_id, name: '測試甲' }] }).ok);
   assert.strictEqual(m.rows('roster')[0].active, true, '沒帶 active 就被停用');
 });
-KNOWN('名冊同步 sync_roster：同名在職的另一個工號不應被加進名冊（薪資／請假用姓名對人會混）', () => {
+ok('名冊同步 sync_roster：同名在職的另一個工號不應被加進名冊（薪資／請假用姓名對人會混）', () => {
   const m = make();
   hire(m, '測試甲');
   m.sb.handleSyncRoster({ admin_key: 'ADM', employees: [{ emp_id: 'Z999', name: '測試甲', active: true }] });
@@ -246,17 +250,19 @@ ok('對照：svc_add 擋同名在職（同一件事兩條路徑規則不一致�
    3. 總部鏡像：events 底部堆了舊的鏡像列 → readEventsSince 提早停
    ════════════════════════════════════════════════════════════════════════ */
 console.log('\n━━ 3. 鏡像 Mirror.gs × readEventsSince ━━');
-KNOWN('events 最底下有 320 列幾個月前的鏡像列時，自家同仁昨晚忘打的下班卡仍應被讀到（交替防呆要擋今天的上班卡→need_confirm／擋下）', () => {
+ok('events 最底下有 320 列幾個月前的鏡像列時，自家同仁 5 分鐘前的上班卡仍應被讀到（同型 10 分鐘鎖要擋下第二張上班卡）', () => {
+  // （2026-11-04 夜間 QA 第三批）原本拿「隔 11 小時再打上班卡」當判準，但同型鎖只有 10 分鐘、休息規則預設關著，那樣寫本來就會 ok；
+  //  改用同型 10 分鐘鎖當判準，鏡像列擠掉自家卡時它會漏擋（修前 ok、修後 rejected_duplicate）。
   const m = make({ now: T('2026-11-03T22:00:00') });
   const e = hire(m, '測試甲');
-  assert.strictEqual(punch(m, e.key, 'in').status, 'ok');   // 11/3 22:00 上班、沒打下班
-  // 鏡像 04:00 把別店 8 月的整段歷史追加到最底下（Mirror.gs 不限日期、appendRow 在最後）
+  assert.strictEqual(punch(m, e.key, 'in').status, 'ok');
   const sh = m.sheet('events');
+  sh.getRange(1, m.c('EVENTS_HEADERS').length + 1).setValue('mirror_src');   // Mirror.gs 首次鏡像時在最右邊加的欄
   const iso = (ms) => formatDate(new m.sb.Date(ms), 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX");
   for (let i = 0; i < 320; i++) sh.appendRow([iso(T('2026-08-01T09:00:00') + i * 3600000), 'MZ' + i, 'in', '', '', '', '', '', '', 'ok', '', 'mztjs']);
-  m.setNow('2026-11-04T09:00:00');
-  const r = punch(m, e.key, 'in');   // 11 小時後再打上班卡：應視為「上一張是上班卡」走交替防呆
-  assert.notStrictEqual(r.status, 'ok', '昨晚的上班卡沒被讀到，今天上班卡直接 ok：' + JSON.stringify(r));
+  m.setNow('2026-11-03T22:05:00');
+  const r = punch(m, e.key, 'in');
+  assert.strictEqual(r.status, 'rejected_duplicate', JSON.stringify(r));
 });
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -271,7 +277,7 @@ function lineFixture(now, events) {
   m.setNow(now);
   return { m, e };
 }
-KNOWN('忘打卡：昨天 22:00 上班、現在凌晨 00:30 補「下班 03:00(+1)」＝還沒到的時間，應回 bad_time', () => {
+ok('忘打卡：昨天 22:00 上班、現在凌晨 00:30 補「下班 03:00(+1)」＝還沒到的時間，應回 bad_time', () => {
   const { m } = lineFixture('2026-11-04T00:30:00', [['2026-11-03T22:00:00', 'in']]);
   const r = sub(m, { kind: 'miss', date: '2026-11-03', miss_type: 'out', end: '03:00', reason: '忘記按' });
   assert.strictEqual(r.error, 'bad_time', JSON.stringify(r));
@@ -281,7 +287,7 @@ ok('對照：同情境補「下班 00:10(+1)」（已過）照常收件', () => 
   const r = sub(m, { kind: 'miss', date: '2026-11-03', miss_type: 'out', end: '00:10', reason: '忘記按' });
   assert.ok(r.ok, JSON.stringify(r));
 });
-KNOWN('凌晨 01:00 只打了下班卡：提醒卡片「申請補登」帶的日期應是前一天（跟 reqDayInfo_ 把 ≤06:00 孤兒下班卡歸前一天一致）', () => {
+ok('凌晨 01:00 只打了下班卡：提醒卡片「申請補登」帶的日期應是前一天（跟 reqDayInfo_ 把 ≤06:00 孤兒下班卡歸前一天一致）', () => {
   const { m, e } = lineFixture('2026-11-04T01:05:00', [['2026-11-04T01:00:00', 'out']]);
   const sb = m.sb, ev = sb.liffEvents_(m.ss);
   const d = sb.liffMissedDetail_([], e.emp_id, 'out', '2026-11-04T01:00:00+08:00');
@@ -289,7 +295,7 @@ KNOWN('凌晨 01:00 只打了下班卡：提醒卡片「申請補登」帶的日
   eq(optPrev, ['in']); eq(optToday, ['both']);
   assert.strictEqual(d.date, '2026-11-03', '卡片帶的 date=' + d.date + '，但那天的補登選項是 ' + JSON.stringify(optToday));
 });
-KNOWN('「我的申請」：8/1 送出 10/20 的特休，10/5 仍是 pending，清單應看得到（才有取消入口）', () => {
+ok('「我的申請」：8/1 送出 10/20 的特休，10/5 仍是 pending，清單應看得到（才有取消入口）', () => {
   const { m } = lineFixture('2026-08-01T10:00:00');
   const r = sub(m, { kind: 'leave', date: '2026-10-20', leave_type: '特休假', hours: 8 });
   assert.ok(r.ok, JSON.stringify(r));
@@ -321,26 +327,26 @@ console.log('\n━━ 5. 班表 Sched.gs／SchedPub.gs ━━');
 const PUB = (m, over) => m.sb.handleSchedPublish_(Object.assign({ svcKey: 'PK', v: 1, store: '', period: 'T01', seq: 1, op_id: 'op-1', start: '2026-11-01', days: 28,
   shifts: [{ id: 'A', name: '早班', start: '10:00', end: '18:00', break_min: 60 }],
   rows: [{ emp_id: 'E01', name: '測試甲', cells: Array.from({ length: 28 }, (_, i) => (i % 7 === 6 ? { t: 'R' } : { t: 'W', s: 'A' })) }] }, over || {}));
-KNOWN('sched_day_roster：節流應在驗金鑰之後；沒帶金鑰狂打 60 次不應讓持有金鑰的訂貨小幫手拿到 too_many', () => {
+ok('sched_day_roster：節流應在驗金鑰之後；沒帶金鑰狂打 60 次不應讓持有金鑰的訂貨小幫手拿到 too_many', () => {
   const m = make({ props: { SCHED_READ_KEY: 'RK', SCHED_STORE_FROM: '2026-11-01' } });
   for (let i = 0; i < 60; i++) m.sb.handleSchedDayRoster_({ key: 'wrong', date: '2026-11-04' });
   const r = m.sb.handleSchedDayRoster_({ key: 'RK', date: '2026-11-04' });
   assert.notStrictEqual(r.error, 'too_many', JSON.stringify(r));
 });
-KNOWN('sched_publish：班別沒帶 start／end 應回 bad_input，而不是把 "undefined" 寫進表、LINE 班表顯示 NaN 時數', () => {
+ok('sched_publish：班別沒帶 start／end 應回 bad_input，而不是把 "undefined" 寫進表、LINE 班表顯示 NaN 時數', () => {
   const m = make({ props: { SCHED_SVC_KEY: 'PK', SCHED_STORE_FROM: '2026-11-01' } });
   const r = PUB(m, { shifts: [{ id: 'A', name: '早班' }] });
   assert.strictEqual(r.ok, false, '發布成功：' + JSON.stringify(r));
 });
-ok('對照：沒帶 start／end 的班別發布後，schedPubDay_ 算出的時數是 NaN、時段是 ["undefined","undefined"]（會原樣顯示給同仁）', () => {
+ok('班別 start／end 不是 HH:MM（"9:00"、空字串）一律 bad_input，且沒寫進 sched_pub', () => {
   const m = make({ props: { SCHED_SVC_KEY: 'PK', SCHED_STORE_FROM: '2026-11-01' } });
-  PUB(m, { shifts: [{ id: 'A', name: '早班' }] });
-  const data = m.sb.schedPubLoad_()['|T01'];
-  const day = m.sb.schedPubDay_(data.rows[0].cells[0], data.shifts, data.stations);
-  assert.ok(Number.isNaN(day.hours), JSON.stringify(day));
-  eq(day.segs, [['undefined', 'undefined']]);
+  ['9:00', '', null].forEach((bad) => {
+    const r = PUB(m, { shifts: [{ id: 'A', name: '早班', start: bad, end: '18:00' }] });
+    assert.strictEqual(r.error, 'bad_input', JSON.stringify(r));
+  });
+  eq(Object.keys(m.sb.schedPubLoad_()), []);
 });
-KNOWN('LINE 查班表：這一期已發布、但本人（新進）不在 rows 裡 → 應回 no_schedule，而不是 not_locked「還在排」', () => {
+ok('LINE 查班表：這一期已發布、但本人（新進）不在 rows 裡 → 應回 no_schedule，而不是 not_locked「還在排」', () => {
   const m = make({ props: { SCHED_SVC_KEY: 'PK', SCHED_STORE_FROM: '2026-11-01' }, now: T('2026-11-04T10:00:00') });
   const e = hire(m, '測試乙'); bindLine(m, e.emp_id, 'U1');
   assert.ok(PUB(m, { rows: [{ emp_id: 'E09', name: '別人', cells: Array.from({ length: 28 }, () => ({ t: 'W', s: 'A' })) }] }).ok);   // 發布的 rows 沒有本人
@@ -354,6 +360,91 @@ ok('對照：本人在 rows 裡 → ready、11/1 早班 7 小時', () => {
   const r = m.sb.handleLineHubSched_({ id_token: 'TOK_U1', ym: '2026-11' });
   assert.strictEqual(r.status, 'ready', JSON.stringify(r).slice(0, 200));
   assert.strictEqual(r.days[0].hours, 7);
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+   6. 修正後的補充驗證（2026-11-04 夜間 QA 第三批）
+   ════════════════════════════════════════════════════════════════════════ */
+console.log('\n━━ 6. 修正後補充 ━━');
+ok('鏡像：350 筆鏡像列堆在底部時，自家同仁 23:00 的下班卡仍讀得到（readEventsSince 不拿鏡像列當「停」的依據）', () => {
+  const m = make({ now: T('2026-11-03T09:00:00') });
+  const e = hire(m, '測試甲');
+  assert.strictEqual(punch(m, e.key, 'in').status, 'ok');
+  m.setNow('2026-11-03T23:00:00'); assert.strictEqual(punch(m, e.key, 'out').status, 'ok');
+  const sh = m.sheet('events');
+  sh.getRange(1, m.c('EVENTS_HEADERS').length + 1).setValue('mirror_src');   // Mirror.gs 首次鏡像時在最右邊加的欄
+  const iso = (ms) => formatDate(new m.sb.Date(ms), 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX");
+  for (let i = 0; i < 350; i++) sh.appendRow([iso(T('2026-08-01T09:00:00') + i * 3600000), 'MZ' + i, 'in', '', '', '', '', '', '', 'ok', '', 'mztjs']);
+  m.setNow('2026-11-04T00:30:00');
+  const got = m.sb.readEventsSince(sh, T('2026-11-03T00:00:00')).rows;
+  const mine = got.filter((r) => String(r.emp_id) === e.emp_id);
+  assert.strictEqual(mine.length, 2, '自家卡讀到 ' + mine.length + ' 張');
+  assert.ok(got.some((r) => String(r.emp_id) === 'MZ349'), '鏡像列本身仍要讀進結果（核定與薪資要用）');
+});
+ok('sync_roster：同名在職的新工號略過並回 skipped；沒帶 active 的新增列一律在職；已停用者同名可加', () => {
+  const m = make();
+  hire(m, '測試甲');
+  const r = m.sb.handleSyncRoster({ admin_key: 'ADM', employees: [{ emp_id: 'Z999', name: '測試甲' }, { emp_id: 'Z998', name: '測試丙' }] });
+  assert.ok(r.ok, JSON.stringify(r));
+  eq(r.skipped, [{ emp_id: 'Z999', reason: 'duplicate_name' }]);
+  const z98 = m.rows('roster').filter((x) => String(x.emp_id) === 'Z998')[0];
+  assert.strictEqual(z98.active, true);
+  assert.strictEqual(m.rows('roster').filter((x) => String(x.emp_id) === 'Z999').length, 0);
+});
+ok('已定案月份 payroll_calc 不帶 force 仍回 locked；帶 force 回 finalized，run 不變 draft', () => {
+  const { m } = payFixture();
+  assert.ok(m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' }).ok);
+  assert.ok(m.sb.handlePayrollFinalize({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', lock: true }).ok);
+  assert.strictEqual(m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' }).error, 'locked');
+  assert.strictEqual(m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', force: true }).error, 'finalized');
+  assert.strictEqual(m.sb.payRead('run')[0].status, 'final');
+});
+ok('特休年資：月底到職補滿 6 個月與其他到職日對照（1/15、8/1、2/28、2/29、12/31 結果不變）', () => {
+  const m = make();
+  const tm = (h, ym) => m.sb.payTenureMonths(h, ym);
+  assert.strictEqual(tm('2025-08-31', '2026-02'), 6);
+  assert.strictEqual(m.sb.payAnnualQuota('2025-08-31', '2026-02').days, 3);
+  assert.strictEqual(tm('2025-08-31', '2026-01'), 5);
+  assert.strictEqual(tm('2025-01-15', '2025-07'), 6);
+  assert.strictEqual(tm('2025-08-01', '2026-01'), 5);
+  assert.strictEqual(tm('2025-08-01', '2026-02'), 6);
+  assert.strictEqual(tm('2025-02-28', '2025-08'), 6);
+  assert.strictEqual(tm('2024-02-29', '2024-08'), 6);
+  assert.strictEqual(tm('2025-12-31', '2026-06'), 6);
+  assert.strictEqual(tm('2025-12-31', '2026-05'), 5);
+  assert.strictEqual(m.sb.payAnnualQuota('2025-01-15', '2025-07').days, 3);
+  assert.strictEqual(m.sb.payAnnualQuota('2025-08-01', '2026-02').days, 3);
+  assert.strictEqual(m.sb.payAnnualQuota('2025-08-01', '2026-01').days, 0);
+});
+ok('忘打卡補昨天跨夜下班：現在 00:30、補 03:00(+1) 擋；補 00:10 收（對照已在上方）', () => {
+  const { m } = lineFixture('2026-11-04T00:30:00', [['2026-11-03T22:00:00', 'in']]);
+  assert.strictEqual(sub(m, { kind: 'miss', date: '2026-11-03', miss_type: 'out', end: '03:00', reason: '忘記按' }).error, 'bad_time');
+});
+ok('「我的申請」：超過 60 天但仍審核中、請假日還沒到的單保留；已核准／已過日期的舊單不保留', () => {
+  const { m } = lineFixture('2026-08-01T10:00:00');
+  const r = sub(m, { kind: 'leave', date: '2026-10-20', leave_type: '特休假', hours: 8 });
+  const r2 = sub(m, { kind: 'leave', date: '2026-08-20', leave_type: '特休假', hours: 8 });
+  assert.ok(r.ok && r2.ok);
+  m.setNow('2026-10-25T10:00:00');   // 距 8/1 已 85 天
+  let ids = m.sb.handleReqInfo_({ id_token: 'TOK_U1' }).requests.map((x) => x.id);
+  eq(ids, []);
+  m.setNow('2026-10-05T10:00:00');
+  ids = m.sb.handleReqInfo_({ id_token: 'TOK_U1' }).requests.map((x) => x.id);
+  eq(ids, [r.request.id]);
+});
+ok('LINE 查班表：已發布但本人 28 格全空 → no_schedule；完全沒發布 → not_locked', () => {
+  const m = make({ props: { SCHED_SVC_KEY: 'PK', SCHED_STORE_FROM: '2026-11-01' }, now: T('2026-11-04T10:00:00') });
+  const e = hire(m, '測試甲'); bindLine(m, e.emp_id, 'U1');
+  assert.strictEqual(m.sb.handleLineHubSched_({ id_token: 'TOK_U1', ym: '2026-11' }).status, 'not_locked');
+  assert.ok(PUB(m, { rows: [{ emp_id: e.emp_id, name: '測試甲', cells: Array.from({ length: 28 }, () => ({ t: '' })) }] }).ok);
+  assert.strictEqual(m.sb.handleLineHubSched_({ id_token: 'TOK_U1', ym: '2026-11' }).status, 'no_schedule');
+});
+ok('sched_day_roster：錯金鑰另有 60/分節流；正確金鑰不受影響，全站上限 300', () => {
+  const m = make({ props: { SCHED_READ_KEY: 'RK', SCHED_STORE_FROM: '2026-11-01' } });
+  for (let i = 0; i < 61; i++) m.sb.handleSchedDayRoster_({ key: 'wrong', date: '2026-11-04' });
+  assert.strictEqual(m.sb.handleSchedDayRoster_({ key: 'wrong', date: '2026-11-04' }).error, 'too_many');
+  for (let i = 0; i < 300; i++) assert.ok(m.sb.handleSchedDayRoster_({ key: 'RK', date: '2026-11-04' }).ok, '第 ' + i + ' 次');
+  assert.strictEqual(m.sb.handleSchedDayRoster_({ key: 'RK', date: '2026-11-04' }).error, 'too_many');
 });
 
 console.log('\n━━ 結果 ━━');

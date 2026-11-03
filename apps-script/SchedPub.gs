@@ -38,7 +38,14 @@ function schedPubCleanSegs_(segs) {
   return out;
 }
 function schedPubClean_(b) {
-  var shifts = (Array.isArray(b.shifts) ? b.shifts : []).map(function (s) {
+  // （2026-11-04 夜間 QA）班別的 start／end 不是 HH:MM 就整份不收（回 null → 呼叫端回 bad_input）：
+  //  否則 "undefined" 會被寫進表、同仁的 LINE 班表顯示 NaN 時數。
+  var rawShifts = Array.isArray(b.shifts) ? b.shifts : [];
+  for (var k = 0; k < rawShifts.length; k++) {
+    var rs = rawShifts[k];
+    if (!rs || !/^\d{2}:\d{2}$/.test(String(rs.start)) || !/^\d{2}:\d{2}$/.test(String(rs.end))) return null;
+  }
+  var shifts = rawShifts.map(function (s) {
     var o = { id: String(s.id), name: String(s.name || s.id), start: String(s.start), end: String(s.end), break_min: Number(s.break_min) || 0 };
     var g = schedPubCleanSegs_(s.segs);
     if (g) o.segs = g;
@@ -92,7 +99,9 @@ function schedPubWrite_(b, kind) {
   if (kind === 'publish') {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.start || '')) || b.days !== 28 || !Array.isArray(b.rows)) return { ok: false, error: 'bad_input' };
     for (var i = 0; i < b.rows.length; i++) if (!b.rows[i] || !Array.isArray(b.rows[i].cells) || b.rows[i].cells.length !== 28) return { ok: false, error: 'bad_input' };
-    data = JSON.stringify(schedPubClean_(b));
+    var cleaned = schedPubClean_(b);
+    if (!cleaned) return { ok: false, error: 'bad_input' };
+    data = JSON.stringify(cleaned);
     if (data.length > SCHED_PUB_MAX_CHARS) return { ok: false, error: 'too_big' };
   }
   var lock = LockService.getScriptLock();

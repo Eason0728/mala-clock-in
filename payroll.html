@@ -1086,7 +1086,8 @@ function costRows(g){
      ⚠ 扣的是 g.insFT／g.dormFT，**不可以用 g.ins／g.dorm**——那會把計時的再扣第二次。 */
   const salaryCost=salaryGross-g.insFT-g.dormFT;   // 正職自付額／宿舍改列獨立減項，這裡扣回來（小計不變）
   const coTotal=CO_ITEMS.reduce((a,[k])=>a+co[k],0);
-  const reduceRows=Object.keys(g.reduceBy).map(lb=>[lb,g.reduceBy[lb]]);
+  // （2026-11-04 夜間 QA）列名裡的姓名／項目名稱來自試算表，渲染時是 innerHTML，一律過 esc()（否則可植入標籤）
+  const reduceRows=Object.keys(g.reduceBy).map(lb=>[esc(lb),g.reduceBy[lb]]);
   // 科目列名的「已扣」註記：只寫扣了什麼，不寫金額（Eason 2026-08-24：備註不顯示金額，
   // 右邊本來就有金額欄，明細也在下方參考區，寫在列名裡只是雜訊）
   const cutNote=(re,ins,dorm)=>{const p=[];if(re)p.push('請假／不足');if(ins)p.push('勞健保自付');
@@ -1097,7 +1098,7 @@ function costRows(g){
     ['薪資費用 加班／正職',g.ot],['薪資費用 全勤／正職',g.attend],
     ['薪資費用 夜間津貼／職能津貼／正職',g.allow],['薪資費用 店長津貼',g.mgr],
     ...(g.meal?[['薪資費用 餐費補助／正職',g.meal]]:[]),
-    ...(g.other?Object.keys(g.otherBy).map(lb=>[`薪資費用 其他津貼／${lb}`,g.otherBy[lb]]):[]),
+    ...(g.other?Object.keys(g.otherBy).map(lb=>[`薪資費用 其他津貼／${esc(lb)}`,g.otherBy[lb]]):[]),
     ...(Object.keys(g.otherBy).length>1?[['s','其他津貼小計',g.other]]:[]),
     ['薪資費用／PT'+cutNote(g.reducePT,g.insPT,g.dormPT),ptNet],
     ...(g.bs?[['薪資費用 業績獎金',g.bs]]:[]),
@@ -1120,13 +1121,13 @@ function costRows(g){
     ['g','人事總成本（薪資費用＋保險成本'+(g.ye?'＋年終提列':'')+'）',salaryCost+coTotal+g.ins+Math.round(g.ye)],
     ...(reduceRows.length?[['h','（參考）請假／不足扣款明細 · 已扣在上方各科目內']].concat(reduceRows):[]),
     ...((g.custAdd||g.custDed)?[['h','自訂加薪／扣款 · 不計入上方薪資費用，請依性質自行歸科目']]
-        .concat(g.custAddBy.map(([nm,ft,lb,amt])=>[`${nm}（${ft?'正職':'計時'}）　${lb}`,amt]))
-        .concat(g.custDedBy.map(([nm,ft,lb,amt])=>[`${nm}（${ft?'正職':'計時'}）　${lb}`,-amt]))
+        .concat(g.custAddBy.map(([nm,ft,lb,amt])=>[`${esc(nm)}（${ft?'正職':'計時'}）　${esc(lb)}`,amt]))
+        .concat(g.custDedBy.map(([nm,ft,lb,amt])=>[`${esc(nm)}（${ft?'正職':'計時'}）　${esc(lb)}`,-amt]))
         .concat([['s','自訂項目淨額',g.custAdd-g.custDed]]):[]),
     ...(g.ins?[['h','（參考）同仁自付額明細 · 已從薪資費用扣除、計入上方保險成本']]
-        .concat(Object.keys(g.insBy).map(lb=>[lb,g.insBy[lb]])):[]),
+        .concat(Object.keys(g.insBy).map(lb=>[esc(lb),g.insBy[lb]])):[]),
     ...(g.dorm?[['h','宿舍收入 · 已從上方薪資費用扣除，損益表勿重複計列']]
-        .concat(g.dormBy.map(([nm,ft,amt])=>[`${nm}（${ft?'正職':'計時'}）`,amt]))
+        .concat(g.dormBy.map(([nm,ft,amt])=>[`${esc(nm)}（${ft?'正職':'計時'}）`,amt]))
         .concat([['s','宿舍收入小計',g.dorm]]):[]),
     ...(g.sup&&g.sup.length?[['h','跨店支援請款 · 向支援門市收款，與本店薪資費用無關']]
         .concat(g.sup.map(x=>[x.fixed

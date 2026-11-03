@@ -505,7 +505,8 @@ function payAnnualQuota(hireStr, ym) {
   const h = new Date(hs + 'T00:00:00'); if (isNaN(h)) return null;
   const asof = new Date(ym + '-' + pad2(payDaysIn(ym)) + 'T00:00:00');
   let months = (asof.getFullYear() - h.getFullYear()) * 12 + (asof.getMonth() - h.getMonth());
-  if (asof.getDate() < h.getDate()) months--;
+  // （2026-11-04 夜間 QA）「滿 N 個月」的那天，該月沒有到職日（8/31 的 2 月）就用該月最後一天（同 payAddMonthsClamp_、民法 §121）。
+  //  asof 本來就是該月最後一天，所以月數＝曆月差，不再因為 asof 日 < 到職日少算一個月（8/31 到職、2026-02 原本回 5，應為 6）。
   if (months < 6) return { days: 0, ps: '', pe: '' };
   function addM(d, m) { return payAddMonthsClamp_(d, m); }   // 月底到職不溢位（8/31＋6 個月＝2/28，不是 3/3；2026-11-04 對抗驗證）
   const fmt = function (d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
@@ -1013,9 +1014,9 @@ function payTenureMonths(hireDate, ym) {
   if (!hd || !/^\d{4}-\d{2}-\d{2}$/.test(hd)) return null;
   const hy = parseInt(hd.slice(0, 4), 10), hm = parseInt(hd.slice(5, 7), 10), hdd = parseInt(hd.slice(8, 10), 10);
   const y = parseInt(String(ym).slice(0, 4), 10), m = parseInt(String(ym).slice(5, 7), 10);
-  const eom = payDaysIn(ym);
-  let months = (y - hy) * 12 + (m - hm);
-  if (eom < hdd) months -= 1;   // 月底日數不足到職日 → 該月尚未滿月
+  // （2026-11-04 夜間 QA）月底到職者（8/31、1/31…）「滿 N 個月」那天該月沒有那一日，用該月最後一天（同 payAddMonthsClamp_）；
+  //  ym 當月月底一定 ≥ 那一天，所以年資月數＝曆月差，不再因 eom < 到職日少算一個月。
+  const months = (y - hy) * 12 + (m - hm);
   return Math.max(0, months);
 }
 
@@ -1801,6 +1802,10 @@ function payInputsBase(ym, store, cutoffDate) {
        不像 hours／deduct_days 那樣「手動優先」。 */
     PAY_PUNCH_ONLY_NUM.forEach(function (k) { sv[k] = payNum(col[k]); });
     sv.attend_void = !!col.attend_void;
+    // （2026-11-04 夜間 QA）leaves（家庭照顧／婚／喪／公傷…）與 other_h 同樣只有歸集值、payroll_input 沒這欄：
+    //  整筆取代會讓它們消失（扣款與抵不足時數都算錯），所以一律取歸集值，重算結果與沒存檔前一致。
+    sv.leaves = col.leaves || {};
+    sv.other_h = payNum(col.other_h);
     if (leaveOnly && base[emp]) sv.deduct_days = payNum(col.deduct_days);
     base[emp] = sv;
   });
@@ -1864,6 +1869,11 @@ function handlePayrollCalc(body) {
   const runs = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === payStore(body.store); });
   if (runs.length && String(runs[0].status) === 'final' && !body.force) {
     return { ok: false, error: 'locked', message: ym + ' 已鎖定，請先解鎖再重算' };
+  }
+  // （2026-11-04 夜間 QA）force 只用來跳過「資料有變動」之類的確認，不能無聲解鎖已定案月份（重算會把 status 改回 draft、也不寫稽核）；
+  //  要重算先走解鎖（會寫稽核）。
+  if (runs.length && String(runs[0].status) === 'final' && body.force) {
+    return { ok: false, error: 'finalized', message: ym + ' 已定案，請先解鎖（會留稽核）再重算' };
   }
 
   let holiday = payHolidayRow(ym, payStore(body.store));
@@ -2031,6 +2041,11 @@ function handlePayrollItemUpsert(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const it = body.item;
   if (!it || !it.ym || !it.emp_id) return { ok: false, error: 'item_required' };
+  // （2026-11-04 夜間 QA）已定案（final）的月份不能再偷加／改明細項；要改先解鎖（會寫稽核）。
+  const itRuns = payRead('run').filter(function (r) { return String(r.ym) === String(it.ym) && payStore(r.store) === payStore(it.store); });
+  if (itRuns.length && String(itRuns[0].status) === 'final') {
+    return { ok: false, error: 'finalized', message: String(it.ym) + ' 已定案，請先解鎖再改明細項' };
+  }
   const rows = payRead('item').filter(function (i) {
     return !(String(i.ym) === String(it.ym) && String(i.emp_id) === String(it.emp_id) &&
              String(i.item_key) === String(it.item_key) && String(i.source) === 'manual');
