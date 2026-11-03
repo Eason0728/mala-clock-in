@@ -2208,6 +2208,13 @@ def handle_liff_punch(data, body):
         left = math.ceil((until - time.time() * 1000) / 60000)
         return {"ok": False, "type": typ, "reason": f"你 {g['last']['hm']} 剛打過{'上班' if g['last']['type'] == 'in' else '下班'}卡，{left} 分鐘內不能打{label}卡（避免連按誤打）",
                 "hint": f"真的要{label}請告知主管補登"}
+    # Liff.gs liffPunchFor_（2026-11-03）：同型過了 10 分鐘，畫面沒帶 confirm_same 就回 need_confirm
+    if g.get("last") and g["last"]["type"] == typ and body.get("confirm_same") is not True:
+        oth = "下班" if typ == "in" else "上班"
+        return {"ok": False, "type": typ, "status": "need_confirm", "need_confirm": True,
+                "last": {"type": g["last"]["type"], "hm": g["last"]["hm"]},
+                "reason": f"你 {g['last']['hm']} 已經打過{label}卡，中間沒有{oth}卡",
+                "hint": f"確定要再打{label}請重新整理打卡頁再按一次；漏打的{oth}卡請到「加班請假 → 忘打卡」補"}
     before = list(data["events"])
     j = handle_clock(data, {"key": me["key"], "type": typ, "lat": body.get("lat"), "lng": body.get("lng"),
                             "accuracy": body.get("accuracy"), "device_id": me.get("device_id") or ("line:" + uid)})

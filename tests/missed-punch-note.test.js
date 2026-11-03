@@ -21,6 +21,7 @@ const sb = {
   console, Date, JSON, Math, String, Number, isNaN, parseInt, Object, Array,
   CONFIG: { ALTERNATION_LOOKBACK_HOURS: 12 },
   normCellTs: (v) => String(v),
+  nowTaipeiIso: () => NOW_TS,   // liffPutMark_（2026-11-03）
   CacheService: { getScriptCache: () => ({ put() {}, get: () => null, remove() {} }) },
 };
 vm.createContext(sb);

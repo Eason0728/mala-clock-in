@@ -8,7 +8,7 @@ const reqs = fs.readFileSync(ROOT + '/apps-script/Requests.gs', 'utf8');
 const liff = fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8');
 let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 const sb = { String }; vm.createContext(sb);
-vm.runInContext(code.match(/function actingName_\([\s\S]*?\n\}\n/)[0], sb);
+vm.runInContext(code.match(/function actingName_\([\s\S]*?\n\}\n/)[0] + code.match(/function sheetSafeText_\([\s\S]*?\n\}\n/)[0], sb);   // 2026-11-03 起 acting_name 也過公式防護
 const A = sb.actingName_;
 const SVC = { name: '營運系統代管', allow_acting: 'TRUE' }, OLD = { name: '王主管', allow_acting: '' };
 

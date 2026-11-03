@@ -66,6 +66,7 @@ function make(opts) {
     readSheetAsObjects: (sh) => sh === roster ? { rows: roster.objs() } : { rows: sh.rows.map((r, i) => Object.assign({ __rowIndex: i + 2 }, r)) },
     ensureRosterHeaders: () => {},
     normCellTs: (v) => v,
+    LockService: { getScriptLock: () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} }) }, SpreadsheetApp: { flush: () => {} },   // 綁定 2026-11-03 起包鎖
     nowTaipeiIso: () => ISO,
     handleClock: (b) => opts.clockReply ? opts.clockReply(b) : { ok: true, status: 'ok', ts: iso(0) },
     checkAdmin: () => true,
@@ -214,9 +215,11 @@ ok('格線欄滿：缺欄補表頭前先 insertColumnAfter', () => {
   assert.strictEqual(col(roster, 'line_ok_at', 2), ISO);
 });
 ok('同日打卡→解綁→重綁→再打卡：line_ok_at 重新寫入（當日快取鍵被清）', () => {
-  const { H, roster } = make({ roster: rosterRows(true), mgr: true });
+  const C = {};
+  const { H, roster } = make({ roster: rosterRows(true), mgr: true, cache: C });
   punch(H);
   assert.strictEqual(col(roster, 'line_ok_at', 2), ISO);
+  Object.keys(C).filter((k) => k.indexOf('lfl:') === 0).forEach((k) => { delete C[k]; });   // 假 handleClock 不寫 events：清掉「剛送出」記號＝當作已過 10 分鐘（2026-11-03）
   assert.strictEqual(J(H.mgr_line_unbind({ mgr_key: 'x', emp_id: 'E1' })).ok, true);
   assert.strictEqual(col(roster, 'line_ok_at', 2), '');
   assert.strictEqual(J(H.liff_bind({ id_token: 'TOK_U1', key: 'k1' })).ok, true);
@@ -225,8 +228,10 @@ ok('同日打卡→解綁→重綁→再打卡：line_ok_at 重新寫入（當�
   assert.strictEqual(col(roster, 'line_ok_at', 2), ISO, '重綁後同日再打卡要重寫');
 });
 ok('liff_bind 新綁定本身也清當日快取（不經 unbind 的路徑）', () => {
-  const { H, roster, sb } = make({ roster: rosterRows(true) });
+  const C = {};
+  const { H, roster, sb } = make({ roster: rosterRows(true), cache: C });
   punch(H);                                   // 寫入並設快取
+  Object.keys(C).filter((k) => k.indexOf('lfl:') === 0).forEach((k) => { delete C[k]; });   // 同上：清「剛送出」記號＝當作已過 10 分鐘
   roster.data[1][5] = ''; roster.data[1][7] = '';   // 模擬後台直接清掉綁定
   assert.strictEqual(J(H.liff_bind({ id_token: 'TOK_U1', key: 'k1' })).ok, true);
   assert.strictEqual(punch(H).ok, true);

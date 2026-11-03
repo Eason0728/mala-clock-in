@@ -36,6 +36,7 @@ function make(opts) {
     getSS: () => ({ getSheetByName: sheet }),
     readSheetAsObjects: (sh) => ({ rows: sh.rows.map((r, i) => Object.assign({ __rowIndex: i + 2 }, r)) }),
     normCellTs: (v) => v,
+    nowTaipeiIso: () => iso(0),   // liffPutMark_ 記「剛送出」的時間（2026-11-03）
     checkAdmin: (b) => b.admin_key === (opts.adminKey === undefined ? 'ADM' : opts.adminKey),   // 與 Code.gs checkAdmin 同：比對 CONFIG.ADMIN_KEY
     handleClock: (b) => { clockCalls.push(b); if (opts.onClock) opts.onClock(); return opts.clockReply ? opts.clockReply(b) : { ok: true, status: 'ok', ts: iso(0) }; },
     Utilities: { DigestAlgorithm: { MD5: 'md5' }, computeDigest: (a, t) => [...require('crypto').createHash('md5').update(t).digest()], base64Encode: (b) => Buffer.from(b).toString('base64'), formatDate: (d, tz, f) => {
@@ -102,7 +103,10 @@ ok('punch：同型 10 分鐘內擋（伺服器端，不信前端）且不呼叫 
 });
 ok('punch：同型超過 10 分鐘放行（2026-11-02：中午忘打下班卡，晚上回來要打得了上班卡）', () => {
   const { H, clockCalls } = make({ sheets: { roster: [R()], events: [EV(120, 'in')] } });
-  H.liff_punch({ id_token: 'TOK_U1', type: 'in', lat: 1, lng: 2 });
+  // 2026-11-03 起同型要畫面確認過（confirm_same）才收；沒帶回 need_confirm、不呼叫 handleClock
+  const r0 = H.liff_punch({ id_token: 'TOK_U1', type: 'in', lat: 1, lng: 2 });
+  assert.strictEqual(r0.need_confirm, true); assert.strictEqual(clockCalls.length, 0);
+  H.liff_punch({ id_token: 'TOK_U1', type: 'in', lat: 1, lng: 2, confirm_same: true });
   assert.strictEqual(clockCalls.length, 1); assert.strictEqual(clockCalls[0].type, 'in');
 });
 ok('punch：上班後 10 分鐘內按下班 → 擋，說還剩幾分鐘', () => {

@@ -73,7 +73,7 @@ function makeEnv(opts) {
     },
   };
   vm.createContext(sb);
-  vm.runInContext([extractConst(codeSrc, 'LEAVE_TYPES'), extract(codeSrc, 'findManagerByKey'), extract(codeSrc, 'actingName_'),
+  vm.runInContext([extractConst(codeSrc, 'LEAVE_TYPES'), extract(codeSrc, 'findManagerByKey'), extract(codeSrc, 'actingName_'), extract(codeSrc, 'sheetSafeText_'),
                    fs.readFileSync(ROOT + '/apps-script/Requests.gs', 'utf8')].join('\n'), sb);
   sb.__sheets = sheets; sb.__setNow = (v) => { nowIso = v; }; sb.__props = props;
   return sb;

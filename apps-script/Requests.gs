@@ -83,6 +83,32 @@ function reqSpanHours_(start, end) {
   if (e <= s) e += 1440;
   return Math.round((e - s) / 60 * 100) / 100;
 }
+/** 兩個時段有沒有重疊（end ≤ start＝跨夜到隔天）；任一邊沒有完整時段回 null。 */
+function reqOverlap_(s1, e1, s2, e2) {
+  var a = reqMin_(s1), b = reqMin_(e1), c = reqMin_(s2), d = reqMin_(e2);
+  if (a === null || b === null || c === null || d === null) return null;
+  if (b <= a) b += 1440;
+  if (d <= c) d += 1440;
+  return a < d && c < b;
+}
+/** 同一天、同一類的兩筆申請是不是「同一件事」（給已核准的重複檢查用，2026-11-03）：
+ *  加班＝時段重疊；請假／出差＝同假別且時段重疊（任一筆只填時數、沒有時段＝當成同一件）；
+ *  忘打卡＝補同一張卡（任一筆是「兩張都補」也算），補中間休息＝休息時段重疊。 */
+function reqSameThing_(kind, a, b) {
+  if (kind === 'miss') {
+    if (a.miss_type === 'break' || b.miss_type === 'break') {
+      return a.miss_type === b.miss_type && reqOverlap_(a.end, a.start, b.end, b.start) !== false;   // break：end＝休息開始、start＝回來
+    }
+    return a.miss_type === b.miss_type || a.miss_type === 'both' || b.miss_type === 'both';
+  }
+  if ((kind === 'leave' || kind === 'trip') && String(a.leave_type || '') !== String(b.leave_type || '')) return false;
+  return reqOverlap_(a.start, a.end, b.start, b.end) !== false;
+}
+function reqDupLabel_(r) {
+  if (r.kind === 'miss') return r.miss_type === 'break' ? '補中間休息 ' + r.end + '–' + r.start : '補' + ({ in: '上班卡', out: '下班卡', both: '上下班卡' }[r.miss_type] || '卡');
+  var t = r.start && r.end ? r.start + '–' + r.end : (r.hours ? r.hours + ' 小時' : '');
+  return (r.kind === 'ot' ? '' : (r.leave_type || '') + ' ') + t;
+}
 function reqDayDiff_(a, b) {   // 日期字串 a − b 的天數
   return Math.round((Date.UTC(+a.slice(0, 4), +a.slice(5, 7) - 1, +a.slice(8, 10)) - Date.UTC(+b.slice(0, 4), +b.slice(5, 7) - 1, +b.slice(8, 10))) / 86400000);
 }
@@ -345,6 +371,15 @@ function reqValidate_(b, me, events, today, existing) {
       if (reqMin_(row.start) === reqMin_(row.end)) return { error: 'bad_time', message: '上班和下班時間一樣，請確認' };
       if (reqMin_(row.end) < reqMin_(row.start)) outNext = true;
     }
+    // 補完以後這一段班不能超過配對窗 16 小時（2026-11-03 對抗驗證 #7）：那天只有隔天 01:00 的下班卡時，
+    // 補上班 02:00 原本也收，核定頁預填 02:00–01:00(+1)＝23 小時。超過 16 小時打卡也配不成一段。
+    var spanIn = null, spanOut = null;
+    if (mt === 'in' && info.lone_out) { spanIn = reqMin_(row.start); spanOut = reqMin_(info.lone_out.slice(0, 5)) + (info.lone_out_next ? 1440 : 0); }
+    if (mt === 'out' && info.open_in) { spanIn = reqMin_(String(info.open_in).slice(0, 5)); spanOut = reqMin_(row.end) + (outNext ? 1440 : 0); }
+    if (mt === 'both') { spanIn = reqMin_(row.start); spanOut = reqMin_(row.end) + (outNext ? 1440 : 0); }
+    if (spanIn !== null && spanOut !== null && spanOut - spanIn > REQ_PAIR_MS / 60000) {
+      return { error: 'bad_time', message: '補完上班到下班超過 16 小時（' + Math.round((spanOut - spanIn) / 6) / 10 + ' 小時），請確認時間；真的這麼長請直接跟值班主管說' };
+    }
     if (diff === 0) {   // 今天：不能補還沒到的時間；跨夜的下班＝明天，還沒到（審查 #3）
       var nowMin = reqMin_(nowTaipeiIso().slice(11, 16));
       if (outNext || (row.end && reqMin_(row.end) > nowMin) || (row.start && reqMin_(row.start) > nowMin)) {
@@ -360,6 +395,12 @@ function reqValidate_(b, me, events, today, existing) {
         && (kind !== 'miss' || r.miss_type === row.miss_type || r.miss_type === 'both' || row.miss_type === 'both');
   })[0];
   if (dup) return { error: 'duplicate', message: '這天已經有一筆審核中的' + REQ_KINDS_[kind] + '申請，要改請先取消那一筆' };
+  // 已核准的也要擋「同一件事」（2026-11-03 對抗驗證 #4）：原本只看審核中，核准後再送一模一樣的一筆、主管批次核准就算兩次
+  // （補休帳加班時數翻倍）。同一天不同時段的加班、不同假別照收（一天多種假別 2026-10-26 起支援）。
+  var dupOk = existing.filter(function (r) {
+    return String(r.emp_id) === String(me.emp_id) && r.status === 'approved' && r.kind === kind && r.date === date && reqSameThing_(kind, r, row);
+  })[0];
+  if (dupOk) return { error: 'duplicate', message: '這天已經有一筆核准的' + REQ_KINDS_[kind] + '申請（' + reqDupLabel_(dupOk) + '），不用再送；要改請找值班主管作廢那一筆' };
   return { row: row };
 }
 

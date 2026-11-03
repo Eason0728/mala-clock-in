@@ -146,11 +146,13 @@ function lineHubLastCounted_(eventRows, empId) {
   return last;
 }
 
-/** 簡單節流：同一個 LINE 帳號在 windowSec 秒內最多 max 次（CacheService，鍵 lht:<kind>:<uid>）。 */
+/** 簡單節流：同一個 LINE 帳號在固定時間窗（windowSec 秒，依時間切格）內最多 max 次（CacheService，鍵 lht:<kind>:<uid>:<格>）。
+ *  2026-11-03 對抗驗證 #3：原本每次計數都重設 TTL，綁定打錯 5 次後每 8 分鐘再試一次就一直鎖著（訊息卻說 10 分鐘後再試）；
+ *  改成與 Liff.gs liffThrottled_ 同樣的固定窗，最晚 windowSec 秒後一定解開。 */
 function lineHubThrottled_(kind, userId, max, windowSec) {
-  var c = CacheService.getScriptCache(), k = 'lht:' + kind + ':' + userId;
+  var c = CacheService.getScriptCache(), k = 'lht:' + kind + ':' + userId + ':' + Math.floor(Date.now() / (windowSec * 1000));
   var n = parseInt(c.get(k) || '0', 10) + 1;
-  c.put(k, String(n), windowSec);
+  c.put(k, String(n), windowSec + 5);
   return n > max;
 }
 
