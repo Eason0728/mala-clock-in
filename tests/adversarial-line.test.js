@@ -145,7 +145,7 @@ function make(opts) {
   const codeFns = ['readSheetAsObjects', 'readEventsSince', 'normCellTs', 'normCellDate', 'lastCountedEvent', 'findRosterByKey', 'findRosterByEmpId', 'handleClock', 'haversineM',
                    'findManagerByKey', 'actingName_', 'nowTaipeiIso', 'todayTaipeiStr', 'tsMs', 'tsDateStr', 'tsHm', 'approvedHoursOfShift', 'pairShifts', 'addDaysStr', 'hmToMs',
                    'dayPunchSegments', 'dayReferenceIncomplete', 'normShiftTime', 'ensureRosterHeaders', 'setRosterCell', 'activeNotices', 'noticeSheet', 'ensureNoticeHeaders',
-                   'normNoticeEndsOn', 'noticeAuth', 'handleMgrAddNotice', 'checkAdmin', 'genKey', 'buildLatestApprovedMap', 'handleMgrAddEmployeeUnlocked_', 'nextEmpId', 'sheetSafeText_'];
+                   'normNoticeEndsOn', 'noticeAuth', 'handleMgrAddNotice', 'checkAdmin', 'genKey', 'buildLatestApprovedMap', 'handleMgrAddEmployeeUnlocked_', 'nextEmpId', 'sheetSafeText_', 'clockMarkKey_', 'clockLastWithMark_', 'clockMarkPut_', 'clockMarkRestore_'];
   const codeConsts = ['EVENTS_HEADERS', 'ROSTER_HEADERS', 'SAME_TYPE_LOCK_MIN', 'ACCURACY_CREDIT_CAP_M', 'LOW_ACCURACY_M', 'MONTHLY_PAIR_WINDOW_HOURS', 'REJECTED_IN_BREAK_MIN',
                       'REJECTED_IN_MISTAP_SEC', 'LEAVE_TYPES', 'NOTICE_HEADERS', 'NOTICE_MAX_SHOW', 'NOTICE_MAX_LEN', 'APPROVED_HEADERS', 'MANAGERS_HEADERS', 'TRIP_NOTE'];
   const parts = [codeConsts.map((c) => extractConst(SRC.code, c)).join('\n'), codeFns.map((f) => extract(SRC.code, f)).join('\n'), SRC.liff, SRC.rest, SRC.req];
@@ -194,6 +194,35 @@ ok('第一筆沒算數（不在範圍內）：記號還原，幾秒後在店裡�
   m.sb.__now += 5000;
   const r = stalePunch(m, 'in')();
   assert.strictEqual(r.ok, true, JSON.stringify(r));
+});
+// 2026-11-03 晚：記號搬進 handleClock，舊連結 clock.html（直接打 handleClock）也受保護
+ok('舊連結：兩筆上班卡同時到（都用對方寫入前讀的 events）→ 第二張 rejected_duplicate、只有一張 ok', () => {
+  const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME], events: [[T('2026-11-02T22:00:00'), 'E01', 'out']] } });
+  const sb = m.sb, snap = () => sb.readEventsSince(m.self.sh.events, sb.__now - 13 * 3600000);
+  const read1 = snap(), read2 = snap();
+  const r1 = sb.handleClock(Object.assign({ key: 'K1', type: 'in', device_id: 'D1' }, HERE), read1, null);
+  sb.__now += 2000;
+  const r2 = sb.handleClock(Object.assign({ key: 'K1', type: 'in', device_id: 'D1' }, HERE), read2, null);
+  assert.strictEqual(r1.status, 'ok');
+  assert.strictEqual(r2.status, 'rejected_duplicate', r2.status);
+  assert.strictEqual(m.events().filter((e) => e.type === 'in' && e.status === 'ok').length, 1);
+});
+ok('舊連結：上班卡寫入失敗（appendRow 丟錯）→ 記號還原，重按不會被當重複', () => {
+  const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME], events: [[T('2026-11-02T22:00:00'), 'E01', 'out']] } });
+  const sh = m.self.sh.events, realAppend = sh.appendRow;
+  sh.appendRow = () => { throw new Error('Sheets 暫時寫不進去'); };
+  assert.throws(() => punch(m.sb, 'in'));
+  sh.appendRow = realAppend;
+  m.sb.__now += 3000;
+  assert.strictEqual(punch(m.sb, 'in').status, 'ok');
+});
+ok('舊連結：上班後幾秒打下班（不同型）不被記號擋；記號過了 10 分鐘也不擋同型', () => {
+  const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME], events: [] } });
+  assert.strictEqual(punch(m.sb, 'in').status, 'ok');
+  m.sb.__now += 5000;
+  assert.strictEqual(punch(m.sb, 'out').status, 'ok');
+  m.sb.__now += 11 * 60000;
+  assert.strictEqual(punch(m.sb, 'out').status, 'ok');
 });
 ok('同型過了 10 分鐘：沒帶 confirm_same 回 need_confirm 且不寫入；帶了才收', () => {
   const m = make({ now: T('2026-11-03T13:00:00'), self: { roster: [ME], events: [[T('2026-11-03T09:00:00'), 'E01', 'in']] } });

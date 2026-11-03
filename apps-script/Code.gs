@@ -439,6 +439,37 @@ function lastCountedEvent(eventRows, empId) {
   return last;
 }
 
+/* 同一人兩筆打卡同時到（2026-11-03 對抗驗證 #1，11-03 晚從 Liff.gs 搬進 handleClock，舊連結 clock.html 也受保護）：
+   handleClock 用「打卡前讀的 events」判重複，兩個畫面同時送上班卡會兩張都 ok。不用 ScriptLock（會跟月表重算搶鎖、讓打卡卡住）：
+   判完重複就在 CacheService 記「這個人剛送出哪一型、幾點」（鍵 lfl:<emp_id>，Liff.gs liffWithMark_ 也讀同一個），
+   下一筆讀完 events 後把記號當成最後一張卡併進來；這張被擋（rejected_*）或寫入失敗就還原。快取壞了一律當沒有記號。 */
+function clockMarkKey_(empId) { return 'lfl:' + empId; }
+function clockLastWithMark_(eventRows, empId) {
+  const last = lastCountedEvent(eventRows, empId);
+  try {
+    const v = CacheService.getScriptCache().get(clockMarkKey_(empId));
+    if (!v) return last;
+    const m = JSON.parse(v), mt = new Date(String(m && m.ts)).getTime();
+    if (!m || (m.type !== 'in' && m.type !== 'out') || isNaN(mt) || mt < Date.now() - CONFIG.ALTERNATION_LOOKBACK_HOURS * 3600000) return last;
+    if (last && new Date(last.ts).getTime() >= mt) return last;
+    return { ts: String(m.ts), type: m.type };
+  } catch (e) { return last; }
+}
+/** 放記號，回原本的記號（字串或 null）給 clockMarkRestore_ 用。 */
+function clockMarkPut_(empId, type, ts) {
+  try {
+    const c = CacheService.getScriptCache(), k = clockMarkKey_(empId), prev = c.get(k);
+    c.put(k, JSON.stringify({ type: type, ts: ts }), SAME_TYPE_LOCK_MIN * 60 + 60);
+    return prev;
+  } catch (e) { return null; }
+}
+function clockMarkRestore_(empId, prev) {
+  try {
+    const c = CacheService.getScriptCache(), k = clockMarkKey_(empId);
+    if (prev) c.put(k, prev, SAME_TYPE_LOCK_MIN * 60 + 60); else c.remove(k);
+  } catch (e) { /* 快取壞了：記號最多 11 分鐘自己過期 */ }
+}
+
 /**
  * 今日出勤時數（whoami 用，同仁自助查詢，不落地寫入試算表）。
  * 只取今日（Asia/Taipei）status='ok' 的事件跑 pairShifts（沿用月表同一套配對／核定
@@ -710,12 +741,15 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
     eventsSheet.getRange(1, 1, 1, EVENTS_HEADERS.length).setValues([EVENTS_HEADERS]);
   }
   const clockEventRows = eventsRead.rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
-  const lastCounted = lastCountedEvent(clockEventRows, roster.emp_id);
+  const lastCounted = clockLastWithMark_(clockEventRows, roster.emp_id);   // 併上「剛送出」記號（同一人兩筆同時到，2026-11-03）
   // 同型只擋 10 分鐘（2026-11-02 Eason：中午忘打下班卡，晚上回來要能打上班卡）；超過就收，前一張由配對標忘刷卡
   const isDuplicate = lastCounted !== null && lastCounted.type === String(body.type)
     && Date.now() - new Date(lastCounted.ts).getTime() < SAME_TYPE_LOCK_MIN * 60000;
+  const prevMark = isDuplicate ? null : clockMarkPut_(roster.emp_id, String(body.type), ts);
   // 單日 10 小時／兩班間隔 11 小時（2026-11-01，11-02 由 12 改 11；Rest.gs）：只擋上班卡；沒部署 Rest.gs 或總開關關著＝null
-  const restBlock = (body.type === 'in' && !isDuplicate && typeof restCheckIn_ === 'function') ? restCheckIn_(ss, roster) : null;
+  let restBlock = null;
+  try { restBlock = (body.type === 'in' && !isDuplicate && typeof restCheckIn_ === 'function') ? restCheckIn_(ss, roster) : null; }
+  catch (e) { if (!isDuplicate) clockMarkRestore_(roster.emp_id, prevMark); throw e; }
 
   let deviceMatch;
   if (!roster.device_id) {
@@ -742,7 +776,10 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
     status = 'ok';
   }
 
-  eventsSheet.appendRow([ts, roster.emp_id, body.type, lat, lng, distanceM, withinRange, deviceId, deviceMatch, status, accuracyM]);
+  // 這張沒算數（被擋）就把記號還原，不能讓它擋到同仁接著重按；寫入失敗也還原
+  if (!isDuplicate && status.indexOf('rejected_') === 0) clockMarkRestore_(roster.emp_id, prevMark);
+  try { eventsSheet.appendRow([ts, roster.emp_id, body.type, lat, lng, distanceM, withinRange, deviceId, deviceMatch, status, accuracyM]); }
+  catch (e) { if (!isDuplicate) clockMarkRestore_(roster.emp_id, prevMark); throw e; }
 
   const result = {
     ok: true,
