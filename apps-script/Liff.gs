@@ -746,6 +746,7 @@ var LIFF_HANDLERS = {
   mgr_req_day: function (b) { return handleMgrReqDay_(b); },
   mgr_req_month: function (b) { return handleMgrReqMonth_(b); },   // 申請單彙整列印（2026-11-02，純讀）
   mgr_qr_token: function (b) { return handleMgrQrToken_(b); },
+  mgr_device_decision: function (b) { return reqDeviceDecisionLogged_(b); },   // 覆蓋 Code.gs：核准／拒絕成功後記 device_log（2026-11-04 核定紀錄）
 };
 
 /**

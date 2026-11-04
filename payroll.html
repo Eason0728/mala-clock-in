@@ -233,6 +233,7 @@ html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬管理
       <div class="nav-label">輸出</div>
       <button data-p="slip"><span class="ic">🧾</span>薪資單</button>
       <button data-p="export"><span class="ic">📤</span>匯出</button>
+      <button data-p="oplog"><span class="ic">🗒️</span>操作紀錄</button>
     </nav>
     <div class="side-user">
       <div class="av">🙂</div>
@@ -380,6 +381,23 @@ html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬管理
     <div class="hint" id="axStat" style="margin:0"></div>
   </div>
   <div id="axBody"></div>
+</section>
+
+<section class="panel" id="p-oplog">
+  <div class="card noprint">
+    <h2>操作紀錄</h2>
+    <p class="hint">薪資定案、解鎖（含原因）、假別設定、假日同步等操作的紀錄，新到舊，最多 1000 筆（唯讀）。從管理系統操作的，操作人是「姓名（帳號）（管理系統）」；系統自動執行的標 auto。</p>
+    <div class="row" style="margin-bottom:12px;align-items:flex-end">
+      <div class="fld"><label for="olYm">月份</label><input type="month" id="olYm" onchange="loadOplog(true)" style="min-width:150px"></div>
+      <div class="fld"><label for="olStore">門市</label><select id="olStore" onchange="renderOplog()" style="min-width:150px"><option value="">全部門市</option></select></div>
+      <div class="fld"><label for="olAct">動作</label><select id="olAct" onchange="renderOplog()" style="min-width:150px"><option value="">全部</option></select></div>
+      <div class="fld"><label for="olWho">操作人</label><input id="olWho" oninput="renderOplog()" placeholder="姓名或帳號" style="min-width:150px"></div>
+      <button class="btn ghost" onclick="loadOplog(true)">重新載入</button>
+      <button class="btn" id="olXlsx" onclick="exportOplogExcel()">匯出 Excel</button>
+    </div>
+    <div class="hint" id="olStat" style="margin:0"></div>
+  </div>
+  <div class="card"><div class="scroll"><table id="olTbl"></table></div></div>
 </section>
 
 <section class="panel" id="p-att">
@@ -2819,6 +2837,59 @@ async function exportAttPDF(){
   window.print();
 }
 
+/* ═════ 操作紀錄（唯讀，後端 payroll_audit_get） ═════ */
+const OPLOG_ACT={lock:'薪資定案',unlock:'解鎖',holiday_sync:'假日同步',leave_type_set:'假別設定',leave_span_set:'假別區間設定',
+  leave_event_set:'假別事件日設定',pnl_snapshot_fail:'損益快照失敗',pnl_snapshot_remove_fail:'損益快照移除失敗',pnl_key_locked:'損益金鑰鎖定'};
+const oplogActName=a=>OPLOG_ACT[a]||a;
+let OPLOG={key:'',data:null};
+function oplogFiltered(){
+  const d=OPLOG.data; if(!d) return [];
+  const st=$('olStore').value, act=$('olAct').value, who=$('olWho').value.trim().toLowerCase();
+  return d.items.filter(x=>(!st||x.store===st)&&(!act||x.action===act)&&(!who||String(x.operator).toLowerCase().indexOf(who)>=0));
+}
+async function loadOplog(force){
+  try{ await BOOT_P; }catch(e){}
+  const month=$('olYm').value;
+  if(month&&!/^\d{4}-\d{2}$/.test(month)) return;
+  const key=month;
+  if(!force&&OPLOG.key===key&&OPLOG.data){ renderOplog(); return; }
+  $('olStat').textContent='載入中…'; $('olTbl').innerHTML='';
+  const r=await post('payroll_audit_get',month?{ym:month,store:''}:{store:''},{noToast:true});   // store 空白＝不限門市（post 會預設補目前門市，這裡明講覆蓋）
+  if($('olYm').value!==month) return;   // 等的時候換了月份：交給新的那次
+  if(!r.ok){ OPLOG={key:'',data:null}; $('olStat').innerHTML='<span class="bad">讀取失敗：'+esc(r.message||r.error||'')+'</span>'; return; }
+  OPLOG={key,data:r};
+  const stores=[...new Set(r.items.map(x=>x.store).filter(Boolean))].sort();
+  const acts=[...new Set(r.items.map(x=>x.action))].sort();
+  const ps=$('olStore').value, pa=$('olAct').value;
+  $('olStore').innerHTML='<option value="">全部門市</option>'+stores.map(c=>{ const o=(STORE_LIST||[]).find(s=>String(s.code).toUpperCase()===c); return `<option value="${esc(c)}">${esc(o&&o.name?o.name:c)}</option>`; }).join('');
+  $('olAct').innerHTML='<option value="">全部</option>'+acts.map(a=>`<option value="${esc(a)}">${esc(oplogActName(a))}</option>`).join('');
+  if(stores.includes(ps)) $('olStore').value=ps;
+  if(acts.includes(pa)) $('olAct').value=pa;
+  renderOplog();
+}
+function oplogStoreName(c){ if(!c) return '全部（集團）'; const o=(STORE_LIST||[]).find(s=>String(s.code).toUpperCase()===c); return o&&o.name?o.name:c; }
+function renderOplog(){
+  const d=OPLOG.data; if(!d) return;
+  const list=oplogFiltered();
+  $('olStat').textContent='共 '+list.length+' 筆'+(list.length!==d.items.length?'（全部 '+d.items.length+' 筆）':'')+(d.truncated?'；只顯示最新 '+d.items.length+' 筆，更早的請選月份縮小範圍':'');
+  $('olTbl').innerHTML='<thead><tr><th>時間</th><th>月份</th><th>門市</th><th>動作</th><th>操作人</th><th>原因／內容</th></tr></thead><tbody>'+
+    (list.length?list.map(x=>`<tr><td>${esc(x.ts.replace('T',' ').slice(0,16))}</td><td>${esc(x.ym||'—')}</td><td>${esc(oplogStoreName(x.store))}</td><td>${esc(oplogActName(x.action))}</td><td>${esc(x.operator)}</td><td>${esc(x.reason)}</td></tr>`).join(''):'<tr><td colspan="6" class="mute">沒有符合的紀錄</td></tr>')+'</tbody>';
+}
+/* Excel 儲存格：開頭是 = + - @ 的文字補一個單引號，避免被當公式執行（原因欄是人打的字） */
+const oplogCell=v=>{ const t=String(v==null?'':v); return /^[=+\-@]/.test(t)?"'"+t:t; };
+async function exportOplogExcel(){
+  await loadOplog(false);
+  const list=oplogFiltered();
+  if(!OPLOG.data||!list.length){ toast('沒有可匯出的資料',true); return; }
+  try{ await attLoadXlsxLib(); }catch(e){ toast('無法載入 Excel 元件（需要連網），請稍後再試',true); return; }
+  const aoa=[['時間','月份','門市','動作','操作人','原因／內容']].concat(list.map(x=>[x.ts.replace('T',' ').slice(0,16),x.ym,oplogStoreName(x.store),oplogActName(x.action),oplogCell(x.operator),oplogCell(x.reason)]));
+  const ws=XLSX.utils.aoa_to_sheet(aoa), wb=XLSX.utils.book_new();
+  ws['!cols']=[{wch:17},{wch:9},{wch:16},{wch:14},{wch:28},{wch:36}];
+  XLSX.utils.book_append_sheet(wb,ws,'操作紀錄');
+  XLSX.writeFile(wb,('薪酬操作紀錄_'+($('olYm').value||'全部')+'.xlsx').replace(/[\\\/:*?"<>|]/g,'_'));   // 檔名：不是 HTML
+  toast('已匯出 Excel（'+list.length+' 筆）');
+}
+
 /* ═════ 啟動 ═════ */
 $('nav').addEventListener('click',ev=>{
   const b=ev.target.closest('button[data-p]');if(!b)return;
@@ -2827,6 +2898,7 @@ $('nav').addEventListener('click',ev=>{
   b.classList.add('on');$('p-'+b.dataset.p).classList.add('on');
   if(b.dataset.p==='punch') loadPunch();
   if(b.dataset.p==='attexp') loadAttExp();
+  if(b.dataset.p==='oplog') loadOplog();
   if(b.dataset.p==='dash') loadDash();
   if(b.dataset.p==='group'&&!scopeLimited()) loadGroup();
   if(b.dataset.p==='bonus') renderBonus();
