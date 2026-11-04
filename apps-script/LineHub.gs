@@ -864,12 +864,13 @@ function lineHubPunchCard_(r) {
       blocks.push({ type: 'sep' }, { type: 'heading', text: '📢 還沒簽的公告' });
       bl.titles.forEach(function (t) { blocks.push({ type: 'text', text: '・' + t, margin: 'xs' }); });
       if (bl.n > bl.titles.length) blocks.push({ type: 'text', text: '還有 ' + (bl.n - bl.titles.length) + ' 則', muted: true, margin: 'xs' });
+      blocks.push({ type: 'text', text: LINE_HUB_BULLETIN_WHERE, muted: true, margin: 'sm', size: 'xs' });   // 2026-11-05 Eason：按鈕縮短，地點寫在內文
     }
     if (r.greeting) blocks.push({ type: 'sep' }, { type: 'text', text: r.greeting, margin: 'md', size: 'md' });
     if (r.annual_note) blocks.push({ type: 'text', text: r.annual_note, margin: 'md' });
     var spec = { title: label + '打卡成功', right: '✓', tone: 'ok', alt: label + '打卡成功 ' + lineHubHm_(r.ts),
                  hero: { label: '打卡時間', value: lineHubHm_(r.ts) }, blocks: blocks };
-    if (bl) spec.buttons = [{ label: '到公告專區閱讀並簽名', uri: LINE_HUB_BULLETIN_DZY_URL }];
+    if (bl) spec.buttons = [{ label: '請到公告專區閱讀並簽名', uri: LINE_HUB_BULLETIN_DZY_URL }];
     return lineHubCard_(spec);
   }
   var fb = [{ type: 'heading', text: '原因' }, { type: 'text', text: r.reason }];
@@ -1289,7 +1290,8 @@ var LINE_HUB_HANDLERS = {
  * 對人鍵＝sha256('dzyb-line:' + LINE userId)，與佈告欄 staff.lineHash 同一個算法；這裡不存任何姓名。
  * 資料超過 30 分鐘沒更新就不提醒（mini 停了不會拿舊資料催已簽的人）。任何錯誤一律不提醒，絕不影響打卡回覆。
  * 金鑰：Script Property BULLETIN_PUSH_KEY（≥32 字；沒設＝一律拒收）＝ mini server/.env PUNCH_REMIND_KEY。 */
-var LINE_HUB_BULLETIN_DZY_URL = 'https://dzy.mozhuting.com/#/bulletin';   // 管理系統公告專區（2026-11-05 Eason：簽名改到管理系統）
+var LINE_HUB_BULLETIN_DZY_URL = 'https://dzy.mozhuting.com/#/bulletin';
+var LINE_HUB_BULLETIN_WHERE = '公告在管理系統的公告專區';   // 管理系統公告專區（2026-11-05 Eason：簽名改到管理系統）
 var LINE_HUB_BULLETIN_STALE_MS = 30 * 60 * 1000;
 var LINE_HUB_BULLETIN_MAX = 90000;                                          // CacheService 單一值上限 100KB
 var LINE_HUB_BULLETIN_TTL = 21600;

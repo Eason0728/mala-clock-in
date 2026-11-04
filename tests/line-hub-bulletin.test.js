@@ -116,10 +116,10 @@ ok('卡片：段落、最多 3 則、還有 N 則、按鈕；段落在問候語�
   const t = texts(card);
   const i = t.indexOf('📢 還沒簽的公告');
   assert.ok(i >= 0);
-  assert.deepStrictEqual(t.slice(i + 1, i + 5), ['・甲公告', '・乙公告', '・丙公告', '還有 2 則']);
+  assert.deepStrictEqual(t.slice(i + 1, i + 6), ['・甲公告', '・乙公告', '・丙公告', '還有 2 則', '公告在管理系統的公告專區']);
   assert.ok(t.indexOf(PUNCH.greeting) > i);
   const btn = buttons(card);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(btn)), [{ type: 'uri', label: '到公告專區閱讀並簽名', uri: 'https://dzy.mozhuting.com/#/bulletin' }]);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(btn)), [{ type: 'uri', label: '請到公告專區閱讀並簽名', uri: 'https://dzy.mozhuting.com/#/bulletin' }]);
 });
 
 ok('卡片：n 等於列出的則數時不寫「還有」', () => {
@@ -134,9 +134,9 @@ ok('卡片：沒有 bulletin 時與原本逐字相同；失敗卡片不帶', () 
   const a = JSON.stringify(sb.lineHubPunchCard_(Object.assign({}, PUNCH)));
   const b = JSON.stringify(sb.lineHubPunchCard_(Object.assign({}, PUNCH, { bulletin: null })));
   assert.strictEqual(a, b);
-  assert.ok(!/還沒簽的公告|公告專區閱讀並簽名/.test(a));
+  assert.ok(!/還沒簽的公告|公告專區閱讀並簽名|公告在管理系統/.test(a));
   const f = JSON.stringify(sb.lineHubPunchCard_({ ok: false, type: 'in', reason: '超出範圍', bulletin: { n: 1, titles: ['x'] } }));
-  assert.ok(!/還沒簽的公告|公告專區閱讀並簽名/.test(f));
+  assert.ok(!/還沒簽的公告|公告專區閱讀並簽名|公告在管理系統/.test(f));
 });
 
 ok('webhook「打卡」把 bulletin 帶進卡片；文字版 lineHubPunchText_ 不帶標題', () => {
