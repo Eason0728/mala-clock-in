@@ -231,9 +231,10 @@ ok('（修好後）2026-11-31 的核定＋事假 8 小時：直接 bad_date，�
   const c = J(m.sb.payCollect('2026-11', 6, 'SSLGF', [], null));
   assert.ok(!c.E01 || !(c.E01.personal_h > 0), JSON.stringify(c.E01));
 });
-ok('（對照）閏日 2028-02-29 核定正常收、2026-13-01 擋（NaN 不會寫進表）', () => {
-  const m = make({ self: { roster: [ME], events: [[T('2028-02-29T09:00:00'), 'E01', 'in'], [T('2028-02-29T18:00:00'), 'E01', 'out']] } });
-  const r = approve(m.sb, { date: '2028-02-29', periods: [PERIOD('09:00', '18:00')] });
+// 2026-11-04 夜間 QA：mgr_approve 不再收未來日期的上班時段，閏日改用已過去的 2024-02-29（原 2028-02-29 會回 future_date）
+ok('（對照）閏日 2024-02-29 核定正常收、2026-13-01 擋（NaN 不會寫進表）', () => {
+  const m = make({ self: { roster: [ME], events: [[T('2024-02-29T09:00:00'), 'E01', 'in'], [T('2024-02-29T18:00:00'), 'E01', 'out']] } });
+  const r = approve(m.sb, { date: '2024-02-29', periods: [PERIOD('09:00', '18:00')] });
   assert.strictEqual(r.ok, true); assert.strictEqual(r.status_text, '正常'); assert.strictEqual(r.approved_hours, 9);
   const out = JSON.parse(m.sb.doPost({ postData: { contents: JSON.stringify({ action: 'mgr_approve', mgr_key: 'MK', emp_id: 'E01', date: '2026-13-01', periods: [PERIOD('09:00', '18:00')] }) } }).__text);
   assert.strictEqual(out.error, 'bad_date', JSON.stringify(out));   // 2026-11-04 修好：原本 addDaysStr 對 NaN 丟 RangeError → server_error

@@ -377,6 +377,7 @@ function readEventsSince(sheet, sinceMs, stopFn) {
     const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
     if (lastRow < 2) return { headers: headers, rows: [] };
     const tsCol = headers.indexOf('ts');
+    const mirrorCol = headers.indexOf('mirror_src');
     if (tsCol < 0 || !(Number(sinceMs) > 0)) return readSheetAsObjects(sheet);
     const chunks = [];
     let end = lastRow, size = 300;
@@ -390,7 +391,14 @@ function readEventsSince(sheet, sinceMs, stopFn) {
         return obj;
       });
       chunks.unshift(objs);
-      const firstMs = new Date(String(normCellTs(vals[0][tsCol]))).getTime();
+      // （2026-11-04 夜間 QA）鏡像列（mirror_src 非空）是整段歷史每天追加在底部，時間不照順序，
+      //  不能拿它當「這段已早於 sinceMs、可以停」的依據，否則自家同仁的近期卡會被擠到沒讀到。
+      //  改拿這段第一個非鏡像列的時間判斷；鏡像列本身照樣讀進結果。表頭沒有 mirror_src 欄時行為不變。
+      let basis = 0;
+      if (mirrorCol >= 0) {
+        while (basis < vals.length && String(vals[basis][mirrorCol] == null ? '' : vals[basis][mirrorCol]) !== '') basis++;
+      }
+      const firstMs = basis < vals.length ? new Date(String(normCellTs(vals[basis][tsCol]))).getTime() : NaN;
       if (!isNaN(firstMs) && firstMs < sinceMs) break;   // 時間空白／讀不懂就繼續往上，不提早停
       if (stopFn && stopFn(objs)) break;
       end = start - 1;
@@ -866,20 +874,34 @@ function handleSyncRoster(body) {
   const rosterRows = readSheetAsObjects(rosterSheet).rows;
   const employees = body.employees || [];
 
+  const skipped = [];
+  // （2026-11-04 夜間 QA）新增同仁前先擋同名在職者（薪資／請假用姓名對人，同名會算錯；比照 svc_add／mgr_add_employee）。
+  const activeNames = {};
+  rosterRows.forEach(function (r) {
+    if (String(r.active).toLowerCase() === 'true') activeNames[String(r.name).trim()] = true;
+  });
   employees.forEach(function (emp) {
     const existing = findRosterByEmpId(rosterRows, emp.emp_id);
     const nm = sheetSafeText_(String(emp.name == null ? '' : emp.name));   // = + - @ 開頭換全形（2026-11-04 對抗驗證）
     if (existing) {
       // 只更新 name/active，絕不覆蓋 key/device_id/device_bound_at
       rosterSheet.getRange(existing.__rowIndex, ROSTER_HEADERS.indexOf('name') + 1).setValue(nm);
-      rosterSheet.getRange(existing.__rowIndex, ROSTER_HEADERS.indexOf('active') + 1).setValue(!!emp.active);
+      // 沒帶 active（undefined）就保留原本的在職狀態，不可把沒帶欄位當成 false 停用人（2026-11-04 夜間 QA）
+      if (emp.active !== undefined) {
+        rosterSheet.getRange(existing.__rowIndex, ROSTER_HEADERS.indexOf('active') + 1).setValue(!!emp.active);
+      }
     } else {
-      rosterSheet.appendRow([sheetSafeText_(String(emp.emp_id)), nm, genKey(), '', '', !!emp.active]);
+      if (activeNames[nm.trim()]) { skipped.push({ emp_id: String(emp.emp_id), reason: 'duplicate_name' }); return; }
+      const act = emp.active === undefined ? true : !!emp.active;   // 新增列沒帶 active 一律在職
+      rosterSheet.appendRow([sheetSafeText_(String(emp.emp_id)), nm, genKey(), '', '', act]);
+      if (act) activeNames[nm.trim()] = true;
     }
   });
 
   const finalRows = readSheetAsObjects(rosterSheet).rows.map(stripRowIndex);
-  return { ok: true, roster: finalRows };
+  const res = { ok: true, roster: finalRows };
+  if (skipped.length) res.skipped = skipped;
+  return res;
 }
 
 function handleGetRoster(body) {
@@ -1725,6 +1747,12 @@ function handleMgrApprove(body) {
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
   const roster = findRosterByEmpId(rosterRows, body.emp_id);
   if (!roster) return { ok: false, error: 'invalid_emp_id' };
+
+  // （2026-11-04 夜間 QA）不能核定還沒到的日子的上班時段（錢會先於出勤入帳）。整天請假（periods 空）的未來日期照收：
+  //  主管可能預先記特休。跨夜班隔天凌晨核「今天」沒問題，所以用 > 今天。
+  if (Array.isArray(body.periods) && body.periods.length > 0 && date > todayTaipeiStr()) {
+    return { ok: false, error: 'future_date', message: '不能核定還沒到的日子的上班時段' };
+  }
 
   // 請假註記（2026-10-26 起一天可以多種）：新版核定頁送 leaves:[{type, hours}]；
   // 舊呼叫端（營運系統的出勤核定）只送 leave_type／leave_hours＝一種。

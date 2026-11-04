@@ -258,7 +258,10 @@ function handleReqInfo_(body) {
   var today = todayTaipeiStr();
   var dayOnly = body.day_only === true && reqIsDate_(body.date);
   var mine = dayOnly ? [] : reqRows_(who.ss).filter(function (r) {
-    return String(r.emp_id) === String(who.me.emp_id) && reqDayDiff_(today, String(r.created_at).slice(0, 10) || r.date) <= REQ_LIST_DAYS;
+    if (String(r.emp_id) !== String(who.me.emp_id)) return false;
+    if (reqDayDiff_(today, String(r.created_at).slice(0, 10) || r.date) <= REQ_LIST_DAYS) return true;
+    // （2026-11-04 夜間 QA）提前請假的單：審核中、請假日期還沒過的，超過 60 天也要看得到（才有取消入口）
+    return r.status === 'pending' && String(r.date).slice(0, 10) >= today;
   }).sort(function (a, b) { return a.created_at < b.created_at ? 1 : -1; }).map(reqPublic_);
   var out = { ok: true, name: String(who.me.name), emp_id: String(who.me.emp_id), today: today, requests: mine,
               miss_days: REQ_MISS_DAYS, leave_types: LEAVE_TYPES.filter(function (t) { return t !== '出差'; }),
@@ -385,6 +388,10 @@ function reqValidate_(b, me, events, today, existing) {
       if (outNext || (row.end && reqMin_(row.end) > nowMin) || (row.start && reqMin_(row.start) > nowMin)) {
         return { error: 'bad_time', message: '不能補登還沒到的時間' };
       }
+    }
+    // （2026-11-04 夜間 QA）補「昨天」的跨夜下班（outNext）＝今天凌晨的某個時刻，那個時刻還沒到也不能補。
+    if (diff === -1 && outNext && row.end && reqMin_(row.end) > reqMin_(nowTaipeiIso().slice(11, 16))) {
+      return { error: 'bad_time', message: '不能補登還沒到的時間' };
     }
     if (!reason) return { error: 'need_reason', message: '請選原因' };
     }

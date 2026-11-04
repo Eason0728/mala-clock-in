@@ -379,7 +379,16 @@ function liffMissedDetail_(events, empId, type, ts) {
       : '你 ' + md(prev.ts) + ' ' + liffHm_(prev.ts) + ' 上班後沒有打下班卡，請跟主管說實際下班時間' };
   }
   if (prev && prev.type === 'in') return none;
-  return { date: String(ts).slice(0, 10), miss_type: 'in', text: failedOther
+  // （2026-11-04 夜間 QA）凌晨（≤ REQ_EARLY_OUT_HM）的孤兒下班卡歸前一天（同 Requests.gs dayOf），
+  //  提醒卡的 date 要用前一天，「申請補登」才會帶到那天的補登選項（否則會被導去填今天的上下班兩張）。
+  var missDate = String(ts).slice(0, 10);
+  // （Liff.gs 可能單獨部署、不一定有 Requests.gs：06:00 門檻與前一天都在這裡自己算）
+  var earlyHm = (typeof REQ_EARLY_OUT_HM === 'string') ? REQ_EARLY_OUT_HM : '06:00';
+  if (type === 'out' && liffHm_(ts) <= earlyHm) {
+    var pd = new Date(Date.UTC(+missDate.slice(0, 4), +missDate.slice(5, 7) - 1, +missDate.slice(8, 10)) - 86400000);
+    missDate = pd.toISOString().slice(0, 10);
+  }
+  return { date: missDate, miss_type: 'in', text: failedOther
     ? '你這次的上班卡沒有打成功（不在範圍內），請跟主管說實際上班時間'
     : '你這次沒有打上班卡，請跟主管說實際上班時間' };
 }
