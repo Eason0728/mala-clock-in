@@ -36,20 +36,25 @@ const FT = { allowed: true, ot_h: 6, used_h: 2, balance_h: 4, ym: '2026-11' };
 
 ok('申請頁開頁：正職（金山，不在 LINE 薪資開放名單）→ comp 是本月補休帳、「補休」放進常用假別', () => {
   const r = make(null, () => FT).handleLineHubReqInit_({ id_token: 't' });
-  assert.strictEqual(JSON.stringify(r.comp), JSON.stringify({ allowed: true, ot_h: 6, used_h: 2, balance_h: 4, ym: '2026-11' }));
+  assert.strictEqual(JSON.stringify(r.comp), JSON.stringify({ allowed: true, known: true, ot_h: 6, used_h: 2, balance_h: 4, ym: '2026-11' }));
   assert(r.leave_types.common.indexOf('補休') >= 0, JSON.stringify(r.leave_types));
   assert(r.leave_types.special.indexOf('補休') < 0);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(r.quota)), []);   // 假別額度仍只開放光復、央廚
 });
-ok('申請頁開頁：正職本月沒加班也是負的 → 照樣有「補休」（先休後補）；計時 → 沒有', () => {
+ok('申請頁開頁：正職本月沒加班也是負的 → 照樣有「補休」（先休後補）；主檔是計時 → 也列補休但 known:true、allowed:false（申請頁擋）', () => {
   let r = make(null, () => ({ allowed: true, ot_h: 0, used_h: 8, balance_h: -8, ym: '2026-11' })).handleLineHubReqInit_({ id_token: 't' });
   assert.strictEqual(r.comp.balance_h, -8); assert(r.leave_types.common.indexOf('補休') >= 0);
   r = make(null, () => ({ allowed: false, ot_h: 0, used_h: 0, balance_h: 0 })).handleLineHubReqInit_({ id_token: 't' });
-  assert.strictEqual(r.comp.allowed, false); assert(r.leave_types.common.indexOf('補休') < 0);
+  assert.strictEqual(r.comp.allowed, false); assert.strictEqual(r.comp.known, true); assert(r.leave_types.common.indexOf('補休') >= 0);
 });
-ok('申請頁開頁：補休帳算不出來（拋例外）→ 不開補休，申請頁照常', () => {
+ok('申請頁開頁（2026-11-04 Eason：全部同仁先看得到補休）：薪資主檔還沒建（known:false）→ 列補休、known:false、不顯示補休帳', () => {
+  const r = make(null, () => ({ allowed: false, known: false })).handleLineHubReqInit_({ id_token: 't' });
+  assert(r.ok); assert.strictEqual(r.comp.allowed, false); assert.strictEqual(r.comp.known, false); assert(r.leave_types.common.indexOf('補休') >= 0);
+  assert(r.leave_types.special.indexOf('補休') < 0);
+});
+ok('申請頁開頁：補休帳算不出來（拋例外）→ 照樣列補休、known:false，申請頁照常', () => {
   const r = make(null, () => { throw new Error('讀不到'); }).handleLineHubReqInit_({ id_token: 't' });
-  assert(r.ok); assert.strictEqual(r.comp.allowed, false); assert(r.leave_types.common.indexOf('補休') < 0);
+  assert(r.ok); assert.strictEqual(r.comp.allowed, false); assert.strictEqual(r.comp.known, false); assert(r.leave_types.common.indexOf('補休') >= 0);
 });
 ok('lineHubCompFor_：不看 LINE_HUB_PAY_STORES——金山正職也算得到；沒有主檔＝不開放', () => {
   const sb = make(null);
@@ -62,9 +67,9 @@ ok('lineHubCompFor_：不看 LINE_HUB_PAY_STORES——金山正職也算得到�
   const c = sb.lineHubCompFor_('U1');
   assert.strictEqual(c.ym, '2026-11'); assert.strictEqual(c.st, 'MZTJS'); assert.strictEqual(c.emp, 'MZTJS06');
   master = [];
-  assert.strictEqual(sb.lineHubCompFor_('U1').allowed, false);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(sb.lineHubCompFor_('U1'))), { allowed: false, known: false }, '沒有主檔＝不知道是不是正職');
   sb.lineHubPayPickAny_ = () => null;
-  assert.strictEqual(sb.lineHubCompFor_('U1').allowed, false);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(sb.lineHubCompFor_('U1'))), { allowed: false, known: false });
 });
 ok('lineHubPayPickFresh_：any＝true 時不套開放名單，否則照舊只回光復、央廚', () => {
   const sb = make(null);

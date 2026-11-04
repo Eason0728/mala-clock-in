@@ -1150,13 +1150,13 @@ def phase_req(ctx, gen):
     page.wait_for_function("document.getElementById('reqView').textContent.indexOf('讀取中') >= 0 || document.querySelector('#reqView .rq-tabs')", timeout=8000)
     ok('登入逾時（送出）：按「重新連線」才重整', True)
     page.close()
-    # 計時同仁（補休不開放）：沒有補休假別、加班分頁沒補休說明
-    d = read_store(''); d['mock_comp'] = {'allowed': False, 'ot_h': 0, 'used_h': 0, 'balance_h': 0, 'ym': comp['ym']}; write_store('', d)
+    # 計時同仁（補休不開放；2026-11-04 起假別照樣列補休，選了會說只有正職）：加班分頁沒補休說明、沒有補休帳
+    d = read_store(''); d['mock_comp'] = {'allowed': False, 'known': True, 'ot_h': 0, 'used_h': 0, 'balance_h': 0, 'ym': comp['ym']}; write_store('', d)
     page = open_req(ctx, A, p, 'ot')
     ok('補休：計時同仁的加班分頁沒有補休說明', '先抵當月請的補休' not in req_text(page))
     click(page, '#reqView .rq-tabs button[data-tab=leave]', '請假分頁')
     page.wait_for_selector('#reqView .rq-chip', timeout=3000)
-    ok('補休：計時同仁沒有「補休」假別、沒有補休帳', page.locator('#reqView .rq-chip:text-is("補休")').count() == 0 and page.locator('#reqView .rq-comp-bal').count() == 0)
+    ok('補休：計時同仁也看得到「補休」假別、沒有補休帳（2026-11-04）', page.locator('#reqView .rq-chip:text-is("補休")').count() == 1 and page.locator('#reqView .rq-comp-bal').count() == 0)
     page.close()
     d['mock_comp'] = comp; write_store('', d)
 

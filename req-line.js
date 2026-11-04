@@ -200,6 +200,8 @@
   /* 補休（2026-11-01 改每月加減結算、開放全部門市）：光復 line_hub_req_init 回 comp {allowed（正職）, ot_h, used_h, balance_h, ym}。
      本月補休帳＝本月核准加班 − 本月補休（含審核中），可以是負的（先休後補），不擋送出；月底剩的照加班費發。 */
   function comp() { return (st.init && st.init.comp) || { allowed: false, ot_h: 0, used_h: 0, balance_h: 0 }; }
+  // 確定是計時（薪資主檔查得到、沒勾正職）才擋補休；主檔還沒建（known:false）或舊後端沒給 known 都放行（2026-11-04 Eason：全部同仁先看得到補休）
+  function compBlocked() { var c = comp(); return c.known === true && !c.allowed; }
   function compText() {
     var c = comp(), r2 = function (v) { return Math.round((Number(v) || 0) * 100) / 100; }, b = r2(c.balance_h);
     var m = /^\d{4}-\d{2}$/.test(String(c.ym || '')) ? (+String(c.ym).slice(5, 7)) + ' 月' : '本月';
@@ -229,10 +231,12 @@
     }
     var q = lv.type ? quotaText(lv.type) : '';
     var qx = q ? [h('div', { class: 'rq-quota', text: lv.type + '：' + q })] : [];
-    // 正職就有補休；本月補休帳一直顯示，選之前就看得到
-    if (lt.common.indexOf('補休') >= 0) {
+    // 本月補休帳：薪資主檔查得到的正職才有，一直顯示、選之前就看得到；主檔還沒建的人只在選了補休時提示
+    if (lt.common.indexOf('補休') >= 0 && comp().allowed) {
       qx.push(h('div', { class: 'rq-quota rq-comp-bal' + (Number(comp().balance_h) < 0 ? ' rq-comp-neg' : ''), text: '補休：' + compText() }));
       if (lv.type === '補休') qx.push(h('div', { class: 'rq-muted', text: '可以先休、之後再用加班補回來；當月要補平（20、25 號會檢查），剩的照加班費發。' }));
+    } else if (lv.type === '補休') {
+      qx.push(h('div', { class: 'rq-muted', text: compBlocked() ? '補休只有正職可以請。' : '可以先休、之後再用加班補回來，由主管審核。本月補休帳要等薪資資料建好才看得到。' }));
     }
     p.appendChild(field('假別', typeBox, qx));
     var modeBox = h('div', {}, [chips(['整天', '只請一段'], lv.mode === 'day' ? '整天' : '只請一段', function (v) { lv.mode = v === '整天' ? 'day' : 'span'; render(); })]);
@@ -262,7 +266,7 @@
         return Promise.reject(new Error('還沒送出：請先選證明照片或 PDF'));
       var body = { kind: 'leave', date: lv.date, leave_type: lv.type, reason: lv.reason };
       if (lv.mode === 'day') body.hours = lv.hours; else { body.start = lv.start; body.end = lv.end; }
-      if (lv.type === '補休' && !comp().allowed) return Promise.reject(new Error('補休只有正職可以請'));   // 不看餘額：可以先休後補
+      if (lv.type === '補休' && compBlocked()) return Promise.reject(new Error('補休只有正職可以請'));   // 不看餘額：可以先休後補；主檔還沒建的人照樣可以送
       return withAttach(lv.file).then(function (aid) { if (aid) body.attach_id = aid; return body; });
     }, function () { lv = { date: '', type: '', mode: 'day', hours: '8', start: '', end: '', reason: '', file: null }; }));
     p.appendChild(out);
