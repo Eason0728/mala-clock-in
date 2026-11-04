@@ -869,7 +869,7 @@ function lineHubPunchCard_(r) {
     if (r.annual_note) blocks.push({ type: 'text', text: r.annual_note, margin: 'md' });
     var spec = { title: label + '打卡成功', right: '✓', tone: 'ok', alt: label + '打卡成功 ' + lineHubHm_(r.ts),
                  hero: { label: '打卡時間', value: lineHubHm_(r.ts) }, blocks: blocks };
-    if (bl) spec.buttons = [{ label: '請到管理系統中的公告專區閱讀並簽名', uri: LINE_HUB_BULLETIN_DZY_URL }];
+    if (bl) spec.buttons = [{ label: '到公告專區閱讀並簽名', uri: LINE_HUB_BULLETIN_DZY_URL }];
     return lineHubCard_(spec);
   }
   var fb = [{ type: 'heading', text: '原因' }, { type: 'text', text: r.reason }];

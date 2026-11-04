@@ -119,7 +119,7 @@ ok('卡片：段落、最多 3 則、還有 N 則、按鈕；段落在問候語�
   assert.deepStrictEqual(t.slice(i + 1, i + 5), ['・甲公告', '・乙公告', '・丙公告', '還有 2 則']);
   assert.ok(t.indexOf(PUNCH.greeting) > i);
   const btn = buttons(card);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(btn)), [{ type: 'uri', label: '請到管理系統中的公告專區閱讀並簽名', uri: 'https://dzy.mozhuting.com/#/bulletin' }]);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(btn)), [{ type: 'uri', label: '到公告專區閱讀並簽名', uri: 'https://dzy.mozhuting.com/#/bulletin' }]);
 });
 
 ok('卡片：n 等於列出的則數時不寫「還有」', () => {
