@@ -794,7 +794,68 @@ function handleMgrReqMonth_(body) {
     leaves.push({ id: id, emp_id: emp, name: name, date: date, type: type, hours: Number(r['時數']) || 0 });
   });
   leaves.sort(function (a, b) { return cmp(a.date, b.date); });
-  return { ok: true, ym: ym, items: items, leaves: leaves, unmatched: unmatched };
+  return { ok: true, ym: ym, items: items, leaves: leaves, unmatched: unmatched, log: reqAuditLog_(ss, ym, items, isHome) };
+}
+
+/* ── 核定紀錄（2026-11-04）：把「誰在什麼時候核了什麼」整理成一筆一列，給管理系統的「核定紀錄」分頁。
+ *  來源（都是既有資料，不另外寫帳）：
+ *   hours＝approved 分頁（只追加不覆蓋，每次重核都是一列；系統重算的名字尾巴有「（系統重算）」）
+ *   req  ＝requests 分頁每一列的 created_at／decided_*／voided_*（核准後才能作廢，decided_* 不會被蓋掉）
+ *   device＝device_log 分頁（裝置核准／拒絕，2026-11-04 起才開始記）
+ *  每筆 {at, kind, action, emp_id, name, date, ref, by, system, detail}；ref 相同＝同一件事（看歷史用）。
+ *  只含該月（依工作日期）的列；不算本店支援的人（isHome）照 mgr_req_month 的規則不列。 */
+var REQ_AUDIT_DEVICE_SHEET_ = 'device_log';
+var REQ_AUDIT_DEVICE_HEADS_ = ['at', 'emp_id', 'name', 'approve', 'by'];
+function reqAuditLog_(ss, ym, items, isHome) {
+  var log = [], mark = (typeof RECHECK_MARK === 'string' ? RECHECK_MARK : '（系統重算）');
+  var ash = ss.getSheetByName('approved');
+  if (ash) readSheetAsObjects(ash).rows.forEach(function (r) {
+    var date = normCellDate(r.date), emp = String(r.emp_id == null ? '' : r.emp_id);
+    if (!emp || date.slice(0, 7) !== ym || isHome(emp)) return;
+    var by = String(r.manager_name || ''), sys = by.length >= mark.length && by.slice(-mark.length) === mark;
+    log.push({ at: String(normCellTs(r.entered_at) || ''), kind: 'hours', action: sys ? 'recheck' : 'hours', emp_id: emp, name: String(r.name || ''),
+               date: date, ref: 'H|' + date + '|' + emp, by: sys ? by.slice(0, -mark.length) : by, system: sys,
+               detail: { hours: Number(r.approved_hours) || 0, status: String(r.status_text || ''), periods: String(r.periods || '') } });
+  });
+  // 同一天同一人：最早那筆是「核定」，之後的人工核定是「重核」（系統重算維持 recheck）
+  var firstSeen = {};
+  log.slice().sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; }).forEach(function (e) {
+    if (e.action !== 'hours') return;
+    if (firstSeen[e.ref]) e.action = 'rehours'; else firstSeen[e.ref] = true;
+  });
+  items.forEach(function (r) {
+    var base = { kind: 'req', emp_id: r.emp_id, name: r.name, date: r.date, ref: 'R|' + r.id, system: false };
+    var add = function (o) { log.push(Object.assign({}, base, o)); };
+    add({ at: r.created_at, action: 'submit', by: r.name, detail: { summary: r.summary } });
+    if (r.status === 'approved' || r.status === 'voided') add({ at: r.decided_at, action: 'approve', by: r.decided_by, detail: { summary: r.summary } });
+    else if (r.status === 'rejected') add({ at: r.decided_at, action: 'reject', by: r.decided_by, detail: { summary: r.summary, reason: r.reject_reason } });
+    else if (r.status === 'cancelled') add({ at: r.decided_at, action: 'cancel', by: r.decided_by || '本人取消', detail: { summary: r.summary } });
+    if (r.status === 'voided') add({ at: r.voided_at, action: 'void', by: r.voided_by, detail: { summary: r.summary, reason: r.void_reason } });
+  });
+  var dsh = ss.getSheetByName(REQ_AUDIT_DEVICE_SHEET_);
+  if (dsh) readSheetAsObjects(dsh).rows.forEach(function (r) {
+    var at = String(normCellTs(r.at) || ''), emp = String(r.emp_id == null ? '' : r.emp_id);
+    if (!emp || at.slice(0, 7) !== ym || isHome(emp)) return;
+    log.push({ at: at, kind: 'device', action: String(r.approve).toLowerCase() === 'true' ? 'device_ok' : 'device_no', emp_id: emp, name: String(r.name || ''),
+               date: at.slice(0, 10), ref: 'D|' + emp + '|' + at, by: String(r.by || ''), system: false, detail: {} });
+  });
+  return log.filter(function (e) { return e.at; }).sort(function (a, b) { return a.at < b.at ? 1 : a.at > b.at ? -1 : 0; });
+}
+/** 裝置核准／拒絕成功後記一列（失敗不影響核准本身）。分頁不存在就建。 */
+function reqAuditDeviceLog_(empId, approve, actor) {
+  try {
+    var ss = getSS(), sh = ss.getSheetByName(REQ_AUDIT_DEVICE_SHEET_);
+    if (!sh) { sh = ss.insertSheet(REQ_AUDIT_DEVICE_SHEET_); sh.getRange(1, 1, 1, REQ_AUDIT_DEVICE_HEADS_.length).setValues([REQ_AUDIT_DEVICE_HEADS_]); }
+    var ros = findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, empId);
+    var nm = ros ? String(ros.name || '') : '';
+    sh.getRange(sh.getLastRow() + 1, 1, 1, 5).setValues([[nowTaipeiIso(), String(empId), sheetSafeText_(nm), approve ? 'TRUE' : 'FALSE', sheetSafeText_(String(actor || ''))]]);
+  } catch (err) { /* 記不進去不影響裝置核准 */ }
+}
+/** 覆蓋 Code.gs mgr_device_decision（Liff.gs LIFF_HANDLERS 掛載）：照原本核准，成功就記一列。 */
+function reqDeviceDecisionLogged_(body) {
+  var res = handleMgrDeviceDecision(body);
+  if (res && res.ok) reqAuditDeviceLog_(body.emp_id, !!body.approve, res.manager_name);
+  return res;
 }
 
 /* ── 主管手機出示的動態 QR（定位抓不準時的備案）── */
