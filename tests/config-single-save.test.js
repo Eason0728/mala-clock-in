@@ -10,13 +10,17 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log('✗ ' + m); } 
 /* ① 後端 */
 const gs = fs.readFileSync(path.join(root, 'apps-script/Payroll.gs'), 'utf8');
 const m = gs.match(/function handlePayrollConfigSet\(body\) \{[\s\S]*?\n\}\n/);
+const lk = gs.match(/const PAY_BUSY_[\s\S]*?function payReplaceKeep_[\s\S]*?\n\}\n/);
+ok(lk, '找得到 payWriteLocked_／payReplaceKeep_');
 ok(m, '找得到 handlePayrollConfigSet');
 function runSet(table, body) {
   const ctx = { TABLE: table.map(r => Object.assign({}, r)),
     checkAdmin: () => true,
     payRead: () => ctx.TABLE.map(r => Object.assign({}, r)),
-    payReplaceAll: (n, rows) => { ctx.TABLE = rows; } };
-  vm.createContext(ctx); vm.runInContext(m[0] + ';OUT=handlePayrollConfigSet(BODY)', Object.assign(ctx, { BODY: body }));
+    payReplaceAll: (n, rows) => { ctx.TABLE = rows; },
+    payInvalidate: () => {}, SpreadsheetApp: { flush: () => {} },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) } };
+  vm.createContext(ctx); vm.runInContext(lk[0] + m[0] + ';OUT=handlePayrollConfigSet(BODY)', Object.assign(ctx, { BODY: body }));
   return ctx;
 }
 const base = [

@@ -65,7 +65,7 @@ chk('補休日不扣錢、不扣全勤', [r.ded.some((x) => /comp/.test(x.item_k
 function ctx(DB, CLOCK, extra) {
   const sb = Object.assign({
     console, Logger: { log() {} },
-    SpreadsheetApp: { getActive: () => null, openById: () => null },
+    SpreadsheetApp: { flush: () => {}, getActive: () => null, openById: () => null },
     Utilities: { formatDate: (d) => { const p = (n) => ('0' + n).slice(-2); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); }, sleep() {} },
     PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => (k === 'NOTIFY_INBOX_TOKEN' ? 'TOK' : null), setProperty() {} }) },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },

@@ -169,6 +169,26 @@ function payReplaceAll(kind, rows) {
   sh.getRange(2, 1, values.length, cols.length).setValues(values);
 }
 
+/* 寫回段加鎖（2026-11-04 夜間 QA #6）：各 handler 都是「開頭讀整張 → 算 → 用『別店列＋本店新列』整張覆寫」，
+   兩店同時重算時，後寫的那支拿開頭讀到的舊整張蓋回去，先存的那店就被洗掉。
+   只鎖寫回那一兩秒（重算本身可能幾十秒，不放進鎖裡，否則 LINE 綁定／送申請要排隊；打卡不用這把鎖）：
+   fn 在鎖內執行，裡面一律 payRead 重讀最新整張（進鎖時已 payInvalidate），再篩、再寫。等不到鎖回 false。 */
+const PAY_BUSY_ = { ok: false, error: 'busy', message: '薪資資料正在被另一台裝置儲存，請幾秒後再按一次' };
+function payWriteLocked_(kinds, fn) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) return false;
+  try {
+    kinds.forEach(payInvalidate);
+    fn();
+    SpreadsheetApp.flush();
+    return true;
+  } finally { lock.releaseLock(); }
+}
+/** 鎖內重讀整張、留下 keep 為真的列、接上 rows 寫回。 */
+function payReplaceKeep_(kind, keep, rows) {
+  return payWriteLocked_([kind], function () { payReplaceAll(kind, payRead(kind).filter(keep).concat(rows)); });
+}
+
 function payAppend(kind, rows) {
   payInvalidate(kind);
   if (!rows.length) return;
@@ -1515,8 +1535,7 @@ function handlePayrollMasterSet(body) {
   const now = nowTaipeiIso();
   const stMs = payStore(body.store);
   const mine = body.master.map(function (m) { m.updated_at = now; m.store = payStore(m.store || stMs); return m; });
-  const others = payRead('master').filter(function (m) { return payStore(m.store) !== stMs; });
-  payReplaceAll('master', others.concat(mine));
+  if (!payReplaceKeep_('master', function (m) { return payStore(m.store) !== stMs; }, mine)) return PAY_BUSY_;
   return { ok: true, count: mine.length, store: stMs };
 }
 
@@ -1533,14 +1552,12 @@ function handlePayrollConfigSet(body) {
   if (body.keys === true) {
     const ks = {};
     rows.forEach(function (r) { ks[r.key] = true; });
-    const keep = payRead('config').filter(function (r) {
+    if (!payReplaceKeep_('config', function (r) {
       return !(String(r.store || '') === stC && ks[r.key]);
-    });
-    payReplaceAll('config', keep.concat(rows));
+    }, rows)) return PAY_BUSY_;
     return { ok: true, keys: Object.keys(ks), store: stC };
   }
-  const otherCfg = payRead('config').filter(function (r) { return String(r.store || '') !== stC; });
-  payReplaceAll('config', otherCfg.concat(rows));
+  if (!payReplaceKeep_('config', function (r) { return String(r.store || '') !== stC; }, rows)) return PAY_BUSY_;
   return { ok: true };
 }
 
@@ -1549,8 +1566,7 @@ function handlePayrollHolidaySet(body) {
   if (!Array.isArray(body.holidays)) return { ok: false, error: 'holidays_required' };
   const stH = String(body.store || '');   // 空白＝集團共用；有值＝該門市專屬
   const mine = body.holidays.map(function (h) { h.store = stH; return h; });
-  const others = payRead('holiday').filter(function (h) { return String(h.store || '') !== stH; });
-  payReplaceAll('holiday', others.concat(mine));
+  if (!payReplaceKeep_('holiday', function (h) { return String(h.store || '') !== stH; }, mine)) return PAY_BUSY_;
   return { ok: true, count: mine.length, store: stH };
 }
 
@@ -1854,10 +1870,9 @@ function handlePayrollInputSet(body) {
     };
   });
   // 只換「本月＋本店」，其他月份與其他門市原封不動
-  const others = payRead('input').filter(function (r) {
+  if (!payReplaceKeep_('input', function (r) {
     return String(r.ym) !== ym || payStore(r.store) !== st;
-  });
-  payReplaceAll('input', others.concat(rows));
+  }, rows)) return PAY_BUSY_;
   return { ok: true, ym: ym, store: st, count: rows.length };
 }
 
@@ -1974,10 +1989,18 @@ function handlePayrollCalc(body) {
     });
   });
 
-  const otherRuns  = payRead('run').filter(function (r) { return String(r.ym) !== ym || payStore(r.store) !== st; });
-  const otherItems = payRead('item').filter(function (i) { return String(i.ym) !== ym || payStore(i.store) !== st; });
-  payReplaceAll('run', otherRuns.concat(runRows));
-  payReplaceAll('item', otherItems.concat(itemRows));
+  let lockedMeanwhile = false;
+  const wrote = payWriteLocked_(['run', 'item'], function () {
+    const runNow = payRead('run');
+    // 算的這段時間別台剛好按了鎖定 → 不蓋（否則定案的月份被改回草稿）
+    lockedMeanwhile = runNow.some(function (r) { return String(r.ym) === ym && payStore(r.store) === st && String(r.status) === 'final'; });
+    if (lockedMeanwhile) return;
+    const mineOut = function (r) { return String(r.ym) !== ym || payStore(r.store) !== st; };
+    payReplaceAll('run', runNow.filter(mineOut).concat(runRows));
+    payReplaceAll('item', payRead('item').filter(mineOut).concat(itemRows));
+  });
+  if (!wrote) return PAY_BUSY_;
+  if (lockedMeanwhile) return { ok: false, error: 'locked', message: ym + ' 剛被鎖定，這次重算沒有寫入' };
 
   return { ok: true, ym: ym, store: st, results: results, config: cfg, red_days: redDays, collected: collected };
 }
@@ -2046,12 +2069,11 @@ function handlePayrollItemUpsert(body) {
   if (itRuns.length && String(itRuns[0].status) === 'final') {
     return { ok: false, error: 'finalized', message: String(it.ym) + ' 已定案，請先解鎖再改明細項' };
   }
-  const rows = payRead('item').filter(function (i) {
+  if (!body.remove) it.source = 'manual';
+  if (!payReplaceKeep_('item', function (i) {
     return !(String(i.ym) === String(it.ym) && String(i.emp_id) === String(it.emp_id) &&
              String(i.item_key) === String(it.item_key) && String(i.source) === 'manual');
-  });
-  if (!body.remove) { it.source = 'manual'; rows.push(it); }
-  payReplaceAll('item', rows);
+  }, body.remove ? [] : [it])) return PAY_BUSY_;
   return { ok: true };
 }
 
@@ -2066,11 +2088,13 @@ function handlePayrollFinalize(body) {
     if (neg.length) return { ok: false, error: 'comp_negative', list: neg,
       message: '補休帳是負的，不能鎖定（請補核准加班申請，或把多請的補休改成其他假別）：\n' + neg.map(payCompNegLine).join('\n') };
   }
-  const rows = payRead('run');
   let n = 0;
-  rows.forEach(function (r) { if (String(r.ym) === ym && payStore(r.store) === stF) { r.status = lock ? 'final' : 'draft'; n++; } });
+  if (!payWriteLocked_(['run'], function () {
+    const rows = payRead('run');
+    rows.forEach(function (r) { if (String(r.ym) === ym && payStore(r.store) === stF) { r.status = lock ? 'final' : 'draft'; n++; } });
+    if (n) payReplaceAll('run', rows);
+  })) return PAY_BUSY_;
   if (!n) return { ok: false, error: 'no_run', message: ym + ' 還沒有月結資料' };
-  payReplaceAll('run', rows);
   payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: lock ? 'lock' : 'unlock',
                         operator: String(body.operator || 'admin'), reason: String(body.reason || ''), store: stF }]);
   /* 損益系統快照（T14，Eason 2026-09-25 選方案 C）：只在「鎖定」（不是解鎖）且前端有送
@@ -2656,8 +2680,7 @@ function handlePayrollBonusSet(body) {
                label: String(b.label || ''), amount: payNum(b.amount),
                memo: String(b.memo || ''), updated_at: now };
     });
-  const others = payRead('bonus').filter(function (b) { return String(b.ym) !== ym || payStore(b.store) !== st; });
-  payReplaceAll('bonus', others.concat(rows));
+  if (!payReplaceKeep_('bonus', function (b) { return String(b.ym) !== ym || payStore(b.store) !== st; }, rows)) return PAY_BUSY_;
   return { ok: true, ym: ym, store: st, count: rows.length };
 }
 

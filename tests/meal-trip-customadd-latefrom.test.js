@@ -6,7 +6,7 @@ const fs = require('fs'), vm = require('vm');
 const __ROOT = require('path').join(__dirname, '..');
 const P = fs.readFileSync(__ROOT + '/apps-script/Payroll.gs', 'utf8');
 const C = fs.readFileSync(__ROOT + '/apps-script/Code.gs', 'utf8');
-const sb = { console, SpreadsheetApp: { getActive: () => ({ getSheetByName: () => null }), openById: () => ({ getSheetByName: () => null }) },
+const sb = { console, SpreadsheetApp: { flush: () => {}, getActive: () => ({ getSheetByName: () => null }), openById: () => ({ getSheetByName: () => null }) },
   Utilities: { formatDate: (d) => { const p = n => ('0' + n).slice(-2); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); } },
   Logger: { log() {} }, PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty() {} }) },
   LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) } };

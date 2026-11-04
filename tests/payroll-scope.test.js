@@ -37,7 +37,7 @@ function makeCtx(opts) {
   opts = opts || {};
   const logs = [];
   const sb = { console, Logger: { log(m) { logs.push(String(m)); } },
-    SpreadsheetApp: { openById: opts.openById || (() => null), getActive: () => null },
+    SpreadsheetApp: { flush: () => {}, openById: opts.openById || (() => null), getActive: () => null },
     Utilities: { formatDate: () => '2026-10-29T12:00:00+08:00' },
     PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty() {} }) },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },

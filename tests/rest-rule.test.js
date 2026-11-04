@@ -47,7 +47,7 @@ function make(opts) {
   sb.Date = class extends Date { constructor(...a) { if (a.length) super(...a); else super(sb.__now); } static now() { return sb.__now; } };
   sb.__now = opts.now;
   vm.createContext(sb);
-  vm.runInContext(['readSheetAsObjects', 'readEventsSince', 'normCellTs', 'lastCountedEvent', 'clockMarkKey_', 'clockLastWithMark_', 'clockMarkPut_', 'clockMarkRestore_', 'findRosterByKey', 'handleClock'].map(f => extract(code, f)).join('\n') + '\n' + rest, sb);
+  vm.runInContext(['readSheetAsObjects', 'readEventsSince', 'normCellTs', 'lastCountedEvent', 'clockMarkKey_', 'clockLastWithMark_', 'clockMarkPut_', 'clockMarkRestore_', 'empIdColText_', 'findRosterByKey', 'handleClock'].map(f => extract(code, f)).join('\n') + '\nvar EMPID_TEXT_DONE_ = {};\n' + rest, sb);
   const self = opts.self;
   sb.getSS = () => self;
   sb.nowTaipeiIso = () => iso(sb.__now);

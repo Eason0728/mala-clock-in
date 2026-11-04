@@ -787,6 +787,7 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
 
   // 這張沒算數（被擋）就把記號還原，不能讓它擋到同仁接著重按；寫入失敗也還原
   if (!isDuplicate && status.indexOf('rejected_') === 0) clockMarkRestore_(roster.emp_id, prevMark);
+  empIdColText_(eventsSheet);
   try { eventsSheet.appendRow([ts, roster.emp_id, body.type, lat, lng, distanceM, withinRange, deviceId, deviceMatch, status, accuracyM]); }
   catch (e) { if (!isDuplicate) clockMarkRestore_(roster.emp_id, prevMark); throw e; }
 
@@ -1290,6 +1291,22 @@ function rosterLockTextCols_(sheet) {
       const c = head.indexOf(h);
       if (c >= 0) sheet.getRange(1, c + 1, sheet.getMaxRows(), 1).setNumberFormat('@');
     });
+  } catch (e) { /* 鎖不上照常寫，只是回到原本行為 */ }
+}
+
+/* events／approved 的 emp_id 欄（第 2 欄）鎖文字（2026-11-04 夜間 QA #3）：純數字工號（'0007'）寫進去會被試算表轉成數字 7，
+   之後本月合計、mgr_day 都對不上這個人。每次寫入都設格式太貴 → 每張表每 6 小時只設一次（快取記號＋本次執行記憶）。
+   系統自己開的工號都帶英文字頭（E01／CF01），這條只防人手在名冊打純數字工號。 */
+var EMPID_TEXT_DONE_ = {};
+function empIdColText_(sheet) {
+  try {
+    const k = 'eidtxt:' + sheet.getSheetId();
+    if (EMPID_TEXT_DONE_[k]) return;
+    EMPID_TEXT_DONE_[k] = true;
+    const cache = CacheService.getScriptCache();
+    if (cache.get(k)) return;
+    sheet.getRange(1, 2, sheet.getMaxRows(), 1).setNumberFormat('@');
+    cache.put(k, '1', 21600);
   } catch (e) { /* 鎖不上照常寫，只是回到原本行為 */ }
 }
 
@@ -1850,6 +1867,7 @@ function handleMgrApprove(body) {
 
   const approvedSheet = ss.getSheetByName('approved');
   if (!approvedSheet) return { ok: false, error: 'approved_sheet_missing' };
+  empIdColText_(approvedSheet);
   approvedSheet.appendRow([date, body.emp_id, roster.name, periodsStr, approvedHours, statusText, actor, enteredAt]);
   replaceLeaveRows(ss, date, String(roster.name), leaves);
 
@@ -2836,6 +2854,7 @@ function recheckPendingApprovalStatuses() {
       if (r.skip) return;
       if (r.newStatusText === statusText) return; // 還是沒打卡，維持原樣，下次再檢查
 
+      empIdColText_(approvedSheet);
       approvedSheet.appendRow([
         date, empId, r.name, rec.periods, rec.approved_hours,
         r.newStatusText, String(rec.manager_name || '') + RECHECK_MARK, nowTaipeiIso(),
@@ -2938,6 +2957,7 @@ function backfillMissingPunchGroups(fromDate, toDate, apply) {
       hits.push({ date: date, emp_id: empId, name: r.name, from: statusText, to: r.newStatusText,
                   periods: String(rec.periods || ''), hours: rec.approved_hours });
       if (apply === true) {
+        empIdColText_(approvedSheet);
         approvedSheet.appendRow([
           date, empId, r.name, rec.periods, rec.approved_hours,
           r.newStatusText, String(rec.manager_name || '') + RECHECK_MARK, nowTaipeiIso(),
