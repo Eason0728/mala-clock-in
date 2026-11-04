@@ -1085,12 +1085,11 @@ function lineHubHelpCard_(key) {
     buttons: [{ label: '其他狀況', text: '打卡求助' }] });
 }
 
-/** 電子佈告欄入口。選單「佈告欄」若仍是傳文字，機器人回這張卡片給連結（2026-10-09 選單改版）。 */
-var LINE_HUB_BULLETIN_URL = 'https://dzy-bulletin.github.io/';
+/** 打字「佈告欄」時回這張卡片給連結。2026-11-05 Eason：改連管理系統公告專區（與圖文選單、打卡卡片同一個地方）。 */
 function lineHubBulletinCard_() {
-  return lineHubCard_({ title: '📌 電子佈告欄', tone: 'info', alt: '電子佈告欄',
-    blocks: [{ type: 'text', text: '公司公告都在這裡，看完要手寫簽名確認已讀。' }],
-    buttons: [{ label: '打開佈告欄', uri: LINE_HUB_BULLETIN_URL }] });
+  return lineHubCard_({ title: '📌 公告專區', tone: 'info', alt: '公告專區',
+    blocks: [{ type: 'text', text: '公司公告在管理系統的公告專區，看完要手寫簽名確認已讀。' }],
+    buttons: [{ label: '打開公告專區', uri: LINE_HUB_BULLETIN_DZY_URL }] });
 }
 
 /** 「重設密碼」（2026-10-25，LINE 登入管理系統）：回一張按鈕卡片，按鈕開 LIFF（?m=reset）。
