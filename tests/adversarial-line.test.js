@@ -145,7 +145,7 @@ function make(opts) {
   const codeFns = ['readSheetAsObjects', 'readEventsSince', 'normCellTs', 'normCellDate', 'lastCountedEvent', 'findRosterByKey', 'findRosterByEmpId', 'handleClock', 'haversineM',
                    'findManagerByKey', 'actingName_', 'nowTaipeiIso', 'todayTaipeiStr', 'tsMs', 'tsDateStr', 'tsHm', 'approvedHoursOfShift', 'pairShifts', 'addDaysStr', 'hmToMs',
                    'dayPunchSegments', 'dayReferenceIncomplete', 'normShiftTime', 'ensureRosterHeaders', 'setRosterCell', 'activeNotices', 'noticeSheet', 'ensureNoticeHeaders',
-                   'normNoticeEndsOn', 'noticeAuth', 'handleMgrAddNotice', 'checkAdmin', 'genKey', 'buildLatestApprovedMap', 'handleMgrAddEmployeeUnlocked_', 'nextEmpId', 'sheetSafeText_', 'clockMarkKey_', 'clockLastWithMark_', 'clockMarkPut_', 'clockMarkRestore_', 'rosterLockTextCols_'];
+                   'normNoticeEndsOn', 'noticeAuth', 'handleMgrAddNotice', 'checkAdmin', 'genKey', 'buildLatestApprovedMap', 'handleMgrAddEmployeeUnlocked_', 'nextEmpId', 'sheetSafeText_', 'clockMarkKey_', 'clockLastWithMark_', 'clockMarkPut_', 'clockMarkRestore_', 'rosterLockTextCols_', 'empIdColText_'];
   const codeConsts = ['EVENTS_HEADERS', 'ROSTER_HEADERS', 'SAME_TYPE_LOCK_MIN', 'ACCURACY_CREDIT_CAP_M', 'LOW_ACCURACY_M', 'MONTHLY_PAIR_WINDOW_HOURS', 'REJECTED_IN_BREAK_MIN',
                       'REJECTED_IN_MISTAP_SEC', 'LEAVE_TYPES', 'NOTICE_HEADERS', 'NOTICE_MAX_SHOW', 'NOTICE_MAX_LEN', 'APPROVED_HEADERS', 'MANAGERS_HEADERS', 'TRIP_NOTE'];
   const parts = [codeConsts.map((c) => extractConst(SRC.code, c)).join('\n'), codeFns.map((f) => extract(SRC.code, f)).join('\n'), SRC.liff, SRC.rest, SRC.req];

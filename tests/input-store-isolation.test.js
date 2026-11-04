@@ -15,7 +15,7 @@ const P = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Payroll.gs'
 
 function makeCtx(seedRows) {
   const sb = { console, Logger: { log() {} },
-    SpreadsheetApp: { openById: () => null, getActive: () => null },
+    SpreadsheetApp: { flush: () => {}, openById: () => null, getActive: () => null },
     Utilities: { formatDate: () => '2026-08-24T12:00:00+08:00' },
     PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty() {} }) },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) } };

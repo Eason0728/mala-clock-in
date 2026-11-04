@@ -33,7 +33,7 @@ const CLOCK = {
 function ctx(inputRows) {
   const sb = {
     console, Logger: { log() {} },
-    SpreadsheetApp: { getActive: () => null, openById: () => null },
+    SpreadsheetApp: { flush: () => {}, getActive: () => null, openById: () => null },
     Utilities: { formatDate: (d) => { const p = (n) => ('0' + n).slice(-2); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); } },
     PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty() {} }) },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },

@@ -158,32 +158,56 @@ ok('已鎖定（final）的月份：payroll_calc 帶 force:true 不應跳過鎖�
   const r = m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', force: true });
   assert.strictEqual(r.ok, false, 'force 跳過鎖定：' + JSON.stringify(r).slice(0, 120));
 });
-KNOWN('兩店同時重算（各自先讀全表再整批覆寫）：先寫入那一店的 run 不應被後寫的洗掉', () => {
+ok('兩店同時重算：光復算完、正要寫回時央廚整段跑完 → 光復寫回後，兩店的 run／item 都要在（2026-11-04 修：寫回段加鎖、鎖內重讀）', () => {
   const { m, e } = payFixture();
   const f = hire(m, '測試乙');
   m.sb.handlePayrollMasterSet({ admin_key: 'ADM', store: 'MDCF', master: [{ emp_id: f.emp_id, name: '測試乙', is_full_time: 'true', base: 30000, ot_rate: 150, attend_cap: 2000, hire_date: '2025-01-01', active: 'true', store: 'MDCF' }] });
-  // 交錯：A 店讀完 run 表（快取）→ B 店讀完 → A 寫 → B 寫
-  const sb = m.sb;
-  const real = sb.payReplaceAll, queue = [];
-  sb.payReplaceAll = (k, rows) => { queue.push([k, rows]); };   // 先排隊，模擬兩個請求各自讀到的舊快照
+  const sb = m.sb, realW = sb.payWriteLocked_;
+  let b = null;
+  // 光復第一次要進寫回段時，先讓央廚整段跑完（光復手上的快取仍是央廚寫入前的舊整張）
+  sb.payWriteLocked_ = function (kinds, fn) {
+    if (!b) { sb.payWriteLocked_ = realW; b = sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'MDCF' }); }
+    return realW(kinds, fn);
+  };
   const a = sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' });
-  const qa = queue.splice(0);
-  sb.PAY_READ_CACHE = {}; vm.runInContext('PAY_READ_CACHE = {}', sb);
-  const b = sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'MDCF' });
-  const qb = queue.splice(0);
-  assert.ok(a.ok && b.ok, JSON.stringify([a.ok, b.ok]));
-  qa.forEach((x) => real(x[0], x[1])); qb.forEach((x) => real(x[0], x[1]));
+  assert.ok(a.ok && b && b.ok, JSON.stringify([a.ok, b && b.ok]));
   vm.runInContext('PAY_READ_CACHE = {}', sb);
-  const runs = m.sb.payRead('run').map((r) => r.store + ':' + r.emp_id);
-  assert.ok(runs.indexOf('SSLGF:' + e.emp_id) >= 0, '光復的 run 被央廚洗掉：' + JSON.stringify(runs));
-  assert.ok(runs.indexOf('MDCF:' + f.emp_id) >= 0, JSON.stringify(runs));
+  const runs = sb.payRead('run').map((r) => r.store + ':' + r.emp_id);
+  assert.ok(runs.indexOf('SSLGF:' + e.emp_id) >= 0, JSON.stringify(runs));
+  assert.ok(runs.indexOf('MDCF:' + f.emp_id) >= 0, '央廚的 run 被光復洗掉：' + JSON.stringify(runs));
+  const items = sb.payRead('item').map((r) => r.store);
+  assert.ok(items.indexOf('MDCF') >= 0 && items.indexOf('SSLGF') >= 0, '兩店 item 都要在');
+});
+ok('重算途中別台按了鎖定 → 這次重算不寫入、月份維持定案', () => {
+  const { m } = payFixture();
+  const sb = m.sb, realW = sb.payWriteLocked_;
+  assert.ok(sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' }).ok);
+  let fin = null;
+  sb.payWriteLocked_ = function (kinds, fn) {
+    if (!fin) { sb.payWriteLocked_ = realW; fin = sb.handlePayrollFinalize({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', lock: true }); }
+    return realW(kinds, fn);
+  };
+  const r = sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' });
+  assert.ok(fin && fin.ok, JSON.stringify(fin));
+  assert.strictEqual(r.error, 'locked', JSON.stringify(r).slice(0, 120));
+  vm.runInContext('PAY_READ_CACHE = {}', sb);
+  assert.ok(sb.payRead('run').filter((x) => x.store === 'SSLGF').every((x) => String(x.status) === 'final'), '應維持 final');
+});
+ok('寫回段等不到鎖 → 回 busy，表不動', () => {
+  const { m } = payFixture();
+  const sb = m.sb;
+  vm.runInContext('LockService = { getScriptLock: () => ({ tryLock: () => false, releaseLock() {} }) }', sb);
+  const r = sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' });
+  assert.strictEqual(r.error, 'busy', JSON.stringify(r).slice(0, 120));
+  vm.runInContext('PAY_READ_CACHE = {}', sb);
+  assert.strictEqual(sb.payRead('run').length, 0);
 });
 
 /* ════════════════════════════════════════════════════════════════════════
    2. 打卡核心／值班核定 Code.gs
    ════════════════════════════════════════════════════════════════════════ */
 console.log('\n━━ 2. 打卡核心／值班核定 Code.gs ━━');
-KNOWN("純數字工號 '0007'（sync_roster 同步進來）：打卡 events／核定 approved 的 emp_id 應維持文字，同仁頁本月合計才對得到", () => {
+ok("純數字工號 '0007'（sync_roster 同步進來）：打卡 events／核定 approved 的 emp_id 應維持文字，同仁頁本月合計才對得到", () => {
   const m = make({ now: T('2026-11-04T09:00:00') });
   assert.ok(m.sb.handleSyncRoster({ admin_key: 'ADM', employees: [{ emp_id: '0007', name: '測試七', active: true }] }).ok);
   const key = m.rows('roster')[0].key;
