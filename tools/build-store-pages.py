@@ -53,6 +53,11 @@ STORES = {
            'clock_home': '瑞光打卡', 'mgr_home': '瑞光值班',
            'favicon': 'favicon-32-mzt.png',
            'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
+    # 墨竹亭台中文心店（2026-11-04 開）。同金山不設中午休息時段。
+    'mztwx': {'name': '墨竹亭 台中文心店', 'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
+           'clock_home': '文心打卡', 'mgr_home': '文心值班',
+           'favicon': 'favicon-32-mzt.png',
+           'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
 }
 PAGES = [
     ('clock.html',   'clock',   '員工打卡',     'clock_icon', 'clock_home', 'clock_bg'),

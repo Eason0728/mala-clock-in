@@ -66,6 +66,17 @@
     "relay": false
   },
   {
+    "code": "mztwx",
+    "name": "墨竹亭 台中文心",
+    "page": "clock-mztwx.html",
+    "gas_dir": "mztwx-clock-in",
+    "api": "https://script.google.com/macros/s/AKfycbzRdL_u2jRkMkcY_ExpXc0mLw1MLbCOiIvf7uReG8T4Qhbk60SX-kPbyj7BxV-JXe0F/exec",
+    "lat": 24.174834951429464,
+    "lng": 120.68876140822387,
+    "radius_m": 50,
+    "relay": false
+  },
+  {
     "code": "hq",
     "name": "鼎兆元 總部",
     "page": "clock-hq.html",

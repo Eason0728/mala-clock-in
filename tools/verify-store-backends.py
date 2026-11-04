@@ -15,7 +15,7 @@
 import pathlib, re, sys
 
 GAS = pathlib.Path.home() / 'mala-gas'
-STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztgf-clock-in', 'mztlzl-clock-in', 'mztmc-clock-in', 'mztrg-clock-in']
+STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztgf-clock-in', 'mztlzl-clock-in', 'mztmc-clock-in', 'mztrg-clock-in', 'mztwx-clock-in']
 
 # 每家店都必須有的 action（doPost 路由）
 ACTIONS = ['clock', 'whoami', 'sync_roster', 'get_roster', 'get_events', 'approve_device',
@@ -58,6 +58,7 @@ STORE_BREAK = {
     'mztlzl-clock-in': ('', ''),           # 墨竹亭六張犁：2026-10-09 同金山不設
     'mztmc-clock-in': ('', ''),            # 墨竹亭台中美村：2026-10-29 同金山不設
     'mztrg-clock-in': ('', ''),            # 墨竹亭內湖瑞光：2026-11-01 同金山不設
+    'mztwx-clock-in': ('', ''),            # 墨竹亭台中文心：2026-11-04 同金山不設
 }
 
 import json
