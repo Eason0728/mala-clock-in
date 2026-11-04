@@ -122,6 +122,14 @@ ok('卡片：段落、最多 3 則、還有 N 則、按鈕；段落在問候語�
   assert.deepStrictEqual(JSON.parse(JSON.stringify(btn)), [{ type: 'uri', label: '請到公告專區閱讀並簽名', uri: 'https://dzy.mozhuting.com/#/bulletin' }]);
 });
 
+ok('打字「佈告欄」的卡片連到管理系統公告專區', () => {
+  const { sb } = make();
+  const card = sb.lineHubBulletinCard_();
+  assert.ok(texts(card).includes('📌 公告專區'));
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(buttons(card))), [{ type: 'uri', label: '打開公告專區', uri: 'https://dzy.mozhuting.com/#/bulletin' }]);
+  assert.ok(!/dzy-bulletin\.github\.io/.test(JSON.stringify(card)));
+});
+
 ok('卡片：n 等於列出的則數時不寫「還有」', () => {
   const { sb } = make();
   const t = texts(sb.lineHubPunchCard_(Object.assign({}, PUNCH, { bulletin: { n: 1, titles: ['只有一則'] } })));
