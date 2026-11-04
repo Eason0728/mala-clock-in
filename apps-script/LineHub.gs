@@ -617,9 +617,9 @@ function lineHubPayPickAny_(userId) {
 /** 本月補休帳（全部門市）：{allowed, ot_h, used_h, balance_h, ym}；找不到人或沒有薪資主檔＝allowed:false。 */
 function lineHubCompFor_(userId) {
   var pick = lineHubPayPickAny_(userId);
-  if (!pick) return { allowed: false };
+  if (!pick) return { allowed: false, known: false };   // known:false＝薪資主檔查不到這個人（還沒建檔），不知道是不是正職
   var m = payRead('master').filter(function (x) { return String(x.emp_id) === String(pick.me.emp_id); })[0];
-  if (!m) return { allowed: false };
+  if (!m) return { allowed: false, known: false };
   return payCompMonthBook(payCompToday().slice(0, 7)).forEmp(m, payStore(m.store || pick.store));
 }
 function lineHubPayPickFresh_(userId, any) {
@@ -1382,19 +1382,22 @@ function handleLineHubReqInit_(body) {
   } catch (e) { names = []; }
   if (!names.length) names = LEAVE_TYPES.slice();
   names = names.filter(function (n) { return n && n !== '出差' && LEAVE_TYPES.indexOf(n) >= 0; });
-  var quota = [], comp = { allowed: false, ot_h: 0, used_h: 0, balance_h: 0 };
+  var quota = [], comp = { allowed: false, known: false, ot_h: 0, used_h: 0, balance_h: 0 };
   try {
     var j = lineHubPayslipFor_(userId);   // 假別額度只開放 LINE_HUB_PAY_STORES
     quota = (j && j.ok && j.leave_quota) || [];
   } catch (e) { quota = []; }
-  /* 補休（2026-11-01 改每月加減結算、開放全部門市）：正職就有「補休」假別，不看餘額（可以先休後補）；
-     申請頁顯示本月補休帳＝本月核准加班 − 本月補休（含審核中），可以是負的。 */
+  /* 補休（2026-11-01 改每月加減結算、開放全部門市）：不看餘額（可以先休後補）；
+     申請頁顯示本月補休帳＝本月核准加班 − 本月補休（含審核中），可以是負的。
+     2026-11-04 Eason：所有同仁的假別都先列「補休」（薪資主檔晚點由會計建檔）。主檔查得到且是計時＝known:true、allowed:false（申請頁擋、送出也擋）；
+     主檔查不到或算不出來＝known:false（照樣可以送出，由主管審；沒有補休帳可顯示）。 */
   try {
     var c = lineHubCompFor_(userId);
-    if (c && c.allowed) comp = { allowed: true, ot_h: Number(c.ot_h) || 0, used_h: Number(c.used_h) || 0, balance_h: Number(c.balance_h) || 0, ym: String(c.ym || '') };
-  } catch (e) { /* 算不出來就不開補休，交給主管 */ }
+    if (c && c.allowed) comp = { allowed: true, known: true, ot_h: Number(c.ot_h) || 0, used_h: Number(c.used_h) || 0, balance_h: Number(c.balance_h) || 0, ym: String(c.ym || '') };
+    else if (c && c.known !== false) comp.known = true;
+  } catch (e) { /* 算不出來＝known:false，照樣列補休，交給主管 */ }
   var common = LINE_HUB_COMMON_LEAVES.filter(function (n) { return names.indexOf(n) >= 0; });
-  if (comp.allowed) common.push('補休');   // 與 Payroll.gs PAY_COMP_NAME、Requests.gs REQ_COMP_LEAVE_ 同一個字
+  common.push('補休');   // 與 Payroll.gs PAY_COMP_NAME、Requests.gs REQ_COMP_LEAVE_ 同一個字；2026-11-04 起一律列出
   var punchStore = null;
   if (mine.length > 1) { try { punchStore = lineHubLastPunchStore_(mine); } catch (e) { punchStore = null; } }   // 只綁一家就不用讀
   return { ok: true, stores: stores, punch_store: punchStore, comp: comp,

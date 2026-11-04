@@ -554,10 +554,10 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)
             ok('補休：先休後補——欠的時候請 8 小時也送得出去', '補休 整天 8 小時' in p.inner_text('#reqView'), p.inner_text('#reqView')[:200])
             p.close()
-            # 計時同仁（光復 mock_comp allowed＝false）：沒有補休假別、加班分頁沒有補休說明
+            # 計時同仁（光復 mock_comp known＝true、allowed＝false）：假別照樣列「補休」（2026-11-04），但選了會說只有正職、送出擋下；加班分頁沒有補休說明
             fg = os.path.join(ROOT, 'mock', 'mock_data.json')
             dg = json.load(open(fg, encoding='utf-8'))
-            dg['mock_comp'] = {'allowed': False, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}
+            dg['mock_comp'] = {'allowed': False, 'known': True, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}
             json.dump(dg, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
             p = open_page(ctx, url(hq, in_client=True, extra='&view=req&tab=ot'))
             p.set_viewport_size({'width': 375, 'height': 812})
@@ -565,7 +565,29 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             ok('補休：計時同仁的加班分頁沒有補休說明', '先抵當月請的補休' not in p.inner_text('#reqView'))
             p.click('#reqView .rq-tabs button[data-tab=leave]')
             p.wait_for_selector('#reqView .rq-chip', timeout=5000)
-            ok('補休：計時同仁沒有「補休」假別', p.locator('#reqView .rq-chip:has-text("補休")').count() == 0 and p.locator('#reqView .rq-comp-bal').count() == 0)
+            ok('補休：計時同仁也看得到「補休」假別、沒有本月補休帳', p.locator('#reqView .rq-chip:has-text("補休")').count() == 1 and p.locator('#reqView .rq-comp-bal').count() == 0)
+            p.click('#reqView .rq-chips >> nth=0 >> .rq-chip:has-text("補休")')
+            p.wait_for_selector('#reqView .rq-chip.on:has-text("補休")', timeout=3000)
+            ok('補休：計時同仁選了補休 → 說明「補休只有正職可以請」', '補休只有正職可以請。' in p.inner_text('#reqView'))
+            p.click('#reqView button.primary')
+            p.wait_for_function('document.getElementById("reqView").textContent.indexOf("補休只有正職可以請") >= 0 && document.getElementById("reqView").textContent.indexOf("✓ 已送出") < 0', timeout=5000)
+            ok('補休：計時同仁送出被擋（沒有送出）', '✓ 已送出' not in p.inner_text('#reqView'))
+            p.close()
+            # 薪資主檔還沒建的同仁（known＝false）：看得到補休、選了提示補休帳要等資料建好，照樣送得出去
+            dg = json.load(open(fg, encoding='utf-8'))
+            dg['mock_comp'] = {'allowed': False, 'known': False, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}
+            json.dump(dg, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
+            p = open_page(ctx, url(hq, in_client=True, extra='&view=req&tab=leave'))
+            p.set_viewport_size({'width': 375, 'height': 812})
+            p.wait_for_selector('#reqView .rq-chip', timeout=10000)
+            pick_date(p, (datetime.now(tz) + timedelta(days=6)).strftime('%Y-%m-%d'))   # 別跟後面病假（今天）、前面補休（+5 天）撞同一天
+            p.click('#reqView .rq-chips >> nth=0 >> .rq-chip:has-text("補休")')
+            p.wait_for_selector('#reqView .rq-chip.on:has-text("補休")', timeout=3000)
+            ok('補休：主檔還沒建 → 看得到補休、提示「本月補休帳要等薪資資料建好才看得到」', '本月補休帳要等薪資資料建好才看得到' in p.inner_text('#reqView') and p.locator('#reqView .rq-comp-bal').count() == 0)
+            p.click('#reqView button.primary')
+            p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)
+            ok('補休：主檔還沒建也送得出去', '補休 整天 8 小時' in p.inner_text('#reqView'), p.inner_text('#reqView')[:200])
+            p.screenshot(path=os.path.join(SHOTS, '補休_主檔未建.jpg'), type='jpeg', quality=80)
             p.close()
             phase_sched(ctx)
             phase_leave_proof(ctx, (HQ['lat'], HQ['lng']))

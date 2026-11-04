@@ -633,8 +633,9 @@ def register(ns):
         names = [t for t in LEAVE_TYPES if t not in ("出差", "補休")]
         # 補休（2026-11-01 改每月加減結算）：光復 mock 資料的 mock_comp 可改（e2e 用來切正職／計時）；
         # 預設正職本月加班 2、補休 4 → 欠 2 小時（負的照樣能請：先休後補）
-        comp = data.get("mock_comp") or {"allowed": True, "ot_h": 2, "used_h": 4, "balance_h": -2, "ym": date.today().strftime("%Y-%m")}
-        common = [n for n in COMMON if n in names] + (["補休"] if comp.get("allowed") else [])
+        comp = data.get("mock_comp") or {"allowed": True, "known": True, "ot_h": 2, "used_h": 4, "balance_h": -2, "ym": date.today().strftime("%Y-%m")}
+        # 2026-11-04 Eason：全部同仁的假別都先列「補休」（同 LineHub.gs）；計時＝known:true、allowed:false 由申請頁擋，主檔還沒建＝known:false 照樣能送
+        common = [n for n in COMMON if n in names] + ["補休"]
         # 假別額度：光復 mock 資料的 mock_quota 可改（e2e 資料帶入用）；沒有就用固定樣本
         quota = data.get("mock_quota") or [{"name": "特休假", "cap_days": 7, "cap_h": 56, "remain_h": 40, "used_h": 16, "basis": "tenure"},
                                            {"name": "事假", "cap_days": 14, "cap_h": 112, "remain_h": 112, "used_h": 0, "basis": "calendar"}]
