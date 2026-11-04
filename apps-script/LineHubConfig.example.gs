@@ -14,6 +14,7 @@ var LINE_HUB_STORES_CONFIG = [
   { code: 'mztlzl', name: '墨竹亭 台北六張犁', ss_id: 'PASTE_墨竹亭六張犁試算表ID', api: 'PASTE_墨竹亭六張犁後端網址', lat: 0, lng: 0, radius_m: 50 },
   { code: 'mztmc', name: '墨竹亭 台中美村', ss_id: 'PASTE_墨竹亭美村試算表ID', api: 'PASTE_墨竹亭美村後端網址', lat: 0, lng: 0, radius_m: 50 },
   { code: 'mztrg', name: '墨竹亭 內湖瑞光', ss_id: 'PASTE_墨竹亭瑞光試算表ID', api: 'PASTE_墨竹亭瑞光後端網址', lat: 0, lng: 0, radius_m: 50 },
+  { code: 'mztwx', name: '墨竹亭 台中文心', ss_id: 'PASTE_墨竹亭文心試算表ID', api: 'PASTE_墨竹亭文心後端網址', lat: 0, lng: 0, radius_m: 50 },
   { code: 'hq',    name: '鼎兆元 總部',     ss_id: 'PASTE_總部試算表ID',     api: 'PASTE_總部後端網址',       lat: 0, lng: 0, radius_m: 50 },
   { code: 'cf',    name: '鼎兆元 中央廚房', ss_id: 'PASTE_央廚試算表ID',     api: 'PASTE_央廚後端網址',       lat: 0, lng: 0, radius_m: 50 },
 ];
