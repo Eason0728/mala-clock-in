@@ -258,7 +258,7 @@
     p.appendChild(field(mustProof ? '證明文件（' + lv.type + '一定要附）' : '附件（選填，病假證明、訃聞等）', fi,
       [h('div', { class: mustProof ? 'rq-proof-note' : 'rq-muted', id: 'rqProofNote',
                   text: mustProof ? '可以拍照或選照片／PDF。手上還沒有證明也能先送出，但主管要等你在「我的申請」補上才能核准。'
-                                  : '照片或 PDF，只有值班主管看得到' })]));
+                                  : '照片或 PDF，只有審核的主管看得到' })]));
     var out = h('div', {});
     p.appendChild(submitBtn(out, function () {
       if (!lv.type) return Promise.reject(new Error('請選假別'));
@@ -270,7 +270,7 @@
       return withAttach(lv.file).then(function (aid) { if (aid) body.attach_id = aid; return body; });
     }, function () { lv = { date: '', type: '', mode: 'day', hours: '8', start: '', end: '', reason: '', file: null }; }));
     p.appendChild(out);
-    p.appendChild(h('div', { class: 'rq-note', text: '送出後由值班主管審核，結果在「我的申請」，下次打卡時也會告訴你。' }));
+    p.appendChild(h('div', { class: 'rq-note', text: '送出後由你的主管審核（門市同仁是本店店長），結果在「我的申請」，下次打卡時也會告訴你。' }));
   }
 
   /* 加班（不分事前事後） */
@@ -326,7 +326,7 @@
       return Promise.resolve(body);
     }, function () { tp = { date: '', mode: 'day', hours: '8', start: '', end: '', place: '', why: '' }; }));
     p.appendChild(out);
-    p.appendChild(h('div', { class: 'rq-note', text: '出差時數會算進當天工時，由值班主管核定。' }));
+    p.appendChild(h('div', { class: 'rq-note', text: '出差時數會算進當天工時，由你的主管審核。' }));
   }
 
   /* 忘打卡 */
@@ -374,7 +374,7 @@
     }).join('、') : '沒有任何打卡';
     p.appendChild(h('div', { class: 'rq-rec', text: '當天紀錄：' + rec }));
     var opts = day.missing.options;
-    if (!opts.length) { p.appendChild(msgBox('這天的上班卡和下班卡都有打成功，不用補登。時間記錯請直接跟值班主管說。', 'err')); return; }
+    if (!opts.length) { p.appendChild(msgBox('這天的上班卡和下班卡都有打成功，不用補登。時間記錯請直接跟打卡門市的店長說。', 'err')); return; }
     var LBL = { in: '上班卡', out: '下班卡', both: '上班和下班都沒打', break: '中間休息沒打卡' };
     if (opts.indexOf(st.missType) < 0) st.missType = opts[0];
     if (opts.length > 1) p.appendChild(field('缺哪張卡', chips(opts.map(function (o) { return LBL[o]; }), LBL[st.missType], function (v) {
@@ -459,7 +459,7 @@
         return E.post(E.storeApi(storeDef()), { action: 'req_attach', id_token: liff.getIDToken(), id: r.id, attach_id: aid });
       }).then(function (x) {
         st.busy = false; btn.disabled = false;
-        if (x && x.ok) return loadInfo().then(function () { render(); $root.insertBefore(msgBox('✓ 證明已補上，等值班主管審核', 'ok'), $root.children[2]); });
+        if (x && x.ok) return loadInfo().then(function () { render(); $root.insertBefore(msgBox('✓ 證明已補上，等主管審核', 'ok'), $root.children[2]); });
         msg.innerHTML = ''; msg.appendChild(msgBox((x && x.message) || '補附沒有成功，請再試一次', 'err'));
       }, function (e) {
         st.busy = false; btn.disabled = false; msg.innerHTML = '';
@@ -492,7 +492,7 @@
         if (!r || !r.ok) { out.appendChild(msgBox((r && r.message) || '送出沒有成功，請再試一次', 'err')); return; }
         reset();
         tellChat('申請已送出：' + r.summary);
-        return loadInfo().then(function () { st.tab = 'mine'; render(); $root.insertBefore(msgBox('✓ 已送出：' + r.summary + '\n等值班主管審核', 'ok'), $root.children[2]); });
+        return loadInfo().then(function () { st.tab = 'mine'; render(); $root.insertBefore(msgBox('✓ 已送出：' + r.summary + (r.request && r.request.kind === 'miss' ? '\n等打卡門市的店長審核' : '\n等主管審核'), 'ok'), $root.children[2]); });
       }, function (e) {
         st.busy = false; btn.disabled = false; out.innerHTML = '';
         out.appendChild(msgBox(e && e.message && !/fetch|network|abort/i.test(e.message) ? e.message : '連線失敗：不確定有沒有送出，請先看「我的申請」再決定要不要重送', 'err'));

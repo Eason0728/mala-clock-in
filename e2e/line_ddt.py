@@ -641,7 +641,7 @@ def phase_punch(ctx, gen):
             wait_req(page, '✓ 已送出')
             row = {'kind': 'ot', 'date': oh['date'], 'start': oh['start'], 'end': oh['end'], 'hours': D.span_hours(oh['start'], oh['end']), 'reason': reason}
             ok(f'{label}：加班申請送出 → 摘要逐字、跳到我的申請、第一筆標題與副標逐字',
-               page.inner_text('#reqView .rq-box.ok') == '✓ 已送出：' + D.req_summary(row) + '\n等值班主管審核'
+               page.inner_text('#reqView .rq-box.ok') == '✓ 已送出：' + D.req_summary(row) + '\n等主管審核'
                and page.inner_text('#reqView .rq-tabs button.on') == '我的申請'
                and page.locator('#reqView .rq-item').first.locator('.rq-t span').first.inner_text() == D.mine_title(row)
                and page.locator('#reqView .rq-item').first.locator('.rq-s').first.inner_text() == D.mine_sub(row)
@@ -910,7 +910,7 @@ def submit_ok(page, row, label):
         err = page.inner_text('#reqView .rq-box.err') if page.locator('#reqView .rq-box.err').count() else '（沒有錯誤框）'
         raise AssertionError(f'{label}：送出沒有成功：{err}')
     got = first_item(page)
-    ok(f'{label}：送出 → 「✓ 已送出：摘要」逐字、我的申請第一筆標題／副標／審核中', page.inner_text('#reqView .rq-box.ok') == '✓ 已送出：' + D.req_summary(row) + '\n等值班主管審核'
+    ok(f'{label}：送出 → 「✓ 已送出：摘要」逐字、我的申請第一筆標題／副標／審核中', page.inner_text('#reqView .rq-box.ok') == '✓ 已送出：' + D.req_summary(row) + ('\n等打卡門市的店長審核' if row.get('kind') == 'miss' else '\n等主管審核')
        and got == {'title': D.mine_title(row), 'pill': '審核中', 'sub': D.mine_sub(row)}, (got, D.mine_title(row), D.mine_sub(row), page.inner_text('#reqView .rq-box.ok')))
 
 
@@ -1030,9 +1030,9 @@ def phase_req(ctx, gen):
     wait_req(page, '✓ 證明已補上')
     c = calls(page)
     up = [x for x in c if x['action'] == 'line_hub_attach_put']; at = [x for x in c if x['action'] == 'req_attach']
-    ok('證明：補附先傳光復 line_hub_attach_put、再打那家店 req_attach；畫面「✓ 證明已補上，等值班主管審核」', up and up[-1]['url'].endswith('/api')
+    ok('證明：補附先傳光復 line_hub_attach_put、再打那家店 req_attach；畫面「✓ 證明已補上，等主管審核」', up and up[-1]['url'].endswith('/api')
        and at and at[-1]['url'].endswith('/api' + ('/' + A['code'] if A['code'] else '')) and up[-1]['t'] <= at[-1]['t']
-       and page.inner_text('#reqView .rq-box.ok') == '✓ 證明已補上，等值班主管審核', c[-3:])
+       and page.inner_text('#reqView .rq-box.ok') == '✓ 證明已補上，等主管審核', c[-3:])
     item = page.locator('#reqView .rq-item').filter(has_text=proof).first
     ok('證明：補附後「已附證明（要換一張可以重新上傳）」＋「重新上傳證明」', '已附證明（要換一張可以重新上傳）' in item.inner_text() and item.locator('.rq-proof-btn').inner_text() == '重新上傳證明', item.inner_text())
     a1 = next(x for x in read_store(A['code'])['requests'] if x['id'] == rid)
