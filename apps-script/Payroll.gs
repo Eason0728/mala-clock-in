@@ -2639,6 +2639,40 @@ function handlePayrollAttachGet(body) {
   return { ok: true, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
 }
 
+/* ═══════════════════ 操作紀錄（payroll_audit 唯讀，2026-11-04） ═══════════════════
+ * 管理系統薪酬管理「操作紀錄」分頁讀這支：定案／解鎖、假別設定、假日同步等寫進 payroll_audit 的列，新到舊，最多 1000 筆。
+ * body：ym（選填，YYYY-MM；只回該月份的列）、store（選填）、limit（選填，1～1000）。
+ * 範圍（body.scope 是門市陣列）：只回 store 在負責範圍內的列；store 空白的「全域列」（假日同步、集團假別設定等）只有系統管理者／舊路看得到。
+ * operator 原樣回（管理系統代轉時由 mini 覆寫成「姓名（帳號）（管理系統）」）。純讀、不寫任何東西。 */
+const PAY_OPLOG_MAX = 1000;
+function handlePayrollAuditGet(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = String(body.ym == null ? '' : body.ym).trim();
+  if (ym && !/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  const sc = payScopeOf_(body), scoped = Array.isArray(sc);
+  const rawSt = String(body.store == null ? '' : body.store).trim();
+  const stF = rawSt ? payScopeNorm_(rawSt) : '';
+  let limit = Number(body.limit);
+  if (!isFinite(limit) || limit < 1) limit = PAY_OPLOG_MAX;
+  limit = Math.min(Math.floor(limit), PAY_OPLOG_MAX);
+  ensurePayrollSheets();
+  const out = [];
+  payRead('audit').forEach(function (r, i) {
+    const rs = String(r.store == null ? '' : r.store).trim().toUpperCase();
+    if (scoped && (!rs || sc.indexOf(rs) < 0)) return;
+    if (stF && rs !== stF) return;
+    const rym = String(r.ym == null ? '' : r.ym).trim();
+    if (ym && rym !== ym) return;
+    out.push({ ts: String(normCellTs(r.ts) || ''), ym: rym, action: String(r.action == null ? '' : r.action),
+               operator: String(r.operator == null ? '' : r.operator), reason: String(r.reason == null ? '' : r.reason),
+               store: rs, __i: i });
+  });
+  out.sort(function (a, b) { return a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : b.__i - a.__i; });
+  const total = out.length;
+  const items = out.slice(0, limit).map(function (x) { delete x.__i; return x; });
+  return { ok: true, items: items, total: total, truncated: total > items.length };
+}
+
 /* ═══════════════════ 門市表 ═══════════════════ */
 
 function handlePayrollStoreGet(body) {
@@ -3309,6 +3343,8 @@ function payScopeGuard_(action, body) {
   if (action === 'payroll_store_get') return null;
   const st = payScopeNorm_(body.store);
   const inL = function (s) { return sc.indexOf(s) >= 0; };
+  /* 操作紀錄（唯讀）：沒帶 store＝由 handler 只留負責門市的列；帶了就要在負責範圍內 */
+  if (action === 'payroll_audit_get') return String(body.store == null ? '' : body.store).trim() && !inL(st) ? payScopeDeny_('門市 ' + st + ' 不在負責範圍') : null;
   if (action === 'payroll_master_get' && sc.length === 0) return null;   // 空名單：回空殼（見 trim）
   if (action === 'payroll_config_set' && !String(body.store || '').trim()) return payScopeDeny_('集團預設參數限系統管理者');
   if (action === 'payroll_leave_type_set' && !String(body.store || '').trim()) return payScopeDeny_('集團共用假別限系統管理者');
@@ -3378,7 +3414,7 @@ function payScopeWrap_(handlers) {
       if (deny) return deny;
       /* 有範圍時 store 先正規化（trim＋大寫）再交給 handler（final review I3）：
          守門比的是正規化後的代碼，handler 不正規化，' cf ' 會寫成另一家「店」。'*'／沒欄位不動。 */
-      if (Array.isArray(payScopeOf_(body))) {
+      if (Array.isArray(payScopeOf_(body)) && action !== 'payroll_audit_get') {   // 操作紀錄的 store 可以空白（＝負責的全部門市），不能被補成預設店
         body.store = payScopeNorm_(body.store);
         if (action === 'payroll_master_set' && Array.isArray(body.master)) {
           body.master.forEach(function (m) { if (m && String(m.store == null ? '' : m.store).trim()) m.store = payScopeNorm_(m.store); });
@@ -3416,6 +3452,7 @@ const PAYROLL_HANDLERS = {
   payroll_punch:        handlePayrollPunch,
   payroll_attendance_export: handlePayrollAttendanceExport,
   payroll_attach_get: handlePayrollAttachGet,
+  payroll_audit_get:    handlePayrollAuditGet,
   payroll_store_get:    handlePayrollStoreGet,
   payroll_store_set:    handlePayrollStoreSet,
   payroll_bonus_get:    handlePayrollBonusGet,
