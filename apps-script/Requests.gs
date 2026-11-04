@@ -344,10 +344,10 @@ function reqValidate_(b, me, events, today, existing) {
     row.reason = reqTripReason_(place, why);
   } else {   // miss
     if (diff > 0) return { error: 'bad_date', message: '不能補登還沒到的日期' };
-    if (diff < -REQ_MISS_DAYS) return { error: 'too_old', message: '超過 ' + REQ_MISS_DAYS + ' 天不能申請，請找值班主管直接核定' };
+    if (diff < -REQ_MISS_DAYS) return { error: 'too_old', message: '超過 ' + REQ_MISS_DAYS + ' 天不能申請，請找打卡門市的店長直接核定' };
     var mt = String(b.miss_type || '');
     var info = reqDayInfo_(events, me.emp_id, date).missing;
-    if (!info.options.length) return { error: 'not_missing', message: '這天的上班卡和下班卡都有打成功，不用補登；時間記錯請直接跟值班主管說' };
+    if (!info.options.length) return { error: 'not_missing', message: '這天的上班卡和下班卡都有打成功，不用補登；時間記錯請直接跟打卡門市的店長說' };
     if (info.options.indexOf(mt) < 0) return { error: 'not_missing', message: mt === 'in' ? '這天的上班卡有打成功，不用補登' : mt === 'out' ? '這天的下班卡有打成功，不用補登' : '請選要補哪一張卡' };
     row.miss_type = mt;
     if (mt === 'break') {
@@ -381,7 +381,7 @@ function reqValidate_(b, me, events, today, existing) {
     if (mt === 'out' && info.open_in) { spanIn = reqMin_(String(info.open_in).slice(0, 5)); spanOut = reqMin_(row.end) + (outNext ? 1440 : 0); }
     if (mt === 'both') { spanIn = reqMin_(row.start); spanOut = reqMin_(row.end) + (outNext ? 1440 : 0); }
     if (spanIn !== null && spanOut !== null && spanOut - spanIn > REQ_PAIR_MS / 60000) {
-      return { error: 'bad_time', message: '補完上班到下班超過 16 小時（' + Math.round((spanOut - spanIn) / 6) / 10 + ' 小時），請確認時間；真的這麼長請直接跟值班主管說' };
+      return { error: 'bad_time', message: '補完上班到下班超過 16 小時（' + Math.round((spanOut - spanIn) / 6) / 10 + ' 小時），請確認時間；真的這麼長請直接跟打卡門市的店長說' };
     }
     if (diff === 0) {   // 今天：不能補還沒到的時間；跨夜的下班＝明天，還沒到（審查 #3）
       var nowMin = reqMin_(nowTaipeiIso().slice(11, 16));
@@ -407,7 +407,7 @@ function reqValidate_(b, me, events, today, existing) {
   var dupOk = existing.filter(function (r) {
     return String(r.emp_id) === String(me.emp_id) && r.status === 'approved' && r.kind === kind && r.date === date && reqSameThing_(kind, r, row);
   })[0];
-  if (dupOk) return { error: 'duplicate', message: '這天已經有一筆核准的' + REQ_KINDS_[kind] + '申請（' + reqDupLabel_(dupOk) + '），不用再送；要改請找值班主管作廢那一筆' };
+  if (dupOk) return { error: 'duplicate', message: '這天已經有一筆核准的' + REQ_KINDS_[kind] + '申請（' + reqDupLabel_(dupOk) + '），不用再送；要改請找你的主管作廢那一筆' };
   return { row: row };
 }
 

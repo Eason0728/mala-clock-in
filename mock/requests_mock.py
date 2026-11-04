@@ -254,11 +254,11 @@ def register(ns):
             if diff > 0:
                 return None, ("bad_date", "不能補登還沒到的日期")
             if diff < -REQ_MISS_DAYS:
-                return None, ("too_old", f"超過 {REQ_MISS_DAYS} 天不能申請，請找值班主管直接核定")
+                return None, ("too_old", f"超過 {REQ_MISS_DAYS} 天不能申請，請找打卡門市的店長直接核定")
             mt = str(b.get("miss_type") or "")
             info = day_info(data, me["emp_id"], d)[1]
             if not info["options"]:
-                return None, ("not_missing", "這天的上班卡和下班卡都有打成功，不用補登；時間記錯請直接跟值班主管說")
+                return None, ("not_missing", "這天的上班卡和下班卡都有打成功，不用補登；時間記錯請直接跟打卡門市的店長說")
             if mt not in info["options"]:
                 return None, ("not_missing", "這天的上班卡有打成功，不用補登" if mt == "in" else "這天的下班卡有打成功，不用補登" if mt == "out" else "請選要補哪一張卡")
             row["miss_type"] = mt
