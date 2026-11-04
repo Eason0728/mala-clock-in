@@ -837,7 +837,7 @@ function lineHubCard_(spec) {
     // 按鈕用標準高度、按鈕之間留 12px（2026-10-09 Eason：每一格大一點避免誤按）
     card.contents.footer = { type: 'box', layout: 'vertical', spacing: 'lg', paddingAll: '14px',
       contents: spec.buttons.map(function (b) {
-        // b.uri＝開網頁（佈告欄）；其餘是 message action
+        // b.uri＝開網頁（佈告欄、管理系統公告專區、申請頁）；其餘是 message action
         if (b.uri) return { type: 'button', style: 'primary', color: '#1F4E8C', height: 'md',
                             action: { type: 'uri', label: lineHubTxt_(b.label).slice(0, 20), uri: String(b.uri) } };
         return { type: 'button', style: 'secondary', height: 'md',
