@@ -639,9 +639,28 @@ def register(ns):
         # 假別額度：光復 mock 資料的 mock_quota 可改（e2e 資料帶入用）；沒有就用固定樣本
         quota = data.get("mock_quota") or [{"name": "特休假", "cap_days": 7, "cap_h": 56, "remain_h": 40, "used_h": 16, "basis": "tenure"},
                                            {"name": "事假", "cap_days": 14, "cap_h": 112, "remain_h": 112, "used_h": 0, "basis": "calendar"}]
-        return {"ok": True, "stores": stores, "punch_store": punch_store, "comp": comp,
+        if body.get("lite"):   # 2026-11-06 開頁加快（同 LineHub.gs）：lite 不算額度與補休帳，另打 line_hub_req_quota
+            comp, quota = None, []
+        if data.get("mock_old_hub"):   # e2e：模擬還沒換的舊後端（不認得 lite，一次全回）
+            comp, quota = data.get("mock_comp") or {"allowed": True, "known": True, "ot_h": 2, "used_h": 4, "balance_h": -2, "ym": date.today().strftime("%Y-%m")}, hub_quota_rows(data)
+            return {"ok": True, "stores": stores, "punch_store": punch_store, "comp": comp,
+                    "leave_types": {"common": common, "special": [n for n in names if n not in COMMON]}, "quota": quota}
+        return {"ok": True, "lite": bool(body.get("lite")), "stores": stores, "punch_store": punch_store, "comp": comp,
                 "leave_types": {"common": common, "special": [n for n in names if n not in COMMON]},
                 "quota": quota}
+
+    def hub_quota_rows(data):
+        return data.get("mock_quota") or [{"name": "特休假", "cap_days": 7, "cap_h": 56, "remain_h": 40, "used_h": 16, "basis": "tenure"},
+                                          {"name": "事假", "cap_days": 14, "cap_h": 112, "remain_h": 112, "used_h": 0, "basis": "calendar"}]
+
+    def hub_quota(data, body):
+        if data.get("mock_old_hub"):
+            return {"ok": False, "error": "unknown_action"}
+        uid = verify(body.get("id_token"))
+        if not uid:
+            return {"ok": False, "error": "invalid_id_token"}
+        comp = data.get("mock_comp") or {"allowed": True, "known": True, "ot_h": 2, "used_h": 4, "balance_h": -2, "ym": date.today().strftime("%Y-%m")}
+        return {"ok": True, "quota": hub_quota_rows(data), "comp": comp}
 
     def hub_attach_put(data, body):
         if not verify(body.get("id_token")):
@@ -694,5 +713,5 @@ def register(ns):
                           "mgr_req_decide_batch": mgr_decide_batch, "mgr_req_void": mgr_void,
                           "mgr_qr_token": mgr_qr, "liff_punch": liff_punch,
                           "mgr_pending_approvals": pending_plus})
-    ns["LINE_HUB_ACTIONS"].update({"line_hub_req_init": hub_init, "line_hub_attach_put": hub_attach_put,
+    ns["LINE_HUB_ACTIONS"].update({"line_hub_req_init": hub_init, "line_hub_req_quota": hub_quota, "line_hub_attach_put": hub_attach_put,
                                    "line_hub_attach_get": hub_attach_get})

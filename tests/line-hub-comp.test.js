@@ -104,4 +104,25 @@ ok('薪資卡：舊制的本月換補休／補休到期折算（2026-10 以前�
   assert.strictEqual(sb.lineHubPayLineSub_({ item_key: 'comp_bank', qty: 4, rate: null }), '4H');
   assert.strictEqual(sb.lineHubPayLineSub_({ item_key: 'comp_expire', qty: 3, rate: 240 }), '3H × 240');
 });
+ok('開頁加快（2026-11-06）：lite＝不算額度與補休帳（不呼叫薪資單、補休帳），其他照舊', () => {
+  let called = 0;
+  const sb = make({ ok: true, leave_quota: [{ name: '特休假', cap_days: 7, cap_h: 56, remain_h: 40, used_h: 16, basis: 'tenure', extra: 1 }] }, () => { called++; return FT; });
+  const orig = sb.lineHubPayslipFor_; sb.lineHubPayslipFor_ = (u) => { called++; return orig(u); };
+  const r = sb.handleLineHubReqInit_({ id_token: 't', lite: true });
+  assert.strictEqual(called, 0); assert.strictEqual(r.lite, true); assert.strictEqual(r.comp, null);
+  assert.strictEqual(JSON.stringify(r.quota), '[]'); assert(r.leave_types.common.indexOf('補休') >= 0); assert.strictEqual(r.stores.length, 1);
+  const full = sb.handleLineHubReqInit_({ id_token: 't' });   // 舊申請頁不帶 lite：照舊一次全回
+  assert.strictEqual(full.lite, false); assert.strictEqual(full.comp.balance_h, 4); assert.strictEqual(full.quota[0].remain_h, 40);
+});
+ok('開頁加快：line_hub_req_quota 回的額度、補休帳＝舊版開頁資料那兩欄；沒綁定、假身分擋', () => {
+  const sb = make({ ok: true, leave_quota: [{ name: '特休假', cap_days: 7, cap_h: 56, remain_h: 40, used_h: 16, basis: 'tenure', extra: 1 }] }, () => FT);
+  const q = sb.LINE_HUB_HANDLERS.line_hub_req_quota({ id_token: 't' }), full = sb.handleLineHubReqInit_({ id_token: 't' });
+  assert.strictEqual(q.ok, true);
+  assert.strictEqual(JSON.stringify(q.quota), JSON.stringify(full.quota)); assert.strictEqual(JSON.stringify(q.comp), JSON.stringify(full.comp));
+  assert.strictEqual(q.quota[0].extra, undefined);
+  assert.strictEqual(sb.handleLineHubReqQuota_({ id_token: '' }).error, 'invalid_id_token');
+  sb.lineHubMine_ = () => [];
+  assert.strictEqual(sb.handleLineHubReqQuota_({ id_token: 't' }).error, 'not_bound');
+});
+
 console.log('\n✅ LINE 補休全部正確 (' + n + '/' + n + ')');

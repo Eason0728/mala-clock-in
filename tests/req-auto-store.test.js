@@ -54,7 +54,8 @@ ok('問不到的店不影響「兩家以上有卡」的提醒', () => {
 /* ── 前端：其他分頁不受影響、單店不多打 ── */
 const reqJs = fs.readFileSync(ROOT + '/req-line.js', 'utf8');
 ok('開頁預設店別＝打卡的店（2026-10-29 改）：打卡畫面帶的店 → 後台 punch_store → 第一家', () => {
-  assert(/st\.store = pickStore\(r\.stores, \[opts\.store, r\.punch_store\]\);/.test(reqJs));
+  // 2026-11-06 開頁加快：同仁還沒動過表單才換成後台查到的店（動過就留著），順序仍是打卡畫面帶的店 → punch_store
+  assert(/st\.store = pickStore\(r\.stores, keep !== null \? \[keep\] : \[opts\.store, r\.punch_store, prev\]\);/.test(reqJs));
   const ctx = {}; vm.createContext(ctx); vm.runInContext(extract(reqJs, 'pickStore'), ctx);
   const S = [{ code: '', name: '光復' }, { code: 'mztjs', name: '金山' }];
   assert.strictEqual(ctx.pickStore(S, ['mztjs', '']).name, '金山');      // 打卡畫面帶的店優先
