@@ -23,6 +23,7 @@
 |---|---|---|---|---|---|
 | 2026-11-05 | 設計審 | requirements＋spec | Fable 12 條（高 5），全收進 spec §7 | 1 | scratchpad xsup-review；GPT 額度用完待補 |
 | 2026-11-05 | 任務關 | T3–T8（薪資後端＋薪酬頁＋mock） | tests 92 支 0 FAIL；新 support-auto 99 項、regression 97 項；破壞驗證 3 種皆紅 | 1 | tests/support-auto*.test.js；docs/support-auto/shot-att.png |
+| 2026-11-05 | 上線前審 | Payroll.gs＋payroll.html | Fable probe 七條全修（高 1、中 4、低 2），每條補測試並破壞驗證會紅 | 1 | tests/support-auto.test.js §12；scratchpad prelaunch-fable/probe.js |
 
 ## 落地清單
 - [ ] 1 排程上線：

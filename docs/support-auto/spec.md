@@ -72,7 +72,7 @@ my_payslip 依打卡金鑰逐店找 roster，找到即停 → 每個打卡連結
 1. **手填列認不出門市**（高）：同仁有任一手填列 code 解析不到（含 store 空白、別名對不到）→ 該人本月整個不自動帶入，回 `warn.manual_unresolved`。alias 表上線前用正式 payroll_input 全部 distinct store 值做單元測試。
 2. **跨品牌手填列**（高）：手填列的 code 與 home 不同組（2026-11 起）→ `warn.cross_manual`，前端標紅並擋「儲存工時」與「重新計算」（否則原店手填＋打卡店主檔各付一次）。
 3. **總部同仁找不到本人帳號**（高）：「本人在 home 的帳號」與「共用打卡表去重」一律用 clock_ss_id 判斷（acct_store 的打卡表＝home 的打卡表），不比代碼（SSLHQ／MZTHQ 的帳號 acct_store 是 HQ）。
-4. **差異決定不可借道整份儲存工時**（高）：新 action `payroll_support_decide {store, ym, emp_id, code, choice:'auto'|'keep', auto_h}`，只改該員 payroll_input 列的 support 欄；該員沒有手動列時只建「僅 support」列，並新增 `hours_manual` 欄（schema append）：空白＝本店時數沿用打卡歸集，'1'＝舊行為整筆手動。payInputsBase 依此判斷；既有手動列遷移時一律視為 '1'（行為不變）。
+4. **差異決定不可借道整份儲存工時**（高）：新 action `payroll_support_decide {store, ym, emp_id, code, choice:'auto'|'keep', auto_h}`，只改該員 payroll_input 列的 support 欄，不建新列；找不到該員工時數列回 `ok:false, error:'no_row'`（前端提示「沒有手填資料，不用決定」並重新載入）。payroll_input 新增 `hours_manual` 欄（schema append）：`'0'`＝「僅 support」列（本店時數沿用打卡歸集），空白（舊列）／`'1'`＝整筆手動，行為不變、不必遷移。「僅 support」列由「儲存工時」建立：2026-11 起，本店歸集沒有此人、其他欄全 0／未填、只剩手填支援 → 寫 `'0'`；連手填支援都沒有 → 不寫列（審查 2026-11-05 #1）。decide 把「僅 support」列刪到沒有支援就整列移除。
 5. **共用打卡表重複計算**（高）：以 clock_ss_id 去重，每份打卡表每個 emp_id 只算一次（xmap 同步時也合併）。
 6. **run 快照過期**（中）：payroll_month 在草稿、ym≥2026-11 時比對 run 內支援時數與本次自動加總，不同就自動重算一次並回 `support_auto.recalc:true`；已鎖定月份只回 `stale:true` 提示，不重算。
 7. **scope 守門**（中）：payScopeGuard_ 加 xmap 分支——set 逐列檢查 pay_store∈L；get 回應裁掉 pay_store∉L 的列。
@@ -81,3 +81,12 @@ my_payslip 依打卡金鑰逐店找 roster，找到即停 → 每個打卡連結
 10. **效能**（中）：pending_days 只讀 S 的 approved＋該月 events（依日期欄篩）；payroll_inputs 與排程估算端點不產逐日明細；上線前實測 payroll_month 耗時（目標：比現在多 ≤ 5 秒）。
 11. **調店雙發**（中）：dup_pay 命中時該店不自動帶入，列待處理（不只警告）。
 12. **欄位與名稱**（低）：逐日明細用 `manager_name`；auto 列同時寫 store（中文名，給請款區顯示）與 code；4B 計時費率＝主檔 `wage`（不含本月 wage_override 與加給），寫進測試釘住。
+
+## 8. 上線前審查修正（Fable 2026-11-05，probe.js 七條，覆蓋前文）
+1. 只在別店有時數的人：見 §7-4（儲存工時不寫 hours:0 整筆手動列；前端 attSendable 不送）。
+2. support_error 的人一律不帶入，回 `warn.support_error`。
+3. 對照已同步（xmap 非空）時，跨品牌手填列不計入支援時數；畫面上保留並標 `cross:true`（存檔時去掉標記），前端標紅擋存檔與重算。support_group 空白不判。
+4. run 追加 `support_auto_h`（＝別家門市核定可帶入時數合計，不論是否被手填蓋過）；payroll_month 只拿它和本次值比，判斷草稿過期。
+5. 打卡編號比對一律過 `payXsupId_`（字串化、去前導零）。
+6. decide 找不到列回 `no_row` 錯誤（§7-4）。
+7. scope 使用者：xmap_set 換掉 pay_store∈L 或 acct_store∈L 的列（其餘保留）；守門只擋兩者都不在 L 的列；xmap_get 回 pay_store∈L 或 acct_store∈L 的列。

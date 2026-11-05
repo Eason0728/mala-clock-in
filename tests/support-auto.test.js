@@ -398,5 +398,119 @@ console.log('§11 mock 切片');
   chk('切片裡不靠試算表也算得出 A 君 12.5H（沒用到 payStore／payRead）', r && r.byEmp.E01.stores[0].hours === 12.5, err);
 }
 
+/* ── §12 上線前審查（Fable 2026-11-05，probe.js）七條 ── */
+console.log('§12 上線前審查');
+{
+  // 1【高】只有他店時數、本店沒有歸集的人：儲存工時不可寫成 hours:0 的整筆手動列（否則本店核定之後流不進來）
+  const s = ctx();
+  s.__DB.master.push(EMP('E11', 'SSLGF'));
+  s.__DB.xmap.push(XROW('D11', 'SSLGF', 'SSLGF', 'E11'), XROW('D11', 'SSLGF', 'CF', 'CF31'));
+  s.__CLOCK['ck-cf'].approved.push(AP('2026-11-03', 'CF31', 7));
+  let mo = s.H('payroll_month', { ym: '2026-11', store: 'SSLGF' });
+  chk('1 E11 只有央廚 7H：畫面帶入 auto 列', autoRows(mo.inputs, 'E11').length === 1 && autoRows(mo.inputs, 'E11')[0].hours === 7);
+  s.H('payroll_input_set', { ym: '2026-11', store: 'SSLGF', inputs: { E01: mo.inputs.E01, E11: mo.inputs.E11 } });
+  chk('1 儲存工時：E11（本店無歸集、只有 auto）不寫列', !s.__DB.input.some((r) => r.emp_id === 'E11'), s.__DB.input.filter((r) => r.emp_id === 'E11'));
+  s.__CLOCK.LOCAL.approved.push(AP('2026-11-12', 'E11', 8), AP('2026-11-13', 'E11', 8));
+  let c = s.H('payroll_calc', { ym: '2026-11', store: 'SSLGF' });
+  let r11 = c.results.find((r) => r.emp_id === 'E11');
+  chk('1 之後本店核定 16H 照樣流入、支援 7H', r11.total_hours === 16 && r11.support_hours === 7, [r11.total_hours, r11.support_hours]);
+  const s2 = ctx();
+  s2.__DB.master.push(EMP('E11', 'SSLGF'));
+  s2.H('payroll_input_set', { ym: '2026-11', store: 'SSLGF', inputs: { E11: { hours: 0, support: [{ code: 'SSLHQ', store: '小辛辣總部', hours: 3, rate: 240, amount: '' }] } } });
+  const row11 = s2.__DB.input.find((r) => r.emp_id === 'E11');
+  chk('1 本店無歸集、只剩手填支援、其他欄沒動 → 寫「僅 support」列（hours_manual=0）', row11 && String(row11.hours_manual) === '0', row11);
+  s2.__CLOCK.LOCAL.approved.push(AP('2026-11-12', 'E11', 8));
+  r11 = s2.H('payroll_calc', { ym: '2026-11', store: 'SSLGF' }).results.find((r) => r.emp_id === 'E11');
+  chk('1 僅 support 列：本店核定 8H 照樣流入、手填 3H 照算', r11.total_hours === 8 && r11.support_hours === 3, [r11.total_hours, r11.support_hours]);
+  s2.H('payroll_input_set', { ym: '2026-11', store: 'SSLGF', inputs: { E11: { hours: 0, extra_ot: 2, support: [] } } });
+  chk('1 有動到其他欄（extra_ot）→ 照舊整筆手動', String((s2.__DB.input.find((r) => r.emp_id === 'E11') || {}).hours_manual) === '1');
+  const s3 = ctx();
+  s3.H('payroll_input_set', { ym: '2026-11', store: 'SSLGF', inputs: { E01: { hours: 0, support: [] } } });
+  chk('1 本店有歸集的人（E01）照舊整筆手動列', String((s3.__DB.input.find((r) => r.emp_id === 'E01') || {}).hours_manual) === '1');
+  // 前端 saveAtt 不送「全空＋只有 auto 列」的人
+  const m = HTML.match(/function attSendable\(A\)\{[\s\S]*?\n\}/);
+  let ok1 = false;
+  if (m) {
+    const f = vm.runInContext('(function(){ const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x}; ' + m[0] + '; return attSendable; })()', vm.createContext({}));
+    ok1 = f({ hours: 0, support: [{ code: 'CF', hours: 7, auto: true }] }) === false && f({ hours: 0, support: [{ code: 'CF', hours: 3 }] }) === true
+      && f({ hours: 8, support: [] }) === true && f({ hours: 0, meal_on: true, support: [] }) === true && f({}) === false;
+  }
+  chk('1 前端 attSendable：只有 auto 列的空人不送、有手填或任何欄位就送', ok1);
+  chk('1 前端 saveAtt 有用 attSendable 過濾', /function saveAtt\(\)\{[\s\S]*?attSendable\(/.test(HTML));
+}
+{
+  // 2【中】support_error 的人一律不帶入（畫面 0、實付卻 12.5H，每次開頁還會 stale 重算寫入）
+  const s = ctx();
+  s.__DB.input = [{ ym: '2026-11', emp_id: 'E01', store: 'SSLGF', hours: 8, support: '[{壞掉', hours_manual: '1' }];
+  const mo = s.H('payroll_month', { ym: '2026-11', store: 'SSLGF' });
+  const ra = mo.run.results.find((r) => r.emp_id === 'E01');
+  chk('2 support_error：畫面不帶入、run 也不帶入（0H）', sup(mo.inputs, 'E01').length === 0 && ra.support_hours === 0, [sup(mo.inputs, 'E01'), ra.support_hours]);
+  chk('2 support_error 進 warn', (mo.support_auto.warn.support_error || []).indexOf('E01') >= 0, mo.support_auto.warn);
+  const mo2 = s.H('payroll_month', { ym: '2026-11', store: 'SSLGF' });
+  chk('2 再開一次不會 stale 重算', !mo2.support_auto.recalc);
+  const c = s.H('payroll_calc', { ym: '2026-11', store: 'SSLGF', inputs: { E01: { hours: 8, support: [] } } });
+  chk('2 payroll_calc（前端送影本）也不帶入', c.results.find((r) => r.emp_id === 'E01').support_hours === 0);
+}
+{
+  // 3【中】跨品牌手填列後端不付（原店手填＋打卡店主檔會付兩次）
+  const s = ctx();
+  s.__DB.input = [{ ym: '2026-11', emp_id: 'E08', store: 'SSLGF', hours: 160, support: JSON.stringify([{ store: '墨竹亭金山', hours: 10, rate: 240, amount: '' }]) }];
+  const c = s.H('payroll_calc', { ym: '2026-11', store: 'SSLGF' });
+  chk('3 跨品牌手填 10H 不計入支援時數（只剩央廚打卡帶入 8H）', c.results.find((r) => r.emp_id === 'E08').support_hours === 8, c.results.find((r) => r.emp_id === 'E08').support_hours);
+  chk('3 cross_manual 照樣警告', c.support_auto.warn.cross_manual.some((x) => x.emp_id === 'E08'));
+  const mo = s.H('payroll_month', { ym: '2026-11', store: 'SSLGF' });
+  chk('3 畫面上那列還在（標 cross，給前端標紅、讓人移除）', sup(mo.inputs, 'E08').some((x) => x.cross === true && x.hours === 10));
+  s.__DB.store.forEach((x) => { x.support_group = ''; });
+  chk('3 support_group 沒設時不判 cross、照舊計入（手填 10H，央廚也不同組了）', s.H('payroll_calc', { ym: '2026-11', store: 'SSLGF' }).results.find((r) => r.emp_id === 'E08').support_hours === 10);
+}
+{
+  // 4【中】stale 只比 auto 加總：用未存手填重算的草稿不可被靜默蓋掉
+  const s = ctx();
+  s.H('payroll_month', { ym: '2026-11', store: 'SSLGF' });
+  s.H('payroll_calc', { ym: '2026-11', store: 'SSLGF', inputs: { E05: { hours: 8, support: [{ store: '央廚', hours: 20, rate: 240, amount: '' }] } } });
+  const runRow = s.__DB.run.find((r) => r.ym === '2026-11' && r.emp_id === 'E01');
+  chk('4 run 存 support_auto_h（A 君 12.5；E 君有手填仍記打卡值 8）', runRow && runRow.support_auto_h === 12.5 && s.__DB.run.find((r) => r.ym === '2026-11' && r.emp_id === 'E05').support_auto_h === 8, runRow);
+  chk('4 run 表 schema 最後一欄 support_auto_h', s.F('PAY_SHEETS').run.slice(-1)[0] === 'support_auto_h');
+  let mo = s.H('payroll_month', { ym: '2026-11', store: 'SSLGF' });
+  chk('4 手填差異（未存覆寫 20H）不算過期：不重算、E 君仍是 20H', !mo.support_auto.recalc && mo.run.results.find((r) => r.emp_id === 'E05').support_hours === 20);
+  s.__CLOCK['ck-cf'].approved.push(AP('2026-11-12', 'CF21', 3));
+  mo = s.H('payroll_month', { ym: '2026-11', store: 'SSLGF' });
+  chk('4 別店核定變了（auto 加總不同）才重算', mo.support_auto.recalc === true && mo.run.results.find((r) => r.emp_id === 'E01').support_hours === 15.5);
+  chk('4 前端提示文字只在 recalc 出現：「別家門市的核定時數有變動」', /SUPA&&SUPA\.recalc\)\s*toast\('別家門市的核定時數有變動/.test(HTML));
+}
+{
+  // 5【低】打卡編號被轉成數字（007 → 7）
+  const s = ctx();
+  s.__DB.xmap.push(XROW('D01', 'SSLGF', 'MZTGF', '007'));
+  s.__DB.store.find((x) => x.code === 'MZTGF').support_group = 'sxl';
+  s.__CLOCK['ck-gf'].approved.push(AP('2026-11-09', 7, 5));
+  const r = s.F('paySupportAuto_')('2026-11', 'SSLGF', false);
+  chk('5 approved emp_id=7（數字）對得到 xmap 的 007', (r.byEmp.E01.stores.find((x) => x.code === 'MZTGF') || {}).hours === 5, r.byEmp.E01.stores);
+  chk('5 正規化函式：去前導零、字串化', s.F('payXsupId_')(7) === '7' && s.F('payXsupId_')(' 007 ') === '7' && s.F('payXsupId_')('HQ-05') === 'HQ-05' && s.F('payXsupId_')('0') === '0');
+}
+{
+  // 6【低】decide 找不到列要回錯
+  const s = ctx();
+  const d = s.H('payroll_support_decide', { store: 'SSLGF', ym: '2026-11', emp_id: 'E01', code: 'CF', choice: 'keep', auto_h: 12.5 });
+  chk('6 找不到工時列 → ok:false、error=no_row', d.ok === false && d.error === 'no_row', d);
+  chk('6 前端遇 no_row 顯示「沒有手填資料，不用決定」並重新載入', /no_row[\s\S]{0,200}沒有手填資料，不用決定[\s\S]{0,80}loadMonth\(\)/.test(HTML));
+}
+{
+  // 7【中】scope 使用者同步：換掉 pay_store∈L 或 acct_store∈L 的列；get 也回這兩種
+  const s = ctx();
+  s.__DB.xmap = [XROW('D01', 'SSLGF', 'SSLGF', 'E01'), XROW('D01', 'SSLGF', 'MZTJS', 'JS07'), XROW('D20', 'MZTJS', 'MZTJS', 'JS20'), XROW('D30', 'CF', 'CF', 'CF40')];
+  const g = s.H('payroll_xmap_get', { scope: ['MZTJS'], store: 'MZTJS' });
+  chk('7 get：MZTJS 使用者看得到 pay=MZTJS 與 acct=MZTJS 的列（2 列）', g.ok && g.rows.length === 2 && g.rows.some((x) => x.emp_id === 'JS07'), g.rows);
+  const r = s.H('payroll_xmap_set', { scope: ['MZTJS'], store: 'MZTJS', rows: [XROW('D20', 'MZTJS', 'MZTJS', 'JS20'), XROW('D01', 'SSLGF', 'MZTJS', 'JS77')] });
+  chk('7 set：acct_store∈L 的別店列可以送', r.ok === true, r);
+  chk('7 set：換掉 pay∈L 或 acct∈L 的列，其他（光復本人、央廚）保留', s.__DB.xmap.some((x) => x.emp_id === 'E01') && s.__DB.xmap.some((x) => x.emp_id === 'CF40')
+    && !s.__DB.xmap.some((x) => x.emp_id === 'JS07') && s.__DB.xmap.some((x) => x.emp_id === 'JS77') && s.__DB.xmap.length === 4, s.__DB.xmap.map((x) => x.emp_id));
+  const deny = s.H('payroll_xmap_set', { scope: ['MZTJS'], store: 'MZTJS', rows: [XROW('D01', 'SSLGF', 'CF', 'CF99')] });
+  chk('7 set：pay 與 acct 都不在 L → scope_forbidden', deny.error === 'scope_forbidden');
+  s.__CLOCK['ck-js'].approved.push(AP('2026-11-09', 'JS77', 4));
+  const mo = s.H('payroll_month', { ym: '2026-11', store: 'MZTJS' });
+  chk('7 金山端同步後的對照讓 cross_no_master 看得到光復同仁 JS77（4H）', mo.ok && mo.support_auto.warn.cross_no_master.some((x) => x.emp_id === 'JS77' && x.hours === 4), mo.support_auto && mo.support_auto.warn.cross_no_master);
+}
+
 console.log(`\n${fail ? '❌ ' + fail + ' 項失敗' : '✅ 跨店支援自動帶入全部通過'}（${pass}/${pass + fail}）`);
 process.exit(fail ? 1 : 0);

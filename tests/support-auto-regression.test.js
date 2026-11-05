@@ -159,8 +159,15 @@ MONTHS.forEach((ym) => {
   const A = HO('payroll_calc', { admin_key: 'x', ym: '2026-11', store: 'SSLGF' });
   const a = A.results.find((r) => r.emp_id === 'E01'), b = B.results.find((r) => r.emp_id === 'E01');
   chk('對照組：放進打卡對照後 E01 支援 0 → 16H、加班費變了（證明比對有在比）', a.support_hours === 0 && b.support_hours === 16 && JSON.stringify(a.earn) !== JSON.stringify(b.earn), JSON.stringify([a.support_hours, b.support_hours]));
-  const others = A.results.filter((r) => r.emp_id !== 'E01').every((r) => JSON.stringify(r) === JSON.stringify(B.results.find((z) => z.emp_id === r.emp_id)));
+  // E02（手填墨竹亭金山 3H）是跨品牌手填：對照同步後不計（審查 #3），支援時數少掉那 3H。
+  // E04 手填「墨復」→ MZTGF 不在這份門市表（沒有組別）→ 不判跨品牌、照算（support_group 空白不判）
+  const CROSS = { E02: 3 };
+  const others = A.results.filter((r) => r.emp_id !== 'E01' && !CROSS[r.emp_id]).every((r) => JSON.stringify(r) === JSON.stringify(B.results.find((z) => z.emp_id === r.emp_id)));
   chk('對照組：其他人一律不變', others);
+  chk('對照組：跨品牌手填的那位只少掉跨品牌那 3H', Object.keys(CROSS).every((k) => {
+    const a = A.results.find((r) => r.emp_id === k), b = B.results.find((r) => r.emp_id === k);
+    return Math.round((a.support_hours - b.support_hours) * 100) / 100 === CROSS[k];
+  }));
 }
 console.log(`\n比對 ${compared} 人次（${MONTHS.length} 個月 × 2 店 × calc／month），寫入列 ${rowsCompared} 列`);
 console.log(fail ? `❌ ${fail} 項不一致` : `✅ 生效月之前（及 2026-11 沒有打卡對照時）逐項完全相同 (${pass}/${pass})`);

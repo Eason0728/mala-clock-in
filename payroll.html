@@ -839,6 +839,18 @@ async function loadAtt(){
   clearAttDirty();   // 剛從試算表讀回來，記憶體＝已存狀態
   renderAtt();
 }
+/** 這個人要不要送去存檔（2026-11 審查 #1）：除了打卡帶入的 auto 列以外什麼都沒有的人不送，
+ *  否則只在別店有時數、本店沒歸集的人會被存成 hours:0 的整筆手動列，之後本店核定就流不進來。 */
+function attSendable(A){
+  A=A||{};
+  if((A.support||[]).some(s=>s&&!(s.auto===true||String(s.auto)==='true'))) return true;
+  const NUMS=['hours','extra_ot','personal_h','sick_h','menstrual_h','disaster_h','annual_h','deduct_days','work_days','wage_override','holiday_h','custom_add_amt','custom_ded_amt'];
+  if(NUMS.some(k=>n(A[k]))) return true;
+  if(A.full_attend||A.meal_on) return true;
+  if(String(A.custom_add_label||'').trim()||String(A.custom_ded_label||'').trim()) return true;
+  if(A.dorm_override!==''&&A.dorm_override!=null) return true;
+  return (A.custom_add_more||[]).some(x=>x&&(String(x.label||'').trim()||n(x.amt)));
+}
 async function saveAtt(){
   const b=$('saveAttBtn');
   /* 支援時數若讀取失敗（後端解析不了那段 JSON），此時 ATT 裡是空陣列——
@@ -856,6 +868,7 @@ async function saveAtt(){
   let sendAtt=ATT;
   if(scopeLimited()){ const own={}; MASTER.forEach(m=>{own[String(m.emp_id).trim()]=1}); sendAtt={};
     Object.keys(ATT||{}).forEach(k=>{ if(own[String(k).trim()]) sendAtt[k]=ATT[k]; }); }
+  if(ym()>=XSUP_FROM){ const t={}; Object.keys(sendAtt||{}).forEach(k=>{ if(attSendable(sendAtt[k])) t[k]=sendAtt[k]; }); sendAtt=t; }
   const r=await post('payroll_input_set',{ym:ym(),inputs:sendAtt});
   if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.error||''),true);return}
   await doCalc();   // 存完用新工時重算帶出數字
@@ -1469,7 +1482,7 @@ function renderAtt(){
   MASTER.filter(e=>String(e.active)==='true').forEach(e=>{
     const A=ATT[e.emp_id]=ATT[e.emp_id]||{};
     A.support=A.support||[];
-    const sh=A.support.reduce((a,s)=>a+n(s.hours),0);
+    const sh=A.support.reduce((a,s)=>a+(s&&s.cross===true?0:n(s.hours)),0);   // 跨品牌列後端不計（2026-11 起），這裡也不加
     // 姓名底下掛「假別額度」——點了才去抓（Apps Script 每次往返約 2 秒，不放進 loadMonth 拖慢切月份）
     h+=`<tr><td><b>${esc(e.name)}</b> <span class="tag ${isFT(e)?'ft':'pt'}">${isFT(e)?'正職':'計時'}</span>`
       +`<br><button class="lnk" onclick="openQuota('${e.emp_id}')">假別額度</button></td>`;
@@ -2145,6 +2158,7 @@ async function supDecide(emp,code,choice,autoH,btn){
   if(!confirmLeaveAtt(choice==='auto'?'改成打卡值':'保留手填')) return;
   if(btn) btn.disabled=true;
   const r=await post('payroll_support_decide',{ym:ym(),emp_id:emp,code,choice,auto_h:autoH});
+  if(!r.ok&&r.error==='no_row'){ toast(supEmpName(emp)+' 這位同仁沒有手填資料，不用決定'); await loadMonth(); return; }
   if(!r.ok){ if(btn) btn.disabled=false; if(!r.message) toast('處理失敗：'+(r.error||''),true); return; }
   toast(supEmpName(emp)+' '+supStoreName(code)+'：'+(choice==='auto'?'已改成打卡值':'已保留手填'));
   await loadMonth();
@@ -2176,6 +2190,7 @@ function renderSupWarn(){
         <button class="btn ghost" style="padding:5px 12px;font-size:13px" onclick="supDecide('${esc(d.emp_id)}','${esc(d.code)}','keep',${n(d.auto)},this)">保留手填</button></td></tr>`).join('')
       +'</tbody></table></div></div>');
   }
+  if((W.support_error||[]).length) line('warn','⚠ <b>支援資料格式壞了</b>，這幾位本月不自動帶入：'+W.support_error.map(x=>esc(supEmpName(x))).join('、')+'。請聯絡 Eason 修正。');
   if((W.manual_unresolved||[]).length) line('warn','⚠ <b>手填的支援門市認不出來</b>，這幾位本月不自動帶入：'+W.manual_unresolved.map(x=>esc(supEmpName(x))).join('、')+'。請把支援門市改選一次再儲存。');
   if((W.dup_pay||[]).length) line('warn','⚠ <b>可能付兩次</b>（打卡那家店也有他的薪資主檔），先不帶入：'
     +W.dup_pay.map(x=>esc(supEmpName(x.emp_id))+'（'+esc(supStoreName(x.code))+' '+esc(r2(n(x.hours)))+' H）').join('、')+'。請確認他這個月由哪一家發薪。');
@@ -2232,7 +2247,7 @@ function renderSup(){
           +(SUP_OPEN[k]?`<tr><td colspan="5" style="text-align:left">${supDaysHtml(e.emp_id,s.code)}</td></tr>`:'');
       }
       // 舊列沒有代碼（只有中文名）：後端認出是跨品牌、但畫面對不到是哪一列時，這位同仁沒代碼的列都標紅（寧可多標，不可漏擋）
-      const bad=s.code?cross.indexOf(String(s.code).toUpperCase())>=0:(String(s.store||'').trim()&&legacyBad);
+      const bad=s.cross===true||(s.code?cross.indexOf(String(s.code).toUpperCase())>=0:(String(s.store||'').trim()&&legacyBad));
       return `<tr${bad?' style="background:#fdecea" title="跨品牌支援：2026-11 起由打卡那家店發薪，請移除這一列"':''}>
       <td><select onchange="setSupStore('${esc(e.emp_id)}',${i},this.value)">${storeOptions(s)}</select>${bad?'<div style="color:#c0392b;font-weight:800;font-size:12px;margin-top:3px">跨品牌：請移除</div>':''}</td>
       <td><input type="number" step="0.25" value="${esc(s.hours??'')}"
