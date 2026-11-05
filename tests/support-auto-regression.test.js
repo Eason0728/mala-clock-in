@@ -149,8 +149,8 @@ MONTHS.forEach((ym) => {
   const body = { admin_key: 'x', ym: '2026-10', store: 'SSLGF', inputs: { E01: { hours: 160, support: [{ store: '央廚', hours: 3, rate: 240, amount: '' }] } } };
   HO('payroll_input_set', body); HN('payroll_input_set', body);
   const a = DB_OLD.input.find((r) => r.ym === '2026-10' && r.emp_id === 'E01'), b = DB_NEW.input.find((r) => r.ym === '2026-10' && r.emp_id === 'E01');
-  const ka = Object.assign({}, a), kb = Object.assign({}, b); delete ka.updated_at; delete kb.updated_at; delete kb.hours_manual;
-  chk('2026-10 儲存工時：除了新欄 hours_manual，寫入的列逐欄相同', JSON.stringify(ka) === JSON.stringify(kb), JSON.stringify(ka) === JSON.stringify(kb) ? '' : JSON.stringify([ka, kb]).slice(0, 300));
+  const ka = Object.assign({}, a), kb = Object.assign({}, b); delete ka.updated_at; delete kb.updated_at; delete ka.hours_manual; delete kb.hours_manual;   // hours_manual 已併進主線（兩邊都有），一起拿掉
+  chk('2026-10 儲存工時：除了 hours_manual，寫入的列逐欄相同', JSON.stringify(ka) === JSON.stringify(kb), JSON.stringify(ka) === JSON.stringify(kb) ? '' : JSON.stringify(Object.keys(Object.assign({}, ka, kb)).filter((k) => JSON.stringify(ka[k]) !== JSON.stringify(kb[k])).map((k) => [k, ka[k], kb[k]])));
 }
 // 對照組：2026-11 有 xmap 後，帶入的那位（E01 在央廚 CF91 有 16H）一定要變
 {
