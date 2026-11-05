@@ -19,12 +19,16 @@ const PAY_SHEETS = {
             'yearend_months'],
   config:  ['key','value','note','store'],
   holiday: ['ym','red_days','note','dates','store'],   // store 空白＝集團共用；填了＝該門市專屬（覆寫集團）   // dates＝該月國定假日的具體日期（逗號分隔），計時當天出勤＝時薪雙倍
-  store:   ['code','name','clock_ss_id','dzy_node','emp_prefix','active','sort','brand'],
+  // support_group（2026-11-05 追加）：跨店支援自動帶入的「同組」判斷（sxl／mzt／*）。空白＝自己一組（不帶入任何店）。
+  store:   ['code','name','clock_ss_id','dzy_node','emp_prefix','active','sort','brand','support_group'],
   bonus:   ['ym','store','emp_id','bonus_type','label','amount','memo','updated_at'],
   run:     ['ym','emp_id','name','is_full_time','ratio','total_hours','base_hours','surplus_hours',
             'ot_paid_hours','gross','deduction','net','status','run_at','support_hours','store'],
   item:    ['ym','emp_id','item_type','item_key','item_label','qty','rate','amount','source','memo','store'],
-  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on','custom_add_label','custom_add_amt','custom_ded_label','custom_ded_amt','store','holiday_h','custom_add_more'],
+  input:   ['ym','emp_id','hours','extra_ot','personal_h','sick_h','annual_h','deduct_days','support','updated_at','menstrual_h','disaster_h','full_attend','work_days','wage_override','dorm_override','meal_on','custom_add_label','custom_add_amt','custom_ded_label','custom_ded_amt','store','holiday_h','custom_add_more',
+            // hours_manual（2026-11-05 追加）：'0'＝「僅 support」列（只存跨店支援，本店時數照打卡歸集，
+            // 只有 payroll_support_decide 會建）；空白（改版前的舊列）／'1'＝整筆手動（行為不變）。
+            'hours_manual'],
   audit:   ['ts','ym','action','operator','reason','store'],
   // 假別參數表（2026-08-22）：一列一種假，值班核定下拉／薪資扣款／額度上限共用同一份正本。
   // store 空白＝集團共用；填了＝該門市專屬（覆寫集團），與 payroll_config 同一套覆寫規則。
@@ -51,6 +55,9 @@ const PAY_SHEETS = {
   // 不含姓名／員工編號／逐人金額——support_json 只到「門市」層級。只在 handlePayrollFinalize
   // 的鎖定流程寫入（見 pnlSnapshotUpsert_／pnlSnapshotRemove_），唯讀端點本身零寫入
   // （見 pnlReadSnapshot_）。
+  // 打卡對照快照（2026-11-05，跨店支援自動帶入）：管理系統「同仁名單 → 打卡對照」同步過來，整表覆寫（scope 下只換負責門市的列）。
+  // 一列＝一位同仁（emp_no＝DZY 編號）在某家打卡店（acct_store）的一個打卡帳號（emp_id）。不存姓名等個資。
+  xmap: ['emp_no','pay_store','acct_store','emp_id','not_support','synced_at','state'],
   cost_snapshot: ['ym','store','base_ft','ot_ft','attend_ft','allow_ft','mgr','meal','other','pt',
                   'bonus_sales','bonus_perf','bonus_proj','ins_ft_deduct','dorm_ft_deduct','ins_pt_deduct','dorm_pt_deduct',
                   'co_labor','co_health','co_pension','co_owner','co_group','ins_self','yearend',
@@ -67,6 +74,7 @@ const PAY_SHEET_NAME = {
   leave_type:'payroll_leave_type', leave_span:'payroll_leave_span',
   leave_event:'payroll_leave_event',
   cost_snapshot:'payroll_cost_snapshot',
+  xmap:'payroll_xmap',
 };
 
 /** 單店期間的預設門市（階段一多店上線後改為必填，屆時移除此預設） */
@@ -144,15 +152,17 @@ function payInvalidate(kind) { delete PAY_READ_CACHE[kind]; }
 
 /* ⚠ Sheets 會把 '2026-08'、'2020-01-01' 這種字串自動轉成日期儲存格，讀回變 Date 物件、比對全失敗
    （ym 對不到 → no_holiday／查不到 run；hire_date 壞 → payRatio 錯）。寫入前把這些字串欄鎖成文字格式 '@'。*/
-function payForceTextCols(sh, cols) {
+function payForceTextCols(sh, cols, kind) {
   // ⚠ 純日期字串一定要鎖文字格式，否則 Sheets 轉成 Date 物件、之後比對全失敗。
   //   event_date／start／end 是 2026-08-23 新增的假別事件日與留停區間，漏了就會踩同一個坑。
   // value：payroll_config 的參數值（2026-11-04 唯讀證實：央廚 late_deduct_from '2026-10' 被轉成日期，遲到按分鐘扣從沒生效）。
   //   鎖文字後讀回一律是字串，payConfig 的 cast 會把 'true'／'false'／數字字串轉回來。
   const TEXT = { ym: 1, hire_date: 1, leave_date: 1, dates: 1,
                  event_date: 1, start: 1, end: 1, value: 1 };
+  // 打卡對照：編號一律文字（'001' 這類打卡編號被轉成數字 1 就對不回打卡表）。只限這張表，其他表的格式不動。
+  const EXTRA = kind === 'xmap' ? { emp_no: 1, emp_id: 1, pay_store: 1, acct_store: 1 } : {};
   cols.forEach(function (c, i) {
-    if (TEXT[c]) sh.getRange(1, i + 1, sh.getMaxRows(), 1).setNumberFormat('@');
+    if (TEXT[c] || EXTRA[c]) sh.getRange(1, i + 1, sh.getMaxRows(), 1).setNumberFormat('@');
   });
 }
 
@@ -161,7 +171,7 @@ function payReplaceAll(kind, rows) {
   payInvalidate(kind);
   const sh = paySheet(kind), cols = PAY_SHEETS[kind];
   sh.getRange(1, 1, 1, cols.length).setValues([cols]);   // 同步表頭（schema 只 append，補上新欄不動既有資料）
-  payForceTextCols(sh, cols);
+  payForceTextCols(sh, cols, kind);
   const last = sh.getLastRow();
   if (last > 1) sh.getRange(2, 1, last - 1, cols.length).clearContent();
   if (!rows.length) return;
@@ -193,7 +203,7 @@ function payAppend(kind, rows) {
   payInvalidate(kind);
   if (!rows.length) return;
   const sh = paySheet(kind), cols = PAY_SHEETS[kind];
-  payForceTextCols(sh, cols);
+  payForceTextCols(sh, cols, kind);
   const values = rows.map(function (r) { return cols.map(function (c) { return r[c] == null ? '' : r[c]; }); });
   sh.getRange(sh.getLastRow() + 1, 1, values.length, cols.length).setValues(values);
 }
@@ -1485,6 +1495,294 @@ function payLeaveSpanDays(s) {
   return Math.max(0, Math.round((d2 - d1) / 86400000) + 1);
 }
 
+/* ═══════════════════ 跨店支援自動帶入（2026-11-05，docs/support-auto）═══════════════════
+ * 2026-11 起：同仁在「同組其他店」主管已核定的時數，計算時自動帶進跨店支援（auto 列）。
+ * 認人＝管理系統「同仁名單 → 打卡對照」快照（payroll_xmap，confirmed 才算），不用姓名。
+ * ⚠ 放在 payR0～Handlers 之間（payroll_mock.js 只抽這段）：這裡不准直接用 payStore／payRead／payClockRead，
+ *   讀資料一律由 paySupportAuto_（包裝）傳進 paySupportAutoCore_（純函式），本段其餘都是純函式。
+ * ⚠ ym < PAY_XSUP_FROM 一律不動作（回 null），輸出與改版前逐欄相同（tests/support-auto-regression.test.js 守）。
+ * ⚠ 去重與「本人在本店的帳號」一律比打卡表（clock_ss_id），不比門市代碼（SSLHQ／MZTHQ 與 HQ 共用一份打卡表）。 */
+var PAY_XSUP_FROM = '2026-11';
+/* 舊手填列只有中文門市名（payroll.html 舊 STORES 下拉＋早期簡寫）→ 薪酬門市代碼。
+ * 比對前去掉所有空白。認不出來的一律不猜：該人本月整個不自動帶入（manual_unresolved，spec §7-1）。
+ * ⚠「光復」單獨兩字不收：小辛辣光復／墨竹亭光復都叫光復，猜錯就是付錯店。 */
+var PAY_SUPPORT_NAME_ALIAS = {
+  '小辛辣光復': 'SSLGF', '麻的小辛辣光復': 'SSLGF', '小辛辣新竹光復': 'SSLGF',
+  '墨竹亭金山': 'MZTJS', '墨金': 'MZTJS',
+  '墨竹亭光復': 'MZTGF', '墨復': 'MZTGF',
+  '墨竹亭六張犁': 'MZTLZL',
+  '央廚': 'CF', '中央廚房': 'CF',
+};
+function payXsupOn_(ym) { return String(ym || '') >= PAY_XSUP_FROM; }
+function payXsupCode_(v) { return String(v == null ? '' : v).trim().toUpperCase(); }
+/** 主檔／工時列的門市（空白＝預設店，與 payStore 同口徑；payStore 不在 mock 切片內所以自己寫） */
+function payXsupRowStore_(v) {
+  const c = payXsupCode_(v);
+  return c || (typeof PAY_DEFAULT_STORE !== 'undefined' ? PAY_DEFAULT_STORE : 'SSLGF');
+}
+function payXsupBool_(v) { return v === true || String(v == null ? '' : v).trim().toLowerCase() === 'true'; }
+/** 同組判斷（spec §1.1）：任一為 *，或兩者非空且相等。空白＝自己一組。 */
+function paySameGroup_(a, b) {
+  a = String(a == null ? '' : a).trim(); b = String(b == null ? '' : b).trim();
+  if (a === '*' || b === '*') return true;
+  return !!a && a === b;
+}
+/** 門市表 → { 代碼大寫: row } */
+function payXsupStoreBy_(stores) {
+  const by = {};
+  (stores || []).forEach(function (s) { const c = payXsupCode_(s && s.code); if (c) by[c] = s; });
+  return by;
+}
+/** 打卡表的識別：有 clock_ss_id 就用它；預設店留空＝本系統所在試算表；其他店留空＝沒有打卡（回 ''）。 */
+function payXsupClockKey_(code, storeBy) {
+  const c = payXsupCode_(code), row = storeBy[c];
+  const id = row ? String(row.clock_ss_id || '').trim() : '';
+  if (id) return 'ID:' + id;
+  return c === payXsupRowStore_('') ? 'LOCAL' : '';
+}
+/** 支援列 → 門市代碼。新列看 code；舊列只有中文名 → 別名表／門市表的名稱／代碼本身。認不出回 ''。 */
+function paySupportCode_(s, storeBy) {
+  if (!s) return '';
+  const c = payXsupCode_(s.code);
+  if (c && storeBy[c]) return c;
+  const raw = String(s.store == null ? '' : s.store).replace(/\s+/g, '');
+  if (!raw) return '';
+  if (PAY_SUPPORT_NAME_ALIAS[raw]) return PAY_SUPPORT_NAME_ALIAS[raw];
+  const up = raw.toUpperCase();
+  if (storeBy[up]) return up;
+  const codes = Object.keys(storeBy);
+  for (let i = 0; i < codes.length; i++) {
+    if (String(storeBy[codes[i]].name || '').replace(/\s+/g, '') === raw) return codes[i];
+  }
+  return '';
+}
+/** 空白的支援列（剛按「＋新增支援」還沒填）：不算認不出門市 */
+function paySupportBlank_(s) {
+  return !s || (!String(s.store == null ? '' : s.store).trim() && !String(s.code == null ? '' : s.code).trim()
+    && !payNum(s.hours) && (s.amount === '' || s.amount == null || !payNum(s.amount)));
+}
+function payXsupIsAuto_(s) { return !!s && (s.auto === true || String(s.auto) === 'true'); }
+/** 存檔前整理支援列（spec §3.3）：丟掉 auto 列，手填列只留白名單欄位（逐日明細等顯示用欄位不落地）。 */
+function paySupportStrip_(list) {
+  return (Array.isArray(list) ? list : []).filter(function (s) { return s && typeof s === 'object' && !payXsupIsAuto_(s); })
+    .map(function (s) {
+      const o = { store: s.store == null ? '' : s.store, hours: s.hours, rate: s.rate, amount: s.amount == null ? '' : s.amount };
+      if (s.code != null && String(s.code).trim()) o.code = payXsupCode_(s.code);
+      if (s.keep === true || String(s.keep) === 'true') { o.keep = true; o.auto_h = payR2(payNum(s.auto_h)); }
+      return o;
+    });
+}
+
+/**
+ * 純函式本體（spec §3.1＋§7-3／5／9／11）。d＝{ xmap, stores, master, approvedMap(code), events(code), tsDate, today, days }。
+ * 回 { empty, synced_at, byEmp:{ 本店emp_id: { stores:[{code,name,hours,days,pending_days}], cross:[…], dup:[code] } },
+ *      unmapped:[{emp_no,acct_store,emp_id}], dup_pay:[{emp_id,code}], pending:[{emp_id,code,days}] }；ym < 生效月回 null。
+ */
+function paySupportAutoCore_(ym, home, d) {
+  if (!payXsupOn_(ym)) return null;
+  home = payXsupCode_(home);
+  const storeBy = payXsupStoreBy_(d.stores);
+  const homeKey = payXsupClockKey_(home, storeBy);
+  const homeGroup = storeBy[home] ? storeBy[home].support_group : '';
+  const xmap = d.xmap || [];
+  let synced = '';
+  xmap.forEach(function (r) { const t = String(r.synced_at || ''); if (t > synced) synced = t; });
+  const out = { empty: !xmap.length, synced_at: synced, byEmp: {}, unmapped: [], dup_pay: [], pending: [] };
+  // 主檔（在職）依打卡表分：dup_pay 要看「用同一份打卡表的門市」有沒有同一個編號
+  const masterByKey = {}, homeMaster = {};
+  (d.master || []).forEach(function (m) {
+    if (String(m.active).toLowerCase() === 'false') return;
+    const st = payXsupRowStore_(m.store), id = String(m.emp_id == null ? '' : m.emp_id).trim();
+    if (st === home) homeMaster[id] = true;
+    const k = payXsupClockKey_(st, storeBy);
+    if (k) (masterByKey[k] = masterByKey[k] || {})[id] = true;
+  });
+  const mapCache = {}, evCache = {};
+  function approvedOf(code, key) { if (!mapCache[key]) mapCache[key] = d.approvedMap(code) || {}; return mapCache[key]; }
+  function pendingOf(code, key) {   // { emp_id: { 日期: true } }：本月有打卡、但主管還沒核定的日子
+    if (evCache[key]) return evCache[key];
+    const amap = approvedOf(code, key), o = {};
+    (d.events ? (d.events(code) || []) : []).forEach(function (e) {
+      const day = d.tsDate(e.ts);
+      if (String(day).slice(0, 7) !== ym || (d.today && day >= d.today)) return;
+      const id = String(e.emp_id);
+      if (amap[day] && amap[day][id]) return;
+      (o[id] = o[id] || {})[day] = true;
+    });
+    evCache[key] = o;
+    return o;
+  }
+  const groups = {};
+  xmap.forEach(function (r) {
+    if (payXsupCode_(r.pay_store) !== home) return;
+    const state = String(r.state || 'confirmed').trim();
+    if (state === 'suggested') { out.unmapped.push({ emp_no: String(r.emp_no), acct_store: payXsupCode_(r.acct_store), emp_id: String(r.emp_id) }); return; }
+    if (state !== 'confirmed') return;
+    (groups[String(r.emp_no)] = groups[String(r.emp_no)] || []).push(r);
+  });
+  Object.keys(groups).forEach(function (no) {
+    const accts = groups[no];
+    const isHome = function (r) {
+      const k = payXsupClockKey_(r.acct_store, storeBy);
+      return homeKey ? k === homeKey : payXsupCode_(r.acct_store) === home;
+    };
+    const mine = accts.filter(function (r) { return isHome(r) && homeMaster[String(r.emp_id).trim()]; })[0];
+    if (!mine) return;   // 本店主檔找不到本人：不帶入（spec §3.1-2）
+    const empId = String(mine.emp_id).trim();
+    const entry = { stores: [], cross: [], dup: [] };
+    const seen = {};
+    accts.forEach(function (r) {
+      if (isHome(r)) return;                         // 本店（含共用同一份打卡表的門市）＝不是支援
+      if (payXsupBool_(r.not_support)) return;       // 個人例外（例：總部薪資、央廚打卡且已 Mirror）
+      const S = payXsupCode_(r.acct_store), key = payXsupClockKey_(S, storeBy);
+      if (!key || key === homeKey) return;
+      const eid = String(r.emp_id).trim();
+      if (seen[key + '|' + eid]) return;             // 共用打卡表：同一份表同一個帳號只算一次（§7-5）
+      seen[key + '|' + eid] = true;
+      const amap = approvedOf(S, key);
+      let hours = 0; const days = [];
+      Object.keys(amap).sort().forEach(function (day) {
+        if (String(day).slice(0, 7) !== ym) return;
+        const rec = amap[day][eid];
+        if (!rec) return;
+        const h = payNum(rec.approved_hours);
+        if (!h) return;
+        hours += h;
+        if (d.days) days.push({ date: day, periods: String(rec.periods || ''), hours: payR2(h), manager_name: String(rec.manager_name || '') });
+      });
+      const pend = Object.keys(pendingOf(S, key)[eid] || {}).length;
+      const row = { code: S, name: String((storeBy[S] || {}).name || S), hours: payR2(hours), pending_days: pend };
+      if (d.days) row.days = days;
+      if (pend) out.pending.push({ emp_id: empId, code: S, days: pend });
+      if (!paySameGroup_(homeGroup, (storeBy[S] || {}).support_group)) { entry.cross.push(row); return; }
+      if ((masterByKey[key] || {})[eid]) {           // 打卡店主檔也有他＝會被付兩次 → 不帶入、列待處理（§7-11）
+        entry.dup.push(S); out.dup_pay.push({ emp_id: empId, code: S, hours: row.hours });
+        return;
+      }
+      entry.stores.push(row);
+    });
+    out.byEmp[empId] = entry;
+  });
+  return out;
+}
+
+/** 跨品牌打卡、本店（打卡店 S）沒有主檔的人（spec §3.4 cross_no_master，在 S 端看）。純函式，d 同上。 */
+function payCrossIncomingCore_(ym, S, d) {
+  if (!payXsupOn_(ym)) return [];
+  S = payXsupCode_(S);
+  const storeBy = payXsupStoreBy_(d.stores);
+  const sKey = payXsupClockKey_(S, storeBy), sGroup = (storeBy[S] || {}).support_group;
+  if (!sKey || !String(sGroup == null ? '' : sGroup).trim()) return [];
+  const have = {};
+  (d.master || []).forEach(function (m) {
+    if (String(m.active).toLowerCase() === 'false') return;
+    if (payXsupClockKey_(payXsupRowStore_(m.store), storeBy) === sKey) have[String(m.emp_id).trim()] = true;
+  });
+  let amap = null;
+  const out = [], seen = {};
+  (d.xmap || []).forEach(function (r) {
+    if (String(r.state || 'confirmed').trim() !== 'confirmed' || payXsupBool_(r.not_support)) return;
+    if (payXsupClockKey_(r.acct_store, storeBy) !== sKey) return;
+    const P = payXsupCode_(r.pay_store), pGroup = (storeBy[P] || {}).support_group;
+    if (payXsupClockKey_(P, storeBy) === sKey) return;
+    if (!String(pGroup == null ? '' : pGroup).trim() || paySameGroup_(pGroup, sGroup)) return;
+    const eid = String(r.emp_id).trim();
+    if (have[eid] || seen[eid]) return;
+    if (!amap) amap = d.approvedMap(S) || {};
+    let h = 0;
+    Object.keys(amap).forEach(function (day) {
+      if (String(day).slice(0, 7) === ym && amap[day][eid]) h += payNum(amap[day][eid].approved_hours);
+    });
+    if (!h) return;
+    seen[eid] = true;
+    out.push({ emp_id: eid, pay_store: P, hours: payR2(h) });
+  });
+  return out;
+}
+
+/**
+ * 一位同仁的支援列合併（spec §3.2＋§7-1／2／12）。純函式。
+ * support＝工時列（或前端送來）的支援陣列；entry＝paySupportAutoCore_ 的 byEmp[emp]（可為 undefined）；e＝主檔列。
+ * ctx＝{ home, storeBy }。回 { support, diffs, unresolved, cross }。
+ * ·auto 列一律先丟掉再重算（舊頁面送上來的凍結值不算數）。
+ * ·有任一手填列認不出門市 → 整個人不帶入（unresolved）。
+ * ·手填列的門市與本店不同組 → cross（前端標紅擋存檔／重算）；兩邊都還沒設 support_group 時不判（上線過渡期不誤擋）。
+ * ·有手填且時數相同 → 不動；不同 → 不動、列差異（keep＋auto_h＝這次打卡值 → 不再提醒）；沒有手填 → 加 auto 列。
+ * ·費率（4B）：正職＝主檔 ot_rate；計時＝主檔 wage（不含本月 wage_override 與加給）。
+ */
+function payMergeSupport_(support, entry, e, ctx) {
+  const manual = (support || []).filter(function (s) { return !payXsupIsAuto_(s); });
+  const out = { support: manual.slice(), diffs: [], unresolved: false, cross: [] };
+  const storeBy = ctx.storeBy || {}, home = payXsupCode_(ctx.home);
+  const homeGroup = String((storeBy[home] || {}).support_group || '').trim();
+  let unresolved = false;
+  const codes = manual.map(function (s) {
+    if (paySupportBlank_(s)) return '';
+    const c = paySupportCode_(s, storeBy);
+    if (!c) unresolved = true;
+    return c;
+  });
+  codes.forEach(function (c) {
+    if (!c || c === home || out.cross.indexOf(c) >= 0) return;
+    const g = String((storeBy[c] || {}).support_group || '').trim();
+    if (homeGroup && g && !paySameGroup_(homeGroup, g)) out.cross.push(c);
+  });
+  if (unresolved) { out.unresolved = true; return out; }
+  if (!entry || !e) return out;
+  const ft = String(e.is_full_time).toLowerCase() === 'true' || e.is_full_time === true;
+  const rate = ft ? payNum(e.ot_rate) : payNum(e.wage);
+  (entry.stores || []).forEach(function (a) {
+    const idx = [];
+    codes.forEach(function (c, i) { if (c === a.code) idx.push(i); });
+    if (!idx.length) {
+      if (payNum(a.hours) > 0) out.support.push({ code: a.code, store: a.name, hours: payR2(a.hours), rate: rate, amount: '', auto: true });
+      return;
+    }
+    const mh = payR2(idx.reduce(function (t, i) { return t + payNum(manual[i].hours); }, 0));
+    const ah = payR2(a.hours);
+    if (mh === ah) return;
+    const kept = idx.every(function (i) {
+      const s = manual[i];
+      return (s.keep === true || String(s.keep) === 'true') && s.auto_h !== '' && s.auto_h != null && payR2(payNum(s.auto_h)) === ah;
+    });
+    if (kept) return;
+    out.diffs.push({ code: a.code, name: a.name, manual: mh, auto: ah });
+  });
+  return out;
+}
+
+/**
+ * 把自動帶入套到整份工時（payroll_month／payroll_inputs 顯示用，也給計算用）。純函式。
+ * inputs＝{emp:{…support}}（就地改 support）；master＝本店主檔列；auto＝paySupportAutoCore_ 的結果；
+ * incoming＝payCrossIncomingCore_ 的結果。回 support_auto（前端提醒列與逐日明細用）。
+ */
+function payApplySupportAuto_(inputs, master, auto, ctx, incoming) {
+  const sa = { synced_at: auto.synced_at, empty: auto.empty, diffs: [], pending_days: auto.pending.slice(),
+               unmapped: auto.unmapped.slice(), detail: {},
+               warn: { manual_unresolved: [], cross_manual: [], dup_pay: auto.dup_pay.slice(), cross_no_master: incoming || [] } };
+  const mBy = {};
+  (master || []).forEach(function (m) { mBy[String(m.emp_id).trim()] = m; });
+  const ids = {};
+  Object.keys(inputs).forEach(function (k) { ids[k] = true; });
+  Object.keys(auto.byEmp).forEach(function (k) { if (mBy[k]) ids[k] = true; });
+  Object.keys(ids).forEach(function (emp) {
+    const e = mBy[String(emp).trim()];
+    const A = inputs[emp] || (inputs[emp] = { hours: 0, extra_ot: 0, personal_h: 0, sick_h: 0, menstrual_h: 0, disaster_h: 0,
+                                             annual_h: 0, deduct_days: 0, work_days: 0, support: [] });
+    if (A.support_error) return;   // 支援欄壞掉的人不動（前端會擋存檔）
+    const ent = auto.byEmp[String(emp).trim()];
+    const r = payMergeSupport_(A.support || [], ent, e, ctx);
+    if (A.support !== undefined || r.support.length) A.support = r.support;   // 沒有支援欄的人不多塞一個空陣列（輸出與改版前相同）
+    if (r.unresolved) sa.warn.manual_unresolved.push(emp);
+    r.cross.forEach(function (c) { sa.warn.cross_manual.push({ emp_id: emp, code: c }); });
+    r.diffs.forEach(function (x) { sa.diffs.push({ emp_id: emp, code: x.code, name: x.name, manual: x.manual, auto: x.auto }); });
+    if (ent) (ent.stores || []).concat(ent.cross || []).forEach(function (s) {
+      if (s.days) (sa.detail[emp] = sa.detail[emp] || {})[s.code] = { name: s.name, hours: s.hours, days: s.days };
+    });
+  });
+  return sa;
+}
+
 /* ═══════════════════ Handlers ═══════════════════ */
 
 function handlePayrollSetup(body) {
@@ -1778,6 +2076,9 @@ function paySavedInputs(ym, store) {
       custom_ded_label: String(r.custom_ded_label||''), custom_ded_amt: payNum(r.custom_ded_amt),
       dorm_override: (r.dorm_override === '' || r.dorm_override == null) ? '' : payNum(r.dorm_override),
     };
+    // 「僅 support」列（hours_manual='0'，只有 payroll_support_decide 會建）：只帶支援欄，本店時數照打卡歸集。
+    // 舊列 hours_manual 空白＝整筆手動，物件形狀與改版前完全相同（不多一個欄位）。
+    if (String(r.hours_manual == null ? '' : r.hours_manual).trim() === '0') out[String(r.emp_id)]._support_only = true;
   });
   return out;
 }
@@ -1806,6 +2107,12 @@ function payInputsBase(ym, store, cutoffDate) {
   const leaveOnly = String(cfgSt.attend_deduct_basis || 'all') === 'leave';
   Object.keys(saved).forEach(function (emp) {
     const col = base[emp] || {}, sv = saved[emp];
+    if (sv._support_only) {   // 僅 support 列：本店時數不凍結（spec §7-4），只換支援欄
+      const keep = base[emp] || {};
+      keep.support = sv.support; keep.support_error = sv.support_error;
+      base[emp] = keep;
+      return;
+    }
     // 國定假日時數：手動工時沒填就沿用打卡歸集出來的值
     //（這個欄位是後加的，先前存過的月份都是空白，不 fallback 會全部變 0）
     if (sv.holiday_h === '' || sv.holiday_h == null) sv.holiday_h = payNum(col.holiday_h);
@@ -1833,8 +2140,12 @@ function handlePayrollInputs(body) {
   const ym = String(body.ym || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
   const st = payStore(body.store);
-  return { ok: true, ym: ym, store: st, inputs: payInputsBase(ym, st),
-           master: payRead('master').filter(function (m) { return payStore(m.store) === st; }) };
+  const inputs = payInputsBase(ym, st);
+  const master = payRead('master').filter(function (m) { return payStore(m.store) === st; });
+  const res = { ok: true, ym: ym, store: st, inputs: inputs, master: master };
+  const sa = payXsupApply_(ym, st, inputs, false);   // 不產逐日明細（spec §7-10）
+  if (sa) res.support_auto = sa;
+  return res;
 }
 
 /** 儲存/覆蓋某月手動工時；inputs 空＝清除該月手動覆蓋（還原成打卡歸集）。 */
@@ -1852,13 +2163,16 @@ function handlePayrollInputSet(body) {
   //   十一支整批覆寫的 handler 裡，只有這支漏了門市過濾——與 master／config／run／item
   //   ／bonus／leave_* 的寫法對齊即可。
   const st = payStore(body.store);
+  const xsup = payXsupOn_(ym);
   const rows = Object.keys(inputs).map(function (emp) {
     const a = inputs[emp] || {};
     return {
       ym: ym, emp_id: emp, store: st,
       hours: payNum(a.hours), extra_ot: payNum(a.extra_ot),
       personal_h: payNum(a.personal_h), sick_h: payNum(a.sick_h), menstrual_h: payNum(a.menstrual_h), disaster_h: payNum(a.disaster_h), annual_h: payNum(a.annual_h),
-      deduct_days: payNum(a.deduct_days), support: JSON.stringify(a.support || []), updated_at: now,
+      // 2026-11 起：打卡帶入的 auto 列不落地（永遠跟著打卡重算，spec §3.3）；手填列只留白名單欄位。生效月之前原樣照存。
+      deduct_days: payNum(a.deduct_days), support: JSON.stringify(xsup ? paySupportStrip_(a.support) : (a.support || [])), updated_at: now,
+      hours_manual: '1',
       full_attend: payBool(a.full_attend) ? 1 : 0,
       work_days: payNum(a.work_days), wage_override: payNum(a.wage_override), meal_on: payBool(a.meal_on) ? 1 : 0, holiday_h: payNum(a.holiday_h),
       custom_add_label: String(a.custom_add_label||''), custom_add_amt: payNum(a.custom_add_amt),
@@ -1918,6 +2232,11 @@ function handlePayrollCalc(body) {
   const LTYPES_FOR_CALC = payLeaveTypes(st);
   const USAGE_BEFORE = payLeaveUsedBefore(ym, st, LTYPES_FOR_CALC, cfg, master);
   const ANNUAL_INFO = payAnnualInfo(ym, st);   // 特休額度／已用／週年期，折算工資要用（迴圈外算一次）
+  // 跨店支援自動帶入（2026-11 起；之前回 null＝完全不動）。迴圈外讀一次，逐人只做純函式合併。
+  const XSUP = paySupportAuto_(ym, st, false);
+  const XCTX = XSUP ? { home: st, storeBy: payXsupStoreBy_(payRead('store')) } : null;
+  const XSA = XSUP ? payApplySupportAuto_({}, [], { synced_at: XSUP.synced_at, empty: XSUP.empty, byEmp: {}, unmapped: XSUP.unmapped,
+                                                    dup_pay: XSUP.dup_pay, pending: XSUP.pending }, XCTX, null) : null;
 
   const results = master.map(function (e) {
     const c = collected[String(e.emp_id)] || {};
@@ -1957,6 +2276,13 @@ function handlePayrollCalc(body) {
       early_min:    o.early_min    !== undefined ? payNum(o.early_min)    : payNum(c.early_min),
       attend_void:  o.attend_void  !== undefined ? payBool(o.attend_void) : !!c.attend_void,
     };
+    if (XSUP) {
+      const mg = payMergeSupport_(att.support, XSUP.byEmp[String(e.emp_id).trim()], e, XCTX);
+      att.support = mg.support;
+      if (mg.unresolved) XSA.warn.manual_unresolved.push(String(e.emp_id));
+      mg.cross.forEach(function (c) { XSA.warn.cross_manual.push({ emp_id: String(e.emp_id), code: c }); });
+      mg.diffs.forEach(function (x) { XSA.diffs.push({ emp_id: String(e.emp_id), code: x.code, name: x.name, manual: x.manual, auto: x.auto }); });
+    }
     return payCalcOne(e, ym, att, cfg, redDays, LTYPES_FOR_CALC);
   });
 
@@ -2002,7 +2328,9 @@ function handlePayrollCalc(body) {
   if (!wrote) return PAY_BUSY_;
   if (lockedMeanwhile) return { ok: false, error: 'locked', message: ym + ' 剛被鎖定，這次重算沒有寫入' };
 
-  return { ok: true, ym: ym, store: st, results: results, config: cfg, red_days: redDays, collected: collected };
+  const res = { ok: true, ym: ym, store: st, results: results, config: cfg, red_days: redDays, collected: collected };
+  if (XSA) res.support_auto = XSA;
+  return res;
 }
 
 function payItemRow(ym, empId, type, x, source, store) {
@@ -2042,7 +2370,22 @@ function handlePayrollMonth(body) {
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
   const stM = payStore(body.store);
   const inputs = payInputsBase(ym, stM);
+  const sa = payXsupApply_(ym, stM, inputs, true);   // 2026-11 起：顯示用工時帶入 auto 列＋提醒（之前回 null，輸出不變）
   let run = payBuildRunResults(ym, stM);
+  /* run 快照過期（spec §7-6）：打卡核定改了、對照同步了，草稿裡的支援時數就不再是現在的值。
+     草稿 → 自動重算一次；已鎖定 → 只標 stale 不重算。對照從沒同步過（empty）時不判。 */
+  if (sa && run && !sa.empty) {
+    const want = {};
+    Object.keys(inputs).forEach(function (k) {
+      want[String(k)] = payR2(((inputs[k] || {}).support || []).reduce(function (t, x) { return t + payNum(x.hours); }, 0));
+    });
+    const stale = (run.results || []).some(function (r) { return payR2(payNum(r.support_hours)) !== (want[String(r.emp_id)] || 0); });
+    if (stale && run.status === 'final') sa.stale = true;
+    else if (stale) {
+      const calc = handlePayrollCalc({ admin_key: body.admin_key, ym: ym, store: stM });
+      if (calc && calc.ok) { run = { results: calc.results, status: 'draft' }; sa.recalc = true; }
+    }
+  }
   if (!run) {
     const hol = payHolidayRow(ym, stM);
     // ⚠ 紅字天數整年自動帶入後，未來月份也有列了；只是翻到未來月份不可以就自動試算並寫入，
@@ -2057,7 +2400,7 @@ function handlePayrollMonth(body) {
            config: payConfig(stM), config_src: payConfigSource(stM),
            bonuses: payRead('bonus').filter(function (b) { return String(b.ym) === ym && payStore(b.store) === stM; }),
            stores: payRead('store').filter(function (x) { return String(x.active).toLowerCase() !== 'false'; }),
-           holidays: payHolidayList(stM) };
+           holidays: payHolidayList(stM), support_auto: sa || undefined };
 }
 
 function handlePayrollItemUpsert(body) {
@@ -2671,6 +3014,120 @@ function handlePayrollAuditGet(body) {
   const total = out.length;
   const items = out.slice(0, limit).map(function (x) { delete x.__i; return x; });
   return { ok: true, items: items, total: total, truncated: total > items.length };
+}
+
+/* ═══════════════════ 跨店支援自動帶入：讀資料＋handler（2026-11-05；規則本身在引擎區段）═══════════════════ */
+
+/** 讀 xmap／門市表／主檔／打卡核定，交給 paySupportAutoCore_。ym < PAY_XSUP_FROM 回 null（一張表都不讀）。 */
+function paySupportAuto_(ym, home, withDays) {
+  if (!payXsupOn_(ym)) return null;
+  return paySupportAutoCore_(ym, home, payXsupData_(withDays));
+}
+function payXsupData_(withDays) {
+  let xmap = [];
+  try { xmap = payRead('xmap'); } catch (e) { xmap = []; }
+  return {
+    xmap: xmap, stores: payRead('store'), master: payRead('master'),
+    approvedMap: function (code) { return buildLatestApprovedMap(payClockRead(code, 'approved')); },
+    events: function (code) { return payClockRead(code, 'events'); },
+    tsDate: tsDateStr, today: todayTaipeiStr(), days: !!withDays,
+  };
+}
+/** payroll_month／payroll_inputs 共用：把 auto 列合進 inputs（就地）並回 support_auto；生效月之前回 null。 */
+function payXsupApply_(ym, st, inputs, withDays) {
+  if (!payXsupOn_(ym)) return null;
+  const d = payXsupData_(withDays);
+  const auto = paySupportAutoCore_(ym, st, d);
+  const master = d.master.filter(function (m) { return payStore(m.store) === st && String(m.active).toLowerCase() !== 'false'; });
+  const incoming = payCrossIncomingCore_(ym, st, d);
+  return payApplySupportAuto_(inputs, master, auto, { home: st, storeBy: payXsupStoreBy_(d.stores) }, incoming);
+}
+
+/** 打卡對照寫入（dzy 同步）：{rows:[{emp_no,pay_store,acct_store,emp_id,state,not_support}], synced_at}。
+ *  ·pay_store／acct_store 必須是門市表現有代碼，否則丟棄（不經 payStore() 補預設店——空白不可以變成光復，§7-8）。
+ *  ·有 scope 時只換 pay_store 在負責門市的列，其他門市原封不動（多店隔離慣例；守門另在 payScopeGuard_）。
+ *  ·同一人、同一份打卡表、同一個帳號只留一列（共用打卡表去重，§7-5）。 */
+function handlePayrollXmapSet(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  if (!Array.isArray(body.rows)) return { ok: false, error: 'rows_required' };
+  const synced = String(body.synced_at || '').trim() || nowTaipeiIso();
+  const storeBy = payXsupStoreBy_(payRead('store'));
+  const sc = payScopeOf_(body), L = Array.isArray(sc) ? sc : null;
+  let dropped = 0;
+  const clean = [], seen = {};
+  body.rows.forEach(function (r) {
+    if (!r || typeof r !== 'object') { dropped++; return; }
+    const ps = payXsupCode_(r.pay_store), as = payXsupCode_(r.acct_store);
+    const eid = String(r.emp_id == null ? '' : r.emp_id).trim(), no = String(r.emp_no == null ? '' : r.emp_no).trim();
+    const state = String(r.state == null || r.state === '' ? 'confirmed' : r.state).trim();
+    if (!ps || !as || !storeBy[ps] || !storeBy[as] || !eid || !no || (state !== 'confirmed' && state !== 'suggested')) { dropped++; return; }
+    if (L && L.indexOf(ps) < 0) { dropped++; return; }
+    const k = no + '|' + ps + '|' + (payXsupClockKey_(as, storeBy) || as) + '|' + eid + '|' + state;
+    if (seen[k]) return;
+    seen[k] = true;
+    clean.push({ emp_no: no, pay_store: ps, acct_store: as, emp_id: eid,
+                 not_support: payXsupBool_(r.not_support) ? 'true' : 'false', synced_at: synced, state: state });
+  });
+  const keep = L ? function (x) { return L.indexOf(payXsupCode_(x.pay_store)) < 0; } : function () { return false; };
+  if (!payReplaceKeep_('xmap', keep, clean)) return PAY_BUSY_;
+  return { ok: true, count: clean.length, dropped: dropped, synced_at: synced };
+}
+/** 打卡對照讀取：回 rows＋synced_at（最新一筆）。有 scope 時只回 pay_store 在負責門市的列（trim 另守一次）。 */
+function handlePayrollXmapGet(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const sc = payScopeOf_(body), L = Array.isArray(sc) ? sc : null;
+  let rows = [];
+  try { rows = payRead('xmap'); } catch (e) { rows = []; }
+  rows = rows.filter(function (r) { return !L || L.indexOf(payXsupCode_(r.pay_store)) >= 0; }).map(function (r) {
+    return { emp_no: String(r.emp_no), pay_store: payXsupCode_(r.pay_store), acct_store: payXsupCode_(r.acct_store),
+             emp_id: String(r.emp_id), not_support: payXsupBool_(r.not_support), state: String(r.state || 'confirmed'),
+             synced_at: String(r.synced_at || '') };
+  });
+  let synced = '';
+  rows.forEach(function (r) { if (r.synced_at > synced) synced = r.synced_at; });
+  return { ok: true, rows: rows, synced_at: synced };
+}
+/** 差異逐筆決定（spec §7-4）：{store, ym, emp_id, code, choice:'auto'|'keep', auto_h}。
+ *  只改該員那一列 payroll_input 的 support 欄，不碰本店時數（不借道整份「儲存工時」，不會把歸集值凍結成手動列）。
+ *  auto＝刪掉該店的手填列（下次計算就變打卡帶入）；keep＝該店手填列加 keep＋auto_h（打卡值再變才會再提醒）。
+ *  「僅 support」列（hours_manual='0'）刪到沒有支援就整列移除。 */
+function handlePayrollSupportDecide(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = String(body.ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  if (!payXsupOn_(ym)) return { ok: false, error: 'xsup_off', message: PAY_XSUP_FROM + ' 以前的月份沒有打卡帶入' };
+  const st = payStore(body.store);
+  const emp = String(body.emp_id == null ? '' : body.emp_id).trim();
+  const code = payXsupCode_(body.code);
+  const choice = String(body.choice || '');
+  if (!emp || !code) return { ok: false, error: 'bad_request' };
+  if (choice !== 'auto' && choice !== 'keep') return { ok: false, error: 'bad_choice' };
+  const locked = payRead('run').some(function (r) { return String(r.ym) === ym && payStore(r.store) === st && String(r.status) === 'final'; });
+  if (locked) return { ok: false, error: 'locked', message: ym + ' 已鎖定，請先解鎖' };
+  const storeBy = payXsupStoreBy_(payRead('store'));
+  let result = 'ok';
+  const wrote = payWriteLocked_(['input'], function () {
+    const all = payRead('input');
+    let idx = -1;
+    all.forEach(function (r, i) { if (idx < 0 && String(r.ym) === ym && payStore(r.store) === st && String(r.emp_id).trim() === emp) idx = i; });
+    if (idx < 0) { result = 'no_row'; return; }
+    const r = Object.assign({}, all[idx]);
+    let sup;
+    try { sup = (r.support === '' || r.support == null) ? [] : JSON.parse(r.support); } catch (e) { result = 'support_error'; return; }
+    if (!Array.isArray(sup)) { result = 'support_error'; return; }
+    const hit = function (s) { return s && !payXsupIsAuto_(s) && paySupportCode_(s, storeBy) === code; };
+    if (!sup.some(hit)) { result = 'no_manual'; return; }
+    if (choice === 'auto') sup = sup.filter(function (s) { return !hit(s); });
+    else sup = sup.map(function (s) { return hit(s) ? Object.assign({}, s, { code: code, keep: true, auto_h: payR2(payNum(body.auto_h)) }) : s; });
+    r.support = JSON.stringify(sup);
+    r.updated_at = nowTaipeiIso();
+    const rest = all.filter(function (x, i) { return i !== idx; });
+    const supOnly = String(r.hours_manual == null ? '' : r.hours_manual).trim() === '0';
+    payReplaceAll('input', (supOnly && !sup.length) ? rest : rest.concat([r]));
+  });
+  if (!wrote) return PAY_BUSY_;
+  if (result === 'support_error') return { ok: false, error: 'support_error', message: '這位同仁的支援資料格式壞了，請先修正' };
+  return { ok: true, ym: ym, store: st, emp_id: emp, code: code, choice: choice, result: result };
 }
 
 /* ═══════════════════ 門市表 ═══════════════════ */
@@ -3373,10 +3830,19 @@ function payScopeGuard_(action, body) {
   /* 工時／假別事件日／獎金：每個 emp_id 都要在負責門市的主檔裡（final review I2；獎金 fix2-4）。
      前端 saveAtt 有範圍時只送本店主檔的人（工時表裡也有只打卡、未建主檔的編號）。
      獎金 bonuses:[{emp_id,amount,...}]：金額 0 的列 handler 會略過，但這裡照樣檢查（每個非空 emp_id）。 */
-  if (action === 'payroll_input_set' || action === 'payroll_leave_event_set' || action === 'payroll_bonus_set') {
+  /* 打卡對照寫入（2026-11-05，spec §7-7）：每一列的 pay_store 都要在負責門市內 */
+  if (action === 'payroll_xmap_set') {
+    const xr = Array.isArray(body.rows) ? body.rows : [];
+    for (let i = 0; i < xr.length; i++) {
+      const ps = payXsupCode_(xr[i] && xr[i].pay_store);
+      if (!inL(ps)) return payScopeDeny_('打卡對照的門市 ' + (ps || '（空白）') + ' 不在負責範圍');
+    }
+  }
+  if (action === 'payroll_input_set' || action === 'payroll_leave_event_set' || action === 'payroll_bonus_set' || action === 'payroll_support_decide') {
     const listOf = function (arr) { return (Array.isArray(arr) ? arr : []).map(function (r) { return r && r.emp_id; }); };
     const ids = action === 'payroll_input_set'
       ? Object.keys(body.inputs && typeof body.inputs === 'object' ? body.inputs : {})
+      : action === 'payroll_support_decide' ? [body.emp_id]
       : listOf(action === 'payroll_bonus_set' ? body.bonuses : body.events);
     const own = {};
     payRead('master').forEach(function (m) { if (inL(payScopeNorm_(m && m.store))) own[payScopeId_(m && m.emp_id)] = true; });
@@ -3395,6 +3861,9 @@ function payScopeTrim_(action, body, res) {
   const sc = payScopeOf_(body);
   if (action === 'payroll_master_get' && res.ok) res.scope = (Array.isArray(sc) ? sc : '*');
   if (!Array.isArray(sc)) return res;
+  if (action === 'payroll_xmap_get' && res.ok && Array.isArray(res.rows)) {
+    res.rows = res.rows.filter(function (r) { return sc.indexOf(payXsupCode_(r && r.pay_store)) >= 0; });
+  }
   if (['payroll_master_get', 'payroll_month', 'payroll_store_get'].indexOf(action) >= 0 && Array.isArray(res.stores)) {
     res.stores = res.stores.filter(function (s) { return sc.indexOf(payScopeNorm_(s && s.code)) >= 0; })
       .map(function (s) { const c = {}; Object.keys(s).forEach(function (k) { if (k !== 'clock_ss_id') c[k] = s[k]; }); return c; });
@@ -3472,6 +3941,9 @@ const PAYROLL_HANDLERS = {
   payroll_rest_check:      handlePayrollRestCheck,
   payroll_rest_trigger_setup: handlePayrollRestTriggerSetup,
   payroll_annual_left:     handlePayrollAnnualLeft,
+  payroll_xmap_set:        handlePayrollXmapSet,
+  payroll_xmap_get:        handlePayrollXmapGet,
+  payroll_support_decide:  handlePayrollSupportDecide,
   pnlPayroll:              handlePnlPayroll_,
   pnlLaborEstimate:        handlePnlLaborEstimate_,
 };

@@ -1727,6 +1727,9 @@ try:
     ACTIONS['payroll_holiday_sync'] = _persist(ACTIONS['payroll_holiday_sync'])
     # 差異清單「帶入／停用」要看得到寫入結果（2026-10-28）
     ACTIONS['payroll_master_set'] = _persist(ACTIONS['payroll_master_set'])
+    # 跨店支援自動帶入（2026-11-05）：對照同步、差異決定要看得到寫入結果
+    ACTIONS['payroll_xmap_set'] = _persist(ACTIONS['payroll_xmap_set'])
+    ACTIONS['payroll_support_decide'] = _persist(ACTIONS['payroll_support_decide'])
 except ImportError:
     pass
 ACTIONS['payroll_attendance_export'] = handle_payroll_attendance_export

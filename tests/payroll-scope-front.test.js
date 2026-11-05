@@ -41,6 +41,7 @@ function load({ EMBED, SCOPE, master, perCall }) {
   };
   ['applyHol', 'renderEmp', 'renderCfg', 'renderStoreSel', 'loadMonth'].forEach(n => ctx[n] = () => {});
   ctx.syncHol = () => { ctx.syncHolN++; };
+  ctx.syncXmap = () => {};   // 打卡對照背景同步（2026-11-05，跨店支援自動帶入）：這支只測 scope
   vm.createContext(ctx);
   vm.runInContext(`let EMBED=${EMBED}; let SCOPE=${JSON.stringify(SCOPE)}; let STORE='SSLGF'; let STORE_LIST=[]; let MASTER, CFG, DASH_PREFETCH;
     const SCOPE_OWN_IDS=${ownIds};\n` + src.join('\n') +
@@ -120,7 +121,7 @@ function load({ EMBED, SCOPE, master, perCall }) {
     ok(!!saveSrc, '找得到 saveAtt');
     const run = async (embed, scope) => {
       const sent = [];
-      const c = { $: () => ({ classList: { add() {}, remove() {} }, style: {} }), toast() {}, ym: () => '2026-10', doCalc: async () => {}, setTimeout() {},
+      const c = { $: () => ({ classList: { add() {}, remove() {} }, style: {} }), toast() {}, ym: () => '2026-10', doCalc: async () => {}, setTimeout() {}, supCrossBlock: () => false,
         post: async (a, b) => { sent.push({ a, b }); return { ok: true, count: 0 }; } };
       vm.createContext(c);
       vm.runInContext(`let EMBED=${embed}; let SCOPE=${JSON.stringify(scope)}; let ATT_DIRTY=true;

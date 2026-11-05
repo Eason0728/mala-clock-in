@@ -142,6 +142,7 @@ console.log('\n══ 6) 重算時送出的工時來源（前端）══');
     let sent = null;
     const ctx = { console, ATT: SUP, ATT_DIRTY: dirty, STATUS: 'draft', RESULTS: [], CFG: {},
       ym: () => '2026-08', setBusy(){}, vClear(){}, renderRun(){}, renderSlipSel(){}, toast(){},
+      supCrossBlock(){ return false; },   // 跨品牌手填擋重算（2026-11-05，support-auto.test 另守）
       post: async (a2, b2) => { sent = b2.inputs; return { ok: true, results: [], config: {} }; } };
     vm2.createContext(ctx);
     vm2.runInContext(src + '\nglobalThis.__d=doCalc;', ctx);
