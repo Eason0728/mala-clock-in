@@ -284,7 +284,7 @@
     if (isLocalHost && qs('mock_uid')) {
       var uid = qs('mock_uid');
       window.liff = { init: function () { return Promise.resolve(); }, isLoggedIn: function () { return true; },
-        getIDToken: function () { return 'MOCK_ID_TOKEN_' + uid; }, login: function () {}, isInClient: function () { return !!qs('in_client'); },
+        getIDToken: function () { return 'MOCK_ID_TOKEN_' + uid; }, getDecodedIDToken: function () { return { sub: uid }; }, login: function () {}, isInClient: function () { return !!qs('in_client'); },
         sendMessages: function (m) { window.__sent = (window.__sent || []).concat(m); return Promise.resolve(); },
         closeWindow: function () { window.__closed = true; } };
       return Promise.resolve(true);

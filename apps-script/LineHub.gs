@@ -1279,6 +1279,7 @@ var LINE_HUB_HANDLERS = {
   line_hub_status: handleLineHubStatus_,
   line_bind_name: handleLineBindName_,
   line_hub_req_init: function (b) { return handleLineHubReqInit_(b); },
+  line_hub_req_quota: function (b) { return handleLineHubReqQuota_(b); },   // 申請頁額度與補休帳（2026-11-06，開頁加快）
   line_hub_attach_put: function (b) { return handleLineHubAttachPut_(b); },
   line_hub_attach_get: function (b) { return handleLineHubAttachGet_(b); },
   line_hub_sched: function (b) { return handleLineHubSched_(b); },   // 出勤班表（Sched.gs）
@@ -1432,6 +1433,24 @@ function handleLineHubReqInit_(body) {
   } catch (e) { names = []; }
   if (!names.length) names = LEAVE_TYPES.slice();
   names = names.filter(function (n) { return n && n !== '出差' && LEAVE_TYPES.indexOf(n) >= 0; });
+  /* 開頁加快（2026-11-06 Eason）：lite＝先不算額度與補休帳（光復、央廚要整份算一次薪資單，是最慢的一段），
+     申請頁另外打 line_hub_req_quota 補上。舊申請頁不帶 lite → 照舊一次全回。 */
+  var qc = body.lite ? { quota: [], comp: null } : lineHubReqQuota_(userId);
+  var quota = qc.quota, comp = qc.comp;
+  var common = LINE_HUB_COMMON_LEAVES.filter(function (n) { return names.indexOf(n) >= 0; });
+  common.push('補休');   // 與 Payroll.gs PAY_COMP_NAME、Requests.gs REQ_COMP_LEAVE_ 同一個字；2026-11-04 起一律列出
+  var punchStore = null;
+  if (mine.length > 1) { try { punchStore = lineHubLastPunchStore_(mine); } catch (e) { punchStore = null; } }   // 只綁一家就不用讀
+  return { ok: true, lite: !!body.lite, stores: stores, punch_store: punchStore, comp: comp,
+           leave_types: { common: common,
+                          special: names.filter(function (n) { return LINE_HUB_COMMON_LEAVES.indexOf(n) < 0; }) },
+           quota: lineHubQuotaOut_(quota) };
+}
+function lineHubQuotaOut_(quota) {
+  return quota.map(function (q) { return { name: q.name, cap_days: q.cap_days, cap_h: q.cap_h, remain_h: q.remain_h, used_h: q.used_h, basis: q.basis }; });
+}
+/** 假別額度＋本月補休帳（line_hub_req_init 與 line_hub_req_quota 共用）。comp 一定有值（算不出來＝known:false）。 */
+function lineHubReqQuota_(userId) {
   var quota = [], comp = { allowed: false, known: false, ot_h: 0, used_h: 0, balance_h: 0 };
   try {
     var j = lineHubPayslipFor_(userId);
@@ -1446,14 +1465,16 @@ function handleLineHubReqInit_(body) {
     if (c && c.allowed) comp = { allowed: true, known: true, ot_h: Number(c.ot_h) || 0, used_h: Number(c.used_h) || 0, balance_h: Number(c.balance_h) || 0, ym: String(c.ym || '') };
     else if (c && c.known !== false) comp.known = true;
   } catch (e) { /* 算不出來＝known:false，照樣列補休，交給主管 */ }
-  var common = LINE_HUB_COMMON_LEAVES.filter(function (n) { return names.indexOf(n) >= 0; });
-  common.push('補休');   // 與 Payroll.gs PAY_COMP_NAME、Requests.gs REQ_COMP_LEAVE_ 同一個字；2026-11-04 起一律列出
-  var punchStore = null;
-  if (mine.length > 1) { try { punchStore = lineHubLastPunchStore_(mine); } catch (e) { punchStore = null; } }   // 只綁一家就不用讀
-  return { ok: true, stores: stores, punch_store: punchStore, comp: comp,
-           leave_types: { common: common,
-                          special: names.filter(function (n) { return LINE_HUB_COMMON_LEAVES.indexOf(n) < 0; }) },
-           quota: quota.map(function (q) { return { name: q.name, cap_days: q.cap_days, cap_h: q.cap_h, remain_h: q.remain_h, used_h: q.used_h, basis: q.basis }; }) };
+  return { quota: quota, comp: comp };
+}
+/** {action:'line_hub_req_quota', id_token} → {ok, quota, comp}（2026-11-06）：申請頁表單先出來，這支晚一點補上額度與補休帳。 */
+function handleLineHubReqQuota_(body) {
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+  if (lineHubThrottled_('rqq', userId, 20, 60)) return { ok: false, error: 'too_many' };
+  if (!lineHubMine_(userId, null, false).length) return { ok: false, error: 'not_bound' };
+  var qc = lineHubReqQuota_(userId);
+  return { ok: true, quota: lineHubQuotaOut_(qc.quota), comp: qc.comp };
 }
 
 var LINE_HUB_ATTACH_FOLDER = '打卡申請附件';

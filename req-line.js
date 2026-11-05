@@ -5,10 +5,14 @@
  * 送出：那家店 req_submit；附件先傳光復 line_hub_attach_put 拿 ID。結果不推播，回「我的申請」看。
  * 2026-10-28 忘打卡自動選店：綁兩家以上的同仁選好日期後，同時問每家店那天有沒有卡（req_info day_only）；
  * 剛好只有一家有卡（含被擋的卡）就幫他切到那家並寫一行說明，兩家以上都有卡提醒確認，都沒有或有店問不到就不動。
- * 2026-10-29 預設店別＝打卡的那家：opts.store（打卡畫面剛打卡的店）→ line_hub_req_init 的 punch_store（最近一張卡）→ 第一家。 */
+ * 2026-10-29 預設店別＝打卡的那家：opts.store（打卡畫面剛打卡的店）→ line_hub_req_init 的 punch_store（最近一張卡）→ 第一家。
+ * 2026-11-06 開頁加快（Eason：開申請頁要等 10 秒以上）：①手機記住上次的店別與假別（localStorage，綁 LINE 帳號、最多 30 天），
+ *   有記住就先畫表單，背景再拿最新的換上；額度、補休帳的數字不記。②光復、那家店、額度三支同時問，不再排隊。
+ *   ③光復開頁資料帶 lite（不算額度與補休帳），額度另打 line_hub_req_quota 晚一點補上；舊後端不認得 lite／quota 照舊一次全回。 */
 (function () {
   'use strict';
-  var E, $root, st = { init: null, store: null, info: null, tab: 'leave', busy: false };
+  var E, $root, st = { init: null, store: null, info: null, tab: 'leave', busy: false,
+                      quotaReady: false, quota: null, infoErr: false, touched: false, storeManual: false };
   var TABS = [['leave', '請假'], ['ot', '加班'], ['trip', '出差'], ['miss', '忘打卡'], ['mine', '我的申請']];
   var MISS_REASONS = ['忘記按', '手機沒電', '定位抓不到被擋', '按錯上下班', '其他'];
   var STATUS = { pending: ['審核中', 'wait'], approved: ['已核准', 'ok'], rejected: ['已退回', 'no'], cancelled: ['已取消', 'off'], voided: ['已作廢', 'off'] };
@@ -98,6 +102,49 @@
   function msgBox(text, cls) { return h('div', { class: 'rq-box ' + (cls || ''), text: text }); }
 
   /* ── 開頁 ── */
+  /* 手機記住的開頁資料（2026-11-06）：只記店別清單、上次用的店、假別清單；額度與補休帳會變，不記。
+     綁 LINE 帳號（id token 的 sub），換人用同一支手機不會看到別人的；超過 30 天當沒記。localStorage 讀寫失敗一律當沒記。 */
+  var CACHE_KEY = 'mala_req_init_v1', CACHE_MS = 30 * 86400000;
+  function lineSub() { try { var d = liff.getDecodedIDToken && liff.getDecodedIDToken(); return (d && d.sub) ? String(d.sub) : ''; } catch (e) { return ''; } }
+  function cacheGet() {
+    try {
+      var c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'), sub = lineSub();
+      if (!c || !sub || c.sub !== sub || !(Date.now() - c.at < CACHE_MS) || !c.stores || !c.stores.length || !c.leave_types) return null;
+      return c;
+    } catch (e) { return null; }
+  }
+  function cachePut() {
+    try {
+      var sub = lineSub();
+      if (!sub || !st.init || !st.init.fresh) return;   // 只存伺服器剛給的，不把記住的再存一次（存的時間會被延長）
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ sub: sub, at: st.init.fresh, stores: st.init.stores, punch_store: st.init.punch_store,
+                                                        leave_types: st.init.leave_types, last_store: st.store ? st.store.code : null }));
+    } catch (e) { /* 存不了就下次再慢一次 */ }
+  }
+  function cacheDrop() { try { localStorage.removeItem(CACHE_KEY); } catch (e) {} }
+  /** 新資料到了要重畫：同仁正在打字（焦點在輸入框）就等他離開那格再畫，免得鍵盤收起來、游標跳走。 */
+  var refreshWait = false;
+  function refresh() {
+    var a = document.activeElement;
+    if (a && $root.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) {
+      if (refreshWait) return;
+      refreshWait = true;
+      a.addEventListener('blur', function () { refreshWait = false; setTimeout(refresh, 0); }, { once: true });
+      return;
+    }
+    render();
+  }
+  function applyQuota() {
+    if (!st.init || !st.quota) return;
+    st.init.quota = st.quota.quota || []; st.init.comp = st.quota.comp || null; st.quotaReady = true;
+  }
+  function infoFor(code) {
+    return E.readRetry(E.storeApi(storeDef(code)), { action: 'req_info', id_token: liff.getIDToken() }).then(function (r) {
+      if (r && r.ok) return r;
+      throw new Error((r && r.error) || 'failed');
+    });
+  }
+  var touchHooked = false;
   function open(opts) {
     E = window.ClockLineEnv;
     $root = document.getElementById('reqView');
@@ -105,25 +152,65 @@
     st.missDate = opts.date || ''; st.missType = opts.miss || '';
     // 下班打卡提示加班（opts.start／end）：預填加班分頁，原因留給同仁寫
     if (st.tab === 'ot' && opts.date && opts.start && opts.end) ot = { date: opts.date, start: opts.start, end: opts.end, reason: '' };
+    if (!touchHooked) {   // 同仁動過表單就不再自動換店（背景拿到最新的「最近一張卡在哪家店」時用）
+      touchHooked = true;
+      ['input', 'change', 'click'].forEach(function (ev) { $root.addEventListener(ev, function () { if (st.init) st.touched = true; }, true); });
+    }
+    st.init = null; st.info = null; st.infoErr = false; st.quota = null; st.quotaReady = false; st.touched = false; st.storeManual = false;
     $root.hidden = false;
+    var token = liff.getIDToken(), cached = cacheGet(), hasOpt = opts.store !== undefined && opts.store !== null;
+    // 三支同時問：光復基本資料（lite）、額度補休帳、那家店的「我的申請」（店別先用記住的／打卡畫面帶來的猜）
+    var initP = E.readRetry(E.HUB_API, { action: 'line_hub_req_init', id_token: token, lite: true });
+    E.readRetry(E.HUB_API, { action: 'line_hub_req_quota', id_token: token }).then(function (q) {
+      if (!q || !q.ok) return;   // 舊後端 unknown_action：額度跟著開頁資料一起回（見下面 r.lite）
+      st.quota = q; applyQuota(); if (st.init && st.store) refresh();
+    }, function () {});
+    var guess = cached ? pickStore(cached.stores, [opts.store, cached.last_store, cached.punch_store]).code : (hasOpt ? opts.store : undefined);
+    var infoP = guess !== undefined && storeDef(guess) ? { code: guess, p: infoFor(guess) } : null;
+    if (infoP) infoP.p.catch(function () {});
+    function loadInfoNow() {
+      var code = st.store.code;
+      var p = infoP && infoP.code === code ? infoP.p : infoFor(code);
+      return p.then(function (r) { if (st.store && st.store.code === code) { st.info = r; st.infoErr = false; } },
+                    function () { if (st.store && st.store.code === code) st.infoErr = true; });
+    }
     $root.innerHTML = '';
-    $root.appendChild(h('div', { class: 'rq-loading', text: '讀取中…' }));
-    E.readRetry(E.HUB_API, { action: 'line_hub_req_init', id_token: liff.getIDToken() }).then(function (r) {
+    if (cached) {   // 有記住：表單馬上出來
+      st.init = { stores: cached.stores, punch_store: cached.punch_store, leave_types: cached.leave_types, quota: [], comp: null, fresh: 0 };
+      st.store = pickStore(st.init.stores, [opts.store, cached.last_store, cached.punch_store]);
+      applyQuota();
+      render();
+      loadInfoNow().then(refresh);
+    } else $root.appendChild(h('div', { class: 'rq-loading', text: '讀取中…' }));
+    initP.then(function (r) {
       if (r && r.error === 'invalid_id_token') {   // 開頁就逾時：還沒填東西，直接重整（2026-10-30）
         $root.innerHTML = '';
         $root.appendChild(msgBox(E.relogin() === 'stuck' ? 'LINE 登入逾時。請關掉這頁，再從選單按「申請」重新打開。' : 'LINE 登入逾時，正在重新連線…', 'err'));
         return;
       }
       if (!r || !r.ok) {
+        if (r && r.error === 'not_bound') cacheDrop();
+        if (cached && !(r && r.error === 'not_bound')) return;   // 已經用記住的畫好了，背景更新失敗就先用記住的（送出時伺服器照樣檢查）
         $root.innerHTML = '';
         $root.appendChild(msgBox(r && r.error === 'not_bound' ? '你還沒綁定打卡。請先到店裡按選單「打卡」完成綁定，再來申請。' : '讀不到資料，請稍後再試。', 'err'));
         return;
       }
-      st.init = r;
-      // 預設店別＝打卡的那家（2026-10-29）：從打卡畫面按進來用剛打卡的店，從選單開用後台查到最近一張卡的店；都沒有才用第一家
-      st.store = pickStore(r.stores, [opts.store, r.punch_store]);
-      return loadInfo().then(render);
-    }, function () { $root.innerHTML = ''; $root.appendChild(msgBox('連線失敗，請檢查網路後重新打開。', 'err')); });
+      var prev = st.store ? st.store.code : null;
+      st.init = { stores: r.stores, punch_store: r.punch_store, leave_types: r.leave_types, fresh: Date.now(),
+                  quota: r.lite ? [] : (r.quota || []), comp: r.lite ? null : (r.comp || null) };
+      if (!r.lite) st.quotaReady = true;   // 舊後端：額度已經一起回了
+      applyQuota();
+      // 預設店別＝打卡的那家（2026-10-29）：從打卡畫面按進來用剛打卡的店，從選單開用後台查到最近一張卡的店；都沒有才用第一家。
+      // 已經用記住的店畫好：同仁還沒動過表單才換成後台查到的那家；那家已經不在名單（解除綁定）一定換。
+      var keep = prev !== null && (st.storeManual || st.touched) ? prev : null;
+      st.store = pickStore(r.stores, keep !== null ? [keep] : [opts.store, r.punch_store, prev]);
+      cachePut();
+      if (prev === null || st.store.code !== prev) { st.info = null; st.infoErr = false; render(); loadInfoNow().then(refresh); }
+      else refresh();
+    }, function () {
+      if (cached) return;
+      $root.innerHTML = ''; $root.appendChild(msgBox('連線失敗，請檢查網路後重新打開。', 'err'));
+    });
   }
   /** 依序找第一個對得上的店代碼（光復的代碼是空字串，所以不能用 truthy 判斷）；都沒有回第一家。 */
   function pickStore(stores, codes) {
@@ -173,7 +260,7 @@
     var head = h('div', { class: 'rq-head' }, [h('b', { text: st.store.emp_name }), ' ']);
     if (st.init.stores.length > 1) {
       var sel = h('select', { class: 'rq-store', on: { change: function () {
-        st.store = st.init.stores[+sel.value]; st.info = null;
+        st.store = st.init.stores[+sel.value]; st.info = null; st.infoErr = false; st.storeManual = true; cachePut();
         if (st.tab === 'miss') render();   // 忘打卡：各店那天的卡已經一起查好了，先換畫面
         loadInfo().then(render, function () { alert('讀不到這家店的資料'); });
       } } }, st.init.stores.map(function (s, i) { return h('option', { value: i, text: s.name, selected: s === st.store }); }));
@@ -407,6 +494,7 @@
 
   /* 我的申請 */
   function renderMine(p) {
+    if (!st.info) { p.appendChild(h('div', { class: 'rq-empty', text: st.infoErr ? '讀不到你的申請，請稍後再打開一次。' : '讀取中…' })); return; }
     var list = (st.info && st.info.requests) || [];
     p.appendChild(h('div', { class: 'rq-muted', text: '最近 60 天' }));
     if (!list.length) { p.appendChild(h('div', { class: 'rq-empty', text: '還沒有任何申請' })); return; }

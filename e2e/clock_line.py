@@ -76,6 +76,9 @@ const _f = window.fetch;
 window.fetch = function (url, o) {
   let a = ''; try { a = JSON.parse(o.body).action; } catch (e) {}
   window.__calls.push({ url: String(url), action: a, t: Date.now() });
+  const dl = (window.__delay || {})[a];   // 某支動作延遲幾毫秒才送（2026-11-06 開頁加快：模擬光復慢）
+  if (dl) { const self = this, args = arguments; window.__delay[a] = 0;
+    return new Promise(function (r) { setTimeout(r, dl); }).then(function () { return window.fetch.apply(self, args); }); }
   let fk = window.__fake[a];
   if (Array.isArray(fk)) fk = fk.length > 1 ? fk.shift() : fk[0];   // 陣列＝依序回，最後一個一直回
   if (fk === 'real') fk = null;
@@ -589,6 +592,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             ok('補休：主檔還沒建也送得出去', '補休 整天 8 小時' in p.inner_text('#reqView'), p.inner_text('#reqView')[:200])
             p.screenshot(path=os.path.join(SHOTS, '補休_主檔未建.jpg'), type='jpeg', quality=80)
             p.close()
+            phase_req_fast(ctx, (HQ['lat'], HQ['lng']))
             phase_sched(ctx)
             phase_leave_proof(ctx, (HQ['lat'], HQ['lng']))
             phase_miss_store(ctx)
@@ -603,6 +607,91 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
     finally:
         proc.kill()
     print(f'\n✅ LINE 打卡畫面（直打店家）全部通過 ({n}/{n})')
+
+
+def phase_req_fast(ctx, hq):
+    """申請頁開頁加快（2026-11-06 Eason：開申請頁要等 10 秒以上）：手機記住上次的店別與假別、三支同時問、額度晚點補上。"""
+    c2 = ctx.browser.new_context()   # 乾淨的 localStorage
+    fg = os.path.join(ROOT, 'mock', 'mock_data.json')
+    def set_hub(**kw):
+        dg = json.load(open(fg, encoding='utf-8'))
+        for k, v in kw.items():
+            if v is None: dg.pop(k, None)
+            else: dg[k] = v
+        json.dump(dg, open(fg, 'w', encoding='utf-8'), ensure_ascii=False)
+    set_hub(mock_comp=None, mock_old_hub=None)
+    u = url(hq, in_client=True, extra='&view=req&tab=leave')
+    slow = "window.__delay = {line_hub_req_init: %d, line_hub_req_quota: %d};"
+    # 1. 第一次打開（手機沒記）：要等光復回來才有表單
+    p = open_page(c2, u, slow % (2500, 0))
+    p.wait_for_timeout(1200)
+    ok('開頁加快：第一次打開（手機沒記）→ 等光復時顯示「讀取中」、還沒有表單',
+       p.locator('#reqView .rq-tabs').count() == 0 and '讀取中' in p.inner_text('#reqView'), p.inner_text('#reqView')[:60])
+    p.wait_for_selector('#reqView .rq-tabs', timeout=15000)
+    cl = p.evaluate("window.__calls.filter(c => /line_hub_req|req_info/.test(c.action)).map(c => c.action)")
+    ok('開頁加快：光復開頁資料、額度、那家店三支都有問', 'line_hub_req_init' in cl and 'line_hub_req_quota' in cl and 'req_info' in cl, cl)
+    saved = p.evaluate("JSON.parse(localStorage.getItem('mala_req_init_v1') || 'null')")
+    ok('開頁加快：記住的只有店別、上次的店、假別（沒有額度、補休帳）',
+       saved and saved['sub'] == 'U1' and saved['stores'] and saved['leave_types'] and 'quota' not in saved and 'comp' not in saved,
+       sorted(saved.keys()) if saved else saved)
+    p.close()
+    # 2. 第二次打開：光復慢 4 秒也馬上有表單；額度晚 2.5 秒補上
+    p = open_page(c2, u, slow % (4000, 2500))
+    p.wait_for_selector('#reqView .rq-tabs', timeout=1500)
+    t0 = p.evaluate("Date.now()")
+    ok('開頁加快：第二次打開 → 光復還沒回就有表單（店名、假別都在）',
+       p.locator('#reqView .rq-chip').count() > 0 and p.inner_text('#reqView .rq-head').strip() != '', p.inner_text('#reqView')[:80])
+    p.click('#reqView .rq-chip:has-text("特休假")')
+    p.wait_for_selector('#reqView .rq-chip.on:has-text("特休假")', timeout=3000)
+    ok('開頁加快：額度還沒回 → 不顯示舊數字', p.locator('#reqView .rq-quota').count() == 0, p.inner_text('#reqView')[:200])
+    p.wait_for_selector('#reqView .rq-quota', timeout=10000)
+    ok('開頁加快：額度晚一點補上「特休假：剩 40 小時（上限 56）」', '特休假：剩 40 小時（上限 56）' in p.inner_text('#reqView'), p.inner_text('#reqView')[:200])
+    p.click('#reqView .rq-tabs button[data-tab=mine]')
+    p.wait_for_function("document.getElementById('reqView').textContent.indexOf('最近 60 天') >= 0", timeout=10000)
+    ok('開頁加快：「我的申請」照樣讀得到', '最近 60 天' in p.inner_text('#reqView'))
+    lite = p.evaluate("window.__calls.filter(c => c.action === 'line_hub_req_init').length")
+    ok('開頁加快：光復開頁資料只問一次', lite == 1, lite)
+    p.close()
+    # 3. 正在打字時新資料到了 → 不重畫（打的字、焦點都留著）
+    p = open_page(c2, url(hq, in_client=True, extra='&view=req&tab=ot'), slow % (2500, 0))
+    p.wait_for_selector('#reqView input[type=text]', timeout=1500)
+    p.click('#reqView input[type=text]'); p.keyboard.type('外送很多')
+    p.wait_for_timeout(3500)
+    ok('開頁加快：打字時光復資料到了 → 打的字還在、游標還在那格',
+       p.evaluate("document.activeElement && document.activeElement.tagName") == 'INPUT'
+       and p.evaluate("document.querySelector('#reqView input[type=text]').value") == '外送很多')
+    p.click('#reqView .rq-tabs button[data-tab=leave]')
+    p.click('#reqView .rq-tabs button[data-tab=ot]')
+    ok('開頁加快：離開那格後換到最新資料、打的字照樣留著', p.evaluate("document.querySelector('#reqView input[type=text]').value") == '外送很多')
+    p.close()
+    # 4. 換一個 LINE 帳號用同一支手機 → 不用前一個人記住的
+    p = c2.new_page(); p.goto(BASE + '/clock-line.html')
+    p.evaluate("""() => { const c = JSON.parse(localStorage.getItem('mala_req_init_v1')); c.sub = 'U_別人'; localStorage.setItem('mala_req_init_v1', JSON.stringify(c)); }""")
+    p.close()
+    p = open_page(c2, u, slow % (2500, 0))
+    p.wait_for_timeout(1200)
+    ok('開頁加快：記住的是別的 LINE 帳號 → 不拿來用（等光復）', p.locator('#reqView .rq-tabs').count() == 0, p.inner_text('#reqView')[:60])
+    p.wait_for_selector('#reqView .rq-tabs', timeout=15000)
+    p.close()
+    # 5. 超過 30 天沒開 → 當沒記
+    p = c2.new_page(); p.goto(BASE + '/clock-line.html')
+    p.evaluate("""() => { const c = JSON.parse(localStorage.getItem('mala_req_init_v1')); c.at = Date.now() - 31 * 86400000; localStorage.setItem('mala_req_init_v1', JSON.stringify(c)); }""")
+    p.close()
+    p = open_page(c2, u, slow % (2500, 0))
+    p.wait_for_timeout(1200)
+    ok('開頁加快：記住超過 30 天 → 不拿來用', p.locator('#reqView .rq-tabs').count() == 0, p.inner_text('#reqView')[:60])
+    p.wait_for_selector('#reqView .rq-tabs', timeout=15000)
+    p.close()
+    # 6. 光復還是舊版（不認得 lite、沒有 line_hub_req_quota）→ 照樣有額度
+    set_hub(mock_old_hub=True)
+    p = open_page(c2, u)
+    p.wait_for_selector('#reqView .rq-tabs', timeout=10000)
+    p.click('#reqView .rq-chip:has-text("特休假")')
+    p.wait_for_selector('#reqView .rq-quota', timeout=10000)
+    ok('開頁加快：光復舊版 → 額度跟著開頁資料一起來，照樣顯示', '特休假：剩 40 小時（上限 56）' in p.inner_text('#reqView'), p.inner_text('#reqView')[:200])
+    p.close()
+    set_hub(mock_old_hub=None)
+    c2.close()
 
 
 def phase_sched(ctx):
