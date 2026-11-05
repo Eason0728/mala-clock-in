@@ -337,6 +337,11 @@ ok('出差：整天填時數／只一段算時數；地點、事由必填，地�
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2027-02-29', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-09-01', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');   // 超過 31 天前
   assert(submit(sb, { kind: 'trip', date: '2026-09-10', hours: 8, place: '總部', why: 'x' }).ok);   // 31 天內可補
+  // 2026-11-05：請假改 7 天前（今天 10/09 → 10/02 可、10/01 擋），加班／出差維持 31 天
+  assert(submit(sb, { kind: 'leave', date: '2026-10-02', leave_type: '事假', hours: 4 }).ok);
+  const old = submit(sb, { kind: 'leave', date: '2026-10-01', leave_type: '事假', hours: 4 });
+  assert.strictEqual(old.error, 'bad_date'); assert.strictEqual(old.message, '請假只能申請 7 天前到 90 天後');
+  assert(submit(sb, { kind: 'ot', date: '2026-09-08', start: '21:00', end: '22:00', reason: 'x' }).ok);
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-12', hours: 4, place: '總部', why: 'x' }).error, 'duplicate');
   // 地點裡的全形分號換掉，reason 才拆得回來
   r = submit(sb, { kind: 'trip', date: '2026-10-20', hours: 8, place: '台中；美村', why: 'x' });

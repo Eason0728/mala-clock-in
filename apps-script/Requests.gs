@@ -16,7 +16,8 @@ var REQ_HEADERS_ = ['id', 'created_at', 'emp_id', 'name', 'kind', 'date', 'leave
 var REQ_COMP_LEAVE_ = '補休';   // 補休（2026-10-09）：不在 Code.gs LEAVE_TYPES 白名單裡，請假申請另外放行
 var REQ_KINDS_ = { leave: '請假', ot: '加班', trip: '出差', miss: '忘打卡' };
 var REQ_MISS_DAYS = 7;          // 忘打卡只能申請 7 天內（含今天）
-var REQ_LEAVE_PAST_DAYS = 31;   // 請假可補申請到 31 天前
+var REQ_LEAVE_PAST_DAYS = 7;    // 請假可補申請到 7 天前（2026-11-05 Eason：原本 31 天，改成事後 7 天內要申請）
+var REQ_OT_PAST_DAYS = 31;      // 加班／出差可補申請到 31 天前（請假改 7 天時沒動這兩種）
 var REQ_FUTURE_DAYS = 90;       // 請假／加班最遠申請到 90 天後
 var REQ_LIST_DAYS = 60;         // 「我的申請」看 60 天
 var REQ_REASON_MAX = 100;
@@ -314,7 +315,7 @@ function reqValidate_(b, me, events, today, existing) {
       row.hours = h;
     }
   } else if (kind === 'ot') {
-    if (diff < -REQ_LEAVE_PAST_DAYS || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '加班只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
+    if (diff < -REQ_OT_PAST_DAYS || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '加班只能申請 ' + REQ_OT_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
     row.start = reqHm_(b.start); row.end = reqHm_(b.end);
     if (!row.start || !row.end) return { error: 'bad_time', message: '請填加班時段' };
     row.hours = reqSpanHours_(row.start, row.end);
@@ -323,7 +324,7 @@ function reqValidate_(b, me, events, today, existing) {
     // 補休（2026-11-01 改每月加減結算）：加班不再分「加班費／換補休」，核准的加班都算進當月補休帳；comp 欄留空（舊列的值不再使用）
   } else if (kind === 'trip') {
     // 出差（2026-10-09）：存成 leave_type＝出差；核准後核定頁預填「出差」＋時數（出差時數與上班時段相加，整天出差可以沒有時段）
-    if (diff < -REQ_LEAVE_PAST_DAYS || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '出差只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
+    if (diff < -REQ_OT_PAST_DAYS || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '出差只能申請 ' + REQ_OT_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
     row.leave_type = '出差';
     if (b.start || b.end) {
       row.start = reqHm_(b.start); row.end = reqHm_(b.end);
