@@ -71,15 +71,14 @@ ok('lineHubCompFor_：不看 LINE_HUB_PAY_STORES——金山正職也算得到�
   sb.lineHubPayPickAny_ = () => null;
   assert.deepStrictEqual(JSON.parse(JSON.stringify(sb.lineHubCompFor_('U1'))), { allowed: false, known: false });
 });
-ok('lineHubPayPickFresh_：any＝true 時不套開放名單，否則照舊只回光復、央廚', () => {
+ok('lineHubPayPickFresh_：2026-11-05 起全部門市開放，金山同仁也找得到', () => {
   const sb = make(null);
   sb.payStoreList = () => [{ code: 'MZTJS' }];
   sb.payClockRead = () => [{ emp_id: 'MZTJS06', name: '甲君', line_user_id: 'U1', active: 'TRUE' }];
   sb.lineHubCanView_ = () => true;
   sb.payRead = () => [{ emp_id: 'MZTJS06', store: 'MZTJS' }];
   sb.payStore = (v) => String(v || 'SSLGF');
-  assert.strictEqual(sb.lineHubPayPickFresh_('U1'), null);
-  assert.strictEqual(sb.lineHubPayPickFresh_('U1', true).store, 'MZTJS');
+  assert.strictEqual(sb.lineHubPayPickFresh_('U1').store, 'MZTJS');
 });
 ok('假別額度卡：特休下面一列「本月補休 剩 4 小時」＋加班 − 補休；欠的標紅；文字版同步', () => {
   let sb = make({ ok: true, annual: null, leave_quota: [], comp: FT });
