@@ -640,5 +640,29 @@ console.log('§13 GPT 上線前審查');
   chk('G12 2026-10 存檔 hours_manual 空白', s.__DB.input.find((r) => r.emp_id === 'E01').hours_manual === '');
 }
 
+/* ── §14 損益人事估算也吃自動帶入（Eason 2026-11-05「一起接上」）── */
+console.log('§14 損益估算');
+{
+  const est = (s, ym) => {
+    vm.runInContext(`checkPnlKey_ = function(){ return ''; };
+      getSS = function(){ return { getSheetByName: function(){ return {}; } }; };`, s);
+    return s.H('pnlLaborEstimate', { key: 'k', ym, store: 'SSLGF' });
+  };
+  const s = ctx();
+  vm.runInContext("todayTaipeiStr = function(){ return '2026-11-06'; };", s);
+  const e = est(s, '2026-11');
+  chk('P1 11 月估算：跨店支援請款有央廚（A 君 12.5H＋其他人）', e.ok && (e.support['中央廚房'] || 0) > 0, e.support || e);
+  // 只算到昨天：11/06 之後的核定不算
+  const s2 = ctx();
+  vm.runInContext("todayTaipeiStr = function(){ return '2026-11-05'; };", s2);   // as_of＝11/04：A 君 11/05 的 4.5H 不算
+  s2.__DB.xmap = XMAP().filter((x) => x.emp_no === 'D01');
+  const e2 = est(s2, '2026-11');
+  chk('P1 只算到 as_of：A 君央廚 8H×240＝1,920（11/05 的 4.5H 不算）', e2.ok && e2.support['中央廚房'] === 1920, e2.support);
+  const s3 = ctx();
+  s3.__DB.xmap = [];
+  vm.runInContext("todayTaipeiStr = function(){ return '2026-11-06'; };", s3);
+  chk('P1 對照沒同步：沒有自動帶入（照舊）', !(est(s3, '2026-11').support || {})['中央廚房']);
+}
+
 console.log(`\n${fail ? '❌ ' + fail + ' 項失敗' : '✅ 跨店支援自動帶入全部通過'}（${pass}/${pass + fail}）`);
 process.exit(fail ? 1 : 0);

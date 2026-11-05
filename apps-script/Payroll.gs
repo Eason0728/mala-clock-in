@@ -1694,7 +1694,7 @@ function paySupportAutoCore_(ym, home, d) {
       const amap = approvedOf(S, key);
       let hours = 0; const days = [];
       Object.keys(amap).sort().forEach(function (day) {
-        if (String(day).slice(0, 7) !== ym) return;
+        if (String(day).slice(0, 7) !== ym || (d.until && day > d.until)) return;
         const rec = amap[day][eid];
         if (!rec) return;
         const h = payNum(rec.approved_hours);
@@ -3109,9 +3109,11 @@ function handlePayrollAuditGet(body) {
 /* ═══════════════════ 跨店支援自動帶入：讀資料＋handler（2026-11-05；規則本身在引擎區段）═══════════════════ */
 
 /** 讀 xmap／門市表／主檔／打卡核定，交給 paySupportAutoCore_。ym < PAY_XSUP_FROM 回 null（一張表都不讀）。 */
-function paySupportAuto_(ym, home, withDays) {
+function paySupportAuto_(ym, home, withDays, until) {
   if (!payXsupOn_(ym)) return null;
-  return paySupportAutoCore_(ym, home, payXsupData_(withDays));
+  const d = payXsupData_(withDays);
+  if (until) d.until = String(until);   // 損益估算：只算到 as_of（含）
+  return paySupportAutoCore_(ym, home, d);
 }
 function payXsupData_(withDays) {
   let xmap = [];
@@ -4554,6 +4556,16 @@ function handlePnlLaborEstimate_(body) {
   // 與手動輸入門市的整月工時都在這裡一起帶進來，跟 handlePayrollCalc 的 collected 同一套合併
   // 規則（payInputsBase 本身沒有改，只是新增了可選的 cutoffDate 第三參數）。
   var att = payInputsBase(ym, st, asOf);
+  // 跨店支援自動帶入（2026-11 起，Eason 11-05「一起接上」）：跟 handlePayrollCalc 同一套合併，只算到 as_of；之前的月份回 null 不動
+  var XS = paySupportAuto_(ym, st, false, asOf);
+  if (XS) {
+    var XC = { home: st, storeBy: payXsupStoreBy_(payRead('store')), dropCross: !XS.empty };
+    master.forEach(function (e) {
+      var id = String(e.emp_id), c = att[id] || (att[id] = {});
+      if (c.support_error) return;   // 支援欄壞掉的人不帶入（同計薪）
+      c.support = payMergeSupport_(c.support || [], XS.byEmp[id.trim()], e, XC).support;
+    });
+  }
 
   var bonusBy = {};
   payRead('bonus').forEach(function (b) {
