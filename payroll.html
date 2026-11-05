@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>鼎兆元集團｜薪酬管理</title>
+<title>鼎兆元集團｜薪酬計算</title>
 <style>
 :root{--red:#E8380D;--black:#231815;--ink:#231815;--orange:#F08300;--gold:#FABE00;--gold-soft:#fff4d1;--cream:#FFE893;
  --sidebar:#1b1917;--sidebar-2:#2a2623;--sidebar-line:#332e2a;--side-txt:#b8afa5;
@@ -206,7 +206,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
    本頁自己的側欄整排隱藏；管理系統換分頁時送 dzy-payroll-nav 過來切換 */
 html.embed .sidebar{display:none}
 html.embed .topbar{padding-top:16px}
-html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬管理」 */
+html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬計算」 */
 </style>
 </head>
 <body>
@@ -244,7 +244,7 @@ html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬管理
     <div class="topbar">
       <div class="tbrow">
         <div>
-          <h1>薪酬管理</h1>
+          <h1>薪酬計算</h1>
           <div class="sub" id="topSub">選擇月份，計算與匯出同仁薪資</div>
         </div>
         <span id="lock" style="margin-left:auto"></span>
@@ -734,7 +734,7 @@ async function bootstrapFromRoster(){
 /* ═════ 載入 ═════ */
 async function boot(){
   if(!EMBED&&!ADMIN_KEY&&!LOCAL_HOST){
-    document.body.insertAdjacentHTML('afterbegin','<div style="padding:24px;margin:16px;border:1px solid #c0392b;border-radius:10px;background:#fff;font-size:16px;line-height:1.7">薪酬管理已搬進集團管理系統：請登入 <a href="https://dzy.mozhuting.com/">https://dzy.mozhuting.com/</a> → 人資部門 → 薪酬管理。<br>沒有看到這一項＝還沒開通權限，請找 Eason。</div>');
+    document.body.insertAdjacentHTML('afterbegin','<div style="padding:24px;margin:16px;border:1px solid #c0392b;border-radius:10px;background:#fff;font-size:16px;line-height:1.7">薪酬管理已搬進集團管理系統：請登入 <a href="https://dzy.mozhuting.com/">https://dzy.mozhuting.com/</a> → 人資部門 → 薪酬計算。<br>沒有看到這一項＝還沒開通權限，請找 Eason。</div>');
     return;
   }
   // 開頁三支同時發出（2026-10-20：原本依序打要 11～14 秒），回來後仍照原本順序套用：主檔 → 本月 → 儀表板
