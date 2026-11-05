@@ -679,7 +679,7 @@ function lineHubPayText_(userId, pre) {
  * 尚未結算／定案、沒綁定、店家沒接薪資 → 照舊回文字。 */
 var LINE_HUB_HOURLY_KEYS = ['overtime', 'shortfall_hours', 'personal_leave', 'sick_leave', 'menstrual_leave',
                             'disaster_leave', 'hourly_wage', 'pt_attend_plus', 'pt_tenure_plus',
-                            'comp_bank', 'comp_expire'];   // 與 clock.html HOURY 相同（補休兩列 2026-10-09 加）
+                            'comp_bank', 'comp_expire', 'ot_w43', 'ot_w53', 'ot_rest', 'ot_rdo_h', 'pt_annual'];   // 與 clock.html HOURY 相同（補休兩列 2026-10-09 加；逐日加班 2026-11-06 加）
 function lineHubNf_(v) { return Math.round(Number(v) || 0).toLocaleString('en-US'); }
 function lineHubR2_(v) { return Math.round((Number(v) || 0) * 100) / 100; }
 function lineHubPayLineSub_(x) {

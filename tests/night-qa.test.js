@@ -84,6 +84,8 @@ function make(opts) {
   vm.runInContext("Object.assign(CONFIG, { STORE_LAT: 24.78, STORE_LNG: 121.01, RADIUS_M: 20, ADMIN_KEY: 'ADM', DEFAULT_SHIFT_IN: '', DEFAULT_SHIFT_OUT: '', PAYROLL_API: '', PAYROLL_STORE: '' })", sb);
   sb.LINE_HUB_STORES_CONFIG = [{ code: '', name: '光復', ss_id: 'SELF' }];
   sb.setup();
+  // 2026-11 起鎖定前會檢查「每天都在已發布班表上查得到」；這支測的是鎖定本身，班表檢查由 ot-daily.test.js 守
+  if (!opts.schedCheck) sb.paySchedMissingAll_ = () => [];
   ss.getSheetByName('managers').appendRow(['值班主管', 'MK', 'true']);
   const rows = (n) => sb.readSheetAsObjects(ss.getSheetByName(n)).rows;
   return { sb, ss, props, rows, c, sheet: (n) => ss.getSheetByName(n), setNow: (v) => { sb.__now = T(v); } };
