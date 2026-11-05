@@ -193,6 +193,26 @@ console.log('\n══ 5b) 唯讀並列試算 payroll_ot_preview ══');
   vm.runInContext("PAY_OT_DAILY_FROM = '2026-11'", sb);
 }
 
+console.log('\n══ 5c) 主檔工號對不到打卡名冊 → 提醒（2026-11-06）══');
+{
+  const miss = F('payRosterMismatch_');
+  vm.runInContext("payHasClock = function(){ return true; }", sb);
+  CLOCK.roster = [{ emp_id: 'E01', name: '甲君', active: true }, { emp_id: 'E11', name: '丁君', active: true }, { emp_id: 'CF14', name: '丙君', active: true }];
+  const M = [{ emp_id: 'E01', name: '甲君', store: 'SSLGF', active: 'true' }, { emp_id: 'E10', name: '丁君', store: 'SSLGF', active: 'true' },
+             { emp_id: 'E12', name: '新人', store: 'SSLGF', active: 'true' }, { emp_id: 'E13', name: '離職', store: 'SSLGF', active: 'false' }];
+  chk('E10 對不到、名冊同名是 E11；E12 名冊沒有同名；停用的不列；對得上的不列', miss('SSLGF', M),
+      [{ emp_id: 'E10', name: '丁君', roster_ids: ['E11'] }, { emp_id: 'E12', name: '新人', roster_ids: [] }]);
+  chk('emp_prefix：主檔 CFCF14 對名冊 CF14 算對得上', miss('CF', [{ emp_id: 'CFCF14', name: '丙君', store: 'CF', active: 'true' }]), []);
+  vm.runInContext("payHasClock = function(){ return false; }", sb);
+  chk('沒有打卡的店不檢查', miss('SSLGF', M), []);
+  vm.runInContext("payHasClock = function(){ return true; }", sb);
+  const pm = F('handlePayrollMonth')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' });
+  chk('payroll_month 帶 roster_mismatch', (pm.roster_mismatch || []).map((x) => x.emp_id), []);
+  DB.master.push({ emp_id: 'E10', name: '丁君', store: 'SSLGF', is_full_time: 'true', base: 30000, active: 'true', hire_date: '2026-10-12' });
+  chk('  主檔多一位對不到的 → 列出來', F('handlePayrollMonth')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' }).roster_mismatch.map((x) => x.emp_id + '→' + x.roster_ids.join()), ['E10→E11']);
+  DB.master.pop();
+}
+
 console.log('\n══ 6) 病假一年 30 天內不扣全勤（C6）══');
 const sick = F('paySickOverDays_');
 chk('今年已用 25 天、本月 3 個病假日 → 都在 30 天內，0 天加回缺勤', sick({ sick_dates: ['a', 'b', 'c'] }, { sick: { used_before_days: 25 } }, []), 0);

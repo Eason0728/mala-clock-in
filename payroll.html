@@ -641,6 +641,7 @@ async function bridgeCallQueued(action,body){
 if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
 
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
+let ROSTER_MISS=[];   // 主檔工號在打卡名冊找不到的人（payroll_month roster_mismatch，2026-11-06）
 let SUPA=null;   // 跨店支援自動帶入（2026-11 起後端 payroll_month 回的 support_auto；之前的月份是 null）
 // 目前操作門市：階段一由門市表全部可見；階段二改讀 dzy 帳號的可見門市清單（UI 與過濾邏輯不變）
 let STORE=(new URLSearchParams(location.search).get('store')||localStorage.getItem('pay_store')||'');
@@ -945,6 +946,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     showClockMode();
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
     SUPA=r.support_auto||null; SUP_OPEN={};
+    ROSTER_MISS=r.roster_mismatch||[];
     if(SUPA&&SUPA.recalc) toast('別家門市的核定時數有變動，已自動重新計算');
     /* ⚠ 這裡把 ATT 換成試算表的內容了，旗標一定要跟著清（與 loadAtt 同一個道理）。
        2026-09-03 起 ATT_DIRTY 決定「重算要不要送影本」，殘留 true 會讓保護失效：
@@ -1339,7 +1341,7 @@ function renderRun(){
   lb.className='btn '+(STATUS==='final'?'dark':'ghost');
   const t=$('runTbl');
   if(!RESULTS.length){t.innerHTML='<tr><td style="text-align:center;padding:34px;color:#8a817a">按「重新計算」產生本月薪資</td></tr>';
-    return}
+    renderOtInfo(t); return}   // 還沒算也要看得到「工號對不到名冊」
   let h=`<thead><tr><th>姓名</th><th style="text-align:left">型態</th>
     <th style="text-align:left">職稱／時薪<br><span style="font-weight:400;color:var(--muted)">計時＝實際生效時薪</span></th>
     <th>核定時數</th><th>支援時數</th><th>超時/不足</th>
@@ -1420,6 +1422,9 @@ function renderOtInfo(t){
   const md=d=>String(d).slice(5).replace('-','/');
   const list=(a,max)=>{a=a||[];const s=a.slice(0,max||12).map(md).join('、');return a.length>(max||12)?s+` 等 ${a.length} 天`:s};
   const rows=[];
+  // 主檔工號對不到打卡名冊：打卡時數、班表都找不到這個人（正職會照領整月底薪），最先列
+  ROSTER_MISS.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：薪資主檔工號 ${esc(x.emp_id)} 在打卡名冊找不到，打卡時數和班表都對不到這個人`
+    +(x.roster_ids&&x.roster_ids.length?`——名冊上同名的人是 <b>${x.roster_ids.map(esc).join('、')}</b>，請到「員工設定」把工號改成一樣`:'——請確認工號')+`</li>`));
   RESULTS.forEach(r=>{const o=r.ot_info; if(!o) return; const nm=esc(r.name);
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
     if(o.over_cap) rows.push(`<li><b class="bad">${nm}</b>：本月加班 ${r2(o.ot_h)} 小時，超過每月 ${OT_MONTH_CAP} 小時上限</li>`);
@@ -1427,7 +1432,7 @@ function renderOtInfo(t){
     if(o.no_show&&o.no_show.length) rows.push(`<li>${nm}：有排班、沒核定也沒請假 ${list(o.no_show)}（系統不扣，請確認要補請假或扣款）</li>`);
     if(o.manual_sup_h>0) rows.push(`<li>${nm}：手填的跨店支援有 ${r2(o.manual_sup_h)} 小時沒有日期，沒算進逐日加班</li>`);
   });
-  box.innerHTML=rows.length?`<div class="card" style="border-left:4px solid #b4762a"><h3 style="margin:0 0 6px">加班與班表提醒</h3><ul style="margin:0;padding-left:20px;line-height:1.8">${rows.join('')}</ul></div>`:'';
+  box.innerHTML=rows.length?`<div class="card" style="border-left:4px solid #b4762a"><h3 style="margin:0 0 6px">${ROSTER_MISS.length?'工號、加班與班表提醒':'加班與班表提醒'}</h3><ul style="margin:0;padding-left:20px;line-height:1.8">${rows.join('')}</ul></div>`:'';
 }
 async function toggleLock(){
   const lock=STATUS!=='final';
