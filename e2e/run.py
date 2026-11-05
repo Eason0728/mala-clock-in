@@ -219,6 +219,11 @@ def phase_leave_proof(page, data):
     fut = (datetime.fromisoformat(data['workday']) + timedelta(days=25)).strftime('%Y-%m-%d')
     path = os.path.join(ROOT, 'mock', 'mock_data.json')
     d = json.load(open(path, encoding='utf-8'))
+    # 病假 2026-11-06 起今年累計滿 3 天才要附證明：先放兩天已核准的病假（同一年、比這張早），這張就是第 3 天
+    for k, md in (('rqE2ES1', '-01-02'), ('rqE2ES2', '-01-03')):
+        d.setdefault('requests', []).append({'id': k, 'created_at': fut[:4] + md + 'T08:00:00+08:00', 'emp_id': p1['emp_id'], 'name': p1['name'],
+            'kind': 'leave', 'date': fut[:4] + md, 'leave_type': '病假', 'start': '', 'end': '', 'hours': 8, 'miss_type': '', 'reason': '',
+            'attach_id': '', 'status': 'approved', 'decided_at': '', 'decided_by': '', 'reject_reason': '', 'seen_at': ''})
     d.setdefault('requests', []).append({'id': 'rqE2EP', 'created_at': data['workday'] + 'T23:00:00+08:00', 'emp_id': p1['emp_id'],
         'name': p1['name'], 'kind': 'leave', 'date': fut, 'leave_type': '病假', 'start': '', 'end': '', 'hours': 8, 'miss_type': '',
         'reason': 'e2e 發燒', 'attach_id': '', 'status': 'pending', 'decided_at': '', 'decided_by': '', 'reject_reason': '', 'seen_at': ''})
@@ -230,8 +235,8 @@ def phase_leave_proof(page, data):
     st = page.evaluate("""() => { const i = [...document.querySelectorAll('#pendingRequests .rq-item')].find(x => x.textContent.includes('病假'));
           const ok = i.querySelector('.rq-ok'), pk = i.querySelector('input[type=checkbox]');
           return { okText: ok.textContent, okDis: ok.disabled, pickCls: pk.className, pickDis: pk.disabled, warn: (i.querySelector('.rq-proof') || {}).textContent || '' }; }""")
-    check('請假證明：病假沒附 → 黃色提醒、核准鍵「待補證明」且停用、勾選框停用',
-          st['okText'] == '待補證明' and st['okDis'] and st['pickDis'] and st['pickCls'] == 'rq-pick-off' and '病假要附證明' in st['warn'], st)
+    check('請假證明：病假第 3 天沒附 → 黃色提醒、核准鍵「待補證明」且停用、勾選框停用',
+          st['okText'] == '待補證明' and st['okDis'] and st['pickDis'] and st['pickCls'] == 'rq-pick-off' and '今年第 3 天病假，要附證明' in st['warn'], st)
     mark_el(page, '#pendingRequests .rq-pick-off', '沒附證明時停用（已驗）')
     CM.mark('button「待補證明」', '沒附證明時停用（已驗）')
     if page.query_selector('#rqAll'):

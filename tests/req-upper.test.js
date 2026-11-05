@@ -165,14 +165,14 @@ ok('REQ_UPPER_EMPS 壞 JSON／非陣列／非字串元素 → 當空', () => {
 });
 ok('need_proof 仍擋（一般同仁）且本人的申請先回 upper_review', () => {
   const e = base({ reqs: [rq('p1', 'E02', '測試二'), rq('p2', 'E01', '測試一')] });
-  e.sheets.requests.data[1][6] = '病假'; e.sheets.requests.data[2][6] = '病假';
+  e.sheets.requests.data[1][6] = '婚假'; e.sheets.requests.data[2][6] = '婚假';
   assert.strictEqual(e.fn('handleMgrReqDecide_', Object.assign({ id: 'p1', decision: 'approve' }, MGR)).error, 'need_proof');
   assert.strictEqual(e.fn('handleMgrReqDecide_', Object.assign({ id: 'p2', decision: 'approve' }, MGR)).error, UP);
   const b = e.fn('handleMgrReqDecideBatch_', Object.assign({ ids: ['p1', 'p2'], decision: 'approve' }, MGR));
   assert.deepStrictEqual(b.done, []); assert.strictEqual(b.skipped.length, 2);
 });
 ok('need_proof 仍擋上層：營運系統鑰匙核准本人的病假單照樣被 need_proof 擋', () => {
-  const e = base({ reqs: [rq('p2', 'E01', '測試一')] }); e.sheets.requests.data[1][6] = '病假';
+  const e = base({ reqs: [rq('p2', 'E01', '測試一')] }); e.sheets.requests.data[1][6] = '婚假';
   assert.strictEqual(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'p2', decision: 'approve', acting_name: '測試代理' }).error, 'need_proof');
   assert(e.fn('handleMgrReqDecide_', { mgr_key: 'OPS', id: 'p2', decision: 'reject', reason: '補件', acting_name: '測試代理' }).ok);
 });

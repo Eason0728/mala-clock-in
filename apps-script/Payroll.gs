@@ -3374,6 +3374,17 @@ function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, 
     const emp = String(q.emp_id);
     ((attachBy[emp] = attachBy[emp] || {})[dt] = (attachBy[emp][dt] || [])).push({ label: String(q.leave_type || q.kind || ''), attach_id: aid });
   });
+  // 忘打卡補登第幾次（2026-11-06 Eason：主管核准的忘打卡申請，同一人同一個月依日期排；第 3 次起出勤紀錄表標記）：emp -> date -> N
+  const missBy = {}, missList = {};
+  (requestRows || []).forEach(function (q) {
+    const dt = normCellDate(q.date);
+    if (String(q.kind) !== 'miss' || String(q.status) !== 'approved' || dt.slice(0, 7) !== ym) return;
+    (missList[String(q.emp_id)] = missList[String(q.emp_id)] || []).push({ dt: dt, c: String(normCellTs(q.created_at) || '') });
+  });
+  Object.keys(missList).forEach(function (emp) {
+    missList[emp].sort(function (a, b) { return a.dt < b.dt ? -1 : a.dt > b.dt ? 1 : (a.c < b.c ? -1 : a.c > b.c ? 1 : 0); })
+      .forEach(function (x, i) { (missBy[emp] = missBy[emp] || {})[x.dt] = i + 1; });   // 同一天兩張取後面那個號碼
+  });
   const people = rosterRows.filter(function (r) {
     const emp = String(r.emp_id);
     if (onlyEmp && onlyEmp !== emp) return false;
@@ -3400,7 +3411,8 @@ function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, 
         status_text: rec ? String(rec.status_text || '') : '',
         manager: rec ? String(rec.manager_name || '') : '',
         leave: lv, leave_hours: Math.round(lvH * 100) / 100,
-        attach: (attachBy[emp] || {})[dt] || []
+        attach: (attachBy[emp] || {})[dt] || [],
+        miss_n: (missBy[emp] || {})[dt] || null   // 這天核准的忘打卡是本月第幾次（第 3 次起畫面與 Excel 標記）
       };
       if (row.approved_hours != null) { apprH += row.approved_hours; if (row.approved_hours > 0) workDays++; }
       else if (seg.length) pendingDays++;
@@ -3409,7 +3421,7 @@ function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, 
     });
     return { emp_id: emp, name: String(r.name || ''), active: String(r.active).toLowerCase() === 'true',
       days: days, totals: { approved_hours: Math.round(apprH * 100) / 100, leave_hours: Math.round(leaveH * 100) / 100,
-        work_days: workDays, pending_days: pendingDays } };
+        work_days: workDays, pending_days: pendingDays, miss_count: (missList[emp] || []).length } };
   });
   return { employees: employees };
 }

@@ -76,11 +76,23 @@ ok('昨天 22:00 下班、今天 09:05 → 可以打（剛好過 11 小時也可
 ok('二段班：11:00–14:00 下班、17:00 回來打上班 → 不看間隔，可以打', () => {
   assert.strictEqual(judge([['2026-11-02T11:00:00', 'E01', 'in'], ['2026-11-02T14:00:00', 'E01', 'out']], '2026-11-02T17:00:00'), null);
 });
-ok('當天已打卡滿 10 小時再打上班 → 擋（cap，沒有解開時間）；9.5 小時可以', () => {
-  const r = judge([['2026-11-02T08:00:00', 'E01', 'in'], ['2026-11-02T13:00:00', 'E01', 'out'],
-    ['2026-11-02T14:00:00', 'E01', 'in'], ['2026-11-02T19:00:00', 'E01', 'out']], '2026-11-02T20:00:00');
-  assert.strictEqual(r.code, 'cap'); assert.strictEqual(r.until, null);
+ok('當天已打卡滿 10 小時再打上班 → 2026-11-06 起不擋、只提醒（REST_LAST_WARN_ 有 cap）；9.5 小時沒有提醒', () => {
+  const evs = [['2026-11-02T08:00:00', 'E01', 'in'], ['2026-11-02T13:00:00', 'E01', 'out'],
+    ['2026-11-02T14:00:00', 'E01', 'in'], ['2026-11-02T19:00:00', 'E01', 'out']];
+  const self = book('SELF', [ME], evs);
+  const m = make({ now: T('2026-11-02T20:00:00'), self, peers: {} });
+  assert.strictEqual(m.sb.restCheckIn_(self, { emp_id: 'E01', name: '王 小明' }), null);
+  const w = vm.runInContext('REST_LAST_WARN_', m.sb);
+  assert.strictEqual(w.code, 'cap'); assert.strictEqual(w.warn, true); assert.ok(w.reason.includes('10 小時'), w.reason);
+  const st = m.sb.restStatus_(self, { emp_id: 'E01', name: '王 小明' });
+  assert.strictEqual(st.blocked, false); assert.strictEqual(st.warn.code, 'cap');
+  // handleClock 照收（寫 ok，不寫 rejected_rest）
+  const r = m.sb.handleClock({ key: 'K1', type: 'in', lat: 24.78, lng: 121.01, device_id: 'D1' });
+  assert.strictEqual(r.status, 'ok');
   assert.strictEqual(judge([['2026-11-02T08:00:00', 'E01', 'in'], ['2026-11-02T17:30:00', 'E01', 'out']], '2026-11-02T18:00:00'), null);
+  const self2 = book('SELF', [ME], [['2026-11-02T08:00:00', 'E01', 'in'], ['2026-11-02T17:30:00', 'E01', 'out']]);
+  const m2 = make({ now: T('2026-11-02T18:00:00'), self: self2, peers: {} });
+  assert.strictEqual(JSON.stringify(m2.sb.restStatus_(self2, { emp_id: 'E01', name: '王 小明' })), '{"blocked":false}');
 });
 ok('跨夜班 22:00–02:00 歸前一天：同一天 10:00 打上班 → 距離 02:00 不到 11 小時，擋到 13:00', () => {
   const r = judge([['2026-11-01T22:00:00', 'E01', 'in'], ['2026-11-02T02:00:00', 'E01', 'out']], '2026-11-02T10:00:00');

@@ -308,7 +308,7 @@
   function renderLeave(p) {
     if (!lv.date) lv.date = taipeiToday(0);
     var lt = st.init.leave_types || { common: [], special: [] };
-    p.appendChild(field('日期', datePick(lv.date, function (v) { lv.date = v; })));
+    p.appendChild(field('日期', datePick(lv.date, function (v) { lv.date = v; if (lv.type === '病假' || lv.type === '事假') render(); })));
     var typeBox = h('div', {});
     typeBox.appendChild(chips(lt.common, lv.type, function (v) { lv.type = v; render(); }));
     if (lt.special.length) {
@@ -325,6 +325,8 @@
     } else if (lv.type === '補休') {
       qx.push(h('div', { class: 'rq-muted', text: compBlocked() ? '補休只有正職可以請。' : '可以先休、之後再用加班補回來，由主管審核。本月補休帳要等薪資資料建好才看得到。' }));
     }
+    var lw = preWarns('leave', lv.type, lv.date, lv.mode === 'day' ? lv.hours : spanHours(lv.start, lv.end));
+    if (lw.length) qx.push(warnBox(lw));
     p.appendChild(field('假別', typeBox, qx));
     var modeBox = h('div', {}, [chips(['整天', '只請一段'], lv.mode === 'day' ? '整天' : '只請一段', function (v) { lv.mode = v === '整天' ? 'day' : 'span'; render(); })]);
     if (lv.mode === 'day') {
@@ -341,15 +343,17 @@
     var rs = h('input', { type: 'text', maxlength: '100', value: lv.reason, placeholder: '例如：家裡有事', on: { input: function () { lv.reason = rs.value; } } });
     p.appendChild(field('原因（選填）', rs));
     var fi = h('input', { type: 'file', accept: 'image/*,application/pdf', on: { change: function () { lv.file = fi.files[0] || null; } } });
-    var mustProof = proofType(lv.type);
-    p.appendChild(field(mustProof ? '證明文件（' + lv.type + '一定要附）' : '附件（選填，病假證明、訃聞等）', fi,
+    var mustProof = proofType(lv.type, lv.date);
+    var sickN = lv.type === '病假' && st.info && st.info.sick_proof_days ? sickNth(lv.date) : 0;
+    p.appendChild(field(mustProof ? '證明文件（' + (sickN ? '今年第 ' + sickN + ' 天病假，' : lv.type) + '一定要附）' : '附件（選填，病假證明、訃聞等）', fi,
       [h('div', { class: mustProof ? 'rq-proof-note' : 'rq-muted', id: 'rqProofNote',
                   text: mustProof ? '可以拍照或選照片／PDF。手上還沒有證明也能先送出，但主管要等你在「我的申請」補上才能核准。'
+                                  : sickN ? '今年第 ' + sickN + ' 天病假：累計滿 ' + st.info.sick_proof_days + ' 天才要附證明，這次可以不附'
                                   : '照片或 PDF，只有審核的主管看得到' })]));
     var out = h('div', {});
     p.appendChild(submitBtn(out, function () {
       if (!lv.type) return Promise.reject(new Error('請選假別'));
-      if (proofType(lv.type) && !lv.file && !confirm(lv.type + '要附證明。\n\n沒附也可以先送出，但主管要等你在「我的申請」補上證明才能核准。\n\n確定先送出？'))
+      if (proofType(lv.type, lv.date) && !lv.file && !confirm(lv.type + '要附證明。\n\n沒附也可以先送出，但主管要等你在「我的申請」補上證明才能核准。\n\n確定先送出？'))
         return Promise.reject(new Error('還沒送出：請先選證明照片或 PDF'));
       var body = { kind: 'leave', date: lv.date, leave_type: lv.type, reason: lv.reason };
       if (lv.mode === 'day') body.hours = lv.hours; else { body.start = lv.start; body.end = lv.end; }
@@ -387,7 +391,8 @@
   var tp = { date: '', mode: 'day', hours: '8', start: '', end: '', place: '', why: '' };
   function renderTrip(p) {
     if (!tp.date) tp.date = taipeiToday(0);
-    p.appendChild(field('日期', datePick(tp.date, function (v) { tp.date = v; })));
+    var tw = preWarns('trip', '', tp.date);
+    p.appendChild(field('日期', datePick(tp.date, function (v) { tp.date = v; render(); }), tw.length ? [warnBox(tw)] : []));
     var modeBox = h('div', {}, [chips(['整天', '只一段'], tp.mode === 'day' ? '整天' : '只一段', function (v) { tp.mode = v === '整天' ? 'day' : 'span'; render(); })]);
     if (tp.mode === 'day') {
       var hr = h('input', { type: 'number', min: '0.5', max: '24', step: '0.5', value: tp.hours, class: 'rq-hours', on: { input: function () { tp.hours = hr.value; } } });
@@ -514,6 +519,8 @@
       if (r.status === 'rejected' && r.reject_reason) item.appendChild(h('div', { class: 'rq-s', text: '主管：' + r.reject_reason }));
       if (r.status === 'approved') item.appendChild(h('div', { class: 'rq-s', text: r.decided_by + ' 核准' }));
       if (r.status === 'voided') item.appendChild(h('div', { class: 'rq-s', text: r.voided_by + ' 作廢' + (r.void_reason ? '：' + r.void_reason : '') }));
+      if ((r.status === 'pending' || r.status === 'approved') && r.warns && r.warns.length)
+        item.appendChild(h('div', { class: 'rq-proof-note rq-warns', text: r.warns.map(function (w) { return '⚠ ' + w; }).join('\n') }));
       if (r.status === 'pending' && r.kind === 'leave' && (r.need_proof || r.proof_required)) item.appendChild(proofBox(r));
       if (r.status === 'pending') {
         var c = h('button', { type: 'button', class: 'rq-link', text: '取消這筆申請', on: { click: function () {
@@ -531,7 +538,43 @@
   }
 
   /* 證明文件（2026-10-10 Eason：病假、婚假、喪假、產假相關一定要附；可先送出、核准前補附）。清單由各店 req_info 的 proof_types 給。 */
-  function proofType(t) { return !!t && ((st.info && st.info.proof_types) || []).indexOf(t) >= 0; }
+  function proofType(t, date) {
+    if (!t || ((st.info && st.info.proof_types) || []).indexOf(t) < 0) return false;
+    return t !== '病假' ? true : sickNth(date) >= ((st.info && st.info.sick_proof_days) || 0);   // 舊後端沒給 sick_proof_days＝照舊一定要附
+  }
+  /* 病假今年第幾天（2026-11-06：滿 3 天才要附證明）：後端給今年審核中＋已核准的病假日期，算選的那天前面有幾天＋1。
+     伺服器送出時會再算一次（以它為準），這裡只是先講。 */
+  /* 只提醒不擋（2026-11-06 Eason）：事假應前一天請、出差應前一週填、本月事假第 3 次起／合計超過 3 天。
+     送出前在表單上先講（用「我的申請」的資料算）；送出後以伺服器算的 warns 為準（我的申請、主管頁都看那份）。 */
+  function dDiff(a, b) {   // 日期字串 a − b 的天數
+    var u = function (d) { return Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)); };
+    return Math.round((u(a) - u(b)) / 86400000);
+  }
+  function preWarns(kind, type, date, hours) {
+    var out = [], today = taipeiToday(0), d = String(date || '');
+    if (!d) return out;
+    if (kind === 'leave' && type === '事假') {
+      if (d <= today) out.push('事假應在前一天請（這張是' + (d === today ? '當天' : '事後') + '才送）');
+      var mine = ((st.info && st.info.requests) || []).filter(function (r) {
+        return r.kind === 'leave' && r.leave_type === '事假' && (r.status === 'pending' || r.status === 'approved') && String(r.date).slice(0, 7) === d.slice(0, 7);
+      });
+      var nth = mine.filter(function (r) { return r.date <= d; }).length + 1;
+      var hrs = mine.reduce(function (a, r) { return a + (Number(r.hours) || 0); }, Number(hours) || 0);
+      if (nth >= 3) out.push('本月第 ' + nth + ' 次事假');
+      if (hrs > 24) out.push('本月事假合計 ' + Math.round(hrs / 8 * 10) / 10 + ' 天，超過 3 天');
+    }
+    if (kind === 'trip') {
+      var ahead = dDiff(d, today);
+      if (ahead < 7) out.push('出差應在一週前填（' + (ahead > 0 ? '只提前 ' + ahead + ' 天' : ahead === 0 ? '當天才填' : '事後才填') + '）');
+    }
+    return out;
+  }
+  function warnBox(list) { return h('div', { class: 'rq-proof-note rq-warns', text: list.map(function (w) { return '⚠ ' + w; }).join('\n') + '\n（只是提醒，照樣可以送出，主管會看到）' }); }
+  function sickNth(date) {
+    var d = String(date || ''), list = (st.info && st.info.sick_dates) || [];
+    if (!d) return 1;
+    return list.filter(function (x) { return x.slice(0, 4) === d.slice(0, 4) && x < d; }).length + 1;
+  }
   function proofBox(r) {
     var wrap = h('div', { class: 'rq-proof' });
     if (r.need_proof) wrap.appendChild(h('div', { class: 'rq-proof-note', text: '⚠ 還沒附證明：主管要等你補上才能核准' }));
@@ -580,7 +623,8 @@
         if (!r || !r.ok) { out.appendChild(msgBox((r && r.message) || '送出沒有成功，請再試一次', 'err')); return; }
         reset();
         tellChat('申請已送出：' + r.summary);
-        return loadInfo().then(function () { st.tab = 'mine'; render(); $root.insertBefore(msgBox('✓ 已送出：' + r.summary + (r.request && r.request.kind === 'miss' ? '\n等打卡門市的店長審核' : '\n等主管審核'), 'ok'), $root.children[2]); });
+        return loadInfo().then(function () { st.tab = 'mine'; render(); $root.insertBefore(msgBox('✓ 已送出：' + r.summary + (r.request && r.request.kind === 'miss' ? '\n等打卡門市的店長審核' : '\n等主管審核')
+          + (r.request && r.request.warns && r.request.warns.length ? '\n' + r.request.warns.map(function (w) { return '⚠ ' + w; }).join('\n') : ''), 'ok'), $root.children[2]); });
       }, function (e) {
         st.busy = false; btn.disabled = false; out.innerHTML = '';
         out.appendChild(msgBox(e && e.message && !/fetch|network|abort/i.test(e.message) ? e.message : '連線失敗：不確定有沒有送出，請先看「我的申請」再決定要不要重送', 'err'));

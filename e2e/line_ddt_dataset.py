@@ -249,8 +249,8 @@ def rest_judge(segs, now):
     if todays:
         h = sum((b - a).total_seconds() for a, b in todays) / 3600
         if h >= REST_DAY_MAX_H:
-            return {'code': 'cap', 'until': None, 'hint': '有問題請找值班主管',
-                    'reason': '你今天已經上班 %s 小時（一天最多 %d 小時），不能再打上班卡' % (js_num(js_round(h, 1)), REST_DAY_MAX_H)}
+            return {'code': 'cap', 'warn': True, 'until': None, 'hint': '再上班會超過 10 小時，請先跟店長確認',   # 2026-11-06 起只提醒、不擋
+                    'reason': '你今天已經上班 %s 小時（一天最多 %d 小時）' % (js_num(js_round(h, 1)), REST_DAY_MAX_H)}
         return None
     last_out = done[-1][1]
     until = last_out + timedelta(hours=REST_GAP_H)

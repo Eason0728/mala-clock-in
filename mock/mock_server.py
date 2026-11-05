@@ -2055,8 +2055,8 @@ def rest_judge(segs, now_ms):
     if todays:
         h = sum(s["out"] - s["in"] for s in todays) / 3600000
         if h >= REST_DAY_MAX_H:
-            return {"code": "cap", "reason": f"你今天已經上班 {_js_round1(h)} 小時（一天最多 {REST_DAY_MAX_H} 小時），不能再打上班卡",
-                    "hint": "有問題請找值班主管", "until": None}
+            return {"code": "cap", "warn": True, "reason": f"你今天已經上班 {_js_round1(h)} 小時（一天最多 {REST_DAY_MAX_H} 小時）",
+                    "hint": "再上班會超過 10 小時，請先跟店長確認", "until": None}   # 2026-11-06 起只提醒
         return None   # 同一天的第二段不看間隔
     last = done[-1]
     until = last["out"] + REST_GAP_H * 3600000
@@ -2098,8 +2098,13 @@ def rest_peer_events(name, since_ms):
     return out
 
 
+REST_LAST_WARN = None   # 同 Rest.gs REST_LAST_WARN_：滿 10 小時只提醒，不從回傳值出去
+
+
 def rest_check_in(data, roster, now_ms=None):
-    """同 Rest.gs restCheckIn_：總開關關著、或任何錯誤都回 None（不擋）。"""
+    """同 Rest.gs restCheckIn_：總開關關著、或任何錯誤都回 None（不擋）；滿 10 小時（cap）回 None、結果放 REST_LAST_WARN。"""
+    global REST_LAST_WARN
+    REST_LAST_WARN = None
     if not _rest_on(data):
         return None
     try:
@@ -2107,7 +2112,11 @@ def rest_check_in(data, roster, now_ms=None):
         since = now - REST_LOOKBACK_H * 3600000
         mine = [e for e in data.get("events", []) if str(e.get("emp_id")) == str(roster["emp_id"])
                 and (_rest_ms(e.get("ts")) or 0) >= since]
-        return rest_judge(rest_segments(mine + rest_peer_events(roster.get("name"), since)), now)
+        r = rest_judge(rest_segments(mine + rest_peer_events(roster.get("name"), since)), now)
+        if r and r.get("warn"):
+            REST_LAST_WARN = r
+            return None
+        return r
     except Exception:   # noqa: BLE001
         return None
 
@@ -2115,7 +2124,10 @@ def rest_check_in(data, roster, now_ms=None):
 def rest_status(data, roster):
     """同 Rest.gs restStatus_（liff_status 用）。"""
     r = rest_check_in(data, roster)
-    return {"blocked": True, "code": r["code"], "reason": r["reason"], "hint": r["hint"], "until": r["until"]} if r else {"blocked": False}
+    if r:
+        return {"blocked": True, "code": r["code"], "reason": r["reason"], "hint": r["hint"], "until": r["until"]}
+    w = REST_LAST_WARN
+    return {"blocked": False, "warn": {"code": w["code"], "reason": w["reason"], "hint": w["hint"]}} if w else {"blocked": False}
 
 
 def handle_rest_rule_set(data, body):
@@ -2222,9 +2234,12 @@ def handle_liff_punch(data, body):
     j = handle_clock(data, {"key": me["key"], "type": typ, "lat": body.get("lat"), "lng": body.get("lng"),
                             "accuracy": body.get("accuracy"), "device_id": me.get("device_id") or ("line:" + uid)})
     if j.get("ok") and j.get("status") == "ok":
-        return {"ok": True, "type": typ, "ts": j.get("ts"), "greeting": liff_greeting(typ, j.get("ts")),
+        res = {"ok": True, "type": typ, "ts": j.get("ts"), "greeting": liff_greeting(typ, j.get("ts")),
                 "missed": liff_missed_note(before, me["emp_id"], typ, j.get("ts")),
                 "steps": {"verify": 120, "roster": 300, "read": 250, "write": 900, "extra": 400}}   # 與 Liff.gs 同：後端各步驟毫秒數（mock 用固定值）
+        if typ == "in" and REST_LAST_WARN:   # 同 Liff.gs：今天已滿 10 小時還打上班卡，只提醒
+            res["rest_warn"] = REST_LAST_WARN["reason"] + "。" + REST_LAST_WARN["hint"]
+        return res
     st = j.get("status") or j.get("error") or ""
     rr = {"pending_device_approval": ["這支手機還沒被核准", "已送出待核准，請主管在值班核定頁核准"],
           "rejected_out_of_range": ["店家判定你不在範圍內", "請開啟「精確位置」與 Wi‑Fi 後再按一次"],

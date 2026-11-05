@@ -2867,7 +2867,8 @@ function attDayCells(d,sep){
     periods:attPeriodsText(d,j),
     hours:d.approved_hours==null?'':d.approved_hours,
     leave:attLeaveText(d),
-    status:attStatusText(d),
+    // 忘打卡補登第 3 次起標記（2026-11-06 Eason；後端 miss_n＝核准的忘打卡申請本月第幾次）
+    status:attStatusText(d)+(d.miss_n>=3?(attStatusText(d)?j:'')+'⚠ 本月第 '+d.miss_n+' 次忘刷':''),
     proof:(d.attach||[]).length?'附證明':''   // 已核准申請有附證明（2026-10-30）
   };
 }
@@ -2931,7 +2932,7 @@ function attSheetHtml(e){
     <table class="att-tbl"><colgroup><col style="width:7.5%"><col style="width:5%"><col style="width:17%"><col style="width:17%"><col style="width:15%"><col style="width:7%"><col style="width:12%"><col style="width:19.5%"></colgroup>
       <thead><tr><th>日期</th><th>星期</th><th>實際打卡</th><th>未入帳的卡（不計）</th><th>主管核定時段</th><th>核定時數</th><th>請假</th><th>狀態</th></tr></thead>
       <tbody>${rows}</tbody></table>
-    <div class="att-sum"><span>核定時數合計：${esc(t.approved_hours)} 小時</span><span>請假時數合計：${esc(t.leave_hours)} 小時</span><span>出勤天數：${esc(t.work_days)} 天</span>${t.pending_days?`<span class="warn">尚有 ${esc(t.pending_days)} 天有打卡未核定</span>`:''}</div>
+    <div class="att-sum"><span>核定時數合計：${esc(t.approved_hours)} 小時</span><span>請假時數合計：${esc(t.leave_hours)} 小時</span><span>出勤天數：${esc(t.work_days)} 天</span>${t.pending_days?`<span class="warn">尚有 ${esc(t.pending_days)} 天有打卡未核定</span>`:''}${t.miss_count>=3?`<span class="warn">本月忘打卡補登 ${esc(t.miss_count)} 次</span>`:''}</div>
     <div class="att-note">出勤天數＝核定時數大於 0 的天數。未入帳的卡（超出範圍、待核准裝置、被系統擋下）不計入工時。本表依打卡系統紀錄與主管核定產生。</div>
     <div class="att-sign"><div>員工簽名：</div><div>主管簽名：</div></div>
   </div>`;
@@ -3000,6 +3001,7 @@ async function exportAttExcel(){
     aoa.push([]);
     aoa.push(['核定時數合計',e.totals.approved_hours,'請假時數合計',e.totals.leave_hours,'出勤天數',e.totals.work_days]);
     if(e.totals.pending_days) aoa.push(['尚有有打卡未核定的天數',e.totals.pending_days]);
+    if(e.totals.miss_count>=3) aoa.push(['本月忘打卡補登次數',e.totals.miss_count]);
     aoa.push(['出勤天數＝核定時數大於 0 的天數；未入帳的卡不計入工時。']);
     aoa.push([]);
     aoa.push(['員工簽名：','','','主管簽名：']);

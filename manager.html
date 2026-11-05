@@ -194,6 +194,7 @@
   .rq-kind.leave { background: #e7eefc; color: #2b4f9a; } .rq-kind.ot { background: #ffe9d6; color: #a14a00; }
   .rq-kind.miss { background: #efe4fb; color: #6a3a9a; } .rq-kind.trip { background: #e2f3ef; color: #1f6b5a; }
   .rq-proof { margin: 6px 0 2px; color: #a15a00; background: #fff6e0; border-radius: 8px; padding: 6px 9px; font-size: 13px; line-height: 1.5; }
+  .rq-warn { white-space: pre-line; }   /* 只提醒不擋（2026-11-06）*/
   /* 批次核准（2026-10-09）：每筆前面一個勾選框＋上方「全選」與「核准勾選的 N 筆」 */
   .rq-batch { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #f7f2ef; border-radius: 9px; padding: 8px 10px; margin: 0 0 10px; }
   .rq-batch[hidden] { display: none; }   /* display:flex 會蓋掉 hidden（打卡 QR 遮罩同一個坑） */
@@ -391,6 +392,7 @@
   .period-total { flex-wrap: wrap; }
   .period-total.over .pt-val { color: #c0392b; }
   .period-total .pt-over { flex-basis: 100%; font-size: 13px; font-weight: 700; color: #c0392b; }
+  .period-total .pt-cont { flex-basis: 100%; font-size: 13px; font-weight: 700; color: #a15a00; background: #fff6e0; border-radius: 6px; padding: 4px 8px; }
   .break-toggle {
     display: inline-block;
     font-size: 13px;
@@ -713,6 +715,27 @@
         任何「自動扣 1 小時」的隱形規則都會少算。所以這裡不做扣除，只在「相鄰兩段之間的空檔
         剛好等於休息帶」時畫一條說明列；主管把兩段改成相連，那條線自己消失、時數一分鐘都不會少。 */
   var DAY_MAX_H = 10;   // 單日上限（2026-11-01，與 Rest.gs、排班 rules.js 同一個數字）
+  /* 連續工作 4 小時要休息 30 分鐘（勞基法 §35；2026-11-06 Eason：核定頁黃字提醒、不擋）。
+     時段照開始排序，中間空檔不到 30 分鐘就當成接著上（沒休到）；接起來超過 4 小時的第一塊 → {start, end, h}，沒有回 null。
+     營運系統考勤管理（web/modules/duty/calc.js contBreakWarn）同一套規則，改一邊兩邊都要改。 */
+  var CONT_MAX_MIN = 240, CONT_BREAK_MIN = 30;
+  function contBreakWarn(periods) {
+    var segs = (periods || []).map(function (p) {
+      var s0 = hhmmToMin(p.start), e0 = hhmmToMin(p.end);
+      if (s0 == null || e0 == null) return null;
+      if (e0 <= s0) e0 += 1440;
+      return { s: s0, e: e0, start: p.start, end: p.end };
+    }).filter(Boolean).sort(function (a, b) { return a.s - b.s; });
+    var cur = null, hit = null;
+    segs.forEach(function (g) {
+      if (hit) return;
+      if (cur && g.s - cur.e < CONT_BREAK_MIN) { if (g.e > cur.e) { cur.e = g.e; cur.end = g.end; } }
+      else cur = { s: g.s, e: g.e, start: g.start, end: g.end };
+      if (cur.e - cur.s > CONT_MAX_MIN) hit = cur;
+    });
+    return hit ? { start: hit.start, end: hit.end, h: Math.round((hit.e - hit.s) / 60 * 100) / 100 } : null;
+  }
+  function contBreakText(w) { return '連續上班 ' + w.h + ' 小時沒休息 30 分鐘（' + w.start + '–' + w.end + '；每 4 小時要休 30 分，提醒不擋）'; }
   var BREAK_START = '';
   var BREAK_END = '';
 
@@ -1304,6 +1327,13 @@
           ow.textContent = '超過一天 ' + DAY_MAX_H + ' 小時上限（照實核定，會列進每日通知）';
           totalBox.appendChild(ow);
         }
+        var cw = contBreakWarn(rows);
+        if (cw) {
+          var cwe = document.createElement('div');
+          cwe.className = 'pt-cont';
+          cwe.textContent = contBreakText(cw);
+          totalBox.appendChild(cwe);
+        }
       }
       // (3) 一顆鈕在「併成一段」與「插入休息」之間切換，讓主管兩個方向都回得去
       breakToggle.hidden = true;
@@ -1638,6 +1668,8 @@
             ? '\n上班 ' + totalH + ' 小時＋出差 ' + tripH2 + ' 小時\n核定時數共 ' + (Math.round((totalH + tripH2) * 100) / 100) + ' 小時'
             : '\n核定時數共 ' + totalH + ' 小時');
         if (totalH + tripH2 > DAY_MAX_H) msg += '\n⚠ 超過一天 ' + DAY_MAX_H + ' 小時上限（照實核定，會列進每日通知）';
+        var cw2 = contBreakWarn(segs);
+        if (cw2) msg += '\n⚠ ' + contBreakText(cw2);
         // 畫面上有休息列才提——主管把時段改成相連（出差）時不會出現這行，與實際計算一致
         if (periodRows.querySelector('.break-split')) {
           msg += '\n（休息 ' + BREAK_START + '–' + BREAK_END + ' 不計入）';
@@ -2111,10 +2143,19 @@
     el.appendChild(l2);
     var ev = punchEvidence(it);
     if (ev) { var e = document.createElement('div'); e.className = 'rq-evid'; e.textContent = ev; el.appendChild(e); }
-    /* 證明文件（2026-10-10 Eason：病假、婚假、喪假、產假相關一定要附）：沒附就不能核准，可以退回；同仁在 LINE「我的申請」補附 */
+    /* 只提醒不擋（2026-11-06 Eason）：事假應前一天請、出差應前一週填、本月事假第 3 次起／超過 3 天；忘打卡寫本月第幾次。
+       舊後端沒有 warns／miss_n 就不顯示。一律 textContent。 */
+    var wl = (it.warns || []).slice();
+    if (it.kind === 'miss' && it.miss_n) wl.unshift('本月第 ' + it.miss_n + ' 次忘刷' + (it.miss_n >= 3 ? '（第 3 次起出勤紀錄表會標記）' : ''));
+    if (wl.length) {
+      var wn = document.createElement('div'); wn.className = 'rq-proof rq-warn';
+      wn.textContent = wl.map(function (w) { return '⚠ ' + w; }).join('\n') + '（提醒，不影響核准）';
+      el.appendChild(wn);
+    }
+    /* 證明文件（2026-10-10 Eason：病假、婚假、喪假、產假相關一定要附；2026-11-06 病假改今年累計滿 3 天才要附）：沒附就不能核准，可以退回；同仁在 LINE「我的申請」補附 */
     if (it.need_proof) {
       var pf = document.createElement('div'); pf.className = 'rq-proof';
-      pf.textContent = '⚠ ' + it.leave_type + '要附證明，同仁還沒附；補上後才能核准（可以先退回）';
+      pf.textContent = '⚠ ' + (it.sick_n ? '今年第 ' + it.sick_n + ' 天病假，' : it.leave_type) + '要附證明，同仁還沒附；補上後才能核准（可以先退回）';
       el.appendChild(pf);
     }
     /* 值班主管本人的申請（2026-10-28）：這把鑰匙不能核准／退回，由上層主管在管理系統審 */

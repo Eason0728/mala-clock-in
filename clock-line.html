@@ -93,6 +93,7 @@
   .rq-link { border: 0; background: transparent; color: #2b6cb0; padding: 4px 0 0; font-size: 13px; }
   .rq-empty, .rq-loading { text-align: center; color: var(--muted); padding: 24px 0; }
   .rq-proof-note { color: var(--warn); font-size: 13px; line-height: 1.6; margin-top: 4px; }
+  .rq-warns { white-space: pre-line; background: #fff6d6; border-radius: 6px; padding: 6px 8px; }   /* 只提醒不擋（2026-11-06）*/
   .rq-proof { margin-top: 6px; }
   .rq-proof-btn { margin-top: 6px; padding: 9px; font-size: 14px; }
   /* 出勤班表頁（sched-line.js，2026-10-10）*/
@@ -372,8 +373,8 @@
     var r = status && status.rest;   // 時間到、解開了：拿掉「幾點以後才能打」那句
     if (r && r.blocked && !restBlocked() && $('msg').textContent === r.reason) say('', '', '');
   }
-  /* 休息不足（2026-11-01，後端 Rest.gs）：兩班間隔不到 11 小時、或今天已滿 10 小時，上班鍵鎖住；
-     間隔那種到時間自動解開（tick 每次重算），10 小時那種今天都不解。伺服器打卡時會再判一次，這裡只是先講。 */
+  /* 休息不足（2026-11-01，後端 Rest.gs）：兩班間隔不到 11 小時，上班鍵鎖住，到時間自動解開（tick 每次重算）。
+     今天已滿 10 小時：2026-11-06 起不鎖、只提醒（rest.warn，blocked＝false）。伺服器打卡時會再判一次，這裡只是先講。 */
   function restBlocked() {
     var r = status && status.rest;
     if (!r || !r.blocked) return false;
@@ -415,6 +416,7 @@
       showStore(s.store);
       say('', '', '');
       if (restBlocked()) say(s.rest.reason, 'warn', s.rest.hint);
+      else if (s.rest && s.rest.warn && s.guard && s.guard.blocked !== 'in') say(s.rest.warn.reason, 'warn', s.rest.warn.hint);   // 滿 10 小時：只提醒，上班鍵照常可按
     } else {
       var r = s.result || {};
       $('storeName').textContent = r.store_name || (r.code === 'ambiguous' ? '分不出在哪一家店' : '不在打卡範圍');
@@ -664,6 +666,7 @@
         if (r.ok) {
           var notes = (r.req_notes || []).join('\n');
           var okText = label + '打卡成功 ' + hm + '\n地點：' + st.name + (r.via_qr ? '（主管 QR）' : '') + (r.missed ? '\n\n⚠️ ' + r.missed : '')
+            + (r.rest_warn ? '\n\n⚠️ ' + r.rest_warn : '')   // 今天已滿 10 小時還打上班卡（2026-11-06 起只提醒）
             + (notes ? '\n\n' + notes : '') + ((shown ? shown.greeting : r.greeting) ? '\n\n' + (shown ? shown.greeting : r.greeting) : '');   // 已先顯示 mini 的問候語就沿用，不換句
           // 就地鎖鍵（同網頁版 updateButtonStates({type, ts})）：10 分鐘內兩顆都鎖（審查 M1；2026-11-02 改兩顆）
           var nowSrv = Date.now() + clockSkew;
@@ -679,7 +682,7 @@
             $('otHint').textContent = '今天出勤 ' + r.ot_hint.hours + ' 小時，超過 8 小時。要申請加班嗎？';
             $('otHint').hidden = false; $('btnOtReq').hidden = false;
           }
-          return sendToChat(!!(r.missed_date || notes || (r.ot_hint && r.ot_hint.date))).then(function (closing) { if (closing) keepBusy = true; });
+          return sendToChat(!!(r.missed_date || notes || r.rest_warn || (r.ot_hint && r.ot_hint.date))).then(function (closing) { if (closing) keepBusy = true; });
         }
         // 後端看到最新的卡是同一型（畫面開著時別處打過）→ 重讀狀態、問同仁一次，確定才帶 confirm_same 再送（2026-11-03 對抗驗證 #1）
         if (r.need_confirm) {

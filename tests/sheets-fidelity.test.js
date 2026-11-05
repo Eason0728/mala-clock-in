@@ -634,7 +634,7 @@ ok('payAttendanceBuild（出勤紀錄匯出）：逐日 segments／approved_hour
   assert.strictEqual(d14.approved_hours, 9); assert.strictEqual(d14.leave_hours, 2); assert.strictEqual(d14.leave[0].type, '病假');
   assert.strictEqual(d15.approved_hours, null); assert.strictEqual(d15.segments[0].out, null);
   assert.strictEqual(d16.status_text, '遲到5分');
-  eq(me.totals, { approved_hours: 18, leave_hours: 2, work_days: 2, pending_days: 1 });
+  eq(me.totals, { approved_hours: 18, leave_hours: 2, work_days: 2, pending_days: 1, miss_count: 0 });
 });
 ok('handlePayrollPunch：rows 的打卡時間 HH:mm、核定時數；summary 的 hours／leave_h／miss／late 與 payCollect 同口徑', () => {
   const { m, e } = monthFixture();

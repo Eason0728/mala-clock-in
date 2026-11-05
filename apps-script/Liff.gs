@@ -615,6 +615,8 @@ function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows
     try { notes = reqUnseenNotes_(ss, me.emp_id, rq); } catch (e) { notes = []; }   // 申請結果告知壞了不能讓打卡失敗
     var res = { ok: true, type: type, ts: j.ts, greeting: liffGreeting_(type, j.ts), missed: md.text,
                 missed_date: md.date, missed_type: md.miss_type, req_notes: notes, via_qr: !!qr };
+    // 今天已滿 10 小時還打上班卡（2026-11-06 起不擋、只提醒）：handleClock 裡的 restCheckIn_ 算好放在 REST_LAST_WARN_
+    if (type === 'in' && typeof REST_LAST_WARN_ !== 'undefined' && REST_LAST_WARN_) res.rest_warn = REST_LAST_WARN_.reason + '。' + REST_LAST_WARN_.hint;
     // 下班後當天超過 8 小時 → 提示申請加班（2026-10-09，Requests.gs reqOtHint_）；算不出來就不提，不能讓打卡失敗
     if (type === 'out') {
       try {
