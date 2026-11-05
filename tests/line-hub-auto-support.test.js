@@ -195,13 +195,43 @@ ok('store_code 對照表：光復（空字串）→ gf，其餘同名；涵蓋 s
   STORES.forEach(s => assert(map[s.code] !== undefined, s.code));
   assert.deepStrictEqual(Object.values(map).sort(), ['cf', 'gf', 'hq', 'mztgf', 'mztjs', 'mztlzl', 'mztmc', 'mztrg', 'mztwx']);
 });
-ok('光復端從光復店出發也能用 gf（B 店＝光復、home＝金山）', () => {
-  const sheets = { '': { roster: [], events: [] }, mztjs: { roster: [R({ emp_id: 'J1', key: 'kJ' })] } };
+ok('光復端從光復店出發也能用 gf（B 店＝光復、home＝央廚）', () => {
+  const sheets = { '': { roster: [], events: [] }, cf: { roster: [R({ emp_id: 'C1', key: 'kC' })] } };
   const gf = STORES.find(s => s.code === '');
   const m = make({ props: P, sheets, hubReply: () => { sheets[''].roster.push({ emp_id: 'E01', name: '測試甲（平台姓名）', key: 'kE', active: 'true', line_user_id: '', created_by: 'LINE 自動（首次支援）' }); return { ok: true, emp_id: 'E01' }; } });
   const r = punch(m, gf);
-  assert.strictEqual(m.hubCalls[0].body.store_code, 'gf'); assert.strictEqual(m.hubCalls[0].body.src_store, 'mztjs');
+  assert.strictEqual(m.hubCalls[0].body.store_code, 'gf'); assert.strictEqual(m.hubCalls[0].body.src_store, 'cf');
   assert(/^hub:gf:/.test(m.hubCalls[0].body.op_id)); assert.strictEqual(r.result.ok, true);
+});
+// 禁止跨品牌（2026-11-06 Eason）：小辛辣 ↔ 墨竹亭不能互相自動加入；央廚、總部兩邊都可以
+ok('跨品牌：墨竹亭同仁在小辛辣光復 → 不呼叫 mini、回 cross_brand「你是墨竹亭的同仁」', () => {
+  const sheets = { '': { roster: [], events: [] }, mztjs: { roster: [R({ emp_id: 'J1', key: 'kJ' })] } };
+  const gf = STORES.find(s => s.code === '');
+  const m = make({ props: P, sheets });
+  const r = punch(m, gf);
+  assert.strictEqual(m.hubCalls.length, 0); assert.strictEqual(r.result.code, 'cross_brand');
+  assert(/你是墨竹亭的同仁，不能在「小辛辣 新竹光復」打卡/.test(r.result.reason), r.result.reason);
+});
+ok('跨品牌：小辛辣同仁在墨竹亭金山 → 擋；就算沒開 7A（沒設屬性）也講清楚原因', () => {
+  const sheets = { '': { roster: [R({ emp_id: 'E01', key: 'kE' })], events: [] }, mztjs: { roster: [], events: [] } };
+  const m = make({ props: {}, sheets });
+  const r = punch(m, js);
+  assert.strictEqual(m.hubCalls.length, 0); assert.strictEqual(r.result.code, 'cross_brand');
+  assert(/你是小辛辣的同仁/.test(r.result.reason), r.result.reason);
+});
+ok('品牌：光復 sxl、mzt 開頭 mzt、央廚與總部不屬於任何品牌（兩邊都可以）', () => {
+  const { sb } = make({ sheets: {} });
+  const B = (code) => sb.lineHubBrand_({ code, ss_id: 'SS_' + code });
+  assert.deepStrictEqual(['', 'mztjs', 'mztgf', 'mztwx', 'cf', 'hq'].map(B), ['sxl', 'mzt', 'mzt', 'mzt', '', '']);
+  assert.strictEqual(sb.lineHubCrossBrand_({ code: 'cf' }, { code: '' }), false);
+  assert.strictEqual(sb.lineHubCrossBrand_({ code: 'mztjs' }, { code: 'mztgf' }), false);
+  assert.strictEqual(sb.lineHubCrossBrand_({ code: 'mztjs' }, { code: '' }), true);
+});
+ok('品牌：薪資門市表的 brand 欄優先（用打卡試算表 ID 對 clock_ss_id）；沒填才看店代碼', () => {
+  const { sb } = make({ sheets: {} });
+  sb.payStoreList = () => [{ code: 'MZTWX', clock_ss_id: 'SS_mztwx', brand: 'sxl' }, { code: 'MZTJS', clock_ss_id: 'SS_mztjs', brand: '' }];
+  assert.strictEqual(sb.lineHubBrand_({ code: 'mztwx', ss_id: 'SS_mztwx' }), 'sxl');
+  assert.strictEqual(sb.lineHubBrand_({ code: 'mztjs', ss_id: 'SS_mztjs' }), 'mzt');
 });
 ok('光復專案的 LINE 相關檔案裡不得出現 STAFF_SVC_KEY（只持 HUB 金鑰）', () => {
   ['LineHub.gs', 'LineHubConfig.example.gs', 'Liff.gs', 'Code.gs'].forEach(f =>

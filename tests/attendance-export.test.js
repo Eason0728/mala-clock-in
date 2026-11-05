@@ -92,7 +92,7 @@ chk('Date 物件的 leave 日期（9/20）也對得上', day(r, 'E1', '2026-09-2
 chk('別的月份的請假不進來', r.employees[0].days.reduce((a, d) => a + d.leave_hours, 0), 12);
 
 chk('E1 合計：核定 9.5+0+8=17.5；請假 12；出勤天數 2（核定 0 的請假日不算）',
-  r.employees[0].totals, { approved_hours: 17.5, leave_hours: 12, work_days: 2, pending_days: 3 });
+  r.employees[0].totals, { approved_hours: 17.5, leave_hours: 12, work_days: 2, pending_days: 3, miss_count: 0 });
 chk('pending_days＝有有效打卡卻尚未核定的天數（9/12、9/13、9/16）', r.employees[0].totals.pending_days, 3);
 chk('離職者 E3 合計與標記', [r.employees[2].active, r.employees[2].totals.approved_hours, r.employees[2].totals.work_days], [false, 9, 1]);
 chk('E3 狀態字樣沿用核定', day(r, 'E3', '2026-09-02').status_text, '遲到5分');
@@ -124,6 +124,13 @@ chk('Date 物件日期也對得上', day(wa, 'E1', '2026-09-20').attach, [{ labe
 chk('作廢、審核中、沒附的不帶', ['2026-09-21', '2026-09-22', '2026-09-23'].map(d => day(wa, 'E1', d).attach.length), [0, 0, 0]);
 chk('別月份的不帶', wa.employees.find(x => x.emp_id === 'E2').days.every(x => !x.attach.length), true);
 chk('沒傳申請表（舊呼叫）每天 attach 都是空陣列', build('2026-09', roster, events, approved, leave, 'E1').employees[0].days.every(x => Array.isArray(x.attach) && !x.attach.length), true);
+
+// ── 忘打卡補登第幾次（2026-11-06：核准的忘打卡申請本月依日期排，第 3 次起畫面與 Excel 標記）──
+const miss = (id, date, o) => Object.assign({ id, emp_id: 'E1', kind: 'miss', date, status: 'approved', created_at: date + 'T23:00:00+08:00', attach_id: '' }, o || {});
+const wm = build('2026-09', roster, events, approved, leave, '', [miss('M1', '2026-09-10'), miss('M2', '2026-09-02'), miss('M3', '2026-09-05', { status: 'rejected' }),
+  miss('M4', '2026-09-15'), miss('M5', '2026-08-30'), miss('M6', '2026-09-20', { emp_id: 'E2' })]);
+chk('忘打卡：依日期排第幾次（退回不算、別月份不算、別人分開算）', ['2026-09-02', '2026-09-05', '2026-09-10', '2026-09-15'].map(d => day(wm, 'E1', d).miss_n), [1, null, 2, 3]);
+chk('忘打卡：每人本月次數', wm.employees.filter(x => x.emp_id === 'E1' || x.emp_id === 'E2').map(x => x.totals.miss_count), [3, 1]);
 
 const AK = vm.runInContext('CONFIG.ADMIN_KEY', sb);
 sb.payHasClock = () => true;

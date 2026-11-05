@@ -451,11 +451,12 @@ def expect_open(gen, p, now):
     tl = [e for e in evs if e['ts'][:10] == today and e['status'] in ('ok', 'pending_device_approval')]
     today_txt = ('今天：' + '、'.join(('上班 ' if e['type'] == 'in' else '下班 ') + e['ts'][11:16] + ('（待核准）' if e['status'] == 'pending_device_approval' else '') for e in tl)) if tl else '今天還沒有打卡紀錄'
     locked = g['until'] is not None and g['until'] > now
-    rest_blocked = bool(rest) and (rest['until'] is None or now < rest['until'])
+    rest_blocked = bool(rest) and not rest.get('warn') and (rest['until'] is None or now < rest['until'])
+    rest_warn = bool(rest) and bool(rest.get('warn'))   # 滿 10 小時：只提醒（2026-11-06），鍵照常
     in_label = D.lock_label('in', g['until'], now) if locked else ('上班（%s 後）' % D.hm_of(rest['until']) if rest_blocked and rest['until'] else '上班')
     out_label = D.lock_label('out', g['until'], now) if locked else '下班'
     return {'evs': evs, 'guard': g, 'rest': rest, 'today': today_txt, 'in_disabled': locked or rest_blocked, 'out_disabled': locked,
-            'in_label': in_label, 'out_label': out_label, 'msg': rest['reason'] if rest_blocked else '', 'hint': rest['hint'] if rest_blocked else ''}
+            'in_label': in_label, 'out_label': out_label, 'msg': rest['reason'] if (rest_blocked or rest_warn) else '', 'hint': rest['hint'] if (rest_blocked or rest_warn) else ''}
 
 
 def check_open(gen, p, page, label):
@@ -696,14 +697,22 @@ def phase_rest(ctx, gen):
             print(f'（{label}：段落跨到昨天（現在 {ex["now"].strftime("%H:%M")}），照規格不算單日上限；10:30 後跑才測得到 cap 分支）')
             page.close()
             continue
-        want_code = 'cap' if p['scenario'] == 'rest_cap' else 'gap'
+        if p['scenario'] == 'rest_cap':   # 2026-11-06 起滿 10 小時只提醒：鍵可按、黃字提醒，打得進去、成功訊息多一句
+            ok(f'{label}：單日上限——只提醒不擋（上班鍵可按、按鈕寫「上班」、原因含「一天最多 10 小時」）',
+               rest is not None and rest['code'] == 'cap' and not ex['in_disabled'] and not page.is_disabled('#btnIn')
+               and page.inner_text('#btnIn') == '上班' and '一天最多 10 小時' in msg(page), (rest, msg(page)))
+            page.screenshot(path=os.path.join(SHOTS, 'ddt_休息不足_rest_cap.jpg'), type='jpeg', quality=70)
+            dlg(page, accept=True)
+            click(page, '#btnIn', '滿 10 小時上班')
+            after_punch_ok(gen, p, page, 'in', label, n_before=n0, extra_msg='\n\n⚠️ ' + rest['reason'] + '。' + rest['hint'], stay_open=True)
+            page.close()
+            continue
+        want_code = 'gap'
         ok(f'{label}：資料檢查——應被擋（{want_code}）', rest is not None and ex['in_disabled'] and rest['code'] == want_code, (rest, ex))
         if p['scenario'] == 'cross_store':
             peer = next(q for q in gen.people if q['scenario'] == 'peer' and q['name'] == p['name'])
             ok(f'{label}：跨店——自己這家店沒卡，原因講的是同名同仁在 {BY_CODE[peer["store"]]["name"]} 的下班時間',
                ex['evs'] == [] and peer['events'][-1]['ts'][11:16] in rest['reason'], (rest, peer['events']))
-        if want_code == 'cap':
-            ok(f'{label}：單日上限——按鈕只寫「上班」（今天都不解）、原因含「一天最多 10 小時」', page.inner_text('#btnIn') == '上班' and '一天最多 10 小時' in msg(page), msg(page))
         page.screenshot(path=os.path.join(SHOTS, f'ddt_休息不足_{p["scenario"]}.jpg'), type='jpeg', quality=70)
         # 畫面沒擋到也會被伺服器擋：rejected_rest 寫進資料檔、原因同一句
         dlg(page, accept=True)
@@ -725,17 +734,21 @@ def phase_rest(ctx, gen):
             ok(f'{label}：下班前的確認框＝規格（上一張是 12 小時內的下班卡才問）', ms == want, (ms, want))
         page.close()
     # 總開關 API（rest_rule_set）：關掉 A 店再開頁，原本被擋的人就不鎖；再開回來
-    victim = next(x for x in gen.people if x['scenario'] == 'rest_cap')
+    # 被擋（班距）而且之後沒再打卡的人：A 店的 rest_gap 會再打一張下班卡（10 分鐘鎖），只能用 cross_store
+    victim = next((x for x in gen.people if x['scenario'] == 'cross_store' and x['store'] == A['code']), None)
     r = api(A['code'], {'action': 'rest_rule_set', 'admin_key': 'test-admin', 'on': False, 'probe': True})
     ok('休息規則總開關：rest_rule_set 關掉 A 店、probe 回其他店都讀得到', r.get('ok') and r.get('on') is False and r.get('peer_bad') == [] and r.get('peers') == len(STORES) - 1, r)
     bad = api(A['code'], {'action': 'rest_rule_set', 'admin_key': '', 'on': True})
     ok('休息規則總開關：空的管理金鑰一律擋', bad == {'ok': False, 'error': 'unauthorized'}, bad)
-    u, _ = url(BY_CODE[victim['store']], victim['line_user_id'])
-    page = open_page(ctx, u)
     gen.rest_on[A['code']] = False
-    check_open(gen, victim, page, '關掉總開關後 rest_cap')
-    ok('休息規則總開關：關掉後今天滿 10 小時的人上班鍵也能按', not page.is_disabled('#btnIn') and msg(page) == '')
-    page.close()
+    if victim:
+        u, _ = url(BY_CODE[victim['store']], victim['line_user_id'])
+        page = open_page(ctx, u)
+        check_open(gen, victim, page, '關掉總開關後 ' + victim['scenario'])
+        ok('休息規則總開關：關掉後班距不足的人上班鍵也能按', not page.is_disabled('#btnIn') and msg(page) == '')
+        page.close()
+    else:
+        print('（A 店這次沒有跨店班距不足的人，總開關關掉後的畫面略過）')
     r = api(A['code'], {'action': 'rest_rule_set', 'admin_key': 'test-admin', 'on': True})
     gen.rest_on[A['code']] = True
     ok('休息規則總開關：開回來', r.get('on') is True, r)
@@ -998,13 +1011,13 @@ def phase_req(ctx, gen):
     d3 = (now_tz() + timedelta(days=5)).strftime('%Y-%m-%d')
     pick_date(page, d3)
     submit_ok(page, {'kind': 'leave', 'date': d3, 'leave_type': '補休', 'hours': 8, 'reason': ''}, '補休（不看餘額）')
-    # 證明：病假一定要附
+    # 證明：婚假一定要附；病假 2026-11-06 起今年累計滿 3 天才要附（前兩天寫「這次可以不附」）
     click(page, '#reqView .rq-tabs button[data-tab=leave]', '請假分頁')
-    proof = RNG.choice(['病假'] * 3 + ['婚假'])
-    if proof == '病假':
-        click(page, '#reqView .rq-chip:text-is("病假")', '病假')
-    else:
-        select(page, '#reqView select.rq-special', proof, '特殊假別（婚假）')
+    click(page, '#reqView .rq-chip:text-is("病假")', '病假')
+    page.wait_for_selector('#reqView .rq-chip.on:text-is("病假")', timeout=3000)
+    ok('證明：選病假 → 寫今年第幾天（滿 3 天才要附）', '今年第 ' in page.inner_text('#reqView'), page.inner_text('#rqProofNote'))
+    proof = '婚假'
+    select(page, '#reqView select.rq-special', proof, '特殊假別（婚假）')
     page.wait_for_function('(t) => document.getElementById("reqView").textContent.indexOf("證明文件（" + t + "一定要附）") >= 0', arg=proof, timeout=3000)
     ok(f'證明：選{proof} → 欄位「證明文件（{proof}一定要附）」＋說明逐字', page.inner_text('#rqProofNote') == '可以拍照或選照片／PDF。手上還沒有證明也能先送出，但主管要等你在「我的申請」補上才能核准。', page.inner_text('#rqProofNote'))
     d4 = (now_tz() + timedelta(days=40)).strftime('%Y-%m-%d')

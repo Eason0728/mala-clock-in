@@ -80,8 +80,25 @@ def register(ns):
              "產假（分娩）", "產假", "流產假（妊娠3個月以上）", "流產假（妊娠2～未滿3個月）", "流產假（妊娠未滿2個月）",
              "產檢假", "陪產檢及陪產假", "安胎休養假"]
 
+    # 病假今年累計滿 3 天才要附（同 Requests.gs reqSickDates_／reqSickNth_，2026-11-06）；其他 15 種一律要附
+    SICK_PROOF_DAYS = 3
+    CUR = {"rows": []}   # 最近一次 reqs(data) 讀到的申請（mock 不在資料檔裡多存欄位）
+
+    def sick_dates(rows, emp_id, date, except_id=None):
+        yr = str(date or "")[:4]
+        return sorted({str(x.get("date") or "")[:10] for x in rows
+                       if x.get("emp_id") == emp_id and x.get("kind") == "leave" and x.get("leave_type") == "病假"
+                       and x.get("status") in ("pending", "approved") and x.get("id") != except_id
+                       and str(x.get("date") or "")[:4] == yr})
+
+    def sick_nth(rows, r):
+        d = str(r.get("date") or "")[:10]
+        return len([x for x in sick_dates(rows, r.get("emp_id"), d, r.get("id")) if x < d]) + 1
+
     def proof_type(r):
-        return r.get("kind") == "leave" and r.get("leave_type", "") in PROOF
+        if not (r.get("kind") == "leave" and r.get("leave_type", "") in PROOF):
+            return False
+        return r.get("leave_type") != "病假" or sick_nth(CUR["rows"], r) >= SICK_PROOF_DAYS
 
     def needs_proof(r):
         return proof_type(r) and not r.get("attach_id")
@@ -93,6 +110,7 @@ def register(ns):
         o["hours"] = r.get("hours")
         o["has_attach"] = bool(r.get("attach_id"))
         o["proof_required"], o["need_proof"] = proof_type(r), needs_proof(r)
+        o["sick_n"] = sick_nth(CUR["rows"], r) if (r.get("kind") == "leave" and r.get("leave_type") == "病假") else None
         return o
 
     def day_info(data, emp_id, d):
@@ -151,7 +169,8 @@ def register(ns):
         return day_info(data, emp_id, d)[0]
 
     def reqs(data):
-        return data.setdefault("requests", [])
+        CUR["rows"] = data.setdefault("requests", [])
+        return CUR["rows"]
 
     # ── 同仁 ──
     def req_info(data, body):
@@ -163,7 +182,8 @@ def register(ns):
         day_only = body.get("day_only") is True and len(d) == 10   # 同 Requests.gs：只要那天的卡、不回申請清單
         mine = [] if day_only else sorted([public(r) for r in reqs(data) if r["emp_id"] == me["emp_id"]], key=lambda r: r["created_at"], reverse=True)
         out = {"ok": True, "name": me["name"], "emp_id": me["emp_id"], "today": today, "requests": mine,
-               "miss_days": REQ_MISS_DAYS, "leave_types": [t for t in LEAVE_TYPES if t != "出差"], "proof_types": list(PROOF)}
+               "miss_days": REQ_MISS_DAYS, "leave_types": [t for t in LEAVE_TYPES if t != "出差"], "proof_types": list(PROOF),
+               "sick_proof_days": SICK_PROOF_DAYS, "sick_dates": sick_dates(reqs(data), me["emp_id"], today)}
         if day_only:
             out["day_only"] = True
         if len(d) == 10:

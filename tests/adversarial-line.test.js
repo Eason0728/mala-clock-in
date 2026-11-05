@@ -451,11 +451,11 @@ ok('申請表公式注入：reason／退回理由／acting_name 以 = + - @ 或 
   assert.strictEqual(v[1][11], '＝1+1'); assert.strictEqual(v[2][11], '＝1+1'); assert.strictEqual(v[3][11], '＠x');
   assert.strictEqual(v[1][15], '＝HYPERLINK("x")'); assert.strictEqual(v[1][16], '＋not ok');
 });
-ok('申請：別人不能取消／補附；取消後批次核准略過；作廢後不能再核；病假沒證明不能核（單筆與批次）', () => {
+ok('申請：別人不能取消／補附；取消後批次核准略過；作廢後不能再核；婚假沒證明不能核（病假 2026-11-06 起滿 3 天才要）（單筆與批次）', () => {
   const U2 = { emp_id: 'E02', name: '測試二', key: 'K2', device_id: 'D2', active: 'TRUE', line_user_id: 'U2' };
   const m = make({ now: T('2026-11-03T16:00:00'), self: { roster: [ME, U2], events: [] } });
   const sb = m.sb;
-  const a = sub(sb, { kind: 'leave', date: '2026-11-05', leave_type: '病假', hours: 4 });
+  const a = sub(sb, { kind: 'leave', date: '2026-11-05', leave_type: '婚假', hours: 4 });
   assert.strictEqual(sb.handleReqCancel_({ id_token: 'TOK_U2', id: a.request.id }).error, 'not_found');
   assert.strictEqual(sb.handleReqAttach_({ id_token: 'TOK_U2', id: a.request.id, attach_id: 'abcdefghijklmnop' }).error, 'not_found');
   assert.strictEqual(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: a.request.id, decision: 'approve' }).error, 'need_proof');

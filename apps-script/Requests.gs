@@ -30,7 +30,80 @@ var REQ_PROOF_TYPES_ = ['病假', '住院傷病假', '公傷病假', '婚假',
   '產假（分娩）', '產假', '流產假（妊娠3個月以上）', '流產假（妊娠2～未滿3個月）', '流產假（妊娠未滿2個月）',
   '產檢假', '陪產檢及陪產假', '安胎休養假'];
 var REQ_ATTACH_RE_ = /^[A-Za-z0-9_-]{10,80}$/;
-function reqProofType_(r) { return String(r.kind) === 'leave' && REQ_PROOF_TYPES_.indexOf(String(r.leave_type || '')) >= 0; }
+/* 病假（2026-11-06 Eason 照人資作業辦法）：今年（同一個日曆年）累計滿 3 天才要附證明——今年第 3 個請病假的日子起要附，
+   前兩天不用。「天」＝不同的日期（半天也算一天）；算審核中＋已核准（退回、取消、作廢的不算）；只看這家店的申請表。
+   其他 15 種要證明的假別不變（一律要附）。reqRows_ 讀表時就幫每筆病假標好 __sick_n（今年第幾天）。 */
+var REQ_SICK_TYPE_ = '病假';
+var REQ_SICK_PROOF_DAYS = 3;
+var REQ_SICK_LIVE_ = { pending: 1, approved: 1 };
+/** 這個人今年（date 那年）審核中／已核准的病假日期（不重複、排序；不含 exceptId 那筆）。 */
+function reqSickDates_(rows, empId, date, exceptId) {
+  var yr = String(date || '').slice(0, 4), seen = {};
+  (rows || []).forEach(function (x) {
+    if (String(x.emp_id) !== String(empId) || String(x.kind) !== 'leave' || String(x.leave_type || '') !== REQ_SICK_TYPE_) return;
+    if (!REQ_SICK_LIVE_[String(x.status)] || (exceptId && String(x.id) === String(exceptId))) return;
+    var d = String(x.date || '').slice(0, 10);
+    if (d.slice(0, 4) === yr) seen[d] = 1;
+  });
+  return Object.keys(seen).sort();
+}
+/** 這筆病假是今年第幾天：今年比它早的病假日期數＋1（同一天兩張都算同一天）。 */
+function reqSickNth_(rows, r) {
+  var d = String(r.date || '').slice(0, 10);
+  return reqSickDates_(rows, r.emp_id, d, r.id).filter(function (x) { return x < d; }).length + 1;
+}
+/* 只提醒、不擋（2026-11-06 Eason，人資作業辦法）：同仁送單與主管審核時黃字。
+   事假應前一天請（送出那天＞＝請假那天）；出差應前一週填（送出到出差不到 7 天）；本月事假第 3 次起、或本月事假合計超過 3 天（8 小時一天）。
+   忘打卡：本月第幾次（同一人、同一個月、審核中＋已核准的忘打卡申請，依日期排；一張申請算一次）。 */
+var REQ_PERSONAL_TYPE_ = '事假';
+var REQ_PERSONAL_WARN_N = 3;      // 本月第 3 次起
+var REQ_PERSONAL_WARN_DAYS = 3;   // 本月合計超過 3 天
+var REQ_TRIP_AHEAD_DAYS = 7;      // 出差應前一週填
+/** 同一人、同月、同類（match）、審核中＋已核准的申請裡，r 排第幾（日期、送出時間先後；r 自己不在 rows 裡也能算）。回 {n, hours}（hours＝那個月全部的時數）。 */
+function reqMonthNth_(rows, r, match) {
+  var ym = String(r.date || '').slice(0, 7), d = String(r.date || '').slice(0, 10), c = String(r.created_at || ''), n = 1, hrs = Number(r.hours) || 0;
+  (rows || []).forEach(function (x) {
+    if (String(x.id) === String(r.id) || String(x.emp_id) !== String(r.emp_id) || !match(x) || !REQ_SICK_LIVE_[String(x.status)]) return;
+    var xd = String(x.date || '').slice(0, 10);
+    if (xd.slice(0, 7) !== ym) return;
+    hrs += Number(x.hours) || 0;
+    if (xd < d || (xd === d && String(x.created_at || '') < c)) n++;
+  });
+  return { n: n, hours: hrs };
+}
+function reqIsPersonal_(x) { return String(x.kind) === 'leave' && String(x.leave_type || '') === REQ_PERSONAL_TYPE_; }
+function reqIsMiss_(x) { return String(x.kind) === 'miss'; }
+/** 一筆申請標上 __sick_n（病假今年第幾天）、__miss_n（本月第幾次忘打卡）、__pl（本月事假 {n, hours}）。rows＝同一店的申請（可不含 r）。 */
+function reqMarkOne_(rows, r) {
+  if (String(r.kind) === 'leave' && String(r.leave_type || '') === REQ_SICK_TYPE_) r.__sick_n = reqSickNth_(rows, r);
+  if (reqIsMiss_(r)) r.__miss_n = reqMonthNth_(rows, r, reqIsMiss_).n;
+  if (reqIsPersonal_(r)) r.__pl = reqMonthNth_(rows, r, reqIsPersonal_);
+  return r;
+}
+function reqSickMark_(rows) {
+  rows.forEach(function (r) { reqMarkOne_(rows, r); });
+  return rows;
+}
+/** 黃字提醒（不擋）：字串陣列。r 要先經 reqMarkOne_。 */
+function reqWarns_(r) {
+  var out = [], made = String(r.created_at || '').slice(0, 10), d = String(r.date || '').slice(0, 10);
+  if (reqIsPersonal_(r)) {
+    if (made && d && made >= d) out.push('事假應在前一天請（這張是' + (made === d ? '當天' : '事後') + '才送）');
+    var pl = r.__pl;
+    if (pl && pl.n >= REQ_PERSONAL_WARN_N) out.push('本月第 ' + pl.n + ' 次事假');
+    if (pl && pl.hours > REQ_PERSONAL_WARN_DAYS * 8) out.push('本月事假合計 ' + (Math.round(pl.hours / 8 * 10) / 10) + ' 天，超過 ' + REQ_PERSONAL_WARN_DAYS + ' 天');
+  }
+  if (String(r.kind) === 'trip' && made && d) {
+    var ahead = reqDayDiff_(d, made);
+    if (ahead < REQ_TRIP_AHEAD_DAYS) out.push('出差應在一週前填（' + (ahead > 0 ? '只提前 ' + ahead + ' 天' : ahead === 0 ? '當天才填' : '事後才填') + '）');
+  }
+  return out;
+}
+function reqProofType_(r) {
+  if (String(r.kind) !== 'leave' || REQ_PROOF_TYPES_.indexOf(String(r.leave_type || '')) < 0) return false;
+  if (String(r.leave_type) === REQ_SICK_TYPE_) return !(r.__sick_n > 0) || r.__sick_n >= REQ_SICK_PROOF_DAYS;   // 沒標到（不該發生）＝照舊要附
+  return true;
+}
 /** 這筆還缺證明（要附、還沒附）→ 不能核准 */
 function reqNeedsProof_(r) { return reqProofType_(r) && !r.attach_id; }
 
@@ -60,11 +133,11 @@ function reqHeads_(sh) {
 function reqRows_(ss) {
   var sh = reqSheet_(ss, false);
   if (!sh) return [];
-  return readSheetAsObjects(sh).rows.map(function (r) {
+  return reqSickMark_(readSheetAsObjects(sh).rows.map(function (r) {
     r.date = normCellDate(r.date); r.created_at = String(normCellTs(r.created_at) || '');
     r.start = reqHm_(r.start); r.end = reqHm_(r.end);
     return r;
-  });
+  }));
 }
 /** 'HH:MM'（容忍 Sheets 轉成 Date 或 '9:00'）；不合法回 ''。 */
 function reqHm_(v) {
@@ -137,7 +210,8 @@ function reqPublic_(r) {
            miss_type: String(r.miss_type || ''), reason: String(r.reason || ''), has_attach: !!r.attach_id,
            status: String(r.status), decided_at: String(normCellTs(r.decided_at) || ''), decided_by: String(r.decided_by || ''),
            reject_reason: String(r.reject_reason || ''),
-           proof_required: reqProofType_(r), need_proof: reqNeedsProof_(r),
+           proof_required: reqProofType_(r), need_proof: reqNeedsProof_(r), sick_n: r.__sick_n || null,
+           miss_n: r.__miss_n || null, warns: reqWarns_(r),
            voided_at: String(normCellTs(r.voided_at) || ''), voided_by: String(r.voided_by || ''), void_reason: String(r.void_reason || '') };
 }
 function reqSetCells_(sh, rowIndex, patch) {
@@ -257,7 +331,8 @@ function handleReqInfo_(body) {
   if (who.error) return { ok: false, error: who.error };
   var today = todayTaipeiStr();
   var dayOnly = body.day_only === true && reqIsDate_(body.date);
-  var mine = dayOnly ? [] : reqRows_(who.ss).filter(function (r) {
+  var all = dayOnly ? [] : reqRows_(who.ss);
+  var mine = all.filter(function (r) {
     if (String(r.emp_id) !== String(who.me.emp_id)) return false;
     if (reqDayDiff_(today, String(r.created_at).slice(0, 10) || r.date) <= REQ_LIST_DAYS) return true;
     // （2026-11-04 夜間 QA）提前請假的單：審核中、請假日期還沒過的，超過 60 天也要看得到（才有取消入口）
@@ -265,7 +340,9 @@ function handleReqInfo_(body) {
   }).sort(function (a, b) { return a.created_at < b.created_at ? 1 : -1; }).map(reqPublic_);
   var out = { ok: true, name: String(who.me.name), emp_id: String(who.me.emp_id), today: today, requests: mine,
               miss_days: REQ_MISS_DAYS, leave_types: LEAVE_TYPES.filter(function (t) { return t !== '出差'; }),
-              proof_types: REQ_PROOF_TYPES_.slice() };
+              proof_types: REQ_PROOF_TYPES_.slice(),
+              // 病假滿 3 天才要附證明（2026-11-06）：給申請頁算「選的那天是今年第幾天」；舊頁面不認得這兩欄＝照舊當病假一定要附
+              sick_proof_days: REQ_SICK_PROOF_DAYS, sick_dates: reqSickDates_(all, who.me.emp_id, today) };
   if (dayOnly) out.day_only = true;
   if (reqIsDate_(body.date)) {
     var di = reqDayInfo_(liffEvents_(who.ss, reqDaySince_(String(body.date))), who.me.emp_id, String(body.date));
@@ -418,7 +495,8 @@ function handleReqSubmit_(body) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請幾秒後再送一次' };
   try {
-    var v = reqValidate_(body, who.me, liffEvents_(who.ss), todayTaipeiStr(), reqRows_(who.ss));
+    var existing = reqRows_(who.ss);
+    var v = reqValidate_(body, who.me, liffEvents_(who.ss), todayTaipeiStr(), existing);
     if (v.error) return { ok: false, error: v.error, message: v.message };
     var r = v.row;
     // 補休（2026-11-01 改每月加減結算）：可以先休後補、不看餘額；只擋計時同仁（和薪資同專案的店〔光復〕查得到主檔才擋，其他店靠 LINE 申請頁與主管）
@@ -429,6 +507,7 @@ function handleReqSubmit_(body) {
     r.created_at = nowTaipeiIso(); r.emp_id = String(who.me.emp_id); r.name = String(who.me.name);
     r.attach_id = REQ_ATTACH_RE_.test(String(body.attach_id || '')) ? String(body.attach_id) : '';
     r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
+    reqMarkOne_(existing, r);   // 今年第幾天病假（滿 3 天才要證明）、本月第幾次忘打卡／事假（黃字提醒）
     var sh = reqSheet_(who.ss, true);
     sh.appendRow(reqHeads_(sh).map(function (h) { return r[h] === undefined ? '' : reqSheetText_(r[h], h); }));   // 照實際表頭寫（舊分頁沒有 comp 欄會先補）
     return { ok: true, request: reqPublic_(r), summary: reqSummary_(r) };

@@ -716,7 +716,7 @@ ok('出勤紀錄表 payAttendanceBuild：被擋的卡列進 invalid 不進工時
   assert.deepStrictEqual(d['2026-11-06'].invalid, [{ time: '08:55', type: 'in', status: 'rejected_out_of_range', label: '超出範圍，未入帳' }]);
   assert.strictEqual(d['2026-11-06'].approved, false); assert.deepStrictEqual(d['2026-11-06'].attach, []); assert.deepStrictEqual(d['2026-11-07'].attach, []);
   assert.deepStrictEqual(d['2026-11-08'].leave, [{ type: '出差', hours: null }]);
-  assert.deepStrictEqual(r.employees[0].totals, { approved_hours: 4, leave_hours: 4, work_days: 1, pending_days: 1 });
+  assert.deepStrictEqual(r.employees[0].totals, { approved_hours: 4, leave_hours: 4, work_days: 1, pending_days: 1, miss_count: 0 });
   assert.strictEqual(m.sb.handlePayrollAttendanceExport({ admin_key: 'ADM', store: 'SSLGF', ym: '2026-13' }).error, 'bad_ym');
   assert.strictEqual(m.sb.handlePayrollAttendanceExport({ admin_key: 'MK', store: 'SSLGF', ym: '2026-11' }).error, 'unauthorized');
   assert.strictEqual(m.sb.handlePayrollAttendanceExport({ admin_key: 'ADM', store: 'ZZ', ym: '2026-11' }).error, 'no_clock');

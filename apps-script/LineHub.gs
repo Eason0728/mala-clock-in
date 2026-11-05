@@ -236,6 +236,12 @@ function lineHubResolve_(userId, body, opts) {
       if (cand.length === 1 && !cand[0].line_user_id) suggest = names[nameKeys[0]];
       // 7A（spec §4.4）：這家店名冊完全沒有這個名字、這個 LINE 只在另一家恰好綁了一位 → 請管理系統（mini）把關後自動加入
       var mine = lineHubMine_(userId);
+      // 禁止跨品牌（2026-11-06 Eason：小辛辣同仁不可在墨竹亭門市打卡，反過來也是；央廚、總部兩邊都可以）
+      if (cand.length === 0 && mine.length === 1 && mine[0].st.code !== st.code && lineHubCrossBrand_(mine[0].st, st)) {
+        return { fail: { ok: false, code: 'cross_brand', store_name: st.name,
+                 reason: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(mine[0].st)] + '的同仁，不能在「' + st.name + '」打卡',
+                 hint: '小辛辣與墨竹亭不能互相支援打卡；有問題請找店長' } };
+      }
       if (cand.length === 0 && opts && opts.autoSupport && mine.length === 1 && mine[0].st.code !== st.code) {
         var auto = lineHubAutoSupport_(userId, st, mine[0], body, ss);
         if (auto) {
@@ -258,6 +264,33 @@ function lineHubResolve_(userId, body, opts) {
  * 光復只持有 STAFF_HUB_URL（mini 的 auto-support 完整網址）與 STAFF_HUB_KEY（HUB_SVC_KEY）；任何一家店的 svc 金鑰都不在這裡。
  * 兩個屬性有任一個沒設＝整段跳過，行為與沒有這個功能時完全相同。 */
 var LINE_HUB_STAFF_CODE_MAP = { '': 'gf', mztjs: 'mztjs', mztgf: 'mztgf', mztlzl: 'mztlzl', mztmc: 'mztmc', mztrg: 'mztrg', mztwx: 'mztwx', hq: 'hq', cf: 'cf' };
+
+/* ── 品牌（2026-11-06 Eason：禁止跨品牌打卡）──
+ * 照薪資門市表的品牌欄（brand：sxl／mzt；用打卡試算表 ID 對 clock_ss_id 找那一列）；
+ * 讀不到門市表或沒填品牌就用店代碼判斷（光復＝sxl、mzt 開頭＝mzt）。
+ * 央廚、總部（LINE_HUB_BRAND_FREE）兩邊都可以：不屬於任何品牌、不擋。 */
+var LINE_HUB_BRAND_FREE = { cf: true, hq: true };
+var LINE_HUB_BRAND_NAME = { sxl: '小辛辣', mzt: '墨竹亭' };
+function lineHubBrand_(st) {
+  var code = String(st && st.code || '');
+  if (LINE_HUB_BRAND_FREE[code]) return '';
+  var b = '';
+  try {
+    if (typeof payStoreList === 'function') {
+      var sid = code === '' ? getSS().getId() : String(st.ss_id || '');
+      var row = payStoreList().filter(function (x) { return sid && String(x.clock_ss_id || '') === sid; })[0];
+      if (!row && code === '') row = payStoreList().filter(function (x) { return String(x.code) === 'SSLGF'; })[0];   // 光復列的 clock_ss_id 可能留空（同一份試算表）
+      b = row ? String(row.brand || '').trim().toLowerCase() : '';
+    }
+  } catch (e) { b = ''; }
+  if (b !== 'sxl' && b !== 'mzt') b = code === '' ? 'sxl' : /^mzt/.test(code) ? 'mzt' : '';
+  return b;
+}
+/** 兩家店是不同品牌（都知道品牌、而且不一樣）→ true；有一邊是央廚／總部或品牌不明 → false（不擋）。 */
+function lineHubCrossBrand_(a, b) {
+  var x = lineHubBrand_(a), y = lineHubBrand_(b);
+  return !!x && !!y && x !== y;
+}
 
 /** op_id 照契約：hub:<store_code>:<sha256(userId) 前 12 碼>:<台北日期 yyyyMMdd> */
 function lineHubSupportOpId_(storeCode, userId) {

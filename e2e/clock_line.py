@@ -1037,19 +1037,25 @@ def phase_leave_proof(ctx, hq):
     p.wait_for_selector('#reqView .rq-chip', timeout=10000)
     p.click('#reqView .rq-chips >> nth=0 >> .rq-chip:has-text("病假")')
     p.wait_for_selector('#reqView .rq-chip.on:has-text("病假")', timeout=3000)
-    ok('證明：選病假 → 欄位寫「病假一定要附」＋可以先送出的說明', '證明文件（病假一定要附）' in p.inner_text('#reqView')
+    # 2026-11-06：病假今年累計滿 3 天才要附；前兩天寫「這次可以不附」（第 3 天起同其他假別）
+    note = p.inner_text('#rqProofNote')
+    ok('證明：選病假 → 寫今年第幾天、滿 3 天才要附', bool(re.search(r'今年第 [12] 天病假：累計滿 3 天才要附證明，這次可以不附', note))
+       or ('一定要附' in p.inner_text('#reqView') and '今年第' in p.inner_text('#reqView')), note)
+    p.select_option('#reqView select.rq-special', '婚假')
+    p.wait_for_function('document.getElementById("reqView").textContent.indexOf("證明文件（婚假一定要附）") >= 0', timeout=3000)
+    ok('證明：選婚假 → 欄位寫「婚假一定要附」＋可以先送出的說明', '證明文件（婚假一定要附）' in p.inner_text('#reqView')
        and '還沒有證明也能先送出' in p.inner_text('#rqProofNote'), p.inner_text('#reqView')[:300])
     n0 = len([x for x in calls(p) if x['action'] == 'req_submit'])
     msgs = []
     p.once('dialog', lambda d: (msgs.append(d.message), d.dismiss()))
     p.click('#reqView button.primary')
     p.wait_for_selector('#reqView .rq-box.err', timeout=5000)
-    ok('證明：沒附按送出 → 跳確認；按取消就不送', msgs and '病假要附證明' in msgs[0] and '還沒送出' in p.inner_text('#reqView .rq-box.err')
+    ok('證明：沒附按送出 → 跳確認；按取消就不送', msgs and '婚假要附證明' in msgs[0] and '還沒送出' in p.inner_text('#reqView .rq-box.err')
        and len([x for x in calls(p) if x['action'] == 'req_submit']) == n0, (msgs, p.inner_text('#reqView .rq-box.err')))
     p.once('dialog', lambda d: d.accept())
     p.click('#reqView button.primary')
     p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)
-    item = p.locator('#reqView .rq-item').filter(has_text='病假').first
+    item = p.locator('#reqView .rq-item').filter(has_text='婚假').first
     ok('證明：確定先送出 → 我的申請顯示「還沒附證明」＋補附按鈕', '還沒附證明' in item.inner_text() and item.locator('.rq-proof-btn').count() == 1,
        item.inner_text())
     png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
@@ -1061,12 +1067,18 @@ def phase_leave_proof(ctx, hq):
     sub = [x for x in c if x['action'] == 'req_submit']
     ok('證明：補附先傳光復 line_hub_attach_put、再打送出那家店的 req_attach', up and up[-1]['url'].endswith('/api') and at and sub
        and at[-1]['url'] == sub[-1]['url'] and up[-1]['t'] <= at[-1]['t'], c[-4:])
-    item = p.locator('#reqView .rq-item').filter(has_text='病假').first
+    item = p.locator('#reqView .rq-item').filter(has_text='婚假').first
     ok('證明：補附後顯示「已附證明」、不再警告', '已附證明' in item.inner_text() and '還沒附證明' not in item.inner_text(), item.inner_text())
     p.screenshot(path=os.path.join(SHOTS, '請假證明_補附.jpg'), type='jpeg', quality=80)
     p.click('#reqView .rq-tabs button[data-tab=leave]')
     p.click('#reqView .rq-chips >> nth=0 >> .rq-chip:has-text("事假")')
     ok('證明：事假不要求證明（欄位維持選填）', '附件（選填' in p.inner_text('#reqView'))
+    # 只提醒不擋（2026-11-06）：今天請事假 → 黃字「事假應在前一天請（這張是當天才送）」＋照樣可以送出
+    ok('請假提醒：今天請事假 → 黃字「事假應在前一天請」、註明照樣可以送出', '事假應在前一天請（這張是當天才送）' in p.inner_text('#reqView .rq-warns')
+       and '照樣可以送出' in p.inner_text('#reqView .rq-warns'), p.inner_text('#reqView')[:300])
+    p.click('#reqView .rq-tabs button[data-tab=trip]')
+    p.wait_for_selector('#reqView .rq-warns', timeout=3000)
+    ok('請假提醒：出差選今天 → 黃字「出差應在一週前填（當天才填）」', '出差應在一週前填（當天才填）' in p.inner_text('#reqView .rq-warns'), p.inner_text('#reqView')[:300])
     p.close()
 
 
@@ -1321,10 +1333,44 @@ def phase_rest(ctx, hq):
     p.wait_for_function('!document.getElementById("btnIn").disabled', timeout=12000)
     ok('休息不足：時間到上班鍵自動解開、按鈕恢復「上班」、拿掉那句', p.inner_text('#btnIn') == '上班' and reason not in msg(p), (p.inner_text('#btnIn'), msg(p)))
     # 伺服器擋下（例如別家店剛打下班卡，開頁時還不知道）
-    S['punch'] = {'ok': False, 'type': 'in', 'status': 'rejected_rest', 'reason': '你今天已經上班 10.5 小時（一天最多 10 小時），不能再打上班卡', 'hint': '有問題請找值班主管'}
+    S['punch'] = {'ok': False, 'type': 'in', 'status': 'rejected_rest', 'reason': '你 11/5 23:30 下班，兩班要隔 11 小時，10:30 以後才能打上班卡', 'hint': '有問題請找值班主管'}
     p.click('#btnIn')
-    wait_msg(p, '一天最多 10 小時')
-    ok('休息不足：伺服器擋下的上班卡照後端字句顯示', '一天最多 10 小時' in msg(p) and '有問題請找值班主管' in msg(p), msg(p))
+    wait_msg(p, '兩班要隔 11 小時')
+    ok('休息不足：伺服器擋下的上班卡照後端字句顯示', '兩班要隔 11 小時' in msg(p) and '有問題請找值班主管' in msg(p), msg(p))
+    p.close()
+    # 單日滿 10 小時（2026-11-06 起只提醒不擋）：rest.blocked=false＋warn → 上班鍵可按、黃字提醒；打卡成功訊息多一句、畫面不自動關
+    warn = {'code': 'cap', 'reason': '你今天已經上班 10.5 小時（一天最多 10 小時）', 'hint': '再上班會超過 10 小時，請先跟店長確認'}
+    def h2(route):
+        try:
+            b = json.loads(route.request.post_data or '{}')
+        except ValueError:
+            return route.continue_()
+        if b.get('action') == 'liff_status':
+            j = route.fetch().json()
+            if j.get('guard') is not None:
+                j['guard'] = {'blocked': 'out', 'lock': {}, 'last': {'type': 'out', 'hm': '19:00', 'ts': '2026-11-01T19:00:00+08:00'},
+                              'now': int(time.time() * 1000)}
+                j['rest'] = {'blocked': False, 'warn': warn}
+            return route.fulfill(status=200, body=json.dumps(j), content_type='text/plain')
+        if b.get('action') == 'liff_punch':   # 後端照收（ok）並帶 rest_warn（同 Liff.gs）；不寫 mock 資料檔，免得影響後面的段落
+            ts = time.strftime('%Y-%m-%dT%H:%M:%S+08:00', time.localtime())
+            j = {'ok': True, 'type': 'in', 'ts': ts, 'greeting': '辛苦了', 'missed': '', 'req_notes': [], 'via_qr': False,
+                 'rest_warn': warn['reason'] + '。' + warn['hint']}
+            return route.fulfill(status=200, body=json.dumps(j), content_type='text/plain')
+        return route.continue_()
+    p = open_page(ctx, url(hq, in_client=True))
+    p.route('**/api/hq', h2)
+    p.reload()
+    p.wait_for_function('document.getElementById("who").textContent.length > 0', timeout=10000)
+    p.wait_for_timeout(300)
+    ok('單日 10 小時：只提醒——上班鍵可按、按鈕寫「上班」、黃字講原因', not p.is_disabled('#btnIn') and p.inner_text('#btnIn') == '上班'
+       and warn['reason'] in msg(p) and warn['hint'] in p.inner_text('#hint'), (p.inner_text('#btnIn'), msg(p)))
+    p.on('dialog', lambda d: d.accept())
+    p.click('#btnIn')
+    wait_msg(p, '上班打卡成功')
+    ok('單日 10 小時：打得進去，成功訊息多「⚠️ 你今天已經上班…請先跟店長確認」', '⚠️ ' + warn['reason'] + '。' + warn['hint'] in msg(p), msg(p))
+    p.wait_for_timeout(2200)
+    ok('單日 10 小時：畫面不自動關（要讓同仁看到提醒）', p.evaluate('window.__closed !== true'))
     p.close()
 
 
