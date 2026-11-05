@@ -25,6 +25,7 @@
 | 2026-11-05 | 任務關 | T3–T8（薪資後端＋薪酬頁＋mock） | tests 92 支 0 FAIL；新 support-auto 99 項、regression 97 項；破壞驗證 3 種皆紅 | 1 | tests/support-auto*.test.js；docs/support-auto/shot-att.png |
 | 2026-11-05 | 上線前審 | Payroll.gs＋payroll.html | Fable probe 七條全修（高 1、中 4、低 2），每條補測試並破壞驗證會紅 | 1 | tests/support-auto.test.js §12；scratchpad prelaunch-fable/probe.js |
 | 2026-11-05 | 上線前審 | Payroll.gs＋payroll.html＋dzy diff | GPT 12 條（高 7、中 4、低 1）：10 條修、2 條（整月覆寫無版本、已鎖定月份仍可存工時）是改版前既有行為，另案；新增 27 項測試皆先在修改前程式上紅 | 1 | tests/support-auto.test.js §13；scratchpad prelaunch-gpt2/gpt-result.md；commit 2f68848 |
+| 2026-11-05 | 上線前審 | GPT 修正＋損益估算 | Fable 複審 5 條（高 3、中 1、低 1）：撤掉移除標記法、改管理系統保留離職一個月；acct_only 不算已同步。測試 157 項＋dzy 45 項全過 | 2 | scratchpad fable-r3/run.js |
 
 ## 落地清單
 - [ ] 1 排程上線：

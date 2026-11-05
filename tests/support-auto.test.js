@@ -118,7 +118,7 @@ console.log('§1 schema');
   const PS = s.F('PAY_SHEETS');
   chk('payroll_store 最後一欄是 support_group（append，不插中間）', PS.store[PS.store.length - 1] === 'support_group' && PS.store.indexOf('brand') === 7, PS.store);
   chk('payroll_input 最後一欄是 hours_manual', PS.input[PS.input.length - 1] === 'hours_manual' && PS.input.indexOf('custom_add_more') === PS.input.length - 2, PS.input);
-  chk('新表 payroll_xmap 欄位', JSON.stringify(PS.xmap) === JSON.stringify(['emp_no', 'pay_store', 'acct_store', 'emp_id', 'not_support', 'synced_at', 'state', 'removed_at', 'acct_only']));
+  chk('新表 payroll_xmap 欄位', JSON.stringify(PS.xmap) === JSON.stringify(['emp_no', 'pay_store', 'acct_store', 'emp_id', 'not_support', 'synced_at', 'state', 'acct_only']));
   chk('分頁名 payroll_xmap', s.F('PAY_SHEET_NAME').xmap === 'payroll_xmap');
   chk('生效常數 PAY_XSUP_FROM=2026-11', s.F('PAY_XSUP_FROM') === '2026-11');
 }
@@ -356,7 +356,7 @@ console.log('§9 xmap 讀寫與 scope');
   chk('scope 下送別店（MZTJS）的列 → scope_forbidden', deny.ok === false && deny.error === 'scope_forbidden', deny);
   const ok2 = s.H('payroll_xmap_set', { scope: ['SSLGF'], store: 'SSLGF', rows: [{ emp_no: 'D01', pay_store: 'SSLGF', acct_store: 'CF', emp_id: 'CF21', state: 'confirmed' }] });
   chk('scope 下 xmap_set 動不到別店列（MZTJS 那列還在、光復換成 1 列）', ok2.ok && s.__DB.xmap.some((x) => x.emp_id === 'CF99' && x.pay_store === 'MZTJS')
-    && s.__DB.xmap.filter((x) => x.pay_store === 'SSLGF' && !x.removed_at).length === 1, s.__DB.xmap);
+    && s.__DB.xmap.filter((x) => x.pay_store === 'SSLGF').length === 1, s.__DB.xmap);
   const g2 = s.H('payroll_xmap_get', { scope: ['SSLGF'], store: 'SSLGF' });
   chk('scope 下 xmap_get 只回負責門市的列', g2.ok && g2.rows.length === 1 && g2.rows[0].pay_store === 'SSLGF', g2.rows);
   const d2 = s.H('payroll_support_decide', { scope: ['SSLGF'], store: 'SSLGF', ym: '2026-11', emp_id: 'CF30', code: 'CF', choice: 'auto' });
@@ -559,36 +559,23 @@ console.log('§13 GPT 上線前審查');
   chk('G5 沒帶 state 的列丟棄（不預設成 confirmed）', nost.ok && nost.dropped === 1 && !s5b.__DB.xmap.some((x) => x.emp_id === 'CF50'), nost);
 }
 {
-  // 4【高】離職／調店後同步，還沒鎖定的舊月份不可以回頭改薪
+  // 4【高】離職：管理系統保留離職同仁到離職月份的下個月底（dzy payXmapBuild_ 測 1k2／1r），薪資這邊照快照整批換、不另記標記
+  //   （Fable 複審：標記法依同步順序會付錯人）。離職後帳號給了新人、舊人還在保留期 → 同一帳號兩人，兩邊都不帶入、列提醒
   const s = ctx();
-  const full = s.__DB.xmap.map((x) => Object.assign({}, x));
-  vm.runInContext("todayTaipeiStr = function(){ return '2026-12-01'; };", s);
-  const left = full.filter((x) => x.emp_no !== 'D01');   // A 君 11/30 離職，12/1 同步時管理系統已不回他
-  const r = s.H('payroll_xmap_set', { rows: left, synced_at: '2026-12-01T01:00:00Z' });
-  chk('G4 離職：A 君的對照不刪、標 removed_at=2026-12-01', r.ok && s.__DB.xmap.filter((x) => x.emp_no === 'D01' && x.removed_at === '2026-12-01').length === 4, s.__DB.xmap.filter((x) => x.emp_no === 'D01'));
-  chk('G4 離職：11 月照樣帶入央廚 12.5H', s.F('paySupportAuto_')('2026-11', 'SSLGF', false).byEmp.E01.stores.find((x) => x.code === 'CF').hours === 12.5);
-  chk('G4 離職：12 月不再帶入', !s.F('paySupportAuto_')('2026-12', 'SSLGF', false).byEmp.E01);
-  chk('G4 xmap_get 不回已移除的列', !s.H('payroll_xmap_get', {}).rows.some((x) => x.emp_no === 'D01'));
-  // 調店：B 君 12/1 起改由小辛辣總部發薪
-  const s2 = ctx();
-  s2.__DB.master.push(EMP('HQ-11', 'SSLHQ', { is_full_time: 'false', base: 0, ot_rate: 0, wage: 200 }));   // 新店主檔用他在總部那份打卡表的帳號
-  vm.runInContext("todayTaipeiStr = function(){ return '2026-12-01'; };", s2);
-  const moved = s2.__DB.xmap.map((x) => (x.emp_no === 'D02' ? Object.assign({}, x, { pay_store: 'SSLHQ' }) : x));
-  s2.H('payroll_xmap_set', { rows: moved, synced_at: '2026-12-01T01:00:00Z' });
-  const nov = s2.F('paySupportAuto_')('2026-11', 'SSLHQ', false);
-  const novGF = s2.F('paySupportAuto_')('2026-11', 'SSLGF', false);
-  chk('G4 調店：11 月光復那邊用舊對照，總部 3H 因新店已有主檔列「可能付兩次」待處理（不會兩邊都付）',
-    novGF.byEmp.E02 && !novGF.byEmp.E02.stores.length && novGF.dup_pay.some((x) => x.emp_id === 'E02' && x.hours === 3), [novGF.byEmp.E02, novGF.dup_pay]);
-  chk('G4 調店：11 月新店（小辛辣總部）不把光復 6H 再帶一次', !(nov.byEmp['HQ-11'] && nov.byEmp['HQ-11'].stores.length), nov.byEmp['HQ-11']);
-  s2.__DB.master.find((m) => m.emp_id === 'E02' && m.store === 'SSLGF').active = 'false';   // 調店完成：光復主檔停用
-  s2.__CLOCK.LOCAL.approved.push(AP('2026-12-03', 'E02', 4));
-  const dec = s2.F('paySupportAuto_')('2026-12', 'SSLHQ', false);
-  chk('G4 調店：12 月起新店帶入光復 4H', ((dec.byEmp['HQ-11'] || {}).stores || []).some((x) => x.code === 'SSLGF' && x.hours === 4), dec.byEmp['HQ-11']);
-  // 更正：帳號改給別人 → 直接刪，不留標記
-  const s3 = ctx();
-  const fix = s3.__DB.xmap.map((x) => (x.emp_id === 'CF24' ? Object.assign({}, x, { emp_no: 'D09' }) : x));
-  s3.H('payroll_xmap_set', { rows: fix, synced_at: '2026-12-01T01:00:00Z' });
-  chk('G4 更正（CF24 改給別人）→ 舊列直接刪', !s3.__DB.xmap.some((x) => x.emp_no === 'D05' && x.emp_id === 'CF24'), s3.__DB.xmap.filter((x) => x.emp_id === 'CF24'));
+  const r = s.H('payroll_xmap_set', { rows: s.__DB.xmap.concat([XROW('D99', 'SSLGF', 'CF', 'CF21')]), synced_at: '2026-12-03T01:00:00Z' });
+  const a = s.F('paySupportAuto_')('2026-11', 'SSLGF', false);
+  chk('G4 舊人還在保留期、帳號又給新人 → A 君不帶入 CF21、列 dup_acct（不會改付給新人）', r.ok && !a.byEmp.E01.stores.some((x) => x.code === 'CF')
+    && a.dup_acct.some((x) => x.emp_id === 'E01'), [a.byEmp.E01, a.dup_acct]);
+  chk('G4 xmap 欄位沒有 removed_at（不做標記）', s.F('PAY_SHEETS').xmap.indexOf('removed_at') < 0);
+}
+{
+  // Fable 複審 #4：只有別店同步留下的 acct_only 列 → 本店仍算「沒同步」
+  const s = ctx();
+  s.__DB.xmap = [];
+  s.H('payroll_xmap_set', { scope: ['CF'], store: 'CF', rows: [XROW('D01', 'SSLGF', 'CF', 'CF21')], synced_at: '2026-11-20T01:00:00Z' });
+  chk('F4 前置：存成 acct_only', s.__DB.xmap.length === 1 && s.__DB.xmap[0].acct_only === 'true');
+  chk('F4 光復 support 仍是 empty（不啟用跨品牌剔除）', s.F('paySupportAuto_')('2026-11', 'SSLGF', false).empty === true);
+  chk('F4 xmap_get 的 synced_at 不算 acct_only（前端會照常同步）', s.H('payroll_xmap_get', { scope: ['SSLGF'], store: 'SSLGF' }).synced_at === '');
 }
 {
   // 6【高】同一個打卡帳號確認給兩個人：兩邊都不帶入、列提醒
