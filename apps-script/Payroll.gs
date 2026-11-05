@@ -2764,6 +2764,32 @@ function handlePayrollGet(body) {
   };
 }
 
+/** 主檔工號在本店打卡名冊找不到的人（2026-11-06：光復 A 君主檔 E10、打卡 E11，打卡時數與班表都對不到人）。
+ *  比對法與 paySchedMonth_ 相同：主檔工號原樣、或去掉 emp_prefix。名冊裡有同名的人就一併回他的打卡工號，方便改。
+ *  沒有打卡的店（has_clock＝false）不檢查；讀不到名冊也不報（不讓提醒拖垮整頁）。 */
+function payRosterMismatch_(st, master) {
+  st = payStore(st);
+  if (!payHasClock(st)) return [];
+  let roster = [];
+  try { roster = payClockRead(st, 'roster') || []; } catch (e) { return []; }
+  if (!roster.length) return [];
+  const ids = {}, byName = {};
+  roster.forEach(function (r) {
+    ids[String(r.emp_id).trim()] = true;
+    const n = String(r.name || '').trim();
+    if (n) (byName[n] = byName[n] || []).push(String(r.emp_id).trim());
+  });
+  const prefix = String((payStoreRow(st) || {}).emp_prefix || '').trim();
+  const out = [];
+  (master || []).forEach(function (m) {
+    if (String(m.active).toLowerCase() !== 'true' || payStore(m.store) !== st) return;
+    const id = String(m.emp_id).trim();
+    if (ids[id] || (prefix && id.indexOf(prefix) === 0 && ids[id.slice(prefix.length)])) return;
+    out.push({ emp_id: id, name: String(m.name || ''), roster_ids: byName[String(m.name || '').trim()] || [] });
+  });
+  return out;
+}
+
 /** 從 run 列＋item 列重建 {results, status}（每人用 payRunItemsToResult 還原 earn/ded）；無資料回 null。 */
 function payBuildRunResults(ym, store) {
   const stB = payStore(store);
@@ -2812,8 +2838,11 @@ function handlePayrollMonth(body) {
       if (calc && calc.ok) run = { results: calc.results, status: 'draft' };
     }
   }
+  const masterM = payRead('master').filter(function (m) { return payStore(m.store) === stM; });
+  let rosterMiss = [];
+  try { rosterMiss = payRosterMismatch_(stM, masterM); } catch (e) { rosterMiss = []; }
   return { ok: true, ym: ym, store: stM, has_clock: payHasClock(stM), inputs: inputs, run: run, annual: payAnnualInfo(ym, stM),
-           master: payRead('master').filter(function (m) { return payStore(m.store) === stM; }),
+           master: masterM, roster_mismatch: rosterMiss.length ? rosterMiss : undefined,   // 沒有就不帶（回應形狀與改版前相同）
            config: payConfig(stM), config_src: payConfigSource(stM),
            bonuses: payRead('bonus').filter(function (b) { return String(b.ym) === ym && payStore(b.store) === stM; }),
            stores: payRead('store').filter(function (x) { return String(x.active).toLowerCase() !== 'false'; }),
