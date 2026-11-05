@@ -256,7 +256,9 @@ console.log('\n══ 9) 對帳檢查按鈕 ══');
       nf:v=>Math.round(Number(v)||0).toLocaleString('en-US'),
       r2:v=>Math.round(Number(v)*100)/100, ym:()=>'2026-08',
       $:id=>id==='costAuditBox'?box:null, toast:(m,bad)=>{t=[m,!!bad]} };
-    vm2.createContext(ctx); vm2.runInContext(src+'\nglobalThis.__a=costAudit;',ctx); ctx.__a();
+    // costRows 的列名 2026-11-04 起過 esc()（夜間 QA）：從 payroll.html 抓同一份 esc，不另寫（本機有 payroll_mock.js 才跑到這段，CI 上一直跳過所以沒發現）
+    const escLine = (HTML.match(/const esc=s=>[\s\S]*?;\n/) || [''])[0];
+    vm2.createContext(ctx); vm2.runInContext(escLine+src+'\nglobalThis.__a=costAudit;',ctx); ctx.__a();
     return { html:box.innerHTML, toast:t };
   };
 

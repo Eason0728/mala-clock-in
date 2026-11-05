@@ -401,6 +401,7 @@ html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬計算
 </section>
 
 <section class="panel" id="p-att">
+  <div id="supWarn"></div>
   <div class="card">
     <h2>工時（從打卡系統歸集）</h2>
     <p class="hint">
@@ -417,7 +418,9 @@ html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬計算
     <h2>跨店支援明細</h2>
     <p class="hint">
       到別家門市上的班填在這裡。<b>支援時數不計入本店工時</b>，所以不會影響基本工時與加班的判斷。<br>
-      支援薪資留空＝自動用「支援時數 × 支援費率」；有特殊協議就直接填金額覆蓋。
+      支援薪資留空＝自動用「支援時數 × 支援費率」；有特殊協議就直接填金額覆蓋。<br>
+      <b>2026-11 起</b>：同組門市（小辛辣↔小辛辣、墨竹亭↔墨竹亭；央廚、總部跟誰都同組）主管核定過的時數會<b>自動帶入</b>，標「打卡帶入」、不能改，點「逐日」看每天明細；
+      跨品牌（例：小辛辣同仁去墨竹亭）不算支援，由打卡那家店的薪資主檔發薪。
     </p>
     <div id="supList"></div>
   </div>
@@ -638,6 +641,7 @@ async function bridgeCallQueued(action,body){
 if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
 
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
+let SUPA=null;   // 跨店支援自動帶入（2026-11 起後端 payroll_month 回的 support_auto；之前的月份是 null）
 // 目前操作門市：階段一由門市表全部可見；階段二改讀 dzy 帳號的可見門市清單（UI 與過濾邏輯不變）
 let STORE=(new URLSearchParams(location.search).get('store')||localStorage.getItem('pay_store')||'');
 if(new URLSearchParams(location.search).get('store')) localStorage.setItem('pay_store',STORE);
@@ -771,7 +775,8 @@ async function boot(){
   renderEmp(); renderCfg();
   applyScopeUi();
   await loadMonth(monP);
-  if(!scopeLimited()) syncHol();   // 紅字天數整年自動帶入（背景跑，不擋畫面）；有負責門市限制時後端會擋，不呼叫
+  if(!scopeLimited()) syncHol();
+  syncXmap();   // 跨店支援的打卡對照（背景跑，不擋畫面）   // 紅字天數整年自動帶入（背景跑，不擋畫面）；有負責門市限制時後端會擋，不呼叫
 }
 /* 切月份/開啟時自動帶出當月數字：未鎖定且尚未算過就靜默試算一次（未設紅字等失敗則安靜略過，不跳錯誤）*/
 async function autoCalc(){
@@ -834,6 +839,19 @@ async function loadAtt(){
   clearAttDirty();   // 剛從試算表讀回來，記憶體＝已存狀態
   renderAtt();
 }
+/** 這個人要不要送去存檔（2026-11 審查 #1）：除了打卡帶入的 auto 列以外什麼都沒有的人不送，
+ *  否則只在別店有時數、本店沒歸集的人會被存成 hours:0 的整筆手動列，之後本店核定就流不進來。 */
+function attSendable(A){
+  A=A||{};
+  if(A._manual) return true;   // 已存過的整筆手動列（含人工填 0）一定要送回，否則會被刪掉、改發打卡工時（GPT #2）
+  if((A.support||[]).some(s=>s&&!(s.auto===true||String(s.auto)==='true'))) return true;
+  const NUMS=['hours','extra_ot','personal_h','sick_h','menstrual_h','disaster_h','annual_h','deduct_days','work_days','wage_override','holiday_h','custom_add_amt','custom_ded_amt'];
+  if(NUMS.some(k=>n(A[k]))) return true;
+  if(A.full_attend||A.meal_on) return true;
+  if(String(A.custom_add_label||'').trim()||String(A.custom_ded_label||'').trim()) return true;
+  if(A.dorm_override!==''&&A.dorm_override!=null) return true;
+  return (A.custom_add_more||[]).some(x=>x&&(String(x.label||'').trim()||n(x.amt)));
+}
 async function saveAtt(){
   const b=$('saveAttBtn');
   /* 支援時數若讀取失敗（後端解析不了那段 JSON），此時 ATT 裡是空陣列——
@@ -844,12 +862,14 @@ async function saveAtt(){
     toast('無法儲存：'+names.join('、')+' 的支援時數或自訂加薪在試算表裡格式壞了，存檔會覆蓋掉原始資料。請先修正該欄再存。',true);
     return;
   }
+  if(supCrossBlock('儲存')) return;
   b.disabled=true; b.classList.remove('done'); b.textContent='存取中…';
   /* 有負責門市範圍時只送本店主檔的人：ATT 也含只打卡、未建主檔或別店的編號（計薪只看主檔，不送不影響本店），
      後端會擋 emp_out_of_scope（payroll-scope final review I2）。系統管理者／非嵌入照舊全送。 */
   let sendAtt=ATT;
   if(scopeLimited()){ const own={}; MASTER.forEach(m=>{own[String(m.emp_id).trim()]=1}); sendAtt={};
     Object.keys(ATT||{}).forEach(k=>{ if(own[String(k).trim()]) sendAtt[k]=ATT[k]; }); }
+  if(ym()>=XSUP_FROM){ const t={}; Object.keys(sendAtt||{}).forEach(k=>{ if(attSendable(sendAtt[k])) t[k]=sendAtt[k]; }); sendAtt=t; }
   const r=await post('payroll_input_set',{ym:ym(),inputs:sendAtt});
   if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.error||''),true);return}
   await doCalc();   // 存完用新工時重算帶出數字
@@ -924,6 +944,8 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     HAS_CLOCK=(r.has_clock!==false);
     showClockMode();
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
+    SUPA=r.support_auto||null; SUP_OPEN={};
+    if(SUPA&&SUPA.recalc) toast('別家門市的核定時數有變動，已自動重新計算');
     /* ⚠ 這裡把 ATT 換成試算表的內容了，旗標一定要跟著清（與 loadAtt 同一個道理）。
        2026-09-03 起 ATT_DIRTY 決定「重算要不要送影本」，殘留 true 會讓保護失效：
        切門市時 ATT 已經是新的一份，卻被當成「有未存變更」照送上去。 */
@@ -947,6 +969,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
   } finally { setBusy(false); }
 }
 async function doCalc(){
+  if(supCrossBlock('重新計算')) return;
   setBusy(true);
   try{
     const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
@@ -1460,7 +1483,7 @@ function renderAtt(){
   MASTER.filter(e=>String(e.active)==='true').forEach(e=>{
     const A=ATT[e.emp_id]=ATT[e.emp_id]||{};
     A.support=A.support||[];
-    const sh=A.support.reduce((a,s)=>a+n(s.hours),0);
+    const sh=A.support.reduce((a,s)=>a+(s&&s.cross===true?0:n(s.hours)),0);   // 跨品牌列後端不計（2026-11 起），這裡也不加
     // 姓名底下掛「假別額度」——點了才去抓（Apps Script 每次往返約 2 秒，不放進 loadMonth 拖慢切月份）
     h+=`<tr><td><b>${esc(e.name)}</b> <span class="tag ${isFT(e)?'ft':'pt'}">${isFT(e)?'正職':'計時'}</span>`
       +`<br><button class="lnk" onclick="openQuota('${e.emp_id}')">假別額度</button></td>`;
@@ -1596,10 +1619,29 @@ function renderQuota(empId){
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeQuota()});
 
 /* ── 跨店支援明細 ── */
+/* 舊下拉（寫死 5 家、存中文名）。2026-11-05 起下拉改讀門市表 STORE_LIST（存代碼 code＋中文名 store），
+   這份只在門市表讀不到時備用；後端 PAY_SUPPORT_NAME_ALIAS 靠它把舊列的中文名對回代碼（tests/support-auto.test.js 會讀這行）。 */
 const STORES=['小辛辣光復','墨竹亭金山','墨竹亭光復','墨竹亭六張犁','央廚'];
-function storeOptions(cur){
-  const list=STORES.slice(); if(cur && !list.includes(cur)) list.unshift(cur);
-  return '<option value="">選擇門市</option>'+list.map(s=>`<option ${s===cur?'selected':''}>${s}</option>`).join('');
+function storeOptions(s){
+  s=(s&&typeof s==='object')?s:{store:s||''};
+  const code=String(s.code||'').trim().toUpperCase();
+  const list=(STORE_LIST||[]).filter(x=>String(x.code||'').trim());
+  if(!list.length){   // 門市表讀不到：退回舊下拉（存中文名）
+    const names=STORES.slice(); if(s.store && !names.includes(s.store)) names.unshift(s.store);
+    return '<option value="">選擇門市</option>'+names.map(x=>`<option value="${esc(x)}" ${x===s.store?'selected':''}>${esc(x)}</option>`).join('');
+  }
+  let h='<option value="">選擇門市</option>';
+  // 舊列只有中文名、沒有代碼：照原樣顯示（不自動改寫，認不認得出來由後端判斷）
+  if(!code && String(s.store||'').trim()) h+=`<option value="" selected>${esc(s.store)}（舊資料）</option>`;
+  return h+list.map(x=>`<option value="${esc(x.code)}" ${String(x.code).trim().toUpperCase()===code?'selected':''}>${esc(x.name||x.code)}</option>`).join('');
+}
+/** 手填列換門市：存代碼＋中文名（請款區顯示用） */
+function setSupStore(emp,i,val){
+  const s=((ATT[emp]||{}).support||[])[i]; if(!s||!val) return;
+  const st=(STORE_LIST||[]).find(x=>String(x.code)===String(val));
+  if(st){ s.code=String(st.code); s.store=String(st.name||st.code); }
+  else { delete s.code; s.store=val; }   // 退回舊下拉時是中文名
+  renderAtt();
 }
 function addSupportFor(emp){
   if(!emp){toast('請先選擇同仁',true);return}
@@ -1765,7 +1807,9 @@ async function saveLeaveEvents(btn){
 }
 
 /* ═════ 門市設定 ═════ */
-const SF=[['code','門市代碼'],['name','門市名稱'],['clock_ss_id','打卡試算表 ID'],['dzy_node','dzy 節點'],['emp_prefix','編號前綴'],['sort','順序']];
+const SF=[['code','門市代碼'],['name','門市名稱'],['clock_ss_id','打卡試算表 ID'],['dzy_node','dzy 節點'],['emp_prefix','編號前綴'],['sort','順序'],
+  // 跨店支援同組（2026-11-05）：sxl／mzt／*（央廚、總部跟誰都同組）。空白＝自己一組，不會自動帶入任何店。
+  ['support_group','支援同組']];
 function renderStores(){
   const t=$('storeTbl'); if(!t) return;
   let h='<thead><tr>'+SF.map(f=>`<th style="text-align:left">${f[1]}</th>`).join('')+'<th style="text-align:left">品牌圖示</th><th>啟用</th><th></th></tr></thead><tbody>';
@@ -2077,7 +2121,106 @@ function renderPunch(r){
     <div class="hint" style="margin-top:10px">共 ${rows.length} 筆</div>`;
 }
 
+/* ═════ 跨店支援自動帶入（2026-11-05）═════
+ * 後端算好 auto 列（打卡帶入，唯讀）與提醒（SUPA）；這裡只負責畫、兩顆差異鈕、擋跨品牌手填。
+ * auto 列存檔時後端會丟掉（永遠跟著打卡）；重新計算時也會丟掉重算，所以畫面上不能改。 */
+const XSUP_FROM='2026-11';
+const XSYNC_MAX_MS=6*3600*1000;
+let SUP_OPEN={};
+const supIsAuto=s=>!!s&&(s.auto===true||String(s.auto)==='true');
+function supEmpName(id){ const m=MASTER.find(x=>String(x.emp_id)===String(id)); return m?m.name:String(id); }
+function supStoreName(code){ const s=(STORE_LIST||[]).find(x=>String(x.code).toUpperCase()===String(code).toUpperCase()); return s?(s.name||s.code):String(code); }
+function supGroupOf(code){ const s=(STORE_LIST||[]).find(x=>String(x.code).toUpperCase()===String(code).toUpperCase()); return s?String(s.support_group||'').trim():''; }
+function supSameGroup(a,b){ return a==='*'||b==='*'||(!!a&&a===b); }
+/** 跨品牌手填（2026-11 起不算支援；原店手填＋打卡店主檔會付兩次）：後端回的＋畫面上剛加、還沒存的 */
+function supCrossList(){
+  if(ym()<XSUP_FROM) return [];
+  const out=[], seen={};
+  const add=(emp,code)=>{ const k=emp+'|'+code; if(seen[k]) return; seen[k]=1; out.push({emp_id:emp,code}); };
+  ((SUPA&&SUPA.warn&&SUPA.warn.cross_manual)||[]).forEach(x=>add(String(x.emp_id),String(x.code)));
+  const hg=supGroupOf(STORE);
+  Object.keys(ATT||{}).forEach(emp=>{
+    ((ATT[emp]||{}).support||[]).forEach(s=>{
+      if(supIsAuto(s)) return;
+      const c=String(s.code||'').trim().toUpperCase(); if(!c||c===String(STORE).toUpperCase()) return;
+      const g=supGroupOf(c);
+      if(hg&&g&&!supSameGroup(hg,g)) add(String(emp),c);
+    });
+  });
+  return out;
+}
+function supCrossBlock(what){
+  const l=supCrossList(); if(!l.length) return false;
+  toast('無法'+what+'：'+l.map(x=>supEmpName(x.emp_id)+'（'+supStoreName(x.code)+'）').join('、')+' 是跨品牌支援，2026-11 起由打卡那家店發薪。請先移除這幾列（標紅的）。',true);
+  return true;
+}
+/** 差異逐筆決定：auto＝改成打卡值（刪掉手填）、keep＝保留手填（打卡值再變才會再提醒） */
+async function supDecide(emp,code,choice,autoH,btn){
+  if(!confirmLeaveAtt(choice==='auto'?'改成打卡值':'保留手填')) return;
+  if(btn) btn.disabled=true;
+  const r=await post('payroll_support_decide',{ym:ym(),emp_id:emp,code,choice,auto_h:autoH});
+  if(!r.ok&&r.error==='no_row'){ toast(supEmpName(emp)+' 這位同仁沒有手填資料，不用決定'); await loadMonth(); return; }
+  if(!r.ok){ if(btn) btn.disabled=false; if(!r.message) toast('處理失敗：'+(r.error||''),true); return; }
+  toast(supEmpName(emp)+' '+supStoreName(code)+'：'+(choice==='auto'?'已改成打卡值':'已保留手填'));
+  await loadMonth();
+}
+function supToggleDays(emp,code){ const k=emp+'|'+code; SUP_OPEN[k]=!SUP_OPEN[k]; renderSup(); }
+function supDaysHtml(emp,code){
+  const d=(((SUPA||{}).detail||{})[emp]||{})[code];
+  if(!d||!d.days||!d.days.length) return '<div style="color:var(--muted);font-size:12.5px;padding:4px 2px">沒有逐日明細</div>';
+  return `<table style="margin:4px 0 2px"><thead><tr><th>日期</th><th>時段</th><th>核定時數</th><th>核定人</th></tr></thead><tbody>`
+    +d.days.map(x=>`<tr><td>${esc(x.date)}</td><td>${esc(String(x.periods||'').split(',').join('、'))}</td><td>${esc(r2(n(x.hours)))}</td><td>${esc(x.manager_name||'')}</td></tr>`).join('')
+    +'</tbody></table>';
+}
+/** 出勤資料最上方的提醒列 */
+function renderSupWarn(){
+  const box=$('supWarn'); if(!box) return;
+  if(!SUPA||ym()<XSUP_FROM){ box.innerHTML=''; return; }
+  const W=SUPA.warn||{}, parts=[];
+  const line=(cls,html)=>parts.push(`<div class="note ${cls}" style="margin:0 0 10px">${html}</div>`);
+  if(SUPA.empty) line('warn','⚠ <b>打卡對照尚未同步</b>：跨店支援這個月還不會自動帶入。請從管理系統開這一頁（會自動同步），或請 Eason 確認同仁名單的打卡對照。');
+  if(SUPA.stale) line('warn','⚠ <b>本月已鎖定，但別家門市的核定時數之後有變動</b>：要更新請先解鎖再重新計算。');
+  const cross=supCrossList();
+  if(cross.length) line('warn','⛔ <b>跨品牌支援不能手填</b>（2026-11 起由打卡那家店的薪資主檔發薪，原店再填會付兩次）：'
+    +cross.map(x=>esc(supEmpName(x.emp_id))+'（'+esc(supStoreName(x.code))+'）').join('、')+'。請到下方跨店支援明細移除標紅的列，才能儲存與重新計算。');
+  if((SUPA.diffs||[]).length){
+    parts.push(`<div class="note warn" style="margin:0 0 10px"><b>手填和打卡不一樣，請逐筆決定</b>（沒決定之前照手填算）
+      <div class="scroll"><table style="margin-top:6px"><thead><tr><th>同仁</th><th>支援門市</th><th>手填</th><th>打卡核定</th><th></th></tr></thead><tbody>`
+      +SUPA.diffs.map(d=>`<tr><td>${esc(supEmpName(d.emp_id))}</td><td>${esc(d.name||supStoreName(d.code))}</td><td>${esc(r2(n(d.manual)))} H</td><td>${esc(r2(n(d.auto)))} H</td>
+        <td style="white-space:nowrap"><button class="btn" style="padding:5px 12px;font-size:13px" onclick="supDecide('${esc(d.emp_id)}','${esc(d.code)}','auto',${n(d.auto)},this)">改成打卡值</button>
+        <button class="btn ghost" style="padding:5px 12px;font-size:13px" onclick="supDecide('${esc(d.emp_id)}','${esc(d.code)}','keep',${n(d.auto)},this)">保留手填</button></td></tr>`).join('')
+      +'</tbody></table></div></div>');
+  }
+  if((W.support_error||[]).length) line('warn','⚠ <b>支援資料格式壞了</b>，這幾位本月不自動帶入：'+W.support_error.map(x=>esc(supEmpName(x))).join('、')+'。請聯絡 Eason 修正。');
+  if((W.manual_unresolved||[]).length) line('warn','⚠ <b>手填的支援門市認不出來</b>，這幾位本月不自動帶入：'+W.manual_unresolved.map(x=>esc(supEmpName(x))).join('、')+'。請把支援門市改選一次再儲存。');
+  if((W.dup_acct||[]).length) line('warn','⚠ <b>同一個打卡帳號對到兩位同仁</b>，兩位都先不帶入：'
+    +W.dup_acct.map(x=>esc(supEmpName(x.emp_id))+'（'+esc(supStoreName(x.code))+' 帳號 '+esc(x.acct)+'）').join('、')+'。請在管理系統「同仁名單 → 打卡對照」改正。');
+  if((W.dup_pay||[]).length) line('warn','⚠ <b>可能付兩次</b>（打卡那家店也有他的薪資主檔），先不帶入：'
+    +W.dup_pay.map(x=>esc(supEmpName(x.emp_id))+'（'+esc(supStoreName(x.code))+' '+esc(r2(n(x.hours)))+' H）').join('、')+'。請確認他這個月由哪一家發薪。');
+  if((SUPA.pending_days||[]).length) line('','ℹ️ <b>還有沒核定的日子</b>（沒核定的不會帶入）：'
+    +SUPA.pending_days.map(x=>esc(supEmpName(x.emp_id))+' '+esc(supStoreName(x.code))+' '+esc(x.days)+' 天').join('、'));
+  if((SUPA.unmapped||[]).length) line('','ℹ️ <b>打卡對照未確認</b> '+esc(SUPA.unmapped.length)+' 個帳號：在管理系統「同仁名單 → 打卡對照」確認後才會帶入。');
+  if((W.cross_no_master||[]).length) line('warn','⚠ <b>在本店有打卡、但沒有薪資主檔</b>（跨品牌支援，由本店發薪）：'
+    +W.cross_no_master.map(x=>'打卡編號 '+esc(x.emp_id)+'（'+esc(r2(n(x.hours)))+' H，原店 '+esc(supStoreName(x.pay_store))+'）').join('、')+'。請依跨品牌建檔規則在員工設定新增。');
+  box.innerHTML=parts.join('');
+}
+/** 背景同步打卡對照（管理系統 → 薪資）。超過 6 小時才同步；非嵌入（?k=）沒有 payroll_dzy_xmap，回錯就跳過。 */
+async function syncXmap(){
+  try{
+    const g=await post('payroll_xmap_get',{},{quiet:true,noToast:true});
+    if(!g||!g.ok) return;
+    const t=Date.parse(g.synced_at||'');
+    if(g.synced_at&&!isNaN(t)&&Date.now()-t<XSYNC_MAX_MS) return;
+    const j=await post('payroll_dzy_xmap',{},{quiet:true,noToast:true});
+    if(!j||!j.ok||!Array.isArray(j.rows)) return;
+    // 不在前端篩：管理系統已依負責門市回傳，薪資後端會把「發薪店不歸我管」的列存成只給打卡店看的提醒列（GPT #3）
+    const rows=j.rows;
+    const s=await post('payroll_xmap_set',{rows,synced_at:j.generated_at||new Date().toISOString()},{quiet:true,noToast:true});
+    if(s&&s.ok&&ym()>=XSUP_FROM&&!ATT_DIRTY) await loadMonth();   // 同步完重讀一次，讓帶入值反映新對照
+  }catch(e){ /* 背景同步失敗不影響畫面 */ }
+}
 function renderSup(){
+  renderSupWarn();
   const act=MASTER.filter(e=>String(e.active)==='true');
   // 顯眼的新增支援列：選同仁＋大按鈕
   const adder=`<div class="card" style="background:var(--gold-soft);border-color:var(--gold)">
@@ -2095,8 +2238,21 @@ function renderSup(){
   const withSup=act.filter(e=>((ATT[e.emp_id]||{}).support||[]).length);
   $('supList').innerHTML=adder+(withSup.length?withSup.map(e=>{
     const A=ATT[e.emp_id];
-    const rows=A.support.map((s,i)=>`<tr>
-      <td><select onchange="ATT['${e.emp_id}'].support[${i}].store=this.value">${storeOptions(s.store)}</select></td>
+    const cross=supCrossList().filter(x=>String(x.emp_id)===String(e.emp_id)).map(x=>x.code);
+    const coded=A.support.filter(x=>!supIsAuto(x)&&x.code).map(x=>String(x.code).toUpperCase());
+    const legacyBad=cross.some(c=>coded.indexOf(c)<0);
+    const rows=A.support.map((s,i)=>{
+      if(supIsAuto(s)){   // 打卡帶入：唯讀，可展開逐日
+        const k=e.emp_id+'|'+s.code;
+        return `<tr style="background:#f4f8f1"><td style="text-align:left">${esc(s.store||supStoreName(s.code))} <span class="tag" style="background:#e3efe0;color:#2e6b34">打卡帶入</span></td>
+          <td>${esc(r2(n(s.hours)))}</td><td>${esc(n(s.rate))}</td><td style="color:var(--muted)">自動</td>
+          <td><button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="supToggleDays('${esc(e.emp_id)}','${esc(s.code)}')">${SUP_OPEN[k]?'收合':'逐日'}</button></td></tr>`
+          +(SUP_OPEN[k]?`<tr><td colspan="5" style="text-align:left">${supDaysHtml(e.emp_id,s.code)}</td></tr>`:'');
+      }
+      // 舊列沒有代碼（只有中文名）：後端認出是跨品牌、但畫面對不到是哪一列時，這位同仁沒代碼的列都標紅（寧可多標，不可漏擋）
+      const bad=s.cross===true||(s.code?cross.indexOf(String(s.code).toUpperCase())>=0:(String(s.store||'').trim()&&legacyBad));
+      return `<tr${bad?' style="background:#fdecea" title="跨品牌支援：2026-11 起由打卡那家店發薪，請移除這一列"':''}>
+      <td><select onchange="setSupStore('${esc(e.emp_id)}',${i},this.value)">${storeOptions(s)}</select>${bad?'<div style="color:#c0392b;font-weight:800;font-size:12px;margin-top:3px">跨品牌：請移除</div>':''}</td>
       <td><input type="number" step="0.25" value="${esc(s.hours??'')}"
         onchange="ATT['${e.emp_id}'].support[${i}].hours=n(this.value);renderAtt()"></td>
       <td><input type="number" value="${esc(s.rate??'')}"
@@ -2104,7 +2260,8 @@ function renderSup(){
       <td><input type="number" value="${esc(s.amount??'')}" placeholder="自動"
         onchange="ATT['${e.emp_id}'].support[${i}].amount=this.value"></td>
       <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
-        onclick="ATT['${e.emp_id}'].support.splice(${i},1);markAttDirty();renderAtt()">移除</button></td></tr>`).join('');
+        onclick="ATT['${e.emp_id}'].support.splice(${i},1);markAttDirty();renderAtt()">移除</button></td></tr>`;
+    }).join('');
     return `<div class="card" style="background:#fdfcfb;margin-bottom:12px">
       <div class="row" style="margin-bottom:10px"><b>${esc(e.name)}</b></div>
       <div class="scroll"><table>

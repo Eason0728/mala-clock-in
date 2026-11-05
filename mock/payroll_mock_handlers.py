@@ -96,9 +96,10 @@ def calc_one(m, inp, cfg):
     }
 
 
-def _results(data, ym):
+def _results(data, ym, store=''):
     cfg = _cfg(data)
-    inputs = {r['emp_id']: r for r in _pay(data, 'input') if r.get('ym') == ym}
+    inputs = {r['emp_id']: dict(r) for r in _pay(data, 'input') if r.get('ym') == ym}
+    _xsup_merge(data, ym, (store or 'SSLGF'), inputs)   # 2026-11 起把打卡帶入併進支援時數（之前不動）
     out = []
     for m in _pay(data, 'master'):
         if str(m.get('active', 'TRUE')).lower() == 'false':
@@ -159,8 +160,13 @@ def h_holiday_set(data, body):
 
 def h_inputs(data, body):
     ym = str(body.get('ym', ''))
-    return {'ok': True, 'ym': ym,
-            'inputs': {r['emp_id']: r for r in _pay(data, 'input') if r.get('ym') == ym}}
+    inputs = {r['emp_id']: dict(r) for r in _pay(data, 'input') if r.get('ym') == ym}
+    sa = _xsup_merge(data, ym, body.get('store') or 'SSLGF', inputs)
+    out = {'ok': True, 'ym': ym, 'inputs': inputs}
+    if sa is not None:
+        sa['detail'] = {}
+        out['support_auto'] = sa
+    return out
 
 
 def h_input_set(data, body):
@@ -170,6 +176,8 @@ def h_input_set(data, body):
     for emp_id, v in incoming.items():
         row = dict(v or {})
         row['ym'], row['emp_id'] = ym, emp_id
+        if ym >= XSUP_FROM:   # 打卡帶入的 auto 列不落地（比照正式 handlePayrollInputSet）
+            row['support'] = [x for x in (row.get('support') or []) if not (isinstance(x, dict) and x.get('auto'))]
         rows.append(row)
     data['payroll']['input'] = rows
     return {'ok': True, 'saved': len(incoming)}
@@ -201,12 +209,17 @@ def h_month(data, body):
     run = {'results': saved, 'status': 'final' if _locked(data, ym) else 'draft'} if saved else None
     if run is None and _pay(data, 'holiday'):
         run = {'results': _results(data, ym), 'status': 'draft'}
-    return {'ok': True, 'ym': ym, 'store': body.get('store', ''), 'has_clock': True,
-            'inputs': {r['emp_id']: r for r in _pay(data, 'input') if r.get('ym') == ym},
+    inputs = {r['emp_id']: dict(r) for r in _pay(data, 'input') if r.get('ym') == ym}
+    sa = _xsup_merge(data, ym, body.get('store') or 'SSLGF', inputs)
+    out = {'ok': True, 'ym': ym, 'store': body.get('store', ''), 'has_clock': True,
+            'inputs': inputs,
             'run': run, 'annual': {'months': 12, 'total': 0},
             'master': _pay(data, 'master'), 'config': _cfg(data), 'config_src': {},
             'holidays': _holiday_list(data, body.get('store', '')), 'stores': _pay(data, 'store'),
             'bonuses': [b for b in _pay(data, 'bonus') if b.get('ym') == ym]}
+    if sa is not None:
+        out['support_auto'] = sa
+    return out
 
 
 def h_finalize(data, body):
@@ -488,8 +501,192 @@ def h_dzy_staff(data, body):
     return {'ok': True, 'store': store, 'clock_store': 'gf', 'clock_store_name': '測試門市', 'staff': staff, 'ids': ids, 'unit_none': ['yiwu-hq']}
 
 
+# ── 跨店支援自動帶入（2026-11-05；正式規則在 Payroll.gs paySupportAutoCore_／payMergeSupport_）──
+# 這裡是**刻意簡化**的假版本：別家門市的「主管核定」用固定假日子產生（每月 3／10／17 號），
+# 只為了讓畫面看得到 auto 列、逐日明細、差異兩顆鈕、各種提醒。真正的規則由 tests/support-auto.test.js 守。
+XSUP_FROM = '2026-11'
+MOCK_XSUP_STORES = {
+    'SSLGF': ('麻的小辛辣 新竹光復店', 'sxl'), 'CF': ('中央廚房', '*'), 'HQ': ('鼎兆元總部', '*'),
+    'MZTJS': ('墨竹亭 金山店', 'mzt'), 'MZTGF': ('墨竹亭 光復店', 'mzt'),
+}
+MOCK_ALIAS = {'小辛辣光復': 'SSLGF', '墨竹亭金山': 'MZTJS', '墨金': 'MZTJS', '墨竹亭光復': 'MZTGF', '墨復': 'MZTGF',
+              '墨竹亭六張犁': 'MZTLZL', '央廚': 'CF'}
+MOCK_DAYS = [(3, 8, '10:00-18:00'), (10, 6.5, '11:00-17:30'), (17, 4, '14:00-18:00')]
+
+
+def _xsup_stores(data):
+    out = {k: {'code': k, 'name': v[0], 'support_group': v[1]} for k, v in MOCK_XSUP_STORES.items()}
+    for s in _pay(data, 'store'):
+        c = str(s.get('code') or '').strip().upper()
+        if c:
+            out[c] = dict(out.get(c, {}), **s)
+    return out
+
+
+def _same_group(a, b):
+    a, b = str(a or '').strip(), str(b or '').strip()
+    return a == '*' or b == '*' or (bool(a) and a == b)
+
+
+def _sup_code(row, stores):
+    c = str(row.get('code') or '').strip().upper()
+    if c and c in stores:
+        return c
+    raw = ''.join(str(row.get('store') or '').split())
+    if not raw:
+        return ''
+    if raw in MOCK_ALIAS:
+        return MOCK_ALIAS[raw]
+    if raw.upper() in stores:
+        return raw.upper()
+    for k, v in stores.items():
+        if ''.join(str(v.get('name') or '').split()) == raw:
+            return k
+    return ''
+
+
+def _xsup(data, ym, home):
+    """回 (byEmp, support_auto 骨架)。byEmp[emp] = [{code,name,hours,days}]"""
+    stores = _xsup_stores(data)
+    home = str(home or 'SSLGF').upper()
+    hg = (stores.get(home) or {}).get('support_group', '')
+    xmap = _pay(data, 'xmap')
+    sa = {'synced_at': max([str(r.get('synced_at') or '') for r in xmap] or ['']), 'empty': not xmap, 'diffs': [],
+          'pending_days': [], 'unmapped': [], 'detail': {},
+          'warn': {'manual_unresolved': [], 'cross_manual': [], 'dup_pay': [], 'cross_no_master': []}}
+    groups = {}
+    for r in xmap:
+        if str(r.get('pay_store')).upper() != home:
+            continue
+        if r.get('state') == 'suggested':
+            sa['unmapped'].append({'emp_no': r.get('emp_no'), 'acct_store': r.get('acct_store'), 'emp_id': r.get('emp_id')})
+            continue
+        groups.setdefault(r.get('emp_no'), []).append(r)
+    master_ids = {str(m.get('emp_id')) for m in _pay(data, 'master')}
+    by = {}
+    for no, accts in groups.items():
+        mine = next((a for a in accts if str(a.get('acct_store')).upper() == home and str(a.get('emp_id')) in master_ids), None)
+        if not mine:
+            continue
+        emp = str(mine.get('emp_id'))
+        for a in accts:
+            S = str(a.get('acct_store')).upper()
+            if S == home or str(a.get('not_support')).lower() == 'true':
+                continue
+            days = [{'date': '%s-%02d' % (ym, d), 'periods': p, 'hours': h, 'manager_name': '值班主管'} for d, h, p in MOCK_DAYS]
+            row = {'code': S, 'name': (stores.get(S) or {}).get('name', S), 'hours': round(sum(x['hours'] for x in days), 2), 'days': days}
+            sa['detail'].setdefault(emp, {})[S] = {'name': row['name'], 'hours': row['hours'], 'days': days}
+            if _same_group(hg, (stores.get(S) or {}).get('support_group')):
+                by.setdefault(emp, []).append(row)
+        if emp in by:
+            sa['pending_days'].append({'emp_id': emp, 'code': by[emp][0]['code'], 'days': 1})
+    return by, sa, stores
+
+
+def _xsup_merge(data, ym, home, inputs):
+    """就地把 auto 列合進 inputs（只在 2026-11 以後），回 support_auto；之前回 None。"""
+    if str(ym) < XSUP_FROM:
+        return None
+    by, sa, stores = _xsup(data, ym, home)
+    home = str(home or 'SSLGF').upper()
+    hg = (stores.get(home) or {}).get('support_group', '')
+    mby = {str(m.get('emp_id')): m for m in _pay(data, 'master')}
+    for emp in set(list(inputs.keys()) + [e for e in by if e in mby]):
+        A = inputs.setdefault(emp, {'emp_id': emp, 'ym': ym, 'support': []})
+        manual = [x for x in (A.get('support') or []) if not x.get('auto')]
+        codes = [_sup_code(x, stores) if (x.get('store') or x.get('code') or _num(x.get('hours'))) else '' for x in manual]
+        for c in codes:
+            g = (stores.get(c) or {}).get('support_group', '')
+            if c and c != home and hg and g and not _same_group(hg, g):
+                sa['warn']['cross_manual'].append({'emp_id': emp, 'code': c})
+        if any(c == '' and (x.get('store') or _num(x.get('hours'))) for c, x in zip(codes, manual)):
+            sa['warn']['manual_unresolved'].append(emp)
+            A['support'] = manual
+            continue
+        m = mby.get(emp) or {}
+        full = str(m.get('is_full_time', '')).lower() in ('true', '1')
+        rate = _num(m.get('ot_rate')) if full else _num(m.get('wage'))
+        out = list(manual)
+        for a in by.get(emp, []):
+            idx = [i for i, c in enumerate(codes) if c == a['code']]
+            if not idx:
+                out.append({'code': a['code'], 'store': a['name'], 'hours': a['hours'], 'rate': rate, 'amount': '', 'auto': True})
+                continue
+            mh = round(sum(_num(manual[i].get('hours')) for i in idx), 2)
+            if mh == a['hours']:
+                continue
+            if all(manual[i].get('keep') and _num(manual[i].get('auto_h')) == a['hours'] for i in idx):
+                continue
+            sa['diffs'].append({'emp_id': emp, 'code': a['code'], 'name': a['name'], 'manual': mh, 'auto': a['hours']})
+        A['support'] = out
+    return sa
+
+
+def h_dzy_xmap(data, body):
+    """管理系統「同仁名單 → 打卡對照」（正式由平台 payrollXmap 回、bridge 改道；這裡用假資料）。
+    第 1 位：央廚帳號（同組 → 打卡帶入）；第 2 位：央廚帳號（配合手填做差異）；第 3 位：金山帳號（跨品牌，不帶入）；
+    第 4 位：央廚帳號只有 suggested（對照未確認）。"""
+    store = str(body.get('store') or 'SSLGF').upper()
+    act = [m for m in _pay(data, 'master') if str(m.get('active')).lower() == 'true']
+    rows = []
+    plan = [('CF', 'confirmed'), ('CF', 'confirmed'), ('MZTJS', 'confirmed'), ('CF', 'suggested')]
+    for i, m in enumerate(act[:4]):
+        eid, no = str(m.get('emp_id')), 'DZY8%02d' % i
+        rows.append({'emp_no': no, 'pay_store': store, 'acct_store': store, 'emp_id': eid, 'state': 'confirmed', 'not_support': False})
+        acct, state = plan[i]
+        rows.append({'emp_no': no, 'pay_store': store, 'acct_store': acct, 'emp_id': '%s9%02d' % (acct, i), 'state': state, 'not_support': False})
+    return {'ok': True, 'rows': rows, 'generated_at': '2026-11-05T09:00:00+08:00'}
+
+
+def h_xmap_set(data, body):
+    if not isinstance(body.get('rows'), list):
+        return {'ok': False, 'error': 'rows_required'}
+    stores = _xsup_stores(data)
+    synced = str(body.get('synced_at') or '')
+    clean, dropped = [], 0
+    for r in body['rows']:
+        ps, as_ = str(r.get('pay_store') or '').strip().upper(), str(r.get('acct_store') or '').strip().upper()
+        if ps not in stores or as_ not in stores or not str(r.get('emp_id') or '').strip():
+            dropped += 1
+            continue
+        clean.append({'emp_no': str(r.get('emp_no')), 'pay_store': ps, 'acct_store': as_, 'emp_id': str(r.get('emp_id')).strip(),
+                      'not_support': 'true' if r.get('not_support') in (True, 'true') else 'false',
+                      'synced_at': synced, 'state': str(r.get('state') or 'confirmed')})
+    data.setdefault('payroll', {})['xmap'] = clean
+    return {'ok': True, 'count': len(clean), 'dropped': dropped, 'synced_at': synced}
+
+
+def h_xmap_get(data, body):
+    rows = _pay(data, 'xmap')
+    return {'ok': True, 'rows': rows, 'synced_at': max([str(r.get('synced_at') or '') for r in rows] or [''])}
+
+
+def h_support_decide(data, body):
+    ym, emp, code, choice = str(body.get('ym', '')), str(body.get('emp_id', '')), str(body.get('code', '')).upper(), body.get('choice')
+    if ym < XSUP_FROM:
+        return {'ok': False, 'error': 'xsup_off', 'message': XSUP_FROM + ' 以前的月份沒有打卡帶入'}
+    if choice not in ('auto', 'keep'):
+        return {'ok': False, 'error': 'bad_choice'}
+    stores = _xsup_stores(data)
+    row = next((r for r in _pay(data, 'input') if r.get('ym') == ym and str(r.get('emp_id')) == emp), None)
+    if not row:
+        return {'ok': True, 'result': 'no_row'}
+    sup = [x for x in (row.get('support') or []) if not x.get('auto')]
+    hit = lambda x: _sup_code(x, stores) == code
+    if choice == 'auto':
+        sup = [x for x in sup if not hit(x)]
+    else:
+        sup = [dict(x, code=code, keep=True, auto_h=_num(body.get('auto_h'))) if hit(x) else x for x in sup]
+    row['support'] = sup
+    return {'ok': True, 'result': 'ok', 'choice': choice}
+
+
 PAYROLL_ACTIONS = {
     'payroll_dzy_staff': h_dzy_staff,
+    'payroll_dzy_xmap': h_dzy_xmap,
+    'payroll_xmap_set': h_xmap_set,
+    'payroll_xmap_get': h_xmap_get,
+    'payroll_support_decide': h_support_decide,
     'payroll_bootstrap': h_bootstrap,
     'payroll_master_get': h_master_get,
     'payroll_master_set': h_master_set,
