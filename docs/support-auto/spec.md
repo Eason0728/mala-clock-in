@@ -90,3 +90,16 @@ my_payslip 依打卡金鑰逐店找 roster，找到即停 → 每個打卡連結
 5. 打卡編號比對一律過 `payXsupId_`（字串化、去前導零）。
 6. decide 找不到列回 `no_row` 錯誤（§7-4）。
 7. scope 使用者：xmap_set 換掉 pay_store∈L 或 acct_store∈L 的列（其餘保留）；守門只擋兩者都不在 L 的列；xmap_get 回 pay_store∈L 或 acct_store∈L 的列。
+
+## 9. 上線前審查修正（GPT 2026-11-05，12 條；覆蓋前文）
+1. 差異「改成打卡值」後：有草稿就在 decide 裡直接重算（support_auto_h 前後一樣，payroll_month 判不出過期）。
+2. 2026-11 起已存的整筆手動列在 inputs 標 `_manual`，前端 attSendable 照送（人工填 0 不會被當沒動過刪掉）。
+3／5. xmap_set 有 scope 時：pay_store∈L 的列整批換；pay_store∉L、acct_store∈L 存成 `acct_only`，只給打卡店的「有打卡沒主檔」提醒用，計薪忽略。前端不再自己篩。state 必填。
+4. 消失的已確認列標 `removed_at`（台北日期），該月份之前照舊有效；同人同帳號有舊列與現行列時用舊列（調店）。帳號改給別人或改回未確認＝更正，直接刪。標記 4 個月後清掉。xmap_get 不回已移除的列。
+6. 同一打卡帳號確認給兩位 DZY 同仁：兩位都不帶入，列 `warn.dup_acct`。
+7. 過期判斷比「草稿裡的人 ∪ 這次要帶入的人」。
+9. decide 拿到寫鎖後再查一次鎖定。（input_set 對已鎖定月份照舊可寫：改版前既有行為，另案）
+10. synced_at 比現有正式列舊 → `stale_snapshot`，不寫。
+11. 在職判斷與正式計薪同口徑（active 恰好是 true）。
+12. 生效月之前存工時 hours_manual 寫空白。
+未修：8（payroll_input_set 整月覆寫無版本，兩個分頁同時存後者蓋前者）——改版前既有行為，另案。
