@@ -27,6 +27,9 @@ function ctx(P, DB, CLOCK) {
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) } };
   vm.createContext(sb);
   vm.runInContext(C + '\n' + P, sb);
+  // 2026-11 起的加班費新算法（逐日判斷、績效獎金改名、早退扣款…）是刻意的改變，由 ot-daily.test.js 守；
+  // 這支只守「其他規則沒被動到」，所以把新版的生效月份推到很遠，兩邊都照舊規則比。
+  vm.runInContext("if (typeof PAY_OT_DAILY_FROM !== 'undefined') PAY_OT_DAILY_FROM = '2099-01';", sb);
   sb.__C = CLOCK; sb.__DB = DB;
   vm.runInContext(`
     payClockRead = function(store, sheet){
