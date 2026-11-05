@@ -135,10 +135,13 @@ MONTHS.forEach((ym) => {
     });
     const mo = HO('payroll_month', { admin_key: 'x', ym, store: st }), mn = HN('payroll_month', { admin_key: 'x', ym, store: st });
     cmpResults(ym + ' ' + st + ' payroll_month', mo, mn);
-    chk(ym + ' ' + st + ' payroll_month 的 inputs（工時分頁）逐欄相同', JSON.stringify(mo.inputs) === JSON.stringify(mn.inputs));
+    // _manual：2026-11 起標「這是已存的整筆手動列」給前端存檔用（GPT #2），不進計算；比對時拿掉，其他欄位逐欄相同
+    const noMk = (o) => JSON.stringify(o, (k, v) => (k === '_manual' ? undefined : v));
+    chk(ym + ' ' + st + ' payroll_month 的 inputs（工時分頁）逐欄相同', noMk(mo.inputs) === noMk(mn.inputs));
+    if (ym >= '2026-11' && (DB_NEW.input || []).some((r) => r.ym === ym && r.store === st)) chk(ym + ' ' + st + ' 有手動列的人標 _manual（且只多這一欄）', Object.keys(mn.inputs).some((k) => mn.inputs[k]._manual === true));
     if (ym < '2026-11') chk(ym + ' ' + st + ' payroll_month 回應整份相同（沒有多任何欄位）', JSON.stringify(mo) === JSON.stringify(mn));
     const io = HO('payroll_inputs', { admin_key: 'x', ym, store: st }), inw = HN('payroll_inputs', { admin_key: 'x', ym, store: st });
-    chk(ym + ' ' + st + ' payroll_inputs inputs 相同', JSON.stringify(io.inputs) === JSON.stringify(inw.inputs));
+    chk(ym + ' ' + st + ' payroll_inputs inputs 相同', noMk(io.inputs) === noMk(inw.inputs));
   });
 });
 // 儲存工時：2026-10 寫進去的 support 欄與舊版逐字相同

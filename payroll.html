@@ -843,6 +843,7 @@ async function loadAtt(){
  *  否則只在別店有時數、本店沒歸集的人會被存成 hours:0 的整筆手動列，之後本店核定就流不進來。 */
 function attSendable(A){
   A=A||{};
+  if(A._manual) return true;   // 已存過的整筆手動列（含人工填 0）一定要送回，否則會被刪掉、改發打卡工時（GPT #2）
   if((A.support||[]).some(s=>s&&!(s.auto===true||String(s.auto)==='true'))) return true;
   const NUMS=['hours','extra_ot','personal_h','sick_h','menstrual_h','disaster_h','annual_h','deduct_days','work_days','wage_override','holiday_h','custom_add_amt','custom_ded_amt'];
   if(NUMS.some(k=>n(A[k]))) return true;
@@ -2192,6 +2193,8 @@ function renderSupWarn(){
   }
   if((W.support_error||[]).length) line('warn','⚠ <b>支援資料格式壞了</b>，這幾位本月不自動帶入：'+W.support_error.map(x=>esc(supEmpName(x))).join('、')+'。請聯絡 Eason 修正。');
   if((W.manual_unresolved||[]).length) line('warn','⚠ <b>手填的支援門市認不出來</b>，這幾位本月不自動帶入：'+W.manual_unresolved.map(x=>esc(supEmpName(x))).join('、')+'。請把支援門市改選一次再儲存。');
+  if((W.dup_acct||[]).length) line('warn','⚠ <b>同一個打卡帳號對到兩位同仁</b>，兩位都先不帶入：'
+    +W.dup_acct.map(x=>esc(supEmpName(x.emp_id))+'（'+esc(supStoreName(x.code))+' 帳號 '+esc(x.acct)+'）').join('、')+'。請在管理系統「同仁名單 → 打卡對照」改正。');
   if((W.dup_pay||[]).length) line('warn','⚠ <b>可能付兩次</b>（打卡那家店也有他的薪資主檔），先不帶入：'
     +W.dup_pay.map(x=>esc(supEmpName(x.emp_id))+'（'+esc(supStoreName(x.code))+' '+esc(r2(n(x.hours)))+' H）').join('、')+'。請確認他這個月由哪一家發薪。');
   if((SUPA.pending_days||[]).length) line('','ℹ️ <b>還有沒核定的日子</b>（沒核定的不會帶入）：'
@@ -2210,8 +2213,8 @@ async function syncXmap(){
     if(g.synced_at&&!isNaN(t)&&Date.now()-t<XSYNC_MAX_MS) return;
     const j=await post('payroll_dzy_xmap',{},{quiet:true,noToast:true});
     if(!j||!j.ok||!Array.isArray(j.rows)) return;
-    let rows=j.rows;
-    if(scopeLimited()) rows=rows.filter(x=>SCOPE.indexOf(String(x.pay_store||'').trim().toUpperCase())>=0);
+    // 不在前端篩：管理系統已依負責門市回傳，薪資後端會把「發薪店不歸我管」的列存成只給打卡店看的提醒列（GPT #3）
+    const rows=j.rows;
     const s=await post('payroll_xmap_set',{rows,synced_at:j.generated_at||new Date().toISOString()},{quiet:true,noToast:true});
     if(s&&s.ok&&ym()>=XSUP_FROM&&!ATT_DIRTY) await loadMonth();   // 同步完重讀一次，讓帶入值反映新對照
   }catch(e){ /* 背景同步失敗不影響畫面 */ }
