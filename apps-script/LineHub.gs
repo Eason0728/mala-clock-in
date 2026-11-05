@@ -862,11 +862,21 @@ function lineHubPunchCard_(r) {
       if (bl.n > bl.titles.length) blocks.push({ type: 'text', text: '還有 ' + (bl.n - bl.titles.length) + ' 則', muted: true, margin: 'xs' });
       blocks.push({ type: 'text', text: LINE_HUB_BULLETIN_WHERE, muted: true, margin: 'sm', size: 'xs' });   // 2026-11-05 Eason：按鈕縮短，地點寫在內文
     }
+    var dz = r.dzy && (r.dzy.s === 'open' || r.dzy.s === 'wait') ? r.dzy : null;   // 管理系統帳號還沒開通（lineHubDzyRemindFor_）
+    if (dz) {
+      blocks.push({ type: 'sep' }, { type: 'heading', text: dz.s === 'open' ? '🔑 管理系統帳號還沒開通' : '🔑 管理系統開通等審核' });
+      blocks.push({ type: 'text', margin: 'xs', text: dz.s === 'open'
+        ? '你的同仁編號 ' + dz.e + '。打開管理系統按「第一次使用」，輸入全名就能開通，之後公告、班表、申請都在裡面。'
+        : '你的開通申請已送出（同仁編號 ' + dz.e + '），等店長或主管審核。可以請店長到管理系統「我的資料 → 待審核」核准，通過後就能登入。' });
+    }
     if (r.greeting) blocks.push({ type: 'sep' }, { type: 'text', text: r.greeting, margin: 'md', size: 'md' });
     if (r.annual_note) blocks.push({ type: 'text', text: r.annual_note, margin: 'md' });
     var spec = { title: label + '打卡成功', right: '✓', tone: 'ok', alt: label + '打卡成功 ' + lineHubHm_(r.ts),
                  hero: { label: '打卡時間', value: lineHubHm_(r.ts) }, blocks: blocks };
-    if (bl) spec.buttons = [{ label: '請到公告專區閱讀並簽名', uri: LINE_HUB_BULLETIN_DZY_URL }];
+    var btns = [];
+    if (dz && dz.s === 'open') btns.push({ label: '開通管理系統', uri: LINE_HUB_DZY_CLAIM_URL });
+    if (bl) btns.push({ label: '請到公告專區閱讀並簽名', uri: LINE_HUB_BULLETIN_DZY_URL });
+    if (btns.length) spec.buttons = btns;
     return lineHubCard_(spec);
   }
   var fb = [{ type: 'heading', text: '原因' }, { type: 'text', text: r.reason }];
@@ -1157,6 +1167,7 @@ function handleLineWebhook_(body) {
         if (r && r.ok) {
           r.annual_note = lineHubAnnualNote_(userId, r.ts);   // 特休快到期提醒（一天最多一次；查不到就不提）
           r.bulletin = lineHubBulletinFor_(userId);           // 還沒簽的公告（佈告欄每 5 分鐘送來；讀不到就不提）
+          r.dzy = lineHubDzyRemindFor_(userId);               // 管理系統帳號還沒開通（管理系統每 15 分鐘送來；讀不到就不提）
         }
         lineHubReply_(ev.replyToken, [
           r && r.unreadable ? lineHubNoticeCard_('打卡', '剛才那筆暫時查不到（店家系統忙碌）。打卡畫面顯示成功就是成功，可按選單「出勤紀錄」確認。', 'warn')
@@ -1277,6 +1288,7 @@ var LINE_HUB_HANDLERS = {
   line_punch_timing: function (b) { return handleLinePunchTiming_(b); },   // 打卡等待秒數（2026-10-12）
   punch_timing_get: function (b) { return handlePunchTimingGet_(b); },     // 指揮台讀打卡秒數（唯讀、管理金鑰）
   line_hub_bulletin_put: function (b) { return handleLineHubBulletinPut_(b); },   // 佈告欄送來的未簽公告（2026-11-02）
+  line_hub_dzy_remind_put: function (b) { return handleLineHubDzyRemindPut_(b); },   // 管理系統送來的「還沒開通」名單（2026-11-06）
 };
 
 /* ══ 打卡回覆帶出未簽公告（2026-11-02 Eason；規格在佈告欄 repo docs/punch-remind.md）══
@@ -1324,6 +1336,47 @@ function lineHubBulletinFor_(userId) {
     var e = m && m[lineHubSha256Hex_('dzyb-line:' + userId)];
     if (!e || !(e.n >= 1) || !Array.isArray(e.titles) || !e.titles.length) return null;
     return { n: e.n, titles: e.titles.slice(0, 3).map(String) };
+  } catch (err) { return null; }
+}
+
+/* ══ 打卡回覆提醒開通管理系統（2026-11-06 Eason：每次打卡都提醒，直到開通）══
+ * 管理系統 Mac mini（dzy-minikit apps/dzy-platform/jobs.js pushLineRemind）每 15 分鐘把「在職、還沒開通」的同仁整包送來：
+ *   { svc_key, v:1, at, map:{ <line_h>: { e:'DZY023', s:'open'|'wait' } } }，存 CacheService；機器人回覆「打卡」時只讀這包。
+ * 對人鍵＝HMAC-SHA256(LINE_MAP_KEY, LINE userId)（SvcStaff.gs svcLineHash_，與 svc_roster 的 line_h 同一把、同一個算法）；這裡不存姓名。
+ * open＝還沒開通／被退回（給「開通管理系統」按鈕）；wait＝已送出等主管審核（只說明、不給按鈕）。
+ * 資料超過 3 小時沒更新就不提醒（mini 停了不拿舊資料催已開通的人）。任何錯誤一律不提醒，絕不影響打卡回覆。
+ * 金鑰：與每日同步同一把服務金鑰（驗證交給 SvcStaff.gs svcAuth_；＝mini .env CLOCK_KEY_GF）。這裡只收、不拿它呼叫任何人。 */
+var LINE_HUB_DZY_CLAIM_URL = 'https://dzy.mozhuting.com/#/claim';
+var LINE_HUB_DZY_STALE_MS = 3 * 3600 * 1000;
+function handleLineHubDzyRemindPut_(b) {
+  var bad = svcAuth_(b || {}); if (bad) return bad;
+  var map = b.map;
+  if (typeof b.at !== 'string' || isNaN(Date.parse(b.at)) || !map || typeof map !== 'object' || Array.isArray(map)) return { ok: false, error: 'bad_input' };
+  var clean = {}, people = 0, wrong = false;
+  Object.keys(map).forEach(function (h) {
+    var e = map[h];
+    if (!/^[0-9a-f]{64}$/.test(h) || !e || !/^DZY\d{3,6}$/.test(String(e.e)) || (e.s !== 'open' && e.s !== 'wait')) { wrong = true; return; }
+    clean[h] = { e: String(e.e), s: e.s };
+    people++;
+  });
+  if (wrong) return { ok: false, error: 'bad_input' };
+  var json = JSON.stringify(clean);
+  if (unescape(encodeURIComponent(json)).length > LINE_HUB_BULLETIN_MAX) return { ok: false, error: 'too_big' };
+  CacheService.getScriptCache().putAll({ 'lhd:v1': json, 'lhd:at': b.at }, LINE_HUB_BULLETIN_TTL);
+  return { ok: true, people: people };
+}
+/** 這個 LINE 帳號還沒開通管理系統 → {e, s}｜null（已開通、對不上、資料太舊、讀不到） */
+function lineHubDzyRemindFor_(userId) {
+  try {
+    var v = CacheService.getScriptCache().getAll(['lhd:v1', 'lhd:at']) || {};
+    var at = Date.parse(v['lhd:at'] || '');
+    if (isNaN(at) || Date.now() - at > LINE_HUB_DZY_STALE_MS) return null;
+    var key = PropertiesService.getScriptProperties().getProperty('LINE_MAP_KEY') || '';
+    var h = svcLineHash_(userId, key);
+    if (!h) return null;
+    var e = (JSON.parse(v['lhd:v1'] || 'null') || {})[h];
+    if (!e || !/^DZY\d{3,6}$/.test(String(e.e)) || (e.s !== 'open' && e.s !== 'wait')) return null;
+    return { e: String(e.e), s: e.s };
   } catch (err) { return null; }
 }
 
