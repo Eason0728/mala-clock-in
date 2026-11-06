@@ -720,9 +720,53 @@ function handleRelaySetup_(body) {
   }
 }
 
+/** {action:'mgr_retire_keys', admin_key, apply?, names?} → 舊值班核定頁停用後，把舊主管鑰匙換成沒人知道的亂碼（2026-11-06 Eason）。
+ *  對象：managers 分頁 active＝TRUE、allow_acting 不是 TRUE 的列（營運系統／考勤管理代管那把不動）。
+ *  刻意只換 key、不改 active：這些列仍是「誰是值班主管」的來源（Requests.gs 值班主管本人的申請改由上層審），停用會讓他本人的單不往上送。
+ *  沒帶 apply＝只列名單（含近 14 天用這個名字核定幾筆），不寫入；apply:true 時一定要帶 names（逐一點名，只換名單上的列）。
+ *  回傳只有姓名、列號、筆數，新舊金鑰一律不回。 */
+var RETIRE_RECENT_DAYS = 14;
+function handleMgrRetireKeys_(body) {
+  if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  var ss = getSS(), sh = ss.getSheetByName('managers');
+  if (!sh) return { ok: false, error: 'managers_sheet_missing' };
+  var apply = body.apply === true;
+  var names = Array.isArray(body.names) ? body.names.map(function (x) { return String(x).trim(); }) : null;
+  if (apply && (!names || !names.length)) return { ok: false, error: 'names_required' };
+  var lock = apply ? LockService.getScriptLock() : null;
+  if (lock && !lock.tryLock(10000)) return { ok: false, error: 'busy' };
+  try {
+    var data = readSheetAsObjects(sh), keyCol = data.headers.indexOf('key') + 1;
+    if (keyCol < 1) return { ok: false, error: 'no_key_column' };
+    var since = new Date(Date.now() - RETIRE_RECENT_DAYS * 86400000 + 8 * 3600000).toISOString().slice(0, 16);
+    var apSh = ss.getSheetByName('approved'), used = {};
+    (apSh ? readSheetAsObjects(apSh).rows : []).forEach(function (a) {
+      var t = String(normCellTs(a.entered_at) || '').slice(0, 16);
+      if (t >= since) { var nm = String(a.manager_name || '').trim(); used[nm] = (used[nm] || 0) + 1; }
+    });
+    var keep = 0, list = [], rotated = [];
+    data.rows.forEach(function (r) {
+      if (String(r.active).toLowerCase() !== 'true' || !String(r.key || '')) return;
+      if (String(r.allow_acting || '').toLowerCase() === 'true') { keep++; return; }
+      var nm = String(r.name || '').trim();
+      list.push({ row: r.__rowIndex, name: nm, emp_id: String(r.emp_id || ''), recent_approved: used[nm] || 0 });
+      if (apply && names.indexOf(nm) >= 0) {
+        sh.getRange(r.__rowIndex, keyCol).setValue('retired-' + genKey(40));
+        rotated.push(nm);
+      }
+    });
+    if (apply) SpreadsheetApp.flush();
+    return { ok: true, apply: apply, acting_rows_kept: keep, candidates: list, rotated: rotated,
+             not_found: apply ? names.filter(function (x) { return rotated.indexOf(x) < 0; }) : [] };
+  } finally {
+    if (lock) lock.releaseLock();
+  }
+}
+
 var LIFF_HANDLERS = {
   relay_snapshot: handleRelaySnapshot_,   // LINE 打卡快速通道：mini 唯讀副本（2026-10-16）
   relay_setup: handleRelaySetup_,   // 一次性設定 RELAY_KEY（2026-10-16）
+  mgr_retire_keys: handleMgrRetireKeys_,   // 舊值班核定頁停用後換掉舊主管鑰匙（2026-11-06）
   mgr_line_binds: handleMgrLineBinds_,
   mgr_line_unbind: handleMgrLineUnbind_,
   liff_bind: handleLiffBind_,
