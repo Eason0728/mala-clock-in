@@ -112,8 +112,7 @@ function handleLineBindName_(body) {
   var st = pick.store, rows;
   try { rows = lineHubSheetRows_(lineHubSS_(st), 'roster'); } catch (e) { return { ok: false, error: 'unreachable', message: '「' + st.name + '」的系統暫時連不上，請稍後再試。' }; }
   var hit = rows.filter(function (r) { return lineHubActive_(r) && lineHubNormName_(r.name) === want; });
-  if (!hit.length) return { ok: false, error: 'name_not_found', store_name: st.name,
-                            message: '「' + st.name + '」的名冊上沒有「' + String(body.name).trim() + '」。請確認是全名、沒有錯字；名冊上沒有你請主管把你加進去。' };
+  if (!hit.length) return lineHubBindElsewhere_(userId, body, st, want);
   if (hit.length > 1) return { ok: false, error: 'name_conflict', message: '「' + st.name + '」有兩位同名同仁，請找主管協助綁定。' };
   var row = hit[0];
   if (row.line_user_id && String(row.line_user_id) === String(userId)) return { ok: true, already: true, store_name: st.name, name: String(row.name) };
@@ -127,6 +126,62 @@ function handleLineBindName_(body) {
   }
   lineHubForget_(userId);   // 剛綁好：機器人那邊記的「綁了哪幾家」要重查
   return { ok: true, store_name: st.name, name: String(row.name) };
+}
+
+/**
+ * 跨單位第一次打卡（2026-11-06 Eason：「已經在原店打卡名冊有資料的同仁，去到不同單位時都可以直接打卡，不需要再另外建檔」）。
+ * 人所在那家店（B）的名冊沒有這個名字時走這裡：
+ *   ①這個 LINE 已在別家店綁成同名、在職、恰好一家 → 身分已由 LINE 證明，直接請管理系統（7A）把他加進 B 店並綁定。
+ *   ②這個 LINE 還沒綁過 → 查各店名冊：全公司恰好一位在職、還沒綁 LINE 的同名同仁 → 先回 confirm_home 請本人確認
+ *     「你是○○的某某嗎」，確認後綁到原單位那一列（原單位綁定紀錄 bind_name，值班核定頁看得到、可解除），再走 7A 加進 B 店。
+ *   同名兩位以上、已被別的 LINE 綁、跨品牌（小辛辣↔墨竹亭）、各店都沒有 → 擋下，請找主管。有任何一家名冊讀不到 → 請稍後再試。
+ */
+function lineHubBindElsewhere_(userId, body, st, want) {
+  var typed = String(body.name).trim();
+  var notFound = { ok: false, error: 'name_not_found', store_name: st.name,
+    message: '公司各單位的打卡名冊都沒有「' + typed + '」。請確認是全名、沒有錯字；名字沒錯請店長或主管到管理系統的「同仁名單」幫你建檔。' };
+  var home = null, viaLine = false;
+  var mine = lineHubMine_(userId).filter(function (m) { return lineHubNormName_(m.row.name) === want && m.st.code !== st.code; });
+  if (mine.length === 1) { home = mine[0]; viaLine = true; }
+  else if (mine.length > 1) return { ok: false, error: 'name_conflict', message: '你的 LINE 在兩個以上的單位都有綁定，請找主管協助加入「' + st.name + '」。' };
+  else {
+    var found = [], unreadable = false;
+    lineHubStores_().forEach(function (s) {
+      if (s.code === st.code) return;
+      var rows;
+      try { rows = lineHubRoster_(s) || []; } catch (e) { unreadable = true; return; }   // 開不起來＝讀不到；沒有名冊分頁＝沒有人
+      rows.forEach(function (r) { if (lineHubActive_(r) && lineHubNormName_(r.name) === want) found.push({ st: s, row: r }); });
+    });
+    if (found.length > 1) return { ok: false, error: 'name_conflict', message: '公司有兩位以上叫「' + typed + '」的同仁，請找主管協助綁定。' };
+    if (!found.length) return unreadable ? { ok: false, error: 'unreachable', message: '有單位的系統暫時連不上，請稍後再試。' } : notFound;
+    home = found[0];
+    if (home.row.line_user_id && String(home.row.line_user_id) !== String(userId)) {
+      return { ok: false, error: 'name_taken', message: '「' + String(home.row.name) + '」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管解除。' };
+    }
+    viaLine = !!home.row.line_user_id;
+  }
+  if (lineHubCrossBrand_(home.st, st)) {
+    return { ok: false, error: 'cross_brand', message: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(home.st)] + '的同仁，不能在「' + st.name + '」打卡（小辛辣與墨竹亭不能互相支援打卡）；有問題請找店長。' };
+  }
+  if (!viaLine) {
+    var token = String(home.st.code) + '|' + String(home.row.emp_id);
+    if (String(body.confirm_home || '') !== token) {
+      return { ok: false, error: 'confirm_home', confirm: token, home_store_name: home.st.name, store_name: st.name, name: String(home.row.name) };
+    }
+    var j = lineHubCallStore_(home.st, { action: 'liff_bind', id_token: body.id_token, key: String(home.row.key), via: 'name' });
+    if (!j || !j.ok) {
+      var m = { line_account_in_use: '你的 LINE 帳號已經綁定「' + home.st.name + '」的另一位同仁，請找主管處理。' }[j && j.error];
+      return { ok: false, error: (j && j.error) || 'unreachable', message: m || '綁定沒有成功，請稍後再試；一直不行請告知主管。' };
+    }
+    lineHubForget_(userId);
+  }
+  var ss;
+  try { ss = lineHubSS_(st); } catch (e) { ss = null; }
+  if (ss && lineHubAutoSupport_(userId, st, { st: home.st, row: home.row }, body, ss)) {
+    return { ok: true, store_name: st.name, name: String(home.row.name), first_support: true, home_store_name: home.st.name };
+  }
+  return { ok: false, error: 'support_failed', home_bound: !viaLine, message: (viaLine ? '' : '已綁定你在「' + home.st.name + '」的打卡帳號，')
+    + '但沒辦法自動把你加入「' + st.name + '」的名冊，請找店長或主管協助。' };
 }
 
 /** 上／下班自動判斷用的「最後一張算數的卡」：與 lastCountedEvent 同規則（排除 rejected_*），但回看
@@ -252,7 +307,13 @@ function lineHubResolve_(userId, body, opts) {
         }
       }
     }
-    return { fail: { ok: false, code: 'not_bound', store_name: st.name, suggest_name: suggest,
+    // 2026-11-06：已在別家綁定、這家店名冊沒有這個名字 → 綁定框帶出名字與原單位，本人按一下就加入（line_bind_name → lineHubBindElsewhere_）
+    var supportFrom = '';
+    if (!suggest && nameKeys.length === 1 && cand.length === 0) {
+      var mineNow = lineHubMine_(userId);
+      if (mineNow.length === 1 && mineNow[0].st.code !== st.code && !lineHubCrossBrand_(mineNow[0].st, st)) { suggest = names[nameKeys[0]]; supportFrom = mineNow[0].st.name; }
+    }
+    return { fail: { ok: false, code: 'not_bound', store_name: st.name, suggest_name: suggest, support_from: supportFrom,
              reason: '你的 LINE 帳號還沒有綁定「' + st.name + '」',
              hint: '請在打卡畫面輸入你的全名完成綁定；名冊上沒有你請主管把你加進去' } };
   }

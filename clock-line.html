@@ -347,7 +347,7 @@
   }
 
   /* ── 畫面狀態 ── */
-  var status = null, busy = false, suggested = '', clockSkew = 0;   // clockSkew＝伺服器時間 − 手機時間（倒數用伺服器時鐘）
+  var status = null, busy = false, suggested = '', bindNote = '', clockSkew = 0;   // clockSkew＝伺服器時間 − 手機時間（倒數用伺服器時鐘）
   function say(text, cls, hint) { $('msg').textContent = text || ''; $('msg').className = 'msg' + (cls ? ' ' + cls : ''); $('hint').textContent = hint || ''; offerHelp(null); }
   /* 打卡求助（2026-10-09）：失敗時多一顆「看排除步驟」→ 代同仁送出「打卡求助：<類別>」，機器人回步驟卡片。
      ⚠ 類別名稱與 LineHub.gs 的 LINE_HUB_HELP 一致，改一邊要改另一邊。say() 會先收起按鈕，所以 offerHelp 要在 say 之後呼叫。 */
@@ -414,7 +414,7 @@
         return (e.type === 'in' ? '上班 ' : '下班 ') + e.hm + (e.status === 'pending_device_approval' ? '（待核准）' : '');
       }).join('、') : '今天還沒有打卡紀錄';
       showStore(s.store);
-      say('', '', '');
+      say(bindNote, bindNote ? 'ok' : '', ''); bindNote = '';   // 剛跨單位加入名冊：顯示一次
       if (restBlocked()) say(s.rest.reason, 'warn', s.rest.hint);
       else if (s.rest && s.rest.warn && s.guard && s.guard.blocked !== 'in') say(s.rest.warn.reason, 'warn', s.rest.warn.hint);   // 滿 10 小時：只提醒，上班鍵照常可按
     } else {
@@ -422,7 +422,7 @@
       $('storeName').textContent = r.store_name || (r.code === 'ambiguous' ? '分不出在哪一家店' : '不在打卡範圍');
       $('who').textContent = '';
       if (r.nearest) showStore(r.nearest);
-      if (r.code === 'not_bound') { showBind(r.store_name, r.suggest_name); }
+      if (r.code === 'not_bound') { showBind(r.store_name, r.suggest_name, r.support_from); }
       else {
         say(r.reason, 'warn', r.hint); $('btnRetry').hidden = false;
         offerHelp({ no_fix: '定位抓不到', ambiguous: '定位不準', out_of_range: '不在範圍' }[r.code] || null);
@@ -758,16 +758,17 @@
   $('btnOtReq').addEventListener('click', function () { showReq({ tab: 'ot', date: otReq.date, start: otReq.start, end: otReq.end, store: curStore ? curStore.code : null }); });
 
   /* ── 第一次使用：輸入全名綁定 ── */
-  function showBind(storeName, suggest) {
+  function showBind(storeName, suggest, supportFrom) {
     suggested = suggest || '';
     $('btns').hidden = true;
     $('bindBox').hidden = false;
-    $('bindTitle').textContent = suggested ? '你在別家店已綁定為「' + suggested + '」' : '第一次使用，請輸入你的全名';
+    $('bindTitle').textContent = suggested ? '你在' + (supportFrom ? '「' + supportFrom + '」' : '別家店') + '已綁定為「' + suggested + '」' : '第一次使用，請輸入你的全名';
+    // 2026-11-06：supportFrom＝這家店名冊沒有你，按下去會把你加進這家店的名冊（跨單位支援）
     $('bindHint').textContent = suggested
-      ? '「' + storeName + '」的名冊上也有這個名字，是你本人就按下面的按鈕。'
-      : '綁定「' + (storeName || '你上班的店') + '」：要人在店裡，名字要和店裡名冊一樣';
+      ? (supportFrom ? '按下面的按鈕，就會把你加入「' + storeName + '」的名冊，馬上可以打卡。' : '「' + storeName + '」的名冊上也有這個名字，是你本人就按下面的按鈕。')
+      : '綁定「' + (storeName || '你上班的店') + '」：要人在店裡，輸入你的全名';
     $('bindName').value = suggested;
-    $('btnBind').textContent = suggested ? '是我，綁定' : '綁定';
+    $('btnBind').textContent = suggested ? (supportFrom ? '是我，加入並打卡' : '是我，綁定') : '綁定';
     $('bindError').textContent = '';
     say('', '', '');
   }
@@ -775,17 +776,27 @@
     var name = $('bindName').value.trim();
     if (!name) { $('bindError').textContent = '請輸入你的全名'; return; }
     $('btnBind').disabled = true; $('bindError').textContent = '';
-    post(HUB_API, Object.assign({ action: 'line_bind_name', id_token: liff.getIDToken(), name: name }, fixPayload()))
+    sendBind(name, '');
+  });
+  /* 2026-11-06 跨單位：名字在別的單位名冊上 → 伺服器回 confirm_home，請本人確認是哪個單位的誰，確認後再送一次。 */
+  function sendBind(name, confirmHome) {
+    post(HUB_API, Object.assign({ action: 'line_bind_name', id_token: liff.getIDToken(), name: name, confirm_home: confirmHome }, fixPayload()))
       .then(function (r) {
         $('btnBind').disabled = false;
-        if (r && r.ok) { loadStatus(); return; }
+        if (r && r.ok) { if (r.first_support) bindNote = '已幫你加入「' + r.store_name + '」名冊，第一次支援請跟值班主管說一聲'; loadStatus(); return; }
+        if (r && r.error === 'confirm_home' && !confirmHome) {
+          if (window.confirm('你是「' + r.home_store_name + '」的「' + r.name + '」嗎？\n\n按「確定」會綁定你在「' + r.home_store_name + '」的打卡帳號，並把你加入「' + r.store_name + '」的名冊。\n不是你本人請按「取消」。')) {
+            $('btnBind').disabled = true; sendBind(name, r.confirm);
+          } else $('bindError').textContent = '沒有綁定。名字不對請重新輸入你的全名。';
+          return;
+        }
         if (r && r.error === 'invalid_id_token') {
           $('bindError').textContent = relogin() === 'stuck' ? 'LINE 登入逾時，還沒綁定。' + RELOGIN_STUCK[1] : 'LINE 登入逾時，正在重新連線，好了請再輸入一次。';
           return;
         }
         $('bindError').textContent = (r && r.message) || '綁定沒有成功，請稍後再試；一直不行請告知主管。';
       }, function () { $('btnBind').disabled = false; $('bindError').textContent = '連線失敗，請檢查網路後再試。'; });
-  });
+  }
   $('btnIn').addEventListener('click', function () { punch('in'); });
   $('btnOut').addEventListener('click', function () { punch('out'); });
   $('btnRetry').addEventListener('click', function () { $('btnRetry').hidden = true; start(); });

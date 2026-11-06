@@ -238,4 +238,65 @@ ok('光復專案的 LINE 相關檔案裡不得出現 STAFF_SVC_KEY（只持 HUB 
     assert(!/STAFF_SVC_KEY/.test(fs.readFileSync(ROOT + '/apps-script/' + f, 'utf8')), f));
   assert(/STAFF_HUB_KEY/.test(LH) && /STAFF_HUB_URL/.test(LH));
 });
+
+/* ── 2026-11-06 跨單位第一次綁定（lineHubBindElsewhere_）── */
+const bind = (m, extra, store) => m.sb.handleLineBindName_(Object.assign({ id_token: 'TOK_U1', name: '測試 甲', lat: (store || js).lat, lng: (store || js).lng, accuracy: 10 }, extra || {}));
+ok('沒綁過 LINE、名字在總部：先回 confirm_home（不綁、不問 mini）；本人確認後綁總部那列→7A 加入金山', () => {
+  const m = scene(); m.sheets.hq.roster[0].line_user_id = '';
+  const a = bind(m);
+  assert.strictEqual(a.error, 'confirm_home'); assert.strictEqual(a.confirm, 'hq|H01');
+  assert.strictEqual(a.home_store_name, '鼎兆元 總部'); assert.strictEqual(a.name, '測試甲'); assert.strictEqual(a.store_name, '墨竹亭 新竹金山');
+  assert.strictEqual(m.storeCalls.length, 0); assert.strictEqual(m.hubCalls.length, 0);
+  const b = bind(m, { confirm_home: 'hq|H01' });
+  assert.strictEqual(b.ok, true, JSON.stringify(b)); assert.strictEqual(b.first_support, true);
+  assert.deepStrictEqual(m.storeCalls.map(c => [c.url, c.body.action, c.body.key, c.body.via]),
+    [['https://hq/exec', 'liff_bind', 'kH', 'name'], ['https://mztjs/exec', 'liff_bind', 'kJ', 'auto']]);
+  assert.strictEqual(m.hubCalls.length, 1); assert.strictEqual(m.hubCalls[0].body.src_store, 'hq');
+});
+ok('確認碼不對（或被竄改成別人）→ 仍只回 confirm_home，不綁', () => {
+  const m = scene(); m.sheets.hq.roster[0].line_user_id = '';
+  ['hq|H99', 'cf|H01', 'x'].forEach(t => { const r = bind(m, { confirm_home: t }); assert.strictEqual(r.error, 'confirm_home'); });
+  assert.strictEqual(m.storeCalls.length, 0); assert.strictEqual(m.hubCalls.length, 0);
+});
+ok('已在總部綁定同名 → 不用確認，直接 7A 加入', () => {
+  const m = scene(); const r = bind(m);
+  assert.strictEqual(r.ok, true, JSON.stringify(r)); assert.strictEqual(r.first_support, true);
+  assert.deepStrictEqual(m.storeCalls.map(c => c.body.action), ['liff_bind']);
+  assert.strictEqual(m.hubCalls.length, 1);
+});
+ok('兩個單位都有同名在職 → name_conflict，不綁', () => {
+  const m = make({ props: P, sheets: { hq: { roster: [R({ line_user_id: '' })] }, cf: { roster: [R({ emp_id: 'C01', key: 'kC', line_user_id: '' })] }, mztjs: { roster: [] } } });
+  const r = bind(m); assert.strictEqual(r.error, 'name_conflict'); assert.strictEqual(m.storeCalls.length, 0);
+});
+ok('各單位都沒有 → name_not_found，請主管到管理系統建檔', () => {
+  const all = {}; STORES.forEach(st => { all[st.code] = { roster: [] }; });
+  const m = make({ props: P, sheets: all });
+  const r = bind(m); assert.strictEqual(r.error, 'name_not_found'); assert(/管理系統/.test(r.message), r.message);
+  // 有一家名冊讀不到、其他都沒有 → 請稍後再試（不能說「公司沒有你」）
+  const m2 = make({ props: P, sheets: all }); const open0 = m2.sb.SpreadsheetApp.openById;
+  m2.sb.SpreadsheetApp = { openById: (id) => { if (id === 'SS_cf') throw new Error('連不上'); return open0(id); } };
+  assert.strictEqual(bind(m2).error, 'unreachable');
+});
+ok('原單位那列已綁別的 LINE → name_taken，不綁', () => {
+  const m = make({ props: P, sheets: { hq: { roster: [R({ line_user_id: 'U_OTHER' })] }, mztjs: { roster: [] } } });
+  const r = bind(m); assert.strictEqual(r.error, 'name_taken'); assert.strictEqual(m.storeCalls.length, 0);
+});
+ok('跨品牌：小辛辣光復的人在墨竹亭金山 → cross_brand，不綁', () => {
+  const m = make({ props: P, sheets: { '': { roster: [R({ emp_id: 'E01', key: 'kE', line_user_id: '' })] }, mztjs: { roster: [] } } });
+  const r = bind(m); assert.strictEqual(r.error, 'cross_brand'); assert(/你是小辛辣的同仁/.test(r.message));
+  assert.strictEqual(m.storeCalls.length, 0); assert.strictEqual(m.hubCalls.length, 0);
+});
+ok('確認後原單位綁好、但管理系統不讓加入 → support_failed（訊息講清楚已綁原單位）', () => {
+  const m = scene({ hubReply: () => ({ ok: false, error: 'not_confirmed' }) }); m.sheets.hq.roster[0].line_user_id = '';
+  const r = bind(m, { confirm_home: 'hq|H01' });
+  assert.strictEqual(r.error, 'support_failed'); assert.strictEqual(r.home_bound, true);
+  assert(/已綁定你在「鼎兆元 總部」/.test(r.message), r.message);
+  assert.strictEqual(m.sheets.hq.roster[0].line_user_id, 'U1');
+});
+ok('開頁（line_hub_status）：已在總部綁定、金山名冊沒有 → 綁定框帶出名字與原單位，不自動加入', () => {
+  const m = scene();
+  const r = m.sb.handleLineHubStatus_({ id_token: 'TOK_U1', lat: js.lat, lng: js.lng, accuracy: 10 });
+  assert.strictEqual(r.result.code, 'not_bound'); assert.strictEqual(r.result.suggest_name, '測試甲');
+  assert.strictEqual(r.result.support_from, '鼎兆元 總部'); assert.strictEqual(m.hubCalls.length, 0);
+});
 console.log(`\n✅ ${n} 項通過`);
