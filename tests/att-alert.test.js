@@ -253,7 +253,7 @@ const join = (c, g) => c.onEvent({ type: 'join', replyToken: 'RTJ', source: { ty
   const c = make();
   const code = c.run('attAlertIssueBindCode');
   chk('產生 6 位數碼、存屬性、Logger 印出', [/^\d{6}$/.test(code), JSON.parse(c.props.ATT_BIND_CODE).code === code, c.logs.log.some(x => x.includes(code))], [true, true, true]);
-  chk('join：記 ATT_JOIN_LAST、不回話', [join(c), JSON.parse(c.props.ATT_JOIN_LAST).groupId, c.net.replies.length], [true, GROUP, 0]);
+  chk('join：記 ATT_JOIN_LAST、不回話', [join(c), JSON.parse(c.props.ATT_JOIN_LAST).pop().groupId, c.net.replies.length], [true, GROUP, 0]);
   const wrong = code === '123456' ? '654321' : '123456';
   chk('碼錯：不綁、不回應（但這句算綁定口令，回 true）', [c.onEvent(msgEv(GROUP, `綁定考勤提醒 ${wrong}`, 'b1')), c.props.ATT_GROUP_ID, c.net.replies.length], [true, undefined, 0]);
   chk('沒帶碼：不是綁定口令', [c.onEvent(msgEv(GROUP, '綁定考勤提醒', 'b2')), c.props.ATT_GROUP_ID, c.net.replies.length], [false, undefined, 0]);
@@ -532,7 +532,7 @@ console.log('══ doPost 分派／webhook 掛勾 ══');
   hook(c, [msgEv(OTHER_GROUP, '早安', 'H2')]);
   chk('webhook：別的群組維持完全不處理', c.net.replies.length, 1);
   hook(c, [{ type: 'join', replyToken: 'RTJ', source: { type: 'group', groupId: OTHER_GROUP } }]);
-  chk('webhook：join 事件交給掛勾（記 ATT_JOIN_LAST）', JSON.parse(c.props.ATT_JOIN_LAST).groupId, OTHER_GROUP);
+  chk('webhook：join 事件交給掛勾（記 ATT_JOIN_LAST）', JSON.parse(c.props.ATT_JOIN_LAST).pop().groupId, OTHER_GROUP);
   hook(c, [priv]);
   chk('私訊打卡流程照舊（加班請假回申請頁卡片）', [c.net.replies.length, /view=req/.test(JSON.stringify(c.net.replies[1] && c.net.replies[1].body))], [2, true]);
   // 故意讓 attAlertOnEvent_ 丟錯
@@ -558,7 +558,7 @@ const INBOX_PROPS = { ATT_GROUP_ID: GROUP, NOTIFY_INBOX_TOKEN: 'tok-fake', NOTIF
   hook(c, [msgEv(GROUP, '早安', 'A1'), priv, { type: 'join', source: { type: 'group', groupId: OTHER_GROUP } }]);
   chk('群組事件在前、私訊在後：私訊先被處理（第一則 reply 是私訊的）', [c.net.replies[0].body.replyToken, c.net.replies[1].body.replyToken], ['RTP', 'RT-A1']);
   chk('私訊結果與單獨處理時完全相同', JSON.stringify(c.net.replies[0].body), JSON.stringify(solo.net.replies[0].body));
-  chk('群組事件仍被處理（帶出＋join 記錄）', [text(c, 1), JSON.parse(c.props.ATT_JOIN_LAST).groupId], [EXP_A, OTHER_GROUP]);
+  chk('群組事件仍被處理（帶出＋join 記錄）', [text(c, 1), JSON.parse(c.props.ATT_JOIN_LAST).pop().groupId], [EXP_A, OTHER_GROUP]);
   // 私訊處理期間，群組事件尚未開始：在私訊 reply 當下檢查佇列還是 pending
   let d; d = bound({ peek: () => d.status() });
   d.enqueue(Object.assign(fxReq(), { seq: 100 }));
@@ -714,6 +714,52 @@ const INBOX_PROPS = { ATT_GROUP_ID: GROUP, NOTIFY_INBOX_TOKEN: 'tok-fake', NOTIF
   chk('解除綁定後群組說話不帶出', c.net.replies.length, 0);
   c.run('attAlertGuard');
   chk('保底觸發器把 leave 通知送出', c.inboxKeys().includes('att-alert:left:2026-12-10'), true);
+}
+
+{
+  // P4-10 最近 5 筆 join
+  const c = make();
+  const code = c.run('attAlertIssueBindCode'); join(c); join(c, OTHER_GROUP); join(c, 'Cgroup0003');
+  chk('行政群 join 後又被拉進別群，仍可綁行政群', [c.onEvent(msgEv(GROUP, `綁定考勤提醒 ${code}`, 'q1')), c.props.ATT_GROUP_ID], [true, GROUP]);
+  const d = make();
+  for (let i = 1; i <= 6; i++) join(d, 'Cg' + i);
+  chk('只留最近 5 筆（舊的擠掉）；同群再 join 不重複', [JSON.parse(d.props.ATT_JOIN_LAST).map(x => x.groupId), (join(d, 'Cg3'), JSON.parse(d.props.ATT_JOIN_LAST).map(x => x.groupId))], [['Cg2', 'Cg3', 'Cg4', 'Cg5', 'Cg6'], ['Cg2', 'Cg4', 'Cg5', 'Cg6', 'Cg3']]);
+  const e = make(); join(e, 'Cg1'); for (let i = 2; i <= 6; i++) join(e, 'Cg' + i);
+  const code2 = e.run('attAlertIssueBindCode');
+  chk('被擠出 5 筆的群不能綁', [e.onEvent(msgEv('Cg1', `綁定考勤提醒 ${code2}`, 'q2')), e.props.ATT_GROUP_ID], [true, undefined]);
+  const f = make(); const code3 = f.run('attAlertIssueBindCode'); join(f); join(f, OTHER_GROUP); f.advance(31);
+  chk('該筆 join 超過 30 分鐘不能綁', [f.onEvent(msgEv(GROUP, `綁定考勤提醒 ${code3}`, 'q3')), f.props.ATT_GROUP_ID], [true, undefined]);
+}
+{
+  // P4-11 沒有可組字內容的批次當 empty
+  const c = bound();
+  chk('只有 notes 的批次 → 當 empty（不寫列、不設旗標、ATT_RUN＝empty）', [c.enqueue({ run_date: '2026-12-10', batch_id: 'n1', daily: [], state: [], sched: [], failed_stores: [], notes: ['跨店合併暫停'] }), c.queue().length, c.props.ATT_HAS_PENDING, c.props['ATT_RUN_2026-12-10']], [{ ok: true }, 0, undefined, 'empty']);
+  chk('全空但沒帶 empty 旗標 → 同樣當 empty', [c.enqueue({ run_date: '2026-12-10', batch_id: 'n2', daily: [], state: [], sched: [], failed_stores: [] }), c.queue().length, c.props.ATT_HAS_PENDING], [{ ok: true }, 0, undefined]);
+  const d = bound();
+  d.enqueue({ run_date: '2026-12-10', batch_id: 'n3', seq: 1, daily: [], state: [{ store: '央廚', lines: ['舊'] }], sched: [], failed_stores: [] });
+  d.enqueue({ run_date: '2026-12-10', batch_id: 'n4', seq: 2, daily: [], state: [], sched: [], failed_stores: [], notes: ['x'] });
+  chk('notes-only 批仍會 supersede 舊 state', d.status(), ['state:superseded']);
+  // 帶出時 compose 為空：改 superseded、清旗標、不回話
+  const e = bound();
+  e.enqueue({ run_date: '2026-12-10', batch_id: 'n5', seq: 1, daily: [], state: [], sched: [], failed_stores: [], notes: ['x'] , empty: true });
+  const sh = e.ss.getSheetByName('att_alert_queue');
+  sh.getRange(2, 1, 1, 12).setNumberFormat('@').setValues([['n6#0', '2026-12-10', 'n6', 3, 'notes', '', '只有註記', 'pending', '2026-12-10T09:00:00+08:00', '', '', '']]);
+  e.props.ATT_HAS_PENDING = '1';
+  e.onEvent(msgEv(GROUP, '早安', 'n9'));
+  chk('compose 結果為空：列改 superseded、旗標清掉、不回話', [e.status(), e.props.ATT_HAS_PENDING, e.net.replies.length], [['notes:superseded'], undefined, 0]);
+}
+{
+  // P4-12 SweepStale 跳過已有 ATT_VERDICT_ 的 inflight 列
+  const c = bound({ props: INBOX_PROPS });
+  c.enqueue(Object.assign(fxReq(), { seq: 100 }));
+  c.lock.failNth = [c.lock.calls.length + 2];
+  c.onEvent(msgEv(GROUP, '甲', 'W1'));   // 寫回拿不到鎖 → ATT_VERDICT_W1
+  c.advance(11);
+  c.lock.failNth = [c.lock.calls.length + 1];   // 保底補寫的鎖也拿不到，verdict 留著
+  c.run('attAlertGuard');
+  chk('有 ATT_VERDICT_ 的 inflight 超過 10 分鐘也不判 unknown', [c.status().every(s => s.endsWith('inflight')), !!c.props.ATT_VERDICT_W1, c.inboxKeys()], [true, true, []]);
+  c.run('attAlertGuard');
+  chk('下一輪補寫成 delivered', [c.status().every(s => s.endsWith('delivered')), c.props.ATT_VERDICT_W1], [true, undefined]);
 }
 
 // ═══════════════ 11 只寫 att_alert_queue ═══════════════

@@ -9,7 +9,7 @@
  *   ATT_ALERT_SVC_KEY  mini 呼叫用的金鑰（Eason 自己設；沒設＝這店沒啟用）
  *   ATT_GROUP_ID       綁定的行政群組
  *   ATT_BIND_CODE      一次性綁定碼 JSON {code, exp, fails}（30 分鐘；碼錯累計 5 次就刪）
- *   ATT_JOIN_LAST      最近一次被拉進群組 JSON {groupId, at}（綁定要求發話群＝這個群且 join 在 30 分鐘內）
+ *   ATT_JOIN_LAST      最近 5 筆被拉進群組的記錄 JSON [{groupId, at}]（綁定要求發話群在其中且該筆 join 在 30 分鐘內）
  *   ATT_RUN_<日期>     當天狀態機 running／received／empty／guarded
  *   ATT_BATCH_<批次>   已收過的批次（冪等）
  *   ATT_EVT_<事件 id>  已處理過的 webhook 事件（保留 1 天）
@@ -191,6 +191,8 @@ function handleAttAlertEnqueue(b) {
     failed.forEach(function (x) { spec.push(['failed', x[0], x[1]]); });
     notes.forEach(function (l) { spec.push(['notes', '', l]); });
     if (spec.length > ATT_ALERT_MAX_ROWS) return { ok: false, error: 'too_big' };
+    // 沒有任何可組字內容（只有 notes、或全空但沒帶 empty 旗標）→ 當 empty 處理：只 supersede、不寫列、不設旗標
+    if (!spec.some(function (x) { return x[0] !== 'notes'; })) { empty = true; spec = []; }
   }
   var seq = Number(b.seq);
   var now = attAlertNow_();
@@ -527,12 +529,19 @@ function attAlertIssueBindCode() {
   Logger.log('考勤提醒綁定碼：' + code + '（30 分鐘內有效）。先把機器人拉進行政群組，再在那個群組輸入：綁定考勤提醒 ' + code);
   return code;
 }
-/** 發話群就是最近 join 的那個群，且 join 在 30 分鐘內 */
-function attAlertJoinOk_(groupId, nowMs) {
+function attAlertJoinList_() {
   var j = null;
   try { j = JSON.parse(attAlertProps_().getProperty('ATT_JOIN_LAST') || 'null'); } catch (e) { j = null; }
-  var t = j ? Date.parse(j.at) : NaN;
-  return !!(j && groupId && j.groupId === groupId && isFinite(t) && nowMs - t <= ATT_ALERT_BIND_TTL_MS && nowMs - t >= -60000);
+  if (j && !Array.isArray(j)) j = [j];   // 舊格式（單一物件）
+  return (j || []).filter(function (x) { return x && x.groupId; });
+}
+/** 發話群在最近 5 筆 join 裡，且該筆 join 在 30 分鐘內 */
+function attAlertJoinOk_(groupId, nowMs) {
+  if (!groupId) return false;
+  return attAlertJoinList_().some(function (j) {
+    var t = Date.parse(j.at);
+    return j.groupId === groupId && isFinite(t) && nowMs - t <= ATT_ALERT_BIND_TTL_MS && nowMs - t >= -60000;
+  });
 }
 /**
  * 群裡「綁定考勤提醒 <6 碼>」。回 true＝這句是綁定口令（不論成功與否都不再往下處理）。
@@ -595,7 +604,11 @@ function attAlertOnEvent_(ev) {
   var gid = String(ev.source.groupId || '');
   var p = attAlertProps_();
   if (ev.type === 'join') {
-    if (gid) p.setProperty('ATT_JOIN_LAST', JSON.stringify({ groupId: gid, at: attAlertIso_(attAlertNow_()) }));
+    if (gid) {
+      var js = attAlertJoinList_().filter(function (x) { return x.groupId !== gid; });
+      js.push({ groupId: gid, at: attAlertIso_(attAlertNow_()) });
+      p.setProperty('ATT_JOIN_LAST', JSON.stringify(js.slice(-5)));
+    }
     return true;
   }
   var bound = p.getProperty('ATT_GROUP_ID') || '';
@@ -643,7 +656,8 @@ function attAlertDeliver_(ev) {
     var info = {};
     var msgs = attAlertCompose_(claimed, info);
     if (!Array.isArray(msgs) || !msgs.length) {
-      console.error('att-alert 沒有可帶出的內容或日期錯誤，保留 pending');
+      if (Array.isArray(msgs)) verdict = 'superseded';   // 組出來是空的：這些列沒東西可講，改 superseded、不回話（旗標已清）
+      else console.error('att-alert 日期錯誤，保留 pending');
     } else {
       var code = attAlertReply_(ev.replyToken, msgs);
       if (code >= 200 && code < 300) { verdict = 'delivered'; hidden = attAlertHiddenIds_(claimed, msgs, info); }
@@ -717,7 +731,9 @@ function attAlertSweepStale_(now) {
   var sh = getSS().getSheetByName(ATT_ALERT_SHEET);
   if (!sh) return;
   var ms = now.getTime();
-  var stale = function (r) { var t = Date.parse(r.inflight_at); return r.status === 'inflight' && (!isFinite(t) || ms - t > ATT_ALERT_INFLIGHT_MS); };
+  var p0 = attAlertProps_();
+  // 已有 ATT_VERDICT_<事件 id> 的列交給補寫處理，不在這裡判 unknown
+  var stale = function (r) { var t = Date.parse(r.inflight_at); return r.status === 'inflight' && !p0.getProperty('ATT_VERDICT_' + r.webhook_event_id) && (!isFinite(t) || ms - t > ATT_ALERT_INFLIGHT_MS); };
   if (!attAlertReadRows_(sh).some(stale)) return;
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return;
