@@ -14,6 +14,9 @@
  * 九店都有 Liff.gs 覆寫 mgr_day（reqMgrDayHome_），但只是濾掉人：設了 REQ_HOME_EMPS 的店才會隱藏，
  * reference 仍來自 handleMgrDay。digest 照樣列出所有人，days／unapproved 每列加 home_hidden
  * （值班主管在 mgr_day 看不到的人＝true，直接呼叫 reqHomeHide_／reqInList_，不重寫判斷）。
+ *
+ * 唯一例外：reqHomeHide_ 讀 REQ_HOME_EMPS 的既有行為，名單有變動時可能順手寫一個 `_LAST` 指令碼屬性
+ * （只是讀失敗時的備份，不寫任何分頁）。名單讀不到／格式錯時全員 home_hidden＝false 並回 home_list_error。
  */
 const ATT_DIGEST_MAX_DAYS = 35;
 const ATT_DIGEST_UNAPPROVED_MAX_DAYS = 56;
@@ -55,7 +58,9 @@ function handleAttDigestData(body) {
   const today = todayTaipeiStr();
   const yesterday = addDaysStr(today, -1);
   const floor = addDaysStr(today, -ATT_DIGEST_UNAPPROVED_MAX_DAYS);
-  let uFrom = attDigestGoodDate_(body.unapproved_from) ? body.unapproved_from : floor;
+  const hasUFrom = body.unapproved_from !== undefined && body.unapproved_from !== null && body.unapproved_from !== '';
+  if (hasUFrom && !attDigestGoodDate_(body.unapproved_from)) return { ok: false, error: 'bad_date' };
+  let uFrom = hasUFrom ? body.unapproved_from : floor;
   if (uFrom < floor) uFrom = floor;
 
   let complete = true;
@@ -82,9 +87,15 @@ function handleAttDigestData(body) {
 
   const approvedMap = buildLatestApprovedMap(approvedRows);
   // 值班主管在 mgr_day 看不到的人（REQ_HOME_EMPS）；沒有 Requests.gs、讀不到、或本店沒設＝都不隱藏
-  const homeHide = guarded(function () {
-    return typeof reqHomeHide_ === 'function' ? reqHomeHide_(body) : null;
-  }, null);
+  // 名單讀壞（reqEmpListProp_ 回 {'*':true}）或丟錯時，不能讓全員隱藏：改全員 false＋回 home_list_error
+  let homeListError = '';
+  let homeHide = null;
+  try {
+    homeHide = typeof reqHomeHide_ === 'function' ? reqHomeHide_(body) : null;
+    if (homeHide && homeHide[REQ_ALL_]) { homeHide = null; homeListError = 'REQ_HOME_EMPS 讀不到或格式錯誤'; }
+  } catch (e) {
+    homeHide = null; homeListError = String((e && e.message) || e);
+  }
   const hidden = function (emp) { return !!(homeHide && reqInList_(homeHide, String(emp))); };
   const segEventRows = dropDupIgnored_(eventRows, dupIgnoreSet_(approvedMap));
 
@@ -110,13 +121,15 @@ function handleAttDigestData(body) {
     if (d < from || d > to) return;
     Object.keys(approvedMap[d]).forEach(function (emp) { dayKeys[d + '|' + emp] = true; });
   });
+  // 跨夜班：只有下班事件落在隔天、沒有歸屬 segments（in 日才算）也沒有核定的那天不出列，時數都在 in 日。
   const days = Object.keys(dayKeys).sort().map(function (k) {
     const d = k.slice(0, 10), emp = k.slice(11);
     const hasPunch = (rawBy[emp] || []).some(function (e) { return tsDateStr(e.ts) === d; });
     const punch = hasPunch ? dayPunchSegments(segBy[emp] || [], emp, d) : null;
     const rec = (approvedMap[d] || {})[emp];
     const blocked = hasPunch && !(rawBy[emp] || []).some(function (e) { return tsDateStr(e.ts) === d && String(e.status) === 'ok'; });
-    const at = rec ? normCellTs(rec.entered_at) : '';
+    const at = rec ? String(normCellTs(rec.entered_at)).trim() : '';
+    if (!rec && !blocked && !(punch && punch.segments.length)) return null;
     return {
       store: store, date: d, emp_id: emp, name: nm(emp),
       punch_hours: hasPunch ? dayReferenceHours_(punch, d, today) : null,
@@ -125,7 +138,7 @@ function handleAttDigestData(body) {
       approved_at: at ? at : null,
       home_hidden: hidden(emp),
     };
-  });
+  }).filter(function (x) { return x !== null; });
 
   // ── newly_approved：entered_at ∈ (since, until]，不看工作日期 ──
   const newly = [];
@@ -169,6 +182,7 @@ function handleAttDigestData(body) {
     days: days, newly_approved: newly, unapproved: unapproved, unapproved_older_count: older,
     requests_pending: pending,
   };
+  if (homeListError) out.home_list_error = homeListError;
 
   // ── xmap（光復薪資模組的打卡對照；要求才給，沒這分頁就不回欄位；不含姓名）──
   if (body.include_xmap === true) {

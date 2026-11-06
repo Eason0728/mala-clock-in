@@ -10,7 +10,8 @@ repo 裡的 Code.gs 的 CONFIG 是 PASTE_SPREADSHEET_ID_HERE / PASTE_ADMIN_KEY_H
 Payroll.gs 沒有店別專屬的值（查過：無 PASTE_／SPREADSHEET_ID／ADMIN_KEY），整份覆蓋。
 2026-10-29 補：Requests／Liff／LineHub／Sched／SchedPub／SvcStaff／Mirror 也是整份覆蓋（WHOLE_FILES），
 原本這支只套 Code.gs、Payroll.gs，這幾份改了都要自己手貼，容易漏（10-25 的 LineHub「重設密碼」就沒上線）。
-只更新專案裡**已經有**的同名 .js（LineHub 只在光復、Mirror 只在總部），不會替哪家店新增檔案。
+只更新專案裡**已經有**的同名 .js（LineHub 只在光復、Mirror 只在總部），不會替哪家店新增檔案；
+唯一例外是 WHOLE_FILES 第三欄標 new_ok 的檔（目前只有 AttDigest.gs）：專案資料夾裡沒有就新增（dry-run 印「將新增」，--apply 才寫）。
 Sched.gs 的 SCHED_GIST_URL 已改成線上用的那顆（10-13 換的 47c876cc…），repo 與光復一致才放進清單。
 
 安全設計：

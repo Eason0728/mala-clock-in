@@ -325,5 +325,45 @@ console.log('══ att_digest_data ══');
   chk('Date 物件 entered_at → days.approved_at 為字串', d && d.approved_at, '2026-11-05T00:00:00+08:00');
 }
 
+// 21 P2-7 殘：events.ts／requests.created_at 是 Date 物件
+{
+  const T = x => ({ __d: Date.parse(x) });
+  const evD = (d, hm, emp, type) => [T(`${d}T${hm}:00+08:00`), emp, type, 'ok'];
+  const cs = makeCtx({ approved: [], events: [evD('2026-11-04', '09:00', 'E01', 'in'), evD('2026-11-04', '18:00', 'E01', 'out')],
+    requests: [reqRow({ id: 'R9', created_at: T('2026-11-05T21:03:00+08:00'), emp_id: 'E01', name: 'Amy', kind: 'leave', status: 'pending' })] });
+  const r = cs.digest(Object.assign({}, base, { unapproved_from: '2026-11-01' }));
+  chk('events.ts 為 Date：punch_hours 9、未核定列出', [r.days[0].punch_hours, r.unapproved.map(x => x.date)], [9, ['2026-11-04']]);
+  chk('requests.created_at 為 Date：回字串帶 +08:00', r.requests_pending.map(x => x.created_at), ['2026-11-05T21:03:00+08:00']);
+}
+
+// 22 P2-9 跨夜班：只有下班落在隔天的那天不出列，總時數與 mgr_day 一致
+{
+  const c = makeCtx({ approved: [], events: [E('2026-11-03', '22:00', 'E01', 'in'), E('2026-11-04', '06:00', 'E01', 'out')] });
+  const r = c.digest(base);
+  chk('跨夜班：只列 in 日 11/03，11/04 不出列', r.days.map(x => x.date), ['2026-11-03']);
+  const sum = ['2026-11-03', '2026-11-04'].reduce((t, d) => t + (c.mgrDay({ mgr_key: 'mk', date: d }).employees.filter(e => e.emp_id === 'E01')[0].reference || 0), 0);
+  chk('days 總時數＝mgr_day reference 總和', r.days.reduce((t, x) => t + x.punch_hours, 0), sum);
+  const c2 = makeCtx({ approved: [['2026-11-04', 'E01', 'Amy', 'x', 1, '正常', '主管', '2026-11-05T08:00:00+08:00', '']], events: [E('2026-11-03', '22:00', 'E01', 'in'), E('2026-11-04', '06:00', 'E01', 'out')] });
+  chk('隔天若有核定就出列', c2.digest(base).days.map(x => x.date), ['2026-11-03', '2026-11-04']);
+}
+
+// 23 P2-10 REQ_HOME_EMPS 壞掉：不全員隱藏
+{
+  const c = makeCtx({ props: { REQ_HOME_EMPS: '{bad' } });
+  const r = c.digest(base);
+  chk('名單格式錯：全員 home_hidden=false＋home_list_error', [r.days.length > 0 && r.days.every(x => x.home_hidden === false), typeof r.home_list_error, r.ok], [true, 'string', true]);
+  chk('名單正常：無 home_list_error', 'home_list_error' in makeCtx().digest(base), false);
+}
+
+// 24 P2-11 unapproved_from 格式錯／entered_at 只有空白
+{
+  const c = makeCtx();
+  chk('unapproved_from 格式錯 → bad_date', c.digest(Object.assign({}, base, { unapproved_from: '2026/10/01' })).error, 'bad_date');
+  chk('unapproved_from 2026-02-30 → bad_date', c.digest(Object.assign({}, base, { unapproved_from: '2026-02-30' })).error, 'bad_date');
+  const c2 = makeCtx({ approved: [['2026-11-02', 'E01', 'Amy', 'x', 7, '正常', '主管', '  \t ', '']] });
+  const d = c2.digest(base).days.filter(x => x.date === '2026-11-02' && x.emp_id === 'E01')[0];
+  chk('entered_at 只有空白 → approved_at null', d.approved_at, null);
+}
+
 console.log(`\n${fail ? '❌' : '✅'} pass ${pass} / fail ${fail}`);
 process.exit(fail ? 1 : 0);
