@@ -276,6 +276,9 @@ function doPost(e) {
     mgr_set_notice_active: handleMgrSetNoticeActive,
   };
 
+  // 考勤異常候補提醒（AttDigest.gs，唯讀）；檔案不存在時完全不影響其他動作。
+  if (typeof handleAttDigestData === 'function') handlers.att_digest_data = handleAttDigestData;
+
   // 薪資模組（Payroll.gs）的 action 掛載於此；Payroll.gs 不存在時完全不影響打卡與核定。
   if (typeof PAYROLL_HANDLERS !== 'undefined') {
     Object.keys(PAYROLL_HANDLERS).forEach(function (k) { handlers[k] = PAYROLL_HANDLERS[k]; });
@@ -1685,12 +1688,11 @@ function handleMgrDay(body) {
     const hasPunch = !!firstTs[item.emp_id];
     const punch = hasPunch ? dayPunchSegments(segEventRows, item.emp_id, date) : null;
     // 參考時數：忘刷卡整天留白，與月表／my_recent 同一規則（A3，見 dayReferenceIncomplete，禁止重寫判斷）
-    const incomplete = hasPunch && dayReferenceIncomplete(punch.segments, date, today);
     const out = {
       emp_id: item.emp_id,
       name: item.name,
       segments: hasPunch ? punch.segments : [],
-      reference: hasPunch && !incomplete ? punch.reference : null, // 沒打卡或忘刷卡整天＝參考空白
+      reference: hasPunch ? dayReferenceHours_(punch, date, today) : null, // 沒打卡或忘刷卡整天＝參考空白
       attempts: attemptsCount[item.emp_id] || 0, // A4：未入帳嘗試次數（status!=='ok'，供主管頁透明化）
       // 名冊姓名可能帶尾端空白：leave 分頁那邊已 trim，這邊也 trim 才對得到（2026-11-04 對抗驗證）
       leaves: leavesByName[String(item.name || '').trim()] || [],
@@ -2320,6 +2322,11 @@ function dayReferenceIncomplete(segments, dateStr, todayStr) {
   const hasForgotOut = segments.some(function (s) { return s.in === null; });
   const hasForgotIn = segments.some(function (s) { return s.out === null; });
   return hasForgotOut || (hasForgotIn && dateStr !== todayStr);
+}
+
+/** mgr_day 的 reference 規則（已完成時段 15 分鐘取整加總；忘刷卡整天留白＝null）。handleMgrDay 與 att_digest_data 共用。 */
+function dayReferenceHours_(punch, dateStr, todayStr) {
+  return dayReferenceIncomplete(punch.segments, dateStr, todayStr) ? null : punch.reference;
 }
 
 /**

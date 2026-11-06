@@ -10,7 +10,8 @@ repo 裡的 Code.gs 的 CONFIG 是 PASTE_SPREADSHEET_ID_HERE / PASTE_ADMIN_KEY_H
 Payroll.gs 沒有店別專屬的值（查過：無 PASTE_／SPREADSHEET_ID／ADMIN_KEY），整份覆蓋。
 2026-10-29 補：Requests／Liff／LineHub／Sched／SchedPub／SvcStaff／Mirror 也是整份覆蓋（WHOLE_FILES），
 原本這支只套 Code.gs、Payroll.gs，這幾份改了都要自己手貼，容易漏（10-25 的 LineHub「重設密碼」就沒上線）。
-只更新專案裡**已經有**的同名 .js（LineHub 只在光復、Mirror 只在總部），不會替哪家店新增檔案。
+只更新專案裡**已經有**的同名 .js（LineHub 只在光復、Mirror 只在總部），不會替哪家店新增檔案；
+唯一例外是 WHOLE_FILES 第三欄標 new_ok 的檔（目前只有 AttDigest.gs）：專案資料夾裡沒有就新增（dry-run 印「將新增」，--apply 才寫）。
 Sched.gs 的 SCHED_GIST_URL 已改成線上用的那顆（10-13 換的 47c876cc…），repo 與光復一致才放進清單。
 
 安全設計：
@@ -40,8 +41,10 @@ import argparse, difflib, functools, pathlib, re, subprocess, sys
 
 STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztgf-clock-in', 'mztlzl-clock-in', 'mztmc-clock-in', 'mztrg-clock-in', 'mztwx-clock-in']   # 2026-10-29 補六張犁（verify-store-backends.py 早就有）
 # 沒有店別專屬值、整份覆蓋的檔案：repo 檔名 → clasp 專案裡的檔名
+# 第三欄 True＝允許新增：專案資料夾裡沒有這個檔時 dry-run 印「將新增」、--apply 直接寫新檔（clasp push 會帶上去）。
+# 沒有第三欄的檔維持原行為：專案裡沒有就不套、報「找不到檔案」。
 WHOLE_FILES = [('Requests.gs', 'Requests.js'), ('Liff.gs', 'Liff.js'), ('LineHub.gs', 'LineHub.js'),
-               ('SvcStaff.gs', 'SvcStaff.js'), ('Sched.gs', 'Sched.js'), ('SchedPub.gs', 'SchedPub.js'), ('Mirror.gs', 'Mirror.js')]
+               ('SvcStaff.gs', 'SvcStaff.js'), ('Sched.gs', 'Sched.js'), ('SchedPub.gs', 'SchedPub.js'), ('Mirror.gs', 'Mirror.js'), ('AttDigest.gs', 'AttDigest.js', True)]
 STORE_FILE = '程式碼.js'
 CODE_SCAN = 120   # 只比程式時，往回看幾個版本
 CONFIG_RE = re.compile(r'^const CONFIG = \{.*?^\};', re.S | re.M)
@@ -282,9 +285,31 @@ def main():
                              base, a.apply, a.force or f'{st}/{STORE_FILE}' in a.force_only, a.full)
 
     # 整份覆蓋的檔案：哪家專案有這個檔就更新哪家，沒有就跳過（不新增）
-    for src_name, dst_name in WHOLE_FILES:
+    for ent in WHOLE_FILES:
+        src_name, dst_name = ent[0], ent[1]
+        new_ok = len(ent) > 2 and ent[2]
         new = (repo / 'apps-script' / src_name).read_text(encoding='utf-8')
         base = bases('apps-script/' + src_name)
+        if new_ok:
+            # 允許新增：每個存在的專案資料夾都要有；沒有這個檔就新增，有就照一般流程比對覆蓋
+            for st in STORES:
+                if not (gas / st).is_dir():
+                    continue
+                dst = gas / st / dst_name
+                if dst.exists():
+                    res[f'{st}/{dst_name}'], _ = process(f'{st}/{dst_name}', dst, new,
+                                                         base, a.apply, a.force or f'{st}/{dst_name}' in a.force_only, a.full)
+                    continue
+                print(f'\n▶ {st}/{dst_name}\n    ＋ 將新增 {dst_name}（{len(new.splitlines())} 行；專案裡原本沒有這個檔）')
+                if 'PASTE_' in new:
+                    raise SystemExit(f'✗ {dst_name}：內容含 PASTE_ 佔位符，中止。')
+                if a.apply:
+                    dst.write_text(new, encoding='utf-8')
+                    print('    ✓ 已新增')
+                else:
+                    print('    （dry-run，沒有寫入）')
+                res[f'{st}/{dst_name}'] = 'updated'
+            continue
         targets = [st for st in STORES if (gas / st / dst_name).exists()]
         if not targets:
             print(f'\n▶ {dst_name}\n    ⚠ 每家專案都沒有 {dst_name}，沒有套')
