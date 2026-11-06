@@ -110,7 +110,7 @@ function handleAttDigestData(body) {
   segEventRows.forEach(function (e) { (segBy[String(e.emp_id)] = segBy[String(e.emp_id)] || []).push(e); });
 
   // ── days：from–to 每人每天（有打卡或有核定才列）──
-  // punch_hours 與 mgr_day reference 完全同一套：全部打卡都被擋（沒有任何 status=ok 的事件）的日子是 0，
+  // punch_hours 與 mgr_day reference 完全同一套：全部上班卡都被擋（有上班嘗試、沒有任何 status=ok 的上班事件）的日子是 0 或 null，
   // 不代表真的 0 小時；這種日子 punch_blocked＝true。忘刷卡整天是 null。
   const dayKeys = {};
   eventRows.forEach(function (e) {
@@ -127,7 +127,9 @@ function handleAttDigestData(body) {
     const hasPunch = (rawBy[emp] || []).some(function (e) { return tsDateStr(e.ts) === d; });
     const punch = hasPunch ? dayPunchSegments(segBy[emp] || [], emp, d) : null;
     const rec = (approvedMap[d] || {})[emp];
-    const blocked = hasPunch && !(rawBy[emp] || []).some(function (e) { return tsDateStr(e.ts) === d && String(e.status) === 'ok'; });
+    // 以「歸屬該日的上班事件」判斷：該日有上班嘗試、但沒有任何 status=ok 的上班事件（前一晚跨夜的下班卡不能遮住）
+    const inEvs = (rawBy[emp] || []).filter(function (e) { return tsDateStr(e.ts) === d && String(e.type) === 'in'; });
+    const blocked = inEvs.length > 0 && !inEvs.some(function (e) { return String(e.status) === 'ok'; });
     const at = rec ? String(normCellTs(rec.entered_at)).trim() : '';
     if (!rec && !blocked && !(punch && punch.segments.length)) return null;
     return {

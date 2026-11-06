@@ -365,5 +365,17 @@ console.log('══ att_digest_data ══');
   chk('entered_at 只有空白 → approved_at null', d.approved_at, null);
 }
 
+// 25 P2-12 前晚跨夜 out(ok)＋當天 in 全被擋 → 當天出列且 punch_blocked
+{
+  const c = makeCtx({ approved: [], events: [
+    E('2026-11-02', '22:00', 'E01', 'in'), E('2026-11-03', '06:00', 'E01', 'out'),
+    E('2026-11-03', '09:00', 'E01', 'in', 'rejected_gps'),
+  ] });
+  const r = c.digest(base), d = r.days.filter(x => x.date === '2026-11-03')[0];
+  chk('前晚跨夜 out ok＋當天 in 全 rejected → 11/03 出列且 punch_blocked true', [!!d, d && d.punch_blocked], [true, true]);
+  const sum = ['2026-11-02', '2026-11-03'].reduce((t, dt) => t + (c.mgrDay({ mgr_key: 'mk', date: dt }).employees.filter(e => e.emp_id === 'E01')[0].reference || 0), 0);
+  chk('days 總時數仍＝mgr_day reference 總和', r.days.reduce((t, x) => t + (x.punch_hours || 0), 0), sum);
+}
+
 console.log(`\n${fail ? '❌' : '✅'} pass ${pass} / fail ${fail}`);
 process.exit(fail ? 1 : 0);
