@@ -279,6 +279,10 @@ function doPost(e) {
   // 考勤異常候補提醒（AttDigest.gs，唯讀）；檔案不存在時完全不影響其他動作。
   if (typeof handleAttDigestData === 'function') handlers.att_digest_data = handleAttDigestData;
 
+  // 考勤異常候補提醒的寄放（AttAlert.gs，只有光復設了 ATT_ALERT_SVC_KEY 才會動；其他店回 not_enabled）。
+  if (typeof handleAttAlertStart === 'function') handlers.att_alert_start = handleAttAlertStart;
+  if (typeof handleAttAlertEnqueue === 'function') handlers.att_alert_enqueue = handleAttAlertEnqueue;
+
   // 薪資模組（Payroll.gs）的 action 掛載於此；Payroll.gs 不存在時完全不影響打卡與核定。
   if (typeof PAYROLL_HANDLERS !== 'undefined') {
     Object.keys(PAYROLL_HANDLERS).forEach(function (k) { handlers[k] = PAYROLL_HANDLERS[k]; });

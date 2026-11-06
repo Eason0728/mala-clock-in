@@ -1248,6 +1248,10 @@ function handleLineWebhook_(body) {
   // 全站每分鐘上限按「事件」算，單一請求最多處理 10 個事件（LINE 正常一次只送幾個），防一個請求塞上百個放大（v2 審查 N6）
   (body.events || []).slice(0, 10).forEach(function (ev) {
     if (lineHubThrottled_('wh', '*all*', 300, 60)) return;
+    // 考勤異常提醒（AttAlert.gs）：只處理綁定的行政群組與 join／綁定口令；出任何錯都只記 log，絕不影響私訊打卡
+    if (typeof attAlertOnEvent_ === 'function') {
+      try { if (attAlertOnEvent_(ev)) return; } catch (eAtt) { console.error('attAlertOnEvent_ 失敗（不影響打卡）：' + eAtt); }
+    }
     try {
       if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
       if (!ev.source || ev.source.type !== 'user') return;

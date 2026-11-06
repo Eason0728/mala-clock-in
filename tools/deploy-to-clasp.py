@@ -11,7 +11,7 @@ Payroll.gs 沒有店別專屬的值（查過：無 PASTE_／SPREADSHEET_ID／ADM
 2026-10-29 補：Requests／Liff／LineHub／Sched／SchedPub／SvcStaff／Mirror 也是整份覆蓋（WHOLE_FILES），
 原本這支只套 Code.gs、Payroll.gs，這幾份改了都要自己手貼，容易漏（10-25 的 LineHub「重設密碼」就沒上線）。
 只更新專案裡**已經有**的同名 .js（LineHub 只在光復、Mirror 只在總部），不會替哪家店新增檔案；
-唯一例外是 WHOLE_FILES 第三欄標 new_ok 的檔（目前只有 AttDigest.gs）：專案資料夾裡沒有就新增（dry-run 印「將新增」，--apply 才寫）。
+唯一例外是 WHOLE_FILES 第三欄標 new_ok 的檔（目前是 AttDigest.gs、AttAlert.gs）：專案資料夾裡沒有就新增（dry-run 印「將新增」，--apply 才寫）。
 Sched.gs 的 SCHED_GIST_URL 已改成線上用的那顆（10-13 換的 47c876cc…），repo 與光復一致才放進清單。
 
 安全設計：
@@ -44,7 +44,7 @@ STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztg
 # 第三欄 True＝允許新增：專案資料夾裡沒有這個檔時 dry-run 印「將新增」、--apply 直接寫新檔（clasp push 會帶上去）。
 # 沒有第三欄的檔維持原行為：專案裡沒有就不套、報「找不到檔案」。
 WHOLE_FILES = [('Requests.gs', 'Requests.js'), ('Liff.gs', 'Liff.js'), ('LineHub.gs', 'LineHub.js'),
-               ('SvcStaff.gs', 'SvcStaff.js'), ('Sched.gs', 'Sched.js'), ('SchedPub.gs', 'SchedPub.js'), ('Mirror.gs', 'Mirror.js'), ('AttDigest.gs', 'AttDigest.js', True)]
+               ('SvcStaff.gs', 'SvcStaff.js'), ('Sched.gs', 'Sched.js'), ('SchedPub.gs', 'SchedPub.js'), ('Mirror.gs', 'Mirror.js'), ('AttDigest.gs', 'AttDigest.js', True), ('AttAlert.gs', 'AttAlert.js', True)]
 STORE_FILE = '程式碼.js'
 CODE_SCAN = 120   # 只比程式時，往回看幾個版本
 CONFIG_RE = re.compile(r'^const CONFIG = \{.*?^\};', re.S | re.M)
