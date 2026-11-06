@@ -121,7 +121,7 @@ const ACCURACY_CREDIT_CAP_M = 100;
 // 誤差 50 m 以上的座標本來就不足以判斷人在不在店裡，所以拿來提示同仁「定位可能不準」。
 const LOW_ACCURACY_M = 50;
 // 值班主管核定（2026-07-13 新增）：只追加不覆蓋；同 (date,emp_id) 多筆以 entered_at 最新為準（讀取端處理）
-const APPROVED_HEADERS = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at'];
+const APPROVED_HEADERS = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at', 'dup_ignore'];   // dup_ignore：2026-11-06 主管認定的重複打卡
 const MANAGERS_HEADERS = ['name', 'key', 'active'];
 // 店內公告（2026-08-28 新增）：值班主管在核定頁發布，同仁打卡頁最上方輪播。
 // 只追加不刪除——停用是把 active 改 FALSE，紀錄留著（同「同仁異動」精神）。
@@ -548,7 +548,7 @@ function buildRecentDays(eventRows, empId, todayStr, approvedMap) {
     const d = tsDateStr(e.ts);
     return d >= fetchStartStr && d <= todayStr;
   });
-  const paired = pairShifts(evs); // pairShifts 內部只取 status='ok'
+  const paired = pairShifts(dropDupIgnored_(evs, dupIgnoreSet_(approvedMap)));   // pairShifts 內部只取 status='ok'；主管認定的重複卡拿掉（2026-11-06）
 
   const dayMap = {};
   function day(d) {
@@ -1614,6 +1614,8 @@ function handleMgrDay(body) {
   const approvedSheet = ss.getSheetByName('approved');
   const approvedRows = approvedSheet ? readSheetAsObjects(approvedSheet).rows : [];
   const approvedMap = buildLatestApprovedMap(approvedRows);
+  // 打卡段要拿掉主管認定的重複卡；重複卡組本身用原始 events 算（重開那天才看得到原本的選項）
+  const segEventRows = dropDupIgnored_(eventRows, dupIgnoreSet_(approvedMap));
 
   // 該日 leave 分頁的假別＋時數（姓名→[{type, hours}]）。2026-10-26 起一天可以記多種假別（一種一列）。
   // 舊欄位 leave_type／leave_hours 給只認得一種假別的呼叫端（營運系統）：取第一列。
@@ -1681,7 +1683,7 @@ function handleMgrDay(body) {
 
   const employees = listed.map(function (item) {
     const hasPunch = !!firstTs[item.emp_id];
-    const punch = hasPunch ? dayPunchSegments(eventRows, item.emp_id, date) : null;
+    const punch = hasPunch ? dayPunchSegments(segEventRows, item.emp_id, date) : null;
     // 參考時數：忘刷卡整天留白，與月表／my_recent 同一規則（A3，見 dayReferenceIncomplete，禁止重寫判斷）
     const incomplete = hasPunch && dayReferenceIncomplete(punch.segments, date, today);
     const out = {
@@ -1699,6 +1701,10 @@ function handleMgrDay(body) {
       shift_out: shiftOf(item.emp_id, 'shift_out', CONFIG.DEFAULT_SHIFT_OUT),
     };
     if (item.first_support) out.first_support = true;
+    if (hasPunch) {
+      const dg = dupPunchGroups_(eventRows, item.emp_id, date);
+      if (dg.length) out.dup_groups = dg;
+    }
     const rec = (approvedMap[date] || {})[item.emp_id];
     if (rec) {
       out.approved = {
@@ -1706,6 +1712,7 @@ function handleMgrDay(body) {
         approved_hours: Number(rec.approved_hours) || 0,
         status_text: String(rec.status_text || ''),
         manager_name: String(rec.manager_name || ''),
+        dup_ignore: dupIgnoreList_(rec.dup_ignore),
       };
     }
     return out;
@@ -1806,6 +1813,24 @@ function handleMgrApprove(body) {
   const timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
   if (!Array.isArray(rawPeriods)) return { ok: false, error: 'bad_periods' };
 
+  // 主管認定的重複打卡（2026-11-06）：有送 dup_ignore（陣列，可空＝取消認定）就用送來的；
+  // 沒送（舊呼叫端）就沿用這天上一筆核定的認定，不洗掉。
+  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  const approvedSheet = ss.getSheetByName('approved');
+  if (!approvedSheet) return { ok: false, error: 'approved_sheet_missing' };
+  const approvedMapAll = buildLatestApprovedMap(readSheetAsObjects(approvedSheet).rows);
+  const prevRec = (approvedMapAll[date] || {})[String(body.emp_id)];
+  if (body.dup_ignore !== undefined && body.dup_ignore !== null && !Array.isArray(body.dup_ignore)) {
+    return { ok: false, error: 'bad_dup_ignore', message: '重複打卡的選擇格式不對' };
+  }
+  const dupList = Array.isArray(body.dup_ignore)
+    ? body.dup_ignore.map(function (x) { return String(x || '').trim(); }).filter(Boolean)
+    : (prevRec ? dupIgnoreList_(prevRec.dup_ignore) : []);
+  if (Array.isArray(body.dup_ignore) && dupList.length) {
+    const bad = dupIgnoreInvalid_(dupPunchGroups_(eventRows, body.emp_id, date), dupList);
+    if (bad) return { ok: false, error: 'bad_dup_ignore', message: bad };
+  }
+
   // 出差時數（2026-10-02 Eason 指定）：出差那格填幾小時就認定幾小時，與上班時段相加成核定時數。
   // ⚠ 出差在薪資假別表是 pay_ratio 1／offset_shortfall false——那格時數本身不扣款也不抵不足，
   //   所以加進核定時數不會被重複給錢。其他假別的時數仍只是註記，不進核定。
@@ -1844,9 +1869,11 @@ function handleMgrApprove(body) {
     periods.forEach(function (p) { approvedHours += (p.endMs - p.startMs) / 3600000; });
     approvedHours = Math.round(approvedHours * 100) / 100;
 
-    // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化（勿自己重寫日期正規化，沿用既有 normCellTs）
-    const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
-    const punch = dayPunchSegments(eventRows, body.emp_id, date);
+    // 其他天的認定照舊拿掉；這天這人改用這次送來的認定
+    const ign = dupIgnoreSet_(approvedMapAll);
+    (prevRec ? dupIgnoreList_(prevRec.dup_ignore) : []).forEach(function (ts) { delete ign[String(body.emp_id) + '|' + ts]; });
+    dupList.forEach(function (ts) { ign[String(body.emp_id) + '|' + ts] = true; });
+    const punch = dayPunchSegments(dropDupIgnored_(eventRows, ign), body.emp_id, date);
     const punchWithMs = punch.segments.map(function (s) {
       const outDate = s.cross ? addDaysStr(date, 1) : date;
       return {
@@ -1861,14 +1888,14 @@ function handleMgrApprove(body) {
       noPunchBreakWindow(date));
     // 主管手動認定的遲到分鐘覆蓋系統判定（打卡沒入帳時系統算不出來）
     statusText = applyManualLate(statusText, body.late_min);
+    statusText = applyDupNote_(statusText, dupList);
     periodsStr = rawPeriods.map(function (p) { return p.start + '-' + p.end; }).join(',');
   }
   const enteredAt = nowTaipeiIso();
 
-  const approvedSheet = ss.getSheetByName('approved');
-  if (!approvedSheet) return { ok: false, error: 'approved_sheet_missing' };
   empIdColText_(approvedSheet);
-  approvedSheet.appendRow([date, body.emp_id, roster.name, periodsStr, approvedHours, statusText, actor, enteredAt]);
+  appendApprovedRow_(approvedSheet, [date, body.emp_id, roster.name, periodsStr, approvedHours, statusText, actor, enteredAt],
+    rawPeriods.length ? dupList : []);
   replaceLeaveRows(ss, date, String(roster.name), leaves);
 
   return {
@@ -1876,6 +1903,7 @@ function handleMgrApprove(body) {
     periods: rawPeriods, approved_hours: approvedHours, leaves: leaves,
     leave_type: leaves[0] ? leaves[0].type : '', leave_hours: leaves[0] ? leaves[0].hours : '',
     status_text: statusText, manager_name: actor, entered_at: enteredAt,
+    dup_ignore: rawPeriods.length ? dupList : [],
   };
 }
 
@@ -2098,6 +2126,130 @@ function pairShifts(events) {
   });
 
   return { shifts: shifts, unmatchedIns: unmatchedIns, unmatchedOuts: unmatchedOuts };
+}
+
+/* ── 主管認定的重複打卡（2026-11-06 Eason）──────────────────────────────
+ * 10 分鐘鎖過後同一顆鍵可以再按（例：17:26 上班、17:55 又按上班、21:00 下班），
+ * 系統照規則會把 17:26 當成「下班忘刷卡」。店長在考勤管理看到這組卡時可以選「以哪張為準」，
+ * 沒被選的那張存進核定紀錄的 dup_ignore 欄（JSON 陣列，放打卡時間 ts），
+ * 之後所有配對（打卡段、遲到早退、月表、薪資忘刷次數）都當那張不存在。
+ * ‧只限同一天、同一型、相鄰（中間沒有另一型的成功卡）、間隔 DUP_PUNCH_MAX_MIN 分鐘內的成功卡。
+ * ‧events 一律不改：認定只存在核定紀錄裡，核定重送就能改選或取消。
+ * ‧不選＝照原本規則（算忘刷）。 */
+const DUP_PUNCH_MAX_MIN = 60;
+const DUP_PUNCH_NOTE = '主管認定重複打卡';
+
+/** 核定紀錄 dup_ignore 欄 → ts 字串陣列（空白、壞掉都回 []）。 */
+function dupIgnoreList_(v) {
+  if (Array.isArray(v)) return v.map(function (x) { return String(normCellTs(x)); }).filter(Boolean);
+  const s = String(v || '').trim();
+  if (!s) return [];
+  try {
+    const a = JSON.parse(s);
+    return Array.isArray(a) ? a.map(function (x) { return String(x); }).filter(Boolean) : [];
+  } catch (e) { return []; }
+}
+
+/** 全部核定紀錄（每天每人取最新那筆）裡被認定重複的卡 → { 'emp|ts': true }。 */
+function dupIgnoreSet_(approvedMap) {
+  const set = {};
+  Object.keys(approvedMap || {}).forEach(function (d) {
+    Object.keys(approvedMap[d] || {}).forEach(function (emp) {
+      dupIgnoreList_(approvedMap[d][emp].dup_ignore).forEach(function (ts) { set[String(emp) + '|' + ts] = true; });
+    });
+  });
+  return set;
+}
+
+/** 把被認定重複的卡從 events 拿掉（回新陣列；沒有認定就原樣回傳）。 */
+function dropDupIgnored_(events, set) {
+  if (!set || !Object.keys(set).length) return events;
+  return events.filter(function (e) { return !set[String(e.emp_id) + '|' + String(normCellTs(e.ts))]; });
+}
+
+/**
+ * 某人某天可以讓主管認定的重複卡組：[{type, cards:[{ts, hm}]}]（cards 依時間，至少 2 張）。
+ * 用原始 events 算（不先拿掉已認定的），主管重開那天才看得到原本的選項。
+ * 歸日：上班卡組歸第一張那天；下班卡組歸它前面最近那張成功上班卡那天（跨夜班的凌晨下班卡歸前一天），沒有就歸自己那天。
+ */
+function dupPunchGroups_(eventRows, empId, dateStr) {
+  const lo = addDaysStr(dateStr, -1);
+  const hi = addDaysStr(dateStr, 1);
+  const oks = eventRows.filter(function (e) {
+    const d = tsDateStr(normCellTs(e.ts));
+    return String(e.emp_id) === String(empId) && String(e.status) === 'ok' &&
+      (e.type === 'in' || e.type === 'out') && d >= lo && d <= hi;
+  }).map(function (e) { return { ts: String(normCellTs(e.ts)), type: e.type }; })
+    .sort(function (a, b) { return tsMs(a.ts) - tsMs(b.ts); });
+  const groups = [];
+  let cur = null;
+  oks.forEach(function (e, i) {
+    const prev = i > 0 ? oks[i - 1] : null;
+    if (cur && prev && prev.type === e.type && tsMs(e.ts) - tsMs(prev.ts) <= DUP_PUNCH_MAX_MIN * 60000) {
+      cur.cards.push(e);
+    } else {
+      cur = { type: e.type, cards: [e], at: i };
+      groups.push(cur);
+    }
+  });
+  return groups.filter(function (g) { return g.cards.length >= 2; }).filter(function (g) {
+    let day = tsDateStr(g.cards[0].ts);
+    if (g.type === 'out') {
+      for (let j = g.at - 1; j >= 0; j--) {
+        if (oks[j].type !== 'in') continue;
+        if (tsMs(g.cards[0].ts) - tsMs(oks[j].ts) <= MONTHLY_PAIR_WINDOW_HOURS * 3600000) day = tsDateStr(oks[j].ts);
+        break;
+      }
+    }
+    return day === dateStr;
+  }).map(function (g) {
+    return { type: g.type, cards: g.cards.map(function (c) { return { ts: c.ts, hm: tsHm(c.ts) }; }) };
+  });
+}
+
+/** 主管送來的 dup_ignore 是否合法：每張都要屬於那天的某組重複卡，而且每組至少留一張。回 null＝合法，否則回錯誤字句。 */
+function dupIgnoreInvalid_(groups, list) {
+  const left = {};
+  groups.forEach(function (g, gi) { left[gi] = g.cards.length; });
+  for (let i = 0; i < list.length; i++) {
+    let gi = -1;
+    groups.forEach(function (g, k) { if (g.cards.some(function (c) { return c.ts === list[i]; })) gi = k; });
+    if (gi === -1) return '這天沒有 ' + tsHm(list[i]) + ' 這組重複打卡，請重新整理再選';
+    left[gi]--;
+    if (left[gi] < 1) return '同一組重複打卡至少要留一張';
+  }
+  return null;
+}
+
+/** 狀態字串補上（或換掉）「主管認定重複打卡（17:55）」；沒有認定就拿掉舊的。 */
+function applyDupNote_(statusText, list) {
+  const parts = String(statusText || '').split('、').filter(function (x) {
+    return x && x.indexOf(DUP_PUNCH_NOTE) !== 0;
+  });
+  if (list && list.length) {
+    const hms = list.slice().sort().map(function (ts) { return tsHm(ts); });
+    if (parts.length === 1 && parts[0] === '正常') parts.length = 0;
+    parts.push(DUP_PUNCH_NOTE + '（' + hms.join('／') + '）');
+  }
+  return parts.length ? parts.join('、') : '正常';
+}
+
+/** 寫一列核定紀錄：照實際表頭放，沒有 dup_ignore 表頭就先補在最右邊（舊試算表只有 8 欄）。 */
+function appendApprovedRow_(sheet, row8, dupList) {
+  if (!dupList || !dupList.length) { sheet.appendRow(row8); return; }   // 沒有認定＝跟以前一模一樣，不碰表頭
+  const lastCol = Math.max(sheet.getLastColumn(), 1);
+  const heads = (sheet.getRange(1, 1, 1, lastCol).getValues()[0] || []).map(String);
+  let at = heads.indexOf('dup_ignore');
+  if (at === -1) {
+    at = heads.length;
+    while (at > 0 && !heads[at - 1]) at--;   // 跳過右邊空白表頭
+    at = Math.max(at, APPROVED_HEADERS.length - 1);
+    sheet.getRange(1, at + 1).setValue('dup_ignore');
+  }
+  const row = row8.slice();
+  while (row.length < at) row.push('');
+  row[at] = dupList && dupList.length ? JSON.stringify(dupList) : '';
+  sheet.appendRow(row);
 }
 
 /* ---- 值班主管核定用的純函式（2026-07-13 新增，供 handleMgrDay/handleMgrApprove/buildMonthlySheet 共用） ---- */
@@ -2365,6 +2517,7 @@ function buildLatestApprovedMap(approvedRecords) {
  */
 function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords) {
   const approvedMap = buildLatestApprovedMap(approvedRecords || []);
+  events = dropDupIgnored_(events, dupIgnoreSet_(approvedMap));   // 主管認定的重複卡不配對、不算忘刷（2026-11-06）
   const activeRoster = roster.filter(function (r) { return String(r.active).toLowerCase() === 'true'; });
 
   const lastDay = lastDayOfMonth(ym);
@@ -2816,10 +2969,10 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) 
 
   return {
     name: rosterNow ? rosterNow.name : rec.name,
-    newStatusText: computeApprovalStatus(periods, punchWithMs,
+    newStatusText: applyDupNote_(computeApprovalStatus(periods, punchWithMs,
       unrecordedAttemptCount(eventRows, empId, date) > 0,
       isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name),
-      noPunchBreakWindow(date)),
+      noPunchBreakWindow(date)), dupIgnoreList_(rec.dup_ignore)),
   };
 }
 
@@ -2833,7 +2986,9 @@ function recheckPendingApprovalStatuses() {
   const dates = [];
   for (let i = 1; i <= RECHECK_STATUS_DAYS; i++) dates.push(addDaysStr(today, -i));
 
-  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  // 主管認定的重複卡先拿掉（2026-11-06），重算才不會又把它當忘刷
+  const eventRows = dropDupIgnored_(readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; }),
+    dupIgnoreSet_(approvedMap));
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
 
   let checked = 0;
@@ -2855,10 +3010,10 @@ function recheckPendingApprovalStatuses() {
       if (r.newStatusText === statusText) return; // 還是沒打卡，維持原樣，下次再檢查
 
       empIdColText_(approvedSheet);
-      approvedSheet.appendRow([
+      appendApprovedRow_(approvedSheet, [
         date, empId, r.name, rec.periods, rec.approved_hours,
         r.newStatusText, String(rec.manager_name || '') + RECHECK_MARK, nowTaipeiIso(),
-      ]);
+      ], dupIgnoreList_(rec.dup_ignore));
       fixed++;
     });
   });
@@ -2923,7 +3078,9 @@ function backfillMissingPunchGroups(fromDate, toDate, apply) {
   if (!approvedSheet) return { ok: false, error: 'no_approved_sheet' };
 
   const approvedMap = buildLatestApprovedMap(readSheetAsObjects(approvedSheet).rows);
-  const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  // 主管認定的重複卡先拿掉（2026-11-06），重算才不會又把它當忘刷
+  const eventRows = dropDupIgnored_(readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; }),
+    dupIgnoreSet_(approvedMap));
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
 
   const hits = [];
@@ -2958,10 +3115,10 @@ function backfillMissingPunchGroups(fromDate, toDate, apply) {
                   periods: String(rec.periods || ''), hours: rec.approved_hours });
       if (apply === true) {
         empIdColText_(approvedSheet);
-        approvedSheet.appendRow([
+        appendApprovedRow_(approvedSheet, [
           date, empId, r.name, rec.periods, rec.approved_hours,
           r.newStatusText, String(rec.manager_name || '') + RECHECK_MARK, nowTaipeiIso(),
-        ]);
+        ], dupIgnoreList_(rec.dup_ignore));
       }
     });
   }

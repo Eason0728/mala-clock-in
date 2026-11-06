@@ -404,7 +404,8 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
   });
 
   // 2) 忘刷卡日（沿用既有 pairShifts 的判定，不重寫規則）
-  const paired = pairShifts(events);
+  //    主管認定的重複打卡不算忘刷（2026-11-06 Eason；認定存在核定紀錄 dup_ignore，見 Code.gs dupIgnoreSet_）
+  const paired = pairShifts(dropDupIgnored_(events, dupIgnoreSet_(approvedMap)));
   const todayStr = todayTaipeiStr();
   function markForget(empId, d, cards) {
     const sl = slot(empId);
@@ -3284,7 +3285,7 @@ function handlePayrollPunch(body) {
     if (d.slice(0, 7) !== ym) return;
     if (String(e.status) !== 'ok') box(String(e.emp_id)).abnormal++;
   });
-  const paired = pairShifts(events);
+  const paired = pairShifts(dropDupIgnored_(events, dupIgnoreSet_(approvedMap)));   // 主管認定的重複卡不算忘刷（同 payCollect）
   const today = todayTaipeiStr();
   const missDays = {};
   function markMiss(e, skipToday) {
@@ -3347,6 +3348,7 @@ function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, 
     return { ts: normCellTs(e.ts), emp_id: String(e.emp_id), type: String(e.type || ''), status: String(e.status || '') };
   });
   const approvedMap = buildLatestApprovedMap(approvedRows);
+  const segEvents = dropDupIgnored_(events, dupIgnoreSet_(approvedMap));   // 打卡段不列主管認定的重複卡（2026-11-06）
   const nameToEmp = {};
   rosterRows.forEach(function (r) { nameToEmp[String(r.name || '').trim()] = String(r.emp_id); });
 
@@ -3393,7 +3395,7 @@ function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, 
 
   const employees = people.map(function (r) {
     const emp = String(r.emp_id);
-    const mine = events.filter(function (e) { return e.emp_id === emp; });
+    const mine = segEvents.filter(function (e) { return e.emp_id === emp; });
     var apprH = 0, leaveH = 0, workDays = 0, pendingDays = 0;
     const days = dates.map(function (dt) {
       const seg = dayPunchSegments(mine, emp, dt).segments;
