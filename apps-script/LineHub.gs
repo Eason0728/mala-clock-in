@@ -1246,8 +1246,11 @@ function handleLineWebhook_(body) {
   var bot = lineHubBotUserId_();
   if (!bot || String(body.destination || '') !== bot) return { ok: true, ignored: 'destination' };
   // 全站每分鐘上限按「事件」算，單一請求最多處理 10 個事件（LINE 正常一次只送幾個），防一個請求塞上百個放大（v2 審查 N6）
+  var deferred = [];
   (body.events || []).slice(0, 10).forEach(function (ev) {
     if (lineHubThrottled_('wh', '*all*', 300, 60)) return;
+    // 群組／join／leave 事件先收起來，私訊全部處理完才交給考勤異常提醒（AttAlert.gs），不拖慢打卡
+    if (ev && ev.source && ev.source.type && ev.source.type !== 'user') { deferred.push(ev); return; }
     try {
       if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
       if (!ev.source || ev.source.type !== 'user') return;
@@ -1294,6 +1297,12 @@ function handleLineWebhook_(body) {
       try { lineHubReply_(ev.replyToken, [lineHubNoticeCard_('系統忙碌', '請稍後再試一次。', 'warn')]); } catch (e2) {}
     }
   });
+  // 考勤異常提醒（AttAlert.gs）：只處理綁定的行政群組與 join／leave／綁定口令；每個事件各自隔離，出任何錯都只記 log
+  if (typeof attAlertOnEvent_ === 'function') {
+    deferred.forEach(function (ev) {
+      try { attAlertOnEvent_(ev); } catch (eAtt) { console.error('attAlertOnEvent_ 失敗（不影響打卡）：' + eAtt); }
+    });
+  }
   return { ok: true };
 }
 
