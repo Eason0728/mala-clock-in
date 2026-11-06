@@ -818,7 +818,7 @@
   function startQr(tok) {
     var tag = String(tok).split('~')[0], code = tag === 'gk' ? '' : tag;
     var st = STORES.filter(function (x) { return x.code === code; })[0];
-    if (!st) { say('看不懂這個 QR 碼', 'warn', '請值班主管在核定頁按「打卡 QR」重新顯示。'); return; }
+    if (!st) { say('看不懂這個 QR 碼', 'warn', '請值班主管在管理系統「考勤管理 → 核定工時」按「打卡 QR」重新顯示。'); return; }
     qrToken = String(tok); curStore = st;
     $('qrBanner').hidden = false;
     showStore(st);

@@ -791,7 +791,7 @@ def phase_qr(ctx, gen):
         click(page, '#btnOut', 'QR 下班（壞的 QR）')
         wait_msg(page, '下班打卡失敗')
         ok(f'QR：{name} → 伺服器擋下、原因逐字、請主管重新顯示、不重讀狀態、不寫卡',
-           msg(page) == f'下班打卡失敗\n原因：{reason}\n怎麼辦：請值班主管在核定頁按「打卡 QR」重新顯示' and [x['action'] for x in calls(page)] == ['liff_status', 'liff_punch']
+           msg(page) == f'下班打卡失敗\n原因：{reason}\n怎麼辦：請值班主管在管理系統「考勤管理 → 核定工時」按「打卡 QR」重新顯示' and [x['action'] for x in calls(page)] == ['liff_status', 'liff_punch']
            and len(file_events_raw(A['code'], p['emp_id'])) == n0 + 1, (msg(page), calls(page)))
         page.close()
     d = read_store(A['code']); d['qr_store'] = 'zz'; write_store(A['code'], d)
@@ -850,7 +850,7 @@ def phase_failures(ctx, gen):
     for fake, needle, extra in [({'ok': False, 'type': 'out', 'reason': '上一筆還在處理中', 'hint': '請等幾秒，看出勤紀錄有沒有這筆再決定要不要重按'}, '原因：上一筆還在處理中', '雙擊防護'),
                                 ({'ok': False, 'error': 'server_error'}, '系統沒有正常回應', '後端壞掉'),
                                 ({'ok': False, 'type': 'out', 'status': 'rejected_out_of_range', 'reason': '店家判定你不在範圍內', 'hint': '請開啟「精確位置」與 Wi‑Fi 後再按一次'}, '店家判定你不在範圍內', '店家判定超出範圍'),
-                                ({'ok': False, 'type': 'out', 'status': 'pending_device_approval', 'reason': '這支手機還沒被核准', 'hint': '已送出待核准，請主管在值班核定頁核准'}, '這支手機還沒被核准', '新手機')]:
+                                ({'ok': False, 'type': 'out', 'status': 'pending_device_approval', 'reason': '這支手機還沒被核准', 'hint': '已送出待核准，請主管到管理系統「考勤管理 → 裝置核准」核准'}, '這支手機還沒被核准', '新手機')]:
         page = open_page(ctx, u)
         wait_ready(page, p['name'])
         page.evaluate('(f) => { window.__fake.liff_punch = f; }', fake)

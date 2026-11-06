@@ -598,7 +598,7 @@ def register(ns):
         if body.get("qr"):
             mgr_name, err = qr_verify(data, body.get("qr"))
             if err:
-                return {"ok": False, "type": body.get("type"), "status": "qr_invalid", "reason": err, "hint": "請值班主管在核定頁按「打卡 QR」重新顯示"}
+                return {"ok": False, "type": body.get("type"), "status": "qr_invalid", "reason": err, "hint": "請值班主管在管理系統「考勤管理 → 核定工時」按「打卡 QR」重新顯示"}
             body = dict(body, lat=ns["STORE_LAT"], lng=ns["STORE_LNG"], accuracy=0)
         before = list(data["events"])
         r = orig_punch(data, body)

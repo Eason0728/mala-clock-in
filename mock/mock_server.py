@@ -2241,7 +2241,7 @@ def handle_liff_punch(data, body):
             res["rest_warn"] = REST_LAST_WARN["reason"] + "。" + REST_LAST_WARN["hint"]
         return res
     st = j.get("status") or j.get("error") or ""
-    rr = {"pending_device_approval": ["這支手機還沒被核准", "已送出待核准，請主管在值班核定頁核准"],
+    rr = {"pending_device_approval": ["這支手機還沒被核准", "已送出待核准，請主管到管理系統「考勤管理 → 裝置核准」核准"],
           "rejected_out_of_range": ["店家判定你不在範圍內", "請開啟「精確位置」與 Wi‑Fi 後再按一次"],
           "rejected_duplicate": ["這一筆和上一筆重複", "請按「出勤紀錄」確認今天的紀錄"]}.get(st, ["系統回覆：" + (st or "未知"), "請告知主管"])
     if st == "rejected_rest" and j.get("rest"):   # 同 Liff.gs liffPunchFor_：Rest.gs 講幾點以後才能打

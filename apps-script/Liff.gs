@@ -493,7 +493,7 @@ function handleLiffStatus_(body) {
 }
 
 var LIFF_PUNCH_REASONS_ = {
-  pending_device_approval: ['這支手機還沒被核准', '已送出待核准，請主管在值班核定頁核准'],
+  pending_device_approval: ['這支手機還沒被核准', '已送出待核准，請主管到管理系統「考勤管理 → 裝置核准」核准'],
   rejected_out_of_range: ['店家判定你不在範圍內', '請開啟「精確位置」與 Wi‑Fi 後再按一次'],
   rejected_duplicate: ['這一筆和上一筆重複', '請按「出勤紀錄」確認今天的紀錄'],
 };
@@ -600,7 +600,7 @@ function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows
   var qr = null, lat = body.lat, lng = body.lng, acc = body.accuracy === undefined ? null : body.accuracy;
   if (body.qr) {
     qr = reqQrVerify_(body.qr);
-    if (!qr.ok) return { ok: false, type: type, status: 'qr_invalid', reason: qr.reason, hint: '請值班主管在核定頁按「打卡 QR」重新顯示' };
+    if (!qr.ok) return { ok: false, type: type, status: 'qr_invalid', reason: qr.reason, hint: '請值班主管在管理系統「考勤管理 → 核定工時」按「打卡 QR」重新顯示' };
     lat = CONFIG.STORE_LAT; lng = CONFIG.STORE_LNG; acc = 0;
   }
   var j = handleClock({ key: me.key, type: type, lat: lat, lng: lng, accuracy: acc,
