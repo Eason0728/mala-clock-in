@@ -11,13 +11,18 @@
  *   approved    ＝ buildLatestApprovedMap（每日最新一筆）
  *   unapproved  ＝ monthPendingApprovalDates（逐月呼叫，所以可跨月）
  *   requests    ＝ reqRows_（Requests.gs）
- * 光復的 Liff.gs 覆寫的 mgr_day 只是濾掉不算本店支援的人，reference 仍來自 handleMgrDay。
+ * 九店都有 Liff.gs 覆寫 mgr_day（reqMgrDayHome_），但只是濾掉人：設了 REQ_HOME_EMPS 的店才會隱藏，
+ * reference 仍來自 handleMgrDay。digest 照樣列出所有人，days／unapproved 每列加 home_hidden
+ * （值班主管在 mgr_day 看不到的人＝true，直接呼叫 reqHomeHide_／reqInList_，不重寫判斷）。
  */
 const ATT_DIGEST_MAX_DAYS = 35;
 const ATT_DIGEST_UNAPPROVED_MAX_DAYS = 56;
 
 function attDigestGoodDate_(s) {
-  return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s + 'T00:00:00Z').getTime());
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const t = new Date(s + 'T00:00:00Z').getTime();
+  // 往返檢查：2026-02-30 會被 Date 滾成 03-02，格式化回來就對不上原字串
+  return !isNaN(t) && new Date(t).toISOString().slice(0, 10) === s;
 }
 function attDigestMs_(s) {
   const t = Date.parse(String(s || ''));
@@ -76,6 +81,11 @@ function handleAttDigestData(body) {
   }, []);
 
   const approvedMap = buildLatestApprovedMap(approvedRows);
+  // 值班主管在 mgr_day 看不到的人（REQ_HOME_EMPS）；沒有 Requests.gs、讀不到、或本店沒設＝都不隱藏
+  const homeHide = guarded(function () {
+    return typeof reqHomeHide_ === 'function' ? reqHomeHide_(body) : null;
+  }, null);
+  const hidden = function (emp) { return !!(homeHide && reqInList_(homeHide, String(emp))); };
   const segEventRows = dropDupIgnored_(eventRows, dupIgnoreSet_(approvedMap));
 
   const nameOf = {};
@@ -89,6 +99,8 @@ function handleAttDigestData(body) {
   segEventRows.forEach(function (e) { (segBy[String(e.emp_id)] = segBy[String(e.emp_id)] || []).push(e); });
 
   // ── days：from–to 每人每天（有打卡或有核定才列）──
+  // punch_hours 與 mgr_day reference 完全同一套：全部打卡都被擋（沒有任何 status=ok 的事件）的日子是 0，
+  // 不代表真的 0 小時；這種日子 punch_blocked＝true。忘刷卡整天是 null。
   const dayKeys = {};
   eventRows.forEach(function (e) {
     const d = tsDateStr(e.ts);
@@ -103,11 +115,15 @@ function handleAttDigestData(body) {
     const hasPunch = (rawBy[emp] || []).some(function (e) { return tsDateStr(e.ts) === d; });
     const punch = hasPunch ? dayPunchSegments(segBy[emp] || [], emp, d) : null;
     const rec = (approvedMap[d] || {})[emp];
+    const blocked = hasPunch && !(rawBy[emp] || []).some(function (e) { return tsDateStr(e.ts) === d && String(e.status) === 'ok'; });
+    const at = rec ? normCellTs(rec.entered_at) : '';
     return {
       store: store, date: d, emp_id: emp, name: nm(emp),
       punch_hours: hasPunch ? dayReferenceHours_(punch, d, today) : null,
+      punch_blocked: blocked,
       approved_hours: rec ? (Number(rec.approved_hours) || 0) : null,
-      approved_at: rec ? normCellTs(rec.entered_at) : null,
+      approved_at: at ? at : null,
+      home_hidden: hidden(emp),
     };
   });
 
@@ -135,7 +151,7 @@ function handleAttDigestData(body) {
       monthPendingApprovalDates(rawBy[emp], approvedMap, emp, ym, today).forEach(function (d) {
         if (d > yesterday) return;
         if (d < uFrom) older++;
-        else unapproved.push({ store: store, date: d, emp_id: emp, name: nm(emp) });
+        else unapproved.push({ store: store, date: d, emp_id: emp, name: nm(emp), home_hidden: hidden(emp) });
       });
     });
   });

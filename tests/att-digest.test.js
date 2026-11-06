@@ -72,13 +72,17 @@ function makeCtx(over) {
       },
     },
     Logger: { log() {} },
-    PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty() { writes.n++; } }) },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: n => (over.props || {})[n] || null, setProperty() { writes.n++; } }) },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
   };
   vm.createContext(sb);
+  // 儲存格 {__d: ms} → 該 vm realm 的 Date 物件（模擬 Sheets 把日期／時間字串轉成 Date）
+  Object.keys(sheets).forEach(k => sheets[k].rows.forEach(r => r.forEach((v, i) => {
+    if (v && typeof v === 'object' && v.__d !== undefined) r[i] = vm.runInContext('new Date(' + v.__d + ')', sb);
+  })));
   vm.runInContext(R('Code.gs'), sb);
   vm.runInContext(R('Requests.gs'), sb);
-  vm.runInContext(R('Payroll.gs'), sb);
+  if (!over.noPayroll) vm.runInContext(R('Payroll.gs'), sb);
   vm.runInContext(R('AttDigest.gs'), sb);
   vm.runInContext("todayTaipeiStr = function(){ return '2026-11-07'; };", sb);
   vm.runInContext("nowTaipeiIso = function(){ return '2026-11-07T08:50:12+08:00'; };", sb);
@@ -119,7 +123,7 @@ console.log('══ att_digest_data ══');
   chk('沒核定＝null', [d('2026-11-06', 'E01').approved_hours, d('2026-11-06', 'E01').approved_at], [null, null]);
   chk('忘刷下班 punch_hours null', d('2026-11-04', 'E02').punch_hours, null);
   chk('每列帶 store', r.days.every(x => x.store === 'mztjs'), true);
-  chk('欄位集合', Object.keys(r.days[0]).sort(), ['approved_at', 'approved_hours', 'date', 'emp_id', 'name', 'punch_hours', 'store']);
+  chk('欄位集合', Object.keys(r.days[0]).sort(), ['approved_at', 'approved_hours', 'date', 'emp_id', 'home_hidden', 'name', 'punch_blocked', 'punch_hours', 'store']);
   chk('範圍外(今天 11/07)不在 days', r.days.some(x => x.date === '2026-11-07'), false);
   chk('離職者姓名仍帶出', d('2026-11-05', 'E03').name, 'Cara');
 }
@@ -180,7 +184,7 @@ console.log('══ att_digest_data ══');
   const c = makeCtx(), r = c.digest(Object.assign({}, base, { unapproved_from: '2026-10-01' }));
   chk('unapproved 跨月(10/30 在內)、不含今天、不含已核定', r.unapproved.map(x => x.date + ':' + x.emp_id),
     ['2026-10-30:E01', '2026-11-04:E02', '2026-11-05:E03', '2026-11-06:E01']);
-  chk('unapproved 欄位', Object.keys(r.unapproved[0]).sort(), ['date', 'emp_id', 'name', 'store']);
+  chk('unapproved 欄位', Object.keys(r.unapproved[0]).sort(), ['date', 'emp_id', 'home_hidden', 'name', 'store']);
   chk('older_count 只算 unapproved_from 之前(9/1 一天)', r.unapproved_older_count, 1);
   const r2 = c.digest(Object.assign({}, base, { unapproved_from: '2026-11-01' }));
   chk('縮小 unapproved_from→10/30 變成 older', [r2.unapproved.length, r2.unapproved_older_count], [3, 2]);
@@ -255,6 +259,70 @@ console.log('══ att_digest_data ══');
   c3.sb.payRead = () => { throw new Error('boom'); };
   const r3 = c3.digest(Object.assign({}, base, { include_xmap: true }));
   chk('讀 xmap 失敗：其他欄位照常、complete 仍 true、帶 xmap_error', [r3.ok, r3.complete, r3.days.length > 0, r3.xmap_error, 'xmap' in r3], [true, true, true, 'boom', false]);
+}
+
+// 15 P2-3 日期往返檢查
+{
+  const c = makeCtx();
+  chk('2026-02-30 → bad_date', c.digest(Object.assign({}, base, { from: '2026-02-30', to: '2026-03-02' })).error, 'bad_date');
+  chk('2026-13-01 → bad_date', c.digest(Object.assign({}, base, { to: '2026-13-01' })).error, 'bad_date');
+  chk('閏日 2024-02-29 合法', c.digest(Object.assign({}, base, { from: '2024-02-29', to: '2024-03-01' })).ok, true);
+}
+
+// 16 P2-4 entered_at 空白 → approved_at null
+{
+  const c = makeCtx({ approved: [['2026-11-02', 'E01', 'Amy', 'x', 7, '正常', '主管', '', '']] });
+  const r = c.digest(base), d = r.days.filter(x => x.date === '2026-11-02' && x.emp_id === 'E01')[0];
+  chk('entered_at 空白 → approved_at null（approved_hours 照回）', [d.approved_at, d.approved_hours], [null, 7]);
+  chk('entered_at 空白不進 newly_approved', r.newly_approved.length, 0);
+}
+
+// 17 P2-5 punch_blocked
+{
+  const c = makeCtx({ events: [
+    E('2026-11-03', '09:00', 'E02', 'in', 'rejected_out_of_range'), E('2026-11-03', '18:00', 'E02', 'out', 'rejected_out_of_range'),
+    E('2026-11-04', '09:00', 'E01', 'in'), E('2026-11-04', '18:00', 'E01', 'out'),
+  ], approved: [] });
+  const r = c.digest(base), d = (dt, e) => r.days.filter(x => x.date === dt && x.emp_id === e)[0];
+  chk('全部打卡被擋：punch_hours 0＋punch_blocked true（與 mgr_day 一致）', [d('2026-11-03', 'E02').punch_hours, d('2026-11-03', 'E02').punch_blocked],
+    [c.mgrDay({ mgr_key: 'mk', date: '2026-11-03' }).employees.filter(e => e.emp_id === 'E02')[0].reference, true]);
+  chk('正常日 punch_blocked false', [d('2026-11-04', 'E01').punch_hours, d('2026-11-04', 'E01').punch_blocked], [9, false]);
+}
+
+// 18 P2-2 home_hidden
+{
+  const c = makeCtx({ props: { REQ_HOME_EMPS: JSON.stringify(['E03', 'E01']) } });
+  const r = c.digest(Object.assign({}, base, { unapproved_from: '2026-10-01' }));
+  chk('days 仍列所有人，home_hidden 標在 E01／E03', r.days.map(x => x.emp_id + ':' + x.home_hidden).filter((v, i, a) => a.indexOf(v) === i).sort(),
+    ['E01:true', 'E02:false', 'E03:true']);
+  chk('unapproved 同樣帶 home_hidden', r.unapproved.map(x => x.emp_id + ':' + x.home_hidden).filter((v, i, a) => a.indexOf(v) === i).sort(), ['E01:true', 'E02:false', 'E03:true']);
+  const md = c.mgrDay({ mgr_key: 'mk', date: '2026-11-06' });
+  const viaLiff = vm.runInContext('reqMgrDayHome_', c.sb)({ mgr_key: 'mk', date: '2026-11-06' });
+  chk('與 mgr_day（Liff 覆寫）看不到的人一致', [md.employees.some(e => e.emp_id === 'E01'), viaLiff.employees.some(e => e.emp_id === 'E01')], [true, false]);
+  const c0 = makeCtx();
+  chk('沒設 REQ_HOME_EMPS → 全 false', c0.digest(base).days.every(x => x.home_hidden === false), true);
+}
+
+// 19 P2-7 沒有 Payroll.gs 但帶 include_xmap
+{
+  const c = makeCtx({ noPayroll: true, xmap: [['0012', 'SSLGF', 'MZTJS', '007', '', '', 'confirmed', '']] });
+  let r, threw = false;
+  try { r = c.digest(Object.assign({}, base, { include_xmap: true })); } catch (e) { threw = true; }
+  chk('沒 Payroll.gs＋include_xmap：不 throw、ok、無 xmap、無 xmap_error', [threw, r && r.ok, r && 'xmap' in r, r && 'xmap_error' in r], [false, true, false, false]);
+}
+
+// 20 P2-7 approved 的 entered_at／date 是 Date 物件
+{
+  const T = s => Date.parse(s);
+  const c = makeCtx({ approved: [
+    ['2026-11-01', 'E01', 'Amy', 'x', 5, '正常', '主管', { __d: T('2026-11-05T00:00:00+08:00') }, ''],   // = since → 不含
+    [{ __d: T('2026-10-02T00:00:00+08:00') }, 'E01', 'Amy', 'x', 6, '正常', '主管', { __d: T('2026-11-05T00:00:01+08:00') }, ''],   // 含；date 也是 Date
+  ] });
+  const r = c.digest(base);
+  chk('Date 物件 entered_at：00:00:00 不含、00:00:01 含；date 正規化回字串，entered_at 帶 +08:00',
+    r.newly_approved.map(x => [x.date, x.approved_hours, x.entered_at]), [['2026-10-02', 6, '2026-11-05T00:00:01+08:00']]);
+  const d = r.days.filter(x => x.date === '2026-11-01' && x.emp_id === 'E01')[0];
+  chk('Date 物件 entered_at → days.approved_at 為字串', d && d.approved_at, '2026-11-05T00:00:00+08:00');
 }
 
 console.log(`\n${fail ? '❌' : '✅'} pass ${pass} / fail ${fail}`);
