@@ -8,12 +8,24 @@
  * 只寫一個新分頁 att_alert_queue（一筆事件一列），絕不碰其他分頁。小狀態放指令碼屬性：
  *   ATT_ALERT_SVC_KEY  mini 呼叫用的金鑰（Eason 自己設；沒設＝這店沒啟用）
  *   ATT_GROUP_ID       綁定的行政群組
- *   ATT_BIND_CODE      一次性綁定碼 JSON {code, exp}（30 分鐘）
- *   ATT_JOIN_LAST      最近一次被拉進群組 JSON {groupId, at}（Eason 查群組 ID 用）
+ *   ATT_BIND_CODE      一次性綁定碼 JSON {code, exp, fails}（30 分鐘；碼錯累計 5 次就刪）
+ *   ATT_JOIN_LAST      最近一次被拉進群組 JSON {groupId, at}（綁定要求發話群＝這個群且 join 在 30 分鐘內）
  *   ATT_RUN_<日期>     當天狀態機 running／received／empty／guarded
  *   ATT_BATCH_<批次>   已收過的批次（冪等）
  *   ATT_EVT_<事件 id>  已處理過的 webhook 事件（保留 1 天）
+ *   ATT_HAS_PENDING    '1'＝佇列可能有 pending 列；沒設時綁定群的訊息完全不讀試算表
+ *   ATT_VERDICT_<事件 id>  帶出結果寫回拿不到鎖時暫存 {eventId, verdict, at}，保底觸發器補寫
+ *   ATT_OUTBOX         要送通知匣的通知 JSON 陣列 [{title,text,key}]（key 去重、上限 20、文字截 200 字）；
+ *                      webhook 路徑不打通知匣，保底觸發器每 5 分鐘送，ok===true&&added===true 才移除
+ *   ATT_ARCHIVE_LAST   最近一次佇列封存的日期
  *   NOTIFY_INBOX_URL／NOTIFY_INBOX_TOKEN  通知匣（Eason 自己貼）
+ *
+ * 佇列封存：保底觸發器每天一次，把 delivered／superseded／unknown／truncated 且建立超過 7 天的列「刪除」
+ * （不搬分頁）；enqueue／帶出只處理非終態（pending／inflight）列，分頁不會一直長大。
+ *
+ * ⚠ 已知限制：Apps Script 讀不到 X-Line-Signature，整個打卡 webhook 只靠 destination 比對（既有限制，不是這個檔新增的）。
+ *   群組綁定靠：一次性碼（30 分鐘、碼錯 5 次即失效）＋發話群必須就是剛 join 的那個群（ATT_JOIN_LAST）＋
+ *   綁定成功／被踢出都送通知匣（含群組 ID 末 6 碼），降低被偽造事件綁走的風險。
  *
  * 訊息版面（attAlertRenderMessage_）是 mini 端 server/att-digest-rules.js renderMessage 的逐行移植，
  * 同一份資料必須產生一樣的字串（tests/att-alert.test.js 把 mini 的輸出寫死在測試裡比對）。
@@ -46,9 +58,9 @@ function attAlertValidDate_(d) {
   var t = Date.parse(d + 'T00:00:00Z');
   return isFinite(t) && new Date(t).toISOString().slice(0, 10) === d;
 }
-/** run_date 合法：格式正確且不晚於台北今天＋1 天。不要求「是今天」——mini 跨日會原樣重送前一天未確認的批次（P3-13） */
+/** run_date 合法：格式正確且不晚於台北今天（嚴格，不收明天）。不要求「是今天」——mini 跨日會原樣重送前一天未確認的批次（P3-13） */
 function attAlertRunDateOk_(d) {
-  return attAlertValidDate_(d) && d <= attAlertAddDays_(attAlertDateStr_(attAlertNow_()), 1);
+  return attAlertValidDate_(d) && d <= attAlertDateStr_(attAlertNow_());
 }
 function attAlertAddDays_(d, n) { return new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10); }
 function attAlertWeekday_(d) { return new Date(Date.parse(d + 'T00:00:00Z')).getUTCDay(); }
@@ -187,25 +199,46 @@ function handleAttAlertEnqueue(b) {
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy' };   // mini 呼叫，可以等
   try {
     var p = attAlertProps_();
-    if (p.getProperty('ATT_BATCH_' + b.batch_id)) return { ok: true, dup: true };
     var sh = attAlertSheet_();
     var rows = attAlertReadRows_(sh);
-    if (rows.some(function (r) { return r.batch_id === b.batch_id; })) return { ok: true, dup: true };   // 屬性寫失敗過的保險
-    // §8.3：舊 pending 的 state／sched／failed／notes／guard 改 superseded；daily 保留
-    var changed = [];
-    rows.forEach(function (r) {
-      if (r.status === 'pending' && ATT_ALERT_LOOSE.indexOf(r.section) >= 0) { r.status = 'superseded'; changed.push(r); }
-    });
-    if (changed.length) attAlertWriteStatus_(sh, changed);
+    var mine = rows.filter(function (r) { return r.batch_id === b.batch_id; });
+    if (mine.length) {
+      // 分頁已有這一批（上次只寫到一半）：補寫 superseded／狀態／批次記錄，再回 dup
+      var s0 = Number(mine[0].seq);
+      attAlertSupersede_(sh, rows, b.run_date, isFinite(s0) ? s0 : seq, b.batch_id);
+      if (mine.some(function (r) { return r.status === 'pending'; })) p.setProperty('ATT_HAS_PENDING', '1');
+      if (p.getProperty('ATT_RUN_' + b.run_date) !== 'received') p.setProperty('ATT_RUN_' + b.run_date, 'received');
+      if (!p.getProperty('ATT_BATCH_' + b.batch_id)) p.setProperty('ATT_BATCH_' + b.batch_id, attAlertIso_(now));
+      return { ok: true, dup: true };
+    }
+    if (p.getProperty('ATT_BATCH_' + b.batch_id)) return { ok: true, dup: true };
     var iso = attAlertIso_(now);
     var matrix = spec.map(function (s, n) {
       return [b.batch_id + '#' + n, b.run_date, b.batch_id, seq, s[0], s[1], s[2], 'pending', iso, '', '', ''];
     });
+    // 寫入順序（出事時留下的是「可重送」的狀態）：①新批列 pending → ②舊列 superseded → ③ATT_RUN → ④ATT_BATCH
     attAlertAppend_(sh, matrix);
+    attAlertSupersede_(sh, rows, b.run_date, seq, b.batch_id);
+    if (matrix.length) p.setProperty('ATT_HAS_PENDING', '1');
     p.setProperty('ATT_RUN_' + b.run_date, empty ? 'empty' : 'received');
     p.setProperty('ATT_BATCH_' + b.batch_id, iso);
     return { ok: true };
   } finally { lock.releaseLock(); }
+}
+/**
+ * §8.3：新批（run_date, seq）只取代「比它更舊」的 pending state／sched／failed／notes／guard；daily 保留。
+ * 更舊＝run_date 較早，或同 run_date 且 seq 較小；guard 只要 run_date ≤ 新批就取代（guard 的 seq 是 GAS 時鐘，不跟 mini 比）。
+ * 舊日重送的批次因此不會取代今天的 guard 或較新的批次（P4-1）。rows 是呼叫前讀到的快照。
+ */
+function attAlertSupersede_(sh, rows, runDate, seq, batchId) {
+  var changed = [];
+  rows.forEach(function (r) {
+    if (r.status !== 'pending' || ATT_ALERT_LOOSE.indexOf(r.section) < 0 || r.batch_id === batchId) return;
+    var older = r.section === 'guard' ? r.run_date <= runDate
+      : (r.run_date < runDate || (r.run_date === runDate && Number(r.seq) < seq));
+    if (older) { r.status = 'superseded'; changed.push(r); }
+  });
+  if (changed.length) attAlertWriteStatus_(sh, changed);
 }
 
 // ───────────────────────── 訊息版面（mini renderMessage 的移植）─────────────────────────
@@ -266,6 +299,7 @@ function attAlertRenderMessage_(batches, opts) {
   var latest = list[list.length - 1];
   var today = opts.today || latest.run_date;
   var recentFrom = attAlertAddDays_(today, -(ATT_ALERT_RECENT_DAYS - 1));
+  if (opts.info) { opts.info.latest = latest.run_date; opts.info.recentFrom = recentFrom; }   // GAS 專有：讓呼叫端知道哪些列被印出
 
   var dailyBy = {};   // run_date → entries
   list.forEach(function (b) {
@@ -380,8 +414,8 @@ function attAlertRowsToBatches_(rows) {
   batches.forEach(function (b) { if (!b.notes.length) delete b.notes; });
   return { batches: batches, guards: guards };
 }
-/** 本次要帶出的列 → 訊息陣列（或 {error}） */
-function attAlertCompose_(rows) {
+/** 本次要帶出的列 → 訊息陣列（或 {error}）。today＝max(佇列最大 run_date, 台北今天)（P4-2）。info 選填：回填 {latest, recentFrom} */
+function attAlertCompose_(rows, info) {
   var x = attAlertRowsToBatches_(rows);
   var batches = x.batches.slice();
   var dates = batches.map(function (b) { return b.run_date; });
@@ -392,11 +426,35 @@ function attAlertCompose_(rows) {
     batches.push({ run_date: x.guards[x.guards.length - 1].run_date, daily: [], state: [], sched: [], failed_stores: [] });
   }
   if (!batches.length) return [];
-  return attAlertRenderMessage_(batches, { today: dates.slice().sort().pop(), lastDate: dates.slice().sort().pop(), guardLines: guardLines });
+  var maxDate = dates.slice().sort().pop();
+  var today = attAlertDateStr_(attAlertNow_());
+  return attAlertRenderMessage_(batches, { today: maxDate > today ? maxDate : today, lastDate: maxDate, guardLines: guardLines, info: info });
 }
-
+/**
+ * 被截斷（沒印進任何一則）的列 id。比對印出的「・」行：每個列算出它的 bullet 文字（跟版面同一規則），
+ * 在印出的行裡找得到（數量也要夠）才算印出；單行過長被截成「…」結尾的，用前綴比對。failed／notes／guard 是尾端，一定印出。
+ */
+function attAlertHiddenIds_(claimed, msgs, info) {
+  var seen = {}, shown = [];
+  msgs.forEach(function (m) { String(m).split('\n').forEach(function (l) { if (l.indexOf('・') === 0) { shown.push(l.slice(1)); seen[l.slice(1)] = (seen[l.slice(1)] || 0) + 1; } }); });
+  var hidden = [];
+  claimed.forEach(function (r) {
+    var t;
+    if (r.section === 'daily') t = (r.run_date === info.latest || r.run_date >= info.recentFrom) ? r.line : attAlertStoreLabel_(r.store) + ' ' + r.line;
+    else if (r.section === 'state' || r.section === 'sched') t = r.line;
+    else return;
+    if (seen[t] > 0) { seen[t]--; return; }
+    for (var i = 0; i < shown.length; i++) {
+      var sx = shown[i];
+      if (seen[sx] > 0 && sx.slice(-1) === '…' && t.length >= sx.length && t.indexOf(sx.slice(0, -1)) === 0) { seen[sx]--; return; }
+    }
+    hidden.push(r.id);
+  });
+  return hidden;
+}
 // ───────────────────────── 通知匣（§8.11；照 inboxNotify_ 的接法，網址與 token 讀指令碼屬性）─────────────────────────
-/** keyEvent 例：'guard:2026-11-23'（冒號分段，每段只留小寫英數與連字號）→ key＝att-alert:guard:2026-11-23。不拋例外；成功判準 ok===true && added===true */
+/** 真正打通知匣（只有保底觸發器的 outbox 會呼叫）。keyEvent 例：'guard:2026-11-23'（冒號分段，每段只留小寫英數與連字號）→ key＝att-alert:guard:2026-11-23。
+ *  不拋例外；成功判準 ok===true && added===true */
 function attAlertInbox_(title, text, keyEvent) {
   try {
     var p = attAlertProps_();
@@ -423,6 +481,40 @@ function attAlertInbox_(title, text, keyEvent) {
   }
   return false;
 }
+var ATT_ALERT_OUTBOX_MAX = 20;
+function attAlertOutboxRead_() {
+  try { var v = JSON.parse(attAlertProps_().getProperty('ATT_OUTBOX') || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+}
+/** webhook 路徑上不呼叫通知匣：只把要送的通知記進 ATT_OUTBOX（key 去重、上限 20、文字截 200 字，守住指令碼屬性 9KB）。不拋例外。 */
+function attAlertNotify_(title, text, keyEvent) {
+  var lock = LockService.getScriptLock(), got = false;
+  try {
+    got = lock.tryLock(500);   // 拿不到也照寫（最壞是少一筆通知，不能讓通知拖住打卡）
+    var list = attAlertOutboxRead_(), key = String(keyEvent || 'event');
+    if (!list.some(function (x) { return x.key === key; })) {
+      list.push({ title: String(title).slice(0, 60), text: String(text).slice(0, 200), key: key });
+      while (list.length > ATT_ALERT_OUTBOX_MAX) list.shift();
+      attAlertProps_().setProperty('ATT_OUTBOX', JSON.stringify(list));
+    }
+  } catch (e) {
+    console.error('att-alert outbox 寫入失敗：' + e);
+  } finally { if (got) lock.releaseLock(); }
+}
+/** 保底觸發器：送 outbox，通知匣回 ok===true&&added===true 才移除；沒送成的留著下次 */
+function attAlertFlushOutbox_() {
+  var list = attAlertOutboxRead_();
+  if (!list.length) return;
+  var sent = {}, any = false;
+  list.forEach(function (x) { if (attAlertInbox_(x.title, x.text, x.key)) { sent[x.key] = true; any = true; } });
+  if (!any) return;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return;   // 下次再送一次，通知匣同一天同 key 會合併
+  try {
+    var left = attAlertOutboxRead_().filter(function (x) { return !sent[x.key]; });
+    if (left.length) attAlertProps_().setProperty('ATT_OUTBOX', JSON.stringify(left));
+    else attAlertProps_().deleteProperty('ATT_OUTBOX');
+  } finally { lock.releaseLock(); }
+}
 
 // ───────────────────────── 群組綁定（§8.9）─────────────────────────
 /** 只能在 Apps Script 編輯器手動執行：產生 6 位數綁定碼（30 分鐘），用 Logger.log 印出。webhook 與任何動作都叫不到它。 */
@@ -431,11 +523,22 @@ function attAlertIssueBindCode() {
   var n = 0;
   try { n = parseInt(Utilities.getUuid().replace(/-/g, '').slice(0, 8), 16) % 900000; } catch (e) { n = Math.floor(Math.random() * 900000); }
   var code = String(100000 + n);
-  attAlertProps_().setProperty('ATT_BIND_CODE', JSON.stringify({ code: code, exp: attAlertNow_().getTime() + ATT_ALERT_BIND_TTL_MS }));
-  Logger.log('考勤提醒綁定碼：' + code + '（30 分鐘內有效）。到行政群組輸入：綁定考勤提醒 ' + code);
+  attAlertProps_().setProperty('ATT_BIND_CODE', JSON.stringify({ code: code, exp: attAlertNow_().getTime() + ATT_ALERT_BIND_TTL_MS, fails: 0 }));
+  Logger.log('考勤提醒綁定碼：' + code + '（30 分鐘內有效）。先把機器人拉進行政群組，再在那個群組輸入：綁定考勤提醒 ' + code);
   return code;
 }
-/** 群裡「綁定考勤提醒 <6 碼>」。回 true＝這句是綁定口令（不論成功與否都不再往下處理）；碼錯、過期、已綁定都不回應 */
+/** 發話群就是最近 join 的那個群，且 join 在 30 分鐘內 */
+function attAlertJoinOk_(groupId, nowMs) {
+  var j = null;
+  try { j = JSON.parse(attAlertProps_().getProperty('ATT_JOIN_LAST') || 'null'); } catch (e) { j = null; }
+  var t = j ? Date.parse(j.at) : NaN;
+  return !!(j && groupId && j.groupId === groupId && isFinite(t) && nowMs - t <= ATT_ALERT_BIND_TTL_MS && nowMs - t >= -60000);
+}
+/**
+ * 群裡「綁定考勤提醒 <6 碼>」。回 true＝這句是綁定口令（不論成功與否都不再往下處理）。
+ * 全部成立才綁：碼正確且未過期、ATT_GROUP_ID 空、發話群＝ATT_JOIN_LAST 且 join 在 30 分鐘內。
+ * 有未過期的碼時，任何不成立的嘗試都累計一次失敗，滿 5 次就刪 ATT_BIND_CODE（要重新產生）。碼錯、過期、已綁定都不回應。
+ */
 function attAlertTryBind_(ev, groupId) {
   var m = ev.message && ev.message.type === 'text' ? /^綁定考勤提醒\s+(\d{6})$/.exec(String(ev.message.text || '').trim()) : null;
   if (!m) return false;
@@ -443,17 +546,29 @@ function attAlertTryBind_(ev, groupId) {
   if (!lock.tryLock(3000)) return true;
   var ok = false;
   try {
-    var p = attAlertProps_();
+    var p = attAlertProps_(), nowMs = attAlertNow_().getTime();
     var raw = p.getProperty('ATT_BIND_CODE'), rec = null;
     try { rec = raw ? JSON.parse(raw) : null; } catch (e) { rec = null; }
-    if (!p.getProperty('ATT_GROUP_ID') && rec && rec.code === m[1] && Number(rec.exp) >= attAlertNow_().getTime() && groupId) {
-      p.setProperty('ATT_GROUP_ID', groupId);
-      p.deleteProperty('ATT_BIND_CODE');
-      ok = true;
+    if (!p.getProperty('ATT_GROUP_ID') && rec && Number(rec.exp) >= nowMs) {
+      if (rec.code === m[1] && groupId && attAlertJoinOk_(groupId, nowMs)) {
+        p.setProperty('ATT_GROUP_ID', groupId);
+        p.deleteProperty('ATT_BIND_CODE');
+        ok = true;
+      } else {
+        rec.fails = (Number(rec.fails) || 0) + 1;
+        if (rec.fails >= 5) p.deleteProperty('ATT_BIND_CODE');
+        else p.setProperty('ATT_BIND_CODE', JSON.stringify(rec));
+      }
     }
   } finally { lock.releaseLock(); }
   if (ok) {
     try { attAlertReply_(ev.replyToken, ['已綁定，之後考勤異常會發在這裡']); } catch (e2) { console.error('att-alert 綁定回覆失敗：' + e2); }
+    attAlertNotify_('考勤提醒已綁定到群組', '考勤提醒已綁定到群組（群組 ID 末 6 碼：' + groupId.slice(-6) + '）。不是你綁的請立刻到指令碼屬性刪除 ATT_GROUP_ID。', 'bound:' + attAlertDateStr_(attAlertNow_()));
+    // 綁定前就已經寄放的內容：把旗標補回來，下一句話就能帶出
+    try {
+      var sh = getSS().getSheetByName(ATT_ALERT_SHEET);
+      if (sh && attAlertReadRows_(sh).some(function (r) { return r.status === 'pending'; })) attAlertProps_().setProperty('ATT_HAS_PENDING', '1');
+    } catch (e3) { console.error('att-alert 綁定後補旗標失敗：' + e3); }
   }
   return true;
 }
@@ -471,19 +586,27 @@ function attAlertReply_(replyToken, texts) {
   return resp && resp.getResponseCode ? resp.getResponseCode() : 0;
 }
 /**
- * 只處理「群組」事件。處理了回 true（呼叫端略過打卡流程），沒處理回 false。
- * 沒啟用的店、非綁定群組的訊息、私訊一律回 false。可能丟例外：呼叫端（LineHub.gs）要 try/catch。
+ * 只處理「群組」事件（LineHub.gs 在私訊全部處理完之後才呼叫）。處理了回 true，沒處理回 false。
+ * 沒啟用的店、非綁定群組的訊息、私訊一律回 false。可能丟例外：呼叫端要 try/catch。
  */
 function attAlertOnEvent_(ev) {
   if (!ev || !ev.source || ev.source.type !== 'group') return false;
   if (!attAlertEnabled_()) return false;
   var gid = String(ev.source.groupId || '');
+  var p = attAlertProps_();
   if (ev.type === 'join') {
-    if (gid) attAlertProps_().setProperty('ATT_JOIN_LAST', JSON.stringify({ groupId: gid, at: attAlertIso_(attAlertNow_()) }));
+    if (gid) p.setProperty('ATT_JOIN_LAST', JSON.stringify({ groupId: gid, at: attAlertIso_(attAlertNow_()) }));
+    return true;
+  }
+  var bound = p.getProperty('ATT_GROUP_ID') || '';
+  if (ev.type === 'leave') {
+    if (!gid || gid !== bound) return false;
+    // 機器人被踢出綁定群：解除綁定（佇列不動），要重新綁
+    p.deleteProperty('ATT_GROUP_ID'); p.deleteProperty('ATT_HAS_PENDING');
+    attAlertNotify_('考勤提醒機器人被移出行政群', '考勤提醒機器人被移出行政群，需重新綁定（到編輯器執行 attAlertIssueBindCode，再把機器人拉回群組）。', 'left:' + attAlertDateStr_(attAlertNow_()));
     return true;
   }
   if (ev.type !== 'message') return false;
-  var bound = attAlertProps_().getProperty('ATT_GROUP_ID') || '';
   if (!bound) return attAlertTryBind_(ev, gid);
   if (gid !== bound) return false;
   attAlertDeliver_(ev);
@@ -491,39 +614,39 @@ function attAlertOnEvent_(ev) {
 }
 function attAlertDeliver_(ev) {
   var p = attAlertProps_();
+  if (!p.getProperty('ATT_HAS_PENDING')) return;   // 沒有寄放內容：完全不讀試算表
   var evId = String(ev.webhookEventId || '');
   if (evId && p.getProperty('ATT_EVT_' + evId)) return;
   if (!ev.replyToken) return;
   var sh = getSS().getSheetByName(ATT_ALERT_SHEET);
   if (!sh) return;
-  var nowMs = attAlertNow_().getTime();
-  var stale = function (r) { var t = Date.parse(r.inflight_at); return r.status === 'inflight' && (!isFinite(t) || nowMs - t > ATT_ALERT_INFLIGHT_MS); };
-  var peek = attAlertReadRows_(sh);
-  if (!peek.some(function (r) { return r.status === 'pending' || stale(r); })) return;
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(500)) return;   // 拿不到鎖就算了，下一句話再帶
-  var claimed = [], expired = [];
+  var nowMs = attAlertNow_().getTime();
+  var eid = evId || ('noid-' + nowMs);
+  var claimed = [];
   try {
     if (evId && p.getProperty('ATT_EVT_' + evId)) return;
     var rows = attAlertReadRows_(sh), iso = attAlertIso_(attAlertNow_()), changed = [];
     rows.forEach(function (r) {
-      if (stale(r)) { r.status = 'unknown'; expired.push(r); changed.push(r); }
-      else if (r.status === 'pending') { r.status = 'inflight'; r.inflight_at = iso; r.webhook_event_id = evId; claimed.push(r); changed.push(r); }
+      if (r.status === 'pending') { r.status = 'inflight'; r.inflight_at = iso; r.webhook_event_id = eid; claimed.push(r); changed.push(r); }
     });
     if (changed.length) attAlertWriteStatus_(sh, changed);
-    if (claimed.length && evId) p.setProperty('ATT_EVT_' + evId, String(nowMs));
+    p.deleteProperty('ATT_HAS_PENDING');   // 所有 pending 都已認領；結果是 pending 的會在寫回時補旗標
+    if (evId) p.setProperty('ATT_EVT_' + evId, String(nowMs));
   } finally { lock.releaseLock(); }
-  if (expired.length) attAlertInbox_('考勤提醒有幾筆帶出結果不明', '有 ' + expired.length + ' 筆提醒卡在帶出中超過 10 分鐘，不會自動重發，請到考勤管理確認。', 'unknown:' + expired[0].run_date);
   if (!claimed.length) return;
 
   var verdict = 'pending';   // pending＝沒送出去、等下一句；delivered；unknown
+  var hidden = [];
   try {
-    var msgs = attAlertCompose_(claimed);
+    var info = {};
+    var msgs = attAlertCompose_(claimed, info);
     if (!Array.isArray(msgs) || !msgs.length) {
       console.error('att-alert 沒有可帶出的內容或日期錯誤，保留 pending');
     } else {
       var code = attAlertReply_(ev.replyToken, msgs);
-      if (code >= 200 && code < 300) verdict = 'delivered';
+      if (code >= 200 && code < 300) { verdict = 'delivered'; hidden = attAlertHiddenIds_(claimed, msgs, info); }
       else if (code >= 400 && code < 500) verdict = 'pending';   // 明確失敗（replyToken 失效等）
       else if (code === 0) verdict = 'pending';                   // 根本沒送
       else verdict = 'unknown';
@@ -532,34 +655,115 @@ function attAlertDeliver_(ev) {
     console.error('att-alert 帶出例外，結果不明：' + e);
     verdict = 'unknown';
   }
-  attAlertFinish_(claimed, evId, verdict);
-  if (verdict === 'unknown') attAlertInbox_('考勤提醒帶出結果不明', '考勤異常提醒送出時逾時或出錯，不知道群組有沒有收到，不會自動重發，請到考勤管理確認。', 'unknown:' + claimed[0].run_date);
+  attAlertFinish_(claimed, eid, verdict, hidden);
+  if (verdict === 'unknown') attAlertNotify_('考勤提醒帶出結果不明', '考勤異常提醒送出時逾時或出錯，不知道群組有沒有收到，不會自動重發，請到考勤管理確認。', 'unknown:' + claimed[0].run_date);
 }
-/** 帶出結果寫回：只改還是 inflight、且事件 id 對得上的那幾列 */
-function attAlertFinish_(claimed, evId, verdict) {
+/** 帶出結果寫回：只改還是 inflight、且事件 id 對得上的那幾列；delivered 但沒印出的列記 truncated（終態，不重發）。
+ *  拿不到鎖（500ms）就把 {eventId, verdict} 存進 ATT_VERDICT_<事件 id>，由保底觸發器補寫（此時截斷標記不補，一律當 delivered）。 */
+function attAlertFinish_(claimed, eid, verdict, hidden) {
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(10000)) { console.error('att-alert 結果寫回拿不到鎖，列維持 inflight'); return; }
+  if (!lock.tryLock(500)) {
+    try { attAlertProps_().setProperty('ATT_VERDICT_' + eid, JSON.stringify({ eventId: eid, verdict: verdict, at: attAlertNow_().getTime() })); }
+    catch (e) { console.error('att-alert 結果暫存失敗，列維持 inflight：' + e); }
+    return;
+  }
   try {
     var sh = attAlertSheet_();
-    var ids = {};
+    var ids = {}, hid = {};
     claimed.forEach(function (r) { ids[r.id] = true; });
+    (hidden || []).forEach(function (id) { hid[id] = true; });
     var iso = attAlertIso_(attAlertNow_()), changed = [];
     attAlertReadRows_(sh).forEach(function (r) {
-      if (!ids[r.id] || r.status !== 'inflight' || r.webhook_event_id !== evId) return;
-      r.status = verdict;
+      if (!ids[r.id] || r.status !== 'inflight' || r.webhook_event_id !== eid) return;
+      r.status = (verdict === 'delivered' && hid[r.id]) ? 'truncated' : verdict;
       if (verdict === 'delivered') r.delivered_at = iso;
       if (verdict === 'pending') { r.inflight_at = ''; r.webhook_event_id = ''; }
       changed.push(r);
     });
     if (changed.length) attAlertWriteStatus_(sh, changed);
+    if (verdict === 'pending') attAlertProps_().setProperty('ATT_HAS_PENDING', '1');
   } finally { lock.releaseLock(); }
 }
 
-// ───────────────────────── 09:30 保底（§8.4）─────────────────────────
-/** 時間觸發器每 5 分鐘呼叫。台北 ≥09:30 且今天狀態不是 received／empty／guarded → 寫一筆 guard、設 guarded、送通知匣 */
+// ───────────────────────── 保底觸發器（§8.4）與每 5 分鐘的維護 ─────────────────────────
+/** 補寫 ATT_VERDICT_*（帶出結果寫回當時拿不到鎖） */
+function attAlertApplyVerdicts_() {
+  var p = attAlertProps_(), all = p.getProperties() || {}, pend = [];
+  Object.keys(all).forEach(function (k) { if (k.indexOf('ATT_VERDICT_') === 0) { try { pend.push({ k: k, v: JSON.parse(all[k]) }); } catch (e) { p.deleteProperty(k); } } });
+  if (!pend.length) return;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return;
+  var unknownDates = [];
+  try {
+    var sh = attAlertSheet_(), rows = attAlertReadRows_(sh), iso = attAlertIso_(attAlertNow_()), changed = [], anyPending = false;
+    pend.forEach(function (x) {
+      rows.forEach(function (r) {
+        if (r.status !== 'inflight' || r.webhook_event_id !== x.v.eventId) return;
+        r.status = x.v.verdict;
+        if (x.v.verdict === 'delivered') r.delivered_at = iso;
+        if (x.v.verdict === 'pending') { r.inflight_at = ''; r.webhook_event_id = ''; anyPending = true; }
+        if (x.v.verdict === 'unknown') unknownDates.push(r.run_date);
+        changed.push(r);
+      });
+      p.deleteProperty(x.k);
+    });
+    if (changed.length) attAlertWriteStatus_(sh, changed);
+    if (anyPending) p.setProperty('ATT_HAS_PENDING', '1');
+  } finally { lock.releaseLock(); }
+  if (unknownDates.length) attAlertNotify_('考勤提醒帶出結果不明', '考勤異常提醒送出時結果不明，不會自動重發，請到考勤管理確認。', 'unknown:' + unknownDates[0]);
+}
+/** inflight 超過 10 分鐘還沒結果 → unknown（不重發），進 outbox 通知 */
+function attAlertSweepStale_(now) {
+  var sh = getSS().getSheetByName(ATT_ALERT_SHEET);
+  if (!sh) return;
+  var ms = now.getTime();
+  var stale = function (r) { var t = Date.parse(r.inflight_at); return r.status === 'inflight' && (!isFinite(t) || ms - t > ATT_ALERT_INFLIGHT_MS); };
+  if (!attAlertReadRows_(sh).some(stale)) return;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return;
+  var first = null;
+  try {
+    var changed = [];
+    attAlertReadRows_(sh).forEach(function (r) { if (stale(r)) { r.status = 'unknown'; changed.push(r); if (!first) first = r.run_date; } });
+    if (changed.length) attAlertWriteStatus_(sh, changed);
+  } finally { lock.releaseLock(); }
+  if (first) attAlertNotify_('考勤提醒有幾筆帶出結果不明', '有提醒卡在帶出中超過 10 分鐘，不會自動重發，請到考勤管理確認。', 'unknown:' + first);
+}
+var ATT_ALERT_TERMINAL = ['delivered', 'superseded', 'unknown', 'truncated'];
+var ATT_ALERT_ARCHIVE_DAYS = 7;
+/** 每天一次：終態列（delivered／superseded／unknown／truncated）建立超過 7 天 → 刪除（不搬分頁） */
+function attAlertArchive_(now) {
+  var p = attAlertProps_(), today = attAlertDateStr_(now);
+  if (p.getProperty('ATT_ARCHIVE_LAST') === today) return;
+  var sh = getSS().getSheetByName(ATT_ALERT_SHEET);
+  if (!sh) { p.setProperty('ATT_ARCHIVE_LAST', today); return; }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return;
+  try {
+    var cut = now.getTime() - ATT_ALERT_ARCHIVE_DAYS * 86400000;
+    var del = attAlertReadRows_(sh).filter(function (r) { var t = Date.parse(r.created_at); return ATT_ALERT_TERMINAL.indexOf(r.status) >= 0 && isFinite(t) && t < cut; })
+      .map(function (r) { return r.row; }).sort(function (a, b) { return b - a; });
+    var i = 0;
+    while (i < del.length) {   // 由下往上，連續的列一次刪
+      var j = i;
+      while (j + 1 < del.length && del[j + 1] === del[j] - 1) j++;
+      sh.deleteRows(del[j], j - i + 1);
+      i = j + 1;
+    }
+    p.setProperty('ATT_ARCHIVE_LAST', today);
+  } finally { lock.releaseLock(); }
+}
+/** 時間觸發器每 5 分鐘呼叫。先做維護（補寫結果、逾時 inflight、清屬性、封存），再看 09:30 保底，最後送 outbox。 */
 function attAlertGuard() {
   if (!attAlertEnabled_()) return;
   var now = attAlertNow_();
+  [attAlertApplyVerdicts_, attAlertSweepStale_, attAlertCleanProps_, attAlertArchive_, attAlertGuardWindow_].forEach(function (fn) {
+    try { fn(now); } catch (e) { console.error('att-alert 維護失敗（' + fn.name + '）：' + e); }
+  });
+  try { attAlertFlushOutbox_(); } catch (e2) { console.error('att-alert outbox 失敗：' + e2); }
+}
+/** 台北 ≥09:30 且今天狀態不是 received／empty／guarded → 寫一筆 guard（固定 batch_id guard-<日期>）、設 guarded、通知進 outbox */
+function attAlertGuardWindow_(now) {
   if (attAlertHm_(now) < ATT_ALERT_GUARD_HM) return;
   var today = attAlertDateStr_(now);
   var p = attAlertProps_(), key = 'ATT_RUN_' + today;
@@ -570,14 +774,16 @@ function attAlertGuard() {
   var wrote = false;
   try {
     if (!done(p.getProperty(key))) {
-      var iso = attAlertIso_(now), bid = 'guard-' + today;
-      attAlertAppend_(attAlertSheet_(), [[bid + '#0', today, bid, now.getTime(), 'guard', '', ATT_ALERT_GUARD_TEXT, 'pending', iso, '', '', '']]);
+      var iso = attAlertIso_(now), bid = 'guard-' + today, sh = attAlertSheet_();
+      if (!attAlertReadRows_(sh).some(function (r) { return r.batch_id === bid; })) {   // 已有就只補 ATT_RUN
+        attAlertAppend_(sh, [[bid + '#0', today, bid, now.getTime(), 'guard', '', ATT_ALERT_GUARD_TEXT, 'pending', iso, '', '', '']]);
+        p.setProperty('ATT_HAS_PENDING', '1');
+        wrote = true;
+      }
       p.setProperty(key, 'guarded');
-      wrote = true;
     }
   } finally { lock.releaseLock(); }
-  if (wrote) attAlertInbox_('今天考勤資料查不到', '09:30 還沒收到考勤異常資料，已在行政群組寄放「查不到」的提醒。請確認 Mac mini 的考勤計算有沒有跑。', 'guard:' + today);
-  try { attAlertCleanProps_(now); } catch (e) { console.error('att-alert 清屬性失敗：' + e); }
+  if (wrote) attAlertNotify_('今天考勤資料查不到', '09:30 還沒收到考勤異常資料，已在行政群組寄放「查不到」的提醒。請確認 Mac mini 的考勤計算有沒有跑。', 'guard:' + today);
 }
 /** 清舊指令碼屬性：ATT_EVT_ 超過 1 天；ATT_BATCH_／ATT_RUN_ 超過 40 天（日期在名稱裡） */
 function attAlertCleanProps_(now) {
