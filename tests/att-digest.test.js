@@ -1,0 +1,261 @@
+/* 考勤異常候補提醒 Phase 2：att_digest_data（apps-script/AttDigest.gs，2026-11-07）
+ * 唯讀、一輪讀 events／approved／requests／roster、punch_hours 與 mgr_day reference 同一套算法。 */
+'use strict';
+const fs = require('fs'), vm = require('vm'), path = require('path');
+const ROOT = path.join(__dirname, '..');
+const R = f => fs.readFileSync(path.join(ROOT, 'apps-script', f), 'utf8');
+const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'att-alert-contract-v1.json'), 'utf8'));
+
+let pass = 0, fail = 0;
+const chk = (n, got, want) => {
+  const ok = JSON.stringify(got) === JSON.stringify(want);
+  ok ? pass++ : fail++;
+  console.log(`${ok ? '✓' : '✗'} ${n}: ${JSON.stringify(got)}${ok ? '' : ' ← 應為 ' + JSON.stringify(want)}`);
+};
+
+const writes = { n: 0 };
+function FakeSheet(headers, rows) { this.headers = headers.slice(); this.rows = (rows || []).map(r => r.slice()); }
+FakeSheet.prototype.getDataRange = function () { const all = [this.headers].concat(this.rows); return { getValues: () => all.map(r => r.slice()) }; };
+FakeSheet.prototype.getLastColumn = function () { return this.headers.length; };
+['setValue', 'setValues', 'appendRow', 'insertSheet', 'deleteRow', 'clear', 'setNumberFormat'].forEach(k => {
+  FakeSheet.prototype[k] = function () { writes.n++; };
+});
+FakeSheet.prototype.getRange = function () {
+  const s = { setValue() { writes.n++; }, setValues() { writes.n++; }, setNumberFormat() { writes.n++; }, getValues: () => [] };
+  return s;
+};
+
+const E = (d, hm, emp, type, status) => [`${d}T${hm}:00+08:00`, emp, type, status || 'ok'];
+const REQ_H = ['id', 'created_at', 'emp_id', 'name', 'kind', 'date', 'leave_type', 'start', 'end', 'hours', 'miss_type', 'reason', 'attach_id', 'status', 'decided_at', 'decided_by', 'reject_reason', 'seen_at', 'comp'];
+const reqRow = (o) => REQ_H.map(h => o[h] === undefined ? '' : o[h]);
+
+function makeCtx(over) {
+  over = over || {};
+  const sheets = {
+    managers: new FakeSheet(['name', 'key', 'active'], [['主管', 'mk', true]]),
+    roster: new FakeSheet(['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active'],
+      [['E01', 'Amy', 'k1', '', '', true], ['E02', 'Bob', 'k2', '', '', true], ['E03', 'Cara', 'k3', '', '', false]]),
+    events: new FakeSheet(['ts', 'emp_id', 'type', 'status'], over.events || [
+      E('2026-10-30', '09:00', 'E01', 'in'), E('2026-10-30', '18:10', 'E01', 'out'),   // 跨月，未核定
+      E('2026-11-02', '09:00', 'E01', 'in'), E('2026-11-02', '17:50', 'E01', 'out'),   // 已核定(兩筆)
+      E('2026-11-03', '09:00', 'E02', 'in'), E('2026-11-03', '18:00', 'E02', 'out'),   // 已核定
+      E('2026-11-04', '09:00', 'E02', 'in'),                                            // 忘刷下班：reference null、未核定
+      E('2026-11-05', '09:00', 'E03', 'in'), E('2026-11-05', '13:00', 'E03', 'out'),   // 離職者，未核定
+      E('2026-11-06', '09:00', 'E01', 'in'), E('2026-11-06', '18:00', 'E01', 'out'),   // 昨天，未核定
+      E('2026-11-07', '09:00', 'E01', 'in'),                                            // 今天，不算未核定
+      E('2026-09-01', '09:00', 'E02', 'in'), E('2026-09-01', '18:00', 'E02', 'out'),   // 更早（> 56 天前）
+    ]),
+    approved: new FakeSheet(['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at', 'dup_ignore'], over.approved || [
+      ['2026-11-02', 'E01', 'Amy', '09:00-17:00', 7, '正常', '主管', '2026-11-02T20:00:00+08:00'],
+      ['2026-11-02', 'E01', 'Amy', '09:00-17:30', 8, '正常', '主管', '2026-11-06T10:00:00+08:00'],  // 重新核定，較新
+      ['2026-11-03', 'E02', 'Bob', '09:00-18:00', 8, '正常', '主管', '2026-11-03T20:00:00+08:00'],
+    ]),
+    requests: new FakeSheet(REQ_H, over.requests || [
+      reqRow({ id: 'R1', created_at: '2026-11-05T21:03:00+08:00', emp_id: 'E02', name: 'Bob', kind: 'leave', date: '2026-11-08', status: 'pending' }),
+      reqRow({ id: 'R2', created_at: '2026-11-05T21:04:00+08:00', emp_id: 'E01', name: 'Amy', kind: 'miss', date: '2026-11-04', status: 'approved' }),
+      reqRow({ id: 'R3', created_at: '2026-11-06T08:00:00+08:00', emp_id: 'E01', name: 'Amy', kind: 'ot', date: '2026-11-06', status: 'pending' }),
+    ]),
+  };
+  if (over.xmap) sheets.payroll_xmap = new FakeSheet(['emp_no', 'pay_store', 'acct_store', 'emp_id', 'not_support', 'synced_at', 'state', 'acct_only'], over.xmap);
+  if (over.dropSheets) over.dropSheets.forEach(k => delete sheets[k]);
+  const ss = { getSheetByName: n => sheets[n] || null, insertSheet() { writes.n++; } };
+  const sb = {
+    console,
+    SpreadsheetApp: { openById: () => ss, getActive: () => ss },
+    Utilities: {
+      formatDate: (d, tz, fmt) => {
+        const t = new Date(d.getTime() + 8 * 3600000), p = n => ('0' + n).slice(-2);
+        const ymd = `${t.getUTCFullYear()}-${p(t.getUTCMonth() + 1)}-${p(t.getUTCDate())}`;
+        if (fmt === 'yyyy-MM') return ymd.slice(0, 7);
+        if (fmt === 'yyyy-MM-dd') return ymd;
+        return `${ymd}T${p(t.getUTCHours())}:${p(t.getUTCMinutes())}:${p(t.getUTCSeconds())}+08:00`;
+      },
+    },
+    Logger: { log() {} },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty() { writes.n++; } }) },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
+  };
+  vm.createContext(sb);
+  vm.runInContext(R('Code.gs'), sb);
+  vm.runInContext(R('Requests.gs'), sb);
+  vm.runInContext(R('Payroll.gs'), sb);
+  vm.runInContext(R('AttDigest.gs'), sb);
+  vm.runInContext("todayTaipeiStr = function(){ return '2026-11-07'; };", sb);
+  vm.runInContext("nowTaipeiIso = function(){ return '2026-11-07T08:50:12+08:00'; };", sb);
+  vm.runInContext("currentYmTaipei = function(){ return '2026-11'; };", sb);
+  return {
+    digest: b => vm.runInContext('handleAttDigestData', sb)(b),
+    mgrDay: b => vm.runInContext('handleMgrDay', sb)(b),
+    sb,
+  };
+}
+
+const base = { action: 'att_digest_data', mgr_key: 'mk', store: 'mztjs', from: '2026-11-01', to: '2026-11-06',
+  since: '2026-11-05T00:00:00+08:00', until: '2026-11-07T08:50:00+08:00' };
+
+console.log('══ att_digest_data ══');
+
+// 1 認證
+{ const c = makeCtx(); chk('mgr_key 錯→unauthorized', c.digest(Object.assign({}, base, { mgr_key: 'bad' })), { ok: false, error: 'unauthorized' }); }
+
+// 2 35 天上限
+{
+  const c = makeCtx();
+  const r35 = c.digest(Object.assign({}, base, { from: '2026-10-03', to: '2026-11-06' }));   // 剛好 35 天(含頭尾)
+  const r36 = c.digest(Object.assign({}, base, { from: '2026-10-02', to: '2026-11-06' }));
+  chk('35 天可過', r35.ok, true);
+  chk('36 天回錯', [r36.ok, r36.error], [false, 'range_too_long']);
+  chk('from>to 回錯', c.digest(Object.assign({}, base, { from: '2026-11-06', to: '2026-11-01' })).ok, false);
+  chk('日期格式錯回錯', c.digest(Object.assign({}, base, { from: '11/01' })).error, 'bad_date');
+}
+
+// 3 days：punch_hours / approved 最新 / null
+{
+  const c = makeCtx(), r = c.digest(base);
+  chk('ok／complete／store', [r.ok, r.complete, r.store], [true, true, 'mztjs']);
+  const d = (date, emp) => r.days.filter(x => x.date === date && x.emp_id === emp)[0];
+  chk('同日多筆核定取最新(8)', [d('2026-11-02', 'E01').approved_hours, d('2026-11-02', 'E01').approved_at], [8, '2026-11-06T10:00:00+08:00']);
+  chk('punch_hours 同 mgr_day reference', d('2026-11-02', 'E01').punch_hours, c.mgrDay({ mgr_key: 'mk', date: '2026-11-02' }).employees.filter(e => e.emp_id === 'E01')[0].reference);
+  chk('沒核定＝null', [d('2026-11-06', 'E01').approved_hours, d('2026-11-06', 'E01').approved_at], [null, null]);
+  chk('忘刷下班 punch_hours null', d('2026-11-04', 'E02').punch_hours, null);
+  chk('每列帶 store', r.days.every(x => x.store === 'mztjs'), true);
+  chk('欄位集合', Object.keys(r.days[0]).sort(), ['approved_at', 'approved_hours', 'date', 'emp_id', 'name', 'punch_hours', 'store']);
+  chk('範圍外(今天 11/07)不在 days', r.days.some(x => x.date === '2026-11-07'), false);
+  chk('離職者姓名仍帶出', d('2026-11-05', 'E03').name, 'Cara');
+}
+
+// 4 punch_hours === mgr_day reference，逐人逐天
+{
+  const c = makeCtx(), r = c.digest(Object.assign({}, base, { from: '2026-10-30', to: '2026-11-06' }));
+  let same = true, cnt = 0;
+  r.days.forEach(x => {
+    const e = c.mgrDay({ mgr_key: 'mk', date: x.date }).employees.filter(y => y.emp_id === x.emp_id)[0];
+    if (!e) return;   // mgr_day 只列 active＋當日有事件者；離職者當天有事件也會補列
+    cnt++;
+    if (e.reference !== x.punch_hours) { same = false; console.log('  差異', x.date, x.emp_id, e.reference, x.punch_hours); }
+  });
+  chk('punch_hours 與 mgr_day reference 全部相同', [same, cnt > 5], [true, true]);
+}
+
+// 5 dup_ignore：mgr_day 拿掉的重複卡，digest 也要拿掉
+{
+  const ev = [E('2026-11-03', '09:00', 'E02', 'in'), E('2026-11-03', '09:05', 'E02', 'in'), E('2026-11-03', '18:00', 'E02', 'out')];
+  const ap = [['2026-11-03', 'E02', 'Bob', '09:00-18:00', 8, '正常', '主管', '2026-11-03T20:00:00+08:00', JSON.stringify(['2026-11-03T09:05:00+08:00'])]];
+  const c = makeCtx({ events: ev, approved: ap });
+  c.sb.__x = 0;
+  const a = c.digest(base).days[0].punch_hours;
+  const b = c.mgrDay({ mgr_key: 'mk', date: '2026-11-03' }).employees.filter(e => e.emp_id === 'E02')[0].reference;
+  chk('有 approved 時 days 仍與 mgr_day 一致(含 dup_ignore 欄缺失情形)', a, b);
+}
+
+// 6 newly_approved (since, until]
+{
+  const c = makeCtx({ approved: [
+    ['2026-10-01', 'E01', 'Amy', 'x', 5, '正常', '主管', '2026-11-05T00:00:00+08:00'],   // = since → 不含
+    ['2026-10-02', 'E01', 'Amy', 'x', 6, '正常', '主管', '2026-11-05T00:00:01+08:00'],   // 含（工作日在範圍外也要）
+    ['2026-11-01', 'E02', 'Bob', 'x', 7, '正常', '主管', '2026-11-07T08:50:00+08:00'],   // = until → 含
+    ['2026-11-01', 'E02', 'Bob', 'x', 4, '正常', '主管', '2026-11-07T08:50:01+08:00'],   // 超過 until → 不含
+  ] });
+  const r = c.digest(base);
+  chk('newly_approved 開閉區間＋不受工作日限制', r.newly_approved.map(x => x.date + ':' + x.approved_hours), ['2026-10-02:6', '2026-11-01:7']);
+  chk('newly_approved 欄位', Object.keys(r.newly_approved[0]).sort(), ['approved_hours', 'date', 'emp_id', 'entered_at', 'name', 'store']);
+  chk('newly_approved 帶 store＋+08:00', [r.newly_approved[0].store, /\+08:00$/.test(r.newly_approved[0].entered_at)], ['mztjs', true]);
+  // 同日重新核定：兩筆都在區間，兩筆都列（去重鍵含 entered_at）
+  const c2 = makeCtx({ approved: [
+    ['2026-11-02', 'E01', 'Amy', 'x', 7, '正常', '主管', '2026-11-05T10:00:00+08:00'],
+    ['2026-11-02', 'E01', 'Amy', 'x', 8, '正常', '主管', '2026-11-06T10:00:00+08:00'],
+  ] });
+  chk('同日兩次核定都在區間→兩列', c2.digest(base).newly_approved.map(x => x.approved_hours), [7, 8]);
+  // since_by_store 型輸入（契約 fixture）
+  const c3 = makeCtx();
+  const req = JSON.parse(JSON.stringify(fixture.att_digest_data_request)); req.mgr_key = 'mk'; req.from = '2026-11-01'; req.to = '2026-11-06';
+  req.until = '2026-11-07T08:50:00+08:00'; req.since_by_store = { mztjs: '2026-11-05T00:00:00+08:00' };
+  const r3 = c3.digest(req);
+  chk('since_by_store 輸入：store 取唯一 key', [r3.ok, r3.store, r3.newly_approved.length], [true, 'mztjs', 1]);
+  chk('缺 since → 回錯', c3.digest(Object.assign({}, base, { since: undefined })).error, 'bad_since');
+}
+
+// 7 unapproved 跨月 + older_count
+{
+  const c = makeCtx(), r = c.digest(Object.assign({}, base, { unapproved_from: '2026-10-01' }));
+  chk('unapproved 跨月(10/30 在內)、不含今天、不含已核定', r.unapproved.map(x => x.date + ':' + x.emp_id),
+    ['2026-10-30:E01', '2026-11-04:E02', '2026-11-05:E03', '2026-11-06:E01']);
+  chk('unapproved 欄位', Object.keys(r.unapproved[0]).sort(), ['date', 'emp_id', 'name', 'store']);
+  chk('older_count 只算 unapproved_from 之前(9/1 一天)', r.unapproved_older_count, 1);
+  const r2 = c.digest(Object.assign({}, base, { unapproved_from: '2026-11-01' }));
+  chk('縮小 unapproved_from→10/30 變成 older', [r2.unapproved.length, r2.unapproved_older_count], [3, 2]);
+  const r3 = c.digest(Object.assign({}, base, { unapproved_from: '2025-01-01' }));
+  chk('unapproved_from 最多 56 天前(9/12)→9/1 算 older', [r3.unapproved.some(x => x.date === '2026-09-01'), r3.unapproved_older_count], [false, 1]);
+  const r4 = c.digest(base);
+  chk('未給 unapproved_from＝56 天前', r4.unapproved_older_count, 1);
+}
+
+// 8 requests_pending
+{
+  const c = makeCtx(), r = c.digest(base);
+  chk('requests_pending 只取 pending、欄位對齊', r.requests_pending, [
+    { id: 'R1', emp_id: 'E02', name: 'Bob', kind: 'leave', created_at: '2026-11-05T21:03:00+08:00' },
+    { id: 'R3', emp_id: 'E01', name: 'Amy', kind: 'ot', created_at: '2026-11-06T08:00:00+08:00' },
+  ]);
+}
+
+// 9 時間 +08:00
+{
+  const c = makeCtx(), r = c.digest(base);
+  chk('asOf 帶 +08:00', /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+08:00$/.test(r.asOf), true);
+  chk('days.approved_at 帶 +08:00', r.days.filter(x => x.approved_at).every(x => /\+08:00$/.test(x.approved_at)), true);
+  chk('created_at 帶 +08:00', r.requests_pending.every(x => /\+08:00$/.test(x.created_at)), true);
+}
+
+// 10 讀取失敗 → complete=false
+{
+  const c = makeCtx({ dropSheets: ['events'] }), r = c.digest(base);
+  chk('events 分頁缺→ok 但 complete=false', [r.ok, r.complete], [true, false]);
+  const c2 = makeCtx({ dropSheets: ['approved', 'requests'] }), r2 = c2.digest(base);
+  chk('approved／requests 分頁不存在視為空、complete 仍 true', [r2.ok, r2.complete, r2.newly_approved.length, r2.requests_pending.length], [true, true, 0, 0]);
+}
+
+// 11 回應形狀對齊契約 fixture
+{
+  const c = makeCtx(), r = c.digest(base), f = fixture.att_digest_data_response;
+  chk('頂層 key 對齊契約（xmap 為選用）', Object.keys(r).sort(), Object.keys(f).concat('complete').filter(k => k !== 'xmap').sort());
+}
+
+// 12 唯讀
+{
+  writes.n = 0;
+  const c = makeCtx(); c.digest(base); c.digest(Object.assign({}, base, { mgr_key: 'bad' }));
+  chk('不呼叫任何寫入 API', writes.n, 0);
+}
+
+// 13 不改既有動作：handlers 登記
+{
+  const src = R('Code.gs');
+  chk('Code.gs handlers 登記 att_digest_data', /handlers.att_digest_data = handleAttDigestData/.test(src), true);
+}
+
+// 14 xmap（include_xmap）
+{
+  const XM = [
+    ['0012', 'SSLGF', 'MZTJS', '007', '', '2026-11-01', 'confirmed', ''],
+    ['0013', 'SSLGF', 'MZTJS', 8, '', '2026-11-01', 'confirmed', 'true'],     // acct_only → 不回
+    ['0014', 'SSLGF', 'MZTJS', 'E09', '', '2026-11-01', 'pending', ''],        // 非 confirmed → 不回
+    ['0015', 'SSLGF', 'MZTJS', ' E10 ', '', '2026-11-01', 'confirmed', false], // 去空白
+  ];
+  const c = makeCtx({ xmap: XM });
+  const r = c.digest(Object.assign({}, base, { include_xmap: true }));
+  chk('xmap 只回 confirmed 且非 acct_only，emp_id 前導零／空白正規化、不含姓名', r.xmap,
+    [{ emp_no: '0012', acct_store: 'MZTJS', emp_id: '7' }, { emp_no: '0015', acct_store: 'MZTJS', emp_id: 'E10' }]);
+  chk('有分頁但沒帶 include_xmap → 無 xmap 欄位', 'xmap' in c.digest(base), false);
+  const c2 = makeCtx();
+  const r2 = c2.digest(Object.assign({}, base, { include_xmap: true }));
+  chk('沒分頁 → 無 xmap 欄位也無 xmap_error、ok', [r2.ok, 'xmap' in r2, 'xmap_error' in r2], [true, false, false]);
+  chk('帶 include_xmap 且沒分頁：未建立分頁（寫入 0）', writes.n, 0);
+  const c3 = makeCtx({ xmap: XM });
+  c3.sb.payRead = () => { throw new Error('boom'); };
+  const r3 = c3.digest(Object.assign({}, base, { include_xmap: true }));
+  chk('讀 xmap 失敗：其他欄位照常、complete 仍 true、帶 xmap_error', [r3.ok, r3.complete, r3.days.length > 0, r3.xmap_error, 'xmap' in r3], [true, true, true, 'boom', false]);
+}
+
+console.log(`\n${fail ? '❌' : '✅'} pass ${pass} / fail ${fail}`);
+process.exit(fail ? 1 : 0);

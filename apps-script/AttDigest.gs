@@ -1,0 +1,173 @@
+/**
+ * 考勤異常候補提醒（Phase 2，2026-11-07）：各店唯讀動作 att_digest_data。
+ *
+ * {action:'att_digest_data', mgr_key, store?, from, to, since, until, unapproved_from?, include_xmap?}
+ *   since／until：ISO 時間；since 也可用 since_by_store:{<店>:ISO}（一店一呼叫時取該店或唯一那個 key）。
+ *   from／to：YYYY-MM-DD，含頭尾最多 35 天。unapproved_from：未核定的起算日，最多 56 天前（預設＝56 天前）。
+ *
+ * 唯讀、一輪讀 events／approved／requests／roster，不迴圈呼叫 mgr_day。
+ * 算法全部沿用既有函式，不另寫一套：
+ *   punch_hours ＝ mgr_day 的 reference（dayPunchSegments＋dayReferenceHours_，與 handleMgrDay 同一支）
+ *   approved    ＝ buildLatestApprovedMap（每日最新一筆）
+ *   unapproved  ＝ monthPendingApprovalDates（逐月呼叫，所以可跨月）
+ *   requests    ＝ reqRows_（Requests.gs）
+ * 光復的 Liff.gs 覆寫的 mgr_day 只是濾掉不算本店支援的人，reference 仍來自 handleMgrDay。
+ */
+const ATT_DIGEST_MAX_DAYS = 35;
+const ATT_DIGEST_UNAPPROVED_MAX_DAYS = 56;
+
+function attDigestGoodDate_(s) {
+  return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s + 'T00:00:00Z').getTime());
+}
+function attDigestMs_(s) {
+  const t = Date.parse(String(s || ''));
+  return isNaN(t) ? null : t;
+}
+function attDigestDaysBetween_(a, b) {
+  return Math.round((new Date(b + 'T00:00:00Z').getTime() - new Date(a + 'T00:00:00Z').getTime()) / 86400000);
+}
+function attDigestCmp_(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }
+
+function handleAttDigestData(body) {
+  const ss = getSS();
+  const mgrSheet = ss.getSheetByName('managers');
+  if (!mgrSheet) return { ok: false, error: 'managers_sheet_missing' };
+  if (!findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key)) return { ok: false, error: 'unauthorized' };
+
+  const from = body.from, to = body.to;
+  if (!attDigestGoodDate_(from) || !attDigestGoodDate_(to)) return { ok: false, error: 'bad_date' };
+  if (to < from) return { ok: false, error: 'bad_range' };
+  if (attDigestDaysBetween_(from, to) + 1 > ATT_DIGEST_MAX_DAYS) return { ok: false, error: 'range_too_long' };
+
+  const byStore = (body.since_by_store && typeof body.since_by_store === 'object') ? body.since_by_store : null;
+  let store = String(body.store || '');
+  if (!store && byStore && Object.keys(byStore).length === 1) store = Object.keys(byStore)[0];
+  const sinceRaw = body.since != null ? body.since : (byStore ? byStore[store] : undefined);
+  const sinceMs = attDigestMs_(sinceRaw), untilMs = attDigestMs_(body.until);
+  if (sinceMs === null) return { ok: false, error: 'bad_since' };
+  if (untilMs === null) return { ok: false, error: 'bad_until' };
+
+  const today = todayTaipeiStr();
+  const yesterday = addDaysStr(today, -1);
+  const floor = addDaysStr(today, -ATT_DIGEST_UNAPPROVED_MAX_DAYS);
+  let uFrom = attDigestGoodDate_(body.unapproved_from) ? body.unapproved_from : floor;
+  if (uFrom < floor) uFrom = floor;
+
+  let complete = true;
+  function guarded(fn, fallback) {
+    try { return fn(); } catch (e) { complete = false; return fallback; }
+  }
+
+  const rosterRows = guarded(function () {
+    const sh = ss.getSheetByName('roster'); if (!sh) throw new Error('no roster');
+    return readSheetAsObjects(sh).rows;
+  }, []);
+  const eventRows = guarded(function () {
+    const sh = ss.getSheetByName('events'); if (!sh) throw new Error('no events');
+    return readSheetAsObjects(sh).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  }, []);
+  const approvedRows = guarded(function () {
+    const sh = ss.getSheetByName('approved');
+    return sh ? readSheetAsObjects(sh).rows : [];
+  }, []);
+  const reqRowsAll = guarded(function () {
+    if (typeof reqRows_ !== 'function') throw new Error('no Requests.gs');
+    return reqRows_(ss);
+  }, []);
+
+  const approvedMap = buildLatestApprovedMap(approvedRows);
+  const segEventRows = dropDupIgnored_(eventRows, dupIgnoreSet_(approvedMap));
+
+  const nameOf = {};
+  approvedRows.forEach(function (a) { if (a.name) nameOf[String(a.emp_id)] = String(a.name); });
+  rosterRows.forEach(function (r) { nameOf[String(r.emp_id)] = String(r.name); });
+  const nm = function (emp) { return nameOf[emp] || emp; };
+
+  // 每人的事件（raw＝判斷有沒有打卡／未核定；seg＝拿掉認定重複卡後算時數，同 mgr_day）
+  const rawBy = {}, segBy = {};
+  eventRows.forEach(function (e) { (rawBy[String(e.emp_id)] = rawBy[String(e.emp_id)] || []).push(e); });
+  segEventRows.forEach(function (e) { (segBy[String(e.emp_id)] = segBy[String(e.emp_id)] || []).push(e); });
+
+  // ── days：from–to 每人每天（有打卡或有核定才列）──
+  const dayKeys = {};
+  eventRows.forEach(function (e) {
+    const d = tsDateStr(e.ts);
+    if (d >= from && d <= to) dayKeys[d + '|' + String(e.emp_id)] = true;
+  });
+  Object.keys(approvedMap).forEach(function (d) {
+    if (d < from || d > to) return;
+    Object.keys(approvedMap[d]).forEach(function (emp) { dayKeys[d + '|' + emp] = true; });
+  });
+  const days = Object.keys(dayKeys).sort().map(function (k) {
+    const d = k.slice(0, 10), emp = k.slice(11);
+    const hasPunch = (rawBy[emp] || []).some(function (e) { return tsDateStr(e.ts) === d; });
+    const punch = hasPunch ? dayPunchSegments(segBy[emp] || [], emp, d) : null;
+    const rec = (approvedMap[d] || {})[emp];
+    return {
+      store: store, date: d, emp_id: emp, name: nm(emp),
+      punch_hours: hasPunch ? dayReferenceHours_(punch, d, today) : null,
+      approved_hours: rec ? (Number(rec.approved_hours) || 0) : null,
+      approved_at: rec ? normCellTs(rec.entered_at) : null,
+    };
+  });
+
+  // ── newly_approved：entered_at ∈ (since, until]，不看工作日期 ──
+  const newly = [];
+  approvedRows.forEach(function (a) {
+    const at = attDigestMs_(normCellTs(a.entered_at));
+    if (at === null || at <= sinceMs || at > untilMs) return;
+    const emp = String(a.emp_id);
+    newly.push({ store: store, date: normCellDate(a.date), emp_id: emp, name: a.name ? String(a.name) : nm(emp),
+                 approved_hours: Number(a.approved_hours) || 0, entered_at: normCellTs(a.entered_at) });
+  });
+  newly.sort(function (a, b) { return attDigestCmp_(a.entered_at, b.entered_at); });
+
+  // ── unapproved：逐月呼叫 monthPendingApprovalDates（可跨月），uFrom–昨天；更早的只算天數 ──
+  const unapproved = [];
+  let older = 0;
+  Object.keys(rawBy).forEach(function (emp) {
+    const yms = {};
+    rawBy[emp].forEach(function (e) {
+      const d = tsDateStr(e.ts);
+      yms[d.slice(0, 7)] = true;
+    });
+    Object.keys(yms).sort().forEach(function (ym) {
+      monthPendingApprovalDates(rawBy[emp], approvedMap, emp, ym, today).forEach(function (d) {
+        if (d > yesterday) return;
+        if (d < uFrom) older++;
+        else unapproved.push({ store: store, date: d, emp_id: emp, name: nm(emp) });
+      });
+    });
+  });
+  unapproved.sort(function (a, b) { return attDigestCmp_(a.date, b.date) || attDigestCmp_(a.emp_id, b.emp_id); });
+
+  // ── requests_pending ──
+  const pending = reqRowsAll.filter(function (r) { return String(r.status) === 'pending'; })
+    .sort(function (a, b) { return attDigestCmp_(a.created_at, b.created_at); })
+    .map(function (r) {
+      return { id: String(r.id), emp_id: String(r.emp_id), name: String(r.name), kind: String(r.kind), created_at: String(r.created_at) };
+    });
+
+  const out = {
+    ok: true, store: store, asOf: nowTaipeiIso(), complete: complete,
+    days: days, newly_approved: newly, unapproved: unapproved, unapproved_older_count: older,
+    requests_pending: pending,
+  };
+
+  // ── xmap（光復薪資模組的打卡對照；要求才給，沒這分頁就不回欄位；不含姓名）──
+  if (body.include_xmap === true) {
+    try {
+      if (typeof PAY_SHEET_NAME !== 'undefined' && typeof payRead === 'function' && typeof payXsupId_ === 'function'
+          && ss.getSheetByName(PAY_SHEET_NAME.xmap)) {   // 先確認分頁存在：paySheet() 找不到會自動建分頁（寫入），這裡不准
+        out.xmap = payRead('xmap')
+          .filter(function (r) { return String(r.state || '').trim().toLowerCase() === 'confirmed' && !payXsupBool_(r.acct_only); })
+          .map(function (r) {
+            return { emp_no: String(r.emp_no == null ? '' : r.emp_no), acct_store: String(r.acct_store == null ? '' : r.acct_store), emp_id: payXsupId_(r.emp_id) };
+          });
+      }
+    } catch (e) {
+      out.xmap_error = String((e && e.message) || e);
+    }
+  }
+  return out;
+}

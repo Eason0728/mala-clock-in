@@ -1,0 +1,103 @@
+{
+  "_note": "att_digest_data 回傳與 att_alert_enqueue 請求契約 v1（spec §2、§3.5、§8.6）；兩個 repo 內容逐字相同。requests_pending[].kind 值域 leave/trip/ot/miss（對齊 Requests.gs）；failed_stores 項目 {store, reason}；各店 complete 必須嚴格為 true 才算完整；days／newly_approved／unapproved 每列明定帶 store（缺 store＝壞資料，函式跳過並記壞資料）；sch_periods.locked 為 1／true／'1'／'true' 才算已鎖；同店多個失敗原因合併成一筆 reason（以「、」連接）；include_xmap:true 時（僅光復有 payroll_xmap 分頁）回應多 xmap:[{emp_no,acct_store,emp_id}]（state=confirmed 且非 acct_only、emp_id 已去空白去前導零、不含姓名）；讀 xmap 失敗回 xmap_error 字串，其他欄位不受影響；沒分頁或沒帶 include_xmap 則無 xmap 欄位",
+  "att_digest_data_request": {
+    "action": "att_digest_data",
+    "mgr_key": "<vault duty:店>",
+    "from": "2026-11-29",
+    "to": "2026-12-09",
+    "until": "2026-12-10T08:50:00+08:00",
+    "since_by_store": {
+      "mztjs": "2026-12-09T08:50:00+08:00"
+    },
+    "include_xmap": true
+  },
+  "att_digest_data_response": {
+    "ok": true,
+    "store": "mztjs",
+    "asOf": "2026-12-10T08:50:12+08:00",
+    "days": [
+      {
+        "store": "mztjs",
+        "date": "2026-12-09",
+        "emp_id": "E03",
+        "name": "林小美",
+        "punch_hours": 6.2,
+        "approved_hours": 6,
+        "approved_at": "2026-12-10T08:10:00+08:00"
+      }
+    ],
+    "newly_approved": [
+      {
+        "store": "mztjs",
+        "date": "2026-12-09",
+        "emp_id": "E03",
+        "name": "林小美",
+        "approved_hours": 6,
+        "entered_at": "2026-12-10T08:10:00+08:00"
+      }
+    ],
+    "unapproved": [
+      {
+        "store": "mztjs",
+        "date": "2026-12-06",
+        "emp_id": "E05",
+        "name": "王小明"
+      }
+    ],
+    "unapproved_older_count": 0,
+    "requests_pending": [
+      {
+        "id": "R123",
+        "emp_id": "E07",
+        "name": "李大同",
+        "kind": "leave",
+        "created_at": "2026-12-06T21:03:00+08:00"
+      }
+    ],
+    "xmap": [
+      {
+        "emp_no": "0012",
+        "acct_store": "MZTJS",
+        "emp_id": "7"
+      }
+    ]
+  },
+  "att_alert_enqueue_request": {
+    "action": "att_alert_enqueue",
+    "svcKey": "<vault att:svc>",
+    "run_date": "2026-12-10",
+    "batch_id": "2026-12-10-0123456789ab",
+    "daily": [
+      {
+        "store": "墨竹亭金山",
+        "lines": [
+          "林小美 12/09（例假）出勤 6 小時"
+        ]
+      }
+    ],
+    "state": [
+      {
+        "store": "小辛辣光復",
+        "lines": [
+          "陳小華 T02 照目前班表會到 202 小時"
+        ]
+      }
+    ],
+    "sched": [
+      "墨竹亭六張犁 T03 班表還沒鎖定（12/27 開始）"
+    ],
+    "failed_stores": [
+      {
+        "store": "墨竹亭台中美村",
+        "reason": "資料查不到"
+      }
+    ]
+  },
+  "att_alert_enqueue_empty_request": {
+    "action": "att_alert_enqueue",
+    "svcKey": "<vault att:svc>",
+    "run_date": "2026-12-10",
+    "empty": true,
+    "batch_id": "2026-12-10-0123456789ab"
+  }
+}
