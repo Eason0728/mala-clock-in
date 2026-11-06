@@ -301,6 +301,8 @@ console.log('\n══ 9) payCollect 新增的 cutoffDate 參數：既有呼叫�
       return map;
     }
     function pairShifts(){ return { unmatchedIns: [], unmatchedOuts: [] }; }
+    function dropDupIgnored_(ev){ return ev; }
+    function dupIgnoreSet_(){ return {}; }
     function todayTaipeiStr(){ return '2026-09-27'; }
     function tsDateStr(ts){ return String(ts).slice(0,10); }
     function payMissingCards(){ return 0; }
