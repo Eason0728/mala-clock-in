@@ -387,8 +387,13 @@
   }
 
   /* 出差（2026-10-09）：日期 7 天前（2026-11-05 由 31 改 7）到 90 天後；整天填時數或只一段填起訖；地點、事由必填。
-     存成 leave_type＝出差、reason＝'地點：…；事由：…'；核准後核定頁預填「出差」＋時數（與上班時段相加）。 */
-  var tp = { date: '', mode: 'day', hours: '8', start: '', end: '', place: '', why: '' };
+     存成 leave_type＝出差、reason＝'地點：…；事由：…'；核准後核定頁預填「出差」＋時數（與上班時段相加）。
+     2026-11-07 Eason：地點改下拉選單（TRIP_PLACES）＋「其他」自己打；後端照舊收文字，送出的是選到的名稱或自填內容。 */
+  var TRIP_PLACES = ['總部辦公室', '新竹光復', '新竹金山', '台北六張犁', '台北瑞光', '台中美村'];
+  var TRIP_OTHER = '其他';
+  function tpBlank() { return { date: '', mode: 'day', hours: '8', start: '', end: '', pick: '', place: '', why: '' }; }
+  var tp = tpBlank();
+  function tripPlace() { return tp.pick === TRIP_OTHER ? tp.place.trim() : tp.pick; }
   function renderTrip(p) {
     if (!tp.date) tp.date = taipeiToday(0);
     var tw = preWarns('trip', '', tp.date);
@@ -405,18 +410,26 @@
       modeBox.appendChild(h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot])); upd();
     }
     p.appendChild(field('時段', modeBox));
-    var pl = h('input', { type: 'text', maxlength: '40', value: tp.place, placeholder: '例如：台中央廚', class: 'rq-place', on: { input: function () { tp.place = pl.value; } } });
-    p.appendChild(field('地點（必填）', pl));
+    var opt = function (v, t) { return h('option', { value: v, text: t, selected: v === tp.pick }); };
+    var ps = h('select', { class: 'rq-place-pick', 'aria-label': '出差地點', on: { change: function () { tp.pick = ps.value; render(); } } },
+      [opt('', '請選擇')].concat(TRIP_PLACES.map(function (v) { return opt(v, v); }), [opt(TRIP_OTHER, '其他（自己填）')]));
+    var plBox = h('div', {}, [ps]);
+    if (tp.pick === TRIP_OTHER) {
+      var pl = h('input', { type: 'text', maxlength: '40', value: tp.place, placeholder: '例如：廠商、銀行', class: 'rq-place', on: { input: function () { tp.place = pl.value; } } });
+      plBox.appendChild(h('div', { class: 'rq-row' }, [pl]));
+    }
+    p.appendChild(field('地點（必填）', plBox));
     var wy = h('input', { type: 'text', maxlength: '100', value: tp.why, placeholder: '例如：支援月初盤點', class: 'rq-why', on: { input: function () { tp.why = wy.value; } } });
     p.appendChild(field('事由（必填）', wy));
     var out = h('div', {});
     p.appendChild(submitBtn(out, function () {
-      if (!tp.place.trim()) return Promise.reject(new Error('請填出差地點'));
+      if (!tp.pick) return Promise.reject(new Error('請選出差地點'));
+      if (!tripPlace()) return Promise.reject(new Error('請填出差地點'));
       if (!tp.why.trim()) return Promise.reject(new Error('請填出差事由'));
-      var body = { kind: 'trip', date: tp.date, place: tp.place.trim(), why: tp.why.trim() };
+      var body = { kind: 'trip', date: tp.date, place: tripPlace(), why: tp.why.trim() };
       if (tp.mode === 'day') body.hours = tp.hours; else { body.start = tp.start; body.end = tp.end; }
       return Promise.resolve(body);
-    }, function () { tp = { date: '', mode: 'day', hours: '8', start: '', end: '', place: '', why: '' }; }));
+    }, function () { tp = tpBlank(); }));
     p.appendChild(out);
     p.appendChild(h('div', { class: 'rq-note', text: '出差時數會算進當天工時，由你的主管審核。' }));
   }
