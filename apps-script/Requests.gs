@@ -12,7 +12,8 @@ var REQ_SHEET_ = 'requests';
 // ⚠ 只能往後加欄（2026-10-09 加 comp）：上線前建的 requests 分頁只有前 18 欄，寫入時 reqHeads_ 會自動補表頭
 var REQ_HEADERS_ = ['id', 'created_at', 'emp_id', 'name', 'kind', 'date', 'leave_type', 'start', 'end', 'hours',
                     'miss_type', 'reason', 'attach_id', 'status', 'decided_at', 'decided_by', 'reject_reason', 'seen_at', 'comp',
-                    'voided_at', 'voided_by', 'void_reason'];   // 作廢已核准的申請（2026-10-26）：decided_* 保留原核准紀錄
+                    'voided_at', 'voided_by', 'void_reason',   // 作廢已核准的申請（2026-10-26）：decided_* 保留原核准紀錄
+                    'proxy_by'];   // 主管代開（2026-11-06）：代開人姓名；有值＝只有總監層級能審
 var REQ_COMP_LEAVE_ = '補休';   // 補休（2026-10-09）：不在 Code.gs LEAVE_TYPES 白名單裡，請假申請另外放行
 var REQ_KINDS_ = { leave: '請假', ot: '加班', trip: '出差', miss: '忘打卡' };
 var REQ_MISS_DAYS = 7;          // 忘打卡只能申請 7 天內（含今天）
@@ -212,7 +213,8 @@ function reqPublic_(r) {
            reject_reason: String(r.reject_reason || ''),
            proof_required: reqProofType_(r), need_proof: reqNeedsProof_(r), sick_n: r.__sick_n || null,
            miss_n: r.__miss_n || null, warns: reqWarns_(r),
-           voided_at: String(normCellTs(r.voided_at) || ''), voided_by: String(r.voided_by || ''), void_reason: String(r.void_reason || '') };
+           voided_at: String(normCellTs(r.voided_at) || ''), voided_by: String(r.voided_by || ''), void_reason: String(r.void_reason || ''),
+           proxy_by: String(r.proxy_by || '') };
 }
 function reqSetCells_(sh, rowIndex, patch) {
   var heads = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
@@ -222,7 +224,8 @@ function reqSetCells_(sh, rowIndex, patch) {
   });
 }
 /** 一句話描述一筆申請（主管頁、我的申請、打卡後告知共用）。 */
-function reqSummary_(r) {
+function reqSummary_(r) { return reqSummaryBase_(r) + (r.proxy_by ? '（主管代開）' : ''); }
+function reqSummaryBase_(r) {
   var md = parseInt(String(r.date).slice(5, 7), 10) + '/' + parseInt(String(r.date).slice(8, 10), 10);
   if (r.kind === 'leave') return md + ' ' + r.leave_type + (r.start ? ' ' + r.start + '–' + r.end : ' 整天') + ' ' + Number(r.hours) + ' 小時';
   if (r.kind === 'ot') return md + ' 加班 ' + r.start + '–' + r.end + '（' + Number(r.hours) + ' 小時）';
@@ -365,7 +368,7 @@ function reqIsDate_(s) {
 }
 
 /** 驗證一筆申請，回 {row} 或 {error, message}。now＝台北日期字串（測試可注入）。 */
-function reqValidate_(b, me, events, today, existing) {
+function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主管代開，不看「幾天前」的期限（呼叫端自己限）
   var kind = String(b.kind || '');
   if (!REQ_KINDS_[kind]) return { error: 'bad_kind', message: '申請類別不對' };
   var date = String(b.date || '');
@@ -391,7 +394,7 @@ function reqValidate_(b, me, events, today, existing) {
       row.hours = h;
     }
   } else if (kind === 'ot') {
-    if (diff < -REQ_LEAVE_PAST_DAYS || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '加班只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
+    if ((!proxy && diff < -REQ_LEAVE_PAST_DAYS) || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '加班只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
     row.start = reqHm_(b.start); row.end = reqHm_(b.end);
     if (!row.start || !row.end) return { error: 'bad_time', message: '請填加班時段' };
     row.hours = reqSpanHours_(row.start, row.end);
@@ -421,7 +424,7 @@ function reqValidate_(b, me, events, today, existing) {
     row.reason = reqTripReason_(place, why);
   } else {   // miss
     if (diff > 0) return { error: 'bad_date', message: '不能補登還沒到的日期' };
-    if (diff < -REQ_MISS_DAYS) return { error: 'too_old', message: '超過 ' + REQ_MISS_DAYS + ' 天不能申請，請找打卡門市的店長直接核定' };
+    if (!proxy && diff < -REQ_MISS_DAYS) return { error: 'too_old', message: '超過 ' + REQ_MISS_DAYS + ' 天不能申請，請找打卡門市的店長直接核定' };
     var mt = String(b.miss_type || '');
     var info = reqDayInfo_(events, me.emp_id, date).missing;
     if (!info.options.length) return { error: 'not_missing', message: '這天的上班卡和下班卡都有打成功，不用補登；時間記錯請直接跟打卡門市的店長說' };
@@ -711,8 +714,8 @@ function handleMgrReqPending_(body) {
   var items = rows.sort(function (a, b) { return a.created_at < b.created_at ? -1 : 1; }).map(function (r) {
     var o = reqPublic_(r);
     o.summary = reqSummary_(r);
-    var why = reqUpperWhy_(r.emp_id, ss, upc);
-    o.upper = !!why;   // 值班主管本人／部門同仁的申請：送上層審，這把鑰匙不能處理
+    var why = r.proxy_by ? 'director' : reqUpperWhy_(r.emp_id, ss, upc);
+    o.upper = !!why;   // 值班主管本人／部門同仁的申請：送上層審，這把鑰匙不能處理；主管代開＝總監層級審
     if (why) o.upper_kind = why;
     o.attach_id = String(r.attach_id || '');   // 主管看附件用（經光復 line_hub_attach_get，會再核對主管金鑰）
     if (reqDayDiff_(r.date, todayTaipeiStr()) <= 0) o.punches = reqDayPunches_(events, r.emp_id, r.date);   // 還沒到的日期沒有打卡可看，不顯示「沒有任何打卡」
@@ -738,7 +741,9 @@ function handleMgrReqDecide_(body) {
     var r = reqRows_(ss).filter(function (x) { return String(x.id) === String(body.id); })[0];
     if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
     if (r.status !== 'pending') return { ok: false, error: 'not_pending', message: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' };
-    var why = reqMgrActing_(mgr, body) ? '' : reqUpperWhy_(r.emp_id, ss);
+    var pb = reqProxyBlock_(r, mgr, body, actor);
+    if (pb) return pb;
+    var why = (r.proxy_by || reqMgrActing_(mgr, body)) ? '' : reqUpperWhy_(r.emp_id, ss);
     if (why) return { ok: false, error: 'upper_review', message: reqUpperMsg_(why) };
     if (decision === 'approve' && reqNeedsProof_(r)) return { ok: false, error: 'need_proof', message: r.leave_type + '要附證明，同仁補上後才能核准（退回不受影響）' };
     reqSetCells_(sh, r.__rowIndex, { status: decision === 'approve' ? 'approved' : 'rejected', decided_at: nowTaipeiIso(),
@@ -765,7 +770,9 @@ function handleMgrReqVoid_(body) {
     if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
     if (r.status !== 'approved') return { ok: false, error: 'not_approved',
       message: r.status === 'voided' ? '這筆已經作廢了' : r.status === 'pending' ? '這筆還在審核中，請用退回' : '只有已核准的申請可以作廢' };
-    var why = reqMgrActing_(mgr, body) ? '' : reqUpperWhy_(r.emp_id, ss);
+    var pb = reqProxyBlock_(r, mgr, body, actor);
+    if (pb) return pb;
+    var why = (r.proxy_by || reqMgrActing_(mgr, body)) ? '' : reqUpperWhy_(r.emp_id, ss);
     if (why) return { ok: false, error: 'upper_review', message: reqUpperMsg_(why) };
     reqHeads_(sh);   // 舊分頁沒有 voided_* 欄，先補表頭
     reqSetCells_(sh, r.__rowIndex, { status: 'voided', voided_at: nowTaipeiIso(), voided_by: actor, void_reason: reason });
@@ -797,7 +804,9 @@ function handleMgrReqDecideBatch_(body) {
       var r = byId[id];
       if (!sh || !r) { skipped.push({ id: id, reason: '找不到這筆申請' }); return; }
       if (r.status !== 'pending') { skipped.push({ id: id, reason: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' }); return; }
-      var why = upc ? reqUpperWhy_(r.emp_id, ss, upc) : '';
+      var pb = reqProxyBlock_(r, mgr, body, actor);
+      if (pb) { skipped.push({ id: id, reason: pb.error === 'self_proxy' ? '你代開的申請，要由別的總監層級主管核准' : '主管代開的申請，由總監層級審核' }); return; }
+      var why = (upc && !r.proxy_by) ? reqUpperWhy_(r.emp_id, ss, upc) : '';
       if (why) { skipped.push({ id: id, reason: why === 'mgr' ? '值班主管本人的申請，送上層審核' : '部門同仁的申請，由部門主管審核' }); return; }
       if (reqNeedsProof_(r)) { skipped.push({ id: id, reason: r.leave_type + '還沒附證明' }); return; }
       reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: actor, reject_reason: '' });
@@ -818,6 +827,7 @@ function handleMgrReqDay_(body) {
     if (r.date !== date || r.status !== 'approved') return;
     var why = upc ? reqUpperWhy_(r.emp_id, ss, upc) : '';
     if (why === 'home') return;   // 不算支援的人：本店主管看不到（2026-10-29）
+    if (r.proxy_by) why = 'director';
     var o = reqPublic_(r); o.summary = reqSummary_(r);
     o.attach_id = String(r.attach_id || '');   // 核定工時看已核准申請的證明（2026-10-30；經光復 line_hub_attach_get 帶 date，會再核對主管金鑰）
     o.upper = !!why;   // 值班主管本人／部門同仁的申請：作廢也要上層處理
@@ -1021,6 +1031,129 @@ function reqOtHint_(events, empId, outTs, rows) {
   var start = ('0' + Math.floor(startMin / 60)).slice(-2) + ':' + ('0' + (startMin % 60)).slice(-2);
   return { date: date, hours: hours, start: start, end: end };
 }
+
+/* ── 主管代開申請（2026-11-06 Eason）──
+   核定工時綁定申請單後，同仁超過 7 天沒補加班／忘打卡單，那天就永遠核不了。出口：店長在管理系統（考勤管理）
+   替同仁代開，只限超過 7 天、只限加班與忘打卡；代開的單一律送總監層級（墨竹亭各店＝品牌總監、央廚＝廚藝總監、
+   小辛辣＝品牌總監、總部＝人資主管）審核。誰是總監層級由營運系統判斷，打卡端只認營運系統代轉時加上的 director_ok。 */
+var REQ_PROXY_PAST_DAYS = 90;   // 代開最遠到 90 天前
+var REQ_PROXY_MSG_ = '這是主管代開的申請，要由總監層級（品牌總監／廚藝總監；總部是人資主管）在管理系統（人資部門 → 考勤管理 → 申請審核）審核';
+/** 代開的申請能不能由這次呼叫處理：不行回錯誤物件，可以回 null；不是代開的申請一律 null */
+function reqProxyBlock_(r, mgr, body, actor) {
+  if (!String(r.proxy_by || '')) return null;
+  if (!reqMgrActing_(mgr, body) || body.director_ok !== true) return { ok: false, error: 'director_review', message: REQ_PROXY_MSG_ };
+  if (reqNameKey_(actor) === reqNameKey_(r.proxy_by)) return { ok: false, error: 'self_proxy', message: '這筆是你代開的，要由別的總監層級主管審核' };
+  return null;
+}
+/** {action:'mgr_req_proxy', mgr_key, acting_name, emp_id, kind:'ot'|'miss', date, start?, end?, miss_type?, reason} */
+function handleMgrReqProxy_(body) {
+  var mgr = reqMgr_(body);
+  if (!mgr) return { ok: false, error: 'unauthorized' };
+  if (!reqMgrActing_(mgr, body)) return { ok: false, error: 'acting_only', message: '代開申請請到管理系統（人資部門 → 考勤管理）用個人帳號操作' };
+  var actor = actingName_(body, mgr);
+  if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
+  var kind = String(body.kind || '');
+  if (kind !== 'ot' && kind !== 'miss') return { ok: false, error: 'bad_kind', message: '代開只限加班或忘打卡' };
+  var date = String(body.date || ''), today = todayTaipeiStr();
+  if (!reqIsDate_(date)) return { ok: false, error: 'bad_date', message: '請選日期' };
+  var diff = reqDayDiff_(date, today), limit = kind === 'ot' ? REQ_LEAVE_PAST_DAYS : REQ_MISS_DAYS;
+  if (diff >= -limit) return { ok: false, error: 'not_old', message: limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天才能由主管代開' };
+  if (diff < -REQ_PROXY_PAST_DAYS) return { ok: false, error: 'too_old', message: '代開最多到 ' + REQ_PROXY_PAST_DAYS + ' 天前' };
+  var ss = getSS();
+  var me = findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, body.emp_id);
+  if (!me) return { ok: false, error: 'invalid_emp_id', message: '找不到這位同仁' };
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
+  try {
+    var existing = reqRows_(ss);
+    var v = reqValidate_(body, me, liffEvents_(ss, reqDaySince_(date)), today, existing, true);
+    if (v.error) return { ok: false, error: v.error, message: v.message };
+    var r = v.row;
+    r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
+    r.created_at = nowTaipeiIso(); r.emp_id = String(me.emp_id); r.name = String(me.name);
+    r.attach_id = ''; r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
+    r.proxy_by = actor;
+    reqMarkOne_(existing, r);
+    var sh = reqSheet_(ss, true);
+    sh.appendRow(reqHeads_(sh).map(function (h) { return r[h] === undefined ? '' : reqSheetText_(r[h], h); }));
+    return { ok: true, request: reqPublic_(r), summary: reqSummary_(r) };
+  } finally { lock.releaseLock(); }
+}
+
+/* ── 核定工時綁定申請單（2026-11-06 Eason）──
+   主管送出核定（有上班時段）時：①核定合計超過 8 小時，超出的時數要有已核准的加班單蓋到；
+   ②核定的每一段上班卡、下班卡都要有（含中間休息沒打、打卡被擋），少幾張就要有幾張已核准的忘打卡單（補休息＝2 張），
+   那天有已核准的出差單不看缺卡。審核中的單不算。不符合＝整天送不出（Eason 選）。
+   不算缺卡：央廚中午休息帶、主管拆段核定（間隔 0）、主管認定的重複打卡（Code.gs 先拿掉再傳進來）。
+   從 REQ_BIND_FROM（指令碼屬性，預設上線當天）起的日子才擋；屬性設 off＝整個關掉。由 Code.gs handleMgrApprove 呼叫。 */
+var REQ_BIND_FROM_DEFAULT_ = '2026-11-06';
+var REQ_BIND_OT_BASE_H = 8;
+var REQ_BIND_NEAR_MS = 4 * 3600000;   // 沒配到完整打卡段的時段：前後 4 小時內的單張卡算那段的
+function reqBindFrom_() {
+  var v = '';
+  try { v = String(PropertiesService.getScriptProperties().getProperty('REQ_BIND_FROM') || ''); } catch (e) {}
+  if (v === 'off') return null;
+  return reqIsDate_(v) ? v : REQ_BIND_FROM_DEFAULT_;
+}
+/** 核定時段少了幾張打卡。periods：[{startMs,endMs}]；segs：[{inMs,outMs}]（null＝沒有那張） */
+function reqBindMissCards_(periods, segs, breakWindow) {
+  var full = segs.filter(function (s) { return s.inMs != null && s.outMs != null; });
+  var lone = segs.filter(function (s) { return (s.inMs == null) !== (s.outMs == null); })
+    .map(function (s) { return { inMs: s.inMs, outMs: s.outMs, used: false }; });
+  var ordered = periods.map(function (p) {
+    var best = -1, bestOv = 0;
+    full.forEach(function (s, i) { var ov = Math.min(p.endMs, s.outMs) - Math.max(p.startMs, s.inMs); if (ov > bestOv) { bestOv = ov; best = i; } });
+    return { p: p, idx: best };
+  }).sort(function (a, b) { return a.p.startMs - b.p.startMs; });
+  var n = 0;
+  ordered.forEach(function (o) {
+    if (o.idx !== -1) return;
+    var miss = 2;
+    ['in', 'out'].forEach(function (side) {
+      var hit = lone.filter(function (l) {
+        var t = side === 'in' ? l.inMs : l.outMs;
+        return !l.used && t != null && t >= o.p.startMs - REQ_BIND_NEAR_MS && t <= o.p.endMs + REQ_BIND_NEAR_MS;
+      })[0];
+      if (hit) { hit.used = true; miss--; }
+    });
+    n += miss;
+  });
+  // 兩段之間有空檔（不是休息帶、也不是拆段的 0 間隔）卻配到同一條打卡段＝中間休息的下班卡、上班卡都沒打
+  var maxEnd = null, prevIdx = -1;
+  ordered.forEach(function (o) {
+    if (maxEnd !== null && o.p.startMs > maxEnd && o.idx !== -1 && o.idx === prevIdx
+        && !(typeof gapExplainedByBreak === 'function' && gapExplainedByBreak(maxEnd, o.p.startMs, breakWindow))) n += 2;
+    if (maxEnd === null || o.p.endMs > maxEnd) maxEnd = o.p.endMs;
+    prevIdx = o.idx;
+  });
+  return n;
+}
+function reqBindFmt_(h) { return String(Math.round(h * 100) / 100); }
+/** 不能核定回 {ok:false, error:'need_request', message, need}；可以回 null */
+function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindow) {
+  if (!periods || !periods.length) return null;   // 整天請假／整天出差不看
+  var from = reqBindFrom_();
+  if (!from || date < from) return null;
+  var rows = reqRows_(ss).filter(function (r) { return String(r.emp_id) === String(empId) && String(r.date) === date; });
+  var ok = rows.filter(function (r) { return r.status === 'approved'; });
+  var pend = rows.filter(function (r) { return r.status === 'pending' && (r.kind === 'ot' || r.kind === 'miss' || r.kind === 'trip'); });
+  var otNeed = Math.round((Number(approvedHours) - REQ_BIND_OT_BASE_H) * 100) / 100;
+  var otHave = ok.reduce(function (a, r) { return a + (r.kind === 'ot' ? Number(r.hours) || 0 : 0); }, 0);
+  var miss = reqBindMissCards_(periods, segs, breakWindow);
+  var tripOk = ok.some(function (r) { return r.kind === 'trip'; });
+  var missHave = ok.reduce(function (a, r) { return a + (r.kind !== 'miss' ? 0 : (r.miss_type === 'break' || r.miss_type === 'both') ? 2 : 1); }, 0);
+  var probs = [];
+  var otBad = otNeed > 0.005 && otHave + 0.005 < otNeed;
+  var missBad = !tripOk && miss > missHave;
+  if (otBad) probs.push('超過 ' + REQ_BIND_OT_BASE_H + ' 小時的 ' + reqBindFmt_(otNeed) + ' 小時要有加班單（已核准 ' + reqBindFmt_(otHave) + ' 小時）');
+  if (missBad) probs.push('少了 ' + miss + ' 張打卡，要有忘打卡單（已核准 ' + missHave + ' 張）');
+  if (!probs.length) return null;
+  var hint = pend.length ? '這天有 ' + pend.length + ' 張申請還在審核中，請先到「申請審核」處理再送。'
+    : '請同仁在 LINE「加班請假」補申請；超過 7 天請店長在考勤管理「代開申請」，送總監層級審核。';
+  return { ok: false, error: 'need_request', message: '這天還不能核定：' + probs.join('；') + '。' + hint,
+           need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length } };
+}
+
 
 /* ── 本月待核定提醒：補上「已核准的申請、那天還沒核定」（2026-10-10 Codex 審查）──
    原本 mgr_pending_approvals 只看有打卡的日子；整天請假／整天出差核准後當天沒有卡，主管不核定那天就不會進薪資，也不會被提醒。

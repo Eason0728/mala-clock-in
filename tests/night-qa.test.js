@@ -39,7 +39,7 @@ function formatDate(d, tz, pattern) {
 /** 沙盒：整檔載入所有 .gs，試算表換成 sheets-like。可控時鐘 sb.__now、有 TTL 的快取、假 LINE 驗證（TOK_<uid> → uid）、假鎖。 */
 function make(opts) {
   opts = opts || {};
-  const props = Object.assign({}, opts.props || {});
+  const props = Object.assign({ REQ_BIND_FROM: 'off' }, opts.props || {});   // 這支測薪資：核定綁定申請單（2026-11-06）另由 req-bind.test.js 測
   const cache = {};
   const sb = {
     console, String, Number, Math, JSON, Object, Array, RegExp, Error, TypeError, isNaN, isFinite, parseFloat, parseInt, encodeURIComponent, decodeURIComponent, unescape, escape,

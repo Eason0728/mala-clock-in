@@ -196,7 +196,7 @@ ok('requests 分頁第一次送出才建立，表頭固定', () => {
   const sb = makeEnv({});
   assert(!sb.__sheets.requests);
   submit(sb, { kind: 'leave', date: '2026-10-15', leave_type: '特休假', hours: 8 });
-  assert.strictEqual(sb.__sheets.requests.data[0].join(','), 'id,created_at,emp_id,name,kind,date,leave_type,start,end,hours,miss_type,reason,attach_id,status,decided_at,decided_by,reject_reason,seen_at,comp,voided_at,voided_by,void_reason');
+  assert.strictEqual(sb.__sheets.requests.data[0].join(','), 'id,created_at,emp_id,name,kind,date,leave_type,start,end,hours,miss_type,reason,attach_id,status,decided_at,decided_by,reject_reason,seen_at,comp,voided_at,voided_by,void_reason,proxy_by');
 });
 /* ── 補休（2026-10-09 加；2026-11-01 改每月加減結算：加班不分換補休、補休不看餘額）── */
 ok('補休：加班申請不再分加班費／換補休——comp 欄留空、摘要沒有「（換補休）」，送了 comp 也不存', () => {
@@ -218,7 +218,7 @@ ok('補休：舊的 18 欄 requests 分頁——讀得到、寫入時自動補�
   const r = submit(sb, { kind: 'ot', date: '2026-10-11', start: '18:00', end: '21:00', reason: '盤點' });
   assert(r.ok, JSON.stringify(r));
   const d = sb.__sheets.requests.data;
-  assert.strictEqual(d[0].length, 22); assert.strictEqual(d[0][18], 'comp'); assert.strictEqual(d[0][21], 'void_reason');   // 2026-10-26 起多 voided_* 三欄
+  assert.strictEqual(d[0].length, 23); assert.strictEqual(d[0][22], 'proxy_by'); assert.strictEqual(d[0][18], 'comp'); assert.strictEqual(d[0][21], 'void_reason');   // 2026-10-26 起多 voided_* 三欄
   assert.strictEqual(d[2][18], ''); assert.strictEqual(d[2][4], 'ot'); assert.strictEqual(d[2][13], 'pending');
   assert.strictEqual(d[1].length, 18);   // 舊列原封不動
   assert(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: r.request.id, decision: 'approve' }).ok);

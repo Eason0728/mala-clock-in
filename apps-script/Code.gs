@@ -1890,6 +1890,11 @@ function handleMgrApprove(body) {
     statusText = applyManualLate(statusText, body.late_min);
     statusText = applyDupNote_(statusText, dupList);
     periodsStr = rawPeriods.map(function (p) { return p.start + '-' + p.end; }).join(',');
+    // 核定綁定申請單（2026-11-06 Eason）：超過 8 小時沒加班單、少卡沒忘打卡單＝整天送不出（Requests.gs reqBindCheck_；舊 Requests 沒有就不擋）
+    if (typeof reqBindCheck_ === 'function') {
+      const bind = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periods, punchWithMs, noPunchBreakWindow(date));
+      if (bind) return bind;
+    }
   }
   const enteredAt = nowTaipeiIso();
 
