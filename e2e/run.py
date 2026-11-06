@@ -429,6 +429,11 @@ def phase_manager(page, data, exp):
     page.dispatch_event('#dateInput', 'change')
     page.wait_for_timeout(3000)
     CM.scan(page, '值班核定頁')
+    href = page.evaluate("() => { const a = document.querySelector('.close-banner a'); return a ? a.href : ''; }")
+    banner = text_of(page, '.close-banner')
+    ok_banner = href == 'https://dzy.mozhuting.com/#/attendance' and '12/1 起停用' in banner
+    check('核定頁頂端有 12/1 停用預告，連到管理系統考勤管理', ok_banner, f'href={href} text={banner[:40]}')
+    mark_el(page, '.close-banner a', '預告橫幅連結指向管理系統考勤管理（外部網址，不點出去）')
     body = text_of(page, 'body')
     check('核定頁列出全部同仁', all(p['name'] in body for p in data['people']),
           f'缺：{[p["name"] for p in data["people"] if p["name"] not in body]}')

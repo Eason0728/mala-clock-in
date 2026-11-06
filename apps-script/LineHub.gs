@@ -116,7 +116,7 @@ function handleLineBindName_(body) {
   if (hit.length > 1) return { ok: false, error: 'name_conflict', message: '「' + st.name + '」有兩位同名同仁，請找主管協助綁定。' };
   var row = hit[0];
   if (row.line_user_id && String(row.line_user_id) === String(userId)) return { ok: true, already: true, store_name: st.name, name: String(row.name) };
-  if (row.line_user_id) return { ok: false, error: 'name_taken', message: '「' + String(row.name) + '」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管在值班核定頁解除。' };
+  if (row.line_user_id) return { ok: false, error: 'name_taken', message: '「' + String(row.name) + '」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管到管理系統「考勤管理 → 員工名冊」的 LINE 綁定紀錄解除。' };
   // via：伺服器自己判斷（不信前端，v2 審查 N2）——這個 LINE 在別家店已綁定同名＝跨店（auto），否則＝輸入全名（name）
   var sameNameElsewhere = lineHubMine_(userId).some(function (m) { return lineHubNormName_(m.row.name) === want; });
   var j = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(row.key), via: sameNameElsewhere ? 'auto' : 'name' });
@@ -464,7 +464,7 @@ function lineHubQuickClockFor_(userId, body) {
                    hint: '請先按選單「出勤紀錄」看今天有沒有這筆；沒有再按一次「打卡」' };
   if (j.ok && j.status === 'ok') return { ok: true, type: type, ts: j.ts, store_name: st.name, note: autoNote };
   var reasons = {
-    pending_device_approval: ['這支手機還沒被核准', '已送出待核准，請主管在值班核定頁核准'],
+    pending_device_approval: ['這支手機還沒被核准', '已送出待核准，請主管到管理系統「考勤管理 → 裝置核准」核准'],
     rejected_out_of_range: ['店家判定你不在範圍內', '請開啟「精確位置」與 Wi‑Fi 後再按一次'],
     rejected_duplicate: ['這一筆和上一筆重複', '請按「出勤紀錄」確認今天的紀錄'],
   };
@@ -1135,18 +1135,18 @@ var LINE_HUB_HELP = {
     ['3', '關掉「低耗電／省電模式」，走到門口或窗邊'],
     ['4', '等 10 秒，按畫面上的「重新定位」'],
     ['5', '還是一直「定位中」：把手機重新開機，再從選單按「打卡」'],
-    ['6', '都不行：請值班主管在核定頁按「打卡 QR」，用 LINE 掃描打卡'] ] },
+    ['6', '都不行：請值班主管在管理系統「考勤管理 → 核定工時」按「打卡 QR」，用 LINE 掃描打卡'] ] },
   '定位不準': { title: '定位不準（位置飄、誤差大）', steps: [
     ['1', '打開「精確位置」（iPhone：設定 › LINE › 位置；安卓：LINE 權限 › 位置）'],
     ['2', '打開 Wi‑Fi：室內靠 Wi‑Fi 定位比較準，不用連線'],
     ['3', '地圖上你的點跳到很遠（Wi‑Fi 偏移）：改成關掉 Wi‑Fi、走到門口用 GPS 再試'],
     ['4', '等 10～20 秒讓定位穩定，再按「重新定位」'],
     ['5', '還是不準：把手機重新開機再試一次'],
-    ['6', '都不行：請值班主管在核定頁按「打卡 QR」，用 LINE 掃描打卡'] ] },
+    ['6', '都不行：請值班主管在管理系統「考勤管理 → 核定工時」按「打卡 QR」，用 LINE 掃描打卡'] ] },
   '不在範圍': { title: '系統說你不在打卡範圍', steps: [
     ['1', '確認人真的在店裡（不是停車場、隔壁或路上）'],
     ['2', '人在店裡還是不行：照「定位不準」的步驟開精確位置與 Wi‑Fi，再按「重新定位」'],
-    ['3', '一直不行：請值班主管在核定頁按「打卡 QR」，用 LINE 掃描打卡，不要連按'] ] },
+    ['3', '一直不行：請值班主管在管理系統「考勤管理 → 核定工時」按「打卡 QR」，用 LINE 掃描打卡，不要連按'] ] },
   '網路不穩': { title: '連線失敗／網路不穩', steps: [
     ['1', '先看「出勤紀錄」今天有沒有剛才那筆，有就不用再打'],
     ['2', '換網路：Wi‑Fi 不穩就關掉改用行動網路，反過來也一樣；有開 VPN 先關掉'],
@@ -1154,11 +1154,11 @@ var LINE_HUB_HELP = {
     ['4', '還是不行：先用舊的專屬打卡連結打卡，並告訴值班主管'] ] },
   '新手機': { title: '這支手機還沒被核准', steps: [
     ['原因', '系統第一次看到這支手機（換手機、重灌 LINE 都會發生），要主管核准'],
-    ['怎麼辦', '請值班主管打開值班核定頁，在「待核准裝置」按核准'],
+    ['怎麼辦', '請值班主管到管理系統「考勤管理 → 裝置核准」按核准'],
     ['這筆卡', '已經記下來了（待核准），核准後就算數，不用重打'] ] },
   '綁定': { title: 'LINE 帳號綁定有問題', steps: [
     ['1', '關掉打卡畫面，從選單重新按「打卡」再試一次'],
-    ['2', '還是說「沒有認得你的 LINE 帳號」：請值班主管在值班核定頁的「LINE 綁定紀錄」解除綁定，再重新輸入全名綁一次'],
+    ['2', '還是說「沒有認得你的 LINE 帳號」：請值班主管到管理系統「考勤管理 → 員工名冊」的「LINE 綁定紀錄」解除綁定，再重新輸入全名綁一次'],
     ['3', '這段時間先用舊的專屬打卡連結打卡'] ] },
   '置頂': { title: '把「鼎兆元打卡」置頂', steps: [
     ['為什麼', '聊天室很多時，置頂後每次打卡不用再找'],

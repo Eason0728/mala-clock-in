@@ -34,6 +34,23 @@
   if (m) m.setAttribute('content', b.home);
 })();
 </script>
+<script>
+/* 2026-12-01 起停用（Eason 2026-11-06）：核定統一到管理系統「人資部門 → 考勤管理」。
+   依台北日期自動切換：之前照常可用＋頂端預告；當天 00:00 起整頁換成指路頁、不讀 ?k=、不打任何後端。
+   放在 <head> 先判斷，停用後原本的畫面一瞬間都不會出現。本機（localhost）用 ?today=YYYY-MM-DD 模擬日期，沒帶＝不停用。 */
+window.MGR_CLOSE_DATE = '2026-12-01';
+window.MGR_CLOSED = (function () {
+  var today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);   // 台北＝UTC+8，沒有夏令時間
+  var h = location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1') {
+    // 本機測試：沒帶 ?today= 一律當作還沒停用，12/1 之後 e2e 與 mock 測試照樣測得到核定功能
+    var t = new URLSearchParams(location.search).get('today');
+    today = /^\d{4}-\d{2}-\d{2}$/.test(t || '') ? t : '';
+  }
+  return !!today && today >= window.MGR_CLOSE_DATE;
+})();
+if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
+</script>
 
 <style>
   :root {
@@ -570,6 +587,17 @@
   /* errorCard 的「重新載入」按鈕（2026-09-19，loadDay 重試用盡才出現）：errorCard 是白底卡片
      （不是畫在紅底色上），直接沿用 .submit-btn 的橘底白字即可，這裡只補一點間距。 */
   .error-retry-btn { margin-top: 12px; }
+
+  /* 12/1 停用：預告橫幅與停用後的指路頁（白底卡片一定要自己設 color，頁面預設是白字） */
+  .mgr-closed .container { display: none; }
+  .close-banner { background: #fff7d6; color: #5a4300; border-left: 5px solid #f2b705; border-radius: 10px; padding: 12px 14px; margin: 0 0 14px; font-size: 15px; line-height: 1.6; }
+  .close-banner a { color: #8a1c12; font-weight: 700; }
+  .closed-page { max-width: 480px; margin: 48px auto; padding: 0 16px; }
+  .closed-card { background: #fff; color: var(--brand-black, #1a1a1a); border-radius: 16px; padding: 24px 20px; box-shadow: 0 6px 24px rgba(0,0,0,.18); line-height: 1.7; }
+  .closed-card h2 { margin: 0 0 10px; font-size: 22px; }
+  .closed-card p { margin: 0 0 12px; font-size: 16px; }
+  .closed-card .go { display: block; text-align: center; background: #8a1c12; color: #fff; text-decoration: none; font-weight: 700; font-size: 17px; padding: 14px; border-radius: 12px; margin: 18px 0 12px; }
+  .closed-card .small { font-size: 14px; color: #555; }
 </style>
 </head>
 <body>
@@ -674,6 +702,32 @@
 <script>
 (function () {
   'use strict';
+
+  /* 12/1 停用（見 <head> 的 MGR_CLOSED）：停用後只畫指路頁就結束，下面所有載入都不跑。 */
+  var DZY_ATT_URL = 'https://dzy.mozhuting.com/#/attendance';
+  var DZY_CLAIM_URL = 'https://dzy.mozhuting.com/#/claim';
+  if (window.MGR_CLOSED) {
+    var cp = document.createElement('div');
+    cp.className = 'closed-page';
+    cp.innerHTML = '<div class="closed-card">'
+      + '<h2>值班核定頁已停用</h2>'
+      + '<p>核定工時、申請審核、裝置核准、打卡 QR、LINE 綁定紀錄、店內公告，都改到<b>管理系統：人資部門 → 考勤管理</b>。</p>'
+      + '<a class="go" href="' + DZY_ATT_URL + '">打開考勤管理</a>'
+      + '<p class="small">還沒有管理系統帳號：<a href="' + DZY_CLAIM_URL + '">到管理系統開通帳號</a>，或找店長、人資協助。</p>'
+      + '</div>';
+    document.body.appendChild(cp);
+    document.title = '值班核定頁已停用';
+    return;
+  }
+  (function closeBanner() {
+    var c = document.querySelector('.container header');
+    if (!c) return;
+    var d = document.createElement('div');
+    d.className = 'close-banner';
+    d.innerHTML = '📢 這一頁 <b>12/1 起停用</b>。核定工時、申請審核、裝置核准、打卡 QR 請改到管理系統：人資部門 → 考勤管理。'
+      + ' <a href="' + DZY_ATT_URL + '">打開考勤管理</a>';
+    c.parentNode.insertBefore(d, c.nextSibling);
+  })();
 
   /* ⚠ 自由文字進 innerHTML 前一律過這支。本檔原本只在公告那一段有個同名的局部版
      （2026-09-03 稽核發現：名冊的姓名與「由誰設定」也是拼字串進 innerHTML，同樣的洞卻沒防），
