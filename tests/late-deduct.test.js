@@ -1,5 +1,6 @@
 /* 遲到分鐘不計薪（Eason 2026-08-23 定案）
- * 正職：(底薪＋職能＋夜間＋店長) ÷30 ÷8 ÷60 × 遲到分鐘　⚠ 基數不含全勤上限
+ * 正職：(底薪＋職能＋夜間＋店長) ÷30 ÷8 ÷60 × 遲到分鐘　2026-09 以前不含全勤上限
+ * 2026-10 起（PAY_LATE_ATTEND_FROM，全部門市）基數加上全勤上限（Eason 2026-11-07）
  * 計時：有效時薪 ÷60 × 遲到分鐘
  * 遲到「照舊也扣全勤」——兩個都扣，不是二擇一 */
 const fs=require('fs');
@@ -46,6 +47,19 @@ console.log('\n兩個都扣（遲到金＋全勤）');
 const r=base(FT,{late_min:30,deduct_days:1});
 chk('  遲到不計薪 75',  g(r,'late_deduct'), 75);
 chk('  全勤仍被扣 100', g(r,'attend_bonus'), 2900);
+
+console.log('\n2026-10 起基數含全勤上限（Eason 2026-11-07，全部門市）');
+const at=(ym,att,c)=>e.payCalcOne(FT,ym,Object.assign(
+ {hours:184,extra_ot:0,deduct_days:0,support:[],bonuses:[],annual:null,leave_usage:{},late_min:0},att),
+ Object.assign({},cfg,c||{}),4);
+chk('2026-09 遲到 30 分 → 仍不含全勤 75', g(at('2026-09',{late_min:30}),'late_deduct'), 75);
+chk('2026-10 遲到 30 分 → 39,000÷30÷8÷60×30＝81', g(at('2026-10',{late_min:30}),'late_deduct'), Math.round(39000/30/8/60*30));
+chk('2026-10 費率欄＝2.71', at('2026-10',{late_min:30}).ded.find(i=>i.item_key==='late_deduct').rate, 2.71);
+// 月薪合計 39,000 的正職遲到 6 分 → 16（不含全勤會是 15）
+const Z=Object.assign({},FT,{base:33000,skill_allow:0,night_allow:3000,attend_cap:3000});
+chk('月薪合計 39,000 遲到 6 分 → 16', g(e.payCalcOne(Z,'2026-10',{hours:184,extra_ot:0,deduct_days:1,support:[],bonuses:[],annual:null,leave_usage:{},late_min:6},cfg,4),'late_deduct'), 16);
+chk('計時不受影響（2026-10）', g(e.payCalcOne(PT,'2026-10',{hours:100,extra_ot:0,deduct_days:0,support:[],bonuses:[],annual:null,leave_usage:{},late_min:30},cfg,4),'late_deduct'), Math.round(210/60*30));
+chk('2026-11 早退同費率 30 分 → 81', g(at('2026-11',{early_min:30}),'early_deduct'), 81);
 
 console.log('\n關閉時完全不扣');
 chk('late_deduct=false', g(base(FT,{late_min:30},{late_deduct:'false'}),'late_deduct'), 0);

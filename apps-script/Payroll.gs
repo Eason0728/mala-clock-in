@@ -709,6 +709,14 @@ function payCompMonthCalc(ots, leaves, reqs) {
  * 正職不再有「不足時數」倒扣；整月加班合計（平日加班＋休息日出勤時數）超過 54 小時只標紅、不擋。
  * 補休（每月加減）照舊：本月休掉的補休時數從加班時數扣（先扣平日 4/3、再 5/3、再休息日）。
  * ⚠ 放在 payR0～Handlers 之間：純函式，測試與 payroll_mock.js 只切這一段。 */
+/* 遲到／早退每分鐘費率（正職）的基數自這個月起含全勤上限（Eason 2026-11-07，全部門市）。
+ * 之前月份照舊：底薪＋職能＋夜間＋店長。 */
+var PAY_LATE_ATTEND_FROM = '2026-10';
+function payLateBaseFT(e, ym, cfg) {
+  const m = payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) + payNum(e.mgr_allow)
+    + (String(ym) >= PAY_LATE_ATTEND_FROM ? payNum(e.attend_cap) : 0);
+  return m / payNum(cfg.late_div_days) / payNum(cfg.late_div_hours) / 60;
+}
 var PAY_OT_DAILY_FROM = '2026-11';
 var PAY_OT_MEAL_FIXED = 2000;        // 伙食費（算進月工資，Eason 2026-11-06：固定 2,000）
 var PAY_OT_DIV = 240;                // 加班時薪分母
@@ -976,28 +984,29 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   }
 
   /* 遲到分鐘不計薪（Eason 2026-08-23 定案）
-   *   正職：(底薪＋職能＋夜間＋店長) ÷ 30 ÷ 8 ÷ 60 × 當月實際遲到分鐘
-   *          ⚠ 基數**不含全勤上限**——全勤已經另外因遲到被扣過，不重複算進基數。
+   *   正職：(底薪＋職能＋夜間＋店長＋全勤上限) ÷ 30 ÷ 8 ÷ 60 × 當月實際遲到分鐘
+   *          全勤上限自 PAY_LATE_ATTEND_FROM（2026-10）起算進基數，全部門市（Eason 2026-11-07）；
+   *          之前月份照舊不含（當初理由：全勤已另外因遲到被扣）。
    *   計時：有效時薪 ÷ 60 × 當月實際遲到分鐘（有效時薪＝基本時薪＋滿勤加給＋年資加給，
    *          與他實際領錢的那個時薪同一個，不另立標準）。
    *   遲到「照舊也扣全勤」是 Eason 指定的——這兩件事並存，不是二擇一。
-   *   att.late_min 由 payCollect 從核定狀態字串解析（「遲到5分、早退3分」要 split('、')）。 */
-  const lateMin = payNum(att.late_min);
+   *   att.late_min 由 payCollect 從核定狀態字串解析（「遲到5分、早退3分」要 split('、')）。
+   *   att.xsup_late_min／xsup_early_min＝同組支援門市的遲到／早退分鐘（2026-11 起有，跟著跨店支援自動帶入），
+   *   用本店費率一起扣（Eason 2026-11-07）；全勤判斷只看 att.late_min，不含支援門市。 */
+  const lateMin = payNum(att.late_min) + payNum(att.xsup_late_min);
   const lateFrom = String(cfg.late_deduct_from || '').trim();
   if (lateMin > 0 && payBool(cfg.late_deduct) && !(lateFrom && String(ym) < lateFrom)) {
     const lateBase = ft
-      ? (payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) + payNum(e.mgr_allow))
-        / payNum(cfg.late_div_days) / payNum(cfg.late_div_hours) / 60
+      ? payLateBaseFT(e, ym, cfg)
       : ptWage / 60;
     const lateAmt = payR0(lateBase * lateMin);
     if (lateAmt > 0) push(ded, 'late_deduct', '遲到不計薪', lateMin, payR2(lateBase), lateAmt);
   }
   // 早退比照遲到按分鐘扣（出勤認定清單 B4，2026-11 起）：同一個費率、同一個開關與起始月份
-  const earlyMin = payNum(att.early_min);
+  const earlyMin = payNum(att.early_min) + payNum(att.xsup_early_min);
   if (payOtDailyOn(ym) && earlyMin > 0 && payBool(cfg.late_deduct) && !(lateFrom && String(ym) < lateFrom)) {
     const earlyBase = ft
-      ? (payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) + payNum(e.mgr_allow))
-        / payNum(cfg.late_div_days) / payNum(cfg.late_div_hours) / 60
+      ? payLateBaseFT(e, ym, cfg)
       : ptWage / 60;
     const earlyAmt = payR0(earlyBase * earlyMin);
     if (earlyAmt > 0) push(ded, 'early_deduct', '早退不計薪', earlyMin, payR2(earlyBase), earlyAmt);
@@ -1773,6 +1782,23 @@ function paySupportStrip_(list) {
     });
 }
 
+/** 核定狀態字串「遲到5分、早退12分」→ 分鐘數（多項用「、」串，要逐項比，同 payCollect）。 */
+function payLateEarlyMin_(st) {
+  const o = { late: 0, early: 0 };
+  String(st || '').split('、').forEach(function (part) {
+    const m = String(part).match(/^(遲到|早退)(\d+(?:\.\d+)?)分/);
+    if (m) o[m[1] === '遲到' ? 'late' : 'early'] += Number(m[2]);
+  });
+  return o;
+}
+/** 同組支援門市（會帶入時數的那些，不含跨品牌與 dup_pay）的遲到／早退分鐘合計。
+ *  支援門市遲到也按分鐘扣（Eason 2026-11-07）；只進扣款、不進全勤（支援門市出勤不列入全勤，Eason 2026-11-05）。 */
+function payXsupLateEarly_(entry) {
+  const o = { late: 0, early: 0 };
+  ((entry && entry.stores) || []).forEach(function (s) { o.late += payNum(s.late_min); o.early += payNum(s.early_min); });
+  return { late: payR2(o.late), early: payR2(o.early) };
+}
+
 /**
  * 純函式本體（spec §3.1＋§7-3／5／9／11）。d＝{ xmap, stores, master, approvedMap(code), events(code), tsDate, today, days }。
  * 回 { empty, synced_at, byEmp:{ 本店emp_id: { stores:[{code,name,hours,days,pending_days}], cross:[…], dup:[code] } },
@@ -1862,18 +1888,21 @@ function paySupportAutoCore_(ym, home, d) {
       if (seen[key + '|' + eid]) return;             // 共用打卡表：同一份表同一個帳號只算一次（§7-5）
       seen[key + '|' + eid] = true;
       const amap = approvedOf(S, key);
-      let hours = 0; const days = [];
+      let hours = 0, late = 0, early = 0; const days = [];
       Object.keys(amap).sort().forEach(function (day) {
         if (String(day).slice(0, 7) !== ym || (d.until && day > d.until)) return;
         const rec = amap[day][eid];
         if (!rec) return;
+        const le = payLateEarlyMin_(rec.status_text);
+        late += le.late; early += le.early;
         const h = payNum(rec.approved_hours);
         if (!h) return;
         hours += h;
         if (d.days) days.push({ date: day, periods: String(rec.periods || ''), hours: payR2(h), manager_name: String(rec.manager_name || '') });
       });
       const pend = Object.keys(pendingOf(S, key)[eid] || {}).length;
-      const row = { code: S, name: String((storeBy[S] || {}).name || S), hours: payR2(hours), pending_days: pend };
+      const row = { code: S, name: String((storeBy[S] || {}).name || S), hours: payR2(hours), pending_days: pend,
+                    late_min: payR2(late), early_min: payR2(early) };
       if (d.days) row.days = days;
       if (pend) out.pending.push({ emp_id: empId, code: S, days: pend });
       if (!paySameGroup_(homeGroup, (storeBy[S] || {}).support_group)) { entry.cross.push(row); return; }
@@ -2651,6 +2680,8 @@ function handlePayrollCalc(body) {
     else if (XSUP) {
       const mg = payMergeSupport_(att.support, XSUP.byEmp[String(e.emp_id).trim()], e, XCTX);
       att.support = mg.support;
+      const xle = payXsupLateEarly_(XSUP.byEmp[String(e.emp_id).trim()]);
+      att.xsup_late_min = xle.late; att.xsup_early_min = xle.early;
 
       if (mg.unresolved) XSA.warn.manual_unresolved.push(String(e.emp_id));
       mg.cross.forEach(function (c) { XSA.warn.cross_manual.push({ emp_id: String(e.emp_id), code: c }); });
@@ -4966,6 +4997,8 @@ function handlePnlLaborEstimate_(body) {
       leave_usage: USAGE_BEFORE[String(e.emp_id)] || {}, annual: ANNUAL_INFO[String(e.emp_id)] || null,
       forget_punch: payNum(c.forget_punch), forget_day: payNum(c.forget_day),
       late_min: payNum(c.late_min), early_min: payNum(c.early_min), attend_void: !!c.attend_void,
+      xsup_late_min: XS ? payXsupLateEarly_(XS.byEmp[String(e.emp_id).trim()]).late : 0,
+      xsup_early_min: XS ? payXsupLateEarly_(XS.byEmp[String(e.emp_id).trim()]).early : 0,
     };
     // 虛擬離職日＝昨天，借用 payRatio 既有的「月中到職/離職才折算」機制算出「已過天數÷當月
     // 天數」；員工本來就有更早的到職日或離職日時，取較早的那個（字串比較，'YYYY-MM-DD' 可直接比大小）。

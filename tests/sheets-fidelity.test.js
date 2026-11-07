@@ -688,7 +688,7 @@ ok("（對照）late_deduct_from 留空或改成不會被轉型的寫法時，�
   const att = { hours: 176, extra_ot: 0, support: [], bonuses: [], annual: null, leave_usage: {}, late_min: 30, early_min: 0, forget_punch: 0, forget_day: 0, deduct_days: 1, work_days: 22, leaves: {} };
   const r = m.sb.payCalcOne(emp, '2026-10', att, m.sb.payConfig('SSLGF'), 4, m.sb.payLeaveTypes('SSLGF'));
   const late = r.ded.filter((x) => x.item_key === 'late_deduct')[0];
-  assert.ok(late && late.amount === Math.round((30000 + 3000 + 3000) / 30 / 8 / 60 * 30), JSON.stringify(late));
+  assert.ok(late && late.amount === Math.round((30000 + 3000 + 3000 + 3000) / 30 / 8 / 60 * 30), JSON.stringify(late));
 });
 
 /* ════════════════════════════════════════════════════════════════════════
