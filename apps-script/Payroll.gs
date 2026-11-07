@@ -709,6 +709,14 @@ function payCompMonthCalc(ots, leaves, reqs) {
  * 正職不再有「不足時數」倒扣；整月加班合計（平日加班＋休息日出勤時數）超過 54 小時只標紅、不擋。
  * 補休（每月加減）照舊：本月休掉的補休時數從加班時數扣（先扣平日 4/3、再 5/3、再休息日）。
  * ⚠ 放在 payR0～Handlers 之間：純函式，測試與 payroll_mock.js 只切這一段。 */
+/* 遲到／早退每分鐘費率（正職）的基數自這個月起含全勤上限（Eason 2026-11-07，全部門市）。
+ * 之前月份照舊：底薪＋職能＋夜間＋店長。 */
+var PAY_LATE_ATTEND_FROM = '2026-10';
+function payLateBaseFT(e, ym, cfg) {
+  const m = payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) + payNum(e.mgr_allow)
+    + (String(ym) >= PAY_LATE_ATTEND_FROM ? payNum(e.attend_cap) : 0);
+  return m / payNum(cfg.late_div_days) / payNum(cfg.late_div_hours) / 60;
+}
 var PAY_OT_DAILY_FROM = '2026-11';
 var PAY_OT_MEAL_FIXED = 2000;        // 伙食費（算進月工資，Eason 2026-11-06：固定 2,000）
 var PAY_OT_DIV = 240;                // 加班時薪分母
@@ -976,8 +984,9 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   }
 
   /* 遲到分鐘不計薪（Eason 2026-08-23 定案）
-   *   正職：(底薪＋職能＋夜間＋店長) ÷ 30 ÷ 8 ÷ 60 × 當月實際遲到分鐘
-   *          ⚠ 基數**不含全勤上限**——全勤已經另外因遲到被扣過，不重複算進基數。
+   *   正職：(底薪＋職能＋夜間＋店長＋全勤上限) ÷ 30 ÷ 8 ÷ 60 × 當月實際遲到分鐘
+   *          全勤上限自 PAY_LATE_ATTEND_FROM（2026-10）起算進基數，全部門市（Eason 2026-11-07）；
+   *          之前月份照舊不含（當初理由：全勤已另外因遲到被扣）。
    *   計時：有效時薪 ÷ 60 × 當月實際遲到分鐘（有效時薪＝基本時薪＋滿勤加給＋年資加給，
    *          與他實際領錢的那個時薪同一個，不另立標準）。
    *   遲到「照舊也扣全勤」是 Eason 指定的——這兩件事並存，不是二擇一。
@@ -986,8 +995,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   const lateFrom = String(cfg.late_deduct_from || '').trim();
   if (lateMin > 0 && payBool(cfg.late_deduct) && !(lateFrom && String(ym) < lateFrom)) {
     const lateBase = ft
-      ? (payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) + payNum(e.mgr_allow))
-        / payNum(cfg.late_div_days) / payNum(cfg.late_div_hours) / 60
+      ? payLateBaseFT(e, ym, cfg)
       : ptWage / 60;
     const lateAmt = payR0(lateBase * lateMin);
     if (lateAmt > 0) push(ded, 'late_deduct', '遲到不計薪', lateMin, payR2(lateBase), lateAmt);
@@ -996,8 +1004,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   const earlyMin = payNum(att.early_min);
   if (payOtDailyOn(ym) && earlyMin > 0 && payBool(cfg.late_deduct) && !(lateFrom && String(ym) < lateFrom)) {
     const earlyBase = ft
-      ? (payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) + payNum(e.mgr_allow))
-        / payNum(cfg.late_div_days) / payNum(cfg.late_div_hours) / 60
+      ? payLateBaseFT(e, ym, cfg)
       : ptWage / 60;
     const earlyAmt = payR0(earlyBase * earlyMin);
     if (earlyAmt > 0) push(ded, 'early_deduct', '早退不計薪', earlyMin, payR2(earlyBase), earlyAmt);

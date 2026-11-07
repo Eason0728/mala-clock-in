@@ -674,7 +674,7 @@ ok('payCalcOne 正職：淨時數口徑（上班＋可抵扣假−基本）、�
   assert.strictEqual(by.shortfall_hours, undefined);
   assert.strictEqual(by.attend_bonus.amount, 1900);    // 2000 − 1 天 × 100
   assert.strictEqual(by.personal_leave.amount, 1064);  // (30000+2000)/30/8 ＝ 133（取整）× 8H
-  assert.strictEqual(by.late_deduct.amount, 21);       // 30000/30/8/60 × 10 分 ＝ 20.8 → 21
+  assert.strictEqual(by.late_deduct.amount, 22);       // (30000+全勤2000)/30/8/60 × 10 分 ＝ 22.2 → 22（2026-10 起基數含全勤）
   assert.strictEqual(r.gross, 32300);
   // 引擎本身不 payNum（'170' + 0 ＝ '1700' → 加班 1,532 小時＝30 萬）；唯一的呼叫端 handlePayrollCalc 每個數值欄都先 payNum，守住這條
   const str = J(m.sb.payCalcOne(FT, '2026-11', { hours: '170' }, CFG, 8, lt));

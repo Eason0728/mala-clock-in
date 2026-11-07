@@ -96,8 +96,8 @@ chk('計時請特休 8H：照有效時薪給 1600（E2）', [it(r, 'pt_annual').
 
 console.log('\n══ 4) 2026-11 一起改的四件事 ══');
 r = E.payCalcOne(FT, '2026-11', ATT({ hours: 160, early_min: 10, late_min: 5, daily: { dates: [], sched: {}, day_h: {}, day_leave: {}, hol: {} } }), cfg, 9);
-chk('早退比照遲到按分鐘扣：(30000＋2000)/30/8/60 × 10＝22.22 → 22（B4）', [it(r, 'early_deduct').qty, it(r, 'early_deduct').amount], [10, 22]);
-chk('遲到照舊：× 5 ＝ 11', it(r, 'late_deduct').amount, 11);
+chk('早退比照遲到按分鐘扣：(30000＋2000＋全勤3000)/30/8/60 × 10＝24.31 → 24（B4；2026-10 起基數含全勤）', [it(r, 'early_deduct').qty, it(r, 'early_deduct').amount], [10, 24]);
+chk('遲到照舊同費率：× 5 ＝ 12.15 → 12', it(r, 'late_deduct').amount, 12);
 r = E.payCalcOne(FT, '2026-10', ATT({ hours: 160, early_min: 10 }), cfg, 10);
 chk('2026-10 早退不扣、仍叫全勤獎金、有整月加班口徑', [it(r, 'early_deduct'), it(r, 'attend_bonus').item_label], [undefined, '全勤獎金']);
 const annual = { payout_ym: '2026-11', left_h: 16 };
