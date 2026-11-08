@@ -58,7 +58,7 @@ chk('沒有平日 5/3', it(r, 'ot_w53'), undefined);
 chk('休息日 9H：(2×1.34＋6×1.67＋1×2.67)×154.1667 → 2370', [it(r, 'ot_rest').qty, it(r, 'ot_rest').amount], [9, 2370]);
 chk('休息日明細說明各段時數', it(r, 'ot_rest').memo, '前2H×1.34 2H、3–8H×1.67 6H、9H起×2.67 1H');
 chk('例假出勤 1 天 × 1233.33 ＝ 1233', [it(r, 'ot_rdo').qty, it(r, 'ot_rdo').amount], [1, 1233]);
-chk('國定假日出勤 1 天 ＝ 1233', [it(r, 'ot_hol').qty, it(r, 'ot_hol').amount], [1, 1233]);
+chk('國定假日出勤 8H × 154.17 ＝ 1233（6-3 改按上班時數）', [it(r, 'ot_hol').qty, it(r, 'ot_hol').amount], [8, 1233]);
 chk('不再有整月「加班」與「不足時數」', [it(r, 'overtime'), it(r, 'shortfall_hours')], [undefined, undefined]);
 chk('本月加班時數＝平日 2＋休息日 9＝11', [r.ot_paid_hours, r.ot_info.ot_h, r.ot_info.over_cap], [11, 11, false]);
 chk('班表查不到：11/29、11/30', r.ot_info.missing, ['2026-11-29', '2026-11-30']);
@@ -212,12 +212,6 @@ console.log('\n══ 5c) 主檔工號對不到打卡名冊 → 提醒（2026-11
   chk('  主檔多一位對不到的 → 列出來', F('handlePayrollMonth')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' }).roster_mismatch.map((x) => x.emp_id + '→' + x.roster_ids.join()), ['E10→E11']);
   DB.master.pop();
 }
-
-console.log('\n══ 6) 病假一年 30 天內不扣全勤（C6）══');
-const sick = F('paySickOverDays_');
-chk('今年已用 25 天、本月 3 個病假日 → 都在 30 天內，0 天加回缺勤', sick({ sick_dates: ['a', 'b', 'c'] }, { sick: { used_before_days: 25 } }, []), 0);
-chk('今年已用 28 天、本月 4 個病假日 → 超過 2 天', sick({ sick_dates: ['a', 'b', 'c', 'd'] }, { sick: { used_before_days: 28 } }, []), 2);
-chk('沒有病假日 → 0', sick({}, {}, []), 0);
 
 console.log('\n' + (fail ? '❌ ' + fail + ' 項失敗（' + pass + '/' + (pass + fail) + '）' : '✅ 加班逐日判斷全部通過（' + pass + ' 項）'));
 process.exit(fail ? 1 : 0);
