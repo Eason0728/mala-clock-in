@@ -14,7 +14,7 @@ var REST_GAP_H = 11;          // 2026-11-02 Eason：12→11（法定下限，不
 var REST_PAIR_H = 16;          // 上班卡往後 16 小時內的下班卡才配成一段（同 MONTHLY_PAIR_WINDOW_HOURS）
 var REST_LOOKBACK_H = 40;      // 今天的段落（最早昨天 16:00 前上班的跨夜班不算今天）＋前一段的下班卡，多留一點
 var REST_PEER_CACHE_S = 21600; // 別家店名冊快取 6 小時
-/* 月加班（出勤規範 4-15，Eason 2026-11-08）：超過 36 小時提醒；滿 46 小時只擋會變成加班的上班卡（休息日、例假、國定假日，或今天已打滿 8 小時），正常班照打。
+/* 28 天週期加班（出勤規範 4-15、4-17，Eason 2026-11-08）：超過 36 小時提醒；滿 46 小時只擋會變成加班的上班卡（休息日、例假、國定假日，或今天已打滿 8 小時），正常班照打。
    時數在 ot_month 分頁（光復每天 09:00 寫，只有當天日期的列才算）。緊急關＝指令碼屬性 REST_OT_ON 設 '0'。 */
 var REST_OT_WARN_H = 36;
 var REST_OT_STOP_H = 46;
@@ -123,12 +123,12 @@ function restOtJudge_(row, segs, nowMs) {
   var shown = Math.round(row.h * 10) / 10;
   if (row.h >= REST_OT_STOP_H) {
     if (row.rest || h >= REST_OT_BASE_H) {
-      return { code: 'ot46', reason: '你本月加班已經 ' + shown + ' 小時（滿 ' + REST_OT_STOP_H + ' 小時），' + (row.rest ? '今天是休息日' : '今天也上滿 ' + REST_OT_BASE_H + ' 小時') + '，不能再打上班卡',
+      return { code: 'ot46', reason: '你這一期（28 天）加班已經 ' + shown + ' 小時（滿 ' + REST_OT_STOP_H + ' 小時），' + (row.rest ? '今天是休息日' : '今天也上滿 ' + REST_OT_BASE_H + ' 小時') + '，不能再打上班卡',
                hint: '正常班不受影響；有問題請找值班主管', until: null };
     }
-    return { code: 'ot46', warn: true, reason: '你本月加班已經 ' + shown + ' 小時（滿 ' + REST_OT_STOP_H + ' 小時）', hint: '今天上滿 ' + REST_OT_BASE_H + ' 小時就不能再打上班卡' };
+    return { code: 'ot46', warn: true, reason: '你這一期（28 天）加班已經 ' + shown + ' 小時（滿 ' + REST_OT_STOP_H + ' 小時）', hint: '今天上滿 ' + REST_OT_BASE_H + ' 小時就不能再打上班卡' };
   }
-  return { code: 'ot36', warn: true, reason: '你本月加班已經 ' + shown + ' 小時（超過 ' + REST_OT_WARN_H + ' 小時）', hint: '滿 ' + REST_OT_STOP_H + ' 小時後，休息日和超過 ' + REST_OT_BASE_H + ' 小時的上班卡會打不了' };
+  return { code: 'ot36', warn: true, reason: '你這一期（28 天）加班已經 ' + shown + ' 小時（超過 ' + REST_OT_WARN_H + ' 小時）', hint: '滿 ' + REST_OT_STOP_H + ' 小時後，休息日和超過 ' + REST_OT_BASE_H + ' 小時的上班卡會打不了' };
 }
 
 /** 這次請求最近一次算出的「只提醒」結果（滿 10 小時）；restCheckIn_ 每次先清掉。

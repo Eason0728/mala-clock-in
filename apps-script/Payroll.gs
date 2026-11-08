@@ -726,7 +726,7 @@ var PAY_OT_DAILY_FROM = '2026-11';
  *   忘刷一律同一天算 1 次（2-3）。計時滿勤、年資加給只有小辛辣有，其他店歸 0（6-4）。
  *   寫在程式不改參數表：參數沒有月份，改表會動到還沒鎖定的 10 月草稿。 */
 var PAY_RULES3_FROM = '2026-11';
-/* 出勤規範第 4 批（Eason 2026-11-08）：月加班 36H 黃字、46H 紅字並擋會變成加班的上班卡（4-15）；
+/* 出勤規範第 4 批（Eason 2026-11-08）：28 天週期加班 36H 黃字、46H 紅字並擋會變成加班的上班卡（4-15、4-17）；
  * 超過 8H 沒有核准的加班單不能鎖月（4-2，2026-11-11 起算）；平日出差不得報加班（5-1，只提醒）；曠職提醒（2-8）。 */
 var PAY_ANNUAL_SETTLE_FROM = '2026-05';   // 薪酬系統第一個月；測試基準用來關掉
 var PAY_OT_WARN_H = 36;
@@ -810,7 +810,7 @@ function payOtKindOf(cell, isHol) {
  *    hol:{date:true}, until:'YYYY-MM-DD'（之後的日子還沒到，不判沒來）, comp_h, extra_ot }
  *  回 { w43,w53,r43,r53,r83, rdo_days,hol_days, rdo_dates:[], missing:[], no_show:[], ot_month_h } */
 function payOtDailySum(d) {
-  const S = { w43: 0, w53: 0, r43: 0, r53: 0, r83: 0, rdo_days: 0, rdo_h: 0, hol_days: 0, hol_h: 0, no_show_streak: 0, rdo_dates: [], hol_dates: [], missing: [], no_show: [] };
+  const S = { w43: 0, w53: 0, r43: 0, r53: 0, r83: 0, rdo_days: 0, rdo_h: 0, hol_days: 0, hol_h: 0, no_show_streak: 0, ot_days: {}, rdo_dates: [], hol_dates: [], missing: [], no_show: [] };
   const pool = [];   // 補休可以抵的加班，依日期先後（4-6、4-7、4-10）
   let absentRun = 0;   // 連續幾個應出勤日沒來（2-8）
   (d.dates || []).forEach(function (date) {
@@ -827,6 +827,7 @@ function payOtDailySum(d) {
     }
     const b = payOtDayBreak(kind || 'W', h);   // 班表查不到的日子先當上班日算（鎖定會被擋，補發布後重算）
     ['w43', 'w53', 'r43', 'r53', 'r83'].forEach(function (k) { S[k] = payR2(S[k] + b[k]); });
+    { const dayOt = payR2(b.w43 + b.w53 + b.r43 + b.r53 + b.r83); if (dayOt > 0) S.ot_days[date] = dayOt; }
     if (kind === 'H') { if (b.r43 > 0) pool.push({ date: date, k: 'r43', h: b.r43 }); }
     else if (kind !== 'R' && kind !== 'HOL') {
       if (b.w43 > 0) pool.push({ date: date, k: 'w43', h: b.w43 });
@@ -844,6 +845,7 @@ function payOtDailySum(d) {
   pool.forEach(function (p) {
     const x = Math.min(comp, p.h);
     S[p.k] = payR2(S[p.k] - x); comp = payR2(comp - x); S.comp_used_h = payR2(S.comp_used_h + x);
+    if (x > 0 && S.ot_days[p.date] != null) S.ot_days[p.date] = payR2(S.ot_days[p.date] - x);
   });
   S.comp_over_h = comp;   // 抵不掉的補休：不能鎖定，要改成其他假別
   S.ot_month_h = payR2(S.w43 + S.w53 + S.r43 + S.r53 + S.r83);
@@ -1138,7 +1140,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     manual_sup_h: payNum(att.daily.manual_sup_h) };
   if (otS) {
     const chk = payOtFormCheck_(att);
-    out.ot_info.ot_level = otS.ot_month_h >= PAY_OT_STOP_H ? 'stop' : otS.ot_month_h > PAY_OT_WARN_H ? 'warn' : '';
+    out._ot_days = otS.ot_days;   // 給 28 天週期加總（payOtMonthSync_）；不進 run 表
     out.ot_info.ot_form_missing = chk.missing;
     out.ot_info.trip_ot = chk.trip_ot;
     out.ot_info.absent_alert = otS.no_show_streak >= 3 || otS.no_show.length >= 6;
@@ -2662,24 +2664,35 @@ function payOtFormsMonth_(st, ym) {
   });
   return out;
 }
-/** 把每個人本月加班時數與今天是不是休息日寫進各店 ot_month 分頁，給打卡端（Rest.gs）判斷 36／46 小時（4-15）。
- *  時數＝主管已核定到目前為止；每天 09:00 跟著超時檢查跑一次。某家算不出來就略過並記錯。姓名跨店合併取最大。 */
+/** 今天在哪一個 28 天週期（與排班 period.js、SchedPub 同一個起算日）→ {start, end}。 */
+function payPeriodRange_(date) {
+  const base = Date.UTC(2026, 10, 1), day = 86400000;
+  const n = Math.floor((Date.parse(date + 'T00:00:00Z') - base) / day / 28);
+  const iso = function (ms) { return new Date(ms).toISOString().slice(0, 10); };
+  return { start: iso(base + n * 28 * day), end: iso(base + (n * 28 + 27) * day) };
+}
+/** 把每個人這一期（28 天）的加班時數與今天是不是休息日寫進各店 ot_month 分頁，給打卡端（Rest.gs）判斷 36／46 小時（4-15、4-17）。
+ *  時數＝主管已核定到目前為止；每天 09:00 跟著超時檢查跑一次。某家算不出來就略過並記錯。姓名跨店相加（5-8）。 */
 function payOtMonthSync_() {
   const today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd'), ym = today.slice(0, 7);
   const stores = payRead('store').filter(function (s) { return String(s.active).toLowerCase() !== 'false' && payHasClock(s.code); });
-  const by = {}, errors = [];
+  const by = {}, errors = [], range = payPeriodRange_(today);
+  const yms = range.start.slice(0, 7) === range.end.slice(0, 7) ? [range.start.slice(0, 7)] : [range.start.slice(0, 7), range.end.slice(0, 7)];
   stores.forEach(function (s) {
     const st = payStore(s.code);
     try {
-      const r = handlePayrollCalc({ admin_key: CONFIG.ADMIN_KEY, ym: ym, store: st, dry_run: true });
-      if (!r || !r.ok) throw new Error((r && r.error) || 'calc_failed');
-      (r.results || []).forEach(function (x) {
-        const nm = String(x.name || '').replace(/\s/g, ''), o = x.ot_info;
-        if (!nm || !o) return;
-        const kind = payOtKindOf(((r._sched || {})[String(x.emp_id)] || {})[today] || null, (r._hol || []).map(String).indexOf(today) >= 0);
-        const row = by[nm] = by[nm] || { h: 0, rest: false, work: false };
-        row.h = Math.max(row.h, payNum(o.ot_h));
-        if (kind === 'H' || kind === 'R' || kind === 'HOL') row.rest = true; else if (kind) row.work = true;
+      yms.forEach(function (m) {
+        const r = handlePayrollCalc({ admin_key: CONFIG.ADMIN_KEY, ym: m, store: st, dry_run: true });
+        if (!r || !r.ok) throw new Error((r && r.error) || 'calc_failed');
+        (r.results || []).forEach(function (x) {
+          const nm = String(x.name || '').replace(/\s/g, '');
+          if (!nm || !x.ot_info) return;
+          const row = by[nm] = by[nm] || { h: 0, rest: false, work: false };
+          Object.keys(x._ot_days || {}).forEach(function (d) { if (d >= range.start && d <= range.end) row.h = payR2(row.h + payNum(x._ot_days[d])); });
+          if (m !== ym) return;
+          const kind = payOtKindOf(((r._sched || {})[String(x.emp_id)] || {})[today] || null, (r._hol || []).map(String).indexOf(today) >= 0);
+          if (kind === 'H' || kind === 'R' || kind === 'HOL') row.rest = true; else if (kind) row.work = true;
+        });
       });
     } catch (e) { errors.push(st); Logger.log('ot_month 算不出來 ' + st + '：' + e); }
   });
@@ -2699,6 +2712,15 @@ function payOtMonthSync_() {
   return { ok: true, date: today, stores: stores.length, people: rows.length - 1, errors: errors, write_errors: writeErrors,
            warn: Object.keys(by).filter(function (n) { return by[n].h > PAY_OT_WARN_H && by[n].h < PAY_OT_STOP_H; }).length,
            stop: Object.keys(by).filter(function (n) { return by[n].h >= PAY_OT_STOP_H; }).length };
+}
+/** 薪資頁用：這家店 ot_month 分頁今天的週期加班時數 {姓名去空白: 時數}；沒有就空物件。 */
+function payOtPeriodMap_(st) {
+  const out = {};
+  try {
+    const today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
+    payClockRead(st, 'ot_month').forEach(function (r) { if (String(r.date).slice(0, 10) === today) out[String(r.name)] = payNum(r.ot_h); });
+  } catch (e) {}
+  return out;
 }
 function handlePayrollOtMonthSync(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
@@ -3010,6 +3032,7 @@ function handlePayrollMonth(body) {
   try { rosterMiss = payRosterMismatch_(stM, masterM); } catch (e) { rosterMiss = []; }
   return { ok: true, ym: ym, store: stM, has_clock: payHasClock(stM), inputs: inputs, run: run, annual: payAnnualInfo(ym, stM),
            master: masterM, roster_mismatch: rosterMiss.length ? rosterMiss : undefined,   // 沒有就不帶（回應形狀與改版前相同）
+           ot_period: (function (m) { return Object.keys(m).length ? m : undefined; })(payOtPeriodMap_(stM)),   // 沒有就不帶（回應形狀與改版前相同）
            config: payConfig(stM), config_src: payConfigSource(stM),
            bonuses: payRead('bonus').filter(function (b) { return String(b.ym) === ym && payStore(b.store) === stM; }),
            stores: payRead('store').filter(function (x) { return String(x.active).toLowerCase() !== 'false'; }),
