@@ -334,7 +334,7 @@ ok("handleMgrApprove 寫一列：date 變 Date、periods '09:00-13:00,14:00-18:0
   assert.ok(r.ok, JSON.stringify(r)); assert.strictEqual(r.approved_hours, 8);
   const sh = m.sheet('approved');
   // 第 9 欄 dup_ignore（2026-11-06 主管認定重複打卡）沒有認定時留空
-  assert.strictEqual(sh.typeMap()[1].replace(/\.$/, ''), 'dtttnttt', sh.typeMap()[1]);
+  assert.strictEqual(sh.typeMap()[1].replace(/\.+$/, ''), 'dtttnttt', sh.typeMap()[1]);
   const row = m.rows('approved')[0];
   assert.strictEqual(row.periods, '09:00-13:00,14:00-18:00'); assert.strictEqual(row.approved_hours, 8); assert.strictEqual(row.entered_at, '2026-07-14T20:00:00+08:00');
   const day = m.sb.handleMgrDay({ mgr_key: 'MK', date: '2026-07-14' });

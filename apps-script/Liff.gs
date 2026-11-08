@@ -789,6 +789,7 @@ var LIFF_HANDLERS = {
   mgr_req_decide: function (b) { return handleMgrReqDecide_(b); },
   mgr_req_decide_batch: function (b) { return handleMgrReqDecideBatch_(b); },
   mgr_req_void: function (b) { return handleMgrReqVoid_(b); },   // 作廢已核准的申請（2026-10-26）
+  approve_strict_preview: function (b) { return handleApproveStrictPreview_(b); },   // 核定加嚴只讀試算（2026-11-08）
   mgr_req_proxy: function (b) { return handleMgrReqProxy_(b); },   // 主管代開加班／忘打卡（2026-11-06，超過 7 天、送總監層級審）
   mgr_req_day: function (b) { return handleMgrReqDay_(b); },
   mgr_req_month: function (b) { return handleMgrReqMonth_(b); },   // 申請單彙整列印（2026-11-02，純讀）

@@ -165,7 +165,7 @@ ok('handleMgrApprove 在寫入核定前呼叫 reqBindCheck_，舊 Requests 沒�
   const fn = extract(codeSrc, 'handleMgrApprove');
   const i = fn.indexOf("typeof reqBindCheck_ === 'function'"), j = fn.indexOf('appendApprovedRow_(');
   assert.ok(i > 0 && j > i, '掛鉤要在 appendApprovedRow_ 之前');
-  assert.ok(/reqBindCheck_\(ss, String\(body\.emp_id\), date, approvedHours, periods, punchWithMs, noPunchBreakWindow\(date\)\)/.test(fn));
+  assert.ok(/reqBindCheck_\(ss, String\(body\.emp_id\), date, approvedHours, periodsMs, punchMs, noPunchBreakWindow\(date\),/.test(fn));
 });
 
 /* ── 主管代開 ── */
@@ -182,7 +182,7 @@ ok('7 天內不能代開；超過 90 天也不行', () => {
 });
 ok('只限加班、忘打卡', () => {
   const sb = makeEnv();
-  assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ kind: 'leave' })).error, 'bad_kind');
+  assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ kind: 'xx' })).error, 'bad_kind');
 });
 ok('代開成功：審核中、記代開人、摘要標主管代開', () => {
   const sb = makeEnv();
@@ -237,5 +237,139 @@ ok('同仁自己送的單不受影響（照舊本店主管審）', () => {
   const sb = makeEnv();
   addReq(sb, { id: 'own1', kind: 'ot', hours: 1, status: 'pending' });
   assert.ok(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: 'own1', decision: 'approve' }).ok);
+});
+
+/* ── 核定加嚴（2026-11-16 起）── */
+const D2 = '2026-11-20';
+const P2 = (a, b) => ({ startMs: ms(a, D2), endMs: ms(b, D2) });
+const S2 = (a, b) => ({ inMs: a ? ms(a, D2) : null, outMs: b ? ms(b, D2) : null });
+const R2 = (o) => Object.assign({ date: D2 }, o);
+const chk = (sb, h, ps, ss, opt) => sb.reqBindCheck_(sb.getSS(), 'E01', D2, h, ps, ss, null, opt);
+const full95 = [P2('09:00', '18:30')], seg95 = [S2('09:00', '18:30')];
+ok('11/15 以前只跑舊規則：時段不對不擋', () => {
+  const sb = makeEnv();
+  addReq(sb, { date: '2026-11-15', kind: 'ot', start: '06:00', end: '07:30', hours: 1.5 });
+  const P15 = (a, b) => ({ startMs: ms(a, '2026-11-15'), endMs: ms(b, '2026-11-15') });
+  const S15 = (a, b) => ({ inMs: ms(a, '2026-11-15'), outMs: ms(b, '2026-11-15') });
+  assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', '2026-11-15', 9.5, [P15('09:00', '18:30')], [S15('09:00', '18:30')], null, {}), null);
+});
+ok('規則 1：時段在核定內放行；前後 15 分鐘內放行；超過擋', () => {
+  let sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '17:00', end: '18:30', hours: 1.5 }));
+  assert.strictEqual(chk(sb, 9.5, full95, seg95, {}), null);
+  sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '17:15', end: '18:45', hours: 1.5 }));
+  assert.strictEqual(chk(sb, 9.5, full95, seg95, {}), null);
+  sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '17:30', end: '19:00', hours: 1.5 }));
+  const r = chk(sb, 9.5, full95, seg95, {});
+  assert.strictEqual(r.error, 'need_request'); assert.ok(/不在核定時段內/.test(r.message), r.message);
+});
+ok('規則 1：跨夜班凌晨的加班單算得進去；當天有出差時數不比時段', () => {
+  let sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '00:00', end: '01:30', hours: 1.5 }));
+  const night = [{ startMs: ms('16:00', D2), endMs: ms('01:30', '2026-11-21') }];
+  assert.strictEqual(chk(sb, 9.5, night, [{ inMs: night[0].startMs, outMs: night[0].endMs }], {}), null);
+  sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '06:00', end: '07:30', hours: 1.5 })); addReq(sb, R2({ kind: 'trip', leave_type: '出差', hours: 2 }));
+  assert.strictEqual(chk(sb, 9.5, [P2('09:00', '16:30')], [S2('09:00', '16:30')], { trip_hours: 2, leaves: [{ type: '出差', hours: 2 }] }), null);
+});
+ok('規則 2：單少擋、多 15 分鐘內放行、多更多擋', () => {
+  let sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '17:00', end: '18:15', hours: 1.25 }));
+  assert.ok(/1\.5 小時要有加班單/.test(chk(sb, 9.5, full95, seg95, {}).message));
+  sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '17:00', end: '18:45', hours: 1.75 }));
+  assert.strictEqual(chk(sb, 9.5, full95, seg95, {}), null);
+  sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '17:00', end: '18:45', hours: 2 }));
+  assert.ok(/多超過 15 分鐘/.test(chk(sb, 9.5, full95, seg95, {}).message));
+});
+ok('規則 2：休息日／例假整天都算加班；班表查不到或上班日照一般日', () => {
+  const ps = [P2('10:00', '14:00')], ss = [S2('10:00', '14:00')];
+  let sb = makeEnv();
+  assert.ok(/都算加班/.test(chk(sb, 4, ps, ss, { sched_day: 'H' }).message));
+  assert.ok(/都算加班/.test(chk(sb, 4, ps, ss, { sched_day: 'R' }).message));
+  assert.strictEqual(chk(sb, 4, ps, ss, { sched_day: 'W' }), null);
+  assert.strictEqual(chk(sb, 4, ps, ss, {}), null);
+  sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '10:00', end: '14:00', hours: 4 }));
+  assert.strictEqual(chk(sb, 4, ps, ss, { sched_day: 'H' }), null);
+  assert.ok(/請先把加班單作廢/.test(chk(sb, 4, ps, ss, {}).message), '查不到班表＝一般日，未滿 8 小時有單要作廢');
+});
+ok('規則 3：沒單擋、假別不同擋、時數不同擋、有單沒登記擋、相符放行', () => {
+  const ps = [P2('09:00', '13:00')], ss = [S2('09:00', '13:00')];
+  let sb = makeEnv();
+  assert.ok(/沒有已核准的假單/.test(chk(sb, 4, ps, ss, { leaves: [{ type: '病假', hours: 4 }] }).message));
+  sb = makeEnv(); addReq(sb, R2({ kind: 'leave', leave_type: '事假', hours: 4 }));
+  const m = chk(sb, 4, ps, ss, { leaves: [{ type: '病假', hours: 4 }] }).message;
+  assert.ok(/病假/.test(m) && /有已核准的事假/.test(m), m);
+  sb = makeEnv(); addReq(sb, R2({ kind: 'leave', leave_type: '病假', hours: 4 }));
+  assert.ok(/已核准的單是 4 小時/.test(chk(sb, 4, ps, ss, { leaves: [{ type: '病假', hours: 3 }] }).message));
+  assert.ok(/核定沒有登記/.test(chk(sb, 4, ps, ss, { leaves: [] }).message));
+  assert.strictEqual(chk(sb, 4, ps, ss, { leaves: [{ type: '病假', hours: 4 }] }), null);
+});
+ok('規則 3：整天請假（沒有時段）也看；審核中的假單不算', () => {
+  let sb = makeEnv();
+  assert.strictEqual(chk(sb, 0, [], [], { leaves: [{ type: '特休', hours: 8 }] }).error, 'need_request');
+  addReq(sb, R2({ kind: 'leave', leave_type: '特休', hours: 8, status: 'pending' }));
+  assert.ok(/審核中/.test(chk(sb, 0, [], [], { leaves: [{ type: '特休', hours: 8 }] }).message));
+  sb = makeEnv(); addReq(sb, R2({ kind: 'leave', leave_type: '特休', hours: 8 }));
+  assert.strictEqual(chk(sb, 0, [], [], { leaves: [{ type: '特休', hours: 8 }] }), null);
+});
+ok('規則 4：差 30 分鐘要原因、29 分鐘不用、有原因放行、缺卡不比、休息帶扣掉', () => {
+  const sb = makeEnv();
+  const r = chk(sb, 7.5, [P2('09:00', '16:30')], [S2('09:00', '17:00')], {});
+  assert.strictEqual(r.error, 'need_diff_reason'); assert.strictEqual(r.diff_min, 30);
+  assert.strictEqual(chk(sb, 7.5, [P2('09:00', '16:30')], [{ inMs: ms('09:00', D2), outMs: ms('16:59', D2) }], {}), null);
+  assert.strictEqual(chk(sb, 7.5, [P2('09:00', '16:30')], [S2('09:00', '17:00')], { diff_reason: '  提早離開，店長同意 ' }), null);
+  assert.strictEqual(chk(sb, 7.5, [P2('09:00', '16:30')], [S2('09:00', '17:00')], { diff_reason: '   ' }).error, 'need_diff_reason');
+  const brk = { startMs: ms('12:00', D2), endMs: ms('13:00', D2) };
+  assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D2, 8, [P2('08:00', '12:00'), P2('13:00', '17:00')], [S2('08:00', '17:00')], brk, {}), null);
+  assert.ok(/舊的值班核定頁/.test(chk(sb, 7.5, [P2('09:00', '16:30')], [S2('09:00', '17:00')], { acting: false }).message));
+});
+ok('開關：REQ_STRICT_FROM off 只關加嚴；REQ_BIND_FROM off 全關', () => {
+  let sb = makeEnv(); sb.__props.REQ_STRICT_FROM = 'off'; addReq(sb, R2({ kind: 'ot', start: '06:00', end: '07:30', hours: 1.5 }));
+  assert.strictEqual(chk(sb, 9.5, full95, seg95, {}), null);
+  assert.strictEqual(chk(sb, 10, [P2('09:00', '19:00')], [S2('09:00', '19:00')], {}).error, 'need_request');
+  sb = makeEnv(); sb.__props.REQ_BIND_FROM = 'off';
+  assert.strictEqual(chk(sb, 10, [P2('09:00', '19:00')], [S2('09:00', '19:00')], {}), null);
+});
+ok('代開假單與出差單：超過 7 天可開、7 天內不行、核准後核定過得了', () => {
+  const sb = makeEnv();
+  const base = { mgr_key: 'SYS', acting_name: '王店長（S1）', emp_id: 'E01', date: D, reason: '補單' };
+  assert.strictEqual(sb.handleMgrReqProxy_(Object.assign({}, base, { kind: 'leave', leave_type: '事假', hours: 4, date: '2026-11-18' })).error, 'not_old');
+  assert.strictEqual(sb.handleMgrReqProxy_(Object.assign({}, base, { kind: 'leave', leave_type: '事假', hours: 4, reason: '' })).error, 'need_reason');
+  const a = sb.handleMgrReqProxy_(Object.assign({}, base, { kind: 'leave', leave_type: '事假', hours: 4 }));
+  assert.ok(a.ok, JSON.stringify(a));
+  assert.strictEqual(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: a.request.id, decision: 'approve' }).error, 'director_review');
+  assert.ok(sb.handleMgrReqDecide_({ mgr_key: 'SYS', acting_name: '王總監（S9）', id: a.request.id, decision: 'approve', director_ok: true }).ok);
+  const t = sb.handleMgrReqProxy_(Object.assign({}, base, { kind: 'trip', hours: 3, place: '總部辦公室', why: '會議', date: '2026-11-09' }));
+  assert.ok(t.ok, JSON.stringify(t));
+});
+ok('核定紀錄：有原因才補 diff_reason 欄，沒有就照舊 8 欄', () => {
+  const sb = makeEnv();
+  vm.runInContext(extractConst(codeSrc, 'APPROVED_HEADERS') + extract(codeSrc, 'appendApprovedRow_'), sb);
+  const sh = sheet('approved', [['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at']]);
+  const row8 = [D2, 'E01', '測試一', '09:00-16:30', 7.5, '正常', '主管', 'x'];
+  sb.appendApprovedRow_(sh, row8, [], '');
+  assert.strictEqual(sh.data[0].length, 8); assert.strictEqual(sh.data[1].length, 8);
+  sb.appendApprovedRow_(sh, row8, [], '提早離開');
+  assert.deepStrictEqual(sh.data[0].slice(8), ['dup_ignore', 'diff_reason']);
+  assert.strictEqual(sh.data[2][9], '提早離開'); assert.strictEqual(sh.data[2][8], '');
+  sb.appendApprovedRow_(sh, row8, ['t1'], '');
+  assert.strictEqual(sh.data[3][8], '["t1"]');
+});
+ok('只讀試算：列出問題、不寫入', () => {
+  const sb = makeEnv();
+  addReq(sb, R2({ kind: 'ot', start: '06:00', end: '07:30', hours: 1.5 }));
+  const sheets = sb.__sheets;
+  sheets.approved = sheet('approved', [['date', 'emp_id', 'name', 'periods', 'approved_hours'], [D2, 'E01', '測試一', '09:00-18:30', 9.5], [D2, 'E02', '測試二', '09:00-17:00', 8]]);
+  sheets.events = sheet('events', [['ts']]); sheets.leave = sheet('leave', [['日期', '姓名', '假別', '時數'], [D2, '測試二', '病假', 1]]);
+  Object.assign(sb, {
+    checkAdmin: (b) => b.admin_key === 'AK',
+    buildLatestApprovedMap: (rows) => { const m = {}; rows.forEach((r) => { (m[r.date] = m[r.date] || {})[r.emp_id] = r; }); return m; },
+    dupIgnoreSet_: () => ({}), dropDupIgnored_: (e) => e, noPunchBreakWindow: () => null, addDaysStr: (d) => d,
+    parsePeriodsStr: (x) => String(x).split(',').map((y) => ({ start: y.split('-')[0], end: y.split('-')[1] })),
+    dayPunchSegments: (e, emp) => ({ segments: [emp === 'E01' ? { in: '09:00', out: '18:30' } : { in: '09:00', out: '17:00' }] }),
+  });
+  const before = JSON.stringify(sheets);
+  assert.strictEqual(sb.handleApproveStrictPreview_({ admin_key: 'x', from: D2, to: D2 }).error, 'unauthorized');
+  const r = sb.handleApproveStrictPreview_({ admin_key: 'AK', from: D2, to: D2 });
+  assert.strictEqual(r.scanned, 2); assert.strictEqual(r.items.length, 2);
+  assert.strictEqual(r.items[0].probs[0].rule, 'ot_slot');
+  assert.strictEqual(r.items[1].probs[0].rule, 'leave');
+  assert.strictEqual(JSON.stringify(sheets), before);
 });
 console.log('req-bind: ' + n + ' 項全過');
