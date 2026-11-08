@@ -239,19 +239,19 @@ ok('同仁自己送的單不受影響（照舊本店主管審）', () => {
   assert.ok(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: 'own1', decision: 'approve' }).ok);
 });
 
-/* ── 核定加嚴（2026-11-16 起）── */
+/* ── 核定加嚴（2026-11-11 起）── */
 const D2 = '2026-11-20';
 const P2 = (a, b) => ({ startMs: ms(a, D2), endMs: ms(b, D2) });
 const S2 = (a, b) => ({ inMs: a ? ms(a, D2) : null, outMs: b ? ms(b, D2) : null });
 const R2 = (o) => Object.assign({ date: D2 }, o);
 const chk = (sb, h, ps, ss, opt) => sb.reqBindCheck_(sb.getSS(), 'E01', D2, h, ps, ss, null, opt);
 const full95 = [P2('09:00', '18:30')], seg95 = [S2('09:00', '18:30')];
-ok('11/15 以前只跑舊規則：時段不對不擋', () => {
+ok('11/10 以前只跑舊規則：時段不對不擋', () => {
   const sb = makeEnv();
-  addReq(sb, { date: '2026-11-15', kind: 'ot', start: '06:00', end: '07:30', hours: 1.5 });
-  const P15 = (a, b) => ({ startMs: ms(a, '2026-11-15'), endMs: ms(b, '2026-11-15') });
-  const S15 = (a, b) => ({ inMs: ms(a, '2026-11-15'), outMs: ms(b, '2026-11-15') });
-  assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', '2026-11-15', 9.5, [P15('09:00', '18:30')], [S15('09:00', '18:30')], null, {}), null);
+  addReq(sb, { date: '2026-11-10', kind: 'ot', start: '06:00', end: '07:30', hours: 1.5 });
+  const P15 = (a, b) => ({ startMs: ms(a, '2026-11-10'), endMs: ms(b, '2026-11-10') });
+  const S15 = (a, b) => ({ inMs: ms(a, '2026-11-10'), outMs: ms(b, '2026-11-10') });
+  assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', '2026-11-10', 9.5, [P15('09:00', '18:30')], [S15('09:00', '18:30')], null, {}), null);
 });
 ok('規則 1：時段在核定內放行；前後 15 分鐘內放行；超過擋', () => {
   let sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '17:00', end: '18:30', hours: 1.5 }));
