@@ -1130,13 +1130,13 @@ function reqBindMissCards_(periods, segs, breakWindow) {
   return n;
 }
 function reqBindFmt_(h) { return String(Math.round(h * 100) / 100); }
-/* ── 核定加嚴（2026-11-08 Eason 定案；REQ_STRICT_FROM 預設 2026-11-16 起的日子才算，指令碼屬性設 off＝只關加嚴；REQ_BIND_FROM 設 off＝全部關）──
+/* ── 核定加嚴（2026-11-08 Eason 定案；REQ_STRICT_FROM 預設 2026-11-11 起的日子才算，指令碼屬性設 off＝只關加嚴；REQ_BIND_FROM 設 off＝全部關）──
    規則 1：已核准加班單的時段要落在核定時段內，前後可差 15 分鐘（那天有出差時數不比時段：加班可能在出差那段）。
    規則 2：加班單時數不可少於應有加班時數；多 15 分鐘內算相符。應有＝一般日核定超過 8 小時的部分；班表休息日／例假＝當天核定全部；班表查不到照一般日。
            一般日核定沒超過 8 小時卻有已核准加班單＝擋，要先作廢。
    規則 3：核定登記的假別、時數要和已核准假單（含出差單）一樣；登記了沒單、有單沒登記都擋。整天請假也看。
    規則 4：核定和打卡（完整打卡的日子，扣掉不打卡休息帶）差 30 分鐘以上要填原因，原因存 approved 的 diff_reason。 */
-var REQ_STRICT_FROM_DEFAULT_ = '2026-11-16';
+var REQ_STRICT_FROM_DEFAULT_ = '2026-11-11';
 var REQ_STRICT_TOL_MIN = 15;
 var REQ_STRICT_DIFF_MIN = 30;
 var REQ_DIFF_REASON_MAX = 100;
