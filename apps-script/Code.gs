@@ -121,7 +121,7 @@ const ACCURACY_CREDIT_CAP_M = 100;
 // 誤差 50 m 以上的座標本來就不足以判斷人在不在店裡，所以拿來提示同仁「定位可能不準」。
 const LOW_ACCURACY_M = 50;
 // 值班主管核定（2026-07-13 新增）：只追加不覆蓋；同 (date,emp_id) 多筆以 entered_at 最新為準（讀取端處理）
-const APPROVED_HEADERS = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at', 'dup_ignore'];   // dup_ignore：2026-11-06 主管認定的重複打卡
+const APPROVED_HEADERS = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at', 'dup_ignore', 'diff_reason'];   // dup_ignore：2026-11-06 主管認定的重複打卡；diff_reason：2026-11-16 起核定和打卡差 30 分鐘以上的原因
 const MANAGERS_HEADERS = ['name', 'key', 'active'];
 // 店內公告（2026-08-28 新增）：值班主管在核定頁發布，同仁打卡頁最上方輪播。
 // 只追加不刪除——停用是把 active 改 FALSE，紀錄留著（同「同仁異動」精神）。
@@ -1719,6 +1719,7 @@ function handleMgrDay(body) {
         status_text: String(rec.status_text || ''),
         manager_name: String(rec.manager_name || ''),
         dup_ignore: dupIgnoreList_(rec.dup_ignore),
+        diff_reason: String(rec.diff_reason || ''),
       };
     }
     return out;
@@ -1843,6 +1844,7 @@ function handleMgrApprove(body) {
   const tripHours = leaves.reduce(function (a, x) { return a + (x.type === TRIP_NOTE && x.hours !== '' ? x.hours : 0); }, 0);
 
   let approvedHours, periodsStr, statusText;
+  let periodsMs = [], punchMs = [];   // 核定綁申請單用（整天請假時是空的）
   if (rawPeriods.length === 0) {
     // 整天請假：沒有任何上班時段，但必須有假別；核定 0 小時、狀態標「全天請假」
     // （沒假別的空送出仍擋掉）。這樣月表那天顯示核定 0h＋假別，而非誤導的「待核定」。
@@ -1896,17 +1898,22 @@ function handleMgrApprove(body) {
     statusText = applyManualLate(statusText, body.late_min);
     statusText = applyDupNote_(statusText, dupList);
     periodsStr = rawPeriods.map(function (p) { return p.start + '-' + p.end; }).join(',');
-    // 核定綁定申請單（2026-11-06 Eason）：超過 8 小時沒加班單、少卡沒忘打卡單＝整天送不出（Requests.gs reqBindCheck_；舊 Requests 沒有就不擋）
-    if (typeof reqBindCheck_ === 'function') {
-      const bind = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periods, punchWithMs, noPunchBreakWindow(date));
-      if (bind) return bind;
-    }
+    periodsMs = periods; punchMs = punchWithMs;
+  }
+  // 核定綁定申請單（2026-11-06）＋核定加嚴（2026-11-16 起，Requests.gs reqBindCheck_）：單對不上＝整天送不出；舊 Requests 沒有就不擋。
+  // sched_day（那天班表 H／R／W）只有營運系統個人帳號代轉時才採信，由營運系統伺服器讀排班資料帶入、前端送的會被蓋掉
+  if (typeof reqBindCheck_ === 'function') {
+    const acting = reqMgrActing_(mgr, body);
+    const bind = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, punchMs, noPunchBreakWindow(date),
+      { leaves: leaves, trip_hours: tripHours, sched_day: acting ? String(body.sched_day || '') : '', diff_reason: body.diff_reason, acting: acting });
+    if (bind) return bind;
   }
   const enteredAt = nowTaipeiIso();
 
   empIdColText_(approvedSheet);
   appendApprovedRow_(approvedSheet, [date, body.emp_id, roster.name, periodsStr, approvedHours, statusText, actor, enteredAt],
-    rawPeriods.length ? dupList : []);
+    rawPeriods.length ? dupList : [],
+    rawPeriods.length && typeof reqCleanDiffReason_ === 'function' ? reqCleanDiffReason_(body.diff_reason) : '');
   replaceLeaveRows(ss, date, String(roster.name), leaves);
 
   return {
@@ -2246,20 +2253,26 @@ function applyDupNote_(statusText, list) {
 }
 
 /** 寫一列核定紀錄：照實際表頭放，沒有 dup_ignore 表頭就先補在最右邊（舊試算表只有 8 欄）。 */
-function appendApprovedRow_(sheet, row8, dupList) {
-  if (!dupList || !dupList.length) { sheet.appendRow(row8); return; }   // 沒有認定＝跟以前一模一樣，不碰表頭
+function appendApprovedRow_(sheet, row8, dupList, diffReason) {
+  const hasDup = !!(dupList && dupList.length), reason = String(diffReason || '');
+  if (!hasDup && !reason) { sheet.appendRow(row8); return; }   // 沒有認定也沒有原因＝跟以前一模一樣，不碰表頭
   const lastCol = Math.max(sheet.getLastColumn(), 1);
   const heads = (sheet.getRange(1, 1, 1, lastCol).getValues()[0] || []).map(String);
-  let at = heads.indexOf('dup_ignore');
-  if (at === -1) {
-    at = heads.length;
-    while (at > 0 && !heads[at - 1]) at--;   // 跳過右邊空白表頭
-    at = Math.max(at, APPROVED_HEADERS.length - 1);
-    sheet.getRange(1, at + 1).setValue('dup_ignore');
-  }
+  const colOf = function (name) {
+    let at = heads.indexOf(name);
+    if (at === -1) {
+      at = heads.length;
+      while (at > 0 && !heads[at - 1]) at--;   // 跳過右邊空白表頭
+      at = Math.max(at, APPROVED_HEADERS.indexOf(name));
+      sheet.getRange(1, at + 1).setValue(name);
+      heads[at] = name;
+    }
+    return at;
+  };
   const row = row8.slice();
-  while (row.length < at) row.push('');
-  row[at] = dupList && dupList.length ? JSON.stringify(dupList) : '';
+  const put = function (name, v) { const at = colOf(name); while (row.length < at) row.push(''); row[at] = v; };
+  put('dup_ignore', hasDup ? JSON.stringify(dupList) : '');
+  if (reason) put('diff_reason', reason);
   sheet.appendRow(row);
 }
 

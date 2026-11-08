@@ -378,9 +378,9 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
   var row = { kind: kind, date: date, leave_type: '', start: '', end: '', hours: '', miss_type: '', reason: reason, comp: '' };
 
   if (kind === 'leave') {
-    if (diff < -REQ_LEAVE_PAST_DAYS || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '請假只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
+    if ((!proxy && diff < -REQ_LEAVE_PAST_DAYS) || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '請假只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
     var lt = reqClean_(b.leave_type, 30);
-    if (!lt || lt === '出差' || (LEAVE_TYPES.indexOf(lt) < 0 && lt !== REQ_COMP_LEAVE_)) return { error: 'bad_leave_type', message: '請選假別' };
+    if (!lt || lt === '出差' || (LEAVE_TYPES.indexOf(lt) < 0 && lt !== REQ_COMP_LEAVE_ && !(proxy && typeof leaveTypeAllowedByPayroll === 'function' && leaveTypeAllowedByPayroll(lt, b.mgr_key)))) return { error: 'bad_leave_type', message: '請選假別' };
     row.leave_type = lt;
     if (b.start || b.end) {
       row.start = reqHm_(b.start); row.end = reqHm_(b.end);
@@ -403,7 +403,7 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     // 補休（2026-11-01 改每月加減結算）：加班不再分「加班費／換補休」，核准的加班都算進當月補休帳；comp 欄留空（舊列的值不再使用）
   } else if (kind === 'trip') {
     // 出差（2026-10-09）：存成 leave_type＝出差；核准後核定頁預填「出差」＋時數（出差時數與上班時段相加，整天出差可以沒有時段）
-    if (diff < -REQ_LEAVE_PAST_DAYS || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '出差只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
+    if ((!proxy && diff < -REQ_LEAVE_PAST_DAYS) || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '出差只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
     row.leave_type = '出差';
     if (b.start || b.end) {
       row.start = reqHm_(b.start); row.end = reqHm_(b.end);
@@ -904,7 +904,7 @@ function reqAuditLog_(ss, ym, items, isHome) {
     var by = String(r.manager_name || ''), sys = by.length >= mark.length && by.slice(-mark.length) === mark;
     log.push({ at: String(normCellTs(r.entered_at) || ''), kind: 'hours', action: sys ? 'recheck' : 'hours', emp_id: emp, name: String(r.name || ''),
                date: date, ref: 'H|' + date + '|' + emp, by: sys ? by.slice(0, -mark.length) : by, system: sys,
-               detail: { hours: Number(r.approved_hours) || 0, status: String(r.status_text || ''), periods: String(r.periods || '') } });
+               detail: { hours: Number(r.approved_hours) || 0, status: String(r.status_text || ''), periods: String(r.periods || ''), diff_reason: String(r.diff_reason || '') } });
   });
   // 同一天同一人：最早那筆是「核定」，之後的人工核定是「重核」（系統重算維持 recheck）
   var firstSeen = {};
@@ -1045,7 +1045,7 @@ function reqProxyBlock_(r, mgr, body, actor) {
   if (reqNameKey_(actor) === reqNameKey_(r.proxy_by)) return { ok: false, error: 'self_proxy', message: '這筆是你代開的，要由別的總監層級主管審核' };
   return null;
 }
-/** {action:'mgr_req_proxy', mgr_key, acting_name, emp_id, kind:'ot'|'miss', date, start?, end?, miss_type?, reason} */
+/** {action:'mgr_req_proxy', mgr_key, acting_name, emp_id, kind:'ot'|'miss'|'leave'|'trip', date, start?, end?, miss_type?, leave_type?, hours?, place?, why?, reason} */
 function handleMgrReqProxy_(body) {
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
@@ -1053,10 +1053,11 @@ function handleMgrReqProxy_(body) {
   var actor = actingName_(body, mgr);
   if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
   var kind = String(body.kind || '');
-  if (kind !== 'ot' && kind !== 'miss') return { ok: false, error: 'bad_kind', message: '代開只限加班或忘打卡' };
+  if (kind !== 'ot' && kind !== 'miss' && kind !== 'leave' && kind !== 'trip') return { ok: false, error: 'bad_kind', message: '代開只限加班、忘打卡、請假或出差' };
+  if (kind === 'leave' && !reqClean_(body.reason, REQ_REASON_MAX)) return { ok: false, error: 'need_reason', message: '代開要寫原因' };
   var date = String(body.date || ''), today = todayTaipeiStr();
   if (!reqIsDate_(date)) return { ok: false, error: 'bad_date', message: '請選日期' };
-  var diff = reqDayDiff_(date, today), limit = kind === 'ot' ? REQ_LEAVE_PAST_DAYS : REQ_MISS_DAYS;
+  var diff = reqDayDiff_(date, today), limit = kind === 'miss' ? REQ_MISS_DAYS : REQ_LEAVE_PAST_DAYS;
   if (diff >= -limit) return { ok: false, error: 'not_old', message: limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天才能由主管代開' };
   if (diff < -REQ_PROXY_PAST_DAYS) return { ok: false, error: 'too_old', message: '代開最多到 ' + REQ_PROXY_PAST_DAYS + ' 天前' };
   var ss = getSS();
@@ -1129,29 +1130,164 @@ function reqBindMissCards_(periods, segs, breakWindow) {
   return n;
 }
 function reqBindFmt_(h) { return String(Math.round(h * 100) / 100); }
-/** 不能核定回 {ok:false, error:'need_request', message, need}；可以回 null */
-function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindow) {
-  if (!periods || !periods.length) return null;   // 整天請假／整天出差不看
-  var from = reqBindFrom_();
-  if (!from || date < from) return null;
-  var rows = reqRows_(ss).filter(function (r) { return String(r.emp_id) === String(empId) && String(r.date) === date; });
+/* ── 核定加嚴（2026-11-08 Eason 定案；REQ_STRICT_FROM 預設 2026-11-16 起的日子才算，指令碼屬性設 off＝只關加嚴；REQ_BIND_FROM 設 off＝全部關）──
+   規則 1：已核准加班單的時段要落在核定時段內，前後可差 15 分鐘（那天有出差時數不比時段：加班可能在出差那段）。
+   規則 2：加班單時數不可少於應有加班時數；多 15 分鐘內算相符。應有＝一般日核定超過 8 小時的部分；班表休息日／例假＝當天核定全部；班表查不到照一般日。
+           一般日核定沒超過 8 小時卻有已核准加班單＝擋，要先作廢。
+   規則 3：核定登記的假別、時數要和已核准假單（含出差單）一樣；登記了沒單、有單沒登記都擋。整天請假也看。
+   規則 4：核定和打卡（完整打卡的日子，扣掉不打卡休息帶）差 30 分鐘以上要填原因，原因存 approved 的 diff_reason。 */
+var REQ_STRICT_FROM_DEFAULT_ = '2026-11-16';
+var REQ_STRICT_TOL_MIN = 15;
+var REQ_STRICT_DIFF_MIN = 30;
+var REQ_DIFF_REASON_MAX = 100;
+function reqStrictFrom_() {
+  var v = '';
+  try { v = String(PropertiesService.getScriptProperties().getProperty('REQ_STRICT_FROM') || ''); } catch (e) {}
+  if (v === 'off') return null;
+  return reqIsDate_(v) ? v : REQ_STRICT_FROM_DEFAULT_;
+}
+function reqCleanDiffReason_(v) { return sheetSafeText_(reqClean_(v, REQ_DIFF_REASON_MAX)); }
+function reqHmMs_(date, hm) { return Date.parse(date + 'T' + hm + ':00+08:00'); }
+/** 應有加班時數；schedDay：H＝休息日、R＝例假，其他（含空白＝查不到）照一般日 */
+function reqStrictOtNeed_(hours, schedDay) {
+  var rest = schedDay === 'H' || schedDay === 'R';
+  var need = rest ? Number(hours) : Math.max(Number(hours) - REQ_BIND_OT_BASE_H, 0);
+  return { rest: rest, need: Math.round(need * 100) / 100 };
+}
+/** 把核定時段併成連續區間（中間空檔在容差內算連著） */
+function reqStrictMerged_(periods) {
+  var tol = REQ_STRICT_TOL_MIN * 60000, out = [];
+  periods.slice().sort(function (a, b) { return a.startMs - b.startMs; }).forEach(function (p) {
+    var last = out[out.length - 1];
+    if (last && p.startMs <= last.e + tol) last.e = Math.max(last.e, p.endMs);
+    else out.push({ s: p.startMs, e: p.endMs });
+  });
+  return out;
+}
+/** 加班單時段在核定時段內？跨夜班的凌晨加班單（日期算前一天）也試隔天 */
+function reqStrictSlotOk_(date, start, end, merged) {
+  var a = reqMin_(start), b = reqMin_(end);
+  if (a == null || b == null) return false;
+  var s = reqHmMs_(date, start), e = reqHmMs_(date, end), tol = REQ_STRICT_TOL_MIN * 60000;
+  if (e <= s) e += 86400000;
+  var fit = function (x, y) { return merged.some(function (m) { return x >= m.s - tol && y <= m.e + tol; }); };
+  return fit(s, e) || fit(s + 86400000, e + 86400000);
+}
+/** 核定和打卡相差幾分鐘；有缺卡（比不出來）回 null */
+function reqPunchDiffMin_(periods, segs, breakWindow) {
+  if (!periods.length || !segs.length || segs.some(function (s) { return s.inMs == null || s.outMs == null; })) return null;
+  var core = periods.reduce(function (a, p) { return a + p.endMs - p.startMs; }, 0);
+  var punch = segs.reduce(function (a, s) {
+    var ov = breakWindow ? Math.max(0, Math.min(s.outMs, breakWindow.endMs) - Math.max(s.inMs, breakWindow.startMs)) : 0;
+    return a + s.outMs - s.inMs - ov;
+  }, 0);
+  return Math.round(Math.abs(core - punch) / 60000);
+}
+/** 核定登記的假 vs 已核准假單（含出差單）；回不符的字句陣列 */
+function reqStrictLeaveProbs_(okRows, leaves) {
+  var sum = function (list) { var o = {}; list.forEach(function (x) { o[x.t] = (o[x.t] || 0) + (Number(x.h) || 0); }); return o; };
+  var have = sum((leaves || []).map(function (x) { return { t: String(x.type), h: x.hours }; }));
+  var reqd = sum(okRows.filter(function (r) { return r.kind === 'leave' || r.kind === 'trip'; })
+    .map(function (r) { return { t: r.kind === 'trip' ? '出差' : String(r.leave_type), h: r.hours }; }));
+  var out = [];
+  Object.keys(have).forEach(function (t) {
+    if (!(t in reqd)) out.push('登記了' + t + ' ' + reqBindFmt_(have[t]) + ' 小時，但沒有已核准的' + (t === '出差' ? '出差單' : '假單'));
+    else if (Math.abs(have[t] - reqd[t]) > 0.005) out.push(t + '核定登記 ' + reqBindFmt_(have[t]) + ' 小時，已核准的單是 ' + reqBindFmt_(reqd[t]) + ' 小時');
+  });
+  Object.keys(reqd).forEach(function (t) { if (!(t in have)) out.push('有已核准的' + t + ' ' + reqBindFmt_(reqd[t]) + ' 小時，核定沒有登記'); });
+  return out;
+}
+/** 不能核定回 {ok:false, error:'need_request'|'need_diff_reason', message, ...}；可以回 null。
+ *  opt：leaves、trip_hours、sched_day（H／R／W／空白）、diff_reason、acting（考勤管理個人帳號）；rows／force_strict／preview 給只讀試算用。 */
+function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindow, opt) {
+  opt = opt || {};
+  periods = periods || [];
+  var from = reqBindFrom_(), strictFrom = reqStrictFrom_();
+  var bindOn = !!(from && date >= from && periods.length);
+  var strict = !!opt.force_strict || !!(from && strictFrom && date >= strictFrom);
+  if (!bindOn && !strict) return null;
+  var rows = (opt.rows || reqRows_(ss)).filter(function (r) { return String(r.emp_id) === String(empId) && String(r.date) === date; });
   var ok = rows.filter(function (r) { return r.status === 'approved'; });
-  var pend = rows.filter(function (r) { return r.status === 'pending' && (r.kind === 'ot' || r.kind === 'miss' || r.kind === 'trip'); });
+  var pend = rows.filter(function (r) { return r.status === 'pending' && (r.kind === 'ot' || r.kind === 'miss' || r.kind === 'trip' || (strict && r.kind === 'leave')); });
+  var otRows = ok.filter(function (r) { return r.kind === 'ot'; });
+  var otHave = otRows.reduce(function (a, r) { return a + (Number(r.hours) || 0); }, 0);
   var otNeed = Math.round((Number(approvedHours) - REQ_BIND_OT_BASE_H) * 100) / 100;
-  var otHave = ok.reduce(function (a, r) { return a + (r.kind === 'ot' ? Number(r.hours) || 0 : 0); }, 0);
-  var miss = reqBindMissCards_(periods, segs, breakWindow);
+  var probs = [], add = function (rule, text) { probs.push({ rule: rule, text: text }); };
+  var otBad = false;
+  if (strict) {
+    var ot = reqStrictOtNeed_(approvedHours, String(opt.sched_day || ''));
+    otNeed = ot.need;
+    var label = ot.rest ? '這天班表是休息日或例假，核定的 ' + reqBindFmt_(otNeed) + ' 小時都算加班，要有加班單'
+                        : '超過 ' + REQ_BIND_OT_BASE_H + ' 小時的 ' + reqBindFmt_(otNeed) + ' 小時要有加班單';
+    var voidIt = otHave > 0.005 && otNeed <= 0.005;
+    if (voidIt) add('ot_void', '核定沒有超過 ' + REQ_BIND_OT_BASE_H + ' 小時，卻有 ' + reqBindFmt_(otHave) + ' 小時的已核准加班單，請先把加班單作廢');
+    else if (otNeed > 0.005 && otHave + 0.005 < otNeed) { otBad = true; add('ot_hours', label + '（已核准 ' + reqBindFmt_(otHave) + ' 小時）'); }
+    else if (otNeed > 0.005 && otHave > otNeed + REQ_STRICT_TOL_MIN / 60 + 0.005) add('ot_hours', '加班單 ' + reqBindFmt_(otHave) + ' 小時比應有的 ' + reqBindFmt_(otNeed) + ' 小時多超過 ' + REQ_STRICT_TOL_MIN + ' 分鐘');
+    if (!voidIt && !(Number(opt.trip_hours) > 0)) {
+      var merged = reqStrictMerged_(periods);
+      otRows.forEach(function (r) {
+        if (!reqStrictSlotOk_(date, String(r.start), String(r.end), merged)) add('ot_slot', '加班單 ' + r.start + '–' + r.end + ' 不在核定時段內（前後可差 ' + REQ_STRICT_TOL_MIN + ' 分鐘）');
+      });
+    }
+  } else if (otNeed > 0.005 && otHave + 0.005 < otNeed) {
+    otBad = true;
+    add('ot_hours', '超過 ' + REQ_BIND_OT_BASE_H + ' 小時的 ' + reqBindFmt_(otNeed) + ' 小時要有加班單（已核准 ' + reqBindFmt_(otHave) + ' 小時）');
+  }
+  var miss = bindOn ? reqBindMissCards_(periods, segs, breakWindow) : 0;
   var tripOk = ok.some(function (r) { return r.kind === 'trip'; });
   var missHave = ok.reduce(function (a, r) { return a + (r.kind !== 'miss' ? 0 : (r.miss_type === 'break' || r.miss_type === 'both') ? 2 : 1); }, 0);
-  var probs = [];
-  var otBad = otNeed > 0.005 && otHave + 0.005 < otNeed;
-  var missBad = !tripOk && miss > missHave;
-  if (otBad) probs.push('超過 ' + REQ_BIND_OT_BASE_H + ' 小時的 ' + reqBindFmt_(otNeed) + ' 小時要有加班單（已核准 ' + reqBindFmt_(otHave) + ' 小時）');
-  if (missBad) probs.push('少了 ' + miss + ' 張打卡，要有忘打卡單（已核准 ' + missHave + ' 張）');
-  if (!probs.length) return null;
-  var hint = pend.length ? '這天有 ' + pend.length + ' 張申請還在審核中，請先到「申請審核」處理再送。'
-    : '請同仁在 LINE「加班請假」補申請；超過 7 天請店長在考勤管理「代開申請」，送總監層級審核。';
-  return { ok: false, error: 'need_request', message: '這天還不能核定：' + probs.join('；') + '。' + hint,
-           need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length } };
+  var missBad = bindOn && !tripOk && miss > missHave;
+  if (missBad) add('miss', '少了 ' + miss + ' 張打卡，要有忘打卡單（已核准 ' + missHave + ' 張）');
+  if (strict) reqStrictLeaveProbs_(ok, opt.leaves).forEach(function (t) { add('leave', t); });
+  var diffMin = strict ? reqPunchDiffMin_(periods, segs, breakWindow) : null;
+  if (opt.preview) return { probs: probs, diff_min: diffMin, ot_have: otHave, ot_need: otNeed };
+  if (probs.length) {
+    var hint = pend.length ? '這天有 ' + pend.length + ' 張申請還在審核中，請先到「申請審核」處理再送。'
+      : '請同仁在 LINE「加班請假」補申請；超過 7 天請店長在考勤管理「代開申請」，送總監層級審核。';
+    return { ok: false, error: 'need_request', message: '這天還不能核定：' + probs.map(function (p) { return p.text; }).join('；') + '。' + hint,
+             need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length } };
+  }
+  if (diffMin != null && diffMin >= REQ_STRICT_DIFF_MIN && !reqCleanDiffReason_(opt.diff_reason)) {
+    return { ok: false, error: 'need_diff_reason', diff_min: diffMin,
+             message: '核定和打卡差 ' + diffMin + ' 分鐘，要填原因才能送出。' + (opt.acting === false ? '舊的值班核定頁不能填原因，請到管理系統「考勤管理」核定。' : '') };
+  }
+  return null;
+}
+
+/** {action:'approve_strict_preview', admin_key, from, to}：用核定加嚴的同一支判斷試算已存在的核定，只讀不寫（班表在 Mac mini，這裡一律當查不到＝一般日）。 */
+function handleApproveStrictPreview_(body) {
+  if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  var from = String(body.from || ''), to = String(body.to || '');
+  if (!reqIsDate_(from) || !reqIsDate_(to) || from > to) return { ok: false, error: 'bad_date' };
+  var ss = getSS(), rows = reqRows_(ss), items = [], scanned = 0;
+  var approvedMap = buildLatestApprovedMap(readSheetAsObjects(ss.getSheetByName('approved')).rows);
+  var events = dropDupIgnored_(readSheetAsObjects(ss.getSheetByName('events')).rows, dupIgnoreSet_(approvedMap));
+  var lsh = ss.getSheetByName('leave');
+  var leaveRows = lsh ? readSheetAsObjects(lsh).rows : [];
+  Object.keys(approvedMap).forEach(function (date) {
+    if (date < from || date > to) return;
+    Object.keys(approvedMap[date]).forEach(function (emp) {
+      var rec = approvedMap[date][emp], name = String(rec.name || '').trim();
+      var leaves = leaveRows.filter(function (r) { return normCellDate(r['日期']) === date && String(r['姓名'] || '').trim() === name; })
+        .map(function (r) { return { type: String(r['假別'] || ''), hours: r['時數'] === '' ? '' : Number(r['時數']) }; });
+      var trip = leaves.reduce(function (a, x) { return a + (x.type === '出差' ? Number(x.hours) || 0 : 0); }, 0);
+      var periods = parsePeriodsStr(rec.periods).map(function (p) {
+        var s = reqHmMs_(date, p.start), e = reqHmMs_(date, p.end);
+        return { startMs: s, endMs: e <= s ? e + 86400000 : e };
+      });
+      var segs = periods.length ? dayPunchSegments(events, emp, date).segments.map(function (x) {
+        return { inMs: x.in ? reqHmMs_(date, x.in) : null, outMs: x.out ? reqHmMs_(x.cross ? addDaysStr(date, 1) : date, x.out) : null };
+      }) : [];
+      scanned++;
+      var r = reqBindCheck_(ss, emp, date, Number(rec.approved_hours) || 0, periods, segs, noPunchBreakWindow(date),
+        { leaves: leaves, trip_hours: trip, rows: rows, force_strict: true, preview: true });
+      if (r && (r.probs.length || (r.diff_min != null && r.diff_min >= REQ_STRICT_DIFF_MIN))) {
+        items.push({ date: date, emp_id: emp, name: name, hours: Number(rec.approved_hours) || 0, leaves: leaves, probs: r.probs, diff_min: r.diff_min, ot_have: r.ot_have, ot_need: r.ot_need });
+      }
+    });
+  });
+  items.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  return { ok: true, from: from, to: to, scanned: scanned, items: items };
 }
 
 
