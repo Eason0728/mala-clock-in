@@ -149,7 +149,9 @@ function handleAttDigestData(body) {
     if (at === null || at <= sinceMs || at > untilMs) return;
     const emp = String(a.emp_id);
     newly.push({ store: store, date: normCellDate(a.date), emp_id: emp, name: a.name ? String(a.name) : nm(emp),
-                 approved_hours: Number(a.approved_hours) || 0, entered_at: normCellTs(a.entered_at) });
+                 approved_hours: Number(a.approved_hours) || 0, entered_at: normCellTs(a.entered_at),
+                 // 主管手動填遲到分鐘（2026-11-08 Eason）：Mac mini 從狀態欄找「主管認定不計遲到」「遲到N分(認定)」，列出是誰核定的
+                 status_text: String(a.status_text || ''), manager_name: String(a.manager_name || '') });
   });
   newly.sort(function (a, b) { return attDigestCmp_(a.entered_at, b.entered_at); });
 

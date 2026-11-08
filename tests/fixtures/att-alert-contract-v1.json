@@ -35,7 +35,9 @@
         "emp_id": "E03",
         "name": "林小美",
         "approved_hours": 6,
-        "entered_at": "2026-12-10T08:10:00+08:00"
+        "entered_at": "2026-12-10T08:10:00+08:00",
+        "status_text": "主管認定不計遲到",
+        "manager_name": "店長"
       }
     ],
     "unapproved": [
