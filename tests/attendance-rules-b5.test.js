@@ -1,0 +1,20 @@
+/* 出勤規範第 5 批（2026-11-08）：加班上限看 28 天週期（4-17）、逐日加班時數扣補休、週期切法 */
+const fs = require('fs');
+const ROOT = require('path').join(__dirname, '..');
+const GS = fs.readFileSync(ROOT + '/apps-script/Payroll.gs', 'utf8');
+const a = GS.indexOf('function payR0'), b = GS.indexOf('/* ═══════════════════ Handlers');
+const E = {}; new Function('exports', "function pad2(n){return ('0'+n).slice(-2)}\n" + GS.slice(a, b) + '\nexports.sum=payOtDailySum;')(E);
+let p = 0, f = 0;
+const chk = (n, g, w) => { const ok = JSON.stringify(g) === JSON.stringify(w); ok ? p++ : f++; console.log((ok ? '✓ ' : '✗ ') + n + ': ' + JSON.stringify(g) + (ok ? '' : ' ← 應為 ' + JSON.stringify(w))); };
+const m = GS.match(/function payPeriodRange_[\s\S]*?\n}\n/)[0];
+const R = new Function(m + '\nreturn payPeriodRange_;')();
+chk('11/1 是第 1 期', R('2026-11-01'), { start: '2026-11-01', end: '2026-11-28' });
+chk('11/28 還是第 1 期', R('2026-11-28').start, '2026-11-01');
+chk('11/29 第 2 期，跨到 12/26', R('2026-11-29'), { start: '2026-11-29', end: '2026-12-26' });
+chk('1/1 落在第 3 期', R('2027-01-01'), { start: '2026-12-27', end: '2027-01-23' });
+const S = E.sum({ dates: ['2026-11-02', '2026-11-03', '2026-11-04'], sched: { '2026-11-02': { t: 'W' }, '2026-11-03': { t: 'H' }, '2026-11-04': { t: 'W' } }, day_h: { '2026-11-02': 10, '2026-11-03': 3, '2026-11-04': 8 }, day_leave: {}, hol: {}, until: '2026-11-30', comp_h: 0, extra_ot: 0 });
+chk('逐日加班：平日超過的 2H、休息日全部', S.ot_days, { '2026-11-02': 2, '2026-11-03': 3 });
+const T = E.sum({ dates: ['2026-11-02', '2026-11-03'], sched: { '2026-11-02': { t: 'W' }, '2026-11-03': { t: 'H' } }, day_h: { '2026-11-02': 10, '2026-11-03': 3 }, day_leave: {}, hol: {}, until: '2026-11-30', comp_h: 3, extra_ot: 0 });
+chk('補休依日期扣到當天', T.ot_days, { '2026-11-02': 0, '2026-11-03': 2 });
+chk('逐日合計＝當月合計', Object.values(T.ot_days).reduce((x, y) => x + y, 0), T.ot_month_h);
+console.log(f ? `\n❌ 失敗 ${f}` : `\n✅ 全部通過 (${p}/${p})`); process.exit(f ? 1 : 0);

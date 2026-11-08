@@ -942,6 +942,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
       return;
     }
     hideLoadError();
+    OT_PERIOD=r.ot_period||{};
     HAS_CLOCK=(r.has_clock!==false);
     showClockMode();
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
@@ -1415,6 +1416,7 @@ function renderRun(){
    ①班表查不到（不能鎖定）②有排班沒核定也沒請假（只提醒、不扣）③例假出勤（要補假、24 小時內報主管機關）
    ④本月加班超過 54 小時（標紅、不擋）⑤手填支援沒有日期（沒算進逐日加班） */
 const OT_MONTH_CAP=54;
+let OT_PERIOD={};   // 今天這一期（28 天）的加班時數，後端 ot_period
 function renderOtInfo(t){
   let box=$('otInfo');
   if(!box){ box=document.createElement('div'); box.id='otInfo'; box.className='noprint'; box.style.margin='12px 0';
@@ -1428,8 +1430,9 @@ function renderOtInfo(t){
   RESULTS.forEach(r=>{const o=r.ot_info; if(!o) return; const nm=esc(r.name);
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
     if(o.comp_over_h>0) rows.push(`<li><b class="bad">${nm}</b>：補休有 ${r2(o.comp_over_h)} 小時抵不掉（休息日第 3 小時起、例假、國定假日的加班不能抵）——<b>改成其他假別前不能鎖定</b></li>`);
-    if(o.ot_level==='stop') rows.push(`<li><b class="bad">${nm}</b>：本月加班 ${r2(o.ot_h)} 小時，已滿 46 小時（休息日和超過 8 小時的上班卡會被擋）</li>`);
-    else if(o.ot_level==='warn') rows.push(`<li><b style="color:#b7791f">${nm}</b>：本月加班 ${r2(o.ot_h)} 小時，超過 36 小時</li>`);
+    { const pH=OT_PERIOD[String(r.name||'').replace(/\s/g,'')];
+      if(pH>=46) rows.push(`<li><b class="bad">${nm}</b>：這一期（28 天）加班 ${r2(pH)} 小時，已滿 46 小時（休息日和超過 8 小時的上班卡會被擋）</li>`);
+      else if(pH>36) rows.push(`<li><b style="color:#b7791f">${nm}</b>：這一期（28 天）加班 ${r2(pH)} 小時，超過 36 小時</li>`); }
     if(o.ot_form_missing&&o.ot_form_missing.length) rows.push(`<li><b class="bad">${nm}</b>：超過 8 小時卻沒有足夠的已核准加班單 ${o.ot_form_missing.map(x=>md(x.date)).join('、')}——<b>補單前不能鎖定</b></li>`);
     if(o.trip_ot&&o.trip_ot.length) rows.push(`<li><b class="bad">${nm}</b>：平日出差不得報加班，${list(o.trip_ot)} 有加班單，請確認</li>`);
     if(o.absent_alert) rows.push(`<li><b class="bad">${nm}</b>：有排班沒來 ${o.no_show.length} 天（最長連續 ${o.absent_streak} 天），已達連續 3 天或當月 6 天，請確認是否曠職</li>`);
