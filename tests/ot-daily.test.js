@@ -53,10 +53,10 @@ delete sched['2026-11-29']; delete sched['2026-11-30'];   // 下一期還沒發�
 const dayH = { '2026-11-02': 10, '2026-11-03': 8, '2026-11-04': 9, '2026-11-06': 4, '2026-11-10': 8 };
 const daily = { dates: DAYS(30), sched, day_h: dayH, day_leave: {}, hol: { '2026-11-10': true }, until: '2026-11-20', manual_sup_h: 0 };
 let r = E.payCalcOne(FT, '2026-11', ATT({ hours: 39, daily }), cfg, 9);
-chk('平日 4/3：11/2 超過 2H → 2 × 205.56 ＝ 411', [it(r, 'ot_w43').qty, it(r, 'ot_w43').rate, it(r, 'ot_w43').amount], [2, 205.56, 411]);
+chk('平日 1.34：11/2 超過 2H → 2 × 206.58 ＝ 413', [it(r, 'ot_w43').qty, it(r, 'ot_w43').rate, it(r, 'ot_w43').amount], [2, 206.58, 413]);
 chk('沒有平日 5/3', it(r, 'ot_w53'), undefined);
-chk('休息日 9H：(2×4/3＋6×5/3＋1×8/3)×154.1667＝2363.89 → 2364', [it(r, 'ot_rest').qty, it(r, 'ot_rest').amount], [9, 2364]);
-chk('休息日明細說明各段時數', it(r, 'ot_rest').memo, '前2H×4/3 2H、3–8H×5/3 6H、9H起×8/3 1H');
+chk('休息日 9H：(2×1.34＋6×1.67＋1×2.67)×154.1667 → 2370', [it(r, 'ot_rest').qty, it(r, 'ot_rest').amount], [9, 2370]);
+chk('休息日明細說明各段時數', it(r, 'ot_rest').memo, '前2H×1.34 2H、3–8H×1.67 6H、9H起×2.67 1H');
 chk('例假出勤 1 天 × 1233.33 ＝ 1233', [it(r, 'ot_rdo').qty, it(r, 'ot_rdo').amount], [1, 1233]);
 chk('國定假日出勤 1 天 ＝ 1233', [it(r, 'ot_hol').qty, it(r, 'ot_hol').amount], [1, 1233]);
 chk('不再有整月「加班」與「不足時數」', [it(r, 'overtime'), it(r, 'shortfall_hours')], [undefined, undefined]);
@@ -64,31 +64,31 @@ chk('本月加班時數＝平日 2＋休息日 9＝11', [r.ot_paid_hours, r.ot_i
 chk('班表查不到：11/29、11/30', r.ot_info.missing, ['2026-11-29', '2026-11-30']);
 chk('有排班沒核定也沒請假：11/5', r.ot_info.no_show, ['2026-11-05']);
 chk('例假出勤日、國定假日出勤日', [r.ot_info.rdo, r.ot_info.hol], [['2026-11-06'], ['2026-11-10']]);
-chk('實付＝底薪 30000＋職能 2000＋績效 3000＋411＋2364＋1233＋1233', r.gross, 30000 + 2000 + 3000 + 411 + 2364 + 1233 + 1233);
+chk('實付＝底薪 30000＋職能 2000＋績效 3000＋411＋2364＋1233＋1233', r.gross, 30000 + 2000 + 3000 + 413 + 2370 + 1233 + 1233);
 chk('2026-11 起「全勤獎金」改名「績效獎金」', it(r, 'attend_bonus').item_label, '績效獎金');
 
 r = E.payCalcOne(FT, '2026-11', ATT({ hours: 20, daily: Object.assign({}, daily, { day_h: { '2026-11-02': 9 } }) }), cfg, 9);
 chk('整月只上 20H 也不倒扣（Eason 2026-11-06）', [it(r, 'shortfall_hours'), r.deduction], [undefined, 0]);
 
 r = E.payCalcOne(FT, '2026-11', ATT({ hours: 39, daily, leaves: { comp: 3 } }), cfg, 9);
-chk('補休 3H：先扣平日 4/3 的 2H、再扣休息日 1H（前 2H 段）', [it(r, 'ot_w43'), it(r, 'ot_rest').qty, r.ot_info.comp_h], [undefined, 8, 3]);
-chk('  休息日剩 (1×4/3＋6×5/3＋1×8/3)×154.1667＝2158.33 → 2158', it(r, 'ot_rest').amount, 2158);
+chk('補休 3H：依日期先扣平日的 2H、再扣休息日前 2H 的 1H', [it(r, 'ot_w43'), it(r, 'ot_rest').qty, r.ot_info.comp_h], [undefined, 8, 3]);
+chk('  休息日剩 (1×1.34＋6×1.67＋1×2.67)×154.1667 → 2163', it(r, 'ot_rest').amount, 2163);
 
 const busy = {}; DAYS(28).forEach((d) => { busy[d] = 11; });   // 每天 11H、都是上班日 → 每天 3H 加班 × 28 天＝84H
 const allW = {}; DAYS(30).forEach((d) => { allW[d] = W; });
 r = E.payCalcOne(FT, '2026-11', ATT({ hours: 308, daily: { dates: DAYS(30), sched: allW, day_h: busy, day_leave: {}, hol: {}, until: '2026-11-30' } }), cfg, 9);
 chk('每天 11H × 28 天：平日 4/3 56H、5/3 28H、超過 54H 標紅', [it(r, 'ot_w43').qty, it(r, 'ot_w53').qty, r.ot_info.ot_h, r.ot_info.over_cap], [56, 28, 84, true]);
-chk('  5/3：28 × 256.94＝7194.44 → 7194', it(r, 'ot_w53').amount, 7194);
+chk('  1.67：28 × 257.46 → 7209', it(r, 'ot_w53').amount, 7209);
 chk('  11/29、11/30 排班沒核定 → 提醒 2 天', r.ot_info.no_show, ['2026-11-29', '2026-11-30']);
 
 r = E.payCalcOne(FT, '2026-11', ATT({ hours: 8, extra_ot: 1.5, daily: Object.assign({}, daily, { day_h: {} }) }), cfg, 9);
-chk('舊的「逐日加班」手填欄照平日前 2H 給：1.5 × 205.56＝308', it(r, 'ot_w43').amount, 308);
+chk('舊的「逐日加班」手填欄照平日前 2H 給：1.5 × 206.58 → 310', it(r, 'ot_w43').amount, 310);
 
 console.log('\n══ 3) 計時：只加加成 ══');
 r = E.payCalcOne(PT, '2026-11', ATT({ hours: 23, daily: { dates: DAYS(30), sched, day_h: { '2026-11-02': 10, '2026-11-04': 3, '2026-11-06': 4, '2026-11-03': 6 }, day_leave: {}, hol: {}, until: '2026-11-03' } }), cfg, 9);
 chk('時數本身照時薪：23 × 200', it(r, 'hourly_wage').amount, 4600);
-chk('平日超過 2H：+1/3 × 2 ＝ 133', [it(r, 'ot_w43').item_label, it(r, 'ot_w43').amount], ['平日加班加成（4/3）', 133]);
-chk('休息日 3H：(2×1/3＋1×2/3)×200＝266.67 → 267', it(r, 'ot_rest').amount, 267);
+chk('平日超過 2H：+0.34 × 2 → 136', [it(r, 'ot_w43').item_label, it(r, 'ot_w43').amount], ['平日加班加成（0.34）', 136]);
+chk('休息日 3H：(2×0.34＋1×0.67)×200 → 270', it(r, 'ot_rest').amount, 270);
 chk('例假 4H：加倍 4 × 200＝800', [it(r, 'ot_rdo_h').qty, it(r, 'ot_rdo_h').amount], [4, 800]);
 chk('計時不加發「一日」', it(r, 'ot_rdo'), undefined);
 r = E.payCalcOne(PT, '2026-11', ATT({ hours: 10, annual_h: 8, leaves: { annual: 8 }, daily: { dates: [], sched: {}, day_h: {}, day_leave: {}, hol: {} } }), cfg, 9);
@@ -161,7 +161,7 @@ chk('光復的店別是空字串（|T01）', F('paySchedCode_')('SSLGF') + '|' +
 let res = F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' });
 const r1 = res.results[0], li = (k) => [].concat(r1.earn, r1.ded).find((i) => i.item_key === k);
 chk('計算成功', res.ok, true);
-chk('平日 4/3 2H＝411、休息日 9H＝2364、例假 1 天＝1233', [li('ot_w43').amount, li('ot_rest').amount, li('ot_rdo').amount], [411, 2364, 1233]);
+chk('平日 1.34 2H＝413、休息日 9H＝2370、例假 1 天＝1233', [li('ot_w43').amount, li('ot_rest').amount, li('ot_rdo').amount], [413, 2370, 1233]);
 chk('沒有不足倒扣（整月只上 31H）', li('shortfall_hours'), undefined);
 chk('提醒：11/5 排班沒來、11/29–30 班表查不到', [r1.ot_info.no_show, r1.ot_info.missing], [['2026-11-05'], ['2026-11-29', '2026-11-30']]);
 const runRow = DB.run.find((x) => x.emp_id === 'E01');
@@ -187,7 +187,7 @@ console.log('\n══ 5b) 唯讀並列試算 payroll_ot_preview ══');
   const pv = F('handlePayrollOtPreview')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' });
   chk('回新舊兩份', [pv.ok, pv.old.length, pv.new.length], [true, 1, 1]);
   chk('舊算法：整月 31H 不足 160 → 有不足倒扣、沒有逐日明細', [pv.old[0].items.some((x) => x[0] === 'shortfall_hours'), pv.old[0].items.some((x) => /^ot_/.test(x[0]))], [true, false]);
-  chk('新算法：逐日明細與 calc 相同（休息日 2364）', pv.new[0].items.find((x) => x[0] === 'ot_rest')[4], 2364);
+  chk('新算法：逐日明細與 calc 相同（休息日 2370）', pv.new[0].items.find((x) => x[0] === 'ot_rest')[4], 2370);
   chk('完全沒有寫入 run／item', JSON.stringify(DB.run) === runsBefore && JSON.stringify(DB.item) === itemsBefore, true);
   chk('算完把開關關回去（生效月份與強制旗標都還原）', vm.runInContext('PAY_OT_DAILY_FROM + "|" + PAY_OT_FORCE_', sb), '2026-12|false');
   vm.runInContext("PAY_OT_DAILY_FROM = '2026-11'", sb);

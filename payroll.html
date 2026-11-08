@@ -1427,6 +1427,7 @@ function renderOtInfo(t){
     +(x.roster_ids&&x.roster_ids.length?`——名冊上同名的人是 <b>${x.roster_ids.map(esc).join('、')}</b>，請到「員工設定」把工號改成一樣`:'——請確認工號')+`</li>`));
   RESULTS.forEach(r=>{const o=r.ot_info; if(!o) return; const nm=esc(r.name);
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
+    if(o.comp_over_h>0) rows.push(`<li><b class="bad">${nm}</b>：補休有 ${r2(o.comp_over_h)} 小時抵不掉（休息日第 3 小時起、例假、國定假日的加班不能抵）——<b>改成其他假別前不能鎖定</b></li>`);
     if(o.over_cap) rows.push(`<li><b class="bad">${nm}</b>：本月加班 ${r2(o.ot_h)} 小時，超過每月 ${OT_MONTH_CAP} 小時上限</li>`);
     if(o.rdo&&o.rdo.length) rows.push(`<li><b>${nm}</b>：例假出勤 ${list(o.rdo)}——要另給補假，並在 24 小時內報主管機關</li>`);
     if(o.no_show&&o.no_show.length) rows.push(`<li>${nm}：有排班、沒核定也沒請假 ${list(o.no_show)}（系統不扣，請確認要補請假或扣款）</li>`);
@@ -1462,7 +1463,7 @@ async function toggleLock(){
     const r=await post('payroll_finalize',body,lock?{noToast:true}:undefined);
     if(r.ok){STATUS=r.status;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
     // 補休帳是負的不能鎖定（2026-11-01）：名單可能好幾行，用對話框列清楚
-    else if(lock&&(r.error==='comp_negative'||r.error==='sched_missing')) alert(r.message);
+    else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='sched_missing')) alert(r.message);
     else if(lock&&r.message) toast(r.message,true);
   } finally {
     if(timer) clearInterval(timer);

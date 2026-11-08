@@ -675,6 +675,8 @@ var PAY_COMP_NAME = '補休';
 var PAY_COMP_MONTHLY_FROM = '2026-10';
 /** 這種假是不是補休（假別表沒有這列時，程式內建也認得「補休」二字） */
 function payIsCompType(t) { return !!t && (String(t.code) === PAY_COMP_CODE || String(t.name).trim() === PAY_COMP_NAME); }
+/** 這家店適不適用補休：墨竹亭不適用（出勤規範 4-6，Eason 2026-11-08） */
+function payCompStoreOn_(store) { return !/^MZT/.test(String(payStore(store))); }
 /** 程式內建的補休假別（Eason 還沒在 payroll_leave_type 加這列時用）：全薪、不扣全勤；時數不抵不足（從當月加班扣）。 */
 function payCompDefaultType() {
   return { code: PAY_COMP_CODE, name: PAY_COMP_NAME, pay_ratio: 1, count_absent: false, offset_shortfall: false,
@@ -702,14 +704,15 @@ function payCompMonthCalc(ots, leaves, reqs) {
 /* ═══════════════════ 加班費新算法：逐日判斷（2026-11-06 Eason 定案，2026-11 薪資起）═══════════════════
  * 規格 ~/Desktop/Claude/系統/打卡/加班費新算法_規格草案_20261106.md；出勤認定清單 D1／D2／D4／D8／D9／D10／E4。
  * 每天先看排班管理發布的班表（sched_pub）那一格，再看當天核定時數（本店＋同品牌別店支援合計）：
- *   上班日（W）／請假日（L）：超過 8 小時 → 前 2 小時 ×4/3、其後 ×5/3（8 小時內月薪已含）
- *   休息日（H）：全部時數另給 → 前 2 小時 ×4/3、第 3–8 小時 ×5/3、第 9 小時起 ×8/3
+ *   上班日（W）／請假日（L）：超過 8 小時 → 前 2 小時 ×1.34、其後 ×1.67（8 小時內月薪已含，出勤規範 4-4）
+ *   休息日（H）：全部時數另給 → 前 2 小時 ×1.34、第 3–8 小時 ×1.67、第 9 小時起 ×2.67
  *   例假（R）、國定假日：有上班就加發一日（月工資 ÷30）；超過 8 小時照平日加班
- *   計時：時數本來就照時薪給，只加「加成」那一段（4/3 → +1/3、5/3 → +2/3、8/3 → +5/3、例假 +1 倍）；
+ *   計時：時數本來就照時薪給，只加「加成」那一段（+0.34、+0.67、+1.67、例假 +1 倍，出勤規範 4-5）；
  *         國定假日維持既有的 holiday_double（當天整天加一倍），不另加逐日加成。
  * 加班時薪＝月工資 ÷240（不取整，金額才四捨五入）；月工資＝本薪＋職能＋夜間＋店長＋小編＋績效獎金上限（原全勤上限）＋伙食費（固定 2,000）。
  * 正職不再有「不足時數」倒扣；整月加班合計（平日加班＋休息日出勤時數）超過 54 小時只標紅、不擋。
- * 補休（每月加減）照舊：本月休掉的補休時數從加班時數扣（先扣平日 4/3、再 5/3、再休息日）。
+ * 補休（每月加減）：本月休掉的補休時數依加班日期先後扣（4-7）；可抵平日全部與休息日前 2 小時（4-6），例假、國定假日出勤不能抵（4-10）；
+ *   抵不掉的時數記 comp_over_h，不能鎖定。墨竹亭不適用補休（payCompStoreOn_）。
  * ⚠ 放在 payR0～Handlers 之間：純函式，測試與 payroll_mock.js 只切這一段。 */
 /* 遲到／早退每分鐘費率（正職）的基數自這個月起含全勤上限（Eason 2026-11-07，全部門市）。
  * 之前月份照舊：底薪＋職能＋夜間＋店長。 */
@@ -724,6 +727,8 @@ var PAY_OT_MEAL_FIXED = 2000;        // 伙食費（算進月工資，Eason 2026
 var PAY_OT_DIV = 240;                // 加班時薪分母
 var PAY_OT_DAY_DIV = 30;             // 一日工資分母（例假／國定假日加發一日、特休未休折算）
 var PAY_OT_MONTH_CAP = 54;           // 每月加班上限（只標紅）
+var PAY_OT_MUL_FT = { a: 1.34, b: 1.67, c: 2.67 };   // 正職加班倍率（出勤規範 4-4，取代 4/3、5/3、8/3）
+var PAY_OT_MUL_PT = { a: 0.34, b: 0.67, c: 1.67 };   // 計時加成（出勤規範 4-5）
 var PAY_OT_FORCE_ = false;           // 只給 payroll_ot_preview 用：試算時把新算法套到任何月份（同一個請求內，算完就關）
 function payOtDailyOn(ym) { return PAY_OT_FORCE_ || String(ym || '') >= PAY_OT_DAILY_FROM; }
 /** 月工資總額（不乘在職比例：費率是職位的費率） */
@@ -759,6 +764,7 @@ function payOtKindOf(cell, isHol) {
  *  回 { w43,w53,r43,r53,r83, rdo_days,hol_days, rdo_dates:[], missing:[], no_show:[], ot_month_h } */
 function payOtDailySum(d) {
   const S = { w43: 0, w53: 0, r43: 0, r53: 0, r83: 0, rdo_days: 0, rdo_h: 0, hol_days: 0, rdo_dates: [], hol_dates: [], missing: [], no_show: [] };
+  const pool = [];   // 補休可以抵的加班，依日期先後（4-6、4-7、4-10）
   (d.dates || []).forEach(function (date) {
     const cell = (d.sched || {})[date] || null;
     const isHol = !!(d.hol || {})[date];
@@ -770,32 +776,40 @@ function payOtDailySum(d) {
     if (scheduledWork && !isHol && !(h > 0) && !(payNum((d.day_leave || {})[date]) > 0) && (!d.until || date <= d.until)) S.no_show.push(date);
     const b = payOtDayBreak(kind || 'W', h);   // 班表查不到的日子先當上班日算（鎖定會被擋，補發布後重算）
     ['w43', 'w53', 'r43', 'r53', 'r83'].forEach(function (k) { S[k] = payR2(S[k] + b[k]); });
+    if (kind === 'H') { if (b.r43 > 0) pool.push({ date: date, k: 'r43', h: b.r43 }); }
+    else if (kind !== 'R' && kind !== 'HOL') {
+      if (b.w43 > 0) pool.push({ date: date, k: 'w43', h: b.w43 });
+      if (b.w53 > 0) pool.push({ date: date, k: 'w53', h: b.w53 });
+    }
     if (b.day && kind === 'R') { S.rdo_days++; S.rdo_h = payR2((S.rdo_h || 0) + h); S.rdo_dates.push(date); }
     if (b.day && kind === 'HOL') { S.hol_days++; S.hol_dates.push(date); }
   });
-  S.w43 = payR2(S.w43 + Math.max(0, payNum(d.extra_ot)));   // 舊的「逐日加班」手填欄：照平日前 2 小時給
-  // 補休（每月加減）：休掉的時數從加班扣，先扣便宜的
+  const extraOt = Math.max(0, payNum(d.extra_ot));
+  S.w43 = payR2(S.w43 + extraOt);   // 舊的「逐日加班」手填欄：照平日前 2 小時給
+  if (extraOt > 0) pool.push({ date: '9999-12-31', k: 'w43', h: extraOt });   // 手填沒有日期，排最後
   let comp = Math.max(0, payNum(d.comp_h));
   S.comp_used_h = 0;
-  ['w43', 'w53', 'r43', 'r53', 'r83'].forEach(function (k) {
-    const x = Math.min(comp, S[k]);
-    S[k] = payR2(S[k] - x); comp = payR2(comp - x); S.comp_used_h = payR2(S.comp_used_h + x);
+  pool.sort(function (x, y) { return String(x.date).localeCompare(String(y.date)); });
+  pool.forEach(function (p) {
+    const x = Math.min(comp, p.h);
+    S[p.k] = payR2(S[p.k] - x); comp = payR2(comp - x); S.comp_used_h = payR2(S.comp_used_h + x);
   });
+  S.comp_over_h = comp;   // 抵不掉的補休：不能鎖定，要改成其他假別
   S.ot_month_h = payR2(S.w43 + S.w53 + S.r43 + S.r53 + S.r83);
   return S;
 }
 /** 逐日加班 → 薪資單明細（push 由 payCalcOne 傳入）。ft：正職給全額倍率；計時只給加成（w＝有效時薪）。 */
 function payOtDailyItems(S, ft, M, w, push) {
   const R = ft ? M / PAY_OT_DIV : w;          // 一小時的「1 倍」
-  const mul = ft ? { a: 4 / 3, b: 5 / 3, c: 8 / 3 } : { a: 1 / 3, b: 2 / 3, c: 5 / 3 };
+  const mul = ft ? PAY_OT_MUL_FT : PAY_OT_MUL_PT;
   const tag = ft ? '' : '加成';
-  if (S.w43 > 0) push('ot_w43', '平日加班' + tag + '（4/3）', S.w43, payR2(R * mul.a), S.w43 * R * mul.a);
-  if (S.w53 > 0) push('ot_w53', '平日加班' + tag + '（5/3）', S.w53, payR2(R * mul.b), S.w53 * R * mul.b);
+  if (S.w43 > 0) push('ot_w43', '平日加班' + tag + '（' + mul.a + '）', S.w43, payR2(R * mul.a), S.w43 * R * mul.a);
+  if (S.w53 > 0) push('ot_w53', '平日加班' + tag + '（' + mul.b + '）', S.w53, payR2(R * mul.b), S.w53 * R * mul.b);
   const restH = payR2(S.r43 + S.r53 + S.r83);
   if (restH > 0) {
     const amt = (S.r43 * mul.a + S.r53 * mul.b + S.r83 * mul.c) * R;
     push('ot_rest', '休息日出勤' + tag, restH, null, amt,
-         '前2H×' + (ft ? '4/3' : '1/3') + ' ' + S.r43 + 'H、3–8H×' + (ft ? '5/3' : '2/3') + ' ' + S.r53 + 'H' + (S.r83 ? '、9H起×' + (ft ? '8/3' : '5/3') + ' ' + S.r83 + 'H' : ''));
+         '前2H×' + mul.a + ' ' + S.r43 + 'H、3–8H×' + mul.b + ' ' + S.r53 + 'H' + (S.r83 ? '、9H起×' + mul.c + ' ' + S.r83 + 'H' : ''));
   }
   if (ft) {
     const day = M / PAY_OT_DAY_DIV;
@@ -1067,7 +1081,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     pt_attend: ptAttendInfo,
   };
   if (otS) out.ot_info = { ot_h: otS.ot_month_h, over_cap: otS.ot_month_h > PAY_OT_MONTH_CAP, missing: otS.missing,
-    no_show: otS.no_show, rdo: otS.rdo_dates, hol: otS.hol_dates, comp_h: otS.comp_used_h,
+    no_show: otS.no_show, rdo: otS.rdo_dates, hol: otS.hol_dates, comp_h: otS.comp_used_h, comp_over_h: otS.comp_over_h,
     manual_sup_h: payNum(att.daily.manual_sup_h) };
   return out;
 }
@@ -2917,6 +2931,16 @@ function handlePayrollFinalize(body) {
     if (neg.length) return { ok: false, error: 'comp_negative', list: neg,
       message: '補休帳是負的，不能鎖定（請補核准加班申請，或把多請的補休改成其他假別）：\n' + neg.map(payCompNegLine).join('\n') };
   }
+  /* 補休抵不掉不能鎖定（出勤規範 4-6、4-10）：休息日第 3 小時起、例假、國定假日的加班不能抵，多請的補休要改成其他假別。解鎖不擋。 */
+  if (lock && payOtDailyOn(ym)) {
+    const over = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === stF; }).map(function (r) {
+      let o = {}; try { o = JSON.parse(r.ot_info || '{}') || {}; } catch (e) { o = {}; }
+      return { name: r.name, h: payNum(o.comp_over_h) };
+    }).filter(function (x) { return x.h > 0; });
+    if (over.length) return { ok: false, error: 'comp_over', list: over,
+      message: '下面的同仁補休比可以抵的加班多，不能鎖定（休息日第 3 小時起、例假、國定假日的加班不能抵）。請把多請的補休改成其他假別：\n' +
+        over.map(function (x) { return x.name + '：' + x.h + ' 小時'; }).join('\n') };
+  }
   /* 班表查不到不能鎖定（Eason 2026-11-06）：2026-11 起加班看班表判斷休息日／例假，
      某人某月有任何一天在排班管理發布的班表上查不到，就要先去補發布班表。解鎖不擋。 */
   if (lock && payOtDailyOn(ym)) {
@@ -4245,7 +4269,8 @@ function handlePayrollLeaveOptions(body) {
   if (deny) return deny;
 
   const ym = /^\d{4}-\d{2}$/.test(String(body.ym || '')) ? body.ym : nowTaipeiIso().slice(0, 7);
-  const types = payLeaveTypes(st);
+  const compOn = payCompStoreOn_(st);
+  const types = payLeaveTypes(st).filter(function (t) { return compOn || !payIsCompType(t); });
   const cfg = payConfig(st);
   const master = payRead('master').filter(function (m) {
     return String(m.active).toLowerCase() === 'true' && payStore(m.store) === st;
@@ -4261,7 +4286,7 @@ function handlePayrollLeaveOptions(body) {
   const flat = payLeaveFlatRows(st, types, nameToEmp);
   const quotas = {};
   let compBook = null;
-  try { compBook = payCompMonthBook(ym); } catch (err) { compBook = null; }
+  try { compBook = compOn ? payCompMonthBook(ym) : null; } catch (err) { compBook = null; }
   const compCode = (types.filter(payIsCompType)[0] || {}).code || PAY_COMP_CODE;   // 表上自訂的補休列 code 可能不是 comp
   master.forEach(function (e) {
     quotas[String(e.emp_id)] = payLeaveUsage(String(e.emp_id), ym, types, cfg, null, flat, spans);
