@@ -1436,6 +1436,7 @@ function renderOtInfo(t){
     if(o.ot_form_missing&&o.ot_form_missing.length) rows.push(`<li><b class="bad">${nm}</b>：超過 8 小時卻沒有足夠的已核准加班單 ${o.ot_form_missing.map(x=>md(x.date)).join('、')}——<b>補單前不能鎖定</b></li>`);
     if(o.trip_ot&&o.trip_ot.length) rows.push(`<li><b class="bad">${nm}</b>：平日出差不得報加班，${list(o.trip_ot)} 有加班單，請確認</li>`);
     if(o.absent_alert) rows.push(`<li><b class="bad">${nm}</b>：有排班沒來 ${o.no_show.length} 天（最長連續 ${o.absent_streak} 天），已達連續 3 天或當月 6 天，請確認是否曠職</li>`);
+    if(o.short_8h&&o.short_8h.length) rows.push(`<li><b style="color:#b7791f">${nm}</b>：墨竹亭全時每日要滿 8 小時（含出差、請假），${o.short_8h.slice(0,12).map(x=>md(x.date)+' '+r2(x.h)+'H').join('、')}${o.short_8h.length>12?` 等 ${o.short_8h.length} 天`:''} 不足，請確認</li>`);
     if(o.personal_over_days>0) rows.push(`<li><b class="bad">${nm}</b>：事假＋家庭照顧假今年超過 14 天（多 ${r2(o.personal_over_days)} 天），以曠職論，系統不自動扣，請確認</li>`);
     if(o.over_cap) rows.push(`<li><b class="bad">${nm}</b>：本月加班 ${r2(o.ot_h)} 小時，超過每月 ${OT_MONTH_CAP} 小時上限</li>`);
     if(o.rdo&&o.rdo.length) rows.push(`<li><b>${nm}</b>：例假出勤 ${list(o.rdo)}——要另給補假，並在 24 小時內報主管機關</li>`);

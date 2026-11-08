@@ -751,6 +751,19 @@ function payOtFormCheck_(att) {
   });
   return out;
 }
+/** 墨竹亭全時同仁每日出勤要滿 8 小時（含出差、請假，出勤規範 4-6）：排工作日、到昨天為止、當天有出勤或請假卻不滿 8 小時的日子。只提醒。 */
+function payMztShortDays_(e, d) {
+  const out = [];
+  if (!/^MZT/.test(String(e.store || '')) || !d) return out;
+  (d.dates || []).forEach(function (date) {
+    if (d.until && date > d.until) return;
+    const cell = (d.sched || {})[date];
+    if (!cell || String(cell.t) !== 'W' || (d.hol || {})[date]) return;
+    const total = payR2(payNum((d.day_h || {})[date]) + payNum((d.day_leave || {})[date]));
+    if (total > 0 && total < 8) out.push({ date: date, h: total });
+  });
+  return out;
+}
 /** 事假＋家庭照顧假今年累計超過事假上限的天數（3-3）。事假的已用天數含家庭照顧假逾上限併入的部分，這裡只補回沒併入的那段。 */
 function payPersonalOverDays_(att, cfg, ltypes) {
   const u = att.leave_usage || {}, dayH = payNum(cfg.daily_hours) || 8, lv = payAttLeaves(att) || {};
@@ -1145,6 +1158,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     out.ot_info.trip_ot = chk.trip_ot;
     out.ot_info.absent_alert = otS.no_show_streak >= 3 || otS.no_show.length >= 6;
     out.ot_info.absent_streak = otS.no_show_streak;
+    out.ot_info.short_8h = ft ? payMztShortDays_(e, att.daily) : [];
     out.ot_info.personal_over_days = payPersonalOverDays_(att, cfg, ltypes);
   }
   return out;
