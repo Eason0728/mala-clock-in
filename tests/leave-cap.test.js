@@ -54,7 +54,7 @@ chk('已用28日 → 16H 全在額度內＝半薪', l2?l2.amount:0, 16*Math.roun
 CLOCK.leave=[];
 for(let d=1;d<=7;d++) CLOCK.leave.push({'日期':`2026-03-0${d}`,'姓名':'張三','假別':'家庭照顧假','時數':8});
 const u3=call('payLeaveUsedBefore','2026-07','SSLGF',T,cfg,[emp]);
-chk('家庭照顧假 7 天 → 吃掉事假額度 7 日', u3.E01.personal.used_before_days, 7);
+chk('家庭照顧假 7 天內不併入事假額度（3-11）', u3.E01.personal.used_before_days, 0);
 
 console.log(`\n${f?'❌ 有失敗':'✅ 跨月額度累計全部正確'} (${p}/${p+f})`);
 process.exit(f?1:0);
