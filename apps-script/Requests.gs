@@ -1175,6 +1175,24 @@ function reqStrictSlotOk_(date, start, end, merged) {
   var fit = function (x, y) { return merged.some(function (m) { return x >= m.s - tol && y <= m.e + tol; }); };
   return fit(s, e) || fit(s + 86400000, e + 86400000);
 }
+/** 加班單有幾分鐘落在班表上班時段內；跨夜的加班單也試隔天。 */
+function reqOtInSchedMin_(start, end, spans) {
+  var a = reqMin_(start), b = reqMin_(end);
+  if (a === null || b === null) return 0;
+  if (b <= a) b += 1440;
+  var best = 0;
+  [0, 1440].forEach(function (shift) {
+    var sum = 0;
+    spans.forEach(function (x) {
+      var s = reqMin_(String(x.start)), e = reqMin_(String(x.end));
+      if (s === null || e === null) return;
+      if (e <= s) e += 1440;
+      sum += Math.max(0, Math.min(b + shift, e) - Math.max(a + shift, s));
+    });
+    if (sum > best) best = sum;
+  });
+  return best;
+}
 /** 核定和打卡相差幾分鐘；有缺卡（比不出來）回 null */
 function reqPunchDiffMin_(periods, segs, breakWindow) {
   if (!periods.length || !segs.length || segs.some(function (s) { return s.inMs == null || s.outMs == null; })) return null;
@@ -1229,6 +1247,12 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
       var merged = reqStrictMerged_(periods);
       otRows.forEach(function (r) {
         if (!reqStrictSlotOk_(date, String(r.start), String(r.end), merged)) add('ot_slot', '加班單 ' + r.start + '–' + r.end + ' 不在核定時段內（前後可差 ' + REQ_STRICT_TOL_MIN + ' 分鐘）');
+      });
+      /* 班表內是正常上班，不能算加班事實（Eason 2026-11-09）。班表時段由營運系統帶入，休息日、例假整天都算加班不比；沒帶＝不檢查。 */
+      var spans = ot.rest || !Array.isArray(opt.sched_spans) ? [] : opt.sched_spans;
+      if (spans.length) otRows.forEach(function (r) {
+        var inMin = reqOtInSchedMin_(String(r.start), String(r.end), spans);
+        if (inMin > REQ_STRICT_TOL_MIN) add('ot_in_sched', '加班單 ' + r.start + '–' + r.end + ' 有 ' + inMin + ' 分鐘在班表上班時段內（' + spans.map(function (x) { return x.start + '–' + x.end; }).join('、') + '），班表內是正常上班，不能算加班，請改成實際加班的時段');
       });
     }
   } else if (otNeed > 0.005 && otHave + 0.005 < otNeed) {

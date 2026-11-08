@@ -1905,7 +1905,7 @@ function handleMgrApprove(body) {
   if (typeof reqBindCheck_ === 'function') {
     const acting = reqMgrActing_(mgr, body);
     const bind = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, punchMs, noPunchBreakWindow(date),
-      { leaves: leaves, trip_hours: tripHours, sched_day: acting ? String(body.sched_day || '') : '', diff_reason: body.diff_reason, acting: acting });
+      { leaves: leaves, trip_hours: tripHours, sched_day: acting ? String(body.sched_day || '') : '', sched_spans: acting && Array.isArray(body.sched_spans) ? body.sched_spans : [], diff_reason: body.diff_reason, acting: acting });
     if (bind) return bind;
   }
   const enteredAt = nowTaipeiIso();
