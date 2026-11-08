@@ -1,0 +1,22 @@
+/* 加班單不能落在班表上班時段內（Eason 2026-11-09）：17:00–18:30 班到 18:00 → 擋；08:00–09:00＋18:00–18:30 → 過 */
+const fs = require('fs'), vm = require('vm');
+const ROOT = require('path').join(__dirname, '..');
+const read = (f) => fs.readFileSync(ROOT + '/apps-script/' + f, 'utf8');
+const sb = { console, Utilities: { formatDate: (d) => d.toISOString() }, Logger: { log() {} }, SpreadsheetApp: {}, PropertiesService: { getScriptProperties: () => ({ getProperty: () => null }) }, LockService: {} };
+vm.createContext(sb); vm.runInContext(read('Code.gs') + '\n' + read('Requests.gs'), sb);
+let p = 0, f = 0; const chk = (n, g, w) => { const ok = JSON.stringify(g) === JSON.stringify(w); ok ? p++ : f++; console.log((ok ? '✓ ' : '✗ ') + n + ': ' + JSON.stringify(g) + (ok ? '' : ' ← 應為 ' + JSON.stringify(w))); };
+const D = '2026-11-12', ms = (h, m = 0) => Date.parse(`${D}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00+08:00`);
+const P = [{ startMs: ms(8), endMs: ms(14) }, { startMs: ms(15), endMs: ms(18, 30) }], S = [{ inMs: ms(7, 56), outMs: ms(18, 35) }], W = { startMs: ms(14), endMs: ms(15) };
+const SP = [{ start: '09:00', end: '14:00' }, { start: '15:00', end: '18:00' }];
+const rows = (l) => l.map(([s, e, h]) => ({ emp_id: 'E', date: D, kind: 'ot', status: 'approved', start: s, end: e, hours: h }));
+const run = (l, opt) => F({}, 'E', D, 9.5, P, S, W, Object.assign({ rows: rows(l), force_strict: true, sched_day: 'W', preview: true, leaves: [], trip_hours: 0, sched_spans: SP }, opt || {})).probs.map((x) => x.rule);
+const F = vm.runInContext('reqBindCheck_', sb), M = vm.runInContext('reqOtInSchedMin_', sb);
+chk('一張 17:00–18:30：60 分鐘在班表內，擋', run([['17:00', '18:30', 1.5]]), ['ot_in_sched']);
+chk('兩張 08:00–09:00、18:00–18:30：過', run([['08:00', '09:00', 1], ['18:00', '18:30', 0.5]]), []);
+chk('差 15 分鐘內算過（17:45–18:30＋08:00–08:45）', run([['17:45', '18:30', 0.75], ['08:15', '09:00', 0.75]]), []);
+chk('沒帶班表時段不檢查', run([['17:00', '18:30', 1.5]], { sched_spans: [] }), []);
+chk('休息日整天都算加班，不比', F({}, 'E', D, 1.5, [{ startMs: ms(17), endMs: ms(18, 30) }], [{ inMs: ms(16, 58), outMs: ms(18, 32) }], null, { rows: rows([['17:00', '18:30', 1.5]]), force_strict: true, sched_day: 'H', preview: true, leaves: [], trip_hours: 0, sched_spans: SP }).probs, []);
+chk('11/11 以前不比', (() => { const r = F({}, 'E', '2026-11-06', 9.5, P, S, W, { rows: rows([['17:00', '18:30', 1.5]]).map((x) => Object.assign(x, { date: '2026-11-06' })), sched_day: 'W', preview: true, leaves: [], trip_hours: 0, sched_spans: SP }); return r.probs.map((x) => x.rule); })(), []);
+chk('跨兩段累計', M('13:30', '15:30', SP), 60);
+chk('跨夜班', M('23:30', '00:30', [{ start: '22:00', end: '00:00' }]), 30);
+console.log(f ? `\n❌ 失敗 ${f}` : `\n✅ 全部通過 (${p}/${p})`); process.exit(f ? 1 : 0);
