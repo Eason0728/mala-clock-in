@@ -855,10 +855,9 @@ function payOtDailySum(d) {
   let comp = Math.max(0, payNum(d.comp_h));
   S.comp_used_h = 0;
   pool.sort(function (x, y) { return String(x.date).localeCompare(String(y.date)); });
-  pool.forEach(function (p) {
+  if (!d.comp_off) pool.forEach(function (p) {
     const x = Math.min(comp, p.h);
     S[p.k] = payR2(S[p.k] - x); comp = payR2(comp - x); S.comp_used_h = payR2(S.comp_used_h + x);
-    if (x > 0 && S.ot_days[p.date] != null) S.ot_days[p.date] = payR2(S.ot_days[p.date] - x);
   });
   S.comp_over_h = comp;   // 抵不掉的補休：不能鎖定，要改成其他假別
   S.ot_month_h = payR2(S.w43 + S.w53 + S.r43 + S.r53 + S.r83);
@@ -943,7 +942,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     if (daily) {
       // 2026-11 起：逐日判斷，不再整月加總、也不再「不足時數」倒扣（Eason 2026-11-06）
       otS = payOtDailySum(Object.assign({}, att.daily, {
-        extra_ot: att.extra_ot, comp_h: !compMonthly ? 0 : Object.keys(LMAP).reduce(function (t, c) {
+        comp_off: /^MZT/.test(String(e.store || '')), extra_ot: att.extra_ot, comp_h: !compMonthly ? 0 : Object.keys(LMAP).reduce(function (t, c) {
           return t + ((c === PAY_COMP_CODE || payIsCompType(LTM[c])) ? payNum(LMAP[c]) : 0); }, 0) }));
       otPaid = otS.ot_month_h;
       payOtDailyItems(otS, true, MW, 0, function (k, l, q, r, a, m) { push(earn, k, l, q, r, a, m); });
@@ -1153,7 +1152,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     manual_sup_h: payNum(att.daily.manual_sup_h) };
   if (otS) {
     const chk = payOtFormCheck_(att);
-    out._ot_days = otS.ot_days;   // 給 28 天週期加總（payOtMonthSync_）；不進 run 表
+    out._ot_days = otS.ot_days;   // 實際加班（補休前），給 28 天週期加總（payOtMonthSync_）；不進 run 表
     out.ot_info.ot_form_missing = chk.missing;
     out.ot_info.trip_ot = chk.trip_ot;
     out.ot_info.absent_alert = otS.no_show_streak >= 3 || otS.no_show.length >= 6;
@@ -2711,8 +2710,8 @@ function payOtMonthSync_() {
     } catch (e) { errors.push(st); Logger.log('ot_month 算不出來 ' + st + '：' + e); }
   });
   const stamp = nowTaipeiIso();
-  const rows = [['name', 'ot_h', 'rest', 'date', 'updated_at']].concat(Object.keys(by).map(function (nm) {
-    return [nm, by[nm].h, (by[nm].rest && !by[nm].work) ? 'TRUE' : 'FALSE', today, stamp];
+  const rows = [['name', 'ot_h', 'rest', 'date', 'updated_at', 'period_start', 'period_end']].concat(Object.keys(by).map(function (nm) {
+    return [nm, by[nm].h, (by[nm].rest && !by[nm].work) ? 'TRUE' : 'FALSE', today, stamp, range.start, range.end];
   }));
   const writeErrors = [];
   stores.forEach(function (s) {
@@ -2720,7 +2719,7 @@ function payOtMonthSync_() {
       const ss = payClockSS(s.code);
       const sh = ss.getSheetByName('ot_month') || ss.insertSheet('ot_month');
       sh.clearContents();
-      sh.getRange(1, 1, rows.length, 5).setNumberFormat('@').setValues(rows.map(function (x) { return x.map(String); }));
+      sh.getRange(1, 1, rows.length, 7).setNumberFormat('@').setValues(rows.map(function (x) { return x.map(String); }));
     } catch (e) { writeErrors.push(String(s.code)); Logger.log('ot_month 寫不進去 ' + s.code + '：' + e); }
   });
   return { ok: true, date: today, stores: stores.length, people: rows.length - 1, errors: errors, write_errors: writeErrors,
@@ -2732,7 +2731,7 @@ function payOtPeriodMap_(st) {
   const out = {};
   try {
     const today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
-    payClockRead(st, 'ot_month').forEach(function (r) { if (String(r.date).slice(0, 10) === today) out[String(r.name)] = payNum(r.ot_h); });
+    payClockRead(st, 'ot_month').forEach(function (r) { const ps = String(r.period_start || '').slice(0, 10), pe = String(r.period_end || '').slice(0, 10); if (ps ? (today >= ps && today <= pe) : String(r.date).slice(0, 10) === today) out[String(r.name)] = payNum(r.ot_h); });
   } catch (e) {}
   return out;
 }
@@ -3208,13 +3207,14 @@ function payAnnualInfo(ym, store) {
     // payout_ym＝週年期「屆滿前一日」所在的月份：勞基法§38 特休因年度終結而未休完者應折算工資。
     // 例到職 10/01 → 到 9/30，算 9 月薪資；到職 10/15 → 到 10/14，算 10 月薪資（Eason 2026-11-08）。
     // q 用月底算，10/15 到職的人一進 10 月 q 已是新年度，所以要回頭看上個月的那一期才結得到舊年度。
-    const settle = (leavingNow || String(ym) < PAY_ANNUAL_SETTLE_FROM) ? null : payAnnualQuota(e.hire_date, payDayBefore(ym + '-01').slice(0, 7));
+    const settle = String(ym) < PAY_ANNUAL_SETTLE_FROM ? null : payAnnualQuota(e.hire_date, payDayBefore(ym + '-01').slice(0, 7));
     const settleNow = !!(settle && settle.days > 0 && settle.pe && payDayBefore(settle.pe).slice(0, 7) === ym);
     const quotaH = payR1(q.days * 8 * ratio);
     out[String(e.emp_id)] = { days: q.days, quota_h: quotaH, used_h: payR1(used),
                               left_h: payR1(quotaH - used),
                               ps: q.ps, pe: q.pe, payout_ym: (leavingNow || settleNow) ? ym : payDayBefore(q.pe).slice(0, 7) };
-    if (settleNow) out[String(e.emp_id)].payout_h = payR1(settle.days * 8 * ratio - usedIn(settle));
+    // 離職當月：q 若已是新週年期，舊週年期剩下的也要一起結；q 就是到期那一期時，照 left_h 不重複算
+    if (settleNow && (!leavingNow || settle.ps !== q.ps)) out[String(e.emp_id)].payout_h = payR1(Math.max(0, settle.days * 8 * ratio - usedIn(settle)) + (leavingNow ? Math.max(0, quotaH - used) : 0));
     if (!ft) out[String(e.emp_id)].ratio = payR2(ratio);   // 計時：工時比例（畫面說明用）
   });
   return out;

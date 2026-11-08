@@ -65,6 +65,23 @@ Object.keys(CACHE).forEach((k) => delete CACHE[k]);
 chk('昨天的列不算', R(sheet([H, ['王小明', '47', 'TRUE', '2026-11-19', 'x']]), '王小明', NOW), null);
 Object.keys(CACHE).forEach((k) => delete CACHE[k]);
 chk('沒有分頁不擋', R({ getSheetByName: () => null }, '王小明', NOW), null);
+Object.keys(CACHE).forEach((k) => delete CACHE[k]);
+const H2 = H.concat(['period_start', 'period_end']);
+chk('同一週期昨天的列沿用時數，休息日不沿用', R(sheet([H2, ['王小明', '47', 'TRUE', '2026-11-19', 'x', '2026-11-01', '2026-11-28']]), '王小明', NOW), { h: 47, rest: false });
+Object.keys(CACHE).forEach((k) => delete CACHE[k]);
+chk('上一期的列不算', R(sheet([H2, ['王小明', '47', 'TRUE', '2026-10-31', 'x', '2026-10-04', '2026-10-31']]), '王小明', NOW), null);
+Object.keys(CACHE).forEach((k) => delete CACHE[k]);
+a = info('2025-10-15', '2026-10');
+sb.__DB.master = [Object.assign(me('2024-10-15'), { leave_date: '2026-10-20' })];
+CLOCK.leave = [{ '日期': '2026-05-01', '姓名': '測試二', '假別': '特休', '時數': 8 }];
+sb.PAY_RULES3_FROM = '2026-10';
+a = F('payAnnualInfo')('2026-10', 'SSLGF')['F'];
+chk('離職月已過週年日：舊期 48H＋新期 80H', [a.payout_ym, a.payout_h], ['2026-10', 128]);
+sb.__DB.master = [Object.assign(me('2024-11-20'), { leave_date: '2026-11-10' })];
+sb.PAY_RULES3_FROM = '2026-11';
+a = F('payAnnualInfo')('2026-11', 'SSLGF')['F'];
+chk('離職時週年日未到：只結上一期，不重複', [a.days, a.payout_h], [7, undefined]);
+CLOCK.leave = [];
 
 // 4-2、5-1
 const C = F('payOtFormCheck_');
