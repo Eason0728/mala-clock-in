@@ -11,6 +11,7 @@ const sandbox={console,SpreadsheetApp:{getActive:()=>({getSheetByName:()=>null})
 vm.createContext(sandbox); vm.runInContext(C+'\n'+P,sandbox);
 vm.runInContext('payClockRead=function(s,sh){return (globalThis.__CLOCK[sh]||[]);};',sandbox);
 sandbox.__CLOCK=CLOCK;
+vm.runInContext("PAY_MENSTRUAL_FULL_FROM='2000-01';",sandbox);
 const call=(fn,...a)=>vm.runInContext(fn,sandbox)(...a);
 const cfg={daily_hours:8,leave_div_days:30,leave_div_hours:8,attend_deduct_per_day:100,sick_ratio:0.5};
 const mk=h=>({emp_id:'E01',name:'張三',is_full_time:'true',base:30000,skill_allow:3000,night_allow:3000,

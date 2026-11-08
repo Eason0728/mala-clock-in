@@ -550,9 +550,11 @@ function payDateStr(v) {
 /** 特休額度（台灣勞基法§38 週年制）：以薪資月月底為基準日，回當前週年期 {days, ps, pe}。
  *  滿6月未滿1年3日；1年7日；2年10日；3年14日；5年15日；10年起每年+1、上限30日。年資未滿6月回 days:0。 */
 /** 計時特休的工時比例（勞基法§38 部分工時：依工作時間比例計給）：
- *  前 12 個月（不含本月）薪資結算過的月份，平均每月核定時數 ÷ 全時每月工時（40×52÷12＝173.33），最多 1。
+ *  前 12 個月（不含本月）薪資結算過的月份，平均每月核定時數 ÷ 全時每月工時（全年 2088 小時÷12＝174，出勤規範 3-18），最多 1。
  *  沒有任何結算過的月份＝0（新人第一個月看不到額度，結算一個月之後才有）。 */
-var PAY_PT_FULL_MONTH_H = 40 * 52 / 12;
+var PAY_PT_FULL_MONTH_H = 2088 / 12;
+/** 計時同仁有沒有投保勞保（主檔自付或公司負擔有填）：出勤規範 3-18 未投保者不適用特休。 */
+function payPtInsured_(e) { return payNum(e.labor_ins) > 0 || payNum(e.co_labor) > 0; }
 function payPtAnnualRatio(runRows, empId, ym) {
   const y = +ym.slice(0, 4), m = +ym.slice(5, 7);
   const from = (m === 12 ? y : y - 1) + '-' + pad2(m === 12 ? 1 : m + 1);   // 12 個月前的下個月
@@ -1022,6 +1024,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     if (!t) return;   // 對不到假別＝不扣款，與改版前的 other_h 行為相同
     let ratio = t.pay_ratio;
     if (t.tenure_months != null && tenureM != null && tenureM < t.tenure_months) ratio = t.under_ratio;
+    if (code === 'menstrual' && String(ym) < PAY_MENSTRUAL_FULL_FROM) ratio = 0.5;   // 3 次內全薪從 2026-11 起，之前月份照舊半薪
     const usage = (att.leave_usage || {})[code] || {};
     const before = payNum(usage.used_before_days);
     let overH = 0;
@@ -1290,7 +1293,7 @@ function payLeaveUsedBefore(ym, store, ltypes, cfg, master) {
       if (!/^\d{4}-\d{2}$/.test(m) || m.slice(0, 4) !== year || m >= ym) return;
       capped.forEach(function (t) {
         const col = legacyCol[t.code];
-        if (col) acc[t.code] = (acc[t.code] || 0) + payNum(r[col]) / dayH;
+        if (col) acc[t.code] = (acc[t.code] || 0) + payLeaveQuotaDays_(t.code, r[col], dayH);
       });
     });
     // ② leave 分頁（歷任門市）
@@ -1301,16 +1304,15 @@ function payLeaveUsedBefore(ym, store, ltypes, cfg, master) {
         if (!d || d.slice(0, 4) !== year || d >= firstOfMonth) return;
         const code = payLeaveCode(String(l['假別'] || ''), ltypes);
         if (!code) return;
-        acc[code] = (acc[code] || 0) + (Number(l['時數']) || 0) / dayH;
+        acc[code] = (acc[code] || 0) + payLeaveQuotaDays_(code, Number(l['時數']) || 0, dayH);
       });
     });
-    // ③ 併入：家庭照顧假全額吃事假額度、生理假逾上限的部分吃病假額度
+    // ③ 併入：家庭照顧假（出勤規範 3-11）、生理假都是逾上限的部分才併入
     (ltypes || []).forEach(function (t) {
       if (!t.merge_into) return;
       const u = acc[t.code] || 0;
       if (!u) return;
-      const add = (t.cap_days == null) ? u
-                : (t.code === 'family' ? u : Math.max(0, u - t.cap_days));
+      const add = (t.cap_days == null) ? u : Math.max(0, u - t.cap_days);
       if (add > 0) acc[t.merge_into] = (acc[t.merge_into] || 0) + add;
     });
     const slot = {};
@@ -1346,12 +1348,12 @@ const PAY_LEAVE_DEFAULTS = [
   ['sick',          '病假',                      0.5, true,  true, 30,  'calendar', 0,   '',        '',   '', '',   'hour', '',  '',   '',   '勞工請假規則§4 未住院全年 30 日內半薪，超過不給薪。⚠2026新制：1 年內未逾 10 日不得為不利處分'],
   ['sick_hosp',     '住院傷病假',                0.5, true,  true, 365, 'calendar', 0,   '',        '',   '', '',   'hour', '',  '',   '',   '住院傷病假 2 年內合計不超過 1 年；與未住院病假合計亦不得逾 1 年'],
   ['prenatal_rest', '安胎休養假',                0.5, false, true, 365, 'calendar', 0,   'sick_hosp','',  '', '',   'hour', '',  '',   '',   '性平法§15 併入住院傷病假計算，2 年合計不超過 1 年；須醫師診斷需安胎休養。半薪'],
-  ['menstrual',     '生理假',                    0.5, false, true, 3,   'calendar', 0.5, 'sick',    1,    '', '',   'hour', '',  '',   '',   '性平法§14 每月 1 日；全年 3 日不併入病假，超過的併入病假額度（仍半薪）'],
+  ['menstrual',     '生理假',                    1,   false, true, 3,   'calendar', 0.5, 'sick',    1,    '', '',   'hour', '',  '',   '',   '性平法§14 每月 1 日；全年 3 日不併入病假，超過的併入病假額度（仍半薪）'],
   ['family',        '家庭照顧假',                0,   false, true, 7,   'calendar', 0,   'personal','',   '', '',   'hour', '',  '',   '',   '性平法§20 全年 7 日、併入事假 14 日額度、不給薪'],
   ['funeral8',      '喪假（父母・配偶）',        1,   false, true, 8,   'event',    0,   '',        '',   '', '',   'hour', '',  '',   '',   '勞工請假規則§3 父母、養父母、繼父母、配偶喪亡：8 日，工資照給；只計工作日、可用小時請'],
   ['funeral6',      '喪假（祖父母・子女・配偶父母）', 1, false, true, 6, 'event',    0,   '',        '',   '', '',   'hour', '',  '',   '',   '祖父母、子女、配偶之父母／養父母／繼父母喪亡：6 日，工資照給'],
   ['funeral3',      '喪假（曾祖父母・兄弟姊妹）',1,   false, true, 3,   'event',    0,   '',        '',   '', '',   'hour', '',  '',   '',   '曾祖父母、兄弟姊妹、配偶之祖父母喪亡：3 日，工資照給'],
-  ['marriage',      '婚假',                      1,   false, true, 8,   'event',    0,   '',        '',   '', '',   'hour', 10,  90,   365,  '勞工請假規則§2 8 日，工資照給；結婚登記日前 10 日起 3 個月內請畢，經雇主同意可延至 1 年'],
+  ['marriage',      '婚假',                      1,   false, true, 14,   'event',    0,   '',        '',   '', '',   'hour', 10,  90,   365,  '勞工請假規則§2 8 日，工資照給；結婚登記日前 10 日起 3 個月內請畢，經雇主同意可延至 1 年'],
   ['disaster',      '天災假',                    0,   false, true, '',  '',         0,   '',        '',   '', '',   'day',  '',  '',   '',   '天災事變停止上班，不給薪但不扣全勤'],
   ['occupational',  '公傷病假',                  1,   false, true, '',  '',         0,   '',        '',   '', '',   'hour', '',  '',   '',   '勞基法§59 職災醫療中不能工作期間，原領工資照給，無日數上限'],
   ['maternity',     '產假（分娩）',              1,   false, true, 56,  'event',    0,   '',        '',   6,  0.5,  'day',  '',  '',   '',   '勞基法§50 分娩前後 8 週；年資未滿 6 個月工資減半'],
@@ -1553,6 +1555,13 @@ function payLeaveEventMap(store) {
 }
 
 /** 一天等於幾小時（額度是「日」、系統記「時」，換算基準）。*/
+/** 生理假 3 次內全薪的起始月份（出勤規範 3-7）。 */
+var PAY_MENSTRUAL_FULL_FROM = '2026-11';
+/** 時數換成額度用掉的「日」：生理假看次數不看時數，請 4H 也算一次（Eason 2026-10-23）。 */
+function payLeaveQuotaDays_(code, h, dayH) {
+  const days = payNum(h) / dayH;
+  return (code === 'menstrual' && days > 0) ? Math.ceil(days) : days;
+}
 function payLeaveDayHours(cfg) {
   const h = payNum((cfg || {}).daily_hours);
   return h > 0 ? h : 8;
@@ -1574,22 +1583,21 @@ function payLeaveUsage(empId, ym, types, cfg, storesMap, leavesByStore, spans) {
     const d = String(l.date || '');
     const code = l.code;
     if (!code) return;
-    const days = payNum(l.hours) / dayH;
+    const days = payLeaveQuotaDays_(code, l.hours, dayH);
     if (d.slice(0, 4) === year) used[code] = (used[code] || 0) + days;
     const m = d.slice(0, 7);
     if (!perMonth[code]) perMonth[code] = {};
     perMonth[code][m] = (perMonth[code][m] || 0) + days;
   });
 
-  // 併入：家庭照顧假吃事假額度、生理假超過 3 日吃病假額度
+  // 併入：家庭照顧假超過 7 日（出勤規範 3-11）、生理假超過 3 次，超過的部分才併入
   const merged = {};
   types.forEach(function (t) {
     if (!t.merge_into) return;
     const u = used[t.code] || 0;
     const cap = t.cap_days;
     const over = (cap == null) ? 0 : Math.max(0, u - cap);
-    // 家庭照顧假是「全額併入事假」，生理假是「超過上限才併入病假」
-    const add = (t.code === 'family') ? u : over;
+    const add = over;
     if (add > 0) merged[t.merge_into] = (merged[t.merge_into] || 0) + add;
   });
 
@@ -2979,7 +2987,7 @@ function payAnnualInfo(ym, store) {
   master.forEach(function (e) {
     // 計時同仁：2026-10 以前沒有特休（Eason 2026-08 定案）；2026-11 起依工時比例給（出勤認定清單 E2、四週變形 C21：報到日起算）
     const ft = String(e.is_full_time).toLowerCase() === 'true' || e.is_full_time === true;
-    if (!ft && !ptOn) { out[String(e.emp_id)] = null; return; }
+    if (!ft && (!ptOn || !payPtInsured_(e))) { out[String(e.emp_id)] = null; return; }
     const q = payAnnualQuota(e.hire_date, ym);
     if (!q) { out[String(e.emp_id)] = null; return; }
     const ratio = ft ? 1 : payPtAnnualRatio(runRows, e.emp_id, ym);

@@ -69,7 +69,7 @@ chk('事假剩滿額 14 日', byCode.personal.remain_days, 14);
 // 畫面統一用時數呈現，所以上限也必須有時數版本，否則前端得自己乘 8（規則會漂移）
 chk('病假上限有時數版 240 H', byCode.sick.cap_h, 240);
 chk('事假上限有時數版 112 H', byCode.personal.cap_h, 112);
-chk('婚假上限有時數版 64 H', byCode.marriage.cap_h, 64);
+chk('婚假上限有時數版 112 H（14 天）', byCode.marriage.cap_h, 112);
 chk('別人的事假沒被算進來', byCode.personal.used_days, 0);
 chk('婚假是每次事件制', byCode.marriage.basis, 'event');
 // 主管端（payroll_leave_options 走的 payLeaveUsage）算出來必須一模一樣
