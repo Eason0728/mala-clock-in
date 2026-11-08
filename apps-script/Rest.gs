@@ -14,6 +14,12 @@ var REST_GAP_H = 11;          // 2026-11-02 Eason：12→11（法定下限，不
 var REST_PAIR_H = 16;          // 上班卡往後 16 小時內的下班卡才配成一段（同 MONTHLY_PAIR_WINDOW_HOURS）
 var REST_LOOKBACK_H = 40;      // 今天的段落（最早昨天 16:00 前上班的跨夜班不算今天）＋前一段的下班卡，多留一點
 var REST_PEER_CACHE_S = 21600; // 別家店名冊快取 6 小時
+/* 月加班（出勤規範 4-15，Eason 2026-11-08）：超過 36 小時提醒；滿 46 小時只擋會變成加班的上班卡（休息日、例假、國定假日，或今天已打滿 8 小時），正常班照打。
+   時數在 ot_month 分頁（光復每天 09:00 寫，只有當天日期的列才算）。緊急關＝指令碼屬性 REST_OT_ON 設 '0'。 */
+var REST_OT_WARN_H = 36;
+var REST_OT_STOP_H = 46;
+var REST_OT_BASE_H = 8;
+var REST_OT_CACHE_S = 600;
 
 function restOn_() {
   try { return PropertiesService.getScriptProperties().getProperty('REST_RULE_ON') === '1'; } catch (e) { return false; }
@@ -92,6 +98,39 @@ function restPeerEvents_(name, sinceMs) {
   return out;
 }
 
+/** ot_month 分頁裡這個人今天那列 → {h, rest}，沒有回 null；任何錯誤回 null（不能讓打卡因為這道檢查壞掉）。 */
+function restOtRow_(ss, name, nowMs) {
+  try {
+    if (PropertiesService.getScriptProperties().getProperty('REST_OT_ON') === '0') return null;
+    var today = restDay_(nowMs), cache = CacheService.getScriptCache(), ck = 'rot:' + today, hit = cache.get(ck), map = hit ? JSON.parse(hit) : null;
+    if (!map) {
+      map = {};
+      var sh = ss.getSheetByName('ot_month');
+      if (sh) readSheetAsObjects(sh).rows.forEach(function (r) {
+        if (String(r.date).slice(0, 10) === today) map[restName_(r.name)] = { h: Number(r.ot_h) || 0, rest: String(r.rest).toUpperCase() === 'TRUE' };
+      });
+      try { cache.put(ck, JSON.stringify(map), REST_OT_CACHE_S); } catch (e) {}
+    }
+    return map[restName_(name)] || null;
+  } catch (e) { Logger.log('REST 月加班讀取失敗（不擋）：' + e); return null; }
+}
+/** 純判斷：row＝restOtRow_ 的結果 → null、擋（code 'ot46'）或提醒（warn:true）。 */
+function restOtJudge_(row, segs, nowMs) {
+  if (!row || !(row.h > REST_OT_WARN_H)) return null;
+  var today = restDay_(nowMs);
+  var h = (segs || []).filter(function (s) { return s.out <= nowMs && restDay_(s.in) === today; })
+    .reduce(function (a, s) { return a + (s.out - s.in); }, 0) / 3600000;
+  var shown = Math.round(row.h * 10) / 10;
+  if (row.h >= REST_OT_STOP_H) {
+    if (row.rest || h >= REST_OT_BASE_H) {
+      return { code: 'ot46', reason: '你本月加班已經 ' + shown + ' 小時（滿 ' + REST_OT_STOP_H + ' 小時），' + (row.rest ? '今天是休息日' : '今天也上滿 ' + REST_OT_BASE_H + ' 小時') + '，不能再打上班卡',
+               hint: '正常班不受影響；有問題請找值班主管', until: null };
+    }
+    return { code: 'ot46', warn: true, reason: '你本月加班已經 ' + shown + ' 小時（滿 ' + REST_OT_STOP_H + ' 小時）', hint: '今天上滿 ' + REST_OT_BASE_H + ' 小時就不能再打上班卡' };
+  }
+  return { code: 'ot36', warn: true, reason: '你本月加班已經 ' + shown + ' 小時（超過 ' + REST_OT_WARN_H + ' 小時）', hint: '滿 ' + REST_OT_STOP_H + ' 小時後，休息日和超過 ' + REST_OT_BASE_H + ' 小時的上班卡會打不了' };
+}
+
 /** 這次請求最近一次算出的「只提醒」結果（滿 10 小時）；restCheckIn_ 每次先清掉。
  *  各店 程式碼.js 的 handleClock 把 restCheckIn_ 回傳非 null 當擋卡，所以提醒不能從回傳值出去——放這裡給 Liff.gs 打卡成功時讀。 */
 var REST_LAST_WARN_ = null;
@@ -106,9 +145,12 @@ function restCheckIn_(ss, roster, nowMs) {
     var mine = readEventsSince(ss.getSheetByName('events'), since).rows.filter(function (e) {
       return String(e.emp_id) === String(roster.emp_id);
     }).map(function (e) { return { ts: normCellTs(e.ts), type: String(e.type), status: String(e.status) }; });
-    var r = restJudge_(restSegments_(mine.concat(restPeerEvents_(roster.name, since))), now);
-    if (r && r.warn) { REST_LAST_WARN_ = r; return null; }
-    return r;
+    var segs = restSegments_(mine.concat(restPeerEvents_(roster.name, since)));
+    var r = restJudge_(segs, now), o = restOtJudge_(restOtRow_(ss, roster.name, now), segs, now);
+    if (r && !r.warn) return r;
+    if (o && !o.warn) return o;
+    if (r || o) REST_LAST_WARN_ = r || o;
+    return null;
   } catch (e) { Logger.log('REST 檢查失敗（不擋）：' + e); return null; }
 }
 
