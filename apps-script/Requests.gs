@@ -35,7 +35,7 @@ var REQ_ATTACH_RE_ = /^[A-Za-z0-9_-]{10,80}$/;
    前兩天不用。「天」＝不同的日期（半天也算一天）；算審核中＋已核准（退回、取消、作廢的不算）；只看這家店的申請表。
    其他 15 種要證明的假別不變（一律要附）。reqRows_ 讀表時就幫每筆病假標好 __sick_n（今年第幾天）。 */
 var REQ_SICK_TYPE_ = '病假';
-var REQ_SICK_PROOF_DAYS = 3;
+var REQ_SICK_PROOF_DAYS = 1;   // 2026-11-08 Eason（3-6）：每張病假都要附
 var REQ_SICK_LIVE_ = { pending: 1, approved: 1 };
 /** 這個人今年（date 那年）審核中／已核准的病假日期（不重複、排序；不含 exceptId 那筆）。 */
 function reqSickDates_(rows, empId, date, exceptId) {
@@ -59,6 +59,7 @@ function reqSickNth_(rows, r) {
 var REQ_PERSONAL_TYPE_ = '事假';
 var REQ_PERSONAL_WARN_N = 3;      // 本月第 3 次起
 var REQ_PERSONAL_WARN_DAYS = 3;   // 本月合計超過 3 天
+var REQ_TRIP_MAX_H = 8;           // 每次出差工作時間上限（出勤規範 5-1）
 var REQ_TRIP_AHEAD_DAYS = 7;      // 出差應前一週填
 /** 同一人、同月、同類（match）、審核中＋已核准的申請裡，r 排第幾（日期、送出時間先後；r 自己不在 rows 裡也能算）。回 {n, hours}（hours＝那個月全部的時數）。 */
 function reqMonthNth_(rows, r, match) {
@@ -416,6 +417,7 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
       if (!isFinite(th) || th <= 0 || th > 24) return { error: 'bad_hours', message: '請填出差時數（最少 0.25 小時）' };
       row.hours = th;
     }
+    if (Number(row.hours) > REQ_TRIP_MAX_H) return { error: 'bad_hours', message: '每次出差工作時間上限 ' + REQ_TRIP_MAX_H + ' 小時，請確認時數' };   // 5-1
     var place = reqClean_(b.place, 200).replace(/；/g, '，');
     if (!place) return { error: 'need_place', message: '請填出差地點' };
     if (place.length > REQ_TRIP_PLACE_MAX) return { error: 'bad_place', message: '地點最多 ' + REQ_TRIP_PLACE_MAX + ' 個字' };

@@ -477,7 +477,8 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     else if (code === 'annual')    s.annual_h += h;
     else                           s.other_h += h;
     // 這種假對全勤的影響：attend_effect 留空＝沿用 count_absent（改版前行為）
-    const ae = lt ? (lt.attend_effect || (lt.count_absent ? 'deduct' : 'none')) : 'deduct';
+    let ae = lt ? (lt.attend_effect || (lt.count_absent ? 'deduct' : 'none')) : 'deduct';
+    if (code === 'personal' && payRules3On_(ym) && !payIsSslStore_(store)) ae = 'void';   // 非小辛辣：當月有事假績效整筆取消（3-3，Eason 2026-11-08 確認）
     if (ae === 'void') s.attend_void = true;          // 例：央廚／總部「有事假就沒全勤」
     s._lh[d] = payR2((s._lh[d] || 0) + h);
     // 病假一年 30 天內不扣全勤（出勤認定清單 C6，2026-11 起）：先記下病假日，超過的天數由計算端（知道今年已用幾天）加回缺勤
@@ -725,6 +726,39 @@ var PAY_OT_DAILY_FROM = '2026-11';
  *   忘刷一律同一天算 1 次（2-3）。計時滿勤、年資加給只有小辛辣有，其他店歸 0（6-4）。
  *   寫在程式不改參數表：參數沒有月份，改表會動到還沒鎖定的 10 月草稿。 */
 var PAY_RULES3_FROM = '2026-11';
+/* 出勤規範第 4 批（Eason 2026-11-08）：月加班 36H 黃字、46H 紅字並擋會變成加班的上班卡（4-15）；
+ * 超過 8H 沒有核准的加班單不能鎖月（4-2，2026-11-11 起算）；平日出差不得報加班（5-1，只提醒）；曠職提醒（2-8）。 */
+var PAY_ANNUAL_SETTLE_FROM = '2026-05';   // 薪酬系統第一個月；測試基準用來關掉
+var PAY_OT_WARN_H = 36;
+var PAY_OT_STOP_H = 46;
+var PAY_OT_FORM_FROM = '2026-11-11';
+var PAY_OT_FORM_TOL_H = 0.25;   // 同核定的 15 分鐘容差
+/** att.ot_own_h＝本店逐日核定；att.ot_forms＝{ot:{日期:已核准加班單時數}, trip:{日期:true}}。沒帶（舊呼叫端）＝不檢查。 */
+function payOtFormCheck_(att) {
+  const out = { missing: [], trip_ot: [] };
+  const own = att.ot_own_h, f = att.ot_forms;
+  if (!own || !f) return out;
+  Object.keys(own).sort().forEach(function (d) {
+    if (d < PAY_OT_FORM_FROM) return;
+    const need = payR2(payNum(own[d]) - 8), have = payNum(f.ot[d]);
+    if (need > 0 && have + PAY_OT_FORM_TOL_H < need) out.missing.push({ date: d, need: need, have: have });
+  });
+  const dl = att.daily || {};
+  Object.keys(f.trip).sort().forEach(function (d) {
+    if (d < PAY_OT_FORM_FROM || !(payNum(f.ot[d]) > 0)) return;
+    const kind = payOtKindOf((dl.sched || {})[d] || null, !!(dl.hol || {})[d]);
+    if (kind !== 'H' && kind !== 'R' && kind !== 'HOL') out.trip_ot.push(d);
+  });
+  return out;
+}
+/** 事假＋家庭照顧假今年累計超過事假上限的天數（3-3）。事假的已用天數含家庭照顧假逾上限併入的部分，這裡只補回沒併入的那段。 */
+function payPersonalOverDays_(att, cfg, ltypes) {
+  const u = att.leave_usage || {}, dayH = payNum(cfg.daily_hours) || 8, lv = payAttLeaves(att) || {};
+  const capOf = function (c, d) { const t = (ltypes || []).filter(function (x) { return x.code === c; })[0]; return t && payNum(t.cap_days) > 0 ? payNum(t.cap_days) : d; };
+  const p = payNum((u.personal || {}).used_before_days), fam = payNum((u.family || {}).used_before_days);
+  const total = p + Math.min(fam, capOf('family', 7)) + (payNum(lv.personal) + payNum(lv.family)) / dayH;
+  return payR2(Math.max(0, total - capOf('personal', 14)));
+}
 function payRules3On_(ym) { return String(ym) >= PAY_RULES3_FROM; }
 function payIsSslStore_(store) { return /^SSL/.test(String(store || 'SSLGF')); }
 function payPerfLeaveOnly_(store, ym, cfg) {
@@ -776,8 +810,9 @@ function payOtKindOf(cell, isHol) {
  *    hol:{date:true}, until:'YYYY-MM-DD'（之後的日子還沒到，不判沒來）, comp_h, extra_ot }
  *  回 { w43,w53,r43,r53,r83, rdo_days,hol_days, rdo_dates:[], missing:[], no_show:[], ot_month_h } */
 function payOtDailySum(d) {
-  const S = { w43: 0, w53: 0, r43: 0, r53: 0, r83: 0, rdo_days: 0, rdo_h: 0, hol_days: 0, hol_h: 0, rdo_dates: [], hol_dates: [], missing: [], no_show: [] };
+  const S = { w43: 0, w53: 0, r43: 0, r53: 0, r83: 0, rdo_days: 0, rdo_h: 0, hol_days: 0, hol_h: 0, no_show_streak: 0, rdo_dates: [], hol_dates: [], missing: [], no_show: [] };
   const pool = [];   // 補休可以抵的加班，依日期先後（4-6、4-7、4-10）
+  let absentRun = 0;   // 連續幾個應出勤日沒來（2-8）
   (d.dates || []).forEach(function (date) {
     const cell = (d.sched || {})[date] || null;
     const isHol = !!(d.hol || {})[date];
@@ -786,7 +821,10 @@ function payOtDailySum(d) {
     if (!cell || !String(cell.t || '')) S.missing.push(date);
     // 有排班、沒核定、沒請假：只提醒（Eason 2026-11-06：不自動扣）
     const scheduledWork = cell && (String(cell.t) === 'W' || (String(cell.t) === 'H' && cell.s));
-    if (scheduledWork && !isHol && !(h > 0) && !(payNum((d.day_leave || {})[date]) > 0) && (!d.until || date <= d.until)) S.no_show.push(date);
+    if (scheduledWork && !isHol && (!d.until || date <= d.until)) {
+      if (!(h > 0) && !(payNum((d.day_leave || {})[date]) > 0)) { S.no_show.push(date); absentRun++; S.no_show_streak = Math.max(S.no_show_streak, absentRun); }
+      else absentRun = 0;
+    }
     const b = payOtDayBreak(kind || 'W', h);   // 班表查不到的日子先當上班日算（鎖定會被擋，補發布後重算）
     ['w43', 'w53', 'r43', 'r53', 'r83'].forEach(function (k) { S[k] = payR2(S[k] + b[k]); });
     if (kind === 'H') { if (b.r43 > 0) pool.push({ date: date, k: 'r43', h: b.r43 }); }
@@ -1004,10 +1042,11 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   /* 特休未休完折算工資（勞基法§38，2026-08-23 加）
    * 只在「週年期屆滿前一日所在的月份」發一次；折算率用平日每小時工資額（＝下方請假費率同一條）。
    * 計時同仁沒有特休（att.annual 為 null），自然不會進來。 */
-  if (att.annual && att.annual.payout_ym === ym && payNum(att.annual.left_h) > 0) {
+  const annualH = att.annual ? payNum(att.annual.payout_h != null ? att.annual.payout_h : att.annual.left_h) : 0;
+  if (att.annual && att.annual.payout_ym === ym && annualH > 0) {
     // 折算時薪不先取整（2026-10-05 Eason：39,000÷30÷8＝162.5，不是 163）；只有最後金額四捨五入
     // 2026-11 起（出勤認定清單 E3）：正職改「月工資 ÷30 ÷每日工時」；計時＝有效時薪
-    const ah = payR2(payNum(att.annual.left_h));
+    const ah = payR2(annualH);
     const aRate = !payOtDailyOn(ym) ? payR2(rateRaw)
       : (ft ? payR2(MW / PAY_OT_DAY_DIV / (payNum(cfg.daily_hours) || 8)) : payR2(ptWage));
     push(earn, 'annual_payout', '特休未休折算', ah, aRate, ah * aRate);
@@ -1097,6 +1136,15 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   if (otS) out.ot_info = { ot_h: otS.ot_month_h, over_cap: otS.ot_month_h > PAY_OT_MONTH_CAP, missing: otS.missing,
     no_show: otS.no_show, rdo: otS.rdo_dates, hol: otS.hol_dates, comp_h: otS.comp_used_h, comp_over_h: otS.comp_over_h,
     manual_sup_h: payNum(att.daily.manual_sup_h) };
+  if (otS) {
+    const chk = payOtFormCheck_(att);
+    out.ot_info.ot_level = otS.ot_month_h >= PAY_OT_STOP_H ? 'stop' : otS.ot_month_h > PAY_OT_WARN_H ? 'warn' : '';
+    out.ot_info.ot_form_missing = chk.missing;
+    out.ot_info.trip_ot = chk.trip_ot;
+    out.ot_info.absent_alert = otS.no_show_streak >= 3 || otS.no_show.length >= 6;
+    out.ot_info.absent_streak = otS.no_show_streak;
+    out.ot_info.personal_over_days = payPersonalOverDays_(att, cfg, ltypes);
+  }
   return out;
 }
 
@@ -2598,6 +2646,64 @@ function payDailyFor_(e, ym, col, xEntry, sched, holDates, until, supportH) {
   return { dates: payEmpDates_(e, ym), sched: sched || {}, day_h: dayH, day_leave: (col && col.day_leave) || {},
            hol: hol, until: until || '', manual_sup_h: payR2(Math.max(0, payNum(supportH) - autoH)) };
 }
+/** 這家店本月已核准的加班單、出差單（以姓名分人）。沒連打卡或讀不到回 null＝不檢查。 */
+function payOtFormsMonth_(st, ym) {
+  if (!payHasClock(st)) return null;
+  let rows;
+  try { rows = payClockRead(st, 'requests'); } catch (e) { return null; }
+  const out = {};
+  (rows || []).forEach(function (r) {
+    if (String(r.status) !== 'approved') return;
+    const kind = String(r.kind), d = normCellDate(r.date);
+    if ((kind !== 'ot' && kind !== 'trip') || String(d).slice(0, 7) !== ym) return;
+    const nm = String(r.name || '').trim();
+    const x = out[nm] = out[nm] || { ot: {}, trip: {} };
+    if (kind === 'ot') x.ot[d] = payR2(payNum(x.ot[d]) + payNum(r.hours)); else x.trip[d] = true;
+  });
+  return out;
+}
+/** 把每個人本月加班時數與今天是不是休息日寫進各店 ot_month 分頁，給打卡端（Rest.gs）判斷 36／46 小時（4-15）。
+ *  時數＝主管已核定到目前為止；每天 09:00 跟著超時檢查跑一次。某家算不出來就略過並記錯。姓名跨店合併取最大。 */
+function payOtMonthSync_() {
+  const today = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd'), ym = today.slice(0, 7);
+  const stores = payRead('store').filter(function (s) { return String(s.active).toLowerCase() !== 'false' && payHasClock(s.code); });
+  const by = {}, errors = [];
+  stores.forEach(function (s) {
+    const st = payStore(s.code);
+    try {
+      const r = handlePayrollCalc({ admin_key: CONFIG.ADMIN_KEY, ym: ym, store: st, dry_run: true });
+      if (!r || !r.ok) throw new Error((r && r.error) || 'calc_failed');
+      (r.results || []).forEach(function (x) {
+        const nm = String(x.name || '').replace(/\s/g, ''), o = x.ot_info;
+        if (!nm || !o) return;
+        const kind = payOtKindOf(((r._sched || {})[String(x.emp_id)] || {})[today] || null, (r._hol || []).map(String).indexOf(today) >= 0);
+        const row = by[nm] = by[nm] || { h: 0, rest: false, work: false };
+        row.h = Math.max(row.h, payNum(o.ot_h));
+        if (kind === 'H' || kind === 'R' || kind === 'HOL') row.rest = true; else if (kind) row.work = true;
+      });
+    } catch (e) { errors.push(st); Logger.log('ot_month 算不出來 ' + st + '：' + e); }
+  });
+  const stamp = nowTaipeiIso();
+  const rows = [['name', 'ot_h', 'rest', 'date', 'updated_at']].concat(Object.keys(by).map(function (nm) {
+    return [nm, by[nm].h, (by[nm].rest && !by[nm].work) ? 'TRUE' : 'FALSE', today, stamp];
+  }));
+  const writeErrors = [];
+  stores.forEach(function (s) {
+    try {
+      const ss = payClockSS(s.code);
+      const sh = ss.getSheetByName('ot_month') || ss.insertSheet('ot_month');
+      sh.clearContents();
+      sh.getRange(1, 1, rows.length, 5).setNumberFormat('@').setValues(rows.map(function (x) { return x.map(String); }));
+    } catch (e) { writeErrors.push(String(s.code)); Logger.log('ot_month 寫不進去 ' + s.code + '：' + e); }
+  });
+  return { ok: true, date: today, stores: stores.length, people: rows.length - 1, errors: errors, write_errors: writeErrors,
+           warn: Object.keys(by).filter(function (n) { return by[n].h > PAY_OT_WARN_H && by[n].h < PAY_OT_STOP_H; }).length,
+           stop: Object.keys(by).filter(function (n) { return by[n].h >= PAY_OT_STOP_H; }).length };
+}
+function handlePayrollOtMonthSync(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  return payOtMonthSync_();
+}
 /** 鎖定前檢查：本店每位在職同仁本月每一天都要在已發布的班表上查得到（Eason 2026-11-06：查不到就不能鎖定） */
 function paySchedMissingAll_(ym, st) {
   const master = payRead('master').filter(function (m) { return String(m.active).toLowerCase() === 'true' && payStore(m.store) === payStore(st); });
@@ -2650,6 +2756,7 @@ function handlePayrollCalc(body) {
   const override = body.inputs || {};   // 本次前端送來的即時編輯（未存的也要算）
 
   // 假別表與「本月之前已用額度」都在迴圈外算好——逐人迴圈裡不准出現 payRead（效能鐵則）
+  const OT_FORMS = payOtFormsMonth_(st, ym);
   const LTYPES_FOR_CALC = payLeaveTypes(st);
   const USAGE_BEFORE = payLeaveUsedBefore(ym, st, LTYPES_FOR_CALC, cfg, master);
   const ANNUAL_INFO = payAnnualInfo(ym, st);   // 特休額度／已用／週年期，折算工資要用（迴圈外算一次）
@@ -2718,6 +2825,7 @@ function handlePayrollCalc(body) {
       const id = String(e.emp_id);
       const supH = (att.support || []).reduce(function (t, x) { return t + payNum(x && x.hours); }, 0);
       att.daily = payDailyFor_(e, ym, c, XSUP ? XSUP.byEmp[id.trim()] : null, SCHED[id], HOLD, UNTIL, supH);
+      if (OT_FORMS) { att.ot_own_h = (c && c.day_h) || {}; att.ot_forms = OT_FORMS[String(e.name || '').trim()] || { ot: {}, trip: {} }; }
     }
     return payCalcOne(e, ym, att, cfg, redDays, LTYPES_FOR_CALC);
   });
@@ -2755,6 +2863,7 @@ function handlePayrollCalc(body) {
 
   if (body.dry_run) {   // 唯讀試算（payroll_ot_preview）：不寫 run／item
     const dres = { ok: true, ym: ym, store: st, results: results, red_days: redDays, dry_run: true };
+    if (typeof SCHED !== 'undefined') { dres._sched = SCHED; dres._hol = HOLD; }   // 只給 payOtMonthSync_；試算回應不帶
     return dres;
   }
   let lockedMeanwhile = false;
@@ -2945,6 +3054,16 @@ function handlePayrollFinalize(body) {
       message: '下面的同仁補休比可以抵的加班多，不能鎖定（休息日第 3 小時起、例假、國定假日的加班不能抵）。請把多請的補休改成其他假別：\n' +
         over.map(function (x) { return x.name + '：' + x.h + ' 小時'; }).join('\n') };
   }
+  /* 超過 8H 沒有核准的加班單不能鎖定（出勤規範 4-2，2026-11-11 起算）。解鎖不擋。 */
+  if (lock && payOtDailyOn(ym)) {
+    const noForm = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === stF; }).map(function (r) {
+      let o = {}; try { o = JSON.parse(r.ot_info || '{}') || {}; } catch (e) { o = {}; }
+      return { name: r.name, list: o.ot_form_missing || [] };
+    }).filter(function (x) { return x.list.length; });
+    if (noForm.length) return { ok: false, error: 'ot_form_missing', list: noForm,
+      message: '下面的同仁當天超過 8 小時，卻沒有足夠的已核准加班單，補單前不能鎖定：\n' +
+        noForm.map(function (x) { return x.name + '：' + x.list.map(function (y) { return y.date.slice(5) + ' 少 ' + payR2(y.need - y.have) + ' 小時'; }).join('、'); }).join('\n') };
+  }
   /* 班表查不到不能鎖定（Eason 2026-11-06）：2026-11 起加班看班表判斷休息日／例假，
      某人某月有任何一天在排班管理發布的班表上查不到，就要先去補發布班表。解鎖不擋。 */
   if (lock && payOtDailyOn(ym)) {
@@ -3023,34 +3142,42 @@ function payAnnualInfo(ym, store) {
     const leavingNow = payRules3On_(ym) && lastDay.slice(0, 7) === ym;
     if (leavingNow && q.ps && q.ps > lastDay) q = payAnnualQuota(e.hire_date, payDayBefore(ym + '-01').slice(0, 7));
     const ratio = ft ? 1 : payPtAnnualRatio(runRows, e.emp_id, ym);
-    let used = 0;
-    // ① 手動工時的特休（annual_h）：該月落在週年期內就累計；同月以手動為準（覆蓋語意，與計薪一致）
-    const inputMonths = {};
-    savedRows.forEach(function (r) {
-      if (String(r.emp_id) !== String(e.emp_id)) return;
-      const m = String(r.ym);
-      if (!/^\d{4}-\d{2}$/.test(m)) return;
-      if (!q.ps || (m + '-31') < q.ps || (m + '-01') >= q.pe) return;
-      inputMonths[m] = true;
-      used += payNum(r.annual_h);
-    });
-    // ② leave 分頁的特休：掃該員工「歷任門市」的請假紀錄；只算沒有手動工時覆蓋的月份，避免同月重複計
-    (empStores[String(e.emp_id)] || [stA]).forEach(function (st2) {
-      leavesOf(st2).forEach(function (l) {
-        if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
-        if (String(l['假別'] || '').indexOf('特') === -1) return;
-        const d = normCellDate(l['日期']);
-        if (!(q.ps && d >= q.ps && d < q.pe)) return;
-        if (inputMonths[d.slice(0, 7)]) return;
-        used += Number(l['時數']) || 0;
+    const usedIn = function (qp) {
+      let used = 0;
+      // ① 手動工時的特休（annual_h）：該月落在週年期內就累計；同月以手動為準（覆蓋語意，與計薪一致）
+      const inputMonths = {};
+      savedRows.forEach(function (r) {
+        if (String(r.emp_id) !== String(e.emp_id)) return;
+        const m = String(r.ym);
+        if (!/^\d{4}-\d{2}$/.test(m)) return;
+        if (!qp.ps || (m + '-31') < qp.ps || (m + '-01') >= qp.pe) return;
+        inputMonths[m] = true;
+        used += payNum(r.annual_h);
       });
-    });
-    // payout_ym＝週年期「屆滿前一日」所在的月份：勞基法§38 特休因年度終結而未休完者應折算工資，
-    // 例到職 10/01 → 週年期到 次年10/01 → 前一日 9/30 → 在 9 月的薪資折算發放。
+      // ② leave 分頁的特休：掃該員工「歷任門市」的請假紀錄；只算沒有手動工時覆蓋的月份，避免同月重複計
+      (empStores[String(e.emp_id)] || [stA]).forEach(function (st2) {
+        leavesOf(st2).forEach(function (l) {
+          if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
+          if (String(l['假別'] || '').indexOf('特') === -1) return;
+          const d = normCellDate(l['日期']);
+          if (!(qp.ps && d >= qp.ps && d < qp.pe)) return;
+          if (inputMonths[d.slice(0, 7)]) return;
+          used += Number(l['時數']) || 0;
+        });
+      });
+      return used;
+    };
+    const used = usedIn(q);
+    // payout_ym＝週年期「屆滿前一日」所在的月份：勞基法§38 特休因年度終結而未休完者應折算工資。
+    // 例到職 10/01 → 到 9/30，算 9 月薪資；到職 10/15 → 到 10/14，算 10 月薪資（Eason 2026-11-08）。
+    // q 用月底算，10/15 到職的人一進 10 月 q 已是新年度，所以要回頭看上個月的那一期才結得到舊年度。
+    const settle = (leavingNow || String(ym) < PAY_ANNUAL_SETTLE_FROM) ? null : payAnnualQuota(e.hire_date, payDayBefore(ym + '-01').slice(0, 7));
+    const settleNow = !!(settle && settle.days > 0 && settle.pe && payDayBefore(settle.pe).slice(0, 7) === ym);
     const quotaH = payR1(q.days * 8 * ratio);
     out[String(e.emp_id)] = { days: q.days, quota_h: quotaH, used_h: payR1(used),
                               left_h: payR1(quotaH - used),
-                              ps: q.ps, pe: q.pe, payout_ym: leavingNow ? ym : payDayBefore(q.pe).slice(0, 7) };
+                              ps: q.ps, pe: q.pe, payout_ym: (leavingNow || settleNow) ? ym : payDayBefore(q.pe).slice(0, 7) };
+    if (settleNow) out[String(e.emp_id)].payout_h = payR1(settle.days * 8 * ratio - usedIn(settle));
     if (!ft) out[String(e.emp_id)].ratio = payR2(ratio);   // 計時：工時比例（畫面說明用）
   });
   return out;
@@ -3255,7 +3382,13 @@ function handlePayrollRestCheck(body) {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : payYesterday_();
   return { ok: true, date: date, list: payRestOverList_(date) };
 }
-function payRestOverDaily() { payRestOverRun_(payYesterday_()); }
+function payRestOverDaily() {
+  payRestOverRun_(payYesterday_());
+  try {
+    const r = payOtMonthSync_();
+    if (r.errors.length || r.write_errors.length) payInboxNotify_('月加班同步有店失敗', '算不出來：' + r.errors.join('、') + '；寫不進去：' + r.write_errors.join('、'), 'otmonth-fail-' + r.date, '超時檢查', 'otmonth');
+  } catch (e) { payInboxNotify_('月加班同步失敗', String(e), 'otmonth-fail-' + payYesterday_(), '超時檢查', 'otmonth'); }
+}
 /** 實際檢查＋通知（date 可指定，給手動補跑）。任何一步失敗都不拋例外。 */
 function payRestOverRun_(date) {
   const md = (+date.slice(5, 7)) + '/' + (+date.slice(8, 10));
@@ -4367,7 +4500,7 @@ function handlePayrollLeaveEventSet(body) {
 const PAY_SCOPE_ADMIN_ONLY = ['payroll_group', 'payroll_store_set', 'payroll_holiday_sync', 'payroll_get',
                               'payroll_comp_check', 'payroll_comp_trigger_setup',   // 補休檢查看全部門市（2026-11-01）
                               'payroll_rest_check', 'payroll_rest_trigger_setup',   // 超時檢查看全部門市（2026-11-01）
-                              'payroll_ot_preview'];   // 加班費新舊並列試算（2026-11-06）只給總管理
+                              'payroll_ot_preview', 'payroll_ot_month_sync'];   // 加班費新舊並列試算（2026-11-06）只給總管理
 
 function payScopeNorm_(v) { return payStore(String(v == null ? '' : v).trim()).toUpperCase(); }
 
@@ -4516,6 +4649,7 @@ const PAYROLL_HANDLERS = {
   payroll_input_set:    handlePayrollInputSet,
   payroll_month:        handlePayrollMonth,
   payroll_calc:         handlePayrollCalc,
+  payroll_ot_month_sync: handlePayrollOtMonthSync,   // 月加班 36／46 小時同步到各店（4-15，只給總管理）
   payroll_ot_preview:   handlePayrollOtPreview,   // 加班費新舊算法唯讀並列（2026-11-06）
   payroll_get:          handlePayrollGet,
   payroll_item_upsert:  handlePayrollItemUpsert,
