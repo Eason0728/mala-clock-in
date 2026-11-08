@@ -95,6 +95,9 @@ ok('req_info 帶 proof_types（申請頁用它判斷要不要提醒附證明）'
   const r = J(sb.handleReqInfo_({ id_token: 'good' }));
   assert.deepStrictEqual(r.proof_types, J(PROOF));
 });
+// 2026-11-08（3-6）正式值改 1＝每張都要附；下面三題把門檻設回 3，守住「第幾天」的機制，最後一題驗正式值
+ok('正式值：每張病假都要附', () => { assert.strictEqual(sb.REQ_SICK_PROOF_DAYS, 1); assert.strictEqual(sb.reqNeedsProof_({ kind: 'leave', leave_type: '病假', __sick_n: 1 }), true); });
+sb.REQ_SICK_PROOF_DAYS = 3;
 ok('病假：今年第 1、2 天不用附證明，第 3 天起要附；同一天兩張算同一天；退回、取消、作廢的不算；跨年重算', () => {
   const sick = (date, o) => mk(Object.assign({ leave_type: '病假', date }, o || {}));
   rows = [sick('2026-03-02'), sick('2026-03-02', { hours: 4 }), sick('2026-05-10'), sick('2026-06-01'),
