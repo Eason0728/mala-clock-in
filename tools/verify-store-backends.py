@@ -52,7 +52,7 @@ EXACT = {
 STORE_BREAK = {
     'mala-clock-in':  ('', ''),            # 光復：排班浮動，沒有固定不打卡休息
     'cf-clock-in':    ('12:00', '13:00'),  # 央廚：規定中午休息不打卡
-    'hq-clock-in':    ('', ''),            # 總部
+    'hq-clock-in':    ('14:00', '15:00'),  # 總部：2026-11-09 Eason 定案 14:00–15:00 休息不打卡（畫面在營運系統，所以 build-store-pages 沒有 mgr_break）
     'mztjs-clock-in': ('', ''),            # 金山：Eason 2026-09-08 指定不設
     'mztgf-clock-in': ('', ''),            # 墨竹亭光復：2026-09-30 同金山不設
     'mztlzl-clock-in': ('', ''),           # 墨竹亭六張犁：2026-10-09 同金山不設

@@ -346,9 +346,14 @@ function haversineM(lat1, lng1, lat2, lng2) {
 function genKey(n) {
   n = n || 20;
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  // 金鑰要用難以推測的亂數：UUID 取 SHA-256 當來源；248 以上的位元組捨棄，字元才平均。
   let out = '';
-  for (let i = 0; i < n; i++) {
-    out += chars.charAt(Math.floor(Math.random() * chars.length));
+  while (out.length < n) {
+    const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, Utilities.getUuid() + Utilities.getUuid());
+    for (let i = 0; i < bytes.length && out.length < n; i++) {
+      const b = bytes[i] & 0xff;
+      if (b < 248) out += chars.charAt(b % chars.length);
+    }
   }
   return out;
 }
@@ -870,7 +875,10 @@ function handleWhoami(body) {
 }
 
 function checkAdmin(body) {
-  return body.admin_key === CONFIG.ADMIN_KEY;
+  // 金鑰沒設時一律拒絕，避免空字串對空字串也算通過（2026-11-10 資安審計；範本值由部署工具擋）
+  const k = String(CONFIG.ADMIN_KEY || '');
+  if (!k) return false;
+  return body.admin_key === k;
 }
 
 function handleSyncRoster(body) {

@@ -31,7 +31,7 @@ function env(opts) {
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in props ? props[k] : null) }) },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
     CacheService: { getScriptCache: () => ({ get: () => null, put() {}, remove() {} }) },
-    Utilities: { formatDate: (d, tz, f) => { const s = new Date(d.getTime() + 8 * 3600000).toISOString(); return f === 'yyyy-MM-dd' ? s.slice(0, 10) : s.slice(0, 19) + '+08:00'; } } };
+    Utilities: { DigestAlgorithm: { SHA_256: 'SHA_256' }, getUuid: () => require('crypto').randomUUID(), computeDigest: (a, s) => Array.from(require('crypto').createHash('sha256').update(s).digest()), formatDate: (d, tz, f) => { const s = new Date(d.getTime() + 8 * 3600000).toISOString(); return f === 'yyyy-MM-dd' ? s.slice(0, 10) : s.slice(0, 19) + '+08:00'; } } };
   vm.createContext(sb); vm.runInContext(CODE, sb);
   if (opts && opts.config) vm.runInContext('CONFIG.STAFF_MASTER_ADD_REDIRECT = ' + JSON.stringify(opts.config), sb);
   const call = (fn, b) => JSON.parse(JSON.stringify(vm.runInContext(fn, sb)(b)));

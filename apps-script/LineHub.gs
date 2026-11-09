@@ -709,7 +709,7 @@ function lineHubPayPickAny_(userId) {
 function lineHubCompFor_(userId) {
   var pick = lineHubPayPickAny_(userId);
   if (!pick) return { allowed: false, known: false };   // known:false＝薪資主檔查不到這個人（還沒建檔），不知道是不是正職
-  var m = payRead('master').filter(function (x) { return String(x.emp_id) === String(pick.me.emp_id); })[0];
+  var m = payMineMaster_(pick.me, pick.store);
   if (!m) return { allowed: false, known: false };
   return payCompMonthBook(payCompToday().slice(0, 7)).forEmp(m, payStore(m.store || pick.store));
 }
@@ -731,7 +731,7 @@ function lineHubPayPickFresh_(userId) {
 /** 薪資卡只要「那個月的薪資單」：不像 payMyPayslipFor_ 還算特休額度與年資（那兩樣最慢，卡片又用不到）。
  *  回傳形狀與 payMyPayslipFor_ 已定案時相同（lineHubPayFlex_ 吃得下）。 */
 function lineHubPayslipLite_(pick, ym) {
-  var mm = payRead('master').filter(function (m) { return String(m.emp_id) === String(pick.me.emp_id); })[0];
+  var mm = payMineMaster_(pick.me, pick.store);
   var st = payStore((mm && mm.store) || pick.store);
   var run = payRead('run').filter(function (r) {
     return String(r.ym) === ym && String(r.emp_id) === String(pick.me.emp_id) && payStore(r.store) === st;
@@ -745,7 +745,7 @@ function lineHubPayslipLite_(pick, ym) {
 /** 這個人已定案的薪資月份（新到舊，最多 LINE_HUB_PAY_MONTHS 個）。店別照 payMyPayslipFor_：主檔為準。 */
 var LINE_HUB_PAY_MONTHS = 12;
 function lineHubPayFinalMonths_(pick) {
-  var mm = payRead('master').filter(function (m) { return String(m.emp_id) === String(pick.me.emp_id); })[0];
+  var mm = payMineMaster_(pick.me, pick.store);
   var st = payStore((mm && mm.store) || pick.store), seen = {};
   return payRead('run').filter(function (r) {
     return String(r.emp_id) === String(pick.me.emp_id) && payStore(r.store) === st && String(r.status) === 'final' && /^\d{4}-\d{2}$/.test(String(r.ym));

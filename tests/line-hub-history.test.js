@@ -1,6 +1,7 @@
 // 2026-10-09 Eason：「薪資明細」可看歷月；「出勤紀錄」可看本月與上個月（LineHub.gs）
 const assert = require('assert'); const fs = require('fs'); const vm = require('vm');
-const SRC = ['Liff.gs', 'LineHub.gs'].map(f => fs.readFileSync(__dirname + '/../apps-script/' + f, 'utf8')).join('\n');
+const SRC = ['Liff.gs', 'LineHub.gs'].map(f => fs.readFileSync(__dirname + '/../apps-script/' + f, 'utf8')).join('\n')
+  + '\n' + /function payMineMaster_[\s\S]*?\n}\n/.exec(fs.readFileSync(__dirname + '/../apps-script/Payroll.gs', 'utf8'))[0];
 let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 const texts = (o) => { const out = []; (function walk(x) { if (Array.isArray(x)) x.forEach(walk); else if (x && typeof x === 'object') { if (x.type === 'text') out.push(x.text); Object.values(x).forEach(walk); } })(o); return out; };
 const buttons = (card) => { const out = []; (function walk(x) { if (Array.isArray(x)) x.forEach(walk); else if (x && typeof x === 'object') { if (x.type === 'button') out.push(x.action); Object.values(x).forEach(walk); } })(card.contents.footer || {}); return out; };

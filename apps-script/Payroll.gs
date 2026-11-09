@@ -3376,38 +3376,40 @@ function handlePayrollFinalize(body) {
         miss.map(function (x) { return x.name + '：' + x.days + ' 天查不到（' + x.first.slice(5) + (x.days > 1 ? '～' + x.last.slice(5) : '') + '）'; }).join('\n') };
   }
   let n = 0;
-  if (!payWriteLocked_(['run'], function () {
+  /* 稽核與損益快照也是「讀整張再寫回」的共用分頁，和鎖定狀態放在同一把鎖裡，兩店同時定案才不會互相蓋掉（2026-11-10）。 */
+  if (!payWriteLocked_(['run', 'audit', 'cost_snapshot'], function () {
     const rows = payRead('run');
     rows.forEach(function (r) { if (String(r.ym) === ym && payStore(r.store) === stF) { r.status = lock ? 'final' : 'draft'; n++; } });
     if (n) payReplaceAll('run', rows);
+    if (!n) return;
+    payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: lock ? 'lock' : 'unlock',
+                          operator: String(body.operator || 'admin'), reason: String(body.reason || ''), store: stF }]);
+    /* 損益系統快照（T14，Eason 2026-09-25 選方案 C）：只在「鎖定」（不是解鎖）且前端有送
+       cost_snapshot 時才寫新快照。鎖定本身在上面已經完成了，快照寫入失敗絕對不可以讓鎖定
+       失敗——try/catch 接住，失敗只記一筆稽核方便之後追查，不影響這次呼叫的回應。
+       ⚠ 2026-09-25 審查修正：兩種情況要清掉「舊快照殘留」，否則端點會把上一輪鎖定留下的
+       舊數字誤當成這次的答案繼續回傳——①解鎖時（這個月不再是定案數字）②鎖定但沒送
+       cost_snapshot（沒有新資料可信，寧可讓端點誠實回 NO_SNAPSHOT，也不要用舊資料充數）。
+       移除同樣包 try/catch，失敗不影響鎖定/解鎖本身。 */
+    if (lock && body.cost_snapshot) {
+      try {
+        pnlSnapshotUpsert_(ym, stF, body.cost_snapshot);
+      } catch (snapErr) {
+        payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: 'pnl_snapshot_fail',
+                              operator: String(body.operator || 'admin'),
+                              reason: String((snapErr && snapErr.message) || snapErr), store: stF }]);
+      }
+    } else {
+      try {
+        pnlSnapshotRemove_(ym, stF);
+      } catch (rmErr) {
+        payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: 'pnl_snapshot_remove_fail',
+                              operator: String(body.operator || 'admin'),
+                              reason: String((rmErr && rmErr.message) || rmErr), store: stF }]);
+      }
+    }
   })) return PAY_BUSY_;
   if (!n) return { ok: false, error: 'no_run', message: ym + ' 還沒有月結資料' };
-  payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: lock ? 'lock' : 'unlock',
-                        operator: String(body.operator || 'admin'), reason: String(body.reason || ''), store: stF }]);
-  /* 損益系統快照（T14，Eason 2026-09-25 選方案 C）：只在「鎖定」（不是解鎖）且前端有送
-     cost_snapshot 時才寫新快照。鎖定本身在上面已經完成了，快照寫入失敗絕對不可以讓鎖定
-     失敗——try/catch 接住，失敗只記一筆稽核方便之後追查，不影響這次呼叫的回應。
-     ⚠ 2026-09-25 審查修正：兩種情況要清掉「舊快照殘留」，否則端點會把上一輪鎖定留下的
-     舊數字誤當成這次的答案繼續回傳——①解鎖時（這個月不再是定案數字）②鎖定但沒送
-     cost_snapshot（沒有新資料可信，寧可讓端點誠實回 NO_SNAPSHOT，也不要用舊資料充數）。
-     移除同樣包 try/catch，失敗不影響鎖定/解鎖本身。 */
-  if (lock && body.cost_snapshot) {
-    try {
-      pnlSnapshotUpsert_(ym, stF, body.cost_snapshot);
-    } catch (snapErr) {
-      payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: 'pnl_snapshot_fail',
-                            operator: String(body.operator || 'admin'),
-                            reason: String((snapErr && snapErr.message) || snapErr), store: stF }]);
-    }
-  } else {
-    try {
-      pnlSnapshotRemove_(ym, stF);
-    } catch (rmErr) {
-      payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: 'pnl_snapshot_remove_fail',
-                            operator: String(body.operator || 'admin'),
-                            reason: String((rmErr && rmErr.message) || rmErr), store: stF }]);
-    }
-  }
   return { ok: true, ym: ym, status: lock ? 'final' : 'draft', count: n };
 }
 
@@ -4544,9 +4546,18 @@ function handleMyPayslip(body) {
 
 /** 已確認身分的同仁（名冊列 me、在 meStore 找到）→ 薪資單回應。
  *  my_payslip（專屬連結金鑰）與 line_my_payslip（LINE 身分，LineHub.gs）共用這一支，回應格式完全相同。 */
+/* 查自己薪資時，用打卡名冊的身分找主檔（2026-11-10 資安審計）：編號可能跨店重複，只比編號會拿到別店同編號的人。
+   先找本店；本店沒有，只接受別店「同編號也同姓名」的主檔（跨店同仁的主檔可能掛在別店）；都沒有就當沒主檔。 */
+function payMineMaster_(me, meStore) {
+  const rows = payRead('master').filter(function (m) { return String(m.emp_id) === String(me.emp_id); });
+  const st = payStore(meStore), nm = String(me.name || '').trim();
+  return rows.filter(function (m) { return payStore(m.store) === st; })[0] ||
+         rows.filter(function (m) { return nm && String(m.name || '').trim() === nm; })[0];
+}
+
 function payMyPayslipFor_(me, meStore, ym) {
-  // 員工所屬門市（主檔為準；找不到就用預設店）
-  const mineMaster = payRead('master').filter(function (m) { return String(m.emp_id) === String(me.emp_id); })[0];
+  // 員工所屬門市（主檔為準；找不到就用打卡名冊所在門市）
+  const mineMaster = payMineMaster_(me, meStore);
   const stMy = payStore((mineMaster && mineMaster.store) || meStore);
   const run = payRead('run').filter(function (r) {
     return String(r.ym) === ym && String(r.emp_id) === String(me.emp_id) && payStore(r.store) === stMy;
@@ -4804,7 +4815,8 @@ function handlePayrollLeaveEventSet(body) {
 const PAY_SCOPE_ADMIN_ONLY = ['payroll_group', 'payroll_store_set', 'payroll_holiday_sync', 'payroll_get',
                               'payroll_comp_check', 'payroll_comp_trigger_setup',   // 補休檢查看全部門市（2026-11-01）
                               'payroll_rest_check', 'payroll_rest_trigger_setup',   // 超時檢查看全部門市（2026-11-01）
-                              'payroll_ot_preview', 'payroll_ot_month_sync'];   // 加班費新舊並列試算（2026-11-06）只給總管理
+                              'payroll_ot_preview', 'payroll_ot_month_sync',
+                              'payroll_migrate_store', 'payroll_item_upsert', 'payroll_leave_span_set'];   // 這三個沒有逐列比對門市，只給全權管理者（2026-11-10 資安審計）   // 加班費新舊並列試算（2026-11-06）只給總管理
 
 function payScopeNorm_(v) { return payStore(String(v == null ? '' : v).trim()).toUpperCase(); }
 
