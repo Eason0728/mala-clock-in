@@ -1217,6 +1217,15 @@ function reqStrictLeaveProbs_(okRows, leaves) {
   Object.keys(reqd).forEach(function (t) { if (!(t in have)) out.push('有已核准的' + t + ' ' + reqBindFmt_(reqd[t]) + ' 小時，核定沒有登記'); });
   return out;
 }
+/** 別家店這天有沒有這個人的成功打卡。跨店同日合計超過 8 小時時，加班單開在做到超過 8 小時的那家店（Eason 2026-11-09），那家店當天可能自己沒滿 8 小時。讀不到算沒有。 */
+function reqPeerWorked_(name, date) {
+  if (typeof restPeerEvents_ !== 'function' || !name) return false;
+  var dayStart = new Date(date + 'T00:00:00+08:00').getTime();
+  return restPeerEvents_(name, dayStart).some(function (e) {
+    var ms = new Date(String(e.ts)).getTime();
+    return e.status === 'ok' && ms >= dayStart && ms < dayStart + 86400000;
+  });
+}
 /** 不能核定回 {ok:false, error:'need_request'|'need_diff_reason', message, ...}；可以回 null。
  *  opt：leaves、trip_hours、sched_day（H／R／W／空白）、diff_reason、acting（考勤管理個人帳號）；rows／force_strict／preview 給只讀試算用。 */
 function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindow, opt) {
@@ -1240,10 +1249,11 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
     var label = ot.rest ? '這天班表是休息日或例假，核定的 ' + reqBindFmt_(otNeed) + ' 小時都算加班，要有加班單'
                         : '超過 ' + REQ_BIND_OT_BASE_H + ' 小時的 ' + reqBindFmt_(otNeed) + ' 小時要有加班單';
     var schedKnown = opt.acting !== false;   // 舊值班核定頁拿不到班表，不知道是不是休息日，不判「加班單太多」；營運系統讀不到班表仍當一般日
-    var voidIt = schedKnown && otHave > 0.005 && otNeed <= 0.005;
+    var peerSeen = null, peerDay = function () { if (peerSeen === null) peerSeen = reqPeerWorked_(String((otRows[0] || {}).name || ''), date); return peerSeen; };   // 只在要擋的時候才讀別家店
+    var voidIt = schedKnown && otHave > 0.005 && otNeed <= 0.005 && !peerDay();
     if (voidIt) add('ot_void', '核定沒有超過 ' + REQ_BIND_OT_BASE_H + ' 小時，卻有 ' + reqBindFmt_(otHave) + ' 小時的已核准加班單，請先把加班單作廢');
     else if (otNeed > 0.005 && otHave + 0.005 < otNeed) { otBad = true; add('ot_hours', label + '（已核准 ' + reqBindFmt_(otHave) + ' 小時）'); }
-    else if (schedKnown && otNeed > 0.005 && otHave > otNeed + REQ_STRICT_TOL_MIN / 60 + 0.005) add('ot_hours', '加班單 ' + reqBindFmt_(otHave) + ' 小時比應有的 ' + reqBindFmt_(otNeed) + ' 小時多超過 ' + REQ_STRICT_TOL_MIN + ' 分鐘');
+    else if (schedKnown && otNeed > 0.005 && otHave > otNeed + REQ_STRICT_TOL_MIN / 60 + 0.005 && !peerDay()) add('ot_hours', '加班單 ' + reqBindFmt_(otHave) + ' 小時比應有的 ' + reqBindFmt_(otNeed) + ' 小時多超過 ' + REQ_STRICT_TOL_MIN + ' 分鐘');
     if (!voidIt && !(Number(opt.trip_hours) > 0)) {
       var merged = reqStrictMerged_(periods);
       otRows.forEach(function (r) {
@@ -1253,7 +1263,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
       var spans = ot.rest || !Array.isArray(opt.sched_spans) ? [] : opt.sched_spans;
       if (spans.length) otRows.forEach(function (r) {
         var inMin = reqOtInSchedMin_(String(r.start), String(r.end), spans);
-        if (inMin > REQ_STRICT_TOL_MIN) add('ot_in_sched', '加班單 ' + r.start + '–' + r.end + ' 有 ' + inMin + ' 分鐘在班表上班時段內（' + spans.map(function (x) { return x.start + '–' + x.end; }).join('、') + '），班表內是正常上班，不能算加班，請改成實際加班的時段');
+        if (inMin > REQ_STRICT_TOL_MIN && !peerDay()) add('ot_in_sched', '加班單 ' + r.start + '–' + r.end + ' 有 ' + inMin + ' 分鐘在班表上班時段內（' + spans.map(function (x) { return x.start + '–' + x.end; }).join('、') + '），班表內是正常上班，不能算加班，請改成實際加班的時段');
       });
     }
   } else if (otNeed > 0.005 && otHave + 0.005 < otNeed) {
