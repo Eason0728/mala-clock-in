@@ -173,6 +173,17 @@ function payForceTextCols(sh, cols, kind) {
   });
 }
 
+/* 寫進試算表前的最後一關（2026-11-10 資安審計）：文字開頭的 = + - @ 會被 Sheets 當公式，
+   財務帳號就能在姓名、備註埋公式讀別店薪資。沿用打卡端 sheetSafeText_ 的全形轉換。
+   純數字字串（-500、+12）不是公式，保持原樣；非字串（數字、布林）也不動。 */
+const PAY_NUMERIC_TEXT_ = /^\s*[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?%?\s*$/i;
+function payCellSafe_(v) {
+  return (typeof v !== 'string' || PAY_NUMERIC_TEXT_.test(v)) ? v : sheetSafeText_(v);
+}
+/* 員工編號只收英數、底線、連字號：編號會進薪資頁的按鈕和各分頁的比對鍵，夾帶引號或標籤就能跑程式。 */
+const PAY_EMP_ID_RE_ = /^[A-Za-z0-9_-]{1,32}$/;
+const PAY_BAD_EMP_ID_ = { ok: false, error: 'bad_emp_id', message: '員工編號只能用英文、數字、底線和連字號，最多 32 字' };
+
 /** 整張覆寫（保留表頭）——用於 master / holiday / run / item 的重建 */
 function payReplaceAll(kind, rows) {
   payInvalidate(kind);
@@ -182,7 +193,7 @@ function payReplaceAll(kind, rows) {
   const last = sh.getLastRow();
   if (last > 1) sh.getRange(2, 1, last - 1, cols.length).clearContent();
   if (!rows.length) return;
-  const values = rows.map(function (r) { return cols.map(function (c) { return r[c] == null ? '' : r[c]; }); });
+  const values = rows.map(function (r) { return cols.map(function (c) { return r[c] == null ? '' : payCellSafe_(r[c]); }); });
   sh.getRange(2, 1, values.length, cols.length).setValues(values);
 }
 
@@ -211,7 +222,7 @@ function payAppend(kind, rows) {
   if (!rows.length) return;
   const sh = paySheet(kind), cols = PAY_SHEETS[kind];
   payForceTextCols(sh, cols, kind);
-  const values = rows.map(function (r) { return cols.map(function (c) { return r[c] == null ? '' : r[c]; }); });
+  const values = rows.map(function (r) { return cols.map(function (c) { return r[c] == null ? '' : payCellSafe_(r[c]); }); });
   sh.getRange(sh.getLastRow() + 1, 1, values.length, cols.length).setValues(values);
 }
 
@@ -2423,6 +2434,7 @@ function handlePayrollMasterGet(body) {
 function handlePayrollMasterSet(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   if (!Array.isArray(body.master)) return { ok: false, error: 'master_required' };
+  if (body.master.some(function (m) { return !PAY_EMP_ID_RE_.test(String(m && m.emp_id != null ? m.emp_id : '').trim()); })) return PAY_BAD_EMP_ID_;
   const now = nowTaipeiIso();
   const stMs = payStore(body.store);
   const mine = body.master.map(function (m) { m.updated_at = now; m.store = payStore(m.store || stMs); return m; });

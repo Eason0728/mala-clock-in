@@ -691,6 +691,11 @@ const rf=v=>(+v).toLocaleString('zh-TW',{maximumFractionDigits:2});   // 單價�
 const esc=s=>String(s==null?'':s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
   .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+/* 把資料放進 onclick／onchange 裡當字串用：先 JSON 編碼（擋跳出 JS 字串），再 HTML 轉義（擋跳出屬性）。
+   只用 esc 不夠：瀏覽器解屬性時會把 &#39; 還原成單引號。 */
+const jsa=s=>esc(JSON.stringify(String(s==null?'':s)));
+/* 匯出 Excel 的文字：開頭 = + - @ 轉全形免得變公式（純數字不動），再轉義 HTML。 */
+const xlsText=s=>{const t=String(s==null?'':s);return (/^\s*[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?%?\s*$/i.test(t)?t:t.replace(/^(\s*)([=+\-@])/,(m,a,b)=>a+{'=':'＝','+':'＋','-':'－','@':'＠'}[b])).replace(/&/g,'&amp;').replace(/</g,'&lt;')};
 const ym=()=>$('ym').value;
 function stepMonth(d){
   const m=/^(\d{4})-(\d{2})$/.exec($('ym').value||''); if(!m)return;
@@ -1302,7 +1307,7 @@ function costAudit(){
     `<div style="border:1px solid ${bad?'var(--bad)':'var(--ok)'};border-radius:12px;overflow:hidden">
       <div style="padding:10px 14px;font-weight:900;color:#fff;background:${bad?'var(--bad)':'var(--ok)'}">
         ${bad?'✗ 有 '+bad+' 項對不上，先別鎖定':'✓ 全部對得上（'+out.filter(o=>o[0]==='chk').length+' 項）'}
-        <span style="font-weight:400;opacity:.85;font-size:12.5px">　${ym()}　${STORE}　${RESULTS.length} 人</span>
+        <span style="font-weight:400;opacity:.85;font-size:12.5px">　${ym()}　${esc(STORE)}　${RESULTS.length} 人</span>
       </div>
       <table style="width:100%">${out.map(o=>o[0]==='h'
         ? `<tr style="background:#faf7f3"><td colspan="2" style="font-weight:900;padding:7px 14px">${o[1]}</td></tr>`
@@ -1312,7 +1317,7 @@ function costAudit(){
             o[1]?nf(o[3]):nf(o[3])+' ≠ '+nf(o[4])}</td></tr>`).join('')}</table>
       ${warn.length?`<div style="padding:10px 14px;background:#fffaf0;border-top:1px solid var(--line)">
         <div style="font-weight:900;margin-bottom:4px">提醒（不影響加減）</div>
-        ${warn.map(w=>`<div style="font-size:13px;color:#8a6d3b">· ${w}</div>`).join('')}</div>`:''}
+        ${warn.map(w=>`<div style="font-size:13px;color:#8a6d3b">· ${esc(w)}</div>`).join('')}</div>`:''}
     </div>`;
   toast(bad?('對帳有 '+bad+' 項對不上'):'對帳全部通過', !!bad);
 }
@@ -1494,16 +1499,16 @@ const AF=[['hours','本店核定時數'],['extra_ot','額外加班 H'],['persona
 function customAddCell(id,A){
   if(A.custom_add_more_error)
     return `<span style="color:#c0392b;font-weight:800" title="試算表裡的自訂加薪格式壞了（${esc(A.custom_add_more_error)}），請聯絡 Eason 修正後再儲存">⚠ 讀取失敗</span>`;
-  const sid=esc(String(id));
+  const sid=jsa(id);
   const row=(lb,amt,onL,onA)=>`<div style="display:flex;gap:5px;min-width:190px;margin-bottom:4px">
       <input type="text" placeholder="名稱" value="${esc(lb||'')}" style="min-width:90px" onchange="${onL}">
       <input type="number" placeholder="金額" value="${esc(n(amt)||'')}" style="min-width:80px" onchange="${onA}"></div>`;
   let h=row(A.custom_add_label,A.custom_add_amt,
-    `ATT['${sid}'].custom_add_label=this.value`,`ATT['${sid}'].custom_add_amt=n(this.value)`);
+    `ATT[${sid}].custom_add_label=this.value`,`ATT[${sid}].custom_add_amt=n(this.value)`);
   (A.custom_add_more||[]).forEach((x,i)=>{
-    h+=row(x.label,x.amt,`ATT['${sid}'].custom_add_more[${i}].label=this.value`,`ATT['${sid}'].custom_add_more[${i}].amt=n(this.value)`);
+    h+=row(x.label,x.amt,`ATT[${sid}].custom_add_more[${i}].label=this.value`,`ATT[${sid}].custom_add_more[${i}].amt=n(this.value)`);
   });
-  return h+`<button type="button" class="btn ghost" style="padding:2px 10px;font-size:12px" onclick="addCustomAdd('${sid}')">＋ 再加一筆</button>`;
+  return h+`<button type="button" class="btn ghost" style="padding:2px 10px;font-size:12px" onclick="addCustomAdd(${sid})">＋ 再加一筆</button>`;
 }
 function addCustomAdd(id){
   const A=ATT[id]||(ATT[id]={});
@@ -1529,48 +1534,48 @@ function renderAtt(){
     const sh=A.support.reduce((a,s)=>a+(s&&s.cross===true?0:n(s.hours)),0);   // 跨品牌列後端不計（2026-11 起），這裡也不加
     // 姓名底下掛「假別額度」——點了才去抓（Apps Script 每次往返約 2 秒，不放進 loadMonth 拖慢切月份）
     h+=`<tr><td><b>${esc(e.name)}</b> <span class="tag ${isFT(e)?'ft':'pt'}">${isFT(e)?'正職':'計時'}</span>`
-      +`<br><button class="lnk" onclick="openQuota('${e.emp_id}')">假別額度</button></td>`;
+      +`<br><button class="lnk" onclick="openQuota(${jsa(e.emp_id)})">假別額度</button></td>`;
     // 全勤津貼：只有計時可勾（滿100H＋全勤由管理者判定），勾了時薪＋10；放在姓名旁第一欄
     h+=`<td style="text-align:center">${isFT(e)?'—':
       `<input type="checkbox" ${A.full_attend?'checked':''}
-        onchange="ATT['${e.emp_id}'].full_attend=this.checked"
+        onchange="ATT[${jsa(e.emp_id)}].full_attend=this.checked"
         style="width:20px;height:20px;cursor:pointer;accent-color:var(--red)">`}</td>`;
     // 餐費補助（正職）：勾了才算＝出勤天數×主檔「餐費補助/日」
     h+=`<td style="text-align:center">${!isFT(e)?'—':
       `<input type="checkbox" ${A.meal_on?'checked':''}
-        onchange="ATT['${e.emp_id}'].meal_on=this.checked"
+        onchange="ATT[${jsa(e.emp_id)}].meal_on=this.checked"
         style="width:20px;height:20px;cursor:pointer;accent-color:var(--red)">`}</td>`;
     // 本月時薪（計時）：填了用該月值、預設帶主檔時薪；每月可不同又保留歷史。正職—
     h+=`<td>${isFT(e)?'—':`<input type="number" step="1" value="${esc(n(A.wage_override)>0?n(A.wage_override):n(e.wage))}"
-        onchange="ATT['${e.emp_id}'].wage_override=n(this.value)">`}</td>`;
+        onchange="ATT[${jsa(e.emp_id)}].wage_override=n(this.value)">`}</td>`;
     // 國定假日時數（計時）：當天出勤時薪雙倍；有填國定假日日期就自動帶出，也可手改
     h+=`<td>${isFT(e)?'—':`<input type="number" step="0.25" value="${esc(n(A.holiday_h)||0)}"
-        onchange="ATT['${e.emp_id}'].holiday_h=n(this.value)">`}</td>`;
+        onchange="ATT[${jsa(e.emp_id)}].holiday_h=n(this.value)">`}</td>`;
     // 出勤天數（正職）：餐費補助用，自動帶打卡有核定的天數、可手改。計時—
     h+=`<td>${!isFT(e)?'—':`<input type="number" step="1" value="${esc(A.work_days??0)}"
-        onchange="ATT['${e.emp_id}'].work_days=n(this.value)">`}</td>`;
+        onchange="ATT[${jsa(e.emp_id)}].work_days=n(this.value)">`}</td>`;
     // 本月宿舍費：空白＝用主檔（placeholder 顯示主檔值）、填 0＝本月免收、填其他＝本月專屬
     h+=`<td><input type="number" step="100" value="${esc((A.dorm_override===''||A.dorm_override==null)?'':A.dorm_override)}"
         placeholder="${n(e.dormitory)||0}"
-        onchange="ATT['${e.emp_id}'].dorm_override=this.value===''?'':n(this.value)"></td>`;
+        onchange="ATT[${jsa(e.emp_id)}].dorm_override=this.value===''?'':n(this.value)"></td>`;
     AF.forEach(([k])=>{
       const dis=!isFT(e)&&(k==='extra_ot'||k==='deduct_days');
       h+=`<td>${dis?'—':`<input type="number" step="0.25" value="${esc(A[k]??0)}"
-        onchange="ATT['${e.emp_id}']['${k}']=n(this.value)">`}</td>`;
+        onchange="ATT[${jsa(e.emp_id)}]['${k}']=n(this.value)">`}</td>`;
     });
     // 支援時數讀取失敗（後端 JSON 解析不了）要看得見——不然會靜靜當成 0，
     // 而且一旦按了儲存就把空值寫回去、原始資料永久消失（2026-08-24 加）
     h+=A.support_error
-      ? `<td style="color:#c0392b;font-weight:800" title="試算表裡的支援資料格式壞了（${A.support_error}），請聯絡 Eason 修正後再儲存">⚠ 讀取失敗</td>`
+      ? `<td style="color:#c0392b;font-weight:800" title="試算表裡的支援資料格式壞了（${esc(A.support_error)}），請聯絡 Eason 修正後再儲存">⚠ 讀取失敗</td>`
       : `<td>${sh?r2(sh)+' H':'—'}</td>`;
     // 自訂加薪／扣款：名稱自填＋金額，逐月存於 payroll_input
     // 2026-10-10 起可多筆：第一筆照舊存 custom_add_label/amt，第二筆以後存 custom_add_more（JSON）
     h+=`<td>${customAddCell(e.emp_id,A)}</td>`;
     h+=`<td><div style="display:flex;gap:5px;min-width:190px">
       <input type="text" placeholder="名稱" value="${esc(A.custom_ded_label||'')}" style="min-width:90px"
-        onchange="ATT['${e.emp_id}'].custom_ded_label=this.value">
+        onchange="ATT[${jsa(e.emp_id)}].custom_ded_label=this.value">
       <input type="number" placeholder="金額" value="${esc(n(A.custom_ded_amt)||'')}" style="min-width:80px"
-        onchange="ATT['${e.emp_id}'].custom_ded_amt=n(this.value)"></div></td>`;
+        onchange="ATT[${jsa(e.emp_id)}].custom_ded_amt=n(this.value)"></div></td>`;
     // 剩餘特休：後端依到職日按勞基法(週年制)算額度、扣掉本週年期已用特休(唯讀)
     const av=ANNUAL[e.emp_id];
     h+=`<td style="white-space:nowrap">${av?`<b>${av.left_h}</b> H <span style="color:var(--muted);font-size:11.5px">/ ${av.quota_h}H(${av.days}天)</span>`:'—'}</td></tr>`;
@@ -1875,7 +1880,7 @@ function renderStores(){
   if(bad.length){
     if(!warn){ warn=document.createElement('div'); warn.id='storeWarn'; warn.className='note warn'; warn.style.marginTop='12px';
       t.parentNode.parentNode.insertBefore(warn,t.parentNode.nextSibling); }
-    warn.innerHTML='⚠ 這些門市還沒填「打卡試算表 ID」：<b>'+bad.map(x=>x.name||x.code).join('、')
+    warn.innerHTML='⚠ 這些門市還沒填「打卡試算表 ID」：<b>'+bad.map(x=>esc(x.name||x.code)).join('、')
       +'</b><br>切到這些門市會讀不到工時資料（第一家門市留空代表用本系統所在的試算表，其他門市必須填）。';
     warn.style.display='';
   } else if(warn){ warn.style.display='none'; }
@@ -1952,7 +1957,7 @@ async function loadGroup(force){
   if(c&&!force){ renderGroup(c); return; }
   box.innerHTML='<div style="color:var(--muted);padding:14px 2px">載入中…</div>';
   const r=await post('payroll_group',{ym:ym()});
-  if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+(r.error||'')+'</div>';return}
+  if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+esc(r.error||'')+'</div>';return}
   vSet('group',r); renderGroup(r);
 }
 function renderGroup(r){
@@ -2007,7 +2012,7 @@ function renderBonus(){
       <div class="scroll"><table>
         <thead><tr><th style="text-align:left">姓名</th><th style="text-align:left">顯示名稱</th><th>金額</th><th style="text-align:left">備註</th><th></th></tr></thead>
         <tbody>${rows.map(({b,i})=>`<tr>
-          <td style="text-align:left"><b>${nameOf(b.emp_id)}</b></td>
+          <td style="text-align:left"><b>${esc(nameOf(b.emp_id))}</b></td>
           <td style="text-align:left"><input type="text" value="${esc(b.label||'')}" onchange="BONUS[${i}].label=this.value"></td>
           <td><input type="number" value="${esc(n(b.amount))}" onchange="BONUS[${i}].amount=n(this.value)"></td>
           <td style="text-align:left"><input type="text" value="${esc(b.memo||'')}" onchange="BONUS[${i}].memo=this.value"></td>
@@ -2045,7 +2050,7 @@ async function loadDash(force){
   // 開頁時已先發出的趨勢：門市與月份都沒變才用（loadMonth 可能把 STORE 換成後端回的門市），只用一次
   const pf=DASH_PREFETCH; DASH_PREFETCH=null;
   const r=await (pf&&!force&&pf.key===STORE+'|'+ym()?pf.p:post('payroll_trend',{ym:ym(),store:STORE,months:12}));
-  if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+(r.error||'')+'</div>';return}
+  if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+esc(r.error||'')+'</div>';return}
   DASH=r.months||[];vSet('dash',DASH);renderDash();
 }
 function bars(data,valKey,color,fmtFn){
@@ -2116,7 +2121,7 @@ async function loadPunch(force){
   if(c&&!force){ renderPunch(c); return; }
   box.innerHTML='<div style="color:var(--muted);padding:14px 2px">載入中…</div>';
   const r=await post('payroll_punch',{ym:ym(),emp_id:who});
-  if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+(r.error||'')+'</div>';return}
+  if(!r.ok){box.innerHTML='<div class="bad" style="padding:14px 2px">讀取失敗：'+esc(r.error||'')+'</div>';return}
   vSet('punch:'+who,r); renderPunch(r);
 }
 function renderPunch(r){
@@ -2149,7 +2154,7 @@ function renderPunch(r){
   const pill=p=>{
     const bad=p.status!=='ok';
     const t=p.type==='in'?'上班':p.type==='out'?'下班':p.type;
-    return `<span class="tag ${bad?'draft':'final'}" style="margin:1px 3px 1px 0">${p.time} ${t}${bad?'·未入帳':''}</span>`;
+    return `<span class="tag ${bad?'draft':'final'}" style="margin:1px 3px 1px 0">${esc(p.time)} ${esc(t)}${bad?'·未入帳':''}</span>`;
   };
   box.innerHTML=sumHtml+`<h2 style="font-size:15px;font-weight:900;margin:4px 0 10px">每日明細</h2><div class="scroll"><table>
     <thead><tr><th>日期</th><th style="text-align:left">姓名</th><th style="text-align:left">打卡事件</th>
@@ -2158,9 +2163,9 @@ function renderPunch(r){
       <td>${x.date}</td><td style="text-align:left"><b>${esc(x.name)}</b></td>
       <td style="text-align:left;white-space:normal;min-width:230px">${x.punches.length?x.punches.map(pill).join(''):'<span style="color:var(--muted)">無打卡</span>'}</td>
       <td>${x.approved_hours===''?'<span style="color:var(--muted)">未核定</span>':'<b>'+x.approved_hours+'</b> H'}</td>
-      <td style="text-align:left">${x.periods||'—'}</td>
+      <td style="text-align:left">${esc(x.periods||'—')}</td>
       <td style="text-align:left">${x.status_text?`<span class="${/遲到|早退|忘刷/.test(x.status_text)?'bad':''}">${esc(x.status_text)}</span>`:'—'}</td>
-      <td style="text-align:left">${x.manager_name||'—'}</td></tr>`).join('')}</tbody></table></div>
+      <td style="text-align:left">${esc(x.manager_name||'—')}</td></tr>`).join('')}</tbody></table></div>
     <div class="hint" style="margin-top:10px">共 ${rows.length} 筆</div>`;
 }
 
@@ -2230,8 +2235,8 @@ function renderSupWarn(){
     parts.push(`<div class="note warn" style="margin:0 0 10px"><b>手填和打卡不一樣，請逐筆決定</b>（沒決定之前照手填算）
       <div class="scroll"><table style="margin-top:6px"><thead><tr><th>同仁</th><th>支援門市</th><th>手填</th><th>打卡核定</th><th></th></tr></thead><tbody>`
       +SUPA.diffs.map(d=>`<tr><td>${esc(supEmpName(d.emp_id))}</td><td>${esc(d.name||supStoreName(d.code))}</td><td>${esc(r2(n(d.manual)))} H</td><td>${esc(r2(n(d.auto)))} H</td>
-        <td style="white-space:nowrap"><button class="btn" style="padding:5px 12px;font-size:13px" onclick="supDecide('${esc(d.emp_id)}','${esc(d.code)}','auto',${n(d.auto)},this)">改成打卡值</button>
-        <button class="btn ghost" style="padding:5px 12px;font-size:13px" onclick="supDecide('${esc(d.emp_id)}','${esc(d.code)}','keep',${n(d.auto)},this)">保留手填</button></td></tr>`).join('')
+        <td style="white-space:nowrap"><button class="btn" style="padding:5px 12px;font-size:13px" onclick="supDecide(${jsa(d.emp_id)},${jsa(d.code)},'auto',${n(d.auto)},this)">改成打卡值</button>
+        <button class="btn ghost" style="padding:5px 12px;font-size:13px" onclick="supDecide(${jsa(d.emp_id)},${jsa(d.code)},'keep',${n(d.auto)},this)">保留手填</button></td></tr>`).join('')
       +'</tbody></table></div></div>');
   }
   if((W.support_error||[]).length) line('warn','⚠ <b>支援資料格式壞了</b>，這幾位本月不自動帶入：'+W.support_error.map(x=>esc(supEmpName(x))).join('、')+'。請聯絡 Eason 修正。');
@@ -2289,21 +2294,21 @@ function renderSup(){
         const k=e.emp_id+'|'+s.code;
         return `<tr style="background:#f4f8f1"><td style="text-align:left">${esc(s.store||supStoreName(s.code))} <span class="tag" style="background:#e3efe0;color:#2e6b34">打卡帶入</span></td>
           <td>${esc(r2(n(s.hours)))}</td><td>${esc(n(s.rate))}</td><td style="color:var(--muted)">自動</td>
-          <td><button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="supToggleDays('${esc(e.emp_id)}','${esc(s.code)}')">${SUP_OPEN[k]?'收合':'逐日'}</button></td></tr>`
+          <td><button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="supToggleDays(${jsa(e.emp_id)},${jsa(s.code)})">${SUP_OPEN[k]?'收合':'逐日'}</button></td></tr>`
           +(SUP_OPEN[k]?`<tr><td colspan="5" style="text-align:left">${supDaysHtml(e.emp_id,s.code)}</td></tr>`:'');
       }
       // 舊列沒有代碼（只有中文名）：後端認出是跨品牌、但畫面對不到是哪一列時，這位同仁沒代碼的列都標紅（寧可多標，不可漏擋）
       const bad=s.cross===true||(s.code?cross.indexOf(String(s.code).toUpperCase())>=0:(String(s.store||'').trim()&&legacyBad));
       return `<tr${bad?' style="background:#fdecea" title="跨品牌支援：2026-11 起由打卡那家店發薪，請移除這一列"':''}>
-      <td><select onchange="setSupStore('${esc(e.emp_id)}',${i},this.value)">${storeOptions(s)}</select>${bad?'<div style="color:#c0392b;font-weight:800;font-size:12px;margin-top:3px">跨品牌：請移除</div>':''}</td>
+      <td><select onchange="setSupStore(${jsa(e.emp_id)},${i},this.value)">${storeOptions(s)}</select>${bad?'<div style="color:#c0392b;font-weight:800;font-size:12px;margin-top:3px">跨品牌：請移除</div>':''}</td>
       <td><input type="number" step="0.25" value="${esc(s.hours??'')}"
-        onchange="ATT['${e.emp_id}'].support[${i}].hours=n(this.value);renderAtt()"></td>
+        onchange="ATT[${jsa(e.emp_id)}].support[${i}].hours=n(this.value);renderAtt()"></td>
       <td><input type="number" value="${esc(s.rate??'')}"
-        onchange="ATT['${e.emp_id}'].support[${i}].rate=n(this.value)"></td>
+        onchange="ATT[${jsa(e.emp_id)}].support[${i}].rate=n(this.value)"></td>
       <td><input type="number" value="${esc(s.amount??'')}" placeholder="自動"
-        onchange="ATT['${e.emp_id}'].support[${i}].amount=this.value"></td>
+        onchange="ATT[${jsa(e.emp_id)}].support[${i}].amount=this.value"></td>
       <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
-        onclick="ATT['${e.emp_id}'].support.splice(${i},1);markAttDirty();renderAtt()">移除</button></td></tr>`;
+        onclick="ATT[${jsa(e.emp_id)}].support.splice(${i},1);markAttDirty();renderAtt()">移除</button></td></tr>`;
     }).join('');
     return `<div class="card" style="background:#fdfcfb;margin-bottom:12px">
       <div class="row" style="margin-bottom:10px"><b>${esc(e.name)}</b></div>
@@ -2382,7 +2387,7 @@ async function saveFX(btn,label,fn){
 async function saveMaster(btn){
   return saveFX(btn,'儲存主檔',async()=>{
     const r=await post('payroll_master_set',{master:MASTER});
-    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    if(!r.ok){toast('儲存失敗：'+(r.message||r.error||''),true);return false}
     renderEmp();toast('主檔已儲存');return true;
   });
 }
@@ -2820,7 +2825,7 @@ function renderExport(){
 }
 function exportExcel(){
   if(!RESULTS.length){toast('此月份尚無資料，請先計算',true);return}
-  const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const esc=xlsText;
   let sum=`<table border="1"><tr><th>姓名</th><th>型態</th><th>核定時數</th><th>支援時數</th><th>基本工時</th><th>超時/不足</th><th>計薪加班</th><th>應收</th><th>應付</th><th>實付</th></tr>`;
   RESULTS.forEach(r=>{sum+=`<tr><td>${esc(r.name)}</td><td>${r.is_full_time?'正職':'計時'}</td><td>${r.total_hours}</td><td>${r.support_hours?r2(r.support_hours):''}</td><td>${r.base_hours??''}</td><td>${r.surplus_hours??''}</td><td>${r.ot_paid_hours?r2(r.ot_paid_hours):''}</td><td>${Math.round(r.gross)}</td><td>${Math.round(r.deduction)}</td><td>${Math.round(r.net)}</td></tr>`});
   sum+='</table>';
