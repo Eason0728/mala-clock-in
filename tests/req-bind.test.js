@@ -114,6 +114,15 @@ ok('審核中的加班單不算，訊息提醒先去審核', () => {
   const r = sb.reqBindCheck_(sb.getSS(), 'E01', D, 9.5, [P('09:00', '18:30')], [S('09:00', '18:30')], null);
   assert.ok(/1 張申請還在審核中/.test(r.message), r.message);
 });
+ok('沒綁 LINE：第一張還在審核，訊息帶沒綁 LINE，可繼續代開第二張；有綁 LINE 不帶', () => {
+  const sb = makeEnv();
+  addReq(sb, { kind: 'miss', emp_id: 'E02', miss_type: 'out', end: '18:30', status: 'pending' });
+  const r = sb.reqBindCheck_(sb.getSS(), 'E02', D, 9.5, [P('09:00', '18:30')], [S('09:00', '18:30')], null);
+  assert.ok(/1 張申請還在審核中/.test(r.message) && /沒綁 LINE/.test(r.message), r.message);
+  addReq(sb, { kind: 'miss', emp_id: 'E01', miss_type: 'out', end: '18:30', status: 'pending' });
+  const r2 = sb.reqBindCheck_(sb.getSS(), 'E01', D, 9.5, [P('09:00', '18:30')], [S('09:00', '18:30')], null);
+  assert.ok(!/沒綁 LINE/.test(r2.message), r2.message);
+});
 ok('別人的單、別天的單不算', () => {
   const sb = makeEnv();
   addReq(sb, { kind: 'ot', hours: 2, emp_id: 'E02' });
