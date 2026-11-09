@@ -208,11 +208,15 @@ def payroll_expect(pay):
     """
     out = {}
     base_hours = float(pay['config']['base_hours'])
-    for m in pay['master']:
+    for idx, m in enumerate(pay['master']):
         i = pay['inputs'][m['emp_id']]
         full = m['is_full_time'] == 'TRUE'
         hours, ot = float(i['hours']), float(i['extra_ot'])
         sup = sum(float(x['hours']) for x in (i.get('support') or []))
+        # 2026-11 起假後端會把跨店支援帶入（mock h_dzy_xmap：前兩位有已確認的央廚帳號，每月固定 8＋6.5＋4H）；
+        # 手填了央廚支援的人列差異、不帶入。
+        if pay['ym'] >= '2026-11' and idx < 2 and not any(x.get('store') == 'CF' for x in (i.get('support') or [])):
+            sup += 18.5
         gross = float(m['base']) if full else float(m['wage']) * hours
         gross += ot * float(m['ot_rate'])
         gross += float(m['skill_allow']) + float(m['night_allow']) + float(m['mgr_allow']) + float(m['meal_allow'])
