@@ -149,6 +149,7 @@
       <div class="msg" id="bindTitle">第一次使用，請輸入你的全名</div>
       <div class="hint" id="bindHint">要人在你上班的店裡，名字要和店裡名冊一樣</div>
       <input id="bindName" type="text" placeholder="例如：王小明" autocomplete="name">
+      <input id="bindCode" type="text" inputmode="numeric" maxlength="6" placeholder="店長給的 6 位數綁定碼" autocomplete="off" hidden>
       <div class="hint" id="bindError" style="color:var(--err)"></div>
       <button class="primary" id="btnBind" type="button">綁定</button>
     </div>
@@ -780,10 +781,14 @@
   });
   /* 2026-11-06 跨單位：名字在別的單位名冊上 → 伺服器回 confirm_home，請本人確認是哪個單位的誰，確認後再送一次。 */
   function sendBind(name, confirmHome) {
-    post(HUB_API, Object.assign({ action: 'line_bind_name', id_token: liff.getIDToken(), name: name, confirm_home: confirmHome }, fixPayload()))
+    post(HUB_API, Object.assign({ action: 'line_bind_name', id_token: liff.getIDToken(), name: name, confirm_home: confirmHome, bind_code: $('bindCode').value.trim() }, fixPayload()))
       .then(function (r) {
         $('btnBind').disabled = false;
         if (r && r.ok) { if (r.first_support) bindNote = '已幫你加入「' + r.store_name + '」名冊，第一次支援請跟值班主管說一聲'; loadStatus(); return; }
+        if (r && (r.error === 'bind_code_required' || r.error === 'bind_code_wrong')) {
+          $('bindCode').hidden = false; $('bindCode').focus(); $('bindError').textContent = r.message;
+          return;
+        }
         if (r && r.error === 'confirm_home' && !confirmHome) {
           if (window.confirm('你是「' + r.home_store_name + '」的「' + r.name + '」嗎？\n\n按「確定」會綁定你在「' + r.home_store_name + '」的打卡帳號，並把你加入「' + r.store_name + '」的名冊。\n不是你本人請按「取消」。')) {
             $('btnBind').disabled = true; sendBind(name, r.confirm);

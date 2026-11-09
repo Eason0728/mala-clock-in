@@ -265,6 +265,37 @@ function liffMgr_(body) {
   return sh ? findManagerByKey(readSheetAsObjects(sh).rows, body.mgr_key) : null;
 }
 
+/* LINE 綁定碼（2026-11-10 資安審計）：只靠姓名和手機回報的定位，知道同事全名就能冒綁。
+   開關 LINE_BIND_CODE_ON（光復 Script Property）＝'1' 才要求；綁定碼由店長替某位同仁產生，當天和隔天有效。
+   碼由該同仁的打卡金鑰算出，不用另外存，綁定成功後該列已綁定，同一組碼就沒有用處了。 */
+function lineBindCode_(rosterKey, ymd) {
+  var s = Utilities.computeHmacSha256Signature('line-bind|' + ymd, String(rosterKey));
+  var n = ((s[0] & 255) * 16777216) + ((s[1] & 255) << 16) + ((s[2] & 255) << 8) + (s[3] & 255);
+  return ('000000' + (n % 1000000)).slice(-6);
+}
+function lineBindYmd_(daysAgo) {
+  return Utilities.formatDate(new Date(Date.now() - (daysAgo || 0) * 86400000), 'Asia/Taipei', 'yyyy-MM-dd');
+}
+function lineBindCodeOk_(rosterKey, code) {
+  var c = String(code == null ? '' : code).trim();
+  return /^\d{6}$/.test(c) && !!String(rosterKey || '') && (c === lineBindCode_(rosterKey, lineBindYmd_(0)) || c === lineBindCode_(rosterKey, lineBindYmd_(1)));
+}
+
+/** {action:'mgr_bind_code', mgr_key, emp_id} → 替還沒綁 LINE 的在職同仁產生綁定碼（只回碼，不回金鑰）。 */
+function handleMgrBindCode_(body) {
+  var mgr = liffMgr_(body);
+  if (!mgr) return { ok: false, error: 'unauthorized' };
+  var actor = actingName_(body, mgr);
+  if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
+  var sheet = getSS().getSheetByName('roster');
+  var row = readSheetAsObjects(sheet).rows.filter(function (r) { return String(r.emp_id) === String(body.emp_id); })[0];
+  if (!row) return { ok: false, error: 'not_found' };
+  if (String(row.active).toLowerCase() !== 'true') return { ok: false, error: 'inactive', message: '這位同仁已停用，不能產生綁定碼' };
+  if (row.line_user_id) return { ok: true, already: true, name: String(row.name) };
+  logLiffBind_(String(row.emp_id), String(row.name), '', 'code_issued');
+  return { ok: true, name: String(row.name), code: lineBindCode_(row.key, lineBindYmd_(0)) };
+}
+
 /** {action:'mgr_line_binds', mgr_key, days?} → 最近 N 天（預設 30）的綁定／解除紀錄＋現在是否仍綁著。不回 LINE userId 全文。 */
 function handleMgrLineBinds_(body) {
   if (!liffMgr_(body)) return { ok: false, error: 'unauthorized' };
@@ -769,6 +800,7 @@ var LIFF_HANDLERS = {
   mgr_retire_keys: handleMgrRetireKeys_,   // 舊值班核定頁停用後換掉舊主管鑰匙（2026-11-06）
   mgr_line_binds: handleMgrLineBinds_,
   mgr_line_unbind: handleMgrLineUnbind_,
+  mgr_bind_code: handleMgrBindCode_,
   liff_bind: handleLiffBind_,
   liff_clock: handleLiffClockGuarded_,
   liff_whoami: function (body) { return withLineIdentity_(body, handleWhoami); },
