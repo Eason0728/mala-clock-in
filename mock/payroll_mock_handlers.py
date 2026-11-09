@@ -656,6 +656,13 @@ def h_xmap_set(data, body):
     return {'ok': True, 'count': len(clean), 'dropped': dropped, 'synced_at': synced}
 
 
+def h_audit_get(data, body):
+    """操作紀錄（假資料一筆，讓分頁的篩選與匯出有東西可驗）。"""
+    ym = str(body.get('ym') or '2026-11')
+    return {'ok': True, 'items': [{'ts': ym + '-05T09:00:00+08:00', 'ym': ym, 'store': 'SSLGF', 'action': 'lock',
+                                   'operator': '測試主管', 'reason': 'e2e', 'detail': ''}]}
+
+
 def h_xmap_get(data, body):
     rows = _pay(data, 'xmap')
     return {'ok': True, 'rows': rows, 'synced_at': max([str(r.get('synced_at') or '') for r in rows] or [''])}
@@ -686,6 +693,7 @@ PAYROLL_ACTIONS = {
     'payroll_dzy_xmap': h_dzy_xmap,
     'payroll_xmap_set': h_xmap_set,
     'payroll_xmap_get': h_xmap_get,
+    'payroll_audit_get': h_audit_get,
     'payroll_support_decide': h_support_decide,
     'payroll_bootstrap': h_bootstrap,
     'payroll_master_get': h_master_get,

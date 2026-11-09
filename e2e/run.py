@@ -82,8 +82,10 @@ def click_text(page, scope, text, why, do_click=True, exact=False):
     k = page.evaluate("""([sc, t, doClick, exact]) => {
         const root = sc ? document.querySelector(sc) : document;
         if (!root) return null;
-        const b = [...root.querySelectorAll('button')].find(x =>
+        const hits = [...root.querySelectorAll('button')].filter(x =>
             exact ? x.textContent.trim() === t : x.textContent.includes(t));
+        // 先找看得到的：不同分頁常有同名按鈕（兩顆「匯出 Excel」），點到藏起來的那顆等於沒測
+        const b = hits.find(x => x.offsetParent !== null) || hits[0];
         if (!b) return null;
         // 先算 key 再點——按下去文字會變成「送出中…」，事後再讀就對不上掃描結果
         const key = b.id ? '#' + b.id
@@ -981,7 +983,7 @@ def phase_payroll(page, data, exp_att):
 
     # 分頁清單（左側選單）
     tabs = page.evaluate("""() => [...document.querySelectorAll('button, a')]
-        .filter(b => b.offsetParent !== null && /儀表板|集團總覽|薪資計算|出勤資料|獎金計算|打卡紀錄|員工設定|參數設定|薪資單|匯出/.test(b.textContent))
+        .filter(b => b.offsetParent !== null && /儀表板|集團總覽|薪資計算|出勤資料|獎金計算|打卡紀錄|操作紀錄|員工設定|參數設定|薪資單|匯出/.test(b.textContent))
         .map(b => b.textContent.trim().replace(/\s+/g, ' '))""")
     tabs = list(dict.fromkeys(tabs))
     check(f'薪酬頁有完整的分頁選單（{len(tabs)} 個）', len(tabs) >= 8, str(tabs))
@@ -1040,6 +1042,18 @@ def phase_payroll(page, data, exp_att):
             # 有些匯出是開新視窗或直接列印，沒有 download 事件——只要按了不出錯就算過
             got = '(無下載事件)'
         check(f'{label} 按下後有反應', bool(got), got)
+
+    # 操作紀錄的匯出（exercise_widgets 依規定不按「匯出」，這裡單獨驗）
+    click_text(page, None, '操作紀錄', '切到操作紀錄分頁')
+    page.wait_for_timeout(1500)
+    got = None
+    try:
+        with page.expect_download(timeout=8000) as dl:
+            click(page, '#olXlsx', '匯出操作紀錄 Excel（攔截下載）')
+        got = dl.value.suggested_filename
+    except Exception as ex:
+        got = str(ex)[:120]
+    check('操作紀錄匯出：真的下載到 Excel', str(got).endswith('.xlsx'), str(got))
 
     phase_attexp(page, data, exp_att)
 
