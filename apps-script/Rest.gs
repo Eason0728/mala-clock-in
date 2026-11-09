@@ -107,7 +107,9 @@ function restOtRow_(ss, name, nowMs) {
       map = {};
       var sh = ss.getSheetByName('ot_month');
       if (sh) readSheetAsObjects(sh).rows.forEach(function (r) {
-        if (String(r.date).slice(0, 10) === today) map[restName_(r.name)] = { h: Number(r.ot_h) || 0, rest: String(r.rest).toUpperCase() === 'TRUE' };
+        var isToday = String(r.date).slice(0, 10) === today, ps = String(r.period_start || '').slice(0, 10), pe = String(r.period_end || '').slice(0, 10);
+        // 09:00 同步前沿用同一週期昨天的時數；「今天是不是休息日」只認當天寫的列
+        if (isToday || (ps && today >= ps && today <= pe)) map[restName_(r.name)] = { h: Number(r.ot_h) || 0, rest: isToday && String(r.rest).toUpperCase() === 'TRUE' };
       });
       try { cache.put(ck, JSON.stringify(map), REST_OT_CACHE_S); } catch (e) {}
     }

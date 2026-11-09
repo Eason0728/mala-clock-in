@@ -1239,10 +1239,11 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
     otNeed = ot.need;
     var label = ot.rest ? '這天班表是休息日或例假，核定的 ' + reqBindFmt_(otNeed) + ' 小時都算加班，要有加班單'
                         : '超過 ' + REQ_BIND_OT_BASE_H + ' 小時的 ' + reqBindFmt_(otNeed) + ' 小時要有加班單';
-    var voidIt = otHave > 0.005 && otNeed <= 0.005;
+    var schedKnown = opt.acting !== false;   // 舊值班核定頁拿不到班表，不知道是不是休息日，不判「加班單太多」；營運系統讀不到班表仍當一般日
+    var voidIt = schedKnown && otHave > 0.005 && otNeed <= 0.005;
     if (voidIt) add('ot_void', '核定沒有超過 ' + REQ_BIND_OT_BASE_H + ' 小時，卻有 ' + reqBindFmt_(otHave) + ' 小時的已核准加班單，請先把加班單作廢');
     else if (otNeed > 0.005 && otHave + 0.005 < otNeed) { otBad = true; add('ot_hours', label + '（已核准 ' + reqBindFmt_(otHave) + ' 小時）'); }
-    else if (otNeed > 0.005 && otHave > otNeed + REQ_STRICT_TOL_MIN / 60 + 0.005) add('ot_hours', '加班單 ' + reqBindFmt_(otHave) + ' 小時比應有的 ' + reqBindFmt_(otNeed) + ' 小時多超過 ' + REQ_STRICT_TOL_MIN + ' 分鐘');
+    else if (schedKnown && otNeed > 0.005 && otHave > otNeed + REQ_STRICT_TOL_MIN / 60 + 0.005) add('ot_hours', '加班單 ' + reqBindFmt_(otHave) + ' 小時比應有的 ' + reqBindFmt_(otNeed) + ' 小時多超過 ' + REQ_STRICT_TOL_MIN + ' 分鐘');
     if (!voidIt && !(Number(opt.trip_hours) > 0)) {
       var merged = reqStrictMerged_(periods);
       otRows.forEach(function (r) {

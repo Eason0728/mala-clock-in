@@ -287,6 +287,7 @@ ok('規則 2：休息日／例假整天都算加班；班表查不到或上班�
   sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '10:00', end: '14:00', hours: 4 }));
   assert.strictEqual(chk(sb, 4, ps, ss, { sched_day: 'H' }), null);
   assert.ok(/請先把加班單作廢/.test(chk(sb, 4, ps, ss, {}).message), '查不到班表＝一般日，未滿 8 小時有單要作廢');
+  assert.strictEqual(chk(sb, 4, ps, ss, { acting: false }), null, '舊值班頁不知道班表，休息日的加班單不能被判成要作廢');
 });
 ok('規則 3：沒單擋、假別不同擋、時數不同擋、有單沒登記擋、相符放行', () => {
   const ps = [P2('09:00', '13:00')], ss = [S2('09:00', '13:00')];
