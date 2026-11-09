@@ -357,15 +357,14 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
   const leaves   = payClockRead(store, 'leave');
 
   const approvedMap = buildLatestApprovedMap(approved);   // { date: { emp_id: {...} } }
-  const nameToEmp = {};
-  roster.forEach(function (r) { nameToEmp[String(r.name).trim()] = String(r.emp_id); });
+  const pickLeaveEmp = payLeavePicker_(store, roster);
 
   const out = {};
   function slot(emp) {
     if (!out[emp]) out[emp] = {
       hours: 0, extra_ot: 0,
       personal_h: 0, sick_h: 0, menstrual_h: 0, annual_h: 0, disaster_h: 0, other_h: 0,
-      deduct_days: 0, _days: {}, _ld: {}, work_days: 0, _wd: {}, _dh: {}, _trip: {}, holiday_h: 0,
+      deduct_days: 0, _days: {}, _ld: {}, work_days: 0, _wd: {}, _dh: {}, _trip: {}, _mens: {}, holiday_h: 0,
       _lh: {},   // 2026-11 起逐日加班用：每天請假時數
       leaves: {},   // { 假別code: 時數 }＝新的正本；上面五個舊欄位同步維護供手動輸入與既有報表用
       // 全勤門檻式歸零用（2026-08-23）：忘刷次數／忘刷天數／遲到累計分鐘／早退累計分鐘／假別觸發歸零
@@ -456,10 +455,10 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
   leaves.forEach(function (l) {
     // ⚠ leave 分頁表頭是中文（日期/姓名/假別/時數，見 Code.gs LEAVE_HEADERS），不是英文 key！
     //   原本讀 l.name/l.date/l.hours/l.type 全 undefined → 請假整批被跳過。沿用月表(buildMonthlySheet)同一套中文 key。
-    const emp = nameToEmp[String(l['姓名'] || '').trim()];
-    if (!emp) return;
     // leave 日期被 Sheets 存成 Date 物件時，用 normCellDate 正規化（避免日期陷阱）。
     const d = normCellDate(l['日期']);
+    const emp = pickLeaveEmp(l['姓名'], d);
+    if (!emp) return;
     if (d.slice(0, 7) !== ym) return;
     if (cutoffDate && d > cutoffDate) return;
     const h = Number(l['時數']) || 0;
@@ -471,7 +470,7 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     if (code) s.leaves[code] = payR2((s.leaves[code] || 0) + h);
     // 舊的五個欄位繼續維護：工時分頁的手動輸入欄與既有報表都還在讀它們
     if (code === 'personal')       s.personal_h += h;
-    else if (code === 'menstrual') s.menstrual_h += h;
+    else if (code === 'menstrual') { s.menstrual_h += h; s._mens[d] = payR2((s._mens[d] || 0) + h); }
     else if (code === 'disaster')  s.disaster_h += h;
     else if (code === 'sick')      s.sick_h += h;
     else if (code === 'annual')    s.annual_h += h;
@@ -504,8 +503,10 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     const o = out[emp];
     if (payOtDailyOn(ym)) {   // 2026-11 之前的月份不多任何欄位（回應與改版前逐欄相同）
       o.day_h = o._dh; o.day_leave = o._lh;
+      const md = Object.keys(o._mens).sort();   // 生理假看次數：每個請假日一次，依日期先後（3-7）
+      if (md.length) o.menstrual_times = md.map(function (x) { return o._mens[x]; });
     }
-    delete o._lh;
+    delete o._lh; delete o._mens;
     out[emp].deduct_days = Object.keys(leaveOnly ? out[emp]._ld : out[emp]._days).length;
     out[emp].work_days = Object.keys(out[emp]._wd).length;
     out[emp].forget_day = Object.keys(out[emp]._fd).length;
@@ -515,6 +516,122 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
   return out;
 }
 
+
+/** 請假分頁只有姓名：同店同名多筆時，用在職與到離職日判斷是誰（Eason 2026-11-09）。沒有同名的情況和原本完全一樣，也不多讀主檔。
+ *  rows＝名冊或主檔列；回傳 pick(姓名, 日期) → 工號。判斷不出來時：只有一位在職就給他，否則維持原本的最後一筆，畫面會標紅。 */
+function payLeavePicker_(st, rows, masterRows) {
+  const byName = {};
+  (rows || []).forEach(function (r) { const n = String(r.name || '').trim(); if (n) (byName[n] = byName[n] || []).push(r); });
+  let ctx = null;
+  function masters() {
+    if (ctx) return ctx;
+    const stN = payStore(st), by = {};
+    const all = masterRows || payRead('master').filter(function (m) { return payStore(m.store) === stN; });
+    const prefix = all.length ? String((payStoreRow(stN) || {}).emp_prefix || '').trim() : '';
+    all.forEach(function (m) {
+      const id = String(m.emp_id).trim();
+      by[id] = m;
+      if (prefix && id.indexOf(prefix) === 0) by[id.slice(prefix.length)] = m;
+    });
+    ctx = by;
+    return by;
+  }
+  const isActive = function (r) { return String(r.active).toLowerCase() === 'true'; };
+  function covers(r, date) {
+    const m = masters()[String(r.emp_id).trim()], removed = payDateStr(r.removed_at);
+    if (removed && date > removed) return false;
+    if (m) {
+      const hire = payDateStr(m.hire_date), left = payDateStr(m.leave_date);
+      if (hire && date < hire) return false;
+      if (left && date > left) return false;
+      return true;
+    }
+    return removed ? true : isActive(r);
+  }
+  return function (name, date) {
+    const list = byName[String(name || '').trim()] || [];
+    if (!list.length) return '';
+    if (list.length === 1) return String(list[0].emp_id);
+    const cover = list.filter(function (r) { return covers(r, date); });
+    if (cover.length === 1) return String(cover[0].emp_id);
+    const pool = cover.length ? cover : list, act = pool.filter(isActive);
+    return String((act.length === 1 ? act[0] : pool[pool.length - 1]).emp_id);
+  };
+}
+/** 本月有請假紀錄、而且打卡名冊同名的人：薪資頁標紅請人確認。沒有回空陣列。 */
+function payLeaveSameName_(st, ym) {
+  st = payStore(st);
+  if (!payHasClock(st)) return [];
+  let roster = [], leaves = [];
+  try { roster = payClockRead(st, 'roster') || []; leaves = payClockRead(st, 'leave') || []; } catch (e) { return []; }
+  const ids = {};
+  roster.forEach(function (r) { const n = String(r.name || '').trim(); if (n) (ids[n] = ids[n] || []).push(String(r.emp_id)); });
+  const pick = payLeavePicker_(st, roster), by = {};
+  leaves.forEach(function (l) {
+    const n = String(l['姓名'] || '').trim(), d = normCellDate(l['日期']);
+    if (!ids[n] || ids[n].length < 2 || String(d).slice(0, 7) !== ym) return;
+    const x = by[n] = by[n] || { name: n, emp_ids: ids[n], rows: 0, to: [] };
+    x.rows++;
+    const to = pick(n, d);
+    if (x.to.indexOf(to) < 0) x.to.push(to);
+  });
+  return Object.keys(by).map(function (k) { return by[k]; });
+}
+/** 同店主檔同名的姓名。累計請假額度靠姓名比對，同名時要用到離職日分開。 */
+function payLeaveDupNames_(st) {
+  const stN = payStore(st), n = {}, out = {};
+  payRead('master').forEach(function (m) {
+    if (payStore(m.store) !== stN) return;
+    const k = String(m.name || '').trim();
+    if (!k) return;
+    n[k] = (n[k] || 0) + 1;
+    if (n[k] > 1) out[k] = true;
+  });
+  return out;
+}
+function payLeaveDateMine_(e, date, dup) {
+  if (!dup[String(e.name || '').trim()]) return true;
+  const hire = payDateStr(e.hire_date), left = payDateStr(e.leave_date);
+  return !(hire && date < hire) && !(left && date > left);
+}
+/** 計時同仁在國定假日去別店支援的時數與費率（規則：計時當天加倍）。對應不到支援列的不算。 */
+function paySupportHolDouble_(support, entry, holDates, storeBy, until) {
+  const hol = {}, out = [];
+  (holDates || []).forEach(function (d) { hol[String(d).trim()] = true; });
+  ((entry && entry.stores) || []).forEach(function (a) {
+    const h = payR2((a.days || []).reduce(function (t, x) { return hol[x.date] && (!until || x.date <= until) ? t + payNum(x.hours) : t; }, 0));
+    if (!(h > 0)) return;
+    const rows = (support || []).filter(function (x) { return paySupportCode_(x, storeBy) === a.code; });
+    if (!rows.length) return;
+    const paid = rows.reduce(function (t, x) { return t + payNum(x.hours); }, 0);
+    out.push({ code: a.code, name: a.name, hours: payR2(Math.min(h, paid)), rate: payNum(rows[0].rate) });
+  });
+  return out;
+}
+/** 鎖定前用最新資料試算一次，和草稿比（2026-11 起）。回 { list } 差異名單；算不出來回 { error }。
+ *  草稿裡有、現在算不到的人不算差異（主檔已改離職的人，重算會讓整列消失）。 */
+function payLockStale_(body, ym, st) {
+  const runs = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === st; });
+  if (!runs.length) return { list: [] };
+  let calc;
+  try { calc = handlePayrollCalc(Object.assign({}, body, { ym: ym, store: st, dry_run: true, inputs: body.inputs || {} })); }
+  catch (err) { return { error: String((err && err.message) || err) }; }
+  if (!calc || !calc.ok) return { error: String((calc && (calc.message || calc.error)) || 'calc_failed') };
+  const byId = {}, list = [];
+  runs.forEach(function (r) { byId[String(r.emp_id)] = r; });
+  const gate = function (raw) {
+    let o = raw; if (typeof raw === 'string') { try { o = JSON.parse(raw || '{}'); } catch (e) { o = {}; } }
+    o = o || {};
+    return JSON.stringify([payNum(o.comp_over_h), o.ot_form_missing || []]);
+  };
+  (calc.results || []).forEach(function (r) {
+    const old = byId[String(r.emp_id)];
+    if (!old) { list.push({ name: r.name, is_new: true, new_net: r.net }); return; }
+    const money = ['gross', 'deduction', 'net'].some(function (k) { return Math.abs(payNum(old[k]) - payNum(r[k])) >= 0.5; });
+    if (money || gate(old.ot_info) !== gate(r.ot_info)) list.push({ name: r.name, old_net: payNum(old.net), new_net: payNum(r.net), money: money });
+  });
+  return { list: list };
+}
 
 /* ═══════════════════ 計算引擎（與 ~/mala-payroll 已驗證版本同一套公式）═══════════════════ */
 
@@ -1000,6 +1117,11 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     const holH = payR2(Math.min(payNum(att.holiday_h), payNum(att.hours)));
     if (holH > 0) push(earn, 'holiday_double', '國定假日加倍', holH, w, holH * w);
     if (daily) {
+      // 國定假日去別店支援：別店不算這個人的薪資，由本店用支援費率補發多的那一倍（2026-11 起）
+      (att.sup_hol || []).forEach(function (x) {
+        const r = payNum(x.rate) || w;
+        push(earn, 'holiday_double', '國定假日加倍（支援' + String(x.name || x.code || '') + '）', x.hours, r, x.hours * r);
+      });
       // 2026-11 起：一天超過 8 小時、休息日、例假的加成（時數本身上面已照時薪給，這裡只加多的那段）
       otS = payOtDailySum(Object.assign({}, att.daily, { extra_ot: 0, comp_h: 0 }));
       otPaid = otS.ot_month_h;
@@ -1113,6 +1235,13 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
       const days = h / dayH;
       const within = Math.max(0, Math.min(days, t.cap_days - before));
       overH = payR2(Math.max(0, days - within) * dayH);
+      /* 生理假 3 次內全薪看次數不看時數（Eason 2026-10-23、3-7）：同月多個半天，每個請假日算 1 次。
+         逐筆資料和總時數對不上（手動改過時數）就維持上面的算法。 */
+      const times = att.menstrual_times;
+      if (code === 'menstrual' && String(ym) >= PAY_MENSTRUAL_FULL_FROM && Array.isArray(times) &&
+          payR2(times.reduce(function (a, b) { return a + payNum(b); }, 0)) === payR2(h)) {
+        overH = payR2(times.slice(Math.max(0, Math.ceil(t.cap_days - before))).reduce(function (a, b) { return a + payNum(b); }, 0));
+      }
     }
     const withinH = payR2(h - overH);
     const r1 = payR0(rate * (1 - ratio));
@@ -1361,6 +1490,7 @@ function payLeaveUsedBefore(ym, store, ltypes, cfg, master) {
   const firstOfMonth = ym + '-01';
   const empStores = payEmpStoresMap();
   const stA = payStore(store);
+  const dupNames = payLeaveDupNames_(stA);
 
   const leaveCache = {};
   function leavesOf(st) {
@@ -1393,6 +1523,7 @@ function payLeaveUsedBefore(ym, store, ltypes, cfg, master) {
         if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
         const d = normCellDate(l['日期']);
         if (!d || d.slice(0, 4) !== year || d >= firstOfMonth) return;
+        if (!payLeaveDateMine_(e, d, dupNames)) return;
         const code = payLeaveCode(String(l['假別'] || ''), ltypes);
         if (!code) return;
         acc[code] = (acc[code] || 0) + payLeaveQuotaDays_(code, Number(l['時數']) || 0, dayH);
@@ -2494,6 +2625,7 @@ function payInputsBase(ym, store, cutoffDate) {
     //  整筆取代會讓它們消失（扣款與抵不足時數都算錯），所以一律取歸集值，重算結果與沒存檔前一致。
     sv.leaves = col.leaves || {};
     sv.other_h = payNum(col.other_h);
+    if (col.menstrual_times) sv.menstrual_times = col.menstrual_times;
     if (leaveOnly && base[emp]) sv.deduct_days = payNum(col.deduct_days);
     // 2026-11 起逐日加班：每天的核定／請假時數只有打卡算得出來（手動列沒有日期）；
     // 病假 30 天內不扣全勤也改了缺勤天數的算法，有打卡資料的人一律取歸集值
@@ -2844,6 +2976,7 @@ function handlePayrollCalc(body) {
       late_min:     o.late_min     !== undefined ? payNum(o.late_min)     : payNum(c.late_min),
       early_min:    o.early_min    !== undefined ? payNum(o.early_min)    : payNum(c.early_min),
       attend_void:  o.attend_void  !== undefined ? payBool(o.attend_void) : !!c.attend_void,
+      menstrual_times: c.menstrual_times || null,
     };
     if (XSUP && c.support_error) XSA.warn.support_error.push(String(e.emp_id));   // 支援欄壞掉：一律不帶入（審查 #2）
     else if (XSUP) {
@@ -2860,6 +2993,7 @@ function handlePayrollCalc(body) {
       const id = String(e.emp_id);
       const supH = (att.support || []).reduce(function (t, x) { return t + payNum(x && x.hours); }, 0);
       att.daily = payDailyFor_(e, ym, c, XSUP ? XSUP.byEmp[id.trim()] : null, SCHED[id], HOLD, UNTIL, supH);
+      if (XSUP) att.sup_hol = paySupportHolDouble_(att.support, XSUP.byEmp[id.trim()], HOLD, XCTX.storeBy);
       if (OT_FORMS) { att.ot_own_h = (c && c.day_h) || {}; att.ot_forms = OT_FORMS[String(e.name || '').trim()] || { ot: {}, trip: {} }; }
     }
     return payCalcOne(e, ym, att, cfg, redDays, LTYPES_FOR_CALC);
@@ -3041,10 +3175,11 @@ function handlePayrollMonth(body) {
     }
   }
   const masterM = payRead('master').filter(function (m) { return payStore(m.store) === stM; });
-  let rosterMiss = [];
+  let rosterMiss = [], sameName = [];
   try { rosterMiss = payRosterMismatch_(stM, masterM); } catch (e) { rosterMiss = []; }
+  try { sameName = payLeaveSameName_(stM, ym); } catch (e) { sameName = []; }
   return { ok: true, ym: ym, store: stM, has_clock: payHasClock(stM), inputs: inputs, run: run, annual: payAnnualInfo(ym, stM),
-           master: masterM, roster_mismatch: rosterMiss.length ? rosterMiss : undefined,   // 沒有就不帶（回應形狀與改版前相同）
+           master: masterM, roster_mismatch: rosterMiss.length ? rosterMiss : undefined, same_name: sameName.length ? sameName : undefined,   // 沒有就不帶（回應形狀與改版前相同）
            ot_period: (function (m) { return Object.keys(m).length ? m : undefined; })(payOtPeriodMap_(stM)),   // 沒有就不帶（回應形狀與改版前相同）
            config: payConfig(stM), config_src: payConfigSource(stM),
            bonuses: payRead('bonus').filter(function (b) { return String(b.ym) === ym && payStore(b.store) === stM; }),
@@ -3074,6 +3209,16 @@ function handlePayrollFinalize(body) {
   const ym = String(body.ym || ''), lock = !!body.lock;
   if (!lock && !body.reason) return { ok: false, error: 'reason_required', message: '解鎖必須填原因' };
   const stF = payStore(body.store);
+  /* 鎖定前用最新資料重算比對（Eason 2026-11-09）：試算後主檔、打卡或假單改過，就不鎖舊數字，前端會自動重算給人看過再鎖。2026-10 以前的月份不動。解鎖不擋。 */
+  if (lock && payOtDailyOn(ym)) {
+    const stale = payLockStale_(body, ym, stF);
+    if (stale.error) return { ok: false, error: 'recheck_failed', message: '鎖定前重算比對失敗，這次沒有鎖定，請再按一次：' + stale.error };
+    if (stale.list.length) return { ok: false, error: 'stale_run', list: stale.list,
+      message: '試算後資料有改過，下面的同仁和目前的草稿不同，不能直接鎖定。請重新計算、確認新數字後再鎖定：\n' + stale.list.slice(0, 30).map(function (x) {
+        if (x.is_new) return x.name + '：草稿沒有這個人';
+        return x.name + '：' + (x.money ? '實付 ' + x.old_net + ' → ' + x.new_net : '加班單或補休檢查結果不同');
+      }).join('\n') + (stale.list.length > 30 ? '\n…共 ' + stale.list.length + ' 人' : '') };
+  }
   /* 補休帳是負的不能鎖定（Eason 2026-11-01：不自動扣，擋住鎖定）。解鎖不擋。 */
   if (lock && ym >= PAY_COMP_MONTHLY_FROM) {
     const neg = payCompNegatives(ym, stF);
@@ -3152,6 +3297,7 @@ function handlePayrollFinalize(body) {
 function payAnnualInfo(ym, store) {
   const stA = payStore(store);
   const master = payRead('master').filter(function (m) { return payStore(m.store) === stA; });
+  const dupNames = payLeaveDupNames_(stA);
   /** 依門市讀 leave（跨店調動要把歷任門市的特休都算進已用）；同一次請求快取 */
   const empStores = payEmpStoresMap();   // 一次算完，避免逐人重掃
   const leaveCache = {};
@@ -3196,6 +3342,7 @@ function payAnnualInfo(ym, store) {
           if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
           if (String(l['假別'] || '').indexOf('特') === -1) return;
           const d = normCellDate(l['日期']);
+          if (!payLeaveDateMine_(e, d, dupNames)) return;
           if (!(qp.ps && d >= qp.ps && d < qp.pe)) return;
           if (inputMonths[d.slice(0, 7)]) return;
           used += Number(l['時數']) || 0;
@@ -3546,10 +3693,9 @@ function handlePayrollPunch(body) {
   });
   Object.keys(missDays).forEach(function (k) { box(k.split('|')[0]).miss++; });
   {
-    const nameToEmp = {};
-    roster.forEach(function (r) { nameToEmp[String(r.name).trim()] = String(r.emp_id); });
+    const pickLeaveEmp = payLeavePicker_(stP, roster);
     payClockRead(stP, 'leave').forEach(function (l) {
-      const emp = nameToEmp[String(l['姓名'] || '').trim()];
+      const emp = pickLeaveEmp(l['姓名'], normCellDate(l['日期']));
       if (!emp) return;
       if (normCellDate(l['日期']).slice(0, 7) !== ym) return;
       box(emp).leave_h += Number(l['時數']) || 0;
@@ -3579,7 +3725,7 @@ function payAttStatusLabel(status) {
   if (s === 'rejected_device') return '裝置不符，被系統擋下';
   return '未入帳（' + s + '）';
 }
-function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, onlyEmp, requestRows) {
+function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, onlyEmp, requestRows, store) {
   const y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
   const dim = new Date(Date.UTC(y, mo, 0)).getUTCDate();
   const dates = [];
@@ -3590,8 +3736,7 @@ function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, 
   });
   const approvedMap = buildLatestApprovedMap(approvedRows);
   const segEvents = dropDupIgnored_(events, dupIgnoreSet_(approvedMap));   // 打卡段不列主管認定的重複卡（2026-11-06）
-  const nameToEmp = {};
-  rosterRows.forEach(function (r) { nameToEmp[String(r.name || '').trim()] = String(r.emp_id); });
+  const pickLeaveEmp = payLeavePicker_(store || '', rosterRows, store ? undefined : []);
 
   // 同仁：在職者＋當月有任何紀錄者（離職前的最後一個月也要匯得出來）
   const has = {};
@@ -3602,8 +3747,8 @@ function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, 
   });
   const leaveBy = {};      // emp -> date -> [{type,hours}]
   leaveRows.forEach(function (l) {
-    const emp = nameToEmp[String(l['姓名'] || '').trim()];
     const dt = normCellDate(l['日期']);
+    const emp = pickLeaveEmp(l['姓名'], dt);
     if (!emp || dt.slice(0, 7) !== ym) return;
     has[emp] = true;
     const hrs = l['時數'] === '' || l['時數'] == null ? null : Number(l['時數']);
@@ -3678,7 +3823,7 @@ function handlePayrollAttendanceExport(body) {
     message: '門市 ' + st + ' 尚未連結打卡系統，沒有出勤紀錄可匯出。' };
   const srow = payStoreRow(st) || {};
   const built = payAttendanceBuild(ym, payClockRead(st, 'roster'), payClockRead(st, 'events'),
-    payClockRead(st, 'approved'), payClockRead(st, 'leave'), body.emp_id ? String(body.emp_id) : '', payClockRead(st, 'requests'));
+    payClockRead(st, 'approved'), payClockRead(st, 'leave'), body.emp_id ? String(body.emp_id) : '', payClockRead(st, 'requests'), st);
   return { ok: true, store: st, store_name: String(srow.name || st), ym: ym,
     generated_at: nowTaipeiIso(), employees: built.employees };
 }
@@ -4181,7 +4326,7 @@ var PAY_INPUT_LEAVE_FIELDS = [
   { field: 'annual_h',    code: 'annual'    },
   { field: 'disaster_h',  code: 'disaster'  },
 ];
-function payLeaveFlatRows(store, types, nameToEmp) {
+function payLeaveFlatRows(store, types, nameToEmp, pickEmp) {
   const st = payStore(store);
   const out = [];
   const manualMonths = {};   // 'emp_id|yyyy-MM' → 該月由手動工時作主
@@ -4201,9 +4346,9 @@ function payLeaveFlatRows(store, types, nameToEmp) {
   let leaveRows = [];
   try { leaveRows = payClockRead(st, 'leave'); } catch (err) { leaveRows = []; }
   leaveRows.forEach(function (l) {
-    const emp = nameToEmp[String(l['姓名'] || '').trim()];
-    if (!emp) return;
     const d = normCellDate(l['日期']);
+    const emp = pickEmp ? pickEmp(l['姓名'], d) : nameToEmp[String(l['姓名'] || '').trim()];
+    if (!emp) return;
     if (manualMonths[emp + '|' + String(d).slice(0, 7)]) return;   // 同月以手動為準，不重複計
     out.push({ emp_id: emp, date: d, hours: Number(l['時數']) || 0,
                code: payLeaveCode(String(l['假別'] || ''), types) });
@@ -4461,7 +4606,7 @@ function handlePayrollLeaveOptions(body) {
   const nameToEmp = {};
   master.forEach(function (e) { nameToEmp[String(e.name).trim()] = String(e.emp_id); });
   // leave 分頁 ＋ 手動工時兩個來源（見 payLeaveFlatRows）。同仁端走同一支，兩邊數字保證一致。
-  const flat = payLeaveFlatRows(st, types, nameToEmp);
+  const flat = payLeaveFlatRows(st, types, nameToEmp, payLeavePicker_(st, master, master));
   const quotas = {};
   let compBook = null;
   try { compBook = compOn ? payCompMonthBook(ym) : null; } catch (err) { compBook = null; }
@@ -5209,6 +5354,7 @@ function handlePnlLaborEstimate_(body) {
       leave_usage: USAGE_BEFORE[String(e.emp_id)] || {}, annual: ANNUAL_INFO[String(e.emp_id)] || null,
       forget_punch: payNum(c.forget_punch), forget_day: payNum(c.forget_day),
       late_min: payNum(c.late_min), early_min: payNum(c.early_min), attend_void: !!c.attend_void,
+      menstrual_times: c.menstrual_times || null,
       xsup_late_min: XS ? payXsupLateEarly_(XS.byEmp[String(e.emp_id).trim()]).late : 0,
       xsup_early_min: XS ? payXsupLateEarly_(XS.byEmp[String(e.emp_id).trim()]).early : 0,
     };
@@ -5219,6 +5365,7 @@ function handlePnlLaborEstimate_(body) {
       var supH = (a.support || []).reduce(function (t, x) { return t + payNum(x && x.hours); }, 0);
       a.daily = payDailyFor_(e, ym, c, XS ? XS.byEmp[String(e.emp_id).trim()] : null, PNL_SCHED[String(e.emp_id)], holDates, asOf, supH);
       a.daily.dates = a.daily.dates.filter(function (d) { return d <= asOf; });
+      if (XS) a.sup_hol = paySupportHolDouble_(a.support, XS.byEmp[String(e.emp_id).trim()], holDates, payXsupStoreBy_(payRead('store')), asOf);
     }
     var origLeave = payDateStr(e.leave_date);
     var virtualLeave = (origLeave && origLeave <= asOf) ? origLeave : asOf;

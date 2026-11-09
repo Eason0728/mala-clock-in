@@ -641,6 +641,7 @@ async function bridgeCallQueued(action,body){
 if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
 
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
+let SAME_NAME=[];   // 本月有請假、名冊同名的人（payroll_month same_name，2026-11-09）
 let ROSTER_MISS=[];   // 主檔工號在打卡名冊找不到的人（payroll_month roster_mismatch，2026-11-06）
 let SUPA=null;   // 跨店支援自動帶入（2026-11 起後端 payroll_month 回的 support_auto；之前的月份是 null）
 // 目前操作門市：階段一由門市表全部可見；階段二改讀 dzy 帳號的可見門市清單（UI 與過濾邏輯不變）
@@ -945,6 +946,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     OT_PERIOD=r.ot_period||{};
     HAS_CLOCK=(r.has_clock!==false);
     showClockMode();
+    SAME_NAME=r.same_name||[];
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
     SUPA=r.support_auto||null; SUP_OPEN={};
     ROSTER_MISS=r.roster_mismatch||[];
@@ -1427,6 +1429,7 @@ function renderOtInfo(t){
   // 主檔工號對不到打卡名冊：打卡時數、班表都找不到這個人（正職會照領整月底薪），最先列
   ROSTER_MISS.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：薪資主檔工號 ${esc(x.emp_id)} 在打卡名冊找不到，打卡時數和班表都對不到這個人`
     +(x.roster_ids&&x.roster_ids.length?`——名冊上同名的人是 <b>${x.roster_ids.map(esc).join('、')}</b>，請到「員工設定」把工號改成一樣`:'——請確認工號')+`</li>`));
+  SAME_NAME.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：打卡名冊有同名的人（${x.emp_ids.map(esc).join('、')}），本月 ${x.rows} 筆請假只有姓名，系統依在職與到離職日算給 ${x.to.map(esc).join('、')}，請確認沒有歸錯人</li>`));
   RESULTS.forEach(r=>{const o=r.ot_info; if(!o) return; const nm=esc(r.name);
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
     if(o.comp_over_h>0) rows.push(`<li><b class="bad">${nm}</b>：補休有 ${r2(o.comp_over_h)} 小時抵不掉（休息日第 3 小時起、例假、國定假日的加班不能抵）——<b>改成其他假別前不能鎖定</b></li>`);
@@ -1443,7 +1446,7 @@ function renderOtInfo(t){
     if(o.no_show&&o.no_show.length) rows.push(`<li>${nm}：有排班、沒核定也沒請假 ${list(o.no_show)}（系統不扣，請確認要補請假或扣款）</li>`);
     if(o.manual_sup_h>0) rows.push(`<li>${nm}：手填的跨店支援有 ${r2(o.manual_sup_h)} 小時沒有日期，沒算進逐日加班</li>`);
   });
-  box.innerHTML=rows.length?`<div class="card" style="border-left:4px solid #b4762a"><h3 style="margin:0 0 6px">${ROSTER_MISS.length?'工號、加班與班表提醒':'加班與班表提醒'}</h3><ul style="margin:0;padding-left:20px;line-height:1.8">${rows.join('')}</ul></div>`:'';
+  box.innerHTML=rows.length?`<div class="card" style="border-left:4px solid #b4762a"><h3 style="margin:0 0 6px">${ROSTER_MISS.length||SAME_NAME.length?'工號、加班與班表提醒':'加班與班表提醒'}</h3><ul style="margin:0;padding-left:20px;line-height:1.8">${rows.join('')}</ul></div>`:'';
 }
 async function toggleLock(){
   const lock=STATUS!=='final';
@@ -1459,6 +1462,7 @@ async function toggleLock(){
   if(lb){ lb.disabled=true; tick(); timer=setInterval(()=>{sec++;tick()},1000); }
   try{
     const body={ym:ym(),lock,reason,operator:'Eason'};
+    if(lock) body.inputs=CALC_INPUTS();   // 後端鎖定前重算要用和畫面相同的工時
     // 損益系統唯讀端點（T14）：只有在「鎖定」（不是解鎖）且畫面上已經有算好的結果時，
     // 才把 costStable() 的快照隨這次請求一起送出去；後端只存不算，見 costStable() 的註解。
     // 沒有 RESULTS（還沒按過計算）就不送，後端保持沒有這個月快照，pnlPayroll 端點
@@ -1474,6 +1478,7 @@ async function toggleLock(){
     if(r.ok){STATUS=r.status;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
     // 補休帳是負的不能鎖定（2026-11-01）：名單可能好幾行，用對話框列清楚
     else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='ot_form_missing'||r.error==='sched_missing')) alert(r.message);
+    else if(lock&&r.error==='stale_run'){ alert(r.message+'\n\n按確定後系統會自動重新計算，請看過新數字再按一次鎖定。'); await doCalc(); }
     else if(lock&&r.message) toast(r.message,true);
   } finally {
     if(timer) clearInterval(timer);
