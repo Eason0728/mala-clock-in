@@ -37,7 +37,7 @@ function sheet(name, rows) {
 function makeEnv(now) {
   const sheets = {
     managers: sheet('managers', [['name', 'key', 'active', 'allow_acting'], ['測試主管', 'MK', 'true', ''], ['門市營運系統', 'SYS', 'true', 'TRUE']]),
-    roster: sheet('roster', [['emp_id', 'name', 'active'], ['E01', '測試一', 'true'], ['E02', '測試二', 'true']]),
+    roster: sheet('roster', [['emp_id', 'name', 'active', 'line_user_id'], ['E01', '測試一', 'true', 'U1'], ['E02', '測試二', 'true', '']]),
   };
   const props = {};
   let nowIso = now || '2026-11-20T16:00:00+08:00';
@@ -179,6 +179,23 @@ ok('7 天內不能代開；超過 90 天也不行', () => {
   const sb = makeEnv();
   assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ date: '2026-11-13' })).error, 'not_old');
   assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ date: '2026-08-01' })).error, 'too_old');
+});
+ok('沒綁 LINE：今天和 7 天內可代開，一樣送總監審；未來日期不行；有綁 LINE 照舊不行', () => {
+  const sb = makeEnv();
+  const r = sb.handleMgrReqProxy_(proxyBody({ emp_id: 'E02', date: '2026-11-13' }));
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual(r.request.proxy_by, '林店長（S1）');
+  assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ emp_id: 'E02', kind: 'leave', leave_type: '事假', hours: 4, reason: '家裡有事', date: sb.todayTaipeiStr() })).ok, true);
+  assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ emp_id: 'E02', date: '2026-12-31' })).error, 'not_old');
+  assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ emp_id: 'E01', date: '2026-11-13' })).error, 'not_old');
+  assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ emp_id: 'E02', date: '2026-08-01' })).error, 'too_old');
+});
+ok('核定被擋：沒綁 LINE 叫店長代開，有綁 LINE 照舊叫同仁補', () => {
+  const sb = makeEnv();
+  const a = sb.reqBindCheck_(sb.getSS(), 'E02', D, 9.5, [P('09:00', '18:30')], [S('09:00', '18:30')], null);
+  assert.ok(/沒綁 LINE/.test(a.message) && /代開申請/.test(a.message), a.message);
+  const b = sb.reqBindCheck_(sb.getSS(), 'E01', D, 9.5, [P('09:00', '18:30')], [S('09:00', '18:30')], null);
+  assert.ok(!/沒綁 LINE/.test(b.message) && /在 LINE/.test(b.message), b.message);
 });
 ok('只限加班、忘打卡', () => {
   const sb = makeEnv();
