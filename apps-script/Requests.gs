@@ -1048,6 +1048,9 @@ function reqProxyBlock_(r, mgr, body, actor) {
   return null;
 }
 /** {action:'mgr_req_proxy', mgr_key, acting_name, emp_id, kind:'ot'|'miss'|'leave'|'trip', date, start?, end?, miss_type?, leave_type?, hours?, place?, why?, reason} */
+/** 名冊這一列沒有綁 LINE（line_user_id 空白）；找不到人回 false。 */
+function reqNoLine_(rosterRow) { return !!rosterRow && !String(rosterRow.line_user_id || '').trim(); }
+
 function handleMgrReqProxy_(body) {
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
@@ -1060,11 +1063,12 @@ function handleMgrReqProxy_(body) {
   var date = String(body.date || ''), today = todayTaipeiStr();
   if (!reqIsDate_(date)) return { ok: false, error: 'bad_date', message: '請選日期' };
   var diff = reqDayDiff_(date, today), limit = kind === 'miss' ? REQ_MISS_DAYS : REQ_LEAVE_PAST_DAYS;
-  if (diff >= -limit) return { ok: false, error: 'not_old', message: limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天才能由主管代開' };
   if (diff < -REQ_PROXY_PAST_DAYS) return { ok: false, error: 'too_old', message: '代開最多到 ' + REQ_PROXY_PAST_DAYS + ' 天前' };
   var ss = getSS();
   var me = findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, body.emp_id);
   if (!me) return { ok: false, error: 'invalid_emp_id', message: '找不到這位同仁' };
+  /* 7 天內同仁自己用 LINE 申請；沒綁 LINE 的人送不了單，今天和過去的日子可以由主管代開（2026-11-09 Eason）。 */
+  if (diff >= -limit && !(diff <= 0 && reqNoLine_(me))) return { ok: false, error: 'not_old', message: limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天或同仁沒綁 LINE 才能由主管代開' };
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
   try {
@@ -1279,7 +1283,10 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   var diffMin = strict ? reqPunchDiffMin_(periods, segs, breakWindow) : null;
   if (opt.preview) return { probs: probs, diff_min: diffMin, ot_have: otHave, ot_need: otNeed };
   if (probs.length) {
+    var noLine = false;
+    if (!pend.length) { try { noLine = reqNoLine_(findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, empId)); } catch (e) {} }   // 只在要擋的時候才讀名冊；讀不到照一般字句
     var hint = pend.length ? '這天有 ' + pend.length + ' 張申請還在審核中，請先到「申請審核」處理再送。'
+      : noLine ? '這位同仁沒綁 LINE，請店長在考勤管理「代開申請」，送總監層級審核。'
       : '請同仁在 LINE「加班請假」補申請；超過 7 天請店長在考勤管理「代開申請」，送總監層級審核。';
     return { ok: false, error: 'need_request', message: '這天還不能核定：' + probs.map(function (p) { return p.text; }).join('；') + '。' + hint,
              need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length } };
