@@ -2,7 +2,8 @@
 // lineHubPayPick_ 不再看店別：薪資有接的店找得到人就回；有主檔的那家優先；找不到人＝「查不到你的薪資資料」。
 const assert = require('assert'); const fs = require('fs'); const vm = require('vm'); const path = require('path');
 const ROOT = path.join(__dirname, '..');
-const SRC = ['Liff.gs', 'LineHub.gs'].map((f) => fs.readFileSync(ROOT + '/apps-script/' + f, 'utf8')).join('\n');
+const SRC = ['Liff.gs', 'LineHub.gs'].map((f) => fs.readFileSync(ROOT + '/apps-script/' + f, 'utf8')).join('\n')
+  + '\n' + /function payMineMaster_[\s\S]*?\n}\n/.exec(fs.readFileSync(__dirname + '/../apps-script/Payroll.gs', 'utf8'))[0];
 let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 
 function make(rosters, master) {

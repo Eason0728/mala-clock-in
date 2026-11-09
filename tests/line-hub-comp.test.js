@@ -3,7 +3,8 @@
 // ②假別額度卡的「本月補休」列（加班 − 補休，欠的標紅）③不再有到期提醒 ④舊制薪資卡兩列補休的數量仍帶 H
 const assert = require('assert'); const fs = require('fs'); const vm = require('vm');
 const ROOT = __dirname + '/..';
-const SRC = ['Liff.gs', 'LineHub.gs'].map(f => fs.readFileSync(ROOT + '/apps-script/' + f, 'utf8')).join('\n');
+const SRC = ['Liff.gs', 'LineHub.gs'].map(f => fs.readFileSync(ROOT + '/apps-script/' + f, 'utf8')).join('\n')
+  + '\n' + /function payMineMaster_[\s\S]*?\n}\n/.exec(fs.readFileSync(ROOT + '/apps-script/Payroll.gs', 'utf8'))[0];
 const PAYSRC = fs.readFileSync(ROOT + '/apps-script/Payroll.gs', 'utf8');
 function extract(src, name) {
   const i = src.indexOf('function ' + name + '('); if (i < 0) throw new Error('找不到 ' + name);

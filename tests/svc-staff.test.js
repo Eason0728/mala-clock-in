@@ -63,7 +63,7 @@ function makeEnv(opts) {
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in props ? props[k] : null), setProperty(k, v) { props[k] = v; } }) },
     LockService: { getScriptLock: () => lock },
     CacheService: { getScriptCache: () => ({ get() { return null; }, put() {}, remove() {} }) },
-    Utilities: { formatDate: (d, tz, f) => { const s = new Date(d.getTime() + 8 * 3600000).toISOString();
+    Utilities: { DigestAlgorithm: { SHA_256: 'SHA_256' }, getUuid: () => require('crypto').randomUUID(), computeDigest: (a, s) => Array.from(require('crypto').createHash('sha256').update(s).digest()), formatDate: (d, tz, f) => { const s = new Date(d.getTime() + 8 * 3600000).toISOString();
       return f === 'yyyy-MM-dd' ? s.slice(0, 10) : s.slice(0, 19).replace(/^(.{10})T/, f.indexOf("'T'") >= 0 ? '$1T' : '$1 ') + (f.indexOf('XXX') >= 0 ? '+08:00' : ''); } },
     ContentService: { MimeType: { JSON: 'json', TEXT: 'text' }, createTextOutput: s => ({ s, setMimeType() { return this; }, getContent() { return this.s; } }) },
   };
