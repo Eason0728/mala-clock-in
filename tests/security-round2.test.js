@@ -131,5 +131,19 @@ const code = read('apps-script/Code.gs');
 const verify = read('tools/verify-store-backends.py');
 ok(/'hq-clock-in':\s*\('14:00', '15:00'\)/.test(verify), '檢查工具的總部休息帶與現行設定一致');
 
+/* ── 空白金鑰 ── */
+{
+  const s = load({ data: {} });
+  const rows = [{ key: '', active: 'true', emp_id: 'E1' }, { key: 'K', active: 'true', emp_id: 'E2' }];
+  s.__rows = rows;
+  for (const k of ['', '  ', null, undefined]) {
+    s.__k = k;
+    ok(vm.runInContext('findRosterByKey(__rows, __k)', s) === undefined, '名冊空白金鑰不算身分：' + JSON.stringify(k));
+    ok(vm.runInContext('findManagerByKey(__rows, __k)', s) === undefined, '店長空白金鑰不算身分：' + JSON.stringify(k));
+  }
+  s.__k = 'K';
+  ok(vm.runInContext('findRosterByKey(__rows, __k)', s).emp_id === 'E2', '正確金鑰仍找得到人');
+}
+
 console.log(`\n${pass} 過、${fail} 失敗`);
 process.exit(fail ? 1 : 0);

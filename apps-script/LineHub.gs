@@ -94,6 +94,15 @@ function lineHubCallStore_(st, payload) {
  * 防代綁三道：①手機定位必須在「名冊上有這個名字」的那家店範圍內 ②只能綁還沒被綁的名字
  *             ③綁定寫進那家店的 liff_bind_log（type=bind_name），值班核定頁看得到、可解除。
  */
+/* 綁定碼檢查：開關沒開回 null（照舊）。開了要帶對的碼，否則回錯誤內容給前端顯示。 */
+function lineHubBindCodeDeny_(rosterKey, body) {
+  if (PropertiesService.getScriptProperties().getProperty('LINE_BIND_CODE_ON') !== '1') return null;
+  var code = String(body.bind_code == null ? '' : body.bind_code).trim();
+  if (!code) return { ok: false, error: 'bind_code_required', message: '第一次綁定需要綁定碼，請向店長索取後輸入。' };
+  if (!lineBindCodeOk_(rosterKey, code)) return { ok: false, error: 'bind_code_wrong', message: '綁定碼不對或已過期，請向店長重新索取。' };
+  return null;
+}
+
 function handleLineBindName_(body) {
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
@@ -119,6 +128,7 @@ function handleLineBindName_(body) {
   if (row.line_user_id) return { ok: false, error: 'name_taken', message: '「' + String(row.name) + '」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管到管理系統「考勤管理 → 員工名冊」的 LINE 綁定紀錄解除。' };
   // via：伺服器自己判斷（不信前端，v2 審查 N2）——這個 LINE 在別家店已綁定同名＝跨店（auto），否則＝輸入全名（name）
   var sameNameElsewhere = lineHubMine_(userId).some(function (m) { return lineHubNormName_(m.row.name) === want; });
+  if (!sameNameElsewhere) { var codeDeny = lineHubBindCodeDeny_(row.key, body); if (codeDeny) return codeDeny; }   // 同名已綁在別店＝LINE 已證明身分，不用再要碼
   var j = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(row.key), via: sameNameElsewhere ? 'auto' : 'name' });
   if (!j || !j.ok) {
     var m = { line_account_in_use: '你的 LINE 帳號已經綁定這家店的另一位同仁，請找主管處理。' }[j && j.error];
@@ -164,6 +174,8 @@ function lineHubBindElsewhere_(userId, body, st, want) {
     return { ok: false, error: 'cross_brand', message: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(home.st)] + '的同仁，不能在「' + st.name + '」打卡（小辛辣與墨竹亭不能互相支援打卡）；有問題請找店長。' };
   }
   if (!viaLine) {
+    var homeDeny = lineHubBindCodeDeny_(home.row.key, body);
+    if (homeDeny) return homeDeny;
     var token = String(home.st.code) + '|' + String(home.row.emp_id);
     if (String(body.confirm_home || '') !== token) {
       return { ok: false, error: 'confirm_home', confirm: token, home_store_name: home.st.name, store_name: st.name, name: String(home.row.name) };

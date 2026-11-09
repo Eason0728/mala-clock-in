@@ -57,6 +57,7 @@ function make(opts) {
     Utilities: {
       DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
       computeDigest: (alg, s) => Array.from(crypto.createHash('sha256').update(String(s)).digest()).map(b => (b > 127 ? b - 256 : b)),   // GAS 的 byte 是有號數
+      computeHmacSha256Signature: (v, k) => Array.from(crypto.createHmac('sha256', String(k)).update(String(v)).digest()).map(b => (b > 127 ? b - 256 : b)),
       formatDate: (d, tz, f) => { const x = new Date(d.getTime() + 8 * 3600000).toISOString().slice(0, 10); return f === 'yyyyMMdd' ? x.replace(/-/g, '') : x; },
     },
   };
@@ -298,5 +299,69 @@ ok('開頁（line_hub_status）：已在總部綁定、金山名冊沒有 → �
   const r = m.sb.handleLineHubStatus_({ id_token: 'TOK_U1', lat: js.lat, lng: js.lng, accuracy: 10 });
   assert.strictEqual(r.result.code, 'not_bound'); assert.strictEqual(r.result.suggest_name, '測試甲');
   assert.strictEqual(r.result.support_from, '鼎兆元 總部'); assert.strictEqual(m.hubCalls.length, 0);
+});
+/* ── 2026-11-10 綁定碼（LINE_BIND_CODE_ON）── */
+const ON = Object.assign({ LINE_BIND_CODE_ON: '1' }, P);
+const atHome = (m, extra) => bind(m, Object.assign({ name: '測試 乙' }, extra || {}));
+const homeScene = (props) => {
+  const sheets = { hq: { roster: [] }, mztjs: { roster: [{ emp_id: 'J2', name: '測試乙', key: 'kJ2', active: 'true', line_user_id: '' }] } };
+  return Object.assign(make({ sheets, props }), { sheets });
+};
+const code = (m, key, ago) => m.sb.lineBindCode_(key, m.sb.lineBindYmd_(ago || 0));
+ok('綁定碼：開關沒開，流程完全照舊', () => {
+  const m = homeScene(P); const r = atHome(m);
+  assert.strictEqual(r.ok, true, JSON.stringify(r)); assert.strictEqual(m.storeCalls[0].body.key, 'kJ2');
+});
+ok('綁定碼：開關打開、沒帶碼 → 不綁，回 bind_code_required', () => {
+  const m = homeScene(ON); const r = atHome(m);
+  assert.strictEqual(r.error, 'bind_code_required'); assert.strictEqual(m.storeCalls.length, 0);
+  assert.strictEqual(m.sheets.mztjs.roster[0].line_user_id, '');
+});
+ok('綁定碼：別人的碼或亂猜 → bind_code_wrong，不綁', () => {
+  const m = homeScene(ON);
+  [code(m, 'kOther'), '000000', 'abcdef', '12345'].forEach(c => {
+    m.cache && Object.keys(m.cache).forEach(k => delete m.cache[k]);
+    const r = atHome(m, { bind_code: c }); assert.strictEqual(r.error, 'bind_code_wrong', c + JSON.stringify(r));
+  });
+  assert.strictEqual(m.storeCalls.length, 0);
+});
+ok('綁定碼：今天和昨天的碼可用，前天的不行', () => {
+  [[0, true], [1, true], [2, false]].forEach(([ago, good]) => {
+    const m = homeScene(ON); const r = atHome(m, { bind_code: code(m, 'kJ2', ago) });
+    assert.strictEqual(r.ok === true, good, ago + JSON.stringify(r));
+  });
+});
+ok('綁定碼：同名已綁在別店的人不用碼', () => {
+  const sheets = { hq: { roster: [R({ name: '測試乙' })] }, mztjs: { roster: [{ emp_id: 'J2', name: '測試乙', key: 'kJ2', active: 'true', line_user_id: '' }] } };
+  const m = Object.assign(make({ sheets, props: ON }), { sheets });
+  const r = atHome(m); assert.strictEqual(r.ok, true, JSON.stringify(r));
+});
+ok('綁定碼：名字在別單位時，沒帶碼也不回確認資訊', () => {
+  const m = scene({ props: ON }); m.sheets.hq.roster[0].line_user_id = '';
+  const a = bind(m); assert.strictEqual(a.error, 'bind_code_required');
+  const b = bind(m, { bind_code: code(m, 'kH') }); assert.strictEqual(b.error, 'confirm_home');
+  const c = bind(m, { bind_code: code(m, 'kH'), confirm_home: 'hq|H01' }); assert.strictEqual(c.ok, true, JSON.stringify(c));
+});
+ok('店長產生綁定碼：要主管金鑰、停用與已綁定不給碼、不回金鑰', () => {
+  const logged = [];
+  const sheets = { '': { managers: [{ name: '店長', key: 'MK', active: 'true' }], roster: [
+    { emp_id: 'A', name: '未綁', key: 'kA', active: 'true', line_user_id: '' },
+    { emp_id: 'B', name: '已綁', key: 'kB', active: 'true', line_user_id: 'U9' },
+    { emp_id: 'C', name: '停用', key: 'kC', active: 'false', line_user_id: '' }] } };
+  const m = make({ sheets, props: P });
+  m.sb.findManagerByKey = (rows, k) => rows.filter(r => r.key === k)[0];
+  m.sb.actingName_ = (b, mgr) => mgr.name;
+  m.sb.logLiffBind_ = (...a) => logged.push(a);
+  const call = (b) => m.sb.handleMgrBindCode_(Object.assign({ mgr_key: 'MK' }, b));
+  assert.strictEqual(m.sb.handleMgrBindCode_({ mgr_key: 'x', emp_id: 'A' }).error, 'unauthorized');
+  const a = call({ emp_id: 'A' }); assert.strictEqual(a.code, code(m, 'kA')); assert(/^\d{6}$/.test(a.code)); assert(!JSON.stringify(a).includes('kA'));
+  assert.deepStrictEqual(logged[0].slice(0, 2).concat(logged[0][3]), ['A', '未綁', 'code_issued']);
+  assert.strictEqual(call({ emp_id: 'B' }).already, true); assert.strictEqual(call({ emp_id: 'B' }).code, undefined);
+  assert.strictEqual(call({ emp_id: 'C' }).error, 'inactive'); assert.strictEqual(call({ emp_id: 'Z' }).error, 'not_found');
+});
+ok('綁定碼畫面：平常藏著，後端要求才顯示', () => {
+  const h = fs.readFileSync(ROOT + '/clock-line.html', 'utf8');
+  assert(/id="bindCode"[^>]*hidden/.test(h)); assert(/bind_code: \$\('bindCode'\)\.value\.trim\(\)/.test(h));
+  assert(/bind_code_required/.test(h));
 });
 console.log(`\n✅ ${n} 項通過`);

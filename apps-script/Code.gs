@@ -423,6 +423,7 @@ function readEventsSince(sheet, sinceMs, stopFn) {
 }
 
 function findRosterByKey(rows, key) {
+  if (!String(key == null ? '' : key).trim()) return undefined;   // 空白金鑰不算身分（2026-11-10 資安審計）
   return rows.filter(function (r) { return String(r.key) === String(key); })[0];
 }
 
@@ -1104,6 +1105,7 @@ function handleMgrDeviceDecision(body) {
  * ============================================================ */
 
 function findManagerByKey(rows, key) {
+  if (!String(key == null ? '' : key).trim()) return undefined;   // 空白金鑰不算身分（2026-11-10 資安審計）
   return rows.filter(function (r) { return String(r.key) === String(key) && String(r.active).toLowerCase() === 'true'; })[0];
 }
 

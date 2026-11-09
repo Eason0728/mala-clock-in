@@ -51,6 +51,7 @@ function make(opts) {
         return { getContentText: () => JSON.stringify(opts.storeReply ? opts.storeReply(url, JSON.parse(o.payload)) : { ok: true, status: 'ok', ts: iso(0) }) };
       },
     },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: () => null }) },
     CacheService: { getScriptCache: () => ({ put: (k, v) => { cache[k] = v; }, get: (k) => cache[k] || null, remove: (k) => { delete cache[k]; }, removeAll: (ks) => ks.forEach(k => { delete cache[k]; }) }) },
     getSS: () => ssOf(''),
     SpreadsheetApp: { openById: (id) => ssOf(id.replace('SS_', '')) },
