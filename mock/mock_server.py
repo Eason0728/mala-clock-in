@@ -765,6 +765,26 @@ def unrecorded_attempt_count(data, emp_id, date_str):
                if e["emp_id"] == emp_id and e["ts"][:10] == date_str and e.get("status") != "ok")
 
 
+def lone_cards_for_periods(periods, full_segs, punch_segments, near_ms=4 * 3600000):
+    """與 Code.gs loneCardsForPeriods_ 同步。"""
+    open_periods = [pi for pi, p in enumerate(periods)
+                    if not any(min(p["end_ms"], s["out_ms"]) - max(p["start_ms"], s["in_ms"]) > 0 for s in full_segs)]
+    result = {}
+    for s in punch_segments:
+        if (s["in_ms"] is None) == (s["out_ms"] is None):
+            continue
+        best, best_dist = -1, near_ms + 1
+        for pi in open_periods:
+            if pi in result:
+                continue
+            dist = abs(s["in_ms"] - periods[pi]["start_ms"]) if s["in_ms"] is not None else abs(s["out_ms"] - periods[pi]["end_ms"])
+            if dist < best_dist:
+                best, best_dist = pi, dist
+        if best != -1:
+            result[best] = s
+    return result if all(pi in result for pi in open_periods) else {}
+
+
 def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=False, break_window=None):
     """比對主管輸入時段 vs 打卡段，回傳狀態字串（與 Code.gs computeApprovalStatus 同步）。
     periods: [{"start_ms","end_ms"}]；punch_segments: [{"in_ms","out_ms"}]（未配對為 None）。
@@ -773,13 +793,20 @@ def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=Fal
     notes = []
     used = set()
     matched_idx = []   # 核定時段 index → 配到的完整打卡段 index（-1＝沒配到）
+    lone = {} if had_unrecorded_attempts else lone_cards_for_periods(periods, full_segs, punch_segments)
 
-    for p in periods:
+    for pi, p in enumerate(periods):
         best_i, best_overlap = -1, 0
         for i, seg in enumerate(full_segs):
             overlap = min(p["end_ms"], seg["out_ms"]) - max(p["start_ms"], seg["in_ms"])
             if overlap > best_overlap:
                 best_overlap, best_i = overlap, i
+        if best_i == -1 and pi in lone:   # 與 Code.gs 同步：只算真正漏的那張
+            matched_idx.append(len(full_segs) + pi)
+            miss = "下班忘刷卡" if lone[pi]["out_ms"] is None else "上班忘刷卡"
+            if miss not in notes:
+                notes.append(miss)
+            continue
         matched_idx.append(best_i)
         if best_i == -1:
             note = NOT_RECORDED_NOTE if had_unrecorded_attempts else NO_PUNCH_NOTE

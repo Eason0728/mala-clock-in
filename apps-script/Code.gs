@@ -2443,8 +2443,32 @@ function gapExplainedByBreak(gapStartMs, gapEndMs, breakWindow) {
   return gapStartMs < breakWindow.endMs && gapEndMs > breakWindow.startMs;
 }
 
+// 只打了一張卡的段落歸給最近的核定時段（前後 4 小時內，同 Requests.gs REQ_BIND_NEAR_MS，2026-11-10 Eason）。
+// 每個核定時段都要有打卡證據才採用；有時段完全沒卡時回 {}，維持原本的逐段標示（中間休息沒打也要標出來）。
+const LONE_CARD_NEAR_MS = 4 * 3600000;
+function loneCardsForPeriods_(periods, fullSegs, punchSegments) {
+  const open = [];
+  periods.forEach(function (p, pi) {
+    const hasFull = fullSegs.some(function (s) { return Math.min(p.endMs, s.outMs) - Math.max(p.startMs, s.inMs) > 0; });
+    if (!hasFull) open.push(pi);
+  });
+  const result = {};
+  punchSegments.forEach(function (s) {
+    if ((s.inMs == null) === (s.outMs == null)) return;
+    let best = -1, bestDist = LONE_CARD_NEAR_MS + 1;
+    open.forEach(function (pi) {
+      if (result[pi]) return;
+      const dist = s.inMs != null ? Math.abs(s.inMs - periods[pi].startMs) : Math.abs(s.outMs - periods[pi].endMs);
+      if (dist < bestDist) { bestDist = dist; best = pi; }
+    });
+    if (best !== -1) result[best] = s;
+  });
+  return open.every(function (pi) { return result[pi]; }) ? result : {};
+}
+
 function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip, breakWindow) {
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
+  const lone = (isTrip || hadUnrecordedAttempts) ? {} : loneCardsForPeriods_(periods, fullSegs, punchSegments);
   const notes = [];
   const usedIdx = {};
   const matchedIdx = [];   // 核定時段 index → 配到的完整打卡段 index（-1＝沒配到，供下方逐段檢查）
@@ -2457,6 +2481,13 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
       if (overlap > bestOverlap) { bestOverlap = overlap; bestIdx = i; }
     });
     matchedIdx[pi] = bestIdx;
+    if (bestIdx === -1 && lone[pi]) {
+      // 有打上班或下班其中一張：只算真正漏的那張，matchedIdx 給獨立編號，中間休息才不會被誤標沒打卡
+      matchedIdx[pi] = fullSegs.length + pi;
+      const missNote = lone[pi].outMs == null ? '下班忘刷卡' : '上班忘刷卡';
+      if (notes.indexOf(missNote) === -1) notes.push(missNote);
+      return;
+    }
     if (bestIdx === -1) {
       // 舊呼叫端沒傳第三／第四個參數＝undefined＝falsy，行為與改版前相同。
       // ⚠ 出差當天本來就打不了卡（人不在店裡），標「該段無打卡」會被當成忘刷卡去扣全勤，
@@ -3031,7 +3062,7 @@ function recheckPendingApprovalStatuses() {
       // 三種措辭都要納入：待核准裝置事後被核准 → 卡會翻成 ok → 那天就真的比對得到了
       // （「少刷N組卡」同理：中間那組卡事後入帳，長段會被拆開，少刷就該自動消失）
       if (statusText.indexOf(NO_PUNCH_NOTE) === -1 && statusText.indexOf(NOT_RECORDED_NOTE) === -1 &&
-          statusText.indexOf(MISSING_GROUP_PREFIX) === -1) return;
+          statusText.indexOf(MISSING_GROUP_PREFIX) === -1 && statusText.indexOf('忘刷卡') === -1) return;
       const r = recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec);
       if (r.skip === 'no_periods') return;
       checked++;
