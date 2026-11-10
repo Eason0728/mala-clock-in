@@ -230,10 +230,11 @@
     });
   }
   /** 那家店那天的卡（忘打卡用）。day_only：新後端只讀尾端、不讀申請表；舊後端不認得就照舊整包回，一樣有 day。 */
+  /*  apply_miss（2026-11-11）：把已送出的忘打卡申請當成已經補上的卡，兩段班一天漏好幾張時，補完一張才看得到還缺哪一張；舊後端不認得就照舊。 */
   function loadDay(code, date) {
     var def = storeDef(code);
     if (!def) return Promise.reject(new Error('no_store'));
-    return E.readRetry(E.storeApi(def), { action: 'req_info', id_token: liff.getIDToken(), date: date, day_only: true }).then(function (r) {
+    return E.readRetry(E.storeApi(def), { action: 'req_info', id_token: liff.getIDToken(), date: date, day_only: true, apply_miss: true }).then(function (r) {
       if (r && r.ok && r.day && r.day.date === date) return r.day;
       throw new Error((r && r.error) || 'failed');
     });
@@ -495,9 +496,17 @@
       return x.hm + ' ' + (x.type === 'in' ? '上班' : '下班') + (x.status.indexOf('rejected_') === 0 ? '（沒有打成功）' : ' ✓');
     }).join('、') : '沒有任何打卡';
     p.appendChild(h('div', { class: 'rq-rec', text: '當天紀錄：' + rec }));
+    // 已送出的忘打卡申請（2026-11-11）：這些算已經補上的卡，下面「缺哪張卡」只列還沒補的；一天漏好幾張就一張一張補
+    var sent = ((st.info && st.info.requests) || []).filter(function (r) {
+      return r.kind === 'miss' && r.date === st.missDate && (r.status === 'pending' || r.status === 'approved');
+    });
+    if (sent.length) p.appendChild(h('div', { class: 'rq-rec', text: '已送出的忘打卡申請：' + sent.map(function (r) {
+      return (r.miss_type === 'both' ? '整段 ' + r.start + '–' + r.end : r.miss_type === 'in' ? '上班卡 ' + r.start
+            : r.miss_type === 'out' ? '下班卡 ' + r.end : '中間休息 ' + r.end + '–' + r.start) + (r.status === 'approved' ? '（已核准）' : '（審核中）');
+    }).join('、') }));
     var opts = day.missing.options;
     if (!opts.length) { p.appendChild(msgBox('這天的上班卡和下班卡都有打成功，不用補登。時間記錯請直接跟打卡門市的店長說。', 'err')); return; }
-    var LBL = { in: '上班卡', out: '下班卡', both: day.punches.length ? '另一段班整段沒打' : '上班和下班都沒打', break: '中間休息沒打卡' };
+    var LBL = { in: '上班卡', out: '下班卡', both: (day.punches.length || sent.length) ? '另一段班整段沒打' : '上班和下班都沒打', break: '中間休息沒打卡' };
     if (opts.indexOf(st.missType) < 0) st.missType = opts[0];
     if (opts.length > 1) p.appendChild(field('缺哪張卡', chips(opts.map(function (o) { return LBL[o]; }), LBL[st.missType], function (v) {
       st.missType = Object.keys(LBL).filter(function (k) { return LBL[k] === v; })[0]; render(); })));
