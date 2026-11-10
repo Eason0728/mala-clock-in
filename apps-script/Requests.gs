@@ -352,12 +352,15 @@ function reqDayPunches_(events, empId, date) { return reqDayInfo_(events, empId,
  *  用「從上班卡起算幾分鐘」比，跨夜班也對。回 {span, next}（next＝回來時間在隔天）或 {error, message}。 */
 function reqBreakSpan_(spans, out, inn) {
   var rel = function (hm, base) { return (reqMin_(hm) - reqMin_(base) + 1440) % 1440; };
+  // 2026-11-11（B37）：只有上班卡、還沒下班的那一段，休息要在上班卡之後的 16 小時內（REQ_PAIR_MS，同打卡配對的上限）。
+  // 原本當成 24 小時，比上班卡還早的時間（09:00 對 10:00 上班）繞一圈也算「在這段班裡」。
+  var OPEN = REQ_PAIR_MS / 60000;
   for (var i = spans.length - 1; i >= 0; i--) {
-    var sp = spans[i], a = rel(out, sp.in), b = rel(inn, sp.in), len = sp.out ? rel(sp.out, sp.in) || 1440 : 1440;
+    var sp = spans[i], a = rel(out, sp.in), b = rel(inn, sp.in), len = sp.out ? rel(sp.out, sp.in) || 1440 : OPEN;
     if (a > 0 && b > a && b < len) return { span: sp, next: reqMin_(sp.in) + b >= 1440 };
   }
   if (spans.length === 1) {
-    var s0 = spans[0], a0 = rel(out, s0.in), b0 = rel(inn, s0.in), l0 = s0.out ? rel(s0.out, s0.in) || 1440 : 1440;
+    var s0 = spans[0], a0 = rel(out, s0.in), b0 = rel(inn, s0.in), l0 = s0.out ? rel(s0.out, s0.in) || 1440 : OPEN;
     if (a0 > 0 && a0 < l0 && b0 > 0 && b0 < l0) return { error: 'bad_time', message: '回來上班時間要比休息開始晚' };
     return { error: 'bad_time', message: '休息時間要在 ' + s0.in + (s0.out ? ' 上班到 ' + s0.out + ' 下班之間' : ' 上班之後') };
   }
@@ -424,7 +427,8 @@ function reqIsDate_(s) {
 /** 驗證一筆申請，回 {row} 或 {error, message}。now＝台北日期字串（測試可注入）。 */
 function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主管代開，不看「幾天前」的期限（呼叫端自己限）
   var kind = String(b.kind || '');
-  if (!REQ_KINDS_[kind]) return { error: 'bad_kind', message: '申請類別不對' };
+  // 2026-11-11（B37）：只認表上自己有的類別（constructor、toString 這類字在物件上本來就查得到東西，原本會被當成合法類別收下）
+  if (!Object.prototype.hasOwnProperty.call(REQ_KINDS_, kind)) return { error: 'bad_kind', message: '申請類別不對' };
   var date = String(b.date || '');
   if (!reqIsDate_(date)) return { error: 'bad_date', message: '請選日期' };
   var diff = reqDayDiff_(date, today);
@@ -1255,6 +1259,10 @@ function handleMgrReqProxy_(body) {
     var v = reqValidate_(body, me, liffEvents_(ss, reqDaySince_(date)), today, existing, true);
     if (v.error) return { ok: false, error: v.error, message: v.message };
     var r = v.row;
+    // 2026-11-11（B37）：補休只有正職可以請——本人送會擋，代開也照擋（查不到薪資主檔的店照舊不擋）
+    if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_ && reqCompAllowed_(me) === false) {
+      return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
+    }
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
     r.created_at = nowTaipeiIso(); r.emp_id = String(me.emp_id); r.name = String(me.name);
     r.attach_id = ''; r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';

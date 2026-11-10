@@ -345,13 +345,13 @@ def register(ns):
                 def break_span(spans):
                     for sp in reversed(spans):
                         a, bb = rel(row["end"], sp["in"]), rel(row["start"], sp["in"])
-                        ln = (rel(sp["out"], sp["in"]) or 1440) if sp["out"] else 1440
+                        ln = (rel(sp["out"], sp["in"]) or 1440) if sp["out"] else 960   # 還沒下班的段：上班後 16 小時內（同 Requests.gs，2026-11-11 B37）
                         if a > 0 and bb > a and bb < ln:
                             return {"span": sp, "next": mins(sp["in"]) + bb >= 1440}, None
                     if len(spans) == 1:
                         s0 = spans[0]
                         a0, b0 = rel(row["end"], s0["in"]), rel(row["start"], s0["in"])
-                        l0 = (rel(s0["out"], s0["in"]) or 1440) if s0["out"] else 1440
+                        l0 = (rel(s0["out"], s0["in"]) or 1440) if s0["out"] else 960
                         if a0 > 0 and a0 < l0 and b0 > 0 and b0 < l0:
                             return None, ("bad_time", "回來上班時間要比休息開始晚")
                         return None, ("bad_time", f"休息時間要在 {s0['in']}" + (f" 上班到 {s0['out']} 下班之間" if s0["out"] else " 上班之後"))
