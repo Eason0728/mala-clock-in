@@ -367,7 +367,10 @@
       var g = ready ? status.guard : null, left = 0;
       if (g && g.lock && g.lock[t]) left = g.lock[t] - (Date.now() + clockSkew);
       var rb = t === 'in' && restBlocked();
-      b.disabled = !ready || (g && g.blocked === t) || left > 0 || rb;
+      // 2026-11-11（B32）：有鎖定時間就只看時間到了沒。blocked（＝同型）是開頁那一刻的狀態，一直照它鎖的話，
+      // 10 分鐘過了同型那顆還是灰的（後端這時是收的，按下去會先跳確認框）。沒有鎖定時間的舊格式才照 blocked。
+      var stale = !!(g && g.lock && g.lock[t]);
+      b.disabled = !ready || (g && g.blocked === t && !stale) || left > 0 || rb;
       b.textContent = left > 0 ? label + '（' + Math.ceil(left / 60000) + ' 分後）'
         : rb && status.rest.until ? label + '（' + hmOf(status.rest.until) + ' 後）' : label;
     });
