@@ -572,6 +572,74 @@ function lineHubMine_(userId, info, view) {
   return out;
 }
 
+/* ── 設離職的連帶停用（2026-11-11 Eason 定，B13；說明見 Code.gs leftCascadeAfter_）──
+ * src＝原單位（lineHubStores_ 的一筆）、srcEmpId＝原單位那一列的工號、uid＝那一列綁的 LINE、by＝原單位是誰設的離職。
+ * 把「其他店名冊上，同一支 LINE、還在職」的列設成離職，removed_by 寫明是哪一家店的哪一列設離職連帶停用的。
+ * 回 {ok, stopped:[{store_name, emp_id, name}], failed:[讀不到的店名], message?}；有店讀不到＝ok:false（其餘照做）。 */
+function lineHubLeftCascade_(src, srcEmpId, uid, by) {
+  var out = { ok: true, stopped: [], failed: [] };
+  uid = String(uid || '').trim();
+  if (!src || !uid) return out;
+  var who = String(by || '').replace(/[\r\n]/g, ' ').replace(/^[=+\-@\s]+/, '').slice(0, 40);
+  var note = '連帶停用：' + src.name + ' 設離職（' + String(srcEmpId) + (who ? '／' + who : '') + '）';
+  var now = nowTaipeiIso();
+  lineHubStores_().forEach(function (st) {
+    if (String(st.code) === String(src.code)) return;
+    try {
+      var sh = lineHubSS_(st).getSheetByName('roster');
+      if (!sh) return;   // 沒有名冊分頁＝沒有人
+      var hit = readSheetAsObjects(sh).rows.filter(function (r) {
+        return lineHubActive_(r) && String(r.line_user_id || '').trim() === uid;   // 只認 LINE 完全相同
+      });
+      if (!hit.length) return;
+      ensureRosterHeaders(sh);
+      hit.forEach(function (r) {
+        setRosterCell(sh, r.__rowIndex, 'active', false);
+        setRosterCell(sh, r.__rowIndex, 'removed_at', now, true);
+        setRosterCell(sh, r.__rowIndex, 'removed_by', note);
+        out.stopped.push({ store_name: st.name, emp_id: String(r.emp_id), name: String(r.name) });
+      });
+    } catch (e) { out.failed.push(st.name); }
+  });
+  try { SpreadsheetApp.flush(); } catch (e) { /* 寫入已送出，落地慢一點無妨 */ }
+  lineHubForget_(uid);   // 機器人記的「綁了哪幾家」要重查
+  if (out.failed.length) {
+    out.ok = false;
+    out.message = '已設為離職。但「' + out.failed.join('」「') + '」的名冊暫時讀不到，沒辦法確認他在那裡的打卡帳號有沒有一併停用，請通知總部檢查。';
+  }
+  return out;
+}
+
+/** {action:'line_hub_left', emp_id, removed_at} → 其他店設離職成功後回頭通知光復（B13）。
+ *  不帶金鑰、也不相信通知的內容：光復自己去各店名冊找「這個工號、已離職、離職時間就是這一筆而且是剛剛（15 分鐘內）、有綁 LINE」的列，
+ *  找到才以名冊上那支 LINE 去停用其他店的列；找不到就什麼都不做。所以這支只能重做一件「本來就該發生」的事。 */
+var LINE_HUB_LEFT_FRESH_MS = 15 * 60000;
+function handleLineHubLeft_(body) {
+  var empId = typeof body.emp_id === 'string' ? body.emp_id.trim() : '';
+  var at = typeof body.removed_at === 'string' ? body.removed_at.trim() : '';
+  if (!empId || empId.length > 40 || !at || at.length > 40) return { ok: false, error: 'bad_input' };
+  var t = new Date(at).getTime();
+  if (!isFinite(t) || Math.abs(Date.now() - t) > LINE_HUB_LEFT_FRESH_MS) return { ok: false, error: 'stale' };
+  var srcs = [];
+  lineHubStores_().forEach(function (st) {
+    var rows;
+    try { rows = lineHubRoster_(st) || []; } catch (e) { rows = []; }
+    rows.forEach(function (r) {
+      if (String(r.emp_id) === empId && !lineHubActive_(r) && String(r.line_user_id || '').trim()
+          && String(normCellTs(r.removed_at) || '') === at) srcs.push({ st: st, row: r });
+    });
+  });
+  if (!srcs.length) return { ok: false, error: 'not_found' };
+  var out = { ok: true, stopped: [], failed: [] };
+  srcs.forEach(function (s) {
+    var one = lineHubLeftCascade_(s.st, empId, String(s.row.line_user_id).trim(), String(s.row.removed_by || ''));
+    out.stopped = out.stopped.concat(one.stopped);
+    one.failed.forEach(function (n) { if (out.failed.indexOf(n) === -1) out.failed.push(n); });
+    if (!one.ok) { out.ok = false; out.message = one.message; }
+  });
+  return out;
+}
+
 /** 方案 C（2026-10-08）：打卡畫面改成直接打各店、光復不再有暫存 → 機器人收到「打卡」時，
  *  查這個 LINE 帳號在已綁定各店最近 LINE_HUB_LATEST_SEC 秒內最新一筆成功的卡（打卡畫面只在成功時才代送「打卡」）。
  *  問候語用同一個打卡時間算（liffGreeting_），與畫面上那句相同。
@@ -1429,6 +1497,7 @@ function handlePunchTimingGet_(body) {
 var LINE_HUB_HANDLERS = {
   line_quick_clock: handleLineQuickClock_,
   line_hub_status: handleLineHubStatus_,
+  line_hub_left: function (b) { return handleLineHubLeft_(b); },   // 其他店設離職後通知光復連帶停用（B13）
   line_bind_name: handleLineBindName_,
   line_hub_req_init: function (b) { return handleLineHubReqInit_(b); },
   line_hub_req_quota: function (b) { return handleLineHubReqQuota_(b); },   // 申請頁額度與補休帳（2026-11-06，開頁加快）

@@ -31,14 +31,23 @@ const objs = (sheet) => { const v = sheet.values, h = v[0]; return v.slice(1).ma
 function buildWorld(opts) {
   opts = opts || {};
   const now = opts.now || H.T('2026-11-10T09:00:00');
-  const w = { stores: {}, miniCalls: [], storeCalls: [], STORES, Core };
+  const w = { stores: {}, miniCalls: [], storeCalls: [], hubCalls: [], hubDown: false, STORES, Core };
   const mini = opts.mini === undefined ? 'approve' : opts.mini;
   STORES.forEach((s) => {
     if (s.code === '') return;
     const m = H.make({ now, lineUsers: USERS,
       self: { roster: (opts.rosters || {})[s.code] || [], events: (opts.events || {})[s.code] || [] },
       props: Object.assign({ STAFF_SVC_KEY: SVC_KEY(s.code) }, (opts.storeProps || {})[s.code] || {}),
-      config: Object.assign({ STORE_LAT: s.lat, STORE_LNG: s.lng, RADIUS_M: s.radius_m }, (opts.config || {})[s.code] || {}) });
+      config: Object.assign({ STORE_LAT: s.lat, STORE_LNG: s.lng, RADIUS_M: s.radius_m }, (opts.config || {})[s.code] || {}),
+      // 店家→光復（伺服器對伺服器）：目前只轉「設離職後通知光復連帶停用」這一支（B13），其餘照舊不通。
+      // w.hubDown = true 假裝光復連不上（回一段不是 JSON 的字）。
+      fetch: (url, o) => {
+        if (!o || typeof o.payload !== 'string' || !/^https:\/\/script\.google\.com\//.test(url)) return undefined;
+        let body; try { body = JSON.parse(o.payload); } catch (e) { return undefined; }
+        if (!body || body.action !== 'line_hub_left') return undefined;
+        w.hubCalls.push({ from: s.code, action: body.action });
+        return w.hubDown ? '<html>服務暫時無法使用</html>' : w.hubPost(body);
+      } });
     vm.runInContext(H.R('apps-script/SvcStaff.gs'), m.sb, { filename: 'apps-script/SvcStaff.gs' });
     w.stores[s.code] = m;
   });

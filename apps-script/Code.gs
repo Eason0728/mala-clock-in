@@ -256,7 +256,7 @@ function doPost(e) {
     set_shifts: handleSetShifts,
     mgr_add_employee: handleMgrAddEmployee,
     mgr_roster: handleMgrRoster,
-    mgr_set_active: handleMgrSetActive,
+    mgr_set_active: function (b) { return leftCascadeAfter_(handleMgrSetActive(b)); },   // 設離職後連帶停用別店同一支 LINE 的列（B13）
     recent_hires: handleRecentHires,
     get_roster: handleGetRoster,
     get_events: handleGetEvents,
@@ -1811,6 +1811,57 @@ function handleMgrDay(body) {
  *   打卡段多於輸入段→「有多出的打卡段」；中間有間隔的兩個輸入段配到同一條打卡段
  *   →「少刷N組卡」；早到晚走不加時數、算正常（無寬限：遲到/早退各自標記分鐘數）。
  */
+/**
+ * 設離職之後的連帶停用（2026-11-11 Eason 定，B13）：原單位把同仁設成離職時，同一支 LINE 在其他店名冊上還在職的列一併設成離職。
+ * 原本只動本店那一列，他支援過的別家店照樣開得了頁、打得了卡、送得出申請。
+ * ‧只認 LINE 帳號（line_user_id）完全相同；沒綁 LINE 的人不做連帶，同名不同人不會被動到。
+ * ‧各店彼此開不了別人的試算表，只有光復開得了：光復自己直接做（lineHubLeftCascade_），其他店回頭通知光復（line_hub_left）。
+ *   通知不帶金鑰：光復只相信自己從那家店名冊讀到的內容（那一列真的剛被設成離職、有綁 LINE），不相信通知裡寫的。
+ * ‧接在 mgr_set_active／svc_set_active 的結果後面（鎖已經放掉）：剛剛（60 秒內）才被設成離職的列才做，
+ *   重送同一個動作、原本就離職的不重做。連帶沒成功不影響本店的離職結果，回應的 cascade 帶結果或警告。
+ * ‧之後本店把人恢復在職，不會自動恢復別店（維持手動）。
+ * res：設離職 handler 的回應（要有 ok、emp_id、active）。回傳同一個物件；別店真的有列被停用、或沒辦法確認時多一格 cascade：
+ *   {ok:true, stopped:[{store_name, emp_id, name}], failed:[]}／{ok:false, message, stopped?, failed?}。
+ */
+var LEFT_CASCADE_FRESH_MS_ = 60000;
+var LEFT_CASCADE_FAIL_MSG_ = '已設為離職。但沒辦法確認他在其他單位的打卡帳號有沒有一併停用，請通知總部檢查。';
+function leftCascadeAfter_(res) {
+  if (!res || res.ok !== true || res.active !== false || res.unchanged) return res;
+  leftCascadeRun_(res);
+  // 別的單位沒有東西要停用、也沒有失敗＝沒事可講，回應維持原樣（管理系統的 svc_set_active 合約是 {ok, emp_id, active}）
+  if (res.cascade && res.cascade.ok === true && !(res.cascade.stopped || []).length) delete res.cascade;
+  return res;
+}
+function leftCascadeRun_(res) {
+  try {
+    var sh = getSS().getSheetByName('roster');
+    var row = sh ? findRosterByEmpId(readSheetAsObjects(sh).rows, String(res.emp_id)) : null;
+    if (!row || String(row.active).toLowerCase() === 'true') return res;
+    var uid = String(row.line_user_id || '').trim();
+    if (!uid) return res;
+    var at = String(normCellTs(row.removed_at) || ''), t = new Date(at).getTime();
+    if (!isFinite(t) || Math.abs(Date.now() - t) > LEFT_CASCADE_FRESH_MS_) return res;
+    var by = String(row.removed_by || '');
+    if (typeof lineHubLeftCascade_ === 'function') {   // 光復：自己就是集中服務，直接做
+      res.cascade = lineHubLeftCascade_(lineHubStores_().filter(function (s) { return s.code === ''; })[0], String(res.emp_id), uid, by);
+      return res;
+    }
+    var api = CONFIG.PAYROLL_API || (typeof REQ_HUB_API_DEFAULT_ !== 'undefined' ? REQ_HUB_API_DEFAULT_ : '');
+    if (!api) { res.cascade = { ok: false, message: LEFT_CASCADE_FAIL_MSG_ }; return res; }
+    SpreadsheetApp.flush();   // 光復要從本店名冊讀到「已離職」才會動手，先讓寫入落地
+    var resp = UrlFetchApp.fetch(api, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true, followRedirects: true,
+      payload: JSON.stringify({ action: 'line_hub_left', emp_id: String(res.emp_id), removed_at: at }) });
+    var j = JSON.parse(resp.getContentText());
+    if (j && Array.isArray(j.stopped) && Array.isArray(j.failed)) {
+      res.cascade = { ok: j.ok === true, stopped: j.stopped, failed: j.failed };
+      if (j.ok !== true) res.cascade.message = String(j.message || LEFT_CASCADE_FAIL_MSG_);
+    } else res.cascade = { ok: false, message: LEFT_CASCADE_FAIL_MSG_ };
+  } catch (e) {
+    res.cascade = { ok: false, message: LEFT_CASCADE_FAIL_MSG_ };
+  }
+  return res;
+}
+
 /** 白名單外的假別 → 向薪酬假別表（payroll_leave_type，資料驅動的正本）即時確認（2026-08-23）。
  *  背景：LEAVE_TYPES 是寫死的送出白名單，但核定頁的下拉已改為資料驅動——只在表上加新假別、
  *  忘了同步三家店後端的白名單，主管選了就被擋成 bad_leave_type。改為白名單外自動查表放行。

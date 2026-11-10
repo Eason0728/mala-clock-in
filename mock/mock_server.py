@@ -1569,8 +1569,44 @@ def handle_mgr_set_active(data, body):
     row["removed_at"] = "" if active else now
     row["removed_by"] = "" if active else mgr["name"]
     save_data(data)
-    return {"ok": True, "emp_id": emp_id, "name": name, "active": active,
-            "removed_at": row["removed_at"], "removed_by": row["removed_by"]}
+    res = {"ok": True, "emp_id": emp_id, "name": name, "active": active,
+           "removed_at": row["removed_at"], "removed_by": row["removed_by"]}
+    # 2026-11-11 Eason 定（B13，與 Code.gs leftCascadeAfter_／LineHub.gs lineHubLeftCascade_ 同步）：
+    # 設離職時，同一支 LINE 在其他店名冊上還在職的列一併設成離職；只認 LINE 完全相同，沒綁 LINE 不做。恢復在職不連帶。
+    uid = str(row.get("line_user_id") or "").strip()
+    if not active and uid:
+        res["cascade"] = _left_cascade(emp_id, uid, mgr["name"], now)
+    return res
+
+
+def _cur_store_code():
+    base = os.path.basename(DATA_FILE)
+    return "" if base == "mock_data.json" else base[len("mock_data_"):-len(".json")]
+
+
+def _left_cascade(src_emp_id, uid, by, now):
+    """把其他店名冊上「同一支 LINE、還在職」的列設成離職（B13）。還沒建立資料檔的店＝沒有人，不去碰。"""
+    src = _cur_store_code()
+    note = "連帶停用：%s 設離職（%s／%s）" % (_hub_store_name(src), src_emp_id, by)
+    out = {"ok": True, "stopped": [], "failed": []}
+    for code in _hub_store_codes():
+        if code == src:
+            continue
+        path = HUB_STORE_[0] if code == "" else os.path.join(BASE_DIR, "mock_data_%s.json" % code)
+        if not os.path.exists(path):
+            continue
+        with store_context(code):
+            sd = load_data()
+            hit = [r for r in sd.get("roster", [])
+                   if str(r.get("active")).lower() == "true" and str(r.get("line_user_id") or "").strip() == uid]
+            for r in hit:
+                r["active"] = False
+                r["removed_at"] = now
+                r["removed_by"] = note
+                out["stopped"].append({"store_name": _hub_store_name(code), "emp_id": str(r["emp_id"]), "name": str(r["name"])})
+            if hit:
+                save_data(sd)
+    return out
 
 
 # ── 店內公告（2026-08-28，與 Code.gs 的 activeNotices／handleMgrNotices… 同步）──

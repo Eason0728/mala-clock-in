@@ -2752,6 +2752,17 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
         { label: '同仁異動', slot: failSlot }
       );
     }
+    /* 設離職的連帶結果（2026-11-11，B13）：同一支 LINE 在其他單位的打卡帳號一併停用了哪幾筆；沒辦法確認時提醒通知總部。 */
+    function cascadeNote(c) {
+      if (!c) return '';
+      var out = '';
+      if (c.stopped && c.stopped.length) {
+        out += '<br>他在' + c.stopped.map(function (x) { return '「' + escHtml(x.store_name) + '」'; }).join('、')
+             + '的打卡帳號（同一支 LINE）也一併停用了；之後恢復在職時，那邊要另外恢復。';
+      }
+      if (c.ok === false) out += '<br>⚠ ' + escHtml(c.message || '沒辦法確認他在其他單位的打卡帳號有沒有一併停用，請通知總部檢查。').replace(/^已設為離職。/, '');
+      return out;
+    }
     function setActive(empId, name, active, srcBtn) {
       var label = srcBtn.textContent;
       srcBtn.disabled = true; srcBtn.textContent = '處理中…';
@@ -2764,7 +2775,8 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
           }
           show(active ? ('✓ <b>' + escHtml(res.name) + '</b> 已恢復在職，可以打卡了')   // 名冊上別人建的名字，當文字顯示（2026-11-04）
                       : ('✓ <b>' + escHtml(res.name) + '</b> 已設為離職，他不能再打卡了。'
-                         + '過去的打卡與核定紀錄都還在，設錯的話按下面的「恢復在職」。'));
+                         + '過去的打卡與核定紀錄都還在，設錯的話按下面的「恢復在職」。'
+                         + cascadeNote(res.cascade)));
           sel.value = '';
           load();
           loadDay(currentDate);   // 核定清單同步（離職者當天若已有打卡仍會列出，可補核定）

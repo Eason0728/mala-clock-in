@@ -62,6 +62,13 @@ function makeEnv(opts) {
     SpreadsheetApp: { openById: () => ss, getActive: () => ss, flush() { if (flushHook.fn) flushHook.fn(); } },
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in props ? props[k] : null), setProperty(k, v) { props[k] = v; } }) },
     LockService: { getScriptLock: () => lock },
+    // 2026-11-11（B13）：設離職後，有綁 LINE 的列會回頭通知光復連帶停用別店的列。這個單店環境沒有別店：
+    // 假的光復一律回「別店沒有要停用的列」（＝真的光復在這個情境的回覆），其餘網路呼叫照舊沒有。
+    UrlFetchApp: { fetch: (url, o) => {
+      const b = JSON.parse(o.payload);
+      if (b.action !== 'line_hub_left') throw new Error('這個環境沒有網路：' + b.action);
+      return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ ok: true, stopped: [], failed: [] }) };
+    } },
     CacheService: { getScriptCache: () => ({ get() { return null; }, put() {}, remove() {} }) },
     Utilities: { DigestAlgorithm: { SHA_256: 'SHA_256' }, getUuid: () => require('crypto').randomUUID(), computeDigest: (a, s) => Array.from(require('crypto').createHash('sha256').update(s).digest()), formatDate: (d, tz, f) => { const s = new Date(d.getTime() + 8 * 3600000).toISOString();
       return f === 'yyyy-MM-dd' ? s.slice(0, 10) : s.slice(0, 19).replace(/^(.{10})T/, f.indexOf("'T'") >= 0 ? '$1T' : '$1 ') + (f.indexOf('XXX') >= 0 ? '+08:00' : ''); } },
