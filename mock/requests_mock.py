@@ -286,6 +286,13 @@ def register(ns):
             row["hours"] = span(row["start"], row["end"])
             if row["hours"] > 12:
                 return None, ("bad_time", "加班時段超過 12 小時，請確認時間")
+            # 跨夜班的加班日期要選上班那一天（同 Requests.gs，2026-11-11 B39）
+            prev = (date.fromisoformat(d) - timedelta(days=1)).isoformat()
+            night = [sp for sp in (day_info(data, me["emp_id"], prev)[1].get("spans") or [])
+                     if sp.get("out") and sp.get("out_next") and mins(row["start"]) < mins(sp["out"])]
+            if night:
+                pmd = f"{int(prev[5:7])}/{int(prev[8:10])}"
+                return None, ("bad_date", f"{row['start']}–{row['end']} 在 {pmd} 上班的跨夜班裡（{pmd} {night[0]['in']} 上班、隔天 {night[0]['out']} 下班），加班單的日期請選上班那一天（{pmd}）")
             if not reason:
                 return None, ("need_reason", "加班要寫原因")
             # 補休（2026-11-01 改每月加減結算）：加班不再分加班費／換補休，comp 欄留空

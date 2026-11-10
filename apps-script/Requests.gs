@@ -457,6 +457,17 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     if (!row.start || !row.end) return { error: 'bad_time', message: '請填加班時段' };
     row.hours = reqSpanHours_(row.start, row.end);
     if (row.hours > 12) return { error: 'bad_time', message: '加班時段超過 12 小時，請確認時間' };
+    /* 2026-11-11（B39）：跨夜班的加班在凌晨。日期填凌晨那一天的話，上班那天核定時找不到這張單、凌晨那天又多一張要作廢的單，
+       兩天都核不過。這段時間如果落在「前一天上班、跨到今天才下班」的班裡，請同仁把日期改選上班那一天
+       （下班打卡後的加班提示本來就帶上班那一天）。核定與薪資怎麼算單不動。 */
+    var prevDate = reqPrevDate_(date), otStartMin = reqMin_(row.start);
+    var nightSpan = ((reqDayInfo_(events, me.emp_id, prevDate).missing || {}).spans || []).filter(function (sp) {
+      return sp.out && sp.out_next && otStartMin < reqMin_(sp.out);
+    })[0];
+    if (nightSpan) {
+      var pmd = (+prevDate.slice(5, 7)) + '/' + (+prevDate.slice(8, 10));
+      return { error: 'bad_date', message: row.start + '–' + row.end + ' 在 ' + pmd + ' 上班的跨夜班裡（' + pmd + ' ' + nightSpan.in + ' 上班、隔天 ' + nightSpan.out + ' 下班），加班單的日期請選上班那一天（' + pmd + '）' };
+    }
     if (!reason) return { error: 'need_reason', message: '加班要寫原因' };
     // 補休（2026-11-01 改每月加減結算）：加班不再分「加班費／換補休」，核准的加班都算進當月補休帳；comp 欄留空（舊列的值不再使用）
   } else if (kind === 'trip') {
