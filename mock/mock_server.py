@@ -652,7 +652,7 @@ ATT_STATUS_LABEL = {
     "pending_device_approval": "新裝置待核准，未入帳",
     "rejected_duplicate": "重複打卡，被系統擋下",
     "rejected_device": "裝置不符，被系統擋下",
-}
+}   # rejected_too_soon（2026-11-11 B33）沒有對照：Payroll.gs payAttStatusLabel 也沒有，兩邊都走「未入帳（狀態碼）」
 
 
 def handle_payroll_attendance_export(data, body):
@@ -1109,7 +1109,10 @@ def handle_mgr_approve(data, body):
             punch_segments.append({"in_ms": in_ms, "out_ms": out_ms})
 
         status_text = compute_approval_status(
-            periods, punch_segments, unrecorded_attempt_count(data, emp_id, date) > 0)
+            periods, punch_segments,
+            # 剛打完卡 10 分鐘內按到另一顆被擋的（rejected_too_soon，2026-11-11 B33）不算「打卡未入帳」，同 Code.gs unresolvedAttemptCount_
+            any(e["emp_id"] == emp_id and e["ts"][:10] == date and e.get("status") not in ("ok", "rejected_too_soon")
+                for e in data["events"]))
         periods_str = ",".join("{}-{}".format(p["start"], p["end"]) for p in raw_periods)
     entered_at = iso_now()
 
@@ -1178,10 +1181,14 @@ def handle_clock(data, body):
     # 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
     last_counted = last_counted_event(data, roster["emp_id"])
     # 同型只擋 10 分鐘（與 Code.gs SAME_TYPE_LOCK_MIN 同步，2026-11-02）
-    is_duplicate = (last_counted is not None and last_counted["type"] == type_
-                    and (now_taipei() - datetime.fromisoformat(last_counted["ts"])).total_seconds() < SAME_TYPE_LOCK_MIN * 60)
+    # 2026-11-11 Eason 定（B33，與 Code.gs 同步）：10 分鐘內另一型也不收（rejected_too_soon）；剛好滿 10 分鐘就收
+    lock_left_s = (0 if last_counted is None else
+                   SAME_TYPE_LOCK_MIN * 60 - (now_taipei() - datetime.fromisoformat(last_counted["ts"])).total_seconds())
+    in_lock = lock_left_s > 0
+    is_duplicate = in_lock and last_counted["type"] == type_
+    is_too_soon = in_lock and not is_duplicate
     # 單日 10 小時／兩班間隔 11 小時（Rest.gs，與 Code.gs handleClock 的 restBlock 同位置）：只擋上班卡；總開關關著＝None
-    rest_block = rest_check_in(data, roster) if (type_ == "in" and not is_duplicate) else None
+    rest_block = rest_check_in(data, roster) if (type_ == "in" and not in_lock) else None
 
     if not roster.get("device_id"):
         roster["device_id"] = device_id
@@ -1192,9 +1199,11 @@ def handle_clock(data, body):
     else:
         device_match = False
 
-    # status 優先序：重複 > 休息不足（rejected_rest，Rest.gs）> 裝置不符 > 超出範圍 > ok（與 Code.gs 同步）
+    # status 優先序：重複 > 剛打完另一型 > 休息不足（rejected_rest，Rest.gs）> 裝置不符 > 超出範圍 > ok（與 Code.gs 同步）
     if is_duplicate:
         status = "rejected_duplicate"
+    elif is_too_soon:
+        status = "rejected_too_soon"
     elif rest_block:
         status = "rejected_rest"
     elif not device_match:
@@ -1233,6 +1242,10 @@ def handle_clock(data, body):
     }
     if status == "rejected_duplicate":
         result["last_type"] = last_counted["type"]
+    if status == "rejected_too_soon":   # 同 Code.gs：畫面照 message 顯示
+        result["last_type"] = last_counted["type"]
+        result["wait_min"] = math.ceil(lock_left_s / 60)
+        result["message"] = f"剛打完{'上班' if last_counted['type'] == 'in' else '下班'}卡，{result['wait_min']} 分鐘後才能再打卡"
     if rest_block:
         result["rest"] = rest_block   # 同 Code.gs：回 {code:gap|cap, reason, hint, until}
     return result
@@ -2334,6 +2347,8 @@ def handle_liff_punch(data, body):
           "rejected_duplicate": ["這一筆和上一筆重複", "請按「出勤紀錄」確認今天的紀錄"]}.get(st, ["系統回覆：" + (st or "未知"), "請告知主管"])
     if st == "rejected_rest" and j.get("rest"):   # 同 Liff.gs liffPunchFor_：Rest.gs 講幾點以後才能打
         rr = [j["rest"]["reason"], j["rest"]["hint"]]
+    if st == "rejected_too_soon":   # 同 Liff.gs liffPunchFor_（2026-11-11 B33）
+        rr = [j.get("message") or "剛打完卡，10 分鐘內不能再打卡", f"真的要{label}請告知主管補登"]
     return {"ok": False, "type": typ, "status": st, "reason": rr[0], "hint": rr[1]}
 
 

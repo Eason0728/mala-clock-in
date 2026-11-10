@@ -542,7 +542,7 @@ function handleLiffPunch_(body) {
   if (liffSiteThrottled_()) return { ok: false, error: 'too_many' };
   if (!body.id_token) return { ok: false, error: 'invalid_id_token' };
   // 雙擊防護（審查 #7、#10）：同一個畫面連按兩下送的是同一張 id_token，在驗身分（打 LINE API，數百毫秒）之前就標記，
-  // 第二筆一進來就擋。不用 ScriptLock：它會跟月表重算搶鎖、讓打卡卡住。handleClock 的 rejected_duplicate 是最後一道。
+  // 第二筆一進來就擋。不用 ScriptLock：它會跟月表重算搶鎖、讓打卡卡住。handleClock 的 rejected_duplicate／rejected_too_soon 是最後一道。
   var cache = CacheService.getScriptCache();
   var busyKey = 'lfp:' + Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, String(body.id_token)));
   if (cache.get(busyKey)) return { ok: false, type: type, reason: '上一筆還在處理中', hint: '請等幾秒，看出勤紀錄有沒有這筆再決定要不要重按' };
@@ -663,6 +663,8 @@ function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows
   var st = j && (j.status || j.error);
   var rr = LIFF_PUNCH_REASONS_[st] || ['系統回覆：' + (st || '未知'), '請告知主管'];
   if (st === 'rejected_rest' && j.rest) rr = [j.rest.reason, j.rest.hint];   // Rest.gs：講幾點以後才能打
+  // 剛打完卡 10 分鐘內按另一顆（2026-11-11 B33）：正常會先被上面 liffGuard_ 擋下；兩筆幾乎同時到才會走到後端這道，照後端那句顯示
+  if (st === 'rejected_too_soon') rr = [j.message || '剛打完卡，10 分鐘內不能再打卡', '真的要' + (type === 'in' ? '上班' : '下班') + '請告知主管補登'];
   return { ok: false, type: type, status: st || '', reason: rr[0], hint: rr[1] };
 }
 

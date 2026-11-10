@@ -453,13 +453,15 @@ ok('第一張卡綁裝置；第二支手機 → pending_device_approval（店外
   assert.strictEqual(punch(sb, 'IN').error, 'bad_type'); assert.strictEqual(punch(sb, '').error, 'bad_type');
   assert.strictEqual(sb.handleWhoami({ key: 'K1', device_id: 'OTHER' }).device_state, 'mismatch');
 });
-ok('兩支手機同時打第一張卡（都讀到「還沒綁」）：兩張都 ok、名冊綁到後寫的那支——已知取捨，守住「之後第三支會被擋」', () => {
+// 2026-11-11 Eason 定（B33：後端也擋，打完卡 10 分鐘內另一型的卡也不收）：第二支手機同一刻送的是下班卡（另一型），
+// 原本預期「兩張都 ok」，依新規則第二張改成 rejected_too_soon。這題守的是裝置綁定（名冊綁到後寫的那支、之後第三支被擋），那部分沒變。
+ok('兩支手機同時打第一張卡（都讀到「還沒綁」）：第一張 ok、同一刻另一型那張被 10 分鐘鎖擋、名冊綁到後寫的那支——已知取捨，守住「之後第三支會被擋」', () => {
   const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [Object.assign({}, ME, { device_id: '' })] } });
   const sb = m.sb;
   const stale = J(sb.readSheetAsObjects(m.self.sh.roster).rows);
   const a = sb.handleClock(Object.assign({ key: 'K1', type: 'in', device_id: 'PHONE-A' }, HERE), null, stale);
   const b = sb.handleClock(Object.assign({ key: 'K1', type: 'out', device_id: 'PHONE-B' }, HERE), null, stale);
-  assert.strictEqual(a.status, 'ok'); assert.strictEqual(b.status, 'ok');
+  assert.strictEqual(a.status, 'ok'); assert.strictEqual(b.status, 'rejected_too_soon');
   assert.strictEqual(m.objs('roster')[0].device_id, 'PHONE-B');
   m.sb.__now += 11 * 60000;
   assert.strictEqual(punch(sb, 'in', { device_id: 'PHONE-C' }).status, 'pending_device_approval');

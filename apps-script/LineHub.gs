@@ -502,6 +502,8 @@ function lineHubQuickClockFor_(userId, body) {
     rejected_duplicate: ['這一筆和上一筆重複', '請按「出勤紀錄」確認今天的紀錄'],
   };
   var rr = reasons[j.status] || reasons[j.error] || ['系統回覆：' + (j.status || j.error || '未知'), '請告知主管'];
+  // 剛打完卡 10 分鐘內按另一顆（2026-11-11 B33，各店 handleClock 最後一道）：照店家那句顯示
+  if (j.status === 'rejected_too_soon') rr = [j.message || '剛打完卡，10 分鐘內不能再打卡', '真的要' + (type === 'in' ? '上班' : '下班') + '請告知主管補登'];
   return { ok: false, type: type, store_name: st.name, reason: rr[0], hint: rr[1] };
 }
 

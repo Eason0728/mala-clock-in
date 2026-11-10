@@ -445,6 +445,8 @@ function stripRowIndex(row) {
  * pending_device_approval 也算數：核准後會翻成 ok，若不算數會造成核准後同型重複。
  */
 /** 同型（上班後又上班、下班後又下班）只在這幾分鐘內擋成 rejected_duplicate（2026-11-02，原本 12 小時內都擋）。
+ *  2026-11-11 Eason 定（B33）：另一型（上班後馬上下班、下班後馬上上班）在這幾分鐘內也不收，記成 rejected_too_soon。
+ *  原本另一型只鎖在畫面上，舊連結用手機時鐘——手機時鐘快的人打完上班可以馬上打下班，兩張都收。
  *  與 Liff.gs LIFF_LOCK_MIN、clock.html CLOCK_LOCK_MIN、mock_server.py 同步。 */
 const SAME_TYPE_LOCK_MIN = 10;
 
@@ -767,13 +769,16 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   const clockEventRows = eventsRead.rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
   const lastCounted = clockLastWithMark_(clockEventRows, roster.emp_id);   // 併上「剛送出」記號（同一人兩筆同時到，2026-11-03）
   // 同型只擋 10 分鐘（2026-11-02 Eason：中午忘打下班卡，晚上回來要能打上班卡）；超過就收，前一張由配對標忘刷卡
-  const isDuplicate = lastCounted !== null && lastCounted.type === String(body.type)
-    && Date.now() - new Date(lastCounted.ts).getTime() < SAME_TYPE_LOCK_MIN * 60000;
-  const prevMark = isDuplicate ? null : clockMarkPut_(roster.emp_id, String(body.type), ts);
+  // 2026-11-11 Eason 定（B33）：10 分鐘內另一型也不收（isTooSoon）。剛好滿 10 分鐘就收，和 Liff.gs liffGuard_ 同一刻解鎖。
+  const lockLeftMs = lastCounted === null ? 0 : new Date(lastCounted.ts).getTime() + SAME_TYPE_LOCK_MIN * 60000 - Date.now();
+  const inLock = lockLeftMs > 0;
+  const isDuplicate = inLock && lastCounted.type === String(body.type);
+  const isTooSoon = inLock && !isDuplicate;
+  const prevMark = inLock ? null : clockMarkPut_(roster.emp_id, String(body.type), ts);
   // 單日 10 小時／兩班間隔 11 小時（2026-11-01，11-02 由 12 改 11；Rest.gs）：只擋上班卡；沒部署 Rest.gs 或總開關關著＝null
   let restBlock = null;
-  try { restBlock = (body.type === 'in' && !isDuplicate && typeof restCheckIn_ === 'function') ? restCheckIn_(ss, roster) : null; }
-  catch (e) { if (!isDuplicate) clockMarkRestore_(roster.emp_id, prevMark); throw e; }
+  try { restBlock = (body.type === 'in' && !inLock && typeof restCheckIn_ === 'function') ? restCheckIn_(ss, roster) : null; }
+  catch (e) { if (!inLock) clockMarkRestore_(roster.emp_id, prevMark); throw e; }
 
   let deviceMatch;
   if (!roster.device_id) {
@@ -786,10 +791,12 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
     deviceMatch = false;
   }
 
-  // status 優先序：重複 > 休息不足（rejected_rest，Rest.gs）> 裝置不符 > 超出範圍 > ok
+  // status 優先序：重複 > 剛打完另一型（rejected_too_soon）> 休息不足（rejected_rest，Rest.gs）> 裝置不符 > 超出範圍 > ok
   let status;
   if (isDuplicate) {
     status = 'rejected_duplicate';
+  } else if (isTooSoon) {
+    status = 'rejected_too_soon';
   } else if (restBlock) {
     status = 'rejected_rest';
   } else if (!deviceMatch) {
@@ -801,10 +808,10 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   }
 
   // 這張沒算數（被擋）就把記號還原，不能讓它擋到同仁接著重按；寫入失敗也還原
-  if (!isDuplicate && status.indexOf('rejected_') === 0) clockMarkRestore_(roster.emp_id, prevMark);
+  if (!inLock && status.indexOf('rejected_') === 0) clockMarkRestore_(roster.emp_id, prevMark);
   empIdColText_(eventsSheet);
   try { eventsSheet.appendRow([ts, roster.emp_id, body.type, lat, lng, distanceM, withinRange, deviceId, deviceMatch, status, accuracyM]); }
-  catch (e) { if (!isDuplicate) clockMarkRestore_(roster.emp_id, prevMark); throw e; }
+  catch (e) { if (!inLock) clockMarkRestore_(roster.emp_id, prevMark); throw e; }
 
   const result = {
     ok: true,
@@ -819,6 +826,12 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   };
   if (status === 'rejected_duplicate') {
     result.last_type = lastCounted.type;
+  }
+  if (status === 'rejected_too_soon') {
+    // 畫面照這句顯示（clock.html；LINE 打卡由 Liff.gs liffPunchFor_ 轉成 reason）
+    result.last_type = lastCounted.type;
+    result.wait_min = Math.ceil(lockLeftMs / 60000);
+    result.message = '剛打完' + (lastCounted.type === 'in' ? '上班' : '下班') + '卡，' + result.wait_min + ' 分鐘後才能再打卡';
   }
   if (restBlock) result.rest = restBlock;
   return result;
@@ -2492,6 +2505,7 @@ function unrecordedAttemptCount(eventRows, empId, dateStr) {
  * 某人某天「真的沒入帳」的打卡筆數：送出了、沒成功，而且之後也沒有補成功（2026-11-11 B08）。
  * 核定狀態用這個判斷要不要寫「打卡未入帳，主管補登」。不算的兩種：
  *   連按被擋（rejected_duplicate）——前面那張同型的卡已經成功；
+ *   剛打完卡 10 分鐘內按到另一顆被擋（rejected_too_soon，2026-11-11 B33）——手滑，前面那張卡已經算數；
  *   被擋之後 10 分鐘內同一種卡重按成功（例：定位飄掉、走近一點再按一次）。
  * 原本只要當天有任何一筆沒成功的卡就整天當成「未入帳」，多按一下，遲到分鐘與忘刷就都不見了。
  * 主管頁顯示的嘗試次數仍用 unrecordedAttemptCount（每一筆都列出來）。
@@ -2503,7 +2517,7 @@ function unresolvedAttemptCount_(eventRows, empId, dateStr) {
   mine.forEach(function (e) {
     if (tsDateStr(e.ts) !== dateStr) return;
     const st = String(e.status);
-    if (st === 'ok' || st === 'rejected_duplicate') return;
+    if (st === 'ok' || st === 'rejected_duplicate' || st === 'rejected_too_soon') return;
     const t = tsMs(e.ts);
     const retried = mine.some(function (x) {
       const d = tsMs(x.ts) - t;
@@ -2808,7 +2822,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     c.incomplete = true;
   });
 
-  // pending → 備註不入班段；超出範圍 → 備註；rejected_duplicate / rejected_device 不顯示（雜訊）
+  // pending → 備註不入班段；超出範圍 → 備註；rejected_duplicate / rejected_too_soon / rejected_device 不顯示（雜訊）
   events.forEach(function (e) {
     const st = String(e.status);
     if (st !== 'pending_device_approval' && st !== 'rejected_out_of_range') return;
