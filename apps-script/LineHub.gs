@@ -129,7 +129,7 @@ function handleLineBindName_(body) {
   // 禁止跨品牌（2026-11-06）：這個 LINE 已經在另一個品牌的門市綁定，就不能再綁這家店——這家店名冊剛好有同名、
   // 還沒綁的列也一樣（2026-11-11 B11；原本只在「名冊沒有這個名字」時才檢查品牌）。央廚、總部兩邊都可以。
   var mineBound = lineHubMine_(userId);
-  var crossed = mineBound.filter(function (m) { return m.st.code !== st.code && lineHubCrossBrand_(m.st, st); })[0];
+  var crossed = lineHubCrossedBound_(mineBound, st);
   if (crossed) {
     return { ok: false, error: 'cross_brand', message: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(crossed.st)] + '的同仁，不能在「' + st.name + '」打卡（小辛辣與墨竹亭不能互相支援打卡）；有問題請找店長。' };
   }
@@ -148,7 +148,9 @@ function handleLineBindName_(body) {
 /**
  * 跨單位第一次打卡（2026-11-06 Eason：「已經在原店打卡名冊有資料的同仁，去到不同單位時都可以直接打卡，不需要再另外建檔」）。
  * 人所在那家店（B）的名冊沒有這個名字時走這裡：
- *   ①這個 LINE 已在別家店綁成同名、在職、恰好一家 → 身分已由 LINE 證明，直接請管理系統（7A）把他加進 B 店並綁定。
+ *   ①這個 LINE 已在別家店綁成同名、在職（一家或多家都可以，2026-11-11 B10 Eason 定：每一家新店的第一次都自動加入）
+ *     → 身分已由 LINE 證明，直接請管理系統（7A）把他加進 B 店並綁定。來源店的挑法見 lineHubSupportSource_。
+ *     在別家綁的名字不一致 → 擋下（name_conflict），請找主管。
  *   ②這個 LINE 還沒綁過 → 查各店名冊：全公司恰好一位在職、還沒綁 LINE 的同名同仁 → 先回 confirm_home 請本人確認
  *     「你是○○的某某嗎」，確認後綁到原單位那一列（原單位綁定紀錄 bind_name，值班核定頁看得到、可解除），再走 7A 加進 B 店。
  *   同名兩位以上、已被別的 LINE 綁、跨品牌（小辛辣↔墨竹亭）、各店都沒有 → 擋下，請找主管。有任何一家名冊讀不到 → 請稍後再試。
@@ -160,12 +162,23 @@ function lineHubBindElsewhere_(userId, body, st, want) {
   var home = null, viaLine = false;
   var UNREACH = { ok: false, error: 'unreachable', message: '有單位的系統暫時連不上，請稍後再試。' };
   var mineInfo = {};
-  var mine = lineHubMine_(userId, mineInfo).filter(function (m) { return lineHubNormName_(m.row.name) === want && m.st.code !== st.code; });
-  // 2026-11-11（B28）：有任何一家名冊讀不到，就不下「只綁一家」「全公司恰好一位」的結論，請同仁稍後再試。
+  var boundElse = lineHubMine_(userId, mineInfo).filter(function (m) { return m.st.code !== st.code; });
+  var mine = boundElse.filter(function (m) { return lineHubNormName_(m.row.name) === want; });
+  // 2026-11-11（B28）：有任何一家名冊讀不到，就不下「綁了哪幾家」「全公司恰好一位」的結論，請同仁稍後再試。
   if (mineInfo.unreadable) return UNREACH;
-  if (mine.length === 1) { home = mine[0]; viaLine = true; }
-  else if (mine.length > 1) return { ok: false, error: 'name_conflict', message: '你的 LINE 在兩個以上的單位都有綁定，請找主管協助加入「' + st.name + '」。' };
-  else {
+  if (mine.length) {
+    // 2026-11-11（B10，Eason 定）：已在別家綁定同名，一家或多家都照樣自動加入；綁的名字不一致才擋。
+    if (mine.length !== boundElse.length) {
+      return { ok: false, error: 'name_conflict', message: '你的 LINE 在不同單位綁定的名字不一樣，請找主管協助加入「' + st.name + '」。' };
+    }
+    var crossedElse = lineHubCrossedBound_(mine, st);
+    if (crossedElse) {
+      return { ok: false, error: 'cross_brand', message: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(crossedElse.st)] + '的同仁，不能在「' + st.name + '」打卡（小辛辣與墨竹亭不能互相支援打卡）；有問題請找店長。' };
+    }
+    home = lineHubSupportSource_(mine);
+    if (!home) return UNREACH;
+    viaLine = true;
+  } else {
     var found = [], unreadable = false;
     lineHubStores_().forEach(function (s) {
       if (s.code === st.code) return;
@@ -182,7 +195,7 @@ function lineHubBindElsewhere_(userId, body, st, want) {
     }
     viaLine = !!home.row.line_user_id;
   }
-  if (lineHubCrossBrand_(home.st, st)) {
+  if (!lineHubBrandFreeRow_(home.row) && lineHubCrossBrand_(home.st, st)) {
     return { ok: false, error: 'cross_brand', message: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(home.st)] + '的同仁，不能在「' + st.name + '」打卡（小辛辣與墨竹亭不能互相支援打卡）；有問題請找店長。' };
   }
   if (!viaLine) {
@@ -309,29 +322,26 @@ function lineHubResolve_(userId, body, opts) {
     var boundAt = lineHubMine_(userId);
     // 禁止跨品牌（2026-11-06）：已經在另一個品牌的門市綁定的人，這家店不出綁定畫面、也不自動加入，
     // 不管這家店名冊有沒有同名的列（2026-11-11 B11）。央廚、總部兩邊都可以。
-    var otherBrand = boundAt.filter(function (m) { return m.st.code !== st.code && lineHubCrossBrand_(m.st, st); })[0];
+    var otherBrand = lineHubCrossedBound_(boundAt, st);
     if (otherBrand) {
       return { fail: { ok: false, code: 'cross_brand', store_name: st.name,
                reason: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(otherBrand.st)] + '的同仁，不能在「' + st.name + '」打卡',
                hint: '小辛辣與墨竹亭不能互相支援打卡；有問題請找店長' } };
     }
     boundAt.forEach(function (m) { names[lineHubNormName_(m.row.name)] = String(m.row.name); });
-    var nameKeys = Object.keys(names), suggest = '';
+    var nameKeys = Object.keys(names), suggest = '', src = null;
     if (nameKeys.length === 1) {
       var cand = lineHubSheetRows_(ss, 'roster').filter(function (r) {
         return lineHubActive_(r) && lineHubNormName_(r.name) === nameKeys[0];
       });
       if (cand.length === 1 && !cand[0].line_user_id) suggest = names[nameKeys[0]];
-      // 7A（spec §4.4）：這家店名冊完全沒有這個名字、這個 LINE 只在另一家恰好綁了一位 → 請管理系統（mini）把關後自動加入
-      var mine = lineHubMine_(userId);
-      // 禁止跨品牌（2026-11-06 Eason：小辛辣同仁不可在墨竹亭門市打卡，反過來也是；央廚、總部兩邊都可以）
-      if (cand.length === 0 && mine.length === 1 && mine[0].st.code !== st.code && lineHubCrossBrand_(mine[0].st, st)) {
-        return { fail: { ok: false, code: 'cross_brand', store_name: st.name,
-                 reason: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(mine[0].st)] + '的同仁，不能在「' + st.name + '」打卡',
-                 hint: '小辛辣與墨竹亭不能互相支援打卡；有問題請找店長' } };
-      }
-      if (cand.length === 0 && opts && opts.autoSupport && mine.length === 1 && mine[0].st.code !== st.code) {
-        var auto = lineHubAutoSupport_(userId, st, mine[0], body, ss);
+      // 7A（spec §4.4）：這家店名冊完全沒有這個名字、這個 LINE 已在別家綁定同名（一家或多家，2026-11-11 B10）
+      // → 請管理系統（mini）把關後自動加入。跨品牌已在上面擋掉；來源店的挑法見 lineHubSupportSource_（有名冊讀不到就不挑）。
+      var mineInfo = {};
+      var mine = lineHubMine_(userId, mineInfo).filter(function (m) { return m.st.code !== st.code; });
+      src = (cand.length === 0 && mine.length && !mineInfo.unreadable) ? lineHubSupportSource_(mine) : null;
+      if (src && opts && opts.autoSupport) {
+        var auto = lineHubAutoSupport_(userId, st, src, body, ss);
         if (auto) {
           var me2 = lineHubSheetRows_(ss, 'roster').filter(function (r) {
             return lineHubActive_(r) && r.line_user_id && String(r.line_user_id) === String(userId);
@@ -342,10 +352,7 @@ function lineHubResolve_(userId, body, opts) {
     }
     // 2026-11-06：已在別家綁定、這家店名冊沒有這個名字 → 綁定框帶出名字與原單位，本人按一下就加入（line_bind_name → lineHubBindElsewhere_）
     var supportFrom = '';
-    if (!suggest && nameKeys.length === 1 && cand.length === 0) {
-      var mineNow = lineHubMine_(userId);
-      if (mineNow.length === 1 && mineNow[0].st.code !== st.code && !lineHubCrossBrand_(mineNow[0].st, st)) { suggest = names[nameKeys[0]]; supportFrom = mineNow[0].st.name; }
-    }
+    if (!suggest && src) { suggest = names[nameKeys[0]]; supportFrom = src.st.name; }
     return { fail: { ok: false, code: 'not_bound', store_name: st.name, suggest_name: suggest, support_from: supportFrom,
              reason: '你的 LINE 帳號還沒有綁定「' + st.name + '」',
              hint: '請在打卡畫面輸入你的全名完成綁定；名冊上沒有你請主管把你加進去' } };
@@ -384,6 +391,46 @@ function lineHubBrand_(st) {
 function lineHubCrossBrand_(a, b) {
   var x = lineHubBrand_(a), y = lineHubBrand_(b);
   return !!x && !!y && x !== y;
+}
+
+/** 這一列是「從央廚／總部自動加入」建出來的支援列（名冊 src_store＝cf／hq，管理系統建列時寫的）→ true。
+ *  央廚、總部的同仁兩個品牌都可以去；他在門市的支援列不代表他是那個品牌的人。
+ *  主管手動加的列沒有 src_store → 照那家店的品牌算（保守）。 */
+function lineHubBrandFreeRow_(row) {
+  return !!LINE_HUB_BRAND_FREE[String(row && row.src_store || '').trim()];
+}
+/** 這個 LINE 已綁定的各列（mine）裡，有沒有一列的品牌跟 st 這家店不同 → 回那一列（沒有回 null）。
+ *  2026-11-11（B10）：央廚／總部同仁的支援列不算（lineHubBrandFreeRow_），否則總部同仁支援過墨竹亭就再也去不了小辛辣。 */
+function lineHubCrossedBound_(mine, st) {
+  return (mine || []).filter(function (m) {
+    return m.st.code !== st.code && !lineHubBrandFreeRow_(m.row) && lineHubCrossBrand_(m.st, st);
+  })[0] || null;
+}
+
+/** 已在別家綁定兩家以上時，挑哪一家當「來源店」（告訴管理系統「他是哪一家的誰」，也是畫面上「你在○○已綁定」的那一家）。
+ *  2026-11-11（B10）規則，照順序比，結果固定（同一個人每次都挑到同一家）：
+ *    ① 原單位優先：名冊 src_store 空白的列（不是自動加入建的支援列）。支援列可能先被收掉，原單位最能代表這個人；
+ *       新店那一列記的來源也就一路指回原單位。
+ *    ② 最早綁 LINE 的（line_bound_at；沒填的排後面）。
+ *    ③ 店家清單（LINE_HUB_STORES_CONFIG）的順序。
+ *  只綁一家就直接用那一家。要即時重讀各家名冊；有一家讀不到回 null（呼叫端請同仁稍後再試，不亂挑）。 */
+function lineHubSupportSource_(mine) {
+  if (!mine || !mine.length) return null;
+  if (mine.length === 1) return mine[0];
+  var order = lineHubStores_().map(function (s) { return String(s.code); }), list = [];
+  for (var i = 0; i < mine.length; i++) {
+    var rows;
+    try { rows = lineHubRoster_(mine[i].st); } catch (e) { return null; }
+    if (!rows) return null;
+    var row = rows.filter(function (r) { return String(r.emp_id) === String(mine[i].row.emp_id); })[0];
+    if (!row) return null;
+    list.push({ st: mine[i].st, row: row, support: String(row.src_store || '').trim() ? 1 : 0,
+                at: String(normCellTs(row.line_bound_at) || '') || '9999', idx: order.indexOf(String(mine[i].st.code)) });
+  }
+  list.sort(function (a, b) {
+    return (a.support - b.support) || (a.at === b.at ? 0 : (a.at < b.at ? -1 : 1)) || (a.idx - b.idx);
+  });
+  return { st: list[0].st, row: list[0].row };
 }
 
 /** op_id 照契約：hub:<store_code>:<sha256(userId) 前 12 碼>:<台北日期 yyyyMMdd> */
@@ -553,7 +600,7 @@ function lineHubMine_(userId, info, view) {
       var stores = lineHubStores_(), got = [];
       JSON.parse(hit).forEach(function (x) {
         var st = stores.filter(function (s) { return String(s.code) === String(x.c); })[0];
-        if (st) got.push({ st: st, row: { emp_id: x.e, name: x.n } });
+        if (st) got.push({ st: st, row: { emp_id: x.e, name: x.n, src_store: x.s || '' } });
       });
       return got;
     } catch (e) { /* 壞掉就重查 */ }
@@ -567,7 +614,7 @@ function lineHubMine_(userId, info, view) {
     });
   });
   if (!bad) {
-    cache.put(key, JSON.stringify(out.map(function (m) { return { c: m.st.code, e: String(m.row.emp_id), n: String(m.row.name) }; })), LINE_HUB_MINE_TTL);
+    cache.put(key, JSON.stringify(out.map(function (m) { return { c: m.st.code, e: String(m.row.emp_id), n: String(m.row.name), s: String(m.row.src_store || '') }; })), LINE_HUB_MINE_TTL);
   }
   return out;
 }
