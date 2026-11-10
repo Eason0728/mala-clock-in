@@ -2071,7 +2071,10 @@ function segMissNote(no, tail) { return MISSING_GROUP_PREFIX + (SEG_NUM_ZH[no] |
 // ⚠ 「超出範圍嘗試」不在這裡（Eason 指定）：那多半是同仁人在店裡、手機定位飄掉，
 //   一天連按十幾次就把數字灌爆（A 君 8/11 一天 12 次），當異常看會失真。
 // ⚠ 只列病假與事假：特休假／生理假／家庭照顧假／喪假／婚假是應有的假，不算異常。
-// ⚠ 「該段無打卡」「有多出的打卡段」「上班中」也不列入。
+// ⚠ 「有多出的打卡段」「上班中」不列入。
+// ⚠ 「該段無打卡」（整天沒打卡、靠主管補核定）：2026-11-11 Eason 定（B04）＝也算異常 1 天，跟薪資一致
+//   （薪資歸集 2026-11 起把這種日子算忘刷 1 天）。因為有生效日，不放在下面這張清單裡，
+//   由 noPunchDayAbnormal_() 另外判斷（NO_PUNCH_ABNORMAL_FROM 起的日子才算，10 月以前的月表不變）。
 const ABNORMAL_CATEGORIES = [
   { key: '上班忘刷卡', prefixes: ['上班忘刷卡'] },
   { key: '下班忘刷卡', prefixes: ['下班忘刷卡'] },
@@ -2087,6 +2090,16 @@ const ABNORMAL_CATEGORIES = [
 const HIGHLIGHT_CATEGORIES = ABNORMAL_CATEGORIES.concat([
   { key: '超出範圍嘗試', prefixes: ['超出範圍嘗試'] },
 ]);
+
+// 「該段無打卡」算異常的生效日（B04，2026-11-11 Eason 定）：比照薪資「2026-11 起算忘刷 1 天」，
+// 看的是「那一天的日期」——10/31 以前的日子不算，重算舊月表數字不會變。
+const NO_PUNCH_ABNORMAL_FROM = '2026-11-01';
+/** 這天的核定狀態有「該段無打卡」（整項相等才算，同薪資 payNoPunchSeg_）而且日期在生效日以後 → true。
+ *  出差（狀態是「出差」）、有打但被擋（「打卡未入帳，主管補登」）、整天請假（沒有核定時段）都不會是這個字樣。 */
+function noPunchDayAbnormal_(dateStr, statusText) {
+  if (String(dateStr || '') < NO_PUNCH_ABNORMAL_FROM) return false;
+  return String(statusText || '').split('、').some(function (p) { return p.trim() === NO_PUNCH_NOTE; });
+}
 
 /**
  * 回傳這一格（某人某天）命中的異常類別清單（同類重複只出現一次）。
@@ -2868,7 +2881,9 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     const rec = (approvedMap[c.date] || {})[c.emp_id];
     const notesForCount = rec && rec.status_text ? c.notes.concat([String(rec.status_text)]) : c.notes;
     // 以天計算：這一格＝某人某天，命中任何一類就 +1，命中幾類、幾次都一樣
-    if (abnormalCategoriesOf(notesForCount, ABNORMAL_CATEGORIES).length > 0) s.abnormal++;
+    // 整天沒打卡、主管補核定（「該段無打卡」）也算 1 天（B04，2026-11-01 起的日子）
+    if (abnormalCategoriesOf(notesForCount, ABNORMAL_CATEGORIES).length > 0 ||
+        noPunchDayAbnormal_(c.date, rec && rec.status_text)) s.abnormal++;
   });
 
   // 核定時數改讀 approved 分頁（每人每月累計＝當月每天最新一筆核定紀錄的 approved_hours 加總）
@@ -2948,7 +2963,8 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
       if (wd === 0 || wd === 6) weekendRows.push(rowNo);
       // 用 statusNotes（已含核定狀態）而不是 c.notes，跟異常筆數看同一份資料：
       // 遲到/早退既然算異常，那一列就該標紅，不然數字對得起來、眼睛找不到。
-      if (abnormalCategoriesOf(statusNotes, HIGHLIGHT_CATEGORIES).length > 0) abnormalNoteRows.push(rowNo);
+      if (abnormalCategoriesOf(statusNotes, HIGHLIGHT_CATEGORIES).length > 0 ||
+          noPunchDayAbnormal_(c.date, approvedRec && approvedRec.status_text)) abnormalNoteRows.push(rowNo);
     });
 
     const s = empStats[emp] || { total: 0 };
