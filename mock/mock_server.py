@@ -2117,7 +2117,7 @@ def rest_segments(evs):
             continue
         if open_ is not None and ms - open_ <= REST_PAIR_H * 3600000:
             segs.append({"in": open_, "out": ms})
-        else:
+        elif open_ is None:   # 前面有上班卡但超過 16 小時配不成段的，照舊不算
             segs.append({"in": ms, "out": ms, "lone": True, "day": _rest_day(ms - 86400000) if _rest_hm(ms) <= "06:00" else _rest_day(ms)})
         open_ = None
     return segs
@@ -2129,14 +2129,17 @@ def rest_judge(segs, now_ms):
     done = [s for s in segs if s["out"] <= now_ms]
     if not done:
         return None
-    todays = [s for s in done if (s.get("day") or _rest_day(s["in"])) == today]
+    todays = [s for s in done if not s.get("lone") and _rest_day(s["in"]) == today]
     if todays:
         h = sum(s["out"] - s["in"] for s in todays) / 3600000
         if h >= REST_DAY_MAX_H:
             return {"code": "cap", "warn": True, "reason": f"你今天已經上班 {_js_round1(h)} 小時（一天最多 {REST_DAY_MAX_H} 小時）",
                     "hint": "再上班會超過 10 小時，請先跟店長確認", "until": None}   # 2026-11-06 起只提醒
         return None   # 同一天的第二段不看間隔
-    last = done[-1]
+    ends = [s for s in done if not s.get("lone") or s["day"] < today]   # 今天的孤單下班卡不算上一段的結束
+    if not ends:
+        return None
+    last = ends[-1]
     until = last["out"] + REST_GAP_H * 3600000
     if now_ms >= until:
         return None
