@@ -309,7 +309,7 @@ ok('Requests.gs reqDayInfo_／reqOtHint_ 與 Rest.gs restCheckIn_ 讀同一份 e
   m.setNow('2026-07-14T18:30:00'); punch(m, e.key, 'out');
   const evs = m.sb.liffEvents_(m.ss);
   const di = m.sb.reqDayInfo_(evs, e.emp_id, '2026-07-14');
-  eq(di.missing.options, ['break']); assert.strictEqual(di.punches.length, 2);
+  eq(di.missing.options, ['break', 'both']); assert.strictEqual(di.punches.length, 2);
   const hint = m.sb.reqOtHint_(evs, e.emp_id, '2026-07-14T18:30:00+08:00', []);
   assert.strictEqual(hint.hours, 9.5); assert.strictEqual(hint.end, '18:30');
   m.props.REST_RULE_ON = '1';

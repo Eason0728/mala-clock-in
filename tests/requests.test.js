@@ -125,6 +125,15 @@ ok('忘打卡：被擋的卡不算有打（定位失準被擋的下班卡＝還�
   assert.deepStrictEqual(JSON.parse(JSON.stringify(info.day.missing.options)), ['both']);
   assert(submit(sb, { kind: 'miss', date: '2026-10-05', miss_type: 'both', start: '09:00', end: '18:00', reason: '手機沒電' }).ok);
 });
+ok('忘打卡：第一段打齊、第二段整段沒打 → 可補另一段上班＋下班，不能和已打的段重疊（2026-11-10）', () => {
+  const sb = makeEnv({ events: [ev('2026-10-06T09:56:00+08:00', 'in'), ev('2026-10-06T14:03:00+08:00', 'out')] });
+  const d = sb.handleReqInfo_({ id_token: 'TOK_U1', date: '2026-10-06' }).day;
+  assert.strictEqual(d.missing.options.join(), 'break,both');
+  assert.strictEqual(submit(sb, { kind: 'miss', date: '2026-10-06', miss_type: 'both', start: '13:00', end: '20:30', reason: '忘記按' }).error, 'bad_time');
+  assert.strictEqual(submit(sb, { kind: 'miss', date: '2026-10-06', miss_type: 'both', start: '08:00', end: '10:00', reason: '忘記按' }).error, 'bad_time');
+  const r = submit(sb, { kind: 'miss', date: '2026-10-06', miss_type: 'both', start: '16:00', end: '20:30', reason: '忘記按' });
+  assert(r.ok, JSON.stringify(r));
+});
 ok('撤銷：只能撤自己的、審核中的；別人撤不了', () => {
   const sb = makeEnv({});
   const a = submit(sb, { kind: 'leave', date: '2026-10-15', leave_type: '特休假', hours: 8 });
@@ -270,7 +279,7 @@ ok('liff_punch 帶 QR：驗過才用店家座標打卡（距離 0）、記 qr_pu
 ok('審查 #2 跨夜班：D 晚上上班、D+1 凌晨下班＝D 不缺卡；D+1 只缺下班卡，不會多報上班卡', () => {
   const sb = makeEnv({ events: [ev('2026-10-06T18:00:00+08:00', 'in'), ev('2026-10-07T01:00:00+08:00', 'out'), ev('2026-10-07T18:00:00+08:00', 'in')] });
   const d6 = sb.handleReqInfo_({ id_token: 'TOK_U1', date: '2026-10-06' }).day;
-  assert.strictEqual(d6.missing.options.join(), 'break', JSON.stringify(d6.missing));   // 卡都齊了，只剩「中間休息」可補（2026-11-02）
+  assert.strictEqual(d6.missing.options.join(), 'break,both', JSON.stringify(d6.missing));   // 卡都齊了：可補中間休息（2026-11-02）或另一段班整段（2026-11-10）
   assert(d6.punches.some((p) => p.hm === '01:00(+1)'), JSON.stringify(d6.punches));
   const d7 = sb.handleReqInfo_({ id_token: 'TOK_U1', date: '2026-10-07' }).day;
   assert.strictEqual(d7.missing.options.join(), 'out,break', JSON.stringify(d7.missing));
@@ -293,7 +302,7 @@ ok('審查 #3 今天：跨夜的下班時間（＝明天）或還沒到的時間
 ok('中間休息沒打卡（2026-11-02）：整段班可補「下班＋回來上班」一組；要在那段班之內、回來晚於下班；摘要寫清楚', () => {
   const sb = makeEnv({ events: [ev('2026-10-08T08:49:00+08:00', 'in'), ev('2026-10-08T21:55:00+08:00', 'out')] });
   const d = sb.handleReqInfo_({ id_token: 'TOK_U1', date: '2026-10-08' }).day;
-  assert.strictEqual(d.missing.options.join(), 'break');
+  assert.strictEqual(d.missing.options.join(), 'break,both');
   assert.deepStrictEqual(JSON.parse(JSON.stringify(d.missing.spans)), [{ in: '08:49', out: '21:55', out_next: false }]);
   const B = (end, start, o) => submit(sb, Object.assign({ kind: 'miss', date: '2026-10-08', miss_type: 'break', end, start, reason: '忘記按' }, o || {}));
   assert.strictEqual(B('', '18:00').error, 'bad_time');

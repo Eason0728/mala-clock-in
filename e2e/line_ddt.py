@@ -1291,7 +1291,7 @@ def phase_miss(ctx, gen):
     # 整段 → 只剩中間休息
     di = choose(md['full'])
     sp = di['spans'][0]
-    ok('忘打卡（整段）：卡都齊了 → 只剩「中間休息沒打卡（系統查到的）」', di['options'] == ['break'] and page.locator('#reqView .rq-fixed').all_inner_texts() == ['中間休息沒打卡（系統查到的）'])
+    ok('忘打卡（整段）：卡都齊了 → 可補中間休息或另一段班整段（預設中間休息）', di['options'] == ['break', 'both'] and page.locator('#reqView .rq-fixed').count() == 0, di['options'])
     reason('忘記按')
     set_times(start=D.min_hm(D.hm_min(sp['in']) - 60), end=D.min_hm(D.hm_min(sp['in']) - 30))
     submit(page)
@@ -1310,7 +1310,7 @@ def phase_miss(ctx, gen):
     back_to_miss()
     # 跨夜：6 天前晚上上班、5 天前凌晨下班 → 歸 6 天前；凌晨那張標 (+1)
     di = choose(md['night'])
-    ok('忘打卡（跨夜）：凌晨下班卡歸前一天、顯示 (+1)、只剩中間休息', any('(+1)' in x['hm'] for x in di['punches']) and di['options'] == ['break'] and '(+1)' in page.inner_text('#reqView .rq-rec'))
+    ok('忘打卡（跨夜）：凌晨下班卡歸前一天、顯示 (+1)、中間休息或另一段班整段', any('(+1)' in x['hm'] for x in di['punches']) and di['options'] == ['break', 'both'] and '(+1)' in page.inner_text('#reqView .rq-rec'))
     # 今天：開著的上班卡 → 不能補還沒到的時間
     di = choose(today)
     pick_type('out')

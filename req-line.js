@@ -480,7 +480,7 @@
     p.appendChild(h('div', { class: 'rq-rec', text: '當天紀錄：' + rec }));
     var opts = day.missing.options;
     if (!opts.length) { p.appendChild(msgBox('這天的上班卡和下班卡都有打成功，不用補登。時間記錯請直接跟打卡門市的店長說。', 'err')); return; }
-    var LBL = { in: '上班卡', out: '下班卡', both: '上班和下班都沒打', break: '中間休息沒打卡' };
+    var LBL = { in: '上班卡', out: '下班卡', both: day.punches.length ? '另一段班整段沒打' : '上班和下班都沒打', break: '中間休息沒打卡' };
     if (opts.indexOf(st.missType) < 0) st.missType = opts[0];
     if (opts.length > 1) p.appendChild(field('缺哪張卡', chips(opts.map(function (o) { return LBL[o]; }), LBL[st.missType], function (v) {
       st.missType = Object.keys(LBL).filter(function (k) { return LBL[k] === v; })[0]; render(); })));
@@ -491,6 +491,7 @@
       p.appendChild(field('休息開始（下班）', timePick(mv.end, 1, function (v) { mv.end = v; })));
       p.appendChild(field('回來上班', timePick(mv.start, 1, function (v) { mv.start = v; })));
     } else {
+      if (st.missType === 'both' && day.punches.length) p.appendChild(h('div', { class: 'rq-muted', text: '例如白天 10:00–14:00 有打，晚上 17:00–21:00 整段都忘了打。' }));
       if (st.missType !== 'out') { var a = timePick(mv.start, 1, function (v) { mv.start = v; }); p.appendChild(field('實際上班時間', a)); }
       if (st.missType !== 'in') { var b = timePick(mv.end, 1, function (v) { mv.end = v; }); p.appendChild(field('實際下班時間', b)); }
     }
