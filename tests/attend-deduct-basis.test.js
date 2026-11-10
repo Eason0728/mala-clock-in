@@ -57,6 +57,9 @@ const bonus = (att) => { const r = call('payCalcOne', emp, '2026-09', Object.ass
 chk('引擎：缺勤 0 → 全勤 3000', bonus({ deduct_days: 0, forget_punch: 1 }), 3000);
 chk('引擎：病假 2 天 → 2800', bonus({ deduct_days: 2 }), 2800);
 chk('引擎：忘刷 3 次 → 歸零', bonus({ deduct_days: 0, forget_punch: 3 }), 0);
+chk('11 月起以天計：同一天漏 3 張只算 1 天，不歸零', call('payAttendVoid', { forget_punch: 3, forget_day: 1 }, cfgBase, '2026-11'), '');
+chk('11 月起以天計：忘刷 3 天 → 歸零', call('payAttendVoid', { forget_punch: 3, forget_day: 3 }, cfgBase, '2026-11'), '忘刷3天');
+chk('10 月以前照設定（以張計）', call('payAttendVoid', { forget_punch: 3, forget_day: 1 }, cfgBase, '2026-10'), '忘刷3次');
 
 // 手動列（按過「儲存工時」）的舊快照 deduct_days 不可蓋掉新口徑（陳建樺 2026-09：手動列 1、應為 0）
 vm.runInContext("paySavedInputs=function(){return {E01:{hours:169,deduct_days:1,meal_on:true,work_days:16}, E99:{hours:100,deduct_days:2}};}; payHolidayRow=function(){return null;};", sb);
