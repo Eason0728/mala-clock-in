@@ -34,7 +34,8 @@ const STORES = [{ code: 'SSLGF', name: '光復', active: 'true', support_group: 
   chk('payCollect 依日期留下每次時數', [c.menstrual_h, Array.from(c.menstrual_times)], [16, [4, 4, 4, 4]]);
   const e = H.ftEmp();
   const amt = (times, h, before) => S.call('payCalcOne', e, '2026-11', H.baseAtt({ menstrual_h: h, leaves: { menstrual: h }, menstrual_times: times, leave_usage: { menstrual: { used_before_days: before } } }), H.cfg, 4, T);
-  const rate = amt(null, 8, 3).leave_rate, half = Math.round(rate * 0.5);
+  // 2026-11 起（薪酬挑錯第 10 項，Eason 2026-11-11 確認）：半價單價不先取整（163×0.5＝81.5，原 82），時數×單價最後才四捨五入
+  const rate = amt(null, 8, 3).leave_rate, half = rate * 0.5;
   const d = (r) => H.item(r, 'menstrual_leave');
   chk('同月 4 個半天：第 4 次轉病假半薪', d(amt([4, 4, 4, 4], 16, 0)), 4 * half);
   chk('之前 2 次、本月 4H＋8H：第 4 次 8H', d(amt([4, 8], 12, 2)), 8 * half);

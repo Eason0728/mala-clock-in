@@ -1224,6 +1224,32 @@ function payIsOtKey(k) { return String(k) === 'overtime' || /^ot_/.test(String(k
  * 2026-08 已發薪，Eason 決定不補回、維持舊算法 → 生效月份為 2026-09。
  * ⚠ 放在 payR0～Handlers 之間：payroll_mock.js 與測試只切這一段。 */
 const PAY_OT_NET_FROM = '2026-09';
+/* 兩個「太早取整」的位置改成最後才四捨五入（薪酬挑錯第 4、10 項，Eason 2026-11-11 確認）。
+ *   都只從 2026-11 薪資起；2026-10 以前的月份逐欄不變（tests/round-late-annual-leave.test.js 守）。
+ *   第 4 項 PAY_ANNUAL_RAW_FROM：特休未休折算金額＝時數 × 沒有取整的時薪；rate 欄照舊顯示取到小數 2 位的值。
+ *   第 10 項 PAY_LEAVE_RAW_FROM：請假扣款金額＝時數 × 整數扣款時薪 ×（1 − 給薪比例），逾上限那段用 over_ratio，
+ *            兩段加總後才四捨五入；rate 欄顯示沒有取整的單價（163 × 0.5 ＝ 81.5）。
+ *            扣款時薪本身（整數、含全勤上限）不動——天災假、事假照現行。 */
+var PAY_ANNUAL_RAW_FROM = '2026-11';
+var PAY_LEAVE_RAW_FROM = '2026-11';
+/** 最後一步的四捨五入。先乘後取整時，0.2 這類比例在浮點數裡會差一點點（2.5 × 163 × 0.2 算出 81.49999…），
+ *  加一個遠小於 1 分錢的量再取整，剛好 .5 的才會照規則進位。 */
+function payRoundLast_(v) { return Math.round(payNum(v) + 1e-9); }
+/** 特休未休折算金額（第 4 項）。rawRate＝沒有取整的時薪；舊月份照舊用取到 2 位的時薪乘。 */
+function payAnnualPayoutAmt_(ym, hours, rawRate) {
+  if (String(ym) < PAY_ANNUAL_RAW_FROM) return payR0(hours * payR2(rawRate));
+  return payRoundLast_(hours * rawRate);
+}
+/** 請假扣款一列的金額與單價（第 10 項）。rate＝整數扣款時薪；ratio／overRatio＝上限內／逾上限的給薪比例。
+ *  回 { amt, unit }：unit 是上限內那段的單價（給 rate 欄用）。 */
+function payLeaveDeduct_(ym, withinH, overH, rate, ratio, overRatio) {
+  if (String(ym) < PAY_LEAVE_RAW_FROM) {
+    const r1 = payR0(rate * (1 - ratio)), r2 = payR0(rate * (1 - overRatio));
+    return { amt: withinH * r1 + overH * r2, unit: r1 };
+  }
+  return { amt: payRoundLast_(withinH * rate * (1 - ratio) + overH * rate * (1 - overRatio)),
+           unit: payR2(rate * (1 - ratio)) };
+}
 
 function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   cfg = payRules3Cfg_(cfg, e.store, ym);
@@ -1398,9 +1424,10 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     // 折算時薪不先取整（2026-10-05 Eason：39,000÷30÷8＝162.5，不是 163）；只有最後金額四捨五入
     // 2026-11 起（出勤認定清單 E3）：正職改「月工資 ÷30 ÷每日工時」；計時＝有效時薪
     const ah = payR2(annualH);
-    const aRate = !payOtDailyOn(ym) ? payR2(rateRaw)
-      : (ft ? payR2(MW / PAY_OT_DAY_DIV / payCfgPos_(cfg, 'daily_hours')) : payR2(ptWage));
-    push(earn, 'annual_payout', '特休未休折算', ah, aRate, ah * aRate);
+    // 2026-11 起（薪酬挑錯第 4 項）：金額用沒有取整的時薪乘、最後才四捨五入；rate 欄照舊顯示 2 位
+    const aRaw = !payOtDailyOn(ym) ? rateRaw
+      : (ft ? MW / PAY_OT_DAY_DIV / payCfgPos_(cfg, 'daily_hours') : ptWage);
+    push(earn, 'annual_payout', '特休未休折算', ah, payR2(aRaw), payAnnualPayoutAmt_(ym, ah, aRaw));
   }
 
   /* 遲到分鐘不計薪（Eason 2026-08-23 定案）
@@ -1459,9 +1486,9 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
       }
     }
     const withinH = payR2(h - overH);
-    const r1 = payR0(rate * (1 - ratio));
-    const r2 = payR0(rate * (1 - t.over_ratio));
-    const amt = withinH * r1 + overH * r2;
+    // 2026-11 起（薪酬挑錯第 10 項）：時數 × 整數時薪 ×（1 − 給薪比例）最後才四捨五入；之前月份照舊先把單價取整
+    const LD = payLeaveDeduct_(ym, withinH, overH, rate, ratio, t.over_ratio);
+    const r1 = LD.unit, amt = LD.amt;
     // 全薪假（特休、婚喪、公傷、公假…）本來就不該有扣款列。
     // ⚠ 但「該扣卻扣到 0」的必須照印——計時同仁 base=0 → rate=0 → 事假金額 0，
     //    舊版會印出「事假 8H $0」這一列，濾掉會讓計時的薪資單少一列（金額不變但看得出差別）。
