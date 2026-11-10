@@ -905,11 +905,11 @@ function handleSyncRoster(body) {
       rosterSheet.getRange(existing.__rowIndex, ROSTER_HEADERS.indexOf('name') + 1).setValue(nm);
       // 沒帶 active（undefined）就保留原本的在職狀態，不可把沒帶欄位當成 false 停用人（2026-11-04 夜間 QA）
       if (emp.active !== undefined) {
-        rosterSheet.getRange(existing.__rowIndex, ROSTER_HEADERS.indexOf('active') + 1).setValue(!!emp.active);
+        rosterSheet.getRange(existing.__rowIndex, ROSTER_HEADERS.indexOf('active') + 1).setValue(emp.active === true || String(emp.active).toLowerCase() === 'true');   // 夜間 QA 低-2：字串 "false" 不是在職
       }
     } else {
       if (activeNames[nm.trim()]) { skipped.push({ emp_id: String(emp.emp_id), reason: 'duplicate_name' }); return; }
-      const act = emp.active === undefined ? true : !!emp.active;   // 新增列沒帶 active 一律在職
+      const act = emp.active === undefined ? true : (emp.active === true || String(emp.active).toLowerCase() === 'true');   // 新增列沒帶 active 一律在職
       rosterSheet.appendRow([sheetSafeText_(String(emp.emp_id)), nm, genKey(), '', '', act]);
       if (act) activeNames[nm.trim()] = true;
     }
@@ -1368,6 +1368,10 @@ function handleMgrRoster(body) {
  * （Eason 2026-08-22 定調：不做事前核准，改用事後看得見）。
  */
 function handleMgrSetActive(body) {
+  // 夜間 QA 低-5：整支包 script lock（讀名冊→檢查→寫入不可交錯；比照 svc_set_active）
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '另一個名冊動作進行中，請稍後再試' };
+  try {
   const ss = getSS();
   const mgrSheet = ss.getSheetByName('managers');
   if (!mgrSheet) return { ok: false, error: 'no_managers' };
@@ -1410,13 +1414,25 @@ function handleMgrSetActive(body) {
     }
   }
 
+  // 夜間 QA 低-5：恢復在職前，這列的 LINE 若已被另一個在職列使用 → 兩個在職列同一 LINE，liffRosterByLine_ 會 line_identity_conflict、本人打不了卡
+  const uid = String(row.line_user_id || '').trim();
+  if (active && uid) {
+    const lineDup = rows.filter(function (r) {
+      return String(r.emp_id) !== empId && String(r.line_user_id || '').trim() === uid
+          && String(r.active).toLowerCase() === 'true';
+    })[0];
+    if (lineDup) return { ok: false, error: 'line_identity_conflict', message: '這位同仁的 LINE 已綁在另一個在職帳號，請先解除其中一個綁定' };
+  }
+
   const now = nowTaipeiIso();
   setRosterCell(rosterSheet, row.__rowIndex, 'active', active);
   // removed_at 是純日期時間字串，鎖文字避免被 Sheets 轉成日期物件（同 created_at）
   setRosterCell(rosterSheet, row.__rowIndex, 'removed_at', active ? '' : now, true);
   setRosterCell(rosterSheet, row.__rowIndex, 'removed_by', active ? '' : actor);
+  if (typeof lineHubForget_ === 'function' && uid) lineHubForget_(uid);   // 夜間 QA 低-7：LINE 小幫手的「綁了哪幾家」快取要重查
   return { ok: true, emp_id: empId, name: name, active: active,
            removed_at: active ? '' : now, removed_by: active ? '' : actor };
+  } finally { lock.releaseLock(); }
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -3213,11 +3229,19 @@ function handleBackfillMissingGroups(body) {
  * 重算當月；每月 1–3 日連上月一起重算（收尾跨夜班與補核准的裝置事件），之後上月凍結不再改動。
  */
 function dailyMonthlyRebuild() {
-  recheckPendingApprovalStatuses();
-  const ym = currentYmTaipei();
-  rebuildMonth(ym);
-  const day = parseInt(todayTaipeiStr().slice(8, 10), 10);
-  if (day <= 3) rebuildMonth(prevYm(ym));
+  // 夜間 QA 低-1：與 handleRebuildMonth 取同一把 script lock（rebuildMonth 是 clear 後整張重寫，不能兩邊同時跑）
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(30000); } catch (e) {
+    Logger.log('dailyMonthlyRebuild: 30 秒內拿不到鎖（另一個重算進行中），跳過本次');
+    return;
+  }
+  try {
+    recheckPendingApprovalStatuses();
+    const ym = currentYmTaipei();
+    rebuildMonth(ym);
+    const day = parseInt(todayTaipeiStr().slice(8, 10), 10);
+    if (day <= 3) rebuildMonth(prevYm(ym));
+  } finally { lock.releaseLock(); }
 }
 
 /**
@@ -3355,8 +3379,13 @@ function setupMonthRefreshTrigger() {
 function handleRebuildMonth(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const ym = body.ym || currentYmTaipei();
-  const rows = rebuildMonth(ym);
-  return { ok: true, ym: ym, rows: rows };
+  // 夜間 QA 低-1：與 dailyMonthlyRebuild 同一把鎖
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(30000); } catch (e) { return { ok: false, error: 'busy' }; }
+  try {
+    const rows = rebuildMonth(ym);
+    return { ok: true, ym: ym, rows: rows };
+  } finally { lock.releaseLock(); }
 }
 
 /** 手動觸發 recheckPendingApprovalStatuses（平常由 05:00 觸發器跑），供部署後驗證用。 */

@@ -128,6 +128,18 @@ function mirrorPlan_(sources, ss) {
     });
     // 名冊（含已離職的列）連一個符合前綴的人都沒有＝設定打錯，照跑會把目標上次鏡像的列整批刪掉、加 0 筆——停下來（2026-11-04）
     if (!Object.keys(names).length) throw new Error(src.code + ' 名冊沒有任何工號以「' + src.emp_prefix + '」開頭的人，請檢查 MirrorConfig 的 emp_prefix（為免清掉上次的鏡像，這次不執行）');
+    // 夜間 QA 中-3：來源名冊若另有「工號不是這個前綴」的同名列（別人同名），這個姓名不能靠姓名抄（leave 只有姓名、approved 空工號列會退回姓名）
+    // → 從 names 剔除並警告；寧可少抄不要多抄。只影響同名的人。
+    var clash = {};
+    roster.rows.forEach(function (r) {
+      var id = String(r.cells[iRid] == null ? '' : r.cells[iRid]).trim();
+      var nm = String(r.cells[iRname] == null ? '' : r.cells[iRname]).trim();
+      if (nm && names[nm] === true && id.indexOf(src.emp_prefix) !== 0) clash[nm] = true;
+    });
+    Object.keys(clash).forEach(function (nm) {
+      delete names[nm];
+      plan.warnings.push(src.code + ' 名冊有同名「' + nm + '」但工號不是「' + src.emp_prefix + '」開頭，靠姓名比對的列（leave、工號空白的核定）不抄；有工號的列照抄');
+    });
     picked[src.code] = {};
     MIRROR_TABLES.forEach(function (t) {
       var sh = sss.getSheetByName(t.sheet);

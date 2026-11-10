@@ -46,17 +46,21 @@ function schedPubClean_(b) {
     if (!rs || !/^\d{2}:\d{2}$/.test(String(rs.start)) || !/^\d{2}:\d{2}$/.test(String(rs.end))) return null;
   }
   var shifts = rawShifts.map(function (s) {
-    var o = { id: String(s.id), name: String(s.name || s.id), start: String(s.start), end: String(s.end), break_min: Number(s.break_min) || 0 };
+    var o = { id: String(s.id), name: String(s.name || s.id).slice(0, SCHED_PUB_STATION_NAME_MAX), start: String(s.start), end: String(s.end), break_min: Number(s.break_min) || 0 };
     var g = schedPubCleanSegs_(s.segs);
     if (g) o.segs = g;
     return o;
   });
-  var rows = (Array.isArray(b.rows) ? b.rows : []).map(function (r) {
+  // 夜間 QA 低-3（保守處理，不整份退件）：缺 emp_id 的列略過；格子 t 不在 R/H/W/L 的丟掉；l 截 4 字。
+  var rows = (Array.isArray(b.rows) ? b.rows : []).filter(function (r) {
+    return r && r.emp_id !== undefined && r.emp_id !== null && String(r.emp_id).trim() !== '';
+  }).map(function (r) {
     return { emp_id: String(r.emp_id), name: String(r.name || ''), cells: (Array.isArray(r.cells) ? r.cells : []).map(function (c) {
-      var o = { t: String((c && c.t) || '') };
-      if (c && c.s) o.s = String(c.s);
-      if (c && c.l) o.l = String(c.l);
-      if (c && c.s && c.w) o.w = String(c.w).slice(0, SCHED_PUB_STATION_ID_MAX);   // 站別只跟著上班格（有班別）存
+      if (!c || !/^[RHWL]$/.test(String(c.t))) return { t: '' };   // 不認得的格子清成空格（cells 是依日期的位置陣列，不能真的刪掉，否則後面全部錯天）
+      var o = { t: String(c.t) };
+      if (c.s) o.s = String(c.s);
+      if (c.l) o.l = String(c.l).slice(0, 4);
+      if (c.s && c.w) o.w = String(c.w).slice(0, SCHED_PUB_STATION_ID_MAX);   // 站別只跟著上班格（有班別）存
       return o;
     }) };
   });

@@ -206,6 +206,14 @@ function handleSvcSetActive_(body) {
         return String(r.emp_id) !== empId && String(r.name).trim() === name && svcIsTrue_(r.active);
       })[0];
       if (dup) return svcFail_('duplicate_name', '本店已有在職同仁同名');
+      // 夜間 QA 低-5：LINE 已被另一個在職列使用 → 恢復後兩列同一 LINE（liffRosterByLine_ 會 line_identity_conflict）
+      var uid = String(row.line_user_id || '').trim();
+      if (uid) {
+        var lineDup = rows.filter(function (r) {
+          return String(r.emp_id) !== empId && String(r.line_user_id || '').trim() === uid && svcIsTrue_(r.active);
+        })[0];
+        if (lineDup) return svcFail_('line_identity_conflict', '這位同仁的 LINE 已綁在另一個在職帳號，請先解除其中一個綁定');
+      }
     }
     var now = nowTaipeiIso();
     setRosterCell(sh, row.__rowIndex, 'active', active);
