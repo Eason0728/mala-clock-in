@@ -289,13 +289,22 @@ def ot_hint(evs, out_ts, requests):
     if not mine:
         return None
     date = mine[0][2]
-    ms = sum((s[1][0] - s[0][0]).total_seconds() * 1000 for s in segs if s[0][2] == date)
+    # 核定加嚴生效的日子（2026-11-11 起）：每段上班進位、下班捨去到 15 分鐘再相減（和主管頁的參考時數同一套）；以前的日子照實際分秒
+    grid = date >= '2026-11-11'
+    def seg_ms(a, b):
+        if not grid:
+            return (b - a).total_seconds() * 1000
+        am, bm = int(a.timestamp() // 60), int(b.timestamp() // 60)
+        return max(0, (bm // 15) * 15 - (-(-am // 15)) * 15) * 60000
+    ms = sum(seg_ms(s[0][0], s[1][0]) for s in segs if s[0][2] == date)
     hours = js_round(ms / 36000) / 100
     if hours <= OT_HINT_H:
         return None
     if any(r['kind'] == 'ot' and r['date'] == date and r['status'] in ('pending', 'approved') for r in requests):
         return None
     end = out_ts[11:16]
+    if grid:
+        end = min_hm((hm_min(end) // 15) * 15)
     start_min = hm_min(end) - (ms - OT_HINT_H * 3600000) / 60000
     start_min = (math.floor(start_min / 15) * 15) % 1440
     return {'date': date, 'hours': hours, 'start': min_hm(int(start_min)), 'end': end}

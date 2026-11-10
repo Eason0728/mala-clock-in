@@ -21,6 +21,7 @@ KIND = {"leave": "請假", "ot": "加班", "trip": "出差", "miss": "忘打卡"
 TRIP_PLACE_MAX = 40
 BATCH_MAX = 30
 OT_HINT_H = 8
+REQ_STRICT_FROM = "2026-11-11"   # 同 Requests.gs REQ_STRICT_FROM_DEFAULT_：這天起的加班提示改用 15 分鐘刻度（2026-11-11 B16）
 
 
 def register(ns):
@@ -631,13 +632,18 @@ def register(ns):
         if not mine:
             return None
         d = mine[0][2]
-        secs = sum(x[1][0] - x[0][0] for x in segs if x[0][2] == d)
+        grid = d >= REQ_STRICT_FROM   # 加嚴生效的日子：每段上班進位、下班捨去到 15 分鐘（同 Requests.gs reqGridMs_）
+        grid_secs = lambda a, b: max(0, (int(b // 60) // 15) * 15 - (-(-int(a // 60) // 15)) * 15) * 60
+        secs = sum((grid_secs(x[0][0], x[1][0]) if grid else x[1][0] - x[0][0]) for x in segs if x[0][2] == d)
         hours = round(secs / 3600, 2)
         if hours <= OT_HINT_H:
             return None
         if any(r["emp_id"] == emp_id and r["kind"] == "ot" and r["date"] == d and r["status"] in ("pending", "approved") for r in rows):
             return None
         end = out_ts[11:16]
+        if grid:
+            em = (mins(end) // 15) * 15
+            end = f"{em // 60:02d}:{em % 60:02d}"
         sm = mins(end) - (secs - OT_HINT_H * 3600) / 60
         sm = int((sm // 15) * 15) % 1440
         return {"date": d, "hours": hours, "start": f"{sm // 60:02d}:{sm % 60:02d}", "end": end}

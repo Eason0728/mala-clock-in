@@ -1166,8 +1166,16 @@ function reqQrLog_(ss, ts, empId, type, mgrName) {
    當天出勤超過 8 小時（全部門市一律 8 小時，先不看班表）、這天還沒有審核中／已核准的加班申請 → 打卡畫面多一顆「申請加班」，預填時段。
    「那天」＝這張下班卡配到的上班卡那天（跨夜班歸上班那天，同 reqDayInfo_ 的 16 小時配對）；那天所有完整的上班→下班段加總（含這一段）。
    預填：end＝這次下班時間；start＝end 往前推（總時數−8）＝剛好滿 8 小時的時刻，往前取整到 :00／:15／:30／:45。
-   events 要含這次這張下班卡。回 {date, hours, start, end} 或 null。 */
+   events 要含這次這張下班卡。回 {date, hours, start, end} 或 null。
+   2026-11-11（B16）：核定加嚴生效的日子（REQ_STRICT_FROM，預設 2026-11-11 起），時數改用和主管頁「參考時數」一樣的算法
+   （每段上班進位、下班捨去到 15 分鐘），end 也捨去到 15 分鐘。原本用實際分秒加總，早到晚走各 5 分鐘、甚至多 18 秒都會提示；
+   同仁照提示送了加班單，主管照參考時數核定 8 小時，就被加嚴規則「請先把加班單作廢」擋住。生效以前的日子、加嚴關掉時照舊。 */
 var REQ_OT_HINT_H = 8;
+/** 一段班在 15 分鐘刻度上的長度（毫秒）：上班捨秒後進位、下班捨秒後捨去——同 Code.gs approvedHoursOfShift */
+function reqGridMs_(inMs, outMs) {
+  var a = Math.ceil(Math.floor(inMs / 60000) / 15) * 15, b = Math.floor(Math.floor(outMs / 60000) / 15) * 15;
+  return Math.max(0, b - a) * 60000;
+}
 function reqOtHint_(events, empId, outTs, rows) {
   var outMs = new Date(String(outTs)).getTime();
   if (isNaN(outMs)) return null;
@@ -1184,7 +1192,8 @@ function reqOtHint_(events, empId, outTs, rows) {
   var mine = segs.filter(function (x) { return x.outp.t === outMs; })[0];
   if (!mine) return null;
   var date = mine.inp.date, ms = 0;
-  segs.forEach(function (x) { if (x.inp.date === date) ms += x.outp.t - x.inp.t; });
+  var strictFrom = reqStrictFrom_(), grid = !!(strictFrom && date >= strictFrom);
+  segs.forEach(function (x) { if (x.inp.date === date) ms += grid ? reqGridMs_(x.inp.t, x.outp.t) : x.outp.t - x.inp.t; });
   var hours = Math.round(ms / 36000) / 100;
   if (hours <= REQ_OT_HINT_H) return null;
   var has = (rows || []).some(function (r) {
@@ -1192,6 +1201,7 @@ function reqOtHint_(events, empId, outTs, rows) {
   });
   if (has) return null;
   var end = String(outTs).slice(11, 16);
+  if (grid) { var em = Math.floor(reqMin_(end) / 15) * 15; end = ('0' + Math.floor(em / 60)).slice(-2) + ':' + ('0' + (em % 60)).slice(-2); }
   var startMin = reqMin_(end) - (ms - REQ_OT_HINT_H * 3600000) / 60000;
   startMin = ((Math.floor(startMin / 15) * 15) % 1440 + 1440) % 1440;
   var start = ('0' + Math.floor(startMin / 60)).slice(-2) + ':' + ('0' + (startMin % 60)).slice(-2);
