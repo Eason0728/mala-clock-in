@@ -80,6 +80,10 @@ function ctx(DB, CLOCK, extra) {
     payAppend = function(){}; payInvalidate = function(){};
     checkAdmin = function(){ return true; };
     todayTaipeiStr = function(){ return globalThis.__TODAY || '2026-10-20'; };
+    /* 薪酬挑錯第 8 項（Eason 2026-11-11 確認）：2026-10 起鎖定前會先重算比對。這支測的是後面那道「補休帳是負的」，
+       假資料的月結列沒有金額、也沒有紅字天數，所以把重算比對換成「草稿沒過期」（同 seven-1110-payroll.test.js 的做法）；
+       重算比對本身在 payroll-lock-recheck-oct.test.js、rules-four.test.js 驗。 */
+    payLockStale_ = function(){ return { list: [] }; };
   `, sb);
   return sb;
 }

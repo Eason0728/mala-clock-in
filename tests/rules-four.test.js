@@ -92,8 +92,12 @@ const STORES = [{ code: 'SSLGF', name: '光復', active: 'true', support_group: 
   chk('草稿有、主檔已改離職的人不擋', [r.ok, r.status], [true, 'final']);
   S = mk([run0()], { ok: false, error: 'no_holiday' }); r = go(S);
   chk('重算失敗不鎖', [r.error, S.__DATA.run[0].status], ['recheck_failed', 'draft']);
+  /* 薪酬挑錯第 8 項（Eason 2026-11-11 確認）：比對起始月份由 2026-11 改成 2026-10；2026-09 以前仍不比。
+     原本這裡是「2026-10 以前不比：[true,'final']」，同一組輸入改放到 2026-09。 */
   S = mk([run0({ ym: '2026-10' })], { ok: true, results: [{ emp_id: 'E01', name: '測試甲', gross: 1, deduction: 0, net: 1, ot_info: {} }] }); r = go(S, { ym: '2026-10' });
-  chk('2026-10 以前不比', [r.ok, r.status], [true, 'final']);
+  chk('2026-10 也要比：金額變了不鎖、草稿不動', [r.ok, r.error, S.__DATA.run[0].status], [false, 'stale_run', 'draft']);
+  S = mk([run0({ ym: '2026-09' })], { ok: true, results: [{ emp_id: 'E01', name: '測試甲', gross: 1, deduction: 0, net: 1, ot_info: {} }] }); r = go(S, { ym: '2026-09' });
+  chk('2026-09 以前不比', [r.ok, r.status], [true, 'final']);
   S = mk([run0({ status: 'final' })], { ok: true, results: [{ emp_id: 'E01', name: '測試甲', gross: 1, deduction: 0, net: 1, ot_info: {} }] }); r = go(S, { lock: false, reason: '測試' });
   chk('解鎖不比', [r.ok, r.status], [true, 'draft']);
 

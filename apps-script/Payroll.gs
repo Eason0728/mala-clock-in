@@ -629,7 +629,7 @@ function paySupportHolDouble_(support, entry, holDates, storeBy, until) {
   });
   return out;
 }
-/** 鎖定前用最新資料試算一次，和草稿比（2026-11 起）。回 { list } 差異名單；算不出來回 { error }。
+/** 鎖定前用最新資料試算一次，和草稿比（2026-10 起，見 PAY_LOCK_RECHECK_FROM）。回 { list } 差異名單；算不出來回 { error }。
  *  草稿裡有、現在算不到的人不算差異（主檔已改離職的人，重算會讓整列消失）。 */
 function payLockStale_(body, ym, st) {
   const runs = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === st; });
@@ -1117,6 +1117,11 @@ var PAY_OT_MUL_FT = { a: 1.34, b: 1.67, c: 2.67 };   // 正職加班倍率（出
 var PAY_OT_MUL_PT = { a: 0.34, b: 0.67, c: 1.67 };   // 計時加成（出勤規範 4-5）
 var PAY_OT_FORCE_ = false;           // 只給 payroll_ot_preview 用：試算時把新算法套到任何月份（同一個請求內，算完就關）
 function payOtDailyOn(ym) { return PAY_OT_FORCE_ || String(ym || '') >= PAY_OT_DAILY_FROM; }
+/* 鎖定前「用最新資料重算、和草稿比」從這個月起做（薪酬挑錯第 8 項，Eason 2026-11-11 確認）：原本跟著逐日加班只做 2026-11 起，
+ * 10 月的草稿算完後主檔、打卡或規則改過也照鎖舊數字。只管 handlePayrollFinalize 那一道比對；
+ * 補休抵不掉、加班單、班表、未核定四道檢查仍看 payOtDailyOn（2026-11 起）。2026-09 以前不比對。 */
+var PAY_LOCK_RECHECK_FROM = '2026-10';
+function payLockRecheckOn(ym) { return String(ym || '') >= PAY_LOCK_RECHECK_FROM; }
 /** 月工資總額（不乘在職比例：費率是職位的費率） */
 function payOtMonthWage(e, cfg) {
   const meal = payCfgNum(cfg, 'ot_meal_fixed', PAY_OT_MEAL_FIXED);
@@ -3602,8 +3607,9 @@ function handlePayrollFinalize(body) {
   const ym = String(body.ym || ''), lock = !!body.lock;
   if (!lock && !body.reason) return { ok: false, error: 'reason_required', message: '解鎖必須填原因' };
   const stF = payStore(body.store);
-  /* 鎖定前用最新資料重算比對（Eason 2026-11-09）：試算後主檔、打卡或假單改過，就不鎖舊數字，前端會自動重算給人看過再鎖。2026-10 以前的月份不動。解鎖不擋。 */
-  if (lock && payOtDailyOn(ym)) {
+  /* 鎖定前用最新資料重算比對（Eason 2026-11-09）：試算後主檔、打卡或假單改過，就不鎖舊數字，前端會自動重算給人看過再鎖。解鎖不擋。
+     起始月份 PAY_LOCK_RECHECK_FROM（2026-10；薪酬挑錯第 8 項，Eason 2026-11-11 確認），2026-09 以前的月份不動。 */
+  if (lock && payLockRecheckOn(ym)) {
     const stale = payLockStale_(body, ym, stF);
     if (stale.error) return { ok: false, error: 'recheck_failed', message: '鎖定前重算比對失敗，這次沒有鎖定，請再按一次：' + stale.error };
     if (stale.list.length) return { ok: false, error: 'stale_run', list: stale.list,
