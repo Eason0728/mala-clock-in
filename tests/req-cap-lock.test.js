@@ -1,0 +1,22 @@
+// 生理假一年 3 次、家庭照顧假一年 7 天用完不能再申請（2026-11-10 Eason）＋出差半天另一段完整打卡不算忘刷
+const fs = require('fs'), vm = require('vm'), path = require('path'), assert = require('assert');
+const src = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Requests.gs'), 'utf8');
+const sb = { console, CONFIG: { PAYROLL_API: '' }, UrlFetchApp: { fetch: () => { throw new Error('不准連網'); } } };
+vm.createContext(sb); vm.runInContext(src, sb);
+let QUOTA = [];
+sb.lineHubReqQuota_ = () => ({ quota: QUOTA });
+const who = { userId: 'U1', me: { emp_id: 'E01', name: '測試一' } };
+const lv = (t, h, o) => Object.assign({ kind: 'leave', leave_type: t, date: '2026-11-20', hours: h }, o || {});
+let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
+ok('生理假：還有 1 次（剩 8 小時）可送', () => { QUOTA = [{ name: '生理假', remain_h: 8 }]; assert.strictEqual(sb.reqCapLocked_(lv('生理假', 4), [], who, {}), ''); });
+ok('生理假：3 次用完（剩 0）擋', () => { QUOTA = [{ name: '生理假', remain_h: 0 }]; assert.match(sb.reqCapLocked_(lv('生理假', 4), [], who, {}), /3 次已經用完/); });
+ok('生理假：剩 1 次但已有 1 張審核中 → 擋', () => { QUOTA = [{ name: '生理假', remain_h: 8 }];
+  assert.match(sb.reqCapLocked_(lv('生理假', 4), [lv('生理假', 4, { emp_id: 'E01', status: 'pending', date: '2026-11-05' })], who, {}), /用完/); });
+ok('家庭照顧假：剩 8 小時、請 8 小時可送；請 9 小時擋', () => { QUOTA = [{ name: '家庭照顧假', remain_h: 8 }];
+  assert.strictEqual(sb.reqCapLocked_(lv('家庭照顧假', 8), [], who, {}), '');
+  assert.match(sb.reqCapLocked_(lv('家庭照顧假', 9), [], who, {}), /只剩 8 小時/); });
+ok('家庭照顧假：審核中 4 小時一起扣', () => { QUOTA = [{ name: '家庭照顧假', remain_h: 8 }];
+  assert.match(sb.reqCapLocked_(lv('家庭照顧假', 6), [lv('家庭照顧假', 4, { emp_id: 'E01', status: 'pending' })], who, {}), /只剩 4 小時/); });
+ok('事假、病假不在這條規則', () => { QUOTA = [{ name: '事假', remain_h: 0 }]; assert.strictEqual(sb.reqCapLocked_(lv('事假', 8), [], who, {}), ''); });
+ok('查不到額度不擋', () => { QUOTA = []; assert.strictEqual(sb.reqCapLocked_(lv('生理假', 8), [], who, {}), ''); });
+console.log(n + ' 項全過');

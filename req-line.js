@@ -294,6 +294,21 @@
     var m = /^\d{4}-\d{2}$/.test(String(c.ym || '')) ? (+String(c.ym).slice(5, 7)) + ' 月' : '本月';
     return m + '加班 ' + r2(c.ot_h) + ' − 補休 ' + r2(c.used_h) + ' ＝ ' + (b < 0 ? '欠 ' + (-b) : '剩 ' + b) + ' 小時';
   }
+  /* 生理假一年 3 次、家庭照顧假一年 7 天，用完就不能再申請（2026-11-10 Eason）；額度還沒讀到就不擋，主管核准與核定時會再擋一次 */
+  function capLocked(type, hours) {
+    if (type !== '生理假' && type !== '家庭照顧假') return '';
+    var q = ((st.init && st.init.quota) || []).filter(function (x) { return x.name === type; })[0];
+    if (!q || q.remain_h == null) return '';
+    if (type === '生理假' && Number(q.remain_h) <= 0.001) return '生理假今年 3 次已經用完，不能再申請';
+    if (type === '家庭照顧假' && Number(hours) > Number(q.remain_h) + 0.001) return '家庭照顧假今年 7 天只剩 ' + r1(Math.max(0, q.remain_h)) + ' 小時，這次超過了，不能送出';
+    return '';
+  }
+  function spanHours(a, b) {
+    var m = function (t) { var x = /^(\d\d):(\d\d)$/.exec(String(t || '')); return x ? +x[1] * 60 + +x[2] : null; };
+    var s = m(a), e = m(b);
+    if (s == null || e == null) return 0;
+    return ((e - s + 1440) % 1440) / 60;
+  }
   function quotaText(name) {
     if (name === '補休') return '';   // 補休的餘額另外一行一直顯示（見 renderLeave）
     var q = (st.init.quota || []).filter(function (x) { return x.name === name; })[0];
@@ -357,7 +372,9 @@
         return Promise.reject(new Error('還沒送出：請先選證明照片或 PDF'));
       var body = { kind: 'leave', date: lv.date, leave_type: lv.type, reason: lv.reason };
       if (lv.mode === 'day') body.hours = lv.hours; else { body.start = lv.start; body.end = lv.end; }
-      if (lv.type === '補休' && compBlocked()) return Promise.reject(new Error('補休只有正職可以請'));   // 不看餘額：可以先休後補；主檔還沒建的人照樣可以送
+      if (lv.type === '補休' && compBlocked()) return Promise.reject(new Error('補休只有正職可以請'));
+      var lock = capLocked(lv.type, lv.mode === 'day' ? Number(lv.hours) : spanHours(lv.start, lv.end));
+      if (lock) return Promise.reject(new Error(lock));   // 不看餘額：可以先休後補；主檔還沒建的人照樣可以送
       return withAttach(lv.file).then(function (aid) { if (aid) body.attach_id = aid; return body; });
     }, function () { lv = { date: '', type: '', mode: 'day', hours: '8', start: '', end: '', reason: '', file: null }; }));
     p.appendChild(out);

@@ -63,12 +63,12 @@ ok('提醒不擋：有提醒的事假照樣核准（單筆、批次）', () => {
   assert.strictEqual(sb.handleMgrReqDecide_({ mgr_key: 'mk', id: 'r1', decision: 'approve' }).ok, true);
   assert.deepStrictEqual(J(sb.handleMgrReqDecideBatch_({ mgr_key: 'mk', ids: ['r2'], decision: 'approve' })).done, ['r2']);
 });
-ok('忘打卡：本月第幾次（依日期、同日看送出先後；退回不算；跨月重算）', () => {
+ok('忘打卡：本月第幾天（同一天多張算同一天、依日期；退回不算；跨月重算）', () => {
   const m = (date, made, o) => mk(Object.assign({ kind: 'miss', leave_type: '', miss_type: 'out', date, created_at: made }, o || {}));
   rows = [m('2026-10-02', '2026-10-02T23:00'), m('2026-10-09', '2026-10-09T23:00'), m('2026-10-05', '2026-10-05T23:00', { status: 'rejected' }),
           m('2026-10-09', '2026-10-09T22:00', { miss_type: 'in' }), m('2026-11-01', '2026-11-01T22:00'), m('2026-10-20', '2026-10-20T22:00', { status: 'approved' })];
   rows.forEach((r, i) => { r.id = 'r' + (i + 1); });
-  assert.deepStrictEqual(pub().map((x) => x.miss_n), [1, 3, 2, 2, 1, 4]);
+  assert.deepStrictEqual(pub().map((x) => x.miss_n), [1, 2, 2, 2, 1, 3]);
   assert.deepStrictEqual(pub()[0].warns, []);   // 忘打卡不放 warns（主管頁另外顯示第 N 次）
 });
 ok('主管待審清單帶 warns 與 miss_n', () => {

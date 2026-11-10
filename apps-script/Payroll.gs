@@ -807,6 +807,8 @@ function payTenurePlus(e, ym, cfg) {
 var PAY_COMP_CODE = 'comp';
 var PAY_COMP_NAME = '補休';
 var PAY_COMP_MONTHLY_FROM = '2026-10';
+/* 補休帳的加班時數和薪資同一套（Eason 2026-11-10）：加班日是休息日只算前 2 小時、例假與國定假日不算（2026-11 起；之前月份照舊全算） */
+var PAY_COMP_OTKIND_FROM = '2026-11';
 /** 這種假是不是補休（假別表沒有這列時，程式內建也認得「補休」二字） */
 function payIsCompType(t) { return !!t && (String(t.code) === PAY_COMP_CODE || String(t.name).trim() === PAY_COMP_NAME); }
 /** 這家店適不適用補休：墨竹亭不適用（出勤規範 4-6，Eason 2026-11-08） */
@@ -821,7 +823,7 @@ function payCompDefaultType() {
 }
 /** 某人某月的補休帳（純計算）：ots＝[{date,h}] 本月核准加班；leaves＝[{date,h}] leave 分頁補休；reqs＝[{date,h}] 審核中／已核准補休申請。
  *  回 {ot_h, used_h, balance_h}（balance 可為負）。 */
-function payCompMonthCalc(ots, leaves, reqs) {
+function payCompMonthCalc(ots, leaves, reqs, kinds) {
   const sumBy = function (xs) {
     const m = {};
     (xs || []).forEach(function (x) { const h = payNum(x.h); if (h > 0) m[String(x.date)] = payR2((m[String(x.date)] || 0) + h); });
@@ -831,7 +833,16 @@ function payCompMonthCalc(ots, leaves, reqs) {
   let used = 0;
   Object.keys(L).concat(Object.keys(R)).filter(function (d, i, a) { return a.indexOf(d) === i; })
     .forEach(function (d) { used = payR2(used + Math.max(L[d] || 0, R[d] || 0)); });
-  const ot = payR2((ots || []).reduce(function (a, x) { return a + Math.max(0, payNum(x.h)); }, 0));
+  let ot = payR2((ots || []).reduce(function (a, x) { return a + Math.max(0, payNum(x.h)); }, 0));
+  if (kinds) {   // kinds＝{日期: 'H'|'R'|'HOL'|'W'|''}：同一天先合計再依日別算（H 前 2 小時、R／HOL 不算、其他全算）；沒有這天的日別＝查不到班表＝全算
+    const byDay = {};
+    (ots || []).forEach(function (x) { const h = Math.max(0, payNum(x.h)); if (h > 0) byDay[String(x.date)] = payR2((byDay[String(x.date)] || 0) + h); });
+    ot = 0;
+    Object.keys(byDay).forEach(function (d) {
+      const k = kinds[d], h = byDay[d];
+      ot = payR2(ot + (k === 'H' ? Math.min(h, 2) : (k === 'R' || k === 'HOL') ? 0 : h));
+    });
+  }
   return { ot_h: ot, used_h: used, balance_h: payR2(ot - used) };
 }
 
@@ -936,12 +947,16 @@ function payOtFormCheck_(att) {
         form = fx['id:' + x.acct] || fx[String(att.ot_name || '').trim()] || { ot: {} };
       }
       const have = payNum(form.ot[d]);
+      const kd = payOtKindOf((((att.daily || {}).sched) || {})[d] || null, !!((att.daily || {}).hol || {})[d]);
+      if (x.home && (kd === 'H' || kd === 'R')) x = Object.assign({}, x, { need: payR2(Math.max(payNum(x.need), payNum(own[d]))) });   // 本店休息日、例假：本店時數整天都要單
       if (have + PAY_OT_FORM_TOL_H < x.need) out.missing.push(x.home ? { date: d, need: x.need, have: have } : { date: d, need: x.need, have: have, store: x.code, store_name: x.name });
     });
   });
   Object.keys(own).sort().forEach(function (d) {
     if (d < PAY_OT_FORM_FROM || cross[d]) return;
-    const need = payR2(payNum(own[d]) - 8), have = payNum(f.ot[d]);
+    /* 休息日、例假當天出勤的時數全部要有加班單（比照考勤，Eason 2026-11-10）；上班日／國定假日照舊超過 8 小時的部分 */
+    const kind = payOtKindOf((((att.daily || {}).sched) || {})[d] || null, !!((att.daily || {}).hol || {})[d]);
+    const need = (kind === 'H' || kind === 'R') ? payR2(payNum(own[d])) : payR2(payNum(own[d]) - 8), have = payNum(f.ot[d]);
     if (need > 0 && have + PAY_OT_FORM_TOL_H < need) out.missing.push({ date: d, need: need, have: have });
   });
   const dl = att.daily || {};
@@ -1384,6 +1399,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     const marPrior = payNum(((att.leave_usage || {}).marriage || {}).no_event_prior_days), marNow = payNum((payAttLeaves(att) || {}).marriage);
     if (marPrior > 0 && marNow > 0) out.ot_info.marriage_cross = { prior_days: marPrior, month_days: payR2(marNow / (payNum(cfg.daily_hours) || 8)) };
     out.ot_info.personal_over_days = payPersonalOverDays_(att, cfg, ltypes);
+    if (att.support_leave && att.support_leave.length) out.ot_info.support_leave = att.support_leave;   // 支援店記的假：只提醒，薪資沒扣
   }
   return out;
 }
@@ -2958,6 +2974,26 @@ function payDailyFor_(e, ym, col, xEntry, sched, holDates, until, supportH) {
   return { dates: payEmpDates_(e, ym), sched: sched || {}, day_h: dayH, day_leave: (col && col.day_leave) || {},
            hol: hol, until: until || '', manual_sup_h: payR2(Math.max(0, payNum(supportH) - autoH)) };
 }
+/** 支援店記的假（只提醒，薪資沒扣，Eason 2026-11-10）：同品牌支援店（paySupportAutoCore_ 的 entry.stores）的 leave 分頁，
+ *  這位同仁在「支援當天」（那家店有核定支援時數的日子）記的假。純函式。leaveBy＝{店代碼: leave 分頁列 | null（讀不到就略過）}。
+ *  回 [{date, store, store_name, type, hours}]，依日期。 */
+function paySupportLeaveList_(entry, name, leaveBy, ym) {
+  const out = [], nm = String(name || '').trim();
+  if (!nm) return out;
+  ((entry && entry.stores) || []).forEach(function (s) {
+    const rows = (leaveBy || {})[s.code];
+    if (!rows) return;
+    const days = {};
+    (s.days || []).forEach(function (x) { if (payNum(x.hours) > 0) days[String(x.date)] = true; });
+    rows.forEach(function (l) {
+      if (String(l['姓名'] || '').trim() !== nm) return;
+      const d = normCellDate(l['日期']);
+      if (String(d).slice(0, 7) !== ym || !days[d]) return;
+      out.push({ date: d, store: s.code, store_name: s.name || s.code, type: String(l['假別'] || '').trim(), hours: payNum(l['時數']) });
+    });
+  });
+  return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+}
 /** 這家店本月已核准的加班單、出差單（以姓名分人）。沒連打卡或讀不到回 null＝不檢查。 */
 function payOtFormsMonth_(st, ym) {
   if (!payHasClock(st)) return null;
@@ -3051,6 +3087,36 @@ function paySchedMissingAll_(ym, st) {
   return out;
 }
 
+/** 鎖定前檢查：本店在職同仁本月到昨天為止，有成功的打卡（status=ok）、approved 分頁卻沒有核定紀錄的日子（Eason 2026-11-10：沒核定就不能鎖）。
+ *  日別＝上班卡那天（跨夜班的下班卡歸上班那天，沿用 pairShifts）；只有下班卡沒上班卡的（忘打上班）歸下班那天。回 [{emp_id, name, date}]，依日期、工號。 */
+function payUnapprovedAll_(ym, st) {
+  st = payStore(st);
+  if (!payHasClock(st)) return [];
+  const until = payYesterday_();
+  const prefix = String((payStoreRow(st) || {}).emp_prefix || '').trim();
+  const byClock = {};
+  payRead('master').forEach(function (m) {
+    if (String(m.active).toLowerCase() !== 'true' || payStore(m.store) !== st) return;
+    const id = String(m.emp_id).trim();
+    byClock[id] = m;
+    if (prefix && id.indexOf(prefix) === 0 && id.length > prefix.length) byClock[id.slice(prefix.length)] = m;
+  });
+  const events = payClockRead(st, 'events').map(function (e) { return Object.assign({}, e, { ts: normCellTs(e.ts) }); });
+  const approvedMap = buildLatestApprovedMap(payClockRead(st, 'approved'));
+  const seen = {}, out = [];
+  function mark(e) {
+    const clockId = String(e.emp_id).trim(), m = byClock[clockId], d = tsDateStr(e.ts);
+    if (!m || d.slice(0, 7) !== ym || d > until || seen[clockId + '|' + d]) return;
+    if (payEmpDates_(m, ym).indexOf(d) < 0) return;
+    seen[clockId + '|' + d] = true;
+    if (approvedMap[d] && approvedMap[d][String(e.emp_id)]) return;
+    out.push({ emp_id: String(m.emp_id), name: String(m.name || ''), date: d });
+  }
+  events.forEach(function (e) { if (String(e.status) === 'ok' && e.type === 'in') mark(e); });
+  pairShifts(events).unmatchedOuts.forEach(mark);
+  return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.emp_id < b.emp_id ? -1 : a.emp_id > b.emp_id ? 1 : 0); });
+}
+
 function handlePayrollCalc(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const ym = String(body.ym || '');
@@ -3106,6 +3172,13 @@ function handlePayrollCalc(body) {
   if (XSUP && OT_FORMS) Object.keys(XSUP.byEmp).forEach(function (id) {
     (XSUP.byEmp[id].stores || []).forEach(function (s) {
       if (!(s.code in OT_FORMS_X) && (s.days || []).some(function (x) { return x.date >= PAY_OT_FORM_FROM; })) OT_FORMS_X[s.code] = payOtFormsMonth_(s.code, ym);
+    });
+  });
+  const SUP_LEAVE_ROWS = {};   // 支援店的 leave 分頁（只讀，支援店記的假只提醒不扣錢）；迴圈外讀一次，讀不到的店略過
+  if (XSUP && DAILY) Object.keys(XSUP.byEmp).forEach(function (id) {
+    (XSUP.byEmp[id].stores || []).forEach(function (s) {
+      if (s.code in SUP_LEAVE_ROWS) return;
+      try { SUP_LEAVE_ROWS[s.code] = payClockRead(s.code, 'leave') || []; } catch (err) { SUP_LEAVE_ROWS[s.code] = null; }
     });
   });
   const XCTX = XSUP ? { home: st, storeBy: payXsupStoreBy_(payRead('store')), dropCross: !XSUP.empty } : null;
@@ -3169,6 +3242,10 @@ function handlePayrollCalc(body) {
       const supH = (att.support || []).reduce(function (t, x) { return t + payNum(x && x.hours); }, 0);
       att.daily = payDailyFor_(e, ym, c, XSUP ? XSUP.byEmp[id.trim()] : null, SCHED[id], payHolKeep_(HOLD, HOLMV[id]), UNTIL, supH);
       if (XSUP) att.sup_hol = paySupportHolDouble_(att.support, XSUP.byEmp[id.trim()], HOLD, XCTX.storeBy);
+      if (XSUP && XSUP.byEmp[id.trim()]) {
+        const sl = paySupportLeaveList_(XSUP.byEmp[id.trim()], e.name, SUP_LEAVE_ROWS, ym);
+        if (sl.length) att.support_leave = sl;
+      }
       if (OT_FORMS) {
         att.ot_own_h = (c && c.day_h) || {}; att.ot_forms = OT_FORMS[String(e.name || '').trim()] || { ot: {}, trip: {} };
         if (XSUP && XSUP.byEmp[id.trim()]) { att.ot_cross = payOtCrossNeed_(c, XSUP.byEmp[id.trim()]); att.ot_forms_x = OT_FORMS_X; att.ot_name = e.name; }
@@ -3431,6 +3508,14 @@ function handlePayrollFinalize(body) {
       message: '下面的同仁有日子在排班管理發布的班表上查不到，不能鎖定（加班要看班表判斷休息日、例假）。請先到排班管理把那幾天排好並發布：\n' +
         miss.map(function (x) { return x.name + '：' + x.days + ' 天查不到（' + x.first.slice(5) + (x.days > 1 ? '～' + x.last.slice(5) : '') + '）'; }).join('\n') };
   }
+  /* 有打卡但還沒核定不能鎖定（Eason 2026-11-10）：到昨天為止，本月在職同仁有成功的打卡、approved 分頁卻沒有核定紀錄。解鎖不擋。 */
+  if (lock && payOtDailyOn(ym)) {
+    let un;
+    try { un = payUnapprovedAll_(ym, stF); } catch (err) { return { ok: false, error: 'unapproved_check_failed', message: '檢查「有打卡沒核定」失敗，這次沒有鎖定，請再按一次：' + err }; }
+    if (un.length) return { ok: false, error: 'unapproved', list: un,
+      message: '還有 ' + un.length + ' 天有打卡但沒核定，請主管先核定完再鎖定：' +
+        un.slice(0, 30).map(function (x) { return (+x.date.slice(5, 7)) + '/' + (+x.date.slice(8, 10)) + ' ' + x.name; }).join('、') + (un.length > 30 ? ' 等' : '') };
+  }
   let n = 0;
   /* 稽核與損益快照也是「讀整張再寫回」的共用分頁，和鎖定狀態放在同一把鎖裡，兩店同時定案才不會互相蓋掉（2026-11-10）。 */
   if (!payWriteLocked_(['run', 'audit', 'cost_snapshot'], function () {
@@ -3559,6 +3644,25 @@ function payCompMonthBook(ym) {
     if (!(k in cache)) { try { cache[k] = payClockRead(st, sheet); } catch (e) { cache[k] = []; } }   // 某店暫時開不起來不該讓整頁掛掉
     return cache[k];
   }
+  let sIdx = null; const holBy = {};
+  /** 這位同仁本月核准加班單日期的班表日別（只在 PAY_COMP_OTKIND_FROM 之後的月份、有加班單時才查）；整個查不到回 null＝照舊全算 */
+  function otKinds(e, store, ots) {
+    if (String(ym) < PAY_COMP_OTKIND_FROM || !ots.length) return null;
+    try {
+      const st = payStore(store);
+      if (!sIdx) sIdx = paySchedIndex_();
+      if (!(st in holBy)) { const hr = payHolidayRow(ym, st); holBy[st] = hr ? payHolidayDates(hr) : []; }
+      const cells = paySchedMonth_(ym, st, [e], sIdx)[String(e.emp_id)] || {};
+      const mv = (payHolMoved_(ym, st, [e], holBy[st], sIdx) || {})[String(e.emp_id)] || {};
+      const hol = payHolKeep_(holBy[st], mv).map(function (d) { return String(d).trim(); });
+      const out = {};
+      ots.forEach(function (x) {
+        const d = String(x.date);
+        out[d] = payOtKindOf(cells[d] || null, hol.indexOf(d) >= 0);   // 班表查不到時仍看節日清單（與薪資 payOtDailySum 一致，Fable 審查）
+      });
+      return out;
+    } catch (err) { return null; }
+  }
   return {
     forEmp: function (e, store) {
       const name = String(e.name || '').trim();
@@ -3581,7 +3685,7 @@ function payCompMonthBook(ym) {
           if (String(d).slice(0, 7) === ym && h > 0) leaves.push({ date: d, h: h });
         });
       });
-      const c = payCompMonthCalc(ots, leaves, reqs);
+      const c = payCompMonthCalc(ots, leaves, reqs, otKinds(e, store, ots));
       c.allowed = payIsFt(e); c.ym = ym;
       return c;
     },
@@ -3949,9 +4053,10 @@ function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, 
     if (String(q.kind) !== 'miss' || String(q.status) !== 'approved' || dt.slice(0, 7) !== ym) return;
     (missList[String(q.emp_id)] = missList[String(q.emp_id)] || []).push({ dt: dt, c: String(normCellTs(q.created_at) || '') });
   });
-  Object.keys(missList).forEach(function (emp) {
-    missList[emp].sort(function (a, b) { return a.dt < b.dt ? -1 : a.dt > b.dt ? 1 : (a.c < b.c ? -1 : a.c > b.c ? 1 : 0); })
-      .forEach(function (x, i) { (missBy[emp] = missBy[emp] || {})[x.dt] = i + 1; });   // 同一天兩張取後面那個號碼
+  Object.keys(missList).forEach(function (emp) {   // 本月第幾「天」忘打卡（Eason 2026-11-10）：同一天多張只算同一天，依日期先後編號
+    const days = {};
+    missList[emp].forEach(function (x) { days[x.dt] = true; });
+    Object.keys(days).sort().forEach(function (dt, i) { (missBy[emp] = missBy[emp] || {})[dt] = i + 1; });
   });
   const people = rosterRows.filter(function (r) {
     const emp = String(r.emp_id);
@@ -3980,7 +4085,7 @@ function payAttendanceBuild(ym, rosterRows, eventRows, approvedRows, leaveRows, 
         manager: rec ? String(rec.manager_name || '') : '',
         leave: lv, leave_hours: Math.round(lvH * 100) / 100,
         attach: (attachBy[emp] || {})[dt] || [],
-        miss_n: (missBy[emp] || {})[dt] || null   // 這天核准的忘打卡是本月第幾次（第 3 次起畫面與 Excel 標記）
+        miss_n: (missBy[emp] || {})[dt] || null   // 這天是本月第幾天有核准的忘打卡（同一天多張算同一天；第 3 天起畫面與 Excel 標記）
       };
       if (row.approved_hours != null) { apprH += row.approved_hours; if (row.approved_hours > 0) workDays++; }
       else if (seg.length) pendingDays++;

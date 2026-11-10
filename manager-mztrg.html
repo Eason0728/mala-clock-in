@@ -2198,7 +2198,7 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
     /* 只提醒不擋（2026-11-06 Eason）：事假應前一天請、出差應前一週填、本月事假第 3 次起／超過 3 天；忘打卡寫本月第幾次。
        舊後端沒有 warns／miss_n 就不顯示。一律 textContent。 */
     var wl = (it.warns || []).slice();
-    if (it.kind === 'miss' && it.miss_n) wl.unshift('本月第 ' + it.miss_n + ' 次忘刷' + (it.miss_n >= 3 ? '（第 3 次起出勤紀錄表會標記）' : ''));
+    if (it.kind === 'miss' && it.miss_n) wl.unshift('本月第 ' + it.miss_n + ' 天忘刷' + (it.miss_n >= 3 ? '（第 3 天起出勤紀錄表會標記）' : ''));
     if (wl.length) {
       var wn = document.createElement('div'); wn.className = 'rq-proof rq-warn';
       wn.textContent = wl.map(function (w) { return '⚠ ' + w; }).join('\n') + '（提醒，不影響核准）';
