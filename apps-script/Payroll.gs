@@ -807,6 +807,40 @@ function payRatio(e, ym) {
   return Math.min(1, d / D);
 }
 
+/* ── 薪資名單（薪酬挑錯第 2 項，Eason 2026-11-11 確認）──
+ * 進名單：主檔「在職」，或「已停用但離職日落在這個月」（月中離職的人停用後，離職當月那一列還在）。 */
+function payInRoster_(m, st, ym) {
+  if (payStore(m.store) !== st) return false;
+  if (String(m.active).toLowerCase() === 'true') return true;
+  return payDateStr(m.leave_date).slice(0, 7) === String(ym);
+}
+/** 這個月有沒有任何時數、支援、請假、自訂加扣、獎金（att＝送進 payCalcOne 的那一包）。
+ *  在職天數 0 的人要有其中一項才產生列；支援欄壞掉（supportError）也當成有資料，不讓它無聲消失。 */
+function payMonthActivity_(att, supportError) {
+  att = att || {};
+  if (supportError) return true;
+  if (payNum(att.hours) || payNum(att.extra_ot) || payNum(att.holiday_h)) return true;
+  if ((att.support || []).some(function (x) { return x && (payNum(x.hours) || payNum(x.amount)); })) return true;
+  if (['personal_h', 'sick_h', 'menstrual_h', 'disaster_h', 'annual_h'].some(function (k) { return payNum(att[k]); })) return true;
+  const lv = att.leaves || {};
+  if (Object.keys(lv).some(function (k) { return payNum(lv[k]); })) return true;
+  if (payNum(att.custom_add_amt) || payNum(att.custom_ded_amt)) return true;
+  if ((att.custom_add_more || []).some(function (x) { return x && payNum(x.amt); })) return true;
+  if ((att.bonuses || []).some(function (b) { return b && payNum(b.amount); })) return true;
+  return false;
+}
+/** 主檔已停用、離職日不在這個月、這個月卻有核定時數或手動工時的人：不進薪資，只回清單讓畫面提醒。
+ *  inputs＝payInputsBase 的結果（打卡歸集＋手動工時）。只放 emp_id、name、hours。 */
+function payNotInPayroll_(masterAll, st, ym, inputs) {
+  const out = [];
+  (masterAll || []).forEach(function (m) {
+    if (payStore(m.store) !== st || payInRoster_(m, st, ym)) return;
+    const h = payR2(payNum(((inputs || {})[String(m.emp_id)] || {}).hours));
+    if (h > 0) out.push({ emp_id: String(m.emp_id), name: String(m.name || ''), hours: h });
+  });
+  return out;
+}
+
 /* 正職月中到職／離職改用「固定 30 天」折算金額（Eason 2026-11-10：正職同仁都用 30 天算，與會計 SD 同口徑）。
  * 金額比例＝在職天數 ÷30（上限 1；整月在職＝1），底薪、全勤、職能／夜間／店長津貼、勞保、宿舍、公司負擔都用它。
  * 基本工時（不足／加班判斷）照舊用實際天數比例。計時同仁不變。之前月份照舊（實際天數）。 */
@@ -3211,10 +3245,17 @@ function handlePayrollCalc(body) {
 
   const st = payStore(body.store);
   const cfg = payConfig(st);
-  const master = payRead('master').filter(function (m) {
-    return String(m.active).toLowerCase() === 'true' && payStore(m.store) === st;
-  });
+  // 名單＝在職，或已停用但離職日在這個月（薪酬挑錯第 2 項，Eason 2026-11-11 確認）
+  const masterAll = payRead('master');
+  const master = masterAll.filter(function (m) { return payInRoster_(m, st, ym); });
   const collected = payInputsBase(ym, st);   // 打卡歸集＋已儲存的手動覆蓋
+  const NOT_IN = payNotInPayroll_(masterAll, st, ym, collected);   // 停用且離職日不在本月、卻有時數的人（只提醒）
+  // 手動明細（下面保留 manual、只重建 auto 也用這一份）；在職天數 0 的人有手動明細也照舊產生列
+  const keptManual = payRead('item').filter(function (i) {
+    return String(i.ym) === ym && payStore(i.store) === st && String(i.source) === 'manual';
+  });
+  const manualByEmp = {};
+  keptManual.forEach(function (i) { (manualByEmp[String(i.emp_id)] = manualByEmp[String(i.emp_id)] || []).push(i); });
   // 當月該店獎金，依員工分組
   const bonusBy = {};
   payRead('bonus').forEach(function (b) {
@@ -3256,7 +3297,8 @@ function handlePayrollCalc(body) {
   const XSA = XSUP ? payApplySupportAuto_({}, [], { synced_at: XSUP.synced_at, empty: XSUP.empty, byEmp: {}, unmapped: XSUP.unmapped,
                                                     dup_pay: XSUP.dup_pay, dup_acct: XSUP.dup_acct, pending: XSUP.pending }, XCTX, null) : null;
 
-  const results = master.map(function (e) {
+  const results = [];
+  master.forEach(function (e) {
     const c = collected[String(e.emp_id)] || {};
     const o = override[String(e.emp_id)] || {};
     const att = {
@@ -3295,6 +3337,7 @@ function handlePayrollCalc(body) {
       attend_void:  o.attend_void  !== undefined ? payBool(o.attend_void) : !!c.attend_void,
       menstrual_times: c.menstrual_times || null,
     };
+    const ZERO_DAYS = payRatio(e, ym) <= 0;   // 這個月在職天數 0（還沒到職／上個月以前已離職）
     if (XSUP && c.support_error) XSA.warn.support_error.push(String(e.emp_id));   // 支援欄壞掉：一律不帶入（審查 #2）
     else if (XSUP) {
       const mg = payMergeSupport_(att.support, XSUP.byEmp[String(e.emp_id).trim()], e, XCTX);
@@ -3320,16 +3363,12 @@ function handlePayrollCalc(body) {
         if (XSUP && XSUP.byEmp[id.trim()]) { att.ot_cross = payOtCrossNeed_(c, XSUP.byEmp[id.trim()]); att.ot_forms_x = OT_FORMS_X; att.ot_name = e.name; }
       }
     }
-    return payCalcOne(e, ym, att, cfg, redDays, LTYPES_FOR_CALC);
+    // 在職天數 0 且沒有任何時數、支援、請假、自訂加扣、獎金、手動明細 → 不產生列；有其中一項照舊計算
+    if (ZERO_DAYS && !payMonthActivity_(att, c.support_error) && !(manualByEmp[String(e.emp_id)] || []).length) return;
+    results.push(payCalcOne(e, ym, att, cfg, redDays, LTYPES_FOR_CALC));
   });
 
-  // 保留 manual 明細，只重建 auto
-  const keptManual = payRead('item').filter(function (i) {
-    return String(i.ym) === ym && payStore(i.store) === st && String(i.source) === 'manual';
-  });
-  const manualByEmp = {};
-  keptManual.forEach(function (i) { (manualByEmp[String(i.emp_id)] = manualByEmp[String(i.emp_id)] || []).push(i); });
-
+  // 保留 manual 明細（keptManual／manualByEmp，上面已讀），只重建 auto
   const now = nowTaipeiIso();
   const itemRows = [], runRows = [];
   results.forEach(function (r) {
@@ -3357,6 +3396,7 @@ function handlePayrollCalc(body) {
   if (body.dry_run) {   // 唯讀試算（payroll_ot_preview）：不寫 run／item
     const dres = { ok: true, ym: ym, store: st, results: results, red_days: redDays, dry_run: true };
     if (typeof SCHED !== 'undefined') { dres._sched = SCHED; dres._hol = HOLD; }   // 只給 payOtMonthSync_；試算回應不帶
+    if (NOT_IN.length) dres.not_in_payroll = NOT_IN;
     return dres;
   }
   let lockedMeanwhile = false;
@@ -3374,6 +3414,7 @@ function handlePayrollCalc(body) {
 
   const res = { ok: true, ym: ym, store: st, results: results, config: cfg, red_days: redDays, collected: collected };
   if (XSA) res.support_auto = XSA;
+  if (NOT_IN.length) res.not_in_payroll = NOT_IN;   // 沒有就不帶（回應形狀與改版前相同）
   return res;
 }
 
@@ -3502,13 +3543,15 @@ function handlePayrollMonth(body) {
   let rosterMiss = [], sameName = [];
   try { rosterMiss = payRosterMismatch_(stM, masterM); } catch (e) { rosterMiss = []; }
   try { sameName = payLeaveSameName_(stM, ym); } catch (e) { sameName = []; }
+  const notIn = payNotInPayroll_(masterM, stM, ym, inputs);   // 停用且離職日不在本月、卻有時數的人（薪酬挑錯第 2 項）
   return { ok: true, ym: ym, store: stM, has_clock: payHasClock(stM), inputs: inputs, run: run, annual: payAnnualInfo(ym, stM),
            master: masterM, roster_mismatch: rosterMiss.length ? rosterMiss : undefined, same_name: sameName.length ? sameName : undefined,   // 沒有就不帶（回應形狀與改版前相同）
            ot_period: (function (m) { return Object.keys(m).length ? m : undefined; })(payOtPeriodMap_(stM)),   // 沒有就不帶（回應形狀與改版前相同）
            config: payConfig(stM), config_src: payConfigSource(stM),
            bonuses: payRead('bonus').filter(function (b) { return String(b.ym) === ym && payStore(b.store) === stM; }),
            stores: payRead('store').filter(function (x) { return String(x.active).toLowerCase() !== 'false'; }),
-           holidays: payHolidayList(stM), support_auto: sa || undefined };
+           holidays: payHolidayList(stM), support_auto: sa || undefined,
+           not_in_payroll: notIn.length ? notIn : undefined };   // 沒有就不帶（回應形狀與改版前相同）
 }
 
 function handlePayrollItemUpsert(body) {
