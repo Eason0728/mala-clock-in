@@ -27,9 +27,11 @@
     (kids || []).forEach(function (c) { if (c) el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
     return el;
   }
+  /** 台北的今天（可加減天數）。2026-11-11：直接用台北時間算，不經過手機自己的時區——
+   *  手機時區有夏令時間時，加減天數剛好跨過換時間的那天，原本的算法會差一天。 */
   function taipeiToday(offsetDays) {
-    var d = new Date(Date.now() + (8 * 60 + new Date().getTimezoneOffset()) * 60000 + (offsetDays || 0) * 86400000);
-    return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+    var d = new Date(Date.now() + 8 * 3600000 + (offsetDays || 0) * 86400000);
+    return d.getUTCFullYear() + '-' + ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2);
   }
   var WK = ['日', '一', '二', '三', '四', '五', '六'];
   function md(date) {
@@ -295,6 +297,9 @@
     var m = /^\d{4}-\d{2}$/.test(String(c.ym || '')) ? (+String(c.ym).slice(5, 7)) + ' 月' : '本月';
     return m + '加班 ' + r2(c.ot_h) + ' − 補休 ' + r2(c.used_h) + ' ＝ ' + (b < 0 ? '欠 ' + (-b) : '剩 ' + b) + ' 小時';
   }
+  /** 時數取到小數一位（額度、餘額的顯示用）。2026-11-11：原本只宣告在 quotaText 裡面，capLocked 也用到它，
+   *  家庭照顧假超過剩餘額度時當場出錯（r1 is not defined）、畫面停在「送出中…」。 */
+  function r1(v) { return Math.round((Number(v) || 0) * 10) / 10; }
   /* 生理假一年 3 次、家庭照顧假一年 7 天，用完就不能再申請（2026-11-10 Eason）；額度還沒讀到就不擋，主管核准與核定時會再擋一次 */
   function capLocked(type, hours) {
     if (type !== '生理假' && type !== '家庭照顧假') return '';
@@ -304,17 +309,12 @@
     if (type === '家庭照顧假' && Number(hours) > Number(q.remain_h) + 0.001) return '家庭照顧假今年 7 天只剩 ' + r1(Math.max(0, q.remain_h)) + ' 小時，這次超過了，不能送出';
     return '';
   }
-  function spanHours(a, b) {
-    var m = function (t) { var x = /^(\d\d):(\d\d)$/.exec(String(t || '')); return x ? +x[1] * 60 + +x[2] : null; };
-    var s = m(a), e = m(b);
-    if (s == null || e == null) return 0;
-    return ((e - s + 1440) % 1440) / 60;
-  }
+  /* 2026-11-11：這裡原本有第二個 spanHours（2026-11-10 加的，不取整、時間沒填回 0），同名的函式後面的會蓋掉前面的，
+     結果整頁的時數都變成沒取整的那一個——加班 17:00–17:20 顯示成 0.3333333333333333 小時。拿掉，一律用檔案前面那個（取到小數兩位）。 */
   function quotaText(name) {
     if (name === '補休') return '';   // 補休的餘額另外一行一直顯示（見 renderLeave）
     var q = (st.init.quota || []).filter(function (x) { return x.name === name; })[0];
     if (!q || q.cap_days == null) return '';
-    var r1 = function (v) { return Math.round((Number(v) || 0) * 10) / 10; };
     if (q.basis === 'event') return '每次上限 ' + r1(q.cap_h) + ' 小時';
     return q.remain_h < 0 ? '已超出 ' + r1(-q.remain_h) + ' 小時' : '剩 ' + r1(q.remain_h) + ' 小時（上限 ' + r1(q.cap_h) + '）';
   }
@@ -647,7 +647,11 @@
     btn.addEventListener('click', function () {
       if (st.busy) return;
       st.busy = true; btn.disabled = true; out.innerHTML = ''; out.appendChild(h('div', { class: 'rq-muted', text: '送出中…' }));
-      build().then(function (body) {
+      // 組資料那一步就算當場出錯（不是回被拒絕的 Promise），也要走到下面的錯誤處理、把忙碌旗標放掉（2026-11-11）；
+      // 原本錯誤直接丟出去，畫面停在「送出中…」、按鈕一直是灰的。
+      var built;
+      try { built = build(); } catch (err) { built = Promise.reject(err); }
+      Promise.resolve(built).then(function (body) {
         body.action = 'req_submit'; body.id_token = liff.getIDToken();
         return E.post(E.storeApi(storeDef()), body);
       }).then(function (r) {
