@@ -767,6 +767,16 @@ function payRatio(e, ym) {
   return Math.min(1, d / D);
 }
 
+/* 正職月中到職／離職改用「固定 30 天」折算金額（Eason 2026-11-10：正職同仁都用 30 天算，與會計 SD 同口徑）。
+ * 金額比例＝在職天數 ÷30（上限 1；整月在職＝1），底薪、全勤、職能／夜間／店長津貼、勞保、宿舍、公司負擔都用它。
+ * 基本工時（不足／加班判斷）照舊用實際天數比例。計時同仁不變。之前月份照舊（實際天數）。 */
+var PAY_RATIO30_FROM = '2026-10';
+function payRatio30(e, ym) {
+  const P = payRatio(e, ym);
+  if (P >= 1 || P <= 0) return P;
+  return Math.min(1, payR2(P * payDaysIn(ym)) / 30);
+}
+
 /** 參數取值：未設定（欄位不存在／空白）才用預設；**0 是合法值**（例：某店不給加給就填 0），
  *  所以不能用 `payNum(v) || dflt` ——那會把 0 當成沒設定。 */
 function payCfgNum(cfg, key, dflt) {
@@ -1127,9 +1137,10 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   // 這樣 payroll_mock.js 只抽這支函式也算得出來，不必碰試算表。
   const LT = (ltypes && ltypes.length) ? ltypes : payLeaveTypes('');
   const LTM = {}; LT.forEach(function (t) { LTM[t.code] = t; });
-  const D = payDaysIn(ym), P = payRatio(e, ym);
-  const earn = [], ded = [];
   const ft = String(e.is_full_time).toLowerCase() === 'true' || e.is_full_time === true;
+  const D = payDaysIn(ym), PD = payRatio(e, ym);   // PD＝實際天數比例（基本工時用）
+  const P = (ft && String(ym) >= PAY_RATIO30_FROM) ? payRatio30(e, ym) : PD;   // 金額折算比例
+  const earn = [], ded = [];
   function push(L, key, label, qty, rate, amt, memo) {
     const x = { item_key: key, item_label: label, qty: qty, rate: rate, amount: payR0(amt) };
     if (memo) x.memo = memo;
@@ -1147,7 +1158,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
 
   if (ft) {
     // 正職：加班／不足時數以「本店核定＋支援」的總時數對基本工時判斷（支援併入，用員工加班費率）
-    baseH = payR2((D - redDays) * payNum(cfg.daily_hours) * P);
+    baseH = payR2((D - redDays) * payNum(cfg.daily_hours) * PD);
     surplus = payR2((att.hours + supportH) - baseH);   // 純上班−基本（顯示用，不含假）
     // 可抵扣的假（假別表 offset_shortfall）。這些假另有扣款／給薪處理，在時數上視同已出勤。
     const LMAP = payAttLeaves(att);
