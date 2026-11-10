@@ -25,7 +25,8 @@ ACTIONS = ['clock', 'whoami', 'sync_roster', 'get_roster', 'get_events', 'approv
 FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'isTripDay',
          'nextEmpId', 'handleSetShifts', 'handleMgrAddEmployee', 'handleRecentHires',
          'computeApprovalStatus', 'pairShifts', 'buildLatestApprovedMap',
-         'recomputeApprovalStatusOf', 'backfillMissingPunchGroups', 'statusDiffIsOnlyMissingGroup']
+         'recomputeApprovalStatusOf', 'backfillMissingPunchGroups', 'statusDiffIsOnlyMissingGroup',
+         'breakBlocksFor_']
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
     'computeApprovalStatus 有 isTrip＋休息帶參數': 'hadUnrecordedAttempts, isTrip, breakWindow)',
@@ -40,11 +41,15 @@ EXACT = {
     # 2026-09-21 少刷一組卡 → 2026-09-29 改「逐段標缺卡」（第N段下班無打卡／第N+1段上班無打卡）。
     # 片段缺任一個，那家店就是沒套到這批。
     '缺卡：常數':                            "const MISSING_GROUP_PREFIX = '第'",
-    '缺卡：逐段標註':                        "[segMissNote(prevNo, SEG_MISS_OUT), segMissNote(no, SEG_MISS_IN)]",
+    # 2026-11-10 #96 改寫成一行一個 add(...)，原本比對的那一行已不存在（九家店全部誤報 ✗），2026-11-11 改成現在的寫法。
+    '缺卡：逐段標註（前一段下班）':          "add(segMissNote(prevNo, SEG_MISS_OUT));",
+    '缺卡：逐段標註（這一段上班）':          "add(segMissNote(inNo[pi], SEG_MISS_IN));",
     '缺卡：列入異常分類':                    "{ key: '段內無打卡', prefixes: [MISSING_GROUP_PREFIX] }",
     '缺卡：回填預設 dry-run':                'body.apply === true',
     '缺卡：休息帶排除':                      'gapExplainedByBreak(maxEnd, o.p.startMs, breakWindow)',
     '缺卡：休息帶由呼叫端算好傳入':          'noPunchBreakWindow(date)',
+    # 2026-11-11 B01：休息帶隔開的兩段，午休照樣打卡的人不併（沒套到＝四張卡準時也標早退 300 分）
+    '休息帶：核定狀態改用 breakBlocksFor_':   'breakBlocksFor_(sortedP, punchSegments, legacy ? null : breakWindow)',
 }
 
 # 各店專屬設定：CONFIG 的不打卡休息帶必須與 tools/build-store-pages.py 的 mgr_break 一致。
