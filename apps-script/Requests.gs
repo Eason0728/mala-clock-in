@@ -175,7 +175,9 @@ function reqOverlap_(s1, e1, s2, e2) {
   if (a === null || b === null || c === null || d === null) return null;
   if (b <= a) b += 1440;
   if (d <= c) d += 1440;
-  return a < d && c < b;
+  // 2026-11-11（B29）：其中一段跨夜到隔天凌晨時，另一段寫的凌晨時間（例：22:00–01:00 與 00:00–02:00）也要當成同一個凌晨來比，
+  // 不然凌晨那一小時會被當成不重疊、兩張都收。兩段都沒跨夜時，往後挪一天一定碰不到，結果和原本一樣。
+  return (a < d && c < b) || (a < d + 1440 && c + 1440 < b) || (a + 1440 < d && c < b + 1440);
 }
 /** 同一天、同一類的兩筆申請是不是「同一件事」（給已核准的重複檢查用，2026-11-03）：
  *  加班＝時段重疊；請假／出差＝同假別且時段重疊（任一筆只填時數、沒有時段＝當成同一件）；
@@ -595,10 +597,13 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     if (!reason) return { error: 'need_reason', message: '請選原因' };
     }
   }
-  // 同一天同一類（忘打卡再加同一張卡）不能有兩筆審核中的
+  // 同一天同一類不能有兩筆「撞在一起」的審核中申請。
+  // 2026-11-11 Eason 定（B29）：請假／加班／出差改看時段——兩張都有開始、結束時間而且不重疊就可以同時在審
+  // （例：上午病假還在等證明，下午的事假照樣能送；同一天兩段加班）。時段重疊、或任一張只填時數沒有時段，照舊擋，不分假別。
+  // 忘打卡：同一張卡才算（2026-11-11 B02；已有人補的卡在上面就擋掉了）。
   var dup = existing.filter(function (r) {
     return String(r.emp_id) === String(me.emp_id) && r.status === 'pending' && r.kind === kind && r.date === date
-        && (kind !== 'miss' || reqSameThing_('miss', r, row));   // 忘打卡：同一張卡才算（2026-11-11 B02；已有人補的卡在上面就擋掉了）
+        && (kind === 'miss' ? reqSameThing_('miss', r, row) : reqOverlap_(r.start, r.end, row.start, row.end) !== false);
   })[0];
   if (dup) return { error: 'duplicate', message: '這天已經有一筆審核中的' + REQ_KINDS_[kind] + '申請，要改請先取消那一筆' };
   // 已核准的也要擋「同一件事」（2026-11-03 對抗驗證 #4）：原本只看審核中，核准後再送一模一樣的一筆、主管批次核准就算兩次
