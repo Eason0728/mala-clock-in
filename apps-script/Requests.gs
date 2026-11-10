@@ -1283,6 +1283,22 @@ function reqBindMissCards_(periods, segs, breakWindow) {
   });
   return n;
 }
+/** 人還在上班（2026-11-11 B03）：那天最後一張卡是沒配對的上班卡，而且那天是今天（跨夜班算到隔天凌晨 06:00 前），
+ *  下班卡還沒到打的時候，不能算少一張——同仁此刻也補不了這張單。做法：把那張上班卡當成「打到現在」的一段再去算。
+ *  需求：今天沒配對的上班卡＝上班中，隔天才算忘刷。之後打了下班卡，每日重算會把狀態改回來。 */
+function reqWorkingSegs_(segs, date) {
+  if (!segs || !segs.length) return segs;
+  var nowIso = nowTaipeiIso(), today = nowIso.slice(0, 10);
+  if (!(date === today || (date === reqPrevDate_(today) && nowIso.slice(11, 16) <= REQ_EARLY_OUT_HM))) return segs;
+  var at = function (x) { return x.inMs != null ? x.inMs : x.outMs; };
+  var last = segs.reduce(function (a, x) { return a === null || at(x) >= at(a) ? x : a; }, null);
+  if (!last || last.inMs == null || last.outMs != null) return segs;   // 最後一張不是沒配對的上班卡
+  var nowMs = new Date(nowIso).getTime();
+  if (nowMs - last.inMs > REQ_PAIR_MS) return segs;                     // 超過 16 小時配不成一段，不算還在上班
+  return segs.map(function (x) {
+    return x === last ? { in: x.in, out: null, inMs: x.inMs, outMs: Math.max(nowMs, x.inMs + 60000) } : x;
+  });
+}
 function reqBindFmt_(h) { return String(Math.round(h * 100) / 100); }
 /* ── 核定加嚴（2026-11-08 Eason 定案；REQ_STRICT_FROM 預設 2026-11-11 起的日子才算，指令碼屬性設 off＝只關加嚴；REQ_BIND_FROM 設 off＝全部關）──
    規則 1：已核准加班單的時段要落在核定時段內，前後可差 15 分鐘（那天有出差時數不比時段：加班可能在出差那段）。
@@ -1422,7 +1438,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
     otBad = true;
     add('ot_hours', '超過 ' + REQ_BIND_OT_BASE_H + ' 小時的 ' + reqBindFmt_(otNeed) + ' 小時要有加班單（已核准 ' + reqBindFmt_(otHave) + ' 小時）');
   }
-  var miss = bindOn ? reqBindMissCards_(periods, segs, breakWindow) : 0;
+  var miss = bindOn ? reqBindMissCards_(periods, reqWorkingSegs_(segs, date), breakWindow) : 0;
   var missHave = ok.reduce(function (a, r) { return a + (r.kind !== 'miss' ? 0 : (r.miss_type === 'break' || r.miss_type === 'both') ? 2 : 1); }, 0);
   var tripOk = ok.some(function (r) { return r.kind === 'trip'; });
   // 出差日：當天有打卡、湊不成完整一段就算忘刷，要忘打卡單；整天沒打卡、或打卡都成段（另一段是出差）不算（2026-11-10 Eason）
