@@ -40,6 +40,24 @@ console.log('════ B26：鏡像過來的列不重複算 ════');
   check('B26-06', '只綁總部一家時：抄來的列照算，合計 16 小時', cur(says()), '16');
 }
 
+{
+  // 獨立審查補：本人在央廚綁的是另一個工號（舊的 HQ-01 那列已離職、沒綁）→ 抄到總部的 HQ-01 列要照算，不能兩邊都落空
+  const w = buildWorld({ now: H.T('2026-11-10T09:30:00'),
+    rosters: { hq: [R({ emp_id: 'HQ-01', name: '測試總', key: 'Khq', line_user_id: 'U3' })],
+               cf: [R({ emp_id: 'HQ-01', name: '測試總', key: 'Kcf', active: 'FALSE' }), R({ emp_id: 'CF07', name: '測試總', key: 'Kcf7', line_user_id: 'U3' })] },
+    events: { cf: [['2026-11-09T08:00:00', 'HQ-01', 'in'], ['2026-11-09T16:00:00', 'HQ-01', 'out']] } });
+  w.post('cf', { action: 'mgr_approve', mgr_key: 'MK', date: '2026-11-09', emp_id: 'HQ-01', periods: [{ start: '08:00', end: '16:00' }] });
+  const hq = w.stores.hq;
+  vm.runInContext(H.R('apps-script/Mirror.gs'), hq.sb, { filename: 'apps-script/Mirror.gs' });
+  hq.sb.MIRROR_SOURCES = [{ code: 'CF', ss_id: SS('cf'), emp_prefix: 'HQ-' }];
+  const cfBook = w.stores.cf.self;
+  hq.peers[SS('cf')] = { sh: cfBook.sh, getId: () => SS('cf'), getSheetByName: cfBook.getSheetByName, insertSheet: cfBook.insertSheet };
+  hq.sb.mirrorCore_(true);
+  w.advance(6 * 60000);
+  const s = w.chat('U3', '出勤紀錄').messages.map(cardText).join(' ');
+  check('B26-10', '央廚綁的是另一個工號：抄到總部的那一天照算，本月 8 小時', (/本月（11 月） \/ ([\d.]+) 小時/.exec(s) || [])[1], '8');
+}
+
 console.log('\n════ B27：新增同仁的同名檢查 ════');
 {
   [['測 試一', '中間半形空白'], ['測　試一', '中間全形空白'], ['測試 一', '中間不換行空白']].forEach((v, i) => {
@@ -57,6 +75,15 @@ console.log('\n════ B27：新增同仁的同名檢查 ════');
   // 離職的同名不擋（照舊）
   const w3 = buildWorld({ rosters: { mztjs: [R({ emp_id: 'JS01', name: '測試一', key: 'KJ01', active: 'FALSE' })] } });
   check('B27-11', '對照：同名的那位已離職 → 可以新增', w3.post('mztjs', { action: 'mgr_add_employee', mgr_key: 'MK', name: '測 試一' }).ok, true);
+}
+
+{
+  // 獨立審查補：「恢復在職」的同名檢查也要去掉全部空白
+  const mk = () => buildWorld({ rosters: { mztjs: [R({ emp_id: 'JS01', name: '測試一', key: 'KJ01', active: 'FALSE' }), R({ emp_id: 'JS02', name: '測 試一', key: 'KJ02' })] } });
+  const w = mk(), w2 = mk();
+  const a = w.post('mztjs', { action: 'mgr_set_active', mgr_key: 'MK', emp_id: 'JS01', active: true });
+  const b = w2.post('mztjs', { action: 'svc_set_active', v: 1, svc_key: 'SVC-KEY-mztjs', emp_id: 'JS01', active: true, op_id: 'act-1' });
+  check('B27-20', '已有在職「測 試一」，把離職的「測試一」恢復在職 → 兩個入口都回 duplicate_name', [a.error, b.error], ['duplicate_name', 'duplicate_name']);
 }
 
 console.log('\n════ B28：有一家店的名冊讀不到 ════');

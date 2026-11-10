@@ -678,11 +678,13 @@ function lineHubAttendanceText_(userId) {
 /** 總部鏡像（Mirror.gs）抄過來的列，最右一欄 mirror_src＝來源店代碼。來源那家店本人也綁著時，同一段班兩家的表各有一份，
  *  出勤紀錄會算兩次（2026-11-11 B26）→ 這種列不算；本人沒綁來源那家時照算（不然看不到自己的出勤）。 */
 function lineHubDropMirrored_(rows, mine) {
+  // 來源店本人綁的那一列要是同一個工號才算「兩邊各有一份」；本人在來源店綁的是另一個工號時，來源店那邊用新工號找不到這些卡，
+  // 抄過來的這一份就是唯一的一份，要留著（獨立審查補）。
   var codes = {};
-  (mine || []).forEach(function (m) { codes[String(m.st.code || 'gf').toLowerCase()] = true; });
+  (mine || []).forEach(function (m) { codes[String(m.st.code || 'gf').toLowerCase() + '|' + String(m.row.emp_id)] = true; });
   return (rows || []).filter(function (r) {
     var src = String(r.mirror_src || '').trim().toLowerCase();
-    return !src || !codes[src];
+    return !src || !codes[src + '|' + String(r.emp_id)];
   });
 }
 /** 出勤資料（文字與卡片共用）：null＝沒綁定；{lines:[{day,store,segs,hrs,status}], tot:{curText,prevText,curLabel,curH,curP,prevLabel,prevH,prevP}} */

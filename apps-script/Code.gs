@@ -1409,7 +1409,7 @@ function handleMgrSetActive(body) {
   // 恢復在職要擋同名：薪資用姓名對應請假與工時，兩位同名同時在職會直接算錯錢
   if (active) {
     const dup = rows.filter(function (r) {
-      return String(r.emp_id) !== empId && String(r.name).trim() === name
+      return String(r.emp_id) !== empId && String(r.name).replace(/\s/g, '') === String(name).replace(/\s/g, '')   // 去掉全部空白再比（同新增，B27）
           && String(r.active).toLowerCase() === 'true';
     })[0];
     if (dup) {
@@ -2435,8 +2435,9 @@ function applyManualLate(statusText, lateMin) {
   const raw = String(lateMin == null ? '' : lateMin).trim();
   if (raw === '') return statusText;           // 留空＝不覆蓋，用系統自動判的
   // 2026-11-11（B21）：先取整再判斷。原本 0.4 不等於 0、又被四捨五入成「遲到0分(認定)」，月表算 1 天異常。
-  const n = Math.round(Number(raw));
-  if (!isFinite(n) || n < 0) return statusText;
+  const rawN = Number(raw);
+  if (!isFinite(rawN) || rawN < 0) return statusText;   // 負數先擋（-0.4 取整後是 0，不可以被當成「填 0」）
+  const n = Math.round(rawN);
   const kept = String(statusText || '').split('、')
     .filter(function (x) { return x && x.indexOf('遲到') !== 0; });
   if (n === 0) {

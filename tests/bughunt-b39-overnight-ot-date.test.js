@@ -23,6 +23,17 @@ check('B39-11', '對照：前一天不是跨夜班（17:00–23:00），11/13 �
 check('B39-12', '對照：前一天跨夜班 02:00 下班，11/13 填 02:00–03:00（下班之後）→ 不擋', res(submit(world(NIGHT), { date: N, start: '02:00', end: '03:00' })), 'ok');
 check('B39-13', '對照：預先申請（未來的日子，還沒有打卡）→ 不擋', res(submit(world([], '2026-11-10T10:00:00'), { date: N, start: '01:00', end: '02:00' })), 'ok');
 {
+  // 獨立審查補：連續兩晚跨夜班，第二晚的凌晨加班單日期照規定填上班那天（11/12）→ 要收（下班後的加班提示給的也是這一天）
+  const TWO = [['2026-11-11T17:00:00', 'E01', 'in'], [D + 'T02:00:00', 'E01', 'out'], [D + 'T17:00:00', 'E01', 'in'], [N + 'T02:30:00', 'E01', 'out']];
+  check('B39-30', '連兩晚夜班：11/12 那一班的加班 01:00–02:30、日期填 11/12 → 收', res(submit(world(TWO), { date: D, start: '01:00', end: '02:30' })), 'ok');
+  check('B39-31', '同上 00:30–02:30 → 收', res(submit(world(TWO), { date: D, start: '00:30', end: '02:30' })), 'ok');
+  check('B39-32', '連兩晚夜班：日期填成凌晨那天（11/13）→ 照樣請改選 11/12', res(submit(world(TWO), { date: N, start: '01:00', end: '02:30' })).split('｜')[0], 'bad_date');
+  // 跨夜班的下班卡是用忘打卡申請補的 → 一樣要擋
+  const m = world([[D + 'T17:00:00', 'E01', 'in']]);
+  const miss = m.sb.handleReqSubmit_({ id_token: 'TOK_U1', kind: 'miss', date: D, miss_type: 'out', end: '02:00', reason: '忘記按' });
+  check('B39-33', '下班卡 02:00 是用忘打卡申請補的（審核中）：加班單日期填凌晨那天 → 一樣請改選上班那一天', [miss.ok, res(submit(m, { date: N, start: '01:00', end: '02:00' })).split('｜')[0]], [true, 'bad_date']);
+}
+{
   // 店長代開同一套
   const m = world(NIGHT, '2026-11-25T10:00:00');
   m.advance(1000);

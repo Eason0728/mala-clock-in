@@ -288,7 +288,9 @@ def register(ns):
                 return None, ("bad_time", "加班時段超過 12 小時，請確認時間")
             # 跨夜班的加班日期要選上班那一天（同 Requests.gs，2026-11-11 B39）
             prev = (date.fromisoformat(d) - timedelta(days=1)).isoformat()
-            night = [sp for sp in (day_info(data, me["emp_id"], prev)[1].get("spans") or [])
+            spans_of = lambda x: day_info(data, me["emp_id"], x, miss_virtual(reqs(data), data["events"], me["emp_id"], x))[1].get("spans") or []
+            own_night = any((not sp.get("out")) or sp.get("out_next") for sp in spans_of(d))   # 這天自己也有跨夜班／上班中 → 照收
+            night = [] if own_night else [sp for sp in spans_of(prev)
                      if sp.get("out") and sp.get("out_next") and mins(row["start"]) < mins(sp["out"])]
             if night:
                 pmd = f"{int(prev[5:7])}/{int(prev[8:10])}"

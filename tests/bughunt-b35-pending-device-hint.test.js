@@ -35,4 +35,10 @@ const approve = (m) => m.sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: '
   const r = approve(m);
   check('B35-06', '別人的、別天的待核准卡不算 → 訊息不提裝置', [r.error, /待核准/.test(String(r.message))], ['need_request', false]);
 }
+{
+  // 獨立審查補：待核准的張數補不齊缺的張數（上班卡待核准、下班卡真的沒打）→ 不可以說「核准後就不用補」，補申請的指引要留著
+  const m = make({ now: T('2026-11-13T10:00:00'), self: { roster: [ME], events: [[D + 'T09:00:00', 'E01', 'in', 'pending_device_approval', 'NEWPHONE']] } });
+  const r = approve(m), msg = String(r.message);
+  check('B35-07', '少 2 張、待核准只有 1 張 → 訊息說核准後還少 1 張要補單，不說「不用補」', [r.need && r.need.miss_cards, /核准後就不用補忘打卡單/.test(msg), /這天有 1 張新手機待核准的打卡，請先到「待核准裝置」核准這支手機；核准後還少 1 張，/.test(msg), /請同仁在 LINE「加班請假」補申請/.test(msg)], [2, false, true, true]);
+}
 done();

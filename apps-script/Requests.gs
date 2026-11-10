@@ -460,8 +460,12 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     /* 2026-11-11（B39）：跨夜班的加班在凌晨。日期填凌晨那一天的話，上班那天核定時找不到這張單、凌晨那天又多一張要作廢的單，
        兩天都核不過。這段時間如果落在「前一天上班、跨到今天才下班」的班裡，請同仁把日期改選上班那一天
        （下班打卡後的加班提示本來就帶上班那一天）。核定與薪資怎麼算單不動。 */
+    // 獨立審查補：①已送出的忘打卡單當成卡一起看（跨夜班的下班卡可能是補的）；
+    // ②這一天自己也有跨夜班或還在上班中（連續兩晚夜班）→ 凌晨那段是這一天那一班的，照收。
     var prevDate = reqPrevDate_(date), otStartMin = reqMin_(row.start);
-    var nightSpan = ((reqDayInfo_(events, me.emp_id, prevDate).missing || {}).spans || []).filter(function (sp) {
+    var spansOf = function (d) { return (reqDayInfo_(events, me.emp_id, d, reqMissVirtual_(existing, events, me.emp_id, d)).missing || {}).spans || []; };
+    var ownNight = spansOf(date).some(function (sp) { return !sp.out || sp.out_next; });
+    var nightSpan = ownNight ? null : spansOf(prevDate).filter(function (sp) {
       return sp.out && sp.out_next && otStartMin < reqMin_(sp.out);
     })[0];
     if (nightSpan) {
@@ -1519,7 +1523,13 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
       : noLine ? '這位同仁沒綁 LINE，請店長在考勤管理「代開申請」，送總監層級審核。'
       : '請同仁在 LINE「加班請假」補申請；超過 7 天請店長在考勤管理「代開申請」，送總監層級審核。';
     // 2026-11-11（B35）：少卡、而那天有新手機待核准的卡（舊連結才會有）——出路是先核准裝置，不是補忘打卡單
-    if (missBad && opt.pending_device > 0) hint = '這天有 ' + opt.pending_device + ' 張新手機待核准的打卡，請先到「待核准裝置」核准這支手機，再回來核定（核准後就不用補忘打卡單）。' + (otBad || pend.length ? hint : '');
+    // 待核准的張數補得齊缺的張數才說「不用補」；補不齊就講核准後還少幾張，補申請的指引照留（獨立審查補）
+    if (missBad && opt.pending_device > 0) {
+      var stillMiss = miss - missHave - opt.pending_device;
+      hint = '這天有 ' + opt.pending_device + ' 張新手機待核准的打卡，請先到「待核准裝置」核准這支手機' +
+        (stillMiss > 0 ? '；核准後還少 ' + stillMiss + ' 張，' + hint
+          : '，再回來核定（核准後就不用補忘打卡單）。' + (otBad || pend.length ? hint : ''));
+    }
     return { ok: false, error: 'need_request', message: '這天還不能核定：' + probs.map(function (p) { return p.text; }).join('；') + '。' + hint,
              need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length } };
   }

@@ -637,7 +637,8 @@
         if (mode !== true || settled || p.predict !== 'ok') return;
         // 開頁時的防呆已經說這型不能打（同型、10 分鐘鎖）就不採用 mini，等 Google（審查 P3 #6）
         var g = status && status.guard;
-        if (g && (g.blocked === type || (g.lock && g.lock[type] && g.lock[type] > Date.now() + clockSkew))) return;
+        // 同 refreshButtons（B32）：有鎖定時間就只看時間到了沒，沒有鎖定時間的舊格式才看 blocked
+        if (g && ((g.blocked === type && !(g.lock && g.lock[type])) || (g.lock && g.lock[type] && g.lock[type] > Date.now() + clockSkew))) return;
         shown = p;
         if (t) t.route = 'predicted';
         say(label + '打卡成功 ' + p.ts.slice(11, 16) + '\n地點：' + st.name + (p.greeting ? '\n\n' + p.greeting : ''), 'ok', '正在寫入紀錄…');
