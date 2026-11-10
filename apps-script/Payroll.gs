@@ -355,7 +355,8 @@ function payEmpStores(empId) { return payEmpStoresMap()[String(empId)] || []; }
  *  第五個參數，行為與加這個參數之前完全相同。加這個參數是為了「至昨天」的估算口徑要排除
  *  今天可能還沒核定完的部分日資料，不是為了改變既有的整月歸集邏輯。 */
 function payCollect(ym, minH, store, holidayDates, cutoffDate) {
-  const MEALMIN = (minH === undefined || minH === null || minH === '') ? MEAL_MIN_HOURS : Number(minH);
+  // 門檻不是正數（0、負數、空白、非數字）＝沒設定，用預設（薪酬挑錯第 3 項）。這支會被測試單獨抽出來跑，所以就地判斷。
+  const MEALMIN = (isFinite(Number(minH)) && Number(minH) > 0) ? Number(minH) : MEAL_MIN_HOURS;
   // 國定假日的具體日期（計時同仁雙薪用）；沒給就是空集合，行為與加這個功能之前相同
   const HOLSET = {};
   (holidayDates || []).forEach(function (d) { HOLSET[String(d).trim()] = true; });
@@ -858,6 +859,20 @@ function payCfgNum(cfg, key, dflt) {
   return (v === undefined || v === null || String(v).trim() === '') ? dflt : payNum(v);
 }
 
+/** 一定要是正數的參數（分母、門檻、每日工時）：0、負數、空白、非數字都沒有意義，一律當成沒設定、用預設值
+ *  （薪酬挑錯第 3 項，Eason 2026-11-11 確認）。畫面上把欄位清空會存成 0：每日工時 0 → 整個月都算加班、
+ *  事假分母 0 → 實付 NaN、遲到分母 0 → 扣款無限大、餐費門檻 0 → 整天請假也算一天。
+ *  ⚠ 金額欄（每日倒扣、滿勤加給…）的 0 是合法值，那些照舊用 payCfgNum，不走這支。
+ *  ⚠ 鍵的清單與 handlePayrollConfigSet 裡擋存檔的那份、payroll.html 的 CFG_POS 是同一組，要改三處一起改。 */
+var PAY_CFG_POS_DEFAULT = { daily_hours: 8, leave_div_days: 30, leave_div_hours: 8,
+  late_div_days: 30, late_div_hours: 8, meal_min_hours: 6 };
+function payCfgPos_(cfg, key) {
+  const v = (cfg || {})[key], d = PAY_CFG_POS_DEFAULT[key];
+  if (v === undefined || v === null || typeof v === 'boolean') return d;
+  const x = Number(String(v).trim());
+  return (isFinite(x) && x > 0) ? x : d;
+}
+
 /** 計時「年資加給」：任職滿指定月數「之後的次月」起，時薪 +N。
  *  例（預設 6 個月／+10）：到職 6/5 → 12/5 滿半年 → 隔年 1 月起（該月 1 號晚於滿期日才算）。
  *  ⚠ 2026-08-24 起金額與年資門檻改為門市可覆寫參數（pt_tenure_plus／pt_tenure_months），
@@ -950,7 +965,7 @@ var PAY_LATE_ATTEND_FROM = '2026-10';
 function payLateBaseFT(e, ym, cfg) {
   const m = payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) + payNum(e.mgr_allow)
     + (String(ym) >= PAY_LATE_ATTEND_FROM ? payNum(e.attend_cap) : 0);
-  return m / payNum(cfg.late_div_days) / payNum(cfg.late_div_hours) / 60;
+  return m / payCfgPos_(cfg, 'late_div_days') / payCfgPos_(cfg, 'late_div_hours') / 60;
 }
 var PAY_OT_DAILY_FROM = '2026-11';
 /* 出勤規範第 3 批（Eason 2026-11-08 確認），2026-11 薪資起：
@@ -1067,7 +1082,7 @@ function payMztShortDays_(e, d) {
 }
 /** 事假＋家庭照顧假今年累計超過事假上限的天數（3-3）。事假的已用天數含家庭照顧假逾上限併入的部分，這裡只補回沒併入的那段。 */
 function payPersonalOverDays_(att, cfg, ltypes) {
-  const u = att.leave_usage || {}, dayH = payNum(cfg.daily_hours) || 8, lv = payAttLeaves(att) || {};
+  const u = att.leave_usage || {}, dayH = payCfgPos_(cfg, 'daily_hours'), lv = payAttLeaves(att) || {};
   const capOf = function (c, d) { const t = (ltypes || []).filter(function (x) { return x.code === c; })[0]; return t && payNum(t.cap_days) > 0 ? payNum(t.cap_days) : d; };
   const p = payNum((u.personal || {}).used_before_days), fam = payNum((u.family || {}).used_before_days);
   const total = p + Math.min(fam, capOf('family', 7)) + (payNum(lv.personal) + payNum(lv.family)) / dayH;
@@ -1081,7 +1096,7 @@ function payFamilyOverVoid_(att, e, ym, cfg, ltypes) {
   const t = (ltypes || []).filter(function (x) { return x.code === 'family'; })[0];
   const cap = t && payNum(t.cap_days) > 0 ? payNum(t.cap_days) : 7;
   const before = payNum(((att.leave_usage || {}).family || {}).used_before_days);
-  return before + h / (payNum(cfg.daily_hours) || 8) > cap + 0.001 ? '家庭照顧假超過 ' + cap + ' 天' : '';
+  return before + h / payCfgPos_(cfg, 'daily_hours') > cap + 0.001 ? '家庭照顧假超過 ' + cap + ' 天' : '';
 }
 function payRules3On_(ym) { return String(ym) >= PAY_RULES3_FROM; }
 function payIsSslStore_(store) { return /^SSL/.test(String(store || 'SSLGF')); }
@@ -1232,7 +1247,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
 
   if (ft) {
     // 正職：加班／不足時數以「本店核定＋支援」的總時數對基本工時判斷（支援併入，用員工加班費率）
-    baseH = payR2((D - redDays) * payNum(cfg.daily_hours) * PD);
+    baseH = payR2((D - redDays) * payCfgPos_(cfg, 'daily_hours') * PD);
     surplus = payR2((att.hours + supportH) - baseH);   // 純上班−基本（顯示用，不含假）
     // 可抵扣的假（假別表 offset_shortfall）。這些假另有扣款／給薪處理，在時數上視同已出勤。
     const LMAP = payAttLeaves(att);
@@ -1363,7 +1378,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   // 請假扣款：費率用「未折算」的全額（費率是職位時薪，不因月中到職而改變）
   const rateRaw =
     (payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) +
-     payNum(e.mgr_allow) + payNum(e.attend_cap)) / payNum(cfg.leave_div_days) / payNum(cfg.leave_div_hours);
+     payNum(e.mgr_allow) + payNum(e.attend_cap)) / payCfgPos_(cfg, 'leave_div_days') / payCfgPos_(cfg, 'leave_div_hours');
   const rate = payR0(rateRaw);
   /* 請假扣款：一律查假別表算，不再逐種假寫死。
    *   扣款率 ＝ rate ×（1 − 給薪比例）：事假 0%→全扣、病假 50%→扣一半、特休 100%→不扣。
@@ -1379,7 +1394,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     // 2026-11 起（出勤認定清單 E3）：正職改「月工資 ÷30 ÷每日工時」；計時＝有效時薪
     const ah = payR2(annualH);
     const aRate = !payOtDailyOn(ym) ? payR2(rateRaw)
-      : (ft ? payR2(MW / PAY_OT_DAY_DIV / (payNum(cfg.daily_hours) || 8)) : payR2(ptWage));
+      : (ft ? payR2(MW / PAY_OT_DAY_DIV / payCfgPos_(cfg, 'daily_hours')) : payR2(ptWage));
     push(earn, 'annual_payout', '特休未休折算', ah, aRate, ah * aRate);
   }
 
@@ -1483,7 +1498,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     out.ot_info.absent_streak = otS.no_show_streak;
     out.ot_info.short_8h = ft ? payMztShortDays_(e, att.daily) : [];
     const marPrior = payNum(((att.leave_usage || {}).marriage || {}).no_event_prior_days), marNow = payNum((payAttLeaves(att) || {}).marriage);
-    if (marPrior > 0 && marNow > 0) out.ot_info.marriage_cross = { prior_days: marPrior, month_days: payR2(marNow / (payNum(cfg.daily_hours) || 8)) };
+    if (marPrior > 0 && marNow > 0) out.ot_info.marriage_cross = { prior_days: marPrior, month_days: payR2(marNow / payCfgPos_(cfg, 'daily_hours')) };
     out.ot_info.personal_over_days = payPersonalOverDays_(att, cfg, ltypes);
     if (att.support_leave && att.support_leave.length) out.ot_info.support_leave = att.support_leave;   // 支援店記的假：只提醒，薪資沒扣
   }
@@ -2005,8 +2020,7 @@ function payLeaveQuotaDays_(code, h, dayH) {
   return (code === 'menstrual' && days > 0) ? Math.ceil(days) : days;
 }
 function payLeaveDayHours(cfg) {
-  const h = payNum((cfg || {}).daily_hours);
-  return h > 0 ? h : 8;
+  return payCfgPos_(cfg, 'daily_hours');
 }
 
 /** 算某員工各假別的已用額度與剩餘。
@@ -2559,6 +2573,18 @@ function handlePayrollConfigSet(body) {
     return { key: k, value: String(body.config[k]), note: '', store: stC };
   });
   if (!rows.length) return { ok: false, error: 'config_required' };
+  /* 一定要是正數的六個參數（分母、門檻、每日工時）：送來的值不是正數 → 整批不存（薪酬挑錯第 3 項，Eason 2026-11-11 確認）。
+     金額欄的 0 是合法值，不在這張表裡。鍵與引擎的 PAY_CFG_POS_DEFAULT 同一組；
+     這支會被 tests/config-single-save.test.js 單獨抽出來跑，所以清單寫在函式裡面。 */
+  const posLabel = { daily_hours: '每日基本工時', leave_div_days: '事假費率分母（天）', leave_div_hours: '事假費率分母（時）',
+    late_div_days: '遲到費率分母（天）', late_div_hours: '遲到費率分母（時）', meal_min_hours: '餐費補助門檻' };
+  const badKeys = rows.filter(function (r) {
+    if (!Object.prototype.hasOwnProperty.call(posLabel, r.key)) return false;
+    const x = Number(String(r.value).trim());
+    return typeof body.config[r.key] === 'boolean' || !(isFinite(x) && x > 0);
+  }).map(function (r) { return r.key; });
+  if (badKeys.length) return { ok: false, error: 'bad_value', keys: badKeys,
+    message: badKeys.map(function (k) { return '「' + posLabel[k] + '」'; }).join('、') + '要填大於 0 的數字，這次沒有儲存' };
   /* 單項儲存（2026-10-10 Eason：「只套用到目前門市要一次單獨儲存一項，不要全部項目連動」）：
      帶 keys:true 時只換送來的這幾個鍵，同一 scope 的其他參數原樣保留。
      不帶＝舊行為（整批覆寫該 scope），setMode 等舊呼叫不受影響。 */
@@ -2822,7 +2848,7 @@ function payInputsBase(ym, store, cutoffDate) {
   const holRow = payHolidayRow(ym, st);
   const holDates = payHolidayDates(holRow);
   const cfgSt = payConfig(st);
-  const base = payCollect(ym, cfgSt.meal_min_hours, st, holDates, cutoffDate);
+  const base = payCollect(ym, payCfgPos_(cfgSt, 'meal_min_hours'), st, holDates, cutoffDate);
   const saved = paySavedInputs(ym, st);
   /* 每日倒扣只算請假日的門市（央廚／總部，2026-10-10）：有打卡資料的人，缺勤天數一律取歸集值。
      手動列存的 deduct_days 是按「儲存工時」當下、用舊口徑（忘刷／遲到也算）算出的快照，
@@ -2906,7 +2932,7 @@ function handlePayrollInputSet(body) {
      本店有歸集的人照舊整筆手動（行為不變）。歸集讀不到（例外）時也照舊。 */
   let colHome = null;
   if (xsup) {
-    try { colHome = payCollect(ym, payConfig(st).meal_min_hours, st, payHolidayDates(payHolidayRow(ym, st))); }
+    try { colHome = payCollect(ym, payCfgPos_(payConfig(st), 'meal_min_hours'), st, payHolidayDates(payHolidayRow(ym, st))); }
     catch (e) { colHome = null; }
   }
   const rows = Object.keys(inputs).map(function (emp) {

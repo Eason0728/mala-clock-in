@@ -2650,15 +2650,22 @@ function renderCfgScope(){
     const own=$(d.own)&&$(d.own).checked;
     if($(d.scope)) $(d.scope).textContent=own?'（儲存後只影響目前門市）':'（集團預設，全店共用）';});
 }
+/* 一定要是正數的六個參數（分母、門檻、每日工時）：欄位清空會變成 0，存進去整個月的薪資會算錯，所以送出前先擋
+   （薪酬挑錯第 3 項，Eason 2026-11-11 確認）。金額欄的 0 是合法值，不在這張表裡。
+   鍵與後端 Payroll.gs 的 PAY_CFG_POS_DEFAULT、handlePayrollConfigSet 同一組。 */
+const CFG_POS={daily_hours:'每日基本工時',leave_div_days:'事假費率分母（天）',leave_div_hours:'事假費率分母（時）',
+  late_div_days:'遲到費率分母（天）',late_div_hours:'遲到費率分母（時）',meal_min_hours:'餐費補助門檻'};
 async function saveCfg(btn,label,card){
   const d=CFG_CARDS[card||'cfg'];
   const keys=d.keys().filter(k=>(k in CFG_DIRTY)&&CFG_OBSOLETE.indexOf(k)<0);
   if(!keys.length){toast('這張卡沒有改過的欄位，不需要儲存');return}
+  const bad=keys.filter(k=>(k in CFG_POS)&&!(typeof CFG[k]!=='boolean'&&isFinite(Number(String(CFG[k]).trim()))&&Number(String(CFG[k]).trim())>0));
+  if(bad.length){toast(bad.map(k=>'「'+CFG_POS[k]+'」').join('、')+'要填大於 0 的數字，這次沒有儲存',true);return}
   const own=!!($(d.own)&&$(d.own).checked);
   return saveFX(btn,label||'儲存',async()=>{
     const send={};keys.forEach(k=>send[k]=CFG[k]);
     const r=await post('payroll_config_set',{config:send,store:own?STORE:'',keys:true});
-    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    if(!r.ok){toast('儲存失敗：'+(r.message||r.error||''),true);return false}
     // 存成集團預設、但本店另有專屬值的鍵：本店照用專屬值，畫面要說清楚，不然會以為存了沒生效
     const shadow=own?[]:keys.filter(k=>CFGSRC[k]==='own');
     keys.forEach(k=>{
