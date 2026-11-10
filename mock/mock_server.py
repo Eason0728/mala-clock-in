@@ -766,87 +766,109 @@ def unrecorded_attempt_count(data, emp_id, date_str):
 
 
 def lone_cards_for_periods(periods, full_segs, punch_segments, near_ms=4 * 3600000):
-    """與 Code.gs loneCardsForPeriods_ 同步。"""
-    open_periods = [pi for pi, p in enumerate(periods)
-                    if not any(min(p["end_ms"], s["out_ms"]) - max(p["start_ms"], s["in_ms"]) > 0 for s in full_segs)]
-    result = {}
-    for s in punch_segments:
-        if (s["in_ms"] is None) == (s["out_ms"] is None):
-            continue
-        best, best_dist = -1, near_ms + 1
-        for pi in open_periods:
-            if pi in result:
+    """與 Code.gs loneCardsForPeriods_ 同步（2026-11-10：整天找配到最多、總距離最小的配法）。"""
+    open_p = [pi for pi, p in enumerate(periods)
+              if not any(min(p["end_ms"], s["out_ms"]) - max(p["start_ms"], s["in_ms"]) > 0 for s in full_segs)]
+    cards = [s for s in punch_segments if (s["in_ms"] is None) != (s["out_ms"] is None)]
+    if not open_p or not cards or len(cards) > 8:
+        return {}
+    def dist(c, pi):
+        d = abs(c["in_ms"] - periods[pi]["start_ms"]) if c["in_ms"] is not None else abs(c["out_ms"] - periods[pi]["end_ms"])
+        return d if d <= near_ms else None
+    best = [{}, 0, float("inf")]
+    def walk(ci, pick, n, total):
+        if ci == len(cards):
+            if n > best[1] or (n == best[1] and n > 0 and total < best[2]):
+                best[0], best[1], best[2] = dict(pick), n, total
+            return
+        walk(ci + 1, pick, n, total)
+        for pi in open_p:
+            if pi in pick:
                 continue
-            dist = abs(s["in_ms"] - periods[pi]["start_ms"]) if s["in_ms"] is not None else abs(s["out_ms"] - periods[pi]["end_ms"])
-            if dist < best_dist:
-                best, best_dist = pi, dist
-        if best != -1:
-            result[best] = s
-    return result if all(pi in result for pi in open_periods) else {}
+            d = dist(cards[ci], pi)
+            if d is None:
+                continue
+            pick[pi] = cards[ci]
+            walk(ci + 1, pick, n + 1, total + d)
+            del pick[pi]
+    walk(0, {}, 0, 0)
+    return best[0]
 
 
 def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=False, break_window=None):
-    """比對主管輸入時段 vs 打卡段，回傳狀態字串（與 Code.gs computeApprovalStatus 同步）。
-    periods: [{"start_ms","end_ms"}]；punch_segments: [{"in_ms","out_ms"}]（未配對為 None）。
-    had_unrecorded_attempts: 當天有沒有送出但沒入帳的打卡，決定對不到段時的措辭。"""
+    """與 Code.gs computeApprovalStatus 同步（2026-11-10 口徑統一）。"""
+    rnd = lambda x: int(math.floor(x / 60000 + 0.5))
     full_segs = [s for s in punch_segments if s["in_ms"] is not None and s["out_ms"] is not None]
-    notes = []
-    used = set()
-    matched_idx = []   # 核定時段 index → 配到的完整打卡段 index（-1＝沒配到）
-    lone = {} if had_unrecorded_attempts else lone_cards_for_periods(periods, full_segs, punch_segments)
-
+    legacy = bool(had_unrecorded_attempts)
+    sorted_p = sorted(periods, key=lambda q: q["start_ms"])
+    multi_orig = len(sorted_p) > 1
+    blocks = []
+    for k, q in enumerate(sorted_p):
+        last = blocks[-1] if blocks else None
+        if (not legacy and break_window and last and q["start_ms"] > last["end_ms"]
+                and last["end_ms"] < break_window["end_ms"] and q["start_ms"] > break_window["start_ms"]):
+            last["end_ms"] = max(last["end_ms"], q["end_ms"])
+            last["last"] = k + 1
+        else:
+            blocks.append({"start_ms": q["start_ms"], "end_ms": q["end_ms"], "first": k + 1, "last": k + 1})
+    if not legacy and break_window:
+        periods = blocks
+    lone = {} if legacy else lone_cards_for_periods(periods, full_segs, punch_segments)
+    multi = len(periods) > 1 and multi_orig
+    any_card = len(punch_segments) > 0
+    order = sorted(range(len(periods)), key=lambda i: periods[i]["start_ms"])
+    in_no, out_no = {}, {}
+    for pi, q in enumerate(periods):
+        hit = [x for x in blocks if x["start_ms"] <= q["start_ms"] and x["end_ms"] >= q["end_ms"]]
+        in_no[pi], out_no[pi] = (hit[0]["first"], hit[0]["last"]) if hit else (pi + 1, pi + 1)
+    notes, used, matched = [], set(), {}
+    def add(n):
+        if n not in notes:
+            notes.append(n)
     for pi, p in enumerate(periods):
-        best_i, best_overlap = -1, 0
+        best_i, best_ov = -1, 0
         for i, seg in enumerate(full_segs):
-            overlap = min(p["end_ms"], seg["out_ms"]) - max(p["start_ms"], seg["in_ms"])
-            if overlap > best_overlap:
-                best_overlap, best_i = overlap, i
-        if best_i == -1 and pi in lone:   # 與 Code.gs 同步：只算真正漏的那張
-            matched_idx.append(len(full_segs) + pi)
-            miss = "下班忘刷卡" if lone[pi]["out_ms"] is None else "上班忘刷卡"
-            if miss not in notes:
-                notes.append(miss)
+            ov = min(p["end_ms"], seg["out_ms"]) - max(p["start_ms"], seg["in_ms"])
+            if ov > best_ov:
+                best_ov, best_i = ov, i
+        matched[pi] = best_i
+        if best_i == -1 and pi in lone:
+            matched[pi] = len(full_segs) + pi
+            c = lone[pi]
+            if c["out_ms"] is None:
+                if c["in_ms"] > p["start_ms"]:
+                    notes.append("遲到{}分".format(rnd(c["in_ms"] - p["start_ms"])))
+                add(seg_miss_note(out_no[pi], "段下班忘刷卡") if multi else "下班忘刷卡")
+            else:
+                if c["out_ms"] < p["end_ms"]:
+                    notes.append("早退{}分".format(rnd(p["end_ms"] - c["out_ms"])))
+                add(seg_miss_note(in_no[pi], "段上班忘刷卡") if multi else "上班忘刷卡")
             continue
-        matched_idx.append(best_i)
+        if best_i == -1 and not legacy and multi and any_card:
+            matched[pi] = -2 - pi
+            add(seg_miss_note(in_no[pi], SEG_MISS_IN))
+            add(seg_miss_note(out_no[pi], SEG_MISS_OUT))
+            continue
         if best_i == -1:
-            note = NOT_RECORDED_NOTE if had_unrecorded_attempts else NO_PUNCH_NOTE
-            if note not in notes:
-                notes.append(note)
+            add(NOT_RECORDED_NOTE if had_unrecorded_attempts else NO_PUNCH_NOTE)
             continue
         used.add(best_i)
         seg = full_segs[best_i]
-        # B3：Python round() 是銀行家捨入，與 JS Math.round 不同；改用 floor(x+0.5)（值恆非負，即四捨五入）
         if seg["in_ms"] > p["start_ms"]:
-            notes.append("遲到{}分".format(int(math.floor((seg["in_ms"] - p["start_ms"]) / 60000 + 0.5))))
+            notes.append("遲到{}分".format(rnd(seg["in_ms"] - p["start_ms"])))
         if seg["out_ms"] < p["end_ms"]:
-            notes.append("早退{}分".format(int(math.floor((p["end_ms"] - seg["out_ms"]) / 60000 + 0.5))))
-
-    # 「第N段下班無打卡／第N段上班無打卡」（2026-09-29，取代「少刷N組卡」，與 Code.gs 同步）：
-    # 兩個核定時段之間若有無法用休息帶解釋的間隔，中間本來就該有一張下班卡與一張上班卡；
-    # 有打的證據＝前後兩段各自配到「不同」的完整打卡段。間隔＝0 不算。
-    # ⚠「打卡未入帳」的日子只沿用舊行為（兩段配到同一條完整段才標）。
-    ordered = sorted(zip(periods, matched_idx), key=lambda t: t[0]["start_ms"])
-    max_end = None
-    prev_idx = -1
-    prev_no = 0
-    for i, (p, idx) in enumerate(ordered):
-        no = i + 1
-        if max_end is None:
-            max_end, prev_idx, prev_no = p["end_ms"], idx, no
-            continue
-        gap_s, gap_e = max_end, p["start_ms"]
-        explained = bool(break_window) and gap_s < break_window["end_ms"] and gap_e > break_window["start_ms"]
-        if gap_e > gap_s and not explained:
-            punched = prev_idx != -1 and idx != -1 and idx != prev_idx
-            one_side_unmatched = prev_idx == -1 or idx == -1
-            if not punched and (not one_side_unmatched or not had_unrecorded_attempts):
-                for n in (seg_miss_note(prev_no, SEG_MISS_OUT), seg_miss_note(no, SEG_MISS_IN)):
-                    if n not in notes:
-                        notes.append(n)
-        if p["end_ms"] > max_end:
+            notes.append("早退{}分".format(rnd(p["end_ms"] - seg["out_ms"])))
+    max_end, prev_idx, prev_no = None, -1, 0
+    for pi in order:
+        p, idx = periods[pi], matched[pi]
+        if max_end is not None and p["start_ms"] > max_end:
+            explained = bool(break_window) and max_end < break_window["end_ms"] and p["start_ms"] > break_window["start_ms"]
+            if not explained and prev_idx >= 0 and idx >= 0 and idx == prev_idx:
+                add(seg_miss_note(prev_no, SEG_MISS_OUT))
+                add(seg_miss_note(in_no[pi], SEG_MISS_IN))
+        if max_end is None or p["end_ms"] > max_end:
             max_end = p["end_ms"]
-        prev_idx, prev_no = idx, no
-
+        prev_idx, prev_no = idx, out_no[pi]
     if len(full_segs) > len(used):
         notes.append("有多出的打卡段")
     return "、".join(notes) if notes else "正常"

@@ -586,10 +586,10 @@ function buildRecentDays(eventRows, empId, todayStr, approvedMap) {
   });
 
   paired.unmatchedOuts.forEach(function (e) {
-    const d = tsDateStr(e.ts);
+    const d = loneOutDate_(e.ts);
     if (d < startStr || d > todayStr) return;
     const c = day(d);
-    c.segments.push({ sortMs: tsMs(e.ts), in: null, out: tsHm(e.ts), cross: false });
+    c.segments.push({ sortMs: tsMs(e.ts), in: null, out: tsHm(e.ts), cross: d !== tsDateStr(e.ts) });
     c.notes.push('上班忘刷卡');
   });
 
@@ -686,7 +686,7 @@ function monthWorkedDays(eventRows, empId, ym) {
   function mark(d) { if (String(d).slice(0, 7) === ym) days[d] = true; }
   paired.shifts.forEach(function (s) { mark(tsDateStr(s.in_ts)); });
   paired.unmatchedIns.forEach(function (e) { mark(tsDateStr(e.ts)); });
-  paired.unmatchedOuts.forEach(function (e) { mark(tsDateStr(e.ts)); });
+  paired.unmatchedOuts.forEach(function (e) { mark(loneOutDate_(e.ts)); });
   return Object.keys(days);
 }
 
@@ -1733,6 +1733,8 @@ function handleMgrDay(body) {
       shift_out: shiftOf(item.emp_id, 'shift_out', CONFIG.DEFAULT_SHIFT_OUT),
     };
     if (item.first_support) out.first_support = true;
+    const rr = findRosterByEmpId(rosterRows, item.emp_id);
+    if (rr && !String(rr.line_user_id || '').trim()) out.no_line = true;   // 沒綁 LINE（2026-11-10：考勤管理手機版 7 天內也能代開）
     if (hasPunch) {
       const dg = dupPunchGroups_(eventRows, item.emp_id, date);
       if (dg.length) out.dup_groups = dg;
@@ -2341,8 +2343,10 @@ function dayPunchSegments(eventRows, empId, dateStr) {
     segments.push({ sortMs: tsMs(e.ts), in: tsHm(e.ts), out: null, cross: false });
   });
   paired.unmatchedOuts.forEach(function (e) {
-    if (tsDateStr(e.ts) !== dateStr) return;
-    segments.push({ sortMs: tsMs(e.ts), in: null, out: tsHm(e.ts), cross: false });
+    // 凌晨 06:00 以前的孤單下班卡＝前一天的跨夜班（2026-11-10 Eason，同 Requests.gs REQ_EARLY_OUT_HM）
+    const d = loneOutDate_(e.ts);
+    if (d !== dateStr) return;
+    segments.push({ sortMs: tsMs(e.ts), in: null, out: tsHm(e.ts), cross: d !== tsDateStr(e.ts) });
   });
 
   segments.sort(function (a, b) { return a.sortMs - b.sortMs; });
@@ -2469,35 +2473,71 @@ function gapExplainedByBreak(gapStartMs, gapEndMs, breakWindow) {
   return gapStartMs < breakWindow.endMs && gapEndMs > breakWindow.startMs;
 }
 
-// 只打了一張卡的段落歸給最近的核定時段（前後 4 小時內，同 Requests.gs REQ_BIND_NEAR_MS，2026-11-10 Eason）。
-// 每個核定時段都要有打卡證據才採用；有時段完全沒卡時回 {}，維持原本的逐段標示（中間休息沒打也要標出來）。
+// 只打了一張卡的段落歸給核定時段（前後 4 小時內，同 Requests.gs REQ_BIND_NEAR_MS）。2026-11-10 Eason：整天一起找配到最多張、
+// 總距離最小的配法（不再先到先配）；有的時段完全沒卡也照樣採用，那段自己標上班、下班都沒打。卡太多（>8 張）不配。
 const LONE_CARD_NEAR_MS = 4 * 3600000;
+const LONE_EARLY_OUT_HM = '06:00';
+/** 孤單下班卡歸哪一天：凌晨 06:00 以前算前一天的跨夜班（2026-11-10 Eason；核定狀態、月表、薪資、申請單同一口徑） */
+function loneOutDate_(ts) { const d = tsDateStr(ts); return tsHm(ts) <= LONE_EARLY_OUT_HM ? addDaysStr(d, -1) : d; }
+const SEG_FORGOT_OUT = '段下班忘刷卡';
+const SEG_FORGOT_IN = '段上班忘刷卡';
 function loneCardsForPeriods_(periods, fullSegs, punchSegments) {
   const open = [];
   periods.forEach(function (p, pi) {
-    const hasFull = fullSegs.some(function (s) { return Math.min(p.endMs, s.outMs) - Math.max(p.startMs, s.inMs) > 0; });
-    if (!hasFull) open.push(pi);
+    if (!fullSegs.some(function (s) { return Math.min(p.endMs, s.outMs) - Math.max(p.startMs, s.inMs) > 0; })) open.push(pi);
   });
-  const result = {};
-  punchSegments.forEach(function (s) {
-    if ((s.inMs == null) === (s.outMs == null)) return;
-    let best = -1, bestDist = LONE_CARD_NEAR_MS + 1;
+  const cards = punchSegments.filter(function (s) { return (s.inMs == null) !== (s.outMs == null); });
+  if (!open.length || !cards.length || cards.length > 8) return {};
+  const dist = function (c, pi) {
+    const d = c.inMs != null ? Math.abs(c.inMs - periods[pi].startMs) : Math.abs(c.outMs - periods[pi].endMs);
+    return d <= LONE_CARD_NEAR_MS ? d : null;
+  };
+  let best = {}, bestN = 0, bestD = Infinity;
+  (function walk(ci, pick, n, total) {
+    if (ci === cards.length) {
+      if (n > bestN || (n === bestN && n > 0 && total < bestD)) { bestN = n; bestD = total; best = Object.assign({}, pick); }
+      return;
+    }
+    walk(ci + 1, pick, n, total);
     open.forEach(function (pi) {
-      if (result[pi]) return;
-      const dist = s.inMs != null ? Math.abs(s.inMs - periods[pi].startMs) : Math.abs(s.outMs - periods[pi].endMs);
-      if (dist < bestDist) { bestDist = dist; best = pi; }
+      if (pick[pi]) return;
+      const d = dist(cards[ci], pi);
+      if (d === null) return;
+      pick[pi] = cards[ci];
+      walk(ci + 1, pick, n + 1, total + d);
+      delete pick[pi];
     });
-    if (best !== -1) result[best] = s;
-  });
-  return open.every(function (pi) { return result[pi]; }) ? result : {};
+  })(0, {}, 0, 0);
+  return best;
 }
 
 function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip, breakWindow) {
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
-  const lone = (isTrip || hadUnrecordedAttempts) ? {} : loneCardsForPeriods_(periods, fullSegs, punchSegments);
+  const legacy = !!(isTrip || hadUnrecordedAttempts);   // 出差、打卡未入帳：照舊標示，不冤枉人
+  // 段號照店長輸入的核定時段（依時間先後）；規定不打卡的休息帶（央廚）隔開的兩段併成一塊，和補單張數一致
+  //（2026-11-10；否則漏一張卡會寫成三張）。併起來的那塊：上班卡用第一段的段號、下班卡用最後一段的段號。
+  const sortedP = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
+  const multiOrig = sortedP.length > 1;
+  const blocks = sortedP.reduce(function (acc, p, k) {
+    const last = acc[acc.length - 1];
+    if (!legacy && breakWindow && last && p.startMs > last.endMs && gapExplainedByBreak(last.endMs, p.startMs, breakWindow)) {
+      last.endMs = Math.max(last.endMs, p.endMs); last.lastNo = k + 1;
+    } else acc.push({ startMs: p.startMs, endMs: p.endMs, firstNo: k + 1, lastNo: k + 1 });
+    return acc;
+  }, []);
+  if (!legacy && breakWindow) periods = blocks;
+  const lone = legacy ? {} : loneCardsForPeriods_(periods, fullSegs, punchSegments);
+  const multi = periods.length > 1 && multiOrig;
+  const anyCard = punchSegments.length > 0;
+  const inNo = [], outNo = [];
+  periods.forEach(function (p, pi) {
+    const b = blocks.filter(function (x) { return x.startMs <= p.startMs && x.endMs >= p.endMs; })[0];
+    inNo[pi] = b ? b.firstNo : pi + 1; outNo[pi] = b ? b.lastNo : pi + 1;
+  });
   const notes = [];
+  const add = function (n) { if (notes.indexOf(n) === -1) notes.push(n); };
   const usedIdx = {};
-  const matchedIdx = [];   // 核定時段 index → 配到的完整打卡段 index（-1＝沒配到，供下方逐段檢查）
+  const matchedIdx = [];   // 核定時段 index → 配到的完整打卡段 index（≥0 有證據；<0 沒有，供下方逐段檢查）
 
   periods.forEach(function (p, pi) {
     let bestIdx = -1;
@@ -2508,18 +2548,29 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
     });
     matchedIdx[pi] = bestIdx;
     if (bestIdx === -1 && lone[pi]) {
-      // 有打上班或下班其中一張：只算真正漏的那張，matchedIdx 給獨立編號，中間休息才不會被誤標沒打卡
+      // 只打了一張卡（2026-11-10）：只標真正漏的那張；有的那張照樣算遲到或早退；多段時寫段號
       matchedIdx[pi] = fullSegs.length + pi;
-      const missNote = lone[pi].outMs == null ? '下班忘刷卡' : '上班忘刷卡';
-      if (notes.indexOf(missNote) === -1) notes.push(missNote);
+      const c = lone[pi];
+      if (c.outMs == null) {
+        if (c.inMs > p.startMs) notes.push('遲到' + Math.round((c.inMs - p.startMs) / 60000) + '分');
+        add(multi ? segMissNote(outNo[pi], SEG_FORGOT_OUT) : '下班忘刷卡');
+      } else {
+        if (c.outMs < p.endMs) notes.push('早退' + Math.round((p.endMs - c.outMs) / 60000) + '分');
+        add(multi ? segMissNote(inNo[pi], SEG_FORGOT_IN) : '上班忘刷卡');
+      }
+      return;
+    }
+    if (bestIdx === -1 && !legacy && multi && anyCard) {
+      // 這天別的時段有打卡、這段整段沒打（2026-11-10）：標這一段的上班、下班，不再寫成前一段沒下班
+      matchedIdx[pi] = -2 - pi;
+      add(segMissNote(inNo[pi], SEG_MISS_IN));
+      add(segMissNote(outNo[pi], SEG_MISS_OUT));
       return;
     }
     if (bestIdx === -1) {
-      // 舊呼叫端沒傳第三／第四個參數＝undefined＝falsy，行為與改版前相同。
       // ⚠ 出差當天本來就打不了卡（人不在店裡），標「該段無打卡」會被當成忘刷卡去扣全勤，
       //    所以改標「出差」——時數照算、工資照給，只是提醒看表的人這天不在店。
-      const note = isTrip ? TRIP_NOTE : (hadUnrecordedAttempts ? NOT_RECORDED_NOTE : NO_PUNCH_NOTE);
-      if (notes.indexOf(note) === -1) notes.push(note);
+      add(isTrip ? TRIP_NOTE : (hadUnrecordedAttempts ? NOT_RECORDED_NOTE : NO_PUNCH_NOTE));
       return;
     }
     usedIdx[bestIdx] = true;
@@ -2528,36 +2579,25 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
     if (seg.outMs < p.endMs) notes.push('早退' + Math.round((p.endMs - seg.outMs) / 60000) + '分');
   });
 
-  // 「第N段下班無打卡／第N段上班無打卡」（2026-09-29 Eason 指定，取代原本的「少刷N組卡」）：
-  // 兩個核定時段之間若有無法用休息帶解釋的間隔，中間本來就該有一張下班卡與一張上班卡。
-  // 有打的證據＝前後兩段各自配到「不同」的完整打卡段；否則把缺的那兩張各標一行，
-  // 讓看表的人知道是哪一段的哪一張沒打，而不是只知道少了幾組。
-  // ⚠ 舊版只在「兩段配到同一條完整段」時抓得到；只有上班卡、沒有下班卡的日子 fullSegs 是空的，
-  //   連中間休息沒刷卡都標不出來（金山一位同仁 2026-09-23、25、26、27 實例）。
-  // ⚠ 間隔＝0 不算：主管把一段連續班拆成兩段核定（例如分開算加班），同仁中間本來就不必刷卡。
-  // ⚠ 出差與「打卡未入帳」的日子只沿用舊行為（兩段配到同一條完整段才標）：前者人不在店裡、
-  //   後者同仁其實有按，把新抓到的那種也標上去是冤枉人。
-  // ⚠ 遲到／早退照原樣算不動：那兩個數字來自真實的頭尾打卡時間，仍然是對的。
+  // 「第N段下班無打卡／第N段上班無打卡」（2026-09-29 Eason 指定）：兩段之間有無法用休息帶解釋的空檔、
+  // 卻配到同一條完整打卡段＝中間休息的下班卡、上班卡都沒打。間隔＝0（拆段核定）不算。
+  // 有一邊沒證據時，那一段自己已經標了（2026-11-10 起不再補標前一段沒下班）。
   const ordered = periods.map(function (p, i) { return { p: p, idx: matchedIdx[i] }; })
     .sort(function (a, b) { return a.p.startMs - b.p.startMs; });
   let maxEnd = null;
   let prevIdx = -1;
   let prevNo = 0;
-  ordered.forEach(function (o, i) {
-    const no = i + 1;
-    if (maxEnd === null) { maxEnd = o.p.endMs; prevIdx = o.idx; prevNo = no; return; }
-    if (o.p.startMs > maxEnd && !gapExplainedByBreak(maxEnd, o.p.startMs, breakWindow)) {
-      const punched = prevIdx !== -1 && o.idx !== -1 && o.idx !== prevIdx;
-      const oneSideUnmatched = prevIdx === -1 || o.idx === -1;
-      if (!punched && (!oneSideUnmatched || (!isTrip && !hadUnrecordedAttempts))) {
-        [segMissNote(prevNo, SEG_MISS_OUT), segMissNote(no, SEG_MISS_IN)].forEach(function (n) {
-          if (notes.indexOf(n) === -1) notes.push(n);
-        });
-      }
+  ordered.forEach(function (o) {
+    const pi = periods.indexOf(o.p);
+    if (maxEnd === null) { maxEnd = o.p.endMs; prevIdx = o.idx; prevNo = outNo[pi]; return; }
+    if (o.p.startMs > maxEnd && !gapExplainedByBreak(maxEnd, o.p.startMs, breakWindow)
+        && prevIdx >= 0 && o.idx >= 0 && o.idx === prevIdx) {
+      add(segMissNote(prevNo, SEG_MISS_OUT));
+      add(segMissNote(inNo[pi], SEG_MISS_IN));
     }
     if (o.p.endMs > maxEnd) maxEnd = o.p.endMs;
     prevIdx = o.idx;
-    prevNo = no;
+    prevNo = outNo[pi];
   });
 
   if (fullSegs.length > Object.keys(usedIdx).length) notes.push('有多出的打卡段');
@@ -2662,7 +2702,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
   });
 
   paired.unmatchedOuts.forEach(function (e) {
-    const d = tsDateStr(e.ts);
+    const d = loneOutDate_(e.ts);
     if (!inMonthToEnd(d)) return;
     const c = cell(d, String(e.emp_id));
     c.segments.push({ sortMs: tsMs(e.ts), text: '？–' + tsHm(e.ts) });

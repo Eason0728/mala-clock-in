@@ -105,7 +105,7 @@ const PAY_CONFIG_DEFAULT = [
   // 哪些日子算進「每日倒扣」（2026-10-10 Eason：央廚／總部全勤是全有全無，只有病假一天扣 100，
   // 忘刷／遲到／早退只看上面的門檻歸零、當天不倒扣）。all＝改版前行為（光復）；leave＝只算請假日。
   ['attend_deduct_basis', 'all', '每日倒扣算哪些日子：all＝遲到早退忘刷請假都算、leave＝只算請假日'],
-  ['attend_forget_unit', 'punch', '忘刷計數單位：punch＝每漏一張卡算一次、day＝同一天只算一次'],
+  ['attend_forget_unit', 'punch', '忘刷計數單位：punch＝每漏一張卡算一次、day＝同一天只算一次（2026-11 起一律以天計，這個設定只管 10 月以前）'],
   ['attend_void_late_min', 0, '遲到累計達幾分鐘(含)以上→全勤歸零，0＝不啟用'],
   ['attend_void_early_min', 0, '早退累計達幾分鐘(含)以上→全勤歸零，0＝不啟用'],
   ['leave_div_days', 30, '事假費率分母（天）'],
@@ -431,7 +431,8 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     markForget(String(e.emp_id), d);
   });
   paired.unmatchedOuts.forEach(function (e) {
-    const d = tsDateStr(e.ts);
+    // 凌晨 06:00 以前的孤單下班卡算前一天（跨夜班，2026-11-10 Eason；同核定狀態與申請單）
+    const d = payRules3On_(ym) ? loneOutDate_(e.ts) : tsDateStr(e.ts);   // 11 月起凌晨下班卡算前一天
     if (d.slice(0, 7) !== ym) return;
     if (cutoffDate && d > cutoffDate) return;
     markForget(String(e.emp_id), d);
@@ -1171,7 +1172,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
        * attend_effect='void' 的假（例：央廚／總部「有事假就沒全勤」）→ 整筆歸零。
        * ⚠ 三個門檻參數預設 0＝不啟用，assend_effect 預設留空＝沿用舊行為，
        *   所以沒設定的門市（光復）算出來與改版前完全相同。 */
-      const voidReason = payAttendVoid(att, cfg) || payFamilyOverVoid_(att, e, ym, cfg, ltypes);
+      const voidReason = payAttendVoid(att, cfg, ym) || payFamilyOverVoid_(att, e, ym, cfg, ltypes);
       const bonusAmt = voidReason ? 0
         : Math.max(0, payNum(e.attend_cap) * P - att.deduct_days * payNum(cfg.attend_deduct_per_day));
       // 2026-11 起改名「績效獎金」（出勤認定清單 E1），規則不變
@@ -1476,9 +1477,10 @@ function payDayBefore(dstr) {
 
 /** 全勤是否整筆歸零；回歸零原因字串，沒歸零回空字串。
  *  參數全部可依門市覆寫（payroll_config 的 store 欄），預設 0／空＝不啟用。 */
-function payAttendVoid(att, cfg) {
+function payAttendVoid(att, cfg, ym) {
   if (att.attend_void) return '請假未達全勤';
-  const unit = String((cfg || {}).attend_forget_unit || 'punch');
+  // 2026-11 起忘刷一律以天計（Eason 2026-11-10：同一天不管漏幾張、整段沒打都算 1 次）；10 月以前照門市設定
+  const unit = (ym && payRules3On_(ym)) ? 'day' : String((cfg || {}).attend_forget_unit || 'punch');
   const fCap = payNum((cfg || {}).attend_void_forget);
   if (fCap > 0) {
     const n = (unit === 'day') ? payNum(att.forget_day) : payNum(att.forget_punch);
@@ -3857,7 +3859,7 @@ function handlePayrollPunch(body) {
   const today = todayTaipeiStr();
   const missDays = {};
   function markMiss(e, skipToday) {
-    const d = tsDateStr(e.ts);
+    const d = (skipToday || !payRules3On_(ym)) ? tsDateStr(e.ts) : loneOutDate_(e.ts);   // 下班卡凌晨 06:00 前算前一天（同 payCollect）
     if (d.slice(0, 7) !== ym) return;
     if (skipToday && d === today) return;   // 今天未配對＝上班中，不算忘刷（同 payCollect）
     missDays[String(e.emp_id) + '|' + d] = true;
@@ -3868,7 +3870,8 @@ function handlePayrollPunch(body) {
   Object.keys(approvedMap).forEach(function (d) {
     if (String(d).slice(0, 7) !== ym) return;
     Object.keys(approvedMap[d]).forEach(function (emp) {
-      if (payMissingCards(approvedMap[d][emp].status_text)) missDays[String(emp) + '|' + d] = true;
+      const st = String(approvedMap[d][emp].status_text || '');
+      if (payMissingCards(st) || (payNoPunchSeg_(st) && payRules3On_(ym))) missDays[String(emp) + '|' + d] = true;   // 整段沒打卡同 payCollect
     });
   });
   Object.keys(missDays).forEach(function (k) { box(k.split('|')[0]).miss++; });

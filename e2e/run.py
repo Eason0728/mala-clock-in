@@ -1060,6 +1060,12 @@ def phase_payroll(page, data, exp_att):
     # 清除本月手動工時（破壞性，清完重算回來）
     click_text(page, None, '出勤資料', '切到出勤資料分頁')
     page.wait_for_timeout(1200)
+    # 跨店支援「逐日」按了會變「收合」（2026-11-10：按鈕稽核偶爾報收合漏測，看隨機資料有沒有支援時數）
+    if click_text(page, None, '逐日', '跨店支援展開逐日明細', exact=True):
+        page.wait_for_timeout(500)
+    if page.locator('button:text-is("收合")').count():
+        click_text(page, None, '收合', '跨店支援收合逐日明細', exact=True)
+        page.wait_for_timeout(300)
     if click_text(page, None, '清除本月手動工時', '清除手動工時（還原成打卡歸集）'):
         page.wait_for_timeout(3000)
         check('清除手動工時後頁面正常', True)

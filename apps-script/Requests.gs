@@ -1112,6 +1112,19 @@ function reqBindFrom_() {
   return reqIsDate_(v) ? v : REQ_BIND_FROM_DEFAULT_;
 }
 /** 核定時段少了幾張打卡。periods：[{startMs,endMs}]；segs：[{inMs,outMs}]（null＝沒有那張） */
+/** 程式碼.js 還沒有 loneCardsForPeriods_ 時的舊算法：每段取前後 4 小時內第一張單獨的卡 */
+function reqLoneFallback_(periods, full, segs) {
+  var used = [], out = {};
+  periods.forEach(function (p, pi) {
+    if (full.some(function (s) { return Math.min(p.endMs, s.outMs) - Math.max(p.startMs, s.inMs) > 0; })) return;
+    segs.forEach(function (s, si) {
+      if (out[pi] || used[si] || (s.inMs == null) === (s.outMs == null)) return;
+      var t = s.inMs != null ? s.inMs : s.outMs;
+      if (t >= p.startMs - REQ_BIND_NEAR_MS && t <= p.endMs + REQ_BIND_NEAR_MS) { out[pi] = s; used[si] = true; }
+    });
+  });
+  return out;
+}
 function reqBindMissCards_(periods, segs, breakWindow) {
   // 規定不打卡的休息帶（央廚）隔開的兩段當成同一段算，否則只漏一張卡會被算成 3 張（2026-11-10，與薪資一致）
   if (breakWindow && typeof gapExplainedByBreak === 'function') {
@@ -1124,26 +1137,16 @@ function reqBindMissCards_(periods, segs, breakWindow) {
     }, []);
   }
   var full = segs.filter(function (s) { return s.inMs != null && s.outMs != null; });
-  var lone = segs.filter(function (s) { return (s.inMs == null) !== (s.outMs == null); })
-    .map(function (s) { return { inMs: s.inMs, outMs: s.outMs, used: false }; });
   var ordered = periods.map(function (p) {
     var best = -1, bestOv = 0;
     full.forEach(function (s, i) { var ov = Math.min(p.endMs, s.outMs) - Math.max(p.startMs, s.inMs); if (ov > bestOv) { bestOv = ov; best = i; } });
     return { p: p, idx: best };
-  }).sort(function (a, b) { return a.p.startMs - b.p.startMs; });
-  var n = 0;
-  ordered.forEach(function (o) {
-    if (o.idx !== -1) return;
-    var miss = 2;
-    ['in', 'out'].forEach(function (side) {
-      var hit = lone.filter(function (l) {
-        var t = side === 'in' ? l.inMs : l.outMs;
-        return !l.used && t != null && t >= o.p.startMs - REQ_BIND_NEAR_MS && t <= o.p.endMs + REQ_BIND_NEAR_MS;
-      })[0];
-      if (hit) { hit.used = true; miss--; }
-    });
-    n += miss;
   });
+  // 單張卡歸哪一段：和核定狀態同一套（Code.gs loneCardsForPeriods_，2026-11-10）；有一張就只缺一張
+  var loneOf = typeof loneCardsForPeriods_ === 'function' ? loneCardsForPeriods_(periods, full, segs) : reqLoneFallback_(periods, full, segs);
+  var n = 0;
+  ordered.forEach(function (o, pi) { if (o.idx === -1) n += loneOf[pi] ? 1 : 2; });
+  ordered.sort(function (a, b) { return a.p.startMs - b.p.startMs; });
   // 兩段之間有空檔（不是休息帶、也不是拆段的 0 間隔）卻配到同一條打卡段＝中間休息的下班卡、上班卡都沒打
   var maxEnd = null, prevIdx = -1;
   ordered.forEach(function (o) {

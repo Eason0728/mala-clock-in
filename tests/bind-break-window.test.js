@@ -5,7 +5,7 @@ const code = fs.readFileSync(path.join(__dirname, '../apps-script/Code.gs'), 'ut
 const pick = (src, name) => { const s = src.indexOf('function ' + name + '('); const e = src.indexOf('\n}\n', s); return src.slice(s, e + 3); };
 const sb = {};
 vm.createContext(sb);
-vm.runInContext(['var REQ_BIND_NEAR_MS = 4 * 3600000;', pick(code, 'gapExplainedByBreak'), pick(req, 'reqBindMissCards_'), 'var __f = reqBindMissCards_;'].join('\n'), sb);
+vm.runInContext(['var REQ_BIND_NEAR_MS = 4 * 3600000;', code.match(/^const LONE_CARD_NEAR_MS = .*$/m)[0], pick(code, 'gapExplainedByBreak'), pick(code, 'loneCardsForPeriods_'), pick(req, 'reqBindMissCards_'), 'var __f = reqBindMissCards_;'].join('\n'), sb);
 const ms = hm => { const [h, m] = hm.split(':').map(Number); return (h * 60 + m) * 60000; };
 const per = (a, b) => ({ startMs: ms(a), endMs: ms(b) });
 const seg = (a, b) => ({ inMs: a ? ms(a) : null, outMs: b ? ms(b) : null });
