@@ -1668,11 +1668,23 @@ function handleMgrDay(body) {
   // 未入帳嘗試次數（A4：status !== 'ok' 的事件筆數，rejected_*/pending 都算，供主管頁揭露透明度）
   const firstTs = {};
   const attemptsCount = {};
+  const earlyOut = {};   // 隔天凌晨 06:00 前的成功下班卡（可能是這天跨夜班的下班卡）
+  const nextDate = addDaysStr(date, 1);
   eventRows.forEach(function (e) {
-    if (tsDateStr(e.ts) !== date) return;
     const emp = String(e.emp_id);
+    const d = tsDateStr(e.ts);
+    if (d === nextDate && String(e.type) === 'out' && String(e.status) === 'ok' && tsHm(e.ts) <= LONE_EARLY_OUT_HM) {
+      if (!earlyOut[emp] || String(e.ts) < earlyOut[emp]) earlyOut[emp] = String(e.ts);
+    }
+    if (d !== date) return;
     if (!firstTs[emp] || String(e.ts) < firstTs[emp]) firstTs[emp] = String(e.ts);
     if (String(e.status) !== 'ok') attemptsCount[emp] = (attemptsCount[emp] || 0) + 1;
+  });
+  // 這天完全沒有卡、但隔天凌晨有一張歸到這天的孤單下班卡（晚班忘打上班卡；2026-11-10 起這張卡算前一天）：
+  // 也算這天有打卡，主管頁才看得到這張卡（2026-11-11 B05；原本兩天都看不到）。歸不歸這天由 dayPunchSegments 決定。
+  Object.keys(earlyOut).forEach(function (emp) {
+    if (firstTs[emp]) return;
+    if (dayPunchSegments(segEventRows, emp, date).segments.length) firstTs[emp] = earlyOut[emp];
   });
 
   // 「首次支援」標記：7A 自動加入、且從來沒有任何核定紀錄（主管核定過一次＝本店已認這個人，標記就消失）
