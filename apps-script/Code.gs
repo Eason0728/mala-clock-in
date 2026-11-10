@@ -533,6 +533,17 @@ function todayHoursSummary(eventRows, empId, today) {
     });
     if (!laterOut) result.working_since = tsHm(openIn.ts);
   }
+  // 跨夜班（B34）：今天還沒有進行中的班段，但昨天的上班卡還開著、而且還在 16 小時內 → 人還在上班，
+  // 顯示「上班中（22:00 起）」，不是 0 小時。時數照舊只算今天已完成的班段。
+  if (!result.working_since) {
+    const lo = addDaysStr(today, -1);
+    const wide = pairShifts(eventRows.filter(function (e) {
+      const d = String(e.ts).slice(0, 10);
+      return String(e.emp_id) === String(empId) && d >= lo && d <= today;
+    }));
+    const o = wide.openIns[0];
+    if (o && String(o.ts).slice(0, 10) !== today && inStillWorking_(o.ts)) result.working_since = tsHm(o.ts);
+  }
   return result;
 }
 
@@ -545,6 +556,7 @@ const RECENT_DAYS_WINDOW = 40;
  * 班段歸 in 那一天（跨夜段標 cross，前端顯示 (+1)）、未配對 in→「下班忘刷卡」、
  * 未配對 out→「上班忘刷卡」；事件往前多抓 1 天供跨夜配對。
  * 例外：未配對 in 落在「今天」→ 不算忘刷卡（上班中），照 today_hours 的邏輯。
+ * 例外二（B34，2026-11-11）：最後還開著的上班卡在 16 小時內 → 不論日期都算上班中（跨夜班過了午夜還在上班）。
  * reference＝該日已完成班段 15 分鐘取整加總（approvedHoursOfShift，2026-07-15 起）；
  * 當天有任一筆忘刷卡（見上例外）→ 整天回 null，不是部分加總（A3，與月表同一規則，
  * 見 dayReferenceIncomplete，勿各自重寫判斷）。
@@ -584,7 +596,9 @@ function buildRecentDays(eventRows, empId, todayStr, approvedMap) {
     if (d < startStr || d > todayStr) return;
     const c = day(d);
     c.segments.push({ sortMs: tsMs(e.ts), in: tsHm(e.ts), out: null, cross: false });
-    c.notes.push(d === todayStr ? '上班中' : '下班忘刷卡');
+    const working = openInWorking_(paired, e);   // B34：還在 16 小時內的最後一張上班卡
+    if (working) c.workingHm = tsHm(e.ts);
+    c.notes.push(d === todayStr || working ? WORKING_NOTE : '下班忘刷卡');
   });
 
   paired.unmatchedOuts.forEach(function (e) {
@@ -600,7 +614,8 @@ function buildRecentDays(eventRows, empId, todayStr, approvedMap) {
     c.segments.sort(function (a, b) { return a.sortMs - b.sortMs; });
     c.segments.forEach(function (s) { delete s.sortMs; });
     // 參考時數：忘刷卡整天留白（null），與出勤月表同一規則（A3，見 dayReferenceIncomplete）
-    c.reference = dayReferenceIncomplete(c.segments, d, todayStr) ? null : Math.round(c.reference * 100) / 100;
+    c.reference = dayReferenceIncomplete(c.segments, d, todayStr, c.workingHm) ? null : Math.round(c.reference * 100) / 100;
+    delete c.workingHm;
     // 核定＝值班主管在 approved 分頁的最新核定（照月表 1201 慣例）。無紀錄→null＝待核定；
     // 有紀錄但 0 小時＝全天請假，必須與 null 區分，故用 rec 是否存在判斷、不看數值真假。
     const rec = ((approvedMap || {})[d] || {})[String(empId)];
@@ -1960,6 +1975,7 @@ function handleMgrApprove(body) {
         outMs: s.out ? hmToMs(outDate, s.out) : null,
       };
     });
+    markWorkingSeg_(punch, date, punchWithMs);   // B34：還在上班的那張上班卡（16 小時內）不算忘刷、不算少一張
     statusText = computeApprovalStatus(periods, punchWithMs,
       unresolvedAttemptCount_(eventRows, body.emp_id, date) > 0,
       hasTrip,
@@ -2185,6 +2201,7 @@ function pairShifts(events) {
   const shifts = [];
   const unmatchedIns = [];
   const unmatchedOuts = [];
+  const openIns = [];   // 每個人「最後還開著」的那張上班卡（後面沒有任何算數的卡；B34 用來判斷是不是還在上班）
 
   Object.keys(byEmp).forEach(function (emp) {
     const evs = byEmp[emp].slice().sort(function (a, b) { return tsMs(a.ts) - tsMs(b.ts); });
@@ -2227,10 +2244,40 @@ function pairShifts(events) {
         unmatchedOuts.push(e);
       }
     });
-    if (open) unmatchedIns.push(open);
+    if (open) { unmatchedIns.push(open); openIns.push(open); }
   });
 
-  return { shifts: shifts, unmatchedIns: unmatchedIns, unmatchedOuts: unmatchedOuts };
+  return { shifts: shifts, unmatchedIns: unmatchedIns, unmatchedOuts: unmatchedOuts, openIns: openIns };
+}
+
+/* ── 上班中（B34，2026-11-11 Eason 定：上班卡之後 16 小時內都算上班中）──────────────────
+ * 沒配到下班卡、而且是這個人最後一張卡的上班卡（pairShifts 的 openIns），距離現在還在打卡配對的上限
+ * （MONTHLY_PAIR_WINDOW_HOURS，16 小時）以內 → 不論日期都算「上班中」：不標下班忘刷卡、不算異常、
+ * 參考時數照上班中的算法（只加已完成的班段）。超過 16 小時還沒有下班卡才標「下班忘刷卡」。
+ * 原本只認「日期是今天」，跨夜班 22:00 上班的人過了午夜就先被標異常。
+ * 同仁頁最近幾天與今日時數、主管頁、月表、核定狀態、少幾張卡（Requests.gs reqWorkingSegs_）都用這一支判斷。
+ * 「今天沒配對的上班卡＝上班中」的舊規則照舊保留（當天中途漏刷的那張，隔天才標忘刷）。
+ * ⚠ 薪資歸集（Payroll.gs）還是只認「今天」——跨夜班凌晨當下去看薪資會先多算一次忘刷，打了下班卡就會自己消失。 */
+const WORKING_NOTE = '上班中';
+function inStillWorking_(inTs, nowMs) {
+  const age = (nowMs == null ? Date.now() : nowMs) - tsMs(inTs);
+  return age >= 0 && age <= MONTHLY_PAIR_WINDOW_HOURS * 3600000;
+}
+/** 這張沒配對的上班卡是不是「還在上班」：是 pairShifts 回的 openIns 之一、而且還在 16 小時內。 */
+function openInWorking_(paired, e, nowMs) {
+  return (paired.openIns || []).indexOf(e) !== -1 && inStillWorking_(e.ts, nowMs);
+}
+/** dayPunchSegments 的結果裡，這天還在上班的那張上班卡的 HH:mm；沒有就回 null。 */
+function workingInHm_(punch, nowMs) {
+  return punch && punch.open_in_ts && inStillWorking_(punch.open_in_ts, nowMs) ? tsHm(punch.open_in_ts) : null;
+}
+/** 把「還在上班」的那張上班卡在帶毫秒的打卡段（{inMs,outMs}）上標 working:true（computeApprovalStatus、reqWorkingSegs_ 會看）。 */
+function markWorkingSeg_(punch, dateStr, segs, nowMs) {
+  const hm = workingInHm_(punch, nowMs);
+  if (!hm) return segs;
+  const ms = hmToMs(dateStr, hm);
+  segs.forEach(function (x) { if (x.outMs == null && x.inMs === ms) x.working = true; });
+  return segs;
 }
 
 /* ── 主管認定的重複打卡（2026-11-06 Eason）──────────────────────────────
@@ -2379,7 +2426,8 @@ function hmToMs(dateStr, hm) {
 /**
  * 單一員工單一天的打卡段（給 mgr_day/mgr_approve 用，沿用 pairShifts）。
  * 事件往前後各多抓 1 天供跨夜配對，只回傳歸屬 dateStr 這天的班段。
- * 回傳 { segments:[{in,out,cross}]（未配對一端為 null）, reference（已完成時段小時數，2 位小數）}。
+ * 回傳 { segments:[{in,out,cross}]（未配對一端為 null）, reference（已完成時段小時數，2 位小數）,
+ *         open_in_ts（這天「最後還開著」的那張上班卡的時間，沒有就 null；是不是還在上班由 workingInHm_ 看現在時間決定，B34）}。
  */
 function dayPunchSegments(eventRows, empId, dateStr) {
   const lo = addDaysStr(dateStr, -1);
@@ -2397,9 +2445,11 @@ function dayPunchSegments(eventRows, empId, dateStr) {
     segments.push({ sortMs: tsMs(s.in_ts), in: tsHm(s.in_ts), out: tsHm(s.out_ts), cross: tsDateStr(s.out_ts) !== d });
     reference += approvedHoursOfShift(s.in_ts, s.out_ts);
   });
+  let openInTs = null;
   paired.unmatchedIns.forEach(function (e) {
     if (tsDateStr(e.ts) !== dateStr) return;
     segments.push({ sortMs: tsMs(e.ts), in: tsHm(e.ts), out: null, cross: false });
+    if (paired.openIns.indexOf(e) !== -1) openInTs = String(e.ts);
   });
   paired.unmatchedOuts.forEach(function (e) {
     // 凌晨 06:00 以前的孤單下班卡＝前一天的跨夜班（2026-11-10 Eason，同 Requests.gs REQ_EARLY_OUT_HM）
@@ -2410,7 +2460,7 @@ function dayPunchSegments(eventRows, empId, dateStr) {
 
   segments.sort(function (a, b) { return a.sortMs - b.sortMs; });
   segments.forEach(function (s) { delete s.sortMs; });
-  return { segments: segments, reference: Math.round(reference * 100) / 100 };
+  return { segments: segments, reference: Math.round(reference * 100) / 100, open_in_ts: openInTs };
 }
 
 /**
@@ -2421,18 +2471,19 @@ function dayPunchSegments(eventRows, empId, dateStr) {
  *   有任一筆未配對 out（in 為 null，即「上班忘刷卡」）→ 恆不完整；
  *   有任一筆未配對 in（out 為 null，即「下班忘刷卡」）且 dateStr 不是今天 → 不完整；
  *   dateStr 是今天的未配對 in → 上班中，不算不完整（a872de4 規則，月表已如此）。
+ *   workingHm（選填，B34）＝這天還在上班的那張上班卡的 HH:mm（16 小時內、後面沒有別的卡）→ 那一張不算忘刷，不論日期。
  * ⚠ 月表 buildMonthlySheet 因 segments 結構不同（{sortMs,text}）無法呼叫本函式，
  *   在 unmatchedIns/unmatchedOuts 兩段維護著同一規則的 inline 版——改這裡必同步改那裡。
  */
-function dayReferenceIncomplete(segments, dateStr, todayStr) {
+function dayReferenceIncomplete(segments, dateStr, todayStr, workingHm) {
   const hasForgotOut = segments.some(function (s) { return s.in === null; });
-  const hasForgotIn = segments.some(function (s) { return s.out === null; });
+  const hasForgotIn = segments.some(function (s) { return s.out === null && !(workingHm && s.in === workingHm); });
   return hasForgotOut || (hasForgotIn && dateStr !== todayStr);
 }
 
 /** mgr_day 的 reference 規則（已完成時段 15 分鐘取整加總；忘刷卡整天留白＝null）。handleMgrDay 與 att_digest_data 共用。 */
 function dayReferenceHours_(punch, dateStr, todayStr) {
-  return dayReferenceIncomplete(punch.segments, dateStr, todayStr) ? null : punch.reference;
+  return dayReferenceIncomplete(punch.segments, dateStr, todayStr, workingInHm_(punch)) ? null : punch.reference;
 }
 
 /**
@@ -2678,7 +2729,9 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
       const c = lone[pi];
       if (c.outMs == null) {
         if (c.inMs > p.startMs) notes.push('遲到' + Math.round((c.inMs - p.startMs) / 60000) + '分');
-        add(multi ? segMissNote(outNo[pi], SEG_FORGOT_OUT) : '下班忘刷卡');
+        // 還在上班（B34：最後一張上班卡、16 小時內）→ 下班卡還沒到打的時候，標「上班中」不標忘刷；
+        // 之後打了下班卡或滿 16 小時，每日 05:00 重算（recheckPendingApprovalStatuses）會把狀態改成該有的樣子。
+        add(c.working ? WORKING_NOTE : (multi ? segMissNote(outNo[pi], SEG_FORGOT_OUT) : '下班忘刷卡'));
       } else {
         if (c.outMs < p.endMs) notes.push('早退' + Math.round((p.endMs - c.outMs) / 60000) + '分');
         add(multi ? segMissNote(inNo[pi], SEG_FORGOT_IN) : '上班忘刷卡');
@@ -2816,10 +2869,11 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     if (!inMonthToEnd(d)) return;
     const c = cell(d, String(e.emp_id));
     c.segments.push({ sortMs: tsMs(e.ts), text: tsHm(e.ts) + '–？' });
-    if (d === todayStr) {
+    if (d === todayStr || openInWorking_(paired, e)) {
       // 今天的未配對上班卡＝人還在上班，顯示「上班中」、當天已完成班段時數照計，
-      // 不標忘刷卡（營業時間看月表才不會滿版假忘刷卡）；隔天起才算真的下班忘刷卡
-      c.notes.push('上班中');
+      // 不標忘刷卡（營業時間看月表才不會滿版假忘刷卡）；隔天起才算真的下班忘刷卡。
+      // B34（2026-11-11）：最後還開著的上班卡在 16 小時內（跨夜班過了午夜還在上班）也一樣，不論日期。
+      c.notes.push(WORKING_NOTE);
     } else {
       c.notes.push('下班忘刷卡');
       c.incomplete = true;
@@ -3219,6 +3273,7 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) 
       outMs: s.out ? hmToMs(outDate, s.out) : null,
     };
   });
+  markWorkingSeg_(punch, date, punchWithMs);   // B34：重算當下人還在上班（16 小時內）→ 不寫成下班忘刷卡
   // 名冊的名字優先（有人改過名時 approved 上是舊名），查不到才退回 approved 那筆的 name。
   const rosterNow = findRosterByEmpId(rosterRows, empId);
   // ⚠ 主管手動認定的遲到不能被重算洗掉。2026-11-11（B06）以前是「原狀態帶認定就整筆跳過」，
@@ -3267,8 +3322,10 @@ function recheckPendingApprovalStatuses() {
       const statusText = String(rec.status_text || '');
       // 三種措辭都要納入：待核准裝置事後被核准 → 卡會翻成 ok → 那天就真的比對得到了
       // （「少刷N組卡」同理：中間那組卡事後入帳，長段會被拆開，少刷就該自動消失）
+      // 「上班中」（B34）：核定當下人還在上班；之後打了下班卡或滿 16 小時沒打，這裡要改成該有的狀態
       if (statusText.indexOf(NO_PUNCH_NOTE) === -1 && statusText.indexOf(NOT_RECORDED_NOTE) === -1 &&
-          statusText.indexOf(MISSING_GROUP_PREFIX) === -1 && statusText.indexOf('忘刷卡') === -1) return;
+          statusText.indexOf(MISSING_GROUP_PREFIX) === -1 && statusText.indexOf('忘刷卡') === -1 &&
+          statusText.indexOf(WORKING_NOTE) === -1) return;
       const r = recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec);
       if (r.skip === 'no_periods') return;
       checked++;

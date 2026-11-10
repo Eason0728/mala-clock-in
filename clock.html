@@ -1084,6 +1084,12 @@
     monthTotalsEl.style.display = 'flex';
   }
 
+  // 核定狀態要不要列成醒目小字：「正常」不列；「上班中」（2026-11-11 B34：主管核定當下人還在上班、
+  // 下班卡還沒到打的時候）不是異常，也不列。其餘（遲到、早退、忘刷卡…）照原樣列。
+  function approvedMarkText(st) {
+    return String(st || '').split('、').filter(function (x) { return x && x !== '正常' && x !== '上班中'; }).join('、');
+  }
+
   function renderRecentDays(days) {
     recentListEl.innerHTML = '';
     if (!days || days.length === 0) {
@@ -1112,10 +1118,11 @@
       hours.textContent = hoursText;
       // 遲到/早退等核定狀態（後端 approved_status＝主管核定當下算的 status_text，與月表狀態欄同源）。
       // 「正常」不顯示以免雜訊；有異常才追加一段醒目小字（Eason 2026-07-15 要求顯示遲到分鐘）。
-      if (d.approved_status && d.approved_status !== '正常') {
+      var markText = approvedMarkText(d.approved_status);
+      if (markText) {
         var mark = document.createElement('span');
         mark.className = 'day-mark';
-        mark.textContent = d.approved_status;
+        mark.textContent = markText;
         hours.appendChild(mark);
       }
       li.appendChild(info);

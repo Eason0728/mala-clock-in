@@ -26,7 +26,9 @@ FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'is
          'nextEmpId', 'handleSetShifts', 'handleMgrAddEmployee', 'handleRecentHires',
          'computeApprovalStatus', 'pairShifts', 'buildLatestApprovedMap',
          'recomputeApprovalStatusOf', 'backfillMissingPunchGroups', 'statusDiffIsOnlyMissingGroup',
-         'breakBlocksFor_', 'unresolvedAttemptCount_']
+         'breakBlocksFor_', 'unresolvedAttemptCount_',
+         # 2026-11-11 B04（該段無打卡算異常）、B34（上班卡之後 16 小時內都算上班中）
+         'noPunchDayAbnormal_', 'inStillWorking_', 'openInWorking_', 'markWorkingSeg_']
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
     'computeApprovalStatus 有 isTrip＋休息帶參數': 'hadUnrecordedAttempts, isTrip, breakWindow)',
@@ -50,6 +52,13 @@ EXACT = {
     '缺卡：休息帶由呼叫端算好傳入':          'noPunchBreakWindow(date)',
     # 2026-11-11 B01：休息帶隔開的兩段，午休照樣打卡的人不併（沒套到＝四張卡準時也標早退 300 分）
     '休息帶：核定狀態改用 breakBlocksFor_':   'breakBlocksFor_(sortedP, punchSegments, legacy ? null : breakWindow)',
+    # 2026-11-11 B04：整天沒打卡、主管補核定的那天，月表也算異常 1 天（2026-11-01 起）
+    '該段無打卡：月表算異常':                'noPunchDayAbnormal_(c.date, rec && rec.status_text)',
+    '該段無打卡：生效日':                    "const NO_PUNCH_ABNORMAL_FROM = '2026-11-01'",
+    # 2026-11-11 B34：上班卡之後 16 小時內都算上班中（沒套到＝跨夜班過了午夜就被標下班忘刷卡）
+    '上班中：月表看 16 小時':                'if (d === todayStr || openInWorking_(paired, e)) {',
+    '上班中：核定狀態不標忘刷':              'add(c.working ? WORKING_NOTE : (multi ? segMissNote(outNo[pi], SEG_FORGOT_OUT)',
+    '上班中：每日重算會回頭改':              'statusText.indexOf(WORKING_NOTE) === -1) return;',
 }
 
 # 各店專屬設定：CONFIG 的不打卡休息帶必須與 tools/build-store-pages.py 的 mgr_break 一致。

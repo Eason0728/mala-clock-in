@@ -1356,16 +1356,18 @@ function reqBindMissCards_(periods, segs, breakWindow) {
   });
   return n;
 }
-/** 人還在上班（2026-11-11 B03）：那天最後一張卡是沒配對的上班卡，而且那天是今天（跨夜班算到隔天凌晨 06:00 前），
- *  下班卡還沒到打的時候，不能算少一張——同仁此刻也補不了這張單。做法：把那張上班卡當成「打到現在」的一段再去算。
- *  需求：今天沒配對的上班卡＝上班中，隔天才算忘刷。之後打了下班卡，每日重算會把狀態改回來。 */
+/** 人還在上班（2026-11-11 B03）：那天最後一張卡是沒配對的上班卡，下班卡還沒到打的時候，不能算少一張——
+ *  同仁此刻也補不了這張單。做法：把那張上班卡當成「打到現在」的一段再去算。之後打了下班卡，每日重算會把狀態改回來。
+ *  2026-11-11（B34，Eason 定）：不再看日期（原本只認今天、跨夜班到隔天 06:00 前），改成「上班卡之後 16 小時內都算上班中」，
+ *  和同仁頁、主管頁、月表同一口徑。是不是還在上班由 Code.gs markWorkingSeg_ 判斷好標在打卡段上（working:true＝
+ *  這個人最後一張卡、而且還在 16 小時內）；沒有標的一律不算。 */
 function reqWorkingSegs_(segs, date) {
   if (!segs || !segs.length) return segs;
-  var nowIso = nowTaipeiIso(), today = nowIso.slice(0, 10);
-  if (!(date === today || (date === reqPrevDate_(today) && nowIso.slice(11, 16) <= REQ_EARLY_OUT_HM))) return segs;
+  var nowIso = nowTaipeiIso();
   var at = function (x) { return x.inMs != null ? x.inMs : x.outMs; };
   var last = segs.reduce(function (a, x) { return a === null || at(x) >= at(a) ? x : a; }, null);
   if (!last || last.inMs == null || last.outMs != null) return segs;   // 最後一張不是沒配對的上班卡
+  if (!last.working) return segs;                                       // 後面還有別的卡，或已經超過 16 小時
   var nowMs = new Date(nowIso).getTime();
   if (nowMs - last.inMs > REQ_PAIR_MS) return segs;                     // 超過 16 小時配不成一段，不算還在上班
   return segs.map(function (x) {
@@ -1566,9 +1568,11 @@ function handleApproveStrictPreview_(body) {
         var s = reqHmMs_(date, p.start), e = reqHmMs_(date, p.end);
         return { startMs: s, endMs: e <= s ? e + 86400000 : e };
       });
-      var segs = periods.length ? dayPunchSegments(events, emp, date).segments.map(function (x) {
+      var punchDay = periods.length ? dayPunchSegments(events, emp, date) : null;
+      var segs = punchDay ? punchDay.segments.map(function (x) {
         return { inMs: x.in ? reqHmMs_(date, x.in) : null, outMs: x.out ? reqHmMs_(x.cross ? addDaysStr(date, 1) : date, x.out) : null };
       }) : [];
+      if (punchDay && typeof markWorkingSeg_ === 'function') markWorkingSeg_(punchDay, date, segs);   // B34：還在上班的那張不算少一張
       scanned++;
       var r = reqBindCheck_(ss, emp, date, Number(rec.approved_hours) || 0, periods, segs, noPunchBreakWindow(date),
         { leaves: leaves, trip_hours: trip, rows: rows, force_strict: true, preview: true });

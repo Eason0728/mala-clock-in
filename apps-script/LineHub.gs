@@ -660,7 +660,9 @@ var LINE_HUB_NOT_BOUND_TEXT = '你的 LINE 帳號還沒綁定打卡系統。\n�
  *  （下班忘刷卡／上班忘刷卡；「上班中」不算異常）。回空字串＝沒異常。 */
 function lineHubDayStatus_(d) {
   var parts = [];
-  if (d.approved_status && d.approved_status !== '正常') parts.push(String(d.approved_status));
+  // 核定狀態裡的「上班中」（B34：核定當下人還在上班）不是異常，拿掉再列
+  var st = String(d.approved_status || '').split('、').filter(function (x) { return x && x !== '正常' && x !== '上班中'; }).join('、');
+  if (st) parts.push(st);
   if (d.approved === null || d.approved === undefined) {
     (d.notes || []).forEach(function (x) { x = String(x); if (x && x !== '上班中' && parts.indexOf(x) < 0) parts.push(x); });
   }

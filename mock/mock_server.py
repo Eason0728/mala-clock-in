@@ -237,6 +237,12 @@ def pair_shifts(events):
     距開著的 in ≥ REJECTED_IN_BREAK_MIN 分鐘才視為換段（低於＝手滑連按，忽略）。
     in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」，途中遇到另一筆 in 就斷掉。
     回傳 (shifts, unmatched_ins, unmatched_outs)。"""
+    return pair_shifts_open(events)[:3]
+
+
+def pair_shifts_open(events):
+    """pair_shifts 的本體，多回第四項 open_in＝「最後還開著」的那張上班卡（後面沒有任何算數的卡；沒有就 None），
+    對應 Code.gs pairShifts 的 openIns（B34：判斷是不是還在上班用）。"""
     evs = sorted(
         [
             e for e in events
@@ -282,7 +288,22 @@ def pair_shifts(events):
             unmatched_outs.append(e)
     if open_in:
         unmatched_ins.append(open_in)
-    return shifts, unmatched_ins, unmatched_outs
+    return shifts, unmatched_ins, unmatched_outs, open_in
+
+
+WORKING_NOTE = "上班中"
+
+
+def in_still_working(in_ts, now=None):
+    """上班中（B34，2026-11-11 Eason 定；與 Code.gs inStillWorking_ 同步）：最後還開著的上班卡，
+    距離現在還在打卡配對上限（MONTHLY_PAIR_WINDOW_HOURS，16 小時）以內 → 不論日期都算上班中，
+    超過才標「下班忘刷卡」。"""
+    now = now or now_taipei()
+    t = datetime.fromisoformat(in_ts)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=TAIPEI_TZ)
+    age = now - t
+    return timedelta(0) <= age <= timedelta(hours=MONTHLY_PAIR_WINDOW_HOURS)
 
 
 def today_hours_summary(data, emp_id, today):
@@ -317,6 +338,13 @@ def today_hours_summary(data, emp_id, today):
         )
         if not later_out:
             result["working_since"] = open_in["ts"][11:16]
+    # 跨夜班（B34，同 Code.gs）：今天沒有進行中的班段，但昨天的上班卡還開著、而且還在 16 小時內 → 上班中
+    if not result["working_since"]:
+        lo = add_days_str(today, -1)
+        wide = [e for e in data["events"] if e["emp_id"] == emp_id and lo <= e["ts"][:10] <= today]
+        o = pair_shifts_open(wide)[3]
+        if o and o["ts"][:10] != today and in_still_working(o["ts"]):
+            result["working_since"] = o["ts"][11:16]
     return result
 
 
@@ -341,7 +369,7 @@ def build_recent_days(data, emp_id, today):
         e for e in data["events"]
         if e["emp_id"] == emp_id and fetch_start <= e["ts"][:10] <= today
     ]
-    shifts, unmatched_ins, unmatched_outs = pair_shifts(evs)  # pair_shifts 內部只取 status='ok'
+    shifts, unmatched_ins, unmatched_outs, open_in = pair_shifts_open(evs)  # 內部只取 status='ok'
 
     day_map = {}
 
@@ -369,7 +397,11 @@ def build_recent_days(data, emp_id, today):
             continue
         c = day(d)
         c["segments"].append({"_sort": e["ts"], "in": e["ts"][11:16], "out": None, "cross": False})
-        c["notes"].append("上班中" if d == today else "下班忘刷卡")
+        # B34（同 Code.gs）：最後還開著的上班卡在 16 小時內 → 不論日期都算上班中
+        working = e is open_in and in_still_working(e["ts"])
+        if working:
+            c["_working_hm"] = e["ts"][11:16]
+        c["notes"].append(WORKING_NOTE if (d == today or working) else "下班忘刷卡")
 
     for e in unmatched_outs:
         d = e["ts"][:10]
@@ -386,7 +418,7 @@ def build_recent_days(data, emp_id, today):
         for s in c["segments"]:
             del s["_sort"]
         # 參考時數：忘刷卡整天留白（None），與出勤月表同一規則（A3，見 day_reference_incomplete）
-        c["reference"] = None if day_reference_incomplete(c["segments"], d, today) else round(c["reference"], 2)
+        c["reference"] = None if day_reference_incomplete(c["segments"], d, today, c.pop("_working_hm", None)) else round(c["reference"], 2)
         # 核定＝主管在 approved 的最新核定（與 Code.gs buildRecentDays／月表同一套慣例）：
         # 無紀錄→None＝待核定；有紀錄但 0 小時＝全天請假，要與 None 區分，故看 rec 是否存在。
         rec = latest_approved_record(data, d, emp_id)
@@ -517,10 +549,11 @@ def day_punch_segments(data, emp_id, date_str):
     lo = add_days_str(date_str, -1)
     hi = add_days_str(date_str, 1)
     evs = [e for e in data["events"] if e["emp_id"] == emp_id and lo <= e["ts"][:10] <= hi]
-    shifts, unmatched_ins, unmatched_outs = pair_shifts(evs)
+    shifts, unmatched_ins, unmatched_outs, open_in = pair_shifts_open(evs)
 
     segments = []
     reference = 0.0
+    open_in_ts = None   # 這天「最後還開著」的那張上班卡（B34，同 Code.gs dayPunchSegments 的 open_in_ts）
     for s in shifts:
         d = s["in_ts"][:10]
         if d != date_str:
@@ -536,6 +569,8 @@ def day_punch_segments(data, emp_id, date_str):
         if e["ts"][:10] != date_str:
             continue
         segments.append({"_sort": e["ts"], "in": e["ts"][11:16], "out": None, "cross": False})
+        if e is open_in:
+            open_in_ts = e["ts"]
     for e in unmatched_outs:
         if e["ts"][:10] != date_str:
             continue
@@ -544,16 +579,23 @@ def day_punch_segments(data, emp_id, date_str):
     segments.sort(key=lambda s: s["_sort"])
     for s in segments:
         del s["_sort"]
-    return {"segments": segments, "reference": round(reference, 2)}
+    return {"segments": segments, "reference": round(reference, 2), "open_in_ts": open_in_ts}
 
 
-def day_reference_incomplete(segments, date_str, today_str):
+def working_in_hm(punch):
+    """這天還在上班的那張上班卡的 HH:mm（16 小時內），沒有就 None（同 Code.gs workingInHm_）。"""
+    ts = (punch or {}).get("open_in_ts")
+    return ts[11:16] if ts and in_still_working(ts) else None
+
+
+def day_reference_incomplete(segments, date_str, today_str, working_hm=None):
     """判斷某天參考時數是否該留白（A3：與 Code.gs dayReferenceIncomplete 同步，月表／my_recent／
     mgr_day 共用同一判斷，勿各自重寫）。只吃已算好的 segments（{in,out,cross}，未配對一端為 None）：
     有任一筆未配對 out（in 為 None，即「上班忘刷卡」）→ 恆不完整；有任一筆未配對 in（out 為 None，
-    即「下班忘刷卡」）且 date_str 不是今天 → 不完整；今天的未配對 in＝上班中，不算不完整（a872de4 規則）。"""
+    即「下班忘刷卡」）且 date_str 不是今天 → 不完整；今天的未配對 in＝上班中，不算不完整（a872de4 規則）。
+    working_hm（B34）＝這天還在上班的那張上班卡的 HH:mm（16 小時內）→ 那一張不算忘刷，不論日期。"""
     has_forgot_out = any(s["in"] is None for s in segments)
-    has_forgot_in = any(s["out"] is None for s in segments)
+    has_forgot_in = any(s["out"] is None and not (working_hm and s["in"] == working_hm) for s in segments)
     return has_forgot_out or (has_forgot_in and date_str != today_str)
 
 
@@ -864,7 +906,8 @@ def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=Fal
             if c["out_ms"] is None:
                 if c["in_ms"] > p["start_ms"]:
                     notes.append("遲到{}分".format(rnd(c["in_ms"] - p["start_ms"])))
-                add(seg_miss_note(out_no[pi], "段下班忘刷卡") if multi else "下班忘刷卡")
+                # 還在上班（B34：最後一張上班卡、16 小時內）→ 標「上班中」不標忘刷（同 Code.gs）
+                add(WORKING_NOTE if c.get("working") else (seg_miss_note(out_no[pi], "段下班忘刷卡") if multi else "下班忘刷卡"))
             else:
                 if c["out_ms"] < p["end_ms"]:
                     notes.append("早退{}分".format(rnd(p["end_ms"] - c["out_ms"])))
@@ -974,7 +1017,7 @@ def handle_mgr_day(data, body):
         has_punch = emp_id in first_ts
         punch = day_punch_segments(data, emp_id, date) if has_punch else None
         # 參考時數：忘刷卡整天留白，與月表／my_recent 同一規則（A3，見 day_reference_incomplete，禁止重寫判斷）
-        incomplete = has_punch and day_reference_incomplete(punch["segments"], date, today)
+        incomplete = has_punch and day_reference_incomplete(punch["segments"], date, today, working_in_hm(punch))
         rec = latest_approved_record(data, date, emp_id)
         out = {
             "emp_id": emp_id,
@@ -1107,6 +1150,12 @@ def handle_mgr_approve(data, body):
             out_date = add_days_str(date, 1) if s["cross"] else date
             out_ms = hm_to_ms(out_date, s["out"]) if s["out"] else None
             punch_segments.append({"in_ms": in_ms, "out_ms": out_ms})
+        # B34（同 Code.gs markWorkingSeg_）：還在上班的那張上班卡（16 小時內）標 working
+        w_hm = working_in_hm(punch)
+        if w_hm:
+            for x in punch_segments:
+                if x["out_ms"] is None and x["in_ms"] == hm_to_ms(date, w_hm):
+                    x["working"] = True
 
         status_text = compute_approval_status(
             periods, punch_segments,
