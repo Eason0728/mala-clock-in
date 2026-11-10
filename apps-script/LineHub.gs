@@ -70,7 +70,7 @@ function lineHubPickStore_(fix, stores) {
     if (typeof s.lat !== 'number') return;
     var d = lineHubDistanceM_(fix.lat, fix.lng, s.lat, s.lng);
     if (d < nearestD) { nearestD = d; nearest = s; }
-    if (Math.max(0, r1(d) - Math.min(acc, LINE_HUB_ACC_CAP_M)) <= s.radius_m) hits.push({ store: s, d: d });
+    if (Math.max(0, r1(r1(d) - Math.min(acc, LINE_HUB_ACC_CAP_M))) <= s.radius_m) hits.push({ store: s, d: d });   // 相減後再取到 0.1（B20，同 Code.gs handleClock）
   });
   if (hits.length === 1) return { status: 'ok', store: hits[0].store, distance_m: Math.round(hits[0].d * 10) / 10 };
   if (hits.length > 1) return { status: 'ambiguous', candidates: hits.map(function (h) { return h.store.code; }) };
@@ -126,8 +126,15 @@ function handleLineBindName_(body) {
   var row = hit[0];
   if (row.line_user_id && String(row.line_user_id) === String(userId)) return { ok: true, already: true, store_name: st.name, name: String(row.name) };
   if (row.line_user_id) return { ok: false, error: 'name_taken', message: '「' + String(row.name) + '」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管到管理系統「考勤管理 → 員工名冊」的 LINE 綁定紀錄解除。' };
+  // 禁止跨品牌（2026-11-06）：這個 LINE 已經在另一個品牌的門市綁定，就不能再綁這家店——這家店名冊剛好有同名、
+  // 還沒綁的列也一樣（2026-11-11 B11；原本只在「名冊沒有這個名字」時才檢查品牌）。央廚、總部兩邊都可以。
+  var mineBound = lineHubMine_(userId);
+  var crossed = mineBound.filter(function (m) { return m.st.code !== st.code && lineHubCrossBrand_(m.st, st); })[0];
+  if (crossed) {
+    return { ok: false, error: 'cross_brand', message: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(crossed.st)] + '的同仁，不能在「' + st.name + '」打卡（小辛辣與墨竹亭不能互相支援打卡）；有問題請找店長。' };
+  }
   // via：伺服器自己判斷（不信前端，v2 審查 N2）——這個 LINE 在別家店已綁定同名＝跨店（auto），否則＝輸入全名（name）
-  var sameNameElsewhere = lineHubMine_(userId).some(function (m) { return lineHubNormName_(m.row.name) === want; });
+  var sameNameElsewhere = mineBound.some(function (m) { return lineHubNormName_(m.row.name) === want; });
   var codeDeny = lineHubBindCodeDeny_(row.key, body); if (codeDeny) return codeDeny;   // 開關開著時一律要碼：別店同名已綁不代表是同一個人（2026-11-10 夜間 QA）
   var j = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(row.key), via: sameNameElsewhere ? 'auto' : 'name' });
   if (!j || !j.ok) {
@@ -151,7 +158,11 @@ function lineHubBindElsewhere_(userId, body, st, want) {
   var notFound = { ok: false, error: 'name_not_found', store_name: st.name,
     message: '公司各單位的打卡名冊都沒有「' + typed + '」。請確認是全名、沒有錯字；名字沒錯請店長或主管到管理系統的「同仁名單」幫你建檔。' };
   var home = null, viaLine = false;
-  var mine = lineHubMine_(userId).filter(function (m) { return lineHubNormName_(m.row.name) === want && m.st.code !== st.code; });
+  var UNREACH = { ok: false, error: 'unreachable', message: '有單位的系統暫時連不上，請稍後再試。' };
+  var mineInfo = {};
+  var mine = lineHubMine_(userId, mineInfo).filter(function (m) { return lineHubNormName_(m.row.name) === want && m.st.code !== st.code; });
+  // 2026-11-11（B28）：有任何一家名冊讀不到，就不下「只綁一家」「全公司恰好一位」的結論，請同仁稍後再試。
+  if (mineInfo.unreadable) return UNREACH;
   if (mine.length === 1) { home = mine[0]; viaLine = true; }
   else if (mine.length > 1) return { ok: false, error: 'name_conflict', message: '你的 LINE 在兩個以上的單位都有綁定，請找主管協助加入「' + st.name + '」。' };
   else {
@@ -163,7 +174,8 @@ function lineHubBindElsewhere_(userId, body, st, want) {
       rows.forEach(function (r) { if (lineHubActive_(r) && lineHubNormName_(r.name) === want) found.push({ st: s, row: r }); });
     });
     if (found.length > 1) return { ok: false, error: 'name_conflict', message: '公司有兩位以上叫「' + typed + '」的同仁，請找主管協助綁定。' };
-    if (!found.length) return unreadable ? { ok: false, error: 'unreachable', message: '有單位的系統暫時連不上，請稍後再試。' } : notFound;
+    if (unreadable) return UNREACH;
+    if (!found.length) return notFound;
     home = found[0];
     if (home.row.line_user_id && String(home.row.line_user_id) !== String(userId)) {
       return { ok: false, error: 'name_taken', message: '「' + String(home.row.name) + '」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管解除。' };
@@ -294,7 +306,16 @@ function lineHubResolve_(userId, body, opts) {
     // 跨店：這個 LINE 在別家店已綁定、名字唯一，這家店名冊有同名且還沒被綁的在職同仁 → 帶出名字請本人確認
     // （v2 審查 #7：不靜默自動綁，避免同名不同人時直接替別人記一張卡）
     var names = {};
-    lineHubMine_(userId).forEach(function (m) { names[lineHubNormName_(m.row.name)] = String(m.row.name); });
+    var boundAt = lineHubMine_(userId);
+    // 禁止跨品牌（2026-11-06）：已經在另一個品牌的門市綁定的人，這家店不出綁定畫面、也不自動加入，
+    // 不管這家店名冊有沒有同名的列（2026-11-11 B11）。央廚、總部兩邊都可以。
+    var otherBrand = boundAt.filter(function (m) { return m.st.code !== st.code && lineHubCrossBrand_(m.st, st); })[0];
+    if (otherBrand) {
+      return { fail: { ok: false, code: 'cross_brand', store_name: st.name,
+               reason: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(otherBrand.st)] + '的同仁，不能在「' + st.name + '」打卡',
+               hint: '小辛辣與墨竹亭不能互相支援打卡；有問題請找店長' } };
+    }
+    boundAt.forEach(function (m) { names[lineHubNormName_(m.row.name)] = String(m.row.name); });
     var nameKeys = Object.keys(names), suggest = '';
     if (nameKeys.length === 1) {
       var cand = lineHubSheetRows_(ss, 'roster').filter(function (r) {
@@ -654,6 +675,18 @@ function lineHubAttendanceText_(userId) {
   return body;
 }
 
+/** 總部鏡像（Mirror.gs）抄過來的列，最右一欄 mirror_src＝來源店代碼。來源那家店本人也綁著時，同一段班兩家的表各有一份，
+ *  出勤紀錄會算兩次（2026-11-11 B26）→ 這種列不算；本人沒綁來源那家時照算（不然看不到自己的出勤）。 */
+function lineHubDropMirrored_(rows, mine) {
+  // 來源店本人綁的那一列要是同一個工號才算「兩邊各有一份」；本人在來源店綁的是另一個工號時，來源店那邊用新工號找不到這些卡，
+  // 抄過來的這一份就是唯一的一份，要留著（獨立審查補）。
+  var codes = {};
+  (mine || []).forEach(function (m) { codes[String(m.st.code || 'gf').toLowerCase() + '|' + String(m.row.emp_id)] = true; });
+  return (rows || []).filter(function (r) {
+    var src = String(r.mirror_src || '').trim().toLowerCase();
+    return !src || !codes[src + '|' + String(r.emp_id)];
+  });
+}
 /** 出勤資料（文字與卡片共用）：null＝沒綁定；{lines:[{day,store,segs,hrs,status}], tot:{curText,prevText,curLabel,curH,curP,prevLabel,prevH,prevP}} */
 function lineHubAttendanceData_(userId) {
   var mine = lineHubMine_(userId, null, true);
@@ -663,8 +696,8 @@ function lineHubAttendanceData_(userId) {
   var lines = [], tot = null, wk = ['日', '一', '二', '三', '四', '五', '六'];
   mine.forEach(function (m) {
     var ss = lineHubSS_(m.st);
-    var events = lineHubSheetRows_(ss, 'events').map(function (e) { e.ts = normCellTs(e.ts); return e; });
-    var amap = buildLatestApprovedMap(lineHubSheetRows_(ss, 'approved'));
+    var events = lineHubDropMirrored_(lineHubSheetRows_(ss, 'events'), mine).map(function (e) { e.ts = normCellTs(e.ts); return e; });
+    var amap = buildLatestApprovedMap(lineHubDropMirrored_(lineHubSheetRows_(ss, 'approved'), mine));
     buildRecentDays(events, m.row.emp_id, today, amap).forEach(function (d) {
       if (d.date < cut) return;
       var segs = (d.segments || []).map(function (g) { return (g.in || '？') + '–' + (g.out || '？'); }).join('、');
@@ -1088,8 +1121,8 @@ function lineHubAttendanceMonthData_(userId, ym) {
   var wk = ['日', '一', '二', '三', '四', '五', '六'], lines = [], hours = 0, pending = 0;
   mine.forEach(function (m) {
     var ss = lineHubSS_(m.st);
-    var events = lineHubSheetRows_(ss, 'events').map(function (e) { e.ts = normCellTs(e.ts); return e; });
-    var amap = buildLatestApprovedMap(lineHubSheetRows_(ss, 'approved'));
+    var events = lineHubDropMirrored_(lineHubSheetRows_(ss, 'events'), mine).map(function (e) { e.ts = normCellTs(e.ts); return e; });
+    var amap = buildLatestApprovedMap(lineHubDropMirrored_(lineHubSheetRows_(ss, 'approved'), mine));
     buildRecentDays(events, m.row.emp_id, end, amap).forEach(function (d) {
       if (d.date.slice(0, 7) !== ym) return;
       var segs = (d.segments || []).map(function (g) { return (g.in || '？') + '–' + (g.out || '？'); }).join('、');

@@ -18,7 +18,7 @@
   function r1(v) { return Math.round(v * 10) / 10; }
   function effectiveDistance(d, accuracy) {
     var acc = (typeof accuracy === 'number' && isFinite(accuracy) && accuracy >= 0) ? r1(accuracy) : 0;
-    return Math.max(0, r1(d) - Math.min(acc, ACCURACY_CREDIT_CAP_M));
+    return Math.max(0, r1(r1(d) - Math.min(acc, ACCURACY_CREDIT_CAP_M)));   // 相減後再取到 0.1：32.2 − 12.2 才會剛好是 20（2026-11-11 B20，後端同步）
   }
 
   function pickStore(fix, stores) {

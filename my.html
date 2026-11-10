@@ -52,7 +52,7 @@ tr.sum td{font-weight:900;border-bottom:0}
 <body>
 <header>
   <h1>麻的<span>小辛辣</span> ｜ 我的薪資</h1>
-  <input type="month" id="ym" value="2026-06">
+  <input type="month" id="ym">
 </header>
 <main id="app"><div class="card"><div class="state">載入中…</div></div></main>
 
@@ -139,6 +139,9 @@ async function load(){
 }
 function st(ic,t,d){return `<div class="card"><div class="state"><div class="ic">${ic}</div>
   <div style="font-weight:900;color:#231815;font-size:16px;margin-bottom:5px">${t}</div><div>${d}</div></div></div>`}
+/* 月份欄預設台北的當月（2026-11-11 B36：原本寫死 2026-06）。加 8 小時後讀世界標準時間的年月，不受手機時區影響。 */
+function defaultYm(now){return new Date((now===undefined?Date.now():now)+8*3600000).toISOString().slice(0,7);}
+document.getElementById('ym').value=defaultYm();
 document.getElementById('ym').addEventListener('change',load);
 load();
 </script>
