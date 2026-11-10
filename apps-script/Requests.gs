@@ -1104,6 +1104,16 @@ function reqBindFrom_() {
 }
 /** 核定時段少了幾張打卡。periods：[{startMs,endMs}]；segs：[{inMs,outMs}]（null＝沒有那張） */
 function reqBindMissCards_(periods, segs, breakWindow) {
+  // 規定不打卡的休息帶（央廚）隔開的兩段當成同一段算，否則只漏一張卡會被算成 3 張（2026-11-10，與薪資一致）
+  if (breakWindow && typeof gapExplainedByBreak === 'function') {
+    periods = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; }).reduce(function (acc, p) {
+      var last = acc[acc.length - 1];
+      if (last && p.startMs > last.endMs && gapExplainedByBreak(last.endMs, p.startMs, breakWindow)) {
+        acc[acc.length - 1] = { startMs: last.startMs, endMs: Math.max(last.endMs, p.endMs) };
+      } else acc.push({ startMs: p.startMs, endMs: p.endMs });
+      return acc;
+    }, []);
+  }
   var full = segs.filter(function (s) { return s.inMs != null && s.outMs != null; });
   var lone = segs.filter(function (s) { return (s.inMs == null) !== (s.outMs == null); })
     .map(function (s) { return { inMs: s.inMs, outMs: s.outMs, used: false }; });

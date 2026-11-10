@@ -3083,7 +3083,7 @@ function recheckPendingApprovalStatuses() {
       appendApprovedRow_(approvedSheet, [
         date, empId, r.name, rec.periods, rec.approved_hours,
         r.newStatusText, String(rec.manager_name || '') + RECHECK_MARK, nowTaipeiIso(),
-      ], dupIgnoreList_(rec.dup_ignore));
+      ], dupIgnoreList_(rec.dup_ignore), String(rec.diff_reason || ''));   // 主管填的差異原因要帶到新列
       fixed++;
     });
   });
@@ -3188,7 +3188,7 @@ function backfillMissingPunchGroups(fromDate, toDate, apply) {
         appendApprovedRow_(approvedSheet, [
           date, empId, r.name, rec.periods, rec.approved_hours,
           r.newStatusText, String(rec.manager_name || '') + RECHECK_MARK, nowTaipeiIso(),
-        ], dupIgnoreList_(rec.dup_ignore));
+        ], dupIgnoreList_(rec.dup_ignore), String(rec.diff_reason || ''));
       }
     });
   }
