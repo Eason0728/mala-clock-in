@@ -1952,7 +1952,9 @@ function handleMgrApprove(body) {
   if (typeof reqBindCheck_ === 'function') {
     const acting = reqMgrActing_(mgr, body);
     const bind = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, punchMs, noPunchBreakWindow(date),
-      { leaves: leaves, trip_hours: tripHours, sched_day: acting ? String(body.sched_day || '') : '', sched_spans: acting && Array.isArray(body.sched_spans) ? body.sched_spans : [], diff_reason: body.diff_reason, acting: acting });
+      { leaves: leaves, trip_hours: tripHours, sched_day: acting ? String(body.sched_day || '') : '', sched_spans: acting && Array.isArray(body.sched_spans) ? body.sched_spans : [], diff_reason: body.diff_reason, acting: acting,
+        // 那天這位同仁「新手機待核准」的卡有幾張（2026-11-11 B35）：少卡被擋時訊息請主管先核准裝置
+        pending_device: eventRows.filter(function (e) { return String(e.emp_id) === String(body.emp_id) && e.status === 'pending_device_approval' && tsDateStr(e.ts) === date; }).length });
     if (bind) return bind;
   }
   const enteredAt = nowTaipeiIso();

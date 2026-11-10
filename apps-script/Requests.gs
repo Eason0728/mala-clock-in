@@ -1502,6 +1502,8 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
     var hint = pend.length ? '這天有 ' + pend.length + ' 張申請還在審核中，請先到「申請審核」處理再送。' + (noLine ? '這位同仁沒綁 LINE，還缺別張單可以繼續代開。' : '')
       : noLine ? '這位同仁沒綁 LINE，請店長在考勤管理「代開申請」，送總監層級審核。'
       : '請同仁在 LINE「加班請假」補申請；超過 7 天請店長在考勤管理「代開申請」，送總監層級審核。';
+    // 2026-11-11（B35）：少卡、而那天有新手機待核准的卡（舊連結才會有）——出路是先核准裝置，不是補忘打卡單
+    if (missBad && opt.pending_device > 0) hint = '這天有 ' + opt.pending_device + ' 張新手機待核准的打卡，請先到「待核准裝置」核准這支手機，再回來核定（核准後就不用補忘打卡單）。' + (otBad || pend.length ? hint : '');
     return { ok: false, error: 'need_request', message: '這天還不能核定：' + probs.map(function (p) { return p.text; }).join('；') + '。' + hint,
              need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length } };
   }
