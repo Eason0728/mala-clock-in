@@ -10,7 +10,7 @@ vm.createContext(sb);
 vm.runInContext([constOf('LONE_CARD_NEAR_MS'), constOf('NO_PUNCH_NOTE'), constOf('NOT_RECORDED_NOTE'), constOf('TRIP_NOTE'), constOf('SEG_MISS_OUT'), constOf('SEG_MISS_IN'),
   constOf('MISSING_GROUP_PREFIX'), constOf('SEG_FORGOT_OUT'), constOf('SEG_FORGOT_IN'), constOf('SEG_NUM_ZH'), code.match(/^function segMissNote.*$/m)[0],
   'function gapExplainedByBreak(a,b,w){return !!w&&a<w.endMs&&b>w.startMs;}',
-  pick(code, 'loneCardsForPeriods_'), pick(code, 'computeApprovalStatus'), pick(payroll, 'payMissingCards'),
+  pick(code, 'loneCardsForPeriods_'), pick(code, 'breakBlocksFor_'), pick(code, 'computeApprovalStatus'), pick(payroll, 'payMissingCards'),
   'var __c=computeApprovalStatus,__m=payMissingCards;'].join('\n'), sb);
 
 const ms = hm => { const [h, m] = hm.split(':').map(Number); return (h * 60 + m) * 60000; };
@@ -40,5 +40,8 @@ const BW = { startMs: ms('12:00'), endMs: ms('13:00') };
 chk('央廚休息帶：只漏下班卡 → 下班忘刷卡（不寫成三張）', sb.__c([per('08:00', '12:00'), per('13:00', '17:00')], [seg('08:00', null)], false, false, BW), '下班忘刷卡');
 chk('央廚休息帶：一長段打齊 → 正常', sb.__c([per('08:00', '12:00'), per('13:00', '17:00')], [seg('07:58', '17:02')], false, false, BW), '正常');
 chk('央廚休息帶：上班晚 10 分 → 遲到10分', sb.__c([per('08:00', '12:00'), per('13:00', '17:00')], [seg('08:10', '17:02')], false, false, BW), '遲到10分');
+chk('央廚休息帶：午休照樣打卡、四張準時 → 正常（B01）', sb.__c([per('08:00', '12:00'), per('13:00', '17:00')], [seg('08:00', '12:00'), seg('13:00', '17:00')], false, false, BW), '正常');
+chk('央廚休息帶：午休有打卡、忘打最後下班 → 第二段下班忘刷卡（B01）', sb.__c([per('08:00', '12:00'), per('13:00', '17:00')], [seg('08:00', '12:00'), seg('13:00', null)], false, false, BW), '第二段下班忘刷卡');
+chk('央廚休息帶：午休有打卡、這天少算的卡是 0 張（B01）', sb.__m(sb.__c([per('08:00', '12:00'), per('13:00', '17:00')], [seg('08:00', '12:00'), seg('13:00', null)], false, false, BW)), 0);
 if (fail) { console.log(fail + ' 項失敗'); process.exit(1); }
 console.log('全部通過');

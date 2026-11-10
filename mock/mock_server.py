@@ -795,6 +795,39 @@ def lone_cards_for_periods(periods, full_segs, punch_segments, near_ms=4 * 36000
     return best[0]
 
 
+def break_blocks_for(periods, punch_segments, break_window):
+    """與 Code.gs breakBlocksFor_ 同步（2026-11-11 B01）：休息帶隔開的兩段併成一塊，但午休照樣打卡的人不併。
+    併與不併各算配得到幾張卡（完整打卡段 2 張、單張卡 1 張），不併比較多就不併；一樣多照舊併。"""
+    sorted_p = sorted(periods, key=lambda q: q["start_ms"])
+    plain = [{"start_ms": q["start_ms"], "end_ms": q["end_ms"], "first": k + 1, "last": k + 1} for k, q in enumerate(sorted_p)]
+    if not break_window:
+        return plain
+    merged = []
+    for k, q in enumerate(sorted_p):
+        last = merged[-1] if merged else None
+        if (last and q["start_ms"] > last["end_ms"]
+                and last["end_ms"] < break_window["end_ms"] and q["start_ms"] > break_window["start_ms"]):
+            last["end_ms"] = max(last["end_ms"], q["end_ms"])
+            last["last"] = k + 1
+        else:
+            merged.append({"start_ms": q["start_ms"], "end_ms": q["end_ms"], "first": k + 1, "last": k + 1})
+    if len(merged) == len(plain):
+        return plain
+    full_segs = [s for s in punch_segments if s["in_ms"] is not None and s["out_ms"] is not None]
+    def cards_used(blocks):
+        used = set()
+        for b in blocks:
+            best_i, best_ov = -1, 0
+            for i, seg in enumerate(full_segs):
+                ov = min(b["end_ms"], seg["out_ms"]) - max(b["start_ms"], seg["in_ms"])
+                if ov > best_ov:
+                    best_ov, best_i = ov, i
+            if best_i >= 0:
+                used.add(best_i)
+        return len(used) * 2 + len(lone_cards_for_periods(blocks, full_segs, punch_segments))
+    return plain if cards_used(plain) > cards_used(merged) else merged
+
+
 def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=False, break_window=None):
     """與 Code.gs computeApprovalStatus 同步（2026-11-10 口徑統一）。"""
     rnd = lambda x: int(math.floor(x / 60000 + 0.5))
@@ -802,15 +835,7 @@ def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=Fal
     legacy = bool(had_unrecorded_attempts)
     sorted_p = sorted(periods, key=lambda q: q["start_ms"])
     multi_orig = len(sorted_p) > 1
-    blocks = []
-    for k, q in enumerate(sorted_p):
-        last = blocks[-1] if blocks else None
-        if (not legacy and break_window and last and q["start_ms"] > last["end_ms"]
-                and last["end_ms"] < break_window["end_ms"] and q["start_ms"] > break_window["start_ms"]):
-            last["end_ms"] = max(last["end_ms"], q["end_ms"])
-            last["last"] = k + 1
-        else:
-            blocks.append({"start_ms": q["start_ms"], "end_ms": q["end_ms"], "first": k + 1, "last": k + 1})
+    blocks = break_blocks_for(sorted_p, punch_segments, None if legacy else break_window)
     if not legacy and break_window:
         periods = blocks
     lone = {} if legacy else lone_cards_for_periods(periods, full_segs, punch_segments)

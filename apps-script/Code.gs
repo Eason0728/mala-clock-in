@@ -2511,20 +2511,52 @@ function loneCardsForPeriods_(periods, fullSegs, punchSegments) {
   return best;
 }
 
+/**
+ * 核定時段依「規定不打卡的休息帶」（央廚 12–13、總部 14–15）分塊，回傳依時間排序的
+ * [{ startMs, endMs, firstNo, lastNo }]（段號＝原始時段依時間先後的序號）。沒有休息帶＝每段自己一塊。
+ * 2026-11-10 起，休息帶隔開的兩段併成一塊（否則照規定不打午休卡的人，漏一張卡會寫成三張）。
+ * 2026-11-11（B01）：午休照樣打卡的同仁不能併——併了以後一整塊只會拿一條打卡段去比，
+ * 四張卡準時也變成「早退300分、有多出的打卡段」。判斷方式：併與不併各算「配得到幾張卡」
+ * （完整打卡段 2 張、單張卡 1 張），不併配得到比較多張＝休息帶前後有打卡，就不併；一樣多照舊併。
+ * computeApprovalStatus 與 Requests.gs reqBindMissCards_ 共用，狀態寫的忘刷張數和要補的單才會一致。
+ */
+function breakBlocksFor_(periods, punchSegments, breakWindow) {
+  const sorted = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
+  const plain = sorted.map(function (p, k) { return { startMs: p.startMs, endMs: p.endMs, firstNo: k + 1, lastNo: k + 1 }; });
+  if (!breakWindow) return plain;
+  const merged = sorted.reduce(function (acc, p, k) {
+    const last = acc[acc.length - 1];
+    if (last && p.startMs > last.endMs && gapExplainedByBreak(last.endMs, p.startMs, breakWindow)) {
+      last.endMs = Math.max(last.endMs, p.endMs); last.lastNo = k + 1;
+    } else acc.push({ startMs: p.startMs, endMs: p.endMs, firstNo: k + 1, lastNo: k + 1 });
+    return acc;
+  }, []);
+  if (merged.length === plain.length) return plain;   // 沒有被休息帶隔開的時段
+  const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
+  const cardsUsed = function (blocks) {
+    const used = {};
+    blocks.forEach(function (b) {
+      let best = -1, bestOv = 0;
+      fullSegs.forEach(function (s, i) {
+        const ov = Math.min(b.endMs, s.outMs) - Math.max(b.startMs, s.inMs);
+        if (ov > bestOv) { bestOv = ov; best = i; }
+      });
+      if (best >= 0) used[best] = true;
+    });
+    return Object.keys(used).length * 2 + Object.keys(loneCardsForPeriods_(blocks, fullSegs, punchSegments)).length;
+  };
+  return cardsUsed(plain) > cardsUsed(merged) ? plain : merged;
+}
+
 function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip, breakWindow) {
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
   const legacy = !!(isTrip || hadUnrecordedAttempts);   // 出差、打卡未入帳：照舊標示，不冤枉人
   // 段號照店長輸入的核定時段（依時間先後）；規定不打卡的休息帶（央廚）隔開的兩段併成一塊，和補單張數一致
   //（2026-11-10；否則漏一張卡會寫成三張）。併起來的那塊：上班卡用第一段的段號、下班卡用最後一段的段號。
+  // 午休照樣打卡的同仁不併、各段自己比（2026-11-11 B01，判斷在 breakBlocksFor_）。
   const sortedP = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
   const multiOrig = sortedP.length > 1;
-  const blocks = sortedP.reduce(function (acc, p, k) {
-    const last = acc[acc.length - 1];
-    if (!legacy && breakWindow && last && p.startMs > last.endMs && gapExplainedByBreak(last.endMs, p.startMs, breakWindow)) {
-      last.endMs = Math.max(last.endMs, p.endMs); last.lastNo = k + 1;
-    } else acc.push({ startMs: p.startMs, endMs: p.endMs, firstNo: k + 1, lastNo: k + 1 });
-    return acc;
-  }, []);
+  const blocks = breakBlocksFor_(sortedP, punchSegments, legacy ? null : breakWindow);
   if (!legacy && breakWindow) periods = blocks;
   const lone = legacy ? {} : loneCardsForPeriods_(periods, fullSegs, punchSegments);
   const multi = periods.length > 1 && multiOrig;

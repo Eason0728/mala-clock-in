@@ -1171,7 +1171,11 @@ function reqLoneFallback_(periods, full, segs) {
 }
 function reqBindMissCards_(periods, segs, breakWindow) {
   // 規定不打卡的休息帶（央廚）隔開的兩段當成同一段算，否則只漏一張卡會被算成 3 張（2026-11-10，與薪資一致）
-  if (breakWindow && typeof gapExplainedByBreak === 'function') {
+  // 午休照樣打卡的同仁不併（2026-11-11 B01）：和核定狀態共用 Code.gs breakBlocksFor_，狀態寫幾張、這裡就要幾張單；
+  // 程式碼.js 還沒有那支函式的店照舊一律併。
+  if (breakWindow && typeof breakBlocksFor_ === 'function') {
+    periods = breakBlocksFor_(periods, segs, breakWindow).map(function (b) { return { startMs: b.startMs, endMs: b.endMs }; });
+  } else if (breakWindow && typeof gapExplainedByBreak === 'function') {
     periods = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; }).reduce(function (acc, p) {
       var last = acc[acc.length - 1];
       if (last && p.startMs > last.endMs && gapExplainedByBreak(last.endMs, p.startMs, breakWindow)) {
