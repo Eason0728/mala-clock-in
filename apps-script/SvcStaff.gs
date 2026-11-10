@@ -142,7 +142,8 @@ function svcAddLocked_(body, name) {
   for (var i = 0; i < rows.length; i++) {
     if (String(rows[i].origin_op) === body.op_id) return { ok: true, emp_id: String(rows[i].emp_id), active: svcIsTrue_(rows[i].active) };
   }
-  var dup = rows.filter(function (r) { return String(r.name).trim() === name && svcIsTrue_(r.active); })[0];
+  var nameKey = name.replace(/\s/g, '');   // 去掉全部空白再比（同 Code.gs handleMgrAddEmployee、LINE 綁定的姓名比對；2026-11-11 B27）
+  var dup = rows.filter(function (r) { return String(r.name).replace(/\s/g, '') === nameKey && svcIsTrue_(r.active); })[0];
   if (dup) return svcFail_('duplicate_name', '本店已有在職同仁同名');
   var empId = nextEmpId(rows);
   var now = nowTaipeiIso();

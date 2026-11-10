@@ -1259,8 +1259,11 @@ function handleMgrAddEmployeeUnlocked_(body) {
   const rosterSheet = ss.getSheetByName('roster');
   if (!rosterSheet) return { ok: false, error: 'no_roster' };
   const rows = readSheetAsObjects(rosterSheet).rows;
+  // 2026-11-11（B27）：去掉全部空白再比（LINE 綁定比對姓名就是這樣比的）。只去頭尾的話「測 試一」新增得進去，
+  // 之後兩位在 LINE 綁定時都會被當成同名而綁不了。
+  const nameKey = name.replace(/\s/g, '');
   const dup = rows.filter(function (r) {
-    return String(r.name).trim() === name && String(r.active).toLowerCase() === 'true';
+    return String(r.name).replace(/\s/g, '') === nameKey && String(r.active).toLowerCase() === 'true';
   })[0];
   if (dup) {
     return { ok: false, error: 'duplicate_name',

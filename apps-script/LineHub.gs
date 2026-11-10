@@ -158,7 +158,11 @@ function lineHubBindElsewhere_(userId, body, st, want) {
   var notFound = { ok: false, error: 'name_not_found', store_name: st.name,
     message: '公司各單位的打卡名冊都沒有「' + typed + '」。請確認是全名、沒有錯字；名字沒錯請店長或主管到管理系統的「同仁名單」幫你建檔。' };
   var home = null, viaLine = false;
-  var mine = lineHubMine_(userId).filter(function (m) { return lineHubNormName_(m.row.name) === want && m.st.code !== st.code; });
+  var UNREACH = { ok: false, error: 'unreachable', message: '有單位的系統暫時連不上，請稍後再試。' };
+  var mineInfo = {};
+  var mine = lineHubMine_(userId, mineInfo).filter(function (m) { return lineHubNormName_(m.row.name) === want && m.st.code !== st.code; });
+  // 2026-11-11（B28）：有任何一家名冊讀不到，就不下「只綁一家」「全公司恰好一位」的結論，請同仁稍後再試。
+  if (mineInfo.unreadable) return UNREACH;
   if (mine.length === 1) { home = mine[0]; viaLine = true; }
   else if (mine.length > 1) return { ok: false, error: 'name_conflict', message: '你的 LINE 在兩個以上的單位都有綁定，請找主管協助加入「' + st.name + '」。' };
   else {
@@ -170,7 +174,8 @@ function lineHubBindElsewhere_(userId, body, st, want) {
       rows.forEach(function (r) { if (lineHubActive_(r) && lineHubNormName_(r.name) === want) found.push({ st: s, row: r }); });
     });
     if (found.length > 1) return { ok: false, error: 'name_conflict', message: '公司有兩位以上叫「' + typed + '」的同仁，請找主管協助綁定。' };
-    if (!found.length) return unreadable ? { ok: false, error: 'unreachable', message: '有單位的系統暫時連不上，請稍後再試。' } : notFound;
+    if (unreadable) return UNREACH;
+    if (!found.length) return notFound;
     home = found[0];
     if (home.row.line_user_id && String(home.row.line_user_id) !== String(userId)) {
       return { ok: false, error: 'name_taken', message: '「' + String(home.row.name) + '」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管解除。' };
@@ -670,6 +675,16 @@ function lineHubAttendanceText_(userId) {
   return body;
 }
 
+/** 總部鏡像（Mirror.gs）抄過來的列，最右一欄 mirror_src＝來源店代碼。來源那家店本人也綁著時，同一段班兩家的表各有一份，
+ *  出勤紀錄會算兩次（2026-11-11 B26）→ 這種列不算；本人沒綁來源那家時照算（不然看不到自己的出勤）。 */
+function lineHubDropMirrored_(rows, mine) {
+  var codes = {};
+  (mine || []).forEach(function (m) { codes[String(m.st.code || 'gf').toLowerCase()] = true; });
+  return (rows || []).filter(function (r) {
+    var src = String(r.mirror_src || '').trim().toLowerCase();
+    return !src || !codes[src];
+  });
+}
 /** 出勤資料（文字與卡片共用）：null＝沒綁定；{lines:[{day,store,segs,hrs,status}], tot:{curText,prevText,curLabel,curH,curP,prevLabel,prevH,prevP}} */
 function lineHubAttendanceData_(userId) {
   var mine = lineHubMine_(userId, null, true);
@@ -679,8 +694,8 @@ function lineHubAttendanceData_(userId) {
   var lines = [], tot = null, wk = ['日', '一', '二', '三', '四', '五', '六'];
   mine.forEach(function (m) {
     var ss = lineHubSS_(m.st);
-    var events = lineHubSheetRows_(ss, 'events').map(function (e) { e.ts = normCellTs(e.ts); return e; });
-    var amap = buildLatestApprovedMap(lineHubSheetRows_(ss, 'approved'));
+    var events = lineHubDropMirrored_(lineHubSheetRows_(ss, 'events'), mine).map(function (e) { e.ts = normCellTs(e.ts); return e; });
+    var amap = buildLatestApprovedMap(lineHubDropMirrored_(lineHubSheetRows_(ss, 'approved'), mine));
     buildRecentDays(events, m.row.emp_id, today, amap).forEach(function (d) {
       if (d.date < cut) return;
       var segs = (d.segments || []).map(function (g) { return (g.in || '？') + '–' + (g.out || '？'); }).join('、');
@@ -1104,8 +1119,8 @@ function lineHubAttendanceMonthData_(userId, ym) {
   var wk = ['日', '一', '二', '三', '四', '五', '六'], lines = [], hours = 0, pending = 0;
   mine.forEach(function (m) {
     var ss = lineHubSS_(m.st);
-    var events = lineHubSheetRows_(ss, 'events').map(function (e) { e.ts = normCellTs(e.ts); return e; });
-    var amap = buildLatestApprovedMap(lineHubSheetRows_(ss, 'approved'));
+    var events = lineHubDropMirrored_(lineHubSheetRows_(ss, 'events'), mine).map(function (e) { e.ts = normCellTs(e.ts); return e; });
+    var amap = buildLatestApprovedMap(lineHubDropMirrored_(lineHubSheetRows_(ss, 'approved'), mine));
     buildRecentDays(events, m.row.emp_id, end, amap).forEach(function (d) {
       if (d.date.slice(0, 7) !== ym) return;
       var segs = (d.segments || []).map(function (g) { return (g.in || '？') + '–' + (g.out || '？'); }).join('、');
