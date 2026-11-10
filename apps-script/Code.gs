@@ -1931,7 +1931,7 @@ function handleMgrApprove(body) {
       };
     });
     statusText = computeApprovalStatus(periods, punchWithMs,
-      unrecordedAttemptCount(eventRows, body.emp_id, date) > 0,
+      unresolvedAttemptCount_(eventRows, body.emp_id, date) > 0,
       hasTrip,
       noPunchBreakWindow(date));
     // 主管手動認定的遲到分鐘覆蓋系統判定（打卡沒入帳時系統算不出來）
@@ -2461,6 +2461,32 @@ function unrecordedAttemptCount(eventRows, empId, dateStr) {
     if (String(e.emp_id) !== String(empId)) return;
     if (tsDateStr(e.ts) !== dateStr) return;
     if (String(e.status) !== 'ok') n++;
+  });
+  return n;
+}
+
+/**
+ * 某人某天「真的沒入帳」的打卡筆數：送出了、沒成功，而且之後也沒有補成功（2026-11-11 B08）。
+ * 核定狀態用這個判斷要不要寫「打卡未入帳，主管補登」。不算的兩種：
+ *   連按被擋（rejected_duplicate）——前面那張同型的卡已經成功；
+ *   被擋之後 10 分鐘內同一種卡重按成功（例：定位飄掉、走近一點再按一次）。
+ * 原本只要當天有任何一筆沒成功的卡就整天當成「未入帳」，多按一下，遲到分鐘與忘刷就都不見了。
+ * 主管頁顯示的嘗試次數仍用 unrecordedAttemptCount（每一筆都列出來）。
+ */
+const ATTEMPT_RETRY_OK_MS = 10 * 60000;
+function unresolvedAttemptCount_(eventRows, empId, dateStr) {
+  const mine = eventRows.filter(function (e) { return String(e.emp_id) === String(empId); });
+  let n = 0;
+  mine.forEach(function (e) {
+    if (tsDateStr(e.ts) !== dateStr) return;
+    const st = String(e.status);
+    if (st === 'ok' || st === 'rejected_duplicate') return;
+    const t = tsMs(e.ts);
+    const retried = mine.some(function (x) {
+      const d = tsMs(x.ts) - t;
+      return String(x.status) === 'ok' && String(x.type) === String(e.type) && d > 0 && d <= ATTEMPT_RETRY_OK_MS;
+    });
+    if (!retried) n++;
   });
   return n;
 }
@@ -3145,7 +3171,7 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) 
   const st0 = String(rec.status_text || '');
   const manualNote = st0.split('、').filter(function (x) { return x.indexOf(MANUAL_LATE_MARK) !== -1 || x === NO_LATE_NOTE; })[0] || '';
   let st = computeApprovalStatus(periods, punchWithMs,
-    unrecordedAttemptCount(eventRows, empId, date) > 0,
+    unresolvedAttemptCount_(eventRows, empId, date) > 0,
     isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name),
     noPunchBreakWindow(date));
   if (manualNote) {

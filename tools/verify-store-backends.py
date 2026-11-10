@@ -26,7 +26,7 @@ FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'is
          'nextEmpId', 'handleSetShifts', 'handleMgrAddEmployee', 'handleRecentHires',
          'computeApprovalStatus', 'pairShifts', 'buildLatestApprovedMap',
          'recomputeApprovalStatusOf', 'backfillMissingPunchGroups', 'statusDiffIsOnlyMissingGroup',
-         'breakBlocksFor_']
+         'breakBlocksFor_', 'unresolvedAttemptCount_']
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
     'computeApprovalStatus 有 isTrip＋休息帶參數': 'hadUnrecordedAttempts, isTrip, breakWindow)',
