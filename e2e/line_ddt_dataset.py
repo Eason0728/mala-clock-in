@@ -339,6 +339,9 @@ def day_info(evs, date):
             [{'in': p['hm'], 'out': None, 'out_next': False} for p in mine_ins]
     if spans:
         opts.append('break')
+    # 另一段班整段沒打（同 Requests.gs reqDayInfo_，2026-11-10）：當天打卡都是完整的段時，也能補一整段上班＋下班
+    if mine_segs and not mine_ins and not mine_outs:
+        opts.append('both')
     lo1 = mine_outs[0] if mine_outs else None
     return {'punches': punches, 'options': opts, 'open_in': mine_ins[-1]['hm'] if mine_ins else None,
             'lone_out': lo1['hm'] if lo1 else None, 'lone_out_next': bool(lo1 and lo1['date'] != date), 'spans': spans}
@@ -352,6 +355,12 @@ def rec_text(punches):
 
 
 MISS_LABEL = {'in': '上班卡', 'out': '下班卡', 'both': '上班和下班都沒打', 'break': '中間休息沒打卡'}
+MISS_LABEL_BOTH_WITH_PUNCH = '另一段班整段沒打'
+
+
+def miss_label(key, di):
+    """req-line.js 的 LBL：'both' 在當天有打卡紀錄時寫「另一段班整段沒打」，整天沒卡才寫「上班和下班都沒打」"""
+    return MISS_LABEL_BOTH_WITH_PUNCH if key == 'both' and di['punches'] else MISS_LABEL[key]
 
 
 def req_summary(r):
