@@ -869,14 +869,21 @@ function payRatio(e, ym) {
  * 進名單：主檔「在職」，或「已停用但離職日落在這個月」（月中離職的人停用後，離職當月那一列還在）。 */
 function payInRoster_(m, st, ym) {
   if (payStore(m.store) !== st) return false;
+  return payInRosterYm_(m, ym);
+}
+/** 名單判斷不看門市的那一半（跨店支援自動帶入也用這一支，門市由呼叫端自己比）。 */
+function payInRosterYm_(m, ym) {
   if (String(m.active).toLowerCase() === 'true') return true;
   return payDateStr(m.leave_date).slice(0, 7) === String(ym);
 }
-/** 這個月有沒有任何時數、支援、請假、自訂加扣、獎金（att＝送進 payCalcOne 的那一包）。
+/** 這個月有沒有任何時數、支援、請假、自訂加扣、獎金、特休折算（att＝送進 payCalcOne 的那一包；ym 有帶才看特休折算）。
  *  在職天數 0 的人要有其中一項才產生列；支援欄壞掉（supportError）也當成有資料，不讓它無聲消失。 */
-function payMonthActivity_(att, supportError) {
+function payMonthActivity_(att, supportError, ym) {
   att = att || {};
   if (supportError) return true;
+  // 這個月剛好是特休折算月、而且有時數可折 → 照修改前產生列，那筆折算不消失（條件同 payCalcOne 發 annual_payout 的那一行）
+  if (ym && att.annual && att.annual.payout_ym === String(ym)
+      && payNum(att.annual.payout_h != null ? att.annual.payout_h : att.annual.left_h) > 0) return true;
   if (payNum(att.hours) || payNum(att.extra_ot) || payNum(att.holiday_h)) return true;
   if ((att.support || []).some(function (x) { return x && (payNum(x.hours) || payNum(x.amount)); })) return true;
   if (['personal_h', 'sick_h', 'menstrual_h', 'disaster_h', 'annual_h'].some(function (k) { return payNum(att[k]); })) return true;
@@ -888,13 +895,29 @@ function payMonthActivity_(att, supportError) {
   return false;
 }
 /** 主檔已停用、離職日不在這個月、這個月卻有核定時數或手動工時的人：不進薪資，只回清單讓畫面提醒。
- *  inputs＝payInputsBase 的結果（打卡歸集＋手動工時）。只放 emp_id、name、hours。 */
-function payNotInPayroll_(masterAll, st, ym, inputs) {
-  const out = [];
+ *  inputs＝payInputsBase 的結果（打卡歸集＋手動工時）。只放 emp_id、name、hours。
+ *  runRows＝這個月的月結列（草稿或鎖定都算）：月結裡已經有這個人的列＝當時有算進薪資 → 不列入提醒。 */
+function payNotInPayroll_(masterAll, st, ym, inputs, runRows) {
+  const out = [], inRun = {};
+  (runRows || []).forEach(function (r) { if (r) inRun[String(r.emp_id)] = true; });
   (masterAll || []).forEach(function (m) {
     if (payStore(m.store) !== st || payInRoster_(m, st, ym)) return;
+    if (inRun[String(m.emp_id)]) return;
     const h = payR2(payNum(((inputs || {})[String(m.emp_id)] || {}).hours));
     if (h > 0) out.push({ emp_id: String(m.emp_id), name: String(m.name || ''), hours: h });
+  });
+  return out;
+}
+/** 這個月在職天數 0（到職日在月底之後／離職日在月初之前）卻有一列薪資的人：照舊算，只回清單讓畫面提醒。
+ *  rows＝這個月的結果列（剛算好的 results 或月結還原的列都可以）。只放 emp_id、name、hours（核定時數）。 */
+function payZeroRatioRows_(masterAll, st, ym, rows) {
+  const by = {};
+  (masterAll || []).forEach(function (m) { if (payStore(m.store) === st) by[String(m.emp_id)] = m; });
+  const out = [];
+  (rows || []).forEach(function (r) {
+    const m = r ? by[String(r.emp_id)] : null;
+    if (!m || payRatio(m, ym) > 0) return;
+    out.push({ emp_id: String(m.emp_id), name: String(m.name || ''), hours: payR2(payNum(r.total_hours)) });
   });
   return out;
 }
@@ -2378,9 +2401,10 @@ function paySupportAutoCore_(ym, home, d) {
   // 主檔（在職）依打卡表分：dup_pay 要看「用同一份打卡表的門市」有沒有同一個編號
   const masterByKey = {}, homeMaster = {};   // homeMaster：正規化編號 → 主檔上的原編號
   (d.master || []).forEach(function (m) {
-    if (String(m.active).toLowerCase() !== 'true') return;   // 跟正式計薪同一個口徑（GPT #11：空白／1 兩邊都不算在職）
     const st = payXsupRowStore_(m.store), id = payXsupId_(m.emp_id);
-    if (st === home) homeMaster[id] = String(m.emp_id == null ? '' : m.emp_id).trim();
+    // 本店的人跟計薪名單同一個判斷（payInRosterYm_）：在職，或已停用但離職日在這個月——月中離職停用後，離職當月的支援照樣帶入
+    if (st === home && payInRosterYm_(m, ym)) homeMaster[id] = String(m.emp_id == null ? '' : m.emp_id).trim();
+    if (String(m.active).toLowerCase() !== 'true') return;   // dup_pay 照舊只看在職（GPT #11：空白／1 兩邊都不算在職）
     const k = payXsupClockKey_(st, storeBy);
     if (k) (masterByKey[k] = masterByKey[k] || {})[id] = true;
   });
@@ -3484,7 +3508,8 @@ function handlePayrollCalc(body) {
       }
     }
     // 在職天數 0 且沒有任何時數、支援、請假、自訂加扣、獎金、手動明細 → 不產生列；有其中一項照舊計算
-    if (ZERO_DAYS && !payMonthActivity_(att, c.support_error) && !(manualByEmp[String(e.emp_id)] || []).length) return;
+    // 例外：這個月是他的特休折算月且有時數可折 → 照修改前產生列（payMonthActivity_ 第三個參數）
+    if (ZERO_DAYS && !payMonthActivity_(att, c.support_error, ym) && !(manualByEmp[String(e.emp_id)] || []).length) return;
     results.push(payCalcOne(e, ym, att, cfg, redDays, LTYPES_FOR_CALC));
   });
 
@@ -3513,10 +3538,12 @@ function handlePayrollCalc(body) {
     if (r.ot_info) runRows[runRows.length - 1].ot_info = JSON.stringify(r.ot_info);
   });
 
+  const ZERO_ROWS = payZeroRatioRows_(masterAll, st, ym, results);   // 在職天數 0 卻有列的人（照舊算，只提醒）
   if (body.dry_run) {   // 唯讀試算（payroll_ot_preview）：不寫 run／item
     const dres = { ok: true, ym: ym, store: st, results: results, red_days: redDays, dry_run: true };
     if (typeof SCHED !== 'undefined') { dres._sched = SCHED; dres._hol = HOLD; }   // 只給 payOtMonthSync_；試算回應不帶
     if (NOT_IN.length) dres.not_in_payroll = NOT_IN;
+    if (ZERO_ROWS.length) dres.zero_ratio_with_data = ZERO_ROWS;
     return dres;
   }
   let lockedMeanwhile = false;
@@ -3535,6 +3562,7 @@ function handlePayrollCalc(body) {
   const res = { ok: true, ym: ym, store: st, results: results, config: cfg, red_days: redDays, collected: collected };
   if (XSA) res.support_auto = XSA;
   if (NOT_IN.length) res.not_in_payroll = NOT_IN;   // 沒有就不帶（回應形狀與改版前相同）
+  if (ZERO_ROWS.length) res.zero_ratio_with_data = ZERO_ROWS;   // 沒有就不帶
   return res;
 }
 
@@ -3663,7 +3691,9 @@ function handlePayrollMonth(body) {
   let rosterMiss = [], sameName = [];
   try { rosterMiss = payRosterMismatch_(stM, masterM); } catch (e) { rosterMiss = []; }
   try { sameName = payLeaveSameName_(stM, ym); } catch (e) { sameName = []; }
-  const notIn = payNotInPayroll_(masterM, stM, ym, inputs);   // 停用且離職日不在本月、卻有時數的人（薪酬挑錯第 2 項）
+  // 停用且離職日不在本月、卻有時數的人（薪酬挑錯第 2 項）；月結（草稿或鎖定）裡已經有他的列就不提醒
+  const notIn = payNotInPayroll_(masterM, stM, ym, inputs, run ? run.results : null);
+  const zeroRows = payZeroRatioRows_(masterM, stM, ym, run ? run.results : null);   // 在職天數 0 卻有列的人
   return { ok: true, ym: ym, store: stM, has_clock: payHasClock(stM), inputs: inputs, run: run, annual: payAnnualInfo(ym, stM),
            master: masterM, roster_mismatch: rosterMiss.length ? rosterMiss : undefined, same_name: sameName.length ? sameName : undefined,   // 沒有就不帶（回應形狀與改版前相同）
            ot_period: (function (m) { return Object.keys(m).length ? m : undefined; })(payOtPeriodMap_(stM)),   // 沒有就不帶（回應形狀與改版前相同）
@@ -3671,7 +3701,8 @@ function handlePayrollMonth(body) {
            bonuses: payRead('bonus').filter(function (b) { return String(b.ym) === ym && payStore(b.store) === stM; }),
            stores: payRead('store').filter(function (x) { return String(x.active).toLowerCase() !== 'false'; }),
            holidays: payHolidayList(stM), support_auto: sa || undefined,
-           not_in_payroll: notIn.length ? notIn : undefined };   // 沒有就不帶（回應形狀與改版前相同）
+           not_in_payroll: notIn.length ? notIn : undefined,   // 沒有就不帶（回應形狀與改版前相同）
+           zero_ratio_with_data: zeroRows.length ? zeroRows : undefined };
 }
 
 function handlePayrollItemUpsert(body) {
@@ -4424,7 +4455,7 @@ function payXsupApply_(ym, st, inputs, withDays) {
   if (!payXsupOn_(ym)) return null;
   const d = payXsupData_(withDays);
   const auto = paySupportAutoCore_(ym, st, d);
-  const master = d.master.filter(function (m) { return payStore(m.store) === st && String(m.active).toLowerCase() === 'true'; });
+  const master = d.master.filter(function (m) { return payInRoster_(m, st, ym); });   // 跟計薪名單同一個判斷
   const incoming = payCrossIncomingCore_(ym, st, d);
   return payApplySupportAuto_(inputs, master, auto, { home: st, storeBy: payXsupStoreBy_(d.stores), dropCross: !auto.empty }, incoming);
 }
@@ -5840,9 +5871,8 @@ function handlePnlLaborEstimate_(body) {
     return { ok: false, error: 'NO_DATA', message: '薪資分頁尚未初始化（尚未執行過 payroll_setup）' };
   }
 
-  var master = payRead('master').filter(function (m) {
-    return String(m.active).toLowerCase() === 'true' && payStore(m.store) === st;
-  });
+  // 名單跟 handlePayrollCalc 同一個判斷（payInRoster_）：在職，或已停用但離職日在這個月
+  var master = payRead('master').filter(function (m) { return payInRoster_(m, st, ym); });
   if (!master.length) return { ok: false, error: 'NO_DATA', message: st + ' 沒有在職同仁主檔' };
 
   var holRow = payHolidayRow(ym, st);
