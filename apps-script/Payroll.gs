@@ -721,6 +721,32 @@ function payAnnualQuota(hireStr, ym) {
   return { days: days, ps: fmt(addM(h, y * 12)), pe: fmt(addM(h, (y + 1) * 12)) };
 }
 
+/** 手動工時那一列的特休時數，有多少算進週年期 qp（薪酬挑錯第 5 項，Eason 2026-11-11 確認）。
+ *  手動列只有月份、沒有日期；週年日落在那個月而且不是 1 號時，這個月會同時碰到新舊兩個年度，
+ *  同一筆時數只能算進其中一個年度：
+ *   ① 那個月請假分頁有這個人的特休逐日紀錄（dated＝[{d:'YYYY-MM-DD', h:時數}]，合計 > 0）→ 依日期切；
+ *      手動總時數與逐日合計不同時，按逐日的比例分配手動總時數。
+ *   ② 沒有逐日紀錄 → 週年日（幾號）≤15 整筆算新年度、≥16 整筆算舊年度。
+ *  其餘月份照舊：整個月在週年期內就全算、在外面就不算。回傳未取整的時數。 */
+function payAnnualManualShare_(m, hours, qp, dated) {
+  const h = payNum(hours);
+  if (!qp || !qp.ps || !qp.pe) return 0;
+  if ((m + '-31') < qp.ps || (m + '-01') >= qp.pe) return 0;   // 整個月在這一期之外
+  const psIn = qp.ps.slice(0, 7) === m && qp.ps.slice(8, 10) !== '01';   // 這一期從這個月的月中開始（這一期是新年度）
+  const peIn = qp.pe.slice(0, 7) === m && qp.pe.slice(8, 10) !== '01';   // 這一期在這個月的月中結束（這一期是舊年度）
+  if (!psIn && !peIn) return h;                                // 整個月都在這一期裡
+  let total = 0, inside = 0;
+  (dated || []).forEach(function (x) {
+    const d = String(x.d || ''), v = Number(x.h) || 0;
+    if (d.slice(0, 7) !== m || v <= 0) return;
+    total += v;
+    if (d >= qp.ps && d < qp.pe) inside += v;
+  });
+  if (total > 0) return h * inside / total;
+  const day = +(psIn ? qp.ps : qp.pe).slice(8, 10);
+  return psIn ? (day <= 15 ? h : 0) : (day >= 16 ? h : 0);
+}
+
 /** 該門市有效的紅字天數清單（每月一筆，該店專屬優先），附 _src 標示來源供前端顯示 */
 function payHolidayList(store) {
   const st = String(store || '');
@@ -3760,9 +3786,21 @@ function payAnnualInfo(ym, store) {
     const leavingNow = payRules3On_(ym) && lastDay.slice(0, 7) === ym;
     if (leavingNow && q.ps && q.ps > lastDay) q = payAnnualQuota(e.hire_date, payDayBefore(ym + '-01').slice(0, 7));
     const ratio = ft ? 1 : payPtAnnualRatio(runRows, e.emp_id, ym);
+    // 這個人在 leave 分頁的特休逐日紀錄（歷任門市）：每人掃一次，usedIn 兩個年度共用
+    const myAnnualLeaves = [];
+    (empStores[String(e.emp_id)] || [stA]).forEach(function (st2) {
+      leavesOf(st2).forEach(function (l) {
+        if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
+        if (String(l['假別'] || '').indexOf('特') === -1) return;
+        const d = normCellDate(l['日期']);
+        if (!payLeaveDateMine_(e, d, dupNames)) return;
+        myAnnualLeaves.push({ d: d, h: Number(l['時數']) || 0 });
+      });
+    });
     const usedIn = function (qp) {
       let used = 0;
-      // ① 手動工時的特休（annual_h）：該月落在週年期內就累計；同月以手動為準（覆蓋語意，與計薪一致）
+      // ① 手動工時的特休（annual_h）：該月落在週年期內就累計；同月以手動為準（覆蓋語意，與計薪一致）。
+      //    週年日在那個月的月中 → 只算進一個年度（payAnnualManualShare_：有逐日紀錄照日期，沒有就看週年日幾號）。
       const inputMonths = {};
       savedRows.forEach(function (r) {
         if (String(r.emp_id) !== String(e.emp_id)) return;
@@ -3770,19 +3808,13 @@ function payAnnualInfo(ym, store) {
         if (!/^\d{4}-\d{2}$/.test(m)) return;
         if (!qp.ps || (m + '-31') < qp.ps || (m + '-01') >= qp.pe) return;
         inputMonths[m] = true;
-        used += payNum(r.annual_h);
+        used += payAnnualManualShare_(m, r.annual_h, qp, myAnnualLeaves);
       });
       // ② leave 分頁的特休：掃該員工「歷任門市」的請假紀錄；只算沒有手動工時覆蓋的月份，避免同月重複計
-      (empStores[String(e.emp_id)] || [stA]).forEach(function (st2) {
-        leavesOf(st2).forEach(function (l) {
-          if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
-          if (String(l['假別'] || '').indexOf('特') === -1) return;
-          const d = normCellDate(l['日期']);
-          if (!payLeaveDateMine_(e, d, dupNames)) return;
-          if (!(qp.ps && d >= qp.ps && d < qp.pe)) return;
-          if (inputMonths[d.slice(0, 7)]) return;
-          used += Number(l['時數']) || 0;
-        });
+      myAnnualLeaves.forEach(function (x) {
+        if (!(qp.ps && x.d >= qp.ps && x.d < qp.pe)) return;
+        if (inputMonths[x.d.slice(0, 7)]) return;
+        used += x.h;
       });
       return used;
     };
