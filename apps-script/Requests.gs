@@ -75,10 +75,21 @@ function reqMonthNth_(rows, r, match) {
 }
 function reqIsPersonal_(x) { return String(x.kind) === 'leave' && String(x.leave_type || '') === REQ_PERSONAL_TYPE_; }
 function reqIsMiss_(x) { return String(x.kind) === 'miss'; }
+/** 這張忘打卡單的日子是本月第幾天忘刷（同一天多張算同一天，依日期先後；審核中與已核准都算）（2026-11-10 Eason：同薪資「同一天只算 1 次」） */
+function reqMissDayNth_(rows, r) {
+  var ym = String(r.date || '').slice(0, 7), d = String(r.date || '').slice(0, 10), days = {};
+  days[d] = true;
+  (rows || []).forEach(function (x) {
+    if (String(x.emp_id) !== String(r.emp_id) || !reqIsMiss_(x) || !REQ_SICK_LIVE_[String(x.status)]) return;
+    var xd = String(x.date || '').slice(0, 10);
+    if (xd.slice(0, 7) === ym && xd <= d) days[xd] = true;
+  });
+  return Object.keys(days).length;
+}
 /** 一筆申請標上 __sick_n（病假今年第幾天）、__miss_n（本月第幾次忘打卡）、__pl（本月事假 {n, hours}）。rows＝同一店的申請（可不含 r）。 */
 function reqMarkOne_(rows, r) {
   if (String(r.kind) === 'leave' && String(r.leave_type || '') === REQ_SICK_TYPE_) r.__sick_n = reqSickNth_(rows, r);
-  if (reqIsMiss_(r)) r.__miss_n = reqMonthNth_(rows, r, reqIsMiss_).n;
+  if (reqIsMiss_(r)) r.__miss_n = reqMissDayNth_(rows, r);
   if (reqIsPersonal_(r)) r.__pl = reqMonthNth_(rows, r, reqIsPersonal_);
   return r;
 }
@@ -517,6 +528,8 @@ function handleReqSubmit_(body) {
     if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_ && reqCompAllowed_(who.me) === false) {
       return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
     }
+    var capMsg = reqCapLocked_(r, existing, who, body);
+    if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
     r.created_at = nowTaipeiIso(); r.emp_id = String(who.me.emp_id); r.name = String(who.me.name);
     r.attach_id = REQ_ATTACH_RE_.test(String(body.attach_id || '')) ? String(body.attach_id) : '';
@@ -526,6 +539,37 @@ function handleReqSubmit_(body) {
     sh.appendRow(reqHeads_(sh).map(function (h) { return r[h] === undefined ? '' : reqSheetText_(r[h], h); }));   // 照實際表頭寫（舊分頁沒有 comp 欄會先補）
     return { ok: true, request: reqPublic_(r), summary: reqSummary_(r) };
   } finally { lock.releaseLock(); }
+}
+
+/** 生理假一年 3 次、家庭照顧假一年 7 天，用完就不能再申請（2026-11-10 Eason）。審核中的同假別一起扣。
+ *  額度來自光復的薪資（同專案直接算；別店打光復 line_hub_req_quota，帶同一個 LINE 身分）。查不到額度＝不擋（主管核准、核定時會再擋）。 */
+var REQ_CAP_LOCK_TYPES_ = ['生理假', '家庭照顧假'];
+var REQ_HUB_API_DEFAULT_ = 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
+function reqCapLocked_(r, existing, who, body) {
+  if (r.kind !== 'leave' || REQ_CAP_LOCK_TYPES_.indexOf(String(r.leave_type)) === -1) return '';
+  var quota = null;
+  try {
+    if (typeof lineHubReqQuota_ === 'function') quota = (lineHubReqQuota_(who.userId) || {}).quota || null;
+    else {
+      var resp = UrlFetchApp.fetch(CONFIG.PAYROLL_API || REQ_HUB_API_DEFAULT_, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true,
+        payload: JSON.stringify({ action: 'line_hub_req_quota', id_token: body.id_token }) });
+      var j = JSON.parse(resp.getContentText());
+      quota = j && j.ok ? j.quota : null;
+    }
+  } catch (e) { quota = null; }
+  var q = (quota || []).filter(function (x) { return String(x.name) === String(r.leave_type); })[0];
+  if (!q || q.remain_h == null) return '';
+  var yr = String(r.date).slice(0, 4), pend = (existing || []).filter(function (x) {
+    return String(x.emp_id) === String(who.me.emp_id) && String(x.kind) === 'leave' && String(x.leave_type) === String(r.leave_type)
+      && String(x.status) === 'pending' && String(x.date || '').slice(0, 4) === yr;
+  });
+  if (r.leave_type === '生理假') {
+    var left = Number(q.remain_h) - pend.length * 8;   // 生理假看次數：一次算 8 小時（同薪資）
+    return left <= 0.001 ? '生理假今年 3 次已經用完（含審核中），不能再申請' : '';
+  }
+  var pendH = pend.reduce(function (t, x) { return t + (Number(x.hours) || 0); }, 0);
+  var room = Number(q.remain_h) - pendH;
+  return Number(r.hours) > room + 0.001 ? '家庭照顧假今年 7 天只剩 ' + Math.max(0, Math.round(room * 10) / 10) + ' 小時（含審核中），這次超過了，不能送出' : '';
 }
 
 /** 能不能請補休（正職才行）：和薪資同專案（光復）才查得到 → true／false；查不到／出錯回 null＝不擋（交給申請頁與主管）。 */
@@ -1294,9 +1338,11 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
     add('ot_hours', '超過 ' + REQ_BIND_OT_BASE_H + ' 小時的 ' + reqBindFmt_(otNeed) + ' 小時要有加班單（已核准 ' + reqBindFmt_(otHave) + ' 小時）');
   }
   var miss = bindOn ? reqBindMissCards_(periods, segs, breakWindow) : 0;
-  var tripOk = ok.some(function (r) { return r.kind === 'trip'; });
   var missHave = ok.reduce(function (a, r) { return a + (r.kind !== 'miss' ? 0 : (r.miss_type === 'break' || r.miss_type === 'both') ? 2 : 1); }, 0);
-  var missBad = bindOn && !tripOk && miss > missHave;
+  var tripOk = ok.some(function (r) { return r.kind === 'trip'; });
+  // 出差日：當天有打卡、湊不成完整一段就算忘刷，要忘打卡單；整天沒打卡、或打卡都成段（另一段是出差）不算（2026-11-10 Eason）
+  var loneCard = (segs || []).some(function (s) { return (s.inMs == null) !== (s.outMs == null); });   // 有上班沒下班、有下班沒上班
+  var missBad = bindOn && !(tripOk && !loneCard) && miss > missHave;   // 出差日只有「湊不成完整一段的卡」才要忘打卡單
   if (missBad) add('miss', '少了 ' + miss + ' 張打卡，要有忘打卡單（已核准 ' + missHave + ' 張）');
   if (strict) reqStrictLeaveProbs_(ok, opt.leaves).forEach(function (t) { add('leave', t); });
   var diffMin = strict ? reqPunchDiffMin_(periods, segs, breakWindow) : null;

@@ -143,10 +143,12 @@ ok('中間休息沒打 2 張：補休息單（算 2 張）就放行', () => {
   addReq(sb, { kind: 'miss', miss_type: 'break', start: '17:00', end: '14:00' });
   assert.strictEqual(sb.reqBindCheck_(...args), null);
 });
-ok('那天有已核准的出差單：缺卡不擋（超時仍要加班單）', () => {
+ok('那天有已核准的出差單：整天沒打卡不擋；有打卡湊不成完整一段照樣要忘打卡單（2026-11-10 Eason；超時仍要加班單）', () => {
   const sb = makeEnv();
   addReq(sb, { kind: 'trip', leave_type: '出差', hours: 4 });
   assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D, 8, [P('09:00', '17:00')], [], null), null);
+  assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D, 8, [P('09:00', '17:00')], [S('09:00', null)], null).error, 'need_request');
+  assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D, 8, [P('09:00', '13:00'), P('14:00', '18:00')], [S('09:00', '13:00')], null), null, '出差半天：另一段打卡完整 → 不用忘打卡單');
   assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D, 9, [P('09:00', '18:00')], [], null).error, 'need_request');
 });
 ok('超時＋缺卡兩個問題一起講', () => {
