@@ -261,9 +261,9 @@ def pair_shifts(events):
                     and (datetime.fromisoformat(nx["ts"]) - datetime.fromisoformat(e["ts"])) <= mistap):
                 continue
             # 被擋的重複上班卡：距開著的 in ≥ 門檻 → 前段忘打下班（收未配對），以本卡當新段起點；
-            # 未達門檻＝手滑連按，忽略（open 不變）；沒有開著的 in → 也以本卡當新段起點（防禦）。
+            # 未達門檻＝手滑連按，忽略（open 不變）；沒有開著的 in → 忽略（2026-11-11 B09，同 Code.gs）。
             if open_in is None:
-                open_in = e
+                continue
             elif (datetime.fromisoformat(e["ts"]) - datetime.fromisoformat(open_in["ts"])) >= break_gap:
                 unmatched_ins.append(open_in)
                 open_in = e
