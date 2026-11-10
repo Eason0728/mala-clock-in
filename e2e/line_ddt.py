@@ -388,7 +388,7 @@ def phase_notice_bind(ctx, gen):
     ok('綁定：開頁先問挑到的店、它說沒綁 → 改問光復 line_hub_status', [x['action'] for x in c] == ['liff_status', 'line_hub_status']
        and c[0]['url'].endswith('/api' + ('/' + A['code'] if A['code'] else '')) and c[1]['url'].endswith('/api'), c)
     ok('綁定：第一次使用的標題與說明（逐字）', p.inner_text('#bindTitle') == '第一次使用，請輸入你的全名'
-       and p.inner_text('#bindHint') == f'綁定「{A["name"]}」：要人在店裡，名字要和店裡名冊一樣' and p.inner_text('#btnBind') == '綁定', (p.inner_text('#bindTitle'), p.inner_text('#bindHint')))
+       and p.inner_text('#bindHint') == f'綁定「{A["name"]}」：要人在店裡，輸入你的全名' and p.inner_text('#btnBind') == '綁定', (p.inner_text('#bindTitle'), p.inner_text('#bindHint')))
     scan(p, '綁定框')
     click(p, '#btnBind', '空白名字')
     ok('綁定：沒輸入名字 → 「請輸入你的全名」、不打後端', p.inner_text('#bindError') == '請輸入你的全名' and not any(x['action'] == 'line_bind_name' for x in calls(p)), p.inner_text('#bindError'))
@@ -614,7 +614,7 @@ def phase_punch(ctx, gen):
             page.wait_for_timeout(200)
             di = D.day_info(events_of(p['store'], p['emp_id']), e['ts'][:10])
             fixed = page.locator('#reqView .rq-fixed').all_inner_texts()
-            want_fixed = [D.MISS_LABEL[di['options'][0]] + '（系統查到的）'] if len(di['options']) == 1 else []
+            want_fixed = [D.miss_label(di['options'][0], di) + '（系統查到的）'] if len(di['options']) == 1 else []
             ok(f'{label}：申請補登 → 日期＝今天、缺哪張卡＝規格 {di["options"]}、當天紀錄含剛打的下班卡', page.input_value('#reqView select.rq-date') == e['ts'][:10]
                and fixed == want_fixed and page.inner_text('#reqView .rq-rec') == D.rec_text(di['punches']), (fixed, want_fixed, page.inner_text('#reqView .rq-rec'), di))
             page.close()
@@ -1089,7 +1089,7 @@ def phase_req(ctx, gen):
     page.wait_for_selector('#reqView .rq-place-pick', timeout=3000)
     submit(page)
     ok('出差：沒選地點 → 「請選出差地點」', err_box(page) == '請選出差地點')
-    page.select_option('#reqView .rq-place-pick', '其他')
+    select(page, '#reqView .rq-place-pick', '其他', '出差地點：其他')
     page.wait_for_selector('#reqView .rq-place', timeout=3000)
     submit(page)
     ok('出差：選其他沒填 → 「請填出差地點」', err_box(page) == '請填出差地點')
@@ -1115,7 +1115,7 @@ def phase_req(ctx, gen):
     page.fill('#reqView .rq-hours', '6')
     d7 = (now_tz() + timedelta(days=RNG.randint(16, 30))).strftime('%Y-%m-%d')
     pick_date(page, d7)
-    page.select_option('#reqView .rq-place-pick', '新竹金山'); page.fill('#reqView .rq-why', '新品教學；試菜')
+    select(page, '#reqView .rq-place-pick', '新竹金山', '出差地點：新竹金山'); page.fill('#reqView .rq-why', '新品教學；試菜')
     submit_ok(page, {'kind': 'trip', 'date': d7, 'hours': 6, 'place': '新竹金山', 'reason': '地點：新竹金山；事由：新品教學；試菜'}, '出差整天：下拉選地點（事由裡的全形分號不影響地點）')
     # 我的申請：撤銷、核准、退回、作廢
     page.wait_for_selector('#reqView .rq-item', timeout=3000)
@@ -1200,11 +1200,12 @@ def phase_miss(ctx, gen):
         got_rec = page.inner_text('#reqView .rq-rec')
         on = page.locator('#reqView .rq-chip.on').all_inner_texts()
         fixed = page.locator('#reqView .rq-fixed').all_inner_texts()
-        chips = [c for c in page.locator('#reqView .rq-chip').all_inner_texts() if c in LBL.values()]
+        lbl = lambda o: D.miss_label(o, di)   # 'both' 的字句看當天有沒有打卡紀錄
+        chips = [c for c in page.locator('#reqView .rq-chip').all_inner_texts() if c in LBL.values() or c == D.MISS_LABEL_BOTH_WITH_PUNCH]
         if len(di['options']) > 1:
-            okc = chips == [LBL[o] for o in di['options']] and on[:1] == [LBL[di['options'][0]]]
+            okc = chips == [lbl(o) for o in di['options']] and on[:1] == [lbl(di['options'][0])]
         else:
-            okc = chips == [] and fixed == [LBL[di['options'][0]] + '（系統查到的）']
+            okc = chips == [] and fixed == [lbl(di['options'][0]) + '（系統查到的）']
         ok(f'忘打卡 {D.md_of(date)}：當天紀錄逐字、缺哪張卡選項＝規格 {di["options"]}', got_rec == D.rec_text(di['punches']) and okc, (got_rec, D.rec_text(di['punches']), chips, on, fixed))
         return di
 
@@ -1292,6 +1293,16 @@ def phase_miss(ctx, gen):
     di = choose(md['full'])
     sp = di['spans'][0]
     ok('忘打卡（整段）：卡都齊了 → 可補中間休息或另一段班整段（預設中間休息）', di['options'] == ['break', 'both'] and page.locator('#reqView .rq-fixed').count() == 0, di['options'])
+    both_lbl = D.MISS_LABEL_BOTH_WITH_PUNCH
+    click(page, f'#reqView .rq-chip:text-is("{both_lbl}")', '缺哪張卡 ' + both_lbl)
+    page.wait_for_selector(f'#reqView .rq-chip.on:text-is("{both_lbl}")', timeout=3000)
+    reason('忘記按')
+    o_s = D.min_hm(D.hm_min(sp['in']) + 60); o_e = D.min_hm(D.hm_min(sp['in']) + 120)
+    set_times(start=o_s, end=o_e)
+    submit(page)
+    ok('忘打卡（整段）：選「另一段班整段沒打」、補的時間落在已打的那段裡 → 擋（逐字）',
+       err_box(page) == f'補的時間和當天已打的卡（{sp["in"]}–{sp["out"]}）重疊；中間休息沒打請選「中間休息沒打卡」', err_box(page))
+    pick_type('break')
     reason('忘記按')
     set_times(start=D.min_hm(D.hm_min(sp['in']) - 60), end=D.min_hm(D.hm_min(sp['in']) - 30))
     submit(page)
