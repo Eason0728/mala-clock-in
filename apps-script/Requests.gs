@@ -591,13 +591,10 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     if (!reason) return { error: 'need_reason', message: '請選原因' };
     }
   }
-  // 同一天「同一件事」不能有兩筆審核中的。
-  // 2026-11-11（B29）：請假／加班／出差改看時段——兩張都有時段、而且不重疊，就可以同時在審
-  // （原本同一天只要有一張請假或加班在審，另一張就送不出去：上午病假在等證明時，下午的事假一直卡住）。
-  // 時段重疊、或任一張只填時數沒有時段（分不出來）照舊擋，不分假別。
+  // 同一天同一類（忘打卡再加同一張卡）不能有兩筆審核中的
   var dup = existing.filter(function (r) {
     return String(r.emp_id) === String(me.emp_id) && r.status === 'pending' && r.kind === kind && r.date === date
-        && (kind === 'miss' ? reqSameThing_('miss', r, row) : reqOverlap_(r.start, r.end, row.start, row.end) !== false);   // 忘打卡：同一張卡才算（2026-11-11 B02；已有人補的卡在上面就擋掉了）
+        && (kind !== 'miss' || reqSameThing_('miss', r, row));   // 忘打卡：同一張卡才算（2026-11-11 B02；已有人補的卡在上面就擋掉了）
   })[0];
   if (dup) return { error: 'duplicate', message: '這天已經有一筆審核中的' + REQ_KINDS_[kind] + '申請，要改請先取消那一筆' };
   // 已核准的也要擋「同一件事」（2026-11-03 對抗驗證 #4）：原本只看審核中，核准後再送一模一樣的一筆、主管批次核准就算兩次
