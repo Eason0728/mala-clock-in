@@ -1920,6 +1920,16 @@ function handleMgrApprove(body) {
       if (endMs <= startMs) endMs += 24 * 3600000; // 跨夜段：end<=start 視為+1天
       return { start: p.start, end: p.end, startMs: startMs, endMs: endMs };
     });
+    // 時段彼此重疊就擋下（2026-11-11 Eason 定，B24）：原本 09:00-13:00 加 12:00-13:00、或同一段填兩次都照收，
+    // 重疊的時間算兩次、核定時數比實際多。跨夜段用上面算好的結束時刻比；剛好相接（13:00 接 13:00）不算重疊。
+    for (let a = 0; a < periods.length; a++) {
+      for (let b = a + 1; b < periods.length; b++) {
+        if (periods[a].startMs < periods[b].endMs && periods[b].startMs < periods[a].endMs) {
+          return { ok: false, error: 'bad_periods', message: '核定時段有重疊：' + periods[a].start + '-' + periods[a].end + ' 和 '
+            + periods[b].start + '-' + periods[b].end + '，請改成不重疊的時段' };
+        }
+      }
+    }
     approvedHours = tripHours;
     periods.forEach(function (p) { approvedHours += (p.endMs - p.startMs) / 3600000; });
     approvedHours = Math.round(approvedHours * 100) / 100;

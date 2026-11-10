@@ -1089,8 +1089,15 @@ def handle_mgr_approve(data, body):
             end_ms = hm_to_ms(date, p["end"])
             if end_ms <= start_ms:
                 end_ms += 24 * 3600 * 1000  # 跨夜段：end<=start 視為+1天
-            periods.append({"start_ms": start_ms, "end_ms": end_ms})
+            periods.append({"start_ms": start_ms, "end_ms": end_ms, "start": p["start"], "end": p["end"]})
             approved_hours += (end_ms - start_ms) / 3600000.0
+        # 時段彼此重疊就擋下（與 Code.gs 同步，2026-11-11 Eason 定，B24）；剛好相接不算重疊
+        for a in range(len(periods)):
+            for b in range(a + 1, len(periods)):
+                if periods[a]["start_ms"] < periods[b]["end_ms"] and periods[b]["start_ms"] < periods[a]["end_ms"]:
+                    return {"ok": False, "error": "bad_periods",
+                            "message": f"核定時段有重疊：{periods[a]['start']}-{periods[a]['end']} 和 "
+                                       f"{periods[b]['start']}-{periods[b]['end']}，請改成不重疊的時段"}
         approved_hours = round(approved_hours, 2)
 
         punch = day_punch_segments(data, emp_id, date)
