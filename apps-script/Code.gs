@@ -2515,37 +2515,42 @@ function loneCardsForPeriods_(periods, fullSegs, punchSegments) {
  * 核定時段依「規定不打卡的休息帶」（央廚 12–13、總部 14–15）分塊，回傳依時間排序的
  * [{ startMs, endMs, firstNo, lastNo }]（段號＝原始時段依時間先後的序號）。沒有休息帶＝每段自己一塊。
  * 2026-11-10 起，休息帶隔開的兩段併成一塊（否則照規定不打午休卡的人，漏一張卡會寫成三張）。
- * 2026-11-11（B01）：午休照樣打卡的同仁不能併——併了以後一整塊只會拿一條打卡段去比，
- * 四張卡準時也變成「早退300分、有多出的打卡段」。判斷方式：併與不併各算「配得到幾張卡」
- * （完整打卡段 2 張、單張卡 1 張），不併配得到比較多張＝休息帶前後有打卡，就不併；一樣多照舊併。
+ * 2026-11-11（B01）：併成一塊以後只會拿一條打卡段去比，午休照樣打卡的人四張卡準時也變成
+ * 「早退300分、有多出的打卡段」。所以只在「併了才講得通」的時候併：
+ *   ① 那一塊裡只要有一段配得到完整打卡段，就拆回各段自己比（2026-11-10 以前的比法；
+ *      一長段跨過休息帶的人，兩段都配到同一條、空檔由休息帶解釋，結果和併起來一樣）。
+ *   ② 整塊都沒有完整打卡段（只有單張卡或完全沒卡）：併與不併各算配得到幾張單張卡，
+ *      不併配得到比較多張（休息帶前後有打卡）才拆；一樣多照舊併（只漏一張卡＝只寫一張）。
  * computeApprovalStatus 與 Requests.gs reqBindMissCards_ 共用，狀態寫的忘刷張數和要補的單才會一致。
  */
 function breakBlocksFor_(periods, punchSegments, breakWindow) {
   const sorted = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
-  const plain = sorted.map(function (p, k) { return { startMs: p.startMs, endMs: p.endMs, firstNo: k + 1, lastNo: k + 1 }; });
+  const mk = function (p, k) { return { startMs: p.startMs, endMs: p.endMs, firstNo: k + 1, lastNo: k + 1 }; };
+  const plain = sorted.map(mk);
   if (!breakWindow) return plain;
   const merged = sorted.reduce(function (acc, p, k) {
     const last = acc[acc.length - 1];
     if (last && p.startMs > last.endMs && gapExplainedByBreak(last.endMs, p.startMs, breakWindow)) {
       last.endMs = Math.max(last.endMs, p.endMs); last.lastNo = k + 1;
-    } else acc.push({ startMs: p.startMs, endMs: p.endMs, firstNo: k + 1, lastNo: k + 1 });
+    } else acc.push(mk(p, k));
     return acc;
   }, []);
   if (merged.length === plain.length) return plain;   // 沒有被休息帶隔開的時段
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
-  const cardsUsed = function (blocks) {
-    const used = {};
-    blocks.forEach(function (b) {
-      let best = -1, bestOv = 0;
-      fullSegs.forEach(function (s, i) {
-        const ov = Math.min(b.endMs, s.outMs) - Math.max(b.startMs, s.inMs);
-        if (ov > bestOv) { bestOv = ov; best = i; }
-      });
-      if (best >= 0) used[best] = true;
-    });
-    return Object.keys(used).length * 2 + Object.keys(loneCardsForPeriods_(blocks, fullSegs, punchSegments)).length;
+  const hasFull = function (b) {
+    return fullSegs.some(function (s) { return Math.min(b.endMs, s.outMs) - Math.max(b.startMs, s.inMs) > 0; });
   };
-  return cardsUsed(plain) > cardsUsed(merged) ? plain : merged;
+  // ① 有完整打卡段的那一塊拆回各段
+  const blocks = [];
+  merged.forEach(function (b) {
+    const parts = sorted.slice(b.firstNo - 1, b.lastNo).map(function (p, i) { return mk(p, b.firstNo - 1 + i); });
+    if (parts.length > 1 && parts.some(hasFull)) parts.forEach(function (x) { blocks.push(x); });
+    else blocks.push(b);
+  });
+  if (blocks.length === plain.length) return plain;
+  // ② 剩下還併著的：不併配得到比較多張單張卡才拆
+  const loneUsed = function (bs) { return Object.keys(loneCardsForPeriods_(bs, fullSegs, punchSegments)).length; };
+  return loneUsed(plain) > loneUsed(blocks) ? plain : blocks;
 }
 
 function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip, breakWindow) {

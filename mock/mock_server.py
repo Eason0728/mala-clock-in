@@ -796,10 +796,11 @@ def lone_cards_for_periods(periods, full_segs, punch_segments, near_ms=4 * 36000
 
 
 def break_blocks_for(periods, punch_segments, break_window):
-    """與 Code.gs breakBlocksFor_ 同步（2026-11-11 B01）：休息帶隔開的兩段併成一塊，但午休照樣打卡的人不併。
-    併與不併各算配得到幾張卡（完整打卡段 2 張、單張卡 1 張），不併比較多就不併；一樣多照舊併。"""
+    """與 Code.gs breakBlocksFor_ 同步（2026-11-11 B01）：休息帶隔開的兩段併成一塊，但只在併了才講得通時併。
+    ① 那一塊裡有一段配得到完整打卡段 → 拆回各段自己比；② 整塊只有單張卡或沒卡 → 不併配得到比較多張才拆。"""
     sorted_p = sorted(periods, key=lambda q: q["start_ms"])
-    plain = [{"start_ms": q["start_ms"], "end_ms": q["end_ms"], "first": k + 1, "last": k + 1} for k, q in enumerate(sorted_p)]
+    mk = lambda q, k: {"start_ms": q["start_ms"], "end_ms": q["end_ms"], "first": k + 1, "last": k + 1}
+    plain = [mk(q, k) for k, q in enumerate(sorted_p)]
     if not break_window:
         return plain
     merged = []
@@ -810,22 +811,22 @@ def break_blocks_for(periods, punch_segments, break_window):
             last["end_ms"] = max(last["end_ms"], q["end_ms"])
             last["last"] = k + 1
         else:
-            merged.append({"start_ms": q["start_ms"], "end_ms": q["end_ms"], "first": k + 1, "last": k + 1})
+            merged.append(mk(q, k))
     if len(merged) == len(plain):
         return plain
     full_segs = [s for s in punch_segments if s["in_ms"] is not None and s["out_ms"] is not None]
-    def cards_used(blocks):
-        used = set()
-        for b in blocks:
-            best_i, best_ov = -1, 0
-            for i, seg in enumerate(full_segs):
-                ov = min(b["end_ms"], seg["out_ms"]) - max(b["start_ms"], seg["in_ms"])
-                if ov > best_ov:
-                    best_ov, best_i = ov, i
-            if best_i >= 0:
-                used.add(best_i)
-        return len(used) * 2 + len(lone_cards_for_periods(blocks, full_segs, punch_segments))
-    return plain if cards_used(plain) > cards_used(merged) else merged
+    has_full = lambda b: any(min(b["end_ms"], s["out_ms"]) - max(b["start_ms"], s["in_ms"]) > 0 for s in full_segs)
+    blocks = []
+    for b in merged:
+        parts = [mk(q, b["first"] - 1 + i) for i, q in enumerate(sorted_p[b["first"] - 1:b["last"]])]
+        if len(parts) > 1 and any(has_full(x) for x in parts):
+            blocks.extend(parts)
+        else:
+            blocks.append(b)
+    if len(blocks) == len(plain):
+        return plain
+    lone_used = lambda bs: len(lone_cards_for_periods(bs, full_segs, punch_segments))
+    return plain if lone_used(plain) > lone_used(blocks) else blocks
 
 
 def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=False, break_window=None):
