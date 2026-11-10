@@ -153,6 +153,7 @@ function handleLineBindName_(body) {
  *     在別家綁的名字不一致 → 擋下（name_conflict），請找主管。
  *   ②這個 LINE 還沒綁過 → 查各店名冊：全公司恰好一位在職、還沒綁 LINE 的同名同仁 → 先回 confirm_home 請本人確認
  *     「你是○○的某某嗎」，確認後綁到原單位那一列（原單位綁定紀錄 bind_name，值班核定頁看得到、可解除），再走 7A 加進 B 店。
+ *     2026-11-11（B12，Eason 定）：這條路照舊不擋，但原單位的綁定紀錄寫明「在哪一家店綁的」，並私訊原單位值班主管。
  *   同名兩位以上、已被別的 LINE 綁、跨品牌（小辛辣↔墨竹亭）、各店都沒有 → 擋下，請找主管。有任何一家名冊讀不到 → 請稍後再試。
  */
 function lineHubBindElsewhere_(userId, body, st, want) {
@@ -205,12 +206,13 @@ function lineHubBindElsewhere_(userId, body, st, want) {
     if (String(body.confirm_home || '') !== token) {
       return { ok: false, error: 'confirm_home', confirm: token, home_store_name: home.st.name, store_name: st.name, name: String(home.row.name) };
     }
-    var j = lineHubCallStore_(home.st, { action: 'liff_bind', id_token: body.id_token, key: String(home.row.key), via: 'name' });
+    var j = lineHubCallStore_(home.st, { action: 'liff_bind', id_token: body.id_token, key: String(home.row.key), via: 'name', via_store: String(st.name) });
     if (!j || !j.ok) {
       var m = { line_account_in_use: '你的 LINE 帳號已經綁定「' + home.st.name + '」的另一位同仁，請找主管處理。' }[j && j.error];
       return { ok: false, error: (j && j.error) || 'unreachable', message: m || '綁定沒有成功，請稍後再試；一直不行請告知主管。' };
     }
     lineHubForget_(userId);
+    if (!j.already) lineHubBindAwayNotify_(home, st, userId);   // 送不出去不影響綁定
   }
   var ss;
   try { ss = lineHubSS_(st); } catch (e) { ss = null; }
@@ -219,6 +221,34 @@ function lineHubBindElsewhere_(userId, body, st, want) {
   }
   return { ok: false, error: 'support_failed', home_bound: !viaLine, message: (viaLine ? '' : '已綁定你在「' + home.st.name + '」的打卡帳號，')
     + '但沒辦法自動把你加入「' + st.name + '」的名冊，請找店長或主管協助。' };
+}
+
+/** 2026-11-11（B12）：同仁的 LINE 在「別家店」被綁到原單位那一列之後，私訊原單位的值班主管，不是本人可以馬上解除。
+ *  管道＝打卡機器人原本就有的權杖（LINE_HUB_BOT_TOKEN），不需要新金鑰；值班主管是誰照申請單那套（reqLocalDutyMgrs_：
+ *  managers 分頁在職、不是營運系統鑰匙列，用工號或姓名對到名冊），只送給名冊上有綁 LINE 的那幾位（最多 5 位），不送給剛綁定的那支 LINE。
+ *  任何一步失敗都只是少一則通知：不拋例外、不影響綁定。回傳送出幾則。 */
+function lineHubBindAwayNotify_(home, st, binderUid) {
+  try {
+    var token = (typeof LINE_HUB_BOT_TOKEN !== 'undefined') ? LINE_HUB_BOT_TOKEN : '';
+    if (!token || typeof reqLocalDutyMgrs_ !== 'function') return 0;
+    var ss = lineHubSS_(home.st), duty = reqLocalDutyMgrs_(ss).emps, uids = {};
+    lineHubSheetRows_(ss, 'roster').forEach(function (r) {
+      var uid = String(r.line_user_id || '');
+      if (lineHubActive_(r) && uid && uid !== String(binderUid) && duty[String(r.emp_id)]) uids[uid] = true;
+    });
+    var text = '【LINE 綁定提醒】\n「' + home.st.name + '」' + String(home.row.name) + '（' + String(home.row.emp_id) + '）的 LINE 剛在「' + st.name + '」被綁定。\n'
+      + '如果不是本人，請立刻到管理系統「考勤管理 → 員工名冊」的 LINE 綁定紀錄按「解除」。';
+    var n = 0;
+    Object.keys(uids).slice(0, 5).forEach(function (uid) {
+      try {
+        var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', { method: 'post', contentType: 'application/json',
+          muteHttpExceptions: true, headers: { Authorization: 'Bearer ' + token },
+          payload: JSON.stringify({ to: uid, messages: [{ type: 'text', text: text.slice(0, 4900) }] }) });
+        if (res.getResponseCode() === 200) n++;
+      } catch (e) { /* 少一則通知，綁定紀錄上仍看得到 */ }
+    });
+    return n;
+  } catch (e) { return 0; }
 }
 
 /** 上／下班自動判斷用的「最後一張算數的卡」：與 lastCountedEvent 同規則（排除 rejected_*），但回看

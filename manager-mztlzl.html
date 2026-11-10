@@ -286,6 +286,7 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
              border-top: 1px solid #f0e6e0; font-size: 14px; }
   .re-item .re-name { flex: 1; min-width: 0; }
   .re-item .re-when { display: block; font-size: 12px; color: #8a7a72; }
+  .re-item .re-when .lb-away { color: #b3261e; font-weight: 700; }   /* LINE 綁定紀錄：在別家店綁的，標紅 */
   .re-restore { flex: none; font-size: 13px; padding: 6px 12px; border-radius: 8px;
                 border: 1px solid var(--brand-orange); background: #fff;
                 color: var(--brand-orange); font-weight: 700; cursor: pointer; }
@@ -672,7 +673,7 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
   <div id="lineBindFail"></div>
   <div class="card" id="lineBindCard" style="display:none">
     <div class="ae-title">LINE 綁定紀錄</div>
-    <div class="ae-hint">同仁第一次用 LINE「鼎兆元打卡」打卡時，要<b>人在店裡</b>並輸入全名才能綁定。下面是最近 30 天的紀錄；<b>不是本人綁的請立刻按「解除」</b>，那位同仁下次打卡要重新輸入全名。</div>
+    <div class="ae-hint">同仁第一次用 LINE「鼎兆元打卡」打卡時，要<b>人在店裡</b>並輸入全名才能綁定。下面是最近 30 天的紀錄；<b>不是本人綁的請立刻按「解除」</b>，那位同仁下次打卡要重新輸入全名。紅字「在某店綁的」＝同仁人在別家店時綁到本店名冊，請特別確認是不是本人。</div>
     <div class="ae-result" id="lbResult" style="display:none"></div>
     <div class="re-list" id="lbList"></div>
   </div>
@@ -2802,20 +2803,21 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
 
   /* ── LINE 綁定紀錄（2026-10-08）──
    * 後端 mgr_line_binds／mgr_line_unbind（Liff.gs）。舊後端沒有這兩個 action 時 bgLoad 會安靜不畫。 */
+  /* 一筆綁定紀錄的說明文字。from_store（2026-11-11）：這筆是同仁人在別家店時輸入全名綁的 → 用紅字標出那家店。 */
+  function lineBindLabel(it) {
+    var TYPE = { bind_name: '輸入全名綁定', bind_auto: '跨店同名（本人確認）', bind: '用打卡連結綁定' };
+    var t = String(it.type || '');
+    if (t.indexOf('unbind_by:') === 0) return '由 ' + escHtml(t.slice(10)) + ' 解除';
+    /* moved_from:工號（2026-11-11，B25）＝復職開新帳號時，本人的 LINE 由已離職的舊帳號自動移過來。 */
+    if (t.indexOf('moved_from:') === 0) return '同一支 LINE 由已離職的舊帳號（' + escHtml(t.slice(11)) + '）移過來';
+    return escHtml(TYPE[t] || t) + (it.from_store ? '・<b class="lb-away">在「' + escHtml(it.from_store) + '」綁的（不是在本店）</b>' : '');
+  }
   (function initLineBinds() {
     var card = document.getElementById('lineBindCard');
     var listBox = document.getElementById('lbList');
     var box = document.getElementById('lbResult');
     var failSlot = document.getElementById('lineBindFail');
     if (!card || !listBox || !box) return;
-    var TYPE = { bind_name: '輸入全名綁定', bind_auto: '跨店同名（本人確認）', bind: '用打卡連結綁定' };
-    /* 紀錄種類 → 白話。moved_from:工號（2026-11-11，B25）＝復職開新帳號時，本人的 LINE 由已離職的舊帳號自動移過來。 */
-    function bindTypeLabel(type) {
-      type = String(type || '');
-      if (type.indexOf('unbind_by:') === 0) return '由 ' + escHtml(type.slice(10)) + ' 解除';
-      if (type.indexOf('moved_from:') === 0) return '同一支 LINE 由已離職的舊帳號（' + escHtml(type.slice(11)) + '）移過來';
-      return escHtml(TYPE[type] || type);
-    }
     function when(iso) {
       var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
       return m ? (Number(m[2]) + '/' + Number(m[3]) + ' ' + m[4] + ':' + m[5]) : '';
@@ -2823,7 +2825,7 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
     function render(items) {
       if (!items.length) { listBox.innerHTML = '<div class="ae-hint">最近 30 天沒有人綁定或解除。</div>'; return; }
       listBox.innerHTML = items.map(function (it) {
-        var label = bindTypeLabel(it.type);
+        var label = lineBindLabel(it);
         var btn = it.still_bound ? '<button type="button" class="re-restore" data-emp="' + escHtml(it.emp_id) + '" data-name="' + escHtml(it.name) + '">解除</button>' : '';
         return '<div class="re-item"><span class="re-name">' + escHtml(it.name) + '（' + escHtml(it.emp_id) + '）'
              + '<span class="re-when">' + when(it.ts) + '・' + label + (it.type.indexOf('bind') === 0 && !it.still_bound ? '・已不是目前綁定' : '') + '</span></span>' + btn + '</div>';

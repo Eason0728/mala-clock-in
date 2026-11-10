@@ -81,10 +81,10 @@ console.log('\n════ 四、主管頁的綁定紀錄：看得出是從哪�
 {
   const fs = require('fs'), path = require('path'), vm = require('vm');
   const html = fs.readFileSync(path.join(H.ROOT, 'manager.html'), 'utf8');
-  const m = html.match(/function bindTypeLabel\(type\) \{[\s\S]*?\n    \}\n/);
-  const sb = { escHtml: (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;'),
-    TYPE: { bind_name: '輸入全名綁定', bind_auto: '跨店同名（本人確認）', bind: '用打卡連結綁定' } };
-  vm.createContext(sb); vm.runInContext(m ? m[0] : 'function bindTypeLabel(t) { return t; }', sb);
+  // 整合後主管頁只有一支 lineBindLabel(it)（B12 的來源店標示與 B25 的移轉字樣共用），這裡包一層沿用原本的檢查
+  const m = html.match(/  function lineBindLabel\(it\) \{[\s\S]*?\n  \}\n/);
+  const sb = { escHtml: (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;') };
+  vm.createContext(sb); vm.runInContext((m ? m[0] : 'function lineBindLabel(it) { return it.type; }') + '\nfunction bindTypeLabel(t) { return lineBindLabel({ type: t }); }', sb);
   check('B25-31', '「由舊列移來」顯示成白話', sb.bindTypeLabel('moved_from:JS01'), '同一支 LINE 由已離職的舊帳號（JS01）移過來');
   check('B25-32', '原本的字樣照舊', [sb.bindTypeLabel('bind_name'), sb.bindTypeLabel('unbind_by:測試主管'), sb.bindTypeLabel('code_issued')], ['輸入全名綁定', '由 測試主管 解除', 'code_issued']);
 }

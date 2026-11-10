@@ -2053,7 +2053,11 @@ def handle_mgr_line_binds(data, body):
     if not mgr:
         return {"ok": False, "error": "unauthorized"}
     bound = {r["emp_id"]: r.get("line_user_id") for r in data["roster"] if r.get("line_user_id")}
-    items = [{"ts": x["ts"], "emp_id": x["emp_id"], "name": x["name"], "type": x.get("type", "bind"),
+    # from_store（2026-11-11 B12，同 Liff.gs liffBindTypeParts_）：類型 bind_name@店名＝在別家店輸入全名綁的，拆成 type＋from_store
+    def _parts(t):
+        t = str(t or "bind")
+        return ("bind_name", t[10:]) if t.startswith("bind_name@") else (t, "")
+    items = [{"ts": x["ts"], "emp_id": x["emp_id"], "name": x["name"], "type": _parts(x.get("type"))[0], "from_store": _parts(x.get("type"))[1],
               "still_bound": str(x.get("type", "bind")).startswith("bind") and bound.get(x["emp_id"]) == x.get("line_user_id")}
              for x in data.get("liff_bind_log", [])]
     return {"ok": True, "days": 30, "items": list(reversed(items))}

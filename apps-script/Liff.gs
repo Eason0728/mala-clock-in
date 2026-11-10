@@ -155,9 +155,25 @@ function liffBindLocked_(body, userId, rosterSheet) {
   liffClearLineOkCache_(target.emp_id);   // 當日快取鍵一併刪，否則重綁後同日打卡會被快取擋掉、line_ok_at 不重寫
   setRosterCell(rosterSheet, target.__rowIndex, 'line_ok_at', '', true);   // 重綁重新計算「LINE 打卡成功過」（沒有這欄時 setRosterCell 回 false，無妨）
   // via：LINE 單一打卡入口（LineHub.gs）代綁時標註是「輸入姓名」還是「跨店自動」綁的，給主管看綁定紀錄用
-  logLiffBind_(target.emp_id, target.name, userId,
-               body.via === 'name' ? 'bind_name' : body.via === 'auto' ? 'bind_auto' : 'bind');
+  // via_store（2026-11-11 B12，Eason 定「照舊可以在別店綁，但留痕並通知」）：人不在本店、在別家店輸入全名綁到本店這一列時，
+  // LineHub.gs 會帶「在哪一家店綁的」。紀錄類型寫成 bind_name@店名，主管頁的 LINE 綁定紀錄會標出來。
+  var bindType = body.via === 'name' ? 'bind_name' : body.via === 'auto' ? 'bind_auto' : 'bind';
+  if (bindType === 'bind_name') {
+    var fromStore = liffBindFromStore_(body.via_store);
+    if (fromStore) bindType += '@' + fromStore;
+  }
+  logLiffBind_(target.emp_id, target.name, userId, bindType);
   return { ok: true, name: target.name, emp_id: target.emp_id };
+}
+
+/** 綁定紀錄用的「在哪一家店綁的」：這個字是外面傳進來的，只留一行字、最長 30 個字（換行與控制字元去掉）。 */
+function liffBindFromStore_(v) {
+  return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 30);
+}
+/** 綁定紀錄的類型拆成 {type, from_store}：bind_name@店名 → bind_name＋店名；其他類型原樣、from_store 空白。 */
+function liffBindTypeParts_(t) {
+  t = String(t || 'bind');
+  return t.indexOf('bind_name@') === 0 ? { type: 'bind_name', from_store: t.slice(10) } : { type: t, from_store: '' };
 }
 
 /** 刪掉 liffMarkLineOk_ 當日快取鍵（綁定／解綁清 line_ok_at 時呼叫）。失敗無妨。 */
@@ -315,7 +331,8 @@ function handleMgrBindCode_(body) {
   return { ok: true, name: String(row.name), code: lineBindCode_(row.key, lineBindYmd_(0)) };
 }
 
-/** {action:'mgr_line_binds', mgr_key, days?} → 最近 N 天（預設 30）的綁定／解除紀錄＋現在是否仍綁著。不回 LINE userId 全文。 */
+/** {action:'mgr_line_binds', mgr_key, days?} → 最近 N 天（預設 30）的綁定／解除紀錄＋現在是否仍綁著。不回 LINE userId 全文。
+ *  from_store（2026-11-11 B12）：這筆是在別家店輸入全名綁的 → 那家店的店名；在本店綁的＝空白。 */
 function handleMgrLineBinds_(body) {
   if (!liffMgr_(body)) return { ok: false, error: 'unauthorized' };
   var days = Math.min(Math.max(parseInt(body.days, 10) || 30, 1), 180);
@@ -330,7 +347,8 @@ function handleMgrLineBinds_(body) {
                                               type: String(r.type || 'bind'), uid: String(r.line_user_id || '') }; })
     .filter(function (r) { var t = new Date(r.ts).getTime(); return !isNaN(t) && t >= cutoff; })
     .map(function (r) {
-      return { ts: r.ts, emp_id: r.emp_id, name: r.name, type: r.type,
+      var tp = liffBindTypeParts_(r.type);
+      return { ts: r.ts, emp_id: r.emp_id, name: r.name, type: tp.type, from_store: tp.from_store,
                still_bound: r.type.indexOf('bind') === 0 && nowBound[r.emp_id] === r.uid };
     })
     .reverse();
