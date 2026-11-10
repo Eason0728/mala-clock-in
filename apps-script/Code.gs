@@ -3114,7 +3114,8 @@ const RECHECK_MARK = '（系統重算）';
 /**
  * 單筆核定紀錄的重算（2026-09-21 從 recheckPendingApprovalStatuses 抽出，行為不變）。
  * recheckPendingApprovalStatuses 與 backfillMissingPunchGroups 共用，禁止各自重寫判斷。
- * 回 { skip:'no_periods'|'manual_late' } ＝這筆不該動；回 { name, newStatusText } ＝算得出新狀態
+ * 回 { skip:'no_periods' } ＝這筆不該動；回 { name, newStatusText, manual_late } ＝算得出新狀態
+ * （manual_late＝原狀態有主管認定的遲到，已原樣保留在新狀態裡；2026-11-11 以前這種日子回 skip:'manual_late'）
  * （newStatusText 可能與原本相同，由呼叫端決定要不要寫）。
  */
 function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) {
@@ -3138,16 +3139,24 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) 
   });
   // 名冊的名字優先（有人改過名時 approved 上是舊名），查不到才退回 approved 那筆的 name。
   const rosterNow = findRosterByEmpId(rosterRows, empId);
-  // ⚠ 主管手動認定的遲到不能被重算洗掉——原狀態帶「(認定)」就整筆跳過。
+  // ⚠ 主管手動認定的遲到不能被重算洗掉。2026-11-11（B06）以前是「原狀態帶認定就整筆跳過」，
+  //   結果主管核定後同仁才補打的下班卡，永遠不會讓「下班忘刷卡」消失。現在重算打卡比對的部分，
+  //   再把主管認定的那一項（遲到N分(認定)／主管認定不計遲到）原樣放回去，系統算的遲到照舊被它取代。
   const st0 = String(rec.status_text || '');
-  if (st0.indexOf(MANUAL_LATE_MARK) !== -1 || st0.indexOf(NO_LATE_NOTE) !== -1) return { skip: 'manual_late' };
-
+  const manualNote = st0.split('、').filter(function (x) { return x.indexOf(MANUAL_LATE_MARK) !== -1 || x === NO_LATE_NOTE; })[0] || '';
+  let st = computeApprovalStatus(periods, punchWithMs,
+    unrecordedAttemptCount(eventRows, empId, date) > 0,
+    isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name),
+    noPunchBreakWindow(date));
+  if (manualNote) {
+    const kept = st.split('、').filter(function (x) { return x && x !== '正常' && x.indexOf('遲到') !== 0; });
+    kept.push(manualNote);
+    st = kept.join('、');
+  }
   return {
     name: rosterNow ? rosterNow.name : rec.name,
-    newStatusText: applyDupNote_(computeApprovalStatus(periods, punchWithMs,
-      unrecordedAttemptCount(eventRows, empId, date) > 0,
-      isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name),
-      noPunchBreakWindow(date)), dupIgnoreList_(rec.dup_ignore)),
+    newStatusText: applyDupNote_(st, dupIgnoreList_(rec.dup_ignore)),
+    manual_late: !!manualNote,   // 回填工具用：主管認定過的日子不自動改
   };
 }
 
@@ -3274,10 +3283,9 @@ function backfillMissingPunchGroups(fromDate, toDate, apply) {
       scanned++;
 
       const r = recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec);
-      if (r.skip) {
-        if (r.skip === 'manual_late') {
-          skipped.push({ date: date, emp_id: empId, name: rec.name, from: statusText, reason: '主管手動認定，不自動改' });
-        }
+      if (r.skip) return;
+      if (r.manual_late) {   // 回填只補「少刷」字樣，主管認定過的日子照舊不自動改
+        skipped.push({ date: date, emp_id: empId, name: rec.name, from: statusText, reason: '主管手動認定，不自動改' });
         return;
       }
       if (r.newStatusText === statusText) return;                    // 沒變，本來就對
