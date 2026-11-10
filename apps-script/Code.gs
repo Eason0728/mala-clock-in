@@ -750,7 +750,9 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   // 距離扣掉定位誤差後才拿來判定（見 ACCURACY_CREDIT_CAP_M）。distance_m 欄位仍存原始距離，
   // 誤差另存 accuracy_m，兩者都留著，事後要重算判定隨時可以。
   const accuracyCredit = accuracyM === '' ? 0 : Math.min(accuracyM, ACCURACY_CREDIT_CAP_M);
-  const effectiveDistanceM = Math.max(0, distanceM - accuracyCredit);
+  // 2026-11-11（B20）：相減後再取到 0.1 公尺。兩個 0.1 一格的數字相減，「剛好等於半徑」時小數運算會多出 0.000000000000004，
+  // 被判成超出範圍（例：32.2 − 12.2）。LineHub.gs lineHubPickStore_、clock-line-core.js 同一條算式，要一起改。
+  const effectiveDistanceM = Math.max(0, Math.round((distanceM - accuracyCredit) * 10) / 10);
   const withinRange = effectiveDistanceM <= CONFIG.RADIUS_M;
 
   // 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
@@ -1600,10 +1602,12 @@ function handleRecentHires(body) {
   const ss = getSS();
   const rosterSheet = ss.getSheetByName('roster');
   if (!rosterSheet) return { ok: true, hires: [] };
-  const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+  // 2026-11-11（B22）：用時間點比，不比字串。原本拿世界標準時間的字串（…Z）和名冊上台北時間的字串（…+08:00）比大小，多算 8 小時。
+  const cutoffMs = Date.now() - days * 86400000;
   const hires = readSheetAsObjects(rosterSheet).rows.filter(function (r) {
     const c = normCellTs(r.created_at);
-    return c && String(c) >= cutoff;
+    const t = c ? Date.parse(String(c)) : NaN;
+    return c && !isNaN(t) && t >= cutoffMs;
   }).map(function (r) {
     return { emp_id: String(r.emp_id), name: String(r.name),
              created_at: String(normCellTs(r.created_at)), created_by: String(r.created_by || '') };
@@ -2425,7 +2429,8 @@ const TRIP_NOTE = '出差';   // 出差當天打不了卡，狀態標這個而�
 function applyManualLate(statusText, lateMin) {
   const raw = String(lateMin == null ? '' : lateMin).trim();
   if (raw === '') return statusText;           // 留空＝不覆蓋，用系統自動判的
-  const n = Number(raw);
+  // 2026-11-11（B21）：先取整再判斷。原本 0.4 不等於 0、又被四捨五入成「遲到0分(認定)」，月表算 1 天異常。
+  const n = Math.round(Number(raw));
   if (!isFinite(n) || n < 0) return statusText;
   const kept = String(statusText || '').split('、')
     .filter(function (x) { return x && x.indexOf('遲到') !== 0; });
@@ -2435,7 +2440,7 @@ function applyManualLate(statusText, lateMin) {
     // 標一句話留痕，否則月表上看起來像系統沒抓到。
     kept.push(NO_LATE_NOTE);
   } else {
-    kept.push('遲到' + Math.round(n) + '分' + MANUAL_LATE_MARK);
+    kept.push('遲到' + n + '分' + MANUAL_LATE_MARK);
   }
   const out = kept.filter(function (x) { return x !== '正常'; });
   return out.length ? out.join('、') : '正常';

@@ -1165,7 +1165,7 @@ def handle_clock(data, body):
         accuracy_m = None
     # 距離扣掉定位誤差後才判定（與 Code.gs 同步）；distance_m 仍存原始距離
     accuracy_credit = 0 if accuracy_m is None else min(accuracy_m, ACCURACY_CREDIT_CAP_M)
-    effective_distance_m = max(0, distance_m - accuracy_credit)
+    effective_distance_m = max(0, round(distance_m - accuracy_credit, 1))   # 相減後再取到 0.1（同 Code.gs，2026-11-11 B20）
     within_range = effective_distance_m <= RADIUS_M
 
     # 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查

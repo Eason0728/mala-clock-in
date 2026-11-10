@@ -70,7 +70,7 @@ function lineHubPickStore_(fix, stores) {
     if (typeof s.lat !== 'number') return;
     var d = lineHubDistanceM_(fix.lat, fix.lng, s.lat, s.lng);
     if (d < nearestD) { nearestD = d; nearest = s; }
-    if (Math.max(0, r1(d) - Math.min(acc, LINE_HUB_ACC_CAP_M)) <= s.radius_m) hits.push({ store: s, d: d });
+    if (Math.max(0, r1(r1(d) - Math.min(acc, LINE_HUB_ACC_CAP_M))) <= s.radius_m) hits.push({ store: s, d: d });   // 相減後再取到 0.1（B20，同 Code.gs handleClock）
   });
   if (hits.length === 1) return { status: 'ok', store: hits[0].store, distance_m: Math.round(hits[0].d * 10) / 10 };
   if (hits.length > 1) return { status: 'ambiguous', candidates: hits.map(function (h) { return h.store.code; }) };
