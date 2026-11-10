@@ -110,6 +110,9 @@ const PAY_CONFIG_DEFAULT = [
   ['attend_void_early_min', 0, '早退累計達幾分鐘(含)以上→全勤歸零，0＝不啟用'],
   ['leave_div_days', 30, '事假費率分母（天）'],
   ['leave_div_hours', 8, '事假費率分母（時）'],
+  /* ⚠ sick_ratio 沒有任何程式在讀（2026-08-23 起病假的給薪比例改讀假別表），設定頁的欄位已拿掉、前端存檔不再送這個鍵
+     （薪酬挑錯第 11 項，Eason 2026-11-11 確認）。這一列暫時留著：tests/support-auto-regression.test.js 拿 origin/main 的
+     payroll_month 回應整份比對，拿掉這一列回應的 config／config_src 會少一個鍵、那支測試會紅——要不要連這一列一起拿掉等 Eason 決定。 */
   ['sick_ratio', 0.5, '病假占事假比例'],
   ['payday', 10, '發薪日'],
   // ── 計時同仁的時薪加給（2026-08-24 改為參數，原本寫死在引擎裡）──
@@ -681,6 +684,34 @@ function payAddMonthsClamp_(d, m) {
 function payDateStr(v) {
   if (v instanceof Date) return v.getFullYear() + '-' + pad2(v.getMonth() + 1) + '-' + pad2(v.getDate());
   return String(v || '').trim().slice(0, 10);
+}
+
+/** 主檔存檔用的到職日／離職日檢查（薪酬挑錯第 13 項，Eason 2026-11-11 確認）：只收空白或 YYYY-MM-DD，而且要是真實存在的日期。
+ *  '2026/10/12'、'115/10/12' 這種寫法 payRatio 認不得，會當成整月在職、發整月薪水，所以存檔時就擋。
+ *  Sheets 把純日期轉成的 Date 物件先用 payDateStr 正規化；字串只去頭尾空白（不截斷，'2026-10-12T00:00' 不收）。
+ *  回 { ok, value }：value＝要存進去的字串（空白一律存 ''）。 */
+function payMasterDateCheck_(v) {
+  const t = (v instanceof Date) ? payDateStr(v) : String(v == null ? '' : v).trim();
+  if (t === '') return { ok: true, value: '' };
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  if (!m) return { ok: false, value: t };
+  const y = +m[1], mo = +m[2], d = +m[3];
+  const real = mo >= 1 && mo <= 12 && d >= 1 && d <= new Date(y, mo, 0).getDate();
+  return { ok: real, value: t };
+}
+/** 整批主檔的到職日／離職日檢查：回不合格的格子（「編號 欄位名」，照送來的順序）；
+ *  全部合格時把正規化後的字串寫回各列。純函式，不碰試算表。 */
+function payMasterDateBad_(rows) {
+  const bad = [], fix = [];
+  (rows || []).forEach(function (m) {
+    [['hire_date', '到職日'], ['leave_date', '離職日']].forEach(function (f) {
+      const c = payMasterDateCheck_(m[f[0]]);
+      if (!c.ok) bad.push(String(m.emp_id).trim() + ' ' + f[1]);
+      else fix.push([m, f[0], c.value]);
+    });
+  });
+  if (!bad.length) fix.forEach(function (x) { x[0][x[1]] = x[2]; });
+  return bad;
 }
 
 /** 特休額度（台灣勞基法§38 週年制）：以薪資月月底為基準日，回當前週年期 {days, ps, pe}。
@@ -2617,6 +2648,11 @@ function handlePayrollMasterSet(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   if (!Array.isArray(body.master)) return { ok: false, error: 'master_required' };
   if (body.master.some(function (m) { return !PAY_EMP_ID_RE_.test(String(m && m.emp_id != null ? m.emp_id : '').trim()); })) return PAY_BAD_EMP_ID_;
+  /* 到職日／離職日只收空白或 YYYY-MM-DD 的真實日期，有一格不合就整批不存（薪酬挑錯第 13 項，Eason 2026-11-11 確認）。
+     訊息只帶編號（上面已驗過格式）與欄位名，不帶使用者填的原文。 */
+  const badDates = payMasterDateBad_(body.master);
+  if (badDates.length) return { ok: false, error: 'bad_date', cells: badDates,
+    message: '到職日、離職日只能留空，或填 YYYY-MM-DD 而且是真實存在的日期（例：2026-10-12），這次沒有儲存：' + badDates.join('、') };
   const now = nowTaipeiIso();
   const stMs = payStore(body.store);
   const mine = body.master.map(function (m) { m.updated_at = now; m.store = payStore(m.store || stMs); return m; });

@@ -1339,7 +1339,10 @@ function ptTenurePlus(m){
   const hs=String((m||{}).hire_date||'').slice(0,10);
   if(!/^\d{4}-\d{2}-\d{2}$/.test(hs)) return 0;
   const h=new Date(hs+'T00:00:00');
-  const due=new Date(h.getFullYear(), h.getMonth()+months, h.getDate());
+  /* 滿期日：那個月沒有到職的那一日（8/31 到職＋6 個月，2 月沒有 31 日）就用該月最後一天，不溢位到下個月——
+     與後端 payAddMonthsClamp_ 同一個算法（薪酬挑錯第 14 項，Eason 2026-11-11 確認）。 */
+  const mo=h.getMonth()+months, last=new Date(h.getFullYear(), mo+1, 0).getDate();
+  const due=new Date(h.getFullYear(), mo, Math.min(h.getDate(), last));
   return (new Date(ym()+'-01T00:00:00') > due) ? plus : 0;
 }
 function renderRun(){
@@ -2585,7 +2588,7 @@ let CFG_DIRTY={};   // {key: 改之前畫面上的值}
 function cfgEdit(k,v){ if(!(k in CFG_DIRTY)) CFG_DIRTY[k]=CFG[k]; CFG[k]=v; }
 const CF=[['daily_hours','每日基本工時（H）'],
  ['leave_div_days','事假費率分母（天）'],['leave_div_hours','事假費率分母（時）'],
- ['sick_ratio','病假占事假比例'],['payday','發薪日'],
+ ['payday','發薪日'],
  ['meal_min_hours','餐費補助門檻（當日滿幾H算一天）'],
  ['yearend_months','年終獎金月數（全店預設）']];
 const CF_ATTEND=[['attend_deduct_per_day','每日倒扣（元）'],
@@ -2607,8 +2610,10 @@ const CF_PT=[['pt_attend_plus','滿勤加給（元/時，勾選才給）'],
  ['pt_tenure_plus','年資加給（元/時）'],
  ['pt_tenure_months','年資門檻（滿幾個月，次月起生效；留空或 0＝用預設 6）']];
 /* 已廢棄的參數：存檔時順手從試算表清掉，避免留一列沒人讀的廢資料誤導。
-   shortfall_deduct＝2026-08 改版前的「工時不足要不要倒扣」開關，現在一律倒扣、引擎不再讀它。 */
-const CFG_OBSOLETE=['shortfall_deduct'];
+   shortfall_deduct＝2026-08 改版前的「工時不足要不要倒扣」開關，現在一律倒扣、引擎不再讀它。
+   sick_ratio＝「病假占事假比例」，2026-08-23 起病假的給薪比例改讀假別表，引擎不再讀它，這一欄已從基本參數卡拿掉
+   （薪酬挑錯第 11 項，Eason 2026-11-11 確認）。 */
+const CFG_OBSOLETE=['shortfall_deduct','sick_ratio'];
 function renderCfg(){
   renderStores();
   // 假別表跟參數一樣依門市覆寫；還沒載入就先抓一次（切門市時 loadMonth 會再抓）
