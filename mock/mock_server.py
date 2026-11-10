@@ -2099,7 +2099,8 @@ def _js_round1(h):
 
 
 def rest_segments(evs):
-    """同 Rest.gs restSegments_：算數＝非 rejected_*；上班接上班＝前一張沒下班（不成立）；16 小時內的下班卡才配成一段。"""
+    """同 Rest.gs restSegments_：算數＝非 rejected_*；上班接上班＝前一張沒下班（不成立）；16 小時內的下班卡才配成一段。
+    前面沒有上班卡的下班卡（2026-11-11 B07）：當成只知道結束時間的一段（時數 0；凌晨 06:00 前的歸前一天）。"""
     lst = []
     for e in evs:
         if e.get("type") not in ("in", "out") or str(e.get("status") or "").startswith("rejected_"):
@@ -2116,6 +2117,8 @@ def rest_segments(evs):
             continue
         if open_ is not None and ms - open_ <= REST_PAIR_H * 3600000:
             segs.append({"in": open_, "out": ms})
+        else:
+            segs.append({"in": ms, "out": ms, "lone": True, "day": _rest_day(ms - 86400000) if _rest_hm(ms) <= "06:00" else _rest_day(ms)})
         open_ = None
     return segs
 
@@ -2126,7 +2129,7 @@ def rest_judge(segs, now_ms):
     done = [s for s in segs if s["out"] <= now_ms]
     if not done:
         return None
-    todays = [s for s in done if _rest_day(s["in"]) == today]
+    todays = [s for s in done if (s.get("day") or _rest_day(s["in"])) == today]
     if todays:
         h = sum(s["out"] - s["in"] for s in todays) / 3600000
         if h >= REST_DAY_MAX_H:
