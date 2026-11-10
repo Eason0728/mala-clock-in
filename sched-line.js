@@ -1,6 +1,6 @@
 /* 出勤班表頁（2026-10-10，規格在 private repo mala-clock-schedule docs/spec.md）
  * 由 clock-line.html 載入：網址帶 ?view=sched 就顯示這頁，不定位、不顯示打卡。
- * 資料：光復 line_hub_sched {id_token, ym}（只回這位同仁自己的班；班表來自排班系統月曆版，鎖定的月份才看得到）。
+ * 資料：光復 line_hub_sched {id_token, ym}（只回這位同仁自己的班；班表來自營運系統自動排班，店長鎖定發布後才看得到；2026-11 以前的月份已不提供）。
  * 兩個分頁：月曆（點某天看各段時間與合計）／本月摘要（排班天數、休假天數、排班時數、下一個班）。
  * 所有文字一律 textContent（班別名稱是店長手打的）。 */
 (function () {
@@ -13,7 +13,9 @@
     // 2026-11-02：11/1 起各店都接營運系統排班，not_bound＝沒有在職的打卡門市（Eason：不再提「只有光復」）
     not_bound: function () { return '找不到你在職的打卡門市，請找店長確認。'; },
     not_matched: function () { return '你的班表還沒對上，請找店長確認。'; },
-    no_schedule: function (ym) { return mLabel(ym) + '的班表沒有你的班。'; }
+    no_schedule: function (ym) { return mLabel(ym) + '的班表沒有你的班。'; },
+    // 2026-11-10：舊的月曆版排班下架，11 月以前的月份不再提供
+    archived: function (ym) { return mLabel(ym) + '的班表已不提供查詢，有問題請找店長。'; }
   };
 
   function h(tag, attrs, kids) {

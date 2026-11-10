@@ -550,7 +550,7 @@ ok('備註：期外日期丟掉、61 字截 60、空白不存；站別 id 截 32
   assert.deepStrictEqual(st.stations, [{ id: 's'.repeat(32), name: 'n'.repeat(20) }]);
   assert.strictEqual(st.shifts[0].segs, undefined);
 });
-/** 出勤班表的沙盒：把 lineHubMine_（名冊對人）換成固定名單，Gist 固定回空（只測營運系統發布那條） */
+/** 出勤班表的沙盒：把 lineHubMine_（名冊對人）換成固定名單（2026-11-10 起程式不再讀月曆版 Gist） */
 function schedCtx(mine, extra) {
   const m = make(Object.assign({ hub: true, now: T('2026-11-10T12:00:00'), props: { SCHED_SVC_KEY: 'SK', SCHED_STORE_FROM: '2026-11-01' },
     fetch: (url) => (String(url).indexOf('gist') >= 0 ? { getResponseCode: () => 200, getContentText: () => JSON.stringify({ mala_employees: [], mala_locks: [] }) } : null) }, extra || {}));
@@ -589,7 +589,7 @@ ok('接手日切在月中（SCHED_STORE_FROM=2026-11-15）：15 日前留白、1
   assert.strictEqual(r2.days[26].label, '尚未發布'); assert.strictEqual(r2.days[26].pending, true);   // 12-27 起是 T03，還沒發布：明講不留白
   assert.strictEqual(r2.days[30].pending, true);
 });
-ok('sched_day_roster：沒設 SCHED_READ_KEY 一律 unauthorized；只回姓名＋時段（沒有 emp_id／工時）；日期早於接手日回 source gist', () => {
+ok('sched_day_roster：沒設 SCHED_READ_KEY 一律 unauthorized；只回姓名＋時段（沒有 emp_id／工時）；日期早於接手日也回 store、published:false（月曆版 2026-11-10 下架）', () => {
   const m = schedCtx([], { props: { SCHED_SVC_KEY: 'SK', SCHED_STORE_FROM: '2026-11-01' } });
   const sb = m.sb;
   sb.handleSchedPublish_(pubBody());
@@ -599,7 +599,8 @@ ok('sched_day_roster：沒設 SCHED_READ_KEY 一律 unauthorized；只回姓名�
   const r = J(sb.handleSchedDayRoster_({ key: 'RK', date: '2026-11-02' }));
   assert.deepStrictEqual(r.people, [{ name: '測試一', label: 'A班', segs: [['15:00', '23:30']] }]);
   assert.strictEqual(J(sb.handleSchedDayRoster_({ key: 'RK', date: '2026-11-07' })).people.length, 0);   // 例假
-  assert.strictEqual(sb.handleSchedDayRoster_({ key: 'RK', date: '2026-10-31' }).source, 'gist');
+  const old = J(sb.handleSchedDayRoster_({ key: 'RK', date: '2026-10-31' }));
+  assert.deepStrictEqual([old.source, old.published, old.people.length], ['store', false, 0]);
   assert.strictEqual(sb.handleSchedDayRoster_({ key: 'RK', date: '2026-11-31' }).published, false);
 });
 
