@@ -753,6 +753,46 @@ function payHolidayDates(holRow) {
   return String(v || '').split(/[,，\s]+/).filter(Boolean).map(function (x) { return payDateStr(x); });
 }
 
+/* ── 已鎖定月份不能再改（薪酬挑錯第 1 項，Eason 2026-11-11 確認）──
+   鎖定＝該店該月 payroll_run 有 status='final' 的列。以下三支都是純函式（不讀寫試算表），handler 把讀到的列傳進來。 */
+/** 該店該月是否已鎖定。runs＝payroll_run 全部列；st＝payStore() 過的門市代碼。 */
+function payMonthLocked_(runs, ym, st) {
+  return (runs || []).some(function (r) {
+    return String(r.ym) === String(ym) && payStore(r.store) === st && String(r.status) === 'final';
+  });
+}
+function payLockedMsg_(ym, what) { return ym + ' 已鎖定，請先解鎖再修改' + (what || ''); }
+/** 紅字天數整批覆寫前的檢查：回「這次覆寫會動到的已鎖定月份」（由小到大），沒有就回 []。
+ *  只看 red_days 與 dates（備註不影響薪資）；某月那一列前後不一樣、被刪、或新增都算有動到。
+ *  stH 有值＝該店專屬列，看該店該月有沒有鎖定；stH 空白＝集團共用列，看所有「該月沒有專屬列」的店（有專屬列的店不吃共用列）。
+ *  oldRows＝holiday 分頁現況全部列；newRows＝這次送來、要取代 stH 那一組的列；runs＝payroll_run 全部列。 */
+function payHolidayLockedYms_(oldRows, newRows, stH, runs) {
+  stH = String(stH || '');
+  const sig = function (rows) {
+    const by = {};
+    (rows || []).forEach(function (h) {
+      if (!h) return;
+      const k = String(h.ym);
+      (by[k] = by[k] || []).push(payNum(h.red_days) + '|' + payHolidayDates(h).slice().sort().join(','));
+    });
+    return by;
+  };
+  const a = sig((oldRows || []).filter(function (h) { return String(h.store || '') === stH; })), b = sig(newRows);
+  const touched = {};
+  Object.keys(a).concat(Object.keys(b)).forEach(function (k) {
+    if ((a[k] || []).join(';') !== (b[k] || []).join(';')) touched[k] = 1;
+  });
+  const hasOwn = {};   // 'ym|店' → 該店該月有專屬列
+  (oldRows || []).forEach(function (h) { const s = String(h.store || ''); if (s) hasOwn[String(h.ym) + '|' + s] = 1; });
+  return Object.keys(touched).sort().filter(function (k) {
+    return (runs || []).some(function (r) {
+      if (String(r.ym) !== k || String(r.status) !== 'final') return false;
+      const rs = payStore(r.store);
+      return stH ? rs === stH : !hasOwn[k + '|' + rs];
+    });
+  });
+}
+
 /** 在職比例：月中到職／離職才折算，整月在職回 1 */
 function payRatio(e, ym) {
   const D = payDaysIn(ym);
@@ -2505,7 +2545,16 @@ function handlePayrollHolidaySet(body) {
   if (!Array.isArray(body.holidays)) return { ok: false, error: 'holidays_required' };
   const stH = String(body.store || '');   // 空白＝集團共用；有值＝該門市專屬
   const mine = body.holidays.map(function (h) { h.store = stH; return h; });
-  if (!payReplaceKeep_('holiday', function (h) { return String(h.store || '') !== stH; }, mine)) return PAY_BUSY_;
+  // 已鎖定月份那一列的 red_days／dates 有變動、被刪、或新增 → 整批不存（薪酬挑錯第 1 項）。在寫鎖內用最新資料比對。
+  let lockedYms = [];
+  if (!payWriteLocked_(['holiday', 'run'], function () {
+    const all = payRead('holiday');
+    lockedYms = payHolidayLockedYms_(all, mine, stH, payRead('run'));
+    if (lockedYms.length) return;
+    payReplaceAll('holiday', all.filter(function (h) { return String(h.store || '') !== stH; }).concat(mine));
+  })) return PAY_BUSY_;
+  if (lockedYms.length) return { ok: false, error: 'locked', yms: lockedYms,
+    message: payLockedMsg_(lockedYms.join('、'), '紅字天數') };
   return { ok: true, count: mine.length, store: stH };
 }
 
@@ -2813,6 +2862,8 @@ function handlePayrollInputSet(body) {
   //   十一支整批覆寫的 handler 裡，只有這支漏了門市過濾——與 master／config／run／item
   //   ／bonus／leave_* 的寫法對齊即可。
   const st = payStore(body.store);
+  // 已鎖定的月份不能再存／清除工時（薪酬挑錯第 1 項）；拿到寫鎖後還會再查一次。
+  if (payMonthLocked_(payRead('run'), ym, st)) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '工時') };
   const xsup = payXsupOn_(ym);
   /* 審查 #1（2026-11-05）：本店打卡歸集裡沒有這個人（只在別店有時數）時，畫面上的 hours:0＋auto 列
      不可以存成「整筆手動」——存了之後本店核定就流不進來。2026-11 起：
@@ -2849,9 +2900,14 @@ function handlePayrollInputSet(body) {
     return true;
   });
   // 只換「本月＋本店」，其他月份與其他門市原封不動
-  if (!payReplaceKeep_('input', function (r) {
-    return String(r.ym) !== ym || payStore(r.store) !== st;
-  }, rows)) return PAY_BUSY_;
+  let lockedNow = false;
+  if (!payWriteLocked_(['input', 'run'], function () {
+    if (payMonthLocked_(payRead('run'), ym, st)) { lockedNow = true; return; }   // 鎖外查完到拿到寫鎖之間被鎖定
+    payReplaceAll('input', payRead('input').filter(function (r) {
+      return String(r.ym) !== ym || payStore(r.store) !== st;
+    }).concat(rows));
+  })) return PAY_BUSY_;
+  if (lockedNow) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '工時') };
   return { ok: true, ym: ym, store: st, count: rows.length };
 }
 
@@ -4376,6 +4432,8 @@ function handlePayrollBonusSet(body) {
   const ym = String(body.ym || ''), st = payStore(body.store);
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
   if (!Array.isArray(body.bonuses)) return { ok: false, error: 'bonuses_required' };
+  // 已鎖定的月份不能再存獎金（薪酬挑錯第 1 項）；拿到寫鎖後還會再查一次。
+  if (payMonthLocked_(payRead('run'), ym, st)) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '獎金') };
   const now = nowTaipeiIso();
   const rows = body.bonuses
     .filter(function (b) { return b && String(b.emp_id || '') !== '' && payNum(b.amount) !== 0; })
@@ -4385,7 +4443,12 @@ function handlePayrollBonusSet(body) {
                label: String(b.label || ''), amount: payNum(b.amount),
                memo: String(b.memo || ''), updated_at: now };
     });
-  if (!payReplaceKeep_('bonus', function (b) { return String(b.ym) !== ym || payStore(b.store) !== st; }, rows)) return PAY_BUSY_;
+  let lockedNow = false;
+  if (!payWriteLocked_(['bonus', 'run'], function () {
+    if (payMonthLocked_(payRead('run'), ym, st)) { lockedNow = true; return; }   // 鎖外查完到拿到寫鎖之間被鎖定
+    payReplaceAll('bonus', payRead('bonus').filter(function (b) { return String(b.ym) !== ym || payStore(b.store) !== st; }).concat(rows));
+  })) return PAY_BUSY_;
+  if (lockedNow) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '獎金') };
   return { ok: true, ym: ym, store: st, count: rows.length };
 }
 

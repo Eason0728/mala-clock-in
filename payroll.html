@@ -869,6 +869,7 @@ async function saveAtt(){
     return;
   }
   if(supCrossBlock('儲存')) return;
+  if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再修改工時',true); return; }   // 已鎖定月份不送出（薪酬挑錯第 1 項）
   b.disabled=true; b.classList.remove('done'); b.textContent='存取中…';
   /* 有負責門市範圍時只送本店主檔的人：ATT 也含只打卡、未建主檔或別店的編號（計薪只看主檔，不送不影響本店），
      後端會擋 emp_out_of_scope（payroll-scope final review I2）。系統管理者／非嵌入照舊全送。 */
@@ -877,7 +878,7 @@ async function saveAtt(){
     Object.keys(ATT||{}).forEach(k=>{ if(own[String(k).trim()]) sendAtt[k]=ATT[k]; }); }
   if(ym()>=XSUP_FROM){ const t={}; Object.keys(sendAtt||{}).forEach(k=>{ if(attSendable(sendAtt[k])) t[k]=sendAtt[k]; }); sendAtt=t; }
   const r=await post('payroll_input_set',{ym:ym(),inputs:sendAtt});
-  if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.error||''),true);return}
+  if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.message||r.error||''),true);return}
   await doCalc();   // 存完用新工時重算帶出數字
   ATT_DIRTY=false;   // 存好了，解除未儲存提醒
   b.classList.add('done'); b.textContent='✓ 存檔完成';
@@ -885,9 +886,10 @@ async function saveAtt(){
   setTimeout(()=>{b.textContent='儲存工時';b.disabled=false;b.classList.remove('done');},1800);
 }
 async function clearAtt(){
+  if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再清除手動工時',true); return; }   // 已鎖定月份不送出（薪酬挑錯第 1 項）
   if(!confirm('清除 '+ym()+' 的手動工時？\n\n會刪掉這個月你手動輸入/儲存的工時，還原成打卡自動歸集的值。\n（只影響目前門市，其他門市不受影響）')) return;
   const r=await post('payroll_input_set',{ym:ym(),inputs:{}});
-  if(!r.ok){toast('清除失敗：'+(r.error||''),true);return}
+  if(!r.ok){toast('清除失敗：'+(r.message||r.error||''),true);return}
   toast(ym()+' 手動工時已清除');
   await loadMonth();
 }
@@ -2031,9 +2033,10 @@ function saveBonusMemo(){
   if($('bnRate')) $('bnRate').value=(rev&&tgt)?(Math.round(rev/tgt*1000)/10+' %'):'—';
 }
 async function saveBonus(btn){
+  if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再修改獎金',true); return false; }   // 已鎖定月份不送出（薪酬挑錯第 1 項）
   return saveFX(btn,'儲存獎金',async()=>{
     const r=await post('payroll_bonus_set',{ym:ym(),store:STORE,bonuses:BONUS});
-    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    if(!r.ok){toast('儲存失敗：'+(r.message||r.error||''),true);return false}
     await doCalc();
     toast('獎金已儲存（'+r.count+' 筆）');return true;
   });
