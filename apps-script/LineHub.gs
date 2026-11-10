@@ -128,7 +128,7 @@ function handleLineBindName_(body) {
   if (row.line_user_id) return { ok: false, error: 'name_taken', message: '「' + String(row.name) + '」已經綁定別的 LINE 帳號。如果那不是你，請立刻告知主管到管理系統「考勤管理 → 員工名冊」的 LINE 綁定紀錄解除。' };
   // via：伺服器自己判斷（不信前端，v2 審查 N2）——這個 LINE 在別家店已綁定同名＝跨店（auto），否則＝輸入全名（name）
   var sameNameElsewhere = lineHubMine_(userId).some(function (m) { return lineHubNormName_(m.row.name) === want; });
-  if (!sameNameElsewhere) { var codeDeny = lineHubBindCodeDeny_(row.key, body); if (codeDeny) return codeDeny; }   // 同名已綁在別店＝LINE 已證明身分，不用再要碼
+  var codeDeny = lineHubBindCodeDeny_(row.key, body); if (codeDeny) return codeDeny;   // 開關開著時一律要碼：別店同名已綁不代表是同一個人（2026-11-10 夜間 QA）
   var j = lineHubCallStore_(st, { action: 'liff_bind', id_token: body.id_token, key: String(row.key), via: sameNameElsewhere ? 'auto' : 'name' });
   if (!j || !j.ok) {
     var m = { line_account_in_use: '你的 LINE 帳號已經綁定這家店的另一位同仁，請找主管處理。' }[j && j.error];

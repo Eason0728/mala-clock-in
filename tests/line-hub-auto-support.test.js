@@ -331,10 +331,12 @@ ok('綁定碼：今天和昨天的碼可用，前天的不行', () => {
     assert.strictEqual(r.ok === true, good, ago + JSON.stringify(r));
   });
 });
-ok('綁定碼：同名已綁在別店的人不用碼', () => {
+ok('綁定碼：同名已綁在別店的人也要碼（同名不代表同一人）', () => {
   const sheets = { hq: { roster: [R({ name: '測試乙' })] }, mztjs: { roster: [{ emp_id: 'J2', name: '測試乙', key: 'kJ2', active: 'true', line_user_id: '' }] } };
   const m = Object.assign(make({ sheets, props: ON }), { sheets });
-  const r = atHome(m); assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual(atHome(m).error, 'bind_code_required');
+  assert.strictEqual(m.sheets.mztjs.roster[0].line_user_id, '');
+  const r = atHome(m, { bind_code: code(m, 'kJ2') }); assert.strictEqual(r.ok, true, JSON.stringify(r));
 });
 ok('綁定碼：名字在別單位時，沒帶碼也不回確認資訊', () => {
   const m = scene({ props: ON }); m.sheets.hq.roster[0].line_user_id = '';

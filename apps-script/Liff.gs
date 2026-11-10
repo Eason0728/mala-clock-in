@@ -334,6 +334,8 @@ function handleMgrLineUnbind_(body) {
   setRosterCell(sheet, row.__rowIndex, 'line_ok_at', '', true);
   liffClearLineOkCache_(row.emp_id);
   logLiffBind_(row.emp_id, row.name, String(row.line_user_id), 'unbind_by:' + actor);
+  var forgetUid = String(row.line_user_id || '').trim();
+  if (typeof lineHubForget_ === 'function' && forgetUid) lineHubForget_(forgetUid);   // 夜間 QA 低-7：解綁後清 LINE 小幫手快取，額度／附件的 not_bound 守門立刻生效
   return { ok: true };
 }
 
