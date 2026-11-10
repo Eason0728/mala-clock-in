@@ -459,6 +459,8 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
       let g = payMissingCards(approvedMap[d][emp].status_text);
       const nb = breakReq[String(emp) + '|' + d] || 0;
       if (g >= 2 && nb) g = Math.max(1, g - Math.min(nb, Math.floor(g / 2)));
+      // 整段沒打卡（「該段無打卡」）也算忘刷，同一天只算 1 天；「打卡未入帳，主管補登」（有打但被擋）不算（2026-11 起，Eason 2026-11-10 確認）
+      if (!g && payNoPunchSeg_(approvedMap[d][emp].status_text) && payRules3On_(ym)) g = 2;
       if (g) markForget(String(emp), d, g);
     });
   });
@@ -528,6 +530,11 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
   return out;
 }
 
+
+/** 核定狀態有「該段無打卡」（整段沒打卡、靠主管補登）→ true。逐項整項比對，「主管說該段無打卡」這種不算 */
+function payNoPunchSeg_(statusText) {
+  return String(statusText || '').split('、').some(function (p) { return p.trim() === '該段無打卡'; });
+}
 
 /** 請假分頁只有姓名：同店同名多筆時，用在職與到離職日判斷是誰（Eason 2026-11-09）。沒有同名的情況和原本完全一樣，也不多讀主檔。
  *  rows＝名冊或主檔列；回傳 pick(姓名, 日期) → 工號。判斷不出來時：只有一位在職就給他，否則維持原本的最後一筆，畫面會標紅。 */
@@ -2887,6 +2894,53 @@ function paySchedMonth_(ym, st, master, idx) {
   });
   return out;
 }
+/** 國定假日調移（2026-11-10 Eason）：正職在同一個 28 天週期有排「國定假日假」（班表 L＋國），原本的國定假日當天上班就當一般上班日，不給雙薪。
+ *  先把排在國定假日當天的國定假日假對掉那天，剩下的依日期先後抵本期其他國定假日。計時不適用。沒有班表模組回 {}。
+ *  回 { emp_id: { 'YYYY-MM-DD': true } }（只列本月、這次不給雙薪的國定假日） */
+function payHolMoved_(ym, st, master, holDates, idx) {
+  const out = {};
+  if (typeof schedPubPeriodOf_ !== 'function' || !(holDates || []).length) return out;
+  idx = idx || paySchedIndex_();
+  const code = paySchedCode_(st), keys = Object.keys(idx);
+  const prefix = String((payStoreRow(payStore(st)) || {}).emp_prefix || '').trim();
+  const periods = {};
+  holDates.forEach(function (d) { d = String(d).trim(); if (d.slice(0, 7) === ym && schedPubPeriodOf_(d)) periods[schedPubPeriodOf_(d)] = payPeriodRange_(d); });
+  Object.keys(periods).forEach(function (p) {
+    const r = periods[p];
+    const yms = r.start.slice(0, 7) === r.end.slice(0, 7) ? [r.start.slice(0, 7)] : [r.start.slice(0, 7), r.end.slice(0, 7)];
+    let all = [];
+    yms.forEach(function (mo) { all = all.concat(mo === ym ? holDates.map(function (x) { return String(x).trim(); }) : payHolidayDates(payHolidayRow(mo, st))); });
+    const hols = [];
+    all.forEach(function (d) { if (d >= r.start && d <= r.end && hols.indexOf(d) === -1) hols.push(d); });
+    hols.sort();
+    if (!hols.length) return;
+    master.forEach(function (m) {
+      if (!payBool(m.is_full_time)) return;
+      const id = String(m.emp_id).trim(), name = String(m.name || '').trim(), ids = [id];
+      if (prefix && id.indexOf(prefix) === 0 && id.length > prefix.length) ids.push(id.slice(prefix.length));
+      let row = null;
+      const own = idx[code + '|' + p];
+      if (own) for (let j = 0; j < ids.length && !row; j++) row = own.byId[ids[j]] || null;
+      for (let k = 0; k < keys.length && !row; k++) {
+        if (keys[k].split('|')[1] !== p || keys[k] === code + '|' + p) continue;
+        for (let j = 0; j < ids.length && !row; j++) { const x = idx[keys[k]].byId[ids[j]]; if (x && String(x.name || '').trim() === name) row = x; }
+      }
+      if (!row) return;
+      const guo = [];
+      (row.cells || []).forEach(function (c, i) { if (c && String(c.t) === 'L' && String(c.l || '') === '國') guo.push(schedPubAddDays_(r.start, i)); });
+      let left = guo.filter(function (d) { return hols.indexOf(d) === -1; }).length;
+      hols.forEach(function (d) {
+        if (guo.indexOf(d) !== -1 || left <= 0) return;
+        left--;
+        if (d.slice(0, 7) === ym) (out[String(m.emp_id)] = out[String(m.emp_id)] || {})[d] = true;
+      });
+    });
+  });
+  return out;
+}
+function payHolKeep_(holDates, moved) {
+  return moved ? (holDates || []).filter(function (d) { return !moved[String(d).trim()]; }) : holDates;
+}
 /** 一個人的逐日資料（給 payCalcOne 的 att.daily）。col＝打卡歸集（day_h／day_leave）；xEntry＝跨店支援自動帶入（同品牌別店，含逐日）；
  *  supportH＝這次計薪採用的支援時數合計（手填＋帶入），多出逐日帶入的部分沒有日期 → 只列提醒 manual_sup_h。 */
 function payDailyFor_(e, ym, col, xEntry, sched, holDates, until, supportH) {
@@ -3043,8 +3097,10 @@ function handlePayrollCalc(body) {
   // 跨店支援自動帶入（2026-11 起；之前回 null＝完全不動）。迴圈外讀一次，逐人只做純函式合併。
   const DAILY = payOtDailyOn(ym);   // 2026-11 起加班逐日判斷：要逐日的支援時數、班表、國定假日
   const XSUP = paySupportAuto_(ym, st, DAILY);
-  const SCHED = DAILY ? paySchedMonth_(ym, st, master) : null;
+  const SIDX = DAILY ? paySchedIndex_() : null;
+  const SCHED = DAILY ? paySchedMonth_(ym, st, master, SIDX) : null;
   const HOLD = DAILY ? payHolidayDates(holiday) : null;
+  const HOLMV = DAILY ? payHolMoved_(ym, st, master, HOLD, SIDX) : {};
   const UNTIL = DAILY ? payYesterday_() : '';
   const OT_FORMS_X = {};   // 支援店的加班單（跨店超過 8 小時由做到超過的那家開）；迴圈外讀
   if (XSUP && OT_FORMS) Object.keys(XSUP.byEmp).forEach(function (id) {
@@ -3111,7 +3167,7 @@ function handlePayrollCalc(body) {
     if (DAILY) {
       const id = String(e.emp_id);
       const supH = (att.support || []).reduce(function (t, x) { return t + payNum(x && x.hours); }, 0);
-      att.daily = payDailyFor_(e, ym, c, XSUP ? XSUP.byEmp[id.trim()] : null, SCHED[id], HOLD, UNTIL, supH);
+      att.daily = payDailyFor_(e, ym, c, XSUP ? XSUP.byEmp[id.trim()] : null, SCHED[id], payHolKeep_(HOLD, HOLMV[id]), UNTIL, supH);
       if (XSUP) att.sup_hol = paySupportHolDouble_(att.support, XSUP.byEmp[id.trim()], HOLD, XCTX.storeBy);
       if (OT_FORMS) {
         att.ot_own_h = (c && c.day_h) || {}; att.ot_forms = OT_FORMS[String(e.name || '').trim()] || { ot: {}, trip: {} };
@@ -5473,6 +5529,8 @@ function handlePnlLaborEstimate_(body) {
   var ANNUAL_INFO = payAnnualInfo(ym, st);
 
   var PNL_SCHED = null;
+
+  var PNL_HOLMV = {};
   var results = master.map(function (e) {
     var c = att[String(e.emp_id)] || {};
     var a = {
@@ -5495,9 +5553,9 @@ function handlePnlLaborEstimate_(body) {
     // 虛擬離職日＝昨天，借用 payRatio 既有的「月中到職/離職才折算」機制算出「已過天數÷當月
     // 天數」；員工本來就有更早的到職日或離職日時，取較早的那個（字串比較，'YYYY-MM-DD' 可直接比大小）。
     if (payOtDailyOn(ym)) {   // 跟 handlePayrollCalc 同一套逐日加班（班表、國定假日、同品牌支援逐日合計），只算到 as_of
-      if (!PNL_SCHED) PNL_SCHED = paySchedMonth_(ym, st, master);
+      if (!PNL_SCHED) { const pidx = paySchedIndex_(); PNL_SCHED = paySchedMonth_(ym, st, master, pidx); PNL_HOLMV = payHolMoved_(ym, st, master, holDates, pidx); }
       var supH = (a.support || []).reduce(function (t, x) { return t + payNum(x && x.hours); }, 0);
-      a.daily = payDailyFor_(e, ym, c, XS ? XS.byEmp[String(e.emp_id).trim()] : null, PNL_SCHED[String(e.emp_id)], holDates, asOf, supH);
+      a.daily = payDailyFor_(e, ym, c, XS ? XS.byEmp[String(e.emp_id).trim()] : null, PNL_SCHED[String(e.emp_id)], payHolKeep_(holDates, PNL_HOLMV[String(e.emp_id)]), asOf, supH);
       a.daily.dates = a.daily.dates.filter(function (d) { return d <= asOf; });
       if (XS) a.sup_hol = paySupportHolDouble_(a.support, XS.byEmp[String(e.emp_id).trim()], holDates, payXsupStoreBy_(payRead('store')), asOf);
     }
