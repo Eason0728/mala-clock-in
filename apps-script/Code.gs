@@ -3071,6 +3071,9 @@ function rebuildMonth(ym) {
           status_text: r.status_text,
           manager_name: r.manager_name,
           entered_at: normCellTs(r.entered_at),
+          // 主管認定的重複打卡（2026-11-06）：要一起帶，buildMonthlySheet 才能把被認定的那張卡拿掉再配對。
+          // 2026-11-10 驗收查到這裡原本沒帶，月表照樣把那張卡配成「下班忘刷卡」、異常天數多 1。
+          dup_ignore: r.dup_ignore,
         };
       })
     : [];

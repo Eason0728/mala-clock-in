@@ -1,8 +1,6 @@
-// 驗收測試（2026-11-10 QA 驗收時加）：正常 3 組＋異常 3 組，一律走真的入口 doPost → 真函式，試算表用 tests/helpers/sheets-like.js。
+// 驗收測試（2026-11-10 QA 驗收時加）：正常 3 組＋異常 3 組，另加 1 組驗收時查到的月表問題（迴歸）。
+// 一律走真的入口 doPost → 真函式，試算表用 tests/helpers/sheets-like.js。
 // 跑法：node tests/qa-acceptance-20261110.test.js（run-all.js 會自動帶到）
-//   ok(name, fn)    ＝ 目前規則下該成立的行為；失敗會讓本檔非零結束。
-//   KNOWN(name, fn) ＝ 驗收時查到「和預期不一樣」的地方（目前一件：月表吃不到認定重複打卡），寫的是預期的結果，目前會失敗；只印出、不擋 run-all。
-//                     修好或確認後把 KNOWN 改成 ok。設 ADV_STRICT=1 時 KNOWN 失敗也非零結束。
 // 名字一律假名；不含金鑰、試算表 ID；只在本機跑，不碰任何正式網址。
 'use strict';
 process.env.TZ = 'Asia/Taipei';
@@ -15,12 +13,8 @@ const SL = require('./helpers/sheets-like');
 const ROOT = path.join(__dirname, '..');
 const SRC = ['Code.gs', 'Liff.gs', 'Rest.gs', 'Requests.gs'].map((f) => [f, fs.readFileSync(path.join(ROOT, 'apps-script', f), 'utf8')]);
 
-let nOk = 0, failed = 0, nKnownOpen = 0, nKnownFixed = 0;
+let nOk = 0, failed = 0;
 const ok = (name, fn) => { try { fn(); nOk++; console.log('✓ ' + name); } catch (e) { failed++; console.log('✗ ' + name + '\n    ' + String(e.stack || e).split('\n').slice(0, 2).join(' | ')); } };
-const KNOWN = (name, fn) => {
-  try { fn(); nKnownFixed++; console.log('✓ [KNOWN 已不成立，可改成 ok] ' + name); }
-  catch (e) { nKnownOpen++; console.log('✗ [KNOWN 待處理] ' + name + '\n    ' + String(e.message || e).split('\n')[0]); }
-};
 
 /* ── 時間（台北）與沙盒 ── */
 const T = (s) => Date.parse(s + '+08:00');
@@ -161,17 +155,20 @@ ok('異常 3｜只有上班卡沒有下班卡：當天顯示「上班中」不�
   assert.strictEqual(m.day('2026-11-10', 'E01').reference, null, '主管頁那天的參考時數要留白');
 });
 
-console.log('━━ 驗收時查到、等處理的一件事（不擋 run-all）━━');
-KNOWN('店長把 17:55 那張認定為重複打卡之後，月表不該再標「下班忘刷卡」、異常天數要是 0（主管頁與同仁頁都已經是 17:26–21:00 一段）', () => {
+console.log('━━ 迴歸 1 組：月表重算要吃到主管認定的重複打卡 ━━');
+// 這組會紅的情況：月表重算（rebuildMonth）讀核定紀錄時沒把 dup_ignore 欄帶進去，被認定重複的那張卡照樣拿去配對
+ok('迴歸｜17:26 上班、17:55 又按上班、21:00 下班，店長認定 17:55 那張重複 → 月表也是 17:26–21:00、參考 3.5、不標忘刷卡、異常 0 天', () => {
   const m = make(D + 'T08:00:00'); m.addEmp('E01', '測試一', 'K1');
   m.punch(D + 'T17:26:00', 'K1', 'in'); m.punch(D + 'T17:55:00', 'K1', 'in'); m.punch(D + 'T21:00:00', 'K1', 'out');
   const a = m.approve(D + 'T21:10:00', 'E01', D, [['17:30', '21:00']], { dup_ignore: [D + 'T17:55:00+08:00'] });
   assert.strictEqual(a.ok, true, JSON.stringify(a));
   assert.strictEqual(JSON.stringify(m.day(D, 'E01').segments), JSON.stringify([{ in: '17:26', out: '21:00', cross: false }]));
-  m.setNow('2026-11-10T10:00:00'); const mo = m.month('2026-11');
-  const got = mo.det['測試一'][D].seg + '｜' + mo.det['測試一'][D].status + '｜異常 ' + mo.sum['測試一'].abnormal;
-  assert.strictEqual(got, '17:26–21:00｜主管認定重複打卡（17:55）｜異常 0', '月表=' + got);
+  m.setNow('2026-11-10T10:00:00'); const mo = m.month('2026-11'); const row = mo.det['測試一'][D];
+  const got = row.seg + '｜參考 ' + row.ref + '｜' + row.status + '｜異常 ' + mo.sum['測試一'].abnormal;
+  // 17:26 進位到 17:30、21:00 不動 → 3.5 小時
+  assert.strictEqual(got, '17:26–21:00｜參考 3.5｜主管認定重複打卡（17:55）｜異常 0', '月表=' + got);
+  assert.strictEqual(mo.sum['測試一'].ref, 3.5, '月表彙總的參考時數');
 });
 
-console.log('\n共 ' + (nOk + failed) + ' 組：通過 ' + nOk + '、失敗 ' + failed + '；等確認 ' + nKnownOpen + ' 件' + (nKnownFixed ? '（另有 ' + nKnownFixed + ' 件已不成立，可改成 ok）' : ''));
-if (failed || (process.env.ADV_STRICT === '1' && nKnownOpen)) process.exit(1);
+console.log('\n共 ' + (nOk + failed) + ' 組：通過 ' + nOk + '、失敗 ' + failed);
+if (failed) process.exit(1);
