@@ -607,7 +607,7 @@ function handleReqSubmit_(body) {
     if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_ && reqCompAllowed_(who.me) === false) {
       return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
     }
-    var capMsg = reqCapLocked_(r, existing, who, body);
+    var capMsg = reqCapLocked_(r, existing, who, body, { today: todayTaipeiStr(), recorded: reqLeaveRecorded_(who.ss, who.me.name, r) });
     if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
     r.created_at = nowTaipeiIso(); r.emp_id = String(who.me.emp_id); r.name = String(who.me.name);
@@ -621,11 +621,35 @@ function handleReqSubmit_(body) {
 }
 
 /** 生理假一年 3 次、家庭照顧假一年 7 天，用完就不能再申請（2026-11-10 Eason）。審核中的同假別一起扣。
- *  額度來自光復的薪資（同專案直接算；別店打光復 line_hub_req_quota，帶同一個 LINE 身分）。查不到額度＝不擋（主管核准、核定時會再擋）。 */
+ *  額度來自光復的薪資（同專案直接算；別店打光復 line_hub_req_quota，帶同一個 LINE 身分）。
+ *  2026-11-11（B18）補三件事：
+ *   ① 已核准、但那天主管還沒核定的單也要扣——額度的「已用」只看核定後的請假登記，原本只扣審核中的，
+ *      3 張都核准之後第 4 張照樣送得出去。那天已經核定過的（opt.recorded）額度已經扣了，不重複扣。
+ *   ② 請的是別的年度（年底請明年的假）：今年剩多少不相干，拿整年的上限來算（原本被今年的餘額擋住）。
+ *   ③ 查不到額度（今年還沒有任何一天核定過，額度表就沒有這個假別；或光復暫時問不到）：用法定上限當整年的額度，
+ *      只擋「光是申請就超過整年上限」的。原本查不到就完全不擋。
+ *  opt：{ today:'yyyy-MM-dd', recorded:{ 'yyyy-MM-dd': true } }，沒帶＝當成同一年、沒有已核定的日子（舊呼叫端照舊）。 */
 var REQ_CAP_LOCK_TYPES_ = ['生理假', '家庭照顧假'];
+var REQ_CAP_YEAR_H_ = { '生理假': 24, '家庭照顧假': 56 };   // 一年 3 次（一次算 8 小時）／7 天
+/** 這個人這個假別已經核定（記進請假登記）的日子 → { 'yyyy-MM-dd': true }；只在兩種有上限的假別才讀表，讀不到回 {}。 */
+function reqLeaveRecorded_(ss, name, r) {
+  var out = {};
+  if (!r || r.kind !== 'leave' || REQ_CAP_LOCK_TYPES_.indexOf(String(r.leave_type)) === -1) return out;
+  try {
+    var sh = ss.getSheetByName('leave');
+    if (!sh) return out;
+    var nm = String(name || '').trim();
+    readSheetAsObjects(sh).rows.forEach(function (l) {
+      if (String(l['姓名'] || '').trim() !== nm || String(l['假別'] || '').trim() !== String(r.leave_type)) return;
+      out[typeof normCellDate === 'function' ? normCellDate(l['日期']) : String(l['日期']).slice(0, 10)] = true;
+    });
+  } catch (e) { return {}; }
+  return out;
+}
 var REQ_HUB_API_DEFAULT_ = 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
-function reqCapLocked_(r, existing, who, body) {
+function reqCapLocked_(r, existing, who, body, opt) {
   if (r.kind !== 'leave' || REQ_CAP_LOCK_TYPES_.indexOf(String(r.leave_type)) === -1) return '';
+  opt = opt || {};
   var quota = null;
   try {
     if (typeof lineHubReqQuota_ === 'function') quota = (lineHubReqQuota_(who.userId) || {}).quota || null;
@@ -637,18 +661,26 @@ function reqCapLocked_(r, existing, who, body) {
     }
   } catch (e) { quota = null; }
   var q = (quota || []).filter(function (x) { return String(x.name) === String(r.leave_type); })[0];
-  if (!q || q.remain_h == null) return '';
-  var yr = String(r.date).slice(0, 4), pend = (existing || []).filter(function (x) {
-    return String(x.emp_id) === String(who.me.emp_id) && String(x.kind) === 'leave' && String(x.leave_type) === String(r.leave_type)
-      && String(x.status) === 'pending' && String(x.date || '').slice(0, 4) === yr;
+  var yr = String(r.date).slice(0, 4), thisYr = String(opt.today || r.date).slice(0, 4), recorded = opt.recorded || {};
+  var known = !!q && q.remain_h != null;
+  // 這一年可以用的額度：同一年＝額度表的剩餘；別的年度、或查不到額度＝整年的上限
+  var base = (known && yr === thisYr) ? Number(q.remain_h) : (known && q.cap_h != null ? Number(q.cap_h) : REQ_CAP_YEAR_H_[String(r.leave_type)]);
+  if (!isFinite(base)) return '';
+  // 還沒算進「已用」的單：審核中的，加上已核准而那天還沒核定的
+  var live = (existing || []).filter(function (x) {
+    if (String(x.emp_id) !== String(who.me.emp_id) || String(x.kind) !== 'leave' || String(x.leave_type) !== String(r.leave_type)) return false;
+    if (String(x.date || '').slice(0, 4) !== yr) return false;
+    return String(x.status) === 'pending' || (String(x.status) === 'approved' && !recorded[String(x.date).slice(0, 10)]);
   });
+  var hasOk = live.some(function (x) { return String(x.status) === 'approved'; });
+  var yrText = yr === thisYr ? '今年' : ' ' + yr + ' 年', incl = hasOk || yr !== thisYr || !known ? '（含審核中、已核准）' : '（含審核中）';
   if (r.leave_type === '生理假') {
-    var left = Number(q.remain_h) - pend.length * 8;   // 生理假看次數：一次算 8 小時（同薪資）
-    return left <= 0.001 ? '生理假今年 3 次已經用完（含審核中），不能再申請' : '';
+    var left = base - live.length * 8;   // 生理假看次數：一次算 8 小時（同薪資）
+    return left <= 0.001 ? '生理假' + yrText + ' 3 次已經用完' + incl + '，不能再申請' : '';
   }
-  var pendH = pend.reduce(function (t, x) { return t + (Number(x.hours) || 0); }, 0);
-  var room = Number(q.remain_h) - pendH;
-  return Number(r.hours) > room + 0.001 ? '家庭照顧假今年 7 天只剩 ' + Math.max(0, Math.round(room * 10) / 10) + ' 小時（含審核中），這次超過了，不能送出' : '';
+  var liveH = live.reduce(function (t, x) { return t + (Number(x.hours) || 0); }, 0);
+  var room = base - liveH;
+  return Number(r.hours) > room + 0.001 ? '家庭照顧假' + yrText + ' 7 天只剩 ' + Math.max(0, Math.round(room * 10) / 10) + ' 小時' + incl + '，這次超過了，不能送出' : '';
 }
 
 /** 能不能請補休（正職才行）：和薪資同專案（光復）才查得到 → true／false；查不到／出錯回 null＝不擋（交給申請頁與主管）。 */
