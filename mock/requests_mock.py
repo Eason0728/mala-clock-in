@@ -435,8 +435,19 @@ def register(ns):
             if row["miss_type"] == "both":
                 return ov(r["start"], r["end"], row["start"], row["end"])
             return str(r.get("start") or "") == str(row.get("start") or "") and str(r.get("end") or "") == str(row.get("end") or "")
+        def same_other(r):
+            # 同 Requests.gs（加班／請假／出差，2026-11-11 B29）：兩張都有時段而且不重疊才放行；任一筆沒有時段＝照舊擋，不分假別
+            ts = [r.get("start"), r.get("end"), row.get("start"), row.get("end")]
+            if not all(isinstance(x, str) and re.match(r"^\d{2}:\d{2}$", x) for x in ts):
+                return True
+            s1, e1, s2, e2 = [mins(x) for x in ts]
+            if e1 <= s1:
+                e1 += 1440
+            if e2 <= s2:
+                e2 += 1440
+            return s1 < e2 and s2 < e1
         dup = [r for r in reqs(data) if r["emp_id"] == me["emp_id"] and r["status"] == "pending" and r["kind"] == kind and r["date"] == d
-               and (kind != "miss" or same_miss(r))]
+               and (same_miss(r) if kind == "miss" else same_other(r))]
         if dup:
             return None, ("duplicate", f"這天已經有一筆審核中的{KIND[kind]}申請，要改請先取消那一筆")
         if kind == "miss" and taken:

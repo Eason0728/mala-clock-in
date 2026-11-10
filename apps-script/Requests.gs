@@ -576,10 +576,13 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     if (!reason) return { error: 'need_reason', message: '請選原因' };
     }
   }
-  // 同一天同一類（忘打卡再加同一張卡）不能有兩筆審核中的
+  // 同一天「同一件事」不能有兩筆審核中的。
+  // 2026-11-11（B29）：請假／加班／出差改看時段——兩張都有時段、而且不重疊，就可以同時在審
+  // （原本同一天只要有一張請假或加班在審，另一張就送不出去：上午病假在等證明時，下午的事假一直卡住）。
+  // 時段重疊、或任一張只填時數沒有時段（分不出來）照舊擋，不分假別。
   var dup = existing.filter(function (r) {
     return String(r.emp_id) === String(me.emp_id) && r.status === 'pending' && r.kind === kind && r.date === date
-        && (kind !== 'miss' || reqSameThing_('miss', r, row));   // 忘打卡：同一張卡才算（2026-11-11 B02；已有人補的卡在上面就擋掉了）
+        && (kind === 'miss' ? reqSameThing_('miss', r, row) : reqOverlap_(r.start, r.end, row.start, row.end) !== false);   // 忘打卡：同一張卡才算（2026-11-11 B02；已有人補的卡在上面就擋掉了）
   })[0];
   if (dup) return { error: 'duplicate', message: '這天已經有一筆審核中的' + REQ_KINDS_[kind] + '申請，要改請先取消那一筆' };
   // 已核准的也要擋「同一件事」（2026-11-03 對抗驗證 #4）：原本只看審核中，核准後再送一模一樣的一筆、主管批次核准就算兩次
@@ -1242,7 +1245,9 @@ function handleMgrReqProxy_(body) {
   var me = findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, body.emp_id);
   if (!me) return { ok: false, error: 'invalid_emp_id', message: '找不到這位同仁' };
   /* 7 天內同仁自己用 LINE 申請；沒綁 LINE 的人送不了單，今天和過去的日子可以由主管代開（2026-11-09 Eason）。 */
-  if (diff >= -limit && !(diff <= 0 && reqNoLine_(me))) return { ok: false, error: 'not_old', message: limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天或同仁沒綁 LINE 才能由主管代開' };
+  /* 2026-11-11（B30）：名冊已停用（離職）的同仁也一樣——LINE 雖然還綁著，本人已經送不了單，
+     原本要等超過 7 天店長才能代開，這幾天核定又被「缺單」擋住。 */
+  if (diff >= -limit && !(diff <= 0 && (reqNoLine_(me) || !reqTrue_(me.active)))) return { ok: false, error: 'not_old', message: limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天或同仁沒綁 LINE 才能由主管代開' };
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
   try {
