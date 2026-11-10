@@ -161,6 +161,8 @@ def register(ns):
                 [{"in": p["hm"], "out": None, "out_next": False} for p in mine_ins]
         if spans:
             opts = opts + ["break"]
+        if mine_segs and not mine_ins and not mine_outs:   # 另一段班整段沒打（同 Requests.gs，2026-11-10）
+            opts = opts + ["both"]
         lo1 = mine_outs[0] if mine_outs else None
         return punches, {"options": opts, "open_in": mine_ins[-1]["hm"] if mine_ins else None,
                          "lone_out": lo1["hm"] if lo1 else None, "lone_out_next": bool(lo1 and lo1["date"] != d), "spans": spans}
@@ -330,6 +332,10 @@ def register(ns):
                 if row["start"] == row["end"]:
                     return None, ("bad_time", "上班和下班時間一樣，請確認")
                 out_next = mins(row["end"]) < mins(row["start"])
+                nb, ne = mins(row["start"]), mins(row["end"]) + (1440 if out_next else 0)
+                for x in info.get("spans") or []:
+                    if x["out"] and nb < mins(x["out"]) + (1440 if x["out_next"] else 0) and mins(x["in"]) < ne:
+                        return None, ("bad_time", f"補的時間和當天已打的卡（{x['in']}–{x['out']}）重疊；中間休息沒打請選「中間休息沒打卡」")
             if diff == 0:
                 now_m = mins(iso_now()[11:16])
                 if out_next or (row["end"] and mins(row["end"]) > now_m) or (row["start"] and mins(row["start"]) > now_m):

@@ -293,6 +293,8 @@ function reqDayInfo_(events, empId, date) {
   var spans = mineSegs.map(function (x) { return { in: x.inp.hm, out: x.outp.hm, out_next: x.outp.date !== date }; })
     .concat(mineIns.map(function (p) { return { in: p.hm, out: null, out_next: false }; }));
   if (spans.length) opts.push('break');
+  // 另一段班整段沒打（2026-11-10 Eason）：當天打卡都是完整的段時，也能補一整段上班＋下班（不能和已打的段重疊）
+  if (mineSegs.length && !mineIns.length && !mineOuts.length) opts.push('both');
   var lo1 = mineOuts[0], oi = mineIns[mineIns.length - 1];
   return { punches: punches, missing: { options: opts, open_in: oi ? oi.hm : null,
            lone_out: lo1 ? lo1.hm : null, lone_out_next: !!(lo1 && lo1.date !== date), spans: spans } };
@@ -455,6 +457,13 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     if (mt === 'both') {
       if (reqMin_(row.start) === reqMin_(row.end)) return { error: 'bad_time', message: '上班和下班時間一樣，請確認' };
       if (reqMin_(row.end) < reqMin_(row.start)) outNext = true;
+      var nb = reqMin_(row.start), ne = reqMin_(row.end) + (outNext ? 1440 : 0);
+      var hit = (info.spans || []).filter(function (x) {
+        if (!x.out) return false;
+        var a = reqMin_(x.in), z = reqMin_(x.out) + (x.out_next ? 1440 : 0);
+        return nb < z && a < ne;
+      })[0];
+      if (hit) return { error: 'bad_time', message: '補的時間和當天已打的卡（' + hit.in + '–' + hit.out + '）重疊；中間休息沒打請選「中間休息沒打卡」' };
     }
     // 補完以後這一段班不能超過配對窗 16 小時（2026-11-03 對抗驗證 #7）：那天只有隔天 01:00 的下班卡時，
     // 補上班 02:00 原本也收，核定頁預填 02:00–01:00(+1)＝23 小時。超過 16 小時打卡也配不成一段。

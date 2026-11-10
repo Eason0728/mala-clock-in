@@ -1010,8 +1010,8 @@ def phase_miss_break(ctx):
     p.select_option('#reqView select.rq-date', D)
     p.wait_for_function("() => document.getElementById('reqView').textContent.includes('中間休息沒打卡')", timeout=10000)
     t = p.inner_text('#reqView')
-    ok('休息：整段班那天只剩「中間休息沒打卡（系統查到的）」、有休息開始／回來上班兩格、說明算一次',
-       '中間休息沒打卡（系統查到的）' in t and '休息開始（下班）' in t and '回來上班' in t and '兩張一起補，算一次' in t, t[:300])
+    ok('休息：整段班那天可選「中間休息沒打卡」或「另一段班整段沒打」，預設中間休息、有休息開始／回來上班兩格、說明算一次',
+       p.locator('#reqView .rq-chip.on:text-is("中間休息沒打卡")').count() == 1 and p.locator('#reqView .rq-chip:text-is("另一段班整段沒打")').count() == 1 and '休息開始（下班）' in t and '回來上班' in t and '兩張一起補，算一次' in t, t[:300])
     times = p.locator('#reqView .rq-time')
     def put(i, hh, mm):
         times.nth(i).locator('select.rq-hh').select_option(hh); times.nth(i).locator('select.rq-mm').select_option(mm)
