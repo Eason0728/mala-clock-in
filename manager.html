@@ -2811,6 +2811,13 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
     var failSlot = document.getElementById('lineBindFail');
     if (!card || !listBox || !box) return;
     var TYPE = { bind_name: '輸入全名綁定', bind_auto: '跨店同名（本人確認）', bind: '用打卡連結綁定' };
+    /* 紀錄種類 → 白話。moved_from:工號（2026-11-11，B25）＝復職開新帳號時，本人的 LINE 由已離職的舊帳號自動移過來。 */
+    function bindTypeLabel(type) {
+      type = String(type || '');
+      if (type.indexOf('unbind_by:') === 0) return '由 ' + escHtml(type.slice(10)) + ' 解除';
+      if (type.indexOf('moved_from:') === 0) return '同一支 LINE 由已離職的舊帳號（' + escHtml(type.slice(11)) + '）移過來';
+      return escHtml(TYPE[type] || type);
+    }
     function when(iso) {
       var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
       return m ? (Number(m[2]) + '/' + Number(m[3]) + ' ' + m[4] + ':' + m[5]) : '';
@@ -2818,7 +2825,7 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
     function render(items) {
       if (!items.length) { listBox.innerHTML = '<div class="ae-hint">最近 30 天沒有人綁定或解除。</div>'; return; }
       listBox.innerHTML = items.map(function (it) {
-        var label = it.type.indexOf('unbind_by:') === 0 ? ('由 ' + escHtml(it.type.slice(10)) + ' 解除') : escHtml(TYPE[it.type] || it.type);
+        var label = bindTypeLabel(it.type);
         var btn = it.still_bound ? '<button type="button" class="re-restore" data-emp="' + escHtml(it.emp_id) + '" data-name="' + escHtml(it.name) + '">解除</button>' : '';
         return '<div class="re-item"><span class="re-name">' + escHtml(it.name) + '（' + escHtml(it.emp_id) + '）'
              + '<span class="re-when">' + when(it.ts) + '・' + label + (it.type.indexOf('bind') === 0 && !it.still_bound ? '・已不是目前綁定' : '') + '</span></span>' + btn + '</div>';

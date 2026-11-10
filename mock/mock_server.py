@@ -1792,17 +1792,21 @@ def handle_liff_bind(data, body):
     # ⚠ 2026-08-27 審查 Important 4：要看「所有列」，不能只看在職——與 Liff.gs 的
     # anyExisting 同步（原本的 find_roster_by_line_user 只比對 active，離職列上殘留的
     # userId 之後被復職會變成兩個在職列共用一個 userId，見 Liff.gs 註解的完整情境說明）。
-    any_existing = next(
-        (r for r in (data.get("roster") or [])
-         if r.get("line_user_id") and str(r["line_user_id"]) == str(user_id)),
-        None,
-    )
+    all_existing = [r for r in (data.get("roster") or [])
+                    if r.get("line_user_id") and str(r["line_user_id"]) == str(user_id)]
 
     target = find_roster_by_key(data, body.get("key"))
     if not target or not target.get("active", False):
         return {"ok": False, "error": "invalid_key"}
 
-    if any_existing and str(any_existing["emp_id"]) != str(target["emp_id"]):
+    # 2026-11-11 Eason 定（B25，與 Liff.gs liffBindLocked_ 同步）：這支 LINE 還留在本人「同一家店、同名（去掉全部空白）、
+    # 已離職」的舊列上 → 不擋，自動移到新列；只要還綁著任何一列在職或不同名的別人，照舊整個擋下。
+    others = [r for r in all_existing if str(r["emp_id"]) != str(target["emp_id"])]
+    _nn = lambda v: re.sub(r"[\s\u3000]", "", str(v or ""))
+    want_name = _nn(target.get("name"))
+    movable = bool(others) and want_name != "" and all(
+        str(r.get("active")).lower() != "true" and _nn(r.get("name")) == want_name for r in others)
+    if others and not movable:
         return {"ok": False, "error": "line_account_in_use"}
 
     # 該員工已綁了另一個 LINE 帳號 → 要店長先解綁，避免默默換人
@@ -1813,6 +1817,11 @@ def handle_liff_bind(data, body):
     if str(target.get("line_user_id")) == str(user_id):
         return {"ok": True, "name": target["name"], "emp_id": target["emp_id"], "already": True}
 
+    for old in others:   # B25：舊列的 LINE 清掉，記一筆「由舊列（工號）移來」
+        old["line_user_id"] = ""
+        old["line_bound_at"] = ""
+        log_liff_bind(data, target["emp_id"], target["name"], user_id)
+        data["liff_bind_log"][-1]["type"] = "moved_from:" + str(old["emp_id"])
     target["line_user_id"] = user_id
     target["line_bound_at"] = iso_now()
     log_liff_bind(data, target["emp_id"], target["name"], user_id)

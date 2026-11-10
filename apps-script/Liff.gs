@@ -105,9 +105,9 @@ function liffBindLocked_(body, userId, rosterSheet) {
   // withLineIdentity_ 取 [0] 會悄悄把打卡算到錯的人頭上、一路餵進 approved 與薪資。
   // 所以這裡刻意不用 findRosterByLineUser_（它的「只看在職」是給 withLineIdentity_ 的
   // 認證用途設計的，那裡本來就該只看在職——不要改那支函式，改這裡的判斷依據）。
-  var anyExisting = rows.filter(function (r) {
+  var allExisting = rows.filter(function (r) {
     return r.line_user_id && String(r.line_user_id) === String(userId);
-  })[0];
+  });
 
   var target = rows.filter(function (r) {
     return String(r.key) === String(body.key)
@@ -115,7 +115,16 @@ function liffBindLocked_(body, userId, rosterSheet) {
   })[0];
   if (!target) return { ok: false, error: 'invalid_key' };
 
-  if (anyExisting && String(anyExisting.emp_id) !== String(target.emp_id)) {
+  // 2026-11-11 Eason 定（B25）：復職開新的一列時，這支 LINE 還留在本人「已離職的舊列」上 → 不擋，自動移到新列。
+  // 條件三個都要：同一家店（這張名冊）、姓名相同（去掉全部空白後比，空白姓名不算）、舊列已離職。
+  // 這支 LINE 只要還綁著任何一列「在職」或「姓名不同」的別人，就照舊整個擋下（什麼都不搬）。
+  var others = allExisting.filter(function (r) { return String(r.emp_id) !== String(target.emp_id); });
+  var normName = function (v) { return String(v || '').replace(/[\s\u3000]/g, ''); };
+  var wantName = normName(target.name);
+  var movable = others.length > 0 && wantName !== '' && others.every(function (r) {
+    return String(r.active).toLowerCase() !== 'true' && normName(r.name) === wantName;
+  });
+  if (others.length && !movable) {
     return { ok: false, error: 'line_account_in_use' };
   }
 
@@ -129,6 +138,16 @@ function liffBindLocked_(body, userId, rosterSheet) {
   if (String(target.line_user_id) === String(userId)) {
     return { ok: true, name: target.name, emp_id: target.emp_id, already: true };
   }
+
+  // B25：先把舊列的 LINE 清乾淨（同 mgr_line_unbind 清的三格），並各記一筆「由舊列（工號）移來」，再綁新列。
+  // 舊列的在職狀態不動；之後就算有人把舊列恢復在職，也不會變成兩列共用一支 LINE。
+  others.forEach(function (old) {
+    setRosterCell(rosterSheet, old.__rowIndex, 'line_user_id', '');
+    setRosterCell(rosterSheet, old.__rowIndex, 'line_bound_at', '', true);
+    setRosterCell(rosterSheet, old.__rowIndex, 'line_ok_at', '', true);
+    liffClearLineOkCache_(old.emp_id);
+    logLiffBind_(target.emp_id, target.name, userId, 'moved_from:' + String(old.emp_id));
+  });
 
   setRosterCell(rosterSheet, target.__rowIndex, 'line_user_id', userId);
   // 純日期時間字串鎖成文字，避免被 Sheets 轉成 Date 物件（同 removed_at 的處理）
