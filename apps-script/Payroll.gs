@@ -4591,6 +4591,9 @@ function handlePayrollBonusSet(body) {
 /** 回近 N 個月的彙總（依門市）。資料全部取自既有 run／item，不需額外輸入。 */
 /** 成本口徑「要扣回」的扣項（薪資費用小計＝應收−這些）：
  *    ①任何請假扣款（/_leave$/，新假別自動涵蓋）②不足時數倒扣
+ *    ②之二 遲到扣款 late_deduct／早退扣款 early_deduct（薪酬挑錯第 6 項，Eason 2026-11-11 確認：
+ *      跟不足倒扣一樣是「真的少領」；成本分類頁 isCostReduceKey 與損益端點 pnlIsCostReduceKey_ 早就扣了，
+ *      這裡漏掉 → 儀表板趨勢／集團總覽的薪資費用比成本分類頁多一筆遲到早退扣款）
  *    ③宿舍代扣（2026-08-24 Eason 改口徑：同仁付的房租不是人事成本，從薪資費用扣除、另列租金收入）
  *  ⚠ 勞健保自付額**不在此列**——那是薪資的一部分，只是代扣去繳保費，仍算人事成本。
  *  與 payroll.html 的 isCostReduceKey＋宿舍、payroll_mock 的 isReduce 同一口徑。
@@ -4605,7 +4608,8 @@ function payIsInsSelfKey(k) {
 }
 function payIsReduceKey(k) {
   const s = String(k);
-  return /_leave$/.test(s) || s === 'shortfall_hours' || s === 'dormitory' || payIsInsSelfKey(s);
+  return /_leave$/.test(s) || s === 'shortfall_hours' || s === 'late_deduct' || s === 'early_deduct'
+      || s === 'dormitory' || payIsInsSelfKey(s);
 }
 
 /* ── 公司負擔勞保／健保／退休金：依員工主檔逐人加總（2026-08-24 修前後端不一致）──
