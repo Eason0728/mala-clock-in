@@ -1196,8 +1196,11 @@ def phase_miss(ctx, gen):
         select(page, '#reqView select.rq-date', date, '選日期')
         page.wait_for_selector('#reqView .rq-rec', timeout=10000)
         page.wait_for_timeout(150)
-        di = D.day_info(evs, date)
+        di = D.day_info(evs, date, sent)   # 已送出的忘打卡申請算已經補上的卡（2026-11-11）
         got_rec = page.inner_text('#reqView .rq-rec')
+        recs = page.locator('#reqView .rq-rec').all_inner_texts()
+        ok(f'忘打卡 {D.md_of(date)}：「已送出的忘打卡申請」那一行（有送過才有；我的申請是新的在前）',
+           recs[1:] == ([D.sent_text(list(reversed(di['sent'])))] if di['sent'] else []), recs)
         on = page.locator('#reqView .rq-chip.on').all_inner_texts()
         fixed = page.locator('#reqView .rq-fixed').all_inner_texts()
         lbl = lambda o: D.miss_label(o, di)   # 'both' 的字句看當天有沒有打卡紀錄
@@ -1233,6 +1236,9 @@ def phase_miss(ctx, gen):
         page.wait_for_selector('#reqView select.rq-date', timeout=5000)
 
     md = p['miss_days']
+    sent = []   # 這個人到目前為止送出的忘打卡申請（規格用）
+    r0 = api(A['code'], {'action': 'req_submit', 'id_token': tok(p), 'kind': 'miss', 'reason': '忘記按', 'date': md['none'], 'miss_type': 'break', 'start': '13:00', 'end': '12:00'})
+    ok('忘打卡（後端）：沒卡、也還沒送過申請的日子不能補中間休息 → 「請選要補哪一張卡」', r0.get('message') == '請選要補哪一張卡', r0)
     # 沒卡 → 上班和下班都沒打（畫面先擋沒選原因，再由後端擋時間）
     di = choose(md['none'])
     set_times('10:00', '18:30')
@@ -1247,6 +1253,7 @@ def phase_miss(ctx, gen):
     ok('忘打卡（沒卡）：上下班一樣 → 擋（逐字）', err_box(page) == '上班和下班時間一樣，請確認', err_box(page))
     set_times('10:00', '18:30')
     submit_ok(page, {'kind': 'miss', 'date': md['none'], 'miss_type': 'both', 'start': '10:00', 'end': '18:30', 'reason': '其他：出差忘了'}, '忘打卡（上下班都補）')
+    sent.append({'date': md['none'], 'miss_type': 'both', 'start': '10:00', 'end': '18:30'})
     back_to_miss()
     # 只有上班卡 → 下班卡／中間休息
     di = choose(md['in_only'])
@@ -1260,8 +1267,10 @@ def phase_miss(ctx, gen):
     later = D.min_hm(D.hm_min(di['open_in']) + RNG.choice([300, 420, 545]))
     set_times(end=later)
     submit_ok(page, {'kind': 'miss', 'date': md['in_only'], 'miss_type': 'out', 'end': later, 'reason': '手機沒電'}, '忘打卡（補下班）')
+    sent.append({'date': md['in_only'], 'miss_type': 'out', 'start': '', 'end': later})
     back_to_miss()
-    choose(md['in_only'])
+    di2 = choose(md['in_only'])
+    ok('忘打卡（只上班、已送出補下班）：下班卡不用再補，剩「中間休息」與「另一段班整段」', di2['options'] == ['break', 'both'], di2['options'])
     pick_type('break')
     ok('忘打卡（中間休息）：例子說明＋兩格「休息開始（下班）」「回來上班」＋說明「兩張一起補，算一次」',
        '例如中午 12:00 下班去休息、18:00 回來上班，兩張都忘了打。' in req_text(page) and '休息開始（下班）' in req_text(page) and '回來上班' in req_text(page)
@@ -1273,10 +1282,12 @@ def phase_miss(ctx, gen):
     ok('忘打卡（中間休息，上班中那段）：回來比休息開始早 → 「回來上班時間要比休息開始晚」', err_box(page) == '回來上班時間要比休息開始晚', err_box(page))
     set_times(start=D.min_hm(D.hm_min(di['open_in']) + 240), end=di['open_in'])
     submit(page)
-    ok('忘打卡（中間休息）：休息開始＝上班卡那一刻 → 「休息時間要在 HH:MM 上班之後」', err_box(page) == f'休息時間要在 {di["open_in"]} 上班之後', err_box(page))
+    ok('忘打卡（中間休息）：休息開始＝上班卡那一刻 → 「休息時間要在 HH:MM 上班到 HH:MM 下班之間」（下班是剛才補的那張）',
+       err_box(page) == f'休息時間要在 {di["open_in"]} 上班到 {later} 下班之間', err_box(page))
     b_in2 = D.min_hm(D.hm_min(di['open_in']) + 240)
     set_times(start=b_in2, end=b_out)
     submit_ok(page, {'kind': 'miss', 'date': md['in_only'], 'miss_type': 'break', 'start': b_in2, 'end': b_out, 'reason': '按錯上下班'}, '忘打卡（中間休息，同一天已有補下班的單不算重複）')
+    sent.append({'date': md['in_only'], 'miss_type': 'break', 'start': b_in2, 'end': b_out})
     back_to_miss()
     # 只有下班卡 → 上班卡
     di = choose(md['out_only'])
@@ -1288,6 +1299,7 @@ def phase_miss(ctx, gen):
     early = D.min_hm(D.hm_min(di['lone_out']) - RNG.choice([240, 300, 480]))
     set_times(start=early)
     submit_ok(page, {'kind': 'miss', 'date': md['out_only'], 'miss_type': 'in', 'start': early, 'reason': '定位抓不到被擋'}, '忘打卡（補上班）')
+    sent.append({'date': md['out_only'], 'miss_type': 'in', 'start': early, 'end': ''})
     back_to_miss()
     # 整段 → 只剩中間休息
     di = choose(md['full'])
@@ -1310,6 +1322,7 @@ def phase_miss(ctx, gen):
     r_out = D.min_hm(D.hm_min(sp['in']) + 180); r_in = D.min_hm(D.hm_min(sp['in']) + 240)
     set_times(start=r_in, end=r_out)
     submit_ok(page, {'kind': 'miss', 'date': md['full'], 'miss_type': 'break', 'start': r_in, 'end': r_out, 'reason': '忘記按'}, '忘打卡（整段補休息）')
+    sent.append({'date': md['full'], 'miss_type': 'break', 'start': r_in, 'end': r_out})
     back_to_miss()
     # 三種都有：上班卡／下班卡／中間休息三顆籌碼
     di = choose(md['three'])
@@ -1318,6 +1331,28 @@ def phase_miss(ctx, gen):
     reason('忘記按')
     set_times(start='07:30')
     submit_ok(page, {'kind': 'miss', 'date': md['three'], 'miss_type': 'in', 'start': '07:30', 'reason': '忘記按'}, '忘打卡（三種之一：補上班）')
+    sent.append({'date': md['three'], 'miss_type': 'in', 'start': '07:30', 'end': ''})
+    back_to_miss()
+    # 兩段班四張卡都沒打（2026-11-11）：7 天前沒有任何卡 → 先補第一段整段，再回同一天補第二段整段
+    free = (now_tz() - timedelta(days=7)).strftime('%Y-%m-%d')
+    di = choose(free)
+    ok('忘打卡（四張都沒打）：一開始只有「上班和下班都沒打」', di['options'] == ['both'] and not di['punches'], di)
+    reason('忘記按')
+    set_times('10:00', '14:00')
+    submit_ok(page, {'kind': 'miss', 'date': free, 'miss_type': 'both', 'start': '10:00', 'end': '14:00', 'reason': '忘記按'}, '忘打卡（四張都沒打：第一段整段）')
+    sent.append({'date': free, 'miss_type': 'both', 'start': '10:00', 'end': '14:00'})
+    back_to_miss()
+    di = choose(free)
+    ok('忘打卡（四張都沒打）：送出第一段後，回同一天可選「中間休息」或「另一段班整段沒打」', di['options'] == ['break', 'both'], di['options'])
+    click(page, f'#reqView .rq-chip:text-is("{D.MISS_LABEL_BOTH_WITH_PUNCH}")', '缺哪張卡 ' + D.MISS_LABEL_BOTH_WITH_PUNCH)
+    page.wait_for_selector(f'#reqView .rq-chip.on:text-is("{D.MISS_LABEL_BOTH_WITH_PUNCH}")', timeout=3000)
+    reason('忘記按')
+    set_times('13:00', '18:00')
+    submit(page)
+    ok('忘打卡（四張都沒打）：第二段和第一段的時間重疊 → 擋（重複申請的字句）', err_box(page) == '這天已經有一筆審核中的忘打卡申請，要改請先取消那一筆', err_box(page))
+    set_times('17:00', '21:00')
+    submit_ok(page, {'kind': 'miss', 'date': free, 'miss_type': 'both', 'start': '17:00', 'end': '21:00', 'reason': '忘記按'}, '忘打卡（四張都沒打：第二段整段）')
+    sent.append({'date': free, 'miss_type': 'both', 'start': '17:00', 'end': '21:00'})
     back_to_miss()
     # 跨夜：6 天前晚上上班、5 天前凌晨下班 → 歸 6 天前；凌晨那張標 (+1)
     di = choose(md['night'])
@@ -1343,12 +1378,16 @@ def phase_miss(ctx, gen):
     ok('忘打卡（後端）：上班卡其實有打成功 → not_missing（逐字）', r.get('error') == 'not_missing' and r.get('message') == '這天的上班卡有打成功，不用補登', r)
     r = sub({'date': md['out_only'], 'miss_type': 'out', 'end': '18:00'})
     ok('忘打卡（後端）：下班卡其實有打成功 → not_missing（逐字）', r.get('message') == '這天的下班卡有打成功，不用補登', r)
-    r = sub({'date': md['none'], 'miss_type': 'break', 'start': '13:00', 'end': '12:00'})
-    ok('忘打卡（後端）：沒卡的日子不能補中間休息 → 「請選要補哪一張卡」', r.get('message') == '請選要補哪一張卡', r)
+    r = sub({'date': md['none'], 'miss_type': 'break', 'start': '09:30', 'end': '09:00'})
+    ok('忘打卡（後端）：已送出整段 10:00–18:30 的日子，補的休息不在那一段裡 → 「休息時間要在 10:00 上班到 18:30 下班之間」',
+       r.get('error') == 'bad_time' and r.get('message') == '休息時間要在 10:00 上班到 18:30 下班之間', r)
+    r = sub({'date': md['in_only'], 'miss_type': 'out', 'end': '23:00'})
+    ok('忘打卡（後端）：那張下班卡已經有申請在補 → duplicate', r.get('error') == 'duplicate'
+       and r.get('message') == '這天已經有忘打卡申請在補這張卡（審核中或已核准），不用再送；要改請先取消那一筆，已核准的請找你的主管作廢', r)
     r = sub({'date': md['none'], 'miss_type': 'both', 'start': '09:00', 'end': '18:00'})
     ok('忘打卡（後端）：同一天已有審核中的忘打卡 → duplicate（逐字）', r.get('error') == 'duplicate' and r.get('message') == '這天已經有一筆審核中的忘打卡申請，要改請先取消那一筆', r)
     rr = [x for x in read_store(A['code'])['requests'] if x['emp_id'] == p['emp_id']]
-    ok('忘打卡：資料檔 6 筆、break 那兩筆 end＝休息開始、start＝回來上班', len(rr) == 6 and all(x['status'] == 'pending' for x in rr)
+    ok('忘打卡：資料檔 8 筆（含四張都沒打那天的兩張整段）、break 那兩筆 end＝休息開始、start＝回來上班', len(rr) == 8 and all(x['status'] == 'pending' for x in rr)
        and [x for x in rr if x['miss_type'] == 'break'][0]['end'] == b_out and [x for x in rr if x['miss_type'] == 'break'][0]['start'] == b_in2, [(x['miss_type'], x['start'], x['end']) for x in rr])
 
 

@@ -399,14 +399,15 @@ def register(ns):
                 nb, ne = mins(row["start"]), mins(row["end"]) + (1440 if out_next else 0)
                 for x in info.get("spans") or []:
                     if x["out"] and nb < mins(x["out"]) + (1440 if x["out_next"] else 0) and mins(x["in"]) < ne:
-                        if x.get("virtual"):
-                            return None, ("duplicate", f"這個時段已經有一筆忘打卡申請（{x['in']}–{x['out']}，審核中或已核准），不用再送；要改請先取消那一筆")
+                        if x.get("virtual"):   # 重疊的是已送出的申請＝重複申請，訊息交給下面的重複檢查
+                            taken = True
+                            break
                         return None, ("bad_time", f"補的時間和當天已打的卡（{x['in']}–{x['out']}）重疊；中間休息沒打請選「中間休息沒打卡」")
             if diff == 0:
                 now_m = mins(iso_now()[11:16])
                 if out_next or (row["end"] and mins(row["end"]) > now_m) or (row["start"] and mins(row["start"]) > now_m):
                     return None, ("bad_time", "不能補登還沒到的時間")
-            if mt in ("in", "out", "both"):
+            if not taken and mt in ("in", "out", "both"):
                 # 補上去以後，沒配對的卡要剛好少一張（單張）或不變（整段），否則和當天其他的卡配不起來
                 mine_row = {"emp_id": me["emp_id"], "kind": "miss", "status": "pending", "date": d, "miss_type": mt, "start": row["start"], "end": row["end"]}
                 after = day_info(data, me["emp_id"], d, virt + miss_virtual([mine_row], data["events"], me["emp_id"], d))[1]

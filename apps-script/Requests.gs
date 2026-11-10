@@ -541,8 +541,9 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
         var a = reqMin_(x.in), z = reqMin_(x.out) + (x.out_next ? 1440 : 0);
         return nb < z && a < ne;
       })[0];
-      if (hit && hit.virtual) return { error: 'duplicate', message: '這個時段已經有一筆忘打卡申請（' + hit.in + '–' + hit.out + '，審核中或已核准），不用再送；要改請先取消那一筆' };
-      if (hit) return { error: 'bad_time', message: '補的時間和當天已打的卡（' + hit.in + '–' + hit.out + '）重疊；中間休息沒打請選「中間休息沒打卡」' };
+      // 重疊的是已送出的申請換來的段＝重複申請：訊息交給下面的重複檢查（審核中／已核准各有原本的字句）
+      if (hit && hit.virtual) row.__taken = true;
+      else if (hit) return { error: 'bad_time', message: '補的時間和當天已打的卡（' + hit.in + '–' + hit.out + '）重疊；中間休息沒打請選「中間休息沒打卡」' };
     }
     // 補完以後這一段班不能超過配對窗 16 小時（2026-11-03 對抗驗證 #7）：那天只有隔天 01:00 的下班卡時，
     // 補上班 02:00 原本也收，核定頁預填 02:00–01:00(+1)＝23 小時。超過 16 小時打卡也配不成一段。
@@ -564,7 +565,7 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
       return { error: 'bad_time', message: '不能補登還沒到的時間' };
     }
     // 補上去以後，沒配對的卡要剛好少一張（單張）或不變（整段）；否則補的時間和當天其他的卡配不起來（2026-11-11 B02）
-    if (mt === 'in' || mt === 'out' || mt === 'both') {
+    if (!row.__taken && (mt === 'in' || mt === 'out' || mt === 'both')) {
       var mine = { emp_id: me.emp_id, kind: 'miss', status: 'pending', date: date, miss_type: mt, start: row.start, end: row.end };
       var after = reqDayInfo_(events, me.emp_id, date, virt.concat(reqMissVirtual_([mine], events, me.emp_id, date))).missing;
       var loose = function (x) { return (x.open_ins || []).length + (x.lone_outs || []).length; };
