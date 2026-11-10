@@ -1,7 +1,7 @@
 // 驗收測試（2026-11-10 QA 驗收時加）：正常 3 組＋異常 3 組，一律走真的入口 doPost → 真函式，試算表用 tests/helpers/sheets-like.js。
 // 跑法：node tests/qa-acceptance-20261110.test.js（run-all.js 會自動帶到）
 //   ok(name, fn)    ＝ 目前規則下該成立的行為；失敗會讓本檔非零結束。
-//   KNOWN(name, fn) ＝ 驗收時查到「和預期不一樣」的地方，寫的是預期的結果，目前會失敗；只印出、不擋 run-all。
+//   KNOWN(name, fn) ＝ 驗收時查到「和預期不一樣」的地方（目前一件：月表吃不到認定重複打卡），寫的是預期的結果，目前會失敗；只印出、不擋 run-all。
 //                     修好或確認後把 KNOWN 改成 ok。設 ADV_STRICT=1 時 KNOWN 失敗也非零結束。
 // 名字一律假名；不含金鑰、試算表 ID；只在本機跑，不碰任何正式網址。
 'use strict';
@@ -98,19 +98,23 @@ ok('正常 1｜需求的例子 11:02–14:31＋17:05–21:44：參考時數 7.5�
   assert.strictEqual(mo.det['測試一'][D].ref, 7.5); assert.strictEqual(mo.sum['測試一'].ref, 7.5);
   assert.strictEqual(mo.det['測試一'][D].seg, '11:02–14:31、17:05–21:44');
 });
-let stdRef = null;
-ok('正常 2｜標準答案那筆打卡（08:46／13:48／13:48／17:30）核定 09:00–13:30＋14:00–17:30：核定 8、狀態正常、月表異常 0', () => {
-  const m = make(D + 'T07:00:00'); m.addEmp('DZY041', '測試同仁', 'K1');
-  [['08:46:12', 'in'], ['13:48:05', 'out'], ['13:48:40', 'in'], ['17:30:20', 'out']].forEach(([t, ty]) => assert.strictEqual(m.punch(D + 'T' + t, 'K1', ty, { d: 6, acc: 12 }).status, 'ok'));
-  const a = m.approve(D + 'T17:40:00', 'DZY041', D, [['09:00', '13:30'], ['14:00', '17:30']], { late_min: '' });
+ok('正常 2｜驗收標準答案那筆（打卡 08:46–13:25、13:48–17:30）：參考 7.75、核定 8、遲到 0、月表異常 0', () => {
+  const m = make(D + 'T07:00:00'); m.addEmp('E01', '測試同仁', 'K1');
+  [['08:46:12', 'in'], ['13:25:30', 'out'], ['13:48:40', 'in'], ['17:30:20', 'out']].forEach(([t, ty]) => assert.strictEqual(m.punch(D + 'T' + t, 'K1', ty, { d: 6, acc: 12 }).status, 'ok'));
+  // 照需求 5 的規則：08:46→09:00、13:25→13:15＝4.25；13:48→14:00、17:30→17:30＝3.5；合計 7.75
+  assert.strictEqual(m.day(D, 'E01').reference, 7.75);
+  // 主管輸入的時段不超出打卡時間（考勤管理畫面顯示「已核定 8 小時・正常」）
+  const a = m.approve(D + 'T17:40:00', 'E01', D, [['09:00', '13:25'], ['13:55', '17:30']], { late_min: '' });
   assert.strictEqual(a.ok, true, JSON.stringify(a));
-  assert.strictEqual(a.approved_hours, 8); assert.strictEqual(a.status_text, '正常'); assert.ok(!/遲到/.test(a.status_text));
+  assert.strictEqual(a.approved_hours, 8); assert.strictEqual(a.status_text, '正常');
   m.setNow('2026-11-10T21:30:00'); const mo = m.month('2026-11');
-  assert.strictEqual(mo.sum['測試同仁'].abnormal, 0); assert.strictEqual(mo.sum['測試同仁'].appr, 8);
-  stdRef = mo.det['測試同仁'][D].ref;
-  // 照需求 5 的規則：08:46→09:00、13:48→13:45＝4.75；13:48→14:00、17:30→17:30＝3.5；合計 8.25
-  assert.strictEqual(stdRef, 8.25);
-  assert.strictEqual(m.day(D, 'DZY041').reference, 8.25);
+  assert.strictEqual(mo.det['測試同仁'][D].ref, 7.75); assert.strictEqual(mo.det['測試同仁'][D].seg, '08:46–13:25、13:48–17:30');
+  assert.strictEqual(mo.sum['測試同仁'].appr, 8); assert.strictEqual(mo.sum['測試同仁'].abnormal, 0);
+  // 同一批打卡若照班表輸入 09:00–13:30＋14:00–17:30：13:25 下班比 13:30 早 → 只標記、時數照給
+  const m2 = make(D + 'T07:00:00'); m2.addEmp('E01', '測試同仁', 'K1');
+  [['08:46:12', 'in'], ['13:25:30', 'out'], ['13:48:40', 'in'], ['17:30:20', 'out']].forEach(([t, ty]) => m2.punch(D + 'T' + t, 'K1', ty, { d: 6, acc: 12 }));
+  const b = m2.approve(D + 'T17:40:00', 'E01', D, [['09:00', '13:30'], ['14:00', '17:30']]);
+  assert.strictEqual(b.approved_hours, 8); assert.strictEqual(b.status_text, '早退5分');
 });
 ok('正常 3｜跨夜班 22:03–隔天 01:07：歸上班那天、班段寫 (+1)、參考 2.75；核定 22:00–01:00＝3 小時', () => {
   const m = make('2026-11-08T20:00:00'); m.addEmp('E01', '測試一', 'K1');
@@ -157,10 +161,7 @@ ok('異常 3｜只有上班卡沒有下班卡：當天顯示「上班中」不�
   assert.strictEqual(m.day('2026-11-10', 'E01').reference, null, '主管頁那天的參考時數要留白');
 });
 
-console.log('━━ 驗收時查到、等確認的兩件事（不擋 run-all）━━');
-KNOWN('標準答案寫「參考時數 7.75」：同一筆打卡照需求 5 的規則算出來是 8.25（見正常 2）', () => {
-  assert.strictEqual(stdRef, 7.75, '程式=' + stdRef + '、標準答案=7.75');
-});
+console.log('━━ 驗收時查到、等處理的一件事（不擋 run-all）━━');
 KNOWN('店長把 17:55 那張認定為重複打卡之後，月表不該再標「下班忘刷卡」、異常天數要是 0（主管頁與同仁頁都已經是 17:26–21:00 一段）', () => {
   const m = make(D + 'T08:00:00'); m.addEmp('E01', '測試一', 'K1');
   m.punch(D + 'T17:26:00', 'K1', 'in'); m.punch(D + 'T17:55:00', 'K1', 'in'); m.punch(D + 'T21:00:00', 'K1', 'out');
