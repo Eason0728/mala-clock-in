@@ -1448,7 +1448,7 @@ function renderOtInfo(t){
   ROSTER_MISS.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：薪資主檔工號 ${esc(x.emp_id)} 在打卡名冊找不到，打卡時數和班表都對不到這個人`
     +(x.roster_ids&&x.roster_ids.length?`——名冊上同名的人是 <b>${x.roster_ids.map(esc).join('、')}</b>，請到「員工設定」把工號改成一樣`:'——請確認工號')+`</li>`));
   // 主檔已停用、離職日不在本月、本月卻有時數：沒有進薪資（薪酬挑錯第 2 項，2026-11-11）
-  NOT_IN_PAY.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：本月有 ${esc(r2(Number(x.hours)||0))} 小時，但主檔已取消在職、也沒有填這個月的離職日，沒有算進薪資。月中離職請到員工設定填離職日</li>`));
+  NOT_IN_PAY.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：本月有 ${esc(r2(Number(x.hours)||0))} 小時，但主檔已取消在職、離職日沒填或早於這個月，沒有算進薪資。這個月還有上班的話，請到員工設定填正確的離職日</li>`));
   // 在職天數 0 卻有一列薪資：照舊算，提醒確認主檔日期（薪酬挑錯第 2 項補洞，2026-11-11）
   ZERO_RATIO.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：本月在職天數是 0（到職日或離職日不在這個月），卻有 ${esc(r2(Number(x.hours)||0))} 小時／加扣項，請確認主檔的到職日、離職日</li>`));
   SAME_NAME.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：打卡名冊有同名的人（${x.emp_ids.map(esc).join('、')}），本月 ${x.rows} 筆請假只有姓名，系統依在職與到離職日算給 ${x.to.map(esc).join('、')}，請確認沒有歸錯人</li>`));

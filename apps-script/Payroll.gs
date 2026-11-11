@@ -920,7 +920,10 @@ function payInRoster_(m, st, ym) {
 /** 名單判斷不看門市的那一半（跨店支援自動帶入也用這一支，門市由呼叫端自己比）。 */
 function payInRosterYm_(m, ym) {
   if (String(m.active).toLowerCase() === 'true') return true;
-  return payDateStr(m.leave_date).slice(0, 7) === String(ym);
+  // 已停用但填了離職日：離職月份（含）以前的月份都還在名單裡（在職天數由 payRatio 算；離職後的月份比例 0、沒有資料就不產生列）。
+  // 2026-11-11 複查：只收「離職月份＝這個月」時，11/15 離職的人重算 10 月草稿會整列消失。
+  const ld = payDateStr(m.leave_date);
+  return /^\d{4}-\d{2}-\d{2}$/.test(ld) && ld.slice(0, 7) >= String(ym);
 }
 /** 這個月有沒有任何時數、支援、請假、自訂加扣、獎金、特休折算（att＝送進 payCalcOne 的那一包；ym 有帶才看特休折算）。
  *  在職天數 0 的人要有其中一項才產生列；支援欄壞掉（supportError）也當成有資料，不讓它無聲消失。 */
@@ -1369,7 +1372,9 @@ function payAnnualPayoutAmt_(ym, hours, rawRate) {
 /** 請假扣款一列的金額與單價（第 10 項）。rate＝整數扣款時薪；ratio／overRatio＝上限內／逾上限的給薪比例。
  *  回 { amt, unit }：unit 是上限內那段的單價（給 rate 欄用）。 */
 function payLeaveDeduct_(ym, withinH, overH, rate, ratio, overRatio) {
-  if (String(ym) < PAY_LEAVE_RAW_FROM) {
+  // 全扣（給薪 0）與全薪的部分照現行逐段算（Eason 2026-11-11：事假、天災假照現行；只改半薪假的取整）
+  const whole = function (x) { return payNum(x) === 0 || payNum(x) === 1; };
+  if (String(ym) < PAY_LEAVE_RAW_FROM || (whole(ratio) && whole(overRatio))) {
     const r1 = payR0(rate * (1 - ratio)), r2 = payR0(rate * (1 - overRatio));
     return { amt: withinH * r1 + overH * r2, unit: r1 };
   }
