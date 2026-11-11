@@ -2747,11 +2747,17 @@ function renderHol(){
   });
   $('holTbl').innerHTML=h+'</tbody>';
   const st=$('holSync'); if(!st||HOL_SYNCING) return;
-  st.innerHTML=(HOLSYNC.status||[]).map(x=>x.ok
-    ? `✓ ${x.year} 年已依人事行政總處《${esc(x.title)}》自動帶入`
+  st.innerHTML=holSyncHtml(HOLSYNC);
+}
+/* 同步狀態列的內容：每年一行行事曆狀態；後端有說明（已有門市鎖定而沒有同步的月份，薪酬挑錯第 1 項補洞）再多一行。文字都經 esc。 */
+function holSyncHtml(s){
+  const lines=((s&&s.status)||[]).map(x=>x.ok
+    ? `✓ ${esc(x.year)} 年已依人事行政總處《${esc(x.title)}》自動帶入`
     : x.error==='not_published'
-      ? `${x.year} 年行事曆人事行政總處還沒公布（每年約 6 月公布下一年）`
-      : `⚠ ${x.year} 年暫時抓不到（${esc(x.message||x.error)}），先顯示目前的資料，重新整理會再試`).join('<br>');
+      ? `${esc(x.year)} 年行事曆人事行政總處還沒公布（每年約 6 月公布下一年）`
+      : `⚠ ${esc(x.year)} 年暫時抓不到（${esc(x.message||x.error)}），先顯示目前的資料，重新整理會再試`);
+  if(s&&s.message) lines.push('⚠ '+esc(s.message));
+  return lines.join('<br>');
 }
 async function syncHol(){
   if(HOL_SYNCING) return HOL_SYNCING;

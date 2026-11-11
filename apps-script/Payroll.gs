@@ -881,6 +881,19 @@ function payHolidayLockedYms_(oldRows, newRows, stH, runs) {
     });
   });
 }
+/** 紅字天數自動同步（payHolidaySync，只動集團共用列）用：yms 這幾個月裡，哪些月份有「使用集團共用列的門市」已鎖定
+ *  （薪酬挑錯第 1 項補洞，2026-11-11）。該月有專屬列的門市不吃共用列，不算。回由小到大、不重複的月份。
+ *  holidayRows＝holiday 分頁現況全部列；runs＝payroll_run 全部列。純函式。 */
+function payHolidaySyncLockedYms_(yms, holidayRows, runs) {
+  const hasOwn = {}, want = {};
+  (holidayRows || []).forEach(function (h) { const s = String(h.store || ''); if (s) hasOwn[String(h.ym) + '|' + s] = 1; });
+  (yms || []).forEach(function (k) { want[String(k)] = 1; });
+  return Object.keys(want).sort().filter(function (k) {
+    return (runs || []).some(function (r) {
+      return String(r.ym) === k && String(r.status) === 'final' && !hasOwn[k + '|' + payStore(r.store)];
+    });
+  });
+}
 
 /** 在職比例：月中到職／離職才折算，整月在職回 1 */
 function payRatio(e, ym) {
@@ -2893,27 +2906,43 @@ function payHolidaySync(years, operator) {
     Object.keys(plan.rows).forEach(function (k) { if (k >= PAY_HOL_SYNC_FROM) want[k] = plan.rows[k]; });
   });
   const all = payRead('holiday'), changed = [];
+  /* 已鎖定月份不動（薪酬挑錯第 1 項補洞，2026-11-11）：這支只動集團共用列；某個月份只要有任何「使用集團共用列的門市」
+     已鎖定，就不改也不補那個月的列，回傳 skipped_locked 列出。先找出這次會動到的月份，有才讀 payroll_run。 */
+  const differs = function (r, w) { return !(payNum(r.red_days) === w.red_days && payHolidayDates(r).join(', ') === w.dates); };
+  const seen = {}, cand = [];
+  all.forEach(function (r) {
+    const k = String(r.ym);
+    if (String(r.store || '') !== '' || !want[k]) return;
+    seen[k] = true;
+    if (k >= nowYm && differs(r, want[k])) cand.push(k);
+  });
+  Object.keys(want).forEach(function (k) { if (!seen[k]) cand.push(k); });
+  const skipped = cand.length ? payHolidaySyncLockedYms_(cand, all, payRead('run')) : [];
+  const isSkipped = {};
+  skipped.forEach(function (k) { isSkipped[k] = true; });
   const out = all.map(function (r) {
     const k = String(r.ym);
     if (String(r.store || '') !== '' || !want[k]) return r;
     const w = want[k]; delete want[k];
     if (k < nowYm) return r;   // 已經過去且已存在的月份不動
-    const same = payNum(r.red_days) === w.red_days && payHolidayDates(r).join(', ') === w.dates;
-    if (same) return r;
+    if (!differs(r, w)) return r;
+    if (isSkipped[k]) return r;   // 已有門市鎖定：不動
     changed.push(k);
     return { ym: k, red_days: w.red_days, note: w.note, dates: w.dates, store: '' };
   });
   Object.keys(want).sort().forEach(function (k) {   // 還沒有的月份：補上
+    if (isSkipped[k]) return;   // 已有門市鎖定：不補
     const w = want[k];
     out.push({ ym: k, red_days: w.red_days, note: w.note, dates: w.dates, store: '' });
     changed.push(k);
   });
+  const skipMsg = skipped.length ? skipped.join('、') + ' 已有門市鎖定，這次沒有同步紅字天數（要更新請先解鎖）' : '';
   if (changed.length) {
     payReplaceAll('holiday', out);
     payAppend('audit', [{ ts: nowTaipeiIso(), ym: '', action: 'holiday_sync', operator: String(operator || 'auto'),
       reason: '依人事行政總處辦公日曆表更新紅字天數：' + changed.join('、'), store: '' }]);
   }
-  return { status: status, names: names, moved: moved, changed: changed };
+  return { status: status, names: names, moved: moved, changed: changed, skipped_locked: skipped, message: skipMsg };
 }
 
 function handlePayrollHolidaySync(body) {
@@ -2923,6 +2952,7 @@ function handlePayrollHolidaySync(body) {
   if (!years.length) return { ok: false, error: 'bad_year' };
   const r = payHolidaySync(years, body.operator);
   return { ok: true, changed: r.changed, status: r.status, names: r.names, moved: r.moved,
+           skipped_locked: r.skipped_locked, message: r.message,   // 已有門市鎖定而沒有同步的月份與說明（沒有就是 []、''）
            sync_from: PAY_HOL_SYNC_FROM, double_from: PAY_HOL_DOUBLE_FROM,
            holidays: payHolidayList(payStore(body.store)) };
 }
