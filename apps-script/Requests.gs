@@ -185,7 +185,11 @@ function reqSameThing_(kind, a, b) {
     if (a.miss_type === 'break' || b.miss_type === 'break') {
       return a.miss_type === b.miss_type && reqOverlap_(a.end, a.start, b.end, b.start) !== false;   // break：end＝休息開始、start＝回來
     }
-    return a.miss_type === b.miss_type || a.miss_type === 'both' || b.miss_type === 'both';
+    // 2026-11-11（B02）：兩段班一天可能漏兩張同型的卡，不能只看類型。同一張卡＝類型、時間都一樣，
+    // 或兩張整段的時間重疊。「這張卡已經有人補了」由 reqValidate_ 把已送出的申請當成虛擬卡來擋。
+    if (a.miss_type !== b.miss_type) return false;
+    if (a.miss_type === 'both') return reqOverlap_(a.start, a.end, b.start, b.end) !== false;
+    return String(a.start || '') === String(b.start || '') && String(a.end || '') === String(b.end || '');
   }
   if ((kind === 'leave' || kind === 'trip') && String(a.leave_type || '') !== String(b.leave_type || '')) return false;
   return reqOverlap_(a.start, a.end, b.start, b.end) !== false;
@@ -264,18 +268,47 @@ var REQ_EARLY_OUT_HM = '06:00';
 function reqPunchObj_(e) {
   var ts = String(e.ts);
   return { type: String(e.type), hm: ts.slice(11, 16), status: String(e.status), date: ts.slice(0, 10), t: new Date(ts).getTime(),
+           virtual: e.__virtual === true,
            distance_m: e.distance_m === '' || e.distance_m === undefined ? null : Number(e.distance_m),
            accuracy_m: e.accuracy_m === '' || e.accuracy_m === undefined ? null : Number(e.accuracy_m) };
 }
 function reqPrevDate_(d) { var x = new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) - 86400000); return x.toISOString().slice(0, 10); }
 function reqNextDate_(d) { var x = new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) + 86400000); return x.toISOString().slice(0, 10); }
-/** 這人前後三天的算數卡配對 → 歸到 date 那天的 {punches:畫面顯示用, missing:{options, open_in, lone_out, lone_out_next}} */
-function reqDayInfo_(events, empId, date) {
+/** 這人已送出（審核中或已核准）的忘打卡申請 → 當成已經補上的卡（虛擬卡，2026-11-11 B02）。
+ *  只給「那天還缺哪張卡」用：兩段班一天漏好幾張時，補了一張之後才看得出還缺哪一張；畫面上的當天紀錄不列這些。
+ *  in＝上班卡；out＝下班卡（凌晨 06:00 前、而且當天有比它晚的上班卡＝隔天凌晨）；both＝上班＋下班（下班早於上班＝隔天）；
+ *  break＝休息開始的下班卡＋回來的上班卡。同一分鐘時下班卡排在上班卡前面（上班卡記在那一分鐘的最後一秒）。 */
+function reqMissVirtual_(rows, events, empId, date) {
+  var lo = reqPrevDate_(date), hi = reqNextDate_(date), out = [];
+  var card = function (d, hm, type) { out.push({ ts: d + 'T' + hm + (type === 'in' ? ':59' : ':00') + '+08:00', emp_id: empId, type: type, status: 'ok', __virtual: true }); };
+  (rows || []).forEach(function (r) {
+    if (String(r.emp_id) !== String(empId) || r.kind !== 'miss' || (r.status !== 'pending' && r.status !== 'approved')) return;
+    var d = String(r.date).slice(0, 10);
+    if (d < lo || d > hi) return;
+    var st = reqHm_(r.start), en = reqHm_(r.end), mt = String(r.miss_type || '');
+    if (mt === 'in' && st) card(d, st, 'in');
+    if (mt === 'out' && en) {
+      var next = en <= REQ_EARLY_OUT_HM && events.some(function (e) {
+        var ts = String(e.ts);
+        return String(e.emp_id) === String(empId) && String(e.type) === 'in' && String(e.status).indexOf('rejected_') !== 0
+            && ts.slice(0, 10) === d && ts.slice(11, 16) >= en;
+      });
+      card(next ? reqNextDate_(d) : d, en, 'out');
+    }
+    if (mt === 'both' && st && en) { card(d, st, 'in'); card(reqMin_(en) < reqMin_(st) ? reqNextDate_(d) : d, en, 'out'); }
+    if (mt === 'break' && st && en) { card(d, en, 'out'); card(reqMin_(st) < reqMin_(en) ? reqNextDate_(d) : d, st, 'in'); }
+  });
+  return out;
+}
+/** 這人前後三天的算數卡配對 → 歸到 date 那天的 {punches:畫面顯示用, missing:{options, open_in, lone_out, lone_out_next, open_ins, lone_outs, spans}}
+ *  virtual（選填）：reqMissVirtual_ 的虛擬卡，一起配對、但不列在 punches。 */
+function reqDayInfo_(events, empId, date, virtual) {
   var lo = reqPrevDate_(date), hi = reqNextDate_(date);
   var all = events.filter(function (e) {
     var d = String(e.ts).slice(0, 10);
     return String(e.emp_id) === String(empId) && d >= lo && d <= hi;
-  }).map(reqPunchObj_).filter(function (p) { return !isNaN(p.t); }).sort(function (a, b) { return a.t - b.t; });
+  }).concat(virtual || []).map(reqPunchObj_).filter(function (p) { return !isNaN(p.t); })
+    .sort(function (a, b) { return a.t - b.t || (a.type === b.type ? 0 : a.type === 'out' ? -1 : 1); });
   var counted = all.filter(function (p) { return p.status.indexOf('rejected_') !== 0; });
   var segs = [], openIns = [], loneOuts = [], open = null;
   counted.forEach(function (p) {
@@ -290,9 +323,9 @@ function reqDayInfo_(events, empId, date) {
   var mineOuts = loneOuts.filter(function (p) { return dayOf(p) === date; });
   var mineSegs = segs.filter(function (x) { return x.inp.date === date; });
   // 顯示：那天的所有卡（含被擋的），加上歸到那天的隔天凌晨下班卡（標 +1）
-  var show = all.filter(function (p) { return p.date === date; });
+  var show = all.filter(function (p) { return p.date === date && !p.virtual; });
   all.forEach(function (p) {
-    if (p.date === hi && (mineSegs.some(function (x) { return x.outp === p; }) || mineOuts.indexOf(p) >= 0)) show.push(p);
+    if (p.date === hi && !p.virtual && (mineSegs.some(function (x) { return x.outp === p; }) || mineOuts.indexOf(p) >= 0)) show.push(p);
   });
   var punches = show.map(function (p) {
     return { type: p.type, hm: p.hm + (p.date !== date ? '(+1)' : ''), status: p.status, distance_m: p.distance_m, accuracy_m: p.accuracy_m };
@@ -301,14 +334,17 @@ function reqDayInfo_(events, empId, date) {
   if (!mineSegs.length && !mineIns.length && !mineOuts.length) opts = ['both'];
   else { if (mineOuts.length) opts.push('in'); if (mineIns.length) opts.push('out'); }
   // 中間休息沒打卡（2026-11-02 Eason）：那天有上班卡（整段，或還在上班中）就能補「下班＋回來上班」一組
-  var spans = mineSegs.map(function (x) { return { in: x.inp.hm, out: x.outp.hm, out_next: x.outp.date !== date }; })
-    .concat(mineIns.map(function (p) { return { in: p.hm, out: null, out_next: false }; }));
+  var vmark = function (sp, v) { if (v) sp.virtual = true; return sp; };   // 真的卡維持原本三個欄位；申請換來的段才多 virtual:true
+  var spans = mineSegs.map(function (x) { return vmark({ in: x.inp.hm, out: x.outp.hm, out_next: x.outp.date !== date }, x.inp.virtual && x.outp.virtual); })
+    .concat(mineIns.map(function (p) { return vmark({ in: p.hm, out: null, out_next: false }, p.virtual); }));
   if (spans.length) opts.push('break');
   // 另一段班整段沒打（2026-11-10 Eason）：當天打卡都是完整的段時，也能補一整段上班＋下班（不能和已打的段重疊）
   if (mineSegs.length && !mineIns.length && !mineOuts.length) opts.push('both');
   var lo1 = mineOuts[0], oi = mineIns[mineIns.length - 1];
   return { punches: punches, missing: { options: opts, open_in: oi ? oi.hm : null,
-           lone_out: lo1 ? lo1.hm : null, lone_out_next: !!(lo1 && lo1.date !== date), spans: spans } };
+           lone_out: lo1 ? lo1.hm : null, lone_out_next: !!(lo1 && lo1.date !== date), spans: spans,
+           open_ins: mineIns.map(function (p) { return p.hm; }),
+           lone_outs: mineOuts.map(function (p) { return { hm: p.hm, next: p.date !== date }; }) } };
 }
 function reqDayPunches_(events, empId, date) { return reqDayInfo_(events, empId, date).punches; }
 
@@ -316,12 +352,15 @@ function reqDayPunches_(events, empId, date) { return reqDayInfo_(events, empId,
  *  用「從上班卡起算幾分鐘」比，跨夜班也對。回 {span, next}（next＝回來時間在隔天）或 {error, message}。 */
 function reqBreakSpan_(spans, out, inn) {
   var rel = function (hm, base) { return (reqMin_(hm) - reqMin_(base) + 1440) % 1440; };
+  // 2026-11-11（B37）：只有上班卡、還沒下班的那一段，休息要在上班卡之後的 16 小時內（REQ_PAIR_MS，同打卡配對的上限）。
+  // 原本當成 24 小時，比上班卡還早的時間（09:00 對 10:00 上班）繞一圈也算「在這段班裡」。
+  var OPEN = REQ_PAIR_MS / 60000;
   for (var i = spans.length - 1; i >= 0; i--) {
-    var sp = spans[i], a = rel(out, sp.in), b = rel(inn, sp.in), len = sp.out ? rel(sp.out, sp.in) || 1440 : 1440;
+    var sp = spans[i], a = rel(out, sp.in), b = rel(inn, sp.in), len = sp.out ? rel(sp.out, sp.in) || 1440 : OPEN;
     if (a > 0 && b > a && b < len) return { span: sp, next: reqMin_(sp.in) + b >= 1440 };
   }
   if (spans.length === 1) {
-    var s0 = spans[0], a0 = rel(out, s0.in), b0 = rel(inn, s0.in), l0 = s0.out ? rel(s0.out, s0.in) || 1440 : 1440;
+    var s0 = spans[0], a0 = rel(out, s0.in), b0 = rel(inn, s0.in), l0 = s0.out ? rel(s0.out, s0.in) || 1440 : OPEN;
     if (a0 > 0 && a0 < l0 && b0 > 0 && b0 < l0) return { error: 'bad_time', message: '回來上班時間要比休息開始晚' };
     return { error: 'bad_time', message: '休息時間要在 ' + s0.in + (s0.out ? ' 上班到 ' + s0.out + ' 下班之間' : ' 上班之後') };
   }
@@ -339,7 +378,7 @@ function reqStaff_(body) {
   return { userId: userId, me: found.roster, ss: found.ss };
 }
 
-/** {action:'req_info', id_token, date?, day_only?} → {ok, name, today, requests:[…], day?:{date, punches, missing}}
+/** {action:'req_info', id_token, date?, day_only?, apply_miss?} → {ok, name, today, requests:[…], day?:{date, punches, missing}}
  *  day_only（2026-10-28，忘打卡自動選店）：申請頁選好日期後同時問每家已綁定的店「那天有沒有卡」，
  *  只要 day、不讀申請表（回 requests:[]、day_only:true）。舊後端不認得這個參數＝照舊整包回，前端一樣能用。
  *  有 date 時 events 只讀尾端（date 前一天 00:00 起，reqDayInfo_ 只看前後一天），不整張讀。 */
@@ -362,7 +401,11 @@ function handleReqInfo_(body) {
               sick_proof_days: REQ_SICK_PROOF_DAYS, sick_dates: reqSickDates_(all, who.me.emp_id, today) };
   if (dayOnly) out.day_only = true;
   if (reqIsDate_(body.date)) {
-    var di = reqDayInfo_(liffEvents_(who.ss, reqDaySince_(String(body.date))), who.me.emp_id, String(body.date));
+    // 已送出的忘打卡申請算已經補上的卡（2026-11-11 B02），申請頁才看得到「還能補另一張／另一段」。
+    // day_only 照舊不讀申請表（查各店那天有沒有卡要快）；申請頁多帶 apply_miss:true 時才讀，只用來算缺哪張，requests 仍回空。
+    var dEv = liffEvents_(who.ss, reqDaySince_(String(body.date)));
+    var vRows = dayOnly ? (body.apply_miss === true ? reqRows_(who.ss) : null) : all;
+    var di = reqDayInfo_(dEv, who.me.emp_id, String(body.date), vRows ? reqMissVirtual_(vRows, dEv, who.me.emp_id, String(body.date)) : []);
     out.day = { date: String(body.date), punches: di.punches, missing: di.missing };
   }
   return out;
@@ -384,7 +427,8 @@ function reqIsDate_(s) {
 /** 驗證一筆申請，回 {row} 或 {error, message}。now＝台北日期字串（測試可注入）。 */
 function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主管代開，不看「幾天前」的期限（呼叫端自己限）
   var kind = String(b.kind || '');
-  if (!REQ_KINDS_[kind]) return { error: 'bad_kind', message: '申請類別不對' };
+  // 2026-11-11（B37）：只認表上自己有的類別（constructor、toString 這類字在物件上本來就查得到東西，原本會被當成合法類別收下）
+  if (!Object.prototype.hasOwnProperty.call(REQ_KINDS_, kind)) return { error: 'bad_kind', message: '申請類別不對' };
   var date = String(b.date || '');
   if (!reqIsDate_(date)) return { error: 'bad_date', message: '請選日期' };
   var diff = reqDayDiff_(date, today);
@@ -413,6 +457,21 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     if (!row.start || !row.end) return { error: 'bad_time', message: '請填加班時段' };
     row.hours = reqSpanHours_(row.start, row.end);
     if (row.hours > 12) return { error: 'bad_time', message: '加班時段超過 12 小時，請確認時間' };
+    /* 2026-11-11（B39）：跨夜班的加班在凌晨。日期填凌晨那一天的話，上班那天核定時找不到這張單、凌晨那天又多一張要作廢的單，
+       兩天都核不過。這段時間如果落在「前一天上班、跨到今天才下班」的班裡，請同仁把日期改選上班那一天
+       （下班打卡後的加班提示本來就帶上班那一天）。核定與薪資怎麼算單不動。 */
+    // 獨立審查補：①已送出的忘打卡單當成卡一起看（跨夜班的下班卡可能是補的）；
+    // ②這一天自己也有跨夜班或還在上班中（連續兩晚夜班）→ 凌晨那段是這一天那一班的，照收。
+    var prevDate = reqPrevDate_(date), otStartMin = reqMin_(row.start);
+    var spansOf = function (d) { return (reqDayInfo_(events, me.emp_id, d, reqMissVirtual_(existing, events, me.emp_id, d)).missing || {}).spans || []; };
+    var ownNight = spansOf(date).some(function (sp) { return !sp.out || sp.out_next; });
+    var nightSpan = ownNight ? null : spansOf(prevDate).filter(function (sp) {
+      return sp.out && sp.out_next && otStartMin < reqMin_(sp.out);
+    })[0];
+    if (nightSpan) {
+      var pmd = (+prevDate.slice(5, 7)) + '/' + (+prevDate.slice(8, 10));
+      return { error: 'bad_date', message: row.start + '–' + row.end + ' 在 ' + pmd + ' 上班的跨夜班裡（' + pmd + ' ' + nightSpan.in + ' 上班、隔天 ' + nightSpan.out + ' 下班），加班單的日期請選上班那一天（' + pmd + '）' };
+    }
     if (!reason) return { error: 'need_reason', message: '加班要寫原因' };
     // 補休（2026-11-01 改每月加減結算）：加班不再分「加班費／換補休」，核准的加班都算進當月補休帳；comp 欄留空（舊列的值不再使用）
   } else if (kind === 'trip') {
@@ -441,29 +500,56 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     if (diff > 0) return { error: 'bad_date', message: '不能補登還沒到的日期' };
     if (!proxy && diff < -REQ_MISS_DAYS) return { error: 'too_old', message: '超過 ' + REQ_MISS_DAYS + ' 天不能申請，請找打卡門市的店長直接核定' };
     var mt = String(b.miss_type || '');
-    var info = reqDayInfo_(events, me.emp_id, date).missing;
-    if (!info.options.length) return { error: 'not_missing', message: '這天的上班卡和下班卡都有打成功，不用補登；時間記錯請直接跟打卡門市的店長說' };
-    if (info.options.indexOf(mt) < 0) return { error: 'not_missing', message: mt === 'in' ? '這天的上班卡有打成功，不用補登' : mt === 'out' ? '這天的下班卡有打成功，不用補登' : '請選要補哪一張卡' };
+    // 已送出（審核中、已核准）的忘打卡申請當成已經補上的卡（2026-11-11 B02）：兩段班一天漏好幾張時才補得齊，
+    // 同一張卡也不會被補兩次。info0＝只看真的打卡（分辨「卡本來就在」和「已經有人申請補這張」，兩種訊息不一樣）。
+    var virt = reqMissVirtual_(existing, events, me.emp_id, date);
+    var info0 = reqDayInfo_(events, me.emp_id, date).missing;
+    var info = virt.length ? reqDayInfo_(events, me.emp_id, date, virt).missing : info0;
+    var dupMsg = '這天已經有忘打卡申請在補這張卡（審核中或已核准），不用再送；要改請先取消那一筆，已核准的請找你的主管作廢';
+    if (!info.options.length) {
+      if (info0.options.length) return { error: 'duplicate', message: dupMsg };
+      return { error: 'not_missing', message: '這天的上班卡和下班卡都有打成功，不用補登；時間記錯請直接跟打卡門市的店長說' };
+    }
+    if (info.options.indexOf(mt) < 0) {
+      if (info0.options.indexOf(mt) >= 0) return { error: 'duplicate', message: dupMsg };
+      return { error: 'not_missing', message: mt === 'in' ? '這天的上班卡有打成功，不用補登' : mt === 'out' ? '這天的下班卡有打成功，不用補登' : '請選要補哪一張卡' };
+    }
     row.miss_type = mt;
     if (mt === 'break') {
       // start＝回來上班（補的上班卡）、end＝休息開始（補的下班卡），與 in／out 用同兩欄
       row.end = reqHm_(b.end); if (!row.end) return { error: 'bad_time', message: '請填休息開始（下班）時間' };
       row.start = reqHm_(b.start); if (!row.start) return { error: 'bad_time', message: '請填回來上班時間' };
       var bk = reqBreakSpan_(info.spans, row.end, row.start);
-      if (bk.error) return bk;
+      if (bk.error) {
+        // 真的卡配得上、只是那段時間已經被送出的忘打卡申請佔掉＝重複申請（訊息在下面的重複檢查給），不是時間填錯
+        var bk0 = virt.length ? reqBreakSpan_(info0.spans, row.end, row.start) : bk;
+        if (bk0.error) return bk;
+        bk = bk0; row.__taken = true;
+      }
       if (diff === 0 && (bk.next || reqMin_(row.start) > reqMin_(nowTaipeiIso().slice(11, 16)))) return { error: 'bad_time', message: '不能補登還沒到的時間' };
       if (!reason) return { error: 'need_reason', message: '請選原因' };
     } else {
     if (mt === 'in' || mt === 'both') { row.start = reqHm_(b.start); if (!row.start) return { error: 'bad_time', message: '請填實際上班時間' }; }
     if (mt === 'out' || mt === 'both') { row.end = reqHm_(b.end); if (!row.end) return { error: 'bad_time', message: '請填實際下班時間' }; }
     // 時間要合理（跨夜：補的下班時間早於上班卡、且在凌晨 06:00 前＝隔天凌晨下班）
+    // 一天有兩張以上沒配對的卡時（兩段班都漏下班、或都漏上班，2026-11-11 B02），要補的那張配的是：
+    // 下班卡 → 補的時間之前最近的那張上班卡；上班卡 → 補的時間之後最近的那張下班卡。只有一張時和原本一樣。
     var outNext = false;
-    if (mt === 'out' && info.open_in && reqMin_(row.end) <= reqMin_(info.open_in)) {
-      if (row.end > REQ_EARLY_OUT_HM) return { error: 'bad_time', message: '補的下班時間 ' + row.end + ' 比當天上班卡 ' + info.open_in + ' 還早' };
+    var pairIn = info.open_in, pairOut = info.lone_out, pairOutNext = info.lone_out_next;
+    if (mt === 'out') {
+      (info.open_ins || []).forEach(function (hm) { if (reqMin_(hm) < reqMin_(row.end)) pairIn = hm; });
+    }
+    if (mt === 'in') {
+      var po = (info.lone_outs || []).filter(function (x) { return x.next || reqMin_(x.hm) > reqMin_(row.start); })[0];
+      if (po) { pairOut = po.hm; pairOutNext = po.next; }
+      else if ((info.lone_outs || []).length) { var pl = info.lone_outs[info.lone_outs.length - 1]; pairOut = pl.hm; pairOutNext = pl.next; }
+    }
+    if (mt === 'out' && pairIn && reqMin_(row.end) <= reqMin_(pairIn)) {
+      if (row.end > REQ_EARLY_OUT_HM) return { error: 'bad_time', message: '補的下班時間 ' + row.end + ' 比當天上班卡 ' + pairIn + ' 還早' };
       outNext = true;
     }
-    if (mt === 'in' && info.lone_out && !info.lone_out_next && reqMin_(row.start) >= reqMin_(info.lone_out.slice(0, 5))) {
-      return { error: 'bad_time', message: '補的上班時間 ' + row.start + ' 比當天下班卡 ' + info.lone_out + ' 還晚' };
+    if (mt === 'in' && pairOut && !pairOutNext && reqMin_(row.start) >= reqMin_(pairOut.slice(0, 5))) {
+      return { error: 'bad_time', message: '補的上班時間 ' + row.start + ' 比當天下班卡 ' + pairOut + ' 還晚' };
     }
     if (mt === 'both') {
       if (reqMin_(row.start) === reqMin_(row.end)) return { error: 'bad_time', message: '上班和下班時間一樣，請確認' };
@@ -474,13 +560,15 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
         var a = reqMin_(x.in), z = reqMin_(x.out) + (x.out_next ? 1440 : 0);
         return nb < z && a < ne;
       })[0];
-      if (hit) return { error: 'bad_time', message: '補的時間和當天已打的卡（' + hit.in + '–' + hit.out + '）重疊；中間休息沒打請選「中間休息沒打卡」' };
+      // 重疊的是已送出的申請換來的段＝重複申請：訊息交給下面的重複檢查（審核中／已核准各有原本的字句）
+      if (hit && hit.virtual) row.__taken = true;
+      else if (hit) return { error: 'bad_time', message: '補的時間和當天已打的卡（' + hit.in + '–' + hit.out + '）重疊；中間休息沒打請選「中間休息沒打卡」' };
     }
     // 補完以後這一段班不能超過配對窗 16 小時（2026-11-03 對抗驗證 #7）：那天只有隔天 01:00 的下班卡時，
     // 補上班 02:00 原本也收，核定頁預填 02:00–01:00(+1)＝23 小時。超過 16 小時打卡也配不成一段。
     var spanIn = null, spanOut = null;
-    if (mt === 'in' && info.lone_out) { spanIn = reqMin_(row.start); spanOut = reqMin_(info.lone_out.slice(0, 5)) + (info.lone_out_next ? 1440 : 0); }
-    if (mt === 'out' && info.open_in) { spanIn = reqMin_(String(info.open_in).slice(0, 5)); spanOut = reqMin_(row.end) + (outNext ? 1440 : 0); }
+    if (mt === 'in' && pairOut) { spanIn = reqMin_(row.start); spanOut = reqMin_(pairOut.slice(0, 5)) + (pairOutNext ? 1440 : 0); }
+    if (mt === 'out' && pairIn) { spanIn = reqMin_(String(pairIn).slice(0, 5)); spanOut = reqMin_(row.end) + (outNext ? 1440 : 0); }
     if (mt === 'both') { spanIn = reqMin_(row.start); spanOut = reqMin_(row.end) + (outNext ? 1440 : 0); }
     if (spanIn !== null && spanOut !== null && spanOut - spanIn > REQ_PAIR_MS / 60000) {
       return { error: 'bad_time', message: '補完上班到下班超過 16 小時（' + Math.round((spanOut - spanIn) / 6) / 10 + ' 小時），請確認時間；真的這麼長請直接跟打卡門市的店長說' };
@@ -495,13 +583,22 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     if (diff === -1 && outNext && row.end && reqMin_(row.end) > reqMin_(nowTaipeiIso().slice(11, 16))) {
       return { error: 'bad_time', message: '不能補登還沒到的時間' };
     }
+    // 補上去以後，沒配對的卡要剛好少一張（單張）或不變（整段）；否則補的時間和當天其他的卡配不起來（2026-11-11 B02）
+    if (!row.__taken && (mt === 'in' || mt === 'out' || mt === 'both')) {
+      var mine = { emp_id: me.emp_id, kind: 'miss', status: 'pending', date: date, miss_type: mt, start: row.start, end: row.end };
+      var after = reqDayInfo_(events, me.emp_id, date, virt.concat(reqMissVirtual_([mine], events, me.emp_id, date))).missing;
+      var loose = function (x) { return (x.open_ins || []).length + (x.lone_outs || []).length; };
+      if (loose(after) !== loose(info) - (mt === 'both' ? 0 : 1)) {
+        return { error: 'bad_time', message: '補的時間和當天其他的卡配不起來，請確認時間（一天漏好幾張時，請一張一張照時間補）' };
+      }
+    }
     if (!reason) return { error: 'need_reason', message: '請選原因' };
     }
   }
   // 同一天同一類（忘打卡再加同一張卡）不能有兩筆審核中的
   var dup = existing.filter(function (r) {
     return String(r.emp_id) === String(me.emp_id) && r.status === 'pending' && r.kind === kind && r.date === date
-        && (kind !== 'miss' || r.miss_type === row.miss_type || r.miss_type === 'both' || row.miss_type === 'both');
+        && (kind !== 'miss' || reqSameThing_('miss', r, row));   // 忘打卡：同一張卡才算（2026-11-11 B02；已有人補的卡在上面就擋掉了）
   })[0];
   if (dup) return { error: 'duplicate', message: '這天已經有一筆審核中的' + REQ_KINDS_[kind] + '申請，要改請先取消那一筆' };
   // 已核准的也要擋「同一件事」（2026-11-03 對抗驗證 #4）：原本只看審核中，核准後再送一模一樣的一筆、主管批次核准就算兩次
@@ -510,6 +607,7 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     return String(r.emp_id) === String(me.emp_id) && r.status === 'approved' && r.kind === kind && r.date === date && reqSameThing_(kind, r, row);
   })[0];
   if (dupOk) return { error: 'duplicate', message: '這天已經有一筆核准的' + REQ_KINDS_[kind] + '申請（' + reqDupLabel_(dupOk) + '），不用再送；要改請找你的主管作廢那一筆' };
+  if (row.__taken) return { error: 'duplicate', message: '這段時間已經有忘打卡申請在補了（審核中或已核准），不用再送；要改請先取消那一筆，已核准的請找你的主管作廢' };
   return { row: row };
 }
 
@@ -528,7 +626,7 @@ function handleReqSubmit_(body) {
     if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_ && reqCompAllowed_(who.me) === false) {
       return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
     }
-    var capMsg = reqCapLocked_(r, existing, who, body);
+    var capMsg = reqCapLocked_(r, existing, who, body, { today: todayTaipeiStr(), recorded: reqLeaveRecorded_(who.ss, who.me.name, r) });
     if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
     r.created_at = nowTaipeiIso(); r.emp_id = String(who.me.emp_id); r.name = String(who.me.name);
@@ -542,11 +640,35 @@ function handleReqSubmit_(body) {
 }
 
 /** 生理假一年 3 次、家庭照顧假一年 7 天，用完就不能再申請（2026-11-10 Eason）。審核中的同假別一起扣。
- *  額度來自光復的薪資（同專案直接算；別店打光復 line_hub_req_quota，帶同一個 LINE 身分）。查不到額度＝不擋（主管核准、核定時會再擋）。 */
+ *  額度來自光復的薪資（同專案直接算；別店打光復 line_hub_req_quota，帶同一個 LINE 身分）。
+ *  2026-11-11（B18）補三件事：
+ *   ① 已核准、但那天主管還沒核定的單也要扣——額度的「已用」只看核定後的請假登記，原本只扣審核中的，
+ *      3 張都核准之後第 4 張照樣送得出去。那天已經核定過的（opt.recorded）額度已經扣了，不重複扣。
+ *   ② 請的是別的年度（年底請明年的假）：今年剩多少不相干，拿整年的上限來算（原本被今年的餘額擋住）。
+ *   ③ 查不到額度（今年還沒有任何一天核定過，額度表就沒有這個假別；或光復暫時問不到）：用法定上限當整年的額度，
+ *      只擋「光是申請就超過整年上限」的。原本查不到就完全不擋。
+ *  opt：{ today:'yyyy-MM-dd', recorded:{ 'yyyy-MM-dd': true } }，沒帶＝當成同一年、沒有已核定的日子（舊呼叫端照舊）。 */
 var REQ_CAP_LOCK_TYPES_ = ['生理假', '家庭照顧假'];
+var REQ_CAP_YEAR_H_ = { '生理假': 24, '家庭照顧假': 56 };   // 一年 3 次（一次算 8 小時）／7 天
+/** 這個人這個假別已經核定（記進請假登記）的日子 → { 'yyyy-MM-dd': true }；只在兩種有上限的假別才讀表，讀不到回 {}。 */
+function reqLeaveRecorded_(ss, name, r) {
+  var out = {};
+  if (!r || r.kind !== 'leave' || REQ_CAP_LOCK_TYPES_.indexOf(String(r.leave_type)) === -1) return out;
+  try {
+    var sh = ss.getSheetByName('leave');
+    if (!sh) return out;
+    var nm = String(name || '').trim();
+    readSheetAsObjects(sh).rows.forEach(function (l) {
+      if (String(l['姓名'] || '').trim() !== nm || String(l['假別'] || '').trim() !== String(r.leave_type)) return;
+      out[typeof normCellDate === 'function' ? normCellDate(l['日期']) : String(l['日期']).slice(0, 10)] = true;
+    });
+  } catch (e) { return {}; }
+  return out;
+}
 var REQ_HUB_API_DEFAULT_ = 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
-function reqCapLocked_(r, existing, who, body) {
+function reqCapLocked_(r, existing, who, body, opt) {
   if (r.kind !== 'leave' || REQ_CAP_LOCK_TYPES_.indexOf(String(r.leave_type)) === -1) return '';
+  opt = opt || {};
   var quota = null;
   try {
     if (typeof lineHubReqQuota_ === 'function') quota = (lineHubReqQuota_(who.userId) || {}).quota || null;
@@ -558,18 +680,26 @@ function reqCapLocked_(r, existing, who, body) {
     }
   } catch (e) { quota = null; }
   var q = (quota || []).filter(function (x) { return String(x.name) === String(r.leave_type); })[0];
-  if (!q || q.remain_h == null) return '';
-  var yr = String(r.date).slice(0, 4), pend = (existing || []).filter(function (x) {
-    return String(x.emp_id) === String(who.me.emp_id) && String(x.kind) === 'leave' && String(x.leave_type) === String(r.leave_type)
-      && String(x.status) === 'pending' && String(x.date || '').slice(0, 4) === yr;
+  var yr = String(r.date).slice(0, 4), thisYr = String(opt.today || r.date).slice(0, 4), recorded = opt.recorded || {};
+  var known = !!q && q.remain_h != null;
+  // 這一年可以用的額度：同一年＝額度表的剩餘；別的年度、或查不到額度＝整年的上限
+  var base = (known && yr === thisYr) ? Number(q.remain_h) : (known && q.cap_h != null ? Number(q.cap_h) : REQ_CAP_YEAR_H_[String(r.leave_type)]);
+  if (!isFinite(base)) return '';
+  // 還沒算進「已用」的單：審核中的，加上已核准而那天還沒核定的
+  var live = (existing || []).filter(function (x) {
+    if (String(x.emp_id) !== String(who.me.emp_id) || String(x.kind) !== 'leave' || String(x.leave_type) !== String(r.leave_type)) return false;
+    if (String(x.date || '').slice(0, 4) !== yr) return false;
+    return String(x.status) === 'pending' || (String(x.status) === 'approved' && !recorded[String(x.date).slice(0, 10)]);
   });
+  var hasOk = live.some(function (x) { return String(x.status) === 'approved'; });
+  var yrText = yr === thisYr ? '今年' : ' ' + yr + ' 年', incl = hasOk || yr !== thisYr || !known ? '（含審核中、已核准）' : '（含審核中）';
   if (r.leave_type === '生理假') {
-    var left = Number(q.remain_h) - pend.length * 8;   // 生理假看次數：一次算 8 小時（同薪資）
-    return left <= 0.001 ? '生理假今年 3 次已經用完（含審核中），不能再申請' : '';
+    var left = base - live.length * 8;   // 生理假看次數：一次算 8 小時（同薪資）
+    return left <= 0.001 ? '生理假' + yrText + ' 3 次已經用完' + incl + '，不能再申請' : '';
   }
-  var pendH = pend.reduce(function (t, x) { return t + (Number(x.hours) || 0); }, 0);
-  var room = Number(q.remain_h) - pendH;
-  return Number(r.hours) > room + 0.001 ? '家庭照顧假今年 7 天只剩 ' + Math.max(0, Math.round(room * 10) / 10) + ' 小時（含審核中），這次超過了，不能送出' : '';
+  var liveH = live.reduce(function (t, x) { return t + (Number(x.hours) || 0); }, 0);
+  var room = base - liveH;
+  return Number(r.hours) > room + 0.001 ? '家庭照顧假' + yrText + ' 7 天只剩 ' + Math.max(0, Math.round(room * 10) / 10) + ' 小時' + incl + '，這次超過了，不能送出' : '';
 }
 
 /** 能不能請補休（正職才行）：和薪資同專案（光復）才查得到 → true／false；查不到／出錯回 null＝不擋（交給申請頁與主管）。 */
@@ -1055,8 +1185,16 @@ function reqQrLog_(ss, ts, empId, type, mgrName) {
    當天出勤超過 8 小時（全部門市一律 8 小時，先不看班表）、這天還沒有審核中／已核准的加班申請 → 打卡畫面多一顆「申請加班」，預填時段。
    「那天」＝這張下班卡配到的上班卡那天（跨夜班歸上班那天，同 reqDayInfo_ 的 16 小時配對）；那天所有完整的上班→下班段加總（含這一段）。
    預填：end＝這次下班時間；start＝end 往前推（總時數−8）＝剛好滿 8 小時的時刻，往前取整到 :00／:15／:30／:45。
-   events 要含這次這張下班卡。回 {date, hours, start, end} 或 null。 */
+   events 要含這次這張下班卡。回 {date, hours, start, end} 或 null。
+   2026-11-11（B16）：核定加嚴生效的日子（REQ_STRICT_FROM，預設 2026-11-11 起），時數改用和主管頁「參考時數」一樣的算法
+   （每段上班進位、下班捨去到 15 分鐘），end 也捨去到 15 分鐘。原本用實際分秒加總，早到晚走各 5 分鐘、甚至多 18 秒都會提示；
+   同仁照提示送了加班單，主管照參考時數核定 8 小時，就被加嚴規則「請先把加班單作廢」擋住。生效以前的日子、加嚴關掉時照舊。 */
 var REQ_OT_HINT_H = 8;
+/** 一段班在 15 分鐘刻度上的長度（毫秒）：上班捨秒後進位、下班捨秒後捨去——同 Code.gs approvedHoursOfShift */
+function reqGridMs_(inMs, outMs) {
+  var a = Math.ceil(Math.floor(inMs / 60000) / 15) * 15, b = Math.floor(Math.floor(outMs / 60000) / 15) * 15;
+  return Math.max(0, b - a) * 60000;
+}
 function reqOtHint_(events, empId, outTs, rows) {
   var outMs = new Date(String(outTs)).getTime();
   if (isNaN(outMs)) return null;
@@ -1073,7 +1211,8 @@ function reqOtHint_(events, empId, outTs, rows) {
   var mine = segs.filter(function (x) { return x.outp.t === outMs; })[0];
   if (!mine) return null;
   var date = mine.inp.date, ms = 0;
-  segs.forEach(function (x) { if (x.inp.date === date) ms += x.outp.t - x.inp.t; });
+  var strictFrom = reqStrictFrom_(), grid = !!(strictFrom && date >= strictFrom);
+  segs.forEach(function (x) { if (x.inp.date === date) ms += grid ? reqGridMs_(x.inp.t, x.outp.t) : x.outp.t - x.inp.t; });
   var hours = Math.round(ms / 36000) / 100;
   if (hours <= REQ_OT_HINT_H) return null;
   var has = (rows || []).some(function (r) {
@@ -1081,6 +1220,7 @@ function reqOtHint_(events, empId, outTs, rows) {
   });
   if (has) return null;
   var end = String(outTs).slice(11, 16);
+  if (grid) { var em = Math.floor(reqMin_(end) / 15) * 15; end = ('0' + Math.floor(em / 60)).slice(-2) + ':' + ('0' + (em % 60)).slice(-2); }
   var startMin = reqMin_(end) - (ms - REQ_OT_HINT_H * 3600000) / 60000;
   startMin = ((Math.floor(startMin / 15) * 15) % 1440 + 1440) % 1440;
   var start = ('0' + Math.floor(startMin / 60)).slice(-2) + ':' + ('0' + (startMin % 60)).slice(-2);
@@ -1121,7 +1261,9 @@ function handleMgrReqProxy_(body) {
   var me = findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, body.emp_id);
   if (!me) return { ok: false, error: 'invalid_emp_id', message: '找不到這位同仁' };
   /* 7 天內同仁自己用 LINE 申請；沒綁 LINE 的人送不了單，今天和過去的日子可以由主管代開（2026-11-09 Eason）。 */
-  if (diff >= -limit && !(diff <= 0 && reqNoLine_(me))) return { ok: false, error: 'not_old', message: limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天或同仁沒綁 LINE 才能由主管代開' };
+  /* 2026-11-11（B30）：名冊已停用（離職）的同仁也一樣——LINE 雖然還綁著，本人已經送不了單，
+     原本要等超過 7 天店長才能代開，這幾天核定又被「缺單」擋住。 */
+  if (diff >= -limit && !(diff <= 0 && (reqNoLine_(me) || !reqTrue_(me.active)))) return { ok: false, error: 'not_old', message: limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天或同仁沒綁 LINE 才能由主管代開' };
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
   try {
@@ -1129,6 +1271,10 @@ function handleMgrReqProxy_(body) {
     var v = reqValidate_(body, me, liffEvents_(ss, reqDaySince_(date)), today, existing, true);
     if (v.error) return { ok: false, error: v.error, message: v.message };
     var r = v.row;
+    // 2026-11-11（B37）：補休只有正職可以請——本人送會擋，代開也照擋（查不到薪資主檔的店照舊不擋）
+    if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_ && reqCompAllowed_(me) === false) {
+      return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
+    }
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
     r.created_at = nowTaipeiIso(); r.emp_id = String(me.emp_id); r.name = String(me.name);
     r.attach_id = ''; r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
@@ -1171,7 +1317,11 @@ function reqLoneFallback_(periods, full, segs) {
 }
 function reqBindMissCards_(periods, segs, breakWindow) {
   // 規定不打卡的休息帶（央廚）隔開的兩段當成同一段算，否則只漏一張卡會被算成 3 張（2026-11-10，與薪資一致）
-  if (breakWindow && typeof gapExplainedByBreak === 'function') {
+  // 午休照樣打卡的同仁不併（2026-11-11 B01）：和核定狀態共用 Code.gs breakBlocksFor_，狀態寫幾張、這裡就要幾張單；
+  // 程式碼.js 還沒有那支函式的店照舊一律併。
+  if (breakWindow && typeof breakBlocksFor_ === 'function') {
+    periods = breakBlocksFor_(periods, segs, breakWindow).map(function (b) { return { startMs: b.startMs, endMs: b.endMs }; });
+  } else if (breakWindow && typeof gapExplainedByBreak === 'function') {
     periods = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; }).reduce(function (acc, p) {
       var last = acc[acc.length - 1];
       if (last && p.startMs > last.endMs && gapExplainedByBreak(last.endMs, p.startMs, breakWindow)) {
@@ -1200,6 +1350,22 @@ function reqBindMissCards_(periods, segs, breakWindow) {
     prevIdx = o.idx;
   });
   return n;
+}
+/** 人還在上班（2026-11-11 B03）：那天最後一張卡是沒配對的上班卡，而且那天是今天（跨夜班算到隔天凌晨 06:00 前），
+ *  下班卡還沒到打的時候，不能算少一張——同仁此刻也補不了這張單。做法：把那張上班卡當成「打到現在」的一段再去算。
+ *  需求：今天沒配對的上班卡＝上班中，隔天才算忘刷。之後打了下班卡，每日重算會把狀態改回來。 */
+function reqWorkingSegs_(segs, date) {
+  if (!segs || !segs.length) return segs;
+  var nowIso = nowTaipeiIso(), today = nowIso.slice(0, 10);
+  if (!(date === today || (date === reqPrevDate_(today) && nowIso.slice(11, 16) <= REQ_EARLY_OUT_HM))) return segs;
+  var at = function (x) { return x.inMs != null ? x.inMs : x.outMs; };
+  var last = segs.reduce(function (a, x) { return a === null || at(x) >= at(a) ? x : a; }, null);
+  if (!last || last.inMs == null || last.outMs != null) return segs;   // 最後一張不是沒配對的上班卡
+  var nowMs = new Date(nowIso).getTime();
+  if (nowMs - last.inMs > REQ_PAIR_MS) return segs;                     // 超過 16 小時配不成一段，不算還在上班
+  return segs.map(function (x) {
+    return x === last ? { in: x.in, out: null, inMs: x.inMs, outMs: Math.max(nowMs, x.inMs + 60000) } : x;
+  });
 }
 function reqBindFmt_(h) { return String(Math.round(h * 100) / 100); }
 /* ── 核定加嚴（2026-11-08 Eason 定案；REQ_STRICT_FROM 預設 2026-11-11 起的日子才算，指令碼屬性設 off＝只關加嚴；REQ_BIND_FROM 設 off＝全部關）──
@@ -1340,7 +1506,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
     otBad = true;
     add('ot_hours', '超過 ' + REQ_BIND_OT_BASE_H + ' 小時的 ' + reqBindFmt_(otNeed) + ' 小時要有加班單（已核准 ' + reqBindFmt_(otHave) + ' 小時）');
   }
-  var miss = bindOn ? reqBindMissCards_(periods, segs, breakWindow) : 0;
+  var miss = bindOn ? reqBindMissCards_(periods, reqWorkingSegs_(segs, date), breakWindow) : 0;
   var missHave = ok.reduce(function (a, r) { return a + (r.kind !== 'miss' ? 0 : (r.miss_type === 'break' || r.miss_type === 'both') ? 2 : 1); }, 0);
   var tripOk = ok.some(function (r) { return r.kind === 'trip'; });
   // 出差日：當天有打卡、湊不成完整一段就算忘刷，要忘打卡單；整天沒打卡、或打卡都成段（另一段是出差）不算（2026-11-10 Eason）
@@ -1356,6 +1522,14 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
     var hint = pend.length ? '這天有 ' + pend.length + ' 張申請還在審核中，請先到「申請審核」處理再送。' + (noLine ? '這位同仁沒綁 LINE，還缺別張單可以繼續代開。' : '')
       : noLine ? '這位同仁沒綁 LINE，請店長在考勤管理「代開申請」，送總監層級審核。'
       : '請同仁在 LINE「加班請假」補申請；超過 7 天請店長在考勤管理「代開申請」，送總監層級審核。';
+    // 2026-11-11（B35）：少卡、而那天有新手機待核准的卡（舊連結才會有）——出路是先核准裝置，不是補忘打卡單
+    // 待核准的張數補得齊缺的張數才說「不用補」；補不齊就講核准後還少幾張，補申請的指引照留（獨立審查補）
+    if (missBad && opt.pending_device > 0) {
+      var stillMiss = miss - missHave - opt.pending_device;
+      hint = '這天有 ' + opt.pending_device + ' 張新手機待核准的打卡，請先到「待核准裝置」核准這支手機' +
+        (stillMiss > 0 ? '；核准後還少 ' + stillMiss + ' 張，' + hint
+          : '，再回來核定（核准後就不用補忘打卡單）。' + (otBad || pend.length ? hint : ''));
+    }
     return { ok: false, error: 'need_request', message: '這天還不能核定：' + probs.map(function (p) { return p.text; }).join('；') + '。' + hint,
              need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length } };
   }

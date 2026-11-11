@@ -21,6 +21,7 @@ KIND = {"leave": "請假", "ot": "加班", "trip": "出差", "miss": "忘打卡"
 TRIP_PLACE_MAX = 40
 BATCH_MAX = 30
 OT_HINT_H = 8
+REQ_STRICT_FROM = "2026-11-11"   # 同 Requests.gs REQ_STRICT_FROM_DEFAULT_：這天起的加班提示改用 15 分鐘刻度（2026-11-11 B16）
 
 
 def register(ns):
@@ -113,18 +114,50 @@ def register(ns):
         o["sick_n"] = sick_nth(CUR["rows"], r) if (r.get("kind") == "leave" and r.get("leave_type") == "病假") else None
         return o
 
-    def day_info(data, emp_id, d):
-        """同 Requests.gs reqDayInfo_：跨夜一起配對（16 小時），段落歸上班卡那天；沒配到的凌晨（≤06:00）下班卡歸前一天。"""
+    def miss_virtual(rows, events, emp_id, d):
+        """同 Requests.gs reqMissVirtual_（2026-11-11 B02）：已送出（審核中、已核准）的忘打卡申請當成已經補上的卡。"""
+        lo = (date.fromisoformat(d) - timedelta(days=1)).isoformat()
+        hi = (date.fromisoformat(d) + timedelta(days=1)).isoformat()
+        nxt = lambda x: (date.fromisoformat(x) + timedelta(days=1)).isoformat()
+        out = []
+
+        def card(day, hm, typ):
+            out.append({"ts": f"{day}T{hm}:{'59' if typ == 'in' else '00'}+08:00", "emp_id": emp_id, "type": typ, "status": "ok", "__virtual": True})
+        for r in rows or []:
+            if r.get("emp_id") != emp_id or r.get("kind") != "miss" or r.get("status") not in ("pending", "approved"):
+                continue
+            rd = str(r.get("date") or "")[:10]
+            if not (lo <= rd <= hi):
+                continue
+            st, en, mt = hm_ok(r.get("start")), hm_ok(r.get("end")), str(r.get("miss_type") or "")
+            if mt == "in" and st:
+                card(rd, st, "in")
+            if mt == "out" and en:
+                later_in = any(e["emp_id"] == emp_id and e["type"] == "in" and not str(e["status"]).startswith("rejected_")
+                               and e["ts"][:10] == rd and e["ts"][11:16] >= en for e in events)
+                card(nxt(rd) if (en <= "06:00" and later_in) else rd, en, "out")
+            if mt == "both" and st and en:
+                card(rd, st, "in")
+                card(nxt(rd) if mins(en) < mins(st) else rd, en, "out")
+            if mt == "break" and st and en:
+                card(rd, en, "out")
+                card(nxt(rd) if mins(st) < mins(en) else rd, st, "in")
+        return out
+
+    def day_info(data, emp_id, d, virtual=None):
+        """同 Requests.gs reqDayInfo_：跨夜一起配對（16 小時），段落歸上班卡那天；沒配到的凌晨（≤06:00）下班卡歸前一天。
+        virtual：miss_virtual 的虛擬卡，一起配對、不列在 punches。"""
         from datetime import datetime
         lo = (date.fromisoformat(d) - timedelta(days=1)).isoformat()
         hi = (date.fromisoformat(d) + timedelta(days=1)).isoformat()
         allp = []
-        for e in data["events"]:
+        for e in list(data["events"]) + list(virtual or []):
             if e["emp_id"] != emp_id or not (lo <= e["ts"][:10] <= hi):
                 continue
             allp.append({"type": e["type"], "hm": e["ts"][11:16], "status": str(e["status"]), "date": e["ts"][:10],
-                         "t": datetime.fromisoformat(e["ts"]).timestamp(), "distance_m": e.get("distance_m"), "accuracy_m": e.get("accuracy_m")})
-        allp.sort(key=lambda p: p["t"])
+                         "t": datetime.fromisoformat(e["ts"]).timestamp(), "distance_m": e.get("distance_m"), "accuracy_m": e.get("accuracy_m"),
+                         "virtual": e.get("__virtual") is True})
+        allp.sort(key=lambda p: (p["t"], 0 if p["type"] == "out" else 1))
         segs, open_ins, lone_outs, open_ = [], [], [], None
         for p in allp:
             if p["status"].startswith("rejected_"):
@@ -149,7 +182,8 @@ def register(ns):
         mine_ins = [p for p in open_ins if p["date"] == d]
         mine_outs = [p for p in lone_outs if day_of(p) == d]
         mine_segs = [x for x in segs if x[0]["date"] == d]
-        show = [p for p in allp if p["date"] == d] + [p for p in allp if p["date"] == hi and (any(x[1] is p for x in mine_segs) or p in mine_outs)]
+        show = [p for p in allp if p["date"] == d and not p["virtual"]] + \
+               [p for p in allp if p["date"] == hi and not p["virtual"] and (any(x[1] is p for x in mine_segs) or p in mine_outs)]
         punches = [{"type": p["type"], "hm": p["hm"] + ("(+1)" if p["date"] != d else ""), "status": p["status"],
                     "distance_m": p["distance_m"], "accuracy_m": p["accuracy_m"]} for p in show]
         if not mine_segs and not mine_ins and not mine_outs:
@@ -157,15 +191,18 @@ def register(ns):
         else:
             opts = (["in"] if mine_outs else []) + (["out"] if mine_ins else [])
         # 中間休息（同 Requests.gs，2026-11-02）
-        spans = [{"in": x[0]["hm"], "out": x[1]["hm"], "out_next": x[1]["date"] != d} for x in mine_segs] + \
-                [{"in": p["hm"], "out": None, "out_next": False} for p in mine_ins]
+        vmark = lambda sp, v: dict(sp, virtual=True) if v else sp   # 真的卡維持原本三個欄位
+        spans = [vmark({"in": x[0]["hm"], "out": x[1]["hm"], "out_next": x[1]["date"] != d}, x[0]["virtual"] and x[1]["virtual"]) for x in mine_segs] + \
+                [vmark({"in": p["hm"], "out": None, "out_next": False}, p["virtual"]) for p in mine_ins]
         if spans:
             opts = opts + ["break"]
         if mine_segs and not mine_ins and not mine_outs:   # 另一段班整段沒打（同 Requests.gs，2026-11-10）
             opts = opts + ["both"]
         lo1 = mine_outs[0] if mine_outs else None
         return punches, {"options": opts, "open_in": mine_ins[-1]["hm"] if mine_ins else None,
-                         "lone_out": lo1["hm"] if lo1 else None, "lone_out_next": bool(lo1 and lo1["date"] != d), "spans": spans}
+                         "lone_out": lo1["hm"] if lo1 else None, "lone_out_next": bool(lo1 and lo1["date"] != d), "spans": spans,
+                         "open_ins": [p["hm"] for p in mine_ins],
+                         "lone_outs": [{"hm": p["hm"], "next": p["date"] != d} for p in mine_outs]}
 
     def day_punches(data, emp_id, d):
         return day_info(data, emp_id, d)[0]
@@ -189,7 +226,9 @@ def register(ns):
         if day_only:
             out["day_only"] = True
         if len(d) == 10:
-            p, m = day_info(data, me["emp_id"], d)
+            # 同 Requests.gs（2026-11-11 B02）：day_only 要帶 apply_miss 才把已送出的忘打卡申請算進去；完整查詢一律算
+            use = (not day_only) or body.get("apply_miss") is True
+            p, m = day_info(data, me["emp_id"], d, miss_virtual(reqs(data), data["events"], me["emp_id"], d) if use else None)
             out["day"] = {"date": d, "punches": p, "missing": m}
         return out
 
@@ -247,6 +286,15 @@ def register(ns):
             row["hours"] = span(row["start"], row["end"])
             if row["hours"] > 12:
                 return None, ("bad_time", "加班時段超過 12 小時，請確認時間")
+            # 跨夜班的加班日期要選上班那一天（同 Requests.gs，2026-11-11 B39）
+            prev = (date.fromisoformat(d) - timedelta(days=1)).isoformat()
+            spans_of = lambda x: day_info(data, me["emp_id"], x, miss_virtual(reqs(data), data["events"], me["emp_id"], x))[1].get("spans") or []
+            own_night = any((not sp.get("out")) or sp.get("out_next") for sp in spans_of(d))   # 這天自己也有跨夜班／上班中 → 照收
+            night = [] if own_night else [sp for sp in spans_of(prev)
+                     if sp.get("out") and sp.get("out_next") and mins(row["start"]) < mins(sp["out"])]
+            if night:
+                pmd = f"{int(prev[5:7])}/{int(prev[8:10])}"
+                return None, ("bad_date", f"{row['start']}–{row['end']} 在 {pmd} 上班的跨夜班裡（{pmd} {night[0]['in']} 上班、隔天 {night[0]['out']} 下班），加班單的日期請選上班那一天（{pmd}）")
             if not reason:
                 return None, ("need_reason", "加班要寫原因")
             # 補休（2026-11-01 改每月加減結算）：加班不再分加班費／換補休，comp 欄留空
@@ -278,12 +326,21 @@ def register(ns):
             if diff < -REQ_MISS_DAYS:
                 return None, ("too_old", f"超過 {REQ_MISS_DAYS} 天不能申請，請找打卡門市的店長直接核定")
             mt = str(b.get("miss_type") or "")
-            info = day_info(data, me["emp_id"], d)[1]
+            # 同 Requests.gs（2026-11-11 B02）：已送出的忘打卡申請當成已經補上的卡
+            virt = miss_virtual(reqs(data), data["events"], me["emp_id"], d)
+            info0 = day_info(data, me["emp_id"], d)[1]
+            info = day_info(data, me["emp_id"], d, virt)[1] if virt else info0
+            dup_msg = "這天已經有忘打卡申請在補這張卡（審核中或已核准），不用再送；要改請先取消那一筆，已核准的請找你的主管作廢"
             if not info["options"]:
+                if info0["options"]:
+                    return None, ("duplicate", dup_msg)
                 return None, ("not_missing", "這天的上班卡和下班卡都有打成功，不用補登；時間記錯請直接跟打卡門市的店長說")
             if mt not in info["options"]:
+                if mt in info0["options"]:
+                    return None, ("duplicate", dup_msg)
                 return None, ("not_missing", "這天的上班卡有打成功，不用補登" if mt == "in" else "這天的下班卡有打成功，不用補登" if mt == "out" else "請選要補哪一張卡")
             row["miss_type"] = mt
+            taken = False
             if mt == "break":
                 # 同 Requests.gs reqValidate_（break）＋ reqBreakSpan_：字句與順序照正式版（2026-11-03 對齊）
                 row["end"] = hm_ok(b.get("end"))
@@ -293,22 +350,28 @@ def register(ns):
                 if not row["start"]:
                     return None, ("bad_time", "請填回來上班時間")
                 rel = lambda hm, base: (mins(hm) - mins(base) + 1440) % 1440
-                bk = None
-                for sp in reversed(info["spans"]):
-                    a, bb = rel(row["end"], sp["in"]), rel(row["start"], sp["in"])
-                    ln = (rel(sp["out"], sp["in"]) or 1440) if sp["out"] else 1440
-                    if a > 0 and bb > a and bb < ln:
-                        bk = {"span": sp, "next": mins(sp["in"]) + bb >= 1440}
-                        break
-                if bk is None:
-                    if len(info["spans"]) == 1:
-                        s0 = info["spans"][0]
+
+                def break_span(spans):
+                    for sp in reversed(spans):
+                        a, bb = rel(row["end"], sp["in"]), rel(row["start"], sp["in"])
+                        ln = (rel(sp["out"], sp["in"]) or 1440) if sp["out"] else 960   # 還沒下班的段：上班後 16 小時內（同 Requests.gs，2026-11-11 B37）
+                        if a > 0 and bb > a and bb < ln:
+                            return {"span": sp, "next": mins(sp["in"]) + bb >= 1440}, None
+                    if len(spans) == 1:
+                        s0 = spans[0]
                         a0, b0 = rel(row["end"], s0["in"]), rel(row["start"], s0["in"])
-                        l0 = (rel(s0["out"], s0["in"]) or 1440) if s0["out"] else 1440
+                        l0 = (rel(s0["out"], s0["in"]) or 1440) if s0["out"] else 960
                         if a0 > 0 and a0 < l0 and b0 > 0 and b0 < l0:
                             return None, ("bad_time", "回來上班時間要比休息開始晚")
                         return None, ("bad_time", f"休息時間要在 {s0['in']}" + (f" 上班到 {s0['out']} 下班之間" if s0["out"] else " 上班之後"))
                     return None, ("bad_time", "休息時間要在當天其中一段班之內（上班卡之後、下班卡之前）")
+                bk, bk_err = break_span(info["spans"])
+                if bk is None:
+                    # 真的卡配得上、只是那段時間被已送出的申請佔掉＝重複申請（下面的重複檢查給訊息）
+                    bk0, _ = break_span(info0["spans"]) if virt else (None, None)
+                    if bk0 is None:
+                        return None, bk_err
+                    bk, taken = bk0, True
                 if diff == 0 and (bk["next"] or mins(row["start"]) > mins(iso_now()[11:16])):
                     return None, ("bad_time", "不能補登還沒到的時間")
                 if not reason:
@@ -322,12 +385,23 @@ def register(ns):
                 if not row["end"]:
                     return None, ("bad_time", "請填實際下班時間")
             out_next = False
-            if mt == "out" and info["open_in"] and mins(row["end"]) <= mins(info["open_in"]):
+            # 一天有兩張以上沒配對的卡（2026-11-11 B02）：下班卡配「補的時間之前最近的上班卡」、上班卡配「之後最近的下班卡」
+            pair_in, pair_out, pair_out_next = info["open_in"], info["lone_out"], info["lone_out_next"]
+            if mt == "out":
+                for hm in info.get("open_ins") or []:
+                    if mins(hm) < mins(row["end"]):
+                        pair_in = hm
+            if mt == "in":
+                los = info.get("lone_outs") or []
+                po = next((x for x in los if x["next"] or mins(x["hm"]) > mins(row["start"])), None) or (los[-1] if los else None)
+                if po:
+                    pair_out, pair_out_next = po["hm"], po["next"]
+            if mt == "out" and pair_in and mins(row["end"]) <= mins(pair_in):
                 if row["end"] > "06:00":
-                    return None, ("bad_time", f"補的下班時間 {row['end']} 比當天上班卡 {info['open_in']} 還早")
+                    return None, ("bad_time", f"補的下班時間 {row['end']} 比當天上班卡 {pair_in} 還早")
                 out_next = True
-            if mt == "in" and info["lone_out"] and not info["lone_out_next"] and mins(row["start"]) >= mins(info["lone_out"][:5]):
-                return None, ("bad_time", f"補的上班時間 {row['start']} 比當天下班卡 {info['lone_out']} 還晚")
+            if mt == "in" and pair_out and not pair_out_next and mins(row["start"]) >= mins(pair_out[:5]):
+                return None, ("bad_time", f"補的上班時間 {row['start']} 比當天下班卡 {pair_out} 還晚")
             if mt == "both":
                 if row["start"] == row["end"]:
                     return None, ("bad_time", "上班和下班時間一樣，請確認")
@@ -335,17 +409,47 @@ def register(ns):
                 nb, ne = mins(row["start"]), mins(row["end"]) + (1440 if out_next else 0)
                 for x in info.get("spans") or []:
                     if x["out"] and nb < mins(x["out"]) + (1440 if x["out_next"] else 0) and mins(x["in"]) < ne:
+                        if x.get("virtual"):   # 重疊的是已送出的申請＝重複申請，訊息交給下面的重複檢查
+                            taken = True
+                            break
                         return None, ("bad_time", f"補的時間和當天已打的卡（{x['in']}–{x['out']}）重疊；中間休息沒打請選「中間休息沒打卡」")
             if diff == 0:
                 now_m = mins(iso_now()[11:16])
                 if out_next or (row["end"] and mins(row["end"]) > now_m) or (row["start"] and mins(row["start"]) > now_m):
                     return None, ("bad_time", "不能補登還沒到的時間")
+            if not taken and mt in ("in", "out", "both"):
+                # 補上去以後，沒配對的卡要剛好少一張（單張）或不變（整段），否則和當天其他的卡配不起來
+                mine_row = {"emp_id": me["emp_id"], "kind": "miss", "status": "pending", "date": d, "miss_type": mt, "start": row["start"], "end": row["end"]}
+                after = day_info(data, me["emp_id"], d, virt + miss_virtual([mine_row], data["events"], me["emp_id"], d))[1]
+                loose = lambda x: len(x.get("open_ins") or []) + len(x.get("lone_outs") or [])
+                if loose(after) != loose(info) - (0 if mt == "both" else 1):
+                    return None, ("bad_time", "補的時間和當天其他的卡配不起來，請確認時間（一天漏好幾張時，請一張一張照時間補）")
             if not reason:
                 return None, ("need_reason", "請選原因")
+
+        def same_miss(r):
+            # 同 Requests.gs reqSameThing_（忘打卡）：同一張卡才算——類型、時間都一樣；兩張整段時間重疊；補休息時段重疊
+            if r["miss_type"] != row["miss_type"]:
+                return False
+
+            def ov(a1, a2, b1, b2):
+                s1, e1, s2, e2 = mins(a1), mins(a2), mins(b1), mins(b2)
+                if e1 <= s1:
+                    e1 += 1440
+                if e2 <= s2:
+                    e2 += 1440
+                return s1 < e2 and s2 < e1
+            if row["miss_type"] == "break":
+                return ov(r["end"], r["start"], row["end"], row["start"])
+            if row["miss_type"] == "both":
+                return ov(r["start"], r["end"], row["start"], row["end"])
+            return str(r.get("start") or "") == str(row.get("start") or "") and str(r.get("end") or "") == str(row.get("end") or "")
         dup = [r for r in reqs(data) if r["emp_id"] == me["emp_id"] and r["status"] == "pending" and r["kind"] == kind and r["date"] == d
-               and (kind != "miss" or r["miss_type"] == row["miss_type"] or "both" in (r["miss_type"], row["miss_type"]))]
+               and (kind != "miss" or same_miss(r))]
         if dup:
             return None, ("duplicate", f"這天已經有一筆審核中的{KIND[kind]}申請，要改請先取消那一筆")
+        if kind == "miss" and taken:
+            return None, ("duplicate", "這段時間已經有忘打卡申請在補了（審核中或已核准），不用再送；要改請先取消那一筆，已核准的請找你的主管作廢")
         return row, None
 
     def req_submit(data, body):
@@ -537,13 +641,18 @@ def register(ns):
         if not mine:
             return None
         d = mine[0][2]
-        secs = sum(x[1][0] - x[0][0] for x in segs if x[0][2] == d)
+        grid = d >= REQ_STRICT_FROM   # 加嚴生效的日子：每段上班進位、下班捨去到 15 分鐘（同 Requests.gs reqGridMs_）
+        grid_secs = lambda a, b: max(0, (int(b // 60) // 15) * 15 - (-(-int(a // 60) // 15)) * 15) * 60
+        secs = sum((grid_secs(x[0][0], x[1][0]) if grid else x[1][0] - x[0][0]) for x in segs if x[0][2] == d)
         hours = round(secs / 3600, 2)
         if hours <= OT_HINT_H:
             return None
         if any(r["emp_id"] == emp_id and r["kind"] == "ot" and r["date"] == d and r["status"] in ("pending", "approved") for r in rows):
             return None
         end = out_ts[11:16]
+        if grid:
+            em = (mins(end) // 15) * 15
+            end = f"{em // 60:02d}:{em % 60:02d}"
         sm = mins(end) - (secs - OT_HINT_H * 3600) / 60
         sm = int((sm // 15) * 15) % 1440
         return {"date": d, "hours": hours, "start": f"{sm // 60:02d}:{sm % 60:02d}", "end": end}

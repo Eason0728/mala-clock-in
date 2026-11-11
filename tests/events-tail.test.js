@@ -115,7 +115,8 @@ function liffBox() {
   vm.runInContext([['readSheetAsObjects', 'readEventsSince', 'normCellTs', 'lastCountedEvent'].map(f => extract(code, f)).join('\n'),
     constOf(liff, 'LIFF_MISSED_DAYS'), constOf(liff, 'LIFF_LOCK_MIN'), constOf(liff, 'LIFF_MISSED_PAIR_HOURS'), constOf(req, 'REQ_PAIR_MS'), constOf(req, 'REQ_OT_HINT_H'),
     ['liffReadEvents_', 'liffEvents_', 'liffLookbackH_', 'liffPunchRead_', 'liffGuard_', 'liffHm_', 'liffMissedDetail_'].map(f => extract(liff, f)).join('\n'),
-    ['reqOtHint_', 'reqPunchObj_', 'reqMin_'].map(f => extract(req, f)).join('\n')].join('\n'), b);
+    constOf(req, 'REQ_STRICT_FROM_DEFAULT_'),
+    ['reqOtHint_', 'reqGridMs_', 'reqStrictFrom_', 'reqIsDate_', 'reqPunchObj_', 'reqMin_'].map(f => extract(req, f)).join('\n')].join('\n'), b);   // 2026-11-11 B16：reqOtHint_ 多用到這三支
   return b;
 }
 // 30 位同仁 × 30 天：每天 10:00 上班、15:00 下班、16:00 上班、22:00 下班；E5 十天沒來；E6 三天前上班沒打下班；E7 前天只有被擋的下班卡

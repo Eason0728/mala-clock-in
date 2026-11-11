@@ -261,9 +261,9 @@ def pair_shifts(events):
                     and (datetime.fromisoformat(nx["ts"]) - datetime.fromisoformat(e["ts"])) <= mistap):
                 continue
             # 被擋的重複上班卡：距開著的 in ≥ 門檻 → 前段忘打下班（收未配對），以本卡當新段起點；
-            # 未達門檻＝手滑連按，忽略（open 不變）；沒有開著的 in → 也以本卡當新段起點（防禦）。
+            # 未達門檻＝手滑連按，忽略（open 不變）；沒有開著的 in → 忽略（2026-11-11 B09，同 Code.gs）。
             if open_in is None:
-                open_in = e
+                continue
             elif (datetime.fromisoformat(e["ts"]) - datetime.fromisoformat(open_in["ts"])) >= break_gap:
                 unmatched_ins.append(open_in)
                 open_in = e
@@ -795,6 +795,40 @@ def lone_cards_for_periods(periods, full_segs, punch_segments, near_ms=4 * 36000
     return best[0]
 
 
+def break_blocks_for(periods, punch_segments, break_window):
+    """與 Code.gs breakBlocksFor_ 同步（2026-11-11 B01）：休息帶隔開的兩段併成一塊，但只在併了才講得通時併。
+    ① 那一塊裡有一段配得到完整打卡段 → 拆回各段自己比；② 整塊只有單張卡或沒卡 → 不併配得到比較多張才拆。"""
+    sorted_p = sorted(periods, key=lambda q: q["start_ms"])
+    mk = lambda q, k: {"start_ms": q["start_ms"], "end_ms": q["end_ms"], "first": k + 1, "last": k + 1}
+    plain = [mk(q, k) for k, q in enumerate(sorted_p)]
+    if not break_window:
+        return plain
+    merged = []
+    for k, q in enumerate(sorted_p):
+        last = merged[-1] if merged else None
+        if (last and q["start_ms"] > last["end_ms"]
+                and last["end_ms"] < break_window["end_ms"] and q["start_ms"] > break_window["start_ms"]):
+            last["end_ms"] = max(last["end_ms"], q["end_ms"])
+            last["last"] = k + 1
+        else:
+            merged.append(mk(q, k))
+    if len(merged) == len(plain):
+        return plain
+    full_segs = [s for s in punch_segments if s["in_ms"] is not None and s["out_ms"] is not None]
+    has_full = lambda b: any(min(b["end_ms"], s["out_ms"]) - max(b["start_ms"], s["in_ms"]) > 0 for s in full_segs)
+    blocks = []
+    for b in merged:
+        parts = [mk(q, b["first"] - 1 + i) for i, q in enumerate(sorted_p[b["first"] - 1:b["last"]])]
+        if len(parts) > 1 and any(has_full(x) for x in parts):
+            blocks.extend(parts)
+        else:
+            blocks.append(b)
+    if len(blocks) == len(plain):
+        return plain
+    lone_used = lambda bs: len(lone_cards_for_periods(bs, full_segs, punch_segments))
+    return plain if lone_used(plain) > lone_used(blocks) else blocks
+
+
 def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=False, break_window=None):
     """與 Code.gs computeApprovalStatus 同步（2026-11-10 口徑統一）。"""
     rnd = lambda x: int(math.floor(x / 60000 + 0.5))
@@ -802,15 +836,7 @@ def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=Fal
     legacy = bool(had_unrecorded_attempts)
     sorted_p = sorted(periods, key=lambda q: q["start_ms"])
     multi_orig = len(sorted_p) > 1
-    blocks = []
-    for k, q in enumerate(sorted_p):
-        last = blocks[-1] if blocks else None
-        if (not legacy and break_window and last and q["start_ms"] > last["end_ms"]
-                and last["end_ms"] < break_window["end_ms"] and q["start_ms"] > break_window["start_ms"]):
-            last["end_ms"] = max(last["end_ms"], q["end_ms"])
-            last["last"] = k + 1
-        else:
-            blocks.append({"start_ms": q["start_ms"], "end_ms": q["end_ms"], "first": k + 1, "last": k + 1})
+    blocks = break_blocks_for(sorted_p, punch_segments, None if legacy else break_window)
     if not legacy and break_window:
         periods = blocks
     lone = {} if legacy else lone_cards_for_periods(periods, full_segs, punch_segments)
@@ -1139,7 +1165,7 @@ def handle_clock(data, body):
         accuracy_m = None
     # 距離扣掉定位誤差後才判定（與 Code.gs 同步）；distance_m 仍存原始距離
     accuracy_credit = 0 if accuracy_m is None else min(accuracy_m, ACCURACY_CREDIT_CAP_M)
-    effective_distance_m = max(0, distance_m - accuracy_credit)
+    effective_distance_m = max(0, round(distance_m - accuracy_credit, 1))   # 相減後再取到 0.1（同 Code.gs，2026-11-11 B20）
     within_range = effective_distance_m <= RADIUS_M
 
     # 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
@@ -2073,7 +2099,8 @@ def _js_round1(h):
 
 
 def rest_segments(evs):
-    """同 Rest.gs restSegments_：算數＝非 rejected_*；上班接上班＝前一張沒下班（不成立）；16 小時內的下班卡才配成一段。"""
+    """同 Rest.gs restSegments_：算數＝非 rejected_*；上班接上班＝前一張沒下班（不成立）；16 小時內的下班卡才配成一段。
+    前面沒有上班卡的下班卡（2026-11-11 B07）：當成只知道結束時間的一段（時數 0；凌晨 06:00 前的歸前一天）。"""
     lst = []
     for e in evs:
         if e.get("type") not in ("in", "out") or str(e.get("status") or "").startswith("rejected_"):
@@ -2090,6 +2117,8 @@ def rest_segments(evs):
             continue
         if open_ is not None and ms - open_ <= REST_PAIR_H * 3600000:
             segs.append({"in": open_, "out": ms})
+        elif open_ is None:   # 前面有上班卡但超過 16 小時配不成段的，照舊不算
+            segs.append({"in": ms, "out": ms, "lone": True, "day": _rest_day(ms - 86400000) if _rest_hm(ms) <= "06:00" else _rest_day(ms)})
         open_ = None
     return segs
 
@@ -2100,14 +2129,17 @@ def rest_judge(segs, now_ms):
     done = [s for s in segs if s["out"] <= now_ms]
     if not done:
         return None
-    todays = [s for s in done if _rest_day(s["in"]) == today]
+    todays = [s for s in done if not s.get("lone") and _rest_day(s["in"]) == today]
     if todays:
         h = sum(s["out"] - s["in"] for s in todays) / 3600000
         if h >= REST_DAY_MAX_H:
             return {"code": "cap", "warn": True, "reason": f"你今天已經上班 {_js_round1(h)} 小時（一天最多 {REST_DAY_MAX_H} 小時）",
                     "hint": "再上班會超過 10 小時，請先跟店長確認", "until": None}   # 2026-11-06 起只提醒
         return None   # 同一天的第二段不看間隔
-    last = done[-1]
+    ends = [s for s in done if not s.get("lone") or s["day"] < today]   # 今天的孤單下班卡不算上一段的結束
+    if not ends:
+        return None
+    last = ends[-1]
     until = last["out"] + REST_GAP_H * 3600000
     if now_ms >= until:
         return None

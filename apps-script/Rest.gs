@@ -6,6 +6,9 @@
      ②上一段班在前一天以前 → 距離那張下班卡不到 11 小時就擋（照舊）
    - 跨店一起算：同一個人（姓名去空白）在別家店的打卡也算，別家店的試算表 ID 在 RestConfig.gs（只放 ~/mala-gas，不進公開 repo）。
    - 上一段忘了打下班卡（沒有下班時間）＝算不出間隔，不擋。沒有例外（主管 QR 也擋）。
+   - 上一段忘了打上班卡、只有下班卡（2026-11-11 B07）：下班時間是知道的，班距照算；那一段不知道幾點上班，時數算 0。
+     只認「今天以前」的（凌晨 06:00 前的下班卡算前一天）；今天的孤單下班卡不算——可能是第一段忘了打上班卡的二段班，
+     也不能讓人先按一張下班卡來繞過班距。超過 16 小時配不成段的下班卡照舊不算。
    - 總開關：指令碼屬性 REST_RULE_ON 恰為 '1' 才擋（Eason 先通知店長再開）。
    - 任何一步出錯一律不擋（不能讓打卡因為這道檢查壞掉）。
    七店整檔共用；handleClock（各店 程式碼.js）與 liff_status 呼叫。 */
@@ -31,7 +34,10 @@ function restHm_(ms) { return Utilities.formatDate(new Date(ms), 'Asia/Taipei', 
 function restMd_(ms) { return Utilities.formatDate(new Date(ms), 'Asia/Taipei', 'M/d'); }
 
 /** 打卡列（{ts,type,status}，可混多家店）→ 段落 [{in, out}]（毫秒）。算數＝非 rejected_*（同 lastCountedEvent）。
- *  上班卡後面接的是上班卡＝前一張沒有下班卡（忘打），那段不成立；下班卡前面沒有上班卡也不算。 */
+ *  上班卡後面接的是上班卡＝前一張沒有下班卡（忘打），那段不成立（算不出幾點下班）。
+ *  下班卡前面沒有上班卡（上班卡忘了打，或被擋沒入帳）：2026-11-11（B07）起當成一段「只知道結束時間」的班
+ *  {in:下班時間, out:下班時間, lone:true, day}——時數是 0；凌晨 06:00 前的歸前一天（同 Code.gs loneOutDate_）。
+ *  restJudge_ 只拿「今天以前」的這種段當上一段的結束。前面有上班卡、但超過 16 小時配不成段的下班卡照舊不算。 */
 function restSegments_(evs) {
   var list = (evs || []).filter(function (e) {
     return (e.type === 'in' || e.type === 'out') && String(e.status || '').indexOf('rejected_') !== 0 && !isNaN(restMs_(e.ts));
@@ -41,6 +47,7 @@ function restSegments_(evs) {
   list.forEach(function (e) {
     if (e.type === 'in') { open = e.ms; return; }
     if (open !== null && e.ms - open <= REST_PAIR_H * 3600000) segs.push({ in: open, out: e.ms });
+    else if (open === null) segs.push({ in: e.ms, out: e.ms, lone: true, day: restHm_(e.ms) <= '06:00' ? restDay_(e.ms - 86400000) : restDay_(e.ms) });
     open = null;
   });
   return segs;
@@ -50,7 +57,7 @@ function restSegments_(evs) {
 function restJudge_(segs, nowMs) {
   var today = restDay_(nowMs), done = segs.filter(function (s) { return s.out <= nowMs; });
   if (!done.length) return null;
-  var todays = done.filter(function (s) { return restDay_(s.in) === today; });
+  var todays = done.filter(function (s) { return !s.lone && restDay_(s.in) === today; });   // 只有下班卡的那段不算「今天已經上過一段」
   if (todays.length) {
     var h = todays.reduce(function (a, s) { return a + (s.out - s.in); }, 0) / 3600000;
     if (h >= REST_DAY_MAX_H) {
@@ -59,7 +66,10 @@ function restJudge_(segs, nowMs) {
     }
     return null;   // 同一天的第二段（二段班中間休息回來）不看間隔
   }
-  var last = done[done.length - 1], until = last.out + REST_GAP_H * 3600000;
+  // 上一段的結束：成段的班，加上今天以前只有下班卡的那種（今天的孤單下班卡不算，見檔頭）
+  var ends = done.filter(function (s) { return !s.lone || s.day < today; });
+  if (!ends.length) return null;
+  var last = ends[ends.length - 1], until = last.out + REST_GAP_H * 3600000;
   if (nowMs >= until) return null;
   var sameDay = restDay_(until) === today;
   return { code: 'gap', reason: '你' + (restDay_(last.out) === today ? '今天 ' : ' ' + restMd_(last.out) + ' ') + restHm_(last.out) +

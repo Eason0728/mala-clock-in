@@ -750,7 +750,9 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   // 距離扣掉定位誤差後才拿來判定（見 ACCURACY_CREDIT_CAP_M）。distance_m 欄位仍存原始距離，
   // 誤差另存 accuracy_m，兩者都留著，事後要重算判定隨時可以。
   const accuracyCredit = accuracyM === '' ? 0 : Math.min(accuracyM, ACCURACY_CREDIT_CAP_M);
-  const effectiveDistanceM = Math.max(0, distanceM - accuracyCredit);
+  // 2026-11-11（B20）：相減後再取到 0.1 公尺。兩個 0.1 一格的數字相減，「剛好等於半徑」時小數運算會多出 0.000000000000004，
+  // 被判成超出範圍（例：32.2 − 12.2）。LineHub.gs lineHubPickStore_、clock-line-core.js 同一條算式，要一起改。
+  const effectiveDistanceM = Math.max(0, Math.round((distanceM - accuracyCredit) * 10) / 10);
   const withinRange = effectiveDistanceM <= CONFIG.RADIUS_M;
 
   // 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
@@ -1257,8 +1259,11 @@ function handleMgrAddEmployeeUnlocked_(body) {
   const rosterSheet = ss.getSheetByName('roster');
   if (!rosterSheet) return { ok: false, error: 'no_roster' };
   const rows = readSheetAsObjects(rosterSheet).rows;
+  // 2026-11-11（B27）：去掉全部空白再比（LINE 綁定比對姓名就是這樣比的）。只去頭尾的話「測 試一」新增得進去，
+  // 之後兩位在 LINE 綁定時都會被當成同名而綁不了。
+  const nameKey = name.replace(/\s/g, '');
   const dup = rows.filter(function (r) {
-    return String(r.name).trim() === name && String(r.active).toLowerCase() === 'true';
+    return String(r.name).replace(/\s/g, '') === nameKey && String(r.active).toLowerCase() === 'true';
   })[0];
   if (dup) {
     return { ok: false, error: 'duplicate_name',
@@ -1404,7 +1409,7 @@ function handleMgrSetActive(body) {
   // 恢復在職要擋同名：薪資用姓名對應請假與工時，兩位同名同時在職會直接算錯錢
   if (active) {
     const dup = rows.filter(function (r) {
-      return String(r.emp_id) !== empId && String(r.name).trim() === name
+      return String(r.emp_id) !== empId && String(r.name).replace(/\s/g, '') === String(name).replace(/\s/g, '')   // 去掉全部空白再比（同新增，B27）
           && String(r.active).toLowerCase() === 'true';
     })[0];
     if (dup) {
@@ -1600,10 +1605,12 @@ function handleRecentHires(body) {
   const ss = getSS();
   const rosterSheet = ss.getSheetByName('roster');
   if (!rosterSheet) return { ok: true, hires: [] };
-  const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+  // 2026-11-11（B22）：用時間點比，不比字串。原本拿世界標準時間的字串（…Z）和名冊上台北時間的字串（…+08:00）比大小，多算 8 小時。
+  const cutoffMs = Date.now() - days * 86400000;
   const hires = readSheetAsObjects(rosterSheet).rows.filter(function (r) {
     const c = normCellTs(r.created_at);
-    return c && String(c) >= cutoff;
+    const t = c ? Date.parse(String(c)) : NaN;
+    return c && !isNaN(t) && t >= cutoffMs;
   }).map(function (r) {
     return { emp_id: String(r.emp_id), name: String(r.name),
              created_at: String(normCellTs(r.created_at)), created_by: String(r.created_by || '') };
@@ -1668,11 +1675,23 @@ function handleMgrDay(body) {
   // 未入帳嘗試次數（A4：status !== 'ok' 的事件筆數，rejected_*/pending 都算，供主管頁揭露透明度）
   const firstTs = {};
   const attemptsCount = {};
+  const earlyOut = {};   // 隔天凌晨 06:00 前的成功下班卡（可能是這天跨夜班的下班卡）
+  const nextDate = addDaysStr(date, 1);
   eventRows.forEach(function (e) {
-    if (tsDateStr(e.ts) !== date) return;
     const emp = String(e.emp_id);
+    const d = tsDateStr(e.ts);
+    if (d === nextDate && String(e.type) === 'out' && String(e.status) === 'ok' && tsHm(e.ts) <= LONE_EARLY_OUT_HM) {
+      if (!earlyOut[emp] || String(e.ts) < earlyOut[emp]) earlyOut[emp] = String(e.ts);
+    }
+    if (d !== date) return;
     if (!firstTs[emp] || String(e.ts) < firstTs[emp]) firstTs[emp] = String(e.ts);
     if (String(e.status) !== 'ok') attemptsCount[emp] = (attemptsCount[emp] || 0) + 1;
+  });
+  // 這天完全沒有卡、但隔天凌晨有一張歸到這天的孤單下班卡（晚班忘打上班卡；2026-11-10 起這張卡算前一天）：
+  // 也算這天有打卡，主管頁才看得到這張卡（2026-11-11 B05；原本兩天都看不到）。歸不歸這天由 dayPunchSegments 決定。
+  Object.keys(earlyOut).forEach(function (emp) {
+    if (firstTs[emp]) return;
+    if (dayPunchSegments(segEventRows, emp, date).segments.length) firstTs[emp] = earlyOut[emp];
   });
 
   // 「首次支援」標記：7A 自動加入、且從來沒有任何核定紀錄（主管核定過一次＝本店已認這個人，標記就消失）
@@ -1919,7 +1938,7 @@ function handleMgrApprove(body) {
       };
     });
     statusText = computeApprovalStatus(periods, punchWithMs,
-      unrecordedAttemptCount(eventRows, body.emp_id, date) > 0,
+      unresolvedAttemptCount_(eventRows, body.emp_id, date) > 0,
       hasTrip,
       noPunchBreakWindow(date));
     // 主管手動認定的遲到分鐘覆蓋系統判定（打卡沒入帳時系統算不出來）
@@ -1933,7 +1952,9 @@ function handleMgrApprove(body) {
   if (typeof reqBindCheck_ === 'function') {
     const acting = reqMgrActing_(mgr, body);
     const bind = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, punchMs, noPunchBreakWindow(date),
-      { leaves: leaves, trip_hours: tripHours, sched_day: acting ? String(body.sched_day || '') : '', sched_spans: acting && Array.isArray(body.sched_spans) ? body.sched_spans : [], diff_reason: body.diff_reason, acting: acting });
+      { leaves: leaves, trip_hours: tripHours, sched_day: acting ? String(body.sched_day || '') : '', sched_spans: acting && Array.isArray(body.sched_spans) ? body.sched_spans : [], diff_reason: body.diff_reason, acting: acting,
+        // 那天這位同仁「新手機待核准」的卡有幾張（2026-11-11 B35）：少卡被擋時訊息請主管先核准裝置
+        pending_device: eventRows.filter(function (e) { return String(e.emp_id) === String(body.emp_id) && e.status === 'pending_device_approval' && tsDateStr(e.ts) === date; }).length });
     if (bind) return bind;
   }
   const enteredAt = nowTaipeiIso();
@@ -2147,10 +2168,12 @@ function pairShifts(events) {
           return;
         }
         // 被擋的重複上班卡：距開著的 in ≥ 門檻 → 前段忘打下班（收未配對），以本卡當新段起點。
-        // 未達門檻＝手滑連按，忽略（open 不變）；沒有開著的 in → 也以本卡當新段起點（防禦，
-        // 例如視窗外的 ok in 未抓到），讓後面的 out 仍能配成段而非誤判上班忘刷卡。
+        // 未達門檻＝手滑連按，忽略（open 不變）。
+        // 沒有開著的 in → 忽略（2026-11-11 B09）。原本「防禦性」拿它當新段起點，但 2026-11-02 起同一種卡只在
+        // 10 分鐘內擋，被擋的重複卡前面一定有一張算數的上班卡；那張若不是成功的卡（新手機待核准後來被拒、
+        // 或同一秒兩筆同時到、被擋的這筆先寫進表），拿被擋的卡當起點就會變出假的「下班忘刷卡」或假的一整段。
         if (!open) {
-          open = e;
+          return;
         } else if (tsMs(e.ts) - tsMs(open.ts) >= REJECTED_IN_BREAK_MIN * 60000) {
           unmatchedIns.push(open);
           open = e;
@@ -2411,8 +2434,10 @@ const TRIP_NOTE = '出差';   // 出差當天打不了卡，狀態標這個而�
 function applyManualLate(statusText, lateMin) {
   const raw = String(lateMin == null ? '' : lateMin).trim();
   if (raw === '') return statusText;           // 留空＝不覆蓋，用系統自動判的
-  const n = Number(raw);
-  if (!isFinite(n) || n < 0) return statusText;
+  // 2026-11-11（B21）：先取整再判斷。原本 0.4 不等於 0、又被四捨五入成「遲到0分(認定)」，月表算 1 天異常。
+  const rawN = Number(raw);
+  if (!isFinite(rawN) || rawN < 0) return statusText;   // 負數先擋（-0.4 取整後是 0，不可以被當成「填 0」）
+  const n = Math.round(rawN);
   const kept = String(statusText || '').split('、')
     .filter(function (x) { return x && x.indexOf('遲到') !== 0; });
   if (n === 0) {
@@ -2421,7 +2446,7 @@ function applyManualLate(statusText, lateMin) {
     // 標一句話留痕，否則月表上看起來像系統沒抓到。
     kept.push(NO_LATE_NOTE);
   } else {
-    kept.push('遲到' + Math.round(n) + '分' + MANUAL_LATE_MARK);
+    kept.push('遲到' + n + '分' + MANUAL_LATE_MARK);
   }
   const out = kept.filter(function (x) { return x !== '正常'; });
   return out.length ? out.join('、') : '正常';
@@ -2449,6 +2474,32 @@ function unrecordedAttemptCount(eventRows, empId, dateStr) {
     if (String(e.emp_id) !== String(empId)) return;
     if (tsDateStr(e.ts) !== dateStr) return;
     if (String(e.status) !== 'ok') n++;
+  });
+  return n;
+}
+
+/**
+ * 某人某天「真的沒入帳」的打卡筆數：送出了、沒成功，而且之後也沒有補成功（2026-11-11 B08）。
+ * 核定狀態用這個判斷要不要寫「打卡未入帳，主管補登」。不算的兩種：
+ *   連按被擋（rejected_duplicate）——前面那張同型的卡已經成功；
+ *   被擋之後 10 分鐘內同一種卡重按成功（例：定位飄掉、走近一點再按一次）。
+ * 原本只要當天有任何一筆沒成功的卡就整天當成「未入帳」，多按一下，遲到分鐘與忘刷就都不見了。
+ * 主管頁顯示的嘗試次數仍用 unrecordedAttemptCount（每一筆都列出來）。
+ */
+const ATTEMPT_RETRY_OK_MS = 10 * 60000;
+function unresolvedAttemptCount_(eventRows, empId, dateStr) {
+  const mine = eventRows.filter(function (e) { return String(e.emp_id) === String(empId); });
+  let n = 0;
+  mine.forEach(function (e) {
+    if (tsDateStr(e.ts) !== dateStr) return;
+    const st = String(e.status);
+    if (st === 'ok' || st === 'rejected_duplicate') return;
+    const t = tsMs(e.ts);
+    const retried = mine.some(function (x) {
+      const d = tsMs(x.ts) - t;
+      return String(x.status) === 'ok' && String(x.type) === String(e.type) && d > 0 && d <= ATTEMPT_RETRY_OK_MS;
+    });
+    if (!retried) n++;
   });
   return n;
 }
@@ -2511,20 +2562,57 @@ function loneCardsForPeriods_(periods, fullSegs, punchSegments) {
   return best;
 }
 
+/**
+ * 核定時段依「規定不打卡的休息帶」（央廚 12–13、總部 14–15）分塊，回傳依時間排序的
+ * [{ startMs, endMs, firstNo, lastNo }]（段號＝原始時段依時間先後的序號）。沒有休息帶＝每段自己一塊。
+ * 2026-11-10 起，休息帶隔開的兩段併成一塊（否則照規定不打午休卡的人，漏一張卡會寫成三張）。
+ * 2026-11-11（B01）：併成一塊以後只會拿一條打卡段去比，午休照樣打卡的人四張卡準時也變成
+ * 「早退300分、有多出的打卡段」。所以只在「併了才講得通」的時候併：
+ *   ① 那一塊裡只要有一段配得到完整打卡段，就拆回各段自己比（2026-11-10 以前的比法；
+ *      一長段跨過休息帶的人，兩段都配到同一條、空檔由休息帶解釋，結果和併起來一樣）。
+ *   ② 整塊都沒有完整打卡段（只有單張卡或完全沒卡）：併與不併各算配得到幾張單張卡，
+ *      不併配得到比較多張（休息帶前後有打卡）才拆；一樣多照舊併（只漏一張卡＝只寫一張）。
+ * computeApprovalStatus 與 Requests.gs reqBindMissCards_ 共用，狀態寫的忘刷張數和要補的單才會一致。
+ */
+function breakBlocksFor_(periods, punchSegments, breakWindow) {
+  const sorted = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
+  const mk = function (p, k) { return { startMs: p.startMs, endMs: p.endMs, firstNo: k + 1, lastNo: k + 1 }; };
+  const plain = sorted.map(mk);
+  if (!breakWindow) return plain;
+  const merged = sorted.reduce(function (acc, p, k) {
+    const last = acc[acc.length - 1];
+    if (last && p.startMs > last.endMs && gapExplainedByBreak(last.endMs, p.startMs, breakWindow)) {
+      last.endMs = Math.max(last.endMs, p.endMs); last.lastNo = k + 1;
+    } else acc.push(mk(p, k));
+    return acc;
+  }, []);
+  if (merged.length === plain.length) return plain;   // 沒有被休息帶隔開的時段
+  const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
+  const hasFull = function (b) {
+    return fullSegs.some(function (s) { return Math.min(b.endMs, s.outMs) - Math.max(b.startMs, s.inMs) > 0; });
+  };
+  // ① 有完整打卡段的那一塊拆回各段
+  const blocks = [];
+  merged.forEach(function (b) {
+    const parts = sorted.slice(b.firstNo - 1, b.lastNo).map(function (p, i) { return mk(p, b.firstNo - 1 + i); });
+    if (parts.length > 1 && parts.some(hasFull)) parts.forEach(function (x) { blocks.push(x); });
+    else blocks.push(b);
+  });
+  if (blocks.length === plain.length) return plain;
+  // ② 剩下還併著的：不併配得到比較多張單張卡才拆
+  const loneUsed = function (bs) { return Object.keys(loneCardsForPeriods_(bs, fullSegs, punchSegments)).length; };
+  return loneUsed(plain) > loneUsed(blocks) ? plain : blocks;
+}
+
 function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip, breakWindow) {
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
   const legacy = !!(isTrip || hadUnrecordedAttempts);   // 出差、打卡未入帳：照舊標示，不冤枉人
   // 段號照店長輸入的核定時段（依時間先後）；規定不打卡的休息帶（央廚）隔開的兩段併成一塊，和補單張數一致
   //（2026-11-10；否則漏一張卡會寫成三張）。併起來的那塊：上班卡用第一段的段號、下班卡用最後一段的段號。
+  // 午休照樣打卡的同仁不併、各段自己比（2026-11-11 B01，判斷在 breakBlocksFor_）。
   const sortedP = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
   const multiOrig = sortedP.length > 1;
-  const blocks = sortedP.reduce(function (acc, p, k) {
-    const last = acc[acc.length - 1];
-    if (!legacy && breakWindow && last && p.startMs > last.endMs && gapExplainedByBreak(last.endMs, p.startMs, breakWindow)) {
-      last.endMs = Math.max(last.endMs, p.endMs); last.lastNo = k + 1;
-    } else acc.push({ startMs: p.startMs, endMs: p.endMs, firstNo: k + 1, lastNo: k + 1 });
-    return acc;
-  }, []);
+  const blocks = breakBlocksFor_(sortedP, punchSegments, legacy ? null : breakWindow);
   if (!legacy && breakWindow) periods = blocks;
   const lone = legacy ? {} : loneCardsForPeriods_(periods, fullSegs, punchSegments);
   const multi = periods.length > 1 && multiOrig;
@@ -2994,6 +3082,9 @@ function rebuildMonth(ym) {
           status_text: r.status_text,
           manager_name: r.manager_name,
           entered_at: normCellTs(r.entered_at),
+          // 主管認定的重複打卡（2026-11-06）：要一起帶，buildMonthlySheet 才能把被認定的那張卡拿掉再配對。
+          // 2026-11-10 驗收查到這裡原本沒帶，月表照樣把那張卡配成「下班忘刷卡」、異常天數多 1。
+          dup_ignore: r.dup_ignore,
         };
       })
     : [];
@@ -3065,7 +3156,8 @@ const RECHECK_MARK = '（系統重算）';
 /**
  * 單筆核定紀錄的重算（2026-09-21 從 recheckPendingApprovalStatuses 抽出，行為不變）。
  * recheckPendingApprovalStatuses 與 backfillMissingPunchGroups 共用，禁止各自重寫判斷。
- * 回 { skip:'no_periods'|'manual_late' } ＝這筆不該動；回 { name, newStatusText } ＝算得出新狀態
+ * 回 { skip:'no_periods' } ＝這筆不該動；回 { name, newStatusText, manual_late } ＝算得出新狀態
+ * （manual_late＝原狀態有主管認定的遲到，已原樣保留在新狀態裡；2026-11-11 以前這種日子回 skip:'manual_late'）
  * （newStatusText 可能與原本相同，由呼叫端決定要不要寫）。
  */
 function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) {
@@ -3089,16 +3181,24 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) 
   });
   // 名冊的名字優先（有人改過名時 approved 上是舊名），查不到才退回 approved 那筆的 name。
   const rosterNow = findRosterByEmpId(rosterRows, empId);
-  // ⚠ 主管手動認定的遲到不能被重算洗掉——原狀態帶「(認定)」就整筆跳過。
+  // ⚠ 主管手動認定的遲到不能被重算洗掉。2026-11-11（B06）以前是「原狀態帶認定就整筆跳過」，
+  //   結果主管核定後同仁才補打的下班卡，永遠不會讓「下班忘刷卡」消失。現在重算打卡比對的部分，
+  //   再把主管認定的那一項（遲到N分(認定)／主管認定不計遲到）原樣放回去，系統算的遲到照舊被它取代。
   const st0 = String(rec.status_text || '');
-  if (st0.indexOf(MANUAL_LATE_MARK) !== -1 || st0.indexOf(NO_LATE_NOTE) !== -1) return { skip: 'manual_late' };
-
+  const manualNote = st0.split('、').filter(function (x) { return x.indexOf(MANUAL_LATE_MARK) !== -1 || x === NO_LATE_NOTE; })[0] || '';
+  let st = computeApprovalStatus(periods, punchWithMs,
+    unresolvedAttemptCount_(eventRows, empId, date) > 0,
+    isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name),
+    noPunchBreakWindow(date));
+  if (manualNote) {
+    const kept = st.split('、').filter(function (x) { return x && x !== '正常' && x.indexOf('遲到') !== 0; });
+    kept.push(manualNote);
+    st = kept.join('、');
+  }
   return {
     name: rosterNow ? rosterNow.name : rec.name,
-    newStatusText: applyDupNote_(computeApprovalStatus(periods, punchWithMs,
-      unrecordedAttemptCount(eventRows, empId, date) > 0,
-      isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name),
-      noPunchBreakWindow(date)), dupIgnoreList_(rec.dup_ignore)),
+    newStatusText: applyDupNote_(st, dupIgnoreList_(rec.dup_ignore)),
+    manual_late: !!manualNote,   // 回填工具用：主管認定過的日子不自動改
   };
 }
 
@@ -3225,10 +3325,9 @@ function backfillMissingPunchGroups(fromDate, toDate, apply) {
       scanned++;
 
       const r = recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec);
-      if (r.skip) {
-        if (r.skip === 'manual_late') {
-          skipped.push({ date: date, emp_id: empId, name: rec.name, from: statusText, reason: '主管手動認定，不自動改' });
-        }
+      if (r.skip) return;
+      if (r.manual_late) {   // 回填只補「少刷」字樣，主管認定過的日子照舊不自動改
+        skipped.push({ date: date, emp_id: empId, name: rec.name, from: statusText, reason: '主管手動認定，不自動改' });
         return;
       }
       if (r.newStatusText === statusText) return;                    // 沒變，本來就對

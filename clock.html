@@ -750,6 +750,10 @@
    * 快照由 renderTodayEvents 每次成功畫面時同步更新（唯一寫入點），
    * doClock 送出前讀一份現在的快照當基準，confirmPunch 拿新資料跟這份基準比。 */
   var todaySnapshot = { in: { count: 0, lastTs: '' }, out: { count: 0, lastTs: '' } };
+  /* 2026-11-11（B17）：開頁資料畫出來以前，上面的快照是空的、不能當基準。
+     打卡鍵不等開頁資料就能按，那時候拿空快照去比，今天稍早打過同一種卡就一定「有變化」，
+     這次沒進去的卡會被講成「已經完成，不用再按」。這個旗標記「快照是不是真的」。 */
+  var todaySnapshotKnown = false;
 
   /** today_events 裡某個 type 最新一筆（依 ts 排序，不假設陣列本身已排好序）。 */
   function findLatestByType(events, type) {
@@ -769,7 +773,27 @@
   }
 
   function snapshotTodayByType(events) {
-    todaySnapshot = { in: computeTypeStat(events, 'in'), out: computeTypeStat(events, 'out') };
+    todaySnapshot = { in: computeTypeStat(events, 'in'), out: computeTypeStat(events, 'out') }; todaySnapshotKnown = true;
+  }
+
+  /** 回頭確認的判斷（2026-11-11 B17 抽出來）：這次送出的卡有沒有進去。
+   *  snap＝送出那一刻的基準 {count, lastTs, known, sentAt}。回 {state, found}：
+   *    landed＝進去了（found 是那張卡）；not_sent＝沒有送出；unsure＝沒辦法判斷（found 是今天最新一張同型卡）。
+   *  有基準（known）：只比送出前後今日紀錄有沒有變，完全不看手機時鐘（見上方 todaySnapshot 的說明）。
+   *  沒有基準（送出時開頁資料還沒回來）：今天沒有這種卡＝沒有送出；最新一張同型卡的時間在
+   *    「手機送出時間往前 2 分鐘」之後才算這次的（容許手機時鐘快 2 分鐘；慢的話，10 分鐘內的同型卡本來就會被擋，
+   *    說「不用再按」也對）；更早的卡不能當成這次的 → unsure，畫面請同仁看今日紀錄。 */
+  function punchLanded(events, type, snap) {
+    var found = findLatestByType(events, type);
+    if (snap && snap.known) {
+      var after = computeTypeStat(events, type);
+      var changed = after.count > snap.count || after.lastTs !== snap.lastTs;
+      return changed && found ? { state: 'landed', found: found } : { state: 'not_sent', found: null };
+    }
+    if (!found) return { state: 'not_sent', found: null };
+    var t = new Date(String(found.ts)).getTime();
+    if (snap && snap.sentAt && !isNaN(t) && t >= snap.sentAt - 120000) return { state: 'landed', found: found };
+    return { state: 'unsure', found: found };
   }
 
   function duplicateMessage(lastType) {
@@ -1387,22 +1411,21 @@
         renderTodayHours(res.today_hours);
         updateButtonStates(res.last_counted);
 
-        var after = computeTypeStat(res.today_events, type);
         // 主判準：這個 type 的紀錄「筆數變多」或「最新一筆的 ts 字串跟送出前不同」
         // 就代表是這次那筆進去了——完全不比對時間戳快慢，避免手機時鐘偏差誤判
         // （2026-09-21 修正：原本拿 Date.now() 當基準，手機時鐘快幾分鐘會把剛寫進去
         // 的那筆判成太舊、誤判成「沒有送出」，反而讓她真的再按一次）。
-        var changed = after.count > beforeSnap.count || after.lastTs !== beforeSnap.lastTs;
-        if (!changed) {
+        // 2026-11-11（B17）：判斷搬到 punchLanded；送出時開頁資料還沒回來（沒有基準）另外處理。
+        var verdict = punchLanded(res.today_events, type, beforeSnap);
+        if (verdict.state === 'unsure') {
+          showStatus('status-warn', '⚠ 連線不穩，沒辦法確認這次有沒有送出。請看下面的今日紀錄：看得到剛才這一筆就是打好了，看不到請再按一次');
+          return;
+        }
+        if (verdict.state !== 'landed') {
           showStatus('status-warn', '✕ 這次沒有送出，請再按一次');
           return;
         }
-        var found = findLatestByType(res.today_events, type);
-        if (!found) {
-          // 理論上不會發生（changed 已經代表至少有一筆），純防禦
-          showStatus('status-warn', '✕ 這次沒有送出，請再按一次');
-          return;
-        }
+        var found = verdict.found;
         if (found.status === 'ok') {
           showStatus('status-ok', withGreeting('✓ 剛才那筆打卡已經完成　' + String(found.ts || '').substring(11, 16)
             + '，剛剛只是畫面卡住，不用再按一次', type, found.ts));
@@ -1454,15 +1477,17 @@
     setBusy(true);
     showStatus('status-loading', '定位中…');
     // 送出「之前」先讀一份目前畫面上的快照當基準（見上方 todaySnapshot 說明）。
-    // 開頁 whoami 還沒回來時 todaySnapshot[type] 就是初始值 {count:0, lastTs:''}，
-    // 這樣 confirmPunch 只要查到任何一筆同型紀錄就會判定「有變化」，正確。
-    var beforeSnap = { count: todaySnapshot[type].count, lastTs: todaySnapshot[type].lastTs };
+    // 2026-11-11（B17）：基準改在「送出那一刻」才取（下面 requestSent = true 那裡）——等定位的幾秒裡
+    // 開頁 whoami 常常已經回來了。到送出時還沒回來＝沒有基準（known:false），由 punchLanded 另外判斷，
+    // 不再拿空的快照去比（今天稍早打過同一種卡就會被講成「已經完成」）。
+    var beforeSnap = { count: 0, lastTs: '', known: false, sentAt: 0 };
     var requestSent = false; // 是否已經送出 clock 請求；沒送出就沒有東西可查證
     // 第一次定位不理想時會多等幾秒，這裡把原因寫出來，不要讓同仁以為畫面當掉
     getPosition(function () { showStatus('status-loading', '定位中…（訊號較弱，再抓一次）'); })
       .then(function (pos) {
         showStatus('status-loading', '送出打卡中…');
         requestSent = true;
+        beforeSnap = { count: todaySnapshot[type].count, lastTs: todaySnapshot[type].lastTs, known: todaySnapshotKnown, sentAt: Date.now() };
         return apiPost(mkPayload('clock', {
           type: type,
           lat: pos.coords.latitude,

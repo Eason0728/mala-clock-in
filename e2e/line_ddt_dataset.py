@@ -289,24 +289,59 @@ def ot_hint(evs, out_ts, requests):
     if not mine:
         return None
     date = mine[0][2]
-    ms = sum((s[1][0] - s[0][0]).total_seconds() * 1000 for s in segs if s[0][2] == date)
+    # 核定加嚴生效的日子（2026-11-11 起）：每段上班進位、下班捨去到 15 分鐘再相減（和主管頁的參考時數同一套）；以前的日子照實際分秒
+    grid = date >= '2026-11-11'
+    def seg_ms(a, b):
+        if not grid:
+            return (b - a).total_seconds() * 1000
+        am, bm = int(a.timestamp() // 60), int(b.timestamp() // 60)
+        return max(0, (bm // 15) * 15 - (-(-am // 15)) * 15) * 60000
+    ms = sum(seg_ms(s[0][0], s[1][0]) for s in segs if s[0][2] == date)
     hours = js_round(ms / 36000) / 100
     if hours <= OT_HINT_H:
         return None
     if any(r['kind'] == 'ot' and r['date'] == date and r['status'] in ('pending', 'approved') for r in requests):
         return None
     end = out_ts[11:16]
+    if grid:
+        end = min_hm((hm_min(end) // 15) * 15)
     start_min = hm_min(end) - (ms - OT_HINT_H * 3600000) / 60000
     start_min = (math.floor(start_min / 15) * 15) % 1440
     return {'date': date, 'hours': hours, 'start': min_hm(int(start_min)), 'end': end}
 
 
 # ══ 那一天缺哪張卡（Requests.gs reqDayInfo_ 規格）═══════════
-def day_info(evs, date):
+def sent_cards(sent, evs):
+    """已送出（審核中、已核准）的忘打卡申請算已經補上的卡（2026-11-11）：
+    補上班＝一張上班卡；補下班＝一張下班卡（凌晨 06:00 前、當天又有比它晚的上班卡＝隔天凌晨）；
+    整段＝上班＋下班（下班早於上班＝隔天）；中間休息＝休息開始的下班卡＋回來的上班卡。
+    同一分鐘時下班卡排在上班卡前面（上班卡記在那一分鐘的最後一秒）。這些卡不列在畫面的「當天紀錄」。"""
+    nxt = lambda d: (datetime.strptime(d, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+    out = []
+    card = lambda d, hm, typ: out.append({'ts': '%sT%s:%s+08:00' % (d, hm, '59' if typ == 'in' else '00'), 'type': typ, 'status': 'ok', 'sent': True})
+    for r in sent or []:
+        d, mt, st, en = r['date'], r['miss_type'], r.get('start'), r.get('end')
+        if mt == 'in':
+            card(d, st, 'in')
+        elif mt == 'out':
+            later_in = any(e['type'] == 'in' and not str(e['status']).startswith('rejected_') and e['ts'][:10] == d and e['ts'][11:16] >= en for e in evs)
+            card(nxt(d) if (en <= REQ_EARLY_OUT_HM and later_in) else d, en, 'out')
+        elif mt == 'both':
+            card(d, st, 'in')
+            card(nxt(d) if hm_min(en) < hm_min(st) else d, en, 'out')
+        elif mt == 'break':
+            card(d, en, 'out')
+            card(nxt(d) if hm_min(st) < hm_min(en) else d, st, 'in')
+    return out
+
+
+def day_info(evs, date, sent=None):
+    """sent：這個人已送出的忘打卡申請（[{date, miss_type, start, end}]）；沒帶＝只看真的打卡。"""
     lo = (datetime.strptime(date, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
     hi = (datetime.strptime(date, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
-    allp = sorted([{'type': e['type'], 'hm': e['ts'][11:16], 'status': str(e['status']), 'date': e['ts'][:10], 't': parse_iso(e['ts'])}
-                   for e in evs if lo <= e['ts'][:10] <= hi], key=lambda p: p['t'])
+    sent = [r for r in (sent or []) if lo <= r['date'] <= hi]
+    allp = sorted([{'type': e['type'], 'hm': e['ts'][11:16], 'status': str(e['status']), 'date': e['ts'][:10], 't': parse_iso(e['ts']), 'sent': bool(e.get('sent'))}
+                   for e in list(evs) + sent_cards(sent, evs) if lo <= e['ts'][:10] <= hi], key=lambda p: (p['t'], 0 if p['type'] == 'out' else 1))
     segs, open_ins, lone_outs, open_ = [], [], [], None
     for p in allp:
         if p['status'].startswith('rejected_'):
@@ -329,7 +364,8 @@ def day_info(evs, date):
     mine_ins = [p for p in open_ins if p['date'] == date]
     mine_outs = [p for p in lone_outs if day_of(p) == date]
     mine_segs = [s for s in segs if s[0]['date'] == date]
-    show = [p for p in allp if p['date'] == date] + [p for p in allp if p['date'] == hi and (any(s[1] is p for s in mine_segs) or p in mine_outs)]
+    show = [p for p in allp if p['date'] == date and not p['sent']] + \
+           [p for p in allp if p['date'] == hi and not p['sent'] and (any(s[1] is p for s in mine_segs) or p in mine_outs)]
     punches = [{'type': p['type'], 'hm': p['hm'] + ('(+1)' if p['date'] != date else ''), 'status': p['status']} for p in show]
     if not mine_segs and not mine_ins and not mine_outs:
         opts = ['both']
@@ -344,7 +380,8 @@ def day_info(evs, date):
         opts.append('both')
     lo1 = mine_outs[0] if mine_outs else None
     return {'punches': punches, 'options': opts, 'open_in': mine_ins[-1]['hm'] if mine_ins else None,
-            'lone_out': lo1['hm'] if lo1 else None, 'lone_out_next': bool(lo1 and lo1['date'] != date), 'spans': spans}
+            'lone_out': lo1['hm'] if lo1 else None, 'lone_out_next': bool(lo1 and lo1['date'] != date), 'spans': spans,
+            'sent': [r for r in sent if r['date'] == date]}
 
 
 def rec_text(punches):
@@ -359,8 +396,15 @@ MISS_LABEL_BOTH_WITH_PUNCH = '另一段班整段沒打'
 
 
 def miss_label(key, di):
-    """req-line.js 的 LBL：'both' 在當天有打卡紀錄時寫「另一段班整段沒打」，整天沒卡才寫「上班和下班都沒打」"""
-    return MISS_LABEL_BOTH_WITH_PUNCH if key == 'both' and di['punches'] else MISS_LABEL[key]
+    """req-line.js 的 LBL：'both' 在當天有打卡紀錄、或已經送出過忘打卡申請時寫「另一段班整段沒打」，都沒有才寫「上班和下班都沒打」"""
+    return MISS_LABEL_BOTH_WITH_PUNCH if key == 'both' and (di['punches'] or di.get('sent')) else MISS_LABEL[key]
+
+
+def sent_text(sent, status='審核中'):
+    """req-line.js：'已送出的忘打卡申請：整段 10:00–14:00（審核中）、下班卡 21:00（審核中）'（照送出先後）"""
+    one = lambda r: ('整段 %s–%s' % (r['start'], r['end']) if r['miss_type'] == 'both' else '上班卡 ' + r['start'] if r['miss_type'] == 'in'
+                     else '下班卡 ' + r['end'] if r['miss_type'] == 'out' else '中間休息 %s–%s' % (r['end'], r['start'])) + '（%s）' % status
+    return '已送出的忘打卡申請：' + '、'.join(one(r) for r in sent)
 
 
 def req_summary(r):
