@@ -255,6 +255,28 @@ console.log('══ 版面（與 mini renderMessage 逐字一致）══');
   })(), [true, true, false]);
 }
 
+// 前一天 daily 未帶出＋今天 mini 送 empty 批：期望字串由 node 實跑 mini renderMessage([昨天批, 今天 empty 批], {today}) 取得後寫死
+const EXP_EMPTY_RESIDUE = ['【考勤異常】12/09–12/10\n\n▍12/09 墨竹亭金山\n・林小美 12/08（例假）出勤 6 小時\n\n請各單位到「考勤管理」處理。'];
+{
+  const y = { run_date: '2026-12-09', batch_id: '2026-12-09-yyyyyyyyyyyy', seq: 1, daily: [{ store: '墨竹亭金山', lines: ['林小美 12/08（例假）出勤 6 小時'] }], state: [], sched: [], failed_stores: [] };
+  const e = { run_date: '2026-12-10', batch_id: '2026-12-10-eeeeeeeeeeee', seq: 2, empty: true };
+  const c = bound({ now: Date.parse('2026-12-09T08:50:00+08:00') });
+  const render = (b, o) => JSON.parse(vm.runInContext('(function(){return JSON.stringify(attAlertRenderMessage_(JSON.parse(__b), JSON.parse(__o)))})()', Object.assign(c.sb, { __b: JSON.stringify(b), __o: JSON.stringify(o || {}) })));
+  chk('empty 批＋殘留 daily：直接呼叫純函式＝mini 字串', render([y, e], { today: '2026-12-10' }), EXP_EMPTY_RESIDUE);
+  c.enqueue(y); c.setNow(Date.parse('2026-12-10T08:50:00+08:00')); c.enqueue(e);
+  chk('empty 批不寫列、ATT_RUN＝empty', [c.queue().length, c.props['ATT_RUN_2026-12-10']], [1, 'empty']);
+  c.setNow(Date.parse('2026-12-10T09:05:00+08:00')); c.onEvent(msgEv(GROUP, '早', 'EVE1'));
+  chk('empty 批＋殘留 daily：經 enqueue→佇列→帶出，逐字同 mini', c.net.replies.map(r => r.body.messages.map(m => m.text))[0], EXP_EMPTY_RESIDUE);
+  chk('殘留 daily 列 delivered', c.status(), ['daily:delivered']);
+}
+// sched 段標題行有印出 → delivered，不記 truncated
+{
+  const c = bound();
+  c.enqueue(Object.assign({}, schedPayload(SCHED_CASES[0]), { run_date: '2026-12-10', batch_id: '2026-12-10-ssssssssssss', seq: 5 }));
+  c.onEvent(msgEv(GROUP, '早', 'SCH1'));
+  chk('sched 標題行印出→整批 delivered（無 truncated）', c.status().every(x => x.endsWith(':delivered')), true);
+}
+
 // ═══════════════ 5 綁定 ═══════════════
 console.log('══ 群組綁定 ══');
 const join = (c, g) => c.onEvent({ type: 'join', replyToken: 'RTJ', source: { type: 'group', groupId: g || GROUP } });

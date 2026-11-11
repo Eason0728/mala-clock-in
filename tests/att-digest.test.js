@@ -163,7 +163,7 @@ console.log('══ att_digest_data ══');
   ] });
   const r = c.digest(base);
   chk('newly_approved 開閉區間＋不受工作日限制', r.newly_approved.map(x => x.date + ':' + x.approved_hours), ['2026-10-02:6', '2026-11-01:7']);
-  chk('newly_approved 欄位', Object.keys(r.newly_approved[0]).sort(), ['approved_hours', 'date', 'emp_id', 'entered_at', 'leave_hours', 'manager_name', 'name', 'status_text', 'store']);
+  chk('newly_approved 欄位', Object.keys(r.newly_approved[0]).sort(), ['approved_hours', 'date', 'emp_id', 'entered_at', 'home_hidden', 'leave_hours', 'manager_name', 'name', 'status_text', 'store']);
   chk('newly_approved 帶 store＋+08:00', [r.newly_approved[0].store, /\+08:00$/.test(r.newly_approved[0].entered_at)], ['mztjs', true]);
   // 主管手動填遲到（2026-11-08）：狀態欄與核定人原樣帶出
   const cl = makeCtx({ approved: [['2026-11-02', 'E01', 'Amy', 'x', 8, '早退5分、主管認定不計遲到', '李大同（DZY0001）', '2026-11-06T10:00:00+08:00']] });
