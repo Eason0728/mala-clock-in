@@ -651,7 +651,7 @@ def register(ns):
         grid = d >= REQ_STRICT_FROM   # 加嚴生效的日子：每段上班進位、下班捨去到 15 分鐘（同 Requests.gs reqGridMs_）
         grid_secs = lambda a, b: max(0, (int(b // 60) // 15) * 15 - (-(-int(a // 60) // 15)) * 15) * 60
         secs = sum((grid_secs(x[0][0], x[1][0]) if grid else x[1][0] - x[0][0]) for x in segs if x[0][2] == d)
-        hours = round(secs / 3600, 2)
+        hours = math.floor(secs / 36 + 0.5) / 100   # 同 Requests.gs 的 Math.round(…×100)/100（Python round 是銀行家捨入，11.555 會變 11.55）
         if hours <= OT_HINT_H:
             return None
         if any(r["emp_id"] == emp_id and r["kind"] == "ot" and r["date"] == d and r["status"] in ("pending", "approved") for r in rows):
