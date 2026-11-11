@@ -1369,7 +1369,8 @@ function reqWorkingSegs_(segs, date) {
   if (!last || last.inMs == null || last.outMs != null) return segs;   // 最後一張不是沒配對的上班卡
   if (!last.working) return segs;                                       // 後面還有別的卡，或已經超過 16 小時
   var nowMs = new Date(nowIso).getTime();
-  if (nowMs - last.inMs > REQ_PAIR_MS) return segs;                     // 超過 16 小時配不成一段，不算還在上班
+  // 16 小時只由 working（Code.gs markWorkingSeg_，用含秒的打卡時間）判一次；這裡不再用捨到分鐘的 inMs 重判，
+  // 否則滿 16 小時前不到 1 分鐘，畫面說上班中、核定卻說少一張卡（獨立審查補）
   return segs.map(function (x) {
     return x === last ? { in: x.in, out: null, inMs: x.inMs, outMs: Math.max(nowMs, x.inMs + 60000) } : x;
   });

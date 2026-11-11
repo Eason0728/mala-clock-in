@@ -128,7 +128,8 @@ function handleAttDigestData(body) {
     const punch = hasPunch ? dayPunchSegments(segBy[emp] || [], emp, d) : null;
     const rec = (approvedMap[d] || {})[emp];
     // 以「歸屬該日的上班事件」判斷：該日有上班嘗試、但沒有任何 status=ok 的上班事件（前一晚跨夜的下班卡不能遮住）
-    const inEvs = (rawBy[emp] || []).filter(function (e) { return tsDateStr(e.ts) === d && String(e.type) === 'in'; });
+    // 打完卡 10 分鐘內被擋的卡（rejected_too_soon，B33）是手滑重按，不算「上班嘗試」（獨立審查補）
+    const inEvs = (rawBy[emp] || []).filter(function (e) { return tsDateStr(e.ts) === d && String(e.type) === 'in' && String(e.status) !== 'rejected_too_soon'; });
     const blocked = inEvs.length > 0 && !inEvs.some(function (e) { return String(e.status) === 'ok'; });
     const at = rec ? String(normCellTs(rec.entered_at)).trim() : '';
     if (!rec && !blocked && !(punch && punch.segments.length)) return null;
