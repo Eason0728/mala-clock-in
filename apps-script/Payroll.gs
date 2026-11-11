@@ -688,16 +688,34 @@ function payDateStr(v) {
 
 /** 主檔存檔用的到職日／離職日檢查（薪酬挑錯第 13 項，Eason 2026-11-11 確認）：只收空白或 YYYY-MM-DD，而且要是真實存在的日期。
  *  '2026/10/12'、'115/10/12' 這種寫法 payRatio 認不得，會當成整月在職、發整月薪水，所以存檔時就擋。
- *  Sheets 把純日期轉成的 Date 物件先用 payDateStr 正規化；字串只去頭尾空白（不截斷，'2026-10-12T00:00' 不收）。
+ *  第 13 項補洞（2026-11-11）：試算表把純日期存成 Date 物件，payroll_master_get／payroll_month 回給前端時 JSON 會變成
+ *  '2023-07-02T16:00:00.000Z'（台北 07-03 00:00），前端原樣送回會被擋、整家店存不進去。所以這兩種先換成台北日期再檢查：
+ *   ・Date 物件 → 台北時區的 YYYY-MM-DD（payTaipeiYmd_，不靠執行環境的時區）
+ *   ・JSON 的 ISO 時間字串（YYYY-MM-DDTHH:MM:SS(.sss)Z，日期與時分秒都要真實存在）→ 台北時區的 YYYY-MM-DD
+ *  其他字串只去頭尾空白（不截斷）：斜線、民國年、沒有時區的 '2026-10-12T00:00:00'、帶位移的 '+08:00' 都不收。
  *  回 { ok, value }：value＝要存進去的字串（空白一律存 ''）。 */
 function payMasterDateCheck_(v) {
-  const t = (v instanceof Date) ? payDateStr(v) : String(v == null ? '' : v).trim();
+  const isDate = v instanceof Date;
+  let t = isDate ? payTaipeiYmd_(v.getTime()) : String(v == null ? '' : v).trim();
+  if (isDate && t === '') return { ok: false, value: '' };   // 壞掉的 Date 物件
   if (t === '') return { ok: true, value: '' };
+  const realDay = function (y, mo, d) { return mo >= 1 && mo <= 12 && d >= 1 && d <= new Date(y, mo, 0).getDate(); };
+  const iso = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/.exec(t);
+  if (iso) {
+    const y = +iso[1], mo = +iso[2], d = +iso[3], hh = +iso[4], mi = +iso[5], ss = +iso[6];
+    if (!realDay(y, mo, d) || hh > 23 || mi > 59 || ss > 59) return { ok: false, value: t };
+    t = payTaipeiYmd_(Date.UTC(y, mo - 1, d, hh, mi, ss, iso[7] ? +(iso[7] + '00').slice(0, 3) : 0));
+  }
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
   if (!m) return { ok: false, value: t };
-  const y = +m[1], mo = +m[2], d = +m[3];
-  const real = mo >= 1 && mo <= 12 && d >= 1 && d <= new Date(y, mo, 0).getDate();
-  return { ok: real, value: t };
+  return { ok: realDay(+m[1], +m[2], +m[3]), value: t };
+}
+/** 某個時間點（毫秒）在台北（UTC+8，沒有日光節約）是哪一天 → 'yyyy-MM-dd'；不是有效時間回 ''。不靠執行環境的時區。 */
+function payTaipeiYmd_(ms) {
+  if (typeof ms !== 'number' || isNaN(ms)) return '';
+  const t = new Date(ms + 8 * 3600000);
+  if (isNaN(t.getTime())) return '';
+  return t.getUTCFullYear() + '-' + pad2(t.getUTCMonth() + 1) + '-' + pad2(t.getUTCDate());
 }
 /** 整批主檔的到職日／離職日檢查：回不合格的格子（「編號 欄位名」，照送來的順序）；
  *  全部合格時把正規化後的字串寫回各列。純函式，不碰試算表。 */
