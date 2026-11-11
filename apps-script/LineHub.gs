@@ -160,9 +160,16 @@ function lineHubBindElsewhere_(userId, body, st, want) {
   var home = null, viaLine = false;
   var UNREACH = { ok: false, error: 'unreachable', message: '有單位的系統暫時連不上，請稍後再試。' };
   var mineInfo = {};
-  var mine = lineHubMine_(userId, mineInfo).filter(function (m) { return lineHubNormName_(m.row.name) === want && m.st.code !== st.code; });
+  var mineAll = lineHubMine_(userId, mineInfo);
   // 2026-11-11（B28）：有任何一家名冊讀不到，就不下「只綁一家」「全公司恰好一位」的結論，請同仁稍後再試。
   if (mineInfo.unreadable) return UNREACH;
+  // 禁止跨品牌（2026-11-12 串接驗收 A3）：已綁兩家以上（例：光復＋央廚）的小辛辣同仁到墨竹亭輸入全名，
+  // 原本先回 name_conflict「請找主管協助加入」——會誤導主管把他加進墨竹亭；跨品牌要先擋、講清楚原因。
+  var xbElse = mineAll.filter(function (m) { return m.st.code !== st.code && lineHubCrossBrand_(m.st, st); })[0];
+  if (xbElse) {
+    return { ok: false, error: 'cross_brand', message: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(xbElse.st)] + '的同仁，不能在「' + st.name + '」打卡（小辛辣與墨竹亭不能互相支援打卡）；有問題請找店長。' };
+  }
+  var mine = mineAll.filter(function (m) { return lineHubNormName_(m.row.name) === want && m.st.code !== st.code; });
   if (mine.length === 1) { home = mine[0]; viaLine = true; }
   else if (mine.length > 1) return { ok: false, error: 'name_conflict', message: '你的 LINE 在兩個以上的單位都有綁定，請找主管協助加入「' + st.name + '」。' };
   else {
