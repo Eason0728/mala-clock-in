@@ -1817,16 +1817,17 @@ function handleMgrDay(body) {
  * ‧只認 LINE 帳號（line_user_id）完全相同；沒綁 LINE 的人不做連帶，同名不同人不會被動到。
  * ‧各店彼此開不了別人的試算表，只有光復開得了：光復自己直接做（lineHubLeftCascade_），其他店回頭通知光復（line_hub_left）。
  *   通知不帶金鑰：光復只相信自己從那家店名冊讀到的內容（那一列真的剛被設成離職、有綁 LINE），不相信通知裡寫的。
- * ‧接在 mgr_set_active／svc_set_active 的結果後面（鎖已經放掉）：剛剛（60 秒內）才被設成離職的列才做，
- *   重送同一個動作、原本就離職的不重做。連帶沒成功不影響本店的離職結果，回應的 cascade 帶結果或警告。
+ * ‧接在 mgr_set_active／svc_set_active 的結果後面（鎖已經放掉）：15 分鐘內才被設成離職的列才做；
+ *   這段時間內重送同一個動作、或主管再按一次都會再做一次（補第一次沒成功的），更早以前就離職的不做。連帶沒成功不影響本店的離職結果，回應的 cascade 帶結果或警告。
  * ‧之後本店把人恢復在職，不會自動恢復別店（維持手動）。
  * res：設離職 handler 的回應（要有 ok、emp_id、active）。回傳同一個物件；別店真的有列被停用、或沒辦法確認時多一格 cascade：
  *   {ok:true, stopped:[{store_name, emp_id, name}], failed:[]}／{ok:false, message, stopped?, failed?}。
  */
-var LEFT_CASCADE_FRESH_MS_ = 60000;
+var LEFT_CASCADE_FRESH_MS_ = 15 * 60000;   // 同光復 LINE_HUB_LEFT_FRESH_MS：15 分鐘內重送／再按一次都會補做（獨立審查補，原本 60 秒）
 var LEFT_CASCADE_FAIL_MSG_ = '已設為離職。但沒辦法確認他在其他單位的打卡帳號有沒有一併停用，請通知總部檢查。';
 function leftCascadeAfter_(res) {
-  if (!res || res.ok !== true || res.active !== false || res.unchanged) return res;
+  // 重送或再按一次（unchanged）也照樣做：第一次光復連不上時，15 分鐘內重來就能補上；已經停用過的別店列不會重複動（獨立審查補）
+  if (!res || res.ok !== true || res.active !== false) return res;
   leftCascadeRun_(res);
   // 別的單位沒有東西要停用、也沒有失敗＝沒事可講，回應維持原樣（管理系統的 svc_set_active 合約是 {ok, emp_id, active}）
   if (res.cascade && res.cascade.ok === true && !(res.cascade.stopped || []).length) delete res.cascade;

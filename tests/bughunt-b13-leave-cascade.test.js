@@ -160,4 +160,17 @@ console.log('\n════ 審查補：支援店收掉「支援列」，不可�
   check('B13-75', '一分鐘內灌 60 次 line_hub_left → 超過上限的回 too_many（不再去開各店名冊）', tooMany > 0, true, 'too_many=' + tooMany);
 }
 
+console.log('\n════ 審查補：第一次光復連不上，15 分鐘內重送（或主管再按一次）要補做 ════');
+[['svc', '管理系統重送同一個動作'], ['mgr', '主管頁再按一次設離職']].forEach((x, k) => {
+  const { w } = scene(x[0], { hubDown: true });
+  const sup = rowOf(w, 'mztjs', (r) => r.line_user_id === 'U3');
+  check('B13-8' + (k * 2), '前置：光復連不上 → 金山那列還在職', act(rowOf(w, 'mztjs', (r) => r.emp_id === sup.emp_id)), true);
+  w.setNow('2026-11-05T10:05:00');
+  const again = x[0] === 'svc'
+    ? w.post('hq', { action: 'svc_set_active', v: 1, svc_key: 'SVC-KEY-hq', emp_id: 'HQ-01', active: false, op_id: 'leave-1', by: '人資' })
+    : w.post('hq', { action: 'mgr_set_active', mgr_key: 'MK', emp_id: 'HQ-01', active: false });
+  check('B13-8' + (k * 2 + 1), x[1] + '（5 分鐘後）→ 補做：金山那列變離職，回應帶連帶結果',
+    [again.ok, act(rowOf(w, 'mztjs', (r) => r.emp_id === sup.emp_id)), !!(again.cascade && again.cascade.ok && again.cascade.stopped.length)], [true, false, true]);
+});
+
 done();
