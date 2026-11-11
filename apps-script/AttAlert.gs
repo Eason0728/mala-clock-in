@@ -331,7 +331,13 @@ function attAlertRenderMessage_(batches, opts) {
   });
   if (earlier.length) sections.push({ head: '▍更早未帶出', bullets: earlier });
   var schedLines = latest.empty ? [] : (latest.sched || []);
-  if (schedLines.length) sections.push({ head: '▍班表', bullets: schedLines.slice() });
+  // sched 區：以「▍」開頭的行是段落標題（本期班表／下一期班表）；標題前的行（舊版 payload）歸「▍班表」
+  var schedSec = null;
+  schedLines.forEach(function (l) {
+    if (typeof l === 'string' && l.indexOf('▍') === 0) { schedSec = { head: l, bullets: [] }; sections.push(schedSec); return; }
+    if (!schedSec) { schedSec = { head: '▍班表', bullets: [] }; sections.push(schedSec); }
+    schedSec.bullets.push(l);
+  });
   var live = sections.filter(function (s) { return s.bullets.length; });
   if (!live.length && !failed.length && !guardLines.length) return [];
 
