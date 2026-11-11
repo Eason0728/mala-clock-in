@@ -196,8 +196,9 @@ function lineHubBindElsewhere_(userId, body, st, want) {
     }
     viaLine = !!home.row.line_user_id;
   }
-  if (!lineHubBrandFreeRow_(home.row) && lineHubCrossBrand_(home.st, st)) {
-    return { ok: false, error: 'cross_brand', message: '你是' + LINE_HUB_BRAND_NAME[lineHubBrand_(home.st)] + '的同仁，不能在「' + st.name + '」打卡（小辛辣與墨竹亭不能互相支援打卡）；有問題請找店長。' };
+  var homeBrand = lineHubRowBrand_(home, lineHubMine_(userId)), stBrand = lineHubBrand_(st);
+  if (homeBrand && stBrand && homeBrand !== stBrand) {
+    return { ok: false, error: 'cross_brand', message: '你是' + LINE_HUB_BRAND_NAME[homeBrand] + '的同仁，不能在「' + st.name + '」打卡（小辛辣與墨竹亭不能互相支援打卡）；有問題請找店長。' };
   }
   if (!viaLine) {
     var homeDeny = lineHubBindCodeDeny_(home.row.key, body);
@@ -423,18 +424,31 @@ function lineHubCrossBrand_(a, b) {
   return !!x && !!y && x !== y;
 }
 
-/** 這一列是「從央廚／總部自動加入」建出來的支援列（名冊 src_store＝cf／hq，管理系統建列時寫的）→ true。
- *  央廚、總部的同仁兩個品牌都可以去；他在門市的支援列不代表他是那個品牌的人。
- *  主管手動加的列沒有 src_store → 照那家店的品牌算（保守）。 */
-function lineHubBrandFreeRow_(row) {
-  return !!LINE_HUB_BRAND_FREE[String(row && row.src_store || '').trim()];
-}
 /** 這個 LINE 已綁定的各列（mine）裡，有沒有一列的品牌跟 st 這家店不同 → 回那一列（沒有回 null）。
- *  2026-11-11（B10）：央廚／總部同仁的支援列不算（lineHubBrandFreeRow_），否則總部同仁支援過墨竹亭就再也去不了小辛辣。 */
+ *  2026-11-11（B10）：每一列的品牌追到原單位（lineHubRowBrand_）：總部同仁支援過墨竹亭照樣能去小辛辣，小辛辣同仁借道央廚也進不了墨竹亭。 */
 function lineHubCrossedBound_(mine, st) {
+  var target = lineHubBrand_(st);
+  if (!target) return null;
   return (mine || []).filter(function (m) {
-    return m.st.code !== st.code && !lineHubBrandFreeRow_(m.row) && lineHubCrossBrand_(m.st, st);
+    var b = m.st.code !== st.code ? lineHubRowBrand_(m, mine) : '';
+    return !!b && b !== target;
   })[0] || null;
+}
+/** 這一列代表的人是哪個品牌（'' ＝央廚／總部的人，兩邊都可以）。獨立審查補（B10）：
+ *  一路追到原單位——支援列（src_store 有值）看它是從哪一家來的；來源是央廚／總部時，再看這個人在央廚／總部那一列又是從哪來的。
+ *  否則小辛辣同仁先到央廚支援（央廚那列 src_store＝gf），之後就能借央廚的身分進墨竹亭。
+ *  原單位列（src_store 空白）＝那家店本身的品牌。來源代碼認不得 → 照這家店的品牌算（保守）。 */
+function lineHubRowBrand_(m, mine, depth) {
+  var src = String(m && m.row && m.row.src_store || '').trim();
+  if (!src) return lineHubBrand_(m.st);
+  var code = null;
+  Object.keys(LINE_HUB_STAFF_CODE_MAP).forEach(function (k) { if (LINE_HUB_STAFF_CODE_MAP[k] === src) code = k; });
+  var st = code === null ? null : lineHubStores_().filter(function (x) { return String(x.code) === code; })[0];
+  if (!st) return lineHubBrand_(m.st);
+  if (!LINE_HUB_BRAND_FREE[code]) return lineHubBrand_(st);
+  if ((depth || 0) >= 3) return '';
+  var up = (mine || []).filter(function (x) { return String(x.st.code) === code; })[0];
+  return up ? lineHubRowBrand_(up, mine, (depth || 0) + 1) : '';
 }
 
 /** 已在別家綁定兩家以上時，挑哪一家當「來源店」（告訴管理系統「他是哪一家的誰」，也是畫面上「你在○○已綁定」的那一家）。

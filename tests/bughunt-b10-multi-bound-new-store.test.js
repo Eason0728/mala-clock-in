@@ -120,4 +120,30 @@ console.log('\n════ 四、來源店的挑法 ════');
   const page = w.openPage('TOK_U1', fx), b = w.bind('TOK_U1', fx, '測試一');
   check('B10-40', '對照：只綁一家 → 照舊自動加入', [page.support_from, b.first.ok, w.miniCalls.length], ['墨竹亭 新竹金山', true, 1]);
 }
+{
+  // 獨立審查補：小辛辣同仁借道央廚（央廚那列是從光復自動加入的，src_store＝gf）→ 不可以進墨竹亭；也不可以借道之後又同時綁回小辛辣兩邊打卡
+  const w = w0 = buildWorld({ rosters: { '': [R({ emp_id: 'E01', name: '測試辣', key: 'KE01', line_user_id: 'U1' })] } });
+  const c = w.bind('TOK_U1', w.fixAt('cf', 3), '測試辣');
+  w.advance(11 * 60000);
+  w.post('', { action: 'mgr_line_unbind', mgr_key: 'MK', emp_id: 'E01' });   // 光復主管把原單位那列的 LINE 解除（只剩央廚支援列）
+  w.advance(6 * 60000);
+  const fx = w.fixAt('mztjs', 3);
+  const page = w.openPage('TOK_U1', fx), b = w.bind('TOK_U1', fx, '測試辣');
+  w.advance(11 * 60000);
+  const p = w.punch('TOK_U1', fx, 'in');
+  check('B10-25', '小辛辣同仁先支援央廚（成功），再到墨竹亭金山 → cross_brand、金山名冊沒有多人、打不了卡',
+    [c.first.ok, page.code, b.first.error, w.roster('mztjs').length, p.ok === true], [true, 'cross_brand', 'cross_brand', 0, false]);
+  const g = w.bind('TOK_U1', w.fixAt('mztgf', 3), '測試辣');
+  check('B10-26', '同一個人再到墨竹亭光復 → 一樣 cross_brand', [g.first.error, w.roster('mztgf').length], ['cross_brand', 0]);
+  const back = w.bind('TOK_U1', w.fixAt('', 3), '測試辣');
+  check('B10-28', '回小辛辣光復重新綁定原單位 → 綁得回來（他本來就是小辛辣的人）', back.first.ok, true, JSON.stringify(back.first));
+}
+{
+  // 對照：總部原單位的同仁（總部那列 src_store 空白）支援過墨竹亭金山之後，照樣可以去小辛辣
+  const w = w0 = buildWorld({ rosters: { hq: [R({ emp_id: 'HQ-01', name: '測試總', key: 'KH01', line_user_id: 'U1' })] } });
+  const a = w.bind('TOK_U1', w.fixAt('mztjs', 3), '測試總');
+  w.advance(11 * 60000);
+  const b = w.bind('TOK_U1', w.fixAt('', 3), '測試總');
+  check('B10-27', '對照：總部同仁 → 金山 → 小辛辣光復，兩次都自動加入', [a.first.ok, b.first.ok], [true, true]);
+}
 done();
