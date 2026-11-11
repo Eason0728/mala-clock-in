@@ -1839,6 +1839,8 @@ function leftCascadeRun_(res) {
     if (!row || String(row.active).toLowerCase() === 'true') return res;
     var uid = String(row.line_user_id || '').trim();
     if (!uid) return res;
+    // 支援列（管理系統自動加入時寫了 src_store）收掉＝只是不再來這家支援，不可以反過來停用原單位與其他店（獨立審查補）
+    if (String(row.src_store || '').trim()) return res;
     var at = String(normCellTs(row.removed_at) || ''), t = new Date(at).getTime();
     if (!isFinite(t) || Math.abs(Date.now() - t) > LEFT_CASCADE_FRESH_MS_) return res;
     var by = String(row.removed_by || '');

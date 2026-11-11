@@ -697,12 +697,15 @@ function handleLineHubLeft_(body) {
   if (!empId || empId.length > 40 || !at || at.length > 40) return { ok: false, error: 'bad_input' };
   var t = new Date(at).getTime();
   if (!isFinite(t) || Math.abs(Date.now() - t) > LINE_HUB_LEFT_FRESH_MS) return { ok: false, error: 'stale' };
+  // 這個入口不帶金鑰：全站固定窗節流，避免被灌爆時每次都去開九家店名冊（正常一天只有個位數；獨立審查補）
+  if (lineHubThrottled_('left', '*all*', 30, 60)) return { ok: false, error: 'too_many' };
   var srcs = [];
   lineHubStores_().forEach(function (st) {
     var rows;
     try { rows = lineHubRoster_(st) || []; } catch (e) { rows = []; }
     rows.forEach(function (r) {
       if (String(r.emp_id) === empId && !lineHubActive_(r) && String(r.line_user_id || '').trim()
+          && !String(r.src_store || '').trim()   // 支援列不當成連帶的來源（舊版店送來的通知也一樣；獨立審查補）
           && String(normCellTs(r.removed_at) || '') === at) srcs.push({ st: st, row: r });
     });
   });

@@ -1574,7 +1574,8 @@ def handle_mgr_set_active(data, body):
     # 2026-11-11 Eason 定（B13，與 Code.gs leftCascadeAfter_／LineHub.gs lineHubLeftCascade_ 同步）：
     # 設離職時，同一支 LINE 在其他店名冊上還在職的列一併設成離職；只認 LINE 完全相同，沒綁 LINE 不做。恢復在職不連帶。
     uid = str(row.get("line_user_id") or "").strip()
-    if not active and uid:
+    # 支援列（src_store 有值）收掉不連帶停用原單位與其他店（同 Code.gs leftCascadeRun_，獨立審查補）
+    if not active and uid and not str(row.get("src_store") or "").strip():
         res["cascade"] = _left_cascade(emp_id, uid, mgr["name"], now)
     return res
 

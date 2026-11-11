@@ -123,4 +123,41 @@ console.log('\n════ 6、主管頁：設離職成功的那句話後面，
   check('B13-63', '沒辦法確認 → 提醒通知總部', sb.cascadeNote({ ok: false, message: '已設為離職。但沒辦法確認他在其他單位的打卡帳號有沒有一併停用，請通知總部檢查。' }),
     '<br>⚠ 但沒辦法確認他在其他單位的打卡帳號有沒有一併停用，請通知總部檢查。');
 }
+console.log('\n════ 審查補：支援店收掉「支援列」，不可以反過來停用原單位 ════');
+[['mgr', '金山值班主管 mgr_set_active'], ['svc', '管理系統 svc_set_active']].forEach((x) => {
+  const w = buildWorld({ now: H.T('2026-11-03T09:00:00'), rosters: { hq: HQ(), mztjs: [JS()[0], JS()[2]], cf: [R({ emp_id: 'CF03', name: '測試總', key: 'KC03', line_user_id: 'U9' })] } });
+  const js = w.fixAt('mztjs', 5);
+  w.bind('TOK_U3', js, '測試總');
+  const sup = rowOf(w, 'mztjs', (r) => r.line_user_id === 'U3');
+  w.setNow('2026-11-05T10:00:00');
+  const off = x[0] === 'svc'
+    ? w.post('mztjs', { action: 'svc_set_active', v: 1, svc_key: 'SVC-KEY-mztjs', emp_id: String(sup.emp_id), active: false, op_id: 'leave-sup', by: '人資' })
+    : w.post('mztjs', { action: 'mgr_set_active', mgr_key: 'MK', emp_id: String(sup.emp_id), active: false });
+  check('B13-7' + (x[0] === 'svc' ? '1' : '0'), x[1] + '把支援列設離職 → 只收掉金山那一列，總部原單位還在職、回應沒有連帶停用',
+    [off.ok, act(rowOf(w, 'mztjs', (r) => r.emp_id === sup.emp_id)), act(rowOf(w, 'hq', (r) => r.emp_id === 'HQ-01')), !!(off.cascade && (off.cascade.stopped || []).length)], [true, false, true, false]);
+  w.setNow('2026-11-06T09:00:00');
+  const p = w.punch('TOK_U3', w.fixAt('hq', 5), 'in');
+  check('B13-7' + (x[0] === 'svc' ? '3' : '2'), '隔天本人回總部打上班卡 → 照常打得進去', p.ok === true, true, JSON.stringify(p));
+});
+{
+  // 光復端也要自己擋：就算支援店送來通知（舊版店、或直接呼叫），支援列也不當成連帶的來源
+  const w = buildWorld({ now: H.T('2026-11-03T09:00:00'), rosters: { hq: HQ(), mztjs: [JS()[0]] } });
+  const js = w.fixAt('mztjs', 5);
+  w.bind('TOK_U3', js, '測試總');
+  const sup = rowOf(w, 'mztjs', (r) => r.line_user_id === 'U3');
+  w.setNow('2026-11-05T10:00:00');
+  const at = '2026-11-05T10:00:00+08:00';
+  const sh = w.stores.mztjs.self.sh.roster, hd = sh.values[0], i = sh.values.findIndex((v) => v[hd.indexOf('emp_id')] === sup.emp_id);
+  sh.values[i][hd.indexOf('active')] = false; sh.values[i][hd.indexOf('removed_at')] = at; sh.values[i][hd.indexOf('removed_by')] = '值班主管';
+  const r = w.hubPost({ action: 'line_hub_left', emp_id: String(sup.emp_id), removed_at: at });
+  check('B13-74', '光復收到「支援列已離職」的通知 → 不停用原單位', [act(rowOf(w, 'hq', (x) => x.emp_id === 'HQ-01')), (r.stopped || []).length], [true, 0]);
+}
+{
+  // 審查補：這個入口不帶金鑰，要有節流
+  const w = buildWorld({ now: H.T('2026-11-05T10:00:00'), rosters: { hq: HQ() } });
+  let tooMany = 0;
+  for (let i = 0; i < 60; i++) { const r = w.hubPost({ action: 'line_hub_left', emp_id: 'X' + i, removed_at: '2026-11-05T10:00:00+08:00' }); if (r && r.error === 'too_many') tooMany++; }
+  check('B13-75', '一分鐘內灌 60 次 line_hub_left → 超過上限的回 too_many（不再去開各店名冊）', tooMany > 0, true, 'too_many=' + tooMany);
+}
+
 done();
