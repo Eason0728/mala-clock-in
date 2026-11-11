@@ -132,6 +132,14 @@ const EXP_C = ['【考勤異常】11/19–11/23\n\n▍央廚\n・新狀態\n\n�
 const EXP_D250 = { count: 3, lens: [4966, 4998, 2086], sha: 'b4fa97b4cf91d411' };
 const EXP_D1000 = { count: 5, lens: [4966, 4998, 4998, 4998, 4986], sha: '440d34a610a36a93' };
 const EXP_E = { count: 2, lens: [4999, 27], sha: 'a1953912f18e9cca' };
+// ── 班表段標題（mini att-digest-rules.js origin/main 實際執行 renderMessage 取得，逐字貼入）──
+const S_BASE = { run_date: '2026-11-23', seq: 1, daily: [], state: [{ store: '小辛辣光復', lines: ['陳小華 T02 照目前班表會到 202 小時'] }], failed_stores: [] };
+const SCHED_CASES = [
+  { name: "本期＋下一期兩段標題", id: 's1', sched: ["▍本期班表（T01）", "墨竹亭六張犁 T01 班表還沒鎖定", "總部 T01 班表還沒鎖定", "▍下一期班表（T02 從 11/29 開始）", "墨竹亭六張犁 T02 班表還沒鎖定（11/29 開始）"], exp: ["【考勤異常】11/23（一）\n\n▍小辛辣光復\n・陳小華 T02 照目前班表會到 202 小時\n\n▍本期班表（T01）\n・墨竹亭六張犁 T01 班表還沒鎖定\n・總部 T01 班表還沒鎖定\n\n▍下一期班表（T02 從 11/29 開始）\n・墨竹亭六張犁 T02 班表還沒鎖定（11/29 開始）\n\n請各單位到「考勤管理」處理。"] },
+  { name: "只有下一期一段標題", id: 's2', sched: ["▍下一期班表（T02 從 11/29 開始）", "小辛辣光復 T02 班表還沒鎖定"], exp: ["【考勤異常】11/23（一）\n\n▍小辛辣光復\n・陳小華 T02 照目前班表會到 202 小時\n\n▍下一期班表（T02 從 11/29 開始）\n・小辛辣光復 T02 班表還沒鎖定\n\n請各單位到「考勤管理」處理。"] },
+  { name: "沒有標題（舊格式）", id: 's3', sched: ["墨竹亭六張犁 T03 班表還沒鎖定（11/29 開始）"], exp: ["【考勤異常】11/23（一）\n\n▍小辛辣光復\n・陳小華 T02 照目前班表會到 202 小時\n\n▍班表\n・墨竹亭六張犁 T03 班表還沒鎖定（11/29 開始）\n\n請各單位到「考勤管理」處理。"] },
+];
+const schedPayload = (sc) => Object.assign({}, S_BASE, { batch_id: '2026-11-23-' + sc.id, sched: sc.sched });
 const longLines = n => Array.from({ length: n }, (_, i) => `同仁${String(i).padStart(4, '0')} 11/22（例假）出勤 6 小時，備註${'字'.repeat(20)}`);
 const B_PAYLOAD = { run_date: '2026-11-23', batch_id: '2026-11-23-bbbbbbbbbbbb', seq: 5,
   daily: [{ store: '墨竹亭金山', lines: ['林小美 11/22（例假）出勤 6 小時'] }],
@@ -230,6 +238,7 @@ console.log('══ 版面（與 mini renderMessage 逐字一致）══');
   const A = Object.assign(fxReq(), { seq: 100 });
   chk('A 契約範例（直接呼叫純函式）', render([A], { today: A.run_date }), EXP_A);
   chk('B failed 多原因＋notes', render([B_PAYLOAD], { today: '2026-11-23' }), EXP_B);
+  SCHED_CASES.forEach(sc => chk('班表段標題：' + sc.name + '（直接呼叫純函式）', render([schedPayload(sc)], { today: '2026-11-23' }), sc.exp));
   chk('C 多批：區間標題、最近 3 天分段、更早未帶出、state 取最新', render(C_BATCHES, { today: '2026-11-23' }), EXP_C);
   const long = (n) => ({ run_date: '2026-11-23', batch_id: 'd', seq: 9, daily: [{ store: '墨竹亭金山', lines: longLines(n) }], state: [], sched: [], failed_stores: [] });
   chk('D250 切 3 則（長度＋雜湊同 mini）', shape(render([long(250)], { today: '2026-11-23' })), EXP_D250);
@@ -424,6 +433,7 @@ console.log('══ 佇列 → 訊息（走完整條）══');
   const c = bound(); B_PAYLOAD.seq = 5;
   c.enqueue(B_PAYLOAD); c.onEvent(msgEv(GROUP, '甲', 'P1'));
   chk('B（含 notes、多原因 failed）經佇列帶出＝mini 輸出', text(c), EXP_B);
+  SCHED_CASES.forEach((sc, i) => { const q = bound(); q.enqueue(schedPayload(sc)); q.onEvent(msgEv(GROUP, '甲', 'PS' + i)); chk('班表段標題經佇列帶出＝mini 輸出：' + sc.name, text(q), sc.exp); });
   const d = bound();
   C_BATCHES.forEach(b => d.enqueue(b)); d.setNow(Date.parse('2026-11-23T08:55:00+08:00'));
   d.onEvent(msgEv(GROUP, '甲', 'P2'));
