@@ -110,9 +110,11 @@ const PAY_CONFIG_DEFAULT = [
   ['attend_void_early_min', 0, '早退累計達幾分鐘(含)以上→全勤歸零，0＝不啟用'],
   ['leave_div_days', 30, '事假費率分母（天）'],
   ['leave_div_hours', 8, '事假費率分母（時）'],
-  /* ⚠ sick_ratio 沒有任何程式在讀（2026-08-23 起病假的給薪比例改讀假別表），設定頁的欄位已拿掉、前端存檔不再送這個鍵
-     （薪酬挑錯第 11 項，Eason 2026-11-11 確認）。這一列暫時留著：tests/support-auto-regression.test.js 拿 origin/main 的
-     payroll_month 回應整份比對，拿掉這一列回應的 config／config_src 會少一個鍵、那支測試會紅——要不要連這一列一起拿掉等 Eason 決定。 */
+  /* ⚠ sick_ratio：畫面已下架、計算不讀、這一列保留只為了回應形狀不變（薪酬挑錯第 11 項，Eason 2026-11-11 確認；2026-11-11 補洞定案保留）。
+     ・畫面已下架：薪資頁參數卡沒有這一欄，前端存檔不再送這個鍵（payroll.html 的 CFG_OBSOLETE）。
+     ・計算不讀：2026-08-23 起病假的給薪比例改讀假別表，整支 Payroll.gs 沒有任何程式讀這個鍵，改它的值不影響任何金額。
+     ・保留的原因：payroll_month／payroll_master_get 回應的 config、config_src 照這張表出鍵，拿掉這一列回應會少一個鍵；
+       tests/support-auto-regression.test.js 拿 origin/main 的回應整份比對，為了這個放寬比對不值得。不要再把它接回畫面或計算。 */
   ['sick_ratio', 0.5, '病假占事假比例'],
   ['payday', 10, '發薪日'],
   // ── 計時同仁的時薪加給（2026-08-24 改為參數，原本寫死在引擎裡）──

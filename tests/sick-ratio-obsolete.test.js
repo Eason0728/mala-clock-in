@@ -2,9 +2,14 @@
  * 薪酬挑錯第 11 項：參數「病假占事假比例」（sick_ratio）下架（Eason 2026-11-11 確認）。
  *  現況：2026-08-23 起病假的給薪比例改讀假別表，整支 Payroll.gs 沒有任何地方再讀 sick_ratio；
  *        參數設定頁卻還有這一欄，改了沒有任何作用。
- *  規則：①後端預設參數表 PAY_CONFIG_DEFAULT 沒有 sick_ratio ②薪資頁參數卡的四張清單都沒有 sick_ratio
+ *  規則（畫面已下架、計算不讀、後端預設值那一列保留只為了回應形狀不變）：
+ *        ①後端預設參數表 PAY_CONFIG_DEFAULT 的 sick_ratio 那一列保留（值 0.5），payConfig 的回應仍有這個鍵；
+ *          除了那一列，Payroll.gs 的程式碼（不含註解）沒有任何地方出現 sick_ratio
+ *        ②薪資頁參數卡的四張清單都沒有 sick_ratio，畫面上沒有「病假占事假比例」
  *        ③前端 CFG_OBSOLETE 有 sick_ratio（存檔時不會送出這個鍵），原本的 shortfall_deduct 仍在
  *        ④引擎算病假不看這個參數：帶 0.5／1／0／不帶，扣款都一樣。
+ *  為什麼①保留（2026-11-11 補洞定案）：拿掉那一列，payroll_month 回應的 config／config_src 會少一個鍵，
+ *        tests/support-auto-regression.test.js 拿 origin/main 的回應整份比對會變紅；為了這個放寬比對不值得。
  *  全部虛構同仁（代號 E01），期望值照規則手算寫死。
  */
 'use strict';
@@ -21,10 +26,12 @@ const html = fs.readFileSync(path.join(ROOT, 'payroll.html'), 'utf8');
 const gs = fs.readFileSync(path.join(ROOT, 'apps-script', 'Payroll.gs'), 'utf8');
 const s = load({ data: {} });
 
-/* ① 後端：除了預設參數表 PAY_CONFIG_DEFAULT 那一列，整支 Payroll.gs 的程式碼（扣掉註解）沒有任何地方讀它。
-   ⚠ 規則①「預設參數表也拿掉這一列」這次沒有做、這裡也不驗：tests/support-auto-regression.test.js 拿 origin/main 的
-     payroll_month 回應整份比對，拿掉那一列回應的 config／config_src 會少一個鍵、那支測試會紅。等 Eason 決定（見 commit 說明）。 */
+/* ① 後端：預設參數表 PAY_CONFIG_DEFAULT 那一列保留（回應形狀不變）；除了那一列，整支 Payroll.gs 的程式碼（扣掉註解）沒有任何地方讀它。 */
 const keys = JSON.parse(vm.runInContext('JSON.stringify(PAY_CONFIG_DEFAULT.map(function(d){return d[0]}))', s));
+eq(JSON.parse(vm.runInContext('JSON.stringify(PAY_CONFIG_DEFAULT.filter(function(d){return d[0]==="sick_ratio"}).map(function(d){return [d[0],d[1]]}))', s)),
+  [['sick_ratio', 0.5]], 'G0 sick_ratio 那一列保留在預設參數表（值 0.5，只為了回應形狀不變）');
+eq(JSON.parse(JSON.stringify(s.call('payConfig', 'SSLGF'))).sick_ratio, 0.5, 'G0 payConfig 的回應仍有 sick_ratio＝0.5（回應形狀不變）');
+eq(/sick_ratio：畫面已下架、計算不讀、這一列保留只為了回應形狀不變/.test(gs), true, 'G0 預設參數表那一列的註解寫明：畫面已下架、計算不讀、保留只為了回應形狀不變');
 ['daily_hours', 'leave_div_days', 'leave_div_hours', 'payday', 'meal_min_hours'].forEach(k =>
   eq(keys.indexOf(k) >= 0, true, `G1 ${k} 仍在預設參數表`));
 const gsCode = gs.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
