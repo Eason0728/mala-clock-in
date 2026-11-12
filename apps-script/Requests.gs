@@ -1548,6 +1548,83 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   return null;
 }
 
+/* ── 已核定但缺單的日子打回待核定（2026-11-13 Eason：11/1–11/5 也要有單，已核定的要重新核定）──
+   {action:'bind_revoke', admin_key, from, to, apply?}
+   用核定綁單的同一支判斷（reqBindCheck_，不套核定加嚴）找出「超過 8 小時沒有已核准加班單」或「少卡沒有已核准忘打卡單」的已核定日。
+   apply 沒帶＝只讀試算；apply:true＝把那幾天 approved 的列整批搬到 approved_revoked 分頁（留底、可復原），那天回到待核定。
+   只收 REQ_STRICT_FROM 之前的日子（加嚴之後送出時本來就擋）。請假分頁不動，主管重送核定時照常取代。 */
+var BIND_REVOKE_SHEET_ = 'approved_revoked';
+function bindRevokeScan_(ss, from, to) {
+  var rows = reqRows_(ss), items = [];
+  var approvedMap = buildLatestApprovedMap(readSheetAsObjects(ss.getSheetByName('approved')).rows);
+  var events = dropDupIgnored_(readSheetAsObjects(ss.getSheetByName('events')).rows, dupIgnoreSet_(approvedMap));
+  var lsh = ss.getSheetByName('leave');
+  var leaveRows = lsh ? readSheetAsObjects(lsh).rows : [];
+  var scanned = 0;
+  Object.keys(approvedMap).forEach(function (date) {
+    if (date < from || date > to) return;
+    Object.keys(approvedMap[date]).forEach(function (emp) {
+      var rec = approvedMap[date][emp], name = String(rec.name || '').trim();
+      var periods = parsePeriodsStr(rec.periods).map(function (p) {
+        var st = reqHmMs_(date, p.start), en = reqHmMs_(date, p.end);
+        return { startMs: st, endMs: en <= st ? en + 86400000 : en };
+      });
+      if (!periods.length) return;   // 整天請假／整天出差沒有時段，綁單本來就不看
+      var leaves = leaveRows.filter(function (r) { return normCellDate(r['日期']) === date && String(r['姓名'] || '').trim() === name; })
+        .map(function (r) { return { type: String(r['假別'] || ''), hours: r['時數'] === '' ? '' : Number(r['時數']) }; });
+      var trip = leaves.reduce(function (a, x) { return a + (x.type === '出差' ? Number(x.hours) || 0 : 0); }, 0);
+      var punchDay = dayPunchSegments(events, emp, date);
+      var segs = punchDay ? punchDay.segments.map(function (x) {
+        return { inMs: x.in ? reqHmMs_(date, x.in) : null, outMs: x.out ? reqHmMs_(x.cross ? addDaysStr(date, 1) : date, x.out) : null };
+      }) : [];
+      if (punchDay && typeof markWorkingSeg_ === 'function') markWorkingSeg_(punchDay, date, segs);
+      scanned++;
+      var r = reqBindCheck_(ss, emp, date, Number(rec.approved_hours) || 0, periods, segs, noPunchBreakWindow(date),
+        { leaves: leaves, trip_hours: trip, rows: rows, preview: true });
+      var probs = r ? r.probs.filter(function (p) { return p.rule === 'ot_hours' || p.rule === 'miss'; }) : [];
+      if (probs.length) items.push({ date: date, emp_id: emp, name: name, hours: Number(rec.approved_hours) || 0,
+        periods: String(rec.periods || ''), manager_name: String(rec.manager_name || ''), probs: probs.map(function (p) { return p.text; }) });
+    });
+  });
+  items.sort(function (a, b) { return (a.date + '|' + a.emp_id).localeCompare(b.date + '|' + b.emp_id); });
+  return { scanned: scanned, items: items };
+}
+function handleBindRevoke_(body) {
+  if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  var from = String(body.from || ''), to = String(body.to || '');
+  if (!reqIsDate_(from) || !reqIsDate_(to) || from > to) return { ok: false, error: 'bad_date' };
+  var bindFrom = reqBindFrom_(), strictFrom = reqStrictFrom_();
+  if (!bindFrom) return { ok: false, error: 'bind_off', message: '核定綁單已關閉（REQ_BIND_FROM=off）' };
+  if (from < bindFrom) return { ok: false, error: 'before_bind', message: '起日早於核定綁單起算日 ' + bindFrom };
+  if (strictFrom && to >= strictFrom) return { ok: false, error: 'strict_range', message: '只收 ' + strictFrom + ' 以前的日子（之後送出時本來就擋）' };
+  var ss = getSS();
+  if (body.apply !== true) { var pv = bindRevokeScan_(ss, from, to); return { ok: true, apply: false, from: from, to: to, scanned: pv.scanned, items: pv.items }; }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) return { ok: false, error: 'busy' };
+  try {
+    var scan = bindRevokeScan_(ss, from, to);   // 鎖內重算，避免剛好有人重送核定
+    if (!scan.items.length) return { ok: true, apply: true, from: from, to: to, scanned: scan.scanned, items: [], moved: 0 };
+    var hit = {};
+    scan.items.forEach(function (it) { hit[it.date + '|' + it.emp_id] = it; });
+    var sh = ss.getSheetByName('approved');
+    var vals = sh.getDataRange().getValues(), head = vals[0];
+    var iDate = head.indexOf('date'), iEmp = head.indexOf('emp_id');
+    if (iDate < 0 || iEmp < 0) return { ok: false, error: 'bad_sheet' };
+    var bak = ss.getSheetByName(BIND_REVOKE_SHEET_);
+    if (!bak) { bak = ss.insertSheet(BIND_REVOKE_SHEET_); bak.appendRow(head.concat(['revoked_at', 'revoke_reason'])); }
+    var now = nowTaipeiIso(), drop = [];
+    for (var i = vals.length - 1; i >= 1; i--) {
+      var it = hit[normCellDate(vals[i][iDate]) + '|' + String(vals[i][iEmp])];
+      if (!it) continue;
+      drop.push({ row: i + 1, vals: vals[i], reason: it.probs.join('；') });
+    }
+    drop.slice().reverse().forEach(function (d) { bak.appendRow(d.vals.concat([now, d.reason])); });
+    SpreadsheetApp.flush();
+    drop.forEach(function (d) { sh.deleteRow(d.row); });   // 由下往上刪，列號不會跑掉
+    SpreadsheetApp.flush();
+    return { ok: true, apply: true, from: from, to: to, scanned: scan.scanned, items: scan.items, moved: drop.length };
+  } finally { lock.releaseLock(); }
+}
 /** {action:'approve_strict_preview', admin_key, from, to}：用核定加嚴的同一支判斷試算已存在的核定，只讀不寫（班表在 Mac mini，這裡一律當查不到＝一般日）。 */
 function handleApproveStrictPreview_(body) {
   if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
