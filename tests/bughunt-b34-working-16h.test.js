@@ -87,7 +87,7 @@ console.log('\n════ 四、核定與每日 05:00 重算 ════');
   const before = m.approved().length;
   m.sb.recheckPendingApprovalStatuses();
   check('B34-32', '05:00 重算時人還在上班 → 不改寫成下班忘刷卡（沒有多一列）', [m.approved().length - before, lastApproved(m)], [0, '上班中']);
-  check('B34-33', '05:00 的月表：11/10 上班中、異常 0', [month(m).days[YDAY].狀態, month(m).異常天數], ['上班中、上班中', 0]);
+  check('B34-33', '05:00 的月表：11/10 上班中、異常 0', [month(m).days[YDAY].狀態, month(m).異常天數], ['上班中', 0]);   // 2026-11-13 驗收 F9（#110）：狀態欄同一句只留一次
   m.setNow(TODAY + 'T06:05:00');
   m.sb.handleClock({ key: 'K1', type: 'out', device_id: 'D1', lat: 24.7840945, lng: 121.0157448, accuracy: 5 });
   m.setNow('2026-11-12T05:00:00');
