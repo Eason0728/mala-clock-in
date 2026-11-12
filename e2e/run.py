@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """打卡＋值班核定 端到端測試：每次全新隨機資料，驗算時數，稽核每一顆按鈕。
 
-  python3 e2e/run.py
-  E2E_SEED=12345 python3 e2e/run.py    # 重現某次的資料
+  /usr/bin/python3 e2e/run.py
+  E2E_SEED=12345 /usr/bin/python3 e2e/run.py    # 重現某次的資料
+  （要用裝了 playwright＋openpyxl 的 python；homebrew 的 python3 通常沒有，跑到一半才中斷——2026-11-10 驗收 F3）
 
 分兩路，因為 mock 的打卡時間是「呼叫當下」無法指定：
   A 真打卡（今天）：驗打卡流程本身——定位、事件寫入、下班鍵冷卻、交替防呆、公告、外連。
@@ -19,6 +20,12 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
+
+# 2026-11-13 驗收 F3：缺套件時一開始就講清楚，不要跑完 69 項才在匯出那段中斷
+_missing = [m for m in ('playwright', 'openpyxl') if __import__('importlib.util').util.find_spec(m) is None]
+if _missing:
+    sys.exit(f'✗ 這個 python（{sys.executable}）缺套件：{"、".join(_missing)}。改用 /usr/bin/python3 e2e/run.py，'
+             f'或先跑 {sys.executable} -m pip install --user {" ".join(_missing)}')
 
 from playwright.sync_api import sync_playwright
 
