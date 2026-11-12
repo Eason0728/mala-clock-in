@@ -250,11 +250,13 @@ console.log('══ att_digest_data ══');
     ['0013', 'SSLGF', 'MZTJS', 8, '', '2026-11-01', 'confirmed', 'true'],     // acct_only → 不回
     ['0014', 'SSLGF', 'MZTJS', 'E09', '', '2026-11-01', 'pending', ''],        // 非 confirmed → 不回
     ['0015', 'SSLGF', 'MZTJS', ' E10 ', '', '2026-11-01', 'confirmed', false], // 去空白
+    ['0016', '', 'CF', 'C1', '', '2026-11-01', 'confirmed', ''],              // 所屬單位空白 → pay_store ''
   ];
   const c = makeCtx({ xmap: XM });
   const r = c.digest(Object.assign({}, base, { include_xmap: true }));
   chk('xmap 只回 confirmed 且非 acct_only，emp_id 前導零／空白正規化、不含姓名', r.xmap,
-    [{ emp_no: '0012', acct_store: 'MZTJS', emp_id: '7' }, { emp_no: '0015', acct_store: 'MZTJS', emp_id: 'E10' }]);
+    [{ emp_no: '0012', acct_store: 'MZTJS', emp_id: '7', pay_store: 'SSLGF' }, { emp_no: '0015', acct_store: 'MZTJS', emp_id: 'E10', pay_store: 'SSLGF' },
+     { emp_no: '0016', acct_store: 'CF', emp_id: 'C1', pay_store: '' }]);
   chk('有分頁但沒帶 include_xmap → 無 xmap 欄位', 'xmap' in c.digest(base), false);
   const c2 = makeCtx();
   const r2 = c2.digest(Object.assign({}, base, { include_xmap: true }));

@@ -209,7 +209,9 @@ function handleAttDigestData(body) {
         out.xmap = payRead('xmap')
           .filter(function (r) { return String(r.state || '').trim().toLowerCase() === 'confirmed' && !payXsupBool_(r.acct_only); })
           .map(function (r) {
-            return { emp_no: String(r.emp_no == null ? '' : r.emp_no), acct_store: String(r.acct_store == null ? '' : r.acct_store), emp_id: payXsupId_(r.emp_id) };
+            // pay_store＝管理系統同仁目前單位的薪酬代號（mini 決定所屬單位與「（X支援）」，store-ops spec §8.20）
+            return { emp_no: String(r.emp_no == null ? '' : r.emp_no), acct_store: String(r.acct_store == null ? '' : r.acct_store), emp_id: payXsupId_(r.emp_id),
+              pay_store: String(r.pay_store == null ? '' : r.pay_store).trim() };
           });
       }
     } catch (e) {
