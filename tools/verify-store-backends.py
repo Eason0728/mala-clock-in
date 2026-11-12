@@ -30,6 +30,7 @@ FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'is
          'breakBlocksFor_', 'unresolvedAttemptCount_',
          # 2026-11-11 B04（該段無打卡算異常）、B34（上班卡之後 16 小時內都算上班中）
          'noPunchDayAbnormal_', 'inStillWorking_', 'openInWorking_', 'markWorkingSeg_',
+         'reactXbrandCheck_',   # 2026-11-13 F10：恢復在職擋跨品牌
          'leftCascadeAfter_']   # 2026-11-11 B13：設離職連帶停用別店同一支 LINE 的列（沒套到＝那家店設離職不會通知光復）
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
