@@ -498,7 +498,7 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     row.reason = reqTripReason_(place, why);
   } else {   // miss
     if (diff > 0) return { error: 'bad_date', message: '不能補登還沒到的日期' };
-    if (!proxy && diff < -REQ_MISS_DAYS) return { error: 'too_old', message: '超過 ' + REQ_MISS_DAYS + ' 天不能申請，請找打卡門市的店長直接核定' };
+    if (!proxy && diff < -REQ_MISS_DAYS) return { error: 'too_old', message: '超過 ' + REQ_MISS_DAYS + ' 天不能自己申請，請店長代開' };
     var mt = String(b.miss_type || '');
     // 已送出（審核中、已核准）的忘打卡申請當成已經補上的卡（2026-11-11 B02）：兩段班一天漏好幾張時才補得齊，
     // 同一張卡也不會被補兩次。info0＝只看真的打卡（分辨「卡本來就在」和「已經有人申請補這張」，兩種訊息不一樣）。

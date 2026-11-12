@@ -1371,7 +1371,7 @@ def phase_miss(ctx, gen):
     def sub(body):
         return api(A['code'], dict({'action': 'req_submit', 'id_token': tok(p), 'kind': 'miss', 'reason': '忘記按'}, **body))
     r = sub({'date': (now_tz() - timedelta(days=8)).strftime('%Y-%m-%d'), 'miss_type': 'both', 'start': '09:00', 'end': '18:00'})
-    ok('忘打卡（後端）：超過 7 天 → too_old（逐字）', r == {'ok': False, 'error': 'too_old', 'message': '超過 7 天不能申請，請找打卡門市的店長直接核定'}, r)
+    ok('忘打卡（後端）：超過 7 天 → too_old（逐字）', r == {'ok': False, 'error': 'too_old', 'message': '超過 7 天不能自己申請，請店長代開'}, r)
     r = sub({'date': (now_tz() + timedelta(days=1)).strftime('%Y-%m-%d'), 'miss_type': 'both', 'start': '09:00', 'end': '18:00'})
     ok('忘打卡（後端）：明天 → 「不能補登還沒到的日期」', r.get('error') == 'bad_date' and r.get('message') == '不能補登還沒到的日期', r)
     r = sub({'date': md['in_only'], 'miss_type': 'in', 'start': '08:00'})

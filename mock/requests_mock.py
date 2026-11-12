@@ -324,7 +324,7 @@ def register(ns):
             if diff > 0:
                 return None, ("bad_date", "不能補登還沒到的日期")
             if diff < -REQ_MISS_DAYS:
-                return None, ("too_old", f"超過 {REQ_MISS_DAYS} 天不能申請，請找打卡門市的店長直接核定")
+                return None, ("too_old", f"超過 {REQ_MISS_DAYS} 天不能自己申請，請店長代開")
             mt = str(b.get("miss_type") or "")
             # 同 Requests.gs（2026-11-11 B02）：已送出的忘打卡申請當成已經補上的卡
             virt = miss_virtual(reqs(data), data["events"], me["emp_id"], d)
