@@ -366,4 +366,37 @@ ok('綁定碼畫面：平常藏著，後端要求才顯示', () => {
   assert(/id="bindCode"[^>]*hidden/.test(h)); assert(/bind_code: \$\('bindCode'\)\.value\.trim\(\)/.test(h));
   assert(/bind_code_required/.test(h));
 });
+
+// ── 2026-11-12 串接驗收（四系統 DZY900 整月實跑）抓到：跨品牌只在「恰好綁一家」且「這家店沒同名」時才擋 ──
+ok('串接 A1：已綁光復＋央廚兩家的小辛辣同仁到墨竹亭金山打卡 → cross_brand（原本回 not_bound）', () => {
+  const sheets = { '': { roster: [R({ emp_id: 'E01', key: 'kE' })], events: [] }, cf: { roster: [R({ emp_id: 'C1', key: 'kC' })], events: [] }, mztjs: { roster: [], events: [] } };
+  const m = make({ props: P, sheets });
+  const r = punch(m, js);
+  assert.strictEqual(r.result.code, 'cross_brand', JSON.stringify(r.result));
+  assert(/你是小辛辣的同仁/.test(r.result.reason), r.result.reason);
+  assert.strictEqual(m.hubCalls.length, 0); assert.strictEqual(m.storeCalls.length, 0);
+});
+ok('串接 A2：墨竹亭金山名冊剛好有同名未綁的人，小辛辣同仁打卡與輸入全名綁定都要擋 cross_brand（原本綁得起來、打得進去）', () => {
+  const sheets = { '': { roster: [R({ emp_id: 'E01', key: 'kE' })], events: [] }, mztjs: { roster: [R({ emp_id: 'J9', key: 'kJ9', line_user_id: '' })], events: [] } };
+  const m = make({ props: P, sheets });
+  const r = punch(m, js);
+  assert.strictEqual(r.result.code, 'cross_brand', JSON.stringify(r.result));
+  const b = bind(m);
+  assert.strictEqual(b.error, 'cross_brand', JSON.stringify(b));
+  assert.strictEqual(m.sheets === undefined ? sheets.mztjs.roster[0].line_user_id : sheets.mztjs.roster[0].line_user_id, '', '金山那列不能被綁走');
+  assert.strictEqual(m.storeCalls.length, 0);
+});
+ok('串接 A3：已綁光復＋央廚，到金山（名冊沒他）輸入全名 → cross_brand（原本回 name_conflict 還請主管「協助加入」）', () => {
+  const sheets = { '': { roster: [R({ emp_id: 'E01', key: 'kE' })], events: [] }, cf: { roster: [R({ emp_id: 'C1', key: 'kC' })], events: [] }, mztjs: { roster: [], events: [] } };
+  const m = make({ props: P, sheets });
+  const b = bind(m);
+  assert.strictEqual(b.error, 'cross_brand', JSON.stringify(b));
+  assert.strictEqual(m.hubCalls.length, 0);
+});
+ok('串接 A4：綁央廚＋總部（不屬任何品牌）的人到金山 → 不擋跨品牌，照舊走 not_bound／7A', () => {
+  const sheets = { cf: { roster: [R({ emp_id: 'C1', key: 'kC' })], events: [] }, hq: { roster: [R()], events: [] }, mztjs: { roster: [], events: [] } };
+  const m = make({ props: {}, sheets });
+  const r = punch(m, js);
+  assert.notStrictEqual(r.result.code, 'cross_brand', JSON.stringify(r.result));
+});
 console.log(`\n✅ ${n} 項通過`);
