@@ -110,11 +110,12 @@ const CODE = read('Code.gs');
 {
   const mkLock = (acquire) => { const st = { waits: [], released: 0 };
     return { st, svc: { getScriptLock: () => ({ tryLock: () => acquire, waitLock: (ms) => { st.waits.push(ms); if (!acquire) throw new Error('timeout'); }, releaseLock: () => { st.released++; } }) } }; };
-  const build = (acquire) => {
+  const build = (acquire, lateApproved) => {
     const L = mkLock(acquire); const calls = [];
     const sb = sandbox({ lockService: L.svc, snippets: ['dailyMonthlyRebuild', 'handleRebuildMonth', 'refreshCurrentMonth'].map((f) => extract(CODE, f)) });
     sb.def('recheckPendingApprovalStatuses', () => { calls.push('recheck'); return { checked: 0, fixed: 0 }; });
     sb.def('rebuildMonth', (ym) => { calls.push('rebuild:' + ym); return 3; });
+    sb.def('prevMonthLateApproved_', () => !!lateApproved);   // 2026-11-13 驗收 F5
     sb.def('currentYmTaipei', () => '2026-11'); sb.def('prevYm', () => '2026-10'); sb.def('todayTaipeiStr', () => '2026-11-10');
     sb.def('checkAdmin', () => true); sb.def('isMonthRefreshQuietHour', () => false); sb.def('nowTaipeiIso', () => '2026-11-10T10:00:00+08:00');
     return { sb, L, calls };
@@ -123,6 +124,10 @@ const CODE = read('Code.gs');
     const t = build(true); t.sb.run('dailyMonthlyRebuild')();
     deq(t.L.st.waits, [30000]); assert.strictEqual(t.L.st.released, 1);
     deq(t.calls, ['recheck', 'rebuild:2026-11']);
+  });
+  ok('F5 dailyMonthlyRebuild 4 號以後有上月晚核定 → 連上月一起重算', () => {
+    const t = build(true, true); t.sb.run('dailyMonthlyRebuild')();
+    deq(t.calls, ['recheck', 'rebuild:2026-11', 'rebuild:2026-10']);
   });
   ok('低-1 dailyMonthlyRebuild 等不到鎖 → 記 Logger 後跳過，不重算、不丟例外', () => {
     const t = build(false); t.sb.run('dailyMonthlyRebuild')();
