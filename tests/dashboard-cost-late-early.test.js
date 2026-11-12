@@ -39,7 +39,7 @@ const a2 = HTML.indexOf('const COST_REDUCE_EXTRA'), b2 = HTML.indexOf('function 
 const e2 = HTML.indexOf('\n  ];\n}', b2) + '\n  ];\n}'.length;
 const escLine = (HTML.match(/const esc=s=>[\s\S]*?;\n/) || [''])[0];
 function front(RESULTS) {
-  const ctx = { console, MASTER: [], CFG: {}, ATT: {}, RESULTS,
+  const ctx = { console, MASTER: [], CFG: {}, ATT: {}, RESULTS, STATUS: 'draft', COST_SNAP: null,   // 2026-11-13：costTotals 會看月份狀態
     n: v => { const x = parseFloat(v); return isNaN(x) ? 0 : x; } };
   vm.createContext(ctx);
   vm.runInContext(escLine + HTML.slice(a2, e2)

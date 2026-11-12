@@ -640,6 +640,10 @@ async function bridgeCallQueued(action,body){
 if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
 
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
+/* 已鎖定月份的成本快照（2026-11-13 薪資挑錯第 7 項）：payroll_month 對已鎖定月份回 run.cost_snap，
+   成本分類頁的公司負擔／年終提列／跨店請款改讀這份，鎖定後改主檔或參數不會讓已鎖定月份的數字跟著變。
+   null＝草稿，或已鎖定但鎖定時沒有快照（畫面照舊即時算，並標「即時值（鎖定時沒有快照）」）。 */
+let COST_SNAP=null;
 let SAME_NAME=[];   // 本月有請假、名冊同名的人（payroll_month same_name，2026-11-09）
 let ROSTER_MISS=[];   // 主檔工號在打卡名冊找不到的人（payroll_month roster_mismatch，2026-11-06）
 let ZERO_RATIO=[];   // 本月在職天數 0 卻有一列薪資的人（payroll_month／payroll_calc 的 zero_ratio_with_data，2026-11-11）
@@ -899,6 +903,7 @@ async function loadRun(){
   const r=await post('payroll_get',{ym:ym()});
   if(r.ok&&r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'}
   else{RESULTS=[];STATUS='draft'}
+  COST_SNAP=(r.ok&&r.run&&r.run.status==='final'&&r.run.cost_snap)||null;
   renderRun();renderSlipSel();
 }
 /* 切月份一次到位：一個請求回工時＋月結（必要時後端自動算），比原本三次往返快很多 */
@@ -977,6 +982,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     if(r.config){CFG=r.config;CFG_DIRTY={}}
     if(r.config||r.holidays) renderCfg();
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
+    COST_SNAP=(r.run&&r.run.status==='final'&&r.run.cost_snap)||null;   // 已鎖定月份的成本快照（沒有就即時算＋標記）
     renderAtt();renderRun();renderSlipSel();
     renderBonus();
     if($('p-punch')&&$('p-punch').classList.contains('on')) loadPunch();
@@ -989,7 +995,7 @@ async function doCalc(){
   try{
     const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
     if(!r.ok)return;
-    RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;
+    RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;COST_SNAP=null;
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
     vClear();   // 重算後儀表板／集團總覽的數字會變
@@ -1040,12 +1046,16 @@ function costTotals(){
   // dorm／dormBy：宿舍代扣（2026-08-24 Eason 改口徑）——從薪資費用扣除，並在下方獨立列成租金收入。
   // ⚠ 兩邊都看得到是刻意的，但**損益表只能取一邊**：薪資費用已經扣過了，租金收入那區只是明細，
   //    再把它加進收入就等於認列兩次。表頭文字已寫明「已從上方扣除，勿重複計列」。
-  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},reduceFT:0,reducePT:0,custAdd:0,custAddBy:[],custDed:0,custDedBy:[],dorm:0,dormBy:[],dormFT:0,dormPT:0,ins:0,insFT:0,insPT:0,insBy:{},sup:[],supTotal:0,coL:0,coH:0,coP:0,ye:0};
+  const g={base:0,ot:0,attend:0,allow:0,mgr:0,pt:0,other:0,otherBy:{},meal:0,bs:0,bp:0,bj:0,reduce:0,reduceBy:{},reduceFT:0,reducePT:0,custAdd:0,custAddBy:[],custDed:0,custDedBy:[],dorm:0,dormBy:[],dormFT:0,dormPT:0,ins:0,insFT:0,insPT:0,insBy:{},sup:[],supTotal:0,coL:0,coH:0,coP:0,ye:0,emp:[],snap:null,live:false};
   RESULTS.forEach(r=>{
     // 公司負擔逐人加總（依員工主檔）。勞保／退休金按在職比例折算，健保整月——與員工自付的處理一致。
     const _m=MASTER.find(x=>String(x.emp_id)===String(r.emp_id))||{};
     const _pr=r.is_full_time?n(r.ratio):1;
     g.coL+=n(_m.co_labor)*_pr; g.coH+=n(_m.co_health); g.coP+=n(_m.co_pension)*_pr;
+    // 逐人值留一份給鎖定快照（detail.emp，2026-11-13）：鎖定後改主檔也查得到鎖定當下每個人用的是多少
+    const _e={emp_id:String(r.emp_id),ft:!!r.is_full_time,ratio:n(r.ratio),co_labor:n(_m.co_labor)*_pr,co_health:n(_m.co_health),
+              co_pension:n(_m.co_pension)*_pr,yearend_months:0,yearend:0,gap_rate:n(_m.gap_rate)};
+    g.emp.push(_e);
     /* 年終獎金提列（2026-08-23）：每月先認列成本，**不進同仁的實付**（他還沒拿到）。
      *   每月提列 ＝（本薪＋職能＋夜間＋店長＋全勤上限）× 年終月數 ÷ 12 × 在職比例
      * 基數與「請假費率」同一組欄位，不另立一套。只有正職；月數留空用參數設定的全店預設。
@@ -1055,6 +1065,7 @@ function costTotals(){
       if(mo>0){
         const bse=n(_m.base)+n(_m.skill_allow)+n(_m.night_allow)+n(_m.mgr_allow)+n(_m.attend_cap);
         g.ye+=bse*mo/12*_pr;
+        _e.yearend_months=mo; _e.yearend=bse*mo/12*_pr;
       }
     }
     // 跨店支援請款（向支援門市收款，與本店薪資費用無關）——兩段式：
@@ -1070,7 +1081,7 @@ function costTotals(){
         const h=n(x.hours), rt=n(x.rate);
         const t1=gapRate>0?alloc[i]:0, t2=h-t1;
         const amt=n(x.amount)||(t1*gapRate+t2*rt);   // 金額欄有填＝以填的為準（特殊協議）
-        g.sup.push({name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',
+        g.sup.push({emp_id:String(r.emp_id),name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',
                     hours:h,rate:rt,gapH:t1,gapRate:gapRate,amount:amt,fixed:!!n(x.amount)});
         g.supTotal+=amt;
       });
@@ -1116,7 +1127,38 @@ function costTotals(){
         if(r.is_full_time) g.insFT+=x.amount; else g.insPT+=x.amount;
         g.insBy[x.item_label]=(g.insBy[x.item_label]||0)+x.amount; }});
   });
+  /* 已鎖定月份改讀鎖定快照（2026-11-13 薪資挑錯第 7 項，Eason 選 A）：
+     公司負擔（見 costCo）、年終提列、跨店請款用鎖定當下存的值；薪資費用各列本來就讀 run／item（鎖定後不會變），不動。
+     ⚠ 只換這三塊，不碰 RESULTS 裡任何人的應發／扣款／實付。
+     已鎖定但沒有快照（本功能上線前鎖的月份）→ 照舊即時算，g.live＝true 讓畫面標「即時值（鎖定時沒有快照）」。 */
+  const S=(STATUS==='final'&&COST_SNAP)?COST_SNAP:null;
+  g.live=(STATUS==='final'&&!S);
+  if(S){
+    g.snap=S; g.ye=n(S.yearend);
+    const D=S.detail;
+    const nameOf=id=>(RESULTS.find(r=>String(r.emp_id)===String(id))||{}).name||id;
+    if(D&&Array.isArray(D.sup)) g.sup=D.sup.map(x=>({emp_id:x.emp_id,name:nameOf(x.emp_id),ft:!!x.ft,store:x.store||'（未指定）',
+      hours:n(x.hours),rate:n(x.rate),gapH:n(x.gapH),gapRate:n(x.gapRate),amount:n(x.amount),fixed:!!x.fixed}));
+    // 2026-09-25～11-13 之間鎖的月份：快照只有「門市合計」，沒有逐筆明細
+    else g.sup=Object.keys(S.support||{}).map(st=>({store:st,amount:n(S.support[st]),storeOnly:true}));
+    g.supTotal=g.sup.reduce((a,x)=>a+n(x.amount),0);
+  }
   return g;
+}
+/* 公司負擔五項的值與「依人員自動加總」標記（costRows／costStable 共用，2026-11-13 抽出）。
+   草稿：逐人加總有值就用，全 0 才退回參數手填值；已鎖定有快照：用鎖定當下存的五項。 */
+function costCo(g){
+  const co={}; CO_ITEMS.forEach(([k])=>co[k]=n(CFG[k]));
+  const autoCo={co_labor:g.coL,co_health:g.coH,co_pension:g.coP};
+  const coAuto=(g.coL+g.coH+g.coP)>0;
+  if(coAuto) Object.keys(autoCo).forEach(k=>{ if(autoCo[k]>0) co[k]=autoCo[k]; });
+  const mark={}; Object.keys(autoCo).forEach(k=>mark[k]=coAuto&&autoCo[k]>0);
+  if(g.snap){
+    CO_ITEMS.forEach(([k])=>co[k]=n(g.snap[k]));
+    const ca=(g.snap.detail||{}).co_auto||{};
+    Object.keys(mark).forEach(k=>mark[k]=!!ca[k]);
+  }
+  return {co,mark};
 }
 /* 成本分類的列定義（label, 值），供月結卡與 Excel 共用 */
 // 成本分類的公司負擔列：前三項改由員工主檔逐人加總，後兩項是非逐人費用（參數設定手填）
@@ -1126,11 +1168,8 @@ const INS_SELF_KEYS=['labor_ins','health_ins','group_ins','pension'];
 // 參數設定「公司負擔」只顯示這兩項——逐人的三項不再手填，避免兩邊數字打架
 const CO_MANUAL=[['co_owner','負責人勞健保'],['co_group','團險']];
 function costRows(g){
-  const co={}; CO_ITEMS.forEach(([k])=>co[k]=n(CFG[k]));
-  // 公司負擔勞保／健保／退休金：改由員工主檔逐人加總（有值就用），全 0 才退回參數設定的手填值
-  const autoCo={co_labor:g.coL,co_health:g.coH,co_pension:g.coP};
-  const coAuto=(g.coL+g.coH+g.coP)>0;
-  if(coAuto) Object.keys(autoCo).forEach(k=>{ if(autoCo[k]>0) co[k]=autoCo[k]; });
+  // 公司負擔勞保／健保／退休金：改由員工主檔逐人加總（有值就用），全 0 才退回參數設定的手填值；已鎖定有快照用快照（見 costCo）
+  const {co,mark}=costCo(g);
   /* 各科目直接呈現「實際值」（2026-08-24 Eason）：請假扣款／不足倒扣已扣進所屬科目，
      損益表可以逐列直接抄，不必再自己減。正職扣底薪那列、計時扣 PT 那列。 */
   /* 2026-09-03 Eason：「薪資費用／正職」那一列只放**底薪科目本身**（底薪 − 請假／不足），
@@ -1151,6 +1190,7 @@ function costRows(g){
   const cutNote=(re,ins,dorm)=>{const p=[];if(re)p.push('請假／不足');if(ins)p.push('勞健保自付');
     if(dorm)p.push('宿舍');return p.length?`（已扣 ${p.join('、')}）`:''};
   return [
+    ...(g.live?[['h','⚠ 即時值（鎖定時沒有快照） · 公司負擔、年終提列、跨店請款依目前主檔與參數計算，可能和鎖定當時不同']]:[]),
     ['h','薪資／人事費用成本 · 每一列都是實際發生金額，可直接認列'],
     ['薪資費用／正職'+cutNote(g.reduceFT,0,0),baseNet],
     ['薪資費用 加班／正職',g.ot],['薪資費用 績效獎金（原全勤）／正職',g.attend],
@@ -1168,7 +1208,7 @@ function costRows(g){
     ...(g.dormFT?[['減：宿舍代扣（正職）',-g.dormFT]]:[]),
     ['s','薪資費用小計',salaryCost],
     ['h','保險成本 · 公司負擔＋代扣同仁自付，合計＝實際繳出去的金額'],
-    ...CO_ITEMS.map(([k,lb])=>[lb+((coAuto&&autoCo[k]>0)?'（依人員自動加總）':''),co[k]]),
+    ...CO_ITEMS.map(([k,lb])=>[lb+(mark[k]?'（依人員自動加總）':''),co[k]]),
     // 同仁自付額：已從上方薪資費用扣除，移到這裡。公司代扣後要繳給勞保局／健保署，
     // 所以要計入小計——否則人事總成本會少這一筆（那筆錢公司確實付出去了）。
     ...(g.ins?[['同仁自付額（代扣代繳）',g.ins]]:[]),
@@ -1188,7 +1228,9 @@ function costRows(g){
         .concat(g.dormBy.map(([nm,ft,amt])=>[`${esc(nm)}（${ft?'正職':'計時'}）`,amt]))
         .concat([['s','宿舍收入小計',g.dorm]]):[]),
     ...(g.sup&&g.sup.length?[['h','跨店支援請款 · 向支援門市收款，與本店薪資費用無關']]
-        .concat(g.sup.map(x=>[x.fixed
+        .concat(g.sup.map(x=>[x.storeOnly
+            ? `${esc(x.store)}（鎖定快照只存門市合計）`
+            : x.fixed
             ? `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H（金額指定）`
             : (x.gapH>0
                 ? `${esc(x.name)} → ${esc(x.store)}　缺口 ${r2(x.gapH)}H×${nf(x.gapRate)} ＋ ${r2(x.hours-x.gapH)}H×${nf(x.rate)}`
@@ -1209,10 +1251,7 @@ function costRows(g){
    支援請款只彙總到「門市」層級的金額（g.sup 逐筆本來含 name，這裡刻意只取 store/amount，
    不把姓名帶進快照，符合「不含任何人名、員工編號、逐人金額」的要求）。 */
 function costStable(g){
-  const co={}; CO_ITEMS.forEach(([k])=>co[k]=n(CFG[k]));
-  const autoCo={co_labor:g.coL,co_health:g.coH,co_pension:g.coP};
-  const coAuto=(g.coL+g.coH+g.coP)>0;
-  if(coAuto) Object.keys(autoCo).forEach(k=>{ if(autoCo[k]>0) co[k]=autoCo[k]; });
+  const {co,mark}=costCo(g);
   const baseNet=g.base-g.reduceFT, ptNet=g.pt-g.reducePT-g.insPT-g.dormPT;
   const salaryGross=baseNet+g.ot+g.attend+g.allow+g.mgr+ptNet+g.other+g.meal+g.bs+g.bp+g.bj;
   const salaryCost=salaryGross-g.insFT-g.dormFT;
@@ -1231,6 +1270,18 @@ function costStable(g){
     ins_self:r2(g.ins), yearend:yearend,
     support:support, total:r2(total)
   };
+}
+/* 鎖定快照的逐人明細（2026-11-13 薪資挑錯第 7 項）：成本分類頁／儀表板／集團總覽在已鎖定月份要讀的
+   逐人公司負擔、年終月數與提列、差額費率，以及跨店請款逐筆明細。鎖定時跟 costStable() 一起送（放在 detail 鍵），
+   後端存進 detail_json，只給管理者畫面讀；損益端點 pnlPayroll 不回這一塊。
+   ⚠ 刻意不放進 costStable()：那份的鍵要跟損益端點／pnlEstimateClassify_ 一模一樣（anti-drift 測試逐鍵比對）。
+   跨店請款明細只帶工號、不帶姓名（畫面上姓名從月結列對回）。 */
+function costDetail(g){
+  const {mark}=costCo(g);
+  return {v:1, co_auto:mark,
+    emp:(g.emp||[]).map(e=>Object.assign({},e,{co_labor:r2(e.co_labor),co_health:r2(e.co_health),co_pension:r2(e.co_pension),yearend:r2(e.yearend)})),
+    sup:(g.sup||[]).map(x=>({emp_id:x.emp_id,ft:!!x.ft,store:x.store,hours:r2(n(x.hours)),rate:n(x.rate),gapH:r2(n(x.gapH)),
+                             gapRate:n(x.gapRate),amount:r2(n(x.amount)),fixed:!!x.fixed}))};
 }
 function renderCost(){
   const card=$('costCard'); if(!card) return;
@@ -1495,11 +1546,12 @@ async function toggleLock(){
     // 更重要的動作），接住並印警告，照常送出鎖定請求（不帶 cost_snapshot，效果等同
     // 「沒有算出快照」，跟沒按過計算是同一種安全的退路）。
     if(lock && RESULTS.length){
-      try{ body.cost_snapshot=costStable(costTotals()); }
+      try{ const g=costTotals(); body.cost_snapshot=Object.assign(costStable(g),{detail:costDetail(g)}); }
       catch(e){ console.warn('pnlPayroll 快照計算失敗，鎖定照常送出，這次不會有快照可讀：',e); }
     }
     const r=await post('payroll_finalize',body,lock?{noToast:true}:undefined);
-    if(r.ok){STATUS=r.status;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
+    // 鎖定：後端寫好快照會帶回 cost_snap，成本分類頁立刻改讀；解鎖：快照已清掉，回到即時算
+    if(r.ok){STATUS=r.status;COST_SNAP=(lock&&r.cost_snap)||null;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
     // 補休帳是負的不能鎖定（2026-11-01）：名單可能好幾行，用對話框列清楚
     else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='ot_form_missing'||r.error==='sched_missing'||r.error==='unapproved')) alert(r.message);
     else if(lock&&r.error==='stale_run'){ alert(r.message+'\n\n按確定後系統會自動重新計算，請看過新數字再按一次鎖定。'); await doCalc(); }
@@ -1968,6 +2020,8 @@ async function switchStore(code){
 }
 
 /* ═════ 集團總覽 ═════ */
+// 已鎖定但鎖定時沒有成本快照的月份（後端回 cost_src＝live）：公司負擔是用目前主檔／參數即時算的（2026-11-13）
+const COST_LIVE_TAG='<span class="tag draft" title="這個月鎖定時還沒有成本快照，公司負擔依目前主檔與參數計算；要固定下來請解鎖→再鎖定一次">即時值（鎖定時沒有快照）</span>';
 async function loadGroup(force){
   if(scopeLimited()) return;   // 集團功能限系統管理者
   const box=$('groupBody'); if(!box) return;
@@ -1989,7 +2043,7 @@ function renderGroup(r){
       <td style="text-align:left"><b>${esc(x.name)}</b> <span style="color:var(--muted);font-size:11.5px">${esc(x.store)}</span></td>`
       +(x.has?`<td>${x.people}</td><td>${x.hours}</td><td>${nf(x.overtime)}</td><td>${nf(x.bonus)}</td>
         <td>${nf(x.salary_cost)}</td><td>${nf(x.company)}</td><td class="big">${nf(x.total_cost)}</td><td>${nf(x.net)}</td>
-        <td style="text-align:left"><span class="tag ${x.status==='final'?'final':'draft'}">${x.status==='final'?'已鎖定':'草稿'}</span></td>`
+        <td style="text-align:left"><span class="tag ${x.status==='final'?'final':'draft'}">${x.status==='final'?'已鎖定':'草稿'}</span>${x.cost_src==='live'?' '+COST_LIVE_TAG:''}</td>`
       :`<td colspan="8" style="color:var(--muted);text-align:left">本月尚未結算${n(x.company)?`（公司負擔 ${nf(x.company)} 已計入合計）`:''}</td>
         <td style="text-align:left">—</td>`)+`</tr>`).join('')}
     <tr style="background:#f6f2ee;font-weight:900">
@@ -2125,7 +2179,7 @@ function renderDash(){
   DASH.slice().reverse().forEach(d=>{
     h+=`<tr><td>${d.ym}</td>`+(d.has?`<td><b>${nf(d.total_cost)}</b></td><td>${nf(d.salary_cost)}</td><td>${nf(d.company)}</td>
       <td>${nf(d.overtime)}</td><td>${nf(d.bonus)}</td><td>${d.people}</td><td>${d.hours}</td><td>${nf(d.avg_net)}</td>
-      <td style="text-align:left"><span class="tag ${d.status==='final'?'final':'draft'}">${d.status==='final'?'已鎖定':'草稿'}</span></td>`
+      <td style="text-align:left"><span class="tag ${d.status==='final'?'final':'draft'}">${d.status==='final'?'已鎖定':'草稿'}</span>${d.cost_src==='live'?' '+COST_LIVE_TAG:''}</td>`
       :'<td colspan="9" style="color:var(--muted);text-align:left">尚未結算</td>')+'</tr>';
   });
   $('dashTbl').innerHTML=h+'</tbody>';

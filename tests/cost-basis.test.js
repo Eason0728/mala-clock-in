@@ -132,7 +132,7 @@ console.log('\n══ 2b) 遲到／早退扣款：儀表板 salary_cost＝前端
   const fe = HTML.indexOf('\n  ];\n}', fb) + '\n  ];\n}'.length;
   const fEsc = (HTML.match(/const esc=s=>[\s\S]*?;\n/) || [''])[0];
   const toDed = arr => arr.map(d => ({ item_key: d[0], item_label: d[1], amount: d[2] }));
-  const fctx = { console, MASTER: [], CFG: {}, ATT: {}, n: v => { const x = parseFloat(v); return isNaN(x) ? 0 : x; },
+  const fctx = { console, MASTER: [], CFG: {}, ATT: {}, STATUS: 'draft', COST_SNAP: null, n: v => { const x = parseFloat(v); return isNaN(x) ? 0 : x; },
     RESULTS: [
       { emp_id: 'E01', name: '正職甲', is_full_time: true, ratio: 1, gross: 32000, deduction: 3321, net: 28679, total_hours: 176,
         earn: [{ item_key: 'base_salary', item_label: '底薪', amount: 30000 }, { item_key: 'attend_bonus', item_label: '績效獎金', amount: 2000 }],
@@ -314,7 +314,7 @@ console.log('\n══ 9) 對帳檢查按鈕 ══');
   ]);
   const runAudit = RES => {
     const box={style:{},innerHTML:''}; let t=null;
-    const ctx={ console, MASTER:[], CFG:{}, RESULTS:RES, ATT:{}, STORE:'SSLGF',
+    const ctx={ console, MASTER:[], CFG:{}, RESULTS:RES, ATT:{}, STORE:'SSLGF', STATUS:'draft', COST_SNAP:null,
       n:v=>{const x=parseFloat(v);return isNaN(x)?0:x},
       nf:v=>Math.round(Number(v)||0).toLocaleString('en-US'),
       r2:v=>Math.round(Number(v)*100)/100, ym:()=>'2026-08',
