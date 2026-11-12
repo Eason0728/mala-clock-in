@@ -950,6 +950,10 @@ function handleSyncRoster(body) {
         skipped.push({ emp_id: String(emp.emp_id), reason: 'duplicate_name' });
         return;
       }
+      if (willOn && !wasOn) {   // F10：恢復在職擋跨品牌（光復連不上照常恢復）
+        const xb = typeof reactXbrandCheck_ === 'function' ? reactXbrandCheck_(id, existing.line_user_id) : null;
+        if (xb && xb.block) { skipped.push({ emp_id: String(emp.emp_id), reason: 'cross_brand' }); return; }
+      }
       if (wasOn && activeByName[oldNm]) delete activeByName[oldNm][id];
       if (willOn) { (activeByName[nm.trim()] = activeByName[nm.trim()] || {})[id] = true; activeNames[nm.trim()] = true; }
       // 只更新 name/active，絕不覆蓋 key/device_id/device_bound_at
@@ -1477,6 +1481,8 @@ function handleMgrSetActive(body) {
     })[0];
     if (lineDup) return { ok: false, error: 'line_identity_conflict', message: '這位同仁的 LINE 已綁在另一個在職帳號，請先解除其中一個綁定' };
   }
+  const xb = active && typeof reactXbrandCheck_ === 'function' ? reactXbrandCheck_(empId, uid) : null;   // F10：恢復在職擋跨品牌（一致性檢查保證九店都有這支）
+  if (xb && xb.block) return { ok: false, error: 'cross_brand', message: xb.block };
 
   const now = nowTaipeiIso();
   setRosterCell(rosterSheet, row.__rowIndex, 'active', active);
@@ -1484,8 +1490,10 @@ function handleMgrSetActive(body) {
   setRosterCell(rosterSheet, row.__rowIndex, 'removed_at', active ? '' : now, true);
   setRosterCell(rosterSheet, row.__rowIndex, 'removed_by', active ? '' : actor);
   if (typeof lineHubForget_ === 'function' && uid) lineHubForget_(uid);   // 夜間 QA 低-7：LINE 小幫手的「綁了哪幾家」快取要重查
-  return { ok: true, emp_id: empId, name: name, active: active,
+  const okRes = { ok: true, emp_id: empId, name: name, active: active,
            removed_at: active ? '' : now, removed_by: active ? '' : actor };
+  if (xb && xb.warn) okRes.warn = xb.warn;
+  return okRes;
   } finally { lock.releaseLock(); }
 }
 
@@ -1854,6 +1862,33 @@ function handleMgrDay(body) {
  */
 var LEFT_CASCADE_FRESH_MS_ = 15 * 60000;   // 同光復 LINE_HUB_LEFT_FRESH_MS：15 分鐘內重送／再按一次都會補做（獨立審查補，原本 60 秒）
 var LEFT_CASCADE_FAIL_MSG_ = '已設為離職。但沒辦法確認他在其他單位的打卡帳號有沒有一併停用，請通知總部檢查。';
+/* F10（2026-11-13 Eason 定案）：把名冊一列「停用 → 在職」、那一列綁著 LINE → 先問光復這支 LINE 在別家有沒有另一個品牌的在職列。
+ * 回 { block: 訊息 }（不准恢復）／{ warn: 訊息 }（光復連不上，照常恢復）／null（沒事）。光復自己直接查（它就是集中服務）。 */
+var REACT_XBRAND_WARN_ = '沒辦法確認這位同仁在其他品牌有沒有在職（光復暫時連不上），已照常恢復在職；請確認他沒有同時在小辛辣與墨竹亭在職。';
+function reactXbrandCheck_(empId, uid) {
+  uid = String(uid || '').trim();
+  if (!uid) return null;
+  try {
+    var j;
+    if (typeof lineHubReactXbrand_ === 'function') {
+      j = lineHubReactXbrand_(lineHubStores_().filter(function (s) { return s.code === ''; })[0], uid);
+    } else {
+      var api = CONFIG.PAYROLL_API || (typeof REQ_HUB_API_DEFAULT_ !== 'undefined' ? REQ_HUB_API_DEFAULT_ : '');
+      if (!api) return { warn: REACT_XBRAND_WARN_ };
+      var resp = UrlFetchApp.fetch(api, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true, followRedirects: true,
+        payload: JSON.stringify({ action: 'line_hub_react_check', emp_id: String(empId), uid: uid }) });
+      j = JSON.parse(resp.getContentText());
+    }
+    if (j && j.ok === true && j.cross === true) {
+      return { block: '這位同仁的 LINE 綁在' + String(j.brand || '另一個品牌') + '的門市，不能在「' + String(j.store_name || '這家店') + '」恢復在職（小辛辣與墨竹亭不能互相支援打卡）；要轉品牌請先把原品牌那邊設離職。' };
+    }
+    if (j && j.ok === true) return null;
+    return { warn: REACT_XBRAND_WARN_ };
+  } catch (e) {
+    return { warn: REACT_XBRAND_WARN_ };
+  }
+}
+
 function leftCascadeAfter_(res) {
   // 重送或再按一次（unchanged）也照樣做：第一次光復連不上時，15 分鐘內重來就能補上；已經停用過的別店列不會重複動（獨立審查補）
   if (!res || res.ok !== true || res.active !== false) return res;

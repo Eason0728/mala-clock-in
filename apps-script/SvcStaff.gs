@@ -215,6 +215,8 @@ function handleSvcSetActive_(body) {
         })[0];
         if (lineDup) return svcFail_('line_identity_conflict', '這位同仁的 LINE 已綁在另一個在職帳號，請先解除其中一個綁定');
       }
+      var xb = typeof reactXbrandCheck_ === 'function' ? reactXbrandCheck_(empId, uid) : null;   // F10：恢復在職擋跨品牌
+      if (xb && xb.block) return svcFail_('cross_brand', xb.block);
     }
     var now = nowTaipeiIso();
     setRosterCell(sh, row.__rowIndex, 'active', active);
@@ -222,7 +224,9 @@ function handleSvcSetActive_(body) {
     setRosterCell(sh, row.__rowIndex, 'removed_by', active ? '' : String(body.by || ''));
     setRosterCell(sh, row.__rowIndex, 'last_op', body.op_id, true);
     SpreadsheetApp.flush();
-    return { ok: true, emp_id: empId, active: active };
+    var okRes = { ok: true, emp_id: empId, active: active };
+    if (active && xb && xb.warn) okRes.warn = xb.warn;
+    return okRes;
   } finally { lock.releaseLock(); }
 }
 

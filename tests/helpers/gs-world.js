@@ -39,12 +39,12 @@ function buildWorld(opts) {
       self: { roster: (opts.rosters || {})[s.code] || [], events: (opts.events || {})[s.code] || [] },
       props: Object.assign({ STAFF_SVC_KEY: SVC_KEY(s.code) }, (opts.storeProps || {})[s.code] || {}),
       config: Object.assign({ STORE_LAT: s.lat, STORE_LNG: s.lng, RADIUS_M: s.radius_m }, (opts.config || {})[s.code] || {}),
-      // 店家→光復（伺服器對伺服器）：目前只轉「設離職後通知光復連帶停用」這一支（B13），其餘照舊不通。
+      // 店家→光復（伺服器對伺服器）：只轉「設離職後通知光復連帶停用」（B13）與「恢復在職前問跨品牌」（F10）兩支，其餘照舊不通。
       // w.hubDown = true 假裝光復連不上（回一段不是 JSON 的字）。
       fetch: (url, o) => {
         if (!o || typeof o.payload !== 'string' || !/^https:\/\/script\.google\.com\//.test(url)) return undefined;
         let body; try { body = JSON.parse(o.payload); } catch (e) { return undefined; }
-        if (!body || body.action !== 'line_hub_left') return undefined;
+        if (!body || (body.action !== 'line_hub_left' && body.action !== 'line_hub_react_check')) return undefined;
         w.hubCalls.push({ from: s.code, action: body.action });
         return w.hubDown ? '<html>服務暫時無法使用</html>' : w.hubPost(body);
       } });

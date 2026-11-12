@@ -708,6 +708,38 @@ function lineHubLeftCascade_(src, srcEmpId, uid, by) {
   return out;
 }
 
+/* ── F10（2026-11-10 驗收；Eason 2026-11-13 定案）：恢復在職時擋跨品牌 ──
+ * 跨品牌原本只在綁定時擋（B11）。11/06 以前綁好的舊列一旦被改回在職，就打得進對方品牌的店（打卡直送各店、不經過光復）。
+ * 所以「停用 → 在職」而且那一列綁著 LINE 時，各店先問光復：這支 LINE 在別家有沒有另一個品牌的在職列。
+ * 回 {ok:true, cross:false} ／ {ok:true, cross:true, brand:'小辛辣'|'墨竹亭', store_name} ／ {ok:false, error}（讀不到就不下結論）。 */
+function lineHubReactXbrand_(st, uid) {
+  if (!st || !uid) return { ok: true, cross: false };
+  try { lineHubForget_(uid); } catch (e) { /* 快取清不掉就照讀 */ }
+  var info = {};
+  var mine = lineHubMine_(uid, info).filter(function (m) { return m.st.code !== st.code; });
+  var crossed = lineHubCrossedBound_(mine, st);
+  if (crossed) return { ok: true, cross: true, brand: LINE_HUB_BRAND_NAME[lineHubRowBrand_(crossed, mine)] || '另一個品牌', store_name: st.name };
+  if (info.unreadable) return { ok: false, error: 'unreachable' };
+  return { ok: true, cross: false };
+}
+/** {action:'line_hub_react_check', emp_id, uid} → 各店恢復在職前問光復（F10）。這家店名冊要真的有這個工號＋這支 LINE 才回答。 */
+function handleLineHubReactCheck_(body) {
+  var empId = typeof body.emp_id === 'string' ? body.emp_id.trim() : '';
+  var uid = typeof body.uid === 'string' ? body.uid.trim() : '';
+  if (!empId || empId.length > 40 || !uid || uid.length > 80) return { ok: false, error: 'bad_input' };
+  // 不帶金鑰（比照 line_hub_left）：全站固定窗節流，恢復在職一天只有個位數
+  if (lineHubThrottled_('react', '*all*', 30, 60)) return { ok: false, error: 'too_many' };
+  var at = null;
+  lineHubStores_().forEach(function (st) {
+    if (at) return;
+    var rows;
+    try { rows = lineHubRoster_(st) || []; } catch (e) { rows = []; }
+    if (rows.some(function (r) { return String(r.emp_id) === empId && String(r.line_user_id || '').trim() === uid; })) at = st;
+  });
+  if (!at) return { ok: false, error: 'not_found' };
+  return lineHubReactXbrand_(at, uid);
+}
+
 /** {action:'line_hub_left', emp_id, removed_at} → 其他店設離職成功後回頭通知光復（B13）。
  *  不帶金鑰、也不相信通知的內容：光復自己去各店名冊找「這個工號、已離職、離職時間就是這一筆而且是剛剛（15 分鐘內）、有綁 LINE」的列，
  *  找到才以名冊上那支 LINE 去停用其他店的列；找不到就什麼都不做。所以這支只能重做一件「本來就該發生」的事。 */
@@ -1598,7 +1630,8 @@ function handlePunchTimingGet_(body) {
 var LINE_HUB_HANDLERS = {
   line_quick_clock: handleLineQuickClock_,
   line_hub_status: handleLineHubStatus_,
-  line_hub_left: function (b) { return handleLineHubLeft_(b); },   // 其他店設離職後通知光復連帶停用（B13）
+  line_hub_left: function (b) { return handleLineHubLeft_(b); },
+  line_hub_react_check: function (b) { return handleLineHubReactCheck_(b); },   // 各店恢復在職前問跨品牌（F10，2026-11-13）   // 其他店設離職後通知光復連帶停用（B13）
   line_bind_name: handleLineBindName_,
   line_hub_req_init: function (b) { return handleLineHubReqInit_(b); },
   line_hub_req_quota: function (b) { return handleLineHubReqQuota_(b); },   // 申請頁額度與補休帳（2026-11-06，開頁加快）
