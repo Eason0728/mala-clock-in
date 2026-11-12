@@ -68,7 +68,12 @@ const PAY_SHEETS = {
   cost_snapshot: ['ym','store','base_ft','ot_ft','attend_ft','allow_ft','mgr','meal','other','pt',
                   'bonus_sales','bonus_perf','bonus_proj','ins_ft_deduct','dorm_ft_deduct','ins_pt_deduct','dorm_pt_deduct',
                   'co_labor','co_health','co_pension','co_owner','co_group','ins_self','yearend',
-                  'support_json','total','updated_at'],
+                  'support_json','total','updated_at',
+                  // detail_json（2026-11-13 薪資挑錯第 7 項）：鎖定當下成本分類頁／儀表板／集團總覽用到的逐人值
+                  // （公司負擔三項、年終月數與提列、差額費率）、跨店請款逐筆明細、公司負擔哪幾項是「依人員自動加總」。
+                  // 已鎖定月份三個畫面改讀這份，鎖定後改主檔或參數不會再讓已鎖定月份的數字跟著變。
+                  // 只存在這張分頁、只給管理者畫面讀；損益端點 pnlPayroll 不回這一欄（不外流逐人明細）。
+                  'detail_json'],
 };
 /** 餐費補助門檻：當天「實際核定工時」要達這個時數才認列一天（核定時數＝實際上班時段，
  *  全天請假核定 0、假別另存 leave 分頁，所以特休／請假／出差自然不會被算進來）。*/
@@ -3755,6 +3760,12 @@ function handlePayrollMonth(body) {
       if (calc && calc.ok) run = { results: calc.results, status: 'draft' };
     }
   }
+  /* 已鎖定月份帶上鎖定當下的成本快照（2026-11-13 薪資挑錯第 7 項）：成本分類頁的公司負擔／年終提列／跨店請款改讀這份。
+     沒有快照（本功能上線前鎖的月份）就不帶，前端照舊即時算並標「即時值（鎖定時沒有快照）」。草稿月份不帶（回應形狀不變）。 */
+  if (run && run.status === 'final') {
+    const cs = paySnapView_(payCostSnapIndex_()[ym + '|' + stM]);
+    if (cs) run.cost_snap = cs;
+  }
   const masterM = payRead('master').filter(function (m) { return payStore(m.store) === stM; });
   let rosterMiss = [], sameName = [];
   try { rosterMiss = payRosterMismatch_(stM, masterM); } catch (e) { rosterMiss = []; }
@@ -3848,7 +3859,7 @@ function handlePayrollFinalize(body) {
       message: '還有 ' + un.length + ' 天有打卡但沒核定，請主管先核定完再鎖定：' +
         un.slice(0, 30).map(function (x) { return (+x.date.slice(5, 7)) + '/' + (+x.date.slice(8, 10)) + ' ' + x.name; }).join('、') + (un.length > 30 ? ' 等' : '') };
   }
-  let n = 0;
+  let n = 0, savedSnap = null;
   /* 稽核與損益快照也是「讀整張再寫回」的共用分頁，和鎖定狀態放在同一把鎖裡，兩店同時定案才不會互相蓋掉（2026-11-10）。 */
   if (!payWriteLocked_(['run', 'audit', 'cost_snapshot'], function () {
     const rows = payRead('run');
@@ -3866,7 +3877,7 @@ function handlePayrollFinalize(body) {
        移除同樣包 try/catch，失敗不影響鎖定/解鎖本身。 */
     if (lock && body.cost_snapshot) {
       try {
-        pnlSnapshotUpsert_(ym, stF, body.cost_snapshot);
+        savedSnap = paySnapView_(pnlSnapshotUpsert_(ym, stF, body.cost_snapshot));
       } catch (snapErr) {
         payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: 'pnl_snapshot_fail',
                               operator: String(body.operator || 'admin'),
@@ -3883,7 +3894,10 @@ function handlePayrollFinalize(body) {
     }
   })) return PAY_BUSY_;
   if (!n) return { ok: false, error: 'no_run', message: ym + ' 還沒有月結資料' };
-  return { ok: true, ym: ym, status: lock ? 'final' : 'draft', count: n };
+  /* cost_snap（2026-11-13）：鎖定且快照寫成功才帶，前端鎖完不用重整就改讀快照；沒寫成功前端照舊標「即時值」。 */
+  const out = { ok: true, ym: ym, status: lock ? 'final' : 'draft', count: n };
+  if (lock && savedSnap) out.cost_snap = savedSnap;
+  return out;
 }
 
 /**
@@ -4806,6 +4820,7 @@ function handlePayrollTrend(body) {
   const runs = payRead('run').filter(function (r) { return payStore(r.store) === st; });
   const items = payRead('item').filter(function (i) { return payStore(i.store) === st; });
   const insMap = (payMasterInsMap())[st] || {};   // 迴圈外先建表
+  const snapIdx = payCostSnapIndex_();   // 已鎖定月份的成本快照（迴圈外先讀一次）
   const runByYm = {}, itemByYm = {};
   runs.forEach(function (r) { (runByYm[String(r.ym)] = runByYm[String(r.ym)] || []).push(r); });
   items.forEach(function (i) { (itemByYm[String(i.ym)] = itemByYm[String(i.ym)] || []).push(i); });
@@ -4846,12 +4861,15 @@ function handlePayrollTrend(body) {
     const otLocal = ot - otSupport;
     const cfg = payConfig(st);
     // 公司負擔改為依主檔逐人加總（與成本分類頁一致），主檔沒填才退回參數手填值
-    const co = payCompanyTotal(cfg, payAutoCompanyIns(rs, insMap));
+    // 已鎖定月份（2026-11-13 薪資挑錯第 7 項）：有快照就用鎖定當下的公司負擔，鎖定後改主檔／參數不再影響
+    const fin = rs.every(function (r) { return String(r.status) === 'final'; });
+    const sn = fin ? snapIdx[ym + '|' + st] : null;
+    const co = sn ? paySnapCompany_(sn) : payCompanyTotal(cfg, payAutoCompanyIns(rs, insMap));
     const salaryCost = gross - reduce - custAdd;
     // 保險成本＝公司負擔＋代扣的同仁自付額（＝實際繳出去的金額）；總成本因此與改口徑前相同
     const insCost = co + insSelf;
     const people = ft + pt;
-    return { ym: ym, has: true,
+    const rowT = { ym: ym, has: true,
              salary_cost: payR0(salaryCost), company: payR0(insCost), ins_self: payR0(insSelf),
              total_cost: payR0(salaryCost + insCost),
              overtime: payR0(ot), overtime_support: payR0(otSupport), overtime_local: payR0(otLocal),
@@ -4862,6 +4880,9 @@ function handlePayrollTrend(body) {
              avg_hours: people ? payR2(hours / people) : 0,
              avg_net: people ? payR0(rs.reduce(function (a, r) { return a + payNum(r.net); }, 0) / people) : 0,
              status: String(rs[0].status || 'draft') };
+    // cost_src：snapshot＝讀鎖定快照；live＝已鎖定但沒有快照（畫面標「即時值」）。草稿月份不帶（回應形狀不變）。
+    if (fin) rowT.cost_src = sn ? 'snapshot' : 'live';
+    return rowT;
   });
   return { ok: true, store: st, months: out };
 }
@@ -4881,11 +4902,15 @@ function handlePayrollGroup(body) {
   items.forEach(function (i) { (itemBy[payStore(i.store)] = itemBy[payStore(i.store)] || []).push(i); });
 
   const insMapAll = payMasterInsMap();   // 迴圈外先建表（不可在逐店迴圈裡 payRead）
+  const snapIdx = payCostSnapIndex_();   // 已鎖定月份的成本快照（迴圈外先讀一次）
   const rows = payStoreList().map(function (st) {
     const code = String(st.code), rs = runBy[code] || [], its = itemBy[code] || [];
     const cfg = payConfig(code);
     // 公司負擔改為依主檔逐人加總（與成本分類頁一致），主檔沒填才退回參數手填值
-    const co = payCompanyTotal(cfg, payAutoCompanyIns(rs, insMapAll[code] || {}));
+    // 已鎖定月份（2026-11-13 薪資挑錯第 7 項）：有快照就用鎖定當下的公司負擔
+    const fin = rs.length > 0 && rs.every(function (r) { return String(r.status) === 'final'; });
+    const sn = fin ? snapIdx[ym + '|' + code] : null;
+    const co = sn ? paySnapCompany_(sn) : payCompanyTotal(cfg, payAutoCompanyIns(rs, insMapAll[code] || {}));
     if (!rs.length) return { store: code, name: String(st.name || code), has: false, company: payR0(co) };
     var gross = 0, net = 0, hours = 0, ft = 0, pt = 0, ot = 0, bonus = 0, reduce = 0, insSelf = 0, custAdd = 0;
     rs.forEach(function (r) {
@@ -4905,12 +4930,14 @@ function handlePayrollGroup(body) {
     });
     const salaryCost = gross - reduce - custAdd;
     const insCost = co + insSelf;   // 保險成本＝公司負擔＋代扣自付額
-    return { store: code, name: String(st.name || code), has: true,
+    const rowG = { store: code, name: String(st.name || code), has: true,
              people: ft + pt, ft: ft, pt: pt, hours: payR2(hours),
              gross: payR0(gross), net: payR0(net), overtime: payR0(ot), bonus: payR0(bonus),
              salary_cost: payR0(salaryCost), company: payR0(insCost), ins_self: payR0(insSelf),
              total_cost: payR0(salaryCost + insCost),
              status: String(rs[0].status || 'draft') };
+    if (fin) rowG.cost_src = sn ? 'snapshot' : 'live';   // 同 trend：草稿不帶
+    return rowG;
   });
   const sum = { people: 0, hours: 0, gross: 0, net: 0, overtime: 0, bonus: 0, salary_cost: 0, company: 0, total_cost: 0 };
   rows.forEach(function (r) {
@@ -5620,9 +5647,35 @@ function pnlSnapshotUpsert_(ym, store, snap) {
     co_owner: payNum(snap.co_owner), co_group: payNum(snap.co_group),
     ins_self: payNum(snap.ins_self), yearend: payNum(snap.yearend),
     support_json: JSON.stringify(pnlSanitizeSupport_(snap.support)),
-    total: payNum(snap.total), updated_at: nowTaipeiIso()
+    total: payNum(snap.total), updated_at: nowTaipeiIso(),
+    detail_json: JSON.stringify(paySnapDetailSanitize_(snap.detail))
   };
   payReplaceAll('cost_snapshot', kept.concat([row]));
+  return row;
+}
+
+/* detail 白名單化（2026-11-13 薪資挑錯第 7 項）：跟 pnlSanitizeSupport_ 同一個原則——不信任前端傳來的結構，
+   只留認得的鍵、數字一律 payNum()、字串截長、筆數設上限。沒送 detail（舊版前端）→ 存 null，畫面退回只用合計欄。 */
+var PAY_SNAP_DETAIL_MAX = 500;
+function paySnapDetailSanitize_(d) {
+  if (!d || typeof d !== 'object') return null;
+  var str = function (v) { return String(v == null ? '' : v).slice(0, PNL_SUPPORT_MAX_KEY_LEN); };
+  var bool = function (v) { return v === true || String(v).toLowerCase() === 'true'; };
+  var coAuto = {};
+  ['co_labor', 'co_health', 'co_pension'].forEach(function (k) { coAuto[k] = bool((d.co_auto || {})[k]); });
+  var emp = (Array.isArray(d.emp) ? d.emp : []).slice(0, PAY_SNAP_DETAIL_MAX).map(function (e) {
+    e = e || {};
+    return { emp_id: str(e.emp_id), ft: bool(e.ft), ratio: payNum(e.ratio),
+             co_labor: payNum(e.co_labor), co_health: payNum(e.co_health), co_pension: payNum(e.co_pension),
+             yearend_months: payNum(e.yearend_months), yearend: payNum(e.yearend), gap_rate: payNum(e.gap_rate) };
+  });
+  var sup = (Array.isArray(d.sup) ? d.sup : []).slice(0, PAY_SNAP_DETAIL_MAX).map(function (x) {
+    x = x || {};
+    return { emp_id: str(x.emp_id), ft: bool(x.ft), store: str(x.store) || '（未指定）',
+             hours: payNum(x.hours), rate: payNum(x.rate), gapH: payNum(x.gapH), gapRate: payNum(x.gapRate),
+             amount: payNum(x.amount), fixed: bool(x.fixed) };
+  });
+  return { v: 1, co_auto: coAuto, emp: emp, sup: sup };
 }
 
 /* 移除某 (ym, store) 的快照（2026-09-25 審查加）。用在：①解鎖時——這個月不再是定案
@@ -5643,14 +5696,38 @@ function pnlSnapshotRemove_(ym, store) {
    建表頭。理論上同一 (ym, store) 只會有一筆（pnlSnapshotUpsert_ 是 upsert），
    保險起見取最後一筆命中的。 */
 function pnlReadSnapshot_(ym, store) {
+  return payCostSnapIndex_()[ym + '|' + payStore(store)] || null;
+}
+
+/* 快照分頁唯讀讀取（2026-11-13 抽出來共用）：分頁不存在回空陣列，不透過會 insertSheet 的 paySheet()。
+   損益端點、payroll_month、儀表板、集團總覽都走這裡，一次請求只讀一次分頁。 */
+function payCostSnapRows_() {
   var sh = getSS().getSheetByName(PAY_SHEET_NAME.cost_snapshot);
-  if (!sh) return null;
-  var rows = readSheetAsObjects(sh).rows.map(stripRowIndex);
-  var hit = null;
-  rows.forEach(function (r) {
-    if (String(r.ym) === ym && payStore(r.store) === store) hit = r;
-  });
-  return hit;
+  if (!sh) return [];
+  return readSheetAsObjects(sh).rows.map(stripRowIndex);
+}
+/** {'YYYY-MM|門市': 快照列}；同鍵理論上只有一筆（upsert），保險起見取最後一筆。 */
+function payCostSnapIndex_() {
+  var out = {};
+  var rows = [];
+  try { rows = payCostSnapRows_() || []; } catch (e) { rows = []; }   // 快照讀不到不可以拖垮整頁，退回即時值
+  rows.forEach(function (r) { out[String(r.ym) + '|' + payStore(r.store)] = r; });
+  return out;
+}
+/** 快照列 → 給管理者畫面用的物件（成本分類頁讀這份）。沒有快照回 null。 */
+function paySnapView_(row) {
+  if (!row) return null;
+  var support = {}, detail = null;
+  try { support = JSON.parse(row.support_json || '{}') || {}; } catch (e) { support = {}; }
+  try { detail = row.detail_json ? JSON.parse(row.detail_json) : null; } catch (e) { detail = null; }
+  return { co_labor: payNum(row.co_labor), co_health: payNum(row.co_health), co_pension: payNum(row.co_pension),
+           co_owner: payNum(row.co_owner), co_group: payNum(row.co_group),
+           ins_self: payNum(row.ins_self), yearend: payNum(row.yearend), total: payNum(row.total),
+           support: support, detail: detail, updated_at: String(row.updated_at || '') };
+}
+/** 快照裡的公司負擔合計（勞保＋健保＋退休金＋負責人＋團險），與 payCompanyTotal 同口徑、但用鎖定當下的值。 */
+function paySnapCompany_(row) {
+  return payNum(row.co_labor) + payNum(row.co_health) + payNum(row.co_pension) + payNum(row.co_owner) + payNum(row.co_group);
 }
 
 /** {action:'pnlPayroll', key, ym, store} → 讀「鎖定本月」時存的人事成本快照，完全唯讀。

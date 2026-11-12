@@ -121,6 +121,7 @@ vm.runInContext(`
   MASTER = ${JSON.stringify(MASTER)};
   ATT = ${JSON.stringify(ATT)};
   CFG = ${JSON.stringify(CFG)};
+  STATUS = 'draft'; COST_SNAP = null;   // 2026-11-13：costTotals 會看月份狀態（草稿＝即時算）
 `, sbFront);
 const frontSnap = vm.runInContext('costStable(costTotals())', sbFront);
 
