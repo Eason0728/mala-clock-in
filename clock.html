@@ -711,6 +711,7 @@
     if (s === 'rejected_out_of_range') return '超出範圍';
     if (s === 'rejected_device') return '裝置被拒';
     if (s === 'rejected_duplicate') return '重複打卡';
+    if (s === 'rejected_too_soon') return '太快重按';
     if (s === 'rejected_rest') return '休息不足';
     return s;
   }
@@ -800,6 +801,14 @@
     return lastType === 'in'
       ? '⚠ 已打過上班卡，下一筆請打下班卡'
       : '⚠ 已打過下班卡，下一筆請打上班卡';
+  }
+
+  /** 剛打完卡 10 分鐘內又按另一顆、被後端擋下（rejected_too_soon，2026-11-11 Eason 定，B33）。
+   *  畫面上的 10 分鐘鎖看的是手機時鐘，手機時鐘快的人會按得下去；後端用伺服器時間再擋一次，這裡照後端那句顯示
+   *  （和畫面自己那道鎖同一句話）。type＝這次按的是哪一顆。 */
+  function tooSoonMessage(res, type) {
+    var base = (res && res.message) ? String(res.message) : '剛打完卡，10 分鐘內不能再打卡';
+    return '⚠ ' + base + '（避免手滑誤打）。真的要' + (type === 'in' ? '上班' : '下班') + '請告知主管補登。';
   }
 
   // 打卡沒成功時一律顯示這一句（Eason 2026-08-03 指定的統一措辭）。
@@ -1075,6 +1084,12 @@
     monthTotalsEl.style.display = 'flex';
   }
 
+  // 核定狀態要不要列成醒目小字：「正常」不列；「上班中」（2026-11-11 B34：主管核定當下人還在上班、
+  // 下班卡還沒到打的時候）不是異常，也不列。其餘（遲到、早退、忘刷卡…）照原樣列。
+  function approvedMarkText(st) {
+    return String(st || '').split('、').filter(function (x) { return x && x !== '正常' && x !== '上班中'; }).join('、');
+  }
+
   function renderRecentDays(days) {
     recentListEl.innerHTML = '';
     if (!days || days.length === 0) {
@@ -1103,10 +1118,11 @@
       hours.textContent = hoursText;
       // 遲到/早退等核定狀態（後端 approved_status＝主管核定當下算的 status_text，與月表狀態欄同源）。
       // 「正常」不顯示以免雜訊；有異常才追加一段醒目小字（Eason 2026-07-15 要求顯示遲到分鐘）。
-      if (d.approved_status && d.approved_status !== '正常') {
+      var markText = approvedMarkText(d.approved_status);
+      if (markText) {
         var mark = document.createElement('span');
         mark.className = 'day-mark';
-        mark.textContent = d.approved_status;
+        mark.textContent = markText;
         hours.appendChild(mark);
       }
       li.appendChild(info);
@@ -1433,6 +1449,9 @@
           // 等於本來就打過了：跟前端「同型連打」前置擋的措辭一致（duplicateMessage(type)，
           // 不是相反的型別——被判重複代表「跟上一筆同型」就是這次嘗試的 type 本身）。
           showStatus('status-warn', duplicateMessage(type));
+        } else if (found.status === 'rejected_too_soon') {
+          // 這筆有送到、但離上一張卡不到 10 分鐘被擋下（2026-11-11 B33）
+          showStatus('status-warn', tooSoonMessage(null, type));
         } else {
           showStatus('status-warn', CLOCK_FAIL_MSG + accuracyHint(found));
         }
@@ -1512,6 +1531,9 @@
           showStatus('status-warn', 'LINE 身分驗證已過期，正在重新登入…');
           liff.login();
           return;
+        } else if (res && res.status === 'rejected_too_soon') {
+          // 剛打完卡 10 分鐘內按另一顆，後端沒收（2026-11-11 B33）：講清楚還要等幾分鐘，不套統一失敗句
+          showStatus('status-warn', tooSoonMessage(res, type));
         } else if (res && res.status === 'rejected_rest' && res.rest) {
           // 單日 10 小時／兩班間隔 11 小時（2026-11-01，11-02 由 12 改 11）：講清楚幾點以後才能打，不套統一失敗句
           showStatus('status-warn', res.rest.reason + '。' + res.rest.hint);

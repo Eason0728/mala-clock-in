@@ -256,7 +256,7 @@ function doPost(e) {
     set_shifts: handleSetShifts,
     mgr_add_employee: handleMgrAddEmployee,
     mgr_roster: handleMgrRoster,
-    mgr_set_active: handleMgrSetActive,
+    mgr_set_active: function (b) { return leftCascadeAfter_(handleMgrSetActive(b)); },   // 設離職後連帶停用別店同一支 LINE 的列（B13）
     recent_hires: handleRecentHires,
     get_roster: handleGetRoster,
     get_events: handleGetEvents,
@@ -445,6 +445,8 @@ function stripRowIndex(row) {
  * pending_device_approval 也算數：核准後會翻成 ok，若不算數會造成核准後同型重複。
  */
 /** 同型（上班後又上班、下班後又下班）只在這幾分鐘內擋成 rejected_duplicate（2026-11-02，原本 12 小時內都擋）。
+ *  2026-11-11 Eason 定（B33）：另一型（上班後馬上下班、下班後馬上上班）在這幾分鐘內也不收，記成 rejected_too_soon。
+ *  原本另一型只鎖在畫面上，舊連結用手機時鐘——手機時鐘快的人打完上班可以馬上打下班，兩張都收。
  *  與 Liff.gs LIFF_LOCK_MIN、clock.html CLOCK_LOCK_MIN、mock_server.py 同步。 */
 const SAME_TYPE_LOCK_MIN = 10;
 
@@ -531,6 +533,17 @@ function todayHoursSummary(eventRows, empId, today) {
     });
     if (!laterOut) result.working_since = tsHm(openIn.ts);
   }
+  // 跨夜班（B34）：今天還沒有進行中的班段，但昨天的上班卡還開著、而且還在 16 小時內 → 人還在上班，
+  // 顯示「上班中（22:00 起）」，不是 0 小時。時數照舊只算今天已完成的班段。
+  if (!result.working_since) {
+    const lo = addDaysStr(today, -1);
+    const wide = pairShifts(eventRows.filter(function (e) {
+      const d = String(e.ts).slice(0, 10);
+      return String(e.emp_id) === String(empId) && d >= lo && d <= today;
+    }));
+    const o = wide.openIns[0];
+    if (o && String(o.ts).slice(0, 10) !== today && inStillWorking_(o.ts)) result.working_since = tsHm(o.ts);
+  }
   return result;
 }
 
@@ -543,6 +556,7 @@ const RECENT_DAYS_WINDOW = 40;
  * 班段歸 in 那一天（跨夜段標 cross，前端顯示 (+1)）、未配對 in→「下班忘刷卡」、
  * 未配對 out→「上班忘刷卡」；事件往前多抓 1 天供跨夜配對。
  * 例外：未配對 in 落在「今天」→ 不算忘刷卡（上班中），照 today_hours 的邏輯。
+ * 例外二（B34，2026-11-11）：最後還開著的上班卡在 16 小時內 → 不論日期都算上班中（跨夜班過了午夜還在上班）。
  * reference＝該日已完成班段 15 分鐘取整加總（approvedHoursOfShift，2026-07-15 起）；
  * 當天有任一筆忘刷卡（見上例外）→ 整天回 null，不是部分加總（A3，與月表同一規則，
  * 見 dayReferenceIncomplete，勿各自重寫判斷）。
@@ -582,7 +596,9 @@ function buildRecentDays(eventRows, empId, todayStr, approvedMap) {
     if (d < startStr || d > todayStr) return;
     const c = day(d);
     c.segments.push({ sortMs: tsMs(e.ts), in: tsHm(e.ts), out: null, cross: false });
-    c.notes.push(d === todayStr ? '上班中' : '下班忘刷卡');
+    const working = openInWorking_(paired, e);   // B34：還在 16 小時內的最後一張上班卡
+    if (working) c.workingHm = tsHm(e.ts);
+    c.notes.push(d === todayStr || working ? WORKING_NOTE : '下班忘刷卡');
   });
 
   paired.unmatchedOuts.forEach(function (e) {
@@ -598,7 +614,8 @@ function buildRecentDays(eventRows, empId, todayStr, approvedMap) {
     c.segments.sort(function (a, b) { return a.sortMs - b.sortMs; });
     c.segments.forEach(function (s) { delete s.sortMs; });
     // 參考時數：忘刷卡整天留白（null），與出勤月表同一規則（A3，見 dayReferenceIncomplete）
-    c.reference = dayReferenceIncomplete(c.segments, d, todayStr) ? null : Math.round(c.reference * 100) / 100;
+    c.reference = dayReferenceIncomplete(c.segments, d, todayStr, c.workingHm) ? null : Math.round(c.reference * 100) / 100;
+    delete c.workingHm;
     // 核定＝值班主管在 approved 分頁的最新核定（照月表 1201 慣例）。無紀錄→null＝待核定；
     // 有紀錄但 0 小時＝全天請假，必須與 null 區分，故用 rec 是否存在判斷、不看數值真假。
     const rec = ((approvedMap || {})[d] || {})[String(empId)];
@@ -767,13 +784,16 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   const clockEventRows = eventsRead.rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
   const lastCounted = clockLastWithMark_(clockEventRows, roster.emp_id);   // 併上「剛送出」記號（同一人兩筆同時到，2026-11-03）
   // 同型只擋 10 分鐘（2026-11-02 Eason：中午忘打下班卡，晚上回來要能打上班卡）；超過就收，前一張由配對標忘刷卡
-  const isDuplicate = lastCounted !== null && lastCounted.type === String(body.type)
-    && Date.now() - new Date(lastCounted.ts).getTime() < SAME_TYPE_LOCK_MIN * 60000;
-  const prevMark = isDuplicate ? null : clockMarkPut_(roster.emp_id, String(body.type), ts);
+  // 2026-11-11 Eason 定（B33）：10 分鐘內另一型也不收（isTooSoon）。剛好滿 10 分鐘就收，和 Liff.gs liffGuard_ 同一刻解鎖。
+  const lockLeftMs = lastCounted === null ? 0 : new Date(lastCounted.ts).getTime() + SAME_TYPE_LOCK_MIN * 60000 - Date.now();
+  const inLock = lockLeftMs > 0;
+  const isDuplicate = inLock && lastCounted.type === String(body.type);
+  const isTooSoon = inLock && !isDuplicate;
+  const prevMark = inLock ? null : clockMarkPut_(roster.emp_id, String(body.type), ts);
   // 單日 10 小時／兩班間隔 11 小時（2026-11-01，11-02 由 12 改 11；Rest.gs）：只擋上班卡；沒部署 Rest.gs 或總開關關著＝null
   let restBlock = null;
-  try { restBlock = (body.type === 'in' && !isDuplicate && typeof restCheckIn_ === 'function') ? restCheckIn_(ss, roster) : null; }
-  catch (e) { if (!isDuplicate) clockMarkRestore_(roster.emp_id, prevMark); throw e; }
+  try { restBlock = (body.type === 'in' && !inLock && typeof restCheckIn_ === 'function') ? restCheckIn_(ss, roster) : null; }
+  catch (e) { if (!inLock) clockMarkRestore_(roster.emp_id, prevMark); throw e; }
 
   let deviceMatch;
   if (!roster.device_id) {
@@ -786,10 +806,12 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
     deviceMatch = false;
   }
 
-  // status 優先序：重複 > 休息不足（rejected_rest，Rest.gs）> 裝置不符 > 超出範圍 > ok
+  // status 優先序：重複 > 剛打完另一型（rejected_too_soon）> 休息不足（rejected_rest，Rest.gs）> 裝置不符 > 超出範圍 > ok
   let status;
   if (isDuplicate) {
     status = 'rejected_duplicate';
+  } else if (isTooSoon) {
+    status = 'rejected_too_soon';
   } else if (restBlock) {
     status = 'rejected_rest';
   } else if (!deviceMatch) {
@@ -801,10 +823,10 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   }
 
   // 這張沒算數（被擋）就把記號還原，不能讓它擋到同仁接著重按；寫入失敗也還原
-  if (!isDuplicate && status.indexOf('rejected_') === 0) clockMarkRestore_(roster.emp_id, prevMark);
+  if (!inLock && status.indexOf('rejected_') === 0) clockMarkRestore_(roster.emp_id, prevMark);
   empIdColText_(eventsSheet);
   try { eventsSheet.appendRow([ts, roster.emp_id, body.type, lat, lng, distanceM, withinRange, deviceId, deviceMatch, status, accuracyM]); }
-  catch (e) { if (!isDuplicate) clockMarkRestore_(roster.emp_id, prevMark); throw e; }
+  catch (e) { if (!inLock) clockMarkRestore_(roster.emp_id, prevMark); throw e; }
 
   const result = {
     ok: true,
@@ -819,6 +841,12 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   };
   if (status === 'rejected_duplicate') {
     result.last_type = lastCounted.type;
+  }
+  if (status === 'rejected_too_soon') {
+    // 畫面照這句顯示（clock.html；LINE 打卡由 Liff.gs liffPunchFor_ 轉成 reason）
+    result.last_type = lastCounted.type;
+    result.wait_min = Math.ceil(lockLeftMs / 60000);
+    result.message = '剛打完' + (lastCounted.type === 'in' ? '上班' : '下班') + '卡，' + result.wait_min + ' 分鐘後才能再打卡';
   }
   if (restBlock) result.rest = restBlock;
   return result;
@@ -1812,6 +1840,60 @@ function handleMgrDay(body) {
  *   打卡段多於輸入段→「有多出的打卡段」；中間有間隔的兩個輸入段配到同一條打卡段
  *   →「少刷N組卡」；早到晚走不加時數、算正常（無寬限：遲到/早退各自標記分鐘數）。
  */
+/**
+ * 設離職之後的連帶停用（2026-11-11 Eason 定，B13）：原單位把同仁設成離職時，同一支 LINE 在其他店名冊上還在職的列一併設成離職。
+ * 原本只動本店那一列，他支援過的別家店照樣開得了頁、打得了卡、送得出申請。
+ * ‧只認 LINE 帳號（line_user_id）完全相同；沒綁 LINE 的人不做連帶，同名不同人不會被動到。
+ * ‧各店彼此開不了別人的試算表，只有光復開得了：光復自己直接做（lineHubLeftCascade_），其他店回頭通知光復（line_hub_left）。
+ *   通知不帶金鑰：光復只相信自己從那家店名冊讀到的內容（那一列真的剛被設成離職、有綁 LINE），不相信通知裡寫的。
+ * ‧接在 mgr_set_active／svc_set_active 的結果後面（鎖已經放掉）：15 分鐘內才被設成離職的列才做；
+ *   這段時間內重送同一個動作、或主管再按一次都會再做一次（補第一次沒成功的），更早以前就離職的不做。連帶沒成功不影響本店的離職結果，回應的 cascade 帶結果或警告。
+ * ‧之後本店把人恢復在職，不會自動恢復別店（維持手動）。
+ * res：設離職 handler 的回應（要有 ok、emp_id、active）。回傳同一個物件；別店真的有列被停用、或沒辦法確認時多一格 cascade：
+ *   {ok:true, stopped:[{store_name, emp_id, name}], failed:[]}／{ok:false, message, stopped?, failed?}。
+ */
+var LEFT_CASCADE_FRESH_MS_ = 15 * 60000;   // 同光復 LINE_HUB_LEFT_FRESH_MS：15 分鐘內重送／再按一次都會補做（獨立審查補，原本 60 秒）
+var LEFT_CASCADE_FAIL_MSG_ = '已設為離職。但沒辦法確認他在其他單位的打卡帳號有沒有一併停用，請通知總部檢查。';
+function leftCascadeAfter_(res) {
+  // 重送或再按一次（unchanged）也照樣做：第一次光復連不上時，15 分鐘內重來就能補上；已經停用過的別店列不會重複動（獨立審查補）
+  if (!res || res.ok !== true || res.active !== false) return res;
+  leftCascadeRun_(res);
+  // 別的單位沒有東西要停用、也沒有失敗＝沒事可講，回應維持原樣（管理系統的 svc_set_active 合約是 {ok, emp_id, active}）
+  if (res.cascade && res.cascade.ok === true && !(res.cascade.stopped || []).length) delete res.cascade;
+  return res;
+}
+function leftCascadeRun_(res) {
+  try {
+    var sh = getSS().getSheetByName('roster');
+    var row = sh ? findRosterByEmpId(readSheetAsObjects(sh).rows, String(res.emp_id)) : null;
+    if (!row || String(row.active).toLowerCase() === 'true') return res;
+    var uid = String(row.line_user_id || '').trim();
+    if (!uid) return res;
+    // 支援列（管理系統自動加入時寫了 src_store）收掉＝只是不再來這家支援，不可以反過來停用原單位與其他店（獨立審查補）
+    if (String(row.src_store || '').trim()) return res;
+    var at = String(normCellTs(row.removed_at) || ''), t = new Date(at).getTime();
+    if (!isFinite(t) || Math.abs(Date.now() - t) > LEFT_CASCADE_FRESH_MS_) return res;
+    var by = String(row.removed_by || '');
+    if (typeof lineHubLeftCascade_ === 'function') {   // 光復：自己就是集中服務，直接做
+      res.cascade = lineHubLeftCascade_(lineHubStores_().filter(function (s) { return s.code === ''; })[0], String(res.emp_id), uid, by);
+      return res;
+    }
+    var api = CONFIG.PAYROLL_API || (typeof REQ_HUB_API_DEFAULT_ !== 'undefined' ? REQ_HUB_API_DEFAULT_ : '');
+    if (!api) { res.cascade = { ok: false, message: LEFT_CASCADE_FAIL_MSG_ }; return res; }
+    SpreadsheetApp.flush();   // 光復要從本店名冊讀到「已離職」才會動手，先讓寫入落地
+    var resp = UrlFetchApp.fetch(api, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true, followRedirects: true,
+      payload: JSON.stringify({ action: 'line_hub_left', emp_id: String(res.emp_id), removed_at: at }) });
+    var j = JSON.parse(resp.getContentText());
+    if (j && Array.isArray(j.stopped) && Array.isArray(j.failed)) {
+      res.cascade = { ok: j.ok === true, stopped: j.stopped, failed: j.failed };
+      if (j.ok !== true) res.cascade.message = String(j.message || LEFT_CASCADE_FAIL_MSG_);
+    } else res.cascade = { ok: false, message: LEFT_CASCADE_FAIL_MSG_ };
+  } catch (e) {
+    res.cascade = { ok: false, message: LEFT_CASCADE_FAIL_MSG_ };
+  }
+  return res;
+}
+
 /** 白名單外的假別 → 向薪酬假別表（payroll_leave_type，資料驅動的正本）即時確認（2026-08-23）。
  *  背景：LEAVE_TYPES 是寫死的送出白名單，但核定頁的下拉已改為資料驅動——只在表上加新假別、
  *  忘了同步三家店後端的白名單，主管選了就被擋成 bad_leave_type。改為白名單外自動查表放行。
@@ -1949,6 +2031,16 @@ function handleMgrApprove(body) {
       if (endMs <= startMs) endMs += 24 * 3600000; // 跨夜段：end<=start 視為+1天
       return { start: p.start, end: p.end, startMs: startMs, endMs: endMs };
     });
+    // 時段彼此重疊就擋下（2026-11-11 Eason 定，B24）：原本 09:00-13:00 加 12:00-13:00、或同一段填兩次都照收，
+    // 重疊的時間算兩次、核定時數比實際多。跨夜段用上面算好的結束時刻比；剛好相接（13:00 接 13:00）不算重疊。
+    for (let a = 0; a < periods.length; a++) {
+      for (let b = a + 1; b < periods.length; b++) {
+        if (periods[a].startMs < periods[b].endMs && periods[b].startMs < periods[a].endMs) {
+          return { ok: false, error: 'bad_periods', message: '核定時段有重疊：' + periods[a].start + '-' + periods[a].end + ' 和 '
+            + periods[b].start + '-' + periods[b].end + '，請改成不重疊的時段' };
+        }
+      }
+    }
     approvedHours = tripHours;
     periods.forEach(function (p) { approvedHours += (p.endMs - p.startMs) / 3600000; });
     approvedHours = Math.round(approvedHours * 100) / 100;
@@ -1966,6 +2058,7 @@ function handleMgrApprove(body) {
         outMs: s.out ? hmToMs(outDate, s.out) : null,
       };
     });
+    markWorkingSeg_(punch, date, punchWithMs);   // B34：還在上班的那張上班卡（16 小時內）不算忘刷、不算少一張
     statusText = computeApprovalStatus(periods, punchWithMs,
       unresolvedAttemptCount_(eventRows, body.emp_id, date) > 0,
       hasTrip,
@@ -2077,7 +2170,10 @@ function segMissNote(no, tail) { return MISSING_GROUP_PREFIX + (SEG_NUM_ZH[no] |
 // ⚠ 「超出範圍嘗試」不在這裡（Eason 指定）：那多半是同仁人在店裡、手機定位飄掉，
 //   一天連按十幾次就把數字灌爆（A 君 8/11 一天 12 次），當異常看會失真。
 // ⚠ 只列病假與事假：特休假／生理假／家庭照顧假／喪假／婚假是應有的假，不算異常。
-// ⚠ 「該段無打卡」「有多出的打卡段」「上班中」也不列入。
+// ⚠ 「有多出的打卡段」「上班中」不列入。
+// ⚠ 「該段無打卡」（整天沒打卡、靠主管補核定）：2026-11-11 Eason 定（B04）＝也算異常 1 天，跟薪資一致
+//   （薪資歸集 2026-11 起把這種日子算忘刷 1 天）。因為有生效日，不放在下面這張清單裡，
+//   由 noPunchDayAbnormal_() 另外判斷（NO_PUNCH_ABNORMAL_FROM 起的日子才算，10 月以前的月表不變）。
 const ABNORMAL_CATEGORIES = [
   { key: '上班忘刷卡', prefixes: ['上班忘刷卡'] },
   { key: '下班忘刷卡', prefixes: ['下班忘刷卡'] },
@@ -2093,6 +2189,16 @@ const ABNORMAL_CATEGORIES = [
 const HIGHLIGHT_CATEGORIES = ABNORMAL_CATEGORIES.concat([
   { key: '超出範圍嘗試', prefixes: ['超出範圍嘗試'] },
 ]);
+
+// 「該段無打卡」算異常的生效日（B04，2026-11-11 Eason 定）：比照薪資「2026-11 起算忘刷 1 天」，
+// 看的是「那一天的日期」——10/31 以前的日子不算，重算舊月表數字不會變。
+const NO_PUNCH_ABNORMAL_FROM = '2026-11-01';
+/** 這天的核定狀態有「該段無打卡」（整項相等才算，同薪資 payNoPunchSeg_）而且日期在生效日以後 → true。
+ *  出差（狀態是「出差」）、有打但被擋（「打卡未入帳，主管補登」）、整天請假（沒有核定時段）都不會是這個字樣。 */
+function noPunchDayAbnormal_(dateStr, statusText) {
+  if (String(dateStr || '') < NO_PUNCH_ABNORMAL_FROM) return false;
+  return String(statusText || '').split('、').some(function (p) { return p.trim() === NO_PUNCH_NOTE; });
+}
 
 /**
  * 回傳這一格（某人某天）命中的異常類別清單（同類重複只出現一次）。
@@ -2178,6 +2284,7 @@ function pairShifts(events) {
   const shifts = [];
   const unmatchedIns = [];
   const unmatchedOuts = [];
+  const openIns = [];   // 每個人「最後還開著」的那張上班卡（後面沒有任何算數的卡；B34 用來判斷是不是還在上班）
 
   Object.keys(byEmp).forEach(function (emp) {
     const evs = byEmp[emp].slice().sort(function (a, b) { return tsMs(a.ts) - tsMs(b.ts); });
@@ -2220,10 +2327,40 @@ function pairShifts(events) {
         unmatchedOuts.push(e);
       }
     });
-    if (open) unmatchedIns.push(open);
+    if (open) { unmatchedIns.push(open); openIns.push(open); }
   });
 
-  return { shifts: shifts, unmatchedIns: unmatchedIns, unmatchedOuts: unmatchedOuts };
+  return { shifts: shifts, unmatchedIns: unmatchedIns, unmatchedOuts: unmatchedOuts, openIns: openIns };
+}
+
+/* ── 上班中（B34，2026-11-11 Eason 定：上班卡之後 16 小時內都算上班中）──────────────────
+ * 沒配到下班卡、而且是這個人最後一張卡的上班卡（pairShifts 的 openIns），距離現在還在打卡配對的上限
+ * （MONTHLY_PAIR_WINDOW_HOURS，16 小時）以內 → 不論日期都算「上班中」：不標下班忘刷卡、不算異常、
+ * 參考時數照上班中的算法（只加已完成的班段）。超過 16 小時還沒有下班卡才標「下班忘刷卡」。
+ * 原本只認「日期是今天」，跨夜班 22:00 上班的人過了午夜就先被標異常。
+ * 同仁頁最近幾天與今日時數、主管頁、月表、核定狀態、少幾張卡（Requests.gs reqWorkingSegs_）都用這一支判斷。
+ * 「今天沒配對的上班卡＝上班中」的舊規則照舊保留（當天中途漏刷的那張，隔天才標忘刷）。
+ * ⚠ 薪資歸集（Payroll.gs）還是只認「今天」——跨夜班凌晨當下去看薪資會先多算一次忘刷，打了下班卡就會自己消失。 */
+const WORKING_NOTE = '上班中';
+function inStillWorking_(inTs, nowMs) {
+  const age = (nowMs == null ? Date.now() : nowMs) - tsMs(inTs);
+  return age >= 0 && age <= MONTHLY_PAIR_WINDOW_HOURS * 3600000;
+}
+/** 這張沒配對的上班卡是不是「還在上班」：是 pairShifts 回的 openIns 之一、而且還在 16 小時內。 */
+function openInWorking_(paired, e, nowMs) {
+  return (paired.openIns || []).indexOf(e) !== -1 && inStillWorking_(e.ts, nowMs);
+}
+/** dayPunchSegments 的結果裡，這天還在上班的那張上班卡的 HH:mm；沒有就回 null。 */
+function workingInHm_(punch, nowMs) {
+  return punch && punch.open_in_ts && inStillWorking_(punch.open_in_ts, nowMs) ? tsHm(punch.open_in_ts) : null;
+}
+/** 把「還在上班」的那張上班卡在帶毫秒的打卡段（{inMs,outMs}）上標 working:true（computeApprovalStatus、reqWorkingSegs_ 會看）。 */
+function markWorkingSeg_(punch, dateStr, segs, nowMs) {
+  const hm = workingInHm_(punch, nowMs);
+  if (!hm) return segs;
+  const ms = hmToMs(dateStr, hm);
+  segs.forEach(function (x) { if (x.outMs == null && x.inMs === ms) x.working = true; });
+  return segs;
 }
 
 /* ── 主管認定的重複打卡（2026-11-06 Eason）──────────────────────────────
@@ -2372,7 +2509,8 @@ function hmToMs(dateStr, hm) {
 /**
  * 單一員工單一天的打卡段（給 mgr_day/mgr_approve 用，沿用 pairShifts）。
  * 事件往前後各多抓 1 天供跨夜配對，只回傳歸屬 dateStr 這天的班段。
- * 回傳 { segments:[{in,out,cross}]（未配對一端為 null）, reference（已完成時段小時數，2 位小數）}。
+ * 回傳 { segments:[{in,out,cross}]（未配對一端為 null）, reference（已完成時段小時數，2 位小數）,
+ *         open_in_ts（這天「最後還開著」的那張上班卡的時間，沒有就 null；是不是還在上班由 workingInHm_ 看現在時間決定，B34）}。
  */
 function dayPunchSegments(eventRows, empId, dateStr) {
   const lo = addDaysStr(dateStr, -1);
@@ -2390,9 +2528,11 @@ function dayPunchSegments(eventRows, empId, dateStr) {
     segments.push({ sortMs: tsMs(s.in_ts), in: tsHm(s.in_ts), out: tsHm(s.out_ts), cross: tsDateStr(s.out_ts) !== d });
     reference += approvedHoursOfShift(s.in_ts, s.out_ts);
   });
+  let openInTs = null;
   paired.unmatchedIns.forEach(function (e) {
     if (tsDateStr(e.ts) !== dateStr) return;
     segments.push({ sortMs: tsMs(e.ts), in: tsHm(e.ts), out: null, cross: false });
+    if (paired.openIns.indexOf(e) !== -1) openInTs = String(e.ts);
   });
   paired.unmatchedOuts.forEach(function (e) {
     // 凌晨 06:00 以前的孤單下班卡＝前一天的跨夜班（2026-11-10 Eason，同 Requests.gs REQ_EARLY_OUT_HM）
@@ -2403,7 +2543,7 @@ function dayPunchSegments(eventRows, empId, dateStr) {
 
   segments.sort(function (a, b) { return a.sortMs - b.sortMs; });
   segments.forEach(function (s) { delete s.sortMs; });
-  return { segments: segments, reference: Math.round(reference * 100) / 100 };
+  return { segments: segments, reference: Math.round(reference * 100) / 100, open_in_ts: openInTs };
 }
 
 /**
@@ -2414,18 +2554,19 @@ function dayPunchSegments(eventRows, empId, dateStr) {
  *   有任一筆未配對 out（in 為 null，即「上班忘刷卡」）→ 恆不完整；
  *   有任一筆未配對 in（out 為 null，即「下班忘刷卡」）且 dateStr 不是今天 → 不完整；
  *   dateStr 是今天的未配對 in → 上班中，不算不完整（a872de4 規則，月表已如此）。
+ *   workingHm（選填，B34）＝這天還在上班的那張上班卡的 HH:mm（16 小時內、後面沒有別的卡）→ 那一張不算忘刷，不論日期。
  * ⚠ 月表 buildMonthlySheet 因 segments 結構不同（{sortMs,text}）無法呼叫本函式，
  *   在 unmatchedIns/unmatchedOuts 兩段維護著同一規則的 inline 版——改這裡必同步改那裡。
  */
-function dayReferenceIncomplete(segments, dateStr, todayStr) {
+function dayReferenceIncomplete(segments, dateStr, todayStr, workingHm) {
   const hasForgotOut = segments.some(function (s) { return s.in === null; });
-  const hasForgotIn = segments.some(function (s) { return s.out === null; });
+  const hasForgotIn = segments.some(function (s) { return s.out === null && !(workingHm && s.in === workingHm); });
   return hasForgotOut || (hasForgotIn && dateStr !== todayStr);
 }
 
 /** mgr_day 的 reference 規則（已完成時段 15 分鐘取整加總；忘刷卡整天留白＝null）。handleMgrDay 與 att_digest_data 共用。 */
 function dayReferenceHours_(punch, dateStr, todayStr) {
-  return dayReferenceIncomplete(punch.segments, dateStr, todayStr) ? null : punch.reference;
+  return dayReferenceIncomplete(punch.segments, dateStr, todayStr, workingInHm_(punch)) ? null : punch.reference;
 }
 
 /**
@@ -2511,6 +2652,7 @@ function unrecordedAttemptCount(eventRows, empId, dateStr) {
  * 某人某天「真的沒入帳」的打卡筆數：送出了、沒成功，而且之後也沒有補成功（2026-11-11 B08）。
  * 核定狀態用這個判斷要不要寫「打卡未入帳，主管補登」。不算的兩種：
  *   連按被擋（rejected_duplicate）——前面那張同型的卡已經成功；
+ *   剛打完卡 10 分鐘內按到另一顆被擋（rejected_too_soon，2026-11-11 B33）——手滑，前面那張卡已經算數；
  *   被擋之後 10 分鐘內同一種卡重按成功（例：定位飄掉、走近一點再按一次）。
  * 原本只要當天有任何一筆沒成功的卡就整天當成「未入帳」，多按一下，遲到分鐘與忘刷就都不見了。
  * 主管頁顯示的嘗試次數仍用 unrecordedAttemptCount（每一筆都列出來）。
@@ -2522,7 +2664,7 @@ function unresolvedAttemptCount_(eventRows, empId, dateStr) {
   mine.forEach(function (e) {
     if (tsDateStr(e.ts) !== dateStr) return;
     const st = String(e.status);
-    if (st === 'ok' || st === 'rejected_duplicate') return;
+    if (st === 'ok' || st === 'rejected_duplicate' || st === 'rejected_too_soon') return;
     const t = tsMs(e.ts);
     const retried = mine.some(function (x) {
       const d = tsMs(x.ts) - t;
@@ -2670,7 +2812,9 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
       const c = lone[pi];
       if (c.outMs == null) {
         if (c.inMs > p.startMs) notes.push('遲到' + Math.round((c.inMs - p.startMs) / 60000) + '分');
-        add(multi ? segMissNote(outNo[pi], SEG_FORGOT_OUT) : '下班忘刷卡');
+        // 還在上班（B34：最後一張上班卡、16 小時內）→ 下班卡還沒到打的時候，標「上班中」不標忘刷；
+        // 之後打了下班卡或滿 16 小時，每日 05:00 重算（recheckPendingApprovalStatuses）會把狀態改成該有的樣子。
+        add(c.working ? WORKING_NOTE : (multi ? segMissNote(outNo[pi], SEG_FORGOT_OUT) : '下班忘刷卡'));
       } else {
         if (c.outMs < p.endMs) notes.push('早退' + Math.round((p.endMs - c.outMs) / 60000) + '分');
         add(multi ? segMissNote(inNo[pi], SEG_FORGOT_IN) : '上班忘刷卡');
@@ -2808,10 +2952,11 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     if (!inMonthToEnd(d)) return;
     const c = cell(d, String(e.emp_id));
     c.segments.push({ sortMs: tsMs(e.ts), text: tsHm(e.ts) + '–？' });
-    if (d === todayStr) {
+    if (d === todayStr || openInWorking_(paired, e)) {
       // 今天的未配對上班卡＝人還在上班，顯示「上班中」、當天已完成班段時數照計，
-      // 不標忘刷卡（營業時間看月表才不會滿版假忘刷卡）；隔天起才算真的下班忘刷卡
-      c.notes.push('上班中');
+      // 不標忘刷卡（營業時間看月表才不會滿版假忘刷卡）；隔天起才算真的下班忘刷卡。
+      // B34（2026-11-11）：最後還開著的上班卡在 16 小時內（跨夜班過了午夜還在上班）也一樣，不論日期。
+      c.notes.push(WORKING_NOTE);
     } else {
       c.notes.push('下班忘刷卡');
       c.incomplete = true;
@@ -2827,7 +2972,7 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     c.incomplete = true;
   });
 
-  // pending → 備註不入班段；超出範圍 → 備註；rejected_duplicate / rejected_device 不顯示（雜訊）
+  // pending → 備註不入班段；超出範圍 → 備註；rejected_duplicate / rejected_too_soon / rejected_device 不顯示（雜訊）
   events.forEach(function (e) {
     const st = String(e.status);
     if (st !== 'pending_device_approval' && st !== 'rejected_out_of_range') return;
@@ -2873,7 +3018,9 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
     const rec = (approvedMap[c.date] || {})[c.emp_id];
     const notesForCount = rec && rec.status_text ? c.notes.concat([String(rec.status_text)]) : c.notes;
     // 以天計算：這一格＝某人某天，命中任何一類就 +1，命中幾類、幾次都一樣
-    if (abnormalCategoriesOf(notesForCount, ABNORMAL_CATEGORIES).length > 0) s.abnormal++;
+    // 整天沒打卡、主管補核定（「該段無打卡」）也算 1 天（B04，2026-11-01 起的日子）
+    if (abnormalCategoriesOf(notesForCount, ABNORMAL_CATEGORIES).length > 0 ||
+        noPunchDayAbnormal_(c.date, rec && rec.status_text)) s.abnormal++;
   });
 
   // 核定時數改讀 approved 分頁（每人每月累計＝當月每天最新一筆核定紀錄的 approved_hours 加總）
@@ -2955,7 +3102,8 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
       if (wd === 0 || wd === 6) weekendRows.push(rowNo);
       // 用 statusNotes（已含核定狀態）而不是 c.notes，跟異常筆數看同一份資料：
       // 遲到/早退既然算異常，那一列就該標紅，不然數字對得起來、眼睛找不到。
-      if (abnormalCategoriesOf(statusNotes, HIGHLIGHT_CATEGORIES).length > 0) abnormalNoteRows.push(rowNo);
+      if (abnormalCategoriesOf(statusNotes, HIGHLIGHT_CATEGORIES).length > 0 ||
+          noPunchDayAbnormal_(c.date, approvedRec && approvedRec.status_text)) abnormalNoteRows.push(rowNo);
     });
 
     const s = empStats[emp] || { total: 0 };
@@ -3210,6 +3358,7 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) 
       outMs: s.out ? hmToMs(outDate, s.out) : null,
     };
   });
+  markWorkingSeg_(punch, date, punchWithMs);   // B34：重算當下人還在上班（16 小時內）→ 不寫成下班忘刷卡
   // 名冊的名字優先（有人改過名時 approved 上是舊名），查不到才退回 approved 那筆的 name。
   const rosterNow = findRosterByEmpId(rosterRows, empId);
   // ⚠ 主管手動認定的遲到不能被重算洗掉。2026-11-11（B06）以前是「原狀態帶認定就整筆跳過」，
@@ -3258,8 +3407,10 @@ function recheckPendingApprovalStatuses() {
       const statusText = String(rec.status_text || '');
       // 三種措辭都要納入：待核准裝置事後被核准 → 卡會翻成 ok → 那天就真的比對得到了
       // （「少刷N組卡」同理：中間那組卡事後入帳，長段會被拆開，少刷就該自動消失）
+      // 「上班中」（B34）：核定當下人還在上班；之後打了下班卡或滿 16 小時沒打，這裡要改成該有的狀態
       if (statusText.indexOf(NO_PUNCH_NOTE) === -1 && statusText.indexOf(NOT_RECORDED_NOTE) === -1 &&
-          statusText.indexOf(MISSING_GROUP_PREFIX) === -1 && statusText.indexOf('忘刷卡') === -1) return;
+          statusText.indexOf(MISSING_GROUP_PREFIX) === -1 && statusText.indexOf('忘刷卡') === -1 &&
+          statusText.indexOf(WORKING_NOTE) === -1) return;
       const r = recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec);
       if (r.skip === 'no_periods') return;
       checked++;

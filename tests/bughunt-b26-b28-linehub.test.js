@@ -98,7 +98,10 @@ console.log('\n════ B28：有一家店的名冊讀不到 ════');
 {
   const mk = () => buildWorld({ rosters: { cf: [R({ emp_id: 'CF01', name: '測試雙', key: 'KC01', line_user_id: 'U1' })], hq: [R({ emp_id: 'HQ-01', name: '測試雙', key: 'KH01', line_user_id: 'U1' })] } });
   const w1 = mk();
-  check('B28-10', '對照：綁了央廚＋總部兩家的人去金山，兩家都讀得到 → name_conflict', w1.bind('TOK_U1', w1.fixAt('mztjs', 5), '測試雙').first.error, 'name_conflict');
+  // 2026-11-11 Eason 定（B10：A「每一家新店的第一次都自動加入」）：綁了兩家以上、名字相同的人到新店，不再回 name_conflict，
+  // 改成照樣問管理系統、放行就自動加入。原本這裡預期 'name_conflict'。
+  const b1 = w1.bind('TOK_U1', w1.fixAt('mztjs', 5), '測試雙');
+  check('B28-10', '對照：綁了央廚＋總部兩家的人去金山，兩家都讀得到 → 自動加入金山', [b1.first.ok, b1.first.first_support, w1.roster('mztjs').length], [true, true, 1]);
   const w2 = mk(); delete w2.hub.peers.SS_hq;
   const b = w2.bind('TOK_U1', w2.fixAt('mztjs', 5), '測試雙');
   check('B28-11', '總部讀不到的那一刻 → 請稍後再試，沒有被自動加入金山', [b.first.ok === true, b.first.error, w2.roster('mztjs').length], [false, 'unreachable', 0]);

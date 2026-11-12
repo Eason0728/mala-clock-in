@@ -175,7 +175,9 @@ function reqOverlap_(s1, e1, s2, e2) {
   if (a === null || b === null || c === null || d === null) return null;
   if (b <= a) b += 1440;
   if (d <= c) d += 1440;
-  return a < d && c < b;
+  // 2026-11-11（B29）：其中一段跨夜到隔天凌晨時，另一段寫的凌晨時間（例：22:00–01:00 與 00:00–02:00）也要當成同一個凌晨來比，
+  // 不然凌晨那一小時會被當成不重疊、兩張都收。兩段都沒跨夜時，往後挪一天一定碰不到，結果和原本一樣。
+  return (a < d && c < b) || (a < d + 1440 && c + 1440 < b) || (a + 1440 < d && c < b + 1440);
 }
 /** 同一天、同一類的兩筆申請是不是「同一件事」（給已核准的重複檢查用，2026-11-03）：
  *  加班＝時段重疊；請假／出差＝同假別且時段重疊（任一筆只填時數、沒有時段＝當成同一件）；
@@ -595,10 +597,13 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     if (!reason) return { error: 'need_reason', message: '請選原因' };
     }
   }
-  // 同一天同一類（忘打卡再加同一張卡）不能有兩筆審核中的
+  // 同一天同一類不能有兩筆「撞在一起」的審核中申請。
+  // 2026-11-11 Eason 定（B29）：請假／加班／出差改看時段——兩張都有開始、結束時間而且不重疊就可以同時在審
+  // （例：上午病假還在等證明，下午的事假照樣能送；同一天兩段加班）。時段重疊、或任一張只填時數沒有時段，照舊擋，不分假別。
+  // 忘打卡：同一張卡才算（2026-11-11 B02；已有人補的卡在上面就擋掉了）。
   var dup = existing.filter(function (r) {
     return String(r.emp_id) === String(me.emp_id) && r.status === 'pending' && r.kind === kind && r.date === date
-        && (kind !== 'miss' || reqSameThing_('miss', r, row));   // 忘打卡：同一張卡才算（2026-11-11 B02；已有人補的卡在上面就擋掉了）
+        && (kind === 'miss' ? reqSameThing_('miss', r, row) : reqOverlap_(r.start, r.end, row.start, row.end) !== false);
   })[0];
   if (dup) return { error: 'duplicate', message: '這天已經有一筆審核中的' + REQ_KINDS_[kind] + '申請，要改請先取消那一筆' };
   // 已核准的也要擋「同一件事」（2026-11-03 對抗驗證 #4）：原本只看審核中，核准後再送一模一樣的一筆、主管批次核准就算兩次
@@ -1351,18 +1356,21 @@ function reqBindMissCards_(periods, segs, breakWindow) {
   });
   return n;
 }
-/** 人還在上班（2026-11-11 B03）：那天最後一張卡是沒配對的上班卡，而且那天是今天（跨夜班算到隔天凌晨 06:00 前），
- *  下班卡還沒到打的時候，不能算少一張——同仁此刻也補不了這張單。做法：把那張上班卡當成「打到現在」的一段再去算。
- *  需求：今天沒配對的上班卡＝上班中，隔天才算忘刷。之後打了下班卡，每日重算會把狀態改回來。 */
+/** 人還在上班（2026-11-11 B03）：那天最後一張卡是沒配對的上班卡，下班卡還沒到打的時候，不能算少一張——
+ *  同仁此刻也補不了這張單。做法：把那張上班卡當成「打到現在」的一段再去算。之後打了下班卡，每日重算會把狀態改回來。
+ *  2026-11-11（B34，Eason 定）：不再看日期（原本只認今天、跨夜班到隔天 06:00 前），改成「上班卡之後 16 小時內都算上班中」，
+ *  和同仁頁、主管頁、月表同一口徑。是不是還在上班由 Code.gs markWorkingSeg_ 判斷好標在打卡段上（working:true＝
+ *  這個人最後一張卡、而且還在 16 小時內）；沒有標的一律不算。 */
 function reqWorkingSegs_(segs, date) {
   if (!segs || !segs.length) return segs;
-  var nowIso = nowTaipeiIso(), today = nowIso.slice(0, 10);
-  if (!(date === today || (date === reqPrevDate_(today) && nowIso.slice(11, 16) <= REQ_EARLY_OUT_HM))) return segs;
+  var nowIso = nowTaipeiIso();
   var at = function (x) { return x.inMs != null ? x.inMs : x.outMs; };
   var last = segs.reduce(function (a, x) { return a === null || at(x) >= at(a) ? x : a; }, null);
   if (!last || last.inMs == null || last.outMs != null) return segs;   // 最後一張不是沒配對的上班卡
+  if (!last.working) return segs;                                       // 後面還有別的卡，或已經超過 16 小時
   var nowMs = new Date(nowIso).getTime();
-  if (nowMs - last.inMs > REQ_PAIR_MS) return segs;                     // 超過 16 小時配不成一段，不算還在上班
+  // 16 小時只由 working（Code.gs markWorkingSeg_，用含秒的打卡時間）判一次；這裡不再用捨到分鐘的 inMs 重判，
+  // 否則滿 16 小時前不到 1 分鐘，畫面說上班中、核定卻說少一張卡（獨立審查補）
   return segs.map(function (x) {
     return x === last ? { in: x.in, out: null, inMs: x.inMs, outMs: Math.max(nowMs, x.inMs + 60000) } : x;
   });
@@ -1561,9 +1569,11 @@ function handleApproveStrictPreview_(body) {
         var s = reqHmMs_(date, p.start), e = reqHmMs_(date, p.end);
         return { startMs: s, endMs: e <= s ? e + 86400000 : e };
       });
-      var segs = periods.length ? dayPunchSegments(events, emp, date).segments.map(function (x) {
+      var punchDay = periods.length ? dayPunchSegments(events, emp, date) : null;
+      var segs = punchDay ? punchDay.segments.map(function (x) {
         return { inMs: x.in ? reqHmMs_(date, x.in) : null, outMs: x.out ? reqHmMs_(x.cross ? addDaysStr(date, 1) : date, x.out) : null };
       }) : [];
+      if (punchDay && typeof markWorkingSeg_ === 'function') markWorkingSeg_(punchDay, date, segs);   // B34：還在上班的那張不算少一張
       scanned++;
       var r = reqBindCheck_(ss, emp, date, Number(rec.approved_hours) || 0, periods, segs, noPunchBreakWindow(date),
         { leaves: leaves, trip_hours: trip, rows: rows, force_strict: true, preview: true });

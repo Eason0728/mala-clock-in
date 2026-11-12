@@ -476,18 +476,28 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             hint = p.inner_text('#otHint')
             import re
             end_hm = re.search(r'下班打卡成功 (\d\d:\d\d)', msg(p)).group(1)   # 伺服器記下的下班時間
-            ok('下班超時：顯示「今天出勤 X 小時，超過 8 小時。要申請加班嗎？」', hint.startswith('今天出勤 9.5') and hint.endswith('超過 8 小時。要申請加班嗎？'), hint)
+            # 2026-11-11 起（核定加嚴生效，B16）提示改用參考時數的算法：上班進位、下班捨去到 15 分鐘，所以 9.5 小時前上班可能算成 9.25 或 9.5
+            _eh, _em = int(end_hm[:2]), int(end_hm[3:])
+            if t_in.strftime('%Y-%m-%d') >= '2026-11-11':
+                _a = -(-(t_in.hour * 60 + t_in.minute) // 15) * 15
+                _b = ((_eh * 60 + _em) // 15) * 15 + (1440 if (_eh * 60 + _em) < t_in.hour * 60 + t_in.minute else 0)
+                exp_h = '%g' % ((_b - _a) / 60)
+            else:
+                exp_h = '9.5'
+            ok('下班超時：顯示「今天出勤 X 小時，超過 8 小時。要申請加班嗎？」', hint.startswith('今天出勤 ' + exp_h + ' ') and hint.endswith('超過 8 小時。要申請加班嗎？'), (hint, exp_h))
             p.wait_for_timeout(2000)
             ok('下班超時：代送「打卡」但畫面不自動關（要讓同仁按得到）', p.evaluate('window.__sent') == [{'type': 'text', 'text': '打卡'}] and not p.evaluate('window.__closed === true'))
             p.screenshot(path=os.path.join(SHOTS, '加班提示_1.png'))
             p.click('#btnOtReq')
             p.wait_for_selector('#reqView .rq-tabs button.on', timeout=10000)
             hrs = float(re.search(r'今天出勤 ([\d.]+) 小時', hint).group(1))
-            exp_start_min = int(((int(end_hm[:2]) * 60 + int(end_hm[3:])) - (hrs - 8) * 60) // 15 * 15) % 1440
+            # 2026-11-11 起（B16）預填的下班時間也捨去到 15 分鐘
+            exp_end = end_hm if t_in.strftime('%Y-%m-%d') < '2026-11-11' else '%02d:%02d' % divmod((int(end_hm[:2]) * 60 + int(end_hm[3:])) // 15 * 15, 60)
+            exp_start_min = int(((int(exp_end[:2]) * 60 + int(exp_end[3:])) - (hrs - 8) * 60) // 15 * 15) % 1440
             vals = p.evaluate("() => [...document.querySelectorAll('#reqView .rq-dpick, #reqView .rq-time')].map(i => i.classList.contains('rq-dpick') ? i.querySelector('select.rq-dd').value : [...i.querySelectorAll('select')].map(s => s.value).join(':'))")   # 時間欄是「時」「分」下拉，下班卡不在 15 分格上也要原樣帶入
             ok('申請加班 → 開「加班」分頁', p.inner_text('#reqView .rq-tabs button.on') == '加班', p.inner_text('#reqView .rq-tabs button.on'))
             ok('加班分頁預填：日期＝上班那天、時段＝滿 8 小時（取整 15 分）到下班', vals[0] == t_in.strftime('%Y-%m-%d')
-               and vals[1] == '%02d:%02d' % (exp_start_min // 60, exp_start_min % 60) and vals[2] == end_hm, [vals, end_hm, exp_start_min, hint])
+               and vals[1] == '%02d:%02d' % (exp_start_min // 60, exp_start_min % 60) and vals[2] == exp_end, [vals, exp_end, exp_start_min, hint])
             p.fill('#reqView input[type=text]', 'e2e 外送訂單多')
             p.click('#reqView button.primary')
             p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)
@@ -1275,6 +1285,18 @@ def phase_same_type(ctx, hq):
             return route.fulfill(status=200, body=json.dumps(j), content_type='text/plain')
         return route.continue_()
     now = int(time.time() * 1000)
+    # 2026-11-11（B33）：後端也擋「打完卡 10 分鐘內的另一型」。這段只假造畫面的 guard，假後端的資料要跟著一致：
+    # 前面幾段剛打的卡（例：加班提示那段的下班卡）往前挪到 11 分鐘以前，否則最後按確定送出的上班卡會被後端正確地擋下
+    from datetime import datetime, timedelta, timezone
+    f = os.path.join(ROOT, 'mock', 'mock_data_hq.json')
+    if os.path.exists(f):
+        d = json.load(open(f, encoding='utf-8'))
+        emp = next((r['emp_id'] for r in d['roster'] if r.get('line_user_id') == 'U1'), None)
+        cut = datetime.now(timezone(timedelta(hours=8))) - timedelta(minutes=11)
+        for e in d['events']:
+            if e['emp_id'] == emp and datetime.fromisoformat(e['ts']) > cut:
+                e['ts'] = cut.replace(microsecond=0).isoformat()
+        json.dump(d, open(f, 'w', encoding='utf-8'), ensure_ascii=False)
     S['guard'] = {'blocked': 'in', 'lock': {'in': now + 6 * 60000, 'out': now + 6 * 60000},
                   'last': {'type': 'in', 'hm': '08:49', 'ts': '2026-11-02T08:49:00+08:00'}}
     p = open_page(ctx, url(hq, in_client=True))

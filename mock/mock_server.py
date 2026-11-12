@@ -237,6 +237,12 @@ def pair_shifts(events):
     距開著的 in ≥ REJECTED_IN_BREAK_MIN 分鐘才視為換段（低於＝手滑連按，忽略）。
     in 配「MONTHLY_PAIR_WINDOW_HOURS 小時內的下一筆 out」，途中遇到另一筆 in 就斷掉。
     回傳 (shifts, unmatched_ins, unmatched_outs)。"""
+    return pair_shifts_open(events)[:3]
+
+
+def pair_shifts_open(events):
+    """pair_shifts 的本體，多回第四項 open_in＝「最後還開著」的那張上班卡（後面沒有任何算數的卡；沒有就 None），
+    對應 Code.gs pairShifts 的 openIns（B34：判斷是不是還在上班用）。"""
     evs = sorted(
         [
             e for e in events
@@ -282,7 +288,22 @@ def pair_shifts(events):
             unmatched_outs.append(e)
     if open_in:
         unmatched_ins.append(open_in)
-    return shifts, unmatched_ins, unmatched_outs
+    return shifts, unmatched_ins, unmatched_outs, open_in
+
+
+WORKING_NOTE = "上班中"
+
+
+def in_still_working(in_ts, now=None):
+    """上班中（B34，2026-11-11 Eason 定；與 Code.gs inStillWorking_ 同步）：最後還開著的上班卡，
+    距離現在還在打卡配對上限（MONTHLY_PAIR_WINDOW_HOURS，16 小時）以內 → 不論日期都算上班中，
+    超過才標「下班忘刷卡」。"""
+    now = now or now_taipei()
+    t = datetime.fromisoformat(in_ts)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=TAIPEI_TZ)
+    age = now - t
+    return timedelta(0) <= age <= timedelta(hours=MONTHLY_PAIR_WINDOW_HOURS)
 
 
 def today_hours_summary(data, emp_id, today):
@@ -317,6 +338,13 @@ def today_hours_summary(data, emp_id, today):
         )
         if not later_out:
             result["working_since"] = open_in["ts"][11:16]
+    # 跨夜班（B34，同 Code.gs）：今天沒有進行中的班段，但昨天的上班卡還開著、而且還在 16 小時內 → 上班中
+    if not result["working_since"]:
+        lo = add_days_str(today, -1)
+        wide = [e for e in data["events"] if e["emp_id"] == emp_id and lo <= e["ts"][:10] <= today]
+        o = pair_shifts_open(wide)[3]
+        if o and o["ts"][:10] != today and in_still_working(o["ts"]):
+            result["working_since"] = o["ts"][11:16]
     return result
 
 
@@ -341,7 +369,7 @@ def build_recent_days(data, emp_id, today):
         e for e in data["events"]
         if e["emp_id"] == emp_id and fetch_start <= e["ts"][:10] <= today
     ]
-    shifts, unmatched_ins, unmatched_outs = pair_shifts(evs)  # pair_shifts 內部只取 status='ok'
+    shifts, unmatched_ins, unmatched_outs, open_in = pair_shifts_open(evs)  # 內部只取 status='ok'
 
     day_map = {}
 
@@ -369,7 +397,11 @@ def build_recent_days(data, emp_id, today):
             continue
         c = day(d)
         c["segments"].append({"_sort": e["ts"], "in": e["ts"][11:16], "out": None, "cross": False})
-        c["notes"].append("上班中" if d == today else "下班忘刷卡")
+        # B34（同 Code.gs）：最後還開著的上班卡在 16 小時內 → 不論日期都算上班中
+        working = e is open_in and in_still_working(e["ts"])
+        if working:
+            c["_working_hm"] = e["ts"][11:16]
+        c["notes"].append(WORKING_NOTE if (d == today or working) else "下班忘刷卡")
 
     for e in unmatched_outs:
         d = e["ts"][:10]
@@ -386,7 +418,7 @@ def build_recent_days(data, emp_id, today):
         for s in c["segments"]:
             del s["_sort"]
         # 參考時數：忘刷卡整天留白（None），與出勤月表同一規則（A3，見 day_reference_incomplete）
-        c["reference"] = None if day_reference_incomplete(c["segments"], d, today) else round(c["reference"], 2)
+        c["reference"] = None if day_reference_incomplete(c["segments"], d, today, c.pop("_working_hm", None)) else round(c["reference"], 2)
         # 核定＝主管在 approved 的最新核定（與 Code.gs buildRecentDays／月表同一套慣例）：
         # 無紀錄→None＝待核定；有紀錄但 0 小時＝全天請假，要與 None 區分，故看 rec 是否存在。
         rec = latest_approved_record(data, d, emp_id)
@@ -517,10 +549,11 @@ def day_punch_segments(data, emp_id, date_str):
     lo = add_days_str(date_str, -1)
     hi = add_days_str(date_str, 1)
     evs = [e for e in data["events"] if e["emp_id"] == emp_id and lo <= e["ts"][:10] <= hi]
-    shifts, unmatched_ins, unmatched_outs = pair_shifts(evs)
+    shifts, unmatched_ins, unmatched_outs, open_in = pair_shifts_open(evs)
 
     segments = []
     reference = 0.0
+    open_in_ts = None   # 這天「最後還開著」的那張上班卡（B34，同 Code.gs dayPunchSegments 的 open_in_ts）
     for s in shifts:
         d = s["in_ts"][:10]
         if d != date_str:
@@ -536,6 +569,8 @@ def day_punch_segments(data, emp_id, date_str):
         if e["ts"][:10] != date_str:
             continue
         segments.append({"_sort": e["ts"], "in": e["ts"][11:16], "out": None, "cross": False})
+        if e is open_in:
+            open_in_ts = e["ts"]
     for e in unmatched_outs:
         if e["ts"][:10] != date_str:
             continue
@@ -544,16 +579,23 @@ def day_punch_segments(data, emp_id, date_str):
     segments.sort(key=lambda s: s["_sort"])
     for s in segments:
         del s["_sort"]
-    return {"segments": segments, "reference": round(reference, 2)}
+    return {"segments": segments, "reference": round(reference, 2), "open_in_ts": open_in_ts}
 
 
-def day_reference_incomplete(segments, date_str, today_str):
+def working_in_hm(punch):
+    """這天還在上班的那張上班卡的 HH:mm（16 小時內），沒有就 None（同 Code.gs workingInHm_）。"""
+    ts = (punch or {}).get("open_in_ts")
+    return ts[11:16] if ts and in_still_working(ts) else None
+
+
+def day_reference_incomplete(segments, date_str, today_str, working_hm=None):
     """判斷某天參考時數是否該留白（A3：與 Code.gs dayReferenceIncomplete 同步，月表／my_recent／
     mgr_day 共用同一判斷，勿各自重寫）。只吃已算好的 segments（{in,out,cross}，未配對一端為 None）：
     有任一筆未配對 out（in 為 None，即「上班忘刷卡」）→ 恆不完整；有任一筆未配對 in（out 為 None，
-    即「下班忘刷卡」）且 date_str 不是今天 → 不完整；今天的未配對 in＝上班中，不算不完整（a872de4 規則）。"""
+    即「下班忘刷卡」）且 date_str 不是今天 → 不完整；今天的未配對 in＝上班中，不算不完整（a872de4 規則）。
+    working_hm（B34）＝這天還在上班的那張上班卡的 HH:mm（16 小時內）→ 那一張不算忘刷，不論日期。"""
     has_forgot_out = any(s["in"] is None for s in segments)
-    has_forgot_in = any(s["out"] is None for s in segments)
+    has_forgot_in = any(s["out"] is None and not (working_hm and s["in"] == working_hm) for s in segments)
     return has_forgot_out or (has_forgot_in and date_str != today_str)
 
 
@@ -652,7 +694,7 @@ ATT_STATUS_LABEL = {
     "pending_device_approval": "新裝置待核准，未入帳",
     "rejected_duplicate": "重複打卡，被系統擋下",
     "rejected_device": "裝置不符，被系統擋下",
-}
+}   # rejected_too_soon（2026-11-11 B33）沒有對照：Payroll.gs payAttStatusLabel 也沒有，兩邊都走「未入帳（狀態碼）」
 
 
 def handle_payroll_attendance_export(data, body):
@@ -864,7 +906,8 @@ def compute_approval_status(periods, punch_segments, had_unrecorded_attempts=Fal
             if c["out_ms"] is None:
                 if c["in_ms"] > p["start_ms"]:
                     notes.append("遲到{}分".format(rnd(c["in_ms"] - p["start_ms"])))
-                add(seg_miss_note(out_no[pi], "段下班忘刷卡") if multi else "下班忘刷卡")
+                # 還在上班（B34：最後一張上班卡、16 小時內）→ 標「上班中」不標忘刷（同 Code.gs）
+                add(WORKING_NOTE if c.get("working") else (seg_miss_note(out_no[pi], "段下班忘刷卡") if multi else "下班忘刷卡"))
             else:
                 if c["out_ms"] < p["end_ms"]:
                     notes.append("早退{}分".format(rnd(p["end_ms"] - c["out_ms"])))
@@ -974,7 +1017,7 @@ def handle_mgr_day(data, body):
         has_punch = emp_id in first_ts
         punch = day_punch_segments(data, emp_id, date) if has_punch else None
         # 參考時數：忘刷卡整天留白，與月表／my_recent 同一規則（A3，見 day_reference_incomplete，禁止重寫判斷）
-        incomplete = has_punch and day_reference_incomplete(punch["segments"], date, today)
+        incomplete = has_punch and day_reference_incomplete(punch["segments"], date, today, working_in_hm(punch))
         rec = latest_approved_record(data, date, emp_id)
         out = {
             "emp_id": emp_id,
@@ -1089,8 +1132,15 @@ def handle_mgr_approve(data, body):
             end_ms = hm_to_ms(date, p["end"])
             if end_ms <= start_ms:
                 end_ms += 24 * 3600 * 1000  # 跨夜段：end<=start 視為+1天
-            periods.append({"start_ms": start_ms, "end_ms": end_ms})
+            periods.append({"start_ms": start_ms, "end_ms": end_ms, "start": p["start"], "end": p["end"]})
             approved_hours += (end_ms - start_ms) / 3600000.0
+        # 時段彼此重疊就擋下（與 Code.gs 同步，2026-11-11 Eason 定，B24）；剛好相接不算重疊
+        for a in range(len(periods)):
+            for b in range(a + 1, len(periods)):
+                if periods[a]["start_ms"] < periods[b]["end_ms"] and periods[b]["start_ms"] < periods[a]["end_ms"]:
+                    return {"ok": False, "error": "bad_periods",
+                            "message": f"核定時段有重疊：{periods[a]['start']}-{periods[a]['end']} 和 "
+                                       f"{periods[b]['start']}-{periods[b]['end']}，請改成不重疊的時段"}
         approved_hours = round(approved_hours, 2)
 
         punch = day_punch_segments(data, emp_id, date)
@@ -1100,9 +1150,18 @@ def handle_mgr_approve(data, body):
             out_date = add_days_str(date, 1) if s["cross"] else date
             out_ms = hm_to_ms(out_date, s["out"]) if s["out"] else None
             punch_segments.append({"in_ms": in_ms, "out_ms": out_ms})
+        # B34（同 Code.gs markWorkingSeg_）：還在上班的那張上班卡（16 小時內）標 working
+        w_hm = working_in_hm(punch)
+        if w_hm:
+            for x in punch_segments:
+                if x["out_ms"] is None and x["in_ms"] == hm_to_ms(date, w_hm):
+                    x["working"] = True
 
         status_text = compute_approval_status(
-            periods, punch_segments, unrecorded_attempt_count(data, emp_id, date) > 0)
+            periods, punch_segments,
+            # 剛打完卡 10 分鐘內按到另一顆被擋的（rejected_too_soon，2026-11-11 B33）不算「打卡未入帳」，同 Code.gs unresolvedAttemptCount_
+            any(e["emp_id"] == emp_id and e["ts"][:10] == date and e.get("status") not in ("ok", "rejected_too_soon")
+                for e in data["events"]))
         periods_str = ",".join("{}-{}".format(p["start"], p["end"]) for p in raw_periods)
     entered_at = iso_now()
 
@@ -1171,10 +1230,14 @@ def handle_clock(data, body):
     # 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
     last_counted = last_counted_event(data, roster["emp_id"])
     # 同型只擋 10 分鐘（與 Code.gs SAME_TYPE_LOCK_MIN 同步，2026-11-02）
-    is_duplicate = (last_counted is not None and last_counted["type"] == type_
-                    and (now_taipei() - datetime.fromisoformat(last_counted["ts"])).total_seconds() < SAME_TYPE_LOCK_MIN * 60)
+    # 2026-11-11 Eason 定（B33，與 Code.gs 同步）：10 分鐘內另一型也不收（rejected_too_soon）；剛好滿 10 分鐘就收
+    lock_left_s = (0 if last_counted is None else
+                   SAME_TYPE_LOCK_MIN * 60 - (now_taipei() - datetime.fromisoformat(last_counted["ts"])).total_seconds())
+    in_lock = lock_left_s > 0
+    is_duplicate = in_lock and last_counted["type"] == type_
+    is_too_soon = in_lock and not is_duplicate
     # 單日 10 小時／兩班間隔 11 小時（Rest.gs，與 Code.gs handleClock 的 restBlock 同位置）：只擋上班卡；總開關關著＝None
-    rest_block = rest_check_in(data, roster) if (type_ == "in" and not is_duplicate) else None
+    rest_block = rest_check_in(data, roster) if (type_ == "in" and not in_lock) else None
 
     if not roster.get("device_id"):
         roster["device_id"] = device_id
@@ -1185,9 +1248,11 @@ def handle_clock(data, body):
     else:
         device_match = False
 
-    # status 優先序：重複 > 休息不足（rejected_rest，Rest.gs）> 裝置不符 > 超出範圍 > ok（與 Code.gs 同步）
+    # status 優先序：重複 > 剛打完另一型 > 休息不足（rejected_rest，Rest.gs）> 裝置不符 > 超出範圍 > ok（與 Code.gs 同步）
     if is_duplicate:
         status = "rejected_duplicate"
+    elif is_too_soon:
+        status = "rejected_too_soon"
     elif rest_block:
         status = "rejected_rest"
     elif not device_match:
@@ -1226,6 +1291,10 @@ def handle_clock(data, body):
     }
     if status == "rejected_duplicate":
         result["last_type"] = last_counted["type"]
+    if status == "rejected_too_soon":   # 同 Code.gs：畫面照 message 顯示
+        result["last_type"] = last_counted["type"]
+        result["wait_min"] = math.ceil(lock_left_s / 60)
+        result["message"] = f"剛打完{'上班' if last_counted['type'] == 'in' else '下班'}卡，{result['wait_min']} 分鐘後才能再打卡"
     if rest_block:
         result["rest"] = rest_block   # 同 Code.gs：回 {code:gap|cap, reason, hint, until}
     return result
@@ -1500,8 +1569,45 @@ def handle_mgr_set_active(data, body):
     row["removed_at"] = "" if active else now
     row["removed_by"] = "" if active else mgr["name"]
     save_data(data)
-    return {"ok": True, "emp_id": emp_id, "name": name, "active": active,
-            "removed_at": row["removed_at"], "removed_by": row["removed_by"]}
+    res = {"ok": True, "emp_id": emp_id, "name": name, "active": active,
+           "removed_at": row["removed_at"], "removed_by": row["removed_by"]}
+    # 2026-11-11 Eason 定（B13，與 Code.gs leftCascadeAfter_／LineHub.gs lineHubLeftCascade_ 同步）：
+    # 設離職時，同一支 LINE 在其他店名冊上還在職的列一併設成離職；只認 LINE 完全相同，沒綁 LINE 不做。恢復在職不連帶。
+    uid = str(row.get("line_user_id") or "").strip()
+    # 支援列（src_store 有值）收掉不連帶停用原單位與其他店（同 Code.gs leftCascadeRun_，獨立審查補）
+    if not active and uid and not str(row.get("src_store") or "").strip():
+        res["cascade"] = _left_cascade(emp_id, uid, mgr["name"], now)
+    return res
+
+
+def _cur_store_code():
+    base = os.path.basename(DATA_FILE)
+    return "" if base == "mock_data.json" else base[len("mock_data_"):-len(".json")]
+
+
+def _left_cascade(src_emp_id, uid, by, now):
+    """把其他店名冊上「同一支 LINE、還在職」的列設成離職（B13）。還沒建立資料檔的店＝沒有人，不去碰。"""
+    src = _cur_store_code()
+    note = "連帶停用：%s 設離職（%s／%s）" % (_hub_store_name(src), src_emp_id, by)
+    out = {"ok": True, "stopped": [], "failed": []}
+    for code in _hub_store_codes():
+        if code == src:
+            continue
+        path = HUB_STORE_[0] if code == "" else os.path.join(BASE_DIR, "mock_data_%s.json" % code)
+        if not os.path.exists(path):
+            continue
+        with store_context(code):
+            sd = load_data()
+            hit = [r for r in sd.get("roster", [])
+                   if str(r.get("active")).lower() == "true" and str(r.get("line_user_id") or "").strip() == uid]
+            for r in hit:
+                r["active"] = False
+                r["removed_at"] = now
+                r["removed_by"] = note
+                out["stopped"].append({"store_name": _hub_store_name(code), "emp_id": str(r["emp_id"]), "name": str(r["name"])})
+            if hit:
+                save_data(sd)
+    return out
 
 
 # ── 店內公告（2026-08-28，與 Code.gs 的 activeNotices／handleMgrNotices… 同步）──
@@ -1687,17 +1793,21 @@ def handle_liff_bind(data, body):
     # ⚠ 2026-08-27 審查 Important 4：要看「所有列」，不能只看在職——與 Liff.gs 的
     # anyExisting 同步（原本的 find_roster_by_line_user 只比對 active，離職列上殘留的
     # userId 之後被復職會變成兩個在職列共用一個 userId，見 Liff.gs 註解的完整情境說明）。
-    any_existing = next(
-        (r for r in (data.get("roster") or [])
-         if r.get("line_user_id") and str(r["line_user_id"]) == str(user_id)),
-        None,
-    )
+    all_existing = [r for r in (data.get("roster") or [])
+                    if r.get("line_user_id") and str(r["line_user_id"]) == str(user_id)]
 
     target = find_roster_by_key(data, body.get("key"))
     if not target or not target.get("active", False):
         return {"ok": False, "error": "invalid_key"}
 
-    if any_existing and str(any_existing["emp_id"]) != str(target["emp_id"]):
+    # 2026-11-11 Eason 定（B25，與 Liff.gs liffBindLocked_ 同步）：這支 LINE 還留在本人「同一家店、同名（去掉全部空白）、
+    # 已離職」的舊列上 → 不擋，自動移到新列；只要還綁著任何一列在職或不同名的別人，照舊整個擋下。
+    others = [r for r in all_existing if str(r["emp_id"]) != str(target["emp_id"])]
+    _nn = lambda v: re.sub(r"[\s\u3000]", "", str(v or ""))
+    want_name = _nn(target.get("name"))
+    movable = bool(others) and want_name != "" and all(
+        str(r.get("active")).lower() != "true" and _nn(r.get("name")) == want_name for r in others)
+    if others and not movable:
         return {"ok": False, "error": "line_account_in_use"}
 
     # 該員工已綁了另一個 LINE 帳號 → 要店長先解綁，避免默默換人
@@ -1708,6 +1818,11 @@ def handle_liff_bind(data, body):
     if str(target.get("line_user_id")) == str(user_id):
         return {"ok": True, "name": target["name"], "emp_id": target["emp_id"], "already": True}
 
+    for old in others:   # B25：舊列的 LINE 清掉，記一筆「由舊列（工號）移來」
+        old["line_user_id"] = ""
+        old["line_bound_at"] = ""
+        log_liff_bind(data, target["emp_id"], target["name"], user_id)
+        data["liff_bind_log"][-1]["type"] = "moved_from:" + str(old["emp_id"])
     target["line_user_id"] = user_id
     target["line_bound_at"] = iso_now()
     log_liff_bind(data, target["emp_id"], target["name"], user_id)
@@ -1939,7 +2054,11 @@ def handle_mgr_line_binds(data, body):
     if not mgr:
         return {"ok": False, "error": "unauthorized"}
     bound = {r["emp_id"]: r.get("line_user_id") for r in data["roster"] if r.get("line_user_id")}
-    items = [{"ts": x["ts"], "emp_id": x["emp_id"], "name": x["name"], "type": x.get("type", "bind"),
+    # from_store（2026-11-11 B12，同 Liff.gs liffBindTypeParts_）：類型 bind_name@店名＝在別家店輸入全名綁的，拆成 type＋from_store
+    def _parts(t):
+        t = str(t or "bind")
+        return ("bind_name", t[10:]) if t.startswith("bind_name@") else (t, "")
+    items = [{"ts": x["ts"], "emp_id": x["emp_id"], "name": x["name"], "type": _parts(x.get("type"))[0], "from_store": _parts(x.get("type"))[1],
               "still_bound": str(x.get("type", "bind")).startswith("bind") and bound.get(x["emp_id"]) == x.get("line_user_id")}
              for x in data.get("liff_bind_log", [])]
     return {"ok": True, "days": 30, "items": list(reversed(items))}
@@ -2327,6 +2446,8 @@ def handle_liff_punch(data, body):
           "rejected_duplicate": ["這一筆和上一筆重複", "請按「出勤紀錄」確認今天的紀錄"]}.get(st, ["系統回覆：" + (st or "未知"), "請告知主管"])
     if st == "rejected_rest" and j.get("rest"):   # 同 Liff.gs liffPunchFor_：Rest.gs 講幾點以後才能打
         rr = [j["rest"]["reason"], j["rest"]["hint"]]
+    if st == "rejected_too_soon":   # 同 Liff.gs liffPunchFor_（2026-11-11 B33）
+        rr = [j.get("message") or "剛打完卡，10 分鐘內不能再打卡", f"真的要{label}請告知主管補登"]
     return {"ok": False, "type": typ, "status": st, "reason": rr[0], "hint": rr[1]}
 
 

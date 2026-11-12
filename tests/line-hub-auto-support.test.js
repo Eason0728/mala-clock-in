@@ -131,9 +131,11 @@ ok('條件不成立（各一）→ 不呼叫 mini，走回原流程', () => {
   // (d) 別家的綁定已離職（不在職）
   const d = make({ props: P, sheets: { hq: { roster: [R({ active: 'false' })] }, mztjs: { roster: [] } } });
   r = punch(d); assert.strictEqual(d.hubCalls.length, 0); NOT_BOUND(r);
-  // (e) 在別家「不只一家」綁定（不是恰好一家）
+  // (e) 在別家「不只一家」綁定、名字相同
+  // 2026-11-11 Eason 定（B10：A「每一家新店的第一次都自動加入」）：原本這裡預期「不呼叫 mini、回 not_bound」，
+  // 改成照樣問 mini 一次（來源店＝兩家都是原單位、都沒有綁定時間 → 照店家清單順序，總部在央廚前面）。
   const e = make({ props: P, sheets: { hq: { roster: [R()] }, cf: { roster: [R({ emp_id: 'C01', key: 'kC' })] }, mztjs: { roster: [] } } });
-  r = punch(e); assert.strictEqual(e.hubCalls.length, 0); NOT_BOUND(r);
+  r = punch(e); assert.strictEqual(e.hubCalls.length, 1); assert.strictEqual(e.hubCalls[0].body.src_store, 'hq'); assert.strictEqual(e.hubCalls[0].body.src_emp_id, 'H01');
   // (f) 姓名不唯一（同一個 LINE 在別家綁了兩個不同名字）
   const f = make({ props: P, sheets: { hq: { roster: [R(), R({ emp_id: 'H02', name: '測試乙', key: 'kH2' })] }, mztjs: { roster: [] } } });
   r = punch(f); assert.strictEqual(f.hubCalls.length, 0); NOT_BOUND(r);

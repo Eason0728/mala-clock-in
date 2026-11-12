@@ -340,10 +340,19 @@ KNOWN('只請一段但沒選時間（前端 mode=span 送 start:"" end:""）：�
   const r = sub(m, { kind: 'leave', date: '2026-11-05', leave_type: '事假', start: '', end: '' });
   assert.notStrictEqual(r.error, 'bad_hours', JSON.stringify(r));
 });
-ok('同日第二段不重疊加班：第一筆 pending 時回 duplicate（規則：同日同類只能一筆審核中）', () => {
+// 2026-11-11 Eason 定：兩張都有時段且不重疊可同時在審（B29）。原本這條寫的是舊規則「同日同類只能一筆審核中、第二段回 duplicate」。
+ok('同日第二段不重疊加班：第一筆 pending 時也收（2026-11-11 Eason 定：兩張都有時段且不重疊可同時在審）', () => {
   const { m } = lineFixture('2026-11-04T10:00:00');
   sub(m, { kind: 'ot', date: '2026-11-05', start: '18:00', end: '19:00', reason: '盤點' });
-  assert.strictEqual(sub(m, { kind: 'ot', date: '2026-11-05', start: '21:00', end: '22:00', reason: '盤點' }).error, 'duplicate');
+  const r = sub(m, { kind: 'ot', date: '2026-11-05', start: '21:00', end: '22:00', reason: '盤點' });
+  assert.ok(r.ok, JSON.stringify(r));
+});
+ok('同日第二段加班和審核中的那筆時段重疊：仍回 duplicate', () => {
+  const { m } = lineFixture('2026-11-04T10:00:00');
+  sub(m, { kind: 'ot', date: '2026-11-05', start: '18:00', end: '19:00', reason: '盤點' });
+  const r = sub(m, { kind: 'ot', date: '2026-11-05', start: '18:30', end: '20:00', reason: '盤點' });
+  assert.strictEqual(r.error, 'duplicate', JSON.stringify(r));
+  assert.strictEqual(r.message, '這天已經有一筆審核中的加班申請，要改請先取消那一筆');
 });
 
 /* ════════════════════════════════════════════════════════════════════════

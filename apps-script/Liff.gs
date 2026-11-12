@@ -105,9 +105,9 @@ function liffBindLocked_(body, userId, rosterSheet) {
   // withLineIdentity_ 取 [0] 會悄悄把打卡算到錯的人頭上、一路餵進 approved 與薪資。
   // 所以這裡刻意不用 findRosterByLineUser_（它的「只看在職」是給 withLineIdentity_ 的
   // 認證用途設計的，那裡本來就該只看在職——不要改那支函式，改這裡的判斷依據）。
-  var anyExisting = rows.filter(function (r) {
+  var allExisting = rows.filter(function (r) {
     return r.line_user_id && String(r.line_user_id) === String(userId);
-  })[0];
+  });
 
   var target = rows.filter(function (r) {
     return String(r.key) === String(body.key)
@@ -115,7 +115,16 @@ function liffBindLocked_(body, userId, rosterSheet) {
   })[0];
   if (!target) return { ok: false, error: 'invalid_key' };
 
-  if (anyExisting && String(anyExisting.emp_id) !== String(target.emp_id)) {
+  // 2026-11-11 Eason 定（B25）：復職開新的一列時，這支 LINE 還留在本人「已離職的舊列」上 → 不擋，自動移到新列。
+  // 條件三個都要：同一家店（這張名冊）、姓名相同（去掉全部空白後比，空白姓名不算）、舊列已離職。
+  // 這支 LINE 只要還綁著任何一列「在職」或「姓名不同」的別人，就照舊整個擋下（什麼都不搬）。
+  var others = allExisting.filter(function (r) { return String(r.emp_id) !== String(target.emp_id); });
+  var normName = function (v) { return String(v || '').replace(/[\s\u3000]/g, ''); };
+  var wantName = normName(target.name);
+  var movable = others.length > 0 && wantName !== '' && others.every(function (r) {
+    return String(r.active).toLowerCase() !== 'true' && normName(r.name) === wantName;
+  });
+  if (others.length && !movable) {
     return { ok: false, error: 'line_account_in_use' };
   }
 
@@ -130,15 +139,41 @@ function liffBindLocked_(body, userId, rosterSheet) {
     return { ok: true, name: target.name, emp_id: target.emp_id, already: true };
   }
 
+  // B25：先把舊列的 LINE 清乾淨（同 mgr_line_unbind 清的三格），並各記一筆「由舊列（工號）移來」，再綁新列。
+  // 舊列的在職狀態不動；之後就算有人把舊列恢復在職，也不會變成兩列共用一支 LINE。
+  others.forEach(function (old) {
+    setRosterCell(rosterSheet, old.__rowIndex, 'line_user_id', '');
+    setRosterCell(rosterSheet, old.__rowIndex, 'line_bound_at', '', true);
+    setRosterCell(rosterSheet, old.__rowIndex, 'line_ok_at', '', true);
+    liffClearLineOkCache_(old.emp_id);
+    logLiffBind_(target.emp_id, target.name, userId, 'moved_from:' + String(old.emp_id));
+  });
+
   setRosterCell(rosterSheet, target.__rowIndex, 'line_user_id', userId);
   // 純日期時間字串鎖成文字，避免被 Sheets 轉成 Date 物件（同 removed_at 的處理）
   setRosterCell(rosterSheet, target.__rowIndex, 'line_bound_at', nowTaipeiIso(), true);
   liffClearLineOkCache_(target.emp_id);   // 當日快取鍵一併刪，否則重綁後同日打卡會被快取擋掉、line_ok_at 不重寫
   setRosterCell(rosterSheet, target.__rowIndex, 'line_ok_at', '', true);   // 重綁重新計算「LINE 打卡成功過」（沒有這欄時 setRosterCell 回 false，無妨）
   // via：LINE 單一打卡入口（LineHub.gs）代綁時標註是「輸入姓名」還是「跨店自動」綁的，給主管看綁定紀錄用
-  logLiffBind_(target.emp_id, target.name, userId,
-               body.via === 'name' ? 'bind_name' : body.via === 'auto' ? 'bind_auto' : 'bind');
+  // via_store（2026-11-11 B12，Eason 定「照舊可以在別店綁，但留痕並通知」）：人不在本店、在別家店輸入全名綁到本店這一列時，
+  // LineHub.gs 會帶「在哪一家店綁的」。紀錄類型寫成 bind_name@店名，主管頁的 LINE 綁定紀錄會標出來。
+  var bindType = body.via === 'name' ? 'bind_name' : body.via === 'auto' ? 'bind_auto' : 'bind';
+  if (bindType === 'bind_name') {
+    var fromStore = liffBindFromStore_(body.via_store);
+    if (fromStore) bindType += '@' + fromStore;
+  }
+  logLiffBind_(target.emp_id, target.name, userId, bindType);
   return { ok: true, name: target.name, emp_id: target.emp_id };
+}
+
+/** 綁定紀錄用的「在哪一家店綁的」：這個字是外面傳進來的，只留一行字、最長 30 個字（換行與控制字元去掉）。 */
+function liffBindFromStore_(v) {
+  return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 30);
+}
+/** 綁定紀錄的類型拆成 {type, from_store}：bind_name@店名 → bind_name＋店名；其他類型原樣、from_store 空白。 */
+function liffBindTypeParts_(t) {
+  t = String(t || 'bind');
+  return t.indexOf('bind_name@') === 0 ? { type: 'bind_name', from_store: t.slice(10) } : { type: t, from_store: '' };
 }
 
 /** 刪掉 liffMarkLineOk_ 當日快取鍵（綁定／解綁清 line_ok_at 時呼叫）。失敗無妨。 */
@@ -296,7 +331,8 @@ function handleMgrBindCode_(body) {
   return { ok: true, name: String(row.name), code: lineBindCode_(row.key, lineBindYmd_(0)) };
 }
 
-/** {action:'mgr_line_binds', mgr_key, days?} → 最近 N 天（預設 30）的綁定／解除紀錄＋現在是否仍綁著。不回 LINE userId 全文。 */
+/** {action:'mgr_line_binds', mgr_key, days?} → 最近 N 天（預設 30）的綁定／解除紀錄＋現在是否仍綁著。不回 LINE userId 全文。
+ *  from_store（2026-11-11 B12）：這筆是在別家店輸入全名綁的 → 那家店的店名；在本店綁的＝空白。 */
 function handleMgrLineBinds_(body) {
   if (!liffMgr_(body)) return { ok: false, error: 'unauthorized' };
   var days = Math.min(Math.max(parseInt(body.days, 10) || 30, 1), 180);
@@ -311,7 +347,8 @@ function handleMgrLineBinds_(body) {
                                               type: String(r.type || 'bind'), uid: String(r.line_user_id || '') }; })
     .filter(function (r) { var t = new Date(r.ts).getTime(); return !isNaN(t) && t >= cutoff; })
     .map(function (r) {
-      return { ts: r.ts, emp_id: r.emp_id, name: r.name, type: r.type,
+      var tp = liffBindTypeParts_(r.type);
+      return { ts: r.ts, emp_id: r.emp_id, name: r.name, type: tp.type, from_store: tp.from_store,
                still_bound: r.type.indexOf('bind') === 0 && nowBound[r.emp_id] === r.uid };
     })
     .reverse();
@@ -542,7 +579,7 @@ function handleLiffPunch_(body) {
   if (liffSiteThrottled_()) return { ok: false, error: 'too_many' };
   if (!body.id_token) return { ok: false, error: 'invalid_id_token' };
   // 雙擊防護（審查 #7、#10）：同一個畫面連按兩下送的是同一張 id_token，在驗身分（打 LINE API，數百毫秒）之前就標記，
-  // 第二筆一進來就擋。不用 ScriptLock：它會跟月表重算搶鎖、讓打卡卡住。handleClock 的 rejected_duplicate 是最後一道。
+  // 第二筆一進來就擋。不用 ScriptLock：它會跟月表重算搶鎖、讓打卡卡住。handleClock 的 rejected_duplicate／rejected_too_soon 是最後一道。
   var cache = CacheService.getScriptCache();
   var busyKey = 'lfp:' + Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, String(body.id_token)));
   if (cache.get(busyKey)) return { ok: false, type: type, reason: '上一筆還在處理中', hint: '請等幾秒，看出勤紀錄有沒有這筆再決定要不要重按' };
@@ -663,6 +700,8 @@ function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows
   var st = j && (j.status || j.error);
   var rr = LIFF_PUNCH_REASONS_[st] || ['系統回覆：' + (st || '未知'), '請告知主管'];
   if (st === 'rejected_rest' && j.rest) rr = [j.rest.reason, j.rest.hint];   // Rest.gs：講幾點以後才能打
+  // 剛打完卡 10 分鐘內按另一顆（2026-11-11 B33）：正常會先被上面 liffGuard_ 擋下；兩筆幾乎同時到才會走到後端這道，照後端那句顯示
+  if (st === 'rejected_too_soon') rr = [j.message || '剛打完卡，10 分鐘內不能再打卡', '真的要' + (type === 'in' ? '上班' : '下班') + '請告知主管補登'];
   return { ok: false, type: type, status: st || '', reason: rr[0], hint: rr[1] };
 }
 

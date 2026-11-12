@@ -216,10 +216,14 @@ ok('舊連結：上班卡寫入失敗（appendRow 丟錯）→ 記號還原，�
   m.sb.__now += 3000;
   assert.strictEqual(punch(m.sb, 'in').status, 'ok');
 });
-ok('舊連結：上班後幾秒打下班（不同型）不被記號擋；記號過了 10 分鐘也不擋同型', () => {
+// 2026-11-11 Eason 定（B33：後端也擋，打完卡 10 分鐘內另一型的卡也不收）：原本這裡寫「上班後幾秒打下班（不同型）照收」，
+// 依新規則改成被擋（rejected_too_soon）；被擋的那張不留記號、不把鎖往後延，滿 10 分鐘後下班卡照收，再過 10 分鐘同型也不擋。
+ok('舊連結：上班後幾秒打下班（不同型）10 分鐘內也擋（rejected_too_soon）；滿 10 分鐘收；記號過了 10 分鐘也不擋同型', () => {
   const m = make({ now: T('2026-11-03T09:00:00'), self: { roster: [ME], events: [] } });
   assert.strictEqual(punch(m.sb, 'in').status, 'ok');
   m.sb.__now += 5000;
+  assert.strictEqual(punch(m.sb, 'out').status, 'rejected_too_soon');
+  m.sb.__now += 10 * 60000 - 5000;
   assert.strictEqual(punch(m.sb, 'out').status, 'ok');
   m.sb.__now += 11 * 60000;
   assert.strictEqual(punch(m.sb, 'out').status, 'ok');

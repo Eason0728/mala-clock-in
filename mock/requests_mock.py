@@ -427,25 +427,32 @@ def register(ns):
             if not reason:
                 return None, ("need_reason", "請選原因")
 
+        def ov(a1, a2, b1, b2):
+            """同 Requests.gs reqOverlap_：兩個時段有沒有重疊（end ≤ start＝跨夜）；任一邊沒有完整時段回 None。
+            其中一段跨夜時，另一段寫的凌晨時間也當成同一個凌晨來比（22:00–01:00 與 00:00–02:00 算重疊，2026-11-11 B29）"""
+            s1, e1, s2, e2 = mins(a1), mins(a2), mins(b1), mins(b2)
+            if s1 is None or e1 is None or s2 is None or e2 is None:
+                return None
+            if e1 <= s1:
+                e1 += 1440
+            if e2 <= s2:
+                e2 += 1440
+            return (s1 < e2 and s2 < e1) or (s1 < e2 + 1440 and s2 + 1440 < e1) or (s1 + 1440 < e2 and s2 < e1 + 1440)
+
         def same_miss(r):
             # 同 Requests.gs reqSameThing_（忘打卡）：同一張卡才算——類型、時間都一樣；兩張整段時間重疊；補休息時段重疊
             if r["miss_type"] != row["miss_type"]:
                 return False
-
-            def ov(a1, a2, b1, b2):
-                s1, e1, s2, e2 = mins(a1), mins(a2), mins(b1), mins(b2)
-                if e1 <= s1:
-                    e1 += 1440
-                if e2 <= s2:
-                    e2 += 1440
-                return s1 < e2 and s2 < e1
             if row["miss_type"] == "break":
-                return ov(r["end"], r["start"], row["end"], row["start"])
+                return ov(r["end"], r["start"], row["end"], row["start"]) is not False
             if row["miss_type"] == "both":
-                return ov(r["start"], r["end"], row["start"], row["end"])
+                return ov(r["start"], r["end"], row["start"], row["end"]) is not False
             return str(r.get("start") or "") == str(row.get("start") or "") and str(r.get("end") or "") == str(row.get("end") or "")
+
+        # 同 Requests.gs（2026-11-11 Eason 定，B29）：請假／加班／出差看時段——兩張都有時段且不重疊可以同時在審；
+        # 時段重疊、或任一張只填時數沒有時段，照舊擋（不分假別）。忘打卡：同一張卡才算。
         dup = [r for r in reqs(data) if r["emp_id"] == me["emp_id"] and r["status"] == "pending" and r["kind"] == kind and r["date"] == d
-               and (kind != "miss" or same_miss(r))]
+               and (same_miss(r) if kind == "miss" else ov(r.get("start"), r.get("end"), row.get("start"), row.get("end")) is not False)]
         if dup:
             return None, ("duplicate", f"這天已經有一筆審核中的{KIND[kind]}申請，要改請先取消那一筆")
         if kind == "miss" and taken:
@@ -644,7 +651,7 @@ def register(ns):
         grid = d >= REQ_STRICT_FROM   # 加嚴生效的日子：每段上班進位、下班捨去到 15 分鐘（同 Requests.gs reqGridMs_）
         grid_secs = lambda a, b: max(0, (int(b // 60) // 15) * 15 - (-(-int(a // 60) // 15)) * 15) * 60
         secs = sum((grid_secs(x[0][0], x[1][0]) if grid else x[1][0] - x[0][0]) for x in segs if x[0][2] == d)
-        hours = round(secs / 3600, 2)
+        hours = math.floor(secs / 36 + 0.5) / 100   # 同 Requests.gs 的 Math.round(…×100)/100（Python round 是銀行家捨入，11.555 會變 11.55）
         if hours <= OT_HINT_H:
             return None
         if any(r["emp_id"] == emp_id and r["kind"] == "ot" and r["date"] == d and r["status"] in ("pending", "approved") for r in rows):

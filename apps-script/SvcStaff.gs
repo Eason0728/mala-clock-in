@@ -286,7 +286,7 @@ function handleSvcSetUpper_(body) {
 var SVC_STAFF_HANDLERS = {
   svc_roster: handleSvcRoster_,
   svc_add: handleSvcAdd_,
-  svc_set_active: handleSvcSetActive_,
+  svc_set_active: function (b) { return leftCascadeAfter_(handleSvcSetActive_(b)); },   // 設離職後連帶停用別店同一支 LINE 的列（B13，Code.gs）
   svc_link: handleSvcLink_,
   svc_payroll_names: handleSvcPayrollNames_,
   svc_set_upper: handleSvcSetUpper_,
