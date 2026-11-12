@@ -408,13 +408,14 @@ ok('bind_revoke：試算只讀；apply 把缺加班單、缺忘打卡單那幾�
   const DA = '2026-11-03', DB = '2026-11-04';
   addReq(sb, { emp_id: 'E02', name: '測試二', date: DA, kind: 'ot', start: '17:00', end: '18:00', hours: 1 });
   const sheets = sb.__sheets;
-  const H = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at'];
+  const H = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at', 'mirror_src'];
   sheets.approved = sheet('approved', [H,
     [DA, 'E01', '測試一', '09:00-18:00', 9, '正常', '店長', '2026-11-03T22:00:00+08:00'],      // 舊的一筆
     [DA, 'E01', '測試一', '09:00-18:30', 9.5, '正常', '店長', '2026-11-03T23:00:00+08:00'],    // 最新：缺 1.5 小時加班單
     [DA, 'E02', '測試二', '09:00-18:00', 9, '正常', '店長', '2026-11-03T22:00:00+08:00'],      // 有 1 小時加班單：不動
     [DB, 'E01', '測試一', '09:00-17:00', 8, '下班忘刷卡', '店長', '2026-11-04T22:00:00+08:00'], // 少 1 張卡沒有忘打卡單
-    ['2026-10-31', 'E01', '測試一', '09:00-19:00', 10, '正常', '店長', '2026-10-31T22:00:00+08:00']]);
+    ['2026-10-31', 'E01', '測試一', '09:00-19:00', 10, '正常', '店長', '2026-10-31T22:00:00+08:00'],
+    [DB, 'HQ-01', '鏡像', '09:00-19:00', 10, '正常', '店長', '2026-11-04T22:00:00+08:00', 'CF']]);   // 鏡像列：不看、不搬
   const sh = sheets.approved;
   sh.getDataRange = () => ({ getValues: () => sh.data.map((r) => r.slice()) });
   sh.deleteRow = (r) => { sh.data.splice(r - 1, 1); };
@@ -440,12 +441,12 @@ ok('bind_revoke：試算只讀；apply 把缺加班單、缺忘打卡單那幾�
   assert.ok(!sheets.approved_revoked);
   const ap = sb.handleBindRevoke_({ admin_key: 'AK', from: '2026-11-01', to: '2026-11-05', apply: true });
   assert.strictEqual(ap.moved, 3);   // E01 11/3 兩筆（含舊的）＋ E01 11/4 一筆
-  assert.deepStrictEqual(sh.data.slice(1).map((r) => r[0] + ' ' + r[1]), [DA + ' E02', '2026-10-31 E01']);
+  assert.strictEqual(JSON.stringify(sh.data.slice(1).map((r) => r[0] + ' ' + r[1])), JSON.stringify([DA + ' E02', '2026-10-31 E01', DB + ' HQ-01']));
   const bak = sheets.approved_revoked.data;
   assert.strictEqual(JSON.stringify(bak[0]), JSON.stringify(H.concat(['revoked_at', 'revoke_reason'])));
   assert.strictEqual(bak.length, 4);
   assert.deepStrictEqual(bak.slice(1).map((r) => r[4]), [9, 9.5, 8]);   // 原順序留底、數字原樣
-  assert.ok(bak.slice(1).every((r) => r[8] === '2026-11-13T10:00:00+08:00' && r[9]));
+  assert.ok(bak.slice(1).every((r) => r[9] === '2026-11-13T10:00:00+08:00' && r[10]));
   const again = sb.handleBindRevoke_({ admin_key: 'AK', from: '2026-11-01', to: '2026-11-05', apply: true });
   assert.strictEqual(again.moved, 0);   // 再跑一次不會多搬
 });
