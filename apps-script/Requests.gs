@@ -1297,7 +1297,7 @@ function handleMgrReqProxy_(body) {
    那天有已核准的出差單不看缺卡。審核中的單不算。不符合＝整天送不出（Eason 選）。
    不算缺卡：央廚中午休息帶、主管拆段核定（間隔 0）、主管認定的重複打卡（Code.gs 先拿掉再傳進來）。
    從 REQ_BIND_FROM（指令碼屬性，預設上線當天）起的日子才擋；屬性設 off＝整個關掉。由 Code.gs handleMgrApprove 呼叫。 */
-var REQ_BIND_FROM_DEFAULT_ = '2026-11-06';
+var REQ_BIND_FROM_DEFAULT_ = '2026-11-01';   // 2026-11-13 Eason：11/1–11/5 也要有單（原 2026-11-06）
 var REQ_BIND_OT_BASE_H = 8;
 var REQ_BIND_NEAR_MS = 4 * 3600000;   // 沒配到完整打卡段的時段：前後 4 小時內的單張卡算那段的
 function reqBindFrom_() {

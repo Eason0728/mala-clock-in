@@ -163,8 +163,9 @@ ok('整天請假（沒有時段）不看', () => {
 ok('上線日以前的日子不擋；REQ_BIND_FROM 可改、off 整個關掉', () => {
   const sb = makeEnv();
   const a = (d) => sb.reqBindCheck_(sb.getSS(), 'E01', d, 9, [P('09:00', '18:00')], [], null);
-  assert.strictEqual(a('2026-11-05'), null);
-  assert.strictEqual(a('2026-11-06').error, 'need_request');
+  assert.strictEqual(a('2026-10-31'), null);
+  assert.strictEqual(a('2026-11-01').error, 'need_request');   // 2026-11-13 起算日改 11/1
+  assert.strictEqual(a('2026-11-05').error, 'need_request');
   sb.__props.REQ_BIND_FROM = '2026-12-01';
   assert.strictEqual(a('2026-11-10'), null);
   sb.__props.REQ_BIND_FROM = 'off';
