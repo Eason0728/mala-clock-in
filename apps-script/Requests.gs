@@ -1552,7 +1552,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
    {action:'bind_revoke', admin_key, from, to, apply?}
    用核定綁單的同一支判斷（reqBindCheck_，不套核定加嚴）找出「超過 8 小時沒有已核准加班單」或「少卡沒有已核准忘打卡單」的已核定日。
    apply 沒帶＝只讀試算；apply:true＝把那幾天 approved 的列整批搬到 approved_revoked 分頁（留底、可復原），那天回到待核定。
-   只收 REQ_STRICT_FROM 之前的日子（加嚴之後送出時本來就擋）。請假分頁不動，主管重送核定時照常取代。 */
+   只收 REQ_STRICT_FROM 之前的日子（加嚴之後送出時本來就擋）。請假分頁不動，主管重送核定時照常取代。總部的鏡像列（mirror_src 有值）不看。 */
 var BIND_REVOKE_SHEET_ = 'approved_revoked';
 function bindRevokeScan_(ss, from, to) {
   var rows = reqRows_(ss), items = [];
@@ -1565,6 +1565,7 @@ function bindRevokeScan_(ss, from, to) {
     if (date < from || date > to) return;
     Object.keys(approvedMap[date]).forEach(function (emp) {
       var rec = approvedMap[date][emp], name = String(rec.name || '').trim();
+      if (String(rec.mirror_src || '').trim()) return;   // 總部從別店抄來的鏡像列：申請單不抄、隔天又會抄回來，看原店就好
       var periods = parsePeriodsStr(rec.periods).map(function (p) {
         var st = reqHmMs_(date, p.start), en = reqHmMs_(date, p.end);
         return { startMs: st, endMs: en <= st ? en + 86400000 : en };
@@ -1616,7 +1617,8 @@ function handleBindRevoke_(body) {
     for (var i = vals.length - 1; i >= 1; i--) {
       var it = hit[normCellDate(vals[i][iDate]) + '|' + String(vals[i][iEmp])];
       if (!it) continue;
-      drop.push({ row: i + 1, vals: vals[i], reason: it.probs.join('；') });
+      var keep = vals[i].slice(0, head.length); while (keep.length < head.length) keep.push('');   // 留底欄位對齊表頭
+      drop.push({ row: i + 1, vals: keep, reason: it.probs.join('；') });
     }
     drop.slice().reverse().forEach(function (d) { bak.appendRow(d.vals.concat([now, d.reason])); });
     SpreadsheetApp.flush();
