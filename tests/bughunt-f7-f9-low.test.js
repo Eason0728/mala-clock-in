@@ -139,6 +139,18 @@ ok('F9 不同的註記照舊都列出、順序不變', () => {
   const row = m.sb.buildMonthlySheet('2026-10', roster, events, [], '2026-11-13', appr).rows.filter((r) => r[0] === '2026-10-06')[0];
   assert.strictEqual(row[5], '下班忘刷卡、遲到5分');
 });
+ok('F5 上月的班這個月 4 號後才核定：最近 2 天內有上月日期的核定 → 要重算上月', () => {
+  const m = make();
+  const since = Date.parse('2026-11-04T05:00:00+08:00');
+  assert.strictEqual(m.sb.lateApprovedTouches_([{ date: '2026-10-30', entered_at: '2026-11-05T10:00:00+08:00' }], '2026-10', since), true);
+});
+ok('F5 上月的核定都在 2 天前、或最近的核定都是本月 → 不重算（上月照舊凍結）', () => {
+  const m = make();
+  const since = Date.parse('2026-11-04T05:00:00+08:00');
+  assert.strictEqual(m.sb.lateApprovedTouches_([{ date: '2026-10-30', entered_at: '2026-11-01T10:00:00+08:00' }], '2026-10', since), false);
+  assert.strictEqual(m.sb.lateApprovedTouches_([{ date: '2026-11-05', entered_at: '2026-11-05T10:00:00+08:00' }], '2026-10', since), false);
+  assert.strictEqual(m.sb.lateApprovedTouches_([{ date: '2026-10-30', entered_at: 'bad' }], '2026-10', since), false);
+});
 
 console.log(`\n${nOk} 過、${failed} 失敗`);
 if (failed) process.exit(1);

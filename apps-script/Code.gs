@@ -3411,7 +3411,26 @@ function dailyMonthlyRebuild() {
     rebuildMonth(ym);
     const day = parseInt(todayTaipeiStr().slice(8, 10), 10);
     if (day <= 3) rebuildMonth(prevYm(ym));
+    else if (prevMonthLateApproved_(prevYm(ym))) rebuildMonth(prevYm(ym));   // 2026-11-13 驗收 F5
   } finally { lock.releaseLock(); }
+}
+
+/**
+ * 2026-11-13 驗收 F5：上月的班在這個月 4 號以後才核定（例：10/30 的班 11/5 核定），
+ * 原本上月月表凍結不重算，核定欄一直是「待核定」。現在：最近 2 天內有核定寫入、而且日期落在上月，
+ * 每日重算就把上月也重算一次；沒有晚核定的日子上月照舊凍結。薪資本來就直接讀 approved，不受影響。
+ */
+function lateApprovedTouches_(records, ym, sinceMs) {
+  return (records || []).some(function (r) {
+    if (normCellDate(r.date).slice(0, 7) !== ym) return false;
+    const t = tsMs(normCellTs(r.entered_at));
+    return !isNaN(t) && t >= sinceMs;
+  });
+}
+function prevMonthLateApproved_(ym) {
+  const sh = getSS().getSheetByName('approved');
+  if (!sh) return false;
+  return lateApprovedTouches_(readSheetAsObjects(sh).rows, ym, Date.now() - 2 * 24 * 3600000);
 }
 
 /**
