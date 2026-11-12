@@ -896,13 +896,34 @@ function handleSyncRoster(body) {
   const skipped = [];
   // （2026-11-04 夜間 QA）新增同仁前先擋同名在職者（薪資／請假用姓名對人，同名會算錯；比照 svc_add／mgr_add_employee）。
   const activeNames = {};
+  // 2026-11-13 驗收 F7：改名也要擋同名在職（原本只擋新增，改名撞名後兩人的請假列會互蓋）。
+  // activeByName：名字 → { 工號: true }，只記在職者；同一批照順序更新，互換名字時先改的那位會先讓出名字。
+  const activeByName = {};
+  const isOn = function (v) { return v === true || String(v).toLowerCase() === 'true'; };
   rosterRows.forEach(function (r) {
-    if (String(r.active).toLowerCase() === 'true') activeNames[String(r.name).trim()] = true;
+    if (!isOn(r.active)) return;
+    activeNames[String(r.name).trim()] = true;
+    (activeByName[String(r.name).trim()] = activeByName[String(r.name).trim()] || {})[String(r.emp_id)] = true;
   });
+  const otherActiveSameName = function (nm, id) {
+    const m = activeByName[nm] || {};
+    return Object.keys(m).some(function (k) { return k !== id; });
+  };
   employees.forEach(function (emp) {
     const existing = findRosterByEmpId(rosterRows, emp.emp_id);
     const nm = sheetSafeText_(String(emp.name == null ? '' : emp.name));   // = + - @ 開頭換全形（2026-11-04 對抗驗證）
     if (existing) {
+      const id = String(existing.emp_id);
+      const oldNm = String(existing.name).trim();
+      const wasOn = isOn(existing.active);
+      const willOn = emp.active === undefined ? wasOn : isOn(emp.active);
+      // 只在「名字真的改了」或「離職改回在職」時檢查；名字沒變的既有同名列照舊更新，不誤擋。
+      if (willOn && (nm.trim() !== oldNm || !wasOn) && otherActiveSameName(nm.trim(), id)) {
+        skipped.push({ emp_id: String(emp.emp_id), reason: 'duplicate_name' });
+        return;
+      }
+      if (wasOn && activeByName[oldNm]) delete activeByName[oldNm][id];
+      if (willOn) { (activeByName[nm.trim()] = activeByName[nm.trim()] || {})[id] = true; activeNames[nm.trim()] = true; }
       // 只更新 name/active，絕不覆蓋 key/device_id/device_bound_at
       rosterSheet.getRange(existing.__rowIndex, ROSTER_HEADERS.indexOf('name') + 1).setValue(nm);
       // 沒帶 active（undefined）就保留原本的在職狀態，不可把沒帶欄位當成 false 停用人（2026-11-04 夜間 QA）
@@ -913,7 +934,7 @@ function handleSyncRoster(body) {
       if (activeNames[nm.trim()]) { skipped.push({ emp_id: String(emp.emp_id), reason: 'duplicate_name' }); return; }
       const act = emp.active === undefined ? true : (emp.active === true || String(emp.active).toLowerCase() === 'true');   // 新增列沒帶 active 一律在職
       rosterSheet.appendRow([sheetSafeText_(String(emp.emp_id)), nm, genKey(), '', '', act]);
-      if (act) activeNames[nm.trim()] = true;
+      if (act) { activeNames[nm.trim()] = true; (activeByName[nm.trim()] = activeByName[nm.trim()] || {})[sheetSafeText_(String(emp.emp_id))] = true; }
     }
   });
 
