@@ -12,9 +12,10 @@
     cd ~/mala-gas/mala-clock-in && clasp pull      # 每個專案都先 pull
     python3 ~/mala-clock-in/tools/verify-store-backends.py
 """
-import pathlib, re, sys
+import os, pathlib, re, sys
 
-GAS = pathlib.Path.home() / 'mala-gas'
+# 2026-11-13：Mac mini 的 clasp 專案在 ~/dev/mala-gas，用 GAS_ROOT 指定（預設仍是 ~/mala-gas）
+GAS = pathlib.Path(os.environ.get('GAS_ROOT') or (pathlib.Path.home() / 'mala-gas')).expanduser()
 STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztgf-clock-in', 'mztlzl-clock-in', 'mztmc-clock-in', 'mztrg-clock-in', 'mztwx-clock-in']
 
 # 每家店都必須有的 action（doPost 路由）
