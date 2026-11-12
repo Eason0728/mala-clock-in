@@ -5,6 +5,8 @@
  *   since／until：ISO 時間；since 也可用 since_by_store:{<店>:ISO}（一店一呼叫時取該店或唯一那個 key）。
  *   from／to：YYYY-MM-DD，含頭尾最多 35 天。unapproved_from：未核定的起算日，最多 56 天前（預設＝56 天前）。
  *
+ * leave_hours（days／newly_approved 每列）＝當天該同仁 leave 分頁（已核准）的請假時數總和，不含出差；沒有＝0。
+ *   與 mgr_day 的 leaves 同一支 leaveByDateName_（Code.gs），一次讀表、依日期＋姓名建表。
  * 唯讀、一輪讀 events／approved／requests／roster，不迴圈呼叫 mgr_day。
  * 算法全部沿用既有函式，不另寫一套：
  *   punch_hours ＝ mgr_day 的 reference（dayPunchSegments＋dayReferenceHours_，與 handleMgrDay 同一支）
@@ -80,6 +82,14 @@ function handleAttDigestData(body) {
     const sh = ss.getSheetByName('approved');
     return sh ? readSheetAsObjects(sh).rows : [];
   }, []);
+  // 請假時數：沿用 mgr_day 的 leaves 同一支 helper（Code.gs leaveByDateName_，讀 leave 分頁一次），依 日期＋姓名 建表。
+  // leave 分頁是主管核定時才寫入的「已核准」結果；待審／退回的假、加班單都還沒進這分頁。出差（TRIP_NOTE）不算請假。
+  // 時數空白＝0（同薪資 mgr_req_month）。讀失敗＝complete:false（不能靜默回 0 讓 mini 誤報）。
+  const leaveMap = guarded(function () { return leaveByDateName_(ss); }, {});
+  const leaveHoursOf = function (date, emp) {
+    const list = ((leaveMap[date] || {})[String(nm(emp)).trim()]) || [];
+    return list.reduce(function (t, x) { return t + (String(x.type) === TRIP_NOTE ? 0 : (Number(x.hours) || 0)); }, 0);
+  };
   const reqRowsAll = guarded(function () {
     if (typeof reqRows_ !== 'function') throw new Error('no Requests.gs');
     return reqRows_(ss);
@@ -140,6 +150,7 @@ function handleAttDigestData(body) {
       approved_hours: rec ? (Number(rec.approved_hours) || 0) : null,
       approved_at: at ? at : null,
       home_hidden: hidden(emp),
+      leave_hours: leaveHoursOf(d, emp),
     };
   }).filter(function (x) { return x !== null; });
 
@@ -151,8 +162,10 @@ function handleAttDigestData(body) {
     const emp = String(a.emp_id);
     newly.push({ store: store, date: normCellDate(a.date), emp_id: emp, name: a.name ? String(a.name) : nm(emp),
                  approved_hours: Number(a.approved_hours) || 0, entered_at: normCellTs(a.entered_at),
+                 home_hidden: hidden(emp),
                  // 主管手動填遲到分鐘（2026-11-08 Eason）：Mac mini 從狀態欄找「主管認定不計遲到」「遲到N分(認定)」，列出是誰核定的
-                 status_text: String(a.status_text || ''), manager_name: String(a.manager_name || '') });
+                 status_text: String(a.status_text || ''), manager_name: String(a.manager_name || ''),
+                 leave_hours: leaveHoursOf(normCellDate(a.date), emp) });
   });
   newly.sort(function (a, b) { return attDigestCmp_(a.entered_at, b.entered_at); });
 
@@ -197,7 +210,9 @@ function handleAttDigestData(body) {
         out.xmap = payRead('xmap')
           .filter(function (r) { return String(r.state || '').trim().toLowerCase() === 'confirmed' && !payXsupBool_(r.acct_only); })
           .map(function (r) {
-            return { emp_no: String(r.emp_no == null ? '' : r.emp_no), acct_store: String(r.acct_store == null ? '' : r.acct_store), emp_id: payXsupId_(r.emp_id) };
+            // pay_store＝管理系統同仁目前單位的薪酬代號（mini 決定所屬單位與「（X支援）」，store-ops spec §8.20）
+            return { emp_no: String(r.emp_no == null ? '' : r.emp_no), acct_store: String(r.acct_store == null ? '' : r.acct_store), emp_id: payXsupId_(r.emp_id),
+              pay_store: String(r.pay_store == null ? '' : r.pay_store).trim() };
           });
       }
     } catch (e) {

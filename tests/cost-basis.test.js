@@ -3,6 +3,8 @@
  * 現行定義：薪資費用小計 ＝ 應收 −（請假扣款 ＋ 不足時數倒扣 ＋ 宿舍代扣 ＋ 勞健保自付額 ＋ 自訂加薪）
  *   ✔ 請假扣款：任何 /_leave$/（新假別自動涵蓋，不必逐一列舉）
  *   ✔ 不足時數倒扣 shortfall_hours
+ *   ✔ 遲到扣款 late_deduct／早退扣款 early_deduct —— 跟不足倒扣一樣是「真的少領」
+ *     （薪酬挑錯第 6 項，Eason 2026-11-11 確認：儀表板 payIsReduceKey 補上，與成本分類頁、損益端點同口徑）
  *   ✔ 宿舍代扣 dormitory —— 同仁付給公司的房租，錢**留在公司**；下方另列成租金收入
  *   ✔ 勞健保／團保／退休金自付額 —— 代扣後**要繳給勞保局**，所以扣掉之後**必須加回保險成本**
  *     （payIsInsSelfKey），否則人事總成本會憑空少一筆。這是它與宿舍的關鍵差異。
@@ -49,6 +51,8 @@ console.log('══ 1) 哪些扣項要從薪資費用扣回 ══');
 [['personal_leave', true, '事假扣款'], ['sick_leave', true, '病假扣款'],
  ['family_leave', true, '家庭照顧假（新假別自動涵蓋）'], ['sick_hosp_leave', true, '住院傷病假'],
  ['shortfall_hours', true, '不足時數倒扣'], ['dormitory', true, '宿舍代扣（2026-08-24 起）'],
+ ['late_deduct', true, '遲到扣款（2026-11-11 第 6 項：儀表板補上）'],
+ ['early_deduct', true, '早退扣款（同上）'],
  ['labor_ins', true, '勞保自付（2026-08-24 起改扣，移到保險成本）'],
  ['health_ins', true, '健保自付（同上）'], ['group_ins', true, '團保自付（同上）'],
  ['pension', true, '退休金自付（同上）'],
@@ -92,6 +96,63 @@ console.log('\n══ 2) 儀表板趨勢／集團總覽用同一口徑 ══');
   chk('  集團總覽總成本也不變', gp.rows[0].total_cost, 35500);
 }
 
+console.log('\n══ 2b) 遲到／早退扣款：儀表板 salary_cost＝前端薪資費用小計（薪酬挑錯第 6 項，2026-11-11）══');
+{
+  /* 虛構兩人，手算：
+       E01 正職 應收 32000（底薪 30000＋全勤 2000）；扣 遲到 81、早退 40、病假 500、勞保 700、宿舍 2000 → 實付 28679
+       P01 計時 應收 20000；扣 遲到 42、勞保 300 → 實付 19658
+       薪資費用小計 ＝ 52000 − 3663 ＝ 48337 ＝ 兩人實付合計；人事總成本 ＝ 48337＋自付額 1000 ＝ 49337 */
+  const E = [['late_deduct', '遲到扣款', 81], ['early_deduct', '早退扣款', 40], ['sick_leave', '病假', 500],
+             ['labor_ins', '勞保費', 700], ['dormitory', '宿舍自付額', 2000]];
+  const Q = [['late_deduct', '遲到扣款', 42], ['labor_ins', '勞保費', 300]];
+  sb.__E = E; sb.__Q = Q;
+  vm.runInContext(`
+    checkAdmin = function(){ return true; };
+    payRead = function(kind){
+      if (kind === 'run') return [
+        { ym:'2026-10', store:'SSLGF', emp_id:'E01', gross:32000, net:28679, total_hours:176, support_hours:0,
+          surplus_hours:0, ot_paid_hours:0, is_full_time:'true',  ratio:1, status:'draft' },
+        { ym:'2026-10', store:'SSLGF', emp_id:'P01', gross:20000, net:19658, total_hours:100, support_hours:0,
+          surplus_hours:0, ot_paid_hours:0, is_full_time:'false', ratio:1, status:'draft' }];
+      if (kind === 'item') {
+        var out = [];
+        __E.forEach(function (d) { out.push({ ym:'2026-10', store:'SSLGF', emp_id:'E01', item_key:d[0], item_type:'deduction', amount:d[2] }); });
+        __Q.forEach(function (d) { out.push({ ym:'2026-10', store:'SSLGF', emp_id:'P01', item_key:d[0], item_type:'deduction', amount:d[2] }); });
+        return out;
+      }
+      return [];
+    };
+    payConfig = function(){ return {}; };
+    payStoreList = function(){ return [{code:'SSLGF', name:'光復'}]; };
+  `, sb);
+  const t = vm.runInContext('handlePayrollTrend', sb)({ admin_key: 'x', store: 'SSLGF', ym: '2026-10', months: 1 }).months[0];
+  const gp = vm.runInContext('handlePayrollGroup', sb)({ admin_key: 'x', ym: '2026-10' });
+  // 前端：抽 payroll.html 的 costTotals／costRows 本體來跑，不另寫
+  const fa = HTML.indexOf('const COST_REDUCE_EXTRA'), fb = HTML.indexOf('function costRows(g){', fa);
+  const fe = HTML.indexOf('\n  ];\n}', fb) + '\n  ];\n}'.length;
+  const fEsc = (HTML.match(/const esc=s=>[\s\S]*?;\n/) || [''])[0];
+  const toDed = arr => arr.map(d => ({ item_key: d[0], item_label: d[1], amount: d[2] }));
+  const fctx = { console, MASTER: [], CFG: {}, ATT: {}, n: v => { const x = parseFloat(v); return isNaN(x) ? 0 : x; },
+    RESULTS: [
+      { emp_id: 'E01', name: '正職甲', is_full_time: true, ratio: 1, gross: 32000, deduction: 3321, net: 28679, total_hours: 176,
+        earn: [{ item_key: 'base_salary', item_label: '底薪', amount: 30000 }, { item_key: 'attend_bonus', item_label: '績效獎金', amount: 2000 }],
+        ded: toDed(E) },
+      { emp_id: 'P01', name: '計時乙', is_full_time: false, ratio: 1, gross: 20000, deduction: 342, net: 19658, total_hours: 100,
+        earn: [{ item_key: 'hourly_wage', item_label: '薪資（時數）', amount: 20000 }], ded: toDed(Q) }] };
+  vm.createContext(fctx);
+  vm.runInContext(fEsc + HTML.slice(fa, fe) + '\nglobalThis.__rows=costRows(costTotals());globalThis.__isCost=isCostReduceKey;', fctx);
+  const frontSalary = fctx.__rows.find(x => x[0] === 's' && x[1] === '薪資費用小計')[2];
+  chk('  前端薪資費用小計＝兩人實付 28679+19658', frontSalary, 48337);
+  chk('  儀表板趨勢 salary_cost：52000−3663=48337', t.salary_cost, 48337);
+  chk('  儀表板 salary_cost＝前端薪資費用小計', t.salary_cost, frontSalary);
+  chk('  集團總覽 salary_cost＝前端薪資費用小計', gp.rows[0].salary_cost, frontSalary);
+  chk('  人事總成本 48337+自付額1000', [t.total_cost, gp.rows[0].total_cost], [49337, 49337]);
+  chk('  遲到早退不算自付額（不加回保險成本）', t.ins_self, 1000);
+  chk('  前端 isCostReduceKey 兩鍵', [fctx.__isCost('late_deduct'), fctx.__isCost('early_deduct')], [true, true]);
+  chk('  損益端點 pnlIsCostReduceKey_ 兩鍵',
+      [vm.runInContext('pnlIsCostReduceKey_', sb)('late_deduct'), vm.runInContext('pnlIsCostReduceKey_', sb)('early_deduct')], [true, true]);
+}
+
 console.log('\n══ 3) 三處程式碼口徑一致（防止只改一處造成報表打架）══');
 chk('  payroll.html 有把宿舍併入成本扣除', /item_key==='dormitory'/.test(HTML), true);
 /* 2026-09-03 Eason：「薪資費用／正職」那列只顯示底薪科目本身，正職的宿舍代扣改列獨立減項。
@@ -105,6 +166,8 @@ chk('  小計不再重複減 g.dorm', /salaryGross-g\.dorm/.test(HTML), false);
 chk('  payroll.html 有獨立的宿舍收入區塊', /宿舍收入/.test(HTML), true);
 chk('  宿舍收入區塊標明勿重複計列', /勿重複計列/.test(HTML), true);
 chk('  mock 兩處都納入 dormitory', (MOCK.match(/k==='dormitory'/g) || []).length, 2);
+chk('  mock 兩處都納入遲到／早退扣款（2026-11-11 第 6 項）',
+    [(MOCK.match(/k==='late_deduct'/g) || []).length, (MOCK.match(/k==='early_deduct'/g) || []).length], [2, 2]);
 
 console.log('\n══ 4) 請假扣款／不足倒扣要扣進所屬科目（2026-08-24 Eason：損益表只認列實際值）══');
 chk('  有分開累計正職／計時的扣款', /reduceFT/.test(HTML) && /reducePT/.test(HTML), true);

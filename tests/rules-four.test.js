@@ -34,7 +34,8 @@ const STORES = [{ code: 'SSLGF', name: '光復', active: 'true', support_group: 
   chk('payCollect 依日期留下每次時數', [c.menstrual_h, Array.from(c.menstrual_times)], [16, [4, 4, 4, 4]]);
   const e = H.ftEmp();
   const amt = (times, h, before) => S.call('payCalcOne', e, '2026-11', H.baseAtt({ menstrual_h: h, leaves: { menstrual: h }, menstrual_times: times, leave_usage: { menstrual: { used_before_days: before } } }), H.cfg, 4, T);
-  const rate = amt(null, 8, 3).leave_rate, half = Math.round(rate * 0.5);
+  // 2026-11 起（薪酬挑錯第 10 項，Eason 2026-11-11 確認）：半價單價不先取整（163×0.5＝81.5，原 82），時數×單價最後才四捨五入
+  const rate = amt(null, 8, 3).leave_rate, half = rate * 0.5;
   const d = (r) => H.item(r, 'menstrual_leave');
   chk('同月 4 個半天：第 4 次轉病假半薪', d(amt([4, 4, 4, 4], 16, 0)), 4 * half);
   chk('之前 2 次、本月 4H＋8H：第 4 次 8H', d(amt([4, 8], 12, 2)), 8 * half);
@@ -92,8 +93,12 @@ const STORES = [{ code: 'SSLGF', name: '光復', active: 'true', support_group: 
   chk('草稿有、主檔已改離職的人不擋', [r.ok, r.status], [true, 'final']);
   S = mk([run0()], { ok: false, error: 'no_holiday' }); r = go(S);
   chk('重算失敗不鎖', [r.error, S.__DATA.run[0].status], ['recheck_failed', 'draft']);
+  /* 薪酬挑錯第 8 項（Eason 2026-11-11 確認）：比對起始月份由 2026-11 改成 2026-10；2026-09 以前仍不比。
+     原本這裡是「2026-10 以前不比：[true,'final']」，同一組輸入改放到 2026-09。 */
   S = mk([run0({ ym: '2026-10' })], { ok: true, results: [{ emp_id: 'E01', name: '測試甲', gross: 1, deduction: 0, net: 1, ot_info: {} }] }); r = go(S, { ym: '2026-10' });
-  chk('2026-10 以前不比', [r.ok, r.status], [true, 'final']);
+  chk('2026-10 也要比：金額變了不鎖、草稿不動', [r.ok, r.error, S.__DATA.run[0].status], [false, 'stale_run', 'draft']);
+  S = mk([run0({ ym: '2026-09' })], { ok: true, results: [{ emp_id: 'E01', name: '測試甲', gross: 1, deduction: 0, net: 1, ot_info: {} }] }); r = go(S, { ym: '2026-09' });
+  chk('2026-09 以前不比', [r.ok, r.status], [true, 'final']);
   S = mk([run0({ status: 'final' })], { ok: true, results: [{ emp_id: 'E01', name: '測試甲', gross: 1, deduction: 0, net: 1, ot_info: {} }] }); r = go(S, { lock: false, reason: '測試' });
   chk('解鎖不比', [r.ok, r.status], [true, 'draft']);
 

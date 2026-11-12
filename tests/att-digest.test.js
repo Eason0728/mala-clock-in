@@ -56,6 +56,7 @@ function makeCtx(over) {
       reqRow({ id: 'R3', created_at: '2026-11-06T08:00:00+08:00', emp_id: 'E01', name: 'Amy', kind: 'ot', date: '2026-11-06', status: 'pending' }),
     ]),
   };
+  if (over.leave) sheets.leave = new FakeSheet(['日期', '姓名', '假別', '時數'], over.leave);
   if (over.xmap) sheets.payroll_xmap = new FakeSheet(['emp_no', 'pay_store', 'acct_store', 'emp_id', 'not_support', 'synced_at', 'state', 'acct_only'], over.xmap);
   if (over.dropSheets) over.dropSheets.forEach(k => delete sheets[k]);
   const ss = { getSheetByName: n => sheets[n] || null, insertSheet() { writes.n++; } };
@@ -123,7 +124,7 @@ console.log('══ att_digest_data ══');
   chk('沒核定＝null', [d('2026-11-06', 'E01').approved_hours, d('2026-11-06', 'E01').approved_at], [null, null]);
   chk('忘刷下班 punch_hours null', d('2026-11-04', 'E02').punch_hours, null);
   chk('每列帶 store', r.days.every(x => x.store === 'mztjs'), true);
-  chk('欄位集合', Object.keys(r.days[0]).sort(), ['approved_at', 'approved_hours', 'date', 'emp_id', 'home_hidden', 'name', 'punch_blocked', 'punch_hours', 'store']);
+  chk('欄位集合', Object.keys(r.days[0]).sort(), ['approved_at', 'approved_hours', 'date', 'emp_id', 'home_hidden', 'leave_hours', 'name', 'punch_blocked', 'punch_hours', 'store']);
   chk('範圍外(今天 11/07)不在 days', r.days.some(x => x.date === '2026-11-07'), false);
   chk('離職者姓名仍帶出', d('2026-11-05', 'E03').name, 'Cara');
 }
@@ -162,7 +163,7 @@ console.log('══ att_digest_data ══');
   ] });
   const r = c.digest(base);
   chk('newly_approved 開閉區間＋不受工作日限制', r.newly_approved.map(x => x.date + ':' + x.approved_hours), ['2026-10-02:6', '2026-11-01:7']);
-  chk('newly_approved 欄位', Object.keys(r.newly_approved[0]).sort(), ['approved_hours', 'date', 'emp_id', 'entered_at', 'manager_name', 'name', 'status_text', 'store']);
+  chk('newly_approved 欄位', Object.keys(r.newly_approved[0]).sort(), ['approved_hours', 'date', 'emp_id', 'entered_at', 'home_hidden', 'leave_hours', 'manager_name', 'name', 'status_text', 'store']);
   chk('newly_approved 帶 store＋+08:00', [r.newly_approved[0].store, /\+08:00$/.test(r.newly_approved[0].entered_at)], ['mztjs', true]);
   // 主管手動填遲到（2026-11-08）：狀態欄與核定人原樣帶出
   const cl = makeCtx({ approved: [['2026-11-02', 'E01', 'Amy', 'x', 8, '早退5分、主管認定不計遲到', '李大同（DZY0001）', '2026-11-06T10:00:00+08:00']] });
@@ -249,11 +250,13 @@ console.log('══ att_digest_data ══');
     ['0013', 'SSLGF', 'MZTJS', 8, '', '2026-11-01', 'confirmed', 'true'],     // acct_only → 不回
     ['0014', 'SSLGF', 'MZTJS', 'E09', '', '2026-11-01', 'pending', ''],        // 非 confirmed → 不回
     ['0015', 'SSLGF', 'MZTJS', ' E10 ', '', '2026-11-01', 'confirmed', false], // 去空白
+    ['0016', '', 'CF', 'C1', '', '2026-11-01', 'confirmed', ''],              // 所屬單位空白 → pay_store ''
   ];
   const c = makeCtx({ xmap: XM });
   const r = c.digest(Object.assign({}, base, { include_xmap: true }));
   chk('xmap 只回 confirmed 且非 acct_only，emp_id 前導零／空白正規化、不含姓名', r.xmap,
-    [{ emp_no: '0012', acct_store: 'MZTJS', emp_id: '7' }, { emp_no: '0015', acct_store: 'MZTJS', emp_id: 'E10' }]);
+    [{ emp_no: '0012', acct_store: 'MZTJS', emp_id: '7', pay_store: 'SSLGF' }, { emp_no: '0015', acct_store: 'MZTJS', emp_id: 'E10', pay_store: 'SSLGF' },
+     { emp_no: '0016', acct_store: 'CF', emp_id: 'C1', pay_store: '' }]);
   chk('有分頁但沒帶 include_xmap → 無 xmap 欄位', 'xmap' in c.digest(base), false);
   const c2 = makeCtx();
   const r2 = c2.digest(Object.assign({}, base, { include_xmap: true }));
@@ -380,6 +383,59 @@ console.log('══ att_digest_data ══');
   const sum = ['2026-11-02', '2026-11-03'].reduce((t, dt) => t + (c.mgrDay({ mgr_key: 'mk', date: dt }).employees.filter(e => e.emp_id === 'E01')[0].reference || 0), 0);
   chk('days 總時數仍＝mgr_day reference 總和', r.days.reduce((t, x) => t + (x.punch_hours || 0), 0), sum);
 }
+
+// 26 leave_hours：已核准請假時數（leave 分頁，同 mgr_day leaves）
+{
+  const L = [
+    ['2026-11-02', 'Amy', '特休假', 4],
+    ['2026-11-03', 'Bob', '事假', 2], ['2026-11-03', 'Bob', '病假', 1.5],   // 同日兩張相加
+    ['2026-11-03', 'Bob', '出差', 8],                                         // 出差不算
+    ['2026-11-04', 'Bob', '特休假', ''],                                      // 時數空白＝0
+    ['2026-11-05', 'Cara ', '補休', 3],                                       // 姓名尾端空白
+    ['2026-11-06', 'Amy', '特休假', 8], ['2026-11-07', 'Amy', '特休假', 8],   // 11/06 在範圍；11/07 另一天
+  ];
+  const c = makeCtx({ leave: L });
+  writes.n = 0;
+  const r = c.digest(Object.assign({}, base, { since: '2026-11-01T00:00:00+08:00' }));
+  const d = (date, emp) => r.days.filter(x => x.date === date && x.emp_id === emp)[0];
+  chk('特休 4 小時 → leave_hours 4', d('2026-11-02', 'E01').leave_hours, 4);
+  chk('同日兩張假相加、出差不算 → 3.5', d('2026-11-03', 'E02').leave_hours, 3.5);
+  chk('時數空白 → 0', d('2026-11-04', 'E02').leave_hours, 0);
+  chk('姓名尾端空白仍對得上', d('2026-11-05', 'E03').leave_hours, 3);
+  chk('沒有假 → 0（不是 null）', [d('2026-11-06', 'E01').leave_hours, typeof d('2026-11-06', 'E01').leave_hours], [8, 'number']);
+  chk('newly_approved 也帶 leave_hours（依該列日期＋人）', r.newly_approved.map(x => x.date + ':' + x.leave_hours), ['2026-11-02:4', '2026-11-03:3.5', '2026-11-02:4']);
+  chk('寫入 API 呼叫 0 次', writes.n, 0);
+  // 與 mgr_day 回傳的 leaves 對同一份假資料一致（排除出差後相加）
+  let same = true;
+  r.days.forEach(x => {
+    const e = c.mgrDay({ mgr_key: 'mk', date: x.date }).employees.filter(y => y.emp_id === x.emp_id)[0];
+    if (!e) return;
+    const sum = e.leaves.reduce((t, l) => t + (l.type === '出差' ? 0 : (Number(l.hours) || 0)), 0);
+    if (sum !== x.leave_hours) { same = false; console.log('  差異', x.date, x.emp_id, sum, x.leave_hours); }
+  });
+  chk('leave_hours 與 mgr_day leaves 逐人逐天一致', same, true);
+  // 待審／退回的假、加班單：只在 requests 分頁、沒進 leave 分頁 → 不算
+  const cr = makeCtx({ leave: [], requests: [
+    reqRow({ id: 'R1', created_at: '2026-11-01T09:00:00+08:00', emp_id: 'E01', name: 'Amy', kind: 'leave', date: '2026-11-02', leave_type: '特休假', hours: 4, status: 'pending' }),
+    reqRow({ id: 'R2', created_at: '2026-11-01T09:00:00+08:00', emp_id: 'E01', name: 'Amy', kind: 'leave', date: '2026-11-02', leave_type: '事假', hours: 4, status: 'rejected' }),
+    reqRow({ id: 'R3', created_at: '2026-11-01T09:00:00+08:00', emp_id: 'E01', name: 'Amy', kind: 'ot', date: '2026-11-02', hours: 2, status: 'approved' }),
+  ] });
+  const rr = cr.digest(base);
+  chk('待審／退回的假、加班單不算 → 0', rr.days.filter(x => x.date === '2026-11-02').map(x => x.leave_hours), [0]);
+  // 沒有 leave 分頁 → 全 0、complete 仍 true
+  const cn = makeCtx();
+  const rn = cn.digest(base);
+  chk('沒有 leave 分頁 → 全 0、complete true', [rn.days.every(x => x.leave_hours === 0), rn.complete], [true, true]);
+  // 跨日請假：leave 分頁一天一列（核定時逐日寫入），同 mgr_day 依日期各算各的
+  const c2 = makeCtx({ leave: [['2026-11-02', 'Amy', '事假', 8], ['2026-11-03', 'Amy', '事假', 8]] });
+  const r2 = c2.digest(base);
+  chk('跨日請假各日各自的時數', r2.days.filter(x => x.emp_id === 'E01' && ['2026-11-02', '2026-11-03'].includes(x.date)).map(x => x.date + ':' + x.leave_hours), ['2026-11-02:8']);
+  // 讀 leave 失敗 → complete false
+  const c3 = makeCtx({ leave: [] });
+  c3.sb.leaveByDateName_ = () => { throw new Error('boom'); };
+  chk('讀 leave 失敗 → complete false', c3.digest(base).complete, false);
+}
+
 
 console.log(`\n${fail ? '❌' : '✅'} pass ${pass} / fail ${fail}`);
 process.exit(fail ? 1 : 0);

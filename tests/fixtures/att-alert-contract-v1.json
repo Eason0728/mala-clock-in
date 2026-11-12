@@ -1,5 +1,5 @@
 {
-  "_note": "att_digest_data 回傳與 att_alert_enqueue 請求契約 v1（spec §2、§3.5、§8.6）；兩個 repo 內容逐字相同。requests_pending[].kind 值域 leave/trip/ot/miss（對齊 Requests.gs）；failed_stores 項目 {store, reason}；各店 complete 必須嚴格為 true 才算完整；days／newly_approved／unapproved 每列明定帶 store（缺 store＝壞資料，函式跳過並記壞資料）；sch_periods.locked 為 1／true／'1'／'true' 才算已鎖；同店多個失敗原因合併成一筆 reason（以「、」連接）；include_xmap:true 時（僅光復有 payroll_xmap 分頁）回應多 xmap:[{emp_no,acct_store,emp_id}]（state=confirmed 且非 acct_only、emp_id 已去空白去前導零、不含姓名）；讀 xmap 失敗回 xmap_error 字串，其他欄位不受影響；沒分頁或沒帶 include_xmap 則無 xmap 欄位；days 每列 punch_blocked（上班卡全被擋的日子（有上班嘗試、沒有 status=ok 的上班事件）punch_blocked=true、punch_hours 可能為 0 或 null，不代表真的 0 小時）；days／unapproved 每列 home_hidden（本店值班主管在 mgr_day 看不到的人＝true，只標記不隱藏）；approved_at 在 entered_at 空白時為 null；回應可能帶選用欄位 home_list_error（字串）：本店 REQ_HOME_EMPS 名單讀不到或格式錯時出現，此時全員 home_hidden=false；att_alert_enqueue 選填欄位：seq（mini 送出時刻毫秒，不進 batch_id hash）、notes（字串陣列，訊息尾端「⚠ 」註記，進 hash，八項全空時不單獨成訊息）",
+  "_note": "att_digest_data 回傳與 att_alert_enqueue 請求契約 v1（spec §2、§3.5、§8.6）；兩個 repo 內容逐字相同。requests_pending[].kind 值域 leave/trip/ot/miss（對齊 Requests.gs）；failed_stores 項目 {store, reason}；各店 complete 必須嚴格為 true 才算完整；days／newly_approved／unapproved 每列明定帶 store（缺 store＝壞資料，函式跳過並記壞資料）；sch_periods.locked 為 1／true／'1'／'true' 才算已鎖；同店多個失敗原因合併成一筆 reason（以「、」連接）；include_xmap:true 時（僅光復有 payroll_xmap 分頁）回應多 xmap:[{emp_no,acct_store,emp_id,pay_store}]（state=confirmed 且非 acct_only、emp_id 已去空白去前導零、不含姓名；pay_store＝管理系統同仁目前單位的薪酬代號，沒有就空字串，mini 用來決定所屬單位與「（X支援）」，§8.20）；讀 xmap 失敗回 xmap_error 字串，其他欄位不受影響；沒分頁或沒帶 include_xmap 則無 xmap 欄位；days 每列 punch_blocked（上班卡全被擋的日子（有上班嘗試、沒有 status=ok 的上班事件）punch_blocked=true、punch_hours 可能為 0 或 null，不代表真的 0 小時）；days／newly_approved／unapproved 每列 home_hidden（本店值班主管在 mgr_day 看不到的人＝true，只標記不隱藏；newly_approved 列與 days／unapproved 同一算法）；approved_at 在 entered_at 空白時為 null；回應可能帶選用欄位 home_list_error（字串）：本店 REQ_HOME_EMPS 名單讀不到或格式錯時出現，此時全員 home_hidden=false；days／newly_approved 每列 leave_hours（數字，當天該同仁已核准的請假時數總和，不含出差／加班／忘打卡，沒有＝0；與 mgr_day 的 leaves 同一份 leave 分頁資料，給正職「核定工時＋請假時數」不滿 8 小時才算異常用；mini 端遇到欄位不存在＝視為未知，該店略過新規則）；att_alert_enqueue 選填欄位：seq（mini 送出時刻毫秒，不進 batch_id hash）、notes（字串陣列，訊息尾端「⚠ 」註記，進 hash，八項全空時不單獨成訊息）",
   "att_digest_data_request": {
     "action": "att_digest_data",
     "mgr_key": "<vault duty:店>",
@@ -25,7 +25,8 @@
         "approved_hours": 6,
         "approved_at": "2026-12-10T08:10:00+08:00",
         "punch_blocked": false,
-        "home_hidden": false
+        "home_hidden": false,
+        "leave_hours": 2
       }
     ],
     "newly_approved": [
@@ -37,7 +38,9 @@
         "approved_hours": 6,
         "entered_at": "2026-12-10T08:10:00+08:00",
         "status_text": "主管認定不計遲到",
-        "manager_name": "店長"
+        "manager_name": "店長",
+        "home_hidden": false,
+        "leave_hours": 2
       }
     ],
     "unapproved": [
@@ -63,7 +66,8 @@
       {
         "emp_no": "0012",
         "acct_store": "MZTJS",
-        "emp_id": "7"
+        "emp_id": "7",
+        "pay_store": "MZTJS"
       }
     ]
   },

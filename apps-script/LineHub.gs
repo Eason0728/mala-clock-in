@@ -167,6 +167,13 @@ function lineHubBindElsewhere_(userId, body, st, want) {
   var mine = boundElse.filter(function (m) { return lineHubNormName_(m.row.name) === want; });
   // 2026-11-11（B28）：有任何一家名冊讀不到，就不下「綁了哪幾家」「全公司恰好一位」的結論，請同仁稍後再試。
   if (mineInfo.unreadable) return UNREACH;
+  // 禁止跨品牌（2026-11-12 串接驗收 A3，#106）：已綁兩家以上（例：光復＋央廚）的小辛辣同仁到墨竹亭，
+  // 不論名字對不對得上都先擋、講清楚原因；原本先回 name_conflict「請找主管協助加入」會誤導主管把他加進墨竹亭。
+  // 品牌追到原單位（B10 的 lineHubCrossedBound_），借道央廚也擋。
+  var crossedAny = lineHubCrossedBound_(boundElse, st);
+  if (crossedAny) {
+    return { ok: false, error: 'cross_brand', message: '你是' + LINE_HUB_BRAND_NAME[lineHubRowBrand_(crossedAny, boundElse)] + '的同仁，不能在「' + st.name + '」打卡（小辛辣與墨竹亭不能互相支援打卡）；有問題請找店長。' };
+  }
   if (mine.length) {
     // 2026-11-11（B10，Eason 定）：已在別家綁定同名，一家或多家都照樣自動加入；綁的名字不一致才擋。
     if (mine.length !== boundElse.length) {

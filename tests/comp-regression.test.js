@@ -28,7 +28,7 @@ function ctx(P, DB, CLOCK) {
   vm.runInContext(C + '\n' + P, sb);
   // 2026-11 起的加班費新算法（逐日判斷、績效獎金改名、早退扣款…）是刻意的改變，由 ot-daily.test.js 守；
   // 這支只守「其他規則沒被動到」，所以把新版的生效月份推到很遠，兩邊都照舊規則比。
-  vm.runInContext("if (typeof PAY_OT_DAILY_FROM !== 'undefined') PAY_OT_DAILY_FROM = '2099-01'; if (typeof PAY_RULES3_FROM !== 'undefined') PAY_RULES3_FROM = '2099-01'; if (typeof PAY_ANNUAL_SETTLE_FROM !== 'undefined') PAY_ANNUAL_SETTLE_FROM = '2099-01'; if (typeof PAY_LATE_ATTEND_FROM !== 'undefined') PAY_LATE_ATTEND_FROM = '2099-01'; if (typeof PAY_MENSTRUAL_FULL_FROM !== 'undefined') PAY_MENSTRUAL_FULL_FROM = '2099-01';", sb);
+  vm.runInContext("if (typeof PAY_OT_DAILY_FROM !== 'undefined') PAY_OT_DAILY_FROM = '2099-01'; if (typeof PAY_RULES3_FROM !== 'undefined') PAY_RULES3_FROM = '2099-01'; if (typeof PAY_ANNUAL_SETTLE_FROM !== 'undefined') PAY_ANNUAL_SETTLE_FROM = '2099-01'; if (typeof PAY_LATE_ATTEND_FROM !== 'undefined') PAY_LATE_ATTEND_FROM = '2099-01'; if (typeof PAY_MENSTRUAL_FULL_FROM !== 'undefined') PAY_MENSTRUAL_FULL_FROM = '2099-01'; if (typeof PAY_ANNUAL_RAW_FROM !== 'undefined') PAY_ANNUAL_RAW_FROM = '2099-01'; if (typeof PAY_LEAVE_RAW_FROM !== 'undefined') PAY_LEAVE_RAW_FROM = '2099-01';", sb);
   sb.__C = CLOCK; sb.__DB = DB;
   vm.runInContext(`
     payClockRead = function(store, sheet){ return JSON.parse(JSON.stringify(globalThis.__C[sheet] || [])); };
@@ -104,6 +104,11 @@ const DB_OLD = freshDB(), DB_NEW = freshDB();
 const sOld = ctx(OLD, DB_OLD, CLOCK), sNew = ctx(NEW, DB_NEW, CLOCK);
 const strip = (rows) => rows.map((r) => { const o = Object.assign({}, r); delete o.run_at; return o; });
 let e09Diff = 0;
+/* 薪酬挑錯第 2 項（Eason 2026-11-11 確認）：這個月在職天數 0、又沒有任何時數與加扣項的人不產生列。
+ * 假資料裡只有這 3 個人月符合（E04 到職 2026-08-14、E05 到職 2026-09-16，到職前的月份沒有任何打卡、請假、手動工時、獎金）：
+ * 舊版各有一列（應發 0 或只有小編津貼、扣整月健保），新版沒有列。其餘人月照舊逐項比對。 */
+const NOT_HIRED_YET = { '2026-07|E04': true, '2026-07|E05': true, '2026-08|E05': true };
+let notHiredSeen = 0;
 MONTHS.forEach((ym) => {
   const A = vm.runInContext('handlePayrollCalc', sOld)({ admin_key: 'x', ym, store: 'SSLGF' });
   const B = vm.runInContext('handlePayrollCalc', sNew)({ admin_key: 'x', ym, store: 'SSLGF' });
@@ -112,13 +117,18 @@ MONTHS.forEach((ym) => {
     const rb = B.results.find((x) => x.emp_id === ra.emp_id);
     const same = JSON.stringify(ra) === JSON.stringify(rb);
     if (ra.emp_id === 'E09') { if (!same) e09Diff++; return; }
+    if (NOT_HIRED_YET[ym + '|' + ra.emp_id]) {
+      notHiredSeen++;
+      chk(ym + ' ' + ra.emp_id + ' 還沒到職、沒有時數：舊版有一列（在職比例 0、核定時數 0），新版沒有列', ra.ratio === 0 && ra.total_hours === 0 && rb === undefined);
+      return;
+    }
     compared++;
     chk(ym + ' ' + ra.emp_id + ' 逐項相同', same, same ? '' : '\n  舊 ' + JSON.stringify(ra).slice(0, 400) + '\n  新 ' + JSON.stringify(rb).slice(0, 400));
   });
   // 寫進表的 run／item（不含補休對照那位）逐列相同
   ['run', 'item'].forEach((k) => {
-    const a = strip(DB_OLD[k].filter((r) => r.ym === ym && r.emp_id !== 'E09'));
-    const b = strip(DB_NEW[k].filter((r) => r.ym === ym && r.emp_id !== 'E09'));
+    const a = strip(DB_OLD[k].filter((r) => r.ym === ym && r.emp_id !== 'E09' && !NOT_HIRED_YET[ym + '|' + r.emp_id]));
+    const b = strip(DB_NEW[k].filter((r) => r.ym === ym && r.emp_id !== 'E09'));   // 新版不濾：還沒到職的人月本來就不該有列
     rowsCompared += a.length;
     chk(ym + ' 寫入的 ' + k + ' 列相同（' + a.length + ' 列）', JSON.stringify(a) === JSON.stringify(b));
   });
@@ -126,6 +136,7 @@ MONTHS.forEach((ym) => {
   DB_OLD.run.forEach((r) => { if (r.ym === ym) r.status = 'final'; });
   DB_NEW.run.forEach((r) => { if (r.ym === ym) r.status = 'final'; });
 });
+chk('還沒到職的 3 個人月都有比到（2026-07 E04、E05；2026-08 E05）', notHiredSeen === 3, String(notHiredSeen));
 chk('對照組：換補休的那位確實有變（' + e09Diff + ' 個月）——證明比對有在比', e09Diff > 0, String(e09Diff) + ' 個月不同');
 console.log(`\n比對 ${compared} 人月（${MONTHS.length} 個月 × ${master.length - 1} 人，含正職／計時／月中到職／手動工時／支援／獎金／9 種假／遲到忘刷），寫入列 ${rowsCompared} 列`);
 console.log(fail ? `❌ ${fail} 項不一致` : `✅ 沒有補休的人逐項完全相同 (${pass}/${pass})`);

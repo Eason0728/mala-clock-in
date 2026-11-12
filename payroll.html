@@ -642,6 +642,8 @@ if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
 let SAME_NAME=[];   // 本月有請假、名冊同名的人（payroll_month same_name，2026-11-09）
 let ROSTER_MISS=[];   // 主檔工號在打卡名冊找不到的人（payroll_month roster_mismatch，2026-11-06）
+let ZERO_RATIO=[];   // 本月在職天數 0 卻有一列薪資的人（payroll_month／payroll_calc 的 zero_ratio_with_data，2026-11-11）
+let NOT_IN_PAY=[];   // 主檔已停用、離職日不在本月、本月卻有時數的人（payroll_month／payroll_calc 的 not_in_payroll，2026-11-11）
 let SUPA=null;   // 跨店支援自動帶入（2026-11 起後端 payroll_month 回的 support_auto；之前的月份是 null）
 // 目前操作門市：階段一由門市表全部可見；階段二改讀 dzy 帳號的可見門市清單（UI 與過濾邏輯不變）
 let STORE=(new URLSearchParams(location.search).get('store')||localStorage.getItem('pay_store')||'');
@@ -788,7 +790,7 @@ async function boot(){
 async function autoCalc(){
   if(STATUS==='final' || RESULTS.length) return;
   const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
-  if(r&&r.ok){RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;renderRun();renderSlipSel()}
+  if(r&&r.ok){RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];renderRun();renderSlipSel()}
 }
 /* ═════ 未儲存提醒（2026-08-23）═════
  * 出勤資料的所有輸入（含跨店支援明細）都只寫在瀏覽器記憶體，按「儲存工時」才進試算表。
@@ -869,6 +871,7 @@ async function saveAtt(){
     return;
   }
   if(supCrossBlock('儲存')) return;
+  if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再修改工時',true); return; }   // 已鎖定月份不送出（薪酬挑錯第 1 項）
   b.disabled=true; b.classList.remove('done'); b.textContent='存取中…';
   /* 有負責門市範圍時只送本店主檔的人：ATT 也含只打卡、未建主檔或別店的編號（計薪只看主檔，不送不影響本店），
      後端會擋 emp_out_of_scope（payroll-scope final review I2）。系統管理者／非嵌入照舊全送。 */
@@ -877,7 +880,7 @@ async function saveAtt(){
     Object.keys(ATT||{}).forEach(k=>{ if(own[String(k).trim()]) sendAtt[k]=ATT[k]; }); }
   if(ym()>=XSUP_FROM){ const t={}; Object.keys(sendAtt||{}).forEach(k=>{ if(attSendable(sendAtt[k])) t[k]=sendAtt[k]; }); sendAtt=t; }
   const r=await post('payroll_input_set',{ym:ym(),inputs:sendAtt});
-  if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.error||''),true);return}
+  if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.message||r.error||''),true);return}
   await doCalc();   // 存完用新工時重算帶出數字
   ATT_DIRTY=false;   // 存好了，解除未儲存提醒
   b.classList.add('done'); b.textContent='✓ 存檔完成';
@@ -885,9 +888,10 @@ async function saveAtt(){
   setTimeout(()=>{b.textContent='儲存工時';b.disabled=false;b.classList.remove('done');},1800);
 }
 async function clearAtt(){
+  if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再清除手動工時',true); return; }   // 已鎖定月份不送出（薪酬挑錯第 1 項）
   if(!confirm('清除 '+ym()+' 的手動工時？\n\n會刪掉這個月你手動輸入/儲存的工時，還原成打卡自動歸集的值。\n（只影響目前門市，其他門市不受影響）')) return;
   const r=await post('payroll_input_set',{ym:ym(),inputs:{}});
-  if(!r.ok){toast('清除失敗：'+(r.error||''),true);return}
+  if(!r.ok){toast('清除失敗：'+(r.message||r.error||''),true);return}
   toast(ym()+' 手動工時已清除');
   await loadMonth();
 }
@@ -951,6 +955,8 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     HAS_CLOCK=(r.has_clock!==false);
     showClockMode();
     SAME_NAME=r.same_name||[];
+    NOT_IN_PAY=r.not_in_payroll||[];
+    ZERO_RATIO=r.zero_ratio_with_data||[];
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
     SUPA=r.support_auto||null; SUP_OPEN={};
     ROSTER_MISS=r.roster_mismatch||[];
@@ -984,6 +990,8 @@ async function doCalc(){
     const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
     if(!r.ok)return;
     RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;
+    NOT_IN_PAY=r.not_in_payroll||[];
+    ZERO_RATIO=r.zero_ratio_with_data||[];
     vClear();   // 重算後儀表板／集團總覽的數字會變
     renderRun();renderSlipSel();toast('已重新計算');
   } finally { setBusy(false); }
@@ -1289,7 +1297,10 @@ function costAudit(){
   /* 提醒：不影響加減，但值得看一眼的狀況 */
   const warn=[], ran={};
   RESULTS.forEach(r=>ran[String(r.emp_id)]=1);
-  const missed=(MASTER||[]).filter(m=>!ran[String(m.emp_id)]
+  // 整月不在職（到職日在月底之後、或離職日在月初之前）的人本來就不會有結算結果，不列
+  const YM=ym(), outOfMonth=m=>{ const h=String(m.hire_date||'').slice(0,7), l=String(m.leave_date||'').slice(0,7);
+    return (/^\d{4}-\d{2}$/.test(h)&&h>YM)||(/^\d{4}-\d{2}$/.test(l)&&l<YM); };
+  const missed=(MASTER||[]).filter(m=>!ran[String(m.emp_id)] && !outOfMonth(m)
       && String(m.active).toLowerCase()!=='false' && !String(m.leave_date||'').trim()
       && (n(m.co_labor)+n(m.co_pension)+n(m.co_health))>0);
   if(missed.length) warn.push('主檔有公司負擔、但本月沒有結算結果，公司負擔會漏算：'
@@ -1334,7 +1345,10 @@ function ptTenurePlus(m){
   const hs=String((m||{}).hire_date||'').slice(0,10);
   if(!/^\d{4}-\d{2}-\d{2}$/.test(hs)) return 0;
   const h=new Date(hs+'T00:00:00');
-  const due=new Date(h.getFullYear(), h.getMonth()+months, h.getDate());
+  /* 滿期日：那個月沒有到職的那一日（8/31 到職＋6 個月，2 月沒有 31 日）就用該月最後一天，不溢位到下個月——
+     與後端 payAddMonthsClamp_ 同一個算法（薪酬挑錯第 14 項，Eason 2026-11-11 確認）。 */
+  const mo=h.getMonth()+months, last=new Date(h.getFullYear(), mo+1, 0).getDate();
+  const due=new Date(h.getFullYear(), mo, Math.min(h.getDate(), last));
   return (new Date(ym()+'-01T00:00:00') > due) ? plus : 0;
 }
 function renderRun(){
@@ -1433,6 +1447,10 @@ function renderOtInfo(t){
   // 主檔工號對不到打卡名冊：打卡時數、班表都找不到這個人（正職會照領整月底薪），最先列
   ROSTER_MISS.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：薪資主檔工號 ${esc(x.emp_id)} 在打卡名冊找不到，打卡時數和班表都對不到這個人`
     +(x.roster_ids&&x.roster_ids.length?`——名冊上同名的人是 <b>${x.roster_ids.map(esc).join('、')}</b>，請到「員工設定」把工號改成一樣`:'——請確認工號')+`</li>`));
+  // 主檔已停用、離職日不在本月、本月卻有時數：沒有進薪資（薪酬挑錯第 2 項，2026-11-11）
+  NOT_IN_PAY.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：本月有 ${esc(r2(Number(x.hours)||0))} 小時，但主檔已取消在職、離職日沒填或早於這個月，沒有算進薪資。這個月還有上班的話，請到員工設定填正確的離職日</li>`));
+  // 在職天數 0 卻有一列薪資：照舊算，提醒確認主檔日期（薪酬挑錯第 2 項補洞，2026-11-11）
+  ZERO_RATIO.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：本月在職天數是 0（到職日或離職日不在這個月），卻有 ${esc(r2(Number(x.hours)||0))} 小時／加扣項，請確認主檔的到職日、離職日</li>`));
   SAME_NAME.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：打卡名冊有同名的人（${x.emp_ids.map(esc).join('、')}），本月 ${x.rows} 筆請假只有姓名，系統依在職與到離職日算給 ${x.to.map(esc).join('、')}，請確認沒有歸錯人</li>`));
   RESULTS.forEach(r=>{const o=r.ot_info; if(!o) return; const nm=esc(r.name);
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
@@ -1452,7 +1470,7 @@ function renderOtInfo(t){
     if(o.support_leave&&o.support_leave.length) o.support_leave.forEach(x=>rows.push(`<li><b style="color:#b7791f">${nm}</b>：<span style="color:#b7791f">${md(x.date)} 在${esc(x.store_name)}記了${esc(x.type)} ${r2(x.hours)} 小時（支援店記的假，薪資沒扣，請確認）</span></li>`));
     if(o.manual_sup_h>0) rows.push(`<li>${nm}：手填的跨店支援有 ${r2(o.manual_sup_h)} 小時沒有日期，沒算進逐日加班</li>`);
   });
-  box.innerHTML=rows.length?`<div class="card" style="border-left:4px solid #b4762a"><h3 style="margin:0 0 6px">${ROSTER_MISS.length||SAME_NAME.length?'工號、加班與班表提醒':'加班與班表提醒'}</h3><ul style="margin:0;padding-left:20px;line-height:1.8">${rows.join('')}</ul></div>`:'';
+  box.innerHTML=rows.length?`<div class="card" style="border-left:4px solid #b4762a"><h3 style="margin:0 0 6px">${(NOT_IN_PAY.length||ZERO_RATIO.length)?'在職狀態、工號、加班與班表提醒':(ROSTER_MISS.length||SAME_NAME.length?'工號、加班與班表提醒':'加班與班表提醒')}</h3><ul style="margin:0;padding-left:20px;line-height:1.8">${rows.join('')}</ul></div>`:'';
 }
 async function toggleLock(){
   const lock=STATUS!=='final';
@@ -2031,9 +2049,10 @@ function saveBonusMemo(){
   if($('bnRate')) $('bnRate').value=(rev&&tgt)?(Math.round(rev/tgt*1000)/10+' %'):'—';
 }
 async function saveBonus(btn){
+  if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再修改獎金',true); return false; }   // 已鎖定月份不送出（薪酬挑錯第 1 項）
   return saveFX(btn,'儲存獎金',async()=>{
     const r=await post('payroll_bonus_set',{ym:ym(),store:STORE,bonuses:BONUS});
-    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    if(!r.ok){toast('儲存失敗：'+(r.message||r.error||''),true);return false}
     await doCalc();
     toast('獎金已儲存（'+r.count+' 筆）');return true;
   });
@@ -2577,7 +2596,7 @@ let CFG_DIRTY={};   // {key: 改之前畫面上的值}
 function cfgEdit(k,v){ if(!(k in CFG_DIRTY)) CFG_DIRTY[k]=CFG[k]; CFG[k]=v; }
 const CF=[['daily_hours','每日基本工時（H）'],
  ['leave_div_days','事假費率分母（天）'],['leave_div_hours','事假費率分母（時）'],
- ['sick_ratio','病假占事假比例'],['payday','發薪日'],
+ ['payday','發薪日'],
  ['meal_min_hours','餐費補助門檻（當日滿幾H算一天）'],
  ['yearend_months','年終獎金月數（全店預設）']];
 const CF_ATTEND=[['attend_deduct_per_day','每日倒扣（元）'],
@@ -2599,8 +2618,10 @@ const CF_PT=[['pt_attend_plus','滿勤加給（元/時，勾選才給）'],
  ['pt_tenure_plus','年資加給（元/時）'],
  ['pt_tenure_months','年資門檻（滿幾個月，次月起生效；留空或 0＝用預設 6）']];
 /* 已廢棄的參數：存檔時順手從試算表清掉，避免留一列沒人讀的廢資料誤導。
-   shortfall_deduct＝2026-08 改版前的「工時不足要不要倒扣」開關，現在一律倒扣、引擎不再讀它。 */
-const CFG_OBSOLETE=['shortfall_deduct'];
+   shortfall_deduct＝2026-08 改版前的「工時不足要不要倒扣」開關，現在一律倒扣、引擎不再讀它。
+   sick_ratio＝「病假占事假比例」，2026-08-23 起病假的給薪比例改讀假別表，引擎不再讀它，這一欄已從基本參數卡拿掉
+   （薪酬挑錯第 11 項，Eason 2026-11-11 確認）。 */
+const CFG_OBSOLETE=['shortfall_deduct','sick_ratio'];
 function renderCfg(){
   renderStores();
   // 假別表跟參數一樣依門市覆寫；還沒載入就先抓一次（切門市時 loadMonth 會再抓）
@@ -2642,15 +2663,22 @@ function renderCfgScope(){
     const own=$(d.own)&&$(d.own).checked;
     if($(d.scope)) $(d.scope).textContent=own?'（儲存後只影響目前門市）':'（集團預設，全店共用）';});
 }
+/* 一定要是正數的六個參數（分母、門檻、每日工時）：欄位清空會變成 0，存進去整個月的薪資會算錯，所以送出前先擋
+   （薪酬挑錯第 3 項，Eason 2026-11-11 確認）。金額欄的 0 是合法值，不在這張表裡。
+   鍵與後端 Payroll.gs 的 PAY_CFG_POS_DEFAULT、handlePayrollConfigSet 同一組。 */
+const CFG_POS={daily_hours:'每日基本工時',leave_div_days:'事假費率分母（天）',leave_div_hours:'事假費率分母（時）',
+  late_div_days:'遲到費率分母（天）',late_div_hours:'遲到費率分母（時）',meal_min_hours:'餐費補助門檻'};
 async function saveCfg(btn,label,card){
   const d=CFG_CARDS[card||'cfg'];
   const keys=d.keys().filter(k=>(k in CFG_DIRTY)&&CFG_OBSOLETE.indexOf(k)<0);
   if(!keys.length){toast('這張卡沒有改過的欄位，不需要儲存');return}
+  const bad=keys.filter(k=>(k in CFG_POS)&&!(typeof CFG[k]!=='boolean'&&isFinite(Number(String(CFG[k]).trim()))&&Number(String(CFG[k]).trim())>0));
+  if(bad.length){toast(bad.map(k=>'「'+CFG_POS[k]+'」').join('、')+'要填大於 0 的數字，這次沒有儲存',true);return}
   const own=!!($(d.own)&&$(d.own).checked);
   return saveFX(btn,label||'儲存',async()=>{
     const send={};keys.forEach(k=>send[k]=CFG[k]);
     const r=await post('payroll_config_set',{config:send,store:own?STORE:'',keys:true});
-    if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    if(!r.ok){toast('儲存失敗：'+(r.message||r.error||''),true);return false}
     // 存成集團預設、但本店另有專屬值的鍵：本店照用專屬值，畫面要說清楚，不然會以為存了沒生效
     const shadow=own?[]:keys.filter(k=>CFGSRC[k]==='own');
     keys.forEach(k=>{
@@ -2719,11 +2747,17 @@ function renderHol(){
   });
   $('holTbl').innerHTML=h+'</tbody>';
   const st=$('holSync'); if(!st||HOL_SYNCING) return;
-  st.innerHTML=(HOLSYNC.status||[]).map(x=>x.ok
-    ? `✓ ${x.year} 年已依人事行政總處《${esc(x.title)}》自動帶入`
+  st.innerHTML=holSyncHtml(HOLSYNC);
+}
+/* 同步狀態列的內容：每年一行行事曆狀態；後端有說明（已有門市鎖定而沒有同步的月份，薪酬挑錯第 1 項補洞）再多一行。文字都經 esc。 */
+function holSyncHtml(s){
+  const lines=((s&&s.status)||[]).map(x=>x.ok
+    ? `✓ ${esc(x.year)} 年已依人事行政總處《${esc(x.title)}》自動帶入`
     : x.error==='not_published'
-      ? `${x.year} 年行事曆人事行政總處還沒公布（每年約 6 月公布下一年）`
-      : `⚠ ${x.year} 年暫時抓不到（${esc(x.message||x.error)}），先顯示目前的資料，重新整理會再試`).join('<br>');
+      ? `${esc(x.year)} 年行事曆人事行政總處還沒公布（每年約 6 月公布下一年）`
+      : `⚠ ${esc(x.year)} 年暫時抓不到（${esc(x.message||x.error)}），先顯示目前的資料，重新整理會再試`);
+  if(s&&s.message) lines.push('⚠ '+esc(s.message));
+  return lines.join('<br>');
 }
 async function syncHol(){
   if(HOL_SYNCING) return HOL_SYNCING;

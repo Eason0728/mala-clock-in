@@ -331,7 +331,13 @@ function attAlertRenderMessage_(batches, opts) {
   });
   if (earlier.length) sections.push({ head: '▍更早未帶出', bullets: earlier });
   var schedLines = latest.empty ? [] : (latest.sched || []);
-  if (schedLines.length) sections.push({ head: '▍班表', bullets: schedLines.slice() });
+  // sched 區：以「▍」開頭的行是段落標題（本期班表／下一期班表）；標題前的行（舊版 payload）歸「▍班表」
+  var schedSec = null;
+  schedLines.forEach(function (l) {
+    if (typeof l === 'string' && l.indexOf('▍') === 0) { schedSec = { head: l, bullets: [] }; sections.push(schedSec); return; }
+    if (!schedSec) { schedSec = { head: '▍班表', bullets: [] }; sections.push(schedSec); }
+    schedSec.bullets.push(l);
+  });
   var live = sections.filter(function (s) { return s.bullets.length; });
   if (!live.length && !failed.length && !guardLines.length) return [];
 
@@ -427,6 +433,18 @@ function attAlertCompose_(rows, info) {
     x.guards.forEach(function (g) { if (guardLines.indexOf(g.line) < 0) guardLines.push(g.line); dates.push(g.run_date); });
     batches.push({ run_date: x.guards[x.guards.length - 1].run_date, daily: [], state: [], sched: [], failed_stores: [] });
   }
+  // 前一天 daily 還沒帶出、今天 mini 送了 empty 批（empty 批不寫列，只留 ATT_RUN_<日期>＝empty）：
+  // mini renderMessage 會把 empty 批當「最新批」（標題區間含今天、殘留 daily 依日期分小段），這裡補一個虛擬 empty 批照同一規則走
+  if (batches.length) {
+    var allP = {};
+    try { allP = attAlertProps_().getProperties() || {}; } catch (e) { allP = {}; }
+    var rowMax = dates.slice().sort().pop(), emptyDate = null;
+    Object.keys(allP).forEach(function (k) {
+      var m = /^ATT_RUN_(\d{4}-\d{2}-\d{2})$/.exec(k);
+      if (m && allP[k] === 'empty' && m[1] > rowMax && (emptyDate === null || m[1] > emptyDate)) emptyDate = m[1];
+    });
+    if (emptyDate) { batches.push({ run_date: emptyDate, empty: true, seq: Number.MAX_SAFE_INTEGER }); dates.push(emptyDate); }
+  }
   if (!batches.length) return [];
   var maxDate = dates.slice().sort().pop();
   var today = attAlertDateStr_(attAlertNow_());
@@ -438,13 +456,20 @@ function attAlertCompose_(rows, info) {
  */
 function attAlertHiddenIds_(claimed, msgs, info) {
   var seen = {}, shown = [];
-  msgs.forEach(function (m) { String(m).split('\n').forEach(function (l) { if (l.indexOf('・') === 0) { shown.push(l.slice(1)); seen[l.slice(1)] = (seen[l.slice(1)] || 0) + 1; } }); });
+  var heads = {};   // 印出的段落標題行（「▍」開頭）原樣
+  msgs.forEach(function (m) { String(m).split('\n').forEach(function (l) {
+    if (l.indexOf('・') === 0) { shown.push(l.slice(1)); seen[l.slice(1)] = (seen[l.slice(1)] || 0) + 1; }
+    else if (l.indexOf('▍') === 0) heads[l] = true;
+  }); });
   var hidden = [];
   claimed.forEach(function (r) {
     var t;
     if (r.section === 'daily') t = (r.run_date === info.latest || r.run_date >= info.recentFrom) ? r.line : attAlertStoreLabel_(r.store) + ' ' + r.line;
-    else if (r.section === 'state' || r.section === 'sched') t = r.line;
-    else return;
+    else if (r.section === 'state' || r.section === 'sched') {
+      // sched 段標題（「▍」開頭）在版面上是標題行不是「・」行：以標題原樣比對，印出了就算 delivered
+      if (r.section === 'sched' && typeof r.line === 'string' && r.line.indexOf('▍') === 0) { if (!heads[r.line]) hidden.push(r.id); return; }
+      t = r.line;
+    } else return;
     if (seen[t] > 0) { seen[t]--; return; }
     for (var i = 0; i < shown.length; i++) {
       var sx = shown[i];

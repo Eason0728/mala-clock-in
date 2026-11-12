@@ -1666,6 +1666,24 @@ function staffMasterAddRedirect_() {
     return PropertiesService.getScriptProperties().getProperty('STAFF_MASTER_ADD_REDIRECT') === '1';
   } catch (e) { return false; }
 }
+/** leave 分頁 → { 日期: { 姓名(trim): [{type, hours}] } }（hours 空白＝''，同 mgr_day）。onlyDate 給了就只收那天。
+ *  mgr_day 的 leaves 與 att_digest_data 的 leave_hours 共用這一支（不准另寫一套）。 */
+function leaveByDateName_(ss, onlyDate) {
+  const out = {};
+  const sh = ss.getSheetByName('leave');
+  if (!sh) return out;
+  readSheetAsObjects(sh).rows.forEach(function (l) {
+    const d = normCellDate(l['日期']);
+    if (onlyDate && d !== onlyDate) return;
+    const nm = String(l['姓名'] || '').trim();
+    const t = String(l['假別'] || '').trim();
+    if (!t) return;
+    const byName = (out[d] = out[d] || {});
+    (byName[nm] = byName[nm] || []).push({ type: t, hours: l['時數'] === '' || l['時數'] == null ? '' : Number(l['時數']) });
+  });
+  return out;
+}
+
 
 function handleMgrDay(body) {
   const ss = getSS();
@@ -1687,17 +1705,7 @@ function handleMgrDay(body) {
 
   // 該日 leave 分頁的假別＋時數（姓名→[{type, hours}]）。2026-10-26 起一天可以記多種假別（一種一列）。
   // 舊欄位 leave_type／leave_hours 給只認得一種假別的呼叫端（營運系統）：取第一列。
-  const leaveSheetForDay = ss.getSheetByName('leave');
-  const leavesByName = {};
-  if (leaveSheetForDay) {
-    readSheetAsObjects(leaveSheetForDay).rows.forEach(function (l) {
-      if (normCellDate(l['日期']) !== date) return;
-      const nm = String(l['姓名'] || '').trim();
-      const t = String(l['假別'] || '').trim();
-      if (!t) return;
-      (leavesByName[nm] = leavesByName[nm] || []).push({ type: t, hours: l['時數'] === '' || l['時數'] == null ? '' : Number(l['時數']) });
-    });
-  }
+  const leavesByName = (leaveByDateName_(ss, date)[date]) || {};
 
   // 該日每位員工最早一筆事件時間（有打卡者排序用；任何 status 的事件都算「有打卡」）＋
   // 未入帳嘗試次數（A4：status !== 'ok' 的事件筆數，rejected_*/pending 都算，供主管頁揭露透明度）

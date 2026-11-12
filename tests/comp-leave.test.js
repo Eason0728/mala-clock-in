@@ -87,8 +87,21 @@ const DB = {
   master: [Object.assign({}, FT, { emp_id: 'E01', name: '甲君', store: 'SSLGF' }),
            Object.assign({}, PT, { emp_id: 'E02', name: '乙君', store: 'SSLGF' }),
            Object.assign({}, FT, { emp_id: 'E03', name: '丙君', store: 'SSLGF' })],
-  run: [{ ym: '2026-10', emp_id: 'E01', store: 'SSLGF', status: 'draft' }, { ym: '2026-09', emp_id: 'E01', store: 'SSLGF', status: 'draft' }],
-  item: [], input: [], config: [], bonus: [], leave_type: [], holiday: [],
+  /* 薪酬挑錯第 8 項（Eason 2026-11-11 確認）：2026-10 起鎖定前會先用最新資料重算、跟草稿比（payLockStale_）。
+     這支不放替身，讓真的重算比對跑：10 月的草稿列帶手算的金額，下面補 10 月的紅字天數（11 天）。
+     2026-10 基本時數＝(31−11)×8＝160H；三位都沒有打卡紀錄（時數 0）；全勤每日倒扣 100、加班／不足費率 240（主檔 ot_rate）。
+     ・E01 甲君（正職，底薪 30000、全勤上限 3000）：10/05 補休 8H（不抵不足、不扣錢）、10/06 事假 8H（抵不足）。
+         不足 160−0−8＝152H×240＝36480；事假 8H×請假時薪（33000÷30÷8＝137.5→138）＝1104；全勤 3000−100×1 天＝2900。
+         應發 30000＋2900＝32900、應扣 36480＋1104＝37584、實付 −4684。
+     ・E02 乙君（計時 200、0 小時）：0／0／0。
+     ・E03 丙君（正職，同主檔）：沒有假。應發 30000＋3000＝33000、應扣 160×240＝38400、實付 −5400。
+     核准加班申請只進補休帳，不改這三個金額（第 4 段補核准 7H 之後一樣比對得過）。 */
+  run: [{ ym: '2026-10', emp_id: 'E01', name: '甲君', store: 'SSLGF', status: 'draft', gross: 32900, deduction: 37584, net: -4684 },
+        { ym: '2026-09', emp_id: 'E01', store: 'SSLGF', status: 'draft' },
+        { ym: '2026-10', emp_id: 'E02', name: '乙君', store: 'SSLGF', status: 'draft', gross: 0, deduction: 0, net: 0 },
+        { ym: '2026-10', emp_id: 'E03', name: '丙君', store: 'SSLGF', status: 'draft', gross: 33000, deduction: 38400, net: -5400 }],
+  item: [], input: [], config: [], bonus: [], leave_type: [],
+  holiday: [{ ym: '2026-10', red_days: 11, note: '', dates: '', store: '' }],
 };
 let rid = 0;
 const RQ = (o) => Object.assign({ id: 'r' + (++rid), emp_id: 'E01', name: '甲君', kind: 'ot', date: '2026-10-03', hours: 2, status: 'approved' }, o);

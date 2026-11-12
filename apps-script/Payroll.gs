@@ -110,6 +110,11 @@ const PAY_CONFIG_DEFAULT = [
   ['attend_void_early_min', 0, '早退累計達幾分鐘(含)以上→全勤歸零，0＝不啟用'],
   ['leave_div_days', 30, '事假費率分母（天）'],
   ['leave_div_hours', 8, '事假費率分母（時）'],
+  /* ⚠ sick_ratio：畫面已下架、計算不讀、這一列保留只為了回應形狀不變（薪酬挑錯第 11 項，Eason 2026-11-11 確認；2026-11-11 補洞定案保留）。
+     ・畫面已下架：薪資頁參數卡沒有這一欄，前端存檔不再送這個鍵（payroll.html 的 CFG_OBSOLETE）。
+     ・計算不讀：2026-08-23 起病假的給薪比例改讀假別表，整支 Payroll.gs 沒有任何程式讀這個鍵，改它的值不影響任何金額。
+     ・保留的原因：payroll_month／payroll_master_get 回應的 config、config_src 照這張表出鍵，拿掉這一列回應會少一個鍵；
+       tests/support-auto-regression.test.js 拿 origin/main 的回應整份比對，為了這個放寬比對不值得。不要再把它接回畫面或計算。 */
   ['sick_ratio', 0.5, '病假占事假比例'],
   ['payday', 10, '發薪日'],
   // ── 計時同仁的時薪加給（2026-08-24 改為參數，原本寫死在引擎裡）──
@@ -355,7 +360,8 @@ function payEmpStores(empId) { return payEmpStoresMap()[String(empId)] || []; }
  *  第五個參數，行為與加這個參數之前完全相同。加這個參數是為了「至昨天」的估算口徑要排除
  *  今天可能還沒核定完的部分日資料，不是為了改變既有的整月歸集邏輯。 */
 function payCollect(ym, minH, store, holidayDates, cutoffDate) {
-  const MEALMIN = (minH === undefined || minH === null || minH === '') ? MEAL_MIN_HOURS : Number(minH);
+  // 門檻不是正數（0、負數、空白、非數字）＝沒設定，用預設（薪酬挑錯第 3 項）。這支會被測試單獨抽出來跑，所以就地判斷。
+  const MEALMIN = (isFinite(Number(minH)) && Number(minH) > 0) ? Number(minH) : MEAL_MIN_HOURS;
   // 國定假日的具體日期（計時同仁雙薪用）；沒給就是空集合，行為與加這個功能之前相同
   const HOLSET = {};
   (holidayDates || []).forEach(function (d) { HOLSET[String(d).trim()] = true; });
@@ -628,7 +634,7 @@ function paySupportHolDouble_(support, entry, holDates, storeBy, until) {
   });
   return out;
 }
-/** 鎖定前用最新資料試算一次，和草稿比（2026-11 起）。回 { list } 差異名單；算不出來回 { error }。
+/** 鎖定前用最新資料試算一次，和草稿比（2026-10 起，見 PAY_LOCK_RECHECK_FROM）。回 { list } 差異名單；算不出來回 { error }。
  *  草稿裡有、現在算不到的人不算差異（主檔已改離職的人，重算會讓整列消失）。 */
 function payLockStale_(body, ym, st) {
   const runs = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === st; });
@@ -682,6 +688,52 @@ function payDateStr(v) {
   return String(v || '').trim().slice(0, 10);
 }
 
+/** 主檔存檔用的到職日／離職日檢查（薪酬挑錯第 13 項，Eason 2026-11-11 確認）：只收空白或 YYYY-MM-DD，而且要是真實存在的日期。
+ *  '2026/10/12'、'115/10/12' 這種寫法 payRatio 認不得，會當成整月在職、發整月薪水，所以存檔時就擋。
+ *  第 13 項補洞（2026-11-11）：試算表把純日期存成 Date 物件，payroll_master_get／payroll_month 回給前端時 JSON 會變成
+ *  '2023-07-02T16:00:00.000Z'（台北 07-03 00:00），前端原樣送回會被擋、整家店存不進去。所以這兩種先換成台北日期再檢查：
+ *   ・Date 物件 → 台北時區的 YYYY-MM-DD（payTaipeiYmd_，不靠執行環境的時區）
+ *   ・JSON 的 ISO 時間字串（YYYY-MM-DDTHH:MM:SS(.sss)Z，日期與時分秒都要真實存在）→ 台北時區的 YYYY-MM-DD
+ *  其他字串只去頭尾空白（不截斷）：斜線、民國年、沒有時區的 '2026-10-12T00:00:00'、帶位移的 '+08:00' 都不收。
+ *  回 { ok, value }：value＝要存進去的字串（空白一律存 ''）。 */
+function payMasterDateCheck_(v) {
+  const isDate = v instanceof Date;
+  let t = isDate ? payTaipeiYmd_(v.getTime()) : String(v == null ? '' : v).trim();
+  if (isDate && t === '') return { ok: false, value: '' };   // 壞掉的 Date 物件
+  if (t === '') return { ok: true, value: '' };
+  const realDay = function (y, mo, d) { return mo >= 1 && mo <= 12 && d >= 1 && d <= new Date(y, mo, 0).getDate(); };
+  const iso = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/.exec(t);
+  if (iso) {
+    const y = +iso[1], mo = +iso[2], d = +iso[3], hh = +iso[4], mi = +iso[5], ss = +iso[6];
+    if (!realDay(y, mo, d) || hh > 23 || mi > 59 || ss > 59) return { ok: false, value: t };
+    t = payTaipeiYmd_(Date.UTC(y, mo - 1, d, hh, mi, ss, iso[7] ? +(iso[7] + '00').slice(0, 3) : 0));
+  }
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  if (!m) return { ok: false, value: t };
+  return { ok: realDay(+m[1], +m[2], +m[3]), value: t };
+}
+/** 某個時間點（毫秒）在台北（UTC+8，沒有日光節約）是哪一天 → 'yyyy-MM-dd'；不是有效時間回 ''。不靠執行環境的時區。 */
+function payTaipeiYmd_(ms) {
+  if (typeof ms !== 'number' || isNaN(ms)) return '';
+  const t = new Date(ms + 8 * 3600000);
+  if (isNaN(t.getTime())) return '';
+  return t.getUTCFullYear() + '-' + pad2(t.getUTCMonth() + 1) + '-' + pad2(t.getUTCDate());
+}
+/** 整批主檔的到職日／離職日檢查：回不合格的格子（「編號 欄位名」，照送來的順序）；
+ *  全部合格時把正規化後的字串寫回各列。純函式，不碰試算表。 */
+function payMasterDateBad_(rows) {
+  const bad = [], fix = [];
+  (rows || []).forEach(function (m) {
+    [['hire_date', '到職日'], ['leave_date', '離職日']].forEach(function (f) {
+      const c = payMasterDateCheck_(m[f[0]]);
+      if (!c.ok) bad.push(String(m.emp_id).trim() + ' ' + f[1]);
+      else fix.push([m, f[0], c.value]);
+    });
+  });
+  if (!bad.length) fix.forEach(function (x) { x[0][x[1]] = x[2]; });
+  return bad;
+}
+
 /** 特休額度（台灣勞基法§38 週年制）：以薪資月月底為基準日，回當前週年期 {days, ps, pe}。
  *  滿6月未滿1年3日；1年7日；2年10日；3年14日；5年15日；10年起每年+1、上限30日。年資未滿6月回 days:0。 */
 /** 計時特休的工時比例（勞基法§38 部分工時：依工作時間比例計給）：
@@ -720,6 +772,45 @@ function payAnnualQuota(hireStr, ym) {
   return { days: days, ps: fmt(addM(h, y * 12)), pe: fmt(addM(h, (y + 1) * 12)) };
 }
 
+/** 手動工時那一列的特休時數，有多少算進週年期 qp（薪酬挑錯第 5 項，Eason 2026-11-11 確認）。
+ *  手動列只有月份、沒有日期；週年日落在那個月而且不是 1 號時，這個月會同時碰到新舊兩個年度，
+ *  同一筆時數只能算進其中一個年度：
+ *   ① 那個月請假分頁有這個人的特休逐日紀錄（dated＝[{d:'YYYY-MM-DD', h:時數}]，合計 > 0）→ 依日期切；
+ *      手動總時數與逐日合計不同時，按逐日的比例分配手動總時數。
+ *   ② 沒有逐日紀錄 → 週年日（幾號）≤15 整筆算新年度、≥16 整筆算舊年度。
+ *  其餘月份照舊：整個月在週年期內就全算、在外面就不算。回傳未取整的時數。
+ *  noPrev＝true（第 5 項補洞，2026-11-11）：這一期是第一個特休年度（起算日＝到職滿六個月那天），之前沒有舊年度可收。
+ *   這一期從這個月的月中開始時，手動列整筆算進這一期——不看起算日幾號，有逐日紀錄時起算日之前的日子也算進來
+ *   （否則那筆特休兩個年度都沒算到）。 */
+function payAnnualManualShare_(m, hours, qp, dated, noPrev) {
+  const h = payNum(hours);
+  if (!qp || !qp.ps || !qp.pe) return 0;
+  if ((m + '-31') < qp.ps || (m + '-01') >= qp.pe) return 0;   // 整個月在這一期之外
+  const psIn = qp.ps.slice(0, 7) === m && qp.ps.slice(8, 10) !== '01';   // 這一期從這個月的月中開始（這一期是新年度）
+  const peIn = qp.pe.slice(0, 7) === m && qp.pe.slice(8, 10) !== '01';   // 這一期在這個月的月中結束（這一期是舊年度）
+  if (!psIn && !peIn) return h;                                // 整個月都在這一期裡
+  if (psIn && noPrev) return h;                                // 第一個特休年度的起點：沒有舊年度可收，整筆算這一期
+  let total = 0, inside = 0;
+  (dated || []).forEach(function (x) {
+    const d = String(x.d || ''), v = Number(x.h) || 0;
+    if (d.slice(0, 7) !== m || v <= 0) return;
+    total += v;
+    if (d >= qp.ps && d < qp.pe) inside += v;
+  });
+  if (total > 0) return h * inside / total;
+  const day = +(psIn ? qp.ps : qp.pe).slice(8, 10);
+  return psIn ? (day <= 15 ? h : 0) : (day >= 16 ? h : 0);
+}
+
+/** 第一個特休年度的起算日（到職滿六個月那天，月底到職不溢位）；到職日讀不出來回 ''。
+ *  payAnnualInfo 用它判斷某一期之前有沒有舊年度（qp.ps 等於這一天＝沒有）。 */
+function payAnnualFirstPs_(hireStr) {
+  const hs = payDateStr(hireStr); if (!hs) return '';
+  const h = new Date(hs + 'T00:00:00'); if (isNaN(h)) return '';
+  const d = payAddMonthsClamp_(h, 6);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
+
 /** 該門市有效的紅字天數清單（每月一筆，該店專屬優先），附 _src 標示來源供前端顯示 */
 function payHolidayList(store) {
   const st = String(store || '');
@@ -753,6 +844,59 @@ function payHolidayDates(holRow) {
   return String(v || '').split(/[,，\s]+/).filter(Boolean).map(function (x) { return payDateStr(x); });
 }
 
+/* ── 已鎖定月份不能再改（薪酬挑錯第 1 項，Eason 2026-11-11 確認）──
+   鎖定＝該店該月 payroll_run 有 status='final' 的列。以下三支都是純函式（不讀寫試算表），handler 把讀到的列傳進來。 */
+/** 該店該月是否已鎖定。runs＝payroll_run 全部列；st＝payStore() 過的門市代碼。 */
+function payMonthLocked_(runs, ym, st) {
+  return (runs || []).some(function (r) {
+    return String(r.ym) === String(ym) && payStore(r.store) === st && String(r.status) === 'final';
+  });
+}
+function payLockedMsg_(ym, what) { return ym + ' 已鎖定，請先解鎖再修改' + (what || ''); }
+/** 紅字天數整批覆寫前的檢查：回「這次覆寫會動到的已鎖定月份」（由小到大），沒有就回 []。
+ *  只看 red_days 與 dates（備註不影響薪資）；某月那一列前後不一樣、被刪、或新增都算有動到。
+ *  stH 有值＝該店專屬列，看該店該月有沒有鎖定；stH 空白＝集團共用列，看所有「該月沒有專屬列」的店（有專屬列的店不吃共用列）。
+ *  oldRows＝holiday 分頁現況全部列；newRows＝這次送來、要取代 stH 那一組的列；runs＝payroll_run 全部列。 */
+function payHolidayLockedYms_(oldRows, newRows, stH, runs) {
+  stH = String(stH || '');
+  const sig = function (rows) {
+    const by = {};
+    (rows || []).forEach(function (h) {
+      if (!h) return;
+      const k = String(h.ym);
+      (by[k] = by[k] || []).push(payNum(h.red_days) + '|' + payHolidayDates(h).slice().sort().join(','));
+    });
+    return by;
+  };
+  const a = sig((oldRows || []).filter(function (h) { return String(h.store || '') === stH; })), b = sig(newRows);
+  const touched = {};
+  Object.keys(a).concat(Object.keys(b)).forEach(function (k) {
+    if ((a[k] || []).join(';') !== (b[k] || []).join(';')) touched[k] = 1;
+  });
+  const hasOwn = {};   // 'ym|店' → 該店該月有專屬列
+  (oldRows || []).forEach(function (h) { const s = String(h.store || ''); if (s) hasOwn[String(h.ym) + '|' + s] = 1; });
+  return Object.keys(touched).sort().filter(function (k) {
+    return (runs || []).some(function (r) {
+      if (String(r.ym) !== k || String(r.status) !== 'final') return false;
+      const rs = payStore(r.store);
+      return stH ? rs === stH : !hasOwn[k + '|' + rs];
+    });
+  });
+}
+/** 紅字天數自動同步（payHolidaySync，只動集團共用列）用：yms 這幾個月裡，哪些月份有「使用集團共用列的門市」已鎖定
+ *  （薪酬挑錯第 1 項補洞，2026-11-11）。該月有專屬列的門市不吃共用列，不算。回由小到大、不重複的月份。
+ *  holidayRows＝holiday 分頁現況全部列；runs＝payroll_run 全部列。純函式。 */
+function payHolidaySyncLockedYms_(yms, holidayRows, runs) {
+  const hasOwn = {}, want = {};
+  (holidayRows || []).forEach(function (h) { const s = String(h.store || ''); if (s) hasOwn[String(h.ym) + '|' + s] = 1; });
+  (yms || []).forEach(function (k) { want[String(k)] = 1; });
+  return Object.keys(want).sort().filter(function (k) {
+    return (runs || []).some(function (r) {
+      return String(r.ym) === k && String(r.status) === 'final' && !hasOwn[k + '|' + payStore(r.store)];
+    });
+  });
+}
+
 /** 在職比例：月中到職／離職才折算，整月在職回 1 */
 function payRatio(e, ym) {
   const D = payDaysIn(ym);
@@ -765,6 +909,66 @@ function payRatio(e, ym) {
   if (s > t) return 0;
   const d = Math.round((t - s) / 86400000) + 1;
   return Math.min(1, d / D);
+}
+
+/* ── 薪資名單（薪酬挑錯第 2 項，Eason 2026-11-11 確認）──
+ * 進名單：主檔「在職」，或「已停用但離職日落在這個月」（月中離職的人停用後，離職當月那一列還在）。 */
+function payInRoster_(m, st, ym) {
+  if (payStore(m.store) !== st) return false;
+  return payInRosterYm_(m, ym);
+}
+/** 名單判斷不看門市的那一半（跨店支援自動帶入也用這一支，門市由呼叫端自己比）。 */
+function payInRosterYm_(m, ym) {
+  if (String(m.active).toLowerCase() === 'true') return true;
+  // 已停用但填了離職日：離職月份（含）以前的月份都還在名單裡（在職天數由 payRatio 算；離職後的月份比例 0、沒有資料就不產生列）。
+  // 2026-11-11 複查：只收「離職月份＝這個月」時，11/15 離職的人重算 10 月草稿會整列消失。
+  const ld = payDateStr(m.leave_date);
+  return /^\d{4}-\d{2}-\d{2}$/.test(ld) && ld.slice(0, 7) >= String(ym);
+}
+/** 這個月有沒有任何時數、支援、請假、自訂加扣、獎金、特休折算（att＝送進 payCalcOne 的那一包；ym 有帶才看特休折算）。
+ *  在職天數 0 的人要有其中一項才產生列；支援欄壞掉（supportError）也當成有資料，不讓它無聲消失。 */
+function payMonthActivity_(att, supportError, ym) {
+  att = att || {};
+  if (supportError) return true;
+  // 這個月剛好是特休折算月、而且有時數可折 → 照修改前產生列，那筆折算不消失（條件同 payCalcOne 發 annual_payout 的那一行）
+  if (ym && att.annual && att.annual.payout_ym === String(ym)
+      && payNum(att.annual.payout_h != null ? att.annual.payout_h : att.annual.left_h) > 0) return true;
+  if (payNum(att.hours) || payNum(att.extra_ot) || payNum(att.holiday_h)) return true;
+  if ((att.support || []).some(function (x) { return x && (payNum(x.hours) || payNum(x.amount)); })) return true;
+  if (['personal_h', 'sick_h', 'menstrual_h', 'disaster_h', 'annual_h'].some(function (k) { return payNum(att[k]); })) return true;
+  const lv = att.leaves || {};
+  if (Object.keys(lv).some(function (k) { return payNum(lv[k]); })) return true;
+  if (payNum(att.custom_add_amt) || payNum(att.custom_ded_amt)) return true;
+  if ((att.custom_add_more || []).some(function (x) { return x && payNum(x.amt); })) return true;
+  if ((att.bonuses || []).some(function (b) { return b && payNum(b.amount); })) return true;
+  return false;
+}
+/** 主檔已停用、離職日不在這個月、這個月卻有核定時數或手動工時的人：不進薪資，只回清單讓畫面提醒。
+ *  inputs＝payInputsBase 的結果（打卡歸集＋手動工時）。只放 emp_id、name、hours。
+ *  runRows＝這個月的月結列（草稿或鎖定都算）：月結裡已經有這個人的列＝當時有算進薪資 → 不列入提醒。 */
+function payNotInPayroll_(masterAll, st, ym, inputs, runRows) {
+  const out = [], inRun = {};
+  (runRows || []).forEach(function (r) { if (r) inRun[String(r.emp_id)] = true; });
+  (masterAll || []).forEach(function (m) {
+    if (payStore(m.store) !== st || payInRoster_(m, st, ym)) return;
+    if (inRun[String(m.emp_id)]) return;
+    const h = payR2(payNum(((inputs || {})[String(m.emp_id)] || {}).hours));
+    if (h > 0) out.push({ emp_id: String(m.emp_id), name: String(m.name || ''), hours: h });
+  });
+  return out;
+}
+/** 這個月在職天數 0（到職日在月底之後／離職日在月初之前）卻有一列薪資的人：照舊算，只回清單讓畫面提醒。
+ *  rows＝這個月的結果列（剛算好的 results 或月結還原的列都可以）。只放 emp_id、name、hours（核定時數）。 */
+function payZeroRatioRows_(masterAll, st, ym, rows) {
+  const by = {};
+  (masterAll || []).forEach(function (m) { if (payStore(m.store) === st) by[String(m.emp_id)] = m; });
+  const out = [];
+  (rows || []).forEach(function (r) {
+    const m = r ? by[String(r.emp_id)] : null;
+    if (!m || payRatio(m, ym) > 0) return;
+    out.push({ emp_id: String(m.emp_id), name: String(m.name || ''), hours: payR2(payNum(r.total_hours)) });
+  });
+  return out;
 }
 
 /* 正職月中到職／離職改用「固定 30 天」折算金額（Eason 2026-11-10：正職同仁都用 30 天算，與會計 SD 同口徑）。
@@ -782,6 +986,20 @@ function payRatio30(e, ym) {
 function payCfgNum(cfg, key, dflt) {
   const v = (cfg || {})[key];
   return (v === undefined || v === null || String(v).trim() === '') ? dflt : payNum(v);
+}
+
+/** 一定要是正數的參數（分母、門檻、每日工時）：0、負數、空白、非數字都沒有意義，一律當成沒設定、用預設值
+ *  （薪酬挑錯第 3 項，Eason 2026-11-11 確認）。畫面上把欄位清空會存成 0：每日工時 0 → 整個月都算加班、
+ *  事假分母 0 → 實付 NaN、遲到分母 0 → 扣款無限大、餐費門檻 0 → 整天請假也算一天。
+ *  ⚠ 金額欄（每日倒扣、滿勤加給…）的 0 是合法值，那些照舊用 payCfgNum，不走這支。
+ *  ⚠ 鍵的清單與 handlePayrollConfigSet 裡擋存檔的那份、payroll.html 的 CFG_POS 是同一組，要改三處一起改。 */
+var PAY_CFG_POS_DEFAULT = { daily_hours: 8, leave_div_days: 30, leave_div_hours: 8,
+  late_div_days: 30, late_div_hours: 8, meal_min_hours: 6 };
+function payCfgPos_(cfg, key) {
+  const v = (cfg || {})[key], d = PAY_CFG_POS_DEFAULT[key];
+  if (v === undefined || v === null || typeof v === 'boolean') return d;
+  const x = Number(String(v).trim());
+  return (isFinite(x) && x > 0) ? x : d;
 }
 
 /** 計時「年資加給」：任職滿指定月數「之後的次月」起，時薪 +N。
@@ -876,7 +1094,7 @@ var PAY_LATE_ATTEND_FROM = '2026-10';
 function payLateBaseFT(e, ym, cfg) {
   const m = payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) + payNum(e.mgr_allow)
     + (String(ym) >= PAY_LATE_ATTEND_FROM ? payNum(e.attend_cap) : 0);
-  return m / payNum(cfg.late_div_days) / payNum(cfg.late_div_hours) / 60;
+  return m / payCfgPos_(cfg, 'late_div_days') / payCfgPos_(cfg, 'late_div_hours') / 60;
 }
 var PAY_OT_DAILY_FROM = '2026-11';
 /* 出勤規範第 3 批（Eason 2026-11-08 確認），2026-11 薪資起：
@@ -993,7 +1211,7 @@ function payMztShortDays_(e, d) {
 }
 /** 事假＋家庭照顧假今年累計超過事假上限的天數（3-3）。事假的已用天數含家庭照顧假逾上限併入的部分，這裡只補回沒併入的那段。 */
 function payPersonalOverDays_(att, cfg, ltypes) {
-  const u = att.leave_usage || {}, dayH = payNum(cfg.daily_hours) || 8, lv = payAttLeaves(att) || {};
+  const u = att.leave_usage || {}, dayH = payCfgPos_(cfg, 'daily_hours'), lv = payAttLeaves(att) || {};
   const capOf = function (c, d) { const t = (ltypes || []).filter(function (x) { return x.code === c; })[0]; return t && payNum(t.cap_days) > 0 ? payNum(t.cap_days) : d; };
   const p = payNum((u.personal || {}).used_before_days), fam = payNum((u.family || {}).used_before_days);
   const total = p + Math.min(fam, capOf('family', 7)) + (payNum(lv.personal) + payNum(lv.family)) / dayH;
@@ -1007,7 +1225,7 @@ function payFamilyOverVoid_(att, e, ym, cfg, ltypes) {
   const t = (ltypes || []).filter(function (x) { return x.code === 'family'; })[0];
   const cap = t && payNum(t.cap_days) > 0 ? payNum(t.cap_days) : 7;
   const before = payNum(((att.leave_usage || {}).family || {}).used_before_days);
-  return before + h / (payNum(cfg.daily_hours) || 8) > cap + 0.001 ? '家庭照顧假超過 ' + cap + ' 天' : '';
+  return before + h / payCfgPos_(cfg, 'daily_hours') > cap + 0.001 ? '家庭照顧假超過 ' + cap + ' 天' : '';
 }
 function payRules3On_(ym) { return String(ym) >= PAY_RULES3_FROM; }
 function payIsSslStore_(store) { return /^SSL/.test(String(store || 'SSLGF')); }
@@ -1028,6 +1246,11 @@ var PAY_OT_MUL_FT = { a: 1.34, b: 1.67, c: 2.67 };   // 正職加班倍率（出
 var PAY_OT_MUL_PT = { a: 0.34, b: 0.67, c: 1.67 };   // 計時加成（出勤規範 4-5）
 var PAY_OT_FORCE_ = false;           // 只給 payroll_ot_preview 用：試算時把新算法套到任何月份（同一個請求內，算完就關）
 function payOtDailyOn(ym) { return PAY_OT_FORCE_ || String(ym || '') >= PAY_OT_DAILY_FROM; }
+/* 鎖定前「用最新資料重算、和草稿比」從這個月起做（薪酬挑錯第 8 項，Eason 2026-11-11 確認）：原本跟著逐日加班只做 2026-11 起，
+ * 10 月的草稿算完後主檔、打卡或規則改過也照鎖舊數字。只管 handlePayrollFinalize 那一道比對；
+ * 補休抵不掉、加班單、班表、未核定四道檢查仍看 payOtDailyOn（2026-11 起）。2026-09 以前不比對。 */
+var PAY_LOCK_RECHECK_FROM = '2026-10';
+function payLockRecheckOn(ym) { return String(ym || '') >= PAY_LOCK_RECHECK_FROM; }
 /** 月工資總額（不乘在職比例：費率是職位的費率） */
 function payOtMonthWage(e, cfg) {
   const meal = payCfgNum(cfg, 'ot_meal_fixed', PAY_OT_MEAL_FIXED);
@@ -1130,6 +1353,34 @@ function payIsOtKey(k) { return String(k) === 'overtime' || /^ot_/.test(String(k
  * 2026-08 已發薪，Eason 決定不補回、維持舊算法 → 生效月份為 2026-09。
  * ⚠ 放在 payR0～Handlers 之間：payroll_mock.js 與測試只切這一段。 */
 const PAY_OT_NET_FROM = '2026-09';
+/* 兩個「太早取整」的位置改成最後才四捨五入（薪酬挑錯第 4、10 項，Eason 2026-11-11 確認）。
+ *   都只從 2026-11 薪資起；2026-10 以前的月份逐欄不變（tests/round-late-annual-leave.test.js 守）。
+ *   第 4 項 PAY_ANNUAL_RAW_FROM：特休未休折算金額＝時數 × 沒有取整的時薪；rate 欄照舊顯示取到小數 2 位的值。
+ *   第 10 項 PAY_LEAVE_RAW_FROM：請假扣款金額＝時數 × 整數扣款時薪 ×（1 − 給薪比例），逾上限那段用 over_ratio，
+ *            兩段加總後才四捨五入；rate 欄顯示沒有取整的單價（163 × 0.5 ＝ 81.5）。
+ *            扣款時薪本身（整數、含全勤上限）不動——天災假、事假照現行。 */
+var PAY_ANNUAL_RAW_FROM = '2026-11';
+var PAY_LEAVE_RAW_FROM = '2026-11';
+/** 最後一步的四捨五入。先乘後取整時，0.2 這類比例在浮點數裡會差一點點（2.5 × 163 × 0.2 算出 81.49999…），
+ *  加一個遠小於 1 分錢的量再取整，剛好 .5 的才會照規則進位。 */
+function payRoundLast_(v) { return Math.round(payNum(v) + 1e-9); }
+/** 特休未休折算金額（第 4 項）。rawRate＝沒有取整的時薪；舊月份照舊用取到 2 位的時薪乘。 */
+function payAnnualPayoutAmt_(ym, hours, rawRate) {
+  if (String(ym) < PAY_ANNUAL_RAW_FROM) return payR0(hours * payR2(rawRate));
+  return payRoundLast_(hours * rawRate);
+}
+/** 請假扣款一列的金額與單價（第 10 項）。rate＝整數扣款時薪；ratio／overRatio＝上限內／逾上限的給薪比例。
+ *  回 { amt, unit }：unit 是上限內那段的單價（給 rate 欄用）。 */
+function payLeaveDeduct_(ym, withinH, overH, rate, ratio, overRatio) {
+  // 全扣（給薪 0）與全薪的部分照現行逐段算（Eason 2026-11-11：事假、天災假照現行；只改半薪假的取整）
+  const whole = function (x) { return payNum(x) === 0 || payNum(x) === 1; };
+  if (String(ym) < PAY_LEAVE_RAW_FROM || (whole(ratio) && whole(overRatio))) {
+    const r1 = payR0(rate * (1 - ratio)), r2 = payR0(rate * (1 - overRatio));
+    return { amt: withinH * r1 + overH * r2, unit: r1 };
+  }
+  return { amt: payRoundLast_(withinH * rate * (1 - ratio) + overH * rate * (1 - overRatio)),
+           unit: payR2(rate * (1 - ratio)) };
+}
 
 function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   cfg = payRules3Cfg_(cfg, e.store, ym);
@@ -1158,7 +1409,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
 
   if (ft) {
     // 正職：加班／不足時數以「本店核定＋支援」的總時數對基本工時判斷（支援併入，用員工加班費率）
-    baseH = payR2((D - redDays) * payNum(cfg.daily_hours) * PD);
+    baseH = payR2((D - redDays) * payCfgPos_(cfg, 'daily_hours') * PD);
     surplus = payR2((att.hours + supportH) - baseH);   // 純上班−基本（顯示用，不含假）
     // 可抵扣的假（假別表 offset_shortfall）。這些假另有扣款／給薪處理，在時數上視同已出勤。
     const LMAP = payAttLeaves(att);
@@ -1289,7 +1540,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   // 請假扣款：費率用「未折算」的全額（費率是職位時薪，不因月中到職而改變）
   const rateRaw =
     (payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) +
-     payNum(e.mgr_allow) + payNum(e.attend_cap)) / payNum(cfg.leave_div_days) / payNum(cfg.leave_div_hours);
+     payNum(e.mgr_allow) + payNum(e.attend_cap)) / payCfgPos_(cfg, 'leave_div_days') / payCfgPos_(cfg, 'leave_div_hours');
   const rate = payR0(rateRaw);
   /* 請假扣款：一律查假別表算，不再逐種假寫死。
    *   扣款率 ＝ rate ×（1 − 給薪比例）：事假 0%→全扣、病假 50%→扣一半、特休 100%→不扣。
@@ -1304,9 +1555,10 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     // 折算時薪不先取整（2026-10-05 Eason：39,000÷30÷8＝162.5，不是 163）；只有最後金額四捨五入
     // 2026-11 起（出勤認定清單 E3）：正職改「月工資 ÷30 ÷每日工時」；計時＝有效時薪
     const ah = payR2(annualH);
-    const aRate = !payOtDailyOn(ym) ? payR2(rateRaw)
-      : (ft ? payR2(MW / PAY_OT_DAY_DIV / (payNum(cfg.daily_hours) || 8)) : payR2(ptWage));
-    push(earn, 'annual_payout', '特休未休折算', ah, aRate, ah * aRate);
+    // 2026-11 起（薪酬挑錯第 4 項）：金額用沒有取整的時薪乘、最後才四捨五入；rate 欄照舊顯示 2 位
+    const aRaw = !payOtDailyOn(ym) ? rateRaw
+      : (ft ? MW / PAY_OT_DAY_DIV / payCfgPos_(cfg, 'daily_hours') : ptWage);
+    push(earn, 'annual_payout', '特休未休折算', ah, payR2(aRaw), payAnnualPayoutAmt_(ym, ah, aRaw));
   }
 
   /* 遲到分鐘不計薪（Eason 2026-08-23 定案）
@@ -1365,9 +1617,9 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
       }
     }
     const withinH = payR2(h - overH);
-    const r1 = payR0(rate * (1 - ratio));
-    const r2 = payR0(rate * (1 - t.over_ratio));
-    const amt = withinH * r1 + overH * r2;
+    // 2026-11 起（薪酬挑錯第 10 項）：時數 × 整數時薪 ×（1 − 給薪比例）最後才四捨五入；之前月份照舊先把單價取整
+    const LD = payLeaveDeduct_(ym, withinH, overH, rate, ratio, t.over_ratio);
+    const r1 = LD.unit, amt = LD.amt;
     // 全薪假（特休、婚喪、公傷、公假…）本來就不該有扣款列。
     // ⚠ 但「該扣卻扣到 0」的必須照印——計時同仁 base=0 → rate=0 → 事假金額 0，
     //    舊版會印出「事假 8H $0」這一列，濾掉會讓計時的薪資單少一列（金額不變但看得出差別）。
@@ -1409,7 +1661,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     out.ot_info.absent_streak = otS.no_show_streak;
     out.ot_info.short_8h = ft ? payMztShortDays_(e, att.daily) : [];
     const marPrior = payNum(((att.leave_usage || {}).marriage || {}).no_event_prior_days), marNow = payNum((payAttLeaves(att) || {}).marriage);
-    if (marPrior > 0 && marNow > 0) out.ot_info.marriage_cross = { prior_days: marPrior, month_days: payR2(marNow / (payNum(cfg.daily_hours) || 8)) };
+    if (marPrior > 0 && marNow > 0) out.ot_info.marriage_cross = { prior_days: marPrior, month_days: payR2(marNow / payCfgPos_(cfg, 'daily_hours')) };
     out.ot_info.personal_over_days = payPersonalOverDays_(att, cfg, ltypes);
     if (att.support_leave && att.support_leave.length) out.ot_info.support_leave = att.support_leave;   // 支援店記的假：只提醒，薪資沒扣
   }
@@ -1931,8 +2183,7 @@ function payLeaveQuotaDays_(code, h, dayH) {
   return (code === 'menstrual' && days > 0) ? Math.ceil(days) : days;
 }
 function payLeaveDayHours(cfg) {
-  const h = payNum((cfg || {}).daily_hours);
-  return h > 0 ? h : 8;
+  return payCfgPos_(cfg, 'daily_hours');
 }
 
 /** 算某員工各假別的已用額度與剩餘。
@@ -2201,9 +2452,10 @@ function paySupportAutoCore_(ym, home, d) {
   // 主檔（在職）依打卡表分：dup_pay 要看「用同一份打卡表的門市」有沒有同一個編號
   const masterByKey = {}, homeMaster = {};   // homeMaster：正規化編號 → 主檔上的原編號
   (d.master || []).forEach(function (m) {
-    if (String(m.active).toLowerCase() !== 'true') return;   // 跟正式計薪同一個口徑（GPT #11：空白／1 兩邊都不算在職）
     const st = payXsupRowStore_(m.store), id = payXsupId_(m.emp_id);
-    if (st === home) homeMaster[id] = String(m.emp_id == null ? '' : m.emp_id).trim();
+    // 本店的人跟計薪名單同一個判斷（payInRosterYm_）：在職，或已停用但離職日在這個月——月中離職停用後，離職當月的支援照樣帶入
+    if (st === home && payInRosterYm_(m, ym)) homeMaster[id] = String(m.emp_id == null ? '' : m.emp_id).trim();
+    if (String(m.active).toLowerCase() !== 'true') return;   // dup_pay 照舊只看在職（GPT #11：空白／1 兩邊都不算在職）
     const k = payXsupClockKey_(st, storeBy);
     if (k) (masterByKey[k] = masterByKey[k] || {})[id] = true;
   });
@@ -2471,6 +2723,11 @@ function handlePayrollMasterSet(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   if (!Array.isArray(body.master)) return { ok: false, error: 'master_required' };
   if (body.master.some(function (m) { return !PAY_EMP_ID_RE_.test(String(m && m.emp_id != null ? m.emp_id : '').trim()); })) return PAY_BAD_EMP_ID_;
+  /* 到職日／離職日只收空白或 YYYY-MM-DD 的真實日期，有一格不合就整批不存（薪酬挑錯第 13 項，Eason 2026-11-11 確認）。
+     訊息只帶編號（上面已驗過格式）與欄位名，不帶使用者填的原文。 */
+  const badDates = payMasterDateBad_(body.master);
+  if (badDates.length) return { ok: false, error: 'bad_date', cells: badDates,
+    message: '到職日、離職日只能留空，或填 YYYY-MM-DD 而且是真實存在的日期（例：2026-10-12），這次沒有儲存：' + badDates.join('、') };
   const now = nowTaipeiIso();
   const stMs = payStore(body.store);
   const mine = body.master.map(function (m) { m.updated_at = now; m.store = payStore(m.store || stMs); return m; });
@@ -2485,6 +2742,18 @@ function handlePayrollConfigSet(body) {
     return { key: k, value: String(body.config[k]), note: '', store: stC };
   });
   if (!rows.length) return { ok: false, error: 'config_required' };
+  /* 一定要是正數的六個參數（分母、門檻、每日工時）：送來的值不是正數 → 整批不存（薪酬挑錯第 3 項，Eason 2026-11-11 確認）。
+     金額欄的 0 是合法值，不在這張表裡。鍵與引擎的 PAY_CFG_POS_DEFAULT 同一組；
+     這支會被 tests/config-single-save.test.js 單獨抽出來跑，所以清單寫在函式裡面。 */
+  const posLabel = { daily_hours: '每日基本工時', leave_div_days: '事假費率分母（天）', leave_div_hours: '事假費率分母（時）',
+    late_div_days: '遲到費率分母（天）', late_div_hours: '遲到費率分母（時）', meal_min_hours: '餐費補助門檻' };
+  const badKeys = rows.filter(function (r) {
+    if (!Object.prototype.hasOwnProperty.call(posLabel, r.key)) return false;
+    const x = Number(String(r.value).trim());
+    return typeof body.config[r.key] === 'boolean' || !(isFinite(x) && x > 0);
+  }).map(function (r) { return r.key; });
+  if (badKeys.length) return { ok: false, error: 'bad_value', keys: badKeys,
+    message: badKeys.map(function (k) { return '「' + posLabel[k] + '」'; }).join('、') + '要填大於 0 的數字，這次沒有儲存' };
   /* 單項儲存（2026-10-10 Eason：「只套用到目前門市要一次單獨儲存一項，不要全部項目連動」）：
      帶 keys:true 時只換送來的這幾個鍵，同一 scope 的其他參數原樣保留。
      不帶＝舊行為（整批覆寫該 scope），setMode 等舊呼叫不受影響。 */
@@ -2505,7 +2774,16 @@ function handlePayrollHolidaySet(body) {
   if (!Array.isArray(body.holidays)) return { ok: false, error: 'holidays_required' };
   const stH = String(body.store || '');   // 空白＝集團共用；有值＝該門市專屬
   const mine = body.holidays.map(function (h) { h.store = stH; return h; });
-  if (!payReplaceKeep_('holiday', function (h) { return String(h.store || '') !== stH; }, mine)) return PAY_BUSY_;
+  // 已鎖定月份那一列的 red_days／dates 有變動、被刪、或新增 → 整批不存（薪酬挑錯第 1 項）。在寫鎖內用最新資料比對。
+  let lockedYms = [];
+  if (!payWriteLocked_(['holiday', 'run'], function () {
+    const all = payRead('holiday');
+    lockedYms = payHolidayLockedYms_(all, mine, stH, payRead('run'));
+    if (lockedYms.length) return;
+    payReplaceAll('holiday', all.filter(function (h) { return String(h.store || '') !== stH; }).concat(mine));
+  })) return PAY_BUSY_;
+  if (lockedYms.length) return { ok: false, error: 'locked', yms: lockedYms,
+    message: payLockedMsg_(lockedYms.join('、'), '紅字天數') };
   return { ok: true, count: mine.length, store: stH };
 }
 
@@ -2635,27 +2913,43 @@ function payHolidaySync(years, operator) {
     Object.keys(plan.rows).forEach(function (k) { if (k >= PAY_HOL_SYNC_FROM) want[k] = plan.rows[k]; });
   });
   const all = payRead('holiday'), changed = [];
+  /* 已鎖定月份不動（薪酬挑錯第 1 項補洞，2026-11-11）：這支只動集團共用列；某個月份只要有任何「使用集團共用列的門市」
+     已鎖定，就不改也不補那個月的列，回傳 skipped_locked 列出。先找出這次會動到的月份，有才讀 payroll_run。 */
+  const differs = function (r, w) { return !(payNum(r.red_days) === w.red_days && payHolidayDates(r).join(', ') === w.dates); };
+  const seen = {}, cand = [];
+  all.forEach(function (r) {
+    const k = String(r.ym);
+    if (String(r.store || '') !== '' || !want[k]) return;
+    seen[k] = true;
+    if (k >= nowYm && differs(r, want[k])) cand.push(k);
+  });
+  Object.keys(want).forEach(function (k) { if (!seen[k]) cand.push(k); });
+  const skipped = cand.length ? payHolidaySyncLockedYms_(cand, all, payRead('run')) : [];
+  const isSkipped = {};
+  skipped.forEach(function (k) { isSkipped[k] = true; });
   const out = all.map(function (r) {
     const k = String(r.ym);
     if (String(r.store || '') !== '' || !want[k]) return r;
     const w = want[k]; delete want[k];
     if (k < nowYm) return r;   // 已經過去且已存在的月份不動
-    const same = payNum(r.red_days) === w.red_days && payHolidayDates(r).join(', ') === w.dates;
-    if (same) return r;
+    if (!differs(r, w)) return r;
+    if (isSkipped[k]) return r;   // 已有門市鎖定：不動
     changed.push(k);
     return { ym: k, red_days: w.red_days, note: w.note, dates: w.dates, store: '' };
   });
   Object.keys(want).sort().forEach(function (k) {   // 還沒有的月份：補上
+    if (isSkipped[k]) return;   // 已有門市鎖定：不補
     const w = want[k];
     out.push({ ym: k, red_days: w.red_days, note: w.note, dates: w.dates, store: '' });
     changed.push(k);
   });
+  const skipMsg = skipped.length ? skipped.join('、') + ' 已有門市鎖定，這次沒有同步紅字天數（要更新請先解鎖）' : '';
   if (changed.length) {
     payReplaceAll('holiday', out);
     payAppend('audit', [{ ts: nowTaipeiIso(), ym: '', action: 'holiday_sync', operator: String(operator || 'auto'),
       reason: '依人事行政總處辦公日曆表更新紅字天數：' + changed.join('、'), store: '' }]);
   }
-  return { status: status, names: names, moved: moved, changed: changed };
+  return { status: status, names: names, moved: moved, changed: changed, skipped_locked: skipped, message: skipMsg };
 }
 
 function handlePayrollHolidaySync(body) {
@@ -2665,6 +2959,7 @@ function handlePayrollHolidaySync(body) {
   if (!years.length) return { ok: false, error: 'bad_year' };
   const r = payHolidaySync(years, body.operator);
   return { ok: true, changed: r.changed, status: r.status, names: r.names, moved: r.moved,
+           skipped_locked: r.skipped_locked, message: r.message,   // 已有門市鎖定而沒有同步的月份與說明（沒有就是 []、''）
            sync_from: PAY_HOL_SYNC_FROM, double_from: PAY_HOL_DOUBLE_FROM,
            holidays: payHolidayList(payStore(body.store)) };
 }
@@ -2739,7 +3034,7 @@ function payInputsBase(ym, store, cutoffDate) {
   const holRow = payHolidayRow(ym, st);
   const holDates = payHolidayDates(holRow);
   const cfgSt = payConfig(st);
-  const base = payCollect(ym, cfgSt.meal_min_hours, st, holDates, cutoffDate);
+  const base = payCollect(ym, payCfgPos_(cfgSt, 'meal_min_hours'), st, holDates, cutoffDate);
   const saved = paySavedInputs(ym, st);
   /* 每日倒扣只算請假日的門市（央廚／總部，2026-10-10）：有打卡資料的人，缺勤天數一律取歸集值。
      手動列存的 deduct_days 是按「儲存工時」當下、用舊口徑（忘刷／遲到也算）算出的快照，
@@ -2813,6 +3108,8 @@ function handlePayrollInputSet(body) {
   //   十一支整批覆寫的 handler 裡，只有這支漏了門市過濾——與 master／config／run／item
   //   ／bonus／leave_* 的寫法對齊即可。
   const st = payStore(body.store);
+  // 已鎖定的月份不能再存／清除工時（薪酬挑錯第 1 項）；拿到寫鎖後還會再查一次。
+  if (payMonthLocked_(payRead('run'), ym, st)) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '工時') };
   const xsup = payXsupOn_(ym);
   /* 審查 #1（2026-11-05）：本店打卡歸集裡沒有這個人（只在別店有時數）時，畫面上的 hours:0＋auto 列
      不可以存成「整筆手動」——存了之後本店核定就流不進來。2026-11 起：
@@ -2821,7 +3118,7 @@ function handlePayrollInputSet(body) {
      本店有歸集的人照舊整筆手動（行為不變）。歸集讀不到（例外）時也照舊。 */
   let colHome = null;
   if (xsup) {
-    try { colHome = payCollect(ym, payConfig(st).meal_min_hours, st, payHolidayDates(payHolidayRow(ym, st))); }
+    try { colHome = payCollect(ym, payCfgPos_(payConfig(st), 'meal_min_hours'), st, payHolidayDates(payHolidayRow(ym, st))); }
     catch (e) { colHome = null; }
   }
   const rows = Object.keys(inputs).map(function (emp) {
@@ -2849,9 +3146,14 @@ function handlePayrollInputSet(body) {
     return true;
   });
   // 只換「本月＋本店」，其他月份與其他門市原封不動
-  if (!payReplaceKeep_('input', function (r) {
-    return String(r.ym) !== ym || payStore(r.store) !== st;
-  }, rows)) return PAY_BUSY_;
+  let lockedNow = false;
+  if (!payWriteLocked_(['input', 'run'], function () {
+    if (payMonthLocked_(payRead('run'), ym, st)) { lockedNow = true; return; }   // 鎖外查完到拿到寫鎖之間被鎖定
+    payReplaceAll('input', payRead('input').filter(function (r) {
+      return String(r.ym) !== ym || payStore(r.store) !== st;
+    }).concat(rows));
+  })) return PAY_BUSY_;
+  if (lockedNow) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '工時') };
   return { ok: true, ym: ym, store: st, count: rows.length };
 }
 
@@ -3155,10 +3457,17 @@ function handlePayrollCalc(body) {
 
   const st = payStore(body.store);
   const cfg = payConfig(st);
-  const master = payRead('master').filter(function (m) {
-    return String(m.active).toLowerCase() === 'true' && payStore(m.store) === st;
-  });
+  // 名單＝在職，或已停用但離職日在這個月（薪酬挑錯第 2 項，Eason 2026-11-11 確認）
+  const masterAll = payRead('master');
+  const master = masterAll.filter(function (m) { return payInRoster_(m, st, ym); });
   const collected = payInputsBase(ym, st);   // 打卡歸集＋已儲存的手動覆蓋
+  const NOT_IN = payNotInPayroll_(masterAll, st, ym, collected);   // 停用且離職日不在本月、卻有時數的人（只提醒）
+  // 手動明細（下面保留 manual、只重建 auto 也用這一份）；在職天數 0 的人有手動明細也照舊產生列
+  const keptManual = payRead('item').filter(function (i) {
+    return String(i.ym) === ym && payStore(i.store) === st && String(i.source) === 'manual';
+  });
+  const manualByEmp = {};
+  keptManual.forEach(function (i) { (manualByEmp[String(i.emp_id)] = manualByEmp[String(i.emp_id)] || []).push(i); });
   // 當月該店獎金，依員工分組
   const bonusBy = {};
   payRead('bonus').forEach(function (b) {
@@ -3200,7 +3509,8 @@ function handlePayrollCalc(body) {
   const XSA = XSUP ? payApplySupportAuto_({}, [], { synced_at: XSUP.synced_at, empty: XSUP.empty, byEmp: {}, unmapped: XSUP.unmapped,
                                                     dup_pay: XSUP.dup_pay, dup_acct: XSUP.dup_acct, pending: XSUP.pending }, XCTX, null) : null;
 
-  const results = master.map(function (e) {
+  const results = [];
+  master.forEach(function (e) {
     const c = collected[String(e.emp_id)] || {};
     const o = override[String(e.emp_id)] || {};
     const att = {
@@ -3239,6 +3549,7 @@ function handlePayrollCalc(body) {
       attend_void:  o.attend_void  !== undefined ? payBool(o.attend_void) : !!c.attend_void,
       menstrual_times: c.menstrual_times || null,
     };
+    const ZERO_DAYS = payRatio(e, ym) <= 0;   // 這個月在職天數 0（還沒到職／上個月以前已離職）
     if (XSUP && c.support_error) XSA.warn.support_error.push(String(e.emp_id));   // 支援欄壞掉：一律不帶入（審查 #2）
     else if (XSUP) {
       const mg = payMergeSupport_(att.support, XSUP.byEmp[String(e.emp_id).trim()], e, XCTX);
@@ -3264,16 +3575,13 @@ function handlePayrollCalc(body) {
         if (XSUP && XSUP.byEmp[id.trim()]) { att.ot_cross = payOtCrossNeed_(c, XSUP.byEmp[id.trim()]); att.ot_forms_x = OT_FORMS_X; att.ot_name = e.name; }
       }
     }
-    return payCalcOne(e, ym, att, cfg, redDays, LTYPES_FOR_CALC);
+    // 在職天數 0 且沒有任何時數、支援、請假、自訂加扣、獎金、手動明細 → 不產生列；有其中一項照舊計算
+    // 例外：這個月是他的特休折算月且有時數可折 → 照修改前產生列（payMonthActivity_ 第三個參數）
+    if (ZERO_DAYS && !payMonthActivity_(att, c.support_error, ym) && !(manualByEmp[String(e.emp_id)] || []).length) return;
+    results.push(payCalcOne(e, ym, att, cfg, redDays, LTYPES_FOR_CALC));
   });
 
-  // 保留 manual 明細，只重建 auto
-  const keptManual = payRead('item').filter(function (i) {
-    return String(i.ym) === ym && payStore(i.store) === st && String(i.source) === 'manual';
-  });
-  const manualByEmp = {};
-  keptManual.forEach(function (i) { (manualByEmp[String(i.emp_id)] = manualByEmp[String(i.emp_id)] || []).push(i); });
-
+  // 保留 manual 明細（keptManual／manualByEmp，上面已讀），只重建 auto
   const now = nowTaipeiIso();
   const itemRows = [], runRows = [];
   results.forEach(function (r) {
@@ -3298,9 +3606,12 @@ function handlePayrollCalc(body) {
     if (r.ot_info) runRows[runRows.length - 1].ot_info = JSON.stringify(r.ot_info);
   });
 
+  const ZERO_ROWS = payZeroRatioRows_(masterAll, st, ym, results);   // 在職天數 0 卻有列的人（照舊算，只提醒）
   if (body.dry_run) {   // 唯讀試算（payroll_ot_preview）：不寫 run／item
     const dres = { ok: true, ym: ym, store: st, results: results, red_days: redDays, dry_run: true };
     if (typeof SCHED !== 'undefined') { dres._sched = SCHED; dres._hol = HOLD; }   // 只給 payOtMonthSync_；試算回應不帶
+    if (NOT_IN.length) dres.not_in_payroll = NOT_IN;
+    if (ZERO_ROWS.length) dres.zero_ratio_with_data = ZERO_ROWS;
     return dres;
   }
   let lockedMeanwhile = false;
@@ -3318,6 +3629,8 @@ function handlePayrollCalc(body) {
 
   const res = { ok: true, ym: ym, store: st, results: results, config: cfg, red_days: redDays, collected: collected };
   if (XSA) res.support_auto = XSA;
+  if (NOT_IN.length) res.not_in_payroll = NOT_IN;   // 沒有就不帶（回應形狀與改版前相同）
+  if (ZERO_ROWS.length) res.zero_ratio_with_data = ZERO_ROWS;   // 沒有就不帶
   return res;
 }
 
@@ -3446,13 +3759,18 @@ function handlePayrollMonth(body) {
   let rosterMiss = [], sameName = [];
   try { rosterMiss = payRosterMismatch_(stM, masterM); } catch (e) { rosterMiss = []; }
   try { sameName = payLeaveSameName_(stM, ym); } catch (e) { sameName = []; }
+  // 停用且離職日不在本月、卻有時數的人（薪酬挑錯第 2 項）；月結（草稿或鎖定）裡已經有他的列就不提醒
+  const notIn = payNotInPayroll_(masterM, stM, ym, inputs, run ? run.results : null);
+  const zeroRows = payZeroRatioRows_(masterM, stM, ym, run ? run.results : null);   // 在職天數 0 卻有列的人
   return { ok: true, ym: ym, store: stM, has_clock: payHasClock(stM), inputs: inputs, run: run, annual: payAnnualInfo(ym, stM),
            master: masterM, roster_mismatch: rosterMiss.length ? rosterMiss : undefined, same_name: sameName.length ? sameName : undefined,   // 沒有就不帶（回應形狀與改版前相同）
            ot_period: (function (m) { return Object.keys(m).length ? m : undefined; })(payOtPeriodMap_(stM)),   // 沒有就不帶（回應形狀與改版前相同）
            config: payConfig(stM), config_src: payConfigSource(stM),
            bonuses: payRead('bonus').filter(function (b) { return String(b.ym) === ym && payStore(b.store) === stM; }),
            stores: payRead('store').filter(function (x) { return String(x.active).toLowerCase() !== 'false'; }),
-           holidays: payHolidayList(stM), support_auto: sa || undefined };
+           holidays: payHolidayList(stM), support_auto: sa || undefined,
+           not_in_payroll: notIn.length ? notIn : undefined,   // 沒有就不帶（回應形狀與改版前相同）
+           zero_ratio_with_data: zeroRows.length ? zeroRows : undefined };
 }
 
 function handlePayrollItemUpsert(body) {
@@ -3477,8 +3795,9 @@ function handlePayrollFinalize(body) {
   const ym = String(body.ym || ''), lock = !!body.lock;
   if (!lock && !body.reason) return { ok: false, error: 'reason_required', message: '解鎖必須填原因' };
   const stF = payStore(body.store);
-  /* 鎖定前用最新資料重算比對（Eason 2026-11-09）：試算後主檔、打卡或假單改過，就不鎖舊數字，前端會自動重算給人看過再鎖。2026-10 以前的月份不動。解鎖不擋。 */
-  if (lock && payOtDailyOn(ym)) {
+  /* 鎖定前用最新資料重算比對（Eason 2026-11-09）：試算後主檔、打卡或假單改過，就不鎖舊數字，前端會自動重算給人看過再鎖。解鎖不擋。
+     起始月份 PAY_LOCK_RECHECK_FROM（2026-10；薪酬挑錯第 8 項，Eason 2026-11-11 確認），2026-09 以前的月份不動。 */
+  if (lock && payLockRecheckOn(ym)) {
     const stale = payLockStale_(body, ym, stF);
     if (stale.error) return { ok: false, error: 'recheck_failed', message: '鎖定前重算比對失敗，這次沒有鎖定，請再按一次：' + stale.error };
     if (stale.list.length) return { ok: false, error: 'stale_run', list: stale.list,
@@ -3602,9 +3921,24 @@ function payAnnualInfo(ym, store) {
     const leavingNow = payRules3On_(ym) && lastDay.slice(0, 7) === ym;
     if (leavingNow && q.ps && q.ps > lastDay) q = payAnnualQuota(e.hire_date, payDayBefore(ym + '-01').slice(0, 7));
     const ratio = ft ? 1 : payPtAnnualRatio(runRows, e.emp_id, ym);
+    // 這個人在 leave 分頁的特休逐日紀錄（歷任門市）：每人掃一次，usedIn 兩個年度共用
+    const myAnnualLeaves = [];
+    (empStores[String(e.emp_id)] || [stA]).forEach(function (st2) {
+      leavesOf(st2).forEach(function (l) {
+        if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
+        if (String(l['假別'] || '').indexOf('特') === -1) return;
+        const d = normCellDate(l['日期']);
+        if (!payLeaveDateMine_(e, d, dupNames)) return;
+        myAnnualLeaves.push({ d: d, h: Number(l['時數']) || 0 });
+      });
+    });
+    const firstPs = payAnnualFirstPs_(e.hire_date);   // 第一個特休年度的起算日；qp.ps 等於它＝之前沒有舊年度
     const usedIn = function (qp) {
       let used = 0;
-      // ① 手動工時的特休（annual_h）：該月落在週年期內就累計；同月以手動為準（覆蓋語意，與計薪一致）
+      const noPrev = !!(firstPs && qp.ps === firstPs);
+      // ① 手動工時的特休（annual_h）：該月落在週年期內就累計；同月以手動為準（覆蓋語意，與計薪一致）。
+      //    週年日在那個月的月中 → 只算進一個年度（payAnnualManualShare_：有逐日紀錄照日期，沒有就看週年日幾號）。
+      //    第一個特休年度的起點（noPrev）沒有舊年度可收 → 整筆算進新年度。
       const inputMonths = {};
       savedRows.forEach(function (r) {
         if (String(r.emp_id) !== String(e.emp_id)) return;
@@ -3612,19 +3946,13 @@ function payAnnualInfo(ym, store) {
         if (!/^\d{4}-\d{2}$/.test(m)) return;
         if (!qp.ps || (m + '-31') < qp.ps || (m + '-01') >= qp.pe) return;
         inputMonths[m] = true;
-        used += payNum(r.annual_h);
+        used += payAnnualManualShare_(m, r.annual_h, qp, myAnnualLeaves, noPrev);
       });
       // ② leave 分頁的特休：掃該員工「歷任門市」的請假紀錄；只算沒有手動工時覆蓋的月份，避免同月重複計
-      (empStores[String(e.emp_id)] || [stA]).forEach(function (st2) {
-        leavesOf(st2).forEach(function (l) {
-          if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
-          if (String(l['假別'] || '').indexOf('特') === -1) return;
-          const d = normCellDate(l['日期']);
-          if (!payLeaveDateMine_(e, d, dupNames)) return;
-          if (!(qp.ps && d >= qp.ps && d < qp.pe)) return;
-          if (inputMonths[d.slice(0, 7)]) return;
-          used += Number(l['時數']) || 0;
-        });
+      myAnnualLeaves.forEach(function (x) {
+        if (!(qp.ps && x.d >= qp.ps && x.d < qp.pe)) return;
+        if (inputMonths[x.d.slice(0, 7)]) return;
+        used += x.h;
       });
       return used;
     };
@@ -4198,7 +4526,7 @@ function payXsupApply_(ym, st, inputs, withDays) {
   if (!payXsupOn_(ym)) return null;
   const d = payXsupData_(withDays);
   const auto = paySupportAutoCore_(ym, st, d);
-  const master = d.master.filter(function (m) { return payStore(m.store) === st && String(m.active).toLowerCase() === 'true'; });
+  const master = d.master.filter(function (m) { return payInRoster_(m, st, ym); });   // 跟計薪名單同一個判斷
   const incoming = payCrossIncomingCore_(ym, st, d);
   return payApplySupportAuto_(inputs, master, auto, { home: st, storeBy: payXsupStoreBy_(d.stores), dropCross: !auto.empty }, incoming);
 }
@@ -4376,6 +4704,8 @@ function handlePayrollBonusSet(body) {
   const ym = String(body.ym || ''), st = payStore(body.store);
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
   if (!Array.isArray(body.bonuses)) return { ok: false, error: 'bonuses_required' };
+  // 已鎖定的月份不能再存獎金（薪酬挑錯第 1 項）；拿到寫鎖後還會再查一次。
+  if (payMonthLocked_(payRead('run'), ym, st)) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '獎金') };
   const now = nowTaipeiIso();
   const rows = body.bonuses
     .filter(function (b) { return b && String(b.emp_id || '') !== '' && payNum(b.amount) !== 0; })
@@ -4385,7 +4715,12 @@ function handlePayrollBonusSet(body) {
                label: String(b.label || ''), amount: payNum(b.amount),
                memo: String(b.memo || ''), updated_at: now };
     });
-  if (!payReplaceKeep_('bonus', function (b) { return String(b.ym) !== ym || payStore(b.store) !== st; }, rows)) return PAY_BUSY_;
+  let lockedNow = false;
+  if (!payWriteLocked_(['bonus', 'run'], function () {
+    if (payMonthLocked_(payRead('run'), ym, st)) { lockedNow = true; return; }   // 鎖外查完到拿到寫鎖之間被鎖定
+    payReplaceAll('bonus', payRead('bonus').filter(function (b) { return String(b.ym) !== ym || payStore(b.store) !== st; }).concat(rows));
+  })) return PAY_BUSY_;
+  if (lockedNow) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '獎金') };
   return { ok: true, ym: ym, store: st, count: rows.length };
 }
 
@@ -4394,6 +4729,9 @@ function handlePayrollBonusSet(body) {
 /** 回近 N 個月的彙總（依門市）。資料全部取自既有 run／item，不需額外輸入。 */
 /** 成本口徑「要扣回」的扣項（薪資費用小計＝應收−這些）：
  *    ①任何請假扣款（/_leave$/，新假別自動涵蓋）②不足時數倒扣
+ *    ②之二 遲到扣款 late_deduct／早退扣款 early_deduct（薪酬挑錯第 6 項，Eason 2026-11-11 確認：
+ *      跟不足倒扣一樣是「真的少領」；成本分類頁 isCostReduceKey 與損益端點 pnlIsCostReduceKey_ 早就扣了，
+ *      這裡漏掉 → 儀表板趨勢／集團總覽的薪資費用比成本分類頁多一筆遲到早退扣款）
  *    ③宿舍代扣（2026-08-24 Eason 改口徑：同仁付的房租不是人事成本，從薪資費用扣除、另列租金收入）
  *  ⚠ 勞健保自付額**不在此列**——那是薪資的一部分，只是代扣去繳保費，仍算人事成本。
  *  與 payroll.html 的 isCostReduceKey＋宿舍、payroll_mock 的 isReduce 同一口徑。
@@ -4408,7 +4746,8 @@ function payIsInsSelfKey(k) {
 }
 function payIsReduceKey(k) {
   const s = String(k);
-  return /_leave$/.test(s) || s === 'shortfall_hours' || s === 'dormitory' || payIsInsSelfKey(s);
+  return /_leave$/.test(s) || s === 'shortfall_hours' || s === 'late_deduct' || s === 'early_deduct'
+      || s === 'dormitory' || payIsInsSelfKey(s);
 }
 
 /* ── 公司負擔勞保／健保／退休金：依員工主檔逐人加總（2026-08-24 修前後端不一致）──
@@ -5603,9 +5942,8 @@ function handlePnlLaborEstimate_(body) {
     return { ok: false, error: 'NO_DATA', message: '薪資分頁尚未初始化（尚未執行過 payroll_setup）' };
   }
 
-  var master = payRead('master').filter(function (m) {
-    return String(m.active).toLowerCase() === 'true' && payStore(m.store) === st;
-  });
+  // 名單跟 handlePayrollCalc 同一個判斷（payInRoster_）：在職，或已停用但離職日在這個月
+  var master = payRead('master').filter(function (m) { return payInRoster_(m, st, ym); });
   if (!master.length) return { ok: false, error: 'NO_DATA', message: st + ' 沒有在職同仁主檔' };
 
   var holRow = payHolidayRow(ym, st);
