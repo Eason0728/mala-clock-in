@@ -163,8 +163,9 @@ ok('整天請假（沒有時段）不看', () => {
 ok('上線日以前的日子不擋；REQ_BIND_FROM 可改、off 整個關掉', () => {
   const sb = makeEnv();
   const a = (d) => sb.reqBindCheck_(sb.getSS(), 'E01', d, 9, [P('09:00', '18:00')], [], null);
-  assert.strictEqual(a('2026-11-05'), null);
-  assert.strictEqual(a('2026-11-06').error, 'need_request');
+  assert.strictEqual(a('2026-10-31'), null);
+  assert.strictEqual(a('2026-11-01').error, 'need_request');   // 2026-11-13 起算日改 11/1
+  assert.strictEqual(a('2026-11-05').error, 'need_request');
   sb.__props.REQ_BIND_FROM = '2026-12-01';
   assert.strictEqual(a('2026-11-10'), null);
   sb.__props.REQ_BIND_FROM = 'off';
@@ -400,5 +401,52 @@ ok('只讀試算：列出問題、不寫入', () => {
   assert.strictEqual(r.items[0].probs[0].rule, 'ot_slot');
   assert.strictEqual(r.items[1].probs[0].rule, 'leave');
   assert.strictEqual(JSON.stringify(sheets), before);
+});
+/* ── 已核定但缺單的日子打回待核定（2026-11-13，bind_revoke）── */
+ok('bind_revoke：試算只讀；apply 把缺加班單、缺忘打卡單那幾天的核定列搬到 approved_revoked，有單的不動', () => {
+  const sb = makeEnv('2026-11-13T10:00:00+08:00');
+  const DA = '2026-11-03', DB = '2026-11-04';
+  addReq(sb, { emp_id: 'E02', name: '測試二', date: DA, kind: 'ot', start: '17:00', end: '18:00', hours: 1 });
+  const sheets = sb.__sheets;
+  const H = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at'];
+  sheets.approved = sheet('approved', [H,
+    [DA, 'E01', '測試一', '09:00-18:00', 9, '正常', '店長', '2026-11-03T22:00:00+08:00'],      // 舊的一筆
+    [DA, 'E01', '測試一', '09:00-18:30', 9.5, '正常', '店長', '2026-11-03T23:00:00+08:00'],    // 最新：缺 1.5 小時加班單
+    [DA, 'E02', '測試二', '09:00-18:00', 9, '正常', '店長', '2026-11-03T22:00:00+08:00'],      // 有 1 小時加班單：不動
+    [DB, 'E01', '測試一', '09:00-17:00', 8, '下班忘刷卡', '店長', '2026-11-04T22:00:00+08:00'], // 少 1 張卡沒有忘打卡單
+    ['2026-10-31', 'E01', '測試一', '09:00-19:00', 10, '正常', '店長', '2026-10-31T22:00:00+08:00']]);
+  const sh = sheets.approved;
+  sh.getDataRange = () => ({ getValues: () => sh.data.map((r) => r.slice()) });
+  sh.deleteRow = (r) => { sh.data.splice(r - 1, 1); };
+  sheets.events = sheet('events', [['ts']]); sheets.leave = sheet('leave', [['日期', '姓名', '假別', '時數']]);
+  Object.assign(sb, {
+    checkAdmin: (b) => b.admin_key === 'AK',
+    buildLatestApprovedMap: (rows) => { const m = {}; rows.forEach((r) => { const c = (m[r.date] = m[r.date] || {}); if (!c[r.emp_id] || r.entered_at >= c[r.emp_id].entered_at) c[r.emp_id] = r; }); return m; },
+    dupIgnoreSet_: () => ({}), dropDupIgnored_: (e) => e, noPunchBreakWindow: () => null, addDaysStr: (d) => d,
+    parsePeriodsStr: (x) => String(x).split(',').map((y) => ({ start: y.split('-')[0], end: y.split('-')[1] })),
+    dayPunchSegments: (e, emp, d) => ({ segments: [d === DB ? { in: '09:00', out: null } : emp === 'E01' ? { in: '09:00', out: '18:30' } : { in: '09:00', out: '18:00' }] }),
+    SpreadsheetApp: { flush() {} },
+  });
+  assert.strictEqual(sb.handleBindRevoke_({ admin_key: 'x', from: DA, to: DB }).error, 'unauthorized');
+  assert.strictEqual(sb.handleBindRevoke_({ admin_key: 'AK', from: '2026-10-31', to: DB }).error, 'before_bind');
+  assert.strictEqual(sb.handleBindRevoke_({ admin_key: 'AK', from: DA, to: '2026-11-11' }).error, 'strict_range');
+  const before = JSON.stringify(sh.data);
+  const pv = sb.handleBindRevoke_({ admin_key: 'AK', from: '2026-11-01', to: '2026-11-05' });
+  assert.strictEqual(pv.apply, false); assert.strictEqual(pv.scanned, 3);
+  assert.strictEqual(JSON.stringify(pv.items.map((x) => x.date + ' ' + x.emp_id)), JSON.stringify([DA + ' E01', DB + ' E01']));
+  assert.ok(/加班單/.test(pv.items[0].probs[0]), pv.items[0].probs[0]);
+  assert.ok(/忘打卡單/.test(pv.items[1].probs[0]), pv.items[1].probs[0]);
+  assert.strictEqual(JSON.stringify(sh.data), before);   // 試算不寫
+  assert.ok(!sheets.approved_revoked);
+  const ap = sb.handleBindRevoke_({ admin_key: 'AK', from: '2026-11-01', to: '2026-11-05', apply: true });
+  assert.strictEqual(ap.moved, 3);   // E01 11/3 兩筆（含舊的）＋ E01 11/4 一筆
+  assert.deepStrictEqual(sh.data.slice(1).map((r) => r[0] + ' ' + r[1]), [DA + ' E02', '2026-10-31 E01']);
+  const bak = sheets.approved_revoked.data;
+  assert.strictEqual(JSON.stringify(bak[0]), JSON.stringify(H.concat(['revoked_at', 'revoke_reason'])));
+  assert.strictEqual(bak.length, 4);
+  assert.deepStrictEqual(bak.slice(1).map((r) => r[4]), [9, 9.5, 8]);   // 原順序留底、數字原樣
+  assert.ok(bak.slice(1).every((r) => r[8] === '2026-11-13T10:00:00+08:00' && r[9]));
+  const again = sb.handleBindRevoke_({ admin_key: 'AK', from: '2026-11-01', to: '2026-11-05', apply: true });
+  assert.strictEqual(again.moved, 0);   // 再跑一次不會多搬
 });
 console.log('req-bind: ' + n + ' 項全過');

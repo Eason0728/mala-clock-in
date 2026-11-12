@@ -64,7 +64,7 @@ const evRow = (e) => Array.isArray(e) && e.length <= 5
  */
 function make(opts) {
   opts = opts || {};
-  const props = Object.assign({}, opts.props || {});
+  const props = Object.assign({ REQ_BIND_FROM: 'off' }, opts.props || {});   // 這支不測核定綁單（另由 req-bind.test.js 測）；2026-11-13 起算日改 11/1 後，11/1–11/5 的核定會被擋
   const cache = {};
   const sb = {
     console, String, Number, Math, JSON, Object, Array, RegExp, Error, TypeError, RangeError, isNaN, isFinite, parseFloat, parseInt,
