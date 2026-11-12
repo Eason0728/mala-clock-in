@@ -2947,6 +2947,8 @@ function buildMonthlySheet(ym, roster, events, leaves, todayStr, approvedRecords
       // 狀態：既有忘刷卡/新裝置/超出範圍/請假註記＋主管核定帶回的遲到/早退（或「正常」）
       const statusNotes = c.notes.slice();
       if (approvedRec && approvedRec.status_text) statusNotes.push(String(approvedRec.status_text));
+      // 2026-11-13 驗收 F9：同一句（例：打卡比對的「下班忘刷卡」＋核定帶回的「下班忘刷卡」）只留一次，順序不變。
+      for (let i = statusNotes.length - 1; i > 0; i--) if (statusNotes.indexOf(statusNotes[i]) < i) statusNotes.splice(i, 1);
       rows.push([c.date, WEEKDAY_ZH[wd], seg, hours, approvedDisplay, statusNotes.join('、')]);
       const rowNo = rows.length;
       detailRows.push({ row: rowNo, date: c.date, name: empName[emp] || emp });
