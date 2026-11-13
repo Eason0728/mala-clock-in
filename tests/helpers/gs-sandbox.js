@@ -121,7 +121,7 @@ function make(opts) {
   } };
   sb.SpreadsheetApp = { openById: (id) => { if (id === 'SELF') return self; if (peers[id]) return peers[id]; throw new Error('沒權限：' + id); }, flush: () => {} };
   vm.createContext(sb);
-  const files = ['apps-script/Code.gs', 'apps-script/Liff.gs', 'apps-script/Rest.gs', 'apps-script/Requests.gs'];
+  const files = ['apps-script/Code.gs', 'apps-script/Liff.gs', 'apps-script/Rest.gs', 'apps-script/Requests.gs', 'apps-script/DutyFeed.gs'];
   if (opts.hub) files.push('apps-script/LineHub.gs');
   if (opts.payroll) files.push('apps-script/Payroll.gs');
   if (opts.digest) files.push('apps-script/AttDigest.gs');

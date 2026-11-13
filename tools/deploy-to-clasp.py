@@ -44,7 +44,7 @@ STORES = ['mala-clock-in', 'cf-clock-in', 'hq-clock-in', 'mztjs-clock-in', 'mztg
 # 第三欄 True＝允許新增：專案資料夾裡沒有這個檔時 dry-run 印「將新增」、--apply 直接寫新檔（clasp push 會帶上去）。
 # 沒有第三欄的檔維持原行為：專案裡沒有就不套、報「找不到檔案」。
 WHOLE_FILES = [('Requests.gs', 'Requests.js'), ('Liff.gs', 'Liff.js'), ('LineHub.gs', 'LineHub.js'),
-               ('SvcStaff.gs', 'SvcStaff.js'), ('Sched.gs', 'Sched.js'), ('SchedPub.gs', 'SchedPub.js'), ('Mirror.gs', 'Mirror.js'), ('AttDigest.gs', 'AttDigest.js', True), ('AttAlert.gs', 'AttAlert.js', True)]
+               ('SvcStaff.gs', 'SvcStaff.js'), ('Sched.gs', 'Sched.js'), ('SchedPub.gs', 'SchedPub.js'), ('Mirror.gs', 'Mirror.js'), ('AttDigest.gs', 'AttDigest.js', True), ('AttAlert.gs', 'AttAlert.js', True), ('DutyFeed.gs', 'DutyFeed.js', True)]
 STORE_FILE = '程式碼.js'
 CODE_SCAN = 120   # 只比程式時，往回看幾個版本
 CONFIG_RE = re.compile(r'^const CONFIG = \{.*?^\};', re.S | re.M)

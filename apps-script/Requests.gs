@@ -912,6 +912,9 @@ function reqMgrDayHome_(body) {
 }
 /** mgr_approve：不算支援的人擋掉（管理系統代核照常） */
 function reqMgrApproveHome_(body) {
+  // 依副本核定（2026-11-14，DutyFeed.gs）：帶 base_ver 的先比版本，主管看到的不是最新的就退回
+  var stale = typeof dutyVerGuard_ === 'function' ? dutyVerGuard_(body) : null;
+  if (stale) return stale;
   var hide = reqHomeHide_(body);
   if (hide && reqInList_(hide, String(body.emp_id == null ? '' : body.emp_id))) return { ok: false, error: 'home_review', message: hide[REQ_ALL_] ? REQ_LIST_BAD_MSG_ : REQ_HOME_MSG_ };
   return handleMgrApprove(body);
