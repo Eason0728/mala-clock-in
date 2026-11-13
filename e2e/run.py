@@ -1080,14 +1080,23 @@ def phase_payroll(page, data, exp_att):
     # 鎖定 → 解鎖（放最後，會改狀態）
     click_text(page, None, '薪資計算', '切回薪資計算')
     page.wait_for_timeout(1200)
+    n_dlg = len(DIALOGS)
     if click_text(page, None, '鎖定', '鎖定本月薪資'):
         page.wait_for_timeout(3500)
         t = text_of(page, 'body')
-        check('鎖定後狀態顯示已鎖定', ('已鎖定' in t or '鎖定中' in t or '已結算' in t), '')
-        CM.scan(page, '薪酬頁（已鎖定）')
-        if click_text(page, None, '解鎖', '解除鎖定'):
-            page.wait_for_timeout(3500)
-            check('可解除鎖定', True)
+        # 2026-11-13（1113 紅燈 d4）：假後端鎖定前跑正式版七道檢查。隨機資料常有「有打卡沒核定」「班表沒發布」，
+        # 那就該被擋：要跳出對話框說明原因、狀態仍是草稿；沒被擋才驗鎖定／解鎖。
+        new_dlg = DIALOGS[n_dlg:]
+        gate_msg = next((m for m in new_dlg if ('不能鎖定' in m or '再鎖定' in m)), '')
+        if gate_msg:
+            check('鎖定前檢查擋下時跳出原因（同正式版）', True, gate_msg.split('\n')[0][:60])
+            check('被鎖定前檢查擋下 → 狀態仍是草稿（沒有顯示已鎖定）', '🔒 解鎖本月' not in t, '')
+        else:
+            check('鎖定後狀態顯示已鎖定', ('已鎖定' in t or '鎖定中' in t or '已結算' in t), '')
+            CM.scan(page, '薪酬頁（已鎖定）')
+            if click_text(page, None, '解鎖', '解除鎖定'):
+                page.wait_for_timeout(3500)
+                check('可解除鎖定', True)
 
     phase_staff_sync(page)
 

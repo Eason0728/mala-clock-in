@@ -2149,11 +2149,17 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
         var dates = {};
         items.forEach(function (el) {
           var it = el.__req;
-          if ((r.done || []).indexOf(it.id) >= 0) { el.__markDone('✓ 已核准：' + it.name + ' ' + it.summary); dates[it.date] = true; return; }
+          if ((r.done || []).indexOf(it.id) >= 0) {
+            el.__markDone('✓ 已核准：' + it.name + ' ' + it.summary); dates[it.date] = true;
+            var rs = (r.warn_items || []).filter(function (x) { return x.id === it.id; })[0];
+            if (rs && rs.warn === 'already_approved_day' && rs.message) el.__warn(rs.message);   // 1113 紅燈 a2
+            return;
+          }
           var sk = (r.skipped || []).filter(function (x) { return x.id === it.id; })[0];
           if (sk) el.__markDone('— 略過：' + it.name + ' ' + it.summary + '（' + sk.reason + '）');
         });
         msg.textContent = '';
+        if ((r.warn_items || []).length) { msg.style.color = '#b45309'; msg.textContent = '⚠ 有 ' + r.warn_items.length + ' 筆的日子已經核定過，請重新核定那幾天，假別才會寫進薪資'; }
         reqTitleRefresh(card, title); syncReqBatch(card);
         Object.keys(dates).forEach(function (d) { delete dayCache[d]; });
         if (dates[currentDate]) loadDay(currentDate);
@@ -2259,6 +2265,7 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
       apiPost(payload).then(function (r) {
         if (!r || !r.ok) { var lockUp = !!it.upper || (r && r.error === 'upper_review'); ok.disabled = !!it.need_proof || lockUp || (r && r.error === 'need_proof'); no.disabled = lockUp; msg.style.color = '#c22a12'; msg.textContent = '✕ ' + ((r && r.message) || '沒有成功，請再試一次'); return; }
         el.__markDone((decision === 'approve' ? '✓ 已核准：' : '✕ 已退回：') + it.name + ' ' + it.summary);
+        if (r.warn === 'already_approved_day' && r.message) el.__warn(r.message);   // 1113 紅燈 a2：那天已核定過，要重新核定假別才會進薪資
         reqTitleRefresh(card, title); syncReqBatch(card);
         if (decision === 'approve') { delete dayCache[it.date]; if (currentDate === it.date) loadDay(it.date); }
       }, function () { ok.disabled = no.disabled = false; msg.style.color = '#c22a12'; msg.textContent = '✕ 連線失敗，請再試一次'; });
@@ -2266,6 +2273,10 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
     el.__markDone = function (text) {   // 單筆與批次共用：處理完就收成一行（勾選框、按鈕一起拿掉）
       el.innerHTML = ''; var done = document.createElement('div'); done.className = 'rq-l2';
       done.textContent = text; el.appendChild(done);
+    };
+    el.__warn = function (text) {   // 核准後的提醒（已經核定過的日子要重新核定），橘字接在下面
+      var w = document.createElement('div'); w.className = 'rq-l2'; w.style.color = '#b45309'; w.style.fontWeight = '700';
+      w.textContent = '⚠ ' + text; el.appendChild(w);
     };
     ok.addEventListener('click', function () { decide('approve'); });
     no.addEventListener('click', function () { decide('reject'); });

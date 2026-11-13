@@ -117,6 +117,12 @@ function payFixture() {
       leaves: d === 10 ? [{ type: '家庭照顧假', hours: 8 }] : (d === 9 ? [{ type: '婚假', hours: 16 }] : []) });
     assert.ok(r.ok, JSON.stringify(r));
   }
+  /* 1113 紅燈 a1 起鎖定要比對請假單和請假登記：補上兩張對應的已核准假單，fixture 才像現場（這裡測的是鎖定流程本身） */
+  const rs = m.sb.reqSheet_(m.sb.getSS(), true), RHD = m.sb.REQ_HEADERS_ || vm.runInContext('REQ_HEADERS_', m.sb);
+  [['2026-11-09', '婚假', 16], ['2026-11-10', '家庭照顧假', 8]].forEach(([date, type, h], i) => {
+    const o = { id: 'RQFX' + i, created_at: '2026-11-01T09:00:00+08:00', emp_id: e.emp_id, name: '測試甲', kind: 'leave', date, leave_type: type, hours: h, status: 'approved' };
+    rs.appendRow(RHD.map((k) => (o[k] === undefined ? '' : o[k])));
+  });
   m.setNow('2026-11-15T10:00:00');
   return { m, e };
 }
