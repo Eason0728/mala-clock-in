@@ -631,6 +631,10 @@ function handleReqSubmit_(body) {
     if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_ && reqCompAllowed_(who.me) === false) {
       return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
     }
+    if (reqIsAnnual_(r)) {
+      var anMsg = reqAnnualBlockMsg_(r, reqAnnualFromLine_(who, body));
+      if (anMsg) return { ok: false, error: 'annual_not_eligible', message: anMsg };
+    }
     var capMsg = reqCapLocked_(r, existing, who, body, { today: todayTaipeiStr(), recorded: reqLeaveRecorded_(who.ss, who.me.name, r) });
     if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
@@ -714,6 +718,37 @@ function reqCompAllowed_(me) {
     var m = payRead('master').filter(function (x) { return String(x.emp_id) === String(me.emp_id); })[0];
     return m ? payIsFt(m) : null;
   } catch (e) { return null; }
+}
+
+/* 到職未滿六個月不能請特休（1113 紅燈 d3，Eason 2026-11-13 選 B）：同仁送單、主管代開、主管核准都擋。
+   「滿六個月那天」＝薪資的 payAnnualFirstPs_（到職日讀薪資主檔）；查不到到職日就不擋（照舊）。
+   和薪資同專案（光復）直接讀主檔；別家店：同仁送單打光復 line_hub_req_quota（LINE 身分），主管端打 payroll_annual_from（主管金鑰）。 */
+var REQ_ANNUAL_TYPE_ = '特休假';
+function reqIsAnnual_(r) { return !!r && String(r.kind) === 'leave' && String(r.leave_type || '') === REQ_ANNUAL_TYPE_; }
+function reqAnnualMsg_(from) { return '到職滿六個月（' + from + '）起才能請特休，這之前請改請事假或補休'; }
+/** 這張單日期早於可以請特休的日子 → 錯誤訊息；否則 ''。 */
+function reqAnnualBlockMsg_(r, from) {
+  return (reqIsAnnual_(r) && reqIsDate_(String(from || '')) && String(r.date).slice(0, 10) < from) ? reqAnnualMsg_(from) : '';
+}
+function reqPayPost_(payload) {
+  var resp = UrlFetchApp.fetch(CONFIG.PAYROLL_API || REQ_HUB_API_DEFAULT_, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true, payload: JSON.stringify(payload) });
+  return JSON.parse(resp.getContentText());
+}
+/** 同仁送單：用 LINE 身分查（同額度表那一支）。查不到回 ''。 */
+function reqAnnualFromLine_(who, body) {
+  try {
+    if (typeof lineHubReqQuota_ === 'function') return String((lineHubReqQuota_(who.userId) || {}).annual_from || '');
+    var j = reqPayPost_({ action: 'line_hub_req_quota', id_token: body.id_token });
+    return j && j.ok ? String(j.annual_from || '') : '';
+  } catch (e) { return ''; }
+}
+/** 主管代開、核准：用工號查（和薪資同專案直接讀主檔；別家店用主管金鑰打 payroll_annual_from）。查不到回 ''。 */
+function reqAnnualFromEmp_(empId, mgrKey) {
+  try {
+    if (typeof payAnnualFromOf_ === 'function' && typeof payRead === 'function') return String(payAnnualFromOf_(CONFIG.PAYROLL_STORE || '', empId) || '');
+    var j = reqPayPost_({ action: 'payroll_annual_from', store: CONFIG.PAYROLL_STORE || '', mgr_key: String(mgrKey || ''), emp_id: String(empId) });
+    return j && j.ok ? String(j.annual_from || '') : '';
+  } catch (e) { return ''; }
 }
 
 /** {action:'req_cancel', id_token, id} → 只能取消自己的、還在審核中的。 */
@@ -953,6 +988,10 @@ function handleMgrReqDecide_(body) {
     var why = (r.proxy_by || reqMgrActing_(mgr, body)) ? '' : reqUpperWhy_(r.emp_id, ss);
     if (why) return { ok: false, error: 'upper_review', message: reqUpperMsg_(why) };
     if (decision === 'approve' && reqNeedsProof_(r)) return { ok: false, error: 'need_proof', message: r.leave_type + '要附證明，同仁補上後才能核准（退回不受影響）' };
+    if (decision === 'approve' && reqIsAnnual_(r)) {   // 1113 紅燈 d3：核准時再查一次（送單時可能查不到到職日）
+      var anMsgD = reqAnnualBlockMsg_(r, reqAnnualFromEmp_(r.emp_id, body.mgr_key));
+      if (anMsgD) return { ok: false, error: 'annual_not_eligible', message: anMsgD };
+    }
     reqSetCells_(sh, r.__rowIndex, { status: decision === 'approve' ? 'approved' : 'rejected', decided_at: nowTaipeiIso(),
                                      decided_by: actor, reject_reason: decision === 'reject' ? reason : '' });
     var out = { ok: true, id: String(r.id), status: decision === 'approve' ? 'approved' : 'rejected' };
@@ -1011,7 +1050,7 @@ function handleMgrReqDecideBatch_(body) {
   try {
     var byId = {};
     reqRows_(ss).forEach(function (x) { byId[String(x.id)] = x; });
-    var now = nowTaipeiIso(), done = [], skipped = [], warnItems = [], apMap = null;
+    var now = nowTaipeiIso(), done = [], skipped = [], warnItems = [], apMap = null, annualFromBy = {};
     var upc = reqMgrActing_(mgr, body) ? null : reqUpperCache_(ss);
     ids.forEach(function (id) {
       var r = byId[id];
@@ -1022,6 +1061,12 @@ function handleMgrReqDecideBatch_(body) {
       var why = (upc && !r.proxy_by) ? reqUpperWhy_(r.emp_id, ss, upc) : '';
       if (why) { skipped.push({ id: id, reason: why === 'mgr' ? '值班主管本人的申請，送上層審核' : '部門同仁的申請，由部門主管審核' }); return; }
       if (reqNeedsProof_(r)) { skipped.push({ id: id, reason: r.leave_type + '還沒附證明' }); return; }
+      if (reqIsAnnual_(r)) {   // 1113 紅燈 d3：同一人只查一次
+        var ek = String(r.emp_id);
+        if (!(ek in annualFromBy)) annualFromBy[ek] = reqAnnualFromEmp_(r.emp_id, body.mgr_key);
+        var anMsgB = reqAnnualBlockMsg_(r, annualFromBy[ek]);
+        if (anMsgB) { skipped.push({ id: id, reason: anMsgB }); return; }
+      }
       reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: actor, reject_reason: '' });
       done.push(id);
       if (reqAffectsLeave_(r)) {
@@ -1311,6 +1356,10 @@ function handleMgrReqProxy_(body) {
     // 2026-11-11（B37）：補休只有正職可以請——本人送會擋，代開也照擋（查不到薪資主檔的店照舊不擋）
     if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_ && reqCompAllowed_(me) === false) {
       return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
+    }
+    if (reqIsAnnual_(r)) {   // 1113 紅燈 d3：代開也擋未滿六個月的特休
+      var anMsgP = reqAnnualBlockMsg_(r, reqAnnualFromEmp_(me.emp_id, body.mgr_key));
+      if (anMsgP) return { ok: false, error: 'annual_not_eligible', message: anMsgP };
     }
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
     r.created_at = nowTaipeiIso(); r.emp_id = String(me.emp_id); r.name = String(me.name);

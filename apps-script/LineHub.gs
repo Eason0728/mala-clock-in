@@ -1822,7 +1822,13 @@ function lineHubReqQuota_(userId) {
     if (c && c.allowed) comp = { allowed: true, known: true, ot_h: Number(c.ot_h) || 0, used_h: Number(c.used_h) || 0, balance_h: Number(c.balance_h) || 0, ym: String(c.ym || '') };
     else if (c && c.known !== false) comp.known = true;
   } catch (e) { /* 算不出來＝known:false，照樣列補休，交給主管 */ }
-  return { quota: quota, comp: comp };
+  /* 到職滿六個月那天（1113 紅燈 d3）：之前不能請特休；查不到＝''（不擋） */
+  var annualFrom = '';
+  try {
+    var pk = lineHubPayPick_(userId);
+    if (pk && typeof payAnnualFromOf_ === 'function') annualFrom = payAnnualFromOf_(pk.store, pk.me.emp_id) || '';
+  } catch (e) { annualFrom = ''; }
+  return { quota: quota, comp: comp, annual_from: annualFrom };
 }
 /** {action:'line_hub_req_quota', id_token} → {ok, quota, comp}（2026-11-06）：申請頁表單先出來，這支晚一點補上額度與補休帳。 */
 function handleLineHubReqQuota_(body) {
@@ -1831,7 +1837,7 @@ function handleLineHubReqQuota_(body) {
   if (lineHubThrottled_('rqq', userId, 20, 60)) return { ok: false, error: 'too_many' };
   if (!lineHubMine_(userId, null, false).length) return { ok: false, error: 'not_bound' };
   var qc = lineHubReqQuota_(userId);
-  return { ok: true, quota: lineHubQuotaOut_(qc.quota), comp: qc.comp };
+  return { ok: true, quota: lineHubQuotaOut_(qc.quota), comp: qc.comp, annual_from: qc.annual_from || '' };
 }
 
 var LINE_HUB_ATTACH_FOLDER = '打卡申請附件';

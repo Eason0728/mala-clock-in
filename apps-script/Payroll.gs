@@ -816,6 +816,20 @@ function payAnnualFirstPs_(hireStr) {
   return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
 }
 
+/** 這個人可以開始請特休的日子（到職滿六個月那天，payAnnualFirstPs_；到職日讀薪資主檔，同計薪）。1113 紅燈 d3。
+ *  st＝薪資門市代碼；empId＝打卡工號（別家店的打卡工號可能沒帶 emp_prefix，兩種都認）。找不到人或沒填到職日回 ''（＝不擋）。 */
+function payAnnualFromOf_(st, empId) {
+  st = payStore(st);
+  const id = String(empId == null ? '' : empId).trim();
+  if (!id) return '';
+  const prefix = String((payStoreRow(st) || {}).emp_prefix || '').trim();
+  const m = payRead('master').filter(function (x) {
+    const xid = String(x.emp_id).trim();
+    return payStore(x.store) === st && (xid === id || (prefix && xid === prefix + id));
+  })[0];
+  return m ? payAnnualFirstPs_(m.hire_date) : '';
+}
+
 /** 該門市有效的紅字天數清單（每月一筆，該店專屬優先），附 _src 標示來源供前端顯示 */
 function payHolidayList(store) {
   const st = String(store || '');
@@ -5393,6 +5407,15 @@ function handlePayrollAnnualLeft(body) {
   return { ok: true, store: st, ym: ym, annual: annual };
 }
 
+/** {action:'payroll_annual_from', mgr_key|admin_key, store, emp_id} → {ok, annual_from}（1113 紅燈 d3）：
+ *  別家店主管代開、核准特休時問「到職滿六個月那天」。驗證同 payroll_annual_left（那家店的主管金鑰）。 */
+function handlePayrollAnnualFrom(body) {
+  const st = payStore(body.store);
+  const deny = payLeaveAuth_(body, st);
+  if (deny) return deny;
+  return { ok: true, annual_from: payAnnualFromOf_(st, body.emp_id) };
+}
+
 /** {action:'payroll_leave_event_get', admin_key, store?} → 該店的假別事件日。 */
 function handlePayrollLeaveEventGet(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
@@ -5608,6 +5631,7 @@ const PAYROLL_HANDLERS = {
   payroll_rest_check:      handlePayrollRestCheck,
   payroll_rest_trigger_setup: handlePayrollRestTriggerSetup,
   payroll_annual_left:     handlePayrollAnnualLeft,
+  payroll_annual_from:     handlePayrollAnnualFrom,   // 1113 紅燈 d3：到職滿六個月才能請特休
   payroll_xmap_set:        handlePayrollXmapSet,
   payroll_xmap_get:        handlePayrollXmapGet,
   payroll_support_decide:  handlePayrollSupportDecide,
