@@ -5383,10 +5383,14 @@ function handlePayrollLeaveOptions(body) {
       } catch (err) { /* 算不出來就沒有額度提示，不擋核定 */ }
     }
   });
-  return { ok: true, store: st, ym: ym, types: types, quotas: quotas,
+  // locked（2026-11-13，營運系統「人資退回給店長重核」，Eason 鎖月 A）：這家店這個月薪資是否已「鎖定本月」（payroll_run status=final）。唯讀，不影響任何計算；
+  //   讀不到 payroll_run 就不給這欄（營運系統當作「不知道」，照樣可退回但提示）
+  let locked;
+  try { locked = payMonthLocked_(payRead('run'), ym, st); } catch (err) { locked = undefined; }
+  return Object.assign({ ok: true, store: st, ym: ym, types: types, quotas: quotas,
            day_hours: dayH, rule_parental: PAY_PARENTAL,
            // 期限規則要用：某人某假別的事件日（結婚登記日／分娩日…），前端據此擋過期的假
-           events: payLeaveEventMap(st) };
+           events: payLeaveEventMap(st) }, typeof locked === 'boolean' ? { locked: locked } : {});
 }
 
 /** {action:'payroll_annual_left', store, mgr_key|admin_key, ym?} → 每位正職的剩餘特休（唯讀）。
