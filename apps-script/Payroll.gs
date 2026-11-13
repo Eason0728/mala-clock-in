@@ -3975,6 +3975,25 @@ function payAnnualInfo(ym, store) {
   const savedRows = payRead('input');   // 手動工時（打卡上線前的月份特休 key 在這裡，不在 leave 分頁）
   const ptOn = payOtDailyOn(ym);
   const runRows = ptOn ? payRead('run') : [];
+  /* 離職當月的特休折算只發一次（1113 紅燈 d1，Eason 2026-11-13 選 A）：更早的已鎖定月份（run 狀態 final）
+     item 分頁已經有這個人的 annual_payout、而且那個月落在這次折算的特休年度內（≥ 年度起算月）→ 這個月不再發。
+     草稿月份不算；上一個特休年度的折算（年度起算月之前）不算。用到才讀，讀不到當作沒發過（照舊發）。 */
+  let paidIdx = null;
+  function paidBefore(empId, fromYm) {
+    if (!paidIdx) {
+      paidIdx = {};
+      try {
+        const fin = {};
+        payRead('run').forEach(function (r) { if (String(r.status) === 'final') fin[String(r.ym) + '|' + payStore(r.store) + '|' + String(r.emp_id)] = true; });
+        payRead('item').forEach(function (i) {
+          if (String(i.item_key) !== 'annual_payout' || !(payNum(i.amount) > 0)) return;
+          if (!fin[String(i.ym) + '|' + payStore(i.store) + '|' + String(i.emp_id)]) return;
+          (paidIdx[String(i.emp_id)] = paidIdx[String(i.emp_id)] || []).push(String(i.ym));
+        });
+      } catch (err) { paidIdx = {}; }
+    }
+    return (paidIdx[String(empId)] || []).filter(function (m) { return m >= fromYm && m < String(ym); }).sort().pop() || '';
+  }
   master.forEach(function (e) {
     // 計時同仁：2026-10 以前沒有特休（Eason 2026-08 定案）；2026-11 起依工時比例給（出勤認定清單 E2、四週變形 C21：報到日起算）
     const ft = String(e.is_full_time).toLowerCase() === 'true' || e.is_full_time === true;
@@ -4032,7 +4051,10 @@ function payAnnualInfo(ym, store) {
                               left_h: payR1(quotaH - used),
                               ps: q.ps, pe: q.pe, payout_ym: (leavingNow || settleNow) ? ym : payDayBefore(q.pe).slice(0, 7) };
     // 離職當月：q 若已是新週年期，舊週年期剩下的也要一起結；q 就是到期那一期時，照 left_h 不重複算
-    if (settleNow && (!leavingNow || settle.ps !== q.ps)) out[String(e.emp_id)].payout_h = payR1(Math.max(0, settle.days * 8 * ratio - usedIn(settle)) + (leavingNow ? Math.max(0, quotaH - used) : 0));
+    const paidYm = (leavingNow && q.ps) ? paidBefore(e.emp_id, q.ps.slice(0, 7)) : '';   // d1：這個特休年度的折算已在更早的鎖定月份發過
+    if (settleNow && (!leavingNow || settle.ps !== q.ps)) out[String(e.emp_id)].payout_h = payR1(Math.max(0, settle.days * 8 * ratio - usedIn(settle)) + (leavingNow && !paidYm ? Math.max(0, quotaH - used) : 0));
+    else if (paidYm) out[String(e.emp_id)].payout_h = 0;
+    if (paidYm) out[String(e.emp_id)].payout_paid_ym = paidYm;
     if (!ft) out[String(e.emp_id)].ratio = payR2(ratio);   // 計時：工時比例（畫面說明用）
   });
   return out;
