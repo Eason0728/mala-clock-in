@@ -178,16 +178,16 @@ ok('審查 1：被支援那家只上 1 小時、兩家合計 11 → 這家只要
   sb = makeEnv();
   const hp = [P2('08:00', '18:00')], hs = [S2('08:00', '18:00')];
   r = chk(sb, 10, hp, hs, FT({ sched_support: false, peer: { worked: true, pending: false, work: 1, leave: 0, ot: 1, names: ['mztlzl'] } }));
-  assert.ok(/這家（原單位，被支援那家只上 1 小時）開 2 小時加班單/.test(r.message), r.message);
+  assert.ok(/超過 8 小時的 2 小時要有加班單/.test(r.message), r.message);      // 原單位自己超過 8 的部分照單店規則
   assert.ok(!/要在被支援的/.test(r.message), '被支援那家的 1 小時已核准');
 });
-ok('加班算被支援那家：這家是原單位、上 9 小時 → 這家不用加班單，看被支援那家', () => {
+ok('加班算被支援那家：這家是原單位、上 9 小時 → 自己超過 8 的 1 小時照單店規則，另外看被支援那家', () => {
   const sb = makeEnv();
   const ps = [P2('08:00', '17:00')], ss = [S2('08:00', '17:00')];
-  assert.strictEqual(chk(sb, 9, ps, ss, FT({ sched_support: false, peer: { worked: true, pending: true, work: 0, leave: 0, ot: 0, names: ['mztlzl'] } })), null, '被支援那家還沒核定：先放行');
+  assert.ok(/超過 8 小時的 1 小時要有加班單/.test(chk(sb, 9, ps, ss, FT({ sched_support: false, peer: { worked: true, pending: true, work: 0, leave: 0, ot: 0, names: ['mztlzl'] } })).message), '審查 3：被支援那家還沒核定，原單位自己超過 8 的 1 小時照樣要單');
   const r = chk(sb, 9, ps, ss, FT({ sched_support: false, peer: { worked: true, pending: false, work: 2, leave: 0, ot: 1, names: ['mztlzl'] } }));
   assert.ok(/兩家上班合計 11 小時，超過 8 的 2 小時要在被支援的 墨竹亭台北六張犁 開加班單（那邊已核准 1 小時）/.test(r.message), r.message);
-  assert.ok(/這家（原單位，被支援那家只上 2 小時）開 1 小時加班單/.test(r.message), r.message);
+  assert.ok(/超過 8 小時的 1 小時要有加班單/.test(r.message), r.message);
 });
 ok('審查 6：兩家合計加班只算上班、不算假（原單位 5＋假 3、支援 3 → 剛好 8，不用加班單）', () => {
   const sb = makeEnv();
@@ -227,9 +227,16 @@ ok('reqPeerDay_：只開名冊有同名在職的店；跳過鏡像列、只認�
          events: mk([['ts', 'emp_id', 'type', 'status', 'mirror_src'], [D2 + 'T09:00:00+08:00', 'H1', 'in', 'ok', 'CF']]),
          approved: mk([['date', 'emp_id', 'approved_hours', 'entered_at', 'mirror_src'], [D2, 'H1', 8, 'x', 'CF']]), requests: [{ emp_id: 'H1', date: D2, status: 'approved', kind: 'ot', hours: 2, mirror_src: 'CF' }] },
     X: { roster: mk([['emp_id', 'name', 'active'], ['X1', '測試一', 'false']]), events: mk([['ts']]), approved: mk([['date']]), requests: [] },   // 離職的同名：不開
+    D: { roster: mk([['emp_id', 'name', 'active'], ['D1', '測試一', 'true'], ['D2', '測試一', 'true']]), events: mk([['ts']]), approved: mk([['date']]), requests: [] },   // 同一家兩位同名：分不出，不算
+    E: { roster: mk([['emp_id', 'name', 'active'], ['E9', '測試一', 'true']]),      // 跨夜班凌晨的下班卡不算；只有一張 10:00 下班卡（忘打上班）算
+         events: mk([['ts', 'emp_id', 'type', 'status', 'mirror_src'], [D2 + 'T02:00:00+08:00', 'E9', 'out', 'ok', ''], [D2 + 'T10:00:00+08:00', 'E9', 'out', 'ok', '']]),
+         approved: mk([['date', 'emp_id', 'approved_hours', 'entered_at', 'mirror_src']]), requests: [] },
+    F: { roster: mk([['emp_id', 'name', 'active'], ['F9', '測試一', 'true']]),      // 只有凌晨的下班卡：不算
+         events: mk([['ts', 'emp_id', 'type', 'status', 'mirror_src'], [D2 + 'T02:00:00+08:00', 'F9', 'out', 'ok', '']]),
+         approved: mk([['date', 'emp_id', 'approved_hours', 'entered_at', 'mirror_src']]), requests: [] },
   };
   const opened = [];
-  sb.REST_PEERS_ = ['A', 'B', 'H', 'X', 'SELF'].map((c) => ({ code: c, ss: 'ss-' + c }));
+  sb.REST_PEERS_ = ['A', 'B', 'H', 'X', 'D', 'E', 'F', 'SELF'].map((c) => ({ code: c, ss: 'ss-' + c }));
   sb.restName_ = (x) => String(x || '').trim();
   sb.CacheService = { getScriptCache: () => ({ get: () => null, put() {} }) };
   sb.getSS = () => ({ getId: () => 'ss-SELF', getSheetByName: () => null });
@@ -238,8 +245,23 @@ ok('reqPeerDay_：只開名冊有同名在職的店；跳過鏡像列、只認�
   sb.buildLatestApprovedMap = (rows) => { const m = {}; rows.forEach((r) => { (m[r.date] = m[r.date] || {})[r.emp_id] = r; }); return m; };
   sb.reqRows_ = (ss) => books[ss.id].requests;
   const r = sb.reqPeerDay_('測試一', D2);
-  assert.strictEqual(JSON.stringify(r), JSON.stringify({ worked: true, pending: true, work: 4, leave: 1, ot: 0.5, names: ['A', 'B'] }));
+  assert.strictEqual(JSON.stringify(r), JSON.stringify({ worked: true, pending: true, failed: false, work: 4, leave: 1, ot: 0.5, names: ["A", "B", "E"] }));
   assert.ok(!opened.includes('SELF'));
+});
+ok('審查 1：別家讀不到 → 滿 8 小時先放行，但加班照單店規則（10 小時沒加班單照擋）', () => {
+  const sb = makeEnv();
+  const failed = { worked: false, pending: false, failed: true, work: 0, leave: 0, ot: 0, names: [] };
+  assert.strictEqual(chk(sb, 4, [P2('09:00', '13:00')], [S2('09:00', '13:00')], FT({ peer: failed })), null);
+  const r = chk(sb, 10, [P2('08:00', '18:00')], [S2('08:00', '18:00')], FT({ sched_support: true, peer: failed }));
+  assert.ok(/超過 8 小時的 2 小時要有加班單/.test(r.message), r.message);
+});
+ok('審查 4：跨店加班單開太多也擋（支援那家應有 2、開了 3；原單位不超過 8 卻開了加班單）', () => {
+  let sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '18:00', end: '21:00', hours: 3 }));
+  let r = chk(sb, 4, [P2('17:00', '21:00')], [S2('17:00', '21:00')], FT({ sched_support: true, peer: { worked: true, pending: false, work: 6, leave: 0, ot: 0, names: ['gf'] } }));
+  assert.ok(/應有的加班是 2 小時，已核准的加班單 3 小時太多/.test(r.message), r.message);
+  sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '13:00', end: '15:00', hours: 2 }));
+  r = chk(sb, 6, [P2('09:00', '15:00')], [S2('09:00', '15:00')], FT({ sched_support: false, peer: { worked: true, pending: false, work: 4, leave: 0, ot: 0, names: ['mztlzl'] } }));
+  assert.ok(/應有的加班是 0 小時/.test(r.message) && /要在被支援的 墨竹亭台北六張犁 開加班單/.test(r.message), r.message);
 });
 ok('核定預覽回 ft8_gap（撤銷試算用）', () => {
   const sb = makeEnv();

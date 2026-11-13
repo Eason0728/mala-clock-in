@@ -1582,8 +1582,11 @@ function reqPeerRoster_(p, fresh) {
   try { cache.put(ck, JSON.stringify(roster), typeof REST_PEER_CACHE_S === 'undefined' ? 21600 : REST_PEER_CACHE_S); } catch (e) {}
   return { roster: roster, ss: ss };
 }
+var REQ_PEER_MEMO_ = {};   // 同一次執行內共用（撤銷掃描、一次核定），Apps Script 每次執行都是新的
 function reqPeerDay_(name, date, fresh) {
-  var out = { worked: false, pending: false, work: 0, leave: 0, ot: 0, names: [] };
+  var mk = name + '|' + date + (fresh ? '|f' : '');
+  if (REQ_PEER_MEMO_[mk]) return REQ_PEER_MEMO_[mk];
+  var out = REQ_PEER_MEMO_[mk] = { worked: false, pending: false, failed: false, work: 0, leave: 0, ot: 0, names: [] };
   if (typeof REST_PEERS_ === 'undefined' || !REST_PEERS_.length || !name || typeof restName_ !== 'function') return out;
   var nm = restName_(name), selfId = '';
   try { selfId = getSS().getId(); } catch (e) {}
@@ -1594,12 +1597,12 @@ function reqPeerDay_(name, date, fresh) {
     try {
       var rs = reqPeerRoster_(p, fresh);
       var ids = rs.roster.filter(function (r) { return r[0] === nm; }).map(function (r) { return r[1]; });
-      if (!ids.length) return;
+      if (ids.length !== 1) return;   // 沒有、或同一家有兩位同名（分不出是不是同一個人）都不算（2026-11-13 審查 5）
       var ss = rs.ss || SpreadsheetApp.openById(p.ss);
-      // 上班卡打在這天才算這天在別家上班（跨夜班隔天凌晨的下班卡不算，2026-11-13 審查 8）
+      // 這天在別家上班：上班卡打在這天，或忘了打上班卡、只有 06:00 以後的下班卡（跨夜班隔天凌晨的下班卡不算，2026-11-13 審查 8、9）
       var worked = readEventsSince(ss.getSheetByName('events'), dayStart).rows.some(function (e) {
         var t = new Date(String(normCellTs(e.ts))).getTime();
-        return ids.indexOf(String(e.emp_id)) >= 0 && mine(e) && e.status === 'ok' && String(e.type) === 'in' && t >= dayStart && t < dayEnd;
+        return ids.indexOf(String(e.emp_id)) >= 0 && mine(e) && e.status === 'ok' && t < dayEnd && (String(e.type) === 'in' ? t >= dayStart : t >= dayStart + 6 * 3600000);
       });
       var day = buildLatestApprovedMap(readSheetAsObjects(ss.getSheetByName('approved')).rows.filter(mine))[date] || {};
       var recs = ids.map(function (id) { return day[id]; }).filter(Boolean);
@@ -1614,7 +1617,7 @@ function reqPeerDay_(name, date, fresh) {
       out.leave += lv; out.ot += ot;
       if (recs.length) { out.worked = true; recs.forEach(function (r) { out.work += Number(r.approved_hours) || 0; }); }
       else if (worked) { out.worked = true; out.pending = true; }
-    } catch (e) { out.worked = true; out.pending = true; Logger.log('滿 8 小時讀別家店 ' + p.code + ' 失敗（當作還沒核定、先放行）：' + e); }
+    } catch (e) { out.failed = true; Logger.log('滿 8 小時讀別家店 ' + p.code + ' 失敗（滿 8 小時先放行、加班照單店規則）：' + e); }
   });
   ['work', 'leave', 'ot'].forEach(function (k) { out[k] = Math.round(out[k] * 100) / 100; });
   return out;
@@ -1636,8 +1639,9 @@ function reqFt8_(date, approvedHours, otHave, opt, okRows) {
   var f = reqBindFmt_, r2 = function (x) { return Math.round(x * 100) / 100; };
   if (own < REQ_FT8_H - 0.005) {
     var pr = getPeer();
-    if (!pr.worked && !pr.leave && !opt.peer) pr = getPeer(true);   // 擋之前不用快取再找一次（當天剛加的支援帳號）
-    if (!pr.worked && !pr.leave) {
+    if (!pr.worked && !pr.leave && !pr.failed && !opt.peer && !opt.preview) pr = getPeer(true);   // 擋之前不用快取再找一次（當天剛加的支援帳號）；撤銷試算不做（太慢）
+    if (pr.failed) { /* 別家讀不到：滿 8 小時先放行 */ }
+    else if (!pr.worked && !pr.leave) {
       out.gap = r2(REQ_FT8_H - own);
       out.probs.push({ rule: 'ft8', text: '正職上班日要滿 ' + REQ_FT8_H + ' 小時（上班 ' + f(work) + '＋出差 ' + f(trip) + '＋假單 ' + f(leaveH) + '＝' + f(own) +
         ' 小時），還差 ' + f(out.gap) + ' 小時，要有已核准的假單或補休單' });
@@ -1650,25 +1654,25 @@ function reqFt8_(date, approvedHours, otHave, opt, okRows) {
       }
     }
   }
-  // 跨店加班算被支援那家（只算上班＋出差，不算假；被支援那家最多要求它自己上班的時數，超出的留在原單位）
+  // 跨店加班算被支援那家（只算上班＋出差，不算假）：被支援那家最多要求它自己上班的時數；原單位自己超過 8 的部分一定留在原單位（＝單店規則，不拿掉）。
+  // 別家讀不到（failed）＝照單店規則，不拿掉任何加班檢查（2026-11-13 審查 1、3、4）
   if (support || home) {
-    var p2 = getPeer();
-    if (p2.worked) {
-      out.drop = support ? ['ot_hours', 'ot_void', 'ot_in_sched'] : ['ot_hours', 'ot_void'];
+    var p2 = getPeer(), tol = REQ_STRICT_TOL_MIN / 60 + 0.005;
+    if (p2.worked && !p2.failed) {
+      if (support) out.drop = ['ot_hours', 'ot_void', 'ot_in_sched'];
+      else out.drop = ['ot_void'];      // 原單位：自己超過 8 的單照單店規則；加班單太多改下面看
       if (!p2.pending) {
-        var combW = r2(ownWork + p2.work), need = r2(combW - REQ_FT8_H);
-        if (need > 0.005) {
-          var supWork = support ? ownWork : p2.work, atSup = r2(Math.min(need, supWork)), atHome = r2(need - atSup);
-          var hereNeed = support ? atSup : atHome;
-          if (hereNeed > 0.005 && otHave + 0.005 < hereNeed) {
-            out.otNeed = hereNeed;
-            out.probs.push({ rule: 'ot_hours', text: '兩家上班合計 ' + f(combW) + ' 小時，超過 ' + REQ_FT8_H + ' 的部分要在' + (support ? '這家（被支援）' : '這家（原單位，被支援那家只上 ' + f(supWork) + ' 小時）') +
-              '開 ' + f(hereNeed) + ' 小時加班單（已核准 ' + f(otHave) + ' 小時）' });
-          }
-          if (home && atSup > 0.005 && p2.ot + 0.005 < atSup) {
-            out.probs.push({ rule: 'ot_peer', text: '兩家上班合計 ' + f(combW) + ' 小時，超過 ' + REQ_FT8_H + ' 的 ' + f(atSup) + ' 小時要在被支援的 ' + reqFt8StoreNames_(p2.names) +
-              ' 開加班單（那邊已核准 ' + f(p2.ot) + ' 小時）' });
-          }
+        var combW = r2(ownWork + p2.work), need = Math.max(0, r2(combW - REQ_FT8_H));
+        var supWork = support ? ownWork : p2.work, atSup = r2(Math.min(need, supWork)), atHome = r2(need - atSup);
+        var hereNeed = support ? atSup : atHome;
+        if (support && hereNeed > 0.005 && otHave + 0.005 < hereNeed) {
+          out.otNeed = hereNeed;
+          out.probs.push({ rule: 'ot_hours', text: '兩家上班合計 ' + f(combW) + ' 小時，超過 ' + REQ_FT8_H + ' 的部分要在這家（被支援）開 ' + f(hereNeed) + ' 小時加班單（已核准 ' + f(otHave) + ' 小時）' });
+        }
+        if (otHave > hereNeed + tol) out.probs.push({ rule: 'ot_hours', text: '兩家上班合計 ' + f(combW) + ' 小時，這家應有的加班是 ' + f(hereNeed) + ' 小時，已核准的加班單 ' + f(otHave) + ' 小時太多，請作廢或改單' });
+        if (home && atSup > 0.005 && p2.ot + 0.005 < atSup) {
+          out.probs.push({ rule: 'ot_peer', text: '兩家上班合計 ' + f(combW) + ' 小時，超過 ' + REQ_FT8_H + ' 的 ' + f(atSup) + ' 小時要在被支援的 ' + reqFt8StoreNames_(p2.names) +
+            ' 開加班單（那邊已核准 ' + f(p2.ot) + ' 小時）' });
         }
       }
     }
