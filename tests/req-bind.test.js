@@ -62,6 +62,8 @@ function makeEnv(now) {
   vm.runInContext([extractConst(codeSrc, 'LEAVE_TYPES'), extract(codeSrc, 'findManagerByKey'), extract(codeSrc, 'actingName_'), extract(codeSrc, 'sheetSafeText_'),
                    extract(codeSrc, 'findRosterByEmpId'), extract(codeSrc, 'gapExplainedByBreak'),
                    fs.readFileSync(ROOT + '/apps-script/Requests.gs', 'utf8')].join('\n'), sb);
+  // 這支測代開與綁單，測試的「今天」在 11/20：先把 T01 不限期限（11/28 以前 11 月的日子同仁能自己補）關掉，照 4 天規則測（T01 那段見 req-past-4d.test.js）
+  vm.runInContext("REQ_PAST_OPEN_TO_ = '2026-10-31';", sb);
   sb.__sheets = sheets; sb.__props = props;
   return sb;
 }
@@ -187,9 +189,9 @@ ok('代開只能用營運系統個人帳號（本店主管鑰匙不行）', () =
   const sb = makeEnv();
   assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ mgr_key: 'MK', acting_name: undefined })).error, 'acting_only');
 });
-ok('7 天內不能代開；超過 90 天也不行', () => {
+ok('4 天內不能代開（2026-11-14 由 7 改 4）；超過 90 天也不行', () => {
   const sb = makeEnv();
-  assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ date: '2026-11-13' })).error, 'not_old');
+  assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ date: '2026-11-16' })).error, 'not_old');
   assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ date: '2026-08-01' })).error, 'too_old');
 });
 ok('沒綁 LINE：今天和 7 天內可代開，一樣送總監審；未來日期不行；有綁 LINE 照舊不行', () => {
@@ -199,7 +201,7 @@ ok('沒綁 LINE：今天和 7 天內可代開，一樣送總監審；未來日�
   assert.strictEqual(r.request.proxy_by, '林店長（S1）');
   assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ emp_id: 'E02', kind: 'leave', leave_type: '事假', hours: 4, reason: '家裡有事', date: sb.todayTaipeiStr() })).ok, true);
   assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ emp_id: 'E02', date: '2026-12-31' })).error, 'not_old');
-  assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ emp_id: 'E01', date: '2026-11-13' })).error, 'not_old');
+  assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ emp_id: 'E01', date: '2026-11-16' })).error, 'not_old');
   assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ emp_id: 'E02', date: '2026-08-01' })).error, 'too_old');
 });
 ok('核定被擋：沒綁 LINE 叫店長代開，有綁 LINE 照舊叫同仁補', () => {

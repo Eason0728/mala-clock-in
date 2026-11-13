@@ -51,14 +51,17 @@
    *  step＝分鐘間隔：加班／請假／出差 15（後台時數也是取到 0.25 小時），忘打卡 1（填實際時間）。
    *  預填的時間不在間隔上（例如下班卡 17:43）照樣留在選項裡，不偷改。回傳值一樣是 'HH:MM' 或 ''。 */
   /** 日期欄（2026-10-31）：「月」「日」兩個下拉，取代 <input type="date">（跟時間欄同一個原因：LINE Android 叫內建轉盤可能閃退）。
-   *  範圍＝後端規則：7 天前到 90 天後（Requests.gs REQ_LEAVE_PAST_DAYS／REQ_FUTURE_DAYS，請假／加班／出差都一樣；2026-11-05 由 31 天改 7 天），
+   *  範圍＝後端規則：4 天前到 90 天後（Requests.gs REQ_LEAVE_PAST_DAYS／reqPastLimit_／REQ_FUTURE_DAYS，請假／加班／出差都一樣；
+   *  2026-11-05 由 31 天改 7 天，2026-11-14 改 4 天；11/28 以前 11 月的日子都選得到〔T01 不限〕），
    *  以前的轉盤選得到範圍外、送出才被擋，現在選不到。預填的日期在範圍外（不太會發生）照樣留著不偷改。
    *  「日」附星期、今天標「今天」；換月時盡量留同一天，那個月沒有就取最近的一天。回傳 'YYYY-MM-DD'。 */
-  var DATE_PAST = 7, DATE_FUT = 90;
+  var DATE_PAST = 4, DATE_FUT = 90, DATE_OPEN_FROM = '2026-11-01', DATE_OPEN_TO = '2026-11-28';   // 同 Requests.gs reqPastLimit_
   function datePick(value, onChange) {
     var today = taipeiToday(0), days = [];
     var endMs = Date.parse(taipeiToday(DATE_FUT) + 'T00:00:00Z');
-    for (var t = Date.parse(taipeiToday(-DATE_PAST) + 'T00:00:00Z'); t <= endMs; t += 86400000) days.push(new Date(t).toISOString().slice(0, 10));
+    var startMs = Date.parse(taipeiToday(-DATE_PAST) + 'T00:00:00Z');
+    if (today <= DATE_OPEN_TO) startMs = Math.min(startMs, Date.parse(DATE_OPEN_FROM + 'T00:00:00Z'));
+    for (var t = startMs; t <= endMs; t += 86400000) days.push(new Date(t).toISOString().slice(0, 10));
     if (/^\d{4}-\d{2}-\d{2}$/.test(value || '') && days.indexOf(value) < 0) { days.push(value); days.sort(); }
     var cur = days.indexOf(value) >= 0 ? value : today;
     var months = [];

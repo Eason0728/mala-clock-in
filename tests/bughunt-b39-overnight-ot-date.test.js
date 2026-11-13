@@ -35,7 +35,7 @@ check('B39-13', '對照：預先申請（未來的日子，還沒有打卡）→
 }
 {
   // 店長代開同一套
-  const m = world(NIGHT, '2026-11-25T10:00:00');
+  const m = world(NIGHT, '2026-12-05T10:00:00');   // 2026-11-14 起 11/28 以前 11 月的日子同仁自己能補、不給代開，改到 12/5 才是「超過 4 天」
   m.advance(1000);
   const r = m.sb.handleMgrReqProxy_({ mgr_key: 'AK', acting_name: '店長甲', emp_id: 'E01', kind: 'ot', date: N, start: '01:00', end: '02:00', reason: '代開' });
   check('B39-20', '店長代開：日期填凌晨那天 → 一樣請改選上班那一天', res(r).split('｜')[0], 'bad_date');

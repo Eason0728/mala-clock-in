@@ -1246,13 +1246,14 @@ def phase_relogin(ctx, hq):
     p.wait_for_function("+sessionStorage.getItem('__loads') === 2", timeout=10000)
     ok('登入逾時：按「重新連線」才重整', True)
     p.close()
-    # 5. 日期欄（2026-10-31）：請假／加班／出差都是「月」「日」下拉、沒有 input[type=date]；範圍 7 天前到 90 天後；附星期與今天
+    # 5. 日期欄（2026-10-31）：請假／加班／出差都是「月」「日」下拉、沒有 input[type=date]；範圍 4 天前到 90 天後（11/28 以前從 11/1 起）；附星期與今天
     from datetime import datetime, timedelta, timezone
     tz = timezone(timedelta(hours=8)); now = datetime.now(tz)
     d = lambda k: (now + timedelta(days=k)).strftime('%Y-%m-%d')
     p = open_page(ctx, url(hq, in_client=True, extra='&view=req&tab=leave'))
     p.wait_for_selector('#reqView .rq-dpick', timeout=10000)
-    past = {'leave': 7, 'ot': 7, 'trip': 7}   # 2026-11-05 三種都由 31 改 7 天前
+    # 2026-11-14 三種都由 7 改 4 天前；11/28 以前 11 月的日子都選得到（同 req-line.js DATE_OPEN_*）
+    earliest = min('2026-11-01', d(-4)) if d(0) <= '2026-11-28' else d(-4)
     for tab in ('leave', 'ot', 'trip'):
         p.click('#reqView .rq-tabs button[data-tab=%s]' % tab)
         p.wait_for_selector('#reqView .rq-dpick', timeout=5000)
@@ -1260,10 +1261,10 @@ def phase_relogin(ctx, hq):
             const dd = document.querySelector('#reqView .rq-dd'); return { dateInputs: document.querySelectorAll('#reqView input[type=date]').length,
             months: ms, sel: dd.value, selText: dd.options[dd.selectedIndex].text }; }""")
         ok('日期欄（%s）：月日下拉、沒有日期轉盤、預設今天且標「今天」' % tab, info['dateInputs'] == 0 and info['sel'] == d(0)
-           and '今天' in info['selText'] and info['months'][0] == d(-past[tab])[:7] and info['months'][-1] == d(90)[:7], info)
-    pick_date(p, d(-7)); first = p.evaluate("[...document.querySelectorAll('#reqView .rq-dd option')].map(o => o.value)")
+           and '今天' in info['selText'] and info['months'][0] == earliest[:7] and info['months'][-1] == d(90)[:7], info)
+    pick_date(p, earliest); first = p.evaluate("[...document.querySelectorAll('#reqView .rq-dd option')].map(o => o.value)")
     pick_date(p, d(90)); last = p.evaluate("[...document.querySelectorAll('#reqView .rq-dd option')].map(o => o.value)")
-    ok('日期欄（出差）：最早只到 7 天前、最晚只到 90 天後', first[0] == d(-7) and last[-1] == d(90), (first[:2], last[-2:]))
+    ok('日期欄（出差）：最早只到 4 天前（11/28 以前到 11/1）、最晚只到 90 天後', first[0] == earliest and last[-1] == d(90), (first[:2], last[-2:]))
     p.select_option('#reqView select.rq-dm', d(0)[:7])
     ok('日期欄：換回這個月 → 日留在同一號（有就留）', p.evaluate("document.querySelector('#reqView .rq-dd').value")[8:] == d(90)[8:]
        or p.evaluate("document.querySelector('#reqView .rq-dd').value")[:7] == d(0)[:7], p.evaluate("document.querySelector('#reqView .rq-dd').value"))
