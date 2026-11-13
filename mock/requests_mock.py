@@ -12,7 +12,7 @@ import time
 import uuid
 from datetime import date, timedelta
 
-REQ_MISS_DAYS = 7
+REQ_MISS_DAYS = 4   # 2026-11-14 由 7 改 4；T01 不限同 leave/ot/trip
 QR_SECRET = "mock-qr-secret"
 QR_WINDOW_MS = 30000
 COMMON = ["特休假", "事假", "病假", "生理假", "家庭照顧假"]
@@ -329,7 +329,10 @@ def register(ns):
         else:
             if diff > 0:
                 return None, ("bad_date", "不能補登還沒到的日期")
-            if diff < -REQ_MISS_DAYS:
+            t0m = today_str()
+            open_m = t0m <= "2026-11-28" and d >= "2026-11-01"
+            lim_m = max(REQ_MISS_DAYS, ddiff(t0m, "2026-11-01")) if open_m else REQ_MISS_DAYS
+            if diff < -lim_m:
                 return None, ("too_old", f"超過 {REQ_MISS_DAYS} 天不能自己申請，請店長代開")
             mt = str(b.get("miss_type") or "")
             # 同 Requests.gs（2026-11-11 B02）：已送出的忘打卡申請當成已經補上的卡

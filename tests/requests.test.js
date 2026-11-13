@@ -107,7 +107,7 @@ ok('加班：不分事前事後，原因必填、跨夜算對、超過 12 小時
   assert(r.ok); assert.strictEqual(r.request.hours, 3);
   assert.strictEqual(submit(sb, { kind: 'ot', date: '2026-10-12', start: '06:00', end: '20:00', reason: 'x' }).error, 'bad_time');
 });
-ok('忘打卡：只能 7 天內、不能未來；那天卡都有打成功就擋；只能補真的缺的那張', () => {
+ok('忘打卡：只能 4 天內（2026-11-14 由 7 改 4）、不能未來；那天卡都有打成功就擋；只能補真的缺的那張', () => {
   const sb = makeEnv({ events: [ev('2026-10-08T17:02:00+08:00', 'in'), ev('2026-10-06T10:58:00+08:00', 'in'), ev('2026-10-06T19:03:00+08:00', 'out')] });
   assert.strictEqual(submit(sb, { kind: 'miss', date: '2026-10-01', miss_type: 'out', end: '22:00', reason: '忘記按' }).error, 'too_old');
   assert.strictEqual(submit(sb, { kind: 'miss', date: '2026-10-10', miss_type: 'out', end: '22:00', reason: '忘記按' }).error, 'bad_date');

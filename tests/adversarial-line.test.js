@@ -472,12 +472,12 @@ ok('申請：別人不能取消／補附；取消後批次核准略過；作廢�
   assert.ok(sb.handleMgrReqVoid_({ mgr_key: 'MK', id: c.request.id, reason: '舊單' }).ok);
   assert.strictEqual(sb.handleMgrReqDecide_({ mgr_key: 'MK', id: c.request.id, decision: 'approve' }).error, 'not_pending');
 });
-ok('申請：日期驗真（閏日 2028-02-29 收、2026-02-29／11-31／13 月拒）；忘打卡 7 天內含第 7 天；加班 12 小時整收、91 天後拒；reason 截 100 字', () => {
+ok('申請：日期驗真（閏日 2028-02-29 收、2026-02-29／11-31／13 月拒）；忘打卡 T01 11/1 起都收、10/31 擋（2026-11-14 改 4 天＋T01 不限）；加班 12 小時整收、91 天後拒；reason 截 100 字', () => {
   const m = make({ now: T('2026-11-10T16:00:00'), self: { roster: [ME], events: [[T('2026-11-03T09:00:00'), 'E01', 'in'], [T('2026-11-02T09:00:00'), 'E01', 'in']] } });
   const sb = m.sb;
   assert.deepStrictEqual(['2028-02-29', '2026-02-29', '2026-11-31', '2026-13-01'].map(sb.reqIsDate_), [true, false, false, false]);
   assert.ok(sub(sb, { kind: 'miss', date: '2026-11-03', miss_type: 'out', end: '18:00', reason: '忘記按' }).ok);
-  assert.strictEqual(sub(sb, { kind: 'miss', date: '2026-11-02', miss_type: 'out', end: '18:00', reason: '忘記按' }).error, 'too_old');
+  assert.strictEqual(sub(sb, { kind: 'miss', date: '2026-10-31', miss_type: 'out', end: '18:00', reason: '忘記按' }).error, 'too_old');
   assert.strictEqual(sub(sb, { kind: 'ot', date: '2026-11-14', start: '08:00', end: '20:00', reason: 'x' }).request.hours, 12);
   assert.strictEqual(sub(sb, { kind: 'ot', date: '2027-02-09', start: '08:00', end: '10:00', reason: 'x' }).error, 'bad_date');
   assert.strictEqual(sub(sb, { kind: 'leave', date: '2026-11-20', leave_type: '事假', hours: 4, reason: 'x'.repeat(5000) + '\u0000' }).request.reason.length, 100);
