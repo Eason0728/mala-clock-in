@@ -1551,6 +1551,108 @@ function reqPeerWorked_(name, date) {
     return e.status === 'ok' && ms >= dayStart && ms < dayStart + 86400000;
   });
 }
+/* ── 正職上班日滿 8 小時（2026-11-13 Eason 定案，REQ_FT8_FROM 預設 2026-11-01，指令碼屬性設 off＝整條關掉）──
+   正職、班表上班日（W）：核定上班＋出差＋已核准假單（任何假別，含補休；看申請單，不看登記）≥ 8 小時，不滿就不能核定。
+   正職與否（sched_ft）、班表日別、是不是支援帳號（sched_support）都由營運系統伺服器讀排班與管理系統身分帶入，只有營運系統個人帳號代轉才採信；
+   沒帶（舊值班核定頁、讀不到排班、央廚沒勾正職計時）＝這條不檢查。
+   同一天兩家店（Eason 第 5 題＋D）：別家當天有打卡、還沒核定 → 先放行；別家已核定 → 兩家（上班＋出差＋假單）相加要滿 8。
+   加班算在被支援那家：知道這家是支援帳號（sched_support true）→ 加班單要有「兩家合計超過 8」那麼多；
+   這家是原單位（false）→ 這家不用開加班單，改看被支援那家已核准的加班單夠不夠。 */
+var REQ_FT8_FROM_DEFAULT_ = '2026-11-01';
+var REQ_FT8_H = 8;
+var REQ_FT8_STORE_NAMES_ = { gf: '小辛辣新竹光復', mztjs: '墨竹亭新竹金山', mztgf: '墨竹亭新竹光復', mztlzl: '墨竹亭台北六張犁', mztmc: '墨竹亭台中美村',
+  mztrg: '墨竹亭內湖瑞光', mztwx: '墨竹亭台中文心', hq: '總部', cf: '中央廚房' };
+function reqFt8StoreNames_(codes) { return codes.map(function (c) { return REQ_FT8_STORE_NAMES_[c] || c; }).join('、') || '別家店'; }
+function reqFt8From_() {
+  var v = '';
+  try { v = String(PropertiesService.getScriptProperties().getProperty('REQ_FT8_FROM') || ''); } catch (e) {}
+  if (v === 'off') return null;
+  return reqIsDate_(v) ? v : REQ_FT8_FROM_DEFAULT_;
+}
+/** 別家店這個人這天：worked（有成功打卡）、pending（有打卡但還沒核定）、h（已核定上班＋出差＋假單）、ot（已核准加班單）、names（店代碼）。
+ *  用 REST_PEERS_ 依姓名對（同 restPeerEvents_）；讀不到的店當作還沒核定（先放行），不誤擋。 */
+function reqPeerDay_(name, date) {
+  var out = { worked: false, pending: false, h: 0, ot: 0, names: [] };
+  if (typeof restPeerEvents_ !== 'function' || !name) return out;
+  var dayStart = Date.parse(date + 'T00:00:00+08:00'), dayEnd = dayStart + 86400000, codes = [];
+  // 先用打卡快速通道同一支（名冊快取 6 小時）找出這天在別家有成功打卡的店，多數人只在一家店＝不開任何別家的表
+  restPeerEvents_(name, dayStart).forEach(function (e) {
+    var t = new Date(String(e.ts)).getTime();
+    if (e.status === 'ok' && t >= dayStart && t < dayEnd && codes.indexOf(e.store) < 0) codes.push(e.store);
+  });
+  if (!codes.length) return out;
+  out.worked = true;
+  var nm = typeof restName_ === 'function' ? restName_(name) : String(name).trim();
+  REST_PEERS_.forEach(function (p) {
+    if (!p || codes.indexOf(p.code) < 0) return;
+    out.names.push(p.code);
+    try {
+      var ss = SpreadsheetApp.openById(p.ss);
+      var ids = readSheetAsObjects(ss.getSheetByName('roster')).rows
+        .filter(function (r) { return (typeof restName_ === 'function' ? restName_(r.name) : String(r.name || '').trim()) === nm; })
+        .map(function (r) { return String(r.emp_id); });
+      var day = buildLatestApprovedMap(readSheetAsObjects(ss.getSheetByName('approved')).rows)[date] || {};
+      var recs = ids.map(function (id) { return day[id]; }).filter(Boolean);
+      if (!recs.length) { out.pending = true; return; }
+      recs.forEach(function (r) { out.h += Number(r.approved_hours) || 0; });
+      reqRows_(ss).forEach(function (r) {   // 假單同這家：看已核准的假單
+        if (ids.indexOf(String(r.emp_id)) < 0 || String(r.date) !== date || r.status !== 'approved') return;
+        if (r.kind === 'ot') out.ot += Number(r.hours) || 0;
+        else if (r.kind === 'leave') out.h += Number(r.hours) || 0;
+      });
+    } catch (e) { out.pending = true; Logger.log('滿 8 小時讀別家店 ' + p.code + ' 失敗（當作還沒核定、先放行）：' + e); }
+  });
+  out.h = Math.round(out.h * 100) / 100; out.ot = Math.round(out.ot * 100) / 100;
+  return out;
+}
+/** 回 null（不適用）或 {probs:[{rule,text}], dropOt, otNeed}。opt.peer 可直接給（測試、撤銷試算用），沒給才讀別家店。 */
+function reqFt8_(date, approvedHours, otHave, opt, okRows) {
+  var from = reqFt8From_();
+  if (!from || date < from || opt.sched_ft !== true || String(opt.sched_day || '') !== 'W') return null;
+  // 假單時數看已核准的假單（11/11 以前核定時沒比對登記和單，不能只信登記的）；出差已經在核定時數裡
+  var leaveH = Math.round((okRows || []).reduce(function (a, r) { return a + (r.kind === 'leave' ? Number(r.hours) || 0 : 0); }, 0) * 100) / 100;
+  var trip = Number(opt.trip_hours) || 0;
+  var work = Math.round((Number(approvedHours) - trip) * 100) / 100;
+  var own = Math.round((Number(approvedHours) + leaveH) * 100) / 100;
+  var support = opt.sched_support === true, home = opt.sched_support === false;
+  var out = { probs: [], dropOt: false, otNeed: 0, gap: 0 };
+  var peer = opt.peer || null, getPeer = function () { if (!peer) peer = reqPeerDay_(opt.name, date); return peer; };
+  var f = reqBindFmt_, gap;
+  if (own < REQ_FT8_H - 0.005) {
+    var pr = getPeer();
+    if (!pr.worked) {
+      gap = Math.round((REQ_FT8_H - own) * 100) / 100; out.gap = gap;
+      out.probs.push({ rule: 'ft8', text: '正職上班日要滿 ' + REQ_FT8_H + ' 小時（上班 ' + f(work) + '＋出差 ' + f(trip) + '＋假單 ' + f(leaveH) + '＝' + f(own) +
+        ' 小時），還差 ' + f(gap) + ' 小時，要有已核准的假單或補休單' });
+    } else if (!pr.pending) {
+      var comb = Math.round((own + pr.h) * 100) / 100;
+      if (comb < REQ_FT8_H - 0.005) out.gap = Math.round((REQ_FT8_H - comb) * 100) / 100;
+      if (comb < REQ_FT8_H - 0.005) out.probs.push({ rule: 'ft8', text: '正職上班日要滿 ' + REQ_FT8_H + ' 小時：這家 ' + f(own) + '＋' + reqFt8StoreNames_(pr.names) + ' ' + f(pr.h) +
+        '＝' + f(comb) + ' 小時，還差 ' + f(Math.round((REQ_FT8_H - comb) * 100) / 100) + ' 小時，要有已核准的假單或補休單' });
+    }
+  }
+  // 跨店加班算被支援那家：只有知道這家是不是支援帳號、而且別家當天有出勤才看
+  if (support || home) {
+    var pr2 = getPeer();
+    if (pr2.worked) {
+      if (home) out.dropOt = true;   // 原單位不用開加班單
+      if (!pr2.pending) {
+        var comb2 = Math.round((own + pr2.h) * 100) / 100, need = Math.round((comb2 - REQ_FT8_H) * 100) / 100;
+        if (support) {
+          out.dropOt = true;
+          if (need > 0.005 && otHave + 0.005 < need) {
+            out.otNeed = need;
+            out.probs.push({ rule: 'ot_hours', text: '兩家合計 ' + f(comb2) + ' 小時，超過 ' + REQ_FT8_H + ' 的 ' + f(need) + ' 小時要在這家（被支援）開加班單（已核准 ' + f(otHave) + ' 小時）' });
+          }
+        } else if (need > 0.005 && pr2.ot + 0.005 < need) {
+          out.probs.push({ rule: 'ot_peer', text: '兩家合計 ' + f(comb2) + ' 小時，超過 ' + REQ_FT8_H + ' 的 ' + f(need) + ' 小時要在被支援的 ' + reqFt8StoreNames_(pr2.names) +
+            ' 開加班單（那邊已核准 ' + f(pr2.ot) + ' 小時）' });
+        }
+      }
+    }
+  }
+  return out;
+}
 /** 不能核定回 {ok:false, error:'need_request'|'need_diff_reason', message, ...}；可以回 null。
  *  opt：leaves、trip_hours、sched_day（H／R／W／空白）、diff_reason、acting（考勤管理個人帳號）；rows／force_strict／preview 給只讀試算用。 */
 function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindow, opt) {
@@ -1603,8 +1705,16 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   var missBad = bindOn && !(tripOk && !loneCard) && miss > missHave;   // 出差日只有「湊不成完整一段的卡」才要忘打卡單
   if (missBad) add('miss', '少了 ' + miss + ' 張打卡，要有忘打卡單（已核准 ' + missHave + ' 張）');
   if (strict) reqStrictLeaveProbs_(ok, opt.leaves).forEach(function (t) { add('leave', t); });
+  // 正職上班日滿 8 小時＋跨店加班算被支援那家（2026-11-13 Eason，見 reqFt8_ 檔頭）
+  var ft8 = reqFt8_(date, approvedHours, otHave, opt, ok);
+  if (ft8) {
+    if (ft8.dropOt) probs = probs.filter(function (p) { return p.rule !== 'ot_hours' && p.rule !== 'ot_void'; });   // 跨店：加班單只看被支援那家（下面重算）
+    if (ft8.dropOt && !ft8.otNeed) otBad = false;
+    if (ft8.otNeed) { otBad = true; otNeed = ft8.otNeed; }
+    ft8.probs.forEach(function (p) { add(p.rule, p.text); });
+  }
   var diffMin = strict ? reqPunchDiffMin_(periods, segs, breakWindow) : null;
-  if (opt.preview) return { probs: probs, diff_min: diffMin, ot_have: otHave, ot_need: otNeed };
+  if (opt.preview) return { probs: probs, diff_min: diffMin, ot_have: otHave, ot_need: otNeed, ft8_gap: ft8 ? ft8.gap : 0 };
   if (probs.length) {
     var noLine = false;
     try { noLine = reqNoLine_(findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, empId)); } catch (e) {}   // 只在要擋的時候才讀名冊；讀不到照一般字句
@@ -1620,7 +1730,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
           : '，再回來核定（核准後就不用補忘打卡單）。' + (otBad || pend.length ? hint : ''));
     }
     return { ok: false, error: 'need_request', message: '這天還不能核定：' + probs.map(function (p) { return p.text; }).join('；') + '。' + hint,
-             need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length } };
+             need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length, leave_hours: ft8 ? ft8.gap : 0 } };
   }
   if (diffMin != null && diffMin >= REQ_STRICT_DIFF_MIN && !reqCleanDiffReason_(opt.diff_reason)) {
     return { ok: false, error: 'need_diff_reason', diff_min: diffMin,
@@ -1635,7 +1745,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
    apply 沒帶＝只讀試算；apply:true＝把那幾天 approved 的列整批搬到 approved_revoked 分頁（留底、可復原），那天回到待核定。
    只收 REQ_STRICT_FROM 之前的日子（加嚴之後送出時本來就擋）。請假分頁不動，主管重送核定時照常取代。總部的鏡像列（mirror_src 有值）不看。 */
 var BIND_REVOKE_SHEET_ = 'approved_revoked';
-function bindRevokeScan_(ss, from, to) {
+function bindRevokeScan_(ss, from, to, cand) {
   var rows = reqRows_(ss), items = [];
   var approvedMap = buildLatestApprovedMap(readSheetAsObjects(ss.getSheetByName('approved')).rows);
   var events = dropDupIgnored_(readSheetAsObjects(ss.getSheetByName('events')).rows, dupIgnoreSet_(approvedMap));
@@ -1645,13 +1755,15 @@ function bindRevokeScan_(ss, from, to) {
   Object.keys(approvedMap).forEach(function (date) {
     if (date < from || date > to) return;
     Object.keys(approvedMap[date]).forEach(function (emp) {
+      var cd = cand ? cand[date + '|' + emp] : null;
+      if (cand && !cd) return;   // 滿 8 小時：只看營運系統給的候選（正職、班表上班日）
       var rec = approvedMap[date][emp], name = String(rec.name || '').trim();
       if (String(rec.mirror_src || '').trim()) return;   // 總部從別店抄來的鏡像列：申請單不抄、隔天又會抄回來，看原店就好
       var periods = parsePeriodsStr(rec.periods).map(function (p) {
         var st = reqHmMs_(date, p.start), en = reqHmMs_(date, p.end);
         return { startMs: st, endMs: en <= st ? en + 86400000 : en };
       });
-      if (!periods.length) return;   // 整天請假／整天出差沒有時段，綁單本來就不看
+      if (!periods.length && !cand) return;   // 整天請假／整天出差沒有時段，綁單本來就不看（滿 8 小時要看：整天只請 4 小時假也算不滿）
       var leaves = leaveRows.filter(function (r) { return normCellDate(r['日期']) === date && String(r['姓名'] || '').trim() === name; })
         .map(function (r) { return { type: String(r['假別'] || ''), hours: r['時數'] === '' ? '' : Number(r['時數']) }; });
       var trip = leaves.reduce(function (a, x) { return a + (x.type === '出差' ? Number(x.hours) || 0 : 0); }, 0);
@@ -1662,14 +1774,32 @@ function bindRevokeScan_(ss, from, to) {
       if (punchDay && typeof markWorkingSeg_ === 'function') markWorkingSeg_(punchDay, date, segs);
       scanned++;
       var r = reqBindCheck_(ss, emp, date, Number(rec.approved_hours) || 0, periods, segs, noPunchBreakWindow(date),
-        { leaves: leaves, trip_hours: trip, rows: rows, preview: true });
-      var probs = r ? r.probs.filter(function (p) { return p.rule === 'ot_hours' || p.rule === 'miss'; }) : [];
+        cand ? { leaves: leaves, trip_hours: trip, rows: rows, preview: true, name: name, sched_ft: true, sched_day: 'W', sched_support: typeof cd.support === 'boolean' ? cd.support : null }
+             : { leaves: leaves, trip_hours: trip, rows: rows, preview: true });
+      var probs = r ? r.probs.filter(function (p) { return cand ? p.rule === 'ft8' : (p.rule === 'ot_hours' || p.rule === 'miss'); }) : [];
       if (probs.length) items.push({ date: date, emp_id: emp, name: name, hours: Number(rec.approved_hours) || 0,
         periods: String(rec.periods || ''), manager_name: String(rec.manager_name || ''), probs: probs.map(function (p) { return p.text; }) });
     });
   });
   items.sort(function (a, b) { return (a.date + '|' + a.emp_id).localeCompare(b.date + '|' + b.emp_id); });
   return { scanned: scanned, items: items };
+}
+/* 滿 8 小時撤銷（2026-11-13 Eason 第 4、6 題）：{action:'ft8_revoke', admin_key, items:[{emp_id, date, support?}], apply?}
+   items＝營運系統依排班算出的「正職、班表上班日」候選（打卡端不知道誰是正職）；用 reqBindCheck_ 預覽只挑 ft8 不滿的，
+   apply 照 bind_revoke 把 approved 列搬到 approved_revoked 留底，那天回待核定。沒有 strict_range 限制（規則上線前核定的都要看）。 */
+function handleFt8Revoke_(body) {
+  if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  if (!reqFt8From_()) return { ok: false, error: 'ft8_off', message: '滿 8 小時已關閉（REQ_FT8_FROM=off）' };
+  if (!Array.isArray(body.items) || body.items.length > 5000) return { ok: false, error: 'bad_items' };
+  var cand = {}, from = '9999-12-31', to = '0000-01-01';
+  for (var i = 0; i < body.items.length; i++) {
+    var it = body.items[i] || {}, d = String(it.date || ''), e = String(it.emp_id || '');
+    if (!reqIsDate_(d) || !e || d < reqFt8From_()) return { ok: false, error: 'bad_items', message: '第 ' + (i + 1) + ' 筆日期或員編不對' };
+    cand[d + '|' + e] = { support: typeof it.support === 'boolean' ? it.support : null };
+    if (d < from) from = d; if (d > to) to = d;
+  }
+  if (!body.items.length) return { ok: true, apply: body.apply === true, scanned: 0, items: [], moved: 0 };
+  return bindRevokeRun_(from, to, cand, body.apply === true);
 }
 function handleBindRevoke_(body) {
   if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
@@ -1679,12 +1809,15 @@ function handleBindRevoke_(body) {
   if (!bindFrom) return { ok: false, error: 'bind_off', message: '核定綁單已關閉（REQ_BIND_FROM=off）' };
   if (from < bindFrom) return { ok: false, error: 'before_bind', message: '起日早於核定綁單起算日 ' + bindFrom };
   if (strictFrom && to >= strictFrom) return { ok: false, error: 'strict_range', message: '只收 ' + strictFrom + ' 以前的日子（之後送出時本來就擋）' };
+  return bindRevokeRun_(from, to, null, body.apply === true);
+}
+function bindRevokeRun_(from, to, cand, apply) {
   var ss = getSS();
-  if (body.apply !== true) { var pv = bindRevokeScan_(ss, from, to); return { ok: true, apply: false, from: from, to: to, scanned: pv.scanned, items: pv.items }; }
+  if (!apply) { var pv = bindRevokeScan_(ss, from, to, cand); return { ok: true, apply: false, from: from, to: to, scanned: pv.scanned, items: pv.items }; }
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) return { ok: false, error: 'busy' };
   try {
-    var scan = bindRevokeScan_(ss, from, to);   // 鎖內重算，避免剛好有人重送核定
+    var scan = bindRevokeScan_(ss, from, to, cand);   // 鎖內重算，避免剛好有人重送核定
     if (!scan.items.length) return { ok: true, apply: true, from: from, to: to, scanned: scan.scanned, items: [], moved: 0 };
     var hit = {};
     scan.items.forEach(function (it) { hit[it.date + '|' + it.emp_id] = it; });
