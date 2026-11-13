@@ -17,7 +17,23 @@ var REQ_HEADERS_ = ['id', 'created_at', 'emp_id', 'name', 'kind', 'date', 'leave
 var REQ_COMP_LEAVE_ = '補休';   // 補休（2026-10-09）：不在 Code.gs LEAVE_TYPES 白名單裡，請假申請另外放行
 var REQ_KINDS_ = { leave: '請假', ot: '加班', trip: '出差', miss: '忘打卡' };
 var REQ_MISS_DAYS = 7;          // 忘打卡只能申請 7 天內（含今天）
-var REQ_LEAVE_PAST_DAYS = 7;    // 請假／加班／出差可補申請到 7 天前（2026-11-05 Eason：原本 31 天）
+var REQ_LEAVE_PAST_DAYS = 4;    // 請假（含補休）／加班／出差可補申請到 4 天前，超過由店長代開（2026-11-14 Eason：原本 7 天，11-05 前是 31 天）
+/* T01（11/1–11/28）先不限幾天前（2026-11-14 Eason）：今天還在 11/28（含）以前，11/1 起的日子都能自己補申請；
+   11/29（T02 第一天）起一律只能補到 4 天前，T01 的日子也一樣。忘打卡另外照 REQ_MISS_DAYS（7 天），不受影響。 */
+var REQ_PAST_OPEN_FROM_ = '2026-11-01';
+var REQ_PAST_OPEN_TO_ = '2026-11-28';
+/** 請假／加班／出差最多能補申請到幾天前（date、today 都是台北日期字串）。 */
+function reqPastLimit_(date, today) {
+  if (today <= REQ_PAST_OPEN_TO_ && date >= REQ_PAST_OPEN_FROM_) return Math.max(REQ_LEAVE_PAST_DAYS, reqDayDiff_(today, REQ_PAST_OPEN_FROM_));
+  return REQ_LEAVE_PAST_DAYS;
+}
+/** 請假／加班／出差的日期超出範圍 → 錯誤物件；可以回 null。label：請假／加班／出差 */
+function reqPastCheck_(label, date, today, proxy) {
+  var diff = reqDayDiff_(date, today);
+  if (diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: label + '最遠只能申請到 ' + REQ_FUTURE_DAYS + ' 天後' };
+  if (!proxy && diff < -reqPastLimit_(date, today)) return { error: 'too_old', message: '超過 ' + REQ_LEAVE_PAST_DAYS + ' 天不能自己申請' + label + '，請店長代開' };
+  return null;
+}
 var REQ_FUTURE_DAYS = 90;       // 請假／加班最遠申請到 90 天後
 var REQ_LIST_DAYS = 60;         // 「我的申請」看 60 天
 var REQ_REASON_MAX = 100;
@@ -438,7 +454,8 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
   var row = { kind: kind, date: date, leave_type: '', start: '', end: '', hours: '', miss_type: '', reason: reason, comp: '' };
 
   if (kind === 'leave') {
-    if ((!proxy && diff < -REQ_LEAVE_PAST_DAYS) || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '請假只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
+    var pastErr = reqPastCheck_('請假', date, today, proxy);
+    if (pastErr) return pastErr;
     var lt = reqClean_(b.leave_type, 30);
     if (!lt || lt === '出差' || (LEAVE_TYPES.indexOf(lt) < 0 && lt !== REQ_COMP_LEAVE_ && !(proxy && typeof leaveTypeAllowedByPayroll === 'function' && leaveTypeAllowedByPayroll(lt, b.mgr_key)))) return { error: 'bad_leave_type', message: '請選假別' };
     row.leave_type = lt;
@@ -454,7 +471,8 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
       row.hours = h;
     }
   } else if (kind === 'ot') {
-    if ((!proxy && diff < -REQ_LEAVE_PAST_DAYS) || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '加班只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
+    var pastErr = reqPastCheck_('加班', date, today, proxy);
+    if (pastErr) return pastErr;
     row.start = reqHm_(b.start); row.end = reqHm_(b.end);
     if (!row.start || !row.end) return { error: 'bad_time', message: '請填加班時段' };
     row.hours = reqSpanHours_(row.start, row.end);
@@ -478,7 +496,8 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     // 補休（2026-11-01 改每月加減結算）：加班不再分「加班費／換補休」，核准的加班都算進當月補休帳；comp 欄留空（舊列的值不再使用）
   } else if (kind === 'trip') {
     // 出差（2026-10-09）：存成 leave_type＝出差；核准後核定頁預填「出差」＋時數（出差時數與上班時段相加，整天出差可以沒有時段）
-    if ((!proxy && diff < -REQ_LEAVE_PAST_DAYS) || diff > REQ_FUTURE_DAYS) return { error: 'bad_date', message: '出差只能申請 ' + REQ_LEAVE_PAST_DAYS + ' 天前到 ' + REQ_FUTURE_DAYS + ' 天後' };
+    var pastErr = reqPastCheck_('出差', date, today, proxy);
+    if (pastErr) return pastErr;
     row.leave_type = '出差';
     if (b.start || b.end) {
       row.start = reqHm_(b.start); row.end = reqHm_(b.end);
@@ -1337,7 +1356,7 @@ function handleMgrReqProxy_(body) {
   if (kind === 'leave' && !reqClean_(body.reason, REQ_REASON_MAX)) return { ok: false, error: 'need_reason', message: '代開要寫原因' };
   var date = String(body.date || ''), today = todayTaipeiStr();
   if (!reqIsDate_(date)) return { ok: false, error: 'bad_date', message: '請選日期' };
-  var diff = reqDayDiff_(date, today), limit = kind === 'miss' ? REQ_MISS_DAYS : REQ_LEAVE_PAST_DAYS;
+  var diff = reqDayDiff_(date, today), limit = kind === 'miss' ? REQ_MISS_DAYS : reqPastLimit_(date, today);
   if (diff < -REQ_PROXY_PAST_DAYS) return { ok: false, error: 'too_old', message: '代開最多到 ' + REQ_PROXY_PAST_DAYS + ' 天前' };
   var ss = getSS();
   var me = findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, body.emp_id);
@@ -1345,7 +1364,7 @@ function handleMgrReqProxy_(body) {
   /* 7 天內同仁自己用 LINE 申請；沒綁 LINE 的人送不了單，今天和過去的日子可以由主管代開（2026-11-09 Eason）。 */
   /* 2026-11-11（B30）：名冊已停用（離職）的同仁也一樣——LINE 雖然還綁著，本人已經送不了單，
      原本要等超過 7 天店長才能代開，這幾天核定又被「缺單」擋住。 */
-  if (diff >= -limit && !(diff <= 0 && (reqNoLine_(me) || !reqTrue_(me.active)))) return { ok: false, error: 'not_old', message: limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天或同仁沒綁 LINE 才能由主管代開' };
+  if (diff >= -limit && !(diff <= 0 && (reqNoLine_(me) || !reqTrue_(me.active)))) return { ok: false, error: 'not_old', message: (kind !== 'miss' && limit > REQ_LEAVE_PAST_DAYS) ? '11/28 以前，11 月的請假、加班、出差請同仁自己在 LINE「加班請假」申請；同仁沒綁 LINE 才能由主管代開' : limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天或同仁沒綁 LINE 才能由主管代開' };
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
   try {

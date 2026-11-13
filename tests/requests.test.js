@@ -344,15 +344,15 @@ ok('出差：整天填時數／只一段算時數；地點、事由必填，地�
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-32', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');   // Codex#13 不存在的日子
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-11-31', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2027-02-29', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');
-  assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-01', hours: 8, place: '總部', why: 'x' }).error, 'bad_date');   // 超過 7 天前（2026-11-05 由 31 改 7）
-  assert(submit(sb, { kind: 'trip', date: '2026-10-02', hours: 8, place: '總部', why: 'x' }).ok);   // 7 天內可補
-  // 2026-11-05：請假／加班／出差都改 7 天前（今天 10/09 → 10/02 可、10/01 擋）
-  assert(submit(sb, { kind: 'leave', date: '2026-10-02', leave_type: '事假', hours: 4 }).ok);
-  const old = submit(sb, { kind: 'leave', date: '2026-10-01', leave_type: '事假', hours: 4 });
-  assert.strictEqual(old.error, 'bad_date'); assert.strictEqual(old.message, '請假只能申請 7 天前到 90 天後');
-  assert(submit(sb, { kind: 'ot', date: '2026-10-02', start: '21:00', end: '22:00', reason: 'x' }).ok);
-  const oldOt = submit(sb, { kind: 'ot', date: '2026-10-01', start: '21:00', end: '22:00', reason: 'x' });
-  assert.strictEqual(oldOt.error, 'bad_date'); assert.strictEqual(oldOt.message, '加班只能申請 7 天前到 90 天後');
+  assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-04', hours: 8, place: '總部', why: 'x' }).error, 'too_old');   // 超過 4 天前（2026-11-14 由 7 改 4）
+  assert(submit(sb, { kind: 'trip', date: '2026-10-05', hours: 8, place: '總部', why: 'x' }).ok);   // 4 天內可補
+  // 2026-11-14：請假／加班／出差都改 4 天前（今天 10/09 → 10/05 可、10/04 擋，要店長代開）
+  assert(submit(sb, { kind: 'leave', date: '2026-10-05', leave_type: '事假', hours: 4 }).ok);
+  const old = submit(sb, { kind: 'leave', date: '2026-10-04', leave_type: '事假', hours: 4 });
+  assert.strictEqual(old.error, 'too_old'); assert.strictEqual(old.message, '超過 4 天不能自己申請請假，請店長代開');
+  assert(submit(sb, { kind: 'ot', date: '2026-10-05', start: '21:00', end: '22:00', reason: 'x' }).ok);
+  const oldOt = submit(sb, { kind: 'ot', date: '2026-10-04', start: '21:00', end: '22:00', reason: 'x' });
+  assert.strictEqual(oldOt.error, 'too_old'); assert.strictEqual(oldOt.message, '超過 4 天不能自己申請加班，請店長代開');
   assert.strictEqual(submit(sb, { kind: 'trip', date: '2026-10-12', hours: 4, place: '總部', why: 'x' }).error, 'duplicate');
   // 地點裡的全形分號換掉，reason 才拆得回來
   r = submit(sb, { kind: 'trip', date: '2026-10-20', hours: 8, place: '台中；美村', why: 'x' });

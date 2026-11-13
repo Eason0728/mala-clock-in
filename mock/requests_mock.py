@@ -261,8 +261,14 @@ def register(ns):
                 return None, ("bad_hours", f"請填{what}時數（最少 0.25 小時）")
             return h, None
 
-        if kind in ("leave", "ot", "trip") and (diff < -7 or diff > 90):   # 同 Requests.gs REQ_LEAVE_PAST_DAYS（2026-11-05 由 31 改 7）／REQ_FUTURE_DAYS
-            return None, ("bad_date", f"{KIND[kind]}只能申請 7 天前到 90 天後")
+        if kind in ("leave", "ot", "trip"):   # 同 Requests.gs reqPastCheck_（2026-11-14：4 天；11/28 以前 11 月的日子不限）
+            t0 = today_str()
+            open_t01 = t0 <= "2026-11-28" and d >= "2026-11-01"
+            lim = max(4, ddiff(t0, "2026-11-01")) if open_t01 else 4
+            if diff > 90:
+                return None, ("bad_date", f"{KIND[kind]}最遠只能申請到 90 天後")
+            if diff < -lim:
+                return None, ("too_old", f"超過 4 天不能自己申請{KIND[kind]}，請店長代開")
         if kind == "leave":
             lt = str(b.get("leave_type") or "")
             if not lt or lt == "出差" or lt not in LEAVE_TYPES:
