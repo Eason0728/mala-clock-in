@@ -3,7 +3,7 @@
  *
  * 五家店整檔共用（同 Liff.gs）：同仁從 LINE 打卡頁送申請 → 存這家店的 requests 分頁 → 值班主管在核定頁審。
  * 核准只是「預填當天核定」，主管送出核定才算數；打卡紀錄（events）一律不改。
- * 忘打卡：只能申請 7 天內、補登後仍算一次忘刷卡（不改全勤規則）。
+ * 忘打卡：只能申請 4 天內（2026-11-14 由 7 改 4；T01 不限，見 reqPastLimit_）、補登後仍算一次忘刷卡（不改全勤規則）。
  * 結果不推播（推播要花額度）：同仁在「我的申請」看，或下一次打卡成功時畫面告知（reqUnseenNotes_）。
  * 程式碼.js 不動；動作掛在 Liff.gs 的 LIFF_HANDLERS。
  */
@@ -16,16 +16,17 @@ var REQ_HEADERS_ = ['id', 'created_at', 'emp_id', 'name', 'kind', 'date', 'leave
                     'proxy_by'];   // 主管代開（2026-11-06）：代開人姓名；有值＝只有總監層級能審
 var REQ_COMP_LEAVE_ = '補休';   // 補休（2026-10-09）：不在 Code.gs LEAVE_TYPES 白名單裡，請假申請另外放行
 var REQ_KINDS_ = { leave: '請假', ot: '加班', trip: '出差', miss: '忘打卡' };
-var REQ_MISS_DAYS = 7;          // 忘打卡只能申請 7 天內（含今天）
+var REQ_MISS_DAYS = 4;          // 忘打卡只能申請 4 天內（含今天；2026-11-14 Eason 由 7 改 4，T01 一樣不限）
 var REQ_LEAVE_PAST_DAYS = 4;    // 請假（含補休）／加班／出差可補申請到 4 天前，超過由店長代開（2026-11-14 Eason：原本 7 天，11-05 前是 31 天）
 /* T01（11/1–11/28）先不限幾天前（2026-11-14 Eason）：今天還在 11/28（含）以前，11/1 起的日子都能自己補申請；
-   11/29（T02 第一天）起一律只能補到 4 天前，T01 的日子也一樣。忘打卡另外照 REQ_MISS_DAYS（7 天），不受影響。 */
+   11/29（T02 第一天）起一律只能補到 4 天前，T01 的日子也一樣。忘打卡同一套（2026-11-14 Eason 追加），天數看 REQ_MISS_DAYS。 */
 var REQ_PAST_OPEN_FROM_ = '2026-11-01';
 var REQ_PAST_OPEN_TO_ = '2026-11-28';
-/** 請假／加班／出差最多能補申請到幾天前（date、today 都是台北日期字串）。 */
-function reqPastLimit_(date, today) {
-  if (today <= REQ_PAST_OPEN_TO_ && date >= REQ_PAST_OPEN_FROM_) return Math.max(REQ_LEAVE_PAST_DAYS, reqDayDiff_(today, REQ_PAST_OPEN_FROM_));
-  return REQ_LEAVE_PAST_DAYS;
+/** 請假／加班／出差（base 省略）、忘打卡（base＝REQ_MISS_DAYS）最多能補申請到幾天前（date、today 都是台北日期字串）。 */
+function reqPastLimit_(date, today, base) {
+  var b = base == null ? REQ_LEAVE_PAST_DAYS : base;
+  if (today <= REQ_PAST_OPEN_TO_ && date >= REQ_PAST_OPEN_FROM_) return Math.max(b, reqDayDiff_(today, REQ_PAST_OPEN_FROM_));
+  return b;
 }
 /** 請假／加班／出差的日期超出範圍 → 錯誤物件；可以回 null。label：請假／加班／出差 */
 function reqPastCheck_(label, date, today, proxy) {
@@ -519,7 +520,7 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     row.reason = reqTripReason_(place, why);
   } else {   // miss
     if (diff > 0) return { error: 'bad_date', message: '不能補登還沒到的日期' };
-    if (!proxy && diff < -REQ_MISS_DAYS) return { error: 'too_old', message: '超過 ' + REQ_MISS_DAYS + ' 天不能自己申請，請店長代開' };
+    if (!proxy && diff < -reqPastLimit_(date, today, REQ_MISS_DAYS)) return { error: 'too_old', message: '超過 ' + REQ_MISS_DAYS + ' 天不能自己申請，請店長代開' };
     var mt = String(b.miss_type || '');
     // 已送出（審核中、已核准）的忘打卡申請當成已經補上的卡（2026-11-11 B02）：兩段班一天漏好幾張時才補得齊，
     // 同一張卡也不會被補兩次。info0＝只看真的打卡（分辨「卡本來就在」和「已經有人申請補這張」，兩種訊息不一樣）。
@@ -1359,7 +1360,7 @@ function handleMgrReqProxy_(body) {
   if (kind === 'leave' && !reqClean_(body.reason, REQ_REASON_MAX)) return { ok: false, error: 'need_reason', message: '代開要寫原因' };
   var date = String(body.date || ''), today = todayTaipeiStr();
   if (!reqIsDate_(date)) return { ok: false, error: 'bad_date', message: '請選日期' };
-  var diff = reqDayDiff_(date, today), limit = kind === 'miss' ? REQ_MISS_DAYS : reqPastLimit_(date, today);
+  var diff = reqDayDiff_(date, today), limit = reqPastLimit_(date, today, kind === 'miss' ? REQ_MISS_DAYS : null);
   if (diff < -REQ_PROXY_PAST_DAYS) return { ok: false, error: 'too_old', message: '代開最多到 ' + REQ_PROXY_PAST_DAYS + ' 天前' };
   var ss = getSS();
   var me = findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, body.emp_id);
@@ -1367,7 +1368,7 @@ function handleMgrReqProxy_(body) {
   /* 7 天內同仁自己用 LINE 申請；沒綁 LINE 的人送不了單，今天和過去的日子可以由主管代開（2026-11-09 Eason）。 */
   /* 2026-11-11（B30）：名冊已停用（離職）的同仁也一樣——LINE 雖然還綁著，本人已經送不了單，
      原本要等超過 7 天店長才能代開，這幾天核定又被「缺單」擋住。 */
-  if (diff >= -limit && !(diff <= 0 && (reqNoLine_(me) || !reqTrue_(me.active)))) return { ok: false, error: 'not_old', message: (kind !== 'miss' && limit > REQ_LEAVE_PAST_DAYS) ? '11/28 以前，11 月的請假、加班、出差請同仁自己在 LINE「加班請假」申請；同仁沒綁 LINE 才能由主管代開' : limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天或同仁沒綁 LINE 才能由主管代開' };
+  if (diff >= -limit && !(diff <= 0 && (reqNoLine_(me) || !reqTrue_(me.active)))) return { ok: false, error: 'not_old', message: limit > (kind === 'miss' ? REQ_MISS_DAYS : REQ_LEAVE_PAST_DAYS) ? '11/28 以前，11 月的請假、加班、出差、忘打卡請同仁自己在 LINE「加班請假」申請；同仁沒綁 LINE 才能由主管代開' : limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天或同仁沒綁 LINE 才能由主管代開' };
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
   try {
@@ -1789,7 +1790,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
     try { noLine = reqNoLine_(findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, empId)); } catch (e) {}   // 只在要擋的時候才讀名冊；讀不到照一般字句
     var hint = pend.length ? '這天有 ' + pend.length + ' 張申請還在審核中，請先到「申請審核」處理再送。' + (noLine ? '這位同仁沒綁 LINE，還缺別張單可以繼續代開。' : '')
       : noLine ? '這位同仁沒綁 LINE，請店長在考勤管理「代開申請」，送總監層級審核。'
-      : '請同仁在 LINE「加班請假」補申請；超過 7 天請店長在考勤管理「代開申請」，送總監層級審核。';
+      : '請同仁在 LINE「加班請假」補申請；超過 4 天（11/28 以前 11 月的日子不限）請店長在考勤管理「代開申請」，送總監層級審核。';
     // 2026-11-11（B35）：少卡、而那天有新手機待核准的卡（舊連結才會有）——出路是先核准裝置，不是補忘打卡單
     // 待核准的張數補得齊缺的張數才說「不用補」；補不齊就講核准後還少幾張，補申請的指引照留（獨立審查補）
     if (missBad && opt.pending_device > 0) {

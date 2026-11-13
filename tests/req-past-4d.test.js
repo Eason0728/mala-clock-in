@@ -20,11 +20,11 @@ vm.runInContext(['REQ_LEAVE_PAST_DAYS', 'REQ_FUTURE_DAYS', 'REQ_MISS_DAYS', 'REQ
 let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 const chk = (date, today, proxy) => sb.reqPastCheck_('請假', date, today, !!proxy);
 
-ok('常數：4 天、T01 11/1–11/28、忘打卡仍 7 天', () => {
+ok('常數：4 天、T01 11/1–11/28、忘打卡也 4 天', () => {
   assert.strictEqual(vm.runInContext('REQ_LEAVE_PAST_DAYS', sb), 4);
   assert.strictEqual(vm.runInContext('REQ_PAST_OPEN_FROM_', sb), '2026-11-01');
   assert.strictEqual(vm.runInContext('REQ_PAST_OPEN_TO_', sb), '2026-11-28');
-  assert.strictEqual(vm.runInContext('REQ_MISS_DAYS', sb), 7);
+  assert.strictEqual(vm.runInContext('REQ_MISS_DAYS', sb), 4);
 });
 ok('11/14：11/1 起都能自己補（含 13 天前）；10/31 以前照 4 天擋', () => {
   assert.strictEqual(chk('2026-11-01', '2026-11-14'), null);
@@ -56,5 +56,12 @@ ok('未來最遠 90 天，代開也一樣', () => {
 ok('代開的「幾天內請同仁自己申請」門檻跟著同一支：11/14 的 11/3＝13 天內；12/10 的 12/5＝超過 4 天', () => {
   assert(sb.reqDayDiff_('2026-11-03', '2026-11-14') >= -sb.reqPastLimit_('2026-11-03', '2026-11-14'));
   assert(sb.reqDayDiff_('2026-12-05', '2026-12-10') < -sb.reqPastLimit_('2026-12-05', '2026-12-10'));
+});
+ok('忘打卡同一套（2026-11-14 追加）：11/14 補 11/1 可、11/29 起 4 天（11/25 可、11/24 擋）、12/10 補 12/6 可 12/5 擋', () => {
+  const M = vm.runInContext('REQ_MISS_DAYS', sb);
+  const can = (d, t) => sb.reqDayDiff_(d, t) >= -sb.reqPastLimit_(d, t, M);
+  assert.deepStrictEqual([can('2026-11-01', '2026-11-14'), can('2026-10-31', '2026-11-14'), can('2026-11-01', '2026-11-28')], [true, false, true]);
+  assert.deepStrictEqual([can('2026-11-25', '2026-11-29'), can('2026-11-24', '2026-11-29')], [true, false]);
+  assert.deepStrictEqual([can('2026-12-06', '2026-12-10'), can('2026-12-05', '2026-12-10')], [true, false]);
 });
 console.log('\n' + n + ' 項全部通過');

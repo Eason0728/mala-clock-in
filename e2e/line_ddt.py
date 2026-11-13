@@ -1188,8 +1188,11 @@ def phase_miss(ctx, gen):
     page.wait_for_selector('#reqView select.rq-date', timeout=10000)
     scan(page, '忘打卡')
     opts = page.locator('#reqView select.rq-date option').all_inner_texts()
-    want = ['選日期（只能選 7 天內）'] + [D.md_wk((now_tz() - timedelta(days=i)).strftime('%Y-%m-%d')) for i in range(0, 8)]
-    ok('忘打卡：日期下拉＝今天往前 7 天（逐項、附星期）', opts == want, (opts, want))
+    # 2026-11-14：7 天改 4 天；11/28 以前 11 月的日子都選得到（同 Requests.gs reqPastLimit_、req-line.js renderMiss）
+    t01 = today <= '2026-11-28'
+    back = max(4, (now_tz().date() - datetime(2026, 11, 1).date()).days) if t01 else 4
+    want = ['選日期（11/28 以前，11 月都能選）' if t01 else '選日期（只能選 4 天內）'] + [D.md_wk((now_tz() - timedelta(days=i)).strftime('%Y-%m-%d')) for i in range(0, back + 1)]
+    ok('忘打卡：日期下拉＝今天往前到期限（逐項、附星期）', opts == want, (opts, want))
     LBL = D.MISS_LABEL
 
     def choose(date):
@@ -1370,8 +1373,8 @@ def phase_miss(ctx, gen):
     # 後端規則（只能從 API 打到的）：超過 7 天、未來日期、卡其實有打成功、沒選卡
     def sub(body):
         return api(A['code'], dict({'action': 'req_submit', 'id_token': tok(p), 'kind': 'miss', 'reason': '忘記按'}, **body))
-    r = sub({'date': (now_tz() - timedelta(days=8)).strftime('%Y-%m-%d'), 'miss_type': 'both', 'start': '09:00', 'end': '18:00'})
-    ok('忘打卡（後端）：超過 7 天 → too_old（逐字）', r == {'ok': False, 'error': 'too_old', 'message': '超過 7 天不能自己申請，請店長代開'}, r)
+    r = sub({'date': (now_tz() - timedelta(days=back + 1)).strftime('%Y-%m-%d'), 'miss_type': 'both', 'start': '09:00', 'end': '18:00'})
+    ok('忘打卡（後端）：超過期限 → too_old（逐字）', r == {'ok': False, 'error': 'too_old', 'message': '超過 4 天不能自己申請，請店長代開'}, r)
     r = sub({'date': (now_tz() + timedelta(days=1)).strftime('%Y-%m-%d'), 'miss_type': 'both', 'start': '09:00', 'end': '18:00'})
     ok('忘打卡（後端）：明天 → 「不能補登還沒到的日期」', r.get('error') == 'bad_date' and r.get('message') == '不能補登還沒到的日期', r)
     r = sub({'date': md['in_only'], 'miss_type': 'in', 'start': '08:00'})

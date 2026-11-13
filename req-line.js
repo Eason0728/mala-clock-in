@@ -457,11 +457,13 @@
 
   /* 忘打卡 */
   function renderMiss(p) {
-    var days = [];
-    for (var i = 0; i <= 7; i++) days.push(taipeiToday(-i));
+    // 2026-11-14 Eason：7 天改 4 天（同 Requests.gs REQ_MISS_DAYS）；11/28 以前 11 月的日子都選得到（同 reqPastLimit_）
+    var days = [], today0 = taipeiToday(0), back = DATE_PAST, open = today0 <= DATE_OPEN_TO;
+    if (open) back = Math.max(back, Math.round((Date.parse(today0 + 'T00:00:00Z') - Date.parse(DATE_OPEN_FROM + 'T00:00:00Z')) / 86400000));
+    for (var i = 0; i <= back; i++) days.push(taipeiToday(-i));
     if (days.indexOf(st.missDate) < 0) st.missDate = '';
     var sel = h('select', { class: 'rq-date', on: { change: function () { st.missDate = sel.value; st.missType = ''; st.days = null; render(); } } },
-      [h('option', { value: '', text: '選日期（只能選 7 天內）' })].concat(days.map(function (d) { return h('option', { value: d, text: md(d), selected: d === st.missDate }); })));
+      [h('option', { value: '', text: open ? '選日期（11/28 以前，11 月都能選）' : '選日期（只能選 ' + DATE_PAST + ' 天內）' })].concat(days.map(function (d) { return h('option', { value: d, text: md(d), selected: d === st.missDate }); })));
     p.appendChild(field('日期', sel));
     if (!st.missDate) return;
     // st.days＝{date, by:{店代碼: day|null}, note}：選日期後一次問完每家已綁定的店（只綁一家就只問那家）
