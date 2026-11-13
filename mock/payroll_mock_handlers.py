@@ -8,7 +8,17 @@
 扣項＝勞健保），**不是真實薪資規則**。真實規則（年終、全勤、遲到扣款、假別上限、
 成本分類…）由 tests/ 那 24 個單元測試守。這支的用途是讓 e2e 能驗
 「輸入 → 後端 → 畫面」這條資料鏈與所有操作，不是驗算薪正確性。
+
+例外：鎖定前檢查（h_finalize）不是簡化版——直接跑正式版 apps-script 的 handlePayrollFinalize（mock/payroll_lock_gate.js），
+七道檢查與訊息和正式版一字不差（1113 紅燈 d4）。
 """
+import json
+import os
+import shutil
+import subprocess
+from datetime import datetime, timedelta, timezone
+
+LOCK_GATE_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'payroll_lock_gate.js')
 
 DEFAULT_CONFIG = {
     'base_hours': '174', 'ot_rate_1': '1.34', 'ot_rate_2': '1.67',
@@ -222,9 +232,74 @@ def h_month(data, body):
     return out
 
 
+def _node_bin():
+    """找 node：MOCK_NODE（測試指定）→ PATH → ~/.local/node/bin/node（Mac mini 的 node 只在 login shell 的 PATH）。"""
+    for c in (os.environ.get('MOCK_NODE'), shutil.which('node'), os.path.expanduser('~/.local/node/bin/node')):
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def _mock_today():
+    return os.environ.get('MOCK_TODAY') or datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+
+
+def _stale_list(data, ym):
+    """同正式版 payLockStale_：草稿有列才比；現在算出來的人草稿沒有＝is_new；應發／扣款／實付差 0.5 以上＝money。
+    mock 的簡化算薪不產生 ot_info，所以 ot_info 那半邊不比（草稿 ot_info 交給後面 comp_over／ot_form_missing 兩道照正式版擋）。"""
+    runs = [r for r in _pay(data, 'run') if r.get('ym') == ym]
+    if not runs:
+        return []
+    by_id = {str(r.get('emp_id')): r for r in runs}
+    out = []
+    for r in _results(data, ym):
+        old = by_id.get(str(r.get('emp_id')))
+        if old is None:
+            out.append({'name': r.get('name'), 'is_new': True, 'new_net': r.get('net')})
+            continue
+        if any(abs(_num(old.get(k)) - _num(r.get(k))) >= 0.5 for k in ('gross', 'deduction', 'net')):
+            out.append({'name': r.get('name'), 'old_net': _num(old.get('net')), 'new_net': _num(r.get('net')), 'money': True})
+    return out
+
+
+def _lock_gate(data, body, ym):
+    """正式版七道鎖定前檢查；回錯誤 dict（不能鎖）或 None（可以鎖）。跑不了就回 recheck_failed（同正式版「檢查失敗就不鎖」）。"""
+    leave = [{'日期': l.get('date', ''), '姓名': l.get('name', ''), '假別': l.get('type', ''), '時數': l.get('hours', '')}
+             for l in data.get('leave', [])]
+    pay = data.get('payroll', {})
+    payload = {
+        'body': {'ym': ym, 'store': body.get('store', ''), 'lock': True, 'inputs': body.get('inputs') or {}},
+        'today': _mock_today(),
+        'payroll': {k: v for k, v in pay.items() if isinstance(v, list)},
+        'clock': {'events': data.get('events', []), 'approved': data.get('approved', []), 'requests': data.get('requests', []),
+                  'leave': leave, 'roster': data.get('roster', []), 'managers': data.get('managers', [])},
+        'sched_pub': pay.get('sched_pub') or data.get('sched_pub') or {},
+        'stale': _stale_list(data, ym),
+    }
+    node = _node_bin()
+    fail = {'ok': False, 'error': 'recheck_failed', 'message': '鎖定前重算比對失敗，這次沒有鎖定，請再按一次：'}
+    if not node:
+        return dict(fail, message=fail['message'] + '本機找不到 node，跑不了鎖定前檢查')
+    try:
+        p = subprocess.run([node, LOCK_GATE_JS], input=json.dumps(payload, ensure_ascii=False), capture_output=True,
+                           text=True, timeout=60)
+        res = json.loads(p.stdout or '{}')
+    except Exception as e:  # noqa: BLE001 — 本機假後端：任何失敗都當檢查沒過
+        return dict(fail, message=fail['message'] + str(e))
+    if 'error' in res and 'gate' not in res:
+        return dict(fail, message=fail['message'] + str(res['error']))
+    return res.get('gate')
+
+
 def h_finalize(data, body):
     ym = str(body.get('ym', ''))
     lock = bool(body.get('lock'))
+    if not lock and not body.get('reason'):   # 同正式版：解鎖要寫原因
+        return {'ok': False, 'error': 'reason_required', 'message': '解鎖必須填原因'}
+    if lock:   # 鎖定前檢查照正式版（1113 紅燈 d4）；解鎖不擋
+        g = _lock_gate(data, body, ym)
+        if g:
+            return g
     rows = [r for r in _pay(data, 'run') if r.get('ym') != ym]
     for r in _results(data, ym):
         r['status'] = 'final' if lock else 'draft'
