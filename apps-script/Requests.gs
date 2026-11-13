@@ -1519,6 +1519,24 @@ function reqStrictSlotOk_(date, start, end, merged) {
   var fit = function (x, y) { return merged.some(function (m) { return x >= m.s - tol && y <= m.e + tol; }); };
   return fit(s, e) || fit(s + 86400000, e + 86400000);
 }
+/** 加班單落在每段班表內各幾分鐘（取跨夜試隔天後總和最大的那種算法），回 [分鐘…] 與 spans 對齊。 */
+function reqOtInSchedBySpan_(start, end, spans) {
+  var a = reqMin_(start), b = reqMin_(end), none = spans.map(function () { return 0; });
+  if (a === null || b === null) return none;
+  if (b <= a) b += 1440;
+  var best = none, bestSum = 0;
+  [0, 1440].forEach(function (shift) {
+    var arr = spans.map(function (x) {
+      var s = reqMin_(String(x.start)), e = reqMin_(String(x.end));
+      if (s === null || e === null) return 0;
+      if (e <= s) e += 1440;
+      return Math.max(0, Math.min(b + shift, e) - Math.max(a + shift, s));
+    });
+    var sum = arr.reduce(function (x, y) { return x + y; }, 0);
+    if (sum > bestSum) { best = arr; bestSum = sum; }
+  });
+  return best;
+}
 /** 加班單有幾分鐘落在班表上班時段內；跨夜的加班單也試隔天。 */
 function reqOtInSchedMin_(start, end, spans) {
   var a = reqMin_(start), b = reqMin_(end);
@@ -1734,9 +1752,12 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
       });
       /* 班表內是正常上班，不能算加班事實（Eason 2026-11-09）。班表時段由營運系統帶入，休息日、例假整天都算加班不比；沒帶＝不檢查。 */
       var spans = ot.rest || !Array.isArray(opt.sched_spans) ? [] : opt.sched_spans;
+      // 班表那段排了休息（break_min）卻沒休息改上班：那段可以開等長的加班單（Eason 2026-11-14）。休息分鐘由同一段內的加班單依序共用
+      var brkLeft = spans.map(function (x) { return Math.max(0, Math.round(Number(x.break_min) || 0)); });
       if (spans.length) otRows.forEach(function (r) {
-        var inMin = reqOtInSchedMin_(String(r.start), String(r.end), spans);
-        if (inMin > REQ_STRICT_TOL_MIN && !peerDay()) add('ot_in_sched', '加班單 ' + r.start + '–' + r.end + ' 有 ' + inMin + ' 分鐘在班表上班時段內（' + spans.map(function (x) { return x.start + '–' + x.end; }).join('、') + '），班表內是正常上班，不能算加班，請改成實際加班的時段');
+        var by = reqOtInSchedBySpan_(String(r.start), String(r.end), spans);
+        var inMin = by.reduce(function (a, m, i) { var use = Math.min(m, brkLeft[i]); brkLeft[i] -= use; return a + m - use; }, 0);
+        if (inMin > REQ_STRICT_TOL_MIN && !peerDay()) add('ot_in_sched', '加班單 ' + r.start + '–' + r.end + ' 有 ' + inMin + ' 分鐘在班表上班時段內（' + spans.map(function (x) { return x.start + '–' + x.end + (Number(x.break_min) > 0 ? '，含休息 ' + Math.round(Number(x.break_min)) + ' 分' : ''); }).join('、') + '），班表內是正常上班，不能算加班（沒休息的時間可以開，最多到班表排的休息分鐘），請改成實際加班的時段');
       });
     }
   } else if (bindOn && otNeed > 0.005 && otHave + 0.005 < otNeed) {   // bindOn：只有滿 8 小時開著時（綁單關或沒時段）不跑舊規則
