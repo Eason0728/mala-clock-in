@@ -6171,8 +6171,11 @@ function handlePnlLaborEstimate_(body) {
     var eEst = {};
     Object.keys(e).forEach(function (k) { eEst[k] = e[k]; });
     eEst.leave_date = virtualLeave;
+    /* 在職 0 天（到 as_of 為止還沒到職、或已離職）又沒有任何資料（核定時數、請假、支援、加扣項、獎金、特休折算；
+       同 payroll_calc 不產生列的 payMonthActivity_）→ 跳過，不再整筆算公司負擔健保（1113 紅燈 d2，Eason 2026-11-13 選 A）。有資料的照舊。 */
+    if (payRatio(eEst, ym) <= 0 && !payMonthActivity_(a, c.support_error, ym)) return null;
     return payCalcOne(eEst, ym, a, cfg, redDays, LTYPES);
-  });
+  }).filter(function (r) { return r; });
 
   var snap = pnlEstimateClassify_(results, master, att, cfg);
   var result = {
