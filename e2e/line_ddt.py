@@ -1327,6 +1327,22 @@ def phase_miss(ctx, gen):
     submit_ok(page, {'kind': 'miss', 'date': md['full'], 'miss_type': 'break', 'start': r_in, 'end': r_out, 'reason': '忘記按'}, '忘打卡（整段補休息）')
     sent.append({'date': md['full'], 'miss_type': 'break', 'start': r_in, 'end': r_out})
     back_to_miss()
+    # 今天：開著的上班卡 → 不能補還沒到的時間
+    di = choose(today)
+    pick_type('out')
+    reason('忘記按')
+    future = D.min_hm(D.hm_min(now_tz().strftime('%H:%M')) + 30)
+    if D.hm_min(future) > D.hm_min(now_tz().strftime('%H:%M')):
+        set_times(end=future)
+        submit(page)
+        ok('忘打卡（今天）：補還沒到的時間 → 擋（逐字）', err_box(page) == '不能補登還沒到的時間', err_box(page))
+    page.close()
+    # 2026-11-14：忘打卡只能補 4 天內，後面三種日子放在第二個人（req_miss2）的 1–3 天前
+    p_main, evs_main, sent_main, md_main = p, evs, sent, md
+    p = next(x for x in gen.people if x['scenario'] == 'req_miss2')
+    evs, sent, md = events_of(A['code'], p['emp_id']), [], p['miss_days']
+    page = open_req(ctx, A, p, 'miss')
+    page.wait_for_selector('#reqView select.rq-date', timeout=10000)
     # 三種都有：上班卡／下班卡／中間休息三顆籌碼
     di = choose(md['three'])
     ok('忘打卡（三種）：孤的下班、開著的上班、整段 → 三個選項', di['options'] == ['in', 'out', 'break'])
@@ -1336,8 +1352,8 @@ def phase_miss(ctx, gen):
     submit_ok(page, {'kind': 'miss', 'date': md['three'], 'miss_type': 'in', 'start': '07:30', 'reason': '忘記按'}, '忘打卡（三種之一：補上班）')
     sent.append({'date': md['three'], 'miss_type': 'in', 'start': '07:30', 'end': ''})
     back_to_miss()
-    # 兩段班四張卡都沒打（2026-11-11）：7 天前沒有任何卡 → 先補第一段整段，再回同一天補第二段整段
-    free = (now_tz() - timedelta(days=7)).strftime('%Y-%m-%d')
+    # 兩段班四張卡都沒打（2026-11-11）：沒有任何卡的那天 → 先補第一段整段，再回同一天補第二段整段
+    free = md['free']
     di = choose(free)
     ok('忘打卡（四張都沒打）：一開始只有「上班和下班都沒打」', di['options'] == ['both'] and not di['punches'], di)
     reason('忘記按')
@@ -1357,19 +1373,11 @@ def phase_miss(ctx, gen):
     submit_ok(page, {'kind': 'miss', 'date': free, 'miss_type': 'both', 'start': '17:00', 'end': '21:00', 'reason': '忘記按'}, '忘打卡（四張都沒打：第二段整段）')
     sent.append({'date': free, 'miss_type': 'both', 'start': '17:00', 'end': '21:00'})
     back_to_miss()
-    # 跨夜：6 天前晚上上班、5 天前凌晨下班 → 歸 6 天前；凌晨那張標 (+1)
+    # 跨夜：3 天前晚上上班、2 天前凌晨下班 → 歸 3 天前；凌晨那張標 (+1)
     di = choose(md['night'])
     ok('忘打卡（跨夜）：凌晨下班卡歸前一天、顯示 (+1)、中間休息或另一段班整段', any('(+1)' in x['hm'] for x in di['punches']) and di['options'] == ['break', 'both'] and '(+1)' in page.inner_text('#reqView .rq-rec'))
-    # 今天：開著的上班卡 → 不能補還沒到的時間
-    di = choose(today)
-    pick_type('out')
-    reason('忘記按')
-    future = D.min_hm(D.hm_min(now_tz().strftime('%H:%M')) + 30)
-    if D.hm_min(future) > D.hm_min(now_tz().strftime('%H:%M')):
-        set_times(end=future)
-        submit(page)
-        ok('忘打卡（今天）：補還沒到的時間 → 擋（逐字）', err_box(page) == '不能補登還沒到的時間', err_box(page))
     page.close()
+    p, evs, sent, md = p_main, evs_main, sent_main, md_main   # 換回第一個人（後端規則用他的日子）
     # 後端規則（只能從 API 打到的）：超過 7 天、未來日期、卡其實有打成功、沒選卡
     def sub(body):
         return api(A['code'], dict({'action': 'req_submit', 'id_token': tok(p), 'kind': 'miss', 'reason': '忘記按'}, **body))
@@ -1389,8 +1397,9 @@ def phase_miss(ctx, gen):
        and r.get('message') == '這天已經有忘打卡申請在補這張卡（審核中或已核准），不用再送；要改請先取消那一筆，已核准的請找你的主管作廢', r)
     r = sub({'date': md['none'], 'miss_type': 'both', 'start': '09:00', 'end': '18:00'})
     ok('忘打卡（後端）：同一天已有審核中的忘打卡 → duplicate（逐字）', r.get('error') == 'duplicate' and r.get('message') == '這天已經有一筆審核中的忘打卡申請，要改請先取消那一筆', r)
-    rr = [x for x in read_store(A['code'])['requests'] if x['emp_id'] == p['emp_id']]
-    ok('忘打卡：資料檔 8 筆（含四張都沒打那天的兩張整段）、break 那兩筆 end＝休息開始、start＝回來上班', len(rr) == 8 and all(x['status'] == 'pending' for x in rr)
+    p2 = next(x for x in gen.people if x['scenario'] == 'req_miss2')
+    rr = [x for x in read_store(A['code'])['requests'] if x['emp_id'] in (p['emp_id'], p2['emp_id'])]
+    ok('忘打卡：資料檔兩人共 8 筆（含四張都沒打那天的兩張整段）、break 那兩筆 end＝休息開始、start＝回來上班', len(rr) == 8 and all(x['status'] == 'pending' for x in rr)
        and [x for x in rr if x['miss_type'] == 'break'][0]['end'] == b_out and [x for x in rr if x['miss_type'] == 'break'][0]['start'] == b_in2, [(x['miss_type'], x['start'], x['end']) for x in rr])
 
 
