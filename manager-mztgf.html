@@ -39,7 +39,7 @@
 /* 2026-12-01 起停用（Eason 2026-11-06）：核定統一到管理系統「人資部門 → 考勤管理」。
    依台北日期自動切換：之前照常可用＋頂端預告；當天 00:00 起整頁換成指路頁、不讀 ?k=、不打任何後端。
    放在 <head> 先判斷，停用後原本的畫面一瞬間都不會出現。本機（localhost）用 ?today=YYYY-MM-DD 模擬日期，沒帶＝不停用。 */
-window.MGR_CLOSE_DATE = '2026-12-01';
+window.MGR_CLOSE_DATE = '2026-11-13';   // 原定 12/1，Eason 2026-11-13 說提前關（舊頁核定會繞過正職滿 8 小時）
 window.MGR_CLOSED = (function () {
   var today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);   // 台北＝UTC+8，沒有夏令時間
   var h = location.hostname;
