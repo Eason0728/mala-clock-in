@@ -81,7 +81,7 @@ const P2 = (a, b) => ({ startMs: ms(a, D2), endMs: ms(b, D2) });
 const S2 = (a, b) => ({ inMs: a ? ms(a, D2) : null, outMs: b ? ms(b, D2) : null });
 const R2 = (o) => Object.assign({ date: D2 }, o);
 const chk = (sb, h, ps, ss, opt, d) => sb.reqBindCheck_(sb.getSS(), 'E01', d || D2, h, ps, ss, null, opt);
-const FT = (o) => Object.assign({ sched_ft: true, sched_day: 'W', name: '測試一', peer: { worked: false, pending: false, h: 0, ot: 0, names: [] } }, o);
+const FT = (o) => Object.assign({ sched_ft: true, sched_day: 'W', name: '測試一', peer: { worked: false, pending: false, work: 0, leave: 0, ot: 0, names: [] } }, o);
 const two = [P2('09:00', '13:00'), P2('18:00', '21:30')], twoS = [S2('09:00', '13:00'), S2('18:00', '21:30')];
 
 ok('11/5 那張卡：正職上班日 7.5 小時沒有假單＝擋，說還差 0.5', () => {
@@ -113,12 +113,12 @@ ok('整天請假 8 小時＝放行；整天請假 4 小時＝擋', () => {
   sb = makeEnv(); addReq(sb, R2({ kind: 'leave', leave_type: '特休', hours: 4 }));
   assert.ok(/還差 4 小時/.test(chk(sb, 0, [], [], FT({ leaves: [{ type: '特休', hours: 4 }] })).message));
 });
-ok('計時、沒帶正職、休息日、例假、沒班表＝不檢查', () => {
+ok('計時、沒帶正職＝不檢查；sched_day 空白（支援帳號）照 sched_ft', () => {
   const sb = makeEnv();
   assert.strictEqual(chk(sb, 7.5, two, twoS, FT({ sched_ft: false })), null);
   assert.strictEqual(chk(sb, 7.5, two, twoS, FT({ sched_ft: undefined })), null);
   assert.strictEqual(chk(sb, 7.5, two, twoS, FT({ sched_ft: 'true' })), null);
-  assert.strictEqual(chk(sb, 7.5, two, twoS, FT({ sched_day: '' })), null);
+  assert.ok(/還差 0\.5/.test(chk(sb, 7.5, two, twoS, FT({ sched_day: '' })).message), '班表空白：營運系統說正職出勤日（支援帳號看原單位）就檢查');
 });
 ok('休息日、例假：照舊規則（全算加班），不套滿 8', () => {
   const sb = makeEnv();
@@ -147,43 +147,99 @@ ok('審核中的假單不算', () => {
 });
 ok('別家當天有打卡、還沒核定＝先放行', () => {
   const sb = makeEnv();
-  assert.strictEqual(chk(sb, 4, [P2('09:00', '13:00')], [S2('09:00', '13:00')], FT({ peer: { worked: true, pending: true, h: 0, ot: 0, names: ['mztlzl'] } })), null);
+  assert.strictEqual(chk(sb, 4, [P2('09:00', '13:00')], [S2('09:00', '13:00')], FT({ peer: { worked: true, pending: true, work: 0, leave: 0, ot: 0, names: ['mztlzl'] } })), null);
 });
 ok('別家已核定：相加滿 8 放行、不滿擋並寫店名', () => {
   const sb = makeEnv();
-  assert.strictEqual(chk(sb, 4, [P2('09:00', '13:00')], [S2('09:00', '13:00')], FT({ peer: { worked: true, pending: false, h: 4, ot: 0, names: ['mztlzl'] } })), null);
-  const r = chk(sb, 3, [P2('09:00', '12:00')], [S2('09:00', '12:00')], FT({ peer: { worked: true, pending: false, h: 4, ot: 0, names: ['mztlzl'] } }));
+  assert.strictEqual(chk(sb, 4, [P2('09:00', '13:00')], [S2('09:00', '13:00')], FT({ peer: { worked: true, pending: false, work: 4, leave: 0, ot: 0, names: ['mztlzl'] } })), null);
+  const r = chk(sb, 3, [P2('09:00', '12:00')], [S2('09:00', '12:00')], FT({ peer: { worked: true, pending: false, work: 4, leave: 0, ot: 0, names: ['mztlzl'] } }));
   assert.ok(/這家 3＋墨竹亭台北六張犁 4＝7 小時，還差 1 小時/.test(r.message), r.message);
 });
-ok('加班算被支援那家：這家是支援帳號、兩家合計 10 → 這家要 2 小時加班單', () => {
+ok('加班算被支援那家：這家是支援帳號、兩家上班合計 10 → 這家要 2 小時加班單；班表內不擋', () => {
   let sb = makeEnv();
-  const peer = { worked: true, pending: false, h: 6, ot: 0, names: ['gf'] };
-  const r = chk(sb, 4, [P2('17:00', '21:00')], [S2('17:00', '21:00')], FT({ sched_support: true, peer }));
-  assert.ok(/兩家合計 10 小時，超過 8 的 2 小時要在這家（被支援）開加班單/.test(r.message), r.message);
+  const peer = { worked: true, pending: false, work: 6, leave: 0, ot: 0, names: ['gf'] };
+  const ps = [P2('17:00', '21:00')], ss = [S2('17:00', '21:00')];
+  const r = chk(sb, 4, ps, ss, FT({ sched_support: true, peer, sched_spans: [{ start: '17:00', end: '21:00' }] }));
+  assert.ok(/兩家上班合計 10 小時，超過 8 的部分要在這家（被支援）開 2 小時加班單/.test(r.message), r.message);
+  assert.ok(!/班表內是正常上班/.test(r.message), '被支援那家：加班單在支援的班表內不擋');
   assert.strictEqual(r.need.ot_hours, 2);
   sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '19:00', end: '21:00', hours: 2 }));
-  assert.strictEqual(chk(sb, 4, [P2('17:00', '21:00')], [S2('17:00', '21:00')], FT({ sched_support: true, peer })), null);
+  assert.strictEqual(chk(sb, 4, ps, ss, FT({ sched_support: true, peer, sched_spans: [{ start: '17:00', end: '21:00' }] })), null);
 });
-ok('加班算被支援那家：這家是原單位、做 9 小時 → 這家不用加班單，看被支援那家', () => {
+ok('審查 1：被支援那家只上 1 小時、兩家合計 11 → 這家只要 1 小時加班單（不卡死），其餘 2 小時在原單位', () => {
+  let sb = makeEnv();
+  const ps = [P2('17:00', '18:00')], ss = [S2('17:00', '18:00')];
+  const peer = { worked: true, pending: false, work: 10, leave: 0, ot: 0, names: ['gf'] };
+  let r = chk(sb, 1, ps, ss, FT({ sched_support: true, peer }));
+  assert.ok(/開 1 小時加班單/.test(r.message), r.message);
+  sb = makeEnv(); addReq(sb, R2({ kind: 'ot', start: '17:00', end: '18:00', hours: 1 }));
+  assert.strictEqual(chk(sb, 1, ps, ss, FT({ sched_support: true, peer })), null);
+  // 原單位後核：10＋1，被支援那家已核准 1 小時 → 原單位要 2 小時
+  sb = makeEnv();
+  const hp = [P2('08:00', '18:00')], hs = [S2('08:00', '18:00')];
+  r = chk(sb, 10, hp, hs, FT({ sched_support: false, peer: { worked: true, pending: false, work: 1, leave: 0, ot: 1, names: ['mztlzl'] } }));
+  assert.ok(/這家（原單位，被支援那家只上 1 小時）開 2 小時加班單/.test(r.message), r.message);
+  assert.ok(!/要在被支援的/.test(r.message), '被支援那家的 1 小時已核准');
+});
+ok('加班算被支援那家：這家是原單位、上 9 小時 → 這家不用加班單，看被支援那家', () => {
   const sb = makeEnv();
   const ps = [P2('08:00', '17:00')], ss = [S2('08:00', '17:00')];
-  // 被支援那家還沒核定：先放行（原單位不用開加班單）
-  assert.strictEqual(chk(sb, 9, ps, ss, FT({ sched_support: false, peer: { worked: true, pending: true, h: 0, ot: 0, names: ['mztlzl'] } })), null);
-  // 被支援那家已核定 2 小時、加班單只有 1 小時 → 擋，叫去那家開
-  const r = chk(sb, 9, ps, ss, FT({ sched_support: false, peer: { worked: true, pending: false, h: 2, ot: 1, names: ['mztlzl'] } }));
-  assert.ok(/兩家合計 11 小時，超過 8 的 3 小時要在被支援的 墨竹亭台北六張犁 開加班單（那邊已核准 1 小時）/.test(r.message), r.message);
-  assert.strictEqual(chk(sb, 9, ps, ss, FT({ sched_support: false, peer: { worked: true, pending: false, h: 2, ot: 3, names: ['mztlzl'] } })), null);
+  assert.strictEqual(chk(sb, 9, ps, ss, FT({ sched_support: false, peer: { worked: true, pending: true, work: 0, leave: 0, ot: 0, names: ['mztlzl'] } })), null, '被支援那家還沒核定：先放行');
+  const r = chk(sb, 9, ps, ss, FT({ sched_support: false, peer: { worked: true, pending: false, work: 2, leave: 0, ot: 1, names: ['mztlzl'] } }));
+  assert.ok(/兩家上班合計 11 小時，超過 8 的 2 小時要在被支援的 墨竹亭台北六張犁 開加班單（那邊已核准 1 小時）/.test(r.message), r.message);
+  assert.ok(/這家（原單位，被支援那家只上 2 小時）開 1 小時加班單/.test(r.message), r.message);
+});
+ok('審查 6：兩家合計加班只算上班、不算假（原單位 5＋假 3、支援 3 → 剛好 8，不用加班單）', () => {
+  const sb = makeEnv();
+  assert.strictEqual(chk(sb, 3, [P2('17:00', '20:00')], [S2('17:00', '20:00')], FT({ sched_support: true, peer: { worked: true, pending: false, work: 5, leave: 3, ot: 0, names: ['gf'] } })), null);
 });
 ok('不知道是不是支援帳號：加班照舊（超過 8 那家開），滿 8 照相加', () => {
   const sb = makeEnv();
-  const r = chk(sb, 9, [P2('08:00', '17:00')], [S2('08:00', '17:00')], FT({ peer: { worked: true, pending: false, h: 2, ot: 0, names: ['gf'] } }));
+  const r = chk(sb, 9, [P2('08:00', '17:00')], [S2('08:00', '17:00')], FT({ peer: { worked: true, pending: false, work: 2, leave: 0, ot: 0, names: ['gf'] } }));
   assert.ok(/超過 8 小時的 1 小時要有加班單/.test(r.message), r.message);
 });
-ok('沒有別家（只在一家店）：讀別家用 restPeerEvents_，沒有就不開任何表', () => {
+ok('審查 5：假單送在原單位、這天只在支援那家上 4 小時 → 相加滿 8 放行', () => {
   const sb = makeEnv();
-  let called = 0; sb.restPeerEvents_ = () => { called++; return []; };
+  assert.strictEqual(chk(sb, 4, [P2('09:00', '13:00')], [S2('09:00', '13:00')], FT({ peer: { worked: false, pending: false, work: 0, leave: 4, ot: 0, names: ['gf'] } })), null);
+});
+ok('審查 4、11：11/1–11/10 整天請假（沒時段）只有 4 小時假單也擋；REQ_BIND_FROM=off 時滿 8 小時照樣檢查、舊規則不跑', () => {
+  const D4 = '2026-11-05';
+  let sb = makeEnv(); addReq(sb, { date: D4, kind: 'leave', leave_type: '特休', hours: 4 });
+  const r = sb.reqBindCheck_(sb.getSS(), 'E01', D4, 0, [], [], null, FT({ leaves: [{ type: '特休', hours: 4 }] }));
+  assert.ok(/還差 4 小時/.test(r.message), JSON.stringify(r));
+  sb = makeEnv(); sb.__props.REQ_BIND_FROM = 'off';
+  const r2 = chk(sb, 9.5, [P2('08:00', '17:30')], [S2('08:00', '17:30')], FT({}));
+  assert.strictEqual(r2, null, '滿 8 了、舊的超過 8 小時要加班單規則跟著綁單關掉');
+  assert.ok(/還差 0\.5/.test(chk(sb, 7.5, two, twoS, FT({})).message));
+});
+ok('reqPeerDay_：只開名冊有同名在職的店；跳過鏡像列、只認這天的上班卡；已核定算上班、已核准假單與加班另計；有卡沒核定＝pending', () => {
+  const sb = makeEnv();
+  const mk = (rows) => sheet('x', rows);
+  const books = {
+    A: { roster: mk([['emp_id', 'name', 'active'], ['A1', '測試一', 'true'], ['A2', '別人', 'true']]),
+         events: mk([['ts', 'emp_id', 'type', 'status', 'mirror_src'], [D2 + 'T09:00:00+08:00', 'A1', 'in', 'ok', ''], [D2 + 'T13:00:00+08:00', 'A1', 'out', 'ok', '']]),
+         approved: mk([['date', 'emp_id', 'approved_hours', 'entered_at', 'mirror_src'], [D2, 'A1', 4, 'x', '']]),
+         requests: [{ emp_id: 'A1', date: D2, status: 'approved', kind: 'leave', hours: 1 }, { emp_id: 'A1', date: D2, status: 'approved', kind: 'ot', hours: 0.5 }] },
+    B: { roster: mk([['emp_id', 'name', 'active'], ['B1', '測試一', 'true']]),      // 有卡沒核定
+         events: mk([['ts', 'emp_id', 'type', 'status', 'mirror_src'], [D2 + 'T18:00:00+08:00', 'B1', 'in', 'ok', '']]),
+         approved: mk([['date', 'emp_id', 'approved_hours', 'entered_at', 'mirror_src']]), requests: [] },
+    H: { roster: mk([['emp_id', 'name', 'active'], ['H1', '測試一', 'true']]),      // 只有鏡像列：不算
+         events: mk([['ts', 'emp_id', 'type', 'status', 'mirror_src'], [D2 + 'T09:00:00+08:00', 'H1', 'in', 'ok', 'CF']]),
+         approved: mk([['date', 'emp_id', 'approved_hours', 'entered_at', 'mirror_src'], [D2, 'H1', 8, 'x', 'CF']]), requests: [{ emp_id: 'H1', date: D2, status: 'approved', kind: 'ot', hours: 2, mirror_src: 'CF' }] },
+    X: { roster: mk([['emp_id', 'name', 'active'], ['X1', '測試一', 'false']]), events: mk([['ts']]), approved: mk([['date']]), requests: [] },   // 離職的同名：不開
+  };
+  const opened = [];
+  sb.REST_PEERS_ = ['A', 'B', 'H', 'X', 'SELF'].map((c) => ({ code: c, ss: 'ss-' + c }));
+  sb.restName_ = (x) => String(x || '').trim();
+  sb.CacheService = { getScriptCache: () => ({ get: () => null, put() {} }) };
+  sb.getSS = () => ({ getId: () => 'ss-SELF', getSheetByName: () => null });
+  sb.SpreadsheetApp = { openById: (id) => { const c = id.slice(3); opened.push(c); const b = books[c]; return { id: c, getSheetByName: (n) => b[n] || null }; } };
+  sb.readEventsSince = (sh) => sb.readSheetAsObjects(sh);
+  sb.buildLatestApprovedMap = (rows) => { const m = {}; rows.forEach((r) => { (m[r.date] = m[r.date] || {})[r.emp_id] = r; }); return m; };
+  sb.reqRows_ = (ss) => books[ss.id].requests;
   const r = sb.reqPeerDay_('測試一', D2);
-  assert.deepStrictEqual([r.worked, r.pending, called], [false, false, 1]);
+  assert.strictEqual(JSON.stringify(r), JSON.stringify({ worked: true, pending: true, work: 4, leave: 1, ot: 0.5, names: ['A', 'B'] }));
+  assert.ok(!opened.includes('SELF'));
 });
 ok('核定預覽回 ft8_gap（撤銷試算用）', () => {
   const sb = makeEnv();
