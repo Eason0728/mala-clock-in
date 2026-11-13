@@ -928,7 +928,7 @@ function reqDayApproved_(approvedMap, r) {
   return !!(reqAffectsLeave_(r) && approvedMap[d] && approvedMap[d][String(r.emp_id)]);
 }
 function reqDayWarnMsg_(dates) {
-  return dates.map(function (d) { return (+d.slice(5, 7)) + ' 月 ' + (+d.slice(8, 10)) + ' 日'; }).join('、') + '已經核定過，請重新核定一次，假別才會寫進薪資';
+  return dates.map(function (d) { return (+d.slice(5, 7)) + '/' + (+d.slice(8, 10)); }).join('、') + ' 已經核定過，請重新核定一次，假別才會寫進薪資';
 }
 
 /** {action:'mgr_req_decide', mgr_key, id, decision:'approve'|'reject', reason?} */
@@ -1011,7 +1011,7 @@ function handleMgrReqDecideBatch_(body) {
   try {
     var byId = {};
     reqRows_(ss).forEach(function (x) { byId[String(x.id)] = x; });
-    var now = nowTaipeiIso(), done = [], skipped = [], results = [], warnDates = [], apMap = null;
+    var now = nowTaipeiIso(), done = [], skipped = [], warnItems = [], apMap = null;
     var upc = reqMgrActing_(mgr, body) ? null : reqUpperCache_(ss);
     ids.forEach(function (id) {
       var r = byId[id];
@@ -1024,19 +1024,16 @@ function handleMgrReqDecideBatch_(body) {
       if (reqNeedsProof_(r)) { skipped.push({ id: id, reason: r.leave_type + '還沒附證明' }); return; }
       reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: actor, reject_reason: '' });
       done.push(id);
-      var res = { id: id };
       if (reqAffectsLeave_(r)) {
         try { if (!apMap) apMap = reqApprovedMap_(ss); } catch (e) { apMap = {}; }
         if (reqDayApproved_(apMap, r)) {
           var dd = String(r.date || '').slice(0, 10);
-          res.warn = REQ_DAY_WARN_; res.warn_dates = [dd]; res.message = reqDayWarnMsg_([dd]);
-          if (warnDates.indexOf(dd) < 0) warnDates.push(dd);
+          warnItems.push({ id: id, warn: REQ_DAY_WARN_, warn_dates: [dd], message: reqDayWarnMsg_([dd]) });
         }
       }
-      results.push(res);
     });
-    var outB = { ok: true, done: done, skipped: skipped, results: results };
-    if (warnDates.length) { warnDates.sort(); outB.warn = REQ_DAY_WARN_; outB.warn_dates = warnDates; outB.message = reqDayWarnMsg_(warnDates); }
+    var outB = { ok: true, done: done, skipped: skipped };
+    if (warnItems.length) outB.warn_items = warnItems;   // 只列有提醒的那幾筆；沒有就不帶（回應形狀同改版前）
     return outB;
   } finally { lock.releaseLock(); }
 }

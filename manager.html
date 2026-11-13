@@ -2151,7 +2151,7 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
           var it = el.__req;
           if ((r.done || []).indexOf(it.id) >= 0) {
             el.__markDone('✓ 已核准：' + it.name + ' ' + it.summary); dates[it.date] = true;
-            var rs = (r.results || []).filter(function (x) { return x.id === it.id; })[0];
+            var rs = (r.warn_items || []).filter(function (x) { return x.id === it.id; })[0];
             if (rs && rs.warn === 'already_approved_day' && rs.message) el.__warn(rs.message);   // 1113 紅燈 a2
             return;
           }
@@ -2159,7 +2159,7 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
           if (sk) el.__markDone('— 略過：' + it.name + ' ' + it.summary + '（' + sk.reason + '）');
         });
         msg.textContent = '';
-        if (r.warn === 'already_approved_day' && r.message) { msg.style.color = '#b45309'; msg.textContent = '⚠ ' + r.message; }
+        if ((r.warn_items || []).length) { msg.style.color = '#b45309'; msg.textContent = '⚠ 有 ' + r.warn_items.length + ' 筆的日子已經核定過，請重新核定那幾天，假別才會寫進薪資'; }
         reqTitleRefresh(card, title); syncReqBatch(card);
         Object.keys(dates).forEach(function (d) { delete dayCache[d]; });
         if (dates[currentDate]) loadDay(currentDate);
