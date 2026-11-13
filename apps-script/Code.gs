@@ -276,6 +276,9 @@ function doPost(e) {
     mgr_set_notice_active: handleMgrSetNoticeActive,
   };
 
+  // 考勤副本變動通知（DutyFeed.gs，唯讀）：Mac mini 每 30 秒來拿最近的變動
+  if (typeof handleDutyChanges_ === 'function') handlers.duty_changes = handleDutyChanges_;
+
   // 考勤異常候補提醒（AttDigest.gs，唯讀）；檔案不存在時完全不影響其他動作。
   if (typeof handleAttDigestData === 'function') handlers.att_digest_data = handleAttDigestData;
 
@@ -309,7 +312,10 @@ function doPost(e) {
   }
 
   try {
-    return jsonOut(handler(body));
+    const res = handler(body);
+    // 考勤副本變動通知（DutyFeed.gs，2026-11-14）：寫入成功記一筆給 Mac mini 來拿；失敗不影響回應
+    if (typeof dutyFeedNote_ === 'function') dutyFeedNote_(body, res);
+    return jsonOut(res);
   } catch (err) {
     return jsonOut({ ok: false, error: 'server_error', detail: String(err) });
   }
@@ -1837,7 +1843,10 @@ function handleMgrDay(body) {
     return out;
   });
 
-  return { ok: true, date: date, employees: employees, add_redirect: staffMasterAddRedirect_() };
+  const res = { ok: true, date: date, employees: employees, add_redirect: staffMasterAddRedirect_() };
+  // with_ver（2026-11-14，DutyFeed.gs）：Mac mini 考勤副本讀取時帶，每人多一格 ver，核定時拿來比對
+  if (body.with_ver === true && typeof dutyAttachVer_ === 'function') return dutyAttachVer_(res, date);
+  return res;
 }
 
 /**
