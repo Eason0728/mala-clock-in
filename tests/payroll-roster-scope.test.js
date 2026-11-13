@@ -171,7 +171,7 @@ let E09_ACTIVE_OCT = null;
   };
   const render = (notIn) => {
     const box = { innerHTML: '' };
-    const ctx = { console, $: () => box, ROSTER_MISS: [], SAME_NAME: [], RESULTS: [], OT_PERIOD: {}, OT_MONTH_CAP: 54, NOT_IN_PAY: notIn, ZERO_RATIO: [],   // ZERO_RATIO：renderOtInfo 2026-11-11 起多讀的清單（補洞 b），這裡給空的
+    const ctx = { console, $: () => box, ROSTER_MISS: [], SAME_NAME: [], RESULTS: [], OT_PERIOD: {}, OT_MONTH_CAP: 54, NOT_IN_PAY: notIn, ZERO_RATIO: [], LEAVE_MM: [],   // LEAVE_MM：1113 紅燈 a1 起多讀的清單；ZERO_RATIO：renderOtInfo 2026-11-11 起多讀的清單（補洞 b），這裡給空的
       esc: (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'),
       r2: (v) => Math.round(v * 100) / 100 };
     vm.createContext(ctx);

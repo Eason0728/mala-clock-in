@@ -215,7 +215,7 @@ const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</
 {
   const render = (zero) => {
     const box = { innerHTML: '' };
-    const ctx = { console, $: () => box, ROSTER_MISS: [], SAME_NAME: [], RESULTS: [], OT_PERIOD: {}, OT_MONTH_CAP: 54, NOT_IN_PAY: [], ZERO_RATIO: zero,
+    const ctx = { console, $: () => box, ROSTER_MISS: [], SAME_NAME: [], RESULTS: [], OT_PERIOD: {}, OT_MONTH_CAP: 54, NOT_IN_PAY: [], ZERO_RATIO: zero, LEAVE_MM: [],
       esc: esc, r2: (v) => Math.round(v * 100) / 100 };
     vm.createContext(ctx);
     vm.runInContext(fnSrc('renderOtInfo') + '\nrenderOtInfo({});', ctx);

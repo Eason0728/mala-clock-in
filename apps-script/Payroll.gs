@@ -1256,6 +1256,9 @@ function payOtDailyOn(ym) { return PAY_OT_FORCE_ || String(ym || '') >= PAY_OT_D
  * 補休抵不掉、加班單、班表、未核定四道檢查仍看 payOtDailyOn（2026-11 起）。2026-09 以前不比對。 */
 var PAY_LOCK_RECHECK_FROM = '2026-10';
 function payLockRecheckOn(ym) { return String(ym || '') >= PAY_LOCK_RECHECK_FROM; }
+/* 鎖定前比對「已核准請假單」與 leave 分頁從這個月起做（1113 紅燈 a1，Eason 2026-11-13 選 A）。2026-10 以前的月份有手填的請假登記，不比。 */
+var PAY_LEAVE_MATCH_FROM = '2026-11';
+function payLeaveMatchOn(ym) { return String(ym || '') >= PAY_LEAVE_MATCH_FROM; }
 /** 月工資總額（不乘在職比例：費率是職位的費率） */
 function payOtMonthWage(e, cfg) {
   const meal = payCfgNum(cfg, 'ot_meal_fixed', PAY_OT_MEAL_FIXED);
@@ -3437,6 +3440,44 @@ function payUnapprovedAll_(ym, st) {
   return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.emp_id < b.emp_id ? -1 : a.emp_id > b.emp_id ? 1 : 0); });
 }
 
+/** 鎖定前檢查（1113 紅燈 a1）：本店 requests 分頁已核准的請假單（kind=leave，含補休）與出差單（kind=trip，對 leave 的「出差」）
+ *  vs leave 分頁的假別列，依「姓名＋日期＋假別」兩邊比，只比有沒有（時數不比）。
+ *  leave 分頁只有 日期／姓名／假別／時數 四欄、沒有來源欄；寫入的只有值班核定（replaceLeaveRows）與手填，
+ *  沒有系統自動產生的列（國定假日、例假不寫 leave），所以不另外排除。
+ *  只看本店薪資主檔上的人（依姓名）；審核中、退回、作廢的單不算。回 [{emp_id, name, date, type, side:'request'|'leave'}]，依日期、姓名、假別。 */
+function payLeaveMismatch_(ym, st) {
+  st = payStore(st);
+  if (!payLeaveMatchOn(ym) || !payHasClock(st)) return [];
+  const byName = {};
+  payRead('master').forEach(function (m) { if (payStore(m.store) === st) byName[String(m.name || '').trim()] = String(m.emp_id); });
+  const has = function (name) { return Object.prototype.hasOwnProperty.call(byName, name); };
+  const reqs = {}, leaves = {}, info = {};
+  payClockRead(st, 'requests').forEach(function (r) {
+    if (String(r.status) !== 'approved' || (r.kind !== 'leave' && r.kind !== 'trip')) return;
+    const date = normCellDate(r.date), name = String(r.name || '').trim();
+    const type = r.kind === 'trip' ? '出差' : String(r.leave_type || '').trim();
+    if (date.slice(0, 7) !== ym || !type || !has(name)) return;
+    const k = name + '|' + date + '|' + type; reqs[k] = true; info[k] = { name: name, date: date, type: type };
+  });
+  payClockRead(st, 'leave').forEach(function (l) {
+    const date = normCellDate(l['日期']), name = String(l['姓名'] || '').trim(), type = String(l['假別'] || '').trim();
+    if (date.slice(0, 7) !== ym || !type || !has(name)) return;
+    const k = name + '|' + date + '|' + type; leaves[k] = true; info[k] = { name: name, date: date, type: type };
+  });
+  const out = [];
+  Object.keys(info).forEach(function (k) {
+    if (reqs[k] && leaves[k]) return;
+    const x = info[k];
+    out.push({ emp_id: byName[x.name], name: x.name, date: x.date, type: x.type, side: reqs[k] ? 'request' : 'leave' });
+  });
+  return out.sort(function (a, b) { return a.date.localeCompare(b.date) || a.name.localeCompare(b.name) || a.type.localeCompare(b.type); });
+}
+/** leave_mismatch 一筆的白話：11/3 代號甲 事假：請假單有、請假登記沒有 */
+function payLeaveMismatchLine_(x) {
+  return (+x.date.slice(5, 7)) + '/' + (+x.date.slice(8, 10)) + ' ' + x.name + ' ' + x.type + '：' +
+    (x.side === 'request' ? '請假單有、請假登記沒有' : '請假登記有、請假單沒有');
+}
+
 function handlePayrollCalc(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const ym = String(body.ym || '');
@@ -3636,6 +3677,8 @@ function handlePayrollCalc(body) {
   if (XSA) res.support_auto = XSA;
   if (NOT_IN.length) res.not_in_payroll = NOT_IN;   // 沒有就不帶（回應形狀與改版前相同）
   if (ZERO_ROWS.length) res.zero_ratio_with_data = ZERO_ROWS;   // 沒有就不帶
+  /* 請假單和請假登記對不上（1113 紅燈 a1）：畫面先標紅，鎖定時會擋。讀不到不影響試算；沒有就不帶。 */
+  try { const LM = payLeaveMismatch_(ym, st); if (LM.length) res.leave_mismatch = LM; } catch (e) { Logger.log('leave_mismatch in calc: ' + e); }
   return res;
 }
 
@@ -3858,6 +3901,14 @@ function handlePayrollFinalize(body) {
     if (un.length) return { ok: false, error: 'unapproved', list: un,
       message: '還有 ' + un.length + ' 天有打卡但沒核定，請主管先核定完再鎖定：' +
         un.slice(0, 30).map(function (x) { return (+x.date.slice(5, 7)) + '/' + (+x.date.slice(8, 10)) + ' ' + x.name; }).join('、') + (un.length > 30 ? ' 等' : '') };
+  }
+  /* 請假單和請假登記對不上不能鎖定（1113 紅燈 a1，Eason 2026-11-13 選 A；PAY_LEAVE_MATCH_FROM 起）：已核准的假單那天沒登記、或登記了卻沒有已核准的單。解鎖不擋。 */
+  if (lock && payLeaveMatchOn(ym)) {
+    let lm;
+    try { lm = payLeaveMismatch_(ym, stF); } catch (err) { return { ok: false, error: 'leave_mismatch_check_failed', message: '檢查「請假單和請假登記對不上」失敗，這次沒有鎖定，請再按一次：' + err }; }
+    if (lm.length) return { ok: false, error: 'leave_mismatch', list: lm,
+      message: '下面 ' + lm.length + ' 筆請假單和請假登記對不上，不能鎖定（請假單有、請假登記沒有＝請主管把那天重新核定一次；請假登記有、請假單沒有＝請同仁補請假單，或主管重新核定改掉那天的登記）：\n' +
+        lm.slice(0, 30).map(payLeaveMismatchLine_).join('\n') + (lm.length > 30 ? '\n…共 ' + lm.length + ' 筆' : '') };
   }
   let n = 0, savedSnap = null;
   /* 稽核與損益快照也是「讀整張再寫回」的共用分頁，和鎖定狀態放在同一把鎖裡，兩店同時定案才不會互相蓋掉（2026-11-10）。 */

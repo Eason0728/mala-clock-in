@@ -647,6 +647,7 @@ let COST_SNAP=null;
 let SAME_NAME=[];   // 本月有請假、名冊同名的人（payroll_month same_name，2026-11-09）
 let ROSTER_MISS=[];   // 主檔工號在打卡名冊找不到的人（payroll_month roster_mismatch，2026-11-06）
 let ZERO_RATIO=[];   // 本月在職天數 0 卻有一列薪資的人（payroll_month／payroll_calc 的 zero_ratio_with_data，2026-11-11）
+let LEAVE_MM=[];   // 請假單和請假登記對不上（payroll_calc 的 leave_mismatch，1113 紅燈 a1）：鎖定前要先處理
 let NOT_IN_PAY=[];   // 主檔已停用、離職日不在本月、本月卻有時數的人（payroll_month／payroll_calc 的 not_in_payroll，2026-11-11）
 let SUPA=null;   // 跨店支援自動帶入（2026-11 起後端 payroll_month 回的 support_auto；之前的月份是 null）
 // 目前操作門市：階段一由門市表全部可見；階段二改讀 dzy 帳號的可見門市清單（UI 與過濾邏輯不變）
@@ -794,7 +795,7 @@ async function boot(){
 async function autoCalc(){
   if(STATUS==='final' || RESULTS.length) return;
   const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
-  if(r&&r.ok){RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];renderRun();renderSlipSel()}
+  if(r&&r.ok){RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];renderRun();renderSlipSel()}
 }
 /* ═════ 未儲存提醒（2026-08-23）═════
  * 出勤資料的所有輸入（含跨店支援明細）都只寫在瀏覽器記憶體，按「儲存工時」才進試算表。
@@ -962,6 +963,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     SAME_NAME=r.same_name||[];
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
+    LEAVE_MM=r.leave_mismatch||[];
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
     SUPA=r.support_auto||null; SUP_OPEN={};
     ROSTER_MISS=r.roster_mismatch||[];
@@ -998,6 +1000,7 @@ async function doCalc(){
     RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;COST_SNAP=null;
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
+    LEAVE_MM=r.leave_mismatch||[];
     vClear();   // 重算後儀表板／集團總覽的數字會變
     renderRun();renderSlipSel();toast('已重新計算');
   } finally { setBusy(false); }
@@ -1502,6 +1505,8 @@ function renderOtInfo(t){
   NOT_IN_PAY.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：本月有 ${esc(r2(Number(x.hours)||0))} 小時，但主檔已取消在職、離職日沒填或早於這個月，沒有算進薪資。這個月還有上班的話，請到員工設定填正確的離職日</li>`));
   // 在職天數 0 卻有一列薪資：照舊算，提醒確認主檔日期（薪酬挑錯第 2 項補洞，2026-11-11）
   ZERO_RATIO.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：本月在職天數是 0（到職日或離職日不在這個月），卻有 ${esc(r2(Number(x.hours)||0))} 小時／加扣項，請確認主檔的到職日、離職日</li>`));
+  // 請假單和請假登記對不上（1113 紅燈 a1）：鎖定時會擋
+  LEAVE_MM.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：${md(x.date)} ${esc(x.type)} ${x.side==='request'?'有已核准的請假單，請假登記沒有（請主管把那天重新核定一次）':'請假登記有，卻沒有已核准的請假單（請同仁補請假單，或主管重新核定改掉登記）'}——<b>處理前不能鎖定</b></li>`));
   SAME_NAME.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：打卡名冊有同名的人（${x.emp_ids.map(esc).join('、')}），本月 ${x.rows} 筆請假只有姓名，系統依在職與到離職日算給 ${x.to.map(esc).join('、')}，請確認沒有歸錯人</li>`));
   RESULTS.forEach(r=>{const o=r.ot_info; if(!o) return; const nm=esc(r.name);
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
@@ -1553,7 +1558,7 @@ async function toggleLock(){
     // 鎖定：後端寫好快照會帶回 cost_snap，成本分類頁立刻改讀；解鎖：快照已清掉，回到即時算
     if(r.ok){STATUS=r.status;COST_SNAP=(lock&&r.cost_snap)||null;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
     // 補休帳是負的不能鎖定（2026-11-01）：名單可能好幾行，用對話框列清楚
-    else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='ot_form_missing'||r.error==='sched_missing'||r.error==='unapproved')) alert(r.message);
+    else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='ot_form_missing'||r.error==='sched_missing'||r.error==='unapproved'||r.error==='leave_mismatch')) alert(r.message);
     else if(lock&&r.error==='stale_run'){ alert(r.message+'\n\n按確定後系統會自動重新計算，請看過新數字再按一次鎖定。'); await doCalc(); }
     else if(lock&&r.message) toast(r.message,true);
   } finally {
