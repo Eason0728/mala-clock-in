@@ -914,6 +914,23 @@ function handleMgrReqPending_(body) {
   return { ok: true, items: items };
 }
 
+/* 核准請假／出差單時那天已經核定過（1113 紅燈 a2，Eason 2026-11-13 選 A）：請假登記（leave 分頁）只在主管送出核定時寫，
+   假單晚於核定才核准，薪資就看不到這個假。照常核准，回應多帶提醒，請主管把那天重新核定一次。
+   加班、忘打卡不寫請假登記，不提醒。approvedMap 用 buildLatestApprovedMap（同一天同一人最新一筆）。 */
+var REQ_DAY_WARN_ = 'already_approved_day';
+function reqAffectsLeave_(r) { return String(r.kind) === 'leave' || String(r.kind) === 'trip'; }
+function reqApprovedMap_(ss) {
+  var ash = ss.getSheetByName('approved');
+  return buildLatestApprovedMap(ash ? readSheetAsObjects(ash).rows : []);
+}
+function reqDayApproved_(approvedMap, r) {
+  var d = String(r.date || '').slice(0, 10);
+  return !!(reqAffectsLeave_(r) && approvedMap[d] && approvedMap[d][String(r.emp_id)]);
+}
+function reqDayWarnMsg_(dates) {
+  return dates.map(function (d) { return (+d.slice(5, 7)) + ' 月 ' + (+d.slice(8, 10)) + ' 日'; }).join('、') + '已經核定過，請重新核定一次，假別才會寫進薪資';
+}
+
 /** {action:'mgr_req_decide', mgr_key, id, decision:'approve'|'reject', reason?} */
 function handleMgrReqDecide_(body) {
   var mgr = reqMgr_(body);
@@ -938,7 +955,13 @@ function handleMgrReqDecide_(body) {
     if (decision === 'approve' && reqNeedsProof_(r)) return { ok: false, error: 'need_proof', message: r.leave_type + '要附證明，同仁補上後才能核准（退回不受影響）' };
     reqSetCells_(sh, r.__rowIndex, { status: decision === 'approve' ? 'approved' : 'rejected', decided_at: nowTaipeiIso(),
                                      decided_by: actor, reject_reason: decision === 'reject' ? reason : '' });
-    return { ok: true, id: String(r.id), status: decision === 'approve' ? 'approved' : 'rejected' };
+    var out = { ok: true, id: String(r.id), status: decision === 'approve' ? 'approved' : 'rejected' };
+    if (decision === 'approve' && reqAffectsLeave_(r)) {
+      var dd = String(r.date || '').slice(0, 10);
+      try { if (reqDayApproved_(reqApprovedMap_(ss), r)) { out.warn = REQ_DAY_WARN_; out.warn_dates = [dd]; out.message = reqDayWarnMsg_([dd]); } }
+      catch (e) {}   // 讀不到核定紀錄不影響核准
+    }
+    return out;
   } finally { lock.releaseLock(); }
 }
 
@@ -988,7 +1011,7 @@ function handleMgrReqDecideBatch_(body) {
   try {
     var byId = {};
     reqRows_(ss).forEach(function (x) { byId[String(x.id)] = x; });
-    var now = nowTaipeiIso(), done = [], skipped = [];
+    var now = nowTaipeiIso(), done = [], skipped = [], results = [], warnDates = [], apMap = null;
     var upc = reqMgrActing_(mgr, body) ? null : reqUpperCache_(ss);
     ids.forEach(function (id) {
       var r = byId[id];
@@ -1001,8 +1024,20 @@ function handleMgrReqDecideBatch_(body) {
       if (reqNeedsProof_(r)) { skipped.push({ id: id, reason: r.leave_type + '還沒附證明' }); return; }
       reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: actor, reject_reason: '' });
       done.push(id);
+      var res = { id: id };
+      if (reqAffectsLeave_(r)) {
+        try { if (!apMap) apMap = reqApprovedMap_(ss); } catch (e) { apMap = {}; }
+        if (reqDayApproved_(apMap, r)) {
+          var dd = String(r.date || '').slice(0, 10);
+          res.warn = REQ_DAY_WARN_; res.warn_dates = [dd]; res.message = reqDayWarnMsg_([dd]);
+          if (warnDates.indexOf(dd) < 0) warnDates.push(dd);
+        }
+      }
+      results.push(res);
     });
-    return { ok: true, done: done, skipped: skipped };
+    var outB = { ok: true, done: done, skipped: skipped, results: results };
+    if (warnDates.length) { warnDates.sort(); outB.warn = REQ_DAY_WARN_; outB.warn_dates = warnDates; outB.message = reqDayWarnMsg_(warnDates); }
+    return outB;
   } finally { lock.releaseLock(); }
 }
 
