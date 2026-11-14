@@ -932,6 +932,8 @@ function reqMgrApproveCheck_(body) {
   if (items.length > REQ_CHECK_MAX_) return { ok: false, error: 'too_many', message: '一次最多試算 ' + REQ_CHECK_MAX_ + ' 人' };
   var base = {};
   ['mgr_key', 'acting_name', 'date'].forEach(function (k) { if (body[k] !== undefined) base[k] = body[k]; });
+  READ_MEMO_ = {};      // 這一批共用讀過的表（Code.gs readSheetAsObjects）；結束一定關掉
+  try {
   var results = items.map(function (it) {
     if (!it || typeof it !== 'object') return { ok: false, error: 'bad_item' };
     var b = {};
@@ -945,6 +947,7 @@ function reqMgrApproveCheck_(body) {
     ['error', 'message', 'approved_hours', 'status_text', 'need', 'diff_min'].forEach(function (k) { if (r && r[k] !== undefined) out[k] = r[k]; });
     return out;
   });
+  } finally { READ_MEMO_ = null; }
   if (results.length && results.every(function (x) { return x.error === 'unauthorized'; })) return { ok: false, error: 'unauthorized' };
   return { ok: true, date: String(body.date || ''), results: results };
 }

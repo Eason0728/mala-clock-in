@@ -365,8 +365,13 @@ function genKey(n) {
 }
 
 /** 讀整張表成物件陣列，每個物件多帶 __rowIndex（1-based 實際列號，含表頭）。 */
+// 只檢查一次多人（2026-11-14 Requests.gs reqMgrApproveCheck_）：同一次執行裡同一張表只讀一次（每人重讀整張表會 20～36 秒逾時）。
+// 只記原始值、每次照樣組新的物件，呼叫端改了列也不會影響下一位；只有只檢查時打開，寫入流程一律照舊每次讀。
+var READ_MEMO_ = null;
 function readSheetAsObjects(sheet) {
-  const values = sheet.getDataRange().getValues();
+  var memo = typeof READ_MEMO_ !== 'undefined' ? READ_MEMO_ : null;      // 有些測試只抽出這支函式，沒有這個全域變數
+  var memoKey = memo && sheet && typeof sheet.getSheetId === 'function' ? String(sheet.getSheetId()) : null;
+  const values = memoKey !== null ? (memo[memoKey] || (memo[memoKey] = sheet.getDataRange().getValues())) : sheet.getDataRange().getValues();
   if (values.length < 2) return { headers: values[0] || [], rows: [] };
   const headers = values[0];
   const rows = values.slice(1).map(function (row, idx) {
