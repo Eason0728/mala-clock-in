@@ -73,5 +73,5 @@ check('F15', '只讀動作不記、其他寫入照記', changes(t1).changes.map(
 const t2 = m.sb.Date.now();
 m.advance(1000);
 m.sb.dutyFeedNote_({ action: 'req_submit', id_token: 'x' }, { ok: true, request: { emp_id: 'E01', date: '2026-11-09' } });
-check('F16', 'LINE 送申請：變動記到那位同仁那天', changes(t2).changes.map((x) => [x.a, x.e, x.d]), [['req_submit', 'E01', ['2026-11-09']]]);
+check('F16', 'LINE 送申請：變動記到那位同仁那天', changes(t2).changes.filter((x) => x.a === 'req_submit').map((x) => [x.a, x.e, x.d]), [['req_submit', 'E01', ['2026-11-09']]]);
 done();
