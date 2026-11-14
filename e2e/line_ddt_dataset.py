@@ -747,7 +747,9 @@ class Gen:
         people.append(req2_b)
         miss = self.person(a, 'req_miss')
         people.append(miss)
-        self.seed_miss_days(miss)
+        miss2 = self.person(a, 'req_miss2')   # 2026-11-14：忘打卡只能補 4 天內，七種日子分兩個人放（都在 4 天內）
+        people.append(miss2)
+        self.seed_miss_days(miss, miss2)
         self.seed_dual_days(req2, req2_b)
         # 班表：光復名冊兩位（正職／計時）＋一位排班系統有兩個同名
         sched_people = [self.person('', 'sched_full'), self.person('', 'sched_part'), self.person('', 'sched_dup')]
@@ -770,19 +772,22 @@ class Gen:
         self.notices = [{'text': '測試公告：' + t} for t in r.sample(['花椒粉用完換辣椒粉', '今晚盤點', '<b>不是粗體</b>', '週五早班提早 30 分'], r.randint(1, 3))]
         return self
 
-    def seed_miss_days(self, p):
-        """忘打卡：7 天內各種日子——沒卡／只有上班卡／只有下班卡／整段／三種都有／跨夜；今天開著的上班卡。"""
+    def seed_miss_days(self, p, p2):
+        """忘打卡：4 天內各種日子（2026-11-14 由 7 改 4，分兩個人放）。
+        p：沒卡／只有上班卡／只有下班卡／整段＋今天開著的上班卡；p2：四張都沒打（1 天前）／三種都有（2 天前）／跨夜（3 天前）。"""
         r = self.rng
         t = lambda d, hm: iso(self.at(days=d).replace(hour=int(hm[:2]), minute=int(hm[3:]), second=0))
         ev = lambda d, hm, typ, st='ok': {'ts': t(d, hm), 'type': typ, 'status': st}
-        days = {'none': 1, 'in_only': 2, 'out_only': 3, 'full': 4, 'three': 5, 'night': 6}
+        days = {'none': 1, 'in_only': 2, 'out_only': 3, 'full': 4}
         p['miss_days'] = {k: self.at(days=v).strftime('%Y-%m-%d') for k, v in days.items()}
+        days2 = {'free': 1, 'three': 2, 'night': 3}
+        p2['miss_days'] = {k: self.at(days=v).strftime('%Y-%m-%d') for k, v in days2.items()}
         p['events'] += [ev(2, '%02d:%02d' % (r.randint(8, 11), r.randint(0, 59)), 'in'),
                         ev(2, '13:00', 'in', 'rejected_out_of_range'),   # 被擋的卡要顯示「沒有打成功」
                         ev(3, '%02d:%02d' % (r.randint(16, 21), r.randint(0, 59)), 'out'),
-                        ev(4, '09:%02d' % r.randint(0, 59), 'in'), ev(4, '18:%02d' % r.randint(0, 59), 'out'),
-                        ev(5, '08:05', 'out'), ev(5, '09:10', 'in'), ev(5, '13:20', 'out'), ev(5, '18:00', 'in'),
-                        ev(6, '17:30', 'in'), ev(5, '01:30', 'out')]   # 跨夜：6 天前晚上上班、5 天前凌晨下班 → 歸 6 天前，5 天前的凌晨卡標 (+1)
+                        ev(4, '09:%02d' % r.randint(0, 59), 'in'), ev(4, '18:%02d' % r.randint(0, 59), 'out')]
+        p2['events'] += [ev(2, '08:05', 'out'), ev(2, '09:10', 'in'), ev(2, '13:20', 'out'), ev(2, '18:00', 'in'),
+                         ev(3, '17:30', 'in'), ev(2, '01:30', 'out')]   # 跨夜：3 天前晚上上班、2 天前凌晨下班 → 歸 3 天前，2 天前的凌晨卡標 (+1)
         p['events'].append(self.ev(self.today_at(self.at(hours=3, minutes=r.randint(0, 30))), 'in'))   # 今天上班中（補休息要擋還沒到的時間）
 
     def seed_dual_days(self, pa, pb):
