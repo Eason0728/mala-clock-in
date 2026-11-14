@@ -1126,8 +1126,12 @@ function finalOrphanScan_(ss, from, to) {
   var days = {};
   var day = function (date, emp, name) { var k = date + '|' + emp; return days[k] = days[k] || { date: date, emp_id: emp, name: name, approved_at: '', leaves: [], voided: [] }; };
   (ash ? readSheetAsObjects(ash).rows : []).forEach(function (x) {
-    var d = normCellDate(x.date); if (d < from || d > to || String(x.mirror_src || '').trim()) return;
-    var o = day(d, String(x.emp_id), String(x.name || '').trim()); var t = String(normCellTs(x.entered_at) || '');
+    var d = normCellDate(x.date); if (d < from || d > to) return;
+    var o = day(d, String(x.emp_id), String(x.name || '').trim());
+    // 總部鏡像列（mirror_src，從央廚等原店抄來）：原店有核定＝這天有核定，假別也是照規則一起抄的，不算孤兒（2026-11-14 吳佳宜誤報）。
+    //   鏡像的核定時間是抄寫時間、作廢的單在原店，所以不拿來比「作廢晚於核定」
+    if (String(x.mirror_src || '').trim()) { o.has_approved = true; o.mirror = true; return; }
+    var t = String(normCellTs(x.entered_at) || '');
     if (t > o.approved_at) o.approved_at = t; o.has_approved = true;
   });
   (lsh ? readSheetAsObjects(lsh).rows : []).forEach(function (x) {
@@ -1143,7 +1147,7 @@ function finalOrphanScan_(ss, from, to) {
   var items = [];
   Object.keys(days).sort().forEach(function (k) {
     var o = days[k], probs = [];
-    if (o.voided.some(function (v) { return !o.has_approved || v.voided_at > o.approved_at; }) && (o.has_approved || o.leaves.length)) probs.push('voided');
+    if (o.voided.some(function (v) { return !o.has_approved || (o.approved_at && v.voided_at > o.approved_at); }) && (o.has_approved || o.leaves.length)) probs.push('voided');
     if (o.leaves.length && !o.has_approved) probs.push('orphan_leave');
     if (!probs.length) return;
     items.push({ key: k, date: o.date, emp_id: o.emp_id, name: o.name, has_approved: !!o.has_approved, approved_at: o.approved_at, leaves: o.leaves, voided: o.voided, probs: probs });

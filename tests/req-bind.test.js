@@ -524,7 +524,8 @@ ok('舊資料掃描：只讀列出「作廢晚於核定」與「有假別沒工�
   addReq(sb, { id: 'V1', kind: 'trip', date: '2026-11-02', status: 'voided', voided_at: '2026-11-04T09:00:00+08:00', voided_by: '總監' });
   addReq(sb, { id: 'V2', kind: 'ot', emp_id: 'E02', name: '測試二', date: '2026-11-01', status: 'voided', voided_at: '2026-11-05T09:00:00+08:00' });
   addReq(sb, { id: 'V3', kind: 'trip', date: '2026-11-01', status: 'voided', voided_at: '2026-11-02T12:00:00+08:00' });
-  sheets.leave.data.push(['2026-11-03', '測試二', '出差', 7], ['2026-11-03', '不在名冊', '事假', 1]);
+  sheets.leave.data.push(['2026-11-03', '測試二', '出差', 7], ['2026-11-03', '不在名冊', '事假', 1], ['2026-11-04', '測試二', '出差', 8]);
+  sheets.approved.data.push(['2026-11-04', 'E02', '測試二', '09:00-17:00', 8, '正常', '店長', '2026-11-05T00:10:00+08:00', '', '', 'CF']);   // 總部鏡像核定＋抄來的假別：不是孤兒
   assert.strictEqual(sb.handleFinalOrphanScan_({ admin_key: 'x', from: '2026-11-01', to: '2026-11-30' }).error, 'unauthorized');
   const before = JSON.stringify([sheets.approved.data, sheets.leave.data]);
   const pv = sb.handleFinalOrphanScan_({ admin_key: 'AK', from: '2026-11-01', to: '2026-11-30' });
