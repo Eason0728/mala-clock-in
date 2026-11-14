@@ -547,10 +547,12 @@ function handleLiffStatus_(body) {
   if (liffThrottled_('st', userId, 30, 60)) return { ok: false, error: 'too_many' };
   var found = liffRosterByLine_(userId);
   if (found.error) return { ok: false, error: found.error };
+  // 單日滿 10 小時（2026-11-14，Cap10.gs）：先算——到了會寫系統卡，下面讀的今天紀錄才看得到那張
+  var capSt = (typeof capStatusFor_ === 'function') ? capStatusFor_(found.ss, found.roster, null) : { locked: false, in_block: false };
   var me = found.roster, events = liffEvents_(found.ss, liffStatusSince_());
   var today = todayTaipeiStr();
   var mine = events.filter(function (e) { return String(e.emp_id) === String(me.emp_id) && String(e.ts).slice(0, 10) === today; })
-    .map(function (e) { return { type: String(e.type), hm: liffHm_(e.ts), status: String(e.status) }; });
+    .map(function (e) { return { type: String(e.type), hm: liffHm_(e.ts), status: String(e.status), sys: String(e.source || '') === 'system_cap' }; });
   var g = liffGuard_(events, me.emp_id);
   // 店內公告（2026-10-09）：主管在核定頁發的公告，LINE 打卡頁也顯示（原本只有舊連結 clock.html 看得到）；讀不到不擋打卡
   var notices = [];
@@ -559,7 +561,9 @@ function handleLiffStatus_(body) {
            shift_in: normShiftTime(me.shift_in), shift_out: normShiftTime(me.shift_out),
            today: mine, guard: { blocked: g.blocked, lock: g.lock, last: g.last, now: Date.now() },
            // 休息不足（2026-11-01，Rest.gs）：開頁就告訴同仁幾點以後才能打上班卡；正在上班中（上一張是上班卡）不用算
-           rest: (g.blocked !== 'in' && typeof restStatus_ === 'function') ? restStatus_(found.ss, me) : { blocked: false } };
+           rest: (g.blocked !== 'in' && typeof restStatus_ === 'function') ? restStatus_(found.ss, me) : { blocked: false },
+           // 單日滿 10 小時系統收卡（2026-11-14，Cap10.gs）：locked＝上下班都鎖、in_block＝只鎖上班；開頁時到了 10 小時會順便寫系統卡
+           cap: capSt };
 }
 
 var LIFF_PUNCH_REASONS_ = {
@@ -625,6 +629,8 @@ function handleLiffClockGuarded_(body) {
   var found = liffRosterByLine_(userId);
   if (found.error) return { ok: false, error: found.error };
   var read = liffReadEvents_(found.ss, liffStatusSince_());
+  var capStop = (typeof capBlock_ === 'function') ? capBlock_(found.ss, found.roster, type, null) : null;   // 單日滿 10 小時（Cap10.gs）
+  if (capStop) return { ok: false, type: type, error: 'guard_blocked', reason: capStop.reason, hint: capStop.hint };
   var stop = liffGuardReject_(liffGuard_(liffWithMark_(read.rows, found.roster.emp_id), found.roster.emp_id), type);
   if (stop) return { ok: false, type: type, error: 'guard_blocked', reason: stop.reason, hint: stop.hint };
   var inner = {};
@@ -656,6 +662,9 @@ function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows
   var read = liffPunchRead_(ss, me.emp_id, type), events = read.rows;
   liffStep_('read');
   var g = liffGuard_(liffWithMark_(events, me.emp_id), me.emp_id);   // 併上「剛送出」的記號（同一人兩筆同時到）
+  // 單日滿 10 小時（2026-11-14，Cap10.gs）：滿了先寫系統卡再擋，上下班都不收；開關關著＝null。放在 10 分鐘鎖前面，講的才是真正的原因
+  var capStop = (typeof capBlock_ === 'function') ? capBlock_(ss, me, type, type === 'out' ? events : null) : null;
+  if (capStop) return { ok: false, type: type, status: 'cap_locked', reason: capStop.reason, hint: capStop.hint, cap_until: capStop.until };
   var stop = liffGuardReject_(g, type);
   if (stop) return { ok: false, type: type, reason: stop.reason, hint: stop.hint };
   // 同一顆再按（過了 10 分鐘）要同仁確認過才收（2026-11-03 對抗驗證 #1）：畫面上的確認框只看開頁時的狀態，
@@ -850,10 +859,13 @@ var LIFF_HANDLERS = {
   liff_punch: handleLiffPunch_,
   export_tables: handleExportTables_,
   rest_rule_set: function (b) { return handleRestRuleSet_(b); },   // Rest.gs（2026-11-01）；包一層，免得檔案載入順序問題
+  cap_set: function (b) { return handleCapSet_(b); },   // 單日滿 10 小時系統收卡開關（Cap10.gs，2026-11-14）
+  clock: function (b) { return (typeof capClockWrapped_ === 'function') ? capClockWrapped_(b) : handleClock(b); },   // 舊連結也過滿 10 小時檢查
   // 加班請假／忘打卡申請＋主管 QR（Requests.gs）。包一層函式：檔案載入順序不保證 Requests.js 在前
   req_info: function (b) { return handleReqInfo_(b); },
   mgr_pending_approvals: function (b) { return reqPendingApprovalsPlus_(b); },   // 覆蓋 Code.gs 同名動作：多算已核准申請（2026-10-10）
-  mgr_day: function (b) { return reqMgrDayHome_(b); },           // 覆蓋 Code.gs：不算本店支援的人本店主管看不到（2026-10-29，REQ_HOME_EMPS）
+  mgr_day: function (b) { var r = reqMgrDayHome_(b); return (typeof capAnnotateDay_ === 'function') ? capAnnotateDay_(b, r) : r; },   // 2026-11-14 加系統卡標示 cap_sys（Cap10.gs）
+  //   ↑ 原本就覆蓋 Code.gs：不算本店支援的人本店主管看不到（2026-10-29，REQ_HOME_EMPS）
   mgr_approve: function (b) { return reqMgrApproveHome_(b); },
   mgr_approve_check: function (b) { return reqMgrApproveCheck_(b); },   // 只檢查不寫入、一次一天多人（2026-11-14 考勤管理好上手）   // 同上：本店主管核不了，管理系統代核照常
   req_submit: function (b) { return handleReqSubmit_(b); },

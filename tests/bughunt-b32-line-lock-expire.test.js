@@ -21,7 +21,7 @@ function buttons(nowMs, guard) {
   const els = { btnIn: { disabled: false, textContent: '' }, btnOut: { disabled: false, textContent: '' }, msg: { textContent: '' } };
   class FD extends Date { constructor(...a) { if (a.length) super(...a); else super(nowMs); } static now() { return nowMs; } }
   const sb = { Date: FD, Math, String, $: (id) => els[id], status: { status: 'ready', guard: guard, rest: null }, busy: false, clockSkew: 0,
-    restBlocked: () => false, hmOf: (x) => String(x), say: () => {} };
+    restBlocked: () => false, capBlocked: () => false, hmOf: (x) => String(x), say: () => {} };
   vm.createContext(sb);
   vm.runInContext(extract('refreshButtons') + '\nrefreshButtons();', sb);
   return [els.btnIn.disabled, els.btnIn.textContent, els.btnOut.disabled, els.btnOut.textContent];
