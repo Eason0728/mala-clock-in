@@ -854,7 +854,8 @@ var LIFF_HANDLERS = {
   req_info: function (b) { return handleReqInfo_(b); },
   mgr_pending_approvals: function (b) { return reqPendingApprovalsPlus_(b); },   // 覆蓋 Code.gs 同名動作：多算已核准申請（2026-10-10）
   mgr_day: function (b) { return reqMgrDayHome_(b); },           // 覆蓋 Code.gs：不算本店支援的人本店主管看不到（2026-10-29，REQ_HOME_EMPS）
-  mgr_approve: function (b) { return reqMgrApproveHome_(b); },   // 同上：本店主管核不了，管理系統代核照常
+  mgr_approve: function (b) { return reqMgrApproveHome_(b); },
+  mgr_approve_check: function (b) { return reqMgrApproveCheck_(b); },   // 只檢查不寫入、一次一天多人（2026-11-14 考勤管理好上手）   // 同上：本店主管核不了，管理系統代核照常
   req_submit: function (b) { return handleReqSubmit_(b); },
   req_cancel: function (b) { return handleReqCancel_(b); },
   req_attach: function (b) { return handleReqAttach_(b); },   // 補附證明（2026-10-10）

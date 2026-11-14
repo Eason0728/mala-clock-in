@@ -2126,6 +2126,11 @@ function handleMgrApprove(body) {
         pending_device: eventRows.filter(function (e) { return String(e.emp_id) === String(body.emp_id) && e.status === 'pending_device_approval' && tsDateStr(e.ts) === date; }).length });
     if (bind) return bind;
   }
+  // 只檢查不寫入（2026-11-14 考勤管理好上手第 1 項，營運系統 docs/duty-easy/）：上面所有檢查都跑過、會不會被擋已經知道，這裡停下、什麼都不寫
+  if (body.dry_run === true) {
+    return { ok: true, dry_run: true, date: date, emp_id: body.emp_id, name: roster.name, periods: rawPeriods,
+             approved_hours: approvedHours, leaves: leaves, status_text: statusText };
+  }
   const enteredAt = nowTaipeiIso();
 
   empIdColText_(approvedSheet);
