@@ -326,7 +326,12 @@ function jsonOut(obj) {
 }
 
 function getSS() {
-  return SpreadsheetApp.openById(spreadsheetId());
+  // 只檢查一批（READ_MEMO_ 開著）時同一次執行只打開一次（每人打開 2 次，2026-11-14 加速）
+  var memo = typeof READ_MEMO_ !== 'undefined' ? READ_MEMO_ : null;
+  if (memo && memo['ss:self']) return memo['ss:self'];
+  var ss = SpreadsheetApp.openById(spreadsheetId());
+  if (memo) memo['ss:self'] = ss;
+  return ss;
 }
 
 function nowTaipeiIso() {
@@ -368,9 +373,13 @@ function genKey(n) {
 // 只檢查一次多人（2026-11-14 Requests.gs reqMgrApproveCheck_）：同一次執行裡同一張表只讀一次（每人重讀整張表會 20～36 秒逾時）。
 // 只記原始值、每次照樣組新的物件，呼叫端改了列也不會影響下一位；只有只檢查時打開，寫入流程一律照舊每次讀。
 var READ_MEMO_ = null;
+function readMemoBook_(sheet) {
+  try { var p = typeof sheet.getParent === 'function' ? sheet.getParent() : null; return p && typeof p.getId === 'function' ? String(p.getId()) : '?'; } catch (e) { return '?'; }
+}
 function readSheetAsObjects(sheet) {
   var memo = typeof READ_MEMO_ !== 'undefined' ? READ_MEMO_ : null;      // 有些測試只抽出這支函式，沒有這個全域變數
-  var memoKey = memo && sheet && typeof sheet.getSheetId === 'function' ? String(sheet.getSheetId()) : null;
+  // 鍵要含試算表 ID：各店試算表是同一份範本複製的，工作表編號（gid）一樣，只看 gid 會把別家店的表讀成自己這家（2026-11-14 修正，正職跨店 8 小時讀別家）
+  var memoKey = memo && sheet && typeof sheet.getSheetId === 'function' ? readMemoBook_(sheet) + ':' + String(sheet.getSheetId()) : null;
   const values = memoKey !== null ? (memo[memoKey] || (memo[memoKey] = sheet.getDataRange().getValues())) : sheet.getDataRange().getValues();
   if (values.length < 2) return { headers: values[0] || [], rows: [] };
   const headers = values[0];

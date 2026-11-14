@@ -56,7 +56,9 @@ function sheet(values, id) {
 function book(id, sheets) {
   const sh = {}; let n = 0;
   Object.keys(sheets).forEach((k) => { if (sheets[k]) sh[k] = sheet(sheets[k], ++n); });
-  return { sh, getId: () => id, getSheetByName: (nm) => sh[nm] || null, insertSheet: (nm) => { sh[nm] = sheet([], ++n); return sh[nm]; } };
+  const bk = { sh, getId: () => id, getSheetByName: (nm) => sh[nm] || null, insertSheet: (nm) => { sh[nm] = sheet([], ++n); sh[nm].getParent = () => bk; return sh[nm]; } };
+  Object.keys(sh).forEach((k) => { sh[k].getParent = () => bk; });      // 各店工作表編號一樣（同範本複製），getParent 才分得出是哪一家
+  return bk;
 }
 const EH = ['ts', 'emp_id', 'type', 'lat', 'lng', 'distance_m', 'within_range', 'device_id', 'device_match', 'status', 'accuracy_m'];
 const RH = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active', 'shift_in', 'shift_out', 'created_at', 'created_by', 'removed_at', 'removed_by', 'line_user_id', 'line_bound_at', 'line_ok_at'];
