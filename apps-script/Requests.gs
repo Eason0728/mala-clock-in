@@ -161,6 +161,10 @@ function reqHeads_(sh) {
   return heads;
 }
 function reqRows_(ss) {
+  var tR = Date.now();
+  try { return reqRowsRaw_(ss); } finally { if (typeof chkT_ === 'function') chkT_('req_rows', Date.now() - tR); }
+}
+function reqRowsRaw_(ss) {
   var sh = reqSheet_(ss, false);
   if (!sh) return [];
   return reqSickMark_(readSheetAsObjects(sh).rows.map(function (r) {
@@ -933,8 +937,11 @@ function reqMgrApproveCheck_(body) {
   var base = {};
   ['mgr_key', 'acting_name', 'date'].forEach(function (k) { if (body[k] !== undefined) base[k] = body[k]; });
   READ_MEMO_ = {};      // 這一批共用讀過的表（Code.gs readSheetAsObjects）；結束一定關掉
+  if (typeof chkT_ === 'function') CHECK_T_ = {}; var tAll = Date.now(), perEmp = [], timing = null;      // 分段計時（2026-11-14）
   try {
   var results = items.map(function (it) {
+    var tE = Date.now();
+    try {
     if (!it || typeof it !== 'object') return { ok: false, error: 'bad_item' };
     var b = {};
     Object.keys(it).forEach(function (k) { if (k !== 'mgr_key' && k !== 'acting_name' && k !== 'date' && k !== 'base_ver' && k !== 'action') b[k] = it[k]; });
@@ -946,10 +953,16 @@ function reqMgrApproveCheck_(body) {
     var out = { emp_id: String(it.emp_id == null ? '' : it.emp_id), ok: !!(r && r.ok) };
     ['error', 'message', 'approved_hours', 'status_text', 'need', 'diff_min', 'probs', 'need_doc', 'hint'].forEach(function (k) { if (r && r[k] !== undefined) out[k] = r[k]; });      // probs／need_doc／hint：營運系統逐條顯示要補的單（2026-11-14）
     return out;
+    } finally { perEmp.push(Date.now() - tE); }
   });
-  } finally { READ_MEMO_ = null; }
+  } finally {
+    READ_MEMO_ = null;
+    var parts = {}; Object.keys((typeof CHECK_T_ !== 'undefined' && CHECK_T_) || {}).forEach(function (k) { parts[k] = CHECK_T_[k]; });
+    timing = { total_ms: Date.now() - tAll, n: items.length, per_emp_ms: perEmp, parts: parts };
+    if (typeof CHECK_T_ !== 'undefined') CHECK_T_ = null;
+  }
   if (results.length && results.every(function (x) { return x.error === 'unauthorized'; })) return { ok: false, error: 'unauthorized' };
-  return { ok: true, date: String(body.date || ''), results: results };
+  return { ok: true, date: String(body.date || ''), results: results, timing: timing };
 }
 /** 為什麼這筆申請不能由本店值班主管處理：'mgr'＝值班主管本人、'dept'＝部門同仁、''＝可以處理 */
 function reqUpperWhy_(empId, ss, cache) {
@@ -1798,6 +1811,10 @@ function reqPeerRoster_(p, fresh) {
 }
 var REQ_PEER_MEMO_ = {};   // 同一次執行內共用（撤銷掃描、一次核定），Apps Script 每次執行都是新的
 function reqPeerDay_(name, date, fresh) {
+  var tP = Date.now();
+  try { return reqPeerDayRaw_(name, date, fresh); } finally { if (typeof chkT_ === 'function') chkT_('peer', Date.now() - tP); }
+}
+function reqPeerDayRaw_(name, date, fresh) {
   var mk = name + '|' + date + (fresh ? '|f' : '');
   if (REQ_PEER_MEMO_[mk]) return REQ_PEER_MEMO_[mk];
   var out = REQ_PEER_MEMO_[mk] = { worked: false, pending: false, failed: false, work: 0, leave: 0, ot: 0, names: [] };
