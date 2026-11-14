@@ -1793,7 +1793,7 @@ function handleLineHubReqInit_(body) {
   var qc = body.lite ? { quota: [], comp: null } : lineHubReqQuota_(userId);
   var quota = qc.quota, comp = qc.comp;
   var common = LINE_HUB_COMMON_LEAVES.filter(function (n) { return names.indexOf(n) >= 0; });
-  // 與 Payroll.gs PAY_COMP_NAME、Requests.gs REQ_COMP_LEAVE_ 同一個字；2026-11-04 起一律列出，只有全部綁墨竹亭的同仁不列（出勤規範 4-6）
+  // 與 Payroll.gs PAY_COMP_NAME、Requests.gs REQ_COMP_LEAVE_ 同一個字；2026-11-04 起一律列出；2026-11-14 起墨竹亭也開放（payCompStoreOn_ 全部 true），開關留著
   var compOff = typeof payCompStoreOn_ === 'function' && stores.every(function (x) { return !payCompStoreOn_(x.code); });
   if (!compOff) common.push('補休');
   var punchStore = null;

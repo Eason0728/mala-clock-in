@@ -45,8 +45,8 @@ chk('休息日 9H：(2.68＋10.02＋2.67)×100',it[0][3],1537);
 it=items(false,S,0,200);
 chk('計時休息日 9H：(0.68＋4.02＋1.67)×200',it[0][3],1274);
 // 墨竹亭
-chk('墨竹亭金山不適用',fn('payCompStoreOn_')('MZTJS'),false);
-chk('墨竹亭總部不適用',fn('payCompStoreOn_')('MZTHQ'),false);
+chk('墨竹亭金山 2026-11-14 起也適用',fn('payCompStoreOn_')('MZTJS'),true);
+chk('墨竹亭總部 2026-11-14 起也適用',fn('payCompStoreOn_')('MZTHQ'),true);
 chk('光復適用',fn('payCompStoreOn_')('SSLGF'),true);
 chk('央廚適用',fn('payCompStoreOn_')('CF'),true);
 chk('總部適用',fn('payCompStoreOn_')('HQ'),true);

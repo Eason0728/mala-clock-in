@@ -18,5 +18,5 @@ const T = E.sum({ dates: ['2026-11-02', '2026-11-03'], sched: { '2026-11-02': { 
 chk('週期上限看實際加班，補休不扣', T.ot_days, { '2026-11-02': 2, '2026-11-03': 3 });
 chk('計薪照樣扣補休', T.ot_month_h, 2);
 const MZ = E.sum({ comp_off: true, dates: ['2026-11-02'], sched: { '2026-11-02': { t: 'W' } }, day_h: { '2026-11-02': 10 }, day_leave: {}, hol: {}, until: '2026-11-30', comp_h: 2, extra_ot: 0 });
-chk('墨竹亭補休不抵加班、列為抵不掉', [MZ.ot_month_h, MZ.comp_over_h, MZ.comp_used_h], [2, 2, 0]);
+chk('comp_off（墨竹亭 2026-10 以前）：補休不抵加班、列為抵不掉', [MZ.ot_month_h, MZ.comp_over_h, MZ.comp_used_h], [2, 2, 0]);
 console.log(f ? `\n❌ 失敗 ${f}` : `\n✅ 全部通過 (${p}/${p})`); process.exit(f ? 1 : 0);
