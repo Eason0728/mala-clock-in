@@ -32,4 +32,12 @@ const real = post({ action: 'mgr_approve', mgr_key: 'AK', date: '2026-11-09', em
 check('C09', '真的送出：照常寫入一筆（只檢查沒有影響正式核定）', [real.ok, m.approved().length], [true, n0 + 1]);
 const r3 = ck([{ emp_id: 'E01', periods: [{ start: '09:00', end: '17:00' }], base_ver: 'x', action: 'evil', mgr_key: 'WRONG' }]);
 check('C10', '每人的 items 不能蓋掉金鑰、動作、日期（base_ver 也不吃）', [r3.ok, r3.results[0].ok], [true, true]);
+// 11. 一批共用讀過的表、批次結束就關掉：下一批看得到新資料
+check('C11', '批次結束後不再共用（READ_MEMO_ 關掉）', m.sb.READ_MEMO_, null);
+const before12 = ck([{ emp_id: 'E09', periods: [{ start: '10:00', end: '18:00' }] }]).results[0];
+const hdr = m.self.sh.roster.values[0], row = hdr.map((h) => ({ emp_id: 'E09', name: '新人', key: 'K9', active: 'TRUE', line_user_id: 'U9' })[h] || '');
+m.self.sh.roster.values.push(row);
+const after12 = ck([{ emp_id: 'E09', periods: [{ start: '10:00', end: '18:00' }] }]).results[0];
+check('C12', '下一批照新資料算（剛加進名冊的同仁找得到）', [before12.error, after12.error || 'ok'], ['invalid_emp_id', after12.error === 'invalid_emp_id' ? 'x' : (after12.error || 'ok')]);
+check('C13', '剛加進名冊的同仁：不再是找不到人', after12.error !== 'invalid_emp_id', true);
 done();
