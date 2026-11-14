@@ -922,6 +922,32 @@ function reqMgrApproveHome_(body) {
   if (hide && reqInList_(hide, String(body.emp_id == null ? '' : body.emp_id))) return { ok: false, error: 'home_review', message: hide[REQ_ALL_] ? REQ_LIST_BAD_MSG_ : REQ_HOME_MSG_ };
   return handleMgrApprove(body);
 }
+/** {action:'mgr_approve_check', mgr_key, acting_name, date, items:[{emp_id, periods, leaves, late_min, diff_reason, dup_ignore, sched_*}]}
+ *  → {ok, date, results:[{emp_id, ok, error, message, approved_hours, status_text}]}（2026-11-14 考勤管理好上手第 1 項）
+ *  一次替一天的多位同仁用「送出核定」同一套檢查試算（mgr_approve dry_run），只讀不寫、不記變動。最多 40 人。 */
+var REQ_CHECK_MAX_ = 40;
+function reqMgrApproveCheck_(body) {
+  var items = Array.isArray(body && body.items) ? body.items : null;
+  if (!items) return { ok: false, error: 'bad_items' };
+  if (items.length > REQ_CHECK_MAX_) return { ok: false, error: 'too_many', message: '一次最多試算 ' + REQ_CHECK_MAX_ + ' 人' };
+  var base = {};
+  ['mgr_key', 'acting_name', 'date'].forEach(function (k) { if (body[k] !== undefined) base[k] = body[k]; });
+  var results = items.map(function (it) {
+    if (!it || typeof it !== 'object') return { ok: false, error: 'bad_item' };
+    var b = {};
+    Object.keys(it).forEach(function (k) { if (k !== 'mgr_key' && k !== 'acting_name' && k !== 'date' && k !== 'base_ver' && k !== 'action') b[k] = it[k]; });
+    Object.keys(base).forEach(function (k) { b[k] = base[k]; });
+    b.action = 'mgr_approve'; b.dry_run = true;
+    var r;
+    try { r = reqMgrApproveHome_(b); } catch (e) { r = { ok: false, error: 'server_error', message: String(e && e.message || e) }; }
+    if (r && r.error === 'unauthorized') return { emp_id: String(it.emp_id == null ? '' : it.emp_id), ok: false, error: 'unauthorized' };
+    var out = { emp_id: String(it.emp_id == null ? '' : it.emp_id), ok: !!(r && r.ok) };
+    ['error', 'message', 'approved_hours', 'status_text', 'need', 'diff_min'].forEach(function (k) { if (r && r[k] !== undefined) out[k] = r[k]; });
+    return out;
+  });
+  if (results.length && results.every(function (x) { return x.error === 'unauthorized'; })) return { ok: false, error: 'unauthorized' };
+  return { ok: true, date: String(body.date || ''), results: results };
+}
 /** 為什麼這筆申請不能由本店值班主管處理：'mgr'＝值班主管本人、'dept'＝部門同仁、''＝可以處理 */
 function reqUpperWhy_(empId, ss, cache) {
   var c = cache || reqUpperCache_(ss || getSS());
