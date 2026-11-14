@@ -373,6 +373,10 @@ function genKey(n) {
 // 只檢查一次多人（2026-11-14 Requests.gs reqMgrApproveCheck_）：同一次執行裡同一張表只讀一次（每人重讀整張表會 20～36 秒逾時）。
 // 只記原始值、每次照樣組新的物件，呼叫端改了列也不會影響下一位；只有只檢查時打開，寫入流程一律照舊每次讀。
 var READ_MEMO_ = null;
+// 只檢查分段計時（2026-11-14 Eason：先量慢在哪）：reqMgrApproveCheck_ 期間打開，各段毫秒累加，回應帶 timing；其他時候是 null、不計
+var CHECK_T_ = null;
+function chkT_(k, ms) { var t = typeof CHECK_T_ !== 'undefined' ? CHECK_T_ : null; if (t) t[k] = (t[k] || 0) + ms; }
+function chkOn_() { return typeof CHECK_T_ !== 'undefined' && !!CHECK_T_; }
 function readMemoBook_(sheet) {
   try { var p = typeof sheet.getParent === 'function' ? sheet.getParent() : null; return p && typeof p.getId === 'function' ? String(p.getId()) : '?'; } catch (e) { return '?'; }
 }
@@ -380,7 +384,9 @@ function readSheetAsObjects(sheet) {
   var memo = typeof READ_MEMO_ !== 'undefined' ? READ_MEMO_ : null;      // 有些測試只抽出這支函式，沒有這個全域變數
   // 鍵要含試算表 ID：各店試算表是同一份範本複製的，工作表編號（gid）一樣，只看 gid 會把別家店的表讀成自己這家（2026-11-14 修正，正職跨店 8 小時讀別家）
   var memoKey = memo && sheet && typeof sheet.getSheetId === 'function' ? readMemoBook_(sheet) + ':' + String(sheet.getSheetId()) : null;
+  var tOn = typeof chkOn_ === 'function' && chkOn_(), t0 = tOn ? Date.now() : 0, tName = tOn ? (function () { try { return String(sheet.getName()); } catch (e) { return '?'; } })() : '';
   const values = memoKey !== null ? (memo[memoKey] || (memo[memoKey] = sheet.getDataRange().getValues())) : sheet.getDataRange().getValues();
+  if (tOn) { chkT_('read:' + tName, Date.now() - t0); t0 = Date.now(); }
   if (values.length < 2) return { headers: values[0] || [], rows: [] };
   const headers = values[0];
   const rows = values.slice(1).map(function (row, idx) {
@@ -389,6 +395,7 @@ function readSheetAsObjects(sheet) {
     obj.__rowIndex = idx + 2;
     return obj;
   });
+  if (tOn) chkT_('rows:' + tName, Date.now() - t0);
   return { headers: headers, rows: rows };
 }
 
@@ -2038,10 +2045,14 @@ function handleMgrApprove(body) {
 
   // 主管認定的重複打卡（2026-11-06）：有送 dup_ignore（陣列，可空＝取消認定）就用送來的；
   // 沒送（舊呼叫端）就沿用這天上一筆核定的認定，不洗掉。
+  var tEv = Date.now();
   const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  if (typeof chkT_ === 'function') { chkT_('events_total', Date.now() - tEv); if (chkOn_()) CHECK_T_.events_n = eventRows.length; }
   const approvedSheet = ss.getSheetByName('approved');
   if (!approvedSheet) return { ok: false, error: 'approved_sheet_missing' };
+  var tAp = Date.now();
   const approvedMapAll = buildLatestApprovedMap(readSheetAsObjects(approvedSheet).rows);
+  if (typeof chkT_ === 'function') chkT_('approved_total', Date.now() - tAp);
   const prevRec = (approvedMapAll[date] || {})[String(body.emp_id)];
   if (body.dup_ignore !== undefined && body.dup_ignore !== null && !Array.isArray(body.dup_ignore)) {
     return { ok: false, error: 'bad_dup_ignore', message: '重複打卡的選擇格式不對' };

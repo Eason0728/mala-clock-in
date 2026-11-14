@@ -15,6 +15,7 @@ const n0 = m.approved().length, c0 = changes();
 const r1 = ck([{ emp_id: 'E01', periods: [{ start: '09:00', end: '17:00' }] }, { emp_id: 'E02', periods: [{ start: '10:00', end: '18:00' }] }]);
 check('C01', '兩人都會過：ok、各自時數', [r1.ok, r1.results.map((x) => [x.emp_id, x.ok, x.approved_hours])], [true, [['E01', true, 8], ['E02', true, 8]]]);
 check('C02', '只檢查：approved 一筆不多', m.approved().length, n0);
+check('C02b', '只檢查回分段計時（2026-11-14）：人數、每人毫秒、讀表各段、結束後關掉', [r1.timing && r1.timing.n, r1.timing && r1.timing.per_emp_ms.length, !!(r1.timing && 'events_total' in r1.timing.parts && r1.timing.parts.events_n === 4 && Object.keys(r1.timing.parts).some((k) => k.startsWith('read:'))), m.sb.CHECK_T_], [2, 2, true, null]);
 check('C03', '只檢查：不記變動', changes(), c0);
 
 const r2 = ck([{ emp_id: 'E01', periods: [{ start: '09:00', end: '09:00' }] }, { emp_id: 'NOPE', periods: [{ start: '10:00', end: '18:00' }] }]);
