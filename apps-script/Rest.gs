@@ -101,7 +101,7 @@ function restPeerEvents_(name, sinceMs) {
       if (!ids.length) return;
       ss = ss || SpreadsheetApp.openById(p.ss);
       readEventsSince(ss.getSheetByName('events'), sinceMs).rows.forEach(function (e) {
-        if (ids.indexOf(String(e.emp_id)) >= 0) out.push({ ts: normCellTs(e.ts), type: String(e.type), status: String(e.status), store: p.code });
+        if (ids.indexOf(String(e.emp_id)) >= 0) out.push({ ts: normCellTs(e.ts), type: String(e.type), status: String(e.status), store: p.code, source: String(e.source || ''), mirror: String(e.mirror_src || '') });   // source：滿 10 小時系統卡（Cap10.gs）
       });
     } catch (e) { Logger.log('REST 讀別家店 ' + p.code + ' 失敗：' + e); }
   });

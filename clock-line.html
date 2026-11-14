@@ -370,19 +370,29 @@
       var b = t === 'in' ? $('btnIn') : $('btnOut'), label = t === 'in' ? '上班' : '下班';
       var g = ready ? status.guard : null, left = 0;
       if (g && g.lock && g.lock[t]) left = g.lock[t] - (Date.now() + clockSkew);
-      var rb = t === 'in' && restBlocked();
+      var rb = t === 'in' && restBlocked(), cb = capBlocked(t);
       // 2026-11-11（B32）：有鎖定時間就只看時間到了沒。blocked（＝同型）是開頁那一刻的狀態，一直照它鎖的話，
       // 10 分鐘過了同型那顆還是灰的（後端這時是收的，按下去會先跳確認框）。沒有鎖定時間的舊格式才照 blocked。
       var stale = !!(g && g.lock && g.lock[t]);
-      b.disabled = !ready || (g && g.blocked === t && !stale) || left > 0 || rb;
-      b.textContent = left > 0 ? label + '（' + Math.ceil(left / 60000) + ' 分後）'
+      b.disabled = !ready || (g && g.blocked === t && !stale) || left > 0 || rb || cb;
+      b.textContent = cb ? label + (status.cap.until ? '（' + hmOf(status.cap.until) + ' 後）' : '（今天已滿 10 小時）')
+        : left > 0 ? label + '（' + Math.ceil(left / 60000) + ' 分後）'
         : rb && status.rest.until ? label + '（' + hmOf(status.rest.until) + ' 後）' : label;
     });
     var r = status && status.rest;   // 時間到、解開了：拿掉「幾點以後才能打」那句
     if (r && r.blocked && !restBlocked() && $('msg').textContent === r.reason) say('', '', '');
+    var c = status && status.cap;   // 滿 10 小時的鎖時間到了：拿掉那句
+    if (c && c.locked && !capBlocked('in') && $('msg').textContent === c.reason) say('', '', '');
   }
   /* 休息不足（2026-11-01，後端 Rest.gs）：兩班間隔不到 11 小時，上班鍵鎖住，到時間自動解開（tick 每次重算）。
      今天已滿 10 小時：2026-11-06 起不鎖、只提醒（rest.warn，blocked＝false）。伺服器打卡時會再判一次，這裡只是先講。 */
+  /* 單日滿 10 小時（2026-11-14，後端 Cap10.gs）：locked＝系統已代打下班卡，上下班都鎖到 until；in_block＝今天自己打滿 10 小時，只鎖上班。 */
+  function capBlocked(t) {
+    var c = status && status.cap;
+    if (!c) return false;
+    if (c.locked) return !c.until || Date.now() + clockSkew < c.until;
+    return t === 'in' && !!c.in_block;
+  }
   function restBlocked() {
     var r = status && status.rest;
     if (!r || !r.blocked) return false;
@@ -419,11 +429,12 @@
       $('shift').textContent = '上班時間 ' + (s.shift_in || '--') + ' / 下班時間 ' + (s.shift_out || '--');
       var ok = (s.today || []).filter(function (e) { return e.status === 'ok' || e.status === 'pending_device_approval'; });
       $('today').textContent = ok.length ? '今天：' + ok.map(function (e) {
-        return (e.type === 'in' ? '上班 ' : '下班 ') + e.hm + (e.status === 'pending_device_approval' ? '（待核准）' : '');
+        return (e.type === 'in' ? '上班 ' : '下班 ') + e.hm + (e.sys ? '（系統代打）' : '') + (e.status === 'pending_device_approval' ? '（待核准）' : '');
       }).join('、') : '今天還沒有打卡紀錄';
       showStore(s.store);
       say(bindNote, bindNote ? 'ok' : '', ''); bindNote = '';   // 剛跨單位加入名冊：顯示一次
-      if (restBlocked()) say(s.rest.reason, 'warn', s.rest.hint);
+      if (capBlocked('in') || capBlocked('out')) say(s.cap.reason, 'warn', s.cap.hint);
+      else if (restBlocked()) say(s.rest.reason, 'warn', s.rest.hint);
       else if (s.rest && s.rest.warn && s.guard && s.guard.blocked !== 'in') say(s.rest.warn.reason, 'warn', s.rest.warn.hint);   // 滿 10 小時：只提醒，上班鍵照常可按
     } else {
       var r = s.result || {};
