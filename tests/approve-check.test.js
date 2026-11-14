@@ -40,4 +40,6 @@ m.self.sh.roster.values.push(row);
 const after12 = ck([{ emp_id: 'E09', periods: [{ start: '10:00', end: '18:00' }] }]).results[0];
 check('C12', '下一批照新資料算（剛加進名冊的同仁找得到）', [before12.error, after12.error || 'ok'], ['invalid_emp_id', after12.error === 'invalid_emp_id' ? 'x' : (after12.error || 'ok')]);
 check('C13', '剛加進名冊的同仁：不再是找不到人', after12.error !== 'invalid_emp_id', true);
+const r14 = ck([{ emp_id: 'E01', periods: [{ start: '09:00', end: '20:00' }] }]).results[0];
+check('C14', '擋下時把原因清單、是否缺單一起回（營運系統逐條顯示）', [r14.ok, Array.isArray(r14.probs) && r14.probs.length > 0, typeof r14.need_doc], [false, true, 'boolean']);
 done();
