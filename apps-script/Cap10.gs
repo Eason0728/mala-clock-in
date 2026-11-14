@@ -346,7 +346,9 @@ function capAnnotateDay_(body, res) {
     if (!res || !res.ok || !res.employees || !body.date) return res;
     var from = capMs_(body.date + 'T00:00:00+08:00'), to = from + 30 * 3600000;
     if (isNaN(from)) return res;
-    var rows = readEventsSince(getSS().getSheetByName('events'), from).rows, by = {};
+    var sh = getSS().getSheetByName('events');
+    if (sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].indexOf('source') < 0) return res;   // 從沒寫過系統卡（沒有 source 欄）：不多讀
+    var rows = readEventsSince(sh, from).rows, by = {};
     rows.forEach(function (e) {
       if (String(e.source || '') !== CAP_SRC) return;
       var ms = capMs_(normCellTs(e.ts));
