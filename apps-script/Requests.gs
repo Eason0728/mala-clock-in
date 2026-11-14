@@ -944,7 +944,7 @@ function reqMgrApproveCheck_(body) {
     try { r = reqMgrApproveHome_(b); } catch (e) { r = { ok: false, error: 'server_error', message: String(e && e.message || e) }; }
     if (r && r.error === 'unauthorized') return { emp_id: String(it.emp_id == null ? '' : it.emp_id), ok: false, error: 'unauthorized' };
     var out = { emp_id: String(it.emp_id == null ? '' : it.emp_id), ok: !!(r && r.ok) };
-    ['error', 'message', 'approved_hours', 'status_text', 'need', 'diff_min'].forEach(function (k) { if (r && r[k] !== undefined) out[k] = r[k]; });
+    ['error', 'message', 'approved_hours', 'status_text', 'need', 'diff_min', 'probs', 'need_doc', 'hint'].forEach(function (k) { if (r && r[k] !== undefined) out[k] = r[k]; });      // probs／need_doc／hint：營運系統逐條顯示要補的單（2026-11-14）
     return out;
   });
   } finally { READ_MEMO_ = null; }
