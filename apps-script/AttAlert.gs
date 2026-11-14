@@ -43,7 +43,8 @@ var ATT_ALERT_MAX_ROWS = 3000;        // 單批上限
 var ATT_ALERT_GUARD_TEXT = '今天考勤資料查不到，請到考勤管理查看';
 var ATT_ALERT_GUARD_HM = '09:30';
 var ATT_ALERT_LOOSE = ['state', 'sched', 'failed', 'notes', 'guard'];   // 新批次寫入時，舊的 pending 改 superseded
-var ATT_ALERT_SECTIONS = ['daily', 'state', 'sched', 'failed', 'notes', 'guard'];
+var ATT_ALERT_SECTIONS = ['daily', 'state', 'sched', 'failed', 'notes', 'guard', 'notice'];
+// notice（2026-11-14）：一次性公告。帶出時自成一則、不加「【考勤異常】」標題與結尾，也不會被之後的批次取代（不在 LOOSE），帶出過一次就結束。
 
 var ATT_ALERT_STORE_LABEL = { gf: '小辛辣光復', cf: '央廚', hq: '總部', mztjs: '墨竹亭金山', mztgf: '墨竹亭光復', mztlzl: '墨竹亭六張犁', mztmc: '墨竹亭台中美村' };
 
@@ -173,7 +174,7 @@ function handleAttAlertEnqueue(b) {
   var spec = []; // [section, store, line]
   if (!empty) {
     var daily = attAlertEntries_(b.daily), state = attAlertEntries_(b.state);
-    var sched = attAlertStrList_(b.sched), notes = attAlertStrList_(b.notes);
+    var sched = attAlertStrList_(b.sched), notes = attAlertStrList_(b.notes), notice = attAlertStrList_(b.notice);
     var failed = [];
     if (b.failed_stores !== undefined && b.failed_stores !== null) {
       if (!Array.isArray(b.failed_stores)) return { ok: false, error: 'bad_input' };
@@ -184,12 +185,13 @@ function handleAttAlertEnqueue(b) {
         else return { ok: false, error: 'bad_input' };
       }
     }
-    if (daily === null || state === null || sched === null || notes === null) return { ok: false, error: 'bad_input' };
+    if (daily === null || state === null || sched === null || notes === null || notice === null) return { ok: false, error: 'bad_input' };
     daily.forEach(function (x) { spec.push(['daily', x[0], x[1]]); });
     state.forEach(function (x) { spec.push(['state', x[0], x[1]]); });
     sched.forEach(function (l) { spec.push(['sched', '', l]); });
     failed.forEach(function (x) { spec.push(['failed', x[0], x[1]]); });
     notes.forEach(function (l) { spec.push(['notes', '', l]); });
+    notice.forEach(function (l) { spec.push(['notice', '', l]); });
     if (spec.length > ATT_ALERT_MAX_ROWS) return { ok: false, error: 'too_big' };
     // 沒有任何可組字內容（只有 notes、或全空但沒帶 empty 旗標）→ 當 empty 處理：只 supersede、不寫列、不設旗標
     if (!spec.some(function (x) { return x[0] !== 'notes'; })) { empty = true; spec = []; }
@@ -424,6 +426,31 @@ function attAlertRowsToBatches_(rows) {
 }
 /** 本次要帶出的列 → 訊息陣列（或 {error}）。today＝max(佇列最大 run_date, 台北今天)（P4-2）。info 選填：回填 {latest, recentFrom} */
 function attAlertCompose_(rows, info) {
+  // 一次性公告（notice）自成一則、放最前面；其他列照原本的版面
+  var noticeMsgs = attAlertNoticeMsgs_(rows.filter(function (r) { return r.section === 'notice'; }));
+  rows = rows.filter(function (r) { return r.section !== 'notice'; });
+  if (!rows.length) return noticeMsgs;
+  var rest = attAlertComposeAlerts_(rows, info);
+  if (!Array.isArray(rest)) return noticeMsgs.length ? noticeMsgs : rest;
+  return noticeMsgs.concat(rest).slice(0, ATT_ALERT_MAX_MESSAGES);
+}
+/** notice 列 → 每一批一則：「▍」開頭的行是段落標題（前面空一行），其他行加「・」。超過 LINE 單則字數就切成多則。 */
+function attAlertNoticeMsgs_(rows) {
+  var by = {}, order = [];
+  rows.forEach(function (r) { if (!by[r.batch_id]) { by[r.batch_id] = []; order.push(r.batch_id); } by[r.batch_id].push(r); });
+  var out = [];
+  order.forEach(function (bid) {
+    var cur = '';
+    by[bid].forEach(function (r) {
+      var l = String(r.line), piece = l.indexOf('▍') === 0 ? (cur ? '\n\n' : '') + l : (cur ? '\n' : '') + '・' + l;
+      if ((cur + piece).length > ATT_ALERT_LINE_LIMIT && cur) { out.push(cur); cur = piece.replace(/^\n+/, ''); }
+      else cur += piece;
+    });
+    if (cur) out.push(cur);
+  });
+  return out;
+}
+function attAlertComposeAlerts_(rows, info) {
   var x = attAlertRowsToBatches_(rows);
   var batches = x.batches.slice();
   var dates = batches.map(function (b) { return b.run_date; });
