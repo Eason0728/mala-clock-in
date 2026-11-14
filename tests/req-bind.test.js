@@ -452,4 +452,88 @@ ok('bind_revoke：試算只讀；apply 把缺加班單、缺忘打卡單那幾�
   const again = sb.handleBindRevoke_({ admin_key: 'AK', from: '2026-11-01', to: '2026-11-05', apply: true });
   assert.strictEqual(again.moved, 0);   // 再跑一次不會多搬
 });
+
+/* ── 作廢申請時，那天的核定一起打回待核定（2026-11-14 Eason 1A 2A）── */
+function finalEnv() {
+  const sb = makeEnv('2026-11-14T09:00:00+08:00');
+  const sheets = sb.__sheets;
+  const AH = ['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at', 'dup_ignore', 'diff_reason', 'mirror_src'];
+  sheets.approved = sheet('approved', [AH,
+    ['2026-11-01', 'E01', '測試一', '09:00-16:00', 7, '正常', '店長', '2026-11-02T10:00:00+08:00'],
+    ['2026-11-01', 'E01', '測試一', '09:00-17:00', 8, '正常', '店長', '2026-11-03T10:00:00+08:00'],   // 重送過一次，兩列都要搬
+    ['2026-11-01', 'E02', '測試二', '09:00-17:00', 8, '正常', '店長', '2026-11-02T10:00:00+08:00'],   // 別人：不動
+    ['2026-11-02', 'E01', '測試一', '09:00-17:00', 8, '正常', '店長', '2026-11-03T10:00:00+08:00'],   // 別天：不動
+    ['2026-11-01', 'E01', '測試一', '09:00-17:00', 8, '正常', '店長', '2026-11-03T10:00:00+08:00', '', '', 'CF']]);   // 總部鏡像列：不動
+  sheets.leave = sheet('leave', [['日期', '姓名', '假別', '時數'],
+    ['2026-11-01', '測試一', '出差', 7], ['2026-11-01', '測試一 ', '特休假', 1], ['2026-11-01', '測試二', '事假', 2], ['2026-11-02', '測試一', '出差', 3]]);
+  for (const nm of ['approved', 'leave']) {
+    const sh = sheets[nm];
+    sh.getDataRange = () => ({ getValues: () => sh.data.map((r) => r.slice()) });
+    sh.deleteRow = (r) => { sh.data.splice(r - 1, 1); };
+  }
+  sb.SpreadsheetApp = { flush() {} };
+  return sb;
+}
+ok('作廢已核定那天的出差單：工時核定與假別紀錄整天搬到留底，那天回待核定；別人、別天、鏡像列不動', () => {
+  const sb = finalEnv(), sheets = sb.__sheets;
+  const id = 'T1'; addReq(sb, { id, kind: 'trip', leave_type: '出差', date: '2026-11-01', start: '10:00', end: '17:00', hours: 7 });
+  const r = sb.handleMgrReqVoid_({ mgr_key: 'MK', id, reason: '沒有出差' });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.strictEqual(r.status, 'voided'); assert.strictEqual(r.date, '2026-11-01');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r.revoked)), { approved: 2, leave: 2 });
+  assert.deepStrictEqual(sheets.approved.data.slice(1).map((x) => x[0] + ' ' + x[1] + ' ' + (x[10] || '')), ['2026-11-01 E02 ', '2026-11-02 E01 ', '2026-11-01 E01 CF']);
+  assert.deepStrictEqual(sheets.leave.data.slice(1).map((x) => x[0] + ' ' + x[1] + ' ' + x[2]), ['2026-11-01 測試二 事假', '2026-11-02 測試一 出差']);
+  const ab = sheets.approved_revoked.data, lb = sheets.leave_revoked.data;
+  assert.deepStrictEqual(lb[0], ['日期', '姓名', '假別', '時數', 'emp_id', 'revoked_at', 'revoke_reason']);
+  assert.deepStrictEqual(lb.slice(1).map((x) => x[2] + x[3] + x[4]), ['出差7E01', '特休假1E01']);   // 數字原樣、記工號
+  assert.strictEqual(ab.length, 3); assert.deepStrictEqual(ab.slice(1).map((x) => x[4]), [7, 8]);
+  assert.ok(ab.slice(1).concat(lb.slice(1)).every((x) => x[x.length - 2] === '2026-11-14T09:00:00+08:00' && /作廢申請 T1（測試主管）：沒有出差/.test(x[x.length - 1])));
+  const st = sb.reqRows_(sb.getSS()).find((x) => x.id === id);
+  assert.strictEqual(st.status, 'voided');
+});
+ok('那天還沒核定：作廢跟以前一樣，什麼都不搬、不建留底分頁', () => {
+  const sb = finalEnv(), sheets = sb.__sheets;
+  addReq(sb, { id: 'O1', kind: 'ot', date: '2026-11-05', start: '18:00', end: '19:00', hours: 1 });
+  const before = JSON.stringify([sheets.approved.data, sheets.leave.data]);
+  const r = sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'O1', reason: '重複' });
+  assert.ok(r.ok); assert.deepStrictEqual(JSON.parse(JSON.stringify(r.revoked)), { approved: 0, leave: 0 });
+  assert.strictEqual(JSON.stringify([sheets.approved.data, sheets.leave.data]), before);
+  assert.ok(!sheets.approved_revoked && !sheets.leave_revoked);
+});
+ok('四種單都會打回：加班、忘打卡、請假也一樣整天搬', () => {
+  for (const k of [{ kind: 'ot', start: '17:00', end: '18:00', hours: 1 }, { kind: 'miss', miss_type: 'out', start: '17:00' }, { kind: 'leave', leave_type: '特休假', start: '09:00', end: '10:00', hours: 1 }]) {
+    const sb = finalEnv(); addReq(sb, Object.assign({ id: 'K', date: '2026-11-01' }, k));
+    const r = sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'K', reason: '錯' });
+    assert.ok(r.ok, k.kind + JSON.stringify(r)); assert.strictEqual(r.revoked.approved + r.revoked.leave, 4, k.kind);
+  }
+});
+ok('搬核定時出錯：單子不作廢，回 revoke_failed', () => {
+  const sb = finalEnv(), sheets = sb.__sheets;
+  addReq(sb, { id: 'F1', kind: 'trip', leave_type: '出差', date: '2026-11-01', hours: 7 });
+  sheets.leave.deleteRow = () => { throw new Error('boom'); };
+  const r = sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'F1', reason: '錯' });
+  assert.strictEqual(r.error, 'revoke_failed');
+  assert.strictEqual(sb.reqRows_(sb.getSS()).find((x) => x.id === 'F1').status, 'approved');
+});
+ok('舊資料掃描：只讀列出「作廢晚於核定」與「有假別沒工時核定」；apply 只清指定的人日', () => {
+  const sb = finalEnv(), sheets = sb.__sheets;
+  sb.checkAdmin = (b) => b.admin_key === 'AK';
+  // 11/2 E01：作廢時間晚於核定 → voided；11/1 E02：核定後才作廢的單 → voided；11/3 測試二：只有假別、沒有工時核定 → orphan_leave；11/1 E01：作廢早於重新核定 → 不列
+  addReq(sb, { id: 'V1', kind: 'trip', date: '2026-11-02', status: 'voided', voided_at: '2026-11-04T09:00:00+08:00', voided_by: '總監' });
+  addReq(sb, { id: 'V2', kind: 'ot', emp_id: 'E02', name: '測試二', date: '2026-11-01', status: 'voided', voided_at: '2026-11-05T09:00:00+08:00' });
+  addReq(sb, { id: 'V3', kind: 'trip', date: '2026-11-01', status: 'voided', voided_at: '2026-11-02T12:00:00+08:00' });
+  sheets.leave.data.push(['2026-11-03', '測試二', '出差', 7], ['2026-11-03', '不在名冊', '事假', 1]);
+  assert.strictEqual(sb.handleFinalOrphanScan_({ admin_key: 'x', from: '2026-11-01', to: '2026-11-30' }).error, 'unauthorized');
+  const before = JSON.stringify([sheets.approved.data, sheets.leave.data]);
+  const pv = sb.handleFinalOrphanScan_({ admin_key: 'AK', from: '2026-11-01', to: '2026-11-30' });
+  assert.strictEqual(JSON.stringify([sheets.approved.data, sheets.leave.data]), before);   // 只讀
+  assert.deepStrictEqual(Array.from(pv.items.map((x) => x.key + ' ' + x.probs.join(','))),
+    ['2026-11-01|E02 voided', '2026-11-02|E01 voided', '2026-11-03|?不在名冊 orphan_leave', '2026-11-03|E02 orphan_leave']);
+  assert.strictEqual(sb.handleFinalOrphanScan_({ admin_key: 'AK', from: '2026-11-01', to: '2026-11-30', apply: true }).error, 'no_keys');
+  const ap = sb.handleFinalOrphanScan_({ admin_key: 'AK', from: '2026-11-01', to: '2026-11-30', apply: true, keys: ['2026-11-03|E02', '2026-11-03|?不在名冊', '2026-11-09|E01'] });
+  assert.deepStrictEqual(Array.from(ap.done.map((x) => x.key + ' ' + x.moved.approved + '/' + x.moved.leave)), ['2026-11-03|E02 0/1']);
+  assert.strictEqual(ap.skipped.length, 2);
+  assert.ok(!sheets.leave.data.some((x) => x[0] === '2026-11-03' && x[1] === '測試二'));
+  assert.ok(sheets.leave.data.some((x) => x[0] === '2026-11-02' && x[1] === '測試一'));   // 沒指定的不動
+});
 console.log('req-bind: ' + n + ' 項全過');

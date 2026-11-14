@@ -1051,9 +1051,125 @@ function handleMgrReqVoid_(body) {
     if (pb) return pb;
     var why = (r.proxy_by || reqMgrActing_(mgr, body)) ? '' : reqUpperWhy_(r.emp_id, ss);
     if (why) return { ok: false, error: 'upper_review', message: reqUpperMsg_(why) };
+    // 那天的核定一起打回待核定（2026-11-14 Eason 1A 2A）：工時核定＋假別紀錄搬到留底分頁，搬完才標作廢；搬的時候出錯＝單子不作廢、請主管再按一次
+    var revoked;
+    try { revoked = reqRevokeFinal_(ss, String(r.emp_id), reqFinalName_(ss, r), String(r.date), '作廢申請 ' + String(r.id) + '（' + actor + '）：' + reason); }
+    catch (err) { console.log('mgr_req_void 打回核定失敗：' + err); return { ok: false, error: 'revoke_failed', message: '這天的核定沒有打回成功，申請也還沒作廢，請再按一次' }; }
     reqHeads_(sh);   // 舊分頁沒有 voided_* 欄，先補表頭
     reqSetCells_(sh, r.__rowIndex, { status: 'voided', voided_at: nowTaipeiIso(), voided_by: actor, void_reason: reason });
-    return { ok: true, id: String(r.id), status: 'voided' };
+    return { ok: true, id: String(r.id), status: 'voided', date: String(r.date), revoked: revoked };
+  } finally { lock.releaseLock(); }
+}
+
+/* ── 作廢申請時，那天的核定一起打回待核定（2026-11-14 Eason：1A 整天打回、2A 四種單都算、3A 鎖月由營運系統擋、4A 舊資料先只讀列清單）──
+   工時核定（approved，總部鏡像列 mirror_src 不動）→ approved_revoked；假別紀錄（leave，薪資讀這份）→ leave_revoked。
+   兩邊都留底、可復原；那天回到待核定，主管照實際重新核定。那天沒有核定＝什麼都不搬（跟以前一樣只作廢）。 */
+var REQ_LEAVE_REVOKE_SHEET_ = 'leave_revoked';
+/** 假別紀錄用姓名對（leave 分頁沒有工號）：以名冊為準，查不到才用申請單上的姓名。 */
+function reqFinalName_(ss, r) {
+  var rsh = ss.getSheetByName('roster');
+  var ros = rsh ? findRosterByEmpId(readSheetAsObjects(rsh).rows, String(r.emp_id)) : null;
+  return String((ros && ros.name) || r.name || '').trim();
+}
+/** 只看：這天這個人在 approved／leave 分頁有幾列（不含總部鏡像列）。 */
+function reqFinalCount_(ss, emp, name, date) {
+  var a = 0, l = 0, ash = ss.getSheetByName('approved'), lsh = ss.getSheetByName('leave');
+  if (ash) readSheetAsObjects(ash).rows.forEach(function (x) { if (normCellDate(x.date) === date && String(x.emp_id) === emp && !String(x.mirror_src || '').trim()) a++; });
+  if (lsh && name) readSheetAsObjects(lsh).rows.forEach(function (x) { if (normCellDate(x['日期']) === date && String(x['姓名'] || '').trim() === name) l++; });
+  return { approved: a, leave: l };
+}
+/** 把一張分頁裡符合 match 的列搬到留底分頁（先寫留底、再由下往上刪）。回搬了幾列。 */
+function reqMoveRows_(ss, sh, bakName, extraHead, match, extraVals) {
+  if (!sh) return 0;
+  var vals = sh.getDataRange().getValues();
+  if (!vals.length) return 0;
+  var head = vals[0], drop = [];
+  for (var i = 1; i < vals.length; i++) {
+    if (!match(vals[i], head)) continue;
+    var keep = vals[i].slice(0, head.length); while (keep.length < head.length) keep.push('');
+    drop.push({ row: i + 1, vals: keep });
+  }
+  if (!drop.length) return 0;
+  var bak = ss.getSheetByName(bakName);
+  if (!bak) { bak = ss.insertSheet(bakName); bak.appendRow(head.concat(extraHead)); }
+  drop.forEach(function (d) { bak.appendRow(d.vals.concat(extraVals)); });
+  SpreadsheetApp.flush();
+  for (var j = drop.length - 1; j >= 0; j--) sh.deleteRow(drop[j].row);   // 由下往上刪，列號不會跑掉
+  SpreadsheetApp.flush();
+  return drop.length;
+}
+/** 打回某人某天的核定。why＝留底理由。回 {approved, leave}＝各搬了幾列。 */
+function reqRevokeFinal_(ss, emp, name, date, why) {
+  var now = nowTaipeiIso();
+  var a = reqMoveRows_(ss, ss.getSheetByName('approved'), BIND_REVOKE_SHEET_, ['revoked_at', 'revoke_reason'], function (row, h) {
+    var im = h.indexOf('mirror_src');
+    return normCellDate(row[h.indexOf('date')]) === date && String(row[h.indexOf('emp_id')]) === emp && !(im >= 0 && String(row[im] || '').trim());
+  }, [now, why]);
+  var l = !name ? 0 : reqMoveRows_(ss, ss.getSheetByName('leave'), REQ_LEAVE_REVOKE_SHEET_, ['emp_id', 'revoked_at', 'revoke_reason'], function (row, h) {
+    return normCellDate(row[h.indexOf('日期')]) === date && String(row[h.indexOf('姓名')] || '').trim() === name;
+  }, [emp, now, why]);
+  return { approved: a, leave: l };
+}
+
+/* ── 舊資料：申請已作廢或核定被打回，假別紀錄還留著（2026-11-14 Eason 4A：先只讀列清單，確認後才清）──
+   {action:'final_orphan_scan', admin_key, from, to, apply?, keys?:['日期|工號',…]}
+   列出 from～to 每一個「有假別紀錄或工時核定」的人日，標兩種問題：
+     voided＝那天有作廢的申請，而且作廢時間晚於現有核定（核定是用作廢前的單算的）；
+     orphan_leave＝有假別紀錄、但沒有工時核定（例：11/13 bind_revoke 只搬了工時核定）。
+   apply:true 只處理 keys 指定的人日（整天打回，同作廢）。 */
+function finalOrphanScan_(ss, from, to) {
+  var reqs = reqRows_(ss);
+  var rsh = ss.getSheetByName('roster'), roster = rsh ? readSheetAsObjects(rsh).rows : [];
+  var empByName = {};
+  roster.forEach(function (x) { var nm = String(x.name || '').trim(); if (nm && !(nm in empByName)) empByName[nm] = String(x.emp_id); });
+  var ash = ss.getSheetByName('approved'), lsh = ss.getSheetByName('leave');
+  var days = {};
+  var day = function (date, emp, name) { var k = date + '|' + emp; return days[k] = days[k] || { date: date, emp_id: emp, name: name, approved_at: '', leaves: [], voided: [] }; };
+  (ash ? readSheetAsObjects(ash).rows : []).forEach(function (x) {
+    var d = normCellDate(x.date); if (d < from || d > to || String(x.mirror_src || '').trim()) return;
+    var o = day(d, String(x.emp_id), String(x.name || '').trim()); var t = String(normCellTs(x.entered_at) || '');
+    if (t > o.approved_at) o.approved_at = t; o.has_approved = true;
+  });
+  (lsh ? readSheetAsObjects(lsh).rows : []).forEach(function (x) {
+    var d = normCellDate(x['日期']); if (d < from || d > to) return;
+    var nm = String(x['姓名'] || '').trim(), emp = empByName[nm] || '';
+    day(d, emp || ('?' + nm), nm).leaves.push({ type: String(x['假別'] || ''), hours: x['時數'] === '' ? '' : Number(x['時數']) });
+  });
+  reqs.forEach(function (r) {
+    if (r.status !== 'voided') return;
+    var o = days[String(r.date) + '|' + String(r.emp_id)]; if (!o) return;
+    o.voided.push({ id: String(r.id), kind: String(r.kind), summary: reqSummary_(r), voided_at: String(normCellTs(r.voided_at) || ''), voided_by: String(r.voided_by || '') });
+  });
+  var items = [];
+  Object.keys(days).sort().forEach(function (k) {
+    var o = days[k], probs = [];
+    if (o.voided.some(function (v) { return !o.has_approved || v.voided_at > o.approved_at; }) && (o.has_approved || o.leaves.length)) probs.push('voided');
+    if (o.leaves.length && !o.has_approved) probs.push('orphan_leave');
+    if (!probs.length) return;
+    items.push({ key: k, date: o.date, emp_id: o.emp_id, name: o.name, has_approved: !!o.has_approved, approved_at: o.approved_at, leaves: o.leaves, voided: o.voided, probs: probs });
+  });
+  return items;
+}
+function handleFinalOrphanScan_(body) {
+  if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  var from = String(body.from || ''), to = String(body.to || '');
+  if (!reqIsDate_(from) || !reqIsDate_(to) || from > to) return { ok: false, error: 'bad_date' };
+  var ss = getSS();
+  if (body.apply !== true) return { ok: true, apply: false, from: from, to: to, items: finalOrphanScan_(ss, from, to) };
+  var keys = Array.isArray(body.keys) ? body.keys.map(String) : [];
+  if (!keys.length) return { ok: false, error: 'no_keys', message: 'apply 要帶 keys（看過試算清單後指定要清的人日）' };
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) return { ok: false, error: 'busy' };
+  try {
+    var items = finalOrphanScan_(ss, from, to), byKey = {}, done = [], skipped = [];
+    items.forEach(function (it) { byKey[it.key] = it; });
+    keys.forEach(function (k) {
+      var it = byKey[k];
+      if (!it || /^\?/.test(it.emp_id)) { skipped.push({ key: k, reason: it ? '姓名對不到名冊' : '不在這次清單裡（可能已經處理過）' }); return; }
+      var r = reqRevokeFinal_(ss, it.emp_id, it.name, it.date, '舊資料清理（' + it.probs.join('、') + '）');
+      done.push({ key: k, moved: r });
+    });
+    return { ok: true, apply: true, from: from, to: to, done: done, skipped: skipped };
   } finally { lock.releaseLock(); }
 }
 
