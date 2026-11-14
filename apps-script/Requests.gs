@@ -1557,7 +1557,7 @@ var REQ_BIND_OT_BASE_H = 8;
 var REQ_BIND_NEAR_MS = 4 * 3600000;   // 沒配到完整打卡段的時段：前後 4 小時內的單張卡算那段的
 function reqBindFrom_() {
   var v = '';
-  try { v = String(PropertiesService.getScriptProperties().getProperty('REQ_BIND_FROM') || ''); } catch (e) {}
+  try { v = String(reqProp_('REQ_BIND_FROM') || ''); } catch (e) {}
   if (v === 'off') return null;
   return reqIsDate_(v) ? v : REQ_BIND_FROM_DEFAULT_;
 }
@@ -1643,7 +1643,7 @@ var REQ_STRICT_DIFF_MIN = 30;
 var REQ_DIFF_REASON_MAX = 100;
 function reqStrictFrom_() {
   var v = '';
-  try { v = String(PropertiesService.getScriptProperties().getProperty('REQ_STRICT_FROM') || ''); } catch (e) {}
+  try { v = String(reqProp_('REQ_STRICT_FROM') || ''); } catch (e) {}
   if (v === 'off') return null;
   return reqIsDate_(v) ? v : REQ_STRICT_FROM_DEFAULT_;
 }
@@ -1775,7 +1775,7 @@ var REQ_FT8_STORE_NAMES_ = { gf: '小辛辣新竹光復', mztjs: '墨竹亭新�
 function reqFt8StoreNames_(codes) { return codes.map(function (c) { return REQ_FT8_STORE_NAMES_[c] || c; }).join('、') || '別家店'; }
 function reqFt8From_() {
   var v = '';
-  try { v = String(PropertiesService.getScriptProperties().getProperty('REQ_FT8_FROM') || ''); } catch (e) {}
+  try { v = String(reqProp_('REQ_FT8_FROM') || ''); } catch (e) {}
   if (v === 'off') return null;
   return reqIsDate_(v) ? v : REQ_FT8_FROM_DEFAULT_;
 }
@@ -1783,14 +1783,18 @@ function reqFt8From_() {
  *  REST_PEERS_ 依姓名對在職同仁（名冊用打卡快速通道同一份 6 小時快取；fresh＝不用快取）。只開名冊有同名在職同仁的店。
  *  鏡像列（mirror_src，總部從央廚抄來的）一律不看。讀不到的店當作還沒核定（先放行），不誤擋。（2026-11-13 審查修正） */
 function reqPeerRoster_(p, fresh) {
+  var memo = typeof READ_MEMO_ !== 'undefined' ? READ_MEMO_ : null, mk = 'rpr:' + p.ss;      // 只檢查一批：同一家店只問一次快取／打開一次（每人每家問一次，2026-11-14 加速）
+  if (memo && !fresh && memo[mk]) return memo[mk];
   var cache = CacheService.getScriptCache(), ck = 'rpr:' + p.ss.slice(-12), hit = fresh ? null : cache.get(ck);
-  if (hit) return { roster: JSON.parse(hit), ss: null };
+  if (hit) { var hr = { roster: JSON.parse(hit), ss: null }; if (memo) memo[mk] = hr; return hr; }
   var ss = SpreadsheetApp.openById(p.ss);
   var roster = readSheetAsObjects(ss.getSheetByName('roster')).rows
     .filter(function (r) { return String(r.active).toLowerCase() === 'true'; })
     .map(function (r) { return [restName_(r.name), String(r.emp_id)]; });
   try { cache.put(ck, JSON.stringify(roster), typeof REST_PEER_CACHE_S === 'undefined' ? 21600 : REST_PEER_CACHE_S); } catch (e) {}
-  return { roster: roster, ss: ss };
+  var out = { roster: roster, ss: ss };
+  if (memo && !fresh) memo[mk] = out;
+  return out;
 }
 var REQ_PEER_MEMO_ = {};   // 同一次執行內共用（撤銷掃描、一次核定），Apps Script 每次執行都是新的
 function reqPeerDay_(name, date, fresh) {
@@ -1808,7 +1812,9 @@ function reqPeerDay_(name, date, fresh) {
       var rs = reqPeerRoster_(p, fresh);
       var ids = rs.roster.filter(function (r) { return r[0] === nm; }).map(function (r) { return r[1]; });
       if (ids.length !== 1) return;   // 沒有、或同一家有兩位同名（分不出是不是同一個人）都不算（2026-11-13 審查 5）
-      var ss = rs.ss || SpreadsheetApp.openById(p.ss);
+      var pm = typeof READ_MEMO_ !== 'undefined' ? READ_MEMO_ : null;
+      var ss = rs.ss || (pm && pm['ss:' + p.ss]) || SpreadsheetApp.openById(p.ss);
+      if (pm) { pm['ss:' + p.ss] = ss; rs.ss = ss; }
       // 這天在別家上班：上班卡打在這天，或忘了打上班卡、只有 06:00 以後的下班卡（跨夜班隔天凌晨的下班卡不算，2026-11-13 審查 8、9）
       var worked = readEventsSince(ss.getSheetByName('events'), dayStart).rows.some(function (e) {
         var t = new Date(String(normCellTs(e.ts))).getTime();
@@ -1899,7 +1905,7 @@ function reqFt8_(date, approvedHours, otHave, opt, okRows) {
 var REQ_OT_PUNCH_FROM_DEFAULT_ = '2026-11-15';
 function reqOtPunchFrom_() {
   var v = '';
-  try { v = String(PropertiesService.getScriptProperties().getProperty('REQ_OT_PUNCH_FROM') || '').trim(); } catch (e) {}
+  try { v = String(reqProp_('REQ_OT_PUNCH_FROM') || '').trim(); } catch (e) {}
   if (v === 'off') return null;
   return reqIsDate_(v) ? v : REQ_OT_PUNCH_FROM_DEFAULT_;
 }
@@ -2248,4 +2254,13 @@ function reqPendingApprovalsPlus_(body) {
   var hide = reqHomeHide_(body);   // 不算支援的人不提醒本店主管（2026-10-29）
   if (hide) r.items = r.items.filter(function (x) { return !hide[String(x.emp_id)]; });
   return r;
+}
+
+/** 指令碼屬性：只檢查一批（READ_MEMO_ 開著）時每個鍵只讀一次（每人讀 7 次，2026-11-14 加速）；其他時候照舊每次讀 */
+function reqProp_(k) {
+  var memo = typeof READ_MEMO_ !== 'undefined' ? READ_MEMO_ : null, mk = 'prop:' + k;
+  if (memo && Object.prototype.hasOwnProperty.call(memo, mk)) return memo[mk];
+  var v = PropertiesService.getScriptProperties().getProperty(k);
+  if (memo) memo[mk] = v;
+  return v;
 }

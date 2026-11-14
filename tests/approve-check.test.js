@@ -42,4 +42,15 @@ check('C12', '下一批照新資料算（剛加進名冊的同仁找得到）', 
 check('C13', '剛加進名冊的同仁：不再是找不到人', after12.error !== 'invalid_emp_id', true);
 const r14 = ck([{ emp_id: 'E01', periods: [{ start: '09:00', end: '20:00' }] }]).results[0];
 check('C14', '擋下時把原因清單、是否缺單一起回（營運系統逐條顯示）', [r14.ok, Array.isArray(r14.probs) && r14.probs.length > 0, typeof r14.need_doc], [false, true, 'boolean']);
+// 15. 正職跨店 8 小時：別家店（試算表工作表編號跟本店一樣）要讀到別家自己的名冊與核定，不是本店的（2026-11-14 共用讀表鍵含試算表 ID）
+const mk2 = () => make({ now: T('2026-11-10T10:00:00'),
+  self: { roster: [{ emp_id: 'E01', name: '跨店甲', key: 'K1', active: 'TRUE', line_user_id: 'U1' }], events: [['2026-11-09T09:00:00', 'E01', 'in'], ['2026-11-09T13:00:00', 'E01', 'out']] },
+  peers: { PEER1: { roster: [{ emp_id: 'P07', name: '跨店甲', key: 'KP', active: 'TRUE', line_user_id: '' }],      // 別家只有核定紀錄（忘打卡已補核定）：只能從別家的核定表看出來
+    approved: [['2026-11-09', 'P07', '跨店甲', '[{"start":"14:00","end":"18:00"}]', 4, '正常', '值班主管', '2026-11-09T19:00:00+08:00', '', '']] } } });
+const post2 = (m, b) => JSON.parse(m.sb.doPost({ postData: { contents: JSON.stringify(b) } }).text);
+const one = { emp_id: 'E01', periods: [{ start: '09:00', end: '13:00' }], sched_ft: true };
+const batch = post2(mk2(), { action: 'mgr_approve_check', mgr_key: 'AK', acting_name: '店長甲（DZY001）', date: '2026-11-09', items: [one] }).results[0];      // 先跑一批（快取是空的）
+const single = post2(mk2(), Object.assign({ action: 'mgr_approve', mgr_key: 'AK', acting_name: '店長甲（DZY001）', date: '2026-11-09', dry_run: true }, one));
+check('C15', '跨店：別家已核定 4 小時＋本店 4 小時＝滿 8，單筆試算會過', single.ok, true);
+check('C16', '跨店：一批只檢查跟單筆試算結果一樣（不會把別家的表讀成本店的）', [batch.ok, batch.error || ''], [single.ok, single.error || '']);
 done();
