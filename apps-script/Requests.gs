@@ -1840,6 +1840,99 @@ function reqFt8_(date, approvedHours, otHave, opt, okRows) {
 }
 /** 不能核定回 {ok:false, error:'need_request'|'need_diff_reason', message, ...}；可以回 null。
  *  opt：leaves、trip_hours、sched_day（H／R／W／空白）、diff_reason、acting（考勤管理個人帳號）；rows／force_strict／preview 給只讀試算用。 */
+/* ── 加班單要有打卡佐證（2026-11-14 Eason：「加班單要綁定打卡紀錄，沒有打卡紀錄則無法核定當天出勤」）──
+   每張已核准加班單的時段要整段落在當天某一段打卡裡（上班卡到下班卡），前後可差 REQ_STRICT_TOL_MIN 分鐘。
+   算打卡的：這家店成功的卡（店長認定的重複卡已拿掉）＋已核准忘打卡單補的卡（審核中不算）；
+   這家店沒蓋到時，再看同一天別家店的打卡（同名在職，同 Rest 跨店讀法）；讀不到別家＝當作沒打卡。
+   出差日（有已核准出差單或核定登記出差時數）不看。開關：指令碼屬性 REQ_OT_PUNCH_FROM（預設 2026-11-15，off＝關）。 */
+var REQ_OT_PUNCH_FROM_DEFAULT_ = '2026-11-15';
+function reqOtPunchFrom_() {
+  var v = '';
+  try { v = String(PropertiesService.getScriptProperties().getProperty('REQ_OT_PUNCH_FROM') || '').trim(); } catch (e) {}
+  if (v === 'off') return null;
+  return reqIsDate_(v) ? v : REQ_OT_PUNCH_FROM_DEFAULT_;
+}
+function reqOtPunchHm_(ms) { return new Date(ms + 8 * 3600000).toISOString().slice(11, 16); }
+/** 卡（{t, type}）依時間配成段：上班卡接下一張下班卡（16 小時內）；回合併後的區間 [{s, e}]（相隔 15 分內併成一段） */
+function reqOtPunchPair_(cards) {
+  var tol = REQ_STRICT_TOL_MIN * 60000, out = [], open = null;
+  cards.slice().sort(function (a, b) { return a.t - b.t || (a.type === b.type ? 0 : a.type === 'out' ? -1 : 1); }).forEach(function (c) {
+    if (c.type === 'in') { open = c.t; return; }
+    if (open != null && c.t >= open && c.t - open <= REQ_PAIR_MS) out.push({ s: open, e: c.t });
+    open = null;
+  });
+  var merged = [];
+  out.sort(function (a, b) { return a.s - b.s; }).forEach(function (x) {
+    var last = merged[merged.length - 1];
+    if (last && x.s <= last.e + tol) last.e = Math.max(last.e, x.e); else merged.push({ s: x.s, e: x.e });
+  });
+  return merged;
+}
+/** 這家店的卡：打卡段（inMs／outMs）＋已核准忘打卡單補的卡 */
+function reqOtPunchCards_(date, segs, okRows) {
+  var cards = [];
+  (segs || []).forEach(function (x) {
+    if (x.inMs != null) cards.push({ t: x.inMs, type: 'in' });
+    if (x.outMs != null) cards.push({ t: x.outMs, type: 'out' });
+  });
+  var D = 86400000, virt = [];
+  (okRows || []).forEach(function (r) {
+    if (r.kind !== 'miss' || r.status !== 'approved') return;
+    var st = reqHm_(r.start), en = reqHm_(r.end), mt = String(r.miss_type || '');
+    if (mt === 'in' && st) virt.push({ t: reqHmMs_(date, st), type: 'in' });
+    if (mt === 'out' && en) virt.push({ t: reqHmMs_(date, en), type: 'out', early: en <= REQ_EARLY_OUT_HM });
+    if (mt === 'both' && st && en) { virt.push({ t: reqHmMs_(date, st), type: 'in' }); virt.push({ t: reqHmMs_(date, en) + (reqMin_(en) < reqMin_(st) ? D : 0), type: 'out' }); }
+    if (mt === 'break' && st && en) { virt.push({ t: reqHmMs_(date, en), type: 'out' }); virt.push({ t: reqHmMs_(date, st) + (reqMin_(st) < reqMin_(en) ? D : 0), type: 'in' }); }
+  });
+  // 凌晨（06:00 前）補的下班卡：那天有比它晚的上班卡＝是跨夜班的下班，算隔天（同 reqMissVirtual_）
+  var all = cards.concat(virt);
+  virt.forEach(function (c) {
+    if (c.early && all.some(function (o) { return o.type === 'in' && o.t > c.t; })) c.t += D;
+  });
+  return cards.concat(virt.map(function (c) { return { t: c.t, type: c.type }; }));
+}
+function reqOtPunchFits_(date, start, end, ivs) {
+  var s = reqHmMs_(date, start), e = reqHmMs_(date, end), tol = REQ_STRICT_TOL_MIN * 60000;
+  if (isNaN(s) || isNaN(e)) return false;
+  if (e <= s) e += 86400000;
+  var fit = function (x, y) { return ivs.some(function (m) { return x >= m.s - tol && y <= m.e + tol; }); };
+  return fit(s, e) || fit(s + 86400000, e + 86400000);
+}
+/** 回 [{rule:'ot_punch', text}]。peerCards（測試用）＝別家店的卡 [{ts, type, status, store}]，沒帶就讀 restPeerEvents_ */
+function reqOtPunchProbs_(date, otRows, segs, okRows, name, peerCards) {
+  var ivs = reqOtPunchPair_(reqOtPunchCards_(date, segs, okRows));
+  var peer = null, peerIvs = function () {
+    if (peer) return peer;
+    var ev = peerCards;
+    if (!ev) {
+      ev = [];
+      try { if (typeof restPeerEvents_ === 'function' && name) ev = restPeerEvents_(name, new Date(date + 'T00:00:00+08:00').getTime()); } catch (e) { ev = []; }
+    }
+    var by = {};
+    ev.forEach(function (x) {
+      if (String(x.status) !== 'ok') return;
+      var t = new Date(String(x.ts)).getTime();
+      if (isNaN(t)) return;
+      (by[x.store] = by[x.store] || []).push({ t: t, type: String(x.type) });
+    });
+    peer = [];
+    Object.keys(by).forEach(function (k) { peer = peer.concat(reqOtPunchPair_(by[k])); });
+    return peer;
+  };
+  var shown = (segs || []).filter(function (x) { return x.inMs != null || x.outMs != null; }).map(function (x) {
+    return (x.inMs != null ? reqOtPunchHm_(x.inMs) : '？') + '–' + (x.outMs != null ? reqOtPunchHm_(x.outMs) : '？');
+  });
+  var missN = (okRows || []).filter(function (r) { return r.kind === 'miss' && r.status === 'approved'; }).length;
+  var probs = [];
+  otRows.forEach(function (r) {
+    var a = String(r.start), b = String(r.end);
+    if (reqOtPunchFits_(date, a, b, ivs)) return;
+    if (reqOtPunchFits_(date, a, b, peerIvs())) return;
+    probs.push({ rule: 'ot_punch', text: '加班單 ' + a + '–' + b + ' 沒有打卡紀錄（' + (shown.length ? '當天打卡：' + shown.join('、') : '當天沒有打卡') +
+      (missN ? '，另有已核准忘打卡單 ' + missN + ' 張' : '') + '），請先補忘打卡單、店長核准後再核定，或把加班單改成有打卡的時段' });
+  });
+  return probs;
+}
 function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindow, opt) {
   opt = opt || {};
   periods = periods || [];
@@ -1847,7 +1940,8 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   var bindOn = !!(from && date >= from && periods.length);
   var strict = !!opt.force_strict || !!(from && strictFrom && date >= strictFrom);
   var ft8On = !!(reqFt8From_() && date >= reqFt8From_() && opt.sched_ft === true);   // 滿 8 小時不跟綁單／加嚴的開關走（2026-11-13 審查 4、11）
-  if (!bindOn && !strict && !ft8On) return null;
+  var otPunchOn = !!opt.force_ot_punch || !!(from && reqOtPunchFrom_() && date >= reqOtPunchFrom_());   // REQ_BIND_FROM off＝全關，這條也關
+  if (!bindOn && !strict && !ft8On && !otPunchOn) return null;
   var rows = (opt.rows || reqRows_(ss)).filter(function (r) { return String(r.emp_id) === String(empId) && String(r.date) === date; });
   var ok = rows.filter(function (r) { return r.status === 'approved'; });
   var pend = rows.filter(function (r) { return r.status === 'pending' && (r.kind === 'ot' || r.kind === 'miss' || r.kind === 'trip' || (strict && r.kind === 'leave')); });
@@ -1885,6 +1979,10 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   } else if (bindOn && otNeed > 0.005 && otHave + 0.005 < otNeed) {   // bindOn：只有滿 8 小時開著時（綁單關或沒時段）不跑舊規則
     otBad = true;
     add('ot_hours', '超過 ' + REQ_BIND_OT_BASE_H + ' 小時的 ' + reqBindFmt_(otNeed) + ' 小時要有加班單（已核准 ' + reqBindFmt_(otHave) + ' 小時）');
+  }
+  // 加班單要有打卡佐證（2026-11-14 Eason）：每張已核准加班單的時段要落在當天的打卡段裡（前後可差 15 分）；出差日不看
+  if (otPunchOn && otRows.length && !(Number(opt.trip_hours) > 0) && !ok.some(function (r) { return r.kind === 'trip'; })) {
+    reqOtPunchProbs_(date, otRows, reqWorkingSegs_(segs || [], date) || [], ok, String(opt.name || (otRows[0] || {}).name || ''), opt.peer_cards).forEach(function (p) { add(p.rule, p.text); });
   }
   var miss = bindOn ? reqBindMissCards_(periods, reqWorkingSegs_(segs, date), breakWindow) : 0;
   var missHave = ok.reduce(function (a, r) { return a + (r.kind !== 'miss' ? 0 : (r.miss_type === 'break' || r.miss_type === 'both') ? 2 : 1); }, 0);
@@ -2057,7 +2155,7 @@ function handleApproveStrictPreview_(body) {
       if (punchDay && typeof markWorkingSeg_ === 'function') markWorkingSeg_(punchDay, date, segs);   // B34：還在上班的那張不算少一張
       scanned++;
       var r = reqBindCheck_(ss, emp, date, Number(rec.approved_hours) || 0, periods, segs, noPunchBreakWindow(date),
-        { leaves: leaves, trip_hours: trip, rows: rows, force_strict: true, preview: true });
+        { leaves: leaves, trip_hours: trip, rows: rows, force_strict: true, force_ot_punch: true, name: name, preview: true });
       if (r && (r.probs.length || (r.diff_min != null && r.diff_min >= REQ_STRICT_DIFF_MIN))) {
         items.push({ date: date, emp_id: emp, name: name, hours: Number(rec.approved_hours) || 0, leaves: leaves, probs: r.probs, diff_min: r.diff_min, ot_have: r.ot_have, ot_need: r.ot_need });
       }

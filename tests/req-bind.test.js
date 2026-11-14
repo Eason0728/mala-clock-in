@@ -353,6 +353,8 @@ ok('規則 4：差 30 分鐘要原因、29 分鐘不用、有原因放行、缺�
 });
 ok('開關：REQ_STRICT_FROM off 只關加嚴；REQ_BIND_FROM off 全關', () => {
   let sb = makeEnv(); sb.__props.REQ_STRICT_FROM = 'off'; addReq(sb, R2({ kind: 'ot', start: '06:00', end: '07:30', hours: 1.5 }));
+  assert.ok(/沒有打卡紀錄/.test(chk(sb, 9.5, full95, seg95, {}).message));   // 加班單要有打卡佐證另有開關（2026-11-14）
+  sb.__props.REQ_OT_PUNCH_FROM = 'off';
   assert.strictEqual(chk(sb, 9.5, full95, seg95, {}), null);
   assert.strictEqual(chk(sb, 10, [P2('09:00', '19:00')], [S2('09:00', '19:00')], {}).error, 'need_request');
   sb = makeEnv(); sb.__props.REQ_BIND_FROM = 'off';
