@@ -340,16 +340,26 @@ ok('規則 3：整天請假（沒有時段）也看；審核中的假單不算',
   sb = makeEnv(); addReq(sb, R2({ kind: 'leave', leave_type: '特休', hours: 8 }));
   assert.strictEqual(chk(sb, 0, [], [], { leaves: [{ type: '特休', hours: 8 }] }), null);
 });
-ok('規則 4：差 30 分鐘要原因、29 分鐘不用、有原因放行、缺卡不比、休息帶扣掉', () => {
+ok('規則 4（2026-11-14 改）：只看核定比打卡多；早到晚走不擋、遲到那段不算、寫原因不再放行、休息帶扣掉', () => {
   const sb = makeEnv();
-  const r = chk(sb, 7.5, [P2('09:00', '16:30')], [S2('09:00', '17:00')], {});
-  assert.strictEqual(r.error, 'need_diff_reason'); assert.strictEqual(r.diff_min, 30);
-  assert.strictEqual(chk(sb, 7.5, [P2('09:00', '16:30')], [{ inMs: ms('09:00', D2), outMs: ms('16:59', D2) }], {}), null);
-  assert.strictEqual(chk(sb, 7.5, [P2('09:00', '16:30')], [S2('09:00', '17:00')], { diff_reason: '  提早離開，店長同意 ' }), null);
-  assert.strictEqual(chk(sb, 7.5, [P2('09:00', '16:30')], [S2('09:00', '17:00')], { diff_reason: '   ' }).error, 'need_diff_reason');
+  // 打卡比核定多（核定 09:00–16:30、打卡到 17:00）：多出的不算，不用原因
+  assert.strictEqual(chk(sb, 7.5, [P2('09:00', '16:30')], [S2('09:00', '17:00')], {}), null);
+  // 核定比打卡多 30 分鐘（核定到 17:00、16:30 就下班）：要有單，逐條回 over_credit、要補申請
+  const r = chk(sb, 8, [P2('09:00', '17:00')], [S2('09:00', '16:30')], {});
+  assert.strictEqual(r.error, 'need_request'); assert.strictEqual(r.need.over_min, 30);
+  assert.strictEqual(JSON.stringify(r.probs.map((x) => x.rule)), '["over_credit"]'); assert.strictEqual(r.need_doc, true); assert.ok(/補申請/.test(r.message));
+  // 寫原因不再放行
+  assert.strictEqual(chk(sb, 8, [P2('09:00', '17:00')], [S2('09:00', '16:30')], { diff_reason: '店長同意' }).error, 'need_request');
+  // 29 分鐘：放行
+  assert.strictEqual(chk(sb, 8, [P2('09:00', '17:00')], [{ inMs: ms('09:00', D2), outMs: ms('16:31', D2) }], {}), null);
+  // 遲到 45 分（核定留班表開頭）：遲到那段不算比打卡多（打卡端照標遲到、薪資照扣）
+  assert.strictEqual(chk(sb, 8, [P2('09:00', '17:00')], [S2('09:45', '17:00')], {}), null);
+  // 休息帶不打卡：扣掉
   const brk = { startMs: ms('12:00', D2), endMs: ms('13:00', D2) };
   assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D2, 8, [P2('08:00', '12:00'), P2('13:00', '17:00')], [S2('08:00', '17:00')], brk, {}), null);
-  assert.ok(/舊的值班核定頁/.test(chk(sb, 7.5, [P2('09:00', '16:30')], [S2('09:00', '17:00')], { acting: false }).message));
+  // 中途離開 1 小時、核定照整天：比打卡多 60 分
+  const r2 = sb.reqBindCheck_(sb.getSS(), 'E01', D2, 8, [P2('08:00', '12:00'), P2('13:00', '17:00')], [S2('08:00', '14:00'), S2('15:00', '17:00')], brk, {});
+  assert.strictEqual(r2.need.over_min, 60);
 });
 ok('開關：REQ_STRICT_FROM off 只關加嚴；REQ_BIND_FROM off 全關', () => {
   let sb = makeEnv(); sb.__props.REQ_STRICT_FROM = 'off'; addReq(sb, R2({ kind: 'ot', start: '06:00', end: '07:30', hours: 1.5 }));
