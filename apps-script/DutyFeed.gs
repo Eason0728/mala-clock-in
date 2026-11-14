@@ -77,7 +77,9 @@ function dutyFeedNote_(body, res) {
     var action = String((body && body.action) || '');
     if (!action || dutyFeedIsRead_(action) || (body && body.dry_run === true)) return;   // 只檢查不寫入的不算變動
     if (!res || res.ok === false) return;
-    var rec = { t: Date.now(), a: action, d: dutyFeedDates_(body, res), e: String((body && body.emp_id) || (res && res.emp_id) || ''),
+    // 同仁從 LINE 送的申請（req_submit）內文只有 id_token、沒有 emp_id：從回應的 request 拿（2026-11-14，副本對帳只差 ver 的就是這種）
+    var resEmp = res && res.request && typeof res.request === 'object' ? res.request.emp_id : '';
+    var rec = { t: Date.now(), a: action, d: dutyFeedDates_(body, res), e: String((body && body.emp_id) || (res && res.emp_id) || resEmp || ''),
                 n: Utilities.getUuid().slice(0, 8) };
     if (/^mgr_req_|^req_/.test(action) && !rec.d.length) {
       var hits = dutyFeedReqLookup_(body);
