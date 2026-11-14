@@ -9,6 +9,10 @@
    - 寫卡時機：①每 15 分鐘觸發器 capSweep（cap_set 開時才建）②同仁開打卡頁或按打卡的當下，所以觸發器晚一點也不會讓人多打。
    - 當天已經打滿 10 小時（自己打了下班卡）也不能再打上班卡。
    - 央廚、總部中午休息不打卡（CONFIG.NO_PUNCH_BREAK_START／END）：本店的段落扣掉休息時段再算，跟核定比對打卡時數同一套（2026-11-14 試算抓到：不扣的話做 9 小時就被收卡）。
+   - 其他店：班表上那天的班別有設休息分鐘，就扣掉（2026-11-14 Eason「班別有輸入休息的分鐘數，也要自動扣除」）。
+     分段班（例 12:00–22:00 中間休 2 小時）的休息＝段與段之間的時間＋各段自己的休息分鐘。
+     休息有打卡（中間下班再上班）的部分不重扣：扣＝班表休息 − 當天打卡中間的空檔，最少 0。
+     例：班別休息 30 分，同仁休息沒打卡 → 扣 30 分；休息有打下班、上班空了 30 分 → 不再扣。
    - 總開關：指令碼屬性 REST_CAP_ON 恰為 '1'。任何一步出錯一律不擋、不寫（不能讓打卡因為這道檢查壞掉）。
    九店整檔共用；動作掛在 Liff.gs LIFF_HANDLERS，不改各店 程式碼.js。 */
 var CAP_H = 10;
@@ -90,17 +94,18 @@ function capJudge_(evs, nowMs, fill, brk) {
     prev = e.ms;
   });
   if (open && nowMs - open.ms > CAP_PAIR_H * 3600000) { segs.push(capFillIn_(open, nowMs, fill)); open = null; }
+  var sb = (!brk && fill && fill.schedBrk) ? fill.schedBrk : null;   // 沒有不打卡休息時段的店才看班表休息分鐘（央廚、總部不重扣）
   var today = capDay_(nowMs);
-  out.today_ms = segs.filter(function (s) { return !s.lone && capDay_(s.in) === today; })
-    .reduce(function (a, s) { return a + capSegMs_(s, brk); }, 0);
+  var todays = segs.filter(function (s) { return !s.lone && capDay_(s.in) === today; });
+  out.today_ms = todays.reduce(function (a, s) { return a + capSegMs_(s, brk); }, 0) - capDed_(todays, null, today, sb);
   if (lastSys && nowMs < lastSys.ms + CAP_LOCK_H * 3600000) {
     out.lock = true; out.sys = lastSys.ms; out.until = lastSys.ms + CAP_LOCK_H * 3600000;
     return out;
   }
   if (!open) { out.open = null; return out; }
   var day = capDay_(open.ms);
-  var done = segs.filter(function (s) { return !s.lone && s.out <= open.ms && capDay_(s.in) === day; })
-    .reduce(function (a, s) { return a + capSegMs_(s, brk); }, 0);
+  var daySegs = segs.filter(function (s) { return !s.lone && s.out <= open.ms && capDay_(s.in) === day; });
+  var done = daySegs.reduce(function (a, s) { return a + capSegMs_(s, brk); }, 0) - capDed_(daySegs, open.ms, day, sb);
   var need = Math.max(0, CAP_H * 3600000 - done), reach = open.ms + need;
   if (!open.store && brk) for (var k = 0; k < 4; k++) {   // 正在上班那段碰到休息時段：往後延（延了可能又碰到下一天的，最多算 4 次）
     var r2 = open.ms + need + capBreakMs_(open.ms, reach, brk);
@@ -110,6 +115,18 @@ function capJudge_(evs, nowMs, fill, brk) {
   if (nowMs >= reach) { out.due = { at: reach, store: open.store }; return out; }
   out.open = { in: open.ms, store: open.store }; out.reach = reach;
   return out;
+}
+
+/** 班表休息要扣多少毫秒：segs＝那天已完成的段，openIn＝正在上班那段的上班時間（沒有給 null）。
+ *  打卡中間的空檔當成已經休息過了，扣＝班表休息 − 空檔（最少 0）。 */
+function capDed_(segs, openIn, day, sb) {
+  if (!sb) return 0;
+  var info = sb(day);
+  if (!info || !(info.b > 0)) return 0;
+  var list = segs.slice().sort(function (a, b) { return a.in - b.in; }), gaps = 0;
+  for (var i = 1; i < list.length; i++) gaps += Math.max(0, list[i].in - list[i - 1].out);
+  if (openIn !== null && list.length) gaps += Math.max(0, openIn - list[list.length - 1].out);
+  return Math.max(0, info.b - gaps);
 }
 
 /* ── 班表（營運系統發布在光復試算表 sched_pub；只有光復部署 SchedPub.gs，這裡自己讀）── */
@@ -154,11 +171,8 @@ function capSchedSegs_(pub, storeAlias, empId, d) {
   if (!data || !data.rows) return [];
   var row = null;
   data.rows.forEach(function (r) { if (String(r.emp_id) === String(empId)) row = r; });
-  var cell = row && row.cells ? row.cells[pi.idx] : null;
-  if (!cell || !cell.s) return [];
-  var sh = null;
-  (data.shifts || []).forEach(function (x) { if (x.id === cell.s) sh = x; });
-  if (!sh || !sh.start || !sh.end) return [];
+  var sh = capSchedShiftOf_(data, row, pi.idx);
+  if (!sh) return [];
   var parts = sh.segs ? sh.segs.map(function (x) { return [x.start, x.end]; }) : [[sh.start, sh.end]];
   var base = capMs_(d + 'T00:00:00+08:00'), out = [];
   parts.forEach(function (x) {
@@ -169,10 +183,40 @@ function capSchedSegs_(pub, storeAlias, empId, d) {
   });
   return out;
 }
-/** fill(kind, ev) 給 capJudge_：只補本店的卡（ev.store ''）；班表第一次用到才讀。 */
+function capSchedShiftOf_(data, row, idx) {
+  var cell = row && row.cells ? row.cells[idx] : null;
+  if (!cell || !cell.s) return null;
+  var sh = null;
+  (data.shifts || []).forEach(function (x) { if (x.id === cell.s) sh = x; });
+  return sh && sh.start && sh.end ? sh : null;
+}
+/** 這個人某天本店班別的休息：{b: 休息毫秒}；沒排班或沒有休息回 null。
+ *  分段班：段與段之間的時間＋各段 break_min（營運系統分段班的 break_min 就是段間空檔）；沒分段：break_min。 */
+function capSchedBreak_(pub, storeAlias, empId, d) {
+  var pi = capSchedPeriod_(d);
+  if (!pub || !pi) return null;
+  var data = pub[storeAlias + '|' + pi.p];
+  if (!data || !data.rows) return null;
+  var row = null;
+  data.rows.forEach(function (r) { if (String(r.emp_id) === String(empId)) row = r; });
+  var sh = capSchedShiftOf_(data, row, pi.idx);
+  if (!sh) return null;
+  var hm = function (t) { return +String(t).slice(0, 2) * 60 + +String(t).slice(3, 5); };
+  var b = 0, g = 0;
+  if (sh.segs && sh.segs.length) {
+    sh.segs.forEach(function (x, i) {
+      b += Math.max(0, Number(x.break_min) || 0);
+      if (i) { var gap = hm(x.start) - hm(sh.segs[i - 1].end); if (gap < 0) gap += 1440; g += gap; }
+    });
+  } else b = Math.max(0, Number(sh.break_min) || 0);
+  b += g;
+  return b > 0 ? { b: b * 60000 } : null;
+}
+/** fill(kind, ev) 給 capJudge_：只補本店的卡（ev.store ''）；班表第一次用到才讀。
+ *  fill.schedBrk(day)：本店班表那天的休息（capSchedBreak_）。 */
 function capMakeFill_(empId) {
   var me = null, pub;
-  return function (kind, ev) {
+  var fn = function (kind, ev) {
     try {
       if (ev.store) return null;
       if (pub === undefined) { me = capSelf_(); pub = me.code ? capSchedPub_() : null; }
@@ -187,6 +231,14 @@ function capMakeFill_(empId) {
       return best ? best.v : null;
     } catch (e) { return null; }
   };
+  fn.schedBrk = function (day) {
+    try {
+      if (pub === undefined) { me = capSelf_(); pub = me.code ? capSchedPub_() : null; }
+      if (!pub || !me || !me.code) return null;
+      return capSchedBreak_(pub, me.code === 'gf' ? '' : me.code, empId, day);
+    } catch (e) { return null; }
+  };
+  return fn;
 }
 
 /* ── 讀寫 ── */
