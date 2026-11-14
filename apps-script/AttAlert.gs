@@ -43,8 +43,12 @@ var ATT_ALERT_MAX_ROWS = 3000;        // 單批上限
 var ATT_ALERT_GUARD_TEXT = '今天考勤資料查不到，請到考勤管理查看';
 var ATT_ALERT_GUARD_HM = '09:30';
 var ATT_ALERT_LOOSE = ['state', 'sched', 'failed', 'notes', 'guard'];   // 新批次寫入時，舊的 pending 改 superseded
-var ATT_ALERT_SECTIONS = ['daily', 'state', 'sched', 'failed', 'notes', 'guard', 'notice'];
+var ATT_ALERT_SECTIONS = ['daily', 'state', 'sched', 'failed', 'notes', 'guard', 'notice', 'comp'];
 // notice（2026-11-14）：一次性公告。帶出時自成一則、不加「【考勤異常】」標題與結尾，也不會被之後的批次取代（不在 LOOSE），帶出過一次就結束。
+// comp（2026-11-14）：班表截止前 15／10／5 天的「本期加班補休」。mini 組好每一行，帶出時自成一則（「▍」「※」開頭的行前面空一行）；
+//   新的 comp 批只取代舊的 pending comp，不碰考勤異常；考勤批也不取代 comp。
+// 只有 notice／comp 的批次（旁支批次）：不取代當天考勤異常列、不改 ATT_RUN_<日期>（09:30 保底照常判斷 mini 今天有沒有送考勤）。
+var ATT_ALERT_SIDE = ['notice', 'comp'];
 
 var ATT_ALERT_STORE_LABEL = { gf: '小辛辣光復', cf: '央廚', hq: '總部', mztjs: '墨竹亭金山', mztgf: '墨竹亭光復', mztlzl: '墨竹亭六張犁', mztmc: '墨竹亭台中美村' };
 
@@ -174,7 +178,7 @@ function handleAttAlertEnqueue(b) {
   var spec = []; // [section, store, line]
   if (!empty) {
     var daily = attAlertEntries_(b.daily), state = attAlertEntries_(b.state);
-    var sched = attAlertStrList_(b.sched), notes = attAlertStrList_(b.notes), notice = attAlertStrList_(b.notice);
+    var sched = attAlertStrList_(b.sched), notes = attAlertStrList_(b.notes), notice = attAlertStrList_(b.notice), comp = attAlertStrList_(b.comp);
     var failed = [];
     if (b.failed_stores !== undefined && b.failed_stores !== null) {
       if (!Array.isArray(b.failed_stores)) return { ok: false, error: 'bad_input' };
@@ -185,17 +189,20 @@ function handleAttAlertEnqueue(b) {
         else return { ok: false, error: 'bad_input' };
       }
     }
-    if (daily === null || state === null || sched === null || notes === null || notice === null) return { ok: false, error: 'bad_input' };
+    if (daily === null || state === null || sched === null || notes === null || notice === null || comp === null) return { ok: false, error: 'bad_input' };
     daily.forEach(function (x) { spec.push(['daily', x[0], x[1]]); });
     state.forEach(function (x) { spec.push(['state', x[0], x[1]]); });
     sched.forEach(function (l) { spec.push(['sched', '', l]); });
     failed.forEach(function (x) { spec.push(['failed', x[0], x[1]]); });
     notes.forEach(function (l) { spec.push(['notes', '', l]); });
     notice.forEach(function (l) { spec.push(['notice', '', l]); });
+    comp.forEach(function (l) { spec.push(['comp', '', l]); });
     if (spec.length > ATT_ALERT_MAX_ROWS) return { ok: false, error: 'too_big' };
     // 沒有任何可組字內容（只有 notes、或全空但沒帶 empty 旗標）→ 當 empty 處理：只 supersede、不寫列、不設旗標
     if (!spec.some(function (x) { return x[0] !== 'notes'; })) { empty = true; spec = []; }
   }
+  var side = spec.length > 0 && spec.every(function (x) { return ATT_ALERT_SIDE.indexOf(x[0]) >= 0; });
+  var hasComp = spec.some(function (x) { return x[0] === 'comp'; });
   var seq = Number(b.seq);
   var now = attAlertNow_();
   if (!(b.seq !== undefined && b.seq !== null && b.seq !== '' && isFinite(seq))) seq = now.getTime();
@@ -209,9 +216,9 @@ function handleAttAlertEnqueue(b) {
     if (mine.length) {
       // 分頁已有這一批（上次只寫到一半）：補寫 superseded／狀態／批次記錄，再回 dup
       var s0 = Number(mine[0].seq);
-      attAlertSupersede_(sh, rows, b.run_date, isFinite(s0) ? s0 : seq, b.batch_id);
+      attAlertSupersede_(sh, rows, b.run_date, isFinite(s0) ? s0 : seq, b.batch_id, side, hasComp);
       if (mine.some(function (r) { return r.status === 'pending'; })) p.setProperty('ATT_HAS_PENDING', '1');
-      if (p.getProperty('ATT_RUN_' + b.run_date) !== 'received') p.setProperty('ATT_RUN_' + b.run_date, 'received');
+      if (!side && p.getProperty('ATT_RUN_' + b.run_date) !== 'received') p.setProperty('ATT_RUN_' + b.run_date, 'received');
       if (!p.getProperty('ATT_BATCH_' + b.batch_id)) p.setProperty('ATT_BATCH_' + b.batch_id, attAlertIso_(now));
       return { ok: true, dup: true };
     }
@@ -222,9 +229,9 @@ function handleAttAlertEnqueue(b) {
     });
     // 寫入順序（出事時留下的是「可重送」的狀態）：①新批列 pending → ②舊列 superseded → ③ATT_RUN → ④ATT_BATCH
     attAlertAppend_(sh, matrix);
-    attAlertSupersede_(sh, rows, b.run_date, seq, b.batch_id);
+    attAlertSupersede_(sh, rows, b.run_date, seq, b.batch_id, side, hasComp);
     if (matrix.length) p.setProperty('ATT_HAS_PENDING', '1');
-    p.setProperty('ATT_RUN_' + b.run_date, empty ? 'empty' : 'received');
+    if (!side) p.setProperty('ATT_RUN_' + b.run_date, empty ? 'empty' : 'received');
     p.setProperty('ATT_BATCH_' + b.batch_id, iso);
     return { ok: true };
   } finally { lock.releaseLock(); }
@@ -234,10 +241,15 @@ function handleAttAlertEnqueue(b) {
  * 更舊＝run_date 較早，或同 run_date 且 seq 較小；guard 只要 run_date ≤ 新批就取代（guard 的 seq 是 GAS 時鐘，不跟 mini 比）。
  * 舊日重送的批次因此不會取代今天的 guard 或較新的批次（P4-1）。rows 是呼叫前讀到的快照。
  */
-function attAlertSupersede_(sh, rows, runDate, seq, batchId) {
+function attAlertSupersede_(sh, rows, runDate, seq, batchId, side, hasComp) {
   var changed = [];
   rows.forEach(function (r) {
-    if (r.status !== 'pending' || ATT_ALERT_LOOSE.indexOf(r.section) < 0 || r.batch_id === batchId) return;
+    if (r.status !== 'pending' || r.batch_id === batchId) return;
+    if (r.section === 'comp') {   // 舊的「本期加班補休」只被新的 comp 批取代（不看 seq：新一次提醒一律換掉舊的）
+      if (hasComp) { r.status = 'superseded'; changed.push(r); }
+      return;
+    }
+    if (side || ATT_ALERT_LOOSE.indexOf(r.section) < 0) return;   // 旁支批次不取代考勤異常列
     var older = r.section === 'guard' ? r.run_date <= runDate
       : (r.run_date < runDate || (r.run_date === runDate && Number(r.seq) < seq));
     if (older) { r.status = 'superseded'; changed.push(r); }
@@ -427,9 +439,10 @@ function attAlertRowsToBatches_(rows) {
 /** 本次要帶出的列 → 訊息陣列（或 {error}）。today＝max(佇列最大 run_date, 台北今天)（P4-2）。info 選填：回填 {latest, recentFrom} */
 function attAlertCompose_(rows, info) {
   // 一次性公告（notice）自成一則、放最前面；其他列照原本的版面
-  var noticeMsgs = attAlertNoticeMsgs_(rows.filter(function (r) { return r.section === 'notice'; }));
-  rows = rows.filter(function (r) { return r.section !== 'notice'; });
-  if (!rows.length) return noticeMsgs;
+  var noticeMsgs = attAlertNoticeMsgs_(rows.filter(function (r) { return r.section === 'notice'; }))
+    .concat(attAlertCompMsgs_(rows.filter(function (r) { return r.section === 'comp'; })));   // 本期加班補休：排在公告後、考勤異常前
+  rows = rows.filter(function (r) { return r.section !== 'notice' && r.section !== 'comp'; });
+  if (!rows.length) return noticeMsgs.slice(0, ATT_ALERT_MAX_MESSAGES);
   var rest = attAlertComposeAlerts_(rows, info);
   if (!Array.isArray(rest)) return noticeMsgs.length ? noticeMsgs : rest;
   return noticeMsgs.concat(rest).slice(0, ATT_ALERT_MAX_MESSAGES);
@@ -448,6 +461,21 @@ function attAlertNoticeMsgs_(rows) {
     });
     if (cur) out.push(cur);
   });
+  return out;
+}
+/** comp 列 → 只取最新一批（seq 最大），行原樣印、「▍」「※」開頭的行前面空一行；超過 LINE 單則字數就切成多則。 */
+function attAlertCompMsgs_(rows) {
+  if (!rows.length) return [];
+  var best = null;
+  rows.forEach(function (r) { var n = Number(r.seq); if (!best || n > best.n || (n === best.n && r.batch_id > best.id)) best = { n: n, id: r.batch_id }; });
+  var out = [], cur = '';
+  rows.filter(function (r) { return r.batch_id === best.id; }).forEach(function (r) {
+    var l = String(r.line), gap = /^[▍※]/.test(l);
+    var piece = cur ? (gap ? '\n\n' : '\n') + l : l;
+    if ((cur + piece).length > ATT_ALERT_LINE_LIMIT && cur) { out.push(cur); cur = l; }
+    else cur += piece;
+  });
+  if (cur) out.push(cur);
   return out;
 }
 function attAlertComposeAlerts_(rows, info) {

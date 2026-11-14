@@ -4186,6 +4186,98 @@ function payCompCheckAll_(ym) {
   return out;
 }
 
+/* ═══════════════════ 期間補休帳（2026-11-14 Eason：班表截止前 15／10／5 天，行政群列各單位正職本期加班、補休）═══════════════════
+ * 跟月補休帳 payCompMonthBook 同一套規則（payCompMonthCalc）：加班＝核准加班單（休息日同日合計只算前 2 小時、例假／國定假日不算）；
+ * 補休＝leave 分頁補休 與 審核中／已核准補休申請，同一天取大的；剩／欠＝加班 − 補休。只是把「這個月」換成「from～to」（班表一期 28 天，會跨月）。
+ * 唯讀、只給提醒用，不影響薪資計算；月補休帳那支一行沒動。墨竹亭也算（Eason 2026-11-14：墨竹亭現在開放補休）。 */
+function payCompPeriodBook(from, to) {
+  const empStores = payEmpStoresMap();
+  const cache = {};
+  function rowsOf(st, sheet) {
+    const k = st + '|' + sheet;
+    if (!(k in cache)) { try { cache[k] = payClockRead(st, sheet); } catch (e) { cache[k] = []; } }
+    return cache[k];
+  }
+  const inRange = function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(String(d)) && d >= from && d <= to; };
+  let sIdx = null; const holBy = {};
+  /** 加班單日期的班表日別：逐月查（期間跨月）；某個月查不到就那個月照舊全算（同月補休帳） */
+  function otKinds(e, store, ots) {
+    if (!ots.length) return null;
+    const st = payStore(store), out = {};
+    ots.map(function (x) { return String(x.date).slice(0, 7); }).filter(function (v, i, a) { return a.indexOf(v) === i; }).forEach(function (ym) {
+      if (String(ym) < PAY_COMP_OTKIND_FROM) return;
+      try {
+        if (!sIdx) sIdx = paySchedIndex_();
+        const hk = st + '|' + ym;
+        if (!(hk in holBy)) { const hr = payHolidayRow(ym, st); holBy[hk] = hr ? payHolidayDates(hr) : []; }
+        const cells = paySchedMonth_(ym, st, [e], sIdx)[String(e.emp_id)] || {};
+        const mv = (payHolMoved_(ym, st, [e], holBy[hk], sIdx) || {})[String(e.emp_id)] || {};
+        const hol = payHolKeep_(holBy[hk], mv).map(function (d) { return String(d).trim(); });
+        ots.forEach(function (x) {
+          const d = String(x.date);
+          if (d.slice(0, 7) === ym) out[d] = payOtKindOf(cells[d] || null, hol.indexOf(d) >= 0);
+        });
+      } catch (err) { /* 這個月查不到：這個月的加班照舊全算 */ }
+    });
+    return out;
+  }
+  return {
+    forEmp: function (e, store) {
+      const name = String(e.name || '').trim();
+      const sts = (empStores[String(e.emp_id)] || []).slice();
+      if (sts.indexOf(payStore(store)) < 0) sts.push(payStore(store));
+      const ots = [], leaves = [], reqs = [];
+      sts.forEach(function (st) {
+        rowsOf(st, 'requests').forEach(function (r) {
+          if (String(r.name || '').trim() !== name) return;
+          const d = normCellDate(r.date), h = payNum(r.hours);
+          if (!inRange(d) || !(h > 0)) return;
+          const status = String(r.status);
+          if (String(r.kind) === 'ot' && status === 'approved') ots.push({ date: d, h: h });
+          else if (String(r.kind) === 'leave' && String(r.leave_type || '').trim() === PAY_COMP_NAME &&
+                   (status === 'pending' || status === 'approved')) reqs.push({ date: d, h: h });
+        });
+        rowsOf(st, 'leave').forEach(function (l) {
+          if (String(l['姓名'] || '').trim() !== name || String(l['假別'] || '').trim() !== PAY_COMP_NAME) return;
+          const d = normCellDate(l['日期']), h = Number(l['時數']) || 0;
+          if (inRange(d) && h > 0) leaves.push({ date: d, h: h });
+        });
+      });
+      const c = payCompMonthCalc(ots, leaves, reqs, otKinds(e, store, ots));
+      c.allowed = payIsFt(e); c.from = from; c.to = to;
+      return c;
+    },
+  };
+}
+/** mini 呼叫用的金鑰：同考勤提醒（光復指令碼屬性 ATT_ALERT_SVC_KEY）；沒設＝不開放 */
+function payCompSvcOk_(body) {
+  let key = '';
+  try { key = String(PropertiesService.getScriptProperties().getProperty('ATT_ALERT_SVC_KEY') || ''); } catch (e) { key = ''; }
+  return !!key && typeof body.svcKey === 'string' && body.svcKey === key;
+}
+/** {action:'payroll_comp_period', svcKey|admin_key, from, to} → 各店在職正職、這段期間有加班或補休的人（唯讀）。
+ *  回 {ok, from, to, stores:[{store, name, list:[{emp_id, name, ot_h, used_h, balance_h}]}]}，門市依門市表順序，兩個都是 0 的不列。 */
+function handlePayrollCompPeriod(body) {
+  body = body || {};
+  if (!checkAdmin(body) && !payCompSvcOk_(body)) return { ok: false, error: 'unauthorized' };
+  const from = String(body.from || ''), to = String(body.to || '');
+  const okD = function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(Date.parse(d + 'T00:00:00Z')); };
+  if (!okD(from) || !okD(to) || from > to || (Date.parse(to) - Date.parse(from)) / 86400000 > 40) return { ok: false, error: 'bad_input' };
+  const book = payCompPeriodBook(from, to);
+  const master = payRead('master');
+  const stores = [];
+  payStoreList().forEach(function (s) {
+    const st = payStore(s.code), list = [];
+    master.forEach(function (e) {
+      if (String(e.active).toLowerCase() !== 'true' || payStore(e.store) !== st || !payIsFt(e)) return;
+      const c = book.forEmp(e, st);
+      if (c.ot_h > 0 || c.used_h > 0) list.push({ emp_id: String(e.emp_id), name: String(e.name), ot_h: c.ot_h, used_h: c.used_h, balance_h: c.balance_h });
+    });
+    if (list.length) stores.push({ store: st, name: String(s.name || s.code), list: list });
+  });
+  return { ok: true, from: from, to: to, stores: stores };
+}
+
 /* 20／25 號檢查（Eason 2026-11-01）：每天 09:00 觸發器跑，只有 20、25 號真的做事。
    有負數 → 通知匣一般件（key 同一天同一件）＋ LINE 私訊該店值班主管（打卡官方帳號，會花推播額度，Eason 選的）。
    觸發器用 payroll_comp_trigger_setup 建（重跑不疊）。通知匣密碼＝指令碼屬性 NOTIFY_INBOX_TOKEN（Eason 自己貼）。 */
@@ -5467,7 +5559,7 @@ function handlePayrollLeaveEventSet(body) {
  *   沒有欄位／'*' → 不限制（舊路與系統管理者）；字串陣列 → 只能碰名單內的門市；其他形狀 → scope_bad。
  * 只守門與裁切，不改任何計算。比較前門市代碼一律 trim＋大寫（payStore 再補預設店）。 */
 const PAY_SCOPE_ADMIN_ONLY = ['payroll_group', 'payroll_store_set', 'payroll_holiday_sync', 'payroll_get',
-                              'payroll_comp_check', 'payroll_comp_trigger_setup',   // 補休檢查看全部門市（2026-11-01）
+                              'payroll_comp_check', 'payroll_comp_trigger_setup', 'payroll_comp_period',   // 補休檢查看全部門市（2026-11-01）
                               'payroll_rest_check', 'payroll_rest_trigger_setup',   // 超時檢查看全部門市（2026-11-01）
                               'payroll_ot_preview', 'payroll_ot_month_sync',
                               'payroll_migrate_store', 'payroll_item_upsert', 'payroll_leave_span_set'];   // 這三個沒有逐列比對門市，只給全權管理者（2026-11-10 資安審計）   // 加班費新舊並列試算（2026-11-06）只給總管理
@@ -5644,6 +5736,7 @@ const PAYROLL_HANDLERS = {
   payroll_leave_span_set:  handlePayrollLeaveSpanSet,
   payroll_leave_options:   handlePayrollLeaveOptions,
   payroll_comp_check:      handlePayrollCompCheck,
+  payroll_comp_period:     handlePayrollCompPeriod,   // 期間補休帳（班表截止前提醒，2026-11-14）
   payroll_comp_trigger_setup: handlePayrollCompTriggerSetup,
   payroll_rest_check:      handlePayrollRestCheck,
   payroll_rest_trigger_setup: handlePayrollRestTriggerSetup,
