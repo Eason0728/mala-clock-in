@@ -849,7 +849,7 @@ if (window.MGR_CLOSED) document.documentElement.classList.add('mgr-closed');
     return x.getFullYear() + '-' + p(x.getMonth() + 1) + '-' + p(x.getDate());
   }
   function windowCheck(def, empId, leaveDate) {
-    if (!def || def.window_days == null) return { ok: true };
+    if (!def || def.window_days == null || String(def.window_days).trim() === '' || !(Number(def.window_days) > 0)) return { ok: true };   // 空白／非數字／0＝沒設期限（2026-11-14）
     var ev = ((LEAVE_OPTS && LEAVE_OPTS.events && LEAVE_OPTS.events[empId]) || {})[def.code];
     if (!ev) return { ok: true, note: def.name + ' 有期限規定，但還沒登記事件日，系統無法檢查' };
     var from = shiftDay(ev, -(Number(def.window_before) || 0));

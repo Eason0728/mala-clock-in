@@ -1880,7 +1880,7 @@ async function resetLeaveTypes(){
 
 /* ═════ 假別事件日（期限規則用）═════ */
 let LEV_LIST=[];
-function leaveTypesWithWindow(){ return LT_LIST.filter(t=>t.window_days!=null&&t.window_days!==''); }
+function leaveTypesWithWindow(){ return LT_LIST.filter(t=>t.window_days!=null&&String(t.window_days).trim()!==''&&Number(t.window_days)>0); }
 function renderLeaveEvents(){
   const t=$('levTbl'); if(!t) return;
   const opts=leaveTypesWithWindow();
