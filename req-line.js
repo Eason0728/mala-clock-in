@@ -8,11 +8,16 @@
  * 2026-10-29 預設店別＝打卡的那家：opts.store（打卡畫面剛打卡的店）→ line_hub_req_init 的 punch_store（最近一張卡）→ 第一家。
  * 2026-11-06 開頁加快（Eason：開申請頁要等 10 秒以上）：①手機記住上次的店別與假別（localStorage，綁 LINE 帳號、最多 30 天），
  *   有記住就先畫表單，背景再拿最新的換上；額度、補休帳的數字不記。②光復、那家店、額度三支同時問，不再排隊。
- *   ③光復開頁資料帶 lite（不算額度與補休帳），額度另打 line_hub_req_quota 晚一點補上；舊後端不認得 lite／quota 照舊一次全回。 */
+ *   ③光復開頁資料帶 lite（不算額度與補休帳），額度另打 line_hub_req_quota 晚一點補上；舊後端不認得 lite／quota 照舊一次全回。
+ * 2026-11-14 先讀 Mac mini（Eason 開工「全照推薦」；營運系統 docs/line-req-mirror/）：開頁同時①問 Mac mini「上次記住的」額度、我的申請、
+ *   開頁資料（peek，馬上回，畫面最下面小字「資料更新於 HH:MM」）②請 Mac mini 代問 Google（read，回來就換上、mini 也記住）。
+ *   Mac mini 連不上、關掉（off）、代問失敗 → 這次開頁一律直接問 Google（跟以前一樣）。送出、附件、查某天的卡照舊直接問 Google。
+ *   E.REQ_MIRROR＝false 時只回報計時（每次開頁表單、剩幾天、我的申請各幾秒出來）。 */
 (function () {
   'use strict';
   var E, $root, st = { init: null, store: null, info: null, tab: 'leave', busy: false,
-                      quotaReady: false, quota: null, infoErr: false, touched: false, storeManual: false };
+                      quotaReady: false, quota: null, infoErr: false, touched: false, storeManual: false,
+                      src: {}, peekAt: {}, infoReal: false, tm: null };
   var TABS = [['leave', '請假'], ['ot', '加班'], ['trip', '出差'], ['miss', '忘打卡'], ['mine', '我的申請']];
   var MISS_REASONS = ['忘記按', '手機沒電', '定位抓不到被擋', '按錯上下班', '其他'];
   var STATUS = { pending: ['審核中', 'wait'], approved: ['已核准', 'ok'], rejected: ['已退回', 'no'], cancelled: ['已取消', 'off'], voided: ['已作廢', 'off'] };
@@ -106,6 +111,45 @@
   }
   function msgBox(text, cls) { return h('div', { class: 'rq-box ' + (cls || ''), text: text }); }
 
+  /* ── 先讀 Mac mini（2026-11-14）── */
+  var mini = { down: false };
+  function miniOn() { return !!(E.REQ_MIRROR && E.MINI_REQ_API && !mini.down); }
+  /** 上次記住的：回 {at, data} 或 null（沒有、過期、mini 不在）。2.5 秒沒回就當 mini 不在，這次開頁全部直接問 Google。 */
+  function miniPeek(kind, url) {
+    if (!miniOn()) return Promise.resolve(null);
+    return E.post(E.MINI_REQ_API, { op: 'peek', kind: kind, url: url, id_token: liff.getIDToken() }, 2500).then(function (r) {
+      var d = r && r.ok && r.data;
+      if (d && d.ok === false && d.error === 'off') mini.down = true;
+      return d && d.ok && d.hit && d.data && d.data.ok ? { at: +d.at || 0, data: d.data } : null;
+    }, function () { mini.down = true; return null; });
+  }
+  /** 讀最新的：先請 Mac mini 代問（它也順便記住），mini 不在或代問失敗就直接問 Google（readRetry 照舊重試）。 */
+  function viaMini(kind, url, body) {
+    if (!miniOn()) return E.readRetry(url, body);
+    return E.post(E.MINI_REQ_API, { op: 'read', kind: kind, url: url, id_token: body.id_token }, 30000).then(function (r) {
+      var d = r && r.ok && r.data, g = d && d.ok && d.src === 'mini' ? d.data : null;
+      if (d && d.ok === false && d.error === 'off') mini.down = true;
+      if (g && typeof g === 'object' && (g.ok === true || (g.error && g.error !== 'server_error'))) return g;
+      return E.readRetry(url, body);
+    }, function () { mini.down = true; return E.readRetry(url, body); });
+  }
+  /** 開頁計時（REQ_MIRROR 開不開都記）：表單、剩幾天、我的申請第一次出來的毫秒數與來源（cache 手機記住／mini／google），送 Mac mini。 */
+  function tmMark(what, src) {
+    var t = st.tm;
+    if (!t || t.sent || t.ms[what] !== undefined) return;
+    t.ms[what] = Date.now() - t.t0; t.src[what] = src || 'google';
+    if (t.ms.form !== undefined && t.ms.quota !== undefined && t.ms.mine !== undefined) tmSend();
+  }
+  function tmSend() {
+    var t = st.tm;
+    if (!t || t.sent || !E.MINI_REQ_API || t.ms.form === undefined) return;
+    t.sent = true;
+    var body = JSON.stringify({ op: 'timing', store: st.store ? String(st.store.code) : '', ms: t.ms, src: t.src });
+    try { if (navigator.sendBeacon && navigator.sendBeacon(E.MINI_REQ_API, new Blob([body], { type: 'text/plain' }))) return; } catch (e) {}
+    try { fetch(E.MINI_REQ_API, { method: 'POST', body: body, mode: 'no-cors', keepalive: true }).catch(function () {}); } catch (e) {}
+  }
+  function hhmm(ms) { var d = new Date(ms + 8 * 3600000); return ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2); }
+
   /* ── 開頁 ── */
   /* 手機記住的開頁資料（2026-11-06）：只記店別清單、上次用的店、假別清單；額度與補休帳會變，不記。
      綁 LINE 帳號（id token 的 sub），換人用同一支手機不會看到別人的；超過 30 天當沒記。localStorage 讀寫失敗一律當沒記。 */
@@ -144,12 +188,13 @@
     st.init.quota = st.quota.quota || []; st.init.comp = st.quota.comp || null; st.quotaReady = true;
   }
   function infoFor(code) {
-    return E.readRetry(E.storeApi(storeDef(code)), { action: 'req_info', id_token: liff.getIDToken() }).then(function (r) {
+    var url = E.storeApi(storeDef(code));
+    return viaMini('info', url, { action: 'req_info', id_token: liff.getIDToken() }).then(function (r) {
       if (r && r.ok) return r;
       throw new Error((r && r.error) || 'failed');
     });
   }
-  var touchHooked = false;
+  var touchHooked = false, tmHooked = false;
   function open(opts) {
     E = window.ClockLineEnv;
     $root = document.getElementById('reqView');
@@ -162,13 +207,15 @@
       ['input', 'change', 'click'].forEach(function (ev) { $root.addEventListener(ev, function () { if (st.init) st.touched = true; }, true); });
     }
     st.init = null; st.info = null; st.infoErr = false; st.quota = null; st.quotaReady = false; st.touched = false; st.storeManual = false;
+    st.src = {}; st.peekAt = {}; st.infoReal = false; st.tm = { t0: Date.now(), ms: {}, src: {}, sent: false };
+    if (!tmHooked) { tmHooked = true; window.addEventListener('pagehide', function () { tmSend(); }); }   // 沒等到三樣都出來就關掉：送已經量到的
     $root.hidden = false;
-    var token = liff.getIDToken(), cached = cacheGet(), hasOpt = opts.store !== undefined && opts.store !== null;
-    // 三支同時問：光復基本資料（lite）、額度補休帳、那家店的「我的申請」（店別先用記住的／打卡畫面帶來的猜）
-    var initP = E.readRetry(E.HUB_API, { action: 'line_hub_req_init', id_token: token, lite: true });
-    E.readRetry(E.HUB_API, { action: 'line_hub_req_quota', id_token: token }).then(function (q) {
+    var token = liff.getIDToken(), cached = cacheGet(), hasOpt = opts.store !== undefined && opts.store !== null, drawn = !!cached;
+    // 三支同時問：光復基本資料（lite）、額度補休帳、那家店的「我的申請」（店別先用記住的／打卡畫面帶來的猜）；先經 Mac mini（viaMini）
+    var initP = viaMini('init', E.HUB_API, { action: 'line_hub_req_init', id_token: token, lite: true });
+    viaMini('quota', E.HUB_API, { action: 'line_hub_req_quota', id_token: token }).then(function (q) {
       if (!q || !q.ok) return;   // 舊後端 unknown_action：額度跟著開頁資料一起回（見下面 r.lite）
-      st.quota = q; applyQuota(); if (st.init && st.store) refresh();
+      st.quota = q; st.src.quota = 'google'; st.peekAt.quota = 0; applyQuota(); if (st.init && st.store) refresh();
     }, function () {});
     var guess = cached ? pickStore(cached.stores, [opts.store, cached.last_store, cached.punch_store]).code : (hasOpt ? opts.store : undefined);
     var infoP = guess !== undefined && storeDef(guess) ? { code: guess, p: infoFor(guess) } : null;
@@ -176,11 +223,35 @@
     function loadInfoNow() {
       var code = st.store.code;
       var p = infoP && infoP.code === code ? infoP.p : infoFor(code);
-      return p.then(function (r) { if (st.store && st.store.code === code) { st.info = r; st.infoErr = false; } },
-                    function () { if (st.store && st.store.code === code) st.infoErr = true; });
+      return p.then(function (r) { if (st.store && st.store.code === code) { st.info = r; st.infoErr = false; st.infoReal = true; st.src.info = 'google'; st.peekAt.info = 0; } },
+                    function () { if (st.store && st.store.code === code && !st.info) st.infoErr = true; });   // 已經先顯示 Mac mini 記住的：讀不到最新的就先留著
     }
+    // Mac mini 上次記住的（2026-11-14）：比 Google 先到才用；Google 的到了就換掉（小字跟著消失）
+    function peekInfo(code) {
+      if (code === undefined || !storeDef(code)) return;
+      miniPeek('info', E.storeApi(storeDef(code))).then(function (pk) {
+        if (!pk || st.infoReal || st.info || !st.store || st.store.code !== code) return;
+        st.info = pk.data; st.infoErr = false; st.src.info = 'mini'; st.peekAt.info = pk.at; refresh();
+      });
+    }
+    miniPeek('quota', E.HUB_API).then(function (pk) {
+      if (!pk || st.quota) return;
+      st.quota = pk.data; st.src.quota = 'mini'; st.peekAt.quota = pk.at; applyQuota(); if (st.init && st.store) refresh();
+    });
+    peekInfo(guess);
+    if (!cached) miniPeek('init', E.HUB_API).then(function (pk) {   // 這支手機沒記住（第一次、換手機）：Mac mini 記住的開頁資料先畫
+      if (!pk || st.init || !pk.data.stores || !pk.data.stores.length) return;
+      var d = pk.data;
+      st.init = { stores: d.stores, punch_store: d.punch_store, leave_types: d.leave_types, quota: [], comp: null, fresh: 0 };
+      st.src.init = 'mini'; drawn = true;
+      st.store = pickStore(st.init.stores, [opts.store, d.punch_store]);
+      applyQuota(); render();
+      if (guess === undefined || st.store.code !== guess) peekInfo(st.store.code);
+      loadInfoNow().then(refresh);
+    });
     $root.innerHTML = '';
     if (cached) {   // 有記住：表單馬上出來
+      st.src.init = 'cache';
       st.init = { stores: cached.stores, punch_store: cached.punch_store, leave_types: cached.leave_types, quota: [], comp: null, fresh: 0 };
       st.store = pickStore(st.init.stores, [opts.store, cached.last_store, cached.punch_store]);
       applyQuota();
@@ -195,12 +266,13 @@
       }
       if (!r || !r.ok) {
         if (r && r.error === 'not_bound') cacheDrop();
-        if (cached && !(r && r.error === 'not_bound')) return;   // 已經用記住的畫好了，背景更新失敗就先用記住的（送出時伺服器照樣檢查）
+        if (drawn && !(r && r.error === 'not_bound')) return;   // 已經用記住的畫好了，背景更新失敗就先用記住的（送出時伺服器照樣檢查）
         $root.innerHTML = '';
         $root.appendChild(msgBox(r && r.error === 'not_bound' ? '你還沒綁定打卡。請先到店裡按選單「打卡」完成綁定，再來申請。' : '讀不到資料，請稍後再試。', 'err'));
         return;
       }
       var prev = st.store ? st.store.code : null;
+      if (!st.src.init) st.src.init = 'google';
       st.init = { stores: r.stores, punch_store: r.punch_store, leave_types: r.leave_types, fresh: Date.now(),
                   quota: r.lite ? [] : (r.quota || []), comp: r.lite ? null : (r.comp || null) };
       if (!r.lite) st.quotaReady = true;   // 舊後端：額度已經一起回了
@@ -213,7 +285,7 @@
       if (prev === null || st.store.code !== prev) { st.info = null; st.infoErr = false; render(); loadInfoNow().then(refresh); }
       else refresh();
     }, function () {
-      if (cached) return;
+      if (drawn) return;
       $root.innerHTML = ''; $root.appendChild(msgBox('連線失敗，請檢查網路後重新打開。', 'err'));
     });
   }
@@ -229,9 +301,10 @@
   }
   function storeDef(code) { if (code === undefined) code = st.store.code; return E.STORES.filter(function (s) { return s.code === code; })[0]; }
   function loadInfo() {
-    return E.readRetry(E.storeApi(storeDef()), { action: 'req_info', id_token: liff.getIDToken() }).then(function (r) {
-      if (r && r.ok) { st.info = r; return r; }
-      throw new Error((r && r.error) || 'failed');
+    var code = st.store.code;
+    return infoFor(code).then(function (r) {
+      if (st.store && st.store.code === code) { st.info = r; st.infoReal = true; st.src.info = 'google'; st.peekAt.info = 0; }
+      return r;
     });
   }
   /** 那家店那天的卡（忘打卡用）。day_only：新後端只讀尾端、不讀申請表；舊後端不認得就照舊整包回，一樣有 day。 */
@@ -266,7 +339,7 @@
     var head = h('div', { class: 'rq-head' }, [h('b', { text: st.store.emp_name }), ' ']);
     if (st.init.stores.length > 1) {
       var sel = h('select', { class: 'rq-store', on: { change: function () {
-        st.store = st.init.stores[+sel.value]; st.info = null; st.infoErr = false; st.storeManual = true; cachePut();
+        st.store = st.init.stores[+sel.value]; st.info = null; st.infoErr = false; st.infoReal = false; st.peekAt.info = 0; st.storeManual = true; cachePut();
         if (st.tab === 'miss') render();   // 忘打卡：各店那天的卡已經一起查好了，先換畫面
         loadInfo().then(render, function () { alert('讀不到這家店的資料'); });
       } } }, st.init.stores.map(function (s, i) { return h('option', { value: i, text: s.name, selected: s === st.store }); }));
@@ -280,6 +353,11 @@
     var panel = h('div', { class: 'rq-panel' });
     $root.appendChild(panel);
     ({ leave: renderLeave, ot: renderOt, trip: renderTrip, miss: renderMiss, mine: renderMine })[st.tab](panel);
+    var pa = [st.peekAt.quota, st.peekAt.info].filter(function (x) { return x > 0; });   // 畫面上有 Mac mini 記住的資料：最下面小字標時間
+    if (pa.length) $root.appendChild(h('div', { class: 'rq-muted rq-fresh', text: '資料更新於 ' + hhmm(Math.min.apply(null, pa)) + '，正在更新…' }));
+    tmMark('form', st.src.init);
+    if (st.quotaReady) tmMark('quota', st.src.quota || 'google');
+    if (st.info) tmMark('mine', st.src.info || 'google');
   }
 
   function chips(list, value, onPick) {

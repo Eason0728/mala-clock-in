@@ -608,6 +608,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             p.screenshot(path=os.path.join(SHOTS, '補休_主檔未建.jpg'), type='jpeg', quality=80)
             p.close()
             phase_req_fast(ctx, (HQ['lat'], HQ['lng']))
+            phase_req_mini(ctx, (HQ['lat'], HQ['lng']))
             phase_sched(ctx)
             phase_leave_proof(ctx, (HQ['lat'], HQ['lng']))
             phase_miss_store(ctx)
@@ -707,6 +708,95 @@ def phase_req_fast(ctx, hq):
     p.close()
     set_hub(mock_old_hub=None)
     c2.close()
+
+
+# LINE 申請頁先讀 Mac mini（2026-11-14，營運系統 docs/line-req-mirror/）：頁內假 mini（http://mini.test/），代問就轉給 mock 的 /api
+MINI_URL = 'http://mini.test/store/api/line-req'
+MINI_JS = """
+window.__mini = { peek: {}, read: 'proxy', mode: '', hits: [], at: 0 };
+const _mf = window.fetch;
+window.fetch = function (url, o) {
+  if (String(url).indexOf('http://mini.test/') !== 0) return _mf.apply(this, arguments);
+  const M = window.__mini, b = JSON.parse(o.body); M.hits.push(b);
+  const J = (x) => Promise.resolve(new Response(JSON.stringify({ ok: true, data: x })));
+  if (M.mode === 'abort') return Promise.reject(new TypeError('Failed to fetch'));
+  if (M.mode === 'off') return J({ ok: false, error: 'off' });
+  if (b.op === 'timing') return J({ ok: true });
+  if (b.op === 'peek') { const d = M.peek[b.kind]; return J(d ? { ok: true, hit: true, at: M.at || Date.now() - 600000, data: d } : { ok: true, hit: false }); }
+  if (M.read === 'upstream') return J({ ok: false, error: 'upstream' });
+  const ACT = { init: 'line_hub_req_init', quota: 'line_hub_req_quota', info: 'req_info' };
+  const g = { action: ACT[b.kind], id_token: b.id_token }; if (b.kind === 'init') g.lite = true;
+  return window.fetch(b.url, { method: 'POST', body: JSON.stringify(g) }).then(r => r.json())
+    .then(j => new Response(JSON.stringify({ ok: true, data: { ok: true, src: 'mini', data: j } })));
+};
+"""
+
+
+def phase_req_mini(ctx, hq):
+    """先讀 Mac mini：mini 記住的先顯示（小字「資料更新於」），Google 回來就換掉；mini 連不上／關掉／代問失敗 → 照舊直接問 Google；只計時模式不問 mini。"""
+    def gas(body):
+        rq = urllib.request.Request(BASE + '/api', data=json.dumps(body).encode(), method='POST')
+        return json.loads(urllib.request.urlopen(rq, timeout=10).read())
+    tok = 'MOCK_ID_TOKEN_U1'
+    init = gas({'action': 'line_hub_req_init', 'id_token': tok, 'lite': True})
+    quota = gas({'action': 'line_hub_req_quota', 'id_token': tok})
+    ok('先讀 mini：假後端額度有特休假', any(q.get('name') == '特休假' for q in quota.get('quota', [])), quota)
+    old = json.loads(json.dumps(quota))
+    for q in old['quota']:
+        if q.get('name') == '特休假': q['remain_h'] = 99
+    base = '&view=req&tab=leave&retry_ms=50&mini_req=' + MINI_URL
+    def setup(peek, slow_ms, **kw):
+        js = MINI_JS + "window.__mini.peek = %s;" % json.dumps(peek) + ''.join("window.__mini.%s = %s;" % (k, json.dumps(v)) for k, v in kw.items())
+        js += "window.__delay = {line_hub_req_init: %d, line_hub_req_quota: %d};" % (slow_ms, slow_ms)
+        return js
+    # 1. 換手機（手機沒記住）＋ Google 慢 4 秒：mini 記住的開頁資料、額度先出來，小字標時間；Google 回來換成最新、小字消失
+    c2 = ctx.browser.new_context()
+    p = open_page(c2, url(hq, in_client=True, extra=base + '&req_mirror=1'), setup({'init': init, 'quota': old}, 4000))
+    p.wait_for_selector('#reqView .rq-tabs', timeout=2000)
+    p.click('#reqView .rq-chip:has-text("特休假")')
+    p.wait_for_selector('#reqView .rq-quota', timeout=2000)
+    t = p.inner_text('#reqView')
+    ok('先讀 mini：Google 還沒回 → 表單與 mini 記住的額度「剩 99 小時」先出來', '特休假：剩 99 小時' in t, t[:200])
+    ok('先讀 mini：最下面小字「資料更新於 HH:MM」', p.locator('#reqView .rq-fresh').count() == 1 and '資料更新於' in p.inner_text('#reqView .rq-fresh'), t[-80:])
+    p.wait_for_function("document.getElementById('reqView').textContent.indexOf('剩 40 小時') >= 0", timeout=15000)
+    ok('先讀 mini：Google 回來 → 換成最新「剩 40 小時」、小字消失', p.locator('#reqView .rq-fresh').count() == 0, p.inner_text('#reqView')[:200])
+    hits = p.evaluate("window.__mini.hits.map(h => h.op + ':' + (h.kind || ''))")
+    ok('先讀 mini：先讀與代問都有走 mini（開頁資料、額度、我的申請）',
+       all(x in hits for x in ['peek:quota', 'peek:init', 'read:init', 'read:quota', 'read:info']), hits)
+    rq = p.evaluate("window.__mini.hits.filter(h => h.op === 'read' && h.kind === 'quota').length")
+    ok('先讀 mini：額度只請 mini 代問一次（沒有退回直接問）', rq == 1, rq)      # 頁內延遲（__delay）會讓同一支在 __calls 記兩次，所以看 mini 收到的
+    p.click('#reqView .rq-tabs button[data-tab=mine]')
+    p.wait_for_function("document.getElementById('reqView').textContent.indexOf('最近 60 天') >= 0", timeout=10000)
+    p.wait_for_timeout(300)
+    bc = p.evaluate("window.__beacons.filter(b => b.url.indexOf('mini.test') >= 0).length")
+    ok('先讀 mini：表單、剩幾天、我的申請都出來後回報計時給 mini 一次', bc == 1, p.evaluate("window.__beacons"))
+    p.close(); c2.close()
+    # 2. mini 連不上 → 照舊直接問 Google（額度照樣出來、沒有小字）
+    p = open_page(ctx, url(hq, in_client=True, extra=base + '&req_mirror=1'), setup({}, 0, mode='abort'))
+    p.wait_for_selector('#reqView .rq-tabs', timeout=10000)
+    p.click('#reqView .rq-chip:has-text("特休假")')
+    p.wait_for_function("document.getElementById('reqView').textContent.indexOf('剩 40 小時') >= 0", timeout=10000)
+    ok('先讀 mini：mini 連不上 → 直接問 Google，照樣顯示額度、沒有小字', p.locator('#reqView .rq-fresh').count() == 0)
+    p.close()
+    # 3. mini 關掉（off）、代問失敗（upstream）→ 一樣直接問 Google
+    for kw, name in (({'mode': 'off'}, '開關關掉'), ({'read': 'upstream'}, '代問 Google 失敗')):
+        p = open_page(ctx, url(hq, in_client=True, extra=base + '&req_mirror=1'), setup({}, 0, **kw))
+        p.wait_for_selector('#reqView .rq-tabs', timeout=10000)
+        p.click('#reqView .rq-chip:has-text("特休假")')
+        p.wait_for_function("document.getElementById('reqView').textContent.indexOf('剩 40 小時') >= 0", timeout=10000)
+        ok('先讀 mini：' + name + ' → 直接問 Google，照樣顯示額度', True)
+        p.close()
+    # 4. 只計時（沒開 REQ_MIRROR）：不問 mini，只回報計時
+    p = open_page(ctx, url(hq, in_client=True, extra=base), setup({'quota': old}, 0))
+    p.wait_for_selector('#reqView .rq-tabs', timeout=10000)
+    p.click('#reqView .rq-chip:has-text("特休假")')
+    p.wait_for_function("document.getElementById('reqView').textContent.indexOf('剩 40 小時') >= 0", timeout=10000)
+    p.click('#reqView .rq-tabs button[data-tab=mine]')
+    p.wait_for_function("document.getElementById('reqView').textContent.indexOf('最近 60 天') >= 0", timeout=10000)
+    p.wait_for_timeout(300)
+    ok('先讀 mini：只計時模式 → 沒有先讀、代問', p.evaluate("window.__mini.hits.length") == 0, p.evaluate("window.__mini.hits"))
+    ok('先讀 mini：只計時模式 → 照樣回報計時', p.evaluate("window.__beacons.filter(b => b.url.indexOf('mini.test') >= 0).length") == 1)
+    p.close()
 
 
 def phase_sched(ctx):

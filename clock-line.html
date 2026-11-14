@@ -196,6 +196,10 @@
      店家 relay＝true 時，mini 1.5 秒內說「會成功」就先顯示；"shadow"＝只送去比對、畫面不採用；false＝不送。 */
   var RELAY_API = 'https://dingzhaoyuandemac-mini.tailc27c34.ts.net/clock/predict';
   if (isLocalHost) RELAY_API = qs('relay_api') || '';   // 本機測試只准打 ?relay_api= 給的假 mini；沒給就不送（絕不打正式 mini）
+  /* LINE 申請頁先讀 Mac mini（2026-11-14，營運系統 docs/line-req-mirror/）：經 Cloudflare 櫃台到營運系統 /store/api/line-req。
+     REQ_MIRROR＝false：只回報開頁計時（量現在要等幾秒）；true：先顯示 Mac mini 記住的、讀最新的也請 mini 代問。mini 不在一律直接問 Google。 */
+  var MINI_REQ_API = 'https://dzy-gw.dingzhaoyuan888.workers.dev/store/api/line-req', REQ_MIRROR = false;
+  if (isLocalHost) { MINI_REQ_API = qs('mini_req') || ''; REQ_MIRROR = qs('req_mirror') === '1'; }   // 本機測試只准打 ?mini_req= 給的假 mini（絕不打正式 mini）
   var RELAY_WAIT_MS = 2500, RELAY_SHADOW_WAIT_MS = 5000;   // 2026-10-19 1.5→2.5 秒：10/18 開通首日 23% 的 mini 回應超過 1.5 秒被放棄（試跑期 28–33% 超過，多為門市網路首連 DNS＋TLS）；shadow 等久一點，量得到 mini 實際要幾秒
   /* STORES:BEGIN（tools/build-line-page.py 產生，勿手改）*/
   var STORES = [
@@ -834,7 +838,7 @@
     say('讀取中…', '', '');
     loadStatus();
   }
-  window.ClockLineEnv = { post: post, readRetry: readRetry, storeApi: storeApi, STORES: STORES, HUB_API: HUB_API,
+  window.ClockLineEnv = { post: post, readRetry: readRetry, storeApi: storeApi, STORES: STORES, HUB_API: HUB_API, MINI_REQ_API: MINI_REQ_API, REQ_MIRROR: REQ_MIRROR,
                           relogin: relogin, RELOGIN_STUCK: RELOGIN_STUCK };
 
   tick(); setInterval(tick, 1000);
