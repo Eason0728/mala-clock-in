@@ -136,6 +136,50 @@ console.log('\n════ 四之二、中午不打卡的休息時段（央廚�
   check('C49', '自己打 07:00–18:30（扣休息 10.5 小時）→ 擋上班卡', status(m).cap.in_block, true);
 }
 
+console.log('\n════ 四之三、班表休息分鐘（2026-11-14 Eason：班別有輸入休息分鐘也要扣） ════');
+const schedOf = (shift) => ({ start: '2026-11-01', shifts: [shift], rows: [{ emp_id: 'E01', name: '測試一', cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: shift.id } : { t: 'R' })) }] });
+const LONG = { id: 'L', name: '長班', start: '11:00', end: '21:30', break_min: 30 };
+{
+  const m = world(D + 'T21:20:00', [[D + 'T11:00:00', 'E01', 'in']], { sched: schedOf(LONG) });
+  check('C70', '班別 11:00–21:30 休息 30 分、休息沒打卡：21:20 還沒滿（扣 30 分）', status(m).cap.locked, false);
+  m.setNow(D + 'T21:30:00');
+  check('C71', '21:30 才收卡', status(m).cap.sys_hm, '21:30');
+}
+{
+  const m = world(D + 'T21:29:00', [[D + 'T11:00:00', 'E01', 'in'], [D + 'T15:00:00', 'E01', 'out'], [D + 'T15:30:00', 'E01', 'in']], { sched: schedOf(LONG) });
+  check('C72', '休息有打卡（空 30 分）→ 不重扣：21:29 還沒滿', status(m).cap.locked, false);
+  m.setNow(D + 'T21:30:00');
+  check('C73', '4＋6 小時 → 21:30 收卡（不是 22:00）', status(m).cap.sys_hm, '21:30');
+}
+{
+  const m = world(D + 'T21:30:00', [[D + 'T11:00:00', 'E01', 'in'], [D + 'T15:00:00', 'E01', 'out'], [D + 'T15:15:00', 'E01', 'in']], { sched: schedOf(LONG) });
+  check('C74', '休息只打了 15 分 → 再扣 15 分：21:30 收卡', status(m).cap.sys_hm, '21:30');
+}
+{
+  const m = world(D + 'T19:00:00', [[D + 'T08:00:00', 'E01', 'in']], { config: { NO_PUNCH_BREAK_START: '12:00', NO_PUNCH_BREAK_END: '13:00' },
+    sched: schedOf({ id: 'C', name: '央廚', start: '08:00', end: '17:00', break_min: 60 }) });
+  check('C75', '央廚有不打卡休息時段：班表休息不重扣，照樣 19:00 收卡', status(m).cap.sys_hm, '19:00');
+}
+{
+  const TWO = { id: 'T', name: '兩段', start: '09:00', end: '22:00', segs: [{ start: '09:00', end: '13:00', break_min: 0 }, { start: '17:00', end: '22:00', break_min: 30 }] };
+  const m = world(D + 'T23:29:00', [[D + 'T09:00:00', 'E01', 'in'], [D + 'T13:00:00', 'E01', 'out'], [D + 'T17:00:00', 'E01', 'in']], { sched: schedOf(TWO) });
+  check('C76', '兩段班 09–13／17–22、第二段休息 30 分，中間有打卡下班：班表休息 4.5 小時、打卡空了 4 小時 → 再扣 30 分，23:29 還沒滿', status(m).cap.locked, false);
+  m.setNow(D + 'T23:30:00');
+  check('C77', '4＋6＋0.5 → 23:30 收卡', status(m).cap.sys_hm, '23:30');
+}
+{
+  // 營運系統的分段班：12:00–22:00、中間休 2 小時（break_min 120＝段間空檔，各段 0）；同仁中間沒打卡
+  const SEG = { id: 'S6', name: '分段', start: '12:00', end: '22:00', break_min: 120, segs: [{ start: '12:00', end: '15:00', break_min: 0 }, { start: '17:00', end: '22:00', break_min: 0 }] };
+  const m = world(D + 'T23:59:00', [[D + 'T12:00:00', 'E01', 'in']], { sched: schedOf(SEG) });
+  check('C79', '分段班中間 2 小時休息沒打卡 → 扣 2 小時：23:59 還沒滿', status(m).cap.locked, false);
+  m.setNow('2026-11-21T00:00:00');
+  check('C80', '12:00 起扣 2 小時 → 隔天 00:00 收卡', status(m).cap.sys_hm, '00:00');
+}
+{
+  const m = world(D + 'T21:00:00', [[D + 'T10:30:00', 'E01', 'in'], [D + 'T20:45:00', 'E01', 'out']], { sched: schedOf(LONG) });
+  check('C78', '自己打 10:30–20:45（10 小時 15 分，扣休息 30 分＝9 小時 45 分）→ 不擋上班卡', status(m).cap.in_block, false);
+}
+
 console.log('\n════ 五、跨店 ════');
 {
   const PEER = { roster: [{ emp_id: 'P9', name: '測 試一', key: 'PK', active: 'TRUE' }], events: [[D + 'T07:00:00', 'P9', 'in'], [D + 'T11:00:00', 'P9', 'out']] };
