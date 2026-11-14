@@ -2024,6 +2024,18 @@ const PAY_PARENTAL = {
   short_month_len: 6,   // 「未滿 6 個月」的門檻
 };
 
+/** 期限欄（window_before／window_days／window_max）讀值。2026-11-14：格子看起來空白、其實藏了空格或「—」這類非數字時，
+ *  舊寫法 payNum() 會變成 0＝「期限 0 天」，值班核定就對沒設期限的喪假跳「還沒登記事件日」。
+ *  一律：空白／非數字／負數＝沒設定（null）；window_days、window_max 還要大於 0（0 天期限沒有意義）。window_before 0 合法。 */
+function payWinNum_(v, allowZero) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (s === '') return null;
+  const x = Number(s);
+  if (!isFinite(x) || x < 0 || (!allowZero && x === 0)) return null;
+  return x;
+}
+
 /** 讀假別表；表不存在或全空 → 回內建預設（系統不會因為沒建表而壞掉）。
  *  依門市覆寫：該店專屬列（store 有填）優先於集團共用列（store 空白），與參數設定同一套規則。 */
 function payLeaveTypes(store) {
@@ -2059,9 +2071,9 @@ function payLeaveTypes(store) {
       tenure_months: (r.tenure_months === '' || r.tenure_months == null) ? null : payNum(r.tenure_months),
       under_ratio: payNum(r.under_ratio),
       min_unit: String(r.min_unit || 'hour').trim(),
-      window_before: (r.window_before === '' || r.window_before == null) ? null : payNum(r.window_before),
-      window_days:   (r.window_days   === '' || r.window_days   == null) ? null : payNum(r.window_days),
-      window_max:    (r.window_max    === '' || r.window_max    == null) ? null : payNum(r.window_max),
+      window_before: payWinNum_(r.window_before, true),
+      window_days:   payWinNum_(r.window_days),
+      window_max:    payWinNum_(r.window_max),
       attend_effect: String(r.attend_effect || '').trim(),
       // 留空一律當 true（＝改版前行為：有核定滿 6H 就算一天）
       // ⚠ Sheets 會把字串 'false' 存成**布林 FALSE**，此時 `r.x || ''` 會把 false 吃成空字串
@@ -2143,7 +2155,7 @@ function payLeaveCode(name, types) {
  *  回 { has:是否有期限規則, from, to, to_max } —— 沒設定 window_days 就是「無期限」。 */
 function payLeaveWindow(type, eventDate) {
   const t = type || {};
-  if (t.window_days == null) return { has: false };
+  if (payWinNum_(t.window_days) == null) return { has: false };
   const ev = payDateStr(eventDate);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ev)) return { has: true, need_event: true };
   function shift(d, n) {
@@ -5258,9 +5270,10 @@ function handlePayrollLeaveTypeSet(body) {
       // ⚠ 2026-08-23：這六欄是後來加的，一定要跟著存——漏了會在存檔時把期限規則、
       //   出差的餐費排除、對全勤的設定全部清成預設值（實際踩過，寫壞過央廚與總部）。
       min_unit: String(t.min_unit || 'hour').trim(),
-      window_before: (t.window_before === '' || t.window_before == null) ? '' : payNum(t.window_before),
-      window_days:   (t.window_days   === '' || t.window_days   == null) ? '' : payNum(t.window_days),
-      window_max:    (t.window_max    === '' || t.window_max    == null) ? '' : payNum(t.window_max),
+      // 存檔時一起清掉看不見的非數字（見 payWinNum_），避免下次讀又變成期限 0 天
+      window_before: payWinNum_(t.window_before, true) == null ? '' : payWinNum_(t.window_before, true),
+      window_days:   payWinNum_(t.window_days) == null ? '' : payWinNum_(t.window_days),
+      window_max:    payWinNum_(t.window_max) == null ? '' : payWinNum_(t.window_max),
       attend_effect: String(t.attend_effect || '').trim(),
       count_meal_day: (t.count_meal_day === false ? 'false' : 'true'),
       active: (t.active === false ? 'false' : 'true'), sort: payNum(t.sort),
