@@ -215,13 +215,13 @@ ok('只限加班、忘打卡', () => {
   const sb = makeEnv();
   assert.strictEqual(sb.handleMgrReqProxy_(proxyBody({ kind: 'xx' })).error, 'bad_kind');
 });
-ok('代開成功：審核中、記代開人、摘要標主管代開', () => {
+ok('代開成功：審核中、記代開人、摘要標代開人姓名', () => {
   const sb = makeEnv();
   const r = sb.handleMgrReqProxy_(proxyBody());
   assert.ok(r.ok, JSON.stringify(r));
   assert.strictEqual(r.request.status, 'pending');
   assert.strictEqual(r.request.proxy_by, '林店長（S1）');
-  assert.ok(/（主管代開）$/.test(r.summary), r.summary);
+  assert.ok(/（林店長代開）$/.test(r.summary), r.summary);
 });
 ok('忘打卡代開照樣檢查那天真的缺卡', () => {
   const sb = makeEnv();

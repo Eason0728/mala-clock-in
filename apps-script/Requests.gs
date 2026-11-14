@@ -259,7 +259,9 @@ function reqSetCells_(sh, rowIndex, patch) {
   });
 }
 /** 一句話描述一筆申請（主管頁、我的申請、打卡後告知共用）。 */
-function reqSummary_(r) { return reqSummaryBase_(r) + (r.proxy_by ? '（主管代開）' : ''); }
+function reqSummary_(r) { return reqSummaryBase_(r) + (r.proxy_by ? '（' + reqProxyName_(r.proxy_by) + '代開）' : ''); }
+/** 代開人顯示名（2026-11-14 Eason：代開一律顯示姓名，不顯示職稱）：proxy_by 存「姓名（工號）」，只取姓名。 */
+function reqProxyName_(by) { return String(by || '').replace(/（[^（）]*）\s*$/, '').trim() || '主管'; }
 function reqSummaryBase_(r) {
   var md = parseInt(String(r.date).slice(5, 7), 10) + '/' + parseInt(String(r.date).slice(8, 10), 10);
   if (r.kind === 'leave') return md + ' ' + r.leave_type + (r.start ? ' ' + r.start + '–' + r.end : ' 整天') + ' ' + Number(r.hours) + ' 小時';
