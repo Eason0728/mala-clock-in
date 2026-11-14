@@ -213,5 +213,17 @@ console.log('\n══ 5c) 主檔工號對不到打卡名冊 → 提醒（2026-11
   DB.master.pop();
 }
 
+console.log('\n══ 墨竹亭開放補休（2026-11-14 Eason：2026-11 薪資起抵加班）══');
+{
+  const d2 = { dates: ['2026-11-02'], sched: { '2026-11-02': W }, day_h: { '2026-11-02': 10 }, day_leave: {}, hol: {}, until: '2026-11-30' };
+  const MZT = Object.assign({}, FT, { store: 'MZTJS' }), SSL = Object.assign({}, FT, { store: 'SSLGF' });
+  const rm = E.payCalcOne(MZT, '2026-11', ATT({ hours: 10, leaves: { comp: 2 }, daily: d2 }), cfg, 9);
+  const rs = E.payCalcOne(SSL, '2026-11', ATT({ hours: 10, leaves: { comp: 2 }, daily: d2 }), cfg, 9);
+  chk('墨竹亭 11 月：平日超過 2H、補休 2H → 抵掉，沒有加班、沒有抵不掉', [it(rm, 'ot_w43'), rm.ot_info.comp_h, rm.ot_info.comp_over_h], [undefined, 2, 0]);
+  chk('  跟小辛辣同一套（加班、應發一樣）', [rm.gross, rm.ot_info.comp_h], [rs.gross, rs.ot_info.comp_h]);
+  const src = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Payroll.gs'), 'utf8');
+  chk('  10 月以前墨竹亭照舊不抵（comp_off 帶月份條件）', /comp_off: \/\^MZT\/\.test\(String\(e\.store \|\| ''\)\) && String\(ym\) < PAY_MZT_COMP_FROM/.test(src) && /var PAY_MZT_COMP_FROM = '2026-11';/.test(src), true);
+}
+
 console.log('\n' + (fail ? '❌ ' + fail + ' 項失敗（' + pass + '/' + (pass + fail) + '）' : '✅ 加班逐日判斷全部通過（' + pass + ' 項）'));
 process.exit(fail ? 1 : 0);

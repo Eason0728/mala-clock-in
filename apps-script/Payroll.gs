@@ -1059,8 +1059,11 @@ var PAY_COMP_MONTHLY_FROM = '2026-10';
 var PAY_COMP_OTKIND_FROM = '2026-11';
 /** 這種假是不是補休（假別表沒有這列時，程式內建也認得「補休」二字） */
 function payIsCompType(t) { return !!t && (String(t.code) === PAY_COMP_CODE || String(t.name).trim() === PAY_COMP_NAME); }
-/** 這家店適不適用補休：墨竹亭不適用（出勤規範 4-6，Eason 2026-11-08） */
-function payCompStoreOn_(store) { return !/^MZT/.test(String(payStore(store))); }
+/** 這家店適不適用補休：全部門市都適用（2026-11-14 Eason「墨竹亭一起開放」，取代出勤規範 4-6 墨竹亭不適用）。
+ *  留著這支是給假別下拉（payroll_leave_options）與 LINE 申請頁（LineHub）共用的開關；之後要再關掉某家店改這裡。 */
+function payCompStoreOn_(store) { return true; }
+/** 墨竹亭補休從哪個月的薪資起抵加班（之前月份照舊：墨竹亭補休不抵加班、全部算抵不掉；10 月以前數字不變） */
+var PAY_MZT_COMP_FROM = '2026-11';
 /** 程式內建的補休假別（Eason 還沒在 payroll_leave_type 加這列時用）：全薪、不扣全勤；時數不抵不足（從當月加班扣）。 */
 function payCompDefaultType() {
   return { code: PAY_COMP_CODE, name: PAY_COMP_NAME, pay_ratio: 1, count_absent: false, offset_shortfall: false,
@@ -1105,7 +1108,7 @@ function payCompMonthCalc(ots, leaves, reqs, kinds) {
  * 加班時薪＝月工資 ÷240（不取整，金額才四捨五入）；月工資＝本薪＋職能＋夜間＋店長＋小編＋績效獎金上限（原全勤上限）＋伙食費（固定 2,000）。
  * 正職不再有「不足時數」倒扣；整月加班合計（平日加班＋休息日出勤時數）超過 54 小時只標紅、不擋。
  * 補休（每月加減）：本月休掉的補休時數依加班日期先後扣（4-7）；可抵平日全部與休息日前 2 小時（4-6），例假、國定假日出勤不能抵（4-10）；
- *   抵不掉的時數記 comp_over_h，不能鎖定。墨竹亭不適用補休（payCompStoreOn_）。
+ *   抵不掉的時數記 comp_over_h，不能鎖定。墨竹亭 2026-11 薪資起也適用（PAY_MZT_COMP_FROM，Eason 2026-11-14；之前月份墨竹亭不抵）。
  * ⚠ 放在 payR0～Handlers 之間：純函式，測試與 payroll_mock.js 只切這一段。 */
 /* 遲到／早退每分鐘費率（正職）的基數自這個月起含全勤上限（Eason 2026-11-07，全部門市）。
  * 之前月份照舊：底薪＋職能＋夜間＋店長。 */
@@ -1453,7 +1456,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     if (daily) {
       // 2026-11 起：逐日判斷，不再整月加總、也不再「不足時數」倒扣（Eason 2026-11-06）
       otS = payOtDailySum(Object.assign({}, att.daily, {
-        comp_off: /^MZT/.test(String(e.store || '')), extra_ot: att.extra_ot, comp_h: !compMonthly ? 0 : Object.keys(LMAP).reduce(function (t, c) {
+        comp_off: /^MZT/.test(String(e.store || '')) && String(ym) < PAY_MZT_COMP_FROM, extra_ot: att.extra_ot, comp_h: !compMonthly ? 0 : Object.keys(LMAP).reduce(function (t, c) {
           return t + ((c === PAY_COMP_CODE || payIsCompType(LTM[c])) ? payNum(LMAP[c]) : 0); }, 0) }));
       otPaid = otS.ot_month_h;
       payOtDailyItems(otS, true, MW, 0, function (k, l, q, r, a, m) { push(earn, k, l, q, r, a, m); });
