@@ -54,4 +54,18 @@ const batch = post2(mk2(), { action: 'mgr_approve_check', mgr_key: 'AK', acting_
 const single = post2(mk2(), Object.assign({ action: 'mgr_approve', mgr_key: 'AK', acting_name: '店長甲（DZY001）', date: '2026-11-09', dry_run: true }, one));
 check('C15', '跨店：別家已核定 4 小時＋本店 4 小時＝滿 8，單筆試算會過', single.ok, true);
 check('C16', '跨店：一批只檢查跟單筆試算結果一樣（不會把別家的表讀成本店的）', [batch.ok, batch.error || ''], [single.ok, single.error || '']);
+// 17–19. 跨店暫存（2026-11-14）：只檢查一批時，別家店的結果暫存 10 分鐘（下一次執行不再打開別家試算表）；真正送出核定一律重查
+{
+  const m3 = mk2(); let opens = 0; const ob = m3.sb.SpreadsheetApp.openById; m3.sb.SpreadsheetApp.openById = (id) => { if (id === 'PEER1') opens++; return ob(id); };
+  const one3 = { emp_id: 'E01', periods: [{ start: '09:00', end: '13:00' }], sched_ft: true };
+  const ck3 = () => post2(m3, { action: 'mgr_approve_check', mgr_key: 'AK', acting_name: '店長甲（DZY001）', date: '2026-11-09', items: [one3] }).results[0];
+  const a1 = ck3(), o1 = opens;
+  m3.sb.REQ_PEER_MEMO_ = {};                                     // 模擬下一次執行（Apps Script 每次執行全域都是新的）
+  const a2 = ck3();
+  check('C17', '只檢查第二次：用暫存，不再打開別家試算表、結果一樣', [a1.ok, a2.ok, o1 > 0, opens === o1], [true, true, true, true]);
+  m3.sb.REQ_PEER_MEMO_ = {};
+  const real = post2(m3, Object.assign({ action: 'mgr_approve', mgr_key: 'AK', acting_name: '店長甲（DZY001）', date: '2026-11-09' }, one3));
+  check('C18', '真正送出核定：一律重查別家店（不用暫存）', [real.ok, opens > o1], [true, true]);
+  check('C19', '真正送出後不留只檢查的共用讀表', m3.sb.READ_MEMO_, null);
+}
 done();

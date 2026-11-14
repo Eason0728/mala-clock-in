@@ -1817,6 +1817,12 @@ function reqPeerDay_(name, date, fresh) {
 function reqPeerDayRaw_(name, date, fresh) {
   var mk = name + '|' + date + (fresh ? '|f' : '');
   if (REQ_PEER_MEMO_[mk]) return REQ_PEER_MEMO_[mk];
+  // 只檢查（一批，READ_MEMO_ 開著）才用 10 分鐘暫存（2026-11-14 Eason：量出光復正職每人 7～9.6 秒花在這裡）；
+  // 真正送出核定、撤銷試算、fresh 重找一律重查別家店，不用暫存。讀不到別家（failed）的結果不存。
+  var useC = !fresh && typeof READ_MEMO_ !== 'undefined' && !!READ_MEMO_, ck = 'rpd:' + date + '|' + String(name).slice(0, 80), cache = null;
+  if (useC) {
+    try { cache = CacheService.getScriptCache(); var hit = cache.get(ck); if (hit) { REQ_PEER_MEMO_[mk] = JSON.parse(hit); return REQ_PEER_MEMO_[mk]; } } catch (e) { cache = null; }
+  }
   var out = REQ_PEER_MEMO_[mk] = { worked: false, pending: false, failed: false, work: 0, leave: 0, ot: 0, names: [] };
   if (typeof REST_PEERS_ === 'undefined' || !REST_PEERS_.length || !name || typeof restName_ !== 'function') return out;
   var nm = restName_(name), selfId = '';
@@ -1853,8 +1859,10 @@ function reqPeerDayRaw_(name, date, fresh) {
     } catch (e) { out.failed = true; Logger.log('滿 8 小時讀別家店 ' + p.code + ' 失敗（滿 8 小時先放行、加班照單店規則）：' + e); }
   });
   ['work', 'leave', 'ot'].forEach(function (k) { out[k] = Math.round(out[k] * 100) / 100; });
+  if (useC && cache && !out.failed) { try { cache.put(ck, JSON.stringify(out), typeof REQ_PEER_CACHE_S_ === 'undefined' ? 600 : REQ_PEER_CACHE_S_); } catch (e) { /* 暫存不進去只是下次慢一點 */ } }
   return out;
 }
+var REQ_PEER_CACHE_S_ = 600;   // 只檢查用的跨店暫存秒數（10 分鐘）
 /** 回 null（不適用）或 {probs:[{rule,text}], drop:[規則], otNeed, gap}。opt.peer 可直接給（測試用），沒給才讀別家店。
  *  sched_ft＝營運系統判斷「正職、這天是出勤日」（支援帳號看原單位的身分與班表）；這家班表是休息日／例假（H／R）照舊規則全算加班，不套。 */
 function reqFt8_(date, approvedHours, otHave, opt, okRows) {
