@@ -4255,7 +4255,7 @@ function payCompSvcOk_(body) {
   try { key = String(PropertiesService.getScriptProperties().getProperty('ATT_ALERT_SVC_KEY') || ''); } catch (e) { key = ''; }
   return !!key && typeof body.svcKey === 'string' && body.svcKey === key;
 }
-/** {action:'payroll_comp_period', svcKey|admin_key, from, to} → 各店在職正職、這段期間有加班或補休的人（唯讀）。
+/** {action:'payroll_comp_period', svcKey|admin_key, from, to, roster?} → 各店在職正職、這段期間有加班或補休的人（唯讀）。
  *  回 {ok, from, to, stores:[{store, name, list:[{emp_id, name, ot_h, used_h, balance_h}]}]}，門市依門市表順序，兩個都是 0 的不列。 */
 function handlePayrollCompPeriod(body) {
   body = body || {};
@@ -4275,7 +4275,11 @@ function handlePayrollCompPeriod(body) {
     });
     if (list.length) stores.push({ store: st, name: String(s.name || s.code), list: list });
   });
-  return { ok: true, from: from, to: to, stores: stores };
+  const out = { ok: true, from: from, to: to, stores: stores };
+  // roster:true（2026-11-14）：另回全部在職正職（給 mini 判斷排班沒標正職／計時的人，例：央廚固定排班），只有門市、編號、姓名
+  if (body.roster === true) out.ft = master.filter(function (e) { return String(e.active).toLowerCase() === 'true' && payIsFt(e); })
+    .map(function (e) { return { store: payStore(e.store), emp_id: String(e.emp_id), name: String(e.name).trim() }; });
+  return out;
 }
 
 /* 20／25 號檢查（Eason 2026-11-01）：每天 09:00 觸發器跑，只有 20、25 號真的做事。

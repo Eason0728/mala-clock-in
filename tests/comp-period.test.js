@@ -109,6 +109,11 @@ const by2 = {}; r2.stores.forEach((s) => s.list.forEach((x) => { by2[x.name] = [
 chk('甲君：11/29 加班 9（班表查不到全算）、補休 8 → 剩 1', by2['甲君'], [9, 8, 1]);
 chk('央廚庚君：11/30 加班 3 → 剩 3', by2['庚君'], [3, 0, 3]);
 
+console.log('\n══ 3b) roster:true 另回全部在職正職 ══');
+chk('沒帶 roster 不回 ft', 'ft' in r, false);
+chk('roster:true：在職正職（不含計時、停用）', call({ svcKey: 'SVC', from: '2026-11-01', to: '2026-11-28', roster: true }).ft.map((x) => x.store + ':' + x.name),
+  ['SSLGF:甲君', 'SSLGF:乙君', 'SSLGF:丁君', 'MZTJS:己君', 'CF:庚君']);
+
 console.log('\n══ 4) 月補休帳那支沒動 ══');
 chk('payCompMonthBook 仍在、11 月甲君照月算（含 11/29 的 9 與 11/29 補休 8）', (() => {
   const c = vm.runInContext('payCompMonthBook', sb)('2026-11').forEmp(DB.master[0], 'SSLGF');
