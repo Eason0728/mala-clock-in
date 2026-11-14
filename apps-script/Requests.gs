@@ -1720,6 +1720,24 @@ function reqPunchDiffMin_(periods, segs, breakWindow) {
   }, 0);
   return Math.round(Math.abs(core - punch) / 60000);
 }
+/** 核定比打卡多幾分鐘（2026-11-14 Eason「打卡＋單＝核定時數」，營運系統 docs/punch-plus-req/）：
+ *  核定時段裡沒有打卡涵蓋的分鐘（扣掉不打卡休息帶），但「第一段開頭到第一張上班卡」不算——那是遲到，打卡端照標「遲到 N 分」、薪資照扣。
+ *  早到、晚走（打卡比核定多）一律不算，不用寫原因。打卡不完整（缺卡）回 null，交給忘打卡單那條。 */
+function reqOverCreditMin_(periods, segs, breakWindow) {
+  if (!periods.length || !segs.length || segs.some(function (s) { return s.inMs == null || s.outMs == null; })) return null;
+  var ps = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
+  var ss = segs.slice().sort(function (a, b) { return a.inMs - b.inMs; });
+  var inBreak = function (a, b) { return breakWindow ? Math.max(0, Math.min(b, breakWindow.endMs) - Math.max(a, breakWindow.startMs)) : 0; };
+  var over = 0;
+  ps.forEach(function (p) {
+    var cov = ss.reduce(function (acc, s) { return acc + Math.max(0, Math.min(p.endMs, s.outMs) - Math.max(p.startMs, s.inMs)); }, 0);
+    var covBreak = ss.reduce(function (acc, s) { var a = Math.max(p.startMs, s.inMs), b = Math.min(p.endMs, s.outMs); return acc + (b > a ? inBreak(a, b) : 0); }, 0);
+    over += (p.endMs - p.startMs - inBreak(p.startMs, p.endMs)) - (cov - covBreak);
+  });
+  var late = Math.max(0, Math.min(ss[0].inMs, ps[0].endMs) - ps[0].startMs);
+  late -= inBreak(ps[0].startMs, ps[0].startMs + late);
+  return Math.max(0, Math.round((over - late) / 60000));
+}
 /** 核定登記的假 vs 已核准假單（含出差單）；回不符的字句陣列 */
 function reqStrictLeaveProbs_(okRows, leaves) {
   var sum = function (list) { var o = {}; list.forEach(function (x) { o[x.t] = (o[x.t] || 0) + (Number(x.h) || 0); }); return o; };
@@ -2033,11 +2051,17 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
     ft8.probs.forEach(function (p) { add(p.rule, p.text); });
   }
   var diffMin = strict ? reqPunchDiffMin_(periods, segs, breakWindow) : null;
-  if (opt.preview) return { probs: probs, diff_min: diffMin, ot_have: otHave, ot_need: otNeed, ft8_gap: ft8 ? ft8.gap : 0 };
+  // 2026-11-14 Eason「打卡＋單＝核定時數」：不再「差 30 分鐘寫原因」，只看核定比打卡多（沒打卡卻要算的時間），要有單；早到晚走不算、不用原因
+  var overMin = strict ? reqOverCreditMin_(periods, segs, breakWindow) : null;
+  if (overMin != null && overMin >= REQ_STRICT_DIFF_MIN) add('over_credit', '核定比打卡多 ' + overMin + ' 分鐘（沒有打卡的時間要有忘打卡單、假單或補休單）');
+  if (opt.preview) return { probs: probs, diff_min: diffMin, over_min: overMin, ot_have: otHave, ot_need: otNeed, ft8_gap: ft8 ? ft8.gap : 0 };
   if (probs.length) {
     var noLine = false;
     try { noLine = reqNoLine_(findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, empId)); } catch (e) {}   // 只在要擋的時候才讀名冊；讀不到照一般字句
+    // 真的缺單（缺加班單、缺忘打卡單、正職不足、核定比打卡多）才請同仁補申請；其他（加班單時段不對、假別對不上…）是要調時段或處理那張單（2026-11-14）
+    var needDoc = otBad || missBad || probs.some(function (p) { return /^ft8/.test(p.rule) || p.rule === 'over_credit'; });
     var hint = pend.length ? '這天有 ' + pend.length + ' 張申請還在審核中，請先到「申請審核」處理再送。' + (noLine ? '這位同仁沒綁 LINE，還缺別張單可以繼續代開。' : '')
+      : !needDoc ? '請照上面調整核定時段，或處理那張單。'
       : noLine ? '這位同仁沒綁 LINE，請店長在考勤管理「代開申請」，送總監層級審核。'
       : '請同仁在 LINE「加班請假」補申請；超過 4 天（11/28 以前 11 月的日子不限）請店長在考勤管理「代開申請」，送總監層級審核。';
     // 2026-11-11（B35）：少卡、而那天有新手機待核准的卡（舊連結才會有）——出路是先核准裝置，不是補忘打卡單
@@ -2049,11 +2073,8 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
           : '，再回來核定（核准後就不用補忘打卡單）。' + (otBad || pend.length ? hint : ''));
     }
     return { ok: false, error: 'need_request', message: '這天還不能核定：' + probs.map(function (p) { return p.text; }).join('；') + '。' + hint,
-             need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length, leave_hours: ft8 ? ft8.gap : 0 } };
-  }
-  if (diffMin != null && diffMin >= REQ_STRICT_DIFF_MIN && !reqCleanDiffReason_(opt.diff_reason)) {
-    return { ok: false, error: 'need_diff_reason', diff_min: diffMin,
-             message: '核定和打卡差 ' + diffMin + ' 分鐘，要填原因才能送出。' + (opt.acting === false ? '舊的值班核定頁不能填原因，請到管理系統「考勤管理」核定。' : '') };
+             need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length, leave_hours: ft8 ? ft8.gap : 0, over_min: overMin || 0 },
+             probs: probs.map(function (p) { return { rule: p.rule, text: p.text }; }), need_doc: !!needDoc, hint: hint };      // 營運系統逐條顯示用（2026-11-14）
   }
   return null;
 }
