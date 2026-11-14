@@ -548,6 +548,9 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             pick_time(p, 0, '18:00')
             pick_time(p, 1, '20:30')
             p.fill('#reqView input[type=text]', '月底盤點')
+            # 加班單要有打卡佐證（2026-11-14）：3 天前沒打卡 → 黃字提醒，照樣送得出去
+            p.wait_for_function('document.getElementById("reqView").textContent.indexOf("沒有完整的打卡紀錄") >= 0', timeout=8000)
+            ok('加班沒打卡：黃字提醒「18:00–20:30 這段時間在「店」沒有完整的打卡紀錄，主管會核不過」', '18:00–20:30 這段時間在' in p.inner_text('#reqView') and '主管會核不過' in p.inner_text('#reqView'))
             p.screenshot(path=os.path.join(SHOTS, '補休_加班.jpg'), type='jpeg', quality=80)
             p.click('#reqView button.primary')
             p.wait_for_function('document.getElementById("reqView").textContent.indexOf("✓ 已送出") >= 0', timeout=10000)

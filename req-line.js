@@ -465,14 +465,54 @@
 
   /* 加班（不分事前事後） */
   var ot = { date: '', start: '', end: '', reason: '' };
+  /* 加班單要有打卡佐證（2026-11-14 Eason）：主管核定時會檢查加班時段在不在當天的打卡段裡（前後 15 分），
+     沒有就核不過。這裡送單前先看那天的卡，不在裡面就黃字提醒——只提醒、照樣可以送（常常先送加班、隔天才補忘打卡）。
+     判斷與後端 Requests.gs reqOtPunchProbs_ 同一套（spans 已含送出的忘打卡單；別家店的卡這裡看不到，所以只講「這家店」）。 */
+  var otDay = { key: '', spans: null };
+  function otPunchCovered(date, start, end, spans) {
+    var m = function (hm) { var a = String(hm || '').split(':'); return a.length === 2 ? (+a[0]) * 60 + (+a[1]) : NaN; };
+    var nowMin = date === taipeiToday(0) ? m(new Date(Date.now() + 8 * 3600000).toISOString().slice(11, 16)) : NaN;
+    var ivs = [];
+    spans.forEach(function (sp) {
+      var a = m(sp.in), b = sp.out ? m(sp.out) : nowMin;
+      if (isNaN(a) || isNaN(b)) return;
+      if (sp.out_next || b < a) b += 1440;
+      ivs.push([a, b]);
+    });
+    ivs.sort(function (x, y) { return x[0] - y[0]; });
+    var mg = [];
+    ivs.forEach(function (x) { var l = mg[mg.length - 1]; if (l && x[0] <= l[1] + 15) l[1] = Math.max(l[1], x[1]); else mg.push([x[0], x[1]]); });
+    var s = m(start), e = m(end);
+    if (isNaN(s) || isNaN(e)) return true;
+    if (e <= s) e += 1440;
+    var fit = function (x, y) { return mg.some(function (v) { return x >= v[0] - 15 && y <= v[1] + 15; }); };
+    return fit(s, e) || fit(s + 1440, e + 1440);
+  }
+  function otPunchWarn(box) {
+    while (box.firstChild) box.removeChild(box.firstChild);
+    if (!ot.date || !ot.start || !ot.end || !st.store) return;
+    var key = st.store.code + '|' + ot.date;
+    if (otDay.key !== key) {
+      otDay = { key: key, spans: null };
+      loadDay(st.store.code, ot.date).then(function (day) {
+        if (otDay.key !== key) return;
+        otDay.spans = (day.missing && day.missing.spans) || [];
+        otPunchWarn(box);
+      }, function () {});   // 讀不到就不提醒（核定時後端照樣會檢查）
+      return;
+    }
+    if (!otDay.spans || otPunchCovered(ot.date, ot.start, ot.end, otDay.spans)) return;
+    box.appendChild(h('div', { class: 'rq-proof-note rq-warns', text: '⚠ ' + ot.start + '–' + ot.end + ' 這段時間在「' + st.store.name + '」沒有完整的打卡紀錄，主管會核不過。請先到「忘打卡」補卡。\n（只是提醒，照樣可以送出）' }));
+  }
   function renderOt(p) {
     if (!ot.date) ot.date = taipeiToday(0);
-    p.appendChild(field('日期', datePick(ot.date, function (v) { ot.date = v; })));
+    var otWarn = h('div', {});
+    p.appendChild(field('日期', datePick(ot.date, function (v) { ot.date = v; otPunchWarn(otWarn); })));
     var s1 = timePick(ot.start, 15, function (v) { ot.start = v; upd(); });
     var e1 = timePick(ot.end, 15, function (v) { ot.end = v; upd(); });
     var tot = h('span', { class: 'rq-muted' });
-    var upd = function () { var x = spanHours(ot.start, ot.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; }; upd();
-    p.appendChild(field('加班時段', h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot])));
+    var upd = function () { var x = spanHours(ot.start, ot.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; otPunchWarn(otWarn); }; upd();
+    p.appendChild(field('加班時段', h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot]), [otWarn]));
     var rs = h('input', { type: 'text', maxlength: '100', value: ot.reason, placeholder: '例如：週六晚上外送訂單多', on: { input: function () { ot.reason = rs.value; } } });
     p.appendChild(field('原因（必填）', rs));
     // 補休（2026-11-01）：不再分加班費／換補休——核准的加班都先抵當月補休，剩的照加班費發
