@@ -1566,7 +1566,7 @@ var LINE_PUNCH_TIMING_HEADERS = ['ts', 'store', 'emp_id', 'type', 'outcome', 'st
   'srv_verify_ms', 'srv_roster_ms', 'srv_read_ms', 'srv_write_ms', 'srv_extra_ms',
   // LINE 打卡快速通道（2026-10-16 加在最後，~/mala-clock-relay plan v2）：這次按鍵編號、畫面有沒有採用 mini 預判、mini 預判結果與花幾毫秒
   'req_id', 'route', 'predict', 'predict_ms'];
-var LINE_PUNCH_TIMING_ROUTES = ['predicted', 'plain', 'off'];
+var LINE_PUNCH_TIMING_ROUTES = ['predicted', 'plain', 'off', 'mini', 'mini_fallback'];   // mini＝G＋備援 mini 正本寫的、mini_fallback＝等不到 mini 改送 Google（2026-11-15）
 var LINE_PUNCH_TIMING_PREDICTS = ['ok', 'blocked', 'unknown', 'none'];
 var LINE_PUNCH_TIMING_STEPS = ['verify', 'roster', 'read', 'write', 'extra'];
 var LINE_PUNCH_TIMING_OUTCOMES = ['ok', 'fail', 'error', 'geo_fail', 'unclear_ok', 'unclear_not', 'unclear_unknown'];

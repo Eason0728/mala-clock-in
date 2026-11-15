@@ -43,14 +43,15 @@ console.log('\n════ B21：遲到分鐘欄填小數 ════');
   const run = (late) => {
     const m = make({ now: T('2026-11-10T23:00:00'), props: { REQ_BIND_FROM: 'off' }, self: { roster: [ME], events: [['2026-11-10T09:07:00', 'E01', 'in'], ['2026-11-10T17:22:00', 'E01', 'out']] } });
     const r = m.sb.handleMgrApprove({ mgr_key: 'MK', date: '2026-11-10', emp_id: 'E01', periods: [{ start: '09:00', end: '17:00' }], late_min: late });
-    return r.status_text;
+    return r.ok === false ? r.error : r.status_text;   // 被退回時回錯誤碼
   };
+  // 2026-11-15（Eason 定，考勤驗收 C9-5）：小數、負數不再取整或忽略，一律退回 bad_late_min。
   check('B21-01', '對照：填 0 → 主管認定不計遲到', run(0), '主管認定不計遲到');
-  check('B21-02', '填 0.4 → 和填 0 一樣（不出現「遲到0分」）', run(0.4), '主管認定不計遲到');
-  check('B21-03', '填 "0.4"（文字）→ 同上', run('0.4'), '主管認定不計遲到');
-  check('B21-04', '填 0.5 → 進位成遲到 1 分', run(0.5), '遲到1分(認定)');
-  check('B21-05', '填 12.6 → 遲到 13 分', run(12.6), '遲到13分(認定)');
-  check('B21-08', '負數（-0.4、-0.5、-3）是無效輸入 → 不覆蓋，照系統算的遲到 7 分', [run(-0.4), run('-0.5'), run(-3)], ['遲到7分', '遲到7分', '遲到7分']);
+  check('B21-02', '填 0.4 → 退回（不出現「遲到0分」）', run(0.4), 'bad_late_min');
+  check('B21-03', '填 "0.4"（文字）→ 同上', run('0.4'), 'bad_late_min');
+  check('B21-04', '填 0.5 → 退回', run(0.5), 'bad_late_min');
+  check('B21-05', '填 12.6 → 退回', run(12.6), 'bad_late_min');
+  check('B21-08', '負數（-0.4、-0.5、-3）→ 退回', [run(-0.4), run('-0.5'), run(-3)], ['bad_late_min', 'bad_late_min', 'bad_late_min']);
   check('B21-06', '對照：留空 → 用系統算的（遲到 7 分）', run(''), '遲到7分');
   check('B21-07', '對照：填 15 → 遲到 15 分（認定）', run(15), '遲到15分(認定)');
 }

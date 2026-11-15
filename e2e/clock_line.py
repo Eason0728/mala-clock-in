@@ -617,6 +617,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             phase_miss_store(ctx)
             phase_miss_break(ctx)
             phase_relay(ctx, (HQ['lat'], HQ['lng']))
+            phase_g(ctx, (HQ['lat'], HQ['lng']))
             phase_relogin(ctx, (HQ['lat'], HQ['lng']))
             phase_rest(ctx, (HQ['lat'], HQ['lng']))
             phase_same_type(ctx, (HQ['lat'], HQ['lng']))
@@ -1492,6 +1493,135 @@ def phase_rest(ctx, hq):
     ok('單日 10 小時：打得進去，成功訊息多「⚠️ 你今天已經上班…請先跟店長確認」', '⚠️ ' + warn['reason'] + '。' + warn['hint'] in msg(p), msg(p))
     p.wait_for_timeout(2200)
     ok('單日 10 小時：畫面不自動關（要讓同仁看到提醒）', p.evaluate('window.__closed !== true'))
+    p.close()
+
+
+
+# ── G＋備援（2026-11-15）：mini 是正本的店先送 mini、等 3 秒沒回改送 Google（同單號）──
+G_URL = BASE + '/relay-mock-g/clock'   # 網址含 relay-mock：LAG_JS 用 'relay' 這個鍵延後 mini 的回應
+G_MINI_OK = {'ok': True, 'type': 'out', 'ts': '2026-10-16T09:01:05+08:00', 'greeting': '【mini 正本】辛苦了', 'missed': '', 'missed_date': '', 'missed_type': '', 'req_notes': [], 'via_qr': False, 'role': 'primary'}
+
+
+def g_open(ctx, hq, conf, mini, after=None, mini_ms=0, g=None):
+    S = {'conf': conf, 'mini': mini, 'after': after or {'ok': True, 'state': 'done', 'extras': {}}, 'g': g or G_OK, 'mini_hits': [], 'after_hits': [], 'g_posts': [], 'conf_hits': 0}
+    u = url(hq, extra='&retry_ms=50&g_api=' + G_URL)
+
+    def conf_h(route):
+        S['conf_hits'] += 1
+        if S['conf'] == 'abort':
+            return route.abort()
+        route.fulfill(status=200, body=json.dumps(S['conf']), content_type='application/json')
+
+    def punch_h(route):
+        S['mini_hits'].append(json.loads(route.request.post_data or '{}'))
+        if S['mini'] == 'abort':
+            return route.abort()
+        route.fulfill(status=200, body=json.dumps(S['mini']), content_type='text/plain')
+
+    def after_h(route):
+        S['after_hits'].append(json.loads(route.request.post_data or '{}'))
+        route.fulfill(status=200, body=json.dumps(S['after']), content_type='text/plain')
+
+    def g_h(route):
+        try:
+            b = json.loads(route.request.post_data or '{}')
+        except ValueError:
+            return route.continue_()
+        if b.get('action') == 'liff_punch':
+            S['g_posts'].append(b)
+            return route.fulfill(status=200, body=json.dumps(S['g']), content_type='text/plain')
+        if b.get('action') == 'liff_status':
+            resp = route.fetch(); j = resp.json()
+            if j.get('guard') is not None:
+                nowms = int(time.time() * 1000)
+                j['guard'] = {'blocked': 'in', 'lock': {}, 'last': {'type': 'in', 'hm': '08:00', 'ts': '2026-10-16T08:00:00+08:00'}, 'now': nowms}
+            return route.fulfill(response=resp, body=json.dumps(j))
+        route.continue_()
+
+    p = ctx.new_page()
+    p.add_init_script(LOG_JS)
+    p.add_init_script(LAG_JS)
+    p.route(G_URL + '/config', conf_h)
+    p.route(G_URL + '/punch', punch_h)
+    p.route(G_URL + '/after', after_h)
+    p.route(re.compile(r'/api(/\w+)?$'), g_h)
+    p.goto(u)
+    p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
+    p.wait_for_timeout(300)
+    p.evaluate('(l) => { window.__lag = l; }', {'relay': mini_ms})
+    return p, S
+
+
+def phase_g(ctx, hq):
+    """G＋備援：mini 正本的店。斷言畫面、送了哪幾份、單號、timing 的 route。"""
+    RID = re.compile(r'^r[0-9a-f]{16}$')
+    on = {'ok': True, 'v': 1, 'primary': ['hq'], 'wait_ms': 3000}
+    # 1. mini 300ms 回成功：1 秒內顯示、不送 Google、抄完補提示再代送「打卡」
+    p, S = g_open(ctx, hq, on, G_MINI_OK, mini_ms=300, after={'ok': True, 'state': 'done', 'extras': {'req_notes': ['你的加班申請已核准'], 'ot_hint': None}})
+    t0 = time.time()
+    force_out(p)
+    wait_msg(p, '下班打卡成功 09:01', timeout=1500)
+    dt = time.time() - t0
+    ok('G 1：mini 300ms 回成功 → 1 秒內顯示（%.2f 秒）' % dt, dt < 1.3, dt)
+    m = msg(p)
+    ok('G 1：顯示 mini 的時間、地點、問候語', '地點：' + HQ['name'] in m and G_MINI_OK['greeting'] in m, m)
+    p.wait_for_function('document.getElementById("msg").textContent.indexOf("你的加班申請已核准") >= 0', timeout=8000)
+    ok('G 1：抄到 Google 後補上申請結果通知', '你的加班申請已核准' in msg(p), msg(p))
+    ok('G 1：沒有送 Google liff_punch、mini 收到 1 份', len(S['g_posts']) == 0 and len(S['mini_hits']) == 1, (S['g_posts'], S['mini_hits']))
+    mh = S['mini_hits'][0]
+    ok('G 1：送 mini 的內容：店碼、類型、定位、單號', mh.get('store') == 'hq' and mh.get('type') == 'out' and 'lat' in mh and RID.match(mh.get('req_id', '')), mh)
+    ok('G 1：補提示用同一張單號問', S['after_hits'] and S['after_hits'][0].get('req_id') == mh['req_id'], S['after_hits'])
+    tm = relay_last(p)
+    ok('G 1：timing route=mini、outcome=ok、req_id 一樣', tm['route'] == 'mini' and tm['outcome'] == 'ok' and tm['req_id'] == mh['req_id'], tm)
+    ok('G 1：開頁有問 mini 正本名單', S['conf_hits'] >= 1, S['conf_hits'])
+    p.close()
+
+    # 2. mini 超過 3 秒沒回：改送 Google、帶同一張單號
+    p, S = g_open(ctx, hq, on, G_MINI_OK, mini_ms=4500)
+    force_out(p)
+    m = None
+    p.wait_for_timeout(2500)
+    ok('G 2：3 秒內還沒改送 Google', len(S['g_posts']) == 0, S['g_posts'])
+    wait_msg(p, '下班打卡成功 09:02', timeout=6000)
+    ok('G 2：改送 Google 1 份，單號跟送 mini 的一樣', len(S['g_posts']) == 1 and S['g_posts'][0].get('req_id') == S['mini_hits'][0].get('req_id'), (S['g_posts'], S['mini_hits']))
+    tm = relay_last(p)
+    ok('G 2：timing route=mini_fallback', tm['route'] == 'mini_fallback', tm)
+    p.close()
+
+    # 3. mini 說「改送 Google」（例如引擎判不了）：馬上送 Google
+    p, S = g_open(ctx, hq, on, {'ok': False, 'role': 'fallback'})
+    t0 = time.time()
+    force_out(p)
+    wait_msg(p, '下班打卡成功 09:02', timeout=4000)
+    ok('G 3：mini 回改送 → 馬上送 Google（%.2f 秒）' % (time.time() - t0), len(S['g_posts']) == 1 and RID.match(S['g_posts'][0].get('req_id', '')), S['g_posts'])
+    p.close()
+
+    # 4. mini 連不上（開頁問不到名單）：跟今天一模一樣——直送 Google、不帶單號、不送 mini
+    p, S = g_open(ctx, hq, 'abort', G_MINI_OK)
+    force_out(p)
+    wait_msg(p, '下班打卡成功 09:02', timeout=6000)
+    ok('G 4：問不到 mini → 直送 Google、不帶單號、mini 沒收到', len(S['g_posts']) == 1 and 'req_id' not in S['g_posts'][0] and len(S['mini_hits']) == 0, (S['g_posts'], S['mini_hits']))
+    p.close()
+
+    # 5. mini 的名單沒有這家店：跟今天一樣
+    p, S = g_open(ctx, hq, {'ok': True, 'v': 1, 'primary': ['gf'], 'wait_ms': 3000}, G_MINI_OK)
+    force_out(p)
+    wait_msg(p, '下班打卡成功 09:02', timeout=6000)
+    ok('G 5：這家店不在名單 → 直送 Google、不帶單號', len(S['g_posts']) == 1 and 'req_id' not in S['g_posts'][0] and len(S['mini_hits']) == 0, S['g_posts'])
+    p.close()
+
+    # 6. mini 擋下（正本說不收）：顯示原因，不送 Google
+    p, S = g_open(ctx, hq, on, {'ok': False, 'role': 'primary', 'type': 'out', 'status': 'rejected_out_of_range', 'reason': '店家判定你不在範圍內', 'hint': '請開啟「精確位置」與 Wi‑Fi 後再按一次'})
+    force_out(p)
+    wait_msg(p, '下班打卡失敗', timeout=4000)
+    ok('G 6：mini 擋下 → 失敗原因照顯示、不送 Google', '原因：店家判定你不在範圍內' in msg(p) and len(S['g_posts']) == 0, (msg(p), S['g_posts']))
+    p.close()
+
+    # 7. 下班超時提示（抄到 Google 後才算得出）：顯示「申請加班」
+    p, S = g_open(ctx, hq, on, G_MINI_OK, after={'ok': True, 'state': 'done', 'extras': {'req_notes': [], 'ot_hint': {'date': '2026-10-16', 'hours': 9.5, 'start': '17:00', 'end': '18:30'}}})
+    force_out(p)
+    p.wait_for_function('!document.getElementById("btnOtReq").hidden', timeout=8000)
+    ok('G 7：補上超時提示與申請加班鍵', '超過 8 小時' in p.inner_text('#otHint'), p.inner_text('#otHint'))
     p.close()
 
 
