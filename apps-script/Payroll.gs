@@ -5472,6 +5472,13 @@ function handlePayrollLeaveOptions(body) {
   if (deny) return deny;
 
   const ym = /^\d{4}-\d{2}$/.test(String(body.ym || '')) ? body.ym : nowTaipeiIso().slice(0, 7);
+  // lock_only（2026-11-15，鎖月後考勤不能再動）：營運系統每次核定前只想知道「這家店這個月鎖了沒」，
+  //   不要為此把假別、額度整套算一遍。只回 locked；讀不到 payroll_run 就不給這欄（營運系統當作不知道、不擋）。
+  if (body.lock_only === true) {
+    let lk;
+    try { lk = payMonthLocked_(payRead('run'), ym, st); } catch (err) { lk = undefined; }
+    return Object.assign({ ok: true, store: st, ym: ym, lock_only: true }, typeof lk === 'boolean' ? { locked: lk } : {});
+  }
   const compOn = payCompStoreOn_(st);
   const types = payLeaveTypes(st).filter(function (t) { return compOn || !payIsCompType(t); });
   const cfg = payConfig(st);
