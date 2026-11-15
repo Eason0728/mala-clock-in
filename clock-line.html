@@ -200,7 +200,13 @@
      REQ_MIRROR＝false：只回報開頁計時（量現在要等幾秒）；true：先顯示 Mac mini 記住的、讀最新的也請 mini 代問。mini 不在一律直接問 Google。 */
   var MINI_REQ_API = 'https://dzy-gw.dingzhaoyuan888.workers.dev/store/api/line-req', REQ_MIRROR = true;
   if (isLocalHost) { MINI_REQ_API = qs('mini_req') || ''; REQ_MIRROR = qs('req_mirror') === '1'; }   // 本機測試只准打 ?mini_req= 給的假 mini（絕不打正式 mini）
-  var RELAY_WAIT_MS = 2500, RELAY_SHADOW_WAIT_MS = 5000;   // 2026-10-19 1.5→2.5 秒：10/18 開通首日 23% 的 mini 回應超過 1.5 秒被放棄（試跑期 28–33% 超過，多為門市網路首連 DNS＋TLS）；shadow 等久一點，量得到 mini 實際要幾秒
+  var RELAY_WAIT_MS = 2500, RELAY_SHADOW_WAIT_MS = 5000;
+  /* G＋備援（2026-11-15，mala-clock-relay docs/g-primary）：Mac mini 是正本的店，按打卡先送 mini（寫進去就算數），
+     等 G_WAIT_MS 沒回應才改送各店 liff_punch（帶同一張單號，不會變兩張）。哪幾家店由 mini 說了算（開頁問 /clock/config），
+     切換／退回只改 mini 的開關，不用重新發布這一頁。問不到 mini＝照舊直送 Google（跟今天一樣）。 */
+  var G_API = RELAY_API ? RELAY_API.replace(/\/predict$/, '') : '';
+  if (isLocalHost) G_API = qs('g_api') || '';   // 本機測試只准打 ?g_api= 給的假 mini
+  var gConf = null, G_AFTER_MS = 6000;   // gConf＝{primary:['gf',…], wait_ms}；問不到維持 null   // 2026-10-19 1.5→2.5 秒：10/18 開通首日 23% 的 mini 回應超過 1.5 秒被放棄（試跑期 28–33% 超過，多為門市網路首連 DNS＋TLS）；shadow 等久一點，量得到 mini 實際要幾秒
   /* STORES:BEGIN（tools/build-line-page.py 產生，勿手改）*/
   var STORES = [
     {"code": "", "name": "小辛辣 新竹光復", "lat": 24.7840945, "lng": 121.0157448, "radius_m": 20, "api": "https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec", "relay": true},
@@ -584,6 +590,29 @@
     }).catch(function () { return { predict: 'none', ms: null }; });
   }
 
+  /** 開頁時問 mini 哪幾家店由它當正本（順便先連上 mini，按打卡時少等一次連線）。3 秒沒回＝照舊直送 Google。 */
+  function gLoadConf() {
+    if (!G_API) return Promise.resolve(null);
+    var ctrl = window.AbortController ? new AbortController() : null, timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 3000) : null;
+    return fetch(G_API + '/config', { method: 'GET', signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (timer) clearTimeout(timer); gConf = j && j.ok && Array.isArray(j.primary) ? j : null; return gConf; },
+            function () { if (timer) clearTimeout(timer); gConf = null; return null; });
+  }
+  function gPrimary(st) { return !!(gConf && st && !qrToken && gConf.primary.indexOf(st.code === '' ? 'gf' : st.code) >= 0); }   // 主管 QR 照舊送 Google
+  /** mini 寫完、抄到 Google 之後才有的提示（申請結果通知、下班超時提示）。最多等 G_AFTER_MS；拿不到回 null。 */
+  function gAfter(st, reqId) {
+    var until = Date.now() + G_AFTER_MS;
+    function once() {
+      return post(G_API + '/after', { store: st.code === '' ? 'gf' : st.code, req_id: reqId }, 3000).then(function (r) {
+        if (r && r.ok && r.state === 'done') return r.extras || {};
+        if (Date.now() + 1200 > until) return null;
+        return new Promise(function (res) { setTimeout(res, 1200); }).then(once);
+      }, function () { return null; });
+    }
+    return once();
+  }
+
   /* ── 打卡 ── */
   function sameTypeMsg(hm, type) {
     var a = type === 'in' ? '上班' : '下班', b = type === 'in' ? '下班' : '上班';
@@ -638,13 +667,28 @@
     var before = { n: countToday(status, type), lastTs: status.guard && status.guard.last ? String(status.guard.last.ts) : '' };
     busy = true; refreshButtons();
     say('送出' + label + '打卡中…', '', '大約需要幾秒，請不要關閉');
-    var mode = relayMode(st), reqId = newReqId(), t = tm, settled = false, shown = null;   // shown＝畫面已採用的 mini 預判
+    var useG = gPrimary(st);
+    var mode = useG ? false : relayMode(st), reqId = newReqId(), t = tm, settled = false, shown = null;   // shown＝畫面已採用的 mini 預判
     if (t) { t.store = st.code; t.qr = !!qrToken; t.acc = qrToken ? null : fixForPick().accuracy_m; t.sent = tmNow();
              t.req_id = reqId; t.route = mode ? 'plain' : 'off'; }
     // 先送 Google（正本），同一刻再問 mini；mini 永遠不會讓 Google 那份晚送
-    var gp = post(storeApi(st), Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, sameOk ? { confirm_same: true } : {},
-                                              qrToken ? { qr: qrToken } : fixPayload()),
-                  undefined, true);
+    var gBody = Object.assign({ action: 'liff_punch', id_token: liff.getIDToken(), type: type }, sameOk ? { confirm_same: true } : {},
+                              qrToken ? { qr: qrToken } : fixPayload());
+    var gp, viaMini = false;
+    if (useG) {   // mini 是正本：先送 mini；沒回應、回「改送 Google」就送 liff_punch（同一張單號）
+      if (t) t.route = 'mini';
+      gp = post(G_API + '/punch', Object.assign({ store: st.code === '' ? 'gf' : st.code, req_id: reqId }, gBody), (gConf && gConf.wait_ms) || 3000, true)
+        .then(function (r) {
+          if (r && r.role === 'primary') { viaMini = true; return r; }
+          throw new Error('fallback');
+        })
+        .catch(function () {
+          if (t) t.route = 'mini_fallback';
+          return post(storeApi(st), Object.assign({ req_id: reqId }, gBody), undefined, true);
+        });
+    } else {
+      gp = post(storeApi(st), gBody, undefined, true);
+    }
     var rp = Promise.resolve();
     try {   // mini 這段出任何錯都不能影響 Google 那份（審查 P3 #7）
       if (mode) rp = askRelay(st, type, reqId, mode).then(function (p) {
@@ -694,6 +738,7 @@
           status.today = (status.today || []).concat([{ type: type, hm: hm, status: 'ok' }]);
           render(status); say(okText, 'ok');
           report('ok', 'ok');   // 畫面已經顯示成功才送，同仁不會多等
+          if (viaMini) return gAfterShow(st, reqId, label, okText, r);   // mini 寫的：等抄到 Google 再補提示、再代送「打卡」（聊天室卡片要讀得到這張）
           // 有漏卡：多一顆「申請補登」直接開申請頁，畫面不自動關（要讓同仁按得到）
           if (r.missed_date) { missReq = { date: r.missed_date, miss: r.missed_type }; $('btnMissReq').hidden = false; }
           // 下班後當天超過 8 小時（2026-10-09）：提示一句＋「申請加班」直接開加班分頁並預填時段，畫面不自動關
@@ -724,6 +769,23 @@
         return loadStatus().then(function () { say(failText, 'warn'); offerHelp(hk); });
       }, function () { settled = true; tmGot(); return confirmPunch(type, st, before, shown, report); })
       .then(function () { if (!keepBusy) { busy = false; refreshButtons(); } });
+  }
+  /** mini 寫完的那張：等抄到 Google（最多 6 秒），補上要讀申請表的提示，再代送「打卡」給聊天室。 */
+  function gAfterShow(st, reqId, label, okText, r) {
+    $('hint').textContent = '';
+    return gAfter(st, reqId).then(function (x) {
+      x = x || {};
+      var notes = (x.req_notes || []).join('\n');
+      if (notes) say(okText + '\n\n' + notes, 'ok');
+      var ot = x.ot_hint;
+      if (ot && ot.date) {
+        otReq = ot;
+        $('otHint').textContent = '今天出勤 ' + ot.hours + ' 小時，超過 8 小時。要申請加班嗎？';
+        $('otHint').hidden = false; $('btnOtReq').hidden = false;
+      }
+      if (r.missed_date) { missReq = { date: r.missed_date, miss: r.missed_type }; $('btnMissReq').hidden = false; }
+      return sendToChat(!!(r.missed_date || notes || r.rest_warn || (ot && ot.date))).then(function (closing) { if (closing) keepBusy = true; });
+    });
   }
   function countToday(s, type) {
     return ((s && s.today) || []).filter(function (e) { return e.type === type && (e.status === 'ok' || e.status === 'pending_device_approval'); }).length;
@@ -828,6 +890,7 @@
 
   function start() {
     say('定位中…', '', '');
+    gLoadConf();   // 跟定位同時：問 mini 哪幾家店由它當正本（問不到＝照舊直送 Google）
     startGeo().then(function (p) { showMe(p.coords.latitude, p.coords.longitude); return loadStatus(); },
       function (err) {
         say(err.message, 'warn', '請允許 LINE 使用定位（手機設定 → LINE → 位置），開啟「精確位置」與 Wi‑Fi 後按「重新定位」。');
