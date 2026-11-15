@@ -20,9 +20,9 @@ const ap = (m, o) => m.sb.handleMgrApprove(Object.assign({ mgr_key: 'MK', date: 
   const r0 = ap(W(ev5), { periods: P('09:00', '17:00'), late_min: 0 });
   check('B1-1', '只打 16:55–17:00、核 09–17、遲到填 0：擋下', { ok: r0.ok, error: r0.error, over: /核定比打卡多 475 分鐘/.test(String(r0.message)) }, { ok: false, error: 'need_request', over: true });
   check('B1-2', '同上經營運系統代轉：也擋', brief(ap(W(ev5), { mgr_key: 'AK', acting_name: '店長甲', sched_day: 'W', periods: P('09:00', '17:00'), late_min: 0 })), { ok: false, error: 'need_request' });
-  check('B1-3', '不填遲到分鐘：照舊核定、狀態標遲到 475 分（薪資照扣）', brief(ap(W(ev5), { periods: P('09:00', '17:00') })), { ok: true, approved_hours: 8, status_text: '遲到475分' });
+  check('B1-3', '不填遲到分鐘：照舊核定、狀態標遲到 475 分（薪資照扣）', brief(ap(W(ev5), { periods: P('09:00', '17:00'), diff_reason: '上班卡 16:55：主管同意' })), { ok: true, approved_hours: 8, status_text: '遲到475分' });      // 2026-11-16 起每張卡跟核定差超過 30 分要原因
   check('B1-4', '遲到填 400（實際 475）：免掉的 75 分鐘要有單', brief(ap(W(ev5), { periods: P('09:00', '17:00'), late_min: 400 })), { ok: false, error: 'need_request' });
-  check('B1-5', '遲到填 475（照實）：核定', brief(ap(W(ev5), { periods: P('09:00', '17:00'), late_min: 475 })).ok, true);
+  check('B1-5', '遲到填 475（照實）：核定', brief(ap(W(ev5), { periods: P('09:00', '17:00'), late_min: 475, diff_reason: '上班卡 16:55：主管同意' })).ok, true);
   const ev10 = [[D + 'T09:10:00', 'E01', 'in'], [D + 'T17:00:00', 'E01', 'out']];
   check('B1-6', '遲到 10 分、主管認定不計遲到（未達 30 分）：照舊核定', brief(ap(W(ev10), { periods: P('09:00', '17:00'), late_min: 0 })), { ok: true, approved_hours: 8, status_text: '主管認定不計遲到' });
 }

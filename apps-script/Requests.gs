@@ -2313,7 +2313,48 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
              need: { ot_hours: otBad ? otNeed : 0, ot_have: otHave, miss_cards: missBad ? miss : 0, miss_have: missHave, pending: pend.length, leave_hours: ft8 ? ft8.gap : 0, over_min: overMin || 0 },
              probs: probs.map(function (p) { return { rule: p.rule, text: p.text }; }), need_doc: !!needDoc, hint: hint };      // 營運系統逐條顯示用（2026-11-14）
   }
+  // 每一張打卡跟核定時間差超過 30 分鐘要寫原因（2026-11-16 Eason；REQ_CARD_REASON_FROM 預設 2026-11-17 起的日子，off＝關）。
+  // 取代 11/14「不再寫原因」：缺單照上面擋（寫原因不能代替補單），單都齊了才看這條。原因存 approved 的 diff_reason
+  var cardFrom = reqCardReasonFrom_();
+  if (from && cardFrom && date >= cardFrom && periods.length) {
+    var cards = reqCardDiffs_(periods, segs || []);
+    if (cards.length && !reqCleanDiffReason_(opt.diff_reason)) {
+      return { ok: false, error: 'need_diff_reason', cards: cards, diff_min: cards.reduce(function (a, c) { return Math.max(a, c.min); }, 0),
+               message: '核定和打卡差超過 ' + REQ_CARD_DIFF_MIN + ' 分鐘：' + cards.map(function (c) { return (c.side === 'in' ? '上班卡 ' : '下班卡 ') + c.card + '（核定 ' + c.core + '，差 ' + c.min + ' 分）'; }).join('、') +
+                 '，每張卡要選原因才能送出。' + (opt.acting === false ? '舊的值班核定頁不能填原因，請到管理系統「考勤管理」核定。' : '') };
+    }
+  }
   return null;
+}
+/* ── 每張卡跟核定時間比（2026-11-16 Eason：「每一次打卡時間跟核定時間相差超過 30 分鐘以上，都需要填寫原因」；剛好 30 分不用，第 7 題 B）──
+   一段打卡（上班卡到下班卡）對到跟它重疊的核定時段：上班卡比最早那段的開始、下班卡比最晚那段的結束（央廚、總部中午不打卡的休息帶自然跨過去）。
+   這段打卡完全沒被核定（例：早到那段整段不算）：上班卡比最近的核定開始、下班卡比最近的核定結束。只有單邊的卡（缺卡）只比有的那邊。
+   遲到：核定從班表開始（標遲到扣薪），上班卡跟核定差超過 30 分一樣要原因（Eason：「是卡核定時間比對打卡紀錄，不是比對班表」）。 */
+var REQ_CARD_REASON_FROM_DEFAULT_ = '2026-11-17';
+var REQ_CARD_DIFF_MIN = 30;
+function reqCardReasonFrom_() {
+  var v = '';
+  try { v = String(reqProp_('REQ_CARD_REASON_FROM') || ''); } catch (e) {}
+  if (v === 'off') return null;
+  return reqIsDate_(v) ? v : REQ_CARD_REASON_FROM_DEFAULT_;
+}
+function reqCardDiffs_(periods, segs) {
+  var ps = (periods || []).filter(function (p) { return p && p.startMs != null && p.endMs != null && p.endMs > p.startMs; });
+  if (!ps.length) return [];
+  var hm = function (t) { var d = new Date(t + 8 * 3600000), p = function (n) { return (n < 10 ? '0' : '') + n; }; return p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()); };      // 台北時間（不靠 Utilities，測試沙盒也能跑）
+  var near = function (t, key) { return ps.reduce(function (a, p) { return a == null || Math.abs(p[key] - t) < Math.abs(a - t) ? p[key] : a; }, null); };
+  var out = [];
+  (segs || []).forEach(function (s) {
+    if (!s) return;
+    var a = s.inMs, b = s.outMs, st = null, en = null;
+    if (a != null && b != null) {
+      var ov = ps.filter(function (p) { return Math.min(b, p.endMs) > Math.max(a, p.startMs); });
+      if (ov.length) { st = Math.min.apply(null, ov.map(function (p) { return p.startMs; })); en = Math.max.apply(null, ov.map(function (p) { return p.endMs; })); }
+    }
+    if (a != null) { var cs = st != null ? st : near(a, 'startMs'); var d1 = Math.round(Math.abs(a - cs) / 60000); if (d1 > REQ_CARD_DIFF_MIN) out.push({ side: 'in', card: hm(a), core: hm(cs), min: d1 }); }
+    if (b != null) { var ce = en != null ? en : near(b, 'endMs'); var d2 = Math.round(Math.abs(b - ce) / 60000); if (d2 > REQ_CARD_DIFF_MIN) out.push({ side: 'out', card: hm(b), core: hm(ce), min: d2 }); }
+  });
+  return out;
 }
 
 /* ── 已核定但缺單的日子打回待核定（2026-11-13 Eason：11/1–11/5 也要有單，已核定的要重新核定）──
