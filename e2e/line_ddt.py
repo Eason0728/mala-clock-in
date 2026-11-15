@@ -1466,6 +1466,55 @@ def phase_dual(ctx, gen):
        and page.locator('#reqView .rq-auto-store').count() == 0 and page.inner_text('#reqView .rq-rec') == '當天紀錄：沒有任何打卡', page.inner_text('#reqView')[:200])
     page.close()
 
+    # 加班單依申請那天、那段時間在哪家打卡選店（2026-11-15 Eason）
+    page = open_req(ctx, A, pa, 'ot')
+    page.wait_for_selector('#reqView select.rq-store', timeout=10000)
+    store_of = lambda: page.evaluate("() => { const s = document.querySelector('#reqView select.rq-store'); return s.options[s.selectedIndex].text; }")
+    pick_date(page, dd['b_only'])
+    page.wait_for_selector('#reqView .rq-auto-store', timeout=10000)
+    ok('加班自動選店：那天只有 B 店有卡 → 換到 B、說明逐字', store_of() == B['name']
+       and page.inner_text('#reqView .rq-auto-store') == f'{D.md_of(dd["b_only"])} 你在{B["name"]}打卡，送到這家（不對可以在上面改）', (store_of(), page.inner_text('#reqView .rq-auto-store')))
+    pick_date(page, dd['both'])
+    page.wait_for_selector('#reqView .rq-auto-store.warn', timeout=10000)
+    ok('加班自動選店：兩家都有卡、還沒填時段 → 橘字列出兩家時間、給兩顆選店', '都有打卡' in page.inner_text('#reqView .rq-auto-store.warn')
+       and page.locator('#reqView .rq-auto-store.warn .rq-chip').count() == 2, page.inner_text('#reqView .rq-auto-store.warn'))
+    pick_time(page, 0, '20:00'); pick_time(page, 1, '21:00')
+    page.wait_for_function("() => { const b = document.querySelector('#reqView .rq-auto-store'); return b && b.textContent.indexOf('這段時間') >= 0; }", timeout=10000)
+    ok('加班自動選店：時段 20:00–21:00 對到 B（17:00–21:30）→ 選 B、寫「這段時間你在 B 打卡」', store_of() == B['name']
+       and page.inner_text('#reqView .rq-auto-store') == f'{D.md_of(dd["both"])} 這段時間你在{B["name"]}打卡，送到這家（不對可以在上面改）', page.inner_text('#reqView .rq-auto-store'))
+    page.screenshot(path=os.path.join(SHOTS, 'ddt_加班_依時段選店.jpg'), type='jpeg', quality=70)
+    pick_time(page, 0, '15:30'); pick_time(page, 1, '16:30')
+    page.wait_for_selector('#reqView .rq-auto-store.warn .rq-chip', timeout=10000)
+    ok('加班自動選店：時段在兩家之間（15:30–16:30）→ 要自己選', '請選這張要送到哪一家' in page.inner_text('#reqView .rq-auto-store.warn'))
+    page.screenshot(path=os.path.join(SHOTS, 'ddt_加班_兩家要自己選.jpg'), type='jpeg', quality=70)
+    page.locator('#reqView .rq-reason, #reqView input[placeholder^="例如：週六"]').first.fill('盤點')
+    n0 = len([x for x in calls(page) if x['action'] == 'req_submit'])
+    submit(page)
+    page.wait_for_selector('#reqView .rq-box.err', timeout=10000)
+    ok('加班送出前：兩家都可能、還沒選 → 擋下、不送', '請先在上面選這張要送到哪一家' in page.inner_text('#reqView .rq-box.err')
+       and len([x for x in calls(page) if x['action'] == 'req_submit']) == n0, page.inner_text('#reqView .rq-box.err'))
+    click(page, '#reqView .rq-auto-store.warn .rq-chip:text-is("%s")' % B['name'], '選店')
+    page.wait_for_function("() => !document.querySelector('#reqView .rq-auto-store.warn .rq-chip')", timeout=10000)
+    ok('加班：按「%s」→ 店別換成 B、選店鈕收起、改寫「確認上面選的」' % B['name'], store_of() == B['name'] and '確認上面選的' in page.inner_text('#reqView .rq-auto-store'), page.inner_text('#reqView .rq-auto-store'))
+    page.close()
+    # 選錯店：時段在 B，手動選 A → 送出前跳確認；按取消就不送
+    page = open_req(ctx, A, pa, 'ot')
+    page.wait_for_selector('#reqView select.rq-store', timeout=10000)
+    pick_date(page, dd['both']); pick_time(page, 0, '15:30'); pick_time(page, 1, '16:30')
+    page.wait_for_selector('#reqView .rq-auto-store.warn .rq-chip', timeout=10000)
+    click(page, '#reqView .rq-auto-store.warn .rq-chip:text-is("%s")' % A['name'], '選店')      # 先選 A
+    pick_time(page, 0, '20:00'); pick_time(page, 1, '21:00')                                       # 再把時段改到 B 那段
+    page.wait_for_function("() => { const b = document.querySelector('#reqView .rq-auto-store.warn'); return b && b.textContent.indexOf('上面選的是') >= 0; }", timeout=10000)
+    ok('加班：選了 A 之後時段改到 B 那段 → 不自動換店、橘字提醒「你是在 B 打卡，上面選的是 A」', store_of() == A['name']
+       and page.inner_text('#reqView .rq-auto-store.warn') == f'{D.md_of(dd["both"])} 你是在{B["name"]}打卡，上面選的是「{A["name"]}」，確認要送到這家嗎？', page.inner_text('#reqView .rq-auto-store.warn'))
+    page.locator('#reqView input[placeholder^="例如：週六"]').first.fill('盤點')
+    dlg(page, accept=False)
+    n0 = len([x for x in calls(page) if x['action'] == 'req_submit'])
+    submit(page)
+    page.wait_for_selector('#reqView .rq-box.err', timeout=10000)
+    ok('加班送出前：時段在 B 卻選 A → 跳確認「這段時間你是在 B 打卡，確定要送到 A 嗎？」、按取消不送', any(m == f'這段時間你是在{B["name"]}打卡，確定要送到「{A["name"]}」嗎？' for m in dlg(page))
+       and len([x for x in calls(page) if x['action'] == 'req_submit']) == n0, dlg(page))
+    page.close()
 
 # ── 10. 出勤班表（sched-line.js）──
 def phase_sched(ctx, gen):

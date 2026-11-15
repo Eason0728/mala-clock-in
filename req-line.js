@@ -333,6 +333,94 @@
     return { pick: null, note: null };
   }
 
+  /** 加班／請假／出差依「申請那天、那個時段」各店的卡決定店別（2026-11-15 Eason，純函式，tests/req-store-by-day.test.js 測）。
+   *  results：[{code, name, day|null}]；range：[start, end]（'HH:MM'）或 null（整天）。被擋的卡（rejected_*）不算。
+   *  回 {pick, expect:[code], must, note}：
+   *  - 有店問不到 → 什麼都不判斷（pick null、expect 空）
+   *  - 只有一家有卡 → 那家（跟目前不同就 pick）
+   *  - 兩家以上有卡：有時段而且只對到一家（時段跟那家當天第一張到最後一張卡重疊）→ 那家；對不到或整天 → must（要同仁自己選）
+   *  - 都沒卡 → 不換 */
+  function storeByDay(results, curCode, date, range) {
+    if (!results.length || results.some(function (x) { return !x.day; })) return { pick: null, expect: [], must: false, note: null };
+    var m = function (t) { var x = /^(\d{1,2}):(\d{2})/.exec(String(t || '')); return x ? +x[1] * 60 + +x[2] : null; };
+    var spans = results.map(function (x) {
+      var ts = (x.day.punches || []).filter(function (p) { return String(p.status || '').indexOf('rejected_') !== 0; }).map(function (p) { return m(p.hm); }).filter(function (v) { return v !== null; });
+      return { code: x.code, name: x.name, a: ts.length ? Math.min.apply(null, ts) : null, b: ts.length ? Math.max.apply(null, ts) : null };
+    }).filter(function (x) { return x.a !== null; });
+    if (!spans.length) return { pick: null, expect: [], must: false, note: null };
+    var fmt = function (v) { return ('0' + Math.floor(v / 60)).slice(-2) + ':' + ('0' + v % 60).slice(-2); };
+    var all = spans.map(function (x) { return x.name + ' ' + fmt(x.a) + '–' + fmt(x.b); });
+    var cand = spans;
+    if (spans.length > 1) {
+      var r0 = range ? m(range[0]) : null, r1 = range ? m(range[1]) : null;
+      if (r0 === null || r1 === null || r1 === r0) return { pick: null, expect: spans.map(function (x) { return x.code; }), must: true, note: { kind: 'multi', date: date, all: all } };
+      if (r1 < r0) r1 += 1440;
+      cand = spans.filter(function (x) { return Math.min(r1, Math.max(x.b, x.a + 1)) > Math.max(r0, x.a); });
+      if (cand.length !== 1) return { pick: null, expect: spans.map(function (x) { return x.code; }), must: true, note: { kind: 'multi', date: date, all: all } };
+    }
+    var c = cand[0];
+    return { pick: c.code === curCode ? null : c.code, expect: [c.code], must: false, note: { kind: spans.length > 1 ? 'range' : 'switched', date: date, code: c.code, name: c.name, all: all } };
+  }
+  /** 各家已綁定的店那天的卡（同一天問過就共用；只綁一家不問） */
+  function daysFor(date) {
+    if (!date || st.init.stores.length < 2) return Promise.resolve(null);
+    st.dayCache = st.dayCache || {};
+    if (!st.dayCache[date]) st.dayCache[date] = Promise.all(st.init.stores.map(function (s) {
+      return loadDay(s.code, date).then(function (d) { return { code: s.code, name: s.name, day: d }; }, function () { return { code: s.code, name: s.name, day: null }; });
+    })).then(function (res) { if (res.some(function (x) { return !x.day; })) delete st.dayCache[date]; return res; });
+    return st.dayCache[date];
+  }
+  function switchStore(code) {
+    var s = st.init.stores.filter(function (x) { return x.code === code; })[0];
+    if (!s || s === st.store) return;
+    st.store = s; st.info = null; st.infoErr = false; st.infoReal = false; st.peekAt.info = 0; cachePut();
+    loadInfo().then(function () { if (st.tab === 'mine') render(); }, function () {});
+  }
+  /** 加班／請假／出差：日期或時段變了 → 查各店那天的卡，自動選店；在 box 寫說明（只綁一家什麼都不做）。
+   *  同仁在這一天手動選過店就不再自動換（st.picked[date]） */
+  function storeHint(box, date, range) {
+    if (st.init.stores.length < 2 || !date) return;
+    var key = date + '|' + (range ? range.join('-') : '');
+    box.dataset.key = key;
+    box.textContent = '查這天在哪家打卡…'; box.className = 'rq-muted';
+    daysFor(date).then(function (res) {
+      if (!res || !box.isConnected || box.dataset.key !== key) return;
+      var dc = storeByDay(res, st.store.code, date, range), picked = (st.picked || {})[date];
+      if (dc.pick && !picked) { switchStore(dc.pick); render(); return; }
+      box.textContent = ''; box.className = '';
+      if (!dc.note) return;
+      if (dc.note.kind === 'multi') {
+        box.className = 'rq-auto-store warn';
+        box.appendChild(document.createTextNode(shortMd(date) + ' 你在 ' + dc.note.all.join('、') + ' 都有打卡，' + (picked ? '確認上面選的「' + st.store.name + '」是對的' : '請選這張要送到哪一家：')));
+        if (!picked) box.appendChild(chips(res.filter(function (x) { return dc.expect.indexOf(x.code) !== -1; }).map(function (x) { return x.name; }), '', function (name) {
+          var c = res.filter(function (x) { return x.name === name; })[0];
+          st.picked = st.picked || {}; st.picked[date] = c.code; switchStore(c.code); render();
+        }));
+      } else if (dc.expect.indexOf(st.store.code) !== -1) {
+        box.className = 'rq-auto-store';
+        box.textContent = shortMd(date) + (dc.note.kind === 'range' ? ' 這段時間你在' : ' 你在') + st.store.name + '打卡，送到這家（不對可以在上面改）';
+      } else {
+        box.className = 'rq-auto-store warn';
+        box.textContent = shortMd(date) + ' 你是在' + dc.note.name + '打卡，上面選的是「' + st.store.name + '」，確認要送到這家嗎？';
+      }
+    });
+  }
+  /** 送出前核對（加班、請假、出差）：要自己選卻還沒選 → 擋；選的店那天（那段時間）沒打卡、別家有 → 確認 */
+  function storeGuard(body) {
+    if (!body || body.kind === 'miss' || st.init.stores.length < 2) return Promise.resolve(body);
+    var range = body.start && body.end ? [body.start, body.end] : null;
+    return daysFor(body.date).then(function (res) {
+      if (!res) return body;
+      var dc = storeByDay(res, st.store.code, body.date, range), picked = (st.picked || {})[body.date];
+      if (dc.must && !picked) throw new Error(shortMd(body.date) + ' 你在 ' + dc.note.all.join('、') + ' 都有打卡，請先在上面選這張要送到哪一家');
+      if (dc.expect.length && dc.expect.indexOf(st.store.code) === -1) {
+        var names = res.filter(function (x) { return dc.expect.indexOf(x.code) !== -1; }).map(function (x) { return x.name; }).join('、');
+        if (!window.confirm((range ? '這段時間' : shortMd(body.date) + ' ') + '你是在' + names + '打卡，確定要送到「' + st.store.name + '」嗎？')) throw new Error('沒有送出：請在上面改成要送的店');
+      }
+      return body;
+    });
+  }
+
   /* ── 畫面 ── */
   function render() {
     $root.innerHTML = '';
@@ -340,6 +428,7 @@
     if (st.init.stores.length > 1) {
       var sel = h('select', { class: 'rq-store', on: { change: function () {
         st.store = st.init.stores[+sel.value]; st.info = null; st.infoErr = false; st.infoReal = false; st.peekAt.info = 0; st.storeManual = true; cachePut();
+        var dNow = ({ leave: lv.date, ot: ot.date, trip: tp.date })[st.tab]; if (dNow) { st.picked = st.picked || {}; st.picked[dNow] = st.store.code; }      // 這一天手動選過店：不再自動換（2026-11-15）
         if (st.tab === 'miss') render();   // 忘打卡：各店那天的卡已經一起查好了，先換畫面
         loadInfo().then(render, function () { alert('讀不到這家店的資料'); });
       } } }, st.init.stores.map(function (s, i) { return h('option', { value: i, text: s.name, selected: s === st.store }); }));
@@ -405,7 +494,10 @@
   function renderLeave(p) {
     if (!lv.date) lv.date = taipeiToday(0);
     var lt = st.init.leave_types || { common: [], special: [] };
-    p.appendChild(field('日期', datePick(lv.date, function (v) { lv.date = v; if (lv.type === '病假' || lv.type === '事假') render(); })));
+    var lvHint = h('div', {});      // 依那天、那段時間在哪家打卡選店（2026-11-15）
+    var lvRange = function () { return lv.mode !== 'day' && lv.start && lv.end ? [lv.start, lv.end] : null; };
+    p.appendChild(field('日期', datePick(lv.date, function (v) { lv.date = v; if (lv.type === '病假' || lv.type === '事假') render(); else storeHint(lvHint, lv.date, lvRange()); }), [lvHint]));
+    storeHint(lvHint, lv.date, lvRange());
     var typeBox = h('div', {});
     typeBox.appendChild(chips(lt.common, lv.type, function (v) { lv.type = v; render(); }));
     if (lt.special.length) {
@@ -433,7 +525,7 @@
       var s1 = timePick(lv.start, 15, function (v) { lv.start = v; upd(); });
       var e1 = timePick(lv.end, 15, function (v) { lv.end = v; upd(); });
       var tot = h('span', { class: 'rq-muted' });
-      var upd = function () { var x = spanHours(lv.start, lv.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; };
+      var upd = function () { var x = spanHours(lv.start, lv.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; if (lv.start && lv.end) storeHint(lvHint, lv.date, lvRange()); };
       modeBox.appendChild(h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot])); upd();
     }
     p.appendChild(field('時段', modeBox));
@@ -507,11 +599,14 @@
   function renderOt(p) {
     if (!ot.date) ot.date = taipeiToday(0);
     var otWarn = h('div', {});
-    p.appendChild(field('日期', datePick(ot.date, function (v) { ot.date = v; otPunchWarn(otWarn); })));
+    var otHint = h('div', {});      // 依那天、那段時間在哪家打卡選店（2026-11-15）
+    var otRange = function () { return ot.start && ot.end ? [ot.start, ot.end] : null; };
+    p.appendChild(field('日期', datePick(ot.date, function (v) { ot.date = v; otPunchWarn(otWarn); storeHint(otHint, ot.date, otRange()); }), [otHint]));
+    storeHint(otHint, ot.date, otRange());
     var s1 = timePick(ot.start, 15, function (v) { ot.start = v; upd(); });
     var e1 = timePick(ot.end, 15, function (v) { ot.end = v; upd(); });
     var tot = h('span', { class: 'rq-muted' });
-    var upd = function () { var x = spanHours(ot.start, ot.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; otPunchWarn(otWarn); }; upd();
+    var upd = function () { var x = spanHours(ot.start, ot.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; otPunchWarn(otWarn); if (ot.start && ot.end) storeHint(otHint, ot.date, otRange()); }; upd();
     p.appendChild(field('加班時段', h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot]), [otWarn]));
     var rs = h('input', { type: 'text', maxlength: '100', value: ot.reason, placeholder: '例如：週六晚上外送訂單多', on: { input: function () { ot.reason = rs.value; } } });
     p.appendChild(field('原因（必填）', rs));
@@ -536,7 +631,10 @@
   function renderTrip(p) {
     if (!tp.date) tp.date = taipeiToday(0);
     var tw = preWarns('trip', '', tp.date);
-    p.appendChild(field('日期', datePick(tp.date, function (v) { tp.date = v; render(); }), tw.length ? [warnBox(tw)] : []));
+    var tpHint = h('div', {});      // 依那天、那段時間在哪家打卡選店（2026-11-15）
+    var tpRange = function () { return tp.mode !== 'day' && tp.start && tp.end ? [tp.start, tp.end] : null; };
+    p.appendChild(field('日期', datePick(tp.date, function (v) { tp.date = v; render(); }), (tw.length ? [warnBox(tw)] : []).concat([tpHint])));
+    storeHint(tpHint, tp.date, tpRange());
     var modeBox = h('div', {}, [chips(['整天', '只一段'], tp.mode === 'day' ? '整天' : '只一段', function (v) { tp.mode = v === '整天' ? 'day' : 'span'; render(); })]);
     if (tp.mode === 'day') {
       var hr = h('input', { type: 'number', min: '0.5', max: '24', step: '0.5', value: tp.hours, class: 'rq-hours', on: { input: function () { tp.hours = hr.value; } } });
@@ -545,7 +643,7 @@
       var s1 = timePick(tp.start, 15, function (v) { tp.start = v; upd(); });
       var e1 = timePick(tp.end, 15, function (v) { tp.end = v; upd(); });
       var tot = h('span', { class: 'rq-muted' });
-      var upd = function () { var x = spanHours(tp.start, tp.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; };
+      var upd = function () { var x = spanHours(tp.start, tp.end); tot.textContent = x ? '共 ' + x + ' 小時' : ''; if (tp.start && tp.end) storeHint(tpHint, tp.date, tpRange()); };
       modeBox.appendChild(h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot])); upd();
     }
     p.appendChild(field('時段', modeBox));
@@ -774,7 +872,7 @@
       // 原本錯誤直接丟出去，畫面停在「送出中…」、按鈕一直是灰的。
       var built;
       try { built = build(); } catch (err) { built = Promise.reject(err); }
-      Promise.resolve(built).then(function (body) {
+      Promise.resolve(built).then(storeGuard).then(function (body) {
         body.action = 'req_submit'; body.id_token = liff.getIDToken();
         return E.post(E.storeApi(storeDef()), body);
       }).then(function (r) {
