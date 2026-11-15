@@ -2079,6 +2079,7 @@ function handleMgrApprove(body) {
     if (x.hours !== '' && x.hours != null) {
       h = Number(x.hours);
       if (!isFinite(h) || h < 0) return { ok: false, error: 'bad_leave_hours' };
+      if (h > 24) return { ok: false, error: 'bad_leave_hours', message: t + '一天不能超過 24 小時' };   // 2026-11-15 考勤挑錯 B19：原本出差 999 小時照收
       h = Math.round(h * 100) / 100;
     }
     leaves.push({ type: t, hours: h });
@@ -2141,7 +2142,8 @@ function handleMgrApprove(body) {
   } else {
     for (let i = 0; i < rawPeriods.length; i++) {
       const p = rawPeriods[i];
-      if (!p || !timeRe.test(p.start) || !timeRe.test(p.end)) return { ok: false, error: 'bad_periods' };
+      // 起訖一定要是字串（2026-11-15 考勤挑錯 B19）：包成陣列 ['09:00'] 會被當成字串通過格式檢查、又躲過下面「開始和結束一樣」，核出 24 小時
+      if (!p || typeof p.start !== 'string' || typeof p.end !== 'string' || !timeRe.test(p.start) || !timeRe.test(p.end)) return { ok: false, error: 'bad_periods' };
       // 起訖一樣原本當成跨夜算 24 小時（營運系統直送沒有確認框）；同 Requests.gs reqSpanCheck_（2026-11-04 對抗驗證）
       if (p.start === p.end) return { ok: false, error: 'bad_periods', message: '上班時段 ' + p.start + '–' + p.end + ' 開始和結束一樣，請確認' };
     }
@@ -2198,6 +2200,7 @@ function handleMgrApprove(body) {
         // 正職上班日滿 8 小時（2026-11-13）：正職與否、是不是支援帳號只信營運系統個人帳號代轉帶來的（伺服器讀排班與管理系統身分填）
         sched_ft: acting && body.sched_ft === true, sched_support: acting && typeof body.sched_support === 'boolean' ? body.sched_support : null,
         sched_day: acting ? String(body.sched_day || '') : '', sched_spans: acting && Array.isArray(body.sched_spans) ? body.sched_spans : [], diff_reason: body.diff_reason, acting: acting,
+        late_min: body.late_min,   // 主管認定的遲到分鐘：被免掉的遲到要有單（2026-11-15 考勤挑錯 B1）
         // 那天這位同仁「新手機待核准」的卡有幾張（2026-11-11 B35）：少卡被擋時訊息請主管先核准裝置
         pending_device: eventRows.filter(function (e) { return String(e.emp_id) === String(body.emp_id) && e.status === 'pending_device_approval' && tsDateStr(e.ts) === date; }).length });
     if (bind) return bind;
