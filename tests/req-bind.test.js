@@ -342,6 +342,7 @@ ok('規則 3：整天請假（沒有時段）也看；審核中的假單不算',
 });
 ok('規則 4（2026-11-14 改）：只看核定比打卡多；早到晚走不擋、遲到那段不算、寫原因不再放行、休息帶扣掉', () => {
   const sb = makeEnv();
+  sb.__props.REQ_CARD_REASON_FROM = 'off';      // 這段只測「核定比打卡多」；每張卡差 30 分要原因另外測（檔尾）
   // 打卡比核定多（核定 09:00–16:30、打卡到 17:00）：多出的不算，不用原因
   assert.strictEqual(chk(sb, 7.5, [P2('09:00', '16:30')], [S2('09:00', '17:00')], {}), null);
   // 核定比打卡多 30 分鐘（核定到 17:00、16:30 就下班）：要有單，逐條回 over_credit、要補申請
@@ -572,4 +573,43 @@ ok('reqSegsWithMiss_：補上班／補下班／補中間休息', () => {
   assert.deepStrictEqual(f([S2('09:00', '21:00')], [{ kind: 'miss', miss_type: 'break', end: '14:00', start: '17:00' }]), [S2('09:00', '14:00'), S2('17:00', '21:00')]);
   assert.deepStrictEqual(f([S2('09:00', '17:00')], [{ kind: 'ot', start: '17:00', end: '18:00' }]), [S2('09:00', '17:00')], '不是忘打卡單不動');
 });
+
+/* ── 每張卡跟核定差超過 30 分要原因（2026-11-16 Eason，11/17 起的日子）── */
+{
+  const D3 = '2026-11-18';
+  const m3 = (hm) => Date.parse(D3 + 'T' + hm + ':00+08:00');
+  const P3 = (a, b) => ({ startMs: m3(a), endMs: m3(b) }), S3 = (a, b) => ({ inMs: a ? m3(a) : null, outMs: b ? m3(b) : null });
+  const B3 = { startMs: m3('12:00'), endMs: m3('13:00') };
+  ok('每張卡：上班卡早 40 分、沒寫原因 → need_diff_reason，列出那張卡；寫了原因放行', () => {
+    const sb = makeEnv();
+    const r = sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('08:20', '17:05')], null);
+    assert.strictEqual(r && r.error, 'need_diff_reason', JSON.stringify(r));
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(r.cards)), [{ side: 'in', card: '08:20', core: '09:00', min: 40 }]);
+    assert.ok(/^核定和打卡差/.test(r.message), r.message);
+    assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('08:20', '17:05')], null, { diff_reason: '上班卡 08:20：臨時調班' }), null);
+  });
+  ok('每張卡：剛好 30 分不用原因（超過 30 分才要）', () => {
+    const sb = makeEnv();
+    assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('08:30', '17:30')], null), null);
+  });
+  ok('每張卡：遲到 40 分（核定從班表開始）也要原因；央廚中午休息帶不算差', () => {
+    const sb = makeEnv();
+    const r = sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('09:40', '17:00')], null);
+    assert.strictEqual(r && r.error, 'need_diff_reason');
+    assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('08:00', '12:00'), P3('13:00', '17:00')], [S3('07:58', '17:02')], B3), null);
+  });
+  ok('每張卡：兩段班各自比；11/16 以前的日子不看；REQ_CARD_REASON_FROM=off 關掉', () => {
+    const sb = makeEnv();
+    const r = sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '13:00'), P3('17:00', '21:00')], [S3('09:00', '13:45'), S3('17:00', '21:00')], null);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(r.cards)), [{ side: 'out', card: '13:45', core: '13:00', min: 45 }]);
+    assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', '2026-11-16', 8, [{ startMs: Date.parse('2026-11-16T09:00:00+08:00'), endMs: Date.parse('2026-11-16T17:00:00+08:00') }], [{ inMs: Date.parse('2026-11-16T08:20:00+08:00'), outMs: Date.parse('2026-11-16T17:00:00+08:00') }], null), null);
+    sb.__props.REQ_CARD_REASON_FROM = 'off';
+    assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('08:20', '17:05')], null), null);
+  });
+  ok('每張卡：缺單照舊先擋（need_request），原因救不了缺單', () => {
+    const sb = makeEnv();
+    const r = sb.reqBindCheck_(sb.getSS(), 'E01', D3, 9.5, [P3('09:00', '18:30')], [S3('08:00', '18:30')], null, { diff_reason: '臨時調班' });
+    assert.strictEqual(r && r.error, 'need_request');
+  });
+}
 console.log('req-bind: ' + n + ' 項全過');
