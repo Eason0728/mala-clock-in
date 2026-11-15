@@ -125,7 +125,7 @@ ok('快速通道：格式不合一律留白（req_id 長度／大寫、route 與
   [{ req_id: 'r3F9a0c11d2e4b7a8' }, { req_id: 'r3f9a0c11d2e4b7a' }, { req_id: "x'+=1" }].forEach(b => {
     const t = make(); t.call(b); assert.strictEqual(t.sheets.punch_timing.rows[0][17], '', JSON.stringify(b));
   });
-  const t = make(); t.call({ route: 'mini', predict: 'yes', predict_ms: -5 });
+  const t = make(); t.call({ route: 'bogus', predict: 'yes', predict_ms: -5 });
   assert.strictEqual(JSON.stringify(t.sheets.punch_timing.rows[0].slice(18)), JSON.stringify(['', '', '']));
 });
 ok('快速通道：三種 route、四種 predict 都收', () => {

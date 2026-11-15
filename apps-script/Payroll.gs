@@ -3939,6 +3939,13 @@ function handlePayrollFinalize(body) {
       message: '下面 ' + lm.length + ' 筆請假單和請假登記對不上，不能鎖定（請假單有、請假登記沒有＝請主管把那天重新核定一次；請假登記有、請假單沒有＝請同仁補請假單，或主管重新核定改掉那天的登記）：\n' +
         lm.slice(0, 30).map(payLeaveMismatchLine_).join('\n') + (lm.length > 30 ? '\n…共 ' + lm.length + ' 筆' : '') };
   }
+  /* 打卡正本在 Mac mini 時（G＋備援，RelayG.gs）：mini 和 Google 這個月的打卡筆數要一致才能鎖（Eason 2026-11-15 選「擋下」）。解鎖不擋。 */
+  if (lock && typeof payGReconBlock_ === 'function' && typeof relayGMode_ === 'function' && relayGMode_().on) {   // 沒切換＝完全不看、不多開試算表（Fable 審查 A2）
+    let gb = null;
+    try { const gss = payClockSS(stF, true); gb = payGReconBlock_(ym, gss ? gss.getId() : ''); }
+    catch (err) { gb = { error: 'g_recon_check_failed', message: '檢查打卡正本對帳失敗，這次沒有鎖定，請再按一次：' + err }; }
+    if (gb) return { ok: false, error: gb.error, message: gb.message };
+  }
   let n = 0, savedSnap = null;
   /* 稽核與損益快照也是「讀整張再寫回」的共用分頁，和鎖定狀態放在同一把鎖裡，兩店同時定案才不會互相蓋掉（2026-11-10）。 */
   if (!payWriteLocked_(['run', 'audit', 'cost_snapshot'], function () {
