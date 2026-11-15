@@ -48,7 +48,7 @@ LOW_ACCURACY_M = 50
 ACCURACY_CREDIT_CAP_M = 100
 # 上下班交替判斷的回看視窗（小時）：看得到跨夜班前一晚的上班卡，
 # 但昨天忘打的下班卡（超過視窗）不會鎖死今天的上班卡。
-ALTERNATION_LOOKBACK_HOURS = 12
+ALTERNATION_LOOKBACK_HOURS = 24   # 2026-11-15 Eason：12→24，與 Code.gs CONFIG 同步
 SAME_TYPE_LOCK_MIN = 10  # 同型（上班後又上班）只在這幾分鐘內擋（與 Code.gs 同步，2026-11-02）
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
