@@ -8,8 +8,12 @@
 var RELAYG_VERSION = 1;
 var RELAYG_REQ_RE_ = /^r[0-9a-f]{16}$/;
 var RELAYG_CAP_RE_ = /^cap:[^:]{1,40}:\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+08:00$/;   // 單日滿 10 小時系統卡的單號（mini 寫的）
-var RELAYG_TAIL_ROWS_ = 400;          // 去重只看最後這幾列（一天九店合計約 90 張卡，夠用好幾天）
-var RELAYG_MARK_TTL_S_ = 900;          // 「這張單號正在寫／寫好了」記號留 15 分鐘
+var RELAYG_MARK_TTL_S_ = 900;          // 「這張單號寫好了」記號留 15 分鐘
+var RELAYG_PENDING_TTL_S_ = 120;       // 「手機改送的那張正在寫」記號最多留 2 分鐘（liff_punch 中途出錯沒清掉也不會卡太久；Fable 審查 B4）
+var RELAYG_TS_BACK_MS_ = 3 * 86400000, RELAYG_TS_AHEAD_MS_ = 2 * 60000;   // relay_append 收的時間範圍：3 天前～2 分鐘後（審查 C2）
+// relay_pull 只給 mini 擋卡要的欄（審查 D1：不給名冊的建立人、移除人等；以後表上新增的欄也不會自動流出）
+var RELAYG_EVENT_COLS_ = ['ts', 'emp_id', 'type', 'lat', 'lng', 'distance_m', 'within_range', 'device_id', 'device_match', 'status', 'accuracy_m', 'source', 'req_id', 'mirror_src'];
+var RELAYG_ROSTER_COLS_ = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active', 'shift_in', 'shift_out', 'removed_at', 'line_user_id', 'line_bound_at', 'line_ok_at'];
 var RELAYG_PULL_MAX_ = 4000;           // relay_pull 一次最多回幾列
 var RELAYG_SHEETS_ = ['ot_month', 'sched_pub'];   // mini 擋卡規則會讀的其他分頁（Rest.gs 加班上限、Cap10.gs 班表）
 var RELAYG_PROPS_ = ['REST_RULE_ON', 'REST_CAP_ON', 'REST_OT_ON'];
@@ -41,28 +45,44 @@ function relayGTail_(sh, heads, n) {
     var o = {}; heads.forEach(function (h, k) { o[h] = row[k]; }); o.__rowIndex = from + i; o.ts = normCellTs(o.ts); return o;
   });
 }
-function relayGFindReq_(rows, reqId) {
-  for (var i = rows.length - 1; i >= 0; i--) if (String(rows[i].req_id || '') === reqId) return rows[i];
+/** 整欄找單號（審查 B5：只看最後 400 列，總部每天鏡像重寫就超過）。找到回那一列（物件），沒有回 null。 */
+function relayGFindReqRow_(sh, heads, reqId) {
+  var c = heads.indexOf('req_id'), last = sh.getLastRow();
+  if (c < 0 || last < 2) return null;
+  var col = sh.getRange(2, c + 1, last - 1, 1).getValues();
+  for (var i = col.length - 1; i >= 0; i--) {
+    if (String(col[i][0] || '') === reqId) {
+      var row = sh.getRange(i + 2, 1, 1, heads.length).getValues()[0], o = {};
+      heads.forEach(function (h, k) { o[h] = row[k]; }); o.__rowIndex = i + 2; o.ts = normCellTs(o.ts);
+      return o;
+    }
+  }
   return null;
+}
+function relayGLock_(ms) {   // 拿不到鎖回 null（呼叫端照常做，只是少一道保險）
+  try { var l = LockService.getScriptLock(); return l.tryLock(ms) ? l : null; } catch (e) { return null; }
 }
 function relayGMarkKey_(reqId) { return 'rqg:' + reqId; }
 function relayGMarkGet_(reqId) {
   try { var v = CacheService.getScriptCache().get(relayGMarkKey_(reqId)); return v ? JSON.parse(v) : null; } catch (e) { return null; }
 }
-function relayGMarkPut_(reqId, obj) {
-  try { CacheService.getScriptCache().put(relayGMarkKey_(reqId), JSON.stringify(obj), RELAYG_MARK_TTL_S_); } catch (e) {}
+function relayGMarkPut_(reqId, obj, ttl) {
+  try { CacheService.getScriptCache().put(relayGMarkKey_(reqId), JSON.stringify(obj), ttl || RELAYG_MARK_TTL_S_); } catch (e) {}
 }
-function relayGRowOut_(r, key) {
+function relayGRowOut_(r, key, cols, memo) {
   var o = {};
-  Object.keys(r).forEach(function (k) {
-    if (k === '__rowIndex') return;
+  cols.forEach(function (k) {
+    if (!(k in r)) return;
     var v = relayGCell_(r[k]);
-    if (k === 'device_id') v = (String(v) === 'system' || v === '') ? v : 'h:' + relayGHash_(v, key);
+    if (k === 'device_id' && !(String(v) === 'system' || v === '')) v = memo[v] || (memo[v] = 'h:' + relayGHash_(v, key));   // 裝置碼重複多：算過的不再算（審查 D2）
     o[k] = v;
   });
   o.__row = r.__rowIndex;
   return o;
 }
+/** 寫進表的值：數字欄轉數字、是非欄轉 true／false、其他是文字的話開頭 = + - @ 換成全形（同 handleClock，擋公式；審查 C1） */
+function relayGNum_(v) { if (v === '' || v === null || v === undefined) return ''; var n = Number(v); return isFinite(n) ? n : ''; }
+function relayGBool_(v) { return v === true || String(v).toLowerCase() === 'true' ? true : (v === false || String(v).toLowerCase() === 'false' ? false : ''); }
 
 /**
  * {action:'relay_pull', relay_key, from_row?:資料第幾列起（1＝第一張卡）, with?:{roster,sheets,props}}
@@ -79,11 +99,12 @@ function handleRelayPull_(body) {
     var heads = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h || ''); });
     var total = Math.max(sh.getLastRow() - 1, 0);
     var from = Math.max(1, Math.floor(Number(body.from_row) || 1));
-    out.total = total; out.from_row = from; out.headers = heads.filter(function (h) { return h; });
+    out.total = total; out.from_row = from; out.headers = heads.filter(function (h) { return h && RELAYG_EVENT_COLS_.indexOf(h) >= 0; });
     if (from <= total) {
       var n = Math.min(total - from + 1, RELAYG_PULL_MAX_);
+      var memo = {};
       out.events = sh.getRange(from + 1, 1, n, heads.length).getValues().map(function (row, i) {
-        var o = {}; heads.forEach(function (h, k) { if (h) o[h] = row[k]; }); o.__rowIndex = from + 1 + i; return relayGRowOut_(o, key);
+        var o = {}; heads.forEach(function (h, k) { if (h) o[h] = row[k]; }); o.__rowIndex = from + 1 + i; return relayGRowOut_(o, key, RELAYG_EVENT_COLS_, memo);
       });
       out.more = from + n - 1 < total;
     }
@@ -95,8 +116,9 @@ function handleRelayPull_(body) {
   }
   if (w.roster) {
     var rs = ss.getSheetByName('roster');
+    var rmemo = {};
     out.roster = rs ? readSheetAsObjects(rs).rows.map(function (r) {
-      var o = relayGRowOut_(r, key);
+      var o = relayGRowOut_(r, key, RELAYG_ROSTER_COLS_, rmemo);
       o.key = r.key ? 'h:' + relayGHash_(r.key, key) : '';
       o.line_user_id = r.line_user_id ? 'h:' + relayGHash_(r.line_user_id, key) : '';
       return o;
@@ -136,14 +158,18 @@ function handleRelayAppend_(body) {
   if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+08:00$/.test(String(row.ts || ''))) return { ok: false, error: 'bad_ts' };
   var status = String(row.status || '');
   if (!/^(ok|pending_device_approval|rejected_[a-z_]+)$/.test(status)) return { ok: false, error: 'bad_status' };
+  var src = String(row.source || 'mini');
+  if (['mini', 'system_cap'].indexOf(src) < 0) return { ok: false, error: 'bad_source' };
+  var tsMs = new Date(String(row.ts)).getTime();
+  if (!(tsMs >= Date.now() - RELAYG_TS_BACK_MS_ && tsMs <= Date.now() + RELAYG_TS_AHEAD_MS_)) return { ok: false, error: 'bad_ts' };   // 太舊或未來的卡不收（金鑰外流也不能補寫任意時間的卡）
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy' };
   try {
     var ss = getSS(), sh = ss.getSheetByName('events');
-    var heads = relayGHeads_(sh), tail = relayGTail_(sh, heads, RELAYG_TAIL_ROWS_);
-    var found = relayGFindReq_(tail, reqId);
+    var heads = relayGHeads_(sh), tail = relayGTail_(sh, heads, 60);
+    var found = relayGFindReqRow_(sh, heads, reqId);
     if (!found && isCap) {   // 系統卡：這裡的觸發器（capSweep）可能已經先寫了同一張（同人、同時刻 ±60 秒）
-      var atMs = new Date(String(row.ts)).getTime();
+      var atMs = tsMs;
       tail.forEach(function (e) {
         if (String(e.emp_id) === String(row.emp_id) && String(e.source || '') === 'system_cap' && Math.abs(new Date(String(e.ts)).getTime() - atMs) <= 60000) found = e;
       });
@@ -155,19 +181,20 @@ function handleRelayAppend_(body) {
     if (found) return relayGDupOut_(found, reqId);
     var rr = readSheetAsObjects(ss.getSheetByName('roster')).rows;
     var me = rr.filter(function (r) { return String(r.emp_id) === String(row.emp_id); })[0];
-    if (!me && !isCap) return { ok: false, error: 'no_emp' };
+    if (!me) return { ok: false, error: 'no_emp' };   // 系統卡也要是名冊上的人（審查 C1）
+    if (!isCap && String(me.active).toLowerCase() !== 'true') return { ok: false, error: 'inactive' };
     var dev;
     if (isCap) dev = 'system';
     else if (me.device_id) dev = String(me.device_id);
-    else if (body.bind_sub && /^U[0-9a-f]{32}$/.test(String(body.bind_sub))) {
+    else if (body.bind_sub && /^U[0-9a-f]{32}$/.test(String(body.bind_sub)) && String(me.line_user_id) === String(body.bind_sub)) {   // 只能綁成這個人自己的 LINE（審查 C3）
       dev = 'line:' + String(body.bind_sub);
       var rsh = ss.getSheetByName('roster');
       rsh.getRange(me.__rowIndex, ROSTER_HEADERS.indexOf('device_id') + 1).setValue(dev);
       rsh.getRange(me.__rowIndex, ROSTER_HEADERS.indexOf('device_bound_at') + 1).setValue(String(row.ts));
     } else return { ok: false, error: 'no_device' };
-    var val = { ts: String(row.ts), emp_id: String(row.emp_id), type: row.type, lat: row.lat, lng: row.lng, distance_m: row.distance_m,
-                within_range: row.within_range, device_id: dev, device_match: row.device_match, status: status,
-                accuracy_m: row.accuracy_m, source: String(row.source || 'mini'), req_id: reqId };
+    var val = { ts: String(row.ts), emp_id: String(me.emp_id), type: row.type, lat: relayGNum_(row.lat), lng: relayGNum_(row.lng), distance_m: relayGNum_(row.distance_m),
+                within_range: relayGBool_(row.within_range), device_id: dev, device_match: relayGBool_(row.device_match), status: status,
+                accuracy_m: relayGNum_(row.accuracy_m), source: src, req_id: reqId };
     if (typeof empIdColText_ === 'function') { try { empIdColText_(sh); } catch (e) {} }
     sh.appendRow(heads.map(function (h) { return val.hasOwnProperty(h) ? (val[h] === null || val[h] === undefined ? '' : val[h]) : ''; }));
     SpreadsheetApp.flush();
@@ -178,7 +205,7 @@ function handleRelayAppend_(body) {
       if (body.line_ok && typeof liffMarkLineOk_ === 'function') { try { liffMarkLineOk_(ss, me.emp_id, me.__rowIndex); } catch (e) {} }
       out.extras = relayGExtras_(ss, val, tail);
     }
-    relayGMarkPut_(reqId, { state: 'done', out: out });
+    relayGMarkPut_(reqId, { state: 'done', out: { ok: true, dup: false, row: out.row, date: out.date, emp_id: out.emp_id, extras: {} } });
     return out;
   } finally { lock.releaseLock(); }
 }
@@ -204,24 +231,26 @@ function relayGExtras_(ss, val, tail) {
 
 /* ── 手機改送 Google（liff_punch 帶 req_id）：同一張單號只寫一次 ──
    Liff.gs handleLiffPunch_ 呼叫：寫之前 relayGFallbackBefore_，寫完 relayGFallbackAfter_ 把 req_id、source 補到那一列。 */
-/** 回 null＝照常寫；回物件＝這張單號已經處理過，直接回這個結果（不再寫一次）。 */
+/** 回 null＝照常寫；回物件＝這張單號已經處理過，直接回這個結果（不再寫一次）。
+ *  查「有沒有寫過」與放「正在寫」記號在同一把鎖裡做，跟 relay_append（也拿這把鎖）不會同時判（審查 B1／B2：mini 剛好 3 秒後才抄過來）。 */
+var RELAYG_FB_T0_ = 0;   // 這次手機改送開始的時間（寫完找那一列用；每次請求是獨立執行）
 function relayGFallbackBefore_(body) {
   var reqId = String(body.req_id || '');
   if (!RELAYG_REQ_RE_.test(reqId)) return null;
-  for (var i = 0; i < 6; i++) {   // mini 那張正在抄過來（relay_append 拿著鎖）：最多等 3 秒
+  RELAYG_FB_T0_ = Date.now() - 2000;
+  var lock = relayGLock_(8000);
+  try {
     var mk = relayGMarkGet_(reqId);
     if (mk && mk.state === 'done' && mk.punch) { var cp = JSON.parse(JSON.stringify(mk.punch)); cp.dup = true; delete cp.steps; return cp; }
     if (mk && mk.state === 'done' && mk.out) return relayGPunchFromRow_(body.type, mk.out.row);
-    if (!mk) break;
-    Utilities.sleep(500);
-  }
-  try {
-    var sh = getSS().getSheetByName('events'), heads = relayGHeads_(sh);
-    var hit = relayGFindReq_(relayGTail_(sh, heads, RELAYG_TAIL_ROWS_), reqId);
-    if (hit) return relayGPunchFromRow_(body.type, { ts: String(hit.ts), status: String(hit.status), type: String(hit.type) });
-  } catch (e) {}
-  relayGMarkPut_(reqId, { state: 'pending' });
-  return null;
+    try {
+      var sh = getSS().getSheetByName('events'), heads = relayGHeads_(sh);
+      var hit = relayGFindReqRow_(sh, heads, reqId);
+      if (hit) return relayGPunchFromRow_(body.type, { ts: String(hit.ts), status: String(hit.status), type: String(hit.type) });
+    } catch (e) {}
+    relayGMarkPut_(reqId, { state: 'pending' }, RELAYG_PENDING_TTL_S_);
+    return null;
+  } finally { if (lock) lock.releaseLock(); }
 }
 function relayGPunchFromRow_(type, r) {
   var ok = r.status === 'ok';
@@ -230,24 +259,29 @@ function relayGPunchFromRow_(type, r) {
   else { var rr = LIFF_PUNCH_REASONS_[r.status] || ['系統回覆：' + r.status, '請告知主管']; res.reason = rr[0]; res.hint = rr[1]; }
   return res;
 }
-/** liff_punch 寫完（handleClock 那列）：在那一列補 req_id 與 source（line_g＝手機改送 Google），記號改成完成。 */
+/** liff_punch 做完（不管成功、被擋、出錯都會呼叫；Liff.gs 放在 finally）：handleClock 寫的那一列補 req_id 與 source（line_g＝手機改送 Google），記號改成完成。
+ *  被擋的卡回應沒有 ts（審查 B3）：找這次開始之後、這個人、這一型、還沒有單號的最後一列。 */
 function relayGFallbackAfter_(body, res, empId) {
   var reqId = String(body.req_id || '');
   if (!RELAYG_REQ_RE_.test(reqId)) return;
+  var keep = res ? JSON.parse(JSON.stringify(res)) : { ok: false, reason: '系統沒有回應', hint: '請再按一次' };
+  delete keep.steps; delete keep.req_notes; delete keep.ot_hint;   // 記號裡不放申請結果等個人提示（同單號重送不用驗身分就拿得到；審查 B7）
   try {
-    if (res && res.ts) {
-      var sh = getSS().getSheetByName('events'), heads = relayGHeads_(sh), tail = relayGTail_(sh, heads, 20);
+    if (empId) {
+      var sh = getSS().getSheetByName('events'), heads = relayGHeads_(sh), tail = relayGTail_(sh, heads, 30);
       for (var i = tail.length - 1; i >= 0; i--) {
-        var e = tail[i];
-        if (String(e.ts) === String(res.ts) && String(e.emp_id) === String(empId) && String(e.type) === String(body.type) && !e.req_id) {
-          sh.getRange(e.__rowIndex, heads.indexOf('req_id') + 1).setValue(reqId);
-          if (!e.source) sh.getRange(e.__rowIndex, heads.indexOf('source') + 1).setValue('line_g');
-          break;
-        }
+        var e = tail[i], t = new Date(String(e.ts)).getTime();
+        if (String(e.emp_id) !== String(empId) || String(e.type) !== String(body.type) || e.req_id) continue;
+        if (res && res.ts ? String(e.ts) !== String(res.ts) : !(t >= RELAYG_FB_T0_)) continue;
+        sh.getRange(e.__rowIndex, heads.indexOf('req_id') + 1).setValue(reqId);
+        if (!e.source) sh.getRange(e.__rowIndex, heads.indexOf('source') + 1).setValue('line_g');
+        if (!keep.ts) keep.ts = String(e.ts);
+        if (!keep.status) keep.status = String(e.status);
+        break;
       }
     }
-    relayGMarkPut_(reqId, { state: 'done', punch: res });
-  } catch (e) { relayGMarkPut_(reqId, { state: 'done', punch: res }); }
+  } catch (e) {}
+  relayGMarkPut_(reqId, { state: 'done', punch: keep });
 }
 
 /* ── 切換開關與對帳結果（只有光復用）：薪資鎖月前檢查（Payroll.gs payGReconBlock_） ──
@@ -269,7 +303,7 @@ function handleRelayMode_(body) {
       Object.keys(m).forEach(function (ym) {
         if (!/^\d{4}-\d\d$/.test(ym)) return;
         var r = m[ym] || {};
-        cur[id][ym] = { ok: r.ok === true, mini: Number(r.mini) || 0, g: Number(r.g) || 0, at: Number(r.at) || Date.now(), diff: String(r.diff || '').slice(0, 200) };
+        cur[id][ym] = { ok: r.ok === true, mini: Number(r.mini) || 0, g: Number(r.g) || 0, at: Number(r.at) || 0, diff: String(r.diff || '').slice(0, 80) };   // 指令碼屬性一個值約 9KB 上限（審查 E3）
       });
       var yms = Object.keys(cur[id]).sort(); while (yms.length > 3) delete cur[id][yms.shift()];   // 每店只留最近 3 個月
     });
@@ -293,6 +327,9 @@ var RELAYG_RECON_FRESH_MS_ = 30 * 60000;
 function payGReconBlock_(ym, ssId) {
   var mode = relayGMode_();
   if (!mode.on || !ssId || (mode.stores || []).indexOf(String(ssId)) < 0) return null;
+  // 切換那個月以前的月份：正本本來就是 Google，不看對帳（審查 E1）
+  var swYm = mode.at ? Utilities.formatDate(new Date(Number(mode.at)), 'Asia/Taipei', 'yyyy-MM') : '';
+  if (swYm && String(ym) < swYm) return null;
   var r = (relayGRecon_()[String(ssId)] || {})[String(ym)];
   if (!r) return { error: 'g_recon_missing', message: '打卡正本（Mac mini）和 Google 這個月還沒有對帳結果，這次沒有鎖定。請找資訊部確認 Mac mini 打卡服務是否正常。' };
   if (Date.now() - Number(r.at || 0) > RELAYG_RECON_FRESH_MS_)

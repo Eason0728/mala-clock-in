@@ -126,4 +126,76 @@ const doPost = (m, body) => JSON.parse(m.sb.doPost({ postData: { contents: JSON.
   check('M7', '退回（關掉）：不擋', m.sb.payGReconBlock_('2026-11', 'SS1'), null);
   check('M8', '沒金鑰不能改開關', m.sb.handleRelayMode_({ relay_key: 'x', on: true }).error, 'unauthorized');
 }
+
+// ── Fable 審查修正（2026-11-15）──
+const ROW = (o) => Object.assign({ ts: '2026-11-20T09:00:01+08:00', emp_id: 'E01', type: 'out', lat: 1, lng: 1, distance_m: 3, within_range: true, device_match: true, status: 'ok', accuracy_m: 10, source: 'mini' }, o || {});
+{
+  // B1／B2：手機改送那張還在寫（pending）時 mini 抄同一張 → busy；寫完再抄 → dup，只有一張
+  const m = world('2026-11-20T09:00:00', [['2026-11-20T08:00:00', 'E01', 'in']]);
+  const body = Object.assign({ id_token: 'TOK_U1', type: 'out', req_id: RID(21) }, HERE);
+  check('R1', 'Before 放 pending', m.sb.relayGFallbackBefore_(body), null);
+  check('R2', 'pending 時 mini 抄同一張 → busy、不寫', [m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(21), row: ROW() }).error, rows(m).length], ['busy', 1]);
+  Object.keys(m.cache).filter((k) => k.indexOf('rqg:') === 0).forEach((k) => delete m.cache[k]);
+  const r = m.sb.handleLiffPunch_(body);
+  const a = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(21), row: ROW() });
+  check('R3', '寫完再抄 → dup，同單號只有一張', [r.ok, a.dup, rows(m).filter((x) => x.req_id === RID(21)).length], [true, true, 1]);
+}
+{
+  // B3：改送 Google 被擋（超出範圍）那列也補單號；mini 再抄同一張＝dup
+  const m = world('2026-11-20T09:00:00', [['2026-11-20T08:00:00', 'E01', 'in']]);
+  const far = Object.assign({ accuracy: 5 }, at(500));
+  const r = m.sb.handleLiffPunch_(Object.assign({ id_token: 'TOK_U1', type: 'out', req_id: RID(22) }, far));
+  const w = rows(m)[1];
+  check('R4', '被擋的卡那列也有單號', [r.ok, w.status, w.req_id], [false, 'rejected_out_of_range', RID(22)]);
+  const a = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(22), row: ROW({ status: 'rejected_out_of_range', within_range: false }) });
+  check('R5', 'mini 抄同一張＝dup，不多一列', [a.dup, rows(m).length], [true, 2]);
+}
+{
+  // B4：liff_punch 中途出錯 → 記號改成完成，mini 抄同一張不會一直 busy
+  const m = world('2026-11-20T09:00:00', [['2026-11-20T08:00:00', 'E01', 'in']]);
+  const orig = m.sb.liffPunchVerified_;
+  m.sb.liffPunchVerified_ = () => { throw new Error('boom'); };
+  let threw = false;
+  try { m.sb.handleLiffPunch_(Object.assign({ id_token: 'TOK_U1', type: 'out', req_id: RID(23) }, HERE)); } catch (e) { threw = true; }
+  m.sb.liffPunchVerified_ = orig;
+  const a = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(23), row: ROW() });
+  check('R6', '出錯後記號不卡：mini 照抄', [threw, a.ok, a.dup], [true, true, false]);
+  check('R7', 'pending 記號最多 2 分鐘', m.sb.RELAYG_PENDING_TTL_S_, 120);
+}
+{
+  // B5：單號在 400 列以前也找得到
+  const evs = [['2026-11-20T08:00:00', 'E01', 'in']];
+  const m = world('2026-11-20T09:00:00', evs);
+  m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(24), row: ROW() });
+  const h = heads(m);
+  for (let i = 0; i < 450; i++) { const r = h.map(() => ''); r[0] = '2026-11-20T09:01:00+08:00'; r[1] = 'X'; r[2] = 'in'; r[h.indexOf('status')] = 'ok'; m.self.sh.events.values.push(r); }
+  Object.keys(m.cache).filter((k) => k.indexOf('rqg:') === 0).forEach((k) => delete m.cache[k]);
+  const a = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(24), row: ROW() });
+  check('R8', '隔 450 列再抄同一張＝dup', a.dup, true);
+}
+{
+  // C1／C2／C3：輸入清洗
+  const m = world('2026-11-20T09:00:00', []);
+  const r1 = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(25), row: ROW({ lat: '=IMPORTRANGE("x")', distance_m: '=1+1', within_range: '=TRUE', source: 'mini' }) });
+  const w = rows(m)[0];
+  check('C2a', '公式字串不寫進數字欄', [r1.ok, w.lat, w.distance_m, w.within_range], [true, '', '', '']);
+  check('C2b', '來源不在白名單不收', m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(26), row: ROW({ source: '=HYPERLINK()' }) }).error, 'bad_source');
+  check('C2c', '名冊沒有的人不收（系統卡也一樣）', m.sb.handleRelayAppend_({ relay_key: KEY, req_id: 'cap:=A1:2026-11-20T09:00:00+08:00', row: ROW({ emp_id: '=A1', source: 'system_cap' }) }).error, 'no_emp');
+  check('C2d', '太舊的卡不收', m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(27), row: ROW({ ts: '2026-08-01T09:00:00+08:00' }) }).error, 'bad_ts');
+  check('C2e', '未來的卡不收', m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(28), row: ROW({ ts: '2031-01-01T09:00:00+08:00' }) }).error, 'bad_ts');
+  check('C2f', '綁定只能綁成自己的 LINE', m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(29), bind_sub: 'U' + 'f'.repeat(32), row: ROW({ emp_id: 'E03' }) }).error, 'no_device');
+}
+{
+  // D1：relay_pull 不給名冊的建立人、移除人
+  const m = world('2026-11-20T09:00:00', []);
+  const r = m.sb.handleRelayPull_({ relay_key: KEY, with: { roster: true } });
+  check('D1', '名冊只給擋卡要的欄', ['created_by', 'removed_by', 'created_at'].some((k) => k in r.roster[0]), false);
+}
+{
+  // E1：切換那個月以前的月份不看對帳
+  const m = world('2026-11-20T09:00:00', []);
+  m.sb.handleRelayMode_({ relay_key: KEY, on: true, stores: ['SS1'] });
+  check('E1', '切換前的月份（2026-10）放行', m.sb.payGReconBlock_('2026-10', 'SS1'), null);
+  check('E1b', '切換當月沒有對帳 → 擋', m.sb.payGReconBlock_('2026-11', 'SS1').error, 'g_recon_missing');
+}
 done();

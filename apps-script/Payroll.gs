@@ -3940,7 +3940,7 @@ function handlePayrollFinalize(body) {
         lm.slice(0, 30).map(payLeaveMismatchLine_).join('\n') + (lm.length > 30 ? '\n…共 ' + lm.length + ' 筆' : '') };
   }
   /* 打卡正本在 Mac mini 時（G＋備援，RelayG.gs）：mini 和 Google 這個月的打卡筆數要一致才能鎖（Eason 2026-11-15 選「擋下」）。解鎖不擋。 */
-  if (lock && typeof payGReconBlock_ === 'function') {
+  if (lock && typeof payGReconBlock_ === 'function' && typeof relayGMode_ === 'function' && relayGMode_().on) {   // 沒切換＝完全不看、不多開試算表（Fable 審查 A2）
     let gb = null;
     try { const gss = payClockSS(stF, true); gb = payGReconBlock_(ym, gss ? gss.getId() : ''); }
     catch (err) { gb = { error: 'g_recon_check_failed', message: '檢查打卡正本對帳失敗，這次沒有鎖定，請再按一次：' + err }; }

@@ -200,13 +200,13 @@
      REQ_MIRROR＝false：只回報開頁計時（量現在要等幾秒）；true：先顯示 Mac mini 記住的、讀最新的也請 mini 代問。mini 不在一律直接問 Google。 */
   var MINI_REQ_API = 'https://dzy-gw.dingzhaoyuan888.workers.dev/store/api/line-req', REQ_MIRROR = true;
   if (isLocalHost) { MINI_REQ_API = qs('mini_req') || ''; REQ_MIRROR = qs('req_mirror') === '1'; }   // 本機測試只准打 ?mini_req= 給的假 mini（絕不打正式 mini）
-  var RELAY_WAIT_MS = 2500, RELAY_SHADOW_WAIT_MS = 5000;
+  var RELAY_WAIT_MS = 2500, RELAY_SHADOW_WAIT_MS = 5000;   // 2026-10-19 1.5→2.5 秒：10/18 開通首日 23% 的 mini 回應超過 1.5 秒被放棄（試跑期 28–33% 超過，多為門市網路首連 DNS＋TLS）；shadow 等久一點，量得到 mini 實際要幾秒
   /* G＋備援（2026-11-15，mala-clock-relay docs/g-primary）：Mac mini 是正本的店，按打卡先送 mini（寫進去就算數），
      等 G_WAIT_MS 沒回應才改送各店 liff_punch（帶同一張單號，不會變兩張）。哪幾家店由 mini 說了算（開頁問 /clock/config），
      切換／退回只改 mini 的開關，不用重新發布這一頁。問不到 mini＝照舊直送 Google（跟今天一樣）。 */
   var G_API = RELAY_API ? RELAY_API.replace(/\/predict$/, '') : '';
   if (isLocalHost) G_API = qs('g_api') || '';   // 本機測試只准打 ?g_api= 給的假 mini
-  var gConf = null, G_AFTER_MS = 6000;   // gConf＝{primary:['gf',…], wait_ms}；問不到維持 null   // 2026-10-19 1.5→2.5 秒：10/18 開通首日 23% 的 mini 回應超過 1.5 秒被放棄（試跑期 28–33% 超過，多為門市網路首連 DNS＋TLS）；shadow 等久一點，量得到 mini 實際要幾秒
+  var gConf = null, G_AFTER_MS = 6000;   // gConf＝{primary:['gf',…], wait_ms}；問不到維持 null
   /* STORES:BEGIN（tools/build-line-page.py 產生，勿手改）*/
   var STORES = [
     {"code": "", "name": "小辛辣 新竹光復", "lat": 24.7840945, "lng": 121.0157448, "radius_m": 20, "api": "https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec", "relay": true},
@@ -677,14 +677,22 @@
     var gp, viaMini = false;
     if (useG) {   // mini 是正本：先送 mini；沒回應、回「改送 Google」就送 liff_punch（同一張單號）
       if (t) t.route = 'mini';
-      gp = post(G_API + '/punch', Object.assign({ store: st.code === '' ? 'gf' : st.code, req_id: reqId }, gBody), (gConf && gConf.wait_ms) || 3000, true)
+      var gWait = (gConf && gConf.wait_ms) || 3000, gStore = st.code === '' ? 'gf' : st.code;
+      var gCap = new Promise(function (res, rej) { setTimeout(function () { rej(new Error('mini_timeout')); }, gWait); });   // 舊手機沒有 AbortController 也一樣最多等這麼久（Fable 審查 F2）
+      gp = Promise.race([post(G_API + '/punch', Object.assign({ store: gStore, req_id: reqId }, gBody), gWait, true), gCap])
         .then(function (r) {
           if (r && r.role === 'primary') { viaMini = true; return r; }
           throw new Error('fallback');
         })
         .catch(function () {
           if (t) t.route = 'mini_fallback';
-          return post(storeApi(st), Object.assign({ req_id: reqId }, gBody), undefined, true);
+          return post(storeApi(st), Object.assign({ req_id: reqId }, gBody), undefined, true)
+            .catch(function (e) {   // Google 也沒回：mini 可能已經寫了（只是慢）——問 mini 這張單號有沒有答案，有就照它顯示（審查 F1）
+              return post(G_API + '/after', { store: gStore, req_id: reqId }, 4000).then(function (a) {
+                if (a && a.ok && a.res) { viaMini = true; if (t) t.route = 'mini'; return a.res; }
+                throw e;
+              }, function () { throw e; });
+            });
         });
     } else {
       gp = post(storeApi(st), gBody, undefined, true);

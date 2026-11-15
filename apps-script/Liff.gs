@@ -593,9 +593,13 @@ function handleLiffPunch_(body) {
     var pre = (body.req_id && typeof relayGFallbackBefore_ === 'function') ? relayGFallbackBefore_(body) : null;
     if (pre) return pre;
     LIFF_LAST_EMP_ = '';
-    var res = liffPunchVerified_(type, body);
-    if (body.req_id && typeof relayGFallbackAfter_ === 'function') relayGFallbackAfter_(body, res, LIFF_LAST_EMP_);
-    return res;
+    var res = null, fb = !!(body.req_id && typeof relayGFallbackAfter_ === 'function');
+    try {
+      res = liffPunchVerified_(type, body);
+      return res;
+    } finally {
+      if (fb) relayGFallbackAfter_(body, res, LIFF_LAST_EMP_);   // 出錯也要做：把「正在寫」記號改成完成（Fable 審查 B4）
+    }
   } finally {
     cache.remove(busyKey);
   }
