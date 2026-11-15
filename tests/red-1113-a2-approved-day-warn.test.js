@@ -18,7 +18,7 @@ function world() {
   add({ id: 'A1', emp_id: 'E01', name: '代號甲', kind: 'leave', date: '2026-11-05', leave_type: '事假' });   // 那天已核定 → 提醒
   add({ id: 'A2', emp_id: 'E01', name: '代號甲', kind: 'leave', date: '2026-11-07', leave_type: '事假' });   // 還沒核定 → 不提醒
   add({ id: 'A3', emp_id: 'E02', name: '代號乙', kind: 'trip', date: '2026-11-06', leave_type: '出差', start: '10:00', end: '18:00' });  // 出差也寫請假登記 → 提醒
-  add({ id: 'A4', emp_id: 'E02', name: '代號乙', kind: 'ot', date: '2026-11-06', start: '18:00', end: '19:00', hours: 1 });   // 加班 → 不提醒
+  add({ id: 'A4', emp_id: 'E02', name: '代號乙', kind: 'ot', date: '2026-11-06', start: '18:00', end: '19:00', hours: 1 });   // 加班 → 2026-11-15 起也提醒
   add({ id: 'A5', emp_id: 'E02', name: '代號乙', kind: 'leave', date: '2026-11-05', leave_type: '事假' });   // 那天核定的是別人 → 不提醒
   return m;
 }
@@ -34,7 +34,9 @@ console.log('══ a2 單筆核准 ══');
   H.check('a2-2', '反例：那天還沒核定 → 不帶提醒', pick(dec(m, 'A2')), [true, 'approved', null, null, null]);
   H.check('a2-3', '出差單那天已核定 → 也提醒', pick(dec(m, 'A3')),
     [true, 'approved', 'already_approved_day', ['2026-11-06'], '11/6 已經核定過，請重新核定一次，假別才會寫進薪資']);
-  H.check('a2-4', '反例：加班單不寫請假登記 → 不提醒', pick(dec(m, 'A4')), [true, 'approved', null, null, null]);
+  // 2026-11-15（考勤挑錯 B5，Eason 核可）：那天已核定後才核准的加班單也提醒（原本不提醒；加班單沒算進核定時數，先核准再核定卻會被擋）
+  H.check('a2-4', '加班單那天已核定 → 也提醒（字句說加班單）', pick(dec(m, 'A4')),
+    [true, 'approved', 'already_approved_day', ['2026-11-06'], '11/6 已經核定過，請重新核定一次，這張加班單才會算進核定時數']);
   H.check('a2-5', '反例：那天核定的是別人 → 不提醒', pick(dec(m, 'A5')), [true, 'approved', null, null, null]);
   const r = J(m.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: 'A2', decision: 'reject', reason: 'x' }));
   H.check('a2-6', '反例：處理過的單照舊回 not_pending', r.error, 'not_pending');
@@ -47,7 +49,8 @@ console.log('\n══ a2 批次核准 ══');
   H.check('a2-7', '批次照常核准 4 筆', r.done, ['A1', 'A2', 'A3', 'A4']);
   H.check('a2-8', 'warn_items 只列有提醒的那幾筆（id、warn、warn_dates、message）', r.warn_items || null,
     [{ id: 'A1', warn: 'already_approved_day', warn_dates: ['2026-11-05'], message: '11/5 已經核定過，請重新核定一次，假別才會寫進薪資' },
-     { id: 'A3', warn: 'already_approved_day', warn_dates: ['2026-11-06'], message: '11/6 已經核定過，請重新核定一次，假別才會寫進薪資' }]);
+     { id: 'A3', warn: 'already_approved_day', warn_dates: ['2026-11-06'], message: '11/6 已經核定過，請重新核定一次，假別才會寫進薪資' },
+     { id: 'A4', warn: 'already_approved_day', warn_dates: ['2026-11-06'], message: '11/6 已經核定過，請重新核定一次，這張加班單才會算進核定時數' }]);
   H.check('a2-9', '批次照原本 done／skipped，不另外帶整體 warn', [Array.isArray(r.skipped), 'warn' in r, 'results' in r], [true, false, false]);
   const r2 = J(m.sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids: ['A5'], decision: 'approve' }));
   H.check('a2-9b', '反例：批次都沒有提醒 → 不帶 warn_items', [r2.done, 'warn_items' in r2], [['A5'], false]);

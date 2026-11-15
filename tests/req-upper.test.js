@@ -217,7 +217,8 @@ ok('svc_set_upper：金鑰錯回 unauthorized、不寫入', () => {
   assert.strictEqual(r.error, 'unauthorized'); assert.strictEqual(e.props.REQ_UPPER_EMPS, undefined);
 });
 ok('總開關關著：本人申請照舊可核／退回／作廢／批次，pending upper 全 false', () => {
-  for (const v of [undefined, '0', 'true', 'TRUE', 1]) {
+  // 2026-11-15（考勤挑錯 B6，Eason 核可）：'true'／'TRUE' 改成算開（原本只有恰好 '1' 才開，寫成 true 以為開了其實沒開）；開的情況見 att-bughunt-1115.test.js B6
+  for (const v of [undefined, '0', '', 'off', 'no']) {
     const e = base({ off: true }); if (v !== undefined) e.props.REQ_UPPER_ON = v;
     assert.strictEqual(e.fn('handleMgrReqPending_', MGR).items.every(x => x.upper === false), true, String(v));
     assert(e.fn('handleMgrReqDecide_', Object.assign({ id: 'r1', decision: 'approve' }, MGR)).ok, String(v));
