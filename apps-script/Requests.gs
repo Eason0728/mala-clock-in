@@ -871,7 +871,7 @@ function reqUpperOn_() { return PropertiesService.getScriptProperties().getPrope
    工時照舊由門市值班主管核；請假、加班、忘打卡、出差申請一律由部門主管在管理系統審，值班核定頁不能核准／退回／作廢。
    名單＝Script Property REQ_DEPT_EMPS（JSON 陣列的本店 emp_id），由 svc_set_upper 的 dept_emp_ids 寫入。
    不看 REQ_UPPER_ON：名單非空就生效；緊急關＝刪掉 REQ_DEPT_EMPS。 */
-var REQ_DEPT_MSG_ = '這是部門同仁的申請（在本店上班算支援），請由部門主管在管理系統（人資部門 → 考勤管理 → 申請審核）審核';
+var REQ_DEPT_MSG_ = '這是支援同仁的申請（在本店上班算支援），請由他原單位的主管在管理系統（人資部門 → 考勤管理 → 申請審核）審核';
 /** 保護名單（JSON 陣列的 emp_id）。讀壞時不當空名單（2026-10-29 審查：不能靜默放行）：
  *  先退回上一份讀成功的快照（<name>_LAST）；連快照都沒有 → {'*':true}＝全部人都當在名單上（本店主管全擋，管理系統照常）。 */
 var REQ_ALL_ = '*';
@@ -1246,7 +1246,7 @@ function handleMgrReqDecideBatch_(body) {
       var pb = reqProxyBlock_(r, mgr, body, actor);
       if (pb) { skipped.push({ id: id, reason: pb.error === 'self_proxy' ? '你代開的申請，要由別的總監層級主管核准' : '主管代開的申請，由總監層級審核' }); return; }
       var why = (upc && !r.proxy_by) ? reqUpperWhy_(r.emp_id, ss, upc) : '';
-      if (why) { skipped.push({ id: id, reason: why === 'mgr' ? '值班主管本人的申請，送上層審核' : '部門同仁的申請，由部門主管審核' }); return; }
+      if (why) { skipped.push({ id: id, reason: why === 'mgr' ? '值班主管本人的申請，送上層審核' : '支援同仁的申請，由原單位主管審核' }); return; }
       if (reqNeedsProof_(r)) { skipped.push({ id: id, reason: r.leave_type + '還沒附證明' }); return; }
       if (reqIsAnnual_(r)) {   // 1113 紅燈 d3：同一人只查一次
         var ek = String(r.emp_id);
@@ -1736,6 +1736,24 @@ function reqPunchDiffMin_(periods, segs, breakWindow) {
 /** 核定比打卡多幾分鐘（2026-11-14 Eason「打卡＋單＝核定時數」，營運系統 docs/punch-plus-req/）：
  *  核定時段裡沒有打卡涵蓋的分鐘（扣掉不打卡休息帶），但「第一段開頭到第一張上班卡」不算——那是遲到，打卡端照標「遲到 N 分」、薪資照扣。
  *  早到、晚走（打卡比核定多）一律不算，不用寫原因。打卡不完整（缺卡）回 null，交給忘打卡單那條。 */
+/** 打卡段＋已核准忘打卡單補的卡（2026-11-15）。segs：[{inMs, outMs}]（缺卡＝null）；okRows：那天已核准的申請。
+ *  both＝補一整段（start–end）；in／out＝補第一個缺上班／下班的段；break＝中間休息沒打卡（end＝出去、start＝回來，同 core-calc）。
+ *  補不上（時間格式錯、找不到缺的段）就略過。回新的陣列，不動原本的 segs。 */
+function reqSegsWithMiss_(segs, okRows, date) {
+  var ms = function (hm) { var m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || '')); return m ? Date.parse(date + 'T' + ('0' + m[1]).slice(-2) + ':' + m[2] + ':00+08:00') : null; };
+  var out = (segs || []).map(function (x) { return { inMs: x.inMs == null ? null : x.inMs, outMs: x.outMs == null ? null : x.outMs }; });
+  (okRows || []).filter(function (r) { return r.kind === 'miss'; }).forEach(function (r) {
+    var a = ms(r.start), b = ms(r.end), t = String(r.miss_type || '');
+    if (t === 'both' && a != null && b != null) out.push({ inMs: a, outMs: b > a ? b : b + 86400000 });
+    else if (t === 'in' && a != null) { var si = out.filter(function (x) { return x.inMs == null; })[0]; if (si) si.inMs = a; }
+    else if (t === 'out' && b != null) { var so = out.filter(function (x) { return x.outMs == null; })[0]; if (so) so.outMs = (so.inMs != null && b <= so.inMs) ? b + 86400000 : b; }
+    else if (t === 'break' && a != null && b != null) {   // end＝出去（b）、start＝回來（a）
+      var sb = out.filter(function (x) { return x.inMs != null && x.outMs != null && x.inMs < b && x.outMs > a; })[0];
+      if (sb) { out.push({ inMs: a, outMs: sb.outMs }); sb.outMs = b; }
+    }
+  });
+  return out;
+}
 function reqOverCreditMin_(periods, segs, breakWindow) {
   if (!periods.length || !segs.length || segs.some(function (s) { return s.inMs == null || s.outMs == null; })) return null;
   var ps = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
@@ -2083,7 +2101,9 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   }
   var diffMin = strict ? reqPunchDiffMin_(periods, segs, breakWindow) : null;
   // 2026-11-14 Eason「打卡＋單＝核定時數」：不再「差 30 分鐘寫原因」，只看核定比打卡多（沒打卡卻要算的時間），要有單；早到晚走不算、不用原因
-  var overMin = strict ? reqOverCreditMin_(periods, segs, breakWindow) : null;
+  // 已核准的忘打卡單補的卡算「有打卡」（2026-11-15 Eason：游家輝 11/11 忘打卡單補 18:30–20:15 仍被算成整段沒打卡；
+  // 同營運系統 core-calc.js 的「打卡＋單」）。只用在這條「核定比打卡多」，其他檢查照舊看真的卡
+  var overMin = strict ? reqOverCreditMin_(periods, reqSegsWithMiss_(segs || [], ok, date), breakWindow) : null;
   if (overMin != null && overMin >= REQ_STRICT_DIFF_MIN) add('over_credit', '核定比打卡多 ' + overMin + ' 分鐘（沒有打卡的時間要有忘打卡單、假單或補休單）');
   if (opt.preview) return { probs: probs, diff_min: diffMin, over_min: overMin, ot_have: otHave, ot_need: otNeed, ft8_gap: ft8 ? ft8.gap : 0 };
   if (probs.length) {
