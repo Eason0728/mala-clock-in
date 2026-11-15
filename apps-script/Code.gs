@@ -306,7 +306,10 @@ function doPost(e) {
     Object.keys(SVC_STAFF_HANDLERS).forEach(function (k) { handlers[k] = SVC_STAFF_HANDLERS[k]; });
   }
 
-  const handler = handlers[body.action];
+  // 只認這張表自己的動作名稱（2026-11-15 驗收 C11-8）：constructor、toString、__proto__ 這類物件原本就有的名字
+  // 原本會被當成處理函式執行。動作名稱不是文字也不認。
+  const handler = typeof body.action === 'string' && Object.prototype.hasOwnProperty.call(handlers, body.action)
+    ? handlers[body.action] : null;
   if (!handler) {
     return jsonOut({ ok: false, error: 'unknown_action' });
   }
@@ -1750,6 +1753,8 @@ function handleMgrDay(body) {
 
   const today = todayTaipeiStr(); // 與 date 分開：判斷「今天」的未配對上班卡是否算上班中（A3）
   const date = body.date || today;
+  // 有帶日期就要是真的有這天的 'yyyy-MM-dd'（2026-11-15 驗收 C11-5）：原本 2026-13-40、abc 會一路算到丟 RangeError 變成 server_error。沒帶＝今天。
+  if (typeof date !== 'string' || !isRealDateStr_(date)) return { ok: false, error: 'bad_date' };
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
   // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化（勿自己重寫日期正規化，沿用既有 normCellTs）
   const eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
@@ -1999,8 +2004,14 @@ function handleMgrApprove(body) {
   if (!isRealDateStr_(date)) return { ok: false, error: 'bad_date' };   // 擋 2026-11-31、2026-13-01（2026-11-04 對抗驗證）
 
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
+  // emp_id 只收文字或數字（2026-11-15 驗收 C11-7）：陣列 ["E01"] 轉成文字剛好等於 E01，原本會對到人、approved 的員編那格被寫進陣列。
+  if (typeof body.emp_id !== 'string' && typeof body.emp_id !== 'number') return { ok: false, error: 'invalid_emp_id' };
   const roster = findRosterByEmpId(rosterRows, body.emp_id);
   if (!roster) return { ok: false, error: 'invalid_emp_id' };
+  // 主管認定的遲到分鐘最多一天（2026-11-15 驗收 C9-5）：原本沒有上限，99999 會寫成「遲到99999分(認定)」流進薪資。
+  // 負數、小數、不是數字也退回（同日 Eason 定「也擋」）；留空照舊用系統判的。
+  const lateProblem = manualLateProblem_(body.late_min);
+  if (lateProblem) return { ok: false, error: 'bad_late_min', message: lateProblem };
 
   // （2026-11-04 夜間 QA）不能核定還沒到的日子的上班時段（錢會先於出勤入帳）。整天請假（periods 空）的未來日期照收：
   //  主管可能預先記特休。跨夜班隔天凌晨核「今天」沒問題，所以用 > 今天。
@@ -2697,6 +2708,22 @@ function applyManualLate(statusText, lateMin) {
   }
   const out = kept.filter(function (x) { return x !== '正常'; });
   return out.length ? out.join('、') : '正常';
+}
+
+/** 主管認定的遲到分鐘上限：一天 1440 分。 */
+const MANUAL_LATE_MAX_MIN = 1440;
+/**
+ * 遲到分鐘欄填的值能不能收：留空＝可以（用系統判的）；其他一定要是 0～1440 的整數。
+ * 2026-11-15（Eason 定）：負數、小數、不是數字也直接退回（原本 B21 是忽略或取整），免得主管以為有填進去。
+ * 回傳 '' ＝可以收；否則回給主管看的原因。
+ */
+function manualLateProblem_(lateMin) {
+  const raw = String(lateMin == null ? '' : lateMin).trim();
+  if (raw === '') return '';
+  const n = (typeof lateMin === 'number' || typeof lateMin === 'string') ? Number(raw) : NaN;
+  if (!isFinite(n) || n < 0 || Math.floor(n) !== n) return '遲到分鐘要填 0 以上的整數，請確認';
+  if (n > MANUAL_LATE_MAX_MIN) return '遲到分鐘最多 ' + MANUAL_LATE_MAX_MIN + ' 分（一天），請確認';
+  return '';
 }
 
 

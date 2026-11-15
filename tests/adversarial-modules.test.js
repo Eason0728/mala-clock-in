@@ -301,7 +301,7 @@ ok('遲到以分計、秒數不算：17:30:59 打卡配 17:30 班別＝正常，
   assert.strictEqual(r2.status_text, '遲到1分');
   assert.strictEqual(J(m.sb.payCollect('2026-11', 6, 'SSLGF', [], null)).E01.deduct_days, 1);
 });
-ok('遲到分鐘欄：留空＝系統判；0＝「主管認定不計遲到」且薪資不算缺勤；" 7 "＝遲到7分(認定)流進薪資；-3／"5abc"／Infinity 一律忽略', () => {
+ok('遲到分鐘欄：留空＝系統判；0＝「主管認定不計遲到」且薪資不算缺勤；" 7 "＝遲到7分(認定)流進薪資；-3／"5abc"／Infinity 一律退回 bad_late_min（2026-11-15 起，原本是忽略）', () => {
   const m = make({ now: T('2026-11-02T23:00:00'), self: { roster: [ME], events: [[T('2026-11-02T17:40:00'), 'E01', 'in'], [T('2026-11-02T22:00:00'), 'E01', 'out']] } });
   const st = (late) => { m.sb.__now += 1000; return approve(m.sb, { date: '2026-11-02', periods: [PERIOD('17:30', '22:00')], late_min: late }).status_text; };
   assert.strictEqual(st(''), '遲到10分');
@@ -309,7 +309,8 @@ ok('遲到分鐘欄：留空＝系統判；0＝「主管認定不計遲到」且
   assert.strictEqual(J(m.sb.payCollect('2026-11', 6, 'SSLGF', [], null)).E01.deduct_days, 0);
   assert.strictEqual(st(' 7 '), '遲到7分(認定)');
   assert.strictEqual(J(m.sb.payCollect('2026-11', 6, 'SSLGF', [], null)).E01.late_min, 7);
-  assert.strictEqual(st('-3'), '遲到10分'); assert.strictEqual(st('5abc'), '遲到10分'); assert.strictEqual(st('Infinity'), '遲到10分');
+  const bad = (late) => { m.sb.__now += 1000; return approve(m.sb, { date: '2026-11-02', periods: [PERIOD('17:30', '22:00')], late_min: late }).error; };
+  assert.strictEqual(bad('-3'), 'bad_late_min'); assert.strictEqual(bad('5abc'), 'bad_late_min'); assert.strictEqual(bad('Infinity'), 'bad_late_min');
 });
 ok('系統重算（recheck）不會洗掉主管認定；沒打卡的日子補卡後狀態會被補一筆修正', () => {
   const m = make({ now: T('2026-11-02T23:00:00'), self: { roster: [ME] } });
