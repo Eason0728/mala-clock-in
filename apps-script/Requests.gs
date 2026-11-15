@@ -937,6 +937,7 @@ function reqMgrApproveCheck_(body) {
   var base = {};
   ['mgr_key', 'acting_name', 'date'].forEach(function (k) { if (body[k] !== undefined) base[k] = body[k]; });
   READ_MEMO_ = {};      // 這一批共用讀過的表（Code.gs readSheetAsObjects）；結束一定關掉
+  REQ_PEER_GIVEN_ = reqPeerGivenParse_(body.peer_given, String(body.date || ''));   // Mac mini 帶來的別家店摘要（2026-11-15）；結束一定關掉
   if (typeof chkT_ === 'function') CHECK_T_ = {}; var tAll = Date.now(), perEmp = [], timing = null;      // 分段計時（2026-11-14）
   try {
   var results = items.map(function (it) {
@@ -956,7 +957,7 @@ function reqMgrApproveCheck_(body) {
     } finally { perEmp.push(Date.now() - tE); }
   });
   } finally {
-    READ_MEMO_ = null;
+    READ_MEMO_ = null; REQ_PEER_GIVEN_ = null;
     var parts = {}; Object.keys((typeof CHECK_T_ !== 'undefined' && CHECK_T_) || {}).forEach(function (k) { parts[k] = CHECK_T_[k]; });
     timing = { total_ms: Date.now() - tAll, n: items.length, per_emp_ms: perEmp, parts: parts };
     if (typeof CHECK_T_ !== 'undefined') CHECK_T_ = null;
@@ -1837,7 +1838,8 @@ function reqPeerDayRaw_(name, date, fresh) {
   if (REQ_PEER_MEMO_[mk]) return REQ_PEER_MEMO_[mk];
   // 只檢查（一批，READ_MEMO_ 開著）才用 10 分鐘暫存（2026-11-14 Eason：量出光復正職每人 7～9.6 秒花在這裡）；
   // 真正送出核定、撤銷試算、fresh 重找一律重查別家店，不用暫存。讀不到別家（failed）的結果不存。
-  var useC = !fresh && typeof READ_MEMO_ !== 'undefined' && !!READ_MEMO_, ck = 'rpd:' + date + '|' + String(name).slice(0, 80), cache = null;
+  var given = reqPeerGivenFor_(date);   // Mac mini 帶來的別家店摘要（只檢查一批才有；2026-11-15 核定前檢查加快 A）
+  var useC = !given && !fresh && typeof READ_MEMO_ !== 'undefined' && !!READ_MEMO_, ck = 'rpd:' + date + '|' + String(name).slice(0, 80), cache = null;
   if (useC) {
     try { cache = CacheService.getScriptCache(); var hit = cache.get(ck); if (hit) { REQ_PEER_MEMO_[mk] = JSON.parse(hit); return REQ_PEER_MEMO_[mk]; } } catch (e) { cache = null; }
   }
@@ -1846,9 +1848,14 @@ function reqPeerDayRaw_(name, date, fresh) {
   var nm = restName_(name), selfId = '';
   try { selfId = getSS().getId(); } catch (e) {}
   var dayStart = Date.parse(date + 'T00:00:00+08:00'), dayEnd = dayStart + 86400000;
-  var mine = function (r) { return !String(r.mirror_src || '').trim(); };
   REST_PEERS_.forEach(function (p) {
     if (!p || !p.ss || p.ss === selfId) return;
+    if (given && Object.prototype.hasOwnProperty.call(given, p.code)) {   // 這家的摘要 Mac mini 帶來了：不開這家的試算表
+      if (typeof chkT_ === 'function') chkT_('peer_given', 1);
+      var g = Object.prototype.hasOwnProperty.call(given[p.code], nm) ? given[p.code][nm] : null;
+      if (g) reqPeerAdd_(out, p.code, g);
+      return;
+    }
     try {
       var rs = reqPeerRoster_(p, fresh);
       var ids = rs.roster.filter(function (r) { return r[0] === nm; }).map(function (r) { return r[1]; });
@@ -1856,24 +1863,9 @@ function reqPeerDayRaw_(name, date, fresh) {
       var pm = typeof READ_MEMO_ !== 'undefined' ? READ_MEMO_ : null;
       var ss = rs.ss || (pm && pm['ss:' + p.ss]) || SpreadsheetApp.openById(p.ss);
       if (pm) { pm['ss:' + p.ss] = ss; rs.ss = ss; }
-      // 這天在別家上班：上班卡打在這天，或忘了打上班卡、只有 06:00 以後的下班卡（跨夜班隔天凌晨的下班卡不算，2026-11-13 審查 8、9）
-      var worked = readEventsSince(ss.getSheetByName('events'), dayStart).rows.some(function (e) {
-        var t = new Date(String(normCellTs(e.ts))).getTime();
-        return ids.indexOf(String(e.emp_id)) >= 0 && mine(e) && e.status === 'ok' && t < dayEnd && (String(e.type) === 'in' ? t >= dayStart : t >= dayStart + 6 * 3600000);
-      });
-      var day = buildLatestApprovedMap(readSheetAsObjects(ss.getSheetByName('approved')).rows.filter(mine))[date] || {};
-      var recs = ids.map(function (id) { return day[id]; }).filter(Boolean);
-      var lv = 0, ot = 0;
-      reqRows_(ss).forEach(function (r) {
-        if (ids.indexOf(String(r.emp_id)) < 0 || String(r.date) !== date || r.status !== 'approved' || !mine(r)) return;
-        if (r.kind === 'ot') ot += Number(r.hours) || 0;
-        else if (r.kind === 'leave') lv += Number(r.hours) || 0;
-      });
-      if (!worked && !recs.length && !lv) return;
-      out.names.push(p.code);
-      out.leave += lv; out.ot += ot;
-      if (recs.length) { out.worked = true; recs.forEach(function (r) { out.work += Number(r.approved_hours) || 0; }); }
-      else if (worked) { out.worked = true; out.pending = true; }
+      var c = reqPeerOne_(ids, date, readEventsSince(ss.getSheetByName('events'), dayStart).rows,
+        buildLatestApprovedMap(readSheetAsObjects(ss.getSheetByName('approved')).rows.filter(reqPeerMine_))[date] || {}, reqRows_(ss));
+      if (c) reqPeerAdd_(out, p.code, c);
     } catch (e) { out.failed = true; Logger.log('滿 8 小時讀別家店 ' + p.code + ' 失敗（滿 8 小時先放行、加班照單店規則）：' + e); }
   });
   ['work', 'leave', 'ot'].forEach(function (k) { out[k] = Math.round(out[k] * 100) / 100; });
@@ -1881,6 +1873,85 @@ function reqPeerDayRaw_(name, date, fresh) {
   return out;
 }
 var REQ_PEER_CACHE_S_ = 600;   // 只檢查用的跨店暫存秒數（10 分鐘）
+function reqPeerMine_(r) { return !String(r.mirror_src || '').trim(); }   // 不算總部鏡像列
+/** 一家店、一位同仁（ids 只有一個員編）這天的情形：{w:有沒有算數的卡, r:幾筆已核定, work:核定時數合計, lv:已核准假單時數, ot:已核准加班時數}；都沒有回 null。
+ *  reqPeerDayRaw_（Google 自己開別家）與 reqPeerDigest_（別家自己算好給 Mac mini）共用，兩條路算法一模一樣。 */
+function reqPeerOne_(ids, date, events, day, reqs) {
+  var dayStart = Date.parse(date + 'T00:00:00+08:00'), dayEnd = dayStart + 86400000;
+  // 這天在別家上班：上班卡打在這天，或忘了打上班卡、只有 06:00 以後的下班卡（跨夜班隔天凌晨的下班卡不算，2026-11-13 審查 8、9）
+  var worked = events.some(function (e) {
+    var t = new Date(String(normCellTs(e.ts))).getTime();
+    return ids.indexOf(String(e.emp_id)) >= 0 && reqPeerMine_(e) && e.status === 'ok' && t < dayEnd && (String(e.type) === 'in' ? t >= dayStart : t >= dayStart + 6 * 3600000);
+  });
+  var recs = ids.map(function (id) { return day[id]; }).filter(Boolean);
+  var lv = 0, ot = 0, work = 0;
+  reqs.forEach(function (r) {
+    if (ids.indexOf(String(r.emp_id)) < 0 || String(r.date) !== date || r.status !== 'approved' || !reqPeerMine_(r)) return;
+    if (r.kind === 'ot') ot += Number(r.hours) || 0;
+    else if (r.kind === 'leave') lv += Number(r.hours) || 0;
+  });
+  if (!worked && !recs.length && !lv) return null;
+  recs.forEach(function (r) { work += Number(r.approved_hours) || 0; });
+  return { w: worked, r: recs.length, work: work, lv: lv, ot: ot };
+}
+function reqPeerAdd_(out, code, c) {
+  out.names.push(code);
+  out.leave += Number(c.lv) || 0; out.ot += Number(c.ot) || 0;
+  if (c.r > 0) { out.worked = true; out.work += Number(c.work) || 0; }
+  else if (c.w) { out.worked = true; out.pending = true; }
+}
+/* ── 別家店摘要由 Mac mini 帶來（2026-11-15 Eason「核定前檢查加快」A）──
+   原本只檢查時每位正職要一家家打開別家店的試算表（平均 5 秒）。改成：每家店自己算好「這天每位同仁在本店的情形」（peer_day_digest），
+   Mac mini 收著（有變動就重拿），只檢查時一起送來（peer_given：{店代碼: {日期, people}}）；有帶的店不再開，沒帶的店照舊自己開。
+   只在只檢查一批（reqMgrApproveCheck_）採用；真正送出核定、撤銷試算一律照舊自己開別家店，不信任何帶來的資料。 */
+var REQ_PEER_GIVEN_ = null;   // {date, by:{店代碼: people}}；reqMgrApproveCheck_ 期間才有值
+function reqPeerGivenFor_(date) {
+  var g = typeof REQ_PEER_GIVEN_ !== 'undefined' ? REQ_PEER_GIVEN_ : null;
+  if (!g || g.date !== date || typeof READ_MEMO_ === 'undefined' || !READ_MEMO_) return null;
+  return g.by;
+}
+function reqPeerGivenParse_(raw, date) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  var by = {}, n = 0;
+  Object.keys(raw).slice(0, 20).forEach(function (code) {
+    var d = raw[code];
+    if (!d || typeof d !== 'object' || d.date !== date || !d.people || typeof d.people !== 'object' || Array.isArray(d.people)) return;
+    var people = {};
+    Object.keys(d.people).slice(0, 500).forEach(function (nm) {
+      var c = d.people[nm];
+      if (!c || typeof c !== 'object') return;
+      people[nm] = { w: c.w === true, r: Math.max(0, Math.floor(Number(c.r) || 0)), work: Number(c.work) || 0, lv: Number(c.lv) || 0, ot: Number(c.ot) || 0 };
+    });
+    by[String(code)] = people; n++;
+  });
+  return n ? { date: date, by: by } : null;
+}
+/** {action:'peer_day_digest', mgr_key, date} → {ok, date, people:{名字（去空白）: {w, r, work, lv, ot}}}
+ *  本店這天每位在職同仁的情形（同 reqPeerOne_）；名冊同名兩位以上的不放（分不出是誰，跟自己開別家時一樣不算）。唯讀。 */
+function handlePeerDayDigest_(body) {
+  if (!reqMgr_(body)) return { ok: false, error: 'unauthorized' };
+  var date = String(body.date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: 'bad_date' };
+  return { ok: true, date: date, people: reqPeerDigest_(getSS(), date) };
+}
+function reqPeerDigest_(ss, date) {
+  var byName = {};
+  readSheetAsObjects(ss.getSheetByName('roster')).rows.forEach(function (r) {
+    if (String(r.active).toLowerCase() !== 'true') return;
+    var nm = restName_(r.name);
+    (byName[nm] = byName[nm] || []).push(String(r.emp_id));
+  });
+  var dayStart = Date.parse(date + 'T00:00:00+08:00');
+  var events = readEventsSince(ss.getSheetByName('events'), dayStart).rows;
+  var day = buildLatestApprovedMap(readSheetAsObjects(ss.getSheetByName('approved')).rows.filter(reqPeerMine_))[date] || {};
+  var reqs = reqRows_(ss), people = {};
+  Object.keys(byName).forEach(function (nm) {
+    if (byName[nm].length !== 1) return;
+    var c = reqPeerOne_(byName[nm], date, events, day, reqs);
+    if (c) people[nm] = c;
+  });
+  return people;
+}
 /** 回 null（不適用）或 {probs:[{rule,text}], drop:[規則], otNeed, gap}。opt.peer 可直接給（測試用），沒給才讀別家店。
  *  sched_ft＝營運系統判斷「正職、這天是出勤日」（支援帳號看原單位的身分與班表）；這家班表是休息日／例假（H／R）照舊規則全算加班，不套。 */
 function reqFt8_(date, approvedHours, otHave, opt, okRows) {
