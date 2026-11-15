@@ -41,8 +41,9 @@ console.log('════ C9-5：遲到分鐘超過一天（1440 分）不收 �
   check('C9-5-12', '對照：0 → 主管認定不計遲到', good(0), [true, '主管認定不計遲到', 1]);
   check('C9-5-13', '對照：留空 → 用系統算的遲到 7 分', good(''), [true, '遲到7分', 1]);
   check('C9-5-14', '對照：沒帶這一欄 → 用系統算的', good(undefined), [true, '遲到7分', 1]);
-  check('C9-5-15', '對照：12.6 照舊進位成 13 分（B21）', good(12.6), [true, '遲到13分(認定)', 1]);
-  check('C9-5-16', '對照：-5、abc 照舊忽略、用系統算的（B21）', [good(-5), good('abc')], [[true, '遲到7分', 1], [true, '遲到7分', 1]]);
+  check('C9-5-15', '12.6（小數）→ 退回、不寫入（2026-11-15 Eason 定：也擋）', bad(12.6), [false, 'bad_late_min', 0]);
+  check('C9-5-16', '-5、abc、true、[5] → 退回、不寫入', [bad(-5), bad('abc'), bad(true), bad([5])], [[false, 'bad_late_min', 0], [false, 'bad_late_min', 0], [false, 'bad_late_min', 0], [false, 'bad_late_min', 0]]);
+  check('C9-5-17', '對照："7.0"、" 7 " 是整數照收', [good('7.0'), good(' 7 ')], [[true, '遲到7分(認定)', 1], [true, '遲到7分(認定)', 1]]);
 }
 
 console.log('\n════ C11-5：mgr_day 日期格式錯回 bad_date ════');

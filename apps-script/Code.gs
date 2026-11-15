@@ -2009,10 +2009,9 @@ function handleMgrApprove(body) {
   const roster = findRosterByEmpId(rosterRows, body.emp_id);
   if (!roster) return { ok: false, error: 'invalid_emp_id' };
   // 主管認定的遲到分鐘最多一天（2026-11-15 驗收 C9-5）：原本沒有上限，99999 會寫成「遲到99999分(認定)」流進薪資。
-  // 留空、負數、不是數字的照舊由 applyManualLate 忽略（用系統判的）。
-  if (manualLateTooBig_(body.late_min)) {
-    return { ok: false, error: 'bad_late_min', message: '遲到分鐘最多 ' + MANUAL_LATE_MAX_MIN + ' 分（一天），請確認' };
-  }
+  // 負數、小數、不是數字也退回（同日 Eason 定「也擋」）；留空照舊用系統判的。
+  const lateProblem = manualLateProblem_(body.late_min);
+  if (lateProblem) return { ok: false, error: 'bad_late_min', message: lateProblem };
 
   // （2026-11-04 夜間 QA）不能核定還沒到的日子的上班時段（錢會先於出勤入帳）。整天請假（periods 空）的未來日期照收：
   //  主管可能預先記特休。跨夜班隔天凌晨核「今天」沒問題，所以用 > 今天。
@@ -2713,12 +2712,18 @@ function applyManualLate(statusText, lateMin) {
 
 /** 主管認定的遲到分鐘上限：一天 1440 分。 */
 const MANUAL_LATE_MAX_MIN = 1440;
-/** 遲到分鐘欄填的數字（照 applyManualLate 的取整）是不是超過一天。留空、負數、不是數字＝不算（那些本來就被忽略）。 */
-function manualLateTooBig_(lateMin) {
+/**
+ * 遲到分鐘欄填的值能不能收：留空＝可以（用系統判的）；其他一定要是 0～1440 的整數。
+ * 2026-11-15（Eason 定）：負數、小數、不是數字也直接退回（原本 B21 是忽略或取整），免得主管以為有填進去。
+ * 回傳 '' ＝可以收；否則回給主管看的原因。
+ */
+function manualLateProblem_(lateMin) {
   const raw = String(lateMin == null ? '' : lateMin).trim();
-  if (raw === '') return false;
-  const rawN = Number(raw);
-  return isFinite(rawN) && Math.round(rawN) > MANUAL_LATE_MAX_MIN;
+  if (raw === '') return '';
+  const n = (typeof lateMin === 'number' || typeof lateMin === 'string') ? Number(raw) : NaN;
+  if (!isFinite(n) || n < 0 || Math.floor(n) !== n) return '遲到分鐘要填 0 以上的整數，請確認';
+  if (n > MANUAL_LATE_MAX_MIN) return '遲到分鐘最多 ' + MANUAL_LATE_MAX_MIN + ' 分（一天），請確認';
+  return '';
 }
 
 
