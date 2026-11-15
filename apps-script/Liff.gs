@@ -323,6 +323,7 @@ function handleMgrBindCode_(body) {
   var actor = actingName_(body, mgr);
   if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
   var sheet = getSS().getSheetByName('roster');
+  if (typeof body.emp_id !== 'string' && typeof body.emp_id !== 'number') return { ok: false, error: 'not_found' };   // 員編只收文字或數字（2026-11-16）
   var row = readSheetAsObjects(sheet).rows.filter(function (r) { return String(r.emp_id) === String(body.emp_id); })[0];
   if (!row) return { ok: false, error: 'not_found' };
   if (String(row.active).toLowerCase() !== 'true') return { ok: false, error: 'inactive', message: '這位同仁已停用，不能產生綁定碼' };
@@ -363,6 +364,7 @@ function handleMgrLineUnbind_(body) {
   if (actor === null) return { ok: false, error: 'bad_acting_name', message: '核定人姓名格式不對' };
   var sheet = getSS().getSheetByName('roster');
   ensureRosterHeaders(sheet);
+  if (typeof body.emp_id !== 'string' && typeof body.emp_id !== 'number') return { ok: false, error: 'not_found' };   // 員編只收文字或數字（2026-11-16）
   var row = readSheetAsObjects(sheet).rows.filter(function (r) { return String(r.emp_id) === String(body.emp_id); })[0];
   if (!row) return { ok: false, error: 'not_found' };
   if (!row.line_user_id) return { ok: true, already: true };

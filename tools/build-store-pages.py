@@ -26,7 +26,11 @@ STORES = {
     'hq': {'name': '鼎兆元 總部', 'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
            'clock_home': '總部打卡', 'mgr_home': '總部值班',
            'favicon': 'favicon-32-mzt.png',
-           'mgr_bg': MZT_BG, 'clock_bg': MZT_BG},
+           'mgr_bg': MZT_BG, 'clock_bg': MZT_BG,
+           # 總部核定頁「作廢」鈕停用時的字：2026-11-15（#148，部門同仁提示改支援同仁）只手改了產出的
+           # manager-hq.html，母版沒改，重產會被洗回「部門主管處理」、GitHub 的同步檢查一直紅。
+           # 這裡照線上那一版補成規則；其他門市頁照母版不動（要不要全部改成同一個用詞由 Eason 決定）。
+           'mgr_text': [("'部門主管處理'", "'原單位主管處理'")]},
     # 墨竹亭金山店（2026-09-08 開）。Eason 指定不設中午休息時段——餐飲門市的休息時間
     # 跟著客流浮動，設一個固定值反而每次都要改掉它，所以沒有 mgr_break。
     'mztjs': {'name': '墨竹亭 金山店', 'clock_icon': 'icon-180-mzt.png', 'mgr_icon': 'icon-180-mzt-manager.png',
@@ -105,6 +109,12 @@ def build(src_name, prefix, page_title, icon_key, home_key, bg_key):
                 if needle not in out:
                     raise SystemExit(f'✗ {src_name} 找不到 {var} 宣告，請同步更新 build-store-pages.py')
                 out = out.replace(needle, f"var {var} = '{val}';", 1)
+        # 7) 個別門市核定頁的用詞（mgr_text：[(母版的字, 這家要顯示的字)]）。找不到母版那段字就報錯，理由同底色。
+        if prefix == 'manager':
+            for old, new in st.get('mgr_text', []):
+                if out.count(old) != 1:
+                    raise SystemExit(f'✗ {src_name} 找不到（或不只一處）{old}，請同步更新 build-store-pages.py 的 mgr_text')
+                out = out.replace(old, new, 1)
         out = out.replace('<!DOCTYPE html>',
                           f'<!-- 本檔由 tools/build-store-pages.py 從 {src_name} 產生，請勿手改 -->\n<!DOCTYPE html>', 1)
         dst = ROOT / f'{prefix}-{code}.html'
