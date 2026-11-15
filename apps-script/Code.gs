@@ -1991,6 +1991,43 @@ function leaveTypeAllowedByPayroll(leaveType, mgrKey) {
   } catch (err) { return false; }
 }
 
+/* ── 薪資鎖月後不可以再動（Eason 2026-11-15）──
+   這家店這個月薪資已「鎖定本月」（payroll_run 該店該月 status=final）之後，日期落在那個月的主管核定（含只檢查）、
+   申請的核准／退回／作廢／代開、同仁送申請，打卡端一律回 { ok:false, error:'pay_locked', message }；解鎖後照常。
+   「這家店」＝CONFIG.PAYROLL_STORE（空白＝光復），跟 payroll_leave_options 的 st 同一個算法；別家店鎖月不影響這家。
+   讀不到鎖月狀態（這個專案沒掛薪資模組、讀表失敗）＝不知道＝不擋，也不丟錯。同仁撤回待審單、打卡、讀取類不擋。 */
+/** 這個日期所在的月份薪資是不是已鎖定：true／false；不知道回 undefined。
+ *  ss＝呼叫端手上已經打開的本店試算表（帶了就不再多開一次；沒帶才自己開）。
+ *  payroll_run 一次請求只讀一次：讀到的列放進薪資模組的 PAY_READ_CACHE（跟 payRead('run') 同一份、同一套失效規則），
+ *  批次核准 30 筆也只讀一次、不多開試算表；只檢查一批（READ_MEMO_ 開著）另外照月份記結果。 */
+function payLockedFor_(dateStr, ss) {
+  var ym = String(dateStr == null ? '' : dateStr).slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(ym)) return undefined;
+  try {
+    if (typeof payMonthLocked_ !== 'function' || typeof payStore !== 'function' || typeof PAY_READ_CACHE === 'undefined') return undefined;
+    var memo = typeof READ_MEMO_ !== 'undefined' ? READ_MEMO_ : null, mk = 'paylock:' + ym;
+    if (memo && Object.prototype.hasOwnProperty.call(memo, mk)) return memo[mk];
+    var runs = PAY_READ_CACHE.run;
+    if (!runs) {
+      // 不叫 payRead：它會自己再開一次試算表，沒有 payroll_run 分頁時還會順手建（只檢查不該寫東西）
+      var sh = (ss || getSS()).getSheetByName(PAY_SHEET_NAME.run);
+      // 還沒有 payroll_run 分頁＝從沒算過薪資＝沒鎖
+      if (sh) runs = PAY_READ_CACHE.run = readSheetAsObjects(sh).rows.map(stripRowIndex);
+    }
+    var v = !runs ? false : payMonthLocked_(runs, ym, payStore(CONFIG.PAYROLL_STORE || '')) === true;
+    if (memo) memo[mk] = v;
+    return v;
+  } catch (e) { return undefined; }
+}
+/** 給主管看的訊息（營運系統先擋時用同一句）／給同仁看的訊息 */
+function payLockedMgrMsg_(dateStr) { return String(dateStr).slice(0, 7) + ' 薪資已鎖定，請先到薪資頁解鎖這個月'; }
+function payLockedStaffMsg_(dateStr) { return String(dateStr).slice(0, 7) + ' 薪資已鎖定，不能再送這個月的申請；有需要請找主管（主管要先到薪資頁解鎖這個月）'; }
+/** 這個日期在已鎖定的月份 → 錯誤物件；沒鎖或不知道 → null。staff＝true 用給同仁看的說法；ss＝已打開的本店試算表（可不帶）。 */
+function payLockedBlock_(dateStr, staff, ss) {
+  if (payLockedFor_(dateStr, ss) !== true) return null;
+  return { ok: false, error: 'pay_locked', message: staff ? payLockedStaffMsg_(dateStr) : payLockedMgrMsg_(dateStr) };
+}
+
 function handleMgrApprove(body) {
   const ss = getSS();
   const mgrSheet = ss.getSheetByName('managers');
@@ -2002,6 +2039,9 @@ function handleMgrApprove(body) {
 
   const date = String(body.date || '');
   if (!isRealDateStr_(date)) return { ok: false, error: 'bad_date' };   // 擋 2026-11-31、2026-13-01（2026-11-04 對抗驗證）
+  // 薪資鎖月後不可以再動（2026-11-15）：核定、重新核定、只檢查（dry_run）都擋
+  const payLock = payLockedBlock_(date, false, ss);
+  if (payLock) return payLock;
 
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
   // emp_id 只收文字或數字（2026-11-15 驗收 C11-7）：陣列 ["E01"] 轉成文字剛好等於 E01，原本會對到人、approved 的員編那格被寫進陣列。
@@ -3503,9 +3543,12 @@ function recheckPendingApprovalStatuses() {
 
   let checked = 0;
   let fixed = 0;
+  let payLockedDays = 0;
   dates.forEach(function (date) {
     const dayMap = approvedMap[date];
     if (!dayMap) return;
+    // 薪資鎖月後不可以再動（2026-11-15）：系統重算也不改鎖定月的核定狀態；解鎖後下一次重算照常補上（回看 RECHECK_STATUS_DAYS 天內）
+    if (payLockedFor_(date, ss) === true) { payLockedDays++; return; }
     Object.keys(dayMap).forEach(function (empId) {
       const rec = dayMap[empId];
       const statusText = String(rec.status_text || '');
@@ -3529,7 +3572,9 @@ function recheckPendingApprovalStatuses() {
       fixed++;
     });
   });
-  return { checked: checked, fixed: fixed };
+  const out = { checked: checked, fixed: fixed };
+  if (payLockedDays) out.pay_locked = payLockedDays;   // 因為薪資鎖月略過幾天（有才帶）
+  return out;
 }
 
 // 一次性回填的最大天數區間（防呆：手滑打成 2020 年不會把整份 approved 掃爆）
@@ -3620,6 +3665,12 @@ function backfillMissingPunchGroups(fromDate, toDate, apply) {
       if (!statusDiffIsOnlyMissingGroup(statusText, r.newStatusText)) {
         skipped.push({ date: date, emp_id: empId, name: r.name, from: statusText, to: r.newStatusText,
                        reason: '不只少刷有變，請人工確認' });
+        return;
+      }
+      // 薪資鎖月後不可以再動（2026-11-15）：鎖定月該補的列進 skipped、不寫（試算也照這樣列，才看得出 apply 會略過哪些）
+      if (payLockedFor_(date, ss) === true) {
+        skipped.push({ date: date, emp_id: empId, name: r.name, from: statusText, to: r.newStatusText,
+                       reason: payLockedMgrMsg_(date), error: 'pay_locked' });
         return;
       }
       hits.push({ date: date, emp_id: empId, name: r.name, from: statusText, to: r.newStatusText,
@@ -3836,7 +3887,9 @@ function handleRebuildMonth(body) {
 function handleRecheckApprovals(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const result = recheckPendingApprovalStatuses();
-  return { ok: true, checked: result.checked, fixed: result.fixed };
+  const out = { ok: true, checked: result.checked, fixed: result.fixed };
+  if (result.pay_locked) out.pay_locked = result.pay_locked;   // 薪資已鎖定而略過的天數（2026-11-15）
+  return out;
 }
 
 /* ============================================================

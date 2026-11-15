@@ -642,10 +642,17 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
   return { row: row };
 }
 
+/** 薪資鎖月後不可以再動（2026-11-15）：這個日期在已鎖定的月份 → { ok:false, error:'pay_locked', message }；沒鎖或不知道 → null。
+ *  判斷在 Code.gs payLockedBlock_；staff＝true 用給同仁看的說法；ss＝手上已打開的本店試算表（帶了就不多開一次）。 */
+function reqPayLock_(date, staff, ss) { return typeof payLockedBlock_ === 'function' ? payLockedBlock_(date, staff, ss) : null; }
+
 /** {action:'req_submit', id_token, kind, date, leave_type?, start?, end?, hours?, miss_type?, reason?, attach_id?} */
 function handleReqSubmit_(body) {
   var who = reqStaff_(body);
   if (who.error) return { ok: false, error: who.error };
+  // 薪資鎖月後不可以再動（2026-11-15，Code.gs payLockedBlock_）：那個月的申請送不了
+  var payLock = reqIsDate_(String(body.date || '')) ? reqPayLock_(String(body.date), true, who.ss) : null;
+  if (payLock) return payLock;
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請幾秒後再送一次' };
   try {
@@ -1051,6 +1058,8 @@ function handleMgrReqDecide_(body) {
     var r = reqRows_(ss).filter(function (x) { return String(x.id) === String(body.id); })[0];
     if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
     if (r.status !== 'pending') return { ok: false, error: 'not_pending', message: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' };
+    var payLock = reqPayLock_(String(r.date || ''), false, ss);   // 薪資鎖月後不可以再動（2026-11-15）：看申請單的日期，核准、退回都擋
+    if (payLock) return payLock;
     var pb = reqProxyBlock_(r, mgr, body, actor);
     if (pb) return pb;
     var why = (r.proxy_by || reqMgrActing_(mgr, body)) ? '' : reqUpperWhy_(r.emp_id, ss);
@@ -1090,6 +1099,8 @@ function handleMgrReqVoid_(body) {
     if (!sh || !r) return { ok: false, error: 'not_found', message: '找不到這筆申請' };
     if (r.status !== 'approved') return { ok: false, error: 'not_approved',
       message: r.status === 'voided' ? '這筆已經作廢了' : r.status === 'pending' ? '這筆還在審核中，請用退回' : '只有已核准的申請可以作廢' };
+    var payLock = reqPayLock_(String(r.date || ''), false, ss);   // 薪資鎖月後不可以再動（2026-11-15）：原本只有營運系統擋，打卡端也擋
+    if (payLock) return payLock;
     var pb = reqProxyBlock_(r, mgr, body, actor);
     if (pb) return pb;
     var why = (r.proxy_by || reqMgrActing_(mgr, body)) ? '' : reqUpperWhy_(r.emp_id, ss);
@@ -1213,6 +1224,8 @@ function handleFinalOrphanScan_(body) {
     keys.forEach(function (k) {
       var it = byKey[k];
       if (!it || /^\?/.test(it.emp_id)) { skipped.push({ key: k, reason: it ? '姓名對不到名冊' : '不在這次清單裡（可能已經處理過）' }); return; }
+      var payLock = reqPayLock_(it.date, false, ss);   // 薪資鎖月後不可以再動（2026-11-15）：鎖定月的人日略過，要清先到薪資頁解鎖
+      if (payLock) { skipped.push({ key: k, reason: payLock.message, error: payLock.error }); return; }
       var r = reqRevokeFinal_(ss, it.emp_id, it.name, it.date, '舊資料清理（' + it.probs.join('、') + '）');
       done.push({ key: k, moved: r });
     });
@@ -1244,6 +1257,8 @@ function handleMgrReqDecideBatch_(body) {
       var r = byId[id];
       if (!sh || !r) { skipped.push({ id: id, reason: '找不到這筆申請' }); return; }
       if (r.status !== 'pending') { skipped.push({ id: id, reason: r.status === 'cancelled' ? '同仁已經取消這筆申請' : '這筆已經處理過了' }); return; }
+      var payLock = reqPayLock_(String(r.date || ''), false, ss);   // 薪資鎖月後不可以再動（2026-11-15）：鎖定月的那幾筆略過、其他照做
+      if (payLock) { skipped.push({ id: id, reason: payLock.message, error: payLock.error }); return; }
       var pb = reqProxyBlock_(r, mgr, body, actor);
       if (pb) { skipped.push({ id: id, reason: pb.error === 'self_proxy' ? '你代開的申請，要由別的總監層級主管核准' : '主管代開的申請，由總監層級審核' }); return; }
       var why = (upc && !r.proxy_by) ? reqUpperWhy_(r.emp_id, ss, upc) : '';
@@ -1528,6 +1543,8 @@ function handleMgrReqProxy_(body) {
   var diff = reqDayDiff_(date, today), limit = reqPastLimit_(date, today, kind === 'miss' ? REQ_MISS_DAYS : null);
   if (diff < -REQ_PROXY_PAST_DAYS) return { ok: false, error: 'too_old', message: '代開最多到 ' + REQ_PROXY_PAST_DAYS + ' 天前' };
   var ss = getSS();
+  var payLock = reqPayLock_(date, false, ss);   // 薪資鎖月後不可以再動（2026-11-15）
+  if (payLock) return payLock;
   var me = findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, body.emp_id);
   if (!me) return { ok: false, error: 'invalid_emp_id', message: '找不到這位同仁' };
   /* 7 天內同仁自己用 LINE 申請；沒綁 LINE 的人送不了單，今天和過去的日子可以由主管代開（2026-11-09 Eason）。 */
@@ -2273,13 +2290,26 @@ function handleBindRevoke_(body) {
   if (strictFrom && to >= strictFrom) return { ok: false, error: 'strict_range', message: '只收 ' + strictFrom + ' 以前的日子（之後送出時本來就擋）' };
   return bindRevokeRun_(from, to, null, body.apply === true);
 }
+/* 薪資鎖月後不可以再動（2026-11-15）：管理金鑰的打回工具（bind_revoke、ft8_revoke）也不搬鎖定月的核定。
+   試算：鎖定月的那幾筆照樣列出、標 pay_locked:true；apply：只搬沒鎖的，鎖定月的列在回應的 pay_locked（帶 message），要搬先到薪資頁解鎖。 */
 function bindRevokeRun_(from, to, cand, apply) {
   var ss = getSS();
-  if (!apply) { var pv = bindRevokeScan_(ss, from, to, cand); return { ok: true, apply: false, from: from, to: to, scanned: pv.scanned, items: pv.items }; }
+  var isLocked = function (it) { return typeof payLockedFor_ === 'function' && payLockedFor_(it.date, ss) === true; };
+  if (!apply) {
+    var pv = bindRevokeScan_(ss, from, to, cand);
+    pv.items.forEach(function (it) { if (isLocked(it)) it.pay_locked = true; });
+    return { ok: true, apply: false, from: from, to: to, scanned: pv.scanned, items: pv.items };
+  }
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) return { ok: false, error: 'busy' };
   try {
     var scan = bindRevokeScan_(ss, from, to, cand);   // 鎖內重算，避免剛好有人重送核定
+    var lockedItems = scan.items.filter(isLocked);
+    if (lockedItems.length) {
+      scan.items = scan.items.filter(function (it) { return !isLocked(it); });
+      var lockedOut = { pay_locked: lockedItems.map(function (it) { return { date: it.date, emp_id: it.emp_id, name: it.name }; }), message: payLockedMgrMsg_(lockedItems[0].date) };
+      if (!scan.items.length) return Object.assign({ ok: true, apply: true, from: from, to: to, scanned: scan.scanned, items: [], moved: 0 }, lockedOut);
+    }
     if (!scan.items.length) return { ok: true, apply: true, from: from, to: to, scanned: scan.scanned, items: [], moved: 0 };
     var hit = {};
     scan.items.forEach(function (it) { hit[it.date + '|' + it.emp_id] = it; });
@@ -2300,7 +2330,7 @@ function bindRevokeRun_(from, to, cand, apply) {
     SpreadsheetApp.flush();
     drop.forEach(function (d) { sh.deleteRow(d.row); });   // 由下往上刪，列號不會跑掉
     SpreadsheetApp.flush();
-    return { ok: true, apply: true, from: from, to: to, scanned: scan.scanned, items: scan.items, moved: drop.length };
+    return Object.assign({ ok: true, apply: true, from: from, to: to, scanned: scan.scanned, items: scan.items, moved: drop.length }, lockedOut || {});
   } finally { lock.releaseLock(); }
 }
 /** {action:'approve_strict_preview', admin_key, from, to}：用核定加嚴的同一支判斷試算已存在的核定，只讀不寫（班表在 Mac mini，這裡一律當查不到＝一般日）。 */
