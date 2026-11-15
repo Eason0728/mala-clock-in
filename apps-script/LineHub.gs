@@ -1635,6 +1635,7 @@ var LINE_HUB_HANDLERS = {
   line_bind_name: handleLineBindName_,
   line_hub_req_init: function (b) { return handleLineHubReqInit_(b); },
   line_hub_req_quota: function (b) { return handleLineHubReqQuota_(b); },   // 申請頁額度與補休帳（2026-11-06，開頁加快）
+  line_hub_pay_lock: function (b) { return handleLineHubPayLock_(b); },     // 各店後端問「這家店這個月薪資鎖了沒」（2026-11-16）
   line_hub_attach_put: function (b) { return handleLineHubAttachPut_(b); },
   line_hub_attach_get: function (b) { return handleLineHubAttachGet_(b); },
   line_hub_sched: function (b) { return handleLineHubSched_(b); },   // 出勤班表（Sched.gs）
@@ -1838,6 +1839,44 @@ function handleLineHubReqQuota_(body) {
   if (!lineHubMine_(userId, null, false).length) return { ok: false, error: 'not_bound' };
   var qc = lineHubReqQuota_(userId);
   return { ok: true, quota: lineHubQuotaOut_(qc.quota), comp: qc.comp, annual_from: qc.annual_from || '' };
+}
+
+/** {action:'line_hub_pay_lock', id_token, store, ym} → {ok, store, ym, locked?}（Eason 2026-11-16 回「要補」）
+ *  其他店同仁從 LINE 送申請時，那家店的後端（沒掛薪資模組）拿同仁自己的 id_token 來問「這家店這個月薪資鎖了沒」
+ *  （Requests.gs reqPayLockRemote_）。只回鎖月布林，不回其他資料；讀不到 payroll_run 就不給 locked（各店當作不知道、不擋）。
+ *  身分：不收任何金鑰，只認 LINE id_token，而且這個 LINE 帳號要是那家店名冊上在職的同仁（lineHubMine_），不是就回 not_bound。
+ *  store＝薪資用的店碼（各店的 CONFIG.PAYROLL_STORE，例 CF、HQ、MZTJS；空白＝光復），大小寫不分。 */
+function handleLineHubPayLock_(body) {
+  var userId = verifyLineIdToken_(body.id_token);
+  if (!userId) return { ok: false, error: 'invalid_id_token' };
+  if (lineHubThrottled_('rpl', userId, 30, 60)) return { ok: false, error: 'too_many' };
+  var ym = String(body.ym == null ? '' : body.ym);
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  var hasPay = typeof payStore === 'function';
+  var norm = function (c) { c = String(c == null ? '' : c).trim().toUpperCase(); return hasPay ? payStore(c) : c; };
+  var st = norm(body.store);
+  var isBound = function () { return lineHubMine_(userId, null, false).some(function (x) { return norm(x.st.code) === st; }); };
+  var mineKey = 'lhm:' + userId, hadMine = false;
+  try { hadMine = !!CacheService.getScriptCache().get(mineKey); } catch (e) { hadMine = false; }
+  var bound = isBound();
+  // 不認得、而且是照 5 分鐘內的舊紀錄判斷的（lineHubMine_ 的快取）：同仁可能剛在自己店綁好 LINE，重新看一次名冊再說。
+  // 每人每 5 分鐘最多重看一次（真的沒綁的人一直問，不會每次都把每家店的名冊重開一遍）。
+  if (!bound && hadMine && !lineHubThrottled_('rplm', userId, 1, 300)) {
+    try { CacheService.getScriptCache().remove(mineKey); } catch (e) { /* 清不掉就照舊紀錄 */ }
+    bound = isBound();
+  }
+  if (!bound) return { ok: false, error: 'not_bound' };
+  var lk;
+  try {
+    if (typeof payMonthLocked_ === 'function' && typeof PAY_SHEET_NAME !== 'undefined') {
+      // 跟 Code.gs payLockedFor_ 同一個讀法：不叫 payRead（沒有 payroll_run 分頁時它會順手建）；還沒有分頁＝從沒算過薪資＝沒鎖
+      var sh = getSS().getSheetByName(PAY_SHEET_NAME.run);
+      lk = sh ? payMonthLocked_(readSheetAsObjects(sh).rows.map(stripRowIndex), ym, st) === true : false;
+    }
+  } catch (e) { lk = undefined; }
+  var out = { ok: true, store: st, ym: ym };
+  if (typeof lk === 'boolean') out.locked = lk;
+  return out;
 }
 
 var LINE_HUB_ATTACH_FOLDER = '打卡申請附件';

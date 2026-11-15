@@ -308,7 +308,8 @@ function doPost(e) {
 
   // 只認這張表自己的動作名稱（2026-11-15 驗收 C11-8）：constructor、toString、__proto__ 這類物件原本就有的名字
   // 原本會被當成處理函式執行。動作名稱不是文字也不認。
-  const handler = typeof body.action === 'string' && Object.prototype.hasOwnProperty.call(handlers, body.action)
+  // 內文是 JSON 的 null 也照「不認得的動作」回（2026-11-16）：原本讀 body.action 就丟例外，這一行在 try 之外。
+  const handler = body && typeof body.action === 'string' && Object.prototype.hasOwnProperty.call(handlers, body.action)
     ? handlers[body.action] : null;
   if (!handler) {
     return jsonOut({ ok: false, error: 'unknown_action' });
@@ -968,6 +969,8 @@ function handleSyncRoster(body) {
     return Object.keys(m).some(function (k) { return k !== id; });
   };
   employees.forEach(function (emp) {
+    // 員編只收文字或數字（2026-11-16）：陣列、物件、整筆不是物件的略過，不改名也不新增
+    if (!emp || (typeof emp.emp_id !== 'string' && typeof emp.emp_id !== 'number')) { skipped.push({ emp_id: '', reason: 'invalid_emp_id' }); return; }
     const existing = findRosterByEmpId(rosterRows, emp.emp_id);
     const nm = sheetSafeText_(String(emp.name == null ? '' : emp.name));   // = + - @ 開頭換全形（2026-11-04 對抗驗證）
     if (existing) {
@@ -1042,6 +1045,7 @@ function applyDeviceDecision(empId, deviceId, approve) {
   const ss = getSS();
   const rosterSheet = ss.getSheetByName('roster');
   const eventsSheet = ss.getSheetByName('events');
+  if (typeof empId !== 'string' && typeof empId !== 'number') return { ok: false, error: 'invalid_emp_id' };   // 員編只收文字或數字（2026-11-16）
   const rosterRows = readSheetAsObjects(rosterSheet).rows;
   const roster = findRosterByEmpId(rosterRows, empId);
   if (!roster) return { ok: false, error: 'invalid_emp_id' };
@@ -1256,6 +1260,8 @@ function handleSetShifts(body) {
 
   const done = [], missed = [];
   body.shifts.forEach(function (x) {
+    // 員編只收文字或數字（2026-11-16）；沒帶員編（用姓名對）照舊
+    if (!x || (x.emp_id != null && (typeof x.emp_id !== 'string' && typeof x.emp_id !== 'number'))) { missed.push(''); return; }
     const wantId = String(x.emp_id || '').trim();
     const wantNm = String(x.name || '').trim();
     const hit = rows.filter(function (r) {
@@ -1472,7 +1478,7 @@ function handleMgrSetActive(body) {
   if (!rosterSheet) return { ok: false, error: 'no_roster' };
   ensureRosterHeaders(rosterSheet);
 
-  const empId = String(body.emp_id || '').trim();
+  const empId = (typeof body.emp_id === 'string' || typeof body.emp_id === 'number') ? String(body.emp_id || '').trim() : '';   // 員編只收文字或數字（2026-11-16）
   if (!empId) return { ok: false, error: 'emp_id_required', message: '請先選擇同仁' };
   const rows = readSheetAsObjects(rosterSheet).rows;
   const row = findRosterByEmpId(rows, empId);

@@ -181,6 +181,7 @@ const ROW = (o) => Object.assign({ ts: '2026-11-20T09:00:01+08:00', emp_id: 'E01
   check('C2a', '公式字串不寫進數字欄', [r1.ok, w.lat, w.distance_m, w.within_range], [true, '', '', '']);
   check('C2b', '來源不在白名單不收', m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(26), row: ROW({ source: '=HYPERLINK()' }) }).error, 'bad_source');
   check('C2c', '名冊沒有的人不收（系統卡也一樣）', m.sb.handleRelayAppend_({ relay_key: KEY, req_id: 'cap:=A1:2026-11-20T09:00:00+08:00', row: ROW({ emp_id: '=A1', source: 'system_cap' }) }).error, 'no_emp');
+  check('C2c2', '員編是陣列／物件不收（2026-11-16）', [m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(28), row: ROW({ emp_id: ['E01'] }) }).error, m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(29), row: ROW({ emp_id: {} }) }).error], ['no_emp', 'no_emp']);
   check('C2d', '太舊的卡不收', m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(27), row: ROW({ ts: '2026-08-01T09:00:00+08:00' }) }).error, 'bad_ts');
   check('C2e', '未來的卡不收', m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(28), row: ROW({ ts: '2031-01-01T09:00:00+08:00' }) }).error, 'bad_ts');
   check('C2f', '綁定只能綁成自己的 LINE', m.sb.handleRelayAppend_({ relay_key: KEY, req_id: RID(29), bind_sub: 'U' + 'f'.repeat(32), row: ROW({ emp_id: 'E03' }) }).error, 'no_device');

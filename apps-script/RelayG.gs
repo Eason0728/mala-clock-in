@@ -155,6 +155,8 @@ function handleRelayAppend_(body) {
   var isCap = String(row.source || '') === (typeof CAP_SRC === 'string' ? CAP_SRC : 'system_cap');
   if (!(RELAYG_REQ_RE_.test(reqId) || (isCap && RELAYG_CAP_RE_.test(reqId)))) return { ok: false, error: 'bad_req_id' };
   if (row.type !== 'in' && row.type !== 'out') return { ok: false, error: 'bad_type' };
+  // 員編只收文字或數字（2026-11-16，同 mgr_approve 的 C11-7）：陣列 ["E01"] 轉成文字剛好等於 E01 會對到人
+  if (typeof row.emp_id !== 'string' && typeof row.emp_id !== 'number') return { ok: false, error: 'no_emp' };
   if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+08:00$/.test(String(row.ts || ''))) return { ok: false, error: 'bad_ts' };
   var status = String(row.status || '');
   if (!/^(ok|pending_device_approval|rejected_[a-z_]+)$/.test(status)) return { ok: false, error: 'bad_status' };

@@ -646,6 +646,39 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
  *  判斷在 Code.gs payLockedBlock_；staff＝true 用給同仁看的說法；ss＝手上已打開的本店試算表（帶了就不多開一次）。 */
 function reqPayLock_(date, staff, ss) { return typeof payLockedBlock_ === 'function' ? payLockedBlock_(date, staff, ss) : null; }
 
+/* 其他店同仁從 LINE 送鎖定月的申請也要擋（Eason 2026-11-16 回「要補」）。
+   薪資模組只掛在光復，其他店的 payLockedFor_ 一律回「不知道」；主管動作有營運系統先擋，同仁從 LINE 申請頁送單不經營運系統。
+   所以沒掛薪資模組、CONFIG.PAYROLL_API 與 PAYROLL_STORE 都有填的店，只在同仁送申請（handleReqSubmit_）這一條路問光復
+   line_hub_pay_lock（LineHub.gs）：帶同仁自己的 LINE id_token，不帶任何金鑰。主管的路徑不走這裡（核定速度不能變慢）。
+   「看哪家店」＝這個後端自己的 CONFIG.PAYROLL_STORE（跟主管動作同一個算法）。
+   結果記 60 秒（鍵含店碼與月份；只記明確的鎖了／沒鎖），所以鎖定或解鎖後最多 60 秒才跟上。
+   回 true／false；光復回 too_many（同仁自己問太多次）回 'retry'＝這張先不收、請他一分鐘後再送；其他問不到（連不上、逾時、回的不是 JSON、光復回錯誤或不給 locked）＝undefined＝不擋、不丟錯。光復自己（有薪資模組）一律回 undefined、不打網路。 */
+var REQ_PAY_LOCK_TTL_ = 60;
+function reqPayLockRemote_(date, idToken) {
+  try {
+    if (typeof payMonthLocked_ === 'function') return undefined;   // 光復：照舊讀自己的 payroll_run（reqPayLock_）
+    var api = String(CONFIG.PAYROLL_API || '').trim(), st = String(CONFIG.PAYROLL_STORE || '').trim(), ym = String(date || '').slice(0, 7);
+    if (!api || !st || !idToken || !/^\d{4}-\d{2}$/.test(ym)) return undefined;
+    var cache = null, ck = 'rqpl:' + st + ':' + ym;
+    try {
+      cache = CacheService.getScriptCache();
+      var hit = cache.get(ck);
+      if (hit === '1') return true;
+      if (hit === '0') return false;
+    } catch (e) { cache = null; }
+    var resp = UrlFetchApp.fetch(api, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true, followRedirects: true,
+      payload: JSON.stringify({ action: 'line_hub_pay_lock', id_token: String(idToken), store: st, ym: ym }) });
+    var j = JSON.parse(resp.getContentText());
+    // 光復說「這位同仁一分鐘內問太多次」：額度是算在他自己的 LINE 帳號上，正常送單碰不到（一張單最多問一次）。
+    // 這種不能當成不知道——不然先把自己的額度洗完再送，鎖定月的單就寫得進去（2026-11-16 複驗）。回 'retry'，請他等一下再送。
+    if (j && j.ok === false && j.error === 'too_many') return 'retry';
+    if (!j || j.ok !== true || typeof j.locked !== 'boolean') return undefined;
+    if (String(j.ym) !== ym || String(j.store).toUpperCase() !== st.toUpperCase()) return undefined;   // 回的不是問的那家店那個月＝不算數
+    if (cache) { try { cache.put(ck, j.locked ? '1' : '0', REQ_PAY_LOCK_TTL_); } catch (e) { /* 記不了就下次再問 */ } }
+    return j.locked;
+  } catch (e) { return undefined; }
+}
+
 /** {action:'req_submit', id_token, kind, date, leave_type?, start?, end?, hours?, miss_type?, reason?, attach_id?} */
 function handleReqSubmit_(body) {
   var who = reqStaff_(body);
@@ -653,6 +686,12 @@ function handleReqSubmit_(body) {
   // 薪資鎖月後不可以再動（2026-11-15，Code.gs payLockedBlock_）：那個月的申請送不了
   var payLock = reqIsDate_(String(body.date || '')) ? reqPayLock_(String(body.date), true, who.ss) : null;
   if (payLock) return payLock;
+  // 其他店（沒掛薪資模組）：問光復這家店這個月鎖了沒（2026-11-16）。類別、日期格式對了才問；問不到＝不擋
+  if (Object.prototype.hasOwnProperty.call(REQ_KINDS_, String(body.kind || '')) && reqIsDate_(String(body.date || ''))) {
+    var remoteLock = reqPayLockRemote_(String(body.date), body.id_token);
+    if (remoteLock === true) return { ok: false, error: 'pay_locked', message: payLockedStaffMsg_(String(body.date)) };
+    if (remoteLock === 'retry') return { ok: false, error: 'busy', message: '系統忙碌，請一分鐘後再送一次' };
+  }
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請幾秒後再送一次' };
   try {
@@ -1593,6 +1632,7 @@ function handleMgrReqProxy_(body) {
   var ss = getSS();
   var payLock = reqPayLock_(date, false, ss);   // 薪資鎖月後不可以再動（2026-11-15）
   if (payLock) return payLock;
+  if (typeof body.emp_id !== 'string' && typeof body.emp_id !== 'number') return { ok: false, error: 'invalid_emp_id', message: '找不到這位同仁' };   // 員編只收文字或數字（2026-11-16）
   var me = findRosterByEmpId(readSheetAsObjects(ss.getSheetByName('roster')).rows, body.emp_id);
   if (!me) return { ok: false, error: 'invalid_emp_id', message: '找不到這位同仁' };
   /* 7 天內同仁自己用 LINE 申請；沒綁 LINE 的人送不了單，今天和過去的日子可以由主管代開（2026-11-09 Eason）。 */
@@ -2330,7 +2370,7 @@ function handleFt8Revoke_(body) {
   if (!Array.isArray(body.items) || body.items.length > 5000) return { ok: false, error: 'bad_items' };
   var cand = {}, from = '9999-12-31', to = '0000-01-01';
   for (var i = 0; i < body.items.length; i++) {
-    var it = body.items[i] || {}, d = String(it.date || ''), e = String(it.emp_id || '');
+    var it = body.items[i] || {}, d = String(it.date || ''), e = (typeof it.emp_id === 'string' || typeof it.emp_id === 'number') ? String(it.emp_id || '') : '';   // 員編只收文字或數字（2026-11-16）
     if (!reqIsDate_(d) || !e || d < reqFt8From_()) return { ok: false, error: 'bad_items', message: '第 ' + (i + 1) + ' 筆日期或員編不對' };
     cand[d + '|' + e] = { support: typeof it.support === 'boolean' ? it.support : null };
     if (d < from) from = d; if (d > to) to = d;
