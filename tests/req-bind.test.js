@@ -549,4 +549,27 @@ ok('舊資料掃描：只讀列出「作廢晚於核定」與「有假別沒工�
   assert.ok(!sheets.leave.data.some((x) => x[0] === '2026-11-03' && x[1] === '測試二'));
   assert.ok(sheets.leave.data.some((x) => x[0] === '2026-11-02' && x[1] === '測試一'));   // 沒指定的不動
 });
+// 2026-11-15 游家輝 11/11：打卡 11:52–17:35、忘打卡單補 18:30 上班＋下班、加班單 12:00–17:30／18:30–21:15。
+// 「核定比打卡多」要把已核准的忘打卡單補的卡算成有打卡（原本只看真的卡，整段 18:30–21:15＝165 分鐘都算沒打卡）
+ok('核定比打卡多：已核准忘打卡單補的卡算有打卡（忘打卡到 20:15＝差 60 分擋；改成 21:15＝放行）', () => {
+  const PS = [P2('12:00', '17:30'), P2('18:30', '21:15')], SS = [S2('11:52', '17:35')];
+  let sb = makeEnv();
+  addReq(sb, R2({ kind: 'ot', start: '12:00', end: '17:30', hours: 5.5 })); addReq(sb, R2({ kind: 'ot', start: '18:30', end: '21:15', hours: 2.75 }));
+  addReq(sb, R2({ kind: 'miss', miss_type: 'both', start: '18:30', end: '20:15' }));
+  const r = chk(sb, 8.25, PS, SS, { sched_day: 'H' });
+  assert.ok(r && r.need && r.need.over_min === 60, JSON.stringify(r && r.need));
+  sb = makeEnv();
+  addReq(sb, R2({ kind: 'ot', start: '12:00', end: '17:30', hours: 5.5 })); addReq(sb, R2({ kind: 'ot', start: '18:30', end: '21:15', hours: 2.75 }));
+  addReq(sb, R2({ kind: 'miss', miss_type: 'both', start: '18:30', end: '21:15' }));
+  const r2 = chk(sb, 8.25, PS, SS, { sched_day: 'H' });
+  assert.ok(!r2 || !(r2.probs || []).some((x) => x.rule === 'over_credit'), JSON.stringify(r2));
+});
+ok('reqSegsWithMiss_：補上班／補下班／補中間休息', () => {
+  const sb = makeEnv();
+  const f = (segs, rows) => JSON.parse(JSON.stringify(sb.reqSegsWithMiss_(segs, rows, D2)));
+  assert.deepStrictEqual(f([S2(null, '17:00')], [{ kind: 'miss', miss_type: 'in', start: '09:00' }]), [S2('09:00', '17:00')]);
+  assert.deepStrictEqual(f([S2('09:00', null)], [{ kind: 'miss', miss_type: 'out', end: '17:00' }]), [S2('09:00', '17:00')]);
+  assert.deepStrictEqual(f([S2('09:00', '21:00')], [{ kind: 'miss', miss_type: 'break', end: '14:00', start: '17:00' }]), [S2('09:00', '14:00'), S2('17:00', '21:00')]);
+  assert.deepStrictEqual(f([S2('09:00', '17:00')], [{ kind: 'ot', start: '17:00', end: '18:00' }]), [S2('09:00', '17:00')], '不是忘打卡單不動');
+});
 console.log('req-bind: ' + n + ' 項全過');

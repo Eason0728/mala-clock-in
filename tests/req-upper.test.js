@@ -284,7 +284,7 @@ const dept = (extra) => { const e = base(extra); e.props.REQ_DEPT_EMPS = JSON.st
 ok('部門同仁：核准／退回／作廢都被擋，訊息講部門主管、不寫任何東西', () => {
   const e = dept(); const before = JSON.stringify(e.sheets.requests.data);
   const a = e.fn('handleMgrReqDecide_', Object.assign({ id: 'p1', decision: 'approve' }, MGR));
-  assert.strictEqual(a.error, UP); assert(/部門主管/.test(a.message) && !/值班主管本人/.test(a.message));
+  assert.strictEqual(a.error, UP); assert(/原單位的主管/.test(a.message) && !/值班主管本人/.test(a.message));
   assert.strictEqual(e.fn('handleMgrReqDecide_', Object.assign({ id: 'p1', decision: 'reject', reason: '不行' }, MGR)).error, UP);
   assert.strictEqual(e.fn('handleMgrReqVoid_', Object.assign({ id: 'p2', reason: '改單' }, MGR)).error, UP);
   assert.strictEqual(JSON.stringify(e.sheets.requests.data), before);
@@ -299,7 +299,7 @@ ok('部門同仁：總開關關著也擋（名單非空就生效）', () => {
 ok('部門同仁：批次略過並說明、pending／mgr_req_day 帶 upper_kind', () => {
   const e = dept();
   const b = e.fn('handleMgrReqDecideBatch_', Object.assign({ ids: ['r2', 'p1'], decision: 'approve' }, MGR));
-  assert.deepStrictEqual(b.done, ['r2']); assert.deepStrictEqual(b.skipped, [{ id: 'p1', reason: '部門同仁的申請，由部門主管審核' }]);
+  assert.deepStrictEqual(b.done, ['r2']); assert.deepStrictEqual(b.skipped, [{ id: 'p1', reason: '支援同仁的申請，由原單位主管審核' }]);
   const items = e.fn('handleMgrReqPending_', MGR).items, k = {}; items.forEach(x => (k[x.id] = [x.upper, x.upper_kind]));
   assert.deepStrictEqual(k.p1, [true, 'dept']); assert.deepStrictEqual(k.r1, [true, 'mgr']); assert.strictEqual(k.r2, undefined);   // r2 剛被批次核准，不在待審
   const k2 = {}; dept().fn('handleMgrReqPending_', MGR).items.forEach(x => (k2[x.id] = [x.upper, x.upper_kind])); assert.deepStrictEqual(k2.r2, [false, undefined]);
@@ -353,7 +353,7 @@ ok('不算支援：本店主管的待審申請／mgr_req_day 看不到；管理�
   assert.strictEqual(e.fn('handleMgrReqDay_', Object.assign({ date: '2026-10-21' }, MGR)).by_emp.E03, undefined);
   assert.strictEqual(e.fn('handleMgrReqDay_', { mgr_key: 'OPS', date: '2026-10-21', acting_name: '人資主管' }).by_emp.E03.length, 1);
   const b = e.fn('handleMgrReqDecideBatch_', Object.assign({ ids: ['h1'], decision: 'approve' }, MGR));
-  assert.deepStrictEqual(b.skipped, [{ id: 'h1', reason: '部門同仁的申請，由部門主管審核' }]);
+  assert.deepStrictEqual(b.skipped, [{ id: 'h1', reason: '支援同仁的申請，由原單位主管審核' }]);
 });
 ok('名單讀壞：先用上一份快照；連快照都沒有就本店主管全擋（管理系統照常）', () => {
   const e = base(); e.props.REQ_HOME_EMPS = '["E03"]';
