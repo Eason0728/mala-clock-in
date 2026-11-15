@@ -31,7 +31,7 @@ const CONFIG = {
   ADMIN_KEY: 'PASTE_ADMIN_KEY_HERE',
   // 上下班交替判斷的回看視窗（小時）：看得到跨夜班前一晚的上班卡，
   // 但昨天忘打的下班卡（超過視窗）不會鎖死今天的上班卡。
-  ALTERNATION_LOOKBACK_HOURS: 12,
+  ALTERNATION_LOOKBACK_HOURS: 24,   // 2026-11-15 Eason：12→24 小時（第一段忘打下班、隔超過 12 小時才打下一張上班卡也要跳「已經打過上班卡」確認框）
   // 值班核定頁的「預設上下班時間」全店預設（2026-08-23）。個人若在名冊填了 shift_in／shift_out
   // 就以個人的為準。兩者都留空＝核定頁維持空白，主管自己填（＝改版前的行為）。
   DEFAULT_SHIFT_IN: '',
@@ -805,7 +805,7 @@ function handleClock(body, preRead, preRoster) {   // preRead／preRoster：LINE
   // 檢查順序：重複檢查 → 裝置檢查 → 範圍檢查
   // events.ts 若被 Sheets 轉成 Date 物件要先 normCellTs 正規化，否則交替防呆的回看視窗可能誤判
   const eventsRead = (preRead && preRead.headers && preRead.headers.length) ? preRead
-    : readEventsSince(eventsSheet, Date.now() - (CONFIG.ALTERNATION_LOOKBACK_HOURS + 1) * 3600000);   // 交替防呆只回看 12 小時，多留 1 小時
+    : readEventsSince(eventsSheet, Date.now() - (CONFIG.ALTERNATION_LOOKBACK_HOURS + 1) * 3600000);   // 交替防呆回看 ALTERNATION_LOOKBACK_HOURS（24）小時，多留 1 小時
   // 既有 events 分頁的表頭只有 10 欄，沒補表頭的話新寫入的第 11 欄會因為 readSheetAsObjects
   // 是照表頭取值而永遠讀不回來。這裡就地自癒，不必請 Eason 去編輯器跑 setup()。
   if (eventsRead.headers.indexOf('accuracy_m') === -1) {
