@@ -589,11 +589,18 @@ function handleLiffPunch_(body) {
   if (cache.get(busyKey)) return { ok: false, type: type, reason: '上一筆還在處理中', hint: '請等幾秒，看出勤紀錄有沒有這筆再決定要不要重按' };
   cache.put(busyKey, '1', 20);
   try {
-    return liffPunchVerified_(type, body);
+    // G＋備援（RelayG.gs，2026-11-15）：手機等 Mac mini 沒回應改送這裡時會帶 req_id——同一張單號已經寫過就回原結果，不寫第二張
+    var pre = (body.req_id && typeof relayGFallbackBefore_ === 'function') ? relayGFallbackBefore_(body) : null;
+    if (pre) return pre;
+    LIFF_LAST_EMP_ = '';
+    var res = liffPunchVerified_(type, body);
+    if (body.req_id && typeof relayGFallbackAfter_ === 'function') relayGFallbackAfter_(body, res, LIFF_LAST_EMP_);
+    return res;
   } finally {
     cache.remove(busyKey);
   }
 }
+var LIFF_LAST_EMP_ = '';   // 這次打卡是誰（RelayG.gs 補 req_id 時找那一列用）；每次請求是獨立執行，不會跟別人混
 
 /* 打卡各步驟花幾毫秒（2026-10-12，先量清楚 5 秒花在哪）：驗身分／讀名冊／讀打卡表／寫入／事後提醒。
    每次請求是獨立執行，用全域變數不會跟別人的打卡混在一起。回在 liff_punch 的 steps，打卡畫面再一起送到光復 punch_timing。 */
@@ -614,6 +621,7 @@ function liffPunchVerified_(type, body) {
   var found = liffRosterByLine_(userId);
   liffStep_('roster');
   if (found.error) return { ok: false, error: found.error };
+  LIFF_LAST_EMP_ = String(found.roster.emp_id);
   var res = liffPunchFor_(userId, found.roster, found.ss, type, body, found.rows);
   if (res && typeof res === 'object') res.steps = liffSteps_();
   return res;
@@ -847,6 +855,9 @@ function handleMgrRetireKeys_(body) {
 var LIFF_HANDLERS = {
   relay_snapshot: handleRelaySnapshot_,   // LINE 打卡快速通道：mini 唯讀副本（2026-10-16）
   relay_setup: handleRelaySetup_,   // 一次性設定 RELAY_KEY（2026-10-16）
+  relay_pull: function (b) { return handleRelayPull_(b); },       // G＋備援：mini 拉完整副本（唯讀，RelayG.gs，2026-11-15）
+  relay_append: function (b) { return handleRelayAppend_(b); },   // G＋備援：mini 寫好的卡抄到這裡（同單號只寫一次）
+  relay_mode: function (b) { return handleRelayMode_(b); },       // G＋備援：切換開關與對帳結果（光復；薪資鎖月用）
   mgr_retire_keys: handleMgrRetireKeys_,   // 舊值班核定頁停用後換掉舊主管鑰匙（2026-11-06）
   mgr_line_binds: handleMgrLineBinds_,
   mgr_line_unbind: handleMgrLineUnbind_,
