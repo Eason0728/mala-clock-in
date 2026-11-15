@@ -867,6 +867,7 @@ var LIFF_HANDLERS = {
   mgr_day: function (b) { var r = reqMgrDayHome_(b); return (typeof capAnnotateDay_ === 'function') ? capAnnotateDay_(b, r) : r; },   // 2026-11-14 加系統卡標示 cap_sys（Cap10.gs）
   //   ↑ 原本就覆蓋 Code.gs：不算本店支援的人本店主管看不到（2026-10-29，REQ_HOME_EMPS）
   mgr_approve: function (b) { return reqMgrApproveHome_(b); },
+  peer_day_digest: function (b) { return handlePeerDayDigest_(b); },   // 本店這天每位同仁的摘要，給 Mac mini 帶去別家只檢查（唯讀，2026-11-15）
   mgr_approve_check: function (b) { return reqMgrApproveCheck_(b); },   // 只檢查不寫入、一次一天多人（2026-11-14 考勤管理好上手）   // 同上：本店主管核不了，管理系統代核照常
   req_submit: function (b) { return handleReqSubmit_(b); },
   req_cancel: function (b) { return handleReqCancel_(b); },
