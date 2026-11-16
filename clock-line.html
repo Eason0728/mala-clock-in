@@ -590,10 +590,13 @@
     }).catch(function () { return { predict: 'none', ms: null }; });
   }
 
-  /** 開頁時問 mini 哪幾家店由它當正本（順便先連上 mini，按打卡時少等一次連線）。3 秒沒回＝照舊直送 Google。 */
+  /** 開頁時問 mini 哪幾家店由它當正本（順便先連上 mini，按打卡時少等一次連線）。還沒回來就按打卡＝照舊直送 Google。
+   *  在背景問、不擋畫面，所以等到 G_CONF_WAIT_MS（8 秒）：2026-11-16 手機連 mini 第一次連線常超過 3 秒，
+   *  3 秒就放棄會連那條連線一起丟掉，結果六成的卡走回 Google（等 7～12 秒）。多等幾秒讓連線接好，按打卡時就用得到。 */
+  var G_CONF_WAIT_MS = (isLocalHost && +qs('g_conf_ms')) || 8000;
   function gLoadConf() {
     if (!G_API) return Promise.resolve(null);
-    var ctrl = window.AbortController ? new AbortController() : null, timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 3000) : null;
+    var ctrl = window.AbortController ? new AbortController() : null, timer = ctrl ? setTimeout(function () { ctrl.abort(); }, G_CONF_WAIT_MS) : null;
     return fetch(G_API + '/config', { method: 'GET', signal: ctrl ? ctrl.signal : undefined })
       .then(function (r) { return r.json(); })
       .then(function (j) { if (timer) clearTimeout(timer); gConf = j && j.ok && Array.isArray(j.primary) ? j : null; return gConf; },
