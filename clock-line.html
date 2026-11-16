@@ -328,25 +328,69 @@
   // 手上那筆已經超過 30 秒＝過時，新的一筆再不準也換掉（2026-10-10 Codex 審查 #4：原本會留著店裡那筆準的舊位置，走出店外照樣打得進去）
   function stale(p) { return !p || Date.now() - p.timestamp > STALE_MS; }
   function better(p) { if (!lastFix || good(p) || stale(lastFix) || (!good(lastFix) && p.coords.accuracy < lastFix.coords.accuracy)) lastFix = p; }
+  /* 先粗後精（2026-11-17 Eason 開工確認，六題照推薦）：手上的位置誤差 ≤100 公尺、扣掉誤差後落在「唯一一家店」內 → 不再等到 ≤40 公尺，按鍵先亮；
+     背景照樣追蹤，送出時用手上最好的那筆（sendPunch 會用最新位置再挑一次店）。收卡規則沒變：後端本來就抵誤差、最多抵 100 公尺，
+     以前只是讓同仁多等 8 秒才拿粗略位置去用。兩家店都符合（ambiguous）或不在任何店內 → 不先亮，照舊等更準的位置或等滿 8 秒。
+     先亮之後校正出來位置不一樣（不在店內、或其實是另一家）→ coarseRecheck 收回按鍵重讀。
+     退回舊做法：COARSE_FIRST 改 false（定位提前另看 GEO_EARLY）；單一手機測試用網址 ?coarse=0／1、?geo_early=0／1。 */
+  var COARSE_FIRST = true, COARSE_MAX_ACC = 100, GEO_EARLY = true, geoDoneAt = null, geoEarly = null;
+  var geoGen = 0;            // 第幾輪定位：按「重新定位」或送出前重抓會開新的一輪，上一輪殘留的計時器與回呼一律作廢
+  var coarseVerify = null;   // 靠粗略位置放行、還沒核對完時＝{ p: 會在核對完成時結束的等待, done: 結束它 }；沒有在等＝null
+  var punchSent = false;     // 這一頁已經送出過打卡：之後不再主動收回畫面（成功畫面與提醒不能被洗掉；再按一次時 sendPunch 自己會重挑店）
+  var GEO_SOFT_MS = (isLocalHost && +qs('geo_soft_ms')) || 8000;
+  function flagOn(name, dflt) { var q = param(name); return q === '1' ? true : q === '0' ? false : dflt; }
+  function coarseOk() {
+    if (!flagOn('coarse', COARSE_FIRST) || !lastFix || stale(lastFix)) return false;
+    var a = lastFix.coords.accuracy;
+    if (!isFinite(a) || a > COARSE_MAX_ACC) return false;
+    return ClockLineCore.pickStore(fixForPick(), STORES).status === 'ok';
+  }
+  function coarseRecheck() {
+    if (busy || qrToken || !curStore || !lastFix || punchSent || $('punchCard').hidden) return;   // 送出中交給 sendPunch 重挑店；申請頁開著、已打過卡都不動畫面
+    var pick = ClockLineCore.pickStore(fixForPick(), STORES);
+    if (pick.status === 'ok' && pick.store.code === curStore.code) return;   // 校正後還是同一家店：什麼都不用做
+    if (omPending) omPending();              // 還沒送的 ready 那列先照「放行當時」的店送出去，不然等一下店別會變
+    omReport('fail', 'coarse_back', true);   // 先亮又收回：另記一列，事後統計用
+    status = null; refreshButtons();
+    loadStatus();
+  }
   function startGeo() {
     return new Promise(function (resolve, reject) {
       if (isLocalHost && qs('loc')) {
         var m = String(qs('loc')).split(','), acc = parseFloat(qs('acc'));
         lastFix = { timestamp: Date.now(), coords: { latitude: +m[0], longitude: +m[1], accuracy: isFinite(acc) ? acc : 10 } };
+        geoDoneAt = tmNow();
         resolve(lastFix); return;
       }
       if (!navigator.geolocation) { reject(new Error('這支手機不支援定位')); return; }
       if (watchId !== null) navigator.geolocation.clearWatch(watchId);
       lastFix = null;   // 重新定位不沿用上一輪的座標（審查 #5 N1）
+      var my = ++geoGen;   // 這一輪的編號
+      if (coarseVerify) { var old = coarseVerify; coarseVerify = null; old.done(); }   // 上一輪還有人在等核對：放掉（它接著會用新位置重挑店）
       // 8 秒後有什麼就用什麼（定位不夠準交給後端判斷）；20 秒還一筆都沒有才算失敗（審查 M2）
-      var settled = false, expired = false;
-      function done(fn, v) { if (settled) return; settled = true; clearTimeout(soft); clearTimeout(hard); fn(v); }
-      var soft = setTimeout(function () { expired = true; if (lastFix) done(resolve, lastFix); }, 8000);
-      var hard = setTimeout(function () { if (!lastFix) done(reject, new Error('定位逾時')); }, 20000);
+      var settled = false, expired = false, coarseWait = false;   // coarseWait＝靠粗略位置先放行了，等更準的那筆（或滿 8 秒）回來再核對一次
+      function done(fn, v) { if (settled) return; settled = true; if (!coarseWait) clearTimeout(soft); clearTimeout(hard); geoDoneAt = tmNow(); fn(v); }
+      function recheck() {
+        if (!coarseWait) return;
+        coarseWait = false; clearTimeout(soft);
+        var v = coarseVerify; coarseVerify = null;
+        coarseRecheck();
+        if (v) v.done();   // 有人按了打卡在等核對：現在放行去送（sendPunch 會用最新位置再挑一次店）
+      }
+      var soft = setTimeout(function () { if (my !== geoGen) return; expired = true; if (lastFix) done(resolve, lastFix); recheck(); }, GEO_SOFT_MS);
+      var hard = setTimeout(function () { if (my !== geoGen) return; if (!lastFix) done(reject, new Error('定位逾時')); }, 20000);
       watchId = navigator.geolocation.watchPosition(function (p) {
+        if (my !== geoGen) return;   // 上一輪晚到的回呼
         better(p);
+        if (om.fix1 === null) { om.fix1 = tmNow(); om.fix1acc = p.coords.accuracy; }
         showMe(lastFix.coords.latitude, lastFix.coords.longitude);
-        if (good(p) || expired) done(resolve, lastFix);
+        if (good(p) || expired) { done(resolve, lastFix); recheck(); }
+        else if (!settled && coarseOk()) {
+          coarseWait = true; om.coarse = true;
+          var fin = null, pr = new Promise(function (r) { fin = r; });
+          coarseVerify = { p: pr, done: fin };
+          done(resolve, lastFix);
+        }
       }, function (err) {
         // 只有「權限被拒」立刻放棄；暫時抓不到（code 2/3）繼續等，交給 20 秒上限（審查 M3）
         if (err && err.code === 1) done(reject, new Error('定位權限被拒絕'));
@@ -509,15 +553,18 @@
   /* ── 開頁秒數（2026-11-16，Eason「點開到成功 5 秒內」）──
      全部是「從點開這一頁起算」的毫秒數（performance.now）：liff＝LINE 登入好、geo＝定位好、st＝開頁狀態回來、ready＝按鍵亮起、conf＝問到 mini 正本名單。
      一次開頁送一列到光復 open_timing（line_punch_timing 帶 kind:'open'）；開頁失敗也送，才知道同仁卡在哪。量不到就算了，絕不影響打卡。 */
-  var om = { liff: null, geo: null, st: null, ready: null, conf: null, src: '', match: '', pre: false, g: null, mini: null, readySent: false, fails: 0 };
-  function omReport(outcome, stt) {
+  var om = { liff: null, geo: null, st: null, ready: null, conf: null, src: '', match: '', pre: false, g: null, mini: null, readySent: false, fails: 0,
+             fix1: null, fix1acc: null, coarse: false, backSent: false };   // fix1＝第一筆位置幾毫秒到、誤差多少；coarse＝按鍵是靠粗略位置放行的（2026-11-17）
+  function omReport(outcome, stt, force) {   // force：已經回報過 ready 之後還要補記的事（目前只有「先亮又收回」，一次開頁最多一列）
     try {
-      if (outcome === 'ready') { if (om.readySent) return; om.readySent = true; }
+      if (force) { if (om.backSent) return; om.backSent = true; }
+      else if (outcome === 'ready') { if (om.readySent) return; om.readySent = true; }
       else if (om.readySent || ++om.fails > 3) return;
       var r = function (v) { return v === null || v === undefined ? null : Math.round(v); };
       var body = JSON.stringify({ action: 'line_punch_timing', kind: 'open', id_token: liff.getIDToken(), store: curStore ? curStore.code : '-',   // '-'＝還不知道在哪家店（定位失敗、不在範圍）；空字串是光復的店碼，不能混用
         outcome: outcome, status: stt || '', liff_ms: r(om.liff), geo_ms: r(om.geo), st_ms: r(om.st), ready_ms: r(om.ready), conf_ms: r(om.conf),
         st_src: om.src, st_match: om.match, pre: om.pre, via: gConf ? gVia : '', g_ms: r(om.g), mini_ms: r(om.mini),
+        fix1_ms: r(om.fix1), fix1_acc: om.fix1acc !== null && isFinite(om.fix1acc) ? om.fix1acc : null, coarse: om.coarse === true,
         accuracy_m: lastFix && isFinite(lastFix.coords.accuracy) ? lastFix.coords.accuracy : null });
       if (isLocalHost) window.__open = (window.__open || []).concat([JSON.parse(body)]);   // 本機測試看得到送了什麼
       if (navigator.sendBeacon && navigator.sendBeacon(HUB_API, new Blob([body], { type: 'text/plain' }))) return;
@@ -574,10 +621,11 @@
     return loadStatusFor(pick.store, use);
   }
   function loadStatusFor(st, pre) {
-    var f = pre || fetchStatus(st);
+    var f = pre || fetchStatus(st), gen = stGen;
     f.live = true;
     return f.first
       .then(function (x) {
+        if (gen !== stGen) return;   // 這份回來之前畫面已經重讀或同仁已動手（例：粗略放行後校正出來不在這家店）：晚到的不准再動畫面
         var r = x.r;
         if (r && r.ok && r.status === 'ready') {
           r.store = { code: st.code, name: st.name, lat: st.lat, lng: st.lng, radius_m: st.radius_m };
@@ -589,7 +637,7 @@
         }
         omReport('fail', (r && r.error) || 'bad_reply');
         return statusRejected(r);
-      }, function () { omReport('fail', 'status_fail'); connFail(); });
+      }, function () { if (gen !== stGen) return; omReport('fail', 'status_fail'); connFail(); });
   }
   /** 開頁狀態不是 ready：後端明確回的原因各自處理（綁定仍由光復處理）。 */
   function statusRejected(r) {
@@ -779,6 +827,19 @@
         tmReport('geo_fail', '');
       });
     }
+    // 靠粗略位置放行、還沒核對完就按了（2026-11-17）：等這一輪核對完才送——更準的那筆一到、或滿原本的 8 秒上限就放行。
+    // 這樣「什麼時候才會真的送出一張卡」跟改之前一模一樣（要嘛有合格位置、要嘛等滿 8 秒），提早的只有讀狀態與亮按鍵。
+    if (!qrToken && coarseVerify) {
+      var wait = coarseVerify.p;
+      busy = true; refreshButtons();
+      say('確認目前位置中…', '', '大約幾秒，請不要關閉');
+      return wait.then(function () {
+        busy = false;
+        if (tm) { tm.coarse_wait = true; tm.geo = tmNow() - tm.t0; }
+        if (lastFix) showMe(lastFix.coords.latitude, lastFix.coords.longitude);
+        return sendPunch(type, sameOk);
+      });
+    }
     return sendPunch(type, sameOk);
   }
   var REFIX_MS = (isLocalHost && +qs('refix_ms')) || 10000;
@@ -792,6 +853,7 @@
       return loadStatus().then(function () { if (status && status.status === 'ready') say('你的位置變了，請確認店家後再按一次', 'warn'); });
     }
     var st = curStore;
+    punchSent = true;
     // 結果不明時回頭確認用：比「今天這型的卡有沒有多一張」，不比時鐘（clock.html 2026-09-21 同一招）；
     // 另記最後一張算數的卡（guard.last，往回 12 小時、不分日期）——23:59 送出、重讀時已跨午夜，「今天」換了一天筆數比不出來（2026-10-10 Codex 審查 #14）
     var before = { n: countToday(status, type), lastTs: status.guard && status.guard.last ? String(status.guard.last.ts) : '' };
@@ -1032,7 +1094,8 @@
     // 跟定位同時：先讀上次打卡那家店的開頁狀態（2026-11-16）。定位回來確認是同一家才拿來用；按鍵一樣等定位確認在店裡才亮。
     var guess = lastStoreGuess(), pre = null;
     try { if (guess) pre = fetchStatus(guess); } catch (e) { pre = null; }
-    startGeo().then(function (p) { om.geo = tmNow(); showMe(p.coords.latitude, p.coords.longitude); return loadStatus(pre); },
+    var g = geoEarly || startGeo(); geoEarly = null;   // 一點開就開始抓的那一輪（GEO_EARLY）接著用；按「重新定位」才重抓
+    g.then(function (p) { om.geo = geoDoneAt === null ? tmNow() : geoDoneAt; showMe(p.coords.latitude, p.coords.longitude); return loadStatus(pre); },
       function (err) {
         omReport('fail', /權限/.test(err.message) ? 'geo_denied' : 'geo_fail');
         say(err.message, 'warn', '請允許 LINE 使用定位（手機設定 → LINE → 位置），開啟「精確位置」與 Wi‑Fi 後按「重新定位」。');
@@ -1058,8 +1121,14 @@
                           relogin: relogin, RELOGIN_STUCK: RELOGIN_STUCK };
 
   tick(); setInterval(tick, 1000);
+  // 定位提前（2026-11-17）：LINE 登入（中位 2 秒）跟抓位置同時進行，登入好了位置多半也有了。是誰在打卡仍然等 LINE 登入確認；
+  // 申請頁、班表頁、QR 打卡不看定位，不抓。不是從 LINE 打開（登入不成）就把定位停掉。
+  if (flagOn('geo_early', GEO_EARLY) && !param('qr') && param('view') !== 'req' && param('view') !== 'sched') {
+    geoEarly = startGeo(); geoEarly.catch(function () {});   // 失敗留給 start() 接（那裡會顯示原因）；這裡只是避免「沒人接的錯誤」
+  }
   initLiff().then(function (ok) {
-    if (!ok) { initMap(); say('請從 LINE 官方帳號「鼎兆元打卡」的選單打開這一頁。', 'warn'); return; }
+    if (!ok) { geoEarly = null; if (watchId !== null && navigator.geolocation) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+      initMap(); say('請從 LINE 官方帳號「鼎兆元打卡」的選單打開這一頁。', 'warn'); return; }
     om.liff = tmNow();
     if (param('view') === 'req') { showReq({ tab: param('tab'), date: param('date'), miss: param('miss') }); return; }
     if (param('view') === 'sched') { $('punchCard').hidden = true; window.SchedLine.open(); return; }   // 出勤班表（2026-10-10）

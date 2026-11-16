@@ -160,8 +160,8 @@ ok('開頁秒數：寫 open_timing 一列（自動建分頁＋表頭）、不寫
   assert.strictEqual(JSON.stringify(r), JSON.stringify({ ok: true }));
   assert.ok(!t.sheets.punch_timing);
   const sh = t.sheets.open_timing;
-  assert.strictEqual(JSON.stringify(sh.header), JSON.stringify(['ts', 'store', 'emp_id', 'outcome', 'status', 'liff_ms', 'geo_ms', 'st_ms', 'ready_ms', 'conf_ms', 'st_src', 'st_match', 'pre', 'via', 'accuracy_m', 'g_ms', 'mini_ms']));
-  assert.strictEqual(JSON.stringify(sh.rows[0]), JSON.stringify(['2026-10-12T21:30:00+08:00', 'mztjs', 'MZTJS05', 'ready', '', 900, 2100, 2150, 2160, 1300, 'mini', 'same', true, 'gw', 15, 4200, 380]));
+  assert.strictEqual(JSON.stringify(sh.header), JSON.stringify(['ts', 'store', 'emp_id', 'outcome', 'status', 'liff_ms', 'geo_ms', 'st_ms', 'ready_ms', 'conf_ms', 'st_src', 'st_match', 'pre', 'via', 'accuracy_m', 'g_ms', 'mini_ms', 'fix1_ms', 'fix1_acc', 'coarse']));   // 2026-11-17 尾端加三欄（定位先粗後精），前 17 欄不動
+  assert.strictEqual(JSON.stringify(sh.rows[0]), JSON.stringify(['2026-10-12T21:30:00+08:00', 'mztjs', 'MZTJS05', 'ready', '', 900, 2100, 2150, 2160, 1300, 'mini', 'same', true, 'gw', 15, 4200, 380, '', '', false]));
   assert.deepStrictEqual(t.opened, []);
 });
 ok('開頁秒數：失敗也記（status 只收小寫底線）；不認得的結果擋下；不合格的值留白', () => {
@@ -195,5 +195,29 @@ ok('開頁秒數：建分頁撞到「已存在」（兩支手機同時第一筆�
     insertSheet: (nm) => { if (nm === 'open_timing') { ss.insertSheet(nm); throw new Error('already exists'); } return ss.insertSheet(nm); } }; };
   assert.strictEqual(JSON.stringify(t.call({ kind: 'open', outcome: 'ready' })), JSON.stringify({ ok: true }));
   assert.strictEqual(t.sheets.open_timing.rows.length, 1);
+});
+ok('開頁秒數（定位先粗後精）：第一筆位置幾毫秒到、誤差、是不是靠粗略位置放行；不合格的值留白、coarse 只認 true', () => {
+  const t = make();
+  t.call({ kind: 'open', outcome: 'ready', fix1_ms: 812.6, fix1_acc: 64.4, coarse: true, accuracy_m: 64.4 });
+  t.call({ kind: 'open', outcome: 'ready', fix1_ms: -5, fix1_acc: 'x', coarse: 'true' });
+  t.call({ kind: 'open', outcome: 'ready', fix1_ms: null, fix1_acc: null, coarse: false });
+  t.call({ kind: 'open', outcome: 'fail', status: 'coarse_back', fix1_ms: 300, fix1_acc: 9e9, coarse: true });
+  const rows = t.sheets.open_timing.rows;
+  assert.strictEqual(JSON.stringify(rows[0].slice(17)), JSON.stringify([813, 64, true]));
+  assert.strictEqual(JSON.stringify(rows[1].slice(17)), JSON.stringify(['', '', false]));
+  assert.strictEqual(JSON.stringify(rows[2].slice(17)), JSON.stringify(['', '', false]));
+  assert.strictEqual(JSON.stringify([rows[3][3], rows[3][4]].concat(rows[3].slice(17))), JSON.stringify(['fail', 'coarse_back', 300, '', true]));
+  rows.forEach((r) => assert.strictEqual(r.length, 20));
+});
+ok('開頁秒數：線上已有 17 欄舊表頭的分頁 → 表頭補到 20 欄（只加在最後）、舊列不動、新列寫 20 欄', () => {
+  const t = make();
+  t.call({ kind: 'open', outcome: 'ready' });
+  const sh = t.sheets.open_timing;
+  sh.header = sh.header.slice(0, 17); sh.rows[0] = sh.rows[0].slice(0, 17);   // 模擬 11/16 上線時建的 17 欄分頁（用複本，不去截到後端的表頭常數）
+  t.call({ kind: 'open', outcome: 'ready', fix1_ms: 500, fix1_acc: 30, coarse: false });
+  assert.strictEqual(sh.header.length, 20);
+  assert.strictEqual(JSON.stringify(sh.header.slice(0, 5).concat(sh.header.slice(17))), JSON.stringify(['ts', 'store', 'emp_id', 'outcome', 'status', 'fix1_ms', 'fix1_acc', 'coarse']));
+  assert.strictEqual(sh.rows[0].length, 17);
+  assert.strictEqual(JSON.stringify(sh.rows[1].slice(17)), JSON.stringify([500, 30, false]));
 });
 console.log('開頁秒數測試完成');

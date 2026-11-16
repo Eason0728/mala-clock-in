@@ -1574,7 +1574,9 @@ var LINE_OPEN_TIMING_SHEET = 'open_timing';
    g_ms／mini_ms＝Google／mini 各自回開頁狀態花多久。
    st_src＝mini／google（誰先回）；st_match＝兩邊都回來時內容一不一樣（same／diff）；pre＝有沒有趁定位時先讀；via＝連 mini 走 gw（櫃台）／direct（直連）。 */
 var LINE_OPEN_TIMING_HEADERS = ['ts', 'store', 'emp_id', 'outcome', 'status', 'liff_ms', 'geo_ms', 'st_ms', 'ready_ms', 'conf_ms',
-  'st_src', 'st_match', 'pre', 'via', 'accuracy_m', 'g_ms', 'mini_ms'];
+  'st_src', 'st_match', 'pre', 'via', 'accuracy_m', 'g_ms', 'mini_ms',
+  // 定位先粗後精（2026-11-17，加在最後；同一天起定位提前到與 LINE 登入同時，geo_ms 可能小於 liff_ms）：第一筆位置幾毫秒到、那一筆誤差幾公尺、按鍵是不是靠粗略位置（誤差 40～100 公尺）先放行的
+  'fix1_ms', 'fix1_acc', 'coarse'];
 var LINE_OPEN_TIMING_OUTCOMES = ['ready', 'fail'];
 var LINE_OPEN_TIMING_SRC = ['mini', 'google'];
 function lineOpenTimingPick_(v, list) { return list.indexOf(String(v)) >= 0 ? String(v) : ''; }
@@ -1637,6 +1639,7 @@ function lineOpenTimingWrite_(body, userId, code) {
     if (mine) empId = String(mine.row.emp_id);
   } catch (e) { empId = ''; }
   var acc = body.accuracy_m === null || body.accuracy_m === undefined || body.accuracy_m === '' ? NaN : Number(body.accuracy_m);
+  var acc1 = body.fix1_acc === null || body.fix1_acc === undefined || body.fix1_acc === '' ? NaN : Number(body.fix1_acc);
   var ss = getSS(), sh = ss.getSheetByName(LINE_OPEN_TIMING_SHEET);
   if (!sh) {   // 兩支手機同時是第一筆：第二個建分頁會丟「已存在」，再拿一次就好
     try { sh = ss.insertSheet(LINE_OPEN_TIMING_SHEET); } catch (e) { sh = ss.getSheetByName(LINE_OPEN_TIMING_SHEET); }
@@ -1649,7 +1652,8 @@ function lineOpenTimingWrite_(body, userId, code) {
     linePunchTimingMs_(body.liff_ms), linePunchTimingMs_(body.geo_ms), linePunchTimingMs_(body.st_ms), linePunchTimingMs_(body.ready_ms), linePunchTimingMs_(body.conf_ms),
     lineOpenTimingPick_(body.st_src, LINE_OPEN_TIMING_SRC), lineOpenTimingPick_(body.st_match, ['same', 'diff']), body.pre === true,
     lineOpenTimingPick_(body.via, ['gw', 'direct']),
-    (isFinite(acc) && acc >= 0 && acc < 100000) ? Math.round(acc) : '', linePunchTimingMs_(body.g_ms), linePunchTimingMs_(body.mini_ms)]);
+    (isFinite(acc) && acc >= 0 && acc < 100000) ? Math.round(acc) : '', linePunchTimingMs_(body.g_ms), linePunchTimingMs_(body.mini_ms),
+    linePunchTimingMs_(body.fix1_ms), (isFinite(acc1) && acc1 >= 0 && acc1 < 100000) ? Math.round(acc1) : '', body.coarse === true]);
   return { ok: true };
 }
 

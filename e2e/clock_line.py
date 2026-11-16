@@ -624,6 +624,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             phase_relay(ctx, (HQ['lat'], HQ['lng']))
             phase_g(ctx, (HQ['lat'], HQ['lng']))
             phase_open(ctx, (HQ['lat'], HQ['lng']))
+            phase_coarse(ctx)
             phase_relogin(ctx, (HQ['lat'], HQ['lng']))
             phase_rest(ctx, (HQ['lat'], HQ['lng']))
             phase_same_type(ctx, (HQ['lat'], HQ['lng']))
@@ -1612,6 +1613,225 @@ def open_fast(ctx, hq, mini_st, conf='gw', pre_js='', wait_who=True, extra=''):
     return p, S
 
 
+COARSE_GEO_JS = """
+window.__geo2 = { calls: 0, clears: 0, firstCallAt: null, ok: null };
+Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
+  watchPosition: function (ok) { var g = window.__geo2; g.calls++; if (g.firstCallAt === null) g.firstCallAt = performance.now(); g.ok = ok; return g.calls; },
+  clearWatch: function () { window.__geo2.clears++; }, getCurrentPosition: function () {}
+} });
+window.__geoPush = function (lat, lng, acc) { window.__geo2.ok({ timestamp: Date.now(), coords: { latitude: lat, longitude: lng, accuracy: acc } }); };
+window.__bodies = [];   // 送出去的請求內容（看打卡那筆帶的是哪個位置）
+(function () { const f0 = window.fetch; window.fetch = function (u, o) { try { const b = JSON.parse(o.body); b.__t = Date.now(); window.__bodies.push(b); } catch (e) {} return f0.apply(this, arguments); }; })();
+"""
+
+
+def phase_coarse(ctx):
+    """定位先粗後精（2026-11-17）：第一筆位置誤差 ≤100 公尺、扣掉誤差後落在唯一一家店 → 不等到 ≤40 公尺就先讀狀態、放行按鍵。
+    用假的定位（一筆一筆推進去）測；按鍵亮不亮可能被前面測試留下的 10 分鐘鎖影響，所以看「開頁狀態有沒有畫出來」（店名出現、不再是定位中）。"""
+    opens = lambda p: p.evaluate('window.__open || []')
+    n_status = lambda p: sum(1 for c in calls(p) if c.get('action') == 'liff_status')
+    HQ_AT, JS_AT = (HQ['lat'], HQ['lng']), (JS['lat'], JS['lng'])
+    MID = ((HQ['lat'] + JS['lat']) / 2, (HQ['lng'] + JS['lng']) / 2)   # 總部與金山正中間（各約 100 公尺）
+    AWAY = (HQ['lat'] + 0.0030, HQ['lng'])                              # 總部北邊約 330 公尺
+
+    errs = []
+
+    def open_geo(extra='', pre=''):
+        p = ctx.new_page(); p.add_init_script(LOG_JS); p.add_init_script(COARSE_GEO_JS)
+        if pre:
+            p.add_init_script(pre)
+        p.on('pageerror', lambda e: errs.append(str(e)))
+        p.goto(BASE + '/clock-line.html?mock_uid=U1&api=/api' + extra)
+        wait_msg(p, '定位中')
+        return p
+
+    def push(p, at, acc):
+        p.evaluate('([a, b, c]) => window.__geoPush(a, b, c)', [at[0], at[1], acc])
+
+    def shown(p, name, timeout=4000):
+        try:
+            p.wait_for_function('(n) => document.getElementById("storeName").textContent === n && document.getElementById("msg").textContent.indexOf("定位中") < 0 && document.getElementById("msg").textContent.indexOf("讀取中") < 0', arg=name, timeout=timeout)
+            return True
+        except Exception:
+            return False
+
+    still_waiting = lambda p: '定位中' in msg(p) and p.is_disabled('#btnIn') and p.is_disabled('#btnOut')
+
+    # 1. 粗略位置（誤差 65 公尺）落在總部 → 馬上讀狀態，不等更準的
+    p = open_geo(); t0 = time.time(); push(p, HQ_AT, 65)
+    ok('先粗後精 1：誤差 65 公尺、在總部 → 不等更準的位置就畫出開頁狀態', shown(p, HQ['name']) and time.time() - t0 < 3, (msg(p), p.inner_text('#storeName')))
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    o = opens(p)[0]
+    ok('先粗後精 1：開頁秒數記「靠粗略位置放行」、第一筆位置的秒數與誤差', o.get('outcome') == 'ready' and o.get('coarse') is True and o.get('fix1_acc') == 65 and isinstance(o.get('fix1_ms'), (int, float)) and o['fix1_ms'] <= o['ready_ms'] and o.get('accuracy_m') == 65, o)
+    n1 = n_status(p)
+    # 1b. 之後更準的位置回來、還是總部 → 什麼都不動（不重讀、不閃畫面）
+    push(p, HQ_AT, 12); p.wait_for_timeout(600)
+    ok('先粗後精 1b：校正後還是同一家店 → 不重讀狀態、畫面不變', n_status(p) == n1 and p.inner_text('#storeName') == HQ['name'] and len(opens(p)) == 1, (n_status(p), n1, opens(p)))
+    p.close()
+
+    # 2. 開關關掉（?coarse=0）→ 同一筆粗略位置不放行，等到 ≤40 公尺才讀
+    p = open_geo('&coarse=0'); push(p, HQ_AT, 65); p.wait_for_timeout(900)
+    ok('先粗後精 2：開關關掉 → 粗略位置不放行（照舊等更準的）', still_waiting(p) and n_status(p) == 0, (msg(p), calls(p)))
+    push(p, HQ_AT, 20)
+    ok('先粗後精 2：開關關掉 → 誤差 20 公尺才畫出狀態', shown(p, HQ['name']), msg(p))
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    ok('先粗後精 2：開頁秒數不記粗略放行；第一筆位置仍記 65 公尺', opens(p)[0].get('coarse') is False and opens(p)[0].get('fix1_acc') == 65 and opens(p)[0].get('accuracy_m') == 20, opens(p)[0])
+    p.close()
+
+    # 3. 太粗（誤差 150 公尺，超過後端最多抵的 100 公尺）→ 不放行
+    p = open_geo(); push(p, HQ_AT, 150); p.wait_for_timeout(900)
+    ok('先粗後精 3：誤差 150 公尺 → 不放行', still_waiting(p) and n_status(p) == 0, msg(p))
+    push(p, HQ_AT, 100)
+    ok('先粗後精 3：剛好 100 公尺、在總部 → 放行', shown(p, HQ['name']), msg(p))
+    p.close()
+
+    # 4. 粗略位置不在任何店內 → 不放行、也不急著說「不在範圍」；更準的位置回來確認不在才說
+    p = open_geo(); push(p, AWAY, 65); p.wait_for_timeout(900)
+    ok('先粗後精 4：粗略位置在店外 → 還在「定位中」，沒有急著判「不在範圍」', still_waiting(p) and '不在任何打卡地點' not in msg(p), msg(p))
+    push(p, AWAY, 15)
+    wait_msg(p, '不在任何打卡地點範圍內')
+    ok('先粗後精 4：更準的位置確認在店外 → 才說不在範圍、鍵不亮、沒有問後端', p.is_disabled('#btnIn') and p.is_visible('#btnRetry') and n_status(p) == 0, (msg(p), calls(p)))
+    p.close()
+
+    # 5. 粗略位置同時落在兩家店（總部與金山正中間、誤差 100）→ 分不出來，不放行；更準的位置回來才決定
+    p = open_geo(); push(p, MID, 100); p.wait_for_timeout(900)
+    ok('先粗後精 5：粗略位置分不出總部還是金山 → 不放行', still_waiting(p) and n_status(p) == 0, msg(p))
+    push(p, JS_AT, 15)
+    ok('先粗後精 5：更準的位置在金山 → 讀金山', shown(p, JS['name']) or '金山' in p.inner_text('#storeName'), (p.inner_text('#storeName'), msg(p)))
+    p.close()
+
+    # 6. 靠粗略位置放行後，更準的位置其實在店外 → 收回按鍵、改成不在範圍，另記一列「先亮又收回」
+    p = open_geo(); push(p, HQ_AT, 90)
+    ok('先粗後精 6：先放行（誤差 90）', shown(p, HQ['name']), msg(p))
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    push(p, AWAY, 12)
+    wait_msg(p, '不在任何打卡地點範圍內')
+    ok('先粗後精 6：更準的位置在店外 → 兩顆鍵都收回、可重新定位', p.is_disabled('#btnIn') and p.is_disabled('#btnOut') and p.is_visible('#btnRetry'), msg(p))
+    p.wait_for_function('(window.__open || []).length >= 2', timeout=4000)
+    o2 = opens(p)
+    ok('先粗後精 6：多記一列 fail／coarse_back（只記一次）', [o2[1].get('outcome'), o2[1].get('status')] == ['fail', 'coarse_back'] and len(o2) == 2, o2)
+    push(p, AWAY, 10); p.wait_for_timeout(400)
+    ok('先粗後精 6：之後再來位置不會重複記', len(opens(p)) == 2, opens(p))
+    p.close()
+
+    # 7. 靠粗略位置放行後，更準的位置是另一家店（金山）→ 改讀金山
+    p = open_geo(); push(p, MID, 60)   # 正中間、誤差 60：扣掉後離兩家各 40 公尺 → 兩家都符合？總部半徑 50、金山 50 → 兩家都中，分不出來
+    p.wait_for_timeout(600)
+    ok('先粗後精 7 前提：正中間誤差 60 也分不出來 → 不放行', still_waiting(p), msg(p))
+    p.close()
+    NEAR_HQ = (HQ['lat'] + (JS['lat'] - HQ['lat']) * 0.15, HQ['lng'] + (JS['lng'] - HQ['lng']) * 0.15)   # 離總部約 30 公尺、離金山約 170 公尺
+    p = open_geo(); push(p, NEAR_HQ, 60)
+    ok('先粗後精 7：靠近總部、誤差 60 → 只中總部，先放行', shown(p, HQ['name']), (p.inner_text('#storeName'), msg(p)))
+    push(p, JS_AT, 10)
+    ok('先粗後精 7：更準的位置在金山 → 改讀金山', shown(p, JS['name']), (p.inner_text('#storeName'), msg(p)))
+    p.close()
+
+    # 8. 靠粗略位置放行後一直沒有更準的 → 滿等待上限也不動（照舊用手上那筆）
+    p = open_geo('&geo_soft_ms=1200'); push(p, HQ_AT, 70)
+    ok('先粗後精 8：先放行（誤差 70）', shown(p, HQ['name']), msg(p))
+    n8 = n_status(p); p.wait_for_timeout(1800)
+    ok('先粗後精 8：滿等待上限、沒有更準的 → 不重讀、畫面不變', n_status(p) == n8 and p.inner_text('#storeName') == HQ['name'], (n_status(p), n8, msg(p)))
+    p.close()
+
+    # 9. 定位提前：LINE 登入還沒好就開始抓位置；關掉開關就等登入完
+    p = open_geo(); push(p, HQ_AT, 10); shown(p, HQ['name'])
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    g = p.evaluate('window.__geo2'); o = opens(p)[0]
+    ok('定位提前 9：開始抓位置的時間早於 LINE 登入完成（%.0f < %.0f 毫秒），整個開頁只抓一輪' % (g['firstCallAt'], o['liff_ms']), g['firstCallAt'] < o['liff_ms'] and g['calls'] == 1, (g, o))
+    p.close()
+    p = open_geo('&geo_early=0'); push(p, HQ_AT, 10); shown(p, HQ['name'])
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    g = p.evaluate('window.__geo2'); o = opens(p)[0]
+    ok('定位提前 9：開關關掉 → 登入完才開始抓（%.0f ≥ %.0f 毫秒）' % (g['firstCallAt'], o['liff_ms']), g['firstCallAt'] >= o['liff_ms'] and g['calls'] == 1, (g, o))
+    p.close()
+
+    # 10. 不是從 LINE 打開（登入不成）→ 提前開的定位要停掉；申請頁、QR 不抓位置
+    p = ctx.new_page(); p.add_init_script(LOG_JS); p.add_init_script(COARSE_GEO_JS)
+    p.route('**/liff/edge/**', lambda r: r.abort())   # LINE 的元件載不到＝不是從 LINE 打開
+    p.goto(BASE + '/clock-line.html?api=/api')
+    wait_msg(p, '請從 LINE 官方帳號', timeout=10000)
+    g = p.evaluate('window.__geo2')
+    ok('定位提前 10：不是從 LINE 打開 → 提前開的定位已停掉', g['calls'] == 1 and g['clears'] >= 1, g)
+    p.close()
+    p = ctx.new_page(); p.add_init_script(LOG_JS); p.add_init_script(COARSE_GEO_JS)
+    p.goto(BASE + '/clock-line.html?mock_uid=U1&api=/api&view=req')
+    p.wait_for_selector('#reqView', state='visible', timeout=10000); p.wait_for_timeout(300)
+    ok('定位提前 10：申請頁不抓位置', p.evaluate('window.__geo2.calls') == 0, p.evaluate('window.__geo2'))
+    p.close()
+
+    # ── 放行之後按打卡（Fable 審查 2026-11-17）：真的送出一張卡的時機要跟改之前一樣——有合格位置，或等滿原本的上限 ──
+    punches = lambda p: [b for b in p.evaluate('window.__bodies') if b.get('action') == 'liff_punch']
+
+    def press_out(p):   # 鍵可能被前面測試留下的 10 分鐘鎖停用：同一個 tick 解開並點下去（後端收不收不是這裡要看的，看送出的內容）
+        p.evaluate('() => { window.confirm = () => true; const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
+
+    # 11. 粗略放行後馬上按 → 先不送，等更準的位置回來才送，送的是準的那筆
+    p = open_geo(); push(p, HQ_AT, 65); shown(p, HQ['name']); press_out(p)
+    wait_msg(p, '確認目前位置中'); p.wait_for_timeout(500)
+    ok('先粗後精 11：粗略放行後馬上按 → 還沒核對完，不送打卡', punches(p) == [] and p.is_disabled('#btnIn') and p.is_disabled('#btnOut'), (msg(p), punches(p)))
+    push(p, HQ_AT, 12)
+    p.wait_for_function('window.__bodies.some(b => b.action === "liff_punch")', timeout=5000)
+    b = punches(p)[0]
+    ok('先粗後精 11：更準的位置回來 → 才送，帶的是準的那筆（誤差 12）', b.get('accuracy') == 12 and abs(b.get('lat') - HQ['lat']) < 1e-9 and b.get('type') == 'out' and len(punches(p)) == 1, b)
+    p.close()
+
+    # 12. 粗略放行後按了，更準的位置其實在店外 → 不送
+    p = open_geo(); push(p, HQ_AT, 90); shown(p, HQ['name']); press_out(p)
+    wait_msg(p, '確認目前位置中'); push(p, AWAY, 12)
+    wait_msg(p, '不在任何打卡地點範圍內')
+    p.wait_for_timeout(500)
+    ok('先粗後精 12：按了之後校正出來在店外 → 沒有送打卡、畫面說不在範圍、鍵不亮', punches(p) == [] and p.is_disabled('#btnIn') and p.is_disabled('#btnOut'), (msg(p), punches(p)))
+    p.close()
+
+    # 13. 粗略放行後按了，一直沒有更準的 → 等滿原本的上限才送（跟改之前「滿 8 秒就用手上那筆」一樣；測試把上限縮成 1.5 秒）
+    p = open_geo('&geo_soft_ms=1500'); t_open = time.time(); push(p, HQ_AT, 65); shown(p, HQ['name']); press_out(p)
+    p.wait_for_timeout(500)
+    ok('先粗後精 13：上限還沒到 → 不送', punches(p) == [], punches(p))
+    p.wait_for_function('window.__bodies.some(b => b.action === "liff_punch")', timeout=5000)
+    ok('先粗後精 13：滿上限才送（開頁後 %.1f 秒），帶手上那筆（誤差 65）' % (time.time() - t_open), time.time() - t_open >= 1.4 and punches(p)[0].get('accuracy') == 65, punches(p))
+    p.close()
+
+    # 14. 已經有合格位置才按 → 不用等，直接送（沒有變慢）
+    p = open_geo(); push(p, HQ_AT, 65); shown(p, HQ['name']); push(p, HQ_AT, 15); p.wait_for_timeout(200)
+    t1 = time.time(); press_out(p)
+    p.wait_for_function('window.__bodies.some(b => b.action === "liff_punch")', timeout=3000)
+    ok('先粗後精 14：核對完才按 → 立刻送（%.2f 秒），帶誤差 15 那筆' % (time.time() - t1), time.time() - t1 < 1.0 and punches(p)[0].get('accuracy') == 15, punches(p))
+    p.close()
+
+    # 15. 狀態還在讀的時候就校正出來不在店內 → 晚回來的那份狀態不准把按鍵亮回來
+    p = open_geo(pre='window.__delay = {liff_status: 1500};'); push(p, HQ_AT, 65); p.wait_for_timeout(150); push(p, AWAY, 12)
+    wait_msg(p, '不在任何打卡地點範圍內')
+    p.wait_for_timeout(2200)   # 總部那份狀態這時已經回來了
+    ok('先粗後精 15：晚到的狀態沒有蓋掉「不在範圍」：鍵仍不亮、沒有顯示成可以打卡', p.is_disabled('#btnIn') and p.is_disabled('#btnOut') and '不在任何打卡地點範圍內' in msg(p), (msg(p), p.inner_text('#storeName')))
+    p.close()
+    # 15b. 校正出來是另一家店，舊店那份狀態晚到 → 畫面留在新的那家
+    p = open_geo(pre='window.__delay = {liff_status: 1500};'); push(p, NEAR_HQ, 60); p.wait_for_timeout(150); push(p, JS_AT, 10)
+    shown(p, JS['name'], timeout=6000); p.wait_for_timeout(2000)
+    ok('先粗後精 15b：舊店的狀態晚到 → 畫面仍是金山', p.inner_text('#storeName') == JS['name'], (p.inner_text('#storeName'), msg(p)))
+    p.close()
+
+    # 16. 粗略放行後讀狀態失敗、按「重新定位」開第二輪 → 上一輪殘留的計時器不准闖進來（不多讀、不出錯）
+    p = open_geo('&geo_soft_ms=1500&retry_ms=50', pre="window.__fake = {liff_status: 'abort'};"); push(p, HQ_AT, 65)
+    p.wait_for_selector('#btnRetry', state='visible', timeout=8000)
+    p.evaluate("window.__fake = {}"); n16 = n_status(p)
+    p.click('#btnRetry'); wait_msg(p, '定位中'); p.wait_for_timeout(1900)   # 上一輪的上限（1.5 秒）這時已經過了
+    ok('先粗後精 16：第二輪還沒有位置 → 仍在定位中、沒有多讀狀態', still_waiting(p) and n_status(p) == n16, (msg(p), n_status(p), n16))
+    push(p, HQ_AT, 10)
+    ok('先粗後精 16：第二輪位置回來 → 正常讀狀態', shown(p, HQ['name']), msg(p))
+    p.close()
+
+    # 17. 位置過了 30 秒才按（手機停止更新）→ 照舊先重新定位，不因為先粗後精被跳過
+    p = open_geo('&refix_ms=1500'); push(p, HQ_AT, 12); shown(p, HQ['name'])
+    p.evaluate('() => { const g = window.__geo2; const ok0 = g.ok; window.__geoPush = function (a, b, c) { g.ok({ timestamp: Date.now(), coords: { latitude: a, longitude: b, accuracy: c } }); }; }')
+    calls0 = p.evaluate('window.__geo2.calls')
+    p.evaluate('() => { const RealNow = Date.now; Date.now = () => RealNow() + 40000; }')   # 手上那筆變成 40 秒前的
+    press_out(p); wait_msg(p, '確認目前位置中'); p.wait_for_timeout(300)
+    ok('先粗後精 17：位置過時 → 按下先重新定位（多抓一輪）、還沒送', p.evaluate('window.__geo2.calls') == calls0 + 1 and punches(p) == [], (p.evaluate('window.__geo2'), punches(p)))
+    p.close()
+
+    ok('先粗後精：以上各情境頁面沒有程式錯誤', errs == [], errs)
+
+
 def phase_open(ctx, hq):
     import urllib.request
     req = urllib.request.Request(BASE + '/api/hq', data=json.dumps({'action': 'liff_status', 'id_token': 'MOCK_ID_TOKEN_U1'}).encode(), headers={'Content-Type': 'text/plain'})
@@ -1628,7 +1848,7 @@ def phase_open(ctx, hq):
     p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
     o = opens(p)[0]
     ok('開頁 1：開頁秒數一列：ready、mini 先回、兩邊一樣、走櫃台', [o.get('kind'), o.get('outcome'), o.get('st_src'), o.get('st_match'), o.get('via')] == ['open', 'ready', 'mini', 'same', 'gw'], o)
-    ok('開頁 1：各段毫秒數都有、順序合理', all(isinstance(o.get(k), (int, float)) for k in ('liff_ms', 'geo_ms', 'st_ms', 'ready_ms', 'g_ms', 'mini_ms')) and o['liff_ms'] <= o['geo_ms'] <= o['ready_ms'] and o['mini_ms'] < o['g_ms'], o)
+    ok('開頁 1：各段毫秒數都有、順序合理', all(isinstance(o.get(k), (int, float)) for k in ('liff_ms', 'geo_ms', 'st_ms', 'ready_ms', 'g_ms', 'mini_ms')) and max(o['liff_ms'], o['geo_ms']) <= o['st_ms'] <= o['ready_ms'] and o['mini_ms'] < o['g_ms'], o)   # 2026-11-17 定位提前到與 LINE 登入同時：geo_ms 可以比 liff_ms 小，改成兩者都要在讀到狀態之前
     p.wait_for_timeout(300)
     ok('開頁 1：只送一列', len(opens(p)) == 1, opens(p))
     p.close()
