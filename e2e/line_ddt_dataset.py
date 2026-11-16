@@ -21,7 +21,7 @@ BRANCHES = '子丑寅卯辰巳午未申酉戌亥'
 # ── 規格常數（照規格寫死，不從系統讀）──
 ACCURACY_CREDIT_CAP_M = 100     # 定位誤差最多折抵 100 公尺（clock-line-core.js／各店 CONFIG）
 SAME_TYPE_LOCK_MIN = 10          # 打完任一張 10 分鐘內兩顆都鎖（2026-11-02）
-ALTERNATION_LOOKBACK_H = 12      # 最後一張算數的卡往回看 12 小時
+ALTERNATION_LOOKBACK_H = 24      # 最後一張算數的卡往回看 24 小時（2026-11-15 #152 起，原 12）
 MISSED_DAYS = 7                  # 忘打卡提醒：打上班往前 7 天
 MISSED_PAIR_H = 16               # 打下班往前 16 小時內要有上班卡
 REST_DAY_MAX_H = 10
@@ -154,7 +154,7 @@ def counted(evs):
 
 
 def last_counted(evs, now):
-    """往回 12 小時內最後一張算數的卡（依 ts 排序）。"""
+    """往回 24 小時內最後一張算數的卡（依 ts 排序）。"""
     cutoff = now - timedelta(hours=ALTERNATION_LOOKBACK_H)
     last = None
     for e in sorted(counted(evs), key=lambda e: e['ts']):
