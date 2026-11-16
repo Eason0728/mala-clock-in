@@ -12,8 +12,9 @@ function extract(src, name) {
   for (; j < src.length; j++) { if (src[j] === '{') d++; else if (src[j] === '}' && --d === 0) { j++; break; } }
   return src.slice(i, j);
 }
-const maxLine = liff.split('\n').filter((l) => l.indexOf('var LIFF_STATS_FORMULA_MAX_CELLS_') === 0)[0];
-assert.ok(maxLine, '找不到 LIFF_STATS_FORMULA_MAX_CELLS_');
+const maxLine = liff.split('\n').filter((l) => l.indexOf('var LIFF_STATS_') === 0).join('\n');
+assert.ok(maxLine.indexOf('LIFF_STATS_FORMULA_MAX_CELLS_') >= 0 && maxLine.indexOf('LIFF_STATS_FORMULA_BUDGET_MS_') >= 0, '找不到 LIFF_STATS_ 常數');
+const FNS = maxLine + '\n' + extract(liff, 'liffStatsFnNames_') + '\n' + extract(liff, 'handleSheetStats_');
 let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 const J = (v) => JSON.parse(JSON.stringify(v));
 
@@ -34,15 +35,15 @@ function make(sheets, opts) {
     appendRow: () => { throw new Error('不該寫入'); }, insertSheet: () => { throw new Error('不該寫入'); }
   });
   const sb = {
-    console, Date, JSON, Math, String, Number, Object, Array,
+    console, Date: opts.Date || Date, JSON, Math, String, Number, Object, Array,
     CONFIG: { ADMIN_KEY: 'ADM' },
     checkAdmin: (b) => b.admin_key === 'ADM',
     getSS: () => ({ getSheets: () => sheets.map(mk), getNamedRanges: () => { if (opts.namedBoom) throw new Error('x'); return new Array(opts.named || 0).fill({}); } }),
     Utilities: { formatDate: () => '2026-11-17T01:00:00+08:00' },
-    ScriptApp: { getProjectTriggers: () => (opts.triggers || []).map((t) => ({ getHandlerFunction: () => t[0], getEventType: () => t[1] })) }
+    ScriptApp: { getProjectTriggers: () => { if (opts.trigBoom) throw new Error('沒有權限'); return (opts.triggers || []).map((t) => ({ getHandlerFunction: () => t[0], getEventType: () => t[1] })); } }
   };
   vm.createContext(sb);
-  vm.runInContext(maxLine + '\n' + extract(liff, 'handleSheetStats_'), sb);
+  vm.runInContext(FNS, sb);
   return { run: (b) => J(vm.runInContext('handleSheetStats_', sb)(b)), calls, sb };
 }
 
@@ -110,6 +111,70 @@ ok('有掛進動作表，而且登記成「讀取」（不會讓考勤副本以�
   vm.runInContext(feed.slice(feed.indexOf('var DUTY_FEED_READS_'), feed.indexOf('function dutyFeedDate_')), sb);
   assert.strictEqual(vm.runInContext('dutyFeedIsRead_("sheet_stats")', sb), true);
   assert.strictEqual(vm.runInContext('dutyFeedIsRead_("mgr_approve")', sb), false);
+});
+
+ok('公式裡的字串常值、帶引號的分頁名稱不會被當成函式名帶出', () => {
+  const { run } = make([{ name: 'x', lastRow: 1, lastCol: 4, maxRows: 10, maxCols: 4,
+    formulas: [['="ABC("', '=IF(A1="John(店長)","SECRET(1)",1)', "='Sheet(1)'!A1", '=IF(A1="他說""HIDE(""",NOW(),0)']] }]);
+  const r = run({ admin_key: 'ADM' });
+  assert.strictEqual(r.sheets[0].formulas, 4);
+  assert.deepStrictEqual(r.sheets[0].formula_kinds.slice().sort(), ['IF:2', 'NOW:1']);
+  const txt = JSON.stringify(r.sheets[0].formula_kinds).toUpperCase();   // 只看函式名稱那一欄（回應的鍵名本身就有 sheets）
+  ['ABC', 'JOHN', 'SECRET', 'SHEET', 'HIDE'].forEach((w) => assert.ok(txt.indexOf(w) < 0, '帶出了 ' + w));
+});
+
+ok('函式種類超過 8 種只留前 8，次數多的在前', () => {
+  const names = ['A1F', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+  const row = []; names.forEach((nm, i) => { for (let k = 0; k < 10 - i; k++) row.push('=' + nm + '()'); });
+  const { run } = make([{ name: 'x', lastRow: 1, lastCol: row.length, maxRows: 10, maxCols: row.length, formulas: [row] }]);
+  assert.deepStrictEqual(run({ admin_key: 'ADM' }).sheets[0].formula_kinds, ['A1F:10', 'B:9', 'C:8', 'D:7', 'E:6', 'F:5', 'G:4', 'H:3']);
+});
+
+ok('no_formulas:true → 完全不讀範圍，每頁 skipped=off，大小照回；字串 "true" 不算，照常數', () => {
+  const sheets = [{ name: 'a', lastRow: 2, lastCol: 2, maxRows: 10, maxCols: 5, formulas: [['=NOW()', ''], ['', '']] }];
+  const x = make(sheets); const r = x.run({ admin_key: 'ADM', no_formulas: true });
+  assert.deepStrictEqual([r.sheets[0].formulas, r.sheets[0].skipped, r.sheets[0].cells], [null, 'off', 50]);
+  assert.strictEqual(x.calls.length, 0);
+  assert.strictEqual(make(sheets).run({ admin_key: 'ADM', no_formulas: 'true' }).sheets[0].formulas, 1);
+});
+
+ok('整趟超過時間上限後的分頁不再數公式（skipped=time），大小照回；太大的分頁 skipped=big', () => {
+  let now = 1000000;
+  class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(now); } static now() { return now; } }
+  const x = make([
+    { name: '第一頁', lastRow: 1, lastCol: 1, maxRows: 10, maxCols: 1, get formulas() { now += 121000; return [['=NOW()']]; } },   // 數這頁「花了」121 秒
+    { name: '第二頁', lastRow: 1, lastCol: 1, maxRows: 10, maxCols: 1, formulas: [['=NOW()']] },
+    { name: '超大', lastRow: 300000, lastCol: 1, maxRows: 300000, maxCols: 1 }
+  ], { Date: FakeDate });
+  const r = x.run({ admin_key: 'ADM' });
+  assert.deepStrictEqual(r.sheets.map((s) => [s.name, s.formulas, s.skipped || '']), [['第一頁', 1, ''], ['第二頁', null, 'time'], ['超大', null, 'big']]);
+  assert.strictEqual(r.sheets[1].max_rows, 10);
+  assert.ok(r.ms >= 121000);
+});
+
+ok('排程清單讀不到（沒有權限）→ triggers=null，其餘照回', () => {
+  const r = make([{ name: 'a', lastRow: 0, lastCol: 0, maxRows: 10, maxCols: 5 }], { trigBoom: true }).run({ admin_key: 'ADM' });
+  assert.strictEqual(r.ok, true); assert.strictEqual(r.triggers, null); assert.strictEqual(r.sheets.length, 1);
+});
+
+ok('真的 checkAdmin：金鑰沒設或有設，空字串、亂填、非文字都被擋，而且不碰試算表', () => {
+  const code = fs.readFileSync(ROOT + '/apps-script/Code.gs', 'utf8');
+  [{ ADMIN_KEY: '' }, { ADMIN_KEY: 'ADM' }].forEach((cfg) => {
+    const sb = { console, Date, JSON, Math, String, Number, Object, Array, CONFIG: cfg,
+      getSS: () => { throw new Error('被擋的請求不該碰試算表'); }, Utilities: {}, ScriptApp: {} };
+    vm.createContext(sb);
+    vm.runInContext(extract(code, 'checkAdmin') + '\n' + FNS, sb);
+    const run = vm.runInContext('handleSheetStats_', sb);
+    [{}, { admin_key: '' }, { admin_key: 'x' }, { admin_key: true }, { admin_key: { a: 1 } }, { admin_key: 0 }].forEach((b) =>
+      assert.deepStrictEqual(J(run(b)), { ok: false, error: 'unauthorized' }, JSON.stringify([cfg, b])));
+  });
+});
+
+ok('整份 Liff.gs 在沒有 ScriptApp 的環境載入不出錯（Mac mini 打卡服務會整檔載入）', () => {
+  const sb = { console, Date, JSON, Math, String, Number, Object, Array, isNaN, isFinite, parseInt, parseFloat, CONFIG: {} };
+  vm.createContext(sb);
+  vm.runInContext(liff, sb);
+  assert.strictEqual(typeof vm.runInContext('LIFF_HANDLERS.sheet_stats', sb), 'function');
 });
 
 console.log('sheet-stats：' + n + ' 項全過');

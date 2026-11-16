@@ -755,14 +755,20 @@ function handleExportTables_(body) {
   return { ok: true, exported_at: Utilities.formatDate(new Date(), 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX"), tables: out };
 }
 
-/** {action:'sheet_stats', admin_key} → {ok, at, ms, sheets:[{name, last_row, last_col, max_rows, max_cols, cells, formulas, formula_kinds, cond_rules, charts, hidden, ms}], named_ranges, triggers}
+/** {action:'sheet_stats', admin_key, no_formulas?} → {ok, at, ms, sheets:[{name, last_row, last_col, max_rows, max_cols, cells, formulas, formula_kinds, cond_rules, charts, hidden, ms}], named_ranges, triggers}
  *  唯讀：只回每個分頁的名稱與大小、公式有幾格與用了哪些函式名稱，**不回任何儲存格內容**，也不寫入。
  *  2026-11-17 加：金山試算表 11/13 下午起整份變慢（名冊、打卡表讀取都是別店 2～3 倍），四張主要表的列數正常，要看是哪個分頁變重。
- *  公式只在「有內容的範圍」不超過 LIFF_STATS_FORMULA_MAX_CELLS_ 格時才數（太大的分頁回 null，光看大小就夠了）；單一分頁出錯只記在那一列。 */
+ *  公式只在「有內容的範圍」不超過 LIFF_STATS_FORMULA_MAX_CELLS_ 格時才數（太大的分頁回 null，光看大小就夠了）；單一分頁出錯只記在那一列。
+ *  整趟超過 LIFF_STATS_FORMULA_BUDGET_MS_ 之後的分頁不再數公式（skipped:'time'），大小照回——寧可少數幾頁，不要整趟逾時什麼都拿不到。
+ *  no_formulas:true＝完全不數公式，只看大小（最快）。函式名稱比對前先拿掉公式裡的字串常值與分頁名稱引號，不會把內容片段當函式名帶出。 */
 var LIFF_STATS_FORMULA_MAX_CELLS_ = 200000;
+var LIFF_STATS_FORMULA_BUDGET_MS_ = 120000;
+function liffStatsFnNames_(f) {
+  return String(f).replace(/"(?:[^"]|"")*"/g, '""').replace(/'(?:[^']|'')*'/g, "''").toUpperCase().match(/[A-Z][A-Z0-9_.]*(?=\()/g) || [];
+}
 function handleSheetStats_(body) {
   if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
-  var t0 = Date.now(), ss = getSS(), out = [];
+  var t0 = Date.now(), ss = getSS(), out = [], noF = body.no_formulas === true;
   ss.getSheets().forEach(function (sh) {
     var t = Date.now(), o = { name: String(sh.getName()) };
     try {
@@ -771,13 +777,16 @@ function handleSheetStats_(body) {
       o.cells = o.max_rows * o.max_cols;
       o.hidden = !!(typeof sh.isSheetHidden === 'function' && sh.isSheetHidden());
       o.formulas = null; o.formula_kinds = null;
-      if (o.last_row > 0 && o.last_col > 0 && o.last_row * o.last_col <= LIFF_STATS_FORMULA_MAX_CELLS_) {
+      if (noF) o.skipped = 'off';
+      else if (o.last_row > 0 && o.last_col > 0 && o.last_row * o.last_col > LIFF_STATS_FORMULA_MAX_CELLS_) o.skipped = 'big';
+      else if (o.last_row > 0 && o.last_col > 0 && Date.now() - t0 > LIFF_STATS_FORMULA_BUDGET_MS_) o.skipped = 'time';
+      else if (o.last_row > 0 && o.last_col > 0) {
         var fs = sh.getRange(1, 1, o.last_row, o.last_col).getFormulas(), n = 0, kinds = {};
         for (var i = 0; i < fs.length; i++) for (var k = 0; k < fs[i].length; k++) {
           var f = fs[i][k];
           if (!f) continue;
           n++;
-          (String(f).toUpperCase().match(/[A-Z][A-Z0-9_.]*(?=\()/g) || []).forEach(function (name) { kinds[name] = (kinds[name] || 0) + 1; });
+          liffStatsFnNames_(f).forEach(function (name) { kinds[name] = (kinds[name] || 0) + 1; });
         }
         o.formulas = n;
         o.formula_kinds = Object.keys(kinds).sort(function (a, b) { return kinds[b] - kinds[a]; }).slice(0, 8).map(function (name) { return name + ':' + kinds[name]; });
