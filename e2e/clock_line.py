@@ -1564,7 +1564,7 @@ ALT_URL = BASE + '/relay-mock-alt/clock'
 
 def open_fast(ctx, hq, mini_st, conf='gw', pre_js='', wait_who=True, extra=''):
     """mini_st：dict＝mini 回的開頁狀態；'abort'＝連不上。conf：'gw'＝櫃台回正本名單；'alt'＝櫃台不通、直連回。"""
-    S = {'st_hits': [], 'punch_hits': [], 'alt_punch': [], 'conf_gw': 0, 'conf_alt': 0}
+    S = {'st_hits': [], 'punch_hits': [], 'alt_punch': [], 'conf_gw': 0, 'conf_alt': 0, 'after_gw': 0, 'after_alt': 0}
     on = {'ok': True, 'v': 1, 'primary': ['hq'], 'wait_ms': 3000}
 
     def st_h(route):
@@ -1600,7 +1600,10 @@ def open_fast(ctx, hq, mini_st, conf='gw', pre_js='', wait_who=True, extra=''):
     p.route(G_URL + '/status', st_h)
     p.route(G_URL + '/punch', punch_gw)
     p.route(ALT_URL + '/punch', punch_alt)
-    p.route(re.compile(r'relay-mock-(g|alt)/clock/after$'), lambda r: r.fulfill(status=200, body=json.dumps({'ok': True, 'state': 'done', 'extras': {}}), content_type='text/plain'))
+    def after_h(route):
+        S['after_alt' if 'relay-mock-alt' in route.request.url else 'after_gw'] += 1
+        route.fulfill(status=200, body=json.dumps({'ok': True, 'state': 'done', 'extras': {}}), content_type='text/plain')
+    p.route(re.compile(r'relay-mock-(g|alt)/clock/after$'), after_h)
     S['t0'] = time.time()
     p.goto(url(hq, extra='&keep_store=1&retry_ms=50&g_conf_ms=600&g_api=' + G_URL + '&g_alt=' + ALT_URL + extra))
     if wait_who:
@@ -1693,6 +1696,51 @@ def phase_open(ctx, hq):
     force_out(p)
     wait_msg(p, '下班打卡成功 09:01', timeout=3000)
     ok('開頁 9：櫃台不通 → 問了直連、打卡送直連那條', S['conf_gw'] >= 1 and S['conf_alt'] == 1 and len(S['alt_punch']) == 1 and len(S['punch_hits']) == 0, S)
+    p.close()
+
+    # 10.（Fable 審查 高 1）mini 先回 → 馬上打卡成功 → Google 的開頁狀態 3.5 秒後才回：不准把成功畫面、10 分鐘鎖蓋回開頁時的樣子
+    fresh = dict(mini, today=[{'type': 'in', 'hm': '08:00', 'status': 'ok', 'sys': False}],
+                 guard={'blocked': 'in', 'lock': {}, 'last': {'type': 'in', 'hm': '08:00', 'ts': '2026-10-16T08:00:00+08:00'}, 'now': int(time.time() * 1000)})
+    gsame = dict(real, today=fresh['today'], guard=fresh['guard'])
+    p, S = open_fast(ctx, hq, fresh, pre_js='window.__delay = {liff_status: 3500}; window.__fake = window.__fake || {}; window.__fake.liff_status = ' + json.dumps(gsame) + ';')
+    p.evaluate('() => { window.confirm = () => true; document.getElementById("btnOut").click(); }')
+    wait_msg(p, '下班打卡成功 09:01', timeout=3000)
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)   # Google 那份回來了
+    p.wait_for_timeout(400)
+    ok('開頁 10：打完卡後 Google 的開頁狀態才回來 → 成功訊息還在、兩顆鍵仍鎖著、今天有這張下班卡',
+       '下班打卡成功' in msg(p) and p.is_disabled('#btnOut') and p.is_disabled('#btnIn') and '下班 09:01' in p.inner_text('#today'), (msg(p), p.inner_text('#today')))
+    ok('開頁 10：比對用的是開頁那一刻的內容（兩邊一樣記 same，不被打卡後的畫面影響）', opens(p)[0].get('st_match') == 'same', opens(p)[0])
+    ok('開頁 10：補提示也走櫃台那條（/punch 與 /after 同一條路）', S['after_gw'] >= 1 and S['after_alt'] == 0, S)
+    p.close()
+
+    # 11.（審查 中 2）mini 先回 ready、Google 之後明確說沒綁定（剛被解除綁定，mini 還沒拉到）→ 收回按鍵
+    p, S = open_fast(ctx, hq, stale, pre_js="window.__delay = {liff_status: 1000}; window.__fake = window.__fake || {}; window.__fake.liff_status = {ok: false, error: 'not_bound'};")
+    ok('開頁 11：先照 mini 亮鍵', p.evaluate('!document.getElementById("btnOut").disabled'))
+    p.wait_for_function('document.getElementById("btnOut").disabled && document.getElementById("btnIn").disabled', timeout=6000)
+    ok('開頁 11：Google 說沒綁定 → 兩顆鍵收回', True)
+    p.close()
+
+    # 12.（審查 中 3）手機記的是別家店、人在總部 → 先讀的那份不用，畫面與打卡都是總部
+    p, S = open_fast(ctx, hq, mini, pre_js="localStorage.setItem('mala_clock_last_store_v1', JSON.stringify({sub: 'U1', code: 'mztjs'})); window.__delay = {liff_status: 600};")
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    ok('開頁 12：記的是金山、人在總部 → 畫面是總部、沒有用先讀的那份', HQ['name'] in p.inner_text('#storeName') and opens(p)[0].get('pre') is False, (p.inner_text('#storeName'), opens(p)[0]))
+    ok('開頁 12：問 mini 兩次（先讀金山、定位後問總部），畫面採用的是總部那份', [h.get('store') for h in S['st_hits']] == ['mztjs', 'hq'], S['st_hits'])
+    force_out(p)
+    wait_msg(p, '下班打卡成功 09:01', timeout=3000)
+    ok('開頁 12：打卡送的是總部', len(S['punch_hits']) == 1 and S['punch_hits'][0].get('store') == 'hq', S['punch_hits'])
+    p.close()
+
+    # 13.（審查 中 3）手機記的是別人的 LINE（換帳號、兩個人共用手機）→ 不先讀
+    p, S = open_fast(ctx, hq, mini, pre_js="localStorage.setItem('mala_clock_last_store_v1', JSON.stringify({sub: 'SOMEONE_ELSE', code: 'hq'}));")
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    ok('開頁 13：記的是別人的 LINE → 不先讀（只在定位後問一次、pre＝false）', len(S['st_hits']) == 1 and opens(p)[0].get('pre') is False, (S['st_hits'], opens(p)[0]))
+    p.close()
+
+    # 14.（審查 低 5）不在任何一家店 → 開頁秒數記 fail，店碼送 "-"（不混進光復）
+    p, S = open_fast(ctx, (hq[0] + 1.0, hq[1] + 1.0), mini, wait_who=False)
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    o = opens(p)[0]
+    ok('開頁 14：不在範圍 → 記 fail、店碼 "-"', o.get('outcome') == 'fail' and o.get('store') == '-' and str(o.get('status', '')).startswith('pick_'), o)
     p.close()
 
 

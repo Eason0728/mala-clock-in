@@ -1593,8 +1593,10 @@ function handleLinePunchTiming_(body) {
   if (!userId) return { ok: false, error: 'invalid_id_token' };
   if (lineHubThrottled_('tm', userId, 20, 60)) return { ok: false, error: 'too_many' };
   var code = String(body.store === undefined || body.store === null ? '' : body.store);
+  // 開頁秒數（2026-11-16）：另一個分頁。店碼 '-'＝開頁失敗時還不知道在哪家店（空字串是光復的店碼，不能混用）
+  if (body.kind === 'open' && code === '-') return lineOpenTimingWrite_(body, userId, '-');
   if (!lineHubStores_().some(function (s) { return String(s.code) === code; })) return { ok: false, error: 'bad_store' };
-  if (body.kind === 'open') return lineOpenTimingWrite_(body, userId, code);   // 開頁秒數：另一個分頁（2026-11-16）
+  if (body.kind === 'open') return lineOpenTimingWrite_(body, userId, code);
   var outcome = String(body.outcome || '');
   if (LINE_PUNCH_TIMING_OUTCOMES.indexOf(outcome) < 0) return { ok: false, error: 'bad_outcome' };
   var type = body.type === 'in' || body.type === 'out' ? body.type : '';
@@ -1631,12 +1633,15 @@ function lineOpenTimingWrite_(body, userId, code) {
   var status = /^[a-z_]{1,40}$/.test(String(body.status || '')) ? String(body.status) : '';
   var empId = '';
   try {
-    var mine = lineHubMine_(userId).filter(function (m) { return String(m.st.code) === code; })[0];
+    var mine = code === '-' ? null : lineHubMine_(userId).filter(function (m) { return String(m.st.code) === code; })[0];
     if (mine) empId = String(mine.row.emp_id);
   } catch (e) { empId = ''; }
   var acc = body.accuracy_m === null || body.accuracy_m === undefined || body.accuracy_m === '' ? NaN : Number(body.accuracy_m);
   var ss = getSS(), sh = ss.getSheetByName(LINE_OPEN_TIMING_SHEET);
-  if (!sh) sh = ss.insertSheet(LINE_OPEN_TIMING_SHEET);
+  if (!sh) {   // 兩支手機同時是第一筆：第二個建分頁會丟「已存在」，再拿一次就好
+    try { sh = ss.insertSheet(LINE_OPEN_TIMING_SHEET); } catch (e) { sh = ss.getSheetByName(LINE_OPEN_TIMING_SHEET); }
+    if (!sh) return { ok: false, error: 'server_error' };
+  }
   if (sh.getLastColumn() < LINE_OPEN_TIMING_HEADERS.length) {   // 新分頁、或之後加欄：補齊表頭（只加在最後）
     sh.getRange(1, 1, 1, LINE_OPEN_TIMING_HEADERS.length).setValues([LINE_OPEN_TIMING_HEADERS]);
   }

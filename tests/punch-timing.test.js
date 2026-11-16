@@ -180,4 +180,20 @@ ok('punch_timing_get：sheet:"open" 讀開頁秒數、不帶照舊；都要管�
   t.sb.checkAdmin = (b) => b.admin_key === 'ADMIN';
   assert.strictEqual(t.sb.handlePunchTimingGet_({ sheet: 'open', from: '2026-10-12', to: '2026-10-12' }).error, 'unauthorized');
 });
+ok('開頁秒數：店碼 "-"（還不知道在哪家店）→ 照記、店欄寫 "-"、工號留白、不查名冊；打卡秒數不收 "-"', () => {
+  let asked = 0;
+  const t = make({ mine: () => { asked++; return []; } });
+  assert.strictEqual(JSON.stringify(t.call({ kind: 'open', store: '-', outcome: 'fail', status: 'geo_fail' })), JSON.stringify({ ok: true }));
+  const r = t.sheets.open_timing.rows[0];
+  assert.strictEqual(JSON.stringify([r[1], r[2], r[3], r[4]]), JSON.stringify(['-', '', 'fail', 'geo_fail']));
+  assert.strictEqual(asked, 0);
+  assert.strictEqual(t.call({ store: '-' }).error, 'bad_store');
+});
+ok('開頁秒數：建分頁撞到「已存在」（兩支手機同時第一筆）→ 改拿既有分頁照寫', () => {
+  const t = make(); const ss0 = t.sb.getSS; let first = true;
+  t.sb.getSS = () => { const ss = ss0(); return { getSheetByName: (nm) => { if (nm === 'open_timing' && first) { first = false; return null; } return ss.getSheetByName(nm); },
+    insertSheet: (nm) => { if (nm === 'open_timing') { ss.insertSheet(nm); throw new Error('already exists'); } return ss.insertSheet(nm); } }; };
+  assert.strictEqual(JSON.stringify(t.call({ kind: 'open', outcome: 'ready' })), JSON.stringify({ ok: true }));
+  assert.strictEqual(t.sheets.open_timing.rows.length, 1);
+});
 console.log('開頁秒數測試完成');

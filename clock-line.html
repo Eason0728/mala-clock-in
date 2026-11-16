@@ -435,7 +435,7 @@
     if (s.status === 'ready' && s.notices) renderNotices(s.notices);
     $('bindBox').hidden = true; $('btns').hidden = false; $('btnRetry').hidden = true;
     if (s.status === 'ready') {
-      clockSkew = s.guard && s.guard.now ? s.guard.now - Date.now() : 0;
+      clockSkew = s.guard && s.guard.now ? s.guard.now - (s.__at || Date.now()) : 0;   // __at＝這份狀態回來那一刻（趁定位先讀的那份可能已經放了幾秒）
       $('storeName').textContent = s.store.name;
       $('who').textContent = s.name;
       $('shift').textContent = '上班時間 ' + (s.shift_in || '--') + ' / 下班時間 ' + (s.shift_out || '--');
@@ -515,7 +515,7 @@
       if (outcome === 'ready') { if (om.readySent) return; om.readySent = true; }
       else if (om.readySent || ++om.fails > 3) return;
       var r = function (v) { return v === null || v === undefined ? null : Math.round(v); };
-      var body = JSON.stringify({ action: 'line_punch_timing', kind: 'open', id_token: liff.getIDToken(), store: curStore ? curStore.code : '',
+      var body = JSON.stringify({ action: 'line_punch_timing', kind: 'open', id_token: liff.getIDToken(), store: curStore ? curStore.code : '-',   // '-'＝還不知道在哪家店（定位失敗、不在範圍）；空字串是光復的店碼，不能混用
         outcome: outcome, status: stt || '', liff_ms: r(om.liff), geo_ms: r(om.geo), st_ms: r(om.st), ready_ms: r(om.ready), conf_ms: r(om.conf),
         st_src: om.src, st_match: om.match, pre: om.pre, via: gConf ? gVia : '', g_ms: r(om.g), mini_ms: r(om.mini),
         accuracy_m: lastFix && isFinite(lastFix.coords.accuracy) ? lastFix.coords.accuracy : null });
@@ -542,10 +542,10 @@
   function fetchStatus(st) {
     var f = { st: st, t0: tmNow(), live: false, quiet: false, gMs: null, mMs: null };
     f.google = readRetry(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() }, 1, function () { return f.quiet || !f.live; })
-      .then(function (r) { f.gMs = tmNow() - f.t0; return r; });
+      .then(function (r) { f.gMs = tmNow() - f.t0; f.gAt = Date.now(); if (r && typeof r === 'object') r.__at = f.gAt; return r; });
     f.mini = (!G_API || qrToken) ? Promise.resolve(null)
       : post(G_API + '/status', { store: st.code === '' ? 'gf' : st.code, id_token: liff.getIDToken() }, MINI_ST_WAIT_MS)
-          .then(function (r) { f.mMs = tmNow() - f.t0; return (r && r.ok === true && r.status === 'ready' && r.role === 'primary' && r.guard) ? r : null; },
+          .then(function (r) { f.mMs = tmNow() - f.t0; if (r && typeof r === 'object') r.__at = Date.now(); return (r && r.ok === true && r.status === 'ready' && r.role === 'primary' && r.guard) ? r : null; },
                 function () { return null; });
     f.first = new Promise(function (resolve, reject) {
       var done = false;
@@ -563,6 +563,7 @@
       !!(lk.in && lk.in > now), !!(lk.out && lk.out > now), !!(s.rest && s.rest.blocked), !!(s.cap && s.cap.locked), !!(s.cap && s.cap.in_block)]);
   }
   function loadStatus(pre) {
+    stGen++;   // 重新讀狀態：上一輪晚回來的那份作廢
     say('讀取中…', '', '');
     if (qrToken) return loadStatusFor(curStore);
     var pick = ClockLineCore.pickStore(fixForPick(), STORES);
@@ -587,37 +588,52 @@
           return;
         }
         omReport('fail', (r && r.error) || 'bad_reply');
-        if (r && r.error === 'invalid_id_token') { loginExpired(); return; }
-        if (r && r.error === 'not_bound' && qrToken) { say('你還沒在這家店綁定打卡', 'warn', '第一次要在店裡用定位綁定：關掉這頁，從選單按「打卡」。'); return; }
-        if (r && r.error === 'not_bound') return loadViaHub();   // 綁定（輸入全名、跨店同名確認）仍由光復處理
-        if (r && r.error === 'too_many') { tooMany(); return; }
-        if (r && r.error === 'line_identity_conflict') { say('你的 LINE 帳號在這家店對到兩位同仁', 'warn', '請告知主管處理。'); return; }
-        noReply();
+        return statusRejected(r);
       }, function () { omReport('fail', 'status_fail'); connFail(); });
   }
-  /** 按鍵亮了之後：另一邊的答案回來時補公告、比對、送開頁秒數。這裡出任何錯都不影響畫面。 */
+  /** 開頁狀態不是 ready：後端明確回的原因各自處理（綁定仍由光復處理）。 */
+  function statusRejected(r) {
+    if (r && r.error === 'invalid_id_token') { loginExpired(); return; }
+    if (r && r.error === 'not_bound' && qrToken) { say('你還沒在這家店綁定打卡', 'warn', '第一次要在店裡用定位綁定：關掉這頁，從選單按「打卡」。'); return; }
+    if (r && r.error === 'not_bound') return loadViaHub();   // 綁定（輸入全名、跨店同名確認）仍由光復處理
+    if (r && r.error === 'too_many') { tooMany(); return; }
+    if (r && r.error === 'line_identity_conflict') { say('你的 LINE 帳號在這家店對到兩位同仁', 'warn', '請告知主管處理。'); return; }
+    noReply();
+  }
+  /* 按鍵亮了之後：另一邊的答案回來時補公告、比對、送開頁秒數。這裡出任何錯都不影響畫面。
+     stGen＝畫面世代號：同仁一按打卡、或重新讀狀態就 +1。晚回來的那份只在「世代沒變」（畫面還停在開頁那一刻）時才准動畫面，
+     否則只記比對——不然會把剛顯示的「打卡成功」、10 分鐘鎖蓋回開頁時的樣子（2026-11-16 Fable 審查 高 1）。 */
+  var stGen = 0, omPending = null;
+  window.addEventListener('pagehide', function () { if (omPending) omPending(); });   // 打完卡畫面自動關掉時，還沒送的開頁秒數趕快送（只掛一次）
   function statusAfter(f, src, shown) {
-    var sent = false, send = function () { if (sent) return; sent = true; om.g = f.gMs; om.mini = f.mMs; omReport('ready', ''); };
+    var gen = stGen, key0 = stKey(shown), sent = false;
+    var send = function () { if (sent) return; sent = true; if (omPending === send) omPending = null; om.g = f.gMs; om.mini = f.mMs; omReport('ready', ''); };
     var cap = function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
+    omPending = send;
     try {
       if (src === 'google') {   // Google 先回：照舊。mini 那份只拿來比對（最多再等 3 秒）
-        Promise.race([f.mini, cap(3000)]).then(function (m) { if (m) om.match = stKey(m) === stKey(shown) ? 'same' : 'diff'; send(); }, send);
+        Promise.race([f.mini, cap(3000)]).then(function (m) { if (m) om.match = stKey(m) === key0 ? 'same' : 'diff'; send(); }, send);
         return;
       }
       f.quiet = true;   // mini 先回：Google 那份在背景，重試也不在畫面上寫字
       Promise.race([f.google, cap(15000)]).then(function (g) {
+        var live = gen === stGen && status === shown && !busy;   // 畫面還停在開頁那一刻（沒按過打卡、沒重讀）
         if (g && g.ok && g.status === 'ready') {
-          om.match = stKey(g) === stKey(shown) ? 'same' : 'diff';
-          if (status === shown && !busy) {
+          om.match = stKey(g) === key0 ? 'same' : 'diff';
+          if (live) {
             // Google 有 mini 還沒拉到的卡（主管 QR、舊連結、別支手機剛打的）：改用 Google 那份，免得亮錯鍵
             var gl = g.guard && g.guard.last ? String(g.guard.last.ts || '') : '', ml = shown.guard && shown.guard.last ? String(shown.guard.last.ts || '') : '';
-            if (gl && gl > ml) { g.store = shown.store; render(g); }
+            if (gl && gl > ml) { g.store = shown.store; g.__at = f.gAt; render(g); }
             else if (g.notices) renderNotices(g.notices);
           }
+        } else if (live && g && g.ok === false && ['not_bound', 'line_identity_conflict', 'invalid_id_token'].indexOf(g.error) >= 0) {
+          // Google 明確說這個人現在不能在這家店打卡（剛被解除綁定、設離職，mini 還沒拉到）：收回按鍵，照 Google 的處理（審查 中 2）
+          om.match = 'diff';
+          status = null; refreshButtons();
+          statusRejected(g);
         }
         send();
       }, send);
-      window.addEventListener('pagehide', send);   // 打完卡畫面自動關掉時，還沒送的那一列趕快送
     } catch (e) { send(); }
   }
   /** 這家店說還沒綁定：問光復（它會帶出跨店同名建議），畫面照舊顯示綁定框。 */
@@ -733,6 +749,7 @@
   }
   function punch(type, preConfirmed) {   // preConfirmed：後端回 need_confirm、同仁已在確認框按確定
     if (busy || !status || status.status !== 'ready') return;
+    stGen++;   // 同仁動手了：晚回來的開頁狀態不准再動畫面
     var hasIn = (status.today || []).some(function (e) { return e.type === 'in' && (e.status === 'ok' || e.status === 'pending_device_approval'); });
     if (!preConfirmed && type === 'out' && !status.guard.last && !hasIn && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
     // 同一顆再按一次（2026-11-02 Eason：只鎖 10 分鐘，之後放行但先確認；漏的那張請用忘打卡補）
@@ -855,7 +872,7 @@
             + (notes ? '\n\n' + notes : '') + ((shown ? shown.greeting : r.greeting) ? '\n\n' + (shown ? shown.greeting : r.greeting) : '');   // 已先顯示 mini 的問候語就沿用，不換句
           // 就地鎖鍵（同網頁版 updateButtonStates({type, ts})）：10 分鐘內兩顆都鎖（審查 M1；2026-11-02 改兩顆）
           var nowSrv = Date.now() + clockSkew;
-          status.guard = { blocked: type, lock: { in: nowSrv + 10 * 60000, out: nowSrv + 10 * 60000 }, last: { type: type, hm: hm }, now: nowSrv };
+          status.guard = { blocked: type, lock: { in: nowSrv + 10 * 60000, out: nowSrv + 10 * 60000 }, last: { type: type, hm: hm, ts: String(r.ts || '') }, now: nowSrv };
           status.today = (status.today || []).concat([{ type: type, hm: hm, status: 'ok' }]);
           render(status); say(okText, 'ok');
           report('ok', 'ok');   // 畫面已經顯示成功才送，同仁不會多等
