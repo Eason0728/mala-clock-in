@@ -64,14 +64,14 @@ ok('只有光復（代碼空字串）有卡、目前選總部 → pick 是空字
 // storeHint 實際跑一次：要自動換到光復的時候真的有換（原本用 truthy 判斷 pick，空字串被當成「不用換」）
 function runHint(res, cur, picked) {
   const src = fs.readFileSync(ROOT + '/req-line.js', 'utf8');
-  const log = { sw: [], render: 0 };
+  const log = { sw: [], render: 0, chips: 0 };
   const stores = res.map((x) => ({ code: x.code, name: x.name }));
   const box = { dataset: {}, isConnected: true, textContent: '', className: '', appendChild() {} };
   const cx = { st: { init: { stores }, store: stores.filter((x) => x.code === cur)[0], picked: picked || {} },
     daysFor: () => ({ then: (f) => f(res) }), switchStore: (c) => log.sw.push(c), render: () => { log.render++; },
-    document: { createTextNode: (t) => t }, chips: () => null };
+    document: { createTextNode: (t) => t }, chips: () => { log.chips++; return null; } };
   vm.createContext(cx);
-  vm.runInContext(extract(src, 'storeByDay') + extract(src, 'shortMd') + extract(src, 'storeHint'), cx);
+  vm.runInContext(extract(src, 'storeByDay') + extract(src, 'shortMd') + extract(src, 'pickedOn') + extract(src, 'storeHint'), cx);
   cx.storeHint(box, D, null);
   return { log, box };
 }
@@ -85,5 +85,11 @@ ok('storeHint：換到一般代碼的店照舊；這一天手動選過店就不�
   const b = runHint([SSL(day(P('17:00'))), HQ(day())], 'hq', { [D]: 'hq' });
   assert.deepStrictEqual(b.log.sw, []); assert.strictEqual(b.box.className, 'rq-auto-store warn');
   assert.strictEqual(b.box.textContent, '11/12 你是在小辛辣 新竹光復打卡，上面選的是「鼎兆元 總部」，確認要送到這家嗎？');
+});
+ok('storeHint：兩家都有卡、手動選了光復（存的是空字串）→ 算選過：不再出選店鈕、不自動換', () => {
+  const res = [SSL(day(P('17:00'), P('21:30', 'out'))), HQ(day(P('09:00'), P('13:00', 'out')))];
+  const a = runHint(res, '', { [D]: '' });
+  assert.strictEqual(a.log.chips, 0); assert.deepStrictEqual(a.log.sw, []);
+  assert.strictEqual(runHint(res, '', {}).log.chips, 1, '沒選過才出選店鈕');
 });
 console.log('\n共 ' + n + ' 項通過');

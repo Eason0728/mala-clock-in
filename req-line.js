@@ -370,6 +370,8 @@
     })).then(function (res) { if (res.some(function (x) { return !x.day; })) delete st.dayCache[date]; return res; });
     return st.dayCache[date];
   }
+  /** 這一天同仁有沒有手動選過店（選的是光復時存的是空字串，所以看有沒有這一筆、不看值） */
+  function pickedOn(date) { return Object.prototype.hasOwnProperty.call(st.picked || {}, date); }
   function switchStore(code) {
     var s = st.init.stores.filter(function (x) { return x.code === code; })[0];
     if (!s || s === st.store) return;
@@ -385,7 +387,7 @@
     box.textContent = '查這天在哪家打卡…'; box.className = 'rq-muted';
     daysFor(date).then(function (res) {
       if (!res || !box.isConnected || box.dataset.key !== key) return;
-      var dc = storeByDay(res, st.store.code, date, range), picked = (st.picked || {})[date];
+      var dc = storeByDay(res, st.store.code, date, range), picked = pickedOn(date);
       if (dc.pick !== null && !picked) { switchStore(dc.pick); render(); return; }      // 光復的店代碼是空字串，不能用 truthy 判斷（2026-11-16）
       box.textContent = ''; box.className = '';
       if (!dc.note) return;
@@ -411,7 +413,7 @@
     var range = body.start && body.end ? [body.start, body.end] : null;
     return daysFor(body.date).then(function (res) {
       if (!res) return body;
-      var dc = storeByDay(res, st.store.code, body.date, range), picked = (st.picked || {})[body.date];
+      var dc = storeByDay(res, st.store.code, body.date, range), picked = pickedOn(body.date);
       if (dc.must && !picked) throw new Error(shortMd(body.date) + ' 你在 ' + dc.note.all.join('、') + ' 都有打卡，請先在上面選這張要送到哪一家');
       if (dc.expect.length && dc.expect.indexOf(st.store.code) === -1) {
         var names = res.filter(function (x) { return dc.expect.indexOf(x.code) !== -1; }).map(function (x) { return x.name; }).join('、');
