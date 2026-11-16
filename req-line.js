@@ -386,7 +386,7 @@
     daysFor(date).then(function (res) {
       if (!res || !box.isConnected || box.dataset.key !== key) return;
       var dc = storeByDay(res, st.store.code, date, range), picked = (st.picked || {})[date];
-      if (dc.pick && !picked) { switchStore(dc.pick); render(); return; }
+      if (dc.pick !== null && !picked) { switchStore(dc.pick); render(); return; }      // 光復的店代碼是空字串，不能用 truthy 判斷（2026-11-16）
       box.textContent = ''; box.className = '';
       if (!dc.note) return;
       if (dc.note.kind === 'multi') {
