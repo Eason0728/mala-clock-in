@@ -755,6 +755,45 @@ function handleExportTables_(body) {
   return { ok: true, exported_at: Utilities.formatDate(new Date(), 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX"), tables: out };
 }
 
+/** {action:'sheet_stats', admin_key} → {ok, at, ms, sheets:[{name, last_row, last_col, max_rows, max_cols, cells, formulas, formula_kinds, cond_rules, charts, hidden, ms}], named_ranges, triggers}
+ *  唯讀：只回每個分頁的名稱與大小、公式有幾格與用了哪些函式名稱，**不回任何儲存格內容**，也不寫入。
+ *  2026-11-17 加：金山試算表 11/13 下午起整份變慢（名冊、打卡表讀取都是別店 2～3 倍），四張主要表的列數正常，要看是哪個分頁變重。
+ *  公式只在「有內容的範圍」不超過 LIFF_STATS_FORMULA_MAX_CELLS_ 格時才數（太大的分頁回 null，光看大小就夠了）；單一分頁出錯只記在那一列。 */
+var LIFF_STATS_FORMULA_MAX_CELLS_ = 200000;
+function handleSheetStats_(body) {
+  if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  var t0 = Date.now(), ss = getSS(), out = [];
+  ss.getSheets().forEach(function (sh) {
+    var t = Date.now(), o = { name: String(sh.getName()) };
+    try {
+      o.last_row = sh.getLastRow(); o.last_col = sh.getLastColumn();
+      o.max_rows = sh.getMaxRows(); o.max_cols = sh.getMaxColumns();
+      o.cells = o.max_rows * o.max_cols;
+      o.hidden = !!(typeof sh.isSheetHidden === 'function' && sh.isSheetHidden());
+      o.formulas = null; o.formula_kinds = null;
+      if (o.last_row > 0 && o.last_col > 0 && o.last_row * o.last_col <= LIFF_STATS_FORMULA_MAX_CELLS_) {
+        var fs = sh.getRange(1, 1, o.last_row, o.last_col).getFormulas(), n = 0, kinds = {};
+        for (var i = 0; i < fs.length; i++) for (var k = 0; k < fs[i].length; k++) {
+          var f = fs[i][k];
+          if (!f) continue;
+          n++;
+          (String(f).toUpperCase().match(/[A-Z][A-Z0-9_.]*(?=\()/g) || []).forEach(function (name) { kinds[name] = (kinds[name] || 0) + 1; });
+        }
+        o.formulas = n;
+        o.formula_kinds = Object.keys(kinds).sort(function (a, b) { return kinds[b] - kinds[a]; }).slice(0, 8).map(function (name) { return name + ':' + kinds[name]; });
+      }
+      o.cond_rules = typeof sh.getConditionalFormatRules === 'function' ? sh.getConditionalFormatRules().length : null;
+      o.charts = typeof sh.getCharts === 'function' ? sh.getCharts().length : null;
+    } catch (e) { o.error = String((e && e.message) || e).slice(0, 160); }
+    o.ms = Date.now() - t;
+    out.push(o);
+  });
+  var named = null, trig = null;
+  try { named = ss.getNamedRanges().length; } catch (e) {}
+  try { trig = ScriptApp.getProjectTriggers().map(function (g) { return String(g.getHandlerFunction()) + ':' + String(g.getEventType()); }); } catch (e) {}
+  return { ok: true, at: Utilities.formatDate(new Date(), 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX"), ms: Date.now() - t0, sheets: out, named_ranges: named, triggers: trig };
+}
+
 /* ══ LINE 打卡快速通道（2026-10-16，~/mala-clock-relay spec v2 §3）══
    Mac mini 每 2 分鐘來讀一次名冊對照與近 48 小時打卡，只拿來「預判」這張卡會不會成功、讓畫面先顯示；
    寫入仍然只有手機直接送的 liff_punch。所以這裡唯讀，而且只給預判用得到的欄位（不給金鑰、裝置碼、座標）。
@@ -875,6 +914,7 @@ var LIFF_HANDLERS = {
   liff_status: handleLiffStatus_,
   liff_punch: handleLiffPunch_,
   export_tables: handleExportTables_,
+  sheet_stats: handleSheetStats_,
   rest_rule_set: function (b) { return handleRestRuleSet_(b); },   // Rest.gs（2026-11-01）；包一層，免得檔案載入順序問題
   cap_set: function (b) { return handleCapSet_(b); },   // 單日滿 10 小時系統收卡開關（Cap10.gs，2026-11-14）
   clock: function (b) { return (typeof capClockWrapped_ === 'function') ? capClockWrapped_(b) : handleClock(b); },   // 舊連結也過滿 10 小時檢查

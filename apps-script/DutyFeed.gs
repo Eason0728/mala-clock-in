@@ -21,7 +21,7 @@ var DUTY_FEED_PREFIX_ = 'dfeed_';
 var DUTY_FEED_READS_ = {
   whoami: 1, my_recent: 1, get_roster: 1, get_events: 1, recent_hires: 1,
   mgr_day: 1, mgr_pending_devices: 1, mgr_pending_approvals: 1, mgr_notices: 1, mgr_roster: 1,
-  att_digest_data: 1, liff_whoami: 1, liff_my_recent: 1, liff_status: 1, export_tables: 1,
+  att_digest_data: 1, liff_whoami: 1, liff_my_recent: 1, liff_status: 1, export_tables: 1, sheet_stats: 1,
   req_info: 1, mgr_req_pending: 1, mgr_req_day: 1, mgr_req_month: 1, approve_strict_preview: 1, mgr_approve_check: 1, peer_day_digest: 1,
   mgr_line_binds: 1, mgr_qr_token: 1, line_hub_status: 1, line_hub_attach_get: 1, line_probe: 1,
   relay_snapshot: 1, relay_pull: 1, relay_mode: 1, punch_timing_get: 1, line_hub_req_quota: 1, line_hub_pay_lock: 1, line_hub_sched: 1, sched_day_roster: 1,
