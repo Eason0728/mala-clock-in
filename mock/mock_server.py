@@ -2472,8 +2472,17 @@ def handle_line_punch_timing(data, body):
     if not uid:
         return {"ok": False, "error": "invalid_id_token"}
     code = str(body.get("store") or "")
-    if code and code not in STORE_TABLE:
+    if code and code not in STORE_TABLE and not (body.get("kind") == "open" and code == "-"):   # "-"＝開頁失敗時還不知道在哪家店
         return {"ok": False, "error": "bad_store"}
+    if body.get("kind") == "open":   # 開頁秒數（2026-11-16）：另一張表 open_timing
+        if body.get("outcome") not in ("ready", "fail"):
+            return {"ok": False, "error": "bad_outcome"}
+        data.setdefault("open_timing", []).append({
+            "ts": iso_now(), "store": code, "uid": uid, "outcome": body["outcome"], "status": str(body.get("status") or "")[:40],
+            "st_src": body.get("st_src") if body.get("st_src") in ("mini", "google") else "",
+            "ready_ms": body.get("ready_ms") if isinstance(body.get("ready_ms"), (int, float)) else ""})
+        save_data(data)
+        return {"ok": True}
     if body.get("outcome") not in ("ok", "fail", "error", "geo_fail", "unclear_ok", "unclear_not", "unclear_unknown"):
         return {"ok": False, "error": "bad_outcome"}
 

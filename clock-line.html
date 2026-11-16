@@ -194,7 +194,10 @@
   /* LINE 打卡快速通道（2026-10-16，規格 Eason0728/mala-clock-relay docs/spec.md v2）：
      按打卡時同一刻送兩份——各店 liff_punch（唯一寫入者，照舊）＋ Mac mini 預判（只讀副本，不寫）。
      店家 relay＝true 時，mini 1.5 秒內說「會成功」就先顯示；"shadow"＝只送去比對、畫面不採用；false＝不送。 */
-  var RELAY_API = 'https://dingzhaoyuandemac-mini.tailc27c34.ts.net/clock/predict';
+  /* 連 Mac mini 的兩條路（2026-11-16）：先走 Cloudflare 櫃台（dzy-gw，實測穩定約 0.9 秒）；櫃台問不到才改走原本的 Tailscale 直連
+     （當天直連第一次連線常要 3～11 秒）。兩條都不通＝照舊全部問 Google。選哪條在開頁問正本名單時決定（gLoadConf）。 */
+  var MINI_GW = 'https://dzy-gw.dingzhaoyuan888.workers.dev/clock', MINI_DIRECT = 'https://dingzhaoyuandemac-mini.tailc27c34.ts.net/clock';
+  var RELAY_API = MINI_GW + '/predict';
   if (isLocalHost) RELAY_API = qs('relay_api') || '';   // 本機測試只准打 ?relay_api= 給的假 mini；沒給就不送（絕不打正式 mini）
   /* LINE 申請頁先讀 Mac mini（2026-11-14，營運系統 docs/line-req-mirror/）：經 Cloudflare 櫃台到營運系統 /store/api/line-req。
      REQ_MIRROR＝false：只回報開頁計時（量現在要等幾秒）；true：先顯示 Mac mini 記住的、讀最新的也請 mini 代問。mini 不在一律直接問 Google。 */
@@ -204,9 +207,10 @@
   /* G＋備援（2026-11-15，mala-clock-relay docs/g-primary）：Mac mini 是正本的店，按打卡先送 mini（寫進去就算數），
      等 G_WAIT_MS 沒回應才改送各店 liff_punch（帶同一張單號，不會變兩張）。哪幾家店由 mini 說了算（開頁問 /clock/config），
      切換／退回只改 mini 的開關，不用重新發布這一頁。問不到 mini＝照舊直送 Google（跟今天一樣）。 */
-  var G_API = RELAY_API ? RELAY_API.replace(/\/predict$/, '') : '';
-  if (isLocalHost) G_API = qs('g_api') || '';   // 本機測試只准打 ?g_api= 給的假 mini
+  var G_API = MINI_GW, G_ALT = MINI_DIRECT, gVia = 'gw';   // G_ALT＝備用那條；gVia＝現在走哪條（回報秒數用）
+  if (isLocalHost) { G_API = qs('g_api') || ''; G_ALT = qs('g_alt') || ''; }   // 本機測試只准打 ?g_api=／?g_alt= 給的假 mini
   var gConf = null, G_AFTER_MS = 6000;   // gConf＝{primary:['gf',…], wait_ms}；問不到維持 null
+  var MINI_ST_WAIT_MS = (isLocalHost && +qs('mini_st_ms')) || 4000;   // 開頁狀態等 mini 最多這麼久（同時也在問 Google，誰先回用誰）
   /* STORES:BEGIN（tools/build-line-page.py 產生，勿手改）*/
   var STORES = [
     {"code": "", "name": "小辛辣 新竹光復", "lat": 24.7840945, "lng": 121.0157448, "radius_m": 20, "api": "https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec", "relay": true},
@@ -275,15 +279,17 @@
   var READ_TIMEOUT_MS = 12000, READ_RETRY_MS = [2000, 4000];
   if (isLocalHost && qs('read_timeout')) READ_TIMEOUT_MS = +qs('read_timeout');
   if (isLocalHost && qs('retry_ms')) READ_RETRY_MS = [+qs('retry_ms'), +qs('retry_ms')];
-  function readRetry(url, body, attempt) {
+  function readRetry(url, body, attempt, quiet) {   // quiet()：回 true 時不在畫面寫「重試中」（開頁狀態已由 mini 先顯示、或還在趁定位時先讀）
     attempt = attempt || 1;
     var again = function () {
       if (attempt > READ_RETRY_MS.length) return Promise.reject(new Error('read_failed'));
-      $('hint').textContent = '連線較慢，重試中（第 ' + attempt + ' 次）…';
-      var scl = document.querySelector('#schedView .sc-loading');   // 班表頁的打卡卡片是隱藏的，進度寫在班表頁
-      if (scl) scl.textContent = '連線較慢，重試中（第 ' + attempt + ' 次）…';
+      if (!(quiet && quiet())) {
+        $('hint').textContent = '連線較慢，重試中（第 ' + attempt + ' 次）…';
+        var scl = document.querySelector('#schedView .sc-loading');   // 班表頁的打卡卡片是隱藏的，進度寫在班表頁
+        if (scl) scl.textContent = '連線較慢，重試中（第 ' + attempt + ' 次）…';
+      }
       return new Promise(function (res) { setTimeout(res, READ_RETRY_MS[attempt - 1]); })
-        .then(function () { return readRetry(url, body, attempt + 1); });
+        .then(function () { return readRetry(url, body, attempt + 1, quiet); });
     };
     return post(url, body, READ_TIMEOUT_MS).then(function (r) {
       if (!r || (r.ok === false && (!r.error || r.error === 'server_error'))) return again();
@@ -429,7 +435,7 @@
     if (s.status === 'ready' && s.notices) renderNotices(s.notices);
     $('bindBox').hidden = true; $('btns').hidden = false; $('btnRetry').hidden = true;
     if (s.status === 'ready') {
-      clockSkew = s.guard && s.guard.now ? s.guard.now - Date.now() : 0;
+      clockSkew = s.guard && s.guard.now ? s.guard.now - (s.__at || Date.now()) : 0;   // __at＝這份狀態回來那一刻（趁定位先讀的那份可能已經放了幾秒）
       $('storeName').textContent = s.store.name;
       $('who').textContent = s.name;
       $('shift').textContent = '上班時間 ' + (s.shift_in || '--') + ' / 下班時間 ' + (s.shift_out || '--');
@@ -500,28 +506,135 @@
     say('這家店的系統沒有認得你的 LINE 帳號', 'warn', '請按「重新定位」再試一次；一直這樣請告知主管。'); $('btnRetry').hidden = false; offerHelp('綁定');
   }
   function tooMany() { say('按太多次了', 'warn', '請等一分鐘後再試；先按選單「出勤紀錄」確認有沒有打到。'); $('btnRetry').hidden = false; }
-  function loadStatus() {
+  /* ── 開頁秒數（2026-11-16，Eason「點開到成功 5 秒內」）──
+     全部是「從點開這一頁起算」的毫秒數（performance.now）：liff＝LINE 登入好、geo＝定位好、st＝開頁狀態回來、ready＝按鍵亮起、conf＝問到 mini 正本名單。
+     一次開頁送一列到光復 open_timing（line_punch_timing 帶 kind:'open'）；開頁失敗也送，才知道同仁卡在哪。量不到就算了，絕不影響打卡。 */
+  var om = { liff: null, geo: null, st: null, ready: null, conf: null, src: '', match: '', pre: false, g: null, mini: null, readySent: false, fails: 0 };
+  function omReport(outcome, stt) {
+    try {
+      if (outcome === 'ready') { if (om.readySent) return; om.readySent = true; }
+      else if (om.readySent || ++om.fails > 3) return;
+      var r = function (v) { return v === null || v === undefined ? null : Math.round(v); };
+      var body = JSON.stringify({ action: 'line_punch_timing', kind: 'open', id_token: liff.getIDToken(), store: curStore ? curStore.code : '-',   // '-'＝還不知道在哪家店（定位失敗、不在範圍）；空字串是光復的店碼，不能混用
+        outcome: outcome, status: stt || '', liff_ms: r(om.liff), geo_ms: r(om.geo), st_ms: r(om.st), ready_ms: r(om.ready), conf_ms: r(om.conf),
+        st_src: om.src, st_match: om.match, pre: om.pre, via: gConf ? gVia : '', g_ms: r(om.g), mini_ms: r(om.mini),
+        accuracy_m: lastFix && isFinite(lastFix.coords.accuracy) ? lastFix.coords.accuracy : null });
+      if (isLocalHost) window.__open = (window.__open || []).concat([JSON.parse(body)]);   // 本機測試看得到送了什麼
+      if (navigator.sendBeacon && navigator.sendBeacon(HUB_API, new Blob([body], { type: 'text/plain' }))) return;
+      fetch(HUB_API, { method: 'POST', body: body, mode: 'no-cors', keepalive: true }).catch(function () {});
+    } catch (e) { /* 量不到就算了 */ }
+  }
+
+  /* ── 開頁狀態：同時問 Mac mini 與 Google，誰先回用誰（2026-11-16）──
+     mini 是這家店的正本時，它回的就是 Google liff_status 同一支程式算的（店內公告除外，等 Google 那份回來再補上）。
+     mini 沒回、不是正本、說沒綁定 → 一律等 Google 那份，跟以前一樣。上次打卡的店記在手機裡，定位還在跑時就先讀（按鍵仍等定位確認在店裡才亮）。 */
+  var ST_KEY = 'mala_clock_last_store_v1';
+  function lastStoreGuess() {
+    try {
+      var o = JSON.parse(localStorage.getItem(ST_KEY) || 'null'), me = liff.getDecodedIDToken && liff.getDecodedIDToken();
+      if (!o || !me || !me.sub || o.sub !== me.sub) return null;
+      return STORES.filter(function (x) { return x.code === o.code; })[0] || null;
+    } catch (e) { return null; }
+  }
+  function rememberStore(st) {
+    try { var me = liff.getDecodedIDToken && liff.getDecodedIDToken(); if (me && me.sub) localStorage.setItem(ST_KEY, JSON.stringify({ sub: me.sub, code: st.code })); } catch (e) { /* 記不住就下次照舊 */ }
+  }
+  function fetchStatus(st) {
+    var f = { st: st, t0: tmNow(), live: false, quiet: false, gMs: null, mMs: null };
+    f.google = readRetry(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() }, 1, function () { return f.quiet || !f.live; })
+      .then(function (r) { f.gMs = tmNow() - f.t0; f.gAt = Date.now(); if (r && typeof r === 'object') r.__at = f.gAt; return r; });
+    f.mini = (!G_API || qrToken) ? Promise.resolve(null)
+      : post(G_API + '/status', { store: st.code === '' ? 'gf' : st.code, id_token: liff.getIDToken() }, MINI_ST_WAIT_MS)
+          .then(function (r) { f.mMs = tmNow() - f.t0; if (r && typeof r === 'object') r.__at = Date.now(); return (r && r.ok === true && r.status === 'ready' && r.role === 'primary' && r.guard) ? r : null; },
+                function () { return null; });
+    f.first = new Promise(function (resolve, reject) {
+      var done = false;
+      f.mini.then(function (r) { if (r && !done) { done = true; resolve({ r: r, src: 'mini' }); } });
+      f.google.then(function (r) { if (!done) { done = true; resolve({ r: r, src: 'google' }); } },
+        function (e) { f.mini.then(function (r) { if (!done) { done = true; reject(e); } }); });   // Google 讀不到、mini 也沒有可用的答案才算失敗
+    });
+    f.first.catch(function () {});   // 先讀的那份沒被用到時不留未處理的錯誤
+    return f;
+  }
+  /** 兩邊的開頁狀態一不一樣（只比會影響按鍵的部分）：今天的卡、最後一張卡、兩顆鍵鎖不鎖、休息、滿 10 小時。 */
+  function stKey(s) {
+    var g = s.guard || {}, now = g.now || 0, lk = g.lock || {};
+    return JSON.stringify([(s.today || []).map(function (e) { return e.type + e.hm + e.status; }), g.blocked || '', g.last ? g.last.type + g.last.hm : '',
+      !!(lk.in && lk.in > now), !!(lk.out && lk.out > now), !!(s.rest && s.rest.blocked), !!(s.cap && s.cap.locked), !!(s.cap && s.cap.in_block)]);
+  }
+  function loadStatus(pre) {
+    stGen++;   // 重新讀狀態：上一輪晚回來的那份作廢
     say('讀取中…', '', '');
     if (qrToken) return loadStatusFor(curStore);
     var pick = ClockLineCore.pickStore(fixForPick(), STORES);
-    if (pick.status !== 'ok') { curStore = null; render(pickFail(pick)); return Promise.resolve(); }
+    if (pick.status !== 'ok') { curStore = null; render(pickFail(pick)); omReport('fail', 'pick_' + String(pick.status)); return Promise.resolve(); }
     curStore = pick.store;
-    return loadStatusFor(pick.store);
+    var use = pre && pre.st.code === pick.store.code ? pre : null;
+    om.pre = !!use;
+    return loadStatusFor(pick.store, use);
   }
-  function loadStatusFor(st) {
-    return readRetry(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() })
-      .then(function (r) {
+  function loadStatusFor(st, pre) {
+    var f = pre || fetchStatus(st);
+    f.live = true;
+    return f.first
+      .then(function (x) {
+        var r = x.r;
         if (r && r.ok && r.status === 'ready') {
           r.store = { code: st.code, name: st.name, lat: st.lat, lng: st.lng, radius_m: st.radius_m };
-          render(r); return;
+          om.st = tmNow(); om.src = x.src;
+          render(r); rememberStore(st);
+          om.ready = tmNow();
+          statusAfter(f, x.src, r);
+          return;
         }
-        if (r && r.error === 'invalid_id_token') { loginExpired(); return; }
-        if (r && r.error === 'not_bound' && qrToken) { say('你還沒在這家店綁定打卡', 'warn', '第一次要在店裡用定位綁定：關掉這頁，從選單按「打卡」。'); return; }
-        if (r && r.error === 'not_bound') return loadViaHub();   // 綁定（輸入全名、跨店同名確認）仍由光復處理
-        if (r && r.error === 'too_many') { tooMany(); return; }
-        if (r && r.error === 'line_identity_conflict') { say('你的 LINE 帳號在這家店對到兩位同仁', 'warn', '請告知主管處理。'); return; }
-        noReply();
-      }, connFail);
+        omReport('fail', (r && r.error) || 'bad_reply');
+        return statusRejected(r);
+      }, function () { omReport('fail', 'status_fail'); connFail(); });
+  }
+  /** 開頁狀態不是 ready：後端明確回的原因各自處理（綁定仍由光復處理）。 */
+  function statusRejected(r) {
+    if (r && r.error === 'invalid_id_token') { loginExpired(); return; }
+    if (r && r.error === 'not_bound' && qrToken) { say('你還沒在這家店綁定打卡', 'warn', '第一次要在店裡用定位綁定：關掉這頁，從選單按「打卡」。'); return; }
+    if (r && r.error === 'not_bound') return loadViaHub();   // 綁定（輸入全名、跨店同名確認）仍由光復處理
+    if (r && r.error === 'too_many') { tooMany(); return; }
+    if (r && r.error === 'line_identity_conflict') { say('你的 LINE 帳號在這家店對到兩位同仁', 'warn', '請告知主管處理。'); return; }
+    noReply();
+  }
+  /* 按鍵亮了之後：另一邊的答案回來時補公告、比對、送開頁秒數。這裡出任何錯都不影響畫面。
+     stGen＝畫面世代號：同仁一按打卡、或重新讀狀態就 +1。晚回來的那份只在「世代沒變」（畫面還停在開頁那一刻）時才准動畫面，
+     否則只記比對——不然會把剛顯示的「打卡成功」、10 分鐘鎖蓋回開頁時的樣子（2026-11-16 Fable 審查 高 1）。 */
+  var stGen = 0, omPending = null;
+  window.addEventListener('pagehide', function () { if (omPending) omPending(); });   // 打完卡畫面自動關掉時，還沒送的開頁秒數趕快送（只掛一次）
+  function statusAfter(f, src, shown) {
+    var gen = stGen, key0 = stKey(shown), sent = false;
+    var send = function () { if (sent) return; sent = true; if (omPending === send) omPending = null; om.g = f.gMs; om.mini = f.mMs; omReport('ready', ''); };
+    var cap = function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
+    omPending = send;
+    try {
+      if (src === 'google') {   // Google 先回：照舊。mini 那份只拿來比對（最多再等 3 秒）
+        Promise.race([f.mini, cap(3000)]).then(function (m) { if (m) om.match = stKey(m) === key0 ? 'same' : 'diff'; send(); }, send);
+        return;
+      }
+      f.quiet = true;   // mini 先回：Google 那份在背景，重試也不在畫面上寫字
+      Promise.race([f.google, cap(15000)]).then(function (g) {
+        var live = gen === stGen && status === shown && !busy;   // 畫面還停在開頁那一刻（沒按過打卡、沒重讀）
+        if (g && g.ok && g.status === 'ready') {
+          om.match = stKey(g) === key0 ? 'same' : 'diff';
+          if (live) {
+            // Google 有 mini 還沒拉到的卡（主管 QR、舊連結、別支手機剛打的）：改用 Google 那份，免得亮錯鍵
+            var gl = g.guard && g.guard.last ? String(g.guard.last.ts || '') : '', ml = shown.guard && shown.guard.last ? String(shown.guard.last.ts || '') : '';
+            if (gl && gl > ml) { g.store = shown.store; g.__at = f.gAt; render(g); }
+            else if (g.notices) renderNotices(g.notices);
+          }
+        } else if (live && g && g.ok === false && ['not_bound', 'line_identity_conflict', 'invalid_id_token'].indexOf(g.error) >= 0) {
+          // Google 明確說這個人現在不能在這家店打卡（剛被解除綁定、設離職，mini 還沒拉到）：收回按鍵，照 Google 的處理（審查 中 2）
+          om.match = 'diff';
+          status = null; refreshButtons();
+          statusRejected(g);
+        }
+        send();
+      }, send);
+    } catch (e) { send(); }
   }
   /** 這家店說還沒綁定：問光復（它會帶出跨店同名建議），畫面照舊顯示綁定框。 */
   function loadViaHub() {
@@ -557,7 +670,9 @@
         total_ms: Math.round(tmNow() - t.t0), geo_ms: Math.round(t.geo),
         server_ms: (t.sent !== null && t.got !== null) ? Math.round(t.got - t.sent) : null,
         refix: t.refix, qr: !!t.qr, accuracy_m: t.acc === undefined ? null : t.acc, steps: t.steps || null,
-        req_id: t.req_id, route: t.route, predict: t.predict, predict_ms: t.predict_ms });
+        req_id: t.req_id, route: t.route, predict: t.predict, predict_ms: t.predict_ms,
+        // 開頁秒數（2026-11-16）：按鍵亮起、按下各是點開後第幾毫秒；合計等待＝open_ready_ms＋total_ms（同仁看著畫面沒按的時間不算）
+        open_ready_ms: om.ready === null ? null : Math.round(om.ready), press_ms: Math.round(t.t0), st_src: om.src });
       if (isLocalHost) window.__timing = (window.__timing || []).concat([JSON.parse(body)]);   // 本機測試看得到送了什麼
       if (navigator.sendBeacon && navigator.sendBeacon(HUB_API, new Blob([body], { type: 'text/plain' }))) return;
       fetch(HUB_API, { method: 'POST', body: body, mode: 'no-cors', keepalive: true }).catch(function () {});
@@ -590,14 +705,28 @@
     }).catch(function () { return { predict: 'none', ms: null }; });
   }
 
-  /** 開頁時問 mini 哪幾家店由它當正本（順便先連上 mini，按打卡時少等一次連線）。3 秒沒回＝照舊直送 Google。 */
+  /** 開頁時問 mini 哪幾家店由它當正本（順便先連上 mini，按打卡時少等一次連線）。還沒回來就按打卡＝照舊直送 Google。
+   *  在背景問、不擋畫面，所以等到 G_CONF_WAIT_MS（8 秒）：2026-11-16 手機連 mini 第一次連線常超過 3 秒，
+   *  3 秒就放棄會連那條連線一起丟掉，結果六成的卡走回 Google（等 7～12 秒）。多等幾秒讓連線接好，按打卡時就用得到。 */
+  var G_CONF_WAIT_MS = (isLocalHost && +qs('g_conf_ms')) || 8000;
+  function gConfOnce(base) {
+    var ctrl = window.AbortController ? new AbortController() : null, timer = ctrl ? setTimeout(function () { ctrl.abort(); }, G_CONF_WAIT_MS) : null;
+    return fetch(base + '/config', { method: 'GET', signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (timer) clearTimeout(timer); return j && j.ok && Array.isArray(j.primary) ? j : null; },
+            function () { if (timer) clearTimeout(timer); return null; });
+  }
+  /** 先問櫃台；櫃台問不到（連不上、櫃台到 mini 的通道斷了）才改問直連，問到就整頁改走直連。兩條都問不到＝gConf 維持 null。 */
   function gLoadConf() {
     if (!G_API) return Promise.resolve(null);
-    var ctrl = window.AbortController ? new AbortController() : null, timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 3000) : null;
-    return fetch(G_API + '/config', { method: 'GET', signal: ctrl ? ctrl.signal : undefined })
-      .then(function (r) { return r.json(); })
-      .then(function (j) { if (timer) clearTimeout(timer); gConf = j && j.ok && Array.isArray(j.primary) ? j : null; return gConf; },
-            function () { if (timer) clearTimeout(timer); gConf = null; return null; });
+    return gConfOnce(G_API).then(function (j) {
+      if (j || !G_ALT) return j;
+      var alt = G_ALT;
+      return gConfOnce(alt).then(function (k) {
+        if (k) { G_API = alt; G_ALT = ''; gVia = 'direct'; if (!isLocalHost) RELAY_API = alt + '/predict'; }
+        return k;
+      });
+    }).then(function (j) { gConf = j; if (j && om.conf === null) om.conf = tmNow(); return j; });
   }
   function gPrimary(st) { return !!(gConf && st && !qrToken && gConf.primary.indexOf(st.code === '' ? 'gf' : st.code) >= 0); }   // 主管 QR 照舊送 Google
   /** mini 寫完、抄到 Google 之後才有的提示（申請結果通知、下班超時提示）。最多等 G_AFTER_MS；拿不到回 null。 */
@@ -620,6 +749,7 @@
   }
   function punch(type, preConfirmed) {   // preConfirmed：後端回 need_confirm、同仁已在確認框按確定
     if (busy || !status || status.status !== 'ready') return;
+    stGen++;   // 同仁動手了：晚回來的開頁狀態不准再動畫面
     var hasIn = (status.today || []).some(function (e) { return e.type === 'in' && (e.status === 'ok' || e.status === 'pending_device_approval'); });
     if (!preConfirmed && type === 'out' && !status.guard.last && !hasIn && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
     // 同一顆再按一次（2026-11-02 Eason：只鎖 10 分鐘，之後放行但先確認；漏的那張請用忘打卡補）
@@ -742,7 +872,7 @@
             + (notes ? '\n\n' + notes : '') + ((shown ? shown.greeting : r.greeting) ? '\n\n' + (shown ? shown.greeting : r.greeting) : '');   // 已先顯示 mini 的問候語就沿用，不換句
           // 就地鎖鍵（同網頁版 updateButtonStates({type, ts})）：10 分鐘內兩顆都鎖（審查 M1；2026-11-02 改兩顆）
           var nowSrv = Date.now() + clockSkew;
-          status.guard = { blocked: type, lock: { in: nowSrv + 10 * 60000, out: nowSrv + 10 * 60000 }, last: { type: type, hm: hm }, now: nowSrv };
+          status.guard = { blocked: type, lock: { in: nowSrv + 10 * 60000, out: nowSrv + 10 * 60000 }, last: { type: type, hm: hm, ts: String(r.ts || '') }, now: nowSrv };
           status.today = (status.today || []).concat([{ type: type, hm: hm, status: 'ok' }]);
           render(status); say(okText, 'ok');
           report('ok', 'ok');   // 畫面已經顯示成功才送，同仁不會多等
@@ -899,8 +1029,12 @@
   function start() {
     say('定位中…', '', '');
     gLoadConf();   // 跟定位同時：問 mini 哪幾家店由它當正本（問不到＝照舊直送 Google）
-    startGeo().then(function (p) { showMe(p.coords.latitude, p.coords.longitude); return loadStatus(); },
+    // 跟定位同時：先讀上次打卡那家店的開頁狀態（2026-11-16）。定位回來確認是同一家才拿來用；按鍵一樣等定位確認在店裡才亮。
+    var guess = lastStoreGuess(), pre = null;
+    try { if (guess) pre = fetchStatus(guess); } catch (e) { pre = null; }
+    startGeo().then(function (p) { om.geo = tmNow(); showMe(p.coords.latitude, p.coords.longitude); return loadStatus(pre); },
       function (err) {
+        omReport('fail', /權限/.test(err.message) ? 'geo_denied' : 'geo_fail');
         say(err.message, 'warn', '請允許 LINE 使用定位（手機設定 → LINE → 位置），開啟「精確位置」與 Wi‑Fi 後按「重新定位」。');
         $('btnRetry').hidden = false;
         offerHelp(/權限/.test(err.message) ? '定位權限' : '定位抓不到');
@@ -926,6 +1060,7 @@
   tick(); setInterval(tick, 1000);
   initLiff().then(function (ok) {
     if (!ok) { initMap(); say('請從 LINE 官方帳號「鼎兆元打卡」的選單打開這一頁。', 'warn'); return; }
+    om.liff = tmNow();
     if (param('view') === 'req') { showReq({ tab: param('tab'), date: param('date'), miss: param('miss') }); return; }
     if (param('view') === 'sched') { $('punchCard').hidden = true; window.SchedLine.open(); return; }   // 出勤班表（2026-10-10）
     initMap();
