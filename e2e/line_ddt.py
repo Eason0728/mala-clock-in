@@ -134,6 +134,8 @@ def shift_events(code, emp_id, minutes, only_last=False):
 
 # ── 頁面 ──
 LOG_JS = """
+// 本檔的情境＝手機沒記過上次那家店（同 clock_line.py）；「趁定位先讀上次那家店」在 clock_line.py phase_open 測（2026-11-16）
+try { if (location.search.indexOf('keep_store=1') < 0) localStorage.removeItem('mala_clock_last_store_v1'); } catch (e) {}
 window.__geo = 0;
 if (navigator.geolocation) ['getCurrentPosition', 'watchPosition'].forEach(function (f) {
   const o = navigator.geolocation[f].bind(navigator.geolocation);
@@ -603,10 +605,14 @@ def phase_punch(ctx, gen):
             ms = dlg(page)
             md = D.missed_detail(ex['evs'], 'out', D.iso(now_tz() + timedelta(seconds=5)))
             e = after_punch_ok(gen, p, page, 'out', label, extra_msg='\n\n⚠️ ' + md['text'], stay_open=True, n_before=n0)
-            # 確認框規格：上一張算數的卡（12 小時內）沒有、今天也沒有打成功的上班卡才問（20 小時前那段班若落在今天就不問）
+            # 確認框規格：上一張算數的卡（24 小時內）沒有、今天也沒有打成功的上班卡才問（20 小時前那段班若落在今天就不問）
             has_in_today = any(x['type'] == 'in' and x['status'] in ('ok', 'pending_device_approval') and x['ts'][:10] == ex['now'].strftime('%Y-%m-%d') for x in ex['evs'])
-            want_dlg = ['你今天還沒打上班卡，確定要打下班嗎？'] if (not ex['guard']['last'] and not has_in_today) else []
-            ok(f'{label}：{"今天沒上班卡 → 先跳「你今天還沒打上班卡，確定要打下班嗎？」" if want_dlg else "今天有打成功的上班卡 → 不問「還沒打上班卡」"}', ms == want_dlg, (ms, want_dlg))
+            gl = ex['guard']['last']
+            if gl and gl['type'] == 'out':   # 24 小時內上一張算數的卡是下班卡 → 問的是同型確認框（2026-11-15 回看改 24 小時）
+                want_dlg = [D.same_type_msg(gl['ts'][11:16], 'out')]
+            else:
+                want_dlg = ['你今天還沒打上班卡，確定要打下班嗎？'] if (not gl and not has_in_today) else []
+            ok(f'{label}：按下班前的確認框＝規格（上一張是下班卡→同型確認；沒有上一張且今天沒上班卡→「還沒打上班卡」；其他不問）', ms == want_dlg, (ms, want_dlg))
             ok(f'{label}：提醒{"寫「沒有打成功（不在範圍內）」" if p["rejected_in"] else "寫「沒有打上班卡」"}（被擋的上班卡要分開講）',
                ('不在範圍內' in md['text']) == p['rejected_in'] and md['miss_type'] == 'in' and md['date'] == e['ts'][:10], md)
             click(page, '#btnMissReq', '申請補登')
@@ -723,7 +729,7 @@ def phase_rest(ctx, gen):
            msg(page) == f'上班打卡失敗\n原因：{rest["reason"]}\n怎麼辦：{rest["hint"]}' and len(raw) == n0 + 1 and raw[-1]['status'] == 'rejected_rest' and raw[-1]['type'] == 'in', (msg(page), raw[-1:]))
         ok(f'{label}：下班卡不受休息規則影響（鍵可按）', not page.is_disabled('#btnOut'))
         if p['scenario'] == 'rest_gap' and p['store'] == A['code']:
-            # 下班鍵：上一張算數的卡是下班（12 小時內）→ 同型確認框；確定後伺服器照收（超過 10 分鐘），提醒「這次沒有打上班卡」
+            # 下班鍵：上一張算數的卡是下班（24 小時內）→ 同型確認框；確定後伺服器照收（超過 10 分鐘），提醒「這次沒有打上班卡」
             g = ex['guard']
             dlg(page, accept=True)
             md = D.missed_detail(events_of(p['store'], p['emp_id']), 'out', D.iso(now_tz() + timedelta(seconds=5)))   # 按下前的卡
@@ -731,7 +737,7 @@ def phase_rest(ctx, gen):
             after_punch_ok(gen, p, page, 'out', label + '／下班', extra_msg='\n\n⚠️ ' + md['text'], stay_open=True)
             ms = dlg(page)
             want = [D.same_type_msg(g['last']['ts'][11:16], 'out')] if g['last'] and g['last']['type'] == 'out' else []
-            ok(f'{label}：下班前的確認框＝規格（上一張是 12 小時內的下班卡才問）', ms == want, (ms, want))
+            ok(f'{label}：下班前的確認框＝規格（上一張是 24 小時內的下班卡才問）', ms == want, (ms, want))
         page.close()
     # 總開關 API（rest_rule_set）：關掉 A 店再開頁，原本被擋的人就不鎖；再開回來
     # 被擋（班距）而且之後沒再打卡的人：A 店的 rest_gap 會再打一張下班卡（10 分鐘鎖），只能用 cross_store
