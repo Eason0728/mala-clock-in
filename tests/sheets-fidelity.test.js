@@ -574,7 +574,7 @@ ok("line_punch_timing 寫一列（ts 文字、store 空字串、毫秒數字、r
                                           steps: { verify: 150, roster: 320, read: 210, write: 1800, extra: 40 }, req_id: 'r0123456789abcdef', route: 'predicted', predict: 'ok', predict_ms: 900 });
   eq(r, { ok: true });
   const sh = m.sheet('punch_timing');
-  assert.strictEqual(sh.typeMap()[1], 't.tttt' + 'nnn' + 'bb' + 'n' + 'nnnnn' + 'ttt' + 'n', sh.typeMap()[1]);   // store 空字串＝空格
+  assert.strictEqual(sh.typeMap()[1], 't.tttt' + 'nnn' + 'bb' + 'n' + 'nnnnn' + 'ttt' + 'n' + '...', sh.typeMap()[1]);   // store 空字串＝空格；最後三格＝開頁秒數三欄（這筆沒帶，留白；2026-11-16）
   assert.strictEqual(sh.getRange(2, 2).getValue(), '', '光復店代碼空字串');
   const got = m.sb.handlePunchTimingGet_({ admin_key: 'ADM', from: '2026-07-14', to: '2026-07-14' });
   assert.strictEqual(got.rows.length, 1);

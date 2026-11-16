@@ -67,10 +67,14 @@ if (navigator.geolocation) ['getCurrentPosition', 'watchPosition'].forEach(funct
   navigator.geolocation[f] = function () { window.__geo++; return o.apply(null, arguments); };
 });
 window.__calls = [];
+// 既有測試＝手機沒記過上次那家店（第一次用的手機）；要測「趁定位先讀上次那家店」的頁面網址帶 keep_store=1（2026-11-16）
+try { if (location.search.indexOf('keep_store=1') < 0) localStorage.removeItem('mala_clock_last_store_v1'); } catch (e) {}
 window.__beacons = [];   // 打卡等待秒數（2026-10-12）：記下送出當下畫面上已經寫什麼，證明是「顯示結果之後」才送
 if (navigator.sendBeacon) { const _b = navigator.sendBeacon.bind(navigator);
   navigator.sendBeacon = function (u, d) { const m = document.getElementById('msg');
-    window.__beacons.push({ url: String(u), msg: m ? m.textContent : '' }); return _b(u, d); }; }
+    // kind：這一筆是開頁秒數（頁面先把內容記進 window.__open 才送）還是打卡秒數（2026-11-16 多了開頁那一筆）
+    const no = (window.__open || []).length, kind = no > (window.__beaconOpens || 0) ? 'open' : 'punch'; window.__beaconOpens = no;
+    window.__beacons.push({ url: String(u), msg: m ? m.textContent : '', kind: kind }); return _b(u, d); }; }
 window.__fake = {};   // action → 假回應（物件）或 'abort'
 const _f = window.fetch;
 window.fetch = function (url, o) {
@@ -203,7 +207,8 @@ def main():
             ok('等待秒數：成功打卡記 1 筆（ok、總部、上班、有總秒數與等後端秒數）',
                len(tmg) == 1 and tmg[0]['outcome'] == 'ok' and tmg[0]['store'] == 'hq' and tmg[0]['type'] == 'in'
                and tmg[0]['total_ms'] > 0 and tmg[0]['server_ms'] is not None and tmg[0]['total_ms'] >= tmg[0]['server_ms'] and tmg[0]['refix'] is False, tmg)
-            bc = p.evaluate('window.__beacons')
+            bc = p.evaluate("window.__beacons.filter(b => b.kind === 'punch')")   # 開頁秒數那一筆另外算（2026-11-16）
+            ok('等待秒數：開頁秒數也送了一筆（按鍵亮起之後）', p.evaluate("window.__beacons.filter(b => b.kind === 'open').length") == 1, p.evaluate('window.__beacons'))
             ok('等待秒數：背景送出時畫面已經顯示「打卡成功」（同仁不用多等）', len(bc) == 1 and '上班打卡成功' in bc[0]['msg'] and bc[0]['url'].endswith('/api'), bc)
             ok('等待秒數：不走一般請求、不會被算成多打一次後端', not any(x['action'] == 'line_punch_timing' for x in calls(p)), calls(p))
             for _ in range(40):   # sendBeacon 是背景送，等 mock 寫進光復資料檔
@@ -618,6 +623,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
             phase_miss_break(ctx)
             phase_relay(ctx, (HQ['lat'], HQ['lng']))
             phase_g(ctx, (HQ['lat'], HQ['lng']))
+            phase_open(ctx, (HQ['lat'], HQ['lng']))
             phase_relogin(ctx, (HQ['lat'], HQ['lng']))
             phase_rest(ctx, (HQ['lat'], HQ['lng']))
             phase_same_type(ctx, (HQ['lat'], HQ['lng']))
@@ -1550,6 +1556,144 @@ def g_open(ctx, hq, conf, mini, after=None, mini_ms=0, g=None):
     p.wait_for_timeout(300)
     p.evaluate('(l) => { window.__lag = l; }', {'relay': mini_ms})
     return p, S
+
+
+# ── 開頁加快（2026-11-16，Eason「點開到成功 5 秒內」）：開頁狀態同時問 mini 與 Google、櫃台不通改直連、開頁秒數 ──
+ALT_URL = BASE + '/relay-mock-alt/clock'
+
+
+def open_fast(ctx, hq, mini_st, conf='gw', pre_js='', wait_who=True, extra=''):
+    """mini_st：dict＝mini 回的開頁狀態；'abort'＝連不上。conf：'gw'＝櫃台回正本名單；'alt'＝櫃台不通、直連回。"""
+    S = {'st_hits': [], 'punch_hits': [], 'alt_punch': [], 'conf_gw': 0, 'conf_alt': 0}
+    on = {'ok': True, 'v': 1, 'primary': ['hq'], 'wait_ms': 3000}
+
+    def st_h(route):
+        S['st_hits'].append(json.loads(route.request.post_data or '{}'))
+        if mini_st == 'abort':
+            return route.abort()
+        route.fulfill(status=200, body=json.dumps(mini_st), content_type='text/plain')
+
+    def conf_gw(route):
+        S['conf_gw'] += 1
+        if conf == 'alt':
+            return route.abort()
+        route.fulfill(status=200, body=json.dumps(on), content_type='application/json')
+
+    def conf_alt(route):
+        S['conf_alt'] += 1
+        route.fulfill(status=200, body=json.dumps(on), content_type='application/json')
+
+    def punch_gw(route):
+        S['punch_hits'].append(json.loads(route.request.post_data or '{}'))
+        route.fulfill(status=200, body=json.dumps(G_MINI_OK), content_type='text/plain')
+
+    def punch_alt(route):
+        S['alt_punch'].append(json.loads(route.request.post_data or '{}'))
+        route.fulfill(status=200, body=json.dumps(G_MINI_OK), content_type='text/plain')
+
+    p = ctx.new_page()
+    p.add_init_script(LOG_JS)
+    if pre_js:
+        p.add_init_script(pre_js)
+    p.route(G_URL + '/config', conf_gw)
+    p.route(ALT_URL + '/config', conf_alt)
+    p.route(G_URL + '/status', st_h)
+    p.route(G_URL + '/punch', punch_gw)
+    p.route(ALT_URL + '/punch', punch_alt)
+    p.route(re.compile(r'relay-mock-(g|alt)/clock/after$'), lambda r: r.fulfill(status=200, body=json.dumps({'ok': True, 'state': 'done', 'extras': {}}), content_type='text/plain'))
+    S['t0'] = time.time()
+    p.goto(url(hq, extra='&keep_store=1&retry_ms=50&g_conf_ms=600&g_api=' + G_URL + '&g_alt=' + ALT_URL + extra))
+    if wait_who:
+        p.wait_for_function('document.getElementById("who").textContent === "測試一" && document.getElementById("btns").hidden === false', timeout=10000)   # 開頁狀態畫出來了（鍵亮不亮照防呆）
+        S['ready_s'] = time.time() - S['t0']
+    return p, S
+
+
+def phase_open(ctx, hq):
+    import urllib.request
+    req = urllib.request.Request(BASE + '/api/hq', data=json.dumps({'action': 'liff_status', 'id_token': 'MOCK_ID_TOKEN_U1'}).encode(), headers={'Content-Type': 'text/plain'})
+    real = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
+    ok('開頁 0：假後端的開頁狀態是 ready（測試前提）', real.get('status') == 'ready', real)
+    mini = dict(real, role='primary', notices=[])
+    opens = lambda p: p.evaluate('window.__open || []')
+
+    # 1. mini 馬上回、Google 慢 2.5 秒：按鍵 1.5 秒內亮；Google 回來後比對一樣、送一列開頁秒數
+    p, S = open_fast(ctx, hq, mini, pre_js='window.__delay = {liff_status: 2500};')
+    ok('開頁 1：Google 慢 2.5 秒，mini 先回 → 1.5 秒內畫出開頁狀態（%.2f 秒）' % S['ready_s'], S['ready_s'] < 1.5, S['ready_s'])
+    ok('開頁 1：畫面沒有寫「重試中」「連線」', '重試' not in msg(p) and '連線' not in p.inner_text('#hint'), (msg(p), p.inner_text('#hint')))
+    ok('開頁 1：問 mini 的內容：店碼＋身分', S['st_hits'] and S['st_hits'][0].get('store') == 'hq' and S['st_hits'][0].get('id_token') == 'MOCK_ID_TOKEN_U1', S['st_hits'])
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    o = opens(p)[0]
+    ok('開頁 1：開頁秒數一列：ready、mini 先回、兩邊一樣、走櫃台', [o.get('kind'), o.get('outcome'), o.get('st_src'), o.get('st_match'), o.get('via')] == ['open', 'ready', 'mini', 'same', 'gw'], o)
+    ok('開頁 1：各段毫秒數都有、順序合理', all(isinstance(o.get(k), (int, float)) for k in ('liff_ms', 'geo_ms', 'st_ms', 'ready_ms', 'g_ms', 'mini_ms')) and o['liff_ms'] <= o['geo_ms'] <= o['ready_ms'] and o['mini_ms'] < o['g_ms'], o)
+    p.wait_for_timeout(300)
+    ok('開頁 1：只送一列', len(opens(p)) == 1, opens(p))
+    p.close()
+
+    # 2. 同一支手機第二次開：上次那家店記住了，定位時就先讀（pre＝true）
+    p, S = open_fast(ctx, hq, mini, pre_js='window.__delay = {liff_status: 800};')
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    ok('開頁 2：第二次開頁趁定位先讀上次那家店', opens(p)[0].get('pre') is True, opens(p)[0])
+    ok('開頁 2：開頁狀態只問 mini 一次', len(S['st_hits']) == 1, S['st_hits'])
+    # 按下打卡：送櫃台那條的 mini；秒數列帶開頁秒數
+    force_out(p)
+    wait_msg(p, '下班打卡成功 09:01', timeout=3000)
+    p.wait_for_function('(window.__timing || []).length >= 1', timeout=8000)
+    t = p.evaluate('window.__timing[0]')
+    ok('開頁 2：打卡走櫃台那條', len(S['punch_hits']) == 1 and len(S['alt_punch']) == 0, (S['punch_hits'], S['alt_punch']))
+    ok('開頁 2：打卡秒數列帶 open_ready_ms、press_ms、st_src', isinstance(t.get('open_ready_ms'), (int, float)) and t.get('press_ms') >= t.get('open_ready_ms') and t.get('st_src') == 'mini', t)
+    p.close()
+
+    # 3. mini 說不是正本（role off）→ 用 Google 那份
+    p, S = open_fast(ctx, hq, {'ok': False, 'role': 'off'})
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    ok('開頁 3：mini 不是正本 → 用 Google 的', opens(p)[0].get('st_src') == 'google', opens(p)[0])
+    p.close()
+
+    # 4. mini 連不上 → 用 Google 那份，畫面照常
+    p, S = open_fast(ctx, hq, 'abort')
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    ok('開頁 4：mini 連不上 → 用 Google 的、按鍵照亮', opens(p)[0].get('st_src') == 'google' and opens(p)[0].get('outcome') == 'ready', opens(p)[0])
+    p.close()
+
+    # 5. mini 說沒綁定 → 不採用，等 Google（綁定流程照舊由 Google／光復處理）
+    p, S = open_fast(ctx, hq, {'ok': False, 'error': 'not_bound', 'role': 'primary'})
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    ok('開頁 5：mini 回沒綁定 → 不採用，照 Google 的', opens(p)[0].get('st_src') == 'google', opens(p)[0])
+    p.close()
+
+    # 6. Google 完全讀不到、mini 有回 → 照 mini 的亮鍵，不出現「連線失敗」
+    p, S = open_fast(ctx, hq, mini, pre_js="window.__fake = window.__fake || {}; window.__fake.liff_status = 'abort';", extra='&read_timeout=300')
+    p.wait_for_timeout(1200)
+    ok('開頁 6：Google 讀不到、mini 有回 → 按鍵亮、沒有「連線失敗」', '連線失敗' not in msg(p) and not p.evaluate('document.getElementById("btnRetry").hidden === false'), msg(p))
+    p.close()
+
+    # 7. 兩邊都讀不到 → 連線失敗，送一列 fail
+    p, S = open_fast(ctx, hq, 'abort', pre_js="window.__fake = window.__fake || {}; window.__fake.liff_status = 'abort';", wait_who=False, extra='&read_timeout=300')
+    wait_msg(p, '連線失敗', timeout=8000)
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=4000)
+    ok('開頁 7：兩邊都讀不到 → 連線失敗、開頁秒數記 fail／status_fail', [opens(p)[0].get('outcome'), opens(p)[0].get('status')] == ['fail', 'status_fail'], opens(p)[0])
+    p.close()
+
+    # 8. Google 有 mini 還沒有的卡（主管 QR、別支手機剛打）→ Google 回來後改照 Google 的鎖鍵
+    stale = dict(mini, today=[], guard={'blocked': None, 'lock': {}, 'last': None, 'now': int(time.time() * 1000)})
+    newer = {'blocked': 'out', 'lock': {}, 'last': {'type': 'out', 'hm': '08:00', 'ts': '2099-01-01T08:00:00+08:00'}, 'now': int(time.time() * 1000)}
+    fake = dict(real, guard=newer)
+    p, S = open_fast(ctx, hq, stale, pre_js='window.__delay = {liff_status: 1200}; window.__fake = window.__fake || {}; window.__fake.liff_status = ' + json.dumps(fake) + ';')
+    ok('開頁 8：先照 mini 亮下班鍵', p.evaluate('!document.getElementById("btnOut").disabled'))
+    p.wait_for_function('document.getElementById("btnOut").disabled', timeout=6000)
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=6000)
+    ok('開頁 8：Google 有較新的卡 → 改照 Google 鎖下班鍵、記 diff', opens(p)[0].get('st_match') == 'diff', opens(p)[0])
+    p.close()
+
+    # 9. 櫃台不通 → 改走直連：正本名單從直連問到、打卡送直連
+    p, S = open_fast(ctx, hq, 'abort', conf='alt')
+    p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+    p.wait_for_timeout(900)
+    force_out(p)
+    wait_msg(p, '下班打卡成功 09:01', timeout=3000)
+    ok('開頁 9：櫃台不通 → 問了直連、打卡送直連那條', S['conf_gw'] >= 1 and S['conf_alt'] == 1 and len(S['alt_punch']) == 1 and len(S['punch_hits']) == 0, S)
+    p.close()
 
 
 def phase_g(ctx, hq):

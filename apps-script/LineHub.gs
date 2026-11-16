@@ -1565,7 +1565,19 @@ var LINE_PUNCH_TIMING_HEADERS = ['ts', 'store', 'emp_id', 'type', 'outcome', 'st
   // 後端各步驟毫秒數（2026-10-12 加在最後，舊列留白）：驗身分／讀名冊／讀打卡表／寫入／事後提醒
   'srv_verify_ms', 'srv_roster_ms', 'srv_read_ms', 'srv_write_ms', 'srv_extra_ms',
   // LINE 打卡快速通道（2026-10-16 加在最後，~/mala-clock-relay plan v2）：這次按鍵編號、畫面有沒有採用 mini 預判、mini 預判結果與花幾毫秒
-  'req_id', 'route', 'predict', 'predict_ms'];
+  'req_id', 'route', 'predict', 'predict_ms',
+  // 開頁秒數（2026-11-16，Eason「點開到成功 5 秒內」，加在最後）：按鍵亮起那一刻、按下那一刻（都從點開起算）、開頁狀態是誰先回的
+  'open_ready_ms', 'press_ms', 'st_src'];
+var LINE_OPEN_TIMING_SHEET = 'open_timing';
+/* 開頁秒數（一次開頁一列，沒打卡、開頁失敗也記）：都是從點開起算的毫秒數。
+   liff_ms＝LINE 登入好；geo_ms＝定位好；st_ms＝開頁狀態回來；ready_ms＝按鍵亮起；conf_ms＝問到 mini 正本名單；
+   g_ms／mini_ms＝Google／mini 各自回開頁狀態花多久。
+   st_src＝mini／google（誰先回）；st_match＝兩邊都回來時內容一不一樣（same／diff）；pre＝有沒有趁定位時先讀；via＝連 mini 走 gw（櫃台）／direct（直連）。 */
+var LINE_OPEN_TIMING_HEADERS = ['ts', 'store', 'emp_id', 'outcome', 'status', 'liff_ms', 'geo_ms', 'st_ms', 'ready_ms', 'conf_ms',
+  'st_src', 'st_match', 'pre', 'via', 'accuracy_m', 'g_ms', 'mini_ms'];
+var LINE_OPEN_TIMING_OUTCOMES = ['ready', 'fail'];
+var LINE_OPEN_TIMING_SRC = ['mini', 'google'];
+function lineOpenTimingPick_(v, list) { return list.indexOf(String(v)) >= 0 ? String(v) : ''; }
 var LINE_PUNCH_TIMING_ROUTES = ['predicted', 'plain', 'off', 'mini', 'mini_fallback'];   // mini＝G＋備援 mini 正本寫的、mini_fallback＝等不到 mini 改送 Google（2026-11-15）
 var LINE_PUNCH_TIMING_PREDICTS = ['ok', 'blocked', 'unknown', 'none'];
 var LINE_PUNCH_TIMING_STEPS = ['verify', 'roster', 'read', 'write', 'extra'];
@@ -1582,6 +1594,7 @@ function handleLinePunchTiming_(body) {
   if (lineHubThrottled_('tm', userId, 20, 60)) return { ok: false, error: 'too_many' };
   var code = String(body.store === undefined || body.store === null ? '' : body.store);
   if (!lineHubStores_().some(function (s) { return String(s.code) === code; })) return { ok: false, error: 'bad_store' };
+  if (body.kind === 'open') return lineOpenTimingWrite_(body, userId, code);   // 開頁秒數：另一個分頁（2026-11-16）
   var outcome = String(body.outcome || '');
   if (LINE_PUNCH_TIMING_OUTCOMES.indexOf(outcome) < 0) return { ok: false, error: 'bad_outcome' };
   var type = body.type === 'in' || body.type === 'out' ? body.type : '';
@@ -1605,7 +1618,33 @@ function handleLinePunchTiming_(body) {
                 .concat([/^r[0-9a-f]{16}$/.test(String(body.req_id || '')) ? String(body.req_id) : '',
                          LINE_PUNCH_TIMING_ROUTES.indexOf(String(body.route)) >= 0 ? String(body.route) : '',
                          LINE_PUNCH_TIMING_PREDICTS.indexOf(String(body.predict)) >= 0 ? String(body.predict) : '',
-                         linePunchTimingMs_(body.predict_ms)]));
+                         linePunchTimingMs_(body.predict_ms),
+                         linePunchTimingMs_(body.open_ready_ms), linePunchTimingMs_(body.press_ms),
+                         lineOpenTimingPick_(body.st_src, LINE_OPEN_TIMING_SRC)]));
+  return { ok: true };
+}
+
+/** 開頁秒數寫進 open_timing（由 handleLinePunchTiming_ 驗完身分、店碼、節流後轉來；body.kind＝'open'）。只追加一列，不讀不改別的資料。 */
+function lineOpenTimingWrite_(body, userId, code) {
+  var outcome = String(body.outcome || '');
+  if (LINE_OPEN_TIMING_OUTCOMES.indexOf(outcome) < 0) return { ok: false, error: 'bad_outcome' };
+  var status = /^[a-z_]{1,40}$/.test(String(body.status || '')) ? String(body.status) : '';
+  var empId = '';
+  try {
+    var mine = lineHubMine_(userId).filter(function (m) { return String(m.st.code) === code; })[0];
+    if (mine) empId = String(mine.row.emp_id);
+  } catch (e) { empId = ''; }
+  var acc = body.accuracy_m === null || body.accuracy_m === undefined || body.accuracy_m === '' ? NaN : Number(body.accuracy_m);
+  var ss = getSS(), sh = ss.getSheetByName(LINE_OPEN_TIMING_SHEET);
+  if (!sh) sh = ss.insertSheet(LINE_OPEN_TIMING_SHEET);
+  if (sh.getLastColumn() < LINE_OPEN_TIMING_HEADERS.length) {   // 新分頁、或之後加欄：補齊表頭（只加在最後）
+    sh.getRange(1, 1, 1, LINE_OPEN_TIMING_HEADERS.length).setValues([LINE_OPEN_TIMING_HEADERS]);
+  }
+  sh.appendRow([nowTaipeiIso(), code, empId, outcome, status,
+    linePunchTimingMs_(body.liff_ms), linePunchTimingMs_(body.geo_ms), linePunchTimingMs_(body.st_ms), linePunchTimingMs_(body.ready_ms), linePunchTimingMs_(body.conf_ms),
+    lineOpenTimingPick_(body.st_src, LINE_OPEN_TIMING_SRC), lineOpenTimingPick_(body.st_match, ['same', 'diff']), body.pre === true,
+    lineOpenTimingPick_(body.via, ['gw', 'direct']),
+    (isFinite(acc) && acc >= 0 && acc < 100000) ? Math.round(acc) : '', linePunchTimingMs_(body.g_ms), linePunchTimingMs_(body.mini_ms)]);
   return { ok: true };
 }
 
@@ -1615,11 +1654,12 @@ function handlePunchTimingGet_(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   var re = /^\d{4}-\d{2}-\d{2}$/;
   if (!re.test(String(body.from || '')) || !re.test(String(body.to || ''))) return { ok: false, error: 'bad_range' };
-  var sh = getSS().getSheetByName(LINE_PUNCH_TIMING_SHEET);
+  var open = body.sheet === 'open';   // sheet:'open' 讀開頁秒數（open_timing）；不帶照舊讀打卡秒數
+  var sh = getSS().getSheetByName(open ? LINE_OPEN_TIMING_SHEET : LINE_PUNCH_TIMING_SHEET);
   if (!sh) return { ok: true, rows: [] };
   var rows = readSheetAsObjects(sh).rows.map(function (r) {
     var o = {};
-    LINE_PUNCH_TIMING_HEADERS.forEach(function (h) { o[h] = r[h] === undefined ? '' : r[h]; });
+    (open ? LINE_OPEN_TIMING_HEADERS : LINE_PUNCH_TIMING_HEADERS).forEach(function (h) { o[h] = r[h] === undefined ? '' : r[h]; });
     o.ts = normCellTs(o.ts);
     o.store = String(o.store); o.emp_id = String(o.emp_id);
     return o;
