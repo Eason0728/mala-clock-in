@@ -661,8 +661,10 @@ class Gen:
             if p['rejected_in']:
                 p['events'].append(self.ev(self.at(minutes=r.randint(30, 90)), 'in', 'rejected_out_of_range'))
             return
-        if s == 'overtime':   # 今天上班 8.25～11.75 小時後打下班 → 超時提示；有些人前面還有一段
-            h = r.choice([8.25, 8.5, 9, 9.5, 10, 10.75, 11.5]) + r.randint(0, 14) / 60
+        if s == 'overtime':   # 今天上班 8.75～11.75 小時後打下班 → 超時提示；有些人前面還有一段
+            # 最少 8.75 小時：11/11 起上班進位、下班捨去到 15 分鐘，最多會少算 29 分；原本 8.25／8.5 小時在不是整刻鐘的時間跑，
+            # 算出來剛好 8 小時或不到 → 「應提示加班」的資料檢查看時間失敗（2026-11-16 21:4x 種子 97189537、41523077）。選項維持 7 個，其他亂數不受影響
+            h = r.choice([8.75, 9, 9.25, 9.5, 10, 10.75, 11.5]) + r.randint(0, 14) / 60
             if r.random() < 0.4:   # 前一段 1～2 小時，中間休息 30 分
                 a = self.at(hours=h, minutes=r.randint(90, 150))
                 p['events'] += [self.ev(a, 'in'), self.ev(a + timedelta(minutes=r.randint(60, 110)), 'out')]
