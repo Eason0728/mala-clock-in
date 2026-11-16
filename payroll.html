@@ -207,6 +207,11 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 html.embed .sidebar{display:none}
 html.embed .topbar{padding-top:16px}
 html.embed .topbar h1{display:none}   /* 管理系統頁頂已有「薪酬計算」 */
+/* 管理系統新外觀（2026-11-16）：嵌入且網址帶 ui=new 時換成 Apple 淺灰底、主要按鈕 Apple 藍；草稿、警示仍是紅色。只換外觀，計算不動 */
+html.embed.ui-new{--bg:#f5f5f7;--ink:#1d1d1f;--black:#1d1d1f;--line:#e5e5ea;--muted:#6e6e73;--bad:#d70015;--shadow:0 1px 2px rgba(0,0,0,.04)}
+html.embed.ui-new body{-webkit-font-smoothing:antialiased}
+html.embed.ui-new .btn{--red:#0066cc;border-radius:10px}
+html.embed.ui-new .monthbar{border-left-color:#0066cc}
 </style>
 </head>
 <body>
@@ -592,6 +597,7 @@ const ADMIN_KEY = new URLSearchParams(location.search).get('k') || '';
 const LOCAL_HOST=(location.hostname==='localhost'||location.hostname==='127.0.0.1');
 const EMBED=!ADMIN_KEY && new URLSearchParams(location.search).get('embed')==='dzy' && window.parent!==window;
 if(EMBED&&document.documentElement) document.documentElement.classList.add('embed');   // 上方分頁列（CSS html.embed）
+if(EMBED&&/(?:^|[?&])ui=new(?:&|#|$)/.test(location.search)) document.documentElement.classList.add('ui-new');   // 管理系統新外觀（2026-11-16）
 const DZY_ORIGIN=(function(){
   if(!LOCAL_HOST) return 'https://dzy.mozhuting.com';
   // 本機開發：管理系統也跑在本機（任一埠），從 referrer 取它的 origin
