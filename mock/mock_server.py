@@ -2480,7 +2480,10 @@ def handle_line_punch_timing(data, body):
         data.setdefault("open_timing", []).append({
             "ts": iso_now(), "store": code, "uid": uid, "outcome": body["outcome"], "status": str(body.get("status") or "")[:40],
             "st_src": body.get("st_src") if body.get("st_src") in ("mini", "google") else "",
-            "ready_ms": body.get("ready_ms") if isinstance(body.get("ready_ms"), (int, float)) else ""})
+            "ready_ms": body.get("ready_ms") if isinstance(body.get("ready_ms"), (int, float)) else "",
+            "fix1_ms": body.get("fix1_ms") if isinstance(body.get("fix1_ms"), (int, float)) else "",
+            "fix1_acc": body.get("fix1_acc") if isinstance(body.get("fix1_acc"), (int, float)) else "",
+            "coarse": body.get("coarse") is True})
         save_data(data)
         return {"ok": True}
     if body.get("outcome") not in ("ok", "fail", "error", "geo_fail", "unclear_ok", "unclear_not", "unclear_unknown"):
