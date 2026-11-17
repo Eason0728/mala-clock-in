@@ -1,0 +1,333 @@
+<!doctype html><html lang="zh-Hant"><head><meta name="robots" content="noindex">
+<!-- 薪資結算手冊（財務同仁用）。正本＝本檔，2026-11-17 從 Artifact 搬進薪酬計算「操作手冊」分頁（payroll.html p-guide）。改薪資規則時要一起改這份。 -->
+<meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>薪資結算手冊</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: the top strip copies the real tab row in the payroll screen, and the page follows it left to right. */
+:root{
+  --bg:#f7f4f1; --surface:#ffffff; --ink:#231815; --muted:#6f645c; --line:#e4dcd5;
+  --red:#d6330b; --red-wash:#fbe7e0; --gold:#fabe00; --gold-wash:#fdf3cf; --gold-ink:#6b5200;
+  --good:#23734a; --on-ink:#f7f4f1;
+  --sans:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#191513; --surface:#231e1b; --ink:#f3ece7; --muted:#b0a59c; --line:#3a312c;
+  --red:#ff7a57; --red-wash:#3b1f17; --gold:#fabe00; --gold-wash:#332a0c; --gold-ink:#f5d469;
+  --good:#63cf95; --on-ink:#191513; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#191513; --surface:#231e1b; --ink:#f3ece7; --muted:#b0a59c; --line:#3a312c;
+  --red:#ff7a57; --red-wash:#3b1f17; --gold:#fabe00; --gold-wash:#332a0c; --gold-ink:#f5d469;
+  --good:#63cf95; --on-ink:#191513; color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--surface)}
+.g{max-width:900px;margin-inline:auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+header{padding-block:44px 28px}
+.kicker{font-size:13px;font-weight:700;color:var(--red);letter-spacing:.08em}
+h1{font-size:clamp(32px,6vw,46px);font-weight:900;line-height:1.2;margin:6px 0 10px;text-wrap:balance}
+.lede{margin:0;max-width:40em;color:var(--muted)}
+nav.tabs{position:sticky;top:env(safe-area-inset-top,0px);z-index:9;background:var(--surface);border-block:1px solid var(--line)}
+.tabrow{display:flex;gap:2px;overflow-x:auto;max-width:900px;margin-inline:auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.tabrow a{flex:none;padding:12px 11px;font-size:14.5px;font-weight:700;color:var(--muted);text-decoration:none;border-bottom:3px solid transparent;white-space:nowrap}
+.tabrow a:hover,.tabrow a:focus-visible{color:var(--red);border-bottom-color:var(--red)}
+.tabrow a:focus-visible{outline:2px solid var(--red);outline-offset:-2px}
+main{padding-block:12px 64px}
+section{margin-top:44px;scroll-margin-top:64px}
+h2{font-size:25px;font-weight:900;line-height:1.35;margin:0 0 6px;text-wrap:balance}
+.sub{margin:0 0 18px;color:var(--muted)}
+p{margin:0}
+.start{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;border-top:2px solid var(--ink);padding-top:16px}
+.start h3{font-size:16px;font-weight:900;margin:0 0 4px}
+.start p{font-size:15px;color:var(--muted)}
+.step{display:grid;grid-template-columns:64px minmax(0,1fr);gap:0 16px;padding-block:26px;border-top:1px solid var(--line);scroll-margin-top:56px}
+.num{font-size:44px;font-weight:900;line-height:1;color:var(--red);font-variant-numeric:tabular-nums}
+.step h3{font-size:21px;font-weight:900;margin:2px 0 2px}
+.why{color:var(--muted);margin-bottom:10px}
+ul{margin:0;padding-left:1.2em;display:grid;gap:5px}
+.btn{display:inline-block;font-size:.9em;font-weight:700;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:0 7px;white-space:nowrap}
+.warn,.tip{margin-top:12px;padding:11px 14px;border-radius:8px;font-size:15px}
+.warn{background:var(--red-wash)}
+.tip{background:var(--gold-wash)}
+.warn b:first-child{color:var(--red)}
+.tip b:first-child{color:var(--gold-ink)}
+.tw{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:14.5px;line-height:1.6}
+th,td{padding:10px 13px;text-align:left;vertical-align:top;border-top:1px solid var(--line)}
+thead th{border-top:0;font-size:13px;color:var(--muted);font-weight:700;white-space:nowrap}
+tbody th{font-weight:700;white-space:nowrap}
+.nums{font-variant-numeric:tabular-nums}
+.rule{display:grid;grid-template-columns:minmax(0,1fr);gap:18px}
+.rule h3{font-size:18px;font-weight:900;margin:0 0 4px}
+.formula{font-family:var(--mono),var(--sans);font-size:14.5px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:9px 13px;margin-block:8px;overflow-x:auto;white-space:nowrap}
+.sect-gap{margin-top:22px}
+.tag{display:inline-block;font-size:12px;font-weight:700;padding:0 8px;border-radius:999px;margin-right:6px;white-space:nowrap}
+.tag.r{background:var(--red);color:var(--on-ink)}
+.tag.y{background:var(--gold);color:#231815}
+footer{border-top:1px solid var(--line);padding-block:18px 36px;font-size:13.5px;color:var(--muted)}
+@media(max-width:640px){
+  .start{grid-template-columns:minmax(0,1fr);gap:14px}
+  .step{grid-template-columns:42px minmax(0,1fr);gap:0 10px}
+  .num{font-size:32px}
+}
+</style>
+
+<header class="g">
+  <div class="kicker">財務同仁用</div>
+  <h1>薪資結算手冊</h1>
+  <p class="lede">每個月結算上個月的薪資。打開「薪酬計算」，照上方分頁從 1 做到 8。計算規則在本頁最後。適用 2026 年 11 月薪資起。</p>
+</header>
+
+<nav class="tabs" aria-label="本頁目錄">
+  <div class="tabrow">
+    <a href="#before">開始前</a><a href="#s1">1 員工設定</a><a href="#s2">2 參數設定</a><a href="#s3">3 打卡紀錄</a><a href="#s4">4 出勤資料</a><a href="#s5">5 獎金計算</a><a href="#s6">6 薪資計算</a><a href="#s7">7 薪資單</a><a href="#s8">8 匯出</a><a href="#lock">鎖定擋住時</a><a href="#rules">計算規則</a><a href="#fix">常見狀況</a>
+  </div>
+</nav>
+
+<main class="g">
+  <section id="before">
+    <div class="start">
+      <div><h3>從哪裡進去</h3><p>登入管理系統，左側「人資部門」，點「薪酬計算」。財務部同仁（含兼任）自動看得到全部門市和集團總覽；剛調進財務部後要登出再登入一次。其他人要找系統管理者開權限。</p></div>
+      <div><h3>先選門市和月份</h3><p>畫面上方選門市，「薪資月份」選要結算的月份。結算 11 月薪資，就選 2026-11。</p></div>
+      <div><h3>什麼時候開始</h3><p>等門市主管把當月工時都核定完再開始。鎖定是在下個月做，月底當下還沒鎖是正常的。</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="steps-h">
+    <h2 id="steps-h">每月結算 8 步</h2>
+    <p class="sub">前兩步只有人員或設定變動時才要改，沒變動就確認一下往下走。</p>
+
+    <article class="step" id="s1"><div class="num">1</div><div>
+      <h3>員工設定</h3>
+      <p class="why">每位同仁的底薪、津貼和保險。資料全月共用，不分月份。</p>
+      <ul>
+        <li>看頁面最上方「同仁名單 N 人／薪資主檔 M 人」。人數不同就按 <span class="btn">看清單</span>。</li>
+        <li>新人按該列的 <span class="btn">帶入</span>；已離職的按 <span class="btn">停用</span>。姓名不一致的，到員工設定改成一致。</li>
+        <li>補齊底薪或時薪、加班費率、津貼、績效上限、餐費補助、宿舍、到職日、離職日，以及勞健保、退休金的自付額和公司負擔額，按 <span class="btn">儲存主檔</span>。到職日、離職日要用日期選擇器選，其他寫法存不進去。</li>
+      </ul>
+      <div class="warn"><b>月中離職一定要填離職日。</b>只按「停用」沒填離職日，離職當月的薪水不會算進去，薪資計算頁會出現紅字提醒。填了離職日，停用與否都會照在職天數算到離職那個月。</div>
+      <div class="warn"><b>不要按「從打卡名冊建立」。</b>打卡名冊是「誰在這家店打卡」，不是「薪水算在哪家店」。按下去可能把支援的人再建一筆，同一個人領兩份薪水。</div>
+      <div class="tip"><b>工號要和打卡名冊完全一樣。</b>工號不同，打卡時數和班表都對不到人，薪資計算頁會出現紅字提醒。</div>
+    </div></article>
+
+    <article class="step" id="s2"><div class="num">2</div><div>
+      <h3>參數設定</h3>
+      <p class="why">全店共用的數字：紅字天數、績效獎金、計時加給、公司負擔、假別。</p>
+      <ul>
+        <li>紅字天數會依行事曆自動帶入，不用填，看一下當月天數和節日對不對。已鎖定的月份不會被自動更新。</li>
+        <li>要改某張卡片的數字，改完按那張卡片自己的 <span class="btn">儲存</span>。只有改過的欄位會存。</li>
+        <li>每日基本工時、事假費率分母、餐費補助門檻要填大於 0 的數字，清空或填 0 會存不進去。</li>
+        <li>同仁請婚假、陪產假等有期限的假，到「假別事件日」登記事件日期。</li>
+      </ul>
+      <div class="warn"><b>只改這家店，要勾「只套用到目前門市」。</b>沒勾會存成集團預設，其他沒有專屬設定的門市會一起變動。</div>
+    </div></article>
+
+    <article class="step" id="s3"><div class="num">3</div><div>
+      <h3>打卡紀錄</h3>
+      <p class="why">只能看不能改，用來確認當月的打卡和核定都完整。</p>
+      <ul>
+        <li>最上方總表看每人的出勤工時、異常筆數、請假時數、忘刷、遲到、早退次數。</li>
+        <li>數字不對，請門市主管到「考勤管理」補核定或補假單，改完回來按 <span class="btn">重新整理</span>。</li>
+        <li>同一天不能同時有請假和上班時數（出差除外）。看到這種情況要請主管修正，否則加班會多算。</li>
+      </ul>
+    </div></article>
+
+    <article class="step" id="s4"><div class="num">4</div><div>
+      <h3>出勤資料</h3>
+      <p class="why">工時會從打卡核定自動帶入。這裡處理系統帶不進來的項目。</p>
+      <ul>
+        <li>勾選「餐費補助」；計時同仁符合資格的勾「全勤津貼」。</li>
+        <li>填自訂加薪、扣款，或當月特殊的時薪、宿舍費。</li>
+        <li>跨店支援：同品牌的支援時數會自動帶入。手填的和打卡不同時，選「改成打卡值」或「保留手填」。</li>
+        <li>全部確認後按 <span class="btn">儲存工時</span>。</li>
+      </ul>
+      <div class="warn"><b>按了「儲存工時」，這個月的工時就固定了。</b>之後主管再改核定，數字不會自動跟著變。所以要等第 3 步全部確認好才按。真的要更新，按 <span class="btn">清除本月手動工時</span>，再重新勾選餐費、填自訂項目並存檔。</div>
+      <div class="tip"><b>已鎖定的月份不能存工時、也不能清除。</b>畫面會提示「已鎖定，請先解鎖」。要改請先到薪資計算解鎖（會留紀錄）。</div>
+    </div></article>
+
+    <article class="step" id="s5"><div class="num">5</div><div>
+      <h3>獎金計算</h3>
+      <p class="why">門市業績獎金、個人績效獎金、介紹或專案獎金。沒有獎金就跳過。</p>
+      <ul>
+        <li>選同仁和獎金類型，填顯示名稱和金額，按 <span class="btn">＋新增獎金</span>，再按 <span class="btn">儲存獎金</span>。</li>
+        <li>當月營收、營收目標只是給人檢核，不影響計算。</li>
+        <li>已鎖定的月份不能存獎金，要先解鎖。</li>
+      </ul>
+    </div></article>
+
+    <article class="step" id="s6"><div class="num">6</div><div>
+      <h3>薪資計算</h3>
+      <p class="why">計算、檢查、定案。鎖定之後同仁才查得到薪資。</p>
+      <ul>
+        <li>按 <span class="btn">重新計算</span>，逐人看時數、加班、應付、實付。</li>
+        <li>上方有「加班與班表提醒」時先處理。寫著「不能鎖定」的一定要清掉。</li>
+        <li>往下到「人事成本分類」，按 <span class="btn">🧮 對帳檢查</span>。顯示「全部對得上」才往下；顯示「有 N 項對不上」先別鎖定。黃底提醒也要看：實付負數、整月零工時、主檔有公司負擔但本月沒有結算結果。</li>
+        <li>確認無誤按 <span class="btn">鎖定本月</span>。被擋下時看<a href="#lock">下一段的對照表</a>。</li>
+      </ul>
+      <div class="tip"><b>鎖定後要改</b>：按 <span class="btn">🔒 解鎖本月</span> 並填原因，改完重新計算，再鎖定。解鎖原因會留在操作紀錄。</div>
+    </div></article>
+
+    <article class="step" id="s7"><div class="num">7</div><div>
+      <h3>薪資單</h3>
+      <p class="why">需要紙本或 PDF 時用。同仁自己用打卡連結裡的「我的薪資」就能查已鎖定的月份。</p>
+      <ul><li>從下拉選單選同仁，按 <span class="btn">列印 / 存成 PDF</span>。</li></ul>
+    </div></article>
+
+    <article class="step" id="s8"><div class="num">8</div><div>
+      <h3>匯出</h3>
+      <p class="why">給匯款、損益和存檔用。</p>
+      <ul><li>按 <span class="btn">匯出 Excel</span> 或 <span class="btn">匯出 PDF</span>。還沒鎖定的月份，匯出的是草稿，不要拿去匯款。</li></ul>
+      <div class="tip"><b>另外兩個查詢頁</b>：「出勤紀錄表」匯出逐日到分鐘的正式出勤紀錄，勞檢或同仁索取時使用，有員工和主管簽名欄。「操作紀錄」查誰在什麼時候鎖定、解鎖或改過設定。</div>
+    </div></article>
+  </section>
+
+  <section id="lock">
+    <h2>鎖定被擋住時怎麼辦</h2>
+    <p class="sub">系統會依序檢查這五件事，畫面會列出是哪些同仁。</p>
+    <div class="tw"><table>
+      <thead><tr><th>畫面上的訊息</th><th>原因</th><th>怎麼處理</th></tr></thead>
+      <tbody>
+        <tr><td>試算後資料有改過</td><td>算完之後，主檔、打卡或假單又被改過（2026 年 10 月薪資起檢查）</td><td>按確定，系統會自動重算。看過新數字再按一次鎖定。</td></tr>
+        <tr><td>補休帳是負的</td><td>請的補休比當月核准的加班多</td><td>請主管補核准加班申請，或把多請的補休改成其他假別。</td></tr>
+        <tr><td>補休比可以抵的加班多</td><td>休息日第 3 小時起、例假、國定假日的加班不能抵補休</td><td>把多出來的補休改成其他假別。</td></tr>
+        <tr><td>超過 8 小時卻沒有足夠的已核准加班單</td><td>2026-11-11 起，當天超時要有加班單</td><td>請同仁補加班單並核准。訊息若寫了門市，要開在那家店。</td></tr>
+        <tr><td>在班表上查不到</td><td>加班要看班表判斷休息日、例假</td><td>請門市到「排班管理」把那幾天排好並發布。</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3 class="sect-gap" style="font-size:18px;font-weight:900;margin-bottom:8px">不擋鎖定，但要看過的提醒</h3>
+    <ul>
+      <li><span class="tag r">紅字</span>薪資主檔工號在打卡名冊找不到、打卡名冊有同名的人：先改對工號，否則工時會是 0。</li>
+      <li><span class="tag r">紅字</span>本月有時數，但主檔已取消在職、離職日沒填或早於這個月：這個人沒有算進薪資。這個月還有上班的話，到員工設定填正確的離職日。</li>
+      <li><span class="tag r">紅字</span>本月在職天數是 0，卻有時數或加扣項：到職日或離職日可能填錯，到員工設定確認。</li>
+      <li><span class="tag r">紅字</span>28 天內加班滿 46 小時、單月超過 54 小時：確認是否超過法定上限。</li>
+      <li><span class="tag r">紅字</span>有排班沒來達連續 3 天或當月 6 天、事假加家庭照顧假超過 14 天：確認是否算曠職，系統不會自動扣。</li>
+      <li><span class="tag r">紅字</span>平日出差有加班單：出差不得報加班，請確認。</li>
+      <li><span class="tag y">黃字</span>28 天內加班超過 36 小時、婚假跨月還沒填結婚日、墨竹亭全時當日未滿 8 小時。</li>
+      <li><span class="tag y">黃字</span>出差沒有申請單：看不到地點，沒給出差餐費。要給就用自訂加薪補。</li>
+    </ul>
+  </section>
+
+  <section id="rules">
+    <h2>計算規則摘要</h2>
+    <p class="sub">2026 年 11 月薪資起適用。各店可在參數設定、假別設定調整，以畫面上的設定為準。</p>
+    <div class="rule">
+
+      <div>
+        <h3>加班費：正職</h3>
+        <p>先算月工資，再換算成加班時薪。每天依班表判斷是上班日、休息日、例假還是國定假日。</p>
+        <div class="formula">月工資 = 本薪 + 職能 + 夜間 + 店長 + 小編津貼 + 績效上限 + 伙食費 2,000</div>
+        <div class="formula">加班時薪 = 月工資 ÷ 240　　　一日工資 = 月工資 ÷ 30</div>
+        <div class="tw"><table class="nums">
+          <thead><tr><th>當天類型</th><th>怎麼算</th></tr></thead>
+          <tbody>
+            <tr><th>上班日</th><td>超過 8 小時的前 2 小時 ×1.34，再來 ×1.67</td></tr>
+            <tr><th>休息日</th><td>前 2 小時 ×1.34，第 3～8 小時 ×1.67，第 9 小時起 ×2.67</td></tr>
+            <tr><th>例假</th><td>有上班就加發一日工資；超過 8 小時照上班日算</td></tr>
+            <tr><th>國定假日</th><td>8 小時內加發「上班時數 × 加班時薪」；超過 8 小時照上班日算</td></tr>
+          </tbody>
+        </table></div>
+        <div class="tip"><b>範例（虛構數字）</b>：月工資 40,000，加班時薪約 166.67。上班日做滿 10 小時，加班費是 2 × 1.34 × 166.67，約 447 元。</div>
+      </div>
+
+      <div>
+        <h3>加班費：計時</h3>
+        <p>時薪已經付了，所以只加「加成」：有效時薪乘 0.34、0.67、1.67，時段切法同上表。例假再加一倍時薪。國定假日當天時數加倍。</p>
+      </div>
+
+      <div>
+        <h3>補休（墨竹亭不適用）</h3>
+        <p>依日期由早到晚，從當月加班時數扣。上班日加班都能抵，休息日只有前 2 小時能抵，例假和國定假日不能抵。補休每月結清，不跨月。</p>
+      </div>
+
+      <div>
+        <h3>績效獎金與計時加給：兩套制度</h3>
+        <div class="tw" style="margin-top:8px"><table>
+          <thead><tr><th>項目</th><th>小辛辣（光復、小辛辣總部）</th><th>墨竹亭、央廚、鼎兆元總部</th></tr></thead>
+          <tbody>
+            <tr><th>每日倒扣</th><td>事假、病假、忘刷、遲到、早退，有一項那天就扣（預設 100 元），同一天只算一次</td><td>只有請假的日子扣（預設 100 元）</td></tr>
+            <tr><th>整筆歸零</th><td>沒有</td><td>當月請事假、忘刷滿 3 天、遲到累計滿 11 分、家庭照顧假超過 7 天</td></tr>
+            <tr><th>計時滿勤 +10</th><td>勾選全勤津貼，且當月滿 100 小時、缺勤 0 天</td><td>沒有</td></tr>
+            <tr><th>計時年資 +10</th><td>任職滿半年的次月起</td><td>沒有</td></tr>
+          </tbody>
+        </table></div>
+        <p style="margin-top:8px;color:var(--muted);font-size:15px">同品牌支援別店時的遲到、早退、忘刷，也算進績效獎金（同一天本店已經算過的不重複算）。跨品牌支援由打卡那家店發薪，不算進原店。</p>
+      </div>
+
+      <div>
+        <h3>遲到、早退</h3>
+        <p>按分鐘扣，支援別店時的遲到、早退也會扣。</p>
+        <div class="formula">正職每分鐘 = (本薪 + 職能 + 夜間 + 店長 + 績效上限) ÷ 30 ÷ 8 ÷ 60</div>
+        <div class="formula">計時每分鐘 = 有效時薪 ÷ 60</div>
+      </div>
+
+      <div>
+        <h3>請假（預設值）</h3>
+        <p>正職的請假扣款用「每小時費率 × 時數 × 不給薪比例」，費率的分子和遲到相同，除以 30 再除以 8，取整數。病假這類半薪假，金額算完才四捨五入。</p>
+        <div class="tw" style="margin-top:8px"><table class="nums">
+          <thead><tr><th>假別</th><th>薪資</th><th>額度</th><th>扣績效</th></tr></thead>
+          <tbody>
+            <tr><th>特休</th><td>全薪</td><td>依年資</td><td>不扣</td></tr>
+            <tr><th>事假</th><td>不給薪</td><td>每年 14 天</td><td>扣</td></tr>
+            <tr><th>病假</th><td>半薪</td><td>每年 30 天</td><td>扣</td></tr>
+            <tr><th>生理假</th><td>全薪；第 4 次起半薪</td><td>每年 3 次，第 4 次起併入病假</td><td>不扣</td></tr>
+            <tr><th>家庭照顧假</th><td>不給薪</td><td>每年 7 天，超過的併入事假</td><td>不扣</td></tr>
+            <tr><th>婚假</th><td>全薪</td><td>14 天</td><td>不扣</td></tr>
+            <tr><th>喪假</th><td>全薪</td><td>8、6、3 天，依親屬關係</td><td>不扣</td></tr>
+            <tr><th>天災假</th><td>不給薪</td><td>不限</td><td>不扣</td></tr>
+            <tr><th>出差</th><td>照常計工時</td><td>不是請假。餐費看出差地點，見下方「出差餐費」</td><td>不扣</td></tr>
+          </tbody>
+        </table></div>
+      </div>
+
+      <div>
+        <h3>特休沒休完</h3>
+        <p>週年到期日的前一天落在哪個月，就在那個月折算成薪資。離職當月也會結算。正職每小時 = 月工資 ÷ 30 ÷ 8；計時用有效時薪。時薪不先取整，金額算完才四捨五入。</p>
+        <p style="margin-top:6px">週年日在月中、那個月的特休是在出勤資料手動填的（沒有逐日紀錄）：週年日 15 號以前算新年度，16 號以後算舊年度。</p>
+      </div>
+
+      <div>
+        <h3>跨店支援</h3>
+        <p>小辛辣內、墨竹亭內的互相支援，時數由別店主管核定後自動帶入原店；央廚和總部兩邊都算同組。跨品牌支援由打卡那家店發薪。正職的支援時數併入當天工時判斷加班；計時另列一行，用本人時薪計算。</p>
+        <p style="margin-top:6px">向支援門市請款（在薪資計算頁的「人事成本分類」最下方），不影響本店薪資費用：</p>
+        <div class="formula">請款 = 支援時數 × 支援同仁時薪　　正職 = 月工資 ÷ 240；計時 = 當月實際時薪（含加給）</div>
+        <p style="color:var(--muted);font-size:15px">出勤資料裡有填請款金額的，以填的金額為準。</p>
+      </div>
+
+      <div>
+        <h3>餐費補助（正職）</h3>
+        <p>有勾選才算。金額 = 當天核定滿 6 小時的天數 × 每日餐費。出差日要扣掉出差時數再看是否滿 6 小時。</p>
+      </div>
+
+      <div>
+        <h3>出差餐費（正職、計時都給）</h3>
+        <p>看出差申請單上的地點。出差到墨竹亭新竹光復、新竹金山、台北六張犁、總部、台北瑞光、台中美村，不給餐費；其他地點，那天固定給 100 元，不用勾餐費補助，那天也不再另算餐費補助。</p>
+        <p style="margin-top:6px">主管直接核定成出差、沒有出差申請單的日子看不到地點，系統不給，薪資計算頁會黃字提醒。應該給的話，在出勤資料用自訂加薪補，或請同仁補出差申請單。</p>
+      </div>
+
+    </div>
+  </section>
+
+  <section id="fix">
+    <h2>常見狀況</h2>
+    <div class="tw"><table>
+      <thead><tr><th>看到的狀況</th><th>先查</th></tr></thead>
+      <tbody>
+        <tr><td>主管改了核定，薪資沒變</td><td>這個月按過「儲存工時」。到出勤資料按「清除本月手動工時」，重新勾選與填寫後存檔，再重新計算。</td></tr>
+        <tr><td>某人時數是 0</td><td>主檔工號和打卡名冊不同。看薪資計算的紅字提醒。</td></tr>
+        <tr><td>月中離職的人薪資不見了</td><td>主檔停用了但沒填離職日。到員工設定填離職日，再重新計算。</td></tr>
+        <tr><td>按儲存出現「已鎖定，請先解鎖」</td><td>這個月已經鎖定。到薪資計算解鎖（填原因），改完重新計算再鎖定。</td></tr>
+        <tr><td>同仁說查不到薪資</td><td>這個月還沒鎖定。鎖定後才看得到。</td></tr>
+        <tr><td>改了獎金或參數，金額沒變</td><td>要回到薪資計算按「重新計算」。</td></tr>
+        <tr><td>公司負擔的金額看起來是別家店的</td><td>主檔沒填逐人的公司負擔，系統改用參數設定的金額。到員工設定補齊。</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+</main>
+
+<footer class="g">麻的小辛辣、墨竹亭、央廚、鼎兆元總部適用 · 第 4 版 · 2026-11-17</footer>
+
+</body></html>
