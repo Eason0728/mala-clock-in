@@ -349,7 +349,7 @@ html.embed.ui-new .monthbar{border-left-color:#0066cc}
   </div>
   <div class="card" id="costCard" style="display:none">
     <h2>人事成本分類（對應損益表）</h2>
-    <p class="hint">依損益表科目彙總本月人事成本，每一列都是可直接認列的實際金額。<b>薪資費用／正職</b>＝底薪 −（請假扣款＋不足倒扣）；正職的勞健保自付與宿舍代扣<b>另列為小計前的兩列減項</b>。<b>薪資費用／PT</b>＝計時同仁領到的全部（時薪＋跨店支援＋津貼），且已扣掉計時的請假／不足、勞健保自付與宿舍。<b>各列相加＝薪資費用小計＝全體實付總額</b>（對不上就是漏算或重複算）。勞健保自付額計入下方<b>保險成本</b>（公司代扣後要繳出去），宿舍代扣列為<b>租金收入</b>。正職才依項目分科目。獎金三類不分正職計時，一律獨立科目。公司負擔（勞健保、負責人、團險）另計於下方，兩者相加＝人事總成本。<br><b>跨店支援請款</b>是另一件事：向支援門市收款＝支援時數×支援門市費率，<b>不影響</b>上方薪資費用。</p>
+    <p class="hint">依損益表科目彙總本月人事成本，每一列都是可直接認列的實際金額。<b>薪資費用／正職</b>＝底薪 −（請假扣款＋不足倒扣）；正職的勞健保自付與宿舍代扣<b>另列為小計前的兩列減項</b>。<b>薪資費用／PT</b>＝計時同仁領到的全部（時薪＋跨店支援＋津貼），且已扣掉計時的請假／不足、勞健保自付與宿舍。<b>各列相加＝薪資費用小計＝全體實付總額</b>（對不上就是漏算或重複算）。勞健保自付額計入下方<b>保險成本</b>（公司代扣後要繳出去），宿舍代扣列為<b>租金收入</b>。正職才依項目分科目。獎金三類不分正職計時，一律獨立科目。公司負擔（勞健保、負責人、團險）另計於下方，兩者相加＝人事總成本。<br><b>跨店支援請款</b>是另一件事：向支援門市收款＝支援時數×支援同仁時薪（2026-11 起；正職＝月工資÷240、計時＝當月實際時薪；之前月份＝支援門市費率），<b>不影響</b>上方薪資費用。</p>
     <div class="scroll"><table id="costTbl"></table></div>
     <div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <button class="btn ghost" onclick="costAudit()">🧮 對帳檢查</button>
@@ -1098,6 +1098,18 @@ function allocGapHours(hoursArr, gap){
   }
   return alloc;
 }
+/* 跨店請款時薪（2026-11-17 Eason，2026-11 薪資起）：請款＝支援時數 × 支援同仁時薪。
+ *   正職＝月工資÷240（本薪＋職能＋夜間＋店長＋小編＋績效上限＋伙食費，同加班時薪）；計時＝當月實際時薪（基本＋滿勤＋年資）。
+ *   2026-10 以前回 null＝照舊兩段式（缺口×差額費率＋其餘×支援門市費率）。後端 pnlSupClaimRate_ 逐字同一套。 */
+const SUP_CLAIM_FROM='2026-11';
+function supClaimRate(ymv, r, m, cfg){
+  if(!(String(ymv||'')>=SUP_CLAIM_FROM)) return null;
+  if(r.is_full_time){
+    const meal=(cfg&&cfg.ot_meal_fixed!==''&&cfg.ot_meal_fixed!=null)?n(cfg.ot_meal_fixed):2000;
+    return (n(m.base)+n(m.skill_allow)+n(m.night_allow)+n(m.mgr_allow)+n(m.editor_allow)+n(m.attend_cap)+meal)/240;
+  }
+  return (r.earn||[]).filter(x=>x.item_key==='hourly_wage'||x.item_key==='pt_attend_plus'||x.item_key==='pt_tenure_plus').reduce((s,x)=>s+n(x.rate),0);
+}
 function costTotals(){
   // dorm／dormBy：宿舍代扣（2026-08-24 Eason 改口徑）——從薪資費用扣除，並在下方獨立列成租金收入。
   // ⚠ 兩邊都看得到是刻意的，但**損益表只能取一邊**：薪資費用已經扣過了，租金收入那區只是明細，
@@ -1133,9 +1145,10 @@ function costTotals(){
       const gapRate=n((MASTER.find(m=>String(m.emp_id)===String(r.emp_id))||{}).gap_rate);
       const gapH=r.base_hours!=null?Math.max(0,n(r.base_hours)-n(r.total_hours)):0;
       const alloc=allocGapHours(sup.map(x=>n(x.hours)), gapH);
+      const cr=supClaimRate(typeof ym==='function'?ym():'', r, MASTER.find(m=>String(m.emp_id)===String(r.emp_id))||{}, CFG);
       sup.forEach((x,i)=>{
-        const h=n(x.hours), rt=n(x.rate);
-        const t1=gapRate>0?alloc[i]:0, t2=h-t1;
+        const h=n(x.hours), rt=cr!=null?cr:n(x.rate);
+        const t1=(cr==null&&gapRate>0)?alloc[i]:0, t2=h-t1;
         const amt=n(x.amount)||(t1*gapRate+t2*rt);   // 金額欄有填＝以填的為準（特殊協議）
         g.sup.push({emp_id:String(r.emp_id),name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',
                     hours:h,rate:rt,gapH:t1,gapRate:gapRate,amount:amt,fixed:!!n(x.amount)});
@@ -1157,7 +1170,7 @@ function costTotals(){
       // 正職：依項目種類分科目
       if(k==='base_salary')g.base+=a;else if(k==='overtime'||/^ot_/.test(k))g.ot+=a;else if(k==='attend_bonus')g.attend+=a;
       else if(k==='night_allow'||k==='skill_allow')g.allow+=a;else if(k==='mgr_allow')g.mgr+=a;
-      else if(k==='meal_sub')g.meal+=a;
+      else if(k==='meal_sub'||k==='trip_meal')g.meal+=a;
       else { g.other+=a; const lb=String(x.item_label||'其他'); g.otherBy[lb]=(g.otherBy[lb]||0)+a; }});
     r.ded.forEach(x=>{
       if(isCostReduceKey(x.item_key)){
@@ -1578,6 +1591,7 @@ function renderOtInfo(t){
     if(o.personal_over_days>0) rows.push(`<li><b class="bad">${nm}</b>：事假＋家庭照顧假今年超過 14 天（多 ${r2(o.personal_over_days)} 天），以曠職論，系統不自動扣，請確認</li>`);
     if(o.over_cap) rows.push(`<li><b class="bad">${nm}</b>：本月加班 ${r2(o.ot_h)} 小時，超過每月 ${OT_MONTH_CAP} 小時上限</li>`);
     if(o.rdo&&o.rdo.length) rows.push(`<li><b>${nm}</b>：例假出勤 ${list(o.rdo)}——要另給補假，並在 24 小時內報主管機關</li>`);
+    if(o.trip_noform&&o.trip_noform.length) rows.push(`<li><b style="color:#b7791f">${nm}</b>：出差 ${list(o.trip_noform)} 沒有出差申請單（看不到地點），沒給出差餐費；要給請在自訂加薪補</li>`);
     if(o.no_show&&o.no_show.length) rows.push(`<li>${nm}：有排班、沒核定也沒請假 ${list(o.no_show)}（系統不扣，請確認要補請假或扣款）</li>`);
     if(o.support_leave&&o.support_leave.length) o.support_leave.forEach(x=>rows.push(`<li><b style="color:#b7791f">${nm}</b>：<span style="color:#b7791f">${md(x.date)} 在${esc(x.store_name)}記了${esc(x.type)} ${r2(x.hours)} 小時（支援店記的假，薪資沒扣，請確認）</span></li>`));
     if(o.manual_sup_h>0) rows.push(`<li>${nm}：手填的跨店支援有 ${r2(o.manual_sup_h)} 小時沒有日期，沒算進逐日加班</li>`);
@@ -2907,7 +2921,7 @@ function renderSlip(){
   const isHoury=k=>/_leave$/.test(String(k))||HOURY_FIX.indexOf(k)>=0;
   // 數量的單位依項目而定：時數類→H、遲到→分鐘、餐費／年終→天，其餘不加單位。
   // ⚠ late_deduct 的 qty 是「分鐘」，不加單位會被誤讀成小時（Eason 2026-09-01 指出）。
-  const qtyUnit=k=>(k==='late_deduct'||k==='early_deduct')?' 分鐘':((k==='meal_sub'||k==='ot_rdo')?' 天':(isHoury(k)?'H':''));
+  const qtyUnit=k=>(k==='late_deduct'||k==='early_deduct')?' 分鐘':((k==='meal_sub'||k==='trip_meal'||k==='ot_rdo')?' 天':(isHoury(k)?'H':''));
   const line=x=>`<tr><td>${esc(x.item_label)}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+rf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   w.innerHTML=`<div class="slip">
     <h3>薪 資 明 細 表</h3>
@@ -2946,7 +2960,7 @@ function exportCSV(){
 const EXP_HOURY_FIX=['overtime','shortfall_hours','hourly_wage','cross_store','pt_attend_plus','pt_tenure_plus','comp_bank','comp_expire','ot_w43','ot_w53','ot_rest','ot_rdo_h','ot_hol','pt_annual'];
 const isExpHoury=k=>/_leave$/.test(String(k))||EXP_HOURY_FIX.indexOf(k)>=0;
 // 與上面的 qtyUnit 同一套規則（匯出／列印用）
-const expQtyUnit=k=>(k==='late_deduct'||k==='early_deduct')?' 分鐘':((k==='meal_sub'||k==='ot_rdo')?' 天':(isExpHoury(k)?'H':''));
+const expQtyUnit=k=>(k==='late_deduct'||k==='early_deduct')?' 分鐘':((k==='meal_sub'||k==='trip_meal'||k==='ot_rdo')?' 天':(isExpHoury(k)?'H':''));
 function expSub(x){ return x.qty!=null ? `${r2(x.qty)}${expQtyUnit(x.item_key)}${x.rate?' × '+rf(x.rate):''}` : ''; }
 function renderExport(){
   if($('expYm')) $('expYm').textContent=ym();
