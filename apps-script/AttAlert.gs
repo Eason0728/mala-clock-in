@@ -1,6 +1,6 @@
 /**
  * 考勤異常候補提醒 Phase 4（2026-11-07）：寄放、群組綁定、帶出、09:30 保底。
- * 規格：mala-store-ops docs/att-alert/spec.md（§8.1–8.5、8.8–8.11、8.13 優先於 §4）。
+ * 規格：mala-store-ops docs/att-alert/spec.md 第 8–11 節（現況版）；決定歷程 decisions.md。
  *
  * 只有光復這套部署會啟用；九個打卡專案都會帶到這個檔，沒設 ATT_ALERT_SVC_KEY 的店完全無害：
  *   att_alert_start／att_alert_enqueue 回 not_enabled、webhook 掛勾回 false、保底函式直接 return。
