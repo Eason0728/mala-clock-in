@@ -22,3 +22,10 @@
 - 10 月部署前後逐人差異 0。既有測試全過。
 
 ## 決定紀錄
+- 綠｜月中仍列出「月底班表查不到」的日子（不影響金額；不然月底前沒人知道要補發布）。
+- 綠｜月中 as_of 之後才登記的獎金隔天才算（跟損益估算同一條規則）。
+- 綠｜不新增 action：06:00 觸發器併進既有的 payroll_rest_trigger_setup 一起建（管理系統權限清單不用改）。
+- 綠｜出勤資料頁（payroll_month／payroll_inputs 的 inputs）本月也只算到昨天，跟薪資計算同一個範圍。
+- 綠｜既有測試固定日期：night-qa、ot-daily、seven-1110-payroll、support-auto 原本拿「11 月中」鎖 11 月，改成 12/1 之後（新規則：本月不能鎖）。
+- 修｜開頁比對跨店支援時一邊算到昨天一邊算到今天，會每次開頁都重算（既有測試 support-auto 抓到）→ payXsupApply_ 加 until。
+- 未做｜mock/payroll_mock.js 沒有月中模式（示範後端仍是整月）。

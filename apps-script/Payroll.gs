@@ -655,6 +655,12 @@ function payAsOfMode_(ym, body) {
   if (!asOf) return { on: true, day1: true };   // 1 號還沒有「昨天」
   return { on: true, as_of: asOf, days_elapsed: parseInt(asOf.slice(8, 10), 10), days_in_month: payDaysIn(ym) };
 }
+/** 這個月的顯示資料要不要截到 as_of：本月、不是 1 號、而且沒有鎖定 → 回 as_of；其他回 ''。 */
+function payAsOfCut_(ym, run) {
+  if (run && run.status === 'final') return '';
+  const am = payAsOfMode_(ym, null);
+  return (am.on && !am.day1) ? am.as_of : '';
+}
 /** 主檔複本：離職日設成 as_of（本來就更早離職的照原本）。不寫回任何地方。 */
 function payAsOfEmp_(e, asOf) {
   const orig = payDateStr(e.leave_date), out = {};
@@ -3146,10 +3152,12 @@ function handlePayrollInputs(body) {
   const ym = String(body.ym || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
   const st = payStore(body.store);
-  const inputs = payInputsBase(ym, st);
+  // 月中草稿（2026-11-17）：本月沒鎖定時只算到昨天，跟 payroll_month 同一個範圍
+  const CUT = payAsOfCut_(ym, payRead('run').some(function (r) { return String(r.ym) === ym && payStore(r.store) === st && String(r.status) === 'final'; }) ? { status: 'final' } : null);
+  const inputs = CUT ? payInputsBase(ym, st, CUT) : payInputsBase(ym, st);
   const master = payRead('master').filter(function (m) { return payStore(m.store) === st; });
   const res = { ok: true, ym: ym, store: st, inputs: inputs, master: master };
-  const sa = payXsupApply_(ym, st, inputs, false);   // 不產逐日明細（spec §7-10）
+  const sa = CUT ? payXsupApply_(ym, st, inputs, false, CUT) : payXsupApply_(ym, st, inputs, false);   // 不產逐日明細（spec §7-10）
   if (sa) res.support_auto = sa;
   return res;
 }
@@ -3846,9 +3854,12 @@ function handlePayrollMonth(body) {
   const ym = String(body.ym || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
   const stM = payStore(body.store);
-  const inputs = payInputsBase(ym, stM);
-  const sa = payXsupApply_(ym, stM, inputs, true);   // 2026-11 起：顯示用工時帶入 auto 列＋提醒（之前回 null，輸出不變）
   let run = payBuildRunResults(ym, stM);
+  /* 月中草稿（2026-11-17）：本月的出勤資料也只算到昨天，跟薪資計算同一個範圍（不然兩頁時數對不起來，
+     而且「別家門市核定有沒有變」會拿算到今天的值去比算到昨天的草稿，每次開頁都重算）。已鎖定、其他月份 CUT＝''，照舊。 */
+  const CUT = payAsOfCut_(ym, run);
+  const inputs = CUT ? payInputsBase(ym, stM, CUT) : payInputsBase(ym, stM);
+  const sa = CUT ? payXsupApply_(ym, stM, inputs, true, CUT) : payXsupApply_(ym, stM, inputs, true);   // 2026-11 起：顯示用工時帶入 auto 列＋提醒（之前回 null，輸出不變）
   /* run 快照過期（spec §7-6）：打卡核定改了、對照同步了，草稿裡的支援時數就不再是現在的值。
      草稿 → 自動重算一次；已鎖定 → 只標 stale 不重算。對照從沒同步過（empty）時不判。 */
   if (sa && run && !sa.empty) {
@@ -4844,9 +4855,10 @@ function payXsupData_(withDays) {
   };
 }
 /** payroll_month／payroll_inputs 共用：把 auto 列合進 inputs（就地）並回 support_auto；生效月之前回 null。 */
-function payXsupApply_(ym, st, inputs, withDays) {
+function payXsupApply_(ym, st, inputs, withDays, until) {
   if (!payXsupOn_(ym)) return null;
   const d = payXsupData_(withDays);
+  if (until) d.until = String(until);   // 月中草稿：別家門市的核定也只算到 as_of（跟 handlePayrollCalc 寫進 run 的 support_auto_h 同一個範圍）
   const auto = paySupportAutoCore_(ym, st, d);
   const master = d.master.filter(function (m) { return payInRoster_(m, st, ym); });   // 跟計薪名單同一個判斷
   const incoming = payCrossIncomingCore_(ym, st, d);

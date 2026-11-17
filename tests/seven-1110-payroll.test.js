@@ -111,6 +111,7 @@ chk('核定日期是 Date 物件（Sheets 轉的）→ 一樣認得，甲君 11/
 // 鎖定流程：unapproved 被擋；解鎖不擋；2026-10 不檢查
 vm.runInContext(`payLockStale_=function(){return {list:[]};};payCompNegatives=function(){return [];};paySchedMissingAll_=function(){return [];};payAppend=function(){};payReplaceAll=function(){};payInvalidate=function(){};`, sb);
 CLOCK.approved = [ap('E01', '2026-11-02'), ap('E01', '2026-11-04')];
+vm.runInContext(`todayTaipeiStr=function(){return "2026-12-01";};`, sb);   // 11 月過完才能鎖定（2026-11-17 起本月不能鎖）
 const fin = (o) => call('handlePayrollFinalize', Object.assign({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true }, o));
 let r = J(fin({}));
 chk('鎖定 2026-11 → unapproved，名單 3 筆', [r.ok, r.error, r.list.length], [false, 'unapproved', 3]);

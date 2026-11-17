@@ -163,6 +163,13 @@ console.log('\n══ ⑥ 開頁自動換成昨天那一份、每天排程 ═�
   chk('11/19 打開 11 月：草稿自動換成算到 11/18', [m.run.as_of, m.asof.as_of, m.asof.days_elapsed], ['2026-11-18', '2026-11-18', 18]);
   chk('run 表也換了', J(M.sb.__DB.run).filter((x) => x.ym === '2026-11').map((x) => x.as_of), ['2026-11-18', '2026-11-18', '2026-11-18']);
   chk('帶「有打卡沒核定」清單欄位（這份假資料沒有打卡事件＝空）', m.asof.unapproved, []);
+  {
+    const at1 = J(M.sb.__DB.run).filter((x) => x.ym === '2026-11').map((x) => x.run_at);
+    M.sb.__DB.run.forEach((x) => { if (x.ym === '2026-11') x.run_at = 'MARK'; });
+    const again = J(M.fn('handlePayrollMonth')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' }));
+    chk('同一天再開一次：不重算（run_at 沒被改寫）', [at1.length, J(M.sb.__DB.run).filter((x) => x.ym === '2026-11').every((x) => x.run_at === 'MARK'), again.run.as_of], [3, true, '2026-11-18']);
+    chk('出勤資料也只算到昨天（跟薪資計算同一個範圍）', [again.inputs.P1.hours, by(again.run.results, 'P1').total_hours], [35, 35]);
+  }
   const m10 = J(M.fn('handlePayrollMonth')({ admin_key: 'x', ym: '2026-10', store: 'SSLGF' }));
   chk('過去的月份不帶 asof', m10.asof === undefined, true);
   const M2 = world(P_NEW, { db: J(W.sb.__DB), clock: CLOCK, today: '2026-12-03' });
