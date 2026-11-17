@@ -240,6 +240,7 @@ html.embed.ui-new .monthbar{border-left-color:#0066cc}
       <div class="nav-label">查詢</div>
       <button data-p="attexp"><span class="ic">🗂️</span>出勤紀錄表</button>
       <button data-p="oplog"><span class="ic">🗒️</span>操作紀錄</button>
+      <button data-p="guide"><span class="ic">📘</span>操作手冊</button>
     </nav>
     <div class="side-user">
       <div class="av">🙂</div>
@@ -556,6 +557,12 @@ html.embed.ui-new .monthbar{border-left-color:#0066cc}
       <button class="btn" id="saveLevBtn" onclick="saveLeaveEvents(this)">儲存事件日</button>
     </div>
   </div>
+</section>
+
+<section class="panel" id="p-guide">
+  <!-- 操作手冊（2026-11-17 Eason：薪資結算手冊放進薪酬計算）。內容在 payroll-guide.html，點這一頁才載入 -->
+  <iframe id="guideFrame" title="薪資結算手冊" data-src="payroll-guide.html" style="width:100%;height:calc(100vh - 120px);min-height:560px;border:1px solid #e4dcd5;border-radius:10px;background:#fff"></iframe>
+  <p class="hint noprint" style="margin-top:6px"><a href="payroll-guide.html" target="_blank" rel="noopener">在新分頁開啟手冊</a>（要列印或分享給同事時用）</p>
 </section>
 
 <section class="panel" id="p-slip">
@@ -3270,6 +3277,7 @@ $('nav').addEventListener('click',ev=>{
   if(b.dataset.p==='punch') loadPunch();
   if(b.dataset.p==='attexp') loadAttExp();
   if(b.dataset.p==='oplog') loadOplog();
+  if(b.dataset.p==='guide'){const f=$('guideFrame');if(f&&!f.src)f.src=f.dataset.src;}
   if(b.dataset.p==='dash') loadDash();
   if(b.dataset.p==='group'&&!scopeLimited()) loadGroup();
   if(b.dataset.p==='bonus') renderBonus();
