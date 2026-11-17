@@ -117,7 +117,7 @@ async function load(){
 
   const r=j.result||j.run, earn=r.earn||[], ded=r.ded||[];
   // 數量單位依項目而定：遲到→分鐘、餐費→天、時數類→H（與 payroll.html 同一套規則）
-  const qtyUnit=k=>(k==='late_deduct'||k==='early_deduct')?' 分鐘':((k==='meal_sub'||k==='ot_rdo')?' 天':(HOURY.includes(k)||/_leave$/.test(String(k))?'H':''));
+  const qtyUnit=k=>(k==='late_deduct'||k==='early_deduct')?' 分鐘':((k==='meal_sub'||k==='trip_meal'||k==='ot_rdo')?' 天':(HOURY.includes(k)||/_leave$/.test(String(k))?'H':''));
   const line=x=>`<tr><td>${esc(x.item_label)}${x.qty!=null?` <span style="color:#8a817a;font-size:12px">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+rf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   app.innerHTML=`<div class="card">
     <div class="who"><div><b>${esc(j.name)}</b><div class="m">${j.ym.replace('-','年')}月薪資</div></div>

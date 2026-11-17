@@ -646,7 +646,8 @@ console.log('§14 損益估算');
   vm.runInContext("todayTaipeiStr = function(){ return '2026-11-05'; };", s2);   // as_of＝11/04：A 君 11/05 的 4.5H 不算
   s2.__DB.xmap = XMAP().filter((x) => x.emp_no === 'D01');
   const e2 = est(s2, '2026-11');
-  chk('P1 只算到 as_of：A 君央廚 8H×240＝1,920（11/05 的 4.5H 不算）', e2.ok && e2.support['中央廚房'] === 1920, e2.support);
+  // 2026-11-17 起請款＝支援時數 × 支援同仁時薪（正職＝月工資÷240：底薪 30,000＋伙食費 2,000＝32,000）
+  chk('P1 只算到 as_of：A 君央廚 8H×(32,000÷240)＝1,066.67（11/05 的 4.5H 不算）', e2.ok && Math.abs(e2.support['中央廚房'] - 8 * 32000 / 240) < 0.01, e2.support);
   const s3 = ctx();
   s3.__DB.xmap = [];
   vm.runInContext("todayTaipeiStr = function(){ return '2026-11-06'; };", s3);

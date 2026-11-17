@@ -370,6 +370,8 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
   // 門檻不是正數（0、負數、空白、非數字）＝沒設定，用預設（薪酬挑錯第 3 項）。這支會被測試單獨抽出來跑，所以就地判斷。
   const MEALMIN = (isFinite(Number(minH)) && Number(minH) > 0) ? Number(minH) : MEAL_MIN_HOURS;
   // 國定假日的具體日期（計時同仁雙薪用）；沒給就是空集合，行為與加這個功能之前相同
+  // 2026-11-17 三項更正的生效判斷：這支會被測試單獨抽出來跑，所以就地判斷、不呼叫外面的函式
+  const R4 = String(ym) >= (typeof PAY_RULES4_FROM !== 'undefined' ? PAY_RULES4_FROM : '2026-11');
   const HOLSET = {};
   (holidayDates || []).forEach(function (d) { HOLSET[String(d).trim()] = true; });
   const LTYPES = payLeaveTypes(store);
@@ -466,6 +468,14 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     const k = String(r.emp_id) + '|' + String(normCellDate(r.date));
     breakReq[k] = (breakReq[k] || 0) + 1;
   });
+  // 出差申請單的地點（①，2026-11 起）：工號|日期 → 地點；同一天多張，只要有一張是「其他地點」就算其他地點
+  const tripReq = {};
+  if (R4) payClockRead(store, 'requests').forEach(function (r) {
+    if (String(r.kind) !== 'trip' || String(r.status) !== 'approved') return;
+    const k = String(r.emp_id) + '|' + String(normCellDate(r.date));
+    const pl = payTripPlaceOf_(r.reason);
+    if (tripReq[k] === undefined || (pl && !payTripNoMealPlace_(pl))) tripReq[k] = pl;
+  });
   Object.keys(approvedMap).forEach(function (d) {
     if (String(d).slice(0, 7) !== ym) return;
     if (cutoffDate && String(d) > cutoffDate) return;
@@ -525,6 +535,11 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     const o = out[emp];
     Object.keys(o._trip).forEach(function (d) {
       if ((o._dh[d] || 0) - o._trip[d] < MEALMIN) delete o._wd[d];
+      if (!R4) return;
+      // ①出差餐費：其他地點＝那天固定 100（不再另算餐費補助）；六個地點＝不給；沒有申請單＝不給、列提醒
+      const pl = tripReq[String(emp) + '|' + d];
+      if (pl === undefined || pl === '') (o._tripNo = o._tripNo || []).push(d);
+      else if (!payTripNoMealPlace_(pl)) { o.trip_meal_days = (o.trip_meal_days || 0) + 1; delete o._wd[d]; }
     });
   });
   Object.keys(out).forEach(function (emp) {
@@ -534,6 +549,12 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
       const md = Object.keys(o._mens).sort();   // 生理假看次數：每個請假日一次，依日期先後（3-7）
       if (md.length) o.menstrual_times = md.map(function (x) { return o._mens[x]; });
     }
+    if (R4) {   // ②支援門市併績效要跟本店比對日期；①出差餐費
+      o.abs_dates = Object.keys(o._days).sort(); o.forget_dates = Object.keys(o._fd).sort();
+      o.trip_meal_days = payNum(o.trip_meal_days);
+      o.trip_noform = (o._tripNo || []).sort();
+    }
+    delete o._tripNo;
     delete o._lh; delete o._mens;
     out[emp].deduct_days = Object.keys(leaveOnly ? out[emp]._ld : out[emp]._days).length;
     out[emp].work_days = Object.keys(out[emp]._wd).length;
@@ -1281,6 +1302,55 @@ function payFamilyOverVoid_(att, e, ym, cfg, ltypes) {
 }
 function payRules3On_(ym) { return String(ym) >= PAY_RULES3_FROM; }
 function payIsSslStore_(store) { return /^SSL/.test(String(store || 'SSLGF')); }
+/* ── 2026-11-17 Eason 三項更正（2026-11 薪資起）──
+ * ①出差餐費：出差到六個地點（墨竹亭新竹光復、新竹金山、台北六張犁、總部、台北瑞光、台中美村）不給餐費；
+ *   其他地點那天固定給 100 元（正職、計時都給；不看主檔每日餐費、不用勾餐費補助），那天不再另算餐費補助。
+ *   地點看出差申請單（LINE 申請頁下拉；主管代開）。沒有申請單、主管直接核定成出差的＝不給，薪資頁列提醒。
+ * ②同品牌支援門市的遲到、早退、忘刷併進績效獎金（缺勤天數、歸零門檻、計時滿勤加給同一套）。推翻 11/05、11/07「績效只看本店」。
+ * ③跨店請款＝支援時數 × 支援同仁時薪（正職＝月工資÷240、計時＝當月實際時薪），在成本分類（payroll.html costTotals）。 */
+var PAY_RULES4_FROM = '2026-11';
+function payRules4On_(ym) { return String(ym) >= PAY_RULES4_FROM; }
+var PAY_TRIP_MEAL_AMT = 100;
+var PAY_TRIP_NOMEAL_KEYS = ['光復', '金山', '六張犁', '瑞光', '美村', '總部'];
+/** 出差地點是不是「不給餐費」的六個地點。下拉選項是「總部辦公室／新竹光復／新竹金山／台北六張犁／台北瑞光／台中美村」；
+ *  舊的自由填文字（主管代開）用關鍵字比對，寧可不給也不多給。 */
+function payTripNoMealPlace_(place) {
+  const t = String(place == null ? '' : place).replace(/[\s\u3000]/g, '');
+  if (!t) return true;
+  return PAY_TRIP_NOMEAL_KEYS.some(function (k) { return t.indexOf(k) !== -1; });
+}
+/** 出差申請單上的地點（Requests.gs reqTripReason_ 的格式「地點：X；事由：Y」）。這支會被測試單獨抽出來跑，不依賴 Requests.gs。 */
+function payTripPlaceOf_(reason) {
+  const m = /^地點：(.*?)；事由：/.exec(String(reason == null ? '' : reason));
+  return m ? m[1] : '';
+}
+/** 支援門市併進績效（②）：entry＝paySupportAutoCore_ 的 byEmp[本人]；c＝本店歸集值（abs_dates／forget_dates）；
+ *  leaveOnly＝這家店每日倒扣只算請假日（非小辛辣）。同一天本店已算過的不重複算。
+ *  回 { deduct_days, forget_day, forget_punch }（都是「要另外加上去」的量；分鐘沿用 payXsupLateEarly_）。 */
+function payXsupPerf_(entry, c, leaveOnly) {
+  const o = { deduct_days: 0, forget_day: 0, forget_punch: 0 };
+  const abs = {}, fd = {};
+  ((c && c.abs_dates) || []).forEach(function (d) { abs[d] = true; });
+  ((c && c.forget_dates) || []).forEach(function (d) { fd[d] = true; });
+  ((entry && entry.stores) || []).forEach(function (s) {
+    (s.abs_dates || []).forEach(function (d) { if (!abs[d]) { abs[d] = true; if (!leaveOnly) o.deduct_days++; } });
+    (s.forget_dates || []).forEach(function (d) { if (!fd[d]) { fd[d] = true; o.forget_day++; } });
+    o.forget_punch += payNum(s.forget_cards);
+  });
+  return o;
+}
+/** 績效判斷用的出勤值＝本店＋同品牌支援門市（②）。只給 payAttendVoid／績效倒扣／計時滿勤加給用；遲到早退扣款另有自己的加總。 */
+function payPerfAtt_(att, ym) {
+  if (!payRules4On_(ym)) return att;
+  const x = {};
+  Object.keys(att).forEach(function (k) { x[k] = att[k]; });
+  x.late_min = payNum(att.late_min) + payNum(att.xsup_late_min);
+  x.early_min = payNum(att.early_min) + payNum(att.xsup_early_min);
+  x.forget_day = payNum(att.forget_day) + payNum(att.xsup_forget_day);
+  x.forget_punch = payNum(att.forget_punch) + payNum(att.xsup_forget_punch);
+  x.deduct_days = payNum(att.deduct_days) + payNum(att.xsup_deduct_days);
+  return x;
+}
 function payPerfLeaveOnly_(store, ym, cfg) {
   return String((cfg || {}).attend_deduct_basis || 'all') === 'leave' || (payRules3On_(ym) && !payIsSslStore_(store));
 }
@@ -1504,9 +1574,10 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
        * attend_effect='void' 的假（例：央廚／總部「有事假就沒全勤」）→ 整筆歸零。
        * ⚠ 三個門檻參數預設 0＝不啟用，assend_effect 預設留空＝沿用舊行為，
        *   所以沒設定的門市（光復）算出來與改版前完全相同。 */
-      const voidReason = payAttendVoid(att, cfg, ym) || payFamilyOverVoid_(att, e, ym, cfg, ltypes);
+      const attP = payPerfAtt_(att, ym);   // 2026-11 起含同品牌支援門市的遲到、早退、忘刷
+      const voidReason = payAttendVoid(attP, cfg, ym) || payFamilyOverVoid_(att, e, ym, cfg, ltypes);
       const bonusAmt = voidReason ? 0
-        : Math.max(0, payNum(e.attend_cap) * P - att.deduct_days * payNum(cfg.attend_deduct_per_day));
+        : Math.max(0, payNum(e.attend_cap) * P - attP.deduct_days * payNum(cfg.attend_deduct_per_day));
       // 2026-11 起改名「績效獎金」（出勤認定清單 E1），規則不變
       push(earn, 'attend_bonus', (payOtDailyOn(ym) ? '績效獎金' : '全勤獎金') + (voidReason ? '（' + voidReason + '）' : ''), null, null, bonusAmt);
     }
@@ -1522,7 +1593,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     // E1 全勤津貼（2026-08-23 改）：勾選＝有資格，**實際符不符合由系統自動偵測**
     //   （時數達門檻且缺勤 0），與餐費補助同一套「勾了才算＋自動判定」的做法。
     //   改版前是「勾了就給」，管理者要自己判斷條件；現在勾錯也不會多給。
-    const ptAttend = payPtAttendCheck(att, cfg);
+    const ptAttend = payPtAttendCheck(payPerfAtt_(att, ym), cfg);
     w += ptAttend.plus;
     const tenPlus = payTenurePlus(e, ym, cfg);   // E2 年資加給（金額與年資門檻同樣可依門市覆寫）
     w += tenPlus;
@@ -1565,6 +1636,8 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   if (payNum(e.mgr_allow))    push(earn, 'mgr_allow', '店長津貼', null, null, payNum(e.mgr_allow) * pr);
   if (payNum(e.editor_allow)) push(earn, 'editor_allow', '小編津貼', null, null, payNum(e.editor_allow));
   // 自訂加薪／扣款（工時分頁逐月填，名稱自訂）
+  // ①出差餐費（2026-11 起，正職計時都給）：出差到六個地點以外，每天固定 100
+  if (payRules4On_(ym) && payNum(att.trip_meal_days) > 0) push(earn, 'trip_meal', '出差餐費', payNum(att.trip_meal_days), PAY_TRIP_MEAL_AMT, payNum(att.trip_meal_days) * PAY_TRIP_MEAL_AMT);
   if (payNum(att.custom_add_amt)) push(earn, 'custom_add', String(att.custom_add_label || '自訂加薪'), null, null, payNum(att.custom_add_amt));
   // 第二筆以後（2026-10-10 Eason：同一人同月要能有多筆自訂加薪，例：8月分紅＋AI種子計畫補助）
   (att.custom_add_more || []).forEach(function (x) {
@@ -1704,6 +1777,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     earn: earn, ded: ded, gross: gross, deduction: deduct, net: gross - deduct, leave_rate: rate,
     pt_attend: ptAttendInfo,
   };
+  if (otS && att.trip_noform && att.trip_noform.length) out._trip_noform = att.trip_noform.slice();
   if (otS) out.ot_info = { ot_h: otS.ot_month_h, over_cap: otS.ot_month_h > PAY_OT_MONTH_CAP, missing: otS.missing,
     no_show: otS.no_show, rdo: otS.rdo_dates, hol: otS.hol_dates, comp_h: otS.comp_used_h, comp_over_h: otS.comp_over_h,
     manual_sup_h: payNum(att.daily.manual_sup_h) };
@@ -1714,6 +1788,8 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     out.ot_info.trip_ot = chk.trip_ot;
     out.ot_info.absent_alert = otS.no_show_streak >= 3 || otS.no_show.length >= 6;
     out.ot_info.absent_streak = otS.no_show_streak;
+    if (out._trip_noform) out.ot_info.trip_noform = out._trip_noform;   // 出差沒有申請單（看不到地點）：沒給出差餐費，只提醒
+    delete out._trip_noform;
     out.ot_info.short_8h = ft ? payMztShortDays_(e, att.daily) : [];
     const marPrior = payNum(((att.leave_usage || {}).marriage || {}).no_event_prior_days), marNow = payNum((payAttLeaves(att) || {}).marriage);
     if (marPrior > 0 && marNow > 0) out.ot_info.marriage_cross = { prior_days: marPrior, month_days: payR2(marNow / payCfgPos_(cfg, 'daily_hours')) };
@@ -2584,12 +2660,20 @@ function paySupportAutoCore_(ym, home, d) {
       seen[key + '|' + eid] = true;
       const amap = approvedOf(S, key);
       let hours = 0, late = 0, early = 0; const days = [];
+      const absD = [], fgD = []; let fgCards = 0;   // ②併績效：遲到／早退／忘刷的日子（看核定狀態，同本店 payCollect 的判斷）
       Object.keys(amap).sort().forEach(function (day) {
         if (String(day).slice(0, 7) !== ym || (d.until && day > d.until)) return;
         const rec = amap[day][eid];
         if (!rec) return;
         const le = payLateEarlyMin_(rec.status_text);
         late += le.late; early += le.early;
+        if (payRules4On_(ym)) {
+          let g = payMissingCards(rec.status_text);
+          // 整段沒打卡也算忘刷（同 payNoPunchSeg_；那支在測試抽取範圍外，這裡就地判斷）
+          if (!g && String(rec.status_text || '').split('、').some(function (x) { return x.trim() === '該段無打卡'; })) g = 2;
+          if (g) { fgD.push(day); fgCards += g; }
+          if (g || payHasLateEarly(rec.status_text).any) absD.push(day);
+        }
         const h = payNum(rec.approved_hours);
         if (!h) return;
         hours += h;
@@ -2599,6 +2683,7 @@ function paySupportAutoCore_(ym, home, d) {
       const row = { code: S, name: String((storeBy[S] || {}).name || S), hours: payR2(hours), pending_days: pend,
                     late_min: payR2(late), early_min: payR2(early) };
       if (d.days) { row.days = days; row.acct = eid; }
+      if (payRules4On_(ym)) { row.abs_dates = absD; row.forget_dates = fgD; row.forget_cards = fgCards; }
       if (pend) out.pending.push({ emp_id: empId, code: S, days: pend });
       if (!paySameGroup_(homeGroup, (storeBy[S] || {}).support_group)) { entry.cross.push(row); return; }
       if ((masterByKey[key] || {})[eid]) {           // 打卡店主檔也有他＝會被付兩次 → 不帶入、列待處理（§7-11）
@@ -3134,6 +3219,11 @@ function payInputsBase(ym, store, cutoffDate) {
     //  整筆取代會讓它們消失（扣款與抵不足時數都算錯），所以一律取歸集值，重算結果與沒存檔前一致。
     sv.leaves = col.leaves || {};
     sv.other_h = payNum(col.other_h);
+    // 2026-11-17：支援門市併績效要用的本店日期、出差沒申請單的日子，同樣只有歸集值
+    if (payRules4On_(ym)) sv.trip_meal_days = payNum(col.trip_meal_days);   // ①出差餐費只看歸集值
+    if (col.abs_dates) sv.abs_dates = col.abs_dates;
+    if (col.forget_dates) sv.forget_dates = col.forget_dates;
+    if (col.trip_noform) sv.trip_noform = col.trip_noform;
     if (col.menstrual_times) sv.menstrual_times = col.menstrual_times;
     if (leaveOnly && base[emp]) sv.deduct_days = payNum(col.deduct_days);
     // 2026-11 起逐日加班：每天的核定／請假時數只有打卡算得出來（手動列沒有日期）；
@@ -3658,6 +3748,7 @@ function handlePayrollCalc(body) {
       early_min:    o.early_min    !== undefined ? payNum(o.early_min)    : payNum(c.early_min),
       attend_void:  o.attend_void  !== undefined ? payBool(o.attend_void) : !!c.attend_void,
       menstrual_times: c.menstrual_times || null,
+      trip_meal_days: payNum(c.trip_meal_days), trip_noform: c.trip_noform || [],   // ①出差餐費（只看歸集值）
     };
     const ZERO_DAYS = payRatio(eC, ym) <= 0;   // 這個月在職天數 0（還沒到職／上個月以前已離職）
     if (XSUP && c.support_error) XSA.warn.support_error.push(String(e.emp_id));   // 支援欄壞掉：一律不帶入（審查 #2）
@@ -3666,6 +3757,10 @@ function handlePayrollCalc(body) {
       att.support = mg.support;
       const xle = payXsupLateEarly_(XSUP.byEmp[String(e.emp_id).trim()]);
       att.xsup_late_min = xle.late; att.xsup_early_min = xle.early;
+      if (payRules4On_(ym)) {   // ②支援門市的遲到、早退、忘刷併進績效
+        const xp = payXsupPerf_(XSUP.byEmp[String(e.emp_id).trim()], c, payPerfLeaveOnly_(st, ym, payConfig(st)));
+        att.xsup_deduct_days = xp.deduct_days; att.xsup_forget_day = xp.forget_day; att.xsup_forget_punch = xp.forget_punch;
+      }
 
       if (mg.unresolved) XSA.warn.manual_unresolved.push(String(e.emp_id));
       mg.cross.forEach(function (c) { XSA.warn.cross_manual.push({ emp_id: String(e.emp_id), code: c }); });
@@ -6226,7 +6321,17 @@ var PNL_INS_SELF_KEYS = ['labor_ins', 'health_ins', 'group_ins', 'pension'];
  *  ⚠ costRows()/costStable() 口徑改了，這裡要一起改——三處同一份規則正本
  *  （見 mala-payroll skill「人事成本分類」那節，2026-09-03 已經改過三次）。
  *  刻意不含 custom_add／custom_ded／宿舍收入 g.dorm，與 costStable() 對齊。 */
-function pnlEstimateClassify_(results, master, att, cfg) {
+/** 跨店請款時薪：payroll.html supClaimRate 的逐字 port（2026-11-17）。2026-10 以前回 null＝照舊兩段式。 */
+function pnlSupClaimRate_(ym, r, m, cfg) {
+  if (!(String(ym || '') >= '2026-11')) return null;
+  if (r.is_full_time) {
+    var meal = (cfg && cfg.ot_meal_fixed !== '' && cfg.ot_meal_fixed != null) ? payNum(cfg.ot_meal_fixed) : 2000;
+    return (payNum(m.base) + payNum(m.skill_allow) + payNum(m.night_allow) + payNum(m.mgr_allow) + payNum(m.editor_allow) + payNum(m.attend_cap) + meal) / 240;
+  }
+  return (r.earn || []).filter(function (x) { return x.item_key === 'hourly_wage' || x.item_key === 'pt_attend_plus' || x.item_key === 'pt_tenure_plus'; })
+    .reduce(function (s, x) { return s + payNum(x.rate); }, 0);
+}
+function pnlEstimateClassify_(results, master, att, cfg, ym) {
   var g = { base: 0, ot: 0, attend: 0, allow: 0, mgr: 0, pt: 0, other: 0, meal: 0, bs: 0, bp: 0, bj: 0,
             reduceFT: 0, reducePT: 0, dormFT: 0, dormPT: 0, ins: 0, insFT: 0, insPT: 0,
             sup: [], coL: 0, coH: 0, coP: 0, ye: 0 };
@@ -6251,9 +6356,10 @@ function pnlEstimateClassify_(results, master, att, cfg) {
       var gapRate = payNum(mEmp.gap_rate);
       var gapH = r.base_hours != null ? Math.max(0, payNum(r.base_hours) - payNum(r.total_hours)) : 0;
       var alloc = pnlAllocGapHours_(sup.map(function (x) { return payNum(x.hours); }), gapH);
+      var cr = pnlSupClaimRate_(ym, r, mEmp, cfg);
       sup.forEach(function (x, i) {
-        var h = payNum(x.hours), rt = payNum(x.rate);
-        var t1 = gapRate > 0 ? alloc[i] : 0, t2 = h - t1;
+        var h = payNum(x.hours), rt = cr != null ? cr : payNum(x.rate);
+        var t1 = (cr == null && gapRate > 0) ? alloc[i] : 0, t2 = h - t1;
         var amt = payNum(x.amount) || (t1 * gapRate + t2 * rt);
         g.sup.push({ store: x.store || '（未指定）', amount: amt });
       });
@@ -6271,7 +6377,7 @@ function pnlEstimateClassify_(results, master, att, cfg) {
       else if (k === 'attend_bonus') g.attend += a;
       else if (k === 'night_allow' || k === 'skill_allow') g.allow += a;
       else if (k === 'mgr_allow') g.mgr += a;
-      else if (k === 'meal_sub') g.meal += a;
+      else if (k === 'meal_sub' || k === 'trip_meal') g.meal += a;
       else g.other += a;
     });
     r.ded.forEach(function (x) {
@@ -6435,7 +6541,12 @@ function handlePnlLaborEstimate_(body) {
       menstrual_times: c.menstrual_times || null,
       xsup_late_min: XS ? payXsupLateEarly_(XS.byEmp[String(e.emp_id).trim()]).late : 0,
       xsup_early_min: XS ? payXsupLateEarly_(XS.byEmp[String(e.emp_id).trim()]).early : 0,
+      trip_meal_days: payNum(c.trip_meal_days),
     };
+    if (XS && payRules4On_(ym)) {
+      const xp = payXsupPerf_(XS.byEmp[String(e.emp_id).trim()], c, payPerfLeaveOnly_(st, ym, payConfig(st)));
+      att.xsup_deduct_days = xp.deduct_days; att.xsup_forget_day = xp.forget_day; att.xsup_forget_punch = xp.forget_punch;
+    }
     // 虛擬離職日＝昨天，借用 payRatio 既有的「月中到職/離職才折算」機制算出「已過天數÷當月
     // 天數」；員工本來就有更早的到職日或離職日時，取較早的那個（字串比較，'YYYY-MM-DD' 可直接比大小）。
     if (payOtDailyOn(ym)) {   // 跟 handlePayrollCalc 同一套逐日加班（班表、國定假日、同品牌支援逐日合計），只算到 as_of
@@ -6456,7 +6567,7 @@ function handlePnlLaborEstimate_(body) {
     return payCalcOne(eEst, ym, a, cfg, redDays, LTYPES);
   }).filter(function (r) { return r; });
 
-  var snap = pnlEstimateClassify_(results, master, att, cfg);
+  var snap = pnlEstimateClassify_(results, master, att, cfg, ym);
   var result = {
     ok: true, ym: ym, store: st,
     as_of: asOf, days_elapsed: daysElapsed, days_in_month: daysInMonth,
