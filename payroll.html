@@ -929,8 +929,11 @@ function renderAsof(){
   const out=[];
   if(STATUS!=='final'&&ASOF&&ASOF.day1){
     out.push(`<div class="asof-b">今天是 1 號，還沒有「昨天」可以算。明天早上起這裡會有本月的數字。</div>`);
+  } else if(STATUS!=='final'&&ASOF&&ASOF.stale&&!ASOF.as_of){
+    out.push(`<div class="asof-w"><b>本月的數字還是整月算法，沒有更新成「算到昨天」。</b>請按「重新計算」。</div>`);
   } else if(STATUS!=='final'&&ASOF&&ASOF.as_of){
     let at=''; try{ const t=new Date(ASOF.run_at); if(!isNaN(t)) at='・'+t.toLocaleString('zh-TW',{timeZone:'Asia/Taipei',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})+' 更新'; }catch(e){}
+    if(ASOF.stale) out.push(`<div class="asof-w"><b>這份數字沒有更新到昨天。</b>請按「重新計算」；還是不行就重新整理頁面。</div>`);
     out.push(`<div class="asof-b"><b>月中數字：算到 ${mdOf(ASOF.as_of)}</b>（已過 ${n(ASOF.days_elapsed)}／${n(ASOF.days_in_month)} 天）${at}。正職本薪與津貼照已過天數折算，加班、扣款、計時時數只算主管已核定的。整個月過完後自動改成整月數字，才能鎖定。</div>`);
     const un=ASOF.unapproved||[];
     if(ASOF.unapproved_failed) out.push(`<div class="asof-w">讀不到「有打卡還沒核定」的名單，請重新整理再看一次。</div>`);

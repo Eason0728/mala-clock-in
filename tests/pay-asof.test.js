@@ -187,6 +187,34 @@ console.log('\n══ ⑥ 開頁自動換成昨天那一份、每天排程 ═�
   chk('11 月換成算到 11/19', J(S.sb.__DB.run).filter((r) => r.ym === '2026-11').every((r) => r.as_of === '2026-11-19'), true);
   const S2 = world(P_NEW, { db: J(W.sb.__DB), clock: CLOCK, today: '2026-12-01' });
   const o2 = J(S2.fn('payAsOfDaily')());
+  {
+    /* 上個月已經是整月草稿：排程不可以再動（會計看過的數字不能無聲被換掉；主檔改了要在鎖定前比對時跳出來） */
+    const S3 = world(P_NEW, { db: J(S2.sb.__DB), clock: CLOCK, today: '2026-12-03' });
+    S3.sb.__DB.master.forEach((m) => { if (m.emp_id === 'F1') m.base = 33000; });
+    const net0 = J(S3.sb.__DB.run).find((r) => r.ym === '2026-11' && r.emp_id === 'F1').net;
+    const o3 = J(S3.fn('payAsOfDaily')());
+    chk('12/3：整月的 11 月草稿不重寫', [o3.done.indexOf('SSLGF 2026-11') < 0, J(S3.sb.__DB.run).find((r) => r.ym === '2026-11' && r.emp_id === 'F1').net], [true, net0]);
+    const f3 = J(S3.fn('handlePayrollFinalize')({ admin_key: 'x', store: 'SSLGF', ym: '2026-11', lock: true }));
+    chk('主檔改過 → 鎖定前照舊跳出差異（stale_run 名單有甲）', [f3.error, (f3.list || []).map((x) => x.name)], ['stale_run', ['同仁甲']]);
+  }
+  {
+    /* 月中已登記的獎金照算（存獎金會整店重寫 updated_at，不可以照日期濾掉） */
+    const db = DB(); db.bonus = [{ ym: '2026-11', store: 'SSLGF', emp_id: 'F1', bonus_type: 'perf', label: '績效', amount: 5000, updated_at: '2026-11-17T10:00:00+08:00' }];
+    const B = world(P_NEW, { db, clock: CLOCK, today: '2026-11-17' });
+    chk('今天才存的獎金也在月中草稿裡', amt(by(B.calc({ ym: '2026-11' }).results, 'F1'), 'bonus_perf'), 5000);
+    /* 1 號：之前有人先算過的整月草稿不可以跟「還沒有昨天」的說明一起出現 */
+    const D1 = world(P_NEW, { db: DB(), clock: CLOCK, today: '2026-11-20' });
+    D1.calc({ ym: '2026-12' });
+    const had = J(D1.sb.__DB.run).filter((r) => r.ym === '2026-12').length;
+    const D2 = world(P_NEW, { db: J(D1.sb.__DB), clock: CLOCK, today: '2026-12-01' });
+    const m1 = J(D2.fn('handlePayrollMonth')({ admin_key: 'x', ym: '2026-12', store: 'SSLGF' }));
+    chk('12/1 開 12 月：先前的整月草稿清掉、只留 1 號說明', [had > 0, m1.run, m1.asof, J(D2.sb.__DB.run).filter((r) => r.ym === '2026-12').length], [true, null, { day1: true }, 0]);
+    /* 自動更新失敗：照實標，不寫成昨天 */
+    const Fz = world(P_NEW, { db: J(W.sb.__DB), clock: CLOCK, today: '2026-11-19' });
+    vm.runInContext('var __real = handlePayrollCalc; handlePayrollCalc = function () { return { ok: false, error: "busy" }; };', Fz.sb);
+    const mf = J(Fz.fn('handlePayrollMonth')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' }));
+    chk('更新失敗：說明寫草稿實際算到 11/16、標 stale', [mf.asof.as_of, mf.asof.stale, mf.run.as_of], ['2026-11-16', true, '2026-11-16']);
+  }
   chk('12/1：上個月草稿換成整月、本月（1 號）不算', [o2.done, J(S2.sb.__DB.run).filter((r) => r.ym === '2026-11').every((r) => !r.as_of)], [['SSLGF 2026-11'], true]);
   chk('沒有通知匣訊息', S.sb.__NOTIFY.length + S2.sb.__NOTIFY.length, 0);
 }
