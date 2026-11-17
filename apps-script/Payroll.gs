@@ -1196,10 +1196,11 @@ function payOtSegs_(periods, hours, tag) {
   if (!total) return [{ s: null, h: h, tag: tag }];
   return list.map(function (x) { return { s: x.s, h: h * x.min / total, tag: tag }; });
 }
-/** 跨店同日合計超過 8 小時，加班單由做到超過 8 小時的那家店開（Eason 2026-11-09 定案）。
- *  照核定時段先後累加，第 8 小時之後落在哪家店就算哪家的加班時數；時段看不懂時本店排前面。
- *  只看併進本店計薪的同品牌支援（xEntry.stores）；跨品牌各店各付、不併算加班，也不列入。
- *  回 { 日期: [{code, name, acct, home, need}] }，只列當天有支援時數的日子（沒超過 8 小時回空陣列）。 */
+/** 跨店同日合計超過 8 小時的加班算哪家（2026-11-18 Eason 改，取代 11-09「做到超過 8 小時的那家」；同打卡端 Requests.gs reqFt8Split_）：
+ *  不分誰先上後上，算支援單位；支援單位最多吸收它自己那天的時數，超過的留本店（原單位）。
+ *  支援兩家以上：只在支援單位之間比，時數最長的那家吸收；一樣長算後上班（核定最早開始較晚）的那家。
+ *  只看併進本店計薪的同一單位支援（xEntry.stores，paySameGroup_：墨竹亭↔總部、總部↔小辛辣同一單位，小辛辣↔墨竹亭不同）。
+ *  回 { 日期: [{code, name, acct, home, need}] }，只列當天有支援時數的日子；need 是 0 的不列（沒超過 8 小時回空陣列）。 */
 function payOtCrossNeed_(col, xEntry) {
   const out = {}, byDay = {};
   ((xEntry && xEntry.stores) || []).forEach(function (st, i) {
@@ -1208,27 +1209,34 @@ function payOtCrossNeed_(col, xEntry) {
       (byDay[x.date] = byDay[x.date] || []).push({ st: st, x: x, i: i });
     });
   });
+  const firstStart = function (periods) {
+    const m = /(\d{1,2}):(\d{2})/.exec(String(periods || ''));
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  };
   Object.keys(byDay).forEach(function (d) {
-    const info = { HOME: { code: '', name: '', acct: '', home: true } };
-    let segs = payOtSegs_(((col && col.day_periods) || {})[d], ((col && col.day_h) || {})[d], 'HOME').map(function (g) {
-      return { s: g.s === null ? -1 : g.s, h: g.h, tag: g.tag };
-    });
+    const homeH = payNum(((col && col.day_h) || {})[d]);
+    const sups = {};      // 同一家店同一天多筆合併
     byDay[d].forEach(function (b) {
-      const tag = 'S' + b.i;
-      info[tag] = { code: b.st.code, name: b.st.name, acct: b.st.acct || '', home: false };
-      segs = segs.concat(payOtSegs_(b.x.periods, b.x.hours, tag).map(function (g) {
-        return { s: g.s === null ? 99999 + b.i : g.s, h: g.h, tag: g.tag };
-      }));
+      const k = String(b.i);
+      const fs = firstStart(b.x.periods);
+      if (!sups[k]) sups[k] = { st: b.st, h: 0, fs: fs, i: b.i };
+      sups[k].h += payNum(b.x.hours);
+      if (fs !== null && (sups[k].fs === null || fs < sups[k].fs)) sups[k].fs = fs;
     });
-    segs.sort(function (a, b) { return a.s - b.s; });
-    let cum = 0; const need = {};
-    segs.forEach(function (g) {
-      const before = Math.max(0, cum - 8);
-      cum += g.h;
-      const over = Math.max(0, cum - 8) - before;
-      if (over > 0) need[g.tag] = (need[g.tag] || 0) + over;
+    const list = Object.keys(sups).map(function (k) { return sups[k]; });
+    const comb = homeH + list.reduce(function (a, x) { return a + x.h; }, 0);
+    const need = Math.max(0, payR2(comb - 8));
+    let abs = null;
+    list.forEach(function (x) {
+      if (!(x.h > 0)) return;
+      if (!abs || x.h > abs.h + 0.005) { abs = x; return; }
+      if (Math.abs(x.h - abs.h) <= 0.005 && x.fs !== null && (abs.fs === null || x.fs > abs.fs)) abs = x;   // 一樣長：後上班那家
     });
-    out[d] = Object.keys(need).map(function (tag) { return Object.assign({}, info[tag], { need: payR2(need[tag]) }); });
+    const atSup = abs ? payR2(Math.min(need, abs.h)) : 0, atHome = payR2(need - atSup);
+    const res = [];
+    if (atHome > 0) res.push({ code: '', name: '', acct: '', home: true, need: atHome });
+    if (atSup > 0) res.push({ code: abs.st.code, name: abs.st.name, acct: abs.st.acct || '', home: false, need: atSup });
+    out[d] = res;
   });
   return out;
 }
@@ -1241,7 +1249,10 @@ function payOtFormCheck_(att) {
   const cross = att.ot_cross || {};
   Object.keys(cross).sort().forEach(function (d) {
     if (d < PAY_OT_FORM_FROM) return;
-    cross[d].forEach(function (x) {
+    const kd0 = payOtKindOf((((att.daily || {}).sched) || {})[d] || null, !!((att.daily || {}).hol || {})[d]);
+    const list = (kd0 === 'H' || kd0 === 'R') && !cross[d].some(function (x) { return x.home; })
+      ? cross[d].concat([{ code: '', name: '', acct: '', home: true, need: 0 }]) : cross[d];   // 本店休息日、例假：本店那段整天都要單（2026-11-18 起本店可能沒有分到跨店加班）
+    list.forEach(function (x) {
       let form = f;
       if (!x.home) {
         const fx = (att.ot_forms_x || {})[x.code];
@@ -1443,10 +1454,37 @@ function payOtDailySum(d) {
   if (!d.comp_off) pool.forEach(function (p) {
     const x = Math.min(comp, p.h);
     S[p.k] = payR2(S[p.k] - x); comp = payR2(comp - x); S.comp_used_h = payR2(S.comp_used_h + x);
+    p.left = payR2(p.h - x);
+  });
+  // 補休抵完每天還剩的平日加班（2026-11-18：跨店請款的加班加成只算沒被補休抵掉的）
+  S.ot_left = {};
+  pool.forEach(function (p) {
+    if (p.k !== 'w43' && p.k !== 'w53') return;
+    const o = S.ot_left[p.date] = S.ot_left[p.date] || { w43: 0, w53: 0 };
+    o[p.k] = payR2(o[p.k] + (p.left === undefined ? p.h : p.left));
   });
   S.comp_over_h = comp;   // 抵不掉的補休：不能鎖定，要改成其他假別
   S.ot_month_h = payR2(S.w43 + S.w53 + S.r43 + S.r53 + S.r83);
   return S;
+}
+/** 跨店請款的加班加成（2026-11-18 Eason：支援單位吸收加班費，只加加成那段）：
+ *  每天被支援店吸收的加班時數（att.ot_cross 的非本店列）佔當天加班的比例 × 補休抵完還剩的平日加班（1.34／1.67 兩段）。
+ *  回 [{code, name, h43, h53}]（同一家店整月合計）；請款金額＝h43×0.34＋h53×0.67 再乘請款時薪（payroll.html costTotals）。 */
+function payOtCrossPremium_(S, cross) {
+  const by = {}, order = [];
+  Object.keys(cross || {}).sort().forEach(function (d) {
+    const list = cross[d] || [];
+    const tot = list.reduce(function (a, x) { return a + payNum(x.need); }, 0);
+    const left = (S && S.ot_left && S.ot_left[d]) || null;
+    if (!(tot > 0) || !left) return;
+    list.forEach(function (x) {
+      if (x.home || !(payNum(x.need) > 0)) return;
+      const f = payNum(x.need) / tot, k = String(x.code || x.name || '');
+      if (!by[k]) { by[k] = { code: String(x.code || ''), name: String(x.name || ''), h43: 0, h53: 0 }; order.push(k); }
+      by[k].h43 += left.w43 * f; by[k].h53 += left.w53 * f;
+    });
+  });
+  return order.map(function (k) { const o = by[k]; o.h43 = payR2(o.h43); o.h53 = payR2(o.h53); return o; }).filter(function (o) { return o.h43 > 0 || o.h53 > 0; });
 }
 /** 逐日加班 → 薪資單明細（push 由 payCalcOne 傳入）。ft：正職給全額倍率；計時只給加成（w＝有效時薪）。 */
 function payOtDailyItems(S, ft, M, w, push) {
@@ -1785,6 +1823,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     const chk = payOtFormCheck_(att);
     out._ot_days = otS.ot_days;   // 實際加班（補休前），給 28 天週期加總（payOtMonthSync_）；不進 run 表
     out.ot_info.ot_form_missing = chk.missing;
+    if (att.ot_cross) { const cp = payOtCrossPremium_(otS, att.ot_cross); if (cp.length) out.ot_info.cross_ot = cp; }   // 跨店請款加班加成（2026-11-18）
     out.ot_info.trip_ot = chk.trip_ot;
     out.ot_info.absent_alert = otS.no_show_streak >= 3 || otS.no_show.length >= 6;
     out.ot_info.absent_streak = otS.no_show_streak;
@@ -6360,7 +6399,9 @@ function pnlEstimateClassify_(results, master, att, cfg, ym) {
       sup.forEach(function (x, i) {
         var h = payNum(x.hours), rt = cr != null ? cr : payNum(x.rate);
         var t1 = (cr == null && gapRate > 0) ? alloc[i] : 0, t2 = h - t1;
-        var amt = payNum(x.amount) || (t1 * gapRate + t2 * rt);
+        var cpx = ((r.ot_info || {}).cross_ot || []).filter(function (c) { return (c.code && x.code && String(c.code) === String(x.code)) || (c.name && c.name === x.store); })[0];   // 同 payroll.html 跨店加班加成（2026-11-18）
+        var otAdd = cpx ? (payNum(cpx.h43) * 0.34 + payNum(cpx.h53) * 0.67) * rt : 0;
+        var amt = payNum(x.amount) || (t1 * gapRate + t2 * rt + otAdd);
         g.sup.push({ store: x.store || '（未指定）', amount: amt });
       });
     }

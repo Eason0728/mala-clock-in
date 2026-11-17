@@ -1156,9 +1156,12 @@ function costTotals(){
       sup.forEach((x,i)=>{
         const h=n(x.hours), rt=cr!=null?cr:n(x.rate);
         const t1=(cr==null&&gapRate>0)?alloc[i]:0, t2=h-t1;
-        const amt=n(x.amount)||(t1*gapRate+t2*rt);   // 金額欄有填＝以填的為準（特殊協議）
+        // 跨店加班加成（2026-11-18 Eason：超過 8 小時的加班算支援單位，只加加成那段；補休抵掉的不加）：引擎 ot_info.cross_ot 給每家店吸收的 1.34／1.67 時數
+        const cpx=((r.ot_info||{}).cross_ot||[]).find(c=>(c.code&&x.code&&String(c.code)===String(x.code))||(c.name&&c.name===x.store));
+        const otH=cpx?n(cpx.h43)+n(cpx.h53):0, otAdd=cpx?(n(cpx.h43)*0.34+n(cpx.h53)*0.67)*rt:0;
+        const amt=n(x.amount)||(t1*gapRate+t2*rt+otAdd);   // 金額欄有填＝以填的為準（特殊協議）
         g.sup.push({emp_id:String(r.emp_id),name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',
-                    hours:h,rate:rt,gapH:t1,gapRate:gapRate,amount:amt,fixed:!!n(x.amount)});
+                    hours:h,rate:rt,gapH:t1,gapRate:gapRate,otH:otH,otAdd:otAdd,amount:amt,fixed:!!n(x.amount)});
         g.supTotal+=amt;
       });
     }
@@ -1310,7 +1313,7 @@ function costRows(g){
             ? `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H（金額指定）`
             : (x.gapH>0
                 ? `${esc(x.name)} → ${esc(x.store)}　缺口 ${r2(x.gapH)}H×${nf(x.gapRate)} ＋ ${r2(x.hours-x.gapH)}H×${nf(x.rate)}`
-                : `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H × ${nf(x.rate)}`), x.amount]))
+                : `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H × ${nf(x.rate)}`)+(n(x.otAdd)>0?`　＋加班加成 ${r2(x.otH)}H（${nf(Math.round(x.otAdd))}）`:''), x.amount]))
         .concat([['s','請款小計',g.supTotal]]):[]),
   ];
 }

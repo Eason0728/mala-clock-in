@@ -2205,6 +2205,9 @@ function handleMgrApprove(body) {
       { leaves: leaves, trip_hours: tripHours, name: String(roster.name || ''),
         // 正職上班日滿 8 小時（2026-11-13）：正職與否、是不是支援帳號只信營運系統個人帳號代轉帶來的（伺服器讀排班與管理系統身分填）
         sched_ft: acting && body.sched_ft === true, sched_support: acting && typeof body.sched_support === 'boolean' ? body.sched_support : null,
+        // 跨店加班歸屬（2026-11-18）：原單位打卡店代碼（營運系統讀排班帶入）、這家核定最早開始（支援兩家時數一樣算後上班那家）
+        sched_home: acting && typeof body.sched_home === 'string' && /^[a-z]{1,8}$/.test(body.sched_home) ? body.sched_home : '',
+        own_fs: rawPeriods && rawPeriods.length ? rawPeriods.reduce(function (m, p) { var x = /^(\d{1,2}):(\d{2})/.exec(String(p.start || '')); var v = x ? Number(x[1]) * 60 + Number(x[2]) : null; return v == null ? m : (m == null || v < m ? v : m); }, null) : null,
         sched_day: acting ? String(body.sched_day || '') : '', sched_spans: acting && Array.isArray(body.sched_spans) ? body.sched_spans : [], diff_reason: body.diff_reason, acting: acting,
         late_min: body.late_min,   // 主管認定的遲到分鐘：被免掉的遲到要有單（2026-11-15 考勤挑錯 B1）
         // 那天這位同仁「新手機待核准」的卡有幾張（2026-11-11 B35）：少卡被擋時訊息請主管先核准裝置

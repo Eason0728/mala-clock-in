@@ -178,7 +178,7 @@ ok('審查 1：被支援那家只上 1 小時、兩家合計 11 → 這家只要
   sb = makeEnv();
   const hp = [P2('08:00', '18:00')], hs = [S2('08:00', '18:00')];
   r = chk(sb, 10, hp, hs, FT({ sched_support: false, peer: { worked: true, pending: false, work: 1, leave: 0, ot: 1, names: ['mztlzl'] } }));
-  assert.ok(/超過 8 小時的 2 小時要有加班單/.test(r.message), r.message);      // 原單位自己超過 8 的部分照單店規則
+  assert.ok(/這家（原單位）開 2 小時加班單/.test(r.message), r.message);      // 支援那家最多吸收它自己的 1 小時，其餘 2 小時留原單位（2026-11-18 第 1 題 B）
   assert.ok(!/要在被支援的/.test(r.message), '被支援那家的 1 小時已核准');
 });
 ok('加班算被支援那家：這家是原單位、上 9 小時 → 自己超過 8 的 1 小時照單店規則，另外看被支援那家', () => {
@@ -187,7 +187,7 @@ ok('加班算被支援那家：這家是原單位、上 9 小時 → 自己超�
   assert.ok(/超過 8 小時的 1 小時要有加班單/.test(chk(sb, 9, ps, ss, FT({ sched_support: false, peer: { worked: true, pending: true, work: 0, leave: 0, ot: 0, names: ['mztlzl'] } })).message), '審查 3：被支援那家還沒核定，原單位自己超過 8 的 1 小時照樣要單');
   const r = chk(sb, 9, ps, ss, FT({ sched_support: false, peer: { worked: true, pending: false, work: 2, leave: 0, ot: 1, names: ['mztlzl'] } }));
   assert.ok(/兩家上班合計 11 小時，超過 8 的 2 小時要在被支援的 墨竹亭台北六張犁 開加班單（那邊已核准 1 小時）/.test(r.message), r.message);
-  assert.ok(/超過 8 小時的 1 小時要有加班單/.test(r.message), r.message);
+  assert.ok(/這家（原單位）開 1 小時加班單/.test(r.message), r.message);
 });
 ok('審查 6：兩家合計加班只算上班、不算假（原單位 5＋假 3、支援 3 → 剛好 8，不用加班單）', () => {
   const sb = makeEnv();
@@ -245,7 +245,9 @@ ok('reqPeerDay_：只開名冊有同名在職的店；跳過鏡像列、只認�
   sb.buildLatestApprovedMap = (rows) => { const m = {}; rows.forEach((r) => { (m[r.date] = m[r.date] || {})[r.emp_id] = r; }); return m; };
   sb.reqRows_ = (ss) => books[ss.id].requests;
   const r = sb.reqPeerDay_('測試一', D2);
-  assert.strictEqual(JSON.stringify(r), JSON.stringify({ worked: true, pending: true, failed: false, work: 4, leave: 1, ot: 0.5, names: ["A", "B", "E"] }));
+  const { by, ...rest } = r;
+  assert.strictEqual(JSON.stringify(rest), JSON.stringify({ worked: true, pending: true, failed: false, work: 4, leave: 1, ot: 0.5, names: ["A", "B", "E"] }));
+  assert.strictEqual(JSON.stringify(by), JSON.stringify({ A: { work: 4, ot: 0.5, pending: false, fs: null }, B: { work: 0, ot: 0, pending: true, fs: null }, E: { work: 0, ot: 0, pending: true, fs: null } }));   // 每店分開（2026-11-18 跨店加班歸屬）
   assert.ok(!opened.includes('SELF'));
 });
 ok('審查 1：別家讀不到 → 滿 8 小時先放行，但加班照單店規則（10 小時沒加班單照擋）', () => {
