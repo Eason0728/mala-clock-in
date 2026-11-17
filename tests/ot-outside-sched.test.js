@@ -16,7 +16,7 @@ chk('兩張 08:00–09:00、18:00–18:30：過', run([['08:00', '09:00', 1], ['
 chk('差 15 分鐘內算過（17:45–18:30＋08:00–08:45）', run([['17:45', '18:30', 0.75], ['08:15', '09:00', 0.75]]), []);
 chk('沒帶班表時段不檢查', run([['17:00', '18:30', 1.5]], { sched_spans: [] }), []);
 chk('休息日整天都算加班，不比', F({}, 'E', D, 1.5, [{ startMs: ms(17), endMs: ms(18, 30) }], [{ inMs: ms(16, 58), outMs: ms(18, 32) }], null, { rows: rows([['17:00', '18:30', 1.5]]), force_strict: true, sched_day: 'H', preview: true, leaves: [], trip_hours: 0, sched_spans: SP }).probs, []);
-chk('11/11 以前不比', (() => { const r = F({}, 'E', '2026-11-06', 9.5, P, S, W, { rows: rows([['17:00', '18:30', 1.5]]).map((x) => Object.assign(x, { date: '2026-11-06' })), sched_day: 'W', preview: true, leaves: [], trip_hours: 0, sched_spans: SP }); return r.probs.map((x) => x.rule); })(), []);
+chk('加嚴起算日（11/1）以前不比', (() => { const r = F({}, 'E', '2026-10-30', 9.5, P, S, W, { rows: rows([['17:00', '18:30', 1.5]]).map((x) => Object.assign(x, { date: '2026-10-30' })), sched_day: 'W', preview: true, leaves: [], trip_hours: 0, sched_spans: SP }); return r ? r.probs.map((x) => x.rule) : []; })(), []);
 // 沒休息改上班（2026-11-14 Eason）：F2 11:00–14:00／17:00–22:30（第二段排休息 30 分），核定 10:30–14:00＋17:00–23:30
 const P2 = [{ startMs: ms(10, 30), endMs: ms(14) }, { startMs: ms(17), endMs: ms(23, 30) }], S2 = [{ inMs: ms(10, 28), outMs: ms(14, 5) }, { inMs: ms(16, 53), outMs: ms(23, 44) }];
 const SP2 = [{ start: '11:00', end: '14:00' }, { start: '17:00', end: '22:30', break_min: 30 }];
@@ -27,6 +27,12 @@ chk('沒休息：班表沒排休息照擋', run2(base.concat([['19:30', '20:00',
 chk('沒休息：開 1 小時（超過休息 30 分＋容差 15 分）擋', run2([['10:30', '11:00', 0.5], ['22:30', '23:00', 0.5], ['19:00', '20:00', 1]]), ['ot_in_sched']);
 chk('沒休息：兩張共用同一段的 30 分休息，第二張擋', run2(base.concat([['19:30', '20:00', 0.5], ['20:00', '20:30', 0.5]])).filter((x) => x === 'ot_in_sched'), ['ot_in_sched']);
 chk('休息分鐘不能挪到別段（第一段沒排休息）', run2([['10:30', '11:00', 0.5], ['22:30', '23:30', 1], ['12:00', '12:30', 0.5]]), ['ot_in_sched']);
+// 2026-11-17 Eason：加嚴往前套到 11/1。休息日 11/1 核定 5 小時（打卡 09:50–15:04）沒有加班單 → 擋；有 5 小時加班單 → 過；10/31 不擋
+const d1 = (dt, h, m = 0) => Date.parse(`${dt}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00+08:00`);
+const rest = (dt, l) => { const r = F({}, 'E', dt, 5, [{ startMs: d1(dt, 10), endMs: d1(dt, 15) }], [{ inMs: d1(dt, 9, 50), outMs: d1(dt, 15, 4) }], null, { rows: l.map(([st, e, h]) => ({ emp_id: 'E', date: dt, kind: 'ot', status: 'approved', start: st, end: e, hours: h })), sched_day: 'H', preview: true, leaves: [], trip_hours: 0, sched_spans: [] }); return r ? r.probs.map((x) => x.rule) : []; };
+chk('11/1 休息日 5 小時沒有加班單（預設起算日）：擋', rest('2026-11-01', []), ['ot_hours']);
+chk('11/1 休息日 5 小時有 5 小時加班單：過', rest('2026-11-01', [['10:00', '15:00', 5]]), []);
+chk('10/31 休息日沒有加班單：不擋（起算日以前）', rest('2026-10-31', []), []);
 const B = vm.runInContext('reqOtInSchedBySpan_', sb);
 chk('逐段分鐘', B('13:30', '17:30', SP2), [30, 30]);
 chk('跨兩段累計', M('13:30', '15:30', SP), 60);
