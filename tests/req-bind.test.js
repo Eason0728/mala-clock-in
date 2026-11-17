@@ -39,7 +39,7 @@ function makeEnv(now) {
     managers: sheet('managers', [['name', 'key', 'active', 'allow_acting'], ['測試主管', 'MK', 'true', ''], ['門市營運系統', 'SYS', 'true', 'TRUE']]),
     roster: sheet('roster', [['emp_id', 'name', 'active', 'line_user_id'], ['E01', '測試一', 'true', 'U1'], ['E02', '測試二', 'true', '']]),
   };
-  const props = {};
+  const props = { REQ_STRICT_FROM: '2026-11-11' };   // 2026-11-17 加嚴預設改 11/1 起；這支有測加嚴前的日子，固定用原本的 11/11
   let nowIso = now || '2026-11-20T16:00:00+08:00';
   let rnd = 0;
   const seqMath = Object.assign(Object.create(Math), { random: () => (rnd++ % 1296) / 1296 });

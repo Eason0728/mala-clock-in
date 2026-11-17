@@ -110,7 +110,7 @@ const ap = (m, o) => m.sb.handleMgrApprove(Object.assign({ mgr_key: 'MK', date: 
   const m2 = W([]);
   const r2 = ap(m2, { date: '2026-11-05', periods: [], leaves: [{ type: '出差', hours: 999 }] });
   check('B19-2', '整天出差 999 小時：擋下、不寫入', { ok: r2.ok, error: r2.error, rows: m2.approved().length }, { ok: false, error: 'bad_leave_hours', rows: 0 });
-  check('B19-3', '整天出差 24 小時以內照舊收', ap(W([]), { date: '2026-11-05', periods: [], leaves: [{ type: '出差', hours: 8 }] }).ok, true);
+  check('B19-3', '整天出差 24 小時以內照舊收', ap(W([]), { date: '2026-10-30', periods: [], leaves: [{ type: '出差', hours: 8 }] }).ok, true);   // 2026-11-17 加嚴預設改 11/1 起，這條只測時數上限，改用加嚴前的日子
 }
 {
   const R = [ME, { emp_id: 'E05', name: '總監乙', key: 'K5', active: 'TRUE', line_user_id: 'U2' }];
