@@ -154,6 +154,7 @@ ok('對照：同一人 2026-03 的 payAnnualQuota 週年期起日已算到 2026-
 });
 ok('已鎖定（final）的月份：payroll_item_upsert 應拒絕寫入', () => {
   const { m, e } = payFixture();
+  m.setNow('2026-12-02T10:00:00');   // 11 月過完才能鎖定（2026-11-17 起本月不能鎖）
   assert.ok(m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' }).ok);
   assert.ok(m.sb.handlePayrollFinalize({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', lock: true }).ok);
   const up = m.sb.handlePayrollItemUpsert({ admin_key: 'ADM', item: { ym: '2026-11', emp_id: e.emp_id, item_type: 'earning', item_key: 'x', item_label: '測試加項', amount: 99999, store: 'SSLGF' } });
@@ -161,6 +162,7 @@ ok('已鎖定（final）的月份：payroll_item_upsert 應拒絕寫入', () => 
 });
 ok('已鎖定（final）的月份：payroll_calc 帶 force:true 不應跳過鎖定直接重算', () => {
   const { m } = payFixture();
+  m.setNow('2026-12-02T10:00:00');   // 11 月過完才能鎖定（2026-11-17 起本月不能鎖）
   assert.ok(m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' }).ok);
   assert.ok(m.sb.handlePayrollFinalize({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', lock: true }).ok);
   const r = m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', force: true });
@@ -188,6 +190,7 @@ ok('兩店同時重算：光復算完、正要寫回時央廚整段跑完 → �
 });
 ok('重算途中別台按了鎖定 → 這次重算不寫入、月份維持定案', () => {
   const { m } = payFixture();
+  m.setNow('2026-12-02T10:00:00');   // 11 月過完才能鎖定（2026-11-17 起本月不能鎖）
   const sb = m.sb, realW = sb.payWriteLocked_;
   assert.ok(sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' }).ok);
   let fin = null;
@@ -434,6 +437,7 @@ ok('sync_roster：同名在職的新工號略過並回 skipped；沒帶 active �
 });
 ok('已定案月份 payroll_calc 不帶 force 仍回 locked；帶 force 回 finalized，run 不變 draft', () => {
   const { m } = payFixture();
+  m.setNow('2026-12-02T10:00:00');   // 11 月過完才能鎖定（2026-11-17 起本月不能鎖）
   assert.ok(m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' }).ok);
   assert.ok(m.sb.handlePayrollFinalize({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF', lock: true }).ok);
   assert.strictEqual(m.sb.handlePayrollCalc({ admin_key: 'ADM', ym: '2026-11', store: 'SSLGF' }).error, 'locked');

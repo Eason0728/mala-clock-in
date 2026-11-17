@@ -1,0 +1,141 @@
+<title>同仁即時薪資開工單</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
+<style>
+/* 版面：一張開工單，最上方是開工指令與已定案的答案，中段是薪資計算頁的完工預覽 */
+:root{--bg:#f2f5f4;--paper:#fff;--fg:#17211f;--muted:#5a6a66;--line:#d5dfdc;--accent:#0b6b5d;--accent-soft:#dff0ec;--on-accent:#fff;--green:#23804f;--green-bg:#e3f3ea;--yellow:#8a6400;--yellow-bg:#fbf1d2;--red:#b3362b;--red-bg:#fbe5e2;--side:#1f2a28;--side-fg:#cfdad7;--font:"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111816;--paper:#1a2421;--fg:#e8efed;--muted:#a0b0ab;--line:#31403c;--accent:#63cdb8;--accent-soft:#1d3a34;--on-accent:#10211d;--green:#71d29c;--green-bg:#1b3627;--yellow:#e8c565;--yellow-bg:#3a3017;--red:#f19a90;--red-bg:#42211d;--side:#0c1210;--side-fg:#a0b0ab;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#111816;--paper:#1a2421;--fg:#e8efed;--muted:#a0b0ab;--line:#31403c;--accent:#63cdb8;--accent-soft:#1d3a34;--on-accent:#10211d;--green:#71d29c;--green-bg:#1b3627;--yellow:#e8c565;--yellow-bg:#3a3017;--red:#f19a90;--red-bg:#42211d;--side:#0c1210;--side-fg:#a0b0ab;color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--font);font-size:16px;line-height:1.7}
+.wrap{max-width:860px;margin:0 auto;padding-block:40px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:40px}
+section,header{min-width:0}
+h1{font-size:clamp(28px,6vw,42px);line-height:1.2;font-weight:900;margin:0 0 12px;text-wrap:balance}
+h2{font-size:22px;line-height:1.35;margin:0 0 14px;text-wrap:balance}
+p{margin:0}
+.lead{color:var(--muted);font-size:17px}
+.reply{background:var(--accent);color:var(--on-accent);border-radius:8px;padding:16px 18px;font-weight:700;margin-top:20px}
+.reply small{display:block;font-weight:400;font-size:14px;opacity:.92}
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--paper)}
+table{border-collapse:collapse;width:100%;min-width:520px;font-size:15px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:500;font-size:13px}
+tr:last-child td{border-bottom:0}
+td.n,th.n{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+.chg{display:inline-block;background:var(--yellow-bg);color:var(--yellow);font-size:12px;font-weight:700;border-radius:4px;padding:1px 6px;margin-left:6px;white-space:nowrap}
+.screen{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--paper)}
+.bar{background:var(--side);color:var(--side-fg);padding:8px 14px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap}
+.bar b{color:var(--on-accent);background:var(--accent);border-radius:4px;padding:0 8px}
+.in{padding:14px;display:grid;gap:12px}
+.banner{background:var(--yellow-bg);color:var(--yellow);border-radius:8px;padding:10px 12px;font-size:14px;font-weight:500}
+.alert{background:var(--red-bg);color:var(--red);border-radius:8px;padding:10px 12px;font-size:14px}
+.alert ul,.plain{margin:0;padding-left:20px;display:grid;gap:6px}
+.screen table{font-size:14px;min-width:640px}
+.screen .tbl{border-radius:6px}
+.sub{display:block;color:var(--muted);font-size:12px;line-height:1.4}
+.redtxt{color:var(--red);font-weight:700}
+.note{color:var(--muted);font-size:14px;margin-top:10px}
+</style>
+<div class="wrap">
+<header>
+<h1>薪酬頁每天自動跟著考勤算到昨天</h1>
+<p class="lead">做完後：人資、會計每天早上打開薪酬頁，每家單位每位同仁「做到昨天賺了多少」已經照考勤核定算好，不用再手動按重新計算。同仁照舊鎖定後才看得到薪資單。</p>
+<div class="reply">確認下面內容沒問題請回「開工」，我就做到完成。<small>要改的直接寫在同一句。這一版已照你 11/17 的回覆改好。</small></div>
+</header>
+
+<section>
+<h2>你的決定</h2>
+<div class="tbl"><table>
+<thead><tr><th>題</th><th>定案</th></tr></thead>
+<tbody>
+<tr><td>誰看得到即時數字</td><td>只有薪酬權限的人（人資、會計、系統管理者）。店長、同仁都看不到。</td></tr>
+<tr><td>同仁</td><td><b>一律鎖定後才看</b>，LINE 薪資卡、打卡頁完全不改（上個月沒鎖定也不顯示）。</td></tr>
+<tr><td>月中怎麼算</td><td>「做到昨天賺了多少」<b>直接取代</b>薪資計算頁的草稿數字；整個月過完後自動變回整月算法。</td></tr>
+<tr><td>沒核定的日子</td><td>不算，畫面列出哪幾天、幾個人還沒核定。</td></tr>
+<tr><td>沒主檔的七家</td><td>機制先做好，主檔建好就自動出現；另產缺檔清單給會計。</td></tr>
+<tr><td>薪資頁手改工時</td><td>維持可以改，但被手改的人標紅字「手動工時，沒有跟考勤連動」。</td></tr>
+<tr><td>月底才知道的項目</td><td>照到昨天為止的狀況算，並寫明條件（例：滿勤加給目前 62.5／100 小時未達標）。</td></tr>
+</tbody></table></div>
+</section>
+
+<section>
+<h2>月中「做到昨天」怎麼算</h2>
+<div class="tbl"><table>
+<thead><tr><th>項目</th><th>月中算法</th></tr></thead>
+<tbody>
+<tr><td>正職本薪、職能、夜間、店長津貼、績效獎金上限</td><td>× 已過天數 ÷ 當月天數（11/17 看＝16／30）。績效倒扣照已發生的天數扣。</td></tr>
+<tr><td>加班、遲到早退、請假扣款、餐費補助</td><td>到昨天為止主管已核定的部分，照現行公式。</td></tr>
+<tr><td>計時</td><td>已核定時數 × 時薪；滿勤、年資加給照到昨天的條件判斷。</td></tr>
+<tr><td>勞保自付、宿舍</td><td>× 同一個比例。</td></tr>
+<tr><td>健保、團保、退休金自付</td><td>整月（現行規則本來就不折算）。</td></tr>
+<tr><td>跨店支援、獎金、自訂加扣</td><td>到昨天為止已核定或已登記的。</td></tr>
+</tbody></table></div>
+<p class="note">這套跟損益系統「月中人事成本估算」是同一支程式，薪酬頁和損益會是同一份數字。<b>鎖定用的整月公式一行不改。</b></p>
+</section>
+
+<section>
+<h2>完工預覽：薪酬頁「6 薪資計算」（11/17 打開 11 月）</h2>
+<div class="screen">
+<div class="bar"><span>墨竹亭 金山店</span><span>2026-11</span><b>6 薪資計算</b><span>草稿</span></div>
+<div class="in">
+<div class="banner">月中數字：算到 11/16（已過 16／30 天）・今天 06:02 自動更新。整個月過完後自動改為整月數字，才能鎖定。</div>
+<div class="alert"><ul>
+<li>11/15、11/16 有 5 人天主管還沒核定，沒算進來</li>
+<li>1 位同仁是手動工時，沒有跟考勤連動（紅字）</li>
+</ul></div>
+<div class="tbl"><table>
+<thead><tr><th>同仁</th><th class="n">已核定時數</th><th class="n">應付</th><th class="n">扣款</th><th class="n">實付（到 11/16）</th></tr></thead>
+<tbody>
+<tr><td>A 君　正職<span class="sub">本薪 39,000 × 16/30；加班 3.5H；績效已倒扣 1 天</span></td><td class="n">96.0</td><td class="n">23,274</td><td class="n">1,354</td><td class="n">21,920</td></tr>
+<tr><td>B 君　計時<span class="sub">時薪 205；滿勤加給不適用</span></td><td class="n">62.5</td><td class="n">12,813</td><td class="n">735</td><td class="n">12,078</td></tr>
+<tr><td><span class="redtxt">C 君　計時　手動工時</span><span class="sub">11/9 有人按過「儲存工時」，之後核定的 14.5 小時沒有算進來</span></td><td class="n redtxt">40.0</td><td class="n">8,200</td><td class="n">735</td><td class="n">7,465</td></tr>
+</tbody></table></div>
+</div>
+</div>
+<p class="note">範例數字，不是真人資料。儀表板、集團總覽、成本分類的本月數字也會跟著是「到昨天」。上個月以前的月份不受影響。</p>
+
+<h2 style="margin-top:28px">完工預覽：給會計的缺檔清單（範例）</h2>
+<div class="tbl"><table>
+<thead><tr><th>單位</th><th class="n">打卡名冊在職</th><th class="n">薪資主檔</th><th>缺</th></tr></thead>
+<tbody>
+<tr><td>墨竹亭 光復店</td><td class="n">12</td><td class="n">0</td><td>MZTGF04–12 九人（另三人已在別店主檔）</td></tr>
+<tr><td>墨竹亭 六張犁店</td><td class="n">9</td><td class="n">0</td><td>全部</td></tr>
+<tr><td>中央廚房</td><td class="n">15</td><td class="n">14</td><td>1 人</td></tr>
+</tbody></table></div>
+<p class="note">實際清單用工號列，放在薪酬頁「1 員工設定」上方，也匯出一份 Excel。只是清單，不會自動建檔。</p>
+</section>
+
+<section>
+<h2>這次的範圍</h2>
+<div class="tbl"><table>
+<thead><tr><th>項目</th><th>內容</th></tr></thead>
+<tbody>
+<tr><td><b>方向</b></td><td>薪酬草稿每天自動照考勤核定重算，月中顯示「做到昨天」。</td></tr>
+<tr><td><b>廣度</b></td><td>薪資後端（打卡系統的薪資模組）、薪酬頁（薪資計算、儀表板、集團總覽、員工設定的缺檔清單）、每天 06:00 排程。<b>不做</b>：同仁端任何改動、店長查看、改整月計算公式、改考勤核定規則、代建主檔。</td></tr>
+<tr><td><b>深度</b></td><td>正職、計時、月中到離職、跨店支援、手動工時、沒核定的日子、沒主檔的店都有對應顯示。已有主檔的四家（光復、央廚、總部、金山）立即生效，其餘主檔建好就生效。</td></tr>
+<tr><td><b>驗收</b></td><td>11 月四家店 30 人：月中數字逐人和損益估算同一天的結果相同；把日期推到 12/1 後 11 月逐人逐項等於現在的整月算法；10 月（光復已鎖定、其他草稿）部署前後逐人差異 0。</td></tr>
+<tr><td><b>不可降的標準</b></td><td>整月算法新舊引擎對拆差異 0；既有測試全過；薪酬頁開頁時間不比現在慢（現在本月 4.7～7.4 秒）。</td></tr>
+<tr><td><b>紅線</b></td><td>整月公式不改；不解鎖、不重算已鎖定月份；不動正式主檔與參數；不對同仁發任何訊息。做到一半發現考勤和薪資規則有矛盾，停下來問你。</td></tr>
+</tbody></table></div>
+</section>
+
+<section>
+<h2>做的時候會自己決定的事</h2>
+<ul class="plain">
+<li><b>本月還沒過完不能鎖定</b>（畫面會擋並說明）。月中離職要提前結清的人，照舊用離職日折算，等月底過完一起鎖。<span class="chg">影響流程，不同意請說</span></li>
+<li>每天 06:00 重算「本月」和「還沒鎖定的上個月」；上個月一律用整月算法。白天有人打開薪酬頁、考勤有新核定時，照現行規則當場重算。</li>
+<li>每月 1 號沒有「昨天」，本月顯示「今天是 1 號，明天開始有數字」。</li>
+<li>同仁端：本月即使有月中草稿，同仁照舊只看到「尚未結算」。</li>
+<li>審查：這台沒有 GPT 交叉審查，改用另一個沒看過過程的 Claude 審查。</li>
+</ul>
+</section>
+
+<section>
+<h2>還沒驗證的事</h2>
+<ul class="plain">
+<li>每天自動重算四家店要多久、會不會撞到 Apps Script 的執行時間上限（實作時量；太久就一家一家分開跑）。</li>
+<li>損益估算的比例是「已過天數 ÷ 當月天數」；正職月中到離職的現行折算是固定 30 天。31 天的月份兩者會差一點，我照你選的損益那套做，12 月的數字出來後給你看差多少。</li>
+<li>沒主檔七家的實際人數（做清單時才讀各店打卡名冊）。</li>
+</ul>
+</section>
+</div>

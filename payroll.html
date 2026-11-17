@@ -212,6 +212,8 @@ html.embed.ui-new{--bg:#f5f5f7;--ink:#1d1d1f;--black:#1d1d1f;--line:#e5e5ea;--mu
 html.embed.ui-new body{-webkit-font-smoothing:antialiased}
 html.embed.ui-new .btn{--red:#0066cc;border-radius:10px}
 html.embed.ui-new .monthbar{border-left-color:#0066cc}
+.asof-b{background:#fbf1d2;color:#6b4e00;border-radius:8px;padding:10px 12px;font-size:13.5px;line-height:1.6;margin:0 0 10px}
+.asof-w{background:#fbe5e2;color:#8f2a21;border-radius:8px;padding:10px 12px;font-size:13.5px;line-height:1.6;margin:0 0 10px}
 </style>
 </head>
 <body>
@@ -337,7 +339,8 @@ html.embed.ui-new .monthbar{border-left-color:#0066cc}
   <div class="stats" id="runStats"></div>
   <div class="card">
     <h2>當月薪資總覽 <span id="baseHint" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
-    <p class="hint">工時直接從打卡系統的核定紀錄歸集，不需人工搬。金額四捨五入到元。</p>
+    <p class="hint">工時直接從打卡系統的核定紀錄歸集，不需人工搬。金額四捨五入到元。本月的數字每天早上自動更新、只算到昨天；整個月過完才是整月數字。</p>
+    <div id="asofBox"></div>
     <div class="row" style="margin-bottom:14px">
       <button class="btn" onclick="doCalc()">重新計算</button>
       <button class="btn ghost" id="lockBtn" onclick="toggleLock()">鎖定本月</button>
@@ -651,6 +654,7 @@ let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], 
    null＝草稿，或已鎖定但鎖定時沒有快照（畫面照舊即時算，並標「即時值（鎖定時沒有快照）」）。 */
 let COST_SNAP=null;
 let SAME_NAME=[];   // 本月有請假、名冊同名的人（payroll_month same_name，2026-11-09）
+let ASOF=null;   // 本月草稿算到哪一天（後端 asof：{as_of,days_elapsed,days_in_month,run_at,unapproved} 或 {day1:true}）；其他月份 null
 let ROSTER_MISS=[];   // 主檔工號在打卡名冊找不到的人（payroll_month roster_mismatch，2026-11-06）
 let ZERO_RATIO=[];   // 本月在職天數 0 卻有一列薪資的人（payroll_month／payroll_calc 的 zero_ratio_with_data，2026-11-11）
 let LEAVE_MM=[];   // 請假單和請假登記對不上（payroll_calc 的 leave_mismatch，1113 紅燈 a1）：鎖定前要先處理
@@ -801,7 +805,7 @@ async function boot(){
 async function autoCalc(){
   if(STATUS==='final' || RESULTS.length) return;
   const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
-  if(r&&r.ok){RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];renderRun();renderSlipSel()}
+  if(r&&r.ok){RESULTS=r.results;STATUS='draft';asofFromCalc(r);CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];renderRun();renderSlipSel()}
 }
 /* ═════ 未儲存提醒（2026-08-23）═════
  * 出勤資料的所有輸入（含跨店支援明細）都只寫在瀏覽器記憶體，按「儲存工時」才進試算表。
@@ -906,6 +910,44 @@ async function clearAtt(){
   toast(ym()+' 手動工時已清除');
   await loadMonth();
 }
+/* ═════ 月中草稿（2026-11-17）：本月只算到昨天 ═════
+   後端是正本（Payroll.gs payAsOfMode_），這裡只顯示：算到哪一天、哪些日子主管還沒核定、誰是手動工時（沒跟考勤連動）。 */
+function asofFromCalc(r){   // 重新計算的回應沒有「還沒核定」清單 → 同一天的沿用開頁時拿到的
+  const a=r&&r.asof;
+  if(!a){ ASOF=null; return; }
+  const keep=(ASOF&&ASOF.as_of&&ASOF.as_of===a.as_of)?ASOF:{};
+  ASOF=Object.assign({},a,{unapproved:keep.unapproved,unapproved_failed:keep.unapproved_failed,run_at:new Date().toISOString()});
+}
+const mdOf=d=>(+String(d).slice(5,7))+'/'+(+String(d).slice(8,10));
+/** 整筆手動工時的人（按過「儲存工時」→ 之後的核定不會流進來）。只在有打卡的門市才算異常。 */
+function manualHourIds(){
+  if(!HAS_CLOCK) return [];
+  return RESULTS.map(r=>String(r.emp_id)).filter(id=>{const A=ATT[id]||{}; return A._manual&&String(A.hours_manual)!=='0';});
+}
+function renderAsof(){
+  const el=$('asofBox'); if(!el) return;
+  const out=[];
+  if(STATUS!=='final'&&ASOF&&ASOF.day1){
+    out.push(`<div class="asof-b">今天是 1 號，還沒有「昨天」可以算。明天早上起這裡會有本月的數字。</div>`);
+  } else if(STATUS!=='final'&&ASOF&&ASOF.as_of){
+    let at=''; try{ const t=new Date(ASOF.run_at); if(!isNaN(t)) at='・'+t.toLocaleString('zh-TW',{timeZone:'Asia/Taipei',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})+' 更新'; }catch(e){}
+    out.push(`<div class="asof-b"><b>月中數字：算到 ${mdOf(ASOF.as_of)}</b>（已過 ${n(ASOF.days_elapsed)}／${n(ASOF.days_in_month)} 天）${at}。正職本薪與津貼照已過天數折算，加班、扣款、計時時數只算主管已核定的。整個月過完後自動改成整月數字，才能鎖定。</div>`);
+    const un=ASOF.unapproved||[];
+    if(ASOF.unapproved_failed) out.push(`<div class="asof-w">讀不到「有打卡還沒核定」的名單，請重新整理再看一次。</div>`);
+    else if(un.length){
+      const days={}; un.forEach(x=>{(days[x.date]=days[x.date]||[]).push(x.name)});
+      const ds=Object.keys(days).sort();
+      out.push(`<div class="asof-w"><b>有 ${un.length} 人天有打卡、主管還沒核定，沒算進來：</b>`+
+        ds.slice(0,12).map(d=>`${mdOf(d)} ${days[d].map(esc).join('、')}`).join('；')+(ds.length>12?`…共 ${ds.length} 天`:'')+`</div>`);
+    }
+  }
+  const mh=STATUS==='final'?[]:manualHourIds();
+  if(mh.length){
+    const nm=id=>esc((RESULTS.find(r=>String(r.emp_id)===id)||{}).name||id);
+    out.push(`<div class="asof-w"><b>${mh.length} 位是手動工時，沒有跟考勤連動（紅字）：</b>${mh.map(nm).join('、')}。之後主管核定的時數不會算進來；要恢復連動，到「4 出勤資料」按「清除本月手動工時」。</div>`);
+  }
+  el.innerHTML=out.join('');
+}
 async function loadRun(){
   const r=await post('payroll_get',{ym:ym()});
   if(r.ok&&r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'}
@@ -990,6 +1032,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     if(r.config){CFG=r.config;CFG_DIRTY={}}
     if(r.config||r.holidays) renderCfg();
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
+    ASOF=r.asof||null;
     COST_SNAP=(r.run&&r.run.status==='final'&&r.run.cost_snap)||null;   // 已鎖定月份的成本快照（沒有就即時算＋標記）
     renderAtt();renderRun();renderSlipSel();
     renderBonus();
@@ -1004,6 +1047,7 @@ async function doCalc(){
     const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
     if(!r.ok)return;
     RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;COST_SNAP=null;
+    asofFromCalc(r);
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
     LEAVE_MM=r.leave_mismatch||[];
@@ -1420,8 +1464,10 @@ function renderRun(){
   // 未鎖定＝白底（尚未定案）；已鎖定＝深底（已定案、同仁看得到），一眼區分
   lb.textContent=STATUS==='final'?'🔒 解鎖本月':'鎖定本月';
   lb.className='btn '+(STATUS==='final'?'dark':'ghost');
+  renderAsof();
+  const MANUAL_H=STATUS==='final'?[]:manualHourIds();
   const t=$('runTbl');
-  if(!RESULTS.length){t.innerHTML='<tr><td style="text-align:center;padding:34px;color:#8a817a">按「重新計算」產生本月薪資</td></tr>';
+  if(!RESULTS.length){t.innerHTML='<tr><td style="text-align:center;padding:34px;color:#8a817a">'+((ASOF&&ASOF.day1)?'今天是 1 號，明天開始有本月的數字':'按「重新計算」產生本月薪資')+'</td></tr>';
     renderOtInfo(t); return}   // 還沒算也要看得到「工號對不到名冊」
   let h=`<thead><tr><th>姓名</th><th style="text-align:left">型態</th>
     <th style="text-align:left">職稱／時薪<br><span style="font-weight:400;color:var(--muted)">計時＝實際生效時薪</span></th>
@@ -1477,11 +1523,12 @@ function renderRun(){
     }
     const roleCell=r.is_full_time?(n(m.mgr_allow)>0?'<b>店長</b>':'正職')
       :(`時薪 <b>${nf(eff)}</b>`+(wageNote?`<span style="color:var(--muted);font-size:11.5px"> (${wageNote})</span>`:'')+attNote);
-    h+=`<tr><td><b>${esc(r.name)}</b></td>
+    const isMan=MANUAL_H.indexOf(String(r.emp_id))>=0;
+    h+=`<tr><td><b${isMan?' class="bad"':''}>${esc(r.name)}</b>${isMan?'<br><span class="bad" style="font-size:11.5px">手動工時・沒跟考勤連動</span>':''}</td>
       <td style="text-align:left"><span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span>
       ${(r.is_full_time&&r.ratio<1)?`<span class="tag draft">折算${Math.round(r.ratio*100)}%</span>`:''}</td>
       <td style="text-align:left">${roleCell}</td>
-      <td>${r.total_hours}</td><td>${r.support_hours?r2(r.support_hours):'—'}</td>
+      <td>${isMan?`<span class="bad">${r.total_hours}</span>`:r.total_hours}</td><td>${r.support_hours?r2(r.support_hours):'—'}</td>
       <td>${s==null?'—':(s>=0?'+'+r2(s)+' H':`<span class="bad">${r2(s)} H</span>`)}</td>
       <td>${r.ot_paid_hours==null?'—':(r.ot_info&&r.ot_info.over_cap?`<span class="bad" title="本月加班超過 ${OT_MONTH_CAP} 小時上限">${r2(r.ot_paid_hours)} H ⚠</span>`:r2(r.ot_paid_hours)+' H')}</td>
       <td>${nf(r.gross)}</td><td>${nf(r.deduction)}</td><td class="big">${nf(r.net)}</td></tr>`;
@@ -1538,6 +1585,7 @@ async function toggleLock(){
   const lock=STATUS!=='final';
   let reason='';
   if(!lock){reason=prompt('解鎖原因（會寫進稽核紀錄）：')||'';if(!reason)return}
+  if(lock&&ASOF){ alert(ym()+' 還沒過完，現在的數字只算到昨天，不能鎖定。\n請等這個月過完、數字變成整月之後再鎖定。'); return; }
   /* 結轉要跑幾秒（後端要寫 run／item／audit 三張表），按鈕沒有回饋會讓人以為按了沒反應
      而連按好幾次（Eason 2026-09-03）。按下就 disable ＋ 顯示已經跑了幾秒。
      ⚠ 結束時的按鈕文字要依 STATUS 重算，不可還原成按下前的字串——成功時 STATUS 已經翻面，
@@ -2903,7 +2951,7 @@ function renderExport(){
   if(!RESULTS.length){ w.innerHTML='<div class="card"><div style="text-align:center;padding:34px;color:#8a817a">此月份尚無資料，請先到「月結」計算</div></div>'; return; }
   const row=x=>`<tr><td style="padding:4px 0;border-bottom:1px dotted var(--line)">${esc(x.item_label)}${expSub(x)?` <span style="color:#8a817a;font-size:12px">${expSub(x)}</span>`:''}</td><td style="text-align:right;border-bottom:1px dotted var(--line)">${nf(x.amount)}</td></tr>`;
   let h=`<div class="card"><div style="font-size:18px;font-weight:900">麻的小辛辣 薪資明細</div>
-    <div style="color:#8a817a;margin:4px 0 16px">${ym().replace('-','年')}月　${STATUS==='final'?'已鎖定':'草稿'}　共 ${RESULTS.length} 人</div>`;
+    <div style="color:#8a817a;margin:4px 0 16px">${ym().replace('-','年')}月　${STATUS==='final'?'已鎖定':'草稿'}${(STATUS!=='final'&&ASOF&&ASOF.as_of)?'（月中數字，只算到 '+mdOf(ASOF.as_of)+'）':''}　共 ${RESULTS.length} 人</div>`;
   RESULTS.forEach(r=>{
     h+=`<div class="exp-person" style="border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px">
       <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid var(--black);padding-bottom:8px;margin-bottom:8px">
@@ -2943,7 +2991,7 @@ function exportExcel(){
   });
   cost+='</table>';
   const html=`<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>
-    <h3>麻的小辛辣 薪資明細 ${ym()}（${STATUS==='final'?'已鎖定':'草稿'}）</h3>
+    <h3>麻的小辛辣 薪資明細 ${ym()}（${STATUS==='final'?'已鎖定':'草稿'}${(STATUS!=='final'&&ASOF&&ASOF.as_of)?'，月中數字只算到 '+mdOf(ASOF.as_of):''}）</h3>
     <h4>彙總</h4>${sum}<br><h4>逐筆明細</h4>${det}<br><h4>人事成本分類（對應損益表）</h4>${cost}</body></html>`;
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob(['﻿'+html],{type:'application/vnd.ms-excel;charset=utf-8'}));
