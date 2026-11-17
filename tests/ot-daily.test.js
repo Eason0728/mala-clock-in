@@ -146,7 +146,7 @@ vm.runInContext(`
   payReplaceAll= function(kind, rows){ globalThis.__DB[kind] = JSON.parse(JSON.stringify(rows)); };
   payAppend = function(){}; payInvalidate = function(){}; pnlSnapshotRemove_ = function(){};
   checkAdmin = function(){ return true; };
-  todayTaipeiStr = function(){ return '2026-11-21'; };
+  todayTaipeiStr = function(){ return '2026-12-01'; };   // 11 月已過完＝整月算法、可以鎖定（月中草稿另見 pay-asof.test.js）；「昨天」仍是上面的 11/20
   schedPubLoad_ = function(){ return JSON.parse(JSON.stringify(globalThis.__PUB)); };
 `, sb);
 const F = (n) => vm.runInContext(n, sb);

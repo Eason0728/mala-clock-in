@@ -90,7 +90,7 @@ function ctx(src) {
     payAppend = function(kind, rows){ globalThis.__DB[kind] = (globalThis.__DB[kind] || []).concat(JSON.parse(JSON.stringify(rows || []))); };
     payInvalidate = function(){}; ensurePayrollSheets = function(){};
     checkAdmin = function(){ return true; };
-    todayTaipeiStr = function(){ return '2026-11-06'; };
+    todayTaipeiStr = function(){ return '2026-12-01'; };   // 11 月已過完＝整月算法（月中草稿另見 pay-asof.test.js）
     currentYmTaipei = function(){ return '2026-12'; };
     payHolidaySync = function(){ return {}; };
     payClockRead = function(store, sheet){
@@ -127,6 +127,7 @@ console.log('§1 schema');
 console.log('§2 帶入規則');
 {
   const s = ctx();
+  vm.runInContext("todayTaipeiStr = function(){ return '2026-11-06'; };", s);   // 這段直接測帶入函式，「今天不算」要在 11 月裡
   const A = s.F('paySupportAuto_');
   chk('ym=2026-10 回 null（7B）', A('2026-10', 'SSLGF', true) === null);
   chk('ym=2026-09 回 null', A('2026-09', 'SSLGF', true) === null);
@@ -471,7 +472,7 @@ console.log('§12 上線前審查');
   const runRow = s.__DB.run.find((r) => r.ym === '2026-11' && r.emp_id === 'E01');
   chk('4 run 存 support_auto_h（A 君 12.5；E 君有手填仍記打卡值 8）', runRow && runRow.support_auto_h === 12.5 && s.__DB.run.find((r) => r.ym === '2026-11' && r.emp_id === 'E05').support_auto_h === 8, runRow);
   // 2026-11-06 加班逐日判斷在後面再 append ot_info（schema 只 append）：support_auto_h 仍在原本的位置（第 17 欄）
-  chk('4 run 表 schema 第 17 欄 support_auto_h（之後只 append）', s.F('PAY_SHEETS').run[16] === 'support_auto_h' && s.F('PAY_SHEETS').run.slice(-1)[0] === 'ot_info');
+  chk('4 run 表 schema 第 17 欄 support_auto_h（之後只 append）', s.F('PAY_SHEETS').run[16] === 'support_auto_h' && s.F('PAY_SHEETS').run[17] === 'ot_info' && s.F('PAY_SHEETS').run.slice(-1)[0] === 'as_of');   // 2026-11-17 再 append as_of
   let mo = s.H('payroll_month', { ym: '2026-11', store: 'SSLGF' });
   chk('4 手填差異（未存覆寫 20H）不算過期：不重算、E 君仍是 20H', !mo.support_auto.recalc && mo.run.results.find((r) => r.emp_id === 'E05').support_hours === 20);
   s.__CLOCK['ck-cf'].approved.push(AP('2026-11-12', 'CF21', 3));
