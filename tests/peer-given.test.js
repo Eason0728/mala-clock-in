@@ -121,7 +121,8 @@ function world() {
 }
 const dig = (sb, books, code) => { const b = books[code]; return sb.reqPeerDigest_({ id: code, getSheetByName: (n) => b[n] || null }, D2); };
 const giveAll = (sb, books, codes) => { const g = {}; codes.forEach((c) => { g[c] = { date: D2, people: JSON.parse(JSON.stringify(dig(sb, books, c))) }; }); return g; };
-const same = (a, b, m) => assert.strictEqual(JSON.stringify(a), JSON.stringify(b), m);
+const strip = (o) => { if (!o || typeof o !== 'object') return o; if (Array.isArray(o)) return o.map(strip); const x = {}; Object.keys(o).forEach((k) => { if (k === 'fs' && o[k] === null) return; if (k === 'by') return; x[k] = strip(o[k]); }); return x; };   // fs／by 是 2026-11-18 新加的，另有測試
+const same = (a, b, m) => assert.strictEqual(JSON.stringify(strip(a)), JSON.stringify(strip(b)), m);
 const CODES = ['A', 'B', 'H', 'X', 'D', 'E', 'F'];
 
 ok('摘要：同名兩位、離職、只有鏡像列、只有凌晨下班卡的人不放；放進去的是本店原始數字', () => {

@@ -1943,6 +1943,21 @@ function reqPeerRoster_(p, fresh) {
   if (memo && !fresh) memo[mk] = out;
   return out;
 }
+/* 同一單位才相加（2026-11-18 Eason）：墨竹亭和總部同一單位、總部和小辛辣同一單位、小辛辣和墨竹亭不同單位。
+   央廚、總部跟誰都算同一單位（同薪資門市表 support_group：CF／HQ＝*）。認不出的代碼當同一單位（照舊相加）。 */
+function reqUnitOf_(code) {
+  var c = String(code || '').toLowerCase();
+  if (c === 'hq' || c === 'cf') return '*';
+  if (c === 'gf') return 'sxl';
+  if (/^mzt/.test(c)) return 'mzt';
+  return '*';
+}
+function reqSameUnit_(a, b) { var x = reqUnitOf_(a), y = reqUnitOf_(b); return x === '*' || y === '*' || x === y; }
+function reqSelfCode_(selfId) {
+  if (!selfId || typeof REST_PEERS_ === 'undefined') return '';
+  for (var i = 0; i < REST_PEERS_.length; i++) if (REST_PEERS_[i] && REST_PEERS_[i].ss === selfId) return String(REST_PEERS_[i].code || '');
+  return '';
+}
 var REQ_PEER_MEMO_ = {};   // 同一次執行內共用（撤銷掃描、一次核定），Apps Script 每次執行都是新的
 function reqPeerDay_(name, date, fresh) {
   var tP = Date.now();
@@ -1954,17 +1969,19 @@ function reqPeerDayRaw_(name, date, fresh) {
   // 只檢查（一批，READ_MEMO_ 開著）才用 10 分鐘暫存（2026-11-14 Eason：量出光復正職每人 7～9.6 秒花在這裡）；
   // 真正送出核定、撤銷試算、fresh 重找一律重查別家店，不用暫存。讀不到別家（failed）的結果不存。
   var given = reqPeerGivenFor_(date);   // Mac mini 帶來的別家店摘要（只檢查一批才有；2026-11-15 核定前檢查加快 A）
-  var useC = !given && !fresh && typeof READ_MEMO_ !== 'undefined' && !!READ_MEMO_, ck = 'rpd:' + date + '|' + String(name).slice(0, 80), cache = null;
+  var useC = !given && !fresh && typeof READ_MEMO_ !== 'undefined' && !!READ_MEMO_, ck = 'rpd2:' + date + '|' + String(name).slice(0, 80), cache = null;
   if (useC) {
     try { cache = CacheService.getScriptCache(); var hit = cache.get(ck); if (hit) { REQ_PEER_MEMO_[mk] = JSON.parse(hit); return REQ_PEER_MEMO_[mk]; } } catch (e) { cache = null; }
   }
-  var out = REQ_PEER_MEMO_[mk] = { worked: false, pending: false, failed: false, work: 0, leave: 0, ot: 0, names: [] };
+  var out = REQ_PEER_MEMO_[mk] = { worked: false, pending: false, failed: false, work: 0, leave: 0, ot: 0, names: [], by: {} };
   if (typeof REST_PEERS_ === 'undefined' || !REST_PEERS_.length || !name || typeof restName_ !== 'function') return out;
   var nm = restName_(name), selfId = '';
   try { selfId = getSS().getId(); } catch (e) {}
   var dayStart = Date.parse(date + 'T00:00:00+08:00'), dayEnd = dayStart + 86400000;
+  var selfCode = reqSelfCode_(selfId);
   REST_PEERS_.forEach(function (p) {
     if (!p || !p.ss || p.ss === selfId) return;
+    if (selfCode && !reqSameUnit_(selfCode, p.code)) return;   // 不同單位（小辛辣↔墨竹亭）不相加（2026-11-18 Eason）
     if (given && Object.prototype.hasOwnProperty.call(given, p.code)) {   // 這家的摘要 Mac mini 帶來了：不開這家的試算表
       if (typeof chkT_ === 'function') chkT_('peer_given', 1);
       var g = Object.prototype.hasOwnProperty.call(given[p.code], nm) ? given[p.code][nm] : null;
@@ -2006,11 +2023,18 @@ function reqPeerOne_(ids, date, events, day, reqs) {
     else if (r.kind === 'leave') lv += Number(r.hours) || 0;
   });
   if (!worked && !recs.length && !lv) return null;
-  recs.forEach(function (r) { work += Number(r.approved_hours) || 0; });
-  return { w: worked, r: recs.length, work: work, lv: lv, ot: ot };
+  var fs = null;
+  recs.forEach(function (r) {
+    work += Number(r.approved_hours) || 0;
+    var m = /(\d{1,2}):(\d{2})/.exec(String(r.periods || ''));
+    if (m) { var v = Number(m[1]) * 60 + Number(m[2]); if (fs === null || v < fs) fs = v; }
+  });
+  return { w: worked, r: recs.length, work: work, lv: lv, ot: ot, fs: fs };   // fs：這家核定最早的開始（分鐘），支援兩家時數一樣算後上班那家（2026-11-18）
 }
 function reqPeerAdd_(out, code, c) {
   out.names.push(code);
+  if (!out.by) out.by = {};
+  out.by[code] = { work: c.r > 0 ? Math.round((Number(c.work) || 0) * 100) / 100 : 0, ot: Number(c.ot) || 0, pending: !(c.r > 0) && !!c.w, fs: c.fs == null || c.fs === '' || !isFinite(Number(c.fs)) ? null : Number(c.fs) };
   out.leave += Number(c.lv) || 0; out.ot += Number(c.ot) || 0;
   if (c.r > 0) { out.worked = true; out.work += Number(c.work) || 0; }
   else if (c.w) { out.worked = true; out.pending = true; }
@@ -2035,7 +2059,7 @@ function reqPeerGivenParse_(raw, date) {
     Object.keys(d.people).slice(0, 500).forEach(function (nm) {
       var c = d.people[nm];
       if (!c || typeof c !== 'object') return;
-      people[nm] = { w: c.w === true, r: Math.max(0, Math.floor(Number(c.r) || 0)), work: Number(c.work) || 0, lv: Number(c.lv) || 0, ot: Number(c.ot) || 0 };
+      people[nm] = { w: c.w === true, r: Math.max(0, Math.floor(Number(c.r) || 0)), work: Number(c.work) || 0, lv: Number(c.lv) || 0, ot: Number(c.ot) || 0, fs: c.fs == null || c.fs === '' || !isFinite(Number(c.fs)) ? null : Number(c.fs) };
     });
     by[String(code)] = people; n++;
   });
@@ -2099,30 +2123,64 @@ function reqFt8_(date, approvedHours, otHave, opt, okRows) {
       }
     }
   }
-  // 跨店加班算被支援那家（只算上班＋出差，不算假）：被支援那家最多要求它自己上班的時數；原單位自己超過 8 的部分一定留在原單位（＝單店規則，不拿掉）。
+  // 跨店加班歸屬（2026-11-18 Eason 改，取代 11-13）：同一天在原單位和支援單位都有上班（同一單位才相加，見 reqSameUnit_），
+  //   兩家合計超過 8 小時的加班算支援單位，不分誰先上後上；支援單位最多吸收它自己上班的時數，超過的留在原單位（確認頁第 1 題 B）。
+  //   支援兩家以上：只在支援單位之間比，時數較長的那家吸收；一樣長算後上班（核定最早開始較晚）的那家（第 2 題 A）。
+  //   原單位：營運系統帶 sched_home（原單位的打卡店代碼）；這家是原單位（sched_support=false）＝自己。沒帶＝別家都當原單位（只有一家支援時結果一樣）。
   // 別家讀不到（failed）＝照單店規則，不拿掉任何加班檢查（2026-11-13 審查 1、3、4）
   if (support || home) {
     var p2 = getPeer(), tol = REQ_STRICT_TOL_MIN / 60 + 0.005;
     if (p2.worked && !p2.failed) {
       if (support) out.drop = ['ot_hours', 'ot_void', 'ot_in_sched'];
-      else out.drop = ['ot_void'];      // 原單位：自己超過 8 的單照單店規則；加班單太多改下面看
+      else out.drop = ['ot_void'];      // 原單位：別家還沒核定前照單店規則；都核定了改下面看
       if (!p2.pending) {
-        var combW = r2(ownWork + p2.work), need = Math.max(0, r2(combW - REQ_FT8_H));
-        var supWork = support ? ownWork : p2.work, atSup = r2(Math.min(need, supWork)), atHome = r2(need - atSup);
-        var hereNeed = support ? atSup : atHome;
-        if (support && hereNeed > 0.005 && otHave + 0.005 < hereNeed) {
+        var x = reqFt8Split_(ownWork, opt, p2, support);
+        out.cross = x;
+        var hereNeed = x.here;
+        if (home) out.drop = ['ot_void', 'ot_hours'];
+        if (hereNeed > 0.005 && otHave + 0.005 < hereNeed) {
           out.otNeed = hereNeed;
-          out.probs.push({ rule: 'ot_hours', text: '兩家上班合計 ' + f(combW) + ' 小時，超過 ' + REQ_FT8_H + ' 的部分要在這家（被支援）開 ' + f(hereNeed) + ' 小時加班單（已核准 ' + f(otHave) + ' 小時）' });
+          out.probs.push({ rule: 'ot_hours', text: '兩家上班合計 ' + f(x.comb) + ' 小時，超過 ' + REQ_FT8_H + ' 的部分要在這家' + (support ? '（被支援）' : '（原單位）') + '開 ' + f(hereNeed) + ' 小時加班單（已核准 ' + f(otHave) + ' 小時）' +
+            (x.atSup > 0.005 && !x.selfAbs ? '；另外 ' + f(x.atSup) + ' 小時算在 ' + reqFt8StoreNames_([x.abs]) : '') });
         }
-        if (otHave > hereNeed + tol) out.probs.push({ rule: 'ot_hours', text: '兩家上班合計 ' + f(combW) + ' 小時，這家應有的加班是 ' + f(hereNeed) + ' 小時，已核准的加班單 ' + f(otHave) + ' 小時太多，請作廢或改單' });
-        if (home && atSup > 0.005 && p2.ot + 0.005 < atSup) {
-          out.probs.push({ rule: 'ot_peer', text: '兩家上班合計 ' + f(combW) + ' 小時，超過 ' + REQ_FT8_H + ' 的 ' + f(atSup) + ' 小時要在被支援的 ' + reqFt8StoreNames_(p2.names) +
-            ' 開加班單（那邊已核准 ' + f(p2.ot) + ' 小時）' });
+        if (otHave > hereNeed + tol) out.probs.push({ rule: 'ot_hours', text: '兩家上班合計 ' + f(x.comb) + ' 小時，這家應有的加班是 ' + f(hereNeed) + ' 小時，已核准的加班單 ' + f(otHave) + ' 小時太多，請作廢或改單' +
+          (x.atSup > 0.005 && !x.selfAbs ? '（' + f(x.atSup) + ' 小時加班要開在 ' + reqFt8StoreNames_([x.abs]) + '）' : '') });
+        if (!x.selfAbs && x.atSup > 0.005 && x.absOt + 0.005 < x.atSup) {
+          out.probs.push({ rule: 'ot_peer', text: '兩家上班合計 ' + f(x.comb) + ' 小時，超過 ' + REQ_FT8_H + ' 的 ' + f(x.atSup) + ' 小時要在被支援的 ' + reqFt8StoreNames_([x.abs]) +
+            ' 開加班單（那邊已核准 ' + f(x.absOt) + ' 小時）' });
         }
       }
     }
   }
   return out;
+}
+/** 跨店加班怎麼分（純函式，reqFt8_ 用）：ownWork＝這家核定（含出差）；opt.sched_home＝原單位代碼、opt.own_fs＝這家核定最早開始（分鐘）；
+ *  p2.by＝別家每店 {work, ot, fs}；support＝這家是支援帳號。
+ *  回 {comb 合計, need 超過 8, abs 吸收的支援店代碼（'' ＝這家）, selfAbs, atSup 支援店吸收, atHome 原單位, here 這家要開, absOt 吸收那家已核准加班}。 */
+function reqFt8Split_(ownWork, opt, p2, support) {
+  var r2 = function (x) { return Math.round(x * 100) / 100; };
+  var by = (p2 && p2.by) || {}, codes = Object.keys(by);
+  var comb = r2(ownWork + codes.reduce(function (a, c) { return a + (Number(by[c].work) || 0); }, 0));
+  if (!codes.length) comb = r2(ownWork + (Number(p2 && p2.work) || 0));
+  var need = Math.max(0, r2(comb - REQ_FT8_H));
+  var homeCode = support ? String(opt.sched_home || '') : '';
+  var sups = [];
+  if (support) sups.push({ code: '', work: ownWork, fs: opt.own_fs == null ? null : Number(opt.own_fs), ot: 0 });
+  codes.forEach(function (c) {
+    if (support && (!homeCode || c === homeCode)) return;      // 支援帳號：原單位不比；沒帶原單位＝別家都當原單位（同 11-13）
+    sups.push({ code: c, work: Number(by[c].work) || 0, fs: by[c].fs == null ? null : Number(by[c].fs), ot: Number(by[c].ot) || 0 });
+  });
+  if (!codes.length && !support) sups.push({ code: (p2 && p2.names && p2.names[0]) || '', work: Number(p2 && p2.work) || 0, fs: null, ot: Number(p2 && p2.ot) || 0 });
+  var abs = null;
+  sups.forEach(function (x) {
+    if (!(x.work > 0)) return;
+    if (!abs || x.work > abs.work + 0.005) { abs = x; return; }
+    if (Math.abs(x.work - abs.work) <= 0.005 && x.fs != null && (abs.fs == null || x.fs > abs.fs)) abs = x;   // 一樣長：後上班那家
+  });
+  var atSup = abs ? r2(Math.min(need, abs.work)) : 0, atHome = r2(need - atSup);
+  var selfAbs = !!abs && abs.code === '';
+  var here = selfAbs ? atSup : (support ? 0 : atHome);
+  return { comb: comb, need: need, abs: abs ? abs.code : '', selfAbs: selfAbs, atSup: atSup, atHome: atHome, here: r2(here), absOt: abs ? abs.ot : 0 };
 }
 /** 不能核定回 {ok:false, error:'need_request'|'need_diff_reason', message, ...}；可以回 null。
  *  opt：leaves、trip_hours、sched_day（H／R／W／空白）、diff_reason、acting（考勤管理個人帳號）；rows／force_strict／preview 給只讀試算用。 */

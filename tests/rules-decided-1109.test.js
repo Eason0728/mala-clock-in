@@ -59,12 +59,28 @@ const J = (x) => JSON.parse(JSON.stringify(x));
   const D = '2026-11-12';
   const X = (periods, hours) => ({ stores: [{ code: 'SSLMC', name: '美村', acct: 'M9', hours, days: [{ date: D, periods, hours }] }] });
   const need = (own, ownP, sp, sh) => J(S.call('payOtCrossNeed_', { day_h: own ? { [D]: own } : {}, day_periods: ownP ? { [D]: ownP } : {} }, X(sp, sh)))[D];
+  // 2026-11-18 Eason 改：不分先後算支援單位，最多到支援店自己的時數，其餘留本店
   chk('本店先 6H、支援後 4H：支援店開 2H', need(6, '10:00-16:00', '17:00-21:00', 4), [{ code: 'SSLMC', name: '美村', acct: 'M9', home: false, need: 2 }]);
-  chk('支援先 4H、本店後 6H：本店開 2H', need(6, '14:00-20:00', '09:00-13:00', 4), [{ code: '', name: '', acct: '', home: true, need: 2 }]);
+  chk('支援先 4H、本店後 6H：一樣算支援店 2H', need(6, '14:00-20:00', '09:00-13:00', 4), [{ code: 'SSLMC', name: '美村', acct: 'M9', home: false, need: 2 }]);
   chk('合計沒超過 8H 不用開', need(4, '10:00-14:00', '15:00-19:00', 4), []);
-  chk('本店本來就超過：兩邊各開', need(9, '09:00-18:00', '19:00-21:00', 2).map((x) => [x.home, x.need]), [[true, 1], [false, 2]]);
-  chk('同一家中間穿插：照時段先後', need(8, '09:00-13:00,18:00-22:00', '14:00-17:00', 3).map((x) => [x.home, x.need]), [[true, 3]]);
-  chk('時段看不懂：本店排前面', need(6, '', '17:00-21:00', 4).map((x) => [x.home, x.need]), [[false, 2]]);
+  chk('本店 9＋支援 2：支援吸收 2、本店留 1', need(9, '09:00-18:00', '19:00-21:00', 2).map((x) => [x.home, x.need]), [[true, 1], [false, 2]]);
+  chk('本店 8＋支援 3：支援吸收 3', need(8, '09:00-13:00,18:00-22:00', '14:00-17:00', 3).map((x) => [x.home, x.need]), [[false, 3]]);
+  chk('時段看不懂也一樣算支援店', need(6, '', '17:00-21:00', 4).map((x) => [x.home, x.need]), [[false, 2]]);
+  chk('本店 10＋支援 1：支援吸收 1、本店留 2', need(10, '08:00-18:00', '19:00-20:00', 1).map((x) => [x.home, x.need]), [[true, 2], [false, 1]]);
+  {
+    const X2 = { stores: [{ code: 'A', name: 'A店', acct: 'a', days: [{ date: D, periods: '10:00-14:30', hours: 4.5 }] }, { code: 'B', name: 'B店', acct: 'b', days: [{ date: D, periods: '15:00-19:00', hours: 4 }] }] };
+    chk('支援兩家：A 4.5、B 4 → A 吸收 0.5（本店 0）', J(S.call('payOtCrossNeed_', { day_h: {}, day_periods: {} }, X2))[D], [{ code: 'A', name: 'A店', acct: 'a', home: false, need: 0.5 }]);
+    chk('支援兩家：本店 3、A 4.5、B 4 → A 吸收 3.5', J(S.call('payOtCrossNeed_', { day_h: { [D]: 3 }, day_periods: { [D]: '07:00-10:00' } }, X2))[D].map((x) => [x.code, x.need]), [['A', 3.5]]);
+    const X3 = { stores: [{ code: 'A', name: 'A店', acct: 'a', days: [{ date: D, periods: '08:00-12:00', hours: 4 }] }, { code: 'B', name: 'B店', acct: 'b', days: [{ date: D, periods: '13:00-17:00', hours: 4 }] }] };
+    chk('支援兩家一樣長：後上班那家', J(S.call('payOtCrossNeed_', { day_h: { [D]: 2 }, day_periods: { [D]: '18:00-20:00' } }, X3))[D].map((x) => [x.code, x.need]), [['B', 2]]);
+  }
+  // 跨店請款加班加成（2026-11-18）：張淳 總部 6.75＋金山 2 → 金山吸收 0.75（1.34 段）；補休抵掉的不算
+  {
+    const cr = { [D]: [{ code: 'MZTJS', name: '金山', acct: 'JS1', home: false, need: 0.75 }] };
+    chk('請款加成：金山 0.75H 1.34 段', J(S.call('payOtCrossPremium_', { ot_left: { [D]: { w43: 0.75, w53: 0 } } }, cr)), [{ code: 'MZTJS', name: '金山', h43: 0.75, h53: 0 }]);
+    chk('請款加成：補休抵掉一半只剩一半', J(S.call('payOtCrossPremium_', { ot_left: { [D]: { w43: 0.5, w53: 0 } } }, { [D]: [{ code: '', home: true, need: 1 }, { code: 'A', name: 'A店', home: false, need: 1 }] })), [{ code: 'A', name: 'A店', h43: 0.25, h53: 0 }]);
+    chk('請款加成：全抵掉不列', J(S.call('payOtCrossPremium_', { ot_left: { [D]: { w43: 0, w53: 0 } } }, cr)), []);
+  }
   const check = (cross, f, fx, own) => J(S.call('payOtFormCheck_', { ot_own_h: own || { [D]: 6 }, ot_forms: f || { ot: {}, trip: {} }, ot_cross: cross, ot_forms_x: fx, ot_name: '測試甲' })).missing;
   const cr = { [D]: [{ code: 'SSLMC', name: '美村', acct: 'M9', home: false, need: 2 }] };
   chk('支援店沒開：列缺單、標哪家店', check(cr, null, { SSLMC: {} }), [{ date: D, need: 2, have: 0, store: 'SSLMC', store_name: '美村' }]);
