@@ -41,12 +41,13 @@ MINI_SLOW = CL.MINI_JS.replace("if (M.mode === 'off')", "if (M.mode === 'slow' &
 class Fake(RS.Fake):
     """開頁資料、額度回什麼可以換；可以讓開頁資料先失敗。"""
 
-    def __init__(self, init_stores=None, punch=None, quota=None, init_fail=0, **k):
+    def __init__(self, init_stores=None, punch=None, quota=None, init_fail=0, comp=None, **k):
         super().__init__(**k)
         self.init_stores = init_stores or [S_HQ]
         self.punch = punch
         self.quota = quota if quota is not None else FAM(56)
         self.init_fail = init_fail
+        self.comp = comp or {'allowed': False, 'known': True, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}
 
     def handler(self, route):
         try:
@@ -64,7 +65,7 @@ class Fake(RS.Fake):
                       'comp': None, 'leave_types': LT, 'quota': []})
         if a == 'line_hub_req_quota':
             self.calls.append({'action': a, 'code': '', 'body': b, 'raw': route.request.post_data})
-            return J({'ok': True, 'quota': self.quota, 'comp': {'allowed': False, 'known': True, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}})
+            return J({'ok': True, 'quota': self.quota, 'comp': self.comp})
         return super().handler(route)
 
 
@@ -261,6 +262,22 @@ def main():
             s = submits(f)
             ok('再按一次 → 送一段（沒有 segments）', len(s) == 1 and 'segments' not in s[0]['body'], s[0]['body'] if s else s)
             p.context.close()
+
+            # 補休可請與否（comp.allowed）變動也要觸發「請確認」（驗收補：程式曾被接在註解後面沒執行）；兩個方向
+            for was, now_ in ((True, False), (False, True)):
+                mk = lambda a: {'allowed': a, 'known': True, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}
+                f = Fake(quota=FAM(56), comp=mk(now_))
+                p, _ = open_p(br, f, 'leave', delay={'line_hub_req_quota': 4000}, cache=cache_js([S_HQ]), mini={'peek': {'quota': {'ok': True, 'quota': FAM(56), 'comp': mk(was)}}}, wait=FORM)
+                p.click('#reqView .rq-chip:has-text("家庭照顧假")')
+                p.click(FORM)
+                p.wait_for_timeout(300)
+                early = len(submits(f))
+                p.wait_for_timeout(5000)
+                ok('補休可請 %s → %s（額度數字相同）：不送、寫「剛更新」、請確認' % (was, now_), early == 0 and len(submits(f)) == 0 and '剛更新' in txt(p) and p.locator('#reqView .rq-gate-note').count() == 1, txt(p)[:300])
+                p.click(FORM)
+                p.wait_for_selector('#reqView .rq-tabs button.on[data-tab=mine]', timeout=15000)
+                ok('再按一次 → 送出 1 張', len(submits(f)) == 1, len(submits(f)))
+                p.context.close()
 
             # 生理假「已請過哪幾天」（dates）也要比對：記住的沒有、最新的有 → 不直接送，換成最新、請確認（額度數字都一樣）
             COMP0 = {'allowed': False, 'known': True, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}   # 同 Fake 額度回的補休帳：這一段只想比「已請日期」

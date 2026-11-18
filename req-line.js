@@ -1358,7 +1358,8 @@
       o.lt = (lt.common || []).concat(lt.special || []).indexOf(lv.type) >= 0;
       if (withQuota) {
         var q = ((st.init && st.init.quota) || []).filter(function (y) { return y.name === lv.type; })[0];
-        o.q = q ? [q.remain_h, q.cap_h, q.used_n === undefined ? null : q.used_n, Array.isArray(q.dates) ? q.dates.map(String).sort() : null] : null;   // dates＝生理假已請過哪幾天（2026-11-18 驗收補） o.cb = compBlocked();
+        o.q = q ? [q.remain_h, q.cap_h, q.used_n === undefined ? null : q.used_n, Array.isArray(q.dates) ? q.dates.map(String).sort() : null] : null;   // dates＝生理假已請過哪幾天（2026-11-18 驗收補）
+        o.cb = compBlocked();
       }
     }
     if (x && x.seg2 && st.info) o.sg = seg2Ok(st.tab, st.tab === 'leave' ? lv.type : '');
