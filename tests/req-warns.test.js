@@ -35,14 +35,14 @@ ok('事假：前一天以前送 → 沒提醒；當天送、事後送 → 「事
   rows.forEach((r, i) => { r.id = 'r' + (i + 1); });
   assert.deepStrictEqual(pub().map((x) => x.warns), [[], ['事假應在前一天請（這張是當天才送）'], ['事假應在前一天請（這張是事後才送）']]);
 });
-ok('事假：本月第 3 次起提醒（依日期排；退回、取消、作廢不算；別的月份、別人不算）', () => {
+ok('事假：「本月第 N 次」提醒 2026-11-18 拿掉（N4）——第 3 次起也不再出現（原本依日期排；退回、取消、作廢不算）', () => {
   rows = [mk({ date: '2026-10-03' }), mk({ date: '2026-10-20', hours: 4 }), mk({ date: '2026-10-05', status: 'rejected' }),
           mk({ date: '2026-10-08', hours: 4 }), mk({ date: '2026-09-30', created_at: '2026-09-01T09:00:00+08:00' }), mk({ date: '2026-10-09', emp_id: 'E02' }), mk({ date: '2026-10-25', status: 'cancelled' })];
   rows.forEach((r, i) => { r.id = 'r' + (i + 1); });
   const p = pub();
   assert.deepStrictEqual(p[0].warns, []);
   assert.deepStrictEqual(p[3].warns, []);                       // 10/08 第 2 次
-  assert.deepStrictEqual(p[1].warns, ['本月第 3 次事假']);         // 10/20 第 3 次；合計 8+4+4=16 小時＝2 天
+  assert.deepStrictEqual(p[1].warns, []);                       // 10/20 第 3 次：2026-11-18 起不提醒（N4）；合計 8+4+4=16 小時＝2 天，沒超過 3 天
   assert.deepStrictEqual(p[4].warns, []);                       // 9 月
   assert.deepStrictEqual(p[5].warns, []);                       // 別人
 });

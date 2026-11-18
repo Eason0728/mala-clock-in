@@ -434,6 +434,27 @@ ok('requests 分頁是人手建的（沒鎖文字）：date／start／end 被轉
   const a = m.sb.handleReqAttach_({ id_token: 'TOK_U1', id: r.request.id, attach_id: '1AbCdEfGhIjKlMnOp-_234567' });
   assert.strictEqual(a.error, 'not_pending', '核准後不能再補附（流程正確）');
 });
+ok('一次填兩段（2026-11-18）：一次 setValues 寫兩列，date／start／end 照樣是文字（新 grp 欄也鎖文字）；reqRows_ 讀回 group／seg；格線剛好滿也寫得進去（先補列）', () => {
+  const m = make({ props: { REQ_SEG2_KINDS: 'ot' } }); const e = hire(m); bindLine(m, e.key);
+  m.setNow('2026-07-14T21:00:00');
+  const r = m.sb.handleReqSubmit_({ id_token: 'TOK_U1', kind: 'ot', date: '2026-07-14', reason: '補貨', segments: [{ start: '11:00', end: '14:00' }, { start: '17:00', end: '21:00' }] });
+  assert.ok(r.ok, JSON.stringify(r));
+  const sh = m.sheet('requests');
+  [2, 3].forEach((row) => { assert.strictEqual(describe(sh, row, 6), 'text(@)', 'date'); assert.strictEqual(describe(sh, row, 8), 'text(@)', 'start'); assert.strictEqual(describe(sh, row, 24), 'text(@)', 'grp'); });
+  const rows = m.sb.reqRows_(m.ss);
+  eq(rows.map((x) => [x.date, x.start, x.end, x.hours, x.__seg]), [['2026-07-14', '11:00', '14:00', 3, 1], ['2026-07-14', '17:00', '21:00', 4, 2]]);
+  assert.ok(rows[0].grp && rows[0].grp === rows[1].grp);
+  // 舊分頁（只到 proxy_by、格線只剩 1 列空）：reqHeads_ 補 grp 表頭、reqAppendRows_ 先補列再寫
+  const m2 = make({ props: { REQ_SEG2_KINDS: 'ot' } }); const e2 = hire(m2); bindLine(m2, e2.key);
+  const H23 = m2.c('REQ_HEADERS_').slice(0, 23);
+  const sh2 = m2.ss.insertSheet('requests'); sh2.getRange('A:W').setNumberFormat('@'); sh2.getRange(1, 1, 1, 23).setValues([H23]);
+  sh2.maxRows = 2; sh2.maxCols = 23;
+  m2.setNow('2026-07-14T21:00:00');
+  const r2 = m2.sb.handleReqSubmit_({ id_token: 'TOK_U1', kind: 'ot', date: '2026-07-14', reason: '補貨', segments: [{ start: '11:00', end: '14:00' }, { start: '17:00', end: '21:00' }] });
+  assert.ok(r2.ok, JSON.stringify(r2));
+  assert.strictEqual(sh2.getMaxColumns() >= 24 && sh2.getMaxRows() >= 3, true);
+  eq(m2.sb.reqRows_(m2.ss).map((x) => x.start + ' ' + x.__seg), ['11:00 1', '17:00 2']);
+});
 ok('忘打卡申請「中間休息」核准後，payCollect 讀 requests（date 經 normCellDate）把兩張卡只算一次忘刷', () => {
   const m = make(); const e = hire(m); bindLine(m, e.key);
   m.setNow('2026-07-14T09:00:00'); punch(m, e.key, 'in');
