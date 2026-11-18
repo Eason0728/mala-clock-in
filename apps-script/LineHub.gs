@@ -641,7 +641,7 @@ function lineHubReply_(replyToken, texts) {
    有店讀不到時不記，下次重查。 */
 var LINE_HUB_MINE_TTL = 300;
 function lineHubForget_(userId) {
-  CacheService.getScriptCache().removeAll(['lhm:' + userId, 'lhv:' + userId, 'lhp2:' + userId, 'lhpa:' + userId]);
+  CacheService.getScriptCache().removeAll(['lhm:' + userId, 'lhv:' + userId, 'lhp2:' + userId, 'lhpa:' + userId, 'lhix']);   // lhix：共用對照表（2026-11-18）也要重建
 }
 /** view＝true：查詢用，含離職 60 天內（lineHubCanView_）；預設只算在職（綁定、打卡相關） */
 function lineHubMine_(userId, info, view) {
@@ -668,6 +668,133 @@ function lineHubMine_(userId, info, view) {
     cache.put(key, JSON.stringify(out.map(function (m) { return { c: m.st.code, e: String(m.row.emp_id), n: String(m.row.name), s: String(m.row.src_store || '') }; })), LINE_HUB_MINE_TTL);
   }
   return out;
+}
+
+/* ── 共用對照表：所有店「哪個 LINE 綁在哪一列」（2026-11-18 Eason：第一次開申請頁向光復讀取要 13～14 秒）──
+ * 原本每個人第一次查都要逐店開 9 家名冊：申請頁開頁資料一次（lineHubMine_）、找薪資那家又一次（lineHubPayPickFresh_），
+ * 同時送出的額度那支再各一次（4 輪 × 9 家），是開頁最慢的一段。
+ * 改成讀一輪 9 家名冊 → { LINE 帳號: [{c 店代碼, e 工號, n 姓名, s 支援來源, a 在職, v 離職 60 天內也算}] } 放 CacheService 5 分鐘
+ * （跟原本每人 5 分鐘快取一樣新），誰先查誰建；Mac mini 每 4 分鐘打 line_hub_warm 先建好（同仁開頁就不用等讀名冊）。
+ * 只給「查詢」用：申請頁開頁資料、額度（handleLineHubReqInit_／handleLineHubReqQuota_）與 lineHubPayPickFresh_（薪資卡、額度、補休帳）。
+ * 綁定、打卡、跨店自動加入照舊走 lineHubMine_，完全不受影響。
+ * 保護：①有任何一家名冊讀不到就不存、這次也不用（退回逐店讀）；②對照表裡找不到這個人 → 照原本逐店讀一次（剛綁好的人不會被說沒綁）；
+ * ③光復這邊綁定、解綁、設離職連帶（都會呼叫 lineHubForget_）一起清掉；店家那邊設離職（店家會通知光復 line_hub_left → lineHubLeftCascade_ → lineHubForget_，對照表當下就清）不用等；店家那邊主管解除綁定，最多 5 分鐘後反映（同原本每人快取），
+ *   送出申請時店家後端照樣用自己的名冊檢查。存法：JSON 切成每段 LINE_HUB_IDX_CHUNK 字（CacheService 單一值上限 100KB），
+ *   鍵 lhix:<版本>:<段>，目錄鍵 lhix；段數超過上限就不存（每次照舊逐店讀，不會錯只會慢）。 */
+var LINE_HUB_IDX_TTL = 300, LINE_HUB_IDX_WARM_AGE = 200, LINE_HUB_IDX_CHUNK = 20000, LINE_HUB_IDX_MAX_CHUNKS = 40;
+function lineHubIdxBuild_() {
+  var stores = lineHubStores_(), map = {}, n = 0;
+  for (var i = 0; i < stores.length; i++) {
+    var st = stores[i], rows;
+    try { rows = lineHubRoster_(st); } catch (e) { return null; }   // 有店讀不到：整份不用（同 lineHubMine_ 的 bad）
+    (rows || []).forEach(function (r) {
+      var u = String(r.line_user_id || '');
+      if (!u) return;
+      var a = lineHubActive_(r), v = lineHubCanView_(r);
+      if (!a && !v) return;
+      (map[u] = map[u] || []).push({ c: String(st.code), e: String(r.emp_id), n: String(r.name), s: String(r.src_store || ''), a: a ? 1 : 0, v: v ? 1 : 0 });
+      n++;
+    });
+  }
+  return { at: Date.now(), n: n, m: map };
+}
+function lineHubIdxSave_(idx) {
+  try {
+    var s = JSON.stringify({ at: idx.at, n: idx.n, m: idx.m }), parts = [];
+    for (var i = 0; i < s.length; i += LINE_HUB_IDX_CHUNK) parts.push(s.slice(i, i + LINE_HUB_IDX_CHUNK));
+    if (!parts.length || parts.length > LINE_HUB_IDX_MAX_CHUNKS) return false;
+    var ver = String(idx.at) + '-' + Math.floor(Math.random() * 1e6), kv = {};
+    parts.forEach(function (p, j) { kv['lhix:' + ver + ':' + j] = p; });
+    var c = CacheService.getScriptCache();
+    if (typeof c.putAll === 'function') c.putAll(kv, LINE_HUB_IDX_TTL + 60);   // 各段比目錄多放一分鐘：目錄在、段一定在
+    else Object.keys(kv).forEach(function (k) { c.put(k, kv[k], LINE_HUB_IDX_TTL + 60); });
+    c.put('lhix', JSON.stringify({ v: ver, k: parts.length, at: idx.at }), LINE_HUB_IDX_TTL);
+    return true;
+  } catch (e) { return false; }
+}
+function lineHubIdxLoad_() {
+  try {
+    var c = CacheService.getScriptCache(), meta = c.get('lhix');
+    if (!meta) return null;
+    var m = JSON.parse(meta), keys = [];
+    if (!m || !(m.k > 0) || m.k > LINE_HUB_IDX_MAX_CHUNKS) return null;
+    for (var j = 0; j < m.k; j++) keys.push('lhix:' + m.v + ':' + j);
+    var got = {}, s = '';
+    if (typeof c.getAll === 'function') got = c.getAll(keys) || {};
+    else keys.forEach(function (k) { got[k] = c.get(k); });
+    for (var k = 0; k < keys.length; k++) { if (typeof got[keys[k]] !== 'string') return null; s += got[keys[k]]; }
+    var idx = JSON.parse(s);
+    if (!idx || !idx.m || typeof idx.m !== 'object' || !(Date.now() - Number(idx.at) < LINE_HUB_IDX_TTL * 1000)) return null;
+    return idx;
+  } catch (e) { return null; }
+}
+/** 拿對照表：快取有就用，沒有就讀一輪名冊建；建不起來回 null（呼叫端退回原本的讀法）。 */
+function lineHubIdx_() {
+  var idx = lineHubIdxLoad_();
+  if (idx) return idx;
+  idx = lineHubIdxBuild_();
+  if (!idx) return null;
+  lineHubIdxSave_(idx);
+  return idx;
+}
+/** 查詢用的「這個 LINE 綁了哪幾家」：形狀同 lineHubMine_ 的回傳（[{st, row:{emp_id,name,src_store}}]），順序也一樣（店別順序、名冊列順序）。 */
+function lineHubMineFast_(userId, view) {
+  var idx = null;
+  try { idx = lineHubIdx_(); } catch (e) { idx = null; }
+  if (!idx) return lineHubMine_(userId, null, view);
+  var stores = lineHubStores_(), out = [];
+  (idx.m[String(userId)] || []).forEach(function (x) {
+    if (!(view ? x.v : x.a)) return;
+    var st = stores.filter(function (s) { return String(s.code) === String(x.c); })[0];
+    if (st) out.push({ st: st, row: { emp_id: x.e, name: x.n, src_store: x.s } });
+  });
+  if (!out.length) return lineHubMine_(userId, null, view);   // 對照表裡沒有（可能剛綁好、剛離職）：照原本逐店讀一次，結果以那次為準
+  return out;
+}
+/** 薪資的店（payStoreList 的一列）對到對照表的哪一家：同一份打卡試算表才算（光復＝本系統試算表）；對不到、或兩家共用一份 → null（那家照舊讀名冊）。 */
+function lineHubPayHubMap_() {
+  var selfId = '';
+  try { selfId = typeof spreadsheetId === 'function' ? String(spreadsheetId() || '') : ''; } catch (e) { selfId = ''; }
+  var def = typeof PAY_DEFAULT_STORE !== 'undefined' ? String(PAY_DEFAULT_STORE) : '';
+  var byId = {}, dup = {};
+  lineHubStores_().forEach(function (st) {
+    var id = String(st.code) === '' ? selfId : String(st.ss_id || '');
+    if (!id) return;
+    if (Object.prototype.hasOwnProperty.call(byId, id)) dup[id] = true;
+    byId[id] = String(st.code);
+  });
+  return function (s) {
+    var id = String(s.clock_ss_id || '');
+    if (!id && def && String(s.code || def) === def) id = selfId;
+    if (!id || dup[id] || !Object.prototype.hasOwnProperty.call(byId, id)) return null;
+    return byId[id];
+  };
+}
+
+/** {action:'line_hub_warm'} → {ok, built, age_s|ms}：Mac mini 每 4 分鐘打一次，讓對照表一直是熱的（營運系統 server/line-req.js warmTick）。
+ *  不收金鑰、不回任何人的資料（也不回綁定總筆數）。對照表還新（< LINE_HUB_IDX_WARM_AGE 秒）就直接回、不讀名冊。
+ *  節流（2026-11-18 驗收補）：重建失敗（有店讀不到、或資料太大存不進）要留記號 lhixb 60 秒，期間再被呼叫一律直接回 busy（不讀表）——
+ *  不需金鑰，不能被連打成「每次重讀九家名冊」；店家恢復後最多 60 秒內再試。成功（存得進）不留記號，由對照表自己的新鮮度（200 秒）擋，同原本。
+ *  重建中（別人正在建）先占位 60 秒。不拿 ScriptLock（重建約要讀 9 家名冊，不能卡住打卡寫入）。 */
+var LINE_HUB_IDX_BUSY_FAIL = 60;
+function handleLineHubWarm_() {
+  var t0 = Date.now(), c = CacheService.getScriptCache(), cur = lineHubIdxLoad_();
+  if (cur && t0 - Number(cur.at) < LINE_HUB_IDX_WARM_AGE * 1000) return { ok: true, built: false, age_s: Math.round((t0 - Number(cur.at)) / 1000) };
+  var mark = c.get('lhixb');
+  if (mark) return mark === 'f' ? { ok: false, built: false, busy: true, error: 'unreadable' } : { ok: true, built: false, busy: true };
+  c.put('lhixb', 'b', 60);   // 建的時候先占位
+  var res = { ok: false, built: false, error: 'unreadable' }, failed = true;
+  try {
+    var idx = lineHubIdxBuild_();
+    if (idx) {
+      var saved = lineHubIdxSave_(idx);
+      res = { ok: true, built: true, saved: saved, ms: Date.now() - t0 };
+      failed = !saved;   // 存不進（太大）也算失敗那一類
+    }
+    return res;
+  } finally {
+    try { if (failed) c.put('lhixb', 'f', LINE_HUB_IDX_BUSY_FAIL); else c.remove('lhixb'); } catch (e) { /* 占位 60 秒後自己消失 */ }
+  }
 }
 
 /* ── 設離職的連帶停用（2026-11-11 Eason 定，B13；說明見 Code.gs leftCascadeAfter_）──
@@ -965,8 +1092,18 @@ function lineHubCompFor_(userId) {
 }
 function lineHubPayPickFresh_(userId) {
   var hits = [];
+  // 共用對照表（2026-11-18）：對得上的店直接用表裡的列（只帶工號、姓名＝同快取命中時的形狀），不再開那家名冊；
+  // 對照表建不起來、或表裡沒有這個人（可能剛綁好）→ 全部照原本逐店讀。
+  var idx = null, hubOf = null, mineIdx = null;
+  try { idx = lineHubIdx_(); } catch (e) { idx = null; }
+  if (idx && idx.m[String(userId)]) { mineIdx = idx.m[String(userId)]; hubOf = lineHubPayHubMap_(); }
   payStoreList().forEach(function (s) {
     var code = String(s.code), rs = [];
+    var hc = hubOf ? hubOf(s) : null;
+    if (hc !== null) {
+      mineIdx.forEach(function (x) { if (String(x.c) === hc && x.v) hits.push({ me: { emp_id: x.e, name: x.n }, store: code }); });
+      return;
+    }
     try { rs = payClockRead(code, 'roster'); } catch (e) { return; }
     rs.forEach(function (r) {
       if (lineHubCanView_(r) && r.line_user_id && String(r.line_user_id) === String(userId)) hits.push({ me: r, store: code });
@@ -1695,6 +1832,7 @@ var LINE_HUB_HANDLERS = {
   line_bind_name: handleLineBindName_,
   line_hub_req_init: function (b) { return handleLineHubReqInit_(b); },
   line_hub_req_quota: function (b) { return handleLineHubReqQuota_(b); },   // 申請頁額度與補休帳（2026-11-06，開頁加快）
+  line_hub_warm: function () { return handleLineHubWarm_(); },               // Mac mini 先建好共用對照表（2026-11-18，申請頁第一次開頁加快）
   line_hub_pay_lock: function (b) { return handleLineHubPayLock_(b); },     // 各店後端問「這家店這個月薪資鎖了沒」（2026-11-16）
   line_hub_attach_put: function (b) { return handleLineHubAttachPut_(b); },
   line_hub_attach_get: function (b) { return handleLineHubAttachGet_(b); },
@@ -1839,7 +1977,7 @@ function handleLineHubReqInit_(body) {
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
   if (lineHubThrottled_('rqi', userId, 20, 60)) return { ok: false, error: 'too_many' };
-  var mine = lineHubMine_(userId, null, false);
+  var mine = lineHubMineFast_(userId, false);   // 共用對照表（2026-11-18）：不用每次逐店讀名冊
   if (!mine.length) return { ok: false, error: 'not_bound' };
   // support（2026-11-18，一次填兩段的加班防呆）：名冊 src_store 有值＝自動加入的支援帳號；沒有＝原單位。申請頁用它找「該吸收加班的那家」，舊申請頁不認得這欄位照常用。
   var stores = mine.map(function (x) { return { code: String(x.st.code), name: String(x.st.name), emp_id: String(x.row.emp_id), emp_name: String(x.row.name), support: !!String(x.row.src_store || '').trim() }; });
@@ -1912,7 +2050,7 @@ function handleLineHubReqQuota_(body) {
   var userId = verifyLineIdToken_(body.id_token);
   if (!userId) return { ok: false, error: 'invalid_id_token' };
   if (lineHubThrottled_('rqq', userId, 20, 60)) return { ok: false, error: 'too_many' };
-  if (!lineHubMine_(userId, null, false).length) return { ok: false, error: 'not_bound' };
+  if (!lineHubMineFast_(userId, false).length) return { ok: false, error: 'not_bound' };
   var qc = lineHubReqQuota_(userId);
   return { ok: true, quota: lineHubQuotaOut_(qc.quota), comp: qc.comp, annual_from: qc.annual_from || '', ft: qc.ft === true || qc.ft === false ? qc.ft : null };
 }
