@@ -2091,6 +2091,33 @@ function reqBindFrom_() {
 }
 /** 核定時段少了幾張打卡。periods：[{startMs,endMs}]；segs：[{inMs,outMs}]（null＝沒有那張） */
 /** 程式碼.js 還沒有 loneCardsForPeriods_ 時的舊算法：每段取前後 4 小時內第一張單獨的卡 */
+/* 核定時段跟已核准加班單之間沒接上的空檔（同一段打卡從核定時段一路打到加班單，中間那段沒核定）→ 白話提示（2026-11-18 驗收 A）。
+   例：「加班單（21:00–21:45）跟上班時段（到 20:30）中間有 30 分鐘沒接上：請把加班單改成從 20:30 開始，或把上班時段接到加班單開始」 */
+function reqOtGapHints_(date, otRows, periods, segs) {
+  var ps = (periods || []).filter(function (p) { return p && p.startMs != null && p.endMs != null; }).slice().sort(function (a, b) { return a.startMs - b.startMs; });
+  var full = (segs || []).filter(function (s) { return s && s.inMs != null && s.outMs != null; });
+  var cover = function (a, b) { return full.some(function (s) { return s.inMs <= a && s.outMs >= b; }); };
+  var inside = function (a, b) { return ps.some(function (p) { return p.startMs < b && p.endMs > a; }); };
+  var out = [];
+  (otRows || []).forEach(function (r) {
+    var a = reqHm_(r.start), b = reqHm_(r.end);
+    if (!a || !b) return;
+    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
+    if (e <= s) e += 86400000;
+    [0, 86400000].forEach(function (d) {
+      var os = s + d, oe = e + d;
+      var before = ps.filter(function (p) { return p.endMs < os; }).pop();
+      if (before && cover(before.endMs, os) && !inside(before.endMs, os)) {
+        out.push('加班單（' + a + '–' + b + '）跟上班時段（到 ' + reqOtPunchHm_(before.endMs) + '）中間有 ' + Math.round((os - before.endMs) / 60000) + ' 分鐘沒接上：請把加班單改成從 ' + reqOtPunchHm_(before.endMs) + ' 開始，或把上班時段接到加班單開始');
+      }
+      var after = ps.filter(function (p) { return p.startMs > oe; })[0];
+      if (after && cover(oe, after.startMs) && !inside(oe, after.startMs)) {
+        out.push('加班單（' + a + '–' + b + '）跟上班時段（' + reqOtPunchHm_(after.startMs) + ' 起）中間有 ' + Math.round((after.startMs - oe) / 60000) + ' 分鐘沒接上：請把加班單改成到 ' + reqOtPunchHm_(after.startMs) + '，或把上班時段從加班單結束接起');
+      }
+    });
+  });
+  return out;
+}
 function reqLoneFallback_(periods, full, segs) {
   var used = [], out = {};
   periods.forEach(function (p, pi) {
@@ -2861,7 +2888,10 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   // 出差日：當天有打卡、湊不成完整一段就算忘刷，要忘打卡單；整天沒打卡、或打卡都成段（另一段是出差）不算（2026-11-10 Eason）
   var loneCard = (segs || []).some(function (s) { return (s.inMs == null) !== (s.outMs == null); });   // 有上班沒下班、有下班沒上班
   var missBad = bindOn && !(tripOk && !loneCard) && miss > missHave;   // 出差日只有「湊不成完整一段的卡」才要忘打卡單
-  if (missBad) add('miss', '少了 ' + miss + ' 張打卡，要有忘打卡單（已核准 ' + missHave + ' 張）');
+  // 2026-11-18 驗收 A：缺的卡其實是「核定時段跟已核准加班單之間沒接上」（同一段打卡中間沒核定）→ 白話講怎麼改，不叫人開忘打卡單；真的少打卡照舊
+  var otGaps = missBad ? reqOtGapHints_(date, otRows, periods, reqWorkingSegs_(segs, date) || []) : [];
+  if (missBad && otGaps.length && miss - missHave <= 2 * otGaps.length) { otGaps.forEach(function (t) { add('ot_gap', t); }); missBad = false; }
+  else if (missBad) add('miss', '少了 ' + miss + ' 張打卡，要有忘打卡單（已核准 ' + missHave + ' 張）');
   if (strict) reqStrictLeaveProbs_(ok, opt.leaves).forEach(function (t) { add('leave', t); });
   if (strict) reqLeaveOverlapProbs_(date, ok, periods).forEach(function (t) { add('leave_overlap', t); });   // 2026-11-18 Eason：核定上班不能跟已核准假單／出差單時段重疊
   // 正職上班日滿 8 小時＋跨店加班算被支援那家（2026-11-13 Eason，見 reqFt8_ 檔頭）
