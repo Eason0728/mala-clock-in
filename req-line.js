@@ -16,13 +16,18 @@
  * 2026-11-18 一次填兩段（Eason 開工確認；後端 Requests.gs reqSegsOf_，req_info 的 seg2_kinds 有這種單才出現「＋ 加第二段」）：
  *   加班、請假（只請一段）、出差（只一段）可以在同一天再加一段，送出帶 segments，後端拆成兩張普通的單；「我的申請」同一次送出的標「第 N 段／共 2 段」，
  *   取消只取消那一段；證明附一次兩段共用。前端先擋重疊、接在一起、合計超過上限；兩段在不同店打卡要分開送。沒開放的店畫面與送出內容跟以前完全一樣。
- *   N1 加班單張上限 10 小時（req_info ot_max_h）；N4 拿掉事假「第 N 次」提醒；加班防呆：兩家合計超過 8 小時的加班要開在被支援那家（otAbsorb）。 */
+ *   N1 加班單張上限 10 小時（req_info ot_max_h）；N4 拿掉事假「第 N 次」提醒；加班防呆：兩家合計超過 8 小時的加班要開在被支援那家（otAbsorb）。
+ * 2026-11-18 第一次開頁加快（Eason：「第一次開申請頁向光復讀取要 13 到 14 秒」；光復 LineHub.gs 共用對照表＋mini 預熱，見營運系統 server/line-req.js）：
+ *   ①送出前確認（gateWait）：畫面上的店別、假別、額度、我的申請還是手機記住的／Mac mini 記住的（不是光復剛給的）→ 按送出時先等最新的（最多 GATE_MS），
+ *     最新的跟畫面上不一樣（少一家、多一家店、額度不同、開關不同）→ 不送，換成最新畫面並寫「請確認後再按一次送出」；一樣就照送。最新的讀不到 → 照送（店家後端照樣檢查）。
+ *   ②讀不到不空白：開頁失敗有「重新讀取」；等光復超過 8 秒寫「還在讀取」；額度還沒到寫「額度讀取中…」、讀不到寫「送出時系統會再檢查」。 */
 (function () {
   'use strict';
   var E, $root, st = { init: null, store: null, info: null, tab: 'leave', busy: false,
                       quotaReady: false, quota: null, infoErr: false, touched: false, storeManual: false,
                       src: {}, peekAt: {}, infoReal: false, tm: null,
-                      infoSeq: 0, syncing: false, cancelling: {}, cancelErr: null, flash: null, syncNote: '' };   // 送出／取消後「先畫結果、背景重讀」用（2026-11-18）
+                      infoSeq: 0, syncing: false, cancelling: {}, cancelErr: null, flash: null, syncNote: '',
+                      initWait: null, quotaWait: null, infoWait: null, initFailed: false, quotaErr: false, gateWait: false, gateNote: null, gateSkip: false, openSeq: 0 };   // 送出前確認（2026-11-18）   // 送出／取消後「先畫結果、背景重讀」用（2026-11-18）
   var TABS = [['leave', '請假'], ['ot', '加班'], ['trip', '出差'], ['miss', '忘打卡'], ['mine', '我的申請']];
   var MISS_REASONS = ['忘記按', '手機沒電', '定位抓不到被擋', '按錯上下班', '其他'];
   var STATUS = { pending: ['審核中', 'wait'], approved: ['已核准', 'ok'], rejected: ['已退回', 'no'], cancelled: ['已取消', 'off'], voided: ['已作廢', 'off'] };
@@ -215,21 +220,25 @@
     st.init = null; st.info = null; st.infoErr = false; st.quota = null; st.quotaReady = false; st.touched = false; st.storeManual = false;
     st.src = {}; st.peekAt = {}; st.infoReal = false; st.tm = { t0: Date.now(), ms: {}, src: {}, sent: false };
     st.syncing = false; st.cancelling = {}; st.cancelErr = null; st.flash = null; st.syncNote = '';
+    st.initWait = null; st.quotaWait = null; st.infoWait = null; st.initFailed = false; st.quotaErr = false; st.gateWait = false; st.gateNote = null; st.gateSkip = false;
+    var seq = ++st.openSeq; st.openOpts = opts;
     if (!tmHooked) { tmHooked = true; window.addEventListener('pagehide', function () { tmSend(); }); }   // 沒等到三樣都出來就關掉：送已經量到的
     $root.hidden = false;
     var token = liff.getIDToken(), cached = cacheGet(), hasOpt = opts.store !== undefined && opts.store !== null, drawn = !!cached;
     // 三支同時問：光復基本資料（lite）、額度補休帳、那家店的「我的申請」（店別先用記住的／打卡畫面帶來的猜）；先經 Mac mini（viaMini）
     var initP = viaMini('init', E.HUB_API, { action: 'line_hub_req_init', id_token: token, lite: true });
-    viaMini('quota', E.HUB_API, { action: 'line_hub_req_quota', id_token: token }).then(function (q) {
-      if (!q || !q.ok) return;   // 舊後端 unknown_action：額度跟著開頁資料一起回（見下面 r.lite）
-      st.quota = q; st.src.quota = 'google'; st.peekAt.quota = 0; applyQuota(); if (st.init && st.store) refresh();
-    }, function () {});
+    st.quotaWait = viaMini('quota', E.HUB_API, { action: 'line_hub_req_quota', id_token: token }).then(function (q) {
+      if (seq !== st.openSeq) return;
+      if (!q || !q.ok) { if (!(q && q.error === 'unknown_action')) { st.quotaErr = true; if (st.init && st.store) refresh(); } return; }   // 舊後端 unknown_action：額度跟著開頁資料一起回（見下面 r.lite）
+      st.quota = q; st.src.quota = 'google'; st.peekAt.quota = 0; st.quotaErr = false; applyQuota(); if (st.init && st.store) refresh();
+    }, function () { if (seq === st.openSeq) { st.quotaErr = true; if (st.init && st.store) refresh(); } });
     var guess = cached ? pickStore(cached.stores, [opts.store, cached.last_store, cached.punch_store]).code : (hasOpt ? opts.store : undefined);
     var infoP = guess !== undefined && storeDef(guess) ? { code: guess, p: infoFor(guess) } : null;
     if (infoP) infoP.p.catch(function () {});
     function loadInfoNow() {
       var code = st.store.code;
       var p = infoP && infoP.code === code ? infoP.p : infoFor(code);
+      st.infoWait = { code: code, p: p.then(function () {}, function () {}) };
       return p.then(function (r) { if (st.store && st.store.code === code) { st.info = r; st.infoErr = false; st.infoReal = true; st.src.info = 'google'; st.peekAt.info = 0; } },
                     function () { if (st.store && st.store.code === code && !st.info) st.infoErr = true; });   // 已經先顯示 Mac mini 記住的：讀不到最新的就先留著
     }
@@ -264,18 +273,27 @@
       applyQuota();
       render();
       loadInfoNow().then(refresh);
-    } else $root.appendChild(h('div', { class: 'rq-loading', text: '讀取中…' }));
-    initP.then(function (r) {
+    } else {
+      $root.appendChild(h('div', { class: 'rq-loading', text: '讀取中…' }));
+      setTimeout(function () {   // 等光復超過 8 秒：不要只留「讀取中…」（2026-11-18）
+        var ld = seq === st.openSeq && $root.querySelector('.rq-loading');
+        if (ld) ld.textContent = '讀取中…光復系統這次回應比較慢，請再等一下（第一次打開比較久）';
+      }, 8000);
+    }
+    st.initWait = initP.then(function (r) {
+      if (seq !== st.openSeq) return;
       if (r && r.error === 'invalid_id_token') {   // 開頁就逾時：還沒填東西，直接重整（2026-10-30）
         $root.innerHTML = '';
         $root.appendChild(msgBox(E.relogin() === 'stuck' ? 'LINE 登入逾時。請關掉這頁，再從選單按「申請」重新打開。' : 'LINE 登入逾時，正在重新連線…', 'err'));
         return;
       }
       if (!r || !r.ok) {
+        st.initFailed = true;
         if (r && r.error === 'not_bound') cacheDrop();
-        if (drawn && !(r && r.error === 'not_bound')) return;   // 已經用記住的畫好了，背景更新失敗就先用記住的（送出時伺服器照樣檢查）
+        if (drawn && !(r && r.error === 'not_bound')) { refresh(); return; }   // 已經用記住的畫好了，背景更新失敗就先用記住的（送出時伺服器照樣檢查）
         $root.innerHTML = '';
-        $root.appendChild(msgBox(r && r.error === 'not_bound' ? '你還沒綁定打卡。請先到店裡按選單「打卡」完成綁定，再來申請。' : '讀不到資料，請稍後再試。', 'err'));
+        if (r && r.error === 'not_bound') $root.appendChild(msgBox('你還沒綁定打卡。請先到店裡按選單「打卡」完成綁定，再來申請。', 'err'));
+        else retryBox('讀不到資料（光復系統暫時沒有回應）。');
         return;
       }
       var prev = st.store ? st.store.code : null;
@@ -290,12 +308,19 @@
       var keep = prev !== null && (st.storeManual || st.touched) ? prev : null;
       st.store = pickStore(r.stores, keep !== null ? [keep] : [opts.store, r.punch_store, prev]);
       cachePut();
-      if (prev === null || st.store.code !== prev) { st.info = null; st.infoErr = false; render(); loadInfoNow().then(refresh); }
+      if (prev === null || st.store.code !== prev) { st.info = null; st.infoErr = false; st.infoReal = false; render(); loadInfoNow().then(refresh); }
       else refresh();
     }, function () {
-      if (drawn) return;
-      $root.innerHTML = ''; $root.appendChild(msgBox('連線失敗，請檢查網路後重新打開。', 'err'));
+      if (seq !== st.openSeq) return;
+      st.initFailed = true;
+      if (drawn) { refresh(); return; }
+      $root.innerHTML = ''; retryBox('連線失敗，請檢查網路。');
     });
+  }
+  /** 開頁讀不到：說明＋「重新讀取」（不用關掉重開；2026-11-18） */
+  function retryBox(text) {
+    $root.appendChild(msgBox(text, 'err'));
+    $root.appendChild(h('button', { type: 'button', class: 'primary rq-retry', text: '重新讀取', on: { click: function () { open(st.openOpts || {}); } } }));
   }
   /** 依序找第一個對得上的店代碼（光復的代碼是空字串，所以不能用 truthy 判斷）；都沒有回第一家。 */
   function pickStore(stores, codes) {
@@ -701,15 +726,16 @@
     $root.appendChild(head);
     $root.appendChild(h('div', { class: 'rq-tabs' }, TABS.map(function (t) {
       return h('button', { type: 'button', class: t[0] === st.tab ? 'on' : '', 'data-tab': t[0], text: t[1],
-                           on: { click: function () { st.tab = t[0]; st.flash = null; st.syncNote = ''; st.cancelErr = null; render(); } } });
+                           on: { click: function () { st.tab = t[0]; st.flash = null; st.syncNote = ''; st.cancelErr = null; st.gateNote = null; render(); } } });
     })));
     if (st.tab === 'mine' && st.flash) $root.appendChild(msgBox(st.flash.text, st.flash.cls));   // 送出後的「✓ 已送出」：背景重讀完重畫也留著，離開分頁才收
     if (st.tab === 'mine' && st.syncNote) $root.appendChild(h('div', { class: 'rq-muted rq-sync-note', text: st.syncNote }));
+    if (st.gateNote && st.gateNote.tab === st.tab) $root.appendChild(msgBox(st.gateNote.text, 'err rq-gate-note'));   // 送出前確認：最新資料跟畫面不一樣（2026-11-18）
     var panel = h('div', { class: 'rq-panel' });
     $root.appendChild(panel);
     ({ leave: renderLeave, ot: renderOt, trip: renderTrip, miss: renderMiss, mine: renderMine })[st.tab](panel);
     var pa = [st.peekAt.quota, st.peekAt.info].filter(function (x) { return x > 0; });   // 畫面上有 Mac mini 記住的資料：最下面小字標時間
-    if (pa.length) $root.appendChild(h('div', { class: 'rq-muted rq-fresh', text: '資料更新於 ' + hhmm(Math.min.apply(null, pa)) + '，正在更新…' }));
+    if (pa.length) $root.appendChild(h('div', { class: 'rq-muted rq-fresh', text: '資料更新於 ' + hhmm(Math.min.apply(null, pa)) + ((st.peekAt.quota > 0 && st.quotaErr) ? '，最新的暫時讀不到（送出時系統會再檢查）' : '，正在更新…') }));
     tmMark('form', st.src.init);
     if (st.quotaReady) tmMark('quota', st.src.quota || 'google');
     if (st.info) tmMark('mine', st.src.info || 'google');
@@ -833,6 +859,7 @@
     }
     var q = lv.type ? quotaText(lv.type) : '';
     var qx = q ? [h('div', { class: 'rq-quota', text: lv.type + '：' + q })] : [];
+    if (lv.type && lv.type !== '補休' && !st.quotaReady) qx.push(h('div', { class: 'rq-muted rq-quota-wait', text: st.quotaErr ? '額度暫時讀不到（送出時系統會再檢查）' : '額度讀取中…' }));   // 2026-11-18：不要空白
     // 本月補休帳：薪資主檔查得到的正職才有，一直顯示、選之前就看得到；主檔還沒建的人只在選了補休時提示
     if (lt.common.indexOf('補休') >= 0 && comp().allowed) {
       qx.push(h('div', { class: 'rq-quota rq-comp-bal' + (Number(comp().balance_h) < 0 ? ' rq-comp-neg' : ''), text: '補休：' + compText() }));
@@ -1259,10 +1286,13 @@
 
   /* ── 送出 ── */
   function submitBtn(out, build, reset) {
-    var btn = h('button', { type: 'button', class: 'primary', text: st.syncing ? '更新清單中…' : '送出申請', disabled: st.syncing });
+    var btn = h('button', { type: 'button', class: 'primary', text: st.gateWait ? '確認最新資料中…' : st.syncing ? '更新清單中…' : '送出申請', disabled: st.syncing || st.gateWait });
     btn._rqSubmit = true;
     btn.addEventListener('click', function () {
       if (st.busy || st.syncing) return;
+      // 送出前確認（2026-11-18）：畫面上還有記住的資料 → 先等最新的，一樣才送
+      if (!st.gateSkip && gateNeeded()) { gateThen(btn, out); return; }
+      st.gateSkip = false; st.gateNote = null;
       st.busy = true; btn.disabled = true; out.innerHTML = ''; out.appendChild(h('div', { class: 'rq-muted', text: '送出中…' }));
       var sentCode = st.store ? st.store.code : null;
       // 組資料那一步就算當場出錯（不是回被拒絕的 Promise），也要走到下面的錯誤處理、把忙碌旗標放掉（2026-11-11）；
@@ -1304,6 +1334,65 @@
       });
     });
     return btn;
+  }
+  /* ── 送出前確認（2026-11-18）──
+   * 手機記住的（localStorage）／Mac mini 記住的資料只拿來先畫；會影響這張單的（店別清單、假別、額度、我的申請裡的開關與上限）
+   * 送出前要以光復／那家店剛給的為準：還沒到就等（最多 GATE_MS），到了跟畫面上不一樣就不送、換成最新畫面請同仁再確認；
+   * 等不到或讀不到就照送（店家後端照樣用名冊、額度檢查，不會因為等不到而送錯）。 */
+  var GATE_MS = 12000;
+  function gateNeeded() {
+    if (!st.init) return false;
+    if (!st.init.fresh && !st.initFailed && st.initWait) return true;
+    if (st.tab === 'leave' && st.src.quota !== 'google' && !st.quotaErr && st.quotaWait) return true;
+    if (st.store && !st.infoReal && st.infoWait && st.infoWait.code === st.store.code) return true;
+    return false;
+  }
+  function gateFp(withQuota) {
+    var o = { s: st.store ? String(st.store.code) : null,
+              ss: ((st.init && st.init.stores) || []).map(function (x) { return String(x.code) + ':' + String(x.emp_id); }).join(',') };
+    var x = ({ leave: lv, ot: ot, trip: tp })[st.tab];
+    if (st.tab === 'leave' && lv.type) {
+      var lt = (st.init && st.init.leave_types) || {};
+      o.lt = (lt.common || []).concat(lt.special || []).indexOf(lv.type) >= 0;
+      if (withQuota) {
+        var q = ((st.init && st.init.quota) || []).filter(function (y) { return y.name === lv.type; })[0];
+        o.q = q ? [q.remain_h, q.cap_h, q.used_n === undefined ? null : q.used_n] : null; o.cb = compBlocked();
+      }
+    }
+    if (x && x.seg2 && st.info) o.sg = seg2Ok(st.tab, st.tab === 'leave' ? lv.type : '');
+    if (st.tab === 'ot' && st.info) o.om = otMaxH();
+    return JSON.stringify(o);
+  }
+  function gateThen(btn, out) {
+    var before = gateFp(st.quotaReady), names = {}, stores0 = (st.init.stores || []).slice();
+    stores0.forEach(function (s) { names[String(s.code)] = s.name; });
+    st.busy = true; st.gateWait = true; st.gateNote = null; btn.disabled = true; btn.textContent = '確認最新資料中…';
+    out.innerHTML = ''; out.appendChild(h('div', { class: 'rq-muted rq-gate-wait', text: '確認最新的店別與額度…' }));
+    var waits = [st.initWait, st.tab === 'leave' ? st.quotaWait : null, st.infoWait && st.store && st.infoWait.code === st.store.code ? st.infoWait.p : null].filter(Boolean);
+    var timer, timeout = new Promise(function (res) { timer = setTimeout(res, GATE_MS); });
+    var tab = st.tab;
+    Promise.race([Promise.all(waits.map(function (p) { return Promise.resolve(p).then(null, function () {}); })), timeout]).then(function () {
+      clearTimeout(timer);
+      // 換成最新的店之後「我的申請」還在讀（店別換了）：等一下那家店（不另外計時，也在上限內）
+      return st.store && !st.infoReal && st.infoWait && st.infoWait.code === st.store.code
+        ? Promise.race([st.infoWait.p, new Promise(function (res) { setTimeout(res, 4000); })]) : null;
+    }).then(function () {
+      st.busy = false; st.gateWait = false;
+      if (st.tab !== tab) { render(); return; }
+      var after = gateFp(st.quotaReady && before.indexOf('"q"') >= 0), stores1 = st.init.stores || [];
+      if (after !== before) {
+        var gone = stores0.filter(function (s) { return !stores1.some(function (y) { return String(y.code) === String(s.code); }); }).map(function (s) { return s.name; });
+        var added = stores1.filter(function (s) { return !names.hasOwnProperty(String(s.code)); }).map(function (s) { return s.name; });
+        var txt = gone.length ? '你綁定的店有變動（「' + gone.join('、') + '」已經不在名單），店別已換成「' + st.store.name + '」。請確認後再按一次送出。'
+                : added.length ? '你綁定的店剛更新（多了「' + added.join('、') + '」）。請確認上面選的店別對不對，再按一次送出。'
+                : '假別、額度或這家店的規則剛更新，畫面已換成最新的。請確認後再按一次送出。';
+        st.gateNote = { tab: tab, text: txt };
+        render(); return;
+      }
+      if (document.body.contains(btn)) { btn.disabled = false; st.gateSkip = true; btn.click(); return; }
+      var nb = Array.prototype.filter.call($root.querySelectorAll('button.primary'), function (b) { return b._rqSubmit; })[0];   // 等的時候畫面重畫過：按新的那顆
+      if (nb) { nb.disabled = false; st.gateSkip = true; nb.click(); } else render();
+    });
   }
   /** 讓機器人回一張「已送出」卡片（回覆免費）；不在 LINE 裡就算了，畫面上已經看得到。 */
   function tellChat(text) {

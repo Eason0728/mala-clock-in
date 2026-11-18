@@ -25,7 +25,8 @@ var DUTY_FEED_READS_ = {
   req_info: 1, mgr_req_pending: 1, mgr_req_day: 1, mgr_req_month: 1, approve_strict_preview: 1, mgr_approve_check: 1, peer_day_digest: 1,
   mgr_line_binds: 1, mgr_qr_token: 1, line_hub_status: 1, line_hub_attach_get: 1, line_probe: 1,
   relay_snapshot: 1, relay_pull: 1, relay_mode: 1, punch_timing_get: 1, line_hub_req_quota: 1, line_hub_pay_lock: 1, line_hub_sched: 1, sched_day_roster: 1,
-  svc_roster: 1, svc_payroll_names: 1, duty_changes: 1, line_hub_react_check: 1, line_punch_timing: 1
+  svc_roster: 1, svc_payroll_names: 1, duty_changes: 1, line_hub_react_check: 1, line_punch_timing: 1,
+  line_hub_req_init: 1, line_hub_warm: 1   // 2026-11-18：申請頁開頁資料、mini 先建對照表都只讀（原本 init 每開一次頁就讓 mini 重讀光復當天考勤）
 };
 /* 薪資模組只讀的動作很多，名稱都是 payroll_ 開頭；會改考勤的只有這幾個（其他 payroll_ 開頭的不記） */
 var DUTY_FEED_PAYROLL_WRITES_ = { payroll_leave_event_set: 1, payroll_ot_month_sync: 1, payroll_holiday_sync: 1, payroll_migrate_store: 1 };
