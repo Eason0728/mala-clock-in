@@ -2283,7 +2283,20 @@ function reqLeaveBackMs_(date, okRows) {
   });
   return out;
 }
-function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs) {
+/* 已核准、有填起訖的假單／出差單的開始時間（ms；同上試前一天／隔天）：「該下班」的時間點（2026-11-18 Eason「請假前提早離開一律記早退」）。
+   營運系統核定會算到這裡（請假前提早走＝早退），reqOverCreditMin_ 把實際下班卡到這裡當早退、不當多核工時。 */
+function reqLeaveStartMs_(date, okRows) {
+  var out = [];
+  (okRows || []).forEach(function (r) {
+    if (r.kind !== 'leave' && r.kind !== 'trip') return;
+    var a = reqHm_(r.start), b = reqHm_(r.end);
+    if (!a || !b || a === b) return;
+    var s = reqHmMs_(date, a);
+    out.push(s, s - 86400000, s + 86400000);
+  });
+  return out;
+}
+function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts) {
   if (!periods.length || !segs.length || segs.some(function (s) { return s.inMs == null || s.outMs == null; })) return null;
   var ps = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
   var ss = segs.slice().sort(function (a, b) { return a.inMs - b.inMs; });
@@ -2309,7 +2322,18 @@ function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs) {
   // 2026-11-15（考勤挑錯 B1）：主管有填遲到分鐘（0＝認定不計遲到、N＝認定遲到 N 分）時，只有他認的那 N 分鐘算遲到（薪資照扣）；
   // 被免掉的遲到分鐘＝沒打卡卻要算的時間，照樣要有單。原本整段都當遲到扣掉，只打 5 分鐘卡、遲到填 0 就核得出 8 小時。沒填＝系統照實標遲到，不變。
   if (lateGiven != null) late = Math.min(late, Math.max(0, lateGiven) * 60000);
-  return Math.max(0, Math.round((over - late) / 60000));
+  // 2026-11-18 Eason「請假前提早離開一律記早退」：核定時段結尾剛好是已核准假單／出差單的開始（中間只隔不打卡休息帶也算），那個時間沒有打卡蓋到
+  // → 從那段裡最後一張下班卡到結尾＝早退（Code.gs computeApprovalStatus 照記「早退N分」），不算沒打卡的多核工時。沒帶 starts＝跟改之前一樣
+  var early = 0;
+  if ((starts || []).length) ps.forEach(function (p) {
+    if (!starts.some(function (t) { return t >= p.endMs && (t - p.endMs) - inBreak(p.endMs, t) <= 0; })) return;
+    if (ss.some(function (s) { return s.inMs < p.endMs && s.outMs >= p.endMs; })) return;
+    var outs = ss.filter(function (s) { return s.outMs > p.startMs && s.outMs < p.endMs; }).map(function (s) { return s.outMs; });
+    if (!outs.length) return;
+    var last = Math.max.apply(null, outs);
+    early += (p.endMs - last) - inBreak(last, p.endMs);
+  });
+  return Math.max(0, Math.round((over - late - early) / 60000));
 }
 /** 主管填的遲到分鐘（同 Code.gs applyManualLate 的讀法）：沒填、不是數字、負數＝null（沒有認定）；否則四捨五入的分鐘數 */
 function reqLateGiven_(v) {
@@ -2807,7 +2831,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   // 2026-11-14 Eason「打卡＋單＝核定時數」：不再「差 30 分鐘寫原因」，只看核定比打卡多（沒打卡卻要算的時間），要有單；早到晚走不算、不用原因
   // 已核准的忘打卡單補的卡算「有打卡」（2026-11-15 Eason：游家輝 11/11 忘打卡單補 18:30–20:15 仍被算成整段沒打卡；
   // 同營運系統 core-calc.js 的「打卡＋單」）。只用在這條「核定比打卡多」，其他檢查照舊看真的卡
-  var overMin = strict ? reqOverCreditMin_(periods, reqSegsWithMiss_(segs || [], ok, date), breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok)) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）
+  var overMin = strict ? reqOverCreditMin_(periods, reqSegsWithMiss_(segs || [], ok, date), breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok), reqLeaveStartMs_(date, ok)) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）
   if (overMin != null && overMin >= REQ_STRICT_DIFF_MIN) add('over_credit', '核定比打卡多 ' + overMin + ' 分鐘（沒有打卡的時間要有忘打卡單、假單或補休單）');
   if (opt.preview) return { probs: probs, diff_min: diffMin, over_min: overMin, ot_have: otHave, ot_need: otNeed, ft8_gap: ft8 ? ft8.gap : 0 };
   if (probs.length) {
