@@ -592,10 +592,23 @@ ok('reqSegsWithMiss_：補上班／補下班／補中間休息', () => {
     const sb = makeEnv();
     assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('08:30', '17:30')], null), null);
   });
-  ok('每張卡：遲到 40 分（核定從班表開始）也要原因；央廚中午休息帶不算差', () => {
+  ok('每張卡：遲到 40 分（核定從班表開始）已記成遲到 → 不用原因（2026-11-18 Eason 拿掉「遲到超過 30 分要選原因」；原斷言要原因）；主管填遲到 0＝沒涵蓋 → 要原因；09:40 到又 18:50 走 → 只有下班卡要原因；央廚中午休息帶不算差', () => {
     const sb = makeEnv();
-    const r = sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('09:40', '17:00')], null);
-    assert.strictEqual(r && r.error, 'need_diff_reason');
+    assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('09:40', '17:00')], null), null);
+    // 主管填遲到分鐘：只有他認的分鐘算已涵蓋（函式層；整條送出時「核定比打卡多」會先擋，見規則 4）
+    const cd = (lg, inHm) => JSON.parse(JSON.stringify(sb.reqCardDiffs_([P3('09:00', '17:00')], [S3(inHm, '17:00')], lg))).map((c) => c.min);
+    assert.deepStrictEqual(cd(null, '09:40'), [], '沒填：40 分全記成遲到 → 不用原因');
+    assert.deepStrictEqual(cd(0, '09:40'), [40], '填 0（不計遲到）：沒涵蓋 → 要原因');
+    assert.deepStrictEqual(cd(10, '09:40'), [], '認 10：剩 30，剛好 30 不用');
+    assert.deepStrictEqual(cd(10, '09:45'), [45], '認 10：剩 35 → 要原因');
+  });
+  ok('每張卡（續）：09:40 到又 18:50 走 → 上班卡不用、下班卡要原因；早到 40 照舊要；早走 45（記早退）不用', () => {
+    const sb = makeEnv();
+    const cd = (ps, ss) => JSON.parse(JSON.stringify(sb.reqCardDiffs_(ps, ss, null))).map((c) => c.side + c.min);
+    assert.deepStrictEqual(cd([P3('09:00', '18:00')], [S3('09:40', '18:50')]), ['out50']);
+    assert.deepStrictEqual(cd([P3('09:00', '18:00')], [S3('08:20', '18:00')]), ['in40'], '早到不認列：照舊要原因');
+    assert.deepStrictEqual(cd([P3('09:00', '18:00')], [S3('09:00', '17:15')]), [], '下班卡比核定早 45（記早退 45）：不用原因');
+    assert.deepStrictEqual(cd([P3('09:30', '18:00')], [S3('09:40', '18:00')]), [], '主管把核定改成 09:30 起：差 10 本來就不用');
     assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('08:00', '12:00'), P3('13:00', '17:00')], [S3('07:58', '17:02')], B3), null);
   });
   ok('每張卡：兩段班各自比；起算日 2026-11-01（2026-11-18 Eason：原 11/17）——10/31 不看、11/1 與 11/16 要原因；REQ_CARD_REASON_FROM=off 關掉', () => {

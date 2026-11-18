@@ -2871,7 +2871,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   // 取代 11/14「不再寫原因」：缺單照上面擋（寫原因不能代替補單），單都齊了才看這條。原因存 approved 的 diff_reason
   var cardFrom = reqCardReasonFrom_();
   if (from && cardFrom && date >= cardFrom && periods.length) {
-    var cards = reqCardDiffs_(periods, segs || []);
+    var cards = reqCardDiffs_(periods, segs || [], reqLateGiven_(opt.late_min));
     if (cards.length && !reqCleanDiffReason_(opt.diff_reason)) {
       return { ok: false, error: 'need_diff_reason', cards: cards, diff_min: cards.reduce(function (a, c) { return Math.max(a, c.min); }, 0),
                message: '核定和打卡差超過 ' + REQ_CARD_DIFF_MIN + ' 分鐘：' + cards.map(function (c) { return (c.side === 'in' ? '上班卡 ' : '下班卡 ') + c.card + '（核定 ' + c.core + '，差 ' + c.min + ' 分）'; }).join('、') +
@@ -2892,12 +2892,16 @@ function reqCardReasonFrom_() {
   if (v === 'off') return null;
   return reqIsDate_(v) ? v : REQ_CARD_REASON_FROM_DEFAULT_;
 }
-function reqCardDiffs_(periods, segs) {
+/* 2026-11-18 Eason「遲到超過 30 分鐘要選原因」拿掉（大腦解讀，整條規則保留）：已經記成遲到／早退的那段差額不用再選原因——
+   上班卡晚於對到的核定開始（computeApprovalStatus 照記「遲到N分」）、下班卡早於對到的核定結束（照記「早退N分」）不算卡差；
+   主管自己填遲到分鐘（lateGiven）時，只有他認的分鐘算已涵蓋（依卡片順序用掉），沒涵蓋的部分超過 30 分仍要原因。
+   仍然要原因：上班卡比核定早很多（早到不認列）、下班卡比核定晚很多（多打的不認列）、那段打卡完全沒被核定（沒有遲到早退可記）。 */
+function reqCardDiffs_(periods, segs, lateGiven) {
   var ps = (periods || []).filter(function (p) { return p && p.startMs != null && p.endMs != null && p.endMs > p.startMs; });
   if (!ps.length) return [];
   var hm = function (t) { var d = new Date(t + 8 * 3600000), p = function (n) { return (n < 10 ? '0' : '') + n; }; return p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()); };      // 台北時間（不靠 Utilities，測試沙盒也能跑）
   var near = function (t, key) { return ps.reduce(function (a, p) { return a == null || Math.abs(p[key] - t) < Math.abs(a - t) ? p[key] : a; }, null); };
-  var out = [];
+  var out = [], lateLeft = lateGiven == null ? null : Math.max(0, Number(lateGiven) || 0);
   (segs || []).forEach(function (s) {
     if (!s) return;
     var a = s.inMs, b = s.outMs, st = null, en = null;
@@ -2905,8 +2909,15 @@ function reqCardDiffs_(periods, segs) {
       var ov = ps.filter(function (p) { return Math.min(b, p.endMs) > Math.max(a, p.startMs); });
       if (ov.length) { st = Math.min.apply(null, ov.map(function (p) { return p.startMs; })); en = Math.max.apply(null, ov.map(function (p) { return p.endMs; })); }
     }
-    if (a != null) { var cs = st != null ? st : near(a, 'startMs'); var d1 = Math.round(Math.abs(a - cs) / 60000); if (d1 > REQ_CARD_DIFF_MIN) out.push({ side: 'in', card: hm(a), core: hm(cs), min: d1 }); }
-    if (b != null) { var ce = en != null ? en : near(b, 'endMs'); var d2 = Math.round(Math.abs(b - ce) / 60000); if (d2 > REQ_CARD_DIFF_MIN) out.push({ side: 'out', card: hm(b), core: hm(ce), min: d2 }); }
+    if (a != null) {
+      var cs = st != null ? st : near(a, 'startMs'), d1 = Math.round(Math.abs(a - cs) / 60000), left1 = d1;
+      if (st != null && a > cs) { var cov = lateLeft == null ? d1 : Math.min(d1, lateLeft); if (lateLeft != null) lateLeft -= cov; left1 = d1 - cov; }      // 晚到＝記成遲到的部分不算
+      if (left1 > REQ_CARD_DIFF_MIN) out.push({ side: 'in', card: hm(a), core: hm(cs), min: d1 });
+    }
+    if (b != null) {
+      var ce = en != null ? en : near(b, 'endMs'), d2 = Math.round(Math.abs(b - ce) / 60000);
+      if (!(en != null && b < ce) && d2 > REQ_CARD_DIFF_MIN) out.push({ side: 'out', card: hm(b), core: hm(ce), min: d2 });      // 早走＝記成早退，不算
+    }
   });
   return out;
 }

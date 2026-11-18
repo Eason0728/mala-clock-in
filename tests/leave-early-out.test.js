@@ -37,7 +37,7 @@ const ev = (a, b) => [[D + 'T' + a + ':00', 'in'], [D + 'T' + b + ':00', 'out']]
 console.log('════ 一、結尾請假前提早走 ════');
 for (const [out, gone] of [['15:59', 1], ['15:50', 10], ['15:44', 16], ['15:30', 30], ['14:00', 120]]) {
   const r = approve(env(ev('08:58', out), [L()]), '09:00-12:00,13:00-16:00', LV2);
-  check('EO-' + out, '事假 16–18、' + out + ' 走 → 放行、6 小時、早退' + gone + (gone > 30 ? '（要選原因）' : ''), [r.ok, r.hours, r.early, r.why], [true, 6, gone, gone > 30]);
+  check('EO-' + out, '事假 16–18、' + out + ' 走 → 放行、6 小時、早退' + gone + '（已記成早退，不用選原因）', [r.ok, r.hours, r.early, r.why], [true, 6, gone, false]);
 }
 
 console.log('\n════ 二、中間請假、出差、跨夜、前面早走＋後面晚回、主管填遲到 ════');

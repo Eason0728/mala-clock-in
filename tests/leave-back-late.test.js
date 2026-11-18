@@ -37,7 +37,7 @@ for (const [back, late, why] of [['15:20', 20, false], ['15:29', 29, false], ['1
   const m = env(day(back), LV);
   const dry = approve(m, '09:00-12:00,13:00-14:00,15:00-18:00', Object.assign({ dry_run: true }, L1));
   if (why) {
-    check('BL-' + back + 'a', back + ' 回：卡差超過 30 分 → 要選原因（同開頭遲到；不是「核定比打卡多」）', [dry.ok, dry.error, /核定比打卡多/.test(dry.message)], [false, 'need_diff_reason', false]);
+    check('BL-' + back + 'a', back + ' 回：卡差超過 30 分但已全數記成遲到 → 不用選原因（2026-11-18 Eason 拿掉「遲到超過 30 分要選原因」）、只檢查直接過', [dry.ok, dry.error], [true, '']);
     Object.assign(L1, WHY);
   }
   const r = approve(m, '09:00-12:00,13:00-14:00,15:00-18:00', Object.assign({}, L1));
@@ -72,9 +72,9 @@ check('BL-trip', '出差 13–15、15:40 回 → 8 小時（6＋出差 2）、�
 console.log('\n════ 二之二、不設上限（選 B）與二段班第二段開頭請假（選 A）════');
 m = env(day('17:00'), LV);
 r = approve(m, '09:00-12:00,13:00-14:00,15:00-18:00', Object.assign({ dry_run: true }, L1));
-check('BL-120a', '中間事假 14–15、17:00 才回（晚 120 分）：不設上限，打卡端回「要選原因」（不是「核定比打卡多」）', [r.ok, r.error, /核定比打卡多/.test(r.message)], [false, 'need_diff_reason', false]);
+check('BL-120a', '中間事假 14–15、17:00 才回（晚 120 分）：不設上限；120 分全數記成遲到 → 不用選原因（2026-11-18 拿掉遲到選原因；原本靠選原因把關）', [r.ok, r.error], [true, '']);
 r = approve(m, '09:00-12:00,13:00-14:00,15:00-18:00', Object.assign({ diff_reason: '上班卡 17:00：主管同意' }, L1));
-check('BL-120b', '選了原因 → 核定 7 小時、遲到120分', [r.ok, r.hours, /遲到120分/.test(r.status)], [true, 7, true]);
+check('BL-120b', '核定 7 小時、遲到120分', [r.ok, r.hours, /遲到120分/.test(r.status)], [true, 7, true]);
 // 二段班 08–12／17–22、事假 17:00–19:00；核定 08–12、19–22＝7 小時（前端預填）；手算遲到＝回來－19:00
 const two = (b) => [[D + 'T08:00:00', 'in'], [D + 'T12:00:00', 'out'], [D + 'T' + b + ':00', 'in'], [D + 'T22:00:00', 'out']];
 const LT = [{ kind: 'leave', leave_type: '事假', start: '17:00', end: '19:00', hours: 2 }], LT2 = { leaves: [{ type: '事假', hours: 2 }] };
