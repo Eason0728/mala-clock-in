@@ -678,7 +678,7 @@ function lineHubMine_(userId, info, view) {
  * 只給「查詢」用：申請頁開頁資料、額度（handleLineHubReqInit_／handleLineHubReqQuota_）與 lineHubPayPickFresh_（薪資卡、額度、補休帳）。
  * 綁定、打卡、跨店自動加入照舊走 lineHubMine_，完全不受影響。
  * 保護：①有任何一家名冊讀不到就不存、這次也不用（退回逐店讀）；②對照表裡找不到這個人 → 照原本逐店讀一次（剛綁好的人不會被說沒綁）；
- * ③光復這邊綁定、解綁、設離職連帶（都會呼叫 lineHubForget_）一起清掉；店家那邊主管解除綁定，最多 5 分鐘後反映（同原本每人快取），
+ * ③光復這邊綁定、解綁、設離職連帶（都會呼叫 lineHubForget_）一起清掉；店家那邊設離職（店家會通知光復 line_hub_left → lineHubLeftCascade_ → lineHubForget_，對照表當下就清）不用等；店家那邊主管解除綁定，最多 5 分鐘後反映（同原本每人快取），
  *   送出申請時店家後端照樣用自己的名冊檢查。存法：JSON 切成每段 LINE_HUB_IDX_CHUNK 字（CacheService 單一值上限 100KB），
  *   鍵 lhix:<版本>:<段>，目錄鍵 lhix；段數超過上限就不存（每次照舊逐店讀，不會錯只會慢）。 */
 var LINE_HUB_IDX_TTL = 300, LINE_HUB_IDX_WARM_AGE = 200, LINE_HUB_IDX_CHUNK = 20000, LINE_HUB_IDX_MAX_CHUNKS = 40;
@@ -771,19 +771,30 @@ function lineHubPayHubMap_() {
   };
 }
 
-/** {action:'line_hub_warm'} → {ok, built, age_s|ms, n}：Mac mini 每 4 分鐘打一次，讓對照表一直是熱的（營運系統 server/line-req.js warmTick）。
- *  不收金鑰、不回任何人的資料（只回筆數）。對照表還新（< LINE_HUB_IDX_WARM_AGE 秒）就直接回、不讀名冊；
- *  別人正在建（lhixb 記號 60 秒）也直接回。被亂打最多每 3 分多鐘重建一次。不拿 ScriptLock（重建約要讀 9 家名冊，不能卡住打卡寫入）。 */
+/** {action:'line_hub_warm'} → {ok, built, age_s|ms}：Mac mini 每 4 分鐘打一次，讓對照表一直是熱的（營運系統 server/line-req.js warmTick）。
+ *  不收金鑰、不回任何人的資料（也不回綁定總筆數）。對照表還新（< LINE_HUB_IDX_WARM_AGE 秒）就直接回、不讀名冊。
+ *  節流（2026-11-18 驗收補）：重建失敗（有店讀不到、或資料太大存不進）要留記號 lhixb 60 秒，期間再被呼叫一律直接回 busy（不讀表）——
+ *  不需金鑰，不能被連打成「每次重讀九家名冊」；店家恢復後最多 60 秒內再試。成功（存得進）不留記號，由對照表自己的新鮮度（200 秒）擋，同原本。
+ *  重建中（別人正在建）先占位 60 秒。不拿 ScriptLock（重建約要讀 9 家名冊，不能卡住打卡寫入）。 */
+var LINE_HUB_IDX_BUSY_FAIL = 60;
 function handleLineHubWarm_() {
   var t0 = Date.now(), c = CacheService.getScriptCache(), cur = lineHubIdxLoad_();
   if (cur && t0 - Number(cur.at) < LINE_HUB_IDX_WARM_AGE * 1000) return { ok: true, built: false, age_s: Math.round((t0 - Number(cur.at)) / 1000) };
-  if (c.get('lhixb')) return { ok: true, built: false, busy: true };
-  c.put('lhixb', '1', 60);
+  var mark = c.get('lhixb');
+  if (mark) return mark === 'f' ? { ok: false, built: false, busy: true, error: 'unreadable' } : { ok: true, built: false, busy: true };
+  c.put('lhixb', 'b', 60);   // 建的時候先占位
+  var res = { ok: false, built: false, error: 'unreadable' }, failed = true;
   try {
     var idx = lineHubIdxBuild_();
-    if (!idx) return { ok: false, error: 'unreadable' };
-    return { ok: true, built: true, saved: lineHubIdxSave_(idx), ms: Date.now() - t0, n: idx.n };
-  } finally { try { c.remove('lhixb'); } catch (e) { /* 60 秒後自己消失 */ } }
+    if (idx) {
+      var saved = lineHubIdxSave_(idx);
+      res = { ok: true, built: true, saved: saved, ms: Date.now() - t0 };
+      failed = !saved;   // 存不進（太大）也算失敗那一類
+    }
+    return res;
+  } finally {
+    try { if (failed) c.put('lhixb', 'f', LINE_HUB_IDX_BUSY_FAIL); else c.remove('lhixb'); } catch (e) { /* 占位 60 秒後自己消失 */ }
+  }
 }
 
 /* ── 設離職的連帶停用（2026-11-11 Eason 定，B13；說明見 Code.gs leftCascadeAfter_）──

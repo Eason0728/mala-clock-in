@@ -262,6 +262,52 @@ def main():
             ok('再按一次 → 送一段（沒有 segments）', len(s) == 1 and 'segments' not in s[0]['body'], s[0]['body'] if s else s)
             p.context.close()
 
+            # 生理假「已請過哪幾天」（dates）也要比對：記住的沒有、最新的有 → 不直接送，換成最新、請確認（額度數字都一樣）
+            COMP0 = {'allowed': False, 'known': True, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}   # 同 Fake 額度回的補休帳：這一段只想比「已請日期」
+            MENS = lambda dates: [{'name': '生理假', 'cap_days': 36, 'cap_h': 288, 'remain_h': 288, 'used_h': 0, 'used_n': 1, 'dates': dates, 'basis': 'calendar'}]
+            f = Fake(quota=MENS(['2020-01-05']))
+            p, _ = open_p(br, f, 'leave', delay={'line_hub_req_quota': 4000}, cache=cache_js([S_HQ]), mini={'peek': {'quota': {'ok': True, 'quota': MENS(['2020-02-07']), 'comp': COMP0}}}, wait=FORM)
+            p.click('#reqView .rq-chip:has-text("生理假")')
+            p.click(FORM)
+            p.wait_for_timeout(300)
+            early = len(submits(f))
+            p.wait_for_timeout(5000)
+            ok('生理假已請日期不同（記住的是 2/7、最新的是 1/5，次數與其他額度欄位相同）→ 不送、寫「剛更新」、請確認', early == 0 and len(submits(f)) == 0 and '剛更新' in txt(p) and p.locator('#reqView .rq-gate-note').count() == 1, txt(p)[:300])
+            p.click(FORM)
+            p.wait_for_selector('#reqView .rq-tabs button.on[data-tab=mine]', timeout=15000)
+            ok('再按一次 → 送出 1 張生理假', len(submits(f)) == 1 and submits(f)[0]['body'].get('leave_type') == '生理假', [x['body'].get('leave_type') for x in submits(f)])
+            p.context.close()
+            f = Fake(quota=MENS(['2020-01-05']))
+            p, _ = open_p(br, f, 'leave', delay={'line_hub_req_quota': 4000}, cache=cache_js([S_HQ]), mini={'peek': {'quota': {'ok': True, 'quota': MENS(['2020-01-05']), 'comp': COMP0}}}, wait=FORM)
+            p.click('#reqView .rq-chip:has-text("生理假")')
+            p.click(FORM)
+            p.wait_for_selector('#reqView .rq-tabs button.on[data-tab=mine]', timeout=15000)
+            ok('生理假已請日期相同 → 等到最新的一樣就照送（不多問）', len(submits(f)) == 1 and p.locator('#reqView .rq-gate-note').count() == 0, len(submits(f)))
+            p.context.close()
+
+            # mini 存檔先畫的開頁資料不帶姓名、工號（2026-11-18 驗收補）：先畫時不顯示姓名（也不能顯示 undefined 或別人），光復最新的到了才顯示；
+            # 送出前確認比對店別時不因「存檔沒有工號」多跳一次「剛更新」
+            kept_peek = {'ok': True, 'lite': True, 'stores': [{'code': 'hq', 'name': HQ['name'], 'support': False}], 'punch_store': 'hq', 'leave_types': LT}
+            f = Fake()
+            p, ms = open_p(br, f, 'ot', delay={'line_hub_req_init': 5000}, mini={'peek': {'init': kept_peek}}, wait=FORM)
+            head = p.inner_text('#reqView .rq-head')
+            ok('mini 存檔（沒有姓名工號）先畫：%d 毫秒可操作、標題只有店名、不顯示 undefined／別人的名字' % ms, ms <= 2500 and 'undefined' not in head and '林小美' not in head and HQ['name'] in head, head)
+            fill_ot(p)
+            p.click(FORM)
+            p.wait_for_selector('#reqView .rq-tabs button.on[data-tab=mine]', timeout=15000)
+            ok('按送出：等光復最新的、店別一樣就照送 1 張（不會因為存檔沒有工號就多問一次）', len(submits(f)) == 1 and p.locator('#reqView .rq-gate-note').count() == 0, [len(submits(f)), txt(p)[:200]])
+            ok('光復最新的到了 → 標題顯示姓名', '林小美' in p.inner_text('#reqView .rq-head'), p.inner_text('#reqView .rq-head'))
+            p.context.close()
+            # 存檔先畫、光復最新的把「這家店的工號」換成別人的（同一支 LINE 改綁）：仍然偵測得到（有工號可比的時候照比）
+            S_HQ2 = dict(S_HQ, emp_id='E9', emp_name='王大明')
+            f = Fake(init_stores=[S_HQ2])
+            p, _ = open_p(br, f, 'ot', delay={'line_hub_req_init': 4000}, cache=cache_js([S_HQ]), wait=FORM)
+            fill_ot(p)
+            p.click(FORM)
+            p.wait_for_timeout(5500)
+            ok('手機記住有工號、最新的工號不同 → 不送、請確認', len(submits(f)) == 0 and p.locator('#reqView .rq-gate-note').count() == 1, txt(p)[:200])
+            p.context.close()
+
             # ── 3. 失敗與慢 ──
             f = Fake(init_fail=99)   # 一直失敗（頁面自己的重試也用完）
             p, _ = open_p(br, f, 'leave', mini={'mode': ''}, )

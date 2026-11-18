@@ -713,7 +713,7 @@
   /* ── 畫面 ── */
   function render() {
     $root.innerHTML = '';
-    var head = h('div', { class: 'rq-head' }, [h('b', { text: st.store.emp_name }), ' ']);
+    var head = h('div', { class: 'rq-head' }, [h('b', { text: st.store.emp_name || '' }), ' ']);
     if (st.init.stores.length > 1) {
       var sel = h('select', { class: 'rq-store', on: { change: function () {
         st.store = st.init.stores[+sel.value]; st.info = null; st.infoErr = false; st.infoReal = false; st.peekAt.info = 0; st.storeManual = true; cachePut();
@@ -1336,7 +1336,7 @@
     return btn;
   }
   /* ── 送出前確認（2026-11-18）──
-   * 手機記住的（localStorage）／Mac mini 記住的資料只拿來先畫；會影響這張單的（店別清單、假別、額度、我的申請裡的開關與上限）
+   * 手機記住的（localStorage）／Mac mini 記住的資料只拿來先畫（mini 存檔的店別清單沒有姓名、工號：標題先不顯示姓名，最新的到了才顯示）；會影響這張單的（店別清單、假別、額度、我的申請裡的開關與上限）
    * 送出前要以光復／那家店剛給的為準：還沒到就等（最多 GATE_MS），到了跟畫面上不一樣就不送、換成最新畫面請同仁再確認；
    * 等不到或讀不到就照送（店家後端照樣用名冊、額度檢查，不會因為等不到而送錯）。 */
   var GATE_MS = 12000;
@@ -1347,16 +1347,18 @@
     if (st.store && !st.infoReal && st.infoWait && st.infoWait.code === st.store.code) return true;
     return false;
   }
-  function gateFp(withQuota) {
+  /** ids＝比對店別時連工號一起比（畫面上的店別清單有工號才比；Mac mini 存檔先畫的清單沒有姓名、工號，只比店代碼，免得多跳一次「剛更新」）。 */
+  function gateHasIds() { return ((st.init && st.init.stores) || []).every(function (x) { return x.emp_id !== undefined && x.emp_id !== null && x.emp_id !== ''; }); }
+  function gateFp(withQuota, ids) {
     var o = { s: st.store ? String(st.store.code) : null,
-              ss: ((st.init && st.init.stores) || []).map(function (x) { return String(x.code) + ':' + String(x.emp_id); }).join(',') };
+              ss: ((st.init && st.init.stores) || []).map(function (x) { return String(x.code) + (ids ? ':' + String(x.emp_id) : ''); }).join(',') };
     var x = ({ leave: lv, ot: ot, trip: tp })[st.tab];
     if (st.tab === 'leave' && lv.type) {
       var lt = (st.init && st.init.leave_types) || {};
       o.lt = (lt.common || []).concat(lt.special || []).indexOf(lv.type) >= 0;
       if (withQuota) {
         var q = ((st.init && st.init.quota) || []).filter(function (y) { return y.name === lv.type; })[0];
-        o.q = q ? [q.remain_h, q.cap_h, q.used_n === undefined ? null : q.used_n] : null; o.cb = compBlocked();
+        o.q = q ? [q.remain_h, q.cap_h, q.used_n === undefined ? null : q.used_n, Array.isArray(q.dates) ? q.dates.map(String).sort() : null] : null;   // dates＝生理假已請過哪幾天（2026-11-18 驗收補） o.cb = compBlocked();
       }
     }
     if (x && x.seg2 && st.info) o.sg = seg2Ok(st.tab, st.tab === 'leave' ? lv.type : '');
@@ -1364,7 +1366,7 @@
     return JSON.stringify(o);
   }
   function gateThen(btn, out) {
-    var before = gateFp(st.quotaReady), names = {}, stores0 = (st.init.stores || []).slice();
+    var ids = gateHasIds(), before = gateFp(st.quotaReady, ids), names = {}, stores0 = (st.init.stores || []).slice();
     stores0.forEach(function (s) { names[String(s.code)] = s.name; });
     st.busy = true; st.gateWait = true; st.gateNote = null; btn.disabled = true; btn.textContent = '確認最新資料中…';
     out.innerHTML = ''; out.appendChild(h('div', { class: 'rq-muted rq-gate-wait', text: '確認最新的店別與額度…' }));
@@ -1379,7 +1381,7 @@
     }).then(function () {
       st.busy = false; st.gateWait = false;
       if (st.tab !== tab) { render(); return; }
-      var after = gateFp(st.quotaReady && before.indexOf('"q"') >= 0), stores1 = st.init.stores || [];
+      var after = gateFp(st.quotaReady && before.indexOf('"q"') >= 0, ids), stores1 = st.init.stores || [];
       if (after !== before) {
         var gone = stores0.filter(function (s) { return !stores1.some(function (y) { return String(y.code) === String(s.code); }); }).map(function (s) { return s.name; });
         var added = stores1.filter(function (s) { return !names.hasOwnProperty(String(s.code)); }).map(function (s) { return s.name; });

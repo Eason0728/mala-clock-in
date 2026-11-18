@@ -128,13 +128,13 @@ console.log('════ E. line_hub_warm 本身 ════');
 {
   const w = world(); w.clearCache();
   const a = w.hubPost({ action: 'line_hub_warm' });
-  check('E-01', '第一次：重建、只回筆數（沒有任何人的資料）', [a.ok, a.built, a.saved, a.n, Object.keys(a).sort()], [true, true, true, 4, ['built', 'ms', 'n', 'ok', 'saved']]);
+  check('E-01', '第一次：重建、不回任何人的資料也不回綁定總筆數 n', [a.ok, a.built, a.saved, Object.keys(a).sort()], [true, true, true, ['built', 'ms', 'ok', 'saved']]);
   w.advance(60000);
   const b = w.hubPost({ action: 'line_hub_warm' });
   check('E-02', '60 秒後再打：不重建（200 秒內）', [b.built, b.age_s], [false, 60]);
   w.advance(150000);
   check('E-03', '210 秒後：重建', w.hubPost({ action: 'line_hub_warm' }).built, true);
-  w.advance(210000); w.hub.cache.lhixb = { v: '1', exp: w.hub.sb.__now + 60000 };
+  w.advance(210000); w.hub.cache.lhixb = { v: 'b', exp: w.hub.sb.__now + 60000 };
   check('E-04', '別人正在建（lhixb）：不重複建', w.hubPost({ action: 'line_hub_warm' }).busy, true);
   delete w.hub.cache.lhixb;
   // 切段：很多人也存得下、讀得回來
@@ -155,6 +155,61 @@ console.log('════ E. line_hub_warm 本身 ════');
   const k0 = Object.keys(w.hub.cache).filter((k) => /^lhix:.*:0$/.test(k))[0]; delete w.hub.cache[k0];
   check('E-08', '缺一段 → 當沒有（不會拿到半份）', w.hub.run('lineHubIdxLoad_() === null'), true);
   check('E-09', '缺一段時查詢照樣對', initOf(w, 'U1').stores.map((s) => s.code), ['', 'mztjs']);
+}
+
+console.log('════ G. warm 失敗也要節流（不需金鑰，被連打不可每次重讀九家名冊）════');
+{
+  const w = world(); w.clearCache();
+  delete w.hub.peers[SS('hq')];   // 總部試算表讀不到 → 重建一定失敗
+  w.reset();
+  const first = w.hubPost({ action: 'line_hub_warm' });
+  const readsFirst = w.cnt.read, opensFirst = w.cnt.open;
+  check('G-01', '第一次：真的去讀了（讀到總部前幾家）、回 unreadable', [first.ok, first.error, readsFirst > 0], [false, 'unreadable', true]);
+  const res = [];
+  for (let i = 0; i < 20; i++) res.push(w.hubPost({ action: 'line_hub_warm' }));
+  check('G-02', '之後連打 20 次：讀表次數、開別店試算表次數都不增加', [w.cnt.read, w.cnt.open], [readsFirst, opensFirst]);
+  check('G-03', '連打的回應：busy、不重建、不洩漏筆數 n', [res.every((r) => r.busy === true && r.built === false && !('n' in r)), res.every((r) => r.ok === false)], [true, true]);
+  w.advance(59000);
+  w.hubPost({ action: 'line_hub_warm' });
+  check('G-04', '59 秒內還是不讀表', w.cnt.read, readsFirst);
+  w.advance(2000);   // 共 61 秒
+  w.hubPost({ action: 'line_hub_warm' });
+  check('G-05', '60 秒後允許再試一次（店家恢復才會被發現）', w.cnt.read > readsFirst, true);
+}
+{
+  // 成功但存不進（太大）：也算失敗那一類，不可連打就每次重讀
+  const w = world(); w.clearCache();
+  w.hub.run('LINE_HUB_IDX_MAX_CHUNKS = 0;');
+  w.reset();
+  const first = w.hubPost({ action: 'line_hub_warm' });
+  const readsFirst = w.cnt.read;
+  check('G-06', '存不進：第一次讀了、saved=false', [first.built, first.saved, readsFirst > 0], [true, false, true]);
+  for (let i = 0; i < 20; i++) w.hubPost({ action: 'line_hub_warm' });
+  check('G-07', '存不進、連打 20 次：不再讀表', w.cnt.read, readsFirst);
+  w.advance(59000);
+  w.hubPost({ action: 'line_hub_warm' });
+  check('G-08', '存不進：59 秒內仍不讀表', w.cnt.read, readsFirst);
+  w.advance(2000);
+  w.hub.run('LINE_HUB_IDX_MAX_CHUNKS = 40;');
+  check('G-09', '61 秒後（資料量恢復）重建、這次存得進；之後不留記號', [w.hubPost({ action: 'line_hub_warm' }).saved, !!w.hub.cache.lhixb], [true, false]);
+}
+{
+  // 成功重建後 200 秒內被連打：不重讀（原本的行為不變）
+  const w = world(); w.clearCache(); w.hubPost({ action: 'line_hub_warm' }); w.reset();
+  for (let i = 0; i < 20; i++) w.hubPost({ action: 'line_hub_warm' });
+  check('G-10', '成功後連打 20 次：不讀表', w.cnt.read, 0);
+}
+
+console.log('════ H. 從沒查過的人在店家端剛被設離職：不能還開得了申請頁（E）════');
+{
+  const w = world(); w.clearCache();
+  w.hubPost({ action: 'line_hub_warm' });   // 對照表已熱，裡面 U2（央廚 C01）在職
+  check('H-01', '設離職前：U2 開得了頁（央廚）', initOf(w, 'U2').ok, true);
+  w.clearCache(); w.hubPost({ action: 'line_hub_warm' });   // 清掉每人快取後再熱起來，確保 U2 是「從沒查過」
+  const off = w.post('cf', { action: 'mgr_set_active', mgr_key: 'MK', emp_id: 'C01', active: false });
+  check('H-02', '央廚主管設離職成功、有通知光復', [off.ok, w.hubCalls.filter((c) => c.action === 'line_hub_left').length], [true, 1]);
+  const r = initOf(w, 'U2');
+  check('H-03', '設離職後馬上開頁：not_bound（不用等對照表過期）', r.error, 'not_bound');
 }
 
 console.log('════ F. 不記進考勤變動通知 ════');
