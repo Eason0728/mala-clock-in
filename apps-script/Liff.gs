@@ -730,7 +730,7 @@ function liffPunchFor_(userId, me, ss, type, body, rosterRows) {   // rosterRows
 
 /* ══ 方案 C：Mac mini 每天 04:30 備份（唯讀，管理金鑰）══
    放在 Liff.gs 是因為這份檔案五家店整檔共用，加動作不必改各店的 程式碼.js。 */
-var LIFF_EXPORT_TABLES_ = ['events', 'approved', 'leave', 'roster'];
+var LIFF_EXPORT_TABLES_ = ['events', 'approved', 'leave', 'roster', 'requests'];   // 2026-11-18 加 requests（申請單；mini 每日備份原本沒備份加班請假忘打卡申請）
 // 備份不該變成萬能鑰匙、也不該對得到 LINE 帳號：events.device_id 沒綁裝置時存的是 'line:<LINE 帳號>'（階段 1 審查 #1）
 var LIFF_EXPORT_DROP_ = { roster: ['key', 'device_id', 'line_user_id'], events: ['device_id'] };
 
@@ -739,7 +739,7 @@ function liffExportCell_(v) {
   return v;
 }
 
-/** {action:'export_tables', admin_key} → {ok, exported_at, tables:{events, approved, leave, roster}}；不寫入任何東西。
+/** {action:'export_tables', admin_key} → {ok, exported_at, tables:{events, approved, leave, roster, requests}}；不寫入任何東西。
  *  admin_key 空字串一律擋（CONFIG.ADMIN_KEY 萬一漏設，checkAdmin 會讓空金鑰通過；審查 #9）。 */
 function handleExportTables_(body) {
   if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };

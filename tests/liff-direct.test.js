@@ -174,12 +174,13 @@ ok('export：錯金鑰 → unauthorized', () => {
   assert.deepStrictEqual(J(H.export_tables({ admin_key: 'x' })), { ok: false, error: 'unauthorized' });
   assert.deepStrictEqual(J(H.export_tables({})), { ok: false, error: 'unauthorized' });
 });
-ok('export：四張表都有；roster 去掉 key／device_id／line_user_id；不寫入；日期轉台北時間字串', () => {
+ok('export：五張表都有（含 requests 申請單）；roster 去掉 key／device_id／line_user_id；不寫入；日期轉台北時間字串', () => {
   const d = new Date(Date.parse('2026-10-07T16:00:00Z'));
-  const { H, writes } = make({ sheets: { roster: [R()], events: [EV(3, 'in')], approved: [{ date: d, emp_id: 'E1', hours: 8 }], leave: [] } });
+  const { H, writes } = make({ sheets: { roster: [R()], events: [EV(3, 'in')], approved: [{ date: d, emp_id: 'E1', hours: 8 }], leave: [], requests: [{ id: 'r1', emp_id: 'E1', kind: 'ot', date: '2026-10-07', start: '18:00', end: '21:00', hours: 3, status: 'pending', grp: 'g1' }] } });
   const r = J(H.export_tables({ admin_key: 'ADM' }));
   assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(Object.keys(r.tables).sort(), ['approved', 'events', 'leave', 'roster']);
+  assert.deepStrictEqual(Object.keys(r.tables).sort(), ['approved', 'events', 'leave', 'requests', 'roster']);
+  assert.strictEqual(r.tables.requests.length, 1); assert.strictEqual(r.tables.requests[0].grp, 'g1'); assert.ok(!('__rowIndex' in r.tables.requests[0]));
   assert.deepStrictEqual(Object.keys(r.tables.roster[0]).sort(), ['active', 'emp_id', 'name', 'shift_in', 'shift_out']);
   assert.ok(JSON.stringify(r).indexOf('k1') < 0 && JSON.stringify(r).indexOf('DEV-SAFARI') < 0 && JSON.stringify(r).indexOf('"U1"') < 0);
   assert.strictEqual(r.tables.approved[0].date, '2026-10-08T00:00:00+08:00');
@@ -189,7 +190,7 @@ ok('export：四張表都有；roster 去掉 key／device_id／line_user_id；�
 ok('export：沒有的表回空陣列', () => {
   const { H } = make({ sheets: { roster: [], events: [] } });
   const r = H.export_tables({ admin_key: 'ADM' });
-  assert.deepStrictEqual(J(r.tables.leave), []); assert.deepStrictEqual(J(r.tables.approved), []);
+  assert.deepStrictEqual(J(r.tables.leave), []); assert.deepStrictEqual(J(r.tables.approved), []); assert.deepStrictEqual(J(r.tables.requests), []);
 });
 
 // ── 舊動作沒被改壞 ──
