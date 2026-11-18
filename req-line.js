@@ -21,7 +21,8 @@
   'use strict';
   var E, $root, st = { init: null, store: null, info: null, tab: 'leave', busy: false,
                       quotaReady: false, quota: null, infoErr: false, touched: false, storeManual: false,
-                      src: {}, peekAt: {}, infoReal: false, tm: null };
+                      src: {}, peekAt: {}, infoReal: false, tm: null,
+                      infoSeq: 0, syncing: false, cancelling: {}, cancelErr: null, flash: null, syncNote: '' };   // 送出／取消後「先畫結果、背景重讀」用（2026-11-18）
   var TABS = [['leave', '請假'], ['ot', '加班'], ['trip', '出差'], ['miss', '忘打卡'], ['mine', '我的申請']];
   var MISS_REASONS = ['忘記按', '手機沒電', '定位抓不到被擋', '按錯上下班', '其他'];
   var STATUS = { pending: ['審核中', 'wait'], approved: ['已核准', 'ok'], rejected: ['已退回', 'no'], cancelled: ['已取消', 'off'], voided: ['已作廢', 'off'] };
@@ -212,6 +213,7 @@
     }
     st.init = null; st.info = null; st.infoErr = false; st.quota = null; st.quotaReady = false; st.touched = false; st.storeManual = false;
     st.src = {}; st.peekAt = {}; st.infoReal = false; st.tm = { t0: Date.now(), ms: {}, src: {}, sent: false };
+    st.syncing = false; st.cancelling = {}; st.cancelErr = null; st.flash = null; st.syncNote = '';
     if (!tmHooked) { tmHooked = true; window.addEventListener('pagehide', function () { tmSend(); }); }   // 沒等到三樣都出來就關掉：送已經量到的
     $root.hidden = false;
     var token = liff.getIDToken(), cached = cacheGet(), hasOpt = opts.store !== undefined && opts.store !== null, drawn = !!cached;
@@ -310,6 +312,49 @@
       if (st.store && st.store.code === code) { st.info = r; st.infoReal = true; st.src.info = 'google'; st.peekAt.info = 0; }
       return r;
     });
+  }
+  /* 送出、取消成功後（2026-11-18）：先用回應把畫面畫好，再背景重讀伺服器的最新清單（req_info 約 3.5 秒），回來後以伺服器為準重畫。
+   *  以前是同步等重讀才換畫面，同仁按完要空等好幾秒。
+   *  - infoSeq：同時有好幾次重讀時只認最新發出的那一次（舊的晚到不蓋掉新的）。
+   *  - syncing：重讀期間送出鈕不可按（避免重複送出）；最多鎖 SYNC_GUARD_MS，重讀卡住也不會一直鎖。
+   *  - 重讀失敗：保留先畫的列，只在「我的申請」寫一句 failNote，不顯示錯誤。 */
+  var SYNC_GUARD_MS = 15000;
+  function syncBtns(on) {
+    Array.prototype.forEach.call($root.querySelectorAll('button.primary'), function (b) {
+      if (!b._rqSubmit || st.busy) return;
+      b.disabled = on; b.textContent = on ? '更新清單中…' : '送出申請';
+    });
+  }
+  function endSync(my) {
+    if (my !== st.infoSeq || !st.syncing) return;
+    st.syncing = false; syncBtns(false);
+  }
+  function reloadBg(failNote) {
+    var code = st.store.code, my = ++st.infoSeq;
+    st.syncing = true;
+    var guard = setTimeout(function () { endSync(my); }, SYNC_GUARD_MS);
+    return infoFor(code).then(function (r) {
+      clearTimeout(guard);
+      if (my !== st.infoSeq) return;
+      if (st.store && st.store.code === code) { st.info = r; st.infoErr = false; st.infoReal = true; st.src.info = 'google'; st.peekAt.info = 0; st.syncNote = ''; }
+      endSync(my);
+      if (st.tab === 'mine') render();
+    }, function () {
+      clearTimeout(guard);
+      if (my !== st.infoSeq) return;
+      if (st.store && st.store.code === code) st.syncNote = failNote;
+      endSync(my);
+      if (st.tab === 'mine') render();
+    });
+  }
+  /** 把剛送出的列放到「我的申請」最前面（伺服器回的列跟 req_info 的 requests 同一個形狀，reqPublic_）；id 已經有了就不重複放。 */
+  function adoptRows(rows) {
+    rows = (rows || []).filter(function (q) { return q && q.id; });
+    if (!rows.length) return;
+    if (!st.info) st.info = { ok: true, requests: [] };
+    var have = {};
+    (st.info.requests || []).forEach(function (q) { have[q.id] = true; });
+    st.info.requests = rows.filter(function (q) { return !have[q.id]; }).concat(st.info.requests || []);
   }
   /** 那家店那天的卡（忘打卡用）。day_only：新後端只讀尾端、不讀申請表；舊後端不認得就照舊整包回，一樣有 day。 */
   /*  apply_miss（2026-11-11）：把已送出的忘打卡申請當成已經補上的卡，兩段班一天漏好幾張時，補完一張才看得到還缺哪一張；舊後端不認得就照舊。 */
@@ -654,8 +699,10 @@
     $root.appendChild(head);
     $root.appendChild(h('div', { class: 'rq-tabs' }, TABS.map(function (t) {
       return h('button', { type: 'button', class: t[0] === st.tab ? 'on' : '', 'data-tab': t[0], text: t[1],
-                           on: { click: function () { st.tab = t[0]; render(); } } });
+                           on: { click: function () { st.tab = t[0]; st.flash = null; st.syncNote = ''; st.cancelErr = null; render(); } } });
     })));
+    if (st.tab === 'mine' && st.flash) $root.appendChild(msgBox(st.flash.text, st.flash.cls));   // 送出後的「✓ 已送出」：背景重讀完重畫也留著，離開分頁才收
+    if (st.tab === 'mine' && st.syncNote) $root.appendChild(h('div', { class: 'rq-muted rq-sync-note', text: st.syncNote }));
     var panel = h('div', { class: 'rq-panel' });
     $root.appendChild(panel);
     ({ leave: renderLeave, ot: renderOt, trip: renderTrip, miss: renderMiss, mine: renderMine })[st.tab](panel);
@@ -1010,6 +1057,7 @@
     list.forEach(function (r) {
       var gk = groupKey(r), grouped = segLive(r) && !!gk && gcount[gk] >= 2 && !!r.seg;
       var s = STATUS[r.status] || [r.status, 'off'];
+      if (st.cancelling[r.id]) s = ['取消中…', 'wait'];
       var title = r.kind === 'leave' ? r.leave_type + ' ' + r.hours + ' 小時'
                 : r.kind === 'ot' ? '加班 ' + r.hours + ' 小時'
                 : r.kind === 'trip' ? '出差 ' + r.hours + ' 小時'
@@ -1032,15 +1080,28 @@
         item.appendChild(proofBox(r));
       }
       if (r.status === 'pending') {
-        var c = h('button', { type: 'button', class: 'rq-link', text: grouped ? '取消這一段' : '取消這筆申請', on: { click: function () {
+        // 按下確認立刻換成「取消中…」（不等後端）；成功就在本地把這列改成已取消，背景再重讀（2026-11-18）。取消失敗：還原按鈕，錯誤寫在這列底下。
+        var cing = !!st.cancelling[r.id];
+        var c = h('button', { type: 'button', class: 'rq-link', disabled: cing, text: cing ? '取消中…' : grouped ? '取消這一段' : '取消這筆申請', on: { click: function () {
+          if (st.cancelling[r.id]) return;
           if (!confirm(grouped ? '確定要取消這一段？（同一次送出的另一段不受影響）' : '確定要取消這筆申請？')) return;
-          c.disabled = true;
+          st.cancelling[r.id] = true; st.cancelErr = null; st.flash = null; st.syncNote = '';
+          render();
+          var code = st.store.code, done = function (msg) {
+            delete st.cancelling[r.id];
+            if (msg) st.cancelErr = { id: r.id, text: msg };
+            else {
+              if (st.store && st.store.code === code) ((st.info && st.info.requests) || []).forEach(function (q) { if (q.id === r.id) { q.status = 'cancelled'; q.decided_by = '本人取消'; } });
+              reloadBg('已取消，清單稍後更新');
+            }
+            if (st.tab === 'mine') render();
+          };
           E.post(E.storeApi(storeDef()), { action: 'req_cancel', id_token: liff.getIDToken(), id: r.id }).then(function (x) {
-            if (x && x.ok) return loadInfo().then(render);
-            c.disabled = false; alert((x && x.message) || '取消沒有成功，請再試一次');
-          }, function () { c.disabled = false; alert('連線失敗，請再試一次'); });
+            done(x && x.ok ? '' : (x && x.message) || '取消沒有成功，請再試一次');
+          }, function () { done('連線失敗，不確定有沒有取消成功，請先看清單再決定要不要再按一次'); });
         } } });
         item.appendChild(c);
+        if (st.cancelErr && st.cancelErr.id === r.id) item.appendChild(msgBox(st.cancelErr.text, 'err'));
       }
       p.appendChild(item);
     });
@@ -1129,10 +1190,12 @@
 
   /* ── 送出 ── */
   function submitBtn(out, build, reset) {
-    var btn = h('button', { type: 'button', class: 'primary', text: '送出申請' });
+    var btn = h('button', { type: 'button', class: 'primary', text: st.syncing ? '更新清單中…' : '送出申請', disabled: st.syncing });
+    btn._rqSubmit = true;
     btn.addEventListener('click', function () {
-      if (st.busy) return;
+      if (st.busy || st.syncing) return;
       st.busy = true; btn.disabled = true; out.innerHTML = ''; out.appendChild(h('div', { class: 'rq-muted', text: '送出中…' }));
+      var sentCode = st.store ? st.store.code : null;
       // 組資料那一步就算當場出錯（不是回被拒絕的 Promise），也要走到下面的錯誤處理、把忙碌旗標放掉（2026-11-11）；
       // 原本錯誤直接丟出去，畫面停在「送出中…」、按鈕一直是灰的。
       var built;
@@ -1156,10 +1219,15 @@
         var two = r.requests && r.requests.length === 2;   // 一次填兩段：變成兩張單（2026-11-18）
         var warns = [];
         (two ? r.requests : [r.request]).forEach(function (q) { ((q && q.warns) || []).forEach(function (w) { if (warns.indexOf(w) < 0) warns.push(w); }); });
-        return loadInfo().then(function () { st.tab = 'mine'; render(); $root.insertBefore(msgBox('✓ 已送出：' + r.summary
+        // 先把剛送出的列畫出來、立刻切到「我的申請」，伺服器最新清單在背景重讀（2026-11-18；以前同步等 req_info 約 3.5 秒才換畫面）
+        if (st.store && sentCode !== null && st.store.code === sentCode) adoptRows(two ? r.requests : [r.request]);
+        st.flash = { cls: 'ok', text: '✓ 已送出：' + r.summary
           + (two ? '\n會變成 2 張' + ({ ot: '加班單', leave: '假單', trip: '出差單' }[r.request && r.request.kind] || '單') + '，等主管審核'
                  : r.request && r.request.kind === 'miss' ? '\n等打卡門市的店長審核' : '\n等主管審核')
-          + (warns.length ? '\n' + warns.map(function (w) { return '⚠ ' + w; }).join('\n') : ''), 'ok'), $root.children[2]); });
+          + (warns.length ? '\n' + warns.map(function (w) { return '⚠ ' + w; }).join('\n') : '') };
+        st.syncNote = ''; st.cancelErr = null; st.tab = 'mine';
+        reloadBg('已送出，清單稍後更新');
+        render();
       }, function (e) {
         st.busy = false; btn.disabled = false; out.innerHTML = '';
         if (e && e.seg) markSegBad(e.seg);
