@@ -10,9 +10,12 @@
  *   ATT_GROUP_ID       綁定的行政群組
  *   ATT_BIND_CODE      一次性綁定碼 JSON {code, exp, fails}（30 分鐘；碼錯累計 5 次就刪）
  *   ATT_JOIN_LAST      最近 5 筆被拉進群組的記錄 JSON [{groupId, at}]（綁定要求發話群在其中且該筆 join 在 30 分鐘內）
- *   ATT_RUN_<日期>     當天狀態機 running／received／empty／guarded
- *   ATT_BATCH_<批次>   已收過的批次（冪等）
- *   ATT_EVT_<事件 id>  已處理過的 webhook 事件（保留 1 天）
+ *   ATT_STATE_RUN      每天的狀態機 JSON {"<日期>": running／received／empty／guarded}（保留 14 天）
+ *   ATT_STATE_BATCH    已收過的批次（冪等）JSON {"<batch_id>": 收到時間 ms}（保留 14 天）
+ *   ATT_STATE_EVT      已處理過的 webhook 事件 JSON {"<事件 id>": 處理時間 ms}（保留 1 天、最多 100 筆）
+ *     ↑ 2026-11-18 起：舊版每天新增 ATT_RUN_<日期>／ATT_BATCH_<批次>／ATT_EVT_<事件 id>，屬性超過 50 個後編輯器變唯讀。
+ *       新版只寫這三個固定名稱；讀的時候仍承接舊屬性（上線當天不重複送），舊屬性由保底觸發器照保留期限慢慢刪，
+ *       或在編輯器執行 attAlertMigrateState（只列出、不改）→ attAlertMigrateStateGo（搬進新格式並刪舊屬性）。
  *   ATT_HAS_PENDING    '1'＝佇列可能有 pending 列；沒設時綁定群的訊息完全不讀試算表
  *   ATT_VERDICT_<事件 id>  帶出結果寫回拿不到鎖時暫存 {eventId, verdict, at}，保底觸發器補寫
  *   ATT_OUTBOX         要送通知匣的通知 JSON 陣列 [{title,text,key}]（key 去重、上限 20、文字截 200 字）；
@@ -38,7 +41,12 @@ var ATT_ALERT_RECENT_DAYS = 3;        // 最近幾天的 daily 依日期分段
 var ATT_ALERT_INFLIGHT_MS = 10 * 60 * 1000;
 var ATT_ALERT_BIND_TTL_MS = 30 * 60 * 1000;
 var ATT_ALERT_EVT_TTL_MS = 24 * 60 * 60 * 1000;
-var ATT_ALERT_KEEP_DAYS = 40;         // ATT_BATCH_／ATT_RUN_ 指令碼屬性保留天數
+var ATT_ALERT_KEEP_DAYS = 14;         // 狀態機／批次記錄保留天數（mini 只重送 3 天內的批次；佇列列另保留 7 天）
+var ATT_ALERT_ST_RUN = 'ATT_STATE_RUN';
+var ATT_ALERT_ST_BATCH = 'ATT_STATE_BATCH';
+var ATT_ALERT_ST_EVT = 'ATT_STATE_EVT';
+var ATT_ALERT_EVT_MAX = 100;          // ATT_STATE_EVT 最多幾筆（一筆約 45 字）
+var ATT_ALERT_STATE_MAX_CHARS = 8000; // 單一指令碼屬性約 9KB 上限，超過就丟最舊的
 var ATT_ALERT_MAX_ROWS = 3000;        // 單批上限
 var ATT_ALERT_GUARD_TEXT = '今天考勤資料查不到，請到考勤管理查看';
 var ATT_ALERT_GUARD_HM = '09:30';
@@ -47,7 +55,7 @@ var ATT_ALERT_SECTIONS = ['daily', 'state', 'sched', 'failed', 'notes', 'guard',
 // notice（2026-11-14）：一次性公告。帶出時自成一則、不加「【考勤異常】」標題與結尾，也不會被之後的批次取代（不在 LOOSE），帶出過一次就結束。
 // comp（2026-11-14）：班表截止前 15／10／5 天的「本期加班補休」。mini 組好每一行，帶出時自成一則（「▍」「※」開頭的行前面空一行）；
 //   新的 comp 批只取代舊的 pending comp，不碰考勤異常；考勤批也不取代 comp。
-// 只有 notice／comp 的批次（旁支批次）：不取代當天考勤異常列、不改 ATT_RUN_<日期>（09:30 保底照常判斷 mini 今天有沒有送考勤）。
+// 只有 notice／comp 的批次（旁支批次）：不取代當天考勤異常列、不改當天狀態機（ATT_STATE_RUN）（09:30 保底照常判斷 mini 今天有沒有送考勤）。
 var ATT_ALERT_SIDE = ['notice', 'comp'];
 
 var ATT_ALERT_STORE_LABEL = { gf: '小辛辣光復', cf: '央廚', hq: '總部', mztjs: '墨竹亭金山', mztgf: '墨竹亭光復', mztlzl: '墨竹亭六張犁', mztmc: '墨竹亭台中美村' };
@@ -83,6 +91,66 @@ function attAlertAuth_(b) {
   if (!key) return { ok: false, error: 'not_enabled' };
   if (typeof b.svcKey !== 'string' || b.svcKey !== key) return { ok: false, error: 'unauthorized' };
   return null;
+}
+
+// ───────────────────────── 動態狀態（三個固定名稱的 JSON 屬性）─────────────────────────
+// 寫入一律在 script lock 內「讀→改→寫」；讀不到（JSON 壞掉）回 null，呼叫端退到安全側（不寄放、不帶出、不寫保底）。
+/** 讀一個狀態屬性：沒有＝{}；壞掉（不是 JSON 物件）＝null */
+function attAlertStateRead_(p, name) {
+  var raw = p.getProperty(name);
+  if (raw === null || raw === undefined || raw === '') return {};
+  try {
+    var v = JSON.parse(raw);
+    return (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
+  } catch (e) { return null; }
+}
+/** 依保留期限修剪（就地改 obj）：RUN 看鍵的日期、BATCH／EVT 看值的時間；EVT 另有筆數上限；最後守住字數上限（丟最舊的） */
+function attAlertStatePrune_(name, obj, now) {
+  var ms = now.getTime(), cut = attAlertAddDays_(attAlertDateStr_(now), -ATT_ALERT_KEEP_DAYS);
+  var age = function (k) { return name === ATT_ALERT_ST_RUN ? Date.parse(k + 'T00:00:00+08:00') : Number(obj[k]); };
+  Object.keys(obj).forEach(function (k) {
+    if (name === ATT_ALERT_ST_RUN) { if (!attAlertValidDate_(k) || k < cut) delete obj[k]; return; }
+    var t = Number(obj[k]);
+    var keep = name === ATT_ALERT_ST_EVT ? ATT_ALERT_EVT_TTL_MS : ATT_ALERT_KEEP_DAYS * 86400000;
+    if (!isFinite(t) || ms - t > keep) delete obj[k];
+  });
+  var keys = Object.keys(obj).sort(function (a, b) { return age(a) - age(b) || (a < b ? -1 : 1); });
+  if (name === ATT_ALERT_ST_EVT) while (keys.length > ATT_ALERT_EVT_MAX) delete obj[keys.shift()];
+  while (keys.length > 1 && JSON.stringify(obj).length > ATT_ALERT_STATE_MAX_CHARS) {
+    console.warn('att-alert ' + name + ' 超過字數上限，丟掉最舊的一筆');
+    delete obj[keys.shift()];
+  }
+  return obj;
+}
+function attAlertStateWrite_(p, name, obj, now) {
+  p.setProperty(name, JSON.stringify(attAlertStatePrune_(name, obj, now)));
+}
+/** 某天的狀態：新格式優先，沒有再看舊屬性 ATT_RUN_<日期>（2026-11-18 以前寫的） */
+function attAlertRunGet_(p, st, d) {
+  if (Object.prototype.hasOwnProperty.call(st, d)) return st[d];
+  return p.getProperty('ATT_RUN_' + d);
+}
+function attAlertBatchHas_(p, st, id) {
+  return Object.prototype.hasOwnProperty.call(st, id) || !!p.getProperty('ATT_BATCH_' + id);
+}
+function attAlertEvtHas_(p, st, id) {
+  return Object.prototype.hasOwnProperty.call(st, id) || !!p.getProperty('ATT_EVT_' + id);
+}
+/** 全部日期的狀態（組字用，讀不到回 {}）：舊屬性 ATT_RUN_<日期> 先放，新格式蓋上去 */
+function attAlertRunAll_() {
+  var out = {};
+  try {
+    var all = attAlertProps_().getProperties() || {};
+    Object.keys(all).forEach(function (k) { var m = /^ATT_RUN_(\d{4}-\d{2}-\d{2})$/.exec(k); if (m) out[m[1]] = all[k]; });
+    var st = all[ATT_ALERT_ST_RUN] ? JSON.parse(all[ATT_ALERT_ST_RUN]) : {};
+    if (st && typeof st === 'object' && !Array.isArray(st)) Object.keys(st).forEach(function (d) { out[d] = st[d]; });
+  } catch (e) { /* 組字只影響版面，讀不到就當沒有 */ }
+  return out;
+}
+/** 狀態屬性壞掉：通知 Eason（一天一則），呼叫端已退到安全側 */
+function attAlertStateBad_(where) {
+  console.error('att-alert 狀態屬性讀不到（' + where + '）');
+  attAlertNotify_('考勤提醒狀態讀不到', '光復打卡的考勤提醒狀態屬性（ATT_STATE_*）讀不到，為避免重複發送已暫停（' + where + '）。請到編輯器執行 attAlertMigrateState 查看。', 'state-bad:' + attAlertDateStr_(attAlertNow_()));
 }
 
 // ───────────────────────── 分頁 ─────────────────────────
@@ -137,11 +205,17 @@ function handleAttAlertStart(b) {
   if (!attAlertRunDateOk_(b.run_date)) return { ok: false, error: 'bad_input' };
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy' };
+  var bad = false;
   try {
-    var p = attAlertProps_(), k = 'ATT_RUN_' + b.run_date, cur = p.getProperty(k);
-    if (cur !== 'received' && cur !== 'empty' && cur !== 'guarded') p.setProperty(k, 'running');
-    return { ok: true };
+    var p = attAlertProps_(), st = attAlertStateRead_(p, ATT_ALERT_ST_RUN);
+    if (!st) { bad = true; }
+    else {
+      var cur = attAlertRunGet_(p, st, b.run_date);
+      if (cur !== 'received' && cur !== 'empty' && cur !== 'guarded') { st[b.run_date] = 'running'; attAlertStateWrite_(p, ATT_ALERT_ST_RUN, st, attAlertNow_()); }
+    }
   } finally { lock.releaseLock(); }
+  if (bad) { attAlertStateBad_('start'); return { ok: false, error: 'state_unreadable' }; }
+  return { ok: true };
 }
 
 // ───────────────────────── att_alert_enqueue ─────────────────────────
@@ -208,8 +282,13 @@ function handleAttAlertEnqueue(b) {
   if (!(b.seq !== undefined && b.seq !== null && b.seq !== '' && isFinite(seq))) seq = now.getTime();
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy' };   // mini 呼叫，可以等
+  var bad = false;
   try {
     var p = attAlertProps_();
+    var runSt = attAlertStateRead_(p, ATT_ALERT_ST_RUN), batSt = attAlertStateRead_(p, ATT_ALERT_ST_BATCH);
+    if (!runSt || !batSt) { bad = true; return { ok: false, error: 'state_unreadable' }; }   // 不知道收過沒：寧可不收（mini 會重試）
+    var setRun = function (v) { runSt[b.run_date] = v; attAlertStateWrite_(p, ATT_ALERT_ST_RUN, runSt, now); };
+    var setBatch = function () { batSt[b.batch_id] = now.getTime(); attAlertStateWrite_(p, ATT_ALERT_ST_BATCH, batSt, now); };
     var sh = attAlertSheet_();
     var rows = attAlertReadRows_(sh);
     var mine = rows.filter(function (r) { return r.batch_id === b.batch_id; });
@@ -218,23 +297,26 @@ function handleAttAlertEnqueue(b) {
       var s0 = Number(mine[0].seq);
       attAlertSupersede_(sh, rows, b.run_date, isFinite(s0) ? s0 : seq, b.batch_id, side, hasComp);
       if (mine.some(function (r) { return r.status === 'pending'; })) p.setProperty('ATT_HAS_PENDING', '1');
-      if (!side && p.getProperty('ATT_RUN_' + b.run_date) !== 'received') p.setProperty('ATT_RUN_' + b.run_date, 'received');
-      if (!p.getProperty('ATT_BATCH_' + b.batch_id)) p.setProperty('ATT_BATCH_' + b.batch_id, attAlertIso_(now));
+      if (!side && attAlertRunGet_(p, runSt, b.run_date) !== 'received') setRun('received');
+      if (!attAlertBatchHas_(p, batSt, b.batch_id)) setBatch();
       return { ok: true, dup: true };
     }
-    if (p.getProperty('ATT_BATCH_' + b.batch_id)) return { ok: true, dup: true };
+    if (attAlertBatchHas_(p, batSt, b.batch_id)) return { ok: true, dup: true };
     var iso = attAlertIso_(now);
     var matrix = spec.map(function (s, n) {
       return [b.batch_id + '#' + n, b.run_date, b.batch_id, seq, s[0], s[1], s[2], 'pending', iso, '', '', ''];
     });
-    // 寫入順序（出事時留下的是「可重送」的狀態）：①新批列 pending → ②舊列 superseded → ③ATT_RUN → ④ATT_BATCH
+    // 寫入順序（出事時留下的是「可重送」的狀態）：①新批列 pending → ②舊列 superseded → ③狀態機 → ④批次記錄
     attAlertAppend_(sh, matrix);
     attAlertSupersede_(sh, rows, b.run_date, seq, b.batch_id, side, hasComp);
     if (matrix.length) p.setProperty('ATT_HAS_PENDING', '1');
-    if (!side) p.setProperty('ATT_RUN_' + b.run_date, empty ? 'empty' : 'received');
-    p.setProperty('ATT_BATCH_' + b.batch_id, iso);
+    if (!side) setRun(empty ? 'empty' : 'received');
+    setBatch();
     return { ok: true };
-  } finally { lock.releaseLock(); }
+  } finally {
+    lock.releaseLock();
+    if (bad) attAlertStateBad_('enqueue');
+  }
 }
 /**
  * §8.3：新批（run_date, seq）只取代「比它更舊」的 pending state／sched／failed／notes／guard；daily 保留。
@@ -488,15 +570,13 @@ function attAlertComposeAlerts_(rows, info) {
     x.guards.forEach(function (g) { if (guardLines.indexOf(g.line) < 0) guardLines.push(g.line); dates.push(g.run_date); });
     batches.push({ run_date: x.guards[x.guards.length - 1].run_date, daily: [], state: [], sched: [], failed_stores: [] });
   }
-  // 前一天 daily 還沒帶出、今天 mini 送了 empty 批（empty 批不寫列，只留 ATT_RUN_<日期>＝empty）：
+  // 前一天 daily 還沒帶出、今天 mini 送了 empty 批（empty 批不寫列，只在狀態機記 empty）：
   // mini renderMessage 會把 empty 批當「最新批」（標題區間含今天、殘留 daily 依日期分小段），這裡補一個虛擬 empty 批照同一規則走
   if (batches.length) {
-    var allP = {};
-    try { allP = attAlertProps_().getProperties() || {}; } catch (e) { allP = {}; }
+    var runs = attAlertRunAll_();
     var rowMax = dates.slice().sort().pop(), emptyDate = null;
-    Object.keys(allP).forEach(function (k) {
-      var m = /^ATT_RUN_(\d{4}-\d{2}-\d{2})$/.exec(k);
-      if (m && allP[k] === 'empty' && m[1] > rowMax && (emptyDate === null || m[1] > emptyDate)) emptyDate = m[1];
+    Object.keys(runs).forEach(function (d) {
+      if (runs[d] === 'empty' && d > rowMax && (emptyDate === null || d > emptyDate)) emptyDate = d;
     });
     if (emptyDate) { batches.push({ run_date: emptyDate, empty: true, seq: Number.MAX_SAFE_INTEGER }); dates.push(emptyDate); }
   }
@@ -709,7 +789,11 @@ function attAlertDeliver_(ev) {
   var p = attAlertProps_();
   if (!p.getProperty('ATT_HAS_PENDING')) return;   // 沒有寄放內容：完全不讀試算表
   var evId = String(ev.webhookEventId || '');
-  if (evId && p.getProperty('ATT_EVT_' + evId)) return;
+  if (evId) {
+    var ev0 = attAlertStateRead_(p, ATT_ALERT_ST_EVT);
+    if (!ev0) { attAlertStateBad_('deliver'); return; }   // 不知道這個事件處理過沒：不帶出
+    if (attAlertEvtHas_(p, ev0, evId)) return;
+  }
   if (!ev.replyToken) return;
   var sh = getSS().getSheetByName(ATT_ALERT_SHEET);
   if (!sh) return;
@@ -719,14 +803,15 @@ function attAlertDeliver_(ev) {
   var eid = evId || ('noid-' + nowMs);
   var claimed = [];
   try {
-    if (evId && p.getProperty('ATT_EVT_' + evId)) return;
+    var evSt = evId ? attAlertStateRead_(p, ATT_ALERT_ST_EVT) : {};
+    if (!evSt || (evId && attAlertEvtHas_(p, evSt, evId))) return;
     var rows = attAlertReadRows_(sh), iso = attAlertIso_(attAlertNow_()), changed = [];
     rows.forEach(function (r) {
       if (r.status === 'pending') { r.status = 'inflight'; r.inflight_at = iso; r.webhook_event_id = eid; claimed.push(r); changed.push(r); }
     });
     if (changed.length) attAlertWriteStatus_(sh, changed);
     p.deleteProperty('ATT_HAS_PENDING');   // 所有 pending 都已認領；結果是 pending 的會在寫回時補旗標
-    if (evId) p.setProperty('ATT_EVT_' + evId, String(nowMs));
+    if (evId) { evSt[evId] = nowMs; attAlertStateWrite_(p, ATT_ALERT_ST_EVT, evSt, attAlertNow_()); }
   } finally { lock.releaseLock(); }
   if (!claimed.length) return;
 
@@ -862,34 +947,104 @@ function attAlertGuard() {
 function attAlertGuardWindow_(now) {
   if (attAlertHm_(now) < ATT_ALERT_GUARD_HM) return;
   var today = attAlertDateStr_(now);
-  var p = attAlertProps_(), key = 'ATT_RUN_' + today;
+  var p = attAlertProps_();
   var done = function (s) { return s === 'received' || s === 'empty' || s === 'guarded'; };
-  if (done(p.getProperty(key))) return;
+  var st0 = attAlertStateRead_(p, ATT_ALERT_ST_RUN);
+  if (!st0) { attAlertStateBad_('guard'); return; }   // 讀不到今天狀態：不寫保底（寧可不送）
+  if (done(attAlertRunGet_(p, st0, today))) return;
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return;   // 下個 5 分鐘再來
   var wrote = false;
   try {
-    if (!done(p.getProperty(key))) {
+    var st = attAlertStateRead_(p, ATT_ALERT_ST_RUN);
+    if (st && !done(attAlertRunGet_(p, st, today))) {
       var iso = attAlertIso_(now), bid = 'guard-' + today, sh = attAlertSheet_();
-      if (!attAlertReadRows_(sh).some(function (r) { return r.batch_id === bid; })) {   // 已有就只補 ATT_RUN
+      if (!attAlertReadRows_(sh).some(function (r) { return r.batch_id === bid; })) {   // 已有就只補狀態機
         attAlertAppend_(sh, [[bid + '#0', today, bid, now.getTime(), 'guard', '', ATT_ALERT_GUARD_TEXT, 'pending', iso, '', '', '']]);
         p.setProperty('ATT_HAS_PENDING', '1');
         wrote = true;
       }
-      p.setProperty(key, 'guarded');
+      st[today] = 'guarded';
+      attAlertStateWrite_(p, ATT_ALERT_ST_RUN, st, now);
     }
   } finally { lock.releaseLock(); }
   if (wrote) attAlertNotify_('今天考勤資料查不到', '09:30 還沒收到考勤異常資料，已在行政群組寄放「查不到」的提醒。請確認 Mac mini 的考勤計算有沒有跑。', 'guard:' + today);
 }
-/** 清舊指令碼屬性：ATT_EVT_ 超過 1 天；ATT_BATCH_／ATT_RUN_ 超過 40 天（日期在名稱裡） */
+/** 舊式屬性（2026-11-18 以前每天新增的 ATT_RUN_／ATT_BATCH_／ATT_EVT_）怎麼處理：
+ *  'move'＝還在保留期限內（遷移時搬進新格式）；'drop'＝已過期；'keep'＝看不出時間（不動）；null＝不是舊式屬性。
+ *  ATT_BATCH_ 看值（收到時間 ISO），值看不出來才看名稱裡的日期（含 comp-<日期>、notice-…-<yyyymmdd>）。ATT_VERDICT_ 不算（仍在用、保底觸發器 5 分鐘內補寫後就刪）。 */
+function attAlertLegacyKind_(k, v, now) {
+  var ms = now.getTime(), cut = attAlertAddDays_(attAlertDateStr_(now), -ATT_ALERT_KEEP_DAYS);
+  if (k.indexOf('ATT_EVT_') === 0) { var t = Number(v); return (isFinite(t) && ms - t <= ATT_ALERT_EVT_TTL_MS) ? 'move' : 'drop'; }
+  var m = /^ATT_RUN_(\d{4}-\d{2}-\d{2})$/.exec(k);
+  if (m) return m[1] < cut ? 'drop' : 'move';
+  if (k.indexOf('ATT_BATCH_') !== 0) return null;
+  var ts = Date.parse(v);
+  if (!isFinite(ts)) {
+    var id = k.slice('ATT_BATCH_'.length);
+    var d1 = /(\d{4})-(\d{2})-(\d{2})/.exec(id) || /(\d{4})(\d{2})(\d{2})/.exec(id);
+    if (d1) ts = Date.parse(d1[1] + '-' + d1[2] + '-' + d1[3] + 'T00:00:00+08:00');
+  }
+  if (!isFinite(ts)) return 'keep';
+  return ms - ts > ATT_ALERT_KEEP_DAYS * 86400000 ? 'drop' : 'move';
+}
+/** 保底觸發器順手清：舊式屬性過期就刪（ATT_EVT_ 1 天、ATT_RUN_／ATT_BATCH_ 14 天，含 comp-／notice-）。新格式的三個屬性每次寫入時自己修剪。 */
 function attAlertCleanProps_(now) {
-  var p = attAlertProps_(), all = p.getProperties() || {}, ms = now.getTime();
-  var cut = attAlertAddDays_(attAlertDateStr_(now), -ATT_ALERT_KEEP_DAYS);
-  Object.keys(all).forEach(function (k) {
-    if (k.indexOf('ATT_EVT_') === 0) { var t = Number(all[k]); if (!isFinite(t) || ms - t > ATT_ALERT_EVT_TTL_MS) p.deleteProperty(k); return; }
-    var m = /^ATT_(?:BATCH|RUN)_(\d{4}-\d{2}-\d{2})/.exec(k);
-    if (m && m[1] < cut) p.deleteProperty(k);
-  });
+  var p = attAlertProps_(), all = p.getProperties() || {};
+  Object.keys(all).forEach(function (k) { if (attAlertLegacyKind_(k, all[k], now) === 'drop') p.deleteProperty(k); });
+}
+/** 編輯器手動執行（只列出、不改任何東西）：舊式屬性有幾個、哪些會搬、哪些會刪。只印名稱不印值。 */
+function attAlertMigrateState() { return attAlertMigrateState_(false); }
+/** 編輯器手動執行：把保留期限內的舊式屬性搬進 ATT_STATE_*，讀回確認新格式有對應紀錄後才刪舊屬性；過期的直接刪。 */
+function attAlertMigrateStateGo() { return attAlertMigrateState_(true); }
+function attAlertMigrateState_(go) {
+  if (!attAlertEnabled_()) { Logger.log('這個部署沒有設 ATT_ALERT_SVC_KEY（未啟用考勤提醒），不用遷移'); return null; }
+  var lock = null;
+  if (go) { lock = LockService.getScriptLock(); if (!lock.tryLock(10000)) { Logger.log('現在有其他程式在寫，請過一分鐘再執行'); return null; } }
+  try {
+    var p = attAlertProps_(), now = attAlertNow_(), all = p.getProperties() || {};
+    var plan = { move: [], drop: [], keep: [], bad: [] };
+    Object.keys(all).sort().forEach(function (k) { var kind = attAlertLegacyKind_(k, all[k], now); if (kind) plan[kind].push(k); });
+    var names = [ATT_ALERT_ST_RUN, ATT_ALERT_ST_BATCH, ATT_ALERT_ST_EVT];
+    var st = {};
+    names.forEach(function (n) { st[n] = attAlertStateRead_(p, n); if (!st[n]) { plan.bad.push(n); st[n] = {}; } });
+    var before = Object.keys(all).length;
+    var addNew = names.filter(function (n) { return !(n in all); }).length;
+    var res = { go: !!go, before: before, move: plan.move.length, drop: plan.drop.length, keep: plan.keep.length, bad: plan.bad.slice(),
+      expectAfter: before - plan.move.length - plan.drop.length + (plan.move.length ? addNew : 0) };
+    Logger.log('指令碼屬性共 ' + before + ' 個；舊式考勤提醒屬性：要搬進新格式 ' + plan.move.length + ' 個、已過期直接刪 ' + plan.drop.length + ' 個、看不出時間不動 ' + plan.keep.length + ' 個');
+    if (plan.move.length) Logger.log('要搬：' + plan.move.join('、'));
+    if (plan.drop.length) Logger.log('要刪：' + plan.drop.join('、'));
+    if (plan.keep.length) Logger.log('不動：' + plan.keep.join('、'));
+    if (plan.bad.length) Logger.log('⚠ 壞掉的新格式屬性（執行 Go 會重設成只含舊屬性搬進來的內容）：' + plan.bad.join('、'));
+    if (!go) { Logger.log('這次只列出、沒改任何東西。確認後執行 attAlertMigrateStateGo；預估之後剩 ' + res.expectAfter + ' 個'); return res; }
+    plan.move.forEach(function (k) {
+      var v = all[k];
+      if (k.indexOf('ATT_RUN_') === 0) { var d = k.slice(8); if (!Object.prototype.hasOwnProperty.call(st[ATT_ALERT_ST_RUN], d)) st[ATT_ALERT_ST_RUN][d] = v; }
+      else if (k.indexOf('ATT_EVT_') === 0) { var e = k.slice(8); if (!Object.prototype.hasOwnProperty.call(st[ATT_ALERT_ST_EVT], e)) st[ATT_ALERT_ST_EVT][e] = Number(v); }
+      else {
+        var id = k.slice(10), t = Date.parse(v);
+        if (!isFinite(t)) t = now.getTime();   // 名稱看得出日期但值不是時間：當作現在收到，照保留期限再放 14 天
+        if (!Object.prototype.hasOwnProperty.call(st[ATT_ALERT_ST_BATCH], id)) st[ATT_ALERT_ST_BATCH][id] = t;
+      }
+    });
+    if (plan.move.length || plan.bad.length) names.forEach(function (n) { attAlertStateWrite_(p, n, st[n], now); });
+    // 讀回確認：新格式真的有這一筆才刪舊屬性
+    var back = {};
+    names.forEach(function (n) { back[n] = attAlertStateRead_(p, n) || {}; });
+    var has = function (k) {
+      if (k.indexOf('ATT_RUN_') === 0) return Object.prototype.hasOwnProperty.call(back[ATT_ALERT_ST_RUN], k.slice(8));
+      if (k.indexOf('ATT_EVT_') === 0) return Object.prototype.hasOwnProperty.call(back[ATT_ALERT_ST_EVT], k.slice(8));
+      return Object.prototype.hasOwnProperty.call(back[ATT_ALERT_ST_BATCH], k.slice(10));
+    };
+    var notMoved = plan.move.filter(function (k) { return !has(k); });
+    plan.move.filter(has).concat(plan.drop).forEach(function (k) { p.deleteProperty(k); });
+    res.notMoved = notMoved.length;
+    res.after = Object.keys(p.getProperties() || {}).length;
+    if (notMoved.length) Logger.log('⚠ 這些沒搬成功、舊屬性保留：' + notMoved.join('、'));
+    Logger.log('完成：指令碼屬性 ' + before + ' 個 → ' + res.after + ' 個');
+    return res;
+  } finally { if (lock) lock.releaseLock(); }
 }
 /** 只在 Apps Script 編輯器手動執行一次：建立每 5 分鐘一次的保底觸發器（已有就先刪再建，不會重複） */
 function attAlertInstallGuard() {

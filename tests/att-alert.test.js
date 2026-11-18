@@ -123,6 +123,15 @@ function make(opts) {
 const msgEv = (groupId, text, evId, extra) => Object.assign({ type: 'message', replyToken: 'RT-' + (evId || 'x'), webhookEventId: evId || 'EVT0', source: { type: 'group', groupId, userId: 'Uxxx' }, message: { type: 'text', text: text || '大家好' } }, extra || {});
 const bound = (o) => make(Object.assign({ props: { ATT_GROUP_ID: GROUP } }, o));
 const fxReq = () => { const r = JSON.parse(JSON.stringify(fixture.att_alert_enqueue_request)); delete r.action; delete r.svcKey; return r; };
+// 2026-11-18 起動態狀態存在三個固定名稱的 JSON 屬性（ATT_STATE_RUN／ATT_STATE_BATCH／ATT_STATE_EVT）
+const stOf = (c, n) => JSON.parse(c.props[n] || '{}');
+const runOf = (c, d) => stOf(c, 'ATT_STATE_RUN')[d];
+const setRun = (c, d, v) => { const o = stOf(c, 'ATT_STATE_RUN'); if (v === undefined) delete o[d]; else o[d] = v; c.props.ATT_STATE_RUN = JSON.stringify(o); };
+const batchOf = (c, id) => stOf(c, 'ATT_STATE_BATCH')[id];
+const hasBatch = (c, id) => batchOf(c, id) !== undefined;
+const delBatch = (c, id) => { const o = stOf(c, 'ATT_STATE_BATCH'); delete o[id]; c.props.ATT_STATE_BATCH = JSON.stringify(o); };
+const evtOf = (c, id) => stOf(c, 'ATT_STATE_EVT')[id];
+const hasEvt = (c, id) => evtOf(c, id) !== undefined;
 const text = (c, i) => c.net.replies[i || 0].body.messages.map(m => m.text);
 
 // ── mini renderMessage 的實際輸出（2026-11-07 用 node 執行 ~/mala-store-ops att-digest-rules.js renderMessage 取得，逐字貼入）──
@@ -157,7 +166,7 @@ console.log('══ 金鑰與啟用 ══');
   const c = make();
   chk('金鑰錯→unauthorized（enqueue）', c.enqueue({ svcKey: 'bad', run_date: '2026-12-10', batch_id: 'x1', empty: true }), { ok: false, error: 'unauthorized' });
   chk('沒帶金鑰→unauthorized（start）', c.call('handleAttAlertStart', { run_date: '2026-12-10' }), { ok: false, error: 'unauthorized' });
-  chk('金鑰錯不寫分頁、不設狀態', [c.queue(), c.props['ATT_RUN_2026-12-10'], Object.keys(c.props).filter(k => /^ATT_(RUN|BATCH)_/.test(k))], [null, undefined, []]);
+  chk('金鑰錯不寫分頁、不設狀態', [c.queue(), runOf(c, '2026-12-10'), Object.keys(c.props).filter(k => /^ATT_(RUN|BATCH|STATE)_/.test(k))], [null, undefined, []]);
 }
 {
   const c = make({ key: null });   // 非光復店：沒設 ATT_ALERT_SVC_KEY
@@ -165,7 +174,7 @@ console.log('══ 金鑰與啟用 ══');
   chk('非光復 enqueue→not_enabled，沒建分頁', [c.call('handleAttAlertEnqueue', Object.assign(fxReq(), { svcKey: 'any' })), c.queue()], [{ ok: false, error: 'not_enabled' }, null]);
   chk('非光復：群組訊息與 join 都回 false、不記屬性', [c.onEvent(msgEv(GROUP, '綁定考勤提醒 123456')), c.onEvent({ type: 'join', source: { type: 'group', groupId: GROUP } }), c.props.ATT_JOIN_LAST, c.props.ATT_GROUP_ID], [false, false, undefined, undefined]);
   c.setNow(Date.parse('2026-12-10T10:00:00+08:00')); c.run('attAlertGuard');
-  chk('非光復：保底函式不動', [c.queue(), c.props['ATT_RUN_2026-12-10']], [null, undefined]);
+  chk('非光復：保底函式不動', [c.queue(), runOf(c, '2026-12-10')], [null, undefined]);
   chk('非光復：綁定碼函式不產生碼', [c.run('attAlertIssueBindCode'), c.props.ATT_BIND_CODE], [null, undefined]);
 }
 
@@ -173,7 +182,7 @@ console.log('══ 金鑰與啟用 ══');
 console.log('══ att_alert_start ══');
 {
   const c = make();
-  chk('start 設 running', [c.start({ run_date: '2026-12-10' }), c.props['ATT_RUN_2026-12-10']], [{ ok: true }, 'running']);
+  chk('start 設 running', [c.start({ run_date: '2026-12-10' }), runOf(c, '2026-12-10')], [{ ok: true }, 'running']);
   chk('start 用了鎖', c.lock.calls.length >= 1 && !c.lock.held, true);
   for (const st of ['received', 'empty', 'guarded']) { c.props['ATT_RUN_2026-12-10'] = st; c.start({ run_date: '2026-12-10' }); chk(`已是 ${st} 不覆蓋`, c.props['ATT_RUN_2026-12-10'], st); }
   chk('壞日期→bad_input', c.start({ run_date: '2026-02-30' }), { ok: false, error: 'bad_input' });
@@ -189,9 +198,9 @@ console.log('══ att_alert_enqueue ══');
   chk('列數與 section', q.map(r => r.section), ['daily', 'state', 'sched', 'failed']);
   chk('全部 pending、run_date／batch_id 維持文字（不被轉成日期）', [q.every(r => r.status === 'pending'), q[0].run_date, q[0].batch_id, q[0].seq], [true, '2026-12-10', '2026-12-10-0123456789ab', 100]);
   chk('failed 列：店名＋原因', [q[3].store, q[3].line], ['墨竹亭台中美村', '資料查不到']);
-  chk('狀態 received＋記批次', [c.props['ATT_RUN_2026-12-10'], !!c.props['ATT_BATCH_2026-12-10-0123456789ab']], ['received', true]);
+  chk('狀態 received＋記批次', [runOf(c, '2026-12-10'), hasBatch(c, '2026-12-10-0123456789ab')], ['received', true]);
   chk('冪等：同 batch 再送→dup、沒多寫', [c.enqueue(Object.assign(fxReq(), { seq: 101 })), c.queue().length], [{ ok: true, dup: true }, 4]);
-  const c2 = make(); c2.enqueue(fxReq()); delete c2.props['ATT_BATCH_2026-12-10-0123456789ab'];
+  const c2 = make(); c2.enqueue(fxReq()); delBatch(c2, '2026-12-10-0123456789ab');
   chk('冪等保險：屬性不見但分頁已有該批→仍 dup', [c2.enqueue(fxReq()), c2.queue().length], [{ ok: true, dup: true }, 4]);
   chk('只寫 att_alert_queue（本檔至今的所有寫入）', [...written], ['att_alert_queue']);
   chk('寫入鎖＝10 秒', c.lock.calls[0], 10000);
@@ -208,7 +217,7 @@ console.log('══ att_alert_enqueue ══');
     ['12-09:daily:pending', '12-09:state:superseded', '12-09:sched:superseded', '12-09:failed:superseded', '12-09:notes:superseded', '12-10:daily:pending', '12-10:state:pending']);
   c.setNow(T0 + 86400000);   // run_date 嚴格不晚於台北今天
   c.enqueue({ run_date: '2026-12-11', batch_id: '2026-12-11-cccccccccccc', empty: true });
-  chk('empty 批：不寫列、只讓舊 state superseded、狀態 empty', [c.queue().length, c.status().slice(-2), c.props['ATT_RUN_2026-12-11']], [7, ['daily:pending', 'state:superseded'], 'empty']);
+  chk('empty 批：不寫列、只讓舊 state superseded、狀態 empty', [c.queue().length, c.status().slice(-2), runOf(c, '2026-12-11')], [7, ['daily:pending', 'state:superseded'], 'empty']);
   chk('empty 批也進冪等', c.enqueue({ run_date: '2026-12-11', batch_id: '2026-12-11-cccccccccccc', empty: true }), { ok: true, dup: true });
   chk('壞輸入：batch_id 含怪字元／lines 不是陣列／日期錯', [
     c.enqueue({ run_date: '2026-12-11', batch_id: 'a b', empty: true }).error,
@@ -222,12 +231,12 @@ console.log('══ att_alert_enqueue ══');
   const c = bound(); c.setNow(T0);
   const y = { run_date: '2026-12-09', batch_id: '2026-12-09-yyyyyyyyyyyy', seq: 1, daily: [{ store: '墨竹亭金山', lines: ['林小美 12/08（例假）出勤 6 小時'] }], state: [], sched: [], failed_stores: [] };
   chk('昨天 run_date 的 enqueue 被接受', c.enqueue(y), { ok: true });
-  chk('ATT_RUN_<昨天>＝received，今天的狀態不受影響', [c.props['ATT_RUN_2026-12-09'], c.props['ATT_RUN_2026-12-10']], ['received', undefined]);
+  chk('ATT_RUN_<昨天>＝received，今天的狀態不受影響', [runOf(c, '2026-12-09'), runOf(c, '2026-12-10')], ['received', undefined]);
   chk('同 batch_id 重送→dup、沒多寫', [c.enqueue(y), c.queue().length], [{ ok: true, dup: true }, 1]);
-  chk('昨天的 start 也接受', [c.start({ run_date: '2026-12-08' }), c.props['ATT_RUN_2026-12-08']], [{ ok: true }, 'running']);
+  chk('昨天的 start 也接受', [c.start({ run_date: '2026-12-08' }), runOf(c, '2026-12-08')], [{ ok: true }, 'running']);
   chk('今天可、明天不可（嚴格 ≤ 台北今天）', [c.start({ run_date: '2026-12-10' }).ok, c.start({ run_date: '2026-12-11' }).error, c.enqueue({ run_date: '2026-12-11', batch_id: 'f1', empty: true }).error], [true, 'bad_input', 'bad_input']);
   c.setNow(Date.parse('2026-12-10T09:30:00+08:00')); c.run('attAlertGuard');
-  chk('昨天已 received 不影響今天保底：09:30 照寫今天的 guard', [c.props['ATT_RUN_2026-12-10'], c.queue().filter(r => r.section === 'guard').map(r => r.run_date)], ['guarded', ['2026-12-10']]);
+  chk('昨天已 received 不影響今天保底：09:30 照寫今天的 guard', [runOf(c, '2026-12-10'), c.queue().filter(r => r.section === 'guard').map(r => r.run_date)], ['guarded', ['2026-12-10']]);
 }
 
 // ═══════════════ 4 版面與 mini renderMessage 一致 ═══════════════
@@ -264,7 +273,7 @@ const EXP_EMPTY_RESIDUE = ['【考勤異常】12/09–12/10\n\n▍12/09 墨竹�
   const render = (b, o) => JSON.parse(vm.runInContext('(function(){return JSON.stringify(attAlertRenderMessage_(JSON.parse(__b), JSON.parse(__o)))})()', Object.assign(c.sb, { __b: JSON.stringify(b), __o: JSON.stringify(o || {}) })));
   chk('empty 批＋殘留 daily：直接呼叫純函式＝mini 字串', render([y, e], { today: '2026-12-10' }), EXP_EMPTY_RESIDUE);
   c.enqueue(y); c.setNow(Date.parse('2026-12-10T08:50:00+08:00')); c.enqueue(e);
-  chk('empty 批不寫列、ATT_RUN＝empty', [c.queue().length, c.props['ATT_RUN_2026-12-10']], [1, 'empty']);
+  chk('empty 批不寫列、ATT_RUN＝empty', [c.queue().length, runOf(c, '2026-12-10')], [1, 'empty']);
   c.setNow(Date.parse('2026-12-10T09:05:00+08:00')); c.onEvent(msgEv(GROUP, '早', 'EVE1'));
   chk('empty 批＋殘留 daily：經 enqueue→佇列→帶出，逐字同 mini', c.net.replies.map(r => r.body.messages.map(m => m.text))[0], EXP_EMPTY_RESIDUE);
   chk('殘留 daily 列 delivered', c.status(), ['daily:delivered']);
@@ -351,7 +360,7 @@ console.log('══ 帶出 ══');
   chk('拿鎖用 500ms', c.lock.calls.includes(500), true);
   chk('再講話：沒有 pending → 不再回', [c.onEvent(msgEv(GROUP, '再一句', 'EV2')), c.net.replies.length], [true, 1]);
   chk('delivered 的列一直保留', c.queue().length, 4);
-  chk('事件 id 記在 ATT_EVT_', !!c.props.ATT_EVT_EV1, true);
+  chk('事件 id 記在 ATT_EVT_', hasEvt(c, 'EV1'), true);
 }
 {
   // reply 當下佇列狀態應為 inflight
@@ -401,7 +410,7 @@ console.log('══ 帶出 ══');
   const c = bound();
   c.enqueue(Object.assign(fxReq(), { seq: 100 }));
   c.lock.failOn = [500];
-  chk('拿不到鎖：直接 return、沒回、沒動列、沒記事件 id', [c.onEvent(msgEv(GROUP, '甲', 'L1')), c.net.replies.length, c.status().every(s => s.endsWith('pending')), c.props.ATT_EVT_L1], [true, 0, true, undefined]);
+  chk('拿不到鎖：直接 return、沒回、沒動列、沒記事件 id', [c.onEvent(msgEv(GROUP, '甲', 'L1')), c.net.replies.length, c.status().every(s => s.endsWith('pending')), evtOf(c, 'L1')], [true, 0, true, undefined]);
   c.lock.failOn = [];
   c.onEvent(msgEv(GROUP, '乙', 'L2'));
   chk('鎖恢復後帶出', c.net.replies.length, 1);
@@ -409,7 +418,7 @@ console.log('══ 帶出 ══');
 {
   const c = bound();
   c.enqueue(Object.assign(fxReq(), { seq: 100 }));
-  chk('非綁定群：完全不處理（回 false、沒 reply、列不動）', [c.onEvent(msgEv(OTHER_GROUP, '甲', 'O1')), c.net.replies.length, c.status().every(s => s.endsWith('pending')), c.props.ATT_EVT_O1], [false, 0, true, undefined]);
+  chk('非綁定群：完全不處理（回 false、沒 reply、列不動）', [c.onEvent(msgEv(OTHER_GROUP, '甲', 'O1')), c.net.replies.length, c.status().every(s => s.endsWith('pending')), evtOf(c, 'O1')], [false, 0, true, undefined]);
   chk('綁定群的其他非訊息事件（memberJoined）不處理', [c.onEvent({ type: 'memberJoined', source: { type: 'group', groupId: GROUP } }), c.net.replies.length], [false, 0]);
   chk('沒有 replyToken：不動列', [c.onEvent(msgEv(GROUP, '甲', 'N1', { replyToken: '' })), c.status().every(s => s.endsWith('pending'))], [true, true]);
   chk('私訊事件：不處理', [c.onEvent({ type: 'message', replyToken: 'r', source: { type: 'user', userId: 'U1' }, message: { type: 'text', text: '打卡' } }), c.net.replies.length], [false, 0]);
@@ -477,9 +486,9 @@ const at = (c, hm) => c.setNow(Date.parse(`2026-12-10T${hm}:00+08:00`));
 {
   const c = bound({ props: { ATT_GROUP_ID: GROUP, NOTIFY_INBOX_TOKEN: 'tok-fake', NOTIFY_INBOX_URL: 'https://inbox.example.test/exec' } });
   at(c, '09:29'); c.run('attAlertGuard');
-  chk('09:29 不動', [c.queue(), c.props['ATT_RUN_2026-12-10']], [null, undefined]);
+  chk('09:29 不動', [c.queue(), runOf(c, '2026-12-10')], [null, undefined]);
   at(c, '09:30'); c.run('attAlertGuard');
-  chk('09:30 寫 guard 列、設 guarded、送通知匣', [c.queue().map(r => [r.section, r.status, r.line]), c.props['ATT_RUN_2026-12-10'], c.inboxKeys()], [[['guard', 'pending', '今天考勤資料查不到，請到考勤管理查看']], 'guarded', ['att-alert:guard:2026-12-10']]);
+  chk('09:30 寫 guard 列、設 guarded、送通知匣', [c.queue().map(r => [r.section, r.status, r.line]), runOf(c, '2026-12-10'), c.inboxKeys()], [[['guard', 'pending', '今天考勤資料查不到，請到考勤管理查看']], 'guarded', ['att-alert:guard:2026-12-10']]);
   at(c, '09:35'); c.run('attAlertGuard');
   chk('之後每 5 分鐘不重複寫', [c.queue().length, c.net.inbox.length], [1, 1]);
   c.onEvent(msgEv(GROUP, '早安', 'G1'));
@@ -505,7 +514,7 @@ const at = (c, hm) => c.setNow(Date.parse(`2026-12-10T${hm}:00+08:00`));
   const c = bound();
   at(c, '09:40'); c.run('attAlertGuard');
   c.enqueue(Object.assign(fxReq(), { seq: 200 }));
-  chk('晚到 enqueue：guard 變 superseded、真資料 pending、狀態改 received', [c.status(), c.props['ATT_RUN_2026-12-10']], [['guard:superseded', 'daily:pending', 'state:pending', 'sched:pending', 'failed:pending'], 'received']);
+  chk('晚到 enqueue：guard 變 superseded、真資料 pending、狀態改 received', [c.status(), runOf(c, '2026-12-10')], [['guard:superseded', 'daily:pending', 'state:pending', 'sched:pending', 'failed:pending'], 'received']);
   c.onEvent(msgEv(GROUP, '早安', 'G3'));
   chk('之後帶出的是真資料，不含「查不到」保底句', [text(c)[0].includes('今天考勤資料查不到，請到考勤管理查看'), text(c)[0].includes('陳小華 T02')], [false, true]);
   at(c, '09:45'); c.run('attAlertGuard');
@@ -549,7 +558,7 @@ console.log('══ doPost 分派／webhook 掛勾 ══');
 {
   const c = make();
   const post = (o) => { c.sb.__p = JSON.stringify(o); return JSON.parse(vm.runInContext('doPost({postData:{contents:__p}}).s', c.sb)); };
-  chk('doPost att_alert_start', [post({ action: 'att_alert_start', svcKey: KEY, run_date: '2026-12-10' }), c.props['ATT_RUN_2026-12-10']], [{ ok: true }, 'running']);
+  chk('doPost att_alert_start', [post({ action: 'att_alert_start', svcKey: KEY, run_date: '2026-12-10' }), runOf(c, '2026-12-10')], [{ ok: true }, 'running']);
   chk('doPost att_alert_enqueue', post(Object.assign(fxReq(), { action: 'att_alert_enqueue', svcKey: KEY })), { ok: true });
   chk('doPost 金鑰錯→unauthorized', post(Object.assign(fxReq(), { action: 'att_alert_enqueue', svcKey: 'no' })), { ok: false, error: 'unauthorized' });
   chk('其他動作不受影響：未知動作照舊', post({ action: 'no_such_action' }), { ok: false, error: 'unknown_action' });
@@ -669,7 +678,7 @@ const INBOX_PROPS = { ATT_GROUP_ID: GROUP, NOTIFY_INBOX_TOKEN: 'tok-fake', NOTIF
   at(c, '09:30'); c.run('attAlertGuard');
   c.enqueue({ run_date: '2026-12-09', batch_id: '2026-12-09-yyyyyyyyyyyy', seq: 5, daily: [{ store: '墨竹亭金山', lines: ['林小美 12/08（例假）出勤 6 小時'] }], state: [{ store: '央廚', lines: ['昨天的狀態'] }], sched: [], failed_stores: [] });
   chk('今天 guard 存在時重送昨天批次 → guard 保留（pending）', c.status().filter(x => x.startsWith('guard')), ['guard:pending']);
-  chk('昨天的 ATT_RUN 照設、今天仍是 guarded', [c.props['ATT_RUN_2026-12-09'], c.props['ATT_RUN_2026-12-10']], ['received', 'guarded']);
+  chk('昨天的 ATT_RUN 照設、今天仍是 guarded', [runOf(c, '2026-12-09'), runOf(c, '2026-12-10')], ['received', 'guarded']);
   const d = bound();
   d.enqueue({ run_date: '2026-12-10', batch_id: '2026-12-10-nnnnnnnnnnnn', seq: 50, daily: [], state: [{ store: '央廚', lines: ['今天的狀態'] }], sched: [], failed_stores: [] });
   d.enqueue({ run_date: '2026-12-09', batch_id: '2026-12-09-oooooooooooo', seq: 99, daily: [], state: [{ store: '央廚', lines: ['昨天的狀態'] }], sched: [], failed_stores: [] });
@@ -684,16 +693,16 @@ const INBOX_PROPS = { ATT_GROUP_ID: GROUP, NOTIFY_INBOX_TOKEN: 'tok-fake', NOTIF
   const c = bound();
   vm.runInContext('globalThis.__origSup = attAlertSupersede_; attAlertSupersede_ = function () { throw new Error("crash-mid-write"); };', c.sb);
   let threw = false; try { c.enqueue(Object.assign(fxReq(), { seq: 100 })); } catch (e) { threw = /crash-mid-write/.test(String(e)); }
-  chk('中途失敗：新批列已寫（pending）、ATT_RUN／ATT_BATCH 還沒寫', [threw, c.status().length, c.props['ATT_RUN_2026-12-10'], c.props['ATT_BATCH_2026-12-10-0123456789ab']], [true, 4, undefined, undefined]);
+  chk('中途失敗：新批列已寫（pending）、ATT_RUN／ATT_BATCH 還沒寫', [threw, c.status().length, runOf(c, '2026-12-10'), batchOf(c, '2026-12-10-0123456789ab')], [true, 4, undefined, undefined]);
   vm.runInContext('attAlertSupersede_ = __origSup;', c.sb);
   chk('重送同 batch → 補寫後回 dup、沒多寫列', [c.enqueue(Object.assign(fxReq(), { seq: 100 })), c.queue().length], [{ ok: true, dup: true }, 4]);
-  chk('補寫了 ATT_RUN／ATT_BATCH／旗標', [c.props['ATT_RUN_2026-12-10'], !!c.props['ATT_BATCH_2026-12-10-0123456789ab'], c.props.ATT_HAS_PENDING], ['received', true, '1']);
+  chk('補寫了 ATT_RUN／ATT_BATCH／旗標', [runOf(c, '2026-12-10'), hasBatch(c, '2026-12-10-0123456789ab'), c.props.ATT_HAS_PENDING], ['received', true, '1']);
   const d = bound();
   d.enqueue(Object.assign(fxReq(), { seq: 100 }));
-  at(d, '09:40'); d.props['ATT_RUN_2026-12-10'] = 'running'; d.run('attAlertGuard');   // 假裝 ATT_RUN 沒寫成、保底插進來
+  at(d, '09:40'); setRun(d, '2026-12-10', 'running'); d.run('attAlertGuard');   // 假裝 ATT_RUN 沒寫成、保底插進來
   chk('（前置）保底寫了 guard', d.status().includes('guard:pending'), true);
   d.enqueue(Object.assign(fxReq(), { seq: 100 }));
-  chk('dup 補寫順便把 guard 取代、狀態 received', [d.status().filter(x => x.startsWith('guard')), d.props['ATT_RUN_2026-12-10']], [['guard:superseded'], 'received']);
+  chk('dup 補寫順便把 guard 取代、狀態 received', [d.status().filter(x => x.startsWith('guard')), runOf(d, '2026-12-10')], [['guard:superseded'], 'received']);
 }
 {
   // B8 保底觸發器：任何提早 return 之前先做維護
@@ -704,14 +713,14 @@ const INBOX_PROPS = { ATT_GROUP_ID: GROUP, NOTIFY_INBOX_TOKEN: 'tok-fake', NOTIF
   c.props.ATT_EVT_old = String(T0 - 2 * 86400000); c.props['ATT_RUN_2026-09-01'] = 'received';
   c.advance(11);   // 09:11：未到 09:30，但 inflight 已超過 10 分鐘
   c.run('attAlertGuard');
-  chk('09:11（未到 09:30）：逾時 inflight 照樣轉 unknown、清屬性、送 outbox，但不寫 guard', [c.status().every(s => s.endsWith('unknown')), c.props.ATT_EVT_old, c.props['ATT_RUN_2026-09-01'], c.inboxKeys(), c.props['ATT_RUN_2026-12-10']], [true, undefined, undefined, ['att-alert:unknown:2026-12-10'], 'received']);
+  chk('09:11（未到 09:30）：逾時 inflight 照樣轉 unknown、清屬性、送 outbox，但不寫 guard', [c.status().every(s => s.endsWith('unknown')), c.props.ATT_EVT_old, c.props['ATT_RUN_2026-09-01'], c.inboxKeys(), runOf(c, '2026-12-10')], [true, undefined, undefined, ['att-alert:unknown:2026-12-10'], 'received']);
 }
 {
   // B9 guard 固定 batch_id；已存在只補 ATT_RUN
   const c = bound();
   at(c, '09:30'); c.run('attAlertGuard');
-  delete c.props['ATT_RUN_2026-12-10']; at(c, '09:35'); c.run('attAlertGuard');
-  chk('guard 列只有一筆（batch_id＝guard-<日期>）、ATT_RUN 補回 guarded', [c.queue().map(r => r.batch_id), c.props['ATT_RUN_2026-12-10']], [['guard-2026-12-10'], 'guarded']);
+  setRun(c, '2026-12-10'); at(c, '09:35'); c.run('attAlertGuard');
+  chk('guard 列只有一筆（batch_id＝guard-<日期>）、ATT_RUN 補回 guarded', [c.queue().map(r => r.batch_id), runOf(c, '2026-12-10')], [['guard-2026-12-10'], 'guarded']);
 }
 {
   // B11 compose 的 today＝max(佇列最大 run_date, 台北今天)
@@ -765,7 +774,7 @@ const INBOX_PROPS = { ATT_GROUP_ID: GROUP, NOTIFY_INBOX_TOKEN: 'tok-fake', NOTIF
 {
   // P4-11 沒有可組字內容的批次當 empty
   const c = bound();
-  chk('只有 notes 的批次 → 當 empty（不寫列、不設旗標、ATT_RUN＝empty）', [c.enqueue({ run_date: '2026-12-10', batch_id: 'n1', daily: [], state: [], sched: [], failed_stores: [], notes: ['跨店合併暫停'] }), c.queue().length, c.props.ATT_HAS_PENDING, c.props['ATT_RUN_2026-12-10']], [{ ok: true }, 0, undefined, 'empty']);
+  chk('只有 notes 的批次 → 當 empty（不寫列、不設旗標、ATT_RUN＝empty）', [c.enqueue({ run_date: '2026-12-10', batch_id: 'n1', daily: [], state: [], sched: [], failed_stores: [], notes: ['跨店合併暫停'] }), c.queue().length, c.props.ATT_HAS_PENDING, runOf(c, '2026-12-10')], [{ ok: true }, 0, undefined, 'empty']);
   chk('全空但沒帶 empty 旗標 → 同樣當 empty', [c.enqueue({ run_date: '2026-12-10', batch_id: 'n2', daily: [], state: [], sched: [], failed_stores: [] }), c.queue().length, c.props.ATT_HAS_PENDING], [{ ok: true }, 0, undefined]);
   const d = bound();
   d.enqueue({ run_date: '2026-12-10', batch_id: 'n3', seq: 1, daily: [], state: [{ store: '央廚', lines: ['舊'] }], sched: [], failed_stores: [] });
