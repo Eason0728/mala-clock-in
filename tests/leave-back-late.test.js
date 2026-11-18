@@ -121,6 +121,19 @@ m = env([[D + 'T10:00:00', 'in'], [D + 'T13:00:00', 'out'], [D + 'T20:40:00', 'i
 r = approve(m, '10:00-13:00,20:00-01:00', ACT({ sched_spans: [{ start: '10:00', end: '13:00' }, { start: '20:00', end: '01:00' }], diff_reason: '上班卡 20:40：主管同意' }));
 check('BL-nl-night', '跨夜二段 10–13／20–01、20:40 到 → 8 小時、遲到40', [r.ok, r.hours, /遲到40分/.test(r.status)], [true, 8, true]);
 check('BL-nl-f', '函式層：reqSchedStartMs_ 帶 17:00 → 第二段開頭 40 分當遲到（0）；不帶＝40', [m.sb.reqOverCreditMin_([{ startMs: Date.parse(D + 'T09:00:00+08:00'), endMs: Date.parse(D + 'T12:00:00+08:00') }, { startMs: Date.parse(D + 'T17:00:00+08:00'), endMs: Date.parse(D + 'T22:00:00+08:00') }], [{ inMs: Date.parse(D + 'T09:00:00+08:00'), outMs: Date.parse(D + 'T12:00:00+08:00') }, { inMs: Date.parse(D + 'T17:40:00+08:00'), outMs: Date.parse(D + 'T22:00:00+08:00') }], null, null, m.sb.reqSchedStartMs_(D, [{ start: '09:00' }, { start: '17:00' }])), m.sb.reqOverCreditMin_([{ startMs: Date.parse(D + 'T09:00:00+08:00'), endMs: Date.parse(D + 'T12:00:00+08:00') }, { startMs: Date.parse(D + 'T17:00:00+08:00'), endMs: Date.parse(D + 'T22:00:00+08:00') }], [{ inMs: Date.parse(D + 'T09:00:00+08:00'), outMs: Date.parse(D + 'T12:00:00+08:00') }, { inMs: Date.parse(D + 'T17:40:00+08:00'), outMs: Date.parse(D + 'T22:00:00+08:00') }], null, null)], [0, 40]);
+// 多段班中間那段提早走＝早退（2026-11-18 Eason「二段班各段結尾早走一律記早退」）：班表 09–12／17–22、核定 09–12、17–22＝8；11:20 走 → 早退 40；當天最後一段 21:30 走照舊（核定到 21:30、不補）
+m = env([[D + 'T09:00:00', 'in'], [D + 'T11:20:00', 'out'], [D + 'T17:00:00', 'in'], [D + 'T22:00:00', 'out']], []);
+r = approve(m, '09:00-12:00,17:00-22:00', ACT());
+check('BL-nl-early', '沒有假單、第一段 11:20 走（第一段到 12:00）→ 放行、8 小時、早退40', [r.ok, r.hours, /早退40分/.test(r.status), r.message.slice(0, 30)], [true, 8, true, '']);
+m = env([[D + 'T09:00:00', 'in'], [D + 'T11:20:00', 'out'], [D + 'T17:00:00', 'in'], [D + 'T22:00:00', 'out']], []);
+r = approve(m, '09:00-12:00,17:00-22:00', { dry_run: true });
+check('BL-nl-early-legacy', '舊值班頁（沒帶班表）：照改之前擋「核定比打卡多 40 分鐘」', [r.ok, /核定比打卡多 40 分鐘/.test(r.message)], [false, true]);
+m = env([[D + 'T09:00:00', 'in'], [D + 'T12:00:00', 'out'], [D + 'T17:00:00', 'in'], [D + 'T21:30:00', 'out']], []);
+r = approve(m, '09:00-12:00,17:00-21:30', ACT());
+check('BL-nl-lastend', '當天最後一段 21:30 走、核定到 21:30（照舊不補）→ 放行 7.5 小時、狀態不記早退', [r.ok, r.hours, /早退/.test(r.status)], [true, 7.5, false]);
+m = env([[D + 'T09:00:00', 'in'], [D + 'T11:20:00', 'out'], [D + 'T17:00:00', 'in'], [D + 'T22:00:00', 'out']], []);
+r = approve(m, '09:00-12:00,17:00-22:00', ACT({ sched_spans: [{ start: '09:00', end: '12:00' }, { start: '17:00', end: '22:00' }] }));
+check('BL-nl-f2', '函式層：reqSchedMidEndMs_ 只取中間段的結束（12:00），最後一段 22:00 不算', JSON.parse(JSON.stringify(m.sb.reqSchedMidEndMs_(D, [{ start: '17:00', end: '22:00' }, { start: '09:00', end: '12:00' }]))).length, 3);
 
 console.log('\n════ 三、不適用：照舊擋 ════');
 for (const st of ['rejected', 'void']) {

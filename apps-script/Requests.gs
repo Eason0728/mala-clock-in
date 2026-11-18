@@ -2296,6 +2296,20 @@ function reqLeaveStartMs_(date, okRows) {
   });
   return out;
 }
+/* 多段班中間那幾段的結束時間（後面還有一段班；當天最後一段的結束不算）：2026-11-18 Eason「二段班各段結尾早走一律記早退」——
+   營運系統核定會算到那段班表結束，reqOverCreditMin_ 把最後一張下班卡到那裡當早退。沒帶班表＝空。 */
+function reqSchedMidEndMs_(date, spans) {
+  var list = (Array.isArray(spans) ? spans : []).map(function (x) {
+    var a = reqHm_(x && x.start), b = reqHm_(x && x.end);
+    if (!a || !b) return null;
+    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
+    if (e <= s) e += 86400000;
+    return { s: s, e: e };
+  }).filter(function (x) { return x; }).sort(function (x, y) { return x.s - y.s; });
+  var out = [];
+  list.slice(0, -1).forEach(function (x) { out.push(x.e, x.e - 86400000, x.e + 86400000); });
+  return out;
+}
 /* 班表每一段的開始時間（ms；營運系統帶的 sched_spans，跨夜試前一天／隔天）：2026-11-18 Eason「沒有請假的二段班第二段晚到，記成遲到」——
    營運系統核定會從那段班表開始算，reqOverCreditMin_ 把那段開頭到實際上班卡當遲到（同第一段開頭）。沒帶班表（舊值班頁）＝空，跟改之前一樣。 */
 function reqSchedStartMs_(date, spans) {
@@ -2843,7 +2857,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   // 2026-11-14 Eason「打卡＋單＝核定時數」：不再「差 30 分鐘寫原因」，只看核定比打卡多（沒打卡卻要算的時間），要有單；早到晚走不算、不用原因
   // 已核准的忘打卡單補的卡算「有打卡」（2026-11-15 Eason：游家輝 11/11 忘打卡單補 18:30–20:15 仍被算成整段沒打卡；
   // 同營運系統 core-calc.js 的「打卡＋單」）。只用在這條「核定比打卡多」，其他檢查照舊看真的卡
-  var overMin = strict ? reqOverCreditMin_(periods, reqSegsWithMiss_(segs || [], ok, date), breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok)) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）
+  var overMin = strict ? reqOverCreditMin_(periods, reqSegsWithMiss_(segs || [], ok, date), breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok).concat(reqSchedMidEndMs_(date, opt.sched_spans))) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）
   if (overMin != null && overMin >= REQ_STRICT_DIFF_MIN) add('over_credit', '核定比打卡多 ' + overMin + ' 分鐘（沒有打卡的時間要有忘打卡單、假單或補休單）');
   if (opt.preview) return { probs: probs, diff_min: diffMin, over_min: overMin, ot_have: otHave, ot_need: otNeed, ft8_gap: ft8 ? ft8.gap : 0 };
   if (probs.length) {
