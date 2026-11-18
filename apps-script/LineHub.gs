@@ -1830,7 +1830,8 @@ function handleLineHubReqInit_(body) {
   if (lineHubThrottled_('rqi', userId, 20, 60)) return { ok: false, error: 'too_many' };
   var mine = lineHubMine_(userId, null, false);
   if (!mine.length) return { ok: false, error: 'not_bound' };
-  var stores = mine.map(function (x) { return { code: String(x.st.code), name: String(x.st.name), emp_id: String(x.row.emp_id), emp_name: String(x.row.name) }; });
+  // support（2026-11-18，一次填兩段的加班防呆）：名冊 src_store 有值＝自動加入的支援帳號；沒有＝原單位。申請頁用它找「該吸收加班的那家」，舊申請頁不認得這欄位照常用。
+  var stores = mine.map(function (x) { return { code: String(x.st.code), name: String(x.st.name), emp_id: String(x.row.emp_id), emp_name: String(x.row.name), support: !!String(x.row.src_store || '').trim() }; });
   var names = [];
   try {
     var pick = lineHubPayPick_(userId);
