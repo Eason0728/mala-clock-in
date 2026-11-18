@@ -1614,9 +1614,10 @@ def open_fast(ctx, hq, mini_st, conf='gw', pre_js='', wait_who=True, extra=''):
 
 
 COARSE_GEO_JS = """
-window.__geo2 = { calls: 0, clears: 0, firstCallAt: null, ok: null };
+// liffAtFirst：第一次要位置時，LINE 登入（initLiff 把 window.liff 掛上去）有沒有已經做完；先後順序用事件判斷、不靠毫秒大小
+window.__geo2 = { calls: 0, clears: 0, firstCallAt: null, liffAtFirst: null, ok: null };
 Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
-  watchPosition: function (ok) { var g = window.__geo2; g.calls++; if (g.firstCallAt === null) g.firstCallAt = performance.now(); g.ok = ok; return g.calls; },
+  watchPosition: function (ok) { var g = window.__geo2; g.calls++; if (g.firstCallAt === null) { g.firstCallAt = performance.now(); g.liffAtFirst = typeof window.liff !== 'undefined'; } g.ok = ok; return g.calls; },
   clearWatch: function () { window.__geo2.clears++; }, getCurrentPosition: function () {}
 } });
 window.__geoPush = function (lat, lng, acc) { window.__geo2.ok({ timestamp: Date.now(), coords: { latitude: lat, longitude: lng, accuracy: acc } }); };
@@ -1737,12 +1738,17 @@ def phase_coarse(ctx):
     p = open_geo(); push(p, HQ_AT, 10); shown(p, HQ['name'])
     p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
     g = p.evaluate('window.__geo2'); o = opens(p)[0]
-    ok('定位提前 9：開始抓位置的時間早於 LINE 登入完成（%.0f < %.0f 毫秒），整個開頁只抓一輪' % (g['firstCallAt'], o['liff_ms']), g['firstCallAt'] < o['liff_ms'] and g['calls'] == 1, (g, o))
+    # 原意：開始抓位置要「不晚於」LINE 登入完成。兩個數字來自同一個 performance.now()，但 liff_ms 是頁面四捨五入成整數毫秒才回報的、
+    # firstCallAt 是原始小數，直接比 < 會把「10.2 對 round(10.4)=10」誤判成晚了（本機 mock 的登入是立刻完成，兩者常差不到 1 毫秒）。
+    # 所以：時間用同樣四捨五入後比「不晚於」（≤），先後順序另用事件證明（第一次抓位置時 window.liff 還沒掛上＝登入還沒做完），開關關掉時則相反。
+    ok('定位提前 9：開始抓位置不晚於 LINE 登入完成（%.1f ≤ %d 毫秒，且抓位置時登入還沒完成），整個開頁只抓一輪' % (g['firstCallAt'], o['liff_ms']),
+       round(g['firstCallAt']) <= o['liff_ms'] and g['liffAtFirst'] is False and g['calls'] == 1, (g, o))
     p.close()
     p = open_geo('&geo_early=0'); push(p, HQ_AT, 10); shown(p, HQ['name'])
     p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
     g = p.evaluate('window.__geo2'); o = opens(p)[0]
-    ok('定位提前 9：開關關掉 → 登入完才開始抓（%.0f ≥ %.0f 毫秒）' % (g['firstCallAt'], o['liff_ms']), g['firstCallAt'] >= o['liff_ms'] and g['calls'] == 1, (g, o))
+    ok('定位提前 9：開關關掉 → 登入完才開始抓（%.1f ≥ %d 毫秒，且抓位置時登入已完成）' % (g['firstCallAt'], o['liff_ms']),
+       round(g['firstCallAt']) >= o['liff_ms'] and g['liffAtFirst'] is True and g['calls'] == 1, (g, o))
     p.close()
 
     # 10. 不是從 LINE 打開（登入不成）→ 提前開的定位要停掉；申請頁、QR 不抓位置

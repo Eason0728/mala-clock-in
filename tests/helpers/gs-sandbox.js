@@ -83,8 +83,14 @@ function make(opts) {
   opts = opts || {};
   const props = Object.assign({}, opts.props || {});
   const cache = {};
+  // 假時鐘是凍結的（Date.now 永遠是同一個毫秒），而申請編號＝'r'＋Date.now()＋Math.random 兩碼（Requests.gs reqNewId_ 等）：
+  // 用真亂數時，同一個測試連續送幾張單就有 1/1296 的機率同編號（→ 核准時「not_pending／這筆已經處理過了」偶發失敗）。
+  // 所以沙盒的 Math.random 改成「依序、不重複」的數列（每個沙盒各自從 0 起，取值落在格子正中間，Math.floor(random*1296) 剛好等於序號，連 1296 個之內不會重複）。
+  // 正式環境碰不到這種撞號：每次執行都在指令碼鎖內、要讀寫試算表，兩張單不可能落在同一毫秒（只有兩段一次送的同一次執行內，reqSaveSegs_ 另有 taken 防重複）。
+  let rndSeq = 0;
+  const sbMath = Object.assign(Object.create(Math), { random: () => ((rndSeq++ * 7919) % 1296 + 0.5) / 1296 });   // 7919 與 1296 互質，序號走遍 0..1295 才會重複
   const sb = {
-    console, String, Number, Math, JSON, Object, Array, RegExp, Error, TypeError, RangeError, isNaN, isFinite, parseFloat, parseInt,
+    console, String, Number, Math: sbMath, JSON, Object, Array, RegExp, Error, TypeError, RangeError, isNaN, isFinite, parseFloat, parseInt,
     encodeURIComponent, decodeURIComponent, unescape, escape, Boolean, Symbol, Map, Set, Promise,
     Logger: { log: () => {} }, __now: opts.now || T('2026-11-10T10:00:00'), __fetches: [],
   };
