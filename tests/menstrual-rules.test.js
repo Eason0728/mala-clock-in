@@ -94,7 +94,7 @@ console.log('\n════ 六、取消／退回／作廢後重算 ════
   const dec = m2.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: r2.request.id, decision: 'reject', reason: '日期錯了' });
   check('M06-b', '主管退回 11/20 後 12/3 收', [dec.ok, res(send(m2, '2026-12-03'))], [true, 'ok']);
   const base = { emp_id: 'E01', kind: 'leave', leave_type: '生理假', hours: 8 };
-  const ex = [Object.assign({ date: '2026-11-20', status: 'void' }, base), Object.assign({ date: '2026-10-05', status: 'cancelled' }, base), Object.assign({ date: '2026-09-05', status: 'rejected' }, base)];
+  const ex = [Object.assign({ date: '2026-11-20', status: 'voided' }, base), Object.assign({ date: '2026-10-05', status: 'cancelled' }, base), Object.assign({ date: '2026-09-05', status: 'rejected' }, base)];
   check('M06-c', '作廢、取消、退回的單都不算（直接跑判斷）', m.sb.reqMensBlock_(Object.assign({ date: '2026-12-10' }, base), ex, 'E01', { quota: MQ(['2026-07-02', '2026-08-05']) }, { today: '2026-11-18' }), null);
 }
 
@@ -202,6 +202,18 @@ console.log('\n════ 十四、薪資：額度表與「本月之前」一�
   PY.input = [{ ym: '2026-06', emp_id: 'E01', store: 'SSLGF', menstrual_h: 8 }];
   const my = call('payMyLeaveQuota', 'E01', '測試一', '2026-11', 'SSLGF').filter((x) => x.code === 'menstrual')[0];
   check('M14-d', '同仁額度 payMyLeaveQuota 帶 used_n、dates（本店 leave＋手動工時）', [my.used_n, my.dates], [3, ['2026-06#1', '2026-09-03', '2026-10-01']]);
+  // 驗收缺口 a：is_full_time 空白不當計時；同工號多筆主檔（雙店）要取對，取不準＝判斷不出來
+  const ME1 = { emp_id: 'E01', name: '測試一' };
+  const ft = (rows, st) => { PY.master = rows; return call('payFtOfMe_', ME1, st); };
+  check('M14-e', 'payFtOfMe_：true／false 照主檔；空白、其他字＝null（不擋）',
+    [ft([Object.assign({}, E, { is_full_time: 'TRUE' })], 'SSLGF'), ft([Object.assign({}, E, { is_full_time: false })], 'SSLGF'), ft([Object.assign({}, E, { is_full_time: '' })], 'SSLGF'), ft([Object.assign({}, E, { is_full_time: '正職' })], 'SSLGF')],
+    [true, false, null, null]);
+  check('M14-f', '雙店主檔：本店那筆優先（光復計時、央廚正職，看光復＝false）；本店沒有、別店同工號同名有兩筆說法不一＝null；別店只一筆＝照那筆',
+    [ft([Object.assign({}, E, { is_full_time: 'false' }), Object.assign({}, E, { store: 'CF', is_full_time: 'true' })], 'SSLGF'),
+     ft([Object.assign({}, E, { store: 'CF', is_full_time: 'false' }), Object.assign({}, E, { store: 'HQ', is_full_time: 'true' })], 'MZTGF'),
+     ft([Object.assign({}, E, { store: 'CF', is_full_time: 'true' }), Object.assign({}, E, { store: 'HQ', name: '別人', is_full_time: 'false' })], 'MZTGF'),
+     ft([Object.assign({}, E, { store: 'SSLGF', is_full_time: 'true' }), Object.assign({}, E, { store: 'SSLGF', is_full_time: '' })], 'SSLGF')],
+    [false, null, true, null]);
 }
 
 console.log('\n════ 十五、光復 LINE 回傳欄位 ════');
@@ -213,10 +225,32 @@ console.log('\n════ 十五、光復 LINE 回傳欄位 ════');
     [{ name: '生理假', cap_days: 3, cap_h: 24, remain_h: 8, used_h: 16, basis: 'calendar', used_n: 2, dates: ['2026-07-02', '2026-08-05'], unit: 'times' },
      { name: '事假', cap_days: 14, cap_h: 112, remain_h: 100, used_h: 12, basis: 'calendar' }]);
   m.sb.lineHubPayPick_ = () => ({ me: { emp_id: 'E01', name: '測試一' }, store: 'SSLGF' });
-  m.sb.payMineMaster_ = () => ({ emp_id: 'E01', is_full_time: 'false' });
-  m.sb.payIsFt = (e) => String(e.is_full_time) === 'true';
+  m.sb.payFtOfMe_ = () => false;
   const a = m.sb.lineHubFtOf_('U1');
-  m.sb.payMineMaster_ = () => null;
-  check('M15-b', 'lineHubFtOf_：主檔計時＝false；查不到主檔＝null', [a, m.sb.lineHubFtOf_('U1')], [false, null]);
+  m.sb.payFtOfMe_ = () => null;
+  check('M15-b', 'lineHubFtOf_ 照薪資 payFtOfMe_：計時＝false；判斷不出來＝null', [a, m.sb.lineHubFtOf_('U1')], [false, null]);
+}
+console.log('\n════ 十六、病假年度用完 → 請改請事假（Eason 選 A：剩 0 才擋） ════');
+{
+  const SQ = (remain) => [{ name: '病假', cap_days: 30, cap_h: 240, remain_h: remain, used_h: 240 - remain }];
+  const sk = (m, date, x) => { m.advance(1000); m.run('READ_MEMO_ = null;'); return res(m.sb.handleReqSubmit_(Object.assign({ id_token: 'TOK_U1', kind: 'leave', leave_type: '病假', date: date, reason: '看醫生' }, x || { hours: 8 }))); };
+  const MSG = 'sick_used_up｜今年病假額度已用完（30 天），請改請事假';
+  check('S01', '病假剩 0 → 擋，訊息白話', sk(world({ quota: SQ(0) }), '2026-11-20'), MSG);
+  check('S02', '剩 4 小時、這張 8 小時 → 不擋（剩的不夠也照現行，超過的部分薪資無薪）', sk(world({ quota: SQ(4) }), '2026-11-20'), 'ok');
+  const m3 = world({ quota: SQ(8) });
+  const a3 = sk(m3, '2026-11-19');
+  check('S03', '剩 8 小時、已有一張審核中 8 小時（跟生理假同口徑：審核中算已用）→ 下一張擋', [a3, sk(m3, '2026-11-20')], ['ok', 'sick_used_up｜今年病假額度已用完（30 天，含審核中或已核准還沒核定的病假單），請改請事假']);
+  const m4 = world({ quota: SQ(8), leave: [['2026-11-17', '測試一', '病假', 8]] });
+  const d4 = m4.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: m4.sb.handleReqSubmit_({ id_token: 'TOK_U1', kind: 'leave', leave_type: '病假', date: '2026-11-17', hours: 8, reason: 'x', attach_id: 'ATTACH_abcdefghij' }).request.id, decision: 'approve' });
+  if (!d4.ok) throw new Error('核准失敗：' + JSON.stringify(d4));
+  check('S04', '已核准而那天本店已記病假（額度表算過了）→ 不重複扣，剩 8 小時照收', sk(m4, '2026-11-20'), 'ok');
+  check('S05', '查不到額度（沒有薪資主檔）→ 不擋', sk(world({ quota: [] }), '2026-11-20'), 'ok');
+  check('S06', '請的是明年 → 不擋', sk(world({ now: '2026-12-20T10:00:00', quota: SQ(0) }), '2027-01-05'), 'ok');
+  check('S07', '開關 REQ_SICK_USED_UP=off → 不擋', sk(world({ quota: SQ(0), props: { REQ_SICK_USED_UP: 'off' } }), '2026-11-20'), 'ok');
+  const m8 = world({ props: { REQ_SEG2_KINDS: 'leave' }, quota: SQ(0) });
+  check('S08', '兩段也擋', sk(m8, '2026-11-20', { segments: [sp('09:00', '10:00'), sp('15:00', '16:00')] }), MSG);
+  const px = (m) => { m.advance(1000); m.run('READ_MEMO_ = null;'); return res(m.sb.handleMgrReqProxy_({ mgr_key: 'AK', acting_name: '店長甲', emp_id: 'E02', kind: 'leave', leave_type: '病假', date: '2026-11-18', hours: 8, reason: '沒綁 LINE' })); };
+  check('S09', '主管代開：剩 0 擋、剩 8 收', [px(world({ opts: { ok: true, quotas: { E02: { sick: { cap_days: 30, cap_h: 240, remain_h: 0 } } } } })), px(world({ opts: { ok: true, quotas: { E02: { sick: { cap_days: 30, cap_h: 240, remain_h: 8 } } } } }))], [MSG, 'ok']);
+  check('S10', '事假、生理假不受這條影響', sk(world({ quota: SQ(0) }), '2026-11-20', { hours: 8, leave_type: '事假' }), 'ok');
 }
 done();

@@ -1869,8 +1869,7 @@ function lineHubFtOf_(userId) {
   try {
     var pk = lineHubPayPick_(userId);
     if (!pk) return null;
-    var m = payMineMaster_(pk.me, pk.store);
-    return m ? payIsFt(m) : null;
+    return payFtOfMe_(pk.me, pk.store);   // is_full_time 空白、雙店主檔說法不一＝null（不擋）
   } catch (e) { return null; }
 }
 /** 假別額度＋本月補休帳（line_hub_req_init 與 line_hub_req_quota 共用）。comp 一定有值（算不出來＝known:false）。 */

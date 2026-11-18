@@ -732,7 +732,7 @@ function handleReqSubmit_(body) {
       var anMsg = reqAnnualBlockMsg_(r, reqAnnualFromLine_(who, body));
       if (anMsg) return { ok: false, error: 'annual_not_eligible', message: anMsg };
     }
-    var mensErr = reqMensSubmitCheck_(r, existing, who, body);   // 生理假新規則（2026-11-18）：計時、第 4 次、每月一次、一天 8 小時
+    var mensErr = reqMensSubmitCheck_(r, existing, who, body);   // 生理假新規則（2026-11-18）：計時、第 4 次、每月一次、一天 8 小時；病假年度用完
     if (mensErr) return mensErr;
     var capMsg = reqCapLocked_(r, existing, who, body, { today: todayTaipeiStr(), recorded: reqLeaveRecorded_(who.ss, who.me.name, r) });
     if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
@@ -1014,42 +1014,84 @@ function reqMensOn_() {
 }
 function reqMensApplies_(r) { return !!r && String(r.kind) === 'leave' && String(r.leave_type) === REQ_MENS_TYPE_ && reqMensOn_(); }
 function reqMd_(d) { return parseInt(String(d).slice(5, 7), 10) + '/' + parseInt(String(d).slice(8, 10), 10); }
-/** 本店請假登記裡這個人的生理假 → { 'yyyy-MM-dd': 時數（空白＝0） }；讀不到回 {}。 */
-function reqMensLeaveDays_(ss, name) {
-  var out = {};
+/** 本店請假登記裡這個人某假別（預設生理假）的日子 → { 'yyyy-MM-dd': 時數（空白＝0） }；讀不到回 {}。 */
+function reqMensLeaveDays_(ss, name, type) {
+  var out = {}, want = type || REQ_MENS_TYPE_;
   try {
     var sh = ss.getSheetByName('leave');
     if (!sh) return out;
     var nm = String(name || '').trim();
     readSheetAsObjects(sh).rows.forEach(function (l) {
-      if (String(l['姓名'] || '').trim() !== nm || String(l['假別'] || '').trim() !== REQ_MENS_TYPE_) return;
+      if (String(l['姓名'] || '').trim() !== nm || String(l['假別'] || '').trim() !== want) return;
       var d = typeof normCellDate === 'function' ? normCellDate(l['日期']) : String(l['日期']).slice(0, 10);
       out[d] = (out[d] || 0) + (Number(l['時數']) || 0);
     });
   } catch (e) { return {}; }
   return out;
 }
-/** 同仁送單（含兩段）：有錯回 {ok:false, error, message}，沒事回 null */
-function reqMensSubmitCheck_(r, existing, who, body) {
-  if (!reqMensApplies_(r)) return null;
-  var src = reqQuotaFetch_(who, body);
-  var v = reqMensBlock_(r, existing, String(who.me.emp_id), src,
-    { today: todayTaipeiStr(), recorded: reqMensLeaveDays_(who.ss, who.me.name), approvedMap: reqApprovedMap_(who.ss) });
+/** 生理假新規則＋病假年度用完（送單、兩段、代開共用）。src()：晚一點才查額度（只有生理假、病假才查）。有錯回 {ok:false, error, message}，沒事回 null */
+function reqLeaveRulesCheck_(r, existing, me, ss, src) {
+  var mens = reqMensApplies_(r), sick = reqSickApplies_(r);
+  if (!mens && !sick) return null;
+  var q = src();
+  var amap = null;
+  try { amap = reqApprovedMap_(ss); } catch (e) { amap = null; }   // 讀不到核定＝當成那天還沒核定（已核准的單照算已用，跟原本一樣保守）
+  var opt = { today: todayTaipeiStr(), recorded: reqMensLeaveDays_(ss, me.name, String(r.leave_type)), approvedMap: amap };
+  var v = mens ? reqMensBlock_(r, existing, String(me.emp_id), q, opt) : reqSickUsedUpBlock_(r, existing, String(me.emp_id), q, opt);
   return v ? { ok: false, error: v.error, message: v.message } : null;
 }
-/** 主管代開用：用工號查額度與是不是正職。光復（同專案）直接讀薪資；別店用主管金鑰打 payroll_leave_options。查不到＝{quota:null, ft:null}。 */
+/** 同仁送單（含兩段） */
+function reqMensSubmitCheck_(r, existing, who, body) {
+  return reqLeaveRulesCheck_(r, existing, who.me, who.ss, function () { return reqQuotaFetch_(who, body); });
+}
+/** 主管代開用：用工號查額度與是不是正職。光復（同專案）直接讀薪資；別店用主管金鑰打 payroll_leave_options。查不到＝{quota:null, ft:null}。
+ *  正職／計時：主檔 is_full_time 空白、雙店主檔說法不一＝null（不擋）。 */
 function reqQuotaForEmp_(me, mgrKey) {
   try {
     if (typeof payMyLeaveQuota === 'function' && typeof payRead === 'function') {
-      return { quota: payMyLeaveQuota(String(me.emp_id), String(me.name), todayTaipeiStr().slice(0, 7), CONFIG.PAYROLL_STORE || ''), ft: reqCompAllowed_(me) };
+      return { quota: payMyLeaveQuota(String(me.emp_id), String(me.name), todayTaipeiStr().slice(0, 7), CONFIG.PAYROLL_STORE || ''),
+               ft: typeof payFtOfMe_ === 'function' ? payFtOfMe_(me, CONFIG.PAYROLL_STORE || '') : null };
     }
     var j = reqPayPost_({ action: 'payroll_leave_options', store: CONFIG.PAYROLL_STORE || '', mgr_key: String(mgrKey || '') });
     var q = j && j.ok && j.quotas ? j.quotas[String(me.emp_id)] : null;
-    var m = q && q.menstrual;
-    if (!m) return { quota: null, ft: null };
-    return { quota: [{ name: REQ_MENS_TYPE_, cap_days: m.cap_days, cap_h: m.cap_h, remain_h: m.remain_h, used_h: m.used_h, used_n: m.used_n, dates: m.dates }],
-             ft: m.ft === true || m.ft === false ? m.ft : null };
+    if (!q) return { quota: null, ft: null };
+    var list = [], m = q.menstrual, sk = q.sick;
+    if (m) list.push({ name: REQ_MENS_TYPE_, cap_days: m.cap_days, cap_h: m.cap_h, remain_h: m.remain_h, used_h: m.used_h, used_n: m.used_n, dates: m.dates });
+    if (sk) list.push({ name: REQ_SICK_TYPE_, cap_days: sk.cap_days, cap_h: sk.cap_h, remain_h: sk.remain_h, used_h: sk.used_h });
+    return { quota: list, ft: m && (m.ft === true || m.ft === false) ? m.ft : null };
   } catch (e) { return { quota: null, ft: null }; }
+}
+/* ── 病假年度用完改請事假（2026-11-18 Eason 選 A）──
+   病假今年的額度（30 天）剩 0 才擋（同仁送單、主管代開），請改請事假；剩的不夠這張單時不擋，照現行（超過的部分薪資無薪）。不改病假給薪計算。
+   已用＝薪資額度表（同仁看到的那份，同月以手動為準）＋還沒算進去的單（跟生理假同一個口徑）：審核中的；已核准而那天還沒核定的。
+   已核准、那天核定過卻沒記病假（核定成別的假）＝不算；那天本店已記病假＝額度表已經算了，不重複扣。
+   查不到額度（沒有薪資主檔的店、還沒建檔、光復暫時問不到）＝判斷不出來＝不擋。請的是別的年度＝不擋。
+   開關：指令碼屬性 REQ_SICK_USED_UP 設 off＝不擋（預設開）。 */
+var REQ_SICK_TYPE_ = '病假';
+function reqSickOn_() {
+  try { return String(reqProp_('REQ_SICK_USED_UP') || '').trim().toLowerCase() !== 'off'; } catch (e) { return true; }
+}
+function reqSickApplies_(r) { return !!r && String(r.kind) === 'leave' && String(r.leave_type) === REQ_SICK_TYPE_ && reqSickOn_(); }
+function reqSickUsedUpBlock_(r, existing, empId, src, opt) {
+  if (!reqSickApplies_(r)) return null;
+  src = src || {}; opt = opt || {};
+  var d = String(r.date || '').slice(0, 10), yr = d.slice(0, 4);
+  if (yr !== String(opt.today || d).slice(0, 4)) return null;
+  var q = (src.quota || []).filter(function (x) { return String(x.name) === REQ_SICK_TYPE_; })[0];
+  if (!q || q.remain_h == null || q.remain_h === '' || !isFinite(Number(q.remain_h))) return null;
+  var recorded = opt.recorded || {}, amap = opt.approvedMap || null, liveH = 0;
+  (existing || []).forEach(function (x) {
+    if (String(x.emp_id) !== String(empId) || String(x.kind) !== 'leave' || String(x.leave_type) !== REQ_SICK_TYPE_) return;
+    var xd = String(x.date || '').slice(0, 10), st = String(x.status);
+    if (xd.slice(0, 4) !== yr) return;
+    if (st === 'pending') { liveH += Number(x.hours) || 0; return; }
+    if (st !== 'approved' || (xd in recorded)) return;
+    if (amap && amap[xd] && amap[xd][String(empId)]) return;   // 那天核定成別的假
+    liveH += Number(x.hours) || 0;
+  });
+  if (Number(q.remain_h) - liveH > 0.001) return null;
+  var capD = q.cap_days != null && q.cap_days !== '' ? Number(q.cap_days) : 30;
+  return { error: 'sick_used_up', message: '今年病假額度已用完（' + capD + ' 天' + (liveH > 0.001 ? '，含審核中或已核准還沒核定的病假單' : '') + '），請改請事假' };
 }
 /** 判斷一張生理假（r：date、hours）。src：{quota, ft}；opt：{today, recorded:{日期:時數}, approvedMap}。
  *  回 null（可以送）或 {error, message}。純函式（不讀表），送單、兩段、代開共用。 */
@@ -1991,11 +2033,8 @@ function handleMgrReqProxy_(body) {
       if (anMsgP) return { ok: false, error: 'annual_not_eligible', message: anMsgP };
     }
     // 生理假新規則（2026-11-18）：代開也檢查（計時、第 4 次、每月一次、一天 8 小時）
-    if (reqMensApplies_(r)) {
-      var mensP = reqMensBlock_(r, existing, String(me.emp_id), reqQuotaForEmp_(me, body.mgr_key),
-        { today: today, recorded: reqMensLeaveDays_(ss, me.name), approvedMap: reqApprovedMap_(ss) });
-      if (mensP) return { ok: false, error: mensP.error, message: mensP.message };
-    }
+    var mensP = reqLeaveRulesCheck_(r, existing, me, ss, function () { return reqQuotaForEmp_(me, body.mgr_key); });   // 病假年度用完也在這裡
+    if (mensP) return mensP;
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
     r.created_at = nowTaipeiIso(); r.emp_id = String(me.emp_id); r.name = String(me.name);
     r.attach_id = ''; r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
