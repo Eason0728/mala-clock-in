@@ -3,7 +3,7 @@
 'use strict';
 const { make, T, check, done } = require('./helpers/gs-sandbox');
 
-const m = make({ now: T('2026-11-10T10:00:00'), self: {
+const m = make({ now: T('2026-11-10T10:00:00'), props: { REQ_CARD_REASON_FROM: 'off' }, self: {      // 這支測變動通知；卡差 30 分要原因（2026-11-18 起 11/1 起算）另外測
   roster: [{ emp_id: 'E01', name: '測試一', key: 'K1', active: 'TRUE', line_user_id: 'U1' }, { emp_id: 'E02', name: '測試二', key: 'K2', active: 'TRUE', line_user_id: 'U2' }],
   events: [['2026-11-09T09:00:00', 'E01', 'in'], ['2026-11-09T17:00:00', 'E01', 'out'], ['2026-11-09T10:00:00', 'E02', 'in'], ['2026-11-09T18:00:00', 'E02', 'out']],
 } });

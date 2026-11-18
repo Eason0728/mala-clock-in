@@ -574,7 +574,7 @@ ok('reqSegsWithMiss_：補上班／補下班／補中間休息', () => {
   assert.deepStrictEqual(f([S2('09:00', '17:00')], [{ kind: 'ot', start: '17:00', end: '18:00' }]), [S2('09:00', '17:00')], '不是忘打卡單不動');
 });
 
-/* ── 每張卡跟核定差超過 30 分要原因（2026-11-16 Eason，11/17 起的日子）── */
+/* ── 每張卡跟核定差超過 30 分要原因（2026-11-16 Eason；起算日 2026-11-18 Eason 改 11/1，原 11/17）── */
 {
   const D3 = '2026-11-18';
   const m3 = (hm) => Date.parse(D3 + 'T' + hm + ':00+08:00');
@@ -592,17 +592,36 @@ ok('reqSegsWithMiss_：補上班／補下班／補中間休息', () => {
     const sb = makeEnv();
     assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('08:30', '17:30')], null), null);
   });
-  ok('每張卡：遲到 40 分（核定從班表開始）也要原因；央廚中午休息帶不算差', () => {
+  ok('每張卡：遲到 40 分（核定從班表開始）已記成遲到 → 不用原因（2026-11-18 Eason 拿掉「遲到超過 30 分要選原因」；原斷言要原因）；主管填遲到 0＝沒涵蓋 → 要原因；09:40 到又 18:50 走 → 只有下班卡要原因；央廚中午休息帶不算差', () => {
     const sb = makeEnv();
-    const r = sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('09:40', '17:00')], null);
-    assert.strictEqual(r && r.error, 'need_diff_reason');
+    assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('09:40', '17:00')], null), null);
+    // 主管填遲到分鐘：只有他認的分鐘算已涵蓋（函式層；整條送出時「核定比打卡多」會先擋，見規則 4）
+    const cd = (lg, inHm) => JSON.parse(JSON.stringify(sb.reqCardDiffs_([P3('09:00', '17:00')], [S3(inHm, '17:00')], lg))).map((c) => c.min);
+    assert.deepStrictEqual(cd(null, '09:40'), [], '沒填：40 分全記成遲到 → 不用原因');
+    assert.deepStrictEqual(cd(0, '09:40'), [40], '填 0（不計遲到）：沒涵蓋 → 要原因');
+    assert.deepStrictEqual(cd(10, '09:40'), [], '認 10：剩 30，剛好 30 不用');
+    assert.deepStrictEqual(cd(10, '09:45'), [45], '認 10：剩 35 → 要原因');
+  });
+  ok('每張卡（續）：09:40 到又 18:50 走 → 上班卡不用、下班卡要原因；早到 40 照舊要；早走 45（記早退）不用', () => {
+    const sb = makeEnv();
+    const cd = (ps, ss) => JSON.parse(JSON.stringify(sb.reqCardDiffs_(ps, ss, null))).map((c) => c.side + c.min);
+    assert.deepStrictEqual(cd([P3('09:00', '18:00')], [S3('09:40', '18:50')]), ['out50']);
+    assert.deepStrictEqual(cd([P3('09:00', '18:00')], [S3('08:20', '18:00')]), ['in40'], '早到不認列：照舊要原因');
+    assert.deepStrictEqual(cd([P3('09:00', '18:00')], [S3('09:00', '17:15')]), [], '下班卡比核定早 45（記早退 45）：不用原因');
+    assert.deepStrictEqual(cd([P3('09:30', '18:00')], [S3('09:40', '18:00')]), [], '主管把核定改成 09:30 起：差 10 本來就不用');
     assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('08:00', '12:00'), P3('13:00', '17:00')], [S3('07:58', '17:02')], B3), null);
   });
-  ok('每張卡：兩段班各自比；11/16 以前的日子不看；REQ_CARD_REASON_FROM=off 關掉', () => {
+  ok('每張卡：兩段班各自比；起算日 2026-11-01（2026-11-18 Eason：原 11/17）——10/31 不看、11/1 與 11/16 要原因；REQ_CARD_REASON_FROM=off 關掉', () => {
     const sb = makeEnv();
     const r = sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '13:00'), P3('17:00', '21:00')], [S3('09:00', '13:45'), S3('17:00', '21:00')], null);
     assert.deepStrictEqual(JSON.parse(JSON.stringify(r.cards)), [{ side: 'out', card: '13:45', core: '13:00', min: 45 }]);
-    assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', '2026-11-16', 8, [{ startMs: Date.parse('2026-11-16T09:00:00+08:00'), endMs: Date.parse('2026-11-16T17:00:00+08:00') }], [{ inMs: Date.parse('2026-11-16T08:20:00+08:00'), outMs: Date.parse('2026-11-16T17:00:00+08:00') }], null), null);
+    const onDay = (d) => sb.reqBindCheck_(sb.getSS(), 'E01', d, 8, [{ startMs: Date.parse(d + 'T09:00:00+08:00'), endMs: Date.parse(d + 'T17:00:00+08:00') }], [{ inMs: Date.parse(d + 'T08:20:00+08:00'), outMs: Date.parse(d + 'T17:00:00+08:00') }], null);
+    assert.strictEqual(onDay('2026-10-31'), null, '10/31：起算日之前不看');
+    assert.strictEqual((onDay('2026-11-01') || {}).error, 'need_diff_reason', '11/1 起要原因');
+    assert.strictEqual((onDay('2026-11-16') || {}).error, 'need_diff_reason', '11/16（原本不看）現在要原因');
+    sb.__props.REQ_CARD_REASON_FROM = '2026-11-17';
+    assert.strictEqual(onDay('2026-11-16'), null, '指令碼屬性有設值仍優先');
+    delete sb.__props.REQ_CARD_REASON_FROM;
     sb.__props.REQ_CARD_REASON_FROM = 'off';
     assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('08:20', '17:05')], null), null);
   });

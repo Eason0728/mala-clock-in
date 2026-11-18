@@ -2091,6 +2091,33 @@ function reqBindFrom_() {
 }
 /** 核定時段少了幾張打卡。periods：[{startMs,endMs}]；segs：[{inMs,outMs}]（null＝沒有那張） */
 /** 程式碼.js 還沒有 loneCardsForPeriods_ 時的舊算法：每段取前後 4 小時內第一張單獨的卡 */
+/* 核定時段跟已核准加班單之間沒接上的空檔（同一段打卡從核定時段一路打到加班單，中間那段沒核定）→ 白話提示（2026-11-18 驗收 A）。
+   例：「加班單（21:00–21:45）跟上班時段（到 20:30）中間有 30 分鐘沒接上：請把加班單改成從 20:30 開始，或把上班時段接到加班單開始」 */
+function reqOtGapHints_(date, otRows, periods, segs) {
+  var ps = (periods || []).filter(function (p) { return p && p.startMs != null && p.endMs != null; }).slice().sort(function (a, b) { return a.startMs - b.startMs; });
+  var full = (segs || []).filter(function (s) { return s && s.inMs != null && s.outMs != null; });
+  var cover = function (a, b) { return full.some(function (s) { return s.inMs <= a && s.outMs >= b; }); };
+  var inside = function (a, b) { return ps.some(function (p) { return p.startMs < b && p.endMs > a; }); };
+  var out = [];
+  (otRows || []).forEach(function (r) {
+    var a = reqHm_(r.start), b = reqHm_(r.end);
+    if (!a || !b) return;
+    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
+    if (e <= s) e += 86400000;
+    [0, 86400000].forEach(function (d) {
+      var os = s + d, oe = e + d;
+      var before = ps.filter(function (p) { return p.endMs < os; }).pop();
+      if (before && cover(before.endMs, os) && !inside(before.endMs, os)) {
+        out.push('加班單（' + a + '–' + b + '）跟上班時段（到 ' + reqOtPunchHm_(before.endMs) + '）中間有 ' + Math.round((os - before.endMs) / 60000) + ' 分鐘沒接上：請把加班單改成從 ' + reqOtPunchHm_(before.endMs) + ' 開始，或把上班時段接到加班單開始');
+      }
+      var after = ps.filter(function (p) { return p.startMs > oe; })[0];
+      if (after && cover(oe, after.startMs) && !inside(oe, after.startMs)) {
+        out.push('加班單（' + a + '–' + b + '）跟上班時段（' + reqOtPunchHm_(after.startMs) + ' 起）中間有 ' + Math.round((after.startMs - oe) / 60000) + ' 分鐘沒接上：請把加班單改成到 ' + reqOtPunchHm_(after.startMs) + '，或把上班時段從加班單結束接起');
+      }
+    });
+  });
+  return out;
+}
 function reqLoneFallback_(periods, full, segs) {
   var used = [], out = {};
   periods.forEach(function (p, pi) {
@@ -2269,7 +2296,60 @@ function reqSegsWithMiss_(segs, okRows, date) {
   });
   return out;
 }
-function reqOverCreditMin_(periods, segs, breakWindow, lateGiven) {
+/* 已核准、有填起訖的假單／出差單的結束時間（ms；跨夜試前一天／隔天，同 reqLeaveOverlapProbs_）：「該回來上班」的時間點（2026-11-18 Eason 選 B）。
+   營運系統核定會從這裡起算（中間請假晚回來＝遲到），reqOverCreditMin_ 把這段當遲到、不當沒打卡的多核工時。 */
+function reqLeaveBackMs_(date, okRows) {
+  var out = [];
+  (okRows || []).forEach(function (r) {
+    if (r.kind !== 'leave' && r.kind !== 'trip') return;
+    var a = reqHm_(r.start), b = reqHm_(r.end);
+    if (!a || !b || a === b) return;
+    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
+    if (e <= s) e += 86400000;
+    out.push(e, e - 86400000, e + 86400000);
+  });
+  return out;
+}
+/* 已核准、有填起訖的假單／出差單的開始時間（ms；同上試前一天／隔天）：「該下班」的時間點（2026-11-18 Eason「請假前提早離開一律記早退」）。
+   營運系統核定會算到這裡（請假前提早走＝早退），reqOverCreditMin_ 把實際下班卡到這裡當早退、不當多核工時。 */
+function reqLeaveStartMs_(date, okRows) {
+  var out = [];
+  (okRows || []).forEach(function (r) {
+    if (r.kind !== 'leave' && r.kind !== 'trip') return;
+    var a = reqHm_(r.start), b = reqHm_(r.end);
+    if (!a || !b || a === b) return;
+    var s = reqHmMs_(date, a);
+    out.push(s, s - 86400000, s + 86400000);
+  });
+  return out;
+}
+/* 多段班中間那幾段的結束時間（後面還有一段班；當天最後一段的結束不算）：2026-11-18 Eason「二段班各段結尾早走一律記早退」——
+   營運系統核定會算到那段班表結束，reqOverCreditMin_ 把最後一張下班卡到那裡當早退。沒帶班表＝空。 */
+function reqSchedMidEndMs_(date, spans) {
+  var list = (Array.isArray(spans) ? spans : []).map(function (x) {
+    var a = reqHm_(x && x.start), b = reqHm_(x && x.end);
+    if (!a || !b) return null;
+    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
+    if (e <= s) e += 86400000;
+    return { s: s, e: e };
+  }).filter(function (x) { return x; }).sort(function (x, y) { return x.s - y.s; });
+  var out = [];
+  list.slice(0, -1).forEach(function (x) { out.push(x.e, x.e - 86400000, x.e + 86400000); });
+  return out;
+}
+/* 班表每一段的開始時間（ms；營運系統帶的 sched_spans，跨夜試前一天／隔天）：2026-11-18 Eason「沒有請假的二段班第二段晚到，記成遲到」——
+   營運系統核定會從那段班表開始算，reqOverCreditMin_ 把那段開頭到實際上班卡當遲到（同第一段開頭）。沒帶班表（舊值班頁）＝空，跟改之前一樣。 */
+function reqSchedStartMs_(date, spans) {
+  var out = [];
+  (Array.isArray(spans) ? spans : []).forEach(function (x) {
+    var a = reqHm_(x && x.start);
+    if (!a) return;
+    var s = reqHmMs_(date, a);
+    out.push(s, s - 86400000, s + 86400000);
+  });
+  return out;
+}
+function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts) {
   if (!periods.length || !segs.length || segs.some(function (s) { return s.inMs == null || s.outMs == null; })) return null;
   var ps = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
   var ss = segs.slice().sort(function (a, b) { return a.inMs - b.inMs; });
@@ -2282,10 +2362,31 @@ function reqOverCreditMin_(periods, segs, breakWindow, lateGiven) {
   });
   var late = Math.max(0, Math.min(ss[0].inMs, ps[0].endMs) - ps[0].startMs);
   late -= inBreak(ps[0].startMs, ps[0].startMs + late);
+  // 2026-11-18 Eason（選 B）：第二段以後的核定時段，開頭剛好是已核准假單／出差單的結束（中間只隔不打卡休息帶也算）→ 從那裡到實際回來那張上班卡＝遲到（同第一段開頭），
+  // 不算沒打卡的多核工時。那段開頭已有打卡蓋到、或那段裡沒有上班卡＝不適用。沒帶 backs（沒有這種單）＝跟改之前一樣
+  (backs || []).length && ps.slice(1).forEach(function (p) {
+    if (!backs.some(function (e) { return e <= p.startMs && (p.startMs - e) - inBreak(e, p.startMs) <= 0; })) return;
+    if (ss.some(function (s) { return s.inMs <= p.startMs && s.outMs > p.startMs; })) return;
+    var ins = ss.filter(function (s) { return s.inMs > p.startMs && s.inMs < p.endMs; }).map(function (s) { return s.inMs; });
+    if (!ins.length) return;
+    var first = Math.min.apply(null, ins);
+    late += (first - p.startMs) - inBreak(p.startMs, first);
+  });
   // 2026-11-15（考勤挑錯 B1）：主管有填遲到分鐘（0＝認定不計遲到、N＝認定遲到 N 分）時，只有他認的那 N 分鐘算遲到（薪資照扣）；
   // 被免掉的遲到分鐘＝沒打卡卻要算的時間，照樣要有單。原本整段都當遲到扣掉，只打 5 分鐘卡、遲到填 0 就核得出 8 小時。沒填＝系統照實標遲到，不變。
   if (lateGiven != null) late = Math.min(late, Math.max(0, lateGiven) * 60000);
-  return Math.max(0, Math.round((over - late) / 60000));
+  // 2026-11-18 Eason「請假前提早離開一律記早退」：核定時段結尾剛好是已核准假單／出差單的開始（中間只隔不打卡休息帶也算），那個時間沒有打卡蓋到
+  // → 從那段裡最後一張下班卡到結尾＝早退（Code.gs computeApprovalStatus 照記「早退N分」），不算沒打卡的多核工時。沒帶 starts＝跟改之前一樣
+  var early = 0;
+  if ((starts || []).length) ps.forEach(function (p) {
+    if (!starts.some(function (t) { return t >= p.endMs && (t - p.endMs) - inBreak(p.endMs, t) <= 0; })) return;
+    if (ss.some(function (s) { return s.inMs < p.endMs && s.outMs >= p.endMs; })) return;
+    var outs = ss.filter(function (s) { return s.outMs > p.startMs && s.outMs < p.endMs; }).map(function (s) { return s.outMs; });
+    if (!outs.length) return;
+    var last = Math.max.apply(null, outs);
+    early += (p.endMs - last) - inBreak(last, p.endMs);
+  });
+  return Math.max(0, Math.round((over - late - early) / 60000));
 }
 /** 主管填的遲到分鐘（同 Code.gs applyManualLate 的讀法）：沒填、不是數字、負數＝null（沒有認定）；否則四捨五入的分鐘數 */
 function reqLateGiven_(v) {
@@ -2306,6 +2407,50 @@ function reqStrictLeaveProbs_(okRows, leaves) {
     else if (Math.abs(have[t] - reqd[t]) > 0.005) out.push(t + '核定登記 ' + reqBindFmt_(have[t]) + ' 小時，已核准的單是 ' + reqBindFmt_(reqd[t]) + ' 小時');
   });
   Object.keys(reqd).forEach(function (t) { if (!(t in have)) out.push('有已核准的' + t + ' ' + reqBindFmt_(reqd[t]) + ' 小時，核定沒有登記'); });
+  return out;
+}
+/* 核定上班時段 vs 已核准、有填起訖的假單／出差單（2026-11-18 Eason 第 6 題）：同一段不能同時算上班和請假，任何重疊（容許 0 分鐘）都擋；
+   剛好相接（假 09:00–11:00、上班 11:00 起）不算。leave 分頁沒有時段，只能比 requests 列的 start／end；沒填時段的單不比。
+   跨夜：單上只有時鐘時間，同 reqStrictSlotOk_ 也試前一天／隔天（班表 22:00–06:00、事假 05:00–06:00＝隔天早上）。回不符的字句陣列。 */
+function reqLeaveOverlapProbs_(date, okRows, periods) {
+  var ps = (periods || []).filter(function (p) { return p && p.startMs != null && p.endMs != null && p.endMs > p.startMs; });
+  var out = reqLeavePairProbs_(date, okRows);
+  if (!ps.length) return out;
+  (okRows || []).forEach(function (r) {
+    if (r.kind !== 'leave' && r.kind !== 'trip') return;
+    var a = reqHm_(r.start), b = reqHm_(r.end);
+    if (!a || !b || a === b) return;
+    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
+    if (e <= s) e += 86400000;
+    var best = 0, hit = [];
+    [0, -86400000, 86400000].forEach(function (d) {
+      var tot = 0, h = [];
+      ps.forEach(function (p) { var m = Math.min(p.endMs, e + d) - Math.max(p.startMs, s + d); if (m > 0) { tot += m; h.push(p); } });
+      if (tot > best) { best = tot; hit = h; }
+    });
+    if (!(best > 0)) return;
+    var what = r.kind === 'trip' ? '出差' : String(r.leave_type || '假');
+    out.push('核定上班 ' + hit.map(function (p) { return reqOtPunchHm_(p.startMs) + '–' + reqOtPunchHm_(p.endMs); }).join('、') + ' 跟已核准的' + what + ' ' + a + '–' + b +
+      ' 重疊 ' + Math.round(best / 60000) + ' 分鐘，同一段不能同時算上班和' + (r.kind === 'trip' ? '出差' : '請假') + '，請把上班時段改到' + (r.kind === 'trip' ? '出差單' : '假單') + '以外（要算上班就先作廢那張單）');
+  });
+  return out;
+}
+/* 同一天兩張已核准、有時段的假單／出差單互相重疊（2026-11-18 驗收）：登記的時數加總會把重疊那段算兩次（營運系統預填用聯集）→ 擋，請作廢或改其中一張。剛好相接不算。 */
+function reqLeavePairProbs_(date, okRows) {
+  var list = [];
+  (okRows || []).forEach(function (r) {
+    if (r.kind !== 'leave' && r.kind !== 'trip') return;
+    var a = reqHm_(r.start), b = reqHm_(r.end);
+    if (!a || !b || a === b) return;
+    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
+    if (e <= s) e += 86400000;
+    list.push({ s: s, e: e, a: a, b: b, what: r.kind === 'trip' ? '出差' : String(r.leave_type || '假') });
+  });
+  var out = [];
+  for (var i = 0; i < list.length; i++) for (var j = i + 1; j < list.length; j++) {
+    var m = Math.min(list[i].e, list[j].e) - Math.max(list[i].s, list[j].s);
+    if (m > 0) out.push('已核准的' + list[i].what + ' ' + list[i].a + '–' + list[i].b + ' 跟' + list[j].what + ' ' + list[j].a + '–' + list[j].b + ' 時段重疊 ' + Math.round(m / 60000) + ' 分鐘，同一段不能請兩次，請作廢或改其中一張');
+  }
   return out;
 }
 /** 別家店這天有沒有這個人的成功打卡。跨店同日合計超過 8 小時時，加班單開在做到超過 8 小時的那家店（Eason 2026-11-09），那家店當天可能自己沒滿 8 小時。讀不到算沒有。 */
@@ -2743,8 +2888,12 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   // 出差日：當天有打卡、湊不成完整一段就算忘刷，要忘打卡單；整天沒打卡、或打卡都成段（另一段是出差）不算（2026-11-10 Eason）
   var loneCard = (segs || []).some(function (s) { return (s.inMs == null) !== (s.outMs == null); });   // 有上班沒下班、有下班沒上班
   var missBad = bindOn && !(tripOk && !loneCard) && miss > missHave;   // 出差日只有「湊不成完整一段的卡」才要忘打卡單
-  if (missBad) add('miss', '少了 ' + miss + ' 張打卡，要有忘打卡單（已核准 ' + missHave + ' 張）');
+  // 2026-11-18 驗收 A：缺的卡其實是「核定時段跟已核准加班單之間沒接上」（同一段打卡中間沒核定）→ 白話講怎麼改，不叫人開忘打卡單；真的少打卡照舊
+  var otGaps = missBad ? reqOtGapHints_(date, otRows, periods, reqWorkingSegs_(segs, date) || []) : [];
+  if (missBad && otGaps.length && miss - missHave <= 2 * otGaps.length) { otGaps.forEach(function (t) { add('ot_gap', t); }); missBad = false; }
+  else if (missBad) add('miss', '少了 ' + miss + ' 張打卡，要有忘打卡單（已核准 ' + missHave + ' 張）');
   if (strict) reqStrictLeaveProbs_(ok, opt.leaves).forEach(function (t) { add('leave', t); });
+  if (strict) reqLeaveOverlapProbs_(date, ok, periods).forEach(function (t) { add('leave_overlap', t); });   // 2026-11-18 Eason：核定上班不能跟已核准假單／出差單時段重疊
   // 正職上班日滿 8 小時＋跨店加班算被支援那家（2026-11-13 Eason，見 reqFt8_ 檔頭）
   var ft8 = reqFt8_(date, approvedHours, otHave, opt, ok);
   if (ft8) {
@@ -2756,7 +2905,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   // 2026-11-14 Eason「打卡＋單＝核定時數」：不再「差 30 分鐘寫原因」，只看核定比打卡多（沒打卡卻要算的時間），要有單；早到晚走不算、不用原因
   // 已核准的忘打卡單補的卡算「有打卡」（2026-11-15 Eason：游家輝 11/11 忘打卡單補 18:30–20:15 仍被算成整段沒打卡；
   // 同營運系統 core-calc.js 的「打卡＋單」）。只用在這條「核定比打卡多」，其他檢查照舊看真的卡
-  var overMin = strict ? reqOverCreditMin_(periods, reqSegsWithMiss_(segs || [], ok, date), breakWindow, reqLateGiven_(opt.late_min)) : null;
+  var overMin = strict ? reqOverCreditMin_(periods, reqSegsWithMiss_(segs || [], ok, date), breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok).concat(reqSchedMidEndMs_(date, opt.sched_spans))) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）
   if (overMin != null && overMin >= REQ_STRICT_DIFF_MIN) add('over_credit', '核定比打卡多 ' + overMin + ' 分鐘（沒有打卡的時間要有忘打卡單、假單或補休單）');
   if (opt.preview) return { probs: probs, diff_min: diffMin, over_min: overMin, ot_have: otHave, ot_need: otNeed, ft8_gap: ft8 ? ft8.gap : 0 };
   if (probs.length) {
@@ -2784,7 +2933,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   // 取代 11/14「不再寫原因」：缺單照上面擋（寫原因不能代替補單），單都齊了才看這條。原因存 approved 的 diff_reason
   var cardFrom = reqCardReasonFrom_();
   if (from && cardFrom && date >= cardFrom && periods.length) {
-    var cards = reqCardDiffs_(periods, segs || []);
+    var cards = reqCardDiffs_(periods, segs || [], reqLateGiven_(opt.late_min));
     if (cards.length && !reqCleanDiffReason_(opt.diff_reason)) {
       return { ok: false, error: 'need_diff_reason', cards: cards, diff_min: cards.reduce(function (a, c) { return Math.max(a, c.min); }, 0),
                message: '核定和打卡差超過 ' + REQ_CARD_DIFF_MIN + ' 分鐘：' + cards.map(function (c) { return (c.side === 'in' ? '上班卡 ' : '下班卡 ') + c.card + '（核定 ' + c.core + '，差 ' + c.min + ' 分）'; }).join('、') +
@@ -2797,7 +2946,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
    一段打卡（上班卡到下班卡）對到跟它重疊的核定時段：上班卡比最早那段的開始、下班卡比最晚那段的結束（央廚、總部中午不打卡的休息帶自然跨過去）。
    這段打卡完全沒被核定（例：早到那段整段不算）：上班卡比最近的核定開始、下班卡比最近的核定結束。只有單邊的卡（缺卡）只比有的那邊。
    遲到：核定從班表開始（標遲到扣薪），上班卡跟核定差超過 30 分一樣要原因（Eason：「是卡核定時間比對打卡紀錄，不是比對班表」）。 */
-var REQ_CARD_REASON_FROM_DEFAULT_ = '2026-11-17';
+var REQ_CARD_REASON_FROM_DEFAULT_ = '2026-11-01';   // 2026-11-18 Eason「卡差 30 分起算日維持 11/1」（原本 11/17）；指令碼屬性 REQ_CARD_REASON_FROM 有設值仍優先
 var REQ_CARD_DIFF_MIN = 30;
 function reqCardReasonFrom_() {
   var v = '';
@@ -2805,12 +2954,16 @@ function reqCardReasonFrom_() {
   if (v === 'off') return null;
   return reqIsDate_(v) ? v : REQ_CARD_REASON_FROM_DEFAULT_;
 }
-function reqCardDiffs_(periods, segs) {
+/* 2026-11-18 Eason「遲到超過 30 分鐘要選原因」拿掉（大腦解讀，整條規則保留）：已經記成遲到／早退的那段差額不用再選原因——
+   上班卡晚於對到的核定開始（computeApprovalStatus 照記「遲到N分」）、下班卡早於對到的核定結束（照記「早退N分」）不算卡差；
+   主管自己填遲到分鐘（lateGiven）時，只有他認的分鐘算已涵蓋（依卡片順序用掉），沒涵蓋的部分超過 30 分仍要原因。
+   仍然要原因：上班卡比核定早很多（早到不認列）、下班卡比核定晚很多（多打的不認列）、那段打卡完全沒被核定（沒有遲到早退可記）。 */
+function reqCardDiffs_(periods, segs, lateGiven) {
   var ps = (periods || []).filter(function (p) { return p && p.startMs != null && p.endMs != null && p.endMs > p.startMs; });
   if (!ps.length) return [];
   var hm = function (t) { var d = new Date(t + 8 * 3600000), p = function (n) { return (n < 10 ? '0' : '') + n; }; return p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()); };      // 台北時間（不靠 Utilities，測試沙盒也能跑）
   var near = function (t, key) { return ps.reduce(function (a, p) { return a == null || Math.abs(p[key] - t) < Math.abs(a - t) ? p[key] : a; }, null); };
-  var out = [];
+  var out = [], lateLeft = lateGiven == null ? null : Math.max(0, Number(lateGiven) || 0);
   (segs || []).forEach(function (s) {
     if (!s) return;
     var a = s.inMs, b = s.outMs, st = null, en = null;
@@ -2818,8 +2971,15 @@ function reqCardDiffs_(periods, segs) {
       var ov = ps.filter(function (p) { return Math.min(b, p.endMs) > Math.max(a, p.startMs); });
       if (ov.length) { st = Math.min.apply(null, ov.map(function (p) { return p.startMs; })); en = Math.max.apply(null, ov.map(function (p) { return p.endMs; })); }
     }
-    if (a != null) { var cs = st != null ? st : near(a, 'startMs'); var d1 = Math.round(Math.abs(a - cs) / 60000); if (d1 > REQ_CARD_DIFF_MIN) out.push({ side: 'in', card: hm(a), core: hm(cs), min: d1 }); }
-    if (b != null) { var ce = en != null ? en : near(b, 'endMs'); var d2 = Math.round(Math.abs(b - ce) / 60000); if (d2 > REQ_CARD_DIFF_MIN) out.push({ side: 'out', card: hm(b), core: hm(ce), min: d2 }); }
+    if (a != null) {
+      var cs = st != null ? st : near(a, 'startMs'), d1 = Math.round(Math.abs(a - cs) / 60000), left1 = d1;
+      if (st != null && a > cs) { var cov = lateLeft == null ? d1 : Math.min(d1, lateLeft); if (lateLeft != null) lateLeft -= cov; left1 = d1 - cov; }      // 晚到＝記成遲到的部分不算
+      if (left1 > REQ_CARD_DIFF_MIN) out.push({ side: 'in', card: hm(a), core: hm(cs), min: d1 });
+    }
+    if (b != null) {
+      var ce = en != null ? en : near(b, 'endMs'), d2 = Math.round(Math.abs(b - ce) / 60000);
+      if (!(en != null && b < ce) && d2 > REQ_CARD_DIFF_MIN) out.push({ side: 'out', card: hm(b), core: hm(ce), min: d2 });      // 早走＝記成早退，不算
+    }
   });
   return out;
 }
