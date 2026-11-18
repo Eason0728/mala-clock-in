@@ -69,6 +69,38 @@ m = env(day('15:40').map((e, i) => (i === 1 ? [D + 'T12:00:00', 'out'] : e)), [{
 r = approve(m, '09:00-12:00,15:00-18:00', { leaves: [{ type: '出差', hours: 2 }], diff_reason: '上班卡 15:40：主管同意' });
 check('BL-trip', '出差 13–15、15:40 回 → 8 小時（6＋出差 2）、遲到40分', [r.ok, r.hours, /遲到40分/.test(r.status)], [true, 8, true]);
 
+console.log('\n════ 二之二、不設上限（選 B）與二段班第二段開頭請假（選 A）════');
+m = env(day('17:00'), LV);
+r = approve(m, '09:00-12:00,13:00-14:00,15:00-18:00', Object.assign({ dry_run: true }, L1));
+check('BL-120a', '中間事假 14–15、17:00 才回（晚 120 分）：不設上限，打卡端回「要選原因」（不是「核定比打卡多」）', [r.ok, r.error, /核定比打卡多/.test(r.message)], [false, 'need_diff_reason', false]);
+r = approve(m, '09:00-12:00,13:00-14:00,15:00-18:00', Object.assign({ diff_reason: '上班卡 17:00：主管同意' }, L1));
+check('BL-120b', '選了原因 → 核定 7 小時、遲到120分', [r.ok, r.hours, /遲到120分/.test(r.status)], [true, 7, true]);
+// 二段班 08–12／17–22、事假 17:00–19:00；核定 08–12、19–22＝7 小時（前端預填）；手算遲到＝回來－19:00
+const two = (b) => [[D + 'T08:00:00', 'in'], [D + 'T12:00:00', 'out'], [D + 'T' + b + ':00', 'in'], [D + 'T22:00:00', 'out']];
+const LT = [{ kind: 'leave', leave_type: '事假', start: '17:00', end: '19:00', hours: 2 }], LT2 = { leaves: [{ type: '事假', hours: 2 }] };
+for (const [b, l] of [['19:00', 0], ['19:10', 10], ['19:16', 16], ['19:40', 40], ['20:30', 90]]) {
+  m = env(two(b), LT);
+  r = approve(m, '08:00-12:00,19:00-22:00', Object.assign({ diff_reason: l > 30 ? '上班卡 ' + b + '：主管同意' : '' }, LT2));
+  const got = /遲到(\d+)分/.exec(r.status); check('BL-two-' + b, '二段班第二段開頭事假 17–19、' + b + ' 回 → 放行、7 小時、遲到' + l, [r.ok, r.hours, got ? +got[1] : 0], [true, 7, l]);
+}
+m = env([[D + 'T08:00:00', 'in'], [D + 'T11:30:00', 'out'], [D + 'T17:00:00', 'in'], [D + 'T22:00:00', 'out']], [{ kind: 'leave', leave_type: '事假', start: '11:00', end: '12:00', hours: 1 }]);
+r = approve(m, '08:00-11:00,17:00-22:00', { leaves: [{ type: '事假', hours: 1 }] });
+check('BL-two-early', '二段班第一段結尾事假 11–12、11:30 走（做到假單時段裡）→ 不算早退、放行 8 小時', [r.ok, r.hours, /早退/.test(r.status)], [true, 8, false]);
+m = env([[D + 'T08:00:00', 'in'], [D + 'T10:30:00', 'out'], [D + 'T17:00:00', 'in'], [D + 'T22:00:00', 'out']], [{ kind: 'leave', leave_type: '事假', start: '11:00', end: '12:00', hours: 1 }]);
+r = approve(m, '08:00-11:00,17:00-22:00', { leaves: [{ type: '事假', hours: 1 }] });
+check('BL-two-early2', '二段班第一段結尾事假 11–12、10:30 走 → 放行 8 小時、早退30', [r.ok, r.hours, /早退30分/.test(r.status)], [true, 8, true]);
+m = env([[D + 'T10:00:00', 'in'], [D + 'T14:00:00', 'out'], [D + 'T22:40:00', 'in'], [D1 + 'T02:00:00', 'out']], [{ kind: 'leave', leave_type: '事假', start: '20:00', end: '22:00', hours: 2 }]);
+r = approve(m, '10:00-14:00,22:00-02:00', { leaves: [{ type: '事假', hours: 2 }], diff_reason: '上班卡 22:40：主管同意' });
+check('BL-two-night', '跨夜二段 10–14／20–02、事假 20–22、22:40 回 → 8 小時、遲到40', [r.ok, r.hours, /遲到40分/.test(r.status)], [true, 8, true]);
+m = env([[D + 'T09:00:00', 'in'], [D + 'T12:00:00', 'out'], [D + 'T19:40:00', 'in'], [D + 'T22:00:00', 'out']], [{ kind: 'trip', leave_type: '出差', start: '17:00', end: '19:00', hours: 2 }]);
+r = approve(m, '09:00-12:00,19:00-22:00', { leaves: [{ type: '出差', hours: 2 }], diff_reason: '上班卡 19:40：主管同意' });
+check('BL-two-trip', '二段班 09–12／17–22、第二段開頭出差 17–19、19:40 回 → 8 小時（6＋出差 2）、遲到40', [r.ok, r.hours, /遲到40分/.test(r.status)], [true, 8, true]);
+for (const st of ['rejected', 'void']) {
+  m = env(two('19:40'), [Object.assign({ status: st }, LT[0])]);
+  r = approve(m, '08:00-12:00,19:00-22:00', { dry_run: true, diff_reason: 'x' });
+  check('BL-two-' + st, '二段班第二段：假單' + st + ' → 照舊擋「核定比打卡多 40 分鐘」', [r.ok, /核定比打卡多 40 分鐘/.test(r.message)], [false, true]);
+}
+
 console.log('\n════ 三、不適用：照舊擋 ════');
 for (const st of ['rejected', 'void']) {
   m = env(day('15:40'), [Object.assign({ status: st }, LV[0])]);
