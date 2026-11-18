@@ -243,6 +243,11 @@ console.log('\n════ 十六、病假年度用完 → 請改請事假（Ea
   const m4 = world({ quota: SQ(8), leave: [['2026-11-17', '測試一', '病假', 8]] });
   const d4 = m4.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: m4.sb.handleReqSubmit_({ id_token: 'TOK_U1', kind: 'leave', leave_type: '病假', date: '2026-11-17', hours: 8, reason: 'x', attach_id: 'ATTACH_abcdefghij' }).request.id, decision: 'approve' });
   if (!d4.ok) throw new Error('核准失敗：' + JSON.stringify(d4));
+  const m3b = world({ quota: SQ(8) });
+  const p3 = m3b.sb.handleReqSubmit_({ id_token: 'TOK_U1', kind: 'leave', leave_type: '病假', date: '2026-11-19', hours: 8, reason: '看醫生' });
+  const blockedBefore = sk(m3b, '2026-11-20').split('｜')[0];
+  const rj = m3b.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: p3.request.id, decision: 'reject', reason: '日期錯了' });
+  check('S03-b', '審核中的病假單把額度用完 → 下一張擋；那張被退回後 → 可以再送（Eason 選 A：審核中算已用）', [blockedBefore, rj.ok, sk(m3b, '2026-11-20')], ['sick_used_up', true, 'ok']);
   check('S04', '已核准而那天本店已記病假（額度表算過了）→ 不重複扣，剩 8 小時照收', sk(m4, '2026-11-20'), 'ok');
   check('S05', '查不到額度（沒有薪資主檔）→ 不擋', sk(world({ quota: [] }), '2026-11-20'), 'ok');
   check('S06', '請的是明年 → 不擋', sk(world({ now: '2026-12-20T10:00:00', quota: SQ(0) }), '2027-01-05'), 'ok');

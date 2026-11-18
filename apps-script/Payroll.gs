@@ -2089,9 +2089,10 @@ function payLeaveUsedBefore(ym, store, ltypes, cfg, master) {
         const d = normCellDate(l['日期']);
         if (!d || d.slice(0, 4) !== year || d >= firstOfMonth) return;
         if (!payLeaveDateMine_(e, d, dupNames)) return;
-        if (dedup && st2 === stA && manualM[d.slice(0, 7)]) return;   // 同月以手動為準，不重複計
         const code = payLeaveCode(String(l['假別'] || ''), ltypes);
         if (!code) return;
+        // 同月以手動為準、不重複計——只限手動工時有欄位的假別（事／病／生理／特休／天災）；家庭照顧、住院傷病等沒有欄位的照 leave 列算（Eason 2026-11-18 選 A）
+        if (dedup && st2 === stA && manualM[d.slice(0, 7)] && legacyCol[code]) return;
         if (code === 'menstrual' && payMensDayOn_(ym)) {
           if (!mensSeen[d]) acc[code] = (acc[code] || 0) + 1;
           mensSeen[d] = true;
@@ -5523,9 +5524,14 @@ var PAY_INPUT_LEAVE_FIELDS = [
   { field: 'annual_h',    code: 'annual'    },
   { field: 'disaster_h',  code: 'disaster'  },
 ];
-function payLeaveFlatRows(store, types, nameToEmp, pickEmp) {
+/** ym（選填，額度表的月份）：早於 PAY_LEAVE_DEDUP_FROM＝照舊（「僅 support」列也算手動月份、手動月份所有假別的 leave 列都略過）；
+ *  沒帶或起算月起：「僅 support」列不算手動月份；手動月份只略過手動工時有欄位的假別，家庭照顧、住院傷病等沒有欄位的照 leave 列算
+ *  （跟計薪 payLeaveUsedBefore 同一套，Eason 2026-11-18）。 */
+var PAY_INPUT_LEAVE_CODE_ = { personal: 1, sick: 1, menstrual: 1, annual: 1, disaster: 1 };   // ＝PAY_INPUT_LEAVE_FIELDS 的 code
+function payLeaveFlatRows(store, types, nameToEmp, pickEmp, ym) {
   const st = payStore(store);
   const out = [];
+  const fix = !ym || payLeaveDedupOn_(ym);
   const manualMonths = {};   // 'emp_id|yyyy-MM' → 該月由手動工時作主
   payRead('input').forEach(function (r) {
     if (payStore(r.store) !== st) return;
@@ -5533,7 +5539,7 @@ function payLeaveFlatRows(store, types, nameToEmp, pickEmp) {
     if (!/^\d{4}-\d{2}$/.test(m)) return;
     const emp = String(r.emp_id);
     // 「僅 support」列不蓋本店時數與假別（payInputsBase 也是照打卡歸集），不當成手動月份（2026-11-18；原本會把那個月的 leave 列整批略過）
-    if (!payInputSupportOnly_(r)) manualMonths[emp + '|' + m] = true;
+    if (!fix || !payInputSupportOnly_(r)) manualMonths[emp + '|' + m] = true;
     PAY_INPUT_LEAVE_FIELDS.forEach(function (f) {
       const h = payNum(r[f.field]);
       if (!h) return;
@@ -5547,9 +5553,9 @@ function payLeaveFlatRows(store, types, nameToEmp, pickEmp) {
     const d = normCellDate(l['日期']);
     const emp = pickEmp ? pickEmp(l['姓名'], d) : nameToEmp[String(l['姓名'] || '').trim()];
     if (!emp) return;
-    if (manualMonths[emp + '|' + String(d).slice(0, 7)]) return;   // 同月以手動為準，不重複計
-    out.push({ emp_id: emp, date: d, hours: Number(l['時數']) || 0,
-               code: payLeaveCode(String(l['假別'] || ''), types) });
+    const code = payLeaveCode(String(l['假別'] || ''), types);
+    if (manualMonths[emp + '|' + String(d).slice(0, 7)] && (!fix || PAY_INPUT_LEAVE_CODE_[code])) return;   // 同月以手動為準，不重複計（手動有欄位的假別）
+    out.push({ emp_id: emp, date: d, hours: Number(l['時數']) || 0, code: code });
   });
   return out;
 }
@@ -5568,7 +5574,7 @@ function payMyLeaveQuota(empId, empName, ym, store) {
   const dayH = payLeaveDayHours(cfg);
   // 兩個來源都要（leave 分頁＋手動工時），只有本人的列
   const nameMap = {}; nameMap[String(empName || '').trim()] = String(empId);
-  const flat = payLeaveFlatRows(st, types, nameMap)
+  const flat = payLeaveFlatRows(st, types, nameMap, null, ym)
     .filter(function (x) { return String(x.emp_id) === String(empId); });
   let spans = [];
   try { spans = payRead('leave_span'); } catch (err) { spans = []; }
@@ -5823,7 +5829,7 @@ function handlePayrollLeaveOptions(body) {
   const nameToEmp = {};
   master.forEach(function (e) { nameToEmp[String(e.name).trim()] = String(e.emp_id); });
   // leave 分頁 ＋ 手動工時兩個來源（見 payLeaveFlatRows）。同仁端走同一支，兩邊數字保證一致。
-  const flat = payLeaveFlatRows(st, types, nameToEmp, payLeavePicker_(st, master, master));
+  const flat = payLeaveFlatRows(st, types, nameToEmp, payLeavePicker_(st, master, master), ym);
   const quotas = {};
   let compBook = null;
   try { compBook = compOn ? payCompMonthBook(ym) : null; } catch (err) { compBook = null; }

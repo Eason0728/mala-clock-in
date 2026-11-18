@@ -41,7 +41,7 @@ const EMP = (id, name, o) => Object.assign({ emp_id: id, name, store: 'SSLGF', i
   group_ins: 0, pension: 0, dormitory: 0, hire_date: '2021-03-10', leave_date: '', meal_allow: 80, active: 'true' }, o);
 const master = [EMP('E01', '甲君', {}), EMP('E02', '乙君', { base: 32000 }),
   EMP('E03', '丙君', { is_full_time: 'false', base: 0, attend_cap: 0, ot_rate: 0, wage: 205, skill_allow: 0 }),
-  EMP('E08', '戊君', {}), EMP('E10', '己君', {}), EMP('E11', '庚君', {})];
+  EMP('E08', '戊君', {}), EMP('E10', '己君', {}), EMP('E11', '庚君', {}), EMP('E12', '辛君', {})];
 const MONTHS = ['2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11', '2026-12'];
 const approved = [], events = [], leave = [];
 const LV = ['事假', '病假', '生理假', '特休假', '家庭照顧假'];
@@ -65,7 +65,11 @@ leave.push({ '日期': '2026-07-02', '姓名': '戊君', '假別': '生理假', 
 for (let m = 1; m <= 6; m++) for (let d = 1; d <= 4; d++) leave.push({ '日期': '2026-0' + m + '-0' + d, '姓名': '庚君', '假別': '病假', '時數': 8 });
 for (let d = 1; d <= 4; d++) leave.push({ '日期': '2026-09-1' + d, '姓名': '庚君', '假別': '病假', '時數': 8 });
 leave.push({ '日期': '2026-11-16', '姓名': '庚君', '假別': '病假', '時數': 8 }, { '日期': '2026-11-17', '姓名': '庚君', '假別': '病假', '時數': 8 });
-const EDGE = { E08: 1, E10: 1, E11: 1 };
+// E12：9 月按過儲存工時（手動事假 8h），同月 leave 有事假 8h、家庭照顧假 16h、住院傷病假 8h；7 月（沒手動列）家照 8h
+leave.push({ '日期': '2026-09-04', '姓名': '辛君', '假別': '事假', '時數': 8 }, { '日期': '2026-09-10', '姓名': '辛君', '假別': '家庭照顧假', '時數': 8 },
+  { '日期': '2026-09-11', '姓名': '辛君', '假別': '家庭照顧假', '時數': 8 }, { '日期': '2026-09-15', '姓名': '辛君', '假別': '住院傷病假', '時數': 8 },
+  { '日期': '2026-07-08', '姓名': '辛君', '假別': '家庭照顧假', '時數': 8 }, { '日期': '2026-11-12', '姓名': '辛君', '假別': '家庭照顧假', '時數': 8 });
+const EDGE = { E08: 1, E10: 1, E11: 1 };   // E12 不在這裡：家照、住院傷病假照 leave 算＝跟改版前一樣，11、12 月也要逐項相同
 const CLOCK = { roster: master.map((e) => ({ emp_id: e.emp_id, name: e.name, active: true })), approved, events, leave, requests: [] };
 const freshDB = () => ({ master: JSON.parse(JSON.stringify(master)), run: [], item: [], config: [], leave_type: [],
   holiday: MONTHS.map((ym) => ({ ym, store: 'SSLGF', red_days: 8 })), bonus: [],
@@ -73,6 +77,7 @@ const freshDB = () => ({ master: JSON.parse(JSON.stringify(master)), run: [], it
             deduct_days: 1, support: '[]', full_attend: 0, work_days: 22, wage_override: 0, meal_on: 1, holiday_h: 0 },
           // 9 月按過儲存工時的人（手動列＝工時分頁顯示的歸集值）、別家店同工號的手動列、「僅 support」列
           { ym: '2026-09', emp_id: 'E11', store: 'SSLGF', hours: 160, sick_h: 32, personal_h: 0, menstrual_h: 0, annual_h: 0, disaster_h: 0, deduct_days: 4, support: '[]', full_attend: 0, work_days: 18, meal_on: 1, holiday_h: 0 },
+          { ym: '2026-09', emp_id: 'E12', store: 'SSLGF', hours: 160, sick_h: 0, personal_h: 8, menstrual_h: 0, annual_h: 0, disaster_h: 0, deduct_days: 1, support: '[]', full_attend: 0, work_days: 20, meal_on: 1, holiday_h: 0 },
           { ym: '2026-08', emp_id: 'E01', store: 'CF', hours: 100, sick_h: 40, personal_h: 0, menstrual_h: 0, annual_h: 0, disaster_h: 0, support: '[]' },
           { ym: '2026-10', emp_id: 'E02', store: 'SSLGF', hours_manual: '0', hours: 0, sick_h: 0, personal_h: 0, menstrual_h: 0, annual_h: 0, disaster_h: 0, support: '[]' }] });
 let pass = 0, fail = 0, lockedCompared = 0, laterCompared = 0;
