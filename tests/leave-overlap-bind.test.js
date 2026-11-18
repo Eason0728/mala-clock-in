@@ -126,4 +126,14 @@ ok('O10 預覽（preview）也帶這條；整天請假（核定沒有時段）�
   const sb2 = makeEnv(); addReq(sb2, lv('特休假', '09:00', '18:00', 8));
   assert.strictEqual(chk(sb2, 0, [], [], { leaves: [{ type: '特休假', hours: 8 }] }), null);
 });
+ok('O11 兩張已核准單時段互相重疊（事假 14–16＋補休 15–17）→ 擋 leave_overlap「同一段不能請兩次」（2026-11-18 驗收：前端聯集、登記時數加總會重複算）；剛好相接不擋', () => {
+  let sb = makeEnv(); addReq(sb, lv('事假', '14:00', '16:00', 2)); addReq(sb, lv('補休', '15:00', '17:00', 2));
+  const L = { leaves: [{ type: '事假', hours: 2 }, { type: '補休', hours: 2 }] };
+  const r = chk(sb, 5, [P('09:00', '12:00'), P('13:00', '14:00'), P('17:00', '18:00')], [S('09:00', '14:00'), S('17:00', '18:00')], L);
+  const t = (r && r.probs || []).map((p) => p.text).join('|');
+  assert.ok(/已核准的事假 14:00–16:00 跟補休 15:00–17:00 時段重疊 60 分鐘，同一段不能請兩次/.test(t), t);
+  sb = makeEnv(); addReq(sb, lv('事假', '14:00', '15:00', 1)); addReq(sb, lv('補休', '15:00', '17:00', 2));
+  const r2 = chk(sb, 5, [P('09:00', '12:00'), P('13:00', '14:00'), P('17:00', '18:00')], [S('09:00', '14:00'), S('17:00', '18:00')], { leaves: [{ type: '事假', hours: 1 }, { type: '補休', hours: 2 }] });
+  assert.ok(!rules(r2).includes('leave_overlap'), JSON.stringify(r2 && r2.probs));
+});
 console.log('leave-overlap-bind: ' + n + ' 項全過');

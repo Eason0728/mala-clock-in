@@ -56,6 +56,14 @@ check('EO-both', '事假 14–15、13:30 走、15:40 回 → 7 小時、遲到40
 r = approve(env(ev('08:58', '15:30'), [L()]), '09:00-12:00,13:00-16:00', Object.assign({ late_min: '0' }, LV2));
 check('EO-lategiven', '主管填遲到 0（認定不計遲到）→ 早退照記 30、放行（沒有「主管填早退分鐘」的欄位）', [r.ok, r.early], [true, 30]);
 
+// 驗收 1（2026-11-18）：午休前就走、沒回來＝中途離開不回來（照 main 單段班中途離開：照打卡算、不補、不記早退）→ 營運系統預填 09–12，打卡端放行、不記早退
+r = approve(env(ev('09:00', '12:00'), [LM]), '09:00-12:00', LV1);
+check('EO-noon-mid', '事假 14–15、12:00 走不回 → 核定 09–12 放行、3 小時、不記早退', [r.ok, r.hours, r.early], [true, 3, 0]);
+r = approve(env(ev('09:00', '12:00'), [L()]), '09:00-12:00', LV2);
+check('EO-noon-tail', '事假 16–18、12:00 走 → 核定 09–12 放行、3 小時、不記早退', [r.ok, r.hours, r.early], [true, 3, 0]);
+r = approve(env(ev('09:00', '12:00'), [LM]), '09:00-12:00,13:00-14:00', Object.assign({ dry_run: true }, LV1));
+check('EO-noon-old', '（舊前端會送的）09–12、13–14：13–14 沒打卡 → 照舊擋（少打卡／核定比打卡多）', r.ok, false);
+
 console.log('\n════ 三、不適用：照舊擋 ════');
 for (const st of ['rejected', 'void', 'pending']) {
   r = approve(env(ev('08:58', '15:30'), [L({ status: st })]), '09:00-12:00,13:00-16:00', st === 'pending' ? {} : {});

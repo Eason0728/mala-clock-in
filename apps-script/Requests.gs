@@ -2387,8 +2387,8 @@ function reqStrictLeaveProbs_(okRows, leaves) {
    跨夜：單上只有時鐘時間，同 reqStrictSlotOk_ 也試前一天／隔天（班表 22:00–06:00、事假 05:00–06:00＝隔天早上）。回不符的字句陣列。 */
 function reqLeaveOverlapProbs_(date, okRows, periods) {
   var ps = (periods || []).filter(function (p) { return p && p.startMs != null && p.endMs != null && p.endMs > p.startMs; });
-  if (!ps.length) return [];
-  var out = [];
+  var out = reqLeavePairProbs_(date, okRows);
+  if (!ps.length) return out;
   (okRows || []).forEach(function (r) {
     if (r.kind !== 'leave' && r.kind !== 'trip') return;
     var a = reqHm_(r.start), b = reqHm_(r.end);
@@ -2406,6 +2406,24 @@ function reqLeaveOverlapProbs_(date, okRows, periods) {
     out.push('核定上班 ' + hit.map(function (p) { return reqOtPunchHm_(p.startMs) + '–' + reqOtPunchHm_(p.endMs); }).join('、') + ' 跟已核准的' + what + ' ' + a + '–' + b +
       ' 重疊 ' + Math.round(best / 60000) + ' 分鐘，同一段不能同時算上班和' + (r.kind === 'trip' ? '出差' : '請假') + '，請把上班時段改到' + (r.kind === 'trip' ? '出差單' : '假單') + '以外（要算上班就先作廢那張單）');
   });
+  return out;
+}
+/* 同一天兩張已核准、有時段的假單／出差單互相重疊（2026-11-18 驗收）：登記的時數加總會把重疊那段算兩次（營運系統預填用聯集）→ 擋，請作廢或改其中一張。剛好相接不算。 */
+function reqLeavePairProbs_(date, okRows) {
+  var list = [];
+  (okRows || []).forEach(function (r) {
+    if (r.kind !== 'leave' && r.kind !== 'trip') return;
+    var a = reqHm_(r.start), b = reqHm_(r.end);
+    if (!a || !b || a === b) return;
+    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
+    if (e <= s) e += 86400000;
+    list.push({ s: s, e: e, a: a, b: b, what: r.kind === 'trip' ? '出差' : String(r.leave_type || '假') });
+  });
+  var out = [];
+  for (var i = 0; i < list.length; i++) for (var j = i + 1; j < list.length; j++) {
+    var m = Math.min(list[i].e, list[j].e) - Math.max(list[i].s, list[j].s);
+    if (m > 0) out.push('已核准的' + list[i].what + ' ' + list[i].a + '–' + list[i].b + ' 跟' + list[j].what + ' ' + list[j].a + '–' + list[j].b + ' 時段重疊 ' + Math.round(m / 60000) + ' 分鐘，同一段不能請兩次，請作廢或改其中一張');
+  }
   return out;
 }
 /** 別家店這天有沒有這個人的成功打卡。跨店同日合計超過 8 小時時，加班單開在做到超過 8 小時的那家店（Eason 2026-11-09），那家店當天可能自己沒滿 8 小時。讀不到算沒有。 */
