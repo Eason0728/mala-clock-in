@@ -38,6 +38,10 @@ function attDigestDaysBetween_(a, b) {
 }
 function attDigestCmp_(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }
 
+/** 總部從央廚抄來的鏡像列（Mirror.gs，mirror_src 有值）是別家店的卡的複本，不算本店的（2026-11-18 Eason 同意）：
+ *  不排除的話，吳佳宜（央廚 HQ-01）會被總部再回一份 hq:HQ-01，mini 當成另一個人。同 Cap10.gs／Requests.gs reqPeerMine_。 */
+function attDigestOwnRow_(r) { return !String((r && r.mirror_src) || '').trim(); }
+
 function handleAttDigestData(body) {
   const ss = getSS();
   const mgrSheet = ss.getSheetByName('managers');
@@ -76,11 +80,11 @@ function handleAttDigestData(body) {
   }, []);
   const eventRows = guarded(function () {
     const sh = ss.getSheetByName('events'); if (!sh) throw new Error('no events');
-    return readSheetAsObjects(sh).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+    return readSheetAsObjects(sh).rows.filter(attDigestOwnRow_).map(function (e) { e.ts = normCellTs(e.ts); return e; });
   }, []);
   const approvedRows = guarded(function () {
     const sh = ss.getSheetByName('approved');
-    return sh ? readSheetAsObjects(sh).rows : [];
+    return sh ? readSheetAsObjects(sh).rows.filter(attDigestOwnRow_) : [];
   }, []);
   // 請假時數：沿用 mgr_day 的 leaves 同一支 helper（Code.gs leaveByDateName_，讀 leave 分頁一次），依 日期＋姓名 建表。
   // leave 分頁是主管核定時才寫入的「已核准」結果；待審／退回的假、加班單都還沒進這分頁。出差（TRIP_NOTE）不算請假。

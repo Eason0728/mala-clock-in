@@ -58,6 +58,7 @@ function makeCtx(over) {
   };
   if (over.leave) sheets.leave = new FakeSheet(['日期', '姓名', '假別', '時數'], over.leave);
   if (over.xmap) sheets.payroll_xmap = new FakeSheet(['emp_no', 'pay_store', 'acct_store', 'emp_id', 'not_support', 'synced_at', 'state', 'acct_only'], over.xmap);
+  if (over.sheets) Object.assign(sheets, over.sheets);   // 換整張表（例：多 mirror_src 欄）
   if (over.dropSheets) over.dropSheets.forEach(k => delete sheets[k]);
   const ss = { getSheetByName: n => sheets[n] || null, insertSheet() { writes.n++; } };
   const sb = {
@@ -434,6 +435,25 @@ console.log('══ att_digest_data ══');
   const c3 = makeCtx({ leave: [] });
   c3.sb.leaveByDateName_ = () => { throw new Error('boom'); };
   chk('讀 leave 失敗 → complete false', c3.digest(base).complete, false);
+}
+
+
+// 總部鏡像列（mirror_src，從央廚抄來）不算本店：days／newly_approved／unapproved 都不出（2026-11-18）
+{
+  const c = makeCtx({ sheets: {
+  events: new FakeSheet(['ts', 'emp_id', 'type', 'status', 'mirror_src'], [
+    [...E('2026-11-03', '09:00', 'E02', 'in'), ''], [...E('2026-11-03', '18:00', 'E02', 'out'), ''],
+    [...E('2026-11-04', '08:25', 'HQ-01', 'in'), 'CF'], [...E('2026-11-04', '17:42', 'HQ-01', 'out'), 'CF'],
+    [...E('2026-11-05', '08:25', 'HQ-01', 'in'), 'CF'], [...E('2026-11-05', '17:42', 'HQ-01', 'out'), 'CF'],   // 鏡像、未核定
+  ]),
+  approved: new FakeSheet(['date', 'emp_id', 'name', 'periods', 'approved_hours', 'status_text', 'manager_name', 'entered_at', 'dup_ignore', 'mirror_src'], [
+    ['2026-11-03', 'E02', 'Bob', '09:00-18:00', 8, '正常', '主管', '2026-11-06T10:00:00+08:00', '', ''],
+    ['2026-11-04', 'HQ-01', '吳佳宜', '08:30-17:30', 8, '正常', '主管', '2026-11-06T10:00:00+08:00', '', 'CF'],
+  ]) } });
+  const r = c.digest(base);
+  chk('鏡像列不出現在 days', r.days.map(x => x.emp_id), ['E02']);
+  chk('鏡像列不出現在 newly_approved', r.newly_approved.map(x => x.emp_id), ['E02']);
+  chk('鏡像列不出現在 unapproved', r.unapproved.filter(x => x.emp_id === 'HQ-01').length, 0);
 }
 
 
