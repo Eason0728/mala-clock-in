@@ -433,7 +433,7 @@ console.log('══ att_digest_data ══');
   chk('跨日請假各日各自的時數', r2.days.filter(x => x.emp_id === 'E01' && ['2026-11-02', '2026-11-03'].includes(x.date)).map(x => x.date + ':' + x.leave_hours), ['2026-11-02:8']);
   // 讀 leave 失敗 → complete false
   const c3 = makeCtx({ leave: [] });
-  c3.sb.leaveByDateName_ = () => { throw new Error('boom'); };
+  c3.sb.attDigestLeaveMap_ = () => { throw new Error('boom'); };
   chk('讀 leave 失敗 → complete false', c3.digest(base).complete, false);
 }
 
@@ -454,6 +454,17 @@ console.log('══ att_digest_data ══');
   chk('鏡像列不出現在 days', r.days.map(x => x.emp_id), ['E02']);
   chk('鏡像列不出現在 newly_approved', r.newly_approved.map(x => x.emp_id), ['E02']);
   chk('鏡像列不出現在 unapproved', r.unapproved.filter(x => x.emp_id === 'HQ-01').length, 0);
+}
+
+// leave 分頁也有鏡像列（Mirror.gs 抄 events／approved／leave）：鏡像的假不算進本店的 leave_hours（2026-11-18）
+{
+  const c = makeCtx({ sheets: { leave: new FakeSheet(['日期', '姓名', '假別', '時數', 'mirror_src'], [
+    ['2026-11-03', 'Bob', '事假', 2, ''],
+    ['2026-11-03', 'Bob', '病假', 8, 'CF'],   // 同名同日的鏡像列：不加
+  ]) } });
+  const r = c.digest(base);
+  chk('leave 鏡像列不算（2 不是 10）', r.days.filter(x => x.emp_id === 'E02' && x.date === '2026-11-03').map(x => x.leave_hours), [2]);
+  chk('沒有 mirror_src 欄的舊 leave 表照常讀', makeCtx({ leave: [['2026-11-03', 'Bob', '事假', 2]] }).digest(base).days.filter(x => x.emp_id === 'E02' && x.date === '2026-11-03').map(x => x.leave_hours), [2]);
 }
 
 
