@@ -2308,6 +2308,32 @@ function reqStrictLeaveProbs_(okRows, leaves) {
   Object.keys(reqd).forEach(function (t) { if (!(t in have)) out.push('有已核准的' + t + ' ' + reqBindFmt_(reqd[t]) + ' 小時，核定沒有登記'); });
   return out;
 }
+/* 核定上班時段 vs 已核准、有填起訖的假單／出差單（2026-11-18 Eason 第 6 題）：同一段不能同時算上班和請假，任何重疊（容許 0 分鐘）都擋；
+   剛好相接（假 09:00–11:00、上班 11:00 起）不算。leave 分頁沒有時段，只能比 requests 列的 start／end；沒填時段的單不比。
+   跨夜：單上只有時鐘時間，同 reqStrictSlotOk_ 也試前一天／隔天（班表 22:00–06:00、事假 05:00–06:00＝隔天早上）。回不符的字句陣列。 */
+function reqLeaveOverlapProbs_(date, okRows, periods) {
+  var ps = (periods || []).filter(function (p) { return p && p.startMs != null && p.endMs != null && p.endMs > p.startMs; });
+  if (!ps.length) return [];
+  var out = [];
+  (okRows || []).forEach(function (r) {
+    if (r.kind !== 'leave' && r.kind !== 'trip') return;
+    var a = reqHm_(r.start), b = reqHm_(r.end);
+    if (!a || !b || a === b) return;
+    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
+    if (e <= s) e += 86400000;
+    var best = 0, hit = [];
+    [0, -86400000, 86400000].forEach(function (d) {
+      var tot = 0, h = [];
+      ps.forEach(function (p) { var m = Math.min(p.endMs, e + d) - Math.max(p.startMs, s + d); if (m > 0) { tot += m; h.push(p); } });
+      if (tot > best) { best = tot; hit = h; }
+    });
+    if (!(best > 0)) return;
+    var what = r.kind === 'trip' ? '出差' : String(r.leave_type || '假');
+    out.push('核定上班 ' + hit.map(function (p) { return reqOtPunchHm_(p.startMs) + '–' + reqOtPunchHm_(p.endMs); }).join('、') + ' 跟已核准的' + what + ' ' + a + '–' + b +
+      ' 重疊 ' + Math.round(best / 60000) + ' 分鐘，同一段不能同時算上班和' + (r.kind === 'trip' ? '出差' : '請假') + '，請把上班時段改到' + (r.kind === 'trip' ? '出差單' : '假單') + '以外（要算上班就先作廢那張單）');
+  });
+  return out;
+}
 /** 別家店這天有沒有這個人的成功打卡。跨店同日合計超過 8 小時時，加班單開在做到超過 8 小時的那家店（Eason 2026-11-09），那家店當天可能自己沒滿 8 小時。讀不到算沒有。 */
 function reqPeerWorked_(name, date) {
   if (typeof restPeerEvents_ !== 'function' || !name) return false;
@@ -2745,6 +2771,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   var missBad = bindOn && !(tripOk && !loneCard) && miss > missHave;   // 出差日只有「湊不成完整一段的卡」才要忘打卡單
   if (missBad) add('miss', '少了 ' + miss + ' 張打卡，要有忘打卡單（已核准 ' + missHave + ' 張）');
   if (strict) reqStrictLeaveProbs_(ok, opt.leaves).forEach(function (t) { add('leave', t); });
+  if (strict) reqLeaveOverlapProbs_(date, ok, periods).forEach(function (t) { add('leave_overlap', t); });   // 2026-11-18 Eason：核定上班不能跟已核准假單／出差單時段重疊
   // 正職上班日滿 8 小時＋跨店加班算被支援那家（2026-11-13 Eason，見 reqFt8_ 檔頭）
   var ft8 = reqFt8_(date, approvedHours, otHave, opt, ok);
   if (ft8) {
