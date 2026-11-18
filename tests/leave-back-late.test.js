@@ -101,6 +101,27 @@ for (const st of ['rejected', 'void']) {
   check('BL-two-' + st, '二段班第二段：假單' + st + ' → 照舊擋「核定比打卡多 40 分鐘」', [r.ok, /核定比打卡多 40 分鐘/.test(r.message)], [false, true]);
 }
 
+console.log('\n════ 二之三、沒有請假的二段班第二段晚到＝遲到（2026-11-18 Eason；營運系統帶 sched_spans 才有）════');
+// 手算：班表 09–12／17–22、核定 09–12、17–22＝8 小時（前端從第二段班表開始算）；遲到＝到的時間－17:00
+const twoNL = (b) => [[D + 'T09:00:00', 'in'], [D + 'T12:00:00', 'out'], [D + 'T' + b + ':00', 'in'], [D + 'T22:00:00', 'out']];
+const ACT = (o) => Object.assign({ mgr_key: 'AK', acting_name: '店長乙（DZY002）', sched_day: 'W', sched_spans: [{ start: '09:00', end: '12:00' }, { start: '17:00', end: '22:00' }] }, o || {});
+for (const [b, l] of [['17:00', 0], ['17:10', 10], ['17:16', 16], ['17:40', 40], ['18:30', 90]]) {
+  m = env(twoNL(b), []);
+  r = approve(m, '09:00-12:00,17:00-22:00', ACT({ diff_reason: l > 30 ? '上班卡 ' + b + '：主管同意' : '' }));
+  const got = /遲到(\d+)分/.exec(r.status);
+  check('BL-nl-' + b, '沒有假單、第二段 ' + b + ' 到 → 放行、8 小時、遲到' + l, [r.ok, r.hours, got ? +got[1] : 0, r.message.slice(0, 40)], [true, 8, l, '']);
+}
+m = env(twoNL('17:40'), []);
+r = approve(m, '09:00-12:00,17:00-22:00', { dry_run: true, diff_reason: 'x' });
+check('BL-nl-legacy', '舊值班頁（沒帶班表 sched_spans）：照改之前擋「核定比打卡多 40 分鐘」', [r.ok, /核定比打卡多 40 分鐘/.test(r.message)], [false, true]);
+m = env([[D + 'T08:00:00', 'in'], [D + 'T10:00:00', 'out'], [D + 'T12:20:00', 'in'], [D + 'T14:00:00', 'out'], [D + 'T17:30:00', 'in'], [D + 'T20:00:00', 'out']], []);
+r = approve(m, '08:00-10:00,12:00-14:00,17:00-20:00', ACT({ sched_spans: [{ start: '08:00', end: '10:00' }, { start: '12:00', end: '14:00' }, { start: '17:00', end: '20:00' }], diff_reason: '上班卡 17:30：主管同意' }));
+check('BL-nl-three', '三段班 08–10／12–14／17–20、12:20、17:30 到 → 7 小時、遲到20＋30', [r.ok, r.hours, /遲到20分/.test(r.status) && /遲到30分/.test(r.status)], [true, 7, true]);
+m = env([[D + 'T10:00:00', 'in'], [D + 'T13:00:00', 'out'], [D + 'T20:40:00', 'in'], [D1 + 'T01:00:00', 'out']], []);
+r = approve(m, '10:00-13:00,20:00-01:00', ACT({ sched_spans: [{ start: '10:00', end: '13:00' }, { start: '20:00', end: '01:00' }], diff_reason: '上班卡 20:40：主管同意' }));
+check('BL-nl-night', '跨夜二段 10–13／20–01、20:40 到 → 8 小時、遲到40', [r.ok, r.hours, /遲到40分/.test(r.status)], [true, 8, true]);
+check('BL-nl-f', '函式層：reqSchedStartMs_ 帶 17:00 → 第二段開頭 40 分當遲到（0）；不帶＝40', [m.sb.reqOverCreditMin_([{ startMs: Date.parse(D + 'T09:00:00+08:00'), endMs: Date.parse(D + 'T12:00:00+08:00') }, { startMs: Date.parse(D + 'T17:00:00+08:00'), endMs: Date.parse(D + 'T22:00:00+08:00') }], [{ inMs: Date.parse(D + 'T09:00:00+08:00'), outMs: Date.parse(D + 'T12:00:00+08:00') }, { inMs: Date.parse(D + 'T17:40:00+08:00'), outMs: Date.parse(D + 'T22:00:00+08:00') }], null, null, m.sb.reqSchedStartMs_(D, [{ start: '09:00' }, { start: '17:00' }])), m.sb.reqOverCreditMin_([{ startMs: Date.parse(D + 'T09:00:00+08:00'), endMs: Date.parse(D + 'T12:00:00+08:00') }, { startMs: Date.parse(D + 'T17:00:00+08:00'), endMs: Date.parse(D + 'T22:00:00+08:00') }], [{ inMs: Date.parse(D + 'T09:00:00+08:00'), outMs: Date.parse(D + 'T12:00:00+08:00') }, { inMs: Date.parse(D + 'T17:40:00+08:00'), outMs: Date.parse(D + 'T22:00:00+08:00') }], null, null)], [0, 40]);
+
 console.log('\n════ 三、不適用：照舊擋 ════');
 for (const st of ['rejected', 'void']) {
   m = env(day('15:40'), [Object.assign({ status: st }, LV[0])]);

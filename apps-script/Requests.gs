@@ -2296,6 +2296,18 @@ function reqLeaveStartMs_(date, okRows) {
   });
   return out;
 }
+/* 班表每一段的開始時間（ms；營運系統帶的 sched_spans，跨夜試前一天／隔天）：2026-11-18 Eason「沒有請假的二段班第二段晚到，記成遲到」——
+   營運系統核定會從那段班表開始算，reqOverCreditMin_ 把那段開頭到實際上班卡當遲到（同第一段開頭）。沒帶班表（舊值班頁）＝空，跟改之前一樣。 */
+function reqSchedStartMs_(date, spans) {
+  var out = [];
+  (Array.isArray(spans) ? spans : []).forEach(function (x) {
+    var a = reqHm_(x && x.start);
+    if (!a) return;
+    var s = reqHmMs_(date, a);
+    out.push(s, s - 86400000, s + 86400000);
+  });
+  return out;
+}
 function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts) {
   if (!periods.length || !segs.length || segs.some(function (s) { return s.inMs == null || s.outMs == null; })) return null;
   var ps = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
@@ -2831,7 +2843,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   // 2026-11-14 Eason「打卡＋單＝核定時數」：不再「差 30 分鐘寫原因」，只看核定比打卡多（沒打卡卻要算的時間），要有單；早到晚走不算、不用原因
   // 已核准的忘打卡單補的卡算「有打卡」（2026-11-15 Eason：游家輝 11/11 忘打卡單補 18:30–20:15 仍被算成整段沒打卡；
   // 同營運系統 core-calc.js 的「打卡＋單」）。只用在這條「核定比打卡多」，其他檢查照舊看真的卡
-  var overMin = strict ? reqOverCreditMin_(periods, reqSegsWithMiss_(segs || [], ok, date), breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok), reqLeaveStartMs_(date, ok)) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）
+  var overMin = strict ? reqOverCreditMin_(periods, reqSegsWithMiss_(segs || [], ok, date), breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok)) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）
   if (overMin != null && overMin >= REQ_STRICT_DIFF_MIN) add('over_credit', '核定比打卡多 ' + overMin + ' 分鐘（沒有打卡的時間要有忘打卡單、假單或補休單）');
   if (opt.preview) return { probs: probs, diff_min: diffMin, over_min: overMin, ot_have: otHave, ot_need: otNeed, ft8_gap: ft8 ? ft8.gap : 0 };
   if (probs.length) {
@@ -2872,7 +2884,7 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
    一段打卡（上班卡到下班卡）對到跟它重疊的核定時段：上班卡比最早那段的開始、下班卡比最晚那段的結束（央廚、總部中午不打卡的休息帶自然跨過去）。
    這段打卡完全沒被核定（例：早到那段整段不算）：上班卡比最近的核定開始、下班卡比最近的核定結束。只有單邊的卡（缺卡）只比有的那邊。
    遲到：核定從班表開始（標遲到扣薪），上班卡跟核定差超過 30 分一樣要原因（Eason：「是卡核定時間比對打卡紀錄，不是比對班表」）。 */
-var REQ_CARD_REASON_FROM_DEFAULT_ = '2026-11-17';
+var REQ_CARD_REASON_FROM_DEFAULT_ = '2026-11-01';   // 2026-11-18 Eason「卡差 30 分起算日維持 11/1」（原本 11/17）；指令碼屬性 REQ_CARD_REASON_FROM 有設值仍優先
 var REQ_CARD_DIFF_MIN = 30;
 function reqCardReasonFrom_() {
   var v = '';

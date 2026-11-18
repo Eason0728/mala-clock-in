@@ -574,7 +574,7 @@ ok('reqSegsWithMiss_：補上班／補下班／補中間休息', () => {
   assert.deepStrictEqual(f([S2('09:00', '17:00')], [{ kind: 'ot', start: '17:00', end: '18:00' }]), [S2('09:00', '17:00')], '不是忘打卡單不動');
 });
 
-/* ── 每張卡跟核定差超過 30 分要原因（2026-11-16 Eason，11/17 起的日子）── */
+/* ── 每張卡跟核定差超過 30 分要原因（2026-11-16 Eason；起算日 2026-11-18 Eason 改 11/1，原 11/17）── */
 {
   const D3 = '2026-11-18';
   const m3 = (hm) => Date.parse(D3 + 'T' + hm + ':00+08:00');
@@ -598,11 +598,17 @@ ok('reqSegsWithMiss_：補上班／補下班／補中間休息', () => {
     assert.strictEqual(r && r.error, 'need_diff_reason');
     assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('08:00', '12:00'), P3('13:00', '17:00')], [S3('07:58', '17:02')], B3), null);
   });
-  ok('每張卡：兩段班各自比；11/16 以前的日子不看；REQ_CARD_REASON_FROM=off 關掉', () => {
+  ok('每張卡：兩段班各自比；起算日 2026-11-01（2026-11-18 Eason：原 11/17）——10/31 不看、11/1 與 11/16 要原因；REQ_CARD_REASON_FROM=off 關掉', () => {
     const sb = makeEnv();
     const r = sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '13:00'), P3('17:00', '21:00')], [S3('09:00', '13:45'), S3('17:00', '21:00')], null);
     assert.deepStrictEqual(JSON.parse(JSON.stringify(r.cards)), [{ side: 'out', card: '13:45', core: '13:00', min: 45 }]);
-    assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', '2026-11-16', 8, [{ startMs: Date.parse('2026-11-16T09:00:00+08:00'), endMs: Date.parse('2026-11-16T17:00:00+08:00') }], [{ inMs: Date.parse('2026-11-16T08:20:00+08:00'), outMs: Date.parse('2026-11-16T17:00:00+08:00') }], null), null);
+    const onDay = (d) => sb.reqBindCheck_(sb.getSS(), 'E01', d, 8, [{ startMs: Date.parse(d + 'T09:00:00+08:00'), endMs: Date.parse(d + 'T17:00:00+08:00') }], [{ inMs: Date.parse(d + 'T08:20:00+08:00'), outMs: Date.parse(d + 'T17:00:00+08:00') }], null);
+    assert.strictEqual(onDay('2026-10-31'), null, '10/31：起算日之前不看');
+    assert.strictEqual((onDay('2026-11-01') || {}).error, 'need_diff_reason', '11/1 起要原因');
+    assert.strictEqual((onDay('2026-11-16') || {}).error, 'need_diff_reason', '11/16（原本不看）現在要原因');
+    sb.__props.REQ_CARD_REASON_FROM = '2026-11-17';
+    assert.strictEqual(onDay('2026-11-16'), null, '指令碼屬性有設值仍優先');
+    delete sb.__props.REQ_CARD_REASON_FROM;
     sb.__props.REQ_CARD_REASON_FROM = 'off';
     assert.strictEqual(sb.reqBindCheck_(sb.getSS(), 'E01', D3, 8, [P3('09:00', '17:00')], [S3('08:20', '17:05')], null), null);
   });
