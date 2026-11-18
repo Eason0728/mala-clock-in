@@ -1118,6 +1118,12 @@ function lineHubAnnual_(a) {
   var last = payDayBefore(String(a.pe).slice(0, 10));
   return { left_h: r1(a.left_h), quota_h: r1(a.quota_h), last: last, md: lineHubMd_(last) };
 }
+/** 生理假用「次」顯示（2026-11-18 Eason，跟 LINE 申請頁、打卡頁同一個口徑）：回已請次數；不是生理假或沒有上限＝null（照時數顯示）。
+ *  舊薪資沒有 used_n 就用時數÷8（一次＝8 小時）。 */
+function lineHubMensTimes_(q) {
+  if (!q || String(q.name) !== '生理假' || q.cap_days == null) return null;
+  return q.used_n != null ? Number(q.used_n) : Math.round((Number(q.used_h) || 0) / 8);
+}
 function lineHubLeaveText_(userId) {
   var j = lineHubPayslipFor_(userId);
   if (!j) return lineHubMine_(userId, null, true).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
@@ -1128,6 +1134,8 @@ function lineHubLeaveText_(userId) {
   var head = an ? '・特休假：剩 ' + an.left_h + ' 小時（共 ' + an.quota_h + ' 小時，' + an.md + ' 到期，未休完依法折算工資）\n' : '';
   if (cp) head += '・本月補休：' + lineHubCompLine_(cp) + '（每月結算，剩的照加班費發）\n';
   return '📅 今年假別額度（已請／剩餘）\n' + head + list.map(function (q) {
+    var n = lineHubMensTimes_(q);
+    if (n != null) return '・' + q.name + '：' + (n ? '已請 ' + n + ' 次' : '未請過') + '｜' + (q.cap_days - n > 0 ? '剩 ' + (q.cap_days - n) + ' 次／上限 ' + q.cap_days + ' 次' : '已用完') + '（一天算一次、每月一次）';
     var used = q.used_days ? r1(q.used_h) + 'H' : '未請過';
     var rem = q.cap_days == null ? '無上限' : (q.basis === 'event' ? '每次上限 ' + r1(q.cap_h) + 'H'
       : (q.remain_h < 0 ? '超出 ' + r1(-q.remain_h) + 'H' : r1(q.remain_h) + 'H／上限 ' + r1(q.cap_h) + 'H'));
@@ -1253,6 +1261,9 @@ function lineHubLeaveCard_(userId) {
   if (!list.length && !an && !cp) return lineHubNoticeCard_('假別額度', '你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。');
   var r1 = function (v) { return Math.round((Number(v) || 0) * 10) / 10; };
   var blocks = list.map(function (q) {
+    var n = lineHubMensTimes_(q);
+    if (n != null) return { type: 'row', l: q.name, r: q.cap_days - n > 0 ? '剩 ' + (q.cap_days - n) + ' 次' : '已用完', bold: true,
+                            sub: (n ? '已請 ' + n + ' 次' : '未請過') + '・上限 ' + q.cap_days + ' 次・一天算一次、每月一次' };
     var rem = q.cap_days == null ? '無上限' : (q.basis === 'event' ? '每次上限 ' + r1(q.cap_h) + 'H'
       : (q.remain_h < 0 ? '超出 ' + r1(-q.remain_h) + 'H' : '剩 ' + r1(q.remain_h) + 'H'));
     var sub = (q.used_days ? '已請 ' + r1(q.used_h) + 'H' : '未請過') + (q.cap_days != null && q.basis !== 'event' ? '・上限 ' + r1(q.cap_h) + 'H' : '');

@@ -6,7 +6,7 @@ const fs = require('fs'), vm = require('vm'), path = require('path'), assert = r
 const src = fs.readFileSync(path.join(__dirname, '..', 'req-line.js'), 'utf8');
 const TAIL = 'window.ReqLine = { open: open };';
 if (src.indexOf(TAIL) < 0) throw new Error('req-line.js 檔尾的寫法變了，請更新這支測試的出口');
-const hooked = src.replace(TAIL, TAIL + ' window.__t = { capLocked: capLocked, quotaText: quotaText, seg2Ok: seg2Ok, st: st };');
+const hooked = src.replace(TAIL, TAIL + ' window.__t = { capLocked: capLocked, quotaText: quotaText, seg2Ok: seg2Ok, sickUsedUp: sickUsedUp, leavePreBlock: leavePreBlock, st: st };');
 const sb = { window: {}, document: { createElement: () => ({}), createTextNode: () => ({}) }, console, Promise, setTimeout, clearTimeout, Date, Math, JSON, String, Number, Object, Array, RegExp, Error,
   parseInt, parseFloat, isNaN, isFinite, liff: { getIDToken: () => 'TOK', isInClient: () => false }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} } };
 sb.window.window = sb.window;
@@ -49,5 +49,36 @@ ok('後端關掉新規則（seg2_no_types 帶生理假）→ 原本的檢查與�
   assert.strictEqual(t.seg2Ok('leave', '生理假'), false);
   t.st.info = { seg2_kinds: ['leave'], seg2_no_types: [], requests: [] };
   assert.strictEqual(t.seg2Ok('leave', '生理假'), true, '新後端：生理假可以加第二段');
+});
+ok('選假別就先擋：病假用完（含審核中、已核准未核定）；開關 off／舊後端／額度查不到／明年不提示', () => {
+  const SQ = (remain) => ({ name: '病假', cap_days: 30, cap_h: 240, remain_h: remain });
+  const MSG = '今年病假額度已用完（30 天），請改請事假';
+  t.st.init = { quota: [SQ(0)] }; t.st.info = { sick_used_up: true, requests: [] };
+  assert.strictEqual(t.leavePreBlock('病假', yr + '-11-20'), MSG);
+  t.st.init = { quota: [SQ(8)] };
+  t.st.info = { sick_used_up: true, requests: [{ kind: 'leave', leave_type: '病假', date: yr + '-11-10', status: 'pending', hours: 8 }] };
+  assert.strictEqual(t.leavePreBlock('病假', yr + '-11-20'), '今年病假額度已用完（30 天，含審核中或已核准還沒核定的病假單），請改請事假');
+  t.st.info = { sick_used_up: true, requests: [], leave_live: { sick_ok_h: 8, mens_ok_dates: [] } };
+  assert.ok(t.leavePreBlock('病假', yr + '-11-20').indexOf('已用完') >= 0, '已核准、那天還沒核定的也算');
+  t.st.info = { sick_used_up: true, requests: [], leave_live: { sick_ok_h: 4 } };
+  assert.strictEqual(t.leavePreBlock('病假', yr + '-11-20'), '', '剩 4 小時＝不擋（選 A：剩 0 才擋）');
+  t.st.init = { quota: [SQ(0)] };
+  t.st.info = { sick_used_up: false, requests: [] }; assert.strictEqual(t.leavePreBlock('病假', yr + '-11-20'), '', '開關 off');
+  t.st.info = { requests: [] }; assert.strictEqual(t.leavePreBlock('病假', yr + '-11-20'), '', '舊後端沒有 sick_used_up 欄');
+  t.st.info = { sick_used_up: true, requests: [] }; assert.strictEqual(t.leavePreBlock('病假', (+yr + 1) + '-01-05'), '', '明年');
+  t.st.init = { quota: [] }; assert.strictEqual(t.leavePreBlock('病假', yr + '-11-20'), '', '額度查不到');
+});
+ok('選假別就先擋：生理假第 4 次、本月已請、計時；已核准未核定的日子（leave_live）也算', () => {
+  t.st.info = { mens_rules: true, requests: [], leave_live: { sick_ok_h: 0, mens_ok_dates: [yr + '-11-03'] } };
+  t.st.init = { quota: [Q([yr + '-07-02'])] };
+  assert.strictEqual(t.leavePreBlock('生理假', yr + '-11-20'), '生理假每月一次，這個月已請過（11/3）');
+  t.st.init = { quota: [Q([yr + '-07-02', yr + '-08-05'])] };
+  assert.ok(t.leavePreBlock('生理假', yr + '-12-20').indexOf(PHRASE) >= 0, '7/2、8/5＋11/3（已核准）＝3 次，12 月是第 4 次');
+  t.st.init = { quota: [Q([])], ft: false };
+  assert.strictEqual(t.leavePreBlock('生理假', yr + '-12-20'), '計時人員不適用生理假，請改請病假或事假');
+  t.st.init = { quota: [] }; t.st.info = { mens_rules: true, requests: [{ kind: 'leave', leave_type: '生理假', date: yr + '-11-05', status: 'pending' }] };
+  assert.strictEqual(t.leavePreBlock('生理假', yr + '-11-20'), '生理假每月一次，這個月已請過（11/5）', '額度查不到（沒有主檔的店）也看本店的單');
+  t.st.info = { mens_rules: false, requests: [] }; assert.strictEqual(t.leavePreBlock('生理假', yr + '-11-20'), '', '後端新規則關掉＝不事前擋');
+  assert.strictEqual(t.leavePreBlock('事假', yr + '-11-20'), '');
 });
 console.log(n + ' 項全過');

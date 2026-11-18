@@ -442,6 +442,9 @@ function handleReqInfo_(body) {
               // 病假滿 3 天才要附證明（2026-11-06）：給申請頁算「選的那天是今年第幾天」；舊頁面不認得這兩欄＝照舊當病假一定要附
               sick_proof_days: REQ_SICK_PROOF_DAYS, sick_dates: reqSickDates_(all, who.me.emp_id, today) };
   reqSeg2Info_(out);   // 一次填兩段（2026-11-18）：這家店開了哪幾種、上限；舊頁面不認得這幾欄＝照舊一張一張送
+  // 生理假新規則、病假年度用完（2026-11-18）：開關狀態＋「已核准、那天還沒核定」的病假時數與生理假日子（申請頁選假別時先提示，口徑同送單檢查）
+  out.mens_rules = reqMensOn_(); out.sick_used_up = reqSickOn_();
+  if (!dayOnly) out.leave_live = reqLeaveLiveOk_(all, who, today);
   if (dayOnly) out.day_only = true;
   if (reqIsDate_(body.date)) {
     // 已送出的忘打卡申請算已經補上的卡（2026-11-11 B02），申請頁才看得到「還能補另一張／另一段」。
@@ -1072,6 +1075,31 @@ function reqSickOn_() {
   try { return String(reqProp_('REQ_SICK_USED_UP') || '').trim().toLowerCase() !== 'off'; } catch (e) { return true; }
 }
 function reqSickApplies_(r) { return !!r && String(r.kind) === 'leave' && String(r.leave_type) === REQ_SICK_TYPE_ && reqSickOn_(); }
+/** 申請頁事前提示用：今年（今天的年份）已核准、還沒算進薪資額度表的病假時數與生理假日子（審核中的申請頁自己從 requests 算）。
+ *  口徑同 reqSickUsedUpBlock_／reqMensBlock_：那天本店已記那個假別＝額度表算過了；那天核定過卻沒記（核定成別的假）＝不算。
+ *  沒有已核准的病假／生理假單就不讀請假登記與核定表。回 {sick_ok_h, mens_ok_dates:[]}。 */
+function reqLeaveLiveOk_(all, who, today) {
+  var out = { sick_ok_h: 0, mens_ok_dates: [] }, yr = String(today).slice(0, 4), empId = String(who.me.emp_id);
+  var oks = (all || []).filter(function (x) {
+    return String(x.emp_id) === empId && String(x.kind) === 'leave' && String(x.status) === 'approved' && String(x.date || '').slice(0, 4) === yr &&
+      (String(x.leave_type) === REQ_SICK_TYPE_ || String(x.leave_type) === REQ_MENS_TYPE_);
+  });
+  if (!oks.length) return out;
+  var rec = {}, amap = null;
+  rec[REQ_SICK_TYPE_] = reqMensLeaveDays_(who.ss, who.me.name, REQ_SICK_TYPE_);
+  rec[REQ_MENS_TYPE_] = reqMensLeaveDays_(who.ss, who.me.name, REQ_MENS_TYPE_);
+  try { amap = reqApprovedMap_(who.ss); } catch (e) { amap = null; }
+  oks.forEach(function (x) {
+    var t = String(x.leave_type), d = String(x.date).slice(0, 10);
+    if (d in rec[t]) return;                                       // 已記進請假登記＝額度表算過了
+    if (amap && amap[d] && amap[d][empId]) return;                 // 那天核定成別的假
+    if (t === REQ_SICK_TYPE_) out.sick_ok_h += Number(x.hours) || 0;
+    else if (out.mens_ok_dates.indexOf(d) < 0) out.mens_ok_dates.push(d);
+  });
+  out.sick_ok_h = Math.round(out.sick_ok_h * 100) / 100;
+  out.mens_ok_dates.sort();
+  return out;
+}
 function reqSickUsedUpBlock_(r, existing, empId, src, opt) {
   if (!reqSickApplies_(r)) return null;
   src = src || {}; opt = opt || {};

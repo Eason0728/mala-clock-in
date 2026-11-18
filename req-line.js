@@ -324,7 +324,7 @@
   function syncBtns(on) {
     Array.prototype.forEach.call($root.querySelectorAll('button.primary'), function (b) {
       if (!b._rqSubmit || st.busy) return;
-      b.disabled = on; b.textContent = on ? '更新清單中…' : '送出申請';
+      b.disabled = on || !!b._rqPreBlock; b.textContent = on ? '更新清單中…' : '送出申請';   // 選假別就先擋的（病假用完、生理假）同步完也維持不可按
     });
   }
   function endSync(my) {
@@ -752,6 +752,7 @@
      這裡只是送出前先提醒，後端（Requests.gs reqMensBlock_）才是正本：已核准單那天有沒有核定成別的假，這裡看不到，所以只算額度表的日期＋審核中的單。
      後端關掉新規則（REQ_MENS_RULES=off）時 req_info 的 seg2_no_types 會帶「生理假」→ 這裡也回到舊的「剩 0 小時就擋」。 */
   function mensRulesOn() {
+    if (st.info && typeof st.info.mens_rules === 'boolean') return st.info.mens_rules;   // 新後端直接給開關狀態
     var no = st.info && Array.isArray(st.info.seg2_no_types) ? st.info.seg2_no_types : null;
     return !(no && no.indexOf('生理假') >= 0);
   }
@@ -761,13 +762,14 @@
     if (st.init && st.init.ft === false) return '計時人員不適用生理假，請改請病假或事假';
     if (Number(hours) > 8.001) return '生理假一天最多 8 小時，這次 ' + r1(hours) + ' 小時超過了';
     var q = mensQuota(), d = String(date || '');
-    if (!q || !d) return '';
-    if (!Array.isArray(q.dates)) return q.remain_h != null && Number(q.remain_h) <= 0.001 ? '生理假今年已請 3 次，已超過年度三次上限，請改辦理病假' : '';
+    if (!d) return '';
+    if (q && !Array.isArray(q.dates)) return q.remain_h != null && Number(q.remain_h) <= 0.001 ? '生理假今年已請 3 次，已超過年度三次上限，請改辦理病假' : '';
     var days = {};
-    q.dates.forEach(function (k) { days[String(k)] = true; });
+    ((q && q.dates) || []).forEach(function (k) { days[String(k)] = true; });   // 額度查不到（沒有薪資主檔的店）：只看本店的單
     ((st.info && st.info.requests) || []).forEach(function (r) {
       if (r && r.kind === 'leave' && r.leave_type === '生理假' && r.status === 'pending') days[String(r.date).slice(0, 10)] = true;
     });
+    ((st.info && st.info.leave_live && st.info.leave_live.mens_ok_dates) || []).forEach(function (k) { days[String(k)] = true; });   // 已核准、那天還沒核定
     if (days[d]) return '';   // 同一天：不加次數（一天 8 小時由後端合計檢查）
     var yr = d.slice(0, 4), ym = d.slice(0, 7), keys = Object.keys(days).sort();
     var inYr = keys.filter(function (k) { return k.slice(0, 4) === yr; });
@@ -775,6 +777,27 @@
     if (inYr.length >= 3) return '生理假' + (yr === thisYr ? '今年' : ' ' + yr + ' 年') + '已請 ' + inYr.length + ' 次，已超過年度三次上限，請改辦理病假';
     var inMon = keys.filter(function (k) { return k.slice(0, 7) === ym; });
     if (inMon.length) return '生理假每月一次，這個月已請過（' + inMon.map(function (k) { return k.indexOf('#') > 0 ? (+k.slice(5, 7)) + ' 月' : mensMd(k); }).join('、') + '）';
+    return '';
+  }
+  /* 病假年度用完（2026-11-18 Eason 選 A）：今年病假額度剩 0（含審核中、已核准還沒核定的病假單）＝請改請事假。
+     後端開關（req_info.sick_used_up）是 true 才提示；額度查不到、不是今年＝不提示（後端也不擋）。 */
+  function sickUsedUp(date) {
+    if (!st.info || st.info.sick_used_up !== true) return '';
+    var q = ((st.init && st.init.quota) || []).filter(function (x) { return x.name === '病假'; })[0];
+    var d = String(date || ''), yr = taipeiToday(0).slice(0, 4);
+    if (!q || q.remain_h == null || q.remain_h === '' || !isFinite(Number(q.remain_h)) || d.slice(0, 4) !== yr) return '';
+    var live = Number((st.info.leave_live || {}).sick_ok_h) || 0;
+    ((st.info.requests) || []).forEach(function (r) {
+      if (r && r.kind === 'leave' && r.leave_type === '病假' && r.status === 'pending' && String(r.date).slice(0, 4) === yr) live += Number(r.hours) || 0;
+    });
+    if (Number(q.remain_h) - live > 0.001) return '';
+    var capD = q.cap_days != null && q.cap_days !== '' ? Number(q.cap_days) : 30;
+    return '今年病假額度已用完（' + capD + ' 天' + (live > 0.001 ? '，含審核中或已核准還沒核定的病假單' : '') + '），請改請事假';
+  }
+  /** 選假別時就先擋（送出鈕不可按）：病假用完；生理假的計時、第 4 次、每月一次（一天 8 小時要看時數，留到送出時） */
+  function leavePreBlock(type, date) {
+    if (type === '病假') return sickUsedUp(date);
+    if (type === '生理假' && mensRulesOn()) return mensLocked(0, date);
     return '';
   }
   function quotaText(name) {
@@ -799,7 +822,7 @@
     var lt = st.init.leave_types || { common: [], special: [] };
     var lvHint = h('div', {});      // 依那天、那段時間在哪家打卡選店（2026-11-15）
     var lvRange = function () { return lv.mode !== 'day' && lv.start && lv.end ? [lv.start, lv.end] : null; };
-    p.appendChild(field('日期', datePick(lv.date, function (v) { lv.date = v; if (lv.type === '病假' || lv.type === '事假') render(); else storeHint(lvHint, lv.date, lvRange()); }), [lvHint]));
+    p.appendChild(field('日期', datePick(lv.date, function (v) { lv.date = v; if (lv.type === '病假' || lv.type === '事假' || lv.type === '生理假') render(); else storeHint(lvHint, lv.date, lvRange()); }), [lvHint]));
     storeHint(lvHint, lv.date, lvRange());
     var typeBox = h('div', {});
     typeBox.appendChild(chips(lt.common, lv.type, function (v) { lv.type = v; render(); }));
@@ -820,6 +843,8 @@
     var lvSegs = function () { return lv.mode === 'day' ? null : segsOf(lv, 'leave', lv.type); };   // 兩段（只請一段模式、這種假別能加第二段才有）
     var lw = preWarns('leave', lv.type, lv.date, lv.mode === 'day' ? lv.hours : lvSegs() ? segHours(lvSegs()) : spanHours(lv.start, lv.end));
     if (lw.length) qx.push(warnBox(lw));
+    var pre = lv.type ? leavePreBlock(lv.type, lv.date) : '';   // 選到就先講、送出鈕不可按（2026-11-18）
+    if (pre) qx.push(h('div', { class: 'rq-proof-note rq-pre-block', text: '⛔ ' + pre }));
     p.appendChild(field('假別', typeBox, qx));
     var modeBox = h('div', {}, [chips(['整天', '只請一段'], lv.mode === 'day' ? '整天' : '只請一段', function (v) { lv.mode = v === '整天' ? 'day' : 'span'; render(); })]);
     if (lv.mode === 'day') {
@@ -844,7 +869,7 @@
                                   : sickN ? '今年第 ' + sickN + ' 天病假：累計滿 ' + st.info.sick_proof_days + ' 天才要附證明，這次可以不附'
                                   : '照片或 PDF，只有審核的主管看得到' })].concat(lvSegs() ? [h('div', { class: 'rq-muted rq-seg-proof', text: '這張證明兩段共用，不用附兩次。' })] : [])));
     var out = h('div', {});
-    p.appendChild(submitBtn(out, function () {
+    var lvBtn = submitBtn(out, function () {
       if (!lv.type) return Promise.reject(new Error('請選假別'));
       if (proofType(lv.type, lv.date) && !lv.file && !confirm(lv.type + '要附證明。\n\n沒附也可以先送出，但主管要等你在「我的申請」補上證明才能核准。\n\n確定先送出？'))
         return Promise.reject(new Error('還沒送出：請先選證明照片或 PDF'));
@@ -853,10 +878,16 @@
       if (two) { var ck = segCheck('leave', two, segMax('leave')); if (ck) return Promise.reject(segErr(ck)); body.segments = two; }   // 兩段：不帶 start／end／hours（api.md）
       else if (lv.mode === 'day') body.hours = lv.hours; else { body.start = lv.start; body.end = lv.end; }
       if (lv.type === '補休' && compBlocked()) return Promise.reject(new Error('補休只有正職可以請'));
-      var lock = capLocked(lv.type, lv.mode === 'day' ? Number(lv.hours) : two ? segHours(two) : spanHours(lv.start, lv.end), lv.date);
+      var preNow = leavePreBlock(lv.type, lv.date);
+      if (preNow) return Promise.reject(new Error(preNow));
+      var lkH = lv.mode === 'day' ? Number(lv.hours) : two ? segHours(two) : spanHours(lv.start, lv.end);
+      if (lv.mode !== 'day' && !two && (!lv.start || !lv.end || lv.start === lv.end || lkH > 12)) lkH = 0;   // 時段本身不對：交給後端回原本的字句（起訖一樣、超過 12 小時），生理假 8 小時先不判
+      var lock = capLocked(lv.type, lkH, lv.date);
       if (lock) return Promise.reject(new Error(lock));   // 不看餘額：可以先休後補；主檔還沒建的人照樣可以送
       return withAttach(lv.file).then(function (aid) { if (aid) body.attach_id = aid; return body; });
-    }, function () { lv = lvBlank(); }));
+    }, function () { lv = lvBlank(); });
+    if (pre) { lvBtn.disabled = true; lvBtn._rqPreBlock = true; }
+    p.appendChild(lvBtn);
     p.appendChild(out);
     p.appendChild(h('div', { class: 'rq-note', text: '送出後由你的主管審核（門市同仁是本店店長），結果在「我的申請」，下次打卡時也會告訴你。' }));
     if (lvSegs()) p.appendChild(h('div', { class: 'rq-note', text: '送出後會變成 2 張假單，主管可以一起核准。' }));

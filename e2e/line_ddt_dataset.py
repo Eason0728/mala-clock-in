@@ -457,6 +457,11 @@ def quota_text(q):
     r1 = lambda v: js_num(js_round(float(v or 0), 1))
     if q.get('cap_days') is None:
         return ''
+    if q.get('name') == '生理假':   # 2026-11-18：生理假用「次」
+        cap = int(q.get('cap_days') or 3)
+        used = int(q['used_n']) if q.get('used_n') is not None else int(js_round((float(q.get('cap_h') or 0) - float(q.get('remain_h') or 0)) / 8, 0))
+        left = max(0, cap - used)
+        return ('剩 %d 次' % left if left > 0 else '%d 次已用完' % cap) + '（每年 %d 次、每月一次，一天不管請幾小時都算一次，最多 8 小時）' % cap
     if q.get('basis') == 'event':
         return '每次上限 %s 小時' % r1(q['cap_h'])
     return ('已超出 %s 小時' % r1(-q['remain_h'])) if q['remain_h'] < 0 else '剩 %s 小時（上限 %s）' % (r1(q['remain_h']), r1(q['cap_h']))
@@ -665,9 +670,12 @@ class Gen:
             # 最少 8.75 小時：11/11 起上班進位、下班捨去到 15 分鐘，最多會少算 29 分；原本 8.25／8.5 小時在不是整刻鐘的時間跑，
             # 算出來剛好 8 小時或不到 → 「應提示加班」的資料檢查看時間失敗（2026-11-16 21:4x 種子 97189537、41523077）。選項維持 7 個，其他亂數不受影響
             h = r.choice([8.75, 9, 9.25, 9.5, 10, 10.75, 11.5]) + r.randint(0, 14) / 60
-            if r.random() < 0.4:   # 前一段 1～2 小時，中間休息 30 分
-                a = self.at(hours=h, minutes=r.randint(90, 150))
-                p['events'] += [self.ev(a, 'in'), self.ev(a + timedelta(minutes=r.randint(60, 110)), 'out')]
+            if r.random() < 0.4:   # 前一段 1～2 小時，中間休息至少 30 分
+                off = r.randint(90, 150)
+                a = self.at(hours=h, minutes=off)
+                # 2026-11-18：原本前一段長度（60～110 分）可能比「離這段上班」（90～150 分）還長，前一段的下班卡落在這段上班卡之後，
+                # 兩段交錯、配不成這一段 → 「應提示加班」的資料檢查失敗（種子 59087800、10844313、29672189）。夾到至少留 30 分休息；亂數抽法不變
+                p['events'] += [self.ev(a, 'in'), self.ev(a + timedelta(minutes=min(r.randint(60, 110), off - 30)), 'out')]
             p['events'].append(self.ev(self.at(hours=h), 'in'))
             return
         if s == 'rest_gap':   # 前一天（或跨夜）那段班的下班離現在不到 11 小時（還剩 20 分～10 小時），今天沒有別的段 → 上班鍵鎖到幾點
@@ -768,7 +776,8 @@ class Gen:
         self.comp['balance_h'] = js_round(self.comp['ot_h'] - self.comp['used_h'], 2)
         self.quota = [{'name': '特休假', 'cap_days': 7, 'cap_h': 56, 'remain_h': r.choice([-8, 0, 12.5, 40, 56]), 'used_h': 16, 'basis': 'tenure'},
                       {'name': '事假', 'cap_days': 14, 'cap_h': 112, 'remain_h': r.choice([3.5, 100]), 'used_h': 12, 'basis': 'calendar'},
-                      {'name': '生理假', 'cap_days': 1, 'cap_h': 8, 'remain_h': 8, 'used_h': 0, 'basis': 'event'}]
+                      # 2026-11-18 生理假新規則：正式後端的形狀（曆年 3 次、用「次」：used_n／dates）
+                      {'name': '生理假', 'cap_days': 3, 'cap_h': 24, 'remain_h': 24, 'used_h': 0, 'basis': 'calendar', 'used_n': 0, 'dates': [], 'unit': 'times'}]
         self.sched = self.build_sched(sched_people)
         # 公告文字要各不相同：兩則一樣的話畫面輪播了也看不出來（輪播只能靠文字變化驗）
         self.notices = [{'text': '測試公告：' + t} for t in r.sample(['花椒粉用完換辣椒粉', '今晚盤點', '<b>不是粗體</b>', '週五早班提早 30 分'], r.randint(1, 3))]

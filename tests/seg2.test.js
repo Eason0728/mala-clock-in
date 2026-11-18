@@ -307,7 +307,8 @@ const proxy = (m, o) => { m.advance(1000); m.run('READ_MEMO_ = null;'); return m
   const iO = io.sb.handleReqInfo_({ id_token: 'TOK_U1' }), iN = inw.sb.handleReqInfo_({ id_token: 'TOK_U1' });
   const added = Object.keys(iN).filter((k) => !(k in iO)).sort();
   const same = Object.keys(iO).every((k) => JSON.stringify(iO[k]) === JSON.stringify(iN[k]));
-  check('R06', 'req_info：舊欄位全部一樣，只多 seg2_kinds、seg2_max_h、seg2_no_types、ot_max_h、ot_segments_max', [same, added], [true, ['ot_max_h', 'ot_segments_max', 'seg2_kinds', 'seg2_max_h', 'seg2_no_types']]);
+  // 2026-11-18 生理假新規則／病假用完再多三欄：mens_rules、sick_used_up、leave_live（原預期只有 seg2 那五欄）
+  check('R06', 'req_info：舊欄位全部一樣，只多 seg2_kinds、seg2_max_h、seg2_no_types、ot_max_h、ot_segments_max（＋生理假／病假三欄）', [same, added], [true, ['leave_live', 'mens_rules', 'ot_max_h', 'ot_segments_max', 'seg2_kinds', 'seg2_max_h', 'seg2_no_types', 'sick_used_up']]);
 }
 
 /* ── 核定判斷（reqBindCheck_，程式沒改）：兩段送出 vs 分兩次送，結果逐欄相同 ── */

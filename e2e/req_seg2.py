@@ -28,10 +28,11 @@ OLD_JS = open(BASE_JS, encoding='utf-8').read() if BASE_JS else None
 class Fake:
     """假後端：記下每個請求，回 api.md 的形狀。"""
 
-    def __init__(self, stores=None, seg2=None, days=None, extra_info=None, requests=None, no_types=None):
+    def __init__(self, stores=None, seg2=None, days=None, extra_info=None, requests=None, no_types=None, quota=None):
         self.stores = stores or [{'code': 'hq', 'name': HQ['name'], 'emp_id': 'E1', 'emp_name': '林小美'}]
         self.seg2 = ['ot'] if seg2 is None else seg2
-        self.no_types = [] if no_types is None else no_types   # 新後端（生理假新規則開著）回 []；REQ_MENS_RULES=off 回 ['生理假']
+        self.no_types = [] if no_types is None else no_types
+        self.quota = quota or []   # 新後端（生理假新規則開著）回 []；REQ_MENS_RULES=off 回 ['生理假']
         self.days = days or {}          # 店代碼 → [(上班, 下班)]
         self.extra = extra_info or {}   # 店代碼 → 要蓋掉的 req_info 欄位
         self.requests = requests or []
@@ -103,7 +104,7 @@ class Fake:
             return J({'ok': True, 'lite': bool(b.get('lite')), 'stores': self.stores, 'punch_store': self.stores[0]['code'], 'comp': None,
                       'leave_types': {'common': ['特休假', '事假', '病假', '生理假', '家庭照顧假'], 'special': []}, 'quota': []})
         if a == 'line_hub_req_quota':
-            return J({'ok': True, 'quota': [], 'comp': {'allowed': False, 'known': True, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}})
+            return J({'ok': True, 'quota': self.quota, 'comp': {'allowed': False, 'known': True, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}})
         if a == 'req_info':
             return J(self.info(code, b))
         if a == 'req_submit':
@@ -372,6 +373,22 @@ def main():
             t = txt(p)
             ok('生理假兩段：成功訊息「會變成 2 張假單」、我的申請標「同一次送出」兩列', '會變成 2 張假單，等主管審核' in t and t.count('同一次送出・第') == 2, t)
             shot(p, '07b-生理假兩段送出成功')
+            p.context.close()
+            # ── 4c. 選假別就先擋（2026-11-18）：病假今年用完、生理假本月已請 → 送出鈕不可按 ──
+            sick0 = {'name': '病假', 'cap_days': 30, 'cap_h': 240, 'remain_h': 0, 'used_h': 240, 'basis': 'calendar'}
+            mens = {'name': '生理假', 'cap_days': 3, 'cap_h': 24, 'remain_h': 16, 'used_h': 8, 'basis': 'calendar', 'used_n': 1, 'dates': [TODAY[:8] + '01' if TODAY[8:] != '01' else TODAY[:8] + '02'], 'unit': 'times'}
+            f = Fake(seg2=['leave'], quota=[sick0, mens], extra_info={'hq': {'sick_used_up': True, 'mens_rules': True}})
+            p = open_req(br, f, 'leave')
+            p.wait_for_timeout(800)
+            p.click('#reqView .rq-chip:has-text("病假")')
+            ok('病假用完：選了就顯示「今年病假額度已用完（30 天），請改請事假」、送出鈕不可按',
+               '今年病假額度已用完（30 天），請改請事假' in txt(p) and p.locator('#reqView button.primary').first.is_disabled(), txt(p)[:300])
+            p.click('#reqView .rq-chip:has-text("生理假")')
+            ok('生理假本月已請：選了就顯示「生理假每月一次，這個月已請過」、送出鈕不可按；額度顯示「剩 2 次」',
+               '生理假每月一次，這個月已請過' in txt(p) and p.locator('#reqView button.primary').first.is_disabled() and '剩 2 次' in txt(p), txt(p)[:300])
+            p.click('#reqView .rq-chip:has-text("事假")')
+            ok('改選事假：沒有事前擋、送出鈕可以按', '請改請事假' not in txt(p) and not p.locator('#reqView button.primary').first.is_disabled())
+            ok('事前擋沒有送出任何 req_submit', len(f.submits()) == 0)
             p.context.close()
             # 請假兩段超過 8 小時
             f = Fake(seg2=['leave'])

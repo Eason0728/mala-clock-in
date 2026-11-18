@@ -85,6 +85,13 @@ function leaveCard(list){
     // 單位統一用時數（Eason 2026-08-27），與打卡頁「我的薪資」同步
     const usedTxt=used?`<b>${r1(q.used_h)}</b> H`:'<span style="color:var(--muted)">未請過</span>';
     let remTxt;
+    // 生理假用「次」（2026-11-18 Eason，同打卡頁、LINE 申請頁）；舊後端沒有 used_n 就用時數÷8
+    const times=q.used_n!=null?Number(q.used_n):(q.name==='生理假'?Math.round((Number(q.used_h)||0)/8):null);
+    if(times!=null&&cap!=null){
+      const u2=times?`<b>${times}</b> 次`:'<span style="color:var(--muted)">未請過</span>';
+      const r2=(cap-times>0)?`<b>${cap-times}</b> 次<span class="u">/ 上限 ${cap} 次</span>`:'<span class="out">已用完</span>';
+      return `<tr><td>${esc(q.name)}${bar}<div class="u" style="color:var(--muted);font-size:11px">一天算一次、每月一次</div></td><td class="r">${u2}</td><td class="r">${r2}</td></tr>`;
+    }
     if(cap==null) remTxt='<span style="color:var(--muted)">無上限</span>';
     else if(q.basis==='event') remTxt=`<span style="color:var(--muted)">每次上限<span class="u">${r1(q.cap_h)} H</span></span>`;
     else if(q.remain_h<0) remTxt=`<span class="out">超出 ${r1(-q.remain_h)} H</span>`;

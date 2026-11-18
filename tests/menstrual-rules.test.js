@@ -258,4 +258,16 @@ console.log('\n════ 十六、病假年度用完 → 請改請事假（Ea
   check('S09', '主管代開：剩 0 擋、剩 8 收', [px(world({ opts: { ok: true, quotas: { E02: { sick: { cap_days: 30, cap_h: 240, remain_h: 0 } } } } })), px(world({ opts: { ok: true, quotas: { E02: { sick: { cap_days: 30, cap_h: 240, remain_h: 8 } } } } }))], [MSG, 'ok']);
   check('S10', '事假、生理假不受這條影響', sk(world({ quota: SQ(0) }), '2026-11-20', { hours: 8, leave_type: '事假' }), 'ok');
 }
+console.log('\n════ 十七、req_info 帶開關狀態與「已核准、那天還沒核定」的病假／生理假（申請頁事前提示用） ════');
+{
+  const CORE = ['2026-11-10', 'E01', '測試一', '[]', 8, '全天請假', '值班主管', '2026-11-10T22:00:00+08:00', '', ''];
+  const m = world({ approved: [CORE], leave: [['2026-11-10', '測試一', '事假', 8], ['2026-11-11', '測試一', '病假', 8]] });
+  const mk = (type, date, h) => { m.advance(1000); m.run('READ_MEMO_ = null;'); const r = m.sb.handleReqSubmit_({ id_token: 'TOK_U1', kind: 'leave', leave_type: type, date: date, hours: h, reason: 'x', attach_id: 'ATTACH_abcdefghij' });
+    if (!r.ok) throw new Error(JSON.stringify(r)); const d = m.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: r.request.id, decision: 'approve' }); if (!d.ok) throw new Error(JSON.stringify(d)); };
+  mk('病假', '2026-11-12', 6); mk('病假', '2026-11-11', 8); mk('病假', '2026-11-10', 4); mk('生理假', '2026-11-13', 4);
+  const info = JSON.parse(JSON.stringify(m.sb.handleReqInfo_({ id_token: 'TOK_U1' })));
+  check('I01', '開關狀態＋已核准未核定：病假只算 11/12 的 6 小時（11/11 已記病假、11/10 核定成事假不算）、生理假 11/13', [info.mens_rules, info.sick_used_up, info.leave_live], [true, true, { sick_ok_h: 6, mens_ok_dates: ['2026-11-13'] }]);
+  const off = world({ props: { REQ_MENS_RULES: 'off', REQ_SICK_USED_UP: 'off' } }).sb.handleReqInfo_({ id_token: 'TOK_U1' });
+  check('I02', '兩個開關 off → false；沒有已核准的單 → 不讀表、回 0', [off.mens_rules, off.sick_used_up, JSON.parse(JSON.stringify(off.leave_live))], [false, false, { sick_ok_h: 0, mens_ok_dates: [] }]);
+}
 done();
