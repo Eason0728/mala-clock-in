@@ -1849,13 +1849,29 @@ function handleLineHubReqInit_(body) {
   if (!compOff) common.push('補休');
   var punchStore = null;
   if (mine.length > 1) { try { punchStore = lineHubLastPunchStore_(mine); } catch (e) { punchStore = null; } }   // 只綁一家就不用讀
-  return { ok: true, lite: !!body.lite, stores: stores, punch_store: punchStore, comp: comp,
+  var res = { ok: true, lite: !!body.lite, stores: stores, punch_store: punchStore, comp: comp,
            leave_types: { common: common,
                           special: names.filter(function (n) { return LINE_HUB_COMMON_LEAVES.indexOf(n) < 0; }) },
            quota: lineHubQuotaOut_(quota) };
+  if (!body.lite) res.ft = qc.ft === true || qc.ft === false ? qc.ft : null;   // 生理假：計時人員不適用（lite 時跟額度一起由 line_hub_req_quota 補）
+  return res;
 }
 function lineHubQuotaOut_(quota) {
-  return quota.map(function (q) { return { name: q.name, cap_days: q.cap_days, cap_h: q.cap_h, remain_h: q.remain_h, used_h: q.used_h, basis: q.basis }; });
+  return quota.map(function (q) {
+    var o = { name: q.name, cap_days: q.cap_days, cap_h: q.cap_h, remain_h: q.remain_h, used_h: q.used_h, basis: q.basis };
+    // 生理假用「次」（2026-11-18）：次數與已用日期（只有本人看得到自己的）；舊薪資沒有這兩欄就不帶
+    if (q.used_n != null) { o.used_n = q.used_n; o.dates = Array.isArray(q.dates) ? q.dates.slice() : []; o.unit = 'times'; }
+    return o;
+  });
+}
+/** 是不是正職（計時人員不適用生理假，2026-11-18）：薪資主檔 is_full_time；主檔查不到＝null（不知道，不擋）。 */
+function lineHubFtOf_(userId) {
+  try {
+    var pk = lineHubPayPick_(userId);
+    if (!pk) return null;
+    var m = payMineMaster_(pk.me, pk.store);
+    return m ? payIsFt(m) : null;
+  } catch (e) { return null; }
 }
 /** 假別額度＋本月補休帳（line_hub_req_init 與 line_hub_req_quota 共用）。comp 一定有值（算不出來＝known:false）。 */
 function lineHubReqQuota_(userId) {
@@ -1879,7 +1895,7 @@ function lineHubReqQuota_(userId) {
     var pk = lineHubPayPick_(userId);
     if (pk && typeof payAnnualFromOf_ === 'function') annualFrom = payAnnualFromOf_(pk.store, pk.me.emp_id) || '';
   } catch (e) { annualFrom = ''; }
-  return { quota: quota, comp: comp, annual_from: annualFrom };
+  return { quota: quota, comp: comp, annual_from: annualFrom, ft: lineHubFtOf_(userId) };
 }
 /** {action:'line_hub_req_quota', id_token} → {ok, quota, comp}（2026-11-06）：申請頁表單先出來，這支晚一點補上額度與補休帳。 */
 function handleLineHubReqQuota_(body) {
@@ -1888,7 +1904,7 @@ function handleLineHubReqQuota_(body) {
   if (lineHubThrottled_('rqq', userId, 20, 60)) return { ok: false, error: 'too_many' };
   if (!lineHubMine_(userId, null, false).length) return { ok: false, error: 'not_bound' };
   var qc = lineHubReqQuota_(userId);
-  return { ok: true, quota: lineHubQuotaOut_(qc.quota), comp: qc.comp, annual_from: qc.annual_from || '' };
+  return { ok: true, quota: lineHubQuotaOut_(qc.quota), comp: qc.comp, annual_from: qc.annual_from || '', ft: qc.ft === true || qc.ft === false ? qc.ft : null };
 }
 
 /** {action:'line_hub_pay_lock', id_token, store, ym} → {ok, store, ym, locked?}（Eason 2026-11-16 回「要補」）

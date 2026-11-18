@@ -11,7 +11,8 @@ const { make, T, check, show, done } = require('./helpers/gs-sandbox');
 const ME = { emp_id: 'E01', name: '測試一', key: 'K1', device_id: 'D1', active: 'TRUE', line_user_id: 'U1' };
 /** 一個店：quota＝光復算出來的額度表（null＝查不到）；sent＝已經在申請表裡的請假單 [日期, 假別, 時數, 狀態]；leave＝已核定的請假登記 [日期, 假別, 時數] */
 function world(now, quota, sent, leave) {
-  const m = make({ now: T(now), self: { roster: [ME], events: [], leave: (leave || []).map((l) => [l[0], '測試一', l[1], l[2]]) } });
+  // 2026-11-18 生理假新規則（一天算一次、每月一次）另有 menstrual-rules.test.js；這支改守「緊急開關 REQ_MENS_RULES=off＝2026-11-10 的做法」
+  const m = make({ now: T(now), props: { REQ_MENS_RULES: 'off' }, self: { roster: [ME], events: [], leave: (leave || []).map((l) => [l[0], '測試一', l[1], l[2]]) } });
   m.sb.lineHubReqQuota_ = () => ({ quota: quota || [] });
   (sent || []).forEach((s, i) => {
     const r = m.sb.handleReqSubmit_({ id_token: 'TOK_U1', kind: 'leave', leave_type: s[1], date: s[0], hours: s[2], reason: '測試' });

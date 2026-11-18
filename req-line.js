@@ -191,6 +191,7 @@
   function applyQuota() {
     if (!st.init || !st.quota) return;
     st.init.quota = st.quota.quota || []; st.init.comp = st.quota.comp || null; st.quotaReady = true;
+    if (st.quota.ft === true || st.quota.ft === false) st.init.ft = st.quota.ft;   // 生理假：計時人員不適用（舊後端沒這欄＝不知道）
   }
   function infoFor(code) {
     var url = E.storeApi(storeDef(code));
@@ -280,7 +281,8 @@
       var prev = st.store ? st.store.code : null;
       if (!st.src.init) st.src.init = 'google';
       st.init = { stores: r.stores, punch_store: r.punch_store, leave_types: r.leave_types, fresh: Date.now(),
-                  quota: r.lite ? [] : (r.quota || []), comp: r.lite ? null : (r.comp || null) };
+                  quota: r.lite ? [] : (r.quota || []), comp: r.lite ? null : (r.comp || null),
+                  ft: !r.lite && (r.ft === true || r.ft === false) ? r.ft : null };
       if (!r.lite) st.quotaReady = true;   // 舊後端：額度已經一起回了
       applyQuota();
       // 預設店別＝打卡的那家（2026-10-29）：從打卡畫面按進來用剛打卡的店，從選單開用後台查到最近一張卡的店；都沒有才用第一家。
@@ -735,8 +737,9 @@
    *  家庭照顧假超過剩餘額度時當場出錯（r1 is not defined）、畫面停在「送出中…」。 */
   function r1(v) { return Math.round((Number(v) || 0) * 10) / 10; }
   /* 生理假一年 3 次、家庭照顧假一年 7 天，用完就不能再申請（2026-11-10 Eason）；額度還沒讀到就不擋，主管核准與核定時會再擋一次 */
-  function capLocked(type, hours) {
+  function capLocked(type, hours, date) {
     if (type !== '生理假' && type !== '家庭照顧假') return '';
+    if (type === '生理假' && mensRulesOn()) return mensLocked(hours, date);
     var q = ((st.init && st.init.quota) || []).filter(function (x) { return x.name === type; })[0];
     if (!q || q.remain_h == null) return '';
     if (type === '生理假' && Number(q.remain_h) <= 0.001) return '生理假今年 3 次已經用完，不能再申請';
@@ -745,10 +748,45 @@
   }
   /* 2026-11-11：這裡原本有第二個 spanHours（2026-11-10 加的，不取整、時間沒填回 0），同名的函式後面的會蓋掉前面的，
      結果整頁的時數都變成沒取整的那一個——加班 17:00–17:20 顯示成 0.3333333333333333 小時。拿掉，一律用檔案前面那個（取到小數兩位）。 */
+  /* 生理假新規則（2026-11-18 Eason）：一天算一次、一年 3 次（第 4 次擋，請改辦理病假）、每月一次、一天最多 8 小時、計時人員不適用。
+     這裡只是送出前先提醒，後端（Requests.gs reqMensBlock_）才是正本：已核准單那天有沒有核定成別的假，這裡看不到，所以只算額度表的日期＋審核中的單。
+     後端關掉新規則（REQ_MENS_RULES=off）時 req_info 的 seg2_no_types 會帶「生理假」→ 這裡也回到舊的「剩 0 小時就擋」。 */
+  function mensRulesOn() {
+    var no = st.info && Array.isArray(st.info.seg2_no_types) ? st.info.seg2_no_types : null;
+    return !(no && no.indexOf('生理假') >= 0);
+  }
+  function mensQuota() { return ((st.init && st.init.quota) || []).filter(function (x) { return x.name === '生理假'; })[0] || null; }
+  function mensMd(d) { return (+String(d).slice(5, 7)) + '/' + (+String(d).slice(8, 10)); }
+  function mensLocked(hours, date) {
+    if (st.init && st.init.ft === false) return '計時人員不適用生理假，請改請病假或事假';
+    if (Number(hours) > 8.001) return '生理假一天最多 8 小時，這次 ' + r1(hours) + ' 小時超過了';
+    var q = mensQuota(), d = String(date || '');
+    if (!q || !d) return '';
+    if (!Array.isArray(q.dates)) return q.remain_h != null && Number(q.remain_h) <= 0.001 ? '生理假今年已請 3 次，已超過年度三次上限，請改辦理病假' : '';
+    var days = {};
+    q.dates.forEach(function (k) { days[String(k)] = true; });
+    ((st.info && st.info.requests) || []).forEach(function (r) {
+      if (r && r.kind === 'leave' && r.leave_type === '生理假' && r.status === 'pending') days[String(r.date).slice(0, 10)] = true;
+    });
+    if (days[d]) return '';   // 同一天：不加次數（一天 8 小時由後端合計檢查）
+    var yr = d.slice(0, 4), ym = d.slice(0, 7), keys = Object.keys(days).sort();
+    var inYr = keys.filter(function (k) { return k.slice(0, 4) === yr; });
+    var thisYr = taipeiToday(0).slice(0, 4);
+    if (inYr.length >= 3) return '生理假' + (yr === thisYr ? '今年' : ' ' + yr + ' 年') + '已請 ' + inYr.length + ' 次，已超過年度三次上限，請改辦理病假';
+    var inMon = keys.filter(function (k) { return k.slice(0, 7) === ym; });
+    if (inMon.length) return '生理假每月一次，這個月已請過（' + inMon.map(function (k) { return k.indexOf('#') > 0 ? (+k.slice(5, 7)) + ' 月' : mensMd(k); }).join('、') + '）';
+    return '';
+  }
   function quotaText(name) {
     if (name === '補休') return '';   // 補休的餘額另外一行一直顯示（見 renderLeave）
     var q = (st.init.quota || []).filter(function (x) { return x.name === name; })[0];
     if (!q || q.cap_days == null) return '';
+    if (name === '生理假') {   // 用「次」（2026-11-18）；舊後端沒有 used_n 就用時數換算（一次＝8 小時）
+      var cap = Number(q.cap_days) || 3;
+      var used = q.used_n != null ? Number(q.used_n) : Math.round((Number(q.cap_h) - Number(q.remain_h)) / 8);
+      var left = Math.max(0, cap - (Number(used) || 0));
+      return (left > 0 ? '剩 ' + left + ' 次' : cap + ' 次已用完') + '（每年 ' + cap + ' 次、每月一次，一天不管請幾小時都算一次，最多 8 小時）';
+    }
     if (q.basis === 'event') return '每次上限 ' + r1(q.cap_h) + ' 小時';
     return q.remain_h < 0 ? '已超出 ' + r1(-q.remain_h) + ' 小時' : '剩 ' + r1(q.remain_h) + ' 小時（上限 ' + r1(q.cap_h) + '）';
   }
@@ -815,7 +853,7 @@
       if (two) { var ck = segCheck('leave', two, segMax('leave')); if (ck) return Promise.reject(segErr(ck)); body.segments = two; }   // 兩段：不帶 start／end／hours（api.md）
       else if (lv.mode === 'day') body.hours = lv.hours; else { body.start = lv.start; body.end = lv.end; }
       if (lv.type === '補休' && compBlocked()) return Promise.reject(new Error('補休只有正職可以請'));
-      var lock = capLocked(lv.type, lv.mode === 'day' ? Number(lv.hours) : two ? segHours(two) : spanHours(lv.start, lv.end));
+      var lock = capLocked(lv.type, lv.mode === 'day' ? Number(lv.hours) : two ? segHours(two) : spanHours(lv.start, lv.end), lv.date);
       if (lock) return Promise.reject(new Error(lock));   // 不看餘額：可以先休後補；主檔還沒建的人照樣可以送
       return withAttach(lv.file).then(function (aid) { if (aid) body.attach_id = aid; return body; });
     }, function () { lv = lvBlank(); }));

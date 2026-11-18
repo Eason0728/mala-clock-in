@@ -732,6 +732,8 @@ function handleReqSubmit_(body) {
       var anMsg = reqAnnualBlockMsg_(r, reqAnnualFromLine_(who, body));
       if (anMsg) return { ok: false, error: 'annual_not_eligible', message: anMsg };
     }
+    var mensErr = reqMensSubmitCheck_(r, existing, who, body);   // 生理假新規則（2026-11-18）：計時、第 4 次、每月一次、一天 8 小時
+    if (mensErr) return mensErr;
     var capMsg = reqCapLocked_(r, existing, who, body, { today: todayTaipeiStr(), recorded: reqLeaveRecorded_(who.ss, who.me.name, r) });
     if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
@@ -751,13 +753,15 @@ function handleReqSubmit_(body) {
    任一段沒過一列都不寫，訊息開頭標「第一段：」「第二段：」（兩段共用的欄位錯了不標）。
    核定、薪資規則完全不動：寫進去的兩列跟同仁分兩次送一模一樣，只多 grp 欄。
    開關：指令碼屬性 REQ_SEG2_KINDS（逗號分隔：ot、leave、trip；沒設或空白＝全關＝跟以前一樣），req_info 回 seg2_kinds 給申請頁看。
-   不開放：忘打卡；生理假（送單端一張算一次、薪資端一天算一次，兩段會被算成兩次）；請假、出差的「整天／只填時數」；
+   不開放：忘打卡；請假、出差的「整天／只填時數」；（生理假 2026-11-18 起開放：送單端改成一天算一次、兩段合計 8 小時；
+   緊急開關 REQ_MENS_RULES=off 時照舊不開放）；
    店長代開的請假、出差（N3，代開本來就只填時數）。三段以上不做。 */
 var REQ_OT_MAX_H = 10;          // 同仁自己送的加班：單張上限，也是兩段合計上限（N1；原本單張 12）
 var REQ_OT_PROXY_MAX_H = 10;    // 店長代開的加班：單張與兩段合計上限（N1 更正，2026-11-18 Eason：「代開也是 10 小時」；原本 12）
 var REQ_SEG2_TOTAL_MAX_H_ = { leave: 8, trip: 8 };   // 請假、出差兩段合計上限（N2）；單段上限照舊（請假 12、出差 8）
 var REQ_SEG2_KINDS_OK_ = { ot: 1, leave: 1, trip: 1 };
-var REQ_SEG2_NO_TYPES_ = ['生理假'];
+var REQ_SEG2_NO_TYPES_ = ['生理假'];   // 生理假新規則關掉（REQ_MENS_RULES=off）時才用這份
+function reqSeg2NoTypes_() { return reqMensOn_() ? [] : REQ_SEG2_NO_TYPES_.slice(); }
 var REQ_SEG_LABEL_ = ['第一段', '第二段'];
 var REQ_EARLY_SEG_MIN_ = 6 * 60;   // 排先後：06:00 前開始的段當成跨過午夜的那一段（同「凌晨 06:00 前的下班卡歸前一天」）
 function reqHasOwn_(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
@@ -779,7 +783,7 @@ function reqSeg2Info_(out) {
   var kinds = reqSeg2Kinds_();
   out.seg2_kinds = kinds;
   out.seg2_max_h = { ot: REQ_OT_MAX_H, leave: REQ_SEG2_TOTAL_MAX_H_.leave, trip: REQ_SEG2_TOTAL_MAX_H_.trip };
-  out.seg2_no_types = REQ_SEG2_NO_TYPES_.slice();
+  out.seg2_no_types = reqSeg2NoTypes_();
   out.ot_max_h = REQ_OT_MAX_H;
   out.ot_segments_max = kinds.indexOf('ot') < 0 ? 1 : 2;
   return out;
@@ -810,7 +814,7 @@ function reqSegsOf_(body, proxy) {
   if (!reqHasOwn_(REQ_SEG2_KINDS_OK_, kind)) return { error: 'bad_segments', message: '只有加班、請假、出差可以一次填兩段' };
   if (proxy && kind !== 'ot') return { error: 'bad_segments', message: '代開請假、出差不分段，請照現在填時數' };
   if (reqSeg2Kinds_().indexOf(kind) < 0) return { error: 'seg2_off', message: '這家店還沒開放一次填兩段，請一段一段分開送' };
-  if (kind === 'leave' && REQ_SEG2_NO_TYPES_.indexOf(reqClean_(body.leave_type, 30)) >= 0) return { error: 'seg2_type', message: reqClean_(body.leave_type, 30) + '一天只算一次，不能分兩段，請填成一段' };
+  if (kind === 'leave' && reqSeg2NoTypes_().indexOf(reqClean_(body.leave_type, 30)) >= 0) return { error: 'seg2_type', message: reqClean_(body.leave_type, 30) + '一天只算一次，不能分兩段，請填成一段' };
   var what = REQ_KINDS_[kind], segs = [];
   for (var i = 0; i < 2; i++) {
     var s = reqHm_(list[i].start), e = reqHm_(list[i].end);
@@ -864,6 +868,8 @@ function reqSubmitSegs_(body, segP, who, existing) {
   var both = {};
   Object.keys(r0).forEach(function (k) { both[k] = r0[k]; });
   both.hours = segP.total;
+  var mensErr = reqMensSubmitCheck_(both, existing, who, body);   // 兩段同一天＝一次，時數用兩段合計
+  if (mensErr) return mensErr;
   var capMsg = reqCapLocked_(both, existing, who, body, { today: today, recorded: reqLeaveRecorded_(who.ss, who.me.name, r0) });
   if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
   var aid = REQ_ATTACH_RE_.test(String(body.attach_id || '')) ? String(body.attach_id) : '';   // 證明附一次，兩列寫同一個
@@ -948,19 +954,25 @@ function reqLeaveRecorded_(ss, name, r) {
   return out;
 }
 var REQ_HUB_API_DEFAULT_ = 'https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec';
+/** 同仁自己的額度表＋是不是正職（光復同專案直接算；別店打光復 line_hub_req_quota，帶同一個 LINE 身分）。
+ *  回 {quota:[]|null, ft:true|false|null}；查不到＝null（不擋）。舊光復沒有 ft 欄＝null。 */
+function reqQuotaFetch_(who, body) {
+  try {
+    if (typeof lineHubReqQuota_ === 'function') {
+      var q = lineHubReqQuota_(who.userId) || {};
+      return { quota: q.quota || null, ft: q.ft === true || q.ft === false ? q.ft : null };
+    }
+    var resp = UrlFetchApp.fetch(CONFIG.PAYROLL_API || REQ_HUB_API_DEFAULT_, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true,
+      payload: JSON.stringify({ action: 'line_hub_req_quota', id_token: body.id_token }) });
+    var j = JSON.parse(resp.getContentText());
+    return j && j.ok ? { quota: j.quota, ft: j.ft === true || j.ft === false ? j.ft : null } : { quota: null, ft: null };
+  } catch (e) { return { quota: null, ft: null }; }
+}
 function reqCapLocked_(r, existing, who, body, opt) {
   if (r.kind !== 'leave' || REQ_CAP_LOCK_TYPES_.indexOf(String(r.leave_type)) === -1) return '';
+  if (reqMensApplies_(r)) return '';   // 生理假新規則開著：改走 reqMensBlock_（一天算一次）
   opt = opt || {};
-  var quota = null;
-  try {
-    if (typeof lineHubReqQuota_ === 'function') quota = (lineHubReqQuota_(who.userId) || {}).quota || null;
-    else {
-      var resp = UrlFetchApp.fetch(CONFIG.PAYROLL_API || REQ_HUB_API_DEFAULT_, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true,
-        payload: JSON.stringify({ action: 'line_hub_req_quota', id_token: body.id_token }) });
-      var j = JSON.parse(resp.getContentText());
-      quota = j && j.ok ? j.quota : null;
-    }
-  } catch (e) { quota = null; }
+  var quota = reqQuotaFetch_(who, body).quota;
   var q = (quota || []).filter(function (x) { return String(x.name) === String(r.leave_type); })[0];
   var yr = String(r.date).slice(0, 4), thisYr = String(opt.today || r.date).slice(0, 4), recorded = opt.recorded || {};
   var known = !!q && q.remain_h != null;
@@ -982,6 +994,120 @@ function reqCapLocked_(r, existing, who, body, opt) {
   var liveH = live.reduce(function (t, x) { return t + (Number(x.hours) || 0); }, 0);
   var room = base - liveH;
   return Number(r.hours) > room + 0.001 ? '家庭照顧假' + yrText + ' 7 天只剩 ' + Math.max(0, Math.round(room * 10) / 10) + ' 小時' + incl + '，這次超過了，不能送出' : '';
+}
+
+/* ── 生理假新規則（2026-11-18 Eason；設計 scratchpad menstrual/design.md＋decisions.md）──
+   ① 一天算一次：同一個人、同一天，不管幾張單、幾段、幾小時都只算 1 次（時數空白的登記也算 1 次）。
+   ② 一天合計最多 8 小時：那天登記的生理假時數（和已核准的單取大的）＋審核中的單＋這張，超過就擋。
+   ③ 一年（曆年，依請假日期）3 次：第 4 次直接擋，請改辦理病假。
+   ④ 每月 1 次：同一個月已經有一天生理假（不同日期），再送就擋。
+   ⑤ 計時人員不適用：薪資主檔是計時（is_full_time 不是 true）就擋；主檔查不到（沒有薪資主檔的店、還沒建檔）＝不知道，不擋。
+   已用的日子＝(A) 薪資額度表的 dates（跨月、手動工時月份是「yyyy-MM#k」代號）∪ (B) 本店請假登記的生理假日子
+            ∪ (C) 還在跑的單：審核中；已核准而那天還沒核定。已核准、那天核定過卻沒有記生理假（核定成別的假）＝不算。
+   不算：退回、本人取消、作廢（作廢會把那天的核定打回，登記也跟著拿掉）。
+   緊急開關：指令碼屬性 REQ_MENS_RULES 設 off＝整條退回 2026-11-10 的做法（reqCapLocked_ 一張算一次、生理假不開放兩段、核定不擋 8 小時）。 */
+var REQ_MENS_TYPE_ = '生理假';
+var REQ_MENS_YEAR_N_ = 3;
+var REQ_MENS_DAY_H_ = 8;
+function reqMensOn_() {
+  try { return String(reqProp_('REQ_MENS_RULES') || '').trim().toLowerCase() !== 'off'; } catch (e) { return true; }
+}
+function reqMensApplies_(r) { return !!r && String(r.kind) === 'leave' && String(r.leave_type) === REQ_MENS_TYPE_ && reqMensOn_(); }
+function reqMd_(d) { return parseInt(String(d).slice(5, 7), 10) + '/' + parseInt(String(d).slice(8, 10), 10); }
+/** 本店請假登記裡這個人的生理假 → { 'yyyy-MM-dd': 時數（空白＝0） }；讀不到回 {}。 */
+function reqMensLeaveDays_(ss, name) {
+  var out = {};
+  try {
+    var sh = ss.getSheetByName('leave');
+    if (!sh) return out;
+    var nm = String(name || '').trim();
+    readSheetAsObjects(sh).rows.forEach(function (l) {
+      if (String(l['姓名'] || '').trim() !== nm || String(l['假別'] || '').trim() !== REQ_MENS_TYPE_) return;
+      var d = typeof normCellDate === 'function' ? normCellDate(l['日期']) : String(l['日期']).slice(0, 10);
+      out[d] = (out[d] || 0) + (Number(l['時數']) || 0);
+    });
+  } catch (e) { return {}; }
+  return out;
+}
+/** 同仁送單（含兩段）：有錯回 {ok:false, error, message}，沒事回 null */
+function reqMensSubmitCheck_(r, existing, who, body) {
+  if (!reqMensApplies_(r)) return null;
+  var src = reqQuotaFetch_(who, body);
+  var v = reqMensBlock_(r, existing, String(who.me.emp_id), src,
+    { today: todayTaipeiStr(), recorded: reqMensLeaveDays_(who.ss, who.me.name), approvedMap: reqApprovedMap_(who.ss) });
+  return v ? { ok: false, error: v.error, message: v.message } : null;
+}
+/** 主管代開用：用工號查額度與是不是正職。光復（同專案）直接讀薪資；別店用主管金鑰打 payroll_leave_options。查不到＝{quota:null, ft:null}。 */
+function reqQuotaForEmp_(me, mgrKey) {
+  try {
+    if (typeof payMyLeaveQuota === 'function' && typeof payRead === 'function') {
+      return { quota: payMyLeaveQuota(String(me.emp_id), String(me.name), todayTaipeiStr().slice(0, 7), CONFIG.PAYROLL_STORE || ''), ft: reqCompAllowed_(me) };
+    }
+    var j = reqPayPost_({ action: 'payroll_leave_options', store: CONFIG.PAYROLL_STORE || '', mgr_key: String(mgrKey || '') });
+    var q = j && j.ok && j.quotas ? j.quotas[String(me.emp_id)] : null;
+    var m = q && q.menstrual;
+    if (!m) return { quota: null, ft: null };
+    return { quota: [{ name: REQ_MENS_TYPE_, cap_days: m.cap_days, cap_h: m.cap_h, remain_h: m.remain_h, used_h: m.used_h, used_n: m.used_n, dates: m.dates }],
+             ft: m.ft === true || m.ft === false ? m.ft : null };
+  } catch (e) { return { quota: null, ft: null }; }
+}
+/** 判斷一張生理假（r：date、hours）。src：{quota, ft}；opt：{today, recorded:{日期:時數}, approvedMap}。
+ *  回 null（可以送）或 {error, message}。純函式（不讀表），送單、兩段、代開共用。 */
+function reqMensBlock_(r, existing, empId, src, opt) {
+  if (!reqMensApplies_(r)) return null;
+  src = src || {}; opt = opt || {};
+  var d = String(r.date || '').slice(0, 10), yr = d.slice(0, 4), ym = d.slice(0, 7);
+  var thisYr = String(opt.today || d).slice(0, 4), yrText = yr === thisYr ? '今年' : ' ' + yr + ' 年';
+  if (src.ft === false) return { error: 'menstrual_pt', message: '計時人員不適用生理假，請改請病假或事假' };
+  var recorded = opt.recorded || {}, amap = opt.approvedMap || null;
+  var days = {};   // 日期（或 yyyy-MM#k）→ 說明（'' 已登記／'審核中'／'已核准'）
+  var add = function (k, tag) { if (!(k in days) || days[k] === '審核中') days[k] = tag; };
+  // (A) 薪資額度表
+  var q = (src.quota || []).filter(function (x) { return String(x.name) === REQ_MENS_TYPE_; })[0];
+  if (q && Array.isArray(q.dates)) q.dates.forEach(function (k) { add(String(k), ''); });
+  // (B) 本店請假登記
+  Object.keys(recorded).forEach(function (k) { add(k, ''); });
+  // (C) 還在跑的單
+  var dayLiveH = 0, dayOkH = 0;
+  (existing || []).forEach(function (x) {
+    if (String(x.emp_id) !== String(empId) || String(x.kind) !== 'leave' || String(x.leave_type) !== REQ_MENS_TYPE_) return;
+    var xd = String(x.date || '').slice(0, 10), st = String(x.status);
+    if (st === 'pending') { add(xd, '審核中'); if (xd === d) dayLiveH += Number(x.hours) || 0; return; }
+    if (st !== 'approved') return;
+    var cored = !!(amap && amap[xd] && amap[xd][String(empId)]);
+    if (cored && !(xd in recorded)) return;   // 那天核定成別的假：不佔次數
+    add(xd, (xd in recorded) ? '' : '已核准');
+    if (xd === d) dayOkH += Number(x.hours) || 0;
+  });
+  // 舊薪資（還沒有 dates）：額度表只有剩餘時數，已用次數裡扣掉本店已登記的，剩下的當成「日期不明」
+  if (q && !Array.isArray(q.dates) && yr === thisYr && q.cap_h != null && q.remain_h != null) {
+    var n0 = Math.round((Number(q.cap_h) - Number(q.remain_h)) / REQ_MENS_DAY_H_);
+    var nRec = Object.keys(recorded).filter(function (k) { return k.slice(0, 4) === thisYr; }).length;
+    for (var i = 1; i <= n0 - nRec; i++) add('?#' + i, '');
+  }
+  var label = function (k) {
+    if (k.charAt(0) === '?') return '';
+    var t = k.indexOf('#') > 0 ? parseInt(k.slice(5, 7), 10) + ' 月' : reqMd_(k);
+    return t + (days[k] ? ' ' + days[k] : '');
+  };
+  if (!(d in days)) {
+    var inYr = Object.keys(days).filter(function (k) { return k.slice(0, 4) === yr || (k.charAt(0) === '?' && yr === thisYr); }).sort();
+    if (inYr.length >= REQ_MENS_YEAR_N_) {
+      var shown = inYr.map(label).filter(function (t) { return t; });
+      return { error: 'quota_exhausted', message: '生理假' + yrText + '已請 ' + inYr.length + ' 次' + (shown.length ? '（' + shown.join('、') + '）' : '') + '，這次是第 ' + (inYr.length + 1) + ' 次，已超過年度三次上限，請改辦理病假' };
+    }
+    var inMon = Object.keys(days).filter(function (k) { return k.slice(0, 7) === ym; }).sort();
+    if (inMon.length) return { error: 'menstrual_month', message: '生理假每月一次，這個月已請過（' + inMon.map(label).join('、') + '）' };
+  }
+  var hrs = Number(r.hours) || 0;
+  var before = Math.max(recorded[d] || 0, dayOkH) + dayLiveH;
+  if (before + hrs > REQ_MENS_DAY_H_ + 0.001) {
+    var room = Math.max(0, Math.round((REQ_MENS_DAY_H_ - before) * 100) / 100);
+    return { error: 'menstrual_over_8', message: before > 0.001
+      ? '生理假一天最多 ' + REQ_MENS_DAY_H_ + ' 小時，' + reqMd_(d) + ' 已請 ' + (Math.round(before * 100) / 100) + ' 小時，' + (room > 0 ? '這次最多 ' + room + ' 小時' : '不能再請')
+      : '生理假一天最多 ' + REQ_MENS_DAY_H_ + ' 小時，這次 ' + hrs + ' 小時超過了' };
+  }
+  return null;
 }
 
 /** 能不能請補休（正職才行）：和薪資同專案（光復）才查得到 → true／false；查不到／出錯回 null＝不擋（交給申請頁與主管）。 */
@@ -1863,6 +1989,12 @@ function handleMgrReqProxy_(body) {
     if (reqIsAnnual_(r)) {   // 1113 紅燈 d3：代開也擋未滿六個月的特休
       var anMsgP = reqAnnualBlockMsg_(r, reqAnnualFromEmp_(me.emp_id, body.mgr_key));
       if (anMsgP) return { ok: false, error: 'annual_not_eligible', message: anMsgP };
+    }
+    // 生理假新規則（2026-11-18）：代開也檢查（計時、第 4 次、每月一次、一天 8 小時）
+    if (reqMensApplies_(r)) {
+      var mensP = reqMensBlock_(r, existing, String(me.emp_id), reqQuotaForEmp_(me, body.mgr_key),
+        { today: today, recorded: reqMensLeaveDays_(ss, me.name), approvedMap: reqApprovedMap_(ss) });
+      if (mensP) return { ok: false, error: mensP.error, message: mensP.message };
     }
     r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
     r.created_at = nowTaipeiIso(); r.emp_id = String(me.emp_id); r.name = String(me.name);

@@ -2070,6 +2070,7 @@ function payLeaveUsedBefore(ym, store, ltypes, cfg, master) {
       });
     });
     // ② leave 分頁（歷任門市）
+    const mensSeen = {};   // 生理假一天算一次（PAY_MENSTRUAL_DAY_FROM 起）：同一天幾列（含兩家店都記）只算 1，時數空白也算 1
     (empStores[emp] || [stA]).forEach(function (st2) {
       leavesOf(st2).forEach(function (l) {
         if (String(l['姓名'] || '').trim() !== String(e.name || '').trim()) return;
@@ -2078,6 +2079,11 @@ function payLeaveUsedBefore(ym, store, ltypes, cfg, master) {
         if (!payLeaveDateMine_(e, d, dupNames)) return;
         const code = payLeaveCode(String(l['假別'] || ''), ltypes);
         if (!code) return;
+        if (code === 'menstrual' && payMensDayOn_(ym)) {
+          if (!mensSeen[d]) acc[code] = (acc[code] || 0) + 1;
+          mensSeen[d] = true;
+          return;
+        }
         acc[code] = (acc[code] || 0) + payLeaveQuotaDays_(code, Number(l['時數']) || 0, dayH);
       });
     });
@@ -2359,6 +2365,11 @@ function payLeaveEventMap(store) {
 /** 一天等於幾小時（額度是「日」、系統記「時」，換算基準）。*/
 /** 生理假 3 次內全薪的起始月份（出勤規範 3-7）。 */
 var PAY_MENSTRUAL_FULL_FROM = '2026-11';
+/** 生理假「一天算一次」的起算月份（Eason 2026-11-18：一天內不管請幾個小時、幾列都算一次；時數空白的列也算一次）。
+ *  計算月份（或額度表的月份）早於它：照舊每列 ceil(時數/8)、空白 0 次。退回＝改成 '9999-12'。
+ *  只動 leave 分頁（有日期）的列；手動工時是整月時數、沒有日期，維持 ceil(月合計/8)。 */
+var PAY_MENSTRUAL_DAY_FROM = '2026-11';
+function payMensDayOn_(ym) { return String(ym) >= PAY_MENSTRUAL_DAY_FROM; }
 /** 時數換成額度用掉的「日」：生理假看次數不看時數，請 4H 也算一次（Eason 2026-10-23）。 */
 function payLeaveQuotaDays_(code, h, dayH) {
   const days = payNum(h) / dayH;
@@ -2378,13 +2389,25 @@ function payLeaveUsage(empId, ym, types, cfg, storesMap, leavesByStore, spans) {
   const year = String(ym || '').slice(0, 4);
   const used = {};        // code -> 已用「日」
   const perMonth = {};    // code -> { 'yyyy-MM': 日 }
+  // 生理假一天算一次（PAY_MENSTRUAL_DAY_FROM 起）：同一天幾列都只算 1；手動工時（manual，沒有日期）照舊 ceil(月合計/8)，
+  // 用「yyyy-MM#k」當代號放進 dates，讓送單端知道那個月已經用過。
+  const mensDay = payMensDayOn_(ym), mensSeen = {}, mensDates = [];
 
   (leavesByStore || []).forEach(function (l) {
     if (String(l.emp_id) !== String(empId)) return;
     const d = String(l.date || '');
     const code = l.code;
     if (!code) return;
-    const days = payLeaveQuotaDays_(code, l.hours, dayH);
+    let days = payLeaveQuotaDays_(code, l.hours, dayH);
+    if (code === 'menstrual' && mensDay) {
+      if (l.manual) {
+        for (let k = 1; k <= days; k++) if (d.slice(0, 4) === year) mensDates.push(d.slice(0, 7) + '#' + k);
+      } else {
+        days = mensSeen[d] ? 0 : 1;
+        if (days && d.slice(0, 4) === year) mensDates.push(d);
+        mensSeen[d] = true;
+      }
+    }
     if (d.slice(0, 4) === year) used[code] = (used[code] || 0) + days;
     const m = d.slice(0, 7);
     if (!perMonth[code]) perMonth[code] = {};
@@ -2426,6 +2449,11 @@ function payLeaveUsage(empId, ym, types, cfg, storesMap, leavesByStore, spans) {
       per_month: perMonth[t.code] || {},
       month_cap: t.cap_per_month,
     };
+    // 生理假多帶次數與已用日期（2026-11-18；送單端用來判斷同一天、每月一次、第幾次）
+    if (t.code === 'menstrual' && mensDay) {
+      out[t.code].used_n = u;
+      out[t.code].dates = mensDates.slice().sort();
+    }
   });
 
   // 育嬰留停三條線
@@ -5468,7 +5496,7 @@ function payLeaveFlatRows(store, types, nameToEmp, pickEmp) {
       const h = payNum(r[f.field]);
       if (!h) return;
       // 手動工時只有「整月時數」沒有日期，掛在該月 1 號——曆年與每月上限的判斷都只看年月
-      out.push({ emp_id: emp, date: m + '-01', hours: h, code: f.code });
+      out.push({ emp_id: emp, date: m + '-01', hours: h, code: f.code, manual: true });   // manual：整月時數（生理假一天算一次只看有日期的列）
     });
   });
   let leaveRows = [];
@@ -5520,6 +5548,8 @@ function payMyLeaveQuota(empId, empName, ym, store) {
                remain_days: v.remain_days == null ? null : payR2(v.remain_days),
                remain_h: v.remain_h,
                blocked: !!v.blocked });
+    // 生理假用「次」（2026-11-18）：次數＋已用日期（手動工時月份是「yyyy-MM#k」代號），送單端判斷同一天／每月一次／第幾次
+    if (t.code === 'menstrual' && v.used_n != null) { out[out.length - 1].used_n = payR2(v.used_n); out[out.length - 1].dates = (v.dates || []).slice(); }
   });
   // 請過的排前面，同仁一眼看到自己動用了哪些
   out.sort(function (a, b) { return (b.used_days || 0) - (a.used_days || 0); });
@@ -5758,6 +5788,8 @@ function handlePayrollLeaveOptions(body) {
   const compCode = (types.filter(payIsCompType)[0] || {}).code || PAY_COMP_CODE;   // 表上自訂的補休列 code 可能不是 comp
   master.forEach(function (e) {
     quotas[String(e.emp_id)] = payLeaveUsage(String(e.emp_id), ym, types, cfg, null, flat, spans);
+    // 計時人員不適用生理假（Eason 2026-11-18）：主管代開時各店後端拿這欄判斷（正本＝薪資主檔 is_full_time）
+    if (quotas[String(e.emp_id)].menstrual) quotas[String(e.emp_id)].menstrual.ft = payIsFt(e);
     // 補休帳（2026-11-01 改每月加減結算）：值班核定頁的下拉標「本月剩 N 小時」；只有計時反灰，餘額不夠也照常核定（可以先休後補）
     if (compBook) {
       try {

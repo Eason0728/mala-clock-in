@@ -63,7 +63,10 @@ const blocked = (m, body) => { const before = nRows(m); const r = submit(m, body
 {
   const m = world({ props: {} });
   const info = m.sb.handleReqInfo_({ id_token: 'TOK_U1' });
-  check('S01', '開關沒設：req_info.seg2_kinds 空、ot_segments_max 1、上限欄位照帶', [info.seg2_kinds, info.ot_segments_max, info.ot_max_h, info.seg2_max_h, info.seg2_no_types], [[], 1, 10, { ot: 10, leave: 8, trip: 8 }, ['生理假']]);
+  check('S01', '開關沒設：req_info.seg2_kinds 空、ot_segments_max 1、上限欄位照帶', [info.seg2_kinds, info.ot_segments_max, info.ot_max_h, info.seg2_max_h, info.seg2_no_types], [[], 1, 10, { ot: 10, leave: 8, trip: 8 }, []]);   // 2026-11-18 生理假新規則：生理假開放兩段（原預期 ['生理假']）
+  m.props.REQ_MENS_RULES = 'off';
+  check('S01-off', '生理假新規則緊急開關 off：seg2_no_types 回到 [生理假]', m.sb.handleReqInfo_({ id_token: 'TOK_U1' }).seg2_no_types, ['生理假']);
+  delete m.props.REQ_MENS_RULES;
   check('S02', '開關沒設：送加班兩段 → seg2_off，一列都不寫', blocked(m, otS(['11:00', '14:00'], ['17:00', '21:00'])), ['seg2_off｜這家店還沒開放一次填兩段，請一段一段分開送', 0]);
   check('S03', '開關沒設：送一段照舊收（跟沒開功能一樣）', res(submit(m, { kind: 'ot', start: '11:00', end: '14:00', reason: '盤點' })), 'ok');
   m.props.REQ_SEG2_KINDS = 'ot';
@@ -172,7 +175,9 @@ check('X08', 'segments 不是陣列、或裡面不是物件 → bad_segments', [
   blocked(m, otS(['11:00', '14:00'], ['13:00', '15:00']));
   blocked(m, otS(['08:00', '14:00'], ['15:00', '20:00']));
   blocked(m, otS(['11:00', '14:00'], ['17:00', '21:00'], { reason: '' }));
+  m.props.REQ_MENS_RULES = 'off';   // 2026-11-18：生理假開放兩段了，這裡改用緊急開關 off 驗「被擋＝0 次寫入」
   blocked(m, lvS('生理假', ['09:00', '10:00'], ['15:00', '16:00']));
+  delete m.props.REQ_MENS_RULES;
   check('W01', '各種被擋（重疊、超過上限、沒原因、生理假）：寫入動作 0 次', log, []);
   submit(m, otS(['11:00', '14:00'], ['17:00', '21:00']));
   check('W02', '兩段成功：只有一次 setValues（2 列），沒有 appendRow', log, ['setValues:2']);
@@ -207,7 +212,11 @@ check('L2-b', '請假 4＋4 剛好 8 → 收', res(submit(world(), lvS('事假',
   const two = res(submit(s, { kind: 'leave', leave_type: '家庭照顧假', start: '15:00', end: '17:00', reason: 'x' })).split('｜')[0];
   check('L3-c', '對照：分兩次送 2＋2 → 第一張收、第二張因額度被擋（兩段送出是整批不寫，判斷一樣）', [one, two], ['ok', 'quota_exhausted']);
 }
-check('L4', '生理假兩段 → 擋（一天只算一次），0 列', blocked(world(), lvS('生理假', ['09:00', '10:00'], ['15:00', '16:00'])), ['seg2_type｜生理假一天只算一次，不能分兩段，請填成一段', 0]);
+check('L4', '生理假新規則開關 off：生理假兩段 → 擋（一天只算一次），0 列', blocked(world({ props: Object.assign({ REQ_MENS_RULES: 'off' }, ALL) }), lvS('生理假', ['09:00', '10:00'], ['15:00', '16:00'])), ['seg2_type｜生理假一天只算一次，不能分兩段，請填成一段', 0]);
+{ // 2026-11-18 生理假新規則：開放兩段（同一天算一次，兩段合計 8 小時）
+  const m = world(), r = submit(m, lvS('生理假', ['09:00', '10:00'], ['15:00', '16:00']));
+  check('L4-new', '生理假兩段 → 收，2 列', [res(r), nRows(m)], ['ok', 2]);
+}
 {
   const m = world();
   submit(m, { kind: 'leave', leave_type: '特休假', hours: 8, reason: 'x' });   // 整天（只填時數）審核中
