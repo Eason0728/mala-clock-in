@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """LINE 申請頁「一次填兩段」端對端（2026-11-18）：加班、請假、出差各一組兩段成功、前端擋、開關沒開時畫面與送出內容跟以前一樣、
-生理假沒有「加第二段」、事假不再出現「本月第 N 次」、加班防呆提示、兩段在不同店要分開送、我的申請標記與取消這一段、證明共用一次上傳。
+生理假（2026-11-18 起新後端開放兩段；後端開關 off 時沒有「加第二段」）、事假不再出現「本月第 N 次」、加班防呆提示、兩段在不同店要分開送、我的申請標記與取消這一段、證明共用一次上傳。
 
 用法：/usr/bin/python3 e2e/req_seg2.py            （手機寬 390px；截圖放 E2E_SHOTS 指的資料夾，沒設就不截）
 後端用 page.route 在瀏覽器外假裝（api.md 的回應形狀），不碰 mock 資料；mock server 只拿來送 clock-line.html／req-line.js。
@@ -28,9 +28,11 @@ OLD_JS = open(BASE_JS, encoding='utf-8').read() if BASE_JS else None
 class Fake:
     """假後端：記下每個請求，回 api.md 的形狀。"""
 
-    def __init__(self, stores=None, seg2=None, days=None, extra_info=None, requests=None):
+    def __init__(self, stores=None, seg2=None, days=None, extra_info=None, requests=None, no_types=None, quota=None):
         self.stores = stores or [{'code': 'hq', 'name': HQ['name'], 'emp_id': 'E1', 'emp_name': '林小美'}]
         self.seg2 = ['ot'] if seg2 is None else seg2
+        self.no_types = [] if no_types is None else no_types
+        self.quota = quota or []   # 新後端（生理假新規則開著）回 []；REQ_MENS_RULES=off 回 ['生理假']
         self.days = days or {}          # 店代碼 → [(上班, 下班)]
         self.extra = extra_info or {}   # 店代碼 → 要蓋掉的 req_info 欄位
         self.requests = requests or []
@@ -43,7 +45,7 @@ class Fake:
              'leave_types': ['特休假', '事假', '病假', '生理假', '家庭照顧假'], 'proof_types': ['病假', '婚假', '喪假', '產假'],
              'sick_proof_days': 3, 'sick_dates': []}
         if self.seg2 is not False:
-            i.update({'seg2_kinds': self.seg2, 'seg2_max_h': {'ot': 10, 'leave': 8, 'trip': 8}, 'seg2_no_types': ['生理假'],
+            i.update({'seg2_kinds': self.seg2, 'seg2_max_h': {'ot': 10, 'leave': 8, 'trip': 8}, 'seg2_no_types': list(self.no_types),
                       'ot_max_h': 10, 'ot_segments_max': 2 if 'ot' in self.seg2 else 1})
         i.update(self.extra.get(code, {}))
         d = body.get('date')
@@ -102,7 +104,7 @@ class Fake:
             return J({'ok': True, 'lite': bool(b.get('lite')), 'stores': self.stores, 'punch_store': self.stores[0]['code'], 'comp': None,
                       'leave_types': {'common': ['特休假', '事假', '病假', '生理假', '家庭照顧假'], 'special': []}, 'quota': []})
         if a == 'line_hub_req_quota':
-            return J({'ok': True, 'quota': [], 'comp': {'allowed': False, 'known': True, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}})
+            return J({'ok': True, 'quota': self.quota, 'comp': {'allowed': False, 'known': True, 'ot_h': 0, 'used_h': 0, 'balance_h': 0}})
         if a == 'req_info':
             return J(self.info(code, b))
         if a == 'req_submit':
@@ -322,21 +324,21 @@ def main():
                         p.context.close()
                     ok('改前改後：%s 只一段的送出內容逐欄相同' % ('請假' if tab == 'leave' else '出差'), got[0] == got[1] and 'segments' not in got[1], got)
 
-            # ── 4. 請假兩段（病假、證明一次附兩段）、生理假沒有鈕 ──
-            f = Fake(seg2=['ot', 'leave', 'trip'])
+            # ── 4. 請假兩段（病假、證明一次附兩段）；生理假沒有鈕（後端生理假新規則開關 off＝seg2_no_types 帶生理假） ──
+            f = Fake(seg2=['ot', 'leave', 'trip'], no_types=['生理假'])
             p = open_req(br, f, 'leave')
             ok('請假：整天模式沒有「加第二段」', p.locator('#reqView .rq-seg-add').count() == 0)
             p.click('#reqView .rq-chip:has-text("病假")')
             p.click('#reqView .rq-chip:has-text("只請一段")')
             ok('請假：只請一段模式出現「＋ 加第二段」', p.locator('#reqView .rq-seg-add').count() == 1)
             p.click('#reqView .rq-chip:has-text("生理假")')
-            ok('生理假：沒有「加第二段」', p.locator('#reqView .rq-seg-add').count() == 0 and '加第二段' not in txt(p))
+            ok('後端開關 off：生理假沒有「加第二段」', p.locator('#reqView .rq-seg-add').count() == 0 and '加第二段' not in txt(p))
             p.click('#reqView .rq-chip:has-text("病假")')
             CL.pick_time(p, 0, '09:00'); CL.pick_time(p, 1, '11:00')
             p.click('#reqView .rq-seg-add')
             CL.pick_time(p, 2, '15:00'); CL.pick_time(p, 3, '17:00')
             p.click('#reqView .rq-chip:has-text("生理假")')
-            ok('生理假：已經加了第二段再改選生理假 → 第二段收起來、不會送兩段', p.locator('#reqView .rq-seg').count() == 0 and p.locator('#reqView .rq-seg-add').count() == 0)
+            ok('後端開關 off：已經加了第二段再改選生理假 → 第二段收起來、不會送兩段', p.locator('#reqView .rq-seg').count() == 0 and p.locator('#reqView .rq-seg-add').count() == 0)
             p.click('#reqView .rq-chip:has-text("病假")')
             ok('改回病假：第二段原本填的還在', p.locator('#reqView .rq-seg').count() == 2)
             ok('請假兩段：合計「第一段 2 小時＋第二段 2 小時＝共 4 小時」＋「這張證明兩段共用，不用附兩次」', '第一段 2 小時＋第二段 2 小時＝共 4 小時' in txt(p) and '這張證明兩段共用，不用附兩次。' in txt(p))
@@ -353,6 +355,40 @@ def main():
             t = txt(p)
             ok('請假兩段：成功訊息「會變成 2 張假單」、我的申請兩列都標「📎 已附證明」與「同一次送出」', '會變成 2 張假單，等主管審核' in t and t.count('📎 已附證明') == 2 and t.count('同一次送出・第') == 2, t)
             shot(p, '07-請假兩段送出成功')
+            p.context.close()
+            # ── 4b. 生理假兩段（2026-11-18 新後端：seg2_no_types＝[]）：有「加第二段」、送出帶 segments、同一天兩張 ──
+            f = Fake(seg2=['leave'])
+            p = open_req(br, f, 'leave')
+            p.click('#reqView .rq-chip:has-text("生理假")'); p.click('#reqView .rq-chip:has-text("只請一段")')
+            ok('生理假（新後端）：出現「＋ 加第二段」', p.locator('#reqView .rq-seg-add').count() == 1)
+            ok('生理假（新後端）：額度沒讀到時不顯示「剩幾小時」（只用「次」）', '小時（上限' not in txt(p))
+            CL.pick_time(p, 0, '09:00'); CL.pick_time(p, 1, '11:00')
+            p.click('#reqView .rq-seg-add')
+            CL.pick_time(p, 2, '15:00'); CL.pick_time(p, 3, '17:00')
+            submit(p); wait_mine(p)
+            s = f.submits()
+            ok('生理假兩段：送出 leave_type 生理假＋segments 兩段，沒有 start／end／hours',
+               len(s) == 1 and s[0]['body'].get('leave_type') == '生理假' and s[0]['body'].get('segments') == [{'start': '09:00', 'end': '11:00'}, {'start': '15:00', 'end': '17:00'}]
+               and not any(k in s[0]['body'] for k in ('start', 'end', 'hours')), s[0]['body'] if s else None)
+            t = txt(p)
+            ok('生理假兩段：成功訊息「會變成 2 張假單」、我的申請標「同一次送出」兩列', '會變成 2 張假單，等主管審核' in t and t.count('同一次送出・第') == 2, t)
+            shot(p, '07b-生理假兩段送出成功')
+            p.context.close()
+            # ── 4c. 選假別就先擋（2026-11-18）：病假今年用完、生理假本月已請 → 送出鈕不可按 ──
+            sick0 = {'name': '病假', 'cap_days': 30, 'cap_h': 240, 'remain_h': 0, 'used_h': 240, 'basis': 'calendar'}
+            mens = {'name': '生理假', 'cap_days': 3, 'cap_h': 24, 'remain_h': 16, 'used_h': 8, 'basis': 'calendar', 'used_n': 1, 'dates': [TODAY[:8] + '01' if TODAY[8:] != '01' else TODAY[:8] + '02'], 'unit': 'times'}
+            f = Fake(seg2=['leave'], quota=[sick0, mens], extra_info={'hq': {'sick_used_up': True, 'mens_rules': True}})
+            p = open_req(br, f, 'leave')
+            p.wait_for_timeout(800)
+            p.click('#reqView .rq-chip:has-text("病假")')
+            ok('病假用完：選了就顯示「今年病假額度已用完（30 天），請改請事假」、送出鈕不可按',
+               '今年病假額度已用完（30 天），請改請事假' in txt(p) and p.locator('#reqView button.primary').first.is_disabled(), txt(p)[:300])
+            p.click('#reqView .rq-chip:has-text("生理假")')
+            ok('生理假本月已請：選了就顯示「生理假每月一次，這個月已請過」、送出鈕不可按；額度顯示「剩 2 次」',
+               '生理假每月一次，這個月已請過' in txt(p) and p.locator('#reqView button.primary').first.is_disabled() and '剩 2 次' in txt(p), txt(p)[:300])
+            p.click('#reqView .rq-chip:has-text("事假")')
+            ok('改選事假：沒有事前擋、送出鈕可以按', '請改請事假' not in txt(p) and not p.locator('#reqView button.primary').first.is_disabled())
+            ok('事前擋沒有送出任何 req_submit', len(f.submits()) == 0)
             p.context.close()
             # 請假兩段超過 8 小時
             f = Fake(seg2=['leave'])

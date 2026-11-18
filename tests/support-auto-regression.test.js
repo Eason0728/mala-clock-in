@@ -29,7 +29,7 @@ function ctx(P, DB, CLOCK) {
   vm.runInContext(C + '\n' + P, sb);
   // 2026-11 起的加班費新算法（逐日判斷、績效獎金改名、早退扣款…）是刻意的改變，由 ot-daily.test.js 守；
   // 這支只守「其他規則沒被動到」，所以把新版的生效月份推到很遠，兩邊都照舊規則比。
-  vm.runInContext("if (typeof PAY_OT_DAILY_FROM !== 'undefined') PAY_OT_DAILY_FROM = '2099-01'; if (typeof PAY_RULES3_FROM !== 'undefined') PAY_RULES3_FROM = '2099-01'; if (typeof PAY_RULES4_FROM !== 'undefined') PAY_RULES4_FROM = '2099-01'; if (typeof PAY_ANNUAL_SETTLE_FROM !== 'undefined') PAY_ANNUAL_SETTLE_FROM = '2099-01'; if (typeof PAY_LATE_ATTEND_FROM !== 'undefined') PAY_LATE_ATTEND_FROM = '2099-01'; if (typeof PAY_MENSTRUAL_FULL_FROM !== 'undefined') PAY_MENSTRUAL_FULL_FROM = '2099-01';", sb);
+  vm.runInContext("if (typeof PAY_OT_DAILY_FROM !== 'undefined') PAY_OT_DAILY_FROM = '2099-01'; if (typeof PAY_RULES3_FROM !== 'undefined') PAY_RULES3_FROM = '2099-01'; if (typeof PAY_RULES4_FROM !== 'undefined') PAY_RULES4_FROM = '2099-01'; if (typeof PAY_ANNUAL_SETTLE_FROM !== 'undefined') PAY_ANNUAL_SETTLE_FROM = '2099-01'; if (typeof PAY_LATE_ATTEND_FROM !== 'undefined') PAY_LATE_ATTEND_FROM = '2099-01'; if (typeof PAY_MENSTRUAL_FULL_FROM !== 'undefined') PAY_MENSTRUAL_FULL_FROM = '2099-01'; if (typeof PAY_MENSTRUAL_DAY_FROM !== 'undefined') PAY_MENSTRUAL_DAY_FROM = '2099-01'; if (typeof PAY_LEAVE_DEDUP_FROM !== 'undefined') PAY_LEAVE_DEDUP_FROM = '2099-01';", sb);   // 2026-11-18 生理假一天算一次、假別同月去重也是刻意的改變（menstrual-*／leave-dedup 測試守），這支照舊只守支援帶入
   sb.__C = CLOCK; sb.__DB = DB;
   vm.runInContext(`
     payClockRead = function(store, sheet){

@@ -1080,7 +1080,7 @@ def phase_req(ctx, gen):
     page.fill('#reqView input[type=text]', '月底盤點')
     pick_time(page, 0, '08:00'); pick_time(page, 1, '21:00')
     submit(page)
-    ok('加班：超過 12 小時 → 擋（逐字）', err_box(page) == '加班時段超過 12 小時，請確認時間', err_box(page))
+    ok('加班：超過 10 小時 → 擋（逐字；2026-11-18 N1 單張上限 12 → 10）', err_box(page) == '加班時段超過 10 小時，請確認時間', err_box(page))
     s = RNG.choice(['17:00', '18:15', '21:30']); e = D.min_hm(D.hm_min(s) + RNG.choice([90, 150, 240]))
     d5 = (now_tz() - timedelta(days=RNG.randint(0, 6))).strftime('%Y-%m-%d')
     pick_date(page, d5); pick_time(page, 0, s); pick_time(page, 1, e)

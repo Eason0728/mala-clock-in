@@ -1118,6 +1118,12 @@ function lineHubAnnual_(a) {
   var last = payDayBefore(String(a.pe).slice(0, 10));
   return { left_h: r1(a.left_h), quota_h: r1(a.quota_h), last: last, md: lineHubMd_(last) };
 }
+/** 生理假用「次」顯示（2026-11-18 Eason，跟 LINE 申請頁、打卡頁同一個口徑）：回已請次數；不是生理假或沒有上限＝null（照時數顯示）。
+ *  舊薪資沒有 used_n 就用時數÷8（一次＝8 小時）。 */
+function lineHubMensTimes_(q) {
+  if (!q || String(q.name) !== '生理假' || q.cap_days == null) return null;
+  return q.used_n != null ? Number(q.used_n) : Math.round((Number(q.used_h) || 0) / 8);
+}
 function lineHubLeaveText_(userId) {
   var j = lineHubPayslipFor_(userId);
   if (!j) return lineHubMine_(userId, null, true).length ? LINE_HUB_NO_PAYROLL_TEXT : LINE_HUB_NOT_BOUND_TEXT;
@@ -1128,6 +1134,8 @@ function lineHubLeaveText_(userId) {
   var head = an ? '・特休假：剩 ' + an.left_h + ' 小時（共 ' + an.quota_h + ' 小時，' + an.md + ' 到期，未休完依法折算工資）\n' : '';
   if (cp) head += '・本月補休：' + lineHubCompLine_(cp) + '（每月結算，剩的照加班費發）\n';
   return '📅 今年假別額度（已請／剩餘）\n' + head + list.map(function (q) {
+    var n = lineHubMensTimes_(q);
+    if (n != null) return '・' + q.name + '：' + (n ? '已請 ' + n + ' 次' : '未請過') + '｜' + (q.cap_days - n > 0 ? '剩 ' + (q.cap_days - n) + ' 次／上限 ' + q.cap_days + ' 次' : '已用完') + '（一天算一次、每月一次）';
     var used = q.used_days ? r1(q.used_h) + 'H' : '未請過';
     var rem = q.cap_days == null ? '無上限' : (q.basis === 'event' ? '每次上限 ' + r1(q.cap_h) + 'H'
       : (q.remain_h < 0 ? '超出 ' + r1(-q.remain_h) + 'H' : r1(q.remain_h) + 'H／上限 ' + r1(q.cap_h) + 'H'));
@@ -1253,6 +1261,9 @@ function lineHubLeaveCard_(userId) {
   if (!list.length && !an && !cp) return lineHubNoticeCard_('假別額度', '你目前沒有需要顯示的假別額度（計時同仁不適用特休等額度）。');
   var r1 = function (v) { return Math.round((Number(v) || 0) * 10) / 10; };
   var blocks = list.map(function (q) {
+    var n = lineHubMensTimes_(q);
+    if (n != null) return { type: 'row', l: q.name, r: q.cap_days - n > 0 ? '剩 ' + (q.cap_days - n) + ' 次' : '已用完', bold: true,
+                            sub: (n ? '已請 ' + n + ' 次' : '未請過') + '・上限 ' + q.cap_days + ' 次・一天算一次、每月一次' };
     var rem = q.cap_days == null ? '無上限' : (q.basis === 'event' ? '每次上限 ' + r1(q.cap_h) + 'H'
       : (q.remain_h < 0 ? '超出 ' + r1(-q.remain_h) + 'H' : '剩 ' + r1(q.remain_h) + 'H'));
     var sub = (q.used_days ? '已請 ' + r1(q.used_h) + 'H' : '未請過') + (q.cap_days != null && q.basis !== 'event' ? '・上限 ' + r1(q.cap_h) + 'H' : '');
@@ -1849,13 +1860,28 @@ function handleLineHubReqInit_(body) {
   if (!compOff) common.push('補休');
   var punchStore = null;
   if (mine.length > 1) { try { punchStore = lineHubLastPunchStore_(mine); } catch (e) { punchStore = null; } }   // 只綁一家就不用讀
-  return { ok: true, lite: !!body.lite, stores: stores, punch_store: punchStore, comp: comp,
+  var res = { ok: true, lite: !!body.lite, stores: stores, punch_store: punchStore, comp: comp,
            leave_types: { common: common,
                           special: names.filter(function (n) { return LINE_HUB_COMMON_LEAVES.indexOf(n) < 0; }) },
            quota: lineHubQuotaOut_(quota) };
+  if (!body.lite) res.ft = qc.ft === true || qc.ft === false ? qc.ft : null;   // 生理假：計時人員不適用（lite 時跟額度一起由 line_hub_req_quota 補）
+  return res;
 }
 function lineHubQuotaOut_(quota) {
-  return quota.map(function (q) { return { name: q.name, cap_days: q.cap_days, cap_h: q.cap_h, remain_h: q.remain_h, used_h: q.used_h, basis: q.basis }; });
+  return quota.map(function (q) {
+    var o = { name: q.name, cap_days: q.cap_days, cap_h: q.cap_h, remain_h: q.remain_h, used_h: q.used_h, basis: q.basis };
+    // 生理假用「次」（2026-11-18）：次數與已用日期（只有本人看得到自己的）；舊薪資沒有這兩欄就不帶
+    if (q.used_n != null) { o.used_n = q.used_n; o.dates = Array.isArray(q.dates) ? q.dates.slice() : []; o.unit = 'times'; }
+    return o;
+  });
+}
+/** 是不是正職（計時人員不適用生理假，2026-11-18）：薪資主檔 is_full_time；主檔查不到＝null（不知道，不擋）。 */
+function lineHubFtOf_(userId) {
+  try {
+    var pk = lineHubPayPick_(userId);
+    if (!pk) return null;
+    return payFtOfMe_(pk.me, pk.store);   // is_full_time 空白、雙店主檔說法不一＝null（不擋）
+  } catch (e) { return null; }
 }
 /** 假別額度＋本月補休帳（line_hub_req_init 與 line_hub_req_quota 共用）。comp 一定有值（算不出來＝known:false）。 */
 function lineHubReqQuota_(userId) {
@@ -1879,7 +1905,7 @@ function lineHubReqQuota_(userId) {
     var pk = lineHubPayPick_(userId);
     if (pk && typeof payAnnualFromOf_ === 'function') annualFrom = payAnnualFromOf_(pk.store, pk.me.emp_id) || '';
   } catch (e) { annualFrom = ''; }
-  return { quota: quota, comp: comp, annual_from: annualFrom };
+  return { quota: quota, comp: comp, annual_from: annualFrom, ft: lineHubFtOf_(userId) };
 }
 /** {action:'line_hub_req_quota', id_token} → {ok, quota, comp}（2026-11-06）：申請頁表單先出來，這支晚一點補上額度與補休帳。 */
 function handleLineHubReqQuota_(body) {
@@ -1888,7 +1914,7 @@ function handleLineHubReqQuota_(body) {
   if (lineHubThrottled_('rqq', userId, 20, 60)) return { ok: false, error: 'too_many' };
   if (!lineHubMine_(userId, null, false).length) return { ok: false, error: 'not_bound' };
   var qc = lineHubReqQuota_(userId);
-  return { ok: true, quota: lineHubQuotaOut_(qc.quota), comp: qc.comp, annual_from: qc.annual_from || '' };
+  return { ok: true, quota: lineHubQuotaOut_(qc.quota), comp: qc.comp, annual_from: qc.annual_from || '', ft: qc.ft === true || qc.ft === false ? qc.ft : null };
 }
 
 /** {action:'line_hub_pay_lock', id_token, store, ym} → {ok, store, ym, locked?}（Eason 2026-11-16 回「要補」）

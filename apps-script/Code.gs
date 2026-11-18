@@ -2086,6 +2086,8 @@ function handleMgrApprove(body) {
       h = Number(x.hours);
       if (!isFinite(h) || h < 0) return { ok: false, error: 'bad_leave_hours' };
       if (h > 24) return { ok: false, error: 'bad_leave_hours', message: t + '一天不能超過 24 小時' };   // 2026-11-15 考勤挑錯 B19：原本出差 999 小時照收
+      // 生理假一天最多 8 小時（2026-11-18 Eason）；開關在 Requests.gs（REQ_MENS_RULES=off 退回）。沒載入 Requests 的環境（mini 預判引擎）不擋
+      if (t === '生理假' && h > 8 && typeof reqMensOn_ === 'function' && reqMensOn_()) return { ok: false, error: 'menstrual_over_8', message: '生理假一天最多 8 小時' };
       h = Math.round(h * 100) / 100;
     }
     leaves.push({ type: t, hours: h });

@@ -3,6 +3,8 @@ const fs = require('fs'), vm = require('vm'), path = require('path'), assert = r
 const src = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Requests.gs'), 'utf8');
 const sb = { console, CONFIG: { PAYROLL_API: '' }, UrlFetchApp: { fetch: () => { throw new Error('不准連網'); } } };
 vm.createContext(sb); vm.runInContext(src, sb);
+// 2026-11-18 生理假新規則另有 menstrual-rules.test.js；這支守「緊急開關 off＝2026-11-10 的做法」，所以把開關關掉
+sb.reqMensOn_ = () => false;
 let QUOTA = [];
 sb.lineHubReqQuota_ = () => ({ quota: QUOTA });
 const who = { userId: 'U1', me: { emp_id: 'E01', name: '測試一' } };
