@@ -1003,12 +1003,12 @@
     if (!list.length) { p.appendChild(h('div', { class: 'rq-empty', text: '還沒有任何申請' })); return; }
     // 同一次送出的兩張（2026-11-18）：店＋group＋emp_id＋date 都一樣才算一組，剩一張不成組；兩張排在一起、第 1 段在前
     var gcount = {}, shownProof = {};
-    list.forEach(function (r) { var k = groupKey(r); if (k) gcount[k] = (gcount[k] || 0) + 1; });
+    gcount = groupCounts(list);   // 只算還有效（審核中、已核准）的；取消／退回／作廢的不算進組數
     if (Object.keys(gcount).length) list = list.slice().sort(function (a, b) {
       return a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : a.group && a.group === b.group ? (a.seg || 0) - (b.seg || 0) : 0;
     });
     list.forEach(function (r) {
-      var gk = groupKey(r), grouped = !!gk && gcount[gk] >= 2 && !!r.seg;
+      var gk = groupKey(r), grouped = segLive(r) && !!gk && gcount[gk] >= 2 && !!r.seg;
       var s = STATUS[r.status] || [r.status, 'off'];
       var title = r.kind === 'leave' ? r.leave_type + ' ' + r.hours + ' 小時'
                 : r.kind === 'ot' ? '加班 ' + r.hours + ' 小時'
@@ -1084,6 +1084,14 @@
   }
   /** 同一次送出（店＋group＋emp_id＋date 都一樣）的 key；沒有 group ＝ ''。同一店的申請清單裡 group 只會在同一店內重複，所以不用再放店。 */
   function groupKey(r) { return r && r.group ? r.group + '|' + r.emp_id + '|' + r.date : ''; }
+  /** 這張還算不算「有效的一段」：審核中、已核准才算（跟考勤管理一樣：剩一張有效就不框） */
+  function segLive(r) { return !!r && (r.status === 'pending' || r.status === 'approved'); }
+  /** 每個 group key 目前有效的張數（取消、退回、作廢的不算）；剩一張＝不成組 */
+  function groupCounts(list) {
+    var c = {};
+    (list || []).forEach(function (r) { var k = segLive(r) ? groupKey(r) : ''; if (k) c[k] = (c[k] || 0) + 1; });
+    return c;
+  }
   function proofBox(r) {
     var gk = groupKey(r);
     var members = gk ? ((st.info && st.info.requests) || []).filter(function (x) { return groupKey(x) === gk && x.kind === 'leave' && x.status === 'pending'; }) : [];

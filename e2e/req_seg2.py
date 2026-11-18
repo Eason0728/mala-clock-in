@@ -209,7 +209,8 @@ def main():
             ok('取消這一段：只對那一張呼叫一次 req_cancel（第 2 段）', len(cc) == 1 and cc[0]['body']['id'].endswith('_2'), cc)
             p.wait_for_timeout(500)
             t = txt(p)
-            ok('取消後另一張還在、仍標「同一次送出」（群組不因取消消失）', '同一次送出・第 1 段／共 2 段' in t and '已取消' in t, t)
+            ok('取消後剩下那張變回一般樣子：不再標「同一次送出・第 N 段／共 2 段」、按鈕回到「取消這筆申請」（已取消的不算進組數）',
+               '同一次送出' not in t and '已取消' in t and '取消這一段' not in t and t.count('取消這筆申請') == 1 and '審核中' in t, t)
             p.context.close()
 
             # ── 2. 前端擋：重疊、相接、超限、沒填完整、單張超過 10 小時 ──

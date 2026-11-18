@@ -14,7 +14,7 @@ const TAIL = 'window.ReqLine = { open: open };';
 if (src.indexOf(TAIL) < 0) throw new Error('req-line.js 檔尾的寫法變了，請更新這支測試的出口');
 const hooked = src.replace(TAIL, TAIL + ' window.__t = { st: st, segCheck: segCheck, segOverlap: segOverlap, segTouch: segTouch, seg2Open: seg2Open, seg2Ok: seg2Ok, segsOf: segsOf,' +
   ' segMax: segMax, otMaxH: otMaxH, segHours: segHours, preWarns: preWarns, otAbsorb: otAbsorb, unitOf: unitOf, sameUnit: sameUnit, dayWork: dayWork,' +
-  ' segStoreSplit: segStoreSplit, storeByDay: storeByDay, groupKey: groupKey };');
+  ' segStoreSplit: segStoreSplit, storeByDay: storeByDay, groupKey: groupKey, groupCounts: groupCounts, segLive: segLive };');
 const sb = { window: {}, document: {}, console, Promise, setTimeout, Date, Math, JSON, String, Number, Object, Array, RegExp, Error, parseInt, parseFloat, isNaN, isFinite };
 vm.createContext(sb);
 vm.runInContext(hooked, sb, { filename: 'req-line.js' });
@@ -174,6 +174,14 @@ ok('兩段各對到不同家店 → 擋（message 講哪段在哪家）；對到
 ok('groupKey：店內的 group＋emp_id＋date；沒有 group ＝ 空字串', () => {
   assert.strictEqual(T.groupKey({ group: 'g1', emp_id: 'E1', date: '2026-11-15' }), 'g1|E1|2026-11-15');
   assert.strictEqual(T.groupKey({ group: '', emp_id: 'E1', date: '2026-11-15' }), ''); assert.strictEqual(T.groupKey({ emp_id: 'E1', date: 'x' }), '');
+});
+ok('groupCounts：只算審核中、已核准；取消／退回／作廢的不算，剩一張＝不成組', () => {
+  const R = (id, status) => ({ id, group: 'g1', emp_id: 'E1', date: '2026-11-15', seg: 1, status });
+  assert.deepStrictEqual(J(T.groupCounts([R('a', 'pending'), R('b', 'pending')])), { 'g1|E1|2026-11-15': 2 });
+  assert.deepStrictEqual(J(T.groupCounts([R('a', 'pending'), R('b', 'approved')])), { 'g1|E1|2026-11-15': 2 });
+  ['cancelled', 'rejected', 'voided'].forEach(st => assert.deepStrictEqual(J(T.groupCounts([R('a', 'pending'), R('b', st)])), { 'g1|E1|2026-11-15': 1 }, st));
+  assert.deepStrictEqual(J(T.groupCounts([{ id: 'x', emp_id: 'E1', date: 'd', status: 'pending' }])), {}, '沒有 group');
+  assert.strictEqual(T.segLive({ status: 'cancelled' }), false); assert.strictEqual(T.segLive({ status: 'approved' }), true);
 });
 
 console.log('\n' + n + ' 過、0 失敗');
