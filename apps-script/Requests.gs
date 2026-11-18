@@ -13,7 +13,8 @@ var REQ_SHEET_ = 'requests';
 var REQ_HEADERS_ = ['id', 'created_at', 'emp_id', 'name', 'kind', 'date', 'leave_type', 'start', 'end', 'hours',
                     'miss_type', 'reason', 'attach_id', 'status', 'decided_at', 'decided_by', 'reject_reason', 'seen_at', 'comp',
                     'voided_at', 'voided_by', 'void_reason',   // 作廢已核准的申請（2026-10-26）：decided_* 保留原核准紀錄
-                    'proxy_by'];   // 主管代開（2026-11-06）：代開人姓名；有值＝只有總監層級能審
+                    'proxy_by',    // 主管代開（2026-11-06）：代開人姓名；有值＝只有總監層級能審
+                    'grp'];        // 一次填兩段（2026-11-18）：同一次送出的兩張單同一個值；舊列、一張的單空白
 var REQ_COMP_LEAVE_ = '補休';   // 補休（2026-10-09）：不在 Code.gs LEAVE_TYPES 白名單裡，請假申請另外放行
 var REQ_KINDS_ = { leave: '請假', ot: '加班', trip: '出差', miss: '忘打卡' };
 var REQ_MISS_DAYS = 4;          // 忘打卡只能申請 4 天內（含今天；2026-11-14 Eason 由 7 改 4，T01 一樣不限）
@@ -71,10 +72,10 @@ function reqSickNth_(rows, r) {
   return reqSickDates_(rows, r.emp_id, d, r.id).filter(function (x) { return x < d; }).length + 1;
 }
 /* 只提醒、不擋（2026-11-06 Eason，人資作業辦法）：同仁送單與主管審核時黃字。
-   事假應前一天請（送出那天＞＝請假那天）；出差應前一週填（送出到出差不到 7 天）；本月事假第 3 次起、或本月事假合計超過 3 天（8 小時一天）。
+   事假應前一天請（送出那天＞＝請假那天）；出差應前一週填（送出到出差不到 7 天）；本月事假合計超過 3 天（8 小時一天）。
+   「本月第 3 次事假」的提醒 2026-11-18 Eason 拿掉（N4：「事假不需要本月第幾次提醒」；只動提醒，不動任何計算）。
    忘打卡：本月第幾次（同一人、同一個月、審核中＋已核准的忘打卡申請，依日期排；一張申請算一次）。 */
 var REQ_PERSONAL_TYPE_ = '事假';
-var REQ_PERSONAL_WARN_N = 3;      // 本月第 3 次起
 var REQ_PERSONAL_WARN_DAYS = 3;   // 本月合計超過 3 天
 var REQ_TRIP_MAX_H = 8;           // 每次出差工作時間上限（出勤規範 5-1）
 var REQ_TRIP_AHEAD_DAYS = 7;      // 出差應前一週填
@@ -119,8 +120,7 @@ function reqWarns_(r) {
   var out = [], made = String(r.created_at || '').slice(0, 10), d = String(r.date || '').slice(0, 10);
   if (reqIsPersonal_(r)) {
     if (made && d && made >= d) out.push('事假應在前一天請（這張是' + (made === d ? '當天' : '事後') + '才送）');
-    var pl = r.__pl;
-    if (pl && pl.n >= REQ_PERSONAL_WARN_N) out.push('本月第 ' + pl.n + ' 次事假');
+    var pl = r.__pl;   // 本月第幾次的提醒 2026-11-18 拿掉（N4），只留合計天數
     if (pl && pl.hours > REQ_PERSONAL_WARN_DAYS * 8) out.push('本月事假合計 ' + (Math.round(pl.hours / 8 * 10) / 10) + ' 天，超過 ' + REQ_PERSONAL_WARN_DAYS + ' 天');
   }
   if (String(r.kind) === 'trip' && made && d) {
@@ -154,6 +154,11 @@ function reqHeads_(sh) {
   var heads = last ? sh.getRange(1, 1, 1, last).getValues()[0].map(String) : [];
   var missing = REQ_HEADERS_.filter(function (h) { return heads.indexOf(h) < 0; });
   if (missing.length) {
+    // 格線欄數不夠就先補欄（2026-11-18 加 grp 欄時補的防護；正式分頁預設 26 欄，平常用不到）
+    var needCols = heads.length + missing.length;
+    if (typeof sh.getMaxColumns === 'function' && typeof sh.insertColumnsAfter === 'function' && sh.getMaxColumns() < needCols) {
+      sh.insertColumnsAfter(sh.getMaxColumns(), needCols - sh.getMaxColumns());
+    }
     sh.getRange(1, heads.length + 1, 1, missing.length).setValues([missing]);
     for (var i = 0; i < missing.length; i++) { var L = reqColLetter_(heads.length + 1 + i); sh.getRange(L + ':' + L).setNumberFormat('@'); }
     heads = heads.concat(missing);
@@ -167,11 +172,22 @@ function reqRows_(ss) {
 function reqRowsRaw_(ss) {
   var sh = reqSheet_(ss, false);
   if (!sh) return [];
-  return reqSickMark_(readSheetAsObjects(sh).rows.map(function (r) {
+  return reqSegMark_(reqSickMark_(readSheetAsObjects(sh).rows.map(function (r) {
     r.date = normCellDate(r.date); r.created_at = String(normCellTs(r.created_at) || '');
     r.start = reqHm_(r.start); r.end = reqHm_(r.end);
     return r;
-  }));
+  })));
+}
+/** 一次填兩段：同一個 grp 的單依表上先後標 __seg（1、2）；寫入時已照時間排好，所以表上先後＝時間先後。沒有 grp 的不標。 */
+function reqSegMark_(rows) {
+  var n = {};
+  rows.forEach(function (r) {
+    var g = String(r.grp == null ? '' : r.grp).trim();
+    if (!g) return;
+    n[g] = (n[g] || 0) + 1;
+    r.__seg = n[g];
+  });
+  return rows;
 }
 /** 'HH:MM'（容忍 Sheets 轉成 Date 或 '9:00'）；不合法回 ''。 */
 function reqHm_(v) {
@@ -253,7 +269,8 @@ function reqPublic_(r) {
            proof_required: reqProofType_(r), need_proof: reqNeedsProof_(r), sick_n: r.__sick_n || null,
            miss_n: r.__miss_n || null, warns: reqWarns_(r),
            voided_at: String(normCellTs(r.voided_at) || ''), voided_by: String(r.voided_by || ''), void_reason: String(r.void_reason || ''),
-           proxy_by: String(r.proxy_by || '') };
+           proxy_by: String(r.proxy_by || ''),
+           group: String(r.grp == null ? '' : r.grp), seg: r.__seg || null };   // 一次填兩段（2026-11-18）：同一次送出的兩張 group 一樣、seg＝第幾段
 }
 function reqSetCells_(sh, rowIndex, patch) {
   var heads = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
@@ -424,6 +441,7 @@ function handleReqInfo_(body) {
               proof_types: REQ_PROOF_TYPES_.slice(),
               // 病假滿 3 天才要附證明（2026-11-06）：給申請頁算「選的那天是今年第幾天」；舊頁面不認得這兩欄＝照舊當病假一定要附
               sick_proof_days: REQ_SICK_PROOF_DAYS, sick_dates: reqSickDates_(all, who.me.emp_id, today) };
+  reqSeg2Info_(out);   // 一次填兩段（2026-11-18）：這家店開了哪幾種、上限；舊頁面不認得這幾欄＝照舊一張一張送
   if (dayOnly) out.day_only = true;
   if (reqIsDate_(body.date)) {
     // 已送出的忘打卡申請算已經補上的卡（2026-11-11 B02），申請頁才看得到「還能補另一張／另一段」。
@@ -483,7 +501,9 @@ function reqValidate_(b, me, events, today, existing, proxy) {   // proxy：主�
     row.start = reqHm_(b.start); row.end = reqHm_(b.end);
     if (!row.start || !row.end) return { error: 'bad_time', message: '請填加班時段' };
     row.hours = reqSpanHours_(row.start, row.end);
-    if (row.hours > 12) return { error: 'bad_time', message: '加班時段超過 12 小時，請確認時間' };
+    // 單張上限：同仁自己送、店長代開都是 10 小時（2026-11-18 Eason N1；原本都是 12）。分兩個常數，之後要分開調不用改程式
+    var otMax = proxy ? REQ_OT_PROXY_MAX_H : REQ_OT_MAX_H;
+    if (row.hours > otMax) return { error: 'bad_time', message: '加班時段超過 ' + otMax + ' 小時，請確認時間' };
     /* 2026-11-11（B39）：跨夜班的加班在凌晨。日期填凌晨那一天的話，上班那天核定時找不到這張單、凌晨那天又多一張要作廢的單，
        兩天都核不過。這段時間如果落在「前一天上班、跨到今天才下班」的班裡，請同仁把日期改選上班那一天
        （下班打卡後的加班提示本來就帶上班那一天）。核定與薪資怎麼算單不動。 */
@@ -692,10 +712,15 @@ function handleReqSubmit_(body) {
     if (remoteLock === true) return { ok: false, error: 'pay_locked', message: payLockedStaffMsg_(String(body.date)) };
     if (remoteLock === 'retry') return { ok: false, error: 'busy', message: '系統忙碌，請一分鐘後再送一次' };
   }
+  // 一次填兩段（2026-11-18）：segments 兩段走 reqSubmitSegs_；只有一段＝照原本一張的流程（跟沒帶 segments 一模一樣）
+  var segP = reqSegsOf_(body, false);
+  if (segP && segP.error) return reqSegFail_(segP);
+  if (segP && segP.single) { body = segP.single; segP = null; }
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請幾秒後再送一次' };
   try {
     var existing = reqRows_(who.ss);
+    if (segP) return reqSubmitSegs_(body, segP, who, existing);
     var v = reqValidate_(body, who.me, liffEvents_(who.ss), todayTaipeiStr(), existing);
     if (v.error) return { ok: false, error: v.error, message: v.message };
     var r = v.row;
@@ -718,6 +743,182 @@ function handleReqSubmit_(body) {
     sh.appendRow(reqHeads_(sh).map(function (h) { return r[h] === undefined ? '' : reqSheetText_(r[h], h); }));   // 照實際表頭寫（舊分頁沒有 comp 欄會先補）
     return { ok: true, request: reqPublic_(r), summary: reqSummary_(r) };
   } finally { lock.releaseLock(); }
+}
+
+/* ── 一次填兩段（2026-11-18 Eason；設計：一次填兩段第 2 版＋最終決定 N1–N5，docs/decisions/0002）──
+   同一天兩段加班／請假／出差一次送出 → 拆成兩張普通的單（同一個 grp、同一個 created_at），各自照現有規則檢查（reqValidate_）。
+   第二段檢查時把第一段當成一張審核中的單一起比（＝分兩次送時第二張看到的樣子）。兩段都過才用一次 setValues 寫兩列；
+   任一段沒過一列都不寫，訊息開頭標「第一段：」「第二段：」（兩段共用的欄位錯了不標）。
+   核定、薪資規則完全不動：寫進去的兩列跟同仁分兩次送一模一樣，只多 grp 欄。
+   開關：指令碼屬性 REQ_SEG2_KINDS（逗號分隔：ot、leave、trip；沒設或空白＝全關＝跟以前一樣），req_info 回 seg2_kinds 給申請頁看。
+   不開放：忘打卡；生理假（送單端一張算一次、薪資端一天算一次，兩段會被算成兩次）；請假、出差的「整天／只填時數」；
+   店長代開的請假、出差（N3，代開本來就只填時數）。三段以上不做。 */
+var REQ_OT_MAX_H = 10;          // 同仁自己送的加班：單張上限，也是兩段合計上限（N1；原本單張 12）
+var REQ_OT_PROXY_MAX_H = 10;    // 店長代開的加班：單張與兩段合計上限（N1 更正，2026-11-18 Eason：「代開也是 10 小時」；原本 12）
+var REQ_SEG2_TOTAL_MAX_H_ = { leave: 8, trip: 8 };   // 請假、出差兩段合計上限（N2）；單段上限照舊（請假 12、出差 8）
+var REQ_SEG2_KINDS_OK_ = { ot: 1, leave: 1, trip: 1 };
+var REQ_SEG2_NO_TYPES_ = ['生理假'];
+var REQ_SEG_LABEL_ = ['第一段', '第二段'];
+var REQ_EARLY_SEG_MIN_ = 6 * 60;   // 排先後：06:00 前開始的段當成跨過午夜的那一段（同「凌晨 06:00 前的下班卡歸前一天」）
+function reqHasOwn_(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+/** 這家店開放兩段的類別（照 REQ_SEG2_KINDS，只認 ot／leave／trip，去重、照寫的順序） */
+function reqSeg2Kinds_() {
+  var raw = '';
+  try { raw = String(reqProp_('REQ_SEG2_KINDS') || ''); } catch (e) { raw = ''; }
+  var out = [];
+  raw.split(/[\s,，、]+/).forEach(function (k) {
+    k = String(k || '').trim().toLowerCase();
+    if (k && reqHasOwn_(REQ_SEG2_KINDS_OK_, k) && out.indexOf(k) < 0) out.push(k);
+  });
+  return out;
+}
+/** 兩段合計上限（小時） */
+function reqSeg2MaxH_(kind, proxy) { return kind === 'ot' ? (proxy ? REQ_OT_PROXY_MAX_H : REQ_OT_MAX_H) : REQ_SEG2_TOTAL_MAX_H_[kind]; }
+/** req_info 多回的欄位（申請頁用來決定要不要出現「＋ 加第二段」、合計上限） */
+function reqSeg2Info_(out) {
+  var kinds = reqSeg2Kinds_();
+  out.seg2_kinds = kinds;
+  out.seg2_max_h = { ot: REQ_OT_MAX_H, leave: REQ_SEG2_TOTAL_MAX_H_.leave, trip: REQ_SEG2_TOTAL_MAX_H_.trip };
+  out.seg2_no_types = REQ_SEG2_NO_TYPES_.slice();
+  out.ot_max_h = REQ_OT_MAX_H;
+  out.ot_segments_max = kinds.indexOf('ot') < 0 ? 1 : 2;
+  return out;
+}
+/** 兩段是不是接在一起（一段的結束＝另一段的開始，含跨夜）；reqOverlap_ 把接在一起當成不重疊，兩段時要另外擋 */
+function reqSegTouch_(s1, e1, s2, e2) {
+  var a = reqMin_(s1), b = reqMin_(e1), c = reqMin_(s2), d = reqMin_(e2);
+  if (a === null || b === null || c === null || d === null) return false;
+  if (b <= a) b += 1440;
+  if (d <= c) d += 1440;
+  return [0, 1440, -1440].some(function (k) { return b === c + k || d + k === a; });
+}
+function reqRound2_(h) { return Math.round(h * 100) / 100; }
+/** body.segments → null（沒帶：照原本一張的流程）｜{single: 換成一張的 body}（只有一段）｜{segs:[{start,end,hours,i}]（照輸入順序）, total, max}｜{error, message, seg?}
+ *  只看格式與兩段互相比對，不讀表。 */
+function reqSegsOf_(body, proxy) {
+  if (!body || body.segments === undefined || body.segments === null) return null;
+  var list = body.segments;
+  if (!Array.isArray(list) || list.length < 1 || list.length > 2) return { error: 'bad_segments', message: '一次最多填兩段時間' };
+  for (var j = 0; j < list.length; j++) if (!list[j] || typeof list[j] !== 'object' || Array.isArray(list[j])) return { error: 'bad_segments', message: '時段格式不對，請重新填' };
+  if (list.length === 1) {
+    var one = {};
+    Object.keys(body).forEach(function (k) { if (k !== 'segments') one[k] = body[k]; });
+    one.start = list[0].start; one.end = list[0].end;
+    return { single: one };
+  }
+  var kind = String(body.kind || '');
+  if (!reqHasOwn_(REQ_SEG2_KINDS_OK_, kind)) return { error: 'bad_segments', message: '只有加班、請假、出差可以一次填兩段' };
+  if (proxy && kind !== 'ot') return { error: 'bad_segments', message: '代開請假、出差不分段，請照現在填時數' };
+  if (reqSeg2Kinds_().indexOf(kind) < 0) return { error: 'seg2_off', message: '這家店還沒開放一次填兩段，請一段一段分開送' };
+  if (kind === 'leave' && REQ_SEG2_NO_TYPES_.indexOf(reqClean_(body.leave_type, 30)) >= 0) return { error: 'seg2_type', message: reqClean_(body.leave_type, 30) + '一天只算一次，不能分兩段，請填成一段' };
+  var what = REQ_KINDS_[kind], segs = [];
+  for (var i = 0; i < 2; i++) {
+    var s = reqHm_(list[i].start), e = reqHm_(list[i].end);
+    if (!s || !e) return { error: 'bad_time', seg: i + 1, message: REQ_SEG_LABEL_[i] + '：請填完整的' + what + '時段' };
+    if (s === e) return { error: 'bad_time', seg: i + 1, message: REQ_SEG_LABEL_[i] + '：開始和結束時間一樣，請確認' };
+    segs.push({ start: s, end: e, hours: reqSpanHours_(s, e), i: i });
+  }
+  var A = segs[0], B = segs[1], txt = A.start + '–' + A.end + '、' + B.start + '–' + B.end;
+  if (reqOverlap_(A.start, A.end, B.start, B.end) === true) return { error: 'seg_overlap', message: '兩段時間重疊（' + txt + '），請確認時間' };
+  if (reqSegTouch_(A.start, A.end, B.start, B.end)) return { error: 'seg_touch', message: '兩段時間接在一起（' + txt + '），請直接填成一段' };
+  var total = reqRound2_(A.hours + B.hours), max = reqSeg2MaxH_(kind, proxy);
+  if (total > max + 0.001) return { error: 'seg_total', message: '兩段合計 ' + total + ' 小時，超過' + what + '一天上限 ' + max + ' 小時' };
+  return { segs: segs, total: total, max: max };
+}
+/* 兩段共用的欄位錯了（假別、原因、地點、日期太早／太晚）不標第幾段；跟時段有關的才標 */
+var REQ_SEG_SHARED_ERR_ = { bad_kind: 1, bad_leave_type: 1, need_reason: 1, need_place: 1, bad_place: 1, too_old: 1 };
+function reqSegErr_(i, v) {
+  var shared = reqHasOwn_(REQ_SEG_SHARED_ERR_, v.error) || (v.error === 'bad_date' && String(v.message || '').indexOf('跨夜班') < 0);
+  return { error: v.error, seg: shared ? null : i + 1, message: (shared ? '' : REQ_SEG_LABEL_[i] + '：') + v.message };
+}
+function reqSegFail_(v) { var o = { ok: false, error: v.error, message: v.message }; if (v.seg) o.seg = v.seg; return o; }
+/** 逐段跑 reqValidate_（第二段把第一段當成審核中的單）→ {rows:[第一段, 第二段]（照輸入順序）}｜{error, message, seg} */
+function reqSegsValidate_(body, segP, me, events, today, existing, proxy) {
+  var seen = (existing || []).slice(), rows = [];
+  for (var i = 0; i < segP.segs.length; i++) {
+    var b = {};
+    Object.keys(body).forEach(function (k) { if (k !== 'segments' && k !== 'hours') b[k] = body[k]; });
+    b.start = segP.segs[i].start; b.end = segP.segs[i].end;
+    var v = reqValidate_(b, me, events, today, seen, proxy);
+    if (v.error) return reqSegErr_(i, v);
+    rows.push(v.row);
+    var pseudo = { id: '__seg' + i, emp_id: String(me.emp_id), status: 'pending', created_at: '' };
+    Object.keys(v.row).forEach(function (k) { pseudo[k] = v.row[k]; });
+    seen.push(pseudo);
+  }
+  return { rows: rows };
+}
+/** 同仁送兩段（handleReqSubmit_ 在鎖裡呼叫）：補休、特休、額度只檢查一次（同一個人、同一天、同一個假別；額度用兩段合計比＝分兩次送的結果） */
+function reqSubmitSegs_(body, segP, who, existing) {
+  var today = todayTaipeiStr();
+  var sv = reqSegsValidate_(body, segP, who.me, liffEvents_(who.ss), today, existing, false);
+  if (sv.error) return reqSegFail_(sv);
+  var r0 = sv.rows[0];
+  if (r0.kind === 'leave' && r0.leave_type === REQ_COMP_LEAVE_ && reqCompAllowed_(who.me) === false) {
+    return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
+  }
+  if (reqIsAnnual_(r0)) {
+    var anMsg = reqAnnualBlockMsg_(r0, reqAnnualFromLine_(who, body));
+    if (anMsg) return { ok: false, error: 'annual_not_eligible', message: anMsg };
+  }
+  var both = {};
+  Object.keys(r0).forEach(function (k) { both[k] = r0[k]; });
+  both.hours = segP.total;
+  var capMsg = reqCapLocked_(both, existing, who, body, { today: today, recorded: reqLeaveRecorded_(who.ss, who.me.name, r0) });
+  if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
+  var aid = REQ_ATTACH_RE_.test(String(body.attach_id || '')) ? String(body.attach_id) : '';   // 證明附一次，兩列寫同一個
+  return reqSaveSegs_(who.ss, sv.rows, existing, { emp_id: String(who.me.emp_id), name: String(who.me.name), attach_id: aid });
+}
+/** 照時間先後排（06:00 前開始的段排在後面＝跨過午夜那段；兩段都在 06:00 前就照開始時間） */
+function reqSegSort_(rows) {
+  var key = function (r) { var m = reqMin_(r.start); return m < REQ_EARLY_SEG_MIN_ ? m + 1440 : m; };
+  return rows.slice().sort(function (a, b) { return key(a) - key(b); });
+}
+function reqNewId_(taken) {
+  var id;
+  do { id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36); } while (taken[id]);
+  taken[id] = true;
+  return id;
+}
+/** 兩段都過了才寫：同一個 grp、同一個 created_at，照時間先後排，一次 setValues 寫兩列。
+ *  base：{emp_id, name, attach_id, proxy_by?}。回 {ok, request（第一段，舊欄位）, requests:[兩段], summary, group}。 */
+function reqSaveSegs_(ss, rows, existing, base) {
+  var now = nowTaipeiIso(), taken = {};
+  (existing || []).forEach(function (x) { taken[String(x.id)] = true; });
+  var gid = 'g' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
+  var seen = (existing || []).slice();
+  rows = reqSegSort_(rows);
+  rows.forEach(function (r, i) {
+    r.id = reqNewId_(taken);
+    r.created_at = now; r.emp_id = String(base.emp_id); r.name = String(base.name);
+    r.attach_id = base.attach_id || '';
+    r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
+    if (base.proxy_by) r.proxy_by = base.proxy_by;
+    r.grp = gid; r.__seg = i + 1;
+    reqMarkOne_(seen, r);   // 第二段把第一段算進去（病假今年第幾天：同一天算同一天）
+    seen.push(r);
+  });
+  var sh = reqSheet_(ss, true), heads = reqHeads_(sh);
+  reqAppendRows_(sh, rows.map(function (r) { return heads.map(function (h) { return r[h] === undefined ? '' : reqSheetText_(r[h], h); }); }));
+  return { ok: true, request: reqPublic_(rows[0]), requests: rows.map(reqPublic_), summary: reqSummarySegs_(rows), group: gid };
+}
+/** 一次寫好幾列（一個範圍一次 setValues；格線列數不夠先補列，appendRow 本來會自己長列） */
+function reqAppendRows_(sh, vals) {
+  if (!vals.length) return;
+  var start = sh.getLastRow() + 1, need = start + vals.length - 1;
+  if (typeof sh.getMaxRows === 'function' && typeof sh.insertRowsAfter === 'function' && sh.getMaxRows() < need) sh.insertRowsAfter(sh.getMaxRows(), need - sh.getMaxRows());
+  sh.getRange(start, 1, vals.length, vals[0].length).setValues(vals);
+}
+/** 兩段送出的摘要：「11/15 加班兩段 11:00–14:00、17:00–21:00（共 7 小時）」 */
+function reqSummarySegs_(rows) {
+  var r = rows[0], md = parseInt(String(r.date).slice(5, 7), 10) + '/' + parseInt(String(r.date).slice(8, 10), 10);
+  var times = rows.map(function (x) { return x.start + '–' + x.end; }).join('、');
+  var tot = reqRound2_(rows.reduce(function (a, x) { return a + (Number(x.hours) || 0); }, 0));
+  var s;
+  if (r.kind === 'ot') s = md + ' 加班兩段 ' + times + '（共 ' + tot + ' 小時）';
+  else if (r.kind === 'leave') s = md + ' ' + r.leave_type + '兩段 ' + times + '（共 ' + tot + ' 小時）';
+  else { var place = reqTripPlace_(r.reason); s = md + ' 出差兩段 ' + times + '（共 ' + tot + ' 小時' + (place ? '，地點：' + place : '') + '）'; }
+  return s + (r.proxy_by ? '（' + reqProxyName_(r.proxy_by) + '代開）' : '');
 }
 
 /** 生理假一年 3 次、家庭照顧假一年 7 天，用完就不能再申請（2026-11-10 Eason）。審核中的同假別一起扣。
@@ -1639,10 +1840,19 @@ function handleMgrReqProxy_(body) {
   /* 2026-11-11（B30）：名冊已停用（離職）的同仁也一樣——LINE 雖然還綁著，本人已經送不了單，
      原本要等超過 7 天店長才能代開，這幾天核定又被「缺單」擋住。 */
   if (diff >= -limit && !(diff <= 0 && (reqNoLine_(me) || !reqTrue_(me.active)))) return { ok: false, error: 'not_old', message: limit > (kind === 'miss' ? REQ_MISS_DAYS : REQ_LEAVE_PAST_DAYS) ? '11/28 以前，11 月的請假、加班、出差、忘打卡請同仁自己在 LINE「加班請假」申請；同仁沒綁 LINE 才能由主管代開' : limit + ' 天內請同仁自己在 LINE「加班請假」申請；超過 ' + limit + ' 天或同仁沒綁 LINE 才能由主管代開' };
+  // 代開兩段（2026-11-18）：只有加班（N3），上限單張與合計都是 REQ_OT_PROXY_MAX_H（N1 更正：10 小時）
+  var segP = reqSegsOf_(body, true);
+  if (segP && segP.error) return reqSegFail_(segP);
+  if (segP && segP.single) { body = segP.single; segP = null; }
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
   try {
     var existing = reqRows_(ss);
+    if (segP) {
+      var sp = reqSegsValidate_(body, segP, me, liffEvents_(ss, reqDaySince_(date)), today, existing, true);
+      if (sp.error) return reqSegFail_(sp);
+      return reqSaveSegs_(ss, sp.rows, existing, { emp_id: String(me.emp_id), name: String(me.name), attach_id: '', proxy_by: actor });
+    }
     var v = reqValidate_(body, me, liffEvents_(ss, reqDaySince_(date)), today, existing, true);
     if (v.error) return { ok: false, error: v.error, message: v.message };
     var r = v.row;
