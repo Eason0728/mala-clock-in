@@ -755,7 +755,8 @@ function handleExportTables_(body) {
   return { ok: true, exported_at: Utilities.formatDate(new Date(), 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX"), tables: out };
 }
 
-/** {action:'sheet_stats', admin_key, no_formulas?} → {ok, at, ms, sheets:[{name, last_row, last_col, max_rows, max_cols, cells, formulas, formula_kinds, cond_rules, charts, hidden, ms}], named_ranges, triggers}
+/** {action:'sheet_stats', admin_key, no_formulas?, props?} → {ok, at, ms, sheets:[{name, last_row, last_col, max_rows, max_cols, cells, formulas, formula_kinds, cond_rules, charts, hidden, ms}], named_ranges, triggers, props?}
+ *  props:true（2026-11-20）多回指令碼屬性的個數與大小（不回值，見 liffStatsProps_）；沒帶 props 時回應不變。
  *  唯讀：只回每個分頁的名稱與大小、公式有幾格與用了哪些函式名稱，**不回任何儲存格內容**，也不寫入。
  *  2026-11-17 加：金山試算表 11/13 下午起整份變慢（名冊、打卡表讀取都是別店 2～3 倍），四張主要表的列數正常，要看是哪個分頁變重。
  *  公式只在「有內容的範圍」不超過 LIFF_STATS_FORMULA_MAX_CELLS_ 格時才數（太大的分頁回 null，光看大小就夠了）；單一分頁出錯只記在那一列。
@@ -766,6 +767,64 @@ var LIFF_STATS_FORMULA_BUDGET_MS_ = 120000;
 function liffStatsFnNames_(f) {
   return String(f).replace(/"(?:[^"]|"")*"/g, '""').replace(/'(?:[^']|'')*'/g, "''").toUpperCase().match(/[A-Z][A-Z0-9_.]*(?=\()/g) || [];
 }
+
+/* sheet_stats 帶 props:true（2026-11-20，容量週檢 0b 段）：指令碼屬性的個數與大小，看離上限（單值 9 KB、總量 500 KB）多遠。
+ *  回 props:{count, total_bytes, max_value_bytes, max_value_group, groups:[{pattern, count, bytes, max_bytes}], secret:{count, big}, other:{count, bytes}, limits}
+ *  - **絕不回任何屬性值**；名稱只回「樣式」：日期→<date>、8 碼以上英數混合亂碼→<id>、其餘數字→#。
+ *  - 名稱含 KEY／TOKEN／SECRET／PASS／PRIVATE／CRED／AUTH（不分大小寫）＝金鑰類：只進 secret.count，名稱與大小都不回、
+ *    不參與 max_value_*（大小照算進 total_bytes）；secret.big＝其中值超過單值上限八成的個數（只是個數）。
+ *  - 看起來像工號（字母 1～4 碼接 3 碼以上數字、或「字母-數字」）、含中文或其他符號、樣式化後不像固定名稱的，只進 other 的個數與大小。
+ *  - bytes＝名稱＋值的 UTF-8 位元組；max_* 只算值。位元組用純 JS 算（不另外叫任何 Google 服務）。
+ *  - 整段只讀一次 getProperties()，沒有任何寫入。 */
+var LIFF_STATS_PROP_SECRET_RE_ = /KEY|TOKEN|SECRET|PASS|PRIVATE|CRED|AUTH/i;
+var LIFF_STATS_PROP_LIMITS_ = { value_bytes: 9216, store_bytes: 512000 };
+var LIFF_STATS_PROP_MAX_GROUPS_ = 80;
+function liffStatsUtf8Len_(s) {
+  s = String(s);
+  var n = 0;
+  for (var i = 0; i < s.length; i++) {
+    var c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length && s.charCodeAt(i + 1) >= 0xDC00 && s.charCodeAt(i + 1) <= 0xDFFF) { n += 4; i++; }
+    else n += 3;
+  }
+  return n;
+}
+/** 屬性名稱 → {secret:true}｜{other:true}｜{pattern:'ATT_RUN_<date>'} */
+function liffStatsPropPattern_(k) {
+  k = String(k);
+  if (LIFF_STATS_PROP_SECRET_RE_.test(k)) return { secret: true };
+  if (/(^|[^A-Za-z0-9])[A-Za-z]{1,4}(\d{3,6}|-\d{2,6})(?![A-Za-z0-9])/.test(k)) return { other: true };
+  var p = k.replace(/(^|[^0-9])(19|20)\d{2}[-_\/.]?(0[1-9]|1[0-2])[-_\/.]?(0[1-9]|[12]\d|3[01])(?![0-9])/g, '$1<date>')
+    .replace(/(^|[^0-9])(19|20)\d{2}-(0[1-9]|1[0-2])(?![0-9])/g, '$1<date>')
+    .replace(/[A-Za-z0-9]+/g, function (t) { return (t.length >= 8 && /[0-9]/.test(t) && /[A-Za-z]/.test(t)) ? '<id>' : t; })
+    .replace(/[0-9]+/g, '#');
+  return /^[A-Za-z][A-Za-z0-9_<>#]{0,47}$/.test(p) ? { pattern: p } : { other: true };
+}
+function liffStatsProps_() {
+  var all;
+  try { all = PropertiesService.getScriptProperties().getProperties() || {}; }
+  catch (e) { return { error: String((e && e.message) || e).slice(0, 160) }; }
+  var L = LIFF_STATS_PROP_LIMITS_, big = Math.floor(L.value_bytes * 0.8), g = {};
+  var out = { count: 0, total_bytes: 0, max_value_bytes: 0, max_value_group: null, groups: [],
+              secret: { count: 0, big: 0 }, other: { count: 0, bytes: 0 }, limits: { value_bytes: L.value_bytes, store_bytes: L.store_bytes } };
+  Object.keys(all).forEach(function (k) {
+    var v = all[k], vb = liffStatsUtf8Len_(v === null || v === undefined ? '' : v), b = liffStatsUtf8Len_(k) + vb, p = liffStatsPropPattern_(k);
+    out.count++; out.total_bytes += b;
+    if (p.secret) { out.secret.count++; if (vb >= big) out.secret.big++; return; }
+    var name = p.other ? 'other' : p.pattern;
+    if (out.max_value_group === null || vb > out.max_value_bytes) { out.max_value_bytes = vb; out.max_value_group = name; }
+    if (p.other) { out.other.count++; out.other.bytes += b; return; }
+    var x = g[name] || (g[name] = { pattern: name, count: 0, bytes: 0, max_bytes: 0 });
+    x.count++; x.bytes += b; if (vb > x.max_bytes) x.max_bytes = vb;
+  });
+  var list = Object.keys(g).map(function (n) { return g[n]; }).sort(function (a, b) { return (b.bytes - a.bytes) || (a.pattern < b.pattern ? -1 : 1); });
+  list.slice(LIFF_STATS_PROP_MAX_GROUPS_).forEach(function (x) { out.other.count += x.count; out.other.bytes += x.bytes; });   // 樣式太多（異常）時多的併進 other，回應大小有上限
+  out.groups = list.slice(0, LIFF_STATS_PROP_MAX_GROUPS_);
+  return out;
+}
+
 function handleSheetStats_(body) {
   if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   var t0 = Date.now(), ss = getSS(), out = [], noF = body.no_formulas === true;
@@ -800,7 +859,10 @@ function handleSheetStats_(body) {
   var named = null, trig = null;
   try { named = ss.getNamedRanges().length; } catch (e) {}
   try { trig = ScriptApp.getProjectTriggers().map(function (g) { return String(g.getHandlerFunction()) + ':' + String(g.getEventType()); }); } catch (e) {}
-  return { ok: true, at: Utilities.formatDate(new Date(), 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX"), ms: Date.now() - t0, sheets: out, named_ranges: named, triggers: trig };
+  var props = body.props === true ? liffStatsProps_() : null;   // 只有明確帶 props:true 才讀；沒帶＝回應跟以前一字不差
+  var res = { ok: true, at: Utilities.formatDate(new Date(), 'Asia/Taipei', "yyyy-MM-dd'T'HH:mm:ssXXX"), ms: Date.now() - t0, sheets: out, named_ranges: named, triggers: trig };
+  if (props) res.props = props;
+  return res;
 }
 
 /* ══ LINE 打卡快速通道（2026-10-16，~/mala-clock-relay spec v2 §3）══
