@@ -420,6 +420,66 @@ ok('ping：沒設網址回 disabled；只計數回 dry（0 次連外）；正式
   assert.strictEqual(h4.changes({ ping: 'nonce_ABC_123' }).ping, 'skip_off');
 });
 
+/* ══ 6b. ping 另設每日上限（每店每天 40 次）══ */
+ok('讀取類請求（mgr_day、duty_changes 不帶新參數、liff_status、relay_pull）：PropertiesService／CacheService 呼叫跟 origin/main 逐次相同，新增屬性讀取＝0 次', () => {
+  const reads = [
+    { action: 'mgr_day', mgr_key: 'AK', date: '2026-11-09' }, { action: 'duty_changes', mgr_key: 'AK', since: T0 }, { action: 'liff_status' }, { action: 'relay_pull', mgr_key: 'AK' },
+  ];
+  [LIVE, {}, { DUTY_PUSH_URL: URL_, DUTY_PUSH_DRY: '1' }].forEach((props) => {
+    const a = harness(OLD, { props }), b = harness(SRC, { props });
+    reads.forEach((body) => { a.write(body, { ok: true }); b.write(body, { ok: true }); });
+    assert.deepStrictEqual(b.log, a.log);
+    assert.strictEqual(b.log.filter((l) => /^Props\./.test(l)).length, 0, '讀取類請求不該讀任何屬性');
+    assert.strictEqual(b.log.filter((l) => /^Cache\./.test(l)).length, 0);
+    // duty_changes 本身（不帶新參數）：整段呼叫序列也跟舊版相同
+    const a2 = harness(OLD, { props }), b2 = harness(SRC, { props });
+    assert.strictEqual(JSON.stringify(b2.changes({ since: T0 - 1000 })), JSON.stringify(a2.changes({ since: T0 - 1000 })));
+    assert.deepStrictEqual(b2.log, a2.log);
+    assert.ok(!b2.log.some((l) => /DUTY_PUSH|dpush_/.test(l)));
+    assert.strictEqual(b.fetches.length + b2.fetches.length, 0);
+  });
+});
+
+ok('ping 每天 40 次：第 41 次不連外（回 skip_ping_cap、統計記一筆）；隔天（台北）重新算', () => {
+  assert.strictEqual(harness(SRC, { props: {} }).sb.DUTY_PUSH_PING_DAY_CAP_, 40);
+  const h = harness(SRC, { props: LIVE });
+  for (let i = 0; i < 40; i++) assert.strictEqual(h.changes({ ping: 'nonce_ABC_123' }).ping, 'ok');
+  assert.strictEqual(h.fetches.length, 40);
+  const r = h.changes({ ping: 'nonce_ABC_123' });
+  assert.strictEqual(r.ping, 'skip_ping_cap'); assert.strictEqual(h.fetches.length, 40);
+  assert.strictEqual(h.changes({ ping: 'nonce_ABC_123' }).ping, 'skip_ping_cap'); assert.strictEqual(h.fetches.length, 40);
+  assert.deepStrictEqual([r.push.sent, r.push.ok, r.push.skip_ping_cap, r.push.skip_cap, r.push.ping_cap], [40, 40, 1, 0, 40]);
+  assert.strictEqual(h.changes({ push_stats: true }).push.skip_ping_cap, 2);
+  h.now = Date.parse('2026-11-11T00:00:05+08:00');
+  assert.strictEqual(h.changes({ ping: 'nonce_ABC_123' }).ping, 'ok'); assert.strictEqual(h.fetches.length, 41);
+  assert.deepStrictEqual([h.stats().sent, h.stats().skip_ping_cap], [1, 0]);
+});
+
+ok('ping 超過上限不影響一般寫入的推送；一般寫入照舊 1,500 次上限；ping 仍受熔斷管', () => {
+  const h = harness(SRC, { props: LIVE });
+  for (let i = 0; i < 41; i++) h.changes({ ping: 'nonce_ABC_123' });
+  assert.strictEqual(h.fetches.length, 40);
+  h.write(W, { ok: true }); h.write({ action: 'clock' }, { ok: true });
+  assert.strictEqual(h.fetches.length, 42);
+  assert.deepStrictEqual(J(JSON.parse(h.fetches[41].opt.payload).a), 'clock');
+  assert.deepStrictEqual([h.stats().sent, h.stats().ok, h.stats().skip_ping_cap, h.stats().skip_cap], [42, 42, 1, 0]);
+  // 一般寫入的上限還是 1,500（含前面 40 次 ping 與 2 次寫入）
+  for (let i = 0; i < 1458; i++) h.write({ action: 'clock' }, { ok: true });
+  assert.strictEqual(h.fetches.length, 1500);
+  h.write({ action: 'clock' }, { ok: true });
+  assert.deepStrictEqual([h.fetches.length, h.stats().skip_cap], [1500, 1]);
+  // ping 還沒滿 40 次、但熔斷中 → skip_off，不算進 ping 次數
+  const g = harness(SRC, { props: LIVE, fetch: () => resp(500, '') });
+  g.write(W, { ok: true });
+  assert.strictEqual(g.changes({ ping: 'nonce_ABC_123' }).ping, 'skip_off');
+  assert.strictEqual(g.cache['dpush_ping_2026-11-10'], undefined);
+  // 只計數模式也套 ping 上限（量到的就是正式會推的次數），一般寫入不受影響
+  const d = harness(SRC, { props: { DUTY_PUSH_URL: URL_, DUTY_PUSH_DRY: '1' } });
+  for (let i = 0; i < 41; i++) d.changes({ ping: 'nonce_ABC_123' });
+  d.write(W, { ok: true });
+  assert.deepStrictEqual([d.fetches.length, d.stats().dry, d.stats().skip_ping_cap], [0, 41, 1]);
+});
+
 /* ══ 7. 一次性設門鈴金鑰（push_setup）══ */
 const NEWKEY = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
 ok('push_setup：沒管理金鑰、主管金鑰錯、格式錯 → 拒絕不寫；第一次寫入（不回金鑰）；第二次 already_set；回應與 log 都沒有金鑰', () => {

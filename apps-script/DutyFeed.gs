@@ -169,6 +169,9 @@ var DUTY_PUSH_TIMEOUT_S_ = 3;               // UrlFetch 最多等 3 秒
 var DUTY_PUSH_FAIL_OFF_S_ = 60;             // 失敗（逾時、非 2xx、回的不是 JSON）→ 60 秒內這家店不推
 var DUTY_PUSH_REMOTE_OFF_S_ = 3600;         // mini 回 off:true → 1 小時內不推
 var DUTY_PUSH_DAY_CAP_ = 1500;              // 單店每天最多真的連外 1,500 次（防 UrlFetch 額度被吃光、LINE 驗證跟著掛）
+var DUTY_PUSH_PING_DAY_CAP_ = 40;           // ping（duty_changes 帶 ping 時往外連的那一次）另計：單店每天最多 40 次。設計是每小時 1 次、一天 22 次，留餘裕；
+                                            // 九店共用同一帳號「往外連線 2 萬次/天」，mini 端出錯狂打 ping 時不能靠一般寫入的 1,500 次額度擋，所以獨立、更保守
+var DUTY_PUSH_PING_PREFIX_ = 'dpush_ping_'; // ping 當天次數（CacheService 另一個 key，後面接台北日期）
 var DUTY_PUSH_MS_KEEP_ = 100;               // 統計保留最近 100 次耗時
 var DUTY_PUSH_OFF_KEY_ = 'dpush_off';
 var DUTY_PUSH_ST_PREFIX_ = 'dpush_st_';
@@ -231,7 +234,7 @@ function dutyPushTo_(action, body, res) {
 }
 
 function dutyPushStParse_(raw, day) {
-  var st = { d: day, sent: 0, ok: 0, remote_off: 0, fail: 0, dry: 0, skip_off: 0, skip_cap: 0, skip_cfg: 0, with_to: 0, ms: [] };
+  var st = { d: day, sent: 0, ok: 0, remote_off: 0, fail: 0, dry: 0, skip_off: 0, skip_cap: 0, skip_ping_cap: 0, skip_cfg: 0, with_to: 0, ms: [] };
   if (!raw) return st;
   var j;
   try { j = JSON.parse(raw); } catch (e) { return st; }
@@ -251,14 +254,19 @@ function dutyPushStParse_(raw, day) {
  *  2. timeoutSeconds:3、muteHttpExceptions、followRedirects:false（轉址＝失敗）。
  *  3. 失敗 → 60 秒熔斷（CacheService dpush_off）；4. mini 回 off:true → 停 1 小時。
  *  5. 單店每天真的連外最多 1,500 次（計數不是原子，誤差可接受）。只計數模式不受上限、也不連外。
+ *  6. ping 另有每天 40 次的獨立上限（skip_ping_cap，不連外）；仍受熔斷管，也算進上面 1,500 次。只計數模式照樣套用，量得到的就是正式會推的次數。
  */
 function dutyPushSend_(p, cfg) {
   var now = Date.now(), day = dutyPushDay_(now), stKey = DUTY_PUSH_ST_PREFIX_ + day;
   var cache = CacheService.getScriptCache();
-  var got = cache.getAll([DUTY_PUSH_OFF_KEY_, stKey]) || {};
+  var isPing = p.a === 'ping', pingKey = DUTY_PUSH_PING_PREFIX_ + day;
+  var got = cache.getAll(isPing ? [DUTY_PUSH_OFF_KEY_, stKey, pingKey] : [DUTY_PUSH_OFF_KEY_, stKey]) || {};   // 一般寫入的快取讀取跟以前一樣，不多讀 ping 計數
   var st = dutyPushStParse_(got[stKey], day), off = null, outcome = '', offPut = null;
+  var pingN = isPing ? Number(got[pingKey]) : 0;
+  if (!isFinite(pingN) || pingN < 0) pingN = 0;
   try { off = got[DUTY_PUSH_OFF_KEY_] ? JSON.parse(got[DUTY_PUSH_OFF_KEY_]) : null; } catch (e) { off = null; }
   if (off && Number(off.until) > now) outcome = 'skip_off';
+  else if (isPing && pingN >= DUTY_PUSH_PING_DAY_CAP_) outcome = 'skip_ping_cap';
   else if (cfg.dry) outcome = 'dry';
   else if (st.sent >= DUTY_PUSH_DAY_CAP_) outcome = 'skip_cap';
   else if (!/^https:\/\//.test(cfg.url) || cfg.key.length < 32 || !/^[a-z0-9]{2,16}$/.test(cfg.store)) outcome = 'skip_cfg';
@@ -289,6 +297,7 @@ function dutyPushSend_(p, cfg) {
   if (p.to && (outcome === 'ok' || outcome === 'remote_off' || outcome === 'fail' || outcome === 'dry')) st.with_to++;
   if (offPut) cache.put(DUTY_PUSH_OFF_KEY_, JSON.stringify({ until: Date.now() + offPut.s * 1000, why: offPut.why }), offPut.s);
   cache.put(stKey, JSON.stringify(st), DUTY_FEED_TTL_S_);
+  if (isPing && (outcome === 'ok' || outcome === 'remote_off' || outcome === 'fail' || outcome === 'dry')) cache.put(pingKey, String(pingN + 1), DUTY_FEED_TTL_S_);   // 只算真的連外（或只計數）的那幾次
   return outcome;
 }
 
@@ -324,9 +333,9 @@ function dutyPushStats_() {
   var ms = st.ms.slice().sort(function (a, b) { return a - b; });
   var q = function (f) { return ms.length ? ms[Math.max(0, Math.ceil(f * ms.length) - 1)] : null; };
   var keySet = cfg.dry ? String(PropertiesService.getScriptProperties().getProperty('DUTY_PUSH_KEY') || '').length >= 32 : cfg.key.length >= 32;
-  return { on: true, mode: cfg.dry ? 'dry' : 'live', day: day, cap: DUTY_PUSH_DAY_CAP_, key_set: keySet,
+  return { on: true, mode: cfg.dry ? 'dry' : 'live', day: day, cap: DUTY_PUSH_DAY_CAP_, ping_cap: DUTY_PUSH_PING_DAY_CAP_, key_set: keySet,
            sent: st.sent, ok: st.ok, remote_off: st.remote_off, fail: st.fail, dry: st.dry,
-           skip_off: st.skip_off, skip_cap: st.skip_cap, skip_cfg: st.skip_cfg, with_to: st.with_to,
+           skip_off: st.skip_off, skip_cap: st.skip_cap, skip_ping_cap: st.skip_ping_cap, skip_cfg: st.skip_cfg, with_to: st.with_to,
            samples: ms.length, p50ms: q(0.5), p95ms: q(0.95), max_ms: ms.length ? ms[ms.length - 1] : null,
            off: off && Number(off.until) > now ? { why: String(off.why || ''), until: Number(off.until) } : null };
 }
