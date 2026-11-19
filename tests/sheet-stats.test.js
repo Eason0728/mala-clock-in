@@ -12,9 +12,13 @@ function extract(src, name) {
   for (; j < src.length; j++) { if (src[j] === '{') d++; else if (src[j] === '}' && --d === 0) { j++; break; } }
   return src.slice(i, j);
 }
-const maxLine = liff.split('\n').filter((l) => l.indexOf('var LIFF_STATS_') === 0).join('\n');
-assert.ok(maxLine.indexOf('LIFF_STATS_FORMULA_MAX_CELLS_') >= 0 && maxLine.indexOf('LIFF_STATS_FORMULA_BUDGET_MS_') >= 0, '找不到 LIFF_STATS_ 常數');
-const FNS = maxLine + '\n' + extract(liff, 'liffStatsFnNames_') + '\n' + extract(liff, 'handleSheetStats_');
+function buildFns(src) {   // 任一版本的 Liff.gs → sheet_stats 相關常數與函式（舊版沒有的 props 輔助函式就略過）
+  const consts = src.split('\n').filter((l) => l.indexOf('var LIFF_STATS_') === 0).join('\n');
+  assert.ok(consts.indexOf('LIFF_STATS_FORMULA_MAX_CELLS_') >= 0 && consts.indexOf('LIFF_STATS_FORMULA_BUDGET_MS_') >= 0, '找不到 LIFF_STATS_ 常數');
+  const extra = ['liffStatsUtf8Len_', 'liffStatsPropPattern_', 'liffStatsProps_'].filter((f) => src.indexOf('function ' + f + '(') >= 0).map((f) => extract(src, f));
+  return [consts, extract(src, 'liffStatsFnNames_')].concat(extra, [extract(src, 'handleSheetStats_')]).join('\n');
+}
+const FNS = buildFns(liff);
 let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 const J = (v) => JSON.parse(JSON.stringify(v));
 
@@ -42,8 +46,9 @@ function make(sheets, opts) {
     Utilities: { formatDate: () => '2026-11-17T01:00:00+08:00' },
     ScriptApp: { getProjectTriggers: () => { if (opts.trigBoom) throw new Error('沒有權限'); return (opts.triggers || []).map((t) => ({ getHandlerFunction: () => t[0], getEventType: () => t[1] })); } }
   };
+  if (opts.PropertiesService) sb.PropertiesService = opts.PropertiesService;
   vm.createContext(sb);
-  vm.runInContext(FNS, sb);
+  vm.runInContext(opts.fns || FNS, sb);
   return { run: (b) => J(vm.runInContext('handleSheetStats_', sb)(b)), calls, sb };
 }
 
@@ -175,6 +180,241 @@ ok('整份 Liff.gs 在沒有 ScriptApp 的環境載入不出錯（Mac mini 打�
   vm.createContext(sb);
   vm.runInContext(liff, sb);
   assert.strictEqual(typeof vm.runInContext('LIFF_HANDLERS.sheet_stats', sb), 'function');
+});
+
+/* ══ props:true（2026-11-20，容量週檢 0b 段）：指令碼屬性個數與大小，不回任何值 ══ */
+const { execFileSync } = require('child_process');
+const BASE_COMMIT = '66aa2cf';   // 加 props 之前的 main（九店 11/18 起服務中的 Liff.js 就是這版的 sheet_stats）
+function gitShow(ref) {
+  try { return execFileSync('git', ['show', ref + ':apps-script/Liff.gs'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 }); }
+  catch (e) { return null; }
+}
+const OLD_LIFF = gitShow(BASE_COMMIT);
+assert.ok(OLD_LIFF, '讀不到 ' + BASE_COMMIT + ' 版的 Liff.gs（要在 git repo 裡跑）');
+const u8 = (s) => Buffer.byteLength(String(s), 'utf8');
+function fakeProps(map, log) {
+  const store = {
+    getProperties: () => { log.push('getProperties'); return Object.assign({}, map); },
+    getProperty: () => { log.push('getProperty'); throw new Error('不該逐一讀'); },
+    getKeys: () => { log.push('getKeys'); throw new Error('不該用'); },
+    setProperty: () => { log.push('setProperty'); throw new Error('不該寫入'); },
+    setProperties: () => { log.push('setProperties'); throw new Error('不該寫入'); },
+    deleteProperty: () => { log.push('deleteProperty'); throw new Error('不該寫入'); },
+    deleteAllProperties: () => { log.push('deleteAllProperties'); throw new Error('不該寫入'); }
+  };
+  return { getScriptProperties: () => { log.push('getScriptProperties'); return store; },
+           getDocumentProperties: () => { log.push('getDocumentProperties'); throw new Error('不該用'); },
+           getUserProperties: () => { log.push('getUserProperties'); throw new Error('不該用'); } };
+}
+const fixedNow = 1763571600000;
+class FixedDate extends Date { constructor(...a) { if (a.length) super(...a); else super(fixedNow); } static now() { return fixedNow; } }
+const SHEETS = [{ name: 'events', lastRow: 3, lastCol: 2, maxRows: 1000, maxCols: 26, formulas: [['=NOW()', ''], ['', ''], ['', '']] },
+                { name: '報表', lastRow: 2, lastCol: 3, maxRows: 500, maxCols: 40, hidden: true, rules: 2, charts: 1, formulas: [['=SUM(A1:A2)', '', ''], ['', '', '']] }];
+const OPTS = { named: 1, triggers: [['capSweep', 'CLOCK']], Date: FixedDate };
+
+// 假屬性：每個值都帶 VAL 記號，名稱敏感的也記下來，最後全文比對都不能出現
+const BIG_SECRET = 'VALSECRETBIG' + 'x'.repeat(8000);
+const DEPT_LAST = JSON.stringify(Array.from({ length: 640 }, (_, i) => 'DZY' + String(i).padStart(3, '0')));   // 約 5 KB，像 REQ_DEPT_EMPS_LAST
+const PROPS = {
+  RELAY_KEY: 'VALrelay0123456789abcdef', QR_SECRET: 'VALqrsecret', NOTIFY_INBOX_TOKEN: 'VALtoken', ATT_ALERT_SVC_KEY: 'VALsvc',
+  relay_key_old: 'VALlower', DB_PASSWORD: 'VALpw', GCP_PRIVATE_PEM: BIG_SECRET, X_CRED: 'VALcred', OAUTH_STATE: 'VALauth',
+  'ATT_RUN_2026-11-01': '{"n":"VALrun1"}', 'ATT_RUN_2026-11-02': '{"n":"VALrun2"}',
+  ATT_STATE_RUN: JSON.stringify({ d: 'VALstate' + 'y'.repeat(3000) }),
+  ATT_VERDICT_01JC3K9Z8QWERTY12: '{"v":"VALverdict"}',
+  REQ_DEPT_EMPS_LAST: DEPT_LAST,
+  REQ_SEG2_KINDS: 'VALseg2', mirror_last_ok: '2026-11-19T10:00:00+08:00VALmirror', REFRESH_CURRENT_MONTH_LAST_ROW: '1234',
+  '店長備註': 'VAL中文值', DZY020: 'VALemp1', 'NOTE_HQ-01': 'VALemp2', GF012_flag: 'VALemp3',
+  U4af4980629bd1ef2f0e2c4c4e2a1b3c9: 'VALline', 'my note': 'VALspace'
+};
+const SECRET_NAMES = ['RELAY_KEY', 'QR_SECRET', 'NOTIFY_INBOX_TOKEN', 'ATT_ALERT_SVC_KEY', 'relay_key_old', 'DB_PASSWORD', 'GCP_PRIVATE_PEM', 'X_CRED', 'OAUTH_STATE'];
+const OTHER_NAMES = ['店長備註', 'DZY020', 'NOTE_HQ-01', 'GF012_flag', 'U4af4980629bd1ef2f0e2c4c4e2a1b3c9', 'my note'];
+
+ok('props：不帶 props（或 props 不是 true）→ 回應跟加功能前的版本一字不差、key 集合不變，而且完全不碰指令碼屬性', () => {
+  const oldFns = buildFns(OLD_LIFF);
+  assert.ok(oldFns.indexOf('liffStatsProps_') < 0, '基準版不該有 props');
+  [{ admin_key: 'ADM' }, { admin_key: 'ADM', no_formulas: true }, { admin_key: 'ADM', props: 'true' }, { admin_key: 'ADM', props: 1 }, { admin_key: 'ADM', props: false }, { admin_key: 'ADM', no_formulas: true, props: null }].forEach((b) => {
+    const log = [];
+    const oldR = make(SHEETS, Object.assign({ fns: oldFns }, OPTS)).run(b);
+    const newR = make(SHEETS, Object.assign({ PropertiesService: fakeProps(PROPS, log) }, OPTS)).run(b);
+    assert.deepStrictEqual(newR, oldR, JSON.stringify(b));
+    assert.strictEqual(JSON.stringify(newR), JSON.stringify(oldR), '欄位順序也要一樣 ' + JSON.stringify(b));
+    assert.deepStrictEqual(Object.keys(newR), ['ok', 'at', 'ms', 'sheets', 'named_ranges', 'triggers']);
+    assert.deepStrictEqual(log, [], '沒帶 props:true 不該碰 PropertiesService ' + JSON.stringify(b));
+  });
+  // 沒有 PropertiesService 的環境（例如 mini 引擎）照常可跑
+  assert.strictEqual(make(SHEETS, OPTS).run({ admin_key: 'ADM' }).ok, true);
+});
+
+ok('props：沒金鑰帶 props:true 一樣 unauthorized，不碰指令碼屬性', () => {
+  const log = [];
+  assert.deepStrictEqual(make(SHEETS, Object.assign({ PropertiesService: fakeProps(PROPS, log) }, OPTS)).run({ props: true }), { ok: false, error: 'unauthorized' });
+  assert.deepStrictEqual(log, []);
+});
+
+ok('props：個數、大小、樣式正確；只呼叫 getScriptProperties().getProperties() 一次，沒有任何寫入', () => {
+  const log = [];
+  const r = make(SHEETS, Object.assign({ PropertiesService: fakeProps(PROPS, log) }, OPTS)).run({ admin_key: 'ADM', no_formulas: true, props: true });
+  assert.deepStrictEqual(log, ['getScriptProperties', 'getProperties']);
+  assert.deepStrictEqual(Object.keys(r), ['ok', 'at', 'ms', 'sheets', 'named_ranges', 'triggers', 'props']);
+  const p = r.props, names = Object.keys(PROPS);
+  assert.strictEqual(p.count, names.length);
+  assert.strictEqual(p.total_bytes, names.reduce((a, k) => a + u8(k) + u8(PROPS[k]), 0));
+  assert.deepStrictEqual(p.limits, { value_bytes: 9216, store_bytes: 512000 });
+  assert.deepStrictEqual(p.secret, { count: SECRET_NAMES.length, big: 1 });   // GCP_PRIVATE_PEM 8012 位元組 ≥ 9216×0.8
+  assert.deepStrictEqual(p.other, { count: OTHER_NAMES.length, bytes: OTHER_NAMES.reduce((a, k) => a + u8(k) + u8(PROPS[k]), 0) });
+  // 最大單值不算金鑰類（金鑰 8012 比 REQ_DEPT_EMPS_LAST 大，但不能被拿來當最大值、也不能透露大小）
+  assert.strictEqual(p.max_value_group, 'REQ_DEPT_EMPS_LAST');
+  assert.strictEqual(p.max_value_bytes, u8(DEPT_LAST));
+  const G = {}; p.groups.forEach((g) => { G[g.pattern] = g; });
+  assert.deepStrictEqual(G['ATT_RUN_<date>'], { pattern: 'ATT_RUN_<date>', count: 2, bytes: u8('ATT_RUN_2026-11-01') * 2 + u8('{"n":"VALrun1"}') * 2, max_bytes: u8('{"n":"VALrun1"}') });
+  assert.strictEqual(G['ATT_VERDICT_<id>'].count, 1);
+  assert.strictEqual(G['REQ_SEG#_KINDS'].count, 1);
+  assert.strictEqual(G.ATT_STATE_RUN.max_bytes, u8(PROPS.ATT_STATE_RUN));
+  assert.ok(G.mirror_last_ok && G.REFRESH_CURRENT_MONTH_LAST_ROW);
+  assert.deepStrictEqual(Object.keys(p.groups[0]), ['pattern', 'count', 'bytes', 'max_bytes']);
+  // 依大小排序；三類加起來＝總數
+  for (let i = 1; i < p.groups.length; i++) assert.ok(p.groups[i - 1].bytes >= p.groups[i].bytes);
+  assert.strictEqual(p.groups.reduce((a, g) => a + g.count, 0) + p.other.count + p.secret.count, p.count);
+});
+
+ok('props：回應全文找不到任何屬性值；金鑰類、工號、中文、LINE 帳號的名稱都不出現', () => {
+  const r = make(SHEETS, Object.assign({ PropertiesService: fakeProps(PROPS, []) }, OPTS)).run({ admin_key: 'ADM', props: true });
+  const txt = JSON.stringify(r.props);
+  assert.ok(txt.indexOf('VAL') < 0, '回應帶出了屬性值');
+  Object.keys(PROPS).forEach((k) => { const v = PROPS[k]; if (v.length >= 4) assert.ok(txt.indexOf(v.slice(0, 12)) < 0, '值外洩：' + k); });
+  ['DZY0', '2026-11-19', '1234'].forEach((w) => assert.ok(txt.indexOf(w) < 0, '值片段外洩：' + w));
+  SECRET_NAMES.concat(OTHER_NAMES).forEach((k) => assert.ok(txt.indexOf(k) < 0, '名稱外洩：' + k));
+  ['RELAY', 'QR_', 'SECRET', 'TOKEN', 'PASS', 'PRIVATE', 'CRED', 'AUTH', 'SVC_KEY', '店長', 'HQ-01', 'GF012', 'U4af'].forEach((w) => assert.ok(txt.replace(/"secret":/g, '').toUpperCase().indexOf(w.toUpperCase()) < 0, '名稱片段外洩：' + w));   // 欄位名 secret 本身不算
+});
+
+ok('props：名稱樣式化規則（手算對照）', () => {
+  const sb = make([], {}).sb;
+  const pat = (k) => J(vm.runInContext('liffStatsPropPattern_', sb)(k));
+  const cases = [
+    ['ATT_RUN_2026-11-01', { pattern: 'ATT_RUN_<date>' }],
+    ['ATT_RUN_20261101', { pattern: 'ATT_RUN_<date>' }],
+    ['ATT_RUN_2026_11_01', { pattern: 'ATT_RUN_<date>' }],
+    ['ATT_X_2026-11', { pattern: 'ATT_X_<date>' }],
+    ['ATT_VERDICT_01JC3K9Z8QWERTY12', { pattern: 'ATT_VERDICT_<id>' }],
+    ['ATT_BATCH_3f2a9c1b7d', { pattern: 'ATT_BATCH_<id>' }],
+    ['ATT_EVT_1763571600000', { pattern: 'ATT_EVT_#' }],
+    ['REQ_SEG2_KINDS', { pattern: 'REQ_SEG#_KINDS' }],
+    ['CAP10_ON', { pattern: 'CAP#_ON' }],
+    ['REQ_DEPT_EMPS_LAST', { pattern: 'REQ_DEPT_EMPS_LAST' }],
+    ['REFRESH_CURRENT_MONTH_LAST_APPROVED_ROW', { pattern: 'REFRESH_CURRENT_MONTH_LAST_APPROVED_ROW' }],
+    ['mirror_last_ok', { pattern: 'mirror_last_ok' }],
+    ['G_RECON', { pattern: 'G_RECON' }],
+    ['LINE_MAP_KID', { pattern: 'LINE_MAP_KID' }],
+    // 金鑰類（不分大小寫，寧可多擋）
+    ['RELAY_KEY', { secret: true }], ['relay_key', { secret: true }], ['QR_SECRET', { secret: true }], ['NOTIFY_INBOX_TOKEN', { secret: true }],
+    ['DB_Password', { secret: true }], ['GCP_PRIVATE', { secret: true }], ['X_CRED', { secret: true }], ['OAUTH_STATE', { secret: true }],
+    ['STAFF_HUB_KEY', { secret: true }], ['PNL_KEY', { secret: true }],
+    // 工號、中文、LINE 帳號、怪符號、太長、開頭不是字母 → other
+    ['DZY020', { other: true }], ['NOTE_HQ-01', { other: true }], ['GF012_flag', { other: true }], ['emp_mzt1234', { other: true }],
+    ['店長備註', { other: true }], ['ATT_店長', { other: true }], ['U4af4980629bd1ef2f0e2c4c4e2a1b3c9', { other: true }],
+    ['my note', { other: true }], ['a-b', { other: true }], ['x.y', { other: true }], ['A'.repeat(49), { other: true }], ['', { other: true }], ['_X', { other: true }],
+    ['3f2a9c1b-4b2e-11ee-be56-0242ac120002', { other: true }],
+    // 白名單：純英文字母（可能是人名）、大小寫混合 → other；全大寫蛇形與明列的固定小寫 key 才回樣式
+    ['REQ_Wang_Xiaoming', { other: true }], ['alice', { other: true }], ['mala_ming', { other: true }], ['Alice', { other: true }], ['mirror_last_ok2', { other: true }],
+    ['X_<date>', { other: true }], ['X_#', { other: true }],
+    ['ATT_STATE_RUN', { pattern: 'ATT_STATE_RUN' }], ['ATT_RUN_2026-11-01', { pattern: 'ATT_RUN_<date>' }]
+  ];
+  cases.forEach(([k, want]) => assert.deepStrictEqual(pat(k), want, k));
+  assert.deepStrictEqual(pat('A'.repeat(48)), { pattern: 'A'.repeat(48) });
+});
+
+ok('props：UTF-8 位元組數與 Node Buffer.byteLength 一致（中文、emoji、落單的代理字元）', () => {
+  const sb = make([], {}).sb, len = vm.runInContext('liffStatsUtf8Len_', sb);
+  ['', 'abc', '店長', 'é', '😀', 'a😀b店', '\uD800', 'x\uDC00y', '\uD83D', JSON.stringify({ a: '中文', b: [1, 2] }), 12345, null].forEach((s) =>
+    assert.strictEqual(len(s), u8(s), JSON.stringify(s)));
+});
+
+ok('props：讀屬性出錯 → props 只帶 error，其餘照回；沒有屬性 → 全 0、max_value_group 為 null', () => {
+  const boom = { getScriptProperties: () => ({ getProperties: () => { throw new Error('Properties 服務暫時無法使用'); } }) };
+  const r = make(SHEETS, Object.assign({ PropertiesService: boom }, OPTS)).run({ admin_key: 'ADM', props: true });
+  assert.strictEqual(r.ok, true); assert.strictEqual(r.sheets.length, 2);
+  assert.deepStrictEqual(r.props, { error: 'Properties 服務暫時無法使用' });
+  const e = make(SHEETS, Object.assign({ PropertiesService: fakeProps({}, []) }, OPTS)).run({ admin_key: 'ADM', props: true }).props;
+  assert.deepStrictEqual(e, { count: 0, total_bytes: 0, max_value_bytes: 0, max_value_group: null, groups: [], secret: { count: 0, big: 0 }, other: { count: 0, bytes: 0 }, limits: { value_bytes: 9216, store_bytes: 512000 } });
+  // 只有金鑰類 → max_value_* 不受影響
+  const s = make(SHEETS, Object.assign({ PropertiesService: fakeProps({ RELAY_KEY: 'k'.repeat(100) }, []) }, OPTS)).run({ admin_key: 'ADM', props: true }).props;
+  assert.deepStrictEqual([s.count, s.total_bytes, s.max_value_bytes, s.max_value_group, s.secret.count, s.secret.big], [1, 109, 0, null, 1, 0]);
+});
+
+ok('props：樣式超過 80 種（異常）→ 多的併進 other，個數守恆', () => {
+  const m = {}; for (let i = 0; i < 100; i++) m['K' + String.fromCharCode(65 + (i % 26)) + String.fromCharCode(65 + Math.floor(i / 26)) + '_X'] = 'v'.repeat(i + 1);
+  const p = make(SHEETS, Object.assign({ PropertiesService: fakeProps(m, []) }, OPTS)).run({ admin_key: 'ADM', props: true }).props;
+  assert.strictEqual(p.groups.length, 80);
+  assert.strictEqual(p.other.count, 20);
+  assert.strictEqual(p.groups.reduce((a, g) => a + g.count, 0) + p.other.count, 100);
+  assert.strictEqual(p.groups.reduce((a, g) => a + g.bytes, 0) + p.other.bytes, p.total_bytes);
+  assert.strictEqual(p.max_value_bytes, 100);
+});
+
+ok('props：屬性值是非字串（物件、undefined、null、數字、陣列）→ 不丟例外，照常統計；值處理中出例外 → 只回固定字串 props_failed、不帶值，其餘欄位照回', () => {
+  const weird = { ODD_OBJ: { a: 'VALobj' }, ODD_UNDEF: undefined, ODD_NULL: null, ODD_NUM: 12345, ODD_ARR: ['VALarr'], odd_lower: { x: 1 } };
+  const r = make(SHEETS, Object.assign({ PropertiesService: fakeProps(weird, []) }, OPTS)).run({ admin_key: 'ADM', props: true });
+  assert.strictEqual(r.ok, true); assert.strictEqual(r.props.error, undefined);
+  assert.strictEqual(r.props.count, 6);
+  assert.ok(JSON.stringify(r.props).indexOf('VAL') < 0);
+  // 值的 toString 會丟出夾著值的訊息 → 固定字串，不帶訊息
+  const bad = { toString() { throw new Error('VALLEAK 不該出現'); } };
+  const r2 = make(SHEETS, Object.assign({ PropertiesService: fakeProps({ ATT_STATE_RUN: bad }, []) }, OPTS)).run({ admin_key: 'ADM', props: true });
+  assert.strictEqual(r2.ok, true); assert.strictEqual(r2.sheets.length, 2); assert.deepStrictEqual(r2.triggers, ['capSweep:CLOCK']);
+  assert.deepStrictEqual(J(r2.props), { error: 'props_failed' });
+  assert.ok(JSON.stringify(r2).indexOf('VALLEAK') < 0);
+});
+
+// Apps Script 依程式碼文字判斷要哪些授權：Liff.gs 只要多出一個新服務（或 ScriptApp 等的新方法），九店都要重新授權、授權前全部失敗
+const SVC_RE = /\b(?:[A-Z][A-Za-z]*(?:App|Service|Services)|Utilities|Session|Logger|Browser|Maps|Jdbc|XmlService|Charts|Drive|Gmail|Calendar|Sheets|Docs|Slides|People|Tasks|AdminDirectory|YouTube|Analytics|BigQuery|Console)\b(?:\s*\.\s*[A-Za-z_$][\w$]*)?/g;
+function svcUse(src) {
+  const names = new Set(), calls = new Set();
+  (src.match(SVC_RE) || []).forEach((m) => { const t = m.replace(/\s+/g, ''); names.add(t.split('.')[0]); if (t.indexOf('.') > 0) calls.add(t); });
+  return { names, calls };
+}
+ok('授權範圍不變：新版 Liff.gs 用到的服務名稱與「服務.方法」都 ⊆ 加功能前版本（' + BASE_COMMIT + '，有 origin/main 也一起比）', () => {
+  const now = svcUse(liff);
+  [BASE_COMMIT, 'origin/main'].forEach((ref) => {
+    const src = gitShow(ref);
+    if (!src) { assert.notStrictEqual(ref, BASE_COMMIT); return; }
+    const old = svcUse(src);
+    const newNames = [...now.names].filter((x) => !old.names.has(x)), newCalls = [...now.calls].filter((x) => !old.calls.has(x));
+    assert.deepStrictEqual(newNames, [], ref + ' 沒有的服務：' + newNames);
+    assert.deepStrictEqual(newCalls, [], ref + ' 沒有的服務方法：' + newCalls);
+  });
+  assert.ok(now.calls.has('PropertiesService.getScriptProperties') && now.names.has('Utilities'), '比對規則本身要抓得到既有服務');
+  assert.ok(svcUse('DriveApp.getFiles(); ScriptApp.newTrigger("x")').calls.has('ScriptApp.newTrigger'), '比對規則要抓得到新方法');
+});
+
+ok('服務用法 ⊆ 舊版（逐條）：對舊版新增的行，用到的「服務.方法鏈」只有 PropertiesService.getScriptProperties().getProperties() 與舊版本來就在用的 Utilities 方法，其他任何 XxxApp.／XxxService. 都失敗', () => {
+  const CHAIN_RE = /\b(?:[A-Z][A-Za-z]*(?:App|Service|Services)|Utilities|Session|Logger|Browser|Maps|Jdbc|XmlService|Charts|Drive|Gmail|Calendar|Sheets|Docs|Slides|People|Tasks|AdminDirectory|YouTube|Analytics|BigQuery|Console)\b(?:\s*\.\s*[A-Za-z_$][\w$]*(?:\s*\([^()]*\))?)*/g;
+  const chains = (text) => (text.match(CHAIN_RE) || []).map((m) => m.replace(/\s+/g, ''));
+  // 比對規則本身要抓得到鏈與新服務
+  assert.deepStrictEqual(chains('x = PropertiesService.getScriptProperties().getProperties() || {};'), ['PropertiesService.getScriptProperties().getProperties()']);
+  assert.deepStrictEqual(chains('DriveApp.getFiles(); LockService . getScriptLock()'), ['DriveApp.getFiles()', 'LockService.getScriptLock()']);
+  const oldUtil = (src) => new Set(chains(src).filter((c) => c.indexOf('Utilities.') === 0).map((c) => c.replace(/\(.*$/, '')));
+  const ALLOWED = ['PropertiesService.getScriptProperties().getProperties()'];
+  const refs = [BASE_COMMIT];
+  try { refs.push(execFileSync('git', ['merge-base', 'origin/main', 'HEAD'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()); } catch (e) { /* 沒有 origin/main（例如淺層複製）就只比基準版 */ }
+  refs.forEach((ref, idx) => {
+    const old = gitShow(ref);
+    if (!old) { assert.ok(idx > 0, '讀不到 ' + ref); return; }
+    const diff = execFileSync('git', ['diff', '-U0', ref, '--', 'apps-script/Liff.gs'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20 });
+    const added = diff.split('\n').filter((l) => l[0] === '+' && l.indexOf('+++') !== 0).map((l) => l.slice(1)).join('\n');
+    if (idx === 0) assert.ok(added.length > 0, '應該有新增的行');
+    const utilOld = oldUtil(old);
+    const bad = chains(added).filter((c) => ALLOWED.indexOf(c) < 0 && !(c.indexOf('Utilities.') === 0 && utilOld.has(c.replace(/\(.*$/, ''))));
+    assert.deepStrictEqual(bad, [], ref.slice(0, 7) + ' 之後新增的行用到舊版沒有的服務用法：' + bad);
+    assert.deepStrictEqual((added.match(/\b[A-Z][A-Za-z]*(?:App|Service)\s*\./g) || []).map((m) => m.replace(/\s+/g, '')).filter((m) => m !== 'PropertiesService.'), [], ref.slice(0, 7) + ' 新增行出現其他 XxxApp.／XxxService.');
+  });
+});
+
+ok('新增段落零寫入：跟 ' + BASE_COMMIT + ' 比，Liff.gs 新增的行沒有任何寫入呼叫', () => {
+  const diff = execFileSync('git', ['diff', '-U0', BASE_COMMIT, '--', 'apps-script/Liff.gs'], { cwd: ROOT, encoding: 'utf8' });
+  const added = diff.split('\n').filter((l) => l[0] === '+' && l.indexOf('+++') !== 0);
+  assert.ok(added.length > 0, '應該有新增的行');
+  const bad = added.filter((l) => /setProperty|deleteProperty|appendRow|setValue|setValues|insertSheet|deleteRow|clear\(|setProperties|deleteAllProperties|getDocumentProperties|getUserProperties|UrlFetchApp|newBlob/.test(l));
+  assert.deepStrictEqual(bad, []);
 });
 
 console.log('sheet-stats：' + n + ' 項全過');
