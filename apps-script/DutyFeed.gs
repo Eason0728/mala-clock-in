@@ -113,12 +113,16 @@ function dutyFeedNote_(body, res) {
  *   push_stats:true  只要門鈴統計
  *   以上任一個有帶 → 回應多 push:{…}（門鈴統計）。
  *   push_setup:{key, store} 一次性設門鈴金鑰（另要 admin_key；已設過就回 already_set；回應不回金鑰）。
+ *   push_cfg:{url_on, dry}  遠端開關門鈴（另要 admin_key；網址寫死、真的連外要先有金鑰；見 dutyPushCfgSet_）。
+ *   push_setup 與 push_cfg 同時帶 → bad_input。
  */
 function handleDutyChanges_(body) {
   var ss = getSS(), sh = ss.getSheetByName('managers');
   var mg = sh ? readSheetAsObjects(sh) : null;
   if (!mg || !findManagerByKey(mg.rows, body.mgr_key)) return { ok: false, error: 'unauthorized' };
+  if (body.push_setup !== undefined && body.push_cfg !== undefined) return { ok: false, error: 'bad_input' };   // 一次只做一件
   if (body.push_setup !== undefined) return dutyPushSetup_(body);
+  if (body.push_cfg !== undefined) return dutyPushCfgSet_(body);
   var x = dutyChangesExtras_(body);   // 沒帶任何新參數＝null，下面每一步都跟之前一樣
   var now = Date.now();
   var since = Number(body.since);
@@ -162,7 +166,7 @@ function dutyChangesExtras_(body) {
  *   DUTY_PUSH_DRY    '1'＝只計數（記「本來會推幾次」），不呼叫 UrlFetchApp。第一輪上線只用這個模式量推送量。
  *   DUTY_PUSH_KEY    簽章金鑰（每店一把，mini 用 duty_changes push_setup 一次寫入；不回、不記錄）。
  *   DUTY_PUSH_STORE  這家店在 mini 的店代碼（gf、mztjs…），跟金鑰一起寫入。
- * 退回：刪 DUTY_PUSH_URL＝立即不推；mini 回 {ok:true, off:true}＝這家店停推 1 小時。
+ * 退回：刪 DUTY_PUSH_URL（或 mini 用 duty_changes push_cfg:{url_on:false, dry:true} 把它設成空白）＝立即不推；mini 回 {ok:true, off:true}＝這家店停推 1 小時。
  */
 var DUTY_FEED_LONG_BACK_MS_ = 75 * 60000;   // back:'long'：往回 75 分鐘（暫存區本來就放 6 小時）
 var DUTY_PUSH_TIMEOUT_S_ = 3;               // UrlFetch 最多等 3 秒
@@ -354,6 +358,44 @@ function dutyPushSetup_(body) {
     props.setProperty('DUTY_PUSH_STORE', s.store);
     props.setProperty('DUTY_PUSH_KEY', s.key);
     return { ok: true, push_setup: 'set', store: s.store };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * duty_changes push_cfg:{url_on, dry}：mini 遠端開關門鈴（2026-11-20 Eason：「你直接幫我設定」，不用進九個編輯器）。
+ * 設計成「主管金鑰＋管理金鑰都外洩也做不了壞事」：
+ *  1. 網址不由呼叫端給：url_on:true 寫死成 DUTY_PUSH_FIXED_URL_，url_on:false 寫空字串（dutyPushCfg_ 把空白當沒設＝不推、不計數）。
+ *     push_cfg 裡其他欄位（url 等）一律忽略。
+ *  2. 聯鎖：url_on:true＋dry:false（真的連外）要 DUTY_PUSH_KEY、DUTY_PUSH_STORE 都已設好（跟 dutyPushSend_ 的 skip_cfg 同一套標準），
+ *     否則 need_key、屬性不動 → 沒金鑰時最多只能開到「只計數」。
+ *  3. 只 setProperty DUTY_PUSH_URL、DUTY_PUSH_DRY 兩個；不刪、不碰金鑰與店代碼。回應只回狀態布林與店代碼。
+ * 可重複呼叫（{url_on:false, dry:true}＝遠端關閉）。寫入順序：關＝先清網址；開＝先寫 DRY 再寫網址（中途不會出現「網址開、還是舊的非只計數」）。
+ */
+var DUTY_PUSH_FIXED_URL_ = 'https://dzy-gw.dingzhaoyuan888.workers.dev/store/svc/duty-push';   // 設計 2.4
+
+function dutyPushCfgSet_(body) {
+  if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  var c = body.push_cfg;
+  if (!c || typeof c !== 'object' || Array.isArray(c) || typeof c.url_on !== 'boolean' || typeof c.dry !== 'boolean') return { ok: false, error: 'bad_input' };
+  var urlOn = c.url_on === true, dry = c.dry === true;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return { ok: false, error: 'busy' };
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var keySet = String(props.getProperty('DUTY_PUSH_KEY') || '').length >= 32;
+    var store = String(props.getProperty('DUTY_PUSH_STORE') || '').trim();
+    var storeOk = /^[a-z0-9]{2,16}$/.test(store);
+    if (urlOn && !dry && !(keySet && storeOk)) return { ok: false, error: 'need_key' };
+    if (!urlOn) {
+      props.setProperty('DUTY_PUSH_URL', '');
+      props.setProperty('DUTY_PUSH_DRY', dry ? '1' : '0');
+    } else {
+      props.setProperty('DUTY_PUSH_DRY', dry ? '1' : '0');
+      props.setProperty('DUTY_PUSH_URL', DUTY_PUSH_FIXED_URL_);
+    }
+    return { ok: true, push_cfg: { url_on: urlOn, dry: dry, key_set: keySet, store: storeOk ? store : '' } };
   } finally {
     lock.releaseLock();
   }

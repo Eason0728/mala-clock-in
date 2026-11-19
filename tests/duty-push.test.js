@@ -3,7 +3,7 @@
 //    （唯一多出來的是「讀一次 DUTY_PUSH_URL 屬性」）。
 // 2. 只計數模式不連外；熔斷、mini 叫停、每日上限、唯讀／dry_run／失敗不推。
 // 3. 內容不含員編、姓名、body 任何欄位；簽章用 Node crypto／openssl 重算。
-// 4. duty_changes digest／ping／back／push_setup；新增行的服務用法 ⊆ 九店已部署檔；新增行零試算表寫入。
+// 4. duty_changes digest／ping／back／push_setup／push_cfg（遠端開關：網址寫死、沒金鑰最多只計數）；新增行的服務用法 ⊆ 九店已部署檔；新增行零試算表寫入。
 // 名字、金鑰一律假的；不連網路。
 'use strict';
 const fs = require('fs'), vm = require('vm'), path = require('path'), crypto = require('crypto'), assert = require('assert');
@@ -509,6 +509,175 @@ ok('push_setup：沒管理金鑰、主管金鑰錯、格式錯 → 拒絕不寫�
   assert.strictEqual(h.sb.dutyFeedIsRead_('duty_changes'), true);
 });
 
+/* ══ 7b. 遠端開關門鈴（push_cfg）：主管金鑰＋管理金鑰都外洩也做不了壞事 ══ */
+const FIXED = 'https://dzy-gw.dingzhaoyuan888.workers.dev/store/svc/duty-push';   // 設計 2.4（dzy-mini-playbook phase1-design.md 113 行）
+const cfgCall = (h, cfg, extra) => h.sb.handleDutyChanges_(Object.assign({ action: 'duty_changes', mgr_key: 'AK', admin_key: 'ADM', push_cfg: cfg }, extra || {}));
+const setCount = (h) => h.log.filter((l) => /^Props\.setProperty/.test(l)).length;
+const KEYED = { DUTY_PUSH_KEY: KEY, DUTY_PUSH_STORE: 'mztjs' };
+
+ok('push_cfg 未授權：沒管理金鑰／管理金鑰空白（含空白字元）／管理金鑰錯／主管金鑰錯或沒帶 → unauthorized，零屬性寫入、零屬性讀取、零連外', () => {
+  const start = Object.assign({ DUTY_PUSH_URL: '', DUTY_PUSH_DRY: '1' }, KEYED);
+  const h = harness(SRC, { props: start });
+  const on = { url_on: true, dry: false };
+  const rs = [
+    cfgCall(h, on, { admin_key: undefined }), cfgCall(h, on, { admin_key: '' }), cfgCall(h, on, { admin_key: '   ' }), cfgCall(h, on, { admin_key: null }),
+    cfgCall(h, on, { admin_key: 'WRONG' }), cfgCall(h, on, { mgr_key: 'NOPE' }), cfgCall(h, on, { mgr_key: '' }), cfgCall(h, on, { mgr_key: undefined }),
+  ];
+  assert.deepStrictEqual(rs.map((r) => J(r)), rs.map(() => ({ ok: false, error: 'unauthorized' })));
+  assert.deepStrictEqual(h.props, start);
+  assert.strictEqual(setCount(h), 0);
+  assert.ok(!h.log.some((l) => /^Props\.|^Lock\.|^UrlFetch/.test(l)), h.log.join(','));
+});
+
+ok('push_cfg 格式錯（不是物件、陣列、缺欄位、不是布林）、跟 push_setup 同時帶 → bad_input，零屬性寫入', () => {
+  const h = harness(SRC, { props: { DUTY_PUSH_DRY: '1' } });
+  [null, 'on', 1, true, [], [true, true], {}, { url_on: true }, { dry: true }, { url_on: 'true', dry: true }, { url_on: true, dry: 1 }, { url_on: 1, dry: 0 }]
+    .forEach((c) => assert.strictEqual(cfgCall(h, c).error, 'bad_input', JSON.stringify(c)));
+  const both = cfgCall(h, { url_on: true, dry: true }, { push_setup: { key: NEWKEY, store: 'gf' } });
+  assert.strictEqual(both.error, 'bad_input');
+  assert.deepStrictEqual(h.props, { DUTY_PUSH_DRY: '1' });
+  assert.strictEqual(setCount(h), 0);
+});
+
+ok('呼叫端塞網址（push_cfg.url／最外層 url／DUTY_PUSH_URL 欄位）一律無效：寫入的永遠是寫死的常數；回應不含任何網址', () => {
+  const evil = 'https://evil.example/steal';
+  const h = harness(SRC, { props: {} });
+  const r = cfgCall(h, { url_on: true, dry: true, url: evil, URL: evil, DUTY_PUSH_URL: evil, href: evil }, { url: evil, DUTY_PUSH_URL: evil, push_url: evil });
+  assert.deepStrictEqual(J(r), { ok: true, push_cfg: { url_on: true, dry: true, key_set: false, store: '' } });
+  assert.strictEqual(h.props.DUTY_PUSH_URL, FIXED);
+  assert.strictEqual(h.sb.DUTY_PUSH_FIXED_URL_, FIXED);
+  assert.ok(JSON.stringify(r).indexOf('http') < 0);
+  // 之前已被手動設成別的網址 → url_on:true 也會蓋回常數
+  const h2 = harness(SRC, { props: Object.assign({ DUTY_PUSH_URL: evil, DUTY_PUSH_DRY: '1' }, KEYED) });
+  cfgCall(h2, { url_on: true, dry: false, url: evil });
+  assert.strictEqual(h2.props.DUTY_PUSH_URL, FIXED);
+  h2.write(W, { ok: true });
+  assert.deepStrictEqual(h2.fetches.map((f) => f.url), [FIXED]);
+});
+
+ok('url_on:true＋dry:true（只計數）：沒金鑰也成功；之後寫入只計數、0 次連外；ping 回 dry；push_stats mode dry', () => {
+  const h = harness(SRC, { props: {} });
+  const r = cfgCall(h, { url_on: true, dry: true });
+  assert.deepStrictEqual(J(r), { ok: true, push_cfg: { url_on: true, dry: true, key_set: false, store: '' } });
+  assert.deepStrictEqual(h.props, { DUTY_PUSH_DRY: '1', DUTY_PUSH_URL: FIXED });
+  assert.strictEqual(setCount(h), 2);
+  h.write(W, { ok: true }); h.write({ action: 'clock' }, { ok: true });
+  assert.strictEqual(h.fetches.length, 0);
+  assert.strictEqual(h.stats().dry, 2);
+  assert.strictEqual(h.changes({ ping: 'nonce_ABC_123' }).ping, 'dry');
+  const p = h.changes({ push_stats: true }).push;
+  assert.deepStrictEqual([p.on, p.mode, p.key_set], [true, 'dry', false]);
+  assert.strictEqual(h.fetches.length, 0);
+  assert.ok(!h.log.some((l) => /^UrlFetch|computeHmac/.test(l)));
+});
+
+ok('聯鎖：url_on:true＋dry:false 在沒金鑰、金鑰太短、沒店代碼、店代碼格式錯時 → need_key，屬性一格都不動、零寫入、之後寫入照樣只計數', () => {
+  const base = { DUTY_PUSH_URL: FIXED, DUTY_PUSH_DRY: '1' };
+  [{}, { DUTY_PUSH_KEY: 'short', DUTY_PUSH_STORE: 'mztjs' }, { DUTY_PUSH_KEY: KEY }, { DUTY_PUSH_KEY: KEY, DUTY_PUSH_STORE: '' },
+   { DUTY_PUSH_KEY: KEY, DUTY_PUSH_STORE: 'MZT JS' }, { DUTY_PUSH_STORE: 'mztjs' }].forEach((extra) => {
+    [base, { DUTY_PUSH_URL: '', DUTY_PUSH_DRY: '0' }, {}].forEach((b) => {
+      const start = Object.assign({}, b, extra);
+      const h = harness(SRC, { props: start });
+      const r = cfgCall(h, { url_on: true, dry: false });
+      assert.deepStrictEqual(J(r), { ok: false, error: 'need_key' }, JSON.stringify(start));
+      assert.deepStrictEqual(h.props, start);
+      assert.strictEqual(setCount(h), 0);
+      h.write(W, { ok: true });
+      assert.strictEqual(h.fetches.length, 0, JSON.stringify(start));
+    });
+  });
+});
+
+ok('有金鑰＋店代碼：url_on:true＋dry:false 成功（DRY=0、網址＝常數）；之後寫入真的推到常數網址、用原金鑰簽；回應不含金鑰', () => {
+  const h = harness(SRC, { props: Object.assign({}, KEYED) });
+  const r = cfgCall(h, { url_on: true, dry: false });
+  assert.deepStrictEqual(J(r), { ok: true, push_cfg: { url_on: true, dry: false, key_set: true, store: 'mztjs' } });
+  assert.deepStrictEqual(h.props, Object.assign({ DUTY_PUSH_DRY: '0', DUTY_PUSH_URL: FIXED }, KEYED));
+  h.write(W, { ok: true });
+  assert.strictEqual(h.fetches.length, 1);
+  assert.strictEqual(h.fetches[0].url, FIXED);
+  const p = JSON.parse(h.fetches[0].opt.payload);
+  assert.strictEqual(p.sig, crypto.createHmac('sha256', KEY).update([p.v, p.s, p.t, p.n, p.a, p.d.join(','), '', ''].join('|')).digest('hex'));
+  assert.ok(JSON.stringify(r).indexOf(KEY) < 0);
+  // 開、改成只計數、關都不碰金鑰與店代碼
+  cfgCall(h, { url_on: true, dry: true }); cfgCall(h, { url_on: false, dry: true });
+  assert.deepStrictEqual([h.props.DUTY_PUSH_KEY, h.props.DUTY_PUSH_STORE], [KEY, 'mztjs']);
+  assert.ok(!h.log.some((l) => /^Props\.setProperty:DUTY_PUSH_(KEY|STORE)/.test(l)));
+});
+
+ok('url_on:false（遠端關閉）：網址設成空字串；之後寫入 0 連外、不計數，每次寫入只多「讀 DUTY_PUSH_URL」1 次（跟 origin/main 只差這一次）；push_stats on:false', () => {
+  [Object.assign({ DUTY_PUSH_URL: FIXED, DUTY_PUSH_DRY: '0' }, KEYED), { DUTY_PUSH_URL: FIXED, DUTY_PUSH_DRY: '1' }, {}].forEach((start) => {
+    [true, false].forEach((dry) => {
+      const h = harness(SRC, { props: start });
+      const r = cfgCall(h, { url_on: false, dry });
+      assert.strictEqual(r.ok, true);
+      assert.deepStrictEqual(J(r.push_cfg), { url_on: false, dry, key_set: !!start.DUTY_PUSH_KEY, store: start.DUTY_PUSH_STORE || '' });
+      assert.strictEqual(h.props.DUTY_PUSH_URL, '');
+      assert.strictEqual(h.props.DUTY_PUSH_DRY, dry ? '1' : '0');
+      const stBefore = JSON.stringify(h.stats());
+      const old = harness(OLD, { props: h.props });
+      for (let i = 0; i < 3; i++) {
+        const n0 = h.log.length, o0 = old.log.length;
+        h.write(W, { ok: true }); old.write(W, { ok: true });
+        const s = stripUrlRead(h.log.slice(n0));
+        assert.strictEqual(s.extra, 1);
+        assert.deepStrictEqual(s.log, old.log.slice(o0));
+        assert.strictEqual(h.log.slice(n0).filter((l) => /^Props\.getProperty/.test(l)).length, 1);
+      }
+      assert.strictEqual(h.fetches.length, 0);
+      assert.strictEqual(JSON.stringify(h.stats()), stBefore);
+      assert.deepStrictEqual(J(h.changes({ push_stats: true }).push), { on: false });
+      assert.strictEqual(h.changes({ ping: 'nonce_ABC_123' }).ping, 'disabled');
+      assert.strictEqual(h.fetches.length, 0);
+    });
+  });
+});
+
+ok('可重複呼叫、寫入順序：關＝先清網址再寫 DRY；開＝先寫 DRY 再寫網址；只 setProperty 這兩格、從不 deleteProperty', () => {
+  const h = harness(SRC, { props: Object.assign({}, KEYED) });
+  const seq = [];
+  const run = (c) => { const n0 = h.log.length; const r = cfgCall(h, c); seq.push(h.log.slice(n0).filter((l) => /^Props\.setProperty/.test(l))); return J(r); };
+  const a = run({ url_on: true, dry: true }), b = run({ url_on: true, dry: true });
+  assert.deepStrictEqual(a, b);
+  run({ url_on: true, dry: false }); run({ url_on: false, dry: true }); run({ url_on: false, dry: true }); run({ url_on: true, dry: true });
+  const ON = ['Props.setProperty:DUTY_PUSH_DRY', 'Props.setProperty:DUTY_PUSH_URL'], OFF = ['Props.setProperty:DUTY_PUSH_URL', 'Props.setProperty:DUTY_PUSH_DRY'];
+  assert.deepStrictEqual(seq, [ON, ON, ON, OFF, OFF, ON]);
+  assert.deepStrictEqual(h.props, Object.assign({ DUTY_PUSH_DRY: '1', DUTY_PUSH_URL: FIXED }, KEYED));
+  assert.ok(!h.log.some((l) => /deleteProperty|getProperties/.test(l)));
+  // 每次都在鎖裡寫、而且有放鎖
+  assert.strictEqual(h.log.filter((l) => l === 'Lock.tryLock').length, 6);
+  assert.strictEqual(h.log.filter((l) => l === 'Lock.releaseLock').length, 6);
+  // 鎖拿不到 → busy、不寫
+  const hb = harness(SRC, { props: {}, lockOk: false });
+  assert.deepStrictEqual(J(cfgCall(hb, { url_on: true, dry: true })), { ok: false, error: 'busy' });
+  assert.deepStrictEqual(hb.props, {}); assert.strictEqual(setCount(hb), 0);
+});
+
+ok('push_cfg 本身不記變動、不按門鈴；回應與 log 全文不含金鑰記號值；回應 key 只有 ok／push_cfg（url_on、dry、key_set、store）', () => {
+  const SECRET = 'MARKPUSHKEY_' + 'z'.repeat(40);
+  const h = harness(SRC, { props: { DUTY_PUSH_KEY: SECRET, DUTY_PUSH_STORE: 'mztjs', DUTY_PUSH_URL: FIXED, DUTY_PUSH_DRY: '0' } });
+  const outs = [cfgCall(h, { url_on: true, dry: false }), cfgCall(h, { url_on: true, dry: true }), cfgCall(h, { url_on: false, dry: true }),
+                cfgCall(h, { url_on: true, dry: false }, { admin_key: 'WRONG' }), cfgCall(h, 'x')];
+  assert.strictEqual(h.fetches.length, 0);
+  assert.ok(!h.log.some((l) => /^Cache\.put/.test(l)), '設定本身不該寫暫存區（不記變動、不計數）');
+  const all = JSON.stringify(outs) + h.logs.join('\n') + h.log.join('\n');
+  assert.ok(all.indexOf(SECRET) < 0 && all.indexOf('MARKPUSHKEY') < 0);
+  outs.filter((r) => r.ok).forEach((r) => {
+    assert.deepStrictEqual(Object.keys(r), ['ok', 'push_cfg']);
+    assert.deepStrictEqual(Object.keys(r.push_cfg), ['url_on', 'dry', 'key_set', 'store']);
+  });
+});
+
+ok('沒帶 push_cfg：duty_changes 回應 key 集合與服務呼叫序列跟 origin/main 相同（push_cfg:undefined 也一樣）', () => {
+  [{}, LIVE, { DUTY_PUSH_URL: FIXED, DUTY_PUSH_DRY: '1' }].forEach((props) => {
+    const a = harness(OLD, { props }), b = harness(SRC, { props }), c = harness(SRC, { props });
+    const ra = a.changes({ since: T0 - 1000 }), rb = b.changes({ since: T0 - 1000 }), rc = c.changes({ since: T0 - 1000, push_cfg: undefined });
+    assert.deepStrictEqual(Object.keys(rb), ['ok', 'now', 'since', 'reset', 'changes']);
+    assert.strictEqual(JSON.stringify(rb), JSON.stringify(ra)); assert.strictEqual(JSON.stringify(rc), JSON.stringify(ra));
+    assert.deepStrictEqual(b.log, a.log); assert.deepStrictEqual(c.log, a.log);
+  });
+});
+
 /* ══ 8. 走真 doPost（gs-sandbox 載入 Code／Liff／Rest／Requests／DutyFeed）══ */
 const { make } = require('./helpers/gs-sandbox');
 const post = (m, b) => JSON.parse(m.sb.doPost({ postData: { contents: JSON.stringify(b) } }).text);
@@ -623,6 +792,32 @@ ok('doPost 端到端：push_setup 走真 checkAdmin（ADM）；回應不含金�
   assert.strictEqual(p.sig, crypto.createHmac('sha256', NEWKEY).update([p.v, p.s, p.t, p.n, p.a, p.d.join(','), '', ''].join('|')).digest('hex'));
 });
 
+ok('doPost 端到端：push_cfg 走真 checkAdmin；ADMIN_KEY 沒設時空白對空白也拒絕；只計數可開、真的連外要先 push_setup；之後核定推到常數網址', () => {
+  const pushes = [];
+  const m = world({}, (url, o) => { if (url === FIXED) { pushes.push(o); return { ok: true }; } return undefined; });
+  const C = (extra) => post(m, Object.assign({ action: 'duty_changes', mgr_key: 'AK', push_cfg: { url_on: true, dry: false } }, extra));
+  assert.deepStrictEqual([C({}).error, C({ admin_key: '' }).error, C({ admin_key: 'WRONG' }).error], ['unauthorized', 'unauthorized', 'unauthorized']);
+  assert.strictEqual(C({ admin_key: 'ADM' }).error, 'need_key');
+  assert.strictEqual(m.props.DUTY_PUSH_URL, undefined);
+  assert.strictEqual(C({ admin_key: 'ADM', push_cfg: { url_on: true, dry: true, url: 'https://evil.example' } }).push_cfg.dry, true);
+  assert.deepStrictEqual([m.props.DUTY_PUSH_URL, m.props.DUTY_PUSH_DRY], [FIXED, '1']);
+  post(m, APPROVE);
+  assert.strictEqual(pushes.length + m.sb.__fetches.length, 0);
+  post(m, { action: 'duty_changes', mgr_key: 'AK', admin_key: 'ADM', push_setup: { key: NEWKEY, store: 'mztjs' } });
+  const r = C({ admin_key: 'ADM' });
+  assert.deepStrictEqual(r, { ok: true, push_cfg: { url_on: true, dry: false, key_set: true, store: 'mztjs' } });
+  post(m, APPROVE);
+  assert.strictEqual(pushes.length, 1);
+  assert.strictEqual(m.sb.__fetches[m.sb.__fetches.length - 1].url, FIXED);
+  assert.strictEqual(post(m, { action: 'duty_changes', mgr_key: 'AK', admin_key: 'ADM', push_cfg: { url_on: false, dry: true } }).ok, true);
+  post(m, APPROVE);
+  assert.strictEqual(pushes.length, 1, '遠端關閉後不該再推');
+  // ADMIN_KEY 沒設（空白）：admin_key 空白也不能過
+  const m2 = make({ now: Date.parse('2026-11-10T10:00:00+08:00'), config: { ADMIN_KEY: '' }, self: { roster: [], events: [], approved: [], leave: [] } });
+  assert.strictEqual(post(m2, { action: 'duty_changes', mgr_key: 'AK', admin_key: '', push_cfg: { url_on: true, dry: true } }).error, 'unauthorized');
+  assert.strictEqual(m2.props.DUTY_PUSH_URL, undefined);
+});
+
 /* ══ 9. 原始碼檢查：授權範圍不變、零試算表寫入 ══ */
 const SVC = '(?:[A-Z][A-Za-z]*(?:App|Service|Services)|Utilities|Session|Logger|Browser|Maps|Jdbc|XmlService|Charts|Drive|Gmail|Calendar|Sheets|Docs|Slides|People|Tasks|AdminDirectory|YouTube|Analytics|BigQuery|Console)';
 const CHAIN_RE = new RegExp('\\b' + SVC + '\\b(?:\\s*\\.\\s*[A-Za-z_$][\\w$]*(?:\\s*\\([^()]*\\))?)*', 'g');
@@ -675,14 +870,21 @@ ok('新增行呼叫的每一個 .方法( 名稱，origin/main 九店部署檔裡
   assert.deepStrictEqual(bad, []);
 });
 
-ok('新增行零試算表寫入：沒有 setValue／setValues／appendRow／insertSheet／deleteRow／clear 等；setProperty 只在 dutyPushSetup_ 裡 2 次', () => {
+ok('新增行零試算表寫入：沒有 setValue／setValues／appendRow／insertSheet／deleteRow／clear 等；setProperty 只在 dutyPushSetup_（2 次）與 dutyPushCfgSet_（URL、DRY 各 2 次，鍵名寫死）', () => {
   const lines = addedLines();
   const bad = lines.filter((l) => /setValue|setValues|appendRow|insertSheet|insertRow|deleteRow|deleteSheet|clearContents|\.clear\(|setFormula|setNumberFormat|SpreadsheetApp\.flush|deleteProperty|setProperties|deleteAllProperties|getUserProperties|getDocumentProperties|newBlob|DriveApp|MailApp|GmailApp/.test(l));
   assert.deepStrictEqual(bad, []);
   const sp = lines.filter((l) => /setProperty\(/.test(l));
-  assert.strictEqual(sp.length, 2);
-  const body = SRC.slice(SRC.indexOf('function dutyPushSetup_'), SRC.indexOf('/* ── 每小時指紋'));
+  assert.strictEqual(sp.length, 6);
+  const body = SRC.slice(SRC.indexOf('function dutyPushSetup_'), SRC.indexOf('/**', SRC.indexOf('function dutyPushSetup_')));
   assert.strictEqual((body.match(/setProperty\(/g) || []).length, 2);
+  // push_cfg：只寫 DUTY_PUSH_URL（值只能是常數或空字串）與 DUTY_PUSH_DRY（'1'／'0'）；不讀呼叫端任何網址欄位
+  const cb = stripComments(SRC.slice(SRC.indexOf('function dutyPushCfgSet_'), SRC.indexOf('/* ── 每小時指紋')));
+  const sets = cb.match(/setProperty\([^)]*\)/g) || [];
+  assert.deepStrictEqual(sets.slice().sort(), ["setProperty('DUTY_PUSH_DRY', dry ? '1' : '0')", "setProperty('DUTY_PUSH_DRY', dry ? '1' : '0')",
+    "setProperty('DUTY_PUSH_URL', '')", "setProperty('DUTY_PUSH_URL', DUTY_PUSH_FIXED_URL_)"]);
+  assert.ok(!/\bc\.(?!url_on\b|dry\b)\w+|body\.(?!admin_key\b|push_cfg\b)\w+/.test(cb), '只准讀 c.url_on、c.dry、body.admin_key、body.push_cfg');
+  assert.strictEqual((stripComments(SRC).match(/DUTY_PUSH_FIXED_URL_\s*=/g) || []).length, 1, '常數只能在一個地方賦值');
   assert.strictEqual((stripComments(SRC).match(/UrlFetchApp\.fetch/g) || []).length, 1, 'UrlFetchApp 只在 dutyPushSend_ 用一次');
 });
 
