@@ -282,6 +282,24 @@ Object.keys(FAILS).forEach((name) => ok('推送' + name + '：dutyFeedNote_ 正�
   assert.ok(h.logs.every((l) => l.indexOf('MARKSECRET') < 0));
 }));
 
+ok('順序鎖定：按門鈴（UrlFetch）當下，暫存區已經有那一筆（先寫暫存區、再按門鈴；對調就紅）', () => {
+  let seen = null;
+  const h = harness(SRC, { props: LIVE, fetch: (u, o, hh) => {
+    const pn = JSON.parse(o.payload).n;
+    const ns = [];
+    Object.keys(hh.cache).forEach((k) => { if (hh.cache[k].exp > hh.now) JSON.parse(hh.cache[k].v).forEach((r) => ns.push(r.n)); });
+    seen = { pn, inCache: ns.indexOf(pn) >= 0 };
+    return resp(200, '{"ok":true}');
+  } });
+  h.write(W, { ok: true });
+  assert.ok(seen, '沒有按門鈴');
+  assert.strictEqual(seen.inCache, true, '按門鈴當下暫存區還沒有這一筆（順序被對調了）');
+  // 門鈴丟錯時暫存區那筆也在（mini 下次問 duty_changes 照樣拿得到）
+  const h2 = harness(SRC, { props: LIVE, fetch: () => { throw new Error('boom'); } });
+  h2.write(W, { ok: true });
+  assert.strictEqual(h2.changes({ since: T0 - 1 }).changes.length, 1);
+});
+
 ok('mini 回 204（關了收門鈴）：算成功、不熔斷', () => {
   const h = harness(SRC, { props: LIVE, fetch: () => resp(204, '') });
   h.write(W, { ok: true }); h.write(W, { ok: true });
