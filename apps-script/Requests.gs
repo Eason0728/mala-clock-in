@@ -3141,8 +3141,48 @@ function handleApproveStrictPreview_(body) {
 /* ── 本月待核定提醒：補上「已核准的申請、那天還沒核定」（2026-10-10 Codex 審查）──
    原本 mgr_pending_approvals 只看有打卡的日子；整天請假／整天出差核准後當天沒有卡，主管不核定那天就不會進薪資，也不會被提醒。
    包在 Code.gs handleMgrPendingApprovals 外面（LIFF_HANDLERS 會覆蓋同名動作），各店程式碼.js 不用改。加班申請不算（加班一定有卡）。 */
+/* ── 指定月份的待核定（2026-11-19 Eason，考勤驗收 11-10 不符 5：月初看不到上個月沒核定的天）──
+   mgr_pending_approvals 多吃一個選填參數 ym（'YYYY-MM'）：
+   ‧不帶 ym（或空字串）＝照舊：直接走 Code.gs handleMgrPendingApprovals（台北本月），結果一個字都不變；
+   ‧ym＝本月＝同上；ym＝上個月＝下面 reqPendingApprovalsMonth_（照 handleMgrPendingApprovals 同一套算法，只把月份換成 ym）；
+   ‧其他月份回 bad_ym。營運系統每月 1～5 號帶上個月來問（首頁「11 月還有 N 天沒核定」、核定頁黃框）。
+   Code.gs（各店 程式碼.js）不動：這裡用到的都是 Code.gs 既有的函式。 */
+var REQ_PENDING_YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+function reqPendingApprovalsMonth_(body, ym) {
+  var ss = getSS();
+  var mgrSheet = ss.getSheetByName('managers');
+  if (!mgrSheet) return { ok: false, error: 'managers_sheet_missing' };
+  if (!findManagerByKey(readSheetAsObjects(mgrSheet).rows, body.mgr_key)) return { ok: false, error: 'unauthorized' };
+  var today = todayTaipeiStr();
+  var rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
+  var eventRows = readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; });
+  var approvedSheet = ss.getSheetByName('approved');
+  var approvedMap = buildLatestApprovedMap(approvedSheet ? readSheetAsObjects(approvedSheet).rows : []);
+  var empIds = {};   // 那個月 events 出現過的所有 emp_id（含停用／離職，同 handleMgrPendingApprovals）
+  eventRows.forEach(function (e) { if (tsDateStr(e.ts).slice(0, 7) === ym) empIds[String(e.emp_id)] = true; });
+  var items = [];
+  Object.keys(empIds).forEach(function (empId) {
+    var roster = findRosterByEmpId(rosterRows, empId);
+    var name = roster ? String(roster.name) : empId;
+    monthPendingApprovalDates(eventRows, approvedMap, empId, ym, today).forEach(function (d) { items.push({ date: d, emp_id: empId, name: name }); });
+  });
+  items.sort(function (a, b) {
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+  });
+  return { ok: true, ym: ym, today: today, items: items };
+}
+
 function reqPendingApprovalsPlus_(body) {
-  var r = handleMgrPendingApprovals(body);
+  var r;
+  var wantYm = body && body.ym !== undefined && body.ym !== null && body.ym !== '' ? String(body.ym) : '';
+  if (wantYm) {
+    var curYm = currentYmTaipei();
+    if (!REQ_PENDING_YM_RE.test(wantYm) || (wantYm !== curYm && wantYm !== prevYm(curYm))) return { ok: false, error: 'bad_ym', message: '待核定提醒只看本月或上個月' };
+    r = wantYm === curYm ? handleMgrPendingApprovals(body) : reqPendingApprovalsMonth_(body, wantYm);
+  } else {
+    r = handleMgrPendingApprovals(body);   // 舊呼叫：原樣
+  }
   if (!r || !r.ok) return r;
   try {
     var ss = getSS();
