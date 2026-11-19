@@ -313,7 +313,11 @@ ok('props：名稱樣式化規則（手算對照）', () => {
     ['DZY020', { other: true }], ['NOTE_HQ-01', { other: true }], ['GF012_flag', { other: true }], ['emp_mzt1234', { other: true }],
     ['店長備註', { other: true }], ['ATT_店長', { other: true }], ['U4af4980629bd1ef2f0e2c4c4e2a1b3c9', { other: true }],
     ['my note', { other: true }], ['a-b', { other: true }], ['x.y', { other: true }], ['A'.repeat(49), { other: true }], ['', { other: true }], ['_X', { other: true }],
-    ['3f2a9c1b-4b2e-11ee-be56-0242ac120002', { other: true }]
+    ['3f2a9c1b-4b2e-11ee-be56-0242ac120002', { other: true }],
+    // 白名單：純英文字母（可能是人名）、大小寫混合 → other；全大寫蛇形與明列的固定小寫 key 才回樣式
+    ['REQ_Wang_Xiaoming', { other: true }], ['alice', { other: true }], ['mala_ming', { other: true }], ['Alice', { other: true }], ['mirror_last_ok2', { other: true }],
+    ['X_<date>', { other: true }], ['X_#', { other: true }],
+    ['ATT_STATE_RUN', { pattern: 'ATT_STATE_RUN' }], ['ATT_RUN_2026-11-01', { pattern: 'ATT_RUN_<date>' }]
   ];
   cases.forEach(([k, want]) => assert.deepStrictEqual(pat(k), want, k));
   assert.deepStrictEqual(pat('A'.repeat(48)), { pattern: 'A'.repeat(48) });
@@ -347,6 +351,20 @@ ok('props：樣式超過 80 種（異常）→ 多的併進 other，個數守恆
   assert.strictEqual(p.max_value_bytes, 100);
 });
 
+ok('props：屬性值是非字串（物件、undefined、null、數字、陣列）→ 不丟例外，照常統計；值處理中出例外 → 只回固定字串 props_failed、不帶值，其餘欄位照回', () => {
+  const weird = { ODD_OBJ: { a: 'VALobj' }, ODD_UNDEF: undefined, ODD_NULL: null, ODD_NUM: 12345, ODD_ARR: ['VALarr'], odd_lower: { x: 1 } };
+  const r = make(SHEETS, Object.assign({ PropertiesService: fakeProps(weird, []) }, OPTS)).run({ admin_key: 'ADM', props: true });
+  assert.strictEqual(r.ok, true); assert.strictEqual(r.props.error, undefined);
+  assert.strictEqual(r.props.count, 6);
+  assert.ok(JSON.stringify(r.props).indexOf('VAL') < 0);
+  // 值的 toString 會丟出夾著值的訊息 → 固定字串，不帶訊息
+  const bad = { toString() { throw new Error('VALLEAK 不該出現'); } };
+  const r2 = make(SHEETS, Object.assign({ PropertiesService: fakeProps({ ATT_STATE_RUN: bad }, []) }, OPTS)).run({ admin_key: 'ADM', props: true });
+  assert.strictEqual(r2.ok, true); assert.strictEqual(r2.sheets.length, 2); assert.deepStrictEqual(r2.triggers, ['capSweep:CLOCK']);
+  assert.deepStrictEqual(J(r2.props), { error: 'props_failed' });
+  assert.ok(JSON.stringify(r2).indexOf('VALLEAK') < 0);
+});
+
 // Apps Script 依程式碼文字判斷要哪些授權：Liff.gs 只要多出一個新服務（或 ScriptApp 等的新方法），九店都要重新授權、授權前全部失敗
 const SVC_RE = /\b(?:[A-Z][A-Za-z]*(?:App|Service|Services)|Utilities|Session|Logger|Browser|Maps|Jdbc|XmlService|Charts|Drive|Gmail|Calendar|Sheets|Docs|Slides|People|Tasks|AdminDirectory|YouTube|Analytics|BigQuery|Console)\b(?:\s*\.\s*[A-Za-z_$][\w$]*)?/g;
 function svcUse(src) {
@@ -366,6 +384,29 @@ ok('授權範圍不變：新版 Liff.gs 用到的服務名稱與「服務.方法
   });
   assert.ok(now.calls.has('PropertiesService.getScriptProperties') && now.names.has('Utilities'), '比對規則本身要抓得到既有服務');
   assert.ok(svcUse('DriveApp.getFiles(); ScriptApp.newTrigger("x")').calls.has('ScriptApp.newTrigger'), '比對規則要抓得到新方法');
+});
+
+ok('服務用法 ⊆ 舊版（逐條）：對舊版新增的行，用到的「服務.方法鏈」只有 PropertiesService.getScriptProperties().getProperties() 與舊版本來就在用的 Utilities 方法，其他任何 XxxApp.／XxxService. 都失敗', () => {
+  const CHAIN_RE = /\b(?:[A-Z][A-Za-z]*(?:App|Service|Services)|Utilities|Session|Logger|Browser|Maps|Jdbc|XmlService|Charts|Drive|Gmail|Calendar|Sheets|Docs|Slides|People|Tasks|AdminDirectory|YouTube|Analytics|BigQuery|Console)\b(?:\s*\.\s*[A-Za-z_$][\w$]*(?:\s*\([^()]*\))?)*/g;
+  const chains = (text) => (text.match(CHAIN_RE) || []).map((m) => m.replace(/\s+/g, ''));
+  // 比對規則本身要抓得到鏈與新服務
+  assert.deepStrictEqual(chains('x = PropertiesService.getScriptProperties().getProperties() || {};'), ['PropertiesService.getScriptProperties().getProperties()']);
+  assert.deepStrictEqual(chains('DriveApp.getFiles(); LockService . getScriptLock()'), ['DriveApp.getFiles()', 'LockService.getScriptLock()']);
+  const oldUtil = (src) => new Set(chains(src).filter((c) => c.indexOf('Utilities.') === 0).map((c) => c.replace(/\(.*$/, '')));
+  const ALLOWED = ['PropertiesService.getScriptProperties().getProperties()'];
+  const refs = [BASE_COMMIT];
+  try { refs.push(execFileSync('git', ['merge-base', 'origin/main', 'HEAD'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()); } catch (e) { /* 沒有 origin/main（例如淺層複製）就只比基準版 */ }
+  refs.forEach((ref, idx) => {
+    const old = gitShow(ref);
+    if (!old) { assert.ok(idx > 0, '讀不到 ' + ref); return; }
+    const diff = execFileSync('git', ['diff', '-U0', ref, '--', 'apps-script/Liff.gs'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20 });
+    const added = diff.split('\n').filter((l) => l[0] === '+' && l.indexOf('+++') !== 0).map((l) => l.slice(1)).join('\n');
+    if (idx === 0) assert.ok(added.length > 0, '應該有新增的行');
+    const utilOld = oldUtil(old);
+    const bad = chains(added).filter((c) => ALLOWED.indexOf(c) < 0 && !(c.indexOf('Utilities.') === 0 && utilOld.has(c.replace(/\(.*$/, ''))));
+    assert.deepStrictEqual(bad, [], ref.slice(0, 7) + ' 之後新增的行用到舊版沒有的服務用法：' + bad);
+    assert.deepStrictEqual((added.match(/\b[A-Z][A-Za-z]*(?:App|Service)\s*\./g) || []).map((m) => m.replace(/\s+/g, '')).filter((m) => m !== 'PropertiesService.'), [], ref.slice(0, 7) + ' 新增行出現其他 XxxApp.／XxxService.');
+  });
 });
 
 ok('新增段落零寫入：跟 ' + BASE_COMMIT + ' 比，Liff.gs 新增的行沒有任何寫入呼叫', () => {
