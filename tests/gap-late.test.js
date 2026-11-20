@@ -3,7 +3,7 @@
  *   不當「核定比打卡多」。只在上線日（REQ_GAP_LATE_FROM）起的日子、營運系統帶班表時、預設只有二段班（班表兩段以上）。
  * 手算預期（日期 2026-11-20，班表 11:00–14:00／16:00–20:00）：
  *   G1  卡 10:58–14:00、15:58–16:03、17:24–20:00，核定 11–14、16–20 → 7 小時、遲到 81（17:24−16:03）、不擋
- *   G1o 同上但沒設屬性（程式預設上線日 11/22，這天在之前）→ 擋「核定比打卡多 81 分鐘」（＝改之前）；G1p 程式預設＝2026-11-22
+ *   G1o 同上但沒設屬性（2026-11-21 起程式預設＝關）→ 擋「核定比打卡多 81 分鐘」（＝改之前）；G1p 程式預設＝null
  *   G1d 上線日 11/21（這天在上線前）→ 照舊擋 81
  *   G2  單段班 16–20、卡 15:58–16:03、17:24–20:00、核定 16–20：預設 multi → 擋 81；REQ_GAP_LATE_SCOPE=all → 4 小時、遲到 81
  *   G3  舊值班頁（沒帶班表）→ 擋 81
@@ -50,8 +50,8 @@ r = approve(m, '11:00-14:00,16:00-20:00', ACT());
 check('G1', '核定 11–14、16–20 → 7 小時、遲到81分、不擋', [r.ok, r.hours, r.status], [true, 7, '遲到81分、中途離開81分']);
 m = env(DAY81, { props: { REQ_STRICT_FROM: '2026-11-01' } });
 r = approve(m, '11:00-14:00,16:00-20:00', ACT());
-check('G1o', '沒設屬性＝用程式預設上線日 11/22，這天 11/20 在之前 → 照改之前擋「核定比打卡多 81 分鐘」', [r.ok, /核定比打卡多 81 分鐘/.test(r.message)], [false, true]);
-check('G1p', '程式預設上線日＝2026-11-22（Eason：九店部署完成隔天起算；要跟營運系統 core-calc.js GAP_LATE_FROM 同一天）：11/21 否、11/22 是', [m.sb.reqGapLateFrom_(), m.sb.reqGapLateOn_('2026-11-21'), m.sb.reqGapLateOn_('2026-11-22')], ['2026-11-22', false, true]);
+check('G1o', '沒設屬性＝關（2026-11-21 延後生效：程式不再寫死上線日）→ 照改之前擋「核定比打卡多 81 分鐘」', [r.ok, /核定比打卡多 81 分鐘/.test(r.message)], [false, true]);
+check('G1p', '程式預設上線日＝null（2026-11-21 延後生效；原本 2026-11-22）：沒設屬性 11/21、11/22、12/01 都不套', [m.sb.reqGapLateFrom_(), m.sb.reqGapLateOn_('2026-11-21'), m.sb.reqGapLateOn_('2026-11-22'), m.sb.reqGapLateOn_('2026-12-01')], [null, false, false, false]);
 m = env(DAY81, { props: { REQ_STRICT_FROM: '2026-11-01', REQ_GAP_LATE_FROM: '2026-11-21' } });
 r = approve(m, '11:00-14:00,16:00-20:00', ACT());
 check('G1d', '上線日 11/21、這天 11/20 在上線前 → 照舊擋 81（不回溯）', [r.ok, /核定比打卡多 81 分鐘/.test(r.message)], [false, true]);
@@ -196,5 +196,5 @@ for (const [v, on] of [['2026-11-20', true], ['OFF', false], ['False', false], [
   const mm = env([], { props: { REQ_GAP_LATE_FROM: v } });
   check('S-' + v, 'REQ_GAP_LATE_FROM=' + JSON.stringify(v) + ' → ' + (on ? '開（這天在上線日起）' : '關（認不得的值也當關，不退回程式預設）'), mm.sb.reqGapLateOn_(D), on);
 }
-check('S-default', '沒設屬性 → 用程式預設（上線日 ' + env([], { props: {} }).sb.reqGapLateFrom_() + '）', env([], { props: {} }).sb.reqGapLateFrom_(), '2026-11-22');
+check('S-default', '沒設屬性 → 關（程式預設 null，2026-11-21 延後生效）', env([], { props: {} }).sb.reqGapLateFrom_(), null);
 done();
