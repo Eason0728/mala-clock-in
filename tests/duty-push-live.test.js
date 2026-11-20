@@ -96,7 +96,7 @@ ok('比對本身抓得到差異：把新版的只計數改壞（多讀一個屬�
 });
 
 /* ══ 2. 正式推送、回應快：跟線上版只差四種呼叫 ══ */
-ok('正式推送、回應快（200 毫秒）：跟 a9fac60 只差「讀 DUTY_PUSH_TUNE、getAll 多一鍵、flush、重讀＋寫慢計數」；送出的內容、回傳值、暫存區（慢計數除外）逐字相同', () => {
+ok('正式推送、回應快（200 毫秒）：跟 a9fac60 只差「金鑰／店代碼／門檻改一次 getProperties、getAll 多一鍵、flush、重讀＋寫慢計數」；送出的內容、回傳值、暫存區（慢計數除外）逐字相同', () => {
   const run = (src) => {
     const h = harness(src, { props: LIVE, fetch: took(200) });
     for (let i = 0; i < 8; i++) { h.write(i % 2 ? C : W, { ok: true }); h.advance(5000); }
@@ -111,11 +111,38 @@ ok('正式推送、回應快（200 毫秒）：跟 a9fac60 只差「讀 DUTY_PUS
   assert.strictEqual(JSON.stringify(outB), JSON.stringify(A.out).replace(/"cap":1500/g, '"cap":800'));
   const cb = Object.assign({}, B.h.cache); delete cb.dpush_slow;
   assert.strictEqual(JSON.stringify(cb), JSON.stringify(A.h.cache));
-  const norm = (log) => log.filter((l) => l !== 'Props.getProperty:DUTY_PUSH_TUNE' && l !== 'SpreadsheetApp.flush' && l !== 'Cache.put:dpush_slow:21600' && l !== 'Cache.get:dpush_slow')
+  const PROPS3 = ['Props.getProperty:DUTY_PUSH_KEY', 'Props.getProperty:DUTY_PUSH_STORE', 'Props.getProperty:DUTY_PUSH_TUNE', 'Props.getProperties'];   // props-once：舊版逐一讀、新版一次讀（另有一項專門數次數）
+  const norm = (log) => log.filter((l) => PROPS3.indexOf(l) < 0 && l !== 'SpreadsheetApp.flush' && l !== 'Cache.put:dpush_slow:21600' && l !== 'Cache.get:dpush_slow')
     .map((l) => l.replace(/^Cache\.getAll:(\d+)$/, 'Cache.getAll:*'));
   assert.deepStrictEqual(norm(B.h.log), norm(A.h.log));
   assert.strictEqual(B.h.log.filter((l) => l === 'SpreadsheetApp.flush').length, 8, '8 筆寫入各 flush 一次（ping 不 flush）');
   assert.strictEqual(B.h.log.filter((l) => l === 'Cache.put:dpush_slow:21600').length, 9, '每次真的連外（8 寫入＋1 ping）寫一次慢計數');
+});
+
+ok('屬性讀取次數（額度 5 萬／天）：關＝每筆 1 次、只計數＝每筆 2 次（跟 a9fac60 相同）；正式推送＝每筆 3 次（網址、旗標、一次 getProperties；a9fac60 是 4 次、#182 是 5 次）；push_stats 正式推送 3 次、只計數 3 次', () => {
+  const reads = (h) => h.log.filter((l) => /^Props\.getPropert(y|ies)/.test(l)).length;
+  const one = (src, props, fn) => { const h = harness(src, { props, fetch: took(100) }); fn(h); return { n: reads(h), log: h.log.filter((l) => /^Props\.getPropert/.test(l)) }; };
+  const w = (h) => h.write(W, { ok: true });
+  const st = (h) => stats(h);
+  assert.strictEqual(one(SRC, {}, w).n, 1);
+  assert.strictEqual(one(SRC, DRY, w).n, 2);
+  assert.strictEqual(one(OLD, DRY, w).n, 2);
+  const lv = one(SRC, LIVE, w);
+  assert.strictEqual(lv.n, 3);
+  assert.deepStrictEqual(lv.log, ['Props.getProperty:DUTY_PUSH_URL', 'Props.getProperty:DUTY_PUSH_DRY', 'Props.getProperties']);
+  assert.strictEqual(one(OLD, LIVE, w).n, 4);
+  assert.strictEqual(one(SRC, LIVE, st).n, 3);
+  assert.strictEqual(one(SRC, DRY, st).n, 3);
+  assert.strictEqual(one(OLD, DRY, st).n, 3);
+  // ping（duty_changes 帶 ping）：送 ping 讀一次設定、回應附 push_stats 再讀一次
+  assert.strictEqual(one(SRC, LIVE, (h) => h.changes({ ping: 'nonce_ABC_123' })).n, 6);
+  // 讀到的金鑰、店代碼、門檻照樣生效（push_cfg／push_setup 改完下一筆就生效，沒有快取）
+  const h = harness(SRC, { props: Object.assign({ DUTY_PUSH_TUNE: '{"cap":1}' }, LIVE), fetch: took(100) });
+  h.write(W, { ok: true }); h.write(W, { ok: true });
+  assert.deepStrictEqual([h.fetches.length, h.stats().skip_cap, JSON.parse(h.fetches[0].opt.payload).s], [1, 1, 'mztjs']);
+  h.props.DUTY_PUSH_TUNE = '{"cap":5}'; h.write(W, { ok: true });
+  assert.strictEqual(h.fetches.length, 2, '改了屬性下一筆就生效');
+  assert.ok(JSON.stringify(h.cache).indexOf(KEY) < 0, '金鑰不進快取');
 });
 
 /* ══ 3. 回應慢也熔斷 ══ */

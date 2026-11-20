@@ -9,7 +9,7 @@
 |---|---|---|
 | 關（預設） | `DUTY_PUSH_URL` 沒設或空白 | 只多讀 1 個屬性 |
 | 只計數 | `DUTY_PUSH_URL`＋`DUTY_PUSH_DRY=1` | 多讀 2 個屬性＋暫存區讀寫 1 次（記「本來會推幾次」），不連外 |
-| 正式推送 | `DUTY_PUSH_URL`＋`DUTY_PUSH_DRY=0`＋`DUTY_PUSH_KEY`＋`DUTY_PUSH_STORE`（選填 `DUTY_PUSH_TUNE`） | 多讀 5 個屬性、`SpreadsheetApp.flush()`、連外一次（最多等 3 秒）、暫存區寫 2–3 次 |
+| 正式推送 | `DUTY_PUSH_URL`＋`DUTY_PUSH_DRY=0`＋`DUTY_PUSH_KEY`＋`DUTY_PUSH_STORE`（選填 `DUTY_PUSH_TUNE`） | 讀屬性 3 次（網址、旗標、一次 `getProperties()`）、`SpreadsheetApp.flush()`、連外一次（最多等 3 秒）、暫存區寫 2–3 次 |
 
 開關不用進編輯器：mini 用 `duty_changes` 帶 `push_cfg:{url_on, dry}`（主管金鑰＋管理金鑰），網址寫死在程式裡；沒有金鑰與店代碼時最多開到只計數。金鑰用 `push_setup:{key, store}` 一次寫入（已設過回 `already_set`）。
 
