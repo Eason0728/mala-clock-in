@@ -2235,7 +2235,9 @@ function handleMgrApprove(body) {
   // 規則乙的競態（2026-11-21 出勤核定舊問題 3，Codex 20261121-rules-ab 問題 5）：開頭的待審檢查到這裡中間跑了一長串檢查，同仁可能剛好送出一張單
   //（送申請是在 ScriptLock 裡寫入的）。寫入前拿同一把鎖、鎖內重讀申請表再判一次，沒有待審才寫；搶不到回 busy、什麼都不寫。
   // 鎖只包最後這段（重讀＋寫 approved＋leave），照 docs/clock-to-mini/phase2-5-design.md §4.2-2。REQ_PEND_BLOCK=off 時不拿鎖＝完全退回舊行為。
-  const pendLock = reqRowsAll && typeof reqPendBlockOn_ === 'function' && reqPendBlockOn_() ? LockService.getScriptLock() : null;
+  // 2026-11-21 P3-3：外層 reqMgrApproveHome_ 已經拿著指令碼鎖（DUTY_APPROVE_LOCK／DUTY_AUTH=mini，REQ_APPROVE_LOCK_HELD_）時不再拿一次：
+  // 巢狀拿同一把鎖會等滿 10 秒回 busy，或放鎖時把外層的鎖一起放掉。外層鎖從開頭的待審檢查就包住，到寫入中間不會有人送單，不必重查。
+  const pendLock = !(typeof REQ_APPROVE_LOCK_HELD_ !== 'undefined' && REQ_APPROVE_LOCK_HELD_) && reqRowsAll && typeof reqPendBlockOn_ === 'function' && reqPendBlockOn_() ? LockService.getScriptLock() : null;
   if (pendLock && !pendLock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
   let enteredAt;
   try {
