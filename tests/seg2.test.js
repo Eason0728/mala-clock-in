@@ -9,6 +9,7 @@
  *   4. 兩段重疊、或接在一起（一段結束＝另一段開始）→ 擋；中間有空檔就收。跨夜（22:00–01:00）照現在的算法，日期記上班那天。
  *   5. 不開放兩段：忘打卡、生理假（一天只算一次）、請假出差的「整天／只填時數」、店長代開的請假出差（N3）。
  *   6. 開關：每店指令碼屬性 REQ_SEG2_KINDS（ot,leave,trip）；沒設＝全關，送兩段一律擋 seg2_off、一列不寫，跟現在完全一樣。
+ *   （2026-11-21 起加班可以填到四段，請假、出差仍兩段；加班三、四段的規則見 seg4.test.js）
  *   7. 只填一段：寫入的每一欄跟現在相同（多一個空白的 grp 欄）；只有 N1 單張加班上限 12→10、N4 拿掉「本月第幾次事假」提醒。
  *
  * 手算對照（日期 2026-11-16，今天 11/17）：
@@ -70,7 +71,7 @@ const blocked = (m, body) => { const before = nRows(m); const r = submit(m, body
   check('S02', '開關沒設：送加班兩段 → seg2_off，一列都不寫', blocked(m, otS(['11:00', '14:00'], ['17:00', '21:00'])), ['seg2_off｜這家店還沒開放一次填兩段，請一段一段分開送', 0]);
   check('S03', '開關沒設：送一段照舊收（跟沒開功能一樣）', res(submit(m, { kind: 'ot', start: '11:00', end: '14:00', reason: '盤點' })), 'ok');
   m.props.REQ_SEG2_KINDS = 'ot';
-  check('S04', '開關只開 ot：req_info 回 [ot]、ot_segments_max 2', [m.sb.handleReqInfo_({ id_token: 'TOK_U1' }).seg2_kinds, m.sb.handleReqInfo_({ id_token: 'TOK_U1' }).ot_segments_max], [['ot'], 2]);
+  check('S04', '開關只開 ot：req_info 回 [ot]、ot_segments_max 4（2026-11-21 加班開到四段，原預期 2）', [m.sb.handleReqInfo_({ id_token: 'TOK_U1' }).seg2_kinds, m.sb.handleReqInfo_({ id_token: 'TOK_U1' }).ot_segments_max], [['ot'], 4]);
   check('S05', '只開 ot：請假兩段、出差兩段 → seg2_off，0 列', [blocked(m, lvS('事假', ['09:00', '10:00'], ['15:00', '16:00'])), blocked(m, tpS(['09:00', '10:00'], ['15:00', '16:00']))],
     [['seg2_off｜這家店還沒開放一次填兩段，請一段一段分開送', 0], ['seg2_off｜這家店還沒開放一次填兩段，請一段一段分開送', 0]]);
   m.props.REQ_SEG2_KINDS = ' OT, leave，trip、foo constructor ot ';
@@ -143,9 +144,10 @@ check('H7-c', '中間空 1 分鐘 11:00–14:00＋14:01–15:00 → 收', res(su
 check('X04', '原因沒寫（兩段共用的欄位）→ 不標第幾段，0 列', blocked(world(), otS(['11:00', '14:00'], ['17:00', '21:00'], { reason: '' })), ['need_reason｜加班要寫原因', 0]);
 check('X05', '第二段時間沒填完整 → 第二段：…，0 列', blocked(world(), otS(['11:00', '14:00'], ['17:00', ''])), ['bad_time｜第二段：請填完整的加班時段', 0]);
 check('X06', '第一段開始＝結束 → 第一段：…', blocked(world(), otS(['11:00', '11:00'], ['17:00', '18:00'])), ['bad_time｜第一段：開始和結束時間一樣，請確認', 0]);
-check('X07', '三段 → bad_segments；忘打卡兩段 → bad_segments（都 0 列）',
-  [blocked(world(), { kind: 'ot', reason: 'x', segments: [seg('09:00', '10:00'), seg('11:00', '12:00'), seg('13:00', '14:00')] })[0].split('｜')[0],
-   blocked(world(), { kind: 'miss', miss_type: 'out', reason: 'x', segments: [seg('09:00', '10:00'), seg('11:00', '12:00')] })[0].split('｜')[0]], ['bad_segments', 'bad_segments']);
+check('X07', '請假三段、出差三段、忘打卡兩段 → bad_segments（都 0 列）；加班三段、四段是 2026-11-21 起開放（見 seg4.test.js）',
+  [blocked(world(), lvS('事假', ['09:00', '10:00'], ['11:00', '12:00'], { segments: [seg('09:00', '10:00'), seg('11:00', '12:00'), seg('13:00', '14:00')] })),
+   blocked(world(), { kind: 'trip', place: '央廚', why: '開會', segments: [seg('09:00', '10:00'), seg('11:00', '12:00'), seg('13:00', '14:00')] }),
+   blocked(world(), { kind: 'miss', miss_type: 'out', reason: 'x', segments: [seg('09:00', '10:00'), seg('11:00', '12:00')] })].map((x) => x[0].split('｜')[0] + x[1]), ['bad_segments0', 'bad_segments0', 'bad_segments0']);
 check('X08', 'segments 不是陣列、或裡面不是物件 → bad_segments', [blocked(world(), { kind: 'ot', reason: 'x', segments: 'abc' }), blocked(world(), { kind: 'ot', reason: 'x', segments: ['09:00', '10:00'] })].map((x) => x[0].split('｜')[0] + x[1]), ['bad_segments0', 'bad_segments0']);
 {
   // B39：跨夜班的凌晨加班日期選錯 → 那一段被擋、整批 0 列

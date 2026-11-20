@@ -2232,13 +2232,24 @@ function handleMgrApprove(body) {
     return { ok: true, dry_run: true, date: date, emp_id: body.emp_id, name: roster.name, periods: rawPeriods,
              approved_hours: approvedHours, leaves: leaves, status_text: statusText };
   }
-  const enteredAt = nowTaipeiIso();
-
-  empIdColText_(approvedSheet);
-  appendApprovedRow_(approvedSheet, [date, body.emp_id, roster.name, periodsStr, approvedHours, statusText, actor, enteredAt],
-    rawPeriods.length ? dupList : [],
-    rawPeriods.length && typeof reqCleanDiffReason_ === 'function' ? reqCleanDiffReason_(body.diff_reason) : '');
-  replaceLeaveRows(ss, date, String(roster.name), leaves);
+  // 規則乙的競態（2026-11-21 出勤核定舊問題 3，Codex 20261121-rules-ab 問題 5）：開頭的待審檢查到這裡中間跑了一長串檢查，同仁可能剛好送出一張單
+  //（送申請是在 ScriptLock 裡寫入的）。寫入前拿同一把鎖、鎖內重讀申請表再判一次，沒有待審才寫；搶不到回 busy、什麼都不寫。
+  // 鎖只包最後這段（重讀＋寫 approved＋leave），照 docs/clock-to-mini/phase2-5-design.md §4.2-2。REQ_PEND_BLOCK=off 時不拿鎖＝完全退回舊行為。
+  const pendLock = reqRowsAll && typeof reqPendBlockOn_ === 'function' && reqPendBlockOn_() ? LockService.getScriptLock() : null;
+  if (pendLock && !pendLock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
+  let enteredAt;
+  try {
+    if (pendLock) {
+      const pendAgain = reqPendBlock_(reqRows_(ss), String(body.emp_id), date);
+      if (pendAgain) return pendAgain;
+    }
+    enteredAt = nowTaipeiIso();
+    empIdColText_(approvedSheet);
+    appendApprovedRow_(approvedSheet, [date, body.emp_id, roster.name, periodsStr, approvedHours, statusText, actor, enteredAt],
+      rawPeriods.length ? dupList : [],
+      rawPeriods.length && typeof reqCleanDiffReason_ === 'function' ? reqCleanDiffReason_(body.diff_reason) : '');
+    replaceLeaveRows(ss, date, String(roster.name), leaves);
+  } finally { if (pendLock) pendLock.releaseLock(); }
 
   return {
     ok: true, date: date, emp_id: body.emp_id, name: roster.name,
