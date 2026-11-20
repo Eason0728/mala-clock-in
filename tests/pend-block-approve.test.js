@@ -81,8 +81,8 @@ r = approve(env([LV], { REQ_STRICT_FROM: '2026-12-01', REQ_BIND_FROM: 'off' }, '
 check('P14', '綁單、加嚴都關著的日子也擋（這條沒有起算日）', [r.ok, r.error], [false, 'pending_request']);
 check('P15', '函式層：沒有待審＝null；有＝錯誤物件', [env([]).sb.reqPendBlock_([], 'E01', D), env([]).sb.reqPendBlock_([{ emp_id: 'E01', date: D, status: 'pending' }], 'E01', D).error], [null, 'pending_request']);
 console.log('\n════ 五、開關填錯值偏安全（2026-11-20 複審）════');
-for (const [v, on] of [['off', false], ['OFF', false], [' Off ', false], ['false', false], ['0', false], ['關', false], ['亂填', false], ['on', true], ['TRUE', true], ['', true]]) {
+for (const [v, on] of [['off', false], ['OFF', false], [' Off ', false], ['false', false], ['0', false], ['關', false], ['False', false], ['no', false], ['亂填', true], ['xyz', true], ['on', true], ['TRUE', true], ['', true]]) {
   const mm = env([OT], v === '' ? {} : { REQ_PEND_BLOCK: v });
-  check('P16-' + (v || '空'), 'REQ_PEND_BLOCK=' + JSON.stringify(v) + ' → ' + (on ? '擋' : '不擋（關；認不得的也當關）'), approve(mm).error === 'pending_request', on);
+  check('P16-' + (v || '空'), 'REQ_PEND_BLOCK=' + JSON.stringify(v) + ' → ' + (on ? '擋（沒設、開、認不得的值都照預設擋）' : '不擋（明確的關閉字）'), approve(mm).error === 'pending_request', on);
 }
 done();

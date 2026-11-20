@@ -2353,10 +2353,10 @@ function reqSchedStartMs_(date, spans) {
    營運系統畫面（web/modules/duty/pend-gate.js pendingFor）與營運系統伺服器（新版前端核定）早就擋；這裡是打卡端最後一道，
    舊值班核定頁、直接打 mgr_approve（含 dry_run 只檢查）也擋。規則同畫面：requests 裡這個人、這一天、status＝pending 的每一張都算
    （加班、請假、忘打卡、出差不分種類；本人自己送的、要上層審的也算——這位主管審不了，仍是待審）。由 Code.gs handleMgrApprove 呼叫。
-   指令碼屬性 REQ_PEND_BLOCK＝off（off／false／0／關，不分大小寫）關掉（退回用，不用改程式）；填了認不得的值也當關、記一筆 log。字句同畫面 PEND_BLOCK_MSG。 */
+   指令碼屬性 REQ_PEND_BLOCK＝off（off／false／0／關，不分大小寫）關掉（退回用，不用改程式）；填了認不得的值照預設「擋」、記一筆 log。字句同畫面 PEND_BLOCK_MSG。 */
 var REQ_PEND_BLOCK_MSG_ = '這天還有待審的申請，請先審單（審完才能核定）';
 /* 開關屬性的讀法（2026-11-20 複審：填錯值要偏安全）：不分大小寫、前後空白不算。
-   回 'off'（off／false／0／no／關）、'on'（on／true／1／yes／開）、''（沒設）、或原值（其他＝認不得，呼叫端一律當「關」並記一筆 log）。 */
+   回 'off'（off／false／0／no／關）、'on'（on／true／1／yes／開）、''（沒設）、或原值（其他＝認不得，呼叫端自己決定：放寬規則的 REQ_GAP_LATE_FROM 當關、保護性的 REQ_PEND_BLOCK 照擋）。 */
 var REQ_SWITCH_OFF_ = ['off', 'false', '0', 'no', '關'], REQ_SWITCH_ON_ = ['on', 'true', '1', 'yes', '開'];
 function reqSwitchRead_(key) {
   var raw = '';
@@ -2369,10 +2369,11 @@ function reqSwitchRead_(key) {
 }
 function reqSwitchBad_(key) { try { console.warn('指令碼屬性 ' + key + ' 的值認不得，當成「關」處理（請改成 off 或刪掉這個屬性）'); } catch (e) {} }      // 不印值
 function reqPendBlockOn_() {
+  // 保護性檢查：只有明確的關閉字（off／false／0／no／關）才關；認不得的值照預設「擋」並記一筆 log（2026-11-20 第三輪：被誤關＝少擋）
   var v = reqSwitchRead_('REQ_PEND_BLOCK');
-  if (v === '' || v === 'on') return true;
-  if (v !== 'off') reqSwitchBad_('REQ_PEND_BLOCK');
-  return false;
+  if (v === 'off') return false;
+  if (v !== '' && v !== 'on') { try { console.warn('指令碼屬性 REQ_PEND_BLOCK 的值認不得，照預設「擋」處理（要關請填 off）'); } catch (e) {} }      // 不印值
+  return true;
 }
 /** rows：申請表（reqRows_）；回 null＝可以核定，否則回要擋的回應（pending＝幾張審核中） */
 function reqPendBlock_(rows, empId, date) {
