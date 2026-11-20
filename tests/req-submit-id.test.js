@@ -46,6 +46,17 @@ const RID = 'r0123456789abcdef', RID2 = 'rfedcba9876543210';
   check('Q10', '兩段的單號拿去送單張：也算寫過（回那兩張）', [c.dup, (c.requests || []).length, rows(m).length], [true, 2, 2]);
 }
 {
+  // 2026-11-21 驗收 P4：寫過的單號在月份鎖了之後補送 → 回 dup，不是 pay_locked
+  const m = world();
+  const RID4 = 'r00000000000000bb';
+  const a = post(m, Object.assign({ req_id: RID4 }, LV));
+  m.run('var __realPL = reqPayLock_; reqPayLock_ = function () { return { ok: false, error: "pay_locked", message: "鎖了" }; };');
+  const b = post(m, Object.assign({ req_id: RID4 }, LV));
+  const c = post(m, Object.assign({ req_id: 'r00000000000000cc' }, LV));
+  m.run('reqPayLock_ = __realPL;');
+  check('Q13', '月份鎖了：同號補送回 dup；新單號照擋 pay_locked', [a.ok, b.ok, b.dup, c.error, rows(m).length], [true, true, true, 'pay_locked', 1]);
+}
+{
   const m = world();
   let flushed = 0; m.sb.SpreadsheetApp.flush = () => { flushed++; };
   post(m, Object.assign({ date: '2026-11-15' }, LV));

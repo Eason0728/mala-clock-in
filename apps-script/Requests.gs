@@ -709,6 +709,9 @@ function handleReqSubmit_(body) {
   // 申請單號（2026-11-21 P3-3，契約 docs/contract-writeback.md 第 4 節）：手機帶 req_id＝送 mini 與改送 Google 同一個號碼，同號只寫一次。沒帶＝跟以前一樣
   var reqId = reqSubmitIdOf_(body);
   if (reqId === null) return { ok: false, error: 'bad_req_id', message: '申請單號格式不對' };
+  // 2026-11-21 驗收 P4：同號已寫過就先回 dup（在鎖月、額度等檢查之前）：mini 補送已寫過的單，月份剛好鎖了也要拿到 dup、不是 pay_locked。
+  // 這裡不拿鎖、只讀：找到＝一定寫過；找不到照原流程，鎖內還會再查一次。
+  if (reqId) { var preDup = reqSubmitDup_(reqId, reqRows_(who.ss), who); if (preDup) return preDup; }
   // 薪資鎖月後不可以再動（2026-11-15，Code.gs payLockedBlock_）：那個月的申請送不了
   var payLock = reqIsDate_(String(body.date || '')) ? reqPayLock_(String(body.date), true, who.ss) : null;
   if (payLock) return payLock;
@@ -3446,20 +3449,26 @@ function reqProp_(k) {
  * {action:'duty_changes', mgr_key, admin_key, auth_cfg:{mode, ver_strict?, ts, sig}} 或 {…, auth_cfg:{get:true}}（只讀現況）
  * 驗證（比 push_cfg 多一層）：
  *  1. 主管金鑰（handleDutyChanges_ 已驗）＋管理金鑰 admin_key（checkAdmin），同 push_cfg。
- *  2. 這家店已設門鈴金鑰（DUTY_PUSH_KEY）時，還要 mini 的簽名：sig＝HMAC-SHA256(DUTY_PUSH_KEY, 'cfg|1|店|mode|ver_strict(0/1/-)|ts')，
- *     ts 只收 ±10 分鐘。三把金鑰都要有才改得動。沒設門鈴金鑰的店只能設 google（＝現行，也不可能切 mini）。
+ *  2. 這家店已設門鈴金鑰（DUTY_PUSH_KEY）時，還要 mini 的簽名：sig＝HMAC-SHA256(DUTY_PUSH_KEY, 'cfg|2|店|mode|ver_strict(0/1/-)|ts|nonce')，
+ *     ts 只收 ±2 分鐘；nonce（一次性單號，/^[A-Za-z0-9_-]{8,64}$/）用過就不收（暫存區 10 分鐘＋DUTY_AUTH_LOG 裡的 n 兩處查；
+ *     2026-11-21 驗收 P2：原本 ±10 分鐘內可重放）。三把金鑰都要有才改得動。沒設門鈴金鑰的店只能設 google（＝現行，也不可能切 mini）。
  * 只寫白名單兩個屬性：DUTY_AUTH（mini→'mini'、google→''）、DUTY_VER_STRICT（ver_strict:true→'1'、false→''；沒帶＝不動）。
- * 值只認 mode＝google／mini（別名 off、shadow＝google，on＝mini）；其他任何值＝bad_input，屬性一個都不動（維持原值）。
+ * 值只認 mode＝DutyFeed.gs DUTY_AUTH_MODES_ 那張表（google／off／shadow＝google，mini／on＝mini）；其他任何值＝bad_input，屬性一個都不動（維持原值）。
  * 切 mini 要門鈴金鑰與店代碼都設好（need_key），同 push_cfg 的聯鎖。
  * 紀錄：每次寫入記一筆到 Apps Script 執行紀錄（console.log）＋指令碼屬性 DUTY_AUTH_LOG（最近 20 筆 {at, by, mode, ver_strict, from}；
  *   by＝主管名單上的名字＋代核姓名，不含金鑰）。回應只回模式與開關（不回金鑰、不回其他屬性）。 */
-var DUTY_AUTH_MODES_ = { google: 'google', off: 'google', shadow: 'google', mini: 'mini', on: 'mini' };
 var DUTY_AUTH_LOG_MAX_ = 20;
+var DUTY_CFG_SKEW_MS_ = 2 * 60000;          // 設定簽名時間 ±2 分鐘
+var DUTY_CFG_NONCE_RE_ = /^[A-Za-z0-9_-]{8,64}$/;
+var DUTY_CFG_NONCE_TTL_S_ = 600;            // 用過的 nonce 在暫存區留 10 分鐘（＞時間窗兩倍）；DUTY_AUTH_LOG 也記
 function dutyAuthNow_(all) {
-  return { mode: dutyAuthCfgOf_(all).mini ? 'mini' : 'google', ver_strict: dutyOnVal_(all.DUTY_VER_STRICT) };
+  var m = dutyAuthCfgOf_(all);
+  var o = { mode: m.mini ? 'mini' : 'google', ver_strict: dutyOnVal_(all.DUTY_VER_STRICT) };
+  if (m.unknown) o.unknown_value = true;   // DUTY_AUTH 被手動填了認不得的值（照 google 處理）
+  return o;
 }
-function dutyAuthCfgMsg_(store, mode, vs, ts) {
-  return ['cfg', '1', store, mode, vs === true ? '1' : vs === false ? '0' : '-', String(ts)].join('|');
+function dutyAuthCfgMsg_(store, mode, vs, ts, nonce) {
+  return ['cfg', '2', store, mode, vs === true ? '1' : vs === false ? '0' : '-', String(ts), String(nonce)].join('|');
 }
 function dutyAuthLogOf_(raw) {
   var log = [];
@@ -3476,7 +3485,7 @@ function dutyAuthCfgSet_(body, mg) {
     return { ok: true, auth_cfg: dutyAuthNow_(all0), log: dutyAuthLogOf_(all0.DUTY_AUTH_LOG) };
   }
   var raw = typeof c.mode === 'string' ? c.mode.trim().toLowerCase() : '';
-  var mode = Object.prototype.hasOwnProperty.call(DUTY_AUTH_MODES_, raw) ? DUTY_AUTH_MODES_[raw] : '';
+  var mode = raw && Object.prototype.hasOwnProperty.call(DUTY_AUTH_MODES_, raw) ? DUTY_AUTH_MODES_[raw] : '';
   if (!mode || (c.ver_strict !== undefined && typeof c.ver_strict !== 'boolean')) {
     return { ok: false, error: 'bad_input', message: 'mode 只能是 google／mini（或 off、shadow、on）；ver_strict 只能是 true／false' };
   }
@@ -3487,11 +3496,19 @@ function dutyAuthCfgSet_(body, mg) {
     var key = String(all.DUTY_PUSH_KEY || ''), store = String(all.DUTY_PUSH_STORE || '').trim();
     var keySet = key.length >= 32 && /^[a-z0-9]{2,16}$/.test(store);
     if (mode === 'mini' && !keySet) return { ok: false, error: 'need_key', message: '這家店還沒設好門鈴金鑰與店代碼，不能切 mini' };
+    var nonce = '';
     if (keySet) {
       var ts = c.ts, sig = String(c.sig == null ? '' : c.sig);
-      if (typeof ts !== 'number' || !isFinite(ts) || !DUTY_WB_SIG_RE_.test(sig)) return { ok: false, error: 'bad_sig', message: '要帶 mini 的設定簽名' };
-      if (Math.abs(Date.now() - ts) > DUTY_WB_SKEW_MS_) return { ok: false, error: 'wb_ts', message: '設定簽名時間超過 10 分鐘', now: Date.now() };
-      if (!dutyWbSame_(dutyWbSign_(dutyAuthCfgMsg_(store, raw, c.ver_strict, ts), key), sig)) return { ok: false, error: 'bad_sig', message: '設定簽名不對' };
+      nonce = String(c.nonce == null ? '' : c.nonce);
+      if (typeof ts !== 'number' || !isFinite(ts) || !DUTY_WB_SIG_RE_.test(sig) || !DUTY_CFG_NONCE_RE_.test(nonce)) return { ok: false, error: 'bad_sig', message: '要帶 mini 的設定簽名與一次性單號' };
+      if (Math.abs(Date.now() - ts) > DUTY_CFG_SKEW_MS_) return { ok: false, error: 'wb_ts', message: '設定簽名時間超過 2 分鐘', now: Date.now() };
+      if (!dutyWbSame_(dutyWbSign_(dutyAuthCfgMsg_(store, raw, c.ver_strict, ts, nonce), key), sig)) return { ok: false, error: 'bad_sig', message: '設定簽名不對' };
+      var cache = CacheService.getScriptCache(), nk = 'dcfg:' + nonce;
+      var seen = false;
+      try { seen = !!cache.get(nk); } catch (e) { seen = false; }
+      if (!seen) seen = dutyAuthLogOf_(all.DUTY_AUTH_LOG).some(function (x) { return x && x.n === nonce; });
+      if (seen) return { ok: false, error: 'replay', message: '這個設定請求已經用過，請重新簽一次' };
+      try { cache.put(nk, '1', DUTY_CFG_NONCE_TTL_S_); } catch (e) {}
     }
     var before = dutyAuthNow_(all);
     props.setProperty('DUTY_AUTH', mode === 'mini' ? 'mini' : '');
@@ -3500,6 +3517,7 @@ function dutyAuthCfgSet_(body, mg) {
     var mgr = mg ? findManagerByKey(mg.rows, body.mgr_key) : null;
     var by = String((mgr && mgr.name) || '') + (body.acting_name ? '／' + String(body.acting_name).slice(0, 40) : '');
     var rec = { at: nowTaipeiIso(), by: by, mode: after.mode, ver_strict: after.ver_strict, from: before.mode };
+    if (nonce) rec.n = nonce;
     var log = dutyAuthLogOf_(all.DUTY_AUTH_LOG);
     log.push(rec);
     props.setProperty('DUTY_AUTH_LOG', JSON.stringify(log.slice(-DUTY_AUTH_LOG_MAX_)));
