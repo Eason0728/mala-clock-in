@@ -1434,9 +1434,11 @@ function reqMgrApproveHomeRaw_(body, cfg) {
   if (!cfg || !cfg.lock || (body && body.dry_run === true)) return reqMgrApproveHomeIn_(body, cfg);
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(typeof DUTY_APPROVE_LOCK_MS_ === 'number' ? DUTY_APPROVE_LOCK_MS_ : 20000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
+  REQ_APPROVE_LOCK_HELD_ = true;   // 告訴 handleMgrApprove：外面已經拿著指令碼鎖，裡面不要再拿一次（巢狀拿鎖會等滿 10 秒回 busy，或放鎖時把外面的鎖一起放掉）
   try { return reqMgrApproveHomeIn_(body, cfg); }
-  finally { lock.releaseLock(); }
+  finally { REQ_APPROVE_LOCK_HELD_ = false; lock.releaseLock(); }
 }
+var REQ_APPROVE_LOCK_HELD_ = false;   // 每次請求是獨立執行，預設 false
 function reqMgrApproveHomeIn_(body, cfg) {
   // 依副本核定（2026-11-14，DutyFeed.gs）：帶 base_ver 的先比版本，主管看到的不是最新的就退回
   var stale = typeof dutyVerGuard_ === 'function' ? dutyVerGuard_(body, !!(cfg && cfg.strict)) : null;
