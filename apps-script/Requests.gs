@@ -2379,7 +2379,7 @@ function reqPendBlock_(rows, empId, date) {
    是已核准「中間休息」忘打卡單補出來的休息。
    班別休息（break_min）那段班的第一個空檔是休息：二段班時只算滿休息分鐘、超過的部分記遲到（2026-11-20 Eason 第 3 題 B，例 休 30、出去 50 → 20 分遲到）；單段班照 11/17（超過的照實扣）。
    沒有新增任何金額規則：空檔只是進了既有的遲到分鐘。 */
-var REQ_GAP_LATE_FROM_DEFAULT_ = null;      // 上線日（YYYY-MM-DD）；null＝還沒上線＝整條關著。指令碼屬性 REQ_GAP_LATE_FROM 設日期優先、off＝關
+var REQ_GAP_LATE_FROM_DEFAULT_ = '2026-11-22';  // 上線日（YYYY-MM-DD；Eason 定案：九店部署完成隔天起算）；null＝整條關著。指令碼屬性 REQ_GAP_LATE_FROM 設日期優先、off＝關
                                             // ⚠ 要跟營運系統 web/modules/duty/core-calc.js 的 GAP_LATE_FROM 設成同一天；九店同一份檔，一改九店同時生效（沒有分店開關）
 var REQ_GAP_LATE_SCOPE_DEFAULT_ = 'multi';  // multi＝只有二段班（當天班表兩段以上）；all＝單段班也算。指令碼屬性 REQ_GAP_LATE_SCOPE 優先
 function reqGapLateFrom_() {
