@@ -380,10 +380,20 @@ function handleRelayMode_(body) {
         if (!/^\d{4}-\d\d$/.test(ym)) return;
         var r = m[ym] || {};
         cur[id][ym] = { ok: r.ok === true, mini: Number(r.mini) || 0, g: Number(r.g) || 0, at: Number(r.at) || 0, diff: String(r.diff || '').slice(0, 80) };   // 指令碼屬性一個值約 9KB 上限（審查 E3）
+        var lr = relayGLockRowsIn_(r.rows); if (lr) cur[id][ym].rows = lr;   // P3-8：核定／請假／申請一致、未寫回、衝突（mini 有開 G_ROWS_ON 才會送）
       });
       var yms = Object.keys(cur[id]).sort(); while (yms.length > 3) delete cur[id][yms.shift()];   // 每店只留最近 3 個月
     });
-    p.setProperty('G_RECON', JSON.stringify(cur));
+    var js = JSON.stringify(cur);
+    if (js.length > 8500) {   // P3-8 多了 rows：太大先丟掉說明文字（不影響判斷；鎖月照擋／照放）
+      Object.keys(cur).forEach(function (id) { Object.keys(cur[id]).forEach(function (ym) { var e = cur[id][ym]; e.diff = ''; if (e.rows) { e.rows.bad = []; e.rows.why = ''; } }); });
+      js = JSON.stringify(cur);
+    }
+    for (var keep = 2; js.length > 8500 && keep >= 1; keep--) {   // 還太大：每店只留最近 keep 個月（被丟掉的月份鎖月會因為「沒有對帳結果」被擋＝安全方向）
+      Object.keys(cur).forEach(function (id) { var ks = Object.keys(cur[id]).sort(); while (ks.length > keep) delete cur[id][ks.shift()]; });
+      js = JSON.stringify(cur);
+    }
+    p.setProperty('G_RECON', js);
   }
   return { ok: true, on: !!mode.on, stores: mode.stores || [], at: mode.at || 0 };
 }
@@ -411,6 +421,49 @@ function payGReconBlock_(ym, ssId) {
   if (Date.now() - Number(r.at || 0) > RELAYG_RECON_FRESH_MS_)
     return { error: 'g_recon_stale', message: '打卡正本（Mac mini）和 Google 的對帳結果超過 30 分鐘沒有更新，這次沒有鎖定。請找資訊部確認 Mac mini 打卡服務是否正常。' };
   if (!r.ok) return { error: 'g_recon_mismatch', message: '打卡正本（Mac mini）有 ' + r.mini + ' 張、Google 有 ' + r.g + ' 張，對不上，這次沒有鎖定。請找資訊部處理' + (r.diff ? '（' + r.diff + '）' : '') + '。' };
+  if (relayGLockRowsOn_()) return relayGLockRowsBlock_(r);   // P3-8（開關 G_LOCK_ROWS，沒設＝關＝照舊只看打卡）
+  return null;
+}
+
+/* ── P3-8 鎖月條件加項（2026-11-21；設計 phase2-5-design.md §4.6、plan P3-8；Eason 2026-11-21 第 2 題選 A「三項都擋」）──
+   光復指令碼屬性 G_LOCK_ROWS：沒設、空白、'0'＝關（＝上面那樣只看打卡）；其他任何值＝開。
+   ⚠ 這是保護性檢查：開了以後填錯值（'yes'、'1 '、'on'…）一律當開＝維持擋，絕不會因為打錯字變成放行。
+   開著時，除了打卡筆數，這家店這個月還要同時滿足（mini 每 10 分鐘隨 relay_mode recon 帶來的 rows）：
+     ①核定（approved）、請假（leave）、申請（requests）三張表該月每一天 mini 和 Google 指紋一致；
+     ②mini 還沒寫回 Google 的 0 筆；③衝突待處理 0 筆。
+   任何一項不知道（沒回報、超過 30 分鐘沒更新、mini 問不到營運系統）＝擋，不放行。
+   Mac mini 長時間不在又要鎖月：照舊在光復編輯器執行 relayGEditorPrimaryOff（P2-A）——正本記號關了，這裡整段不看（Payroll.gs 也不會呼叫）。
+   未寫回／衝突算哪個範圍：RELAYG_LOCK_SCOPE_。'month'＝日期在要鎖的那個月（日期認不出來的算進每個月）；其他值＝全店任何一筆都算。 */
+var RELAYG_LOCK_SCOPE_ = 'month';   // Eason 2026-11-21 定案 A：只算要鎖的那個月（日期認不出來的算進每個月）；改 'store' 才是全店
+function relayGLockRowsOn_() {
+  var v; try { v = PropertiesService.getScriptProperties().getProperty('G_LOCK_ROWS'); } catch (e) { return true; }   // 讀不到設定：當開（保護性）
+  if (v === null || v === undefined) return false;
+  v = String(v).trim();
+  return !(v === '' || v === '0');
+}
+function relayGLockNum_(v) { return typeof v === 'number' && isFinite(v) && v >= 0 && Math.floor(v) === v ? v : null; }   // 不是 0 以上整數（數字型別）＝不知道（null）
+/** mini 送來的 rows 只留認得的欄、限長度（屬性大小）；不是物件回 null（＝不寫，鎖月時當沒回報）。 */
+function relayGLockRowsIn_(x) {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return null;
+  return { fp: x.fp === 'ok' || x.fp === 'bad' ? x.fp : 'unknown',
+    bad: (Array.isArray(x.bad) ? x.bad : []).slice(0, 3).map(function (s) { return String(s).slice(0, 24); }),
+    unwb: relayGLockNum_(x.unwb), conflict: relayGLockNum_(x.conflict), unwb_all: relayGLockNum_(x.unwb_all), conflict_all: relayGLockNum_(x.conflict_all),
+    at: Number(x.at) || 0, why: String(x.why || '').slice(0, 40) };
+}
+/** 回 null＝三項都過；回 {error, message}＝擋。r＝這家店這個月的對帳結果（打卡那幾項已經過了）。 */
+function relayGLockRowsBlock_(r) {
+  var x = r && r.rows, tail = '這次沒有鎖定。請找資訊部處理。';
+  if (!x || typeof x !== 'object') return { error: 'g_rows_missing', message: 'Mac mini 還沒回報這個月核定、請假、申請和 Google 是否一致，' + tail };
+  if (!(Number(x.at) > 0) || Date.now() - Number(x.at) > RELAYG_RECON_FRESH_MS_)
+    return { error: 'g_rows_stale', message: 'Mac mini 回報的核定、請假、申請對帳結果超過 30 分鐘沒有更新，' + tail };
+  if (x.fp === 'bad') return { error: 'g_rows_fp', message: '這個月的核定、請假或申請，Mac mini 和 Google 對不上' + ((x.bad || []).length ? '（' + x.bad.join('、') + '）' : '') + '，' + tail };
+  if (x.fp !== 'ok') return { error: 'g_rows_fp_unknown', message: '這個月的核定、請假、申請還沒比對完（' + (x.why || '原因不明') + '），' + tail };
+  var all = RELAYG_LOCK_SCOPE_ !== 'month';
+  var u = all ? x.unwb_all : x.unwb, c = all ? x.conflict_all : x.conflict;
+  u = relayGLockNum_(u); c = relayGLockNum_(c);
+  if (u === null || c === null) return { error: 'g_rows_count_unknown', message: 'Mac mini 問不到「還沒寫回 Google」和「衝突待處理」的筆數，' + tail };
+  if (u > 0) return { error: 'g_rows_unwb', message: 'Mac mini 還有 ' + u + ' 筆核定、審單還沒寫回 Google，請過幾分鐘再按一次鎖定；一直這樣請找資訊部。' };
+  if (c > 0) return { error: 'g_rows_conflict', message: '還有 ' + c + ' 筆核定衝突待處理（Mac mini 和 Google 結果不同），要資訊部處理完才能鎖定。' };
   return null;
 }
 
@@ -514,13 +567,14 @@ function relayGWatchTick() {
 function relayGEditorPrimaryOff() {
   var before = relayGMode_();
   PropertiesService.getScriptProperties().setProperty('G_PRIMARY', JSON.stringify({ on: false, stores: [], at: Date.now(), by: 'editor' }));
-  Logger.log('已關閉「打卡正本在 Mac mini」記號：薪資鎖月不再等 Mac mini 對帳（原本' + (before.on ? '開著、' + (before.stores || []).length + ' 家店' : '就是關著') + '）。Mac mini 恢復後請資訊部跑 g-switch 再打開。');
+  Logger.log('已關閉「打卡正本在 Mac mini」記號：薪資鎖月不再等 Mac mini 對帳（打卡筆數、核定／請假／申請一致、未寫回、衝突都不看；原本' + (before.on ? '開著、' + (before.stores || []).length + ' 家店' : '就是關著') + '）。Mac mini 恢復後請資訊部跑 g-switch 再打開。');
   return { ok: true, was_on: !!before.on, on: false };
 }
 /** 看現況（只讀）：正本記號、各店對帳時間、停機通知狀態。不印金鑰與收件人。 */
 function relayGEditorStatus() {
   var p = PropertiesService.getScriptProperties(), mode = relayGMode_(), recon = relayGRecon_(), seen = relayGWatchLastSeen_();
   var s = { primary: { on: !!mode.on, stores: (mode.stores || []).length, at: relayGWatchFmt_(mode.at), by: mode.by || '' },
+    lock_rows: { on: relayGLockRowsOn_(), scope: RELAYG_LOCK_SCOPE_ === 'month' ? 'month' : 'store' },
     recon_at: Object.keys(recon).map(function (id) { var yms = Object.keys(recon[id]).sort(), r = recon[id][yms[yms.length - 1]] || {}; return relayGWatchFmt_(r.at); }),
     watch: { on: p.getProperty('G_WATCH_ON') === '1', hook: !!p.getProperty('G_WATCH_HOOK_URL'), to: !!p.getProperty('G_WATCH_TO'), last_seen: relayGWatchFmt_(seen), state: relayGWatchState_().state,
       trigger: (function () { try { return ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === RELAYG_WATCH_FN_; }); } catch (e) { return null; } })() } };
