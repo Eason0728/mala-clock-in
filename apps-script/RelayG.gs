@@ -163,6 +163,26 @@ function relayGRowsOut_(ss, out, wantRows) {
  * rows／fp（P3-1）：approved、leave、requests 全部列＋主管名單白名單欄＋每天指紋；fp 只回指紋。格式見 r-line.md。
  * 唯讀。金鑰、裝置碼、LINE 帳號一律回 HMAC（'h:'＋十六進位），mini 拿不到原文。
  */
+/* P5-1 標示（2026-11-21，設計 6.2 的 5-1；不改分頁名、不改表頭文字＝只在第一格加「註記」）：
+   mini 設 G_MARK_SHEETS 時，拉回帶 with.mark:'on'／'off'。on＝第一列第一格的註記開頭加上下面這句（原本有別的註記就留在後面）；
+   off＝只拿掉這句，別的註記照留。已經是對的就不寫。回 {分頁: 'set'|'same'|'cleared'|'none'|'no_sheet'}；出錯回 {error}，不影響拉回。 */
+var RELAYG_MARK_SHEETS_ = ['events', 'approved', 'leave', 'requests'];
+var RELAYG_MARK_NOTE_ = '系統產生（Mac mini 寫回），請勿手改。要改請在管理系統操作；有問題請找資訊部。';
+function relayGMarkOut_(ss, mode) {
+  var out = {};
+  try {
+    RELAYG_MARK_SHEETS_.forEach(function (nm) {
+      var s = ss.getSheetByName(nm);
+      if (!s) { out[nm] = 'no_sheet'; return; }
+      var c = s.getRange(1, 1), cur = String(c.getNote() || '');
+      var has = cur.indexOf(RELAYG_MARK_NOTE_) === 0, rest = has ? cur.slice(RELAYG_MARK_NOTE_.length).replace(/^\n/, '') : cur;
+      if (mode === 'on') { if (has) out[nm] = 'same'; else { c.setNote(RELAYG_MARK_NOTE_ + (rest ? '\n' + rest : '')); out[nm] = 'set'; } }
+      else if (has) { c.setNote(rest); out[nm] = 'cleared'; }
+      else out[nm] = 'none';
+    });
+  } catch (e) { return { error: String(e && e.message || e).slice(0, 80) }; }
+  return out;
+}
 function relayGNoticesOut_(ss) {
   var cols = RELAYG_NOTICE_COLS_, s = ss.getSheetByName('notices');
   var v = s ? s.getDataRange().getValues() : [];
@@ -220,6 +240,7 @@ function handleRelayPull_(body) {
     RELAYG_PROPS_.forEach(function (k) { var v = p.getProperty(k); if (v !== null) out.props[k] = v; });
   }
   if (w.rows || w.fp) relayGRowsOut_(ss, out, !!w.rows);   // P3-1：沒帶就完全不讀這幾張
+  if (w.mark === 'on' || w.mark === 'off') out.mark = relayGMarkOut_(ss, w.mark);   // P5-1：表頭註記（沒帶＝不碰）
   out.config = { STORE_LAT: CONFIG.STORE_LAT, STORE_LNG: CONFIG.STORE_LNG, RADIUS_M: CONFIG.RADIUS_M,
                  NO_PUNCH_BREAK_START: CONFIG.NO_PUNCH_BREAK_START || '', NO_PUNCH_BREAK_END: CONFIG.NO_PUNCH_BREAK_END || '',
                  ALTERNATION_LOOKBACK_HOURS: CONFIG.ALTERNATION_LOOKBACK_HOURS };
