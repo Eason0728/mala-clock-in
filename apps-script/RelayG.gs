@@ -132,19 +132,27 @@ function relayGReadRows_(ss, name) {
 }
 /** with.rows／with.fp：三張原始列＋主管名單（白名單欄）＋每天指紋。wantRows=false 只回 fp。 */
 function relayGRowsOut_(ss, out, wantRows) {
-  var rows = {}, fp = {};
+  var rows = {}, fp = {}, rerr = null;
   Object.keys(RELAYG_ROW_SHEETS_).forEach(function (nm) {
-    var t = relayGReadRows_(ss, nm);
-    fp[nm] = t.error ? null : relayGFpOf_(nm, t.rows);
-    rows[nm] = t;
+    try {
+      var t = relayGReadRows_(ss, nm);
+      fp[nm] = t.error ? null : relayGFpOf_(nm, t.rows);
+      rows[nm] = t;
+    } catch (e) {   // 一張讀不了：只那張標失敗（形狀同 too_many：fp 為 null、rows 為 {error}），不連累打卡／名冊／屬性
+      fp[nm] = null; rows[nm] = { error: 'read_failed' };
+      (rerr = rerr || {})[nm] = 'read_failed';
+    }
   });
   out.fp = fp;
-  if (!wantRows) return;
+  if (!wantRows) { if (rerr) out.rows_error = rerr; return; }
   out.rows = rows;
-  var msh = ss.getSheetByName('managers');
-  out.managers = msh ? readSheetAsObjects(msh).rows.map(function (r) {
-    var o = {}; RELAYG_MGR_COLS_.forEach(function (k) { if (k in r) o[k] = relayGCell_(r[k]); }); o.__row = r.__rowIndex; return o;
-  }) : [];
+  try {
+    var msh = ss.getSheetByName('managers');
+    out.managers = msh ? readSheetAsObjects(msh).rows.map(function (r) {
+      var o = {}; RELAYG_MGR_COLS_.forEach(function (k) { if (k in r) o[k] = relayGCell_(r[k]); }); o.__row = r.__rowIndex; return o;
+    }) : [];
+  } catch (e) { (rerr = rerr || {}).managers = 'read_failed'; }   // 沒帶 managers＝快速通道端留著舊名單
+  if (rerr) out.rows_error = rerr;
 }
 
 /**
@@ -508,7 +516,14 @@ function relayGWatchSend_(kind, title, text) {
       payload: JSON.stringify({ action: 'add', token: String(p.getProperty('G_WATCH_HOOK_TOKEN') || ''), to: to, from: '打卡（Google 光復）',
         title: title, text: text, level: 'high', key: 'clock:mini-' + kind }) });
     var code = r.getResponseCode();
-    return code >= 200 && code < 300 ? { ok: true } : { ok: false, error: 'http_' + code };
+    if (!(code >= 200 && code < 300)) return { ok: false, error: 'http_' + code };
+    // 寄信端是網頁應用程式，成敗都回 200，要看內文：ok:true 才算送出（added:false＋skipped:duplicate＝對方已寄過，也算）；其餘一律失敗、下一輪補送。
+    var j = null;
+    try { j = JSON.parse(String(r.getContentText() || '')); } catch (e2) { j = null; }
+    if (!j || typeof j !== 'object') return { ok: false, error: 'bad_body' };
+    if (j.ok === true) return j.added === false && j.skipped !== 'duplicate' ? { ok: false, error: j.skipped === 'daily_cap' ? 'daily_cap' : 'not_sent' } : { ok: true };
+    var er = String(j.error || '');   // 只回固定碼，不回對方給的原文
+    return { ok: false, error: /^(unauthorized|not_configured|send_failed)$/.test(er) ? er : 'hook_error' };
   } catch (e) { return { ok: false, error: 'fetch' }; }
 }
 /**
