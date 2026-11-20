@@ -75,7 +75,9 @@ check('EO-1300-old', '13:00 整走卻送 09–12、13–14 → 照舊擋（13–
 console.log('\n════ 三、不適用：照舊擋 ════');
 for (const st of ['rejected', 'void', 'pending']) {
   r = approve(env(ev('08:58', '15:30'), [L({ status: st })]), '09:00-12:00,13:00-16:00', st === 'pending' ? {} : {});
-  check('EO-' + st, '假單' + st + ' → 照舊「核定比打卡多 30 分鐘」擋', [r.ok, r.rules.split(',').includes('over_credit')], [false, true]);
+  // 2026-11-20 Eason 第 13 題 A：假單還在審核中＝打卡後端先擋「這天還有待審的申請」（pending_request），不再走到核定比打卡多
+  if (st === 'pending') check('EO-' + st, '假單pending → 先擋「這天還有待審的申請」（2026-11-20 起打卡後端也擋）', [r.ok, r.message], [false, '這天還有待審的申請，請先審單（審完才能核定）']);
+  else check('EO-' + st, '假單' + st + ' → 照舊「核定比打卡多 30 分鐘」擋', [r.ok, r.rules.split(',').includes('over_credit')], [false, true]);
 }
 r = approve(env(ev('08:58', '17:30'), []), '09:00-12:00,13:00-18:00', {});
 check('EO-noleave', '沒有假單：班表結尾 17:30 走、核定到 18:00 → 照舊擋 over_credit 30', [r.ok, /核定比打卡多 30 分鐘/.test(r.message)], [false, true]);

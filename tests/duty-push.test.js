@@ -715,7 +715,8 @@ function world(props, fetchFn) {
     } });
   let u = 0; m.sb.Utilities.getUuid = () => ('0000000' + (u++)).slice(-8) + '-1111-2222-3333-444455556666';
   const rq = m.self.insertSheet('requests');
-  rq.values.push(['id', 'date', 'emp_id', 'type', 'reason', 'status'], ['r1', '2026-11-09', 'E01', 'leave', 'MARKREQREASON', 'pending']);
+  // 待審單是 E02 的（2026-11-20 起核定的人那天有待審單會被擋 pending_request；這張只用來驗推送不帶申請內容）
+  rq.values.push(['id', 'date', 'emp_id', 'type', 'reason', 'status'], ['r1', '2026-11-09', 'E02', 'leave', 'MARKREQREASON', 'pending']);
   return m;
 }
 const APPROVE = { action: 'mgr_approve', mgr_key: 'AK', acting_name: 'MARKACT（DZY001）', date: '2026-11-09', emp_id: 'E01', periods: [{ start: '09:00', end: '17:00' }] };

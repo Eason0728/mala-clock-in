@@ -34,7 +34,10 @@ FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'is
          'leftCascadeAfter_']   # 2026-11-11 B13：設離職連帶停用別店同一支 LINE 的列（沒套到＝那家店設離職不會通知光復）
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
-    'computeApprovalStatus 有 isTrip＋休息帶參數': 'hadUnrecordedAttempts, isTrip, breakWindow)',
+    # 2026-11-20 多一個 gapLate 參數（二段班中途離開比照遲到）；沒套到＝那家店核定狀態照舊、待審單不擋
+    'computeApprovalStatus 有 isTrip＋休息帶＋gapLate 參數': 'hadUnrecordedAttempts, isTrip, breakWindow, gapLate)',
+    '待審單不能核定（打卡後端）':            'const pendBlock = reqPendBlock_(reqRowsAll, String(body.emp_id), date);',
+    '中途離開比照遲到：每天重算同一個日期判斷': "typeof reqGapLateOn_ === 'function' && reqGapLateOn_(date));   // 跟核定當下",
     '出差在假別白名單':                      "'出差'",
     '名冊有 shift_in／shift_out':            "'shift_in', 'shift_out'",
     '名冊有 created_at／created_by':         "'created_at', 'created_by'",
