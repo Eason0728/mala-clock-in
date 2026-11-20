@@ -144,7 +144,7 @@ console.log('\n════ 四、舊連結打卡頁（clock.html）收到這個
     f ? f.tooSoonMessage({ ok: true, status: 'rejected_too_soon' }, 'in') : err,
     '⚠ 剛打完卡，10 分鐘內不能再打卡（避免手滑誤打）。真的要上班請告知主管補登。');
   check('B33-42', '今日紀錄裡這一筆的標示', f ? f.statusLabel('rejected_too_soon') : err, '太快重按');
-  const doClock = (() => { try { return extract('doClock'); } catch (e) { return ''; } })();
+  const doClock = (() => { try { return extract('sendClock'); } catch (e) { return ''; } })();
   const iSoon = doClock.indexOf("res.status === 'rejected_too_soon'"), iSrv = doClock.indexOf("res.error === 'server_error'"), iOk = doClock.indexOf("res.ok && res.status === 'ok'");
   check('B33-43', '打卡回應的處理：先看是不是成功，再看這個狀態（顯示那句話），不會走到「回頭確認」那一支',
     [iOk >= 0 && iSoon > iOk, iSrv > iSoon, /rejected_too_soon'\) \{\s*(\/\/[^\n]*\n\s*)*showStatus\('status-warn', tooSoonMessage\(res, type\)\);/.test(doClock)], [true, true, true]);

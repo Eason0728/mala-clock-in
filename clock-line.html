@@ -144,6 +144,24 @@
   .sc-box { border-radius: 10px; padding: 12px; font-size: 15px; line-height: 1.6; margin: 8px 0; }
   .sc-box.err { background: #fdeceb; color: var(--err); } .sc-box.info { background: #eef5f2; color: var(--in); }
   .sc-loading { text-align: center; color: var(--muted); padding: 24px 0; }
+  /* 誤按防呆 B（2026-11-20）：依前一筆提示該按哪顆——該按的加亮框、另一顆變淡（仍可按，按了會先跳提醒框） */
+  .pg-last { text-align: center; font-size: 14px; font-weight: 600; color: var(--muted); margin-top: 14px; }
+  .pg-last + .btns { margin-top: 8px; }
+  #btnIn.pg-next, #btnOut.pg-next { box-shadow: 0 0 0 4px #f0c24b, 0 6px 16px rgba(0,0,0,.22); }
+  #btnIn.pg-dim, #btnOut.pg-dim { opacity: .5; }
+  /* 誤按防呆 A：頁面內提醒框（不用瀏覽器原生 confirm，按 Enter 會直接過） */
+  .pg-mask { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 9999; display: flex; align-items: center; justify-content: center;
+             padding: 20px; background: rgba(20,30,27,.6); }
+  .pg-box { width: 100%; max-width: 360px; background: #fff; color: var(--ink); border-radius: 18px; padding: 22px 20px 12px;
+            box-shadow: 0 14px 40px rgba(0,0,0,.3); }
+  .pg-title { font-size: 18px; font-weight: 700; margin-bottom: 10px; }
+  .pg-msg { font-size: 16px; line-height: 1.7; white-space: pre-line; margin-bottom: 18px; }
+  .pg-main { display: block; width: 100%; padding: 16px; font-size: 20px; font-weight: 700; border: 0; border-radius: 14px;
+             background: var(--in); color: #fff; box-shadow: 0 0 0 3px rgba(42,107,94,.25); }
+  .pg-main.out { background: var(--out); box-shadow: 0 0 0 3px rgba(192,86,31,.25); }
+  .pg-sub { display: block; width: 100%; margin-top: 10px; padding: 12px; font-size: 15px; font-weight: 600; border: 1px solid var(--line);
+            border-radius: 12px; background: #fff; color: var(--muted); }
+  .pg-cancel { display: block; margin: 8px auto 0; padding: 8px 12px; font-size: 13px; color: var(--muted); background: none; border: 0; text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -166,6 +184,7 @@
       <button class="primary" id="btnBind" type="button">綁定</button>
     </div>
 
+    <div class="pg-last" id="pgLast" hidden></div>
     <div class="btns" id="btns">
       <button id="btnIn" type="button" disabled>上班</button>
       <button id="btnOut" type="button" disabled>下班</button>
@@ -182,6 +201,15 @@
   <div class="card" id="reqView" hidden></div>
   <div class="card" id="schedView" hidden></div>
 </main>
+<div class="pg-mask" id="pgMask" hidden>
+  <div class="pg-box" role="alertdialog" aria-modal="true" aria-labelledby="pgTitle" aria-describedby="pgMsg">
+    <div class="pg-title" id="pgTitle"></div>
+    <div class="pg-msg" id="pgMsg"></div>
+    <button class="pg-main" id="pgMain" type="button"></button>
+    <button class="pg-sub" id="pgSub" type="button"></button>
+    <button class="pg-cancel" id="pgCancel" type="button">先不打卡</button>
+  </div>
+</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="clock-line-core.js"></script>
@@ -447,6 +475,7 @@
         : left > 0 ? label + '（' + Math.ceil(left / 60000) + ' 分後）'
         : rb && status.rest.until ? label + '（' + hmOf(status.rest.until) + ' 後）' : label;
     });
+    applyPunchHint();
     var r = status && status.rest;   // 時間到、解開了：拿掉「幾點以後才能打」那句
     if (r && r.blocked && !restBlocked() && $('msg').textContent === r.reason) say('', '', '');
     var c = status && status.cap;   // 滿 10 小時的鎖時間到了：拿掉那句
@@ -803,22 +832,123 @@
   }
 
   /* ── 打卡 ── */
-  function sameTypeMsg(hm, type) {
-    var a = type === 'in' ? '上班' : '下班', b = type === 'in' ? '下班' : '上班';
-    return '你 ' + hm + ' 已經打過' + a + '卡，中間沒有' + b + '卡。確定要再打' + a + '嗎？\n漏打的' + b + '卡請到「加班請假 → 忘打卡」補。';
+  /* PUNCH_GUARD:BEGIN（2026-11-20 誤按防呆：clock.html 與 clock-line.html 這一段必須一字不差，tests/punch-guard.test.js 會比對）
+   * 起因：同仁下班誤按成「上班」，原本的確認框一路按確定；隔天又誤按「下班」被滿 10 小時鎖卡。
+   * A：同型再按 → 頁面內對話框，講出上一筆的日期時間；主按鈕＝改按另一型（預設焦點），次按鈕＝確定照原本那型送。
+   * B：開頁依前一筆提示該按哪顆：前一筆是上班且在 PUNCH_PAIR_H 小時內 → 下班；否則 → 上班；沒有前一筆 → 不提示。
+   * 純顯示，不改任何後端規則、不改任何門檻（PUNCH_PAIR_H 與 Cap10.gs CAP_PAIR_H 同值）。 */
+  var PUNCH_PAIR_H = 16;
+  function pgName(t) { return t === 'out' ? '下班' : '上班'; }
+  function pgOther(t) { return t === 'out' ? 'in' : 'out'; }
+  /** '2026-11-19T10:02:00+08:00' → '11/19 10:02'；格式不對回空字串 */
+  function pgWhen(ts) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(ts || ''));
+    return m ? (+m[2]) + '/' + (+m[3]) + ' ' + m[4] + ':' + m[5] : '';
   }
-  function punch(type, preConfirmed) {   // preConfirmed：後端回 need_confirm、同仁已在確認框按確定
+  /** 前一筆 {type, ts} → '11/19 10:02 上班'；沒有或看不懂回空字串 */
+  function pgLastLabel(last) {
+    if (!last || (last.type !== 'in' && last.type !== 'out')) return '';
+    var w = pgWhen(last.ts);
+    return w ? w + ' ' + pgName(last.type) : '';
+  }
+  /** B：該按的那顆（'in'／'out'）；沒有前一筆或看不懂回 null（兩顆照原樣） */
+  function pgNextType(last, nowMs) {
+    if (!pgLastLabel(last)) return null;
+    if (last.type === 'in') {
+      var t = new Date(String(last.ts)).getTime();
+      if (!isNaN(t) && nowMs - t <= PUNCH_PAIR_H * 3600000) return 'out';
+    }
+    return 'in';
+  }
+  /** A：同型再按的提醒框內容；不是同型回 null。switchTo＝主按鈕要改送的型別 */
+  function pgSameAlert(last, type) {
+    if (!last || last.type !== type) return null;
+    var lbl = pgLastLabel(last) || pgName(type);   // 時間看不懂也要提醒（只是少了時間）
+    var a = pgName(type), b = pgName(pgOther(type));
+    return { title: '再確認一下：這次要按「' + a + '」嗎？',
+             msg: '你上一筆是 ' + lbl + '，現在又按「' + a + '」。如果是要' + b + '，請按「改按' + b + '」。',
+             main: '改按' + b, sub: '確定是' + a, switchTo: pgOther(type), missType: b };
+  }
+  /** A（既有）：今天第一張就按下班；只有按下班才有 */
+  function pgFirstOutAlert(type) {
+    if (type !== 'out') return null;
+    return { title: '再確認一下：這次要按「下班」嗎？',
+             msg: '你今天還沒打上班卡，現在按的是「下班」。如果是要上班，請按「改按上班」。',
+             main: '改按上班', sub: '確定是下班', switchTo: 'in' };
+  }
+  /* PUNCH_GUARD:END */
+
+  /** 頁面內提醒框：回傳 Promise，resolve 'main'（主按鈕）／'sub'（次按鈕）／null（先不打卡、按 Esc）。主按鈕預設焦點。 */
+  var pgResolve = null, pgPrevFocus = null;
+  function pgClose(v) {
+    document.getElementById('pgMask').hidden = true;
+    var r = pgResolve; pgResolve = null;
+    try { if (pgPrevFocus && pgPrevFocus.focus) pgPrevFocus.focus(); } catch (e) {}
+    if (r) r(v);
+  }
+  function pgAsk(spec) {
+    return new Promise(function (resolve) {
+      if (pgResolve) pgClose(null);
+      pgResolve = resolve;
+      pgPrevFocus = document.activeElement;
+      document.getElementById('pgTitle').textContent = spec.title;
+      document.getElementById('pgMsg').textContent = spec.msg;
+      document.getElementById('pgMain').textContent = spec.main;
+      document.getElementById('pgSub').textContent = spec.sub;
+      document.getElementById('pgMask').hidden = false;
+      document.getElementById('pgMain').className = 'pg-main' + (spec.switchTo === 'out' ? ' out' : '');
+      document.getElementById('pgMain').focus();
+    });
+  }
+  document.getElementById('pgMain').addEventListener('click', function () { pgClose('main'); });
+  document.getElementById('pgSub').addEventListener('click', function () { pgClose('sub'); });
+  document.getElementById('pgCancel').addEventListener('click', function () { pgClose(null); });
+  document.getElementById('pgMask').addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape') { pgClose(null); return; }
+    if (ev.key !== 'Tab') return;
+    var f = [document.getElementById('pgMain'), document.getElementById('pgSub'), document.getElementById('pgCancel')];
+    var i = f.indexOf(document.activeElement);
+    ev.preventDefault();
+    f[(i + (ev.shiftKey ? f.length - 1 : 1)) % f.length].focus();
+  });
+  /** B：依 status.guard.last 畫「上一筆」小字與按鍵加亮／變淡；沒有前一筆（或還沒讀好）就全部還原。refreshButtons 每次都會呼叫。 */
+  function applyPunchHint() {
+    var last = (status && status.status === 'ready' && status.guard) ? status.guard.last : null;
+    var nx = pgNextType(last, Date.now() + clockSkew), lbl = pgLastLabel(last), el = $('pgLast');
+    el.hidden = !(nx && lbl);
+    el.textContent = nx && lbl ? '上一筆：' + lbl : '';
+    $('btnIn').classList.toggle('pg-next', nx === 'in');
+    $('btnIn').classList.toggle('pg-dim', nx === 'out');
+    $('btnOut').classList.toggle('pg-next', nx === 'out');
+    $('btnOut').classList.toggle('pg-dim', nx === 'in');
+  }
+  /** 提醒框後面接的那句（LINE 版：漏打的卡到申請頁補）。 */
+  function pgAskFull(ask) {
+    if (ask.missType) ask.msg += '\n漏打的' + ask.missType + '卡請到「加班請假 → 忘打卡」補。';
+    return pgAsk(ask);
+  }
+  function punch(type, preConfirmed) {   // preConfirmed：後端回 need_confirm、同仁已在提醒框按確定
     if (busy || !status || status.status !== 'ready') return;
     stGen++;   // 同仁動手了：晚回來的開頁狀態不准再動畫面
     var hasIn = (status.today || []).some(function (e) { return e.type === 'in' && (e.status === 'ok' || e.status === 'pending_device_approval'); });
-    if (!preConfirmed && type === 'out' && !status.guard.last && !hasIn && !window.confirm('你今天還沒打上班卡，確定要打下班嗎？')) return;
-    // 同一顆再按一次（2026-11-02 Eason：只鎖 10 分鐘，之後放行但先確認；漏的那張請用忘打卡補）
-    // confirm_same：同仁確認過才帶給後端；畫面看的是開頁時的狀態，後端會再用最新的卡判斷一次（2026-11-03 對抗驗證 #1）
-    var sameOk = !!preConfirmed;
-    if (!sameOk && status.guard.last && status.guard.last.type === type) {
-      if (!window.confirm(sameTypeMsg(status.guard.last.hm, type))) return;
-      sameOk = true;
+    /* 同一顆再按一次（2026-11-02 Eason：只鎖 10 分鐘，之後放行但先確認；漏的那張請用忘打卡補）／今天第一張就按下班。
+       2026-11-20 起改頁面內提醒框，講出上一筆的日期時間，主按鈕＝改按另一型（見 PUNCH_GUARD 區塊）。
+       confirm_same：同仁確認過才帶給後端；畫面看的是開頁時的狀態，後端會再用最新的卡判斷一次（2026-11-03 對抗驗證 #1） */
+    var ask = null, isSame = !!(status.guard.last && status.guard.last.type === type);
+    if (!preConfirmed) {
+      if (isSame) ask = pgSameAlert(status.guard.last, type);
+      else if (!status.guard.last && !hasIn) ask = pgFirstOutAlert(type);
     }
+    if (ask) {
+      return pgAskFull(ask).then(function (r) {
+        if (r === 'main') return punch(ask.switchTo);   // 改按另一型：前一筆是這一型的反面／沒有前一筆，不會再跳提醒
+        if (r === 'sub') return punchGo(type, isSame);   // 只有「同型再按」才帶 confirm_same；第一張就下班照舊不帶
+      });
+    }
+    return punchGo(type, !!preConfirmed);
+  }
+  function punchGo(type, sameOk) {
+    if (busy || !status || status.status !== 'ready') return;
     tmStart(type);
     // 送出前位置一定要是 30 秒內的（定位被關掉、手機在背景停止更新時，手上那筆可能是剛才在店裡的位置）：
     // 過時就重新定位，最多等 10 秒；抓不到就不送（2026-10-10 Codex 審查 #4）。QR 打卡不看定位。
@@ -967,9 +1097,13 @@
           status = null; refreshButtons();
           return loadStatus().then(function () {
             if (!status || status.status !== 'ready') return;
-            if (!window.confirm(sameTypeMsg((r.last && r.last.hm) || '', type))) { say(label + '打卡沒有送出', 'warn', '你剛才按了取消。'); return; }
-            busy = false;
-            return punch(type, true);
+            var gl = status.guard && status.guard.last && status.guard.last.type === type ? status.guard.last : { type: type, ts: '' };
+            var ask = pgSameAlert(gl, type);
+            return pgAskFull(ask).then(function (c) {
+              if (c !== 'main' && c !== 'sub') { say(label + '打卡沒有送出', 'warn', '你剛才按了取消。'); return; }
+              busy = false;
+              return c === 'main' ? punch(ask.switchTo) : punch(type, true);
+            });
           });
         }
         var failText = (shown ? '剛才顯示成功有誤。\n' : '') + label + '打卡失敗\n原因：' + r.reason + (r.hint ? '\n怎麼辦：' + r.hint : '');
