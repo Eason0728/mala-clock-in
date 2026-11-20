@@ -10,7 +10,7 @@ const fs = require('fs'), vm = require('vm'), path = require('path'), crypto = r
 const { execFileSync } = require('child_process');
 const ROOT = path.join(__dirname, '..');
 const SRC = fs.readFileSync(path.join(ROOT, 'apps-script/DutyFeed.gs'), 'utf8');
-const BASE = 'origin/main';
+const BASE = process.env.DUTY_PUSH_BASE || '50a80bc^1';   // PR #181 合併前的 main（b85fbdd）：門鈴關時「只多讀 DUTY_PUSH_URL」以它為準；PR #181 之後的補強另見 duty-push-live.test.js
 function gitShow(ref, f) {
   try { return execFileSync('git', ['show', ref + ':' + f], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 << 20 }); }
   catch (e) { return null; }
@@ -74,7 +74,8 @@ function harness(src, o) {
   };
   sb.LockService = { getScriptLock: () => { log.push('Lock.getScriptLock'); return {
     tryLock: () => { log.push('Lock.tryLock'); return o.lockOk !== false; }, releaseLock: () => { log.push('Lock.releaseLock'); } }; } };
-  sb.SpreadsheetApp = new Proxy({}, { get: (t, k) => { log.push('SpreadsheetApp.' + String(k)); throw new Error('不該用 SpreadsheetApp'); } });
+  // 2026-11-20 live-prep：正式推送前會 SpreadsheetApp.flush()（只准這一個；其餘一律丟錯）
+  sb.SpreadsheetApp = new Proxy({}, { get: (t, k) => { log.push('SpreadsheetApp.' + String(k)); if (k === 'flush') return () => { if (o.flushMs) h.now += o.flushMs; if (o.flushThrows) throw new Error('flush 失敗'); }; throw new Error('不該用 SpreadsheetApp'); } });
   sb.Logger = { log: (...a) => { logs.push(a.map(String).join(' ')); } };
   const mgSheet = { name: 'managers' };
   const ss = { getSheetByName: (nm) => { log.push('ss.getSheetByName:' + nm); return nm === 'managers' ? mgSheet : null; } };
@@ -198,7 +199,7 @@ ok('DUTY_PUSH_DRY=1：UrlFetch 0 次、只計數有加；不讀金鑰；唯讀�
   const st = h.stats();
   assert.deepStrictEqual([st.dry, st.sent, st.ok, st.fail, st.with_to], [3, 0, 0, 0, 1]);
   const p = h.changes({ push_stats: true }).push;
-  assert.deepStrictEqual([p.on, p.mode, p.dry, p.sent, p.key_set, p.cap], [true, 'dry', 3, 0, false, 1500]);
+  assert.deepStrictEqual([p.on, p.mode, p.dry, p.sent, p.key_set, p.cap], [true, 'dry', 3, 0, false, 800]);   // live-prep：預設上限 1,500→800
 });
 
 ok('只計數模式：1,500 次以上照樣計數（量真實推送量），一樣不連外', () => {
@@ -271,13 +272,17 @@ Object.keys(FAILS).forEach((name) => ok('推送' + name + '：dutyFeedNote_ 正�
   const st = h.stats();
   assert.deepStrictEqual([st.sent, st.fail, st.ok], [1, 1, 0]);
   const p = h.changes({ push_stats: true }).push;
-  assert.strictEqual(p.off.why, 'fail');
+  const slowCase = name.indexOf('逾時') === 0;   // live-prep：等了 3 秒（≥ 2.5 秒）＝慢熔斷，停 10 分鐘（比失敗的 60 秒久，取久的）
+  assert.strictEqual(p.off.why, slowCase ? 'slow' : 'fail');
   for (let i = 0; i < 5; i++) { h.advance(10000); h.write(W, { ok: true }); }   // 50 秒內 5 筆
   assert.strictEqual(h.fetches.length, 1, '熔斷期間還在連外');
   assert.strictEqual(h.stats().skip_off, 5);
   h.advance(11000);   // 距離失敗 61 秒（逾時那筆另外多 3 秒，所以多等一點）
-  if (name.indexOf('逾時') === 0) h.advance(3000);
-  h.write(W, { ok: true });
+  if (slowCase) {   // live-prep：因慢停推後不拿同仁寫入當探針，要等 mini 的 ping
+    h.advance(3000); h.write(W, { ok: true }); assert.strictEqual(h.fetches.length, 1, '慢熔斷 10 分鐘內還在連外');
+    h.advance(600000); h.write(W, { ok: true }); assert.strictEqual(h.fetches.length, 1, '停推期滿、還沒等到 ping，寫入不該連外');
+    h.changes({ ping: 'nonce_ABC_123' });   // ping 才會去試
+  } else h.write(W, { ok: true });
   assert.strictEqual(h.fetches.length, 2, '熔斷過了應該再試');
   assert.ok(h.logs.every((l) => l.indexOf('MARKSECRET') < 0));
 }));
@@ -318,17 +323,17 @@ ok('mini 回 {ok:true, off:true}：之後 1 小時內 0 次連外，1 小時後�
   assert.strictEqual(h.fetches.length, 2);
 });
 
-ok('每日上限：第 1,501 次不連外（記 skip_cap）；隔天（台北）重新計', () => {
+ok('每日上限（live-prep 起預設 800）：第 801 次不連外（記 skip_cap）；隔天（台北）重新計', () => {
   const h = harness(SRC, { props: LIVE });
-  for (let i = 0; i < 1500; i++) h.write({ action: 'clock' }, { ok: true });
-  assert.strictEqual(h.fetches.length, 1500);
+  for (let i = 0; i < 800; i++) h.write({ action: 'clock' }, { ok: true });
+  assert.strictEqual(h.fetches.length, 800);
   h.write({ action: 'clock' }, { ok: true });
-  assert.strictEqual(h.fetches.length, 1500);
-  assert.deepStrictEqual([h.stats().sent, h.stats().skip_cap], [1500, 1]);
+  assert.strictEqual(h.fetches.length, 800);
+  assert.deepStrictEqual([h.stats().sent, h.stats().skip_cap], [800, 1]);
   assert.strictEqual(h.stats().ms.length, 100, '耗時只留最近 100 次');
   h.now = Date.parse('2026-11-11T00:00:05+08:00');
   h.write({ action: 'clock' }, { ok: true });
-  assert.strictEqual(h.fetches.length, 1501);
+  assert.strictEqual(h.fetches.length, 801);
 });
 
 ok('唯讀動作、dry_run:true、res.ok===false、沒有回應：不推、不計數', () => {
@@ -473,7 +478,7 @@ ok('ping 每天 40 次：第 41 次不連外（回 skip_ping_cap、統計記一�
   assert.deepStrictEqual([h.stats().sent, h.stats().skip_ping_cap], [1, 0]);
 });
 
-ok('ping 超過上限不影響一般寫入的推送；一般寫入照舊 1,500 次上限；ping 仍受熔斷管', () => {
+ok('ping 超過上限不影響一般寫入的推送；一般寫入照舊受每日上限（live-prep 起 800）；ping 仍受熔斷管', () => {
   const h = harness(SRC, { props: LIVE });
   for (let i = 0; i < 41; i++) h.changes({ ping: 'nonce_ABC_123' });
   assert.strictEqual(h.fetches.length, 40);
@@ -481,11 +486,11 @@ ok('ping 超過上限不影響一般寫入的推送；一般寫入照舊 1,500 �
   assert.strictEqual(h.fetches.length, 42);
   assert.deepStrictEqual(J(JSON.parse(h.fetches[41].opt.payload).a), 'clock');
   assert.deepStrictEqual([h.stats().sent, h.stats().ok, h.stats().skip_ping_cap, h.stats().skip_cap], [42, 42, 1, 0]);
-  // 一般寫入的上限還是 1,500（含前面 40 次 ping 與 2 次寫入）
-  for (let i = 0; i < 1458; i++) h.write({ action: 'clock' }, { ok: true });
-  assert.strictEqual(h.fetches.length, 1500);
+  // 一般寫入的上限 800（含前面 40 次 ping 與 2 次寫入）
+  for (let i = 0; i < 758; i++) h.write({ action: 'clock' }, { ok: true });
+  assert.strictEqual(h.fetches.length, 800);
   h.write({ action: 'clock' }, { ok: true });
-  assert.deepStrictEqual([h.fetches.length, h.stats().skip_cap], [1500, 1]);
+  assert.deepStrictEqual([h.fetches.length, h.stats().skip_cap], [800, 1]);
   // ping 還沒滿 40 次、但熔斷中 → skip_off，不算進 ping 次數
   const g = harness(SRC, { props: LIVE, fetch: () => resp(500, '') });
   g.write(W, { ok: true });
@@ -871,7 +876,9 @@ ok('授權範圍不變：DutyFeed.gs 新增行用到的每一個「服務.方法
   assert.deepStrictEqual(bad, [], 'origin/main 九店檔都沒在用：' + bad);
   // 服務名稱只能是這幾個（UrlFetchApp 已在九店 程式碼.js／Liff.js 用、授權範圍不變；其餘四個不需授權）
   const names = Array.from(new Set(used.map((c) => c.split('.')[0]))).sort();
-  assert.deepStrictEqual(names.filter((x) => ['CacheService', 'LockService', 'PropertiesService', 'UrlFetchApp', 'Utilities'].indexOf(x) < 0), []);
+  // live-prep 起多 SpreadsheetApp（只有 .flush，九店 程式碼.js／Liff.js 早就在用）
+  assert.deepStrictEqual(names.filter((x) => ['CacheService', 'LockService', 'PropertiesService', 'SpreadsheetApp', 'UrlFetchApp', 'Utilities'].indexOf(x) < 0), []);
+  assert.deepStrictEqual(used.filter((c) => c.indexOf('SpreadsheetApp') === 0), ['SpreadsheetApp.flush']);
   // 特別記下：HMAC 在 origin/main 的 Liff.gs（九店都有）已在用
   assert.ok(where['Utilities.computeHmacSha256Signature'].indexOf('Liff.gs') >= 0);
   // 整個新檔的服務名稱集合 ⊆ 舊 DutyFeed.gs ∪ 九店檔
@@ -890,8 +897,13 @@ ok('新增行呼叫的每一個 .方法( 名稱，origin/main 九店部署檔裡
 
 ok('新增行零試算表寫入：沒有 setValue／setValues／appendRow／insertSheet／deleteRow／clear 等；setProperty 只在 dutyPushSetup_（2 次）與 dutyPushCfgSet_（URL、DRY 各 2 次，鍵名寫死）', () => {
   const lines = addedLines();
-  const bad = lines.filter((l) => /setValue|setValues|appendRow|insertSheet|insertRow|deleteRow|deleteSheet|clearContents|\.clear\(|setFormula|setNumberFormat|SpreadsheetApp\.flush|deleteProperty|setProperties|deleteAllProperties|getUserProperties|getDocumentProperties|newBlob|DriveApp|MailApp|GmailApp/.test(l));
+  const bad = lines.filter((l) => /setValue|setValues|appendRow|insertSheet|insertRow|deleteRow|deleteSheet|clearContents|\.clear\(|setFormula|setNumberFormat|deleteProperty|setProperties|deleteAllProperties|getUserProperties|getDocumentProperties|newBlob|DriveApp|MailApp|GmailApp/.test(l));
   assert.deepStrictEqual(bad, []);
+  // live-prep：SpreadsheetApp.flush() 只准一處，在 dutyPushSend_ 的「不是 ping」那一段（只在真的要連外時）
+  // （新增行是片段、註解區塊不完整，所以用整支去掉註解後來數）
+  const sendBody = stripComments(SRC.slice(SRC.indexOf('function dutyPushSend_'), SRC.indexOf('/** dutyFeedNote_ 記完一筆寫入後呼叫')));
+  assert.ok(/if \(!isPing\) \{[^}]*SpreadsheetApp\.flush\(\)/.test(sendBody), 'flush 要在 dutyPushSend_ 的 if (!isPing) 裡');
+  assert.strictEqual((stripComments(SRC).match(/SpreadsheetApp\./g) || []).length, 1, '整支只准用 SpreadsheetApp.flush 一次');
   const sp = lines.filter((l) => /setProperty\(/.test(l));
   assert.strictEqual(sp.length, 6);
   const body = SRC.slice(SRC.indexOf('function dutyPushSetup_'), SRC.indexOf('/**', SRC.indexOf('function dutyPushSetup_')));
