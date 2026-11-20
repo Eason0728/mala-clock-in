@@ -132,19 +132,27 @@ function relayGReadRows_(ss, name) {
 }
 /** with.rows／with.fp：三張原始列＋主管名單（白名單欄）＋每天指紋。wantRows=false 只回 fp。 */
 function relayGRowsOut_(ss, out, wantRows) {
-  var rows = {}, fp = {};
+  var rows = {}, fp = {}, rerr = null;
   Object.keys(RELAYG_ROW_SHEETS_).forEach(function (nm) {
-    var t = relayGReadRows_(ss, nm);
-    fp[nm] = t.error ? null : relayGFpOf_(nm, t.rows);
-    rows[nm] = t;
+    try {
+      var t = relayGReadRows_(ss, nm);
+      fp[nm] = t.error ? null : relayGFpOf_(nm, t.rows);
+      rows[nm] = t;
+    } catch (e) {   // 一張讀不了：只那張標失敗（形狀同 too_many：fp 為 null、rows 為 {error}），不連累打卡／名冊／屬性
+      fp[nm] = null; rows[nm] = { error: 'read_failed' };
+      (rerr = rerr || {})[nm] = 'read_failed';
+    }
   });
   out.fp = fp;
-  if (!wantRows) return;
+  if (!wantRows) { if (rerr) out.rows_error = rerr; return; }
   out.rows = rows;
-  var msh = ss.getSheetByName('managers');
-  out.managers = msh ? readSheetAsObjects(msh).rows.map(function (r) {
-    var o = {}; RELAYG_MGR_COLS_.forEach(function (k) { if (k in r) o[k] = relayGCell_(r[k]); }); o.__row = r.__rowIndex; return o;
-  }) : [];
+  try {
+    var msh = ss.getSheetByName('managers');
+    out.managers = msh ? readSheetAsObjects(msh).rows.map(function (r) {
+      var o = {}; RELAYG_MGR_COLS_.forEach(function (k) { if (k in r) o[k] = relayGCell_(r[k]); }); o.__row = r.__rowIndex; return o;
+    }) : [];
+  } catch (e) { (rerr = rerr || {}).managers = 'read_failed'; }   // 沒帶 managers＝快速通道端留著舊名單
+  if (rerr) out.rows_error = rerr;
 }
 
 /**
