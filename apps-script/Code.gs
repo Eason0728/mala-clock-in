@@ -2064,6 +2064,13 @@ function handleMgrApprove(body) {
   if (Array.isArray(body.periods) && body.periods.length > 0 && date > todayTaipeiStr()) {
     return { ok: false, error: 'future_date', message: '不能核定還沒到的日子的上班時段' };
   }
+  // 這天還有待審的申請就不能核定（2026-11-20 Eason 第 13 題 A：原本只有營運系統畫面擋，直接打打卡後端繞得過）。
+  // 核定、重新核定、整天請假、只檢查（dry_run）都擋；規則與字句同營運系統 web/modules/duty/pend-gate.js。沒載入 Requests 的環境（mini 預判引擎）不擋
+  const reqRowsAll = typeof reqRows_ === 'function' && typeof reqPendBlock_ === 'function' ? reqRows_(ss) : null;
+  if (reqRowsAll) {
+    const pendBlock = reqPendBlock_(reqRowsAll, String(body.emp_id), date);
+    if (pendBlock) return pendBlock;
+  }
 
   // 請假註記（2026-10-26 起一天可以多種）：新版核定頁送 leaves:[{type, hours}]；
   // 舊呼叫端（營運系統的出勤核定）只送 leave_type／leave_hours＝一種。
@@ -2192,7 +2199,10 @@ function handleMgrApprove(body) {
     statusText = computeApprovalStatus(periods, punchWithMs,
       unresolvedAttemptCount_(eventRows, body.emp_id, date) > 0,
       hasTrip,
-      noPunchBreakWindow(date));
+      noPunchBreakWindow(date),
+      // 中途離開又回來比照遲到（2026-11-20）：上線日起、營運系統個人帳號代轉（才收得到班表）、當天班表兩段以上才套；
+      // 門市登入、舊值班頁、單段班＝跟 main 完全一樣（2026-11-20 複審）
+      typeof reqGapLateDay_ === 'function' && typeof reqMgrActing_ === 'function' && reqMgrActing_(mgr, body) && reqGapLateDay_(date, body.sched_spans));
     // 主管手動認定的遲到分鐘覆蓋系統判定（打卡沒入帳時系統算不出來）
     statusText = applyManualLate(statusText, body.late_min);
     statusText = applyDupNote_(statusText, dupList);
@@ -2205,6 +2215,7 @@ function handleMgrApprove(body) {
     const acting = reqMgrActing_(mgr, body);
     const bind = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, punchMs, noPunchBreakWindow(date),
       { leaves: leaves, trip_hours: tripHours, name: String(roster.name || ''),
+        rows: reqRowsAll || undefined,   // 上面待審檢查讀過的申請表，不再讀一次（2026-11-20）
         // 正職上班日滿 8 小時（2026-11-13）：正職與否、是不是支援帳號只信營運系統個人帳號代轉帶來的（伺服器讀排班與管理系統身分填）
         sched_ft: acting && body.sched_ft === true, sched_support: acting && typeof body.sched_support === 'boolean' ? body.sched_support : null,
         // 跨店加班歸屬（2026-11-18）：原單位打卡店代碼（營運系統讀排班帶入）、這家核定最早開始（支援兩家時數一樣算後上班那家）
@@ -2729,6 +2740,7 @@ const NO_PUNCH_NOTE = '該段無打卡';
 const MANUAL_LATE_MARK = '(認定)';   // 主管手動填的遲到，與系統比對出來的區分
 const NO_LATE_NOTE = '主管認定不計遲到';   // 系統判有遲到、但主管判定不算（填 0 觸發）
 const TRIP_NOTE = '出差';   // 出差當天打不了卡，狀態標這個而不是「該段無打卡」
+const GAP_LATE_NOTE = '中途離開';   // 2026-11-20 二段班中途離開比照遲到：狀態多一項「中途離開N分」（分鐘已含在遲到N分裡）
 
 /** 主管手動認定的遲到分鐘，覆蓋進狀態字串（2026-09-01）。
  *
@@ -2933,7 +2945,30 @@ function breakBlocksFor_(periods, punchSegments, breakWindow) {
   return loneUsed(plain) > loneUsed(blocks) ? plain : blocks;
 }
 
-function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip, breakWindow) {
+/** 一段核定時段蓋到的完整打卡段（兩段以上才回）：{ idx:[fullSegs 的 index], inMs:第一張上班卡, outMs:最後一張下班卡, gapMs:中間空檔合計（扣掉不打卡休息帶） }。
+ *  只有一段或沒有＝null（照原本比法）。給 computeApprovalStatus 的 gapLate 用。 */
+function gapLateSpan_(p, fullSegs, breakWindow) {
+  const hit = fullSegs.map(function (s, i) { return { s: s, i: i }; })
+    .filter(function (x) { return Math.min(p.endMs, x.s.outMs) - Math.max(p.startMs, x.s.inMs) > 0; })
+    .sort(function (a, b) { return a.s.inMs - b.s.inMs; });
+  if (hit.length < 2) return null;
+  let maxOut = hit[0].s.outMs, gapMs = 0;
+  hit.slice(1).forEach(function (x) {
+    if (x.s.inMs > maxOut) {
+      const ov = breakWindow ? Math.max(0, Math.min(x.s.inMs, breakWindow.endMs) - Math.max(maxOut, breakWindow.startMs)) : 0;
+      gapMs += (x.s.inMs - maxOut) - ov;
+    }
+    if (x.s.outMs > maxOut) maxOut = x.s.outMs;
+  });
+  return { idx: hit.map(function (x) { return x.i; }), inMs: hit[0].s.inMs, outMs: maxOut, gapMs: gapMs };
+}
+/* gapLate（2026-11-20 Eason 第 11 題 B「二段班中途離開又回來，比照遲到記」；呼叫端照日期決定，Requests.gs reqGapLateOn_）：
+ *   一段核定時段蓋過兩段以上的完整打卡段（中間有下班卡、又打上班卡回來）→ 中間沒打卡的空檔照「遲到」記，
+ *   跟開頭晚到同一套：沒有寬限、照實際分鐘、跟那段開頭的遲到合成一個「遲到N分」（薪資 payCollect 照扣、照算全勤）；
+ *   空檔落在不打卡休息帶的分鐘不算。蓋到的每一段打卡都算用掉（不再標「有多出的打卡段」）；結尾照舊比最後一段的下班卡記早退。
+ *   沒帶（false）＝改之前：只拿重疊最大的一段比，其他段算「有多出的打卡段」（例：16:00–20:00 打卡 15:58–16:03、17:24–20:00 → 遲到84分、有多出的打卡段）。
+ *   核定時段可不可以這樣蓋（核定比打卡多）由 Requests.gs reqOverCreditMin_ 把關，這裡只照核定時段記狀態。 */
+function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip, breakWindow, gapLate) {
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
   const legacy = !!(isTrip || hadUnrecordedAttempts);   // 出差、打卡未入帳：照舊標示，不冤枉人
   // 段號照店長輸入的核定時段（依時間先後）；規定不打卡的休息帶（央廚）隔開的兩段併成一塊，和補單張數一致
@@ -2994,6 +3029,18 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
     }
     usedIdx[bestIdx] = true;
     const seg = fullSegs[bestIdx];
+    const span = gapLate && !legacy ? gapLateSpan_(p, fullSegs, breakWindow) : null;
+    if (span) {
+      // 中途離開又回來（gapLate）：開頭晚到＋中間空檔合成一個遲到；結尾比最後一段的下班卡
+      span.idx.forEach(function (i) { usedIdx[i] = true; });
+      const lateMs = Math.max(0, span.inMs - p.startMs) + span.gapMs;
+      if (Math.round(lateMs / 60000) > 0) notes.push('遲到' + Math.round(lateMs / 60000) + '分');
+      if (span.outMs < p.endMs) notes.push('早退' + Math.round((p.endMs - span.outMs) / 60000) + '分');
+      // 「中途離開N分」：給看表的人知道遲到裡有中途離開，也讓每天重算知道這筆是照這條算的（主管填遲到分鐘時「遲到…」會被換掉，這項會留著）。
+      // 不是「遲到／早退」開頭：薪資、異常筆數都不讀這項，分鐘只算在上面那個「遲到N分」裡
+      if (Math.round(span.gapMs / 60000) > 0) add(GAP_LATE_NOTE + Math.round(span.gapMs / 60000) + '分');
+      return;
+    }
     if (seg.inMs > p.startMs) notes.push('遲到' + Math.round((seg.inMs - p.startMs) / 60000) + '分');
     if (seg.outMs < p.endMs) notes.push('早退' + Math.round((p.endMs - seg.outMs) / 60000) + '分');
   });
@@ -3527,7 +3574,9 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) 
   let st = computeApprovalStatus(periods, punchWithMs,
     unresolvedAttemptCount_(eventRows, empId, date) > 0,
     isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name),
-    noPunchBreakWindow(date));
+    noPunchBreakWindow(date),
+    // 每天重算沒有班表：照原狀態有沒有「中途離開N分」判斷（核定當下有套才會有），重算結果才跟核定當下一樣；開關改了也不回頭改已核定的
+    st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; }));
   if (manualNote) {
     const kept = st.split('、').filter(function (x) { return x && x !== '正常' && x.indexOf('遲到') !== 0; });
     kept.push(manualNote);

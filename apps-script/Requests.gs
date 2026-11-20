@@ -2349,7 +2349,135 @@ function reqSchedStartMs_(date, spans) {
   });
   return out;
 }
-function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts) {
+/* ── 還有待審的申請單就不能核定（2026-11-20 Eason 第 13 題 A：打卡後端也擋）──
+   營運系統畫面（web/modules/duty/pend-gate.js pendingFor）與營運系統伺服器（新版前端核定）早就擋；這裡是打卡端最後一道，
+   舊值班核定頁、直接打 mgr_approve（含 dry_run 只檢查）也擋。規則同畫面：requests 裡這個人、這一天、status＝pending 的每一張都算
+   （加班、請假、忘打卡、出差不分種類；本人自己送的、要上層審的也算——這位主管審不了，仍是待審）。由 Code.gs handleMgrApprove 呼叫。
+   指令碼屬性 REQ_PEND_BLOCK＝off（off／false／0／關，不分大小寫）關掉（退回用，不用改程式）；填了認不得的值照預設「擋」、記一筆 log。字句同畫面 PEND_BLOCK_MSG。 */
+var REQ_PEND_BLOCK_MSG_ = '這天還有待審的申請，請先審單（審完才能核定）';
+/* 開關屬性的讀法（2026-11-20 複審：填錯值要偏安全）：不分大小寫、前後空白不算。
+   回 'off'（off／false／0／no／關）、'on'（on／true／1／yes／開）、''（沒設）、或原值（其他＝認不得，呼叫端自己決定：放寬規則的 REQ_GAP_LATE_FROM 當關、保護性的 REQ_PEND_BLOCK 照擋）。 */
+var REQ_SWITCH_OFF_ = ['off', 'false', '0', 'no', '關'], REQ_SWITCH_ON_ = ['on', 'true', '1', 'yes', '開'];
+function reqSwitchRead_(key) {
+  var raw = '';
+  try { raw = String(reqProp_(key) || ''); } catch (e) {}
+  var v = raw.trim().toLowerCase();
+  if (!v) return '';
+  if (REQ_SWITCH_OFF_.indexOf(v) >= 0) return 'off';
+  if (REQ_SWITCH_ON_.indexOf(v) >= 0) return 'on';
+  return v;
+}
+function reqSwitchBad_(key) { try { console.warn('指令碼屬性 ' + key + ' 的值認不得，當成「關」處理（請改成 off 或刪掉這個屬性）'); } catch (e) {} }      // 不印值
+function reqPendBlockOn_() {
+  // 保護性檢查：只有明確的關閉字（off／false／0／no／關）才關；認不得的值照預設「擋」並記一筆 log（2026-11-20 第三輪：被誤關＝少擋）
+  var v = reqSwitchRead_('REQ_PEND_BLOCK');
+  if (v === 'off') return false;
+  if (v !== '' && v !== 'on') { try { console.warn('指令碼屬性 REQ_PEND_BLOCK 的值認不得，照預設「擋」處理（要關請填 off）'); } catch (e) {} }      // 不印值
+  return true;
+}
+/** rows：申請表（reqRows_）；回 null＝可以核定，否則回要擋的回應（pending＝幾張審核中） */
+function reqPendBlock_(rows, empId, date) {
+  if (!reqPendBlockOn_()) return null;
+  var n = (rows || []).filter(function (r) {
+    return String(r.emp_id) === String(empId) && String(r.date).slice(0, 10) === String(date) && String(r.status) === 'pending';
+  }).length;
+  return n ? { ok: false, error: 'pending_request', message: REQ_PEND_BLOCK_MSG_, pending: n } : null;
+}
+
+/* ── 二段班中途離開又回來，比照遲到記（2026-11-20 Eason 第 11 題 B；例 班表 16:00–20:00，16:03 走、17:24 回 → 遲到 81 分）──
+   營運系統核定會把那段空檔一起核進去（跟開頭晚到「核定留班表」一樣），Code.gs computeApprovalStatus（gapLate）照記「遲到N分」、薪資照扣；
+   這裡讓「核定比打卡多」把那段空檔當遲到、不當沒打卡的多核工時。只認：
+     ① 上線日（REQ_GAP_LATE_FROM）起的日子——之前的日子核定、重新核定、每天重算都照舊（不回溯）；
+     ② 營運系統個人帳號代轉帶來的班表（sched_spans）：空檔整個落在同一段班表裡；預設只有當天班表兩段以上（二段班）才算（REQ_GAP_LATE_SCOPE＝all 單段班也算）；
+     ③ 空檔兩邊都是打卡（或已核准忘打卡單補的卡），整個被同一段核定時段蓋住。
+   不算（照改之前，空檔照樣是「核定比打卡多」）：空檔碰到不打卡休息帶、碰到已核准有時段的假單／出差單（走請假那幾條）、
+   是已核准「中間休息」忘打卡單補出來的休息。
+   班別休息（break_min）那段班的第一個空檔是休息：二段班時只算滿休息分鐘、超過的部分記遲到（2026-11-20 Eason 第 3 題 B，例 休 30、出去 50 → 20 分遲到）；單段班照 11/17（超過的照實扣）。
+   沒有新增任何金額規則：空檔只是進了既有的遲到分鐘。 */
+var REQ_GAP_LATE_FROM_DEFAULT_ = '2026-11-22';  // 上線日（YYYY-MM-DD；Eason 定案：九店部署完成隔天起算）；null＝整條關著。指令碼屬性 REQ_GAP_LATE_FROM 設日期優先、off＝關
+                                            // ⚠ 要跟營運系統 web/modules/duty/core-calc.js 的 GAP_LATE_FROM 設成同一天；九店同一份檔，一改九店同時生效（沒有分店開關）
+var REQ_GAP_LATE_SCOPE_DEFAULT_ = 'multi';  // multi＝只有二段班（當天班表兩段以上）；all＝單段班也算。指令碼屬性 REQ_GAP_LATE_SCOPE 優先
+function reqGapLateFrom_() {
+  var v = reqSwitchRead_('REQ_GAP_LATE_FROM');
+  if (v === 'off') return null;
+  if (reqIsDate_(v)) return v;
+  if (v !== '') { reqSwitchBad_('REQ_GAP_LATE_FROM'); return null; }      // 不是日期也不是關（含 on）＝認不得 → 關（2026-11-20 複審：原本退回程式預設＝開）
+  return REQ_GAP_LATE_FROM_DEFAULT_ && reqIsDate_(REQ_GAP_LATE_FROM_DEFAULT_) ? REQ_GAP_LATE_FROM_DEFAULT_ : null;
+}
+/** 這一天的核定狀態要不要把中途離開的空檔記成遲到（Code.gs computeApprovalStatus 的 gapLate；核定當下與每天重算同一個判斷） */
+function reqGapLateOn_(date) { var f = reqGapLateFrom_(); return !!(f && reqIsDate_(String(date)) && String(date) >= f); }
+/** 營運系統帶的班表 → 依時間排、剛好相接（14:00 接 14:00）或重疊的併成一段（同營運系統 core-calc 的 merge）：[{s, e, bm}] */
+function reqGapLateSpanList_(date, spans) {
+  var list = (Array.isArray(spans) ? spans : []).map(function (x) {
+    var a = reqHm_(x && x.start), b = reqHm_(x && x.end);
+    if (!a || !b || a === b) return null;
+    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
+    if (e <= s) e += 86400000;
+    return { s: s, e: e, bm: Math.max(0, Math.round(Number(x.break_min) || 0)), rest: false };
+  }).filter(function (x) { return x; }).sort(function (x, y) { return x.s - y.s; });
+  var out = [];
+  list.forEach(function (x) { var l = out[out.length - 1]; if (l && x.s <= l.e) { l.e = Math.max(l.e, x.e); l.bm = l.bm || x.bm; } else out.push(x); });
+  return out;
+}
+/** 這一天核定要不要套中途離開比照遲到（Code.gs handleMgrApprove 決定 computeApprovalStatus 的 gapLate）：上線日起、有營運系統班表、
+ *  範圍內（預設當天班表兩段以上）。單段班、門市登入／舊值班頁（沒有班表）＝false＝狀態跟 main 完全一樣（2026-11-20 複審）。 */
+function reqGapLateDay_(date, spans) {
+  if (!reqGapLateOn_(date)) return false;
+  var n = reqGapLateSpanList_(date, spans).length;
+  return reqGapLateScope_() === 'all' ? n >= 1 : n >= 2;
+}
+function reqGapLateScope_() {
+  var v = '';
+  try { v = String(reqProp_('REQ_GAP_LATE_SCOPE') || ''); } catch (e) {}
+  return v === 'all' || v === 'multi' ? v : REQ_GAP_LATE_SCOPE_DEFAULT_;
+}
+/** 中途離開又回來、被核定蓋住的空檔合計（ms），算進「核定比打卡多」的遲到。不適用回 0。
+ *  periods：[{startMs,endMs}]；segs：打卡＋已核准忘打卡單補的卡（reqSegsWithMiss_）；spans：營運系統帶的班表 [{start,end,break_min}]；okRows：這天已核准的申請 */
+function reqGapLateMs_(date, periods, segs, spans, breakWindow, okRows) {
+  if (!reqGapLateOn_(date)) return 0;
+  var sp = reqGapLateSpanList_(date, spans);      // 剛好相接的兩段併成一段（同營運系統），併完只剩一段＝單段班
+  if (!sp.length || (reqGapLateScope_() === 'multi' && sp.length < 2)) return 0;
+  var full = (segs || []).filter(function (s) { return s && s.inMs != null && s.outMs != null && s.outMs > s.inMs; })
+    .slice().sort(function (a, b) { return a.inMs - b.inMs; });
+  if (full.length < 2) return 0;
+  // 這天打卡之間的空檔（全部的段照時間先後）
+  var gaps = [], maxOut = full[0].outMs;
+  full.slice(1).forEach(function (s) { if (s.inMs > maxOut) gaps.push({ a: maxOut, b: s.inMs }); if (s.outMs > maxOut) maxOut = s.outMs; });
+  // 已核准、有時段的假單／出差單，與「中間休息」忘打卡單（end＝出去、start＝回來）：空檔碰到就不算（跨夜試前一天／隔天）
+  var skip = [];
+  (okRows || []).forEach(function (r) {
+    var a = reqHm_(r.start), b = reqHm_(r.end), s, e;
+    if (!a || !b || a === b) return;
+    if (r.kind === 'leave' || r.kind === 'trip') { s = reqHmMs_(date, a); e = reqHmMs_(date, b); }
+    else if (r.kind === 'miss' && String(r.miss_type || '') === 'break') { s = reqHmMs_(date, b); e = reqHmMs_(date, a); }
+    else return;
+    if (e <= s) e += 86400000;
+    [-86400000, 0, 86400000].forEach(function (k) { skip.push({ s: s + k, e: e + k }); });
+  });
+  var touch = function (g) {
+    if (breakWindow && breakWindow.startMs < g.b && breakWindow.endMs > g.a) return true;
+    return skip.some(function (x) { return x.s < g.b && x.e > g.a; });
+  };
+  var total = 0;
+  gaps.forEach(function (g) {
+    var s = sp.filter(function (x) { return x.s < g.a && g.b < x.e; })[0];      // 空檔整個在同一段班裡（同營運系統 core-calc：開頭、結尾剛好貼著班表邊界的不算）
+    if (!s) return;
+    var covered = function (a, b) { return (periods || []).some(function (p) { return p.startMs <= a && b <= p.endMs; }); };
+    if (s.bm > 0 && !s.rest) {
+      // 班別休息：那段班的第一個空檔是休息。2026-11-20 Eason 第 3 題 B：二段班時休息只算滿班別休息分鐘，超過的部分（核定蓋住的話）記遲到；
+      // 單段班照 11/17（超過的照實扣、核定蓋住＝核定比打卡多）。碰到休息帶／假單／中間休息忘打卡單照 11/17
+      s.rest = true;
+      var a2 = g.a + s.bm * 60000;
+      if (sp.length >= 2 && g.b > a2 && !touch(g) && covered(a2, g.b)) total += g.b - a2;
+      return;
+    }
+    if (touch(g)) return;
+    if (!covered(g.a, g.b)) return;
+    total += g.b - g.a;
+  });
+  return total;
+}
+function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts, gapMs) {
   if (!periods.length || !segs.length || segs.some(function (s) { return s.inMs == null || s.outMs == null; })) return null;
   var ps = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
   var ss = segs.slice().sort(function (a, b) { return a.inMs - b.inMs; });
@@ -2372,6 +2500,8 @@ function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts)
     var first = Math.min.apply(null, ins);
     late += (first - p.startMs) - inBreak(p.startMs, first);
   });
+  // 2026-11-20 Eason 第 11 題 B：中途離開又回來、被核定蓋住的空檔＝遲到（reqGapLateMs_ 算好帶進來；沒帶＝跟改之前一樣）。主管填遲到分鐘時合計受下面同一個上限
+  if (Number(gapMs) > 0) late += Number(gapMs);
   // 2026-11-15（考勤挑錯 B1）：主管有填遲到分鐘（0＝認定不計遲到、N＝認定遲到 N 分）時，只有他認的那 N 分鐘算遲到（薪資照扣）；
   // 被免掉的遲到分鐘＝沒打卡卻要算的時間，照樣要有單。原本整段都當遲到扣掉，只打 5 分鐘卡、遲到填 0 就核得出 8 小時。沒填＝系統照實標遲到，不變。
   if (lateGiven != null) late = Math.min(late, Math.max(0, lateGiven) * 60000);
@@ -2905,7 +3035,9 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   // 2026-11-14 Eason「打卡＋單＝核定時數」：不再「差 30 分鐘寫原因」，只看核定比打卡多（沒打卡卻要算的時間），要有單；早到晚走不算、不用原因
   // 已核准的忘打卡單補的卡算「有打卡」（2026-11-15 Eason：游家輝 11/11 忘打卡單補 18:30–20:15 仍被算成整段沒打卡；
   // 同營運系統 core-calc.js 的「打卡＋單」）。只用在這條「核定比打卡多」，其他檢查照舊看真的卡
-  var overMin = strict ? reqOverCreditMin_(periods, reqSegsWithMiss_(segs || [], ok, date), breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok).concat(reqSchedMidEndMs_(date, opt.sched_spans))) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）
+  var segsMiss = strict ? reqSegsWithMiss_(segs || [], ok, date) : null;
+  var overMin = strict ? reqOverCreditMin_(periods, segsMiss, breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok).concat(reqSchedMidEndMs_(date, opt.sched_spans)),
+    reqGapLateMs_(date, periods, segsMiss, opt.sched_spans, breakWindow, ok)) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）；2026-11-20：二段班中途離開的空檔算遲到（最後一個參數）
   if (overMin != null && overMin >= REQ_STRICT_DIFF_MIN) add('over_credit', '核定比打卡多 ' + overMin + ' 分鐘（沒有打卡的時間要有忘打卡單、假單或補休單）');
   if (opt.preview) return { probs: probs, diff_min: diffMin, over_min: overMin, ot_have: otHave, ot_need: otNeed, ft8_gap: ft8 ? ft8.gap : 0 };
   if (probs.length) {
