@@ -183,7 +183,9 @@ var DUTY_PUSH_CAP_MAX_ = 1500;              // DUTY_PUSH_TUNE 的 cap 最多只�
 /* 回應慢也熔斷（2026-11-20 開真推送前補強；S3 審查必做 2）：門鈴在打卡回應之前同步送出，mini 慢＝同仁打卡跟著慢。
  *   一次 ≥ DUTY_PUSH_HARD_MS_（2.5 秒，已接近 3 秒逾時）→ 立刻停推 10 分鐘；
  *   連續 DUTY_PUSH_SLOW_N_ 次（3 次）≥ DUTY_PUSH_SLOW_MS_（1.5 秒）→ 停推 10 分鐘；回應快又成功一次才歸零。
- *   停推期滿後是「半開」：計數停在差一次就跳，下一次還是慢＝馬上再停 10 分鐘。持續慢的時候，最多每 10 分鐘一位同仁多等一次。
+ *   因慢停推後，**同仁的寫入不再當探針**：停推期滿也不推，要等 mini 帶來的 ping（duty_changes ping，mini 不在推送模式時每 20 分鐘一次）
+ *   回得又快又成功才恢復（need_ping）；那次 ping 還是慢＝再停 10 分鐘（計數停在差一次就跳＝半開）。所以 mini 持續卡住時，同仁最多只會多等第一次。
+ *   （mini 不再 ping 時，慢計數快取 6 小時後過期，下一筆寫入才會再試一次。）
  *   門檻理由：mini 收門鈴是同步驗簽、不碰網路（server/duty-push.js），正常應在 1 秒內（審查驗收標準 push.p95ms ≤ 1000）；
  *   1.5 秒＝正常值的 1.5 倍以上才算慢，偶發一次不跳；2.5 秒以上已經是「卡住」，不再等第二次。
  *   全部可用指令碼屬性 DUTY_PUSH_TUNE（JSON，只在正式推送模式讀）調：{"slow_ms":1500,"slow_n":3,"hard_ms":2500,"slow_off_s":600,"cap":800}。 */
@@ -191,7 +193,7 @@ var DUTY_PUSH_SLOW_MS_ = 1500;
 var DUTY_PUSH_SLOW_N_ = 3;
 var DUTY_PUSH_HARD_MS_ = 2500;
 var DUTY_PUSH_SLOW_OFF_S_ = 600;
-var DUTY_PUSH_SLOW_KEY_ = 'dpush_slow';     // {n:連續慢幾次, d:台北日期, trips:今天因慢停推幾次, fl:[最近 20 次 flush 毫秒]}；只有正式推送會讀寫
+var DUTY_PUSH_SLOW_KEY_ = 'dpush_slow';     // {n:連續慢幾次, np:因慢停推、等 ping 復原, d:台北日期, trips:今天因慢停推幾次, fe:今天 flush 失敗幾次, fl:[最近 20 次 flush 毫秒]}；只有正式推送會讀寫
 var DUTY_PUSH_FL_KEEP_ = 20;
 var DUTY_PUSH_PING_DAY_CAP_ = 40;           // ping（duty_changes 帶 ping 時往外連的那一次）另計：單店每天最多 40 次。設計是每小時 1 次、一天 22 次，留餘裕；
                                             // 九店共用同一帳號「往外連線 2 萬次/天」，mini 端出錯狂打 ping 時不能靠一般寫入的 1,500 次額度擋，所以獨立、更保守
@@ -238,11 +240,13 @@ function dutyPushTune_(raw) {
 }
 
 function dutyPushSlowParse_(raw, day) {
-  var sl = { n: 0, d: day, trips: 0, fl: [] }, j = null;
+  var sl = { n: 0, np: false, d: day, trips: 0, fe: 0, fl: [] }, j = null;
   try { j = raw ? JSON.parse(raw) : null; } catch (e) { j = null; }
   if (!j || typeof j !== 'object') return sl;
-  if (typeof j.n === 'number' && isFinite(j.n) && j.n >= 0) sl.n = j.n;   // 連續慢的次數跨日照算
+  if (typeof j.n === 'number' && isFinite(j.n) && j.n >= 0) sl.n = j.n;   // 連續慢的次數、等 ping 復原，跨日照算
+  sl.np = j.np === true;
   if (j.d === day && typeof j.trips === 'number' && isFinite(j.trips)) sl.trips = j.trips;
+  if (j.d === day && typeof j.fe === 'number' && isFinite(j.fe)) sl.fe = j.fe;
   if (Array.isArray(j.fl)) sl.fl = j.fl.filter(function (v) { return typeof v === 'number' && isFinite(v); }).slice(-DUTY_PUSH_FL_KEEP_);
   return sl;
 }
@@ -310,8 +314,12 @@ function dutyPushStParse_(raw, day) {
  *  5. 單店每天真的連外最多 800 次（可用 DUTY_PUSH_TUNE 調，最多 1,500；計數不是原子，最壞約兩倍，見 DUTY_PUSH_DAY_CAP_）。只計數模式不受上限、也不連外。
  *  6. ping 另有每天 40 次的獨立上限（skip_ping_cap，不連外）；仍受熔斷管，也算進上面每日上限。只計數模式照樣套用，量得到的就是正式會推的次數。
  *  7. 回應慢也熔斷（見 DUTY_PUSH_SLOW_MS_ 上方）：慢的判定看「連外那一趟」花多久，不分成功失敗；跟失敗熔斷同時成立時取停比較久的那個。
+ *     因慢停推後，一般寫入要等 mini 的 ping 又快又成功才恢復（不拿同仁打卡當探針），等待中記 skip_off。
  *  8. 真的要連外（不是 ping）之前先 SpreadsheetApp.flush()：mini 收到門鈴會馬上回頭讀，要讓這次寫入先落地。
  *     只在這一條路做：沒設網址、只計數、熔斷中、上限滿、設定不齊都不 flush（跟 PR #181 一樣）。flush 耗時記在 push_stats 的 flush_*。
+ *     flush 丟錯（寫入可能還沒落地）→ 這一筆不按門鈴（回 skip_flush、記 flush_err；打卡回應不變；mini 3 秒補問／輪詢會補）。
+ *  9. 停推（dpush_off）只會延長、不會縮短：寫入前重讀，別的同時執行已寫了更晚的結束時間就不蓋；快取存活一律 6 小時，看 until 判斷。
+ *     慢計數也是連外之後重讀再改（不用執行開頭讀到的舊值），同時有快速失敗不會把別人的慢計數／等 ping 狀態蓋掉。
  * 第 7、8 點與 DUTY_PUSH_TUNE 只在正式推送模式（cfg.dry 為 false）生效：關與只計數的快取讀寫、回應跟 PR #181 逐次相同。
  */
 function dutyPushSend_(p, cfg) {
@@ -326,18 +334,28 @@ function dutyPushSend_(p, cfg) {
   var pingN = isPing ? Number(got[pingKey]) : 0;
   if (!isFinite(pingN) || pingN < 0) pingN = 0;
   try { off = got[DUTY_PUSH_OFF_KEY_] ? JSON.parse(got[DUTY_PUSH_OFF_KEY_]) : null; } catch (e) { off = null; }
-  if (off && Number(off.until) > now) outcome = 'skip_off';
+  var waitPing = live && !isPing && dutyPushSlowParse_(got[DUTY_PUSH_SLOW_KEY_], day).np;   // 因慢停推、還沒等到 ping 復原
+  if ((off && Number(off.until) > now) || waitPing) outcome = 'skip_off';
   else if (isPing && pingN >= DUTY_PUSH_PING_DAY_CAP_) outcome = 'skip_ping_cap';
   else if (cfg.dry) outcome = 'dry';
   else if (st.sent >= tune.cap) outcome = 'skip_cap';
   else if (!/^https:\/\//.test(cfg.url) || cfg.key.length < 32 || !/^[a-z0-9]{2,16}$/.test(cfg.store)) outcome = 'skip_cfg';
   else {
-    var flMs = null;
+    var flMs = null, flErr = false;
     if (!isPing) {   // 第 8 點：mini 收到門鈴會馬上回頭讀，先讓這次寫入落地（ping 是 duty_changes 唯讀請求，不用）
       var f0 = Date.now();
-      try { SpreadsheetApp.flush(); } catch (e) { /* 落地失敗也照按：mini 3 秒後補問、每小時補問 */ }
+      try { SpreadsheetApp.flush(); } catch (e) { flErr = true; }
       flMs = Date.now() - f0;
     }
+  }
+  if (outcome === '' && flErr) {   // flush 失敗：這一筆不按門鈴（mini 補問／輪詢會補），只記 flush_err 與耗時
+    var slF = dutyPushSlowParse_(cache.get(DUTY_PUSH_SLOW_KEY_), day);
+    slF.fe++;
+    slF.fl.push(flMs); if (slF.fl.length > DUTY_PUSH_FL_KEEP_) slF.fl = slF.fl.slice(-DUTY_PUSH_FL_KEEP_);
+    cache.put(DUTY_PUSH_SLOW_KEY_, JSON.stringify(slF), DUTY_FEED_TTL_S_);
+    return 'skip_flush';
+  }
+  if (outcome === '') {
     p.s = cfg.store;
     p.sig = dutyPushSign_(p, cfg.key);
     st.sent++;
@@ -360,14 +378,17 @@ function dutyPushSend_(p, cfg) {
       outcome = 'fail';
       offPut = { why: 'fail', s: DUTY_PUSH_FAIL_OFF_S_ };
     }
-    // 第 7 點：回應慢也熔斷
-    var sl = dutyPushSlowParse_(got[DUTY_PUSH_SLOW_KEY_], day), trip = false;
+    // 第 7 點：回應慢也熔斷。連外完才重讀慢計數（不用開頭讀到的舊值：同時有別筆在改）
+    var sl = dutyPushSlowParse_(cache.get(DUTY_PUSH_SLOW_KEY_), day), trip = false;
     if (flMs !== null) { sl.fl.push(flMs); if (sl.fl.length > DUTY_PUSH_FL_KEEP_) sl.fl = sl.fl.slice(-DUTY_PUSH_FL_KEEP_); }
     if (el >= tune.hard_ms) trip = true;
     else if (el >= tune.slow_ms) { sl.n++; if (sl.n >= tune.slow_n) trip = true; }
-    else if (outcome === 'ok' || outcome === 'remote_off') sl.n = 0;   // 快又成功才歸零；快但失敗（例如 502）交給失敗熔斷，不動慢計數
+    else if (outcome === 'ok' || outcome === 'remote_off') {   // 快又成功才歸零；快但失敗（例如 502）交給失敗熔斷，不動慢計數
+      if (isPing || !sl.np) { sl.n = 0; sl.np = false; }      // 等 ping 復原時只有 ping 能解除
+    }
     if (trip) {
-      sl.n = Math.max(0, tune.slow_n - 1);   // 半開：停推期滿後再慢一次就馬上再停
+      sl.n = Math.max(0, tune.slow_n - 1);      // 半開：恢復後再慢一次就馬上再停
+      sl.np = true;                             // 停推期滿也不拿同仁寫入當探針，等 mini 的 ping
       sl.trips++;
       if (!offPut || offPut.s < tune.slow_off_s) offPut = { why: 'slow', s: tune.slow_off_s };
     }
@@ -375,7 +396,11 @@ function dutyPushSend_(p, cfg) {
   }
   st[outcome] = (st[outcome] || 0) + 1;
   if (p.to && (outcome === 'ok' || outcome === 'remote_off' || outcome === 'fail' || outcome === 'dry')) st.with_to++;
-  if (offPut) cache.put(DUTY_PUSH_OFF_KEY_, JSON.stringify({ until: Date.now() + offPut.s * 1000, why: offPut.why }), offPut.s);
+  if (offPut) {   // 第 9 點：只延長不縮短（重讀；別的執行已寫了更晚的就不蓋）；快取存活 6 小時，靠 until 判斷
+    var until = Date.now() + offPut.s * 1000, cur = null;
+    try { cur = JSON.parse(cache.get(DUTY_PUSH_OFF_KEY_) || 'null'); } catch (e) { cur = null; }
+    if (!(cur && Number(cur.until) >= until)) cache.put(DUTY_PUSH_OFF_KEY_, JSON.stringify({ until: until, why: offPut.why }), DUTY_FEED_TTL_S_);
+  }
   cache.put(stKey, JSON.stringify(st), DUTY_FEED_TTL_S_);
   if (slPut) cache.put(DUTY_PUSH_SLOW_KEY_, JSON.stringify(slPut), DUTY_FEED_TTL_S_);   // 只有真的連外過才寫
   if (isPing && (outcome === 'ok' || outcome === 'remote_off' || outcome === 'fail' || outcome === 'dry')) cache.put(pingKey, String(pingN + 1), DUTY_FEED_TTL_S_);   // 只算真的連外（或只計數）的那幾次
@@ -424,7 +449,8 @@ function dutyPushStats_() {
            off: off && Number(off.until) > now ? { why: String(off.why || ''), until: Number(off.until) } : null };
   if (!live) return out;   // 關／只計數：欄位跟 PR #181 相同（cap 數字除外）
   var sl = dutyPushSlowParse_(got[DUTY_PUSH_SLOW_KEY_], day), fl = sl.fl.slice().sort(function (a, b) { return a - b; });
-  out.slow = { n: sl.n, trips: sl.trips, slow_ms: tune.slow_ms, slow_n: tune.slow_n, hard_ms: tune.hard_ms, off_s: tune.slow_off_s };
+  out.slow = { n: sl.n, need_ping: sl.np, trips: sl.trips, slow_ms: tune.slow_ms, slow_n: tune.slow_n, hard_ms: tune.hard_ms, off_s: tune.slow_off_s };
+  out.flush_err = sl.fe;
   out.flush_samples = fl.length;
   out.flush_p50ms = fl.length ? fl[Math.max(0, Math.ceil(0.5 * fl.length) - 1)] : null;
   out.flush_max_ms = fl.length ? fl[fl.length - 1] : null;

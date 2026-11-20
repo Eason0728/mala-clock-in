@@ -278,8 +278,11 @@ Object.keys(FAILS).forEach((name) => ok('推送' + name + '：dutyFeedNote_ 正�
   assert.strictEqual(h.fetches.length, 1, '熔斷期間還在連外');
   assert.strictEqual(h.stats().skip_off, 5);
   h.advance(11000);   // 距離失敗 61 秒（逾時那筆另外多 3 秒，所以多等一點）
-  if (slowCase) { h.advance(3000); h.write(W, { ok: true }); assert.strictEqual(h.fetches.length, 1, '慢熔斷 10 分鐘內還在連外'); h.advance(600000); }
-  h.write(W, { ok: true });
+  if (slowCase) {   // live-prep：因慢停推後不拿同仁寫入當探針，要等 mini 的 ping
+    h.advance(3000); h.write(W, { ok: true }); assert.strictEqual(h.fetches.length, 1, '慢熔斷 10 分鐘內還在連外');
+    h.advance(600000); h.write(W, { ok: true }); assert.strictEqual(h.fetches.length, 1, '停推期滿、還沒等到 ping，寫入不該連外');
+    h.changes({ ping: 'nonce_ABC_123' });   // ping 才會去試
+  } else h.write(W, { ok: true });
   assert.strictEqual(h.fetches.length, 2, '熔斷過了應該再試');
   assert.ok(h.logs.every((l) => l.indexOf('MARKSECRET') < 0));
 }));

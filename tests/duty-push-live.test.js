@@ -96,7 +96,7 @@ ok('比對本身抓得到差異：把新版的只計數改壞（多讀一個屬�
 });
 
 /* ══ 2. 正式推送、回應快：跟線上版只差四種呼叫 ══ */
-ok('正式推送、回應快（200 毫秒）：跟 a9fac60 只差「讀 DUTY_PUSH_TUNE、getAll 多一鍵、flush、寫慢計數」；送出的內容、回傳值、暫存區（慢計數除外）逐字相同', () => {
+ok('正式推送、回應快（200 毫秒）：跟 a9fac60 只差「讀 DUTY_PUSH_TUNE、getAll 多一鍵、flush、重讀＋寫慢計數」；送出的內容、回傳值、暫存區（慢計數除外）逐字相同', () => {
   const run = (src) => {
     const h = harness(src, { props: LIVE, fetch: took(200) });
     for (let i = 0; i < 8; i++) { h.write(i % 2 ? C : W, { ok: true }); h.advance(5000); }
@@ -107,11 +107,11 @@ ok('正式推送、回應快（200 毫秒）：跟 a9fac60 只差「讀 DUTY_PUS
   assert.deepStrictEqual(B.h.fetches.map((f) => f.opt.payload), A.h.fetches.map((f) => f.opt.payload));
   assert.deepStrictEqual(B.h.fetches.map((f) => JSON.stringify(f.opt)), A.h.fetches.map((f) => JSON.stringify(f.opt)));
   // push_stats：正式推送多回 slow／flush_*、cap 1500→800；其餘欄位逐字相同
-  const outB = J(B.out).map((o) => { if (o.push) { assert.ok(o.push.slow && 'flush_p50ms' in o.push); delete o.push.slow; delete o.push.flush_samples; delete o.push.flush_p50ms; delete o.push.flush_max_ms; } return o; });
+  const outB = J(B.out).map((o) => { if (o.push) { assert.ok(o.push.slow && 'flush_p50ms' in o.push); delete o.push.slow; delete o.push.flush_samples; delete o.push.flush_p50ms; delete o.push.flush_max_ms; delete o.push.flush_err; } return o; });
   assert.strictEqual(JSON.stringify(outB), JSON.stringify(A.out).replace(/"cap":1500/g, '"cap":800'));
   const cb = Object.assign({}, B.h.cache); delete cb.dpush_slow;
   assert.strictEqual(JSON.stringify(cb), JSON.stringify(A.h.cache));
-  const norm = (log) => log.filter((l) => l !== 'Props.getProperty:DUTY_PUSH_TUNE' && l !== 'SpreadsheetApp.flush' && l !== 'Cache.put:dpush_slow:21600')
+  const norm = (log) => log.filter((l) => l !== 'Props.getProperty:DUTY_PUSH_TUNE' && l !== 'SpreadsheetApp.flush' && l !== 'Cache.put:dpush_slow:21600' && l !== 'Cache.get:dpush_slow')
     .map((l) => l.replace(/^Cache\.getAll:(\d+)$/, 'Cache.getAll:*'));
   assert.deepStrictEqual(norm(B.h.log), norm(A.h.log));
   assert.strictEqual(B.h.log.filter((l) => l === 'SpreadsheetApp.flush').length, 8, '8 筆寫入各 flush 一次（ping 不 flush）');
@@ -119,8 +119,8 @@ ok('正式推送、回應快（200 毫秒）：跟 a9fac60 只差「讀 DUTY_PUS
 });
 
 /* ══ 3. 回應慢也熔斷 ══ */
-ok('一次 ≥2.5 秒（2.6 秒、回 ok）→ 馬上停推 10 分鐘（off.why=slow）；期間 0 次連外、寫入照常返回；10 分鐘後再試', () => {
-  const h = harness(SRC, { props: LIVE, fetch: seq([took(2600), took(200)]) });
+ok('一次 ≥2.5 秒（2.6 秒、回 ok）→ 馬上停推 10 分鐘（off.why=slow）；期間 0 次連外、寫入照常返回；期滿後同仁寫入仍不連外，等 mini 的 ping 又快又成功才恢復', () => {
+  const h = harness(SRC, { props: LIVE, fetch: seq([took(2600), took(200), took(200)]) });
   h.write(W, { ok: true });
   assert.strictEqual(h.fetches.length, 1);
   const p = stats(h);
@@ -129,8 +129,14 @@ ok('一次 ≥2.5 秒（2.6 秒、回 ok）→ 馬上停推 10 分鐘（off.why=
   assert.strictEqual(h.fetches.length, 1);
   assert.strictEqual(stats(h).skip_off, 59);
   h.advance(12600); h.write(C, { ok: true });   // 距離停推開始 > 600 秒
+  assert.strictEqual(h.fetches.length, 1, '停推期滿也不拿同仁寫入當探針');
+  assert.strictEqual(stats(h).slow.need_ping, true);
+  assert.ok(!h.log.slice(-30).includes('SpreadsheetApp.flush'), '等 ping 時不 flush');
+  assert.strictEqual(h.changes({ ping: 'nonce_ABC_123' }).ping, 'ok');   // mini 帶來的 ping
   assert.strictEqual(h.fetches.length, 2);
-  assert.strictEqual(slowSt(h).n, 0, '快又成功 → 歸零');
+  assert.deepStrictEqual([slowSt(h).n, slowSt(h).np], [0, false], 'ping 快又成功 → 解除');
+  h.write(C, { ok: true });
+  assert.strictEqual(h.fetches.length, 3, '恢復後寫入照推');
 });
 
 ok('連續 3 次 ≥1.5 秒（1.6 秒）→ 第 3 次後停推 10 分鐘；2 次慢＋1 次快 → 不停、歸零', () => {
@@ -142,22 +148,27 @@ ok('連續 3 次 ≥1.5 秒（1.6 秒）→ 第 3 次後停推 10 分鐘；2 次
   h.write(W, { ok: true });
   assert.strictEqual(h.fetches.length, 6);
   const p = stats(h);
-  assert.deepStrictEqual([p.off.why, p.slow.trips, p.slow.n], ['slow', 1, 2], '停推後計數停在差一次就跳（半開）');
+  assert.deepStrictEqual([p.off.why, p.slow.trips, p.slow.n, p.slow.need_ping], ['slow', 1, 2, true], '停推後計數停在差一次就跳（半開）、等 ping');
   h.advance(30000); h.write(W, { ok: true });
   assert.strictEqual(h.fetches.length, 6);
 });
 
-ok('半開：停推期滿後第一次還是慢（1.6 秒）→ 馬上再停 10 分鐘；之後一次快又成功 → 又要連 3 次慢才停', () => {
-  const h = harness(SRC, { props: LIVE, fetch: seq([took(2600), took(1600), took(200), took(1600), took(1600), took(200)]) });
-  h.write(W, { ok: true });                      // 第 1 次：2.6 秒 → 停
-  h.advance(601000); h.write(W, { ok: true });   // 第 2 次：1.6 秒 → 半開狀態下一次就再停
-  assert.deepStrictEqual([h.fetches.length, stats(h).off.why, stats(h).slow.trips], [2, 'slow', 2]);
-  h.advance(601000); h.write(W, { ok: true });   // 第 3 次：快 → 歸零
-  assert.strictEqual(slowSt(h).n, 0);
-  h.write(W, { ok: true }); h.write(W, { ok: true });   // 慢兩次：還不停
+ok('半開：停推期滿後探針（ping）還是慢（1.6 秒）→ 馬上再停 10 分鐘；之後 ping 快又成功 → 恢復，又要連 3 次慢才停', () => {
+  const h = harness(SRC, { props: LIVE, fetch: seq([took(2600), took(1600), took(200), took(1600), took(1600), took(1600), took(200)]) });
+  h.write(W, { ok: true });                                  // 第 1 次：2.6 秒 → 停
+  h.advance(601000); h.write(W, { ok: true });               // 期滿：寫入不連外（等 ping）
+  assert.strictEqual(h.fetches.length, 1);
+  h.changes({ ping: 'nonce_ABC_123' });                      // 第 2 次（ping）：1.6 秒 → 半開狀態下一次就再停
+  assert.deepStrictEqual([h.fetches.length, stats(h).off.why, stats(h).slow.trips, stats(h).slow.need_ping], [2, 'slow', 2, true]);
+  h.advance(601000); h.changes({ ping: 'nonce_ABC_124' });   // 第 3 次（ping）：快 → 解除、歸零
+  assert.deepStrictEqual([slowSt(h).n, slowSt(h).np], [0, false]);
+  h.write(W, { ok: true }); h.write(W, { ok: true });       // 寫入慢兩次：還不停
   assert.strictEqual(stats(h).off, null);
-  h.write(W, { ok: true });
+  h.write(W, { ok: true });                                  // 第三次慢 → 停
   assert.strictEqual(h.fetches.length, 6);
+  assert.strictEqual(stats(h).off.why, 'slow');
+  h.advance(601000); h.write(W, { ok: true });
+  assert.strictEqual(h.fetches.length, 6, '又要等 ping');
 });
 
 ok('慢又失敗（1.6 秒後回 500）：算失敗（停 60 秒）也算一次慢；連 3 次就改停 10 分鐘', () => {
@@ -170,6 +181,7 @@ ok('慢又失敗（1.6 秒後回 500）：算失敗（停 60 秒）也算一次�
   assert.deepStrictEqual([stats(h).off.why, stats(h).slow.trips, stats(h).fail], ['slow', 1, 3]);
   h.advance(61000); h.write(W, { ok: true });
   assert.strictEqual(h.fetches.length, 3, '慢熔斷 10 分鐘，60 秒後不該再試');
+  assert.strictEqual(slowSt(h).np, true);
 });
 
 ok('快但失敗（100 毫秒回 502）：只走失敗熔斷 60 秒，不動慢計數；回 204、off:true 照舊不算慢', () => {
@@ -207,14 +219,19 @@ ok('ping 慢也算（mini 慢就是慢）；ping 不 flush', () => {
   assert.strictEqual(h.fetches.length, 1);
 });
 
-ok('最壞情況：mini 持續每次卡 3 秒、每 10 秒一筆寫入、連續 2 小時 → 最多 13 次連外（每 10 分鐘 1 次），同仁多等合計 ≤ 39 秒', () => {
+ok('最壞情況：mini 持續每次卡 3 秒、每 10 秒一筆寫入、mini 每 20 分鐘 ping 一次、連續 2 小時 → 同仁只有第一筆多等 3 秒，之後全由 ping 探測', () => {
   const h = harness(SRC, { props: LIVE, fetch: (u, o, hh) => { hh.now += 3000; throw new Error('Timeout'); } });
   const end = h.now + 2 * 3600000;
-  let waited = 0;
-  while (h.now < end) { const t = h.now; h.write(C, { ok: true }); waited += h.now - t; h.advance(10000); }
-  assert.ok(h.fetches.length <= 13, '連外 ' + h.fetches.length + ' 次');
-  assert.ok(waited <= 39000, '多等 ' + waited + ' 毫秒');
-  console.log('    （2 小時連外 ' + h.fetches.length + ' 次，同仁合計多等 ' + waited / 1000 + ' 秒）');
+  let waited = 0, writes = 0, nextPing = h.now + 20 * 60000, pings = 0;
+  while (h.now < end) {
+    const t = h.now; h.write(C, { ok: true }); waited += h.now - t; writes++;
+    if (h.now >= nextPing) { h.changes({ ping: 'nonce_ABC_' + (100 + pings) }); pings++; nextPing += 20 * 60000; }
+    h.advance(10000);
+  }
+  const wfetch = h.fetches.filter((f) => JSON.parse(f.opt.payload).a !== 'ping').length;
+  assert.strictEqual(wfetch, 1, '同仁寫入連外 ' + wfetch + ' 次');
+  assert.ok(waited <= 3000, '同仁多等 ' + waited + ' 毫秒');
+  console.log('    （2 小時 ' + writes + ' 筆寫入：寫入連外 ' + wfetch + ' 次、ping 連外 ' + (h.fetches.length - wfetch) + ' 次，同仁合計多等 ' + waited / 1000 + ' 秒）');
 });
 
 ok('DUTY_PUSH_TUNE：自訂門檻生效；格式錯／超出範圍的欄位用預設；hard_ms 不低於 slow_ms；cap 最多 1,500', () => {
@@ -264,11 +281,42 @@ ok('不 flush 的情況：門鈴關、只計數、熔斷中、上限滿、設定
   assert.strictEqual(h.fetches.length, 1, '只有 ping 連外');
 });
 
-ok('flush 丟錯：照樣按門鈴、寫入照常返回、回應物件不變', () => {
-  const h = harness(SRC, { props: LIVE, flushThrows: true });
+ok('flush 丟錯：這一筆不按門鈴（寫入照常返回、回應物件不變）、記 flush_err；不動 sent／慢計數；下一筆 flush 好了照推', () => {
+  let bad = true;
+  const h = harness(SRC, { props: LIVE });
+  h.sb.SpreadsheetApp = { flush: () => { h.log.push('SpreadsheetApp.flush'); if (bad) throw new Error('flush 失敗'); } };
   h.write(W, { ok: true });
+  assert.strictEqual(h.fetches.length, 0);
+  const p = stats(h);
+  assert.deepStrictEqual([p.flush_err, p.sent, p.slow.n, p.slow.need_ping, p.off], [1, 0, 0, false, null]);
+  bad = false; h.write(W, { ok: true });
   assert.strictEqual(h.fetches.length, 1);
-  assert.strictEqual(h.stats().ok, 1);
+  assert.deepStrictEqual([stats(h).flush_err, stats(h).ok], [1, 1]);
+});
+
+ok('停推只延長不縮短：連外期間別的執行寫了 600 秒的停推，這筆快速失敗（60 秒）不蓋掉；停推快取一律存 6 小時', () => {
+  const h = harness(SRC, { props: LIVE, fetch: (u, o, hh) => {
+    hh.cache.dpush_off = { v: JSON.stringify({ until: hh.now + 600000, why: 'slow' }), exp: hh.now + 21600000 };
+    hh.now += 100; return resp(502, '');
+  } });
+  h.write(W, { ok: true });
+  const off = JSON.parse(h.cache.dpush_off.v);
+  assert.strictEqual(off.why, 'slow'); assert.ok(off.until - h.now > 590000);
+  const g = harness(SRC, { props: LIVE, fetch: took(100, 500, '') });
+  g.write(W, { ok: true });
+  assert.ok(g.log.includes('Cache.put:dpush_off:21600'));
+  assert.strictEqual(JSON.parse(g.cache.dpush_off.v).until - g.now, 60000, '靠 until 判斷，不靠快取存活時間');
+});
+
+ok('慢計數連外後重讀：連外期間別的執行已把店設成「等 ping」，這筆快速失敗不會把慢計數／等 ping 清掉；這筆快又成功也不會（只有 ping 能解除）', () => {
+  const day = new Date(T0 + 8 * 3600000).toISOString().slice(0, 10);
+  const set = (hh) => { hh.cache.dpush_slow = { v: JSON.stringify({ n: 2, np: true, d: day, trips: 1, fe: 0, fl: [] }), exp: hh.now + 21600000 }; };
+  const h = harness(SRC, { props: LIVE, fetch: (u, o, hh) => { set(hh); hh.now += 100; return resp(502, ''); } });
+  h.write(W, { ok: true });
+  assert.deepStrictEqual([slowSt(h).n, slowSt(h).np, slowSt(h).trips], [2, true, 1]);
+  const g = harness(SRC, { props: LIVE, fetch: (u, o, hh) => { set(hh); hh.now += 100; return resp(200, '{"ok":true}'); } });
+  g.write(W, { ok: true });
+  assert.deepStrictEqual([slowSt(g).n, slowSt(g).np], [2, true]);
 });
 
 /* ══ 5. 每日上限 ══ */
@@ -289,13 +337,13 @@ ok('push_stats 正式推送多回 slow／flush_*（只有個數與門檻），�
   const h = harness(SRC, { props: LIVE, fetch: took(1600) });
   h.write(W, { ok: true });
   const p = stats(h);
-  assert.deepStrictEqual(Object.keys(p.slow), ['n', 'trips', 'slow_ms', 'slow_n', 'hard_ms', 'off_s']);
-  assert.ok('flush_p50ms' in p && 'flush_max_ms' in p && 'flush_samples' in p);
+  assert.deepStrictEqual(Object.keys(p.slow), ['n', 'need_ping', 'trips', 'slow_ms', 'slow_n', 'hard_ms', 'off_s']);
+  assert.ok('flush_p50ms' in p && 'flush_max_ms' in p && 'flush_samples' in p && 'flush_err' in p);
   const txt = JSON.stringify(p);
   assert.ok(txt.indexOf(KEY) < 0 && txt.indexOf('gw.example') < 0 && txt.indexOf(FIXED) < 0);
   const d = harness(SRC, { props: DRY }); d.write(W, { ok: true });
   const q = stats(d);
-  assert.ok(!('slow' in q) && !('flush_p50ms' in q));
+  assert.ok(!('slow' in q) && !('flush_p50ms' in q) && !('flush_err' in q));
 });
 
 console.log('\nduty-push-live：' + n + ' 項通過、' + nFail + ' 項失敗');

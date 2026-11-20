@@ -18,8 +18,10 @@
 1. 先寫暫存區、再按門鈴；整段 try/catch，門鈴出什麼事都不影響打卡回應。
 2. `timeoutSeconds:3`（官方 UrlFetchApp 參考文件有列、預設 360 秒；**實際生效與否要在第一家店實測**）、`muteHttpExceptions`、不跟轉址。
 3. 失敗（非 2xx、不是 JSON、例外）→ 停推 60 秒；mini 回 `off:true` → 停 1 小時。
-4. **回應慢也熔斷**：一次 ≥2.5 秒 → 停 10 分鐘；連續 3 次 ≥1.5 秒 → 停 10 分鐘；快又成功一次才歸零。停推期滿是「半開」：再慢一次馬上再停。mini 持續卡住時，最多每 10 分鐘有一位同仁多等一次（測試：持續卡 3 秒、每 10 秒一筆、2 小時 → 連外 12 次、合計多等 36 秒）。
-5. **按門鈴前先 flush**：mini 收到門鈴會馬上回頭讀，所以真的要連外（不是 ping）之前先 `SpreadsheetApp.flush()` 讓這次寫入落地。關、只計數、熔斷中、上限滿都不 flush。
+4. **回應慢也熔斷**：一次 ≥2.5 秒 → 停 10 分鐘；連續 3 次 ≥1.5 秒 → 停 10 分鐘；快又成功一次才歸零。
+   因慢停推後**不拿同仁打卡當探針**：停推期滿，一般寫入仍不推（記 skip_off、`slow.need_ping:true`），要等 mini 帶來的 ping（不在推送模式時每 20 分鐘）又快又成功才恢復；那次 ping 還是慢＝再停 10 分鐘（半開）。mini 持續卡住時同仁只有第一筆多等（測試：持續卡 3 秒、每 10 秒一筆、每 20 分鐘 ping、2 小時 → 寫入只連外 1 次、合計多等 3 秒）。mini 都不 ping 時，慢計數快取 6 小時後過期才會再用寫入試一次。
+5. **按門鈴前先 flush**：mini 收到門鈴會馬上回頭讀，所以真的要連外（不是 ping）之前先 `SpreadsheetApp.flush()` 讓這次寫入落地。關、只計數、熔斷中、上限滿都不 flush。flush 丟錯＝這一筆不按門鈴（打卡回應不變），記 `push_stats.flush_err`。
+   停推只延長不縮短（寫入前重讀，別的同時執行寫了更晚的就不蓋；快取存 6 小時、看 until）；慢計數在連外之後重讀再改，同時的快速失敗不會清掉別人的慢計數或等 ping 狀態。
 6. **每店每天上限 800 次**（原 1,500）：計數在 CacheService、不是原子，最壞約兩倍；九店 9×800×2＝14,400＝帳號每天 2 萬次連外的 72%（≤80%）。設計估九店合計一天約 500–800 次。
 7. ping（mini 每小時帶 nonce 請打卡端按一下）另有每店每天 40 次上限；也算進每日上限。
 
@@ -32,7 +34,7 @@
 - 關：`{on:false}`。
 - 只計數：`mode:'dry'`、`dry`（本來會推幾次）、`cap`、`skip_*`。
 - 正式推送：另有 `sent ok fail remote_off`、`p50ms p95ms max_ms`（連外耗時，最近 100 次）、`off:{why:'fail'|'slow'|'remote', until}`、
-  `slow:{n, trips, slow_ms, slow_n, hard_ms, off_s}`（n＝目前連續慢幾次、trips＝今天因慢停推幾次）、`flush_samples flush_p50ms flush_max_ms`（按門鈴前 flush 花多久，最近 20 次）。
+  `slow:{n, need_ping, trips, slow_ms, slow_n, hard_ms, off_s}`（n＝目前連續慢幾次、need_ping＝因慢停推、等 ping 復原、trips＝今天因慢停推幾次）、`flush_samples flush_p50ms flush_max_ms`（按門鈴前 flush 花多久，最近 20 次）、`flush_err`（今天 flush 失敗、沒按門鈴幾次）。
 - 計數存 CacheService 6 小時、只看得到「今天」：要一天的量請每小時收（mala-clock-mini `push-stats-hourly.js`）。
 
 ## 測試
