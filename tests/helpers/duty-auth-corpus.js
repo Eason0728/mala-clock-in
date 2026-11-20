@@ -1,0 +1,52 @@
+// duty-auth-same.test.js 用（不是測試）：在 GS_ROOT 指的那一版程式上跑同一組請求，印出所有回應＋試算表最後的樣子（JSON）。
+// 開關全空（DUTY_AUTH、DUTY_VER_STRICT、DUTY_APPROVE_LOCK 都沒設），用來證明新版跟舊版逐字相同。
+'use strict';
+const { make, T } = require('./gs-sandbox');
+const ROSTER = [{ emp_id: 'E01', name: '測試一', key: 'K1', active: 'TRUE', line_user_id: 'U1' }, { emp_id: 'E02', name: '測試二', key: 'K2', active: 'TRUE', line_user_id: 'U2' }];
+const EVENTS = [['2026-11-09T09:00:00', 'E01', 'in'], ['2026-11-09T17:00:00', 'E01', 'out'], ['2026-11-09T10:00:00', 'E02', 'in'], ['2026-11-09T18:00:00', 'E02', 'out'],
+  ['2026-11-08T09:00:00', 'E01', 'in'], ['2026-11-08T17:00:00', 'E01', 'out']];
+const props = JSON.parse(process.env.CORPUS_PROPS || '{}');
+const m = make({ now: T('2026-11-10T10:00:00'), props: Object.assign({ REQ_CARD_REASON_FROM: 'off' }, props), self: { roster: ROSTER, events: EVENTS } });
+let propReads = 0;
+const ps0 = m.sb.PropertiesService.getScriptProperties;
+m.sb.PropertiesService = { getScriptProperties: () => { const p = ps0(); return { getProperty: (k) => { propReads++; return p.getProperty(k); }, getProperties: () => { propReads++; return p.getProperties(); }, setProperty: p.setProperty, deleteProperty: p.deleteProperty }; } };
+const post = (b) => JSON.parse(m.sb.doPost({ postData: { contents: JSON.stringify(b) } }).text);
+const ss = m.sb.getSS(), sh = m.sb.reqSheet_(ss, true), HD = m.run('REQ_HEADERS_');
+const addReq = (o) => { const r = Object.assign({ created_at: '2026-11-01T09:00:00+08:00', status: 'pending', hours: 8, emp_id: 'E01', name: '測試一', kind: 'leave', leave_type: '事假', date: '2026-11-12' }, o); sh.appendRow(HD.map((k) => (r[k] === undefined ? '' : r[k]))); };
+['P1', 'P2', 'P3', 'P4'].forEach((id) => addReq({ id }));
+addReq({ id: 'A1', status: 'approved' }); addReq({ id: 'A2', status: 'approved', date: '2026-11-11', emp_id: 'E02', name: '測試二' });
+const ver = (emp, d) => (post({ action: 'mgr_day', mgr_key: 'AK', date: d || '2026-11-09', with_ver: true }).employees.filter((e) => e.emp_id === emp)[0] || {}).ver;
+const APV = (x) => Object.assign({ action: 'mgr_approve', mgr_key: 'AK', acting_name: '店長甲（DZY001）', date: '2026-11-09', emp_id: 'E01', periods: [{ start: '09:00', end: '17:00' }] }, x || {});
+const WB = { wb_id: 'wb-corpus-0001', wb_ts: T('2026-11-10T10:00:00'), wb_sig: 'a'.repeat(64) };   // 沒設金鑰：新版當沒帶
+const out = [];
+const rec = (label, b) => { const n0 = propReads; out.push([label, post(b)]); return propReads - n0; };
+const reads = {};
+const v1 = ver('E01');
+rec('approve_dry', APV({ dry_run: true }));
+rec('approve_check', { action: 'mgr_approve_check', mgr_key: 'AK', date: '2026-11-09', items: [{ emp_id: 'E01', periods: [{ start: '09:00', end: '17:00' }] }, { emp_id: 'E02', periods: [{ start: '10:00', end: '18:00' }] }] });
+reads.approve = rec('approve_ver_ok', APV({ base_ver: v1 }));
+rec('approve_ver_stale', APV({ base_ver: v1, acting_name: '店長乙（DZY002）' }));
+rec('approve_wrong_key', APV({ mgr_key: 'WRONG', base_ver: 'x' }));
+rec('approve_no_ver', APV({ mgr_key: 'MK', emp_id: 'E02', periods: [{ start: '10:00', end: '18:00' }] }));
+rec('approve_with_wb_fields', APV({ date: '2026-11-08', periods: [{ start: '09:00', end: '17:00' }], base_ver: ver('E01', '2026-11-08') }, WB));
+m.run('var __rd = handleMgrDay; handleMgrDay = function (b) { if (b && b.with_ver) return null; return __rd(b); };');
+rec('approve_unreadable_null', APV({ emp_id: 'E02', periods: [{ start: '10:00', end: '17:00' }], base_ver: 'AAAAAAAAAAAAAAAA' }));
+m.run('handleMgrDay = function (b) { if (b && b.with_ver) return { ok: true, employees: [] }; return __rd(b); };');
+rec('approve_unreadable_noemp', APV({ emp_id: 'E02', periods: [{ start: '10:00', end: '16:00' }], base_ver: 'AAAAAAAAAAAAAAAA' }));
+m.run('handleMgrDay = __rd;');
+reads.decide = rec('decide_approve', { action: 'mgr_req_decide', mgr_key: 'MK', id: 'P1', decision: 'approve' });
+rec('decide_again', { action: 'mgr_req_decide', mgr_key: 'MK', id: 'P1', decision: 'approve' });
+rec('decide_reject', Object.assign({ action: 'mgr_req_decide', mgr_key: 'MK', id: 'P2', decision: 'reject', reason: '不行' }, WB));
+rec('decide_not_found', { action: 'mgr_req_decide', mgr_key: 'MK', id: 'NOPE', decision: 'approve' });
+rec('decide_bad_key', { action: 'mgr_req_decide', mgr_key: 'BAD', id: 'P3', decision: 'approve' });
+rec('batch', { action: 'mgr_req_decide_batch', mgr_key: 'MK', ids: ['P3', 'P4', 'P1', 'NOPE'], decision: 'approve' });
+rec('void', { action: 'mgr_req_void', mgr_key: 'MK', id: 'A1', reason: '改單' });
+rec('void_again', { action: 'mgr_req_void', mgr_key: 'MK', id: 'A1', reason: '改單' });
+rec('void_day', { action: 'mgr_req_void', mgr_key: 'MK', id: 'A2', reason: '打回' });
+reads.submit = rec('submit', { action: 'req_submit', id_token: 'TOK_U2', kind: 'leave', leave_type: '事假', date: '2026-11-20', hours: 8, reason: '家裡有事' });
+rec('submit_bad_token', { action: 'req_submit', id_token: 'NOPE', kind: 'leave', leave_type: '事假', date: '2026-11-21', hours: 8, reason: 'x' });
+reads.day = rec('mgr_day', { action: 'mgr_day', mgr_key: 'AK', date: '2026-11-09' });
+const bk = m.self.sh;
+const sheets = {}; Object.keys(bk).sort().forEach((k) => { sheets[k] = bk[k].values; });
+const cacheKeys = Object.keys(m.cache).filter((k) => !/^dfeed_/.test(k)).sort();
+process.stdout.write(JSON.stringify({ out, sheets, cacheKeys, reads }));

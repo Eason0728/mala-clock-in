@@ -626,16 +626,139 @@ function dutyAttachVer_(res, date) {
 
 var DUTY_STALE_MSG_ = '你打開之後，這位同仁這天的資料有變動（補了打卡、申請單有變化，或別人已經核定），請看過最新的再核定一次';
 
-/** mgr_approve 帶 base_ver：重算現在的版本，對不上就退回。回 null＝可以照常核定。 */
-function dutyVerGuard_(body) {
+/** mgr_approve 帶 base_ver：重算現在的版本，對不上就退回。回 null＝可以照常核定。
+ *  strict（2026-11-21 P3-3，DUTY_VER_STRICT 或 DUTY_AUTH=mini）：讀不到版本改回 ver_unknown（可重試），不再放行（設計 §4.2 舊缺口 1）。
+ *  strict 沒開＝跟以前逐字相同。金鑰不對時照舊交給原本流程回 unauthorized（重試也沒用，不回 ver_unknown）。 */
+var DUTY_VER_UNKNOWN_ = { ok: false, error: 'ver_unknown', message: '資料正在更新，請幾秒後再按一次' };
+function dutyVerGuard_(body, strict) {
   if (!body || typeof body.base_ver !== 'string' || !body.base_ver) return null;
   var date = dutyFeedDate_(body.date), emp = String(body.emp_id == null ? '' : body.emp_id);
   if (!date || !emp) return null;   // 格式錯讓原本的檢查回錯
   var r = handleMgrDay({ mgr_key: body.mgr_key, date: date, with_ver: true });
-  if (!r || r.ok !== true) return null;   // 讀不到就交給原本流程（它會自己回 unauthorized 等）
+  if (!r || r.ok !== true) {   // 讀不到就交給原本流程（它會自己回 unauthorized 等）
+    if (!strict || (r && r.error === 'unauthorized')) return null;
+    return dutyVerUnknown_();
+  }
   var cur = null;
   (r.employees || []).forEach(function (e) { if (String(e.emp_id) === emp) cur = e; });
-  if (!cur || !cur.ver) return null;
+  if (!cur || !cur.ver) return strict ? dutyVerUnknown_() : null;
   if (cur.ver === body.base_ver) return null;
   return { ok: false, error: 'stale_ver', message: DUTY_STALE_MSG_, cur_ver: cur.ver };
+}
+function dutyVerUnknown_() { return JSON.parse(JSON.stringify(DUTY_VER_UNKNOWN_)); }
+
+/* ══ 核定只收 mini 寫回＋寫回簽名（2026-11-21 第 3 階段 P3-3；契約 docs/contract-writeback.md，設計 phase2-5-design §4.2、§4.3）══
+ * 指令碼屬性（全部沒設＝跟以前逐字相同；只多一次 getProperties()，而且只有下面四個動作、不是 dry_run 才讀）：
+ *   DUTY_AUTH          空／google／off＝現行；其他任何值＝mini：mgr_approve、mgr_req_decide、mgr_req_decide_batch、mgr_req_void
+ *                      只收 mini 簽過名的寫回，其餘回 moved_to_mini。保護性檢查：填錯值當 mini（只由營運系統 ops/duty-auth.sh 設）。
+ *   DUTY_VER_STRICT    開＝帶 base_ver 卻讀不到版本時回 ver_unknown（舊缺口 1）。空／0／off／false／no＝關，其他＝開（保護性）。
+ *   DUTY_APPROVE_LOCK  開＝mgr_approve 的「比版本＋寫入」包在指令碼鎖內（舊缺口 2；最多等 20 秒，拿不到回 busy）。值同上（保護性）。
+ *   mini 模式時後兩個一律當開。簽名金鑰、店代碼沿用門鈴的 DUTY_PUSH_KEY、DUTY_PUSH_STORE（不新增金鑰）。
+ * 寫回簽名：wb_sig＝HMAC-SHA256(DUTY_PUSH_KEY, 'wb|1|店|action|wb_id|wb_ts|對象')，對象見 dutyWbTarget_。wb_ts 只收 ±10 分鐘。
+ * 同一個 wb_id 只寫一次：同一把指令碼鎖內查記號＋放「正在寫」記號（同 RelayG.gs relayGFallbackBefore_ 做法），
+ *   寫成功改「已寫好」留 6 小時（CacheService 上限），重送直接回當時結果＋dup:true；失敗或例外就拿掉記號。 */
+var DUTY_AUTH_ACTIONS_ = { mgr_approve: 1, mgr_req_decide: 1, mgr_req_decide_batch: 1, mgr_req_void: 1 };
+var DUTY_MOVED_MSG_ = '核定已改在管理系統。系統暫停時請等恢復，不要改用其他頁面。';
+var DUTY_WB_ID_RE_ = /^[A-Za-z0-9_-]{8,64}$/;
+var DUTY_WB_SIG_RE_ = /^[0-9a-f]{64}$/;
+var DUTY_WB_SKEW_MS_ = 10 * 60000;          // 簽名時間 ±10 分鐘
+var DUTY_WB_PENDING_TTL_S_ = 600;           // 「正在寫」記號：執行中斷（逾時）時最多卡 10 分鐘
+var DUTY_WB_DONE_TTL_S_ = 21600;            // 「已寫好」記號：6 小時（CacheService 上限）
+var DUTY_WB_LOCK_MS_ = 10000;               // 查／放記號那一下最多等 10 秒
+var DUTY_APPROVE_LOCK_MS_ = 20000;          // mgr_approve 比版本＋寫入最多等 20 秒（設計 §4.2）
+var DUTY_WB_MAX_CACHE_ = 90000;             // 結果太大放不進暫存區時只記 ok（重送回 {ok:true, dup:true}）
+var DUTY_BUSY_MSG_ = '系統忙碌，請再按一次';
+
+function dutyOnVal_(v) {   // 保護性開關：沒設／空白＝關；明寫 0／off／false／no＝關；其他一律當開
+  var s = String(v == null ? '' : v).trim().toLowerCase();
+  if (!s) return false;
+  return !(s === '0' || s === 'off' || s === 'false' || s === 'no');
+}
+/** 這四個動作要用的設定（一次 getProperties()）。key 不回傳、不記錄。 */
+function dutyAuthCfg_() {
+  var all = {};
+  try { all = PropertiesService.getScriptProperties().getProperties() || {}; } catch (e) { all = {}; }
+  var a = String(all.DUTY_AUTH == null ? '' : all.DUTY_AUTH).trim().toLowerCase();
+  var mini = !(a === '' || a === 'google' || a === 'off');
+  return { mini: mini, strict: mini || dutyOnVal_(all.DUTY_VER_STRICT), lock: mini || dutyOnVal_(all.DUTY_APPROVE_LOCK),
+           key: String(all.DUTY_PUSH_KEY || ''), store: String(all.DUTY_PUSH_STORE || '').trim() };
+}
+function dutyWbStr_(v) { return v == null ? '' : String(v); }
+/** 簽名的「對象」：綁住動作改的是誰（時數、理由等內容不綁，仍要正確的 mgr_key） */
+function dutyWbTarget_(action, b) {
+  if (action === 'mgr_approve') return [dutyWbStr_(b.emp_id), dutyWbStr_(b.date), dutyWbStr_(b.base_ver)].join('|');
+  if (action === 'mgr_req_decide') return dutyWbStr_(b.id) + '|' + dutyWbStr_(b.decision);
+  if (action === 'mgr_req_decide_batch') return (Array.isArray(b.ids) ? b.ids.map(dutyWbStr_).join(',') : '') + '|' + dutyWbStr_(b.decision);
+  return dutyWbStr_(b.id);   // mgr_req_void
+}
+function dutyWbMsg_(store, action, b) {
+  return ['wb', '1', store, action, String(b.wb_id), String(b.wb_ts), dutyWbTarget_(action, b)].join('|');
+}
+function dutyWbSign_(msg, key) { return dutyPushHex_(Utilities.computeHmacSha256Signature(msg, key)); }
+function dutyWbHas_(b) { return b.wb_id !== undefined || b.wb_ts !== undefined || b.wb_sig !== undefined; }
+function dutyWbSame_(a, b) {   // 比對時間不依內容提早結束
+  if (a.length !== b.length) return false;
+  var d = 0;
+  for (var i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+/** 回 null＝簽名合格；否則回錯誤物件（不寫）。 */
+function dutyWbCheck_(action, b, cfg) {
+  if (!DUTY_WB_ID_RE_.test(String(b.wb_id == null ? '' : b.wb_id)) || typeof b.wb_ts !== 'number' || !isFinite(b.wb_ts) ||
+      !DUTY_WB_SIG_RE_.test(String(b.wb_sig == null ? '' : b.wb_sig))) return { ok: false, error: 'bad_wb', message: '寫回欄位格式不對' };
+  if (cfg.key.length < 32 || !cfg.store) return { ok: false, error: 'wb_no_key', message: '這家店還沒設好寫回金鑰' };
+  var now = Date.now();
+  if (Math.abs(now - b.wb_ts) > DUTY_WB_SKEW_MS_) return { ok: false, error: 'wb_ts', message: '寫回簽名時間超過 10 分鐘', now: now };
+  if (!dutyWbSame_(dutyWbSign_(dutyWbMsg_(cfg.store, action, b), cfg.key), String(b.wb_sig))) return { ok: false, error: 'bad_sig', message: '寫回簽名不對' };
+  return null;
+}
+function dutyWbKey_(id) { return 'dwb:' + id; }
+function dutyWbGet_(id) {
+  try { var v = CacheService.getScriptCache().get(dutyWbKey_(id)); return v ? JSON.parse(v) : null; } catch (e) { return null; }
+}
+function dutyWbPut_(id, obj, ttl) { try { CacheService.getScriptCache().put(dutyWbKey_(id), JSON.stringify(obj), ttl); } catch (e) {} }
+function dutyWbDrop_(id) { try { CacheService.getScriptCache().remove(dutyWbKey_(id)); } catch (e) {} }
+
+/**
+ * Requests.gs 四個動作（核定、審單、批次審單、作廢）的入口都包這一層：dutyAuthRun_(body, 'mgr_req_decide', 原本的函式)。
+ * 沒有開關、沒帶 wb_*：直接呼叫原本的函式（只多讀一次屬性），回應逐字相同。dry_run 連屬性都不讀。
+ * raw(body, cfg)：mgr_approve 的原本函式用 cfg 決定要不要上鎖、讀不到版本要不要擋。
+ */
+function dutyAuthRun_(body, action, raw) {
+  if (!body || typeof body !== 'object' || body.dry_run === true || !DUTY_AUTH_ACTIONS_[action]) return raw(body);
+  var cfg = dutyAuthCfg_();
+  var has = dutyWbHas_(body);
+  if (!has) {
+    if (cfg.mini) return { ok: false, error: 'moved_to_mini', message: DUTY_MOVED_MSG_ };
+    return raw(body, cfg);
+  }
+  var bad = dutyWbCheck_(action, body, cfg);
+  if (bad) return cfg.mini ? bad : raw(body, cfg);   // 現行模式：帶了不合格的簽名＝當沒帶（照以前，不防重）
+  if (cfg.mini && action === 'mgr_approve' && !(typeof body.base_ver === 'string' && body.base_ver)) {
+    return { ok: false, error: 'need_base_ver', message: '核定要帶版本' };
+  }
+  var id = String(body.wb_id);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(DUTY_WB_LOCK_MS_)) return { ok: false, error: 'busy', message: DUTY_BUSY_MSG_ };
+  try {
+    var mk = dutyWbGet_(id);
+    if (mk && mk.state === 'done') {
+      var out = mk.res && typeof mk.res === 'object' ? mk.res : { ok: true };
+      out.dup = true; out.wb_id = id;
+      return out;
+    }
+    if (mk && mk.state === 'pending') return { ok: false, error: 'busy', message: '這筆正在寫入，請幾秒後再送一次', wb_pending: true };
+    dutyWbPut_(id, { state: 'pending', a: action }, DUTY_WB_PENDING_TTL_S_);
+  } finally { lock.releaseLock(); }
+  var res;
+  try { res = raw(body, cfg); }
+  catch (err) { dutyWbDrop_(id); throw err; }
+  if (res && res.ok === true) {
+    var s = '';
+    try { s = JSON.stringify(res); } catch (e) { s = ''; }
+    dutyWbPut_(id, { state: 'done', a: action, res: s && s.length <= DUTY_WB_MAX_CACHE_ ? res : null }, DUTY_WB_DONE_TTL_S_);
+  } else {
+    dutyWbDrop_(id);
+  }
+  return res;
 }

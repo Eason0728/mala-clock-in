@@ -1376,10 +1376,23 @@ function reqMgrDayHome_(body) {
   if (hide && Array.isArray(r.employees)) r.employees = r.employees.filter(function (e) { return !reqInList_(hide, String(e.emp_id)); });
   return r;
 }
-/** mgr_approve：不算支援的人擋掉（管理系統代核照常） */
+/** mgr_approve：不算支援的人擋掉（管理系統代核照常）
+ *  2026-11-21 P3-3：外面包 dutyAuthRun_（DutyFeed.gs：DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次）；開關全空＝跟以前一樣。 */
 function reqMgrApproveHome_(body) {
+  return typeof dutyAuthRun_ === 'function' ? dutyAuthRun_(body, 'mgr_approve', reqMgrApproveHomeRaw_) : reqMgrApproveHomeRaw_(body);
+}
+/** cfg（dutyAuthCfg_）：lock＝比版本＋寫入包在指令碼鎖內（舊缺口 2）、strict＝讀不到版本就擋（舊缺口 1）；沒給＝都關＝以前的流程。
+ *  只檢查（dry_run，含 mgr_approve_check）不上鎖、不讀開關。 */
+function reqMgrApproveHomeRaw_(body, cfg) {
+  if (!cfg || !cfg.lock || (body && body.dry_run === true)) return reqMgrApproveHomeIn_(body, cfg);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(typeof DUTY_APPROVE_LOCK_MS_ === 'number' ? DUTY_APPROVE_LOCK_MS_ : 20000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
+  try { return reqMgrApproveHomeIn_(body, cfg); }
+  finally { lock.releaseLock(); }
+}
+function reqMgrApproveHomeIn_(body, cfg) {
   // 依副本核定（2026-11-14，DutyFeed.gs）：帶 base_ver 的先比版本，主管看到的不是最新的就退回
-  var stale = typeof dutyVerGuard_ === 'function' ? dutyVerGuard_(body) : null;
+  var stale = typeof dutyVerGuard_ === 'function' ? dutyVerGuard_(body, !!(cfg && cfg.strict)) : null;
   if (stale) return stale;
   var hide = reqHomeHide_(body);
   if (hide && reqInList_(hide, String(body.emp_id == null ? '' : body.emp_id))) return { ok: false, error: 'home_review', message: hide[REQ_ALL_] ? REQ_LIST_BAD_MSG_ : REQ_HOME_MSG_ };
@@ -1501,7 +1514,11 @@ function reqDayWarnMsg_(dates) {
 }
 
 /** {action:'mgr_req_decide', mgr_key, id, decision:'approve'|'reject', reason?} */
+/* 2026-11-21 P3-3：包 dutyAuthRun_（DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝跟以前一樣） */
 function handleMgrReqDecide_(body) {
+  return typeof dutyAuthRun_ === 'function' ? dutyAuthRun_(body, 'mgr_req_decide', handleMgrReqDecideRaw_) : handleMgrReqDecideRaw_(body);
+}
+function handleMgrReqDecideRaw_(body) {
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
   var actor = actingName_(body, mgr);
@@ -1544,7 +1561,11 @@ function handleMgrReqDecide_(body) {
 /** {action:'mgr_req_void', mgr_key, id, reason} → 作廢一筆已核准的申請（2026-10-26 Eason 選）。
  *  起因：同仁改申請（例：整天出差 8h 改成出差 4h＋天災假 4h）時舊單已核准，沒人能撤，核定頁會一直帶出舊單。
  *  只改申請的狀態；那天若已經送過核定，核定紀錄不動——要改時數請主管重新核定那天。 */
+/* 2026-11-21 P3-3：包 dutyAuthRun_（DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝跟以前一樣） */
 function handleMgrReqVoid_(body) {
+  return typeof dutyAuthRun_ === 'function' ? dutyAuthRun_(body, 'mgr_req_void', handleMgrReqVoidRaw_) : handleMgrReqVoidRaw_(body);
+}
+function handleMgrReqVoidRaw_(body) {
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
   var actor = actingName_(body, mgr);
@@ -1708,7 +1729,11 @@ function handleFinalOrphanScan_(body) {
 
 /** {action:'mgr_req_decide_batch', mgr_key, ids:[…], decision:'approve'} → {ok, done:[ids], skipped:[{id, reason}]}
  *  批次只能核准（2026-10-09 Eason）：退回要寫理由，一筆一筆退。一把鎖、鎖內重讀，不是審核中的就略過並說明原因。 */
+/* 2026-11-21 P3-3：包 dutyAuthRun_（DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝跟以前一樣） */
 function handleMgrReqDecideBatch_(body) {
+  return typeof dutyAuthRun_ === 'function' ? dutyAuthRun_(body, 'mgr_req_decide_batch', handleMgrReqDecideBatchRaw_) : handleMgrReqDecideBatchRaw_(body);
+}
+function handleMgrReqDecideBatchRaw_(body) {
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
   var actor = actingName_(body, mgr);
