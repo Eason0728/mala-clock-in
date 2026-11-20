@@ -210,6 +210,38 @@ ok('逾時（等了 3 秒後丟錯）＝慢：停 10 分鐘（不是失敗的 60
   assert.deepStrictEqual([p.fail, p.off.why, p.off.until - h.now], [1, 'slow', 600000]);
 });
 
+ok('實測情境（2026-11-20）：timeoutSeconds:3 約 2.44 秒丟「逾時」→ 第一筆就停 10 分鐘＋等 ping（不是 60 秒失敗熔斷），之後同仁寫入不再連外', () => {
+  const h = harness(SRC, { props: LIVE, fetch: (u, o, hh) => { hh.now += 2442; throw new Error('Exception: 逾時: ' + u); } });
+  h.write(W, { ok: true });
+  const p = stats(h);
+  assert.deepStrictEqual([p.fail, p.off.why, p.off.until - h.now, p.slow.need_ping, p.slow.trips], [1, 'slow', 600000, true, 1]);
+  for (let i = 0; i < 2; i++) { h.advance(61000); h.write(C, { ok: true }); }
+  assert.strictEqual(h.fetches.length, 1, '原本 2.5 秒門檻碰不到：60 秒後第 2、3 位同仁還會各等 2.4 秒');
+});
+
+ok('逾時類例外不管多快都一次就跳（中文「逾時」、英文 Timeout／timed out、deadline）；其他例外（DNS、連線被拒）只走 60 秒失敗熔斷', () => {
+  for (const [msg, ms] of [['Exception: 逾時: https://x', 720], ['Timeout: https://x', 300], ['Request timed out', 50], ['Deadline exceeded', 10], ['要求超時', 10]]) {
+    const h = harness(SRC, { props: LIVE, fetch: (u, o, hh) => { hh.now += ms; throw new Error(msg); } });
+    h.write(W, { ok: true });
+    assert.deepStrictEqual([stats(h).off.why, slowSt(h).np], ['slow', true], msg);
+    assert.ok(JSON.stringify(h.cache).indexOf(msg) < 0, '例外訊息不能寫進快取');
+  }
+  for (const msg of ['DNS error: gw', 'Connection refused', 'Address unavailable']) {
+    const h = harness(SRC, { props: LIVE, fetch: (u, o, hh) => { hh.now += 100; throw new Error(msg); } });
+    h.write(W, { ok: true });
+    assert.deepStrictEqual([stats(h).off.why, slowSt(h).np, slowSt(h).n], ['fail', false, 0], msg);
+  }
+});
+
+ok('一次門檻預設 2 秒：2.1 秒回 ok → 馬上停；1.9 秒回 ok → 只算一次慢（要連 3 次）', () => {
+  const a = harness(SRC, { props: LIVE, fetch: took(2100) });
+  a.write(W, { ok: true });
+  assert.deepStrictEqual([stats(a).off.why, stats(a).slow.hard_ms], ['slow', 2000]);
+  const b = harness(SRC, { props: LIVE, fetch: took(1900) });
+  b.write(W, { ok: true });
+  assert.deepStrictEqual([stats(b).off, slowSt(b).n, slowSt(b).np], [null, 1, false]);
+});
+
 ok('ping 慢也算（mini 慢就是慢）；ping 不 flush', () => {
   const h = harness(SRC, { props: LIVE, fetch: took(2600) });
   assert.strictEqual(h.changes({ ping: 'nonce_ABC_123' }).ping, 'ok');
@@ -236,7 +268,7 @@ ok('最壞情況：mini 持續每次卡 3 秒、每 10 秒一筆寫入、mini �
 
 ok('DUTY_PUSH_TUNE：自訂門檻生效；格式錯／超出範圍的欄位用預設；hard_ms 不低於 slow_ms；cap 最多 1,500', () => {
   const t = (raw) => JSON.parse(JSON.stringify(harness(SRC, {}).sb.dutyPushTune_(raw)));
-  const D = { slow_ms: 1500, slow_n: 3, hard_ms: 2500, slow_off_s: 600, cap: 800 };
+  const D = { slow_ms: 1500, slow_n: 3, hard_ms: 2000, slow_off_s: 600, cap: 800 };
   assert.deepStrictEqual(t(null), D);
   assert.deepStrictEqual(t('not json'), D);
   assert.deepStrictEqual(t('[1,2]'), D);

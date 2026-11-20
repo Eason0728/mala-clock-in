@@ -181,17 +181,20 @@ var DUTY_PUSH_DAY_CAP_ = 800;               // 單店每天最多真的連外 80
                                             // 設計估九店合計一天約 500～800 次（phase1-design 第 4 節），單店 800 綽綽有餘；可用 DUTY_PUSH_TUNE 的 cap 調（上限 1,500）
 var DUTY_PUSH_CAP_MAX_ = 1500;              // DUTY_PUSH_TUNE 的 cap 最多只能調到這裡（＝PR #181 原本的上限）
 /* 回應慢也熔斷（2026-11-20 開真推送前補強；S3 審查必做 2）：門鈴在打卡回應之前同步送出，mini 慢＝同仁打卡跟著慢。
- *   一次 ≥ DUTY_PUSH_HARD_MS_（2.5 秒，已接近 3 秒逾時）→ 立刻停推 10 分鐘；
+ *   一次 ≥ DUTY_PUSH_HARD_MS_（2 秒），或連外丟出逾時例外 → 立刻停推 10 分鐘；
  *   連續 DUTY_PUSH_SLOW_N_ 次（3 次）≥ DUTY_PUSH_SLOW_MS_（1.5 秒）→ 停推 10 分鐘；回應快又成功一次才歸零。
  *   因慢停推後，**同仁的寫入不再當探針**：停推期滿也不推，要等 mini 帶來的 ping（duty_changes ping，mini 不在推送模式時每 20 分鐘一次）
  *   回得又快又成功才恢復（need_ping）；那次 ping 還是慢＝再停 10 分鐘（計數停在差一次就跳＝半開）。所以 mini 持續卡住時，同仁最多只會多等第一次。
  *   （mini 不再 ping 時，慢計數快取 6 小時後過期，下一筆寫入才會再試一次。）
  *   門檻理由：mini 收門鈴是同步驗簽、不碰網路（server/duty-push.js），正常應在 1 秒內（審查驗收標準 push.p95ms ≤ 1000）；
- *   1.5 秒＝正常值的 1.5 倍以上才算慢，偶發一次不跳；2.5 秒以上已經是「卡住」，不再等第二次。
- *   全部可用指令碼屬性 DUTY_PUSH_TUNE（JSON，只在正式推送模式讀）調：{"slow_ms":1500,"slow_n":3,"hard_ms":2500,"slow_off_s":600,"cap":800}。 */
+ *   1.5 秒＝正常值的 1.5 倍以上才算慢，偶發一次不跳；2 秒以上已經是「卡住」，不再等第二次。
+ *   2026-11-20 實測（madesiaosinla，timeout_probe）：timeoutSeconds:3 約 2.44 秒就丟「逾時」例外、:1 約 0.72 秒——比設定短。
+ *   原本門檻 2.5 秒碰不到（卡死時只會走 60 秒失敗熔斷，要累積 3 次慢才停），所以一次門檻改 2 秒，而且逾時例外本身就直接跳。
+ *   全部可用指令碼屬性 DUTY_PUSH_TUNE（JSON，只在正式推送模式讀）調：{"slow_ms":1500,"slow_n":3,"hard_ms":2000,"slow_off_s":600,"cap":800}。 */
 var DUTY_PUSH_SLOW_MS_ = 1500;
 var DUTY_PUSH_SLOW_N_ = 3;
-var DUTY_PUSH_HARD_MS_ = 2500;
+var DUTY_PUSH_HARD_MS_ = 2000;              // 原 2500：實測 3 秒逾時約 2.4 秒就中斷，2.5 秒永遠碰不到
+var DUTY_PUSH_TIMEOUT_RE_ = /timeout|timed out|deadline|逾時|超時/i;   // 連外例外訊息像逾時（只拿來比對，不記錄訊息內容）
 var DUTY_PUSH_SLOW_OFF_S_ = 600;
 var DUTY_PUSH_SLOW_KEY_ = 'dpush_slow';     // {n:連續慢幾次, np:因慢停推、等 ping 復原, d:台北日期, trips:今天因慢停推幾次, fe:今天 flush 失敗幾次, fl:[最近 20 次 flush 毫秒]}；只有正式推送會讀寫
 var DUTY_PUSH_FL_KEEP_ = 20;
@@ -359,13 +362,13 @@ function dutyPushSend_(p, cfg) {
     p.s = cfg.store;
     p.sig = dutyPushSign_(p, cfg.key);
     st.sent++;
-    var t0 = Date.now(), code = -1, txt = '';
+    var t0 = Date.now(), code = -1, txt = '', tmo = false;
     try {
       var resp = UrlFetchApp.fetch(cfg.url, { method: 'post', contentType: 'application/json', payload: JSON.stringify(p),
                                               muteHttpExceptions: true, followRedirects: false, timeoutSeconds: DUTY_PUSH_TIMEOUT_S_ });
       code = Number(resp.getResponseCode());
       if (code >= 200 && code < 300 && code !== 204) txt = String(resp.getContentText() || '');
-    } catch (e) { code = -1; }
+    } catch (e) { code = -1; try { tmo = DUTY_PUSH_TIMEOUT_RE_.test(String(e && e.message || e)); } catch (e2) { tmo = false; } }
     var el = Date.now() - t0;
     st.ms.push(el);
     if (st.ms.length > DUTY_PUSH_MS_KEEP_) st.ms = st.ms.slice(-DUTY_PUSH_MS_KEEP_);
@@ -381,7 +384,7 @@ function dutyPushSend_(p, cfg) {
     // 第 7 點：回應慢也熔斷。連外完才重讀慢計數（不用開頭讀到的舊值：同時有別筆在改）
     var sl = dutyPushSlowParse_(cache.get(DUTY_PUSH_SLOW_KEY_), day), trip = false;
     if (flMs !== null) { sl.fl.push(flMs); if (sl.fl.length > DUTY_PUSH_FL_KEEP_) sl.fl = sl.fl.slice(-DUTY_PUSH_FL_KEEP_); }
-    if (el >= tune.hard_ms) trip = true;
+    if (el >= tune.hard_ms || tmo) trip = true;   // 逾時例外＝mini 卡住：一次就跳（不管 Google 實際等了多久）
     else if (el >= tune.slow_ms) { sl.n++; if (sl.n >= tune.slow_n) trip = true; }
     else if (outcome === 'ok' || outcome === 'remote_off') {   // 快又成功才歸零；快但失敗（例如 502）交給失敗熔斷，不動慢計數
       if (isPing || !sl.np) { sl.n = 0; sl.np = false; }      // 等 ping 復原時只有 ping 能解除
