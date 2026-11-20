@@ -343,6 +343,13 @@ function run() { addManager('王經理'); }
     - ⚠ 這裡**不跳過今天**（`pairShifts` 的未配對 in 要跳過今天，因為那是「上班中」）：少刷是「完整長段吃掉兩個核定時段」才成立，人早就下班了，沒有那種歧義。
   - 都沒有異常 → 狀態顯示「正常」。
   - 多個標記以「、」串接（如「遲到10分、早退10分」）。
+  - **二段班中途離開又回來，比照遲到記（2026-11-20 Eason；`computeApprovalStatus` 第 6 個參數 `gapLate`）**：一個輸入時段蓋到兩段以上完整打卡段（中間打下班卡走、又打上班卡回來）→ 開頭晚到＋中間空檔合成一個「遲到N分」（空檔落在不打卡休息帶的分鐘不算），另加一項「中途離開N分」（說明用，薪資、異常筆數不讀），蓋到的段都算用掉、結尾照最後一張下班卡記早退。例：核定 16:00–20:00、打卡 15:58–16:03、17:24–20:00 → `遲到81分、中途離開81分`（main 是 `遲到84分、有多出的打卡段`）。
+    - 什麼時候套（`reqGapLateDay_`）：上線日（`REQ_GAP_LATE_FROM_DEFAULT_`，屬性 `REQ_GAP_LATE_FROM` 優先）起的日子、營運系統**個人帳號**代轉（帶 acting_name，才收 `sched_spans`）、當天班表兩段以上（剛好相接的兩段算一段）。門市登入、舊值班頁、單段班＝跟 main 完全一樣。每天 05:00 重算沒有班表，照原狀態有沒有「中途離開」判斷，不回頭改已核定的。
+    - 核定比打卡多（`reqOverCreditMin_`＋`reqGapLateMs_`）：空檔整個在同一段班表、被核定蓋住才當遲到；碰到休息帶、已核准有時段的假單／出差單、「中間休息」忘打卡單都不算。班別休息（break_min）那段班的第一個空檔是休息：二段班只算滿休息分鐘、超過的部分記遲到（Eason 第 3 題 B，例 休 30、出去 50 → 遲到 20）；單段班照 11/17。
+    - 開關屬性填錯值偏安全：`off／OFF／false／0／no／關` 都算關；`REQ_GAP_LATE_FROM` 認不得的值（含 on）一律當關並記一筆 log（放寬規則，關比較保守），沒設才用程式預設。
+    - **要開**：`apps-script/Requests.gs` 的 `REQ_GAP_LATE_FROM_DEFAULT_`（上線日）照一般流程部署九店（Requests.js 九店同一份，常數一改**九店同時生效，沒有分店開關**）；營運系統 `web/modules/duty/core-calc.js` 的 `GAP_LATE_FROM` 設**同一天**、update-all。**九店沒有全部部署完成前，營運系統不要上 #326**（打卡端沒開、營運系統先開＝核定被擋「核定比打卡多 N 分鐘」）。
+    - **要退：兩邊一起退**——打卡端屬性 `REQ_GAP_LATE_FROM=off`（或常數改回 null 重部署九店）＋營運系統 `GAP_LATE_FROM` 改回 null 並 update-all、發布前端。只退打卡端、營運系統還開著＝二段班空檔的核定被擋。
+- **這天還有待審的申請就不能核定（2026-11-20 Eason；`reqPendBlock_`）**：`mgr_approve`（含 dry_run、整天請假、舊值班頁）在這位同仁這天有任何 `status=pending` 的申請時回 `{ok:false, error:'pending_request', message:'這天還有待審的申請，請先審單（審完才能核定）', pending:N}`，字句同營運系統畫面。指令碼屬性 `REQ_PEND_BLOCK=off`（off／OFF／false／0／no／關都算，不分大小寫）關掉；認不得的值照預設「擋」並記一筆 log（保護性檢查，被誤關＝少擋）。
 - 這套比對邏輯在 `apps-script/Code.gs`（`computeApprovalStatus`）與 `mock/mock_server.py`（`compute_approval_status`）各實作一份，保持同步；純函式可直接用 node 載入 `Code.gs` 測試，不需要試算表。
 - **狀態是核定當下的一次性快照，靠 `recheckPendingApprovalStatuses()` 回頭修**（每日 05:00 由 `dailyMonthlyRebuild` 呼叫，也可用管理 API `recheck_approvals` 手動跑）：掃近 `RECHECK_STATUS_DAYS` 天內 `status_text` 含「該段無打卡」（或「打卡未入帳」「少刷N組卡」）的核定紀錄，用**當下最新**的打卡資料重算；狀態有變才追加一筆修正紀錄（`periods`／`approved_hours` 原封不動只換 `status_text`，`manager_name` 加註「（系統重算）」）。
   - **`RECHECK_STATUS_DAYS` 2026-08-19 由 3 天放寬為 40 天**（Eason 指定）。原本 3 天只涵蓋「週五核定、週六才打完卡」，同仁隔久一點補打卡就永遠修不到。成本與天數幾乎無關——讀三張表是一次性的，迴圈只在「那天真的有『該段無打卡』紀錄」時才進到重算。

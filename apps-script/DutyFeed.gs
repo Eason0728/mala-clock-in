@@ -309,11 +309,12 @@ function dutyPushStParse_(raw, day) {
     if (k === 'ms') { if (Array.isArray(j.ms)) st.ms = j.ms.filter(function (v) { return typeof v === 'number' && isFinite(v); }).slice(-DUTY_PUSH_MS_KEEP_); return; }
     if (typeof j[k] === 'number' && isFinite(j[k])) st[k] = j[k];
   });
+  if (typeof j.skip_flush === 'number' && isFinite(j.skip_flush)) st.skip_flush = j.skip_flush;   // 有記過才帶（見 dutyPushSend_ flush 失敗那段）
   return st;
 }
 
 /**
- * 按一次門鈴。回結果：ok／remote_off／fail（有連外）、dry（只計數）、skip_off（熔斷中）、skip_cap（今天滿了）、skip_cfg（金鑰、店代碼、網址不齊）。
+ * 按一次門鈴。回結果：ok／remote_off／fail（有連外）、dry（只計數）、skip_off（熔斷中）、skip_cap（今天滿了）、skip_cfg（金鑰、店代碼、網址不齊）、skip_flush（flush 丟錯）。
  * 硬性規則（寫入絕不能因 mini 卡住）：
  *  1. 呼叫端整段 try/catch；先寫暫存區再按門鈴。
  *  2. timeoutSeconds:3（官方參考文件有列這個參數、預設 360 秒；實際是否生效要在第一家店實測）、muteHttpExceptions、followRedirects:false（轉址＝失敗）。
@@ -324,7 +325,7 @@ function dutyPushStParse_(raw, day) {
  *     因慢停推後，一般寫入要等 mini 的 ping 又快又成功才恢復（不拿同仁打卡當探針），等待中記 skip_off。
  *  8. 真的要連外（不是 ping）之前先 SpreadsheetApp.flush()：mini 收到門鈴會馬上回頭讀，要讓這次寫入先落地。
  *     只在這一條路做：沒設網址、只計數、熔斷中、上限滿、設定不齊都不 flush（跟 PR #181 一樣）。flush 耗時記在 push_stats 的 flush_*。
- *     flush 丟錯（寫入可能還沒落地）→ 這一筆不按門鈴（回 skip_flush、記 flush_err；打卡回應不變；mini 3 秒補問／輪詢會補）。
+ *     flush 丟錯（寫入可能還沒落地）→ 這一筆不按門鈴（回 skip_flush、記 flush_err 與每日統計 skip_flush；打卡回應不變；mini 看到計數增加會退出推送模式、回 30 秒輪詢補）。
  *  9. 停推（dpush_off）只會延長、不會縮短：寫入前重讀，別的同時執行已寫了更晚的結束時間就不蓋；快取存活一律 6 小時，看 until 判斷。
  *     慢計數也是連外之後重讀再改（不用執行開頭讀到的舊值），同時有快速失敗不會把別人的慢計數／等 ping 狀態蓋掉。
  * 第 7、8 點與 DUTY_PUSH_TUNE 只在正式推送模式（cfg.dry 為 false）生效：關與只計數的快取讀寫、回應跟 PR #181 逐次相同。
@@ -355,11 +356,15 @@ function dutyPushSend_(p, cfg) {
       flMs = Date.now() - f0;
     }
   }
-  if (outcome === '' && flErr) {   // flush 失敗：這一筆不按門鈴（mini 補問／輪詢會補），只記 flush_err 與耗時
+  if (outcome === '' && flErr) {   // flush 失敗：這一筆不按門鈴（mini 補問／輪詢會補），記 flush_err 與耗時
     var slF = dutyPushSlowParse_(cache.get(DUTY_PUSH_SLOW_KEY_), day);
     slF.fe++;
     slF.fl.push(flMs); if (slF.fl.length > DUTY_PUSH_FL_KEEP_) slF.fl = slF.fl.slice(-DUTY_PUSH_FL_KEEP_);
     cache.put(DUTY_PUSH_SLOW_KEY_, JSON.stringify(slF), DUTY_FEED_TTL_S_);
+    // fix/push-gap（11/20 獨立複審【中】）：也記進每日統計 st.skip_flush，mini 看 push_stats 計數增加就知道有寫入沒按到門鈴、退出推送模式。
+    // 只有正式推送、flush 真的丟錯才會走到這裡：關／只計數、沒出錯時 st 的內容跟以前逐字相同（不預先放 skip_flush:0）
+    st.skip_flush = (st.skip_flush || 0) + 1;
+    cache.put(stKey, JSON.stringify(st), DUTY_FEED_TTL_S_);
     return 'skip_flush';
   }
   if (outcome === '') {
@@ -458,6 +463,7 @@ function dutyPushStats_() {
   var sl = dutyPushSlowParse_(got[DUTY_PUSH_SLOW_KEY_], day), fl = sl.fl.slice().sort(function (a, b) { return a - b; });
   out.slow = { n: sl.n, need_ping: sl.np, trips: sl.trips, slow_ms: tune.slow_ms, slow_n: tune.slow_n, hard_ms: tune.hard_ms, off_s: tune.slow_off_s };
   out.flush_err = sl.fe;
+  out.skip_flush = st.skip_flush || 0;   // flush 失敗沒按門鈴的次數（每日統計；跟 flush_err 同一件事，記在不同快取鍵，mini 兩個都看）
   out.flush_samples = fl.length;
   out.flush_p50ms = fl.length ? fl[Math.max(0, Math.ceil(0.5 * fl.length) - 1)] : null;
   out.flush_max_ms = fl.length ? fl[fl.length - 1] : null;
