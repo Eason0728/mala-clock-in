@@ -53,4 +53,12 @@ const RID = 'r0123456789abcdef', RID2 = 'rfedcba9876543210';
   post(m, Object.assign({ req_id: RID }, LV));
   check('Q11', '有單號才在放鎖前 flush（沒單號的流程不多做事）', [f0, flushed - f0], [0, 1]);
 }
+{
+  const m = world();
+  const RID3 = 'r00000000000000aa';
+  const body = { req_id: RID3, kind: 'ot', reason: '盤點', segments: [{ start: '18:00', end: '19:00' }, { start: '07:00', end: '08:00' }, { start: '12:00', end: '13:00' }] };
+  const a = post(m, body), b = post(m, body);
+  check('Q12', '加班三段（#193 四段）帶單號：_1～_3 照時間先後；同號再送 dup、不再寫', [a.ok, rows(m).map((x) => x.id), b.dup, (b.requests || []).length, rows(m).length],
+    [true, [RID3 + '_1', RID3 + '_2', RID3 + '_3'], true, 3, 3], a.ok ? '' : a.error + '｜' + a.message);
+}
 done();

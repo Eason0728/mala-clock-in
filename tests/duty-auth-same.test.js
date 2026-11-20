@@ -6,7 +6,7 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs'), os = require('os'), path = require('path');
 const { check, done, ROOT } = require('./helpers/gs-sandbox');
-const BASE = process.env.DUTY_AUTH_BASE || '64655fb';   // 改版前的 main（PR 開出時的 merge-base；合併後可用環境變數換）
+const BASE = process.env.DUTY_AUTH_BASE || '7dceb4b';   // 改版前的 main（PR 開出時的 merge-base；合併後可用環境變數換）
 let base;
 try {
   base = fs.mkdtempSync(path.join(os.tmpdir(), 'duty-auth-base-'));
