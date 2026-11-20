@@ -1514,11 +1514,9 @@ function reqDayWarnMsg_(dates) {
 }
 
 /** {action:'mgr_req_decide', mgr_key, id, decision:'approve'|'reject', reason?} */
-/* 2026-11-21 P3-3：包 dutyAuthRun_（DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝跟以前一樣） */
-function handleMgrReqDecide_(body) {
-  return typeof dutyAuthRun_ === 'function' ? dutyAuthRun_(body, 'mgr_req_decide', handleMgrReqDecideRaw_) : handleMgrReqDecideRaw_(body);
-}
-function handleMgrReqDecideRaw_(body) {
+function handleMgrReqDecide_(body, viaAuth) {
+  // 2026-11-21 P3-3：先過 dutyAuthRun_（DutyFeed.gs：DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝直接回來照原本流程）
+  if (!viaAuth && typeof dutyAuthRun_ === 'function') return dutyAuthRun_(body, 'mgr_req_decide', handleMgrReqDecide_);
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
   var actor = actingName_(body, mgr);
@@ -1561,11 +1559,9 @@ function handleMgrReqDecideRaw_(body) {
 /** {action:'mgr_req_void', mgr_key, id, reason} → 作廢一筆已核准的申請（2026-10-26 Eason 選）。
  *  起因：同仁改申請（例：整天出差 8h 改成出差 4h＋天災假 4h）時舊單已核准，沒人能撤，核定頁會一直帶出舊單。
  *  只改申請的狀態；那天若已經送過核定，核定紀錄不動——要改時數請主管重新核定那天。 */
-/* 2026-11-21 P3-3：包 dutyAuthRun_（DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝跟以前一樣） */
-function handleMgrReqVoid_(body) {
-  return typeof dutyAuthRun_ === 'function' ? dutyAuthRun_(body, 'mgr_req_void', handleMgrReqVoidRaw_) : handleMgrReqVoidRaw_(body);
-}
-function handleMgrReqVoidRaw_(body) {
+function handleMgrReqVoid_(body, viaAuth) {
+  // 2026-11-21 P3-3：先過 dutyAuthRun_（DutyFeed.gs：DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝直接回來照原本流程）
+  if (!viaAuth && typeof dutyAuthRun_ === 'function') return dutyAuthRun_(body, 'mgr_req_void', handleMgrReqVoid_);
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
   var actor = actingName_(body, mgr);
@@ -1729,11 +1725,9 @@ function handleFinalOrphanScan_(body) {
 
 /** {action:'mgr_req_decide_batch', mgr_key, ids:[…], decision:'approve'} → {ok, done:[ids], skipped:[{id, reason}]}
  *  批次只能核准（2026-10-09 Eason）：退回要寫理由，一筆一筆退。一把鎖、鎖內重讀，不是審核中的就略過並說明原因。 */
-/* 2026-11-21 P3-3：包 dutyAuthRun_（DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝跟以前一樣） */
-function handleMgrReqDecideBatch_(body) {
-  return typeof dutyAuthRun_ === 'function' ? dutyAuthRun_(body, 'mgr_req_decide_batch', handleMgrReqDecideBatchRaw_) : handleMgrReqDecideBatchRaw_(body);
-}
-function handleMgrReqDecideBatchRaw_(body) {
+function handleMgrReqDecideBatch_(body, viaAuth) {
+  // 2026-11-21 P3-3：先過 dutyAuthRun_（DutyFeed.gs：DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝直接回來照原本流程）
+  if (!viaAuth && typeof dutyAuthRun_ === 'function') return dutyAuthRun_(body, 'mgr_req_decide_batch', handleMgrReqDecideBatch_);
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
   var actor = actingName_(body, mgr);

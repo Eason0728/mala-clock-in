@@ -720,12 +720,14 @@ function dutyWbPut_(id, obj, ttl) { try { CacheService.getScriptCache().put(duty
 function dutyWbDrop_(id) { try { CacheService.getScriptCache().remove(dutyWbKey_(id)); } catch (e) {} }
 
 /**
- * Requests.gs 四個動作（核定、審單、批次審單、作廢）的入口都包這一層：dutyAuthRun_(body, 'mgr_req_decide', 原本的函式)。
- * 沒有開關、沒帶 wb_*：直接呼叫原本的函式（只多讀一次屬性），回應逐字相同。dry_run 連屬性都不讀。
- * raw(body, cfg)：mgr_approve 的原本函式用 cfg 決定要不要上鎖、讀不到版本要不要擋。
+ * Requests.gs 四個動作（核定、審單、批次審單、作廢）的入口第一行都先叫這支：dutyAuthRun_(body, 'mgr_req_decide', 原本的函式)。
+ * 沒有開關、沒帶 wb_*：直接回頭呼叫原本的函式（只多讀一次屬性），回應逐字相同。dry_run 連屬性都不讀。
+ * raw(body, cfg) 的第二個參數一定有值（原本的函式看到有值就不再進來，避免繞圈）；
+ * mgr_approve 的原本函式用 cfg.lock／cfg.strict 決定要不要上鎖、讀不到版本要不要擋（DUTY_AUTH_PASS_＝都不要）。
  */
+var DUTY_AUTH_PASS_ = { pass: true };
 function dutyAuthRun_(body, action, raw) {
-  if (!body || typeof body !== 'object' || body.dry_run === true || !DUTY_AUTH_ACTIONS_[action]) return raw(body);
+  if (!body || typeof body !== 'object' || body.dry_run === true || !DUTY_AUTH_ACTIONS_[action]) return raw(body, DUTY_AUTH_PASS_);
   var cfg = dutyAuthCfg_();
   var has = dutyWbHas_(body);
   if (!has) {

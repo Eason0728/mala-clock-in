@@ -183,9 +183,10 @@ console.log('\n══ 三、DUTY_AUTH=mini：只收 mini 簽名的寫回 ══'
   const pend = m.post(signed(m, APV({ emp_id: 'E02', base_ver: m.ver('E02'), wb_id: 'wb-pend-0001' })));
   check('M23', '同 wb_id 正在寫 → busy＋wb_pending', [pend.error, pend.wb_pending], ['busy', true]);
   // 執行中丟例外 → 記號拿掉
-  m.run('var __boom = true; var __realVoidRaw = handleMgrReqVoidRaw_; handleMgrReqVoidRaw_ = function (b) { if (__boom) throw new Error("boom"); return __realVoidRaw(b); };');
+  m.run('var __realRows = reqRows_; reqRows_ = function () { throw new Error("boom"); };');   // 原本流程鎖內第一件事就丟例外
   const ex = m.post(signed(m, { action: 'mgr_req_void', mgr_key: 'MK', id: 'P2', reason: 'x', wb_id: 'wb-ex-0001' }));
   check('M24', '執行中丟例外 → server_error、記號拿掉（重送不會卡 busy）', [ex.error, m.sb.dutyWbGet_('wb-ex-0001')], ['server_error', null]);
+  m.run('reqRows_ = __realRows;');
   // 6 小時後記號過期
   m.advance(6 * 3600000 + 1000);
   check('M25', '「已寫好」記號 6 小時後過期', m.sb.dutyWbGet_('wb-dec-0001'), null);
