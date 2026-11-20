@@ -2200,7 +2200,9 @@ function handleMgrApprove(body) {
       unresolvedAttemptCount_(eventRows, body.emp_id, date) > 0,
       hasTrip,
       noPunchBreakWindow(date),
-      typeof reqGapLateOn_ === 'function' && reqGapLateOn_(date));   // 中途離開又回來比照遲到（2026-11-20，上線日起的日子）
+      // 中途離開又回來比照遲到（2026-11-20）：上線日起、營運系統個人帳號代轉（才收得到班表）、當天班表兩段以上才套；
+      // 門市登入、舊值班頁、單段班＝跟 main 完全一樣（2026-11-20 複審）
+      typeof reqGapLateDay_ === 'function' && typeof reqMgrActing_ === 'function' && reqMgrActing_(mgr, body) && reqGapLateDay_(date, body.sched_spans));
     // 主管手動認定的遲到分鐘覆蓋系統判定（打卡沒入帳時系統算不出來）
     statusText = applyManualLate(statusText, body.late_min);
     statusText = applyDupNote_(statusText, dupList);
@@ -2738,6 +2740,7 @@ const NO_PUNCH_NOTE = '該段無打卡';
 const MANUAL_LATE_MARK = '(認定)';   // 主管手動填的遲到，與系統比對出來的區分
 const NO_LATE_NOTE = '主管認定不計遲到';   // 系統判有遲到、但主管判定不算（填 0 觸發）
 const TRIP_NOTE = '出差';   // 出差當天打不了卡，狀態標這個而不是「該段無打卡」
+const GAP_LATE_NOTE = '中途離開';   // 2026-11-20 二段班中途離開比照遲到：狀態多一項「中途離開N分」（分鐘已含在遲到N分裡）
 
 /** 主管手動認定的遲到分鐘，覆蓋進狀態字串（2026-09-01）。
  *
@@ -3033,6 +3036,9 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
       const lateMs = Math.max(0, span.inMs - p.startMs) + span.gapMs;
       if (Math.round(lateMs / 60000) > 0) notes.push('遲到' + Math.round(lateMs / 60000) + '分');
       if (span.outMs < p.endMs) notes.push('早退' + Math.round((p.endMs - span.outMs) / 60000) + '分');
+      // 「中途離開N分」：給看表的人知道遲到裡有中途離開，也讓每天重算知道這筆是照這條算的（主管填遲到分鐘時「遲到…」會被換掉，這項會留著）。
+      // 不是「遲到／早退」開頭：薪資、異常筆數都不讀這項，分鐘只算在上面那個「遲到N分」裡
+      if (Math.round(span.gapMs / 60000) > 0) add(GAP_LATE_NOTE + Math.round(span.gapMs / 60000) + '分');
       return;
     }
     if (seg.inMs > p.startMs) notes.push('遲到' + Math.round((seg.inMs - p.startMs) / 60000) + '分');
@@ -3569,7 +3575,8 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) 
     unresolvedAttemptCount_(eventRows, empId, date) > 0,
     isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name),
     noPunchBreakWindow(date),
-    typeof reqGapLateOn_ === 'function' && reqGapLateOn_(date));   // 跟核定當下同一個日期判斷：上線日以前的日子重算也照舊（不回溯）
+    // 每天重算沒有班表：照原狀態有沒有「中途離開N分」判斷（核定當下有套才會有），重算結果才跟核定當下一樣；開關改了也不回頭改已核定的
+    st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; }));
   if (manualNote) {
     const kept = st.split('、').filter(function (x) { return x && x !== '正常' && x.indexOf('遲到') !== 0; });
     kept.push(manualNote);

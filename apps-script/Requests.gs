@@ -2353,12 +2353,26 @@ function reqSchedStartMs_(date, spans) {
    營運系統畫面（web/modules/duty/pend-gate.js pendingFor）與營運系統伺服器（新版前端核定）早就擋；這裡是打卡端最後一道，
    舊值班核定頁、直接打 mgr_approve（含 dry_run 只檢查）也擋。規則同畫面：requests 裡這個人、這一天、status＝pending 的每一張都算
    （加班、請假、忘打卡、出差不分種類；本人自己送的、要上層審的也算——這位主管審不了，仍是待審）。由 Code.gs handleMgrApprove 呼叫。
-   指令碼屬性 REQ_PEND_BLOCK＝off 關掉（退回用，不用改程式）。字句同畫面 PEND_BLOCK_MSG。 */
+   指令碼屬性 REQ_PEND_BLOCK＝off（off／false／0／關，不分大小寫）關掉（退回用，不用改程式）；填了認不得的值也當關、記一筆 log。字句同畫面 PEND_BLOCK_MSG。 */
 var REQ_PEND_BLOCK_MSG_ = '這天還有待審的申請，請先審單（審完才能核定）';
+/* 開關屬性的讀法（2026-11-20 複審：填錯值要偏安全）：不分大小寫、前後空白不算。
+   回 'off'（off／false／0／no／關）、'on'（on／true／1／yes／開）、''（沒設）、或原值（其他＝認不得，呼叫端一律當「關」並記一筆 log）。 */
+var REQ_SWITCH_OFF_ = ['off', 'false', '0', 'no', '關'], REQ_SWITCH_ON_ = ['on', 'true', '1', 'yes', '開'];
+function reqSwitchRead_(key) {
+  var raw = '';
+  try { raw = String(reqProp_(key) || ''); } catch (e) {}
+  var v = raw.trim().toLowerCase();
+  if (!v) return '';
+  if (REQ_SWITCH_OFF_.indexOf(v) >= 0) return 'off';
+  if (REQ_SWITCH_ON_.indexOf(v) >= 0) return 'on';
+  return v;
+}
+function reqSwitchBad_(key) { try { console.warn('指令碼屬性 ' + key + ' 的值認不得，當成「關」處理（請改成 off 或刪掉這個屬性）'); } catch (e) {} }      // 不印值
 function reqPendBlockOn_() {
-  var v = '';
-  try { v = String(reqProp_('REQ_PEND_BLOCK') || ''); } catch (e) {}
-  return v !== 'off';
+  var v = reqSwitchRead_('REQ_PEND_BLOCK');
+  if (v === '' || v === 'on') return true;
+  if (v !== 'off') reqSwitchBad_('REQ_PEND_BLOCK');
+  return false;
 }
 /** rows：申請表（reqRows_）；回 null＝可以核定，否則回要擋的回應（pending＝幾張審核中） */
 function reqPendBlock_(rows, empId, date) {
@@ -2383,14 +2397,34 @@ var REQ_GAP_LATE_FROM_DEFAULT_ = '2026-11-22';  // 上線日（YYYY-MM-DD；Easo
                                             // ⚠ 要跟營運系統 web/modules/duty/core-calc.js 的 GAP_LATE_FROM 設成同一天；九店同一份檔，一改九店同時生效（沒有分店開關）
 var REQ_GAP_LATE_SCOPE_DEFAULT_ = 'multi';  // multi＝只有二段班（當天班表兩段以上）；all＝單段班也算。指令碼屬性 REQ_GAP_LATE_SCOPE 優先
 function reqGapLateFrom_() {
-  var v = '';
-  try { v = String(reqProp_('REQ_GAP_LATE_FROM') || ''); } catch (e) {}
+  var v = reqSwitchRead_('REQ_GAP_LATE_FROM');
   if (v === 'off') return null;
   if (reqIsDate_(v)) return v;
+  if (v !== '') { reqSwitchBad_('REQ_GAP_LATE_FROM'); return null; }      // 不是日期也不是關（含 on）＝認不得 → 關（2026-11-20 複審：原本退回程式預設＝開）
   return REQ_GAP_LATE_FROM_DEFAULT_ && reqIsDate_(REQ_GAP_LATE_FROM_DEFAULT_) ? REQ_GAP_LATE_FROM_DEFAULT_ : null;
 }
 /** 這一天的核定狀態要不要把中途離開的空檔記成遲到（Code.gs computeApprovalStatus 的 gapLate；核定當下與每天重算同一個判斷） */
 function reqGapLateOn_(date) { var f = reqGapLateFrom_(); return !!(f && reqIsDate_(String(date)) && String(date) >= f); }
+/** 營運系統帶的班表 → 依時間排、剛好相接（14:00 接 14:00）或重疊的併成一段（同營運系統 core-calc 的 merge）：[{s, e, bm}] */
+function reqGapLateSpanList_(date, spans) {
+  var list = (Array.isArray(spans) ? spans : []).map(function (x) {
+    var a = reqHm_(x && x.start), b = reqHm_(x && x.end);
+    if (!a || !b || a === b) return null;
+    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
+    if (e <= s) e += 86400000;
+    return { s: s, e: e, bm: Math.max(0, Math.round(Number(x.break_min) || 0)), rest: false };
+  }).filter(function (x) { return x; }).sort(function (x, y) { return x.s - y.s; });
+  var out = [];
+  list.forEach(function (x) { var l = out[out.length - 1]; if (l && x.s <= l.e) { l.e = Math.max(l.e, x.e); l.bm = l.bm || x.bm; } else out.push(x); });
+  return out;
+}
+/** 這一天核定要不要套中途離開比照遲到（Code.gs handleMgrApprove 決定 computeApprovalStatus 的 gapLate）：上線日起、有營運系統班表、
+ *  範圍內（預設當天班表兩段以上）。單段班、門市登入／舊值班頁（沒有班表）＝false＝狀態跟 main 完全一樣（2026-11-20 複審）。 */
+function reqGapLateDay_(date, spans) {
+  if (!reqGapLateOn_(date)) return false;
+  var n = reqGapLateSpanList_(date, spans).length;
+  return reqGapLateScope_() === 'all' ? n >= 1 : n >= 2;
+}
 function reqGapLateScope_() {
   var v = '';
   try { v = String(reqProp_('REQ_GAP_LATE_SCOPE') || ''); } catch (e) {}
@@ -2400,13 +2434,7 @@ function reqGapLateScope_() {
  *  periods：[{startMs,endMs}]；segs：打卡＋已核准忘打卡單補的卡（reqSegsWithMiss_）；spans：營運系統帶的班表 [{start,end,break_min}]；okRows：這天已核准的申請 */
 function reqGapLateMs_(date, periods, segs, spans, breakWindow, okRows) {
   if (!reqGapLateOn_(date)) return 0;
-  var sp = (Array.isArray(spans) ? spans : []).map(function (x) {
-    var a = reqHm_(x && x.start), b = reqHm_(x && x.end);
-    if (!a || !b || a === b) return null;
-    var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
-    if (e <= s) e += 86400000;
-    return { s: s, e: e, bm: Math.max(0, Math.round(Number(x.break_min) || 0)), rest: false };
-  }).filter(function (x) { return x; }).sort(function (x, y) { return x.s - y.s; });
+  var sp = reqGapLateSpanList_(date, spans);      // 剛好相接的兩段併成一段（同營運系統），併完只剩一段＝單段班
   if (!sp.length || (reqGapLateScope_() === 'multi' && sp.length < 2)) return 0;
   var full = (segs || []).filter(function (s) { return s && s.inMs != null && s.outMs != null && s.outMs > s.inMs; })
     .slice().sort(function (a, b) { return a.inMs - b.inMs; });

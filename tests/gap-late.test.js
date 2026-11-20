@@ -45,9 +45,9 @@ const DAY81 = [['10:58', 'in'], ['14:00', 'out'], ['15:58', 'in'], ['16:03', 'ou
 console.log('════ 一、81 分鐘的例子（二段班第二段 16:00–20:00）════');
 let m = env(DAY81);
 let r = approve(m, '11:00-14:00,16:00-20:00', ACT({ dry_run: true }));
-check('G1d0', '只檢查：過、狀態遲到81分', [r.ok, r.status], [true, '遲到81分']);
+check('G1d0', '只檢查：過、狀態遲到81分（多一項「中途離開81分」說明，薪資不讀）', [r.ok, r.status], [true, '遲到81分、中途離開81分']);
 r = approve(m, '11:00-14:00,16:00-20:00', ACT());
-check('G1', '核定 11–14、16–20 → 7 小時、遲到81分、不擋', [r.ok, r.hours, r.status], [true, 7, '遲到81分']);
+check('G1', '核定 11–14、16–20 → 7 小時、遲到81分、不擋', [r.ok, r.hours, r.status], [true, 7, '遲到81分、中途離開81分']);
 m = env(DAY81, { props: { REQ_STRICT_FROM: '2026-11-01' } });
 r = approve(m, '11:00-14:00,16:00-20:00', ACT());
 check('G1o', '沒設屬性＝用程式預設上線日 11/22，這天 11/20 在之前 → 照改之前擋「核定比打卡多 81 分鐘」', [r.ok, /核定比打卡多 81 分鐘/.test(r.message)], [false, true]);
@@ -66,7 +66,7 @@ r = approve(m, '16:00-20:00', ACT({ sched_spans: [{ start: '16:00', end: '20:00'
 check('G2', '單段班 16–20（預設只算二段班）→ 擋 81', [r.ok, /核定比打卡多 81 分鐘/.test(r.message)], [false, true]);
 m = env(ONE, { props: Object.assign({}, ON, { REQ_GAP_LATE_SCOPE: 'all' }) });
 r = approve(m, '16:00-20:00', ACT({ sched_spans: [{ start: '16:00', end: '20:00' }] }));
-check('G2a', 'REQ_GAP_LATE_SCOPE=all → 單段班也算：4 小時、遲到81分', [r.ok, r.hours, r.status], [true, 4, '遲到81分']);
+check('G2a', 'REQ_GAP_LATE_SCOPE=all → 單段班也算：4 小時、遲到81分', [r.ok, r.hours, r.status], [true, 4, '遲到81分、中途離開81分']);
 m = env(DAY81);
 r = approve(m, '11:00-14:00,16:00-20:00');
 check('G3', '舊值班頁（沒帶班表）→ 擋 81', [r.ok, /核定比打卡多 81 分鐘/.test(r.message)], [false, true]);
@@ -74,20 +74,20 @@ check('G3', '舊值班頁（沒帶班表）→ 擋 81', [r.ok, /核定比打卡�
 console.log('\n════ 三、開頭也晚到、主管填遲到 ════');
 m = env([['11:00', 'in'], ['14:00', 'out'], ['16:10', 'in'], ['16:30', 'out'], ['17:00', 'in'], ['20:00', 'out']]);
 r = approve(m, '11:00-14:00,16:00-20:00', ACT());
-check('G4', '16:10 到、16:30 走、17:00 回 → 遲到40分（10＋30）', [r.ok, r.hours, r.status], [true, 7, '遲到40分']);
+check('G4', '16:10 到、16:30 走、17:00 回 → 遲到40分（10＋30）', [r.ok, r.hours, r.status], [true, 7, '遲到40分、中途離開30分']);
 m = env(DAY81);
 r = approve(m, '11:00-14:00,16:00-20:00', ACT({ late_min: '0' }));
 check('G5', '主管填遲到 0：空檔被免掉＝沒打卡卻要算 → 擋 81（同開頭遲到填 0 的規則）', [r.ok, /核定比打卡多 81 分鐘/.test(r.message)], [false, true]);
 m = env(DAY81);
 r = approve(m, '11:00-14:00,16:00-20:00', ACT({ late_min: '81' }));
-check('G5b', '主管填遲到 81 → 過、狀態遲到81分(認定)', [r.ok, r.status], [true, '遲到81分(認定)']);
+check('G5b', '主管填遲到 81 → 過、狀態遲到81分(認定)（「中途離開81分」留著）', [r.ok, r.status], [true, '中途離開81分、遲到81分(認定)']);
 
 console.log('\n════ 四、班別休息、請假、休息帶、中間休息忘打卡單 ════');
 const BRKD = [['11:00', 'in'], ['14:00', 'out'], ['16:00', 'in'], ['17:00', 'out'], ['17:30', 'in'], ['18:30', 'out'], ['19:10', 'in'], ['20:00', 'out']];
 const SP_B = [{ start: '11:00', end: '14:00' }, { start: '16:00', end: '20:00', break_min: 30 }];
 m = env(BRKD);
 r = approve(m, '11:00-14:00,16:00-17:00,17:30-20:00', ACT({ sched_spans: SP_B }));
-check('G6', '班別休息 30：17:00–17:30 是休息、18:30–19:10 記遲到40分', [r.ok, r.hours, r.status], [true, 6.5, '遲到40分']);
+check('G6', '班別休息 30：17:00–17:30 是休息、18:30–19:10 記遲到40分', [r.ok, r.hours, r.status], [true, 6.5, '遲到40分、中途離開40分']);
 m = env(BRKD);
 r = approve(m, '11:00-14:00,16:00-20:00', ACT({ sched_spans: SP_B }));
 check('G6b', '核定蓋過休息 → 休息 30 分不當遲到 → 擋「核定比打卡多 30 分鐘」', [r.ok, /核定比打卡多 30 分鐘/.test(r.message)], [false, true]);
@@ -118,13 +118,13 @@ console.log('\n════ 五、狀態字串（computeApprovalStatus）與薪�
   const ps = [{ startMs: mm('16:00'), endMs: mm('20:00') }];
   const ss = [{ in: '15:58', out: '16:03', inMs: mm('15:58'), outMs: mm('16:03') }, { in: '17:24', out: '20:00', inMs: mm('17:24'), outMs: mm('20:00') }];
   check('G10a', '沒開（改之前）：只比重疊最大那段 → 遲到84分、有多出的打卡段', m.sb.computeApprovalStatus(ps, ss, false, false, null), '遲到84分、有多出的打卡段');
-  check('G10b', '開：遲到81分', m.sb.computeApprovalStatus(ps, ss, false, false, null, true), '遲到81分');
+  check('G10b', '開：遲到81分', m.sb.computeApprovalStatus(ps, ss, false, false, null, true), '遲到81分、中途離開81分');
   const ss2 = [{ inMs: mm('09:00'), outMs: mm('15:00') }, { inMs: mm('15:20'), outMs: mm('17:30') }];
   const p2 = [{ startMs: mm('09:00'), endMs: mm('18:00') }];
-  check('G10c', '09–18 打卡 09–15、15:20–17:30：沒開＝早退180分、有多出的打卡段；開＝遲到20分、早退30分', [m.sb.computeApprovalStatus(p2, ss2, false, false, null), m.sb.computeApprovalStatus(p2, ss2, false, false, null, true)], ['早退180分、有多出的打卡段', '遲到20分、早退30分']);
+  check('G10c', '09–18 打卡 09–15、15:20–17:30：沒開＝早退180分、有多出的打卡段；開＝遲到20分、早退30分', [m.sb.computeApprovalStatus(p2, ss2, false, false, null), m.sb.computeApprovalStatus(p2, ss2, false, false, null, true)], ['早退180分、有多出的打卡段', '遲到20分、早退30分、中途離開20分']);
   const bw = { startMs: mm('12:00'), endMs: mm('13:00') };
   const ss3 = [{ inMs: mm('09:00'), outMs: mm('11:40') }, { inMs: mm('13:10'), outMs: mm('18:00') }];
-  check('G10d', '空檔 11:40–13:10 跨休息帶 12–13（核定一整段 09–18）：休息帶 60 分不算 → 遲到30分', m.sb.computeApprovalStatus(p2, ss3, false, false, bw, true), '遲到30分');
+  check('G10d', '空檔 11:40–13:10 跨休息帶 12–13（核定一整段 09–18）：休息帶 60 分不算 → 遲到30分', m.sb.computeApprovalStatus(p2, ss3, false, false, bw, true), '遲到30分、中途離開30分');
   check('G10e', '出差日（legacy）照舊不套', m.sb.computeApprovalStatus(ps, ss, false, true, null, true), m.sb.computeApprovalStatus(ps, ss, false, true, null));
   const pm = make({ now: T('2026-11-21T21:00:00'), payroll: true, self: { roster: [ME], events: [] } });
   check('G10f', '薪資照舊解析：遲到81分 → late 81（扣款與全勤走既有遲到）', pm.sb.payLateEarlyMin_('遲到81分'), { late: 81, early: 0 });
@@ -133,16 +133,37 @@ console.log('\n════ 五、狀態字串（computeApprovalStatus）與薪�
 
 console.log('\n════ 六、每天重算不回溯 ════');
 {
-  // 上線前核定、狀態「下班忘刷卡」這類會被每天重算的；上線日之後的日子才用新算法
+  // 每天重算沒有班表：照原狀態有沒有「中途離開N分」判斷（核定當下有套才會有）→ 重算跟核定當下一樣；開關改了也不回頭改
   const evs = [['15:58', 'in'], ['16:03', 'out'], ['17:24', 'in'], ['20:00', 'out']];
   const mk = (from) => make({ now: T('2026-11-21T21:00:00'), props: { REQ_GAP_LATE_FROM: from }, config: { NO_PUNCH_BREAK_START: '', NO_PUNCH_BREAK_END: '' },
     self: { roster: [ME], events: evs.map((e) => [D + 'T' + e[0] + ':00', 'E01', e[1]]) } });
-  const rec = { periods: '16:00-20:00', status_text: '該段無打卡', name: '測試一' };
-  const a = mk('2026-11-21'), b = mk('2026-11-20');
-  const ra = a.sb.recomputeApprovalStatusOf(a.self, a.sb.readSheetAsObjects(a.self.getSheetByName('events')).rows.map((e) => { e.ts = a.sb.normCellTs(e.ts); return e; }), [ME], D, 'E01', rec);
-  const rb = b.sb.recomputeApprovalStatusOf(b.self, b.sb.readSheetAsObjects(b.self.getSheetByName('events')).rows.map((e) => { e.ts = b.sb.normCellTs(e.ts); return e; }), [ME], D, 'E01', rec);
-  check('G11', '每天重算：上線日 11/21 → 11/20 照舊（遲到84分、有多出的打卡段）；上線日 11/20 → 遲到81分', [ra.newStatusText, rb.newStatusText], ['遲到84分、有多出的打卡段', '遲到81分']);
+  const re = (mm, st) => mm.sb.recomputeApprovalStatusOf(mm.self, mm.sb.readSheetAsObjects(mm.self.getSheetByName('events')).rows.map((e) => { e.ts = mm.sb.normCellTs(e.ts); return e; }), [ME], D, 'E01', { periods: '16:00-20:00', status_text: st, name: '測試一' }).newStatusText;
+  const on = mk('2026-11-20'), off = mk('off');
+  check('G11', '原狀態沒有「中途離開」（上線前核的、門市登入、單段班）→ 重算照 main：遲到84分、有多出的打卡段（開著關著都一樣）', [re(on, '該段無打卡'), re(off, '該段無打卡')], ['遲到84分、有多出的打卡段', '遲到84分、有多出的打卡段']);
+  check('G11b', '原狀態有「中途離開81分」→ 重算照新算法（就算之後把開關關掉也不改回去）', [re(on, '遲到81分、中途離開81分、下班忘刷卡'), re(off, '遲到81分、中途離開81分、下班忘刷卡')], ['遲到81分、中途離開81分', '遲到81分、中途離開81分']);
+  check('G11c', '主管填過遲到：重算後主管認定照留、「中途離開」照留', re(on, '中途離開81分、遲到81分(認定)'), '中途離開81分、遲到81分(認定)');
 }
+
+console.log('\n════ 六之二、門市登入、單段班、相接的兩段班：跟 main 完全一樣（2026-11-20 複審）════');
+{
+  const run2 = (props, extra, periods, evs) => { const mm = env(evs || DAY81, { props }); return mm.sb.handleMgrApprove(Object.assign({ mgr_key: 'MK', date: D, emp_id: 'E01', periods: P(periods), dry_run: true }, extra || {})); };
+  const OFF = { REQ_STRICT_FROM: '2026-11-01', REQ_GAP_LATE_FROM: 'off' };
+  // 門市登入（不帶 acting_name，營運系統照舊不補空檔）：預填 11–14、17:30–20:00
+  let a = run2(ON, {}, '11:00-14:00,17:30-20:00'), b = run2(OFF, {}, '11:00-14:00,17:30-20:00');
+  check('G3b', '門市登入＋二段班＋空檔 81：照舊預填 → 不被新規則擋（結果跟開關關著完全一樣；卡差原因是既有規則）', [JSON.stringify(a) === JSON.stringify(b), a.error === 'need_request'], [true, false]);
+  a = run2(ON, { sched_spans: TWO }, '11:00-14:00,16:00-20:00'); b = run2(OFF, { sched_spans: TWO }, '11:00-14:00,16:00-20:00');
+  check('G3c', '門市登入就算帶了班表（打卡端不收）：主管手動蓋過空檔 → 跟 main 完全一樣（擋 81）', [JSON.stringify(a) === JSON.stringify(b), /核定比打卡多 81 分鐘/.test(a.message)], [true, true]);
+  const ONE1 = [{ start: '16:00', end: '20:00' }], ONEV = [['15:58', 'in'], ['16:03', 'out'], ['17:24', 'in'], ['20:00', 'out']];
+  a = run2(ON, ACT({ sched_spans: ONE1 }), '16:00-20:00', ONEV); b = run2(OFF, ACT({ sched_spans: ONE1 }), '16:00-20:00', ONEV);
+  check('G2b', '單段班（個人帳號）主管手動核成一整段 → 狀態、擋不擋都跟 main 完全一樣', [JSON.stringify(a) === JSON.stringify(b), /核定比打卡多 81 分鐘/.test(a.message)], [true, true]);
+  a = run2(ON, ACT({ sched_spans: ONE1 }), '16:00-20:00', [['15:58', 'in'], ['16:03', 'out'], ['16:20', 'in'], ['20:00', 'out']]);
+  b = run2(OFF, ACT({ sched_spans: ONE1 }), '16:00-20:00', [['15:58', 'in'], ['16:03', 'out'], ['16:20', 'in'], ['20:00', 'out']]);
+  check('G2c', '單段班空檔 17 分（不到 30 不擋）→ 狀態跟 main 一樣（遲到20分、有多出的打卡段）', [JSON.stringify(a) === JSON.stringify(b), a.status_text], [true, '遲到20分、有多出的打卡段']);
+  const ADJ = [{ start: '11:00', end: '14:00' }, { start: '14:00', end: '20:00' }];
+  a = run2(ON, ACT({ sched_spans: ADJ }), '11:00-14:00,16:00-20:00'); b = run2(OFF, ACT({ sched_spans: ADJ }), '11:00-14:00,16:00-20:00');
+  check('G2d', '班表兩段剛好相接（11–14、14–20）＝併成一段＝單段班（同營運系統）→ 跟 main 一樣', [JSON.stringify(a) === JSON.stringify(b)], [true]);
+}
+
 console.log('\n════ 七、班別休息超過的部分（2026-11-20 Eason 第 3 題 B，只限二段班）════');
 {
   // 班表 11:00–14:00／16:00–20:00（第二段排休息 30 分）；營運系統預填：休息從出去那張卡起扣滿 30 分，超過的核定蓋過、記遲到
@@ -155,7 +176,7 @@ console.log('\n════ 七、班別休息超過的部分（2026-11-20 Eason
   }
   let mm = env(day('17:00', '17:50', [['18:30', 'out'], ['19:10', 'in'], ['20:00', 'out']]));
   let rr = approve(mm, '11:00-14:00,16:00-17:00,17:30-20:00', ACT({ sched_spans: SPB }));
-  check('R4', '同一天休息超過 20＋後面中途離開 40（18:30–19:10）→ 遲到60分（合計）、6.5 小時、不擋', [rr.ok, rr.hours, rr.status], [true, 6.5, '遲到60分']);
+  check('R4', '同一天休息超過 20＋後面中途離開 40（18:30–19:10）→ 遲到60分（合計）、6.5 小時、不擋', [rr.ok, rr.hours, rr.status], [true, 6.5, '遲到60分、中途離開40分']);
   mm = env(day('17:00', '18:10'));
   rr = approve(mm, '11:00-14:00,16:00-17:00,17:30-20:00', ACT({ sched_spans: SPB }));
   check('R5', '出去 70 分（超過 40）→ 核定比打卡多不擋、遲到40分', [rr.ok, rr.hours, rr.status], [true, 6.5, '遲到40分']);
@@ -170,4 +191,10 @@ console.log('\n════ 七、班別休息超過的部分（2026-11-20 Eason
   const on = env([]);
   check('R6b', '函式層（開著）：二段班 → 40 分；碰到已核准假單 → 0', [on.sb.reqGapLateMs_(D, ps1, ss1, SPB, null, []) / 60000, on.sb.reqGapLateMs_(D, ps1, ss1, SPB, null, [{ kind: 'leave', start: '17:00', end: '18:00' }])], [40, 0]);
 }
+console.log('\n════ 八、開關填錯值偏安全（2026-11-20 複審）════');
+for (const [v, on] of [['2026-11-20', true], ['OFF', false], ['False', false], ['0', false], ['關', false], ['on', false], ['2026/11/20', false], ['亂填', false]]) {
+  const mm = env([], { props: { REQ_GAP_LATE_FROM: v } });
+  check('S-' + v, 'REQ_GAP_LATE_FROM=' + JSON.stringify(v) + ' → ' + (on ? '開（這天在上線日起）' : '關（認不得的值也當關，不退回程式預設）'), mm.sb.reqGapLateOn_(D), on);
+}
+check('S-default', '沒設屬性 → 用程式預設（上線日 ' + env([], { props: {} }).sb.reqGapLateFrom_() + '）', env([], { props: {} }).sb.reqGapLateFrom_(), '2026-11-22');
 done();
