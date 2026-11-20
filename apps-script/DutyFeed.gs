@@ -13,6 +13,9 @@
  *    記完變動後，順手按一下 Mac mini 的門鈴（只說「哪家店、什麼動作、哪幾天、編號」，不帶員編、不帶任何內容），
  *    mini 收到再回頭用 duty_changes 拿。**預設關**：指令碼屬性 DUTY_PUSH_URL 沒設＝跟沒有這段完全一樣（只多讀那一個屬性）。
  *    DUTY_PUSH_DRY＝1＝只計數不連外。寫入絕不能因為門鈴失敗、變慢：見 dutyPushSend_ 上方的規則。
+ *    2026-11-20 開真推送前補強（feat/duty-push-live-prep）：回應慢也熔斷、真的要按門鈴前先 SpreadsheetApp.flush()、
+ *    每店每日上限 1,500→800（非原子計數最壞約兩倍：9×800×2＝14,400 ≤ 2 萬的 80%）。三項都只在「正式推送」才生效；
+ *    沒設網址（關）與只計數模式的行為跟 a9fac60（PR #181）逐次相同，唯一差別是 push_stats 回報的 cap 數字。
  */
 
 var DUTY_FEED_BUCKET_MS_ = 10000;          // 10 秒一格
@@ -166,13 +169,30 @@ function dutyChangesExtras_(body) {
  *   DUTY_PUSH_DRY    '1'＝只計數（記「本來會推幾次」），不呼叫 UrlFetchApp。第一輪上線只用這個模式量推送量。
  *   DUTY_PUSH_KEY    簽章金鑰（每店一把，mini 用 duty_changes push_setup 一次寫入；不回、不記錄）。
  *   DUTY_PUSH_STORE  這家店在 mini 的店代碼（gf、mztjs…），跟金鑰一起寫入。
+ *   DUTY_PUSH_TUNE   選填，JSON：慢熔斷門檻與每日上限（見 DUTY_PUSH_SLOW_MS_ 上方）。只在正式推送模式讀；格式錯＝用預設。
  * 退回：刪 DUTY_PUSH_URL（或 mini 用 duty_changes push_cfg:{url_on:false, dry:true} 把它設成空白）＝立即不推；mini 回 {ok:true, off:true}＝這家店停推 1 小時。
  */
 var DUTY_FEED_LONG_BACK_MS_ = 75 * 60000;   // back:'long'：往回 75 分鐘（暫存區本來就放 6 小時）
 var DUTY_PUSH_TIMEOUT_S_ = 3;               // UrlFetch 最多等 3 秒
 var DUTY_PUSH_FAIL_OFF_S_ = 60;             // 失敗（逾時、非 2xx、回的不是 JSON）→ 60 秒內這家店不推
 var DUTY_PUSH_REMOTE_OFF_S_ = 3600;         // mini 回 off:true → 1 小時內不推
-var DUTY_PUSH_DAY_CAP_ = 1500;              // 單店每天最多真的連外 1,500 次（防 UrlFetch 額度被吃光、LINE 驗證跟著掛）
+var DUTY_PUSH_DAY_CAP_ = 800;               // 單店每天最多真的連外 800 次（防 UrlFetch 額度被吃光、LINE 驗證跟著掛）。
+                                            // 計數不是原子（CacheService 讀－改－寫），最壞約兩倍：九店 9×800×2＝14,400＝帳號每天 2 萬次的 72%（≤80%）。
+                                            // 設計估九店合計一天約 500～800 次（phase1-design 第 4 節），單店 800 綽綽有餘；可用 DUTY_PUSH_TUNE 的 cap 調（上限 1,500）
+var DUTY_PUSH_CAP_MAX_ = 1500;              // DUTY_PUSH_TUNE 的 cap 最多只能調到這裡（＝PR #181 原本的上限）
+/* 回應慢也熔斷（2026-11-20 開真推送前補強；S3 審查必做 2）：門鈴在打卡回應之前同步送出，mini 慢＝同仁打卡跟著慢。
+ *   一次 ≥ DUTY_PUSH_HARD_MS_（2.5 秒，已接近 3 秒逾時）→ 立刻停推 10 分鐘；
+ *   連續 DUTY_PUSH_SLOW_N_ 次（3 次）≥ DUTY_PUSH_SLOW_MS_（1.5 秒）→ 停推 10 分鐘；回應快又成功一次才歸零。
+ *   停推期滿後是「半開」：計數停在差一次就跳，下一次還是慢＝馬上再停 10 分鐘。持續慢的時候，最多每 10 分鐘一位同仁多等一次。
+ *   門檻理由：mini 收門鈴是同步驗簽、不碰網路（server/duty-push.js），正常應在 1 秒內（審查驗收標準 push.p95ms ≤ 1000）；
+ *   1.5 秒＝正常值的 1.5 倍以上才算慢，偶發一次不跳；2.5 秒以上已經是「卡住」，不再等第二次。
+ *   全部可用指令碼屬性 DUTY_PUSH_TUNE（JSON，只在正式推送模式讀）調：{"slow_ms":1500,"slow_n":3,"hard_ms":2500,"slow_off_s":600,"cap":800}。 */
+var DUTY_PUSH_SLOW_MS_ = 1500;
+var DUTY_PUSH_SLOW_N_ = 3;
+var DUTY_PUSH_HARD_MS_ = 2500;
+var DUTY_PUSH_SLOW_OFF_S_ = 600;
+var DUTY_PUSH_SLOW_KEY_ = 'dpush_slow';     // {n:連續慢幾次, d:台北日期, trips:今天因慢停推幾次, fl:[最近 20 次 flush 毫秒]}；只有正式推送會讀寫
+var DUTY_PUSH_FL_KEEP_ = 20;
 var DUTY_PUSH_PING_DAY_CAP_ = 40;           // ping（duty_changes 帶 ping 時往外連的那一次）另計：單店每天最多 40 次。設計是每小時 1 次、一天 22 次，留餘裕；
                                             // 九店共用同一帳號「往外連線 2 萬次/天」，mini 端出錯狂打 ping 時不能靠一般寫入的 1,500 次額度擋，所以獨立、更保守
 var DUTY_PUSH_PING_PREFIX_ = 'dpush_ping_'; // ping 當天次數（CacheService 另一個 key，後面接台北日期）
@@ -193,8 +213,38 @@ function dutyPushCfg_() {
   if (!cfg.dry) {
     cfg.key = String(props.getProperty('DUTY_PUSH_KEY') || '');
     cfg.store = String(props.getProperty('DUTY_PUSH_STORE') || '').trim();
+    cfg.tune = dutyPushTune_(props.getProperty('DUTY_PUSH_TUNE'));   // 正式推送才多讀這一個屬性；只計數模式完全不讀
   }
   return cfg;
+}
+
+/** DUTY_PUSH_TUNE（JSON）→ 有效門檻。沒設、格式錯、超出範圍的欄位一律用預設（不丟例外）。 */
+function dutyPushTune_(raw) {
+  var t = { slow_ms: DUTY_PUSH_SLOW_MS_, slow_n: DUTY_PUSH_SLOW_N_, hard_ms: DUTY_PUSH_HARD_MS_, slow_off_s: DUTY_PUSH_SLOW_OFF_S_, cap: DUTY_PUSH_DAY_CAP_ };
+  var j = null;
+  try { j = raw ? JSON.parse(String(raw)) : null; } catch (e) { j = null; }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return t;
+  var pick = function (k, lo, hi) {
+    var v = j[k];
+    if (typeof v === 'number' && isFinite(v) && Math.floor(v) === v && v >= lo && v <= hi) t[k] = v;
+  };
+  pick('slow_ms', 300, 10000);
+  pick('slow_n', 1, 10);
+  pick('hard_ms', 500, 30000);
+  pick('slow_off_s', 60, 21600);
+  pick('cap', 0, DUTY_PUSH_CAP_MAX_);
+  if (t.hard_ms < t.slow_ms) t.hard_ms = t.slow_ms;   // 「一次就跳」的門檻不會比「算慢」還低
+  return t;
+}
+
+function dutyPushSlowParse_(raw, day) {
+  var sl = { n: 0, d: day, trips: 0, fl: [] }, j = null;
+  try { j = raw ? JSON.parse(raw) : null; } catch (e) { j = null; }
+  if (!j || typeof j !== 'object') return sl;
+  if (typeof j.n === 'number' && isFinite(j.n) && j.n >= 0) sl.n = j.n;   // 連續慢的次數跨日照算
+  if (j.d === day && typeof j.trips === 'number' && isFinite(j.trips)) sl.trips = j.trips;
+  if (Array.isArray(j.fl)) sl.fl = j.fl.filter(function (v) { return typeof v === 'number' && isFinite(v); }).slice(-DUTY_PUSH_FL_KEEP_);
+  return sl;
 }
 
 function dutyPushDay_(ms) { return new Date(ms + 8 * 3600000).toISOString().slice(0, 10); }   // 台北日期
@@ -255,26 +305,39 @@ function dutyPushStParse_(raw, day) {
  * 按一次門鈴。回結果：ok／remote_off／fail（有連外）、dry（只計數）、skip_off（熔斷中）、skip_cap（今天滿了）、skip_cfg（金鑰、店代碼、網址不齊）。
  * 硬性規則（寫入絕不能因 mini 卡住）：
  *  1. 呼叫端整段 try/catch；先寫暫存區再按門鈴。
- *  2. timeoutSeconds:3、muteHttpExceptions、followRedirects:false（轉址＝失敗）。
+ *  2. timeoutSeconds:3（官方參考文件有列這個參數、預設 360 秒；實際是否生效要在第一家店實測）、muteHttpExceptions、followRedirects:false（轉址＝失敗）。
  *  3. 失敗 → 60 秒熔斷（CacheService dpush_off）；4. mini 回 off:true → 停 1 小時。
- *  5. 單店每天真的連外最多 1,500 次（計數不是原子，誤差可接受）。只計數模式不受上限、也不連外。
- *  6. ping 另有每天 40 次的獨立上限（skip_ping_cap，不連外）；仍受熔斷管，也算進上面 1,500 次。只計數模式照樣套用，量得到的就是正式會推的次數。
+ *  5. 單店每天真的連外最多 800 次（可用 DUTY_PUSH_TUNE 調，最多 1,500；計數不是原子，最壞約兩倍，見 DUTY_PUSH_DAY_CAP_）。只計數模式不受上限、也不連外。
+ *  6. ping 另有每天 40 次的獨立上限（skip_ping_cap，不連外）；仍受熔斷管，也算進上面每日上限。只計數模式照樣套用，量得到的就是正式會推的次數。
+ *  7. 回應慢也熔斷（見 DUTY_PUSH_SLOW_MS_ 上方）：慢的判定看「連外那一趟」花多久，不分成功失敗；跟失敗熔斷同時成立時取停比較久的那個。
+ *  8. 真的要連外（不是 ping）之前先 SpreadsheetApp.flush()：mini 收到門鈴會馬上回頭讀，要讓這次寫入先落地。
+ *     只在這一條路做：沒設網址、只計數、熔斷中、上限滿、設定不齊都不 flush（跟 PR #181 一樣）。flush 耗時記在 push_stats 的 flush_*。
+ * 第 7、8 點與 DUTY_PUSH_TUNE 只在正式推送模式（cfg.dry 為 false）生效：關與只計數的快取讀寫、回應跟 PR #181 逐次相同。
  */
 function dutyPushSend_(p, cfg) {
   var now = Date.now(), day = dutyPushDay_(now), stKey = DUTY_PUSH_ST_PREFIX_ + day;
   var cache = CacheService.getScriptCache();
   var isPing = p.a === 'ping', pingKey = DUTY_PUSH_PING_PREFIX_ + day;
-  var got = cache.getAll(isPing ? [DUTY_PUSH_OFF_KEY_, stKey, pingKey] : [DUTY_PUSH_OFF_KEY_, stKey]) || {};   // 一般寫入的快取讀取跟以前一樣，不多讀 ping 計數
-  var st = dutyPushStParse_(got[stKey], day), off = null, outcome = '', offPut = null;
+  var live = !cfg.dry, tune = live ? (cfg.tune || dutyPushTune_(null)) : null;
+  var keys = isPing ? [DUTY_PUSH_OFF_KEY_, stKey, pingKey] : [DUTY_PUSH_OFF_KEY_, stKey];   // 一般寫入的快取讀取跟以前一樣，不多讀 ping 計數
+  if (live) keys.push(DUTY_PUSH_SLOW_KEY_);   // 慢熔斷計數只有正式推送才讀（同一次 getAll，不多一趟）
+  var got = cache.getAll(keys) || {};
+  var st = dutyPushStParse_(got[stKey], day), off = null, outcome = '', offPut = null, slPut = null;
   var pingN = isPing ? Number(got[pingKey]) : 0;
   if (!isFinite(pingN) || pingN < 0) pingN = 0;
   try { off = got[DUTY_PUSH_OFF_KEY_] ? JSON.parse(got[DUTY_PUSH_OFF_KEY_]) : null; } catch (e) { off = null; }
   if (off && Number(off.until) > now) outcome = 'skip_off';
   else if (isPing && pingN >= DUTY_PUSH_PING_DAY_CAP_) outcome = 'skip_ping_cap';
   else if (cfg.dry) outcome = 'dry';
-  else if (st.sent >= DUTY_PUSH_DAY_CAP_) outcome = 'skip_cap';
+  else if (st.sent >= tune.cap) outcome = 'skip_cap';
   else if (!/^https:\/\//.test(cfg.url) || cfg.key.length < 32 || !/^[a-z0-9]{2,16}$/.test(cfg.store)) outcome = 'skip_cfg';
   else {
+    var flMs = null;
+    if (!isPing) {   // 第 8 點：mini 收到門鈴會馬上回頭讀，先讓這次寫入落地（ping 是 duty_changes 唯讀請求，不用）
+      var f0 = Date.now();
+      try { SpreadsheetApp.flush(); } catch (e) { /* 落地失敗也照按：mini 3 秒後補問、每小時補問 */ }
+      flMs = Date.now() - f0;
+    }
     p.s = cfg.store;
     p.sig = dutyPushSign_(p, cfg.key);
     st.sent++;
@@ -285,7 +348,8 @@ function dutyPushSend_(p, cfg) {
       code = Number(resp.getResponseCode());
       if (code >= 200 && code < 300 && code !== 204) txt = String(resp.getContentText() || '');
     } catch (e) { code = -1; }
-    st.ms.push(Date.now() - t0);
+    var el = Date.now() - t0;
+    st.ms.push(el);
     if (st.ms.length > DUTY_PUSH_MS_KEEP_) st.ms = st.ms.slice(-DUTY_PUSH_MS_KEEP_);
     var j = null;
     if (txt) { try { j = JSON.parse(txt); } catch (e) { j = null; } }
@@ -296,11 +360,24 @@ function dutyPushSend_(p, cfg) {
       outcome = 'fail';
       offPut = { why: 'fail', s: DUTY_PUSH_FAIL_OFF_S_ };
     }
+    // 第 7 點：回應慢也熔斷
+    var sl = dutyPushSlowParse_(got[DUTY_PUSH_SLOW_KEY_], day), trip = false;
+    if (flMs !== null) { sl.fl.push(flMs); if (sl.fl.length > DUTY_PUSH_FL_KEEP_) sl.fl = sl.fl.slice(-DUTY_PUSH_FL_KEEP_); }
+    if (el >= tune.hard_ms) trip = true;
+    else if (el >= tune.slow_ms) { sl.n++; if (sl.n >= tune.slow_n) trip = true; }
+    else if (outcome === 'ok' || outcome === 'remote_off') sl.n = 0;   // 快又成功才歸零；快但失敗（例如 502）交給失敗熔斷，不動慢計數
+    if (trip) {
+      sl.n = Math.max(0, tune.slow_n - 1);   // 半開：停推期滿後再慢一次就馬上再停
+      sl.trips++;
+      if (!offPut || offPut.s < tune.slow_off_s) offPut = { why: 'slow', s: tune.slow_off_s };
+    }
+    slPut = sl;
   }
   st[outcome] = (st[outcome] || 0) + 1;
   if (p.to && (outcome === 'ok' || outcome === 'remote_off' || outcome === 'fail' || outcome === 'dry')) st.with_to++;
   if (offPut) cache.put(DUTY_PUSH_OFF_KEY_, JSON.stringify({ until: Date.now() + offPut.s * 1000, why: offPut.why }), offPut.s);
   cache.put(stKey, JSON.stringify(st), DUTY_FEED_TTL_S_);
+  if (slPut) cache.put(DUTY_PUSH_SLOW_KEY_, JSON.stringify(slPut), DUTY_FEED_TTL_S_);   // 只有真的連外過才寫
   if (isPing && (outcome === 'ok' || outcome === 'remote_off' || outcome === 'fail' || outcome === 'dry')) cache.put(pingKey, String(pingN + 1), DUTY_FEED_TTL_S_);   // 只算真的連外（或只計數）的那幾次
   return outcome;
 }
@@ -330,18 +407,28 @@ function dutyPushPing_(nonce) {
 function dutyPushStats_() {
   var cfg = dutyPushCfg_();
   if (!cfg) return { on: false };
-  var now = Date.now(), day = dutyPushDay_(now);
-  var got = CacheService.getScriptCache().getAll([DUTY_PUSH_OFF_KEY_, DUTY_PUSH_ST_PREFIX_ + day]) || {};
+  var now = Date.now(), day = dutyPushDay_(now), live = !cfg.dry;
+  var keys = [DUTY_PUSH_OFF_KEY_, DUTY_PUSH_ST_PREFIX_ + day];
+  if (live) keys.push(DUTY_PUSH_SLOW_KEY_);
+  var got = CacheService.getScriptCache().getAll(keys) || {};
   var st = dutyPushStParse_(got[DUTY_PUSH_ST_PREFIX_ + day], day), off = null;
   try { off = got[DUTY_PUSH_OFF_KEY_] ? JSON.parse(got[DUTY_PUSH_OFF_KEY_]) : null; } catch (e) { off = null; }
   var ms = st.ms.slice().sort(function (a, b) { return a - b; });
   var q = function (f) { return ms.length ? ms[Math.max(0, Math.ceil(f * ms.length) - 1)] : null; };
   var keySet = cfg.dry ? String(PropertiesService.getScriptProperties().getProperty('DUTY_PUSH_KEY') || '').length >= 32 : cfg.key.length >= 32;
-  return { on: true, mode: cfg.dry ? 'dry' : 'live', day: day, cap: DUTY_PUSH_DAY_CAP_, ping_cap: DUTY_PUSH_PING_DAY_CAP_, key_set: keySet,
+  var tune = live ? (cfg.tune || dutyPushTune_(null)) : null;
+  var out = { on: true, mode: cfg.dry ? 'dry' : 'live', day: day, cap: live ? tune.cap : DUTY_PUSH_DAY_CAP_, ping_cap: DUTY_PUSH_PING_DAY_CAP_, key_set: keySet,
            sent: st.sent, ok: st.ok, remote_off: st.remote_off, fail: st.fail, dry: st.dry,
            skip_off: st.skip_off, skip_cap: st.skip_cap, skip_ping_cap: st.skip_ping_cap, skip_cfg: st.skip_cfg, with_to: st.with_to,
            samples: ms.length, p50ms: q(0.5), p95ms: q(0.95), max_ms: ms.length ? ms[ms.length - 1] : null,
            off: off && Number(off.until) > now ? { why: String(off.why || ''), until: Number(off.until) } : null };
+  if (!live) return out;   // 關／只計數：欄位跟 PR #181 相同（cap 數字除外）
+  var sl = dutyPushSlowParse_(got[DUTY_PUSH_SLOW_KEY_], day), fl = sl.fl.slice().sort(function (a, b) { return a - b; });
+  out.slow = { n: sl.n, trips: sl.trips, slow_ms: tune.slow_ms, slow_n: tune.slow_n, hard_ms: tune.hard_ms, off_s: tune.slow_off_s };
+  out.flush_samples = fl.length;
+  out.flush_p50ms = fl.length ? fl[Math.max(0, Math.ceil(0.5 * fl.length) - 1)] : null;
+  out.flush_max_ms = fl.length ? fl[fl.length - 1] : null;
+  return out;
 }
 
 /** duty_changes push_setup：一次性寫入門鈴金鑰與店代碼（比照 relay_setup）。金鑰由 mini 產生；這裡不回、不記錄。 */

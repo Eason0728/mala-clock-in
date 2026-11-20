@@ -17,6 +17,9 @@ node tests/run-all.js
 | `comp-regression.test.js` | 同一份假資料餵補休上線前（git 3668329）與現在的 `handlePayrollCalc`，沒有補休的人 results／run／item 逐列相同 | 補休不可以動到任何沒有補休的人；含一位有補休的對照組證明比對有效 |
 | `line-hub-comp.test.js` | LINE：申請頁 comp 資訊、假別額度卡補休列、到期提醒、薪資卡數量帶 H | |
 | `sheets-fidelity.test.js` | 用 `helpers/sheets-like.js`（仿 Google 試算表自動轉型的假 Sheet）把真函式的寫→讀跑一遍：events／approved／leave／requests／roster／notices／sched_pub／punch_timing／qr_punch／Payroll 讀的範圍／月表備註往返；`KNOWN` 是已確認的問題（只印不擋） | **mock 與既有沙盒把儲存格當純字串，真的試算表會把 '2026-07-14' 轉成 Date、'11:00' 轉成 1899-12-30 的時間、'false' 轉成布林**；2026-07-15（approved.date）、2026-08-23（roster.shift_in、'false' 布林陷阱）三個歷史 bug 都在這裡用當年的舊寫法重現 |
+| `duty-push.test.js` | 門鈴（PR #181）：門鈴關時跟 PR #181 合併前的 main（`50a80bc^1`，可用 `DUTY_PUSH_BASE` 換）逐次相同、只多讀 `DUTY_PUSH_URL`；只計數、熔斷、上限、簽章、push_setup／push_cfg、授權範圍 | 打卡回應路徑上多一次連外，關的時候必須跟沒有一樣 |
+| `duty-push-live.test.js` | 開真推送前補強（2026-11-20）：關／只計數跟九店線上版 a9fac60（`50a80bc`）逐字逐次相同（只差 push_stats.cap）；回應慢也熔斷、半開、最壞情況（mini 持續卡 3 秒 2 小時同仁合計多等 ≤39 秒）；flush 只在正式推送；每日上限 800 | 慢熔斷與 flush 只在正式推送生效，關的店不能有任何差別 |
+| `helpers/duty-push-harness.js` | 門鈴測試的假 Apps Script 環境（不是測試） | |
 | `helpers/sheets-like.js` | 假試算表本體（不是測試，run-all 不會跑它）：寫入字串照 Sheets 規則轉型、`setNumberFormat('@')` 鎖文字、在 vm 的 Date realm 建 Date、格線範圍外丟例外；每條規則標 [已查證] 或 [推定]＋出處，見檔頭 | 要模擬正式試算表時用這個，不要再寫「把字串原樣存起來」的假 sheet |
 
 ## 改引擎之前先跑 engine-diff
