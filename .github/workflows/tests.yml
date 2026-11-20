@@ -53,7 +53,7 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
-      # ③ 薪資引擎與打卡邏輯的測試（22 支）
+      # ③ 薪資引擎與打卡邏輯的測試（tests/*.test.js 全部，run-all.js 自動掃描，不寫死支數）
       - name: 跑測試
         run: node tests/run-all.js
 

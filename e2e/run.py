@@ -327,6 +327,12 @@ def start_mock(data):
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(build_mock_data(data), f, ensure_ascii=False, indent=2)
     env = dict(os.environ, MOCK_PORT=str(PORT))
+    # 2026-11-17 起正式版「本月還沒過完不能鎖定」（month_not_over）。測試資料造在昨天＝多半是本月，
+    # 假後端的鎖定前檢查照正式版就永遠擋下，鎖定／解鎖兩顆按鈕測不到。這裡讓假後端的「今天」＝資料月份的下個月 1 號，
+    # 模擬「月份已過完」；它只給鎖定前檢查用（mock/payroll_mock_handlers.py _mock_today）。
+    if 'MOCK_TODAY' not in env:
+        y, m = int(data['workday'][:4]), int(data['workday'][5:7])
+        env['MOCK_TODAY'] = f'{y + (m == 12)}-{(m % 12) + 1:02d}-01'
     proc = subprocess.Popen([sys.executable, os.path.join(ROOT, 'mock', 'mock_server.py')],
                             cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(40):
@@ -1076,6 +1082,21 @@ def phase_payroll(page, data, exp_att):
     if click_text(page, None, '清除本月手動工時', '清除手動工時（還原成打卡歸集）'):
         page.wait_for_timeout(3000)
         check('清除手動工時後頁面正常', True)
+
+    # 操作手冊分頁（2026-11-17 加進薪酬計算；2026-11-21 補測，之前「在新分頁開啟手冊」連結一直列漏測）
+    if click_text(page, None, '操作手冊', '切到操作手冊分頁'):
+        page.wait_for_timeout(1500)
+        g_src = page.evaluate("() => (document.getElementById('guideFrame') || {}).src || ''")
+        check('操作手冊：分頁打開後載入 payroll-guide.html', 'payroll-guide.html' in g_src, g_src)
+        try:
+            g_txt = page.frame_locator('#guideFrame').locator('h1').first.inner_text(timeout=5000)
+        except Exception as ex:
+            g_txt = str(ex)[:80]
+        check('操作手冊：內嵌手冊真的載入（標題「薪資結算手冊」）', '薪資結算手冊' in g_txt, g_txt)
+        g_href = page.evaluate("() => { const a = document.querySelector('a[href=\"payroll-guide.html\"][target=_blank]');"
+                               " return a ? a.getAttribute('href') : ''; }")
+        check('操作手冊：「在新分頁開啟手冊」連結指向手冊', g_href == 'payroll-guide.html', g_href)
+        mark_el(page, 'a[href="payroll-guide.html"][target=_blank]', '連結指向手冊（新分頁開啟，不實際開）')
 
     # 鎖定 → 解鎖（放最後，會改狀態）
     click_text(page, None, '薪資計算', '切回薪資計算')
