@@ -426,7 +426,7 @@ function payGReconBlock_(ym, ssId) {
    任何一項不知道（沒回報、超過 30 分鐘沒更新、mini 問不到營運系統）＝擋，不放行。
    Mac mini 長時間不在又要鎖月：照舊在光復編輯器執行 relayGEditorPrimaryOff（P2-A）——正本記號關了，這裡整段不看（Payroll.gs 也不會呼叫）。
    未寫回／衝突算哪個範圍：RELAYG_LOCK_SCOPE_。'month'＝日期在要鎖的那個月（日期認不出來的算進每個月）；其他值＝全店任何一筆都算。 */
-var RELAYG_LOCK_SCOPE_ = 'month';   // ⚠ 待大腦／Eason 確認（2026-11-21 已問）：A 'month'（推薦）／B 'store'
+var RELAYG_LOCK_SCOPE_ = 'month';   // Eason 2026-11-21 定案 A：只算要鎖的那個月（日期認不出來的算進每個月）；改 'store' 才是全店
 function relayGLockRowsOn_() {
   var v; try { v = PropertiesService.getScriptProperties().getProperty('G_LOCK_ROWS'); } catch (e) { return true; }   // 讀不到設定：當開（保護性）
   if (v === null || v === undefined) return false;
