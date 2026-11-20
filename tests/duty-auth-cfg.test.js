@@ -10,9 +10,11 @@ const world = (props) => {
   m.post = (b) => JSON.parse(m.sb.doPost({ postData: { contents: JSON.stringify(b) } }).text);
   return m;
 };
-const sig = (store, mode, vs, ts, key) => crypto.createHmac('sha256', key || KEY).update(['cfg', '1', store, mode, vs === true ? '1' : vs === false ? '0' : '-', String(ts)].join('|')).digest('hex');
+const sig = (store, mode, vs, ts, nonce, key) => crypto.createHmac('sha256', key || KEY).update(['cfg', '2', store, mode, vs === true ? '1' : vs === false ? '0' : '-', String(ts), nonce].join('|')).digest('hex');
+let nSeq = 0;
 const cfg = (m, c, extra) => m.post(Object.assign({ action: 'duty_changes', mgr_key: 'AK', admin_key: 'ADM', acting_name: '資訊部（DZY000）', auth_cfg: c }, extra || {}));
-const signed = (m, mode, vs, opt) => { opt = opt || {}; const ts = opt.ts || m.sb.Date.now(); const c = { mode, ts, sig: sig(opt.store || STORE, mode, vs, ts, opt.key) }; if (vs !== undefined) c.ver_strict = vs; return c; };
+const signed = (m, mode, vs, opt) => { opt = opt || {}; const ts = opt.ts || m.sb.Date.now(); const nonce = opt.nonce || ('nonce-' + String(++nSeq).padStart(6, '0'));
+  const c = { mode, ts, nonce, sig: sig(opt.store || STORE, mode, vs, ts, nonce, opt.key) }; if (vs !== undefined) c.ver_strict = vs; return c; };
 const P = (m) => ({ DUTY_AUTH: m.props.DUTY_AUTH, DUTY_VER_STRICT: m.props.DUTY_VER_STRICT });
 
 {
@@ -25,7 +27,9 @@ const P = (m) => ({ DUTY_AUTH: m.props.DUTY_AUTH, DUTY_VER_STRICT: m.props.DUTY_
   check('C6', '簽名錯（別家店）→ bad_sig', cfg(m, signed(m, 'mini', undefined, { store: 'mztjs' })).error, 'bad_sig');
   const tam = signed(m, 'google'); tam.mode = 'mini';
   check('C7', '簽 google 改成 mini → bad_sig', cfg(m, tam).error, 'bad_sig');
-  check('C8', '簽名時間超過 10 分鐘 → wb_ts', cfg(m, signed(m, 'mini', undefined, { ts: m.sb.Date.now() - 11 * 60000 })).error, 'wb_ts');
+  check('C8', '簽名時間超過 2 分鐘 → wb_ts（2026-11-21 驗收 P2：原 10 分鐘）', [cfg(m, signed(m, 'mini', undefined, { ts: m.sb.Date.now() - 3 * 60000 })).error, P(m).DUTY_AUTH], ['wb_ts', undefined]);
+  const noN = signed(m, 'mini'); delete noN.nonce;
+  check('C8b', '沒帶一次性單號 → bad_sig', cfg(m, noN).error, 'bad_sig');
   for (const bad of ['MINI!', 'shadoww', '', 'true', 'yes']) {
     check('C9[' + bad + ']', '認不得的值 ' + JSON.stringify(bad) + ' → bad_input、屬性不動', [cfg(m, signed(m, bad)).error, P(m).DUTY_AUTH], ['bad_input', undefined]);
   }
@@ -40,14 +44,26 @@ const P = (m) => ({ DUTY_AUTH: m.props.DUTY_AUTH, DUTY_VER_STRICT: m.props.DUTY_
   cfg(m, signed(m, 'off', false));
   check('C15', 'off＝google、ver_strict:false 清掉', P(m), { DUTY_AUTH: '', DUTY_VER_STRICT: '' });
   const g = cfg(m, { get: true });
-  check('C16', 'get:true：回現況＋最近紀錄（誰、何時、從哪到哪），不含金鑰', [g.auth_cfg, g.log.length, g.log.map((x) => [x.by, x.from, x.mode]), JSON.stringify(g).indexOf(KEY) < 0, Object.keys(g.log[0]).sort()],
+  check('C16', 'get:true：回現況＋最近紀錄（誰、何時、從哪到哪、單號），不含金鑰', [g.auth_cfg, g.log.length, g.log.map((x) => [x.by, x.from, x.mode]), JSON.stringify(g).indexOf(KEY) < 0, Object.keys(g.log[0]).sort()],
     [{ mode: 'google', ver_strict: false }, 4, [['營運系統代管／資訊部（DZY000）', 'google', 'mini'], ['營運系統代管／資訊部（DZY000）', 'mini', 'google'], ['營運系統代管／資訊部（DZY000）', 'google', 'mini'], ['營運系統代管／資訊部（DZY000）', 'mini', 'google']],
-      true, ['at', 'by', 'from', 'mode', 'ver_strict']]);
+      true, ['at', 'by', 'from', 'mode', 'n', 'ver_strict']]);
+  // 重放（2026-11-21 驗收 P2）：同一個請求 2 分鐘內原封不動再送 → replay、不動
+  const once = signed(m, 'mini');
+  const rp1 = cfg(m, once);
+  cfg(m, signed(m, 'google'));
+  const rp2 = cfg(m, once);
+  check('C16b', '同一個設定請求再送一次 → replay、屬性不動', [rp1.ok, rp2.error, P(m).DUTY_AUTH], [true, 'replay', '']);
+  Object.keys(m.cache).forEach((k) => delete m.cache[k]);
+  check('C16c', '暫存區被清掉也擋得住（查 DUTY_AUTH_LOG 的單號）', cfg(m, once).error, 'replay');
+  cfg(m, signed(m, 'off', false));
   check('C17', '只動白名單：門鈴金鑰、店代碼、其他屬性不變', [m.props.DUTY_PUSH_KEY === KEY, m.props.DUTY_PUSH_STORE, Object.keys(m.props).sort()],
     [true, STORE, ['DUTY_AUTH', 'DUTY_AUTH_LOG', 'DUTY_PUSH_KEY', 'DUTY_PUSH_STORE', 'DUTY_VER_STRICT', 'REQ_CARD_REASON_FROM']]);
   for (let i = 0; i < 25; i++) cfg(m, signed(m, i % 2 ? 'mini' : 'google'));
   check('C18', '紀錄只留最近 20 筆', cfg(m, { get: true }).log.length, 20);
   check('C19', '跟 push_cfg 同時帶 → bad_input', cfg(m, signed(m, 'mini'), { push_cfg: { url_on: false, dry: true } }).error, 'bad_input');
+  m.props.DUTY_AUTH = 'disabled';
+  const gu = cfg(m, { get: true });
+  check('C19b', 'DUTY_AUTH 被手動填認不得的值：get 回 google＋unknown_value:true', [gu.auth_cfg.mode, gu.auth_cfg.unknown_value], ['google', true]);
 }
 {
   const m = world({});

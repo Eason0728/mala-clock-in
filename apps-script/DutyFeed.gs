@@ -650,8 +650,8 @@ function dutyVerUnknown_() { return JSON.parse(JSON.stringify(DUTY_VER_UNKNOWN_)
 
 /* ══ 核定只收 mini 寫回＋寫回簽名（2026-11-21 第 3 階段 P3-3；契約 docs/contract-writeback.md，設計 phase2-5-design §4.2、§4.3）══
  * 指令碼屬性（全部沒設＝跟以前逐字相同；只多一次 getProperties()，而且只有下面四個動作、不是 dry_run 才讀）：
- *   DUTY_AUTH          空／google／off＝現行；其他任何值＝mini：mgr_approve、mgr_req_decide、mgr_req_decide_batch、mgr_req_void
- *                      只收 mini 簽過名的寫回，其餘回 moved_to_mini。保護性檢查：填錯值當 mini（只由營運系統 ops/duty-auth.sh 設）。
+ *   DUTY_AUTH          mini／on＝mgr_approve、mgr_req_decide、mgr_req_decide_batch、mgr_req_void 只收 mini 簽過名的寫回，其餘回 moved_to_mini；
+ *                      空／google／off／shadow＝現行。認不得的值＝現行＋警告（dutyAuthCfgOf_；只由營運系統 ops/duty-auth.sh 經 auth_cfg 設）。
  *   DUTY_VER_STRICT    開＝舊缺口 1＋2：帶 base_ver 卻讀不到版本時回 ver_unknown；寫入前在 #195 的指令碼鎖內（Code.gs handleMgrApprove，
  *                      最多等 10 秒，拿不到回 busy）再比一次版本。空／0／off／false／no＝關，其他＝開（保護性）。
  *   mini 模式時 DUTY_VER_STRICT 一律當開。（原本另有 DUTY_APPROVE_LOCK 自己包一層鎖，#195 合併後改用同一把鎖，拿掉。）簽名金鑰、店代碼沿用門鈴的 DUTY_PUSH_KEY、DUTY_PUSH_STORE（不新增金鑰）。
@@ -764,8 +764,14 @@ function dutyAuthRun_(body, action, raw) {
   return res;
 }
 
-/** DUTY_AUTH 的值 → {mini}（空／google／off＝現行；其他＝mini，保護性）。Requests.gs dutyAuthCfgSet_ 也用。 */
+/** DUTY_AUTH 的值只有這一張表（Requests.gs auth_cfg 也用，2026-11-21 驗收 P1 統一）：
+ *  google（現行）＝空／google／off／shadow；mini＝mini／on。
+ *  認不得的值（0、false、no、disabled、亂碼…）＝google：手動打錯字不交出核定權（放寬性規則，填錯值維持關），
+ *  console.warn 留警告；auth_cfg get 回 unknown_value:true。正常只由 auth_cfg 寫入（只寫 'mini' 或空字串）。 */
+var DUTY_AUTH_MODES_ = { '': 'google', google: 'google', off: 'google', shadow: 'google', mini: 'mini', on: 'mini' };
 function dutyAuthCfgOf_(all) {
   var a = String(all.DUTY_AUTH == null ? '' : all.DUTY_AUTH).trim().toLowerCase();
-  return { mini: !(a === '' || a === 'google' || a === 'off') };
+  var known = Object.prototype.hasOwnProperty.call(DUTY_AUTH_MODES_, a);
+  if (!known) { try { console.warn('指令碼屬性 DUTY_AUTH 的值認不得，照 google（現行）處理、不交出核定權；要切 mini 請用 auth_cfg'); } catch (e) {} }
+  return { mini: known && DUTY_AUTH_MODES_[a] === 'mini', unknown: !known };
 }

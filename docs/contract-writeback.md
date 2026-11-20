@@ -2,7 +2,7 @@
 
 - 撰寫：G 線子對話（Opus），2026-11-21。程式在 mala-clock-in 分支 `p25-g-p3-3`（worktree `~/dev/_wt/p25-g-google`），只動 `apps-script/DutyFeed.gs`、`apps-script/Requests.gs`。
 - 讀者：S 線（營運系統寫回隊伍 `duty-mirror.js`、`duty-auth.js`、`ops/duty-auth.sh`、`req-line.js`）、E 線（engine 照跑同一份 Requests.gs 時要知道新開關）、大腦。
-- 狀態：**v2（2026-11-21）**：拿掉 `DUTY_APPROVE_LOCK`（併進 #195 的鎖）、加第 5 節遠端設定 `auth_cfg`、第 3.5 節寫明重送時怎麼用指紋確認。v1 → v2 差異見第 7 節。改欄位會在 PR 標題寫「契約改動」並通知 S 線。正本＝本檔；playbook `docs/clock-to-mini/contracts/g-line.md` 是複本。
+- 狀態：**v3（2026-11-21 晚）**：驗收五點修正（第 8 節）。v2：拿掉 `DUTY_APPROVE_LOCK`（併進 #195 的鎖）、加第 5 節遠端設定 `auth_cfg`、第 3.5 節寫明重送時怎麼用指紋確認。v1 → v2 差異見第 7 節。改欄位會在 PR 標題寫「契約改動」並通知 S 線。正本＝本檔；playbook `docs/clock-to-mini/contracts/g-line.md` 是複本。
 - 依據：設計 `phase2-5-design.md` §4.1–4.4；plan P3-3；並行排程 1.3 G 線。
 
 ## 1. 一句話
@@ -14,7 +14,7 @@
 ## 2. 開關（各店指令碼屬性；全部沒設＝跟現在逐字相同）
 | 屬性 | 值 | 預設 | 分類 | 填錯值 |
 |---|---|---|---|---|
-| `DUTY_AUTH` | 空／`google`／`off`＝現行；其他任何值＝`mini` | 沒設＝現行 | **保護性檢查**（限制誰能核定：只收 mini） | 當 `mini`（維持保護）。所以只能由 `ops/duty-auth.sh` 寫 `mini` 或清空，不手打 |
+| `DUTY_AUTH` | `mini`／`on`＝只收 mini；空／`google`／`off`／`shadow`＝現行（**全系統只有這一張表**，`auth_cfg` 也用） | 沒設＝現行 | 放寬性規則（交出核定權） | **認不得的值＝現行（不交出核定權）**＋警告（執行紀錄 `console.warn`；`auth_cfg get` 回 `unknown_value:true`）。正常只由 `auth_cfg` 寫 `mini` 或空字串 |
 | `DUTY_VER_STRICT` | 空＝關；`0`／`off`／`false`／`no`＝關；其他＝開 | 沒設＝關 | 保護性檢查（兩個舊缺口：帶 `base_ver` 讀不到版本＝擋；寫入前在 #195 那把指令碼鎖內再比一次版本） | 當開 |
 - `DUTY_AUTH=mini` 時，`DUTY_VER_STRICT` 一律當開（不看屬性）。
 - v1 的 `DUTY_APPROVE_LOCK` 已拿掉：#195 已在 `handleMgrApprove` 寫入前拿指令碼鎖（`REQ_PEND_BLOCK` 沒關就拿，預設就生效），P3-3 改成在同一把鎖內再比一次版本，不另外包一層鎖（兩層同一把鎖會巢狀，實測每筆都 `busy`）。
@@ -118,6 +118,7 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
   - 有，但不是這位同仁的 → `{"ok":false,"error":"req_id_taken","message":"申請單號重複，請重新送出"}`（不寫，也不回別人的單）。
   - 沒有 → 照原本規則判、寫，編號用 `req_id`；寫完放鎖前 `SpreadsheetApp.flush()`。
 - 這是查試算表本身（不是暫存記號），所以**沒有時間限制**：mini 停機一天後回來再送，同一個單號還是只算一張。
+- **同號查重排在鎖月、額度等檢查之前**（v3）：已寫過的單號，就算那個月後來鎖了，補送也回 `dup`，不回 `pay_locked`。
 - 回應形狀跟原本一樣（單張：`{ok, request, summary}`；多段：照原本多段的回應），重送多 `dup:true`。
 - `DUTY_AUTH` 不影響 `req_submit`（設計 §4.3：LINE 送出不擋）。身分照舊用 `id_token` 驗：mini 代送時要帶手機的 `id_token`（LINE 的 token 約 1 小時過期；過期 → 原本的 `invalid_token` 類錯誤，mini 要讓手機重送或走對帳）。**沒有「用簽名代替 id_token」的路**（那會改變誰能送單，不在這包）。
 
@@ -125,19 +126,20 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
 這台沒有別的方式改指令碼屬性，所以比照門鈴的 `push_cfg` 開一個設定動作（掛在 `duty_changes` 底下，不新增動作名稱，不記成考勤變動）。
 ```json
 { "action": "duty_changes", "mgr_key": "<營運系統代管主管金鑰>", "admin_key": "<管理金鑰>", "acting_name": "資訊部（DZY000）",
-  "auth_cfg": { "mode": "mini", "ver_strict": true, "ts": 1763712000000, "sig": "<64 個小寫十六進位>" } }
+  "auth_cfg": { "mode": "mini", "ver_strict": true, "ts": 1763712000000, "nonce": "cfg-gf-0001-7f3a", "sig": "<64 個小寫十六進位>" } }
 { "action": "duty_changes", "mgr_key": "…", "admin_key": "…", "auth_cfg": { "get": true } }
 ```
 - **驗證（三把金鑰都要有）**：①主管金鑰（`managers` 分頁上在職的那把）＋②管理金鑰 `admin_key`（同 `push_cfg`）＋③這家店已設門鈴金鑰時，還要 mini 的設定簽名：
-  `sig = HMAC-SHA256(DUTY_PUSH_KEY, "cfg|1|<店代碼>|<mode 照請求原字小寫>|<ver_strict：1／0／沒帶寫 ->|<ts>")`，`ts` 只收 Google 現在 ±10 分鐘。
+  `sig = HMAC-SHA256(DUTY_PUSH_KEY, "cfg|2|<店代碼>|<mode 照請求原字小寫>|<ver_strict：1／0／沒帶寫 ->|<ts>|<nonce>")`，`ts` 只收 Google 現在 **±2 分鐘**；
+  `nonce`＝一次性單號 `/^[A-Za-z0-9_-]{8,64}$/`，每次呼叫都要新的；用過的（暫存區 10 分鐘＋`DUTY_AUTH_LOG` 的 `n` 兩處查）回 `replay`、不動。
   沒設門鈴金鑰的店（瑞光、文心）只能設 `google`（＝現行），切 `mini` 一律 `need_key`。
 - **值**：`mode` 只認 `google`、`mini`（別名 `off`、`shadow`＝`google`；`on`＝`mini`）。營運系統的 shadow 模式在 Google 端就是 `google`。`ver_strict` 只認 `true`／`false`，沒帶＝不動。**其他任何值 → `bad_input`，屬性一個都不動（維持原值）**。
 - **只寫白名單**：`DUTY_AUTH`（mini→`mini`、google→空字串）、`DUTY_VER_STRICT`（true→`1`、false→空字串）。不碰金鑰、店代碼、其他屬性（有測試）。
-- **紀錄**：每次寫入記一筆到 Apps Script 執行紀錄，並存進指令碼屬性 `DUTY_AUTH_LOG`（最近 20 筆 `{at, by, mode, ver_strict, from}`；`by`＝主管名單上的名字＋`acting_name`，不含金鑰）。`get:true` 讀得到。
+- **紀錄**：每次寫入記一筆到 Apps Script 執行紀錄，並存進指令碼屬性 `DUTY_AUTH_LOG`（最近 20 筆 `{at, by, mode, ver_strict, from, n}`；`n`＝nonce；`by`＝主管名單上的名字＋`acting_name`，不含金鑰）。`get:true` 讀得到。
 - **回應**：
   - 成功 `{"ok":true,"auth_cfg":{"mode":"mini","ver_strict":true},"changed":true}`
   - 讀現況 `{"ok":true,"auth_cfg":{…},"log":[{"at":"2026-11-21T15:00:00+08:00","by":"營運系統代管／資訊部（DZY000）","mode":"mini","ver_strict":true,"from":"google"}]}`
-  - 錯誤：`unauthorized`（任一把金鑰錯）、`bad_sig`（缺簽名或簽名錯）、`wb_ts`（時間超過，附 `now`）、`bad_input`（值認不得）、`need_key`（沒門鈴金鑰卻要切 mini）、`busy`、`not_supported`（那家店的 `Requests.js` 還是舊版）。
+  - 錯誤：`unauthorized`（任一把金鑰錯）、`bad_sig`（缺簽名、缺 nonce 或簽名錯）、`wb_ts`（超過 ±2 分鐘，附 `now`）、`replay`（nonce 用過）、`bad_input`（值認不得）、`need_key`（沒門鈴金鑰卻要切 mini）、`busy`、`not_supported`（那家店的 `Requests.js` 還是舊版）。
 - 生效：下一筆核定就照新模式（不快取）。
 
 ## 5b. 版本與退回
@@ -152,3 +154,12 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
 - 拿掉 `DUTY_APPROVE_LOCK`。鎖等待從 20 秒改成 10 秒（#195 那把）；`busy` 的意思不變，照樣重送。
 - 新增第 5 節 `auth_cfg`（`ops/duty-auth.sh` 要改成呼叫它）。
 - 第 3.5 節寫明重送時怎麼用指紋與原始列確認。
+
+## 8. v2 → v3（2026-11-21 驗收五點）
+- **P1**：`DUTY_AUTH` 只剩一張表（第 2 節）；`shadow` 一律＝現行；認不得的值＝現行＋警告（原本當 mini）。
+- **P2**：`auth_cfg` 簽名改 `cfg|2|…|ts|nonce`，時間窗 ±2 分鐘、nonce 一次性（第 5 節）。**S 線 `ops/duty-auth.sh` 要改成帶 `nonce`**。
+- **P4**：`req_submit` 同號查重提前（第 4.2 節）。
+- **P5（說明，不改程式）`dup` 記號只在暫存區 6 小時的風險**：
+  - 核定寫回的簽名只在 `wb_ts` ±10 分鐘內有效，所以**被別人攔下重放**只可能發生在簽名後 10 分鐘內；這段時間「已寫好」記號一定還在（6 小時、正常不會 10 分鐘就被清），重放直接回 `dup`。
+  - 6 小時只限制 **mini 自己重送**（每次重簽、`wb_id` 不變）。記號提早被清或超過 6 小時，Google 就照原流程再判：核定有 `base_ver`（第二次一定 `stale_ver`）、審單看狀態（`not_pending`）、作廢看狀態（`not_approved`），**不會重寫**；營運系統照第 3.5 節用指紋確認是不是自己寫過的，不會誤判成衝突。
+  - 所以不另外在試算表或屬性留永久記號：屬性每天寫入有額度、試算表要新分頁或新欄（會改指紋與表結構），換到的只是「回 `dup` 而不是回原流程錯誤」，安全性沒變。`req_submit` 的單號本來就查試算表（永久）。

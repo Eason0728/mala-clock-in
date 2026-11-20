@@ -201,9 +201,15 @@ console.log('\n══ 三、DUTY_AUTH=mini：只收 mini 簽名的寫回 ══'
   check('M26', 'mini 但這家店沒設金鑰 → wb_no_key', m.post(signed(m, APV({ base_ver: m.ver('E01') }))).error, 'wb_no_key');
   const m2 = world({ DUTY_AUTH: 'mini', DUTY_PUSH_KEY: KEY });
   check('M27', 'mini 但沒設店代碼 → wb_no_key', m2.post(signed(m2, APV({ base_ver: m2.ver('E01') }))).error, 'wb_no_key');
-  const m3 = world({ DUTY_AUTH: 'mni', DUTY_PUSH_KEY: KEY, DUTY_PUSH_STORE: STORE });
-  check('M28', 'DUTY_AUTH 填錯值（mni）＝當 mini（保護性）', m3.post(APV()).error, 'moved_to_mini');
-  for (const val of ['', 'google', 'GOOGLE', ' off ']) {
+  for (const val of ['mni', '0', 'false', 'no', 'disabled', '亂碼']) {   // 2026-11-21 驗收 P1：手動打錯字不交出核定權
+    const m3 = world({ DUTY_AUTH: val, DUTY_PUSH_KEY: KEY, DUTY_PUSH_STORE: STORE });
+    check('M28[' + val + ']', 'DUTY_AUTH 填了認不得的值 ' + JSON.stringify(val) + '＝當現行（沒簽名照常核定）', m3.post(APV()).ok, true);
+  }
+  for (const val of ['on', 'ON', ' mini ']) {
+    const m4 = world({ DUTY_AUTH: val, DUTY_PUSH_KEY: KEY, DUTY_PUSH_STORE: STORE });
+    check('M28b[' + val + ']', 'DUTY_AUTH=' + JSON.stringify(val) + '＝mini', m4.post(APV()).error, 'moved_to_mini');
+  }
+  for (const val of ['', 'google', 'GOOGLE', ' off ', 'shadow']) {
     const mg = world({ DUTY_AUTH: val });
     check('M29[' + JSON.stringify(val) + ']', 'DUTY_AUTH=' + JSON.stringify(val) + '＝現行（沒簽名照常核定）', mg.post(APV()).ok, true);
   }
