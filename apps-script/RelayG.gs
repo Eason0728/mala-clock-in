@@ -155,6 +155,7 @@ function relayGRowsOut_(ss, out, wantRows) {
  */
 function handleRelayPull_(body) {
   if (!relayKeyOk_(body.relay_key)) return { ok: false, error: 'unauthorized' };
+  relayGWatchSeen_();   // P2-D：記「mini 剛來過」（光復的停機通知觸發器看這個）
   var ss = getSS(), key = relayKey_(), sh = ss.getSheetByName('events');
   var w = body['with'] || {};
   var out = { ok: true, v: RELAYG_VERSION, now: relayIsoNow_(), events: [], total: 0 };
@@ -403,4 +404,126 @@ function payGReconBlock_(ym, ssId) {
     return { error: 'g_recon_stale', message: '打卡正本（Mac mini）和 Google 的對帳結果超過 30 分鐘沒有更新，這次沒有鎖定。請找資訊部確認 Mac mini 打卡服務是否正常。' };
   if (!r.ok) return { error: 'g_recon_mismatch', message: '打卡正本（Mac mini）有 ' + r.mini + ' 張、Google 有 ' + r.g + ' 張，對不上，這次沒有鎖定。請找資訊部處理' + (r.diff ? '（' + r.diff + '）' : '') + '。' };
   return null;
+}
+
+/* ══ 第 2 階段 P2-A／P2-D（2026-11-21，dzy-mini-playbook docs/clock-to-mini/phase2-5-plan.md） ══
+   - P2-A：Mac mini 長時間不在、又要鎖月 → 在「光復」Apps Script 編輯器執行 relayGEditorPrimaryOff（不用參數），
+     等同快速通道的 g-rollback 送 relay_mode on:false：薪資鎖月改回只看 Google（＝切換前的行為）。
+   - P2-D：Google 端看「Mac mini 最後一次來 relay_pull」；超過 15 分鐘通知一次、恢復再通知一次（每次停機最多 2 封）。
+     ⚠ 九店共用檔不新增 Apps Script 服務（不用 Google 的寄信服務：檔案裡出現那兩個服務名稱，連寫在註解都會被 Apps Script 判成要新權限＝九店都要重新授權，授權前打卡備援與核定全掛）。
+       通知改用既有的 UrlFetchApp 送到指令碼屬性 G_WATCH_HOOK_URL（寄信的那一端由題 4 決定：例如另開的寄信小專案）。
+     開關：光復指令碼屬性 G_WATCH_ON＝'1' 才通知（沒設／其他值＝關）＋觸發器（relayGWatchInstall 裝、relayGWatchUninstall 拆）。
+     收件人 G_WATCH_TO、網址 G_WATCH_HOOK_URL、金鑰 G_WATCH_HOOK_TOKEN 都只放指令碼屬性，不進程式。
+     只裝在光復；其他八店的 relay_pull 只多寫一個快取記號，沒有觸發器就沒有其他作用。 */
+var RELAYG_WATCH_DOWN_MS_ = 15 * 60000;   // 超過這麼久沒來拉＝停了
+var RELAYG_WATCH_FN_ = 'relayGWatchTick';
+var RELAYG_WATCH_PROP_EVERY_S_ = 300;     // 「最後一次來拉」寫進指令碼屬性最多 5 分鐘一次（快取可能被清掉時的備援；不每 30 秒寫屬性）
+
+/** relay_pull 每次呼叫（handleRelayPull_ 驗過金鑰後）：記「mini 剛來過」。出錯不影響拉回。 */
+function relayGWatchSeen_() {
+  try {
+    var c = CacheService.getScriptCache(), t = String(Date.now());
+    c.put('g_watch_seen', t, 21600);
+    if (!c.get('g_watch_prop')) {
+      PropertiesService.getScriptProperties().setProperty('G_WATCH_SEEN', t);
+      c.put('g_watch_prop', '1', RELAYG_WATCH_PROP_EVERY_S_);
+    }
+  } catch (e) {}
+}
+function relayGWatchLastSeen_() {
+  var a = 0, b = 0;
+  try { a = Number(CacheService.getScriptCache().get('g_watch_seen')) || 0; } catch (e) {}
+  try { b = Number(PropertiesService.getScriptProperties().getProperty('G_WATCH_SEEN')) || 0; } catch (e) {}
+  return Math.max(a, b);
+}
+function relayGWatchState_() {
+  try { var v = PropertiesService.getScriptProperties().getProperty('G_WATCH_STATE'); var s = v ? JSON.parse(v) : null; return s && typeof s === 'object' ? s : { state: 'up' }; }
+  catch (e) { return { state: 'up' }; }
+}
+function relayGWatchFmt_(ms) {   // 「11/21 09:05」；分兩段格式（mini 擋卡引擎的替身只認得這幾種）
+  if (!ms) return '（沒有紀錄）';
+  var d = new Date(Number(ms));
+  return Utilities.formatDate(d, 'Asia/Taipei', 'M/d') + ' ' + Utilities.formatDate(d, 'Asia/Taipei', 'HH:mm');
+}
+/** 送通知到 G_WATCH_HOOK_URL。回 {ok} 或 {ok:false, error}；不丟例外。 */
+function relayGWatchSend_(kind, title, text) {
+  var p = PropertiesService.getScriptProperties();
+  var url = String(p.getProperty('G_WATCH_HOOK_URL') || ''), to = String(p.getProperty('G_WATCH_TO') || '');
+  if (!/^https:\/\//.test(url) || !to) return { ok: false, error: 'no_hook' };
+  try {
+    var r = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      payload: JSON.stringify({ action: 'add', token: String(p.getProperty('G_WATCH_HOOK_TOKEN') || ''), to: to, from: '打卡（Google 光復）',
+        title: title, text: text, level: 'high', key: 'clock:mini-' + kind }) });
+    var code = r.getResponseCode();
+    return code >= 200 && code < 300 ? { ok: true } : { ok: false, error: 'http_' + code };
+  } catch (e) { return { ok: false, error: 'fetch' }; }
+}
+/**
+ * 觸發器每 10 分鐘（relayGWatchInstall 裝）：
+ * - 沒開（G_WATCH_ON 不是 '1'）→ 什麼都不做。
+ * - 平常 → 最後一次來拉超過 15 分鐘 → 標「停了」、送一封；送不出去下一輪再試（仍算同一次停機）。
+ * - 停了 → mini 又來拉（最後一次 > 標停的時間）→ 標「恢復」；停的那封有送出才送恢復那封。
+ * 回 {state, sent?, error?}（給測試與 relayGEditorStatus 看）。
+ */
+function relayGWatchTick() {
+  var p = PropertiesService.getScriptProperties();
+  if (p.getProperty('G_WATCH_ON') !== '1') return { state: 'off' };
+  var now = Date.now(), seen = relayGWatchLastSeen_(), st = relayGWatchState_(), out = { state: st.state };
+  if (!seen) return { state: 'never' };   // 開了以後 mini 一次都還沒來過：不猜（relayGWatchInstall 會先記一次）
+  if (st.state !== 'down') {
+    if (now - seen <= RELAYG_WATCH_DOWN_MS_) return out;
+    st = { state: 'down', since: seen, at: now, down_sent: false, tries: 0 };
+  } else if (seen > Number(st.at || 0)) {
+    var mins = Math.round((seen - Number(st.since || seen)) / 60000);
+    var up = st.down_sent ? relayGWatchSend_('up', 'Mac mini 恢復了（停了約 ' + mins + ' 分鐘）',
+      '最後一次停在 ' + relayGWatchFmt_(st.since) + '，' + relayGWatchFmt_(seen) + ' 又開始來拉打卡資料。\n請照 outage-runbook 確認三件事（快速通道綠燈、營運系統 200、待抄 0）。') : { ok: true, skipped: true };
+    p.setProperty('G_WATCH_STATE', JSON.stringify({ state: 'up', at: now, last_down: { since: st.since, until: seen, down_sent: !!st.down_sent, up_sent: !!(up.ok && !up.skipped) } }));
+    return { state: 'up', recovered: true, sent: !!(up.ok && !up.skipped), error: up.ok ? undefined : up.error };
+  }
+  if (!st.down_sent) {   // 每次停機只送一封「停了」；送不出去下一輪再試
+    var r = relayGWatchSend_('down', 'Mac mini 停了：超過 15 分鐘沒來拉打卡資料',
+      'Mac mini 最後一次來拉資料：' + relayGWatchFmt_(st.since) + '。\n' +
+      '・同仁打卡照常（手機自動改送 Google）。\n' +
+      '・已改在管理系統核定的店，暫時不能核定、審單，等 Mac mini 恢復（期限順延）。\n' +
+      '・處理：照 outage-runbook 到場登入。要鎖月又等不到 Mac mini：在光復 Apps Script 編輯器執行 relayGEditorPrimaryOff。');
+    st.down_sent = !!r.ok; st.tries = Number(st.tries || 0) + 1; if (!r.ok) st.err = r.error; else delete st.err;
+    out.sent = !!r.ok; if (!r.ok) out.error = r.error;
+  }
+  p.setProperty('G_WATCH_STATE', JSON.stringify(st));
+  out.state = 'down';
+  return out;
+}
+
+/* ── 編輯器專用（名稱不帶底線＝編輯器「執行」選單看得到）。只在光復執行。 ── */
+/** P2-A：關光復的 G_PRIMARY（等同 g-rollback 的 relay_mode on:false）。之後鎖月只看 Google；Mac mini 恢復後由資訊部跑 g-switch 再打開。 */
+function relayGEditorPrimaryOff() {
+  var before = relayGMode_();
+  PropertiesService.getScriptProperties().setProperty('G_PRIMARY', JSON.stringify({ on: false, stores: [], at: Date.now(), by: 'editor' }));
+  Logger.log('已關閉「打卡正本在 Mac mini」記號：薪資鎖月不再等 Mac mini 對帳（原本' + (before.on ? '開著、' + (before.stores || []).length + ' 家店' : '就是關著') + '）。Mac mini 恢復後請資訊部跑 g-switch 再打開。');
+  return { ok: true, was_on: !!before.on, on: false };
+}
+/** 看現況（只讀）：正本記號、各店對帳時間、停機通知狀態。不印金鑰與收件人。 */
+function relayGEditorStatus() {
+  var p = PropertiesService.getScriptProperties(), mode = relayGMode_(), recon = relayGRecon_(), seen = relayGWatchLastSeen_();
+  var s = { primary: { on: !!mode.on, stores: (mode.stores || []).length, at: relayGWatchFmt_(mode.at), by: mode.by || '' },
+    recon_at: Object.keys(recon).map(function (id) { var yms = Object.keys(recon[id]).sort(), r = recon[id][yms[yms.length - 1]] || {}; return relayGWatchFmt_(r.at); }),
+    watch: { on: p.getProperty('G_WATCH_ON') === '1', hook: !!p.getProperty('G_WATCH_HOOK_URL'), to: !!p.getProperty('G_WATCH_TO'), last_seen: relayGWatchFmt_(seen), state: relayGWatchState_().state,
+      trigger: (function () { try { return ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === RELAYG_WATCH_FN_; }); } catch (e) { return null; } })() } };
+  Logger.log(JSON.stringify(s, null, 2));
+  return s;
+}
+/** P2-D：裝每 10 分鐘的觸發器（重複執行只會有一個）。裝了但 G_WATCH_ON 不是 '1' 時觸發器什麼都不做。 */
+function relayGWatchInstall() {
+  relayGWatchUninstall();
+  ScriptApp.newTrigger(RELAYG_WATCH_FN_).timeBased().everyMinutes(10).create();
+  var p = PropertiesService.getScriptProperties();
+  if (!p.getProperty('G_WATCH_SEEN')) p.setProperty('G_WATCH_SEEN', String(Date.now()));   // 從現在起算，免得剛裝就誤報
+  Logger.log('已裝停機通知觸發器（每 10 分鐘）。要真的送通知還要設 G_WATCH_ON=1、G_WATCH_HOOK_URL、G_WATCH_TO。');
+  return { ok: true };
+}
+function relayGWatchUninstall() {
+  var n = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === RELAYG_WATCH_FN_) { ScriptApp.deleteTrigger(t); n++; } });
+  Logger.log('拆掉停機通知觸發器 ' + n + ' 個。');
+  return { ok: true, removed: n };
 }
