@@ -706,6 +706,9 @@ function reqPayLockRemote_(date, idToken) {
 function handleReqSubmit_(body) {
   var who = reqStaff_(body);
   if (who.error) return { ok: false, error: who.error };
+  // 申請單號（2026-11-21 P3-3，契約 docs/contract-writeback.md 第 4 節）：手機帶 req_id＝送 mini 與改送 Google 同一個號碼，同號只寫一次。沒帶＝跟以前一樣
+  var reqId = reqSubmitIdOf_(body);
+  if (reqId === null) return { ok: false, error: 'bad_req_id', message: '申請單號格式不對' };
   // 薪資鎖月後不可以再動（2026-11-15，Code.gs payLockedBlock_）：那個月的申請送不了
   var payLock = reqIsDate_(String(body.date || '')) ? reqPayLock_(String(body.date), true, who.ss) : null;
   if (payLock) return payLock;
@@ -723,7 +726,9 @@ function handleReqSubmit_(body) {
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請幾秒後再送一次' };
   try {
     var existing = reqRows_(who.ss);
-    if (segP) return reqSubmitSegs_(body, segP, who, existing);
+    var dupR = reqId ? reqSubmitDup_(reqId, existing, who) : null;   // 同一把鎖內查：這個單號寫過就回原本那張，不再寫
+    if (dupR) return dupR;
+    if (segP) return reqSubmitSegs_(body, segP, who, existing, reqId);
     var v = reqValidate_(body, who.me, liffEvents_(who.ss), todayTaipeiStr(), existing);
     if (v.error) return { ok: false, error: v.error, message: v.message };
     var r = v.row;
@@ -739,7 +744,7 @@ function handleReqSubmit_(body) {
     if (mensErr) return mensErr;
     var capMsg = reqCapLocked_(r, existing, who, body, { today: todayTaipeiStr(), recorded: reqLeaveRecorded_(who.ss, who.me.name, r) });
     if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
-    r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
+    r.id = reqId || ('r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36));
     r.created_at = nowTaipeiIso(); r.emp_id = String(who.me.emp_id); r.name = String(who.me.name);
     r.attach_id = REQ_ATTACH_RE_.test(String(body.attach_id || '')) ? String(body.attach_id) : '';
     r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
@@ -747,7 +752,33 @@ function handleReqSubmit_(body) {
     var sh = reqSheet_(who.ss, true);
     sh.appendRow(reqHeads_(sh).map(function (h) { return r[h] === undefined ? '' : reqSheetText_(r[h], h); }));   // 照實際表頭寫（舊分頁沒有 comp 欄會先補）
     return { ok: true, request: reqPublic_(r), summary: reqSummary_(r) };
-  } finally { lock.releaseLock(); }
+  } finally {
+    if (reqId) { try { SpreadsheetApp.flush(); } catch (e) {} }   // 有單號：放鎖前寫進去，下一個查同號的一定看得到
+    lock.releaseLock();
+  }
+}
+
+/* ── 申請單號 req_id（2026-11-21 P3-3）──
+   格式同打卡單號（RelayG.gs RELAYG_REQ_RE_）。單張的申請編號就用 req_id；一次多段第 n 段用 req_id_n。
+   查試算表本身（不是暫存記號），所以沒有時間限制：mini 停機一天後回來再送，同號還是只算一張。 */
+var REQ_SUBMIT_ID_RE_ = /^r[0-9a-f]{16}$/;
+/** '' ＝沒帶；null＝帶了但格式不對；其他＝單號 */
+function reqSubmitIdOf_(body) {
+  var v = body ? body.req_id : undefined;
+  if (v === undefined || v === null || v === '') return '';
+  v = String(v);
+  return REQ_SUBMIT_ID_RE_.test(v) ? v : null;
+}
+function reqSubmitSegNo_(id, reqId) { var n = Number(String(id).slice(reqId.length + 1)); return isFinite(n) ? n : 0; }
+/** 這個單號寫過了 → 回原本那張（或那幾張）現在的樣子＋dup:true；不是這位同仁的 → req_id_taken；沒寫過 → null */
+function reqSubmitDup_(reqId, existing, who) {
+  var hits = (existing || []).filter(function (x) { var id = String(x.id); return id === reqId || id.indexOf(reqId + '_') === 0; });
+  if (!hits.length) return null;
+  var me = String(who.me.emp_id);
+  if (hits.some(function (x) { return String(x.emp_id) !== me; })) return { ok: false, error: 'req_id_taken', message: '申請單號重複，請重新送出' };
+  if (hits.length === 1 && String(hits[0].id) === reqId) return { ok: true, request: reqPublic_(hits[0]), summary: reqSummary_(hits[0]), dup: true };
+  hits.sort(function (a, b) { return reqSubmitSegNo_(a.id, reqId) - reqSubmitSegNo_(b.id, reqId); });
+  return { ok: true, request: reqPublic_(hits[0]), requests: hits.map(reqPublic_), summary: reqSummarySegs_(hits), group: String(hits[0].grp || ''), dup: true };
 }
 
 /* ── 一次填兩段（2026-11-18 Eason；設計：一次填兩段第 2 版＋最終決定 N1–N5，docs/decisions/0002）──
@@ -856,7 +887,7 @@ function reqSegsValidate_(body, segP, me, events, today, existing, proxy) {
   return { rows: rows };
 }
 /** 同仁送兩段（handleReqSubmit_ 在鎖裡呼叫）：補休、特休、額度只檢查一次（同一個人、同一天、同一個假別；額度用兩段合計比＝分兩次送的結果） */
-function reqSubmitSegs_(body, segP, who, existing) {
+function reqSubmitSegs_(body, segP, who, existing, reqId) {
   var today = todayTaipeiStr();
   var sv = reqSegsValidate_(body, segP, who.me, liffEvents_(who.ss), today, existing, false);
   if (sv.error) return reqSegFail_(sv);
@@ -876,7 +907,7 @@ function reqSubmitSegs_(body, segP, who, existing) {
   var capMsg = reqCapLocked_(both, existing, who, body, { today: today, recorded: reqLeaveRecorded_(who.ss, who.me.name, r0) });
   if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
   var aid = REQ_ATTACH_RE_.test(String(body.attach_id || '')) ? String(body.attach_id) : '';   // 證明附一次，兩列寫同一個
-  return reqSaveSegs_(who.ss, sv.rows, existing, { emp_id: String(who.me.emp_id), name: String(who.me.name), attach_id: aid });
+  return reqSaveSegs_(who.ss, sv.rows, existing, { emp_id: String(who.me.emp_id), name: String(who.me.name), attach_id: aid, req_id: reqId || '' });
 }
 /** 照時間先後排（06:00 前開始的段排在後面＝跨過午夜那段；兩段都在 06:00 前就照開始時間） */
 function reqSegSort_(rows) {
@@ -898,7 +929,7 @@ function reqSaveSegs_(ss, rows, existing, base) {
   var seen = (existing || []).slice();
   rows = reqSegSort_(rows);
   rows.forEach(function (r, i) {
-    r.id = reqNewId_(taken);
+    r.id = base.req_id ? base.req_id + '_' + (i + 1) : reqNewId_(taken);   // 帶申請單號（P3-3）：第 n 段＝單號_n
     r.created_at = now; r.emp_id = String(base.emp_id); r.name = String(base.name);
     r.attach_id = base.attach_id || '';
     r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
