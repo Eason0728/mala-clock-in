@@ -25,7 +25,7 @@ function harness(src, o) {
   sb.PropertiesService = { getScriptProperties: () => { log.push('Props.getScriptProperties'); return {
     getProperty: (k) => { log.push('Props.getProperty:' + k); return props[k] === undefined ? null : props[k]; },
     setProperty: (k, v) => { log.push('Props.setProperty:' + k); props[k] = String(v); },
-    getProperties: () => { log.push('Props.getProperties'); throw new Error('不該整包讀'); },
+    getProperties: () => { log.push('Props.getProperties'); return Object.assign({}, props); },   // 2026-11-20 props-once：正式推送一次讀完
     deleteProperty: () => { log.push('Props.deleteProperty'); throw new Error('不該刪'); },
   }; } };
   sb.CacheService = { getScriptCache: () => { log.push('Cache.getScriptCache'); return {

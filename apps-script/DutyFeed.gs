@@ -216,9 +216,13 @@ function dutyPushCfg_() {
   if (!url) return null;
   var cfg = { url: url, dry: String(props.getProperty('DUTY_PUSH_DRY') || '').trim() === '1', key: '', store: '' };
   if (!cfg.dry) {
-    cfg.key = String(props.getProperty('DUTY_PUSH_KEY') || '');
-    cfg.store = String(props.getProperty('DUTY_PUSH_STORE') || '').trim();
-    cfg.tune = dutyPushTune_(props.getProperty('DUTY_PUSH_TUNE'));   // 正式推送才多讀這一個屬性；只計數模式完全不讀
+    // 正式推送：金鑰、店代碼、門檻一次 getProperties() 讀完（2026-11-20 審查：屬性讀取每日額度 5 萬、快速通道已佔約 2.6 萬）。
+    // 每筆寫入的屬性讀取＝網址＋只計數旗標＋這一次＝3 次（原本 5 次）。網址、旗標兩次不能省：關與只計數的呼叫序列要跟 a9fac60 逐次相同。
+    // 不放 CacheService：金鑰不進快取；push_cfg／push_setup 改完下一筆就生效，不用清快取。
+    var all = props.getProperties() || {};
+    cfg.key = String(all.DUTY_PUSH_KEY || '');
+    cfg.store = String(all.DUTY_PUSH_STORE || '').trim();
+    cfg.tune = dutyPushTune_(all.DUTY_PUSH_TUNE);
   }
   return cfg;
 }
