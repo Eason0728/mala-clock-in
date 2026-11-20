@@ -706,6 +706,9 @@ function reqPayLockRemote_(date, idToken) {
 function handleReqSubmit_(body) {
   var who = reqStaff_(body);
   if (who.error) return { ok: false, error: who.error };
+  // 申請單號（2026-11-21 P3-3，契約 docs/contract-writeback.md 第 4 節）：手機帶 req_id＝送 mini 與改送 Google 同一個號碼，同號只寫一次。沒帶＝跟以前一樣
+  var reqId = reqSubmitIdOf_(body);
+  if (reqId === null) return { ok: false, error: 'bad_req_id', message: '申請單號格式不對' };
   // 薪資鎖月後不可以再動（2026-11-15，Code.gs payLockedBlock_）：那個月的申請送不了
   var payLock = reqIsDate_(String(body.date || '')) ? reqPayLock_(String(body.date), true, who.ss) : null;
   if (payLock) return payLock;
@@ -723,7 +726,9 @@ function handleReqSubmit_(body) {
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請幾秒後再送一次' };
   try {
     var existing = reqRows_(who.ss);
-    if (segP) return reqSubmitSegs_(body, segP, who, existing);
+    var dupR = reqId ? reqSubmitDup_(reqId, existing, who) : null;   // 同一把鎖內查：這個單號寫過就回原本那張，不再寫
+    if (dupR) return dupR;
+    if (segP) return reqSubmitSegs_(body, segP, who, existing, reqId);
     var v = reqValidate_(body, who.me, liffEvents_(who.ss), todayTaipeiStr(), existing);
     if (v.error) return { ok: false, error: v.error, message: v.message };
     var r = v.row;
@@ -739,7 +744,7 @@ function handleReqSubmit_(body) {
     if (mensErr) return mensErr;
     var capMsg = reqCapLocked_(r, existing, who, body, { today: todayTaipeiStr(), recorded: reqLeaveRecorded_(who.ss, who.me.name, r) });
     if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
-    r.id = 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
+    r.id = reqId || ('r' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36));
     r.created_at = nowTaipeiIso(); r.emp_id = String(who.me.emp_id); r.name = String(who.me.name);
     r.attach_id = REQ_ATTACH_RE_.test(String(body.attach_id || '')) ? String(body.attach_id) : '';
     r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
@@ -747,7 +752,33 @@ function handleReqSubmit_(body) {
     var sh = reqSheet_(who.ss, true);
     sh.appendRow(reqHeads_(sh).map(function (h) { return r[h] === undefined ? '' : reqSheetText_(r[h], h); }));   // 照實際表頭寫（舊分頁沒有 comp 欄會先補）
     return { ok: true, request: reqPublic_(r), summary: reqSummary_(r) };
-  } finally { lock.releaseLock(); }
+  } finally {
+    if (reqId) { try { SpreadsheetApp.flush(); } catch (e) {} }   // 有單號：放鎖前寫進去，下一個查同號的一定看得到
+    lock.releaseLock();
+  }
+}
+
+/* ── 申請單號 req_id（2026-11-21 P3-3）──
+   格式同打卡單號（RelayG.gs RELAYG_REQ_RE_）。單張的申請編號就用 req_id；一次多段第 n 段用 req_id_n。
+   查試算表本身（不是暫存記號），所以沒有時間限制：mini 停機一天後回來再送，同號還是只算一張。 */
+var REQ_SUBMIT_ID_RE_ = /^r[0-9a-f]{16}$/;
+/** '' ＝沒帶；null＝帶了但格式不對；其他＝單號 */
+function reqSubmitIdOf_(body) {
+  var v = body ? body.req_id : undefined;
+  if (v === undefined || v === null || v === '') return '';
+  v = String(v);
+  return REQ_SUBMIT_ID_RE_.test(v) ? v : null;
+}
+function reqSubmitSegNo_(id, reqId) { var n = Number(String(id).slice(reqId.length + 1)); return isFinite(n) ? n : 0; }
+/** 這個單號寫過了 → 回原本那張（或那幾張）現在的樣子＋dup:true；不是這位同仁的 → req_id_taken；沒寫過 → null */
+function reqSubmitDup_(reqId, existing, who) {
+  var hits = (existing || []).filter(function (x) { var id = String(x.id); return id === reqId || id.indexOf(reqId + '_') === 0; });
+  if (!hits.length) return null;
+  var me = String(who.me.emp_id);
+  if (hits.some(function (x) { return String(x.emp_id) !== me; })) return { ok: false, error: 'req_id_taken', message: '申請單號重複，請重新送出' };
+  if (hits.length === 1 && String(hits[0].id) === reqId) return { ok: true, request: reqPublic_(hits[0]), summary: reqSummary_(hits[0]), dup: true };
+  hits.sort(function (a, b) { return reqSubmitSegNo_(a.id, reqId) - reqSubmitSegNo_(b.id, reqId); });
+  return { ok: true, request: reqPublic_(hits[0]), requests: hits.map(reqPublic_), summary: reqSummarySegs_(hits), group: String(hits[0].grp || ''), dup: true };
 }
 
 /* ── 一次填兩段（2026-11-18 Eason；設計：一次填兩段第 2 版＋最終決定 N1–N5，docs/decisions/0002）──
@@ -871,7 +902,7 @@ function reqSegsValidate_(body, segP, me, events, today, existing, proxy) {
   return { rows: rows };
 }
 /** 同仁送多段（handleReqSubmit_ 在鎖裡呼叫）：補休、特休、額度只檢查一次（同一個人、同一天、同一個假別；額度用各段合計比＝分兩次送的結果） */
-function reqSubmitSegs_(body, segP, who, existing) {
+function reqSubmitSegs_(body, segP, who, existing, reqId) {
   var today = todayTaipeiStr();
   var sv = reqSegsValidate_(body, segP, who.me, liffEvents_(who.ss), today, existing, false);
   if (sv.error) return reqSegFail_(sv);
@@ -891,7 +922,7 @@ function reqSubmitSegs_(body, segP, who, existing) {
   var capMsg = reqCapLocked_(both, existing, who, body, { today: today, recorded: reqLeaveRecorded_(who.ss, who.me.name, r0) });
   if (capMsg) return { ok: false, error: 'quota_exhausted', message: capMsg };
   var aid = REQ_ATTACH_RE_.test(String(body.attach_id || '')) ? String(body.attach_id) : '';   // 證明附一次，兩列寫同一個
-  return reqSaveSegs_(who.ss, sv.rows, existing, { emp_id: String(who.me.emp_id), name: String(who.me.name), attach_id: aid });
+  return reqSaveSegs_(who.ss, sv.rows, existing, { emp_id: String(who.me.emp_id), name: String(who.me.name), attach_id: aid, req_id: reqId || '' });
 }
 /** 照時間先後排（06:00 前開始的段排在後面＝跨過午夜那段；都在 06:00 前就照開始時間） */
 function reqSegSort_(rows) {
@@ -913,7 +944,7 @@ function reqSaveSegs_(ss, rows, existing, base) {
   var seen = (existing || []).slice();
   rows = reqSegSort_(rows);
   rows.forEach(function (r, i) {
-    r.id = reqNewId_(taken);
+    r.id = base.req_id ? base.req_id + '_' + (i + 1) : reqNewId_(taken);   // 帶申請單號（P3-3）：第 n 段＝單號_n
     r.created_at = now; r.emp_id = String(base.emp_id); r.name = String(base.name);
     r.attach_id = base.attach_id || '';
     r.status = 'pending'; r.decided_at = ''; r.decided_by = ''; r.reject_reason = ''; r.seen_at = '';
@@ -1392,10 +1423,24 @@ function reqMgrDayHome_(body) {
   if (hide && Array.isArray(r.employees)) r.employees = r.employees.filter(function (e) { return !reqInList_(hide, String(e.emp_id)); });
   return r;
 }
-/** mgr_approve：不算支援的人擋掉（管理系統代核照常） */
+/** mgr_approve：不算支援的人擋掉（管理系統代核照常）
+ *  2026-11-21 P3-3：外面包 dutyAuthRun_（DutyFeed.gs：DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次）；開關全空＝跟以前一樣。 */
 function reqMgrApproveHome_(body) {
+  return typeof dutyAuthRun_ === 'function' ? dutyAuthRun_(body, 'mgr_approve', reqMgrApproveHomeRaw_) : reqMgrApproveHomeRaw_(body);
+}
+/** cfg（dutyAuthCfg_）.strict（DUTY_VER_STRICT 或 DUTY_AUTH=mini）：讀不到版本就擋（舊缺口 1）＋寫入前在 #195 那把鎖內再比一次版本
+ *  （舊缺口 2，Code.gs handleMgrApprove 讀 REQ_APPROVE_VER_LOCK_）。沒給或沒開＝以前的流程。只檢查（dry_run）不受影響。 */
+function reqMgrApproveHomeRaw_(body, cfg) {
+  var strict = !!(cfg && cfg.strict) && !(body && body.dry_run === true);
+  var prev = REQ_APPROVE_VER_LOCK_;
+  REQ_APPROVE_VER_LOCK_ = strict;
+  try { return reqMgrApproveHomeIn_(body, cfg); }
+  finally { REQ_APPROVE_VER_LOCK_ = prev; }
+}
+var REQ_APPROVE_VER_LOCK_ = false;   // 每次請求是獨立執行，預設 false
+function reqMgrApproveHomeIn_(body, cfg) {
   // 依副本核定（2026-11-14，DutyFeed.gs）：帶 base_ver 的先比版本，主管看到的不是最新的就退回
-  var stale = typeof dutyVerGuard_ === 'function' ? dutyVerGuard_(body) : null;
+  var stale = typeof dutyVerGuard_ === 'function' ? dutyVerGuard_(body, !!(cfg && cfg.strict)) : null;
   if (stale) return stale;
   var hide = reqHomeHide_(body);
   if (hide && reqInList_(hide, String(body.emp_id == null ? '' : body.emp_id))) return { ok: false, error: 'home_review', message: hide[REQ_ALL_] ? REQ_LIST_BAD_MSG_ : REQ_HOME_MSG_ };
@@ -1517,7 +1562,9 @@ function reqDayWarnMsg_(dates) {
 }
 
 /** {action:'mgr_req_decide', mgr_key, id, decision:'approve'|'reject', reason?} */
-function handleMgrReqDecide_(body) {
+function handleMgrReqDecide_(body, viaAuth) {
+  // 2026-11-21 P3-3：先過 dutyAuthRun_（DutyFeed.gs：DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝直接回來照原本流程）
+  if (!viaAuth && typeof dutyAuthRun_ === 'function') return dutyAuthRun_(body, 'mgr_req_decide', handleMgrReqDecide_);
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
   var actor = actingName_(body, mgr);
@@ -1560,7 +1607,9 @@ function handleMgrReqDecide_(body) {
 /** {action:'mgr_req_void', mgr_key, id, reason} → 作廢一筆已核准的申請（2026-10-26 Eason 選）。
  *  起因：同仁改申請（例：整天出差 8h 改成出差 4h＋天災假 4h）時舊單已核准，沒人能撤，核定頁會一直帶出舊單。
  *  只改申請的狀態；那天若已經送過核定，核定紀錄不動——要改時數請主管重新核定那天。 */
-function handleMgrReqVoid_(body) {
+function handleMgrReqVoid_(body, viaAuth) {
+  // 2026-11-21 P3-3：先過 dutyAuthRun_（DutyFeed.gs：DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝直接回來照原本流程）
+  if (!viaAuth && typeof dutyAuthRun_ === 'function') return dutyAuthRun_(body, 'mgr_req_void', handleMgrReqVoid_);
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
   var actor = actingName_(body, mgr);
@@ -1724,7 +1773,9 @@ function handleFinalOrphanScan_(body) {
 
 /** {action:'mgr_req_decide_batch', mgr_key, ids:[…], decision:'approve'} → {ok, done:[ids], skipped:[{id, reason}]}
  *  批次只能核准（2026-10-09 Eason）：退回要寫理由，一筆一筆退。一把鎖、鎖內重讀，不是審核中的就略過並說明原因。 */
-function handleMgrReqDecideBatch_(body) {
+function handleMgrReqDecideBatch_(body, viaAuth) {
+  // 2026-11-21 P3-3：先過 dutyAuthRun_（DutyFeed.gs：DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝直接回來照原本流程）
+  if (!viaAuth && typeof dutyAuthRun_ === 'function') return dutyAuthRun_(body, 'mgr_req_decide_batch', handleMgrReqDecideBatch_);
   var mgr = reqMgr_(body);
   if (!mgr) return { ok: false, error: 'unauthorized' };
   var actor = actingName_(body, mgr);
@@ -3390,4 +3441,71 @@ function reqProp_(k) {
   var v = PropertiesService.getScriptProperties().getProperty(k);
   if (memo) memo[mk] = v;
   return v;
+}
+/* ══ duty_changes auth_cfg：營運系統 ops/duty-auth.sh 遠端切核定模式（2026-11-21 P3-3；放 Requests.gs：九店 D2 只換 DutyFeed.js＋Requests.js，DutyFeed.gs 的寫屬性處數有測試釘住；契約 docs/contract-writeback.md 第 5 節）══
+ * {action:'duty_changes', mgr_key, admin_key, auth_cfg:{mode, ver_strict?, ts, sig}} 或 {…, auth_cfg:{get:true}}（只讀現況）
+ * 驗證（比 push_cfg 多一層）：
+ *  1. 主管金鑰（handleDutyChanges_ 已驗）＋管理金鑰 admin_key（checkAdmin），同 push_cfg。
+ *  2. 這家店已設門鈴金鑰（DUTY_PUSH_KEY）時，還要 mini 的簽名：sig＝HMAC-SHA256(DUTY_PUSH_KEY, 'cfg|1|店|mode|ver_strict(0/1/-)|ts')，
+ *     ts 只收 ±10 分鐘。三把金鑰都要有才改得動。沒設門鈴金鑰的店只能設 google（＝現行，也不可能切 mini）。
+ * 只寫白名單兩個屬性：DUTY_AUTH（mini→'mini'、google→''）、DUTY_VER_STRICT（ver_strict:true→'1'、false→''；沒帶＝不動）。
+ * 值只認 mode＝google／mini（別名 off、shadow＝google，on＝mini）；其他任何值＝bad_input，屬性一個都不動（維持原值）。
+ * 切 mini 要門鈴金鑰與店代碼都設好（need_key），同 push_cfg 的聯鎖。
+ * 紀錄：每次寫入記一筆到 Apps Script 執行紀錄（console.log）＋指令碼屬性 DUTY_AUTH_LOG（最近 20 筆 {at, by, mode, ver_strict, from}；
+ *   by＝主管名單上的名字＋代核姓名，不含金鑰）。回應只回模式與開關（不回金鑰、不回其他屬性）。 */
+var DUTY_AUTH_MODES_ = { google: 'google', off: 'google', shadow: 'google', mini: 'mini', on: 'mini' };
+var DUTY_AUTH_LOG_MAX_ = 20;
+function dutyAuthNow_(all) {
+  return { mode: dutyAuthCfgOf_(all).mini ? 'mini' : 'google', ver_strict: dutyOnVal_(all.DUTY_VER_STRICT) };
+}
+function dutyAuthCfgMsg_(store, mode, vs, ts) {
+  return ['cfg', '1', store, mode, vs === true ? '1' : vs === false ? '0' : '-', String(ts)].join('|');
+}
+function dutyAuthLogOf_(raw) {
+  var log = [];
+  try { log = JSON.parse(String(raw || '[]')); } catch (e) { log = []; }
+  return Array.isArray(log) ? log : [];
+}
+function dutyAuthCfgSet_(body, mg) {
+  if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  var c = body.auth_cfg;
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return { ok: false, error: 'bad_input' };
+  var props = PropertiesService.getScriptProperties();
+  if (c.get === true) {
+    var all0 = props.getProperties() || {};
+    return { ok: true, auth_cfg: dutyAuthNow_(all0), log: dutyAuthLogOf_(all0.DUTY_AUTH_LOG) };
+  }
+  var raw = typeof c.mode === 'string' ? c.mode.trim().toLowerCase() : '';
+  var mode = Object.prototype.hasOwnProperty.call(DUTY_AUTH_MODES_, raw) ? DUTY_AUTH_MODES_[raw] : '';
+  if (!mode || (c.ver_strict !== undefined && typeof c.ver_strict !== 'boolean')) {
+    return { ok: false, error: 'bad_input', message: 'mode 只能是 google／mini（或 off、shadow、on）；ver_strict 只能是 true／false' };
+  }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return { ok: false, error: 'busy' };
+  try {
+    var all = props.getProperties() || {};
+    var key = String(all.DUTY_PUSH_KEY || ''), store = String(all.DUTY_PUSH_STORE || '').trim();
+    var keySet = key.length >= 32 && /^[a-z0-9]{2,16}$/.test(store);
+    if (mode === 'mini' && !keySet) return { ok: false, error: 'need_key', message: '這家店還沒設好門鈴金鑰與店代碼，不能切 mini' };
+    if (keySet) {
+      var ts = c.ts, sig = String(c.sig == null ? '' : c.sig);
+      if (typeof ts !== 'number' || !isFinite(ts) || !DUTY_WB_SIG_RE_.test(sig)) return { ok: false, error: 'bad_sig', message: '要帶 mini 的設定簽名' };
+      if (Math.abs(Date.now() - ts) > DUTY_WB_SKEW_MS_) return { ok: false, error: 'wb_ts', message: '設定簽名時間超過 10 分鐘', now: Date.now() };
+      if (!dutyWbSame_(dutyWbSign_(dutyAuthCfgMsg_(store, raw, c.ver_strict, ts), key), sig)) return { ok: false, error: 'bad_sig', message: '設定簽名不對' };
+    }
+    var before = dutyAuthNow_(all);
+    props.setProperty('DUTY_AUTH', mode === 'mini' ? 'mini' : '');
+    if (typeof c.ver_strict === 'boolean') props.setProperty('DUTY_VER_STRICT', c.ver_strict ? '1' : '');
+    var after = dutyAuthNow_(props.getProperties() || {});
+    var mgr = mg ? findManagerByKey(mg.rows, body.mgr_key) : null;
+    var by = String((mgr && mgr.name) || '') + (body.acting_name ? '／' + String(body.acting_name).slice(0, 40) : '');
+    var rec = { at: nowTaipeiIso(), by: by, mode: after.mode, ver_strict: after.ver_strict, from: before.mode };
+    var log = dutyAuthLogOf_(all.DUTY_AUTH_LOG);
+    log.push(rec);
+    props.setProperty('DUTY_AUTH_LOG', JSON.stringify(log.slice(-DUTY_AUTH_LOG_MAX_)));
+    try { console.log('DUTY_AUTH 設定：' + JSON.stringify(rec)); } catch (e) {}
+    return { ok: true, auth_cfg: after, changed: before.mode !== after.mode || before.ver_strict !== after.ver_strict };
+  } finally {
+    lock.releaseLock();
+  }
 }

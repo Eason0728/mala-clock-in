@@ -2235,13 +2235,21 @@ function handleMgrApprove(body) {
   // 規則乙的競態（2026-11-21 出勤核定舊問題 3，Codex 20261121-rules-ab 問題 5）：開頭的待審檢查到這裡中間跑了一長串檢查，同仁可能剛好送出一張單
   //（送申請是在 ScriptLock 裡寫入的）。寫入前拿同一把鎖、鎖內重讀申請表再判一次，沒有待審才寫；搶不到回 busy、什麼都不寫。
   // 鎖只包最後這段（重讀＋寫 approved＋leave），照 docs/clock-to-mini/phase2-5-design.md §4.2-2。REQ_PEND_BLOCK=off 時不拿鎖＝完全退回舊行為。
-  const pendLock = reqRowsAll && typeof reqPendBlockOn_ === 'function' && reqPendBlockOn_() ? LockService.getScriptLock() : null;
+  // 2026-11-21 P3-3（舊缺口 2「比版本與寫入沒在同一把鎖」併進這把鎖）：DUTY_VER_STRICT 或 DUTY_AUTH=mini 時（REQ_APPROVE_VER_LOCK_，
+  // Requests.gs reqMgrApproveHomeRaw_ 設），有帶 base_ver 的核定在鎖內再比一次版本；REQ_PEND_BLOCK=off 時也照樣拿鎖。兩個都沒開＝跟 #195 一模一樣。
+  const pendOn = !!(reqRowsAll && typeof reqPendBlockOn_ === 'function' && reqPendBlockOn_());
+  const verLock = typeof REQ_APPROVE_VER_LOCK_ !== 'undefined' && REQ_APPROVE_VER_LOCK_ === true && typeof body.base_ver === 'string' && body.base_ver !== '' && typeof dutyVerGuard_ === 'function';
+  const pendLock = pendOn || verLock ? LockService.getScriptLock() : null;
   if (pendLock && !pendLock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
   let enteredAt;
   try {
-    if (pendLock) {
+    if (pendLock && pendOn) {
       const pendAgain = reqPendBlock_(reqRows_(ss), String(body.emp_id), date);
       if (pendAgain) return pendAgain;
+    }
+    if (verLock) {
+      const staleAgain = dutyVerGuard_(body, true);
+      if (staleAgain) return staleAgain;
     }
     enteredAt = nowTaipeiIso();
     empIdColText_(approvedSheet);
