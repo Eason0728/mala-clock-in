@@ -17,6 +17,8 @@ var RELAYG_ROSTER_COLS_ = ['emp_id', 'name', 'key', 'device_id', 'device_bound_a
 var RELAYG_PULL_MAX_ = 4000;           // relay_pull 一次最多回幾列
 var RELAYG_SHEETS_ = ['ot_month', 'sched_pub'];   // mini 擋卡規則會讀的其他分頁（Rest.gs 加班上限、Cap10.gs 班表）
 var RELAYG_PROPS_ = ['REST_RULE_ON', 'REST_CAP_ON', 'REST_OT_ON'];
+// P2-B 開頁只問 mini（2026-11-21）：公告副本跟 sheets 同一趟帶。只給打卡頁要的欄（不給 created_by）；分頁不存在也回表頭（mini 才知道「這家店沒有公告」）
+var RELAYG_NOTICE_COLS_ = ['id', 'text', 'active', 'ends_on', 'created_at'];
 // P3-1 原始列副本（2026-11-21，契約 dzy-mini-playbook docs/clock-to-mini/contracts/r-line.md）：with.rows／with.fp 才回，沒帶＝回應不變。
 var RELAYG_ROW_SHEETS_ = { approved: 'date', leave: '日期', requests: 'date' };   // 分頁 → 算「哪一天」的欄
 var RELAYG_ROWS_MAX_ = 8000;                                                    // 單張超過就不送列（回 too_many）
@@ -161,6 +163,13 @@ function relayGRowsOut_(ss, out, wantRows) {
  * rows／fp（P3-1）：approved、leave、requests 全部列＋主管名單白名單欄＋每天指紋；fp 只回指紋。格式見 r-line.md。
  * 唯讀。金鑰、裝置碼、LINE 帳號一律回 HMAC（'h:'＋十六進位），mini 拿不到原文。
  */
+function relayGNoticesOut_(ss) {
+  var cols = RELAYG_NOTICE_COLS_, s = ss.getSheetByName('notices');
+  var v = s ? s.getDataRange().getValues() : [];
+  if (!v.length) return [cols.slice()];
+  var heads = v[0].map(function (h) { return String(h || ''); }), idx = cols.map(function (h) { return heads.indexOf(h); });
+  return [cols.slice()].concat(v.slice(1).map(function (row) { return idx.map(function (i) { return i < 0 ? '' : relayGCell_(row[i]); }); }));
+}
 function handleRelayPull_(body) {
   if (!relayKeyOk_(body.relay_key)) return { ok: false, error: 'unauthorized' };
   relayGWatchSeen_();   // P2-D：記「mini 剛來過」（光復的停機通知觸發器看這個）
@@ -203,6 +212,7 @@ function handleRelayPull_(body) {
       var s = ss.getSheetByName(nm);
       if (s) out.sheets[nm] = s.getDataRange().getValues().map(function (row) { return row.map(relayGCell_); });
     });
+    out.sheets.notices = relayGNoticesOut_(ss);
   }
   if (w.props) {
     out.props = {};
