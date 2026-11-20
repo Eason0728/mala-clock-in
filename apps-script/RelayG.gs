@@ -183,6 +183,30 @@ function relayGMarkOut_(ss, mode) {
   } catch (e) { return { error: String(e && e.message || e).slice(0, 80) }; }
   return out;
 }
+/* P5-1 手改提醒的「正常寫入證據」（2026-11-21 大腦驗收第 5 點）：DutyFeed.gs 每個成功的寫入動作都先在暫存區記一筆 {t,a,d,e}
+   （再按門鈴；門鈴熔斷、丟了都不影響這筆紀錄，暫存區留 6 小時）。mini 帶 with.changes:<毫秒> 時，回那之後的紀錄（只回時間、動作、日期，不回工號）。
+   since 超過 6 小時或不是數字：回 {from:實際起點, partial:true}，mini 不拿來判。DutyFeed 沒載入：回 {error:'no_feed'}。 */
+var RELAYG_CHANGES_MAX_ = 3000;
+function relayGChangesOut_(sinceRaw) {
+  if (typeof DUTY_FEED_PREFIX_ === 'undefined' || typeof DUTY_FEED_BUCKET_MS_ === 'undefined' || typeof DUTY_FEED_SLOTS_ === 'undefined') return { error: 'no_feed' };
+  try {
+    var now = Date.now(), ttl = (typeof DUTY_FEED_TTL_S_ !== 'undefined' ? DUTY_FEED_TTL_S_ : 21600) * 1000 - 60000;
+    var since = Number(sinceRaw), partial = false;
+    if (!isFinite(since) || since <= 0 || now - since > ttl) { since = now - ttl; partial = true; }
+    var keys = [];
+    for (var b = Math.floor(since / DUTY_FEED_BUCKET_MS_); b <= Math.floor(now / DUTY_FEED_BUCKET_MS_); b++) for (var k = 0; k < DUTY_FEED_SLOTS_; k++) keys.push(DUTY_FEED_PREFIX_ + b + '_' + k);
+    var cache = CacheService.getScriptCache(), list = [];
+    for (var i = 0; i < keys.length; i += 100) {
+      var got = cache.getAll(keys.slice(i, i + 100));
+      Object.keys(got).forEach(function (key) {
+        var a; try { a = JSON.parse(got[key]); } catch (e) { return; }
+        if (Array.isArray(a)) a.forEach(function (r) { if (r && Number(r.t) >= since) list.push({ t: Number(r.t), a: String(r.a || ''), d: Array.isArray(r.d) ? r.d.map(String).slice(0, 40) : [] }); });
+      });
+    }
+    list.sort(function (x, y) { return x.t - y.t; });
+    return { from: since, now: now, partial: partial || list.length > RELAYG_CHANGES_MAX_, list: list.slice(-RELAYG_CHANGES_MAX_) };
+  } catch (e) { return { error: 'read_failed' }; }
+}
 function relayGNoticesOut_(ss) {
   var cols = RELAYG_NOTICE_COLS_, s = ss.getSheetByName('notices');
   var v = s ? s.getDataRange().getValues() : [];
@@ -241,6 +265,7 @@ function handleRelayPull_(body) {
   }
   if (w.rows || w.fp) relayGRowsOut_(ss, out, !!w.rows);   // P3-1：沒帶就完全不讀這幾張
   if (w.mark === 'on' || w.mark === 'off') out.mark = relayGMarkOut_(ss, w.mark);   // P5-1：表頭註記（沒帶＝不碰）
+  if (w.changes !== undefined) out.changes = relayGChangesOut_(w.changes);         // P5-1 手改提醒：Google 自己記的變動紀錄（沒帶＝不讀）
   out.config = { STORE_LAT: CONFIG.STORE_LAT, STORE_LNG: CONFIG.STORE_LNG, RADIUS_M: CONFIG.RADIUS_M,
                  NO_PUNCH_BREAK_START: CONFIG.NO_PUNCH_BREAK_START || '', NO_PUNCH_BREAK_END: CONFIG.NO_PUNCH_BREAK_END || '',
                  ALTERNATION_LOOKBACK_HOURS: CONFIG.ALTERNATION_LOOKBACK_HOURS };
