@@ -85,20 +85,22 @@ function realLock(m) {
     releaseLock: () => { if (st.held === me.id) st.held = null; }, hasLock: () => st.held === me.id }; } };
   return st;
 }
-function race(props, signedMode) {
+function race(props, signedMode, at) {
   const m = world(props);
   const st = realLock(m);
   const v = m.ver('E01');
-  const realApprove = m.sb.handleMgrApprove;
   let second = null, fired = false;
-  m.sb.__realApprove = realApprove;
   m.sb.__fire = () => {
     if (fired) return; fired = true;
     const b2 = APV({ acting_name: '店長乙（DZY002）', periods: [{ start: '09:00', end: '16:00' }], base_ver: v });
     second = m.post(signedMode ? signed(m, Object.assign(b2, { wb_id: 'wb-test-0002' })) : b2);
   };
-  // 第一個請求判完版本、正要寫入時，第二個請求進來（＝兩位主管幾乎同時按）
-  m.run('handleMgrApprove = function (b) { if (b.dry_run !== true) __fire(); return __realApprove(b); }');
+  if (at === 'inlock') {   // 第一個已經拿到鎖、正在寫的時候，第二個進來
+    m.run('var __realAppend = appendApprovedRow_; appendApprovedRow_ = function () { __fire(); return __realAppend.apply(null, arguments); };');
+  } else {                 // 第一個判完版本、還沒拿鎖時，第二個進來而且整筆做完（＝兩位主管幾乎同時按）
+    m.sb.__realApprove = m.sb.handleMgrApprove;
+    m.run('handleMgrApprove = function (b) { if (b.dry_run !== true) __fire(); return __realApprove(b); };');
+  }
   const b1 = APV({ base_ver: v });
   const first = m.post(signedMode ? signed(m, b1) : b1);
   const rows = m.approved().filter((r) => r[0] === '2026-11-09' && r[1] === 'E01');
@@ -106,21 +108,24 @@ function race(props, signedMode) {
 }
 {
   const off = race({});
-  check('L1', '開關關（現在的行為）：兩個都成功＝舊缺口 2 重現', [off.first.ok, off.second.ok], [true, true], '證明測試抓得到問題；上線預設照舊，開 DUTY_APPROVE_LOCK 或 mini 才修');
-  const on = race({ DUTY_APPROVE_LOCK: '1' });
-  check('L2', 'DUTY_APPROVE_LOCK=1：只有一個成功，另一個 busy', [on.first, on.second, on.rows], [{ ok: true, error: undefined }, { ok: false, error: 'busy' }, 1]);
-  check('L3', '核定鎖最多等 20 秒', on.waits.indexOf(20000) >= 0, true);
+  check('L1', '開關關（＝#195 現在的行為）：先後交錯時兩個都成功＝舊缺口 2 還在', [off.first.ok, off.second.ok, off.rows], [true, true, 2], '證明測試抓得到問題；上線預設照舊，開 DUTY_VER_STRICT 或 mini 才修');
+  const on = race({ DUTY_VER_STRICT: '1' });
+  check('L2', 'DUTY_VER_STRICT=1：先後交錯 → 後寫的那個在鎖內再比版本被退回 stale_ver，只寫一筆', [on.first, on.second, on.rows], [{ ok: false, error: 'stale_ver' }, { ok: true, error: undefined }, 1]);
+  const inl = race({ DUTY_VER_STRICT: '1' }, false, 'inlock');
+  check('L3', 'DUTY_VER_STRICT=1：第一個拿著鎖時第二個進來 → busy，只寫一筆；鎖等 10 秒（#195 那把）', [inl.first, inl.second, inl.rows, inl.waits.every((w) => w === 10000)], [{ ok: true, error: undefined }, { ok: false, error: 'busy' }, 1, true]);
   const mini = race(MINI, true);
-  check('L4', 'mini 模式（簽名寫回）：只有一個成功', [mini.first, mini.second, mini.rows], [{ ok: true, error: undefined }, { ok: false, error: 'busy' }, 1]);
-  const m = world({ DUTY_APPROVE_LOCK: '1' });
-  const v = m.ver('E01');
-  m.post(APV({ base_ver: v }));
-  check('L5', '鎖開：一前一後送，第二個照版本退回 stale_ver', m.post(APV({ base_ver: v, acting_name: '店長乙（DZY002）' })).error, 'stale_ver');
-  const m2 = world({ DUTY_APPROVE_LOCK: '1' });
+  check('L4', 'mini 模式（簽名寫回）：先後交錯也只寫一筆', [mini.first, mini.second, mini.rows], [{ ok: false, error: 'stale_ver' }, { ok: true, error: undefined }, 1]);
+  const pendOff = race({ DUTY_VER_STRICT: '1', REQ_PEND_BLOCK: 'off' });
+  check('L5', 'REQ_PEND_BLOCK=off（#195 不拿鎖）但 DUTY_VER_STRICT=1：照樣拿鎖再比版本', [pendOff.first.error, pendOff.second.ok, pendOff.rows], ['stale_ver', true, 1]);
+  const m2 = world({ DUTY_VER_STRICT: '1' });
   m2.sb.LockService = { getScriptLock: () => ({ tryLock: () => false, releaseLock: () => {} }) };
   const n0 = m2.approved().length;
-  check('L6', '鎖拿不到：回 busy、不寫', [pick(m2.post(APV())), m2.approved().length], [{ ok: false, error: 'busy' }, n0]);
+  check('L6', '鎖拿不到：回 busy、不寫', [pick(m2.post(APV({ base_ver: m2.ver('E01') }))), m2.approved().length], [{ ok: false, error: 'busy' }, n0]);
   check('L7', '鎖拿不到也不擋只檢查（mgr_approve_check）', m2.post({ action: 'mgr_approve_check', mgr_key: 'AK', date: '2026-11-09', items: [{ emp_id: 'E01', periods: [{ start: '09:00', end: '17:00' }] }] }).ok, true);
+  const m3 = world({});
+  const st3 = realLock(m3);
+  m3.post(APV({ base_ver: m3.ver('E01') }));
+  check('L8', '開關關：核定的拿鎖次數跟 #195 一樣（1 次、10 秒）', st3.waits, [10000]);
 }
 
 console.log('\n══ 三、DUTY_AUTH=mini：只收 mini 簽名的寫回 ══');

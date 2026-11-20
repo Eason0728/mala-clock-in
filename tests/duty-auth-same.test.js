@@ -1,4 +1,4 @@
-// P3-3：開關全空（DUTY_AUTH、DUTY_VER_STRICT、DUTY_APPROVE_LOCK 都沒設）時，新版跟改版前的 main 逐字相同。
+// P3-3：開關全空（DUTY_AUTH、DUTY_VER_STRICT 都沒設）時，新版跟改版前的 main 逐字相同。
 // 同一組請求（核定成功／版本退回／金鑰錯／沒帶版本／帶了寫回欄位但店沒設金鑰／讀不到版本兩種／審單／批次／作廢／LINE 送單）
 // 分別在舊版（git show DUTY_AUTH_BASE 的 DutyFeed.gs、Requests.gs，其他檔用這一版）與新版跑，比全部回應＋試算表最後內容＋暫存區記號。
 // 唯一允許的差別：四個核定類動作（不含 dry_run）每次多讀一次 getProperties()（印出來，不算不同）。

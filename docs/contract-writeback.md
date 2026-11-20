@@ -2,7 +2,7 @@
 
 - 撰寫：G 線子對話（Opus），2026-11-21。程式在 mala-clock-in 分支 `p25-g-p3-3`（worktree `~/dev/_wt/p25-g-google`），只動 `apps-script/DutyFeed.gs`、`apps-script/Requests.gs`。
 - 讀者：S 線（營運系統寫回隊伍 `duty-mirror.js`、`duty-auth.js`、`ops/duty-auth.sh`、`req-line.js`）、E 線（engine 照跑同一份 Requests.gs 時要知道新開關）、大腦。
-- 狀態：**草案 v1**。改欄位會在 PR 標題寫「契約改動」並通知 S 線。正本＝本檔；playbook `docs/clock-to-mini/contracts/g-line.md` 是複本。
+- 狀態：**v2（2026-11-21）**：拿掉 `DUTY_APPROVE_LOCK`（併進 #195 的鎖）、加第 5 節遠端設定 `auth_cfg`、第 3.5 節寫明重送時怎麼用指紋確認。v1 → v2 差異見第 7 節。改欄位會在 PR 標題寫「契約改動」並通知 S 線。正本＝本檔；playbook `docs/clock-to-mini/contracts/g-line.md` 是複本。
 - 依據：設計 `phase2-5-design.md` §4.1–4.4；plan P3-3；並行排程 1.3 G 線。
 
 ## 1. 一句話
@@ -15,9 +15,9 @@
 | 屬性 | 值 | 預設 | 分類 | 填錯值 |
 |---|---|---|---|---|
 | `DUTY_AUTH` | 空／`google`／`off`＝現行；其他任何值＝`mini` | 沒設＝現行 | **保護性檢查**（限制誰能核定：只收 mini） | 當 `mini`（維持保護）。所以只能由 `ops/duty-auth.sh` 寫 `mini` 或清空，不手打 |
-| `DUTY_VER_STRICT` | 空＝關；`0`／`off`／`false`／`no`＝關；其他＝開 | 沒設＝關 | 保護性檢查（帶 `base_ver` 讀不到版本＝擋，不再放行） | 當開 |
-| `DUTY_APPROVE_LOCK` | 同上 | 沒設＝關 | 保護性檢查（`mgr_approve` 比版本＋寫入包在指令碼鎖內） | 當開 |
-- `DUTY_AUTH=mini` 時，`DUTY_VER_STRICT`、`DUTY_APPROVE_LOCK` 一律當開（不看屬性）。
+| `DUTY_VER_STRICT` | 空＝關；`0`／`off`／`false`／`no`＝關；其他＝開 | 沒設＝關 | 保護性檢查（兩個舊缺口：帶 `base_ver` 讀不到版本＝擋；寫入前在 #195 那把指令碼鎖內再比一次版本） | 當開 |
+- `DUTY_AUTH=mini` 時，`DUTY_VER_STRICT` 一律當開（不看屬性）。
+- v1 的 `DUTY_APPROVE_LOCK` 已拿掉：#195 已在 `handleMgrApprove` 寫入前拿指令碼鎖（`REQ_PEND_BLOCK` 沒關就拿，預設就生效），P3-3 改成在同一把鎖內再比一次版本，不另外包一層鎖（兩層同一把鎖會巢狀，實測每筆都 `busy`）。
 - 簽名用的金鑰與店代碼沿用門鈴已設好的 `DUTY_PUSH_KEY`（≥ 32 字）、`DUTY_PUSH_STORE`，**不新增金鑰**；營運系統那一邊是保險箱 `push:<店>`（同 `server/duty-push.js` 驗門鈴用的那把）。
 - 讀屬性的成本：上面四個動作（不含 `dry_run`）每次多一次 `getProperties()`；其他動作不多讀。
 - `req_submit` 的 `req_id` 沒有開關：**呼叫端不帶就跟現在一樣**（現在沒有任何頁面帶）。
@@ -72,7 +72,7 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
    - 正在寫（另一個執行剛放的記號）→ `busy`（`wb_pending:true`）。
    - 沒有 → 放「正在寫」記號（10 分鐘），放鎖，照原本流程判＋寫。
 5. 寫完：成功（`ok:true`）→ 記號改「已寫好」並存結果，**留 6 小時**；失敗或丟例外 → 記號拿掉（下一次重送會重新判）。
-6. `mgr_approve` 不論有沒有簽名，只要 `DUTY_APPROVE_LOCK` 開（或 `mini`）：比版本＋寫入包在指令碼鎖內（最多等 20 秒，拿不到 → `busy`）。`base_ver` 有帶而 `DUTY_VER_STRICT` 開（或 `mini`）：讀不到版本 → `ver_unknown`。
+6. `mgr_approve` 帶 `base_ver`、`DUTY_VER_STRICT` 開（或 `mini`）時：讀不到版本 → `ver_unknown`；寫入前在 #195 那把指令碼鎖內（最多等 10 秒，拿不到 → `busy`）再比一次版本，對不上 → `stale_ver`。`REQ_PEND_BLOCK=off` 時也照樣拿這把鎖。
 
 ### 3.4 回應一覽（`ok:false` 時 HTTP 仍是 200，看 `error`）
 | `error` | 什麼時候 | 營運系統該怎麼做 | 範例 |
@@ -91,7 +91,13 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
 | 原本的各種規則錯誤 | `not_pending`、`need_proof`、`pay_locked`、`unauthorized`… | 照設計 §4.5：真衝突 | 照原本 |
 
 ### 3.5 營運系統要注意的三件事
-1. **6 小時後記號會消失**（CacheService 上限）。重送超過 5 小時還沒成功就不要再送，改走對帳。記號被 Google 提早清掉時，Google 就照原本流程再判一次：核定會因 `base_ver` 已變而回 `stale_ver`、審單回 `not_pending`（「這筆已經處理過了」）、作廢回 `not_approved`——**重送（第 2 次以上）收到這三種，先用指紋／原始列確認是不是自己上一次其實已經寫進去，再決定算不算衝突**。
+1. **6 小時後記號會消失**（CacheService 上限）。重送超過 5 小時還沒成功就不要再送，改走對帳。記號被 Google 提早清掉時，Google 就照原本流程再判一次：核定會因 `base_ver` 已變而回 `stale_ver`、審單回 `not_pending`（「這筆已經處理過了」）、作廢回 `not_approved`。**重送（第 2 次以上）收到這三種，先照下面確認是不是自己上一次其實已經寫進去，再決定算不算衝突**：
+   - **第一步：當天指紋**（R 線契約 `r-line.md` 第 4 節）。用 `relay_pull {with:{fp:true}}` 重拉這家店的指紋（或等下一次每小時對帳），取 `fp.<表>[<日期>]`：核定看 `approved`、審單與作廢看 `requests`（日期＝申請單的 `date`）。mini 用自己原始表、同一套 `rowCanon`／`fpOfRows` 算同一天，值是 `"<列數>:<雜湊>"`。**兩邊相同＝Google 那天跟 mini 一模一樣＝自己那筆已寫進去，標完成**。
+   - **第二步：指紋不同時看那一列**（`relay_pull {with:{rows:true}}`，或 R 線副本表 `g_approved`／`g_requests` 重拉後）：
+     - 核定：`approved` 有 `date`＝那天、`emp_id`＝那人、`periods`、`approved_hours`、`status_text`、`manager_name` 都等於 mini 寫回的值，而且沒有更晚的列（`entered_at` 最大的那列就是它）。`entered_at` 是 Google 寫入時間，不比。另一個捷徑：`stale_ver` 回應帶 `cur_ver`，跟 mini 照自己寫完後的原始列用同一套 `dutyVerOf_` 算出的版本相同，也算同一筆。
+     - 審單：`requests` 那個 `id` 的 `status` 是自己的決定（`approved`／`rejected`），`decided_by` 是自己送的核定人姓名（`acting_name`），退回的 `reject_reason` 也相同。
+     - 作廢：那個 `id` 的 `status`＝`voided`，`voided_by`、`void_reason` 跟自己送的一樣。
+   - 兩步都對不上＝真衝突（別人改過），列「衝突待處理」。
 2. 一筆寫回只有一個 `wb_id`；批次審單（`mgr_req_decide_batch`）整批一個 `wb_id`，成功結果裡的 `done`／`skipped` 照原本。
 3. 同一店同時送很多筆會排同一把指令碼鎖：一筆一筆送（隊伍本來就是逐筆），不要並發。
 
@@ -115,10 +121,34 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
 - 回應形狀跟原本一樣（單張：`{ok, request, summary}`；多段：照原本多段的回應），重送多 `dup:true`。
 - `DUTY_AUTH` 不影響 `req_submit`（設計 §4.3：LINE 送出不擋）。身分照舊用 `id_token` 驗：mini 代送時要帶手機的 `id_token`（LINE 的 token 約 1 小時過期；過期 → 原本的 `invalid_token` 類錯誤，mini 要讓手機重送或走對帳）。**沒有「用簽名代替 id_token」的路**（那會改變誰能送單，不在這包）。
 
-## 5. 版本與退回
-- 上線（D2）：九店只換 `DutyFeed.js`＋`Requests.js`，屬性全空 → 跟現在一樣。
-- 開：`ops/duty-auth.sh <店> mini --go` 設 `DUTY_AUTH=mini`（S 線）；兩個缺口修正可以單獨先開 `DUTY_VER_STRICT=1`、`DUTY_APPROVE_LOCK=1`（逐店，量光復 `busy`）。
+## 5. 遠端設定 `auth_cfg`（給 `ops/duty-auth.sh`）
+這台沒有別的方式改指令碼屬性，所以比照門鈴的 `push_cfg` 開一個設定動作（掛在 `duty_changes` 底下，不新增動作名稱，不記成考勤變動）。
+```json
+{ "action": "duty_changes", "mgr_key": "<營運系統代管主管金鑰>", "admin_key": "<管理金鑰>", "acting_name": "資訊部（DZY000）",
+  "auth_cfg": { "mode": "mini", "ver_strict": true, "ts": 1763712000000, "sig": "<64 個小寫十六進位>" } }
+{ "action": "duty_changes", "mgr_key": "…", "admin_key": "…", "auth_cfg": { "get": true } }
+```
+- **驗證（三把金鑰都要有）**：①主管金鑰（`managers` 分頁上在職的那把）＋②管理金鑰 `admin_key`（同 `push_cfg`）＋③這家店已設門鈴金鑰時，還要 mini 的設定簽名：
+  `sig = HMAC-SHA256(DUTY_PUSH_KEY, "cfg|1|<店代碼>|<mode 照請求原字小寫>|<ver_strict：1／0／沒帶寫 ->|<ts>")`，`ts` 只收 Google 現在 ±10 分鐘。
+  沒設門鈴金鑰的店（瑞光、文心）只能設 `google`（＝現行），切 `mini` 一律 `need_key`。
+- **值**：`mode` 只認 `google`、`mini`（別名 `off`、`shadow`＝`google`；`on`＝`mini`）。營運系統的 shadow 模式在 Google 端就是 `google`。`ver_strict` 只認 `true`／`false`，沒帶＝不動。**其他任何值 → `bad_input`，屬性一個都不動（維持原值）**。
+- **只寫白名單**：`DUTY_AUTH`（mini→`mini`、google→空字串）、`DUTY_VER_STRICT`（true→`1`、false→空字串）。不碰金鑰、店代碼、其他屬性（有測試）。
+- **紀錄**：每次寫入記一筆到 Apps Script 執行紀錄，並存進指令碼屬性 `DUTY_AUTH_LOG`（最近 20 筆 `{at, by, mode, ver_strict, from}`；`by`＝主管名單上的名字＋`acting_name`，不含金鑰）。`get:true` 讀得到。
+- **回應**：
+  - 成功 `{"ok":true,"auth_cfg":{"mode":"mini","ver_strict":true},"changed":true}`
+  - 讀現況 `{"ok":true,"auth_cfg":{…},"log":[{"at":"2026-11-21T15:00:00+08:00","by":"營運系統代管／資訊部（DZY000）","mode":"mini","ver_strict":true,"from":"google"}]}`
+  - 錯誤：`unauthorized`（任一把金鑰錯）、`bad_sig`（缺簽名或簽名錯）、`wb_ts`（時間超過，附 `now`）、`bad_input`（值認不得）、`need_key`（沒門鈴金鑰卻要切 mini）、`busy`、`not_supported`（那家店的 `Requests.js` 還是舊版）。
+- 生效：下一筆核定就照新模式（不快取）。
+
+## 5b. 版本與退回
+- 上線（D2）：九店換 `DutyFeed.js`＋`Requests.js`（＋`程式碼.js` 的程式部分，設定區逐位元組保留），屬性全空 → 跟現在一樣。
+- 開：`ops/duty-auth.sh <店> mini --go` 用第 5 節設 `DUTY_AUTH=mini`（S 線）；舊缺口修正可以逐店先開 `DUTY_VER_STRICT`（`auth_cfg {mode:'google', ver_strict:true}`）。
 - 退回：清空屬性（秒級，下一筆生效）；程式退回＝部署包 `p3g/rollback_one.sh <店>`。
 
 ## 6. 測試對照
-`tests/duty-auth.test.js`（本 PR）：每一列回應都有一條測試；範例 JSON 直接取自測試輸出。S 線寫假 Google 時照第 3.4、4.2 節。
+`tests/duty-auth.test.js`（寫回、模式、鎖）、`tests/duty-auth-cfg.test.js`（第 5 節）、`tests/req-submit-id.test.js`（第 4 節）、`tests/duty-auth-same.test.js`（屬性全空＝跟改版前逐字相同）。範例 JSON 直接取自測試輸出。S 線寫假 Google 時照第 3.4、4.2、5 節。
+
+## 7. v1 → v2 差異（S 線要對的）
+- 拿掉 `DUTY_APPROVE_LOCK`。鎖等待從 20 秒改成 10 秒（#195 那把）；`busy` 的意思不變，照樣重送。
+- 新增第 5 節 `auth_cfg`（`ops/duty-auth.sh` 要改成呼叫它）。
+- 第 3.5 節寫明重送時怎麼用指紋與原始列確認。

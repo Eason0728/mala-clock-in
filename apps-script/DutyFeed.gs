@@ -127,9 +127,10 @@ function handleDutyChanges_(body) {
   var ss = getSS(), sh = ss.getSheetByName('managers');
   var mg = sh ? readSheetAsObjects(sh) : null;
   if (!mg || !findManagerByKey(mg.rows, body.mgr_key)) return { ok: false, error: 'unauthorized' };
-  if (body.push_setup !== undefined && body.push_cfg !== undefined) return { ok: false, error: 'bad_input' };   // 一次只做一件
+  if ((body.push_setup !== undefined) + (body.push_cfg !== undefined) + (body.auth_cfg !== undefined) > 1) return { ok: false, error: 'bad_input' };   // 一次只做一件
   if (body.push_setup !== undefined) return dutyPushSetup_(body);
   if (body.push_cfg !== undefined) return dutyPushCfgSet_(body);
+  if (body.auth_cfg !== undefined) return typeof dutyAuthCfgSet_ === 'function' ? dutyAuthCfgSet_(body, mg) : { ok: false, error: 'not_supported' };   // 2026-11-21 P3-3：遠端切核定模式（Requests.gs dutyAuthCfgSet_）
   var x = dutyChangesExtras_(body);   // 沒帶任何新參數＝null，下面每一步都跟之前一樣
   var now = Date.now();
   var since = Number(body.since);
@@ -651,9 +652,9 @@ function dutyVerUnknown_() { return JSON.parse(JSON.stringify(DUTY_VER_UNKNOWN_)
  * 指令碼屬性（全部沒設＝跟以前逐字相同；只多一次 getProperties()，而且只有下面四個動作、不是 dry_run 才讀）：
  *   DUTY_AUTH          空／google／off＝現行；其他任何值＝mini：mgr_approve、mgr_req_decide、mgr_req_decide_batch、mgr_req_void
  *                      只收 mini 簽過名的寫回，其餘回 moved_to_mini。保護性檢查：填錯值當 mini（只由營運系統 ops/duty-auth.sh 設）。
- *   DUTY_VER_STRICT    開＝帶 base_ver 卻讀不到版本時回 ver_unknown（舊缺口 1）。空／0／off／false／no＝關，其他＝開（保護性）。
- *   DUTY_APPROVE_LOCK  開＝mgr_approve 的「比版本＋寫入」包在指令碼鎖內（舊缺口 2；最多等 20 秒，拿不到回 busy）。值同上（保護性）。
- *   mini 模式時後兩個一律當開。簽名金鑰、店代碼沿用門鈴的 DUTY_PUSH_KEY、DUTY_PUSH_STORE（不新增金鑰）。
+ *   DUTY_VER_STRICT    開＝舊缺口 1＋2：帶 base_ver 卻讀不到版本時回 ver_unknown；寫入前在 #195 的指令碼鎖內（Code.gs handleMgrApprove，
+ *                      最多等 10 秒，拿不到回 busy）再比一次版本。空／0／off／false／no＝關，其他＝開（保護性）。
+ *   mini 模式時 DUTY_VER_STRICT 一律當開。（原本另有 DUTY_APPROVE_LOCK 自己包一層鎖，#195 合併後改用同一把鎖，拿掉。）簽名金鑰、店代碼沿用門鈴的 DUTY_PUSH_KEY、DUTY_PUSH_STORE（不新增金鑰）。
  * 寫回簽名：wb_sig＝HMAC-SHA256(DUTY_PUSH_KEY, 'wb|1|店|action|wb_id|wb_ts|對象')，對象見 dutyWbTarget_。wb_ts 只收 ±10 分鐘。
  * 同一個 wb_id 只寫一次：同一把指令碼鎖內查記號＋放「正在寫」記號（同 RelayG.gs relayGFallbackBefore_ 做法），
  *   寫成功改「已寫好」留 6 小時（CacheService 上限），重送直接回當時結果＋dup:true；失敗或例外就拿掉記號。 */
@@ -665,7 +666,6 @@ var DUTY_WB_SKEW_MS_ = 10 * 60000;          // 簽名時間 ±10 分鐘
 var DUTY_WB_PENDING_TTL_S_ = 600;           // 「正在寫」記號：執行中斷（逾時）時最多卡 10 分鐘
 var DUTY_WB_DONE_TTL_S_ = 21600;            // 「已寫好」記號：6 小時（CacheService 上限）
 var DUTY_WB_LOCK_MS_ = 10000;               // 查／放記號那一下最多等 10 秒
-var DUTY_APPROVE_LOCK_MS_ = 20000;          // mgr_approve 比版本＋寫入最多等 20 秒（設計 §4.2）
 var DUTY_WB_MAX_CACHE_ = 90000;             // 結果太大放不進暫存區時只記 ok（重送回 {ok:true, dup:true}）
 var DUTY_BUSY_MSG_ = '系統忙碌，請再按一次';
 
@@ -678,9 +678,8 @@ function dutyOnVal_(v) {   // 保護性開關：沒設／空白＝關；明寫 0
 function dutyAuthCfg_() {
   var all = {};
   try { all = PropertiesService.getScriptProperties().getProperties() || {}; } catch (e) { all = {}; }
-  var a = String(all.DUTY_AUTH == null ? '' : all.DUTY_AUTH).trim().toLowerCase();
-  var mini = !(a === '' || a === 'google' || a === 'off');
-  return { mini: mini, strict: mini || dutyOnVal_(all.DUTY_VER_STRICT), lock: mini || dutyOnVal_(all.DUTY_APPROVE_LOCK),
+  var mini = dutyAuthCfgOf_(all).mini;
+  return { mini: mini, strict: mini || dutyOnVal_(all.DUTY_VER_STRICT),
            key: String(all.DUTY_PUSH_KEY || ''), store: String(all.DUTY_PUSH_STORE || '').trim() };
 }
 function dutyWbStr_(v) { return v == null ? '' : String(v); }
@@ -723,7 +722,7 @@ function dutyWbDrop_(id) { try { CacheService.getScriptCache().remove(dutyWbKey_
  * Requests.gs 四個動作（核定、審單、批次審單、作廢）的入口第一行都先叫這支：dutyAuthRun_(body, 'mgr_req_decide', 原本的函式)。
  * 沒有開關、沒帶 wb_*：直接回頭呼叫原本的函式（只多讀一次屬性），回應逐字相同。dry_run 連屬性都不讀。
  * raw(body, cfg) 的第二個參數一定有值（原本的函式看到有值就不再進來，避免繞圈）；
- * mgr_approve 的原本函式用 cfg.lock／cfg.strict 決定要不要上鎖、讀不到版本要不要擋（DUTY_AUTH_PASS_＝都不要）。
+ * mgr_approve 的原本函式用 cfg.strict 決定讀不到版本要不要擋、鎖內要不要再比一次版本（DUTY_AUTH_PASS_＝都不要）。
  */
 var DUTY_AUTH_PASS_ = { pass: true };
 function dutyAuthRun_(body, action, raw) {
@@ -763,4 +762,10 @@ function dutyAuthRun_(body, action, raw) {
     dutyWbDrop_(id);
   }
   return res;
+}
+
+/** DUTY_AUTH 的值 → {mini}（空／google／off＝現行；其他＝mini，保護性）。Requests.gs dutyAuthCfgSet_ 也用。 */
+function dutyAuthCfgOf_(all) {
+  var a = String(all.DUTY_AUTH == null ? '' : all.DUTY_AUTH).trim().toLowerCase();
+  return { mini: !(a === '' || a === 'google' || a === 'off') };
 }
