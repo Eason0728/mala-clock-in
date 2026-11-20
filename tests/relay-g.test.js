@@ -199,4 +199,25 @@ const ROW = (o) => Object.assign({ ts: '2026-11-20T09:00:01+08:00', emp_id: 'E01
   check('E1', '切換前的月份（2026-10）放行', m.sb.payGReconBlock_('2026-10', 'SS1'), null);
   check('E1b', '切換當月沒有對帳 → 擋', m.sb.payGReconBlock_('2026-11', 'SS1').error, 'g_recon_missing');
 }
+// ── P3-1 原始列副本（with.rows／with.fp；契約 dzy-mini-playbook contracts/r-line.md）──
+{
+  const m = make({ now: T('2026-11-20T09:00:00'), props: { REQ_BIND_FROM: 'off', RELAY_KEY: KEY },
+    self: { roster: [ME], events: [['2026-11-20T08:00:00', 'E01', 'in']],
+      approved: [['2026-11-19', 'E01', '測試一', '09:00-18:00', 8, '正常', '值班主管', '2026-11-19T19:00:00+08:00', '', ''], ['2026-11-19', 'E01', '測試一', '09:00-17:00', 7, '正常', '值班主管', '2026-11-19T20:00:00+08:00', '', '改']],
+      leave: [['2026-11-18', '測試一', '特休', 8]],
+      managers: [['值班主管', 'MGR-SECRET-0001', 'true', '', 'E09']] } });
+  m.run(R('apps-script/RelayG.gs'));
+  const plain = m.sb.handleRelayPull_({ relay_key: KEY, with: { roster: true } });
+  check('RW1', '沒帶 rows／fp：回應沒有新欄位', ['rows', 'managers', 'fp'].map((k) => k in plain), [false, false, false]);
+  const r = m.sb.handleRelayPull_({ relay_key: KEY, with: { rows: true } });
+  check('RW2', '三張表筆數（requests 分頁不存在＝空）', [r.rows.approved.total, r.rows.leave.total, r.rows.requests.total, r.rows.requests.rows.length], [2, 1, 0, 0]);
+  check('RW3', '主管名單只有白名單欄、整個回應找不到主管金鑰', [Object.keys(r.managers[0]).sort().join(','), JSON.stringify(r).indexOf('MGR-SECRET-0001') < 0], ['__row,active,allow_acting,emp_id,name', true]);
+  check('RW4', '指紋格式：同一天兩列', /^2:[0-9a-f]{16}$/.test(r.fp.approved['2026-11-19']), true);
+  const f = m.sb.handleRelayPull_({ relay_key: KEY, with: { fp: true } });
+  check('RW5', '只要指紋：不帶列、指紋相同', ['rows' in f, 'managers' in f, JSON.stringify(f.fp) === JSON.stringify(r.fp)], [false, false, true]);
+  m.self.sh.approved.getRange(3, 5).setValue(6.5);
+  const g = m.sb.handleRelayPull_({ relay_key: KEY, with: { fp: true } });
+  check('RW6', '改一格 → 那天指紋變、別天不變', [g.fp.approved['2026-11-19'] !== r.fp.approved['2026-11-19'], g.fp.leave['2026-11-18'] === r.fp.leave['2026-11-18']], [true, true]);
+  check('RW7', '金鑰類欄名一律不帶', [m.sb.RELAYG_SECRET_COL_RE_.test('key'), m.sb.RELAYG_SECRET_COL_RE_.test('relay_key'), m.sb.RELAYG_SECRET_COL_RE_.test('line_user_id'), m.sb.RELAYG_SECRET_COL_RE_.test('emp_id'), m.sb.RELAYG_SECRET_COL_RE_.test('monkey')], [true, true, true, false, false]);
+}
 done();
