@@ -33,7 +33,11 @@ var DUTY_FEED_READS_ = {
   mgr_line_binds: 1, mgr_qr_token: 1, line_hub_status: 1, line_hub_attach_get: 1, line_probe: 1,
   relay_snapshot: 1, relay_pull: 1, relay_mode: 1, punch_timing_get: 1, line_hub_req_quota: 1, line_hub_pay_lock: 1, line_hub_sched: 1, sched_day_roster: 1,
   svc_roster: 1, svc_payroll_names: 1, duty_changes: 1, line_hub_react_check: 1, line_punch_timing: 1,
-  line_hub_req_init: 1, line_hub_warm: 1   // 2026-11-18：申請頁開頁資料、mini 先建對照表都只讀（原本 init 每開一次頁就讓 mini 重讀光復當天考勤）
+  line_hub_req_init: 1, line_hub_warm: 1,   // 2026-11-18：申請頁開頁資料、mini 先建對照表都只讀（原本 init 每開一次頁就讓 mini 重讀光復當天考勤）
+  // 2026-11-21：mini 定時送來、只寫 CacheService 的快取（LineHub.gs handleLineHubBulletinPut_ 每 5 分鐘、handleLineHubDzyRemindPut_ 每 15 分鐘）。
+  //   不動任何考勤資料，卻一律被當寫入記變動＋按門鈴，佔光復門鈴約八成：光復每天多送 200 多次，慢門鈴熔斷（單次 ≥2 秒就停推 10 分鐘＋等 ping）
+  //   機會多 4～5 倍，每筆還讓 mini 重讀光復今天的考勤與待審清單。熔斷期間這兩種的變動沒門鈴又被 mini 當成漏推。
+  line_hub_bulletin_put: 1, line_hub_dzy_remind_put: 1
 };
 /* 薪資模組只讀的動作很多，名稱都是 payroll_ 開頭；會改考勤的只有這幾個（其他 payroll_ 開頭的不記） */
 var DUTY_FEED_PAYROLL_WRITES_ = { payroll_leave_event_set: 1, payroll_ot_month_sync: 1, payroll_holiday_sync: 1, payroll_migrate_store: 1 };

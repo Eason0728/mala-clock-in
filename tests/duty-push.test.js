@@ -348,6 +348,28 @@ ok('唯讀動作、dry_run:true、res.ok===false、沒有回應：不推、不�
   assert.strictEqual(h.fetches.length, 0); assert.strictEqual(h.stats(), null);
 });
 
+ok('mini 定時送來、只寫快取的 line_hub_bulletin_put／line_hub_dzy_remind_put（光復）：不記變動、不按門鈴、不計數；跟真正的寫入並排時真的寫入照舊（2026-11-21 光復門鈴常掉的查證）', () => {
+  const h = harness(SRC, { props: LIVE });
+  const since = h.now - 1000;
+  for (let i = 0; i < 20; i++) {
+    h.write({ action: 'line_hub_bulletin_put', key: 'x', v: 1, at: 'x', map: {} }, { ok: true, people: 3 });
+    h.write({ action: 'line_hub_dzy_remind_put', svc_key: 'x', v: 1, at: 'x', map: {} }, { ok: true, people: 1 });
+  }
+  assert.strictEqual(h.fetches.length, 0, '40 次快取推送：0 次連外');
+  assert.strictEqual(h.stats(), null, '門鈴統計一筆都不計（sent／skip_off 都不動）');
+  assert.strictEqual(h.changes({ since }).changes.length, 0, 'duty_changes 沒有這兩種（mini 不會因它們重讀考勤）');
+  assert.ok(h.sb.dutyFeedIsRead_('line_hub_bulletin_put') && h.sb.dutyFeedIsRead_('line_hub_dzy_remind_put'));
+  // 對照：真的寫入照舊記變動、照舊按門鈴；熔斷中的快取推送也不會多記 skip_off
+  h.write(W, { ok: true });
+  assert.strictEqual(h.fetches.length, 1, '真的核定照常按一次門鈴');
+  assert.strictEqual(JSON.stringify(h.changes({ since }).changes.map((c) => c.a)), '["mgr_approve"]');
+  h.cache.dpush_off = { v: JSON.stringify({ until: h.now + 600e3, why: 'slow' }), exp: h.now + 6 * 3600e3 };
+  h.write({ action: 'line_hub_bulletin_put', key: 'x', v: 1, at: 'x', map: {} }, { ok: true, people: 3 });
+  assert.strictEqual(h.stats().skip_off || 0, 0, '熔斷中收到快取推送：不記 skip_off（不會被 mini 當成寫入沒按到門鈴）');
+  h.write(W, { ok: true });
+  assert.strictEqual(h.stats().skip_off, 1, '熔斷中的真寫入照舊記 skip_off');
+});
+
 ok('金鑰、店代碼、網址不齊：不連外、記 skip_cfg', () => {
   [{ DUTY_PUSH_URL: URL_, DUTY_PUSH_STORE: 'mztjs' }, { DUTY_PUSH_URL: URL_, DUTY_PUSH_KEY: 'short', DUTY_PUSH_STORE: 'mztjs' },
    { DUTY_PUSH_URL: URL_, DUTY_PUSH_KEY: KEY }, { DUTY_PUSH_URL: 'http://plain.example.test/x', DUTY_PUSH_KEY: KEY, DUTY_PUSH_STORE: 'mztjs' },
