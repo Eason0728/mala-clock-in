@@ -249,8 +249,23 @@
      切換／退回只改 mini 的開關，不用重新發布這一頁。問不到 mini＝照舊直送 Google（跟今天一樣）。 */
   var G_API = MINI_GW, G_ALT = MINI_DIRECT, gVia = 'gw';   // G_ALT＝備用那條；gVia＝現在走哪條（回報秒數用）
   if (isLocalHost) { G_API = qs('g_api') || ''; G_ALT = qs('g_alt') || ''; }   // 本機測試只准打 ?g_api=／?g_alt= 給的假 mini
-  var gConf = null, G_AFTER_MS = 6000;   // gConf＝{primary:['gf',…], wait_ms}；問不到維持 null
+  var gConf = null, gConfFailed = false, G_AFTER_MS = 6000;   // gConf＝{primary:['gf',…], wait_ms}；問不到維持 null
   var MINI_ST_WAIT_MS = (isLocalHost && +qs('mini_st_ms')) || 4000;   // 開頁狀態等 mini 最多這麼久（同時也在問 Google，誰先回用誰）
+  /* 開頁只問 mini（2026-11-21，第 2 階段 P2-B／設計 2-1）：每店開關，沒列＝false＝跟現在一樣（同時問 mini 與 Google）。
+     "cmp"＝試跑：先只問 mini，按鍵亮了之後才在背景問 Google 比對（量 st_match），有 Google 較新的卡照舊改用 Google；
+     true＝只問 mini：mini 回了（而且公告也由 mini 帶，notices_ok）就完全不問 Google。
+     mini 先跑 ST_HEDGE_MS；這段時間沒回、連不上、回的不能用、沒帶公告，就馬上問 Google（＝跟現在一樣誰先回用誰）。開頁時已知 mini 連不上也直接照現在。
+     退回：這裡改回 false 重發頁面（≤10 分鐘）。 */
+  var ST_ONLY_MINI = {};   // 例：{ mztjs: "cmp" }（店碼；小辛辣光復＝""）
+  var ST_HEDGE_MS = (isLocalHost && +qs('st_hedge_ms')) || 1200, ST_CMP_DELAY_MS = (isLocalHost && +qs('st_cmp_ms')) || 1500;
+  if (isLocalHost && qs('st_only') !== null && qs('st_only') !== '') {   // 本機測試：?st_only=cmp|1|0 套用到每一家店
+    var so = qs('st_only'); ST_ONLY_MINI = { '*': so === 'cmp' ? 'cmp' : so === '1' };
+  }
+  function stOnlyMini(st) {
+    if (!st) return false;
+    var v = Object.prototype.hasOwnProperty.call(ST_ONLY_MINI, st.code) ? ST_ONLY_MINI[st.code] : ST_ONLY_MINI['*'];
+    return v === true ? true : (v === 'cmp' ? 'cmp' : false);   // 其他值一律當 false（＝現在的做法）
+  }
   /* STORES:BEGIN（tools/build-line-page.py 產生，勿手改）*/
   var STORES = [
     {"code": "", "name": "小辛辣 新竹光復", "lat": 24.7840945, "lng": 121.0157448, "radius_m": 20, "api": "https://script.google.com/macros/s/AKfycbxE4DTz847y0bPvLd4mD_9vBFTe3npmVVYKU1CYgeFcUpAuL4vLIA3rySXSR-2qujdJ0A/exec", "relay": true},
@@ -594,7 +609,7 @@
   /* ── 開頁秒數（2026-11-16，Eason「點開到成功 5 秒內」）──
      全部是「從點開這一頁起算」的毫秒數（performance.now）：liff＝LINE 登入好、geo＝定位好、st＝開頁狀態回來、ready＝按鍵亮起、conf＝問到 mini 正本名單。
      一次開頁送一列到光復 open_timing（line_punch_timing 帶 kind:'open'）；開頁失敗也送，才知道同仁卡在哪。量不到就算了，絕不影響打卡。 */
-  var om = { liff: null, geo: null, st: null, ready: null, conf: null, src: '', match: '', pre: false, g: null, mini: null, readySent: false, fails: 0,
+  var om = { liff: null, geo: null, st: null, ready: null, conf: null, src: '', match: '', only: '', pre: false, g: null, mini: null, readySent: false, fails: 0,
              fix1: null, fix1acc: null, coarse: false, backSent: false };   // fix1＝第一筆位置幾毫秒到、誤差多少；coarse＝按鍵是靠粗略位置放行的（2026-11-17）
   function omReport(outcome, stt, force) {   // force：已經回報過 ready 之後還要補記的事（目前只有「先亮又收回」，一次開頁最多一列）
     try {
@@ -604,7 +619,7 @@
       var r = function (v) { return v === null || v === undefined ? null : Math.round(v); };
       var body = JSON.stringify({ action: 'line_punch_timing', kind: 'open', id_token: liff.getIDToken(), store: curStore ? curStore.code : '-',   // '-'＝還不知道在哪家店（定位失敗、不在範圍）；空字串是光復的店碼，不能混用
         outcome: outcome, status: stt || '', liff_ms: r(om.liff), geo_ms: r(om.geo), st_ms: r(om.st), ready_ms: r(om.ready), conf_ms: r(om.conf),
-        st_src: om.src, st_match: om.match, pre: om.pre, via: gConf ? gVia : '', g_ms: r(om.g), mini_ms: r(om.mini),
+        st_src: om.src, st_match: om.match, st_only: om.only, pre: om.pre, via: gConf ? gVia : '', g_ms: r(om.g), mini_ms: r(om.mini),
         fix1_ms: r(om.fix1), fix1_acc: om.fix1acc !== null && isFinite(om.fix1acc) ? om.fix1acc : null, coarse: om.coarse === true,
         accuracy_m: lastFix && isFinite(lastFix.coords.accuracy) ? lastFix.coords.accuracy : null });
       if (isLocalHost) window.__open = (window.__open || []).concat([JSON.parse(body)]);   // 本機測試看得到送了什麼
@@ -628,20 +643,29 @@
     try { var me = liff.getDecodedIDToken && liff.getDecodedIDToken(); if (me && me.sub) localStorage.setItem(ST_KEY, JSON.stringify({ sub: me.sub, code: st.code })); } catch (e) { /* 記不住就下次照舊 */ }
   }
   function fetchStatus(st) {
-    var f = { st: st, t0: tmNow(), live: false, quiet: false, gMs: null, mMs: null };
-    f.google = readRetry(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() }, 1, function () { return f.quiet || !f.live; })
-      .then(function (r) { f.gMs = tmNow() - f.t0; f.gAt = Date.now(); if (r && typeof r === 'object') r.__at = f.gAt; return r; });
+    var f = { st: st, t0: tmNow(), live: false, quiet: false, gMs: null, mMs: null, google: null, only: false };
+    var done = false, res, rej;
+    f.first = new Promise(function (a, b) { res = a; rej = b; });
+    f.first.catch(function () {});   // 先讀的那份沒被用到時不留未處理的錯誤
     f.mini = (!G_API || qrToken) ? Promise.resolve(null)
       : post(G_API + '/status', { store: st.code === '' ? 'gf' : st.code, id_token: liff.getIDToken() }, MINI_ST_WAIT_MS)
           .then(function (r) { f.mMs = tmNow() - f.t0; if (r && typeof r === 'object') r.__at = Date.now(); return (r && r.ok === true && r.status === 'ready' && r.role === 'primary' && r.guard) ? r : null; },
                 function () { return null; });
-    f.first = new Promise(function (resolve, reject) {
-      var done = false;
-      f.mini.then(function (r) { if (r && !done) { done = true; resolve({ r: r, src: 'mini' }); } });
-      f.google.then(function (r) { if (!done) { done = true; resolve({ r: r, src: 'google' }); } },
-        function (e) { f.mini.then(function (r) { if (!done) { done = true; reject(e); } }); });   // Google 讀不到、mini 也沒有可用的答案才算失敗
-    });
-    f.first.catch(function () {});   // 先讀的那份沒被用到時不留未處理的錯誤
+    f.mini.then(function (r) { if (r && !done) { done = true; res({ r: r, src: 'mini' }); } });
+    /** 問 Google（只問一次）。誰先回用誰：Google 讀不到、mini 也沒有可用的答案才算失敗 */
+    f.askGoogle = function () {
+      if (f.google) return f.google;
+      f.google = readRetry(storeApi(st), { action: 'liff_status', id_token: liff.getIDToken() }, 1, function () { return f.quiet || !f.live; })
+        .then(function (r) { f.gMs = tmNow() - f.t0; f.gAt = Date.now(); if (r && typeof r === 'object') r.__at = f.gAt; return r; });
+      f.google.then(function (r) { if (!done) { done = true; res({ r: r, src: 'google' }); } },
+        function (e) { f.mini.then(function () { if (!done) { done = true; rej(e); } }); });
+      return f.google;
+    };
+    // 開頁只問 mini（P2-B）：開關開、有 mini 網址、不是主管 QR、開頁時沒有已知 mini 連不上
+    f.only = (G_API && !qrToken && !gConfFailed) ? stOnlyMini(st) : false;
+    if (!f.only) { f.askGoogle(); return f; }   // 跟現在一樣：同時問
+    var hedge = setTimeout(function () { f.hedged = true; f.askGoogle(); }, ST_HEDGE_MS);
+    f.mini.then(function (r) { clearTimeout(hedge); if (!(r && r.notices_ok === true)) f.askGoogle(); });   // mini 不能用、或公告沒帶（Google 端還是舊版 RelayG）：照現在問 Google
     return f;
   }
   /** 兩邊的開頁狀態一不一樣（只比會影響按鍵的部分）：今天的卡、最後一張卡、兩顆鍵鎖不鎖、休息、滿 10 小時。 */
@@ -670,7 +694,7 @@
         var r = x.r;
         if (r && r.ok && r.status === 'ready') {
           r.store = { code: st.code, name: st.name, lat: st.lat, lng: st.lng, radius_m: st.radius_m };
-          om.st = tmNow(); om.src = x.src;
+          om.st = tmNow(); om.src = x.src; om.only = (f.only === true ? '1' : (f.only === 'cmp' ? 'cmp' : '')) + (f.hedged ? '+h' : '');
           render(r); rememberStore(st);
           om.ready = tmNow();
           statusAfter(f, x.src, r);
@@ -705,7 +729,10 @@
         return;
       }
       f.quiet = true;   // mini 先回：Google 那份在背景，重試也不在畫面上寫字
-      Promise.race([f.google, cap(15000)]).then(function (g) {
+      if (!f.google && f.only === true) { om.match = ''; send(); return; }   // 只問 mini（P2-B true）：mini 回了、公告也有 → 不問 Google
+      var gP = f.google || (f.only === 'cmp'   // 試跑（"cmp"）：按鍵亮了之後才在背景問 Google 比對
+        ? cap(ST_CMP_DELAY_MS).then(function () { return f.askGoogle(); }) : f.askGoogle());
+      Promise.race([gP, cap(15000 + (f.google ? 0 : ST_CMP_DELAY_MS))]).then(function (g) {
         var live = gen === stGen && status === shown && !busy;   // 畫面還停在開頁那一刻（沒按過打卡、沒重讀）
         if (g && g.ok && g.status === 'ready') {
           om.match = stKey(g) === key0 ? 'same' : 'diff';
@@ -815,7 +842,7 @@
         if (k) { G_API = alt; G_ALT = ''; gVia = 'direct'; if (!isLocalHost) RELAY_API = alt + '/predict'; }
         return k;
       });
-    }).then(function (j) { gConf = j; if (j && om.conf === null) om.conf = tmNow(); return j; });
+    }).then(function (j) { gConf = j; gConfFailed = !j; if (j && om.conf === null) om.conf = tmNow(); return j; });
   }
   function gPrimary(st) { return !!(gConf && st && !qrToken && gConf.primary.indexOf(st.code === '' ? 'gf' : st.code) >= 0); }   // 主管 QR 照舊送 Google
   /** mini 寫完、抄到 Google 之後才有的提示（申請結果通知、下班超時提示）。最多等 G_AFTER_MS；拿不到回 null。 */
