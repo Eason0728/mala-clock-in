@@ -20,7 +20,10 @@
  * 2026-11-18 第一次開頁加快（Eason：「第一次開申請頁向光復讀取要 13 到 14 秒」；光復 LineHub.gs 共用對照表＋mini 預熱，見營運系統 server/line-req.js）：
  *   ①送出前確認（gateWait）：畫面上的店別、假別、額度、我的申請還是手機記住的／Mac mini 記住的（不是光復剛給的）→ 按送出時先等最新的（最多 GATE_MS），
  *     最新的跟畫面上不一樣（少一家、多一家店、額度不同、開關不同）→ 不送，換成最新畫面並寫「請確認後再按一次送出」；一樣就照送。最新的讀不到 → 照送（店家後端照樣檢查）。
- *   ②讀不到不空白：開頁失敗有「重新讀取」；等光復超過 8 秒寫「還在讀取」；額度還沒到寫「額度讀取中…」、讀不到寫「送出時系統會再檢查」。 */
+ *   ②讀不到不空白：開頁失敗有「重新讀取」；等光復超過 8 秒寫「還在讀取」；額度還沒到寫「額度讀取中…」、讀不到寫「送出時系統會再檢查」。
+ * 2026-11-21 加班一次最多四段（Eason：門市加班常被切成三、四段，以前要拆兩張單送）：只有加班；請假、出差仍最多兩段。
+ *   req_info 的 ot_segments_max（4）決定加班能「＋ 加一段」到第幾段（舊後端回 2＝只能加到第二段，沒這欄也當 2）；多段時每一段都有「刪除這段」；
+ *   前端兩兩檢查重疊、接在一起、合計 10 小時（後端照樣全部再檢查一次）；送出後「我的申請」同一次送出的標「第 N 段／共 M 段」。資料欄位不變。 */
 (function () {
   'use strict';
   /* 送出／取消先走 Mac mini 的開關（2026-11-21，Eason 決定：mini 停機時同仁照樣送得出去）。
@@ -262,7 +265,7 @@
     st.tab = TABS.some(function (t) { return t[0] === opts.tab; }) ? opts.tab : 'leave';
     st.missDate = opts.date || ''; st.missType = opts.miss || '';
     // 下班打卡提示加班（opts.start／end）：預填加班分頁，原因留給同仁寫
-    if (st.tab === 'ot' && opts.date && opts.start && opts.end) ot = { date: opts.date, start: opts.start, end: opts.end, reason: '', seg2: null };
+    if (st.tab === 'ot' && opts.date && opts.start && opts.end) ot = { date: opts.date, start: opts.start, end: opts.end, reason: '', seg2: null, seg3: null, seg4: null };
     if (!touchHooked) {   // 同仁動過表單就不再自動換店（背景拿到最新的「最近一張卡在哪家店」時用）
       touchHooked = true;
       ['input', 'change', 'click'].forEach(function (ev) { $root.addEventListener(ev, function () { if (st.init) st.touched = true; }, true); });
@@ -538,7 +541,7 @@
    *  兩段（body.segments，2026-11-18）：兩段在不同家店打卡 → 擋，請分開送（兩張單會送到同一家店）；否則兩段合起來照同一套看。 */
   function storeGuard(body) {
     if (!body || body.kind === 'miss' || st.init.stores.length < 2) return Promise.resolve(body);
-    var two = body.segments && body.segments.length === 2;
+    var two = body.segments && body.segments.length >= 2;
     var ranges = two ? body.segments.map(function (g) { return [g.start, g.end]; }) : [body.start && body.end ? [body.start, body.end] : null];
     return daysFor(body.date).then(function (res) {
       if (!res) return body;
@@ -561,7 +564,9 @@
   /* ── 一次填兩段（2026-11-18 Eason）──
      同一天兩段加班／請假（只請一段）／出差（只一段）一次送出，後端（Requests.gs reqSegsOf_）拆成兩張普通的單。
      這裡的檢查是「先講」：後端照樣全部檢查一次、以後端為準；任一段沒過一列都不會寫。 */
-  var SEG_LABEL = ['第一段', '第二段'], SEG_WORD = { ot: '加班', leave: '請假', trip: '出差' };
+  var SEG_LABEL = ['第一段', '第二段', '第三段', '第四段'], SEG_NUM = ['', '一', '兩', '三', '四'], SEG_WORD = { ot: '加班', leave: '請假', trip: '出差' };
+  var SEG_KEYS = ['seg2', 'seg3', 'seg4'];   // 表單狀態裡「第二～第四段」的欄位（第一段就是 start／end）
+  var SEG_MAX_N = { ot: 4, leave: 2, trip: 2 };   // 同 Requests.gs REQ_SEG_MAX_N_；加班實際能加到第幾段看 req_info 的 ot_segments_max
   var SEG_MAX_DEFAULT = { ot: 10, leave: 8, trip: 8 };   // 同 Requests.gs REQ_OT_MAX_H／REQ_SEG2_TOTAL_MAX_H_；req_info 的 seg2_max_h、ot_max_h 有給就用給的
   function segMin(t) { var m = /^(\d{2}):(\d{2})$/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; }
   /** 兩段有沒有重疊（含其中一段跨夜到隔天凌晨），同 Requests.gs reqOverlap_；任一邊沒填完整回 null */
@@ -580,34 +585,37 @@
     if (d <= c) d += 1440;
     return [0, 1440, -1440].some(function (k) { return b === c + k || d + k === a; });
   }
-  /** 兩段檢查（純函式，tests/seg2-line.test.js 測）：segs＝[{start,end},{start,end}]，maxH＝兩段合計上限。
-   *  回 null（過）或 {error, message, seg?}；順序同後端：沒填完整 → 重疊 → 接在一起 → 合計超過。 */
+  /** 多段檢查（純函式，tests/seg2-line.test.js、seg4-line.test.js 測）：segs＝[{start,end}…]（2～4 段，照畫面順序），maxH＝合計上限。
+   *  回 null（過）或 {error, message, seg?}；順序同後端：沒填完整 → 各段兩兩比（重疊、接在一起）→ 合計超過。
+   *  兩段時字句跟以前一樣；三、四段時講「第幾段和第幾段」。 */
   function segCheck(kind, segs, maxH) {
-    var what = SEG_WORD[kind] || '', hrs = [], i;
-    for (i = 0; i < 2; i++) {
+    var what = SEG_WORD[kind] || '', hrs = [], n = segs.length, i, j;
+    for (i = 0; i < n; i++) {
       var a = segMin(segs[i].start), b = segMin(segs[i].end);
       if (a === null || b === null) return { error: 'bad_time', seg: i + 1, message: SEG_LABEL[i] + '：請填完整的' + what + '時段' };
       if (a === b) return { error: 'bad_time', seg: i + 1, message: SEG_LABEL[i] + '：開始和結束時間一樣，請確認' };
       hrs.push(spanHours(segs[i].start, segs[i].end));
     }
-    var A = segs[0], B = segs[1];
-    if (segOverlap(A.start, A.end, B.start, B.end) === true)
-      return { error: 'seg_overlap', message: '兩段時間重疊（' + A.start + '–' + A.end + '、' + B.start + '–' + B.end + '），請改時間' };
-    if (segTouch(A.start, A.end, B.start, B.end)) {
-      var ab = segTouch(A.start, A.end, B.start, B.end) && segMin(A.end) === segMin(B.start);   // A 接 B（否則是 B 接 A）
-      return { error: 'seg_touch', message: '兩段接在一起，請直接填成一段 ' + (ab ? A.start + '–' + B.end : B.start + '–' + A.end) };
+    for (i = 0; i < n; i++) for (j = i + 1; j < n; j++) {
+      var A = segs[i], B = segs[j], who = n === 2 ? '兩段' : SEG_LABEL[i] + '和' + SEG_LABEL[j];
+      if (segOverlap(A.start, A.end, B.start, B.end) === true)
+        return { error: 'seg_overlap', message: who + '時間重疊（' + A.start + '–' + A.end + '、' + B.start + '–' + B.end + '），請改時間' };
+      if (segTouch(A.start, A.end, B.start, B.end)) {
+        var ab = segMin(A.end) === segMin(B.start);   // A 接 B（否則是 B 接 A）
+        return { error: 'seg_touch', message: (n === 2 ? '兩段' : who) + '接在一起，請直接填成一段 ' + (ab ? A.start + '–' + B.end : B.start + '–' + A.end) };
+      }
     }
-    var total = Math.round((hrs[0] + hrs[1]) * 100) / 100;
-    if (total > maxH + 0.001) return { error: 'seg_total', message: '兩段合計 ' + total + ' 小時，超過 ' + maxH + ' 小時，請確認時間' };
+    var total = Math.round(hrs.reduce(function (t, v) { return t + v; }, 0) * 100) / 100;
+    if (total > maxH + 0.001) return { error: 'seg_total', message: SEG_NUM[n] + '段合計 ' + total + ' 小時，超過 ' + maxH + ' 小時，請確認時間' };
     return null;
   }
-  /** 這家店有沒有開這種單的「加第二段」（req_info 的 seg2_kinds；舊後端沒這欄＝沒開，畫面跟以前一樣） */
+  /** 這家店有沒有開這種單的「加一段」（req_info 的 seg2_kinds；舊後端沒這欄＝沒開，畫面跟以前一樣） */
   function seg2Open(kind) {
     var i = st.info;
     if (!i || !Array.isArray(i.seg2_kinds) || i.seg2_kinds.indexOf(kind) < 0) return false;
     return !(kind === 'ot' && i.ot_segments_max !== undefined && Number(i.ot_segments_max) < 2);
   }
-  /** 這張表單現在能不能加第二段：開了＋請假的話假別不在 seg2_no_types（生理假） */
+  /** 這張表單現在能不能加一段：開了＋請假的話假別不在 seg2_no_types（生理假） */
   function seg2Ok(kind, type) {
     if (!seg2Open(kind)) return false;
     if (kind === 'leave' && type) {
@@ -616,49 +624,87 @@
     }
     return true;
   }
-  /** 目前要送的兩段（x＝{start,end,seg2}）；沒加第二段、或這張不能加 → null */
+  /** 這種單最多能填幾段：加班看 req_info 的 ot_segments_max（2026-11-21 新後端回 4；舊後端回 2、沒這欄也當 2），請假、出差 2 */
+  function segMaxN(kind) {
+    if (kind !== 'ot') return SEG_MAX_N[kind] || 2;
+    var n = st.info && Number(st.info.ot_segments_max);
+    return n >= 2 ? Math.min(Math.floor(n), SEG_MAX_N.ot) : 2;
+  }
+  /** 表單狀態 x 目前加了哪幾段（第二～第四段，到第一個空的為止）；不看開關 */
+  function segExtras(x) {
+    var out = [];
+    for (var i = 0; i < SEG_KEYS.length; i++) { if (x[SEG_KEYS[i]]) out.push(x[SEG_KEYS[i]]); else break; }
+    return out;
+  }
+  function segSetExtras(x, arr) { for (var i = 0; i < SEG_KEYS.length; i++) x[SEG_KEYS[i]] = arr[i] || null; }
+  /** 目前要送的各段（x＝{start,end,seg2,seg3,seg4}）；沒加第二段、或這張不能加 → null */
   function segsOf(x, kind, type) {
-    return x.seg2 && seg2Ok(kind, type) ? [{ start: x.start, end: x.end }, { start: x.seg2.start, end: x.seg2.end }] : null;
+    if (!x.seg2 || !seg2Ok(kind, type)) return null;
+    return [{ start: x.start, end: x.end }].concat(segExtras(x).map(function (g) { return { start: g.start, end: g.end }; }));
   }
   function segMax(kind) {
     var m = st.info && st.info.seg2_max_h && Number(st.info.seg2_max_h[kind]);
     return m > 0 ? m : SEG_MAX_DEFAULT[kind];
   }
   function otMaxH() { var m = st.info && Number(st.info.ot_max_h); return m > 0 ? m : SEG_MAX_DEFAULT.ot; }   // 單張加班上限（N1：12 → 10）
-  function segHours(segs) { return Math.round(((spanHours(segs[0].start, segs[0].end) || 0) + (spanHours(segs[1].start, segs[1].end) || 0)) * 100) / 100; }
+  function segHours(segs) { return Math.round(segs.reduce(function (t, g) { return t + (spanHours(g.start, g.end) || 0); }, 0) * 100) / 100; }
   /** 一列時段（兩個時間欄＋時數）；seg＝{start,end}，label 有值＝兩段時的「第一段／第二段」 */
-  function segRow(seg, label, onChange) {
+  function segRow(seg, label, onChange, onDel) {
     var tot = h('span', { class: 'rq-muted' });
     var upd = function () { var v = spanHours(seg.start, seg.end); tot.textContent = v ? (label ? v + ' 小時' : '共 ' + v + ' 小時') : ''; };
     var s1 = timePick(seg.start, 15, function (v) { seg.start = v; upd(); onChange(); });
     var e1 = timePick(seg.end, 15, function (v) { seg.end = v; upd(); onChange(); });
     upd();
     var row = h('div', { class: 'rq-row' }, [s1, ' – ', e1, ' ', tot]);
-    return label ? h('div', { class: 'rq-seg' }, [h('div', { class: 'rq-seg-k', text: label }), row]) : row;   // 只一段＝跟以前同一列；兩段＝上面多一行「第一段／第二段」
+    var head = onDel ? h('div', { class: 'rq-seg-k rq-seg-k-del' }, [h('span', { text: label }), h('button', { type: 'button', class: 'rq-link rq-seg-del', text: '刪除這段', 'aria-label': '刪除' + label, on: { click: onDel } })]) : h('div', { class: 'rq-seg-k', text: label });
+    return label ? h('div', { class: 'rq-seg' }, [head, row]) : row;   // 只一段＝跟以前同一列；多段＝上面多一行「第一段／第二段…」（加班可加到四段時，每段右上角有「刪除這段」）
   }
   /** 時段欄（加班、請假只請一段、出差只一段共用）。onChange：任何一段時間改了叫一次（呼叫端更新選店、打卡提醒）。
-   *  沒開放（或這張不能加）＝跟以前同一列；開放＝多一顆「＋ 加第二段」；加了＝兩列＋合計＋檢查訊息。 */
+   *  沒開放（或這張不能加）＝跟以前同一列；開放＝多一顆「＋ 加一段」；加了＝多列＋合計＋檢查訊息。
+   *  最多兩段（請假、出差、舊後端的加班）＝跟 2026-11-18 一樣：「＋ 加第二段」「移除第二段」；
+   *  最多四段（加班，新後端）＝「＋ 再加一段」加到第四段，每段都有「刪除這段」（刪第一段＝後面的往前補）。 */
   function segBlock(x, kind, type, onChange) {
     if (!seg2Ok(kind, type)) return segRow(x, null, onChange);
-    if (!x.seg2) {
+    var maxN = segMaxN(kind), many = maxN > 2, extras = segExtras(x);
+    if (!extras.length) {
       return h('div', {}, [segRow(x, null, onChange),
-        h('button', { type: 'button', class: 'rq-link rq-seg-add', text: '＋ 加第二段（同一天另一段時間）', on: { click: function () { x.seg2 = { start: '', end: '' }; render(); } } })]);
+        h('button', { type: 'button', class: 'rq-link rq-seg-add', text: many ? '＋ 加一段（同一天另一段時間，最多' + SEG_NUM[maxN] + '段）' : '＋ 加第二段（同一天另一段時間）', on: { click: function () { x.seg2 = { start: '', end: '' }; render(); } } })]);
     }
     var sum = h('div', { class: 'rq-seg-sum rq-muted' }), bad = h('div', { class: 'rq-seg-bad-msg' });
+    var cur = function () { return [{ start: x.start, end: x.end }].concat(segExtras(x).map(function (g) { return { start: g.start, end: g.end }; })); };
     var live = function () {
-      var two = [{ start: x.start, end: x.end }, { start: x.seg2.start, end: x.seg2.end }], v1 = spanHours(two[0].start, two[0].end), v2 = spanHours(two[1].start, two[1].end);
-      sum.textContent = v1 && v2 ? '第一段 ' + v1 + ' 小時＋第二段 ' + v2 + ' 小時＝共 ' + segHours(two) + ' 小時' : '';
+      var list = cur(), vs = list.map(function (g) { return spanHours(g.start, g.end); }), all = vs.every(function (v) { return !!v; });
+      sum.textContent = !all ? '' : list.length === 2 ? '第一段 ' + vs[0] + ' 小時＋第二段 ' + vs[1] + ' 小時＝共 ' + segHours(list) + ' 小時'
+                                                      : vs.join('＋') + '＝共 ' + segHours(list) + ' 小時';
       bad.innerHTML = '';
-      var c = v1 && v2 ? segCheck(kind, two, kind === 'ot' ? Math.min(segMax('ot'), otMaxH()) : segMax(kind)) : null;
+      var c = list.length > maxN ? { message: (kind === 'ot' ? '加班' : '請假、出差') + '一次最多填' + SEG_NUM[maxN] + '段時間' }   // 後端最新說的上限比畫面上填的少（例如退回舊版）：先講、送出也會擋
+            : all ? segCheck(kind, list, kind === 'ot' ? Math.min(segMax('ot'), otMaxH()) : segMax(kind)) : null;
       if (c) bad.appendChild(msgBox(c.message, 'err'));
     };
     var chg = function () { live(); onChange(); };
-    var r1 = segRow(x, SEG_LABEL[0], chg), r2 = segRow(x.seg2, SEG_LABEL[1], chg);
-    r1.setAttribute('data-seg', '1'); r2.setAttribute('data-seg', '2'); r2.classList.add('rq-seg2');
+    var rows = [];
+    // 刪第 k 段（0＝第一段）：後面的往前補；刪完剩一段＝回到沒加段的樣子
+    var del = function (k) { return function () {
+      var list = [{ start: x.start, end: x.end }].concat(segExtras(x).map(function (g) { return { start: g.start, end: g.end }; }));
+      list.splice(k, 1);
+      x.start = list[0].start; x.end = list[0].end; segSetExtras(x, list.slice(1));
+      render();
+    }; };
+    var segObjs = [x].concat(extras);
+    segObjs.forEach(function (g, k) {
+      var r = segRow(g, SEG_LABEL[k], chg, many ? del(k) : null);
+      r.setAttribute('data-seg', String(k + 1));
+      if (k >= 1) r.classList.add('rq-seg2');
+      rows.push(r);
+    });
     live();
-    return h('div', { class: 'rq-segs' }, [r1, r2,
-      h('button', { type: 'button', class: 'rq-link rq-seg-del', text: '移除第二段', on: { click: function () { x.seg2 = null; render(); } } }),
-      sum, bad]);
+    var kids = rows.slice();
+    if (many) {
+      if (extras.length + 1 < maxN) kids.push(h('button', { type: 'button', class: 'rq-link rq-seg-add', text: '＋ 再加一段（最多' + SEG_NUM[maxN] + '段，還能加 ' + (maxN - extras.length - 1) + ' 段）', on: { click: function () { x[SEG_KEYS[extras.length]] = { start: '', end: '' }; render(); } } }));
+    } else {
+      kids.push(h('button', { type: 'button', class: 'rq-link rq-seg-del', text: '移除第二段', on: { click: function () { segSetExtras(x, []); render(); } } }));   // 連第三、四段一起收起來
+    }
+    return h('div', { class: 'rq-segs' }, kids.concat([sum, bad]));
   }
   function segErr(c) { var e = new Error(c.message); e.seg = c.seg || 0; return e; }   // 前端自己擋下來的錯誤：帶 seg 讓那一列標紅
   /** 送出失敗、後端說是哪一段（seg 1／2）→ 那一列標紅 */
@@ -666,13 +712,17 @@
     var rows = $root.querySelectorAll('.rq-seg .rq-row');
     for (var i = 0; i < rows.length; i++) rows[i].classList.toggle('rq-seg-bad', i === seg - 1);
   }
-  /** 兩段各自在哪家店打卡（storeByDay 的 expect）；兩段各對到一家而且不同家 → {message}，要分開送；判斷不出來（有店問不到、沒卡、對不到）回 null */
+  /** 各段各自在哪家店打卡（storeByDay 的 expect）；有兩段各對到一家而且不同家 → {message}，要分開送；判斷不出來（有店問不到、沒卡、對不到）的段不算，都判斷不出來回 null。
+   *  兩段時字句跟 2026-11-18 一樣；三、四段時講第幾段（照畫面順序）。 */
   function segStoreSplit(results, date, segs) {
     var dcs = segs.map(function (g) { return storeByDay(results, '', date, [g.start, g.end]); });
-    if (dcs[0].expect.length !== 1 || dcs[1].expect.length !== 1 || dcs[0].expect[0] === dcs[1].expect[0] || dcs[0].must || dcs[1].must) return null;
+    var known = [];
+    dcs.forEach(function (dc, i) { if (dc.expect.length === 1 && !dc.must) known.push({ i: i, code: dc.expect[0] }); });
+    var first = known[0], other = first && known.filter(function (k) { return k.code !== first.code; })[0];
+    if (!first || !other) return null;
     var nm = function (code) { return results.filter(function (x) { return x.code === code; })[0].name; };
-    return { codes: [dcs[0].expect[0], dcs[1].expect[0]],
-             message: shortMd(date) + ' 第一段在' + nm(dcs[0].expect[0]) + '打卡、第二段在' + nm(dcs[1].expect[0]) + '打卡，兩段要送到不同的店，請分開送（先送一段，再回來送另一段）' };
+    return { codes: [first.code, other.code],
+             message: shortMd(date) + ' ' + SEG_LABEL[first.i] + '在' + nm(first.code) + '打卡、' + SEG_LABEL[other.i] + '在' + nm(other.code) + '打卡，' + (segs.length === 2 ? '兩段' : '這幾段') + '要送到不同的店，請分開送（先送一段，再回來送另一段）' };
   }
   /** 兩段時：在表單上先講「兩段在不同家店打卡」（送出時 storeGuard 也會擋） */
   function segSplitNote(box, date, segs) {
@@ -891,7 +941,7 @@
   }
 
   /* 請假 */
-  function lvBlank() { return { date: '', type: '', mode: 'day', hours: '8', start: '', end: '', reason: '', file: null, seg2: null }; }
+  function lvBlank() { return { date: '', type: '', mode: 'day', hours: '8', start: '', end: '', reason: '', file: null, seg2: null, seg3: null, seg4: null }; }
   var lv = lvBlank();
   function renderLeave(p) {
     if (!lv.date) lv.date = taipeiToday(0);
@@ -971,7 +1021,7 @@
   }
 
   /* 加班（不分事前事後） */
-  function otBlank() { return { date: '', start: '', end: '', reason: '', seg2: null }; }
+  function otBlank() { return { date: '', start: '', end: '', reason: '', seg2: null, seg3: null, seg4: null }; }
   var ot = otBlank();
   /* 加班單要有打卡佐證（2026-11-14 Eason）：主管核定時會檢查加班時段在不在當天的打卡段裡（前後 15 分），
      沒有就核不過。這裡送單前先看那天的卡，不在裡面就黃字提醒——只提醒、照樣可以送（常常先送加班、隔天才補忘打卡）。
@@ -1037,13 +1087,14 @@
     var out = h('div', {});
     p.appendChild(submitBtn(out, function () {
       var two = otSegs();
+      if (two && two.length > segMaxN('ot')) return Promise.reject(new Error('加班一次最多填' + SEG_NUM[segMaxN('ot')] + '段時間'));
       if (two) { var ck = segCheck('ot', two, Math.min(segMax('ot'), otMaxH())); if (ck) return Promise.reject(segErr(ck)); return Promise.resolve({ kind: 'ot', date: ot.date, segments: two, reason: ot.reason }); }
       var oh = spanHours(ot.start, ot.end);   // N1：單張上限 10 小時（原 12），req_info 的 ot_max_h 有給就用給的
       if (oh !== null && oh > otMaxH() + 0.001) return Promise.reject(new Error('加班時段超過 ' + otMaxH() + ' 小時，請確認時間'));
       return Promise.resolve({ kind: 'ot', date: ot.date, start: ot.start, end: ot.end, reason: ot.reason });
     }, function () { ot = otBlank(); }));
     p.appendChild(out);
-    p.appendChild(h('div', { class: 'rq-note', text: otSegs() ? '送出後會變成 2 張加班單，主管可以一起核准。' : '已經加過班或還沒加班都可以申請。實際時數以主管當天核定為準。' }));
+    p.appendChild(h('div', { class: 'rq-note', text: otSegs() ? '送出後會變成 ' + otSegs().length + ' 張加班單，主管可以一起核准。' : '已經加過班或還沒加班都可以申請。實際時數以主管當天核定為準。' }));
   }
 
   /* 出差（2026-10-09）：日期 7 天前（2026-11-05 由 31 改 7）到 90 天後；整天填時數或只一段填起訖；地點、事由必填。
@@ -1051,7 +1102,7 @@
      2026-11-07 Eason：地點改下拉選單（TRIP_PLACES）＋「其他」自己打；後端照舊收文字，送出的是選到的名稱或自填內容。 */
   var TRIP_PLACES = ['總部辦公室', '新竹光復', '新竹金山', '台北六張犁', '台北瑞光', '台中美村'];
   var TRIP_OTHER = '其他';
-  function tpBlank() { return { date: '', mode: 'day', hours: '8', start: '', end: '', pick: '', place: '', why: '', seg2: null }; }
+  function tpBlank() { return { date: '', mode: 'day', hours: '8', start: '', end: '', pick: '', place: '', why: '', seg2: null, seg3: null, seg4: null }; }
   var tp = tpBlank();
   function tripPlace() { return tp.pick === TRIP_OTHER ? tp.place.trim() : tp.pick; }
   function renderTrip(p) {
@@ -1197,6 +1248,7 @@
     // 同一次送出的兩張（2026-11-18）：店＋group＋emp_id＋date 都一樣才算一組，剩一張不成組；兩張排在一起、第 1 段在前
     var gcount = {}, shownProof = {};
     gcount = groupCounts(list);   // 只算還有效（審核中、已核准）的；取消／退回／作廢的不算進組數
+    var grank = groupRanks(list);   // 第 N 段：在還有效的幾張裡排第幾（三、四段取消中間一張後不會變成「第 4 段／共 3 段」）
     if (Object.keys(gcount).length) list = list.slice().sort(function (a, b) {
       return a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : a.group && a.group === b.group ? (a.seg || 0) - (b.seg || 0) : 0;
     });
@@ -1215,7 +1267,7 @@
         h('div', { class: 'rq-t' }, [h('span', { text: title }), h('span', { class: 'rq-pill ' + s[1], text: s[0] })]),
         h('div', { class: 'rq-s', text: sub }),
       ]);
-      if (grouped) item.appendChild(h('div', { class: 'rq-s' }, [h('span', { class: 'rq-grp', text: '同一次送出・第 ' + r.seg + ' 段／共 ' + gcount[gk] + ' 段' })]));
+      if (grouped) item.appendChild(h('div', { class: 'rq-s' }, [h('span', { class: 'rq-grp', text: '同一次送出・第 ' + (grank[r.id] || r.seg) + ' 段／共 ' + gcount[gk] + ' 段' })]));
       if (r.status === 'rejected' && r.reject_reason) item.appendChild(h('div', { class: 'rq-s', text: '主管：' + r.reject_reason }));
       if (r.status === 'approved') item.appendChild(h('div', { class: 'rq-s', text: r.decided_by + ' 核准' }));
       if (r.status === 'voided') item.appendChild(h('div', { class: 'rq-s', text: r.voided_by + ' 作廢' + (r.void_reason ? '：' + r.void_reason : '') }));
@@ -1299,6 +1351,16 @@
     (list || []).forEach(function (r) { var k = segLive(r) ? groupKey(r) : ''; if (k) c[k] = (c[k] || 0) + 1; });
     return c;
   }
+  /** 每張還有效的單在它那組裡排第幾（照 seg）：{id: 1…}。原本直接寫後端給的 seg，兩段時一張取消就不成組所以沒事；
+   *  加班可到四段後，取消中間一張剩三張仍成組，要照剩下的重新數（2026-11-21）。 */
+  function groupRanks(list) {
+    var by = {}, out = {};
+    (list || []).forEach(function (r) { var k = segLive(r) ? groupKey(r) : ''; if (k) (by[k] = by[k] || []).push(r); });
+    Object.keys(by).forEach(function (k) {
+      by[k].slice().sort(function (a, b) { return (a.seg || 0) - (b.seg || 0); }).forEach(function (r, i) { out[r.id] = i + 1; });
+    });
+    return out;
+  }
   function proofBox(r) {
     var gk = groupKey(r);
     var members = gk ? ((st.info && st.info.requests) || []).filter(function (x) { return groupKey(x) === gk && x.kind === 'leave' && x.status === 'pending'; }) : [];
@@ -1365,13 +1427,13 @@
         if (!r || !r.ok) { out.appendChild(msgBox((r && r.message) || '送出沒有成功，請再試一次', 'err')); if (r && r.seg) markSegBad(r.seg); return; }
         reset();
         tellChat('申請已送出：' + r.summary);
-        var two = r.requests && r.requests.length === 2;   // 一次填兩段：變成兩張單（2026-11-18）
+        var two = r.requests && r.requests.length >= 2;   // 一次填多段：變成好幾張單（2026-11-18 兩段；2026-11-21 加班最多四段）
         var warns = [];
         (two ? r.requests : [r.request]).forEach(function (q) { ((q && q.warns) || []).forEach(function (w) { if (warns.indexOf(w) < 0) warns.push(w); }); });
         // 先把剛送出的列畫出來、立刻切到「我的申請」，伺服器最新清單在背景重讀（2026-11-18；以前同步等 req_info 約 3.5 秒才換畫面）
         if (st.store && sentCode !== null && st.store.code === sentCode) adoptRows(two ? r.requests : [r.request]);
         st.flash = { cls: 'ok', text: '✓ 已送出：' + r.summary
-          + (two ? '\n會變成 2 張' + ({ ot: '加班單', leave: '假單', trip: '出差單' }[r.request && r.request.kind] || '單') + '，等主管審核'
+          + (two ? '\n會變成 ' + r.requests.length + ' 張' + ({ ot: '加班單', leave: '假單', trip: '出差單' }[r.request && r.request.kind] || '單') + '，等主管審核'
                  : r.request && r.request.kind === 'miss' ? '\n等打卡門市的店長審核' : '\n等主管審核')
           + (warns.length ? '\n' + warns.map(function (w) { return '⚠ ' + w; }).join('\n') : '') };
         st.syncNote = ''; st.cancelErr = null; st.tab = 'mine';
@@ -1412,7 +1474,7 @@
         o.cb = compBlocked();
       }
     }
-    if (x && x.seg2 && st.info) o.sg = seg2Ok(st.tab, st.tab === 'leave' ? lv.type : '');
+    if (x && x.seg2 && st.info) { o.sg = seg2Ok(st.tab, st.tab === 'leave' ? lv.type : ''); o.sn = segMaxN(st.tab); }   // 後端最新說「最多幾段」跟畫面上不一樣也要請同仁再確認（2026-11-21）
     if (st.tab === 'ot' && st.info) o.om = otMaxH();
     return JSON.stringify(o);
   }

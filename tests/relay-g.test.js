@@ -220,4 +220,46 @@ const ROW = (o) => Object.assign({ ts: '2026-11-20T09:00:01+08:00', emp_id: 'E01
   check('RW6', '改一格 → 那天指紋變、別天不變', [g.fp.approved['2026-11-19'] !== r.fp.approved['2026-11-19'], g.fp.leave['2026-11-18'] === r.fp.leave['2026-11-18']], [true, true]);
   check('RW7', '金鑰類欄名一律不帶', [m.sb.RELAYG_SECRET_COL_RE_.test('key'), m.sb.RELAYG_SECRET_COL_RE_.test('relay_key'), m.sb.RELAYG_SECRET_COL_RE_.test('line_user_id'), m.sb.RELAYG_SECRET_COL_RE_.test('emp_id'), m.sb.RELAYG_SECRET_COL_RE_.test('monkey')], [true, true, true, false, false]);
 }
+
+// ── P3-1 部分失敗：一張原始列讀不了，relay_pull 其他內容照常回（fix/relayg-rows-guard）──
+{
+  const mk = () => {
+    const m = make({ now: T('2026-11-20T09:00:00'), props: { REQ_BIND_FROM: 'off', RELAY_KEY: KEY },
+      self: { roster: [ME], events: [['2026-11-20T08:00:00', 'E01', 'in']],
+        approved: [['2026-11-19', 'E01', '測試一', '09:00-18:00', 8, '正常', '值班主管', '2026-11-19T19:00:00+08:00', '', '']],
+        leave: [['2026-11-18', '測試一', '特休', 8]],
+        managers: [['值班主管', 'MGR-SECRET-0001', 'true', '', 'E09']] } });
+    m.run(R('apps-script/RelayG.gs'));
+    return m;
+  };
+  const boom = (m, nm) => { m.self.sh[nm].getDataRange = () => { throw new Error('Exception: 服務發生錯誤 SECRET-INTERNAL-XYZ'); }; };
+  const strip = (r) => { const o = JSON.parse(JSON.stringify(r)); delete o.rows; delete o.fp; delete o.managers; delete o.rows_error; return o; };
+  const m0 = mk();
+  const base = m0.sb.handleRelayPull_({ relay_key: KEY, with: { roster: true, props: true, sheets: true } });
+  const full = m0.sb.handleRelayPull_({ relay_key: KEY, with: { roster: true, props: true, sheets: true, rows: true } });
+  check('RG0', '全部成功：沒有 rows_error、其餘內容與不帶 with.rows 相同', ['rows_error' in full, JSON.stringify(strip(full)) === JSON.stringify(strip(base))], [false, true]);
+
+  const m1 = mk(); boom(m1, 'leave');
+  const a = m1.sb.handleRelayPull_({ relay_key: KEY, with: { roster: true, props: true, sheets: true, rows: true } });
+  check('RG1', '假單讀不了：relay_pull 仍 ok、其餘內容與不帶 with.rows 相同', [a.ok, JSON.stringify(strip(a)) === JSON.stringify(strip(base))], [true, true]);
+  check('RG2', '假單標失敗（rows.leave={error}、fp.leave=null、rows_error.leave）、核定與申請照常', [JSON.stringify(a.rows.leave), a.fp.leave, a.rows_error.leave, a.rows.approved.total, !!a.fp.approved['2026-11-19'], a.rows.requests.total, Array.isArray(a.managers)], ['{"error":"read_failed"}', null, 'read_failed', 1, true, 0, true]);
+  check('RG3', '失敗標記只有固定碼：整個回應找不到例外訊息原文', [JSON.stringify(a).indexOf('SECRET-INTERNAL') < 0, Object.keys(a.rows_error).join(',')], [true, 'leave']);
+
+  const m2 = mk(); boom(m2, 'approved');
+  const b = m2.sb.handleRelayPull_({ relay_key: KEY, with: { fp: true } });
+  check('RG4', '只要指紋、核定讀不了：ok、不帶 rows、fp.approved=null、leave 指紋照常、rows_error 有標', [b.ok, 'rows' in b, b.fp.approved, !!b.fp.leave['2026-11-18'], JSON.stringify(b.rows_error)], [true, false, null, true, '{"approved":"read_failed"}']);
+
+  const m4 = mk(); ['approved', 'leave', 'managers'].forEach((n) => boom(m4, n));
+  m4.self.sh.requests = (function () { const x = { getDataRange: () => { throw new Error('boom'); }, getSheetId: () => 99, getName: () => 'requests', getLastRow: () => 0, getLastColumn: () => 0 }; return x; })();
+  const c = m4.sb.handleRelayPull_({ relay_key: KEY, with: { roster: true, props: true, sheets: true, rows: true } });
+  check('RG5', '四張（含主管名單）全丟錯：仍 ok、其餘內容相同、各自標失敗、沒有 managers', [c.ok, JSON.stringify(strip(c)) === JSON.stringify(strip(base)), Object.keys(c.rows_error).sort().join(','), ['approved', 'leave', 'requests'].every((n) => c.rows[n].error === 'read_failed' && c.fp[n] === null), 'managers' in c], [true, true, 'approved,leave,managers,requests', true, false]);
+
+  const m5 = mk(); boom(m5, 'managers');
+  const d = m5.sb.handleRelayPull_({ relay_key: KEY, with: { rows: true } });
+  check('RG6', '只有主管名單讀不了：三張表照常、沒有 managers、rows_error.managers', [d.ok, d.rows.approved.total, d.rows.leave.total, 'managers' in d, JSON.stringify(d.rows_error)], [true, 1, 1, false, '{"managers":"read_failed"}']);
+
+  const m6 = mk(); boom(m6, 'leave');
+  const e = m6.sb.handleRelayPull_({ relay_key: KEY, with: { roster: true } });
+  check('RG7', '不帶 rows／fp：完全不讀這幾張，壞表也不影響、沒有新欄位', [e.ok, ['rows', 'managers', 'fp', 'rows_error'].map((k) => k in e)], [true, [false, false, false, false]]);
+}
 done();
