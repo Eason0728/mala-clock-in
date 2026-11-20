@@ -44,12 +44,12 @@ console.log('════ 一、Codex 問題 1～4 重現（規則甲開著）�
 {
   let m = env(D0, NOW0, EV1, ON);
   let r = approve(m, D0, '09:00-11:00,13:00-17:00', ACT(SP1, { dry_run: true }));
-  check('Q1a', '問題1 現況：先只要卡差原因（上班卡 14:00 差 60 分），沒要忘打卡單', [r.ok, r.error], [false, 'need_diff_reason']);
+  check('Q1a', '問題1 修好後（2026-11-21 舊問題 1）：連只檢查都直接擋「核定比打卡多」（原本只要卡差原因）', [r.ok, r.error], [false, 'need_request']);
   r = approve(m, D0, '09:00-11:00,13:00-17:00', ACT(SP1, { diff_reason: WHY }));
-  check('Q1b', '問題1 現況（錯）：填原因後核成 6 小時、狀態「早退237分」（缺最後一張下班卡卻沒要忘打卡單）', [r.ok, r.hours, r.status], [true, 6, '早退237分']);
+  check('Q1b', '問題1 修好後：填原因也不能核成 6 小時（原本核成、狀態「早退237分」；tests/oldfix3-lone-over.test.js 詳測）', [r.ok, r.hours, r.status], [false, null, '']);
   m = env(D0, NOW0, EV1, OFF);
   r = approve(m, D0, '09:00-11:00,13:00-17:00', ACT(SP1, { diff_reason: WHY }));
-  check('Q1b-off', '問題1 後端那半是舊洞：規則甲關著同一組時段也一樣被接受（mini 另以 d3798f5 實測同結果）', [r.ok, r.status], [true, '早退237分']);
+  check('Q1b-off', '問題1 後端那半是舊洞（規則甲關著、d3798f5 也一樣被接受）→ 修好後規則甲關著一樣擋', [r.ok, r.status], [false, '']);
   m = env(D0, NOW0, EV1, OFF);
   r = approve(m, D0, '09:00-11:00,14:00-17:00', ACT(SP1, { diff_reason: WHY }));
   check('Q1c', '對照：規則甲關著營運系統預填 09–11、14–17 → 打卡端要忘打卡單（不會核成）', [r.ok, r.error], [false, 'need_request']);

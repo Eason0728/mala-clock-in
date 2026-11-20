@@ -48,7 +48,8 @@ m.self.sh.events.values.push(['2026-11-09T12:00:00+08:00', 'E02', 'out', 24.78, 
 check('F10', '同仁補了打卡：版本改變', verOf(day({ with_ver: true }), 'E02') !== vE2, true);
 
 // 7. 沒帶 base_ver：照舊流程（舊 manager.html）
-const a3 = post({ action: 'mgr_approve', mgr_key: 'MK', date: '2026-11-09', emp_id: 'E02', periods: [{ start: '10:00', end: '18:00' }] });
+// 2026-11-21 舊問題 1：E02 現在是 10:00–12:00＋18:00 單張下班卡，核 10:00–18:00 會被「核定比打卡多」擋（12:00–18:00 沒打卡），改核有打卡的 10:00–12:00
+const a3 = post({ action: 'mgr_approve', mgr_key: 'MK', date: '2026-11-09', emp_id: 'E02', periods: [{ start: '10:00', end: '12:00' }] });
 check('F11', '沒帶 base_ver：照常核定', [a3.ok], [true]);
 
 // 8. 失敗的寫入不記

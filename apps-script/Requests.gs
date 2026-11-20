@@ -2534,6 +2534,27 @@ function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts,
   });
   return Math.max(0, Math.round((over - late - early) / 60000));
 }
+/* ── 有沒配對的卡時「核定比打卡多」也要算（2026-11-21 出勤核定舊問題 1，Codex 20261121-rules-ab 問題 1）──
+   reqOverCreditMin_ 遇到缺卡回 null、原意是交給忘打卡單那條（reqBindMissCards_），但那條只認「整段沒配到完整打卡段的核定時段」裡的單張卡：
+   核定時段只要碰到一小段完整打卡（例 12:58–13:03），同一段裡的單張卡（14:00 上班、缺下班）就沒人管，主管填卡差原因就核成完整工時、狀態「早退237分」。
+   做法（套既有規則，不是新規則：11/14「打卡＋單＝核定時數」、11/16「缺單照擋，寫原因不能代替補單」）：忘打卡單那條沒擋到時，
+   改用「完整打卡段＋已核准忘打卡單補的卡」照算，沒配對的單張卡不當證據；還在上班的那張上班卡（B34，markWorkingSeg_ 標的 working）當成一直在上班（不擋，同 B03）。
+   開關 REQ_LONE_OVER：保護性檢查——只有明確的關閉字（off／false／0／no／關）才關（退回舊行為）；沒設、認不得照擋。 */
+function reqLoneOverOn_() {
+  var v = reqSwitchRead_('REQ_LONE_OVER');
+  if (v === 'off') return false;
+  if (v !== '' && v !== 'on') { try { console.warn('指令碼屬性 REQ_LONE_OVER 的值認不得，照預設「擋」處理（要關請填 off）'); } catch (e) {} }      // 不印值
+  return true;
+}
+/** segsMiss（reqSegsWithMiss_ 的結果，前 rawSegs.length 筆跟 rawSegs 同順序）→ 只留完整的段；還在上班的上班卡延到 16 小時後 */
+function reqOverSegsKnown_(segsMiss, rawSegs) {
+  return (segsMiss || []).map(function (s, i) {
+    if (s.inMs != null && s.outMs != null) return s;
+    var raw = (rawSegs || [])[i];
+    if (raw && raw.working && s.inMs != null && s.outMs == null) return { inMs: s.inMs, outMs: s.inMs + REQ_PAIR_MS };
+    return null;
+  }).filter(function (s) { return s; });
+}
 /** 主管填的遲到分鐘（同 Code.gs applyManualLate 的讀法）：沒填、不是數字、負數＝null（沒有認定）；否則四捨五入的分鐘數 */
 function reqLateGiven_(v) {
   var raw = String(v == null ? '' : v).trim();
@@ -3054,6 +3075,12 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   var segsMiss = strict ? reqSegsWithMiss_(segs || [], ok, date) : null;
   var overMin = strict ? reqOverCreditMin_(periods, segsMiss, breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok).concat(reqSchedMidEndMs_(date, opt.sched_spans)),
     reqGapLateMs_(date, periods, segsMiss, opt.sched_spans, breakWindow, ok)) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）；2026-11-20：二段班中途離開的空檔算遲到（最後一個參數）
+  // 2026-11-21 舊問題 1：有沒配對的卡、忘打卡單那條又沒擋到 → 用完整打卡段（＋已核准忘打卡單補的卡）照算，不再整個跳過（見 reqLoneOverOn_ 檔頭）
+  if (strict && overMin == null && !(bindOn && miss > missHave) && periods.length && reqLoneOverOn_()) {
+    var segsKnown = reqOverSegsKnown_(segsMiss, segs);
+    if (segsKnown.length) overMin = reqOverCreditMin_(periods, segsKnown, breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok).concat(reqSchedMidEndMs_(date, opt.sched_spans)),
+      reqGapLateMs_(date, periods, segsKnown, opt.sched_spans, breakWindow, ok));
+  }
   if (overMin != null && overMin >= REQ_STRICT_DIFF_MIN) add('over_credit', '核定比打卡多 ' + overMin + ' 分鐘（沒有打卡的時間要有忘打卡單、假單或補休單）');
   if (opt.preview) return { probs: probs, diff_min: diffMin, over_min: overMin, ot_have: otHave, ot_need: otNeed, ft8_gap: ft8 ? ft8.gap : 0 };
   if (probs.length) {
