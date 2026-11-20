@@ -17,6 +17,11 @@ var RELAYG_ROSTER_COLS_ = ['emp_id', 'name', 'key', 'device_id', 'device_bound_a
 var RELAYG_PULL_MAX_ = 4000;           // relay_pull 一次最多回幾列
 var RELAYG_SHEETS_ = ['ot_month', 'sched_pub'];   // mini 擋卡規則會讀的其他分頁（Rest.gs 加班上限、Cap10.gs 班表）
 var RELAYG_PROPS_ = ['REST_RULE_ON', 'REST_CAP_ON', 'REST_OT_ON'];
+// P3-1 原始列副本（2026-11-21，契約 dzy-mini-playbook docs/clock-to-mini/contracts/r-line.md）：with.rows／with.fp 才回，沒帶＝回應不變。
+var RELAYG_ROW_SHEETS_ = { approved: 'date', leave: '日期', requests: 'date' };   // 分頁 → 算「哪一天」的欄
+var RELAYG_ROWS_MAX_ = 8000;                                                    // 單張超過就不送列（回 too_many）
+var RELAYG_MGR_COLS_ = ['name', 'active', 'allow_acting', 'emp_id'];           // 主管名單白名單：沒有 key、也不給雜湊
+var RELAYG_SECRET_COL_RE_ = /(^|_)(key|token|secret|pass|password|device_id|line_user_id)($|_)/i;   // 原始列這幾種欄一律不帶、不算指紋（mini 端同一條）
 
 function relayGHash_(v, key) {
   if (v === '' || v === null || v === undefined) return '';
@@ -84,9 +89,68 @@ function relayGRowOut_(r, key, cols, memo) {
 function relayGNum_(v) { if (v === '' || v === null || v === undefined) return ''; var n = Number(v); return isFinite(n) ? n : ''; }
 function relayGBool_(v) { return v === true || String(v).toLowerCase() === 'true' ? true : (v === false || String(v).toLowerCase() === 'false' ? false : ''); }
 
+/* ── P3-1 原始列與指紋（契約 r-line.md 第 3、4 節；mini 端 gstore.js rowCanon／fpOfRows 同一套，改這裡要一起改） ── */
+function relayGFpVal_(v) {
+  if (v === null || v === undefined) return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') return relayGCell_(v);
+  if (v === true) return 'true';
+  if (v === false) return 'false';
+  return String(v);
+}
+/** 一列的正規字串：欄名排序後 [[欄名, 值], …]；不含 __row、空欄名、金鑰類欄 */
+function relayGCanon_(row) {
+  var ks = Object.keys(row).filter(function (k) { return k && k !== '__row' && k !== '__rowIndex' && !RELAYG_SECRET_COL_RE_.test(k); }).sort();
+  return JSON.stringify(ks.map(function (k) { return [k, relayGFpVal_(row[k])]; }));
+}
+function relayGHex16_(s) {
+  var b = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8), h = '';
+  for (var i = 0; i < 8; i++) h += ('0' + (b[i] & 255).toString(16)).slice(-2);
+  return h;
+}
+function relayGRowDay_(sheet, row) {
+  var m = /^\d{4}-\d\d-\d\d/.exec(relayGFpVal_(row[RELAYG_ROW_SHEETS_[sheet]]));
+  return m ? m[0] : '?';
+}
+/** {day: '<列數>:<16 位雜湊>'}：同一天的列正規字串排序後接起來算（順序、列號不影響） */
+function relayGFpOf_(sheet, rows) {
+  var by = {}, out = {};
+  rows.forEach(function (r) { var d = relayGRowDay_(sheet, r); (by[d] = by[d] || []).push(relayGCanon_(r)); });
+  Object.keys(by).forEach(function (d) { var a = by[d].sort(); out[d] = a.length + ':' + relayGHex16_(a.join('\n')); });
+  return out;
+}
+/** 一張原始列分頁（同 export_tables 的讀法）：{headers, total, rows:[{…, __row}]}；金鑰類欄、空欄名不帶 */
+function relayGReadRows_(ss, name) {
+  var sh = ss.getSheetByName(name);
+  if (!sh) return { headers: [], total: 0, rows: [] };
+  var rd = readSheetAsObjects(sh);
+  var heads = rd.headers.map(function (h) { return String(h === null || h === undefined ? '' : h); })
+    .filter(function (h) { return h && !RELAYG_SECRET_COL_RE_.test(h); });
+  if (rd.rows.length > RELAYG_ROWS_MAX_) return { error: 'too_many', total: rd.rows.length };
+  return { headers: heads, total: rd.rows.length, rows: rd.rows.map(function (r) {
+    var o = {}; heads.forEach(function (h) { o[h] = relayGCell_(r[h]); }); o.__row = r.__rowIndex; return o;
+  }) };
+}
+/** with.rows／with.fp：三張原始列＋主管名單（白名單欄）＋每天指紋。wantRows=false 只回 fp。 */
+function relayGRowsOut_(ss, out, wantRows) {
+  var rows = {}, fp = {};
+  Object.keys(RELAYG_ROW_SHEETS_).forEach(function (nm) {
+    var t = relayGReadRows_(ss, nm);
+    fp[nm] = t.error ? null : relayGFpOf_(nm, t.rows);
+    rows[nm] = t;
+  });
+  out.fp = fp;
+  if (!wantRows) return;
+  out.rows = rows;
+  var msh = ss.getSheetByName('managers');
+  out.managers = msh ? readSheetAsObjects(msh).rows.map(function (r) {
+    var o = {}; RELAYG_MGR_COLS_.forEach(function (k) { if (k in r) o[k] = relayGCell_(r[k]); }); o.__row = r.__rowIndex; return o;
+  }) : [];
+}
+
 /**
- * {action:'relay_pull', relay_key, from_row?:資料第幾列起（1＝第一張卡）, with?:{roster,sheets,props}}
- * → {ok, v, now, total, from_row, events:[…], last:{row, ts, emp_id, type}, roster?, sheets?, props?, config}
+ * {action:'relay_pull', relay_key, from_row?:資料第幾列起（1＝第一張卡）, with?:{roster,sheets,props,rows,fp}}
+ * → {ok, v, now, total, from_row, events:[…], last:{row, ts, emp_id, type}, roster?, sheets?, props?, rows?, managers?, fp?, config}
+ * rows／fp（P3-1）：approved、leave、requests 全部列＋主管名單白名單欄＋每天指紋；fp 只回指紋。格式見 r-line.md。
  * 唯讀。金鑰、裝置碼、LINE 帳號一律回 HMAC（'h:'＋十六進位），mini 拿不到原文。
  */
 function handleRelayPull_(body) {
@@ -136,6 +200,7 @@ function handleRelayPull_(body) {
     var p = PropertiesService.getScriptProperties();
     RELAYG_PROPS_.forEach(function (k) { var v = p.getProperty(k); if (v !== null) out.props[k] = v; });
   }
+  if (w.rows || w.fp) relayGRowsOut_(ss, out, !!w.rows);   // P3-1：沒帶就完全不讀這幾張
   out.config = { STORE_LAT: CONFIG.STORE_LAT, STORE_LNG: CONFIG.STORE_LNG, RADIUS_M: CONFIG.RADIUS_M,
                  NO_PUNCH_BREAK_START: CONFIG.NO_PUNCH_BREAK_START || '', NO_PUNCH_BREAK_END: CONFIG.NO_PUNCH_BREAK_END || '',
                  ALTERNATION_LOOKBACK_HOURS: CONFIG.ALTERNATION_LOOKBACK_HOURS };
