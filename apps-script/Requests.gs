@@ -2376,7 +2376,8 @@ function reqPendBlock_(rows, empId, date) {
      ② 營運系統個人帳號代轉帶來的班表（sched_spans）：空檔整個落在同一段班表裡；預設只有當天班表兩段以上（二段班）才算（REQ_GAP_LATE_SCOPE＝all 單段班也算）；
      ③ 空檔兩邊都是打卡（或已核准忘打卡單補的卡），整個被同一段核定時段蓋住。
    不算（照改之前，空檔照樣是「核定比打卡多」）：空檔碰到不打卡休息帶、碰到已核准有時段的假單／出差單（走請假那幾條）、
-   是已核准「中間休息」忘打卡單補出來的休息、那段班表有班別休息分鐘（break_min）時的第一個空檔（照 11/17「班別休息從出去那張卡起算，超過的照實扣」）。
+   是已核准「中間休息」忘打卡單補出來的休息。
+   班別休息（break_min）那段班的第一個空檔是休息：二段班時只算滿休息分鐘、超過的部分記遲到（2026-11-20 Eason 第 3 題 B，例 休 30、出去 50 → 20 分遲到）；單段班照 11/17（超過的照實扣）。
    沒有新增任何金額規則：空檔只是進了既有的遲到分鐘。 */
 var REQ_GAP_LATE_FROM_DEFAULT_ = null;      // 上線日（YYYY-MM-DD）；null＝還沒上線＝整條關著。指令碼屬性 REQ_GAP_LATE_FROM 設日期優先、off＝關
 var REQ_GAP_LATE_SCOPE_DEFAULT_ = 'multi';  // multi＝只有二段班（當天班表兩段以上）；all＝單段班也算。指令碼屬性 REQ_GAP_LATE_SCOPE 優先
@@ -2403,7 +2404,7 @@ function reqGapLateMs_(date, periods, segs, spans, breakWindow, okRows) {
     if (!a || !b || a === b) return null;
     var s = reqHmMs_(date, a), e = reqHmMs_(date, b);
     if (e <= s) e += 86400000;
-    return { s: s, e: e, brk: Math.round(Number(x.break_min) || 0) > 0, rest: false };
+    return { s: s, e: e, bm: Math.max(0, Math.round(Number(x.break_min) || 0)), rest: false };
   }).filter(function (x) { return x; }).sort(function (x, y) { return x.s - y.s; });
   if (!sp.length || (reqGapLateScope_() === 'multi' && sp.length < 2)) return 0;
   var full = (segs || []).filter(function (s) { return s && s.inMs != null && s.outMs != null && s.outMs > s.inMs; })
@@ -2429,11 +2430,19 @@ function reqGapLateMs_(date, periods, segs, spans, breakWindow, okRows) {
   };
   var total = 0;
   gaps.forEach(function (g) {
-    var s = sp.filter(function (x) { return x.s <= g.a && g.b <= x.e; })[0];
+    var s = sp.filter(function (x) { return x.s < g.a && g.b < x.e; })[0];      // 空檔整個在同一段班裡（同營運系統 core-calc：開頭、結尾剛好貼著班表邊界的不算）
     if (!s) return;
-    if (s.brk && !s.rest) { s.rest = true; return; }      // 班別休息：那段班的第一個空檔是休息（11/17），不算
+    var covered = function (a, b) { return (periods || []).some(function (p) { return p.startMs <= a && b <= p.endMs; }); };
+    if (s.bm > 0 && !s.rest) {
+      // 班別休息：那段班的第一個空檔是休息。2026-11-20 Eason 第 3 題 B：二段班時休息只算滿班別休息分鐘，超過的部分（核定蓋住的話）記遲到；
+      // 單段班照 11/17（超過的照實扣、核定蓋住＝核定比打卡多）。碰到休息帶／假單／中間休息忘打卡單照 11/17
+      s.rest = true;
+      var a2 = g.a + s.bm * 60000;
+      if (sp.length >= 2 && g.b > a2 && !touch(g) && covered(a2, g.b)) total += g.b - a2;
+      return;
+    }
     if (touch(g)) return;
-    if (!(periods || []).some(function (p) { return p.startMs <= g.a && g.b <= p.endMs; })) return;
+    if (!covered(g.a, g.b)) return;
     total += g.b - g.a;
   });
   return total;

@@ -345,7 +345,8 @@ function run() { addManager('王經理'); }
   - 多個標記以「、」串接（如「遲到10分、早退10分」）。
   - **二段班中途離開又回來，比照遲到記（2026-11-20 Eason；`computeApprovalStatus` 第 6 個參數 `gapLate`，Requests.gs `reqGapLateOn_` 照日期決定）**：一個輸入時段蓋到兩段以上完整打卡段（中間打下班卡走、又打上班卡回來）→ 開頭晚到＋中間空檔合成一個「遲到N分」（空檔落在不打卡休息帶的分鐘不算），蓋到的段都算用掉、結尾照最後一張下班卡記早退。例：核定 16:00–20:00、打卡 15:58–16:03、17:24–20:00 → `遲到81分`（改之前是 `遲到84分、有多出的打卡段`）。
     - 只有上線日（指令碼屬性 `REQ_GAP_LATE_FROM`，程式預設 `REQ_GAP_LATE_FROM_DEFAULT_`＝null＝關）起的日子才這樣記；之前的日子核定、重新核定、每天 05:00 重算都照舊（不回溯）。
-    - 核定可不可以蓋過空檔由 `reqOverCreditMin_`（核定比打卡多）把關：只有營運系統帶班表、空檔整個在同一段班表裡、預設當天班表兩段以上（`REQ_GAP_LATE_SCOPE`＝multi；all＝單段班也算）才把空檔當遲到；碰到休息帶、已核准有時段的假單／出差單、「中間休息」忘打卡單、班別休息那段班的第一個空檔都不算（照樣是核定比打卡多）。
+    - 核定可不可以蓋過空檔由 `reqOverCreditMin_`（核定比打卡多）把關：只有營運系統帶班表、空檔整個在同一段班表裡、預設當天班表兩段以上（`REQ_GAP_LATE_SCOPE`＝multi；all＝單段班也算）才把空檔當遲到；碰到休息帶、已核准有時段的假單／出差單、「中間休息」忘打卡單都不算（照樣是核定比打卡多）。班別休息（break_min）那段班的第一個空檔是休息：二段班只算滿休息分鐘、超過的部分記遲到（Eason 第 3 題 B，例 休 30、出去 50 → 遲到 20）；單段班照 11/17（超過的照實扣）。
+    - **要開時**：只改 `apps-script/Requests.gs` 的 `REQ_GAP_LATE_FROM_DEFAULT_` 一行（null → 上線日字串），照一般流程部署九店（Requests.js 是整份覆蓋，九店同一份）；營運系統 `web/modules/duty/core-calc.js` 的 `GAP_LATE_SCOPE` 改 `'multi'`。不用逐店設屬性（屬性有設值才會蓋過常數）。
 - **這天還有待審的申請就不能核定（2026-11-20 Eason；`reqPendBlock_`）**：`mgr_approve`（含 dry_run、整天請假、舊值班頁）在這位同仁這天有任何 `status=pending` 的申請時回 `{ok:false, error:'pending_request', message:'這天還有待審的申請，請先審單（審完才能核定）', pending:N}`，字句同營運系統畫面。指令碼屬性 `REQ_PEND_BLOCK=off` 關掉。
 - 這套比對邏輯在 `apps-script/Code.gs`（`computeApprovalStatus`）與 `mock/mock_server.py`（`compute_approval_status`）各實作一份，保持同步；純函式可直接用 node 載入 `Code.gs` 測試，不需要試算表。
 - **狀態是核定當下的一次性快照，靠 `recheckPendingApprovalStatuses()` 回頭修**（每日 05:00 由 `dailyMonthlyRebuild` 呼叫，也可用管理 API `recheck_approvals` 手動跑）：掃近 `RECHECK_STATUS_DAYS` 天內 `status_text` 含「該段無打卡」（或「打卡未入帳」「少刷N組卡」）的核定紀錄，用**當下最新**的打卡資料重算；狀態有變才追加一筆修正紀錄（`periods`／`approved_hours` 原封不動只換 `status_text`，`manager_name` 加註「（系統重算）」）。
