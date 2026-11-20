@@ -78,8 +78,8 @@ if (navigator.sendBeacon) { const _b = navigator.sendBeacon.bind(navigator);
 window.__fake = {};   // action → 假回應（物件）或 'abort'
 const _f = window.fetch;
 window.fetch = function (url, o) {
-  let a = ''; try { a = JSON.parse(o.body).action; } catch (e) {}
-  window.__calls.push({ url: String(url), action: a, t: Date.now() });
+  let a = '', ty = ''; try { const j = JSON.parse(o.body); a = j.action; ty = j.type || ''; } catch (e) {}
+  window.__calls.push({ url: String(url), action: a, type: ty, t: Date.now() });
   const dl = (window.__delay || {})[a];   // 某支動作延遲幾毫秒才送（2026-11-06 開頁加快：模擬光復慢）
   if (dl) { const self = this, args = arguments; window.__delay[a] = 0;
     return new Promise(function (r) { setTimeout(r, dl); }).then(function () { return window.fetch.apply(self, args); }); }
@@ -131,7 +131,7 @@ def no_undefined(p, where):
 
 def force_out(p):
     """模擬「畫面沒擋到」：鍵被畫面停用（10 分鐘鎖）時，同一個 tick 內解開並點下去，測後端擋下時畫面怎麼顯示。"""
-    p.evaluate('() => { window.confirm = () => true; const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
+    p.evaluate('() => { window.confirm = () => true; const sub = () => { const m = document.getElementById("pgMask"); if (m && !m.hidden) document.getElementById("pgSub").click(); }; const b = document.getElementById("btnOut"); b.disabled = false; b.click(); sub(); }')
 
 
 def calls(p):
@@ -334,7 +334,7 @@ def main():
             p.wait_for_function('document.getElementById("storeName").textContent === %s' % json.dumps(HQ['name']), timeout=20000)
             gctx.set_geolocation({'latitude': JS['lat'], 'longitude': JS['lng'], 'accuracy': 10})
             p.wait_for_timeout(1500)
-            p.evaluate('() => { window.confirm = () => true; const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
+            p.evaluate('() => { window.confirm = () => true; const sub = () => { const m = document.getElementById("pgMask"); if (m && !m.hidden) document.getElementById("pgSub").click(); }; const b = document.getElementById("btnOut"); b.disabled = false; b.click(); sub(); }')
             p.wait_for_selector('#bindBox:not([hidden])', timeout=10000)
             c = calls(p)
             ok('位置變了：沒有送出打卡，改問新那家店（金山）', not any(x['action'] == 'liff_punch' for x in c) and any(x['url'].endswith('/api/mztjs') for x in c), c)
@@ -413,7 +413,7 @@ Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
                 p.wait_for_function('document.getElementById("who").textContent === "測試一"', timeout=10000)
                 p.wait_for_timeout(4000)   # 開頁那筆變成過時
                 p.evaluate("m => { window.__geo.mode = m; }", mode)
-                p.evaluate('() => { window.confirm = () => true; for (const id of ["btnIn", "btnOut"]) { const b = document.getElementById(id); if (!b.disabled) { b.click(); return; } } const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
+                p.evaluate('() => { window.confirm = () => true; const sub = () => { const m = document.getElementById("pgMask"); if (m && !m.hidden) document.getElementById("pgSub").click(); }; for (const id of ["btnIn", "btnOut"]) { const b = document.getElementById(id); if (!b.disabled) { b.click(); sub(); return; } } const b = document.getElementById("btnOut"); b.disabled = false; b.click(); sub(); }')
                 wait_msg(p, expect, timeout=15000)
                 ok('舊位置：' + name, sum(1 for x in calls(p) if x['action'] == 'liff_punch') == 0 and p.evaluate('window.__geo.calls') >= 2, msg(p))
                 tmg = p.evaluate('window.__timing') or []
@@ -1415,19 +1415,42 @@ def phase_same_type(ctx, hq):
     p.wait_for_timeout(300)
     ok('同型：過了 10 分鐘，上班鍵也能按（中午忘打下班卡，晚上回來要打得了）', not p.is_disabled('#btnIn') and not p.is_disabled('#btnOut'),
        p.inner_text('#btnIn'))
+    ok('B：前一筆是 11/2 的上班（超過 16 小時）→ 上班鍵加亮、下班鍵變淡但仍可按，鍵上方寫「上一筆：11/2 08:49 上班」',
+       'pg-next' in p.get_attribute('#btnIn', 'class') and 'pg-dim' in p.get_attribute('#btnOut', 'class')
+       and not p.is_disabled('#btnOut') and p.inner_text('#pgLast') == '上一筆：11/2 08:49 上班', (p.get_attribute('#btnIn', 'class'), p.inner_text('#pgLast')))
     n0 = len([x for x in calls(p) if x['action'] == 'liff_punch'])
-    msgs = []
-    p.once('dialog', lambda d: (msgs.append(d.message), d.dismiss()))
+    # 誤按防呆（2026-11-20）：同型再按改頁面內提醒框，講出上一筆日期時間，主按鈕＝改按下班（預設焦點）
     p.click('#btnIn')
-    p.wait_for_timeout(500)
-    ok('同型：再按上班 → 跳確認框講「08:49 已經打過上班卡、中間沒有下班卡、漏的去忘打卡補」；按取消不送',
-       bool(msgs) and '你 08:49 已經打過上班卡，中間沒有下班卡' in msgs[0] and '忘打卡' in msgs[0]
-       and len([x for x in calls(p) if x['action'] == 'liff_punch']) == n0, msgs)
-    p.once('dialog', lambda d: d.accept())
+    p.wait_for_selector('#pgMask:not([hidden])', timeout=3000)
+    dm = p.inner_text('#pgMsg')
+    ok('同型：再按上班 → 提醒框講「上一筆是 11/2 08:49 上班…請按改按下班」；主按鈕＝改按下班且預設焦點、次按鈕＝確定是上班',
+       '你上一筆是 11/2 08:49 上班，現在又按「上班」。如果是要下班，請按「改按下班」。' in dm and '忘打卡' in dm
+       and p.inner_text('#pgMain') == '改按下班' and p.inner_text('#pgSub') == '確定是上班'
+       and p.evaluate('document.activeElement.id') == 'pgMain' and len([x for x in calls(p) if x['action'] == 'liff_punch']) == n0, dm)
+    p.click('#pgCancel')
+    p.wait_for_timeout(300)
+    ok('同型：提醒框按「先不打卡」→ 不送', p.locator('#pgMask:not([hidden])').count() == 0
+       and len([x for x in calls(p) if x['action'] == 'liff_punch']) == n0, calls(p)[-3:])
+    # 主按鈕＝照下班送出（原本按的是上班）
     p.click('#btnIn')
+    p.wait_for_selector('#pgMask:not([hidden])', timeout=3000)
+    p.keyboard.press('Enter')   # 預設焦點在主按鈕：連 Enter 也只會是「改按下班」，不會變成再打一次上班
     p.wait_for_function('window.__calls.filter(c => c.action === "liff_punch").length > %d' % n0, timeout=10000)
+    lp = [x for x in calls(p) if x['action'] == 'liff_punch']
+    ok('同型：主按鈕（Enter）→ 改送下班，不是上班', lp[-1]['type'] == 'out', lp[-1])
+    wait_msg(p, '下班打卡')
+    p.reload()
+    p.wait_for_function('document.getElementById("who").textContent.length > 0', timeout=10000)
+    p.wait_for_timeout(300)
+    n0 = len([x for x in calls(p) if x['action'] == 'liff_punch'])
+    p.click('#btnIn')
+    p.wait_for_selector('#pgMask:not([hidden])', timeout=3000)
+    p.click('#pgSub')
+    p.wait_for_function('window.__calls.filter(c => c.action === "liff_punch").length > %d' % n0, timeout=10000)
+    lp = [x for x in calls(p) if x['action'] == 'liff_punch']
+    ok('同型：次按鈕「確定是上班」→ 照上班送出', lp[-1]['type'] == 'in', lp[-1])
     wait_msg(p, '上班打卡')
-    ok('同型：確認框按確定 → 送出上班卡', '上班打卡' in msg(p), msg(p))
+    ok('同型：提醒框按確定是上班 → 送出上班卡', '上班打卡' in msg(p), msg(p))
     p.close()
 
 
@@ -1496,6 +1519,8 @@ def phase_rest(ctx, hq):
        and warn['reason'] in msg(p) and warn['hint'] in p.inner_text('#hint'), (p.inner_text('#btnIn'), msg(p)))
     p.on('dialog', lambda d: d.accept())
     p.click('#btnIn')
+    if p.locator('#pgMask:not([hidden])').count():   # 2026-11-20：同型提醒框改頁面內，按「確定是上班」
+        p.click('#pgSub')
     wait_msg(p, '上班打卡成功')
     ok('單日 10 小時：打得進去，成功訊息多「⚠️ 你今天已經上班…請先跟店長確認」', '⚠️ ' + warn['reason'] + '。' + warn['hint'] in msg(p), msg(p))
     p.wait_for_timeout(2200)
@@ -1769,7 +1794,7 @@ def phase_coarse(ctx):
     punches = lambda p: [b for b in p.evaluate('window.__bodies') if b.get('action') == 'liff_punch']
 
     def press_out(p):   # 鍵可能被前面測試留下的 10 分鐘鎖停用：同一個 tick 解開並點下去（後端收不收不是這裡要看的，看送出的內容）
-        p.evaluate('() => { window.confirm = () => true; const b = document.getElementById("btnOut"); b.disabled = false; b.click(); }')
+        p.evaluate('() => { window.confirm = () => true; const sub = () => { const m = document.getElementById("pgMask"); if (m && !m.hidden) document.getElementById("pgSub").click(); }; const b = document.getElementById("btnOut"); b.disabled = false; b.click(); sub(); }')
 
     # 11. 粗略放行後馬上按 → 先不送，等更準的位置回來才送，送的是準的那筆
     p = open_geo(); push(p, HQ_AT, 65); shown(p, HQ['name']); press_out(p)
@@ -1929,7 +1954,7 @@ def phase_open(ctx, hq):
                  guard={'blocked': 'in', 'lock': {}, 'last': {'type': 'in', 'hm': '08:00', 'ts': '2026-10-16T08:00:00+08:00'}, 'now': int(time.time() * 1000)})
     gsame = dict(real, today=fresh['today'], guard=fresh['guard'])
     p, S = open_fast(ctx, hq, fresh, pre_js='window.__delay = {liff_status: 3500}; window.__fake = window.__fake || {}; window.__fake.liff_status = ' + json.dumps(gsame) + ';')
-    p.evaluate('() => { window.confirm = () => true; document.getElementById("btnOut").click(); }')
+    p.evaluate('() => { window.confirm = () => true; const sub = () => { const m = document.getElementById("pgMask"); if (m && !m.hidden) document.getElementById("pgSub").click(); }; document.getElementById("btnOut").click(); sub(); }')
     wait_msg(p, '下班打卡成功 09:01', timeout=3000)
     p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)   # Google 那份回來了
     p.wait_for_timeout(400)
