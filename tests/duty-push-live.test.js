@@ -106,8 +106,8 @@ ok('正式推送、回應快（200 毫秒）：跟 a9fac60 只差「金鑰／店
   const A = run(OLD), B = run(SRC);
   assert.deepStrictEqual(B.h.fetches.map((f) => f.opt.payload), A.h.fetches.map((f) => f.opt.payload));
   assert.deepStrictEqual(B.h.fetches.map((f) => JSON.stringify(f.opt)), A.h.fetches.map((f) => JSON.stringify(f.opt)));
-  // push_stats：正式推送多回 slow／flush_*、cap 1500→800；其餘欄位逐字相同
-  const outB = J(B.out).map((o) => { if (o.push) { assert.ok(o.push.slow && 'flush_p50ms' in o.push); delete o.push.slow; delete o.push.flush_samples; delete o.push.flush_p50ms; delete o.push.flush_max_ms; delete o.push.flush_err; } return o; });
+  // push_stats：正式推送多回 slow／flush_*／skip_flush（fix/push-gap）、cap 1500→800；其餘欄位逐字相同
+  const outB = J(B.out).map((o) => { if (o.push) { assert.ok(o.push.slow && 'flush_p50ms' in o.push); delete o.push.slow; delete o.push.flush_samples; delete o.push.flush_p50ms; delete o.push.flush_max_ms; delete o.push.flush_err; assert.strictEqual(o.push.skip_flush, 0); delete o.push.skip_flush; } return o; });
   assert.strictEqual(JSON.stringify(outB), JSON.stringify(A.out).replace(/"cap":1500/g, '"cap":800'));
   const cb = Object.assign({}, B.h.cache); delete cb.dpush_slow;
   assert.strictEqual(JSON.stringify(cb), JSON.stringify(A.h.cache));
@@ -351,6 +351,29 @@ ok('flush 丟錯：這一筆不按門鈴（寫入照常返回、回應物件不�
   bad = false; h.write(W, { ok: true });
   assert.strictEqual(h.fetches.length, 1);
   assert.deepStrictEqual([stats(h).flush_err, stats(h).ok], [1, 1]);
+});
+
+ok('fix/push-gap：flush 丟錯也記進每日統計 skip_flush（push_stats 回 skip_flush，mini 看到增加就退出推送模式）；沒出錯時暫存區不多 skip_flush 這一欄', () => {
+  let bad = true;
+  const h = harness(SRC, { props: LIVE });
+  h.sb.SpreadsheetApp = { flush: () => { h.log.push('SpreadsheetApp.flush'); if (bad) throw new Error('flush 失敗'); } };
+  const stKey = 'dpush_st_' + new Date(T0 + 8 * 3600000).toISOString().slice(0, 10);
+  h.write(W, { ok: true }); h.write(C, { ok: true });
+  assert.strictEqual(h.fetches.length, 0);
+  let p = stats(h);
+  assert.deepStrictEqual([p.skip_flush, p.flush_err, p.sent, p.fail, p.skip_off], [2, 2, 0, 0, 0]);
+  assert.strictEqual(JSON.parse(h.cache[stKey].v).skip_flush, 2, '記在每日統計（跟 sent／fail 同一個快取鍵）');
+  bad = false; h.write(W, { ok: true });
+  p = stats(h);
+  assert.deepStrictEqual([p.skip_flush, p.ok, p.sent], [2, 1, 1], '下一筆照推；skip_flush 不會被成功那筆蓋掉');
+  // 沒出錯：push_stats 回 0；暫存區的每日統計不多這一欄（跟 #182–#184 逐字相同）
+  const g = harness(SRC, { props: LIVE, fetch: took(100) });
+  g.write(W, { ok: true });
+  assert.strictEqual(stats(g).skip_flush, 0);
+  assert.ok(!('skip_flush' in JSON.parse(g.cache[stKey].v)));
+  // 只計數：push_stats 不多欄位
+  const d = harness(SRC, { props: DRY }); d.write(W, { ok: true });
+  assert.ok(!('skip_flush' in stats(d)));
 });
 
 ok('停推只延長不縮短：連外期間別的執行寫了 600 秒的停推，這筆快速失敗（60 秒）不蓋掉；停推快取一律存 6 小時', () => {

@@ -918,8 +918,10 @@ ok('新增行零試算表寫入：沒有 setValue／setValues／appendRow／inse
   assert.strictEqual((stripComments(SRC).match(/UrlFetchApp\.fetch/g) || []).length, 1, 'UrlFetchApp 只在 dutyPushSend_ 用一次');
 });
 
-ok('沒動 DutyFeed.gs 以外的程式檔（apps-script 底下只有 DutyFeed.gs 有差異）', () => {
-  const files = execFileSync('git', ['diff', '--name-only', BASE, '--', 'apps-script'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+ok('門鈴那幾個 PR（#181–#184）沒動 DutyFeed.gs 以外的程式檔（apps-script 底下只有 DutyFeed.gs 有差異）', () => {
+  // 比對範圍到 #184 合併點（510ded9）為止：之後合併的 #179（Requests.gs，考勤異常「連絡不上」）不是門鈴的改動，不算在這裡
+  const END = process.env.DUTY_PUSH_END || '510ded9';
+  const files = execFileSync('git', ['diff', '--name-only', BASE + '..' + END, '--', 'apps-script'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
   assert.deepStrictEqual(files, ['apps-script/DutyFeed.gs']);
 });
 
