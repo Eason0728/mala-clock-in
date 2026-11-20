@@ -86,7 +86,7 @@ const ok = async (name, fn) => { await fn(); n++; console.log('✓ ' + name); };
     assert.deepStrictEqual(Object.keys(m.body).sort(), ['body', 'id_token', 'op', 'req_id', 'url']);
     assert.strictEqual(m.body.op, 'submit'); assert.strictEqual(m.body.url, GURL); assert.strictEqual(m.body.id_token, 'TOK');
     assert.deepStrictEqual(J(m.body.body), { kind: 'leave', date: '2026-11-25', hours: 8 });
-    assert(/^[A-Za-z0-9_-]{8,64}$/.test(m.body.req_id) && /^lr/.test(m.body.req_id), 'req_id 格式 ' + m.body.req_id);
+    assert(/^r[0-9a-f]{16}$/.test(m.body.req_id), 'req_id 格式（g-line.md 4.1：r＋16 碼十六進位） ' + m.body.req_id);
     assert.strictEqual(c.beacons.length, 0);
   });
   await ok('(b) mini 回 data.ok===false（規則拒絕）：照樣當 Google 回應用，不再送 Google', async () => {
@@ -99,6 +99,11 @@ const ok = async (name, fn) => { await fn(); n++; console.log('✓ ' + name); };
     const c = load({ flag: true, post: () => Promise.resolve({ ok: true, src: 'mini', data: { ok: true } }) });
     await c.T.sendReq('cancel', GURL, { action: 'req_cancel', id_token: 'TOK', id: 'R1' });
     assert.strictEqual(c.calls[0].body.op, 'cancel'); assert.deepStrictEqual(J(c.calls[0].body.body), { id: 'R1' });
+  });
+  await ok('取消改送 Google 時不帶 req_id（g-line.md 只定義 req_submit 的單號）', async () => {
+    const c = load({ flag: true, post: (url) => url === MINI ? Promise.resolve({ ok: false, error: 'mini_off' }) : Promise.resolve(G_OK) });
+    await c.T.sendReq('cancel', GURL, { action: 'req_cancel', id_token: 'TOK', id: 'R1' });
+    assert.strictEqual(gCalls(c).length, 1); assert.strictEqual(gCalls(c)[0].body.req_id, undefined);
   });
 
   await ok('(c) 開關開＋mini 3 秒沒回：3 秒多一點改送 Google，req_id 同一個，沒有 shadow_note', async () => {

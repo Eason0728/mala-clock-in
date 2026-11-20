@@ -174,10 +174,11 @@
       return ['localhost', '127.0.0.1'].indexOf(location.hostname) !== -1 && new URLSearchParams(location.search).get('submit_mini') === '1';
     } catch (e) { return false; }
   }
-  /** 單號：'lr' + 時間 base36 + 10 碼隨機英數（只含 [A-Za-z0-9_-]，8–64 字）。 */
+  /** 單號：'r' + 16 碼小寫十六進位（G 線契約 g-line.md 4.1，同打卡單號格式；Google 直接拿來當申請單 id、同單號只寫一次）。 */
   function newReqId() {
-    var cs = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', s = 'lr' + Date.now().toString(36);
-    for (var i = 0; i < 10; i++) s += cs.charAt(Math.floor(Math.random() * cs.length));
+    var s = 'r', b = null;
+    try { b = new Uint8Array(8); window.crypto.getRandomValues(b); } catch (e) { b = null; }
+    for (var i = 0; i < 8; i++) s += ('0' + ((b ? b[i] : Math.floor(Math.random() * 256)) & 255).toString(16)).slice(-2);
     return s;
   }
   /** 影子回報（Google 回來後告訴 mini 結果，fire-and-forget）。 */
@@ -196,7 +197,7 @@
     var reqId = newReqId(), mb = {};
     Object.keys(body).forEach(function (k) { if (k !== 'action' && k !== 'id_token') mb[k] = body[k]; });
     var toG = function (shadow) {
-      var gb = Object.assign({}, body, { req_id: reqId });
+      var gb = op === 'submit' ? Object.assign({}, body, { req_id: reqId }) : body;   // 只有送出帶單號給 Google（取消用申請單 id，g-line.md 只定義 req_submit 的 req_id）
       return E.post(url, gb).then(function (r) { if (shadow) shadowNote(url, body.id_token, reqId, r); return r; });
     };
     var capT, cap = new Promise(function (res, rej) { capT = setTimeout(function () { rej(new Error('mini_timeout')); }, SUBMIT_MINI_MS); });   // 舊手機沒有 AbortController 也最多等這麼久
