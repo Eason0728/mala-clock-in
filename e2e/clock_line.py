@@ -120,8 +120,12 @@ def msg(p):
 
 
 def wait_msg(p, needle, timeout=8000):
-    p.wait_for_function('(s) => (document.getElementById("msg").textContent + document.getElementById("hint").textContent).indexOf(s) >= 0',
-                        arg=needle, timeout=timeout)
+    try:
+        p.wait_for_function('(s) => (document.getElementById("msg").textContent + document.getElementById("hint").textContent).indexOf(s) >= 0',
+                            arg=needle, timeout=timeout)
+    except Exception:
+        print('wait_msg 逾時：等「%s」，畫面實際是 %r' % (needle, msg(p)))   # 失敗時直接看到畫面上是什麼
+        raise
 
 
 def no_undefined(p, where):
@@ -1391,14 +1395,26 @@ def phase_same_type(ctx, hq):
     # 前面幾段剛打的卡（例：加班提示那段的下班卡）往前挪到 11 分鐘以前，否則最後按確定送出的上班卡會被後端正確地擋下
     from datetime import datetime, timedelta, timezone
     f = os.path.join(ROOT, 'mock', 'mock_data_hq.json')
-    if os.path.exists(f):
+
+    def backdate(last_type=None):
+        """把這位同仁 11 分鐘內的卡全部挪到 11 分鐘前（解除後端的 10 分鐘鎖）。
+        last_type：同時把最後一筆改成這個型別。2026-11-20 起這段要這樣做：畫面上的 guard 是假的（上一筆＝上班），
+        但「改按下班」會真的送到 mock 後端；前面加班提示那段留下的真資料最後一筆是「下班」，
+        後端就會回 need_confirm（同型），畫面再跳一次提醒框、不會出現打卡成功——跟畫面上假的 guard 對不起來。
+        所以要讓假後端的最後一筆跟畫面上假的 guard 說的一樣（上班）。"""
+        if not os.path.exists(f):
+            return
         d = json.load(open(f, encoding='utf-8'))
         emp = next((r['emp_id'] for r in d['roster'] if r.get('line_user_id') == 'U1'), None)
         cut = datetime.now(timezone(timedelta(hours=8))) - timedelta(minutes=11)
-        for e in d['events']:
-            if e['emp_id'] == emp and datetime.fromisoformat(e['ts']) > cut:
+        mine = [e for e in d['events'] if e['emp_id'] == emp]
+        for e in mine:
+            if datetime.fromisoformat(e['ts']) > cut:
                 e['ts'] = cut.replace(microsecond=0).isoformat()
+        if last_type and mine:
+            mine[-1]['type'] = last_type
         json.dump(d, open(f, 'w', encoding='utf-8'), ensure_ascii=False)
+    backdate('in')
     S['guard'] = {'blocked': 'in', 'lock': {'in': now + 6 * 60000, 'out': now + 6 * 60000},
                   'last': {'type': 'in', 'hm': '08:49', 'ts': '2026-11-02T08:49:00+08:00'}}
     p = open_page(ctx, url(hq, in_client=True))
@@ -1438,7 +1454,9 @@ def phase_same_type(ctx, hq):
     p.wait_for_function('window.__calls.filter(c => c.action === "liff_punch").length > %d' % n0, timeout=10000)
     lp = [x for x in calls(p) if x['action'] == 'liff_punch']
     ok('同型：主按鈕（Enter）→ 改送下班，不是上班', lp[-1]['type'] == 'out', lp[-1])
-    wait_msg(p, '下班打卡')
+    wait_msg(p, '下班打卡成功')   # 等具體結果：後端收了才會出現；need_confirm／被擋都不會寫這句
+    ok('同型：改按下班 → 下班卡真的寫進去', '下班打卡成功' in msg(p) and '打卡失敗' not in msg(p) and p.locator('#pgMask:not([hidden])').count() == 0, msg(p))
+    backdate()   # 剛打的下班卡讓後端鎖 10 分鐘（B33）：挪到 11 分鐘前，後面「確定是上班」才不會被正確地擋下
     p.reload()
     p.wait_for_function('document.getElementById("who").textContent.length > 0', timeout=10000)
     p.wait_for_timeout(300)
@@ -1449,8 +1467,8 @@ def phase_same_type(ctx, hq):
     p.wait_for_function('window.__calls.filter(c => c.action === "liff_punch").length > %d' % n0, timeout=10000)
     lp = [x for x in calls(p) if x['action'] == 'liff_punch']
     ok('同型：次按鈕「確定是上班」→ 照上班送出', lp[-1]['type'] == 'in', lp[-1])
-    wait_msg(p, '上班打卡')
-    ok('同型：提醒框按確定是上班 → 送出上班卡', '上班打卡' in msg(p), msg(p))
+    wait_msg(p, '上班打卡成功')
+    ok('同型：提醒框按確定是上班 → 送出上班卡', '上班打卡成功' in msg(p), msg(p))
     p.close()
 
 
