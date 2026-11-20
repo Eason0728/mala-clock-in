@@ -115,4 +115,49 @@ const ON = { G_WATCH_ON: '1', G_WATCH_HOOK_URL: HOOK, G_WATCH_TO: 'someone@examp
   const r = w.pull();
   check('D23', 'relay_pull 回應沒有新欄位', Object.keys(r).sort().join(','), 'config,events,from_row,headers,now,ok,total,v');   // 跟 main 一樣的欄位
 }
+
+// ── 寄信端回 HTTP 200 但內文才有成敗（fix/relayg-rows-guard）──
+{
+  const reply = (code, body) => ({ getResponseCode: () => code, getContentText: () => body });
+  const down = (resp) => {
+    const w = world({ props: ON });
+    w.m.sb.UrlFetchApp = { fetch: () => resp };
+    w.pull(); w.adv(16 * MIN);
+    const t = w.tick();
+    return { w, t, st: JSON.parse(w.prop('G_WATCH_STATE')) };
+  };
+  const cases = [
+    ['H1', '內文 ok＋added：算送出', reply(200, '{"ok":true,"added":true}'), true, undefined],
+    ['H2', '被去重（added:false＋duplicate）：對方已寄過，算送出', reply(200, '{"ok":true,"added":false,"skipped":"duplicate"}'), true, undefined],
+    ['H3', '超過每日上限（daily_cap）：算失敗、下一輪補送', reply(200, '{"ok":true,"added":false,"skipped":"daily_cap"}'), false, 'daily_cap'],
+    ['H4', 'ok:false＋unauthorized：算失敗、記固定碼', reply(200, '{"ok":false,"error":"unauthorized"}'), false, 'unauthorized'],
+    ['H5', 'ok:false＋not_configured', reply(200, '{"ok":false,"error":"not_configured"}'), false, 'not_configured'],
+    ['H6', 'ok:false＋send_failed', reply(200, '{"ok":false,"error":"send_failed"}'), false, 'send_failed'],
+    ['H7', 'ok:false＋看不懂的錯誤文字：只記 hook_error、不記原文', reply(200, '{"ok":false,"error":"bad token abc@x.test"}'), false, 'hook_error'],
+    ['H8', '內文不是 JSON（例如登入頁 HTML）：算失敗', reply(200, '<html>Sign in</html>'), false, 'bad_body'],
+    ['H9', '內文空白：算失敗', reply(200, ''), false, 'bad_body'],
+    ['H10', '內文是 JSON 但不是物件（null）：算失敗', reply(200, 'null'), false, 'bad_body'],
+    ['H11', 'ok 不是 true（缺欄位）：算失敗', reply(200, '{"added":true}'), false, 'hook_error'],
+    ['H12', 'HTTP 500：照舊算失敗', reply(500, '{"ok":true}'), false, 'http_500'],
+    ['H13', '2xx 且 added:false 沒說原因：算失敗', reply(200, '{"ok":true,"added":false}'), false, 'not_sent'],
+  ];
+  cases.forEach((c) => {
+    const x = down(c[2]);
+    check(c[0], c[1], [x.t.sent, x.t.error, x.st.down_sent, x.st.err], [c[3], c[4], c[3], c[3] ? undefined : c[4]]);
+  });
+  const x = down(reply(200, '{"ok":false,"error":"bad token abc@x.test"}'));
+  check('H14', '狀態與回傳都找不到 token、信箱', [JSON.stringify(x.st).indexOf('hook-token-0001') < 0, JSON.stringify(x.st).indexOf('example.test') < 0, JSON.stringify(x.st).indexOf('abc@x.test') < 0], [true, true, true]);
+  // 補送：第一輪被擋，下一輪（10 分鐘後）對方正常 → 補送成功；中間每分鐘不重打
+  const w = world({ props: ON });
+  let n = 0, mode = 'cap';
+  w.m.sb.UrlFetchApp = { fetch: () => { n++; return reply(200, mode === 'cap' ? '{"ok":true,"added":false,"skipped":"daily_cap"}' : '{"ok":true,"added":true}'); } };
+  w.pull(); w.adv(16 * MIN);
+  const a = w.tick();
+  check('H15', '第一輪被擋：沒送出、記一次嘗試', [a.sent, JSON.parse(w.prop('G_WATCH_STATE')).tries, n], [false, 1, 1]);
+  mode = 'ok'; w.adv(10 * MIN);
+  const b = w.tick();
+  check('H16', '下一輪（觸發器 10 分鐘一次）補送成功、之後不再送', [b.sent, JSON.parse(w.prop('G_WATCH_STATE')).down_sent, n], [true, true, 2]);
+  w.adv(10 * MIN); w.tick();
+  check('H17', '已送出的停機不重複送', n, 2);
+}
 done();

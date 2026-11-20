@@ -463,7 +463,14 @@ function relayGWatchSend_(kind, title, text) {
       payload: JSON.stringify({ action: 'add', token: String(p.getProperty('G_WATCH_HOOK_TOKEN') || ''), to: to, from: '打卡（Google 光復）',
         title: title, text: text, level: 'high', key: 'clock:mini-' + kind }) });
     var code = r.getResponseCode();
-    return code >= 200 && code < 300 ? { ok: true } : { ok: false, error: 'http_' + code };
+    if (!(code >= 200 && code < 300)) return { ok: false, error: 'http_' + code };
+    // 寄信端是網頁應用程式，成敗都回 200，要看內文：ok:true 才算送出（added:false＋skipped:duplicate＝對方已寄過，也算）；其餘一律失敗、下一輪補送。
+    var j = null;
+    try { j = JSON.parse(String(r.getContentText() || '')); } catch (e2) { j = null; }
+    if (!j || typeof j !== 'object') return { ok: false, error: 'bad_body' };
+    if (j.ok === true) return j.added === false && j.skipped !== 'duplicate' ? { ok: false, error: j.skipped === 'daily_cap' ? 'daily_cap' : 'not_sent' } : { ok: true };
+    var er = String(j.error || '');   // 只回固定碼，不回對方給的原文
+    return { ok: false, error: /^(unauthorized|not_configured|send_failed)$/.test(er) ? er : 'hook_error' };
   } catch (e) { return { ok: false, error: 'fetch' }; }
 }
 /**
