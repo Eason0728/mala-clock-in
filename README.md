@@ -354,8 +354,8 @@ function run() { addManager('王經理'); }
   - Mac mini 長時間不在又要鎖月：在光復 Apps Script 編輯器執行 `relayGEditorPrimaryOff`（關正本記號），這三項與打卡筆數都不看。看現況：`relayGEditorStatus` 的 `lock_rows`。契約：dzy-mini-playbook `docs/clock-to-mini/contracts/r-line-p38.md`。
   - **打開 `G_LOCK_ROWS` 前的步驟**（照順序；任何一步沒過就先不要開——開了只會「擋」、不會放行，但會擋住會計鎖月）：
     1. 九店 `RelayG.js` 已含 P3-1、P3-8（2026-11-21 換檔來源 `3dbca83` 起就有）。
-    2. 營運系統已上核定接 mini（P3-4），而且本機查詢回 200：在 Mac mini 跑 `curl -s 'http://127.0.0.1:8796/store/svc/duty-auth?store=gf&ym=<要鎖的月>'`，回 `ok:true` 且 `stores.gf` 有 `unsent`、`conflicts`。
-       - 快速通道用的是這條（mala-clock-relay #22 起；**不用金鑰**）。若改用營運系統 #342 的 `/store/svc/duty-lock-stats`，要先請 **Eason 輸入同一把門鈴金鑰**（≥16 字）：營運系統 `.env` 的 `DUTY_POKE_KEY` 與快速通道 `.env` 的 `POKE_KEY`（金鑰類，不經 env-set.sh），兩邊各自重啟。
+    2. 營運系統已上核定接 mini（P3-4）與鎖月筆數查詢（mala-store-ops #342），在 Mac mini 跑 `curl -s http://127.0.0.1:8796/store/svc/duty-lock-stats` 回 `ok:true`，九店每家都有 `unwb`、`conflict`、`months`、`unknown_date`。
+       - 金鑰：營運系統 `DUTY_POKE_KEY` 與快速通道 `POKE_KEY` **兩邊都沒設＝不用金鑰**（只收本機連線）。之後若有人設了其中一邊，另一邊要由 **Eason 輸入同一把**（≥16 字，金鑰類、不經 env-set.sh）並各自重啟，不然查詢回 403、鎖月會一直被擋。
     3. 快速通道 `G_ROWS_ON=1`（`env-set.sh clock-relay G_ROWS_ON` → `update-all.sh --restart clock-relay`），等 10 分鐘以上，`/clock/admin/g` `op:info` 的 `rows.lock_stats.err` 是 `null`、`rows.fp_bad` 沒有要鎖的那個月。
     4. 光復 Apps Script 編輯器執行 `relayGEditorStatus`：`primary.on` 是 true、`recon_at` 是 30 分鐘內。
     5. 光復指令碼屬性加 `G_LOCK_ROWS=1`。再跑一次 `relayGEditorStatus`，`lock_rows.on` 是 true。
