@@ -349,6 +349,17 @@ function run() { addManager('王經理'); }
     - 開關屬性填錯值偏安全：`off／OFF／false／0／no／關` 都算關；`REQ_GAP_LATE_FROM` 認不得的值（含 on）一律當關並記一筆 log（放寬規則，關比較保守），沒設才用程式預設。
     - **要開**：`apps-script/Requests.gs` 的 `REQ_GAP_LATE_FROM_DEFAULT_`（上線日）照一般流程部署九店（Requests.js 九店同一份，常數一改**九店同時生效，沒有分店開關**）；營運系統 `web/modules/duty/core-calc.js` 的 `GAP_LATE_FROM` 設**同一天**、update-all。**九店沒有全部部署完成前，營運系統不要上 #326**（打卡端沒開、營運系統先開＝核定被擋「核定比打卡多 N 分鐘」）。
     - **要退：兩邊一起退**——打卡端屬性 `REQ_GAP_LATE_FROM=off`（或常數改回 null 重部署九店）＋營運系統 `GAP_LATE_FROM` 改回 null 並 update-all、發布前端。只退打卡端、營運系統還開著＝二段班空檔的核定被擋。
+- **薪資鎖月多擋三項（P3-8，2026-11-21 Eason 第 2 題 A；`RelayG.gs` `relayGLockRowsOn_`／`relayGLockRowsBlock_`，只有光復用）**：光復指令碼屬性 `G_LOCK_ROWS` 開著、而且打卡正本在 Mac mini（`G_PRIMARY` 開）時，鎖月除了打卡筆數，還要這家店這個月核定／請假／申請 mini 和 Google 指紋一致、mini 未寫回 0、衝突待處理 0；任何一項不知道（沒回報、超過 30 分鐘、問不到營運系統）＝擋。未寫回／衝突只算要鎖的那個月，日期認不出來的算進每個月（Eason 2026-11-21 定案 A，常數 `RELAYG_LOCK_SCOPE_='month'`）。
+  - ⚠ **開關寫法跟本檔其他開關相反**：這是保護性檢查，**只有「刪掉屬性」、空白、或填 `0` 才是關**；`off`、`false`、`no`、`關`、`1 ` 等**任何其他值都當「開」**（打錯字維持擋，不會變放行；讀不到設定也當開）。要關請刪屬性或填 `0`。
+  - Mac mini 長時間不在又要鎖月：在光復 Apps Script 編輯器執行 `relayGEditorPrimaryOff`（關正本記號），這三項與打卡筆數都不看。看現況：`relayGEditorStatus` 的 `lock_rows`。契約：dzy-mini-playbook `docs/clock-to-mini/contracts/r-line-p38.md`。
+  - **打開 `G_LOCK_ROWS` 前的步驟**（照順序；任何一步沒過就先不要開——開了只會「擋」、不會放行，但會擋住會計鎖月）：
+    1. 九店 `RelayG.js` 已含 P3-1、P3-8（2026-11-21 換檔來源 `3dbca83` 起就有）。
+    2. 營運系統已上核定接 mini（P3-4）與鎖月筆數查詢（mala-store-ops #342），在 Mac mini 跑 `curl -s http://127.0.0.1:8796/store/svc/duty-lock-stats` 回 `ok:true`，九店每家都有 `unwb`、`conflict`、`months`、`unknown_date`。
+       - 金鑰：營運系統 `DUTY_POKE_KEY` 與快速通道 `POKE_KEY` **兩邊都沒設＝不用金鑰**（只收本機連線）。之後若有人設了其中一邊，另一邊要由 **Eason 輸入同一把**（≥16 字，金鑰類、不經 env-set.sh）並各自重啟，不然查詢回 403、鎖月會一直被擋。
+    3. 快速通道 `G_ROWS_ON=1`（`env-set.sh clock-relay G_ROWS_ON` → `update-all.sh --restart clock-relay`），等 10 分鐘以上，`/clock/admin/g` `op:info` 的 `rows.lock_stats.err` 是 `null`、`rows.fp_bad` 沒有要鎖的那個月。
+    4. 光復 Apps Script 編輯器執行 `relayGEditorStatus`：`primary.on` 是 true、`recon_at` 是 30 分鐘內。
+    5. 光復指令碼屬性加 `G_LOCK_ROWS=1`。再跑一次 `relayGEditorStatus`，`lock_rows.on` 是 true。
+    6. 退回：刪掉 `G_LOCK_ROWS` 或改成 `0`（**不要填 off／false，那也算開**）。
 - **這天還有待審的申請就不能核定（2026-11-20 Eason；`reqPendBlock_`）**：`mgr_approve`（含 dry_run、整天請假、舊值班頁）在這位同仁這天有任何 `status=pending` 的申請時回 `{ok:false, error:'pending_request', message:'這天還有待審的申請，請先審單（審完才能核定）', pending:N}`，字句同營運系統畫面。指令碼屬性 `REQ_PEND_BLOCK=off`（off／OFF／false／0／no／關都算，不分大小寫）關掉；認不得的值照預設「擋」並記一筆 log（保護性檢查，被誤關＝少擋）。
 - 這套比對邏輯在 `apps-script/Code.gs`（`computeApprovalStatus`）與 `mock/mock_server.py`（`compute_approval_status`）各實作一份，保持同步；純函式可直接用 node 載入 `Code.gs` 測試，不需要試算表。
 - **狀態是核定當下的一次性快照，靠 `recheckPendingApprovalStatuses()` 回頭修**（每日 05:00 由 `dailyMonthlyRebuild` 呼叫，也可用管理 API `recheck_approvals` 手動跑）：掃近 `RECHECK_STATUS_DAYS` 天內 `status_text` 含「該段無打卡」（或「打卡未入帳」「少刷N組卡」）的核定紀錄，用**當下最新**的打卡資料重算；狀態有變才追加一筆修正紀錄（`periods`／`approved_hours` 原封不動只換 `status_text`，`manager_name` 加註「（系統重算）」）。
