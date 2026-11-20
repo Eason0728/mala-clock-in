@@ -26,6 +26,11 @@
  *   前端兩兩檢查重疊、接在一起、合計 10 小時（後端照樣全部再檢查一次）；送出後「我的申請」同一次送出的標「第 N 段／共 M 段」。資料欄位不變。 */
 (function () {
   'use strict';
+  /* 送出／取消先走 Mac mini 的開關（2026-11-21，Eason 決定：mini 停機時同仁照樣送得出去）。
+     放寬性開關：只有 true 才走新路徑（先送 Mac mini、3 秒沒回改送 Google）；false 時送出、取消跟以前逐字相同（sendReq 第一行直接 E.post）。
+     改成 true＝合併到 main 就是 GitHub Pages 上線，由大腦決定時間。本機測試：只在 localhost／127.0.0.1，網址加 ?submit_mini=1 才打開。
+     另外 E.MINI_REQ_API 要有值才算開。 */
+  var SUBMIT_MINI = false;
   var E, $root, st = { init: null, store: null, info: null, tab: 'leave', busy: false,
                       quotaReady: false, quota: null, infoErr: false, touched: false, storeManual: false,
                       src: {}, peekAt: {}, infoReal: false, tm: null,
@@ -162,6 +167,51 @@
     try { fetch(E.MINI_REQ_API, { method: 'POST', body: body, mode: 'no-cors', keepalive: true }).catch(function () {}); } catch (e) {}
   }
   function hhmm(ms) { var d = new Date(ms + 8 * 3600000); return ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2); }
+
+  /* ── 送出／取消走 Mac mini（2026-11-21；SUBMIT_MINI 關＝完全照舊）── */
+  var SUBMIT_MINI_MS = 3000;
+  function submitMiniOn() {
+    if (!E || !E.MINI_REQ_API) return false;
+    if (SUBMIT_MINI) return true;
+    try {
+      return ['localhost', '127.0.0.1'].indexOf(location.hostname) !== -1 && new URLSearchParams(location.search).get('submit_mini') === '1';
+    } catch (e) { return false; }
+  }
+  /** 單號：'r' + 16 碼小寫十六進位（G 線契約 g-line.md 4.1，同打卡單號格式；Google 直接拿來當申請單 id、同單號只寫一次）。 */
+  function newReqId() {
+    var s = 'r', b = null;
+    try { b = new Uint8Array(8); window.crypto.getRandomValues(b); } catch (e) { b = null; }
+    for (var i = 0; i < 8; i++) s += ('0' + ((b ? b[i] : Math.floor(Math.random() * 256)) & 255).toString(16)).slice(-2);
+    return s;
+  }
+  /** 影子回報（Google 回來後告訴 mini 結果，fire-and-forget）。 */
+  function shadowNote(url, idToken, reqId, r) {
+    try {
+      var g = { ok: !!(r && r.ok), error: (r && r.error) || '', message: (r && r.message) || '' };
+      var body = JSON.stringify({ op: 'shadow_note', url: url, id_token: idToken, req_id: reqId, g: g });
+      try { if (navigator.sendBeacon && navigator.sendBeacon(E.MINI_REQ_API, new Blob([body], { type: 'text/plain' }))) return; } catch (e) {}
+      try { fetch(E.MINI_REQ_API, { method: 'POST', body: body, mode: 'no-cors', keepalive: true }).catch(function () {}); } catch (e) {}
+    } catch (e) {}
+  }
+  /** 送申請（op＝submit／cancel）。開關關：就是 E.post(url, body)。開關開：先 mini（3 秒），
+   *  回 src:'mini' 就用它的 data；mini_off＋shadow、其他失敗、逾時、非 JSON 都改送 Google（同一個 req_id）。 */
+  function sendReq(op, url, body) {
+    if (!submitMiniOn()) return E.post(url, body);
+    var reqId = newReqId(), mb = {};
+    Object.keys(body).forEach(function (k) { if (k !== 'action' && k !== 'id_token') mb[k] = body[k]; });
+    var toG = function (shadow) {
+      var gb = op === 'submit' ? Object.assign({}, body, { req_id: reqId }) : body;   // 只有送出帶單號給 Google（取消用申請單 id，g-line.md 只定義 req_submit 的 req_id）
+      return E.post(url, gb).then(function (r) { if (shadow) shadowNote(url, body.id_token, reqId, r); return r; });
+    };
+    var capT, cap = new Promise(function (res, rej) { capT = setTimeout(function () { rej(new Error('mini_timeout')); }, SUBMIT_MINI_MS); });   // 舊手機沒有 AbortController 也最多等這麼久
+    var mp;
+    try { mp = E.post(E.MINI_REQ_API, { op: op, url: url, id_token: body.id_token, req_id: reqId, body: mb }, SUBMIT_MINI_MS); } catch (e) { mp = Promise.reject(e); }
+    return Promise.race([mp, cap]).then(function (r) {
+      clearTimeout(capT);
+      if (r && r.ok === true && r.src === 'mini' && r.data && typeof r.data === 'object') return r.data;
+      return toG(!!(r && r.ok === false && r.error === 'mini_off' && r.shadow === true));
+    }, function () { clearTimeout(capT); return toG(false); });
+  }
 
   /* ── 開頁 ── */
   /* 手機記住的開頁資料（2026-11-06）：只記店別清單、上次用的店、假別清單；額度與補休帳會變，不記。
@@ -1244,7 +1294,7 @@
             }
             if (st.tab === 'mine') render();
           };
-          E.post(E.storeApi(storeDef()), { action: 'req_cancel', id_token: liff.getIDToken(), id: r.id }).then(function (x) {
+          sendReq('cancel', E.storeApi(storeDef()), { action: 'req_cancel', id_token: liff.getIDToken(), id: r.id }).then(function (x) {
             done(x && x.ok ? '' : (x && x.message) || '取消沒有成功，請再試一次');
           }, function () { done('連線失敗，不確定有沒有取消成功，請先看清單再決定要不要再按一次'); });
         } } });
@@ -1363,7 +1413,7 @@
       try { built = build(); } catch (err) { built = Promise.reject(err); }
       Promise.resolve(built).then(storeGuard).then(function (body) {
         body.action = 'req_submit'; body.id_token = liff.getIDToken();
-        return E.post(E.storeApi(storeDef()), body);
+        return sendReq('submit', E.storeApi(storeDef()), body);
       }).then(function (r) {
         st.busy = false; btn.disabled = false; out.innerHTML = '';
         if (r && r.error === 'invalid_id_token') {   // 送出時逾時：不自動重整（填的內容會不見），讓同仁自己按（2026-10-30）
