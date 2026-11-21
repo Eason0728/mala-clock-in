@@ -1622,7 +1622,7 @@ function renderOtInfo(t){
   SAME_NAME.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：打卡名冊有同名的人（${x.emp_ids.map(esc).join('、')}），本月 ${x.rows} 筆請假只有姓名，系統依在職與到離職日算給 ${x.to.map(esc).join('、')}，請確認沒有歸錯人</li>`));
   RESULTS.forEach(r=>{const o=r.ot_info; if(!o) return; const nm=esc(r.name);
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
-    if(o.comp_over_h>0) rows.push(`<li><b class="bad">${nm}</b>：補休有 ${r2(o.comp_over_h)} 小時抵不掉（休息日第 3 小時起、例假、國定假日的加班不能抵）——<b>改成其他假別前不能鎖定</b></li>`);
+    if(o.comp_over_h>0) rows.push(`<li><b class="bad">${nm}</b>：補休有 ${r2(o.comp_over_h)} 小時抵不掉（休息日第 3 小時起、例假、國定假日、選舉日的加班不能抵）——<b>改成其他假別前不能鎖定</b></li>`);
     { const pH=OT_PERIOD[String(r.name||'').replace(/\s/g,'')];
       if(pH>=46) rows.push(`<li><b class="bad">${nm}</b>：這一期（28 天）加班 ${r2(pH)} 小時，已滿 46 小時（休息日和超過 8 小時的上班卡會被擋）</li>`);
       else if(pH>36) rows.push(`<li><b style="color:#b7791f">${nm}</b>：這一期（28 天）加班 ${r2(pH)} 小時，超過 36 小時</li>`); }
