@@ -677,7 +677,7 @@ async function bridgeCallQueued(action,body){
 if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
 
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
-let HOLEMP=[], HOLEMP_OTHER=[], ELEC_KEY='';   // 選舉假名單（本店本月；後端 payroll_month 的 hol_emp，沒有＝空）；ELEC_KEY＝讀到的是哪家店哪個月（讀失敗＝空，卡片停用）
+let HOLEMP=[], HOLEMP_OTHER=[], ELEC_KEY='', ELEC_STALE=false;   // ELEC_STALE＝草稿不是用現在的名單算的（存名單後重算沒成功；後端 payroll_month 的 elec_stale）：重算成功前不顯示舊數字、不能匯出   // 選舉假名單（本店本月；後端 payroll_month 的 hol_emp，沒有＝空）；ELEC_KEY＝讀到的是哪家店哪個月（讀失敗＝空，卡片停用）
 /* 已鎖定月份的成本快照（2026-11-13 薪資挑錯第 7 項）：payroll_month 對已鎖定月份回 run.cost_snap，
    成本分類頁的公司負擔／年終提列／跨店請款改讀這份，鎖定後改主檔或參數不會讓已鎖定月份的數字跟著變。
    null＝草稿，或已鎖定但鎖定時沒有快照（畫面照舊即時算，並標「即時值（鎖定時沒有快照）」）。 */
@@ -801,7 +801,7 @@ async function boot(){
   const Q={quiet:true};   // 負責門市有限制時，記住的門市可能已不在範圍內，平行呼叫被擋是預期內的事
   const usedStore=STORE;
   const mP=post('payroll_master_get',{},Q);
-  let monP=post('payroll_month',{ym:ym(),inputs:{}},Q);
+  let monP=post('payroll_month',{ym:ym(),inputs:{}},Q), monSeq=++LOAD_SEQ;   // 發出預抓時就記序號（之後使用者先切了店／月，這份就作廢，Codex 第三次 S5）
   DASH_PREFETCH={key:STORE+'|'+ym(),p:post('payroll_trend',{ym:ym(),store:STORE,months:12},Q)};
   let m=await mP;
   if(EMBED&&!m.ok&&m.error==='scope_forbidden'){
@@ -820,18 +820,18 @@ async function boot(){
     }
   }
   if(STORE!==usedStore){   // 平行發出的 month／trend 是用舊門市打的 → 改用選定的門市重載
-    monP=post('payroll_month',{ym:ym(),inputs:{}});
+    monP=post('payroll_month',{ym:ym(),inputs:{}}); monSeq=++LOAD_SEQ;
     DASH_PREFETCH={key:STORE+'|'+ym(),p:post('payroll_trend',{ym:ym(),store:STORE,months:12})};
   }
   MASTER=m.master; CFG=m.config; CFG_DIRTY={};
-  HOLEMP=[]; ELEC_KEY='';   // 名單跟著 payroll_month 讀（loadMonth）
+  if(monSeq===LOAD_SEQ){ HOLEMP=[]; ELEC_KEY=''; }   // 名單跟著 payroll_month 讀（loadMonth）；預抓發出後使用者已切過店月＝那次載入已經設好，不清掉
   // ⚠ 門市下拉一定要在這裡先建好：若等到 loadMonth，該門市讀取失敗就會提早 return，
   //    下拉永遠是空的 → 使用者被鎖在壞掉的門市、切不回來（踩過）
   if(m.stores&&m.stores.length){STORE_LIST=m.stores;renderStoreSel()}
   applyHol(m.holidays);
   renderEmp(); renderCfg();
   applyScopeUi();
-  await loadMonth(monP);
+  await loadMonth(monP,monSeq);
   if(!scopeLimited()) syncHol();
   syncXmap();   // 跨店支援的打卡對照（背景跑，不擋畫面）   // 紅字天數整年自動帶入（背景跑，不擋畫面）；有負責門市限制時後端會擋，不呼叫
 }
@@ -839,7 +839,7 @@ async function boot(){
 async function autoCalc(){
   if(STATUS==='final' || RESULTS.length) return;
   const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
-  if(r&&r.ok){RESULTS=r.results;STATUS='draft';asofFromCalc(r);CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];renderRun();renderSlipSel()}
+  if(r&&r.ok){RESULTS=r.results;STATUS='draft';ELEC_STALE=false;asofFromCalc(r);CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];renderRun();renderSlipSel()}
 }
 /* ═════ 未儲存提醒（2026-08-23）═════
  * 出勤資料的所有輸入（含跨店支援明細）都只寫在瀏覽器記憶體，按「儲存工時」才進試算表。
@@ -1025,13 +1025,16 @@ function showClockMode(){
 }
 // 切月份／切門市／任何寫入後都要讓分頁快取失效，否則會看到舊數字
 let LOAD_SEQ=0;   // loadMonth 只套最後一次發出去的回應（晚到的舊回應不可改到別的店月畫面，Codex 複審 S5）
-async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month（boot 用）；其他時候自己打
-  const seq=++LOAD_SEQ;
+async function loadMonth(pre,preSeq){   // pre＝開頁時先發出去的 payroll_month（boot 用，preSeq＝發出時記的序號）；其他時候自己打
+  const seq=(pre&&preSeq)?preSeq:++LOAD_SEQ;
+  if(seq!==LOAD_SEQ) return;   // 預抓發出後使用者已經切過店／月：那次切換自己會載入，這份舊的不套用（Codex 第三次 S5）
+  const reqKey=STORE+'|'+ym();
   setBusy(true);
   try{
     vClear();
     const r=await (pre||post('payroll_month',{ym:ym(),inputs:{}}));
-    if(seq!==LOAD_SEQ) return;
+    if(seq!==LOAD_SEQ||STORE+'|'+ym()!==reqKey) return;
+    if(r&&r.ok&&r.ym&&String(r.ym)!==ym()) return;   // 回應的月份不是畫面上的月份：不套用
     if(!r.ok){
       // ⚠ 不可靜默 return——會讓畫面空白，使用者以為「資料不見了」
       const msg=r.error==='scope_forbidden'?'這家門市不在你的負責範圍':String(r.detail||r.message||r.error||'讀取失敗');
@@ -1073,6 +1076,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     if(r.config){CFG=r.config;CFG_DIRTY={}}
     if(r.config||r.holidays) renderCfg();
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
+    ELEC_STALE=!!r.elec_stale&&STATUS!=='final'; if(ELEC_STALE) RESULTS=[];   // 草稿是舊名單算的：不顯示、不匯出，重算成功才回來（Codex 第三次 B1）
     HOLEMP=Array.isArray(r.hol_emp)?r.hol_emp:[]; HOLEMP_OTHER=Array.isArray(r.hol_emp_other_dates)?r.hol_emp_other_dates:[]; ELEC_KEY=STORE+'|'+ym(); renderElec();   // 選舉假名單隨門市、月份、鎖定狀態重畫
     ASOF=r.asof||null;
     COST_SNAP=(r.run&&r.run.status==='final'&&r.run.cost_snap)||null;   // 已鎖定月份的成本快照（沒有就即時算＋標記）
@@ -1095,7 +1099,7 @@ async function doCalc(){   // 回 true＝重算成功並已套到畫面（選舉
       else if(r.message) toast(r.message,true);
       return false;
     }
-    RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;COST_SNAP=null;
+    RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;COST_SNAP=null;ELEC_STALE=false;
     asofFromCalc(r);
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
@@ -1533,7 +1537,7 @@ function renderRun(){
   renderAsof();
   const MANUAL_H=STATUS==='final'?[]:manualHourIds();
   const t=$('runTbl');
-  if(!RESULTS.length){t.innerHTML='<tr><td style="text-align:center;padding:34px;color:#8a817a">'+((ASOF&&ASOF.day1)?'今天是 1 號，明天開始有本月的數字':'按「重新計算」產生本月薪資')+'</td></tr>';
+  if(!RESULTS.length){t.innerHTML='<tr><td style="text-align:center;padding:34px;color:#8a817a">'+(ELEC_STALE?'<b class="bad">名單已儲存，但重新計算沒有完成，請再按一次「重新計算」</b>':(ASOF&&ASOF.day1)?'今天是 1 號，明天開始有本月的數字':'按「重新計算」產生本月薪資')+'</td></tr>';
     renderOtInfo(t); return}   // 還沒算也要看得到「工號對不到名冊」
   let h=`<thead><tr><th>姓名</th><th style="text-align:left">型態</th>
     <th style="text-align:left">職稱／時薪<br><span style="font-weight:400;color:var(--muted)">計時＝實際生效時薪</span></th>
@@ -2992,7 +2996,7 @@ function renderElec(){
   const dEl=$('elecDate');
   if(dEl){ dEl.min=ym()+'-01'; dEl.max=ym()+'-'+String(new Date(+ym().slice(0,4),+ym().slice(5,7),0).getDate()).padStart(2,'0');
     dEl.value=(rows[0]&&rows[0].date)||''; }
-  const list=(MASTER||[]).filter(m=>String(m.active).toLowerCase()!=='false'||on[String(m.emp_id)]);
+  const list=(MASTER||[]).filter(m=>elecInRoster(m,ym())||on[String(m.emp_id)]);   // 候選人＝後端當月計薪名冊（payInRosterYm_：在職，或已停用但離職日在本月或之後），已勾選的人一律留著可取消（Codex 第三次 B2）
   const tooOld=ym()<ELEC_FROM;   // 2026-10 以前：後端不收、薪資也不套用（Codex 複審 S1）
   const locked=STATUS==='final'||!elecReady()||tooOld;
   box.innerHTML=list.length?list.map(m=>`<label class="elec-item"><input type="checkbox" class="elec-ck" value="${esc(m.emp_id)}" ${on[String(m.emp_id)]?'checked':''} ${locked?'disabled':''} onchange="elecCount()">
@@ -3007,6 +3011,12 @@ function renderElec(){
   elecCount();
 }
 function payTrue(v){ return v===true||String(v).toLowerCase()==='true'; }
+/* 同後端 payInRosterYm_（防漂移測試 election-day-emp 會拿兩邊比）：主檔 active 是 true；或已停用但離職日（YYYY-MM-DD）在這個月或之後。 */
+function elecLeaveYmd(v){ const t=String(v==null?'':v).trim();
+  if(/^\d{4}-\d{2}-\d{2}T.*Z$/.test(t)){ const d=new Date(t); if(!isNaN(d)) return new Date(d.getTime()+8*3600000).toISOString().slice(0,10); }   // 試算表 Date 物件經 JSON 變 UTC 字串 → 台北日期
+  return t.slice(0,10); }
+function elecInRoster(m,Y){ if(String(m&&m.active).toLowerCase()==='true') return true;
+  const ld=elecLeaveYmd(m&&m.leave_date); return /^\d{4}-\d{2}-\d{2}$/.test(ld)&&ld.slice(0,7)>=String(Y); }
 function elecCount(){ const n=document.querySelectorAll('#elecList .elec-ck:checked').length; if($('elecCount')) $('elecCount').textContent='已勾選 '+n+' 人'; }
 function elecAll(v){ if(STATUS==='final'||!elecReady()||ym()<ELEC_FROM) return; document.querySelectorAll('#elecList .elec-ck').forEach(c=>{ c.checked=!!v; }); elecCount(); }
 async function saveElec(btn){
@@ -3028,7 +3038,7 @@ async function saveElec(btn){
     HOLEMP=ids.map(id=>({ym:reqYm,date:date,emp_id:id,note:''})); HOLEMP_OTHER=[];
     renderElec();
     // 舊的計算結果先作廢：重算成功前，薪資單、匯出都是「請先計算」（Codex 複審 K3）
-    RESULTS=[]; renderRun(); renderSlipSel();
+    RESULTS=[]; ELEC_STALE=true; renderRun(); renderSlipSel();   // 重新整理頁面後後端也會回 elec_stale（草稿存的名單指紋不同），兩邊同一個狀態
     recalced=await doCalc();   // 名單改了，草稿與匯出用的 RESULTS 跟著重算（比照「儲存工時」存完就重算）
   }
   const fail='名單已儲存，但重新計算沒有完成，請再按一次「重新計算」';

@@ -404,7 +404,7 @@ console.log('\n══ e6) 離職又被勾選的人鎖定時也檢查補休帳；
   chk('  第一列是不存在的日期（11/31）不會遮掉合法的 11/28', wb.F('payElecDates_')(wb.DB.hol_emp, '2026-11', 'SSLGF', 'E1'), [E]);
   const keyOf = (o) => { const w = world(o); w.sb.__TODAY = '2026-11-29'; w.F('(function(){ checkPnlKey_ = function(){ return ""; }; })')();
     w.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2026-11', store: 'SSLGF' }); return w.sb.__PUTS.filter((k) => k.indexOf('pnlestimate|') === 0)[0]; };
-  chk('  損益快取鍵：沒有名單＝跟改版前一樣；有名單多帶名單指紋', [keyOf({}), keyOf({ elec: ['a'] })], ['pnlestimate|2026-11|SSLGF|2026-11-28', 'pnlestimate|2026-11|SSLGF|2026-11-28|2026-11-28|E1']);
+  chk('  損益快取鍵：沒有名單＝跟改版前一樣；有名單多帶名單指紋的固定長度摘要（Codex 第三次）', [keyOf({}), /^pnlestimate\|2026-11\|SSLGF\|2026-11-28\|e[0-9a-f]{16}$/.test(keyOf({ elec: ['a'] }))], ['pnlestimate|2026-11|SSLGF|2026-11-28', true]);
 }
 
 console.log('\n══ g) 純函式 ══');
@@ -442,6 +442,152 @@ console.log('\n══ h) 支援：班表是別店班別（例 MZTLZL.S1）、時
   const r0 = w.F('payCalcOne')(e, '2026-11', att([]), cfg, 9), r1 = w.F('payCalcOne')(e, '2026-11', att(on), cfg, 9);
   chk('  總部正職、別店班別、勾選、在六張犁出勤 8H：編制店（總部）薪資單多「選舉日出勤」8H × 150 ＝ 1200',
     [r1.gross - r0.gross, r1.earn.filter((x) => x.item_label === '選舉日出勤').map((x) => [x.item_key, x.qty, x.amount])], [1200, [['ot_hol', 8, 1200]]]);
+}
+
+
+console.log('\n══ i) Codex 第三次（2026-11-22）：草稿過期、停用離職者首次勾選、手填衝突＋當天只在別店支援、鎖定時補休帳讀表失敗 ══');
+{
+  /* A｜存名單成功、接著的重算失敗 → 舊草稿（舊名單算的）不可被當成目前結果：載入回 elec_stale、鎖定擋 stale_run（Codex 第三次 B1）。
+     手算：a 正職 W 8h，勾選後應多「選舉日出勤」8H × 150 ＝ 1200；舊草稿 gross 34000。 */
+  const STALE_MSG = '試算後選舉假名單有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。';
+  const saveList = (w, ids) => w.F('handlePayrollHolEmpSet')({ admin_key: 'x', store: 'SSLGF', ym: '2026-11', date: ids.length ? E : '', emp_ids: ids });
+  const breakCalc = (w) => w.F('(function(){ var o = handlePayrollCalc; globalThis.__REAL_CALC = o; handlePayrollCalc = function(b){ if (b && b.dry_run) return o(b); return { ok: false, error: "busy", message: "忙碌中" }; }; })')();
+  const fixCalc = (w) => w.F('(function(){ handlePayrollCalc = globalThis.__REAL_CALC; })')();
+  const pmOf = (w) => w.F('handlePayrollMonth')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' });
+  const lockOf = (w) => w.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true });
+  {
+    const w = world({ elec: [], only: ['a'] }); w.calc();
+    chk('  A0 沒有名單的草稿不寫 elec_fp（run 列跟改版前同一列）', 'elec_fp' in w.DB.run[0], false);
+    saveList(w, ['E1']); breakCalc(w);
+    const pm = pmOf(w);
+    chk('  A1 存名單後重算失敗、重新開頁（自動重算也失敗）→ elec_stale、草稿仍是舊的 34000', [pm.ok, pm.elec_stale, w.DB.run[0].gross], [true, true, 34000]);
+    const lk = lockOf(w);
+    chk('  A2 這時按鎖定 → stale_run（名單訊息）、沒鎖', [lk.ok, lk.error, lk.message, w.DB.run[0].status], [false, 'stale_run', STALE_MSG, 'draft']);
+    fixCalc(w);
+    const pm2 = pmOf(w);
+    chk('  A3 重算恢復後重新開頁 → 自動重算、不帶 elec_stale、草稿有選舉日出勤 1200、存了名單指紋', [pm2.elec_stale, pm2.run.results[0].gross, w.DB.run[0].gross, w.DB.run[0].elec_fp], [undefined, 35200, 35200, E + '|E1']);
+    chk('  A4 之後鎖定照常', lockOf(w).ok, true);
+  }
+  {
+    // 只差提醒、金額不變的人（d 正職 W 沒出勤：勾選前後都是 34000）：舊的「鎖定前重算比對」只比金額抓不到 → 名單指紋要擋
+    const w = world({ elec: [], only: ['d'] }); w.calc(); saveList(w, ['E1']); breakCalc(w);
+    const lk = lockOf(w);
+    chk('  A5 金額沒變、只差名單（d 沒出勤）也擋鎖定', [lk.ok, lk.error, lk.message], [false, 'stale_run', STALE_MSG]);
+  }
+  {
+    // 反向：原本勾 a、算好，之後清除名單但重算失敗 → 舊草稿多了 1200，同樣不可鎖、開頁標過期
+    const w = world({ elec: ['a'], only: ['a'] }); w.calc(); saveList(w, []); breakCalc(w);
+    chk('  A6 清除名單後重算失敗：開頁 elec_stale、鎖定擋', [pmOf(w).elec_stale, lockOf(w).error, w.DB.run[0].gross], [true, 'stale_run', 35200]);
+  }
+  {
+    // 舊草稿（沒有 elec_fp 欄）＋沒有名單：不是過期（跟改版前一樣，不多重算、不多欄位）
+    const w = world({ only: ['a'] }); w.calc(); delete w.DB.run[0].elec_fp;
+    const S = w.F('payRunElecStale_');
+    chk('  A7 舊草稿沒有指紋欄＋沒有名單 → 不過期；有名單 → 過期；已鎖定 → 不算', [S(w.DB.run, '2026-11', 'SSLGF', ''), S(w.DB.run, '2026-11', 'SSLGF', E + '|E1'),
+      S([Object.assign({}, w.DB.run[0], { status: 'final' })], '2026-11', 'SSLGF', E + '|E1'), S([], '2026-11', 'SSLGF', E + '|E1')], [false, true, false, false]);
+    let n = 0; w.F('(function(){ var o = handlePayrollCalc; handlePayrollCalc = function(b){ globalThis.__N = (globalThis.__N||0) + 1; return o(b); }; })')();
+    const pm = pmOf(w); n = w.sb.__N || 0;
+    chk('  A8 沒有名單開頁：不多重算、沒有 elec_stale 屬性', [n, Object.prototype.hasOwnProperty.call(pm, 'elec_stale')], [0, false]);
+  }
+}
+{
+  /* B｜11/28 有出勤、11/29 離職、主檔已停用，12/1 才第一次建名單 → 存得進、算得出（Codex 第三次 B2）。
+     手算：l 正職 W 10h（單 2h）＋11/20 補休 2h；選舉日出勤 8H × 150 ＝ 1200（在職比例照離職日折算，兩邊相同，差額＝1200）。
+     為了不受補休影響改用 a（W 8h）。 */
+  const dep = (m) => { m[0].active = 'false'; m[0].leave_date = '2026-11-29'; };
+  const w0 = world({ elec: [], only: ['a'], patch: dep }); const r0 = w0.calc().by.a;
+  const w = world({ elec: [], only: ['a'], patch: dep });
+  const sv = w.F('handlePayrollHolEmpSet')({ admin_key: 'x', store: 'SSLGF', ym: '2026-11', date: E, emp_ids: ['E1'] });
+  const r1 = w.calc().by.a;
+  chk('  B1 停用離職者第一次建名單：存得進（1 人）', [sv.ok, sv.count], [true, 1]);
+  chk('  B2 算得出：多「選舉日出勤」8H × 150 ＝ 1200', [r1.gross - r0.gross, r1.earn.filter((x) => x.item_label === '選舉日出勤').map((x) => [x.qty, x.amount])], [1200, [[8, 1200]]]);
+  // 前端候選人＝後端當月計薪名冊（防漂移）：從 payroll.html 抽 elecInRoster 跟後端 payInRosterYm_ 比
+  const HTML = fs.readFileSync(path.join(ROOT, 'payroll.html'), 'utf8');
+  const grab = (sig) => { const i = HTML.indexOf(sig); if (i < 0) return ''; let d = 0, j = HTML.indexOf('{', i); for (let k = j; k < HTML.length; k++) { if (HTML[k] === '{') d++; else if (HTML[k] === '}' && --d === 0) return HTML.slice(i, k + 1); } return ''; };
+  const fe = vm.createContext({});
+  vm.runInContext(grab('function elecLeaveYmd(') + '\n' + grab('function elecInRoster('), fe);
+  const FE = vm.runInContext('elecInRoster', fe), BE = w.F('payInRosterYm_');
+  const actives = ['true', 'TRUE', true, 'false', false, '', 'x'], leaves = ['', '2026-10-31', '2026-11-01', '2026-11-29', '2026-11-30', '2026-12-01', '2027-01-15', '2026-11', 'abc', ' 2026-11-29 '];
+  let same = 0, tot = 0; const bad = [];
+  ['2026-10', '2026-11', '2026-12'].forEach((Y) => actives.forEach((a) => leaves.forEach((l) => { tot++; const m = { active: a, leave_date: l };
+    if (FE(m, Y) === BE(m, Y)) same++; else bad.push([Y, a, l]); })));
+  chk('  B3 前端候選人條件 elecInRoster ＝ 後端 payInRosterYm_（' + tot + ' 組）', [same, bad.slice(0, 3)], [tot, []]);
+  chk('  B4 前端：試算表 Date 物件經 JSON 的 UTC 字串（台北 11/29）也認得', FE({ active: 'false', leave_date: '2026-11-28T16:00:00.000Z' }, '2026-11'), true);
+  chk('  B5 名單卡片的候選人用 elecInRoster（不是只看 active）', /const list=\(MASTER\|\|\[\]\)\.filter\(m=>elecInRoster\(m,ym\(\)\)\|\|on\[/.test(grab('function renderElec(')), true);
+}
+{
+  /* C｜計時 11/28 只在同品牌別店支援 8H（自動帶入），會計把本店「國定假日時數」從打卡的 0 改成 8 → 本店、支援都不自動加發、提醒 hol_manual（Codex 第三次 B3）。
+     手算：時薪 200；不勾選＝本店 8H 220…（下面只比「勾選 − 不勾選」）＝ 0；舊版會多「選舉日出勤（支援支援店）」8H × 200 ＝ 1600。 */
+  const X = [['p', '計時 本店 11/20 8h、11/28 只在支援店', false, W, 0, 0, { cells: { '2026-11-20': W }, hours: { '2026-11-20': 8 } }]];
+  const AP = (h) => ({ approved_hours: h, status_text: '正常', periods: '', manager_name: '' });
+  function mk(o, manual) {
+    const w = world(Object.assign({ only: [], extra: X }, o || {}));
+    w.DB.store.push({ code: 'SSLHQ', name: '支援店', clock_ss_id: 'ck-hq', active: 'true', support_group: 'sxl' });
+    w.DB.xmap = [{ emp_no: '1', pay_store: 'SSLGF', acct_store: 'SSLGF', emp_id: 'E1', state: 'confirmed', not_support: 'false', synced_at: '2026-11-05' },
+                 { emp_no: '1', pay_store: 'SSLGF', acct_store: 'SSLHQ', emp_id: 'H1', state: 'confirmed', not_support: 'false', synced_at: '2026-11-05' }];
+    w.sb.__AP = { SSLHQ: { '2026-11-28': { H1: AP(8) } } };
+    w.F('(function(){ payXsupData_ = function(withDays){ return { xmap: payRead("xmap"), stores: payRead("store"), master: payRead("master"), approvedMap: function(c){ return globalThis.__AP[c] || {}; }, events: function(){ return []; }, tsDate: function(s){ return String(s).slice(0,10); }, today: "2026-12-01", days: !!withDays }; }; })')();
+    if (manual) w.DB.input = [{ ym: '2026-11', emp_id: 'E1', store: 'SSLGF', hours: 8, extra_ot: 0, deduct_days: 0, holiday_h: 8, support: '', hours_manual: '' }];
+    return w;
+  }
+  const calcOf = (w) => w.F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' });
+  const lab = (r) => r.earn.filter((x) => x.item_key === 'holiday_double').map((x) => x.item_label + ' ' + x.qty + '=' + x.amount);
+  const est = (w) => { w.sb.__TODAY = '2026-11-29'; w.F('(function(){ checkPnlKey_ = function(){ return ""; }; })')(); return w.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2026-11', store: 'SSLGF' }); };
+  // 沒手改：支援的選舉日照發 8H（確認情境真的有支援加倍）
+  const okA = calcOf(mk({}, false)).results[0], okB = calcOf(mk({ elec: ['p'] }, false)).results[0];
+  chk('  C0 沒手改國定假日時數：勾選多「選舉日出勤（支援支援店）」8H × 200 ＝ 1600', [okB.gross - okA.gross, lab(okB).filter((x) => x.indexOf('選舉日') === 0)], [1600, ['選舉日出勤（支援支援店） 8=1600']]);
+  const wA = mk({}, true), wB = mk({ elec: ['p'] }, true);
+  const cA = calcOf(wA), cB = calcOf(wB), rA = cA.results[0], rB = cB.results[0];
+  const WARN = { want: 8, paid: 0, reason: 'hol_manual' };
+  chk('  C1 計算結果：勾選 − 不勾選 ＝ 0、沒有任何「選舉日出勤」、提醒 hol_manual want 8', [rB.gross - rA.gross, rB.earn.some((x) => x.item_label.indexOf('選舉日出勤') === 0), rB.ot_info.elec_warn], [0, false, WARN]);
+  chk('  C1b 不勾選沒有提醒', rA.ot_info.elec_warn, undefined);
+  const runB = wB.DB.run[0], itB = wB.DB.item.filter((i) => i.emp_id === 'E1');
+  chk('  C2 已存草稿：run.ot_info 同一個提醒、item 沒有選舉日出勤、gross 同計算', [JSON.parse(runB.ot_info).elec_warn, itB.some((i) => String(i.item_label).indexOf('選舉日出勤') === 0), runB.gross], [WARN, false, rB.gross]);
+  const pmB = wB.F('handlePayrollMonth')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' });
+  chk('  C3 月回應（payroll_month）：同一個提醒、gross 同、沒有過期', [pmB.run.results[0].ot_info.elec_warn, pmB.run.results[0].gross, pmB.elec_stale], [WARN, rB.gross, undefined]);
+  const stB = wB.F('payLockStale_')({ admin_key: 'x' }, '2026-11', 'SSLGF');
+  chk('  C4 鎖定前試算（payLockStale_）：跟草稿一致、沒有差異', [stB.error, stB.list], [undefined, []]);
+  const eA = est(mk({}, true)), eB = est(mk({ elec: ['p'] }, true));
+  chk('  C5 損益估算：勾選不多算、elec_warn_count 1', [eB.total - eA.total, eB.elec_warn_count, 'elec_warn_count' in eA], [0, 1, false]);
+  // 翻轉點：PAY_ELEC_MANUAL_STOPS_SUP＝false → 支援照發 8H（回到舊行為），本店仍不發
+  const wF = mk({ elec: ['p'] }, true); wF.F('(function(){ PAY_ELEC_MANUAL_STOPS_SUP = false; })')();
+  const rF = calcOf(wF).results[0];
+  chk('  C6 翻轉點改成 false：支援照發 1600、本店不發', [rF.gross - rA.gross, lab(rF).filter((x) => x.indexOf('選舉日') === 0)], [1600, ['選舉日出勤（支援支援店） 8=1600']]);
+}
+{
+  /* D｜只手填支援（本店 0、全月沒有逐日資料）被勾選 → 提醒 no_daily、計入 elec_warn_count（Codex 第三次 SHOULD-FIX） */
+  const nd = [['s', '計時 W、沒有打卡、只手填支援', false, W, 0, 0]];
+  const sup = [{ code: 'SSLHQ', store: '支援店', hours: 8, rate: 200 }];
+  const wn = world({ only: [], extra: nd, elec: ['s'] });
+  const rn = wn.F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', inputs: { E1: { hours: 0, support: sup } } }).results[0];
+  chk('  D1 只手填支援：提醒 no_daily、沒有選舉日出勤', [rn.ot_info.elec_warn, rn.earn.some((x) => x.item_label.indexOf('選舉日出勤') === 0)], [{ want: 0, paid: 0, reason: 'no_daily' }, false]);
+  const est = (o) => { const w = world(o); w.sb.__TODAY = '2026-11-29'; w.F('(function(){ checkPnlKey_ = function(){ return ""; }; })')();
+    w.DB.input = [{ ym: '2026-11', emp_id: 'E1', store: 'SSLGF', hours: 0, extra_ot: 0, deduct_days: 0, support: JSON.stringify(sup), hours_manual: '' }];
+    return w.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2026-11', store: 'SSLGF' }); };
+  const e0 = est({ only: [], extra: nd }), e1 = est({ only: [], extra: nd, elec: ['s'] });
+  chk('  D2 損益估算計入 elec_warn_count、金額不變', [e1.elec_warn_count, e1.total - e0.total, 'elec_warn_count' in e0], [1, 0, false]);
+}
+{
+  /* E｜名單上的正職補休帳讀表失敗 → 鎖定擋（不再顯示鎖定成功、卻沒說補休檢查不完整；Codex 第三次 S2）。沒有名單時行為跟 45ccbec 相同。 */
+  // 只在補休帳檢查（payCompNegatives）那一段讀 leave 失敗，其他鎖定檢查照常 → 舊版會顯示鎖定成功
+  const failLeave = (w) => w.F('(function(){ var oc = payClockRead, on = payCompNegatives; payCompNegatives = function(a, b, c){ globalThis.__FAIL = true; try { return on(a, b, c); } finally { globalThis.__FAIL = false; } }; payClockRead = function(st, sh){ if (globalThis.__FAIL && sh === "leave") throw new Error("讀不到"); return oc(st, sh); }; })')();
+  const w = world({ elec: ['a'], only: ['a'] }); w.calc(); failLeave(w);
+  const lk = w.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true });
+  chk('  E1 名單上的人補休帳讀表失敗 → 不鎖', [lk.ok, lk.error, lk.message, w.DB.run[0].status], [false, 'recheck_failed', '鎖定前重算比對失敗，這次沒有鎖定，請再按一次：補休帳讀取失敗（1 人）', 'draft']);
+  let base = null; try { base = execFileSync('git', ['show', BASE_REF + ':apps-script/Payroll.gs'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) {}
+  const noList = (gs) => { const v = world({ only: ['a'], gs }); v.calc(); failLeave(v); const r = v.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true }); return [r.ok, r.error, v.DB.run[0].status]; };
+  chk('  E2 沒有名單、同樣讀表失敗：跟 45ccbec 結果相同', !!base && JSON.stringify(noList(undefined)) === JSON.stringify(noList(base)), true);
+  const w2 = world({ elec: ['a'], only: ['a'] }); w2.calc();
+  chk('  E3 讀表正常：名單上的人照常鎖', w2.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true }).ok, true);
+}
+{
+  /* F｜損益快取鍵固定長度：60 個 32 字元工號也不超過 250 字元（Codex 第三次 SHOULD-FIX） */
+  const w = world({});
+  const ids = Array.from({ length: 60 }, (_, i) => ('E' + i).padEnd(32, 'X'));
+  const rows = ids.map((id) => ({ ym: '2026-11', date: E, store: 'SSLGF', emp_id: id }));
+  const fp = w.F('payElecFp_')(rows, '2026-11', 'SSLGF'), h = w.F('payHash16_');
+  const key = 'pnlestimate|2026-11|SSLGF|2026-11-28|e' + h(fp);
+  chk('  F1 指紋 ' + fp.length + ' 字 → 鍵 ' + key.length + ' 字（≤ 250）、同名單同鍵、差一人不同鍵', [key.length <= 250, h(fp) === h(fp), h(fp) !== h(w.F('payElecFp_')(rows.slice(1), '2026-11', 'SSLGF'))], [true, true, true]);
 }
 
 console.log(`\n${fail ? '❌' : '✅'} ${pass} 過、${fail} 失敗`);
