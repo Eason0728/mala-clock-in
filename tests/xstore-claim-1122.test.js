@@ -37,14 +37,20 @@ function build(o, S2) {
     });
   });
   const xEntry = { stores: Object.keys(by).map((k) => by[k]) };
-  const support = xEntry.stores.map((s) => ({ code: s.code, store: s.name, hours: s.hours, rate: o.ft ? 200 : 200, amount: '', auto: true }));
+  const support = xEntry.stores.map((s) => ({ code: s.code, store: s.name, hours: (o.supPaid && o.supPaid[s.code] != null) ? o.supPaid[s.code] : s.hours, rate: 200, amount: '', auto: true }));
   const supH = support.reduce((a, s) => a + s.hours, 0);
   const homeSum = r2(Object.keys(col.day_h).reduce((a, k) => a + col.day_h[k], 0));
   const daily = E.call('payDailyFor_', e, YM, col, xEntry, sched, hol, '', supH, elec);
   const att = H.baseAtt({ hours: homeSum, support, daily, leaves: o.comp ? { comp: o.comp } : {},
     holiday_h: r2(hol.reduce((a, d) => a + (col.day_h[d] || 0), 0)) });
   att.sup_hol = E.call('paySupportHolDouble_', support, xEntry, hol, STORE_BY, '');
-  if (elec.length) { att.elec_h = E.call('payElecOwnH_', col, elec); att.sup_elec = E.call('paySupportHolDouble_', support, xEntry, elec, STORE_BY, ''); }
+  if (elec.length) {
+    att.elec_h = E.call('payElecOwnH_', col, elec);
+    att.sup_elec = vm.runInContext('typeof paySupportElecDouble_', E) === 'function'   // #209 改版（Codex B2）：國定假日先用掉採計支援時數，選舉日只拿剩下的
+      ? E.call('paySupportElecDouble_', support, xEntry, hol, elec, STORE_BY, '') : E.call('paySupportHolDouble_', support, xEntry, elec, STORE_BY, '');
+  }
+  if (o.hours != null) att.hours = o.hours;
+  if (o.holManual) att.elec_hol_manual = true;
   if (xEntry.stores.length) {
     if (vm.runInContext('typeof payOtCrossDays_', E) === 'function') att.ot_xdays = E.call('payOtCrossDays_', col, xEntry);
     att.ot_cross = E.call('payOtCrossNeed_', col, xEntry);
@@ -156,6 +162,34 @@ function randomCase() {
   chk('V7 計時選舉日：hx＝sup_elec 8（不重複算成 16）', pt.r.ot_info.xclaim.map((x) => x.hx), [8]);
   const both = claims({ ft: false, days: [{ date: '2026-11-03', hol: true, home: 0, sups: [{ code: 'MZTJS', h: 5, s: 600 }] }, { date: D, elec: true, home: 0, sups: [{ code: 'MZTJS', h: 3, s: 600 }] }, { date: D2, home: 6 }] });
   chk('V7 計時國定＋選舉日同一家：hx＝5＋3', both.r.ot_info.xclaim.map((x) => x.hx), [8]);
+}
+
+/* ── #209 改版後：計時假日加倍的請款 hx 一律用「實際有加發的時數」（不可超過同仁領到的） ── */
+{
+  const paidOf = (r, name) => r2(r.earn.filter((x) => x.item_key === 'holiday_double' && x.item_label.indexOf('（支援' + name + '）') >= 0).reduce((a, x) => a + x.qty, 0));
+  const hxOf = (r, code) => ((r.ot_info.xclaim || []).find((x) => x.code === code) || { hx: 0 }).hx;
+  // elec_warn hol_manual：國定假日時數被手改過 → 本店選舉日不自動加發；支援店那段照發、照請
+  const m = claims({ ft: false, holManual: true, days: [{ date: D2, home: 6 }, { date: D, elec: true, home: 4, sups: [{ code: 'MZTJS', h: 4, s: 900 }] }] });
+  chk('elec_warn hol_manual：提醒原因', m.r.ot_info.elec_warn && m.r.ot_info.elec_warn.reason, 'hol_manual');
+  chk('elec_warn hol_manual：本店選舉日加發 0（不請）、支援店加發 4＝請款 hx 4', [H.item(m.r, 'holiday_double') - 800, paidOf(m.r, '金山'), hxOf(m.r, 'MZTJS')], [0, 4, 4]);
+  // elec_warn cap：總時數被手動調低 → 本店只發剩下的；支援店那段不受影響
+  const c = claims({ ft: false, hours: 2, days: [{ date: D, elec: true, home: 6, sups: [{ code: 'MZTJS', h: 4, s: 900 }] }] });
+  chk('elec_warn cap：提醒原因、本店只發 2', [c.r.ot_info.elec_warn && c.r.ot_info.elec_warn.reason, c.r.ot_info.elec_warn && c.r.ot_info.elec_warn.paid], ['cap', 2]);
+  chk('elec_warn cap：支援店加發 4＝請款 hx 4（本店那段本來就不請）', [paidOf(c.r, '金山'), hxOf(c.r, 'MZTJS')], [4, 4]);
+  // 採計支援時數不夠（支援列只算 5h，實際國定 4＋選舉日 4）：國定先用 4、選舉日只剩 1 → 請 5，不是 8
+  const sh = claims({ ft: false, supPaid: { MZTJS: 5 }, days: [{ date: '2026-11-03', hol: true, home: 0, sups: [{ code: 'MZTJS', h: 4, s: 600 }] }, { date: D, elec: true, home: 0, sups: [{ code: 'MZTJS', h: 4, s: 600 }] }, { date: D2, home: 6 }] });
+  chk('支援採計 5h：國定 4＋選舉日 1＝加發 5＝請款 hx 5', [paidOf(sh.r, '金山'), hxOf(sh.r, 'MZTJS')], [5, 5]);
+  // 隨機計時情境：每家店 hx ＝ 例假那幾天在那家的時數 ＋ 實際發的「（支援○○）」加倍時數
+  let bad = 0, n = 0;
+  for (let i = 0; i < 2000; i++) {
+    const o = randomCase(); if (o.ft) continue;
+    if (rnd() < 0.3) o.holManual = true;
+    if (rnd() < 0.3) o.hours = Math.round(rnd() * 20) / 2;
+    const b = build(o), r = calc(b); n++;
+    const rdo = {}; o.days.forEach((d) => { if (d.cell === 'R' && !d.hol && !d.elec) d.sups.forEach((s) => { if (s.h > 0) rdo[s.code] = r2((rdo[s.code] || 0) + s.h); }); });
+    b.att.support.forEach((x) => { if (r2(hxOf(r, x.code)) !== r2((rdo[x.code] || 0) + paidOf(r, x.store))) bad++; });
+  }
+  chk('計時隨機 ' + n + ' 組：請款 hx＝例假支援時數＋實際發的支援加倍時數', bad, 0);
 }
 
 /* ── V5 月份閘 ── */

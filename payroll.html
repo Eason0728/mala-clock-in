@@ -1179,6 +1179,11 @@ function supXAdd(r, x, rt){
   const cpx=(oi.cross_ot||[]).find(hit);
   return cpx?{h:n(cpx.h43)+n(cpx.h53),add:(n(cpx.h43)*0.34+n(cpx.h53)*0.67)*rt}:{h:0,add:0};
 }
+/** 請款逐筆裡沒有門市代碼的筆數（2026-11 起才算；鎖定快照只存門市合計的舊月份不算） */
+function supNoCodeN(g){
+  if(!(String(typeof ym==='function'?ym():'')>=SUP_CLAIM_FROM)) return 0;
+  return (g.sup||[]).filter(x=>!x.storeOnly&&!String(x.code||'').trim()).length;
+}
 function costTotals(){
   // dorm／dormBy：宿舍代扣（2026-08-24 Eason 改口徑）——從薪資費用扣除，並在下方獨立列成租金收入。
   // ⚠ 兩邊都看得到是刻意的，但**損益表只能取一邊**：薪資費用已經扣過了，租金收入那區只是明細，
@@ -1277,7 +1282,7 @@ function costTotals(){
     g.snap=S; g.ye=n(S.yearend);
     const D=S.detail;
     const nameOf=id=>(RESULTS.find(r=>String(r.emp_id)===String(id))||{}).name||id;
-    if(D&&Array.isArray(D.sup)) g.sup=D.sup.map(x=>({emp_id:x.emp_id,name:nameOf(x.emp_id),ft:!!x.ft,store:x.store||'（未指定）',
+    if(D&&Array.isArray(D.sup)) g.sup=D.sup.map(x=>({emp_id:x.emp_id,name:nameOf(x.emp_id),ft:!!x.ft,store:x.store||'（未指定）',code:String(x.code||''),
       hours:n(x.hours),rate:n(x.rate),gapH:n(x.gapH),gapRate:n(x.gapRate),amount:n(x.amount),fixed:!!x.fixed}));
     // 2026-09-25～11-13 之間鎖的月份：快照只有「門市合計」，沒有逐筆明細
     else g.sup=Object.keys(S.support||{}).map(st=>({store:st,amount:n(S.support[st]),storeOnly:true}));
@@ -1374,8 +1379,10 @@ function costRows(g){
             ? `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H（金額指定）`
             : (x.gapH>0
                 ? `${esc(x.name)} → ${esc(x.store)}　缺口 ${r2(x.gapH)}H×${nf(x.gapRate)} ＋ ${r2(x.hours-x.gapH)}H×${nf(x.rate)}`
-                : `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H × ${nf(x.rate)}`)+(n(x.otAdd)>0?`　＋加班加成 ${r2(x.otH)}H（${nf(Math.round(x.otAdd))}）`:''), x.amount]))
-        .concat([['s','請款小計',g.supTotal]]):[]),
+                : `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H × ${nf(x.rate)}`)+(n(x.otAdd)>0?`　＋加班／假日加成 ${r2(x.otH)}H（${nf(Math.round(x.otAdd))}）`:''), x.amount]))
+        .concat([['s','請款小計',g.supTotal]])
+        // 沒有門市代碼的支援列（舊手填列）：損益端點的他店支援人力成本（xsup_cost）認不出是哪家，不會算進去（2026-11-22）
+        .concat(supNoCodeN(g)?[['h','有 '+supNoCodeN(g)+' 筆支援列沒有門市代碼，這幾筆不會算進被支援門市的損益成本']]:[]):[]),
   ];
 }
 /* 損益系統快照（T14，mala-pnl-auto#15，Eason 2026-09-25 選方案 C）：按「鎖定本月」時，
