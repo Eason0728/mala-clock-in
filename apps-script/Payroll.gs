@@ -775,11 +775,54 @@ function payLockStale_(body, ym, st) {
   });
   /* r5（Codex 擋項 1）：請款快照由後端產生——用這次重算實際採用的支援列與費率（跟畫面 costTotals 同一套 paySupClaimRows_），
      不信任畫面送來的那份（別的分頁改了指定金額、或上線前沒重新整理的舊頁）。2026-11 起才做。 */
-  let supRows = null;
+  /* r6（Codex 第三次）：請款要照「實際被定案的那份名單」組——定案寫的是草稿列。草稿有、重算沒有的人（主檔改停用／離職，
+     正式版就放行、照草稿定案）用他的草稿結果（含當時的請款摘要 xr／xclaim／cross_ot、計時的時薪明細）＋已存檔的支援列
+     （這次請求有帶他的工時就用帶來的，同重算）補進來；重算有的人照重算。照草稿順序排（同畫面）。 */
+  let supRows = null, supErr = '';
   if (payXclaimOn_(ym) && calc._sup) {
-    try { supRows = paySupClaimRows_(ym, calc.results || [], payRead('master').filter(function (m) { return payStore(m.store) === st; }), calc._sup, payConfig(st)); } catch (e) { supRows = null; }
+    try {
+      const inCalc = {}, resBy = {};
+      (calc.results || []).forEach(function (r) { inCalc[String(r.emp_id)] = true; resBy[String(r.emp_id)] = r; });
+      const supBy = Object.assign({}, calc._sup);
+      const missing = runs.filter(function (r) { return !inCalc[String(r.emp_id)]; });
+      if (missing.length) {
+        const built = payBuildRunResults(ym, st) || { results: [] };
+        const cut = payAsOfCut_(ym, { status: String(runs[0].status || '') });
+        const saved = cut ? payInputsBase(ym, st, cut) : payInputsBase(ym, st);
+        const sent = body.inputs || {};
+        const miss = {};
+        missing.forEach(function (r) { miss[String(r.emp_id)] = true; });
+        // 自動帶入照 handlePayrollCalc 同一套合進來（不看計薪名冊——這些人就是名冊外、照草稿定案的人）
+        // 自動帶入核心只帶「計薪名冊內」的本店同仁 → 這幾位在算的時候暫時當在職（只在這裡、只影響請款組裝，不寫任何東西）
+        let XS = null;
+        if (payXsupOn_(ym)) {
+          const dX = payXsupData_(false);
+          if (cut) dX.until = String(cut);
+          dX.master = (dX.master || []).map(function (m) {
+            return (payStore(m.store) === st && miss[String(m.emp_id).trim()]) ? Object.assign({}, m, { active: 'true', leave_date: '' }) : m;
+          });
+          XS = paySupportAutoCore_(ym, st, dX);
+        }
+        const ctx = XS ? { home: st, storeBy: payXsupStoreBy_(payRead('store')), dropCross: !XS.empty } : null;
+        const mAll = {};
+        payRead('master').forEach(function (m) { if (payStore(m.store) === st) mAll[String(m.emp_id).trim()] = m; });
+        built.results.forEach(function (r) {
+          const id = String(r.emp_id);
+          if (!miss[id]) return;
+          resBy[id] = r;
+          const src = sent[id] || sent[r.emp_id] || saved[id] || saved[r.emp_id] || {};
+          let sup = src.support_error ? [] : (src.support || []).filter(function (x) { return x && !x.cross; });
+          if (XS && !src.support_error) sup = payMergeSupport_(sup, XS.byEmp[id.trim()], mAll[id.trim()] || { emp_id: id }, ctx).support;
+          supBy[r.emp_id] = sup;
+        });
+      }
+      const order = runs.map(function (r) { return String(r.emp_id); });
+      (calc.results || []).forEach(function (r) { if (order.indexOf(String(r.emp_id)) < 0) order.push(String(r.emp_id)); });
+      const allRes = order.map(function (id) { return resBy[id]; }).filter(function (r) { return r; });
+      supRows = paySupClaimRows_(ym, allRes, payRead('master').filter(function (m) { return payStore(m.store) === st; }), supBy, payConfig(st));
+    } catch (e) { supRows = null; supErr = String((e && e.message) || e); }
   }
-  return { list: list, claim: claim, xfp: payXclaimFp_(ym, calc.results || []), sup_rows: supRows };
+  return { list: list, claim: claim, xfp: payXclaimFp_(ym, calc.results || []), sup_rows: supRows, sup_err: supErr };
 }
 
 /* ═══════════════════ 計算引擎（與 ~/mala-payroll 已驗證版本同一套公式）═══════════════════ */
@@ -4823,6 +4866,10 @@ function handlePayrollFinalize(body) {
     if (stale.claim || (body.xclaim_fp != null && payXclaimOn_(ym) && String(body.xclaim_fp) !== stale.xfp))
       return { ok: false, error: 'stale_run', list: [], message: '試算後資料有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。' };
     LOCK_SUP_ROWS = stale.sup_rows;
+    /* r6 SHOULD-FIX：後端產生請款失敗 → 不擋鎖月、退回畫面送的快照，但記一筆稽核（店、月、原因）讓事後查得到 */
+    if (stale.sup_err) {
+      try { payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: 'xclaim_snap_fail', operator: String(body.operator || 'admin'), reason: stale.sup_err.slice(0, 300), store: stF }]); } catch (auditErr) { /* 記錄失敗不擋鎖定 */ }
+    }
   }
   /* 補休帳是負的不能鎖定（Eason 2026-11-01：不自動扣，擋住鎖定）。解鎖不擋。 */
   if (lock && ym >= PAY_COMP_MONTHLY_FROM) {

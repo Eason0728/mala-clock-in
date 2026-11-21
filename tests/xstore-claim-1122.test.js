@@ -542,6 +542,43 @@ function randomCase() {
     const sh3 = J(S.call('payXclaimShare_', b3.att.ot_xdays[D]));
     chk('r5-B 休息日 本店 0.5＋三家各 4（原單位分到的超過 8 比它自己的時數多）：沒有負數、加總 1', [Object.values(sh3).every((v) => v >= 0), r2(Object.values(sh3).reduce((a, v) => a + v, 0))], [true, 1]);
   }
+  // r6-4：鎖月請款照「被定案的名單」組——草稿有、重算沒有的人（停用、改離職日、當月離職）補進來；隨機 5,000 組
+  {
+    const W = H.load({ today: '2026-12-05', data: { run: [], master: [], store: [] } });
+    vm.runInContext(`
+      handlePayrollCalc = function(){ return { ok: true, results: __CALC, _sup: __CSUP }; };
+      payBuildRunResults = function(){ return { results: __DRAFT, status: 'draft' }; };
+      payInputsBase = function(){ return __SAVED; };
+      payXsupOn_ = function(){ return false; };
+      payConfig = function(){ return __CFG; };
+    `, W);
+    let badSet = 0, badSum = 0, nMiss = 0, n4 = 0;
+    for (let i = 0; i < 5000; i++) {
+      const ne = 1 + Math.floor(rnd() * 5), draft = [], calcR = [], csup = {}, saved = {}, master = [], runs = [];
+      for (let k = 0; k < ne; k++) {
+        const o = randomCase(); const b = build(o); const id = 'R' + k;
+        b.e.emp_id = id; b.e.name = '同仁' + k; master.push(b.e);
+        const sup = b.att.support.slice();
+        if (rnd() < 0.2) sup.push({ code: 'MZTJS', store: '金山', hours: 3, rate: 200, amount: 2600, auto: false });   // 指定金額
+        if (rnd() < 0.2) sup.length = 0;   // 沒有支援
+        const r = J(calc(b)); r.emp_id = id; r.name = b.e.name;
+        draft.push(r); saved[id] = { support: sup }; runs.push({ ym: '2026-11', store: 'MZTGF', emp_id: id, name: r.name, gross: r.gross, deduction: r.deduction, net: r.net, ot_info: JSON.stringify(r.ot_info), status: 'draft' });
+        const gone = rnd() < 0.3;   // 停用／改離職日／當月離職：重算名單沒有這個人
+        if (gone) nMiss++; else { calcR.push(r); csup[id] = sup; }
+      }
+      vm.runInContext('__DATA.run=' + JSON.stringify(runs) + ';__DATA.master=' + JSON.stringify(master.map((m) => Object.assign({}, m, { store: 'MZTGF' }))) + ';__CALC=' + JSON.stringify(calcR) + ';__CSUP=' + JSON.stringify(csup) + ';__DRAFT=' + JSON.stringify(draft) + ';__SAVED=' + JSON.stringify(saved) + ';__CFG=' + JSON.stringify(H.cfg) + ';', W);
+      const st = J(W.call('payLockStale_', { admin_key: 'x' }, '2026-11', 'MZTGF'));
+      const rows = st.sup_rows || [];
+      const want = new Set(draft.filter((r) => (saved[r.emp_id].support || []).some((x) => Number(x.hours) || Number(x.amount))).map((r) => r.emp_id));
+      const got = new Set(rows.map((x) => x.emp_id));
+      n4++;
+      if (want.size !== got.size || [...want].some((x) => !got.has(x))) badSet++;
+      const each = draft.reduce((a, r) => a + J(W.call('paySupClaimRows_', '2026-11', [r], [master.find((m) => m.emp_id === r.emp_id)], { [r.emp_id]: saved[r.emp_id].support }, H.cfg)).reduce((t, x) => t + x.amount, 0), 0);
+      if (Math.abs(rows.reduce((a, x) => a + x.amount, 0) - each) > 0.005) badSum++;
+    }
+    chk('r6-4 隨機 ' + n4 + ' 組（其中 ' + nMiss + ' 人草稿有、重算沒有）：快照裡的同仁＝定案名單中有支援列的同仁', badSet, 0);
+    chk('r6-4 快照請款合計＝定案名單逐人請款加總', badSum, 0);
+  }
   // 同一份資料連算 10,000 組，摘要逐字相同（不會因浮點數讓月份鎖不了）
   let diffSig = 0;
   for (let i = 0; i < 10000; i++) {
