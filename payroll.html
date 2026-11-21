@@ -677,7 +677,7 @@ async function bridgeCallQueued(action,body){
 if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
 
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
-let HOLEMP=[];   // 選舉假名單（本店全部月份；後端 payroll_master_get／payroll_month 的 hol_emp，沒有＝空）
+let HOLEMP=[], ELEC_KEY='';   // 選舉假名單（本店本月；後端 payroll_month 的 hol_emp，沒有＝空）；ELEC_KEY＝讀到的是哪家店哪個月（讀失敗＝空，卡片停用）
 /* 已鎖定月份的成本快照（2026-11-13 薪資挑錯第 7 項）：payroll_month 對已鎖定月份回 run.cost_snap，
    成本分類頁的公司負擔／年終提列／跨店請款改讀這份，鎖定後改主檔或參數不會讓已鎖定月份的數字跟著變。
    null＝草稿，或已鎖定但鎖定時沒有快照（畫面照舊即時算，並標「即時值（鎖定時沒有快照）」）。 */
@@ -824,7 +824,7 @@ async function boot(){
     DASH_PREFETCH={key:STORE+'|'+ym(),p:post('payroll_trend',{ym:ym(),store:STORE,months:12})};
   }
   MASTER=m.master; CFG=m.config; CFG_DIRTY={};
-  HOLEMP=Array.isArray(m.hol_emp)?m.hol_emp:[];
+  HOLEMP=[]; ELEC_KEY='';   // 名單跟著 payroll_month 讀（loadMonth）
   // ⚠ 門市下拉一定要在這裡先建好：若等到 loadMonth，該門市讀取失敗就會提早 return，
   //    下拉永遠是空的 → 使用者被鎖在壞掉的門市、切不回來（踩過）
   if(m.stores&&m.stores.length){STORE_LIST=m.stores;renderStoreSel()}
@@ -1032,6 +1032,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     if(!r.ok){
       // ⚠ 不可靜默 return——會讓畫面空白，使用者以為「資料不見了」
       const msg=r.error==='scope_forbidden'?'這家門市不在你的負責範圍':String(r.detail||r.message||r.error||'讀取失敗');
+      HOLEMP=[]; ELEC_KEY=''; renderElec();   // 不留上一家店／上個月的選舉假名單（Codex S5）
       showLoadError(msg);
       toast(msg,true);
       // 失敗也要保證能切回別的門市：下拉是空的就單獨去抓門市表
@@ -1069,7 +1070,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     if(r.config){CFG=r.config;CFG_DIRTY={}}
     if(r.config||r.holidays) renderCfg();
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
-    HOLEMP=Array.isArray(r.hol_emp)?r.hol_emp:[]; renderElec();   // 選舉假名單隨門市、月份、鎖定狀態重畫
+    HOLEMP=Array.isArray(r.hol_emp)?r.hol_emp:[]; ELEC_KEY=STORE+'|'+ym(); renderElec();   // 選舉假名單隨門市、月份、鎖定狀態重畫
     ASOF=r.asof||null;
     COST_SNAP=(r.run&&r.run.status==='final'&&r.run.cost_snap)||null;   // 已鎖定月份的成本快照（沒有就即時算＋標記）
     renderAtt();renderRun();renderSlipSel();
@@ -1622,6 +1623,9 @@ function renderOtInfo(t){
   SAME_NAME.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：打卡名冊有同名的人（${x.emp_ids.map(esc).join('、')}），本月 ${x.rows} 筆請假只有姓名，系統依在職與到離職日算給 ${x.to.map(esc).join('、')}，請確認沒有歸錯人</li>`));
   RESULTS.forEach(r=>{const o=r.ot_info; if(!o) return; const nm=esc(r.name);
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
+    if(o.elec_warn) rows.push(o.elec_warn.reason==='hol_manual'
+      ? `<li><b class="bad">${nm}</b>：選舉日出勤沒有自動加發（這個月手填的國定假日時數和打卡不同，分不出是不是選舉日；請確認後用自訂加薪補）</li>`
+      : `<li><b class="bad">${nm}</b>：選舉日出勤只加發 ${r2(o.elec_warn.paid)} 小時（應為 ${r2(o.elec_warn.want)} 小時，本月總時數被手動調低）</li>`);
     if(o.comp_over_h>0) rows.push(`<li><b class="bad">${nm}</b>：補休有 ${r2(o.comp_over_h)} 小時抵不掉（休息日第 3 小時起、例假、國定假日、選舉日的加班不能抵）——<b>改成其他假別前不能鎖定</b></li>`);
     { const pH=OT_PERIOD[String(r.name||'').replace(/\s/g,'')];
       if(pH>=46) rows.push(`<li><b class="bad">${nm}</b>：這一期（28 天）加班 ${r2(pH)} 小時，已滿 46 小時（休息日和超過 8 小時的上班卡會被擋）</li>`);
@@ -1680,7 +1684,7 @@ async function toggleLock(){
     // 先前已經鎖定（例如上一次的回應斷掉）：後端回 already，重新載入該月才帶得回鎖定時的成本快照
     else if(r.ok&&lock&&r.already){ await loadMonth(); toast('這個月已經鎖定了'); }
     // 鎖定：後端寫好快照會帶回 cost_snap，成本分類頁立刻改讀；解鎖：快照已清掉，回到即時算
-    else if(r.ok){STATUS=r.status;COST_SNAP=(lock&&r.cost_snap)||null;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
+    else if(r.ok){STATUS=r.status;COST_SNAP=(lock&&r.cost_snap)||null;vClear();renderRun();renderElec();toast(lock?'已鎖定':'已解鎖')}
     // 補休帳是負的不能鎖定（2026-11-01）：名單可能好幾行，用對話框列清楚
     else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='ot_form_missing'||r.error==='sched_missing'||r.error==='unapproved'||r.error==='leave_mismatch')) alert(r.message);
     else if(lock&&r.error==='stale_run'){ alert(r.message+'\n\n按確定後系統會自動重新計算，請看過新數字再按一次鎖定。'); await doCalc(); }
@@ -2965,7 +2969,12 @@ async function syncHol(){
 /* ═════ 選舉假名單（2026-11-22 Eason）═════
    一次選舉一份：後端 payroll_hol_emp_set 整份取代「本店＋目前月份」的名單；已鎖定月份後端也會擋（這裡先擋）。
    名單上的人只在選舉日班表是上班日時才套用（規則在 Payroll.gs payElecApply_），畫面只負責勾選。 */
-function elecRowsYm(){ return HOLEMP.filter(x=>String(x.ym)===ym()); }
+function elecReady(){ return ELEC_KEY===STORE+'|'+ym(); }
+function elecRowsYm(){
+  if(!elecReady()) return [];
+  const rows=HOLEMP.filter(x=>String(x.ym)===ym()), d0=rows[0]&&rows[0].date;
+  return rows.filter(x=>x.date===d0);   // 一店一月只認一個日期（後端 payElecDateOf_ 同一條）
+}
 function renderElec(){
   const box=$('elecList'); if(!box) return;
   const rows=elecRowsYm(), on={}; rows.forEach(x=>{ on[String(x.emp_id)]=true; });
@@ -2974,33 +2983,39 @@ function renderElec(){
   if(dEl){ dEl.min=ym()+'-01'; dEl.max=ym()+'-'+String(new Date(+ym().slice(0,4),+ym().slice(5,7),0).getDate()).padStart(2,'0');
     dEl.value=(rows[0]&&rows[0].date)||''; }
   const list=(MASTER||[]).filter(m=>String(m.active).toLowerCase()!=='false'||on[String(m.emp_id)]);
-  const locked=STATUS==='final';
+  const locked=STATUS==='final'||!elecReady();
   box.innerHTML=list.length?list.map(m=>`<label class="elec-item"><input type="checkbox" class="elec-ck" value="${esc(m.emp_id)}" ${on[String(m.emp_id)]?'checked':''} ${locked?'disabled':''} onchange="elecCount()">
       <span>${esc(m.name||m.emp_id)}</span> <small>${esc(m.emp_id)}｜${payTrue(m.is_full_time)?'正職':'計時'}</small></label>`).join('')
     :'<div style="color:var(--muted);font-size:13px">這家門市還沒有薪資主檔</div>';
   if(dEl) dEl.disabled=locked;
   const sv=$('elecSave'); if(sv) sv.disabled=locked;
-  if($('elecLock')) $('elecLock').textContent=locked?ym()+' 已鎖定，要改名單請先解鎖':'';
+  if($('elecLock')) $('elecLock').textContent=!elecReady()?'名單還沒讀到（讀取失敗或還在載入），請重新整理後再改':(STATUS==='final'?ym()+' 已鎖定，要改名單請先解鎖':'');
   elecCount();
 }
 function payTrue(v){ return v===true||String(v).toLowerCase()==='true'; }
 function elecCount(){ const n=document.querySelectorAll('#elecList .elec-ck:checked').length; if($('elecCount')) $('elecCount').textContent='已勾選 '+n+' 人'; }
-function elecAll(v){ if(STATUS==='final') return; document.querySelectorAll('#elecList .elec-ck').forEach(c=>{ c.checked=!!v; }); elecCount(); }
+function elecAll(v){ if(STATUS==='final'||!elecReady()) return; document.querySelectorAll('#elecList .elec-ck').forEach(c=>{ c.checked=!!v; }); elecCount(); }
 async function saveElec(btn){
   if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再修改選舉假名單',true); return; }
   const ids=[...document.querySelectorAll('#elecList .elec-ck:checked')].map(c=>c.value);
   const date=($('elecDate')||{}).value||'';
   if(ids.length&&(!date||date.slice(0,7)!==ym())){ toast('請先選 '+ym()+' 裡的選舉日期',true); return; }
+  if(!elecReady()){ toast('名單還沒讀到（讀取失敗或還在載入），請重新整理後再改',true); return; }
+  const reqYm=ym(), reqStore=STORE;   // 回應回來時畫面可能已經切到別家店／別個月（Codex S5）
   btn.disabled=true;
-  const r=await post('payroll_hol_emp_set',{ym:ym(),date:ids.length?date:'',emp_ids:ids});
+  const r=await post('payroll_hol_emp_set',{ym:reqYm,date:ids.length?date:'',emp_ids:ids});
   btn.disabled=false;
   // 有 message 的錯誤 post() 已經跳過提示；沒有 message 的（例：後端還是舊版、回 unknown_action）用通用的「儲存失敗」
   if(!r||!r.ok){ if(!(r&&r.message)) toast('儲存失敗：'+((r&&r.error)||''),true); return; }
-  HOLEMP=HOLEMP.filter(x=>String(x.ym)!==ym()).concat(ids.map(id=>({ym:ym(),date:date,emp_id:id,note:''})));
-  renderElec();
-  // 勾選的人那天的加班已經拿去抵補休 → 後端回人數提醒（補休帳會變負、本月鎖不了）
+  const same=ym()===reqYm&&STORE===reqStore;
+  if(same){
+    HOLEMP=ids.map(id=>({ym:reqYm,date:date,emp_id:id,note:''}));
+    renderElec();
+    await doCalc();   // 名單改了，草稿與匯出用的 RESULTS 跟著重算（Codex S4；比照「儲存工時」存完就重算）
+  }
+  // 勾選的人那天的加班已經拿去抵補休 → 後端回人數提醒；補休帳沒檢查成也會回 warn_message
   if(r.warn_message){ toast(r.warn_message,true); return; }
-  toast(ids.length?'已儲存選舉假名單（'+date+'，'+ids.length+' 人），請到「6 薪資計算」重新計算':'已清除 '+ym()+' 的選舉假名單，請重新計算');
+  toast(ids.length?'已儲存選舉假名單（'+date+'，'+ids.length+' 人）'+(same?'，已重新計算':'，請回到 '+reqYm+' 重新計算'):'已清除 '+reqYm+' 的選舉假名單'+(same?'，已重新計算':''));
 }
 
 /* ═════ 薪資單 ═════ */
