@@ -575,7 +575,7 @@ console.log('\n══ i) Codex 第三次（2026-11-22）：草稿過期、停用
   const failLeave = (w) => w.F('(function(){ var oc = payClockRead, on = payCompNegatives; payCompNegatives = function(a, b, c){ globalThis.__FAIL = true; try { return on(a, b, c); } finally { globalThis.__FAIL = false; } }; payClockRead = function(st, sh){ if (globalThis.__FAIL && sh === "leave") throw new Error("讀不到"); return oc(st, sh); }; })')();
   const w = world({ elec: ['a'], only: ['a'] }); w.calc(); failLeave(w);
   const lk = w.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true });
-  chk('  E1 名單上的人補休帳讀表失敗 → 不鎖', [lk.ok, lk.error, lk.message, w.DB.run[0].status], [false, 'recheck_failed', '鎖定前重算比對失敗，這次沒有鎖定，請再按一次：補休帳讀取失敗（1 人）', 'draft']);
+  chk('  E1 名單上的人補休帳讀表失敗 → 不鎖', [lk.ok, lk.error, lk.message, w.DB.run[0].status], [false, 'recheck_failed', '選舉假名單上有 1 位同仁的補休帳沒讀到，這次沒有鎖定，請再按一次', 'draft']);
   let base = null; try { base = execFileSync('git', ['show', BASE_REF + ':apps-script/Payroll.gs'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) {}
   const noList = (gs) => { const v = world({ only: ['a'], gs }); v.calc(); failLeave(v); const r = v.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true }); return [r.ok, r.error, v.DB.run[0].status]; };
   chk('  E2 沒有名單、同樣讀表失敗：跟 45ccbec 結果相同', !!base && JSON.stringify(noList(undefined)) === JSON.stringify(noList(base)), true);
@@ -590,6 +590,34 @@ console.log('\n══ i) Codex 第三次（2026-11-22）：草稿過期、停用
   const fp = w.F('payElecFp_')(rows, '2026-11', 'SSLGF'), h = w.F('payHash16_');
   const key = 'pnlestimate|2026-11|SSLGF|2026-11-28|e' + h(fp);
   chk('  F1 指紋 ' + fp.length + ' 字 → 鍵 ' + key.length + ' 字（≤ 250）、同名單同鍵、差一人不同鍵', [key.length <= 250, h(fp) === h(fp), h(fp) !== h(w.F('payElecFp_')(rows.slice(1), '2026-11', 'SSLGF'))], [true, true, true]);
+}
+
+
+console.log('\n══ j) 有逐日資料、但有沒有日期的手填支援：被勾選才提醒（主管 2026-11-22）══');
+{
+  /* a 正職 W 8h（有逐日打卡）＋手填支援 4H 沒有日期（存檔的「僅 support」列）。手算：提醒不改金額 → 有支援列時 勾選 − 不勾選 ＝ 選舉日出勤 1200（本店 8H × 150），跟沒支援列時一樣。 */
+  const SUP = [{ code: 'SSLHQ', store: '支援店', hours: 4, rate: 150, keep: true }];
+  const mk = (elec, sup) => { const w = world({ only: ['a'], elec }); if (sup) w.DB.input = [{ ym: '2026-11', emp_id: 'E1', store: 'SSLGF', hours: 0, extra_ot: 0, deduct_days: 0, support: JSON.stringify(SUP), hours_manual: '0' }]; return w; };
+  const ND = [{ store: '支援店' }];
+  const five = (w) => {
+    const c = w.F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' }).results[0];
+    const run = JSON.parse(w.DB.run[0].ot_info).elec_sup_nodate;
+    const pm = w.F('handlePayrollMonth')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' }).run.results[0].ot_info.elec_sup_nodate;
+    const st = w.F('payLockStale_')({ admin_key: 'x' }, '2026-11', 'SSLGF');
+    w.sb.__TODAY = '2026-11-29'; w.F('(function(){ checkPnlKey_ = function(){ return ""; }; })')();
+    const est = w.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2026-11', store: 'SSLGF' });
+    return { gross: c.gross, calc: c.ot_info.elec_sup_nodate, run, pm, stale: st.list.length, cnt: est.elec_warn_count, total: est.total };
+  };
+  const yy = five(mk(['a'], true)), ny = five(mk([], true)), yn = five(mk(['a'], false)), nn = five(mk([], false));
+  chk('  j1 勾選＋有無日期支援：計算、已存草稿、月回應都提醒「支援店」，鎖定前試算一致，損益 elec_warn_count 1', [yy.calc, yy.run, yy.pm, yy.stale, yy.cnt], [ND, ND, ND, 0, 1]);
+  chk('  j2 不勾選＋有無日期支援：五處都沒有提醒', [ny.calc, ny.run, ny.pm, ny.stale, ny.cnt], [undefined, undefined, undefined, 0, undefined]);
+  chk('  j3 勾選＋沒有支援列：沒有這個提醒', [yn.calc, yn.run, yn.pm, yn.cnt], [undefined, undefined, undefined, undefined]);
+  chk('  j4 不勾選＋沒有支援列：沒有提醒', [nn.calc, nn.cnt], [undefined, undefined]);
+  chk('  j5 只是提醒、不改金額：有支援列時勾選差額 ＝ 沒支援列時 ＝ 1200；損益差額相同', [yy.gross - ny.gross, yn.gross - nn.gross, yy.total - ny.total, yn.total - nn.total], [1200, 1200, yn.total - nn.total, yy.total - ny.total]);
+  const f = world({}).F('payElecSupNoDate_');
+  const x = { stores: [{ code: 'SSLHQ', name: '支援店', days: [{ date: E, hours: 8 }] }] }, by = { SSLHQ: {} };
+  chk('  j6 純函式：自動帶入有日期的不算；手填比帶入多才算；手填比帶入少不算；沒有帶入全算', [f([{ code: 'SSLHQ', store: '支援店', hours: 8 }], x, by), f([{ code: 'SSLHQ', store: '支援店', hours: 10 }], x, by), f([{ code: 'SSLHQ', store: '支援店', hours: 6 }], x, by), f([{ code: 'SSLHQ', store: '支援店', hours: 3 }], null, by)],
+    [[], [{ store: '支援店' }], [], [{ store: '支援店' }]]);
 }
 
 console.log(`\n${fail ? '❌' : '✅'} ${pass} 過、${fail} 失敗`);

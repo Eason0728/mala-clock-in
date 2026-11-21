@@ -1638,6 +1638,7 @@ function renderOtInfo(t){
       : o.elec_warn.reason==='no_daily'
       ? `<li><b class="bad">${nm}</b>：選舉日出勤沒有自動加發（這位同仁本月沒有逐日打卡資料，無法判斷選舉日時數；請確認後用自訂加薪補）</li>`
       : `<li><b class="bad">${nm}</b>：選舉日出勤只加發 ${r2(o.elec_warn.paid)} 小時（應為 ${r2(o.elec_warn.want)} 小時，本月總時數被手動調低）</li>`);
+    (o.elec_sup_nodate||[]).forEach(x=>rows.push(`<li><b class="bad">${nm}</b>：去${esc(x.store)}支援的選舉日出勤沒有自動加發（手填支援沒有日期）；請確認後用自訂加薪補</li>`));
     (o.elec_sup_warn||[]).forEach(x=>rows.push(`<li><b class="bad">${nm}</b>：去${esc(x.store)}支援的選舉日出勤只加發 ${r2(x.paid)} 小時（應為 ${r2(x.want)} 小時，支援採計時數已被國定假日用掉）</li>`));
     if(o.comp_over_h>0) rows.push(`<li><b class="bad">${nm}</b>：補休有 ${r2(o.comp_over_h)} 小時抵不掉（休息日第 3 小時起、例假、國定假日、選舉日的加班不能抵）——<b>改成其他假別前不能鎖定</b></li>`);
     { const pH=OT_PERIOD[String(r.name||'').replace(/\s/g,'')];
