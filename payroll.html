@@ -1191,8 +1191,8 @@ function xclaimSig(ymv, oi){
   if(!(String(ymv||'')>=SUP_CLAIM_FROM)) return '';
   let o=oi; if(typeof oi==='string'){ try{ o=JSON.parse(oi||'{}'); }catch(e){ o={}; } }
   o=o||{};
-  if(!o.xr&&!(o.xclaim&&o.xclaim.length)&&!(o.cross_ot&&o.cross_ot.length)) return '';
-  return JSON.stringify([String(o.xr||''),o.xclaim||[],o.cross_ot||[]]);
+  if(!o.xr&&!(o.xclaim&&o.xclaim.length)&&!(o.cross_ot&&o.cross_ot.length)&&!(o.xsup&&o.xsup.length)) return '';
+  return JSON.stringify([String(o.xr||''),o.xclaim||[],o.cross_ot||[],o.xsup||[]]);
 }
 function hash16(s){
   s=String(s==null?'':s);
@@ -1742,7 +1742,7 @@ async function toggleLock(){
     // 更重要的動作），接住並印警告，照常送出鎖定請求（不帶 cost_snapshot，效果等同
     // 「沒有算出快照」，跟沒按過計算是同一種安全的退路）。
     if(lock && RESULTS.length){
-      try{ const g=costTotals(); body.cost_snapshot=Object.assign(costStable(g),{detail:costDetail(g)}); if(String(ym())>=SUP_CLAIM_FROM) body.xclaim_fp=xclaimFp(ym(),RESULTS); }
+      try{ const g=costTotals(); body.cost_snapshot=Object.assign(costStable(g),{detail:costDetail(g)}); }   // 2026-11 起請款欄位由後端從定案草稿換掉（r7），這裡照舊送
       catch(e){ console.warn('pnlPayroll 快照計算失敗，鎖定照常送出，這次不會有快照可讀：',e); }
     }
     const r=await post('payroll_finalize',body,lock?{noToast:true,noRetry:true}:undefined);

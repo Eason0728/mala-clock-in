@@ -740,8 +740,8 @@ function payXclaimSig_(ym, oi) {
   if (!payXclaimOn_(ym)) return '';
   let o = oi; if (typeof oi === 'string') { try { o = JSON.parse(oi || '{}'); } catch (e) { o = {}; } }
   o = o || {};
-  if (!o.xr && !(o.xclaim && o.xclaim.length) && !(o.cross_ot && o.cross_ot.length)) return '';
-  return JSON.stringify([String(o.xr || ''), o.xclaim || [], o.cross_ot || []]);
+  if (!o.xr && !(o.xclaim && o.xclaim.length) && !(o.cross_ot && o.cross_ot.length) && !(o.xsup && o.xsup.length)) return '';
+  return JSON.stringify([String(o.xr || ''), o.xclaim || [], o.cross_ot || [], o.xsup || []]);
 }
 /** 整店請款指紋：[工號, 摘要]（摘要空的不列）照工號排，payHash16_。前端鎖定時送它算快照用的那份（body.xclaim_fp）。 */
 function payXclaimFp_(ym, rows) {
@@ -755,7 +755,7 @@ function payLockStale_(body, ym, st) {
   const runs = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === st; });
   if (!runs.length) return { list: [] };
   let calc;
-  try { calc = handlePayrollCalc(Object.assign({}, body, { ym: ym, store: st, dry_run: true, inputs: body.inputs || {}, _with_sup: true })); }
+  try { calc = handlePayrollCalc(Object.assign({}, body, { ym: ym, store: st, dry_run: true, inputs: body.inputs || {} })); }
   catch (err) { return { error: String((err && err.message) || err) }; }
   if (!calc || !calc.ok) return { error: String((calc && (calc.message || calc.error)) || 'calc_failed') };
   const byId = {}, list = [];
@@ -773,56 +773,60 @@ function payLockStale_(body, ym, st) {
     if (money || gate(old.ot_info) !== gate(r.ot_info)) list.push({ name: r.name, old_net: payNum(old.net), new_net: payNum(r.net), money: money });
     else if (payXclaimSig_(ym, old.ot_info) !== payXclaimSig_(ym, r.ot_info)) claim = true;
   });
-  /* r5（Codex 擋項 1）：請款快照由後端產生——用這次重算實際採用的支援列與費率（跟畫面 costTotals 同一套 paySupClaimRows_），
-     不信任畫面送來的那份（別的分頁改了指定金額、或上線前沒重新整理的舊頁）。2026-11 起才做。 */
-  /* r6（Codex 第三次）：請款要照「實際被定案的那份名單」組——定案寫的是草稿列。草稿有、重算沒有的人（主檔改停用／離職，
-     正式版就放行、照草稿定案）用他的草稿結果（含當時的請款摘要 xr／xclaim／cross_ot、計時的時薪明細）＋已存檔的支援列
-     （這次請求有帶他的工時就用帶來的，同重算）補進來；重算有的人照重算。照草稿順序排（同畫面）。 */
-  let supRows = null, supErr = '';
-  if (payXclaimOn_(ym) && calc._sup) {
+  /* r7（Codex 第四次）：請款跟薪資草稿綁在同一份資料——算草稿時每人這次實際採計的請款逐筆存在草稿列 ot_info.xsup（handlePayrollCalc）。
+     鎖月的請款快照＝「實際被定案的草稿列」各自存的 xsup 合起來（照草稿順序），不再另外組。
+     仍在重算名單的人：上面比對已把 xsup 放進請款摘要（payXclaimSig_），草稿存的跟這次重算不同就擋（既有句子）；
+     草稿有、重算沒有的人（主檔改停用／離職，正式版照草稿定案）：不比、直接用草稿存的那份。
+     退路：上線前的舊草稿沒有 xsup、而且這個人不在重算名單 → 用他的草稿結果＋已存檔／這次帶來的支援列＋自動帶入補算（sup_legacy，finalize 記稽核）。
+     在重算名單、舊草稿沒有 xsup 的人：重算有 xsup 時摘要不同已擋；重算也沒有＝沒有支援，不用補。 */
+  let supRows = null, supErr = '', supLegacy = [];
+  if (payXclaimOn_(ym)) {
     try {
-      const inCalc = {}, resBy = {};
-      (calc.results || []).forEach(function (r) { inCalc[String(r.emp_id)] = true; resBy[String(r.emp_id)] = r; });
-      const supBy = Object.assign({}, calc._sup);
-      const missing = runs.filter(function (r) { return !inCalc[String(r.emp_id)]; });
-      if (missing.length) {
+      const inCalc = {};
+      (calc.results || []).forEach(function (r) { inCalc[String(r.emp_id)] = true; });
+      const perEmp = {}, legacy = {};
+      runs.forEach(function (rw) {
+        const id = String(rw.emp_id);
+        let oi = rw.ot_info; if (typeof oi === 'string') { try { oi = JSON.parse(oi || '{}'); } catch (e) { oi = {}; } }
+        oi = oi || {};
+        if (Array.isArray(oi.xsup)) perEmp[id] = oi.xsup;
+        else if (!inCalc[id]) legacy[id] = true;
+      });
+      supLegacy = Object.keys(legacy);
+      if (supLegacy.length) {
         const built = payBuildRunResults(ym, st) || { results: [] };
         const cut = payAsOfCut_(ym, { status: String(runs[0].status || '') });
         const saved = cut ? payInputsBase(ym, st, cut) : payInputsBase(ym, st);
         const sent = body.inputs || {};
-        const miss = {};
-        missing.forEach(function (r) { miss[String(r.emp_id)] = true; });
-        // 自動帶入照 handlePayrollCalc 同一套合進來（不看計薪名冊——這些人就是名冊外、照草稿定案的人）
-        // 自動帶入核心只帶「計薪名冊內」的本店同仁 → 這幾位在算的時候暫時當在職（只在這裡、只影響請款組裝，不寫任何東西）
+        // 自動帶入照 handlePayrollCalc 同一套合進來；自動帶入核心只帶名冊內的人 → 這幾位在算的時候暫時當在職（只在這裡、不寫任何東西）
         let XS = null;
         if (payXsupOn_(ym)) {
           const dX = payXsupData_(false);
           if (cut) dX.until = String(cut);
           dX.master = (dX.master || []).map(function (m) {
-            return (payStore(m.store) === st && miss[String(m.emp_id).trim()]) ? Object.assign({}, m, { active: 'true', leave_date: '' }) : m;
+            return (payStore(m.store) === st && legacy[String(m.emp_id).trim()]) ? Object.assign({}, m, { active: 'true', leave_date: '' }) : m;
           });
           XS = paySupportAutoCore_(ym, st, dX);
         }
         const ctx = XS ? { home: st, storeBy: payXsupStoreBy_(payRead('store')), dropCross: !XS.empty } : null;
-        const mAll = {};
-        payRead('master').forEach(function (m) { if (payStore(m.store) === st) mAll[String(m.emp_id).trim()] = m; });
+        const mSt = payRead('master').filter(function (m) { return payStore(m.store) === st; }), mAll = {};
+        mSt.forEach(function (m) { mAll[String(m.emp_id).trim()] = m; });
+        const cfgL = payConfig(st);
         built.results.forEach(function (r) {
           const id = String(r.emp_id);
-          if (!miss[id]) return;
-          resBy[id] = r;
+          if (!legacy[id]) return;
           const src = sent[id] || sent[r.emp_id] || saved[id] || saved[r.emp_id] || {};
           let sup = src.support_error ? [] : (src.support || []).filter(function (x) { return x && !x.cross; });
           if (XS && !src.support_error) sup = payMergeSupport_(sup, XS.byEmp[id.trim()], mAll[id.trim()] || { emp_id: id }, ctx).support;
-          supBy[r.emp_id] = sup;
+          const one = {}; one[r.emp_id] = sup;
+          perEmp[id] = paySupRowsStore_(paySupClaimRows_(ym, [r], mSt, one, cfgL));
         });
       }
-      const order = runs.map(function (r) { return String(r.emp_id); });
-      (calc.results || []).forEach(function (r) { if (order.indexOf(String(r.emp_id)) < 0) order.push(String(r.emp_id)); });
-      const allRes = order.map(function (id) { return resBy[id]; }).filter(function (r) { return r; });
-      supRows = paySupClaimRows_(ym, allRes, payRead('master').filter(function (m) { return payStore(m.store) === st; }), supBy, payConfig(st));
+      supRows = [];
+      runs.forEach(function (rw) { supRows = supRows.concat(perEmp[String(rw.emp_id)] || []); });
     } catch (e) { supRows = null; supErr = String((e && e.message) || e); }
   }
-  return { list: list, claim: claim, xfp: payXclaimFp_(ym, calc.results || []), sup_rows: supRows, sup_err: supErr };
+  return { list: list, claim: claim, sup_rows: supRows, sup_err: supErr, sup_legacy: supLegacy };
 }
 
 /* ═══════════════════ 計算引擎（與 ~/mala-payroll 已驗證版本同一套公式）═══════════════════ */
@@ -4188,7 +4192,7 @@ function payOtMonthSync_() {
         if (!r || !r.ok) throw new Error((r && r.error) || 'calc_failed');
         (r.results || []).forEach(function (x) {
           const nm = String(x.name || '').replace(/\s/g, '');
-          if (!nm || !x.ot_info) return;
+          if (!nm || !x.ot_info || x.ot_info.ot_h === undefined) return;   // r7：只有 xsup 的 ot_info（沒有逐日資料）不算
           const row = by[nm] = by[nm] || { h: 0, rest: false, work: false };
           Object.keys(x._ot_days || {}).forEach(function (d) { if (d >= range.start && d <= range.end) row.h = payR2(row.h + payNum(x._ot_days[d])); });
           if (m !== ym) return;
@@ -4394,7 +4398,7 @@ function handlePayrollCalc(body) {
   const XSA = XSUP ? payApplySupportAuto_({}, [], { synced_at: XSUP.synced_at, empty: XSUP.empty, byEmp: {}, unmapped: XSUP.unmapped,
                                                     dup_pay: XSUP.dup_pay, dup_acct: XSUP.dup_acct, pending: XSUP.pending }, XCTX, null) : null;
 
-  const results = [], SUP_BY = {};   // SUP_BY：每人這次計算實際用的支援列（r5：鎖月時後端自己產生請款快照）
+  const results = [], SUP_BY = {};   // SUP_BY：每人這次計算實際用的支援列（r7：存成草稿列的請款逐筆 ot_info.xsup）
   (AM.day1 ? [] : master).forEach(function (e) {
     const eC = ASOF ? payAsOfEmp_(e, ASOF) : e;   // 月中：離職日＝as_of 的複本，只給在職比例與 payCalcOne 用（同損益估算）
     const c = collected[String(e.emp_id)] || {};
@@ -4497,6 +4501,19 @@ function handlePayrollCalc(body) {
     SUP_BY[String(e.emp_id)] = att.support || [];
   });
 
+  /* r7：每人這次實際採計的請款逐筆存進 ot_info.xsup（跟 payroll.html costDetail 的 sup 同形狀、同取位），鎖月快照只從這裡來。
+     2026-11 起、有支援列的人才有；沒有 ot_info（沒有逐日資料）的人只為它建一個 ot_info。 */
+  if (payXclaimOn_(ym)) {
+    const mByX = {};
+    masterAll.forEach(function (m) { if (payStore(m.store) === st) mByX[String(m.emp_id)] = m; });
+    results.forEach(function (r) {
+      const one = {}; one[r.emp_id] = SUP_BY[String(r.emp_id)] || [];
+      const xs = paySupRowsStore_(paySupClaimRows_(ym, [r], [mByX[String(r.emp_id)] || {}], one, cfg));
+      if (!xs.length) return;
+      if (!r.ot_info) r.ot_info = {};
+      r.ot_info.xsup = paySupRowsFit_(xs);
+    });
+  }
   // 保留 manual 明細（keptManual／manualByEmp，上面已讀），只重建 auto
   const now = nowTaipeiIso();
   const itemRows = [], runRows = [];
@@ -4534,7 +4551,6 @@ function handlePayrollCalc(body) {
     if (ASOF_INFO) dres.asof = ASOF_INFO;
     if (NOT_IN.length) dres.not_in_payroll = NOT_IN;
     if (ZERO_ROWS.length) dres.zero_ratio_with_data = ZERO_ROWS;
-    if (body._with_sup) dres._sup = SUP_BY;   // 只給鎖月 payLockStale_（r5）；試算回應不帶
     return dres;
   }
   let lockedMeanwhile = false;
@@ -4852,7 +4868,7 @@ function handlePayrollFinalize(body) {
     return { ok: false, error: 'stale_run', list: [], message: '試算後選舉假名單有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。' };
   /* 鎖定前用最新資料重算比對（Eason 2026-11-09）：試算後主檔、打卡或假單改過，就不鎖舊數字，前端會自動重算給人看過再鎖。解鎖不擋。
      起始月份 PAY_LOCK_RECHECK_FROM（2026-10；薪酬挑錯第 8 項，Eason 2026-11-11 確認），2026-09 以前的月份不動。 */
-  let LOCK_SUP_ROWS = null;   // r5：後端產生的請款逐筆（2026-11 起），存快照時取代畫面送來的請款欄位
+  let LOCK_SUP = null;   // r7：後端從定案草稿列組的請款逐筆（2026-11 起），存快照時取代畫面送來的請款欄位
   if (lock && payLockRecheckOn(ym)) {
     const stale = payLockStale_(body, ym, stF);
     if (stale.error) return { ok: false, error: 'recheck_failed', message: '鎖定前重算比對失敗，這次沒有鎖定，請再按一次：' + stale.error };
@@ -4863,13 +4879,11 @@ function handlePayrollFinalize(body) {
       }).join('\n') + (stale.list.length > 30 ? '\n…共 ' + stale.list.length + ' 人' : '') };
     /* r3（Codex 擋項 3）：草稿的請款跟現在重算的不同，或畫面送來算快照用的請款（xclaim_fp）跟重算不同 → 不鎖、不存那份快照；
        前端照 stale_run 自動重算。舊前端沒送 xclaim_fp＝只比草稿。2026-10 以前、沒有跨店的店：摘要都是空的，不會擋。 */
-    if (stale.claim || (body.xclaim_fp != null && payXclaimOn_(ym) && String(body.xclaim_fp) !== stale.xfp))
+    /* r7：只比後端自己的資料（草稿 vs 重算，兩邊都在重算名單裡的人）。畫面送的請款指紋（r3）不再當擋的依據——
+       快照完全由後端從定案的草稿列產生，畫面那份不用了；草稿有、重算沒有的人照正式版放行。 */
+    if (stale.claim)
       return { ok: false, error: 'stale_run', list: [], message: '試算後資料有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。' };
-    LOCK_SUP_ROWS = stale.sup_rows;
-    /* r6 SHOULD-FIX：後端產生請款失敗 → 不擋鎖月、退回畫面送的快照，但記一筆稽核（店、月、原因）讓事後查得到 */
-    if (stale.sup_err) {
-      try { payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: 'xclaim_snap_fail', operator: String(body.operator || 'admin'), reason: stale.sup_err.slice(0, 300), store: stF }]); } catch (auditErr) { /* 記錄失敗不擋鎖定 */ }
-    }
+    LOCK_SUP = { rows: stale.sup_rows, err: stale.sup_err || '', legacy: stale.sup_legacy || [] };
   }
   /* 補休帳是負的不能鎖定（Eason 2026-11-01：不自動扣，擋住鎖定）。解鎖不擋。 */
   if (lock && ym >= PAY_COMP_MONTHLY_FROM) {
@@ -4961,7 +4975,17 @@ function handlePayrollFinalize(body) {
        移除同樣包 try/catch，失敗不影響鎖定/解鎖本身。 */
     if (lock && body.cost_snapshot) {
       try {
-        savedSnap = paySnapView_(pnlSnapshotUpsert_(ym, stF, LOCK_SUP_ROWS ? paySnapWithSup_(body.cost_snapshot, LOCK_SUP_ROWS) : body.cost_snapshot));
+        /* r7：請款逐筆一律用後端的（LOCK_SUP.rows）。只有組請款丟例外（rows＝null）才退回畫面送的，並在這裡（鎖月寫鎖內、真的採用畫面那份時）記稽核；
+           舊草稿退路（sup_legacy）也記一筆。稽核寫不進去至少留執行紀錄。 */
+        const xaud = function (action, reason) {
+          try { payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: action, operator: String(body.operator || 'admin'), reason: String(reason).slice(0, 300), store: stF }]); }
+          catch (auditErr) { try { console.error(action + ' 稽核寫入失敗：' + stF + ' ' + ym + ' ' + reason + ' / ' + auditErr); } catch (e2) {} }
+        };
+        let snapIn = body.cost_snapshot;
+        if (LOCK_SUP && LOCK_SUP.rows) snapIn = paySnapWithSup_(body.cost_snapshot, LOCK_SUP.rows);
+        else if (LOCK_SUP && LOCK_SUP.err) xaud('xclaim_snap_fail', LOCK_SUP.err);
+        if (LOCK_SUP && LOCK_SUP.rows && LOCK_SUP.legacy.length) xaud('xclaim_snap_legacy', '舊草稿沒有 xsup、照草稿定案的 ' + LOCK_SUP.legacy.length + ' 人用已存檔支援列補算');
+        savedSnap = paySnapView_(pnlSnapshotUpsert_(ym, stF, snapIn));
       } catch (snapErr) {
         payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: 'pnl_snapshot_fail',
                               operator: String(body.operator || 'admin'),
@@ -7299,15 +7323,32 @@ function paySupClaimRows_(ym, results, master, supBy, cfg) {
   });
   return out;
 }
-/** 鎖定快照換上後端產生的請款：support（門市名稱合計，同 costStable）、detail.sup（同 costDetail，數字取兩位）。其他欄位照畫面送的。 */
-function paySnapWithSup_(snap, rows) {
-  var support = {};
-  rows.forEach(function (x) { var st = x.store || '（未指定）'; support[st] = payR2((support[st] || 0) + x.amount); });
-  var d = Object.assign({ v: 1, co_auto: {}, emp: [] }, (snap && snap.detail) || {});
-  d.sup = rows.map(function (x) {
-    return { emp_id: x.emp_id, ft: !!x.ft, store: x.store, code: String(x.code || ''), hours: payR2(payNum(x.hours)), rate: payNum(x.rate), gapH: payR2(payNum(x.gapH)),
+/** 請款逐筆 → 存檔形狀（同 payroll.html costDetail 的 sup：時數、金額、加成取兩位；費率不取位）。草稿列 ot_info.xsup 與鎖定快照共用。 */
+function paySupRowsStore_(rows) {
+  return (rows || []).map(function (x) {
+    return { emp_id: String(x.emp_id), ft: !!x.ft, store: x.store, code: String(x.code || ''), hours: payR2(payNum(x.hours)), rate: payNum(x.rate), gapH: payR2(payNum(x.gapH)),
              gapRate: payNum(x.gapRate), amount: payR2(payNum(x.amount)), fixed: !!x.fixed, otH: payR2(payNum(x.otH)), otAdd: payR2(payNum(x.otAdd)) };
   });
+}
+/** 一個人的 xsup 太長（一格 5 萬字；正常一筆約 200 字、一人幾筆）→ 合成每家店一筆（金額合計不變）。實務上碰不到，只是保險。 */
+var PAY_XSUP_MAX_CHARS = 20000;
+function paySupRowsFit_(rows) {
+  if (JSON.stringify(rows).length <= PAY_XSUP_MAX_CHARS) return rows;
+  var by = {}, order = [];
+  rows.forEach(function (x) {
+    var k = String(x.code || '') + '|' + String(x.store || '');
+    if (!by[k]) { by[k] = { emp_id: x.emp_id, ft: x.ft, store: x.store, code: x.code, hours: 0, rate: x.rate, gapH: 0, gapRate: x.gapRate, amount: 0, fixed: false, otH: 0, otAdd: 0, merged: 0 }; order.push(k); }
+    var o = by[k]; o.hours = payR2(o.hours + x.hours); o.gapH = payR2(o.gapH + x.gapH); o.amount = payR2(o.amount + x.amount); o.otH = payR2(o.otH + x.otH); o.otAdd = payR2(o.otAdd + x.otAdd); o.merged++;
+  });
+  return order.map(function (k) { return by[k]; });
+}
+/** 鎖定快照換上後端的請款：support（門市名稱合計，同 costStable）、detail.sup（存檔形狀）。其他欄位照畫面送的。 */
+function paySnapWithSup_(snap, rows) {
+  var support = {};
+  var st2 = paySupRowsStore_(rows);
+  st2.forEach(function (x) { var st = x.store || '（未指定）'; support[st] = payR2((support[st] || 0) + x.amount); });
+  var d = Object.assign({ v: 1, co_auto: {}, emp: [] }, (snap && snap.detail) || {});
+  d.sup = st2;
   return Object.assign({}, snap || {}, { support: support, detail: d });
 }
 function pnlEstimateClassify_(results, master, att, cfg, ym) {

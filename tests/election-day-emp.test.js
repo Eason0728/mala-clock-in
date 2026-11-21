@@ -383,7 +383,7 @@ console.log('\n══ e5) 計時跨店支援整條鏈（主算、損益估算；
   chk('  採計 8H：國定假日加倍 8H 照舊、沒有選舉日那列', lab(run(mk({ elec: ['p'] }), 8)), ['國定假日加倍（支援支援店） 8=1600']);
   let base = null; try { base = execFileSync('git', ['show', '45ccbec:apps-script/Payroll.gs'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) {}
   // 跨店請款 #210（2026-11-22）只在 ot_info 多 xr／xclaim（請款用、不進應發扣款）；其他欄位仍逐欄相同
-  const noClaim = (r) => { const o = JSON.parse(JSON.stringify(r)); if (o.ot_info) { delete o.ot_info.xr; delete o.ot_info.xclaim; } return JSON.stringify(o); };
+  const noClaim = (r) => { const o = JSON.parse(JSON.stringify(r)); if (o.ot_info) { delete o.ot_info.xr; delete o.ot_info.xclaim; delete o.ot_info.xsup; } return JSON.stringify(o); };   // xsup：r7 草稿存的請款逐筆
   if (process.env.V) [null, 8, 12, 16].forEach((sup) => { const x = JSON.parse(JSON.stringify(run(mk({}), sup))).ot_info || {}; console.log('    #210 ot_info 請款欄', sup, JSON.stringify({ xr: x.xr, xclaim: x.xclaim })); });
   // #210 整條鏈：請款 hx（計時國定假日＋選舉日的支援加倍）＝薪資單實際發的「…（支援○○）」加倍時數，採計被截掉或手填衝突停發的不請
   chk('  #210 請款 hx＝實際發的支援加倍時數（勾選；採計 自動16／8／12／16）', [null, 8, 12, 16].map((sup) => { const r = run(mk({ elec: ['p'] }), sup); const paid = r.earn.filter((x) => x.item_key === 'holiday_double' && x.item_label.indexOf('（支援') >= 0).reduce((t, x) => t + x.qty, 0); const hx = ((r.ot_info.xclaim || [])[0] || { hx: 0 }).hx; return [paid, hx]; }), [[16, 16], [8, 8], [12, 12], [16, 16]]);
@@ -400,7 +400,7 @@ console.log('\n══ e5) 計時跨店支援整條鏈（主算、損益估算；
     chk('  #210 r3 舊草稿只差請款欄 → stale_run、沒鎖、沿用既有句子', [l2.ok, l2.error, w2.DB.run[0].status, l2.message], [false, 'stale_run', 'draft', '試算後資料有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。']);
     const w3 = mk({}); calcW(w3);
     const l3 = lockOf(w3, { xclaim_fp: '0000000000000000', cost_snapshot: { support: { '支援店': 1 } } });
-    chk('  #210 r3 畫面請款指紋跟重算不同 → stale_run、沒鎖、快照沒寫', [l3.ok, l3.error, w3.DB.run[0].status, (w3.DB.cost_snapshot || []).length], [false, 'stale_run', 'draft', 0]);
+    chk('  #210 r7 畫面送的請款指紋不再當擋的依據（快照由後端從定案草稿組）：照鎖、快照請款是後端的（不是畫面的 1）', [l3.ok, w3.DB.run[0].status, JSON.parse(w3.DB.cost_snapshot[0].support_json)['支援店'] > 1], [true, 'final', true]);
     const w4 = mk({}); calcW(w4);
     chk('  #210 r3 舊前端沒送指紋：只比草稿，照樣鎖得下去', lockOf(w4).ok, true);
     // r5（Codex 擋項 1／全資料驗證 A）：正式版 payroll.html 的鎖定請求（沒有 xclaim_fp、快照是舊公式、沒有門市代碼）→ 存下的是後端產生的新版
@@ -439,11 +439,53 @@ console.log('\n══ e5) 計時跨店支援整條鏈（主算、損益估算；
     const snapIn = { total: 1, support: {}, detail: { v: 1, co_auto: {}, emp: [], sup: [] } };
     const l9 = lockOf(w9, { cost_snapshot: snapIn });
     chk('  #210 r6 (3) 草稿有、重算沒有、但沒有任何支援列：照鎖、快照沒有請款列（同正式版）', [l9.ok, snapOf(w9).sup, JSON.parse(((w9.DB.cost_snapshot || [])[0] || {}).support_json || '{}')], [true, [], {}]);
-    // SHOULD-FIX：後端產生請款丟例外 → 照鎖、退回畫面那份、記稽核
-    const w10 = mk({}); calcW(w10);
-    w10.F('(function(){ paySupClaimRows_ = function(){ throw new Error("boom-xclaim"); }; })')();
+    // SHOULD-FIX：組請款丟例外（舊草稿退路裡出錯）→ 照鎖、退回畫面那份、在寫鎖內記稽核
+    const w10 = mk({}); calcW(w10); deact(w10);
+    w10.DB.run.forEach((r) => { const o = JSON.parse(r.ot_info || '{}'); delete o.xsup; r.ot_info = JSON.stringify(o); });   // 上線前的舊草稿
+    w10.F('(function(){ payBuildRunResults = function(){ throw new Error("boom-xclaim"); }; })')();
     const l10 = lockOf(w10, { cost_snapshot: { total: 1, support: { '支援店': 7 }, detail: { v: 1, co_auto: {}, emp: [], sup: [] } } });
-    chk('  #210 r6 請款產生失敗：照鎖、用畫面那份、稽核記一筆（店、月、原因）', [l10.ok, JSON.parse(w10.DB.cost_snapshot[0].support_json), (w10.DB.audit || []).filter((x) => x.action === 'xclaim_snap_fail').map((x) => [x.store, x.ym, /boom-xclaim/.test(x.reason)])], [true, { '支援店': 7 }, [['SSLGF', '2026-11', true]]]);
+    chk('  #210 r6／r7 組請款失敗：照鎖、用畫面那份、稽核記一筆（店、月、原因）', [l10.ok, JSON.parse(w10.DB.cost_snapshot[0].support_json), (w10.DB.audit || []).filter((x) => x.action === 'xclaim_snap_fail').map((x) => [x.store, x.ym, /boom-xclaim/.test(x.reason)])], [true, { '支援店': 7 }, [['SSLGF', '2026-11', true]]]);
+  }
+  // r7（Codex 第四次）：請款跟薪資草稿綁同一份（草稿列 ot_info.xsup），鎖月快照只從定案的草稿列來
+  {
+    const lockOf = (w, extra) => w.F('handlePayrollFinalize')(Object.assign({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true }, extra || {}));
+    const calcW = (w) => w.F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', inputs: {} });
+    const snapOf = (w) => JSON.parse(((w.DB.cost_snapshot || [])[0] || {}).detail_json || 'null') || {};
+    const deact = (w) => { w.DB.master.forEach((m) => { if (String(m.emp_id) === 'E1') { m.active = 'false'; m.leave_date = ''; } }); };
+    const inp = (amt) => [{ ym: '2026-11', emp_id: 'E1', store: 'SSLGF', hours: 0, extra_ot: 0, deduct_days: 0, support: JSON.stringify([{ code: 'SSLHQ', store: '支援店', hours: 16, rate: 200, amount: amt, keep: true, auto_h: 16 }]), hours_manual: '' }];
+    const runE1 = (w) => w.DB.run.find((r) => r.emp_id === 'E1');
+    const snapIn = () => ({ total: 1, support: {}, detail: { v: 1, co_auto: {}, emp: [], sup: [] } });
+    // 1. Codex 擋項 1：自動帶入、草稿有 xr／xclaim、停用後直接鎖，畫面還送了舊指紋 → 鎖得下去（同正式版）、他的薪資列照草稿定案、快照含他的請款與加成
+    const w1 = mk({}); const c1 = calcW(w1); const draft1 = JSON.parse(JSON.stringify(runE1(w1))); deact(w1);
+    const fpOld = w1.F('payXclaimFp_')('2026-11', c1.results);
+    const l1 = lockOf(w1, { xclaim_fp: fpOld, cost_snapshot: snapIn() });
+    const r1 = runE1(w1), x1 = JSON.parse(draft1.ot_info).xsup;
+    chk('  #210 r7-1 自動帶入＋停用後直接鎖：鎖得下去、薪資列照草稿定案（實付同草稿）、快照＝草稿存的請款（含加成）', [l1.ok, r1.status, r1.net === draft1.net, snapOf(w1).sup, x1[0].otAdd > 0], [true, 'final', true, x1, true]);
+    // 2. Codex 擋項 2：手填指定 2,600 → 停用 → 清除本月手動工時（刪掉已存支援列）→ 直接鎖 → 薪資 2,600、快照與 sup_code 也 2,600
+    const w2 = mk({}); w2.sb.__AP = { SSLHQ: {} }; w2.DB.input = inp(2600); calcW(w2); deact(w2); w2.DB.input = [];
+    const l2 = lockOf(w2, { cost_snapshot: snapIn() });
+    const supPay2 = w2.DB.item.filter((i) => i.emp_id === 'E1' && /支援/.test(String(i.item_label))).reduce((t, i) => t + Number(i.amount), 0);
+    chk('  #210 r7-2 手填 2,600、停用、清除手動工時後直接鎖：薪資的支援加項＝2,600、快照與 sup_code 也 2,600', [l2.ok, supPay2, snapOf(w2).sup.map((x) => x.amount), snapOf(w2).sup_code], [true, 2600, [2600], { SSLHQ: 2600 }]);
+    // 3. 上一輪的例子（手填指定 2,600、停用後不重算直接鎖）
+    const w3 = mk({}); w3.DB.input = inp(2600); calcW(w3); deact(w3);
+    const l3 = lockOf(w3, { cost_snapshot: snapIn() });
+    chk('  #210 r7-3 手填指定 2,600、停用後不重算直接鎖：快照 2,600', [l3.ok, snapOf(w3).sup_code], [true, { SSLHQ: 2600 }]);
+    // 4. 改了支援列：有重算 → 用新的；沒重算、這位同仁仍在重算名單 → 擋（既有句子）
+    const w4 = mk({}); w4.DB.input = inp(1600); calcW(w4); w4.DB.input = inp(2600); calcW(w4);
+    chk('  #210 r7-4a 改指定金額後有重算 → 鎖得下去、快照用新的 2,600', [lockOf(w4, { cost_snapshot: snapIn() }).ok, snapOf(w4).sup_code], [true, { SSLHQ: 2600 }]);
+    const w5 = mk({}); w5.DB.input = inp(1600); calcW(w5); w5.DB.input = inp(2600);
+    const l5 = lockOf(w5, { cost_snapshot: snapIn() });
+    chk('  #210 r7-4b 改指定金額後沒重算（仍在重算名單）→ stale_run、沒鎖、既有句子（計時的支援指定金額也進實付，所以是列名單那句）', [l5.ok, l5.error, runE1(w5).status, /^試算後資料有改過/.test(l5.message)], [false, 'stale_run', 'draft', true]);
+    const wF = mk({ patch: (m) => { m[0].is_full_time = 'true'; m[0].base = 34000; m[0].wage = 0; } }); wF.DB.input = inp(1600); calcW(wF); wF.DB.input = inp(2600);
+    const lF = lockOf(wF, { cost_snapshot: snapIn() });
+    chk('  #210 r7-4c 正職改指定金額後沒重算（實付不變、只有請款變）→ stale_run、既有句子（草稿存的 xsup 跟重算不同）', [lF.ok, lF.error, (lF.list || []).length, lF.message], [false, 'stale_run', 0, '試算後資料有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。']);
+    // 舊草稿退路：上線前的草稿沒有 xsup、這個人不在重算名單 → 用已存檔支援列補算、稽核記一筆
+    const w6 = mk({}); w6.DB.input = inp(2600); calcW(w6); deact(w6);
+    w6.DB.run.forEach((r) => { const o = JSON.parse(r.ot_info || '{}'); delete o.xsup; r.ot_info = JSON.stringify(o); });
+    const l6 = lockOf(w6, { cost_snapshot: snapIn() });
+    chk('  #210 r7 舊草稿退路：補算 2,600、稽核 xclaim_snap_legacy 一筆', [l6.ok, snapOf(w6).sup_code, (w6.DB.audit || []).filter((x) => x.action === 'xclaim_snap_legacy').length], [true, { SSLHQ: 2600 }, 1]);
+    // 草稿列的 xsup 跟畫面 costDetail 的逐筆同形狀；沒有支援的人沒有 xsup
+    chk('  #210 r7 草稿列 xsup 欄位（同快照逐筆）', Object.keys(x1[0]).sort(), ['amount', 'code', 'emp_id', 'fixed', 'ft', 'gapH', 'gapRate', 'hours', 'otAdd', 'otH', 'rate', 'store']);
   }
   chk('  沒勾選：四種採計都跟 45ccbec 逐欄相同（不含 #210 請款欄 xr／xclaim）', !!base && [null, 8, 12, 16].every((sup) => noClaim(run(mk({ gs: base }), sup)) === noClaim(run(mk({}), sup))), true);
   const est = (o, sup) => { const w = mk(o); w.sb.__TODAY = '2026-11-29'; w.F('(function(){ checkPnlKey_ = function(){ return ""; }; })')();
