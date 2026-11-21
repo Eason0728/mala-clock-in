@@ -701,7 +701,7 @@ function applyScopeUi(){
 }
 
 const $=id=>document.getElementById(id);
-const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};
+const n=v=>{if(typeof v==='number')return isNaN(v)?0:v;if(typeof v==='string'&&/[^\x00-\x7f]|,/.test(v)){v=v.replace(/[\uFF01-\uFF5E]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace(/\u3000/g,' ');const t=v.trim();if(/^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t))v=t.replace(/,/g,'')}const x=parseFloat(v);return isNaN(x)?0:x};   // 千分位、全形同後端 payNum（F18，2026-11-19）
 const r2=v=>Math.round(v*100)/100;
 const r1=v=>Math.round(v*10)/10;   // 假別時數一律到小數第一位（2026-10-05）
 const nf=v=>Math.round(v).toLocaleString('zh-TW');
@@ -731,7 +731,7 @@ const isFT=e=>String(e.is_full_time)==='true'||e.is_full_time===true;
 function toast(t,bad){const m=$('msg');m.textContent=t;m.style.background=bad?'#c0392b':'#231815';
   m.style.display='block';clearTimeout(m._t);m._t=setTimeout(()=>m.style.display='none',2600)}
 
-async function post(action,body,opt){   // opt.quiet：被擋（scope_forbidden）時不跳提示（boot 的平行呼叫用）
+async function post(action,body,opt){   // opt.quiet：被擋（scope_forbidden）時不跳提示（boot 的平行呼叫用）；opt.noRetry：斷線／回應壞掉不自動重送（鎖定用，F21）
   if(EMBED){
     const j=await bridgeCallQueued(action,Object.assign({store:STORE},body||{}));
     if(!j.ok&&j.error==='scope_forbidden'&&j.detail==='emp_out_of_scope'){ toast('編號 '+(j.emp_ids||[]).join('、')+' 不在你負責門市的薪資主檔，無法儲存',true); return j; }
@@ -743,14 +743,18 @@ async function post(action,body,opt){   // opt.quiet：被擋（scope_forbidden�
   // 改成：讀純文字自己 parse、非 JSON 時重試一次，仍失敗才跳提示、回 {ok:false}，絕不 throw。
   const url=API||location.pathname.replace(/[^/]*$/,'');
   const payload=JSON.stringify(Object.assign({action,admin_key:ADMIN_KEY,store:STORE},body||{}));
-  for(let attempt=0;attempt<2;attempt++){
+  /* 鎖定不自動重送（F21，2026-11-19）：請求可能已經到了伺服器、只是回應半路斷掉，重送會鎖兩次。
+     帶 noRetry 的呼叫失敗時不跳提示，由呼叫端自己重讀狀態再講。 */
+  const tries=(opt&&opt.noRetry)?1:2, quietFail=!!(opt&&opt.noRetry);
+  for(let attempt=0;attempt<tries;attempt++){
+    const last=attempt===tries-1;
     try{
       const res=await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain'},body:payload});
       const txt=await res.text();
-      let j; try{ j=JSON.parse(txt); }catch(e){ if(attempt===0) continue; toast('連線異常（伺服器忙碌），請再試一次',true); return {ok:false,error:'bad_response'}; }
+      let j; try{ j=JSON.parse(txt); }catch(e){ if(!last) continue; if(!quietFail) toast('連線異常（伺服器忙碌），請再試一次',true); return {ok:false,error:'bad_response'}; }
       if(!j.ok&&j.message&&!(opt&&opt.noToast)) toast(j.message,true);
       return j;
-    }catch(e){ if(attempt===0) continue; toast('連不上伺服器，請稍後再試',true); return {ok:false,error:'network'}; }
+    }catch(e){ if(!last) continue; if(!quietFail) toast('連不上伺服器，請稍後再試',true); return {ok:false,error:'network'}; }
   }
 }
 
@@ -1054,8 +1058,13 @@ async function doCalc(){
   if(supCrossBlock('重新計算')) return;
   setBusy(true);
   try{
-    const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
-    if(!r.ok)return;
+    const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()},{noToast:true});
+    if(!r.ok){
+      // 紅字天數那格空白／不是數字（F17，2026-11-19）：對話框講清楚哪個月、怎麼補，不只閃一下提示
+      if(r.error==='red_days_blank'||r.error==='red_days_bad') alert(r.message);
+      else if(r.message) toast(r.message,true);
+      return;
+    }
     RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;COST_SNAP=null;
     asofFromCalc(r);
     NOT_IN_PAY=r.not_in_payroll||[];
@@ -1635,9 +1644,19 @@ async function toggleLock(){
       try{ const g=costTotals(); body.cost_snapshot=Object.assign(costStable(g),{detail:costDetail(g)}); }
       catch(e){ console.warn('pnlPayroll 快照計算失敗，鎖定照常送出，這次不會有快照可讀：',e); }
     }
-    const r=await post('payroll_finalize',body,lock?{noToast:true}:undefined);
+    const r=await post('payroll_finalize',body,lock?{noToast:true,noRetry:true}:undefined);
+    /* 鎖定的回應沒收到（斷線、Google 回 HTML 頁、代轉逾時）：不重送，改重讀這個月的狀態再顯示（F21，2026-11-19）。
+       伺服器其實已鎖＝照已鎖定重新載入；仍是草稿＝說沒鎖成功；連狀態都讀不到＝請人重新整理，畫面不亂改。 */
+    if(lock&&!r.ok&&(r.error==='network'||r.error==='bad_response'||r.error==='timeout')){
+      const chk=await post('payroll_month',{ym:ym(),inputs:{}},{noToast:true,quiet:true});
+      if(chk&&chk.ok&&chk.run&&chk.run.status==='final'){ await loadMonth(Promise.resolve(chk)); toast('已鎖定（剛才的回應在路上斷了，重新讀取後確認這個月已經鎖定）'); }
+      else if(chk&&chk.ok) toast('連線中斷：重新讀取後這個月仍是草稿，沒有鎖定成功，請再按一次「鎖定本月」',true);
+      else toast('連不上伺服器，無法確認有沒有鎖定成功，請稍後重新整理頁面看狀態',true);
+    }
+    // 先前已經鎖定（例如上一次的回應斷掉）：後端回 already，重新載入該月才帶得回鎖定時的成本快照
+    else if(r.ok&&lock&&r.already){ await loadMonth(); toast('這個月已經鎖定了'); }
     // 鎖定：後端寫好快照會帶回 cost_snap，成本分類頁立刻改讀；解鎖：快照已清掉，回到即時算
-    if(r.ok){STATUS=r.status;COST_SNAP=(lock&&r.cost_snap)||null;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
+    else if(r.ok){STATUS=r.status;COST_SNAP=(lock&&r.cost_snap)||null;vClear();renderRun();toast(lock?'已鎖定':'已解鎖')}
     // 補休帳是負的不能鎖定（2026-11-01）：名單可能好幾行，用對話框列清楚
     else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='ot_form_missing'||r.error==='sched_missing'||r.error==='unapproved'||r.error==='leave_mismatch')) alert(r.message);
     else if(lock&&r.error==='stale_run'){ alert(r.message+'\n\n按確定後系統會自動重新計算，請看過新數字再按一次鎖定。'); await doCalc(); }
@@ -2841,7 +2860,8 @@ async function saveCfg(btn,label,card){
 let GOVNAMES={}, HOLSYNC={}, HOL_SYNCING=null;
 function applyHol(list){
   HOL={}; HOLD={}; HOLSRC={}; HOLN={};
-  const add=(k,h)=>{ HOL[k]=n(h.red_days); HOLD[k]=String(h.dates||''); HOLN[k]=String(h.note||'');
+  // 紅字天數那格空白不顯示成 0（F17，2026-11-19：空白時計算會擋下）；null＝空白，其他照原樣給 renderHol 判斷
+  const add=(k,h)=>{ const rv=h.red_days; HOL[k]=(rv==null||String(rv).trim()==='')?null:(isNaN(Number(String(rv).replace(/[\uFF10-\uFF19]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).trim()))?String(rv):n(rv)); HOLD[k]=String(h.dates||''); HOLN[k]=String(h.note||'');
     HOLSRC[k]=h._src==='own'?'own':'global'; };
   if(Array.isArray(list)) list.forEach(h=>{ if(h&&h.ym!=null) add(String(h.ym),h); });
   else if(list) Object.keys(list).forEach(k=>add(k,{red_days:list[k]}));   // 相容舊物件格式 {ym:red_days}
@@ -2882,7 +2902,8 @@ function renderHol(){
     const grp={}; skip.forEach(d=>{ (grp[why(d)]=grp[why(d)]||[]).push(`${holDateLabel(d)}${GOVNAMES[d]}`); });
     if(skip.length) cell+=`<span class="hempty">${Object.keys(grp).map(w=>esc(grp[w].join('、')+'：'+w)).join('<br>')}</span>`;
     if(!cell) cell='<span class="hempty">這個月沒有國定假日</span>';
-    h+=`<tr><td>${k}${own}</td><td style="text-align:center;font-weight:800">${esc(HOL[k])}</td>
+    const hv=HOL[k], hcell=hv===null?'<span class="bad">空白（計算會擋下，請補；沒有紅字填 0）</span>':(typeof hv==='string'?`<span class="bad">${esc(hv)}（不是數字，計算會擋下）</span>`:esc(hv));
+    h+=`<tr><td>${k}${own}</td><td style="text-align:center;font-weight:800">${hcell}</td>
       <td style="text-align:left"><div class="hdates">${cell}</div></td></tr>`;
   });
   $('holTbl').innerHTML=h+'</tbody>';

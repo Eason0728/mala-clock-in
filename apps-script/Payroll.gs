@@ -725,7 +725,29 @@ function payR0(v) { return Math.round(v); }
 function payR2(v) { return Math.round(v * 100) / 100; }
 /** 假別時數一律四捨五入到小數第一位（Eason 2026-10-05） */
 function payR1(v) { return Math.round(v * 10) / 10; }
-function payNum(v) { const x = parseFloat(v); return isNaN(x) ? 0 : x; }
+/* 數值讀取（F18，11/10 薪酬驗收，Eason 2026-11-19）：試算表裡手打的 "28,000"（千分位）、全形「２８０００」「２８，０００」
+ * 以前 parseFloat 讀到逗號就停（28 元）、讀不懂全形（0 元）。現在先把全形英數符號換成半形；整串是標準千分位寫法才拿掉逗號。
+ * 其他字串（"1,5"、"8H"、"abc"）照舊 parseFloat，行為不變。數字直接回傳（熱路徑不多做事）。 */
+function payNum(v) {
+  if (typeof v === 'number') return isNaN(v) ? 0 : v;
+  if (typeof v === 'string' && /[^\x00-\x7f]|,/.test(v)) v = payNumNorm_(v);
+  const x = parseFloat(v); return isNaN(x) ? 0 : x;
+}
+/** 全形 → 半形（數字、逗號、小數點、正負號；全形空白 → 半形空白）；整串符合「1,234,567.89」才去掉逗號。回字串。 */
+function payNumNorm_(s) {
+  s = String(s).replace(/[！-～]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); }).replace(/　/g, ' ');
+  const t = s.trim();
+  return /^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t) ? t.replace(/,/g, '') : s;
+}
+/** 存檔／紅字天數用的嚴格版（F17、F18）：空白／只有空格／null 回 ''；轉得成乾淨數字回 Number；轉不了回 null（呼叫端擋下）。 */
+function payNumStrict_(v) {
+  if (v === '' || v == null) return '';
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  if (typeof v !== 'string') return null;
+  const t = payNumNorm_(v).trim();
+  if (t === '') return '';
+  return /^[+-]?(\d+(\.\d+)?|\.\d+)$/.test(t) ? Number(t) : null;
+}
 /** 布林讀取：接受 true/1/'1'/'true'/'TRUE'（試算表可能存成數字或字串） */
 function payBool(v) { return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true'; }
 
@@ -788,6 +810,27 @@ function payMasterDateBad_(rows) {
       const c = payMasterDateCheck_(m[f[0]]);
       if (!c.ok) bad.push(String(m.emp_id).trim() + ' ' + f[1]);
       else fix.push([m, f[0], c.value]);
+    });
+  });
+  if (!bad.length) fix.forEach(function (x) { x[0][x[1]] = x[2]; });
+  return bad;
+}
+/* 主檔金額欄（F18，Eason 2026-11-19）：存主檔時 "28,000"、全形「２８０００」轉成數字存；空白照舊空白；
+ * 轉不了的（「二萬八」「28000元」「28,00」）整批不存，回「編號 欄位名」清單（不帶使用者填的原文，同到職日那條）。
+ * 全部合格才把轉好的數字寫回 rows。欄位名跟薪資頁主檔表（payroll.html EF）同一組。 */
+var PAY_MASTER_AMOUNT_FIELDS_ = [['wage', '時薪'], ['base', '底薪'], ['ot_rate', '加班費率'], ['skill_allow', '職能津貼'],
+  ['night_allow', '夜間津貼'], ['mgr_allow', '店長津貼'], ['editor_allow', '小編津貼'], ['attend_cap', '績效獎金上限'],
+  ['meal_allow', '餐費補助/日'], ['gap_rate', '差額費率'], ['labor_ins', '勞保費'], ['health_ins', '健保費'], ['group_ins', '團保費'],
+  ['pension', '退休金'], ['dormitory', '宿舍費'], ['co_labor', '公司負擔勞保'], ['co_health', '公司負擔健保'],
+  ['co_pension', '公司負擔退休金'], ['yearend_months', '年終月數']];
+function payMasterAmountBad_(rows) {
+  const bad = [], fix = [];
+  (rows || []).forEach(function (m) {
+    PAY_MASTER_AMOUNT_FIELDS_.forEach(function (f) {
+      if (!Object.prototype.hasOwnProperty.call(m, f[0])) return;
+      const v = payNumStrict_(m[f[0]]);
+      if (v === null) bad.push(String(m.emp_id).trim() + ' ' + f[1]);
+      else fix.push([m, f[0], v]);
     });
   });
   if (!bad.length) fix.forEach(function (x) { x[0][x[1]] = x[2]; });
@@ -907,6 +950,18 @@ function payHolidayRow(ym, store) {
   if (own) return own;
   return rows.filter(function (h) { return String(h.store || '') === ''; })[0] || null;
 }
+/* 紅字天數那格要是數字（F17，11/10 薪酬驗收，Eason 2026-11-19）：空白不能當 0 天——以前 payNum('')＝0，
+ * 10 月正職 baseH 變 31×8＝248、倒扣 21120 也沒有提示。0 是合法值（照算）；全形「１１」讀成 11。
+ * 回 {ok:true, value} 或 {ok:false, error:'red_days_blank'|'red_days_bad', message}。
+ * 薪資計算（handlePayrollCalc）擋下；損益估算把它當「沒設定紅字天數」（red_days_missing）；同步把空白當成不一樣。 */
+function payRedDaysCheck_(row, ym) {
+  const where = (row && String(row.store || '') !== '') ? '本店專屬' : '集團共用';
+  const v = payNumStrict_(row ? row.red_days : '');
+  const fix = '請管理者到薪資試算表的 payroll_holiday 分頁補上 ' + ym + '（' + where + '那一列）的 red_days，這個月沒有紅字就填 0，補好再重新計算';
+  if (v === '') return { ok: false, error: 'red_days_blank', message: ym + ' 的紅字天數是空白，不能當 0 天算（基本工時會變多、正職會被倒扣），這次沒有計算。' + fix };
+  if (v === null) return { ok: false, error: 'red_days_bad', message: ym + ' 的紅字天數不是數字，這次沒有計算。' + fix };
+  return { ok: true, value: v };
+}
 
 /** 解析某月的國定假日日期清單。
  *  ⚠ 只填一天時 Sheets 會把 '2026-10-10' 存成日期物件，讀回是 Date 而不是字串——
@@ -925,6 +980,11 @@ function payMonthLocked_(runs, ym, st) {
   return (runs || []).some(function (r) {
     return String(r.ym) === String(ym) && payStore(r.store) === st && String(r.status) === 'final';
   });
+}
+/** 該店該月有月結列、而且每一列都是 final（F21：已鎖定再送鎖定＝不用再做一次）。有任何一列是草稿就回 false。 */
+function payMonthAllFinal_(runs, ym, st) {
+  const mine = (runs || []).filter(function (r) { return String(r.ym) === String(ym) && payStore(r.store) === st; });
+  return mine.length > 0 && mine.every(function (r) { return String(r.status) === 'final'; });
 }
 function payLockedMsg_(ym, what) { return ym + ' 已鎖定，請先解鎖再修改' + (what || ''); }
 /** 紅字天數整批覆寫前的檢查：回「這次覆寫會動到的已鎖定月份」（由小到大），沒有就回 []。
@@ -2989,6 +3049,9 @@ function handlePayrollMasterSet(body) {
   const badDates = payMasterDateBad_(body.master);
   if (badDates.length) return { ok: false, error: 'bad_date', cells: badDates,
     message: '到職日、離職日只能留空，或填 YYYY-MM-DD 而且是真實存在的日期（例：2026-10-12），這次沒有儲存：' + badDates.join('、') };
+  const badAmt = payMasterAmountBad_(body.master);   // F18：千分位、全形轉成數字；轉不了的整批不存
+  if (badAmt.length) return { ok: false, error: 'bad_amount', cells: badAmt,
+    message: '金額欄只能留空或填數字（可以有千分位逗號、全形數字），下面這幾格看不懂，這次沒有儲存：' + badAmt.join('、') };
   const now = nowTaipeiIso();
   const stMs = payStore(body.store);
   const mine = body.master.map(function (m) { m.updated_at = now; m.store = payStore(m.store || stMs); return m; });
@@ -3176,7 +3239,8 @@ function payHolidaySync(years, operator) {
   const all = payRead('holiday'), changed = [];
   /* 已鎖定月份不動（薪酬挑錯第 1 項補洞，2026-11-11）：這支只動集團共用列；某個月份只要有任何「使用集團共用列的門市」
      已鎖定，就不改也不補那個月的列，回傳 skipped_locked 列出。先找出這次會動到的月份，有才讀 payroll_run。 */
-  const differs = function (r, w) { return !(payNum(r.red_days) === w.red_days && payHolidayDates(r).join(', ') === w.dates); };
+  // F17：那格空白／不是數字也算「不一樣」，本月以後的集團列會被補上（不然紅字 0 天的月份會一直被計算擋下）
+  const differs = function (r, w) { return !(payRedDaysCheck_(r, String(r.ym)).ok && payNum(r.red_days) === w.red_days && payHolidayDates(r).join(', ') === w.dates); };
   const seen = {}, cand = [];
   all.forEach(function (r) {
     const k = String(r.ym);
@@ -3759,7 +3823,9 @@ function handlePayrollCalc(body) {
     holiday = payHolidayRow(ym, payStore(body.store));
   }
   if (!holiday) return { ok: false, error: 'no_holiday', message: ym + ' 沒有紅字天數（人事行政總處可能還沒公布該年行事曆）' };
-  const redDays = payNum(holiday.red_days);
+  const redChk = payRedDaysCheck_(holiday, ym);   // F17：空白／不是數字 → 擋下請人補，不當 0 天
+  if (!redChk.ok) return redChk;
+  const redDays = redChk.value;
 
   const st = payStore(body.store);
   const cfg = payConfig(st);
@@ -4198,6 +4264,13 @@ function handlePayrollFinalize(body) {
   const ym = String(body.ym || ''), lock = !!body.lock;
   if (!lock && !body.reason) return { ok: false, error: 'reason_required', message: '解鎖必須填原因' };
   const stF = payStore(body.store);
+  /* 已經鎖定的月份再送鎖定（F21，Eason 2026-11-19）：通常是前端回應半路斷掉後又送一次。直接回 ok＋already:true，
+     不跑鎖定前的檢查、不再寫第二筆 lock 稽核、不動損益快照（重送的請求可能沒帶快照，照舊流程會把第一次的快照清掉）。
+     寫鎖裡面還會再看一次（兩個請求幾乎同時到）。解鎖不在這次範圍，照舊。 */
+  if (lock) {
+    const mineF = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === stF; });
+    if (payMonthAllFinal_(mineF, ym, stF)) return { ok: true, ym: ym, status: 'final', count: mineF.length, already: true };
+  }
   /* 月中草稿不能鎖定（Eason 2026-11-17）：本月還沒過完，草稿是「算到昨天」的數字；整個月過完、草稿變回整月算法才能鎖。解鎖不擋。 */
   if (lock && String(ym) >= PAY_ASOF_FROM) {
     if (String(ym) >= todayTaipeiStr().slice(0, 7)) return { ok: false, error: 'month_not_over', message: ym + ' 還沒過完，現在的數字只算到昨天，不能鎖定。請等這個月過完再鎖定。' };
@@ -4272,10 +4345,15 @@ function handlePayrollFinalize(body) {
     catch (err) { gb = { error: 'g_recon_check_failed', message: '檢查打卡正本對帳失敗，這次沒有鎖定，請再按一次：' + err }; }
     if (gb) return { ok: false, error: gb.error, message: gb.message };
   }
-  let n = 0, savedSnap = null;
+  let n = 0, savedSnap = null, already = false;
   /* 稽核與損益快照也是「讀整張再寫回」的共用分頁，和鎖定狀態放在同一把鎖裡，兩店同時定案才不會互相蓋掉（2026-11-10）。 */
   if (!payWriteLocked_(['run', 'audit', 'cost_snapshot'], function () {
     const rows = payRead('run');
+    if (lock && payMonthAllFinal_(rows, ym, stF)) {   // F21：等鎖的這段時間另一個請求已經鎖好了
+      already = true;
+      n = rows.filter(function (r) { return String(r.ym) === ym && payStore(r.store) === stF; }).length;
+      return;
+    }
     rows.forEach(function (r) { if (String(r.ym) === ym && payStore(r.store) === stF) { r.status = lock ? 'final' : 'draft'; n++; } });
     if (n) payReplaceAll('run', rows);
     if (!n) return;
@@ -4307,6 +4385,7 @@ function handlePayrollFinalize(body) {
     }
   })) return PAY_BUSY_;
   if (!n) return { ok: false, error: 'no_run', message: ym + ' 還沒有月結資料' };
+  if (already) return { ok: true, ym: ym, status: 'final', count: n, already: true };
   /* cost_snap（2026-11-13）：鎖定且快照寫成功才帶，前端鎖完不用重整就改讀快照；沒寫成功前端照舊標「即時值」。 */
   const out = { ok: true, ym: ym, status: lock ? 'final' : 'draft', count: n };
   if (lock && savedSnap) out.cost_snap = savedSnap;
@@ -6607,8 +6686,9 @@ function handlePnlLaborEstimate_(body) {
 
   var holRow = payHolidayRow(ym, st);
   var holDates = payHolidayDates(holRow);
-  var redDaysMissing = !holRow;
-  var redDays = holRow ? payNum(holRow.red_days) : 0;   // 沒設定紅字天數＝先當 0，見下方 red_days_missing
+  var redChkE = holRow ? payRedDaysCheck_(holRow, ym) : null;   // F17：那格空白／不是數字＝跟沒設定同一種情況
+  var redDaysMissing = !holRow || !redChkE.ok;
+  var redDays = redDaysMissing ? 0 : redChkE.value;   // 沒設定紅字天數＝先當 0，見下方 red_days_missing
 
   var cfg = payConfig(st);
   // 打卡歸集（只到 asOf）疊上 payroll_input 手動覆蓋——support/meal_on/full_attend/wage_override
