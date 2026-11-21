@@ -6852,9 +6852,25 @@ function pnlSanitizeSupport_(support) {
    跟既有 handlePayrollLeaveEventSet 同一套「讀→濾掉同鍵→append→整表覆寫」手法。
    金額欄位一律 payNum() 防呆（前端理論上都是數字，但別假設）；support 先過
    pnlSanitizeSupport_ 白名單化，只到門市層級、不含姓名。 */
+/* 快照一格的字數上限保護（r4）：Google 試算表一格最多 50,000 字；payReplaceAll 是「先清空整張、再寫」，
+   寫入丟例外時整張 cost_snapshot（別的月份、別的店）已經被清掉。所以寫之前把 detail_json 縮到安全門檻內：
+   先從尾端減逐筆支援明細（sup），還不夠再減逐人明細（emp）；門市彙總 sup_code 與各合計欄不動（損益照樣對），
+   截過的在 detail 留 sup_trunc／emp_trunc（原筆數）。畫面讀到 sup_trunc 就改用「門市合計」那種既有顯示（不加新字）。 */
+var PAY_SNAP_CELL_SAFE = 45000;
+function paySnapDetailFit_(d) {
+  if (!d) return d;
+  var s = JSON.stringify(d);
+  if (s.length <= PAY_SNAP_CELL_SAFE) return d;
+  var o = JSON.parse(s), n0 = (o.sup || []).length, e0 = (o.emp || []).length;
+  while (JSON.stringify(o).length > PAY_SNAP_CELL_SAFE && ((o.sup || []).length || (o.emp || []).length)) {
+    if ((o.sup || []).length) { o.sup = o.sup.slice(0, Math.floor(o.sup.length * 0.9)); o.sup_trunc = n0; }
+    else { o.emp = o.emp.slice(0, Math.floor(o.emp.length * 0.9)); o.emp_trunc = e0; }
+  }
+  return o;
+}
 function pnlSnapshotUpsert_(ym, store, snap) {
-  var rows = [];
-  try { rows = payRead('cost_snapshot'); } catch (e) { rows = []; }
+  /* r4：讀不到現有快照就不寫（以前當成空表，整張覆寫會把別的月份、別的店清掉）；丟出去由 handlePayrollFinalize 的 try/catch 記稽核，鎖定照樣成功 */
+  var rows = payRead('cost_snapshot');
   var kept = rows.filter(function (r) { return !(String(r.ym) === ym && payStore(r.store) === store); });
   var row = {
     ym: ym, store: store,
@@ -6868,9 +6884,13 @@ function pnlSnapshotUpsert_(ym, store, snap) {
     ins_self: payNum(snap.ins_self), yearend: payNum(snap.yearend),
     support_json: JSON.stringify(pnlSanitizeSupport_(snap.support)),
     total: payNum(snap.total), updated_at: nowTaipeiIso(),
-    detail_json: JSON.stringify(paySnapDetailSanitize_(snap.detail))
+    detail_json: JSON.stringify(paySnapDetailFit_(paySnapDetailSanitize_(snap.detail)))
   };
-  payReplaceAll('cost_snapshot', kept.concat([row]));
+  // 最後一關：任何一格超過上限就不寫（寫了會先清空整張再失敗）
+  var all = kept.concat([row]), tooLong = '';
+  all.forEach(function (r) { Object.keys(r).forEach(function (k) { if (!tooLong && typeof r[k] === 'string' && r[k].length > 49000) tooLong = k; }); });
+  if (tooLong) throw new Error('cost_snapshot ' + tooLong + ' 超過一格字數上限，沒有寫入');
+  payReplaceAll('cost_snapshot', all);
   return row;
 }
 
@@ -7141,7 +7161,7 @@ function pnlSupClaimRate_(ym, r, m, cfg) {
     .reduce(function (s, x) { return s + payNum(x.rate); }, 0);
 }
 /** 跨店請款加成：payroll.html supXAddAll 的逐字 port（2026-11-22；r3 Codex 擋項 1）。有 xr 戳記用 xclaim（含休息日／例假／國定假日／選舉日），沒有照舊 cross_ot。
- *  引擎的 xclaim／cross_ot 已經是「這個人、這家店、整月」的合計 → 每家店只入帳一次：給同一家店第一筆「沒有指定金額」的支援列；
+ *  引擎的 xclaim／cross_ot 已經是「這個人、這家店、整月」的合計 → 每家店只入帳一次：給同一家店「沒有指定金額」的支援列（有門市代碼的優先，r4）；
  *  同一家拆成好幾筆時其他列不再加（以前每筆都加一次＝重複請款）。全部是指定金額的列＝整筆以填的為準，不加（既有語意）。
  *  比對：兩邊都有門市代碼只比代碼；有一邊沒有代碼才比店名。sup＝支援列、rts＝每列的請款時薪；回 [{h, add}]（跟 sup 同順序）。 */
 function pnlSupXAddAll_(r, sup, rts) {
@@ -7153,8 +7173,14 @@ function pnlSupXAddAll_(r, sup, rts) {
   };
   var list = oi.xr ? (oi.xclaim || []) : (oi.cross_ot || []);
   list.forEach(function (c) {
-    var i = -1;
-    for (var k = 0; k < sup.length; k++) { if (!payNum(sup[k].amount) && hit(c, sup[k])) { i = k; break; } }
+    // r4：優先給「有門市代碼」的列（快照的門市彙總 sup_code 只收有代碼的列，給沒代碼那列被支援店損益會少算）；同店都沒代碼才給第一筆
+    var i = -1, j = -1;
+    for (var k = 0; k < sup.length; k++) {
+      if (payNum(sup[k].amount) || !hit(c, sup[k])) continue;
+      if (j < 0) j = k;
+      if (String(sup[k].code || '').trim()) { i = k; break; }
+    }
+    if (i < 0) i = j;
     if (i < 0) return;
     var h = oi.xr ? payNum(c.h43) + payNum(c.h53) + payNum(c.r43) + payNum(c.r53) + payNum(c.r83) + payNum(c.d8) + payNum(c.hx) : payNum(c.h43) + payNum(c.h53);
     var m = oi.xr ? payNum(c.h43) * 0.34 + payNum(c.h53) * 0.67 + payNum(c.r43) * 0.34 + payNum(c.r53) * 0.67 + payNum(c.r83) * 1.67 + payNum(c.d8) + payNum(c.hx) : payNum(c.h43) * 0.34 + payNum(c.h53) * 0.67;

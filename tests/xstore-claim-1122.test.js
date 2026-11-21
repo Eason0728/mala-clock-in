@@ -418,6 +418,40 @@ function randomCase() {
   const sw1 = calc(build({ ft: true, days: [{ date: D, cell: 'H', home: 0, sups: [{ code: 'MZTJS', h: 8, s: 600 }] }, { date: D2, home: 0, sups: [{ code: 'MZTLZL', h: 8, s: 600 }] }] }));
   const sw2 = calc(build({ ft: true, days: [{ date: D, cell: 'H', home: 0, sups: [{ code: 'MZTLZL', h: 8, s: 600 }] }, { date: D2, home: 0, sups: [{ code: 'MZTJS', h: 8, s: 600 }] }] }));
   chk('r3-3 兩天互換支援店：實領相同、請款摘要不同', [sw1.net === sw2.net, S.call('payXclaimSig_', '2026-11', sw1.ot_info) !== S.call('payXclaimSig_', '2026-11', sw2.ot_info)], [true, true]);
+  // r4-1：同店同時有「沒代碼」與「有代碼」的列 → 加成給有代碼那筆（快照門市彙總 sup_code 只收有代碼的列，損益才不少算）
+  const supCodeOf = (c) => J(S.call('paySnapDetailSanitize_', c.detail)).sup_code || {};
+  const codedSum = (c) => r2(c.sup.filter((x) => String(x.code || '').trim()).reduce((a, x) => a + x.amount, 0));
+  const nc1 = cost(RD, [row('', '金山', 2), Object.assign(row('MZTJS', '金山', 3), { auto: true })]);
+  chk('r4-1 沒代碼在前＋自動帶入有代碼：合計 2,020.5 不變、加成在有代碼那筆、sup_code 1,620.5＝有代碼部分（修正前 600）', [nc1.front, nc1.back, nc1.sup.map((x) => r2(x.otAdd)), supCodeOf(nc1), codedSum(nc1)], [2020.5, 2020.5, [0, 1020.5], { MZTJS: 1620.5 }, 1620.5]);
+  const nc2 = cost(RD, [Object.assign(row('MZTJS', '金山', 3), { auto: true }), row('', '金山', 2)]);
+  chk('r4-1 有代碼在前＋沒代碼在後：一樣', [nc2.front, nc2.back, supCodeOf(nc2), codedSum(nc2)], [2020.5, 2020.5, { MZTJS: 1620.5 }, 1620.5]);
+  const nc3 = cost(RD, [row('MZTJS', '金山', 2), row('MZTJS', '金山', 3)]);
+  chk('r4-1 兩筆都有代碼：sup_code＝合計 2,020.5', [nc3.front, supCodeOf(nc3)], [2020.5, { MZTJS: 2020.5 }]);
+  const nc4 = cost(RD, [row('', '金山', 2), row('', '金山', 3)]);
+  chk('r4-1 兩筆都沒代碼：合計 2,020.5（照店名）、沒有門市彙總', [nc4.front, nc4.back, supCodeOf(nc4)], [2020.5, 2020.5, {}]);
+  // r4-2：快照一格字數上限（Google 試算表一格 5 萬字；payReplaceAll 先清整張再寫）
+  {
+    const long = []; for (let i = 0; i < 400; i++) long.push({ emp_id: 'EMP' + String(i).padStart(5, '0'), ft: true, store: '某某某某某某某某支援門市' + (i % 7), code: i % 2 ? 'MZTGF' : 'MZTJS', hours: 12.25, rate: 213.33, gapH: 0, gapRate: 0, otH: 3.75, otAdd: 1234.56, amount: 3851.11, fixed: false });
+    const emp = []; for (let i = 0; i < 60; i++) emp.push({ emp_id: 'E' + i, ft: true, ratio: 1, co_labor: 1000, co_health: 800, co_pension: 1500, yearend_months: 1, yearend: 3000, gap_rate: 0 });
+    const others = [{ ym: '2026-10', store: 'MZTGF', support_json: '{}', total: 1, detail_json: '{}' }, { ym: '2026-11', store: 'HQ', support_json: '{}', total: 2, detail_json: '{}' }];
+    const W = H.load({ today: '2026-12-05', data: { cost_snapshot: J(others) } });
+    const fullLen = JSON.stringify(J(W.call('paySnapDetailSanitize_', { sup: long, emp }))).length;
+    W.call('pnlSnapshotUpsert_', '2026-11', 'MZTGF', { total: 99, support: { '墨光': 1 }, detail: { co_auto: {}, emp, sup: long } });
+    const rows = J(vm.runInContext('__DATA.cost_snapshot', W));
+    const maxCell = Math.max(...rows.map((r) => Math.max(...Object.values(r).map((v) => String(v == null ? '' : v).length))));
+    const mine = rows.find((r) => r.ym === '2026-11' && r.store === 'MZTGF'), d = JSON.parse(mine.detail_json);
+    chk('r4-2 400 筆支援列（未截前 ' + fullLen + ' 字）：寫入的每一格 ≤ 45,000 字', [fullLen > 50000, maxCell <= 45000], [true, true]);
+    chk('r4-2 其他月份／其他店的快照列都還在', rows.filter((r) => r !== mine).map((r) => r.ym + r.store).sort(), ['2026-10MZTGF', '2026-11HQ']);
+    chk('r4-2 sup_code 用全部 400 筆（各 200 筆 × 3,851.11）、留截斷旗標、逐筆少於 400', [d.sup_code, d.sup_trunc, d.sup.length < 400 && d.sup.length > 100], [{ MZTJS: r2(200 * 3851.11), MZTGF: r2(200 * 3851.11) }, 400, true]);
+    const W2 = H.load({ today: '2026-12-05', data: { cost_snapshot: J(others) } });
+    vm.runInContext('payRead = (function(o){ return function(k){ if (k === "cost_snapshot") throw new Error("讀表失敗"); return o(k); }; })(payRead);', W2);
+    let threw = false; try { W2.call('pnlSnapshotUpsert_', '2026-11', 'MZTGF', { total: 1, support: {}, detail: null }); } catch (e) { threw = true; }
+    chk('r4-2 讀不到現有快照：不寫（丟出去給鎖定流程記稽核），別店別月的快照還在', [threw, J(vm.runInContext('__DATA.cost_snapshot', W2)).length], [true, 2]);
+    // 畫面：逐筆被截過 → 改用門市合計（既有顯示，不加新字），合計不少
+    vm.runInContext('RESULTS=[];STATUS="final";COST_SNAP={support:{"金山":770222,"墨光":770222},detail:' + JSON.stringify(d) + '};', sbF);
+    chk('r4-2 鎖定畫面：逐筆被截過 → 用門市合計列、請款合計＝1,540,444', J(vm.runInContext('(function(){const g=costTotals();return [g.sup.every(x=>x.storeOnly),g.supTotal];})()', sbF)), [true, 1540444]);
+    vm.runInContext('STATUS="draft";COST_SNAP=null;', sbF);
+  }
   // 同一份資料連算 10,000 組，摘要逐字相同（不會因浮點數讓月份鎖不了）
   let diffSig = 0;
   for (let i = 0; i < 10000; i++) {
