@@ -2,7 +2,7 @@
 
 - 撰寫：G 線子對話（Opus），2026-11-21。程式在 mala-clock-in 分支 `p25-g-p3-3`（worktree `~/dev/_wt/p25-g-google`），只動 `apps-script/DutyFeed.gs`、`apps-script/Requests.gs`。
 - 讀者：S 線（營運系統寫回隊伍 `duty-mirror.js`、`duty-auth.js`、`ops/duty-auth.sh`、`req-line.js`）、E 線（engine 照跑同一份 Requests.gs 時要知道新開關）、大腦。
-- 狀態：**v3.1（2026-11-21 深夜）**：撤銷工具在 mini 模式擋套用（第 9 節）。v3：驗收五點修正（第 8 節）。v2：拿掉 `DUTY_APPROVE_LOCK`（併進 #195 的鎖）、加第 5 節遠端設定 `auth_cfg`、第 3.5 節寫明重送時怎麼用指紋確認。v1 → v2 差異見第 7 節。改欄位會在 PR 標題寫「契約改動」並通知 S 線。正本＝本檔；playbook `docs/clock-to-mini/contracts/g-line.md` 是複本。
+- 狀態：**v4（2026-11-21，方案 A）**：LINE 申請 `req_submit`／`req_cancel` 可用 mini 的簽名寫回、不需要 id_token（第 10 節；Eason 定案四題全照推薦）。v3.1：撤銷工具在 mini 模式擋套用（第 9 節）。v3：驗收五點修正（第 8 節）。v2：拿掉 `DUTY_APPROVE_LOCK`（併進 #195 的鎖）、加第 5 節遠端設定 `auth_cfg`、第 3.5 節寫明重送時怎麼用指紋確認。v1 → v2 差異見第 7 節。改欄位會在 PR 標題寫「契約改動」並通知 S 線。正本＝本檔；playbook `docs/clock-to-mini/contracts/g-line.md` 是複本。
 - 依據：設計 `phase2-5-design.md` §4.1–4.4；plan P3-3；並行排程 1.3 G 線。
 
 ## 1. 一句話
@@ -10,6 +10,7 @@
 1. 核定 `mgr_approve`、審單 `mgr_req_decide`／`mgr_req_decide_batch`、作廢 `mgr_req_void` 可以帶 **mini 的寫回簽名**（`wb_id`、`wb_ts`、`wb_sig`）；簽過名的同一個 `wb_id` 只寫一次。
 2. 指令碼屬性 `DUTY_AUTH=mini` 時，上面四個動作**只收簽過名的**，其他一律回 `moved_to_mini`。
 3. LINE 送申請 `req_submit` 可以帶單號 `req_id`；同一個單號只寫一次（重送回原本那張）。
+4. （v4）LINE 送申請／取消 `req_submit`、`req_cancel` 可以帶 mini 的寫回簽名＋營運系統代管主管金鑰，代替手機的 `id_token`（第 10 節）；沒帶＝跟現在逐字相同。
 
 ## 2. 開關（各店指令碼屬性；全部沒設＝跟現在逐字相同）
 | 屬性 | 值 | 預設 | 分類 | 填錯值 |
@@ -120,7 +121,7 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
 - 這是查試算表本身（不是暫存記號），所以**沒有時間限制**：mini 停機一天後回來再送，同一個單號還是只算一張。
 - **同號查重排在鎖月、額度等檢查之前**（v3）：已寫過的單號，就算那個月後來鎖了，補送也回 `dup`，不回 `pay_locked`。
 - 回應形狀跟原本一樣（單張：`{ok, request, summary}`；多段：照原本多段的回應），重送多 `dup:true`。
-- `DUTY_AUTH` 不影響 `req_submit`（設計 §4.3：LINE 送出不擋）。身分照舊用 `id_token` 驗：mini 代送時要帶手機的 `id_token`（LINE 的 token 約 1 小時過期；過期 → 原本的 `invalid_token` 類錯誤，mini 要讓手機重送或走對帳）。**沒有「用簽名代替 id_token」的路**（那會改變誰能送單，不在這包）。
+- `DUTY_AUTH` 不影響 `req_submit`（設計 §4.3：LINE 送出不擋）。身分照舊用 `id_token` 驗：mini 代送時要帶手機的 `id_token`（LINE 的 token 約 1 小時過期；過期 → 原本的 `invalid_token` 類錯誤，mini 要讓手機重送或走對帳）。~~沒有「用簽名代替 id_token」的路~~ **v4 起有**：見第 10 節（Eason 2026-11-21 定案方案 A）。
 
 ## 5. 遠端設定 `auth_cfg`（給 `ops/duty-auth.sh`）
 這台沒有別的方式改指令碼屬性，所以比照門鈴的 `push_cfg` 開一個設定動作（掛在 `duty_changes` 底下，不新增動作名稱，不記成考勤變動）。
@@ -148,7 +149,7 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
 - 退回：清空屬性（秒級，下一筆生效）；程式退回＝部署包 `p3g/rollback_one.sh <店>`。
 
 ## 6. 測試對照
-`tests/duty-auth.test.js`（寫回、模式、鎖）、`tests/duty-auth-cfg.test.js`（第 5 節）、`tests/req-submit-id.test.js`（第 4 節）、`tests/duty-auth-same.test.js`（屬性全空＝跟改版前逐字相同）。範例 JSON 直接取自測試輸出。S 線寫假 Google 時照第 3.4、4.2、5 節。
+`tests/duty-auth.test.js`（寫回、模式、鎖）、`tests/duty-auth-cfg.test.js`（第 5 節）、`tests/req-submit-id.test.js`（第 4 節）、`tests/duty-auth-same.test.js`（屬性全空＝跟改版前逐字相同）、`tests/line-wb.test.js`（第 10 節：12 組權限對照＋外部入口冒名）、`tests/line-wb-same.test.js`（沒帶簽名的 LINE 申請＝跟 6c5f137 逐字相同）。範例 JSON 直接取自測試輸出。S 線寫假 Google 時照第 3.4、4.2、5 節。
 
 ## 7. v1 → v2 差異（S 線要對的）
 - 拿掉 `DUTY_APPROVE_LOCK`。鎖等待從 20 秒改成 10 秒（#195 那把）；`busy` 的意思不變，照樣重送。
@@ -176,3 +177,41 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
 | 沒設、空、`google`／`off`／`shadow` | 跟改版前逐字相同（`tests/revoke-mini-block.test.js` 第四段跟 main 比回應與兩張表） |
 
 - 管理金鑰錯照舊先回 `unauthorized`。要在 mini 模式下撤銷：先用 `auth_cfg` 把該店切回 google，做完再切回 mini；或由 mini 端處理。營運系統呼叫這兩個動作時要認得 `moved_to_mini`／`auth_unknown`。
+
+## 10. v4：LINE 申請的簽名寫回（方案 A，2026-11-21 Eason 定案四題全照推薦）
+為什麼：mini 已收的 LINE 申請原本要帶手機的 `id_token` 代送（營運系統只放記憶體 ≤2 小時），Mac mini 重開或憑證過期就送不了（`line_token_lost`）。改成 mini 驗完 LINE 身分後用 mini 的簽名寫回。
+
+### 10.1 請求
+原本 `req_submit`／`req_cancel` 的欄位，加：`emp_id`（mini 判出的工號）、`mgr_key`（**營運系統代管**的那把：managers 列 `allow_acting=TRUE`）、`wb_id`、`wb_ts`、`wb_sig`；`id_token` 營運系統記憶體裡還有就帶、沒有就不帶。
+```
+wb|1|<店代碼>|req_submit|<wb_id>|<wb_ts>|<emp_id>|<req_id>|<kind>|<date>
+wb|1|<店代碼>|req_cancel|<wb_id>|<wb_ts>|<emp_id>|<id>
+```
+- `req_submit` 的 `wb_id` **必須等於** `req_id`（`^r[0-9a-f]{16}$`），不等＝`bad_wb`。`req_cancel` 的 `wb_id`＝手機為這次取消產生的單號。金鑰、時間窗（±10 分鐘）、每次重送重簽、`wb_id` 不變，都同第 3 節。
+- 範例（假金鑰 `k`×32、店 `mztjs`）：`msg = "wb|1|mztjs|req_submit|r0000000000000002|1763344801000|E01|r0000000000000002|leave|2026-11-16"`、`sig = "15c6b1bd601e0118da8aae622bfb91a0bee04faf24b1c856e7c91704178e4600"`（`tests/line-wb.test.js` W10 比對 Google 端算的結果；營運系統 `wbTarget` 測試用同一組值比對）。
+
+### 10.2 Google 怎麼判（只有帶了 `wb_*` 才進這條；沒帶＝一個屬性都不多讀、逐字同 v3.1）
+1. 驗簽（`dutyWbCheck_`）＋`wb_id`＝`req_id`。不合格：`DUTY_AUTH=mini` 回錯（`bad_wb／wb_no_key／wb_ts／bad_sig`）；現行模式＝當沒帶（照舊用 `id_token`，沒有就 `invalid_id_token`）。
+2. 第二道：在職主管金鑰而且是營運系統代管那把（`allow_acting=TRUE`），否則 `unauthorized`（題 1）。
+3. 認人：`emp_id` → 名冊在職且唯一那列；沒綁 LINE、離職、查無＝`not_bound`；一個 LINE 綁兩位在職／同工號兩列在職＝`line_identity_conflict`。帶了 `id_token` 且驗得過：要是同一個 LINE 帳號，不同＝`line_emp_mismatch`；驗不過（過期）＝當沒帶。
+4. 節流照舊（全站 600／分、每人 30／分 → `too_many`）；同一個 `wb_id` 的「正在寫／已寫好」記號同第 3.3 節（`busy`／`dup`）。
+5. 之後**一律照原本規則判、寫**（同號查重、鎖月、額度、特休滿半年、補休限正職、多段、重疊、只能取消自己審核中的單）。`DUTY_AUTH` 不影響。
+6. **沒有 token 的非光復店**（光復店同專案、用名冊上的 LINE 帳號直接算，跟現在一樣）只換三個「問光復」的來源：
+   - 鎖月：用主管金鑰問 `payroll_leave_options {lock_only:true}`（光復同一個 `payMonthLocked_`，跟 id_token 那條共用 60 秒暫存）。**問不到＝`busy`**，營運系統稍後重送（題 3：不可查不到就不擋）。
+   - 特休滿半年：`payroll_annual_from`（主管核准時用的同一支）。
+   - 本人額度表沒有對等來源：生理假、家庭照顧假、病假（年度用完規則開著時）回 `{"ok":false,"error":"need_line_token","message":"這張假單要用同仁本人的 LINE 登入確認額度，登入憑證已不在，請人工處理"}`，不寫（題 2＝A；營運系統列衝突 `line_token_lost`）。
+7. 試算表不加欄（題 4）；Apps Script 執行紀錄留一行「LINE 簽名寫回 店 動作 單號（無 token）」，不含姓名。
+
+### 10.3 回應一覽（新增的；其餘同原本 `req_submit`／`req_cancel` 與第 3.4 節）
+| `error` | 什麼時候 | 營運系統該怎麼做 |
+|---|---|---|
+| （成功／`dup:true`） | 寫好／同號已寫過 | 完成 |
+| `unauthorized` | 主管金鑰錯或不是代管那把 | 衝突，不重試（設定錯） |
+| `not_bound`／`line_identity_conflict`／`line_emp_mismatch` | 第 3 步 | 衝突，不重試 |
+| `need_line_token` | 第 6 步 | 衝突 `line_token_lost`（同現在人工處理） |
+| `busy`／`too_many` | 鎖、記號、光復查不到鎖月、節流 | 重送（同 `wb_id`、重簽） |
+| `not_pending`（取消，第 2 次以上） | 記號被清掉後重送 | 看副本那列 `status=cancelled`、`decided_by=本人取消` → 是＝完成 |
+
+### 10.4 「誰送的」只能從簽名包裝進來
+`handleReqSubmit_`／`handleReqCancel_` 的第二個參數（已認好的人）只有 `DutyFeed.gs` `dutyLineWbRun_` 在第 1、2 步都過了才傳。`doPost` 的路由（`Liff.gs` `req_submit: function (b) { return handleReqSubmit_(b); }`）只傳一個參數，外部請求塞 `emp_id`、`who`、`wbWho`… 都不會被採用（`tests/line-wb.test.js` X01–X08 直接打 `doPost` 驗）。
+

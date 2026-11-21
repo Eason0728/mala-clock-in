@@ -688,6 +688,8 @@ function dutyWbTarget_(action, b) {
   if (action === 'mgr_approve') return [dutyWbStr_(b.emp_id), dutyWbStr_(b.date), dutyWbStr_(b.base_ver)].join('|');
   if (action === 'mgr_req_decide') return dutyWbStr_(b.id) + '|' + dutyWbStr_(b.decision);
   if (action === 'mgr_req_decide_batch') return (Array.isArray(b.ids) ? b.ids.map(dutyWbStr_).join(',') : '') + '|' + dutyWbStr_(b.decision);
+  if (action === 'req_submit') return [dutyWbStr_(b.emp_id), dutyWbStr_(b.req_id), dutyWbStr_(b.kind), dutyWbStr_(b.date)].join('|');   // 2026-11-21 方案 A
+  if (action === 'req_cancel') return dutyWbStr_(b.emp_id) + '|' + dutyWbStr_(b.id);
   return dutyWbStr_(b.id);   // mgr_req_void
 }
 function dutyWbMsg_(store, action, b) {
@@ -753,6 +755,54 @@ function dutyAuthRun_(body, action, raw) {
   } finally { lock.releaseLock(); }
   var res;
   try { res = raw(body, cfg); }
+  catch (err) { dutyWbDrop_(id); throw err; }
+  if (res && res.ok === true) {
+    var s = '';
+    try { s = JSON.stringify(res); } catch (e) { s = ''; }
+    dutyWbPut_(id, { state: 'done', a: action, res: s && s.length <= DUTY_WB_MAX_CACHE_ ? res : null }, DUTY_WB_DONE_TTL_S_);
+  } else {
+    dutyWbDrop_(id);
+  }
+  return res;
+}
+
+/* ══ LINE 申請的簽名寫回（2026-11-21 方案 A，Eason 定案四題全照推薦；契約 docs/contract-writeback.md 第 10 節）══
+ * mini 驗完同仁的 LINE 身分、規則判可以之後，寫回 req_submit／req_cancel 改用 mini 的簽名（同上面 wb|1 那一套），不再需要手機的 id_token。
+ * 只有請求帶了 wb_* 才會進來（Requests.gs 兩個入口第一行判斷）；沒帶＝一個屬性都不多讀、逐字同以前。
+ * 驗兩道（題 1）：①簽名（對象＝工號|單號|類別|日期；取消＝工號|申請編號），req_submit 的 wb_id 必須等於 req_id；②營運系統代管的在職主管金鑰（reqMgr_＋allow_acting）。
+ * 認人：簽名綁住的工號 → 名冊（Requests.gs reqWbWho_）；帶了 id_token 且驗得過要是同一人。之後一律照原本規則判、寫（規則不變）。
+ * 跟核定寫回一樣：DUTY_AUTH=mini 時簽名不合格直接回錯；google 模式下簽名不合格＝當沒帶（照以前用 id_token）。DUTY_AUTH 不擋 LINE 送單（設計 §4.3）。
+ * 同一個 wb_id 只寫一次：同 dutyAuthRun_ 的「正在寫／已寫好」記號；送出申請另有試算表永久查重（req_id）。
+ * 執行紀錄只留一行（店、動作、單號；題 4：試算表不加欄）。 */
+var DUTY_LINE_ACTIONS_ = { req_submit: 1, req_cancel: 1 };
+var DUTY_LINE_PASS_ = { pass: true };   // google 模式下簽名不合格：交回原本函式照 id_token 認人（沒有 me，reqWhoOf_ 會走 reqStaff_）
+function dutyLineWbRun_(body, action, raw) {
+  if (!DUTY_LINE_ACTIONS_[action]) return raw(body, DUTY_LINE_PASS_);
+  var cfg = dutyAuthCfg_();
+  var bad = dutyWbCheck_(action, body, cfg);
+  if (!bad && action === 'req_submit' && String(body.wb_id) !== String(body.req_id == null ? '' : body.req_id)) bad = { ok: false, error: 'bad_wb', message: '寫回欄位格式不對' };
+  if (bad) return cfg.mini ? bad : raw(body, DUTY_LINE_PASS_);
+  var mgr = reqMgr_(body);   // 第二道：營運系統代管的那把（allow_acting＝TRUE，同 actingName_ 的判斷）；一般值班主管金鑰不收
+  if (!mgr || String(mgr.allow_acting || '').toLowerCase() !== 'true') return { ok: false, error: 'unauthorized' };
+  var who = reqWbWho_(body);
+  if (who.error) return { ok: false, error: who.error };
+  if (liffSiteThrottled_() || liffThrottled_('rq', who.userId, 30, 60)) return { ok: false, error: 'too_many' };
+  var id = String(body.wb_id);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(DUTY_WB_LOCK_MS_)) return { ok: false, error: 'busy', message: DUTY_BUSY_MSG_ };
+  try {
+    var mk = dutyWbGet_(id);
+    if (mk && mk.state === 'done') {
+      var out = mk.res && typeof mk.res === 'object' ? mk.res : { ok: true };
+      out.dup = true; out.wb_id = id;
+      return out;
+    }
+    if (mk && mk.state === 'pending') return { ok: false, error: 'busy', message: '這筆正在寫入，請幾秒後再送一次', wb_pending: true };
+    dutyWbPut_(id, { state: 'pending', a: action }, DUTY_WB_PENDING_TTL_S_);
+  } finally { lock.releaseLock(); }
+  try { console.log('LINE 簽名寫回 ' + cfg.store + ' ' + action + ' ' + id + (who.tokenless ? '（無 token）' : '')); } catch (e) {}
+  var res;
+  try { res = raw(body, who); }
   catch (err) { dutyWbDrop_(id); throw err; }
   if (res && res.ok === true) {
     var s = '';
