@@ -26,17 +26,24 @@ function world(props, hub) {
       if (!b || url !== HUB) return undefined;
       calls.push(b);
       if (b.action === 'line_hub_pay_lock') return b.id_token === 'TOK_U1' || b.id_token === 'TOK_U2' ? { ok: true, store: 'MZTJS', ym: b.ym, locked: hub.locked } : { ok: false, error: 'invalid_id_token' };
-      if (b.action === 'line_hub_req_quota') return b.id_token ? { ok: true, quota: [], annual_from: hub.annualFrom } : { ok: false, error: 'invalid_id_token' };
+      if (b.action === 'line_hub_req_quota') { if (hub.quotaDown) throw new Error('連不上'); }
+      if (b.action === 'line_hub_req_quota') return b.id_token ? { ok: true, quota: [], annual_from: /^\d{4}-/.test(hub.annualFrom) ? hub.annualFrom : '' } : { ok: false, error: 'invalid_id_token' };
       if (b.action === 'payroll_leave_options' && b.lock_only === true) {
         if (hub.lockOnly === 'down') throw new Error('連不上');
         if (b.mgr_key !== 'AK') return { ok: false, error: 'unauthorized' };
         return { ok: true, store: 'MZTJS', ym: b.ym, lock_only: true, locked: hub.lockOnly };
       }
-      if (b.action === 'payroll_annual_from') return { ok: true, annual_from: hub.annualFrom };
+      if (b.action === 'payroll_annual_from') {   // annualFrom：'down'＝連不上、'err'＝ok:false、'bad'＝ok 但沒給 annual_from、'junk'＝給的不是日期
+        if (hub.annualFrom === 'down') throw new Error('連不上');
+        if (hub.annualFrom === 'err') return { ok: false, error: 'unauthorized' };
+        if (hub.annualFrom === 'bad') return { ok: true };
+        if (hub.annualFrom === 'junk') return { ok: true, annual_from: '不是日期' };
+        return { ok: true, annual_from: hub.annualFrom };
+      }
       return { ok: false, error: 'unknown' };
     } });
   m.sb.console = { log: () => {}, warn: () => {}, info: () => {}, error: () => {} };
-  m.calls = calls;
+  m.calls = calls; m.hub = hub;
   m.post = (b) => { m.advance(1000); m.run('READ_MEMO_ = null;'); return JSON.parse(m.sb.doPost({ postData: { contents: JSON.stringify(b) } }).text); };
   m.rows = () => { const sh = m.self.sh.requests; if (!sh) return []; const h = sh.values[0]; return sh.values.slice(1).map((r) => { const o = {}; h.forEach((k, i) => { o[k] = r[i] === undefined ? '' : r[i]; }); return o; }); };
   return m;
@@ -56,6 +63,7 @@ function wbCancel(m, wbId, id, extra) {
   b.wb_id = wbId; b.wb_ts = m.sb.Date.now() + 1000; b.wb_sig = sign(b);
   return b;
 }
+const annualCalls = (m) => m.calls.filter((c) => c.action === 'payroll_annual_from').length;
 const R = (n) => 'r' + String(n).padStart(16, '0');
 
 console.log('══ 簽名算法（契約第 10.1 節範例）══');
@@ -231,11 +239,88 @@ console.log('\n══ 其他細節 ══');
 {
   const m = world(MINI, { lockOnly: 'down' });
   m.post(wbSubmit(m, R(64)));
-  check('G04', '題 3：查不到鎖月時不留「正在寫」記號（下次重送可以重新判）', Object.keys(m.cache).filter((k) => k === 'dwb:' + R(64)).length, 0);
+  check('G04', '題 3：查不到鎖月時不留「正在寫」記號（下次重送可以重新判）', Object.keys(m.cache).filter((k) => k.indexOf(R(64)) >= 0).length, 0);
 }
 {
   const m = world(Object.assign({ REQ_SICK_USED_UP: 'off' }, MINI));
   const r = m.post(wbSubmit(m, R(65), { leave_type: '病假' }));
   check('G05', '病假年度用完規則關掉時，病假不需要額度表＝照常寫', [r.ok, r.error], [true, undefined], r.ok ? '' : r.error + '｜' + r.message);
+}
+{
+  // 2026-11-21 暫存鍵納入動作名稱：手機讓「取消」用跟某張「送單」相同的 wb_id，不可被當成送單的重放
+  const m = world(MINI);
+  const st = (id) => (m.rows().filter((r) => r.id === id)[0] || {}).status;
+  const s1 = m.post(wbSubmit(m, R(70)));
+  const s1b = m.post(wbSubmit(m, R(70)));
+  const c1 = m.post(wbCancel(m, R(70), R(70)));   // wb_id 刻意＝送單的 wb_id（也＝要取消的單號）
+  const c1b = m.post(wbCancel(m, R(70), R(70)));
+  check('K01', '送單後用同一個 wb_id 送取消：不當重放（真的取消）；同動作同 wb_id 重送仍 dup、不重寫',
+    [s1.ok, s1.dup, s1b.dup, s1b.wb_id, c1.ok, c1.dup, st(R(70)), c1b.ok, c1b.dup, m.rows().length], [true, undefined, true, R(70), true, undefined, 'cancelled', true, true, 1]);
+  check('K02', '暫存鍵＝dwb:動作:wb_id，送單與取消各一把', Object.keys(m.cache).filter((k) => /^dwb:/.test(k)).sort(), ['dwb:req_cancel:' + R(70), 'dwb:req_submit:' + R(70)]);
+  const bad = wbCancel(m, R(70), R(70)); bad.wb_sig = '0'.repeat(64);
+  check('K03', '送單後用同一個 wb_id 送取消、簽名不對：照簽名規則擋（bad_sig），不因為暫存命中而回成功', m.post(bad).error, 'bad_sig');
+}
+{
+  // 換版相容：換版前寫的舊格式鍵（dwb:<wb_id>，內含 a）——動作相同才算命中
+  const m = world(MINI);
+  const put = (k, o) => m.sb.CacheService.getScriptCache().put(k, JSON.stringify(o), 600);
+  put('dwb:' + R(71), { state: 'done', a: 'req_submit', res: { ok: true, id: R(71) } });
+  const r1 = m.post(wbSubmit(m, R(71)));
+  check('K04', '舊格式鍵、動作相同（送單）：仍當重放 dup，不重寫', [r1.ok, r1.dup, m.rows().length], [true, true, 0]);
+  const r2 = m.post(wbSubmit(m, R(72)));
+  put('dwb:' + R(72), { state: 'done', a: 'req_submit', res: { ok: true } });
+  const c2 = m.post(wbCancel(m, R(72), R(72)));
+  check('K05', '舊格式鍵、動作不同（暫存是送單、這次是取消）：當沒命中，照規則取消', [r2.ok, c2.ok, c2.dup, (m.rows().filter((r) => r.id === R(72))[0] || {}).status], [true, true, undefined, 'cancelled']);
+  // 新鍵內存的動作對不上（雙保險）：當沒命中
+  put('dwb:req_cancel:' + R(73), { state: 'done', a: 'req_submit', res: { ok: true } });
+  m.post(wbSubmit(m, R(73)));
+  const c3 = m.post(wbCancel(m, R(73), R(73)));
+  check('K06', '新鍵裡存的 a 跟這次動作不同：當沒命中（取消照常執行）', [c3.ok, c3.dup, (m.rows().filter((r) => r.id === R(73))[0] || {}).status], [true, undefined, 'cancelled']);
+}
+{
+  // 2026-11-21 Eason 定案「特休滿半年查不到時比照鎖月」：簽名路、沒有 token、問光復 payroll_annual_from 問不到 → busy（不寫、不留記號）
+  const keys = (m) => Object.keys(m.cache).filter((k) => /^dwb:/.test(k));
+  const AN = { leave_type: '特休假' };
+  const m = world(MINI, { annualFrom: 'down' });
+  const r1 = m.post(wbSubmit(m, R(80), AN));
+  check('A01', '沒 token＋特休＋光復連不上：busy、沒寫入、沒留「正在寫」記號', [r1.ok, r1.error, m.rows().length, keys(m)], [false, 'busy', 0, []]);
+  m.hub.annualFrom = '2027-01-01';
+  const r2 = m.post(wbSubmit(m, R(80), AN));
+  check('A02', '光復恢復後同一 wb_id 重送：照判斷——未滿半年擋（annual_not_eligible）、沒寫入', [r2.error, m.rows().length, keys(m)], ['annual_not_eligible', 0, []]);
+  m.hub.annualFrom = '2026-01-01';
+  const r3 = m.post(wbSubmit(m, R(80), AN));
+  check('A03', '光復恢復後同一 wb_id 重送：滿半年收、寫一列', [r3.ok, r3.dup, m.rows().length, keys(m)], [true, undefined, 1, ['dwb:req_submit:' + R(80)]]);
+}
+for (const [id, v, desc] of [['A04', 'err', 'ok:false'], ['A05', 'bad', 'ok:true 但沒給 annual_from'], ['A06', 'junk', 'annual_from 不是日期']]) {
+  const m = world(MINI, { annualFrom: v });
+  const r = m.post(wbSubmit(m, R(81), { leave_type: '特休假' }));
+  check(id, '光復回應看不懂（' + desc + '）：busy、沒寫入、沒記號', [r.error, m.rows().length, Object.keys(m.cache).filter((k) => /^dwb:/.test(k)).length], ['busy', 0, 0]);
+}
+{
+  const m = world(MINI, { annualFrom: '' });
+  const r = m.post(wbSubmit(m, R(82), { leave_type: '特休假' }));
+  check('A07', '光復明確回「沒有到職日資料／不適用」（ok:true、annual_from 空）：維持現行＝不擋、寫一列', [r.ok, m.rows().length], [true, 1]);
+}
+{
+  const m = world(MINI, { annualFrom: 'down' });
+  const r = m.post(wbSubmit(m, R(83), { leave_type: '事假' }));
+  check('A08', '其他假別（事假）不多問光復滿半年：照常寫、payroll_annual_from 一次都沒打', [r.ok, annualCalls(m)], [true, 0]);
+}
+{
+  const m = world(MINI, { annualFrom: 'down' });
+  const r = m.post(wbSubmit(m, R(85), { leave_type: '特休假', hours: undefined, date: '2026-11-13', segments: [{ start: '10:00', end: '12:00' }, { start: '14:00', end: '16:00' }] }));
+  check('A09', '多段特休、光復連不上：busy、沒寫入、沒記號', [r.error, m.rows().length, Object.keys(m.cache).filter((k) => /^dwb:/.test(k)).length], ['busy', 0, 0]);
+}
+{
+  // 簽名路有 token：照舊（用 LINE 身分問 line_hub_req_quota，不打 payroll_annual_from；問不到不擋）
+  const m = world(MINI, { annualFrom: 'down', quotaDown: true });
+  const r = m.post(wbSubmit(m, R(86), { leave_type: '特休假', id_token: 'TOK_U1' }));
+  check('A10', '簽名路有 token（驗得過）：照舊走 LINE 身分那條，不打 payroll_annual_from；問不到＝不擋', [r.ok, annualCalls(m), m.rows().length], [true, 0, 1]);
+}
+{
+  // id_token 路（沒帶簽名）：問不到＝不擋（與 main 相同）
+  const m = world(GOOGLE, { quotaDown: true });
+  const r = m.post(Object.assign({ action: 'req_submit', id_token: 'TOK_U1', req_id: R(87) }, LV, { leave_type: '特休假' }));
+  check('A11', 'id_token 路（沒簽名）特休、查不到：照舊不擋（寫一列）', [r.ok, m.rows().length, annualCalls(m)], [true, 1, 0]);
 }
 done();

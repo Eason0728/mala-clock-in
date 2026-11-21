@@ -182,19 +182,19 @@ console.log('\n══ 三、DUTY_AUTH=mini：只收 mini 簽名的寫回 ══'
   // 失敗不留記號
   const nf = m.post(signed(m, { action: 'mgr_req_decide', mgr_key: 'MK', id: 'NOPE', decision: 'approve', wb_id: 'wb-nf-0001' }));
   const nf2 = m.post(signed(m, { action: 'mgr_req_decide', mgr_key: 'MK', id: 'NOPE', decision: 'approve', wb_id: 'wb-nf-0001' }));
-  check('M22', '規則擋下（找不到單）→ 不留記號，重送照樣重判', [nf.error, nf2.error, nf2.dup, m.sb.dutyWbGet_('wb-nf-0001')], ['not_found', 'not_found', undefined, null]);
+  check('M22', '規則擋下（找不到單）→ 不留記號，重送照樣重判', [nf.error, nf2.error, nf2.dup, m.sb.dutyWbGet_('mgr_req_decide', 'wb-nf-0001')], ['not_found', 'not_found', undefined, null]);
   // 正在寫的記號（另一個執行剛放的）→ busy
-  m.sb.dutyWbPut_('wb-pend-0001', { state: 'pending' }, 600);
+  m.sb.dutyWbPut_('mgr_approve', 'wb-pend-0001', { state: 'pending', a: 'mgr_approve' }, 600);
   const pend = m.post(signed(m, APV({ emp_id: 'E02', base_ver: m.ver('E02'), wb_id: 'wb-pend-0001' })));
   check('M23', '同 wb_id 正在寫 → busy＋wb_pending', [pend.error, pend.wb_pending], ['busy', true]);
   // 執行中丟例外 → 記號拿掉
   m.run('var __realRows = reqRows_; reqRows_ = function () { throw new Error("boom"); };');   // 原本流程鎖內第一件事就丟例外
   const ex = m.post(signed(m, { action: 'mgr_req_void', mgr_key: 'MK', id: 'P2', reason: 'x', wb_id: 'wb-ex-0001' }));
-  check('M24', '執行中丟例外 → server_error、記號拿掉（重送不會卡 busy）', [ex.error, m.sb.dutyWbGet_('wb-ex-0001')], ['server_error', null]);
+  check('M24', '執行中丟例外 → server_error、記號拿掉（重送不會卡 busy）', [ex.error, m.sb.dutyWbGet_('mgr_req_void', 'wb-ex-0001')], ['server_error', null]);
   m.run('reqRows_ = __realRows;');
   // 6 小時後記號過期
   m.advance(6 * 3600000 + 1000);
-  check('M25', '「已寫好」記號 6 小時後過期', m.sb.dutyWbGet_('wb-dec-0001'), null);
+  check('M25', '「已寫好」記號 6 小時後過期', m.sb.dutyWbGet_('mgr_req_decide', 'wb-dec-0001'), null);
 }
 {
   const m = world({ DUTY_AUTH: 'mini' });
@@ -230,6 +230,37 @@ console.log('\n══ 五、現行模式（DUTY_AUTH 沒設）帶簽名 ══')
   const b = m.post(signed(m, APV({ base_ver: v })));
   check('G1', '簽名合格 → 照常核定＋同 wb_id 防重', [a.ok, b.ok, b.dup], [true, true, true]);
   const bad = signed(m, APV({ emp_id: 'E02', wb_id: 'wb-g-0002' })); bad.wb_sig = '0'.repeat(64);
-  check('G2', '簽名不合格 → 當沒帶（照以前核定，不防重）', [m.post(bad).ok, m.sb.dutyWbGet_('wb-g-0002')], [true, null]);
+  check('G2', '簽名不合格 → 當沒帶（照以前核定，不防重）', [m.post(bad).ok, m.sb.dutyWbGet_('mgr_approve', 'wb-g-0002')], [true, null]);
+}
+console.log('\n══ 六、暫存鍵納入動作名稱（2026-11-21）：同 wb_id 換動作不算重放；同動作同 wb_id 仍 dup ══');
+{
+  const m = world(MINI);
+  m.addReq({ id: 'P1' }); m.addReq({ id: 'P2' }); m.addReq({ id: 'P3' }); m.addReq({ id: 'A1', status: 'approved' });
+  const W = 'wb-same-0001';   // 四種動作刻意共用同一個 wb_id
+  const v = m.ver('E01');
+  const a = m.post(signed(m, APV({ base_ver: v, wb_id: W })));
+  const d = m.post(signed(m, { action: 'mgr_req_decide', mgr_key: 'MK', id: 'P1', decision: 'approve', wb_id: W }));
+  const b = m.post(signed(m, { action: 'mgr_req_decide_batch', mgr_key: 'MK', ids: ['P2', 'P3'], decision: 'approve', wb_id: W }));
+  const x = m.post(signed(m, { action: 'mgr_req_void', mgr_key: 'MK', id: 'A1', reason: '改單', wb_id: W }));
+  check('N01', '四種動作共用同一個 wb_id：各自照一般規則處理，沒有一個被當成別的動作的重放',
+    [a.ok, a.dup, d.ok, d.dup, b.ok, b.dup, x.ok, x.dup, m.reqStatus('P1'), m.reqStatus('P2'), m.reqStatus('P3'), m.reqStatus('A1')],
+    [true, undefined, true, undefined, true, undefined, true, undefined, 'approved', 'approved', 'approved', 'voided']);
+  check('N02', '暫存鍵＝dwb:動作:wb_id，每個動作一把', Object.keys(m.cache).filter((k) => /^dwb:/.test(k)).sort(),
+    ['mgr_approve', 'mgr_req_decide', 'mgr_req_decide_batch', 'mgr_req_void'].map((k) => 'dwb:' + k + ':' + W).sort());
+  const n = m.approved().length;
+  const a2 = m.post(signed(m, APV({ base_ver: v, wb_id: W })));
+  const d2 = m.post(signed(m, { action: 'mgr_req_decide', mgr_key: 'MK', id: 'P1', decision: 'approve', wb_id: W }));
+  const b2 = m.post(signed(m, { action: 'mgr_req_decide_batch', mgr_key: 'MK', ids: ['P2', 'P3'], decision: 'approve', wb_id: W }));
+  const x2 = m.post(signed(m, { action: 'mgr_req_void', mgr_key: 'MK', id: 'A1', reason: '改單', wb_id: W }));
+  check('N03', '四種動作各自同 wb_id 重送：都回 dup、不重寫', [a2.dup, d2.dup, b2.dup, x2.dup, m.approved().length], [true, true, true, true, n]);
+  // 簽名不對的取消類動作不因同 wb_id 的別種暫存而過關
+  const bad = signed(m, { action: 'mgr_req_void', mgr_key: 'MK', id: 'P9', reason: 'x', wb_id: W }); bad.wb_sig = '0'.repeat(64);
+  check('N04', '同 wb_id、簽名不對：照簽名規則回 bad_sig', m.post(bad).error, 'bad_sig');
+  // 換版相容：舊格式鍵（動作相同＝仍 dup；動作不同＝不命中）
+  const c = m.sb.CacheService.getScriptCache();
+  c.put('dwb:wb-old-0001', JSON.stringify({ state: 'done', a: 'mgr_req_decide', res: { ok: true, old: 1 } }), 600);
+  const o1 = m.post(signed(m, { action: 'mgr_req_decide', mgr_key: 'MK', id: 'NOPE', decision: 'approve', wb_id: 'wb-old-0001' }));
+  const o2 = m.post(signed(m, { action: 'mgr_req_void', mgr_key: 'MK', id: 'NOPE', reason: 'x', wb_id: 'wb-old-0001' }));
+  check('N05', '舊格式鍵：動作相同仍回舊結果＋dup；動作不同當沒命中（照一般規則 not_found）', [o1.ok, o1.dup, o1.old, o2.error, o2.dup], [true, true, 1, 'not_found', undefined]);
 }
 done();
