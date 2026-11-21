@@ -1507,6 +1507,12 @@ var PAY_ELEC_FROM = '2026-11';
 /* 計時「手填國定假日時數和打卡不同」（att.elec_hol_manual）時，去別店支援的選舉日加倍也一起停發、只提醒（Codex 第三次 B3；大腦讀法，待 Eason 確認）。
    ⇩ 翻轉點：改成 false＝只停本店、支援照發（回到 42b122b 的行為）。只有 payCalcOne 計時那段讀它，損益估算走同一支 payCalcOne。 */
 var PAY_ELEC_MANUAL_STOPS_SUP = true;
+/** 計時去別店支援的選舉日加倍「實際發的」時數（att.sup_elec 套上手填衝突停發；停發的列 hours＝0、stopped＝true、want 照舊）。
+ *  payCalcOne 與跨店請款（#210 payOtCrossClaim_）都要用這一份，不要直接讀 att.sup_elec（停發的時數不可以再拿去請款）。純函式。 */
+function payElecSupPaid_(att) {
+  const stop = !!(att && att.elec_hol_manual) && PAY_ELEC_MANUAL_STOPS_SUP;
+  return ((att && att.sup_elec) || []).map(function (x) { return stop ? Object.assign({}, x, { hours: 0, stopped: true }) : x; });
+}
 function payElecOn_(ym) { return String(ym || '') >= PAY_ELEC_FROM; }
 /** Sheets 把文字轉成 Date 時一律用台北日期讀（Codex S3：執行環境時區不是台北時，台北 11/01 00:00 會讀成 10/31） */
 function payElecYmd_(v) {
@@ -1873,12 +1879,12 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
          分不出那幾小時是不是選舉日 → 不自動加發，提醒區列出來由管理者確認（Codex B3，先採不多發，規則待 Eason 定）。 */
       const elecWant = payR2(payNum(att.elec_h));
       const elecStop = !!att.elec_hol_manual;                               // 手填衝突：本店不自動發
-      const elecStopSup = elecStop && PAY_ELEC_MANUAL_STOPS_SUP;            // 手填衝突：支援也不自動發（翻轉點見 PAY_ELEC_MANUAL_STOPS_SUP）
+      // 手填衝突時支援也不自動發：payElecSupPaid_ 依翻轉點 PAY_ELEC_MANUAL_STOPS_SUP 把那幾列標 stopped
       const elecH = elecStop ? 0 : payR2(Math.min(elecWant, Math.max(0, payNum(att.hours) - holH)));
       if (elecH > 0) push(earn, 'holiday_double', PAY_ELEC_LABEL, elecH, w, elecH * w);
       let elecSupStopped = 0;   // 因手填衝突沒發的支援選舉日時數（提醒用）
-      (att.sup_elec || []).forEach(function (x) {
-        if (elecStopSup) { elecSupStopped = payR2(elecSupStopped + Math.max(0, payNum(x.want))); return; }
+      payElecSupPaid_(att).forEach(function (x) {
+        if (x.stopped) { elecSupStopped = payR2(elecSupStopped + Math.max(0, payNum(x.want))); return; }
         const r = payNum(x.rate) || w;
         if (payNum(x.hours) > 0) push(earn, 'holiday_double', PAY_ELEC_LABEL + '（支援' + String(x.name || x.code || '') + '）', x.hours, r, x.hours * r);
         if (payNum(x.want) > payNum(x.hours) + 0.005) (ptElecSupWarn = ptElecSupWarn || []).push({ store: String(x.name || x.code || ''), want: payR2(payNum(x.want)), paid: payR2(payNum(x.hours)) });

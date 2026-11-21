@@ -553,6 +553,8 @@ console.log('\n══ i) Codex 第三次（2026-11-22）：草稿過期、停用
   const wF = mk({ elec: ['p'] }, true); wF.F('(function(){ PAY_ELEC_MANUAL_STOPS_SUP = false; })')();
   const rF = calcOf(wF).results[0];
   chk('  C6 翻轉點改成 false：支援照發 1600、本店不發', [rF.gross - rA.gross, lab(rF).filter((x) => x.indexOf('選舉日') === 0)], [1600, ['選舉日出勤（支援支援店） 8=1600']]);
+  const SP = wB.F('payElecSupPaid_'), sx = [{ code: 'SSLHQ', name: '支援店', hours: 8, rate: 200, want: 8 }];
+  chk('  C7 payElecSupPaid_（跨店請款也要用這份）：手填衝突 → hours 0、stopped；沒衝突 → 原樣', [SP({ elec_hol_manual: true, sup_elec: sx }).map((x) => [x.hours, x.stopped, x.want]), SP({ sup_elec: sx }).map((x) => [x.hours, x.stopped])], [[[0, true, 8]], [[8, undefined]]]);
 }
 {
   /* D｜只手填支援（本店 0、全月沒有逐日資料）被勾選 → 提醒 no_daily、計入 elec_warn_count（Codex 第三次 SHOULD-FIX） */
