@@ -1763,7 +1763,7 @@ function payOtCrossPremium_(S, cross) {
  *   8 小時以內照兩邊時數比例分（D3，比例怎麼算看 PAY_XCLAIM_SHARE）：
  *     休息日前 2 小時（補休抵完剩的，D4）×0.34、3–8 小時×0.67；
  *     正職：例假加發一日＝8 倍數小時、國定假日／選舉日加發＝min(當天合計, 8) 倍數小時；
- *     計時：例假＝那家當天時數×1（計時例假整天加倍）；國定假日／選舉日＝本店已發的支援加倍時數（att.sup_hol／att.sup_elec，逐店）。
+ *     計時：例假＝那家當天時數×1（計時例假整天加倍）；國定假日／選舉日＝本店已發的支援加倍時數（att.sup_hol／payElecSupPaid_(att)，逐店；選舉日手填衝突停發的列 hours＝0、不請）。
  * 回 [{code, name, h43, h53, r43, r53, r83, d8, hx}]（每家整月合計、各段取兩位）；
  * 請款加成＝(h43×0.34＋h53×0.67＋r43×0.34＋r53×0.67＋r83×1.67＋d8＋hx)×請款時薪（payroll.html costTotals）。
  * ⚠ 只算請款，不碰任何人的應發扣款。 */
@@ -2218,7 +2218,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     // 跨店請款含休息日／例假／國定假日／選舉日（2026-11-22 N4、D2–D4）：有 xr 戳記的 ot_info 前端才用新公式，沒有（舊月份、鎖定時存的舊 ot_info）照舊公式
     if (att.ot_xdays && payXclaimOn_(ym)) {
       out.ot_info.xr = PAY_XCLAIM_VER;
-      const xc = payOtCrossClaim_(otS, att.ot_xdays, att.ot_cross, ft, att.sup_hol, att.sup_elec, ym);
+      const xc = payOtCrossClaim_(otS, att.ot_xdays, att.ot_cross, ft, att.sup_hol, payElecSupPaid_(att), ym);   // 選舉日讀實際加發（手填衝突停發的不請，#209 r3）
       if (xc.length) out.ot_info.xclaim = xc;
     }
     out.ot_info.trip_ot = chk.trip_ot;

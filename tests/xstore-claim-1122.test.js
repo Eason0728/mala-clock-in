@@ -168,10 +168,20 @@ function randomCase() {
 {
   const paidOf = (r, name) => r2(r.earn.filter((x) => x.item_key === 'holiday_double' && x.item_label.indexOf('（支援' + name + '）') >= 0).reduce((a, x) => a + x.qty, 0));
   const hxOf = (r, code) => ((r.ot_info.xclaim || []).find((x) => x.code === code) || { hx: 0 }).hx;
-  // elec_warn hol_manual：國定假日時數被手改過 → 本店選舉日不自動加發；支援店那段照發、照請
+  // elec_warn hol_manual：國定假日時數被手改過 → 本店與支援都不自動加發（#209 定版、主管 11/22 確認 PAY_ELEC_MANUAL_STOPS_SUP）→ 請款也不可以有 hx
+  //   （r2 rebase 前 payOtCrossClaim_ 直接讀 att.sup_elec，這裡會請 hx 4＝同仁沒領到的錢也請款）
   const m = claims({ ft: false, holManual: true, days: [{ date: D2, home: 6 }, { date: D, elec: true, home: 4, sups: [{ code: 'MZTJS', h: 4, s: 900 }] }] });
   chk('elec_warn hol_manual：提醒原因', m.r.ot_info.elec_warn && m.r.ot_info.elec_warn.reason, 'hol_manual');
-  chk('elec_warn hol_manual：本店選舉日加發 0（不請）、支援店加發 4＝請款 hx 4', [H.item(m.r, 'holiday_double') - 800, paidOf(m.r, '金山'), hxOf(m.r, 'MZTJS')], [0, 4, 4]);
+  chk('elec_warn hol_manual：本店、支援選舉日都沒加發（holiday_double 0、支援 0）→ 請款 hx 0', [H.item(m.r, 'holiday_double'), paidOf(m.r, '金山'), hxOf(m.r, 'MZTJS')], [0, 0, 0]);
+  chk('elec_warn hol_manual：請款＝只有支援時數 4×200（沒有任何加成）', m.claims, { MZTJS: 800 });
+  // 手填衝突、當天只在支援店（本店 0）：同樣不請
+  const m0 = claims({ ft: false, holManual: true, days: [{ date: D2, home: 6 }, { date: D, elec: true, home: 0, sups: [{ code: 'MZTJS', h: 8, s: 600 }] }] });
+  chk('elec_warn hol_manual（只在支援店 8h）：支援沒加發、請款 1600（只有時數）', [paidOf(m0.r, '金山'), hxOf(m0.r, 'MZTJS'), m0.claims.MZTJS], [0, 0, 1600]);
+  // 翻轉點 PAY_ELEC_MANUAL_STOPS_SUP＝false → 支援照發 4、請款 hx 也是 4（兩邊永遠同一份 payElecSupPaid_）
+  vm.runInContext('PAY_ELEC_MANUAL_STOPS_SUP = false', S);
+  const mF = claims({ ft: false, holManual: true, days: [{ date: D2, home: 6 }, { date: D, elec: true, home: 4, sups: [{ code: 'MZTJS', h: 4, s: 900 }] }] });
+  vm.runInContext('PAY_ELEC_MANUAL_STOPS_SUP = true', S);
+  chk('翻轉點 false：支援加發 4＝請款 hx 4', [paidOf(mF.r, '金山'), hxOf(mF.r, 'MZTJS')], [4, 4]);
   // elec_warn cap：總時數被手動調低 → 本店只發剩下的；支援店那段不受影響
   const c = claims({ ft: false, hours: 2, days: [{ date: D, elec: true, home: 6, sups: [{ code: 'MZTJS', h: 4, s: 900 }] }] });
   chk('elec_warn cap：提醒原因、本店只發 2', [c.r.ot_info.elec_warn && c.r.ot_info.elec_warn.reason, c.r.ot_info.elec_warn && c.r.ot_info.elec_warn.paid], ['cap', 2]);

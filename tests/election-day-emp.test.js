@@ -382,7 +382,12 @@ console.log('\n══ e5) 計時跨店支援整條鏈（主算、損益估算；
   }
   chk('  採計 8H：國定假日加倍 8H 照舊、沒有選舉日那列', lab(run(mk({ elec: ['p'] }), 8)), ['國定假日加倍（支援支援店） 8=1600']);
   let base = null; try { base = execFileSync('git', ['show', '45ccbec:apps-script/Payroll.gs'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) {}
-  chk('  沒勾選：四種採計都跟 45ccbec 逐欄相同', !!base && [null, 8, 12, 16].every((sup) => JSON.stringify(run(mk({ gs: base }), sup)) === JSON.stringify(run(mk({}), sup))), true);
+  // 跨店請款 #210（2026-11-22）只在 ot_info 多 xr／xclaim（請款用、不進應發扣款）；其他欄位仍逐欄相同
+  const noClaim = (r) => { const o = JSON.parse(JSON.stringify(r)); if (o.ot_info) { delete o.ot_info.xr; delete o.ot_info.xclaim; } return JSON.stringify(o); };
+  if (process.env.V) [null, 8, 12, 16].forEach((sup) => { const x = JSON.parse(JSON.stringify(run(mk({}), sup))).ot_info || {}; console.log('    #210 ot_info 請款欄', sup, JSON.stringify({ xr: x.xr, xclaim: x.xclaim })); });
+  // #210 整條鏈：請款 hx（計時國定假日＋選舉日的支援加倍）＝薪資單實際發的「…（支援○○）」加倍時數，採計被截掉或手填衝突停發的不請
+  chk('  #210 請款 hx＝實際發的支援加倍時數（勾選；採計 自動16／8／12／16）', [null, 8, 12, 16].map((sup) => { const r = run(mk({ elec: ['p'] }), sup); const paid = r.earn.filter((x) => x.item_key === 'holiday_double' && x.item_label.indexOf('（支援') >= 0).reduce((t, x) => t + x.qty, 0); const hx = ((r.ot_info.xclaim || [])[0] || { hx: 0 }).hx; return [paid, hx]; }), [[16, 16], [8, 8], [12, 12], [16, 16]]);
+  chk('  沒勾選：四種採計都跟 45ccbec 逐欄相同（不含 #210 請款欄 xr／xclaim）', !!base && [null, 8, 12, 16].every((sup) => noClaim(run(mk({ gs: base }), sup)) === noClaim(run(mk({}), sup))), true);
   const est = (o, sup) => { const w = mk(o); w.sb.__TODAY = '2026-11-29'; w.F('(function(){ checkPnlKey_ = function(){ return ""; }; })')();
     if (sup != null) w.DB.input = [{ ym: '2026-11', emp_id: 'E1', store: 'SSLGF', hours: 0, extra_ot: 0, deduct_days: 0, support: JSON.stringify([{ code: 'SSLHQ', store: '支援店', hours: sup, rate: 200, keep: true, auto_h: 16 }]), hours_manual: '' }];
     return w.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2026-11', store: 'SSLGF' }); };
