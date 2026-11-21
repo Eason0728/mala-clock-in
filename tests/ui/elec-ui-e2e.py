@@ -85,6 +85,49 @@ try:
             saved = api('payroll_master_get', store='SSLGF').get('hol_emp') or []
             ok(bname + ' 儲存成功（提示＋假後端存到 E1、停用離職的 E5）', '已儲存選舉假名單（2026-11-28，2 人）' in msg and sorted(x['emp_id'] for x in saved) == ['E1', 'E5'], (msg, saved))
             shot(pg, bname, 'ui-2-saved.png')
+            # 儲存送出後、回應回來前：舊結果不能匯出、鎖定停用（Codex 第四次 B1）
+            time.sleep(3)
+            hs = {}
+            def holdsave(route):
+                body = json.loads(route.request.post_data or '{}')
+                if body.get('action') == 'payroll_hol_emp_set' and 'r' not in hs: hs['r'] = route; return
+                route.continue_()
+            pg.route('**/*', holdsave)
+            pg.click('#elecSave')
+            for _ in range(50):
+                if 'r' in hs: break
+                pg.wait_for_timeout(100)
+            pg.evaluate('exportExcel()'); pg.wait_for_timeout(200)
+            m1 = pg.inner_text('#msg')
+            pg.evaluate('exportCSV()'); pg.wait_for_timeout(200)
+            m2 = pg.inner_text('#msg')
+            ok(bname + ' 儲存回應前：RESULTS 已作廢、匯出 Excel／CSV 都擋（請先計算）、鎖定鈕停用',
+               'r' in hs and pg.evaluate('RESULTS.length') == 0 and '請先計算' in m1 and '請先計算' in m2 and pg.is_disabled('#lockBtn'), (list(hs), pg.evaluate('RESULTS.length'), m1, m2))
+            if 'r' in hs: hs['r'].continue_()
+            pg.wait_for_function("document.getElementById('msg').textContent.indexOf('已儲存選舉假名單')>=0", timeout=8000); time.sleep(0.5)
+            ok(bname + ' 回應回來、重算成功 → 結果回來、鎖定鈕恢復', pg.evaluate('RESULTS.length') > 0 and not pg.is_disabled('#lockBtn'), pg.evaluate('RESULTS.length'))
+            pg.unroute('**/*')
+            # 儲存途中切到別個月：剛存的那個店月照樣重算（Codex 第四次 B3）
+            time.sleep(3)
+            hs2, calcs = {}, []
+            def holdsave2(route):
+                body = json.loads(route.request.post_data or '{}')
+                if body.get('action') == 'payroll_calc': calcs.append(body.get('ym'))
+                if body.get('action') == 'payroll_hol_emp_set' and 'r' not in hs2: hs2['r'] = route; return
+                route.continue_()
+            pg.route('**/*', holdsave2)
+            pg.click('#elecSave')
+            for _ in range(50):
+                if 'r' in hs2: break
+                pg.wait_for_timeout(100)
+            pg.evaluate("$('ym').value='2026-10'; $('ym').dispatchEvent(new Event('change'))"); pg.wait_for_timeout(2500)
+            if 'r' in hs2: hs2['r'].continue_()
+            pg.wait_for_function("document.getElementById('msg').textContent.indexOf('已儲存選舉假名單')>=0", timeout=8000); time.sleep(0.5)
+            yv, mv = pg.input_value('#ym'), pg.inner_text('#msg')
+            ok(bname + ' 儲存途中切到 10 月：11 月照樣重算（送出 payroll_calc ym=2026-11）、畫面仍是 10 月', '2026-11' in calcs and yv == '2026-10' and '已重新計算' in mv, (calcs, yv, mv))
+            pg.unroute('**/*')
+            pg.evaluate("$('ym').value='2026-11'; $('ym').dispatchEvent(new Event('change'))"); time.sleep(2.5)
+            pg.click('button[data-p="cfg"]'); time.sleep(0.5)
             # 後端回提醒（模擬 warn_message）
             W = '已儲存。其中 1 人選舉日的加班先前已拿去抵補休；選舉假那天的加班不能抵補休，這 1 人的補休帳會變成負的，本月會鎖不了。請把多請的補休改成其他假別，或補核准加班申請。'
             def warn(route):

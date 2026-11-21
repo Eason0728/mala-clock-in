@@ -140,7 +140,7 @@ console.log('\n══ 6) 重算時送出的工時來源（前端）══');
   const src = [grab('async function autoCalc(){'), calcLine, grab('async function doCalc(){')].join('\n');
   const sentWith = dirty => {
     let sent = null;
-    const ctx = { console, ATT: SUP, ATT_DIRTY: dirty, STATUS: 'draft', RESULTS: [], CFG: {}, STORE: 'SSLGF',   // doCalc 核對回應的店月（選舉假 Codex 複審 S5）
+    const ctx = { console, ATT: SUP, ATT_DIRTY: dirty, STATUS: 'draft', RESULTS: [], CFG: {}, STORE: 'SSLGF', ELEC_SAVING: '',   // doCalc 核對回應的店月（選舉假 Codex 複審 S5）；名單儲存中不套用（第四次）
       ym: () => '2026-08', setBusy(){}, vClear(){}, renderRun(){}, renderSlipSel(){}, toast(){},
       supCrossBlock(){ return false; },   // 跨品牌手填擋重算（2026-11-05，support-auto.test 另守）
       post: async (a2, b2) => { sent = b2.inputs; return { ok: true, results: [], config: {} }; } };

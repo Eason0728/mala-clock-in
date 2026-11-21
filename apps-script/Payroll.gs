@@ -4306,8 +4306,15 @@ function handlePayrollCalc(body) {
     // 算的這段時間選舉假名單被改了 → 不寫這份草稿（Codex B1；沒有名單時兩邊都是空字串）
     if (DAILY && payElecOn_(ym)) { payInvalidate('hol_emp'); if (payElecFp_(payHolEmpRows_(), ym, st) !== ELEC_FP) { elecChanged = true; return; } }
     const mineOut = function (r) { return String(r.ym) !== ym || payStore(r.store) !== st; };
-    payReplaceAll('run', runNow.filter(mineOut).concat(runRows));
-    payReplaceAll('item', payRead('item').filter(mineOut).concat(itemRows));
+    /* 有選舉假名單（新的或舊草稿上的指紋）時先寫明細、最後才寫帶新指紋的彙總（Codex 第四次 B2）：明細沒寫成，彙總還是舊指紋 → 仍判過期，
+       不會讓新指紋替不完整的草稿背書。沒有名單時照舊（先彙總後明細），跟 45ccbec 一樣。 */
+    if (ELEC_FP || payRunElecFp_(runNow, ym, st)) {
+      payReplaceAll('item', payRead('item').filter(mineOut).concat(itemRows));
+      payReplaceAll('run', runNow.filter(mineOut).concat(runRows));
+    } else {
+      payReplaceAll('run', runNow.filter(mineOut).concat(runRows));
+      payReplaceAll('item', payRead('item').filter(mineOut).concat(itemRows));
+    }
   });
   if (!wrote) return PAY_BUSY_;
   if (lockedMeanwhile) return { ok: false, error: 'locked', message: ym + ' 剛被鎖定，這次重算沒有寫入' };
@@ -4460,14 +4467,15 @@ function handlePayrollMonth(body) {
   }
   /* 選舉假名單改過、草稿還是舊名單算的（例：存名單成功但接著的重算失敗，Codex 第三次 B1）：開頁自動重算一次；
      還是沒成功 → 回 elec_stale，畫面不顯示舊數字、不能匯出（鎖定另有 payRunElecStale_ 擋）。沒有名單時永遠不成立（回應形狀不變）。 */
-  let elecStale = false;
+  let elecStale = false, elecCalcTried = false, elecRecalc = false;
   if (run && run.status !== 'final' && payElecOn_(ym) && payRunElecStale_(payRead('run'), ym, stM, payElecFpNow_(ym, stM))) {
     let calc = null;
-    if (!triedCalc) { try { calc = handlePayrollCalc({ admin_key: body.admin_key, ym: ym, store: stM }); } catch (e) { Logger.log('elec recalc in month: ' + e); } }
-    if (calc && calc.ok) { run = (calc.results || []).length ? { results: calc.results, status: 'draft' } : null; if (run && calc.asof && calc.asof.as_of) run.as_of = calc.asof.as_of; }
+    if (!triedCalc) { elecCalcTried = true; try { calc = handlePayrollCalc({ admin_key: body.admin_key, ym: ym, store: stM }); } catch (e) { Logger.log('elec recalc in month: ' + e); } }
+    if (calc && calc.ok) { elecRecalc = true; run = (calc.results || []).length ? { results: calc.results, status: 'draft' } : null; if (run && calc.asof && calc.asof.as_of) run.as_of = calc.asof.as_of; }
+    payInvalidate('run');
     if (payRunElecStale_(payRead('run'), ym, stM, payElecFpNow_(ym, stM))) elecStale = true;
   }
-  if (!run && !(amM.on && amM.day1)) {
+  if (!run && !(amM.on && amM.day1) && !elecCalcTried) {   // 選舉假那段剛重算過（例：回零列）就不再算第二次（Codex 第四次 S-b）
     const hol = payHolidayRow(ym, stM);
     // ⚠ 紅字天數整年自動帶入後，未來月份也有列了；只是翻到未來月份不可以就自動試算並寫入，
     //   否則會先存一份全是 0 的草稿，到了那個月打開看到的是那份舊草稿（要按重新計算才會更新）。
@@ -4516,6 +4524,7 @@ function handlePayrollMonth(body) {
   const heM = payHolEmpFor_(stM, ym);
   if (heM) resM.hol_emp = heM;
   if (elecStale) resM.elec_stale = true;   // 草稿不是用現在的名單算的（只有這種情況才帶）
+  if (elecRecalc && !elecStale) resM.elec_recalc = true;   // 這次開頁因名單改過重算了草稿：前端丟掉先前預抓的趨勢（Codex 第四次 B3）
   if (heM && payElecOn_(ym)) { const od = payElecOtherDates_(payHolEmpRows_(), ym, stM); if (od.length) resM.hol_emp_other_dates = od; }   // 直接編表多出的日期（畫面提醒，Codex 複審 S3）
   return resM;
 }
@@ -5812,6 +5821,8 @@ function handlePayrollTrend(body) {
   const out = list.map(function (ym) {
     const rs = runByYm[ym] || [], its = itemByYm[ym] || [];
     if (!rs.length) return { ym: ym, has: false };
+    // 選舉假名單改過、草稿還是舊名單算的：舊金額不當成有效草稿，比照「還沒有草稿」（Codex 第四次 B3；沒有名單時不會成立）
+    if (payElecOn_(ym) && payRunElecStale_(rs, ym, st, payElecFpNow_(ym, st))) return { ym: ym, has: false };
     var gross = 0, hours = 0, ft = 0, pt = 0, ot = 0, reduce = 0, bonus = 0, supportH = 0, insSelf = 0, custAdd = 0;
     // 每人的加班費（拆「支援造成的加班」用）
     const otByEmp = {};
@@ -5888,7 +5899,9 @@ function handlePayrollGroup(body) {
   const insMapAll = payMasterInsMap();   // 迴圈外先建表（不可在逐店迴圈裡 payRead）
   const snapIdx = payCostSnapIndex_();   // 已鎖定月份的成本快照（迴圈外先讀一次）
   const rows = payStoreList().map(function (st) {
-    const code = String(st.code), rs = runBy[code] || [], its = itemBy[code] || [];
+    const code = String(st.code), its = itemBy[code] || [];
+    let rs = runBy[code] || [];
+    if (rs.length && payElecOn_(ym) && payRunElecStale_(rs, ym, payStore(code), payElecFpNow_(ym, payStore(code)))) rs = [];   // 選舉假草稿過期 → 比照還沒有草稿（Codex 第四次 B3）
     const cfg = payConfig(code);
     // 公司負擔改為依主檔逐人加總（與成本分類頁一致），主檔沒填才退回參數手填值
     // 已鎖定月份（2026-11-13 薪資挑錯第 7 項）：有快照就用鎖定當下的公司負擔

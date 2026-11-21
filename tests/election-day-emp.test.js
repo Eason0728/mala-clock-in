@@ -620,5 +620,32 @@ console.log('\n══ j) 有逐日資料、但有沒有日期的手填支援：�
     [[], [{ store: '支援店' }], [], [{ store: '支援店' }]]);
 }
 
+
+console.log('\n══ k) Codex 第四次：明細寫入失敗不可讓新指紋放行、集團總覽／儀表板不把過期草稿算進合計 ══');
+{
+  const saveList = (w, ids) => w.F('handlePayrollHolEmpSet')({ admin_key: 'x', store: 'SSLGF', ym: '2026-11', date: ids.length ? E : '', emp_ids: ids });
+  const failItemOnce = (w) => w.F('(function(){ var o = payReplaceAll; payReplaceAll = function(k, rows){ if (k === "item" && !globalThis.__FAILED) { globalThis.__FAILED = true; throw new Error("寫入失敗"); } return o(k, rows); }; })')();
+  const pmOf = (w) => w.F('handlePayrollMonth')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF' });
+  const w = world({ elec: [], only: ['a'] }); w.calc(); saveList(w, ['E1']); failItemOnce(w);
+  const pm = pmOf(w);
+  chk('  k1 開頁自動重算、明細寫入失敗一次 → 回 elec_stale、彙總沒換成新指紋（仍是舊 34000）', [pm.ok, pm.elec_stale, w.DB.run[0].elec_fp, w.DB.run[0].gross], [true, true, undefined, 34000]);
+  const lk = w.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true });
+  chk('  k2 這時鎖定 → stale_run、沒鎖', [lk.ok, lk.error, w.DB.run[0].status], [false, 'stale_run', 'draft']);
+  const pm2 = pmOf(w);
+  chk('  k3 下次開頁重算成功 → 不過期、彙總與明細都是新的（35200、有選舉日出勤）、之後可鎖', [pm2.elec_stale, w.DB.run[0].gross, w.DB.item.some((i) => i.item_label === '選舉日出勤'),
+    w.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true }).ok], [undefined, 35200, true, true]);
+  // 集團總覽／儀表板趨勢：過期草稿比照「還沒有草稿」（has:false），不把舊金額算進合計
+  const g = world({ elec: [], only: ['a'] }); g.calc(); saveList(g, ['E1']);
+  const grp = g.F('handlePayrollGroup')({ admin_key: 'x', ym: '2026-11' }), tr = g.F('handlePayrollTrend')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', months: 2 });
+  const row = grp.rows.find((x) => x.store === 'SSLGF'), m11 = tr.months.find((x) => x.ym === '2026-11');
+  chk('  k4 名單改了、還沒重算：集團總覽該店 has:false、合計實付 0；趨勢 11 月 has:false', [row.has, grp.sum.net, m11.has], [false, 0, false]);
+  g.calc();
+  const grp2 = g.F('handlePayrollGroup')({ admin_key: 'x', ym: '2026-11' }), tr2 = g.F('handlePayrollTrend')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', months: 2 });
+  chk('  k5 重算後：集團總覽實付 35200、趨勢 11 月 has:true', [grp2.rows.find((x) => x.store === 'SSLGF').has, grp2.sum.net, tr2.months.find((x) => x.ym === '2026-11').has], [true, 35200, true]);
+  let base = null; try { base = execFileSync('git', ['show', BASE_REF + ':apps-script/Payroll.gs'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) {}
+  const gt = (gs) => { const v = world({ only: ['a', 'g'], gs }); v.calc(); return JSON.stringify([v.F('handlePayrollGroup')({ admin_key: 'x', ym: '2026-11' }), v.F('handlePayrollTrend')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', months: 3 })]); };
+  chk('  k6 沒有名單：集團總覽、趨勢回應跟 45ccbec 逐字相同', !!base && gt(undefined) === gt(base), true);
+}
+
 console.log(`\n${fail ? '❌' : '✅'} ${pass} 過、${fail} 失敗`);
 process.exit(fail ? 1 : 0);

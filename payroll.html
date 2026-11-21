@@ -677,7 +677,7 @@ async function bridgeCallQueued(action,body){
 if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
 
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
-let HOLEMP=[], HOLEMP_OTHER=[], ELEC_KEY='', ELEC_STALE=false;   // ELEC_STALE＝草稿不是用現在的名單算的（存名單後重算沒成功；後端 payroll_month 的 elec_stale）：重算成功前不顯示舊數字、不能匯出   // 選舉假名單（本店本月；後端 payroll_month 的 hol_emp，沒有＝空）；ELEC_KEY＝讀到的是哪家店哪個月（讀失敗＝空，卡片停用）
+let HOLEMP=[], HOLEMP_OTHER=[], ELEC_KEY='', ELEC_STALE=false, ELEC_SAVING='';   // ELEC_SAVING＝正在存名單的「店|月」   // ELEC_STALE＝草稿不是用現在的名單算的（存名單後重算沒成功；後端 payroll_month 的 elec_stale）：重算成功前不顯示舊數字、不能匯出   // 選舉假名單（本店本月；後端 payroll_month 的 hol_emp，沒有＝空）；ELEC_KEY＝讀到的是哪家店哪個月（讀失敗＝空，卡片停用）
 /* 已鎖定月份的成本快照（2026-11-13 薪資挑錯第 7 項）：payroll_month 對已鎖定月份回 run.cost_snap，
    成本分類頁的公司負擔／年終提列／跨店請款改讀這份，鎖定後改主檔或參數不會讓已鎖定月份的數字跟著變。
    null＝草稿，或已鎖定但鎖定時沒有快照（畫面照舊即時算，並標「即時值（鎖定時沒有快照）」）。 */
@@ -1076,7 +1076,8 @@ async function loadMonth(pre,preSeq){   // pre＝開頁時先發出去的 payrol
     if(r.config){CFG=r.config;CFG_DIRTY={}}
     if(r.config||r.holidays) renderCfg();
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
-    ELEC_STALE=!!r.elec_stale&&STATUS!=='final'; if(ELEC_STALE) RESULTS=[];   // 草稿是舊名單算的：不顯示、不匯出，重算成功才回來（Codex 第三次 B1）
+    ELEC_STALE=(!!r.elec_stale||ELEC_SAVING===reqKey)&&STATUS!=='final'; if(ELEC_STALE) RESULTS=[];   // 正在存名單的店月也一樣不顯示舊數字
+    if(r.elec_recalc&&DASH_PREFETCH&&DASH_PREFETCH.key===reqKey) DASH_PREFETCH=null;   // 開頁預抓的趨勢可能是重算前讀的：丟掉，進儀表板時重抓（Codex 第四次 B3）   // 草稿是舊名單算的：不顯示、不匯出，重算成功才回來（Codex 第三次 B1）
     HOLEMP=Array.isArray(r.hol_emp)?r.hol_emp:[]; HOLEMP_OTHER=Array.isArray(r.hol_emp_other_dates)?r.hol_emp_other_dates:[]; ELEC_KEY=STORE+'|'+ym(); renderElec();   // 選舉假名單隨門市、月份、鎖定狀態重畫
     ASOF=r.asof||null;
     COST_SNAP=(r.run&&r.run.status==='final'&&r.run.cost_snap)||null;   // 已鎖定月份的成本快照（沒有就即時算＋標記）
@@ -1093,6 +1094,7 @@ async function doCalc(){   // 回 true＝重算成功並已套到畫面（選舉
     const reqKey=STORE+'|'+ym();
     const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()},{noToast:true});
     if(STORE+'|'+ym()!==reqKey) return false;   // 等回應時切到別家店／別個月：不套用（Codex 複審 S5）
+    if(ELEC_SAVING===reqKey) return false;   // 這個店月的名單正在儲存：這份可能是舊名單算的，不套用（存完會再算，Codex 第四次 B1）
     if(!r.ok){
       // 紅字天數那格空白／不是數字（F17，2026-11-19）：對話框講清楚哪個月、怎麼補，不只閃一下提示
       if(r.error==='red_days_blank'||r.error==='red_days_bad') alert(r.message);
@@ -3028,25 +3030,33 @@ async function saveElec(btn){
   if(ym()<ELEC_FROM){ toast('選舉假名單從 '+ELEC_FROM+' 起才能用，'+ym()+' 的薪資不會套用',true); return; }
   if(!elecReady()){ toast('名單還沒讀到（讀取失敗或還在載入），請重新整理後再改',true); return; }
   const reqYm=ym(), reqStore=STORE;   // 回應回來時畫面可能已經切到別家店／別個月（Codex S5）
-  btn.disabled=true;
-  const r=await post('payroll_hol_emp_set',{ym:reqYm,date:ids.length?date:'',emp_ids:ids});
-  btn.disabled=false;
-  // 有 message 的錯誤 post() 已經跳過提示；沒有 message 的（例：後端還是舊版、回 unknown_action）用通用的「儲存失敗」
-  if(!r||!r.ok){ if(!(r&&r.message)) toast('儲存失敗：'+((r&&r.error)||''),true); return; }
+  /* 一按儲存就把這個店月的結果作廢（Codex 第四次 B1）：送出到回應之間，名單可能已經寫進去，舊 RESULTS 不能再匯出、鎖定也先停用；
+     重算成功才放行（doCalc 在儲存途中回來的結果不套用）。 */
+  ELEC_SAVING=reqStore+'|'+reqYm;
+  RESULTS=[]; ELEC_STALE=true; renderRun(); renderSlipSel();   // 重新整理頁面後後端也會回 elec_stale（草稿存的名單指紋不同），兩邊同一個狀態
+  btn.disabled=true; const lb=$('lockBtn'); if(lb) lb.disabled=true;
+  let r=null;
+  try{ r=await post('payroll_hol_emp_set',{ym:reqYm,date:ids.length?date:'',emp_ids:ids}); }
+  finally{ btn.disabled=false; ELEC_SAVING=''; if(lb) lb.disabled=false; }
   const same=ym()===reqYm&&STORE===reqStore;
+  // 有 message 的錯誤 post() 已經跳過提示；沒有 message 的（例：後端還是舊版、回 unknown_action）用通用的「儲存失敗」
+  // 存檔失敗或結果不明：重新讀這個月（名單與草稿是不是過期以後端為準），不自己猜
+  if(!r||!r.ok){ if(!(r&&r.message)) toast('儲存失敗：'+((r&&r.error)||''),true); if(same) await loadMonth(); return; }
   let recalced=false;
   if(same){
     HOLEMP=ids.map(id=>({ym:reqYm,date:date,emp_id:id,note:''})); HOLEMP_OTHER=[];
     renderElec();
-    // 舊的計算結果先作廢：重算成功前，薪資單、匯出都是「請先計算」（Codex 複審 K3）
-    RESULTS=[]; ELEC_STALE=true; renderRun(); renderSlipSel();   // 重新整理頁面後後端也會回 elec_stale（草稿存的名單指紋不同），兩邊同一個狀態
     recalced=await doCalc();   // 名單改了，草稿與匯出用的 RESULTS 跟著重算（比照「儲存工時」存完就重算）
+  } else {
+    // 等回應時切到別家店／別個月：剛存的那個店月照樣重算寫回草稿（結果不套到現在的畫面；失敗就維持過期，Codex 第四次 B3）
+    const rc=await post('payroll_calc',{ym:reqYm,store:reqStore,inputs:{}},{noToast:true});
+    if(rc&&rc.ok){ recalced=true; vClear(); }
   }
   const fail='名單已儲存，但重新計算沒有完成，請再按一次「重新計算」';
   // 勾選的人那天的加班已經拿去抵補休 → 後端回人數提醒；補休帳沒檢查成也會回 warn_message
   if(r.warn_message){ toast(r.warn_message+(same&&!recalced?' '+fail:''),true); return; }
   if(same&&!recalced){ toast(fail,true); return; }
-  toast(ids.length?'已儲存選舉假名單（'+date+'，'+ids.length+' 人）'+(same?'，已重新計算':'，請回到 '+reqYm+' 重新計算'):'已清除 '+reqYm+' 的選舉假名單'+(same?'，已重新計算':''));
+  toast(ids.length?'已儲存選舉假名單（'+date+'，'+ids.length+' 人）'+(recalced?'，已重新計算':'，請回到 '+reqYm+' 重新計算'):'已清除 '+reqYm+' 的選舉假名單'+(recalced?'，已重新計算':''));
 }
 
 /* ═════ 薪資單 ═════ */
