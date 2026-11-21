@@ -1164,6 +1164,21 @@ function supClaimRate(ymv, r, m, cfg){
   }
   return (r.earn||[]).filter(x=>x.item_key==='hourly_wage'||x.item_key==='pt_attend_plus'||x.item_key==='pt_tenure_plus').reduce((s,x)=>s+n(x.rate),0);
 }
+/* 跨店請款的加成（2026-11-22 N4、定案 D1–D4）：引擎 ot_info 有 xr 戳記才用新公式——xclaim 每家店的
+   平日 1.34／1.67 段（現行）＋休息日三段、例假／國定假日／選舉日超過 8 小時那段、正職加發（d8）、計時加倍（hx）；
+   沒有 xr（2026-10 以前、鎖定時存的舊 ot_info）照 2026-11-18 舊公式（cross_ot 的 h43／h53）。後端 pnlSupXAdd_ 逐字同一套。 */
+function supXAdd(r, x, rt){
+  const oi=r.ot_info||{};
+  const hit=c=>(c.code&&x.code&&String(c.code)===String(x.code))||(c.name&&c.name===x.store);
+  if(oi.xr){
+    const c=(oi.xclaim||[]).find(hit);
+    if(!c) return {h:0,add:0};
+    return {h:n(c.h43)+n(c.h53)+n(c.r43)+n(c.r53)+n(c.r83)+n(c.d8)+n(c.hx),
+            add:(n(c.h43)*0.34+n(c.h53)*0.67+n(c.r43)*0.34+n(c.r53)*0.67+n(c.r83)*1.67+n(c.d8)+n(c.hx))*rt};
+  }
+  const cpx=(oi.cross_ot||[]).find(hit);
+  return cpx?{h:n(cpx.h43)+n(cpx.h53),add:(n(cpx.h43)*0.34+n(cpx.h53)*0.67)*rt}:{h:0,add:0};
+}
 function costTotals(){
   // dorm／dormBy：宿舍代扣（2026-08-24 Eason 改口徑）——從薪資費用扣除，並在下方獨立列成租金收入。
   // ⚠ 兩邊都看得到是刻意的，但**損益表只能取一邊**：薪資費用已經扣過了，租金收入那區只是明細，
@@ -1203,11 +1218,10 @@ function costTotals(){
       sup.forEach((x,i)=>{
         const h=n(x.hours), rt=cr!=null?cr:n(x.rate);
         const t1=(cr==null&&gapRate>0)?alloc[i]:0, t2=h-t1;
-        // 跨店加班加成（2026-11-18 Eason：超過 8 小時的加班算支援單位，只加加成那段；補休抵掉的不加）：引擎 ot_info.cross_ot 給每家店吸收的 1.34／1.67 時數
-        const cpx=((r.ot_info||{}).cross_ot||[]).find(c=>(c.code&&x.code&&String(c.code)===String(x.code))||(c.name&&c.name===x.store));
-        const otH=cpx?n(cpx.h43)+n(cpx.h53):0, otAdd=cpx?(n(cpx.h43)*0.34+n(cpx.h53)*0.67)*rt:0;
+        // 跨店加班加成（2026-11-18 平日；2026-11-22 加休息日／例假／國定假日／選舉日）：只加加成那段、補休抵掉的不加，見 supXAdd
+        const xa=supXAdd(r, x, rt), otH=xa.h, otAdd=xa.add;
         const amt=n(x.amount)||(t1*gapRate+t2*rt+otAdd);   // 金額欄有填＝以填的為準（特殊協議）
-        g.sup.push({emp_id:String(r.emp_id),name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',
+        g.sup.push({emp_id:String(r.emp_id),name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',code:String(x.code||''),
                     hours:h,rate:rt,gapH:t1,gapRate:gapRate,otH:otH,otAdd:otAdd,amount:amt,fixed:!!n(x.amount)});
         g.supTotal+=amt;
       });
@@ -1406,8 +1420,8 @@ function costDetail(g){
   const {mark}=costCo(g);
   return {v:1, co_auto:mark,
     emp:(g.emp||[]).map(e=>Object.assign({},e,{co_labor:r2(e.co_labor),co_health:r2(e.co_health),co_pension:r2(e.co_pension),yearend:r2(e.yearend)})),
-    sup:(g.sup||[]).map(x=>({emp_id:x.emp_id,ft:!!x.ft,store:x.store,hours:r2(n(x.hours)),rate:n(x.rate),gapH:r2(n(x.gapH)),
-                             gapRate:n(x.gapRate),amount:r2(n(x.amount)),fixed:!!x.fixed}))};
+    sup:(g.sup||[]).map(x=>({emp_id:x.emp_id,ft:!!x.ft,store:x.store,code:String(x.code||''),hours:r2(n(x.hours)),rate:n(x.rate),gapH:r2(n(x.gapH)),
+                             gapRate:n(x.gapRate),amount:r2(n(x.amount)),fixed:!!x.fixed}))};   // code（2026-11-22）：被支援門市的損益成本（pnlPayroll xsup_cost）用
 }
 function renderCost(){
   const card=$('costCard'); if(!card) return;

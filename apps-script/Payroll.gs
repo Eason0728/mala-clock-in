@@ -1302,8 +1302,21 @@ function payOtSegs_(periods, hours, tag) {
  *  不分誰先上後上，算支援單位；支援單位最多吸收它自己那天的時數，超過的留本店（原單位）。
  *  支援兩家以上：只在支援單位之間比，時數最長的那家吸收；一樣長算後上班（核定最早開始較晚）的那家。
  *  只看併進本店計薪的同一單位支援（xEntry.stores，paySameGroup_：墨竹亭↔總部、總部↔小辛辣同一單位，小辛辣↔墨竹亭不同）。
- *  回 { 日期: [{code, name, acct, home, need}] }，只列當天有支援時數的日子；need 是 0 的不列（沒超過 8 小時回空陣列）。 */
+ *  回 { 日期: [{code, name, acct, home, need}] }，只列當天有支援時數的日子；need 是 0 的不列（沒超過 8 小時回空陣列）。
+ *  逐日的各店時數、吸收者在 payOtCrossDays_（請款與加班單檢查共用同一份判斷）。 */
 function payOtCrossNeed_(col, xEntry) {
+  const out = {}, days = payOtCrossDays_(col, xEntry);
+  Object.keys(days).forEach(function (d) {
+    const x = days[d], res = [];
+    if (x.at_home > 0) res.push({ code: '', name: '', acct: '', home: true, need: x.at_home });
+    if (x.at_sup > 0) res.push({ code: x.abs.code, name: x.abs.name, acct: x.abs.acct, home: false, need: x.at_sup });
+    out[d] = res;
+  });
+  return out;
+}
+/** 跨店逐日（純函式，2026-11-22 從 payOtCrossNeed_ 抽出）：{ 日期: { home_h, comb, need, sups:[{code,name,acct,h,fs}], abs（吸收的支援店，沒有＝null）, at_sup, at_home } }。
+ *  吸收者：時數最長；一樣長取核定最早開始較晚（後上班）；開始也一樣（或都不知道）取門市代碼小的（Eason 2026-11-22 D7）。 */
+function payOtCrossDays_(col, xEntry) {
   const out = {}, byDay = {};
   ((xEntry && xEntry.stores) || []).forEach(function (st, i) {
     (st.days || []).forEach(function (x) {
@@ -1332,29 +1345,54 @@ function payOtCrossNeed_(col, xEntry) {
     list.forEach(function (x) {
       if (!(x.h > 0)) return;
       if (!abs || x.h > abs.h + 0.005) { abs = x; return; }
-      if (Math.abs(x.h - abs.h) <= 0.005 && x.fs !== null && (abs.fs === null || x.fs > abs.fs)) abs = x;   // 一樣長：後上班那家
+      if (Math.abs(x.h - abs.h) > 0.005) return;
+      if (x.fs !== null && (abs.fs === null || x.fs > abs.fs)) { abs = x; return; }   // 一樣長：後上班那家
+      if (x.fs === abs.fs && String(x.st.code || '') < String(abs.st.code || '')) abs = x;   // 開始也一樣：門市代碼小的（D7）
     });
     const atSup = abs ? payR2(Math.min(need, abs.h)) : 0, atHome = payR2(need - atSup);
-    const res = [];
-    if (atHome > 0) res.push({ code: '', name: '', acct: '', home: true, need: atHome });
-    if (atSup > 0) res.push({ code: abs.st.code, name: abs.st.name, acct: abs.st.acct || '', home: false, need: atSup });
-    out[d] = res;
+    const view = function (x) { return { code: String(x.st.code || ''), name: String(x.st.name || ''), acct: x.st.acct || '', h: payR2(x.h), fs: x.fs }; };
+    out[d] = { home_h: payR2(homeH), comb: payR2(comb), need: need, sups: list.map(view), abs: abs ? view(abs) : null, at_sup: atSup, at_home: atHome };
   });
   return out;
 }
 /** att.ot_own_h＝本店逐日核定；att.ot_forms＝{ot:{日期:已核准加班單時數}, trip:{日期:true}}；
- *  att.ot_cross＝payOtCrossNeed_ 的結果、att.ot_forms_x＝{門市代碼: 該店加班單}（讀不到的店不檢查）。沒帶（舊呼叫端）＝不檢查。 */
-function payOtFormCheck_(att) {
+ *  att.ot_cross＝payOtCrossNeed_ 的結果、att.ot_forms_x＝{門市代碼: 該店加班單}（讀不到的店不檢查）。沒帶（舊呼叫端）＝不檢查。
+ *  opt.ft（2026-11-22 Eason D5，payCalcOne 傳入；沒帶＝照舊）：跨店那天照打卡端現行要求——
+ *    只有「正職、原單位班表那格是上班日 W」才照跨店拆（同 Requests.gs reqFt8_：sched_ft＝正職且那天 W）；
+ *    其他（計時、休息日、例假、請假日、國定假日假、班表查不到）每家店各自算（同 reqStrictOtNeed_）：
+ *    原單位那格是休息日／例假＝本店時數整天要單，其他＝本店超過 8 小時；支援店（支援帳號在支援店沒有班表）＝那家超過 8 小時。 */
+function payOtFormCheck_(att, opt) {
   const out = { missing: [], trip_ot: [] };
   const own = att.ot_own_h, f = att.ot_forms;
   if (!own || !f) return out;
   const cross = att.ot_cross || {};
+  const xdays = att.ot_xdays || null, d5 = !!(opt && typeof opt.ft === 'boolean' && xdays);
+  const formOf = function (code, acct) {   // 支援店的加班單（讀不到那家＝null，不檢查）
+    const fx = (att.ot_forms_x || {})[code];
+    if (!fx) return null;
+    return fx['id:' + acct] || fx[String(att.ot_name || '').trim()] || { ot: {} };
+  };
   Object.keys(cross).sort().forEach(function (d) {
     if (d < PAY_OT_FORM_FROM) return;
+    const cell = (((att.daily || {}).sched) || {})[d] || null, ct = cell ? String(cell.t || '') : '';
+    if (d5 && xdays[d] && !(opt.ft && ct === 'W')) {
+      const ownNeed = (ct === 'H' || ct === 'R') ? payR2(payNum(own[d])) : payR2(payNum(own[d]) - 8), ownHave = payNum(f.ot[d]);
+      if (ownNeed > 0 && ownHave + PAY_OT_FORM_TOL_H < ownNeed) out.missing.push({ date: d, need: ownNeed, have: ownHave });
+      xdays[d].sups.forEach(function (s) {
+        const need = payR2(s.h - 8);
+        if (!(need > 0)) return;
+        const form = formOf(s.code, s.acct);
+        if (!form) return;
+        const have = payNum(form.ot[d]);
+        if (have + PAY_OT_FORM_TOL_H < need) out.missing.push({ date: d, need: need, have: have, store: s.code, store_name: s.name });
+      });
+      return;
+    }
     const kd0 = payOtKindOf((((att.daily || {}).sched) || {})[d] || null, !!((att.daily || {}).hol || {})[d]);
     const list = (kd0 === 'H' || kd0 === 'R') && !cross[d].some(function (x) { return x.home; })
       ? cross[d].concat([{ code: '', name: '', acct: '', home: true, need: 0 }]) : cross[d];   // 本店休息日、例假：本店那段整天都要單（2026-11-18 起本店可能沒有分到跨店加班）
     list.forEach(function (x) {
+      if (d5 && x.home && !(payNum(own[d]) > 0)) return;   // D5：原單位那天沒上班（只在兩家以上支援店做）＝打卡端不會叫原單位開單（reqFt8_ 根本不在原單位跑）
       let form = f;
       if (!x.home) {
         const fx = (att.ot_forms_x || {})[x.code];
@@ -1643,6 +1681,7 @@ function payOtKindOf(cell, isHol) {
  *  回 { w43,w53,r43,r53,r83, rdo_days,hol_days, rdo_dates:[], missing:[], no_show:[], ot_month_h } */
 function payOtDailySum(d) {
   const S = { w43: 0, w53: 0, r43: 0, r53: 0, r83: 0, rdo_days: 0, rdo_h: 0, hol_days: 0, hol_h: 0, no_show_streak: 0, ot_days: {}, rdo_dates: [], hol_dates: [], missing: [], no_show: [] };
+  S.day_break = {};
   const pool = [];   // 補休可以抵的加班，依日期先後（4-6、4-7、4-10）
   let absentRun = 0;   // 連續幾個應出勤日沒來（2-8）
   (d.dates || []).forEach(function (date) {
@@ -1662,6 +1701,8 @@ function payOtDailySum(d) {
     { const dayOt = payR2(b.w43 + b.w53 + b.r43 + b.r53 + b.r83); if (dayOt > 0) S.ot_days[date] = dayOt; }
     // 選舉假（d.elec，見 payElecApply_）：日別、補休都照國定假日（超過 8 小時的加班不能抵補休，Eason 2026-11-22 00:40）；elec 只用來把明細名稱分開
     const isElec = !!(d.elec || {})[date];
+    // 逐日分段（2026-11-22 跨店請款 N4 用；不影響任何金額）：kind 空白＝班表查不到，金額照上班日算
+    if (h > 0) S.day_break[date] = { kind: kind || 'W', elec: isElec, h: payR2(h), w43: b.w43, w53: b.w53, r43: b.r43, r53: b.r53, r83: b.r83 };
     if (kind === 'H') { if (b.r43 > 0) pool.push({ date: date, k: 'r43', h: b.r43 }); }
     else if (kind !== 'R' && kind !== 'HOL') {
       if (b.w43 > 0) pool.push({ date: date, k: 'w43', h: b.w43 });
@@ -1684,7 +1725,9 @@ function payOtDailySum(d) {
   });
   // 補休抵完每天還剩的平日加班（2026-11-18：跨店請款的加班加成只算沒被補休抵掉的）
   S.ot_left = {};
+  S.r43_left = {};   // 休息日前 2 小時補休抵完還剩多少（2026-11-22 D4：跨店請款休息日加成也只算沒被補休抵掉的）
   pool.forEach(function (p) {
+    if (p.k === 'r43') { S.r43_left[p.date] = payR2((S.r43_left[p.date] || 0) + (p.left === undefined ? p.h : p.left)); return; }
     if (p.k !== 'w43' && p.k !== 'w53') return;
     const o = S.ot_left[p.date] = S.ot_left[p.date] || { w43: 0, w53: 0 };
     o[p.k] = payR2(o[p.k] + (p.left === undefined ? p.h : p.left));
@@ -1711,6 +1754,101 @@ function payOtCrossPremium_(S, cross) {
     });
   });
   return order.map(function (k) { const o = by[k]; o.h43 = payR2(o.h43); o.h53 = payR2(o.h53); return o; }).filter(function (o) { return o.h43 > 0 || o.h53 > 0; });
+}
+/* ── 跨店請款：休息日、例假、國定假日、選舉日（2026-11-22 Eason N4、定案 D1–D4、D7）──
+ * 平日：照 2026-11-18 現行（payOtCrossPremium_ 同一套：吸收那家佔當天超過 8 小時的比例 × 補休抵完剩的 1.34／1.67 時數）。
+ * 休息日／例假／國定假日／選舉日（日別看本人原單位班表＋國定假日清單，同薪資 payOtKindOf）：
+ *   超過 8 小時那段照平日現行吸收規則分（D3；支援單位最多吸收自己那天的時數，D1）：
+ *     休息日第 9 小時起 r83、例假／國定／選舉日超過 8 的 1.34／1.67 段（這兩種本來就不能抵補休，直接取當天分段）× 吸收比例 → 吸收那家；
+ *   8 小時以內照兩邊時數比例分（D3，比例怎麼算看 PAY_XCLAIM_SHARE）：
+ *     休息日前 2 小時（補休抵完剩的，D4）×0.34、3–8 小時×0.67；
+ *     正職：例假加發一日＝8 倍數小時、國定假日／選舉日加發＝min(當天合計, 8) 倍數小時；
+ *     計時：例假＝那家當天時數×1（計時例假整天加倍）；國定假日／選舉日＝本店已發的支援加倍時數（att.sup_hol／att.sup_elec，逐店）。
+ * 回 [{code, name, h43, h53, r43, r53, r83, d8, hx}]（每家整月合計、各段取兩位）；
+ * 請款加成＝(h43×0.34＋h53×0.67＋r43×0.34＋r53×0.67＋r83×1.67＋d8＋hx)×請款時薪（payroll.html costTotals）。
+ * ⚠ 只算請款，不碰任何人的應發扣款。 */
+var PAY_XCLAIM_FROM = '2026-11';
+var PAY_XCLAIM_VER = 'n4-1122';
+/* D3「8 小時以內照兩邊時數比例」的比例（待 Eason 確認，集中在這裡切換）：
+ *   'w8'＝各單位時數扣掉它分到的超過 8 小時那段後的比例（加總＝8；休息日原 5＋支援 5 → 支援 3/8）；
+ *   'total'＝當天各單位總時數比例（休息日原 5＋支援 5 → 支援 5/10）。 */
+var PAY_XCLAIM_SHARE = 'w8';
+function payXclaimOn_(ym) { return String(ym || '') >= PAY_XCLAIM_FROM; }
+/** 某天各單位「8 小時以內」佔比：{ _home: 比例, 門市代碼: 比例 }。x＝payOtCrossDays_ 的一天。 */
+function payXclaimShare_(x, mode) {
+  const out = { _home: 0 };
+  const m = mode || PAY_XCLAIM_SHARE;
+  if (m === 'total') {
+    const tot = x.comb;
+    out._home = tot > 0 ? x.home_h / tot : 0;
+    x.sups.forEach(function (s) { out[s.code] = tot > 0 ? s.h / tot : 0; });
+    return out;
+  }
+  const w = { _home: x.home_h - x.at_home };
+  x.sups.forEach(function (s) { w[s.code] = s.h - (x.abs && s.code === x.abs.code ? x.at_sup : 0); });
+  if (w._home < 0) {   // 原單位分到的超過 8 比它自己的時數還多（支援三家以上的極端情況）：不夠扣的按其他支援店時數比例扣
+    const lack = -w._home; w._home = 0;
+    const others = x.sups.filter(function (s) { return !(x.abs && s.code === x.abs.code); });
+    const tot = others.reduce(function (a, s) { return a + Math.max(0, w[s.code]); }, 0);
+    others.forEach(function (s) { w[s.code] = tot > 0 ? Math.max(0, w[s.code] - lack * Math.max(0, w[s.code]) / tot) : 0; });
+  }
+  const tot = Object.keys(w).reduce(function (a, k) { return a + Math.max(0, w[k]); }, 0);
+  Object.keys(w).forEach(function (k) { out[k] = tot > 0 ? Math.max(0, w[k]) / tot : 0; });
+  return out;
+}
+function payOtCrossClaim_(S, xdays, cross, ft, supHol, supElec, ym, mode) {
+  if (!payXclaimOn_(ym)) return [];
+  const by = {}, order = [];
+  const acc = function (code, name) {
+    const k = String(code || '');
+    if (!by[k]) { by[k] = { code: k, name: String(name || ''), h43: 0, h53: 0, r43: 0, r53: 0, r83: 0, d8: 0, hx: 0 }; order.push(k); }
+    return by[k];
+  };
+  const nameOf = {};
+  Object.keys(xdays || {}).forEach(function (d) { (xdays[d].sups || []).forEach(function (s) { nameOf[s.code] = s.name; }); });
+  // 平日：同 payOtCrossPremium_（逐字同一套，只是不在這裡取兩位）
+  Object.keys(cross || {}).sort().forEach(function (d) {
+    const list = cross[d] || [];
+    const tot = list.reduce(function (a, x) { return a + payNum(x.need); }, 0);
+    const left = (S && S.ot_left && S.ot_left[d]) || null;
+    if (!(tot > 0) || !left) return;
+    list.forEach(function (x) {
+      if (x.home || !(payNum(x.need) > 0)) return;
+      const f = payNum(x.need) / tot, o = acc(x.code || x.name, x.name);
+      o.h43 += left.w43 * f; o.h53 += left.w53 * f;
+    });
+  });
+  // 休息日、例假、國定假日、選舉日
+  Object.keys(xdays || {}).sort().forEach(function (d) {
+    const x = xdays[d], b = ((S && S.day_break) || {})[d];
+    if (!b || b.kind === 'W' || !x.sups.length) return;
+    const fA = x.need > 0 && x.abs ? x.at_sup / x.need : 0;
+    const sh = payXclaimShare_(x, mode);
+    if (b.kind === 'H') {
+      if (x.abs && fA > 0) acc(x.abs.code, x.abs.name).r83 += b.r83 * fA;
+      const r43 = (S.r43_left && S.r43_left[d] !== undefined) ? S.r43_left[d] : b.r43;
+      x.sups.forEach(function (s) { const o = acc(s.code, s.name); o.r43 += r43 * sh[s.code]; o.r53 += b.r53 * sh[s.code]; });
+      return;
+    }
+    if (b.kind !== 'R' && b.kind !== 'HOL') return;
+    if (x.abs && fA > 0) { const o = acc(x.abs.code, x.abs.name); o.h43 += b.w43 * fA; o.h53 += b.w53 * fA; }
+    if (ft) {
+      const unit = b.kind === 'R' ? 8 : Math.min(b.h, 8);
+      x.sups.forEach(function (s) { acc(s.code, s.name).d8 += unit * sh[s.code]; });
+    } else if (b.kind === 'R') {
+      x.sups.forEach(function (s) { acc(s.code, s.name).hx += s.h; });
+    }
+  });
+  // 計時國定假日、選舉日：本店已發的支援加倍（逐店時數，同薪資單「國定假日加倍（支援○○）」「選舉日出勤（支援○○）」）
+  if (!ft) (supHol || []).concat(supElec || []).forEach(function (h) {
+    if (!(payNum(h.hours) > 0)) return;
+    acc(h.code, h.name || nameOf[h.code]).hx += payNum(h.hours);
+  });
+  return order.map(function (k) {
+    const o = by[k];
+    ['h43', 'h53', 'r43', 'r53', 'r83', 'd8', 'hx'].forEach(function (f) { o[f] = payR2(o[f]); });
+    return o;
+  }).filter(function (o) { return o.h43 > 0 || o.h53 > 0 || o.r43 > 0 || o.r53 > 0 || o.r83 > 0 || o.d8 > 0 || o.hx > 0; });
 }
 /** 逐日加班 → 薪資單明細（push 由 payCalcOne 傳入）。ft：正職給全額倍率；計時只給加成（w＝有效時薪）。 */
 function payOtDailyItems(S, ft, M, w, push) {
@@ -2073,10 +2211,16 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   if (otS && ptElecSupWarn) out.ot_info.elec_sup_warn = ptElecSupWarn;   // 計時支援的選舉日加倍被採計時數截掉
   if (otS && att.elec_sup_nodate && att.elec_sup_nodate.length) out.ot_info.elec_sup_nodate = att.elec_sup_nodate.slice();   // 被勾選、有沒有日期的手填支援（只提醒，主管 2026-11-22）
   if (otS) {
-    const chk = payOtFormCheck_(att);
+    const chk = payOtFormCheck_(att, { ft: ft });   // D5（2026-11-22）：跨店那天照打卡端現行要求
     out._ot_days = otS.ot_days;   // 實際加班（補休前），給 28 天週期加總（payOtMonthSync_）；不進 run 表
     out.ot_info.ot_form_missing = chk.missing;
     if (att.ot_cross) { const cp = payOtCrossPremium_(otS, att.ot_cross); if (cp.length) out.ot_info.cross_ot = cp; }   // 跨店請款加班加成（2026-11-18）
+    // 跨店請款含休息日／例假／國定假日／選舉日（2026-11-22 N4、D2–D4）：有 xr 戳記的 ot_info 前端才用新公式，沒有（舊月份、鎖定時存的舊 ot_info）照舊公式
+    if (att.ot_xdays && payXclaimOn_(ym)) {
+      out.ot_info.xr = PAY_XCLAIM_VER;
+      const xc = payOtCrossClaim_(otS, att.ot_xdays, att.ot_cross, ft, att.sup_hol, att.sup_elec, ym);
+      if (xc.length) out.ot_info.xclaim = xc;
+    }
     out.ot_info.trip_ot = chk.trip_ot;
     out.ot_info.absent_alert = otS.no_show_streak >= 3 || otS.no_show.length >= 6;
     out.ot_info.absent_streak = otS.no_show_streak;
@@ -4244,9 +4388,15 @@ function handlePayrollCalc(body) {
         const sl = paySupportLeaveList_(XSUP.byEmp[id.trim()], e.name, SUP_LEAVE_ROWS, ym);
         if (sl.length) att.support_leave = sl;
       }
+      /* 跨店逐日（2026-11-22 a5）：只要有同單位支援就算——請款用的是核定時數，跟讀不讀得到加班單無關；
+         原本只在讀得到加班單時才算，讀不到時請款加成會靜默變 0。加班單檢查照舊：讀不到加班單（沒有 ot_own_h／ot_forms）就整段不檢查。 */
+      if (XSUP && XSUP.byEmp[id.trim()]) {
+        att.ot_xdays = payOtCrossDays_(c, XSUP.byEmp[id.trim()]);
+        att.ot_cross = payOtCrossNeed_(c, XSUP.byEmp[id.trim()]);
+      }
       if (OT_FORMS) {
         att.ot_own_h = (c && c.day_h) || {}; att.ot_forms = OT_FORMS[String(e.name || '').trim()] || { ot: {}, trip: {} };
-        if (XSUP && XSUP.byEmp[id.trim()]) { att.ot_cross = payOtCrossNeed_(c, XSUP.byEmp[id.trim()]); att.ot_forms_x = OT_FORMS_X; att.ot_name = e.name; }
+        if (XSUP && XSUP.byEmp[id.trim()]) { att.ot_forms_x = OT_FORMS_X; att.ot_name = e.name; }
       }
     }
     // 在職天數 0 且沒有任何時數、支援、請假、自訂加扣、獎金、手動明細 → 不產生列；有其中一項照舊計算
@@ -6706,7 +6856,7 @@ function paySnapDetailSanitize_(d) {
   });
   var sup = (Array.isArray(d.sup) ? d.sup : []).slice(0, PAY_SNAP_DETAIL_MAX).map(function (x) {
     x = x || {};
-    return { emp_id: str(x.emp_id), ft: bool(x.ft), store: str(x.store) || '（未指定）',
+    return { emp_id: str(x.emp_id), ft: bool(x.ft), store: str(x.store) || '（未指定）', code: payXsupCode_(str(x.code)),
              hours: payNum(x.hours), rate: payNum(x.rate), gapH: payNum(x.gapH), gapRate: payNum(x.gapRate),
              amount: payNum(x.amount), fixed: bool(x.fixed) };
   });
@@ -6791,8 +6941,9 @@ function handlePnlPayroll_(body) {
 
   var support = {};
   try { support = JSON.parse(snap.support_json || '{}'); } catch (e) { support = {}; }
+  var xs = payXclaimOn_(ym) ? pnlXsupCost_(ym, st) : null;   // 2026-10 以前回應逐欄不變
 
-  return {
+  var out = {
     ok: true, ym: ym, store: st,
     rows: {
       base_ft: payNum(snap.base_ft), ot_ft: payNum(snap.ot_ft), attend_ft: payNum(snap.attend_ft),
@@ -6807,6 +6958,32 @@ function handlePnlPayroll_(body) {
     support: support,
     total: payNum(snap.total)
   };
+  if (xs) out.rows.xsup_cost = xs.amount;
+  return out;
+}
+/* 他店支援人力成本（2026-11-22 Eason D6）：別家店鎖定快照的跨店請款逐筆明細（detail_json.sup，2026-11-22 起帶 code）裡，
+   被支援門市＝本店的金額合計。只讀快照、不重算；舊快照（沒有 code）一律不算（N5：之前月份不回溯）。
+   pending＝同月還沒鎖定、或鎖了沒快照的別家店（那幾家請本店的錢還沒進來；端點回應欄位不變，所以不回傳，
+   損益月結定稿前照舊重拉一次連接器就會補進來）。
+   ⚠ total 不含這筆（total 是本店自己的薪資成本，損益那邊另掛科目 xsup_cost）。 */
+function pnlXsupCost_(ym, st) {
+  var out = { amount: 0, pending: [] };
+  var idx = payCostSnapIndex_(), byStore = {};
+  payRead('run').forEach(function (r) {
+    if (String(r.ym) !== ym) return;
+    var s = payStore(r.store);
+    if (s === st) return;
+    byStore[s] = byStore[s] !== false && r.status === 'final';
+  });
+  Object.keys(byStore).sort().forEach(function (s) {
+    var row = idx[ym + '|' + s];
+    if (!byStore[s] || !row) { out.pending.push(s); return; }
+    var d = null;
+    try { d = JSON.parse(row.detail_json || 'null'); } catch (e) { d = null; }
+    ((d && d.sup) || []).forEach(function (x) { if (x && payXsupCode_(x.code) === st) out.amount += payNum(x.amount); });
+  });
+  out.amount = payR2(out.amount);
+  return out;
 }
 
 // ---------- 損益系統唯讀端點（T15，mala-pnl-auto，月中人事成本估算） ----------
@@ -6919,6 +7096,19 @@ function pnlSupClaimRate_(ym, r, m, cfg) {
   return (r.earn || []).filter(function (x) { return x.item_key === 'hourly_wage' || x.item_key === 'pt_attend_plus' || x.item_key === 'pt_tenure_plus'; })
     .reduce(function (s, x) { return s + payNum(x.rate); }, 0);
 }
+/** 跨店請款加成：payroll.html supXAdd 的逐字 port（2026-11-22）。有 xr 戳記用 xclaim（含休息日／例假／國定假日／選舉日），沒有照舊 cross_ot。 */
+function pnlSupXAdd_(r, x, rt) {
+  var oi = r.ot_info || {};
+  var hit = function (c) { return (c.code && x.code && String(c.code) === String(x.code)) || (c.name && c.name === x.store); };
+  if (oi.xr) {
+    var c = (oi.xclaim || []).filter(hit)[0];
+    if (!c) return { h: 0, add: 0 };
+    return { h: payNum(c.h43) + payNum(c.h53) + payNum(c.r43) + payNum(c.r53) + payNum(c.r83) + payNum(c.d8) + payNum(c.hx),
+             add: (payNum(c.h43) * 0.34 + payNum(c.h53) * 0.67 + payNum(c.r43) * 0.34 + payNum(c.r53) * 0.67 + payNum(c.r83) * 1.67 + payNum(c.d8) + payNum(c.hx)) * rt };
+  }
+  var cpx = (oi.cross_ot || []).filter(hit)[0];
+  return cpx ? { h: payNum(cpx.h43) + payNum(cpx.h53), add: (payNum(cpx.h43) * 0.34 + payNum(cpx.h53) * 0.67) * rt } : { h: 0, add: 0 };
+}
 function pnlEstimateClassify_(results, master, att, cfg, ym) {
   var g = { base: 0, ot: 0, attend: 0, allow: 0, mgr: 0, pt: 0, other: 0, meal: 0, bs: 0, bp: 0, bj: 0,
             reduceFT: 0, reducePT: 0, dormFT: 0, dormPT: 0, ins: 0, insFT: 0, insPT: 0,
@@ -6948,8 +7138,7 @@ function pnlEstimateClassify_(results, master, att, cfg, ym) {
       sup.forEach(function (x, i) {
         var h = payNum(x.hours), rt = cr != null ? cr : payNum(x.rate);
         var t1 = (cr == null && gapRate > 0) ? alloc[i] : 0, t2 = h - t1;
-        var cpx = ((r.ot_info || {}).cross_ot || []).filter(function (c) { return (c.code && x.code && String(c.code) === String(x.code)) || (c.name && c.name === x.store); })[0];   // 同 payroll.html 跨店加班加成（2026-11-18）
-        var otAdd = cpx ? (payNum(cpx.h43) * 0.34 + payNum(cpx.h53) * 0.67) * rt : 0;
+        var otAdd = pnlSupXAdd_(r, x, rt).add;   // 同 payroll.html supXAdd（2026-11-18 平日、2026-11-22 加休息日／例假／國定假日／選舉日）
         var amt = payNum(x.amount) || (t1 * gapRate + t2 * rt + otAdd);
         g.sup.push({ store: x.store || '（未指定）', amount: amt });
       });
@@ -7156,6 +7345,11 @@ function handlePnlLaborEstimate_(body) {
         if (!Object.keys(a.daily.day_h || {}).length && (payNum(a.hours) > 0 || supH > 0)) a.elec_nodaily = true;   // 同 handlePayrollCalc（含只手填支援）
         else { var ndE = payElecSupNoDate_(a.support, XS ? XS.byEmp[String(e.emp_id).trim()] : null, payXsupStoreBy_(payRead('store'))); if (ndE.length) a.elec_sup_nodate = ndE; }   // 同 handlePayrollCalc
         if (XS) a.sup_elec = paySupportElecDouble_(a.support, XS.byEmp[String(e.emp_id).trim()], holDates, elecOn, payXsupStoreBy_(payRead('store')), asOf);   // 與國定假日共用採計時數（Codex B2）
+      }
+      // 跨店請款的加班加成（2026-11-22 a6）：月中估算原本沒有 ot_cross，請款一直少了加成；跟 handlePayrollCalc 同一套（XS 已截到 asOf）
+      if (XS && XS.byEmp[String(e.emp_id).trim()]) {
+        a.ot_xdays = payOtCrossDays_(c, XS.byEmp[String(e.emp_id).trim()]);
+        a.ot_cross = payOtCrossNeed_(c, XS.byEmp[String(e.emp_id).trim()]);
       }
     }
     var origLeave = payDateStr(e.leave_date);
