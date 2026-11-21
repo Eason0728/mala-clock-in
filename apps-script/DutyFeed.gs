@@ -713,12 +713,23 @@ function dutyWbCheck_(action, b, cfg) {
   if (!dutyWbSame_(dutyWbSign_(dutyWbMsg_(cfg.store, action, b), cfg.key), String(b.wb_sig))) return { ok: false, error: 'bad_sig', message: '寫回簽名不對' };
   return null;
 }
-function dutyWbKey_(id) { return 'dwb:' + id; }
-function dutyWbGet_(id) {
-  try { var v = CacheService.getScriptCache().get(dutyWbKey_(id)); return v ? JSON.parse(v) : null; } catch (e) { return null; }
+/* 暫存鍵納入動作名稱（2026-11-21）：'dwb:'+動作+':'+wb_id。舊格式 'dwb:'+wb_id 不含動作，手機若讓「取消」用跟某張「送單」相同的 wb_id，取消會被當成送單的重放。
+ * 讀：先讀新鍵，命中後還要比暫存內的 a（動作）一次，不同＝當沒命中；新鍵沒有再讀一次舊鍵（換版前 6 小時內寫的記號），同樣要 a 相同才算命中。寫、刪只動新鍵。 */
+function dutyWbKey_(action, id) { return 'dwb:' + action + ':' + id; }
+function dutyWbGet_(action, id) {
+  try {
+    var c = CacheService.getScriptCache();
+    var v = c.get(dutyWbKey_(action, id));
+    var o = v ? JSON.parse(v) : null;
+    if (o && o.a === action) return o;
+    if (o) return null;   // 新鍵裡存的動作對不上：當沒命中（不再退回找舊鍵）
+    v = c.get('dwb:' + id);   // 換版相容：舊格式鍵（只在換版後最多 6 小時內才會有）
+    o = v ? JSON.parse(v) : null;
+    return o && o.a === action ? o : null;
+  } catch (e) { return null; }
 }
-function dutyWbPut_(id, obj, ttl) { try { CacheService.getScriptCache().put(dutyWbKey_(id), JSON.stringify(obj), ttl); } catch (e) {} }
-function dutyWbDrop_(id) { try { CacheService.getScriptCache().remove(dutyWbKey_(id)); } catch (e) {} }
+function dutyWbPut_(action, id, obj, ttl) { try { CacheService.getScriptCache().put(dutyWbKey_(action, id), JSON.stringify(obj), ttl); } catch (e) {} }
+function dutyWbDrop_(action, id) { try { CacheService.getScriptCache().remove(dutyWbKey_(action, id)); } catch (e) {} }
 
 /**
  * Requests.gs 四個動作（核定、審單、批次審單、作廢）的入口第一行都先叫這支：dutyAuthRun_(body, 'mgr_req_decide', 原本的函式)。
@@ -744,24 +755,24 @@ function dutyAuthRun_(body, action, raw) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(DUTY_WB_LOCK_MS_)) return { ok: false, error: 'busy', message: DUTY_BUSY_MSG_ };
   try {
-    var mk = dutyWbGet_(id);
+    var mk = dutyWbGet_(action, id);
     if (mk && mk.state === 'done') {
       var out = mk.res && typeof mk.res === 'object' ? mk.res : { ok: true };
       out.dup = true; out.wb_id = id;
       return out;
     }
     if (mk && mk.state === 'pending') return { ok: false, error: 'busy', message: '這筆正在寫入，請幾秒後再送一次', wb_pending: true };
-    dutyWbPut_(id, { state: 'pending', a: action }, DUTY_WB_PENDING_TTL_S_);
+    dutyWbPut_(action, id, { state: 'pending', a: action }, DUTY_WB_PENDING_TTL_S_);
   } finally { lock.releaseLock(); }
   var res;
   try { res = raw(body, cfg); }
-  catch (err) { dutyWbDrop_(id); throw err; }
+  catch (err) { dutyWbDrop_(action, id); throw err; }
   if (res && res.ok === true) {
     var s = '';
     try { s = JSON.stringify(res); } catch (e) { s = ''; }
-    dutyWbPut_(id, { state: 'done', a: action, res: s && s.length <= DUTY_WB_MAX_CACHE_ ? res : null }, DUTY_WB_DONE_TTL_S_);
+    dutyWbPut_(action, id, { state: 'done', a: action, res: s && s.length <= DUTY_WB_MAX_CACHE_ ? res : null }, DUTY_WB_DONE_TTL_S_);
   } else {
-    dutyWbDrop_(id);
+    dutyWbDrop_(action, id);
   }
   return res;
 }
@@ -791,25 +802,25 @@ function dutyLineWbRun_(body, action, raw) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(DUTY_WB_LOCK_MS_)) return { ok: false, error: 'busy', message: DUTY_BUSY_MSG_ };
   try {
-    var mk = dutyWbGet_(id);
+    var mk = dutyWbGet_(action, id);
     if (mk && mk.state === 'done') {
       var out = mk.res && typeof mk.res === 'object' ? mk.res : { ok: true };
       out.dup = true; out.wb_id = id;
       return out;
     }
     if (mk && mk.state === 'pending') return { ok: false, error: 'busy', message: '這筆正在寫入，請幾秒後再送一次', wb_pending: true };
-    dutyWbPut_(id, { state: 'pending', a: action }, DUTY_WB_PENDING_TTL_S_);
+    dutyWbPut_(action, id, { state: 'pending', a: action }, DUTY_WB_PENDING_TTL_S_);
   } finally { lock.releaseLock(); }
   try { console.log('LINE 簽名寫回 ' + cfg.store + ' ' + action + ' ' + id + (who.tokenless ? '（無 token）' : '')); } catch (e) {}
   var res;
   try { res = raw(body, who); }
-  catch (err) { dutyWbDrop_(id); throw err; }
+  catch (err) { dutyWbDrop_(action, id); throw err; }
   if (res && res.ok === true) {
     var s = '';
     try { s = JSON.stringify(res); } catch (e) { s = ''; }
-    dutyWbPut_(id, { state: 'done', a: action, res: s && s.length <= DUTY_WB_MAX_CACHE_ ? res : null }, DUTY_WB_DONE_TTL_S_);
+    dutyWbPut_(action, id, { state: 'done', a: action, res: s && s.length <= DUTY_WB_MAX_CACHE_ ? res : null }, DUTY_WB_DONE_TTL_S_);
   } else {
-    dutyWbDrop_(id);
+    dutyWbDrop_(action, id);
   }
   return res;
 }

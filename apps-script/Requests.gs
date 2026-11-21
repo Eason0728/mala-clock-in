@@ -455,8 +455,20 @@ function reqNeedLineToken_(r, who) {
 }
 /** 到職滿六個月那天：有 token 或光復店＝照舊（LINE 身分）；沒有 token 的別家店＝主管核准時用的同一支（payroll_annual_from） */
 function reqAnnualFromWho_(who, body) {
-  if (who && who.tokenless && typeof lineHubReqQuota_ !== 'function') return reqAnnualFromEmp_(who.me.emp_id, body.mgr_key);
+  if (who && who.tokenless && typeof lineHubReqQuota_ !== 'function') return reqAnnualFromByMgr_(who.me.emp_id, body.mgr_key);
   return reqAnnualFromLine_(who, body);
+}
+/** 簽名寫回、沒有 token、別家店的特休（Eason 2026-11-21 定案「比照鎖月」）：用主管金鑰問光復 payroll_annual_from。
+ *  問到了（ok:true 且 annual_from 是字串）＝照舊判斷（空字串＝光復明確回這個人沒有到職日資料／不適用＝不擋；日期＝滿半年那天）；
+ *  問不到（連不上、逾時、ok 不是 true、沒給 annual_from、給的不是日期）＝'retry'＝呼叫端回 busy 稍後重送、不寫入、不留記號。
+ *  只有這條簽名路用；主管核准／代開仍用 reqAnnualFromEmp_（查不到＝不擋，不動）。 */
+function reqAnnualFromByMgr_(empId, mgrKey) {
+  try {
+    var j = reqPayPost_({ action: 'payroll_annual_from', store: CONFIG.PAYROLL_STORE || '', mgr_key: String(mgrKey || ''), emp_id: String(empId) });
+    if (!j || j.ok !== true || typeof j.annual_from !== 'string') return 'retry';
+    if (j.annual_from !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(j.annual_from)) return 'retry';
+    return j.annual_from;
+  } catch (e) { return 'retry'; }
 }
 /** 沒有 token 時的鎖月（簽名寫回才會用）：用主管金鑰問光復 payroll_leave_options {lock_only:true}（光復同一個 payMonthLocked_）。
  *  回 true／false；這家店本來就不問光復（光復自己、沒填 PAYROLL_API／PAYROLL_STORE）＝undefined（照舊）；
@@ -810,7 +822,9 @@ function handleReqSubmit_(body, wbWho) {
       return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
     }
     if (reqIsAnnual_(r)) {
-      var anMsg = reqAnnualBlockMsg_(r, reqAnnualFromWho_(who, body));
+      var anFrom = reqAnnualFromWho_(who, body);
+      if (anFrom === 'retry') return { ok: false, error: 'busy', message: '系統忙碌，請一分鐘後再送一次' };   // 簽名路問不到滿半年那天：比照鎖月回 busy（不寫、不留記號）
+      var anMsg = reqAnnualBlockMsg_(r, anFrom);
       if (anMsg) return { ok: false, error: 'annual_not_eligible', message: anMsg };
     }
     var mensErr = reqMensSubmitCheck_(r, existing, who, body);   // 生理假新規則（2026-11-18）：計時、第 4 次、每月一次、一天 8 小時；病假年度用完
@@ -986,7 +1000,9 @@ function reqSubmitSegs_(body, segP, who, existing, reqId) {
     return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
   }
   if (reqIsAnnual_(r0)) {
-    var anMsg = reqAnnualBlockMsg_(r0, reqAnnualFromWho_(who, body));
+    var anFrom = reqAnnualFromWho_(who, body);
+    if (anFrom === 'retry') return { ok: false, error: 'busy', message: '系統忙碌，請一分鐘後再送一次' };   // 同上（多段）
+    var anMsg = reqAnnualBlockMsg_(r0, anFrom);
     if (anMsg) return { ok: false, error: 'annual_not_eligible', message: anMsg };
   }
   var both = {};

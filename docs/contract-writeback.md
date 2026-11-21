@@ -35,7 +35,7 @@
 ```
 | 欄 | 規則 |
 |---|---|
-| `wb_id` | 寫回單號，`/^[A-Za-z0-9_-]{8,64}$/`。**同一筆寫回重送時不變**；Google 用它防重寫。一個 `wb_id` 只對應一個動作與一組對象，不可重用 |
+| `wb_id` | 寫回單號，`/^[A-Za-z0-9_-]{8,64}$/`。**同一筆寫回重送時不變**；Google 用它防重寫。一個 `wb_id` 只對應一個動作與一組對象，不可重用。防重記號鍵含動作名稱（`dwb:<動作>:<wb_id>`），所以手機若讓不同動作共用同一個 `wb_id`，彼此**不會**被當成對方的重放（各自照簽名與一般規則處理）；同動作同 `wb_id` 才是重放 |
 | `wb_ts` | 簽名當下的時間（毫秒，數字）。Google 只收 **現在 ±10 分鐘**。重送時可以（也應該）重簽：換 `wb_ts`、`wb_sig`，`wb_id` 不變 |
 | `wb_sig` | `HMAC-SHA256(key=DUTY_PUSH_KEY, msg=簽名字串)` 的小寫十六進位（64 字） |
 
@@ -68,7 +68,7 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
    - `DUTY_AUTH=mini`：**沒帶 → `moved_to_mini`**；帶了但不合格 → 回對應錯誤（3.4），不寫。
    - 現行模式（沒設）：沒帶 → 照現在；帶了但不合格 → **當沒帶**（照現在，不防重）；帶了且合格 → 照現在判＋防重。
 3. 簽名合格後，`DUTY_AUTH=mini` 的 `mgr_approve` 還要有 `base_ver`，沒有 → `need_base_ver`。
-4. **防重（同一把指令碼鎖內查＋放記號）**：拿鎖（最多等 10 秒，拿不到 → `busy`）→ 查記號 `dwb:<wb_id>`：
+4. **防重（同一把指令碼鎖內查＋放記號）**：拿鎖（最多等 10 秒，拿不到 → `busy`）→ 查記號 `dwb:<動作>:<wb_id>`（2026-11-21 起鍵含動作名稱；記號內存的 `a`＝動作，讀到時還要比一次，不同當沒命中。舊格式 `dwb:<wb_id>` 只在換版後最多 6 小時內還會讀到，動作相同才算命中，見 10.5）：
    - 已寫好 → 直接回當時的成功結果，加 `dup:true`（不再寫）。
    - 正在寫（另一個執行剛放的記號）→ `busy`（`wb_pending:true`）。
    - 沒有 → 放「正在寫」記號（10 分鐘），放鎖，照原本流程判＋寫。
@@ -187,7 +187,7 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
 wb|1|<店代碼>|req_submit|<wb_id>|<wb_ts>|<emp_id>|<req_id>|<kind>|<date>
 wb|1|<店代碼>|req_cancel|<wb_id>|<wb_ts>|<emp_id>|<id>
 ```
-- `req_submit` 的 `wb_id` **必須等於** `req_id`（`^r[0-9a-f]{16}$`），不等＝`bad_wb`。`req_cancel` 的 `wb_id`＝手機為這次取消產生的單號。金鑰、時間窗（±10 分鐘）、每次重送重簽、`wb_id` 不變，都同第 3 節。
+- `req_submit` 的 `wb_id` **必須等於** `req_id`（`^r[0-9a-f]{16}$`），不等＝`bad_wb`。`req_cancel` 的 `wb_id`＝手機為這次取消產生的單號（即使跟某張送單的 `wb_id` 相同，取消也不會被當成送單的重放）。金鑰、時間窗（±10 分鐘）、每次重送重簽、`wb_id` 不變，都同第 3 節。
 - 範例（假金鑰 `k`×32、店 `mztjs`）：`msg = "wb|1|mztjs|req_submit|r0000000000000002|1763344801000|E01|r0000000000000002|leave|2026-11-16"`、`sig = "15c6b1bd601e0118da8aae622bfb91a0bee04faf24b1c856e7c91704178e4600"`（`tests/line-wb.test.js` W10 比對 Google 端算的結果；營運系統 `wbTarget` 測試用同一組值比對）。
 
 ### 10.2 Google 怎麼判（只有帶了 `wb_*` 才進這條；沒帶＝一個屬性都不多讀、逐字同 v3.1）
@@ -198,7 +198,7 @@ wb|1|<店代碼>|req_cancel|<wb_id>|<wb_ts>|<emp_id>|<id>
 5. 之後**一律照原本規則判、寫**（同號查重、鎖月、額度、特休滿半年、補休限正職、多段、重疊、只能取消自己審核中的單）。`DUTY_AUTH` 不影響。
 6. **沒有 token 的非光復店**（光復店同專案、用名冊上的 LINE 帳號直接算，跟現在一樣）只換三個「問光復」的來源：
    - 鎖月：用主管金鑰問 `payroll_leave_options {lock_only:true}`（光復同一個 `payMonthLocked_`，跟 id_token 那條共用 60 秒暫存）。**問不到＝`busy`**，營運系統稍後重送（題 3：不可查不到就不擋）。
-   - 特休滿半年：`payroll_annual_from`（主管核准時用的同一支）。
+   - 特休滿半年：`payroll_annual_from`（主管核准時用的同一支）。**問不到比照鎖月回 `busy`（Eason 2026-11-21 定案）**：連不上／逾時、`ok` 不是 true、沒給 `annual_from`、給的不是日期 → 該次送單回 `busy`（營運系統稍後以同 `wb_id` 重送），不寫入、不留「正在寫」記號。問到了照舊判斷：`annual_from` 為空字串（光復明確回這個人沒有到職日資料／不適用）＝不擋；有日期且送單日早於它＝`annual_not_eligible`。只影響特休（單段、多段都是）；其他假別不多問光復；有 token 的簽名路與 id_token 路（`reqAnnualFromLine_`）、主管核准／代開（`reqAnnualFromEmp_`）都不動（查不到仍不擋）。
    - 本人額度表沒有對等來源：生理假、家庭照顧假、病假（年度用完規則開著時）回 `{"ok":false,"error":"need_line_token","message":"這張假單要用同仁本人的 LINE 登入確認額度，登入憑證已不在，請人工處理"}`，不寫（題 2＝A；營運系統列衝突 `line_token_lost`）。
 7. 試算表不加欄（題 4）；Apps Script 執行紀錄留一行「LINE 簽名寫回 店 動作 單號（無 token）」，不含姓名。
 
@@ -209,9 +209,16 @@ wb|1|<店代碼>|req_cancel|<wb_id>|<wb_ts>|<emp_id>|<id>
 | `unauthorized` | 主管金鑰錯或不是代管那把 | 衝突，不重試（設定錯） |
 | `not_bound`／`line_identity_conflict`／`line_emp_mismatch` | 第 3 步 | 衝突，不重試 |
 | `need_line_token` | 第 6 步 | 衝突 `line_token_lost`（同現在人工處理） |
-| `busy`／`too_many` | 鎖、記號、光復查不到鎖月、節流 | 重送（同 `wb_id`、重簽） |
+| `busy`／`too_many` | 鎖、記號、光復查不到鎖月、沒 token 的特休光復查不到滿半年那天、節流 | 重送（同 `wb_id`、重簽） |
 | `not_pending`（取消，第 2 次以上） | 記號被清掉後重送 | 看副本那列 `status=cancelled`、`decided_by=本人取消` → 是＝完成 |
 
 ### 10.4 「誰送的」只能從簽名包裝進來
 `handleReqSubmit_`／`handleReqCancel_` 的第二個參數（已認好的人）只有 `DutyFeed.gs` `dutyLineWbRun_` 在第 1、2 步都過了才傳。`doPost` 的路由（`Liff.gs` `req_submit: function (b) { return handleReqSubmit_(b); }`）只傳一個參數，外部請求塞 `emp_id`、`who`、`wbWho`… 都不會被採用（`tests/line-wb.test.js` X01–X08 直接打 `doPost` 驗）。
 
+### 10.5 防重記號鍵含動作名稱（2026-11-21，驗收補洞）與換版相容
+- 原本鍵是 `dwb:<wb_id>`，不含動作：手機若讓「取消」用跟某張「送單」相同的 `wb_id`，取消會被當成送單的重放，回成功與送單當時的結果、實際沒取消。現在鍵是 `dwb:<動作>:<wb_id>`（`mgr_approve`、`mgr_req_decide`、`mgr_req_decide_batch`、`mgr_req_void`、`req_submit`、`req_cancel` 各一把，多段送出同 `req_submit`），讀與寫一致；記號內存的 `a` 讀取時也比一次。
+- **換版瞬間**：讀取時新鍵找不到會再讀一次舊鍵 `dwb:<wb_id>`，且記號內的動作相同才算命中（動作不同＝不命中），所以換版前 6 小時內寫好的記號仍擋得住同動作重送；寫、刪只動新鍵（舊鍵自然過期）。現況沒有任何店是 mini 模式，沒有進行中的寫回。**若未來在有 mini 店時再改鍵格式，要先清空營運系統的寫回佇列（或確認沒有 6 小時內待重送的項目），再換版。**
+- 營運系統（mala-clock-relay、mala-store-ops）不依賴鍵格式：搜 `dwb:` 只有 Google 端與其測試。
+
+### 10.6 已接受風險：簽名涵蓋的欄位
+簽名只綁**工號、單號、類別、日期**（取消＝工號、申請編號；核定／審單另綁各自的對象），**不綁時數、假別細項、理由**等其他欄位。要利用這點，得先攔截 mini → Google 的 HTTPS 連線並改內容，且仍須在 ±10 分鐘內、持有同一個 `wb_id`；視為可接受，不為此加欄位進簽名（加了要雙邊同步改、會破壞既有簽名範例）。
