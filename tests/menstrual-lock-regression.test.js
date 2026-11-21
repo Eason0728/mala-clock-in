@@ -85,13 +85,20 @@ const chk = (n, cond, detail) => { cond ? pass++ : fail++; if (!cond || detail) 
 const DB_OLD = freshDB(), DB_NEW = freshDB();
 const sOld = ctx(OLD, DB_OLD, CLOCK), sNew = ctx(NEW, DB_NEW, CLOCK);
 let e08Nov = null, e11Nov = null;
+/* 跨店請款 #210 r8：2026-11 起每列草稿多 ot_info.xsup（請款逐筆，沒有支援＝[]，不進應發扣款）；跟舊版比對時拿掉（拿掉後 ot_info 空的就當沒有） */
+const NX = (k, v) => {
+  if (k !== 'ot_info' || v == null || v === '') return v;
+  let o = v; const str = typeof v === 'string'; if (str) { try { o = JSON.parse(v); } catch (e) { return v; } }
+  if (!o || typeof o !== 'object' || !('xsup' in o)) return v;
+  o = Object.assign({}, o); delete o.xsup; if (!Object.keys(o).length) return undefined; return str ? JSON.stringify(o) : o;
+};
 MONTHS.forEach((ym) => {
   const A = vm.runInContext('handlePayrollCalc', sOld)({ admin_key: 'x', ym, store: 'SSLGF' });
   const B = vm.runInContext('handlePayrollCalc', sNew)({ admin_key: 'x', ym, store: 'SSLGF' });
   chk(ym + ' 兩版都算得出來', A.ok && B.ok, A.ok && B.ok ? '' : JSON.stringify([A.error, B.error]));
   A.results.forEach((ra) => {
     const rb = B.results.find((x) => x.emp_id === ra.emp_id);
-    const same = JSON.stringify(ra) === JSON.stringify(rb);
+    const same = JSON.stringify(ra, NX) === JSON.stringify(rb, NX);
     if (ym === '2026-11' && ra.emp_id === 'E08') e08Nov = { old: ra.net, nw: rb.net, same };
     if (ym === '2026-11' && ra.emp_id === 'E11') e11Nov = { old: ra.net, nw: rb.net, same };
     if (ym < '2026-11') { lockedCompared++; chk(ym + ' ' + ra.emp_id + ' 逐項相同（鎖月）', same, same ? '' : '\n  舊 ' + JSON.stringify(ra).slice(0, 300) + '\n  新 ' + JSON.stringify(rb).slice(0, 300)); }

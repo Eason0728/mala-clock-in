@@ -1185,29 +1185,6 @@ function supXAddAll(r, sup, rts){
   });
   return out;
 }
-/* 請款摘要與整店指紋（r3 Codex 擋項 3）：後端 payXclaimSig_／payXclaimFp_／payHash16_ 逐字同一套。鎖定時送 xclaim_fp，
-   後端拿這次重算的比，不同＝畫面上算快照用的請款不是最新的 → 不鎖。 */
-function xclaimSig(ymv, oi){
-  if(!(String(ymv||'')>=SUP_CLAIM_FROM)) return '';
-  let o=oi; if(typeof oi==='string'){ try{ o=JSON.parse(oi||'{}'); }catch(e){ o={}; } }
-  o=o||{};
-  if(!o.xr&&!(o.xclaim&&o.xclaim.length)&&!(o.cross_ot&&o.cross_ot.length)&&!(o.xsup&&o.xsup.length)) return '';
-  return JSON.stringify([String(o.xr||''),o.xclaim||[],o.cross_ot||[],o.xsup||[]]);
-}
-function hash16(s){
-  s=String(s==null?'':s);
-  let a=0x811c9dc5, b=0x01000193^0x5bd1e995;
-  for(let i=0;i<s.length;i++){
-    const c=s.charCodeAt(i);
-    a=Math.imul(a^c,0x01000193)>>>0;
-    b=Math.imul(b^c,0x5bd1e995)>>>0; b=(b^(b>>>15))>>>0;
-  }
-  return ('0000000'+a.toString(16)).slice(-8)+('0000000'+b.toString(16)).slice(-8);
-}
-function xclaimFp(ymv, rows){
-  const list=(rows||[]).map(r=>[String(r.emp_id),xclaimSig(ymv,r.ot_info)]).filter(x=>x[1]).sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
-  return hash16(JSON.stringify(list));
-}
 /** 請款逐筆裡沒有門市代碼的筆數（2026-11 起才算；鎖定快照只存門市合計的舊月份不算） */
 function supNoCodeN(g){
   if(!(String(typeof ym==='function'?ym():'')>=SUP_CLAIM_FROM)) return 0;
@@ -1688,7 +1665,7 @@ function renderOtInfo(t){
   // 請假單和請假登記對不上（1113 紅燈 a1）：鎖定時會擋
   LEAVE_MM.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：${md(x.date)} ${esc(x.type)} ${x.side==='request'?'有已核准的請假單，請假登記沒有（請主管把那天重新核定一次）':'請假登記有，卻沒有已核准的請假單（請同仁補請假單，或主管重新核定改掉登記）'}——<b>處理前不能鎖定</b></li>`));
   SAME_NAME.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：打卡名冊有同名的人（${x.emp_ids.map(esc).join('、')}），本月 ${x.rows} 筆請假只有姓名，系統依在職與到離職日算給 ${x.to.map(esc).join('、')}，請確認沒有歸錯人</li>`));
-  RESULTS.forEach(r=>{const o=r.ot_info; if(!o) return; const nm=esc(r.name);
+  RESULTS.forEach(r=>{const o=r.ot_info; if(!o||o.ot_h===undefined) return; const nm=esc(r.name);   // r8：只有請款逐筆 xsup 的 ot_info（沒有逐日資料）＝當作沒有，提醒區同正式版
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
     if(o.elec_warn) rows.push(o.elec_warn.reason==='hol_manual'
       ? `<li><b class="bad">${nm}</b>：選舉日出勤沒有自動加發（這個月手填的國定假日時數和打卡不同，分不出是不是選舉日；請確認後用自訂加薪補）</li>`

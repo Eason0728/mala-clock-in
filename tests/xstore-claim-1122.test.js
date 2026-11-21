@@ -411,7 +411,7 @@ function randomCase() {
   // 擋項 3：請款摘要／指紋 前後端逐字相同、2026-10 與沒有跨店的人是空的
   const rs = [two.r, J(calc(build({ ft: true, days: [{ date: D, home: 9 }] })))]; rs[1].emp_id = 'Y2';
   const rsStr = J(rs); rsStr.forEach((r) => { r.ot_info = JSON.stringify(r.ot_info); });   // 草稿表存的是 JSON 字串
-  chk('r3-3 前端 xclaimFp＝後端 payXclaimFp_（物件／字串兩種 ot_info）', [vm.runInContext('xclaimFp("2026-11",' + JSON.stringify(rs) + ')', sbF), vm.runInContext('xclaimFp("2026-11",' + JSON.stringify(rsStr) + ')', sbF)], [S.call('payXclaimFp_', '2026-11', rs), S.call('payXclaimFp_', '2026-11', rs)]);
+  chk('r3-3 摘要物件／JSON 字串兩種 ot_info 相同（草稿表存字串）', S.call('payXclaimSig_', '2026-11', rsStr[0].ot_info), S.call('payXclaimSig_', '2026-11', rs[0].ot_info));   // r8：前端整店指紋已移除（快照由後端從草稿組）
   chk('r3-3 2026-10：摘要空的（鎖月行為同正式版）', S.call('payXclaimSig_', '2026-10', two.r.ot_info), '');
   chk('r3-3 沒有跨店的人：摘要空的', S.call('payXclaimSig_', '2026-11', rs[1].ot_info), '');
   chk('r3-3 只差 xr／xclaim（上線前舊草稿）：摘要不同', S.call('payXclaimSig_', '2026-11', Object.assign({}, two.r.ot_info, { xr: undefined, xclaim: undefined })) !== S.call('payXclaimSig_', '2026-11', two.r.ot_info), true);
