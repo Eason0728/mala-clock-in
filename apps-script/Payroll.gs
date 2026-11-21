@@ -3159,9 +3159,12 @@ function handlePayrollHolEmpSet(body) {
   if (payMonthLocked_(payRead('run'), ym, st)) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '選舉假名單') };
   const now = nowTaipeiIso(), note = String(body.note == null ? '' : body.note).slice(0, 100);
   const rows = ids.map(function (id) { return { ym: ym, date: date, store: st, emp_id: id, name: nameOf[id], note: note, updated_at: now }; });
-  // 存檔前先記下補休帳已經是負的人（存完再算一次，只提醒「因為這次勾選才變負」的人；算不出來就不提醒，不擋存檔）
+  // 存檔前先記下補休帳已經是負的人與餘額（存完再算一次，提醒「因為這次勾選才變負、或變得更負」的人；算不出來就不提醒，不擋存檔）
   let negBefore = null;
-  if (ids.length) { try { negBefore = payCompNegatives(ym, st).map(function (x) { return String(x.emp_id); }); } catch (e) { negBefore = null; } }
+  if (ids.length) {
+    try { negBefore = {}; payCompNegatives(ym, st).forEach(function (x) { negBefore[String(x.emp_id)] = payNum(x.balance_h); }); }
+    catch (e) { negBefore = null; }
+  }
   let lockedNow = false;
   if (!payWriteLocked_(['hol_emp', 'run'], function () {
     if (payMonthLocked_(payRead('run'), ym, st)) { lockedNow = true; return; }   // 拿到寫鎖後再查一次（別台剛鎖定）
@@ -3179,7 +3182,9 @@ function handlePayrollHolEmpSet(body) {
   if (negBefore) {
     try {
       const newly = payCompNegatives(ym, st).filter(function (x) {
-        return negBefore.indexOf(String(x.emp_id)) < 0 && ids.indexOf(String(x.emp_id)) >= 0;
+        const id = String(x.emp_id);
+        if (ids.indexOf(id) < 0) return false;
+        return !Object.prototype.hasOwnProperty.call(negBefore, id) || payNum(x.balance_h) < negBefore[id] - 0.005;   // 新變負，或比存檔前更負
       });
       if (newly.length) {
         res.warn_comp_negative = newly.length;
@@ -3752,7 +3757,7 @@ function payDailyFor_(e, ym, col, xEntry, sched, holDates, until, supportH, elec
   (holDates || []).forEach(function (d) { hol[String(d).trim()] = true; });
   const out = { dates: payEmpDates_(e, ym), sched: sched || {}, day_h: dayH, day_leave: (col && col.day_leave) || {},
            hol: hol, until: until || '', manual_sup_h: payR2(Math.max(0, payNum(supportH) - autoH)) };
-  // 選舉假（payElecApply_ 過濾後的日子）：日別當國定假日（hol），另記 elec 讓明細用「選舉日出勤」、補休照上班日。沒有就不加欄位
+  // 選舉假（payElecApply_ 過濾後的日子）：日別當國定假日（hol），另記 elec 讓明細用「選舉日出勤」；補休也照國定假日（不能抵，Eason 2026-11-22）。沒有就不加欄位
   if (elecDates && elecDates.length) {
     out.elec = {};
     elecDates.forEach(function (d) { d = String(d).trim(); hol[d] = true; out.elec[d] = true; });
@@ -4451,7 +4456,7 @@ function handlePayrollFinalize(body) {
       return { name: r.name, h: payNum(o.comp_over_h) };
     }).filter(function (x) { return x.h > 0; });
     if (over.length) return { ok: false, error: 'comp_over', list: over,
-      message: '下面的同仁補休比可以抵的加班多，不能鎖定（休息日第 3 小時起、例假、國定假日的加班不能抵）。請把多請的補休改成其他假別：\n' +
+      message: '下面的同仁補休比可以抵的加班多，不能鎖定（休息日第 3 小時起、例假、國定假日、選舉日的加班不能抵）。請把多請的補休改成其他假別：\n' +
         over.map(function (x) { return x.name + '：' + x.h + ' 小時'; }).join('\n') };
   }
   /* 超過 8H 沒有核准的加班單不能鎖定（出勤規範 4-2，2026-11-11 起算）。解鎖不擋。 */

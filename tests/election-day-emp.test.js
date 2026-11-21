@@ -192,6 +192,18 @@ console.log('\n══ d) 補休：選舉日的加班照國定假日不能抵補�
   const r1 = ws.F('handlePayrollHolEmpSet')({ admin_key: 'x', store: 'SSLGF', ym: '2026-11', date: E, emp_ids: ['E1', 'E2'] });
   chk('  存檔成功＋提醒 1 人（l 的加班已抵補休；a 沒有）', [r1.ok, r1.warn_comp_negative, r1.warn_message],
     [true, 1, '已儲存。其中 1 人選舉日的加班先前已拿去抵補休；選舉假那天的加班不能抵補休，這 1 人的補休帳會變成負的，本月會鎖不了。請把多請的補休改成其他假別，或補核准加班申請。']);
+  // 勾選前補休帳就是負的、勾選後更負（−2 → −4）也要算進提醒人數
+  const deeper = [['y1', '正職 W 10h（單 2h）＋補休 4h', true, W, 10, 2, { comp: { '2026-11-20': 4 } }],
+                  ['y2', '正職 W 8h＋補休 2h（本來就 −2，勾選後不變）', true, W, 8, 0, { comp: { '2026-11-19': 2 } }]];
+  const wd = world({ elec: [], only: [], extra: deeper });
+  chk('  勾選前：y1 −2、y2 −2', wd.F('payCompNegatives')('2026-11', 'SSLGF').map((x) => x.balance_h), [-2, -2]);
+  const rd = wd.F('handlePayrollHolEmpSet')({ admin_key: 'x', store: 'SSLGF', ym: '2026-11', date: E, emp_ids: ['E1', 'E2'] });
+  chk('  勾選 y1、y2：只有變得更負的 y1 算進提醒（1 人）', [rd.ok, rd.warn_comp_negative, wd.F('payCompNegatives')('2026-11', 'SSLGF').map((x) => x.balance_h)], [true, 1, [-4, -2]]);
+  // 補休抵不掉（comp_over）的鎖定訊息補上選舉日
+  const co = [['z1', '正職 11/20 W 8h＋加班單 2h（沒有超過 8H）＋11/21 補休 2h', true, W, 0, 0, { cells: { '2026-11-20': W }, hours: { '2026-11-20': 8 }, ot: { '2026-11-20': 2 }, comp: { '2026-11-21': 2 } }]];
+  const wc = world({ only: [], extra: co }); wc.calc();
+  const lc = wc.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true });
+  chk('  comp_over 訊息：休息日第 3 小時起、例假、國定假日、選舉日的加班不能抵', [lc.error, /例假、國定假日、選舉日的加班不能抵/.test(lc.message || '')], ['comp_over', true]);
   const r2 = ws.F('handlePayrollHolEmpSet')({ admin_key: 'x', store: 'SSLGF', ym: '2026-11', date: E, emp_ids: ['E2'] });
   chk('  只勾沒問題的人：沒有提醒欄位', [r2.ok, 'warn_comp_negative' in r2, 'warn_message' in r2], [true, false, false]);
   // 28 天加班同步的休息日旗標：試算回應帶 _elec（只有套用的人），payOtMonthSync_ 當國定假日
