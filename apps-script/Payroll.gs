@@ -1504,7 +1504,7 @@ function payOtMonthWage(e, cfg) {
 var PAY_ELEC_LABEL = '選舉日出勤';
 /* 生效月份（Codex 審查 S1）：存名單、正式計算、損益估算、補休帳一律同一個條件；不跟 PAY_OT_FORCE_（payroll_ot_preview 強制新算法）走。 */
 var PAY_ELEC_FROM = '2026-11';
-/* 計時「手填國定假日時數和打卡不同」（att.elec_hol_manual）時，去別店支援的選舉日加倍也一起停發、只提醒（Codex 第三次 B3；大腦讀法，待 Eason 確認）。
+/* 計時「手填國定假日時數和打卡不同」（att.elec_hol_manual）時，去別店支援的選舉日加倍也一起停發、只提醒（Codex 第三次 B3；Eason 2026-11-22 確認）。
    ⇩ 翻轉點：改成 false＝只停本店、支援照發（回到 42b122b 的行為）。只有 payCalcOne 計時那段讀它，損益估算走同一支 payCalcOne。 */
 var PAY_ELEC_MANUAL_STOPS_SUP = true;
 /** 計時去別店支援的選舉日加倍「實際發的」時數（att.sup_elec 套上手填衝突停發；停發的列 hours＝0、stopped＝true、want 照舊）。
