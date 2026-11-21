@@ -732,6 +732,23 @@ function payAsOfEmp_(e, asOf) {
   return out;
 }
 
+/* 請款摘要（r3 Codex 擋項 3）：鎖月比對要連「向誰請、請多少」一起比——每店月總時數、薪資都一樣但請款歸屬變了（兩天互換支援店）、
+   或上線前的舊草稿只差 xr／xclaim 時，舊比對會放行。只在跨店請款生效月份（PAY_XCLAIM_FROM）以後比；更早的月份、
+   沒有跨店的人（三個欄位都沒有）摘要是空字串，鎖月行為跟正式版相同。數字是引擎已取兩位的值，同一份資料重算逐字相同。
+   payroll.html xclaimSig／xclaimFp 逐字同一套。 */
+function payXclaimSig_(ym, oi) {
+  if (!payXclaimOn_(ym)) return '';
+  let o = oi; if (typeof oi === 'string') { try { o = JSON.parse(oi || '{}'); } catch (e) { o = {}; } }
+  o = o || {};
+  if (!o.xr && !(o.xclaim && o.xclaim.length) && !(o.cross_ot && o.cross_ot.length)) return '';
+  return JSON.stringify([String(o.xr || ''), o.xclaim || [], o.cross_ot || []]);
+}
+/** 整店請款指紋：[工號, 摘要]（摘要空的不列）照工號排，payHash16_。前端鎖定時送它算快照用的那份（body.xclaim_fp）。 */
+function payXclaimFp_(ym, rows) {
+  const list = (rows || []).map(function (r) { return [String(r.emp_id), payXclaimSig_(ym, r.ot_info)]; })
+    .filter(function (x) { return x[1]; }).sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; });
+  return payHash16_(JSON.stringify(list));
+}
 /** 鎖定前用最新資料試算一次，和草稿比（2026-10 起，見 PAY_LOCK_RECHECK_FROM）。回 { list } 差異名單；算不出來回 { error }。
  *  草稿裡有、現在算不到的人不算差異（主檔已改離職的人，重算會讓整列消失）。 */
 function payLockStale_(body, ym, st) {
@@ -748,13 +765,15 @@ function payLockStale_(body, ym, st) {
     o = o || {};
     return JSON.stringify([payNum(o.comp_over_h), o.ot_form_missing || []]);
   };
+  let claim = false;   // r3：只有請款不同（不列進名單，finalize 用既有「試算後資料有改過」那句擋）
   (calc.results || []).forEach(function (r) {
     const old = byId[String(r.emp_id)];
     if (!old) { list.push({ name: r.name, is_new: true, new_net: r.net }); return; }
     const money = ['gross', 'deduction', 'net'].some(function (k) { return Math.abs(payNum(old[k]) - payNum(r[k])) >= 0.5; });
     if (money || gate(old.ot_info) !== gate(r.ot_info)) list.push({ name: r.name, old_net: payNum(old.net), new_net: payNum(r.net), money: money });
+    else if (payXclaimSig_(ym, old.ot_info) !== payXclaimSig_(ym, r.ot_info)) claim = true;
   });
-  return { list: list };
+  return { list: list, claim: claim, xfp: payXclaimFp_(ym, calc.results || []) };
 }
 
 /* ═══════════════════ 計算引擎（與 ~/mala-payroll 已驗證版本同一套公式）═══════════════════ */
@@ -1367,6 +1386,10 @@ function payOtFormCheck_(att, opt) {
   if (!own || !f) return out;
   const cross = att.ot_cross || {};
   const xdays = att.ot_xdays || null, d5 = !!(opt && typeof opt.ft === 'boolean' && xdays);
+  /* D5 只能放寬、不能比正式版（2026-11-22 以前的規則）更嚴（Codex 2026-11-22 擋項 4：國定假日＋班表休息日 H 重疊，
+     舊規則國定假日優先、新的逐店分支看原始 H，會多擋一張本店單）。所以 D5 的缺單只留「舊規則也缺」的那一筆（同日期、同店），
+     時數取兩者較小。舊規則＝不帶 opt 的同一支（d5 關閉，路徑與正式版逐行相同）。 */
+  const base = d5 ? payOtFormCheck_(att) : null;
   const formOf = function (code, acct) {   // 支援店的加班單（讀不到那家＝null，不檢查）
     const fx = (att.ot_forms_x || {})[code];
     if (!fx) return null;
@@ -1418,6 +1441,14 @@ function payOtFormCheck_(att, opt) {
     const kind = payOtKindOf((dl.sched || {})[d] || null, !!(dl.hol || {})[d]);
     if (kind !== 'H' && kind !== 'R' && kind !== 'HOL') out.trip_ot.push(d);
   });
+  if (base) {
+    const old = {};
+    base.missing.forEach(function (x) { old[x.date + '|' + String(x.store || '')] = x; });
+    out.missing = out.missing.filter(function (x) { return old[x.date + '|' + String(x.store || '')]; }).map(function (x) {
+      const o = old[x.date + '|' + String(x.store || '')];
+      return payNum(o.need) < payNum(x.need) ? o : x;
+    });
+  }
   return out;
 }
 /** 墨竹亭全時同仁每日出勤要滿 8 小時（含出差、請假，出勤規範 4-6）：排工作日、到昨天為止、當天有出勤或請假卻不滿 8 小時的日子。只提醒。 */
@@ -3444,7 +3475,7 @@ function handlePayrollHolEmpSet(body) {
                         reason: st + ' 選舉假名單 ' + (date || '（清除）') + ' 共 ' + rows.length + ' 人', store: st }]);
   const res = { ok: true, count: rows.length, ym: ym, date: ids.length ? date : '', store: st };
   // 損益月中估算有 600 秒快取（同年月／門市／截止日）：名單改了就清掉這一格（Codex S4）
-  try { CacheService.getScriptCache().remove('pnlestimate|' + ym + '|' + st + '|' + pnlAsOfDate_(ym, todayTaipeiStr())); } catch (e) { /* 清不掉就等它過期 */ }
+  try { var pk = 'pnlestimate|' + ym + '|' + st + '|' + pnlAsOfDate_(ym, todayTaipeiStr()); CacheService.getScriptCache().remove(pk); if (payXclaimOn_(ym)) CacheService.getScriptCache().remove(pk + '|' + PAY_XCLAIM_VER); } catch (e) { /* 清不掉就等它過期 */ }
   /* 選舉假那天的加班不能抵補休（Eason 2026-11-22 00:40）：勾選的人那天的加班如果已經拿去抵補休，補休帳會變負、本月鎖不了。
      存檔照樣成功，回人數提醒（不列姓名），鎖定時 comp_negative 會再列出是誰。
      比的是勾選的每一位（含當月離職的正職），名單用寫鎖內同一份快照；新變負或比存檔前更負都算（Codex S2）。
@@ -4769,6 +4800,10 @@ function handlePayrollFinalize(body) {
         if (x.is_new) return x.name + '：草稿沒有這個人';
         return x.name + '：' + (x.money ? '實付 ' + x.old_net + ' → ' + x.new_net : '加班單或補休檢查結果不同');
       }).join('\n') + (stale.list.length > 30 ? '\n…共 ' + stale.list.length + ' 人' : '') };
+    /* r3（Codex 擋項 3）：草稿的請款跟現在重算的不同，或畫面送來算快照用的請款（xclaim_fp）跟重算不同 → 不鎖、不存那份快照；
+       前端照 stale_run 自動重算。舊前端沒送 xclaim_fp＝只比草稿。2026-10 以前、沒有跨店的店：摘要都是空的，不會擋。 */
+    if (stale.claim || (body.xclaim_fp != null && payXclaimOn_(ym) && String(body.xclaim_fp) !== stale.xfp))
+      return { ok: false, error: 'stale_run', list: [], message: '試算後資料有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。' };
   }
   /* 補休帳是負的不能鎖定（Eason 2026-11-01：不自動扣，擋住鎖定）。解鎖不擋。 */
   if (lock && ym >= PAY_COMP_MONTHLY_FROM) {
@@ -6854,13 +6889,21 @@ function paySnapDetailSanitize_(d) {
              co_labor: payNum(e.co_labor), co_health: payNum(e.co_health), co_pension: payNum(e.co_pension),
              yearend_months: payNum(e.yearend_months), yearend: payNum(e.yearend), gap_rate: payNum(e.gap_rate) };
   });
-  var sup = (Array.isArray(d.sup) ? d.sup : []).slice(0, PAY_SNAP_DETAIL_MAX).map(function (x) {
+  /* 被支援門市彙總（r3 Codex 擋項 6）：在截斷前用全部逐筆算 {門市代碼: 金額}，損益 xsup_cost 用這份，逐筆超過上限也不少算。
+     沒有門市代碼的列不進彙總（同 pnlXsupCost_）。2026-11-22 以前的快照沒有這欄＝照舊加逐筆。 */
+  var supAll = Array.isArray(d.sup) ? d.sup : [], supCode = {};
+  supAll.forEach(function (x) { var c = payXsupCode_(str((x || {}).code)); if (c) supCode[c] = payR2((supCode[c] || 0) + payNum((x || {}).amount)); });
+  var sup = supAll.slice(0, PAY_SNAP_DETAIL_MAX).map(function (x) {
     x = x || {};
-    return { emp_id: str(x.emp_id), ft: bool(x.ft), store: str(x.store) || '（未指定）', code: payXsupCode_(str(x.code)),
+    var o = { emp_id: str(x.emp_id), ft: bool(x.ft), store: str(x.store) || '（未指定）', code: payXsupCode_(str(x.code)),
              hours: payNum(x.hours), rate: payNum(x.rate), gapH: payNum(x.gapH), gapRate: payNum(x.gapRate),
              amount: payNum(x.amount), fixed: bool(x.fixed) };
+    if (x.otH != null || x.otAdd != null) { o.otH = payNum(x.otH); o.otAdd = payNum(x.otAdd); }   // 加班／假日加成（r3 擋項 5：鎖定後明細照樣顯示；舊前端沒送＝不帶）
+    return o;
   });
-  return { v: 1, co_auto: coAuto, emp: emp, sup: sup };
+  var outD = { v: 1, co_auto: coAuto, emp: emp, sup: sup };
+  if (Array.isArray(d.sup) && d.sup.some(function (x) { return x && Object.prototype.hasOwnProperty.call(x, 'code'); })) outD.sup_code = supCode;
+  return outD;
 }
 
 /* 移除某 (ym, store) 的快照（2026-09-25 審查加）。用在：①解鎖時——這個月不再是定案
@@ -6958,7 +7001,7 @@ function handlePnlPayroll_(body) {
     support: support,
     total: payNum(snap.total)
   };
-  if (xs) out.rows.xsup_cost = xs.amount;
+  if (xs) { out.rows.xsup_cost = xs.amount; out.xsup_pending = xs.pending; }   // xsup_pending（r3 SHOULD-FIX a）：同月還沒鎖、或鎖了沒快照的別家門市代碼（那幾家請本店的錢還沒進來）
   return out;
 }
 /* 他店支援人力成本（2026-11-22 Eason D6）：別家店鎖定快照的跨店請款逐筆明細（detail_json.sup，2026-11-22 起帶 code）裡，
@@ -6980,7 +7023,8 @@ function pnlXsupCost_(ym, st) {
     if (!byStore[s] || !row) { out.pending.push(s); return; }
     var d = null;
     try { d = JSON.parse(row.detail_json || 'null'); } catch (e) { d = null; }
-    ((d && d.sup) || []).forEach(function (x) { if (x && payXsupCode_(x.code) === st) out.amount += payNum(x.amount); });
+    if (d && d.sup_code && typeof d.sup_code === 'object') out.amount += payNum(d.sup_code[st]);   // r3：截斷前的彙總
+    else ((d && d.sup) || []).forEach(function (x) { if (x && payXsupCode_(x.code) === st) out.amount += payNum(x.amount); });
   });
   out.amount = payR2(out.amount);
   return out;
@@ -7096,18 +7140,27 @@ function pnlSupClaimRate_(ym, r, m, cfg) {
   return (r.earn || []).filter(function (x) { return x.item_key === 'hourly_wage' || x.item_key === 'pt_attend_plus' || x.item_key === 'pt_tenure_plus'; })
     .reduce(function (s, x) { return s + payNum(x.rate); }, 0);
 }
-/** 跨店請款加成：payroll.html supXAdd 的逐字 port（2026-11-22）。有 xr 戳記用 xclaim（含休息日／例假／國定假日／選舉日），沒有照舊 cross_ot。 */
-function pnlSupXAdd_(r, x, rt) {
+/** 跨店請款加成：payroll.html supXAddAll 的逐字 port（2026-11-22；r3 Codex 擋項 1）。有 xr 戳記用 xclaim（含休息日／例假／國定假日／選舉日），沒有照舊 cross_ot。
+ *  引擎的 xclaim／cross_ot 已經是「這個人、這家店、整月」的合計 → 每家店只入帳一次：給同一家店第一筆「沒有指定金額」的支援列；
+ *  同一家拆成好幾筆時其他列不再加（以前每筆都加一次＝重複請款）。全部是指定金額的列＝整筆以填的為準，不加（既有語意）。
+ *  比對：兩邊都有門市代碼只比代碼；有一邊沒有代碼才比店名。sup＝支援列、rts＝每列的請款時薪；回 [{h, add}]（跟 sup 同順序）。 */
+function pnlSupXAddAll_(r, sup, rts) {
   var oi = r.ot_info || {};
-  var hit = function (c) { return (c.code && x.code && String(c.code) === String(x.code)) || (c.name && c.name === x.store); };
-  if (oi.xr) {
-    var c = (oi.xclaim || []).filter(hit)[0];
-    if (!c) return { h: 0, add: 0 };
-    return { h: payNum(c.h43) + payNum(c.h53) + payNum(c.r43) + payNum(c.r53) + payNum(c.r83) + payNum(c.d8) + payNum(c.hx),
-             add: (payNum(c.h43) * 0.34 + payNum(c.h53) * 0.67 + payNum(c.r43) * 0.34 + payNum(c.r53) * 0.67 + payNum(c.r83) * 1.67 + payNum(c.d8) + payNum(c.hx)) * rt };
-  }
-  var cpx = (oi.cross_ot || []).filter(hit)[0];
-  return cpx ? { h: payNum(cpx.h43) + payNum(cpx.h53), add: (payNum(cpx.h43) * 0.34 + payNum(cpx.h53) * 0.67) * rt } : { h: 0, add: 0 };
+  var out = sup.map(function () { return { h: 0, add: 0 }; });
+  var hit = function (c, x) {
+    var cc = String(c.code || ''), xc = String(x.code || '');
+    return (cc && xc) ? cc === xc : (!!c.name && c.name === x.store);
+  };
+  var list = oi.xr ? (oi.xclaim || []) : (oi.cross_ot || []);
+  list.forEach(function (c) {
+    var i = -1;
+    for (var k = 0; k < sup.length; k++) { if (!payNum(sup[k].amount) && hit(c, sup[k])) { i = k; break; } }
+    if (i < 0) return;
+    var h = oi.xr ? payNum(c.h43) + payNum(c.h53) + payNum(c.r43) + payNum(c.r53) + payNum(c.r83) + payNum(c.d8) + payNum(c.hx) : payNum(c.h43) + payNum(c.h53);
+    var m = oi.xr ? payNum(c.h43) * 0.34 + payNum(c.h53) * 0.67 + payNum(c.r43) * 0.34 + payNum(c.r53) * 0.67 + payNum(c.r83) * 1.67 + payNum(c.d8) + payNum(c.hx) : payNum(c.h43) * 0.34 + payNum(c.h53) * 0.67;
+    out[i].h += h; out[i].add += m * rts[i];
+  });
+  return out;
 }
 function pnlEstimateClassify_(results, master, att, cfg, ym) {
   var g = { base: 0, ot: 0, attend: 0, allow: 0, mgr: 0, pt: 0, other: 0, meal: 0, bs: 0, bp: 0, bj: 0,
@@ -7135,10 +7188,11 @@ function pnlEstimateClassify_(results, master, att, cfg, ym) {
       var gapH = r.base_hours != null ? Math.max(0, payNum(r.base_hours) - payNum(r.total_hours)) : 0;
       var alloc = pnlAllocGapHours_(sup.map(function (x) { return payNum(x.hours); }), gapH);
       var cr = pnlSupClaimRate_(ym, r, mEmp, cfg);
+      var xadd = pnlSupXAddAll_(r, sup, sup.map(function (x) { return cr != null ? cr : payNum(x.rate); }));   // 同 payroll.html supXAddAll（每家店只入帳一次，r3）
       sup.forEach(function (x, i) {
         var h = payNum(x.hours), rt = cr != null ? cr : payNum(x.rate);
         var t1 = (cr == null && gapRate > 0) ? alloc[i] : 0, t2 = h - t1;
-        var otAdd = pnlSupXAdd_(r, x, rt).add;   // 同 payroll.html supXAdd（2026-11-18 平日、2026-11-22 加休息日／例假／國定假日／選舉日）
+        var otAdd = xadd[i].add;
         var amt = payNum(x.amount) || (t1 * gapRate + t2 * rt + otAdd);
         g.sup.push({ store: x.store || '（未指定）', amount: amt });
       });
@@ -7247,7 +7301,7 @@ function handlePnlLaborEstimate_(body) {
 
   var cache = CacheService.getScriptCache();
   var elecFpE = payElecOn_(ym) ? payElecFp_(payHolEmpRows_(), ym, st) : '';
-  var cacheKey = 'pnlestimate|' + ym + '|' + st + '|' + asOf + (elecFpE ? '|e' + payHash16_(elecFpE) : '');   // 名單用固定 16 字元摘要（完整工號串可能超過快取鍵 250 字元上限，Codex 第三次）   // 名單改了就換鍵（Codex 複審：清掉後舊請求回填舊值）；沒有名單鍵不變
+  var cacheKey = 'pnlestimate|' + ym + '|' + st + '|' + asOf + (elecFpE ? '|e' + payHash16_(elecFpE) : '') + (payXclaimOn_(ym) ? '|' + PAY_XCLAIM_VER : '');   // 請款公式版本（r3 SHOULD-FIX b：部署後不回舊公式的快取）   // 名單用固定 16 字元摘要（完整工號串可能超過快取鍵 250 字元上限，Codex 第三次）   // 名單改了就換鍵（Codex 複審：清掉後舊請求回填舊值）；沒有名單鍵不變
   var cached = cache.get(cacheKey);
   if (cached) {
     try { return JSON.parse(cached); } catch (parseErr) { /* 壞掉的快取當沒有，往下重算 */ }

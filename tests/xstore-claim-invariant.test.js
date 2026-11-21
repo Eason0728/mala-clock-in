@@ -54,7 +54,15 @@ function build(o, E) {
     });
   });
   const xEntry = { stores: Object.keys(by).map((k) => by[k]) };
-  const support = xEntry.stores.map((s) => ({ code: s.code, store: s.name, hours: (o.supPaid && o.supPaid[s.code] != null) ? Math.min(o.supPaid[s.code], s.hours) : s.hours, rate: 200, amount: '', auto: true }));
+  const support = [];
+  xEntry.stores.forEach((s) => {
+    const h = (o.supPaid && o.supPaid[s.code] != null) ? Math.min(o.supPaid[s.code], s.hours) : s.hours;
+    const parts = (o.split && o.split[s.code]) || 1;   // r3：同一店拆成好幾筆支援列（手填常見）
+    for (let k = 0; k < parts; k++) {
+      const hk = k < parts - 1 ? r2(Math.floor(h / parts * 4) / 4) : r2(h - Math.floor(h / parts * 4) / 4 * (parts - 1));
+      support.push({ code: s.code, store: s.name, hours: hk, rate: 200, amount: (o.fixed && o.fixed[s.code] && k === 0) ? o.fixed[s.code] : '', auto: k === 0 });
+    }
+  });
   const supH = support.reduce((a, s) => a + s.hours, 0);
   const homeSum = r2(Object.keys(col.day_h).reduce((a, k) => a + col.day_h[k], 0));
   const daily = E.call('payDailyFor_', e, YM, col, xEntry, sched, hol, '', supH, elec);
@@ -87,8 +95,8 @@ function randomCase() {
   let day = 1 + Math.floor(rnd() * 3);
   for (let i = 0; i < nd && day <= 30; i++, day += 1 + Math.floor(rnd() * 4)) {
     const date = '2026-11-' + String(day).padStart(2, '0');
-    const k = pick(['W', 'W', 'W', 'H', 'H', 'R', 'L', 'G', 'HOL', 'ELEC', 'ELEC']);
-    const d = { date, cell: k === 'HOL' || k === 'ELEC' ? 'W' : k, hol: k === 'HOL', elec: k === 'ELEC', home: rnd() < 0.25 ? 0 : q(), sups: [] };
+    const k = pick(['W', 'W', 'W', 'H', 'H', 'R', 'L', 'G', 'HOL', 'ELEC', 'ELEC', 'HOLH', 'HOLR']);   // HOLH／HOLR：國定假日清單＋班表休息日／例假重疊（r3）
+    const d = { date, cell: k === 'HOL' || k === 'ELEC' ? 'W' : k === 'HOLH' ? 'H' : k === 'HOLR' ? 'R' : k, hol: k === 'HOL' || k === 'HOLH' || k === 'HOLR', elec: k === 'ELEC', home: rnd() < 0.25 ? 0 : q(), sups: [] };
     const ns = rnd() < 0.25 ? 0 : 1 + Math.floor(rnd() * 3);
     const s0 = 360 + Math.floor(rnd() * 48) * 15;
     ['MZTJS', 'MZTLZL', 'MZTMC'].slice(0, ns).forEach((c, j) => d.sups.push({ code: c, h: rnd() < 0.1 ? 0 : q(), s: rnd() < 0.2 ? s0 : 360 + Math.floor(rnd() * 60) * 15 + j }));   // 兩成同時開始（D7 並列）
@@ -98,6 +106,8 @@ function randomCase() {
   if (!ft && days.some((d) => d.elec) && rnd() < 0.3) o.holManual = true;   // 計時手填國定假日時數≠打卡 → 選舉日本店與支援都不自動發
   if (!ft && rnd() < 0.2) o.hours = Math.round(rnd() * 40) / 2;              // 總時數被手調低
   if (rnd() < 0.2) { o.supPaid = {}; ['MZTJS', 'MZTLZL', 'MZTMC'].forEach((c) => { if (rnd() < 0.5) o.supPaid[c] = Math.round(rnd() * 32) / 4; }); }   // 採計支援時數少於逐日
+  if (rnd() < 0.3) { o.split = {}; ['MZTJS', 'MZTLZL', 'MZTMC'].forEach((c) => { if (rnd() < 0.6) o.split[c] = 2 + Math.floor(rnd() * 2); }); }   // r3：同店多筆
+  if (rnd() < 0.15) { o.fixed = {}; ['MZTJS', 'MZTLZL', 'MZTMC'].forEach((c) => { if (rnd() < 0.5) o.fixed[c] = 100 + Math.floor(rnd() * 3000); }); }   // r3：金額指定列
   return o;
 }
 
@@ -118,8 +128,8 @@ function paidDay(otS, d, ft) {
 const supPaidQty = (r, name) => r.earn.filter((x) => x.item_key === 'holiday_double' && (x.item_label === '國定假日加倍（支援' + name + '）' || x.item_label === ELEC_LABEL + '（支援' + name + '）')).reduce((a, x) => a + x.qty, 0);
 
 const t0 = Date.now();
-const V = { pay: 0, day: 0, sup: 0, store: 0, recon: 0, slipDay: 0 };
-const C = { cases: 0, cross: 0, claim: 0, kindH: 0, kindR: 0, kindHOL: 0, kindELEC: 0, stopped: 0, tie: 0, multi: 0, comp: 0, ptSupDouble: 0, capped: 0 };
+const V = { pay: 0, day: 0, sup: 0, store: 0, recon: 0, slipDay: 0, amt: 0, formStricter: 0, formStricterCase: 0 };
+const C = { cases: 0, cross: 0, claim: 0, kindH: 0, kindR: 0, kindHOL: 0, kindELEC: 0, stopped: 0, tie: 0, multi: 0, comp: 0, ptSupDouble: 0, capped: 0, split: 0, fixed: 0, overlap: 0, formCases: 0, formMainPass: 0 };
 const ex = {};
 const note = (k, o) => { if (!ex[k]) ex[k] = o; };
 for (let i = 0; i < N; i++) {
@@ -130,7 +140,35 @@ for (let i = 0; i < N; i++) {
   const r0 = J(S0.call('payCalcOne', b0.e, YM, b0.att, H.cfg, 4, LT0));
   C.cases++;
   if (strip(r) !== strip(r0)) { V.pay++; note('pay', { o, a: strip(r).slice(0, 400), b: strip(r0).slice(0, 400) }); }
+  if (o.days.some((d) => d.hol && (d.cell === 'H' || d.cell === 'R') && (d.home > 0 || d.sups.some((x) => x.h > 0)))) C.overlap++;
+  // 加班單檢查：新版不可以比正式版多擋（r3 擋項 4）。先照正式版沒單時要的單補齊（三成機率每筆隨機少補一點），兩版同一份單比
+  {
+    const m0 = J(S0.call('payOtFormCheck_', b0.att)).missing;
+    const fh = {}, fs = {};
+    m0.forEach((x) => { const v = rnd() < 0.3 ? Math.max(0, r2(x.need - Math.ceil(rnd() * 8) / 4)) : x.need; if (x.store) { (fs[x.store] = fs[x.store] || {})[x.date] = v; } else fh[x.date] = v; });
+    const setF = (att) => { att.ot_forms = { ot: Object.assign({}, fh), trip: {} }; Object.keys(att.ot_forms_x || {}).forEach((k) => { att.ot_forms_x[k] = { 'id:7': { ot: Object.assign({}, fs[k] || {}) } }; }); };
+    setF(b.att); setF(b0.att);
+    const mN = J(S.call('payOtFormCheck_', b.att, { ft: o.ft })).missing, mO = J(S0.call('payOtFormCheck_', b0.att)).missing;
+    C.formCases++; if (!mO.length) C.formMainPass++;
+    const keyO = {}; mO.forEach((x) => { keyO[x.date + '|' + (x.store || '')] = x.need; });
+    const extra = mN.filter((x) => !((x.date + '|' + (x.store || '')) in keyO) || x.need > keyO[x.date + '|' + (x.store || '')] + 0.005);
+    if (extra.length) { V.formStricter++; note('form', { o, mN, mO }); }
+    if (mN.length && !mO.length) V.formStricterCase++;
+    b.att.ot_forms = { ot: {}, trip: {} }; b0.att.ot_forms = { ot: {}, trip: {} };
+  }
   if (!b.xEntry.stores.length) continue;
+  if (o.split) C.split++;
+  if (o.fixed) C.fixed++;
+  // 請款金額：每家店的加成只入帳一次（同店多筆不重複）；全是指定金額的店不加（r3 擋項 1、2）
+  {
+    const xa = J(S.call('pnlSupXAddAll_', r, b.att.support, b.att.support.map(() => 200)));
+    const byCode = {};
+    b.att.support.forEach((x, i) => { const k = x.code; byCode[k] = byCode[k] || { add: 0, free: false }; byCode[k].add += xa[i].add; if (!Number(x.amount)) byCode[k].free = true; });
+    Object.keys(byCode).forEach((k) => {
+      const c = (r.ot_info.xclaim || []).find((y) => y.code === k), want = c && byCode[k].free ? mh(c) * 200 : 0;
+      if (Math.abs(byCode[k].add - want) > 0.01) { V.amt++; note('amt', { o, k, add: byCode[k].add, want }); }
+    });
+  }
   C.cross++;
   const xc = vm.runInContext('__XC', S);
   if (!xc) continue;
@@ -188,7 +226,11 @@ chk('I2b 計時國定假日／選舉日：每家店 hx ≤ 薪資單實發的支
 chk('I2c 每家店整月：請款倍數時數 ≤ 有出勤那幾天實際多拿的加成＋實發支援加倍，違反', V.store, 0);
 chk('I2d 對帳：引擎 xclaim 整月＝逐日拆開合計，不符', V.recon, 0);
 chk('I2e 對帳：逐日「實際多拿」合計＝薪資單加班類項目，不符', V.slipDay, 0);
-chk('涵蓋：有跨店、有請款、休息日／例假／國定／選舉日都有出現請款、手填停發、並列、多支援、補休抵', [C.cross > N * 0.5, C.claim > N * 0.4, C.kindH > N / 20, C.kindR > N / 20, C.kindHOL > N / 20, C.kindELEC > N / 20, C.stopped > N / 40, C.tie > N / 400, C.multi > N / 2, C.comp > N / 40], [true, true, true, true, true, true, true, true, true, true]);
+chk('I3 請款金額：每家店加成只入帳一次（同店多筆不重複）、全是指定金額的店不加，不符', V.amt, 0);
+chk('I4 加班單：新版要的單比正式版多（多一筆或時數更多），違反', V.formStricter, 0);
+chk('I4 加班單：新版擋而正式版不擋的組數', V.formStricterCase, 0);
+chk('I4 涵蓋：補齊後正式版放行的組數夠多（比對有意義）、國定＋班表 H／R 重疊有出現', [C.formMainPass * 2 >= N, C.overlap * 20 >= N], [true, true]);
+chk('涵蓋：有跨店、有請款、休息日／例假／國定／選舉日都有出現請款、手填停發、並列、多支援、補休抵', [C.split * 10 >= N && C.fixed * 20 >= N, C.claim > N * 0.4, C.kindH > N / 20, C.kindR > N / 20, C.kindHOL > N / 20, C.kindELEC > N / 20, C.stopped > N / 40, C.tie > N / 400, C.multi > N / 2, C.comp > N / 40], [true, true, true, true, true, true, true, true, true, true]);
 Object.keys(ex).forEach((k) => console.log('  例 ' + k + '：' + JSON.stringify(ex[k]).slice(0, 900)));
 console.log('\n' + (f ? '❌' : '✅') + ' 跨店請款不變量：' + p + ' 過、' + f + ' 失敗');
 process.exit(f ? 1 : 0);
