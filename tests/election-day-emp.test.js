@@ -403,6 +403,24 @@ console.log('\n══ e5) 計時跨店支援整條鏈（主算、損益估算；
     chk('  #210 r3 畫面請款指紋跟重算不同 → stale_run、沒鎖、快照沒寫', [l3.ok, l3.error, w3.DB.run[0].status, (w3.DB.cost_snapshot || []).length], [false, 'stale_run', 'draft', 0]);
     const w4 = mk({}); calcW(w4);
     chk('  #210 r3 舊前端沒送指紋：只比草稿，照樣鎖得下去', lockOf(w4).ok, true);
+    // r5（Codex 擋項 1／全資料驗證 A）：正式版 payroll.html 的鎖定請求（沒有 xclaim_fp、快照是舊公式、沒有門市代碼）→ 存下的是後端產生的新版
+    const w5 = mk({}); const c5 = calcW(w5);
+    const oldSnap = { total: 1, support: { '支援店': 1 }, detail: { v: 1, co_auto: {}, emp: [], sup: [{ emp_id: 'E1', ft: false, store: '支援店', hours: 16, rate: 200, gapH: 0, gapRate: 0, amount: 1, fixed: false }] } };
+    const l5 = lockOf(w5, { cost_snapshot: oldSnap });
+    const s5 = (w5.DB.cost_snapshot || [])[0] || {}, d5 = JSON.parse(s5.detail_json || 'null') || {};
+    const hx5 = ((c5.results[0].ot_info.xclaim || [])[0] || {}).hx;
+    chk('  #210 r5 舊前端（正式版頁面）鎖 2026-11 → 鎖得下去、快照是後端產生的：有門市代碼、有加成、sup_code 正確', [l5.ok, d5.sup.map((x) => [x.code, x.otAdd > 0, x.amount]), d5.sup_code, JSON.parse(s5.support_json)],
+      [true, [['SSLHQ', true, 16 * 200 + hx5 * 200]], { SSLHQ: 16 * 200 + hx5 * 200 }, { '支援店': 16 * 200 + hx5 * 200 }]);
+    // 兩個分頁：乙把指定金額 1,600 改成 2,600、存檔重算；甲沒重新載入就鎖（請款指紋一樣）→ 存下的是 2,600
+    const w6 = mk({});
+    const inp = (amt) => [{ ym: '2026-11', emp_id: 'E1', store: 'SSLGF', hours: 0, extra_ot: 0, deduct_days: 0, support: JSON.stringify([{ code: 'SSLHQ', store: '支援店', hours: 16, rate: 200, amount: amt, keep: true, auto_h: 16 }]), hours_manual: '' }];
+    w6.DB.input = inp(1600); const c6a = calcW(w6);
+    const fp6 = w6.F('payXclaimFp_')('2026-11', c6a.results);
+    const snapA = { total: 1, support: { '支援店': 1600 }, detail: { v: 1, co_auto: {}, emp: [], sup: [{ emp_id: 'E1', ft: false, store: '支援店', code: 'SSLHQ', hours: 16, rate: 200, gapH: 0, gapRate: 0, otH: 0, otAdd: 0, amount: 1600, fixed: true }] } };
+    w6.DB.input = inp(2600); calcW(w6);   // 乙存檔＋重算
+    const l6 = lockOf(w6, { xclaim_fp: fp6, cost_snapshot: snapA });
+    const d6 = JSON.parse(((w6.DB.cost_snapshot || [])[0] || {}).detail_json || 'null') || {};
+    chk('  #210 r5 只改指定金額、用舊畫面鎖 → 存下的是新金額 2,600（後端產生），不是畫面送的 1,600', [l6.ok, d6.sup.map((x) => [x.amount, x.fixed]), d6.sup_code], [true, [[2600, true]], { SSLHQ: 2600 }]);
   }
   chk('  沒勾選：四種採計都跟 45ccbec 逐欄相同（不含 #210 請款欄 xr／xclaim）', !!base && [null, 8, 12, 16].every((sup) => noClaim(run(mk({ gs: base }), sup)) === noClaim(run(mk({}), sup))), true);
   const est = (o, sup) => { const w = mk(o); w.sb.__TODAY = '2026-11-29'; w.F('(function(){ checkPnlKey_ = function(){ return ""; }; })')();

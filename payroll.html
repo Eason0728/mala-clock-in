@@ -1172,7 +1172,7 @@ function supClaimRate(ymv, r, m, cfg){
 function supXAddAll(r, sup, rts){
   const oi=r.ot_info||{};
   const out=sup.map(()=>({h:0,add:0}));
-  const hit=(c,x)=>{const cc=String(c.code||''),xc=String(x.code||''); return (cc&&xc)?cc===xc:(!!c.name&&c.name===x.store);};
+  const hit=(c,x)=>{const cc=String(c.code==null?'':c.code).trim().toUpperCase(),xc=String(x.code==null?'':x.code).trim().toUpperCase(); return (cc&&xc)?cc===xc:(!!c.name&&c.name===x.store);};   // r5：代碼去空白、大寫再比（同後端 payXsupCode_）
   const list=oi.xr?(oi.xclaim||[]):(oi.cross_ot||[]);
   list.forEach(c=>{
     // r4：優先給有門市代碼的列（快照門市彙總只收有代碼的列）；同店都沒代碼才給第一筆
@@ -1318,7 +1318,7 @@ function costTotals(){
       hours:n(x.hours),rate:n(x.rate),gapH:n(x.gapH),gapRate:n(x.gapRate),otH:n(x.otH),otAdd:n(x.otAdd),amount:n(x.amount),fixed:!!x.fixed}));
     // 2026-09-25～11-13 之間鎖的月份：快照只有「門市合計」，沒有逐筆明細
     else g.sup=Object.keys(S.support||{}).map(st=>({store:st,amount:n(S.support[st]),storeOnly:true}));
-    g.supTotal=g.sup.reduce((a,x)=>a+n(x.amount),0);
+    g.supTotal=(D&&D.sup_trunc&&D.sup_total!=null)?n(D.sup_total):g.sup.reduce((a,x)=>a+n(x.amount),0);   // r5：截斷時用截斷前的合計
   }
   return g;
 }

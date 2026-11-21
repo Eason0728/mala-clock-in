@@ -78,6 +78,7 @@ function build(o, E) {
   if (xEntry.stores.length) {
     if (vm.runInContext('typeof payOtCrossDays_', E) === 'function') att.ot_xdays = E.call('payOtCrossDays_', col, xEntry);
     att.ot_cross = E.call('payOtCrossNeed_', col, xEntry);
+    att.ot_cross_legacy = E.call('payOtCrossNeed_', col, xEntry, true);   // 同 handlePayrollCalc（r5；正式版的函式沒有第三個參數＝照它自己的順序）
   }
   att.ot_own_h = col.day_h; att.ot_forms = { ot: {}, trip: {} };
   att.ot_forms_x = {}; Object.keys(by).forEach((k) => { att.ot_forms_x[k] = { 'id:7': { ot: {} } }; });
@@ -99,7 +100,9 @@ function randomCase() {
     const d = { date, cell: k === 'HOL' || k === 'ELEC' ? 'W' : k === 'HOLH' ? 'H' : k === 'HOLR' ? 'R' : k, hol: k === 'HOL' || k === 'HOLH' || k === 'HOLR', elec: k === 'ELEC', home: rnd() < 0.25 ? 0 : q(), sups: [] };
     const ns = rnd() < 0.25 ? 0 : 1 + Math.floor(rnd() * 3);
     const s0 = 360 + Math.floor(rnd() * 48) * 15;
-    ['MZTJS', 'MZTLZL', 'MZTMC'].slice(0, ns).forEach((c, j) => d.sups.push({ code: c, h: rnd() < 0.1 ? 0 : q(), s: rnd() < 0.2 ? s0 : 360 + Math.floor(rnd() * 60) * 15 + j }));   // 兩成同時開始（D7 並列）
+    const codes = rnd() < 0.4 ? ['MZTMC', 'MZTLZL', 'MZTJS'] : ['MZTJS', 'MZTLZL', 'MZTMC'];   // r5：帶入順序有時是代碼大的在前（正式版同分取先遇到的）
+    const tie = rnd() < 0.2, th = q();   // r5：兩成的日子各店時數、開始時間完全相同（同分）
+    codes.slice(0, ns).forEach((c, j) => d.sups.push({ code: c, h: tie ? th : (rnd() < 0.1 ? 0 : q()), s: tie ? s0 : (rnd() < 0.2 ? s0 : 360 + Math.floor(rnd() * 60) * 15 + j) }));   // 兩成同時開始（D7 並列）
     days.push(d);
   }
   const o = { ft, days, comp: ft && rnd() < 0.4 ? Math.round(rnd() * 40) / 4 : 0 };

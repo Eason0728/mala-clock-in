@@ -54,6 +54,7 @@ function build(o, S2) {
   if (xEntry.stores.length) {
     if (vm.runInContext('typeof payOtCrossDays_', E) === 'function') att.ot_xdays = E.call('payOtCrossDays_', col, xEntry);
     att.ot_cross = E.call('payOtCrossNeed_', col, xEntry);
+    att.ot_cross_legacy = E.call('payOtCrossNeed_', col, xEntry, true);   // 同 handlePayrollCalc（r5；正式版的函式沒有第三個參數＝照它自己的順序）
   }
   att.ot_own_h = col.day_h; att.ot_forms = { ot: o.formsHome || {}, trip: {} };
   att.ot_forms_x = {}; Object.keys(by).forEach((k) => { att.ot_forms_x[k] = { 'id:7': { ot: (o.formsSup || {})[k] || {} } }; });
@@ -293,7 +294,7 @@ function randomCase() {
   // r3（Codex 擋項 4）：國定假日＋班表休息日 H 重疊（薪資國定假日清單優先＝正式版不擋），D5 不可以多擋
   chk('V6 國定＋班表 H 重疊 原4＋A4（正職、都沒單）：不擋', one({ ft: true, days: [{ date: DT, cell: 'H', hol: true, home: 4, sups: [{ code: 'MZTJS', h: 4, s: 900 }] }] }), {});
   chk('V6 國定＋班表 H 重疊 原4＋A4（計時）：不擋', one({ ft: false, days: [{ date: DT, cell: 'H', hol: true, home: 4, sups: [{ code: 'MZTJS', h: 4, s: 900 }] }] }), {});
-  chk('V6 國定＋班表 R 重疊 原6＋A3（正職）：只擋超過 8 那段（A 吸收 1）', one({ ft: true, days: [{ date: DT, cell: 'R', hol: true, home: 6, sups: [{ code: 'MZTJS', h: 3, s: 900 }] }] }), {});
+  chk('V6 國定＋班表 R 重疊 原6＋A3（正職）：只擋超過 8 那段（A 吸收 1，同正式版）', one({ ft: true, days: [{ date: DT, cell: 'R', hol: true, home: 6, sups: [{ code: 'MZTJS', h: 3, s: 900 }] }] }), { MZTJS: 1 });
   chk('V6 國定＋班表 H 重疊 只在支援店 A 10（正職）：正式版要 A 2', one({ ft: true, days: [{ date: DT, cell: 'H', hol: true, home: 0, sups: [{ code: 'MZTJS', h: 10, s: 600 }] }] }), { MZTJS: 2 });
   chk('V6 國定＋班表 H 重疊 原10＋A1（正職）：原 2（正式版另要 A 1；D5 支援店自己沒超過 8 不要＝放寬）', one({ ft: true, days: [{ date: DT, cell: 'H', hol: true, home: 10, sups: [{ code: 'MZTJS', h: 1, s: 1260 }] }] }), { '': 2 });
   chk('V6 國定＋班表 H 重疊 原4＋A4 本店有 4 小時單：不擋', (() => { const b = build({ ft: true, formsHome: { [DT]: 4 }, days: [{ date: DT, cell: 'H', hol: true, home: 4, sups: [{ code: 'MZTJS', h: 4, s: 900 }] }] }); return J(S.call('payOtFormCheck_', b.att, { ft: true })).missing; })(), []);
@@ -451,6 +452,95 @@ function randomCase() {
     vm.runInContext('RESULTS=[];STATUS="final";COST_SNAP={support:{"金山":770222,"墨光":770222},detail:' + JSON.stringify(d) + '};', sbF);
     chk('r4-2 鎖定畫面：逐筆被截過 → 用門市合計列、請款合計＝1,540,444', J(vm.runInContext('(function(){const g=costTotals();return [g.sup.every(x=>x.storeOnly),g.supTotal];})()', sbF)), [true, 1540444]);
     vm.runInContext('STATUS="draft";COST_SNAP=null;', sbF);
+  }
+  // r5-1：鎖月存的請款由後端產生（paySupClaimRows_＋paySnapWithSup_），正常流程跟畫面算的逐欄相同 → 鎖後快照＝畫面＝重算（5,000 組）
+  {
+    let bad = 0, n5 = 0; const ex5 = [];
+    for (let i = 0; i < 5000; i++) {
+      const o = randomCase(); const b = build(o); if (!b.att.support.length) continue;
+      b.e.emp_id = 'Z1'; b.e.name = '同仁Z';
+      if (rnd() < 0.3) { const x = b.att.support[0]; b.att.support.splice(1, 0, Object.assign({}, x, { hours: 1, auto: false })); }   // 同店多一筆
+      if (rnd() < 0.15) b.att.support[0].amount = 1234;   // 指定金額
+      if (rnd() < 0.15) b.att.support.push({ store: '手填店', hours: 2, rate: 200, amount: '' });   // 沒代碼
+      const r = calc(b), att = { Z1: { support: b.att.support } };
+      vm.runInContext('RESULTS=' + JSON.stringify([r]) + ';MASTER=' + JSON.stringify([b.e]) + ';ATT=' + JSON.stringify(att) + ';CFG=' + JSON.stringify(H.cfg) + ';STATUS="draft";COST_SNAP=null;', sbF);
+      const front = J(vm.runInContext('(function(){const g=costTotals();return {support:costStable(g).support,sup:costDetail(g).sup};})()', sbF));
+      const rows = J(S.call('paySupClaimRows_', YM, [r], [b.e], { Z1: b.att.support }, H.cfg));
+      const snap = J(S.call('paySnapWithSup_', { total: 1 }, rows));
+      n5++;
+      if (JSON.stringify(front.support) !== JSON.stringify(snap.support) || JSON.stringify(front.sup) !== JSON.stringify(snap.detail.sup)) { bad++; if (ex5.length < 2) ex5.push({ front, snap }); }
+    }
+    chk('r5-1 正常流程 ' + n5 + ' 組：後端產生的請款快照（門市合計、逐筆）＝畫面算的，逐欄相同', bad, 0);
+    if (bad) console.log(JSON.stringify(ex5).slice(0, 1500));
+  }
+  // r5-2：門市代碼大小寫、前後空白混用
+  {
+    const W = H.load({ today: '2026-12-05', data: { run: [{ ym: '2026-11', store: 'a01', status: 'final' }, { ym: '2026-11', store: 'B02', status: 'final' }, { ym: '2026-11', store: ' c03 ', status: 'draft' }],
+      cost_snapshot: [{ ym: '2026-11', store: 'a01', support_json: '{}', total: 1, detail_json: '{}' },
+        { ym: '2026-11', store: 'B02', support_json: '{}', total: 1, detail_json: JSON.stringify(J(S.call('paySnapDetailSanitize_', { sup: [{ emp_id: 'x', store: 'A店', code: ' a01 ', amount: 2000 }] }))) }] } });
+    vm.runInContext('checkPnlKey_=function(){return null}; payCostSnapRows_=function(){return payRead("cost_snapshot")};', W);
+    const q = (st) => { const o = J(W.call('handlePnlPayroll_', { key: 'k', ym: '2026-11', store: st })); return [o.rows.xsup_cost, o.xsup_pending]; };
+    chk('r5-2 快照寫入時代碼正規化成大寫（" a01 " → A01）', Object.keys(JSON.parse(J(vm.runInContext('__DATA.cost_snapshot', W))[1].detail_json).sup_code), ['A01']);
+    chk('r5-2 用小寫 a01 查：找得到 B02 請 A01 的 2,000；還沒鎖的 c03 列進 pending', q('a01'), [2000, [' c03 ']]);
+    const W2 = H.load({ today: '2026-12-05', data: { run: [{ ym: '2026-11', store: 'A01', status: 'final' }, { ym: '2026-11', store: 'B02', status: 'final' }],
+      cost_snapshot: [{ ym: '2026-11', store: 'A01', support_json: '{}', total: 1, detail_json: '{}' }, { ym: '2026-11', store: 'B02', support_json: '{}', total: 1, detail_json: JSON.stringify({ v: 1, sup: [], sup_code: { a01: 500 } }) }] } });
+    vm.runInContext('checkPnlKey_=function(){return null}; payCostSnapRows_=function(){return payRead("cost_snapshot")};', W2);
+    chk('r5-2 既有資料相容：彙總鍵是小寫 a01、用大寫 A01 查也對得到', J(W2.call('handlePnlPayroll_', { key: 'k', ym: '2026-11', store: 'A01' })).rows.xsup_cost, 500);
+    const rr = calc(build(RD)); rr.ot_info.xclaim[0].code = ' mztjs ';
+    chk('r5-2 請款列比對：引擎代碼 " mztjs "、支援列 "MZTJS" 也算同一家', r2(J(S.call('pnlSupXAddAll_', rr, [{ code: 'MZTJS', store: 'X', hours: 5 }], [200]))[0].add), 1020.5);
+  }
+  // r5-C：同支援群組、這個月連草稿都沒有的店也列進 xsup_pending（停用、別群組、沒有群組不列）
+  {
+    const W = H.load({ today: '2026-12-05', data: { run: [{ ym: '2026-11', store: 'MZTGF', status: 'final' }, { ym: '2026-11', store: 'HQ', status: 'final' }],
+      store: [{ code: 'MZTGF', support_group: 'mzt', active: 'true' }, { code: 'HQ', support_group: '*', active: 'true' }, { code: 'MZTJS', support_group: 'mzt', active: 'true' },
+              { code: 'MZTOLD', support_group: 'mzt', active: 'false' }, { code: 'SSLGF', support_group: 'sxl', active: 'true' }, { code: 'NOGRP', support_group: '', active: 'true' }],
+      cost_snapshot: [{ ym: '2026-11', store: 'MZTGF', support_json: '{}', total: 1, detail_json: '{}' }, { ym: '2026-11', store: 'HQ', support_json: '{}', total: 1, detail_json: '{}' }] } });
+    vm.runInContext('checkPnlKey_=function(){return null}; payCostSnapRows_=function(){return payRead("cost_snapshot")};', W);
+    chk('r5-C 墨光：同群組沒草稿的金山列進 pending（停用的、小辛辣、沒群組的不列）', J(W.call('handlePnlPayroll_', { key: 'k', ym: '2026-11', store: 'MZTGF' })).xsup_pending, ['MZTJS']);
+  }
+  // r5-3（Codex 擋項 3）：正職上班日 本店 2＋B 4＋A 4（同時開始、帶入順序 B、A），只有 B 有 2 小時單 → 正式版放行、新版也要放行
+  {
+    const DX = '2026-11-12';   // 加班單檢查 11/11 起算
+    const b = build({ ft: true, formsSup: { MZTLZL: { [DX]: 2 } }, days: [{ date: DX, home: 2, sups: [{ code: 'MZTLZL', h: 4, s: 600 }, { code: 'MZTJS', h: 4, s: 600 }] }] });
+    const b0 = build({ ft: true, days: [{ date: DX, home: 2, sups: [{ code: 'MZTLZL', h: 4, s: 600 }, { code: 'MZTJS', h: 4, s: 600 }] }] });
+    chk('r5-3 對照：都沒有單時照正式版要 B 2（兩邊缺在不同店 → 用正式版那筆，不會整天都不要單）', J(S.call('payOtFormCheck_', b0.att, { ft: true })).missing.map((x) => [x.store, x.need]), [['MZTLZL', 2]]);
+    chk('r5-3 同分（時數、開始都一樣）帶入順序 B、A、只有 B 有單：不擋（正式版取先遇到的 B）', J(S.call('payOtFormCheck_', b.att, { ft: true })).missing, []);
+    chk('r5-3 請款照定案取代碼小的 A（這個不變）', b.att.ot_xdays[DX].abs.code, 'MZTJS');
+  }
+  // r5-4（殘餘 4）：同店只有「有代碼的指定金額列」＋「沒代碼的一般列」→ 加成給沒代碼那列，提醒的 N 有算到它
+  {
+    const c = cost(RD, [row('MZTJS', '金山', 3, 1600), row('', '金山', 2)]);
+    vm.runInContext('RESULTS=' + JSON.stringify([c.r]) + ';ATT=' + JSON.stringify(c.att) + ';STATUS="draft";COST_SNAP=null;', sbF);
+    chk('r5-4 加成給沒代碼的一般列、提醒「有 1 筆支援列沒有門市代碼…」', [c.sup.map((x) => r2(x.otAdd)), vm.runInContext('supNoCodeN(costTotals())', sbF), vm.runInContext('costRows(costTotals()).some(r=>r[0]==="h"&&/^有 1 筆支援列沒有門市代碼/.test(r[1]))', sbF)], [[0, 1020.5], 1, true]);
+  }
+  // r5-5（殘餘 5）：逐筆被截斷時，畫面請款合計用快照的 sup_total（不受 support_json 50 個門市名稱上限影響）
+  {
+    const many = []; for (let i = 0; i < 60; i++) many.push({ emp_id: 'e' + i, store: '門市' + i, code: 'C' + i, amount: 100 });
+    const sd = J(S.call('paySnapDetailSanitize_', { sup: many }));
+    const sp = J(S.call('pnlSanitizeSupport_', Object.fromEntries(many.map((x) => [x.store, x.amount]))));
+    chk('r5-5 support_json 只留 50 個門市（既有上限）、sup_total 用全部 60 筆', [Object.keys(sp).length, sd.sup_total], [50, 6000]);
+    const d = Object.assign({}, sd, { sup_trunc: 60, sup: sd.sup.slice(0, 10) });
+    vm.runInContext('RESULTS=[];STATUS="final";COST_SNAP={support:' + JSON.stringify(sp) + ',detail:' + JSON.stringify(d) + '};', sbF);
+    chk('r5-5 截斷後畫面請款合計＝6,000（不是 support_json 的 5,000）', vm.runInContext('costTotals().supTotal', sbF), 6000);
+    vm.runInContext('STATUS="draft";COST_SNAP=null;', sbF);
+  }
+  // r5-B：一天本店＋三家支援店（休息日、平日），各店分攤 ≥ 0、合計＝當天同仁實際多拿的加成
+  {
+    const days = (cell) => [{ date: D, cell, home: 3, sups: [{ code: 'MZTJS', h: 4, s: 600 }, { code: 'MZTLZL', h: 3.5, s: 700 }, { code: 'MZTMC', h: 2.5, s: 800 }] }];
+    [['H', '休息日'], ['W', '平日']].forEach(([cell, nm]) => {
+      const b = build({ ft: true, days: days(cell) }), r = calc(b), xc = r.ot_info.xclaim || [];
+      const otS = S.call('payOtDailySum', Object.assign({}, b.att.daily, { comp_h: 0 }));
+      const bd = otS.day_break[D], left = (otS.ot_left || {})[D] || { w43: 0, w53: 0 };
+      const paid = cell === 'H' ? bd.r43 * 0.34 + bd.r53 * 0.67 + bd.r83 * 1.67 : left.w43 * 0.34 + left.w53 * 0.67;
+      const sh = J(S.call('payXclaimShare_', b.att.ot_xdays[D]));
+      const mh = (c) => c.h43 * 0.34 + c.h53 * 0.67 + c.r43 * 0.34 + c.r53 * 0.67 + c.r83 * 1.67 + c.d8 + c.hx;
+      const claimed = xc.reduce((a, c) => a + mh(c), 0);
+      const fields = xc.every((c) => ['h43', 'h53', 'r43', 'r53', 'r83', 'd8', 'hx'].every((k) => c[k] >= 0));
+      chk('r5-B ' + nm + ' 本店 3＋三家支援（4、3.5、2.5）：比例都 ≥ 0、加總 1、各段 ≥ 0、請款 ≤ 實際多拿', [Object.values(sh).every((v) => v >= 0), r2(Object.values(sh).reduce((a, v) => a + v, 0)), fields, claimed <= paid + 0.03], [true, 1, true, true]);
+    });
+    const b3 = build({ ft: true, days: [{ date: D, cell: 'H', home: 0.5, sups: [{ code: 'MZTJS', h: 4, s: 600 }, { code: 'MZTLZL', h: 4, s: 700 }, { code: 'MZTMC', h: 4, s: 800 }] }] });
+    const sh3 = J(S.call('payXclaimShare_', b3.att.ot_xdays[D]));
+    chk('r5-B 休息日 本店 0.5＋三家各 4（原單位分到的超過 8 比它自己的時數多）：沒有負數、加總 1', [Object.values(sh3).every((v) => v >= 0), r2(Object.values(sh3).reduce((a, v) => a + v, 0))], [true, 1]);
   }
   // 同一份資料連算 10,000 組，摘要逐字相同（不會因浮點數讓月份鎖不了）
   let diffSig = 0;
