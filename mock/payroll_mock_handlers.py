@@ -126,10 +126,37 @@ def _locked(data, ym):
 
 # ── 各動作 ───────────────────────────────────────────────
 def h_master_get(data, body):
-    return {'ok': True, 'store': body.get('store', ''),
-            'master': _pay(data, 'master'), 'config': _cfg(data),
-            'config_src': {}, 'stores': _pay(data, 'store'),
-            'holidays': _holiday_list(data, body.get('store', ''))}
+    out = {'ok': True, 'store': body.get('store', ''),
+           'master': _pay(data, 'master'), 'config': _cfg(data),
+           'config_src': {}, 'stores': _pay(data, 'store'),
+           'holidays': _holiday_list(data, body.get('store', ''))}
+    he = _hol_emp_for(data, body.get('store', ''))
+    if he:
+        out['hol_emp'] = he
+    return out
+
+
+def _hol_emp_for(data, store):
+    """選舉假名單（2026-11-22，照抄正式 payHolEmpFor_）：本店的列；沒有回空（呼叫端不帶欄位）。"""
+    st = str(store or 'SSLGF')
+    return [{'ym': str(r.get('ym', '')), 'date': str(r.get('date', '')), 'emp_id': str(r.get('emp_id', '')), 'note': str(r.get('note', ''))}
+            for r in _pay(data, 'hol_emp') if str(r.get('store') or 'SSLGF') == st]
+
+
+def h_hol_emp_set(data, body):
+    """照抄正式 handlePayrollHolEmpSet 的合約（簡化）：整份取代本店該月；已鎖定月份擋。不算薪資（mock 的計算沒有選舉假）。"""
+    ym, st = str(body.get('ym', '')), str(body.get('store') or 'SSLGF')
+    ids = body.get('emp_ids')
+    if not isinstance(ids, list):
+        return {'ok': False, 'error': 'emp_ids_required'}
+    if _locked(data, ym):
+        return {'ok': False, 'error': 'locked', 'message': ym + ' 已鎖定，請先解鎖再修改選舉假名單'}
+    date = str(body.get('date') or '')
+    if ids and date[:7] != ym:
+        return {'ok': False, 'error': 'bad_date', 'message': '選舉日期要填 ' + ym + ' 裡的日期'}
+    keep = [r for r in _pay(data, 'hol_emp') if not (str(r.get('ym')) == ym and str(r.get('store') or 'SSLGF') == st)]
+    data['payroll']['hol_emp'] = keep + [{'ym': ym, 'date': date, 'store': st, 'emp_id': str(i), 'name': '', 'note': ''} for i in ids]
+    return {'ok': True, 'count': len(ids), 'ym': ym, 'date': date if ids else '', 'store': st}
 
 
 def h_master_set(data, body):
@@ -229,6 +256,9 @@ def h_month(data, body):
             'bonuses': [b for b in _pay(data, 'bonus') if b.get('ym') == ym]}
     if sa is not None:
         out['support_auto'] = sa
+    he = _hol_emp_for(data, body.get('store', ''))
+    if he:
+        out['hol_emp'] = he
     return out
 
 
@@ -782,6 +812,7 @@ PAYROLL_ACTIONS = {
     'payroll_calc': h_calc,
     'payroll_get': h_get,
     'payroll_month': h_month,
+    'payroll_hol_emp_set': h_hol_emp_set,
     'payroll_finalize': h_finalize,
     'payroll_punch': h_punch,
     'payroll_store_get': h_store_get,

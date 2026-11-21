@@ -20,6 +20,7 @@ node tests/run-all.js
 | `duty-push.test.js` | 門鈴（PR #181）：門鈴關時跟 PR #181 合併前的 main（`50a80bc^1`，可用 `DUTY_PUSH_BASE` 換）逐次相同、只多讀 `DUTY_PUSH_URL`；只計數、熔斷、上限、簽章、push_setup／push_cfg、授權範圍 | 打卡回應路徑上多一次連外，關的時候必須跟沒有一樣 |
 | `duty-push-live.test.js` | 開真推送前補強（2026-11-20）：關／只計數跟九店線上版 a9fac60（`50a80bc`）逐字逐次相同（只差 push_stats.cap）；回應慢也熔斷、等 ping 復原、半開、最壞情況（mini 持續卡 3 秒 2 小時同仁只有第一筆多等）、停推不縮短、flush 失敗不按；flush 只在正式推送；每日上限 800 | 慢熔斷與 flush 只在正式推送生效，關的店不能有任何差別 |
 | `helpers/duty-push-harness.js` | 門鈴測試的假 Apps Script 環境（不是測試） | |
+| `election-day-emp.test.js` | 選舉假逐人名單（payroll_hol_emp，2026-11-22）：沒有名單跟 #178 分支頭逐欄相同；勾選後只有班表上班日 W 的人加「選舉日出勤」，H／R／L／查不到不變、沒有人變少；與國定假日並存、同一天只算一次；補休照上班日不會變負；名單存檔的鎖定、權限、門市範圍；損益月中估算同一套；支援別店班別仍是 W | Eason 定案「不可讓任何人因被勾選而少領」，用全部勾選 vs 沒有名單逐人比對守住 |
 | `helpers/sheets-like.js` | 假試算表本體（不是測試，run-all 不會跑它）：寫入字串照 Sheets 規則轉型、`setNumberFormat('@')` 鎖文字、在 vm 的 Date realm 建 Date、格線範圍外丟例外；每條規則標 [已查證] 或 [推定]＋出處，見檔頭 | 要模擬正式試算表時用這個，不要再寫「把字串原樣存起來」的假 sheet |
 
 ## 改引擎之前先跑 engine-diff

@@ -102,6 +102,11 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 .hchip{display:inline-flex;align-items:center;background:var(--gold-soft);color:#7a5a00;font-size:12.5px;font-weight:800;padding:3px 10px;border-radius:20px}
 .hempty{color:var(--muted);font-size:12px;line-height:1.6}
 .hdates .hchip~.hempty{flex-basis:100%}
+/* 選舉假名單（2026-11-22） */
+.elec-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:6px 12px}
+.elec-item{display:flex;align-items:center;gap:8px;font-size:13.5px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.elec-item input{width:18px;height:18px;margin:0}
+.elec-item small{color:var(--muted);font-size:11.5px}
 .ok{color:var(--ok);font-weight:700}.bad{color:var(--bad);font-weight:700}
 .big{font-size:20px;font-weight:900}
 .note{background:#fff8ec;border-left:4px solid var(--gold);padding:12px 14px;border-radius:0 9px 9px 0;font-size:12.5px;margin-bottom:15px}
@@ -523,6 +528,22 @@ html.embed.ui-new .monthbar{border-left-color:#0066cc}
     <div id="holSync" style="font-size:12.5px;color:var(--muted);margin:0 0 10px"></div>
     <div class="scroll"><table id="holTbl"></table></div>
   </div>
+  <div class="card" id="elecCard">
+    <h2>選舉假名單 <span id="elecYm" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
+    <p class="hint">勾選的同仁，選舉日<b>班表是上班日</b>又有出勤，那天比照國定假日加發（正職：8 小時內的出勤時數 × 月工資÷240；計時：當天時數再給一倍），
+      薪資單項目是「選舉日出勤」。<br>
+      <b>不套用</b>：班表是休息日、例假、請假，或查不到班表（照原本算法）；那天已經是國定假日（以國定假日為準）；沒出勤的計時同仁不給。<br>
+      一次選舉一份，存的是上面選的月份。存好後請到「6 薪資計算」重新計算。</p>
+    <div class="row" style="flex-wrap:wrap;gap:10px;align-items:center">
+      <label style="font-size:13px">選舉日期 <input type="date" id="elecDate" style="width:auto"></label>
+      <button class="btn ghost" type="button" onclick="elecAll(true)">全選</button>
+      <button class="btn ghost" type="button" onclick="elecAll(false)">清除</button>
+      <span id="elecCount" style="font-size:12.5px;color:var(--muted)"></span>
+    </div>
+    <div id="elecList" class="elec-list" style="margin:10px 0"></div>
+    <div class="row"><button class="btn" id="elecSave" type="button" onclick="saveElec(this)">儲存選舉假名單</button>
+      <span id="elecLock" style="font-size:12.5px;color:var(--red)"></span></div>
+  </div>
   <div class="card">
     <h2>假別設定 <span id="ltScope" style="font-size:12.5px;font-weight:700;color:var(--muted);margin-left:6px"></span></h2>
     <p class="hint">一列一種假。<b>值班核定的下拉、薪資扣款、額度上限全部讀這張表</b>——在這裡加一列就多一種假，不用改程式。<br>
@@ -656,6 +677,7 @@ async function bridgeCallQueued(action,body){
 if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
 
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
+let HOLEMP=[];   // 選舉假名單（本店全部月份；後端 payroll_master_get／payroll_month 的 hol_emp，沒有＝空）
 /* 已鎖定月份的成本快照（2026-11-13 薪資挑錯第 7 項）：payroll_month 對已鎖定月份回 run.cost_snap，
    成本分類頁的公司負擔／年終提列／跨店請款改讀這份，鎖定後改主檔或參數不會讓已鎖定月份的數字跟著變。
    null＝草稿，或已鎖定但鎖定時沒有快照（畫面照舊即時算，並標「即時值（鎖定時沒有快照）」）。 */
@@ -802,6 +824,7 @@ async function boot(){
     DASH_PREFETCH={key:STORE+'|'+ym(),p:post('payroll_trend',{ym:ym(),store:STORE,months:12})};
   }
   MASTER=m.master; CFG=m.config; CFG_DIRTY={};
+  HOLEMP=Array.isArray(m.hol_emp)?m.hol_emp:[];
   // ⚠ 門市下拉一定要在這裡先建好：若等到 loadMonth，該門市讀取失敗就會提早 return，
   //    下拉永遠是空的 → 使用者被鎖在壞掉的門市、切不回來（踩過）
   if(m.stores&&m.stores.length){STORE_LIST=m.stores;renderStoreSel()}
@@ -1046,6 +1069,7 @@ async function loadMonth(pre){   // pre＝開頁時先發出去的 payroll_month
     if(r.config){CFG=r.config;CFG_DIRTY={}}
     if(r.config||r.holidays) renderCfg();
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
+    HOLEMP=Array.isArray(r.hol_emp)?r.hol_emp:[]; renderElec();   // 選舉假名單隨門市、月份、鎖定狀態重畫
     ASOF=r.asof||null;
     COST_SNAP=(r.run&&r.run.status==='final'&&r.run.cost_snap)||null;   // 已鎖定月份的成本快照（沒有就即時算＋標記）
     renderAtt();renderRun();renderSlipSel();
@@ -2804,6 +2828,7 @@ function renderCfg(){
   //（2026-08-24：這張卡原本沒有來源標示也沒有門市勾選，改團險時很容易誤存成集團預設）
   if($('coGrid')) $('coGrid').innerHTML=CO_MANUAL.map(cfgFld).join('');
   renderHol();
+  renderElec();
   applyScopeUi();
 }
 /* ⚠ 參數設定四張卡（基本／全勤／計時加給／公司負擔）的「儲存」都呼叫 saveCfg。
@@ -2935,6 +2960,44 @@ async function syncHol(){
     }
   })();
   try{ await HOL_SYNCING; } finally { HOL_SYNCING=null; renderHol(); }
+}
+
+/* ═════ 選舉假名單（2026-11-22 Eason）═════
+   一次選舉一份：後端 payroll_hol_emp_set 整份取代「本店＋目前月份」的名單；已鎖定月份後端也會擋（這裡先擋）。
+   名單上的人只在選舉日班表是上班日時才套用（規則在 Payroll.gs payElecApply_），畫面只負責勾選。 */
+function elecRowsYm(){ return HOLEMP.filter(x=>String(x.ym)===ym()); }
+function renderElec(){
+  const box=$('elecList'); if(!box) return;
+  const rows=elecRowsYm(), on={}; rows.forEach(x=>{ on[String(x.emp_id)]=true; });
+  if($('elecYm')) $('elecYm').textContent=ym();
+  const dEl=$('elecDate');
+  if(dEl){ dEl.min=ym()+'-01'; dEl.max=ym()+'-'+String(new Date(+ym().slice(0,4),+ym().slice(5,7),0).getDate()).padStart(2,'0');
+    dEl.value=(rows[0]&&rows[0].date)||''; }
+  const list=(MASTER||[]).filter(m=>String(m.active).toLowerCase()!=='false'||on[String(m.emp_id)]);
+  const locked=STATUS==='final';
+  box.innerHTML=list.length?list.map(m=>`<label class="elec-item"><input type="checkbox" class="elec-ck" value="${esc(m.emp_id)}" ${on[String(m.emp_id)]?'checked':''} ${locked?'disabled':''} onchange="elecCount()">
+      <span>${esc(m.name||m.emp_id)}</span> <small>${esc(m.emp_id)}｜${payTrue(m.is_full_time)?'正職':'計時'}</small></label>`).join('')
+    :'<div style="color:var(--muted);font-size:13px">這家門市還沒有薪資主檔</div>';
+  if(dEl) dEl.disabled=locked;
+  const sv=$('elecSave'); if(sv) sv.disabled=locked;
+  if($('elecLock')) $('elecLock').textContent=locked?ym()+' 已鎖定，要改名單請先解鎖':'';
+  elecCount();
+}
+function payTrue(v){ return v===true||String(v).toLowerCase()==='true'; }
+function elecCount(){ const n=document.querySelectorAll('#elecList .elec-ck:checked').length; if($('elecCount')) $('elecCount').textContent='已勾選 '+n+' 人'; }
+function elecAll(v){ if(STATUS==='final') return; document.querySelectorAll('#elecList .elec-ck').forEach(c=>{ c.checked=!!v; }); elecCount(); }
+async function saveElec(btn){
+  if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再修改選舉假名單',true); return; }
+  const ids=[...document.querySelectorAll('#elecList .elec-ck:checked')].map(c=>c.value);
+  const date=($('elecDate')||{}).value||'';
+  if(ids.length&&(!date||date.slice(0,7)!==ym())){ toast('請先選 '+ym()+' 裡的選舉日期',true); return; }
+  btn.disabled=true;
+  const r=await post('payroll_hol_emp_set',{ym:ym(),date:ids.length?date:'',emp_ids:ids});
+  btn.disabled=false;
+  if(!r||!r.ok){ if(r&&r.error==='not_in_master') toast('有編號不在本店薪資主檔，這次沒有儲存',true); return; }
+  HOLEMP=HOLEMP.filter(x=>String(x.ym)!==ym()).concat(ids.map(id=>({ym:ym(),date:date,emp_id:id,note:''})));
+  renderElec();
+  toast(ids.length?'已儲存選舉假名單（'+date+'，'+ids.length+' 人），請到「6 薪資計算」重新計算':'已清除 '+ym()+' 的選舉假名單，請重新計算');
 }
 
 /* ═════ 薪資單 ═════ */
@@ -3240,7 +3303,7 @@ async function exportAttPDF(){
 }
 
 /* ═════ 操作紀錄（唯讀，後端 payroll_audit_get） ═════ */
-const OPLOG_ACT={lock:'薪資定案',unlock:'解鎖',holiday_sync:'假日同步',leave_type_set:'假別設定',leave_span_set:'假別區間設定',
+const OPLOG_ACT={hol_emp_set:'選舉假名單',lock:'薪資定案',unlock:'解鎖',holiday_sync:'假日同步',leave_type_set:'假別設定',leave_span_set:'假別區間設定',
   leave_event_set:'假別事件日設定',pnl_snapshot_fail:'損益快照失敗',pnl_snapshot_remove_fail:'損益快照移除失敗',pnl_key_locked:'損益金鑰鎖定'};
 const oplogActName=a=>OPLOG_ACT[a]||a;
 let OPLOG={key:'',data:null};
