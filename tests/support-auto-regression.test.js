@@ -113,7 +113,12 @@ function freshDB() {
 
 let pass = 0, fail = 0, compared = 0, rowsCompared = 0;
 const chk = (n, cond, detail) => { cond ? pass++ : fail++; if (!cond || detail) console.log((cond ? '✓ ' : '✗ ') + n + (detail ? '：' + detail : '')); };
-const strip = (rows) => rows.map((r) => { const o = Object.assign({}, r); delete o.run_at; return o; });
+/* 跨店請款 #210 r7（2026-11-22）：2026-11 起有支援列的人草稿多存 ot_info.xsup（請款逐筆，不進應發扣款；沒有逐日資料的人只為它建 ot_info）。
+   比對時拿掉 xsup（拿掉後 ot_info 空的就當沒有），其他欄位照舊逐欄比。 */
+const noXsupOi = (oi) => { if (oi == null || oi === '') return oi; let o = oi, str = typeof oi === 'string'; if (str) { try { o = JSON.parse(oi); } catch (e) { return oi; } }
+  if (!o || typeof o !== 'object' || !('xsup' in o)) return oi; o = Object.assign({}, o); delete o.xsup; if (!Object.keys(o).length) return undefined; return str ? JSON.stringify(o) : o; };
+const noXsup = (r) => { if (!r || !('ot_info' in r)) return r; const o = Object.assign({}, r), v = noXsupOi(r.ot_info); if (v === undefined) delete o.ot_info; else o.ot_info = v; return o; };
+const strip = (rows) => rows.map((r) => { const o = noXsup(Object.assign({}, r)); delete o.run_at; if (o.ot_info === undefined || o.ot_info === '') delete o.ot_info; return o; });
 const DB_OLD = freshDB(), DB_NEW = freshDB();
 const sOld = ctx(OLD, DB_OLD, CLOCK), sNew = ctx(NEW, DB_NEW, CLOCK);
 const HO = (a, b) => vm.runInContext('PAYROLL_HANDLERS', sOld)[a](J(b)), HN = (a, b) => vm.runInContext('PAYROLL_HANDLERS', sNew)[a](J(b));
@@ -124,7 +129,7 @@ const cmpResults = (tag, A, B) => {
   ra.forEach((x) => {
     const y = rb.find((z) => z.emp_id === x.emp_id);
     compared++;
-    const same = JSON.stringify(x) === JSON.stringify(y);
+    const same = JSON.stringify(noXsup(x)) === JSON.stringify(noXsup(y));
     chk(tag + ' ' + x.emp_id + ' earn／ded／gross／net 逐項相同', same, same ? '' : '\n  舊 ' + JSON.stringify(x).slice(0, 300) + '\n  新 ' + JSON.stringify(y).slice(0, 300));
   });
 };
@@ -168,7 +173,7 @@ MONTHS.forEach((ym) => {
   // E02（手填墨竹亭金山 3H）是跨品牌手填：對照同步後不計（審查 #3），支援時數少掉那 3H。
   // E04 手填「墨復」→ MZTGF 不在這份門市表（沒有組別）→ 不判跨品牌、照算（support_group 空白不判）
   const CROSS = { E02: 3 };
-  const others = A.results.filter((r) => r.emp_id !== 'E01' && !CROSS[r.emp_id]).every((r) => JSON.stringify(r) === JSON.stringify(B.results.find((z) => z.emp_id === r.emp_id)));
+  const others = A.results.filter((r) => r.emp_id !== 'E01' && !CROSS[r.emp_id]).every((r) => JSON.stringify(noXsup(r)) === JSON.stringify(noXsup(B.results.find((z) => z.emp_id === r.emp_id))));   // #210 r7：不比 ot_info.xsup
   chk('對照組：其他人一律不變', others);
   chk('對照組：跨品牌手填的那位只少掉跨品牌那 3H', Object.keys(CROSS).every((k) => {
     const a = A.results.find((r) => r.emp_id === k), b = B.results.find((r) => r.emp_id === k);
