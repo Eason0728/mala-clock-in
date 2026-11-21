@@ -144,7 +144,7 @@ function calcOct(holiday, ym) {
   eq(/payRedDaysCheck_/.test(dif), true, 'F17-11 紅字天數同步把空白當成「不一樣」（本月以後會被補上）');
 }
 { // 畫面看得到原因：doCalc 對 red_days_* 用對話框講清楚；紅字天數表把空白標紅
-  const d = HTML.slice(HTML.indexOf('async function doCalc()'), HTML.indexOf('/* ═════ 月結 ═════ */'));
+  const d = HTML.slice(HTML.indexOf('async function doCalc('), HTML.indexOf('/* ═════ 月結 ═════ */'));
   eq(/red_days_blank/.test(d) && /alert\(/.test(d), true, 'F17-12 重新計算被紅字天數擋下 → 對話框顯示原因');
   const h = HTML.slice(HTML.indexOf('function applyHol('), HTML.indexOf('function holDateList('));
   eq(/空白/.test(HTML.slice(HTML.indexOf('function renderHol()'), HTML.indexOf('function holSyncHtml('))) && !/HOL\[k\]=n\(h\.red_days\)/.test(h), true, 'F17-13 紅字天數表：空白不再顯示成 0，標「空白」');
@@ -202,7 +202,7 @@ function front(fetchPlan, monthStatus) {
   const log = { fetch: [], toast: [], loadMonth: 0 };
   const ctx = {
     EMBED: false, API: 'https://example.invalid/exec', ADMIN_KEY: 'k', STORE: 'SSLGF', location: { pathname: '/' }, JSON, console,
-    ASOF: null, STATUS: 'draft', RESULTS: [], COST_SNAP: null, CALC_INPUTS: () => ({}), $: () => null, ym: () => '2026-10',
+    ASOF: null, STATUS: 'draft', RESULTS: [], COST_SNAP: null, ELEC_PEND: {}, LOCK_BUSY: false, elecBtns() {}, /* 選舉假：店月名單存檔待確認（Codex 第五次） */ CALC_INPUTS: () => ({}), $: () => null, ym: () => '2026-10',
     vClear() {}, renderRun() {}, setInterval: () => 1, clearInterval() {}, prompt: () => '', alert() {}, doCalc: async () => {},
     costStable() { return {}; }, costTotals() { return {}; }, costDetail() { return []; },
     toast: (m, bad) => log.toast.push((bad ? '!' : '') + m),

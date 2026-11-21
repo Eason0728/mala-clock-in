@@ -149,6 +149,73 @@ try:
             ok(bname + ' 舊後端 unknown_action → 「儲存失敗：unknown_action」', pg.inner_text('#msg') == '儲存失敗：unknown_action', pg.inner_text('#msg'))
             shot(pg, bname, 'ui-4-oldbackend.png')
             pg.unroute('**/*')
+            # Codex 第五次 B1：A 店月（11 月）存檔在途 → 切到 B（12 月）也存名單 → 切回 A：A 仍擋匯出與鎖定（B 的請求解不掉 A）
+            def setym(v): pg.evaluate("$('ym').value='%s'; $('ym').dispatchEvent(new Event('change'))" % v); pg.wait_for_timeout(2500)
+            time.sleep(3)
+            h5 = {}
+            def hold5(route):
+                body = json.loads(route.request.post_data or '{}')
+                if body.get('action') == 'payroll_hol_emp_set' and body.get('ym') == '2026-11' and 'a' not in h5: h5['a'] = route; return
+                route.continue_()
+            pg.route('**/*', hold5)
+            pg.click('#elecSave')
+            for _ in range(50):
+                if 'a' in h5: break
+                pg.wait_for_timeout(100)
+            setym('2026-12'); pg.click('button[data-p="cfg"]'); pg.wait_for_timeout(400)
+            pg.fill('#elecDate', '2026-12-05'); pg.locator('#elecList .elec-ck').nth(0).check()
+            pg.click('#elecSave'); pg.wait_for_function("document.getElementById('msg').textContent.indexOf('2026-12-05')>=0", timeout=8000)
+            setym('2026-11'); pg.click('button[data-p="run"]'); pg.wait_for_timeout(400)
+            pg.evaluate('exportExcel()'); pg.wait_for_timeout(200); m5 = pg.inner_text('#msg')
+            n5, d5, c5 = pg.evaluate('RESULTS.length'), pg.is_disabled('#lockBtn'), pg.is_disabled('#calcBtn')
+            ok(bname + ' A（11 月）存檔在途、B（12 月）存完、切回 A：A 仍不顯示舊數字、匯出擋、鎖定與重新計算鈕停用', 'a' in h5 and n5 == 0 and '請先計算' in m5 and d5 and c5, (list(h5), n5, m5, d5, c5))
+            setym('2026-10')
+            ok(bname + ' A 存檔在途時切到 10 月（沒有名單的月份）：鎖定、重新計算鈕不受影響', not pg.is_disabled('#lockBtn') and not pg.is_disabled('#calcBtn'), (pg.is_disabled('#lockBtn'), pg.is_disabled('#calcBtn')))
+            setym('2026-11'); pg.click('button[data-p="run"]'); pg.wait_for_timeout(300)
+            if 'a' in h5: h5['a'].continue_()
+            pg.wait_for_function("document.getElementById('msg').textContent.indexOf('已儲存選舉假名單（2026-11-28')>=0", timeout=8000); pg.wait_for_timeout(800)
+            ok(bname + ' A 的存檔回來、A 自己重算成功 → 才放行（結果回來、鎖定鈕恢復）', pg.evaluate('RESULTS.length') > 0 and not pg.is_disabled('#lockBtn'), pg.evaluate('RESULTS.length'))
+            pg.unroute('**/*')
+            # Codex 第五次 B2：A 存檔回來時人在 B → A 背景重算在途時切回 A：A 先擋；背景重算完成後重讀 A 才放行
+            time.sleep(3)
+            h6, seen6 = {}, []
+            def hold6(route):
+                body = json.loads(route.request.post_data or '{}')
+                a6 = body.get('action'); seen6.append((a6, body.get('ym')))
+                if a6 == 'payroll_hol_emp_set' and 's' not in h6: h6['s'] = route; return
+                if a6 == 'payroll_calc' and body.get('ym') == '2026-11' and 's' in h6 and 'c' not in h6: h6['c'] = route; return
+                route.continue_()
+            pg.route('**/*', hold6)
+            pg.click('button[data-p="cfg"]'); pg.wait_for_timeout(300); pg.click('#elecSave')
+            for _ in range(50):
+                if 's' in h6: break
+                pg.wait_for_timeout(100)
+            setym('2026-10')
+            if 's' in h6: h6['s'].continue_()
+            for _ in range(60):
+                if 'c' in h6: break
+                pg.wait_for_timeout(100)
+            setym('2026-11'); pg.click('button[data-p="run"]'); pg.wait_for_timeout(400)
+            n6, d6 = pg.evaluate('RESULTS.length'), pg.is_disabled('#lockBtn')
+            ok(bname + ' A 背景重算在途時切回 A：不顯示舊數字、鎖定鈕停用', 'c' in h6 and n6 == 0 and d6, (list(h6), n6, d6))
+            k6 = len(seen6)
+            if 'c' in h6: h6['c'].continue_()
+            pg.wait_for_timeout(3000)
+            after = seen6[k6:]
+            ok(bname + ' 背景重算完成 → 重讀 A（payroll_month 11 月）後才放行', ('payroll_month', '2026-11') in after and pg.evaluate('RESULTS.length') > 0 and not pg.is_disabled('#lockBtn'), (after, pg.evaluate('RESULTS.length')))
+            pg.unroute('**/*')
+            # Codex 第五次 B2(b)：鎖定成功後一律重讀這個月（畫面就是鎖進去的那份）
+            seen7 = []
+            def lock7(route):
+                body = json.loads(route.request.post_data or '{}')
+                seen7.append(body.get('action'))
+                if body.get('action') == 'payroll_finalize':
+                    route.fulfill(status=200, content_type='application/json', body=json.dumps({'ok': True, 'ym': '2026-11', 'status': 'final', 'count': 4})); return
+                route.continue_()
+            pg.route('**/*', lock7); pg.click('#lockBtn'); pg.wait_for_timeout(3000)
+            ok(bname + ' 鎖定成功後重讀這個月（finalize 之後有 payroll_month）', 'payroll_finalize' in seen7 and 'payroll_month' in seen7[seen7.index('payroll_finalize'):], seen7)
+            pg.unroute('**/*')
+            seed(False); setym('2026-10'); setym('2026-11'); pg.click('button[data-p="cfg"]'); time.sleep(0.5)
             # 存檔成功但自動重算失敗（後端回 hol_emp_changed）→ 舊結果作廢、提示失敗（Codex 複審 K3）
             def calcfail(route):
                 body = json.loads(route.request.post_data or '{}')

@@ -106,7 +106,7 @@ const STORES = [{ code: 'SSLGF', name: '光復', active: 'true', support_group: 
   const HTML = fs.readFileSync(path.join(__dirname, '..', 'payroll.html'), 'utf8');
   const a = HTML.indexOf('async function toggleLock()'), b = HTML.indexOf('/* ═════ 工時 ═════ */');
   const log = [];
-  const ctx = { ASOF: null, STATUS: 'draft', RESULTS: [], ATT_DIRTY: false, CALC_INPUTS: () => ({}), $: () => null, ym: () => '2026-11', vClear() {}, renderRun() {}, toast() {}, setInterval: () => 1, clearInterval() {}, console, prompt: () => '',
+  const ctx = { ASOF: null, STATUS: 'draft', RESULTS: [], ATT_DIRTY: false, STORE: 'SSLGF', ELEC_PEND: {}, LOCK_BUSY: false, elecBtns() {}, CALC_INPUTS: () => ({}), $: () => null, ym: () => '2026-11', vClear() {}, renderRun() {}, toast() {}, setInterval: () => 1, clearInterval() {}, console, prompt: () => '',
     alert: (m) => log.push('alert:' + m.split('\n')[0]), doCalc: async () => log.push('doCalc'), post: async () => ({ ok: false, error: 'stale_run', message: '試算後資料有改過\n測試甲：實付 1 → 2' }), costStable() {}, costTotals() {} };
   vm.createContext(ctx); vm.runInContext(HTML.slice(a, b), ctx);
   ctx.toggleLock().then(() => {

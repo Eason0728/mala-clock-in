@@ -137,10 +137,10 @@ console.log('\n══ 6) 重算時送出的工時來源（前端）══');
   /* ⚠ CALC_INPUTS 一定要從 payroll.html 抓出來，不可以在這裡寫死一份——
      寫死的話這兩條實跑測的是「測試自己寫的邏輯」，把程式改壞也照樣綠（2026-09-03 踩過）。 */
   const calcLine = (HTML.match(/const CALC_INPUTS = [^\n]+/) || [''])[0];
-  const src = [grab('async function autoCalc(){'), calcLine, grab('async function doCalc(){')].join('\n');
+  const src = [grab('async function autoCalc(){'), calcLine, grab('async function doCalc(')].join('\n');
   const sentWith = dirty => {
     let sent = null;
-    const ctx = { console, ATT: SUP, ATT_DIRTY: dirty, STATUS: 'draft', RESULTS: [], CFG: {}, STORE: 'SSLGF', ELEC_SAVING: '',   // doCalc 核對回應的店月（選舉假 Codex 複審 S5）；名單儲存中不套用（第四次）
+    const ctx = { console, ATT: SUP, ATT_DIRTY: dirty, STATUS: 'draft', RESULTS: [], CFG: {}, STORE: 'SSLGF', ELEC_PEND: {},   // doCalc 核對回應的店月（選舉假 Codex 複審 S5）；名單存檔待確認的店月不套用（第四、五次）
       ym: () => '2026-08', setBusy(){}, vClear(){}, renderRun(){}, renderSlipSel(){}, toast(){},
       supCrossBlock(){ return false; },   // 跨品牌手填擋重算（2026-11-05，support-auto.test 另守）
       post: async (a2, b2) => { sent = b2.inputs; return { ok: true, results: [], config: {} }; } };
