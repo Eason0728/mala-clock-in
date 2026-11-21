@@ -161,6 +161,7 @@ function relayGRowsOut_(ss, out, wantRows) {
  * {action:'relay_pull', relay_key, from_row?:資料第幾列起（1＝第一張卡）, with?:{roster,sheets,props,rows,fp}}
  * → {ok, v, now, total, from_row, events:[…], last:{row, ts, emp_id, type}, roster?, sheets?, props?, rows?, managers?, fp?, config}
  * rows／fp（P3-1）：approved、leave、requests 全部列＋主管名單白名單欄＋每天指紋；fp 只回指紋。格式見 r-line.md。
+ * props：REST_* 三個原值（有設才帶）＋DUTY_VER_STRICT:'1'（Google 實際採用 strict 時才帶，見 relayGVerStrictOut_；不帶 DUTY_AUTH）。
  * 唯讀。金鑰、裝置碼、LINE 帳號一律回 HMAC（'h:'＋十六進位），mini 拿不到原文。
  */
 /* P5-1 標示（2026-11-21，設計 6.2 的 5-1；不改分頁名、不改表頭文字＝只在第一格加「註記」）：
@@ -214,6 +215,17 @@ function relayGNoticesOut_(ss) {
   var heads = v[0].map(function (h) { return String(h || ''); }), idx = cols.map(function (h) { return heads.indexOf(h); });
   return [cols.slice()].concat(v.slice(1).map(function (row) { return idx.map(function (i) { return i < 0 ? '' : relayGCell_(row[i]); }); }));
 }
+/* 獨立複審 2026-11-21 第 10 項（L3）：mini 核定引擎在沙盒裡跑同一份 DutyFeed.gs／Code.gs，指令碼屬性只看 relay_pull 帶過去的 props。
+   以前 props 沒有 DUTY_VER_STRICT：Google 開了（或 DUTY_AUTH=mini 一律當開）而引擎沒開 → 版本讀不到時引擎放行、Google 回 ver_unknown，重試 3 次變衝突。
+   現在帶 Google「實際採用」的值：開（dutyOnVal_(DUTY_VER_STRICT) 或 DUTY_AUTH=mini）＝props.DUTY_VER_STRICT:'1'；關＝不帶這個鍵
+   （沒設、空白、0／off／false／no 都是關；回應跟以前逐字相同，引擎讀到 null＝關，同一個判斷）。
+   ⚠ 不帶 DUTY_AUTH 本身：引擎看到 mini 會對自己（沒簽名的呼叫）回 moved_to_mini＝切店後全擋。
+   DutyFeed.gs 沒載入（這家店沒有 strict 這回事）＝不帶。props 一次整份換掉，所以 Google 關掉後下一次帶 props 引擎就跟著關。 */
+function relayGVerStrictOut_(p, props) {
+  if (typeof dutyOnVal_ !== 'function' || typeof dutyAuthCfgOf_ !== 'function') return;
+  var on = dutyOnVal_(p.getProperty('DUTY_VER_STRICT')) || dutyAuthCfgOf_({ DUTY_AUTH: p.getProperty('DUTY_AUTH') }).mini;
+  if (on) props.DUTY_VER_STRICT = '1';
+}
 function handleRelayPull_(body) {
   if (!relayKeyOk_(body.relay_key)) return { ok: false, error: 'unauthorized' };
   relayGWatchSeen_();   // P2-D：記「mini 剛來過」（光復的停機通知觸發器看這個）
@@ -262,6 +274,7 @@ function handleRelayPull_(body) {
     out.props = {};
     var p = PropertiesService.getScriptProperties();
     RELAYG_PROPS_.forEach(function (k) { var v = p.getProperty(k); if (v !== null) out.props[k] = v; });
+    relayGVerStrictOut_(p, out.props);   // 審查第 10 項：Google 實際採用的「版本讀不到就擋」（關＝不帶，回應不變）
   }
   if (w.rows || w.fp) relayGRowsOut_(ss, out, !!w.rows);   // P3-1：沒帶就完全不讀這幾張
   if (w.mark === 'on' || w.mark === 'off') out.mark = relayGMarkOut_(ss, w.mark);   // P5-1：表頭註記（沒帶＝不碰）
