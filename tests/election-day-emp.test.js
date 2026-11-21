@@ -69,12 +69,14 @@ function world(opt) {
   const hasSheet = opt.elec !== undefined;
   if (hasSheet) DB.hol_emp = (opt.elec || []).map((id) => { const i = people.findIndex((p) => p[0] === id); return { ym: '2026-11', date: opt.elecDate || E, store: 'SSLGF', emp_id: 'E' + (i + 1), name: NAMES[i] + '君', note: '', updated_at: '' }; });
   const CLOCK = { roster: master.map((m) => ({ emp_id: m.emp_id, name: m.name, active: true })), approved, events: [], leave, requests };
+  const CACHE = {};   // 這個世界自己的 CacheService（不同世界不共用）
   const sb = { console, Logger: { log() {} },
-    SpreadsheetApp: { flush: () => {}, getActive: () => null, openById: () => ({ getSheetByName: (n) => (n === 'payroll_hol_emp' && !hasSheet ? null : {}) }) },
+    SpreadsheetApp: { flush: () => {}, getActive: () => null, openById: () => ({ getSheetByName: (n) => (n === 'payroll_hol_emp' && !('hol_emp' in DB) ? null : {}) }) },
     Utilities: { formatDate: () => '2026-11-30' },
     PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty() {} }) },
-    CacheService: { getScriptCache: () => ({ get: () => null, put() {}, remove() {} }) },
+    CacheService: { getScriptCache: () => ({ get: (k) => CACHE[k] || null, put(k, v) { CACHE[k] = v; sb.__PUTS.push(k); }, remove(k) { delete CACHE[k]; } }) },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) } };
+  sb.__PUTS = [];
   vm.createContext(sb);
   vm.runInContext(C + '\n' + (opt.gs || GS_NOW) + '\n' + SP, sb);
   sb.__C = CLOCK; sb.__DB = DB; sb.__PUB = PUB;
@@ -294,11 +296,19 @@ console.log('\n══ e3) 計時：跨店支援兩種加倍共用採計時數、
   const f = w.F('paySupportElecDouble_'), fh = w.F('paySupportHolDouble_');
   const entry = { stores: [{ code: 'MZTLZL', name: '六張犁', days: [{ date: '2026-11-10', hours: 8 }, { date: E, hours: 8 }] }] };
   const sup = (h) => [{ store: '六張犁', code: 'MZTLZL', hours: h, rate: 200 }];
-  chk('  支援列只採計 8H：國定假日加倍 8H、選舉日 0H（合計不超過 8H）', [fh(sup(8), entry, ['2026-11-10'], {}).map((x) => x.hours), f(sup(8), entry, ['2026-11-10'], [E], {}).map((x) => x.hours)], [[8], []]);
+  chk('  支援列只採計 8H：國定假日加倍 8H、選舉日 0H（合計不超過 8H；want 8 留給提醒）', [fh(sup(8), entry, ['2026-11-10'], {}).map((x) => x.hours), f(sup(8), entry, ['2026-11-10'], [E], {}).map((x) => [x.hours, x.want])], [[8], [[0, 8]]]);
   chk('  採計 12H：國定假日 8H、選舉日 4H', f(sup(12), entry, ['2026-11-10'], [E], {}).map((x) => x.hours), [4]);
   chk('  採計 16H：國定假日 8H、選舉日 8H', f(sup(16), entry, ['2026-11-10'], [E], {}).map((x) => [x.hours, x.rate]), [[8, 200]]);
   chk('  當月沒有國定假日：選舉日 min(8, 採計)', f(sup(5), entry, [], [E], {}).map((x) => x.hours), [5]);
   chk('  until 之後的日子不算', f(sup(16), entry, [], [E], {}, '2026-11-27'), []);
+  // 純手填工時（沒有逐日打卡資料）被勾選：不加發，但要提醒（Codex 複審 K4a）
+  const nd = [['q', '正職 W、沒有打卡、手填工時', true, W, 0, 0], ['r', '計時 W、沒有打卡、手填工時', false, W, 0, 0]];
+  const wn = world({ only: [], extra: nd, elec: ['q', 'r'] });
+  const rn = wn.F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', inputs: { E1: { hours: 160 }, E2: { hours: 80 } } }).results;
+  chk('  純手填：正職、計時都提醒 no_daily、沒有選舉日出勤', rn.map((r) => [r.ot_info.elec_warn, r.earn.some((x) => x.item_label.indexOf('選舉日出勤') === 0)]),
+    [[{ want: 0, paid: 0, reason: 'no_daily' }, false], [{ want: 0, paid: 0, reason: 'no_daily' }, false]]);
+  const rn0 = world({ only: [], extra: nd }).F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', inputs: { E1: { hours: 160 }, E2: { hours: 80 } } }).results;
+  chk('  沒勾選就沒有提醒', rn0.map((r) => r.ot_info.elec_warn), [undefined, undefined]);
   // 本店：手填國定假日時數跟打卡不同 → 不自動加發、提醒區列出
   const extra = [['p', '計時 W 8h＋11/20 W 8h', false, W, 8, 0, { cells: { '2026-11-20': W }, hours: { '2026-11-20': 8 } }]];
   const wp = world({ only: [], extra, elec: ['p'] });
@@ -326,6 +336,75 @@ console.log('\n══ f) 損益月中估算（handlePnlLaborEstimate_）同一�
   function payNumOf(r, k) { return r && r[k] != null ? r[k] : (r && r.totals && r.totals[k] != null ? r.totals[k] : null); }
   const gA = g(A, 'gross') ?? g(A, 'total'), gC = g(C2, 'gross') ?? g(C2, 'total');
   if (gA != null && gC != null) chk('  應發差 2800', gC - gA, 2800);
+}
+
+console.log('\n══ e4) 定案的版本缺口（Codex 複審 K1）══');
+{
+  // (a) 分頁還沒建（第一次存檔前）：定案固定一份名單快照，草稿比對中途有人存了名單，比對看到的仍是快照
+  const w = world({ only: ['a'] }); w.calc();
+  w.sb.__SEEN = [];
+  w.F('(function(){ var o = payLockStale_; payLockStale_ = function(b, ym, st){ handlePayrollHolEmpSet({ admin_key: "x", store: "SSLGF", ym: "2026-11", date: "2026-11-28", emp_ids: ["E1"] }); globalThis.__SEEN.push(payHolEmpRows_().length); var r = o(b, ym, st); handlePayrollHolEmpSet({ admin_key: "x", store: "SSLGF", ym: "2026-11", date: "", emp_ids: [] }); return r; }; })')();
+  const lk = w.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true });
+  chk('  比對期間讀到的名單＝鎖前快照（0 筆），不是中途存的', w.sb.__SEEN, [0]);
+  chk('  首尾名單都空、草稿用的也是空 → 可以鎖（鎖的數字跟現在的名單一致）', [lk.ok, w.DB.run[0].status, w.DB.run[0].gross], [true, 'final', 34000]);
+  chk('  定案結束後快照解除', w.F('(function(){ return PAY_ELEC_PIN_; })')(), null);
+  // (b) 草稿比對之後、拿寫鎖之前，另一個重算把草稿換掉 → 不鎖新的那份（手填工時改了再重算也是這條）
+  const w2 = world({ only: ['a'] }); w2.calc();
+  w2.F('(function(){ var o = payLockStale_; payLockStale_ = function(b, ym, st){ var r = o(b, ym, st); handlePayrollCalc({ admin_key: "x", ym: "2026-11", store: "SSLGF", inputs: { E1: { hours: 8, custom_add_label: "補發", custom_add_amt: 500 } } }); return r; }; })')();
+  const lk2 = w2.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true });
+  chk('  草稿被換掉 → stale_run、沒鎖', [lk2.ok, lk2.error, w2.DB.run[0].status], [false, 'stale_run', 'draft']);
+  chk('  訊息', lk2.message, '試算後資料有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。');
+  // 沒有交錯：照常鎖（run 指紋不影響一般流程）
+  const w3 = world({ only: ['a'] }); w3.calc();
+  chk('  一般鎖定照常', w3.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true }).ok, true);
+  chk('  payroll_setup 不建名單分頁（第一次儲存才建）', (() => { const wq = world({}); let made = []; wq.F('(function(){ var o = paySheet; paySheet = function(k){ globalThis.__MADE = (globalThis.__MADE||[]).concat([k]); return null; }; })')(); try { wq.F('ensurePayrollSheets')(); } catch (e) {} return (wq.sb.__MADE || []).indexOf('hol_emp'); })(), -1);
+}
+
+console.log('\n══ e5) 計時跨店支援整條鏈（主算、損益估算；驗收員 zz_b2 改寫）══');
+{
+  const X = [['p', '計時 支援', false, W, 0, 0, { cells: { '2026-11-10': W } }]];
+  const AP = (h) => ({ approved_hours: h, status_text: '正常', periods: '', manager_name: '' });
+  function mk(o) {
+    const w = world(Object.assign({ only: [], extra: X, hol: '2026-11-10' }, o || {}));
+    w.DB.store.push({ code: 'SSLHQ', name: '支援店', clock_ss_id: 'ck-hq', active: 'true', support_group: 'sxl' });
+    w.DB.xmap = [{ emp_no: '1', pay_store: 'SSLGF', acct_store: 'SSLGF', emp_id: 'E1', state: 'confirmed', not_support: 'false', synced_at: '2026-11-05' },
+                 { emp_no: '1', pay_store: 'SSLGF', acct_store: 'SSLHQ', emp_id: 'H1', state: 'confirmed', not_support: 'false', synced_at: '2026-11-05' }];
+    w.sb.__AP = { SSLHQ: { '2026-11-10': { H1: AP(8) }, '2026-11-28': { H1: AP(8) } } };
+    w.F('(function(){ payXsupData_ = function(withDays){ return { xmap: payRead("xmap"), stores: payRead("store"), master: payRead("master"), approvedMap: function(c){ return globalThis.__AP[c] || {}; }, events: function(){ return []; }, tsDate: function(s){ return String(s).slice(0,10); }, today: "2026-12-01", days: !!withDays }; }; })')();
+    return w;
+  }
+  const run = (w, sup) => w.F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', inputs: sup == null ? {} : { E1: { support: [{ code: 'SSLHQ', store: '支援店', hours: sup, rate: 200, keep: true, auto_h: 16 }] } } }).results[0];
+  const lab = (r) => r.earn.filter((x) => x.item_key === 'holiday_double').map((x) => x.item_label + ' ' + x.qty + '=' + x.amount);
+  const want = { null: [16, 1600, undefined], 8: [8, 0, [{ store: '支援店', want: 8, paid: 0 }]], 12: [12, 800, [{ store: '支援店', want: 8, paid: 4 }]], 16: [16, 1600, undefined] };
+  for (const sup of [null, 8, 12, 16]) {
+    const a = run(mk({}), sup), b = run(mk({ elec: ['p'] }), sup);
+    chk('  採計 ' + (sup == null ? '自動 16' : sup) + 'H：勾選後差額 ' + want[sup][1] + '、截斷提醒', [b.gross - a.gross, b.ot_info.elec_sup_warn], [want[sup][1], want[sup][2]]);
+  }
+  chk('  採計 8H：國定假日加倍 8H 照舊、沒有選舉日那列', lab(run(mk({ elec: ['p'] }), 8)), ['國定假日加倍（支援支援店） 8=1600']);
+  let base = null; try { base = execFileSync('git', ['show', '45ccbec:apps-script/Payroll.gs'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) {}
+  chk('  沒勾選：四種採計都跟 45ccbec 逐欄相同', !!base && [null, 8, 12, 16].every((sup) => JSON.stringify(run(mk({ gs: base }), sup)) === JSON.stringify(run(mk({}), sup))), true);
+  const est = (o, sup) => { const w = mk(o); w.sb.__TODAY = '2026-11-29'; w.F('(function(){ checkPnlKey_ = function(){ return ""; }; })')();
+    if (sup != null) w.DB.input = [{ ym: '2026-11', emp_id: 'E1', store: 'SSLGF', hours: 0, extra_ot: 0, deduct_days: 0, support: JSON.stringify([{ code: 'SSLHQ', store: '支援店', hours: sup, rate: 200, keep: true, auto_h: 16 }]), hours_manual: '' }];
+    return w.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2026-11', store: 'SSLGF' }); };
+  const eA = est({}, 8), eB = est({ elec: ['p'] }, 8);
+  chk('  損益估算 採計 8H：勾選不多算、帶 elec_warn_count 1', [eB.total - eA.total, eB.elec_warn_count, 'elec_warn_count' in eA], [0, 1, false]);
+}
+
+console.log('\n══ e6) 離職又被勾選的人鎖定時也檢查補休帳；其他日期提醒；損益快取鍵（Codex 複審 S2、S3）══');
+{
+  const wl = world({ elec: ['l'], only: ['l'], patch: (m) => { m[0].active = 'false'; m[0].leave_date = '2026-11-29'; } }); wl.calc();
+  const lk = wl.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true });
+  chk('  當月離職（已停用）又被勾選、補休帳 −2 → 擋 comp_negative', [lk.ok, lk.error], [false, 'comp_negative']);
+  const wl0 = world({ elec: [], only: ['l'], patch: (m) => { m[0].active = 'false'; m[0].leave_date = '2026-11-29'; } }); wl0.calc();
+  chk('  沒勾選的停用者照舊不掃（既有行為不變）', wl0.F('payCompNegatives')('2026-11', 'SSLGF').length, 0);
+  const wd = world({ elec: ['a', 'b'] }); wd.DB.hol_emp[1].date = '2026-11-27'; wd.calc();
+  const pm = wd.F('handlePayrollMonth')({ ym: '2026-11', store: 'SSLGF' });
+  chk('  同店同月第二個日期：名單只回第一個日期、另帶 hol_emp_other_dates', [pm.hol_emp.map((x) => x.emp_id), pm.hol_emp_other_dates], [['E1'], ['2026-11-27']]);
+  const wb = world({ elec: ['a'] }); wb.DB.hol_emp.unshift({ ym: '2026-11', date: '2026-11-31', store: 'SSLGF', emp_id: 'E2' });
+  chk('  第一列是不存在的日期（11/31）不會遮掉合法的 11/28', wb.F('payElecDates_')(wb.DB.hol_emp, '2026-11', 'SSLGF', 'E1'), [E]);
+  const keyOf = (o) => { const w = world(o); w.sb.__TODAY = '2026-11-29'; w.F('(function(){ checkPnlKey_ = function(){ return ""; }; })')();
+    w.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2026-11', store: 'SSLGF' }); return w.sb.__PUTS.filter((k) => k.indexOf('pnlestimate|') === 0)[0]; };
+  chk('  損益快取鍵：沒有名單＝跟改版前一樣；有名單多帶名單指紋', [keyOf({}), keyOf({ elec: ['a'] })], ['pnlestimate|2026-11|SSLGF|2026-11-28', 'pnlestimate|2026-11|SSLGF|2026-11-28|2026-11-28|E1']);
 }
 
 console.log('\n══ g) 純函式 ══');

@@ -157,7 +157,7 @@ function paySheet(kind) {
 }
 
 function ensurePayrollSheets() {
-  Object.keys(PAY_SHEETS).forEach(function (k) { paySheet(k); });
+  Object.keys(PAY_SHEETS).forEach(function (k) { if (k !== 'hol_emp') paySheet(k); });   // 選舉假名單第一次按儲存才建（沒有名單時跟改版前一樣）
   return { ok: true, sheets: Object.keys(PAY_SHEET_NAME).map(function (k) { return PAY_SHEET_NAME[k]; }) };
 }
 
@@ -173,10 +173,13 @@ function payRead(kind) {
 }
 function payInvalidate(kind) { delete PAY_READ_CACHE[kind]; }
 /** 選舉假名單（payroll_hol_emp）：分頁不存在就回空陣列、不建分頁（計算是唯讀路徑，不能因為讀一次就多一張分頁）。 */
+var PAY_ELEC_PIN_ = null;   // 定案流程固定的名單快照（Codex 複審 K1a）：設了就一律回這一份，試算與補休檢查用同一版
 function payHolEmpRows_() {
+  if (PAY_ELEC_PIN_) return PAY_ELEC_PIN_;
+  if (PAY_READ_CACHE.hol_emp) return PAY_READ_CACHE.hol_emp;
   try {
     const ss = getSS();
-    if (ss && typeof ss.getSheetByName === 'function' && !ss.getSheetByName(PAY_SHEET_NAME.hol_emp)) return [];
+    if (ss && typeof ss.getSheetByName === 'function' && !ss.getSheetByName(PAY_SHEET_NAME.hol_emp)) { PAY_READ_CACHE.hol_emp = []; return PAY_READ_CACHE.hol_emp; }   // 空結果也進請求內快取
   } catch (e) { /* 讀不到試算表物件（測試替身）時交給 payRead */ }
   return payRead('hol_emp') || [];
 }
@@ -694,7 +697,7 @@ function paySupportElecDouble_(support, entry, holDates, elecDates, storeBy, unt
     const paid = rows.reduce(function (t, x) { return t + payNum(x.hours); }, 0);
     const left = Math.max(0, paid - Math.min(sum(hol), paid));
     const h = payR2(Math.min(he, left));
-    if (h > 0) out.push({ code: a.code, name: a.name, hours: h, rate: payNum(rows[0].rate) });
+    out.push({ code: a.code, name: a.name, hours: h, rate: payNum(rows[0].rate), want: he });   // hours 0 也回：want＞hours＝被採計時數截掉（提醒用，Codex 複審 K4b）
   });
   return out;
 }
@@ -1513,8 +1516,16 @@ function payElecRowsOf_(rows, ym, st) {
   return (rows || []).filter(function (r) {
     if (!r || payYmStr_(r.ym) !== String(ym) || payStore(String(r.store == null ? '' : r.store).trim()) !== st) return false;
     const d = payElecYmd_(r.date);
-    return /^\d{4}-\d{2}-\d{2}$/.test(d) && d.slice(0, 7) === String(ym);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d.slice(0, 7) !== String(ym)) return false;
+    const dc = payMasterDateCheck_(d);   // 2026-11-31 這種不存在的日期不算（Codex 複審 S3：不可遮掉合法日期）
+    return dc.ok && dc.value === d;
   });
+}
+/** 本店本月名單裡、第一個日期以外的其他日期（直接編表才會有；畫面提醒用） */
+function payElecOtherDates_(rows, ym, st) {
+  const d0 = payElecDateOf_(rows, ym, st), out = [];
+  payElecRowsOf_(rows, ym, st).forEach(function (r) { const d = payElecYmd_(r.date); if (d !== d0 && out.indexOf(d) < 0) out.push(d); });
+  return out.sort();
 }
 /** 一店一月只認一個選舉日（Codex S3）：名單第一列的日期；直接編表多出別的日期的列不算（畫面同樣只認這一天） */
 function payElecDateOf_(rows, ym, st) {
@@ -1733,6 +1744,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   let ptWage = 0;   // 計時同仁的有效時薪（基本＋滿勤加給＋年資加給），遲到扣款要用
   let ptAttendInfo = null;   // 計時全勤津貼的判定結果（前端顯示時薪組成用）
   let ptElecWarn = null;     // 計時選舉日出勤沒有全額加發的原因（提醒區用；沒有就不帶）
+  let ptElecSupWarn = null;  // 計時去別店支援的選舉日加倍被店級採計時數截掉（提醒區用）
   const supportH = (att.support || []).reduce(function (a, s) { return a + payNum(s.hours); }, 0);
 
   if (ft) {
@@ -1832,7 +1844,8 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
       if (elecWant > 0 && elecH < elecWant) ptElecWarn = { want: elecWant, paid: elecH, reason: att.elec_hol_manual ? 'hol_manual' : 'cap' };
       (att.sup_elec || []).forEach(function (x) {
         const r = payNum(x.rate) || w;
-        push(earn, 'holiday_double', PAY_ELEC_LABEL + '（支援' + String(x.name || x.code || '') + '）', x.hours, r, x.hours * r);
+        if (payNum(x.hours) > 0) push(earn, 'holiday_double', PAY_ELEC_LABEL + '（支援' + String(x.name || x.code || '') + '）', x.hours, r, x.hours * r);
+        if (payNum(x.want) > payNum(x.hours) + 0.005) (ptElecSupWarn = ptElecSupWarn || []).push({ store: String(x.name || x.code || ''), want: payR2(payNum(x.want)), paid: payR2(payNum(x.hours)) });
       });
       // 2026-11 起：一天超過 8 小時、休息日、例假的加成（時數本身上面已照時薪給，這裡只加多的那段）
       otS = payOtDailySum(Object.assign({}, att.daily, { extra_ot: 0, comp_h: 0 }));
@@ -1996,7 +2009,9 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     no_show: otS.no_show, rdo: otS.rdo_dates, hol: otS.hol_dates, comp_h: otS.comp_used_h, comp_over_h: otS.comp_over_h,
     manual_sup_h: payNum(att.daily.manual_sup_h) };
   if (otS && otS.elec_dates && otS.elec_dates.length) out.ot_info.elec = otS.elec_dates.slice();   // 選舉假有算到的日子（沒有就不帶，回應形狀不變）
-  if (otS && ptElecWarn) out.ot_info.elec_warn = ptElecWarn;   // 計時選舉日出勤沒有全額加發（hol_manual＝手填國定假日時數、cap＝本月總時數不夠）
+  if (otS && att.elec_nodaily) ptElecWarn = { want: 0, paid: 0, reason: 'no_daily' };   // 被勾選、班表上班日，卻沒有逐日打卡資料（純手填工時；正職計時都會）
+  if (otS && ptElecWarn) out.ot_info.elec_warn = ptElecWarn;   // 選舉日出勤沒有全額加發（hol_manual＝手填國定假日時數、cap＝本月總時數不夠、no_daily＝沒有逐日資料）
+  if (otS && ptElecSupWarn) out.ot_info.elec_sup_warn = ptElecSupWarn;   // 計時支援的選舉日加倍被採計時數截掉
   if (otS) {
     const chk = payOtFormCheck_(att);
     out._ot_days = otS.ot_days;   // 實際加班（補休前），給 28 天週期加總（payOtMonthSync_）；不進 run 表
@@ -4155,6 +4170,7 @@ function handlePayrollCalc(body) {
         const cut = function (ds) { return ASOF ? ds.filter(function (d) { return d <= ASOF; }) : ds; };
         att.elec_h = payElecOwnH_(c, cut(elecOn));   // 計時加倍用（本店時數）
         if (payR2(payNum(att.holiday_h)) !== payElecOwnH_(c, cut(HOLD))) att.elec_hol_manual = true;   // 國定假日時數被手改過（Codex B3）
+        if (!Object.keys(att.daily.day_h || {}).length && payNum(att.hours) > 0) att.elec_nodaily = true;   // 純手填工時：沒有逐日資料判斷不了選舉日時數（Codex 複審 K4a）
         if (XSUP) att.sup_elec = paySupportElecDouble_(att.support, XSUP.byEmp[id.trim()], HOLD, elecOn, XCTX.storeBy, ASOF || undefined);
       }
       if (ASOF) {   // 月中只算到 as_of；之後「班表查不到」的日子照舊提醒（月底前要補發布，不然到時候鎖不了），不影響金額
@@ -4425,6 +4441,7 @@ function handlePayrollMonth(body) {
   // 選舉假名單：只帶本店本月、有才加屬性（Codex B5：沒有名單時連值為 undefined 的屬性都不加）
   const heM = payHolEmpFor_(stM, ym);
   if (heM) resM.hol_emp = heM;
+  if (heM && payElecOn_(ym)) { const od = payElecOtherDates_(payHolEmpRows_(), ym, stM); if (od.length) resM.hol_emp_other_dates = od; }   // 直接編表多出的日期（畫面提醒，Codex 複審 S3）
   return resM;
 }
 
@@ -4498,8 +4515,12 @@ function handlePayrollFinalize(body) {
     if (payRead('run').some(function (r) { return String(r.ym) === ym && payStore(r.store) === stF && payDateStr(r.as_of); }))
       return { ok: false, error: 'stale_run', list: [], message: '草稿還是月中（只算到某一天）的數字，不能直接鎖定。請按「重新計算」換成整月數字、確認後再鎖定。' };
   }
-  // 選舉假名單指紋：在草稿比對之前記下，寫鎖內再比一次（Codex B1）。沒有名單＝空字串
-  const ELEC_FP0 = (lock && payElecOn_(ym)) ? payElecFp_(payHolEmpRows_(), ym, stF) : null;
+  // 選舉假名單：在草稿比對之前固定一份快照（後面的試算、補休檢查都用這一份），寫鎖內再跟表上現況比一次（Codex B1、複審 K1a）
+  PAY_ELEC_PIN_ = null;
+  const ELEC_FP0 = (lock && payElecOn_(ym)) ? payElecFp_((PAY_ELEC_PIN_ = payHolEmpRows_().slice()), ym, stF) : null;
+  // 要定案的草稿：比對前記下內容指紋，寫鎖內確認還是同一份（另一個重算在中間換掉草稿就不鎖，Codex 複審 K1b）
+  const RUN_SIG0 = lock ? payRunSig_(payRead('run'), ym, stF) : null;
+  try {
   /* 鎖定前用最新資料重算比對（Eason 2026-11-09）：試算後主檔、打卡或假單改過，就不鎖舊數字，前端會自動重算給人看過再鎖。解鎖不擋。
      起始月份 PAY_LOCK_RECHECK_FROM（2026-10；薪酬挑錯第 8 項，Eason 2026-11-11 確認），2026-09 以前的月份不動。 */
   if (lock && payLockRecheckOn(ym)) {
@@ -4568,7 +4589,7 @@ function handlePayrollFinalize(body) {
     catch (err) { gb = { error: 'g_recon_check_failed', message: '檢查打卡正本對帳失敗，這次沒有鎖定，請再按一次：' + err }; }
     if (gb) return { ok: false, error: gb.error, message: gb.message };
   }
-  let n = 0, savedSnap = null, already = false, elecChanged = false;
+  let n = 0, savedSnap = null, already = false, elecChanged = false, runChanged = false;
   /* 稽核與損益快照也是「讀整張再寫回」的共用分頁，和鎖定狀態放在同一把鎖裡，兩店同時定案才不會互相蓋掉（2026-11-10）。 */
   if (!payWriteLocked_(['run', 'audit', 'cost_snapshot'], function () {
     const rows = payRead('run');
@@ -4578,7 +4599,8 @@ function handlePayrollFinalize(body) {
       return;
     }
     /* 選舉假名單在上面的草稿比對、補休檢查之後被改了（Codex B1）：那些檢查用的是舊名單 → 不鎖，前端照 stale_run 自動重算 */
-    if (lock && ELEC_FP0 !== null) { payInvalidate('hol_emp'); if (payElecFp_(payHolEmpRows_(), ym, stF) !== ELEC_FP0) { elecChanged = true; return; } }
+    if (lock && ELEC_FP0 !== null) { PAY_ELEC_PIN_ = null; payInvalidate('hol_emp'); if (payElecFp_(payHolEmpRows_(), ym, stF) !== ELEC_FP0) { elecChanged = true; return; } }
+    if (lock && payRunSig_(rows, ym, stF) !== RUN_SIG0) { runChanged = true; return; }   // 草稿在比對之後被換掉
     rows.forEach(function (r) { if (String(r.ym) === ym && payStore(r.store) === stF) { r.status = lock ? 'final' : 'draft'; n++; } });
     if (n) payReplaceAll('run', rows);
     if (!n) return;
@@ -4610,12 +4632,21 @@ function handlePayrollFinalize(body) {
     }
   })) return PAY_BUSY_;
   if (elecChanged) return { ok: false, error: 'stale_run', list: [], message: '試算後選舉假名單有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。' };
+  if (runChanged) return { ok: false, error: 'stale_run', list: [], message: '試算後資料有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。' };
   if (!n) return { ok: false, error: 'no_run', message: ym + ' 還沒有月結資料' };
   if (already) return { ok: true, ym: ym, status: 'final', count: n, already: true };
   /* cost_snap（2026-11-13）：鎖定且快照寫成功才帶，前端鎖完不用重整就改讀快照；沒寫成功前端照舊標「即時值」。 */
   const out = { ok: true, ym: ym, status: lock ? 'final' : 'draft', count: n };
   if (lock && savedSnap) out.cost_snap = savedSnap;
   return out;
+  } finally { PAY_ELEC_PIN_ = null; }   // 名單快照只在這次定案內有效
+}
+/** 某店某月草稿列的內容指紋（不含 status）：定案時確認寫鎖內要鎖的就是鎖外比對過的那一份（Codex 複審 K1b） */
+function payRunSig_(rows, ym, st) {
+  const byEmp = function (a, b) { const x = String(a.emp_id), y = String(b.emp_id); return x === y ? 0 : (x < y ? -1 : 1); };
+  return JSON.stringify((rows || []).filter(function (r) { return String(r.ym) === String(ym) && payStore(r.store) === st; })
+    .map(function (r) { const o = {}; Object.keys(r).sort().forEach(function (k) { if (k !== 'status') o[k] = r[k] instanceof Date ? r[k].getTime() : r[k]; }); return o; })
+    .sort(byEmp));
 }
 
 /**
@@ -4734,12 +4765,13 @@ function payAnnualInfo(ym, store) {
 function payCompMonthBook(ym, opt) {
   const empStores = payEmpStoresMap();
   const cache = {};
+  let kindErrN = 0;   // 讀不到、日別查不到的次數（kindErr()）
   function rowsOf(st, sheet) {
     const k = st + '|' + sheet;
-    if (!(k in cache)) { try { cache[k] = payClockRead(st, sheet); } catch (e) { cache[k] = []; } }   // 某店暫時開不起來不該讓整頁掛掉
+    if (!(k in cache)) { try { cache[k] = payClockRead(st, sheet); } catch (e) { cache[k] = []; kindErrN++; } }   // 某店暫時開不起來不該讓整頁掛掉（存名單的補休提醒算「沒檢查成」）
     return cache[k];
   }
-  let sIdx = null; const holBy = {}; let elecRows = (opt && opt.elecRows) || null, kindErrN = 0;   // opt.elecRows：指定名單快照（存名單時的補休提醒）
+  let sIdx = null; const holBy = {}; let elecRows = (opt && opt.elecRows) || null;   // opt.elecRows：指定名單快照（存名單時的補休提醒）
   /** 這位同仁本月核准加班單日期的班表日別（只在 PAY_COMP_OTKIND_FROM 之後的月份、有加班單時才查）；整個查不到回 null＝照舊全算 */
   function otKinds(e, store, ots) {
     if (String(ym) < PAY_COMP_OTKIND_FROM || !ots.length) return null;
@@ -4756,6 +4788,7 @@ function payCompMonthBook(ym, opt) {
       ots.forEach(function (x) {
         const d = String(x.date);
         out[d] = payOtKindOf(cells[d] || null, hol.indexOf(d) >= 0);   // 班表查不到時仍看節日清單（與薪資 payOtDailySum 一致，Fable 審查）
+        if (!cells[d]) kindErrN++;   // 加班那天班表缺格：日別是猜的（存名單的補休提醒算「沒檢查成」，Codex 複審 S2）
       });
       return out;
     } catch (err) { kindErrN++; return null; }
@@ -4802,8 +4835,13 @@ function payCompNegatives(ym, store, book) {
   const st = payStore(store);
   const bk = book || payCompMonthBook(ym);
   const out = [];
+  // 選舉假名單上的人（含當月離職、主檔已停用）也要檢查：選舉日的加班不能抵補休，會讓他的補休帳變負（Codex 複審 S2）
+  const elecIds = {};
+  if (payElecOn_(ym)) { const er = payHolEmpRows_(), d0 = payElecDateOf_(er, ym, st);
+    payElecRowsOf_(er, ym, st).forEach(function (r) { if (payElecYmd_(r.date) === d0) elecIds[String(r.emp_id == null ? '' : r.emp_id).trim()] = true; }); }
   payRead('master').forEach(function (e) {
-    if (String(e.active).toLowerCase() !== 'true' || payStore(e.store) !== st || !payIsFt(e)) return;
+    const elected = !!elecIds[String(e.emp_id).trim()] && payInRoster_(e, st, ym);
+    if ((String(e.active).toLowerCase() !== 'true' && !elected) || payStore(e.store) !== st || !payIsFt(e)) return;
     const c = bk.forEmp(e, st);
     if (c.balance_h < 0) out.push({ emp_id: String(e.emp_id), name: String(e.name), ot_h: c.ot_h, used_h: c.used_h, balance_h: c.balance_h });
   });
@@ -6903,7 +6941,8 @@ function handlePnlLaborEstimate_(body) {
   var daysElapsed = Math.min(daysInMonth, parseInt(asOf.slice(8, 10), 10));
 
   var cache = CacheService.getScriptCache();
-  var cacheKey = 'pnlestimate|' + ym + '|' + st + '|' + asOf;
+  var elecFpE = payElecOn_(ym) ? payElecFp_(payHolEmpRows_(), ym, st) : '';
+  var cacheKey = 'pnlestimate|' + ym + '|' + st + '|' + asOf + (elecFpE ? '|' + elecFpE : '');   // 名單改了就換鍵（Codex 複審：清掉後舊請求回填舊值）；沒有名單鍵不變
   var cached = cache.get(cacheKey);
   if (cached) {
     try { return JSON.parse(cached); } catch (parseErr) { /* 壞掉的快取當沒有，往下重算 */ }
@@ -6998,6 +7037,7 @@ function handlePnlLaborEstimate_(body) {
       if (elecOn.length) {
         a.elec_h = payElecOwnH_(c, elecOn.filter(function (d) { return d <= asOf; }));
         if (payR2(payNum(a.holiday_h)) !== payElecOwnH_(c, holDates.filter(function (d) { return d <= asOf; }))) a.elec_hol_manual = true;   // 同 handlePayrollCalc（Codex B3）
+        if (!Object.keys(a.daily.day_h || {}).length && payNum(a.hours) > 0) a.elec_nodaily = true;
         if (XS) a.sup_elec = paySupportElecDouble_(a.support, XS.byEmp[String(e.emp_id).trim()], holDates, elecOn, payXsupStoreBy_(payRead('store')), asOf);   // 與國定假日共用採計時數（Codex B2）
       }
     }
@@ -7038,6 +7078,8 @@ function handlePnlLaborEstimate_(body) {
     not_estimated: ['custom_add', 'custom_ded', 'dorm_income（g.dorm，宿舍收入參考區塊）'],
   };
   if (redDaysMissing) result.red_days_missing = true;   // 損益端看到這個旗標就該顯示提醒（見 issue #46）
+  var elecWarnN = results.filter(function (r) { return r.ot_info && (r.ot_info.elec_warn || r.ot_info.elec_sup_warn); }).length;
+  if (elecWarnN) result.elec_warn_count = elecWarnN;   // 選舉日出勤沒有全額加發的人數（只提醒；估算不會比薪資多算）
 
   try { cache.put(cacheKey, JSON.stringify(result), PNL_ESTIMATE_CACHE_SEC); } catch (cacheErr) { /* 快取失敗不影響回應 */ }
   return result;
