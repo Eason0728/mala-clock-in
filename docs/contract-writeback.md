@@ -2,7 +2,7 @@
 
 - 撰寫：G 線子對話（Opus），2026-11-21。程式在 mala-clock-in 分支 `p25-g-p3-3`（worktree `~/dev/_wt/p25-g-google`），只動 `apps-script/DutyFeed.gs`、`apps-script/Requests.gs`。
 - 讀者：S 線（營運系統寫回隊伍 `duty-mirror.js`、`duty-auth.js`、`ops/duty-auth.sh`、`req-line.js`）、E 線（engine 照跑同一份 Requests.gs 時要知道新開關）、大腦。
-- 狀態：**v4（2026-11-21，方案 A）**：LINE 申請 `req_submit`／`req_cancel` 可用 mini 的簽名寫回、不需要 id_token（第 10 節；Eason 定案四題全照推薦）。v3.1：撤銷工具在 mini 模式擋套用（第 9 節）。v3：驗收五點修正（第 8 節）。v2：拿掉 `DUTY_APPROVE_LOCK`（併進 #195 的鎖）、加第 5 節遠端設定 `auth_cfg`、第 3.5 節寫明重送時怎麼用指紋確認。v1 → v2 差異見第 7 節。改欄位會在 PR 標題寫「契約改動」並通知 S 線。正本＝本檔；playbook `docs/clock-to-mini/contracts/g-line.md` 是複本。
+- 狀態：**v4.1（2026-11-21，補洞 gate-holes）**：`final_orphan_scan`、`backfill_missing_groups` 在 mini 模式也擋套用，並列出 mini 模式下每個會寫 approved／requests／leave 的入口怎麼處理（第 11 節）。v4（2026-11-21，方案 A）：LINE 申請 `req_submit`／`req_cancel` 可用 mini 的簽名寫回、不需要 id_token（第 10 節；Eason 定案四題全照推薦）。v3.1：撤銷工具在 mini 模式擋套用（第 9 節）。v3：驗收五點修正（第 8 節）。v2：拿掉 `DUTY_APPROVE_LOCK`（併進 #195 的鎖）、加第 5 節遠端設定 `auth_cfg`、第 3.5 節寫明重送時怎麼用指紋確認。v1 → v2 差異見第 7 節。改欄位會在 PR 標題寫「契約改動」並通知 S 線。正本＝本檔；playbook `docs/clock-to-mini/contracts/g-line.md` 是複本。
 - 依據：設計 `phase2-5-design.md` §4.1–4.4；plan P3-3；並行排程 1.3 G 線。
 
 ## 1. 一句話
@@ -149,7 +149,7 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
 - 退回：清空屬性（秒級，下一筆生效）；程式退回＝部署包 `p3g/rollback_one.sh <店>`。
 
 ## 6. 測試對照
-`tests/duty-auth.test.js`（寫回、模式、鎖）、`tests/duty-auth-cfg.test.js`（第 5 節）、`tests/req-submit-id.test.js`（第 4 節）、`tests/duty-auth-same.test.js`（屬性全空＝跟改版前逐字相同）、`tests/line-wb.test.js`（第 10 節：12 組權限對照＋外部入口冒名）、`tests/line-wb-same.test.js`（沒帶簽名的 LINE 申請＝跟 6c5f137 逐字相同）。範例 JSON 直接取自測試輸出。S 線寫假 Google 時照第 3.4、4.2、5 節。
+`tests/duty-auth.test.js`（寫回、模式、鎖）、`tests/duty-auth-cfg.test.js`（第 5 節）、`tests/req-submit-id.test.js`（第 4 節）、`tests/duty-auth-same.test.js`（屬性全空＝跟改版前逐字相同）、`tests/line-wb.test.js`（第 10 節：12 組權限對照＋外部入口冒名）、`tests/line-wb-same.test.js`（沒帶簽名的 LINE 申請＝跟 6c5f137 逐字相同）、`tests/revoke-mini-block.test.js`（第 9 節）、`tests/gate-holes-mini.test.js`（第 11 節：擋套用、預覽不擋、google 類＝跟 dcd5c50 逐字相同、刻意放行的入口連 mini 都逐字相同）。範例 JSON 直接取自測試輸出。S 線寫假 Google 時照第 3.4、4.2、5 節。
 
 ## 7. v1 → v2 差異（S 線要對的）
 - 拿掉 `DUTY_APPROVE_LOCK`。鎖等待從 20 秒改成 10 秒（#195 那把）；`busy` 的意思不變，照樣重送。
@@ -222,3 +222,34 @@ wb|1|<店代碼>|req_cancel|<wb_id>|<wb_ts>|<emp_id>|<id>
 
 ### 10.6 已接受風險：簽名涵蓋的欄位
 簽名只綁**工號、單號、類別、日期**（取消＝工號、申請編號；核定／審單另綁各自的對象），**不綁時數、假別細項、理由**等其他欄位。要利用這點，得先攔截 mini → Google 的 HTTPS 連線並改內容，且仍須在 ±10 分鐘內、持有同一個 `wb_id`；視為可接受，不為此加欄位進簽名（加了要雙邊同步改、會破壞既有簽名範例）。
+
+## 11. v4.1：mini 模式下所有改核定結果的入口（2026-11-21 補洞 gate-holes）
+店切 mini（`DUTY_AUTH=mini`／`on`）後，Google 端只該接受 mini 簽名寫回。逐一盤點會寫 `approved`／`requests`／`leave` 的入口，處理分四類：
+
+| 入口 | 寫什麼 | mini 模式 | 依據 |
+|---|---|---|---|
+| `mgr_approve`、`mgr_req_decide`、`mgr_req_decide_batch`、`mgr_req_void` | approved＋leave／requests | **只收簽名**（第 3 節，`dutyAuthRun_`） | v1 |
+| `req_submit`、`req_cancel` | requests（審核中） | 有簽名走第 10 節；**沒簽名照舊**（同仁本人 id_token） | v4，刻意放行 |
+| `bind_revoke`、`ft8_revoke` 的 `apply:true` | approved → approved_revoked | **擋**（第 9 節） | v3.1 |
+| `final_orphan_scan` 的 `apply:true` | approved → approved_revoked、leave → leave_revoked | **擋**（本節，新增） | v4.1 |
+| `backfill_missing_groups` 的 `apply:true`（含編輯器手動跑 `backfillMissingPunchGroups(…, true)`） | approved 補一列（改 status_text） | **擋**（本節，新增） | v4.1 |
+| 05:00 排程 `dailyMonthlyRebuild` → `recheckPendingApprovalStatuses`；手動 `recheck_approvals` | approved 補一列（系統重算） | **照跑**（Eason 定案：薪資全勤要用）；手動那支呼叫同一個函式、不帶參數，範圍與排程相同 | 刻意放行 |
+| `mgr_req_proxy`（主管代開） | requests（審核中，`proxy_by`） | **照舊**：只開審核中的單，核准仍要走 `mgr_req_decide`（只收簽名）；比照沒簽名的 `req_submit` | 刻意放行 |
+| `req_attach`（補附證明） | requests.attach_id（只限本人審核中的請假） | **照舊**：不改狀態，比照 `req_cancel` | 刻意放行 |
+| `liff_punch`／`relay_append` 順手標 `seen_at` | requests.seen_at（已讀） | 照舊：只是「已告知同仁」記號 | 刻意放行 |
+| `mgr_device_decision`、`approve_device`（新裝置核准／退回） | roster、events（不寫 approved） | **照舊**（主管日常操作；events 正本在 mini，快速通道定時整批拉回（預設 10 分鐘、閒時 30 分鐘）、狀態以 Google 為準；不直接寫 approved，已核定日的狀態字由 05:00 系統重算補） | 刻意放行，見下 |
+| 總部 `mirror_run`／04:00 `mirrorFromSources`（Mirror.gs，只裝總部） | approved／leave 鏡像列（`mirror_src`） | 照舊；**總部要切 mini 前要另外設計** | 範圍外 |
+| `setup_sheets` | approved／leave 只重寫表頭 | 照舊 | 不改資料 |
+
+擋的規則同第 9 節（`Requests.gs` `reqMiniApplyBlock_(動作名稱)`；`reqRevokeMiniBlock_()` 改成呼叫它、撤銷的訊息逐字不變）：
+
+| `DUTY_AUTH` | `apply:true` 的結果 |
+|---|---|
+| `mini`／`on` | `{ok:false, error:'moved_to_mini', message}`，一列都不動；訊息含「舊資料清理」或「少刷回填」 |
+| 認不得的值、讀不到指令碼屬性 | `{ok:false, error:'auth_unknown', message}` |
+| 沒設、空、`google`／`off`／`shadow` | 跟改版前逐字相同（`tests/gate-holes-mini.test.js` 第四段跟 dcd5c50 比回應與七張表） |
+
+- 位置：`final_orphan_scan` 在拿到指令碼鎖之後、掃描與搬列之前（跟 `auth_cfg` 切換互斥，同第 9 節）；`backfill_missing_groups` 在日期檢查之後、讀表之前（**這支原本就沒有鎖**，見風險）。管理金鑰錯、日期錯、沒帶 `keys` 的回應照舊（先於擋）。`apply` 只認布林 `true`，其他值＝預覽，跟原本一樣。
+- 風險：`backfill_missing_groups` 套用沒有拿指令碼鎖，若正在跑的同時用 `auth_cfg` 切 mini，已開始的那一次會寫完。這支是資訊部手動跑的一次性工具，切店前確認沒有人在跑即可；要完全互斥得替它加鎖（會改 google 模式的行為，未做）。
+- 營運系統呼叫這兩個動作時要認得 `moved_to_mini`／`auth_unknown`（同第 9 節）。
+

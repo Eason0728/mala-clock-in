@@ -3711,6 +3711,12 @@ function backfillMissingPunchGroups(fromDate, toDate, apply) {
   const span = Math.round((new Date(toDate + 'T00:00:00Z').getTime()
                          - new Date(fromDate + 'T00:00:00Z').getTime()) / 86400000) + 1;
   if (span > BACKFILL_MAX_DAYS) return { ok: false, error: 'range_too_wide', max_days: BACKFILL_MAX_DAYS };
+  // 2026-11-21：店切 mini 核定後不在 Google 直接補寫 approved（Requests.gs reqMiniApplyBlock_；認不得的值、讀不到屬性也擋）。
+  // 只預覽（apply 不是 true）不擋；放在日期檢查之後、讀表與寫入之前（API 與編輯器手動跑都經過這裡）
+  if (apply === true && typeof reqMiniApplyBlock_ === 'function') {
+    const miniBlock = reqMiniApplyBlock_('少刷回填');
+    if (miniBlock) return miniBlock;
+  }
 
   const ss = getSS();
   const approvedSheet = ss.getSheetByName('approved');

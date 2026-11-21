@@ -1849,6 +1849,8 @@ function handleFinalOrphanScan_(body) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) return { ok: false, error: 'busy' };
   try {
+    var miniBlock = reqMiniApplyBlock_('舊資料清理');   // 2026-11-21：店切 mini 後不套用（見 reqMiniApplyBlock_）；只預覽不擋
+    if (miniBlock) return miniBlock;
     var items = finalOrphanScan_(ss, from, to), byKey = {}, done = [], skipped = [];
     items.forEach(function (it) { byKey[it.key] = it; });
     keys.forEach(function (k) {
@@ -3381,17 +3383,20 @@ function handleBindRevoke_(body) {
    - DUTY_AUTH 填了認不得的值 → auth_unknown（核定照 P1 留在 Google，但撤銷這種搬資料的動作先不做，值改正再做）。
    - 讀不到指令碼屬性 → auth_unknown（不知道是不是 mini，先不搬）。
    - 沒設、空、google／off／shadow → 放行，跟原本一模一樣。
-   舊 DutyFeed.gs 沒有 dutyAuthCfgOf_（沒有 mini 模式）→ 放行。在 bindRevokeRun_ 拿到指令碼鎖之後查，跟 auth_cfg 切換互斥。 */
-function reqRevokeMiniBlock_() {
+   舊 DutyFeed.gs 沒有 dutyAuthCfgOf_（沒有 mini 模式）→ 放行。在 bindRevokeRun_ 拿到指令碼鎖之後查，跟 auth_cfg 切換互斥。
+   2026-11-21 補洞（gate-holes）：同一套判斷也擋 final_orphan_scan（舊資料清理）、backfill_missing_groups（少刷回填，Code.gs）的套用；
+   what＝訊息裡的動作名稱（撤銷的訊息逐字不變）。契約 docs/contract-writeback.md 第 11 節。 */
+function reqMiniApplyBlock_(what) {
   if (typeof dutyAuthCfgOf_ !== 'function') return null;
   var all;
   try { all = PropertiesService.getScriptProperties().getProperties() || {}; }
-  catch (e) { return { ok: false, error: 'auth_unknown', message: '讀不到核定模式設定，先不套用撤銷，請稍後再試（只預覽照常可用）' }; }
+  catch (e) { return { ok: false, error: 'auth_unknown', message: '讀不到核定模式設定，先不套用' + what + '，請稍後再試（只預覽照常可用）' }; }
   var m = dutyAuthCfgOf_(all);
-  if (m.mini) return { ok: false, error: 'moved_to_mini', message: '這家店的核定已移到 mini，Google 端不能直接套用撤銷；要做請先把該店切回 google（auth_cfg）。只預覽照常可用' };
-  if (m.unknown) return { ok: false, error: 'auth_unknown', message: '指令碼屬性 DUTY_AUTH 的值認不得，先不套用撤銷；請用 auth_cfg 改正後再做（只預覽照常可用）' };
+  if (m.mini) return { ok: false, error: 'moved_to_mini', message: '這家店的核定已移到 mini，Google 端不能直接套用' + what + '；要做請先把該店切回 google（auth_cfg）。只預覽照常可用' };
+  if (m.unknown) return { ok: false, error: 'auth_unknown', message: '指令碼屬性 DUTY_AUTH 的值認不得，先不套用' + what + '；請用 auth_cfg 改正後再做（只預覽照常可用）' };
   return null;
 }
+function reqRevokeMiniBlock_() { return reqMiniApplyBlock_('撤銷'); }
 /* 薪資鎖月後不可以再動（2026-11-15）：管理金鑰的打回工具（bind_revoke、ft8_revoke）也不搬鎖定月的核定。
    試算：鎖定月的那幾筆照樣列出、標 pay_locked:true；apply：只搬沒鎖的，鎖定月的列在回應的 pay_locked（帶 message），要搬先到薪資頁解鎖。 */
 function bindRevokeRun_(from, to, cand, apply) {
