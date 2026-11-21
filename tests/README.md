@@ -20,6 +20,8 @@ node tests/run-all.js
 | `duty-push.test.js` | 門鈴（PR #181）：門鈴關時跟 PR #181 合併前的 main（`50a80bc^1`，可用 `DUTY_PUSH_BASE` 換）逐次相同、只多讀 `DUTY_PUSH_URL`；只計數、熔斷、上限、簽章、push_setup／push_cfg、授權範圍 | 打卡回應路徑上多一次連外，關的時候必須跟沒有一樣 |
 | `duty-push-live.test.js` | 開真推送前補強（2026-11-20）：關／只計數跟九店線上版 a9fac60（`50a80bc`）逐字逐次相同（只差 push_stats.cap）；回應慢也熔斷、等 ping 復原、半開、最壞情況（mini 持續卡 3 秒 2 小時同仁只有第一筆多等）、停推不縮短、flush 失敗不按；flush 只在正式推送；每日上限 800 | 慢熔斷與 flush 只在正式推送生效，關的店不能有任何差別 |
 | `helpers/duty-push-harness.js` | 門鈴測試的假 Apps Script 環境（不是測試） | |
+| `election-day-emp.test.js` | 選舉假逐人名單（payroll_hol_emp，2026-11-22）：沒有名單跟 #178 分支頭逐欄相同；勾選後只有班表上班日 W 的人加「選舉日出勤」，H／R／L／查不到不變、沒有人變少；與國定假日並存、同一天只算一次；補休照國定假日（已抵的會變負、擋鎖定，存名單時提醒人數）；名單存檔的鎖定、權限、門市範圍；損益月中估算同一套；支援別店班別仍是 W | Eason 定案「不可讓任何人因被勾選而少領」，用全部勾選 vs 沒有名單逐人比對守住 |
+| `election-day-emp-random.test.js` | 選舉假「勾選 vs 不勾選」隨機對照（2026-11-22 Codex 第三次後補）：每輪 8 位假同仁（正職／計時、當月停用離職、班表 W/H/R/L/查不到、國定假日、加班單、補休、同品牌別店支援含當天只在別店、手填國定假日／手調總時數／只手填支援），同一份資料名單空白 vs 隨機勾選各算一次，逐人比實付與應發；預設 2500 輪＝2 萬人次（`ELEC_RAND_N`、`ELEC_RAND_SEED` 可改） | Eason 定案「不可讓任何人因被勾選而少領」；手填衝突時本店、支援都不自動發（不勾選本來就沒有選舉日加發，仍是勾選 ≥ 不勾選）也一起守 |
 | `helpers/sheets-like.js` | 假試算表本體（不是測試，run-all 不會跑它）：寫入字串照 Sheets 規則轉型、`setNumberFormat('@')` 鎖文字、在 vm 的 Date realm 建 Date、格線範圍外丟例外；每條規則標 [已查證] 或 [推定]＋出處，見檔頭 | 要模擬正式試算表時用這個，不要再寫「把字串原樣存起來」的假 sheet |
 
 ## 改引擎之前先跑 engine-diff
@@ -56,3 +58,16 @@ python3 tools/verify-store-backends.py
 而前一步剛加的 `isTripDay` 就含這個子字串 → 三份全被誤判成已套用而跳過 →
 呼叫端傳了第四個參數但函式簽名沒收 → 出差照樣扣全勤。**`node --check` 完全過**
 （JS 多傳參數合法）。所以 `EXACT` 那一組查的是**完整片段**不是函式名。
+
+## 瀏覽器實操：選舉假名單卡片＋薪資計算頁（`tests/ui/elec-ui-e2e.py`）
+
+```bash
+python3 tests/ui/elec-ui-e2e.py [截圖資料夾]
+```
+
+- 不在 `run-all.js` 裡（要 Python 的 `playwright`＋chromium、webkit 瀏覽器）；改 `payroll.html` 的選舉假卡片、`loadMonth`、匯出、`doCalc` 時手動跑。
+- 自己在隨機埠起 `mock/mock_server.py`（只綁本機），用 `tests/election-day-emp.test.js` 的 `world()` 算出虛構同仁「測試甲～己」的 11 月草稿當假資料；
+  跑完用自己的程序代號收掉假後端、刪掉 `mock/mock_data.json`。不碰任何正式試算表。
+- Chromium、WebKit 各跑一次（共 36 條）：勾選／全選／清除／儲存、後端回補休提醒、舊後端、存檔後重算失敗、
+  **重算失敗後重新整理（後端回 `elec_stale`）→ 仍顯示要重算、匯出 Excel／CSV 都擋**、**已停用但 11/29 離職的同仁勾得到（10 月離職的不出現）**、
+  **開頁預抓的 11 月資料在切到 10 月之後才回來 → 不套用**、舊月份停用、已鎖定停用、沒有 JS 錯誤。

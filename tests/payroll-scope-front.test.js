@@ -31,6 +31,7 @@ function load({ EMBED, SCOPE, master, perCall }) {
     document: { querySelector: q => q === 'main' ? mainEl : (q.includes('data-p="group"') ? groupBtn : null) },
     localStorage: { setItem() {}, getItem() { return ''; } },
     ym: () => '2026-10', ADMIN_KEY: '', LOCAL_HOST: false, CFG_DIRTY: {},
+    LOAD_SEQ: 0,   // boot 發出預抓時記序號（選舉假 Codex 第三次 S5）
   };
   ctx.toast = (t) => ctx.toasts.push(t);
   ctx.post = async (action, body, opt) => {

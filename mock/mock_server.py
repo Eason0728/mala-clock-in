@@ -1920,6 +1920,8 @@ try:
     # 跨店支援自動帶入（2026-11-05）：對照同步、差異決定要看得到寫入結果
     ACTIONS['payroll_xmap_set'] = _persist(ACTIONS['payroll_xmap_set'])
     ACTIONS['payroll_support_decide'] = _persist(ACTIONS['payroll_support_decide'])
+    # 選舉假名單（2026-11-22）
+    ACTIONS['payroll_hol_emp_set'] = _persist(ACTIONS['payroll_hol_emp_set'])
 except ImportError:
     pass
 ACTIONS['payroll_attendance_export'] = handle_payroll_attendance_export
