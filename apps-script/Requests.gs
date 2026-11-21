@@ -420,6 +420,70 @@ function reqStaff_(body) {
   return { userId: userId, me: found.roster, ss: found.ss };
 }
 
+/* ── 簽名寫回的同仁身分（2026-11-21 方案 A，Eason 定案；契約 docs/contract-writeback.md 第 10 節）──
+   mini 驗過 LINE 身分、規則判可以之後，用 mini 的簽名寫回 req_submit／req_cancel（DutyFeed.gs dutyLineWbRun_）。
+   wbWho 只有那支包裝在「簽名對＋在職主管金鑰對」之後才傳進來（第二個參數；doPost 路由只傳一個參數）。
+   其他（沒帶簽名、或 google 模式下簽名不合格＝當沒帶的 DUTY_LINE_PASS_）一律照舊用 id_token 認人。 */
+function reqWhoOf_(body, wbWho) { return wbWho && wbWho.me ? wbWho : reqStaff_(body); }
+/** 簽名綁住的工號 → 名冊在職且唯一的那列；那列沒綁 LINE＝not_bound；那個 LINE 綁了兩位在職＝line_identity_conflict（同 liffRosterByLine_）。
+ *  帶了 id_token 而且驗得過：必須是同一個 LINE 帳號，不是＝line_emp_mismatch；驗不過（過期）＝當沒帶（tokenless）。 */
+function reqWbWho_(body) {
+  var ss = getSS(), sh = ss.getSheetByName('roster');
+  if (!sh) return { error: 'no_roster' };
+  var rows = readSheetAsObjects(sh).rows, emp = String(body.emp_id == null ? '' : body.emp_id);
+  var isOn = function (r) { return String(r.active).toLowerCase() === 'true'; };
+  var mine = emp ? rows.filter(function (r) { return String(r.emp_id) === emp && isOn(r); }) : [];
+  if (mine.length > 1) return { error: 'line_identity_conflict' };
+  if (!mine.length || !mine[0].line_user_id) return { error: 'not_bound' };
+  var uid = String(mine[0].line_user_id);
+  if (rows.filter(function (r) { return r.line_user_id && String(r.line_user_id) === uid && isOn(r); }).length > 1) return { error: 'line_identity_conflict' };
+  var tokenless = true;
+  if (body.id_token) {
+    var tu = null;
+    try { tu = verifyLineIdToken_(body.id_token); } catch (e) { tu = null; }
+    if (tu && String(tu) !== uid) return { error: 'line_emp_mismatch' };
+    if (tu) tokenless = false;
+  }
+  return { userId: uid, me: mine[0], ss: ss, tokenless: tokenless, wb: true };
+}
+/** 沒有 token、這家店不是光復（本人額度表要拿 LINE 身分問光復）：生理假、家庭照顧假、病假（年度用完規則開著）不自動寫，
+ *  回 need_line_token，營運系統照現行列衝突 line_token_lost 人工處理（Eason 定案題 2＝A）。其他假別、光復店＝null（照常判）。 */
+function reqNeedLineToken_(r, who) {
+  if (!who || !who.tokenless || typeof lineHubReqQuota_ === 'function' || !r || String(r.kind) !== 'leave') return null;
+  if (REQ_CAP_LOCK_TYPES_.indexOf(String(r.leave_type)) === -1 && !reqMensApplies_(r) && !reqSickApplies_(r)) return null;
+  return { ok: false, error: 'need_line_token', message: '這張假單要用同仁本人的 LINE 登入確認額度，登入憑證已不在，請人工處理' };
+}
+/** 到職滿六個月那天：有 token 或光復店＝照舊（LINE 身分）；沒有 token 的別家店＝主管核准時用的同一支（payroll_annual_from） */
+function reqAnnualFromWho_(who, body) {
+  if (who && who.tokenless && typeof lineHubReqQuota_ !== 'function') return reqAnnualFromEmp_(who.me.emp_id, body.mgr_key);
+  return reqAnnualFromLine_(who, body);
+}
+/** 沒有 token 時的鎖月（簽名寫回才會用）：用主管金鑰問光復 payroll_leave_options {lock_only:true}（光復同一個 payMonthLocked_）。
+ *  回 true／false；這家店本來就不問光復（光復自己、沒填 PAYROLL_API／PAYROLL_STORE）＝undefined（照舊）；
+ *  問不到（連不上、回錯誤、沒給 locked、回的不是問的那家店那個月）＝'retry'＝回 busy 稍後重送（Eason 定案題 3）。
+ *  結果跟 reqPayLockRemote_ 共用 60 秒暫存（同一個判斷）。 */
+function reqPayLockByMgr_(date, mgrKey) {
+  if (typeof payMonthLocked_ === 'function') return undefined;
+  var api = String(CONFIG.PAYROLL_API || '').trim(), st = String(CONFIG.PAYROLL_STORE || '').trim(), ym = String(date || '').slice(0, 7);
+  if (!api || !st || !/^\d{4}-\d{2}$/.test(ym)) return undefined;
+  var cache = null, ck = 'rqpl:' + st + ':' + ym;
+  try {
+    cache = CacheService.getScriptCache();
+    var hit = cache.get(ck);
+    if (hit === '1') return true;
+    if (hit === '0') return false;
+  } catch (e) { cache = null; }
+  try {
+    var resp = UrlFetchApp.fetch(api, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true, followRedirects: true,
+      payload: JSON.stringify({ action: 'payroll_leave_options', store: st, mgr_key: String(mgrKey || ''), ym: ym, lock_only: true }) });
+    var j = JSON.parse(resp.getContentText());
+    if (!j || j.ok !== true || typeof j.locked !== 'boolean') return 'retry';
+    if (String(j.ym) !== ym || String(j.store).toUpperCase() !== st.toUpperCase()) return 'retry';
+    if (cache) { try { cache.put(ck, j.locked ? '1' : '0', REQ_PAY_LOCK_TTL_); } catch (e) { /* 記不了就下次再問 */ } }
+    return j.locked;
+  } catch (e) { return 'retry'; }
+}
+
 /** {action:'req_info', id_token, date?, day_only?, apply_miss?} → {ok, name, today, requests:[…], day?:{date, punches, missing}}
  *  day_only（2026-10-28，忘打卡自動選店）：申請頁選好日期後同時問每家已綁定的店「那天有沒有卡」，
  *  只要 day、不讀申請表（回 requests:[]、day_only:true）。舊後端不認得這個參數＝照舊整包回，前端一樣能用。
@@ -702,9 +766,12 @@ function reqPayLockRemote_(date, idToken) {
   } catch (e) { return undefined; }
 }
 
-/** {action:'req_submit', id_token, kind, date, leave_type?, start?, end?, hours?, miss_type?, reason?, attach_id?} */
-function handleReqSubmit_(body) {
-  var who = reqStaff_(body);
+/** {action:'req_submit', id_token, kind, date, leave_type?, start?, end?, hours?, miss_type?, reason?, attach_id?}
+ *  wbWho（2026-11-21 方案 A，契約 docs/contract-writeback.md 第 10 節）：只有 DutyFeed.gs dutyLineWbRun_ 驗過簽名＋主管金鑰後才會傳，
+ *  doPost 的路由（Liff.gs）只傳一個參數，外部請求帶什麼欄位都進不了這個參數。 */
+function handleReqSubmit_(body, wbWho) {
+  if (!wbWho && body && typeof body === 'object' && typeof dutyLineWbRun_ === 'function' && dutyWbHas_(body)) return dutyLineWbRun_(body, 'req_submit', handleReqSubmit_);
+  var who = reqWhoOf_(body, wbWho);
   if (who.error) return { ok: false, error: who.error };
   // 申請單號（2026-11-21 P3-3，契約 docs/contract-writeback.md 第 4 節）：手機帶 req_id＝送 mini 與改送 Google 同一個號碼，同號只寫一次。沒帶＝跟以前一樣
   var reqId = reqSubmitIdOf_(body);
@@ -717,7 +784,8 @@ function handleReqSubmit_(body) {
   if (payLock) return payLock;
   // 其他店（沒掛薪資模組）：問光復這家店這個月鎖了沒（2026-11-16）。類別、日期格式對了才問；問不到＝不擋
   if (Object.prototype.hasOwnProperty.call(REQ_KINDS_, String(body.kind || '')) && reqIsDate_(String(body.date || ''))) {
-    var remoteLock = reqPayLockRemote_(String(body.date), body.id_token);
+    // 簽名寫回、沒有 token：改用主管金鑰問光復同一個鎖月判斷（lock_only）；查不到回 busy 讓隊伍稍後重送（Eason 定案題 3，不可查不到就不擋）
+    var remoteLock = who.tokenless ? reqPayLockByMgr_(String(body.date), body.mgr_key) : reqPayLockRemote_(String(body.date), body.id_token);
     if (remoteLock === true) return { ok: false, error: 'pay_locked', message: payLockedStaffMsg_(String(body.date)) };
     if (remoteLock === 'retry') return { ok: false, error: 'busy', message: '系統忙碌，請一分鐘後再送一次' };
   }
@@ -735,12 +803,14 @@ function handleReqSubmit_(body) {
     var v = reqValidate_(body, who.me, liffEvents_(who.ss), todayTaipeiStr(), existing);
     if (v.error) return { ok: false, error: v.error, message: v.message };
     var r = v.row;
+    var needTok = reqNeedLineToken_(r, who);   // 簽名寫回、沒有 token：要本人額度表的假別不自動寫（2026-11-21 Eason 定案題 2）
+    if (needTok) return needTok;
     // 補休（2026-11-01 改每月加減結算）：可以先休後補、不看餘額；只擋計時同仁（和薪資同專案的店〔光復〕查得到主檔才擋，其他店靠 LINE 申請頁與主管）
     if (r.kind === 'leave' && r.leave_type === REQ_COMP_LEAVE_ && reqCompAllowed_(who.me) === false) {
       return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
     }
     if (reqIsAnnual_(r)) {
-      var anMsg = reqAnnualBlockMsg_(r, reqAnnualFromLine_(who, body));
+      var anMsg = reqAnnualBlockMsg_(r, reqAnnualFromWho_(who, body));
       if (anMsg) return { ok: false, error: 'annual_not_eligible', message: anMsg };
     }
     var mensErr = reqMensSubmitCheck_(r, existing, who, body);   // 生理假新規則（2026-11-18）：計時、第 4 次、每月一次、一天 8 小時；病假年度用完
@@ -910,11 +980,13 @@ function reqSubmitSegs_(body, segP, who, existing, reqId) {
   var sv = reqSegsValidate_(body, segP, who.me, liffEvents_(who.ss), today, existing, false);
   if (sv.error) return reqSegFail_(sv);
   var r0 = sv.rows[0];
+  var needTok = reqNeedLineToken_(r0, who);   // 簽名寫回、沒有 token：要本人額度表的假別不自動寫（2026-11-21 Eason 定案題 2）
+  if (needTok) return needTok;
   if (r0.kind === 'leave' && r0.leave_type === REQ_COMP_LEAVE_ && reqCompAllowed_(who.me) === false) {
     return { ok: false, error: 'comp_not_allowed', message: '補休只有正職可以請' };
   }
   if (reqIsAnnual_(r0)) {
-    var anMsg = reqAnnualBlockMsg_(r0, reqAnnualFromLine_(who, body));
+    var anMsg = reqAnnualBlockMsg_(r0, reqAnnualFromWho_(who, body));
     if (anMsg) return { ok: false, error: 'annual_not_eligible', message: anMsg };
   }
   var both = {};
@@ -1270,9 +1342,10 @@ function reqAnnualFromEmp_(empId, mgrKey) {
   } catch (e) { return ''; }
 }
 
-/** {action:'req_cancel', id_token, id} → 只能取消自己的、還在審核中的。 */
-function handleReqCancel_(body) {
-  var who = reqStaff_(body);
+/** {action:'req_cancel', id_token, id} → 只能取消自己的、還在審核中的。wbWho 同 handleReqSubmit_（只有簽名包裝會傳）。 */
+function handleReqCancel_(body, wbWho) {
+  if (!wbWho && body && typeof body === 'object' && typeof dutyLineWbRun_ === 'function' && dutyWbHas_(body)) return dutyLineWbRun_(body, 'req_cancel', handleReqCancel_);
+  var who = reqWhoOf_(body, wbWho);
   if (who.error) return { ok: false, error: who.error };
   var lock = LockService.getScriptLock();   // 與主管審核同一把鎖，鎖內重讀狀態，避免「剛核准就被取消蓋掉」（審查 #4）
   if (!lock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
