@@ -2,7 +2,7 @@
 
 - 撰寫：G 線子對話（Opus），2026-11-21。程式在 mala-clock-in 分支 `p25-g-p3-3`（worktree `~/dev/_wt/p25-g-google`），只動 `apps-script/DutyFeed.gs`、`apps-script/Requests.gs`。
 - 讀者：S 線（營運系統寫回隊伍 `duty-mirror.js`、`duty-auth.js`、`ops/duty-auth.sh`、`req-line.js`）、E 線（engine 照跑同一份 Requests.gs 時要知道新開關）、大腦。
-- 狀態：**v3（2026-11-21 晚）**：驗收五點修正（第 8 節）。v2：拿掉 `DUTY_APPROVE_LOCK`（併進 #195 的鎖）、加第 5 節遠端設定 `auth_cfg`、第 3.5 節寫明重送時怎麼用指紋確認。v1 → v2 差異見第 7 節。改欄位會在 PR 標題寫「契約改動」並通知 S 線。正本＝本檔；playbook `docs/clock-to-mini/contracts/g-line.md` 是複本。
+- 狀態：**v3.1（2026-11-21 深夜）**：撤銷工具在 mini 模式擋套用（第 9 節）。v3：驗收五點修正（第 8 節）。v2：拿掉 `DUTY_APPROVE_LOCK`（併進 #195 的鎖）、加第 5 節遠端設定 `auth_cfg`、第 3.5 節寫明重送時怎麼用指紋確認。v1 → v2 差異見第 7 節。改欄位會在 PR 標題寫「契約改動」並通知 S 線。正本＝本檔；playbook `docs/clock-to-mini/contracts/g-line.md` 是複本。
 - 依據：設計 `phase2-5-design.md` §4.1–4.4；plan P3-3；並行排程 1.3 G 線。
 
 ## 1. 一句話
@@ -163,3 +163,16 @@ Node：`crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex')`（�
   - 核定寫回的簽名只在 `wb_ts` ±10 分鐘內有效，所以**被別人攔下重放**只可能發生在簽名後 10 分鐘內；這段時間「已寫好」記號一定還在（6 小時、正常不會 10 分鐘就被清），重放直接回 `dup`。
   - 6 小時只限制 **mini 自己重送**（每次重簽、`wb_id` 不變）。記號提早被清或超過 6 小時，Google 就照原流程再判：核定有 `base_ver`（第二次一定 `stale_ver`）、審單看狀態（`not_pending`）、作廢看狀態（`not_approved`），**不會重寫**；營運系統照第 3.5 節用指紋確認是不是自己寫過的，不會誤判成衝突。
   - 所以不另外在試算表或屬性留永久記號：屬性每天寫入有額度、試算表要新分頁或新欄（會改指紋與表結構），換到的只是「回 `dup` 而不是回原流程錯誤」，安全性沒變。`req_submit` 的單號本來就查試算表（永久）。
+
+## 9. v3.1：`bind_revoke`／`ft8_revoke` 在 mini 模式擋套用（2026-11-21 大腦定案）
+- 店切 mini 後核定正本在 mini；Google 端再把已核定日搬到 `approved_revoked` 會讓兩邊不一致，所以 `apply:true` 擋，**只預覽（`apply` 沒帶／false）不擋**。
+- 保護性檢查（`Requests.gs` `reqRevokeMiniBlock_`，在 `bindRevokeRun_` 拿到指令碼鎖之後查，跟 `auth_cfg` 切換互斥）：
+
+| `DUTY_AUTH` | `apply:true` 的結果 |
+|---|---|
+| `mini`／`on` | `{ok:false, error:'moved_to_mini', message}`，一筆都不搬 |
+| 認不得的值 | `{ok:false, error:'auth_unknown', message}`（核定照 P1 留在 Google，但搬資料的動作等值改正再做） |
+| 讀不到指令碼屬性 | `{ok:false, error:'auth_unknown', message}` |
+| 沒設、空、`google`／`off`／`shadow` | 跟改版前逐字相同（`tests/revoke-mini-block.test.js` 第四段跟 main 比回應與兩張表） |
+
+- 管理金鑰錯照舊先回 `unauthorized`。要在 mini 模式下撤銷：先用 `auth_cfg` 把該店切回 google，做完再切回 mini；或由 mini 端處理。營運系統呼叫這兩個動作時要認得 `moved_to_mini`／`auth_unknown`。
