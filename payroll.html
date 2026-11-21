@@ -2994,9 +2994,12 @@ async function saveElec(btn){
   btn.disabled=true;
   const r=await post('payroll_hol_emp_set',{ym:ym(),date:ids.length?date:'',emp_ids:ids});
   btn.disabled=false;
-  if(!r||!r.ok){ if(r&&r.error==='not_in_master') toast('有編號不在本店薪資主檔，這次沒有儲存',true); return; }
+  // 有 message 的錯誤 post() 已經跳過提示；沒有 message 的（例：後端還是舊版、回 unknown_action）用通用的「儲存失敗」
+  if(!r||!r.ok){ if(!(r&&r.message)) toast('儲存失敗：'+((r&&r.error)||''),true); return; }
   HOLEMP=HOLEMP.filter(x=>String(x.ym)!==ym()).concat(ids.map(id=>({ym:ym(),date:date,emp_id:id,note:''})));
   renderElec();
+  // 勾選的人那天的加班已經拿去抵補休 → 後端回人數提醒（補休帳會變負、本月鎖不了）
+  if(r.warn_message){ toast(r.warn_message,true); return; }
   toast(ids.length?'已儲存選舉假名單（'+date+'，'+ids.length+' 人），請到「6 薪資計算」重新計算':'已清除 '+ym()+' 的選舉假名單，請重新計算');
 }
 

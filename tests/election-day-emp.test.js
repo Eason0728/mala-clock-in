@@ -1,7 +1,7 @@
 /* 選舉假逐人名單（payroll_hol_emp，Eason 2026-11-22 定案）
  * 規則：名單上的同仁、選舉日班表是上班日 W → 那天照國定假日算，項目名稱「選舉日出勤」；
  *   班表 H／R／L／查不到 → 不套用（照原本算）；同一天已經是國定假日 → 以國定假日為準、只算一次；
- *   補休照上班日（選舉日超過 8 小時的加班可以抵補休，補休帳不會因為勾選變負）；已鎖定月份不能改名單。
+ *   補休照國定假日（選舉日的加班不能抵補休；已抵掉的會讓補休帳變負、擋鎖定，名單存檔時提醒人數，Eason 2026-11-22 00:40）；已鎖定月份不能改名單。
  * 整條鏈：Code.gs＋Payroll.gs＋SchedPub.gs 真函式（payCollect→payDailyFor_→payCalcOne→payOtFormCheck_→Finalize），假資料。
  * 假人：正職 本薪 34000＋伙食 2000＝月工資 36000 → 加班時薪 150；計時 時薪 200（到職未滿半年，沒有年資加給）。
  * 期望值全部手算，寫在每條旁邊。 */
@@ -141,6 +141,7 @@ chk('j 正職 班表 L特：不套用 0', diff('j'), 0);
 chk('k 正職 查不到班表：不套用 0', diff('k'), 0);
 chk('m 計時 W 10h：+10H × 200 ＝ 2000（當天時數全部再一倍，超過 8H 的加成照舊）', diff('m'), 2000);
 chk('沒有任何人變少', PEOPLE.every(([id]) => diff(id) >= 0), true);
+chk('沒有任何負的薪資項目（勾選後所有人的加項、扣項金額都 ≥ 0）', PEOPLE.every(([id]) => N1[id].earn.concat(N1[id].ded).every((x) => x.amount >= 0)), true);
 chk('ot_info.elec 只出現在有算到的人', PEOPLE.filter(([id]) => N1[id].ot_info && N1[id].ot_info.elec).map(([id]) => id), ['a', 'b', 'c', 'g', 'l', 'm']);
 chk('W 沒出勤也不再列「排班沒來」（同國定假日）', [N0.d.ot_info.no_show.includes(E), N1.d.ot_info.no_show.includes(E)], [true, false]);
 
@@ -168,19 +169,34 @@ console.log('\n══ c) 與國定假日並存 ══');
   chk('  名稱照國定假日（a）', lab(S1.a), ['國定假日出勤（加發時數） 8=1200']);
 }
 
-console.log('\n══ d) 補休：選舉日超過 8H 的加班照上班日可以抵，補休帳不會變負 ══');
+console.log('\n══ d) 補休：選舉日的加班照國定假日不能抵補休（Eason 2026-11-22 00:40）══');
 {
-  // l：11/28 W 10h、加班單 2h、11/20 補休 2h。沒勾選：平日 2H 被補休抵掉；勾選：一樣抵掉，另加選舉日出勤 1200
+  // l：11/28 W 10h、加班單 2h、11/20 補休 2h。
+  //   沒勾選：平日 2H 被補休抵掉（不發），補休帳 2−2＝0，可以鎖定。
+  //   勾選：那天照國定假日，2H 加班不能抵 → 平日加班 2H×1.34＝402 照發＋選舉日出勤 1200；補休 2H 抵不掉；補休帳 0−2＝−2 → 擋鎖定
   chk('  沒勾選：補休抵 2H、抵不掉 0、沒有平日加班列', [N0.l.ot_info.comp_h, N0.l.ot_info.comp_over_h, !!N0.l.earn.find((x) => x.item_key === 'ot_w43')], [2, 0, false]);
-  chk('  勾選：補休抵 2H、抵不掉 0、＋選舉日出勤 1200', [N1.l.ot_info.comp_h, N1.l.ot_info.comp_over_h, N1.l.gross - N0.l.gross], [2, 0, 1200]);
-  const wl = world({ elec: ['l'], only: ['l'] }); wl.calc();   // 只放 l（k 查不到班表會擋鎖定）
-  const neg = wl.F('payCompNegatives')('2026-11', 'SSLGF');
-  chk('  補休帳（comp_negative 那道）沒有負數', neg.length, 0);
+  chk('  勾選：補休抵 0、抵不掉 2H、平日加班 402 照發、差額 +1602', [N1.l.ot_info.comp_h, N1.l.ot_info.comp_over_h, (N1.l.earn.find((x) => x.item_key === 'ot_w43') || {}).amount, N1.l.gross - N0.l.gross], [0, 2, 402, 1602]);
+  const w0 = world({ elec: [], only: ['l'] }); w0.calc();   // 只放 l（k 查不到班表會擋鎖定）
+  chk('  沒勾選：補休帳沒有負數、可以鎖定', [w0.F('payCompNegatives')('2026-11', 'SSLGF').length, w0.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true }).ok], [0, true]);
+  const wl = world({ elec: ['l'], only: ['l'] }); wl.calc();
+  chk('  勾選：補休帳 加班 0 − 補休 2 ＝ −2', wl.F('payCompNegatives')('2026-11', 'SSLGF').map((x) => [x.ot_h, x.used_h, x.balance_h]), [[0, 2, -2]]);
   const lk = wl.F('handlePayrollFinalize')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', lock: true });
-  chk('  可以鎖定', [lk.ok, lk.error || ''], [true, '']);
-  // 對照：同樣的人如果 11/28 是真的國定假日 → 照現行規則補休抵不掉（證明上面不是測試沒測到）
+  chk('  勾選：鎖定被擋 comp_negative（沿用現行訊息）', [lk.ok, lk.error, lk.message], [false, 'comp_negative', '補休帳是負的，不能鎖定（請補核准加班申請，或把多請的補休改成其他假別）：\n甲君：加班 0 − 補休 2 ＝ -2 小時']);
   const wh = world({ hol: E, only: ['l'] }); wh.calc();
-  chk('  對照組：11/28 是國定假日時 l 補休帳是負的（現行規則）', wh.F('payCompNegatives')('2026-11', 'SSLGF').map((x) => x.balance_h), [-2]);
+  chk('  跟 11/28 是真國定假日時一樣（補休帳、補休抵、實付）', [wh.F('payCompNegatives')('2026-11', 'SSLGF').map((x) => x.balance_h), wh.calc().by.l.ot_info.comp_over_h], [[-2], 2]);
+  // 期間補休帳（班表截止前提醒）同一套
+  const pb = (w) => w.F('payCompPeriodBook')('2026-11-01', '2026-11-28').forEmp(w.DB.master[0], 'SSLGF');
+  chk('  期間補休帳：沒勾選 加班 2、勾選 加班 0', [pb(w0).ot_h, pb(wl).ot_h], [2, 0]);
+  // 名單存檔當下提醒（只回人數）
+  const ws = world({ elec: [], only: ['l', 'a'] });
+  const r1 = ws.F('handlePayrollHolEmpSet')({ admin_key: 'x', store: 'SSLGF', ym: '2026-11', date: E, emp_ids: ['E1', 'E2'] });
+  chk('  存檔成功＋提醒 1 人（l 的加班已抵補休；a 沒有）', [r1.ok, r1.warn_comp_negative, r1.warn_message],
+    [true, 1, '已儲存。其中 1 人選舉日的加班先前已拿去抵補休；選舉假那天的加班不能抵補休，這 1 人的補休帳會變成負的，本月會鎖不了。請把多請的補休改成其他假別，或補核准加班申請。']);
+  const r2 = ws.F('handlePayrollHolEmpSet')({ admin_key: 'x', store: 'SSLGF', ym: '2026-11', date: E, emp_ids: ['E2'] });
+  chk('  只勾沒問題的人：沒有提醒欄位', [r2.ok, 'warn_comp_negative' in r2, 'warn_message' in r2], [true, false, false]);
+  // 28 天加班同步的休息日旗標：試算回應帶 _elec（只有套用的人），payOtMonthSync_ 當國定假日
+  const dr = (o) => { const w = world(o); return w.F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', dry_run: true, full_month: true }); };
+  chk('  試算回應：沒有名單不帶 _elec；有名單只列套用的人（a、g，不含 e 休息日）', ['_elec' in dr({}), dr({ elec: ['a', 'e', 'g'] })._elec], [false, { E1: [E], E7: [E] }]);
 }
 
 console.log('\n══ e) 名單存檔：權限、鎖定、檢查 ══');
