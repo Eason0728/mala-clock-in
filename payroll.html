@@ -1182,7 +1182,8 @@ function supXAdd(r, x, rt){
 /** 請款逐筆裡沒有門市代碼的筆數（2026-11 起才算；鎖定快照只存門市合計的舊月份不算） */
 function supNoCodeN(g){
   if(!(String(typeof ym==='function'?ym():'')>=SUP_CLAIM_FROM)) return 0;
-  return (g.sup||[]).filter(x=>!x.storeOnly&&!String(x.code||'').trim()).length;
+  // code＝null：本版上線前鎖的快照逐筆明細本來就沒有 code 欄（舊快照），不算「沒有門市代碼」、不提醒
+  return (g.sup||[]).filter(x=>!x.storeOnly&&x.code!==null&&!String(x.code||'').trim()).length;
 }
 function costTotals(){
   // dorm／dormBy：宿舍代扣（2026-08-24 Eason 改口徑）——從薪資費用扣除，並在下方獨立列成租金收入。
@@ -1282,7 +1283,7 @@ function costTotals(){
     g.snap=S; g.ye=n(S.yearend);
     const D=S.detail;
     const nameOf=id=>(RESULTS.find(r=>String(r.emp_id)===String(id))||{}).name||id;
-    if(D&&Array.isArray(D.sup)) g.sup=D.sup.map(x=>({emp_id:x.emp_id,name:nameOf(x.emp_id),ft:!!x.ft,store:x.store||'（未指定）',code:String(x.code||''),
+    if(D&&Array.isArray(D.sup)) g.sup=D.sup.map(x=>({emp_id:x.emp_id,name:nameOf(x.emp_id),ft:!!x.ft,store:x.store||'（未指定）',code:(x&&Object.prototype.hasOwnProperty.call(x,'code'))?String(x.code||''):null,
       hours:n(x.hours),rate:n(x.rate),gapH:n(x.gapH),gapRate:n(x.gapRate),amount:n(x.amount),fixed:!!x.fixed}));
     // 2026-09-25～11-13 之間鎖的月份：快照只有「門市合計」，沒有逐筆明細
     else g.sup=Object.keys(S.support||{}).map(st=>({store:st,amount:n(S.support[st]),storeOnly:true}));

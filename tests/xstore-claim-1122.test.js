@@ -208,7 +208,7 @@ function randomCase() {
   const ai = HTML.indexOf('const COST_REDUCE_EXTRA='), bi = HTML.indexOf('function renderCost(){');
   const sbF = { console };
   vm.createContext(sbF);
-  vm.runInContext('const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};const r2=v=>Math.round(v*100)/100;const ym=()=>"2026-11";' + HTML.slice(ai, bi), sbF);
+  vm.runInContext('const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};const r2=v=>Math.round(v*100)/100;const ym=()=>"2026-11";const esc=v=>String(v);const nf=v=>String(v);' + HTML.slice(ai, bi), sbF);
   const cases = [
     { ft: true, days: [{ date: D, cell: 'H', home: 5, sups: [{ code: 'MZTJS', h: 5, s: 900 }] }, { date: D2, home: 10, sups: [{ code: 'MZTJS', h: 1, s: 1260 }] }] },
     { ft: false, days: [{ date: D, hol: true, home: 4, sups: [{ code: 'MZTLZL', h: 6, s: 840 }] }, { date: D2, cell: 'R', home: 4, sups: [{ code: 'MZTJS', h: 4, s: 900 }] }] },
@@ -233,6 +233,15 @@ function randomCase() {
   vm.runInContext('STATUS="final";COST_SNAP={support:{"金山":123},detail:{sup:[{emp_id:"X0",store:"金山",hours:6,rate:200,amount:123}]}};', sbF);
   chk('V5 已鎖有快照：請款＝快照金額', J(vm.runInContext('costTotals().sup.map(x=>x.amount)', sbF)), [123]);
   vm.runInContext('STATUS="draft";COST_SNAP=null;', sbF);
+  // 「沒有門市代碼」提醒：舊快照（detail.sup 沒有 code 欄）不提醒；新快照只算 code 欄存在但是空的；草稿手填沒代碼要算
+  vm.runInContext('STATUS="final";COST_SNAP={support:{"金山":100,"六張犁":50},detail:{sup:[{emp_id:"X0",store:"金山",hours:6,rate:200,amount:100},{emp_id:"X1",store:"六張犁",hours:2,rate:200,amount:50}]}};', sbF);
+  chk('提醒：舊快照（沒有 code 欄）→ 0', vm.runInContext('supNoCodeN(costTotals())', sbF), 0);
+  vm.runInContext('COST_SNAP={support:{"金山":100,"手填店":50},detail:{sup:[{emp_id:"X0",store:"金山",code:"MZTJS",hours:6,rate:200,amount:100},{emp_id:"X1",store:"手填店",code:"",hours:2,rate:200,amount:50}]}};', sbF);
+  chk('提醒：新快照混合（一筆有代碼、一筆空）→ 1', vm.runInContext('supNoCodeN(costTotals())', sbF), 1);
+  vm.runInContext('STATUS="draft";COST_SNAP=null;ATT.X0={support:ATT.X0.support.concat([{store:"手填店",hours:3,rate:200,amount:""}])};', sbF);
+  chk('提醒：草稿手填沒代碼 → 1', vm.runInContext('supNoCodeN(costTotals())', sbF), 1);
+  chk('提醒：草稿手填沒代碼 → 請款區多一列提醒', vm.runInContext('costRows(costTotals()).some(r=>r[0]==="h"&&/沒有門市代碼/.test(r[1]))', sbF), true);
+  vm.runInContext('ATT.X0={support:ATT.X0.support.filter(x=>x.code)};', sbF);
   chk('a9 快照逐筆明細帶被支援門市代碼', J(vm.runInContext('costDetail(costTotals()).sup.map(x=>x.code)', sbF)).sort(), ['MZTJS', 'MZTJS', 'MZTJS', 'MZTLZL']);
 }
 
