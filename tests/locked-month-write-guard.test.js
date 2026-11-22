@@ -165,7 +165,7 @@ function page(status, reply) {
   const btn = { disabled: false, textContent: '儲存', title: '', classList: { add() {}, remove() {} } };
   const ctx = { console, setTimeout: () => 0, btn, log,
     $: () => btn, toast: (t, bad) => log.toasts.push([String(t), !!bad]), confirm: () => { log.confirms++; return true; },
-    ym: () => '2026-10', STORE: 'SSLGF', XSUP_FROM: '2026-11', STATUS: status, RESULTS: [1], ATT_DIRTY: true, CFG: {},
+    ym: () => '2026-10', STORE: 'SSLGF', ATT_KEY: 'SSLGF|2026-10', ATT_FOREIGN_MSG: '（表單不是這個月的）', XSUP_FROM: '2026-11', STATUS: status, RESULTS: [1], ATT_DIRTY: true, CFG: {},
     BONUS: [{ emp_id: 'E01', bonus_type: 'sales', label: '業績', amount: 5000 }],
     MASTER: [{ emp_id: 'E01', name: '測試甲' }, { emp_id: 'P01', name: '測試丙' }], ATT: { E01: { hours: 100, support: [] }, P01: { hours: 5, support: [] } },
     supCrossBlock: () => false, scopeLimited: () => false,
@@ -173,7 +173,7 @@ function page(status, reply) {
     post: async (action, body) => { log.posts.push(action); return reply(action, body); },
   };
   vm.createContext(ctx);
-  vm.runInContext('const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};\n' + ['attSendable', 'saveFX', 'saveAtt', 'clearAtt', 'saveBonus'].map(fnSrc).join('\n')
+  vm.runInContext('const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};\n' + ['attSendable', 'attForeign', 'attBtnIdle', 'saveFX', 'saveAtt', 'clearAtt', 'saveBonus'].map(fnSrc).join('\n')
     + '\nthis.saveAtt=saveAtt;this.clearAtt=clearAtt;this.saveBonus=saveBonus;', ctx);
   return ctx;
 }
@@ -207,6 +207,11 @@ const LOCKR = () => ({ ok: false, error: 'locked', message: '2026-10 已鎖定�
   p = page('draft', OKR); await p.clearAtt();
   eq([p.log.posts, p.log.confirms, p.log.reload, lastToast(p)], [['payroll_input_set'], 1, 1, ['2026-10 手動工時已清除', false]], 'F3 clearAtt 草稿成功 → 確認一次、重載、提示已清除');
 
+  // F4（2026-11-23）表單是別的月份讀來的（這個月讀取失敗，ATT_KEY 還是上個月）：saveAtt 不送、提示；存檔失敗時按鈕依未存狀態帶圓點
+  p = page('draft', OKR); p.ATT_KEY = 'SSLGF|2026-09'; await p.saveAtt();
+  eq([p.log.posts, p.log.calc, lastToast(p)], [[], 0, ['（表單不是這個月的）', true]], 'F4 saveAtt 表單是上個月的 → 不送出、不重算、紅字提示');
+  p = page('draft', LOCKR); await p.saveAtt();
+  eq([p.btn.disabled, p.btn.textContent], [false, '儲存工時 ●'], 'F4 saveAtt 存檔失敗、編輯還沒存 → 按鈕可按、「儲存工時 ●」');
   console.log(`\n小計：通過 ${pass}、失敗 ${fail}`);
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

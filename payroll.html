@@ -111,6 +111,8 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
 .big{font-size:20px;font-weight:900}
 .note{background:#fff8ec;border-left:4px solid var(--gold);padding:12px 14px;border-radius:0 9px 9px 0;font-size:12.5px;margin-bottom:15px}
 .note.warn{background:#fdf0ee;border-left-color:var(--red)}
+/* 出勤表單不是畫面上這個店月的（這個月讀取失敗，留著的是上一次成功讀到的別月／別店表單）：整個表單收起來，不能改、不能存（attGuardUi） */
+#p-att.att-foreign .card,#p-att.att-foreign #supWarn{display:none}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
 /* ── 假別額度彈窗（工時分頁「額度」按鈕開啟）── */
 .qz-mask{position:fixed;inset:0;background:rgba(35,24,21,.42);display:flex;align-items:center;
@@ -860,11 +862,32 @@ async function autoCalc(){
  * 但下方的試算金額**不需要存檔就會即時更新**，很容易「看到數字對了就以為存好了」，
  * 然後切月份或關頁面，東西就沒了。這一段就是擋那個。 */
 let ATT_DIRTY = false;
+/* 「儲存工時 ●」（2026-11-23 修）：原本已經是未存狀態就整段跳過，存檔失敗時按鈕被改回「儲存工時」後再編輯，圓點就不回來。
+   改成每次編輯都補上圓點；按鈕停用中（存取中…、✓ 存檔完成）不動字，等 attBtnIdle 放開時依 ATT_DIRTY 決定要不要有圓點。 */
 function markAttDirty(){
-  if(ATT_DIRTY) return;
   ATT_DIRTY = true;
   const b=$('saveAttBtn');
-  if(b){ b.classList.remove('done'); b.textContent='儲存工時 ●'; b.title='有尚未儲存的變更'; }
+  if(b&&!b.disabled&&b.textContent.indexOf('●')<0){ b.classList.remove('done'); b.textContent='儲存工時 ●'; b.title='有尚未儲存的變更'; }
+}
+/* 儲存工時鈕回到可按：有未存編輯就帶圓點（存檔失敗、存好後 1.8 秒內又編輯都會走這裡） */
+function attBtnIdle(b){
+  if(!b) return;
+  b.disabled=false; b.classList.remove('done');
+  b.textContent=ATT_DIRTY?'儲存工時 ●':'儲存工時'; b.title=ATT_DIRTY?'有尚未儲存的變更':'';
+}
+/* 出勤表單是哪個店月的（2026-11-23，讀取失敗後存到錯月份）：ATT 只在讀取成功時換掉，切月份／切門市讀取失敗時 ATT 還是上一次成功讀到的店月。
+   ATT_KEY＝ATT 是哪個「店|月」讀來的；跟畫面上的店月不同（attForeign）→ 不能存（saveAtt）、重算與鎖定不送這份表單（CALC_INPUTS）、整個出勤表單收起來（attGuardUi）。
+   選「收起來＋提示」不選「清空」：清空後按儲存會把空白表單存進去（＝清掉這個月的手動工時），收起來就沒有按鈕可按。 */
+let ATT_KEY='';
+function attForeign(){ return ATT_KEY!==STORE+'|'+ym(); }
+const ATT_FOREIGN_MSG='這個月的出勤資料沒有讀取成功，為了避免存錯月份，先不能修改或儲存工時。請重新整理頁面後再操作。';   // 字句草稿，Eason 尚未確認
+function attGuardUi(){
+  const p=$('p-att'); if(!p) return;
+  const f=attForeign();
+  p.classList.toggle('att-foreign',f);
+  let el=$('attForeign');
+  if(f&&!el){ el=document.createElement('div'); el.id='attForeign'; el.className='note warn'; el.textContent=ATT_FOREIGN_MSG; p.insertBefore(el,p.firstChild); }
+  if(el) el.style.display=f?'':'none';
 }
 function clearAttDirty(){
   ATT_DIRTY = false;
@@ -878,8 +901,9 @@ function clearAttDirty(){
  * 改成只有「這個分頁真的有未存變更」時才送影本，否則送 {} 讓後端以試算表為準。
  *   ·剛輸入完就按重新計算 → ATT_DIRTY 為真，照送，行為完全不變
  *   ·開著沒動過的舊分頁誤按 → 送 {}，不會蓋掉別人剛存的東西
- * ⚠ 兩處都要用：doCalc（手動按）與 autoCalc（切月份時自動試算，更隱蔽）。 */
-const CALC_INPUTS = () => ATT_DIRTY ? ATT : {};
+ * ⚠ 兩處都要用：doCalc（手動按）與 autoCalc（切月份時自動試算，更隱蔽）。
+ * 2026-11-23：表單不是畫面上這個店月的（attForeign，讀取失敗留下的別月表單）一律送 {}，不可以拿上個月的表單算這個月。 */
+const CALC_INPUTS = () => (ATT_DIRTY && !attForeign()) ? ATT : {};
 
 /** 有未存變更時問一次。回 true＝可以繼續（已存或使用者選擇捨棄）。 */
 function confirmLeaveAtt(what){
@@ -908,7 +932,8 @@ async function loadAtt(){
   const r=await post('payroll_inputs',{ym:ym()});
   ATT=r.ok?(r.inputs||{}):{};
   clearAttDirty();   // 剛從試算表讀回來，記憶體＝已存狀態
-  renderAtt();
+  ATT_KEY=r.ok?STORE+'|'+ym():'';   // 讀失敗＝空表單不屬於任何店月（不能存）
+  renderAtt(); attGuardUi();
 }
 /** 這個人要不要送去存檔（2026-11 審查 #1）：除了打卡帶入的 auto 列以外什麼都沒有的人不送，
  *  否則只在別店有時數、本店沒歸集的人會被存成 hours:0 的整筆手動列，之後本店核定就流不進來。 */
@@ -924,6 +949,7 @@ function attSendable(A){
   return (A.custom_add_more||[]).some(x=>x&&(String(x.label||'').trim()||n(x.amt)));
 }
 async function saveAtt(){
+  if(attForeign()){ toast(ATT_FOREIGN_MSG,true); return; }   // 表單是別的店月的（這個月讀取失敗）：不可以存進畫面上的月份（2026-11-23）
   const b=$('saveAttBtn');
   /* 支援時數若讀取失敗（後端解析不了那段 JSON），此時 ATT 裡是空陣列——
      直接存檔會把空值寫回去、原始資料永久消失。擋下來，先修資料再存（2026-08-24 加）。*/
@@ -943,12 +969,12 @@ async function saveAtt(){
     Object.keys(ATT||{}).forEach(k=>{ if(own[String(k).trim()]) sendAtt[k]=ATT[k]; }); }
   if(ym()>=XSUP_FROM){ const t={}; Object.keys(sendAtt||{}).forEach(k=>{ if(attSendable(sendAtt[k])) t[k]=sendAtt[k]; }); sendAtt=t; }
   const r=await post('payroll_input_set',{ym:ym(),inputs:sendAtt});
-  if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.message||r.error||''),true);return}
+  if(!r.ok){attBtnIdle(b);toast('儲存失敗：'+(r.message||r.error||''),true);return}   // 沒存成：編輯還在，圓點跟著回來（2026-11-23）
   await doCalc(undefined,true);   // 存完用新工時重算帶出數字（true＝工時已存：這個月讀取失敗時重算後可以重新載入）
   ATT_DIRTY=false;   // 存好了，解除未儲存提醒
   b.classList.add('done'); b.textContent='✓ 存檔完成';
   toast(ym()+' 工時已儲存（'+r.count+' 人）');
-  setTimeout(()=>{b.textContent='儲存工時';b.disabled=false;b.classList.remove('done');},1800);
+  setTimeout(()=>attBtnIdle(b),1800);
 }
 async function clearAtt(){
   if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再清除手動工時',true); return; }   // 已鎖定月份不送出（薪酬挑錯第 1 項）
@@ -1071,7 +1097,8 @@ async function loadMonth(pre,preSeq,preGen){   // pre＝開頁時先發出去的
       elecBtns();
       return false;
     }
-    delete MON_UNSURE[reqKey];
+    const wasUnsure=monUnsure();   // 這個店月先前讀取失敗／鎖定結果不明（解開前要先確認月結列不是一半鎖定，見下方 monMixedRecheck）
+    if(!wasUnsure) delete MON_UNSURE[reqKey];
     hideLoadError();
     OT_PERIOD=r.ot_period||{};
     HAS_CLOCK=(r.has_clock!==false);
@@ -1089,6 +1116,7 @@ async function loadMonth(pre,preSeq,preGen){   // pre＝開頁時先發出去的
        切門市時 ATT 已經是新的一份，卻被當成「有未存變更」照送上去。 */
     clearAttDirty();
     STORE=r.store||STORE; CFGSRC=r.config_src||{};
+    ATT_KEY=STORE+'|'+ym();   // 出勤表單＝這個店月（attForeign 解除）
     LT_LIST=[]; loadLeaveTypes(); LEV_LIST=[]; loadLeaveEvents();   // ⚠ 切門市必須重載，否則沿用上一家店的設定
     QUOTA=null; QUOTA_KEY=''; closeQuota();   // 假別額度同理：換店換年度都要重抓（快取 key 是 店|年）
     if(r.stores&&r.stores.length){STORE_LIST=r.stores;renderStoreSel()}
@@ -1109,8 +1137,22 @@ async function loadMonth(pre,preSeq,preGen){   // pre＝開頁時先發出去的
     renderBonus();
     if($('p-punch')&&$('p-punch').classList.contains('on')) loadPunch();
     if($('p-dash')&&$('p-dash').classList.contains('on')) loadDash();
+    if(wasUnsure) await monMixedRecheck(reqKey,seq);
     return true;
-  } finally { if(LOAD_INFLIGHT&&LOAD_INFLIGHT.seq===seq) LOAD_INFLIGHT=null; setBusy(false); }
+  } finally { if(LOAD_INFLIGHT&&LOAD_INFLIGHT.seq===seq) LOAD_INFLIGHT=null; setBusy(false); attGuardUi(); }
+}
+/* 讀取失敗旗標在、這次重新載入成功：先用唯讀 payroll_status 確認月結列不是「一部分已鎖定、一部分草稿」才解開（2026-11-23）。
+   payroll_month 只看第一列判整個月（Payroll.gs payBuildRunResults），一半鎖定時照樣回 ok，原本在這裡就直接解開了。
+   狀態 final／draft／none＝解開；mixed＝照擋、提示沿用鎖定那一句；查不到＝照擋（同鎖定流程：不把「查不到」當成「沒問題」）；
+   只有舊後端（unknown_action）或管理系統代轉未放行（FORBIDDEN／沒有權限）＝沒辦法查，照舊解開（同改版前）。 */
+const MON_MIXED_MSG='這個月有一部分已鎖定、一部分還是草稿，請重新整理頁面看狀態；重新整理後還是這樣請找資訊部';   // 字句沿用鎖定流程（toggleLock）那一句
+async function monMixedRecheck(key,seq){
+  const i=key.lastIndexOf('|'), st=await post('payroll_status',{ym:key.slice(i+1),store:key.slice(0,i)||STORE},{noToast:true,quiet:true,noRetry:true});
+  if(seq!==LOAD_SEQ) return;   // 等回應時又開始了新的載入：交給那一次判斷
+  const old=!!(st&&!st.ok&&(st.error==='unknown_action'||st.error==='FORBIDDEN'||st.error==='沒有權限'));
+  if(old||(st&&st.ok&&st.ym===key.slice(i+1)&&st.status!=='mixed')) delete MON_UNSURE[key];
+  else if(STORE+'|'+ym()===key) toast(st&&st.ok&&st.status==='mixed'?MON_MIXED_MSG:MON_UNSURE_MSG,true);
+  elecBtns();
 }
 async function doCalc(pendSeq,inputsSaved){   // 回 true＝重算成功並已套到畫面（選舉假存檔後要知道，Codex 複審 K3）；pendSeq＝選舉假存檔觸發的重算（序號相符才套用並解除該店月的待確認）；inputsSaved＝saveAtt 剛存好工時才叫的（出勤表單＝試算表）
   if(supCrossBlock('重新計算')) return false;
@@ -1790,13 +1832,25 @@ async function toggleLock(){
     // 補休帳是負的不能鎖定（2026-11-01）：名單可能好幾行，用對話框列清楚
     else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='ot_form_missing'||r.error==='sched_missing'||r.error==='unapproved'||r.error==='leave_mismatch')) alert(r.message);
     else if(lock&&r.error==='stale_run'){ alert(r.message+'\n\n按確定後系統會自動重新計算，請看過新數字再按一次鎖定。'); await doCalc(); }
-    else if(lock&&r.message) toast(r.message,true);
+    else if(lock&&r.message) lockBlockedBox(r.error,r.message);   // 待辦 17（Eason 2026-11-22 選 5A）：鎖定被擋改成要按「知道了」才關的視窗（原本紅字 2.6 秒就消失）
   } finally {
     LOCK_BUSY=false;
     if(timer) clearInterval(timer);
     if(lb){ lb.disabled=false; lb.textContent=label(); }
     elecBtns();
   }
+}
+/* 鎖定被擋的視窗（5A）：後端的字句照原樣顯示；「核定衝突」「Mac mini 和 Google 對不上」「Mac mini 還沒回報」三種後面加一句（Eason 選 5A 時定的）。
+   只有按「知道了」才關（不接受按外圍、Esc），免得還沒看清楚就不見。 */
+const LOCK_SHOT_ERR={g_rows_conflict:1,g_rows_fp:1,g_rows_missing:1};
+function lockBlockedBox(err,msg){
+  const old=$('lockBlocked'); if(old) old.remove();
+  const mask=document.createElement('div'); mask.className='qz-mask'; mask.id='lockBlocked';
+  mask.innerHTML='<div class="qz-box" role="alertdialog" aria-modal="true"><div class="qz-bd" style="padding:20px 20px 16px"><p id="lockBlockedTxt" style="font-size:14px;line-height:1.7;white-space:pre-wrap"></p>'
+    +'<div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" type="button" id="lockBlockedOk">知道了</button></div></div></div>';
+  mask.querySelector('#lockBlockedTxt').textContent=String(msg||'')+(LOCK_SHOT_ERR[err]?'請把這個畫面截圖傳給資訊部。':'');
+  mask.querySelector('#lockBlockedOk').onclick=()=>mask.remove();
+  document.body.appendChild(mask); mask.querySelector('#lockBlockedOk').focus();
 }
 
 /* ═════ 工時 ═════ */
@@ -2521,6 +2575,7 @@ function supCrossBlock(what){
 }
 /** 差異逐筆決定：auto＝改成打卡值（刪掉手填）、keep＝保留手填（打卡值再變才會再提醒） */
 async function supDecide(emp,code,choice,autoH,btn){
+  if(attForeign()){ toast(ATT_FOREIGN_MSG,true); return; }   // 差異清單是別的店月讀來的（這個月讀取失敗）：不送（2026-11-23）
   if(!confirmLeaveAtt(choice==='auto'?'改成打卡值':'保留手填')) return;
   if(btn) btn.disabled=true;
   const r=await post('payroll_support_decide',{ym:ym(),emp_id:emp,code,choice,auto_h:autoH});
