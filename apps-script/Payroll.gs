@@ -8126,7 +8126,10 @@ function handlePnlLaborEstimate_(body) {
  *   w1＝契約草案 v1（§5.3 已同意的 A 類），跟 mini 端目前 payshadow-whitelist.js 的 WHITELIST 逐字相同；
  *   w2＝w1＋契約第 3 節建議同意的 B 類：主檔 name、active；假別參數；每月手填（不抄兩個 label，custom_add_more 只留金額）；
  *       獎金（不抄 label／memo）；留職停薪區間（child 換成代號）；打卡對照。leave_event（結婚／分娩日）先不抄。
- *   兩版都收，讓 mini 端可以晚一步換 w2；要加欄位＝先問 Eason，兩邊一起加、版本號加 1。名單外的分頁（例：選舉假名單 hol_emp）一律不抄。 */
+ *       選舉假名單 hol_emp（2026-11-23 主管同意，w2 從沒上線過所以直接加進 w2、不開 w3）：只出 ym、date、store、emp_id
+ *       ＝計算 payElecRowsOf_／payElecDates_ 用到的全部欄位；name（姓名）、note（主管自填文字）、updated_at 一律不出
+ *       （比照 leave_span／leave_event 不抄 name／memo／updated_at）。只回 ym 那個月；分頁不存在＝空陣列（沒有名單是常態，不回 no_sheet）。
+ *   兩版都收，讓 mini 端可以晚一步換 w2；要加欄位＝先問 Eason，兩邊一起加、版本號加 1。白名單外的分頁（leave_event、audit、cost_snapshot）一律不抄。 */
 const PAY_SHADOW_FORMAT_ = 'payshadow-v1';
 const PAY_SHADOW_W1_ = {
   master: ['emp_id', 'is_full_time', 'wage', 'base', 'ot_rate',
@@ -8156,6 +8159,7 @@ const PAY_SHADOW_W2_ = {
   bonus: ['ym', 'store', 'emp_id', 'bonus_type', 'amount'],
   leave_span: ['emp_id', 'store', 'code', 'child', 'unit', 'start', 'end', 'months', 'days'],
   xmap: ['emp_no', 'pay_store', 'acct_store', 'emp_id', 'not_support', 'state', 'acct_only'],
+  hol_emp: ['ym', 'date', 'store', 'emp_id'],   // 不出 name／note／updated_at（2026-11-23 主管同意的前提）
 };
 const PAY_SHADOW_WHITELISTS_ = { w1: PAY_SHADOW_W1_, w2: PAY_SHADOW_W2_ };
 /* 每張表怎麼讀：month＝'ym' 只回這個月；'year2' 只回 ym 去年 1 月到今年 12 月（手填工時：曆年請假上限、週年制特休要看前面的月份，
@@ -8173,6 +8177,7 @@ const PAY_SHADOW_TABLES_ = {
   bonus:      { month: 'ym',    need: false, max: 20000 },
   leave_span: { month: false,   need: false, max: 5000 },
   xmap:       { month: false,   need: false, max: 5000 },
+  hol_emp:    { month: 'ym',    need: false, max: 5000 },
 };
 
 function handlePayrollShadowExport(body) {

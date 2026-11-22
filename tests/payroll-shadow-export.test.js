@@ -10,6 +10,7 @@
  *   4. 月份：本月往前 3 個月內才收；空月份回空陣列；整月一次回齊、不重不漏；超過上限回 too_many_rows、不截斷。
  *   5. 形狀：契約 4.2 的鍵；值只有字串／數字／布林／null；日期轉台北 YYYY-MM-DD；mini 端 checkExport 吃得下。
  *   6. 轉換：custom_add_more 只留金額（算出來的加薪金額不變）、留停 child 換代號（育嬰額度分組不變）。
+ *   7. 選舉假名單 hol_emp（2026-11-23）：只出 ym、date、store、emp_id；name／note／updated_at 不出；只回 ym 那個月；分頁不存在＝空陣列；匯出列與原列算出的選舉日相同。
  * 假資料全部虛構（姓名「測試甲」、身分證／帳號是明顯的假字串），不碰正式試算表。
  * PAY_GS_OVERRIDE＝改用別份 Payroll.gs（只給變異測試用）。 */
 'use strict';
@@ -122,7 +123,7 @@ function tab(kind, rows, extraCols) {
   const cols = PS.S[kind].concat(extraCols || []);
   return [cols].concat(rows.map((r) => cols.map((c) => (r[c] === undefined ? '' : r[c]))));
 }
-const SECRET_RE = /SECRET|X000000000|BANK-000|測試甲|測試乙|測試丙/;
+const SECRET_RE = /SECRET|X000000000|BANK-000|測試甲|測試乙|測試丙|選舉丁/;
 function baseSheets(opt) {
   opt = opt || {};
   const people = [['E1', '測試甲', 'true'], ['E2', '測試乙', 'false'], ['E3', '測試丙', 'true']];
@@ -169,7 +170,12 @@ function baseSheets(opt) {
   s[PS.N.xmap] = tab('xmap', [{ emp_no: 'D001', pay_store: 'SSLGF', acct_store: 'CF', emp_id: 'C9', not_support: '', synced_at: 'SECRET-SYNC', state: 'active', acct_only: '' }]);
   s[PS.N.audit] = tab('audit', [{ ts: 'x', ym: '2026-11', action: 'lock', operator: 'SECRET-OP', reason: 'SECRET-REASON', store: 'SSLGF' }]);
   s[PS.N.cost_snapshot] = tab('cost_snapshot', [{ ym: '2026-11', store: 'SSLGF', detail_json: '{"SECRET":1}' }]);
-  s[PS.N.hol_emp] = tab('hol_emp', [{ ym: '2026-11', date: '2026-11-28', store: 'SSLGF', emp_id: 'E1', name: '測試甲', note: 'SECRET-NOTE', updated_at: 'x' }]);
+  /* 選舉假名單：姓名用「選舉丁」、備註 SECRET-NOTE、updated_at SECRET-UPD——回應裡一個都不准出現（只出 ym、date、store、emp_id） */
+  s[PS.N.hol_emp] = tab('hol_emp', [
+    { ym: '2026-11', date: '2026-11-28', store: 'SSLGF', emp_id: 'E1', name: '選舉丁', note: 'SECRET-NOTE', updated_at: 'SECRET-UPD' },
+    { ym: '2026-11', date: D('2026-11-27T16:00:00Z'), store: 'CF', emp_id: 'E3', name: '選舉丁', note: 'SECRET-NOTE', updated_at: 'SECRET-UPD' },   // 日期儲存格被轉成 Date
+    { ym: '2026-10', date: '2026-10-10', store: 'SSLGF', emp_id: 'E2', name: '選舉丁', note: 'SECRET-NOTE', updated_at: 'SECRET-UPD' },        // 別的月份
+  ]);
   if (opt.mut) opt.mut(s);
   return s;
 }
@@ -224,7 +230,8 @@ console.log('══ 2) 白名單 ══');
   const r = ask(w);
   const wl = W2(w);
   chk('  w2 成功', [r.ok, r.format, r.whitelist_version, r.ym], [true, 'payshadow-v1', 'w2', '2026-11']);
-  chk('  分頁集合＝w2 白名單的分頁（沒有 leave_event、audit、cost_snapshot、hol_emp）', Object.keys(r.tables), Object.keys(wl));
+  chk('  分頁集合＝w2 白名單的分頁（沒有 leave_event、audit、cost_snapshot）', Object.keys(r.tables), Object.keys(wl));
+  chk('  w2 沒有 leave_event、audit、cost_snapshot 這三張', ['leave_event', 'audit', 'cost_snapshot'].filter((k) => k in r.tables), []);
   let extra = [];
   for (const t of Object.keys(r.tables)) r.tables[t].forEach((row) => Object.keys(row).forEach((k) => { if (wl[t].indexOf(k) < 0) extra.push(t + '.' + k); }));
   chk('  每列欄位 ⊆ 白名單（名單外的欄 0 個）', extra, []);
@@ -240,8 +247,9 @@ console.log('══ 2) 白名單 ══');
   const r1 = ask(w, { whitelist_version: 'w1' });
   chk('  Payroll.gs 的 w1＝mini 端 payshadow-whitelist.js（8f8c017）逐字相同', W1(w), MINI_W1);
   chk('  w1 只回 6 張表、沒有姓名', [Object.keys(r1.tables), /測試甲|"name":"測試/.test(JSON.stringify(r1.tables.master))], [Object.keys(MINI_W1), false]);
-  chk('  w2＝w1＋契約第 3 節建議同意的（主檔 name、active；leave_type、input、bonus、leave_span、xmap）',
-    [wl.master.slice(MINI_W1.master.length), Object.keys(wl).filter((k) => !MINI_W1[k])], [['name', 'active'], ['leave_type', 'input', 'bonus', 'leave_span', 'xmap']]);
+  chk('  w2＝w1＋契約第 3 節建議同意的（主檔 name、active；leave_type、input、bonus、leave_span、xmap）＋選舉假名單 hol_emp（11/23）',
+    [wl.master.slice(MINI_W1.master.length), Object.keys(wl).filter((k) => !MINI_W1[k])], [['name', 'active'], ['leave_type', 'input', 'bonus', 'leave_span', 'xmap', 'hol_emp']]);
+  chk('  w2 的 hol_emp 只有 ym、date、store、emp_id（不抄 name／note／updated_at）', wl.hol_emp, ['ym', 'date', 'store', 'emp_id']);
   chk('  w2 的 input 不抄兩個 label、bonus 不抄 label／memo、leave_span 不抄 name／memo',
     [wl.input.filter((c) => /label|updated_at/.test(c)), wl.bonus.filter((c) => /label|memo|updated_at/.test(c)), wl.leave_span.filter((c) => /name|memo|updated_at/.test(c))], [[], [], []]);
   chk('  版本號不認得 → whitelist_version_mismatch', ask(w, { whitelist_version: 'w3' }), { ok: false, error: 'whitelist_version_mismatch' });
@@ -252,7 +260,8 @@ console.log('══ 2) 白名單 ══');
 console.log('══ 3) 唯讀 ══');
 {
   for (const [lab, extra, mut] of [['w2 成功', {}], ['w1 成功', { whitelist_version: 'w1' }], ['空月份', { ym: '2026-09' }],
-    ['選填分頁都不存在', {}, (s) => { ['leave_type', 'input', 'bonus', 'leave_span', 'xmap', 'item', 'config', 'holiday'].forEach((k) => delete s[PS.N[k]]); }],
+    ['選填分頁都不存在', {}, (s) => { ['leave_type', 'input', 'bonus', 'leave_span', 'xmap', 'item', 'config', 'holiday', 'hol_emp'].forEach((k) => delete s[PS.N[k]]); }],
+    ['選舉假名單分頁不存在', {}, (s) => { delete s[PS.N.hol_emp]; }], ['選舉假名單只有表頭', {}, (s) => { s[PS.N.hol_emp].length = 1; }],
     ['run 分頁不存在（no_sheet）', {}, (s) => { delete s[PS.N.run]; }], ['壞月份', { ym: '2026-13' }], ['筆數超過', {}, (s) => { const t = s[PS.N.run]; for (let i = 0; i < 2001; i++) t.push(t[1].slice()); }]]) {
     const w = world(baseSheets({ mut }));
     const before = snapOf(w), sheetNames = Object.keys(w.sheets).join(',');
@@ -372,6 +381,58 @@ console.log('══ 7) 轉換：自訂加薪只留金額、留停子女換代號
   const origSpans = w.sheets[PS.N.leave_span].slice(1).map((row) => { const o = {}; w.sheets[PS.N.leave_span][0].forEach((h, i) => { o[h] = row[i]; }); return o; });
   const use = (spans) => JSON.parse(JSON.stringify(w.F('payParentalUsage')('E1', spans, [], 8))).children.map((c) => [c.month_used, c.day_used, c.short_count]).sort();
   chk('  payParentalUsage：原值與代號算出每個子女的用量相同', use(sp), use(origSpans));
+}
+
+console.log('══ 7b) 選舉假名單 hol_emp（2026-11-23 主管同意：只出 ym、date、store、emp_id） ══');
+{
+  const ids = (rows) => rows.map((x) => x.ym + '|' + x.date + '|' + x.store + '|' + x.emp_id);
+  const w = world(baseSheets());
+  const r = ask(w);
+  chk('  有名單：2026-11 回兩列（兩家店都回，總管理金鑰＝全部門市）、別月份 2026-10 那列不回', [r.ok, ids(r.tables.hol_emp), r.counts.hol_emp],
+    [true, ['2026-11|2026-11-28|SSLGF|E1', '2026-11|2026-11-28|CF|E3'], 2]);
+  chk('  每列的鍵逐字＝ym、date、store、emp_id', r.tables.hol_emp.map((x) => Object.keys(x)), [['ym', 'date', 'store', 'emp_id'], ['ym', 'date', 'store', 'emp_id']]);
+  const js = JSON.stringify(r);
+  chk('  name、note、updated_at 三欄一定不出現（鍵與值：選舉丁、SECRET-NOTE、SECRET-UPD）',
+    [r.tables.hol_emp.some((x) => 'name' in x || 'note' in x || 'updated_at' in x), /選舉丁|SECRET-NOTE|SECRET-UPD/.test(js)], [false, false]);
+  /* 分頁上多出別的欄（例如有人手加「身分證」）也不出 */
+  const wx = world(baseSheets({ mut: (s) => { const t = s[PS.N.hol_emp]; t[0].push('id_no'); for (let i = 1; i < t.length; i++) t[i].push('X000000000'); } }));
+  const rx = ask(wx);
+  chk('  名單分頁多一個名單外的欄 → 不出現', [rx.ok, /id_no|X000000000/.test(JSON.stringify(rx.tables.hol_emp))], [true, false]);
+  chk('  日期儲存格被轉成 Date（台北 2026-11-28 00:00）→ 回 2026-11-28', r.tables.hol_emp[1].date, '2026-11-28');
+  const ro = ask(w, { ym: '2026-10' });
+  chk('  要 2026-10 → 只回 2026-10 那列', ids(ro.tables.hol_emp), ['2026-10|2026-10-10|SSLGF|E2']);
+  chk('  空月份 2026-09 → 空陣列、counts 0', [ask(w, { ym: '2026-09' }).tables.hol_emp, ask(w, { ym: '2026-09' }).counts.hol_emp], [[], 0]);
+  const we = world(baseSheets({ mut: (s) => { s[PS.N.hol_emp].length = 1; } }));
+  const re = ask(we);
+  chk('  空名單（只有表頭）→ ok、空陣列、其他表照回、不寫', [re.ok, re.tables.hol_emp, re.counts.master, we.writes], [true, [], 3, []]);
+  const wn = world(baseSheets({ mut: (s) => { delete s[PS.N.hol_emp]; } }));
+  const rn = ask(wn);
+  chk('  分頁不存在 → ok、空陣列（不是 no_sheet）、不建分頁、分頁清單不變',
+    [rn.ok, rn.error, rn.tables && rn.tables.hol_emp, wn.writes, PS.N.hol_emp in wn.sheets], [true, undefined, [], [], false]);
+  chk('  need＝false、month＝ym', JSON.parse(w.F('JSON.stringify(PAY_SHADOW_TABLES_.hol_emp)')), { month: 'ym', need: false, max: 5000 });
+  chk('  w1 不回 hol_emp（mini 端現行版本不變）', 'hol_emp' in ask(w, { whitelist_version: 'w1' }).tables, false);
+  /* 門市範圍：這支只限不限門市的總管理金鑰；帶範圍（含空範圍）一律擋，拿不到任何一家店的名單 */
+  for (const [lab, sc] of [['空範圍 []', []], ['只有 SSLGF', ['SSLGF']], ['只有 CF', ['CF']]]) {
+    const ws = world(baseSheets());
+    const rs = ask(ws, { scope: sc });
+    chk('  帶門市範圍 ' + lab + ' → scope_forbidden、沒有 tables、一張分頁都沒讀', [rs.error, 'tables' in rs, ws.reads], ['scope_forbidden', false, 0]);
+  }
+  /* 匯出的四欄足夠：用這邊的計算函式（payElecDates_）拿原列與匯出列各算一次，每家店、每個人、每個月結果相同 */
+  /* 原列的 Date 要換成 vm 裡的 Date（payElecYmd_ 用 instanceof 判斷；測試檔與 vm 是兩個 realm，正式環境只有一個） */
+  const vmDate = w.F('(function (t) { return new Date(t); })');
+  const rawOf = (ws) => { const t = ws.sheets[PS.N.hol_emp]; return t.slice(1).map((row) => { const o = {}; t[0].forEach((h, i) => { o[h] = row[i] instanceof Date ? vmDate(row[i].getTime()) : row[i]; }); return o; }); };
+  const elec = (rows, ym, st, id) => JSON.parse(JSON.stringify(w.F('payElecDates_')(rows, ym, st, id)));
+  const exp = { '2026-11': r.tables.hol_emp, '2026-10': ro.tables.hol_emp };
+  const diff = [];
+  for (const ym of ['2026-11', '2026-10']) for (const st of ['SSLGF', 'CF']) for (const id of ['E1', 'E2', 'E3']) {
+    const a = elec(rawOf(w), ym, st, id), b = elec(exp[ym], ym, st, id);
+    if (JSON.stringify(a) !== JSON.stringify(b)) diff.push(ym + st + id);
+  }
+  chk('  payElecDates_：原列 vs 匯出列 2 個月 × 2 店 × 3 人結果相同', diff, []);
+  chk('  前提：有人真的被算到選舉日（E1@SSLGF、E3@CF 11/28；E2@SSLGF 10/10）',
+    [elec(r.tables.hol_emp, '2026-11', 'SSLGF', 'E1'), elec(r.tables.hol_emp, '2026-11', 'CF', 'E3'), elec(ro.tables.hol_emp, '2026-10', 'SSLGF', 'E2'), elec(r.tables.hol_emp, '2026-11', 'SSLGF', 'E3')],
+    [['2026-11-28'], ['2026-11-28'], ['2026-10-10'], []]);
+  chk('  mini 端 checkExport（w2 白名單）吃得下含 hol_emp 的回應', miniCheckExport(r, '2026-11', W2(w), 'w2').ok, true);
 }
 
 console.log('══ 8) 草稿過期也不重算、不寫回（對照組 payroll_month 會） ══');
