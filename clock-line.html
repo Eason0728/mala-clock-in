@@ -721,14 +721,33 @@
      否則只記比對——不然會把剛顯示的「打卡成功」、10 分鐘鎖蓋回開頁時的樣子（2026-11-16 Fable 審查 高 1）。 */
   var stGen = 0, omPending = null;
   window.addEventListener('pagehide', function () { if (omPending) omPending(); });   // 打完卡畫面自動關掉時，還沒送的開頁秒數趕快送（只掛一次）
+  /* 比對紀錄（2026-11-23 驗收：11/17–11/22 七店 34 筆 diff 全部是同仁已按打卡後 Google 才回來，量法記錯）：
+     只記「這一場開頁還沒動過」（stGen 沒變）時回來的那份；按過打卡、重讀過才回來的不記 same／diff，status 標 cmp_late。
+     不一樣時 status 帶是誰落後與兩邊最後一張卡的類型（光復 open_timing 的 status 欄只收 a-z 與底線、最多 40 字，不帶時間與個資）：
+     diff_<mold＝mini 較舊｜gold＝Google 較舊｜same＝最後一張卡相同、別的不同>_m<i 上班｜o 下班｜n 沒有>_g<同左>。 */
+  function lastOf(s) { return s && s.guard && s.guard.last ? s.guard.last : null; }
+  function diffClass(m, g) {
+    var ml = lastOf(m), gl = lastOf(g), mt = ml ? String(ml.ts || '') : '', gt = gl ? String(gl.ts || '') : '';
+    var t = function (x) { return !x ? 'n' : x.type === 'in' ? 'i' : x.type === 'out' ? 'o' : 'x'; };
+    return 'diff_' + (gt > mt ? 'mold' : mt > gt ? 'gold' : 'same') + '_m' + t(ml) + '_g' + t(gl);
+  }
+  /** 畫面上的訊息（文字、樣式、提示、求助鍵）：Google 校正重畫時，開頁之後才寫上的訊息（例：打卡失敗原因）要留著 */
+  function msgSnap() { return { t: $('msg').textContent, c: $('msg').className, h: $('hint').textContent, k: helpKey }; }
+  function msgSame(a, b) { return a.t === b.t && a.c === b.c && a.h === b.h && a.k === b.k; }
+  function msgPut(m) { $('msg').textContent = m.t; $('msg').className = m.c; $('hint').textContent = m.h; offerHelp(m.k); }
   function statusAfter(f, src, shown) {
-    var gen = stGen, key0 = stKey(shown), sent = false;
-    var send = function () { if (sent) return; sent = true; if (omPending === send) omPending = null; om.g = f.gMs; om.mini = f.mMs; omReport('ready', ''); };
+    var gen = stGen, key0 = stKey(shown), sent = false, msg0 = msgSnap();   // msg0：剛畫完開頁狀態那一刻的訊息
+    var send = function () { if (sent) return; sent = true; if (omPending === send) omPending = null; om.g = f.gMs; om.mini = f.mMs; omReport('ready', om.cmp || ''); };
+    var note = function (m, g) {   // m＝mini 那份、g＝Google 那份（其中一份就是畫面上的 shown）
+      if (gen !== stGen) { om.cmp = 'cmp_late'; return; }
+      var same = stKey(src === 'google' ? m : g) === key0;
+      om.match = same ? 'same' : 'diff'; om.cmp = same ? '' : diffClass(m, g);
+    };
     var cap = function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
     omPending = send;
     try {
       if (src === 'google') {   // Google 先回：照舊。mini 那份只拿來比對（最多再等 3 秒）
-        Promise.race([f.mini, cap(3000)]).then(function (m) { if (m) om.match = stKey(m) === key0 ? 'same' : 'diff'; send(); }, send);
+        Promise.race([f.mini, cap(3000)]).then(function (m) { if (m) note(m, shown); send(); }, send);
         return;
       }
       f.quiet = true;   // mini 先回：Google 那份在背景，重試也不在畫面上寫字
@@ -738,16 +757,16 @@
       Promise.race([gP, cap(15000 + (f.google ? 0 : ST_CMP_DELAY_MS))]).then(function (g) {
         var live = gen === stGen && status === shown && !busy;   // 畫面還停在開頁那一刻（沒按過打卡、沒重讀）
         if (g && g.ok && g.status === 'ready') {
-          om.match = stKey(g) === key0 ? 'same' : 'diff';
+          note(shown, g);
           if (live) {
             // Google 有 mini 還沒拉到的卡（主管 QR、舊連結、別支手機剛打的）：改用 Google 那份，免得亮錯鍵
             var gl = g.guard && g.guard.last ? String(g.guard.last.ts || '') : '', ml = shown.guard && shown.guard.last ? String(shown.guard.last.ts || '') : '';
-            if (gl && gl > ml) { g.store = shown.store; g.__at = f.gAt; render(g); }
+            if (gl && gl > ml) { var m1 = msgSnap(); g.store = shown.store; g.__at = f.gAt; render(g); if (!msgSame(m1, msg0)) msgPut(m1); }   // 開頁後寫上的訊息（打卡失敗原因）留著
             else if (g.notices) renderNotices(g.notices);
           }
         } else if (live && g && g.ok === false && ['not_bound', 'line_identity_conflict', 'invalid_id_token'].indexOf(g.error) >= 0) {
           // Google 明確說這個人現在不能在這家店打卡（剛被解除綁定、設離職，mini 還沒拉到）：收回按鍵，照 Google 的處理（審查 中 2）
-          om.match = 'diff';
+          om.match = 'diff'; om.cmp = 'diff_g_reject';
           status = null; refreshButtons();
           statusRejected(g);
         }
