@@ -149,6 +149,29 @@ try:
             ok(bname + ' 舊後端 unknown_action → 「儲存失敗：unknown_action」', pg.inner_text('#msg') == '儲存失敗：unknown_action', pg.inner_text('#msg'))
             shot(pg, bname, 'ui-4-oldbackend.png')
             pg.unroute('**/*')
+            # 讀寫互斥版的「A 存檔在途時切到 10 月（沒有名單的月份）」：10 月的讀取等 A 的寫入結束才發；讀完後鎖定、重新計算鈕狀態正確
+            def setym0(v): pg.evaluate("$('ym').value='%s'; $('ym').dispatchEvent(new Event('change'))" % v); pg.wait_for_timeout(2500)
+            time.sleep(3)
+            h4, seen4 = {}, []
+            def hold4(route):
+                body = json.loads(route.request.post_data or '{}')
+                seen4.append((body.get('action'), body.get('ym')))
+                if body.get('action') == 'payroll_hol_emp_set' and body.get('ym') == '2026-11' and 'a' not in h4: h4['a'] = route; return
+                route.continue_()
+            pg.route('**/*', hold4)
+            pg.click('#elecSave')
+            for _ in range(50):
+                if 'a' in h4: break
+                pg.wait_for_timeout(100)
+            k4 = len(seen4)
+            setym0('2026-10')
+            ok(bname + ' A（11 月）存檔在途時切到 10 月：10 月的讀取排隊、沒有發出（A 結束後才發）', 'a' in h4 and ('payroll_month', '2026-10') not in seen4[k4:] and pg.evaluate('!!LOAD_INFLIGHT'), (list(h4), seen4[k4:]))
+            if 'a' in h4: h4['a'].continue_()
+            pg.wait_for_timeout(4000)
+            ok(bname + ' A 結束後 10 月讀取發出、讀完：鎖定、重新計算鈕不受影響（10 月沒有名單、沒有待確認）', ('payroll_month', '2026-10') in seen4[k4:] and not pg.evaluate('!!LOAD_INFLIGHT') and not pg.is_disabled('#lockBtn') and not pg.is_disabled('#calcBtn') and not pg.evaluate('monBlocked()'), (seen4[k4:], pg.is_disabled('#lockBtn'), pg.is_disabled('#calcBtn')))
+            pg.unroute('**/*')
+            setym0('2026-11'); pg.click('button[data-p="cfg"]'); pg.wait_for_timeout(400)
+            pg.fill('#elecDate', '2026-11-28'); pg.locator('#elecList .elec-ck').nth(0).check()
             # 第四輪（讀寫互斥）取代原本的 Codex 第五次 B1：A 店月（11 月）存檔在途 → 切到 B（12 月）：B 的月資料讀取排隊、B 不能存；A 回來後 A 自己重算成功才放行
             def setym(v): pg.evaluate("$('ym').value='%s'; $('ym').dispatchEvent(new Event('change'))" % v); pg.wait_for_timeout(2500)
             time.sleep(3)
@@ -167,6 +190,8 @@ try:
             setym('2026-12')
             ok(bname + ' A（11 月）存檔在途：切到 12 月的月資料讀取排隊、沒有發出（讀寫互斥），畫面是讀取中',
                'a' in h5 and ('payroll_month', '2026-12') not in seen5[k5:] and pg.evaluate('!!LOAD_INFLIGHT'), (list(h5), seen5[k5:]))
+            pg.evaluate("$('msg').textContent=''; exportExcel(); 0"); pg.wait_for_timeout(300)
+            ok(bname + ' A 存檔在途（結果已作廢）時按匯出 Excel：擋下（請先計算），沒有匯出舊結果', '請先計算' in pg.inner_text('#msg') and pg.evaluate('RESULTS.length') == 0, (pg.inner_text('#msg'), pg.evaluate('RESULTS.length')))
             pg.click('button[data-p="cfg"]'); pg.wait_for_timeout(300)
             pg.evaluate("$('msg').textContent=''; saveElec(null); 0"); pg.wait_for_timeout(500)
             ok(bname + ' 讀取中按「儲存選舉假名單」：不送 payroll_hol_emp_set（12 月）、提示「讀取中…」', ('payroll_hol_emp_set', '2026-12') not in seen5[k5:] and pg.inner_text('#msg') == '讀取中…', (seen5[k5:], pg.inner_text('#msg')))

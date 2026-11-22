@@ -25,13 +25,13 @@ const settle = async () => { await sleep(15); };
 const noop = () => {};
 
 const FN = ['readBusy', 'loadingStop', 'wpost', 'wakeWriteWaiters', 'writeIdle', 'writeFence', 'doCalcAfterLoad', 'doCalc', 'loadMonth', 'monUnsure', 'elecPending', 'monBlocked', 'dataStop', 'bonusForeign', 'attForeign', 'saveFX',
-  'saveBonus', 'saveMaster', 'saveCfg', 'setMode', 'saveStores', 'saveAtt', 'clearAtt', 'toggleLock', 'syncWrite', 'syncXmap', 'syncHol', 'onceFor', 'loadLeaveTypes', 'loadLeaveTypes1', 'loadLeaveEvents', 'loadLeaveEvents1', 'saveLeaveTypes', 'resetLeaveTypes', 'saveLeaveEvents'];
+  'saveBonus', 'saveMaster', 'saveCfg', 'setMode', 'saveStores', 'saveAtt', 'clearAtt', 'toggleLock', 'syncWrite', 'syncXmap', 'syncHol', 'onceFor', 'loadLeaveTypes', 'loadLeaveTypes1', 'loadLeaveEvents', 'loadLeaveEvents1', 'saveLeaveTypes', 'resetLeaveTypes', 'saveLeaveEvents', 'supDecide', 'bootstrapFromRoster'];
 
 /* 假後端＋假畫面。hold：這些動作先不回，等 release；failWrites：寫入回 ok:false；holdMonth：月資料讀取先不回（回應內容是「發出當下」的後端）。 */
 function mk(Htxt, opt) {
   opt = opt || {};
   const log = { posts: [], bodies: {}, toasts: [], loads: 0 };
-  const SRV = { bonus: [{ emp_id: 'A', amount: 100 }, { emp_id: 'B', amount: 200 }], master: [{ emp_id: 'A', base: 1 }, { emp_id: 'B', base: 2 }], cfg: { daily_hours: 8, meal: 5 }, stores: [{ code: 'S', name: 'S店' }, { code: 'T', name: 'T店' }], att: { A: { hours: 8 }, B: { hours: 9 } } };
+  const SRV = { lt: [{ code: 'a', name: '事假' }], bonus: [{ emp_id: 'A', amount: 100 }, { emp_id: 'B', amount: 200 }], master: [{ emp_id: 'A', base: 1 }, { emp_id: 'B', base: 2 }], cfg: { daily_hours: 8, meal: 5 }, stores: [{ code: 'S', name: 'S店' }, { code: 'T', name: 'T店' }], att: { A: { hours: 8 }, B: { hours: 9 } } };
   const pending = {}, hold = new Set(opt.hold || []);
   const monResp = (S, ym) => ({ ok: true, ym, store: ctx.STORE, inputs: clone(S.att), bonuses: clone(S.bonus), master: clone(S.master), config: clone(S.cfg), stores: clone(S.stores), annual: {}, has_clock: true });
   const commit = (a, body) => {
@@ -39,33 +39,37 @@ function mk(Htxt, opt) {
     if (a === 'payroll_master_set') SRV.master = clone(body.master);
     if (a === 'payroll_config_set') Object.assign(SRV.cfg, clone(body.config));
     if (a === 'payroll_store_set') SRV.stores = clone(body.stores);
+    if (a === 'payroll_leave_type_set') SRV.lt = (body.types && body.types.length) ? clone(body.types) : [{ code: 'default', name: '預設事假' }];
+    if (a === 'payroll_support_decide') delete SRV.att.A;
+    if (a === 'payroll_bootstrap') SRV.master.push({ emp_id: 'C', base: 3 });
     if (a === 'payroll_input_set') SRV.att = clone(body.inputs);
   };
   const ctx = { STORE: 'S', _ym: '2026-10', ym: () => ctx._ym, RES_GEN: {}, LOAD_SEQ: 0, LOAD_INFLIGHT: null, LOAD_WAITERS: [], VGEN: 0, DASH_PREFETCH: null, MON_UNSURE: {}, ELEC_PEND: {}, HOLEMP: [], HOLEMP_OTHER: [], ELEC_DAYS: null, ELEC_KEY: '', ELEC_STALE: false,
-    WRITING: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, setInterval, clearInterval, XSYNC_MAX_MS: 6 * 3600 * 1000, HOL_SYNCING: null, ONCE: {},
+    WRITING: 0, WRITE_FAILS: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, setInterval, clearInterval, XSYNC_MAX_MS: 6 * 3600 * 1000, HOL_SYNCING: null, ONCE: {},
     OT_PERIOD: {}, HAS_CLOCK: true, SAME_NAME: [], NOT_IN_PAY: [], ZERO_RATIO: [], LEAVE_MM: [], ANNUAL: {}, SUPA: null, SUP_OPEN: {}, ROSTER_MISS: [], ATT_DIRTY: false, CFGSRC: {}, QUOTA: null, QUOTA_KEY: '', RESULTS: [], STATUS: 'draft', ASOF: null, COST_SNAP: null,
     STORES_OK: true, LOCK_BUSY: false, XSUP_FROM: '2026-11', SYNC_BUSY: false, LT_VER: 0, LEV_VER: 0, LT_IS_DEFAULT: false,
     ATT: clone(SRV.att), BONUS: clone(SRV.bonus), MASTER: clone(SRV.master), CFG: clone(SRV.cfg), STORE_LIST: clone(SRV.stores), CFG_DIRTY: { daily_hours: 8 }, CFG_OBSOLETE: [], CFG_POS: {}, CFG_CARDS: { cfg: { own: 'cfgOwn', scope: 'cfgScope', keys: () => ['daily_hours', 'meal'] } },
     ATT_KEY: 'S|2026-10', BONUS_KEY: 'S|2026-10', MASTER_ST: 'S', CFG_ST: 'S', LT_LIST: [{ code: 'a', name: '事假' }], LT_ST: 'S', LEV_LIST: [{ emp_id: 'E1', code: 'c', event_date: '2026-10-01' }], LEV_ST: 'S', SAVE_UNSURE_MSG: 'U', ATT_FOREIGN_MSG: 'F',
     $: () => ({ disabled: false, style: {}, classList: { add: noop, remove: noop, contains: () => false }, textContent: '', checked: false }), toast: (t) => log.toasts.push(t), alert: noop, confirm: () => true, prompt: () => '原因', supCrossBlock: () => false, scopeLimited: () => false, attSendable: () => true, attBtnIdle: noop, CALC_INPUTS: () => ({}),
-    syncStoreGuard: () => true, syncCurStore: () => 'S', renderStaffSync: noop, renderAtt: noop, renderLeaveTypes: noop, renderLeaveEvents: noop, applyScopeUi: noop, renderHol: noop,
+    confirmLeaveAtt: () => true, supEmpName: (x) => x, supStoreName: (x) => x, _failMonthN: 0, _failLeaveGet: false, boot: async () => {}, syncStoreGuard: () => true, syncCurStore: () => 'S', renderStaffSync: noop, renderAtt: noop, renderLeaveTypes: noop, renderLeaveEvents: noop, applyScopeUi: noop, renderHol: noop,
     setBusy: noop, vClear: noop, elecBtns: noop, renderElec: noop, showLoadError: noop, renderStoreSel: noop, hideLoadError: noop, showClockMode: noop, clearAttDirty: () => { ctx.ATT_DIRTY = false; }, closeQuota: noop, renderEmp: noop,
     loadStaffSync: noop, applyHol: noop, renderCfg: noop, renderRun: noop, renderSlipSel: noop, renderBonus: noop, loadPunch: noop, loadDash: noop, monMixedRecheck: async () => {}, attGuardUi: noop, asofFromCalc: noop, costTotals() { return {}; }, costStable() { return {}; }, costDetail() { return {}; }, lockBlockedBox: noop,
     document: { querySelector: () => ({ classList: { contains: () => false } }) },
     post: (a, body) => {
       log.posts.push(a); (log.bodies[a] = log.bodies[a] || []).push(Object.assign({ _ym: ctx._ym, _store: ctx.STORE }, clone(body || {})));
-      if (a === 'payroll_month') { const snap = monResp(SRV, ctx._ym); if (opt.holdMonth) { const d = defer(); (pending[a] = pending[a] || []).push({ d, snap }); return d.p.then(() => clone(snap)); } if (opt.failMonth) return Promise.resolve(opt.failMonth); return Promise.resolve(clone(snap)); }
+      if (a === 'payroll_month') { const snap = monResp(SRV, ctx._ym); if (opt.holdMonth) { const d = defer(); (pending[a] = pending[a] || []).push({ d, snap }); return d.p.then(() => clone(snap)); } if (ctx._failMonthN > 0) { ctx._failMonthN--; return Promise.resolve({ ok: false, error: 'timeout', message: '等候逾時' }); } if (opt.failMonth) return Promise.resolve(opt.failMonth); return Promise.resolve(clone(snap)); }
       if (a === 'payroll_calc') return Promise.resolve({ ok: true, results: [{ amt: 100 + (SRV.bonus[0].amount - 100) }] });
       if (a === 'payroll_finalize') return Promise.resolve(opt.finalizeResp || { ok: true, status: STATUS_AFTER() });
-      if (a === 'payroll_xmap_get') return Promise.resolve({ ok: true, synced_at: new Date().toISOString() });
+      if (a === 'payroll_xmap_get') return Promise.resolve({ ok: true, synced_at: opt.xmapStale ? '2020-01-01T00:00:00Z' : new Date().toISOString() });
+      if (a === 'payroll_dzy_xmap') return Promise.resolve({ ok: true, rows: [], generated_at: '2026-11-23T00:00:00Z' });
       if (a === 'payroll_holiday_sync') return Promise.resolve({ ok: true, holidays: [], changed: ['2026-10'], names: {} });
-      if (a === 'payroll_leave_type_get') { const snap = clone(ctx.LT_LIST); return Promise.resolve({ ok: true, types: snap }); }
+      if (a === 'payroll_leave_type_get') { if (ctx._failLeaveGet) return Promise.resolve({ ok: false, error: 'timeout' }); return Promise.resolve({ ok: true, types: clone(SRV.lt) }); }
       if (a === 'payroll_leave_event_get') return Promise.resolve({ ok: true, events: clone(ctx.LEV_LIST) });
       if (/_set$/.test(a) || a === 'payroll_support_decide' || a === 'payroll_bootstrap') {
-        const done = () => { if (opt.failWrites) return { ok: false, error: 'x', message: 'x' }; commit(a, body); return { ok: true, count: 1, config: clone(SRV.cfg), names: [], added: 0 }; };
+        const done = () => { if (opt.failWrites) return { ok: false, error: 'x', message: 'x' }; commit(a, body); return a === 'payroll_bootstrap' ? { ok: true, added: 1, names: ['新人'] } : { ok: true, count: 1, config: clone(SRV.cfg), names: [], added: 0 }; };
         if (hold.has(a)) { const d = defer(); (pending[a] = pending[a] || []).push({ d }); return d.p.then(done); }
         return Promise.resolve(done()); }
-      if (a === 'payroll_master_get') return Promise.resolve({ ok: true, master: clone(SRV.master) });
+      if (a === 'payroll_master_get') { const snap = { ok: true, master: clone(SRV.master) }; if (hold.has(a)) { const d = defer(); (pending[a] = pending[a] || []).push({ d }); return d.p.then(() => clone(snap)); } return Promise.resolve(snap); }
       return Promise.resolve({ ok: true }); } };
   const STATUS_AFTER = () => (ctx.STATUS === 'final' ? 'draft' : 'final');
   vm.createContext(ctx);
@@ -188,11 +192,12 @@ const counts = (log, a) => log.posts.filter(x => x === a).length;
       t.release('payroll_bonus_set'); await sb; await l1; await l2; await settle();
       const b = (t.log.bodies.payroll_month || []);
       ok(b.length === 1 && b[0]._ym === t.ctx._ym && b[0]._store === t.ctx.STORE && t.ctx.LOAD_INFLIGHT === null && t.ctx.WRITING === 0, 'D3 排隊期間' + lab + '：舊的排隊讀取作廢，只對新店月發一次月讀取，沒有卡住', { b: b.map(x => [x._store, x._ym]), cur: [t.ctx.STORE, t.ctx._ym] }); } }
-  { // D4 兩個寫入並行（規則一只擋讀取）：讀取等兩個都結束
-    const t = mk(H, { hold: ['payroll_bonus_set', 'payroll_master_set'] });
-    const a = t.ctx.saveBonus(null); await settle(); const b = t.ctx.saveMaster(null); await settle(); const lm = t.ctx.loadMonth(); await settle();
-    t.release('payroll_bonus_set'); await settle(); const mid = counts(t.log, 'payroll_month'); t.release('payroll_master_set'); await a; await b; await lm; await settle();
-    ok(mid === 0 && counts(t.log, 'payroll_month') >= 1 && t.ctx.WRITING === 0, 'D4 兩個寫入並行：第一個結束時讀取仍在排隊，兩個都結束後才發', { mid, posts: t.log.posts }); }
+  { // D4 兩個使用者寫入不並行（規則一擴充）：第二個被拒、第一個結束後可以送；讀取等第一個結束
+    const t = mk(H, { hold: ['payroll_bonus_set'] });
+    const a = t.ctx.saveBonus(null); await settle(); t.log.toasts.length = 0; await t.ctx.saveMaster(null); const refused = counts(t.log, 'payroll_master_set') === 0 && t.log.toasts[0] === '存取中…';
+    const lm = t.ctx.loadMonth(); await settle(); t.release('payroll_bonus_set'); await a; await lm; await settle(); const mid = counts(t.log, 'payroll_month');
+    await t.ctx.saveMaster(null); await settle();
+    ok(refused && mid >= 1 && counts(t.log, 'payroll_master_set') === 1 && t.ctx.WRITING === 0, 'D4 存獎金在途時按存主檔 → 存取中…、不送；第一個結束後讀取發出、第二個可再按', { refused, mid, posts: t.log.posts }); }
   { // D5 讀取排隊（LOAD_INFLIGHT 已標）時，新的寫入被拒、不會再增加寫入；寫入結束後讀取發出、讀完可再存
     const t = mk(H, { hold: ['payroll_bonus_set'] }); const sb = t.ctx.saveBonus(null); await settle(); const lm = t.ctx.loadMonth(); await settle();
     t.ctx.toasts = t.log.toasts.length = 0; await t.ctx.saveMaster(null); const refused = counts(t.log, 'payroll_master_set') === 0 && t.log.toasts[0] === '讀取中…';
@@ -203,6 +208,89 @@ const counts = (log, a) => log.posts.filter(x => x === a).length;
     ok(refused && counts(t.log, 'payroll_master_set') === 1, 'D6 開頁載入中不送、載入結束後恢復');
     const ctx = { BOOT_BUSY: 0, bootRun: async () => { throw new Error('boom'); } }; vm.createContext(ctx); vm.runInContext(fnSrcFrom(H, 'boot'), ctx);
     await ctx.boot().catch(() => {}); ok(ctx.BOOT_BUSY === 0, 'D6 boot 丟例外：BOOT_BUSY 也會歸零'); }
+
+  /* ═════ F 規則三：寫入內容不是來自畫面上那份表單 → 成功當下表單來源標記失效，重讀成功才恢復 ═════ */
+  console.log('══ F 規則三：清除工時／差異決定／名冊建立／還原假別／打卡對照 成功後重讀失敗一次 → 之後的儲存被擋，重讀成功才恢復 ══');
+  const F_CASES = [
+    { name: '清除工時', setup: (t) => {}, act: (t) => t.ctx.clearAtt(), writeAct: 'payroll_input_set', key: (c) => c.ATT_KEY, edit: (c) => { c.ATT.B = { hours: 13 }; }, save: (c) => c.saveAtt(), saveAct: 'payroll_input_set', blockedToast: 'F',
+      recover: (t) => t.ctx.loadMonth(), after: (t) => { const b = t.log.bodies.payroll_input_set[t.log.bodies.payroll_input_set.length - 1]; return Object.keys(b.inputs).join() === 'B'; }, wantKey: 'S|2026-10' },
+    { name: '差異決定「改成打卡值」', setup: (t) => {}, act: (t) => t.ctx.supDecide('A', 'S', 'auto', 1, null), key: (c) => c.ATT_KEY, edit: (c) => { c.ATT.B = { hours: 13 }; }, save: (c) => c.saveAtt(), saveAct: 'payroll_input_set', blockedToast: 'F',
+      recover: (t) => t.ctx.loadMonth(), after: (t) => { const b = t.log.bodies.payroll_input_set[t.log.bodies.payroll_input_set.length - 1]; return Object.keys(b.inputs).join() === 'B'; }, wantKey: 'S|2026-10' },
+    { name: '名冊建立', setup: (t) => {}, act: (t) => t.ctx.bootstrapFromRoster(), key: (c) => c.MASTER_ST, edit: (c) => { c.MASTER[0].base = 9; }, save: (c) => c.saveMaster(null), saveAct: 'payroll_master_set', blockedToast: 'U',
+      recover: (t) => t.ctx.loadMonth(), after: (t) => { const b = t.log.bodies.payroll_master_set[0]; return b.master.length === 3 && b.master.some(m => m.emp_id === 'C') && b.master[0].base === 9; }, wantKey: 'S', skipFail: true },
+    { name: '還原假別設定', setup: (t) => { t.ctx._failLeaveGet = true; }, act: (t) => t.ctx.resetLeaveTypes(), key: (c) => c.LT_ST, edit: (c) => { c.LT_LIST.push({ code: 'n' + c.LT_LIST.length, name: '新增' + c.LT_LIST.length }); }, save: (c) => c.saveLeaveTypes(null), saveAct: 'payroll_leave_type_set', blockedToast: 'U',
+      recover: (t) => { t.ctx._failLeaveGet = false; return t.ctx.loadLeaveTypes(); }, after: (t) => JSON.stringify(t.ctx.LT_LIST).indexOf('預設事假') >= 0, wantKey: 'S', skipFail: true, reads: 'payroll_leave_type_get' },
+    { name: '打卡對照同步寫入', setup: (t) => { t.ctx._ym = '2026-11'; t.ctx.ATT_KEY = t.ctx.BONUS_KEY = 'S|2026-11'; }, act: (t) => t.ctx.syncXmap(), writeAct: 'payroll_xmap_set', key: (c) => c.ATT_KEY, edit: (c) => { c.ATT.B = { hours: 13 }; }, save: (c) => c.saveAtt(), saveAct: 'payroll_input_set', blockedToast: 'F',
+      recover: (t) => t.ctx.loadMonth(), after: () => true, wantKey: 'S|2026-11', xmap: true },
+  ];
+  for (const fc of F_CASES) {
+    const t = mk(H, { xmapStale: !!fc.xmap }); fc.setup(t); if (!fc.skipFail) t.ctx._failMonthN = 1;
+    if (fc.name === '名冊建立') t.ctx.boot = async () => {};   // 名冊建立後的主檔重讀（boot）失敗一次：boot 在套用之前就返回，什麼都沒換
+    await fc.act(t); await settle();
+    const k1 = fc.key(t.ctx);
+    t.ctx.toasts = t.log.toasts.length = 0; fc.edit(t.ctx); const before = counts(t.log, fc.saveAct);
+    await Promise.resolve(fc.save(t.ctx)).catch(() => {}); await settle();
+    ok(k1 === '' && counts(t.log, fc.saveAct) === before && t.log.toasts[0] === fc.blockedToast, 'F ' + fc.name + '：成功後重讀失敗一次 → 來源標記失效、之後的儲存被擋（沒有送出任何請求，提示沿用既有字句）', { k1, posts: t.log.posts, toasts: t.log.toasts });
+    await fc.recover(t); await settle();
+    ok(fc.key(t.ctx) === fc.wantKey, 'F ' + fc.name + '：一次成功的重讀之後來源標記恢復', fc.key(t.ctx));
+    fc.edit(t.ctx); await Promise.resolve(fc.save(t.ctx)).catch(() => {}); await settle();
+    ok(counts(t.log, fc.saveAct) === before + 1 && fc.after(t), 'F ' + fc.name + '：恢復後可以存，存出去的內容不含舊值／不會刪掉新同仁', t.log.bodies[fc.saveAct]);
+  }
+  { // F6 寫入失敗 → 排隊中的「自動」讀取取消（不蓋掉待重試的輸入）；使用者主動的讀取照發
+    for (const [lab, o, wantReads, wantBonus] of [['背景自動讀取', { auto: true }, 0, 150], ['使用者主動的讀取（對照）', undefined, 1, 100]]) {
+      const t = mk(H, { hold: ['payroll_bonus_set'], failWrites: true }); t.ctx.BONUS[0].amount = 150;
+      const sb = t.ctx.saveBonus(null); await settle(); const lm = t.ctx.loadMonth(undefined, undefined, undefined, o); await settle();
+      t.release('payroll_bonus_set'); await sb; await lm; await settle();
+      ok(counts(t.log, 'payroll_month') === wantReads && t.ctx.BONUS[0].amount === wantBonus && t.ctx.LOAD_INFLIGHT === null && t.ctx.WRITING === 0, 'F 獎金寫入失敗＋排隊的' + lab + ' → 月讀取 ' + wantReads + ' 次；待重試的輸入' + (wantBonus === 150 ? '（150）還在' : '被主動讀取換成後端內容（100，原本就是使用者要的重讀）') + '；旗標清乾淨', { posts: t.log.posts, bonus: t.ctx.BONUS[0].amount }); } }
+  { // F7 正常情況（重讀成功）：請求序列與 6a60970 相同
+    let OLD2 = null; try { OLD2 = cp.execSync('git show 6a60970:payroll.html', { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 }).toString('utf8'); } catch (e) { OLD2 = null; }
+    if (!OLD2) { console.log('（找不到 6a60970：略過 F7，這不算通過）'); fail++; }
+    else for (const fc of F_CASES) {
+      const seqs = [];
+      for (const T of [OLD2, H]) { const t = mk(T, { xmapStale: !!fc.xmap }); fc.setup(t); if (fc.name === '名冊建立') t.ctx.boot = async () => { await t.ctx.loadMonth(); }; await Promise.resolve(fc.act(t)).catch(() => {}); await settle(); seqs.push(t.log.posts.join(',')); }
+      ok(seqs[0] === seqs[1], 'F 正常（重讀成功）' + fc.name + '：請求序列與 6a60970 相同', seqs); }
+  }
+
+  /* ═════ G 規則一擴充：任何讀取「或寫入」在途時，使用者另外按的寫入都不送；同一個操作的後續不受影響 ═════ */
+  console.log('══ G 兩個使用者寫入不並行（提示沿用既有字串「存取中…」）；同一個操作的後續（重算、重讀）不被擋 ══');
+  { // G1 存主檔在途 → 名冊同步不送（驗收員的例子）
+    const t = mk(H, { hold: ['payroll_master_set'] }); t.ctx.MASTER[0].base = 9; const sm = t.ctx.saveMaster(null); await settle(); t.log.toasts.length = 0;
+    await t.ctx.syncWrite(null, '標籤', 'S', (rows) => { rows[0].base = 5; return '已處理'; }); await settle();
+    ok(counts(t.log, 'payroll_master_get') === 0 && counts(t.log, 'payroll_master_set') === 1 && t.log.toasts[0] === '存取中…', 'G1 存主檔在途時按名冊同步 → 不讀主檔、不寫、提示「存取中…」', t.log.posts);
+    t.release('payroll_master_set'); await sm; await settle(); t.hold.clear();
+    await t.ctx.syncWrite(null, '標籤', 'S', (rows) => { rows[0].base = 5; return '已處理'; }); await settle();
+    ok(counts(t.log, 'payroll_master_set') === 2 && t.ctx.WRITING === 0, 'G1 存主檔結束後名冊同步可以正常送出'); }
+  { // G2 存獎金在途 → 存工時、使用者按的重新計算、清除工時、鎖定都不送
+    for (const [lab, call] of [['存工時', c => c.saveAtt()], ['重新計算（按鈕）', c => c.doCalc()], ['清除工時', c => c.clearAtt()], ['鎖定', c => c.toggleLock()], ['存主檔', c => c.saveMaster(null)], ['存參數', c => c.saveCfg(null, '儲存', 'cfg')], ['存門市表', c => c.saveStores(null)], ['存假別設定', c => c.saveLeaveTypes(null)], ['存事件日', c => c.saveLeaveEvents(null)]]) {
+      const t = mk(H, { hold: ['payroll_bonus_set'] }); t.ctx.BONUS[0].amount = 150; const sb = t.ctx.saveBonus(null); await settle(); t.log.toasts.length = 0; const n0 = t.log.posts.length;
+      await Promise.resolve(call(t.ctx)).catch(() => {}); await settle();
+      ok(t.log.posts.length === n0 && t.log.toasts[0] === '存取中…', 'G2 存獎金在途時按「' + lab + '」→ 不送、提示「存取中…」', { posts: t.log.posts.slice(n0), toasts: t.log.toasts });
+      t.release('payroll_bonus_set'); await sb; await settle(); } }
+  { // G3 前一個寫入結束（成功或失敗）後，第二個可以送
+    for (const [lab, o] of [['成功', {}], ['失敗', { failWrites: true }]]) {
+      const t = mk(H, Object.assign({ hold: ['payroll_bonus_set'] }, o)); t.ctx.BONUS[0].amount = 150; const sb = t.ctx.saveBonus(null); await settle();
+      t.release('payroll_bonus_set'); await sb; await settle(); t.hold.clear(); t.ctx.ATT.B = { hours: 13 }; await t.ctx.saveAtt(); await settle();
+      ok(t.ctx.WRITING === 0 && counts(t.log, 'payroll_input_set') === 1, 'G3 存獎金' + lab + '結束後按存工時 → 正常送出', t.log.posts); } }
+  { // G4 同一個操作的後續不被擋：存檔後自動重算（含存工時帶 inputsSaved、存獎金、setMode、stale_run）、存完的重讀都照常送
+    const seq = async (run, optx) => { const t = mk(H, optx); await Promise.resolve(run(t.ctx)).catch(() => {}); await settle(); return t.log.posts.join(','); };
+    ok((await seq(c => { c.ATT.A.hours = 12; c.ATT_DIRTY = true; return c.saveAtt(); })).indexOf('payroll_input_set,payroll_calc') === 0, 'G4 存工時：存完自動重算照送');
+    ok((await seq(c => { c.BONUS[0].amount = 150; return c.saveBonus(null); })) === 'payroll_bonus_set,payroll_calc', 'G4 存獎金：存完自動重算照送');
+    ok((await seq(c => { c.RESULTS = [{ amt: 100 }]; return c.setMode('daily_hours', 8); })) === 'payroll_config_set,payroll_calc', 'G4 改模式：存完自動重算照送');
+    ok((await seq(c => c.toggleLock(), { finalizeResp: { ok: false, error: 'stale_run', message: 'm' } })) === 'payroll_finalize,payroll_calc', 'G4 鎖定回 stale_run：自動重算照送');
+    ok((await seq(c => c.clearAtt())).indexOf('payroll_input_set,payroll_month') === 0, 'G4 清除工時：存完重讀照送'); }
+  { // G5 名冊同步整段（先讀主檔→寫→再讀）都算在途：中間按存主檔也被擋；同步結束後恢復，不會有計數沒歸零
+    const t = mk(H, { hold: ['payroll_master_get'] }); const sw = t.ctx.syncWrite(null, '標籤', 'S', (rows) => { rows[0].base = 5; return '已處理'; }); await settle(); t.log.toasts.length = 0;
+    await t.ctx.saveMaster(null); await settle();
+    ok(counts(t.log, 'payroll_master_set') === 0 && t.log.toasts[0] === '存取中…', 'G5 名冊同步讀主檔途中按存主檔 → 不送、提示「存取中…」', t.log);
+    t.hold.clear(); t.release('payroll_master_get'); await sw; await settle(); await t.ctx.saveMaster(null); await settle();
+    ok(t.ctx.WRITING === 0 && counts(t.log, 'payroll_master_set') === 2, 'G5 名冊同步結束後存主檔可以送，WRITING 歸零', { w: t.ctx.WRITING, posts: t.log.posts });
+    const t2 = mk(H); await t2.ctx.syncWrite(null, '標籤', 'S', () => null); await settle(); await t2.ctx.saveMaster(null); await settle();
+    ok(t2.ctx.WRITING === 0 && counts(t2.log, 'payroll_master_set') === 1, 'G5 名冊同步中途不需要寫（mutate 沒回字串）也會歸零，之後存主檔可送'); }
+  { // G6 計數一定歸零：寫入丟例外、回失敗、被拒，之後任何寫入都能送（對每一種寫入端點）
+    for (const bad of ['throw', 'fail']) {
+      const t = mk(H, bad === 'fail' ? { failWrites: true } : {}); if (bad === 'throw') { const o = t.ctx.post; t.ctx.post = (a, b) => /_set$/.test(a) ? Promise.reject(new Error('boom')) : o(a, b); }
+      for (const c of [c => c.saveBonus(null), c => c.saveMaster(null), c => c.saveStores(null), c => c.saveAtt(), c => c.setMode('daily_hours', 8), c => c.saveLeaveEvents(null)]) await Promise.resolve(c(t.ctx)).catch(() => {});
+      await settle(); ok(t.ctx.WRITING === 0 && !t.ctx.readBusy(), 'G6 各種寫入（' + bad + '）之後 WRITING 歸零、沒有讀取旗標殘留', { w: t.ctx.WRITING }); } }
 
   /* ═════ E 正常情況（沒有讀取在途）：請求序列與 61362ce 相同 ═════ */
   console.log('══ E 正常情況請求序列與 61362ce 相同 ══');
