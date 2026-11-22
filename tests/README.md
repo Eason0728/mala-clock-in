@@ -13,7 +13,7 @@ node tests/run-all.js
 | `annual-payout.test.js` | 特休週年期屆滿當月折算工資 | 一年只會發生一次，出錯很難發現 |
 | `engine-diff.js` | 拿改動前後兩版引擎跑 2160 組情境逐項對拆 | 改公式時確認既有數字沒動 |
 | `engine-diff-coverage.test.js` | 對拆工具本身：用 #97 之前的版本當舊版，新月份那一區要抓得到 2026-10 月中到職的差異、舊四個月仍 0 差異、`--strict`、缺函式不掛掉 | 2026-11-11 以前對拆只比 2026-06／07／08／02，10 月以後的規則改了也顯示 0 個不同 |
-| `comp-leave.test.js` | 補休：到期日定義、換補休上限、計時忽略、先換先用、到期／離職折算、只認定案月份、假別表內建列 | 2026-10-09 動到薪資，期望值全部手算 |
+| `comp-leave.test.js` | 補休：到期日定義、換補休上限、計時忽略、先換先用、到期／離職折算、只認定案月份、假別表內建列；20／25 號補休為負提醒已停用（`payCompCheckDaily` 不做事、`payroll_comp_trigger_setup` 只刪不建，2026-11-22） | 2026-10-09 動到薪資，期望值全部手算 |
 | `comp-regression.test.js` | 同一份假資料餵補休上線前（git 3668329）與現在的 `handlePayrollCalc`，沒有補休的人 results／run／item 逐列相同 | 補休不可以動到任何沒有補休的人；含一位有補休的對照組證明比對有效 |
 | `line-hub-comp.test.js` | LINE：申請頁 comp 資訊、假別額度卡補休列、到期提醒、薪資卡數量帶 H | |
 | `sheets-fidelity.test.js` | 用 `helpers/sheets-like.js`（仿 Google 試算表自動轉型的假 Sheet）把真函式的寫→讀跑一遍：events／approved／leave／requests／roster／notices／sched_pub／punch_timing／qr_punch／Payroll 讀的範圍／月表備註往返；`KNOWN` 是已確認的問題（只印不擋） | **mock 與既有沙盒把儲存格當純字串，真的試算表會把 '2026-07-14' 轉成 Date、'11:00' 轉成 1899-12-30 的時間、'false' 轉成布林**；2026-07-15（approved.date）、2026-08-23（roster.shift_in、'false' 布林陷阱）三個歷史 bug 都在這裡用當年的舊寫法重現 |

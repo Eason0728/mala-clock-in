@@ -5566,39 +5566,14 @@ function handlePayrollCompPeriod(body) {
   return out;
 }
 
-/* 20／25 號檢查（Eason 2026-11-01）：每天 09:00 觸發器跑，只有 20、25 號真的做事。
-   有負數 → 通知匣一般件（key 同一天同一件）＋ LINE 私訊該店值班主管（打卡官方帳號，會花推播額度，Eason 選的）。
-   觸發器用 payroll_comp_trigger_setup 建（重跑不疊）。通知匣密碼＝指令碼屬性 NOTIFY_INBOX_TOKEN（Eason 自己貼）。 */
-var PAY_COMP_CHECK_DAYS = [20, 25];
-var PAY_NOTIFY_INBOX_URL = 'https://script.google.com/macros/s/AKfycbyZ-sVl9KbKhotjsFhKg9Id7j4qgNRf6wSlSCacoBe7lATkuJFb9_ShCaicAJuLOak/exec';
-function payCompCheckDaily() {
-  const today = payCompToday();
-  if (PAY_COMP_CHECK_DAYS.indexOf(+today.slice(8, 10)) < 0) return;
-  payCompCheckRun_(today);
-}
-/** 實際檢查＋通知（today 可指定，給手動補跑）。回 {stores, inbox, pushed}。任何一步失敗都不拋例外。 */
-function payCompCheckRun_(today) {
-  const ym = String(today).slice(0, 7), md = (+today.slice(5, 7)) + '/' + (+today.slice(8, 10));
-  let stores = [];
-  try { stores = payCompCheckAll_(ym); } catch (err) {
-    payInboxNotify_('補休檢查讀不到資料', md + ' 補休帳檢查失敗：' + err, 'compcheck-fail-' + today);
-    return { stores: [], inbox: false, pushed: 0, error: String(err) };
-  }
-  if (!stores.length) return { stores: [], inbox: false, pushed: 0 };
-  let pushed = 0;
-  const lines = [];
-  stores.forEach(function (s) {
-    const body = s.list.map(payCompNegLine).join('\n');
-    const n = payCompPushManagers_(s.store, '⚠ 補休帳是負的（' + md + ' 檢查）\n' + body +
-      '\n\n請在月底前補核准加班申請，或把多請的補休改成其他假別；有負數的話這個月薪資不能鎖定。');
-    pushed += n;
-    lines.push('【' + s.name + '】' + (n ? '' : '（沒有可私訊的值班主管）') + '\n' + body);
-  });
-  const inbox = payInboxNotify_('補休帳有負數：' + stores.map(function (s) { return s.name; }).join('、'),
-    md + ' 檢查 ' + ym + ' 補休帳（核准加班 − 補休）：\n' + lines.join('\n') + '\n\n有負數的店不能鎖定本月薪資。',
-    'compcheck-' + today);
-  return { stores: stores, inbox: inbox, pushed: pushed };
-}
+/* 補休為負的 20／25 號提醒：已停用（Eason 2026-11-22 定案：「補休為負的提醒不做。現在小幫手已經有定期整理提醒在群組了，不個別提醒主管。」）。
+   原本每天 09:00 觸發器跑、20、25 號檢查各店補休帳，有負數就寫通知匣＋用打卡官方帳號私訊值班主管（2026-11-01 起）。
+   ⚠ payCompCheckDaily 這個名字要留著：正式端若還有舊觸發器，函式不見會每天報錯；它現在什麼都不做。
+     舊觸發器用 payroll_comp_trigger_setup 清掉（現在只刪不建）。
+   鎖月時「補休帳是負的不能鎖定」（handlePayrollFinalize → payCompNegatives／payCompNegLine）是鎖月規則，不是提醒，照舊。
+   原本的 payCompCheckRun_（檢查＋通知）、payCompPushManagers_（私訊值班主管）沒有其他呼叫者，一起刪掉（要找回看 git 歷史 49dc85e）。 */
+var PAY_NOTIFY_INBOX_URL = 'https://script.google.com/macros/s/AKfycbyZ-sVl9KbKhotjsFhKg9Id7j4qgNRf6wSlSCacoBe7lATkuJFb9_ShCaicAJuLOak/exec';   // 通知匣（payInboxNotify_ 用：每日重算失敗、月加班同步、單日超過 10 小時）
+function payCompCheckDaily() { return; }
 /** 通知匣一般件；成功判準 ok===true && added===true。任何情況都不拋例外。 */
 function payInboxNotify_(title, text, keyEvent, from, prefix) {
   try {
@@ -5620,39 +5595,13 @@ function payInboxNotify_(title, text, keyEvent, from, prefix) {
     return false;
   } catch (err) { return false; }
 }
-/** 私訊某店值班主管（managers 分頁 active＝TRUE、不是營運系統鑰匙列；emp_id 有填為準，沒填用姓名對名冊）→ 送出幾個人。 */
-function payCompPushManagers_(store, text) {
-  try {
-    const token = (typeof LINE_HUB_BOT_TOKEN !== 'undefined') ? LINE_HUB_BOT_TOKEN : '';
-    if (!token) return 0;
-    const roster = payClockRead(store, 'roster'), uids = {};
-    payClockRead(store, 'managers').forEach(function (m) {
-      if (String(m.active).toLowerCase() !== 'true' || String(m.allow_acting).toLowerCase() === 'true') return;
-      const id = String(m.emp_id || '').trim(), nm = String(m.name || '').replace(/\s/g, '');
-      roster.forEach(function (r) {
-        if (String(r.active).toLowerCase() !== 'true' || !r.line_user_id) return;
-        if (id ? String(r.emp_id) === id : String(r.name || '').replace(/\s/g, '') === nm) uids[String(r.line_user_id)] = true;
-      });
-    });
-    let n = 0;
-    Object.keys(uids).forEach(function (uid) {
-      try {
-        const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', { method: 'post', contentType: 'application/json',
-          muteHttpExceptions: true, headers: { Authorization: 'Bearer ' + token },
-          payload: JSON.stringify({ to: uid, messages: [{ type: 'text', text: String(text).slice(0, 4900) }] }) });
-        if (res.getResponseCode() === 200) n++;
-        else Logger.log('補休檢查私訊失敗 ' + store + '：' + res.getResponseCode());
-      } catch (err) { Logger.log('補休檢查私訊失敗 ' + store + '：' + err); }
-    });
-    return n;
-  } catch (err) { return 0; }
-}
-/** {action:'payroll_comp_trigger_setup', admin_key} → 建每天 09:00 的 payCompCheckDaily（同名先刪，重跑不疊）。 */
+/** {action:'payroll_comp_trigger_setup', admin_key} → 只刪不建（2026-11-22 補休提醒停用）：把 handler 是 payCompCheckDaily 的觸發器全部刪掉，
+ *  回 { ok, removed:<刪了幾個>, triggers:[剩下的 handler 名稱] }。其他觸發器（payRestOverDaily、payAsOfDaily…）不動。重跑安全（第二次 removed＝0）。 */
 function handlePayrollCompTriggerSetup(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
-  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'payCompCheckDaily') ScriptApp.deleteTrigger(t); });
-  ScriptApp.newTrigger('payCompCheckDaily').timeBased().everyDays(1).atHour(9).inTimezone('Asia/Taipei').create();
-  return { ok: true, triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
+  let removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'payCompCheckDaily') { ScriptApp.deleteTrigger(t); removed++; } });
+  return { ok: true, removed: removed, triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
 }
 
 /* 單日核定超過 10 小時（2026-11-01 Eason）：照實核定、不擋，每天 09:00 把各店「前一天」核定超過 10 小時的人列進通知匣（一般件）。
