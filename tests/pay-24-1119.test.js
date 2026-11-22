@@ -254,6 +254,12 @@ function front(fetchPlan, monthStatus) {
     eq([log.fetch, ctx.STATUS], [['payroll_finalize', 'payroll_status', 'payroll_month'], 'draft'], 'F21-F8 舊後端、伺服器沒鎖：退回 payroll_month，畫面維持草稿');
     eq(log.toast.some(t => /^!/.test(t) && /沒有鎖定/.test(t)), true, 'F21-F8 說清楚沒有鎖定');
   }
+  /* payroll_status 回 mixed／none：各自一句（字句草稿，2026-11-22），draft 維持原句 */
+  for (const [stv, re, lab] of [['mixed', /一部分已鎖定、一部分還是草稿.*找資訊部/, 'F21-F10'], ['none', /還沒有計算結果，沒有鎖定成功/, 'F21-F11']]) {
+    const { ctx, log } = front({ payroll_finalize: ['net'], payroll_status: [{ ok: true, ym: '2026-10', store: 'SSLGF', status: stv, rows: 0, run_at: '', elec_stale: false }] }, 'final');
+    await ctx.toggleLock();
+    eq([log.fetch, log.loadMonth, log.toast.some(t => /^!/.test(t) && re.test(t)), log.toast.some(t => /仍是草稿/.test(t))], [['payroll_finalize', 'payroll_status'], 0, true, false], lab + ' payroll_status 回 ' + stv + '：專屬提示、不說「仍是草稿」、不重讀');
+  }
   /* Codex 第六次 13b：鎖定成功、重讀失敗 → 提示要重新整理確認（不只說「已鎖定」） */
   { const { ctx, log } = front({ payroll_finalize: [{ ok: true, status: 'final' }], payroll_month: ['net', 'net'] }, 'final');
     await ctx.toggleLock();

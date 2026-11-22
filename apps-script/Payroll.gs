@@ -4949,6 +4949,12 @@ function handlePayrollMonth(body) {
 }
 
 /** 這家店這個月草稿的計算時間（run_at，取最新一筆）；沒有回 ''。 */
+function payRunAt_(ym, st) {
+  let at = '';
+  payRead('run').forEach(function (r) { if (String(r.ym) === ym && payStore(r.store) === st && String(r.run_at || '') > at) at = String(r.run_at || ''); });
+  return at;
+}
+
 /** {action:'payroll_status', admin_key, store, ym} → 這家店這個月的月結狀態（待辦 10，2026-11-22）。
  *  用途：薪資頁按「鎖定本月」後回應斷掉／逾時，用它確認剛才那次到底有沒有鎖成功。
  *  ⚠ 純唯讀：不重算、不寫任何分頁、不取鎖、不建分頁（分頁不存在＝沒有資料），也不碰 CacheService。
@@ -4982,12 +4988,6 @@ function payReadNoCreate_(kind) {
     if (ss && typeof ss.getSheetByName === 'function' && !ss.getSheetByName(PAY_SHEET_NAME[kind])) return [];
   } catch (e) { /* 交給 payRead */ }
   return payRead(kind) || [];
-}
-
-function payRunAt_(ym, st) {
-  let at = '';
-  payRead('run').forEach(function (r) { if (String(r.ym) === ym && payStore(r.store) === st && String(r.run_at || '') > at) at = String(r.run_at || ''); });
-  return at;
 }
 
 /* 每天 06:00 自動重算草稿（Eason 2026-11-17）：有薪資主檔的門市，重算「本月（算到昨天）」。

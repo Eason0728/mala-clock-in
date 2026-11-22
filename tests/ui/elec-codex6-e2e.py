@@ -63,6 +63,10 @@ def act(route):
     try: return json.loads(route.request.post_data or '{}')
     except Exception: return {}
 OLD = '舊資料X'
+UNSURE_TXT = '這個月的資料剛才沒有讀取成功，請重新整理頁面、確認金額後再匯出'
+ST_TXT = {'draft': '連線中斷：重新讀取後這個月仍是草稿，沒有鎖定成功，請再按一次「鎖定本月」',
+          'mixed': '這個月有一部分已鎖定、一部分還是草稿，請重新整理頁面看狀態；重新整理後還是這樣請找資訊部',
+          'none': '這個月還沒有計算結果，沒有鎖定成功；請重新整理頁面看狀態'}
 try:
     for _ in range(50):
         try: urllib.request.urlopen(BASE + '/payroll.html', timeout=1); break
@@ -138,10 +142,16 @@ try:
                 ok(bname + ' B 鎖定成功但重讀失敗：紅字提示要重新整理確認', '重新讀取這個月失敗' in m1, m1)
                 pg.evaluate('exportExcel()'); pg.wait_for_timeout(200); m2 = msg()
                 pg.evaluate('exportCSV()'); pg.wait_for_timeout(200); m3 = msg()
-                ok(bname + ' B 重讀失敗後：匯出 Excel／CSV 擋（請先計算）、鎖定鈕停用', n0 > 0 and '請先計算' in m2 and '請先計算' in m3 and pg.is_disabled('#lockBtn'), (n0, m2, m3, pg.is_disabled('#lockBtn')))
+                pg.evaluate('exportPDF()'); pg.wait_for_timeout(200); m4 = msg()
+                ok(bname + ' B 重讀失敗後：匯出 Excel／CSV／PDF 擋，提示「剛才沒有讀取成功」（不是「請先計算」）、鎖定鈕停用',
+                   n0 > 0 and m2 == UNSURE_TXT and m3 == UNSURE_TXT and m4 == UNSURE_TXT and pg.is_disabled('#lockBtn'), (n0, m2, m3, m4, pg.is_disabled('#lockBtn')))
                 pg.unroute('**/*')
                 setym('2026-10'); setym('2026-11')
                 ok(bname + ' B 重新載入成功 → 解除（匯出、鎖定鈕恢復）', not blocked() and not pg.is_disabled('#lockBtn') and pg.evaluate('RESULTS.length') > 0, (blocked(),))
+                pg.evaluate('RESULTS=[]; 0')   # 真的沒算過：維持原本兩句
+                pg.evaluate('exportCSV()'); pg.wait_for_timeout(200); n1 = msg()
+                pg.evaluate('exportExcel()'); pg.wait_for_timeout(200); n2 = msg()
+                ok(bname + ' B 沒讀取失敗、只是沒有結果：仍是原本的「請先計算」／「此月份尚無資料，請先計算」', n1 == '請先計算' and n2 == '此月份尚無資料，請先計算', (n1, n2))
 
             # ── C（13b 存檔途中丟例外 → finally 解除待確認）──
             if not ONLY or 'C' in ONLY:
@@ -208,22 +218,22 @@ try:
 
             # ── F（待辦 10：鎖定逾時用唯讀 payroll_status）──
             if not ONLY or 'F' in ONLY:
-                for want in ('draft', 'final'):
+                for want in ('draft', 'final', 'mixed', 'none'):
                     fresh(); pg.click('button[data-p="run"]'); pg.wait_for_timeout(300)
                     seenF, wantF = [], {'v': want}
                     def routeF(route):   # ⚠ 不可用預設參數帶值：Playwright 會把 request 當第二個參數傳進來
                         a = act(route).get('action'); seenF.append(a)
                         if a == 'payroll_finalize':
                             route.fulfill(status=200, content_type='application/json', body=json.dumps({'ok': False, 'error': 'timeout', 'message': '等候逾時，請稍後再試'})); return
-                        if a == 'payroll_status' and wantF['v'] == 'final':
-                            route.fulfill(status=200, content_type='application/json', body=json.dumps({'ok': True, 'ym': '2026-11', 'store': 'SSLGF', 'status': 'final', 'rows': 4, 'run_at': '', 'elec_stale': False})); return
+                        if a == 'payroll_status' and wantF['v'] != 'draft':
+                            route.fulfill(status=200, content_type='application/json', body=json.dumps({'ok': True, 'ym': '2026-11', 'store': 'SSLGF', 'status': wantF['v'], 'rows': 4, 'run_at': '', 'elec_stale': False})); return
                         route.continue_()
                     pg.route('**/*', routeF)
                     pg.click('#lockBtn'); pg.wait_for_timeout(2500)
                     after = seenF[seenF.index('payroll_finalize') + 1:] if 'payroll_finalize' in seenF else []
-                    if want == 'draft':
-                        ok(bname + ' F 鎖定逾時、後端仍是草稿：只問唯讀 payroll_status、不打 payroll_month；提示沒有鎖定成功',
-                           after[:1] == ['payroll_status'] and 'payroll_month' not in after and '沒有鎖定成功' in msg(), (after, msg()))
+                    if want in ST_TXT:
+                        ok(bname + ' F 鎖定逾時、payroll_status 回 ' + want + '：只問唯讀 payroll_status、不打 payroll_month；提示「' + ST_TXT[want][:12] + '…」',
+                           after[:1] == ['payroll_status'] and 'payroll_month' not in after and msg() == ST_TXT[want], (after, msg()))
                     else:
                         ok(bname + ' F 鎖定逾時、後端已鎖：payroll_status 回 final → 重新載入這個月、提示已鎖定',
                            after[:1] == ['payroll_status'] and 'payroll_month' in after and '重新讀取後確認這個月已經鎖定' in msg(), (after, msg()))
