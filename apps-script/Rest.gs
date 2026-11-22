@@ -56,16 +56,18 @@ function restSegments_(evs) {
 }
 
 /** 純判斷：段落＋現在 → null（可以打）或 {code:'cap'|'gap', reason, hint, until}（until＝幾點起可以打，毫秒；cap 沒有）。
- *  dayMs（2026-11-23）：今天已完成的出勤（Cap10.gs capTodayMs_，新定義：央廚／總部扣不打卡休息＋已核准請假、出差）；
- *  沒給（舊呼叫、Cap10 算失敗）＝照舊用今天的段落加總。 */
-function restJudge_(segs, nowMs, dayMs) {
+ *  day（2026-11-23）：Cap10.gs capTodayMs_ 的 {total, punch}——判斷用 total（新定義），畫面上的「已經上班 X 小時」顯示 punch（實際打卡）；
+ *  沒給（舊呼叫、REST_CAP_ON 沒開、Cap10 算失敗）＝照舊用今天的段落加總。 */
+function restJudge_(segs, nowMs, day) {
   var today = restDay_(nowMs), done = segs.filter(function (s) { return s.out <= nowMs; });
   if (!done.length) return null;
   var todays = done.filter(function (s) { return !s.lone && restDay_(s.in) === today; });   // 只有下班卡的那段不算「今天已經上過一段」
   if (todays.length) {
-    var h = (typeof dayMs === 'number' && isFinite(dayMs) ? dayMs : todays.reduce(function (a, s) { return a + (s.out - s.in); }, 0)) / 3600000;
+    var raw = todays.reduce(function (a, s) { return a + (s.out - s.in); }, 0) / 3600000;
+    var ok = day && typeof day.total === 'number' && isFinite(day.total) && typeof day.punch === 'number' && isFinite(day.punch);
+    var h = ok ? day.total / 3600000 : raw, shown = ok ? day.punch / 3600000 : raw;
     if (h >= REST_DAY_MAX_H) {
-      return { code: 'cap', warn: true, reason: '你今天已經上班 ' + (Math.round(h * 10) / 10) + ' 小時（一天最多 ' + REST_DAY_MAX_H + ' 小時）',
+      return { code: 'cap', warn: true, reason: '你今天已經上班 ' + (Math.round(shown * 10) / 10) + ' 小時（一天最多 ' + REST_DAY_MAX_H + ' 小時）',
                hint: '再上班會超過 10 小時，請先跟店長確認', until: null };
     }
     return null;   // 同一天的第二段（二段班中間休息回來）不看間隔
@@ -164,12 +166,14 @@ function restCheckIn_(ss, roster, nowMs) {
     }).map(function (e) { return { ts: normCellTs(e.ts), type: String(e.type), status: String(e.status) }; });
     var peers = restPeerEvents_(roster.name, since);
     var segs = restSegments_(mine.concat(peers));
-    // 滿 10 小時提醒的時數（2026-11-23 新定義）：今天有完成的段才需要算（restJudge_ 只在那時看時數），跟收卡用同一支（Cap10.gs）
-    var today = restDay_(now), dayMs = null;
-    if (typeof capTodayMs_ === 'function' && segs.some(function (s) { return s.out <= now && !s.lone && restDay_(s.in) === today; })) {
-      try { dayMs = capTodayMs_(ss, roster, now, rows, peers); } catch (e) { dayMs = null; }   // 算失敗不能連帶讓班距檢查失效
+    // 滿 10 小時提醒的時數（2026-11-23 新定義）：只在收卡開關 REST_CAP_ON 開著時改用新定義（關著＝跟改版前完全一樣）；
+    // 今天有完成的段才需要算（restJudge_ 只在那時看時數），跟收卡用同一支（Cap10.gs）
+    var today = restDay_(now), day = null;
+    if (typeof capTodayMs_ === 'function' && typeof capOn_ === 'function' && capOn_() &&
+        segs.some(function (s) { return s.out <= now && !s.lone && restDay_(s.in) === today; })) {
+      try { day = capTodayMs_(ss, roster, now, rows, peers); } catch (e) { day = null; }   // 算失敗不能連帶讓班距檢查失效
     }
-    var r = restJudge_(segs, now, dayMs), o = restOtJudge_(restOtRow_(ss, roster.name, now), segs, now);
+    var r = restJudge_(segs, now, day), o = restOtJudge_(restOtRow_(ss, roster.name, now), segs, now);
     if (r && !r.warn) return r;
     if (o && !o.warn) return o;
     if (r || o) REST_LAST_WARN_ = r || o;

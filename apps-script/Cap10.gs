@@ -13,7 +13,13 @@
      「當日出勤滿十小時是有打卡的時數＋假單時數＋出差。如果班表是像央廚或總部有固定休息一小時不列入打卡就要扣除，其餘門市單位則不扣除班表的休息時間。」
      ①其他店不再扣班表休息（capDed_ 拿掉）；②加上這一天**已核准**的請假單、出差單（requests 分頁，本店工號＋別家店同名在職）；
      ③有時段的單跟打卡時段、跟前面已算過的單重疊的部分不重複算，本店的單再扣不打卡休息時段，最多算單上時數；只填時數的單照時數全算；
-     ④「滿 10」含剛好 10 小時；⑤假單從「核准那一刻」（decided_at）起才算：上班中才核准的假，系統卡最早記在核准那一刻，不把核准前已經上的班抹掉。
+     ④「滿 10」含剛好 10 小時。
+     ⑤即時收卡、擋上班卡只算「有時段」的單（2026-11-23 主管確認）：只填時數、沒有時段的單不知道跟打卡重不重疊，
+       不計入即時收卡、也不會因此擋上班卡，只進事後的通知與清單。
+       上班中才核准的單不當場收卡（CAP_LIVE_LATE_OK，預設可改、待主管決定）。
+       當天還沒有任何打卡時數的人，不會因為假單被擋上班卡；假單本身就 ≥ 10 小時（資料異常，例如同一趟出差兩家店各核一次）不拿來即時收卡；
+       同一筆假兩個管道各建一張且時段相同＝重疊部分只算一次。
+     ⑥同一段上班只會有一張系統下班卡：寫之前看這段上班（最後一張上班卡之後）有沒有別處寫好的系統卡或本人的下班卡，有就不寫（capWrite_）。
      設計與試算：~/加盟名單平台/_brain_out/cap10-newdef/design.md
    - 總開關：指令碼屬性 REST_CAP_ON 恰為 '1'。任何一步出錯一律不擋、不寫（不能讓打卡因為這道檢查壞掉）。
    九店整檔共用；動作掛在 Liff.gs LIFF_HANDLERS，不改各店 程式碼.js。 */
@@ -28,6 +34,8 @@ var CAP_SWEEP_MIN = 15;
 var CAP_SCHED_BASE = '2026-11-01';   // 同 SchedPub.gs SCHED_PUB_BASE（營運系統期別：每期 28 天）
 var CAP_SCHED_CACHE_S = 300;
 var CAP_LEAVE_CACHE_S = 60;      // 申請表（已核准的請假、出差）快取秒數
+// 這段上班開始之後才核准的單，算不算進即時收卡（預設 false＝不算、只進事後通知；待主管決定，true＝從核准那一刻起算、可能當場收卡）
+var CAP_LIVE_LATE_OK = false;
 
 function capOn_() {
   try { return PropertiesService.getScriptProperties().getProperty('REST_CAP_ON') === '1'; } catch (e) { return false; }
@@ -99,30 +107,45 @@ function capSegs_(evs, nowMs, fill) {
  *  {due:{at, store}}                   正在上班那段已經滿 10 小時（at＝剛好滿 10 小時那一刻；store＝那段在哪家店）
  *  {open:{in, store}, reach}           正在上班、還沒滿（reach＝幾點會滿）
  *  {open:null}                         沒在上班
- *  每種都帶 today_ms＝今天（現在的日期）已完成的段加總，打上班卡時用。
+ *  每種都帶 today_ms＝今天已完成的出勤（打卡＋算數的假單）、today_punch_ms＝其中打卡的部分（顯示、擋上班卡的前提用）。
  *  fill(kind, ev)：缺卡用班表補（'in'→回結束 ms、'out'→回開始 ms，補不出來回 null）。
  *  brk：本店不打卡休息時段 {s, e}（沒有就 null），本店的段落扣掉。
- *  leaves：已核准的請假、出差（capLeaveItems_ 的結果；沒有給 [] 或省略）；每張從核准那一刻（dec）起才算。
- *  due.at＝剛好滿 10 小時那一刻（打卡＋已核准的假一起算）。 */
+ *  leaves：已核准的請假、出差（capLeaveItems_ 的結果；沒有給 [] 或省略），先經 capLiveLeaves_ 篩（見檔頭⑤）。
+ *  due.at＝剛好滿 10 小時那一刻（打卡＋算數的假一起算）；due.in＝這段上班的上班卡時間（capWrite_ 判斷「同一段」用）。 */
 function capJudge_(evs, nowMs, fill, brk, leaves) {
-  var g = capSegs_(evs, nowMs, fill), segs = g.segs, open = g.open, lastSys = g.lastSys, out = { today_ms: 0 };
+  var g = capSegs_(evs, nowMs, fill), segs = g.segs, open = g.open, lastSys = g.lastSys, out = { today_ms: 0, today_punch_ms: 0 };
   var today = capDay_(nowMs), need = CAP_H * 3600000;
-  out.today_ms = capDayMs_(segs, null, nowMs, today, brk, leaves).total;
+  var td = capDayMs_(segs, null, nowMs, today, brk, capLiveLeaves_(leaves, today, null, brk));
+  out.today_ms = td.total; out.today_punch_ms = td.punch;
   if (lastSys && nowMs < lastSys.ms + CAP_LOCK_H * 3600000) {
     out.lock = true; out.sys = lastSys.ms; out.until = lastSys.ms + CAP_LOCK_H * 3600000;
     return out;
   }
   if (!open) { out.open = null; return out; }
-  var day = capDay_(open.ms), o = { ms: open.ms, store: open.store };
-  var tot = function (t) { return capDayMs_(segs, o, t, day, brk, leaves).total; };
-  var jumps = (leaves || []).filter(function (l) { return l && l.day === day && l.dec > open.ms; }).map(function (l) { return l.dec; });
+  var day = capDay_(open.ms), o = { ms: open.ms, store: open.store }, lv = capLiveLeaves_(leaves, day, open.ms, brk);
+  var tot = function (t) { return capDayMs_(segs, o, t, day, brk, lv).total; };
+  var jumps = lv.filter(function (l) { return l.dec > open.ms; }).map(function (l) { return l.dec; });
   var reach = capReach_(tot, open.ms, jumps);
   if (tot(nowMs) >= need) {
-    out.due = { at: (reach !== null && reach <= nowMs) ? reach : nowMs, store: open.store };
+    out.due = { at: (reach !== null && reach <= nowMs) ? reach : nowMs, in: open.ms, store: open.store };
     return out;
   }
   out.open = { in: open.ms, store: open.store }; out.reach = reach;
   return out;
+}
+
+/** 即時收卡、擋上班卡要算的單（檔頭⑤）：那天、有時段的單（只填時數的不算，主管 2026-11-23 確認）；
+ *  openMs（正在上班那段的上班卡時間，沒有給 null）之後才核准的看 CAP_LIVE_LATE_OK；
+ *  剩下的單本身（不看打卡）就 ≥ 10 小時＝資料異常（重複核定之類），一張都不拿來即時收卡（少算＝不誤收）。 */
+function capLiveLeaves_(leaves, day, openMs, brk) {
+  var l = (leaves || []).filter(function (x) {
+    if (!x || x.day !== day) return false;
+    if (x.a === null || x.b === null) return false;
+    if (openMs !== null && x.dec > openMs && !CAP_LIVE_LATE_OK) return false;
+    return true;
+  });
+  if (l.length && capLeaveMs_(l, day, [], brk, Infinity) >= CAP_H * 3600000) return [];
+  return l;
 }
 
 /** 第一個「當日出勤 ≥ 10 小時」的時刻。tot 隨時間只增不減：平常每毫秒最多增 1 毫秒（碰到不打卡休息、假單時段重疊會停著不增），
@@ -181,15 +204,15 @@ function capMinus_(a, b, used) {
   return out;
 }
 /** 某一天、到 t 為止已核准（dec ≤ t）的請假、出差算多少毫秒。work＝那天的打卡區間（正在上班那段算到 t）。
- *  有時段的單（照開始時間先後）：時段扣掉打卡區間、扣掉前面已算過的單（重疊不重複算）；本店的單（store ''）再扣不打卡休息時段；最多算單上時數。
- *  只填時數的單：不知道是哪個時段，照單上時數全算。 */
+ *  有時段的單（照開始時間先後）：時段扣掉打卡區間、扣掉前面已算過的單（重疊不重複算，同一筆假重複建單也只算一次）；
+ *  本店的單（store ''）再扣不打卡休息時段；最多算單上時數。只填時數的單不在這裡算（capLiveLeaves_ 已排除；傳進來就略過）。 */
 function capLeaveMs_(leaves, day, work, brk, t) {
   var list = (leaves || []).filter(function (l) { return l && l.day === day && l.ms > 0 && !(l.dec > t); });
   if (!list.length) return 0;
   list.sort(function (p, q) { return (p.a === null ? Infinity : p.a) - (q.a === null ? Infinity : q.a); });
   var used = capUnion_(work.slice()), sum = 0;
   list.forEach(function (l) {
-    if (l.a === null || l.b === null) { sum += l.ms; return; }
+    if (l.a === null || l.b === null) return;
     var len = 0;
     capMinus_(l.a, l.b, used).forEach(function (f) { len += (f[1] - f[0]) - (l.store ? 0 : capBreakMs_(f[0], f[1], brk)); });
     sum += Math.min(l.ms, Math.max(0, len));
@@ -226,7 +249,7 @@ function capLeaveItems_(rows, ids, store, days, nowMs) {
       if (!isNaN(base)) { a = base + s * 60000; b = base + e * 60000; }
     }
     var dec = capMs_((typeof normCellTs === 'function') ? normCellTs(r.decided_at) : r.decided_at);
-    out.push({ day: d, a: a, b: b, ms: Math.round(h * 3600000), store: store, kind: kind, dec: isNaN(dec) ? (nowMs || Date.now()) : dec });
+    out.push({ day: d, a: a, b: b, ms: Math.round(h * 3600000), store: store, kind: kind, type: String(r.leave_type || ''), dec: isNaN(dec) ? (nowMs || Date.now()) : dec });
   });
   return out;
 }
@@ -241,7 +264,7 @@ function capReqRows_(ss, days) {
     var d = (typeof normCellDate === 'function') ? normCellDate(r.date) : String(r.date || '').slice(0, 10);
     if (days.indexOf(d) < 0) return;
     var hm = function (v) { var m = capHmMin_(v); return m === null ? '' : ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2); };
-    out.push({ emp_id: String(r.emp_id), kind: String(r.kind), status: 'approved', date: d, start: hm(r.start), end: hm(r.end), hours: r.hours,
+    out.push({ emp_id: String(r.emp_id), kind: String(r.kind), leave_type: String(r.leave_type || ''), status: 'approved', date: d, start: hm(r.start), end: hm(r.end), hours: r.hours,
                decided_at: (typeof normCellTs === 'function') ? normCellTs(r.decided_at) : String(r.decided_at || '') });
   });
   try { cache.put(ck, JSON.stringify(out), CAP_LEAVE_CACHE_S); } catch (e) {}
@@ -381,25 +404,39 @@ function capEventsFor_(ss, me, nowMs, ownRows, peerEvs) {
   return mine.concat(peers);
 }
 
-/** 打卡頁提醒（Rest.gs restCheckIn_）用：這個人今天已完成的出勤（新定義，跟收卡同一支 capJudge_ 算）。
- *  不看 REST_CAP_ON（提醒照 REST_RULE_ON）；出錯回 null（Rest.gs 退回原本的打卡加總）。 */
+/** 打卡頁提醒（Rest.gs restCheckIn_）用：這個人今天已完成的出勤（新定義，跟收卡同一支 capJudge_ 算）→ {total, punch}（毫秒）。
+ *  Rest.gs 只在 REST_CAP_ON 開著時叫（關著＝提醒跟改版前一樣）；出錯回 null（Rest.gs 退回原本的打卡加總）。 */
 function capTodayMs_(ss, me, nowMs, ownRows, peerEvs) {
   try {
-    return capJudge_(capEventsFor_(ss, me, nowMs, ownRows, peerEvs), nowMs, capMakeFill_(me.emp_id), capBreak_(), capLeavesFor_(ss, me, nowMs)).today_ms;
+    var r = capJudge_(capEventsFor_(ss, me, nowMs, ownRows, peerEvs), nowMs, capMakeFill_(me.emp_id), capBreak_(), capLeavesFor_(ss, me, nowMs));
+    return { total: r.today_ms, punch: r.today_punch_ms };
   } catch (e) { Logger.log('CAP 今日出勤計算失敗（提醒改用打卡加總）：' + e); return null; }
 }
 
-/** 寫系統下班卡（剛好滿 10 小時那一刻）。同一人前後 1 分鐘內已有系統卡就不重寫。回 true＝這次有寫。 */
-function capWrite_(ss, empId, atMs) {
+/** 寫系統下班卡（剛好滿 10 小時那一刻）。回 {at}＝這次有寫；{sys}＝這段上班已經有系統卡（別處寫的，回那張的時間）；
+ *  {closed:true}＝這段上班已經有本人的下班卡（剛同步進來）；false＝拿不到鎖。
+ *  inMs＝這段上班的上班卡時間（2026-11-23）：上班卡之後已有任何算數的下班卡（系統或本人、不論幾點）就不寫——
+ *  同一段上班不會有兩張系統卡（mini 與 Google 各算一張、規則版本不同時間差超過 1 分鐘也一樣），也不會系統卡記在本人下班卡之後。
+ *  沒給 inMs（舊呼叫）＝照舊：前後 1 分鐘內已有系統卡才不寫。 */
+function capWrite_(ss, empId, atMs, inMs) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return false;
   try {
     var sh = ss.getSheetByName('events');
-    var read = readEventsSince(sh, atMs - 3600000);
-    var dup = read.rows.some(function (e) {
-      return String(e.emp_id) === String(empId) && String(e.source || '') === CAP_SRC && Math.abs(capMs_(normCellTs(e.ts)) - atMs) <= 60000;
+    var seg = typeof inMs === 'number' && isFinite(inMs) && inMs < atMs;
+    var read = readEventsSince(sh, Math.min(atMs - 3600000, seg ? inMs : Infinity));
+    var sys = null, closed = false;
+    read.rows.forEach(function (e) {
+      if (String(e.emp_id) !== String(empId) || String(e.type) !== 'out' || String(e.status || '').indexOf('rejected_') === 0 || String(e.mirror_src || '')) return;
+      var ms = capMs_(normCellTs(e.ts)), isSys = String(e.source || '') === CAP_SRC;
+      if (isNaN(ms)) return;
+      if (seg ? ms > inMs : (isSys && Math.abs(ms - atMs) <= 60000)) {
+        if (isSys) sys = (sys === null || ms < sys) ? ms : sys;
+        else closed = true;
+      }
     });
-    if (dup) return false;
+    if (sys !== null) return { sys: sys };
+    if (closed) return { closed: true };
     var heads = read.headers.slice();
     if (heads.indexOf('source') < 0) {   // 舊表沒有 source 欄：補在最後（readSheetAsObjects 照表頭取值，舊程式不受影響）
       heads.push('source');
@@ -410,7 +447,7 @@ function capWrite_(ss, empId, atMs) {
     if (typeof empIdColText_ === 'function') { try { empIdColText_(sh); } catch (e) {} }
     sh.appendRow(heads.map(function (h) { return val.hasOwnProperty(h) ? val[h] : ''; }));
     SpreadsheetApp.flush();
-    return true;
+    return { at: atMs };
   } finally { lock.releaseLock(); }
 }
 
@@ -421,12 +458,17 @@ function capCheck_(ss, me, nowMs, ownRows) {
   try {
     var now = nowMs || Date.now();
     var r = capJudge_(capEventsFor_(ss, me, now, ownRows), now, capMakeFill_(me.emp_id), capBreak_(), capLeavesFor_(ss, me, now));
-    var st = { locked: false, in_block: false, today_h: Math.round(r.today_ms / 360000) / 10 };
+    // today_h 是畫面上「你今天已經上班 X 小時」的 X：顯示實際打卡時數（判斷用 today_ms＝含假單的新定義）
+    var st = { locked: false, in_block: false, today_h: Math.round(r.today_punch_ms / 360000) / 10 };
     var sys = null;
     if (r.lock) sys = r.sys;
     else if (r.due) {
-      if (!r.due.store) capWrite_(ss, me.emp_id, r.due.at);   // 正在上班那段在別家店：那家店寫，這裡只擋
       sys = r.due.at;
+      if (!r.due.store) {   // 正在上班那段在別家店：那家店寫，這裡只擋
+        var w = capWrite_(ss, me.emp_id, r.due.at, r.due.in);
+        if (w && w.closed) return st;          // 這段上班已經有本人的下班卡（判斷之後才同步進來）：不收、不鎖
+        if (w && w.sys) sys = w.sys;           // 這段上班已經有別處寫的系統卡：照那一張
+      }
     }
     if (sys !== null) {
       var until = sys + CAP_LOCK_H * 3600000;
@@ -435,7 +477,7 @@ function capCheck_(ss, me, nowMs, ownRows) {
       st.hint = (capDay_(until) === capDay_(now) ? '' : capMd_(until) + ' ') + capHm_(until) + ' 以後才能再打卡';
       return st;
     }
-    if (!r.open && r.today_ms >= CAP_H * 3600000) {
+    if (!r.open && r.today_ms >= CAP_H * 3600000 && r.today_punch_ms > 0) {   // 今天還沒有任何打卡時數＝不會因為假單擋上班卡
       st.in_block = true;
       st.reason = '你今天已經上班 ' + st.today_h + ' 小時（一天最多 ' + CAP_H + ' 小時）';
       st.hint = '今天不能再打上班卡';
