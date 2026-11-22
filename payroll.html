@@ -827,7 +827,7 @@ async function boot(){
     const pick=pickScopedStore((sl&&sl.stores)||[],STORE);
     if(pick){ STORE=pick; localStorage.setItem('pay_store',STORE); m=await post('payroll_master_get'); mStore=STORE; }
   }
-  if(!m.ok){toast(m.error==='scope_forbidden'?'這家門市不在你的負責範圍':'讀取主檔失敗',true);return}
+  if(!m.ok){toast(m.error==='scope_forbidden'?'這家門市不在你的負責範圍':'讀取主檔失敗',true);attGuardUi();return}   // attGuardUi：開頁就讀取失敗時出勤／獎金卡片也要收起來（跟切門市讀取失敗一致，2026-11-23）
   if(EMBED){
     SCOPE=(m.scope===undefined?'*':m.scope);
     if(scopeLimited()){
@@ -895,6 +895,8 @@ let BONUS_KEY='', MASTER_ST='', CFG_ST='', LT_ST='', LEV_ST='', STORES_OK=false;
 function bonusForeign(){ return BONUS_KEY!==STORE+'|'+ym(); }
 /** 資料不是畫面上這個店（月）的 → 提示並回 true（呼叫端不送） */
 function dataStop(foreign,msg){ if(!foreign) return false; toast(LOAD_INFLIGHT?'讀取中…':msg,true); return true; }
+/** 月資料正在讀（切月份／切門市後還沒回來）：畫面上的 STATUS／ASOF／RESULTS 還是上一個店月的，鎖定、解鎖、重新計算、清除工時一律不送（滑鼠有 CSS 擋，鍵盤 Tab＋Enter 沒有；沿用既有提示「讀取中…」，2026-11-23） */
+function loadingStop(){ if(!LOAD_INFLIGHT) return false; toast('讀取中…',true); return true; }
 function guardPanel(id,noteId,f,msg){
   const p=$(id); if(!p) return;
   p.classList.toggle('pay-foreign',f);
@@ -994,6 +996,8 @@ async function saveAtt(){
   setTimeout(()=>attBtnIdle(b),1800);
 }
 async function clearAtt(){
+  if(loadingStop()) return;   // 月資料正在讀：不送（2026-11-23）
+  if(dataStop(attForeign(),ATT_FOREIGN_MSG)) return;   // 出勤表單從沒讀到（開頁就讀取失敗）或是別的店月的：不送（整月清除，2026-11-23）
   if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再清除手動工時',true); return; }   // 已鎖定月份不送出（薪酬挑錯第 1 項）
   if(!confirm('清除 '+ym()+' 的手動工時？\n\n會刪掉這個月你手動輸入/儲存的工時，還原成打卡自動歸集的值。\n（只影響目前門市，其他門市不受影響）')) return;
   const r=await post('payroll_input_set',{ym:ym(),inputs:{}});
@@ -1172,6 +1176,7 @@ async function monMixedRecheck(key,seq){
   elecBtns();
 }
 async function doCalc(pendSeq,inputsSaved){   // 回 true＝重算成功並已套到畫面（選舉假存檔後要知道，Codex 複審 K3）；pendSeq＝選舉假存檔觸發的重算（序號相符才套用並解除該店月的待確認）；inputsSaved＝saveAtt 剛存好工時才叫的（出勤表單＝試算表）
+  if(pendSeq===undefined&&!inputsSaved&&loadingStop()) return false;   // 使用者按「重新計算」（沒帶參數）時月資料正在讀：不送；存檔後的重算（帶 pendSeq／inputsSaved）自己處理在途的讀取（2026-11-23）
   if(supCrossBlock('重新計算')) return false;
   setBusy(true);
   try{
@@ -1785,6 +1790,7 @@ function renderOtInfo(t){
   box.innerHTML=rows.length?`<div class="card" style="border-left:4px solid #b4762a"><h3 style="margin:0 0 6px">${(NOT_IN_PAY.length||ZERO_RATIO.length)?'在職狀態、工號、加班與班表提醒':(ROSTER_MISS.length||SAME_NAME.length?'工號、加班與班表提醒':'加班與班表提醒')}</h3><ul style="margin:0;padding-left:20px;line-height:1.8">${rows.join('')}</ul></div>`:'';
 }
 async function toggleLock(){
+  if(loadingStop()) return;   // 月資料正在讀：不拿舊店月的 STATUS／ASOF／RESULTS 去鎖定或解鎖（2026-11-23）
   const lock=STATUS!=='final';
   // 名單存檔／存後重算還沒確認（只擋鎖定；已鎖定時 elecPending 為 false，解鎖不受影響），或畫面上的月資料不確定跟後端一致（重讀失敗）：重新載入成功前不鎖、不解鎖。鎖定鈕此時是停用的（Codex 第六次 13b；同 elecBtns 用 monBlocked）
   if(monBlocked()) return;
@@ -2159,6 +2165,7 @@ async function loadLeaveTypes1(){
   const st=STORE;   // 發出時的門市（回來時已切店＝這份是別店的，LT_ST 不等於 STORE，存檔會擋）
   const r=await post('payroll_leave_type_get');   // post() 會自動帶 admin_key 與 store
   if(!r||!r.ok) return;
+  if(STORE!==st) return;   // 等回應時已切店（或開頁時店碼才定下來）：這份是發出當下那家店的，整個丟掉、不改清單也不改旗標（2026-11-23）
   LT_LIST=r.types||[]; LT_IS_DEFAULT=!!r.is_default; LT_ST=st;
   const own=$('ltOwn'); if(own) own.checked=!LT_IS_DEFAULT && !!r.store_specific;
   renderLeaveTypes();
@@ -2223,7 +2230,7 @@ function loadLeaveEvents(){ return onceFor('lev',loadLeaveEvents1); }
 async function loadLeaveEvents1(){
   const st=STORE;
   const r=await post('payroll_leave_event_get');
-  if(r&&r.ok){ LEV_LIST=r.events||[]; LEV_ST=st; renderLeaveEvents(); }
+  if(r&&r.ok){ if(STORE!==st) return;   /* 同假別設定：晚到的舊店回應整個丟掉（2026-11-23） */ LEV_LIST=r.events||[]; LEV_ST=st; renderLeaveEvents(); }
 }
 async function saveLeaveEvents(btn){
   if(dataStop(LEV_ST!==STORE,SAVE_UNSURE_MSG)) return false;   // 事件日沒讀到或是別店的：不送（後端整店取代，2026-11-23）
@@ -2918,6 +2925,7 @@ async function syncWrite(btn,label,st,mutate){
     if(!r.ok){ toast('寫入失敗：'+(r.message||r.error||''),true); return; }
     if(st!==syncCurStore()){ toast(msg+'（已寫入 '+st+'；目前畫面是別家店）'); return; }
     const g2=await post('payroll_master_get',{store:st});
+    if(st!==syncCurStore()){ toast(msg+'（已寫入 '+st+'；目前畫面是別家店）'); return; }   // 等重讀時切了店：不把這家店的主檔換進現在這家店的畫面（MASTER_ST 會誤放行，2026-11-23）
     MASTER=g2.ok&&Array.isArray(g2.master)?g2.master:rows;
     renderEmp(); renderAtt(); vClear(); renderStaffSync(); toast(msg);
   } finally { SYNC_BUSY=false; if(btn&&btn.isConnected){btn.disabled=false;btn.textContent=label;} }

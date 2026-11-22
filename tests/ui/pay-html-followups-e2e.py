@@ -12,6 +12,7 @@
 #   C  ③待辦 17（5A）：鎖定被擋 → 要按「知道了」才關的視窗（按外圍、Esc 不關），字句照後端；衝突、對不上、還沒回報三種後面加「請把這個畫面截圖傳給資訊部。」
 #   D  ④補測試：存檔成功後正本與草稿一致（重算用的工時＝存進去的工時、重新載入讀回同一份）；存檔成功但重算失敗；存檔、重算成功但重新載入失敗
 #   E  ⑤鎖定結果不明、狀態查詢回 mixed 之後：重新載入成功但 payroll_status 仍是 mixed → 照擋；查不到 → 照擋；草稿／舊後端 → 解開
+#   G  Codex #221 審查補強：開頁就讀不到主檔 → 出勤卡片收起來、clearAtt 不送；切月份讀取未回，鍵盤 Tab＋Enter 按鎖定／重算不送
 #   F  同一類的其他資料（驗收補）：獎金（切月份讀取失敗／開頁就失敗）收起來＋不送；切門市讀取失敗 → 主檔、參數、假別設定、事件日、獎金、工時都不送（後端都是整份取代）
 import json, os, shutil, socket, subprocess, sys, time, urllib.request
 
@@ -96,10 +97,11 @@ try:
             pg.on('pageerror', lambda e: None)
             pg.on('dialog', lambda d: d.accept())
             # 一個攔截器、每個情境改 cfg：fail_month＝這些月份的 payroll_month 回失敗；其他鍵＝那個動作直接回這份（None＝照常給假後端）
-            seen, cfg, canon = [], {}, {}
+            seen, cfg, canon, held = [], {}, {}, []
             def router(route):
                 bd = act(route); a = bd.get('action'); seen.append(bd)
                 if a == 'payroll_month' and bd.get('ym') in cfg.get('fail_month', ()): fulfill(route, FAIL); return
+                if a == 'payroll_month' and bd.get('ym') in cfg.get('hold_month', ()): held.append(route); return   # G：先不回，之後 release_held 才放行
                 if a == 'payroll_month' and bd.get('store') in cfg.get('fail_store', ()): fulfill(route, FAIL); return
                 if a in cfg and cfg[a] is not None: fulfill(route, cfg[a]); return
                 if a == 'payroll_input_set' and cfg.get('canon'):   # D：自己記正本
@@ -111,7 +113,7 @@ try:
                     resp = route.fetch(); j = resp.json(); j['inputs'] = canon[bd.get('ym')]; fulfill(route, j); return
                 route.continue_()
             def fresh(boot_fail=False):
-                seed(); cfg.clear(); canon.clear(); del seen[:]
+                seed(); cfg.clear(); canon.clear(); del seen[:]; del held[:]
                 pg.unroute('**/*')
                 pg.goto(BASE + '/payroll.html?k=test-admin', wait_until='networkidle')
                 pg.evaluate("localStorage.setItem('pay_store','SSLGF')")
@@ -332,6 +334,36 @@ try:
                     else:
                         ok(bname + ' E ' + lab + ' → 解開', 'payroll_status' in asked and blocked() is False and not pg.is_disabled('#lockBtn'), (asked, blocked(), m1))
                     cfg['payroll_status'] = None
+
+            if not ONLY or 'G' in ONLY:
+                # G Codex #221 審查補強：①開頁就讀不到主檔 → 出勤卡片收起來、「清除本月手動工時」不送；②切月份讀取未回，用鍵盤（Tab 聚焦＋Enter）按鎖定／重算不送；放行後照常
+                seed(); cfg.clear(); canon.clear(); del seen[:]; del held[:]
+                pg.unroute('**/*')
+                pg.goto(BASE + '/payroll.html?k=test-admin', wait_until='networkidle')
+                pg.evaluate("localStorage.setItem('pay_store','SSLGF')")
+                cfg['payroll_master_get'] = FAIL
+                pg.route('**/*', router)
+                pg.goto(BASE + '/payroll.html?k=test-admin', wait_until='networkidle'); pg.wait_for_timeout(1500)
+                ui = foreign_ui(); k = len(seen); clear_msg(); pg.evaluate('clearAtt()'); pg.wait_for_timeout(500)
+                ok(bname + ' G1 開頁就讀不到主檔 → 出勤卡片收起來；clearAtt 不送 payroll_input_set（對話框自動按確定也不送）',
+                   ui['cls'] and ui['card'] == 'none' and not sent('payroll_input_set', k), (ui, [x.get('action') for x in seen[k:]]))
+                fresh()
+                pg.click('button[data-p="run"]'); pg.wait_for_timeout(300)   # 重新計算／鎖定鈕在「薪資計算」分頁
+                cfg['hold_month'] = ('2026-10',)
+                setym('2026-10', 400)
+                ok(bname + ' G2 前提：切到 10 月、月資料還沒回來', pg.evaluate('!!LOAD_INFLIGHT') and len(held) >= 1, (pg.evaluate('!!LOAD_INFLIGHT'), len(held)))
+                k = len(seen); clear_msg()
+                pg.focus('#lockBtn'); pg.keyboard.press('Enter'); pg.wait_for_timeout(400)
+                m_lock = msg(); clear_msg()
+                pg.focus('#calcBtn'); pg.keyboard.press('Enter'); pg.wait_for_timeout(400)
+                after = [x.get('action') for x in seen[k:]]
+                ok(bname + ' G3 讀取未回：Tab＋Enter 按鎖定／重新計算 → 沒有送出 payroll_finalize、payroll_calc，提示「讀取中…」',
+                   'payroll_finalize' not in after and 'payroll_calc' not in after and m_lock == '讀取中…' and msg() == '讀取中…', (after, m_lock, msg()))
+                cfg['hold_month'] = ()
+                for r in list(held): r.continue_()
+                del held[:]; pg.wait_for_timeout(2500)
+                k = len(seen); pg.focus('#calcBtn'); pg.keyboard.press('Enter'); pg.wait_for_timeout(2000)
+                ok(bname + ' G4 對照：讀取回來之後重新計算照送', not pg.evaluate('!!LOAD_INFLIGHT') and 'payroll_calc' in [x.get('action') for x in seen[k:]], [x.get('action') for x in seen[k:]])
             b.close()
 finally:
     proc.terminate()

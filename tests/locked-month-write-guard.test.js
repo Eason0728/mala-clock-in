@@ -173,7 +173,7 @@ function page(status, reply) {
     post: async (action, body) => { log.posts.push(action); return reply(action, body); },
   };
   vm.createContext(ctx);
-  vm.runInContext('const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};\n' + ['attSendable', 'attForeign', 'bonusForeign', 'dataStop', 'attBtnIdle', 'saveFX', 'saveAtt', 'clearAtt', 'saveBonus'].map(fnSrc).join('\n')
+  vm.runInContext('const n=v=>{const x=parseFloat(v);return isNaN(x)?0:x};\n' + ['attSendable', 'attForeign', 'bonusForeign', 'dataStop', 'loadingStop', 'attBtnIdle', 'saveFX', 'saveAtt', 'clearAtt', 'saveBonus'].map(fnSrc).join('\n')
     + '\nthis.saveAtt=saveAtt;this.clearAtt=clearAtt;this.saveBonus=saveBonus;', ctx);
   return ctx;
 }
