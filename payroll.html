@@ -3089,9 +3089,11 @@ function renderElec(){
   const box=$('elecList'); if(!box) return;
   const rows=elecRowsYm(), on={}; rows.forEach(x=>{ on[String(x.emp_id)]=true; });
   if($('elecYm')) $('elecYm').textContent=ym();
-  const dEl=$('elecDate');
+  const dEl=$('elecDate'), vd=elecVoteDays();
   if(dEl){ dEl.min=ym()+'-01'; dEl.max=ym()+'-'+String(new Date(+ym().slice(0,4),+ym().slice(5,7),0).getDate()).padStart(2,'0');
-    dEl.value=(rows[0]&&rows[0].date)||''; }
+    /* 日期欄初始值（Eason 2026-11-22）：存過名單＝存過的日期（清單外也照顯示）；沒存過＝該月最早的投票日；該月沒有投票日＝空白（原本沒存過一律空白）。
+       只是畫面初始值：不存檔、不重算，改成清單外日期照樣要確認。 */
+    dEl.value=(rows[0]&&rows[0].date)||(vd&&vd.length?vd.slice().sort()[0]:''); }
   const list=(MASTER||[]).filter(m=>elecInRoster(m,ym())||on[String(m.emp_id)]);   // 候選人＝後端當月計薪名冊（payInRosterYm_：在職，或已停用但離職日在本月或之後），已勾選的人一律留著可取消（Codex 第三次 B2）
   const tooOld=ym()<ELEC_FROM;   // 2026-10 以前：後端不收、薪資也不套用（Codex 複審 S1）
   const locked=STATUS==='final'||!elecReady()||tooOld;
@@ -3099,7 +3101,7 @@ function renderElec(){
       <span>${esc(m.name||m.emp_id)}</span> <small>${esc(m.emp_id)}｜${payTrue(m.is_full_time)?'正職':'計時'}</small></label>`).join('')
     :'<div style="color:var(--muted);font-size:13px">這家門市還沒有薪資主檔</div>';
   if(dEl) dEl.disabled=locked;
-  const vd=elecVoteDays(); if($('elecVoteDays')) $('elecVoteDays').textContent=vd&&vd.length?'本月投票日：'+vd.join('、'):'';   // 該月清單沒有日期、或後端沒帶（舊版）時不顯示
+  if($('elecVoteDays')) $('elecVoteDays').textContent=vd&&vd.length?'本月投票日：'+vd.join('、'):'';   // 該月清單沒有日期、或後端沒帶（舊版）時不顯示
   const sv=$('elecSave'); if(sv) sv.disabled=locked;
   if($('elecLock')) $('elecLock').textContent=tooOld?'選舉假名單從 '+ELEC_FROM+' 起才能用，'+ym()+' 的薪資不會套用'
     :!elecReady()?'名單還沒讀到（讀取失敗或還在載入），請重新整理後再改'
@@ -3134,8 +3136,8 @@ function elecVoteDays(){ return elecReady()&&Array.isArray(ELEC_DAYS)?ELEC_DAYS:
 function elecAsk(date,days){
   return new Promise(res=>{
     const mask=document.createElement('div'); mask.className='qz-mask'; mask.id='elecAsk';
-    // TODO（主管未定，2026-11-22）：該月清單沒有日期時「（本月投票日是 …）」怎麼寫還沒定案，暫時省略括號那段
-    const txt=date+' 不在投票日清單'+(days.length?'（本月投票日是 '+days.join('、')+'）':'')+'。選錯日期會讓名單上的人選舉日加發算錯。確定要用 '+date+' 嗎？';
+    // 該月清單沒有日期時括號寫「（本月沒有投票日）」（Eason 2026-11-22 定案）
+    const txt=date+' 不在投票日清單'+(days.length?'（本月投票日是 '+days.join('、')+'）':'（本月沒有投票日）')+'。選錯日期會讓名單上的人選舉日加發算錯。確定要用 '+date+' 嗎？';
     mask.innerHTML='<div class="qz-box" role="dialog" aria-modal="true"><div class="qz-bd" style="padding:20px 20px 16px"><p id="elecAskTxt" style="font-size:14px;line-height:1.7"></p>'
       +'<div class="row" style="justify-content:flex-end;gap:10px;margin-top:16px"><button class="btn ghost" type="button" id="elecAskNo">取消</button>'
       +'<button class="btn" type="button" id="elecAskYes">確定使用這個日期</button></div></div></div>';

@@ -7,7 +7,8 @@
 # 段落：
 #   A 說明行「本月投票日：2026-11-28」；12 月（清單沒有日期）不顯示
 #   B 清單外 11/29：跳確認框（逐字）→ 取消不送出、畫面不變；Esc 也是取消 → 確定才送出且帶 confirm_off_list:true → 成功提示（逐字）
-#   C 清單內 11/28：不跳確認框、不帶旗標、提示照舊；12 月清單空白：一樣要確認（暫用句，TODO）
+#   C 清單內 11/28：不跳確認框、不帶旗標、提示照舊；12 月清單空白：一樣要確認（「本月沒有投票日」）
+#   E 日期欄初始值：沒存過＝該月最早投票日、存過＝存過的日期（清單外也照顯示）、12 月＝空白；帶入不存檔不重算、直接存不跳框、改成清單外要確認
 #   D 前後端相依：新畫面＋舊後端（沒帶 elec_vote_days）→ 不跳框、照舊直接送；舊畫面＋新後端 → 顯示後端說明、名單不變
 import json, os, shutil, socket, subprocess, sys, time, urllib.request
 
@@ -66,7 +67,7 @@ def ok(name, cond, extra=''):
 HINT = '本月投票日：2026-11-28'
 ASK = '2026-11-29 不在投票日清單（本月投票日是 2026-11-28）。選錯日期會讓名單上的人選舉日加發算錯。確定要用 2026-11-29 嗎？'
 DONE = '已儲存選舉假名單（2026-11-29，3 人；不在投票日清單）'
-ASK_DEC = '2026-12-05 不在投票日清單。選錯日期會讓名單上的人選舉日加發算錯。確定要用 2026-12-05 嗎？'   # TODO：清單空白月份的字句主管未定（暫用句）
+ASK_DEC = '2026-12-05 不在投票日清單（本月沒有投票日）。選錯日期會讓名單上的人選舉日加發算錯。確定要用 2026-12-05 嗎？'   # Eason 2026-11-22 定案
 try:
     for _ in range(50):
         try: urllib.request.urlopen(BASE + '/payroll.html', timeout=1); break
@@ -128,7 +129,7 @@ try:
                 pg.click('#elecSave'); pg.wait_for_selector('#elecAsk', timeout=4000); pg.click('#elecAskYes')
                 wait_msg('已儲存選舉假名單'); pg.wait_for_timeout(300); m = pg.inner_text('#msg')
                 ok(bname + ' B 確定 → 送出一次、帶 confirm_off_list:true（布林）', len(sent) == 1 and sent[0].get('confirm_off_list') is True and sent[0].get('date') == '2026-11-29', sent)
-                ok(bname + ' B 成功提示逐字「' + DONE + '」（後面接原有的「，已重新計算」）', m.startswith(DONE) and m in (DONE, DONE + '，已重新計算'), m)
+                ok(bname + ' B 成功提示逐字「' + DONE + '，已重新計算」（完整句）', m == DONE + '，已重新計算', m)
                 ok(bname + ' B 假後端存到 3 人 11/29', sorted(saved()) == sorted([('2026-11-29', x) for x in ck0]), saved())
 
             # ── C 清單內 11/28；12 月清單空白 ──
@@ -139,10 +140,50 @@ try:
                 ok(bname + ' C 11/28 提示照舊（沒有「不在投票日清單」）', m.startswith('已儲存選舉假名單（2026-11-28，2 人）') and '不在投票日清單' not in m, m)
                 setym('2026-12'); pg.click('button[data-p="cfg"]'); pg.wait_for_timeout(300); sent.clear()
                 pick('2026-12-05', 1); pg.click('#elecSave'); pg.wait_for_selector('#elecAsk', timeout=4000)
-                ok(bname + ' C 12 月清單空白：一樣要確認（暫用句、TODO）', pg.inner_text('#elecAskTxt') == ASK_DEC, pg.inner_text('#elecAskTxt'))
+                ok(bname + ' C 12 月清單空白：一樣要確認、內文逐字', pg.inner_text('#elecAskTxt') == ASK_DEC, pg.inner_text('#elecAskTxt'))
                 pg.click('#elecAskYes'); wait_msg('2026-12-05'); pg.wait_for_timeout(300)
                 ok(bname + ' C 12 月確定 → 帶旗標、提示有「不在投票日清單」', len(sent) == 1 and sent[0].get('confirm_off_list') is True and pg.inner_text('#msg').startswith('已儲存選舉假名單（2026-12-05，1 人；不在投票日清單）'),
                    (sent, pg.inner_text('#msg')))
+
+            # ── E 日期欄初始值 ──
+            if not ONLY or 'E' in ONLY:
+                acts = []   # 開頁後送出的所有動作（確認預設帶入不會存檔、不會重算）
+                def rec_all(route):
+                    try: bd = json.loads(route.request.post_data or '{}')
+                    except Exception: bd = {}
+                    if bd.get('action'): acts.append(bd.get('action'))
+                    rec(route)
+                fresh(rec_all)
+                ok(bname + ' E 沒存過名單 → 日期欄預設 2026-11-28', pg.input_value('#elecDate') == '2026-11-28', pg.input_value('#elecDate'))
+                acts.clear(); pg.click('button[data-p="emp"]'); pg.wait_for_timeout(300); pg.click('button[data-p="cfg"]'); pg.wait_for_timeout(800)
+                ok(bname + ' E 預設帶入不存檔、不重算（沒有 payroll_hol_emp_set／payroll_calc）', 'payroll_hol_emp_set' not in acts and 'payroll_calc' not in acts and sent == [], acts)
+                pick('2026-11-28', 1); pg.locator('#elecList .elec-ck').nth(0).check()
+                pg.fill('#elecDate', '2026-11-30'); pg.click('#elecSave'); pg.wait_for_selector('#elecAsk', timeout=4000)
+                ok(bname + ' E 預設值改成清單外 11/30 → 照樣跳確認框', pg.inner_text('#elecAskTxt').startswith('2026-11-30 不在投票日清單（本月投票日是 2026-11-28）'), pg.inner_text('#elecAskTxt'))
+                pg.click('#elecAskNo'); pg.wait_for_timeout(300)
+                setym('2026-12'); pg.click('button[data-p="cfg"]'); pg.wait_for_timeout(300)
+                ok(bname + ' E 12 月（沒有投票日）→ 日期欄空白（維持原本）', pg.input_value('#elecDate') == '', pg.input_value('#elecDate'))
+                # 存過清單外日期 11/29 → 顯示 11/29，不被預設蓋掉
+                seed(); d = json.load(open(DATA, encoding='utf-8')); d['payroll']['hol_emp'] = [{'ym': '2026-11', 'date': '2026-11-29', 'store': 'SSLGF', 'emp_id': 'E1', 'name': '', 'note': ''}]
+                json.dump(d, open(DATA, 'w', encoding='utf-8'), ensure_ascii=False)
+                pg.goto(BASE + '/payroll.html?k=test-admin', wait_until='networkidle'); pg.wait_for_timeout(1200); pg.click('button[data-p="cfg"]'); pg.wait_for_timeout(400)
+                ok(bname + ' E 存過 11/29（清單外）→ 顯示 11/29、不被預設蓋掉', pg.input_value('#elecDate') == '2026-11-29' and checked() == ['E1'], (pg.input_value('#elecDate'), checked()))
+                # 清單有兩個日期 → 帶最早的；直接存不跳框、不帶旗標
+                def two_days(route):
+                    try: bd = json.loads(route.request.post_data or '{}')
+                    except Exception: bd = {}
+                    if bd.get('action') == 'payroll_month':
+                        j = route.fetch().json()
+                        if bd.get('ym') == '2026-11': j['elec_vote_days'] = ['2026-11-28', '2026-11-15']
+                        route.fulfill(status=200, content_type='application/json', body=json.dumps(j)); return
+                    if bd.get('action') == 'payroll_hol_emp_set':   # 假後端的清單只有 11/28：這段模擬清單也有 11/15 的後端（照存）
+                        sent.append(bd)
+                        route.fulfill(status=200, content_type='application/json', body=json.dumps({'ok': True, 'count': len(bd.get('emp_ids') or []), 'ym': bd.get('ym'), 'date': bd.get('date'), 'store': 'SSLGF'})); return
+                    rec(route)
+                fresh(two_days)
+                ok(bname + ' E 兩個投票日（11/28、11/15）→ 預設最早的 11/15', pg.input_value('#elecDate') == '2026-11-15', pg.input_value('#elecDate'))
+                pg.locator('#elecList .elec-ck').nth(0).check(); pg.click('#elecSave'); wait_msg('已儲存選舉假名單（2026-11-15')
+                ok(bname + ' E 用預設值直接存 → 不跳框、不帶旗標', not ask_open() and len(sent) == 1 and sent[0].get('date') == '2026-11-15' and 'confirm_off_list' not in sent[0], sent)
 
             # ── D 前後端相依 ──
             if not ONLY or 'D' in ONLY:

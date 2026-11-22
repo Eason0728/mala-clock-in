@@ -170,7 +170,7 @@ def h_hol_emp_set(data, body):
     off = bool(ids) and date not in days   # 上面已確認 date 在 ym 裡
     if off and body.get('confirm_off_list') is not True:
         return {'ok': False, 'error': 'elec_date_unconfirmed', 'date': date, 'vote_days': days,
-                'message': date + ' 不在投票日清單' + ('（本月投票日是 ' + '、'.join(days) + '）' if days else '') + '。選錯日期會讓名單上的人選舉日加發算錯。'}
+                'message': date + ' 不在投票日清單' + ('（本月投票日是 ' + '、'.join(days) + '）' if days else '（本月沒有投票日）') + '。選錯日期會讓名單上的人選舉日加發算錯。'}
     keep = [r for r in _pay(data, 'hol_emp') if not (str(r.get('ym')) == ym and str(r.get('store') or 'SSLGF') == st)]
     data['payroll']['hol_emp'] = keep + [{'ym': ym, 'date': date, 'store': st, 'emp_id': str(i), 'name': '', 'note': ''} for i in ids]
     out = {'ok': True, 'count': len(ids), 'ym': ym, 'date': date if ids else '', 'store': st}

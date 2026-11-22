@@ -109,12 +109,12 @@ console.log('\n══ 6) 清除名單（沒勾人）不看日期、不用確認 
   chk('  清除的操作紀錄照舊', w.DB.audit.slice(-1)[0].reason, 'SSLGF 選舉假名單 （清除） 共 0 人');
 }
 
-console.log('\n══ 7) 該月清單沒有日期（例：12 月）也要確認（字句 TODO：主管未定，暫省略括號）══');
+console.log('\n══ 7) 該月清單沒有日期（例：12 月）也要確認（括號寫「本月沒有投票日」，Eason 2026-11-22 定案）══');
 {
   const { w, S } = mk();
   const r = S({ ym: '2026-12', date: '2026-12-05', emp_ids: ['E1'] });
   chk('  12/05 沒旗標 → 擋、vote_days 空', [r.error, r.vote_days], ['elec_date_unconfirmed', []]);
-  chk('  說明暫用句（沒有括號那段）', r.message, '2026-12-05 不在投票日清單。選錯日期會讓名單上的人選舉日加發算錯。');
+  chk('  說明逐字（本月沒有投票日）', r.message, '2026-12-05 不在投票日清單（本月沒有投票日）。選錯日期會讓名單上的人選舉日加發算錯。');
   const r2 = S({ ym: '2026-12', date: '2026-12-05', emp_ids: ['E1'], confirm_off_list: true });
   chk('  帶旗標 → 存成功、紀錄有標', [r2.ok, r2.off_list, w.DB.audit.slice(-1)[0].reason], [true, true, 'SSLGF 選舉假名單 2026-12-05（不在投票日清單） 共 1 人']);
 }

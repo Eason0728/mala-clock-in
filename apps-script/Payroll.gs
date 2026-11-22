@@ -3654,10 +3654,9 @@ function payElecVoteDaysOf_(ym) {
   const p = String(ym || '') + '-';
   return PAY_ELEC_VOTE_DAYS.filter(function (d) { return String(d).slice(0, 8) === p; });
 }
-/** 清單外日期沒確認時的說明（舊版畫面也看得懂）：沿用確認框前兩句。
- *  TODO（主管未定，2026-11-22）：該月清單沒有日期時「（本月投票日是 …）」怎麼寫還沒定案，暫時省略括號那段。 */
+/** 清單外日期沒確認時的說明（舊版畫面也看得懂）：沿用確認框前兩句。該月清單沒有日期時括號寫「（本月沒有投票日）」（Eason 2026-11-22 定案）。 */
 function payElecOffListMsg_(date, days) {
-  return date + ' 不在投票日清單' + (days.length ? '（本月投票日是 ' + days.join('、') + '）' : '') + '。選錯日期會讓名單上的人選舉日加發算錯。';
+  return date + ' 不在投票日清單' + (days.length ? '（本月投票日是 ' + days.join('、') + '）' : '（本月沒有投票日）') + '。選錯日期會讓名單上的人選舉日加發算錯。';
 }
 
 /** {action:'payroll_hol_emp_set', admin_key, store, ym, date, emp_ids:[...], note?, operator?, confirm_off_list?}
