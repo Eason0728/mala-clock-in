@@ -85,15 +85,18 @@ function world(src, opt) {
     sh.getLastRow = readFirst(sh.getLastRow.bind(sh));
     sh.getMaxRows = readFirst(sh.getMaxRows.bind(sh));
     sh.getDataRange = readFirst(sh.getDataRange.bind(sh));
+    const origClr = sh.clearContents.bind(sh);   // 整張清（各店 ot_month 舊寫法用）也一樣排隊
+    sh.clearContents = function () { submit({ type: 'clearSheet', sheet: sh, name: n, data: true, run: () => origClr() }); return sh; };
     const origIns = sh.insertRowsAfter.bind(sh);
     sh.insertRowsAfter = function (r, k) { submit({ type: 'insertRows', sheet: sh, run: () => origIns(r, k) }); return sh; };
     sh.getRange = function (r, c, nr, nc) {
       const rg = sh._origGetRange(r, c, nr, nc);
       const w = Object.create(rg);
       w.getValues = readFirst(() => rg.getValues());
-      w.setValues = (vals) => { submit({ type: 'setValues', sheet: sh, name: n, r, c, nr, nc, vals, data: r >= 2, run: () => rg.setValues(vals) }); return w; };
+      w.setValues = (vals) => { submit({ type: 'setValues', sheet: sh, name: n, r, c, nr, nc, vals, data: r >= 2 || n === 'ot_month', run: () => rg.setValues(vals) }); return w; };
       w.clearContent = () => { submit({ type: 'clearContent', sheet: sh, name: n, r, c, nr, nc, data: r >= 2, run: () => rg.clearContent() }); return w; };
       w.setNumberFormat = (fmt) => { submit({ type: 'fmt', sheet: sh, run: () => rg.setNumberFormat(fmt) }); return w; };
+      w.getLastRow = () => rg.getLastRow();
       return w;
     };
     return sh;
@@ -363,6 +366,105 @@ function runSameHandlers() {
   sec('N2 正常路徑（存檔）', diff === 0, `每次存檔後 ${KINDS.length} 張表與回應改版前後不同 ${diff} 處`);
 }
 
+/* ── 各店月加班表 ot_month（payOtMonthSync_，每天 09:00；打卡端 Rest.gs 讀它擋 46 小時）──
+   以前先 clearContents 整張再寫。計算本身（handlePayrollCalc 試算）換成固定假結果，只測「寫進去」這段。 */
+function otWorld(src) {
+  const W = world(src);
+  W.vm(`
+    payHasClock = function () { return true; };
+    payClockSS = function () { return __SS; };
+    handlePayrollCalc = function (b) {
+      var d = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd'), res = [];
+      (__PEOPLE || []).forEach(function (p, i) { var o = {}; o[d] = p.h; res.push({ name: p.name, emp_id: 'E' + i, ot_info: { ot_h: p.h }, _ot_days: o }); });
+      return { ok: true, results: res, _sched: {}, _hol: [] };
+    };
+  `);
+  W.replace('store', [{ code: 'SSLGF', name: '測試店甲', active: 'true' }]);
+  W.sync = (people) => { W.sb.__PEOPLE = people; return W.vm('payOtMonthSync_()'); };
+  W.ot = () => dump(W.ss.getSheetByName('ot_month'));
+  return W;
+}
+const people = (n, tag) => { const a = []; for (let i = 0; i < n; i++) a.push({ name: '測試' + tag + i, h: Math.round(rnd() * 500) / 10 }); return a; };
+/* 舊內容：先同步一次；extra＝分頁上另外有第 8～9 欄的舊字（舊寫法 clearContents 會一起清掉） */
+function otSeed(W, n, extra) {
+  W.sync(people(n, 'A'));
+  if (extra) { const sh = W.ss.getSheetByName('ot_month'); sh._origGetRange(2, 8, 1, 2).setValues([['舊備註', '2026-10-01']]); }
+}
+const OT_SHAPES = [[4, 7, false], [9, 3, false], [5, 0, false], [6, 6, true], [0, 5, false]];
+const isOt = (op) => op.type === 'setValues' && op.name === 'ot_month';
+function runOtFaults(src) {
+  const FA = {
+    'G1 ot_month 清空後立刻失敗': (W) => { W.F.faults = [{ match: isOt, how: 'throw', times: 1 }]; },
+    'G2 ot_month 寫到一半失敗': (W) => { W.F.faults = [{ match: isOt, how: 'half', times: 1 }]; },
+    'G3 ot_month 收尾（送出）失敗': (W) => { W.F.mode = 'buffered'; W.F.faults = [{ match: isOt, how: 'throw', times: 1 }]; },
+  };
+  for (const [name, setup] of Object.entries(FA)) {
+    for (const [oldN, newN, extra] of OT_SHAPES) {
+      const s0 = seed;
+      const W = otWorld(src); if (oldN || extra) otSeed(W, oldN, extra);
+      seed = s0;
+      const E = otWorld(src); if (oldN || extra) otSeed(E, oldN, extra);
+      const s1 = seed;
+      const pB = people(newN, 'B');
+      E.sync(pB);
+      const before = W.ot(), after = E.ot();
+      setup(W);
+      let res = null, err = null;
+      try { res = W.sync(pB); W.sb.SpreadsheetApp.flush(); } catch (e) { err = e; }
+      W.F.faults = []; W.F.mode = 'direct'; W.F.queue = [];
+      const got = W.ot(), told = !!err || !!(res && (res.write_errors || []).length);
+      const tag = `${oldN}→${newN}${extra ? '（有舊備註欄）' : ''}`;
+      if (W.F.fired) {
+        sec(name, told, tag + '：呼叫端知道失敗（write_errors／錯誤）');
+        sec(name, got === before || got === after, tag + '：內容＝寫入前或完整新內容' + (got === before || got === after ? '' : '（實際：' + got.slice(0, 80) + '）'));
+      } else sec(name, !err && got === after, tag + '：沒有觸發失敗時正常寫完');
+      seed = s1;
+    }
+  }
+  // 同時有人在讀（打卡端 Rest.gs 這時讀到空表會當成「沒有加班」、還會快取起來）
+  let bad = 0, total = 0;
+  for (const [oldN, newN, extra] of OT_SHAPES) {
+    if (!oldN) continue;
+    const s0 = seed;
+    const W = otWorld(src); otSeed(W, oldN, extra);
+    seed = s0;
+    const E = otWorld(src); otSeed(E, oldN, extra);
+    const pB = people(newN, 'B'); E.sync(pB);
+    const before = W.ot(), after = E.ot(), seen = [];
+    W.F.observe = () => seen.push(W.ot());
+    W.sync(pB);
+    total++;
+    if (!seen.every((x) => x === before || x === after)) bad++;
+  }
+  sec('G4 ot_month 同時有人在讀', bad === 0, `${total} 次同步，中途讀到空表或半張的次數 ${bad}`);
+  // 格線不夠：分頁只有 5 列、要寫 12 人
+  {
+    const W = otWorld(src); otSeed(W, 3, false);
+    W.ss.getSheetByName('ot_month').maxRows = 5;
+    const pB = people(12, 'B');
+    const res = W.sync(pB);
+    const E = otWorld(src); E.sync(pB);
+    sec('G5 ot_month 超過格線', W.ot() === E.ot() && !(res.write_errors || []).length, '12 人寫進 5 列的分頁：先加列、寫完整');
+  }
+}
+function runOtSame() {
+  if (!baseSrc) return;
+  let diff = 0, n = 0;
+  for (let t = 0; t < 12; t++) {
+    const A = otWorld(baseSrc), B = otWorld(CUR);
+    const s0 = seed;
+    if (t % 3 === 1) { otSeed(A, 4, true); seed = s0; otSeed(B, 4, true); }
+    for (let i = 0; i < 5; i++) {
+      const p = people(pick([0, 1, 3, 8, 20, 2]), 'S' + i);
+      const ra = A.sync(p), rb = B.sync(p);
+      n++;
+      const shA = A.ss.getSheetByName('ot_month'), shB = B.ss.getSheetByName('ot_month');
+      if (A.ot() !== B.ot() || fmtDump(shA, 9) !== fmtDump(shB, 9) || JSON.stringify(ra) !== JSON.stringify(rb)) { diff++; if (diff <= 3) fails.push('G6 不同：t=' + t + ' i=' + i); }
+    }
+  }
+  sec('G6 ot_month 正常路徑', diff === 0, `${n} 次同步，改版前後（值、型別、文字格式、格線、回應）不同 ${diff} 次`);
+}
+
 /* 每次 payReplaceAll 的試算表呼叫數（給 PR 描述的估計） */
 function countCalls(src, kind, oldN, newN, warm) {
   const W = world(src);
@@ -390,7 +492,8 @@ runMany(CUR);
 runReadFail(CUR);
 runGrid(CUR);
 runObserve(CUR);
-if (!process.env.PAYRA_SRC || process.env.PAYRA_N1) { runSame(); runSameHandlers(); }   // PAYRA_N1=1：拿 PAYRA_SRC 那版跟改版前比（驗這組抓得到差異）
+runOtFaults(CUR);
+if (!process.env.PAYRA_SRC || process.env.PAYRA_N1) { runSame(); runSameHandlers(); runOtSame(); }   // PAYRA_N1=1：拿 PAYRA_SRC 那版跟改版前比（驗這組抓得到差異）
 
 console.log('\n各組結果（通過／失敗）：');
 Object.keys(section).forEach((k) => console.log('  ' + (section[k][1] ? '✗ ' : '✓ ') + k + '：' + section[k][0] + '／' + section[k][1]));

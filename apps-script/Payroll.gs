@@ -240,36 +240,50 @@ function payReplaceAll(kind, rows) {
   const oldN = last > 1 ? last - 1 : 0;
   const values = rows.map(function (r) { return cols.map(function (c) { return r[c] == null ? '' : payCellSafe_(r[c]); }); });
   const h = Math.max(oldN, values.length);   // 這次要蓋的列數：舊的、新的取大的
-  const maxR = sh.getMaxRows();
-  if (h + 1 > maxR) sh.insertRowsAfter(maxR, h + 1 - maxR);   // 格線不夠先加列（以前在清空之後才發現範圍超出）
+  payEnsureRows_(sh, h + 1);
   payForceTextCols(sh, cols, kind);
   // 舊內容：讀的當下抄的那份列數對得上才用（被別台改過列數就重讀）；沒有就讀一次
   const before = !oldN ? [] : (raw && raw.length === oldN ? raw : sh.getRange(2, 1, oldN, nc).getValues());
+  const inv = function () { payInvalidate(kind); };
+  return paySafePut_(sh, 2, nc, h, values, before, PAY_SHEET_NAME[kind] || kind, inv);
+}
+/** 格線不夠 need 列就先加列（以前在清空之後才發現範圍超出 → 整張變空）。 */
+function payEnsureRows_(sh, need) {
+  const maxR = sh.getMaxRows();
+  if (need > maxR) sh.insertRowsAfter(maxR, need - maxR);
+}
+/** 安全覆寫（payReplaceAll 與各店 ot_month 共用）：從第 r0 列起 h 列 × nc 欄，一次 setValues 寫 values（不足的列、欄補空字串＝清掉）並當場送出；
+ *  失敗就把 before 用同一招寫回再丟錯（訊息說有沒有還原成功）。成功回 undo()。onTouch：每次動到這張表時呼叫（清讀取快取用）。 */
+function paySafePut_(sh, r0, nc, h, values, before, label, onTouch) {
+  const touch = function () { if (onTouch) onTouch(); };
   if (!h) return function () {};
-  const blank = cols.map(function () { return ''; });
   const put = function (vals) {
-    const out = vals.slice();
-    while (out.length < h) out.push(blank);
-    sh.getRange(2, 1, h, nc).setValues(out);
+    const out = [];
+    for (let i = 0; i < h; i++) {
+      const row = (vals[i] || []).slice(0, nc);
+      while (row.length < nc) row.push('');
+      out.push(row);
+    }
+    sh.getRange(r0, 1, h, nc).setValues(out);
     payFlush_();   // 排隊中的寫入在這裡送出：送出失敗也在這裡丟出來，才接得到、還原得了
   };
   try { put(values); }
   catch (err) {
-    payInvalidate(kind);
+    touch();
     let restored = true;
-    try { put(before); } catch (err2) { restored = false; try { console.error('payReplaceAll 還原失敗 ' + kind + '：' + err2); } catch (e3) {} }
-    payInvalidate(kind);
-    throw payWriteErr_(kind, err, restored);
+    try { put(before); } catch (err2) { restored = false; try { console.error('薪資覆寫還原失敗 ' + label + '：' + err2); } catch (e3) {} }
+    touch();
+    throw payWriteErr_(label, err, restored);
   }
   return function undo() {
-    payInvalidate(kind);
+    touch();
     put(before);
-    payInvalidate(kind);
+    touch();
   };
 }
 function payFlush_() { if (typeof SpreadsheetApp !== 'undefined' && SpreadsheetApp && typeof SpreadsheetApp.flush === 'function') SpreadsheetApp.flush(); }
 function payWriteErr_(kind, err, restored) {
-  const e = new Error('薪資分頁 ' + (PAY_SHEET_NAME[kind] || kind) + ' 寫入失敗，' +
+  const e = new Error('薪資分頁 ' + kind + ' 寫入失敗，' +
     (restored ? '已還原成寫入前的內容，請再按一次' : '還原也失敗，分頁內容可能不完整，請立刻通知 Eason') + '：' + (err && err.message || err));
   e.pay_kind = kind; e.pay_restored = restored;
   return e;
@@ -4321,8 +4335,15 @@ function payOtMonthSync_() {
     try {
       const ss = payClockSS(s.code);
       const sh = ss.getSheetByName('ot_month') || ss.insertSheet('ot_month');
-      sh.clearContents();
-      sh.getRange(1, 1, rows.length, 7).setNumberFormat('@').setValues(rows.map(function (x) { return x.map(String); }));
+      /* 寫入防壞（2026-11-22）：以前先 clearContents 整張再寫，寫入失敗＝這家店的 36／46 小時檢查整張沒資料。
+         現在跟 payReplaceAll 同一套（paySafePut_）：一次寫完「表頭＋新列＋要清掉的舊格（補空字串）」，失敗就寫回舊內容、記進 write_errors。
+         清的範圍照舊是整張有內容的地方（列、欄都取舊的與新的較大者），文字格式照舊只設在表頭＋新列的 7 欄。 */
+      const last = sh.getLastRow(), lastC = sh.getLastColumn();
+      const nc = Math.max(7, lastC), h = Math.max(last, rows.length);
+      payEnsureRows_(sh, h);
+      const before = last && lastC ? sh.getRange(1, 1, last, nc).getValues() : [];   // 先留舊內容再設格式（設 '@' 會改變日期格讀回的樣子）
+      sh.getRange(1, 1, rows.length, 7).setNumberFormat('@');
+      paySafePut_(sh, 1, nc, h, rows.map(function (x) { return x.map(String); }), before, 'ot_month（' + String(s.code) + '）');
     } catch (e) { writeErrors.push(String(s.code)); Logger.log('ot_month 寫不進去 ' + s.code + '：' + e); }
   });
   return { ok: true, date: today, stores: stores.length, people: rows.length - 1, errors: errors, write_errors: writeErrors,
