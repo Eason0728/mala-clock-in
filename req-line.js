@@ -185,10 +185,10 @@
     return s;
   }
   /** 影子回報（Google 回來後告訴 mini 結果，fire-and-forget）。 */
-  function shadowNote(url, idToken, reqId, r) {
+  function shadowNote(url, reqId, r) {   // 不帶 LINE 登入憑證：營運系統只用店別＋req_id 找影子紀錄（server/proxy/duty.js:2402-2409 不驗身分）
     try {
       var g = { ok: !!(r && r.ok), error: (r && r.error) || '', message: (r && r.message) || '' };
-      var body = JSON.stringify({ op: 'shadow_note', url: url, id_token: idToken, req_id: reqId, g: g });
+      var body = JSON.stringify({ op: 'shadow_note', url: url, req_id: reqId, g: g });
       try { if (navigator.sendBeacon && navigator.sendBeacon(E.MINI_REQ_API, new Blob([body], { type: 'text/plain' }))) return; } catch (e) {}
       try { fetch(E.MINI_REQ_API, { method: 'POST', body: body, mode: 'no-cors', keepalive: true }).catch(function () {}); } catch (e) {}
     } catch (e) {}
@@ -201,7 +201,7 @@
     Object.keys(body).forEach(function (k) { if (k !== 'action' && k !== 'id_token') mb[k] = body[k]; });
     var toG = function (shadow) {
       var gb = op === 'submit' ? Object.assign({}, body, { req_id: reqId }) : body;   // 只有送出帶單號給 Google（取消用申請單 id，g-line.md 只定義 req_submit 的 req_id）
-      return E.post(url, gb).then(function (r) { if (shadow) shadowNote(url, body.id_token, reqId, r); return r; });
+      return E.post(url, gb).then(function (r) { if (shadow) shadowNote(url, reqId, r); return r; });
     };
     var capT, cap = new Promise(function (res, rej) { capT = setTimeout(function () { rej(new Error('mini_timeout')); }, SUBMIT_MINI_MS); });   // 舊手機沒有 AbortController 也最多等這麼久
     var mp;
@@ -209,13 +209,14 @@
     return Promise.race([mp, cap]).then(function (r) {
       clearTimeout(capT);
       var d = miniReply(r);
-      if (d && d.ok === true && d.src === 'mini' && d.data && typeof d.data === 'object') return d.data;
+      if (d && d.ok === true && d.src === 'mini' && isObj(d.data) && typeof d.data.ok === 'boolean') return d.data;   // 最內層是 Google 形狀的回應：非陣列物件、有布林 ok；否則當 mini 沒收，改送 Google
       return toG(!!(d && d.ok === false && d.error === 'mini_off' && d.shadow === true));
     }, function () { clearTimeout(capT); return toG(false); });
   }
   /** 營運系統的回應一律包一層 { ok:true, data:<line-req 的回傳> }（mala-store-ops server/index.js 路由收尾；讀取那條 miniPeek／viaMini 也是拆 r.data）。
    *  拆出裡面那層：外層不是 ok:true 或裡面不是物件（伺服器錯誤、被擋、回應怪）→ null＝當 mini 沒收，由呼叫端改送 Google。 */
-  function miniReply(r) { return r && r.ok === true && r.data && typeof r.data === 'object' ? r.data : null; }
+  function isObj(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
+  function miniReply(r) { return r && r.ok === true && isObj(r.data) ? r.data : null; }
   /** 送出成功訊息「：摘要」那一段。回應沒有 summary（mini 的同單號重送 { ok:true, dup:true }）就不接，畫面與聊天只留「已送出」，不出現 undefined；有 summary 時字串與以前逐字相同（Google 的成功回應一定有，Requests.gs:841、866、868、1049）。 */
   function sumTail(r) { return r && r.summary ? '：' + r.summary : ''; }
 

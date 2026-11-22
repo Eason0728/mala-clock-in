@@ -145,8 +145,9 @@ const ok = async (name, fn) => { await fn(); n++; console.log('✓ ' + name); };
     assert.strictEqual(c.beacons.length, 1);
     const s = c.beacons[0].body;
     assert.strictEqual(c.beacons[0].url, MINI);
-    assert.deepStrictEqual(Object.keys(s).sort(), ['g', 'id_token', 'op', 'req_id', 'url']);
-    assert.strictEqual(s.op, 'shadow_note'); assert.strictEqual(s.url, GURL); assert.strictEqual(s.id_token, 'TOK'); assert.strictEqual(s.req_id, gCalls(c)[0].body.req_id);
+    assert.deepStrictEqual(Object.keys(s).sort(), ['g', 'op', 'req_id', 'url'], 'shadow_note 不帶 id_token（營運系統只用店別＋req_id 找影子紀錄）');
+    assert.strictEqual('id_token' in s, false); assert(!/TOK/.test(JSON.stringify(c.beacons[0])), 'beacon 內容完全沒有 LINE 憑證');
+    assert.strictEqual(s.op, 'shadow_note'); assert.strictEqual(s.url, GURL); assert.strictEqual(s.req_id, gCalls(c)[0].body.req_id);
     assert.deepStrictEqual(Object.keys(s.g).sort(), ['error', 'message', 'ok']);
     assert.deepStrictEqual(J(s.g), { ok: false, error: 'over_limit', message: '超過上限' });
   });
@@ -257,6 +258,21 @@ const ok = async (name, fn) => { await fn(); n++; console.log('✓ ' + name); };
     for (const rep of [{ ok: true }, { ok: true, data: null }, { ok: true, data: 'x' }, { ok: true, data: [] }, WRAP({ ok: true, src: 'mini', data: 'x' }), WRAP({ ok: true, src: 'other', data: { ok: true } })]) {
       const { c, r } = await sendBoth(null, 'submit', () => Promise.resolve(rep));
       assert.strictEqual(r, G_OK, JSON.stringify(rep)); assert.strictEqual(gCalls(c).length, 1, JSON.stringify(rep));
+    }
+  });
+  await ok('型別收緊：外層 data／最內層 data 必須是非陣列物件，src:mini 時最內層要有布林 ok，否則當 mini 沒收、改送 Google 1 次', async () => {
+    const bad = [WRAP([]), WRAP({ ok: true, src: 'mini', data: [] }), WRAP({ ok: true, src: 'mini', data: [{ ok: true }] }),
+      WRAP({ ok: true, src: 'mini', data: {} }), WRAP({ ok: true, src: 'mini', data: { summary: '沒有 ok' } }),
+      WRAP({ ok: true, src: 'mini', data: { ok: 'true' } }), WRAP({ ok: true, src: 'mini', data: { ok: 1 } }), WRAP({ ok: true, src: 'mini', data: { ok: null } })];
+    for (const rep of bad) for (const op of ['submit', 'cancel']) {
+      const { c, r } = await sendBoth(null, op, () => Promise.resolve(rep));
+      assert.strictEqual(r, G_OK, op + JSON.stringify(rep)); assert.strictEqual(gCalls(c).length, 1, op + JSON.stringify(rep)); assert.strictEqual(c.beacons.length, 0);
+    }
+  });
+  await ok('型別收緊不影響合法回應：ok:true 收下、ok:false 規則拒絕、mini_syncing 都照舊不送 Google', async () => {
+    for (const rep of [M_TAKEN({ ok: true, summary: 's' }), M_TAKEN({ ok: false, error: 'over_limit', message: 'm' }), M_SYNCING, M_TAKEN({ ok: true, dup: true })]) {
+      const { c, r } = await sendBoth(null, 'submit', () => Promise.resolve(rep));
+      assert.strictEqual(gCalls(c).length, 0); assert.strictEqual(r, rep.data.data);
     }
   });
   await ok('沒包外層的舊形狀（只有測試假 mini 才會回）不再被當成收下：改送 Google', async () => {

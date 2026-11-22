@@ -41,6 +41,16 @@ class Mini:
     def ops(self, *names):
         return [h for h in self.hits if h.get('op') in names]
 
+    def release_late(self):
+        """逾時情境：mini 的收下回應「晚到」。手機等滿 3 秒就中止那筆請求，瀏覽器通常已不收；放行是盡量模擬，丟錯就算了。"""
+        late = {'ok': True, 'data': {'ok': True, 'src': 'mini', 'data': {'ok': True, 'summary': '晚到的回應', 'request': {'id': 'LATE'}}}}
+        for r in self.hold:
+            try:
+                r.fulfill(status=200, content_type='application/json', headers=CORS, body=json.dumps(late, ensure_ascii=False))
+            except Exception:
+                pass
+        self.hold = []
+
     def handler(self, route):
         req = route.request
         if req.method == 'OPTIONS':
@@ -207,11 +217,14 @@ def main():
             ok('送出・mini 逾時：約 3 秒後改送 Google，畫面「✓ 已送出」（耗時 %.1f 秒）' % dt, '✓ 已送出：' in R2.txt(p) and 2.8 <= dt < 8, dt)
             ok('送出・mini 逾時：mini 1 次、Google 1 次 req_submit、同一個 req_id', len(m.ops('submit')) == 1 and len(gs) == 1 and gs[0]['body'].get('req_id') == m.ops('submit')[0]['req_id'], (len(m.ops('submit')), len(gs)))
             RESULT_ROWS.append(('送出・mini 逾時（%.1f 秒）' % dt, len(m.ops('submit')), len(gs)))
-            for r in m.hold:   # 故意不回的那筆，收尾時中斷掉（不然關頁面時 playwright 會印一串無害的 CancelledError）
-                try:
-                    r.abort()
-                except Exception:
-                    pass
+            # 改送 Google 之後才放行 mini 的收下回應：畫面不變、聊天不再多一則、不再多任何請求
+            before = (R2.txt(p), p.evaluate('window.__sent || []'), len(f.calls), len(m.hits), len(f.requests))
+            m.release_late()
+            p.wait_for_timeout(1000)
+            after = (R2.txt(p), p.evaluate('window.__sent || []'), len(f.calls), len(m.hits), len(f.requests))
+            ok('送出・逾時後 mini 才回收下：畫面完全不變（沒有被「晚到的回應」改掉）', before[0] == after[0] and '晚到的回應' not in after[0], (before[0][:120], after[0][:120]))
+            ok('送出・逾時後 mini 才回收下：LINE 聊天只有 1 則「申請已送出：…」（tellChat 只呼叫一次）', len(after[1]) == 1 and after[1][0]['text'].startswith('申請已送出：') and '晚到' not in after[1][0]['text'], after[1])
+            ok('送出・逾時後 mini 才回收下：之後沒有任何新請求（Google 仍只 1 次 req_submit、mini 仍 1 次）', after[2] == before[2] and after[3] == before[3] and len(f.submits()) == 1 and after[4] == before[4], (before[2:], after[2:]))
             p.context.close()
 
             # ── 5. 其他：mini_busy、影子、功能關掉、伺服器錯誤 500、非 JSON、連不上 → 一律改送 Google 1 次 ──
@@ -225,7 +238,7 @@ def main():
                 if mode == 'shadow':
                     p.wait_for_timeout(500)
                     ok('送出・影子店：Google 回來後送 1 筆 shadow_note（g 只有 ok／error／message）',
-                       len(m.ops('shadow_note')) == 1 and sorted(m.ops('shadow_note')[0]['g'].keys()) == ['error', 'message', 'ok'], m.ops('shadow_note'))
+                       len(m.ops('shadow_note')) == 1 and sorted(m.ops('shadow_note')[0]['g'].keys()) == ['error', 'message', 'ok'] and 'id_token' not in m.ops('shadow_note')[0] and sorted(m.ops('shadow_note')[0].keys()) == ['g', 'op', 'req_id', 'url'], m.ops('shadow_note'))
                 else:
                     ok('送出・%s：沒有送 shadow_note' % label, len(m.ops('shadow_note')) == 0)
                 RESULT_ROWS.append(('送出・' + label, len(m.ops('submit')), len(gs)))
@@ -266,6 +279,42 @@ def main():
             R2.wait_mine(p)
             sent = p.evaluate('window.__sent || []')
             ok('送出・一般收下（有 summary）：聊天「申請已送出：…」、畫面「✓ 已送出：…」跟以前一樣', len(sent) == 1 and sent[0]['text'].startswith('申請已送出：') and '✓ 已送出：' in R2.txt(p), sent)
+            p.context.close()
+
+            # ── 9. mini 等待期間連按送出：只送一次（mini 1 次；3 秒後 Google 1 次），成功只顯示一次 ──
+            f, m, p = run_submit(br, 'timeout')
+            for _ in range(3):
+                p.wait_for_timeout(400)
+                p.evaluate("document.querySelectorAll('#reqView button.primary').forEach(b => b.click())")
+            p.evaluate("document.querySelectorAll('#reqView button.primary').forEach(b => { b.disabled = false; b.click(); })")   # 就算按鈕沒擋，程式裡的忙碌旗標也要擋下
+            R2.wait_mine(p)
+            p.wait_for_timeout(800)
+            sent = p.evaluate('window.__sent || []')
+            ok('送出・mini 等待中連按送出：mini 只收 1 次 submit、Google 只收 1 次 req_submit、同一個 req_id', len(m.ops('submit')) == 1 and len(f.submits()) == 1 and f.submits()[0]['body'].get('req_id') == m.ops('submit')[0]['req_id'], (len(m.ops('submit')), len(f.submits())))
+            ok('送出・mini 等待中連按送出：成功只顯示一次、聊天只 1 則、我的申請只有 1 張新單', R2.txt(p).count('✓ 已送出') == 1 and len(sent) == 1 and len(f.requests) == 1, (R2.txt(p)[:200], sent, len(f.requests)))
+            RESULT_ROWS.append(('送出・等待中連按', len(m.ops('submit')), len(f.submits())))
+            m.release_late()
+            p.context.close()
+
+            # ── 10. 取消：mini 逾時改送 Google（只 1 次），等待中對同一筆連按取消都被擋 ──
+            f = R2.Fake()
+            seed_pending(f)
+            m = Mini(f, 'timeout')
+            p = open_page(br, f, m, 'mine')
+            p.locator('#reqView .rq-link:has-text("取消這筆申請")').first.click()
+            p.wait_for_selector('#reqView .rq-link:has-text("取消中…")', timeout=3000)
+            for _ in range(3):
+                p.wait_for_timeout(400)
+                p.evaluate("document.querySelectorAll('#reqView .rq-link').forEach(b => { b.disabled = false; b.click(); })")   # 取消中還去按：旗標要擋下
+            p.wait_for_function("document.getElementById('reqView').textContent.indexOf('已取消') >= 0", timeout=9000)
+            p.wait_for_timeout(500)
+            cc = [c for c in f.calls if c['action'] == 'req_cancel']
+            ok('取消・mini 逾時：約 3 秒後改送 Google，只 1 次 req_cancel（body 沒有 req_id）；mini 只收 1 次 cancel', len(cc) == 1 and 'req_id' not in cc[0]['body'] and len(m.ops('cancel')) == 1, (len(cc), len(m.ops('cancel'))))
+            ok('取消・mini 逾時：清單變成已取消、單的狀態是 cancelled', '已取消' in R2.txt(p) and f.requests[0]['status'] == 'cancelled', R2.txt(p)[:200])
+            RESULT_ROWS.append(('取消・逾時＋等待中連按', len(m.ops('cancel')), len(cc)))
+            m.release_late()
+            p.wait_for_timeout(600)
+            ok('取消・逾時後 mini 才回：之後沒有新請求（Google 仍 1 次 req_cancel）', len([c for c in f.calls if c['action'] == 'req_cancel']) == 1 and len(m.ops('cancel')) == 1)
             p.context.close()
 
             br.close()
