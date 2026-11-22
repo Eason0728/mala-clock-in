@@ -172,6 +172,12 @@ var PAY_READ_CACHE = {};
    不用再多讀一次整張表。呼叫端會改 payRead 回的物件（例：鎖定時把 status 改成 final），所以這份是讀的當下抄出來的值，
    不跟回傳的物件共用。只在這支檔案內部用。 */
 var PAY_RAW_CACHE = {};
+/* 讀的當下那份只在「讀和寫都在同一次 payWriteLocked_ 寫鎖內」才拿來還原（Codex 複審 2026-11-22）：鎖外讀的，中間別台可能已經存了新內容
+   （列數不變也一樣），失敗時拿它還原會把別台剛存的蓋掉。PAY_IN_LOCK_＝目前這把寫鎖的編號（不在鎖內＝0）。
+   PAY_RAW_UNLOCKED_WRITER_：有「不拿寫鎖就寫」的呼叫端的表（holiday 有 payHolidaySync），就算自己在鎖內讀也不能信那份，一律寫前當場讀。
+   一次性的 handlePayrollMigrateStore 也不拿寫鎖，但只在搬資料那一次手動跑，不列進來（見 PR #211 殘餘風險）。 */
+//   （PAY_LOCK_GEN_／PAY_IN_LOCK_ 宣告在 payWriteLocked_ 旁邊：tests/config-single-save.test.js 只抽那一段出來跑）
+var PAY_RAW_UNLOCKED_WRITER_ = { holiday: 1 };
 function payRead(kind) {
   if (PAY_READ_CACHE[kind]) return PAY_READ_CACHE[kind];
   const got = readSheetAsObjects(paySheet(kind));
@@ -180,7 +186,7 @@ function payRead(kind) {
   /* 只有分頁上的表頭跟 PAY_SHEETS 一模一樣（前 N 欄同名同順序、後面沒有重複的欄名）時，依欄名抄出來的值才等於格子原位；
      有人調過欄位順序或插了別的欄 → 不留，payReplaceAll 改成直接讀格子（還原才會原位放回）。 */
   const cols = PAY_SHEETS[kind], hdr = got.headers || [];
-  if (cols && payHdrSame_(hdr, cols)) PAY_RAW_CACHE[kind] = { rows: rows, vals: rows.map(function (r) { return cols.map(function (c) { return r[c] === undefined || r[c] === null ? '' : r[c]; }); }) };
+  if (cols && payHdrSame_(hdr, cols)) PAY_RAW_CACHE[kind] = { rows: rows, gen: PAY_IN_LOCK_, vals: rows.map(function (r) { return cols.map(function (c) { return r[c] === undefined || r[c] === null ? '' : r[c]; }); }) };
   return rows;
 }
 function payHdrSame_(hdr, cols) {
@@ -240,7 +246,8 @@ const PAY_BAD_EMP_ID_ = { ok: false, error: 'bad_emp_id', message: '員工編號
  *  回傳 undo()：把這張表寫回這次呼叫之前的內容（一次要寫好幾張表的 payReplaceMany_ 用；其他呼叫端不理它，跟以前一樣）。 */
 function payReplaceAll(kind, rows) {
   const rc = PAY_RAW_CACHE[kind];
-  const raw = rc && PAY_READ_CACHE[kind] === rc.rows ? rc.vals : null;   // 只認跟目前快取同一次讀的那份（快取被整個換掉＝不算數）
+  // 只認：跟目前快取同一次讀的那份（快取被整個換掉＝不算數）、而且是在目前這把寫鎖內讀的、這張表沒有不拿鎖的寫入者
+  const raw = rc && PAY_READ_CACHE[kind] === rc.rows && rc.gen && rc.gen === PAY_IN_LOCK_ && !PAY_RAW_UNLOCKED_WRITER_[kind] ? rc.vals : null;
   payInvalidate(kind);
   const sh = paySheet(kind), cols = PAY_SHEETS[kind], nc = cols.length;
   const last = sh.getLastRow();
@@ -321,15 +328,18 @@ function payReplaceMany_(pairs) {
    只鎖寫回那一兩秒（重算本身可能幾十秒，不放進鎖裡，否則 LINE 綁定／送申請要排隊；打卡不用這把鎖）：
    fn 在鎖內執行，裡面一律 payRead 重讀最新整張（進鎖時已 payInvalidate），再篩、再寫。等不到鎖回 false。 */
 const PAY_BUSY_ = { ok: false, error: 'busy', message: '薪資資料正在被另一台裝置儲存，請幾秒後再按一次' };
+var PAY_LOCK_GEN_ = 0, PAY_IN_LOCK_ = 0;   // 寫鎖編號（見 PAY_RAW_CACHE 說明）
 function payWriteLocked_(kinds, fn) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) return false;
+  const prevLock = PAY_IN_LOCK_;
+  PAY_IN_LOCK_ = ++PAY_LOCK_GEN_;   // 這把鎖的編號：鎖內 payRead 讀的那份才給 payReplaceAll 還原用
   try {
     kinds.forEach(payInvalidate);
     fn();
     SpreadsheetApp.flush();
     return true;
-  } finally { lock.releaseLock(); }
+  } finally { PAY_IN_LOCK_ = prevLock; lock.releaseLock(); }
 }
 /** 鎖內重讀整張、留下 keep 為真的列、接上 rows 寫回。 */
 function payReplaceKeep_(kind, keep, rows) {
