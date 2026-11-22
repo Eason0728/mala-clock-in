@@ -28,7 +28,7 @@ const tick = () => new Promise(r => setImmediate(r));
   console.log('══ ① 首次讀主檔失敗後：卡片收起來、清除工時不送 ══');
   {
     const log = { guard: 0, toasts: [] };
-    const ctx = { WRITING: 0, WRITE_FAILS: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, EMBED: true, ADMIN_KEY: 'k', LOCAL_HOST: false, STORE: 'S', ym: () => '2026-11', LOAD_SEQ: 0, RES_GEN: {}, VGEN: 0, DASH_PREFETCH: null, SCOPE: '*', MASTER: ['舊'],
+    const ctx = { WRITING: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, EMBED: true, ADMIN_KEY: 'k', LOCAL_HOST: false, STORE: 'S', ym: () => '2026-11', LOAD_SEQ: 0, RES_GEN: {}, VGEN: 0, DASH_PREFETCH: null, SCOPE: '*', MASTER: ['舊'],
       post: async () => ({ ok: false, error: 'timeout' }), toast: (t) => log.toasts.push(t), attGuardUi: () => { log.guard++; }, localStorage: { setItem() {} }, pickScopedStore: () => null };
     vm.createContext(ctx); vm.runInContext(fnSrc('bootRun'), ctx);
     await ctx.bootRun();
@@ -37,7 +37,7 @@ const tick = () => new Promise(r => setImmediate(r));
   {
     const mk = (over) => {
       const log = { posts: [], confirms: 0, toasts: [], loads: 0 };
-      const ctx = Object.assign({ WRITING: 0, WRITE_FAILS: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, STATUS: 'draft', ATT_KEY: 'S|2026-11', STORE: 'S', ym: () => '2026-11', LOAD_INFLIGHT: null, ATT_FOREIGN_MSG: 'F', ATT: {},
+      const ctx = Object.assign({ WRITING: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, STATUS: 'draft', ATT_KEY: 'S|2026-11', STORE: 'S', ym: () => '2026-11', LOAD_INFLIGHT: null, ATT_FOREIGN_MSG: 'F', ATT: {},
         confirm: () => { log.confirms++; return true; }, toast: (t) => log.toasts.push(t), post: async (a) => { log.posts.push(a); return { ok: true }; }, loadMonth: async () => { log.loads++; } }, over);
       vm.createContext(ctx);
       vm.runInContext(['attForeign', 'dataStop', 'readBusy', 'loadingStop', 'wpost', 'wakeWriteWaiters', 'writeIdle', 'clearAtt'].map(fnSrc).join('\n'), ctx);
@@ -63,7 +63,7 @@ const tick = () => new Promise(r => setImmediate(r));
   {
     const mk = () => {
       const q = [];   // 依序發出的讀取（每個都是 deferred）
-      const ctx = { WRITING: 0, WRITE_FAILS: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, STORE: '', LT_LIST: ['初值'], LT_ST: '', LT_IS_DEFAULT: false, LEV_LIST: ['初值'], LEV_ST: '', ONCE: {}, rendered: 0, LT_VER: 0, LEV_VER: 0,
+      const ctx = { WRITING: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, STORE: '', LT_LIST: ['初值'], LT_ST: '', LT_IS_DEFAULT: false, LEV_LIST: ['初值'], LEV_ST: '', ONCE: {}, rendered: 0, LT_VER: 0, LEV_VER: 0,
         $: () => null, renderLeaveTypes() { ctx.rendered++; }, renderLeaveEvents() { ctx.rendered++; }, applyScopeUi() {},
         post: (a) => { const d = defer(); q.push({ a, st: ctx.STORE, d }); return d.p; } };
       vm.createContext(ctx);
@@ -99,7 +99,7 @@ const tick = () => new Promise(r => setImmediate(r));
     // 名冊同步寫入後重讀主檔（syncWrite）：等重讀時切了店 → 不把這家店的主檔換進現在這家店的畫面（MASTER_ST 會誤放行儲存）
     const log = { posts: [], toasts: [], renders: 0 };
     const g2 = defer(); let n = 0;
-    const ctx = { loadingStop: () => false, WRITING: 0, WRITE_FAILS: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, SYNC_BUSY: false, ym: () => '2026-10', writeFence() {}, STORE: 'A', MASTER: ['A舊'], MASTER_ST: 'A', syncCurStore: () => String(ctx.STORE).toUpperCase(), syncStoreGuard: () => true,
+    const ctx = { loadingStop: () => false, WRITING: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, SYNC_BUSY: false, ym: () => '2026-10', writeFence() {}, STORE: 'A', MASTER: ['A舊'], MASTER_ST: 'A', syncCurStore: () => String(ctx.STORE).toUpperCase(), syncStoreGuard: () => true,
       renderEmp() { log.renders++; }, renderAtt() {}, vClear() {}, renderStaffSync() {}, toast: (t) => log.toasts.push(t),
       get wpost() { return this.post; }, post: (a) => { log.posts.push(a); if (a === 'payroll_master_get') return ++n === 1 ? Promise.resolve({ ok: true, master: [{ e: 1 }] }) : g2.p; return Promise.resolve({ ok: true }); } };
     vm.createContext(ctx); vm.runInContext(fnSrc('syncWrite'), ctx);
@@ -121,7 +121,7 @@ const tick = () => new Promise(r => setImmediate(r));
   {
     const mk = (over) => {
       const log = { posts: [], prompts: 0, toasts: [], alerts: 0 };
-      const ctx = Object.assign({ WRITING: 0, WRITE_FAILS: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, STATUS: 'final', ASOF: null, RESULTS: [], STORE: 'S', ym: () => '2026-10', LOAD_INFLIGHT: null, MON_UNSURE: {}, ELEC_PEND: {}, LOCK_BUSY: false, ATT_DIRTY: false, RES_GEN: {},
+      const ctx = Object.assign({ WRITING: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, STATUS: 'final', ASOF: null, RESULTS: [], STORE: 'S', ym: () => '2026-10', LOAD_INFLIGHT: null, MON_UNSURE: {}, ELEC_PEND: {}, LOCK_BUSY: false, ATT_DIRTY: false, RES_GEN: {},
         $: () => null, toast: (t) => log.toasts.push(t), prompt: () => { log.prompts++; return '測試原因'; }, alert: () => { log.alerts++; }, confirm: () => true,
         setBusy() {}, supCrossBlock: () => false, CALC_INPUTS: () => ({}), elecBtns() {}, costTotals() { return {}; }, costStable() { return {}; }, costDetail() { return {}; },
         post: async (a) => { log.posts.push(a); return { ok: false, error: 'x', message: 'x' }; } }, over);
@@ -166,7 +166,7 @@ const tick = () => new Promise(r => setImmediate(r));
   console.log('══ ⑥ finally 中 setBusy／attGuardUi 丟例外 → 排隊的人仍被喚醒；setBusy(true) 丟例外 → 旗標仍清掉 ══');
   for (const [lab, over, expectThrow] of [['attGuardUi 丟例外', { attGuardUi() { throw new Error('boom'); } }, true], ['setBusy(false) 丟例外', { setBusy(on) { if (!on) throw new Error('boom'); } }, true], ['setBusy(true) 丟例外', { setBusy(on) { if (on) throw new Error('boom'); } }, true]]) {
     const noop = () => {};
-    const ctx = Object.assign({ WRITING: 0, WRITE_FAILS: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, STORE: 'S', ym: () => '2026-10', RES_GEN: {}, LOAD_SEQ: 0, LOAD_INFLIGHT: null, LOAD_WAITERS: [], VGEN: 0, DASH_PREFETCH: null, MON_UNSURE: {}, vClear: noop, setBusy: noop, attGuardUi: noop, elecBtns: noop, showLoadError: noop, renderElec: noop, toast: noop, HOLEMP: [], ELEC_DAYS: null, ELEC_KEY: '',
+    const ctx = Object.assign({ WRITING: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, STORE: 'S', ym: () => '2026-10', RES_GEN: {}, LOAD_SEQ: 0, LOAD_INFLIGHT: null, LOAD_WAITERS: [], VGEN: 0, DASH_PREFETCH: null, MON_UNSURE: {}, vClear: noop, setBusy: noop, attGuardUi: noop, elecBtns: noop, showLoadError: noop, renderElec: noop, toast: noop, HOLEMP: [], ELEC_DAYS: null, ELEC_KEY: '',
       STORE_LIST: [{ code: 'S' }], post: async () => ({ ok: false, error: 'x', message: 'x' }) }, over);
     vm.createContext(ctx); vm.runInContext(['loadMonth', 'monUnsure'].map(fnSrc).join('\n'), ctx);
     let woke = 0; const waiter = new Promise(r => { ctx.LOAD_WAITERS.push(() => { woke++; r(); }); });
@@ -176,7 +176,7 @@ const tick = () => new Promise(r => setImmediate(r));
   }
   { // 正常結束也喚醒（對照）
     const noop = () => {};
-    const ctx = { WRITING: 0, WRITE_FAILS: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, STORE: 'S', ym: () => '2026-10', RES_GEN: {}, LOAD_SEQ: 0, LOAD_INFLIGHT: null, LOAD_WAITERS: [], VGEN: 0, DASH_PREFETCH: null, MON_UNSURE: {}, vClear: noop, setBusy: noop, attGuardUi: noop, elecBtns: noop, showLoadError: noop, renderElec: noop, toast: noop, HOLEMP: [], ELEC_DAYS: null, ELEC_KEY: '',
+    const ctx = { WRITING: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, STORE: 'S', ym: () => '2026-10', RES_GEN: {}, LOAD_SEQ: 0, LOAD_INFLIGHT: null, LOAD_WAITERS: [], VGEN: 0, DASH_PREFETCH: null, MON_UNSURE: {}, vClear: noop, setBusy: noop, attGuardUi: noop, elecBtns: noop, showLoadError: noop, renderElec: noop, toast: noop, HOLEMP: [], ELEC_DAYS: null, ELEC_KEY: '',
       STORE_LIST: [{ code: 'S' }], post: async () => ({ ok: false, error: 'x', message: 'x' }) };
     vm.createContext(ctx); vm.runInContext(['loadMonth', 'monUnsure'].map(fnSrc).join('\n'), ctx);
     let woke = 0; ctx.LOAD_WAITERS.push(() => { woke++; }); await ctx.loadMonth(); await tick();

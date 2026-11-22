@@ -90,7 +90,7 @@ console.log('══ ⑥ 同一類的其他資料：別店（月）的或沒讀�
   const mk = (over) => {
     const log = { posts: [], toasts: [] };
     const btn = { disabled: false, textContent: '', classList: { add() {}, remove() {} }, checked: false };
-    const ctx = Object.assign({ console, setTimeout: () => 0, STORE: 'S', ym: () => '2026-10', LOAD_INFLIGHT: null, WRITING: 0, WRITE_FAILS: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, writeFence() {}, LT_VER: 0, LEV_VER: 0, ONCE: {}, MON_UNSURE_MSG: 'M', SAVE_UNSURE_MSG: 'U', STATUS: 'draft', RESULTS: [],
+    const ctx = Object.assign({ console, setTimeout: () => 0, STORE: 'S', ym: () => '2026-10', LOAD_INFLIGHT: null, WRITING: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, writeFence() {}, LT_VER: 0, LEV_VER: 0, ONCE: {}, MON_UNSURE_MSG: 'M', SAVE_UNSURE_MSG: 'U', STATUS: 'draft', RESULTS: [],
       BONUS_KEY: 'S|2026-10', MASTER_ST: 'S', CFG_ST: 'S', LT_ST: 'S', LEV_ST: 'S', STORES_OK: true,
       BONUS: [{ emp_id: 'E1', amount: 1 }], MASTER: [{ emp_id: 'E1' }], CFG: { daily_hours: 8 }, CFG_DIRTY: { daily_hours: 8 }, CFG_OBSOLETE: [], CFGSRC: {}, CFG_POS: {},
       CFG_CARDS: { cfg: { own: 'x', scope: 'y', keys: () => ['daily_hours'] } }, LT_LIST: [{ name: '事假', code: 'personal' }], LEV_LIST: [{ emp_id: 'E1', code: 'c', event_date: '2026-10-01' }], STORE_LIST: [{ code: 'S' }],
