@@ -30,7 +30,7 @@
      放寬性開關：只有 true 才走新路徑（先送 Mac mini、3 秒沒回改送 Google）；false 時送出、取消跟以前逐字相同（sendReq 第一行直接 E.post）。
      改成 true＝合併到 main 就是 GitHub Pages 上線，由大腦決定時間。本機測試：只在 localhost／127.0.0.1，網址加 ?submit_mini=1 才打開。
      另外 E.MINI_REQ_API 要有值才算開。 */
-  var SUBMIT_MINI = false;
+  var SUBMIT_MINI = true;   // 2026-11-23 打開（七家 mini 核定店由 mini 收單；瑞光、文心 mini 回 mini_off 改送 Google）
   var E, $root, st = { init: null, store: null, info: null, tab: 'leave', busy: false,
                       quotaReady: false, quota: null, infoErr: false, touched: false, storeManual: false,
                       src: {}, peekAt: {}, infoReal: false, tm: null,
