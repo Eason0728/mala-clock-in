@@ -4962,13 +4962,16 @@ function payRunAt_(ym, st) {
  *  權限＝payroll_month（選舉假名單的讀取路徑）：管理金鑰＋門市範圍（payScopeWrap_ 一樣包，store 要在負責範圍內）。
  *  回 { ok, ym, store, status:'final'|'draft'|'none'|'mixed', rows, run_at, elec_stale }：
  *    final＝該店該月每一列都是 final；draft＝都不是；none＝還沒有月結列；mixed＝有 final 也有草稿（不該發生，照實回）。
- *    elec_stale＝草稿不是用現在的選舉假名單算的（同 payroll_month 的判斷；已鎖定、沒有名單一律 false）。 */
+ *    elec_stale＝草稿不是用現在的選舉假名單算的（同 payroll_month 的判斷；已鎖定、沒有名單一律 false）。
+ *  讀不到（開試算表、查分頁、讀格子丟例外）→ 回 { ok:false, error:'status_read_failed' }，不回 status：
+ *    前端當成「狀態查不到」（擋匯出與鎖定、請人重新整理），不可當成「這個月沒有資料／沒有名單」（Codex 複審 SHOULD-FIX 2，2026-11-22）。 */
 function handlePayrollStatus(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const ym = String((body && body.ym) || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
   const st = payStore(body.store);
-  const runs = payReadNoCreate_('run');
+  let runs;
+  try { runs = payReadNoCreate_('run'); } catch (e) { return { ok: false, error: 'status_read_failed' }; }
   const mine = runs.filter(function (r) { return String(r.ym) === ym && payStore(r.store) === st; });
   const nFinal = mine.filter(function (r) { return String(r.status) === 'final'; }).length;
   const status = !mine.length ? 'none' : nFinal === mine.length ? 'final' : nFinal ? 'mixed' : 'draft';
@@ -4976,18 +4979,22 @@ function handlePayrollStatus(body) {
   mine.forEach(function (r) { if (String(r.run_at || '') > at) at = String(r.run_at || ''); });
   let elecStale = false;
   if (status === 'draft' && payElecOn_(ym)) {
-    try { elecStale = payRunElecStale_(mine, ym, st, payElecFpNow_(ym, st)); } catch (e) { elecStale = false; }
+    /* 名單指紋＝payElecFpNow_ 的條件（逐日月份＋生效月份）與算法，只是名單改用不建分頁的讀法（payHolEmpRows_ 預查失敗會落回 payRead → paySheet 建分頁）。
+       ⚠ payElecFpNow_ 的條件改了這裡要一起改（tests/payroll-status.test.js 第 2、5 段會抓到 elec_stale 不一致）。 */
+    let hol = null;
+    try { hol = payOtDailyOn(ym) ? payReadNoCreate_('hol_emp') : null; } catch (e) { return { ok: false, error: 'status_read_failed' }; }
+    try { elecStale = payRunElecStale_(mine, ym, st, hol ? payElecFp_(hol, ym, st) : ''); } catch (e) { elecStale = false; }
   }
   return { ok: true, ym: ym, store: st, status: status, rows: mine.length, run_at: at, elec_stale: elecStale };
 }
-/** 讀分頁但不建分頁（唯讀端點用）：分頁不存在＝[]。讀不到試算表物件（測試替身）時交給 payRead。 */
+/** 讀分頁但不建分頁（只給 payroll_status 用）：分頁不存在＝[]；開試算表、查分頁、讀格子丟例外 → 照樣丟給呼叫端。
+ *  用這一次 getSheetByName 拿到的分頁物件直接讀格子（同 payRead 的 readSheetAsObjects＋stripRowIndex），不經 payRead／paySheet：
+ *  以前預查丟例外會被吞掉、落回 payRead → paySheet，分頁不存在時就建分頁＋寫表頭（Codex 複審 SHOULD-FIX 2，2026-11-22）。
+ *  不讀也不寫請求內快取（PAY_READ_CACHE／PAY_RAW_CACHE）；payRead／paySheet 給其他路徑的行為不變。 */
 function payReadNoCreate_(kind) {
-  if (PAY_READ_CACHE[kind]) return PAY_READ_CACHE[kind];
-  try {
-    const ss = getSS();
-    if (ss && typeof ss.getSheetByName === 'function' && !ss.getSheetByName(PAY_SHEET_NAME[kind])) return [];
-  } catch (e) { /* 交給 payRead */ }
-  return payRead(kind) || [];
+  const sh = getSS().getSheetByName(PAY_SHEET_NAME[kind]);
+  if (!sh) return [];
+  return readSheetAsObjects(sh).rows.map(stripRowIndex);
 }
 
 /* 每天 06:00 自動重算草稿（Eason 2026-11-17）：有薪資主檔的門市，重算「本月（算到昨天）」。

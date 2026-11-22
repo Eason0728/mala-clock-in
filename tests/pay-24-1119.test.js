@@ -218,6 +218,8 @@ function front(fetchPlan, monthStatus) {
   };
   ctx.loadMonth = async (pre) => { log.loadMonth++; const r = await (pre || ctx.post('payroll_month', { ym: '2026-10', inputs: {} })); if (!r || !r.ok) return false; ctx.STATUS = r && r.run ? r.run.status : 'draft'; return true; };
   vm.createContext(ctx); vm.runInContext(HTML.slice(a, b) + '\n' + HTML.slice(c, d), ctx);
+  // 鎖定的擋用 monBlocked()（＝elecPending()||monUnsure()，2026-11-22 #212 後續 PR）：把 payroll.html 的這三支原樣放進模擬環境
+  vm.runInContext(HTML.match(/^function (?:elecPending|monBlocked|monUnsure)\(\)\{.*\}.*$/gm).join('\n'), ctx);
   return { ctx, log };
 }
 (async () => {

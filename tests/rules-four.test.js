@@ -109,6 +109,8 @@ const STORES = [{ code: 'SSLGF', name: '光復', active: 'true', support_group: 
   const ctx = { ASOF: null, STATUS: 'draft', RESULTS: [], ATT_DIRTY: false, STORE: 'SSLGF', ELEC_PEND: {}, MON_UNSURE: {}, LOCK_BUSY: false, elecBtns() {}, CALC_INPUTS: () => ({}), $: () => null, ym: () => '2026-11', vClear() {}, renderRun() {}, toast() {}, setInterval: () => 1, clearInterval() {}, console, prompt: () => '',
     alert: (m) => log.push('alert:' + m.split('\n')[0]), doCalc: async () => log.push('doCalc'), post: async () => ({ ok: false, error: 'stale_run', message: '試算後資料有改過\n測試甲：實付 1 → 2' }), costStable() {}, costTotals() {} };
   vm.createContext(ctx); vm.runInContext(HTML.slice(a, b), ctx);
+  // 鎖定的擋用 monBlocked()（＝elecPending()||monUnsure()，2026-11-22 #212 後續 PR）：把 payroll.html 的這三支原樣放進模擬環境
+  vm.runInContext(HTML.match(/^function (?:elecPending|monBlocked|monUnsure)\(\)\{.*\}.*$/gm).join('\n'), ctx);
   ctx.toggleLock().then(() => {
     chk('畫面先說明再自動重算', log, ['alert:試算後資料有改過', 'doCalc']);
     chk('狀態仍是草稿', ctx.STATUS, 'draft');
