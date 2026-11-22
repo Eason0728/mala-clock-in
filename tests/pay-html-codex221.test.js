@@ -3,6 +3,7 @@
  *   ②晚到的舊回應：假別設定、事件日、主檔重讀（syncWrite）回應回來時發出當下的門市已不是現在的 → 整個丟掉，不改清單也不改旗標
  *      其他讀取（loadMonth 的月資料／出勤／獎金／主檔／參數、boot 的主檔）本來就有保護，這裡用靜態斷言鎖住
  *   ③月資料還在讀（LOAD_INFLIGHT）：toggleLock、使用者按的 doCalc、clearAtt 不送；沒有讀取在進行時照舊
+ *   ④（第二輪審查）程式自己發出的重算（存獎金、setMode、鎖月 stale_run）遇到月資料正在讀：等讀取結束再算，不可默默丟掉；等的期間店月變了就不算
  * 用法：node tests/pay-html-codex221.test.js（結束碼 0＝全過） */
 'use strict';
 const fs = require('fs'), path = require('path'), vm = require('vm');
@@ -156,6 +157,74 @@ const tick = () => new Promise(r => setImmediate(r));
     }
     ok(/async function toggleLock\(\)\{\n  if\(loadingStop\(\)\) return;/.test(H), 'toggleLock 第一行就看 loadingStop（在 monBlocked 與任何 prompt 之前）');
     ok(/function loadingStop\(\)\{ if\(!LOAD_INFLIGHT\) return false; toast\('讀取中…',true\); return true; \}/.test(H), 'loadingStop 只用既有字串「讀取中…」');
+  }
+
+  /* ═════ ④ 程式自動發出的重算遇到讀取中：等讀取結束再算 ═════ */
+  console.log('══ ④ 存獎金／setMode／鎖月 stale_run 遇到背景讀取：讀取結束後補算 ══');
+  {
+    const flushM = /if\(!LOAD_INFLIGHT&&LOAD_WAITERS\.length\)\{ const w=LOAD_WAITERS; LOAD_WAITERS=\[\]; w\.forEach\(f=>f\(\)\); \}/.exec(fnSrc('loadMonth'));
+    ok(!!flushM, 'loadMonth 的 finally 清掉 LOAD_INFLIGHT 後會喚醒等待中的自動重算（LOAD_WAITERS）');
+    const FLUSH = flushM ? flushM[0] : '';
+    const SAVED = '獎金已儲存（1 筆）';
+    const mk = (over) => {
+      const log = { posts: [], toasts: [], alerts: 0 };
+      const fin = defer();
+      const ctx = Object.assign({ STORE: 'S', _ym: '2026-10', ym: () => ctx._ym, STATUS: 'draft', ASOF: null, RESULTS: [{ amt: 100 }], LOAD_INFLIGHT: null, LOAD_WAITERS: [], MON_UNSURE: {}, ELEC_PEND: {}, LOCK_BUSY: false, ATT_DIRTY: false, RES_GEN: {},
+        SAVE_UNSURE_MSG: 'U', BACK: { bonus: 0 }, BONUS_KEY: 'S|2026-10', CFG_ST: 'S', CFG: {}, BONUS: [{ emp_id: 'E1', amount: 500 }], COST_SNAP: null, NOT_IN_PAY: [], ZERO_RATIO: [], LEAVE_MM: [], ELEC_STALE: false,
+        $: () => null, toast: (t) => log.toasts.push(t), prompt: () => '原因', alert: () => { log.alerts++; }, confirm: () => true, setBusy() {}, supCrossBlock: () => false, CALC_INPUTS: () => ({}), elecBtns() {},
+        vClear() {}, renderRun() {}, renderSlipSel() {}, renderCfg() {}, asofFromCalc() {}, loadMonth: async () => true, costTotals() { return {}; }, costStable() { return {}; }, costDetail() { return {}; }, lockBlockedBox() {},
+        post: async (a) => { log.posts.push(a + '@' + ctx.STORE + '|' + ctx._ym);
+          if (a === 'payroll_bonus_set') { ctx.BACK.bonus = 500; return { ok: true, count: 1 }; }
+          if (a === 'payroll_config_set') return { ok: true, config: {} };
+          if (a === 'payroll_calc') return { ok: true, results: [{ amt: 100 + ctx.BACK.bonus }] };
+          if (a === 'payroll_finalize') return fin.p;
+          return { ok: false }; } }, over);
+      vm.createContext(ctx);
+      vm.runInContext(['saveBonus', 'saveFX', 'dataStop', 'bonusForeign', 'setMode', 'loadingStop', 'doCalcAfterLoad', 'doCalc', 'elecPending', 'monUnsure', 'monBlocked', 'toggleLock'].map(fnSrc).join('\n'), ctx);
+      // 背景讀取（開頁後的打卡對照同步）：開始＝LOAD_INFLIGHT 有值；結束＝套回「寫入前」的舊草稿、清旗標、喚醒等待的重算（喚醒那段用 payroll.html 原文）
+      const bg = () => { const d = defer(); ctx.LOAD_INFLIGHT = { seq: 9, key: ctx.STORE + '|' + ctx._ym };
+        d.p.then(() => { ctx.RESULTS = [{ amt: 100 }]; vm.runInContext('LOAD_INFLIGHT=null;' + FLUSH, ctx); }); return d; };
+      return { ctx, log, fin, bg };
+    };
+    const calcs = (log) => log.posts.filter(x => x.indexOf('payroll_calc') === 0);
+    const settle = async () => { for (let i = 0; i < 8; i++) await tick(); };
+    const run = (f) => f().catch(() => {});
+
+    // (a) 開頁背景同步進行中存獎金
+    { const t = mk({}); const b = t.bg(); const p = t.ctx.saveBonus(null); await settle();
+      const before = calcs(t.log).length, savedEarly = t.log.toasts.indexOf(SAVED) >= 0;
+      b.res(); await p; await settle();
+      ok(before === 0 && !savedEarly && calcs(t.log).length === 1 && t.ctx.RESULTS[0].amt === 600 && t.log.toasts.indexOf(SAVED) >= 0, '(a) 背景讀取進行中存獎金：讀取結束後才送 payroll_calc 一次、畫面金額含新獎金（600，不是舊草稿的 100）；讀完才顯示「獎金已儲存」', { before, savedEarly, posts: t.log.posts, res: t.ctx.RESULTS }); }
+    // (b) 同情境 setMode（目前全檔唯一會在存參數後重算的路徑；saveCfg 本來就不重算）
+    { const t = mk({}); t.ctx.BACK.bonus = 500; const b = t.bg(); await t.ctx.setMode('daily_hours', 8); await settle();
+      const before = calcs(t.log).length; b.res(); await settle();
+      ok(before === 0 && calcs(t.log).length === 1 && t.ctx.RESULTS[0].amt === 600, '(b) 背景讀取進行中改設定（setMode）：讀取結束後補送 payroll_calc、畫面是重算後的金額', { before, posts: t.log.posts, res: t.ctx.RESULTS }); }
+    // (c) 鎖月收到 stale_run 時有讀取在跑
+    { const t = mk({}); t.ctx.BACK.bonus = 500; const p = run(() => t.ctx.toggleLock()); await settle();
+      const b = t.bg(); t.fin.res({ ok: false, error: 'stale_run', message: '試算後資料有改過' }); await settle();
+      const before = calcs(t.log).length; b.res(); await p; await settle();
+      ok(t.log.alerts === 1 && before === 0 && calcs(t.log).length === 1 && t.ctx.RESULTS[0].amt === 600, '(c) 鎖月回 stale_run、背景讀取在跑：說明對話框照跳，讀取結束後補送 payroll_calc、畫面是重算後的金額', { alerts: t.log.alerts, before, posts: t.log.posts, res: t.ctx.RESULTS }); }
+    // (d) 等待期間使用者切了月份／門市 → 不補算、不送任何請求到新的店月
+    for (const [lab, sw] of [['切月份', c => { c._ym = '2026-09'; }], ['切門市', c => { c.STORE = 'X'; }]]) {
+      for (const [nm, start] of [['存獎金', (t) => t.ctx.saveBonus(null)], ['setMode', (t) => t.ctx.setMode('daily_hours', 8)]]) {
+        const t = mk({}); const b = t.bg(); const p = start(t); await settle();
+        const k = t.log.posts.length; sw(t.ctx); b.res(); await run(() => p); await settle();
+        ok(t.log.posts.length === k && calcs(t.log).length === 0, '(d) ' + nm + '：等讀取時' + lab + ' → 不補算、不送任何請求（新店月沒有被拿去算）', t.log.posts);
+      }
+      const t = mk({}); const p = run(() => t.ctx.toggleLock()); await settle(); const b = t.bg(); t.fin.res({ ok: false, error: 'stale_run', message: 'm' }); await settle();
+      const k = t.log.posts.length; sw(t.ctx); b.res(); await p; await settle();
+      ok(t.log.posts.length === k && calcs(t.log).length === 0, '(d) stale_run 補算：等讀取時' + lab + ' → 不補算、不送任何請求', t.log.posts);
+    }
+    // (e) 沒有讀取在跑：三處照改版前（立刻送一次 payroll_calc）
+    { const t = mk({}); await t.ctx.saveBonus(null);
+      ok(calcs(t.log).length === 1 && t.ctx.RESULTS[0].amt === 600 && t.log.toasts.indexOf(SAVED) >= 0, '(e) 沒有讀取在跑：存獎金 → 立刻重算一次、畫面含新獎金', t.log.posts); }
+    { const t = mk({}); await t.ctx.setMode('daily_hours', 8); await settle();
+      ok(calcs(t.log).length === 1, '(e) 沒有讀取在跑：setMode → 立刻重算一次', t.log.posts); }
+    { const t = mk({}); const p = run(() => t.ctx.toggleLock()); await settle(); t.fin.res({ ok: false, error: 'stale_run', message: 'm' }); await p; await settle();
+      ok(t.log.alerts === 1 && calcs(t.log).length === 1, '(e) 沒有讀取在跑：stale_run → 對話框後立刻重算一次', t.log); }
+    // 使用者直接按的重算：讀取中照舊不送（3c4004a 的行為）
+    { const t = mk({}); t.bg(); await run(() => t.ctx.doCalc()); ok(calcs(t.log).length === 0 && t.log.toasts[0] === '讀取中…', '使用者按的 doCalc()：讀取中照舊不送、提示「讀取中…」', t.log); }
+    ok(!/await doCalc\(\);|[^A-Za-z]doCalc\(\)\}/.test(H.replace(/onclick="doCalc\(\)"/, '')), '程式自己發出的無參數 doCalc() 全部改走 doCalcAfterLoad（只剩按鈕的 onclick）');
   }
 
   console.log('\n小計：通過 ' + pass + '、失敗 ' + fail);

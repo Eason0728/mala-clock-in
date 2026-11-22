@@ -24,7 +24,7 @@ console.log('══ ① 出勤表單是哪個店月的 ══');
   const iFail = lm.indexOf('if(!r.ok){'), iOk = lm.indexOf("ATT_KEY=BONUS_KEY=STORE+'|'+ym();");
   ok(/function attForeign\(\)\{ return ATT_KEY!==STORE\+'\|'\+ym\(\); \}/.test(H), 'attForeign()＝ATT_KEY 跟畫面上的店月不同');
   ok(iFail > 0 && iOk > iFail && lm.slice(iFail, lm.indexOf('return false;', iFail)).indexOf('ATT_KEY') < 0, 'loadMonth：讀取失敗那段不改 ATT_KEY；讀取成功（換掉 ATT 之後）才設成這個店月');
-  ok(/finally \{[^}]*attGuardUi\(\); \}/.test(lm), 'loadMonth：finally 一律 attGuardUi()（失敗時收起表單、成功時打開）');
+  ok(/finally \{[^}]*attGuardUi\(\);/.test(lm), 'loadMonth：finally 一律 attGuardUi()（失敗時收起表單、成功時打開）');
   ok(/^\s*if\(dataStop\(attForeign\(\),ATT_FOREIGN_MSG\)\) return;/.test(fnSrc('saveAtt').split('\n')[1]), 'saveAtt：第一行就擋 attForeign()');
   ok(/^\s*if\(dataStop\(attForeign\(\),ATT_FOREIGN_MSG\)\) return;/.test(fnSrc('supDecide').split('\n')[1]), 'supDecide：第一行就擋 attForeign()');
   ok(H.indexOf("const ATT_FOREIGN_MSG='這個月的出勤資料沒有讀取成功，為了避免存錯月份，先不能修改或儲存工時。請重新整理頁面後再操作。';   // Eason 2026-11-23 核可") >= 0, '出勤被擋的字句＝核可原文、註解寫核可');

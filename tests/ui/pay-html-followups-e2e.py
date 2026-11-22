@@ -364,6 +364,18 @@ try:
                 del held[:]; pg.wait_for_timeout(2500)
                 k = len(seen); pg.focus('#calcBtn'); pg.keyboard.press('Enter'); pg.wait_for_timeout(2000)
                 ok(bname + ' G4 對照：讀取回來之後重新計算照送', not pg.evaluate('!!LOAD_INFLIGHT') and 'payroll_calc' in [x.get('action') for x in seen[k:]], [x.get('action') for x in seen[k:]])
+                # G5 第二輪審查：同店月的背景讀取在跑時存獎金 → 程式自己的重算不可被丟掉，讀取結束後補送 payroll_calc、才顯示「獎金已儲存」
+                fresh()
+                cfg['hold_month'] = ('2026-11',)
+                pg.evaluate("window.__lm=loadMonth(); 0"); pg.wait_for_timeout(300)
+                k = len(seen); pg.evaluate("window.__sb=saveBonus(null); 0"); pg.wait_for_timeout(800)
+                mid = [x.get('action') for x in seen[k:]]; clear_msg()
+                cfg['hold_month'] = ()
+                for r in list(held): r.continue_()
+                del held[:]; pg.wait_for_timeout(3500)
+                aft = [x.get('action') for x in seen[k:]]
+                ok(bname + ' G5 背景讀取在跑時存獎金：存檔請求先送、重算等讀取結束後才送（讀取結束後有 payroll_calc），最後不在讀取中',
+                   'payroll_bonus_set' in mid and 'payroll_calc' not in mid and 'payroll_calc' in aft and not pg.evaluate('!!LOAD_INFLIGHT'), (mid, aft))
             b.close()
 finally:
     proc.terminate()
