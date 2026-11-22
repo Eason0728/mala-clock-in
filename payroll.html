@@ -900,6 +900,12 @@ function loadingStop(){ if(!LOAD_INFLIGHT) return false; toast('讀取中…',tr
 /** 程式自己發出的重算（存獎金、改設定、鎖月收到 stale_run）遇到月資料正在讀：不可以默默丟掉（背景讀取可能是存檔前發出的，套回來的是舊草稿）。
     等讀取結束再算一次（算的是讀取完成後的畫面與後端最新資料）；等的期間店月變了（key＝存檔當下的店月）就不算、不送任何請求。沒有讀取在跑時＝立刻 doCalc，行為同改版前（2026-11-23） */
 let LOAD_WAITERS=[];
+/** 整份取代式寫入的「柵欄」（2026-11-23，Codex 第三輪）：寫入送出時、寫入成功時各呼叫一次，把這個店月的世代加一。
+    月資料讀取（loadMonth）發出時記了世代，回來時世代變了＝這份讀取是寫入前（或寫入途中）發出的，整份不套用、重讀一次——
+    不然它會把寫入前的舊清單（獎金、工時、主檔、參數、門市表、選舉假名單）蓋回畫面，下一次儲存就把剛存的內容整月取代掉。
+    假別設定、假別事件日不在月資料裡，各有自己的版本號（LT_VER／LEV_VER，見 loadLeaveTypes1／loadLeaveEvents1）。 */
+function writeFence(key){ const k=key||(STORE+'|'+ym()); RES_GEN[k]=(RES_GEN[k]||0)+1; }
+let LT_VER=0, LEV_VER=0;   // 假別設定／事件日：每次寫入（送出時、成功時）加一，更早發出的讀取回來時整個丟掉
 async function doCalcAfterLoad(key){
   while(LOAD_INFLIGHT) await new Promise(r=>LOAD_WAITERS.push(r));
   if(STORE+'|'+ym()!==key) return false;
@@ -995,8 +1001,10 @@ async function saveAtt(){
   if(scopeLimited()){ const own={}; MASTER.forEach(m=>{own[String(m.emp_id).trim()]=1}); sendAtt={};
     Object.keys(ATT||{}).forEach(k=>{ if(own[String(k).trim()]) sendAtt[k]=ATT[k]; }); }
   if(ym()>=XSUP_FROM){ const t={}; Object.keys(sendAtt||{}).forEach(k=>{ if(attSendable(sendAtt[k])) t[k]=sendAtt[k]; }); sendAtt=t; }
+  const wk=STORE+'|'+ym(); writeFence(wk);   // 寫入柵欄（送出時）：寫入前發出的月資料讀取回來不套用（2026-11-23）
   const r=await post('payroll_input_set',{ym:ym(),inputs:sendAtt});
-  if(!r.ok){attBtnIdle(b);toast('儲存失敗：'+(r.message||r.error||''),true);return}   // 沒存成：編輯還在，圓點跟著回來（2026-11-23）
+  if(!r.ok){attBtnIdle(b);toast('儲存失敗：'+(r.message||r.error||''),true);return}
+  writeFence(wk);   // 寫入柵欄（成功時）   // 沒存成：編輯還在，圓點跟著回來（2026-11-23）
   await doCalc(undefined,true);   // 存完用新工時重算帶出數字（true＝工時已存：這個月讀取失敗時重算後可以重新載入）
   ATT_DIRTY=false;   // 存好了，解除未儲存提醒
   b.classList.add('done'); b.textContent='✓ 存檔完成';
@@ -1102,8 +1110,8 @@ async function loadMonth(pre,preSeq,preGen){   // pre＝開頁時先發出去的
   const reqKey=STORE+'|'+ym();
   const g0=(pre&&preGen!=null)?preGen:(RES_GEN[reqKey]||0);   // 發出時這個店月的重算結果版本（Codex 第六次 13a）
   LOAD_INFLIGHT={seq,key:reqKey};
-  setBusy(true);
   try{
+    setBusy(true);   // 放在 try 裡：它丟例外時 finally 也會清旗標、喚醒排隊的重算
     const pg=VGEN; vClear();
     if(pre&&preSeq&&DASH_PREFETCH&&DASH_PREFETCH.g===pg) DASH_PREFETCH.g=VGEN;   // 開頁時跟這份月資料一起發出的趨勢預抓＝同一版（中間沒有清過快取才算，Codex 第六次 13c）
     const r=await (pre||post('payroll_month',{ym:ym(),inputs:{}}));
@@ -1168,7 +1176,11 @@ async function loadMonth(pre,preSeq,preGen){   // pre＝開頁時先發出去的
     if($('p-dash')&&$('p-dash').classList.contains('on')) loadDash();
     if(wasUnsure) await monMixedRecheck(reqKey,seq);
     return true;
-  } finally { if(LOAD_INFLIGHT&&LOAD_INFLIGHT.seq===seq) LOAD_INFLIGHT=null; setBusy(false); attGuardUi(); if(!LOAD_INFLIGHT&&LOAD_WAITERS.length){ const w=LOAD_WAITERS; LOAD_WAITERS=[]; w.forEach(f=>f()); } }
+  } finally {
+    if(LOAD_INFLIGHT&&LOAD_INFLIGHT.seq===seq) LOAD_INFLIGHT=null;
+    try{ setBusy(false); attGuardUi(); }
+    finally{ if(!LOAD_INFLIGHT&&LOAD_WAITERS.length){ const w=LOAD_WAITERS; LOAD_WAITERS=[]; w.forEach(f=>f()); } }   // 前面的步驟丟例外也一定喚醒排隊的重算（否則獎金鈕會停在「存取中…」）
+  }
 }
 /* 讀取失敗旗標在、這次重新載入成功：先用唯讀 payroll_status 確認月結列不是「一部分已鎖定、一部分草稿」才解開（2026-11-23）。
    payroll_month 只看第一列判整個月（Payroll.gs payBuildRunResults），一半鎖定時照樣回 ok，原本在這裡就直接解開了。
@@ -2170,10 +2182,10 @@ function onceFor(name,fn){
 }
 function loadLeaveTypes(){ return onceFor('lt',loadLeaveTypes1); }
 async function loadLeaveTypes1(){
-  const st=STORE;   // 發出時的門市（回來時已切店＝這份是別店的，LT_ST 不等於 STORE，存檔會擋）
+  const st=STORE, ver=LT_VER;   // 發出時的門市（回來時已切店＝這份是別店的，LT_ST 不等於 STORE，存檔會擋）
   const r=await post('payroll_leave_type_get');   // post() 會自動帶 admin_key 與 store
   if(!r||!r.ok) return;
-  if(STORE!==st) return;   // 等回應時已切店（或開頁時店碼才定下來）：這份是發出當下那家店的，整個丟掉、不改清單也不改旗標（2026-11-23）
+  if(STORE!==st||ver!==LT_VER) return;   // 等回應時已切店（或開頁時店碼才定下來）、或這之間有寫入（版本變了＝這份是寫入前發出的）：這份是發出當下那家店的，整個丟掉、不改清單也不改旗標（2026-11-23）
   LT_LIST=r.types||[]; LT_IS_DEFAULT=!!r.is_default; LT_ST=st;
   const own=$('ltOwn'); if(own) own.checked=!LT_IS_DEFAULT && !!r.store_specific;
   renderLeaveTypes();
@@ -2186,16 +2198,19 @@ async function saveLeaveTypes(btn){
     if(bad.length) throw new Error('有假別的名稱或代碼是空的，請補齊再存');
     const names=LT_LIST.map(x=>String(x.name).trim());
     if(new Set(names).size!==names.length) throw new Error('有重複的假別名稱——名稱是 leave 分頁比對的依據，不能重複');
+    LT_VER++; delete ONCE.lt;   // 寫入柵欄（送出時）：在途的舊讀取作廢，之後的讀取不再共用它（2026-11-23）
     const r=await post('payroll_leave_type_set',
                        {scope_own:$('ltOwn')&&$('ltOwn').checked, types:LT_LIST});
     if(!r||!r.ok) throw new Error((r&&r.message)||'儲存失敗');
+    LT_VER++; delete ONCE.lt;   // 寫入柵欄（成功時）
     await loadLeaveTypes();
   });
 }
 async function resetLeaveTypes(){
   if(!confirm('要把假別設定還原成系統內建的法定預設嗎？\n（你自訂的列會被覆蓋，已算過的月份數字不受影響，除非之後按重新計算）')) return;
+  LT_VER++; delete ONCE.lt;   // 寫入柵欄（送出時）
   const r=await post('payroll_leave_type_set',{scope_own:false,types:[]});
-  if(r&&r.ok) await loadLeaveTypes();
+  if(r&&r.ok){ LT_VER++; delete ONCE.lt; await loadLeaveTypes(); }   // 寫入柵欄（成功時）
 }
 
 /* ═════ 假別事件日（期限規則用）═════ */
@@ -2236,17 +2251,19 @@ function renderLeaveEvents(){
 function addLeaveEvent(){ LEV_LIST.push({emp_id:'',name:'',code:'',event_date:'',memo:''}); renderLeaveEvents(); }
 function loadLeaveEvents(){ return onceFor('lev',loadLeaveEvents1); }
 async function loadLeaveEvents1(){
-  const st=STORE;
+  const st=STORE, ver=LEV_VER;
   const r=await post('payroll_leave_event_get');
-  if(r&&r.ok){ if(STORE!==st) return;   /* 同假別設定：晚到的舊店回應整個丟掉（2026-11-23） */ LEV_LIST=r.events||[]; LEV_ST=st; renderLeaveEvents(); }
+  if(r&&r.ok){ if(STORE!==st||ver!==LEV_VER) return;   /* 同假別設定：晚到的舊店回應整個丟掉（2026-11-23） */ LEV_LIST=r.events||[]; LEV_ST=st; renderLeaveEvents(); }
 }
 async function saveLeaveEvents(btn){
   if(dataStop(LEV_ST!==STORE,SAVE_UNSURE_MSG)) return false;   // 事件日沒讀到或是別店的：不送（後端整店取代，2026-11-23）
   return saveFX(btn,'儲存事件日',async()=>{
     const bad=LEV_LIST.filter(x=>!x.emp_id||!x.code||!x.event_date);
     if(bad.length) throw new Error('有列的同仁／假別／事件日沒填完，請補齊或移除');
+    LEV_VER++; delete ONCE.lev;   // 寫入柵欄（送出時，2026-11-23）
     const r=await post('payroll_leave_event_set',{events:LEV_LIST});
     if(!r||!r.ok) throw new Error((r&&r.message)||'儲存失敗');
+    LEV_VER++; delete ONCE.lev;   // 寫入柵欄（成功時）
     await loadLeaveEvents();
   });
 }
@@ -2291,8 +2308,10 @@ async function saveStores(btn){
   return saveFX(btn,'儲存門市',async()=>{
     const bad=STORE_LIST.filter(s=>!String(s.code||'').trim());
     if(bad.length){toast('門市代碼不可空白',true);return false}
+    writeFence();   // 寫入柵欄（送出時，2026-11-23）：月資料也帶門市表，舊讀取回來不可把舊門市表蓋回來
     const r=await post('payroll_store_set',{stores:STORE_LIST});
     if(!r.ok){toast('儲存失敗：'+(r.error||''),true);return false}
+    writeFence();   // 寫入柵欄（成功時）
     renderStoreSel();toast('門市已儲存（'+r.count+' 家）');return true;
   });
 }
@@ -2438,8 +2457,10 @@ async function saveBonus(btn){
   if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再修改獎金',true); return false; }   // 已鎖定月份不送出（薪酬挑錯第 1 項）
   return saveFX(btn,'儲存獎金',async()=>{
     const bKey=STORE+'|'+ym();
+    writeFence(bKey);   // 寫入柵欄（送出時）：寫入前發出、還在路上的月資料讀取回來不可把舊獎金清單蓋回畫面（2026-11-23）
     const r=await post('payroll_bonus_set',{ym:ym(),store:STORE,bonuses:BONUS});
     if(!r.ok){toast('儲存失敗：'+(r.message||r.error||''),true);return false}
+    writeFence(bKey);   // 寫入柵欄（成功時）
     await doCalcAfterLoad(bKey);   // 背景讀取在跑時等它結束再算（2026-11-23）
     toast('獎金已儲存（'+r.count+' 筆）');return true;
   });
@@ -2798,8 +2819,10 @@ async function saveFX(btn,label,fn){
 async function saveMaster(btn){
   if(dataStop(MASTER_ST!==STORE,SAVE_UNSURE_MSG)) return false;   // 主檔是別店的或沒讀到：不送（後端整店取代，2026-11-23）
   return saveFX(btn,'儲存主檔',async()=>{
+    writeFence();   // 寫入柵欄（送出時，2026-11-23）
     const r=await post('payroll_master_set',{master:MASTER});
     if(!r.ok){toast('儲存失敗：'+(r.message||r.error||''),true);return false}
+    writeFence();   // 寫入柵欄（成功時）
     renderEmp();toast('主檔已儲存');return true;
   });
 }
@@ -2930,8 +2953,10 @@ async function syncWrite(btn,label,st,mutate){
     if(!syncStoreGuard(st)) return;
     const rows=g.master.map(e=>Object.assign({},e));
     const msg=mutate(rows); if(typeof msg!=='string'){ return; }
+    const sk=STORE+'|'+ym(); writeFence(sk);   // 寫入柵欄（送出時，2026-11-23）
     const r=await post('payroll_master_set',{store:st,master:rows});
     if(!r.ok){ toast('寫入失敗：'+(r.message||r.error||''),true); return; }
+    writeFence(sk);   // 寫入柵欄（成功時）
     if(st!==syncCurStore()){ toast(msg+'（已寫入 '+st+'；目前畫面是別家店）'); return; }
     const g2=await post('payroll_master_get',{store:st});
     if(st!==syncCurStore()){ toast(msg+'（已寫入 '+st+'；目前畫面是別家店）'); return; }   // 等重讀時切了店：不把這家店的主檔換進現在這家店的畫面（MASTER_ST 會誤放行，2026-11-23）
@@ -3046,8 +3071,8 @@ function renderCfg(){
    2026-09-18 改紅字天數時整段取代「紅字天數」到「薪資單」兩個標記之間的程式，把這兩支一起刪掉了，
    四顆儲存按鈕全部報錯（2026-09-19 修）。它們跟紅字天數無關，所以放在紅字天數區塊外面；
    tests/page-handlers.test.js 會檢查頁面上每一個按鈕呼叫的函式都還存在。 */
-async function setMode(k,v){if(dataStop(CFG_ST!==STORE,SAVE_UNSURE_MSG)) return;const mKey=STORE+'|'+ym();CFG[k]=v;const r=await post('payroll_config_set',{config:CFG});
-  if(r.ok){CFG=r.config||CFG;renderCfg();if(RESULTS.length)doCalcAfterLoad(mKey)}}
+async function setMode(k,v){if(dataStop(CFG_ST!==STORE,SAVE_UNSURE_MSG)) return;const mKey=STORE+'|'+ym();CFG[k]=v;writeFence(mKey);const r=await post('payroll_config_set',{config:CFG});
+  if(r.ok){writeFence(mKey);CFG=r.config||CFG;renderCfg();if(RESULTS.length)doCalcAfterLoad(mKey)}}
 /* 每張卡的欄位與範圍勾選（各卡獨立，不互相連動） */
 const CFG_CARDS={cfg:{own:'cfgOwn',scope:'cfgScope',keys:()=>CF.map(x=>x[0])},
   att:{own:'attOwn',scope:'attScope',keys:()=>CF_ATTEND.concat(CF_ATTEND_SELECT,CF_ATTEND_TEXT).map(x=>x[0])},
@@ -3073,8 +3098,10 @@ async function saveCfg(btn,label,card){
   const own=!!($(d.own)&&$(d.own).checked);
   return saveFX(btn,label||'儲存',async()=>{
     const send={};keys.forEach(k=>send[k]=CFG[k]);
+    writeFence();   // 寫入柵欄（送出時，2026-11-23）
     const r=await post('payroll_config_set',{config:send,store:own?STORE:'',keys:true});
     if(!r.ok){toast('儲存失敗：'+(r.message||r.error||''),true);return false}
+    writeFence();   // 寫入柵欄（成功時）
     // 存成集團預設、但本店另有專屬值的鍵：本店照用專屬值，畫面要說清楚，不然會以為存了沒生效
     const shadow=own?[]:keys.filter(k=>CFGSRC[k]==='own');
     keys.forEach(k=>{
@@ -3276,6 +3303,7 @@ async function saveElec(btn){
     RESULTS=[]; ELEC_STALE=true; renderRun(); renderSlipSel();   // 重新整理頁面後後端也會回 elec_stale（草稿存的名單指紋不同），兩邊同一個狀態
     btn.disabled=true;
     let r=null;
+    writeFence(pkey);   // 寫入柵欄（送出時，2026-11-23）
     try{ r=await post('payroll_hol_emp_set',Object.assign({ym:reqYm,date:ids.length?date:'',emp_ids:ids},off?{confirm_off_list:true}:{})); }
     finally{ btn.disabled=false; }
     const onIt=()=>ym()===reqYm&&STORE===reqStore;
@@ -3283,6 +3311,7 @@ async function saveElec(btn){
     // 有 message 的錯誤 post() 已經跳過提示；沒有 message 的（例：後端還是舊版、回 unknown_action）用通用的「儲存失敗」
     // 存檔失敗或結果不明：解除待確認後重新讀這個月（名單與草稿是不是過期以後端為準），不自己猜
     if(!r||!r.ok){ if(!(r&&r.message)) toast('儲存失敗：'+((r&&r.error)||''),true); clearPend(); if(onIt()) await loadMonth(); else renderRun(); return; }
+    writeFence(pkey);   // 寫入柵欄（成功時）
     let recalced=false;
     if(same){
       HOLEMP=ids.map(id=>({ym:reqYm,date:date,emp_id:id,note:''})); HOLEMP_OTHER=[];

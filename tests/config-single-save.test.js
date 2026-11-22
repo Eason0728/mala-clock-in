@@ -52,7 +52,7 @@ const cfgDecl = html.slice(html.indexOf('const CF=['), html.indexOf('const CFG_O
 const co = html.match(/const CO_MANUAL=\[[^\n]*\n/)[0];
 const front = html.slice(a, b).replace(/function renderCfg\(\)\{[\s\S]*?\n\}\n/, '');
 function mkEl(checked) { return { checked, textContent: '' }; }
-const ctx = { POSTS: [], toasts: [], STORE: 'CF', dataStop: () => false, CFG_ST: 'CF', MON_UNSURE_MSG: '', SAVE_UNSURE_MSG: '',   // 參數是這家店讀來的（別店／沒讀到擋存檔見 tests/pay-html-followups.test.js）
+const ctx = { POSTS: [], toasts: [], STORE: 'CF', dataStop: () => false, writeFence() {}, CFG_ST: 'CF', MON_UNSURE_MSG: '', SAVE_UNSURE_MSG: '',   // 參數是這家店讀來的（別店／沒讀到擋存檔見 tests/pay-html-followups.test.js）
   CFGSRC: { co_group: 'global', daily_hours: 'global', attend_void_forget: 'own' },
   CFG: { co_group: 1170, daily_hours: 8, attend_void_forget: 3, attend_forget_unit: 'punch', pt_attend_plus: 0, co_owner: 1405 },
   CFG_OBSOLETE: ['shortfall_deduct'], els: { cfgOwn: mkEl(false), attOwn: mkEl(false), ptOwn: mkEl(false), coOwn: mkEl(true) },

@@ -126,7 +126,7 @@ function load({ EMBED, SCOPE, master, perCall }) {
       const c = { $: () => ({ classList: { add() {}, remove() {} }, style: {} }), toast() {}, ym: () => '2026-10', doCalc: async () => {}, setTimeout() {}, supCrossBlock: () => false, XSUP_FROM: '2026-11', attSendable: () => true, attForeign: () => false, dataStop: () => false, ATT_FOREIGN_MSG: '',   // 表單是這個店月的（讀取失敗擋存檔另見 tests/ui/pay-html-followups-e2e.py）
         post: async (a, b) => { sent.push({ a, b }); return { ok: true, count: 0 }; } };
       vm.createContext(c);
-      vm.runInContext(`let EMBED=${embed}; let SCOPE=${JSON.stringify(scope)}; let ATT_DIRTY=true; let STATUS='draft';
+      vm.runInContext(`let EMBED=${embed}; let SCOPE=${JSON.stringify(scope)}; let ATT_DIRTY=true; let STATUS='draft'; let STORE='SSLGF'; function writeFence(){}
         let MASTER=[{emp_id:'T002',name:'測試乙'},{emp_id:3,name:'數字編號'}];
         let ATT={T002:{hours:8},'3':{hours:1},PUNCH9:{hours:5},T001:{hours:2}};
         ${fn('scopeLimited')}\n${saveSrc}\nthis.go=saveAtt;`, c);

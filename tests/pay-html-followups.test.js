@@ -83,14 +83,14 @@ console.log('══ ⑥ 同一類的其他資料：別店（月）的或沒讀�
   ok(!/BONUS_KEY|MASTER_ST|CFG_ST|LT_ST|LEV_ST/.test(failPart), 'loadMonth 讀取失敗那段不改任何資料記號（只有另外讀到門市表時記 STORES_OK）');
   ok(/ATT_KEY=BONUS_KEY=STORE\+'\|'\+ym\(\);/.test(lm) && /MASTER=r\.master;MASTER_ST=STORE;/.test(lm) && /CFG=r\.config;CFG_DIRTY=\{\};CFG_ST=STORE/.test(lm), 'loadMonth 讀取成功：獎金、主檔、參數記成這個店（月）');
   ok(/LT_LIST=\[\]; LT_ST=''; loadLeaveTypes\(\); LEV_LIST=\[\]; LEV_ST=''; loadLeaveEvents\(\);/.test(lm), '換店重讀假別設定／事件日：先清空並標成還沒讀到（讀失敗不會存空白）');
-  ok(/const st=STORE;[\s\S]*LT_ST=st;/.test(fnSrc('loadLeaveTypes1')) && /const st=STORE;[\s\S]*LEV_ST=st;/.test(fnSrc('loadLeaveEvents1')), '假別設定／事件日讀取成功才記門市（用發出時的門市）');
+  ok(/const st=STORE[,;][\s\S]*LT_ST=st;/.test(fnSrc('loadLeaveTypes1')) && /const st=STORE[,;][\s\S]*LEV_ST=st;/.test(fnSrc('loadLeaveEvents1')), '假別設定／事件日讀取成功才記門市（用發出時的門市）');
   ok(/MASTER_ST=CFG_ST=mStore;/.test(fnSrc('boot')) && /mStore=STORE; \}/.test(fnSrc('boot')), '開頁：主檔／參數記成實際讀的那家店');
   // 實跑：每支存檔在「資料是別店（月）的／沒讀到」時不送，對照組照送
   const FN = ['dataStop', 'bonusForeign', 'saveFX', 'saveBonus', 'saveMaster', 'saveCfg', 'setMode', 'saveLeaveTypes', 'saveLeaveEvents', 'saveStores'];
   const mk = (over) => {
     const log = { posts: [], toasts: [] };
     const btn = { disabled: false, textContent: '', classList: { add() {}, remove() {} }, checked: false };
-    const ctx = Object.assign({ console, setTimeout: () => 0, STORE: 'S', ym: () => '2026-10', LOAD_INFLIGHT: null, MON_UNSURE_MSG: 'M', SAVE_UNSURE_MSG: 'U', STATUS: 'draft', RESULTS: [],
+    const ctx = Object.assign({ console, setTimeout: () => 0, STORE: 'S', ym: () => '2026-10', LOAD_INFLIGHT: null, writeFence() {}, LT_VER: 0, LEV_VER: 0, ONCE: {}, MON_UNSURE_MSG: 'M', SAVE_UNSURE_MSG: 'U', STATUS: 'draft', RESULTS: [],
       BONUS_KEY: 'S|2026-10', MASTER_ST: 'S', CFG_ST: 'S', LT_ST: 'S', LEV_ST: 'S', STORES_OK: true,
       BONUS: [{ emp_id: 'E1', amount: 1 }], MASTER: [{ emp_id: 'E1' }], CFG: { daily_hours: 8 }, CFG_DIRTY: { daily_hours: 8 }, CFG_OBSOLETE: [], CFGSRC: {}, CFG_POS: {},
       CFG_CARDS: { cfg: { own: 'x', scope: 'y', keys: () => ['daily_hours'] } }, LT_LIST: [{ name: '事假', code: 'personal' }], LEV_LIST: [{ emp_id: 'E1', code: 'c', event_date: '2026-10-01' }], STORE_LIST: [{ code: 'S' }],
