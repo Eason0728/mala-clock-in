@@ -1,0 +1,422 @@
+/* 薪資影子唯讀匯出 payroll_shadow_export（P4-1 Google 端，2026-11-22）
+ * 用途：Mac mini 每天凌晨拉薪資資料做影子試算（只比對、不切換）。契約 dzy-mini-playbook docs/clock-to-mini/contracts/p-line-payshadow.md。
+ * 守的事：
+ *   1. 權限：只有總管理金鑰過；錯金鑰、沒金鑰、主管金鑰 → unauthorized（逐字、不洩漏任何東西、一張分頁都不讀）；
+ *      帶門市範圍 → scope_forbidden（跟同層的 payroll_get 同結果）。走 doPost 真的分派。
+ *   2. 白名單：每列欄位＝白名單（分頁上多出來的欄、名單外的欄、身分證／銀行帳號假欄一律不出現）；名單外的分頁不出現；
+ *      w1 跟 mini 端 payshadow-whitelist.js（mala-clock-mini 8f8c017）逐字相同。
+ *   3. 唯讀：分頁內容、指令碼屬性、觸發器清單前後完全相同；沒有任何寫入類呼叫（建分頁、寫格子、取鎖、寫快取）；
+ *      分頁不存在不建分頁；草稿過期也不重算（對照組：同情境 payroll_month 會重算寫回）；靜態檢查程式裡沒有寫入類呼叫。
+ *   4. 月份：本月往前 3 個月內才收；空月份回空陣列；整月一次回齊、不重不漏；超過上限回 too_many_rows、不截斷。
+ *   5. 形狀：契約 4.2 的鍵；值只有字串／數字／布林／null；日期轉台北 YYYY-MM-DD；mini 端 checkExport 吃得下。
+ *   6. 轉換：custom_add_more 只留金額（算出來的加薪金額不變）、留停 child 換代號（育嬰額度分組不變）。
+ * 假資料全部虛構（姓名「測試甲」、身分證／帳號是明顯的假字串），不碰正式試算表。
+ * PAY_GS_OVERRIDE＝改用別份 Payroll.gs（只給變異測試用）。 */
+'use strict';
+const fs = require('fs'), vm = require('vm'), path = require('path');
+const ROOT = path.join(__dirname, '..');
+const rd = (f) => fs.readFileSync(path.join(ROOT, 'apps-script', f), 'utf8');
+const GS = process.env.PAY_GS_OVERRIDE ? fs.readFileSync(process.env.PAY_GS_OVERRIDE, 'utf8') : rd('Payroll.gs');
+const C = rd('Code.gs'), DF = rd('DutyFeed.gs');
+let pass = 0, fail = 0;
+const chk = (n, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); ok ? pass++ : fail++;
+  console.log((ok ? '✓ ' : '✗ ') + n + ': ' + String(JSON.stringify(got)).slice(0, 300) + (ok ? '' : ' ← 應為 ' + String(JSON.stringify(want)).slice(0, 300))); };
+const ADMIN = 'TEST-ADMIN-KEY-0000';
+
+/* mini 端 checkExport（mala-clock-mini origin/main 8f8c017 mini/payshadow-whitelist.js，逐字抄；只把 WHITELIST 改成參數，好拿來檢查 w2） */
+const MINI_W1 = {
+  master: ['emp_id', 'is_full_time', 'wage', 'base', 'ot_rate',
+    'skill_allow', 'night_allow', 'mgr_allow', 'editor_allow', 'attend_cap', 'meal_allow',
+    'labor_ins', 'health_ins', 'group_ins', 'pension', 'co_labor', 'co_health', 'co_pension',
+    'dormitory', 'hire_date', 'leave_date', 'store'],
+  config: ['key', 'value', 'store'],
+  holiday: ['ym', 'red_days', 'dates', 'store'],
+  store: ['code', 'name', 'emp_prefix', 'active', 'sort', 'support_group'],
+  run: ['ym', 'emp_id', 'store', 'is_full_time', 'ratio', 'total_hours', 'base_hours', 'surplus_hours',
+    'ot_paid_hours', 'support_hours', 'support_auto_h', 'gross', 'deduction', 'net', 'as_of'],
+  item: ['ym', 'emp_id', 'store', 'item_type', 'item_key', 'qty', 'rate', 'amount', 'source'],
+};
+function miniCheckExport(resp, ym, WHITELIST, WHITELIST_VERSION) {
+  const FORMAT = 'payshadow-v1', TABLES = Object.keys(WHITELIST);
+  if (!resp || typeof resp !== 'object') return { ok: false, code: 'bad_response' };
+  if (resp.format !== FORMAT) return { ok: false, code: 'bad_format' };
+  if (resp.whitelist_version !== WHITELIST_VERSION) return { ok: false, code: 'whitelist_version_mismatch' };
+  if (resp.ym !== ym) return { ok: false, code: 'ym_mismatch' };
+  const t = resp.tables;
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return { ok: false, code: 'no_tables' };
+  for (const name of Object.keys(t)) {
+    if (!Object.prototype.hasOwnProperty.call(WHITELIST, name)) return { ok: false, code: 'non_whitelisted_table', table: name };
+  }
+  const counts = {};
+  for (const name of TABLES) {
+    const rows = t[name];
+    if (!Array.isArray(rows)) return { ok: false, code: 'missing_table', table: name };
+    const allow = new Set(WHITELIST[name]);
+    for (const r of rows) {
+      if (!r || typeof r !== 'object' || Array.isArray(r)) return { ok: false, code: 'bad_row', table: name };
+      for (const col of Object.keys(r)) {
+        if (!allow.has(col)) return { ok: false, code: 'non_whitelisted_column', table: name, column: col };
+        const v = r[col];
+        if (v !== null && typeof v === 'object') return { ok: false, code: 'nested_value', table: name, column: col };
+      }
+    }
+    counts[name] = rows.length;
+  }
+  if (counts.master === 0) return { ok: false, code: 'empty_master', table: 'master' };
+  return { ok: true, counts };
+}
+
+/* ── 假試算表：所有寫入類方法都記一筆（用 Proxy 抓，沒列在「讀」名單的方法一律算寫入） ── */
+const SHEET_READS = new Set(['getName', 'getSheetId', 'getDataRange', 'getLastRow', 'getLastColumn', 'getMaxRows', 'getMaxColumns', 'getFrozenRows']);
+const RANGE_READS = new Set(['getValues', 'getDisplayValues', 'getNumRows', 'getNumColumns', 'getValue']);
+function book(sheets) {
+  const w = { sheets, writes: [], reads: 0, opens: 0, props: { SOME_PROP: 'v' }, triggers: [{ fn: 'payAsOfDaily' }] };
+  const rangeOf = (name) => new Proxy({}, { get: (_, m) => RANGE_READS.has(m)
+    ? () => (m === 'getValues' ? sheets[name].map((r) => r.slice()) : 0)
+    : (...a) => { w.writes.push(name + '.range.' + String(m)); return rangeOf(name); } });
+  const sheetOf = (name) => new Proxy({}, { get: (_, m) => {
+    if (m === 'getDataRange') return () => rangeOf(name);
+    if (m === 'getName') return () => name;
+    if (m === 'getSheetId') return () => Object.keys(sheets).indexOf(name);
+    if (SHEET_READS.has(m)) return () => sheets[name].length;
+    return (...a) => { w.writes.push(name + '.' + String(m)); return m === 'getRange' ? rangeOf(name) : undefined; };
+  } });
+  w.ss = new Proxy({}, { get: (_, m) => {
+    if (m === 'getSheetByName') return (n) => { w.reads++; return Object.prototype.hasOwnProperty.call(sheets, n) ? sheetOf(n) : null; };
+    if (m === 'getId') return () => 'FAKE';
+    return (...a) => { w.writes.push('ss.' + String(m)); if (m === 'insertSheet') { sheets[a[0]] = [[]]; return sheetOf(a[0]); } };
+  } });
+  return w;
+}
+const snapOf = (w) => JSON.stringify({ s: w.sheets, p: w.props, t: w.triggers }, (k, v) => v);
+
+/* ── 一個世界：真的 Code.gs＋Payroll.gs＋DutyFeed.gs，假的 Google 服務 ── */
+function world(sheets, today) {
+  const w = book(sheets);
+  const sb = { console, Logger: { log() {} },
+    SpreadsheetApp: { openById: () => { w.opens++; return w.ss; }, getActive: () => w.ss, flush() {} },
+    Utilities: { formatDate: (d, tz, f) => (f === 'yyyy-MM-dd' ? (today || '2026-11-22') : (today || '2026-11-22') + 'T05:20:00+08:00'),
+                 getUuid: () => '00000000-0000-0000-0000-000000000000' },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => (w.props[k] === undefined ? null : w.props[k]), getProperties: () => Object.assign({}, w.props),
+      setProperty: (k, v) => { w.writes.push('props.set'); w.props[k] = v; }, setProperties: () => { w.writes.push('props.setAll'); },
+      deleteProperty: (k) => { w.writes.push('props.delete'); delete w.props[k]; } }) },
+    ScriptApp: { getProjectTriggers: () => w.triggers.slice(), newTrigger: () => { w.writes.push('trigger.new'); throw new Error('不准建觸發器'); },
+      deleteTrigger: () => { w.writes.push('trigger.delete'); } },
+    LockService: { getScriptLock: () => { w.writes.push('lock'); return { tryLock: () => true, waitLock() {}, releaseLock() {} }; },
+      getDocumentLock: () => { w.writes.push('lock'); return { tryLock: () => true, waitLock() {}, releaseLock() {} }; } },
+    CacheService: { getScriptCache: () => ({ get: () => null, put: () => { w.writes.push('cache.put'); }, remove: () => { w.writes.push('cache.remove'); } }) },
+    ContentService: { MimeType: { JSON: 'json' }, createTextOutput: (s) => ({ s, setMimeType() { return this; } }) },
+  };
+  vm.createContext(sb);
+  vm.runInContext(C + '\n' + GS + '\n' + DF, sb);
+  vm.runInContext("CONFIG.ADMIN_KEY = '" + ADMIN + "'; CONFIG.SPREADSHEET_ID = 'FAKE';", sb);
+  const F = (n) => vm.runInContext(n, sb);
+  const post = (body) => JSON.parse(F('doPost')({ postData: { contents: JSON.stringify(body) } }).s);
+  return Object.assign(w, { sb, F, post });
+}
+
+/* ── 假資料：每張薪資分頁都多塞名單外的欄與假的敏感值（SECRET／假身分證／假帳號），回應裡一個都不准出現 ── */
+const PS = (() => { const sb = {}; vm.createContext(sb); vm.runInContext(C + '\n' + GS + '\nglobalThis.__S = PAY_SHEETS; globalThis.__N = PAY_SHEET_NAME;', sb); return { S: sb.__S, N: sb.__N }; })();
+const D = (iso) => new Date(iso);   // 試算表把純日期存成 Date（台北 00:00＝前一天 16:00Z）
+function tab(kind, rows, extraCols) {
+  const cols = PS.S[kind].concat(extraCols || []);
+  return [cols].concat(rows.map((r) => cols.map((c) => (r[c] === undefined ? '' : r[c]))));
+}
+const SECRET_RE = /SECRET|X000000000|BANK-000|測試甲|測試乙|測試丙/;
+function baseSheets(opt) {
+  opt = opt || {};
+  const people = [['E1', '測試甲', 'true'], ['E2', '測試乙', 'false'], ['E3', '測試丙', 'true']];
+  const s = {};
+  s[PS.N.master] = tab('master', people.map(([id, nm, ft], i) => ({ emp_id: id, name: nm, is_full_time: ft, wage: ft === 'true' ? 0 : 200, base: ft === 'true' ? 34000 : 0,
+    ot_rate: 0, skill_allow: 0, night_allow: 0, mgr_allow: 1000, editor_allow: 0, attend_cap: 2000, labor_ins: 700, health_ins: 500, group_ins: 0, pension: 0,
+    dormitory: 0, hire_date: D('2023-07-02T16:00:00Z'), leave_date: '', active: true, updated_at: 'SECRET-UPDATED', meal_allow: 2000, store: i === 2 ? 'CF' : 'SSLGF',
+    gap_rate: 0.1, co_labor: 1500, co_health: 1200, co_pension: 2000, yearend_months: 1, id_no: 'X000000000', bank_account: 'BANK-000-TEST' })), ['id_no', 'bank_account']);
+  s[PS.N.config] = tab('config', [{ key: 'daily_hours', value: 8, note: 'SECRET-NOTE', store: '' }, { key: 'late_deduct', value: 'true', note: 'SECRET-NOTE', store: 'CF' }]);
+  s[PS.N.holiday] = tab('holiday', [{ ym: '2026-11', red_days: 9, note: 'SECRET-NOTE', dates: '2026-11-12', store: '' },
+    { ym: '2026-10', red_days: 10, note: 'SECRET-NOTE', dates: '2026-10-10', store: '' }]);
+  s[PS.N.store] = tab('store', [{ code: 'SSLGF', name: '測試店一', clock_ss_id: 'SECRET-SSID', dzy_node: 'SECRET-NODE', emp_prefix: 'E', active: true, sort: 1, brand: 'SECRET-BRAND', support_group: 'sxl' },
+    { code: 'CF', name: '測試店二', clock_ss_id: 'SECRET-SSID', dzy_node: 'SECRET-NODE', emp_prefix: 'C', active: true, sort: 2, brand: 'SECRET-BRAND', support_group: 'sxl' }]);
+  const run = [];
+  ['2026-11', '2026-10'].forEach((ym) => people.forEach(([id, nm, ft], i) => run.push({ ym, emp_id: id, name: nm, is_full_time: ft, ratio: 1, total_hours: 176, base_hours: 160,
+    surplus_hours: 16, ot_paid_hours: 2, gross: 40000 + i, deduction: 1200, net: 38800 + i, status: ym === '2026-10' ? 'final' : 'draft', run_at: 'SECRET-RUNAT',
+    support_hours: 0, store: i === 2 ? 'CF' : 'SSLGF', support_auto_h: 0, ot_info: '{"SECRET":1}', as_of: ym === '2026-11' ? '2026-11-21' : '', elec_fp: 'SECRET-FP' })));
+  s[PS.N.run] = tab('run', run);
+  const item = [];
+  ['2026-11', '2026-10'].forEach((ym) => people.forEach(([id], i) => ['base', 'meal', 'labor_ins'].forEach((k, j) => item.push({ ym, emp_id: id, item_type: j < 2 ? 'earn' : 'ded',
+    item_key: k, item_label: 'SECRET-LABEL', qty: '', rate: '', amount: 1000 * (j + 1), source: 'calc', memo: 'SECRET-MEMO', store: i === 2 ? 'CF' : 'SSLGF' }))));
+  s[PS.N.item] = tab('item', item);
+  s[PS.N.input] = tab('input', [
+    { ym: '2026-11', emp_id: 'E1', hours: 0, sick_h: 8, menstrual_h: 0, support: '[{"code":"CF","store":"測試店二","hours":4,"rate":200,"amount":"","auto":true}]',
+      updated_at: 'SECRET-UPDATED', custom_add_label: 'SECRET-LABEL', custom_add_amt: 300, custom_ded_label: 'SECRET-LABEL', custom_ded_amt: 100, store: 'SSLGF',
+      custom_add_more: '[{"label":"SECRET-LABEL-A","amt":500},{"label":"SECRET-LABEL-B","amt":"1,200"},null]', hours_manual: '1' },
+    { ym: '2026-11', emp_id: 'E2', custom_add_more: 'SECRET-LABEL{壞掉', store: 'SSLGF' },
+    { ym: '2026-10', emp_id: 'E2', custom_add_more: '{"label":"SECRET-LABEL"}', store: 'SSLGF' },
+    { ym: '2025-01', emp_id: 'E1', annual_h: 8, custom_add_more: '', store: 'SSLGF' },
+    { ym: '2024-12', emp_id: 'E1', annual_h: 16, store: 'SSLGF' },      // 早於「去年 1 月」→ 不回
+    { ym: 'SECRET-bad', emp_id: 'E1', store: 'SSLGF' },                  // 月份格式不對 → 不回（計算也認不得）
+  ]);
+  s[PS.N.bonus] = tab('bonus', [{ ym: '2026-11', store: 'SSLGF', emp_id: 'E1', bonus_type: 'perf', label: 'SECRET-LABEL', amount: 3000, memo: 'SECRET-MEMO', updated_at: 'SECRET-UPDATED' },
+    { ym: '2026-10', store: 'SSLGF', emp_id: 'E1', bonus_type: 'sales', label: 'SECRET-LABEL', amount: 1000, memo: 'SECRET-MEMO', updated_at: 'x' }]);
+  s[PS.N.leave_type] = tab('leave_type', [{ code: 'sick', name: '病假', pay_ratio: 0.5, count_absent: true, cap_days: 30, cap_basis: 'year', active: true, sort: 1, note: 'SECRET-NOTE', store: '' }]);
+  s[PS.N.leave_span] = tab('leave_span', [
+    { emp_id: 'E1', name: '測試甲', store: 'SSLGF', code: 'parental', child: 'SECRET-CHILD-B', unit: 'month', start: D('2026-01-31T16:00:00Z'), end: '2026-04-30', months: 3, days: '', memo: 'SECRET-MEMO', updated_at: 'x' },
+    { emp_id: 'E1', name: '測試甲', store: 'SSLGF', code: 'parental', child: 'SECRET-CHILD-A', unit: 'month', start: '2025-01-01', end: '2025-06-30', months: 6, days: '', memo: 'SECRET-MEMO', updated_at: 'x' },
+    { emp_id: 'E1', name: '測試甲', store: 'SSLGF', code: 'parental', child: ' SECRET-CHILD-A ', unit: 'day', start: '2025-08-01', end: '2025-08-10', months: '', days: 10, memo: '', updated_at: 'x' },
+    { emp_id: 'E1', name: '測試甲', store: 'SSLGF', code: 'parental', child: '', unit: 'day', start: '2025-09-01', end: '2025-09-05', months: '', days: 5, memo: '', updated_at: 'x' },
+    { emp_id: 'E2', name: '測試乙', store: 'SSLGF', code: 'parental', child: 'SECRET-CHILD-A', unit: 'month', start: '2026-03-01', end: '2026-05-31', months: 3, days: '', memo: '', updated_at: 'x' },
+  ]);
+  s[PS.N.leave_event] = tab('leave_event', [{ emp_id: 'E1', name: '測試甲', store: 'SSLGF', code: 'marriage', event_date: '2026-10-01', memo: 'SECRET-MEMO', updated_at: 'x' }]);
+  s[PS.N.xmap] = tab('xmap', [{ emp_no: 'D001', pay_store: 'SSLGF', acct_store: 'CF', emp_id: 'C9', not_support: '', synced_at: 'SECRET-SYNC', state: 'active', acct_only: '' }]);
+  s[PS.N.audit] = tab('audit', [{ ts: 'x', ym: '2026-11', action: 'lock', operator: 'SECRET-OP', reason: 'SECRET-REASON', store: 'SSLGF' }]);
+  s[PS.N.cost_snapshot] = tab('cost_snapshot', [{ ym: '2026-11', store: 'SSLGF', detail_json: '{"SECRET":1}' }]);
+  s[PS.N.hol_emp] = tab('hol_emp', [{ ym: '2026-11', date: '2026-11-28', store: 'SSLGF', emp_id: 'E1', name: '測試甲', note: 'SECRET-NOTE', updated_at: 'x' }]);
+  if (opt.mut) opt.mut(s);
+  return s;
+}
+const ask = (w, extra) => w.post(Object.assign({ action: 'payroll_shadow_export', admin_key: ADMIN, ym: '2026-11', whitelist_version: 'w2' }, extra || {}));
+const W2 = (w) => JSON.parse(w.F('JSON.stringify(PAY_SHADOW_W2_)'));
+const W1 = (w) => JSON.parse(w.F('JSON.stringify(PAY_SHADOW_W1_)'));
+
+console.log('══ 0) 有登記：分派表、只限總管理清單 ══');
+{
+  const w = world(baseSheets());
+  chk('  PAYROLL_HANDLERS 有 payroll_shadow_export', w.F("typeof PAYROLL_HANDLERS.payroll_shadow_export"), 'function');
+  chk('  列在 PAY_SCOPE_ADMIN_ONLY（帶門市範圍一律擋）', w.F("PAY_SCOPE_ADMIN_ONLY.indexOf('payroll_shadow_export') >= 0"), true);
+  chk('  DutyFeed 當唯讀（不記變動）', w.F("dutyFeedIsRead_('payroll_shadow_export')"), true);
+}
+
+console.log('══ 1) 權限 ══');
+{
+  const cls = (r) => (r && r.ok ? 'ok' : String(r && r.error)) + (r && r.detail ? ':' + r.detail : '');
+  const cases = [
+    ['總管理金鑰', { admin_key: ADMIN }, 'ok'],
+    ['錯金鑰', { admin_key: 'WRONG' }, 'unauthorized'],
+    ['沒有金鑰', { admin_key: undefined }, 'unauthorized'],
+    ['空字串金鑰', { admin_key: '' }, 'unauthorized'],
+    ['主管金鑰（mgr_key，沒有 admin_key）', { admin_key: undefined, mgr_key: 'MGR-KEY-TEST' }, 'unauthorized'],
+    ['總管理金鑰＋門市範圍 [SSLGF]', { scope: ['SSLGF'] }, 'scope_forbidden:集團功能，限系統管理者'],
+    ['總管理金鑰＋空範圍 []', { scope: [] }, 'scope_forbidden:集團功能，限系統管理者'],
+    ['總管理金鑰＋範圍形狀錯', { scope: 'SSLGF' }, 'scope_bad:scope 必須是 * 或門市代碼陣列'],
+    ['錯金鑰＋門市範圍', { admin_key: 'WRONG', scope: ['SSLGF'] }, 'unauthorized'],
+    ['總管理金鑰＋scope *（＝不限門市的系統管理者）', { scope: '*' }, 'ok'],
+  ];
+  for (const [lab, b, want] of cases) {
+    const w = world(baseSheets());
+    const before = snapOf(w);
+    const r = ask(w, b);
+    chk('  ' + lab + ' → ' + want, cls(r), want);
+    if (want !== 'ok') {
+      chk('    拒絕時沒有 tables、沒讀任何分頁、沒有寫入、資料不變', ['tables' in r, w.reads, w.writes, snapOf(w) === before], [false, 0, [], true]);
+      /* 跟同層的 payroll_get（只限總管理的唯讀動作）同一種拒絕 */
+      const g = world(baseSheets()).post(Object.assign({ action: 'payroll_get', admin_key: ADMIN, ym: '2026-11' }, b));
+      chk('    跟 payroll_get 同一種拒絕', cls(r), cls(g));
+    }
+  }
+  const w = world(baseSheets());
+  chk('  錯金鑰回應逐字＝{ok:false,error:unauthorized}（不回月份、分頁、筆數）', ask(w, { admin_key: 'WRONG' }), { ok: false, error: 'unauthorized' });
+  chk('  錯金鑰＋壞月份＋壞版本 → 還是 unauthorized（先驗金鑰）', ask(w, { admin_key: 'WRONG', ym: 'SECRET', whitelist_version: 'zz' }), { ok: false, error: 'unauthorized' });
+  chk('  金鑰設定是空的（範本值沒換）→ 空字串金鑰也不過', (() => { const x = world(baseSheets()); x.F("CONFIG.ADMIN_KEY = ''"); return ask(x, { admin_key: '' }); })(), { ok: false, error: 'unauthorized' });
+}
+
+console.log('══ 2) 白名單 ══');
+{
+  const w = world(baseSheets());
+  const r = ask(w);
+  const wl = W2(w);
+  chk('  w2 成功', [r.ok, r.format, r.whitelist_version, r.ym], [true, 'payshadow-v1', 'w2', '2026-11']);
+  chk('  分頁集合＝w2 白名單的分頁（沒有 leave_event、audit、cost_snapshot、hol_emp）', Object.keys(r.tables), Object.keys(wl));
+  let extra = [];
+  for (const t of Object.keys(r.tables)) r.tables[t].forEach((row) => Object.keys(row).forEach((k) => { if (wl[t].indexOf(k) < 0) extra.push(t + '.' + k); }));
+  chk('  每列欄位 ⊆ 白名單（名單外的欄 0 個）', extra, []);
+  chk('  欄位齊全的列：鍵＝白名單、順序也一樣（master 第 1 列）', Object.keys(r.tables.master[0]), wl.master);
+  chk('  敏感假值（身分證、銀行帳號、SECRET 標記的 label／memo／note／ot_info／打卡試算表 ID）一個都沒出現', SECRET_RE.test(JSON.stringify(r).replace(/測試甲|測試乙|測試丙/g, '')), false);
+  chk('  w2 主檔有 name（Eason 11/21 同意）', r.tables.master.map((m) => m.name), ['測試甲', '測試乙', '測試丙']);
+  chk('  身分證、銀行帳號欄名不在任何一列', /id_no|bank_account/.test(JSON.stringify(r.tables)), false);
+  /* 分頁上又多一個新欄（例：日後有人手加「手機」欄）→ 照樣不帶出去 */
+  const w3 = world(baseSheets({ mut: (s) => { const t = s[PS.N.master]; t[0].push('phone_new'); for (let i = 1; i < t.length; i++) t[i].push('SECRET-PHONE'); } }));
+  const r3 = ask(w3);
+  chk('  主檔多一個名單外的新欄 → 回應裡沒有這欄、也沒有值', [r3.ok, /phone_new|SECRET-PHONE/.test(JSON.stringify(r3))], [true, false]);
+  /* w1：跟 mini 端目前的白名單逐字相同 */
+  const r1 = ask(w, { whitelist_version: 'w1' });
+  chk('  Payroll.gs 的 w1＝mini 端 payshadow-whitelist.js（8f8c017）逐字相同', W1(w), MINI_W1);
+  chk('  w1 只回 6 張表、沒有姓名', [Object.keys(r1.tables), /測試甲|"name":"測試/.test(JSON.stringify(r1.tables.master))], [Object.keys(MINI_W1), false]);
+  chk('  w2＝w1＋契約第 3 節建議同意的（主檔 name、active；leave_type、input、bonus、leave_span、xmap）',
+    [wl.master.slice(MINI_W1.master.length), Object.keys(wl).filter((k) => !MINI_W1[k])], [['name', 'active'], ['leave_type', 'input', 'bonus', 'leave_span', 'xmap']]);
+  chk('  w2 的 input 不抄兩個 label、bonus 不抄 label／memo、leave_span 不抄 name／memo',
+    [wl.input.filter((c) => /label|updated_at/.test(c)), wl.bonus.filter((c) => /label|memo|updated_at/.test(c)), wl.leave_span.filter((c) => /name|memo|updated_at/.test(c))], [[], [], []]);
+  chk('  版本號不認得 → whitelist_version_mismatch', ask(w, { whitelist_version: 'w3' }), { ok: false, error: 'whitelist_version_mismatch' });
+  chk('  沒帶版本號 → whitelist_version_mismatch', ask(w, { whitelist_version: undefined }), { ok: false, error: 'whitelist_version_mismatch' });
+  chk('  版本號是物件原型上的名字（constructor）→ 不認', ask(w, { whitelist_version: 'constructor' }), { ok: false, error: 'whitelist_version_mismatch' });
+}
+
+console.log('══ 3) 唯讀 ══');
+{
+  for (const [lab, extra, mut] of [['w2 成功', {}], ['w1 成功', { whitelist_version: 'w1' }], ['空月份', { ym: '2026-09' }],
+    ['選填分頁都不存在', {}, (s) => { ['leave_type', 'input', 'bonus', 'leave_span', 'xmap', 'item', 'config', 'holiday'].forEach((k) => delete s[PS.N[k]]); }],
+    ['run 分頁不存在（no_sheet）', {}, (s) => { delete s[PS.N.run]; }], ['壞月份', { ym: '2026-13' }], ['筆數超過', {}, (s) => { const t = s[PS.N.run]; for (let i = 0; i < 2001; i++) t.push(t[1].slice()); }]]) {
+    const w = world(baseSheets({ mut }));
+    const before = snapOf(w), sheetNames = Object.keys(w.sheets).join(',');
+    const r = ask(w, extra);
+    chk('  ' + lab + '（' + (r.ok ? 'ok' : r.error) + '）：分頁內容、指令碼屬性、觸發器清單前後相同', snapOf(w) === before, true);
+    chk('  ' + lab + '：寫入類呼叫 0 次（建分頁／寫格子／取鎖／寫快取／寫屬性／觸發器）、分頁清單不變', [w.writes, Object.keys(w.sheets).join(',') === sheetNames], [[], true]);
+  }
+  /* 靜態檢查：匯出那一段程式（handler＋小工具）裡沒有任何寫入類、會建分頁、會重算的呼叫；呼叫到的外部函式只限唯讀的那幾支 */
+  const start = GS.indexOf('薪資影子唯讀匯出 payroll_shadow_export（P4-1');
+  const block = start >= 0 ? GS.slice(GS.indexOf('const PAY_SHADOW_FORMAT_', start)) : '';
+  const code = block.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '').replace(/'(?:[^'\\]|\\.)*'/g, "''");
+  const BAD = /setValue|setValues|appendRow|insertSheet|deleteRow|clear\(|setFormula|setNumberFormat|paySheet\(|payRead\(|payReplace|payAppend|payWrite|PropertiesService|LockService|CacheService|ScriptApp|handlePayrollCalc|handlePayrollMonth|payCollect|payCalcOne|payInvalidate|UrlFetchApp|MailApp|GmailApp|DriveApp/;
+  chk('  找得到匯出那一段程式', block.length > 1000, true);
+  chk('  靜態：沒有寫入類／建分頁／重算／其他服務的呼叫', (code.match(BAD) || [null])[0], null);
+  const own = new Set((code.match(/function\s+([A-Za-z_$][\w$]*)/g) || []).map((s) => s.replace(/function\s+/, '')));
+  const KW = new Set(['if', 'for', 'while', 'function', 'return', 'catch', 'switch', 'typeof']);
+  const BUILTIN = new Set(['String', 'Number', 'Object', 'Array', 'JSON', 'isFinite', 'Boolean']);
+  const called = new Set();
+  code.replace(/(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(/g, (m, id) => { if (!KW.has(id) && !BUILTIN.has(id) && !own.has(id)) called.add(id); return m; });
+  chk('  靜態：呼叫到的外部函式只有這幾支唯讀的', [...called].sort(), ['checkAdmin', 'getSS', 'nowTaipeiIso', 'payNum', 'payTaipeiYmd_', 'readSheetAsObjects', 'todayTaipeiStr']);
+}
+
+console.log('══ 4) 月份、空月份、不存在的分頁 ══');
+{
+  const w = world(baseSheets());
+  const ok = (r) => (r.ok ? 'ok' : r.error);
+  chk('  本月 2026-11、往前 3 個月 2026-08 → 收', [ok(ask(w, { ym: '2026-11' })), ok(ask(w, { ym: '2026-08' }))], ['ok', 'ok']);
+  chk('  2026-07（往前 4 個月）、2026-12（未來）→ bad_ym', [ok(ask(w, { ym: '2026-07' })), ok(ask(w, { ym: '2026-12' }))], ['bad_ym', 'bad_ym']);
+  chk('  格式不對（2026-1、2026-13、2026-11-01、空白、沒帶）→ bad_ym',
+    ['2026-1', '2026-13', '2026-11-01', '', undefined, ' 2026-11'].map((ym) => ok(ask(w, { ym }))), Array(6).fill('bad_ym'));
+  const wy = world(baseSheets(), '2027-01-05');
+  chk('  跨年：今天 2027-01-05 → 2026-10 收、2026-09 不收', [ok(ask(wy, { ym: '2026-10' })), ok(ask(wy, { ym: '2026-09' }))], ['ok', 'bad_ym']);
+  const e = ask(w, { ym: '2026-09' });
+  chk('  空月份 2026-09：ok、run／item／holiday／bonus 都是空陣列、counts 明寫 0、整張的表照回',
+    [e.ok, e.tables.run, e.tables.item, e.tables.holiday, e.tables.bonus, e.counts.run, e.counts.item, e.counts.master, e.counts.store], [true, [], [], [], [], 0, 0, 3, 2]);
+  const r = ask(w);
+  chk('  2026-11：run／item／holiday／bonus 只回這個月', [r.tables.run.length, r.tables.item.length, r.tables.holiday.map((x) => x.ym), r.tables.bonus.length, r.tables.run.every((x) => x.ym === '2026-11')], [3, 9, ['2026-11'], 1, true]);
+  chk('  手填工時回「去年 1 月～今年 12 月」：2025-01、2026-10、2026-11（2024-12 和格式不對的不回）', r.tables.input.map((x) => x.ym).sort(), ['2025-01', '2026-10', '2026-11', '2026-11']);
+  chk('  主檔、參數、門市、假別、留停、打卡對照整張回', [r.counts.master, r.counts.config, r.counts.store, r.counts.leave_type, r.counts.leave_span, r.counts.xmap], [3, 2, 2, 1, 5, 1]);
+  for (const k of ['master', 'store', 'run']) {
+    const wm = world(baseSheets({ mut: (s) => { delete s[PS.N[k]]; } }));
+    const rm = ask(wm);
+    chk('  ' + k + ' 分頁不存在 → no_sheet、不建分頁', [rm, wm.writes], [{ ok: false, error: 'no_sheet', table: k }, []]);
+  }
+  const wo = world(baseSheets({ mut: (s) => { delete s[PS.N.leave_type]; delete s[PS.N.item]; } }));
+  const ro = ask(wo);
+  chk('  選填分頁（leave_type、item）不存在 → 空陣列、不建分頁', [ro.ok, ro.tables.leave_type, ro.tables.item, wo.writes], [true, [], [], []]);
+  /* 讀不到（開試算表或讀格子丟例外）→ read_failed，不回細節、不當成「沒有資料」 */
+  const wt = world(baseSheets()); wt.sb.SpreadsheetApp.openById = () => { throw new Error('Service Spreadsheets timed out SECRET'); };
+  chk('  開試算表丟例外 → read_failed（不回例外原文）', ask(wt), { ok: false, error: 'read_failed' });
+  const wg = world(baseSheets()); const ss0 = wg.ss; let n = 0;
+  wg.sb.SpreadsheetApp.openById = () => new Proxy({}, { get: (_, m) => (m === 'getSheetByName' ? (nm) => { if (++n === 4) throw new Error('SECRET'); return ss0.getSheetByName(nm); } : ss0[m]) });
+  chk('  讀到一半丟例外 → read_failed（不回半套）', ask(wg), { ok: false, error: 'read_failed' });
+}
+
+console.log('══ 5) 一次回齊、不重不漏；超過上限不截斷 ══');
+{
+  /* 契約沒有分批：一次回整月（分批的話兩次請求中間有人存檔，拼起來就不是同一個時間點）。這裡用大量列證明整月一次回齊、不重不漏。 */
+  const N = 1500;
+  const w = world(baseSheets({ mut: (s) => { const t = s[PS.N.item]; const h = t[0]; for (let i = 0; i < N; i++) { const row = h.map(() => ''); row[h.indexOf('ym')] = '2026-11'; row[h.indexOf('emp_id')] = 'P' + i; row[h.indexOf('item_key')] = 'k' + i; row[h.indexOf('amount')] = i; t.push(row); } } }));
+  const src = w.sheets[PS.N.item].slice(1).filter((x) => x[0] === '2026-11').map((x) => x[1] + '|' + x[3]);
+  const r = ask(w);
+  const got = r.tables.item.map((x) => x.emp_id + '|' + x.item_key);
+  chk('  2026-11 item ' + src.length + ' 列：回應列數＝來源、counts 相同', [got.length, r.counts.item], [src.length, src.length]);
+  chk('  不重：鍵全部不同', new Set(got).size, got.length);
+  chk('  不漏、順序照分頁：逐列相同', JSON.stringify(got) === JSON.stringify(src), true);
+  chk('  金額逐列相同（數字原樣）', r.tables.item.filter((x) => /^P/.test(x.emp_id)).every((x, i) => x.amount === i), true);
+  /* 上限：剛好 2,000 列 run 過；2,001 列回 too_many_rows、沒有 tables（不截斷送出） */
+  const mk = (n) => world(baseSheets({ mut: (s) => { const t = s[PS.N.run]; const h = t[0]; t.length = 1; for (let i = 0; i < n; i++) { const row = h.map(() => ''); row[0] = '2026-11'; row[1] = 'P' + i; t.push(row); } } }));
+  const a = ask(mk(2000)), b = ask(mk(2001));
+  chk('  run 剛好 2,000 列 → ok、2,000 列', [a.ok, a.counts && a.counts.run], [true, 2000]);
+  chk('  run 2,001 列 → too_many_rows、不回 tables', b, { ok: false, error: 'too_many_rows', table: 'run' });
+  chk('  上限照契約 4.2b：master／config／store／run 2,000、item 60,000', JSON.parse(w.F("JSON.stringify(['master','config','store','run','item'].map(function(k){return PAY_SHADOW_TABLES_[k].max;}))")), [2000, 2000, 2000, 2000, 60000]);
+}
+
+console.log('══ 6) 回應形狀與值 ══');
+{
+  const w = world(baseSheets());
+  const r = ask(w);
+  chk('  頂層鍵＝ok、format、whitelist_version、ym、generated_at、counts、tables', Object.keys(r), ['ok', 'format', 'whitelist_version', 'ym', 'generated_at', 'counts', 'tables']);
+  chk('  generated_at 是台北時間 ISO', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$/.test(r.generated_at), true);
+  chk('  counts＝每張表的列數', Object.keys(r.tables).every((t) => r.counts[t] === r.tables[t].length), true);
+  let bad = [];
+  for (const t of Object.keys(r.tables)) r.tables[t].forEach((row) => Object.keys(row).forEach((k) => { const v = row[k]; if (!(v === null || ['string', 'number', 'boolean'].includes(typeof v))) bad.push(t + '.' + k); }));
+  chk('  值只有字串／數字／布林／null', bad, []);
+  chk('  日期儲存格 → 台北 YYYY-MM-DD（到職日 Date 2023-07-02T16:00Z → 2023-07-03）', r.tables.master[0].hire_date, '2023-07-03');
+  chk('  留停起日 Date 2026-01-31T16:00Z → 2026-02-01', r.tables.leave_span[0].start, '2026-02-01');
+  chk('  布林、數字原樣（active true、base 34000、空白格＝空字串）', [r.tables.master[0].active, r.tables.master[0].base, r.tables.master[0].leave_date], [true, 34000, '']);
+  /* 分頁表頭少一欄（舊表）→ 那一欄不放鍵（跟這邊讀到 undefined 一樣），其他照常 */
+  const wl = world(baseSheets({ mut: (s) => { const t = s[PS.N.store]; const i = t[0].indexOf('support_group'); t.forEach((row) => row.splice(i, 1)); } }));
+  const rl = ask(wl);
+  chk('  門市分頁沒有 support_group 欄 → 每列不放這個鍵', [rl.ok, rl.tables.store.every((x) => !('support_group' in x)), Object.keys(rl.tables.store[0]).length], [true, true, 5]);
+  /* mini 端 checkExport（8f8c017 的解析邏輯）吃得下 */
+  const r1 = ask(w, { whitelist_version: 'w1' });
+  chk('  mini 端 checkExport（w1，現在已合併的那版）→ ok、筆數對', miniCheckExport(r1, '2026-11', MINI_W1, 'w1'), { ok: true, counts: { master: 3, config: 2, holiday: 1, store: 2, run: 3, item: 9 } });
+  chk('  同一套 checkExport 換成 w2 白名單 → ok（mini 端換 w2 只要改白名單常數）', miniCheckExport(r, '2026-11', W2(w), 'w2').ok, true);
+  chk('  mini 端還是 w1 時收到 w2 回應 → 整月拒收（不會默默收下多的欄）', miniCheckExport(r, '2026-11', MINI_W1, 'w1').code, 'whitelist_version_mismatch');
+  chk('  空月份 mini 端照收（run 0 筆）', miniCheckExport(ask(w, { ym: '2026-09', whitelist_version: 'w1' }), '2026-09', MINI_W1, 'w1').ok, true);
+}
+
+console.log('══ 7) 轉換：自訂加薪只留金額、留停子女換代號（算出來的結果不變） ══');
+{
+  const w = world(baseSheets());
+  const r = ask(w);
+  const inp = (emp, ym) => r.tables.input.find((x) => x.emp_id === emp && x.ym === ym) || {};   // 找不到＝空物件（讓下面逐條判紅，不在這裡丟例外）
+  chk('  custom_add_more 只留金額（千分位照 payNum 轉、null 照留）', inp('E1', '2026-11').custom_add_more, '[{"amt":500},{"amt":1200},null]');
+  const sumOf = (s) => { let a = []; try { a = JSON.parse(s); } catch (e) { return 'parse_error'; } if (!Array.isArray(a)) return 'not_array'; return a.reduce((t, x) => t + (x && w.F('payNum')(x.amt) ? w.F('payNum')(x.amt) : 0), 0); };
+  const orig = w.sheets[PS.N.input][1][PS.S.input.indexOf('custom_add_more')];
+  chk('  這邊的算法（x && payNum(x.amt)）算出的加薪合計跟原值一樣：1700', [sumOf(orig), sumOf(inp('E1', '2026-11').custom_add_more)], [1700, 1700]);
+  chk('  原值解析不了 → 照樣解析不了（不帶原文）', [sumOf(inp('E2', '2026-11').custom_add_more), inp('E2', '2026-11').custom_add_more], ['parse_error', '!']);
+  chk('  原值不是陣列 → 照樣不是陣列', [sumOf(inp('E2', '2026-10').custom_add_more), inp('E2', '2026-10').custom_add_more], ['not_array', '{}']);
+  chk('  空白照原樣', inp('E1', '2025-01').custom_add_more, '');
+  chk('  support（跨店支援 JSON）原樣', inp('E1', '2026-11').support, '[{"code":"CF","store":"測試店二","hours":4,"rate":200,"amount":"","auto":true}]');
+  const sp = r.tables.leave_span;
+  chk('  留停子女代號：同一人依原值排序 A→c1、B→c2（前後空白算同一個）、空白照空白、別人自己從 c1 起', sp.map((x) => x.emp_id + ':' + x.child), ['E1:c2', 'E1:c1', 'E1:c1', 'E1:', 'E2:c1']);
+  /* 育嬰額度（payParentalUsage）用原值與代號各算一次：每個子女的用量一樣（名稱不同、數字相同） */
+  const origSpans = w.sheets[PS.N.leave_span].slice(1).map((row) => { const o = {}; w.sheets[PS.N.leave_span][0].forEach((h, i) => { o[h] = row[i]; }); return o; });
+  const use = (spans) => JSON.parse(JSON.stringify(w.F('payParentalUsage')('E1', spans, [], 8))).children.map((c) => [c.month_used, c.day_used, c.short_count]).sort();
+  chk('  payParentalUsage：原值與代號算出每個子女的用量相同', use(sp), use(origSpans));
+}
+
+console.log('══ 8) 草稿過期也不重算、不寫回（對照組 payroll_month 會） ══');
+{
+  /* 借 election-day-emp.test.js 的 world()（真的 handlePayrollCalc 算出草稿），選舉假名單改過＝草稿過期：payroll_month 會自動重算寫回。
+     匯出只讀格子：回的就是那份過期草稿，寫入 0 次、假資料庫前後逐字相同。 */
+  const T = fs.readFileSync(path.join(__dirname, 'election-day-emp.test.js'), 'utf8');
+  const cut = T.indexOf('const BASE_REF');
+  const mod = { exports: {} };
+  new Function('require', 'module', '__dirname', T.slice(0, cut).replace("'use strict';", '') + '\nmodule.exports = { world };')(require, mod, __dirname);
+  const ew = mod.exports.world;
+  const fake = (w) => {
+    const names = JSON.parse(vm.runInContext('JSON.stringify(PAY_SHEET_NAME)', w.sb)), heads = JSON.parse(vm.runInContext('JSON.stringify(PAY_SHEETS)', w.sb));
+    const kindOf = (nm) => Object.keys(names).find((k) => names[k] === nm);
+    const c = { insert: 0, mut: 0 };
+    w.sb.SpreadsheetApp.openById = () => ({
+      getSheetByName: (nm) => { const k = kindOf(nm); if (!k || !(k in w.DB)) return null;
+        return { getDataRange: () => ({ getValues: () => { const cols = heads[k].slice(); (w.DB[k] || []).forEach((r) => Object.keys(r).forEach((x) => { if (cols.indexOf(x) < 0) cols.push(x); }));
+          return [cols].concat((w.DB[k] || []).map((r) => cols.map((x) => (r[x] === undefined || r[x] === null ? '' : r[x])))); } }),
+          getRange: () => { c.mut++; return { setValues() { c.mut++; }, setNumberFormat() { c.mut++; } }; }, getSheetId: () => 1, getName: () => nm, setFrozenRows() { c.mut++; }, getMaxRows: () => 1000 }; },
+      insertSheet: () => { c.insert++; return null; },
+    });
+    vm.runInContext(`(function(){ const R = payReplaceAll, A = payAppend, M = handlePayrollCalc;
+      globalThis.__W = { write: 0, calc: 0 };
+      payReplaceAll = function(k, rows){ globalThis.__W.write++; return R(k, rows); };
+      payAppend = function(k, rows){ globalThis.__W.write++; return A(k, rows); };
+      handlePayrollCalc = function(b){ globalThis.__W.calc++; return M(b); };
+      checkAdmin = function(b){ return !!b && (b.admin_key === 'good' || b.admin_key === 'x'); };
+      todayTaipeiStr = function(){ return '2026-11-30'; }; })();`, w.sb);
+    return c;
+  };
+  const mk = () => { const w = ew({ elec: ['a'] }); w.calc(); w.DB.hol_emp.push(Object.assign({}, w.DB.hol_emp[0], { emp_id: 'E2', name: '乙君' })); return w; };
+  const w = mk(); const c = fake(w);
+  const before = JSON.stringify(w.DB);
+  const draft = w.DB.run.map((x) => x.emp_id + ':' + x.net + ':' + x.gross);
+  const H = (act) => vm.runInContext('PAYROLL_HANDLERS', w.sb)[act];
+  const r = H('payroll_shadow_export')({ action: 'payroll_shadow_export', admin_key: 'good', ym: '2026-11', whitelist_version: 'w2' });
+  chk('  前提：草稿確實過期（payroll_status 回 elec_stale true）', H('payroll_status')({ admin_key: 'good', ym: '2026-11', store: 'SSLGF' }).elec_stale, true);
+  chk('  匯出 ok、回的就是那份過期草稿（逐人 net／gross 相同）', [r.ok, r.ok && r.tables.run.map((x) => x.emp_id + ':' + x.net + ':' + x.gross)], [true, draft]);
+  chk('  寫表 0 次、重算 0 次、建分頁 0 次、寫格子 0 次', [w.sb.__W.write, w.sb.__W.calc, c.insert, c.mut], [0, 0, 0, 0]);
+  chk('  假資料庫前後逐字相同', JSON.stringify(w.DB) === before, true);
+  const wm = mk(); fake(wm); const bm = JSON.stringify(wm.DB);
+  vm.runInContext('PAYROLL_HANDLERS', wm.sb).payroll_month({ admin_key: 'good', ym: '2026-11', store: 'SSLGF' });
+  chk('  對照組：同情境 payroll_month 會重算（重算 ≥1、寫表 ≥1、資料庫有變）', [wm.sb.__W.calc >= 1, wm.sb.__W.write >= 1, JSON.stringify(wm.DB) !== bm], [true, true, true]);
+}
+
+console.log('\n' + (fail ? '❌' : '✅') + ' payroll-shadow-export：' + pass + ' 過、' + fail + ' 失敗');
+process.exit(fail ? 1 : 0);
