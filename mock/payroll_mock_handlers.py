@@ -340,6 +340,16 @@ def h_finalize(data, body):
     return {'ok': True, 'ym': ym, 'status': 'final' if lock else 'draft'}
 
 
+def h_status(data, body):
+    """月結狀態唯讀查詢（同正式版 handlePayrollStatus，2026-11-22 待辦 10）：不寫 data。"""
+    ym = str(body.get('ym', ''))
+    mine = [r for r in _pay(data, 'run') if r.get('ym') == ym]
+    nf = sum(1 for r in mine if r.get('status') == 'final')
+    status = 'none' if not mine else ('final' if nf == len(mine) else ('mixed' if nf else 'draft'))
+    return {'ok': True, 'ym': ym, 'store': body.get('store', ''), 'status': status, 'rows': len(mine),
+            'run_at': max([str(r.get('run_at', '')) for r in mine] or ['']), 'elec_stale': False}
+
+
 def h_punch(data, body):
     """某人的當月打卡明細——直接從打卡系統那邊的 approved/events 拼出來。"""
     ym, emp = str(body.get('ym', '')), str(body.get('emp_id', ''))
@@ -812,6 +822,7 @@ PAYROLL_ACTIONS = {
     'payroll_calc': h_calc,
     'payroll_get': h_get,
     'payroll_month': h_month,
+    'payroll_status': h_status,
     'payroll_hol_emp_set': h_hol_emp_set,
     'payroll_finalize': h_finalize,
     'payroll_punch': h_punch,

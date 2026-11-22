@@ -202,7 +202,7 @@ function front(fetchPlan, monthStatus) {
   const log = { fetch: [], toast: [], loadMonth: 0 };
   const ctx = {
     EMBED: false, API: 'https://example.invalid/exec', ADMIN_KEY: 'k', STORE: 'SSLGF', location: { pathname: '/' }, JSON, console,
-    ASOF: null, STATUS: 'draft', RESULTS: [], COST_SNAP: null, ELEC_PEND: {}, LOCK_BUSY: false, elecBtns() {}, /* 選舉假：店月名單存檔待確認（Codex 第五次） */ CALC_INPUTS: () => ({}), $: () => null, ym: () => '2026-10',
+    ASOF: null, STATUS: 'draft', RESULTS: [], COST_SNAP: null, ELEC_PEND: {}, MON_UNSURE: {}, LOCK_BUSY: false, elecBtns() {}, /* 選舉假：店月名單存檔待確認（Codex 第五次） */ CALC_INPUTS: () => ({}), $: () => null, ym: () => '2026-10',
     vClear() {}, renderRun() {}, setInterval: () => 1, clearInterval() {}, prompt: () => '', alert() {}, doCalc: async () => {},
     costStable() { return {}; }, costTotals() { return {}; }, costDetail() { return []; },
     toast: (m, bad) => log.toast.push((bad ? '!' : '') + m),
@@ -212,10 +212,11 @@ function front(fetchPlan, monthStatus) {
       if (step === 'net') throw new Error('network');
       if (step === 'html') return { text: async () => '<html>Google</html>' };
       if (body.action === 'payroll_month') return { text: async () => JSON.stringify({ ok: true, run: { status: monthStatus, results: [] } }) };
+      if (body.action === 'payroll_status') return { text: async () => JSON.stringify(step || { ok: true, ym: body.ym, store: body.store, status: monthStatus, rows: 1, run_at: '', elec_stale: false }) };   // 唯讀狀態查詢（待辦 10）
       return { text: async () => JSON.stringify(step || { ok: true }) };
     },
   };
-  ctx.loadMonth = async (pre) => { log.loadMonth++; const r = await (pre || ctx.post('payroll_month', { ym: '2026-10', inputs: {} })); ctx.STATUS = r && r.run ? r.run.status : 'draft'; };
+  ctx.loadMonth = async (pre) => { log.loadMonth++; const r = await (pre || ctx.post('payroll_month', { ym: '2026-10', inputs: {} })); if (!r || !r.ok) return false; ctx.STATUS = r && r.run ? r.run.status : 'draft'; return true; };
   vm.createContext(ctx); vm.runInContext(HTML.slice(a, b) + '\n' + HTML.slice(c, d), ctx);
   return { ctx, log };
 }
@@ -223,25 +224,40 @@ function front(fetchPlan, monthStatus) {
   console.log('── F21 前端');
   { const { ctx, log } = front({ payroll_finalize: ['net'] }, 'final');
     await ctx.toggleLock();
-    eq(log.fetch, ['payroll_finalize', 'payroll_month'], 'F21-F1 鎖定斷線：不重送鎖定，改讀一次該月狀態');
+    eq(log.fetch, ['payroll_finalize', 'payroll_status', 'payroll_month'], 'F21-F1 鎖定斷線：不重送鎖定，先用唯讀 payroll_status 確認（已鎖才重新載入該月）');
     eq([ctx.STATUS, log.loadMonth], ['final', 1], 'F21-F1 伺服器其實已鎖 → 畫面改成已鎖定（重新載入該月）');
     eq(log.toast.some(t => /已鎖定/.test(t) && !/^!/.test(t)), true, 'F21-F1 提示已鎖定');
   }
   { const { ctx, log } = front({ payroll_finalize: ['net'] }, 'draft');
     await ctx.toggleLock();
-    eq(log.fetch, ['payroll_finalize', 'payroll_month'], 'F21-F2 斷線且伺服器沒鎖：也只送一次鎖定');
+    eq(log.fetch, ['payroll_finalize', 'payroll_status'], 'F21-F2 斷線且伺服器沒鎖：也只送一次鎖定，確認只用唯讀 payroll_status（不打會自動重算的 payroll_month）');
     eq([ctx.STATUS, log.loadMonth], ['draft', 0], 'F21-F2 畫面維持草稿');
     eq(log.toast.some(t => /^!/.test(t) && /沒有鎖定/.test(t) && /再按一次/.test(t)), true, 'F21-F2 說清楚沒有鎖定、請再按一次');
   }
   { const { ctx, log } = front({ payroll_finalize: ['html'] }, 'final');
     await ctx.toggleLock();
-    eq(log.fetch, ['payroll_finalize', 'payroll_month'], 'F21-F3 回應壞掉（Google HTML 頁）：鎖定也不重送');
+    eq(log.fetch, ['payroll_finalize', 'payroll_status', 'payroll_month'], 'F21-F3 回應壞掉（Google HTML 頁）：鎖定也不重送');
     eq(ctx.STATUS, 'final', 'F21-F3 重讀後顯示已鎖定');
   }
-  { const { ctx, log } = front({ payroll_finalize: ['net'], payroll_month: ['net', 'net'] }, 'final');
+  { const { ctx, log } = front({ payroll_finalize: ['net'], payroll_status: ['net'] }, 'final');
     await ctx.toggleLock();
     eq(ctx.STATUS, 'draft', 'F21-F4 連狀態都讀不到：畫面不亂改');
     eq(log.toast.some(t => /^!/.test(t) && /重新整理/.test(t)), true, 'F21-F4 請人重新整理頁面看狀態');
+  }
+  /* 待辦 10：後端或管理系統代轉還是舊版（payroll_status 回 unknown_action／被擋）→ 照舊用 payroll_month 確認 */
+  { const { ctx, log } = front({ payroll_finalize: ['net'], payroll_status: [{ ok: false, error: 'unknown_action' }] }, 'final');
+    await ctx.toggleLock();
+    eq([log.fetch, ctx.STATUS, log.loadMonth], [['payroll_finalize', 'payroll_status', 'payroll_month'], 'final', 1], 'F21-F7 舊後端沒有 payroll_status：退回 payroll_month 確認（行為同改版前）');
+  }
+  { const { ctx, log } = front({ payroll_finalize: ['net'], payroll_status: [{ ok: false, error: 'unknown_action' }] }, 'draft');
+    await ctx.toggleLock();
+    eq([log.fetch, ctx.STATUS], [['payroll_finalize', 'payroll_status', 'payroll_month'], 'draft'], 'F21-F8 舊後端、伺服器沒鎖：退回 payroll_month，畫面維持草稿');
+    eq(log.toast.some(t => /^!/.test(t) && /沒有鎖定/.test(t)), true, 'F21-F8 說清楚沒有鎖定');
+  }
+  /* Codex 第六次 13b：鎖定成功、重讀失敗 → 提示要重新整理確認（不只說「已鎖定」） */
+  { const { ctx, log } = front({ payroll_finalize: [{ ok: true, status: 'final' }], payroll_month: ['net', 'net'] }, 'final');
+    await ctx.toggleLock();
+    eq(log.toast.some(t => /^!/.test(t) && /重新讀取這個月失敗/.test(t) && /再匯出/.test(t)), true, 'F21-F9 鎖定成功但重讀失敗：紅字提示重新整理、確認金額後再匯出');
   }
   { const { ctx, log } = front({ payroll_finalize: [{ ok: true, status: 'final', already: true }] }, 'final');
     await ctx.toggleLock();

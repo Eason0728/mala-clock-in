@@ -4949,6 +4949,41 @@ function handlePayrollMonth(body) {
 }
 
 /** 這家店這個月草稿的計算時間（run_at，取最新一筆）；沒有回 ''。 */
+/** {action:'payroll_status', admin_key, store, ym} → 這家店這個月的月結狀態（待辦 10，2026-11-22）。
+ *  用途：薪資頁按「鎖定本月」後回應斷掉／逾時，用它確認剛才那次到底有沒有鎖成功。
+ *  ⚠ 純唯讀：不重算、不寫任何分頁、不取鎖、不建分頁（分頁不存在＝沒有資料），也不碰 CacheService。
+ *    payroll_month 不能拿來確認：草稿過期時它會自動重算寫回（別家核定變了、月中草稿日期不對、選舉假名單改過）。
+ *  權限＝payroll_month（選舉假名單的讀取路徑）：管理金鑰＋門市範圍（payScopeWrap_ 一樣包，store 要在負責範圍內）。
+ *  回 { ok, ym, store, status:'final'|'draft'|'none'|'mixed', rows, run_at, elec_stale }：
+ *    final＝該店該月每一列都是 final；draft＝都不是；none＝還沒有月結列；mixed＝有 final 也有草稿（不該發生，照實回）。
+ *    elec_stale＝草稿不是用現在的選舉假名單算的（同 payroll_month 的判斷；已鎖定、沒有名單一律 false）。 */
+function handlePayrollStatus(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = String((body && body.ym) || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  const st = payStore(body.store);
+  const runs = payReadNoCreate_('run');
+  const mine = runs.filter(function (r) { return String(r.ym) === ym && payStore(r.store) === st; });
+  const nFinal = mine.filter(function (r) { return String(r.status) === 'final'; }).length;
+  const status = !mine.length ? 'none' : nFinal === mine.length ? 'final' : nFinal ? 'mixed' : 'draft';
+  let at = '';
+  mine.forEach(function (r) { if (String(r.run_at || '') > at) at = String(r.run_at || ''); });
+  let elecStale = false;
+  if (status === 'draft' && payElecOn_(ym)) {
+    try { elecStale = payRunElecStale_(mine, ym, st, payElecFpNow_(ym, st)); } catch (e) { elecStale = false; }
+  }
+  return { ok: true, ym: ym, store: st, status: status, rows: mine.length, run_at: at, elec_stale: elecStale };
+}
+/** 讀分頁但不建分頁（唯讀端點用）：分頁不存在＝[]。讀不到試算表物件（測試替身）時交給 payRead。 */
+function payReadNoCreate_(kind) {
+  if (PAY_READ_CACHE[kind]) return PAY_READ_CACHE[kind];
+  try {
+    const ss = getSS();
+    if (ss && typeof ss.getSheetByName === 'function' && !ss.getSheetByName(PAY_SHEET_NAME[kind])) return [];
+  } catch (e) { /* 交給 payRead */ }
+  return payRead(kind) || [];
+}
+
 function payRunAt_(ym, st) {
   let at = '';
   payRead('run').forEach(function (r) { if (String(r.ym) === ym && payStore(r.store) === st && String(r.run_at || '') > at) at = String(r.run_at || ''); });
@@ -6983,6 +7018,7 @@ const PAYROLL_HANDLERS = {
   payroll_inputs:      handlePayrollInputs,
   payroll_input_set:    handlePayrollInputSet,
   payroll_month:        handlePayrollMonth,
+  payroll_status:       handlePayrollStatus,   // 月結狀態唯讀查詢（鎖定逾時後確認用，2026-11-22 待辦 10）
   payroll_calc:         handlePayrollCalc,
   payroll_ot_month_sync: handlePayrollOtMonthSync,   // 月加班 36／46 小時同步到各店（4-15，只給總管理）
   payroll_ot_preview:   handlePayrollOtPreview,   // 加班費新舊算法唯讀並列（2026-11-06）
