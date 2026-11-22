@@ -783,7 +783,7 @@ async function post(action,body,opt){   // opt.quiet：被擋（scope_forbidden�
 async function bootstrapFromRoster(){
   if(!confirm('從打卡名冊建立主檔？\n\n會把打卡系統名冊裡、還沒在主檔的同仁自動加進來（含正確員工編號），金額欄位先給空白／0。\n已存在的人不會被覆蓋。\n\n建立後請逐一填上金額，再按「儲存主檔」。')) return;
   const r=await post('payroll_bootstrap',{});
-  if(!r.ok){toast('建立失敗：'+(r.error||''),true);return}
+  if(!r.ok){toast('建立失敗：'+(r.message||r.error||''),true);return}   // 同「儲存工時」：有後端說明（例：忙碌）就顯示說明，沒有才顯示代碼
   // 後端回 {added:<人數>, names:[姓名...]}（payroll-scope fix2-3 修正：以前當成陣列讀 r.added.length，永遠顯示「沒有新增」）
   const names=Array.isArray(r.names)?r.names:[], cnt=Number(r.added)||names.length;
   if(!cnt){toast('名冊裡的同仁都已在主檔，沒有新增。');await boot();return}

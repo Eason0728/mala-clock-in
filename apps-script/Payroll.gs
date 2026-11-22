@@ -168,13 +168,33 @@ function ensurePayrollSheets() {
  *  同一請求裡重複讀同一張表（特休／集團總覽／計算都會）會把時間拉到數十秒。
  *  任何寫入（payReplaceAll／payAppend）都必須讓對應的快取失效。 */
 var PAY_READ_CACHE = {};
+/* 讀的當下順手留一份「格子原值」（PAY_RAW_CACHE，2026-11-22 寫入防壞）：payReplaceAll 寫壞時拿它還原，
+   不用再多讀一次整張表。呼叫端會改 payRead 回的物件（例：鎖定時把 status 改成 final），所以這份是讀的當下抄出來的值，
+   不跟回傳的物件共用。只在這支檔案內部用。 */
+var PAY_RAW_CACHE = {};
+/* 讀的當下那份只在「讀和寫都在同一次 payWriteLocked_ 寫鎖內」才拿來還原（Codex 複審 2026-11-22）：鎖外讀的，中間別台可能已經存了新內容
+   （列數不變也一樣），失敗時拿它還原會把別台剛存的蓋掉。PAY_IN_LOCK_＝目前這把寫鎖的編號（不在鎖內＝0）。
+   PAY_RAW_UNLOCKED_WRITER_：有（或曾有）「不拿寫鎖就寫」的呼叫端的表（holiday 有 payHolidaySync；master 的名冊帶入 2026-11-22 起已進鎖），就算自己在鎖內讀也不能信那份，一律寫前當場讀。
+   一次性的 handlePayrollMigrateStore 也不拿寫鎖，但只在搬資料那一次手動跑，不列進來（見 PR #211 殘餘風險）。 */
+//   （PAY_LOCK_GEN_／PAY_IN_LOCK_ 宣告在 payWriteLocked_ 旁邊：tests/config-single-save.test.js 只抽那一段出來跑）
+var PAY_RAW_UNLOCKED_WRITER_ = { holiday: 1, master: 1 };   // master：帶入名冊已改成鎖內追加，仍保險起見寫前當場讀（存主檔不在 06:00 路徑上，多讀一次無感）
 function payRead(kind) {
   if (PAY_READ_CACHE[kind]) return PAY_READ_CACHE[kind];
-  const rows = readSheetAsObjects(paySheet(kind)).rows.map(stripRowIndex);
+  const got = readSheetAsObjects(paySheet(kind));
+  const rows = got.rows.map(stripRowIndex);
   PAY_READ_CACHE[kind] = rows;
+  /* 只有分頁上的表頭跟 PAY_SHEETS 一模一樣（前 N 欄同名同順序、後面沒有重複的欄名）時，依欄名抄出來的值才等於格子原位；
+     有人調過欄位順序或插了別的欄 → 不留，payReplaceAll 改成直接讀格子（還原才會原位放回）。 */
+  const cols = PAY_SHEETS[kind], hdr = got.headers || [];
+  if (cols && payHdrSame_(hdr, cols)) PAY_RAW_CACHE[kind] = { rows: rows, gen: PAY_IN_LOCK_, vals: rows.map(function (r) { return cols.map(function (c) { return r[c] === undefined || r[c] === null ? '' : r[c]; }); }) };
   return rows;
 }
-function payInvalidate(kind) { delete PAY_READ_CACHE[kind]; }
+function payHdrSame_(hdr, cols) {
+  for (let i = 0; i < cols.length; i++) if (String(hdr[i] == null ? '' : hdr[i]) !== cols[i]) return false;
+  for (let j = cols.length; j < hdr.length; j++) if (cols.indexOf(String(hdr[j])) >= 0) return false;
+  return true;
+}
+function payInvalidate(kind) { delete PAY_READ_CACHE[kind]; delete PAY_RAW_CACHE[kind]; }
 /** 選舉假名單（payroll_hol_emp）：分頁不存在就回空陣列、不建分頁（計算是唯讀路徑，不能因為讀一次就多一張分頁）。 */
 var PAY_ELEC_PIN_ = null;   // 定案流程固定的名單快照（Codex 複審 K1a）：設了就一律回這一份，試算與補休檢查用同一版
 function payHolEmpRows_() {
@@ -215,17 +235,92 @@ function payCellSafe_(v) {
 const PAY_EMP_ID_RE_ = /^[A-Za-z0-9_-]{1,32}$/;
 const PAY_BAD_EMP_ID_ = { ok: false, error: 'bad_emp_id', message: '員工編號只能用英文、數字、底線和連字號，最多 32 字' };
 
-/** 整張覆寫（保留表頭）——用於 master / holiday / run / item 的重建 */
+/** 整張覆寫（保留表頭）——用於 master / holiday / run / item 的重建。
+ *  寫入防壞（2026-11-22）：以前是「先清空整張、再寫新資料」，中間失敗（逾時、配額、單格太長、送出失敗）會留下空表或半張表，
+ *  另一台同時在讀的也會讀到空表。現在改成：
+ *   ① 不先清空：新資料和「要清掉的舊列」（補空字串）合成一次 setValues 寫完，試算表一次套用，別人只會讀到舊的或新的；
+ *   ② 寫之前留一份舊內容（優先用 payRead 讀的當下抄的那份，沒有才多讀一次），寫入或送出（flush）丟例外就用同一招寫回舊內容，
+ *      再把錯誤丟給呼叫端（訊息說有沒有還原成功）；
+ *   ③ 列數超過分頁格線先加列（以前會在清空之後才發現範圍超出 → 整張變空）。
+ *  寫完的內容與舊寫法逐格相同（空字串＝空格，跟 clearContent 一樣）。
+ *  回傳 undo()：把這張表寫回這次呼叫之前的內容（一次要寫好幾張表的 payReplaceMany_ 用；其他呼叫端不理它，跟以前一樣）。 */
 function payReplaceAll(kind, rows) {
+  const rc = PAY_RAW_CACHE[kind];
+  // 只認：跟目前快取同一次讀的那份（快取被整個換掉＝不算數）、而且是在目前這把寫鎖內讀的、這張表沒有不拿鎖的寫入者
+  const raw = rc && PAY_READ_CACHE[kind] === rc.rows && rc.gen && rc.gen === PAY_IN_LOCK_ && !PAY_RAW_UNLOCKED_WRITER_[kind] ? rc.vals : null;
   payInvalidate(kind);
-  const sh = paySheet(kind), cols = PAY_SHEETS[kind];
-  sh.getRange(1, 1, 1, cols.length).setValues([cols]);   // 同步表頭（schema 只 append，補上新欄不動既有資料）
-  payForceTextCols(sh, cols, kind);
+  const sh = paySheet(kind), cols = PAY_SHEETS[kind], nc = cols.length;
   const last = sh.getLastRow();
-  if (last > 1) sh.getRange(2, 1, last - 1, cols.length).clearContent();
-  if (!rows.length) return;
-  const values = rows.map(function (r) { return cols.map(function (c) { return r[c] == null ? '' : payCellSafe_(r[c]); }); });
-  sh.getRange(2, 1, values.length, cols.length).setValues(values);
+  const oldN = last > 1 ? last - 1 : 0;
+  /* 表頭跟資料一起寫（2026-11-22）：第 1 列寫 PAY_SHEETS 的欄名（同步表頭，schema 只 append），第 2 列起寫資料，同一次寫入。
+     還原也一起：寫入前第 1～N 欄的原樣（含表頭列、原本的欄位順序、插在中間的別的欄）整塊放回，分頁上表頭順序被人調過也不會放錯欄。 */
+  const values = [cols.slice()].concat(rows.map(function (r) { return cols.map(function (c) { return r[c] == null ? '' : payCellSafe_(r[c]); }); }));
+  const h = Math.max(oldN + 1, values.length);   // 這次要蓋的列數（含表頭）：舊的、新的取大的
+  payEnsureRows_(sh, h);
+  // 舊內容（含表頭列）：讀的當下抄的那份列數對得上才用（表頭跟 PAY_SHEETS 不一樣時 payRead 本來就不留）；沒有就讀一次格子原樣。設文字格式之前讀。
+  const before = (raw && raw.length === oldN) ? [cols.slice()].concat(raw) : sh.getRange(1, 1, Math.max(last, 1), nc).getValues();
+  payForceTextCols(sh, cols, kind);
+  const inv = function () { payInvalidate(kind); };
+  return paySafePut_(sh, 1, nc, h, values, before, PAY_SHEET_NAME[kind] || kind, inv);
+}
+/** 格線不夠 need 列就先加列（以前在清空之後才發現範圍超出 → 整張變空）。 */
+function payEnsureRows_(sh, need) {
+  const maxR = sh.getMaxRows();
+  if (need > maxR) sh.insertRowsAfter(maxR, need - maxR);
+}
+/** 安全覆寫（payReplaceAll 與各店 ot_month 共用）：從第 r0 列起 h 列 × nc 欄，一次 setValues 寫 values（不足的列、欄補空字串＝清掉）並當場送出；
+ *  失敗就把 before 用同一招寫回再丟錯（訊息說有沒有還原成功）。成功回 undo()。onTouch：每次動到這張表時呼叫（清讀取快取用）。 */
+function paySafePut_(sh, r0, nc, h, values, before, label, onTouch) {
+  const touch = function () { if (onTouch) onTouch(); };
+  if (!h) return function () {};
+  const put = function (vals) {
+    const out = [];
+    for (let i = 0; i < h; i++) {
+      const row = (vals[i] || []).slice(0, nc);
+      while (row.length < nc) row.push('');
+      out.push(row);
+    }
+    sh.getRange(r0, 1, h, nc).setValues(out);
+    payFlush_();   // 排隊中的寫入在這裡送出：送出失敗也在這裡丟出來，才接得到、還原得了
+  };
+  try { put(values); }
+  catch (err) {
+    touch();
+    let restored = true;
+    try { put(before); } catch (err2) { restored = false; try { console.error('薪資覆寫還原失敗 ' + label + '：' + err2); } catch (e3) {} }
+    touch();
+    throw payWriteErr_(label, err, restored);
+  }
+  return function undo() {
+    touch();
+    put(before);
+    touch();
+  };
+}
+function payFlush_() { if (typeof SpreadsheetApp !== 'undefined' && SpreadsheetApp && typeof SpreadsheetApp.flush === 'function') SpreadsheetApp.flush(); }
+function payWriteErr_(kind, err, restored) {
+  const e = new Error('薪資分頁 ' + kind + ' 寫入失敗，' +
+    (restored ? '已還原成寫入前的內容，請再按一次' : '還原也失敗，分頁內容可能不完整，請立刻通知 Eason') + '：' + (err && err.message || err));
+  e.pay_kind = kind; e.pay_restored = restored;
+  return e;
+}
+/** 一次寫好幾張表（[[kind, rows], ...] 依序寫）：後面那張失敗，前面已寫好的依相反順序寫回原內容，再把錯誤丟出去——
+ *  要嘛全部換新、要嘛全部維持原樣。退回本身也失敗時錯誤訊息會說，並維持「依序寫」原本的順序保護（例：薪資計算的彙總最後寫）。 */
+function payReplaceMany_(pairs) {
+  const undos = [];
+  try {
+    pairs.forEach(function (p) {
+      const u = payReplaceAll(p[0], typeof p[1] === 'function' ? p[1]() : p[1]);
+      undos.push(typeof u === 'function' ? u : function () {});   // 測試把 payReplaceAll 換成假的時沒有 undo
+    });
+  } catch (err) {
+    let allBack = true;
+    for (let i = undos.length - 1; i >= 0; i--) {
+      try { undos[i](); } catch (err2) { allBack = false; try { console.error('payReplaceMany_ 退回失敗 ' + pairs[i][0] + '：' + err2); } catch (e3) {} }
+    }
+    if (!allBack) err.message = String(err.message || err) + '（先寫好的分頁退回失敗，內容可能新舊混在一起，請立刻通知 Eason）';
+    throw err;
+  }
 }
 
 /* 寫回段加鎖（2026-11-04 夜間 QA #6）：各 handler 都是「開頭讀整張 → 算 → 用『別店列＋本店新列』整張覆寫」，
@@ -233,15 +328,18 @@ function payReplaceAll(kind, rows) {
    只鎖寫回那一兩秒（重算本身可能幾十秒，不放進鎖裡，否則 LINE 綁定／送申請要排隊；打卡不用這把鎖）：
    fn 在鎖內執行，裡面一律 payRead 重讀最新整張（進鎖時已 payInvalidate），再篩、再寫。等不到鎖回 false。 */
 const PAY_BUSY_ = { ok: false, error: 'busy', message: '薪資資料正在被另一台裝置儲存，請幾秒後再按一次' };
+var PAY_LOCK_GEN_ = 0, PAY_IN_LOCK_ = 0;   // 寫鎖編號（見 PAY_RAW_CACHE 說明）
 function payWriteLocked_(kinds, fn) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) return false;
+  const prevLock = PAY_IN_LOCK_;
+  PAY_IN_LOCK_ = ++PAY_LOCK_GEN_;   // 這把鎖的編號：鎖內 payRead 讀的那份才給 payReplaceAll 還原用
   try {
     kinds.forEach(payInvalidate);
     fn();
     SpreadsheetApp.flush();
     return true;
-  } finally { lock.releaseLock(); }
+  } finally { PAY_IN_LOCK_ = prevLock; lock.releaseLock(); }
 }
 /** 鎖內重讀整張、留下 keep 為真的列、接上 rows 寫回。 */
 function payReplaceKeep_(kind, keep, rows) {
@@ -3485,17 +3583,27 @@ function handlePayrollBootstrap(body) {
     message: '門市 ' + stBs + ' 尚未連結打卡系統，沒有名冊可帶入。請在「員工設定」手動新增同仁，或先到 參數設定 → 門市設定 填入打卡試算表 ID。' };
   const roster = payClockRead(stBs, 'roster');
   const prefix = (function () { const r = payStoreRow(stBs); return r ? String(r.emp_prefix || '') : ''; })();
-  const existing = {};
-  payRead('master').forEach(function (m) { if (payStore(m.store) === stBs) existing[String(m.emp_id)] = true; });
-  const add = roster
-    .filter(function (r) { return String(r.active).toLowerCase() === 'true' && !existing[prefix + String(r.emp_id)]; })
-    .map(function (r) {
-      return { emp_id: prefix + r.emp_id, name: r.name, is_full_time: 'false', wage: 0, base: 0, ot_rate: 0,
-               skill_allow: 0, night_allow: 0, mgr_allow: 0, editor_allow: 0, attend_cap: 0,
-               labor_ins: 0, health_ins: 0, group_ins: 0, pension: 0, dormitory: 0,
-               hire_date: '', leave_date: '', active: 'true', updated_at: nowTaipeiIso(), store: stBs };
-    });
-  payAppend('master', add);
+  const pick = function (masterRows) {   // 名冊裡在職、還不在本店主檔的人
+    const existing = {};
+    masterRows.forEach(function (m) { if (payStore(m.store) === stBs) existing[String(m.emp_id)] = true; });
+    return roster
+      .filter(function (r) { return String(r.active).toLowerCase() === 'true' && !existing[prefix + String(r.emp_id)]; })
+      .map(function (r) {
+        return { emp_id: prefix + r.emp_id, name: r.name, is_full_time: 'false', wage: 0, base: 0, ot_rate: 0,
+                 skill_allow: 0, night_allow: 0, mgr_allow: 0, editor_allow: 0, attend_cap: 0,
+                 labor_ins: 0, health_ins: 0, group_ins: 0, pension: 0, dormitory: 0,
+                 hire_date: '', leave_date: '', active: 'true', updated_at: nowTaipeiIso(), store: stBs };
+      });
+  };
+  /* 兩段（2026-11-22 Codex 第三輪）：先在鎖外判斷，沒有人要加就直接回 0 人（跟改版前一樣，不等鎖、不會回忙碌）；
+     有人要加才進寫鎖、鎖內重讀主檔再判斷一次（別台剛加完就回 0 人）再追加——存主檔（鎖內整張覆寫）失敗還原時才不會清掉剛帶入的人，
+     兩台同時按也不會重複帶入。 */
+  let add = pick(payRead('master'));
+  if (!add.length) return { ok: true, added: 0, names: [] };
+  if (!payWriteLocked_(['master'], function () {
+    add = pick(payRead('master'));
+    if (add.length) payAppend('master', add);
+  })) return PAY_BUSY_;
   return { ok: true, added: add.length, names: add.map(function (a) { return a.name; }) };
 }
 
@@ -4256,8 +4364,15 @@ function payOtMonthSync_() {
     try {
       const ss = payClockSS(s.code);
       const sh = ss.getSheetByName('ot_month') || ss.insertSheet('ot_month');
-      sh.clearContents();
-      sh.getRange(1, 1, rows.length, 7).setNumberFormat('@').setValues(rows.map(function (x) { return x.map(String); }));
+      /* 寫入防壞（2026-11-22）：以前先 clearContents 整張再寫，寫入失敗＝這家店的 36／46 小時檢查整張沒資料。
+         現在跟 payReplaceAll 同一套（paySafePut_）：一次寫完「表頭＋新列＋要清掉的舊格（補空字串）」，失敗就寫回舊內容、記進 write_errors。
+         清的範圍照舊是整張有內容的地方（列、欄都取舊的與新的較大者），文字格式照舊只設在表頭＋新列的 7 欄。 */
+      const last = sh.getLastRow(), lastC = sh.getLastColumn();
+      const nc = Math.max(7, lastC), h = Math.max(last, rows.length);
+      payEnsureRows_(sh, h);
+      const before = last && lastC ? sh.getRange(1, 1, last, nc).getValues() : [];   // 先留舊內容再設格式（設 '@' 會改變日期格讀回的樣子）
+      sh.getRange(1, 1, rows.length, 7).setNumberFormat('@');
+      paySafePut_(sh, 1, nc, h, rows.map(function (x) { return x.map(String); }), before, 'ot_month（' + String(s.code) + '）');
     } catch (e) { writeErrors.push(String(s.code)); Logger.log('ot_month 寫不進去 ' + s.code + '：' + e); }
   });
   return { ok: true, date: today, stores: stores.length, people: rows.length - 1, errors: errors, write_errors: writeErrors,
@@ -4611,12 +4726,13 @@ function handlePayrollCalc(body) {
     const mineOut = function (r) { return String(r.ym) !== ym || payStore(r.store) !== st; };
     /* 有選舉假名單（新的或舊草稿上的指紋）時先寫明細、最後才寫帶新指紋的彙總（Codex 第四次 B2）：明細沒寫成，彙總還是舊指紋 → 仍判過期，
        不會讓新指紋替不完整的草稿背書。沒有名單時照舊（先彙總後明細），跟 45ccbec 一樣。 */
+    /* 兩張一起寫（2026-11-22 寫入防壞）：後寫的那張失敗，先寫好的那張退回原內容，不會留下「彙總是新的、明細是舊的」。 */
+    const itemPair = ['item', function () { return payRead('item').filter(mineOut).concat(itemRows); }];
+    const runPair = ['run', function () { return runNow.filter(mineOut).concat(runRows); }];
     if (ELEC_FP || payRunElecFp_(runNow, ym, st)) {
-      payReplaceAll('item', payRead('item').filter(mineOut).concat(itemRows));
-      payReplaceAll('run', runNow.filter(mineOut).concat(runRows));
+      payReplaceMany_([itemPair, runPair]);
     } else {
-      payReplaceAll('run', runNow.filter(mineOut).concat(runRows));
-      payReplaceAll('item', payRead('item').filter(mineOut).concat(itemRows));
+      payReplaceMany_([runPair, itemPair]);
     }
   });
   if (!wrote) return PAY_BUSY_;
@@ -5915,8 +6031,7 @@ function handlePayrollXmapSet(body) {
   const tNew = Date.parse(synced);
   let staleSnap = false;
   const wrote = payWriteLocked_(['xmap'], function () {
-    let all;
-    try { all = payRead('xmap'); } catch (e) { all = []; }
+    const all = payRead('xmap');   // 讀不到就不寫（2026-11-22 寫入防壞）：以前當成空表，整張覆寫會把別家店的對照清掉
     const mine = all.filter(function (x) { return !payXsupBool_(x.acct_only) && inL(x.pay_store); });   // 這次有權決定的列
     let newest = NaN;
     mine.forEach(function (x) {
@@ -6525,8 +6640,8 @@ function handlePayrollLeaveTypeSet(body) {
     return { ok: false, error: 'trip_name_locked',
              message: '「出差」不能改名（打卡端核定狀態寫死此名稱）；要改名需同步修改三家店打卡後端，請聯絡 Eason。' };
   }
-  let rows = [];
-  try { rows = payRead('leave_type'); } catch (err) { rows = []; }
+  /* 讀不到就不寫（2026-11-22 寫入防壞，同 #210 成本快照）：以前讀失敗當成空表，整張覆寫會把別家店的列清掉；現在讓錯誤直接回給呼叫端 */
+  const rows = payRead('leave_type');
   const kept = rows.filter(function (r) { return String(r.store || '').trim() !== st; });
   payReplaceAll('leave_type', kept.concat(incoming));
   payAppend('audit', [{ ts: nowTaipeiIso(), ym: '', action: 'leave_type_set',
@@ -6563,8 +6678,8 @@ function handlePayrollLeaveSpanSet(body) {
              months: payNum(r.months), days: payNum(r.days),
              memo: String(r.memo || ''), updated_at: now };
   }).filter(function (r) { return r.emp_id; });
-  let rows = [];
-  try { rows = payRead('leave_span'); } catch (err) { rows = []; }
+  /* 讀不到就不寫（2026-11-22 寫入防壞，同 #210 成本快照）：以前讀失敗當成空表，整張覆寫會把別家店的列清掉；現在讓錯誤直接回給呼叫端 */
+  const rows = payRead('leave_span');
   const kept = rows.filter(function (r) { return payStore(r.store) !== st; });
   payReplaceAll('leave_span', kept.concat(incoming));
   payAppend('audit', [{ ts: nowTaipeiIso(), ym: '', action: 'leave_span_set',
@@ -6700,8 +6815,8 @@ function handlePayrollLeaveEventSet(body) {
              code: String(r.code || '').trim(), event_date: payDateStr(r.event_date),
              memo: String(r.memo || ''), updated_at: now };
   }).filter(function (r) { return r.emp_id && r.code && r.event_date; });
-  let rows = [];
-  try { rows = payRead('leave_event'); } catch (err) { rows = []; }
+  /* 讀不到就不寫（2026-11-22 寫入防壞，同 #210 成本快照）：以前讀失敗當成空表，整張覆寫會把別家店的列清掉；現在讓錯誤直接回給呼叫端 */
+  const rows = payRead('leave_event');
   const kept = rows.filter(function (r) { return payStore(r.store) !== st; });
   payReplaceAll('leave_event', kept.concat(incoming));
   payAppend('audit', [{ ts: now, ym: '', action: 'leave_event_set',

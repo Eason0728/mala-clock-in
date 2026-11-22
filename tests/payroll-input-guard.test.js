@@ -39,8 +39,8 @@ for (const id of BAD) {
 /* ── 2. 寫入層（payReplaceAll／payAppend 本體，只把試算表換成記錄器）── */
 function writerEnv() {
   const written = [];
-  const range = { setValues: v => written.push(v), clearContent() {}, setNumberFormat() { return range; } };
-  const sheet = { getRange: () => range, getLastRow: () => 1, getMaxRows: () => 10 };
+  const range = { setValues: v => written.push(v), clearContent() {}, setNumberFormat() { return range; }, getValues: () => [[]] };   // 2026-11-22：寫入前先留表頭列原樣
+  const sheet = { getRange: () => range, getLastRow: () => 1, getMaxRows: () => 10, insertRowsAfter() {} };   // 2026-11-22：寫入前格線不夠會先加列
   const s = { console, Logger: { log() {} }, written };
   vm.createContext(s);
   const C = fs.readFileSync(path.join(ROOT, 'apps-script', 'Code.gs'), 'utf8');
@@ -61,7 +61,8 @@ function written(fnName) {
   s.__rows = CASES.map(c => row(c[0]));
   vm.runInContext(`${fnName}('master', __rows)`, s);
   const nameCol = 1;
-  return s.written[s.written.length - 1].map(v => v[nameCol]);
+  const w = s.written[s.written.length - 1];
+  return (fnName === 'payReplaceAll' ? w.slice(1) : w).map(v => v[nameCol]);   // payReplaceAll 第 1 列是表頭（2026-11-22 起跟資料同一次寫）
 }
 for (const fnName of ['payReplaceAll', 'payAppend']) {
   const got = written(fnName);
@@ -71,7 +72,7 @@ for (const fnName of ['payReplaceAll', 'payAppend']) {
   const s = writerEnv();
   s.__rows = [{ emp_id: 'E1', wage: -500, active: true }];
   vm.runInContext(`payReplaceAll('master', __rows)`, s);
-  const line = s.written[s.written.length - 1][0];
+  const line = s.written[s.written.length - 1][1];   // [0] 是表頭
   ok(line[0] === 'E1' && line.indexOf(-500) !== -1 && line.indexOf(true) !== -1, '數字與布林值原樣寫入');
 }
 

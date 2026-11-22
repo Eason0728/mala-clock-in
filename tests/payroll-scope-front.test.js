@@ -156,6 +156,11 @@ function load({ EMBED, SCOPE, master, perCall }) {
     ok(/新增 2 人：測試甲、測試乙/.test(m1) && !/沒有新增/.test(m1), 'bootstrapResult：added=2 → 「新增 2 人：測試甲、測試乙」（' + m1 + '）');
     const m0 = await runBs({ ok: true, added: 0, names: [] });
     ok(/沒有新增/.test(m0), 'bootstrapResult：added=0 → 「沒有新增」');
+    // 2026-11-22：帶入改在寫鎖內，拿不到鎖回 busy＋說明 → 顯示後端說明（同「儲存工時」）；沒有說明才顯示代碼
+    const mb = await runBs({ ok: false, error: 'busy', message: '薪資資料正在被另一台裝置儲存，請幾秒後再按一次' });
+    ok(mb === '建立失敗：薪資資料正在被另一台裝置儲存，請幾秒後再按一次', 'bootstrapBusy：顯示後端說明（' + mb + '）');
+    const me = await runBs({ ok: false, error: 'no_clock_x' });
+    ok(me === '建立失敗：no_clock_x', 'bootstrapBusy：沒有說明 → 維持「建立失敗：代碼」（' + me + '）');
   }
 
   console.log((fail ? 'FAIL ' : '全部通過 ') + pass + '/' + (pass + fail));
