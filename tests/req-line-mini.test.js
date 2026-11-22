@@ -61,9 +61,21 @@ const tick = (ms) => new Promise((r) => setTimeout(r, ms));
 const ok = async (name, fn) => { await fn(); n++; console.log('✓ ' + name); };
 
 (async () => {
-  await ok('預設開關是 false（上線檔案）；沒設 ?submit_mini 也不開', () => {
-    assert(/\n  var SUBMIT_MINI = false;\n/.test(src));
-    assert.strictEqual(load({ post: () => Promise.resolve(G_OK) }).T.submitMiniOn(), false);
+  await ok('上線檔案開關是 true（2026-11-23 打開）：不靠網址參數、有 E.MINI_REQ_API 就開；E.MINI_REQ_API 空仍不開', () => {
+    assert(/\n  var SUBMIT_MINI = true;/.test(src));
+    assert.strictEqual(load({ post: () => Promise.resolve(G_OK) }).T.submitMiniOn(), true);
+    assert.strictEqual(load({ mini: '', post: () => Promise.resolve(G_OK) }).T.submitMiniOn(), false);
+  });
+  await ok('預設值是開：不指定 flag、不帶網址參數，送出與取消都先送 mini（收下→Google 0 次；mini_off→改送 Google 1 次）', async () => {
+    for (const op of ['submit', 'cancel']) {
+      const body = op === 'cancel' ? { action: 'req_cancel', id_token: 'TOK', id: 'R1' } : mkBody();
+      const a = load({ post: (url) => url === MINI ? Promise.resolve(M_TAKEN({ ok: true, summary: 'mini 回的' })) : Promise.resolve(G_OK) });
+      assert.strictEqual((await a.T.sendReq(op, GURL, body)).summary, 'mini 回的', op);
+      assert.strictEqual(miniCalls(a).length, 1, op); assert.strictEqual(gCalls(a).length, 0, op);
+      const b = load({ post: (url) => url === MINI ? Promise.resolve(M_OFF) : Promise.resolve(G_OK) });
+      assert.strictEqual(await b.T.sendReq(op, GURL, body), G_OK);
+      assert.strictEqual(miniCalls(b).length, 1, op); assert.strictEqual(gCalls(b).length, 1, op);
+    }
   });
 
   await ok('(a) 開關關：送出只打 Google、body 是原物件（沒有 req_id）、不打 mini、不給逾時參數', async () => {

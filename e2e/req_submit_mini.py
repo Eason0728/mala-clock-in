@@ -317,6 +317,13 @@ def main():
             ok('取消・逾時後 mini 才回：之後沒有新請求（Google 仍 1 次 req_cancel）', len([c for c in f.calls if c['action'] == 'req_cancel']) == 1 and len(m.ops('cancel')) == 1)
             p.context.close()
 
+            # ── 11. 預設值是開（#220）：不帶 ?submit_mini、不換頁面來源，送出照樣先送 mini；收下 → Google 0 次 ──
+            f, m, p = run_submit(br, 'taken', extra='')
+            R2.wait_mine(p)
+            ok('預設值是開・送出：不帶網址參數也先送 mini；mini 1 次、Google 0 次、畫面「✓ 已送出」', len(m.ops('submit')) == 1 and gcount(f, 'req_submit') == 0 and '✓ 已送出：' in R2.txt(p), (len(m.ops('submit')), gcount(f, 'req_submit')))
+            RESULT_ROWS.append(('預設值是開・送出', len(m.ops('submit')), gcount(f, 'req_submit')))
+            p.context.close()
+
             br.close()
         print('\n情境                            mini(送出/取消)  Google(req_submit/req_cancel)')
         for name, a, b in RESULT_ROWS:
