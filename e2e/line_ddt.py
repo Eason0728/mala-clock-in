@@ -957,7 +957,7 @@ def phase_req(ctx, gen):
         got = page.locator('#reqView .rq-quota:not(.rq-comp-bal)').all_inner_texts()
         ok(f'請假：選「{name}」→ 額度字句逐字（{want[0] if want else "沒有額度行"}）', got == want, (got, want))
         if name == '補休':
-            ok('請假：選補休多一行「可以先休、之後再用加班補回來…」', '可以先休、之後再用加班補回來；當月要補平（20、25 號會檢查），剩的照加班費發。' in req_text(page))
+            ok('請假：選補休多一行「可以先休、之後再用加班補回來…」', '可以先休、之後再用加班補回來；當月要補平，剩的照加班費發。' in req_text(page))
     # 整天：隨機時數、日期、原因
     name = RNG.choice(['特休假', '事假', '家庭照顧假', '生理假'])
     click(page, f'#reqView .rq-chips >> nth=0 >> .rq-chip:text-is("{name}")', '假別')
