@@ -253,6 +253,47 @@ def main():
                 C.ok('11 被擋後重讀（%s）：按鍵照 Google 較新的（上班亮、下班灰）' % mode, btns(p) == (False, True), btns(p))
                 p.close()
 
+            # 12. 開關關：mini 先回、Google 慢回、Google 較新 → 先照 mini、Google 回來後改用 Google 的（瑞光、文心走這條，原本沒有測試保護）
+            p, _ = open_two(ctx, M_OLD, G_NEW, '0', g_delay=1500)   # g_delay：開頁那次 Google 晚 1.5 秒回來（mini 先回）
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            b0 = btns(p)
+            C.ok('12 開關關 mini 先 Google 慢且較新：先照 mini（上班灰、下班亮）', b0 == (True, False), b0)
+            p.wait_for_function('(window.__open || []).length >= 1', timeout=10000)
+            o = opens(p)[0]
+            C.ok('12 開關關：開頁狀態先用的是 mini', o.get('st_src') == 'mini', o)
+            C.ok('12 開關關 Google 較新：畫面最後以 Google 為準（上班亮、下班灰）', btns(p) == (False, True), btns(p))
+            C.ok('12 開關關 Google 較新：比對 diff、status 標 mini 較舊', [o.get('st_match'), o.get('status')] == ['diff', 'diff_mold_mi_go'], o)
+            p.close()
+
+            # 13–15. diff_g_reject（Google 明確說「這個人現在不能在這家店打卡」）只在「開頁第一次、同仁還沒動手、沒重讀」時才記成開頁樣本
+            G_REJ = {'ok': False, 'error': 'not_bound'}
+            # 13. 開頁第一次：照記 diff_g_reject，按鍵照舊收回
+            p, _ = open_two(ctx, M_OLD, G_REJ, 'cmp', extra='&st_cmp_ms=800')
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+            o = opens(p)[0]
+            C.ok('13 Google 說不能打卡（開頁第一次）：比對 diff、status＝diff_g_reject', [o.get('st_match'), o.get('status')] == ['diff', 'diff_g_reject'], o)
+            p.wait_for_timeout(500)
+            C.ok('13 Google 說不能打卡（開頁第一次）：兩顆鍵都收回', btns(p) == (True, True), btns(p))
+            p.close()
+            # 14. 同仁按了打卡（卡住不回）之後 Google 才說不能打卡：不記成開頁樣本、標 cmp_late
+            p, _ = open_two(ctx, M_OLD, G_REJ, 'cmp', extra='&st_cmp_ms=1500', punch_fake='hang')
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            C.force_out(p)
+            p.wait_for_function('(window.__open || []).length >= 1', timeout=10000)
+            o = opens(p)[0]
+            C.ok('14 按了打卡之後 Google 才說不能打卡：不記 diff_g_reject、標 cmp_late', [o.get('st_match'), o.get('status')] == ['', 'cmp_late'], o)
+            p.close()
+            # 15. 按打卡被擋、重讀之後 Google 才說不能打卡：重讀那次不記成開頁樣本、標 cmp_late
+            #     （開頁那次的 Google 不回；重讀那次的 Google 說不能打卡，它的回報先送出）
+            p, _ = open_two(ctx, M_OLD, ['hang', G_REJ], 'cmp', extra='&st_cmp_ms=800', punch_fake=REJ)
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            C.force_out(p)
+            p.wait_for_function('(window.__open || []).length >= 1', timeout=12000)
+            o = opens(p)[0]
+            C.ok('15 重讀之後 Google 才說不能打卡：不記 diff_g_reject、標 cmp_late', [o.get('st_match'), o.get('status')] == ['', 'cmp_late'], o)
+            p.close()
+
             C.ok('P2-B：以上各情境頁面沒有程式錯誤', errs == [], errs)
             br.close()
     finally:

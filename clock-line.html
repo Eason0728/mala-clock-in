@@ -764,11 +764,14 @@
             if (gl && gl > ml) { var m1 = msgSnap(); g.store = shown.store; g.__at = f.gAt; render(g); if (!msgSame(m1, msg0)) msgPut(m1); }   // 開頁後寫上的訊息（打卡失敗原因）留著
             else if (g.notices) renderNotices(g.notices);
           }
-        } else if (live && g && g.ok === false && ['not_bound', 'line_identity_conflict', 'invalid_id_token'].indexOf(g.error) >= 0) {
-          // Google 明確說這個人現在不能在這家店打卡（剛被解除綁定、設離職，mini 還沒拉到）：收回按鍵，照 Google 的處理（審查 中 2）
-          om.match = 'diff'; om.cmp = 'diff_g_reject';
-          status = null; refreshButtons();
-          statusRejected(g);
+        } else if (g && g.ok === false && ['not_bound', 'line_identity_conflict', 'invalid_id_token'].indexOf(g.error) >= 0) {
+          // 比對標籤跟其他 diff_* 一樣：只記開頁第一次、世代沒變；按過打卡、重讀過的標 cmp_late（只動標籤，下面收鍵的動作不變）
+          if (first && gen === stGen) { om.match = 'diff'; om.cmp = 'diff_g_reject'; } else if (!om.match) om.cmp = 'cmp_late';
+          if (live) {
+            // Google 明確說這個人現在不能在這家店打卡（剛被解除綁定、設離職，mini 還沒拉到）：收回按鍵，照 Google 的處理（審查 中 2）
+            status = null; refreshButtons();
+            statusRejected(g);
+          }
         }
         send();
       }, send);
