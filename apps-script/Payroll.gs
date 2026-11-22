@@ -174,11 +174,19 @@ var PAY_READ_CACHE = {};
 var PAY_RAW_CACHE = {};
 function payRead(kind) {
   if (PAY_READ_CACHE[kind]) return PAY_READ_CACHE[kind];
-  const rows = readSheetAsObjects(paySheet(kind)).rows.map(stripRowIndex);
+  const got = readSheetAsObjects(paySheet(kind));
+  const rows = got.rows.map(stripRowIndex);
   PAY_READ_CACHE[kind] = rows;
-  const cols = PAY_SHEETS[kind];
-  if (cols) PAY_RAW_CACHE[kind] = { rows: rows, vals: rows.map(function (r) { return cols.map(function (c) { return r[c] === undefined || r[c] === null ? '' : r[c]; }); }) };
+  /* 只有分頁上的表頭跟 PAY_SHEETS 一模一樣（前 N 欄同名同順序、後面沒有重複的欄名）時，依欄名抄出來的值才等於格子原位；
+     有人調過欄位順序或插了別的欄 → 不留，payReplaceAll 改成直接讀格子（還原才會原位放回）。 */
+  const cols = PAY_SHEETS[kind], hdr = got.headers || [];
+  if (cols && payHdrSame_(hdr, cols)) PAY_RAW_CACHE[kind] = { rows: rows, vals: rows.map(function (r) { return cols.map(function (c) { return r[c] === undefined || r[c] === null ? '' : r[c]; }); }) };
   return rows;
+}
+function payHdrSame_(hdr, cols) {
+  for (let i = 0; i < cols.length; i++) if (String(hdr[i] == null ? '' : hdr[i]) !== cols[i]) return false;
+  for (let j = cols.length; j < hdr.length; j++) if (cols.indexOf(String(hdr[j])) >= 0) return false;
+  return true;
 }
 function payInvalidate(kind) { delete PAY_READ_CACHE[kind]; delete PAY_RAW_CACHE[kind]; }
 /** 選舉假名單（payroll_hol_emp）：分頁不存在就回空陣列、不建分頁（計算是唯讀路徑，不能因為讀一次就多一張分頁）。 */
@@ -235,17 +243,18 @@ function payReplaceAll(kind, rows) {
   const raw = rc && PAY_READ_CACHE[kind] === rc.rows ? rc.vals : null;   // 只認跟目前快取同一次讀的那份（快取被整個換掉＝不算數）
   payInvalidate(kind);
   const sh = paySheet(kind), cols = PAY_SHEETS[kind], nc = cols.length;
-  sh.getRange(1, 1, 1, nc).setValues([cols]);   // 同步表頭（schema 只 append，補上新欄不動既有資料）
   const last = sh.getLastRow();
   const oldN = last > 1 ? last - 1 : 0;
-  const values = rows.map(function (r) { return cols.map(function (c) { return r[c] == null ? '' : payCellSafe_(r[c]); }); });
-  const h = Math.max(oldN, values.length);   // 這次要蓋的列數：舊的、新的取大的
-  payEnsureRows_(sh, h + 1);
+  /* 表頭跟資料一起寫（2026-11-22）：第 1 列寫 PAY_SHEETS 的欄名（同步表頭，schema 只 append），第 2 列起寫資料，同一次寫入。
+     還原也一起：寫入前第 1～N 欄的原樣（含表頭列、原本的欄位順序、插在中間的別的欄）整塊放回，分頁上表頭順序被人調過也不會放錯欄。 */
+  const values = [cols.slice()].concat(rows.map(function (r) { return cols.map(function (c) { return r[c] == null ? '' : payCellSafe_(r[c]); }); }));
+  const h = Math.max(oldN + 1, values.length);   // 這次要蓋的列數（含表頭）：舊的、新的取大的
+  payEnsureRows_(sh, h);
+  // 舊內容（含表頭列）：讀的當下抄的那份列數對得上才用（表頭跟 PAY_SHEETS 不一樣時 payRead 本來就不留）；沒有就讀一次格子原樣。設文字格式之前讀。
+  const before = (raw && raw.length === oldN) ? [cols.slice()].concat(raw) : sh.getRange(1, 1, Math.max(last, 1), nc).getValues();
   payForceTextCols(sh, cols, kind);
-  // 舊內容：讀的當下抄的那份列數對得上才用（被別台改過列數就重讀）；沒有就讀一次
-  const before = !oldN ? [] : (raw && raw.length === oldN ? raw : sh.getRange(2, 1, oldN, nc).getValues());
   const inv = function () { payInvalidate(kind); };
-  return paySafePut_(sh, 2, nc, h, values, before, PAY_SHEET_NAME[kind] || kind, inv);
+  return paySafePut_(sh, 1, nc, h, values, before, PAY_SHEET_NAME[kind] || kind, inv);
 }
 /** 格線不夠 need 列就先加列（以前在清空之後才發現範圍超出 → 整張變空）。 */
 function payEnsureRows_(sh, need) {

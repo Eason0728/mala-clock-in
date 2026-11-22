@@ -93,8 +93,8 @@ function world(src, opt) {
       const rg = sh._origGetRange(r, c, nr, nc);
       const w = Object.create(rg);
       w.getValues = readFirst(() => rg.getValues());
-      w.setValues = (vals) => { submit({ type: 'setValues', sheet: sh, name: n, r, c, nr, nc, vals, data: r >= 2 || n === 'ot_month', run: () => rg.setValues(vals) }); return w; };
-      w.clearContent = () => { submit({ type: 'clearContent', sheet: sh, name: n, r, c, nr, nc, data: r >= 2, run: () => rg.clearContent() }); return w; };
+      w.setValues = (vals) => { submit({ type: 'setValues', sheet: sh, name: n, r, c, nr, nc, vals, data: r + nr - 1 >= 2 || n === 'ot_month', run: () => rg.setValues(vals) }); return w; };
+      w.clearContent = () => { submit({ type: 'clearContent', sheet: sh, name: n, r, c, nr, nc, data: r + nr - 1 >= 2, run: () => rg.clearContent() }); return w; };
       w.setNumberFormat = (fmt) => { submit({ type: 'fmt', sheet: sh, run: () => rg.setNumberFormat(fmt) }); return w; };
       w.getLastRow = () => rg.getLastRow();
       return w;
@@ -465,6 +465,63 @@ function runOtSame() {
   sec('G6 ot_month 正常路徑', diff === 0, `${n} 次同步，改版前後（值、型別、文字格式、格線、回應）不同 ${diff} 次`);
 }
 
+/* H 分頁上的表頭順序跟 PAY_SHEETS 不同（有人手動調過欄、或多一欄 PAY_SHEETS 沒有的）：
+   寫入失敗＋還原後，整張（含表頭列）要跟寫入前逐格相同、payRead 讀回的每列物件也相同。
+   另外記下「正常寫入」時那一欄會怎樣（既有行為，跟 4f929d3 一樣就好，不改）。 */
+function hdrSeed(W, layout) {
+  const sh = W.vm('paySheet("bonus")') && W.sheetOf('bonus');
+  const vals = [layout].concat([0, 1, 2, 3].map((i) => layout.map((c) => c + '-' + i)));
+  sh._origGetRange(1, 1, vals.length, layout.length).setValues(vals);
+  return sh;
+}
+function runHeaderOrder(src) {
+  const cols = COLS.bonus;   // ym, store, emp_id, bonus_type, label, amount, memo, updated_at
+  const LAYOUTS = {
+    '欄位順序對調': [cols[1], cols[0]].concat(cols.slice(2)),
+    '中間多一欄': cols.slice(0, 3).concat(['手寫備註']).concat(cols.slice(3)),
+    '對調＋最後多一欄': [cols[2], cols[0], cols[1]].concat(cols.slice(3)).concat(['手寫備註']),
+  };
+  for (const [name, layout] of Object.entries(LAYOUTS)) {
+    for (const warm of [true, false]) {
+      for (const how of ['throw', 'half']) {
+        const W = world(src);
+        hdrSeed(W, layout);
+        W.vm('payInvalidate("bonus")');
+        const objBefore = JSON.stringify(W.vm('payRead("bonus")'));
+        W.vm('payInvalidate("bonus")');
+        if (warm) W.vm('payRead("bonus")');
+        const before = W.state('bonus');
+        W.F.faults = [{ match: isData, how, times: 1 }];
+        let err = null;
+        try { W.replace('bonus', makeRows(cols, 6)); } catch (e) { err = e; }
+        W.F.faults = [];
+        W.vm('payInvalidate("bonus")');
+        const tag = `${name}／${warm ? '用讀的當下那份' : '沒讀過'}／${how}`;
+        sec('H 表頭順序不同', !!err, tag + '：呼叫端收到錯誤');
+        sec('H 表頭順序不同', W.state('bonus') === before, tag + '：整張（含表頭列）＝寫入前');
+        sec('H 表頭順序不同', JSON.stringify(W.vm('payRead("bonus")')) === objBefore, tag + '：payRead 讀回每列物件＝寫入前');
+      }
+    }
+  }
+}
+function headerNormalNote() {
+  if (!baseSrc) return [];
+  const out = [];
+  const cols = COLS.bonus;
+  for (const layout of [cols.slice(0, 3).concat(['手寫備註']).concat(cols.slice(3)), cols.concat(['手寫備註'])]) {
+    const s0 = seed;
+    const A = world(baseSrc), B = world(CUR);
+    hdrSeed(A, layout); hdrSeed(B, layout);
+    const rows = makeRows(cols, 3); seed = s0;
+    A.replace('bonus', rows); B.replace('bonus', rows);
+    const same = A.state('bonus') === B.state('bonus');
+    sec('H 表頭順序不同', same, '正常寫入：額外欄在第 ' + (layout.indexOf('手寫備註') + 1) + ' 欄時，結果跟改版前逐格相同');
+    const sh = B.sheetOf('bonus'), c = layout.indexOf('手寫備註') + 1;
+    out.push('額外欄在第 ' + c + ' 欄：正常寫入後表頭＝' + JSON.stringify(sh._read(1, c)) + '、第 2 列＝' + JSON.stringify(sh._read(2, c)) + '（改版前' + (same ? '相同' : '不同') + '）');
+  }
+  return out;
+}
+
 /* 每次 payReplaceAll 的試算表呼叫數（給 PR 描述的估計） */
 function countCalls(src, kind, oldN, newN, warm) {
   const W = world(src);
@@ -493,6 +550,8 @@ runReadFail(CUR);
 runGrid(CUR);
 runObserve(CUR);
 runOtFaults(CUR);
+runHeaderOrder(CUR);
+const HDR_NOTE = (!process.env.PAYRA_SRC || process.env.PAYRA_N1) ? headerNormalNote() : [];
 if (!process.env.PAYRA_SRC || process.env.PAYRA_N1) { runSame(); runSameHandlers(); runOtSame(); }   // PAYRA_N1=1：拿 PAYRA_SRC 那版跟改版前比（驗這組抓得到差異）
 
 console.log('\n各組結果（通過／失敗）：');
@@ -504,6 +563,7 @@ if (!process.env.PAYRA_SRC && baseSrc) {
   console.log('  現在（鎖內剛 payRead 過，用讀的當下那份）：' + fmt(countCalls(CUR, 'run', 40, 42, true)));
   console.log('  現在（沒有讀過，要多讀一次）：' + fmt(countCalls(CUR, 'run', 40, 42, false)));
 }
+if (HDR_NOTE.length) { console.log('\n正常寫入時 PAY_SHEETS 沒有的欄（既有行為）：'); HDR_NOTE.forEach((x) => console.log('  ' + x)); }
 if (fails.length) { console.log('\n失敗明細（前 15 筆）：'); fails.slice(0, 15).forEach((m) => console.log('  ✗ ' + m)); }
 console.log(`\n${fail ? '❌' : '✅'} pay-replaceall-safe：${pass} 通過、${fail} 失敗`);
 process.exit(fail ? 1 : 0);
