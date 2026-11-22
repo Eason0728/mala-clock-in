@@ -253,6 +253,31 @@ def main():
                 C.ok('11 被擋後重讀（%s）：按鍵照 Google 較新的（上班亮、下班灰）' % mode, btns(p) == (False, True), btns(p))
                 p.close()
 
+            # ── 12–13（2026-11-23 驗收 D）：只問 mini（true）時的保護 ──
+            # 12. mini 落後：開頁照 mini（舊，下班亮）；按下班被後端擋 → 重讀兩邊都問 → Google 較新的校正（上班亮、下班灰），失敗原因留著
+            p, _ = open_two(ctx, M_OLD, G_NEW, '1', punch_fake=REJ)
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            b0 = btns(p)
+            p.wait_for_timeout(1500)
+            n0 = len(g_status_calls(p))
+            C.ok('12 true mini 落後：開頁照 mini、沒問 Google（上班灰、下班亮）', b0 == (True, False) and n0 == 0, (b0, n0))
+            C.force_out(p)
+            C.wait_msg(p, '（測試）後端擋下', timeout=8000)
+            p.wait_for_timeout(3000)
+            C.ok('12 true 被擋後重讀：有問 Google', len(g_status_calls(p)) >= 1, C.calls(p))
+            C.ok('12 true 被擋後重讀：按鍵照 Google 較新的（上班亮、下班灰）', btns(p) == (False, True), btns(p))
+            C.ok('12 true 被擋後重讀：失敗原因還在', '（測試）後端擋下' in C.msg(p), C.msg(p))
+            p.close()
+            # 13. mini 回的缺今天的卡（today）：當不能用、改問 Google，用 Google 的；開頁秒數 status＝mini_bad
+            bad = {k: v for k, v in M_NEW.items() if k != 'today'}
+            p, _ = open_two(ctx, bad, G_OLD, '1')
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+            o = opens(p)[0]
+            C.ok('13 true mini 缺 today：改問 Google、用 Google 的（上班灰、下班亮）', o.get('st_src') == 'google' and btns(p) == (True, False), (o, btns(p)))
+            C.ok('13 true mini 缺 today：開頁秒數 status＝mini_bad', o.get('status') == 'mini_bad', o)
+            p.close()
+
             C.ok('P2-B：以上各情境頁面沒有程式錯誤', errs == [], errs)
             br.close()
     finally:

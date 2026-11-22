@@ -258,8 +258,8 @@
      true＝只問 mini：mini 回了（而且公告也由 mini 帶，notices_ok）就完全不問 Google。
      mini 先跑 ST_HEDGE_MS；這段時間沒回、連不上、回的不能用、沒帶公告，就馬上問 Google（＝跟現在一樣誰先回用誰）。開頁時已知 mini 連不上也直接照現在。
      退回：這裡改回 false 重發頁面（≤10 分鐘）。 */
-  // 2026-11-23 七家 mini 核定店一起先試跑比對（"cmp"）；瑞光 mztrg、文心 mztwx 不列＝照現在。店碼對 STORES（小辛辣光復＝""）
-  var ST_ONLY_MINI = { "": "cmp", "cf": "cmp", "hq": "cmp", "mztjs": "cmp", "mztgf": "cmp", "mztlzl": "cmp", "mztmc": "cmp" };
+  // 2026-11-23 七家 mini 核定店試跑比對（"cmp"）之後改只問 mini（true）；瑞光 mztrg、文心 mztwx 不列＝照現在。店碼對 STORES（小辛辣光復＝""）
+  var ST_ONLY_MINI = { "": true, "cf": true, "hq": true, "mztjs": true, "mztgf": true, "mztlzl": true, "mztmc": true };
   var ST_HEDGE_MS = (isLocalHost && +qs('st_hedge_ms')) || 1200, ST_CMP_DELAY_MS = (isLocalHost && +qs('st_cmp_ms')) || 1500;
   if (isLocalHost && qs('st_only') !== null && qs('st_only') !== '') {   // 本機測試：?st_only=cmp|1|0 套用到每一家店
     var so = qs('st_only'); ST_ONLY_MINI = { '*': so === 'cmp' ? 'cmp' : so === '1' };
@@ -645,14 +645,23 @@
   function rememberStore(st) {
     try { var me = liff.getDecodedIDToken && liff.getDecodedIDToken(); if (me && me.sub) localStorage.setItem(ST_KEY, JSON.stringify({ sub: me.sub, code: st.code })); } catch (e) { /* 記不住就下次照舊 */ }
   }
-  function fetchStatus(st) {
+  /* 只問 mini（true／cmp）時 mini 的開頁狀態要齊才收（2026-11-23 驗收 D）：缺姓名、今天的卡、防呆任一項＝當不能用、照現在問 Google，開頁秒數 status 標 mini_bad。
+     開關關的店照舊（Google 同時在問，畫面最後會被 Google 那份校正）。 */
+  function miniFull(r) { return !!(r && typeof r.name === 'string' && r.name !== '' && Array.isArray(r.today) && r.guard && typeof r.guard === 'object'); }
+  /** both＝這次不管開關、兩邊都問（打卡被後端擋下後的重讀：mini 可能落後，要讓 Google 較新的那份校正畫面） */
+  function fetchStatus(st, both) {
     var f = { st: st, t0: tmNow(), live: false, quiet: false, gMs: null, mMs: null, google: null, only: false };
     var done = false, res, rej;
     f.first = new Promise(function (a, b) { res = a; rej = b; });
     f.first.catch(function () {});   // 先讀的那份沒被用到時不留未處理的錯誤
     f.mini = (!G_API || qrToken) ? Promise.resolve(null)
       : post(G_API + '/status', { store: st.code === '' ? 'gf' : st.code, id_token: liff.getIDToken() }, MINI_ST_WAIT_MS)
-          .then(function (r) { f.mMs = tmNow() - f.t0; if (r && typeof r === 'object') r.__at = Date.now(); return (r && r.ok === true && r.status === 'ready' && r.role === 'primary' && r.guard) ? r : null; },
+          .then(function (r) {
+            f.mMs = tmNow() - f.t0; if (r && typeof r === 'object') r.__at = Date.now();
+            var use = !!(r && r.ok === true && r.status === 'ready' && r.role === 'primary' && r.guard);
+            if (use && f.only && !miniFull(r)) { use = false; om.bad = true; }
+            return use ? r : null;
+          },
                 function () { return null; });
     f.mini.then(function (r) { if (r && !done) { done = true; res({ r: r, src: 'mini' }); } });
     /** 問 Google（只問一次）。誰先回用誰：Google 讀不到、mini 也沒有可用的答案才算失敗 */
@@ -665,7 +674,7 @@
       return f.google;
     };
     // 開頁只問 mini（P2-B）：開關開、有 mini 網址、不是主管 QR、開頁時沒有已知 mini 連不上
-    f.only = (G_API && !qrToken && !gConfFailed) ? stOnlyMini(st) : false;
+    f.only = (!both && G_API && !qrToken && !gConfFailed) ? stOnlyMini(st) : false;
     if (!f.only) { f.askGoogle(); return f; }   // 跟現在一樣：同時問
     var hedge = setTimeout(function () { f.hedged = true; f.askGoogle(); }, ST_HEDGE_MS);
     f.mini.then(function (r) { clearTimeout(hedge); if (!(r && r.notices_ok === true)) f.askGoogle(); });   // mini 不能用、或公告沒帶（Google 端還是舊版 RelayG）：照現在問 Google
@@ -677,19 +686,19 @@
     return JSON.stringify([(s.today || []).map(function (e) { return e.type + e.hm + e.status; }), g.blocked || '', g.last ? g.last.type + g.last.hm : '',
       !!(lk.in && lk.in > now), !!(lk.out && lk.out > now), !!(s.rest && s.rest.blocked), !!(s.cap && s.cap.locked), !!(s.cap && s.cap.in_block)]);
   }
-  function loadStatus(pre) {
+  function loadStatus(pre, both) {
     stGen++;   // 重新讀狀態：上一輪晚回來的那份作廢
     say('讀取中…', '', '');
-    if (qrToken) return loadStatusFor(curStore);
+    if (qrToken) return loadStatusFor(curStore, null, both);
     var pick = ClockLineCore.pickStore(fixForPick(), STORES);
     if (pick.status !== 'ok') { curStore = null; render(pickFail(pick)); omReport('fail', 'pick_' + String(pick.status)); return Promise.resolve(); }
     curStore = pick.store;
     var use = pre && pre.st.code === pick.store.code ? pre : null;
     om.pre = !!use;
-    return loadStatusFor(pick.store, use);
+    return loadStatusFor(pick.store, use, both);
   }
-  function loadStatusFor(st, pre) {
-    var f = pre || fetchStatus(st), gen = stGen;
+  function loadStatusFor(st, pre, both) {
+    var f = pre || fetchStatus(st, both), gen = stGen;
     f.live = true;
     return f.first
       .then(function (x) {
@@ -737,7 +746,7 @@
   function msgPut(m) { $('msg').textContent = m.t; $('msg').className = m.c; $('hint').textContent = m.h; offerHelp(m.k); }
   function statusAfter(f, src, shown) {
     var gen = stGen, key0 = stKey(shown), sent = false, msg0 = msgSnap(), first = ++saSeq === 1;   // msg0：剛畫完開頁狀態那一刻的訊息
-    var send = function () { if (sent) return; sent = true; if (omPending === send) omPending = null; om.g = f.gMs; om.mini = f.mMs; omReport('ready', om.cmp || ''); };
+    var send = function () { if (sent) return; sent = true; if (omPending === send) omPending = null; om.g = f.gMs; om.mini = f.mMs; omReport('ready', om.cmp || (om.bad ? 'mini_bad' : '')); };
     var note = function (m, g) {   // m＝mini 那份、g＝Google 那份（其中一份就是畫面上的 shown）
       if (!first || gen !== stGen) { if (!om.match) om.cmp = 'cmp_late'; return; }   // 重讀的那幾次（例：打卡被擋後）也不記：那時 Google 常還沒抄到剛打的卡
       var same = stKey(src === 'google' ? m : g) === key0;
@@ -1144,7 +1153,7 @@
         if (r.need_confirm) {
           report('fail', 'need_confirm'); unshow();
           status = null; refreshButtons();
-          return loadStatus().then(function () {
+          return loadStatus(null, true).then(function () {   // 兩邊都問（mini 可能落後）
             if (!status || status.status !== 'ready') return;
             var gl = status.guard && status.guard.last && status.guard.last.type === type ? status.guard.last : { type: type, ts: '' };
             var ask = pgSameAlert(gl, type);
@@ -1161,7 +1170,7 @@
         var hk = { rejected_out_of_range: '定位不準', pending_device_approval: '新手機' }[r.status] || null;
         if (r.status === 'qr_invalid') { say(failText, 'warn'); report('fail', 'qr_invalid'); return; }   // QR 過期：不重讀，請主管重新顯示再掃
         report('fail', r.status || 'guard');   // 失敗原因已經回來就算數；後面重讀狀態是另一件事
-        return loadStatus().then(function () { say(failText, 'warn'); offerHelp(hk); });
+        return loadStatus(null, true).then(function () { say(failText, 'warn'); offerHelp(hk); });   // 被擋下後兩邊都問：mini 落後時由 Google 較新的那份校正（2026-11-23 驗收 D）
       }, function () { settled = true; tmGot(); return confirmPunch(type, st, before, shown, report); })
       .then(function () { if (!keepBusy) { busy = false; refreshButtons(); } });
   }
