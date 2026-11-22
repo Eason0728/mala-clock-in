@@ -604,6 +604,32 @@ function randomCase() {
     chk('r6-4／r7 隨機 ' + n4 + ' 組（' + nMiss + ' 人草稿有、重算沒有，其中 ' + nLegacy + ' 人是沒有 xsup 的舊草稿）：快照裡的同仁＝定案名單中有支援列的同仁', badSet, 0);
     chk('r6-4 快照請款合計＝定案名單逐人請款加總', badSum, 0);
   }
+  // r10（Codex 第七次）：整數分、逐人 2 分容差、被支援門市累計 50 分（payLockStale_ 鎖月比對；草稿與重算用假資料，只差請款金額）
+  {
+    const W = H.load({ today: '2026-12-05', data: { run: [], master: [] } });
+    vm.runInContext(`handlePayrollCalc = function(){ return { ok: true, results: __CALC }; };`, W);
+    const lockClaim = (pairs) => {   // pairs：[[草稿 xsup, 重算 xsup], …]（每人一對）
+      const runs = [], calcR = [];
+      pairs.forEach(([a1, b1], i) => {
+        const base = { emp_id: 'P' + i, name: '同仁' + i, gross: 30000, deduction: 0, net: 30000 };
+        runs.push(Object.assign({ ym: '2026-11', store: 'MZTGF', status: 'draft', ot_info: JSON.stringify({ xsup: a1 }) }, base));
+        calcR.push(Object.assign({ ot_info: { xsup: b1 } }, base));
+      });
+      vm.runInContext('__DATA.run=' + JSON.stringify(runs) + ';__CALC=' + JSON.stringify(calcR) + ';', W);
+      return J(W.call('payLockStale_', { admin_key: 'x' }, '2026-11', 'MZTGF')).claim;
+    };
+    const one = (amt, extra) => [Object.assign({ code: 'MZTJS', store: '金山', hours: 5, amount: amt, otH: 0, otAdd: 0 }, extra || {})];
+    const rep = (n, f) => Array(n).fill(0).map((_, i) => f(i));
+    chk('r10-1 Codex 例子：26 人各 755.00→755.04（每人差 4 分 > 2 分）→ 擋', lockClaim(rep(26, () => [one(755), one(755.04)])), true);
+    chk('r10-2 30 人各差 2 分同向（逐人都過）→ 金山累計 60 分 > 50 → 擋', lockClaim(rep(30, () => [one(755), one(755.02)])), true);
+    chk('r10-2b 25 人各差 2 分同向（累計 50 分，不超過）→ 不擋', lockClaim(rep(25, () => [one(755), one(755.02)])), false);
+    chk('r10-3 30 人各差 2 分、一半正一半負（累計 0）→ 不擋', lockClaim(rep(30, (i) => [one(755), one(i % 2 ? 755.02 : 754.98)])), false);
+    chk('r10-4 單人同店兩筆換掛加成、逐筆取位差 1 分 → 不擋', lockClaim([[[{ code: 'MZTJS', hours: 3, amount: 666.67, otH: 1, otAdd: 66.67 }, { code: 'MZTJS', hours: 5, amount: 1000 }], [{ code: 'MZTJS', hours: 3, amount: 600 }, { code: 'MZTJS', hours: 5, amount: 1066.66, otH: 1, otAdd: 66.66 }]]]), false);
+    chk('r10-5 整數分邊界：10.00 對 10.02 不擋、10.00 對 10.03 擋、10.00 對 10.05 擋（浮點數相減會飄）', [lockClaim([[one(10), one(10.02)]]), lockClaim([[one(10), one(10.03)]]), lockClaim([[one(10), one(10.05)]])], [false, true, true]);
+    chk('r10 指定金額合計各自正負抵銷、最終金額不變：各店累計也看指定金額（30 人各 +2 分指定）→ 擋', lockClaim(rep(30, () => [one(755, { fixed: true }), one(755.02, { fixed: true })])), true);
+    chk('r10 時數差 0.01 小時（不同）→ 擋', lockClaim([[one(755), one(755, { hours: 5.01 })]]), true);
+    chk('r10 草稿有、重算沒有的人不比（照舊）', (() => { vm.runInContext('__DATA.run=' + JSON.stringify([{ ym: '2026-11', store: 'MZTGF', status: 'draft', emp_id: 'Q', name: 'Q', gross: 1, deduction: 0, net: 1, ot_info: JSON.stringify({ xsup: one(999) }) }]) + ';__CALC=[];', W); return J(W.call('payLockStale_', { admin_key: 'x' }, '2026-11', 'MZTGF')).claim; })(), false);
+  }
   // 同一份資料連算 10,000 組，摘要逐字相同（不會因浮點數讓月份鎖不了）
   let diffSig = 0;
   for (let i = 0; i < 10000; i++) {

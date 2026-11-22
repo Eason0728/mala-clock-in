@@ -507,12 +507,16 @@ console.log('\n══ e5) 計時跨店支援整條鏈（主算、損益估算；
       return [l.ok, 'xsup' in JSON.parse(wM.DB.run[0].ot_info || '{}'), snapOf(wN).sup_code, (wN.DB.audit || []).filter((x) => x.action === 'xclaim_snap_legacy').map((x) => /^共 1 位/.test(x.reason) && /工號：E1/.test(x.reason) && /不含休息日／例假／國定假日／選舉日的加成/.test(x.reason) && /請重算或人工核對/.test(x.reason))];
     };
     chk('  #210 r8-3 正式版算的舊草稿（沒有 xsup）＋停用後鎖：走退路補算 2,600、稽核點名 E1（甲君）、寫明請核對', !!mainSrc && oldDraft(false), [true, false, { SSLHQ: 2600 }, [true]]);
-    chk('  #210 r8-3 同上但已清除手動工時：薪資照草稿定案、請款補不回來（0）、稽核點名請核對', !!mainSrc && oldDraft(true), [true, false, null, [true]]);
+    chk('  #210 r8-3／r10 同上但已清除手動工時：薪資照草稿定案、請款補不回來（0）、稽核點名「補不回來」', !!mainSrc && (() => { const r = oldDraft(true); return r.slice(0, 3); })(), [true, false, null]);
+    { const wM = mk({ gs: mainSrc }); wM.sb.__AP = { SSLHQ: {} }; wM.DB.input = inp(2600); calcW(wM);
+      const wN = mk({}); wN.sb.__AP = { SSLHQ: {} }; wN.DB.run = JSON.parse(JSON.stringify(wM.DB.run)); wN.DB.item = JSON.parse(JSON.stringify(wM.DB.item)); deact(wN); wN.DB.input = [];
+      lockOf(wN, { cost_snapshot: snapIn() });
+      chk('  #210 r10 補不回來的稽核：一筆、點名 E1、寫明草稿當時有支援但查不到', (wN.DB.audit || []).filter((x) => x.action === 'xclaim_snap_legacy').map((x) => /^有 1 位/.test(x.reason) && /查不到支援列，請款補不回來/.test(x.reason) && /工號：E1/.test(x.reason)), [true]); }
     { // 舊草稿、停用、這個人沒有任何支援 → 不記退路稽核（驗收員：以前 132 組都記了）
       const wM = mk({ gs: mainSrc }); wM.sb.__AP = { SSLHQ: {} }; calcW(wM);
       const wN = mk({}); wN.sb.__AP = { SSLHQ: {} }; wN.DB.run = JSON.parse(JSON.stringify(wM.DB.run)); wN.DB.item = JSON.parse(JSON.stringify(wM.DB.item)); deact(wN);
       const l = lockOf(wN, { cost_snapshot: snapIn() });
-      chk('  #210 r8-3／r9 舊草稿、停用、沒有任何支援 → 照鎖、不點名；只記一筆「無法判斷當時有無支援」人數', [!!mainSrc, l.ok, (wN.DB.audit || []).filter((x) => x.action === 'xclaim_snap_legacy').map((x) => /^有 1 位舊草稿同仁無法判斷當時有無支援/.test(x.reason) && /E1/.test(x.reason))], [true, true, [true]]);
+      chk('  #210 r8-3／r10 舊草稿、停用、沒有任何支援跡象 → 照鎖、不記稽核', [!!mainSrc, l.ok, (wN.DB.audit || []).filter((x) => x.action === 'xclaim_snap_legacy').length], [true, true, 0]);
     }
     // r8 擋項 2：只改不影響 11 月請款的欄位、只換支援列順序 → 不擋；真的改了時數 → 擋
     const ftP = { patch: (m) => { m[0].is_full_time = 'true'; m[0].base = 34000; m[0].wage = 0; m[0].gap_rate = 100; } };

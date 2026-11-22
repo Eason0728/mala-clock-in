@@ -98,10 +98,13 @@ for (let it = 0; it < N; it++) {
     /* 本版多擋只允許一種：重算名單裡的人，草稿存的請款（xsup／xclaim／cross_ot）跟這次重算不同（改了支援列沒重算，r7 設計，既有句子）。
        確認真的是這種，然後照前端的反應「重新計算 → 再鎖」，要鎖得下去。其他原因的多擋＝違反。 */
     const dry = B.F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', dry_run: true, inputs: {} });
-    const same = (a2, b2) => B.F('payXclaimSame_')('2026-11', a2, b2);
+    const diff = (a2, b2) => B.F('payXclaimDiff_')('2026-11', a2, b2);
     const byId = {}; B.DB.run.forEach((r) => { byId[r.emp_id] = r; });
-    // 至少一家店的時數、指定金額、加成或請款金額真的不同（payXclaimSame_ 照門市合計比）才算設計上的擋
-    const claimDiff = lb.error === 'stale_run' && !(lb.list || []).length && (dry.results || []).some((r) => byId[r.emp_id] && !same(byId[r.emp_id].ot_info, r.ot_info));
+    // 設計上的擋＝至少一位同仁某家店的時數／指定金額／加成／請款差超過 2 分，或某家店（逐人容差內的差額）累計超過 50 分（r10）
+    const cumS = {}; let perEmpDiff = false;
+    (dry.results || []).forEach((r) => { if (!byId[r.emp_id]) return; const xd = diff(byId[r.emp_id].ot_info, r.ot_info); if (!xd.same) perEmpDiff = true; else Object.keys(xd.d).forEach((k) => { const c = cumS[k] = cumS[k] || { fx: 0, oa: 0, amt: 0 }; c.fx += xd.d[k].fx; c.oa += xd.d[k].oa; c.amt += xd.d[k].amt; }); });
+    const storeCum = Object.values(cumS).some((c) => Math.abs(c.amt) > 50 || Math.abs(c.fx) > 50 || Math.abs(c.oa) > 50);
+    const claimDiff = lb.error === 'stale_run' && !(lb.list || []).length && (perEmpDiff || storeCum);
     if (claimDiff) { C.claimBlock++; C.claimBlockOps[op] = (C.claimBlockOps[op] || 0) + 1; calc(B); lbF = B.F('handlePayrollFinalize')(JSON.parse(JSON.stringify(body))); if (!lbF.ok) { V.stricter++; if (!ex.stricter) ex.stricter = { op, again: lbF.error }; } }
     else { V.stricter++; if (!ex.stricter) ex.stricter = { op, la: la.error, lb: [lb.error, String(lb.message).slice(0, 120)] }; }
   }
