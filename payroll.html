@@ -536,6 +536,7 @@ html.embed.ui-new .monthbar{border-left-color:#0066cc}
       一次選舉一份，存的是上面選的月份。存好後請到「6 薪資計算」重新計算。</p>
     <div class="row" style="flex-wrap:wrap;gap:10px;align-items:center">
       <label style="font-size:13px">選舉日期 <input type="date" id="elecDate" style="width:auto"></label>
+      <span id="elecVoteDays" style="font-size:12.5px;color:var(--muted)"></span>
       <button class="btn ghost" type="button" onclick="elecAll(true)">全選</button>
       <button class="btn ghost" type="button" onclick="elecAll(false)">清除</button>
       <span id="elecCount" style="font-size:12.5px;color:var(--muted)"></span>
@@ -678,7 +679,7 @@ async function bridgeCallQueued(action,body){
 if(EMBED) window.parent.postMessage({type:'dzy-payroll-ready',v:1},DZY_ORIGIN);
 
 let MASTER=[], CFG={}, HOL={}, HOLD={}, HOLSRC={}, HOLN={}, ATT={}, RESULTS=[], STATUS='draft', ANNUAL={}, BONUS=[], STORE_LIST=[], CFGSRC={};
-let HOLEMP=[], HOLEMP_OTHER=[], ELEC_KEY='', ELEC_STALE=false, ELEC_PEND={}, ELEC_PSEQ=0, LOCK_BUSY=false;   // ELEC_PEND＝{'店|月': 序號}：名單存檔中＋存完的重算還沒確認（Codex 第五次：各店月各自記，別的店月的請求解不掉）   // ELEC_STALE＝草稿不是用現在的名單算的（存名單後重算沒成功；後端 payroll_month 的 elec_stale）：重算成功前不顯示舊數字、不能匯出   // 選舉假名單（本店本月；後端 payroll_month 的 hol_emp，沒有＝空）；ELEC_KEY＝讀到的是哪家店哪個月（讀失敗＝空，卡片停用）
+let HOLEMP=[], HOLEMP_OTHER=[], ELEC_DAYS=null, ELEC_KEY='', ELEC_STALE=false, ELEC_PEND={}, ELEC_PSEQ=0, LOCK_BUSY=false;   // ELEC_PEND＝{'店|月': 序號}：名單存檔中＋存完的重算還沒確認（Codex 第五次：各店月各自記，別的店月的請求解不掉）   // ELEC_STALE＝草稿不是用現在的名單算的（存名單後重算沒成功；後端 payroll_month 的 elec_stale）：重算成功前不顯示舊數字、不能匯出   // 選舉假名單（本店本月；後端 payroll_month 的 hol_emp，沒有＝空）；ELEC_KEY＝讀到的是哪家店哪個月（讀失敗＝空，卡片停用）
 /* Codex 第六次（2026-11-22）：MON_UNSURE＝{'店|月':1} 畫面上的月資料不確定跟後端一致（重讀失敗、或重算結果蓋過還在路上的月資料、正等重讀）→ 匯出、鎖定先擋，那個店月下一次載入成功才解除；
    RES_GEN＝{'店|月': 次數} 重算結果套到畫面的次數：月資料請求發出後這個數字變了＝回應可能比畫面上的重算舊，不套用、重讀；LOAD_INFLIGHT＝正在讀的 {seq,key}。 */
 let MON_UNSURE={}, RES_GEN={}, LOAD_INFLIGHT=null;
@@ -837,7 +838,7 @@ async function boot(){
     DASH_PREFETCH={key:STORE+'|'+ym(),g:VGEN,p:post('payroll_trend',{ym:ym(),store:STORE,months:12})};
   }
   MASTER=m.master; CFG=m.config; CFG_DIRTY={};
-  if(monSeq===LOAD_SEQ){ HOLEMP=[]; ELEC_KEY=''; }   // 名單跟著 payroll_month 讀（loadMonth）；預抓發出後使用者已切過店月＝那次載入已經設好，不清掉
+  if(monSeq===LOAD_SEQ){ HOLEMP=[]; ELEC_DAYS=null; ELEC_KEY=''; }   // 名單跟著 payroll_month 讀（loadMonth）；預抓發出後使用者已切過店月＝那次載入已經設好，不清掉
   // ⚠ 門市下拉一定要在這裡先建好：若等到 loadMonth，該門市讀取失敗就會提早 return，
   //    下拉永遠是空的 → 使用者被鎖在壞掉的門市、切不回來（踩過）
   if(m.stores&&m.stores.length){STORE_LIST=m.stores;renderStoreSel()}
@@ -943,7 +944,7 @@ async function saveAtt(){
   if(ym()>=XSUP_FROM){ const t={}; Object.keys(sendAtt||{}).forEach(k=>{ if(attSendable(sendAtt[k])) t[k]=sendAtt[k]; }); sendAtt=t; }
   const r=await post('payroll_input_set',{ym:ym(),inputs:sendAtt});
   if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.message||r.error||''),true);return}
-  await doCalc();   // 存完用新工時重算帶出數字
+  await doCalc(undefined,true);   // 存完用新工時重算帶出數字（true＝工時已存：這個月讀取失敗時重算後可以重新載入）
   ATT_DIRTY=false;   // 存好了，解除未儲存提醒
   b.classList.add('done'); b.textContent='✓ 存檔完成';
   toast(ym()+' 工時已儲存（'+r.count+' 人）');
@@ -1059,7 +1060,7 @@ async function loadMonth(pre,preSeq,preGen){   // pre＝開頁時先發出去的
       MON_UNSURE[reqKey]=1;   // 畫面上還是上一份資料：匯出、鎖定先擋，重新載入成功才解除（Codex 第六次 13b）
       // ⚠ 不可靜默 return——會讓畫面空白，使用者以為「資料不見了」
       const msg=r.error==='scope_forbidden'?'這家門市不在你的負責範圍':String(r.detail||r.message||r.error||'讀取失敗');
-      HOLEMP=[]; ELEC_KEY=''; renderElec();   // 不留上一家店／上個月的選舉假名單（Codex S5）
+      HOLEMP=[]; ELEC_DAYS=null; ELEC_KEY=''; renderElec();   // 不留上一家店／上個月的選舉假名單（Codex S5）
       showLoadError(msg);
       toast(msg,true);
       // 失敗也要保證能切回別的門市：下拉是空的就單獨去抓門市表
@@ -1101,7 +1102,7 @@ async function loadMonth(pre,preSeq,preGen){   // pre＝開頁時先發出去的
     if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
     ELEC_STALE=(!!r.elec_stale||!!ELEC_PEND[reqKey])&&STATUS!=='final'; if(ELEC_STALE) RESULTS=[];   // 這個店月的名單存檔／存後重算還沒確認：一樣不顯示舊數字
     if(r.elec_recalc&&DASH_PREFETCH&&DASH_PREFETCH.key===reqKey) DASH_PREFETCH=null;   // 開頁預抓的趨勢可能是重算前讀的：丟掉，進儀表板時重抓（Codex 第四次 B3）   // 草稿是舊名單算的：不顯示、不匯出，重算成功才回來（Codex 第三次 B1）
-    HOLEMP=Array.isArray(r.hol_emp)?r.hol_emp:[]; HOLEMP_OTHER=Array.isArray(r.hol_emp_other_dates)?r.hol_emp_other_dates:[]; ELEC_KEY=STORE+'|'+ym(); renderElec();   // 選舉假名單隨門市、月份、鎖定狀態重畫
+    HOLEMP=Array.isArray(r.hol_emp)?r.hol_emp:[]; HOLEMP_OTHER=Array.isArray(r.hol_emp_other_dates)?r.hol_emp_other_dates:[]; ELEC_DAYS=Array.isArray(r.elec_vote_days)?r.elec_vote_days.map(String):null; ELEC_KEY=STORE+'|'+ym(); renderElec();   // ELEC_DAYS＝本月投票日（後端 PAY_ELEC_VOTE_DAYS，唯一來源）；舊後端沒帶＝null（不顯示說明、不跳確認框）   // 選舉假名單隨門市、月份、鎖定狀態重畫
     ASOF=r.asof||null;
     COST_SNAP=(r.run&&r.run.status==='final'&&r.run.cost_snap)||null;   // 已鎖定月份的成本快照（沒有就即時算＋標記）
     renderAtt();renderRun();renderSlipSel();
@@ -1111,7 +1112,7 @@ async function loadMonth(pre,preSeq,preGen){   // pre＝開頁時先發出去的
     return true;
   } finally { if(LOAD_INFLIGHT&&LOAD_INFLIGHT.seq===seq) LOAD_INFLIGHT=null; setBusy(false); }
 }
-async function doCalc(pendSeq){   // 回 true＝重算成功並已套到畫面（選舉假存檔後要知道，Codex 複審 K3）；pendSeq＝選舉假存檔觸發的重算（序號相符才套用並解除該店月的待確認）
+async function doCalc(pendSeq,inputsSaved){   // 回 true＝重算成功並已套到畫面（選舉假存檔後要知道，Codex 複審 K3）；pendSeq＝選舉假存檔觸發的重算（序號相符才套用並解除該店月的待確認）；inputsSaved＝saveAtt 剛存好工時才叫的（出勤表單＝試算表）
   if(supCrossBlock('重新計算')) return false;
   setBusy(true);
   try{
@@ -1136,8 +1137,10 @@ async function doCalc(pendSeq){   // 回 true＝重算成功並已套到畫面�
     LEAVE_MM=r.leave_mismatch||[];
     vClear();   // 重算後儀表板／集團總覽的數字會變
     renderRun();renderSlipSel();toast('已重新計算');
-    /* 這個月先前讀取失敗（旗標還在）、也沒有月資料在路上：重算成功後重新載入這個月，載入成功才解開（規則同切月份重新載入；2026-11-22 後續 PR） */
-    if(STORE+'|'+ym()===reqKey&&monUnsure()&&!(LOAD_INFLIGHT&&LOAD_INFLIGHT.key===reqKey)) await loadMonth();
+    /* 這個月先前讀取失敗（旗標還在）、也沒有月資料在路上：重算成功後重新載入這個月，載入成功才解開（規則同切月份重新載入；2026-11-22 後續 PR）。
+       出勤表單有尚未儲存的編輯（且不是剛存好）就不重新載入（Codex 複審 2026-11-22 BLOCKER）：重新載入會把表單換回試算表的值、清掉「儲存工時 ●」，
+       草稿卻是用未存的編輯算的；所以留著編輯與未存標記，匯出、列印、鎖定照擋，等按「儲存工時」（存好→重算→這裡重新載入）成功才解開 */
+    if(STORE+'|'+ym()===reqKey&&monUnsure()&&!(LOAD_INFLIGHT&&LOAD_INFLIGHT.key===reqKey)&&(!ATT_DIRTY||inputsSaved)) await loadMonth();
     return true;
   } finally { setBusy(false); }
 }
@@ -1763,7 +1766,7 @@ async function toggleLock(){
       const here=()=>STORE+'|'+ym()===lockKey;
       if(st&&st.ok&&st.ym===lockYm){
         if(st.status==='final'){ const ok=here()?await loadMonth():true; toast(ok?'已鎖定（剛才的回應在路上斷了，重新讀取後確認這個月已經鎖定）':'已鎖定，但重新讀取這個月失敗：請重新整理頁面、確認金額後再匯出',!ok); }
-        else if(st.status==='mixed') toast('這個月有一部分已鎖定、一部分還是草稿，請重新整理頁面看狀態；重新整理後還是這樣請找資訊部',true);   // 字句草稿，Eason 尚未確認
+        else if(st.status==='mixed'){ MON_UNSURE[lockKey]=1; toast('這個月有一部分已鎖定、一部分還是草稿，請重新整理頁面看狀態；重新整理後還是這樣請找資訊部',true); }   // 字句草稿，Eason 尚未確認。一部分已鎖定＝畫面上的草稿不確定跟後端一致：同「狀態查不到」設讀取失敗旗標（匯出、列印、鎖定擋，重新載入成功才解開；Codex 複審殘餘）
         else if(st.status==='none') toast('這個月還沒有計算結果，沒有鎖定成功；請重新整理頁面看狀態',true);   // 字句草稿，Eason 尚未確認
         else toast('連線中斷：重新讀取後這個月仍是草稿，沒有鎖定成功，請再按一次「鎖定本月」',true);
       /* 只有「後端不認得這個動作」（舊版 Apps Script 回 unknown_action）或「管理系統代轉還沒放行」（dzy#157 未上線：代轉回 403，
@@ -3088,9 +3091,11 @@ function renderElec(){
   const box=$('elecList'); if(!box) return;
   const rows=elecRowsYm(), on={}; rows.forEach(x=>{ on[String(x.emp_id)]=true; });
   if($('elecYm')) $('elecYm').textContent=ym();
-  const dEl=$('elecDate');
+  const dEl=$('elecDate'), vd=elecVoteDays();
   if(dEl){ dEl.min=ym()+'-01'; dEl.max=ym()+'-'+String(new Date(+ym().slice(0,4),+ym().slice(5,7),0).getDate()).padStart(2,'0');
-    dEl.value=(rows[0]&&rows[0].date)||''; }
+    /* 日期欄初始值（Eason 2026-11-22）：存過名單＝存過的日期（清單外也照顯示）；沒存過＝該月最早的投票日；該月沒有投票日＝空白（原本沒存過一律空白）。
+       只是畫面初始值：不存檔、不重算，改成清單外日期照樣要確認。 */
+    dEl.value=(rows[0]&&rows[0].date)||(vd&&vd.length?vd.slice().sort()[0]:''); }
   const list=(MASTER||[]).filter(m=>elecInRoster(m,ym())||on[String(m.emp_id)]);   // 候選人＝後端當月計薪名冊（payInRosterYm_：在職，或已停用但離職日在本月或之後），已勾選的人一律留著可取消（Codex 第三次 B2）
   const tooOld=ym()<ELEC_FROM;   // 2026-10 以前：後端不收、薪資也不套用（Codex 複審 S1）
   const locked=STATUS==='final'||!elecReady()||tooOld;
@@ -3098,6 +3103,7 @@ function renderElec(){
       <span>${esc(m.name||m.emp_id)}</span> <small>${esc(m.emp_id)}｜${payTrue(m.is_full_time)?'正職':'計時'}</small></label>`).join('')
     :'<div style="color:var(--muted);font-size:13px">這家門市還沒有薪資主檔</div>';
   if(dEl) dEl.disabled=locked;
+  if($('elecVoteDays')) $('elecVoteDays').textContent=vd&&vd.length?'本月投票日：'+vd.join('、'):'';   // 該月清單沒有日期、或後端沒帶（舊版）時不顯示
   const sv=$('elecSave'); if(sv) sv.disabled=locked;
   if($('elecLock')) $('elecLock').textContent=tooOld?'選舉假名單從 '+ELEC_FROM+' 起才能用，'+ym()+' 的薪資不會套用'
     :!elecReady()?'名單還沒讀到（讀取失敗或還在載入），請重新整理後再改'
@@ -3125,6 +3131,28 @@ function elecLeaveYmd(v){ const t=String(v==null?'':v).trim();
 function elecInRoster(m,Y){ if(String(m&&m.active).toLowerCase()==='true') return true;
   const ld=elecLeaveYmd(m&&m.leave_date); return /^\d{4}-\d{2}-\d{2}$/.test(ld)&&ld.slice(0,7)>=String(Y); }
 function elecCount(){ const n=document.querySelectorAll('#elecList .elec-ck:checked').length; if($('elecCount')) $('elecCount').textContent='已勾選 '+n+' 人'; }
+/* 投票日清單（2026-11-22 Eason 選項 7B）：清單內的日期直接存；清單外的日期要多按一次確認，送出時帶 confirm_off_list:true（後端只認布林 true）。
+   清單只在後端（Payroll.gs PAY_ELEC_VOTE_DAYS），由 payroll_month 的 elec_vote_days 帶來；null＝舊後端沒帶（不跳確認框，照舊直接存）。 */
+function elecVoteDays(){ return elecReady()&&Array.isArray(ELEC_DAYS)?ELEC_DAYS:null; }
+/* 確認框：回 Promise<true＝確定使用這個日期／false＝取消>。按遮罩外圍、Esc 都當取消。 */
+function elecAsk(date,days){
+  return new Promise(res=>{
+    const mask=document.createElement('div'); mask.className='qz-mask'; mask.id='elecAsk';
+    // 該月清單沒有日期時括號寫「（本月沒有投票日）」（Eason 2026-11-22 定案）
+    const txt=date+' 不在投票日清單'+(days.length?'（本月投票日是 '+days.join('、')+'）':'（本月沒有投票日）')+'。選錯日期會讓名單上的人選舉日加發算錯。確定要用 '+date+' 嗎？';
+    mask.innerHTML='<div class="qz-box" role="dialog" aria-modal="true"><div class="qz-bd" style="padding:20px 20px 16px"><p id="elecAskTxt" style="font-size:14px;line-height:1.7"></p>'
+      +'<div class="row" style="justify-content:flex-end;gap:10px;margin-top:16px"><button class="btn ghost" type="button" id="elecAskNo">取消</button>'
+      +'<button class="btn" type="button" id="elecAskYes">確定使用這個日期</button></div></div></div>';
+    mask.querySelector('#elecAskTxt').textContent=txt;
+    const done=v=>{ document.removeEventListener('keydown',key,true); mask.remove(); res(v); };
+    const key=e=>{ if(e.key==='Escape'){ e.preventDefault(); done(false); } };
+    mask.addEventListener('click',e=>{ if(e.target===mask) done(false); });
+    mask.querySelector('#elecAskNo').onclick=()=>done(false);
+    mask.querySelector('#elecAskYes').onclick=()=>done(true);
+    document.addEventListener('keydown',key,true);
+    document.body.appendChild(mask); mask.querySelector('#elecAskNo').focus();
+  });
+}
 function elecAll(v){ if(STATUS==='final'||!elecReady()||ym()<ELEC_FROM) return; document.querySelectorAll('#elecList .elec-ck').forEach(c=>{ c.checked=!!v; }); elecCount(); }
 async function saveElec(btn){
   if(STATUS==='final'){ toast(ym()+' 已鎖定，請先解鎖再修改選舉假名單',true); return; }
@@ -3133,6 +3161,13 @@ async function saveElec(btn){
   if(ids.length&&(!date||date.slice(0,7)!==ym())){ toast('請先選 '+ym()+' 裡的選舉日期',true); return; }
   if(ym()<ELEC_FROM){ toast('選舉假名單從 '+ELEC_FROM+' 起才能用，'+ym()+' 的薪資不會套用',true); return; }
   if(!elecReady()){ toast('名單還沒讀到（讀取失敗或還在載入），請重新整理後再改',true); return; }
+  // 投票日清單外的日期：先確認，按「取消」什麼都不送、畫面不動（7B）
+  const vdays=elecVoteDays(), off=!!(ids.length&&vdays&&vdays.indexOf(date)<0);
+  if(off){
+    const k0=STORE+'|'+ym();
+    if(!(await elecAsk(date,vdays))) return;
+    if(STORE+'|'+ym()!==k0||STATUS==='final'||!elecReady()) return;   // 確認框開著時店月或鎖定狀態變了：不送
+  }
   const reqYm=ym(), reqStore=STORE;   // 回應回來時畫面可能已經切到別家店／別個月（Codex S5）
   /* 一按儲存就把這個店月的結果作廢（Codex 第四次 B1）：送出到回應之間，名單可能已經寫進去，舊 RESULTS 不能再匯出、鎖定也先停用；
      重算成功才放行（doCalc 在儲存途中回來的結果不套用）。 */
@@ -3144,7 +3179,7 @@ async function saveElec(btn){
     RESULTS=[]; ELEC_STALE=true; renderRun(); renderSlipSel();   // 重新整理頁面後後端也會回 elec_stale（草稿存的名單指紋不同），兩邊同一個狀態
     btn.disabled=true;
     let r=null;
-    try{ r=await post('payroll_hol_emp_set',{ym:reqYm,date:ids.length?date:'',emp_ids:ids}); }
+    try{ r=await post('payroll_hol_emp_set',Object.assign({ym:reqYm,date:ids.length?date:'',emp_ids:ids},off?{confirm_off_list:true}:{})); }
     finally{ btn.disabled=false; }
     const onIt=()=>ym()===reqYm&&STORE===reqStore;
     const same=onIt();
@@ -3170,7 +3205,7 @@ async function saveElec(btn){
     // 勾選的人那天的加班已經拿去抵補休 → 後端回人數提醒；補休帳沒檢查成也會回 warn_message
     if(r.warn_message){ toast(r.warn_message+(same&&!recalced?' '+fail:''),true); return; }
     if(same&&!recalced){ toast(fail,true); return; }
-    toast(ids.length?'已儲存選舉假名單（'+date+'，'+ids.length+' 人）'+(recalced?'，已重新計算':'，請回到 '+reqYm+' 重新計算'):'已清除 '+reqYm+' 的選舉假名單'+(recalced?'，已重新計算':''));
+    toast(ids.length?'已儲存選舉假名單（'+date+'，'+ids.length+' 人'+(off?'；不在投票日清單':'')+'）'+(recalced?'，已重新計算':'，請回到 '+reqYm+' 重新計算'):'已清除 '+reqYm+' 的選舉假名單'+(recalced?'，已重新計算':''));
   } finally { clearPend(); }   // 不管中間哪一步丟例外，這次存檔的待確認都要解除（只解自己這個序號；Codex 第六次 13b）
 }
 

@@ -128,7 +128,10 @@ console.log('══ a) 沒有名單：跟改版前（main ' + BASE_REF + '）逐
     chk('  payroll_master_get 回應形狀不變（沒有名單不多 hol_emp）', JSON.stringify(Object.keys(mB)), JSON.stringify(Object.keys(mA)));
     const pm = (gs, o2) => { const w = world(Object.assign({ gs }, o2 || {})); w.calc(); return JSON.parse(JSON.stringify(w.F('handlePayrollMonth')({ ym: '2026-11', store: 'SSLGF' }))); };
     const pA = pm(before), pB = pm(undefined);
-    chk('  payroll_month 回應（JSON）逐字相同（不含 #210 r8 的 ot_info.xsup）', JSON.stringify(pB, NX) === JSON.stringify(pA, NX), true);
+    // 7B 投票日清單（2026-11-22）：名單能用的月份多帶 elec_vote_days（前端說明行用）；比對時拿掉，另外斷言它的值
+    chk('  payroll_month 多帶 elec_vote_days＝["2026-11-28"]（7B）', pB.elec_vote_days, [E]);
+    delete pB.elec_vote_days;
+    chk('  payroll_month 回應（JSON）逐字相同（不含 #210 r8 的 ot_info.xsup、7B 的 elec_vote_days）', JSON.stringify(pB, NX) === JSON.stringify(pA, NX), true);
     chk('  payroll_month 有名單時多 hol_emp', pm(undefined, { elec: ['a'] }).hol_emp, [{ ym: '2026-11', date: E, emp_id: 'E1', note: '' }]);
     const raw = (o2) => { const w = world(o2 || {}); w.calc(); return w.F('handlePayrollMonth')({ ym: '2026-11', store: 'SSLGF' }); };
     chk('  payroll_month 沒有名單：連值為 undefined 的 hol_emp 屬性都沒有（Codex B5c）', Object.prototype.hasOwnProperty.call(raw({}), 'hol_emp'), false);

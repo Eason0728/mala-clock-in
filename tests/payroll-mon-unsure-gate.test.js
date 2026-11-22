@@ -76,5 +76,41 @@ console.log('══ 4) 被擋提示只有那一句 ══');
   ok(/function monUnsureStop\(\)\{ if\(!monUnsure\(\)\) return false; toast\(MON_UNSURE_MSG,true\); return true; \}/.test(H), 'monUnsureStop 只用 MON_UNSURE_MSG');
 }
 
-console.log(fail ? `\n❌ ${pass} 過、${fail} 失敗` : `\n✅ ${pass} 過、0 失敗`);
-process.exit(fail ? 1 : 0);
+console.log('══ 5) 讀取失敗後重算：有未存的出勤編輯就不自動重新載入（Codex 複審 2026-11-22 BLOCKER）══');
+let done5;
+{
+  /* 讀取失敗旗標在、按「重新計算」成功：
+   *   沒有未存編輯 → 重新載入（#214 第 5 點）；有未存編輯 → 不重新載入（留著編輯與「儲存工時 ●」、旗標照擋）；
+   *   saveAtt 存好工時後叫的重算（inputsSaved）→ 重新載入。旗標不在 → 都不重新載入。 */
+  const vm = require('vm');
+  const src = fnBody('doCalc');
+  const run = async (unsure, dirty, saved) => {
+    const log = { reload: 0 };
+    const ctx = { STORE: 'S', ym: () => '2026-10', MON_UNSURE: unsure ? { 'S|2026-10': 1 } : {}, RES_GEN: {}, ELEC_PEND: {}, LOAD_INFLIGHT: null, ATT_DIRTY: dirty, ATT: { e: { custom_add_amt: 500 } },
+      RESULTS: [], STATUS: 'draft', CFG: {}, COST_SNAP: null, ELEC_STALE: false, NOT_IN_PAY: [], ZERO_RATIO: [], LEAVE_MM: [],
+      supCrossBlock: () => false, setBusy() {}, elecBtns() {}, asofFromCalc() {}, vClear() {}, renderRun() {}, renderSlipSel() {}, toast() {}, alert() {},
+      CALC_INPUTS: () => (ctx.ATT_DIRTY ? ctx.ATT : {}), post: async () => ({ ok: true, results: [{ emp_id: 'e' }] }),
+      loadMonth: async () => { log.reload++; delete ctx.MON_UNSURE['S|2026-10']; ctx.ATT_DIRTY = false; return true; } };
+    ctx.monUnsure = () => !!ctx.MON_UNSURE[ctx.STORE + '|' + ctx.ym()];
+    vm.createContext(ctx); vm.runInContext(src + '\nglobalThis.__d=doCalc;', ctx);
+    const ret = await ctx.__d(undefined, saved);
+    return { ret, reload: log.reload, unsure: ctx.monUnsure(), dirty: ctx.ATT_DIRTY };
+  };
+  done5 = (async () => {
+    let r = await run(true, false, undefined);
+    ok(r.ret === true && r.reload === 1 && !r.unsure, '旗標在、沒有未存編輯 → 重算後重新載入、成功才解開（#214 第 5 點照舊）', r);
+    r = await run(true, true, undefined);
+    ok(r.ret === true && r.reload === 0 && r.unsure && r.dirty === true, '旗標在、有未存編輯 → 重算成功但不重新載入：未存標記還在、旗標照擋', r);
+    r = await run(true, true, true);
+    ok(r.ret === true && r.reload === 1 && !r.unsure, '旗標在、saveAtt 剛存好工時（inputsSaved）→ 重新載入、成功才解開', r);
+    r = await run(false, true, undefined);
+    ok(r.reload === 0, '旗標不在 → 不重新載入（同線上版：留著未存編輯）', r);
+    ok(/await doCalc\(undefined,true\);/.test(fnBody('saveAtt')), 'saveAtt 存好工時後叫 doCalc(undefined,true)');
+    ok(/else if\(st\.status==='mixed'\)\{ MON_UNSURE\[lockKey\]=1; toast\(/.test(fnBody('toggleLock')), '鎖定回應遺失、狀態查詢回 mixed → 設讀取失敗旗標（提示照舊）');
+  })();
+}
+
+done5.then(() => {
+  console.log(fail ? `\n❌ ${pass} 過、${fail} 失敗` : `\n✅ ${pass} 過、0 失敗`);
+  process.exit(fail ? 1 : 0);
+});
