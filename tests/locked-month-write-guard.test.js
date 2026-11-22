@@ -165,7 +165,7 @@ function page(status, reply) {
   const btn = { disabled: false, textContent: '儲存', title: '', classList: { add() {}, remove() {} } };
   const ctx = { console, setTimeout: () => 0, btn, log,
     $: () => btn, toast: (t, bad) => log.toasts.push([String(t), !!bad]), confirm: () => { log.confirms++; return true; },
-    ym: () => '2026-10', STORE: 'SSLGF', ATT_KEY: 'SSLGF|2026-10', BONUS_KEY: 'SSLGF|2026-10', LOAD_INFLIGHT: null, ATT_FOREIGN_MSG: '（表單不是這個月的）', MON_UNSURE_MSG: '（資料不是這個月的）', XSUP_FROM: '2026-11', STATUS: status, RESULTS: [1], ATT_DIRTY: true, CFG: {},
+    ym: () => '2026-10', STORE: 'SSLGF', ATT_KEY: 'SSLGF|2026-10', BONUS_KEY: 'SSLGF|2026-10', LOAD_INFLIGHT: null, ATT_FOREIGN_MSG: '（表單不是這個月的）', MON_UNSURE_MSG: '（匯出那句）', SAVE_UNSURE_MSG: '（資料不是這個月的）', XSUP_FROM: '2026-11', STATUS: status, RESULTS: [1], ATT_DIRTY: true, CFG: {},
     BONUS: [{ emp_id: 'E01', bonus_type: 'sales', label: '業績', amount: 5000 }],
     MASTER: [{ emp_id: 'E01', name: '測試甲' }, { emp_id: 'P01', name: '測試丙' }], ATT: { E01: { hours: 100, support: [] }, P01: { hours: 5, support: [] } },
     supCrossBlock: () => false, scopeLimited: () => false,

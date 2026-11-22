@@ -28,6 +28,10 @@ console.log('══ ① 出勤表單是哪個店月的 ══');
   ok(/^\s*if\(dataStop\(attForeign\(\),ATT_FOREIGN_MSG\)\) return;/.test(fnSrc('saveAtt').split('\n')[1]), 'saveAtt：第一行就擋 attForeign()');
   ok(/^\s*if\(dataStop\(attForeign\(\),ATT_FOREIGN_MSG\)\) return;/.test(fnSrc('supDecide').split('\n')[1]), 'supDecide：第一行就擋 attForeign()');
   ok(H.indexOf("const ATT_FOREIGN_MSG='這個月的出勤資料沒有讀取成功，為了避免存錯月份，先不能修改或儲存工時。請重新整理頁面後再操作。';   // Eason 2026-11-23 核可") >= 0, '出勤被擋的字句＝核可原文、註解寫核可');
+  ok(H.indexOf("const SAVE_UNSURE_MSG='這個月的資料沒有讀取成功，為了避免存錯月份或門市，先不能儲存。請重新整理頁面後再操作。';") >= 0, '非工時類儲存被擋的字句＝主管核可新句（一字不差）');
+  ok(H.indexOf("const MON_UNSURE_MSG='這個月的資料剛才沒有讀取成功，請重新整理頁面、確認金額後再匯出';") >= 0, '匯出被擋的字句＝舊句、一字不改');
+  ok((H.match(/dataStop\([^\n]*MON_UNSURE_MSG/g) || []).length === 0 && (H.match(/dataStop\([^\n]*SAVE_UNSURE_MSG/g) || []).length === 7, '所有 dataStop 儲存路徑（獎金、主檔、參數×2、假別設定、事件日、門市表）都用新句、沒有一處還用舊句');
+  ok(/function monUnsureStop\(\)\{ if\(!monUnsure\(\)\) return false; toast\(MON_UNSURE_MSG,true\); return true; \}/.test(H) && /guardPanel\('p-bonus','bonusForeign',bonusForeign\(\),SAVE_UNSURE_MSG\)/.test(H), '匯出／列印仍用舊句；獎金分頁提示用新句');
   ok(/ATT_KEY=r\.ok\?STORE\+'\|'\+ym\(\):'';/.test(fnSrc('loadAtt')), 'loadAtt：讀失敗 ATT_KEY 空白');
   ok(/\.panel\.pay-foreign \.card,#p-att\.pay-foreign #supWarn\{display:none\}/.test(H), 'CSS：資料不是這個店月的 → 該分頁的卡片（出勤另含支援提醒）收起來');
   // attGuardUi 實跑（假 DOM）
@@ -35,11 +39,11 @@ console.log('══ ① 出勤表單是哪個店月的 ══');
   const mk = (id) => ({ id, style: {}, className: '', textContent: '', classList: { s: new Set(), toggle(c, on) { on ? this.s.add(c) : this.s.delete(c); }, contains(c) { return this.s.has(c); } } });
   els['p-att'] = Object.assign(mk('p-att'), { firstChild: null, insertBefore(el) { els[el.id] = el; } });
   els['p-bonus'] = Object.assign(mk('p-bonus'), { firstChild: null, insertBefore(el) { els[el.id] = el; } });
-  const ctx = { STORE: 'S', ym: () => '2026-10', ATT_KEY: 'S|2026-11', BONUS_KEY: 'S|2026-11', ATT_FOREIGN_MSG: '（提示）', MON_UNSURE_MSG: '（沒讀到）', $: (id) => els[id] || null, document: { createElement: () => mk('') } };
+  const ctx = { STORE: 'S', ym: () => '2026-10', ATT_KEY: 'S|2026-11', BONUS_KEY: 'S|2026-11', ATT_FOREIGN_MSG: '（提示）', MON_UNSURE_MSG: '（匯出舊句）', SAVE_UNSURE_MSG: '（沒讀到）', $: (id) => els[id] || null, document: { createElement: () => mk('') } };
   vm.createContext(ctx); vm.runInContext(['attForeign', 'bonusForeign', 'guardPanel', 'attGuardUi'].map(fnSrc).join('\n'), ctx);
   ctx.attGuardUi();
   ok(els['p-att'].classList.contains('pay-foreign') && els.attForeign && els.attForeign.textContent === '（提示）' && els.attForeign.style.display === '', 'attGuardUi：表單是 11 月的、畫面在 10 月 → 出勤收起來＋核可那句');
-  ok(els['p-bonus'].classList.contains('pay-foreign') && els.bonusForeign && els.bonusForeign.textContent === '（沒讀到）', 'attGuardUi：獎金也是 11 月的 → 獎金分頁收起來＋沿用 MON_UNSURE_MSG');
+  ok(els['p-bonus'].classList.contains('pay-foreign') && els.bonusForeign && els.bonusForeign.textContent === '（沒讀到）', 'attGuardUi：獎金也是 11 月的 → 獎金分頁收起來＋用 SAVE_UNSURE_MSG（不是匯出那句）');
   ctx.ATT_KEY = ctx.BONUS_KEY = 'S|2026-10'; ctx.attGuardUi();
   ok(!els['p-att'].classList.contains('pay-foreign') && els.attForeign.style.display === 'none' && !els['p-bonus'].classList.contains('pay-foreign') && els.bonusForeign.style.display === 'none', 'attGuardUi：讀取成功（10 月）→ 兩個分頁打開、提示收掉');
 }
@@ -86,7 +90,7 @@ console.log('══ ⑥ 同一類的其他資料：別店（月）的或沒讀�
   const mk = (over) => {
     const log = { posts: [], toasts: [] };
     const btn = { disabled: false, textContent: '', classList: { add() {}, remove() {} }, checked: false };
-    const ctx = Object.assign({ console, setTimeout: () => 0, STORE: 'S', ym: () => '2026-10', LOAD_INFLIGHT: null, MON_UNSURE_MSG: 'U', STATUS: 'draft', RESULTS: [],
+    const ctx = Object.assign({ console, setTimeout: () => 0, STORE: 'S', ym: () => '2026-10', LOAD_INFLIGHT: null, MON_UNSURE_MSG: 'M', SAVE_UNSURE_MSG: 'U', STATUS: 'draft', RESULTS: [],
       BONUS_KEY: 'S|2026-10', MASTER_ST: 'S', CFG_ST: 'S', LT_ST: 'S', LEV_ST: 'S', STORES_OK: true,
       BONUS: [{ emp_id: 'E1', amount: 1 }], MASTER: [{ emp_id: 'E1' }], CFG: { daily_hours: 8 }, CFG_DIRTY: { daily_hours: 8 }, CFG_OBSOLETE: [], CFGSRC: {}, CFG_POS: {},
       CFG_CARDS: { cfg: { own: 'x', scope: 'y', keys: () => ['daily_hours'] } }, LT_LIST: [{ name: '事假', code: 'personal' }], LEV_LIST: [{ emp_id: 'E1', code: 'c', event_date: '2026-10-01' }], STORE_LIST: [{ code: 'S' }],
@@ -111,7 +115,7 @@ console.log('══ ⑥ 同一類的其他資料：別店（月）的或沒讀�
       ok(t.log.posts.indexOf(act) >= 0, name + ' 對照：資料是這家店（這個月）的 → 照送 ' + act, t.log);
       for (const [lab, over] of bad) {
         t = mk(over); await call(t.ctx);
-        ok(t.log.posts.indexOf(act) < 0 && t.log.toasts[0] === 'U', name + '：' + lab + ' → 不送、提示沿用 MON_UNSURE_MSG', t.log);
+        ok(t.log.posts.indexOf(act) < 0 && t.log.toasts[0] === 'U', name + '：' + lab + ' → 不送、提示用 SAVE_UNSURE_MSG（U，不是匯出的 M）', t.log);
       }
     }
     const t = mk({ BONUS_KEY: 'S|2026-09', LOAD_INFLIGHT: { seq: 1 } }); await t.ctx.saveBonus(null);

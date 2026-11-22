@@ -72,6 +72,7 @@ def fulfill(route, obj): route.fulfill(status=200, content_type='application/jso
 FAIL = {'ok': False, 'error': 'server_error', 'message': '讀取失敗（測試）'}
 TIMEOUT = {'ok': False, 'error': 'timeout', 'message': '等候逾時，請稍後再試'}
 UNSURE_TXT = '這個月的資料剛才沒有讀取成功，請重新整理頁面、確認金額後再匯出'
+SAVE_UNSURE_TXT = '這個月的資料沒有讀取成功，為了避免存錯月份或門市，先不能儲存。請重新整理頁面後再操作。'   # 非工時類儲存被擋（獎金等）；匯出／列印／鎖定仍用 UNSURE_TXT
 MIXED_TXT = '這個月有一部分已鎖定、一部分還是草稿，請重新整理頁面看狀態；重新整理後還是這樣請找資訊部'
 FOREIGN_TXT = '這個月的出勤資料沒有讀取成功，為了避免存錯月份，先不能修改或儲存工時。請重新整理頁面後再操作。'
 SHOT = '請把這個畫面截圖傳給資訊部。'
@@ -192,8 +193,8 @@ try:
                 ui = bonus_ui()
                 k = len(seen); clear_msg(); pg.evaluate('saveBonus(null)'); pg.wait_for_timeout(1500)
                 bs = sent('payroll_bonus_set', k)
-                ok(bname + ' F 切到 10 月讀取失敗 → 獎金分頁收起來、提示沿用「剛才沒有讀取成功」那句；saveBonus 不送（改版前會把 11 月的獎金整份寫進 10 月）',
-                   ui['cls'] and ui['note'] == UNSURE_TXT and ui['card'] == 'none' and not bs and msg() == UNSURE_TXT, (ui, [(x.get('ym'), len(x.get('bonuses') or [])) for x in bs], msg()))
+                ok(bname + ' F 切到 10 月讀取失敗 → 獎金分頁收起來、提示是儲存被擋的新句；saveBonus 不送（改版前會把 11 月的獎金整份寫進 10 月）',
+                   ui['cls'] and ui['note'] == SAVE_UNSURE_TXT and ui['card'] == 'none' and not bs and msg() == SAVE_UNSURE_TXT, (ui, [(x.get('ym'), len(x.get('bonuses') or [])) for x in bs], msg()))
                 cfg['fail_month'] = ()
                 setym('2026-11'); setym('2026-10')
                 pg.click('button[data-p="bonus"]'); pg.wait_for_timeout(300)

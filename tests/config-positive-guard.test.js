@@ -141,7 +141,7 @@ const co = html.match(/const CO_MANUAL=\[[^\n]*\n/)[0];
 const front = html.slice(a, b).replace(/function renderCfg\(\)\{[\s\S]*?\n\}\n/, '');
 function mkFront(postRes) {
   const el = (checked) => ({ checked, textContent: '' });
-  const ctx = { POSTS: [], toasts: [], STORE: 'CF', CFGSRC: {}, RESULTS: [], dataStop: () => false, CFG_ST: 'CF', MON_UNSURE_MSG: '',   // 參數是這家店讀來的（別店／沒讀到擋存檔見 tests/pay-html-followups.test.js）
+  const ctx = { POSTS: [], toasts: [], STORE: 'CF', CFGSRC: {}, RESULTS: [], dataStop: () => false, CFG_ST: 'CF', MON_UNSURE_MSG: '', SAVE_UNSURE_MSG: '',   // 參數是這家店讀來的（別店／沒讀到擋存檔見 tests/pay-html-followups.test.js）
     CFG: { daily_hours: 8, leave_div_days: 30, leave_div_hours: 8, meal_min_hours: 6, payday: 10, attend_deduct_per_day: 100, pt_attend_plus: 10, co_group: 1170 },
     els: { cfgOwn: el(false), attOwn: el(false), ptOwn: el(false), coOwn: el(false) },
     n: v => { const x = parseFloat(v); return isNaN(x) ? 0 : x; },
