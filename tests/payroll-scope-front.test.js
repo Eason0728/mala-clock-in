@@ -123,7 +123,7 @@ function load({ EMBED, SCOPE, master, perCall }) {
     ok(!!saveSrc, '找得到 saveAtt');
     const run = async (embed, scope) => {
       const sent = [];
-      const c = { $: () => ({ classList: { add() {}, remove() {} }, style: {} }), toast() {}, ym: () => '2026-10', doCalc: async () => {}, setTimeout() {}, supCrossBlock: () => false, XSUP_FROM: '2026-11', attSendable: () => true, attForeign: () => false,   // 表單是這個店月的（讀取失敗擋存檔另見 tests/ui/pay-html-followups-e2e.py）
+      const c = { $: () => ({ classList: { add() {}, remove() {} }, style: {} }), toast() {}, ym: () => '2026-10', doCalc: async () => {}, setTimeout() {}, supCrossBlock: () => false, XSUP_FROM: '2026-11', attSendable: () => true, attForeign: () => false, dataStop: () => false, ATT_FOREIGN_MSG: '',   // 表單是這個店月的（讀取失敗擋存檔另見 tests/ui/pay-html-followups-e2e.py）
         post: async (a, b) => { sent.push({ a, b }); return { ok: true, count: 0 }; } };
       vm.createContext(c);
       vm.runInContext(`let EMBED=${embed}; let SCOPE=${JSON.stringify(scope)}; let ATT_DIRTY=true; let STATUS='draft';

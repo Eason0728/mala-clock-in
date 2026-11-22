@@ -12,6 +12,7 @@
 #   C  ③待辦 17（5A）：鎖定被擋 → 要按「知道了」才關的視窗（按外圍、Esc 不關），字句照後端；衝突、對不上、還沒回報三種後面加「請把這個畫面截圖傳給資訊部。」
 #   D  ④補測試：存檔成功後正本與草稿一致（重算用的工時＝存進去的工時、重新載入讀回同一份）；存檔成功但重算失敗；存檔、重算成功但重新載入失敗
 #   E  ⑤鎖定結果不明、狀態查詢回 mixed 之後：重新載入成功但 payroll_status 仍是 mixed → 照擋；查不到 → 照擋；草稿／舊後端 → 解開
+#   F  同一類的其他資料（驗收補）：獎金（切月份讀取失敗／開頁就失敗）收起來＋不送；切門市讀取失敗 → 主檔、參數、假別設定、事件日、獎金、工時都不送（後端都是整份取代）
 import json, os, shutil, socket, subprocess, sys, time, urllib.request
 
 ROOT = os.path.abspath(os.environ.get('E2E_ROOT') or os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -58,7 +59,7 @@ def seed():
     p['master'] = sd['master']; p['hol_emp'] = []
     p['run'] = [dict(r, status='draft') for r in sd['results']]
     p['holiday'] = [{'ym': '2026-11', 'red_days': 9, 'note': '', 'dates': '', 'store': ''}]
-    p['store'] = [{'code': 'SSLGF', 'name': '測試店', 'active': True}]
+    p['store'] = [{'code': 'SSLGF', 'name': '測試店', 'active': True}, {'code': 'TESTB', 'name': '測試二店', 'active': True}]
     p['input'] = [{'ym': '2026-11', 'emp_id': EMP, 'hours': H_A, 'support': []}, {'ym': '2026-10', 'emp_id': EMP, 'hours': H_B, 'support': []}]
     json.dump(d, open(DATA, 'w', encoding='utf-8'), ensure_ascii=False)
 results = []
@@ -98,6 +99,7 @@ try:
             def router(route):
                 bd = act(route); a = bd.get('action'); seen.append(bd)
                 if a == 'payroll_month' and bd.get('ym') in cfg.get('fail_month', ()): fulfill(route, FAIL); return
+                if a == 'payroll_month' and bd.get('store') in cfg.get('fail_store', ()): fulfill(route, FAIL); return
                 if a in cfg and cfg[a] is not None: fulfill(route, cfg[a]); return
                 if a == 'payroll_input_set' and cfg.get('canon'):   # D：自己記正本
                     canon[bd.get('ym')] = json.loads(json.dumps(bd.get('inputs') or {})); fulfill(route, {'ok': True, 'saved': len(canon[bd.get('ym')]), 'count': len(canon[bd.get('ym')])}); return
@@ -125,7 +127,7 @@ try:
             att = lambda k: pg.evaluate("(ATT[%s]||{})[%s]" % (json.dumps(EMP), json.dumps(k)))
             sent = lambda a, k=0: [x for x in seen[k:] if x.get('action') == a]
             foreign_ui = lambda: pg.evaluate("""()=>{ const p=$('p-att'), n=$('attForeign'), c=p.querySelector('.card');
-                  return { cls: p.classList.contains('att-foreign'), note: n&&getComputedStyle(n).display!=='none'?n.textContent:'', card: c?getComputedStyle(c).display:'' }; }""")
+                  return { cls: p.classList.contains('pay-foreign'), note: n&&getComputedStyle(n).display!=='none'?n.textContent:'', card: c?getComputedStyle(c).display:'' }; }""")
             def set_custom_add(v):   # 程式直接改值並發事件（表單收起來時人按不到，這裡仍可模擬「有未存編輯」）
                 pg.click('button[data-p="att"]'); pg.wait_for_timeout(300)
                 return pg.evaluate("""(v)=>{ const id=%s;
@@ -176,6 +178,48 @@ try:
                 sv = sent('payroll_input_set', k)
                 ok(bname + ' A 開頁第一次就讀取失敗 → 表單收起來、saveAtt() 不送（改版前會送空白表單＝清掉這個月的手動工時）',
                    foreign_ui()['cls'] and not sv and msg() == FOREIGN_TXT, ([(x.get('ym'), x.get('inputs')) for x in sv], msg()))
+
+            # ── F 同一類的其他資料 ──
+            if not ONLY or 'F' in ONLY:
+                WRITES = ('payroll_bonus_set', 'payroll_master_set', 'payroll_config_set', 'payroll_leave_type_set', 'payroll_leave_event_set', 'payroll_input_set', 'payroll_store_set')
+                bonus_ui = lambda: pg.evaluate("""()=>{ const p=$('p-bonus'), n=$('bonusForeign'), c=p.querySelector('.card');
+                      return { cls: p.classList.contains('pay-foreign'), note: n&&getComputedStyle(n).display!=='none'?n.textContent:'', card: c?getComputedStyle(c).display:'' }; }""")
+                fresh()
+                pg.evaluate("BONUS.push({emp_id:%s,bonus_type:'project',label:'十一月',amount:1234,memo:''}); renderBonus(); 0" % json.dumps(EMP))
+                cfg['fail_month'] = ('2026-10',)
+                setym('2026-10')
+                pg.click('button[data-p="bonus"]'); pg.wait_for_timeout(300)
+                ui = bonus_ui()
+                k = len(seen); clear_msg(); pg.evaluate('saveBonus(null)'); pg.wait_for_timeout(1500)
+                bs = sent('payroll_bonus_set', k)
+                ok(bname + ' F 切到 10 月讀取失敗 → 獎金分頁收起來、提示沿用「剛才沒有讀取成功」那句；saveBonus 不送（改版前會把 11 月的獎金整份寫進 10 月）',
+                   ui['cls'] and ui['note'] == UNSURE_TXT and ui['card'] == 'none' and not bs and msg() == UNSURE_TXT, (ui, [(x.get('ym'), len(x.get('bonuses') or [])) for x in bs], msg()))
+                cfg['fail_month'] = ()
+                setym('2026-11'); setym('2026-10')
+                pg.click('button[data-p="bonus"]'); pg.wait_for_timeout(300)
+                k = len(seen); pg.evaluate('saveBonus(null)'); pg.wait_for_timeout(2000)
+                bs = sent('payroll_bonus_set', k)
+                ok(bname + ' F 10 月重新讀取成功 → 獎金分頁打開、照常存（送 10 月）', not bonus_ui()['cls'] and bs and bs[0].get('ym') == '2026-10', (bonus_ui(), [x.get('ym') for x in bs]))
+                fresh(boot_fail=True)
+                k = len(seen); pg.evaluate('saveBonus(null)'); pg.wait_for_timeout(1500)
+                bs = sent('payroll_bonus_set', k)
+                ok(bname + ' F 開頁就讀取失敗 → saveBonus 不送（改版前送空陣列＝清光這個月的獎金）', not bs and bonus_ui()['cls'], [(x.get('ym'), x.get('bonuses')) for x in bs])
+                # 切門市讀取失敗：主檔、參數、假別設定、事件日、獎金、工時都還是 SSLGF 的
+                fresh(); pg.wait_for_timeout(800)
+                cfg['fail_store'] = ('TESTB',)
+                pg.evaluate("switchStore('TESTB')"); pg.wait_for_timeout(2500)
+                k = len(seen); clear_msg()
+                for f in ('saveMaster(null)', "setMode('daily_hours',8)", 'saveLeaveTypes(null)', 'saveLeaveEvents(null)', 'saveBonus(null)', 'saveAtt()'):
+                    pg.evaluate(f); pg.wait_for_timeout(700)
+                pg.evaluate("CFG_DIRTY={daily_hours:8}; 0"); pg.evaluate("saveCfg(null,'儲存','cfg')"); pg.wait_for_timeout(700)
+                w = [(x.get('action'), x.get('store')) for x in seen[k:] if x.get('action') in WRITES]
+                ok(bname + ' F 切到別家門市讀取失敗 → 主檔、參數（兩種存法）、假別設定、事件日、獎金、工時都不送（改版前會把原門市的資料整份寫進新門市）',
+                   pg.evaluate('STORE') == 'TESTB' and not w, (pg.evaluate('STORE'), w))
+                cfg['fail_store'] = ()
+                pg.evaluate("switchStore('TESTB')"); pg.wait_for_timeout(3000)
+                k = len(seen); pg.evaluate('saveMaster(null)'); pg.wait_for_timeout(1500)
+                ms = [x.get('store') for x in seen[k:] if x.get('action') == 'payroll_master_set']
+                ok(bname + ' F 新門市讀取成功 → 照常存主檔（送 TESTB）', ms == ['TESTB'], ms)
 
             # ── B ②存檔失敗後「●」 ──
             if not ONLY or 'B' in ONLY:

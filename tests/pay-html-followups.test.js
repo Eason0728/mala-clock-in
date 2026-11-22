@@ -2,11 +2,13 @@
  *   ①表單是哪個店月的：attForeign／ATT_KEY 只在讀取成功時換；loadMonth 讀取失敗不改 ATT_KEY、finally 一律 attGuardUi
  *   ②「儲存工時 ●」：已是未存狀態再編輯也補圓點；按鈕停用中不動字；attBtnIdle 依 ATT_DIRTY
  *   ③待辦 17（5A）：鎖定被擋走 lockBlockedBox；加句只給三種；只有「知道了」能關
- *   ⑤讀取失敗後重新載入成功：先問 payroll_status，mixed／查不到照擋，草稿／已鎖／沒資料／舊後端才解開 */
+ *   ⑤讀取失敗後重新載入成功：先問 payroll_status，mixed／查不到照擋，草稿／已鎖／沒資料／舊後端才解開
+ *   ⑥同一類的其他資料（驗收補）：獎金、主檔、參數、假別設定、事件日、門市表——資料是別店（月）的或沒讀到就不送（後端都是整份取代） */
 'use strict';
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const H = fs.readFileSync(path.join(__dirname, '..', 'payroll.html'), 'utf8');
 let pass = 0, fail = 0;
+let done6 = Promise.resolve();
 const ok = (c, n, extra) => { c ? pass++ : fail++; console.log((c ? '✓ ' : '✗ ') + n + (c || extra === undefined ? '' : '  ' + JSON.stringify(extra))); };
 function fnSrc(name) {   // 頂層函式原文（配對大括號）
   const m = new RegExp('(?:async\\s+)?function\\s+' + name + '\\s*\\(').exec(H);
@@ -19,24 +21,27 @@ function fnSrc(name) {   // 頂層函式原文（配對大括號）
 console.log('══ ① 出勤表單是哪個店月的 ══');
 {
   const lm = fnSrc('loadMonth');
-  const iFail = lm.indexOf('if(!r.ok){'), iOk = lm.indexOf("ATT_KEY=STORE+'|'+ym();");
+  const iFail = lm.indexOf('if(!r.ok){'), iOk = lm.indexOf("ATT_KEY=BONUS_KEY=STORE+'|'+ym();");
   ok(/function attForeign\(\)\{ return ATT_KEY!==STORE\+'\|'\+ym\(\); \}/.test(H), 'attForeign()＝ATT_KEY 跟畫面上的店月不同');
   ok(iFail > 0 && iOk > iFail && lm.slice(iFail, lm.indexOf('return false;', iFail)).indexOf('ATT_KEY') < 0, 'loadMonth：讀取失敗那段不改 ATT_KEY；讀取成功（換掉 ATT 之後）才設成這個店月');
   ok(/finally \{[^}]*attGuardUi\(\); \}/.test(lm), 'loadMonth：finally 一律 attGuardUi()（失敗時收起表單、成功時打開）');
-  ok(/^\s*if\(attForeign\(\)\)\{ toast\(ATT_FOREIGN_MSG,true\); return; \}/m.test(fnSrc('saveAtt').split('\n')[1]), 'saveAtt：第一行就擋 attForeign()');
-  ok(/^\s*if\(attForeign\(\)\)\{ toast\(ATT_FOREIGN_MSG,true\); return; \}/m.test(fnSrc('supDecide').split('\n')[1]), 'supDecide：第一行就擋 attForeign()');
+  ok(/^\s*if\(dataStop\(attForeign\(\),ATT_FOREIGN_MSG\)\) return;/.test(fnSrc('saveAtt').split('\n')[1]), 'saveAtt：第一行就擋 attForeign()');
+  ok(/^\s*if\(dataStop\(attForeign\(\),ATT_FOREIGN_MSG\)\) return;/.test(fnSrc('supDecide').split('\n')[1]), 'supDecide：第一行就擋 attForeign()');
+  ok(H.indexOf("const ATT_FOREIGN_MSG='這個月的出勤資料沒有讀取成功，為了避免存錯月份，先不能修改或儲存工時。請重新整理頁面後再操作。';   // Eason 2026-11-23 核可") >= 0, '出勤被擋的字句＝核可原文、註解寫核可');
   ok(/ATT_KEY=r\.ok\?STORE\+'\|'\+ym\(\):'';/.test(fnSrc('loadAtt')), 'loadAtt：讀失敗 ATT_KEY 空白');
-  ok(/#p-att\.att-foreign \.card,#p-att\.att-foreign #supWarn\{display:none\}/.test(H), 'CSS：表單不是這個店月的 → 出勤分頁的卡片與支援提醒收起來');
+  ok(/\.panel\.pay-foreign \.card,#p-att\.pay-foreign #supWarn\{display:none\}/.test(H), 'CSS：資料不是這個店月的 → 該分頁的卡片（出勤另含支援提醒）收起來');
   // attGuardUi 實跑（假 DOM）
   const els = {};
   const mk = (id) => ({ id, style: {}, className: '', textContent: '', classList: { s: new Set(), toggle(c, on) { on ? this.s.add(c) : this.s.delete(c); }, contains(c) { return this.s.has(c); } } });
   els['p-att'] = Object.assign(mk('p-att'), { firstChild: null, insertBefore(el) { els[el.id] = el; } });
-  const ctx = { STORE: 'S', ym: () => '2026-10', ATT_KEY: 'S|2026-11', ATT_FOREIGN_MSG: '（提示）', $: (id) => els[id] || null, document: { createElement: () => mk('') } };
-  vm.createContext(ctx); vm.runInContext(fnSrc('attForeign') + '\n' + fnSrc('attGuardUi'), ctx);
+  els['p-bonus'] = Object.assign(mk('p-bonus'), { firstChild: null, insertBefore(el) { els[el.id] = el; } });
+  const ctx = { STORE: 'S', ym: () => '2026-10', ATT_KEY: 'S|2026-11', BONUS_KEY: 'S|2026-11', ATT_FOREIGN_MSG: '（提示）', MON_UNSURE_MSG: '（沒讀到）', $: (id) => els[id] || null, document: { createElement: () => mk('') } };
+  vm.createContext(ctx); vm.runInContext(['attForeign', 'bonusForeign', 'guardPanel', 'attGuardUi'].map(fnSrc).join('\n'), ctx);
   ctx.attGuardUi();
-  ok(els['p-att'].classList.contains('att-foreign') && els.attForeign && els.attForeign.textContent === '（提示）' && els.attForeign.style.display === '', 'attGuardUi：表單是 11 月的、畫面在 10 月 → 收起來＋提示');
-  ctx.ATT_KEY = 'S|2026-10'; ctx.attGuardUi();
-  ok(!els['p-att'].classList.contains('att-foreign') && els.attForeign.style.display === 'none', 'attGuardUi：讀取成功（ATT_KEY＝10 月）→ 打開、提示收掉');
+  ok(els['p-att'].classList.contains('pay-foreign') && els.attForeign && els.attForeign.textContent === '（提示）' && els.attForeign.style.display === '', 'attGuardUi：表單是 11 月的、畫面在 10 月 → 出勤收起來＋核可那句');
+  ok(els['p-bonus'].classList.contains('pay-foreign') && els.bonusForeign && els.bonusForeign.textContent === '（沒讀到）', 'attGuardUi：獎金也是 11 月的 → 獎金分頁收起來＋沿用 MON_UNSURE_MSG');
+  ctx.ATT_KEY = ctx.BONUS_KEY = 'S|2026-10'; ctx.attGuardUi();
+  ok(!els['p-att'].classList.contains('pay-foreign') && els.attForeign.style.display === 'none' && !els['p-bonus'].classList.contains('pay-foreign') && els.bonusForeign.style.display === 'none', 'attGuardUi：讀取成功（10 月）→ 兩個分頁打開、提示收掉');
 }
 
 console.log('══ ② 儲存工時 ● ══');
@@ -68,6 +73,52 @@ console.log('══ ③ 待辦 17（5A）鎖定被擋的視窗 ══');
   ok(/\.textContent=String\(msg\|\|''\)/.test(bx), '後端字句用 textContent 放（不當 HTML）');
 }
 
+console.log('══ ⑥ 同一類的其他資料：別店（月）的或沒讀到就不送 ══');
+{
+  const lm = fnSrc('loadMonth'), iFail = lm.indexOf('if(!r.ok){'), failPart = lm.slice(iFail, lm.indexOf('return false;', iFail));
+  ok(!/BONUS_KEY|MASTER_ST|CFG_ST|LT_ST|LEV_ST/.test(failPart), 'loadMonth 讀取失敗那段不改任何資料記號（只有另外讀到門市表時記 STORES_OK）');
+  ok(/ATT_KEY=BONUS_KEY=STORE\+'\|'\+ym\(\);/.test(lm) && /MASTER=r\.master;MASTER_ST=STORE;/.test(lm) && /CFG=r\.config;CFG_DIRTY=\{\};CFG_ST=STORE/.test(lm), 'loadMonth 讀取成功：獎金、主檔、參數記成這個店（月）');
+  ok(/LT_LIST=\[\]; LT_ST=''; loadLeaveTypes\(\); LEV_LIST=\[\]; LEV_ST=''; loadLeaveEvents\(\);/.test(lm), '換店重讀假別設定／事件日：先清空並標成還沒讀到（讀失敗不會存空白）');
+  ok(/const st=STORE;[\s\S]*LT_ST=st;/.test(fnSrc('loadLeaveTypes1')) && /const st=STORE;[\s\S]*LEV_ST=st;/.test(fnSrc('loadLeaveEvents1')), '假別設定／事件日讀取成功才記門市（用發出時的門市）');
+  ok(/MASTER_ST=CFG_ST=mStore;/.test(fnSrc('boot')) && /mStore=STORE; \}/.test(fnSrc('boot')), '開頁：主檔／參數記成實際讀的那家店');
+  // 實跑：每支存檔在「資料是別店（月）的／沒讀到」時不送，對照組照送
+  const FN = ['dataStop', 'bonusForeign', 'saveFX', 'saveBonus', 'saveMaster', 'saveCfg', 'setMode', 'saveLeaveTypes', 'saveLeaveEvents', 'saveStores'];
+  const mk = (over) => {
+    const log = { posts: [], toasts: [] };
+    const btn = { disabled: false, textContent: '', classList: { add() {}, remove() {} }, checked: false };
+    const ctx = Object.assign({ console, setTimeout: () => 0, STORE: 'S', ym: () => '2026-10', LOAD_INFLIGHT: null, MON_UNSURE_MSG: 'U', STATUS: 'draft', RESULTS: [],
+      BONUS_KEY: 'S|2026-10', MASTER_ST: 'S', CFG_ST: 'S', LT_ST: 'S', LEV_ST: 'S', STORES_OK: true,
+      BONUS: [{ emp_id: 'E1', amount: 1 }], MASTER: [{ emp_id: 'E1' }], CFG: { daily_hours: 8 }, CFG_DIRTY: { daily_hours: 8 }, CFG_OBSOLETE: [], CFGSRC: {}, CFG_POS: {},
+      CFG_CARDS: { cfg: { own: 'x', scope: 'y', keys: () => ['daily_hours'] } }, LT_LIST: [{ name: '事假', code: 'personal' }], LEV_LIST: [{ emp_id: 'E1', code: 'c', event_date: '2026-10-01' }], STORE_LIST: [{ code: 'S' }],
+      $: () => btn, toast: (t, bad) => log.toasts.push(t), doCalc: async () => {}, renderEmp() {}, renderCfg() {}, renderStoreSel() {}, loadLeaveTypes: async () => {}, loadLeaveEvents: async () => {},
+      post: async (a) => { log.posts.push(a); return { ok: true, count: 1, config: {} }; } }, over);
+    vm.createContext(ctx);
+    vm.runInContext(FN.map(fnSrc).join('\n'), ctx);
+    return { ctx, log, btn };
+  };
+  const cases = [
+    ['saveBonus', c => c.saveBonus(null), 'payroll_bonus_set', [['獎金是上個月讀來的', { BONUS_KEY: 'S|2026-09' }], ['獎金是別家店的', { BONUS_KEY: 'X|2026-10' }], ['開頁就沒讀到（空白）', { BONUS_KEY: '' }]]],
+    ['saveMaster', c => c.saveMaster(null), 'payroll_master_set', [['主檔是別家店的（切店讀取失敗）', { MASTER_ST: 'X' }], ['開頁主檔沒讀到（空白）', { MASTER_ST: '' }]]],
+    ['saveCfg', c => c.saveCfg(null, '儲存', 'cfg'), 'payroll_config_set', [['參數是別家店的', { CFG_ST: 'X' }], ['開頁參數沒讀到', { CFG_ST: '' }]]],
+    ['setMode', c => c.setMode('daily_hours', 8), 'payroll_config_set', [['參數是別家店的（整份送出）', { CFG_ST: 'X' }]]],
+    ['saveLeaveTypes', c => c.saveLeaveTypes(null), 'payroll_leave_type_set', [['假別設定是別家店的', { LT_ST: 'X' }], ['假別設定沒讀到（空白）', { LT_ST: '' }]]],
+    ['saveLeaveEvents', c => c.saveLeaveEvents(null), 'payroll_leave_event_set', [['事件日是別家店的', { LEV_ST: 'X' }], ['事件日沒讀到（空白）', { LEV_ST: '' }]]],
+    ['saveStores', c => c.saveStores(null), 'payroll_store_set', [['門市表沒讀到（空白＝會清光門市表）', { STORES_OK: false, STORE_LIST: [] }]]],
+  ];
+  done6 = (async () => {
+    for (const [name, call, act, bad] of cases) {
+      let t = mk({}); await call(t.ctx);
+      ok(t.log.posts.indexOf(act) >= 0, name + ' 對照：資料是這家店（這個月）的 → 照送 ' + act, t.log);
+      for (const [lab, over] of bad) {
+        t = mk(over); await call(t.ctx);
+        ok(t.log.posts.indexOf(act) < 0 && t.log.toasts[0] === 'U', name + '：' + lab + ' → 不送、提示沿用 MON_UNSURE_MSG', t.log);
+      }
+    }
+    const t = mk({ BONUS_KEY: 'S|2026-09', LOAD_INFLIGHT: { seq: 1 } }); await t.ctx.saveBonus(null);
+    ok(t.log.posts.length === 0 && t.log.toasts[0] === '讀取中…', '月資料還在讀 → 不送、提示沿用月份列的「讀取中…」', t.log);
+  })();
+}
+
 console.log('══ ⑤ 讀取失敗後重新載入成功：先確認不是一半鎖定 ══');
 {
   const lm = fnSrc('loadMonth');
@@ -82,6 +133,7 @@ console.log('══ ⑤ 讀取失敗後重新載入成功：先確認不是一�
     return { unsure: !!ctx.MON_UNSURE['S|2026-11'], log, M: ctx.M };
   };
   (async () => {
+    await done6;
     const S = (status) => ({ ok: true, ym: '2026-11', store: 'S', status, rows: 4 });
     let r = await run(S('mixed'));
     ok(r.unsure && r.log.toasts[0] === r.M && r.log.posts[0][0] === 'payroll_status' && r.log.posts[0][1].ym === '2026-11' && r.log.posts[0][1].store === 'S' && r.log.posts[0][2].noRetry, 'payroll_status 回 mixed → 照擋、提示沿用鎖定那一句（改版前這裡直接解開）', r);
