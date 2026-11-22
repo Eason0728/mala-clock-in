@@ -208,10 +208,14 @@
     try { mp = E.post(E.MINI_REQ_API, { op: op, url: url, id_token: body.id_token, req_id: reqId, body: mb }, SUBMIT_MINI_MS); } catch (e) { mp = Promise.reject(e); }
     return Promise.race([mp, cap]).then(function (r) {
       clearTimeout(capT);
-      if (r && r.ok === true && r.src === 'mini' && r.data && typeof r.data === 'object') return r.data;
-      return toG(!!(r && r.ok === false && r.error === 'mini_off' && r.shadow === true));
+      var d = miniReply(r);
+      if (d && d.ok === true && d.src === 'mini' && d.data && typeof d.data === 'object') return d.data;
+      return toG(!!(d && d.ok === false && d.error === 'mini_off' && d.shadow === true));
     }, function () { clearTimeout(capT); return toG(false); });
   }
+  /** 營運系統的回應一律包一層 { ok:true, data:<line-req 的回傳> }（mala-store-ops server/index.js 路由收尾；讀取那條 miniPeek／viaMini 也是拆 r.data）。
+   *  拆出裡面那層：外層不是 ok:true 或裡面不是物件（伺服器錯誤、被擋、回應怪）→ null＝當 mini 沒收，由呼叫端改送 Google。 */
+  function miniReply(r) { return r && r.ok === true && r.data && typeof r.data === 'object' ? r.data : null; }
 
   /* ── 開頁 ── */
   /* 手機記住的開頁資料（2026-11-06）：只記店別清單、上次用的店、假別清單；額度與補休帳會變，不記。
