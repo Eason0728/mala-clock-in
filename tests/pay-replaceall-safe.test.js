@@ -7,7 +7,8 @@
  *   F1 清空後立刻失敗（第一次寫資料就丟例外，什麼都沒寫進去）
  *   F2 寫到一半失敗（寫進前一半的列才丟例外）
  *   F3 收尾（送出）失敗：寫入先排隊、送出（flush）時才失敗——Apps Script 真的會這樣，錯誤到 flush 才冒出來
- *   → 三種都要：分頁內容＝寫入前 或＝完整新內容，而且呼叫端收到錯誤（沒失敗的話內容要＝完整新內容）。
+ *   → 三種都要：分頁內容必須＝寫入前（不接受新內容），而且呼叫端收到錯誤（沒觸發失敗的話內容要＝完整新內容）。
+ *     只有 F9「寫完之後收尾才失敗」允許完整新內容；F10「資料已套用、paySafePut_ 自己送出失敗」要還原成寫入前。
  *   F4 還原也失敗：錯誤訊息要講清楚（殘餘風險，不保證內容）
  *   F5 一次寫兩張（薪資計算的 run＋item）：後面那張失敗，先寫好的那張退回原內容
  *   F6 讀不到分頁時不可以當成空表整張覆寫（假別表、留停、假別事件日、打卡對照）
@@ -42,7 +43,9 @@ function world(src, opt) {
   const F = { mode: 'direct', queue: [], faults: [], fired: 0, observe: null, flushN: 0, flushThrowAt: 0 };
   const sb = {
     console: { log() {}, error() {}, warn() {} }, Logger: { log() {} },
-    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
+    // opt.lock：幾個環境共用一把會互斥的寫鎖（模擬兩個執行搶同一把鎖；拿不到就回 false＝忙碌）
+    LockService: { getScriptLock: () => (opt.lock ? { tryLock() { if (opt.lock.held) return false; opt.lock.held = true; return true; }, releaseLock() { opt.lock.held = false; } }
+                                                  : { tryLock: () => true, releaseLock() {} }) },
     CacheService: { getScriptCache: () => ({ get: () => null, put() {}, remove() {} }) },
     PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty() {} }) },
     Utilities: { formatDate: (d) => new Date(d.getTime() + 8 * 3600000).toISOString().slice(0, 10) },
@@ -50,7 +53,7 @@ function world(src, opt) {
   sb.SpreadsheetApp = { flush() { F.flushN++; if (F.flushThrowAt && F.flushN === F.flushThrowAt) throw new Error('模擬收尾送出失敗'); flushAll(); } };
   vm.createContext(sb);
   vm.runInContext(C + '\n' + src, sb, { filename: 'gs' });
-  const ss = createSpreadsheet({ DateCtor: vm.runInContext('Date', sb), defaultMaxCols: 40, defaultMaxRows: opt.maxRows || 1000 });
+  const ss = opt.ss || createSpreadsheet({ DateCtor: vm.runInContext('Date', sb), defaultMaxCols: 40, defaultMaxRows: opt.maxRows || 1000 });   // opt.ss：跟另一個環境共用同一份試算表（另一個執行）
   sb.SpreadsheetApp.getActive = () => ss; sb.SpreadsheetApp.openById = () => ss;
   sb.__SS = ss;
   vm.runInContext(`getSS = function () { return __SS; }; CONFIG.ADMIN_KEY = 'k'; nowTaipeiIso = function () { return '2026-11-22T09:00:00+08:00'; };`, sb);
@@ -79,7 +82,7 @@ function world(src, opt) {
   const readFirst = (fn) => function () { if (F.mode === 'buffered') flushAll(); return fn.apply(this, arguments); };
 
   const origInsert = ss.insertSheet.bind(ss);
-  ss.insertSheet = function (n) {
+  if (!opt.ss) ss.insertSheet = function (n) {
     const sh = origInsert(n);
     sh._origGetRange = sh.getRange.bind(sh);
     sh.getLastRow = readFirst(sh.getLastRow.bind(sh));
@@ -652,6 +655,89 @@ function runTwoTableWindow(src) {
   sec('K 兩張表之間的空檔（既有）', seenA[seenA.length - 1] === seenB[seenB.length - 1], '寫完的結果兩版相同');
 }
 
+/* L 主檔交錯（Codex 第二輪 SHOULD-FIX）：A 鎖內存主檔（新增一列），讀完、寫之前，B（另一個執行，共用同一份試算表與同一把寫鎖）從打卡名冊帶入新同仁；
+   A 寫入失敗還原時不可以把 B 帶入的同仁清掉。B 要嘛拿不到鎖（回忙碌、什麼都沒寫），要嘛寫進去之後還在。 */
+function runMasterInterleave(src) {
+  for (const how of ['throw', 'half']) {
+    const lock = { held: false };
+    const A = world(src, { lock });
+    A.replace('master', [0, 1, 2].map((i) => ({ emp_id: 'E' + i, name: '測試' + i, store: 'SSLGF', active: 'true' })));
+    A.replace('store', [{ code: 'SSLGF', name: '測試店甲', active: 'true' }]);
+    const B = world(src, { lock, ss: A.ss });
+    B.vm(`CONFIG.ADMIN_KEY = 'k'; payHasClock = function () { return true; }; payClockRead = function () { return [{ emp_id: 'N9', name: '測試新人', active: 'true' }]; };`);
+    A.vm('payInvalidate("master")');
+    let bRes = null, err = null;
+    // B 插在 A 已經取得列數、算好還原資料之後，A 的資料寫入真正套用之前（Codex 描述的時機）；然後 A 的寫入失敗
+    let bDone = false, inB = false;
+    const isA = (op) => !inB && isData(op) && op.name === 'payroll_master';   // B 自己的寫入不算 A 的
+    const runB = () => { inB = true; try { bRes = B.vm('handlePayrollBootstrap({ admin_key: "k", store: "SSLGF" })'); } finally { inB = false; } };
+    A.F.faults = [{ match: (op) => { if (isA(op) && !bDone) { bDone = true; runB(); } return isA(op); }, how, times: 1 }];
+    const aRows = [0, 1, 2, 3].map((i) => ({ emp_id: 'E' + i, name: '測試' + i, store: 'SSLGF', active: 'true' }));
+    try { A.lockedReplace('master', aRows); } catch (e) { err = e; }
+    A.F.faults = [];
+    A.vm('payInvalidate("master")');
+    const ids = A.vm('payRead("master")').map((m) => String(m.emp_id));
+    const bOk = !!(bRes && bRes.ok && bRes.added === 1);
+    sec('L 主檔交錯：還原不清掉同時帶入的同仁', !!err, how + '：A 收到錯誤');
+    sec('L 主檔交錯：還原不清掉同時帶入的同仁', bOk ? ids.indexOf('N9') >= 0 : (bRes && bRes.error === 'busy' && ids.indexOf('N9') < 0),
+        how + '：B ' + (bOk ? '帶入成功 → 還原後新同仁還在' : '拿不到鎖回忙碌（' + JSON.stringify(bRes) + '）→ 什麼都沒寫') + '；主檔＝' + ids.join(','));
+  }
+  // 帶入本身：拿得到鎖照常成功、重按不重複；拿不到鎖回跟其他存檔一樣的忙碌訊息
+  const lock = { held: false };
+  const W = world(src, { lock });
+  W.replace('master', [{ emp_id: 'E0', name: '測試0', store: 'SSLGF', active: 'true' }]);
+  W.replace('store', [{ code: 'SSLGF', name: '測試店甲', active: 'true' }]);
+  W.vm(`payHasClock = function () { return true; }; payClockRead = function () { return [{ emp_id: 'E0', name: '測試0', active: 'true' }, { emp_id: 'N9', name: '測試新人', active: 'true' }]; };`);
+  const r1 = W.vm('handlePayrollBootstrap({ admin_key: "k", store: "SSLGF" })'), r2 = W.vm('handlePayrollBootstrap({ admin_key: "k", store: "SSLGF" })');
+  sec('L 主檔交錯：還原不清掉同時帶入的同仁', r1.ok && r1.added === 1 && r1.names[0] === '測試新人' && r2.ok && r2.added === 0, '帶入照常：第一次加 1 人、再按加 0 人（回應格式不變）');
+  lock.held = true;
+  const r3 = W.vm('handlePayrollBootstrap({ admin_key: "k", store: "SSLGF" })');
+  lock.held = false;
+  const busy = W.vm('PAY_BUSY_');
+  sec('L 主檔交錯：還原不清掉同時帶入的同仁', JSON.stringify(r3) === JSON.stringify(busy), '別台正在存薪資資料時回忙碌：' + JSON.stringify(r3));
+}
+
+/* F10 資料已完整套用、但 paySafePut_ 自己的送出（flush）丟錯 → 走還原 → 整張（含表頭列）逐格＝寫入前 */
+function runOwnFlushFail(src) {
+  for (const kind of ['run', 'item', 'master', 'holiday', 'bonus']) {
+    for (const locked of [true, false]) {
+      const W = world(src);
+      W.replace(kind, makeRows(COLS[kind], 6));
+      W.vm(`payInvalidate(${JSON.stringify(kind)})`);
+      const before = W.state(kind);
+      let applied = false;
+      W.F.observe = (op) => { if (op.name === W.vm('PAY_SHEET_NAME')[kind]) applied = true; };
+      W.F.flushN = 0; W.F.flushThrowAt = 1;   // 第 1 次送出＝paySafePut_ 寫完資料後那次
+      let err = null;
+      try { if (locked) W.lockedReplace(kind, makeRows(COLS[kind], 8)); else W.replace(kind, makeRows(COLS[kind], 8)); } catch (e) { err = e; }
+      W.F.flushThrowAt = 0; W.F.observe = null;
+      sec('F10 資料已套用、自己送出失敗（必須＝寫入前）', applied && !!err && W.state(kind) === before, `${kind}（${locked ? '鎖內用讀的當下那份' : '鎖外當場讀'}）：資料有套用過、呼叫端收到錯誤、整張＝寫入前`);
+    }
+  }
+}
+
+/* F11 鎖內兩張一起寫（兩張都用同一把鎖內讀的那份還原）：第二張失敗、第一張退回 → 兩張都逐格＝寫入前，而且沒有多讀格子（真的走快照） */
+function runManyLocked(src) {
+  if (!/function payReplaceMany_\(/.test(src)) { sec('F11 鎖內兩張一起寫', false, '沒有 payReplaceMany_'); return; }
+  for (const order of [['run', 'item'], ['item', 'run']]) {
+    for (const how of ['throw', 'half']) {
+      const W = world(src);
+      W.replace('run', makeRows(COLS.run, 5)); W.replace('item', makeRows(COLS.item, 12));
+      const b = { run: W.state('run'), item: W.state('item') };
+      let reads = 0;
+      for (const k of ['run', 'item']) { const sh = W.sheetOf(k), og = sh.getRange; sh.getRange = function () { const w = og.apply(this, arguments); const gv = w.getValues; w.getValues = function () { reads++; return gv.apply(this, arguments); }; return w; }; }
+      const nr = { run: makeRows(COLS.run, 7), item: makeRows(COLS.item, 9) };
+      W.sb.__pairs = order.map((k) => [k, nr[k]]);
+      W.F.faults = [{ match: (op) => isData(op) && op.name === W.vm('PAY_SHEET_NAME')[order[1]], how, times: 1 }];
+      let err = null;
+      try { W.vm('payWriteLocked_(["run", "item"], function () { payRead("run"); payRead("item"); payReplaceMany_(__pairs); })'); } catch (e) { err = e; }
+      W.F.faults = [];
+      sec('F11 鎖內兩張一起寫', !!err && W.state('run') === b.run && W.state('item') === b.item && reads === 0,
+          `${order.join('→')} 後面那張${how}：兩張都＝寫入前、多讀格子 ${reads} 次`);
+    }
+  }
+}
+
 /* 每次 payReplaceAll 的試算表呼叫數（給 PR 描述的估計） */
 function countCalls(src, kind, oldN, newN, warm) {
   const W = world(src);
@@ -683,6 +769,9 @@ runHeaderOrder(CUR);
 runAfterCommit(CUR);
 runInterleave(CUR);
 runFormula(CUR);
+runMasterInterleave(CUR);
+runOwnFlushFail(CUR);
+runManyLocked(CUR);
 if (!process.env.PAYRA_SRC || process.env.PAYRA_N1) runTwoTableWindow(CUR);
 const HDR_NOTE = (!process.env.PAYRA_SRC || process.env.PAYRA_N1) ? headerNormalNote() : [];
 if (!process.env.PAYRA_SRC || process.env.PAYRA_N1) { runSame(); runSameHandlers(); runOtSame(); }   // PAYRA_N1=1：拿 PAYRA_SRC 那版跟改版前比（驗這組抓得到差異）

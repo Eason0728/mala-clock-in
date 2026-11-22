@@ -174,10 +174,10 @@ var PAY_READ_CACHE = {};
 var PAY_RAW_CACHE = {};
 /* 讀的當下那份只在「讀和寫都在同一次 payWriteLocked_ 寫鎖內」才拿來還原（Codex 複審 2026-11-22）：鎖外讀的，中間別台可能已經存了新內容
    （列數不變也一樣），失敗時拿它還原會把別台剛存的蓋掉。PAY_IN_LOCK_＝目前這把寫鎖的編號（不在鎖內＝0）。
-   PAY_RAW_UNLOCKED_WRITER_：有「不拿寫鎖就寫」的呼叫端的表（holiday 有 payHolidaySync），就算自己在鎖內讀也不能信那份，一律寫前當場讀。
+   PAY_RAW_UNLOCKED_WRITER_：有（或曾有）「不拿寫鎖就寫」的呼叫端的表（holiday 有 payHolidaySync；master 的名冊帶入 2026-11-22 起已進鎖），就算自己在鎖內讀也不能信那份，一律寫前當場讀。
    一次性的 handlePayrollMigrateStore 也不拿寫鎖，但只在搬資料那一次手動跑，不列進來（見 PR #211 殘餘風險）。 */
 //   （PAY_LOCK_GEN_／PAY_IN_LOCK_ 宣告在 payWriteLocked_ 旁邊：tests/config-single-save.test.js 只抽那一段出來跑）
-var PAY_RAW_UNLOCKED_WRITER_ = { holiday: 1 };
+var PAY_RAW_UNLOCKED_WRITER_ = { holiday: 1, master: 1 };   // master：帶入名冊已改成鎖內追加，仍保險起見寫前當場讀（存主檔不在 06:00 路徑上，多讀一次無感）
 function payRead(kind) {
   if (PAY_READ_CACHE[kind]) return PAY_READ_CACHE[kind];
   const got = readSheetAsObjects(paySheet(kind));
@@ -3583,17 +3583,22 @@ function handlePayrollBootstrap(body) {
     message: '門市 ' + stBs + ' 尚未連結打卡系統，沒有名冊可帶入。請在「員工設定」手動新增同仁，或先到 參數設定 → 門市設定 填入打卡試算表 ID。' };
   const roster = payClockRead(stBs, 'roster');
   const prefix = (function () { const r = payStoreRow(stBs); return r ? String(r.emp_prefix || '') : ''; })();
-  const existing = {};
-  payRead('master').forEach(function (m) { if (payStore(m.store) === stBs) existing[String(m.emp_id)] = true; });
-  const add = roster
-    .filter(function (r) { return String(r.active).toLowerCase() === 'true' && !existing[prefix + String(r.emp_id)]; })
-    .map(function (r) {
-      return { emp_id: prefix + r.emp_id, name: r.name, is_full_time: 'false', wage: 0, base: 0, ot_rate: 0,
-               skill_allow: 0, night_allow: 0, mgr_allow: 0, editor_allow: 0, attend_cap: 0,
-               labor_ins: 0, health_ins: 0, group_ins: 0, pension: 0, dormitory: 0,
-               hire_date: '', leave_date: '', active: 'true', updated_at: nowTaipeiIso(), store: stBs };
-    });
-  payAppend('master', add);
+  /* 主檔追加放進寫鎖（2026-11-22 Codex 複審）：存主檔（鎖內整張覆寫）寫入失敗還原時，才不會把同時帶入的新同仁清掉；
+     「已經在主檔」也在鎖內重讀才判斷，兩台同時按不會重複帶入。名冊（打卡試算表）在鎖外先讀好，鎖只包讀主檔＋追加那一下。 */
+  let add = [];
+  if (!payWriteLocked_(['master'], function () {
+    const existing = {};
+    payRead('master').forEach(function (m) { if (payStore(m.store) === stBs) existing[String(m.emp_id)] = true; });
+    add = roster
+      .filter(function (r) { return String(r.active).toLowerCase() === 'true' && !existing[prefix + String(r.emp_id)]; })
+      .map(function (r) {
+        return { emp_id: prefix + r.emp_id, name: r.name, is_full_time: 'false', wage: 0, base: 0, ot_rate: 0,
+                 skill_allow: 0, night_allow: 0, mgr_allow: 0, editor_allow: 0, attend_cap: 0,
+                 labor_ins: 0, health_ins: 0, group_ins: 0, pension: 0, dormitory: 0,
+                 hire_date: '', leave_date: '', active: 'true', updated_at: nowTaipeiIso(), store: stBs };
+      });
+    payAppend('master', add);
+  })) return PAY_BUSY_;
   return { ok: true, added: add.length, names: add.map(function (a) { return a.name; }) };
 }
 
