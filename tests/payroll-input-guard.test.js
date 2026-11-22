@@ -40,7 +40,7 @@ for (const id of BAD) {
 function writerEnv() {
   const written = [];
   const range = { setValues: v => written.push(v), clearContent() {}, setNumberFormat() { return range; } };
-  const sheet = { getRange: () => range, getLastRow: () => 1, getMaxRows: () => 10 };
+  const sheet = { getRange: () => range, getLastRow: () => 1, getMaxRows: () => 10, insertRowsAfter() {} };   // 2026-11-22：寫入前格線不夠會先加列
   const s = { console, Logger: { log() {} }, written };
   vm.createContext(s);
   const C = fs.readFileSync(path.join(ROOT, 'apps-script', 'Code.gs'), 'utf8');
