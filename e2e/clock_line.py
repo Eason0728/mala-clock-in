@@ -1978,7 +1978,8 @@ def phase_open(ctx, hq):
     p.wait_for_timeout(400)
     ok('開頁 10：打完卡後 Google 的開頁狀態才回來 → 成功訊息還在、兩顆鍵仍鎖著、今天有這張下班卡',
        '下班打卡成功' in msg(p) and p.is_disabled('#btnOut') and p.is_disabled('#btnIn') and '下班 09:01' in p.inner_text('#today'), (msg(p), p.inner_text('#today')))
-    ok('開頁 10：比對用的是開頁那一刻的內容（兩邊一樣記 same，不被打卡後的畫面影響）', opens(p)[0].get('st_match') == 'same', opens(p)[0])
+    # 2026-11-23 量法改版：打卡之後才回來的比對不記 same／diff（11/17–11/22 正式 34 筆 diff 全是這種），status 標 cmp_late
+    ok('開頁 10：打卡之後才回來的比對不記 same／diff、status 標 cmp_late', [opens(p)[0].get('st_match'), opens(p)[0].get('status')] == ['', 'cmp_late'], opens(p)[0])
     ok('開頁 10：補提示也走櫃台那條（/punch 與 /after 同一條路）', S['after_gw'] >= 1 and S['after_alt'] == 0, S)
     p.close()
 
