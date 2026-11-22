@@ -3644,7 +3644,22 @@ function handlePayrollMasterSet(body) {
   return { ok: true, count: mine.length, store: stMs };
 }
 
-/** {action:'payroll_hol_emp_set', admin_key, store, ym, date, emp_ids:[...], note?, operator?}
+/* ── 選舉假名單的投票日清單（2026-11-22 Eason 選項 7B）──
+ * 清單內的日期直接存；清單外的日期要前端帶 confirm_off_list:true（只認布林 true；字串 "true"、1、"yes"、缺少一律當沒確認＝擋），
+ * 存成功時操作紀錄那一列的說明多記「（不在投票日清單）」。只管存名單，不影響任何金額算法、誰能勾。
+ * 之後有補選、公投：在這裡加日期（YYYY-MM-DD）即可，邏輯不用改。前端顯示的投票日一律由 payroll_month 的 elec_vote_days 帶出（不另寫一份）。 */
+var PAY_ELEC_VOTE_DAYS = ['2026-11-28'];
+/** 某月的投票日（照清單順序；沒有回空陣列）。 */
+function payElecVoteDaysOf_(ym) {
+  const p = String(ym || '') + '-';
+  return PAY_ELEC_VOTE_DAYS.filter(function (d) { return String(d).slice(0, 8) === p; });
+}
+/** 清單外日期沒確認時的說明（舊版畫面也看得懂）：沿用確認框前兩句。該月清單沒有日期時括號寫「（本月沒有投票日）」（Eason 2026-11-22 定案）。 */
+function payElecOffListMsg_(date, days) {
+  return date + ' 不在投票日清單' + (days.length ? '（本月投票日是 ' + days.join('、') + '）' : '（本月沒有投票日）') + '。選錯日期會讓名單上的人選舉日加發算錯。';
+}
+
+/** {action:'payroll_hol_emp_set', admin_key, store, ym, date, emp_ids:[...], note?, operator?, confirm_off_list?}
  *  存某店某月的選舉假名單（整份取代該店該月的列；emp_ids 空陣列＝清除）。2026-11-22 Eason 定案（一次選舉一份）。
  *  權限比照薪資主檔：管理金鑰＋門市範圍（payScopeGuard_ 檢查每個 emp_id 都在負責門市主檔）；已鎖定月份不能改（payMonthLocked_）。
  *  每個編號都要在本店主檔；日期要是該月的真實日期。只記人數到操作紀錄，不記姓名。 */
@@ -3671,6 +3686,11 @@ function handlePayrollHolEmpSet(body) {
   const notIn = ids.filter(function (id) { return !Object.prototype.hasOwnProperty.call(nameOf, id); });
   if (notIn.length) return { ok: false, error: 'not_in_master', emp_ids: notIn, message: '下面這些編號不在本店薪資主檔，這次沒有儲存：' + notIn.join('、') };
   if (payMonthLocked_(payRead('run'), ym, st)) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '選舉假名單') };
+  // 投票日清單（7B）：既有檢查都過了才看。清除名單（沒勾人）不看日期。只認布林 true，其他值一律當沒確認。
+  const voteDays = payElecVoteDaysOf_(ym);
+  const offList = ids.length > 0 && PAY_ELEC_VOTE_DAYS.indexOf(date) < 0;
+  if (offList && body.confirm_off_list !== true)
+    return { ok: false, error: 'elec_date_unconfirmed', date: date, vote_days: voteDays, message: payElecOffListMsg_(date, voteDays) };
   const now = nowTaipeiIso(), note = String(body.note == null ? '' : body.note).slice(0, 100);
   const rows = ids.map(function (id) { return { ym: ym, date: date, store: st, emp_id: id, name: nameOf[id], note: note, updated_at: now }; });
   let lockedNow = false, snapBefore = null, snapAfter = null;
@@ -3685,8 +3705,9 @@ function handlePayrollHolEmpSet(body) {
   })) return PAY_BUSY_;
   if (lockedNow) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '選舉假名單') };
   payAppend('audit', [{ ts: now, ym: ym, action: 'hol_emp_set', operator: String(body.operator || 'admin'),
-                        reason: st + ' 選舉假名單 ' + (date || '（清除）') + ' 共 ' + rows.length + ' 人', store: st }]);
+                        reason: st + ' 選舉假名單 ' + (date || '（清除）') + (offList ? '（不在投票日清單）' : '') + ' 共 ' + rows.length + ' 人', store: st }]);
   const res = { ok: true, count: rows.length, ym: ym, date: ids.length ? date : '', store: st };
+  if (offList) res.off_list = true;   // 只有清單外日期才帶（清單內回應形狀不變）
   // 損益月中估算有 600 秒快取（同年月／門市／截止日）：名單改了就清掉這一格（Codex S4）
   try { var pk = 'pnlestimate|' + ym + '|' + st + '|' + pnlAsOfDate_(ym, todayTaipeiStr()); CacheService.getScriptCache().remove(pk); if (payXclaimOn_(ym)) CacheService.getScriptCache().remove(pk + '|' + PAY_XCLAIM_VER); } catch (e) { /* 清不掉就等它過期 */ }
   /* 選舉假那天的加班不能抵補休（Eason 2026-11-22 00:40）：勾選的人那天的加班如果已經拿去抵補休，補休帳會變負、本月鎖不了。
@@ -4942,6 +4963,7 @@ function handlePayrollMonth(body) {
   // 選舉假名單：只帶本店本月、有才加屬性（Codex B5：沒有名單時連值為 undefined 的屬性都不加）
   const heM = payHolEmpFor_(stM, ym);
   if (heM) resM.hol_emp = heM;
+  if (payElecOn_(ym)) resM.elec_vote_days = payElecVoteDaysOf_(ym);   // 本月投票日（可能是空陣列）；名單能用的月份才帶，前端說明行與確認框只讀這一份
   if (elecStale) resM.elec_stale = true;   // 草稿不是用現在的名單算的（只有這種情況才帶）
   if (elecRecalc && !elecStale) resM.elec_recalc = true;   // 這次開頁因名單改過重算了草稿：前端丟掉先前預抓的趨勢（Codex 第四次 B3）
   if (heM && payElecOn_(ym)) { const od = payElecOtherDates_(payHolEmpRows_(), ym, stM); if (od.length) resM.hol_emp_other_dates = od; }   // 直接編表多出的日期（畫面提醒，Codex 複審 S3）
@@ -4953,6 +4975,48 @@ function payRunAt_(ym, st) {
   let at = '';
   payRead('run').forEach(function (r) { if (String(r.ym) === ym && payStore(r.store) === st && String(r.run_at || '') > at) at = String(r.run_at || ''); });
   return at;
+}
+
+/** {action:'payroll_status', admin_key, store, ym} → 這家店這個月的月結狀態（待辦 10，2026-11-22）。
+ *  用途：薪資頁按「鎖定本月」後回應斷掉／逾時，用它確認剛才那次到底有沒有鎖成功。
+ *  ⚠ 純唯讀：不重算、不寫任何分頁、不取鎖、不建分頁（分頁不存在＝沒有資料），也不碰 CacheService。
+ *    payroll_month 不能拿來確認：草稿過期時它會自動重算寫回（別家核定變了、月中草稿日期不對、選舉假名單改過）。
+ *  權限＝payroll_month（選舉假名單的讀取路徑）：管理金鑰＋門市範圍（payScopeWrap_ 一樣包，store 要在負責範圍內）。
+ *  回 { ok, ym, store, status:'final'|'draft'|'none'|'mixed', rows, run_at, elec_stale }：
+ *    final＝該店該月每一列都是 final；draft＝都不是；none＝還沒有月結列；mixed＝有 final 也有草稿（不該發生，照實回）。
+ *    elec_stale＝草稿不是用現在的選舉假名單算的（同 payroll_month 的判斷；已鎖定、沒有名單一律 false）。
+ *  讀不到（開試算表、查分頁、讀格子丟例外）→ 回 { ok:false, error:'status_read_failed' }，不回 status：
+ *    前端當成「狀態查不到」（擋匯出與鎖定、請人重新整理），不可當成「這個月沒有資料／沒有名單」（Codex 複審 SHOULD-FIX 2，2026-11-22）。 */
+function handlePayrollStatus(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const ym = String((body && body.ym) || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'bad_ym' };
+  const st = payStore(body.store);
+  let runs;
+  try { runs = payReadNoCreate_('run'); } catch (e) { return { ok: false, error: 'status_read_failed' }; }
+  const mine = runs.filter(function (r) { return String(r.ym) === ym && payStore(r.store) === st; });
+  const nFinal = mine.filter(function (r) { return String(r.status) === 'final'; }).length;
+  const status = !mine.length ? 'none' : nFinal === mine.length ? 'final' : nFinal ? 'mixed' : 'draft';
+  let at = '';
+  mine.forEach(function (r) { if (String(r.run_at || '') > at) at = String(r.run_at || ''); });
+  let elecStale = false;
+  if (status === 'draft' && payElecOn_(ym)) {
+    /* 名單指紋＝payElecFpNow_ 的條件（逐日月份＋生效月份）與算法，只是名單改用不建分頁的讀法（payHolEmpRows_ 預查失敗會落回 payRead → paySheet 建分頁）。
+       ⚠ payElecFpNow_ 的條件改了這裡要一起改（tests/payroll-status.test.js 第 2、5 段會抓到 elec_stale 不一致）。 */
+    let hol = null;
+    try { hol = payOtDailyOn(ym) ? payReadNoCreate_('hol_emp') : null; } catch (e) { return { ok: false, error: 'status_read_failed' }; }
+    try { elecStale = payRunElecStale_(mine, ym, st, hol ? payElecFp_(hol, ym, st) : ''); } catch (e) { elecStale = false; }
+  }
+  return { ok: true, ym: ym, store: st, status: status, rows: mine.length, run_at: at, elec_stale: elecStale };
+}
+/** 讀分頁但不建分頁（只給 payroll_status 用）：分頁不存在＝[]；開試算表、查分頁、讀格子丟例外 → 照樣丟給呼叫端。
+ *  用這一次 getSheetByName 拿到的分頁物件直接讀格子（同 payRead 的 readSheetAsObjects＋stripRowIndex），不經 payRead／paySheet：
+ *  以前預查丟例外會被吞掉、落回 payRead → paySheet，分頁不存在時就建分頁＋寫表頭（Codex 複審 SHOULD-FIX 2，2026-11-22）。
+ *  不讀也不寫請求內快取（PAY_READ_CACHE／PAY_RAW_CACHE）；payRead／paySheet 給其他路徑的行為不變。 */
+function payReadNoCreate_(kind) {
+  const sh = getSS().getSheetByName(PAY_SHEET_NAME[kind]);
+  if (!sh) return [];
+  return readSheetAsObjects(sh).rows.map(stripRowIndex);
 }
 
 /* 每天 06:00 自動重算草稿（Eason 2026-11-17）：有薪資主檔的門市，重算「本月（算到昨天）」。
@@ -5524,39 +5588,15 @@ function handlePayrollCompPeriod(body) {
   return out;
 }
 
-/* 20／25 號檢查（Eason 2026-11-01）：每天 09:00 觸發器跑，只有 20、25 號真的做事。
-   有負數 → 通知匣一般件（key 同一天同一件）＋ LINE 私訊該店值班主管（打卡官方帳號，會花推播額度，Eason 選的）。
-   觸發器用 payroll_comp_trigger_setup 建（重跑不疊）。通知匣密碼＝指令碼屬性 NOTIFY_INBOX_TOKEN（Eason 自己貼）。 */
-var PAY_COMP_CHECK_DAYS = [20, 25];
+/* 補休為負的 20／25 號提醒：已停用（Eason 2026-11-22 定案：「補休為負的提醒不做。現在小幫手已經有定期整理提醒在群組了，不個別提醒主管。」）。
+   原本每天 09:00 觸發器跑、20、25 號檢查各店補休帳，有負數就寫通知匣＋用打卡官方帳號私訊值班主管（2026-11-01 起）。
+   ⚠ payCompCheckDaily 這個名字要留著：正式端若還有舊觸發器，函式不見會每天報錯；它現在什麼都不做。
+     舊觸發器用 payroll_comp_trigger_setup 清掉（現在只刪不建）。
+   鎖月時「補休帳是負的不能鎖定」（handlePayrollFinalize → payCompNegatives／payCompNegLine）是鎖月規則，不是提醒，照舊。
+   原本的 payCompCheckRun_（檢查＋通知）、payCompPushManagers_（私訊值班主管）沒有其他呼叫者，一起刪掉（要找回看 git 歷史 49dc85e）。 */
+// 通知匣網址（payInboxNotify_ 用：每日重算失敗、月加班同步、單日超過 10 小時）
 var PAY_NOTIFY_INBOX_URL = 'https://script.google.com/macros/s/AKfycbyZ-sVl9KbKhotjsFhKg9Id7j4qgNRf6wSlSCacoBe7lATkuJFb9_ShCaicAJuLOak/exec';
-function payCompCheckDaily() {
-  const today = payCompToday();
-  if (PAY_COMP_CHECK_DAYS.indexOf(+today.slice(8, 10)) < 0) return;
-  payCompCheckRun_(today);
-}
-/** 實際檢查＋通知（today 可指定，給手動補跑）。回 {stores, inbox, pushed}。任何一步失敗都不拋例外。 */
-function payCompCheckRun_(today) {
-  const ym = String(today).slice(0, 7), md = (+today.slice(5, 7)) + '/' + (+today.slice(8, 10));
-  let stores = [];
-  try { stores = payCompCheckAll_(ym); } catch (err) {
-    payInboxNotify_('補休檢查讀不到資料', md + ' 補休帳檢查失敗：' + err, 'compcheck-fail-' + today);
-    return { stores: [], inbox: false, pushed: 0, error: String(err) };
-  }
-  if (!stores.length) return { stores: [], inbox: false, pushed: 0 };
-  let pushed = 0;
-  const lines = [];
-  stores.forEach(function (s) {
-    const body = s.list.map(payCompNegLine).join('\n');
-    const n = payCompPushManagers_(s.store, '⚠ 補休帳是負的（' + md + ' 檢查）\n' + body +
-      '\n\n請在月底前補核准加班申請，或把多請的補休改成其他假別；有負數的話這個月薪資不能鎖定。');
-    pushed += n;
-    lines.push('【' + s.name + '】' + (n ? '' : '（沒有可私訊的值班主管）') + '\n' + body);
-  });
-  const inbox = payInboxNotify_('補休帳有負數：' + stores.map(function (s) { return s.name; }).join('、'),
-    md + ' 檢查 ' + ym + ' 補休帳（核准加班 − 補休）：\n' + lines.join('\n') + '\n\n有負數的店不能鎖定本月薪資。',
-    'compcheck-' + today);
-  return { stores: stores, inbox: inbox, pushed: pushed };
-}
+function payCompCheckDaily() { return; }
 /** 通知匣一般件；成功判準 ok===true && added===true。任何情況都不拋例外。 */
 function payInboxNotify_(title, text, keyEvent, from, prefix) {
   try {
@@ -5578,39 +5618,13 @@ function payInboxNotify_(title, text, keyEvent, from, prefix) {
     return false;
   } catch (err) { return false; }
 }
-/** 私訊某店值班主管（managers 分頁 active＝TRUE、不是營運系統鑰匙列；emp_id 有填為準，沒填用姓名對名冊）→ 送出幾個人。 */
-function payCompPushManagers_(store, text) {
-  try {
-    const token = (typeof LINE_HUB_BOT_TOKEN !== 'undefined') ? LINE_HUB_BOT_TOKEN : '';
-    if (!token) return 0;
-    const roster = payClockRead(store, 'roster'), uids = {};
-    payClockRead(store, 'managers').forEach(function (m) {
-      if (String(m.active).toLowerCase() !== 'true' || String(m.allow_acting).toLowerCase() === 'true') return;
-      const id = String(m.emp_id || '').trim(), nm = String(m.name || '').replace(/\s/g, '');
-      roster.forEach(function (r) {
-        if (String(r.active).toLowerCase() !== 'true' || !r.line_user_id) return;
-        if (id ? String(r.emp_id) === id : String(r.name || '').replace(/\s/g, '') === nm) uids[String(r.line_user_id)] = true;
-      });
-    });
-    let n = 0;
-    Object.keys(uids).forEach(function (uid) {
-      try {
-        const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', { method: 'post', contentType: 'application/json',
-          muteHttpExceptions: true, headers: { Authorization: 'Bearer ' + token },
-          payload: JSON.stringify({ to: uid, messages: [{ type: 'text', text: String(text).slice(0, 4900) }] }) });
-        if (res.getResponseCode() === 200) n++;
-        else Logger.log('補休檢查私訊失敗 ' + store + '：' + res.getResponseCode());
-      } catch (err) { Logger.log('補休檢查私訊失敗 ' + store + '：' + err); }
-    });
-    return n;
-  } catch (err) { return 0; }
-}
-/** {action:'payroll_comp_trigger_setup', admin_key} → 建每天 09:00 的 payCompCheckDaily（同名先刪，重跑不疊）。 */
+/** {action:'payroll_comp_trigger_setup', admin_key} → 只刪不建（2026-11-22 補休提醒停用）：把 handler 是 payCompCheckDaily 的觸發器全部刪掉，
+ *  回 { ok, removed:<刪了幾個>, triggers:[剩下的 handler 名稱] }。其他觸發器（payRestOverDaily、payAsOfDaily…）不動。重跑安全（第二次 removed＝0）。 */
 function handlePayrollCompTriggerSetup(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
-  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'payCompCheckDaily') ScriptApp.deleteTrigger(t); });
-  ScriptApp.newTrigger('payCompCheckDaily').timeBased().everyDays(1).atHour(9).inTimezone('Asia/Taipei').create();
-  return { ok: true, triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
+  let removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'payCompCheckDaily') { ScriptApp.deleteTrigger(t); removed++; } });
+  return { ok: true, removed: removed, triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
 }
 
 /* 單日核定超過 10 小時（2026-11-01 Eason）：照實核定、不擋，每天 09:00 把各店「前一天」核定超過 10 小時的人列進通知匣（一般件）。
@@ -6983,6 +6997,7 @@ const PAYROLL_HANDLERS = {
   payroll_inputs:      handlePayrollInputs,
   payroll_input_set:    handlePayrollInputSet,
   payroll_month:        handlePayrollMonth,
+  payroll_status:       handlePayrollStatus,   // 月結狀態唯讀查詢（鎖定逾時後確認用，2026-11-22 待辦 10）
   payroll_calc:         handlePayrollCalc,
   payroll_ot_month_sync: handlePayrollOtMonthSync,   // 月加班 36／46 小時同步到各店（4-15，只給總管理）
   payroll_ot_preview:   handlePayrollOtPreview,   // 加班費新舊算法唯讀並列（2026-11-06）
