@@ -9,7 +9,7 @@ const assert = require('assert');
 const fs = require('fs'), vm = require('vm'), path = require('path');
 const html = fs.readFileSync(path.join(__dirname, '..', 'clock-line.html'), 'utf8');
 
-const EXPECT = 'cmp';   // 這一版七家店的值："cmp"（試跑比對）或 true（只問 mini）
+const EXPECT = true;   // 這一版七家店的值："cmp"（試跑比對）或 true（只問 mini）
 const SEVEN = ['', 'cf', 'hq', 'mztjs', 'mztgf', 'mztlzl', 'mztmc'];
 const OFF = ['mztrg', 'mztwx'];
 
