@@ -145,30 +145,47 @@ const q1 = lo.quotas.E01.comp, q2 = lo.quotas.E02.comp;
 chk('甲君：comp、本月帳 −7、不反灰', [q1.comp, q1.monthly, q1.balance_h, q1.blocked], [true, true, -7, false]);
 chk('乙君（計時）反灰', [q2.allowed, q2.blocked], [false, true]);
 
-console.log('\n══ 6) 20／25 號檢查：通知匣＋私訊值班主管 ══');
+console.log('\n══ 6) 20／25 號補休提醒已停用（Eason 2026-11-22：小幫手已在群組定期整理提醒，不個別提醒主管）══');
+/* 同一份有負數的資料（甲君 −7）：以前 20 號會寫通知匣＋私訊值班主管；現在任何一天都 0 次通知匣、0 次 LINE push */
 const calls = [];
 const fetchStub = { fetch: (url, o) => { calls.push({ url, body: JSON.parse(o.payload) }); return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ ok: true, added: true }) }; } };
 sb = ctx(DB, CLOCK, { UrlFetchApp: fetchStub, LINE_HUB_BOT_TOKEN: 'BOT' });
-sb.__TODAY = '2026-10-19';
-vm.runInContext('payCompCheckDaily', sb)();
-chk('19 號不做事', calls.length, 0);
-sb.__TODAY = '2026-10-20';
-vm.runInContext('payCompCheckDaily', sb)();
-const push = calls.filter((c) => /line\.me/.test(c.url)), inbox = calls.filter((c) => !/line\.me/.test(c.url));
-chk('20 號：私訊丙君（姓名去空白對名冊；營運系統鑰匙列不算）一則', push.map((c) => c.body.to), ['U_MGR']);
-chk('私訊內容寫出甲君欠幾小時', /甲君：加班 5 − 補休 12 ＝ -7 小時/.test(push[0].body.messages[0].text), true);
-chk('通知匣一般件、key 同一天同一件', [inbox.length, inbox[0].body.level, inbox[0].body.key, inbox[0].body.from], [1, 'normal', 'compcheck:compcheck-2026-10-20', '補休檢查']);
-calls.length = 0;
-const savedLeave = CLOCK.leave, savedReq = CLOCK.requests;
-CLOCK.leave = []; CLOCK.requests = savedReq.filter((x) => x.kind !== 'leave');
-sb = ctx(DB, CLOCK, { UrlFetchApp: fetchStub, LINE_HUB_BOT_TOKEN: 'BOT' });
-const res = vm.runInContext('payCompCheckRun_', sb)('2026-10-25');
-chk('沒有負數 → 什麼都不送', [res.stores.length, calls.length], [0, 0]);
-CLOCK.leave = savedLeave; CLOCK.requests = savedReq;
-sb = ctx(DB, CLOCK, { UrlFetchApp: { fetch: () => { throw new Error('斷線'); } }, LINE_HUB_BOT_TOKEN: 'BOT' });
-let threw = false, out = null;
-try { out = vm.runInContext('payCompCheckRun_', sb)('2026-10-25'); } catch (e) { threw = true; }
-chk('通知送不出去也不拋例外、回報沒送到', [threw, out && out.inbox, out && out.pushed], [false, false, 0]);
+chk('對照：這份資料 10 月確實有補休為負的人（鎖月規則照舊看得到）', vm.runInContext('payCompCheckAll_', sb)('2026-10').map((x) => x.store), ['SSLGF']);
+for (const d of ['2026-10-19', '2026-10-20', '2026-10-25', '2026-11-20', '2026-11-25']) {
+  sb.__TODAY = d; calls.length = 0;
+  let threw = false, ret;
+  try { ret = vm.runInContext('payCompCheckDaily', sb)(); } catch (e) { threw = true; }
+  const push = calls.filter((c) => /line\.me/.test(c.url)).length, inbox = calls.filter((c) => !/line\.me/.test(c.url)).length;
+  chk(d + '：payCompCheckDaily 還在、不拋例外、通知匣 0 次、LINE push 0 次', [typeof vm.runInContext('payCompCheckDaily', sb), threw, ret, inbox, push], ['function', false, undefined, 0, 0]);
+}
+chk('檢查＋通知、私訊值班主管兩支已刪（沒有其他呼叫者）', [vm.runInContext('typeof payCompCheckRun_', sb), vm.runInContext('typeof payCompPushManagers_', sb), vm.runInContext('typeof PAY_COMP_CHECK_DAYS', sb)], ['undefined', 'undefined', 'undefined']);
+chk('通知匣 payInboxNotify_ 還在（每日重算失敗、月加班同步、單日超過 10 小時在用）', vm.runInContext('typeof payInboxNotify_', sb), 'function');
+
+console.log('\n══ 7) payroll_comp_trigger_setup 只刪不建 ══');
+function triggerWorld(handlers, adminOk) {
+  const T = handlers.map((h, i) => ({ id: i, h, getHandlerFunction() { return this.h; } }));
+  const log = { created: 0, deleted: [] };
+  const builder = () => { const b = { timeBased: () => b, everyDays: () => b, atHour: () => b, inTimezone: () => b, everyHours: () => b, create: () => { log.created++; } }; return b; };
+  const ScriptApp = { getProjectTriggers: () => T.slice(), deleteTrigger: (t) => { const k = T.indexOf(t); if (k >= 0) { T.splice(k, 1); log.deleted.push(t.h); } }, newTrigger: () => builder() };
+  const w = ctx(DB, CLOCK, { ScriptApp, UrlFetchApp: fetchStub });
+  vm.runInContext('checkAdmin = function(b){ return !!b && b.admin_key === "good"; }', w);
+  return { w, T, log, fn: vm.runInContext('PAYROLL_HANDLERS', w).payroll_comp_trigger_setup };
+}
+{
+  const { T, log, fn } = triggerWorld(['payAsOfDaily', 'payCompCheckDaily', 'payRestOverDaily', 'payCompCheckDaily', 'payOtMonthDaily']);
+  const before = T.filter((t) => t.h !== 'payCompCheckDaily').map((t) => t.id);
+  const r = fn({ admin_key: 'good' });
+  chk('刪掉 2 個 payCompCheckDaily、沒有新建任何觸發器', [r.ok, r.removed, log.created, log.deleted], [true, 2, 0, ['payCompCheckDaily', 'payCompCheckDaily']]);
+  chk('回剩下的 handler：payAsOfDaily、payRestOverDaily 等原封不動（同一個觸發器物件、順序不變）', [r.triggers, T.map((t) => t.id)], [['payAsOfDaily', 'payRestOverDaily', 'payOtMonthDaily'], before]);
+  const r2 = fn({ admin_key: 'good' });
+  chk('再呼叫一次：removed 0、仍不新建', [r2.ok, r2.removed, log.created, r2.triggers.length], [true, 0, 0, 3]);
+}
+{
+  const { T, log, fn } = triggerWorld(['payCompCheckDaily', 'payRestOverDaily']);
+  const r = fn({ admin_key: 'bad' });
+  chk('金鑰錯 → unauthorized、觸發器一個都沒動', [r, log.deleted.length, log.created, T.length], [{ ok: false, error: 'unauthorized' }, 0, 0, 2]);
+  chk('只限系統管理者（PAY_SCOPE_ADMIN_ONLY 照舊列著）', triggerWorld([]).w && vm.runInContext("PAY_SCOPE_ADMIN_ONLY.indexOf('payroll_comp_trigger_setup') >= 0", triggerWorld([]).w), true);
+}
 
 console.log(fail ? `\n❌ ${fail} 項不對` : `\n✅ 補休每月結算全部正確 (${pass}/${pass})`);
 process.exit(fail ? 1 : 0);

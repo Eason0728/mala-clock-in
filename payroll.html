@@ -591,7 +591,7 @@ html.embed.ui-new .monthbar{border-left-color:#0066cc}
     <h2>個人薪資單</h2>
     <div class="row">
       <select id="slipSel" onchange="renderSlip()" style="font:inherit;padding:8px 11px;border:1px solid var(--line);border-radius:6px"></select>
-      <button class="btn" onclick="window.print()">列印 / 存成 PDF</button>
+      <button class="btn" onclick="printSlip()">列印 / 存成 PDF</button>
     </div>
   </div>
   <div class="card" style="padding:0" id="slipWrap"></div>
@@ -1136,6 +1136,8 @@ async function doCalc(pendSeq){   // 回 true＝重算成功並已套到畫面�
     LEAVE_MM=r.leave_mismatch||[];
     vClear();   // 重算後儀表板／集團總覽的數字會變
     renderRun();renderSlipSel();toast('已重新計算');
+    /* 這個月先前讀取失敗（旗標還在）、也沒有月資料在路上：重算成功後重新載入這個月，載入成功才解開（規則同切月份重新載入；2026-11-22 後續 PR） */
+    if(STORE+'|'+ym()===reqKey&&monUnsure()&&!(LOAD_INFLIGHT&&LOAD_INFLIGHT.key===reqKey)) await loadMonth();
     return true;
   } finally { setBusy(false); }
 }
@@ -1722,8 +1724,8 @@ function renderOtInfo(t){
 }
 async function toggleLock(){
   const lock=STATUS!=='final';
-  if(lock&&ELEC_PEND[STORE+'|'+ym()]) return;   // 這個店月的名單存檔／存後重算還沒確認（鎖定鈕此時是停用的）
-  if(MON_UNSURE[STORE+'|'+ym()]) return;   // 畫面上的月資料不確定跟後端一致（重讀失敗）：重新載入成功前不鎖、不解鎖（鎖定鈕此時是停用的，Codex 第六次 13b）
+  // 名單存檔／存後重算還沒確認（只擋鎖定；已鎖定時 elecPending 為 false，解鎖不受影響），或畫面上的月資料不確定跟後端一致（重讀失敗）：重新載入成功前不鎖、不解鎖。鎖定鈕此時是停用的（Codex 第六次 13b；同 elecBtns 用 monBlocked）
+  if(monBlocked()) return;
   const lockYm=ym(), lockStore=STORE, lockKey=lockStore+'|'+lockYm;   // 回應回來時畫面可能已切到別的店月
   let reason='';
   if(!lock){reason=prompt('解鎖原因（會寫進稽核紀錄）：')||'';if(!reason)return}
@@ -1764,12 +1766,16 @@ async function toggleLock(){
         else if(st.status==='mixed') toast('這個月有一部分已鎖定、一部分還是草稿，請重新整理頁面看狀態；重新整理後還是這樣請找資訊部',true);   // 字句草稿，Eason 尚未確認
         else if(st.status==='none') toast('這個月還沒有計算結果，沒有鎖定成功；請重新整理頁面看狀態',true);   // 字句草稿，Eason 尚未確認
         else toast('連線中斷：重新讀取後這個月仍是草稿，沒有鎖定成功，請再按一次「鎖定本月」',true);
-      } else if(st&&(st.error==='network'||st.error==='bad_response'||st.error==='timeout')) toast('連不上伺服器，無法確認有沒有鎖定成功，請稍後重新整理頁面看狀態',true);
+      /* 只有「後端不認得這個動作」（舊版 Apps Script 回 unknown_action）或「管理系統代轉還沒放行」（dzy#157 未上線：代轉回 403，
+         薪資頁收到的是 FORBIDDEN／沒有權限）才退回 payroll_month 確認（2026-11-22 後續 PR，驗收員第 5 點）。
+         其他一律當「狀態查不到」（斷線、逾時、系統忙碌、後端讀表失敗 status_read_failed…）：設讀取失敗旗標，匯出與鎖定先擋，重新載入成功才解開（Codex 複審殘餘 1）；
+         不退回 payroll_month——那支在草稿過期時會自動重算寫回，也不可把「讀不到」當成「沒有資料」（SHOULD-FIX 2）。 */
+      } else if(!(st&&!st.ok&&(st.error==='unknown_action'||st.error==='FORBIDDEN'||st.error==='沒有權限'))){ MON_UNSURE[lockKey]=1; toast('連不上伺服器，無法確認有沒有鎖定成功，請稍後重新整理頁面看狀態',true); }
       else {
         const chk=await post('payroll_month',{ym:lockYm,store:lockStore,inputs:{}},{noToast:true,quiet:true});
         if(chk&&chk.ok&&chk.run&&chk.run.status==='final'){ const ok=here()?await loadMonth(Promise.resolve(chk)):true; toast(ok?'已鎖定（剛才的回應在路上斷了，重新讀取後確認這個月已經鎖定）':'已鎖定，但重新讀取這個月失敗：請重新整理頁面、確認金額後再匯出',!ok); }
         else if(chk&&chk.ok) toast('連線中斷：重新讀取後這個月仍是草稿，沒有鎖定成功，請再按一次「鎖定本月」',true);
-        else toast('連不上伺服器，無法確認有沒有鎖定成功，請稍後重新整理頁面看狀態',true);
+        else { MON_UNSURE[lockKey]=1; toast('連不上伺服器，無法確認有沒有鎖定成功，請稍後重新整理頁面看狀態',true); }   // 舊後端退回 payroll_month 也讀不到：同上設旗標
       }
     }
     // 先前已經鎖定（例如上一次的回應斷掉）：後端回 already，重新載入該月才帶得回鎖定時的成本快照
@@ -3103,11 +3109,15 @@ function payTrue(v){ return v===true||String(v).toLowerCase()==='true'; }
 /* 目前這個店月的名單存檔／存後重算還沒確認（Codex 第五次）：匯出、鎖定、重新計算共用這一條判斷 */
 function elecPending(){ return !!ELEC_PEND[STORE+'|'+ym()]&&STATUS!=='final'; }
 /* 匯出、鎖定共用（Codex 第六次 13b）：名單存檔還沒確認，或畫面上的月資料不確定跟後端一致（重讀失敗、正等重讀） */
-function monBlocked(){ return elecPending()||!!MON_UNSURE[STORE+'|'+ym()]; }
+function monBlocked(){ return elecPending()||monUnsure(); }
+/* 「這個月讀取失敗」的唯一判斷（2026-11-22 後續 PR）：擋匯出／列印（monUnsureStop）、擋鎖定（monBlocked）都經過這一支，新增會把薪資數字送出去的按鈕也要經過 monUnsureStop */
+function monUnsure(){ return !!MON_UNSURE[STORE+'|'+ym()]; }
 /* 匯出前：畫面上的月資料剛才沒讀成功 → 講清楚是「不確定」不是「沒算」（字句是草稿，Eason 尚未確認，2026-11-22）。回 true＝已擋下 */
 const MON_UNSURE_MSG='這個月的資料剛才沒有讀取成功，請重新整理頁面、確認金額後再匯出';
-function monUnsureStop(){ if(!MON_UNSURE[STORE+'|'+ym()]) return false; toast(MON_UNSURE_MSG,true); return true; }
-function elecBtns(){ const p=elecPending(), lb=$('lockBtn'), cb=$('calcBtn'); if(lb&&!LOCK_BUSY) lb.disabled=p||!!MON_UNSURE[STORE+'|'+ym()]; if(cb) cb.disabled=p; }
+function monUnsureStop(){ if(!monUnsure()) return false; toast(MON_UNSURE_MSG,true); return true; }
+/* 薪資單頁「列印 / 存成 PDF」：讀取失敗時畫面上可能還是上一個月的薪資單，同匯出一樣先擋（Codex 複審 2026-11-22 SHOULD-FIX 1） */
+function printSlip(){ if(monUnsureStop()) return; window.print(); }
+function elecBtns(){ const p=elecPending(), lb=$('lockBtn'), cb=$('calcBtn'); if(lb&&!LOCK_BUSY) lb.disabled=monBlocked(); if(cb) cb.disabled=p; }   // 重新計算鈕不看讀取失敗旗標：重算成功後會重新載入，載入成功才解開（doCalc）
 /* 同後端 payInRosterYm_（防漂移測試 election-day-emp 會拿兩邊比）：主檔 active 是 true；或已停用但離職日（YYYY-MM-DD）在這個月或之後。 */
 function elecLeaveYmd(v){ const t=String(v==null?'':v).trim();
   if(/^\d{4}-\d{2}-\d{2}T.*Z$/.test(t)){ const d=new Date(t); if(!isNaN(d)) return new Date(d.getTime()+8*3600000).toISOString().slice(0,10); }   // 試算表 Date 物件經 JSON 變 UTC 字串 → 台北日期
