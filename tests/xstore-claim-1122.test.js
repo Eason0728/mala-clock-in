@@ -408,17 +408,37 @@ function randomCase() {
   vm.runInContext('checkPnlKey_=function(){return null}; payCostSnapRows_=function(){return payRead("cost_snapshot")};', W6);
   chk('r3-6 損益 xsup_cost 用彙總（第 501 筆以後也算到）', J(W6.call('handlePnlPayroll_', { key: 'k', ym: '2026-11', store: 'MZTGF' })).rows.xsup_cost, 3000);
   chk('r3-6 舊快照（逐筆沒有 code 欄）不產生彙總', 'sup_code' in J(S.call('paySnapDetailSanitize_', { sup: [{ emp_id: 'a', store: 'x', amount: 1 }] })), false);
-  // 擋項 3：請款摘要／指紋 前後端逐字相同、2026-10 與沒有跨店的人是空的
-  const rs = [two.r, J(calc(build({ ft: true, days: [{ date: D, home: 9 }] })))]; rs[1].emp_id = 'Y2';
-  const rsStr = J(rs); rsStr.forEach((r) => { r.ot_info = JSON.stringify(r.ot_info); });   // 草稿表存的是 JSON 字串
-  chk('r3-3 摘要物件／JSON 字串兩種 ot_info 相同（草稿表存字串）', S.call('payXclaimSig_', '2026-11', rsStr[0].ot_info), S.call('payXclaimSig_', '2026-11', rs[0].ot_info));   // r8：前端整店指紋已移除（快照由後端從草稿組）
-  chk('r3-3 2026-10：摘要空的（鎖月行為同正式版）', S.call('payXclaimSig_', '2026-10', two.r.ot_info), '');
-  chk('r3-3 沒有跨店的人：摘要空的', S.call('payXclaimSig_', '2026-11', rs[1].ot_info), '');
-  chk('r3-3 只差 xr／xclaim（上線前舊草稿）：摘要不同', S.call('payXclaimSig_', '2026-11', Object.assign({}, two.r.ot_info, { xr: undefined, xclaim: undefined })) !== S.call('payXclaimSig_', '2026-11', two.r.ot_info), true);
-  // 兩天互換支援店（休息日 A／平日 B → 休息日 B／平日 A）：每店總時數、實領都一樣，請款摘要不同
-  const sw1 = calc(build({ ft: true, days: [{ date: D, cell: 'H', home: 0, sups: [{ code: 'MZTJS', h: 8, s: 600 }] }, { date: D2, home: 0, sups: [{ code: 'MZTLZL', h: 8, s: 600 }] }] }));
-  const sw2 = calc(build({ ft: true, days: [{ date: D, cell: 'H', home: 0, sups: [{ code: 'MZTLZL', h: 8, s: 600 }] }, { date: D2, home: 0, sups: [{ code: 'MZTJS', h: 8, s: 600 }] }] }));
-  chk('r3-3 兩天互換支援店：實領相同、請款摘要不同', [sw1.net === sw2.net, S.call('payXclaimSig_', '2026-11', sw1.ot_info) !== S.call('payXclaimSig_', '2026-11', sw2.ot_info)], [true, true]);
+  // 擋項 3（r9 改寫：比的是草稿列存的 xsup 照門市合計的結果）
+  const withXs = (b, r) => { const o = J(r); o.ot_info = o.ot_info || {}; o.ot_info.xsup = J(S.call('paySupRowsStore_', J(S.call('paySupClaimRows_', YM, [o], [b.e], { [o.emp_id]: b.att.support }, H.cfg)))); return o; };
+  const bTwo = build(RD); bTwo.e.emp_id = 'Y1'; bTwo.att.support = [row('MZTJS', '金山', 2), row('MZTJS', '金山', 3)];
+  const rTwo = withXs(bTwo, Object.assign(J(calc(bTwo)), { emp_id: 'Y1' }));
+  const bNo = build({ ft: true, days: [{ date: D, home: 9 }] }); const rNo = withXs(bNo, Object.assign(J(calc(bNo)), { emp_id: 'Y2' }));
+  const rStr = J(rTwo); rStr.ot_info = JSON.stringify(rStr.ot_info);
+  chk('r3-3 摘要物件／JSON 字串兩種 ot_info 相同（草稿表存字串）', S.call('payXclaimSig_', '2026-11', rStr.ot_info), S.call('payXclaimSig_', '2026-11', rTwo.ot_info));
+  chk('r3-3 2026-10：摘要空的、一律相同（鎖月行為同正式版）', [S.call('payXclaimSig_', '2026-10', rTwo.ot_info), S.call('payXclaimSame_', '2026-10', rTwo.ot_info, {})], ['', true]);
+  chk('r3-3 沒有跨店的人：摘要空的', S.call('payXclaimSig_', '2026-11', rNo.ot_info), '');
+  chk('r3-3 上線前的舊草稿（沒有 xsup）vs 重算有請款：不同', S.call('payXclaimSame_', '2026-11', Object.assign({}, rTwo.ot_info, { xsup: undefined }), rTwo.ot_info), false);
+  chk('r9 只差 xr／xclaim、請款結果（xsup）相同：不擋', S.call('payXclaimSame_', '2026-11', Object.assign({}, rTwo.ot_info, { xr: undefined, xclaim: undefined }), rTwo.ot_info), true);
+  // 兩天互換支援店（休息日 A／平日 B → 休息日 B／平日 A）：每店總時數、實領都一樣，請款結果不同
+  const swB = (a1, a2) => { const b = build({ ft: true, days: [{ date: D, cell: 'H', home: 0, sups: [{ code: a1, h: 8, s: 600 }] }, { date: D2, home: 0, sups: [{ code: a2, h: 8, s: 600 }] }] }); return withXs(b, J(calc(b))); };
+  const sw1 = swB('MZTJS', 'MZTLZL'), sw2 = swB('MZTLZL', 'MZTJS');
+  chk('r3-3 兩天互換支援店：實領相同、請款結果不同', [sw1.net === sw2.net, S.call('payXclaimSame_', '2026-11', sw1.ot_info, sw2.ot_info)], [true, false]);
+  // r9（Codex 第六次）：指定金額照填、沒被用到的請款時薪變了 → 結果相同、不擋；按時數計價時請款時薪變了 → 金額變了、擋
+  {
+    const ftE2 = (cap) => H.ftEmp({ store: 'MZTGF', base: 40000, skill_allow: 0, night_allow: 0, mgr_allow: 0, attend_cap: cap, ot_rate: 200 });
+    const xsOf = (cap, rows) => { const b = build({ ft: true, days: [{ date: D, home: 0, sups: [{ code: 'MZTJS', h: 8, s: 600 }] }, { date: D2, home: 8 }] }); b.e = ftE2(cap); b.att.support = rows; const r = J(calc(b)); return withXs(b, r).ot_info; };
+    const fixedRow = [Object.assign(row('MZTJS', '金山', 8, 2600), { auto: true })], hourRow = [Object.assign(row('MZTJS', '金山', 8), { auto: true })];
+    chk('r9-1 指定金額 2,600、主檔改了只影響請款時薪的欄位（全勤上限 6,000→6,100）→ 請款結果相同、不擋', S.call('payXclaimSame_', '2026-11', xsOf(6000, fixedRow), xsOf(6100, fixedRow)), true);
+    chk('r9-2 同例但按時數計價 → 請款金額真的變了、擋', S.call('payXclaimSame_', '2026-11', xsOf(6000, hourRow), xsOf(6100, hourRow)), false);
+    const allFixed = [Object.assign(row('MZTJS', '金山', 5, 1600), { auto: true }), row('MZTLZL', '六張犁', 3, 900)];
+    chk('r9-3 全店支援列都是指定金額，改只影響請款時薪的欄位 → 不擋', S.call('payXclaimSame_', '2026-11', xsOf(6000, allFixed), xsOf(6800, allFixed)), true);
+    // 合併列（一人超過 2 萬字）混合指定＋按時數：合併前後比對結果相同、快照合計相同
+    const mixed = [Object.assign(row('MZTJS', '金山', 3, 1600), { auto: true }), row('MZTJS', '金山', 5)];
+    const raw = xsOf(6000, mixed).xsup, merged = J(S.call('paySupRowsFit_', raw.concat(Array(300).fill(0).map(() => Object.assign({}, raw[1], { hours: 0, amount: 0, otH: 0, otAdd: 0 })))));
+    chk('r9 混合的合併列：比對結果同未合併、金額合計相同、fixedAmt＝指定的 1,600', [merged.length, S.call('payXclaimSame_', '2026-11', { xsup: raw }, { xsup: merged }), r2(merged.reduce((t, x) => t + x.amount, 0)) === r2(raw.reduce((t, x) => t + x.amount, 0)), merged[0].fixedAmt], [1, true, true, 1600]);
+    // 同店多筆按時數計價、加成換掛另一筆：逐筆取兩位加總差 0.01 也不擋
+    chk('r9 同店兩筆換順序（加成換掛、逐筆取位差一分）→ 不擋', S.call('payXclaimSame_', '2026-11', { xsup: [{ code: 'MZTJS', hours: 3, amount: 666.67, otH: 1, otAdd: 66.67 }, { code: 'MZTJS', hours: 5, amount: 1000, otH: 0, otAdd: 0 }] }, { xsup: [{ code: 'MZTJS', hours: 3, amount: 600, otH: 0, otAdd: 0 }, { code: 'MZTJS', hours: 5, amount: 1066.66, otH: 1, otAdd: 66.66 }] }), true);
+  }
   // r4-1：同店同時有「沒代碼」與「有代碼」的列 → 加成給有代碼那筆（快照門市彙總 sup_code 只收有代碼的列，損益才不少算）
   const supCodeOf = (c) => J(S.call('paySnapDetailSanitize_', c.detail)).sup_code || {};
   const codedSum = (c) => r2(c.sup.filter((x) => String(x.code || '').trim()).reduce((a, x) => a + x.amount, 0));
@@ -588,7 +608,7 @@ function randomCase() {
   let diffSig = 0;
   for (let i = 0; i < 10000; i++) {
     const o = randomCase(); const b1 = build(o), b2 = build(o);
-    const x1 = S.call('payXclaimSig_', '2026-11', J(calc(b1)).ot_info), x2 = S.call('payXclaimSig_', '2026-11', JSON.stringify(J(calc(b2)).ot_info));
+    const x1 = S.call('payXclaimSig_', '2026-11', withXs(b1, J(calc(b1))).ot_info), x2 = S.call('payXclaimSig_', '2026-11', JSON.stringify(withXs(b2, J(calc(b2))).ot_info));   // r9：帶草稿會存的 xsup
     if (x1 !== x2) diffSig++;
   }
   chk('r3-3 同一份資料連算兩次（含存成 JSON 字串再讀）1 萬組：請款摘要逐字相同', diffSig, 0);

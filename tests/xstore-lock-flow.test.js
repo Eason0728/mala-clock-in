@@ -76,13 +76,14 @@ for (let it = 0; it < N; it++) {
   const calc = (w) => w.F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', inputs: {} });
   const ca = calc(A), cb = calc(B);
   if (!ca.ok || !cb.ok) continue;
-  const op = pick(['none', 'deact', 'leave', 'clear', 'amount', 'auto', 'gaprate', 'shuffle']); C.ops[op] = (C.ops[op] || 0) + 1;   // r8：gaprate＝只改差額費率、shuffle＝支援列與對照表換順序（都不影響 11 月請款）
+  const op = pick(['none', 'deact', 'leave', 'clear', 'amount', 'auto', 'gaprate', 'shuffle', 'ratefield']); C.ops[op] = (C.ops[op] || 0) + 1;   // r9：ratefield＝只改影響請款時薪、不影響薪資的主檔欄位（全勤上限）   // r8：gaprate＝只改差額費率、shuffle＝支援列與對照表換順序（都不影響 11 月請款）
   const victim = 'E' + (1 + Math.floor(rnd() * sc.X.length)), lv = rnd() < 0.5 ? '2026-11-15' : '2026-10-31', amt = 500 + Math.floor(rnd() * 4000), autoH = q(6);
   [A, B].forEach((w) => {
     if (op === 'deact') w.DB.master.forEach((m) => { if (m.emp_id === victim) { m.active = 'false'; m.leave_date = ''; } });
     if (op === 'leave') w.DB.master.forEach((m) => { if (m.emp_id === victim) { m.leave_date = lv; if (lv < '2026-11-01') m.active = 'false'; } });
     if (op === 'clear') w.DB.input = [];
     if (op === 'amount') w.DB.input.forEach((r) => { const s = JSON.parse(r.support); s.forEach((x) => { x.amount = amt; }); r.support = JSON.stringify(s); });
+    if (op === 'ratefield') w.DB.master.forEach((m) => { m.attend_cap = (Number(m.attend_cap) || 0) + 500; });
     if (op === 'gaprate') w.DB.master.forEach((m) => { m.gap_rate = 120; });
     if (op === 'shuffle') { w.DB.input.forEach((r) => { r.support = JSON.stringify(JSON.parse(r.support).reverse()); }); w.DB.xmap = w.DB.xmap.slice().reverse(); }
     if (op === 'auto') { const d = w.sb.__AP.SSLHQ['2026-11-28'] = w.sb.__AP.SSLHQ['2026-11-28'] || {}; d['H' + victim.slice(1)] = AP(autoH); }
@@ -97,9 +98,10 @@ for (let it = 0; it < N; it++) {
     /* 本版多擋只允許一種：重算名單裡的人，草稿存的請款（xsup／xclaim／cross_ot）跟這次重算不同（改了支援列沒重算，r7 設計，既有句子）。
        確認真的是這種，然後照前端的反應「重新計算 → 再鎖」，要鎖得下去。其他原因的多擋＝違反。 */
     const dry = B.F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', dry_run: true, inputs: {} });
-    const sig = (oi) => B.F('payXclaimSig_')('2026-11', oi);
+    const same = (a2, b2) => B.F('payXclaimSame_')('2026-11', a2, b2);
     const byId = {}; B.DB.run.forEach((r) => { byId[r.emp_id] = r; });
-    const claimDiff = lb.error === 'stale_run' && !(lb.list || []).length && (dry.results || []).some((r) => byId[r.emp_id] && sig(byId[r.emp_id].ot_info) !== sig(r.ot_info));
+    // 至少一家店的時數、指定金額、加成或請款金額真的不同（payXclaimSame_ 照門市合計比）才算設計上的擋
+    const claimDiff = lb.error === 'stale_run' && !(lb.list || []).length && (dry.results || []).some((r) => byId[r.emp_id] && !same(byId[r.emp_id].ot_info, r.ot_info));
     if (claimDiff) { C.claimBlock++; C.claimBlockOps[op] = (C.claimBlockOps[op] || 0) + 1; calc(B); lbF = B.F('handlePayrollFinalize')(JSON.parse(JSON.stringify(body))); if (!lbF.ok) { V.stricter++; if (!ex.stricter) ex.stricter = { op, again: lbF.error }; } }
     else { V.stricter++; if (!ex.stricter) ex.stricter = { op, la: la.error, lb: [lb.error, String(lb.message).slice(0, 120)] }; }
   }
@@ -122,11 +124,12 @@ for (let it = 0; it < N; it++) {
 console.log('基準 ' + BASE + '；' + N + ' 組（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）；' + JSON.stringify(C));
 chk('(i) 正式版鎖得下去、本版鎖不下去（扣掉「草稿存的請款跟重算不同 → 要求重算、重算後鎖得下去」那種設計上的擋），違反', V.stricter, 0);
 chk('(i) 只換順序、只改差額費率的組：本版設計上的擋也是 0（金額與歸屬相同就不擋）', [C.claimBlockOps.shuffle || 0, C.claimBlockOps.gaprate || 0], [0, 0]);
+chk('(i) 只改請款時薪欄位的組：設計上的擋只出現在按時數計價（請款金額真的變了）；被擋的都驗過至少一家店結果不同（上面那條違反＝0）', (C.claimBlockOps.ratefield || 0) >= 0, true);
 chk('(ii) 兩邊都鎖下去：定案的薪資列（ot_info 去掉請款／加班單檢查鍵）逐列相同，不符', V.runDiff, 0);
 chk('(ii) 兩邊都鎖下去：定案的薪資明細（item）逐列相同，不符', V.itemDiff, 0);
 chk('(iii) 本版快照請款合計＝被定案草稿列存的 xsup 加總，不符', V.sumDiff, 0);
 chk('(iv) 快照裡每位同仁的請款逐筆＝他被定案那列草稿存的 xsup，不符', V.perEmp, 0);
-chk('涵蓋：兩邊都鎖下去的組數、有請款的、停用或上個月離職後照草稿定案的、八種操作都出現', [C.both * 5 >= N, C.withSup * 8 >= N, C.keptOut * 40 >= N, Object.keys(C.ops).length], [true, true, true, 8]);
+chk('涵蓋：兩邊都鎖下去的組數、有請款的、停用或上個月離職後照草稿定案的、九種操作都出現', [C.both * 5 >= N, C.withSup * 8 >= N, C.keptOut * 40 >= N, Object.keys(C.ops).length], [true, true, true, 9]);
 Object.keys(ex).forEach((k) => console.log('  例 ' + k + '：' + JSON.stringify(ex[k]).slice(0, 1200)));
 console.log('\n' + (f ? '❌' : '✅') + ' 鎖月流程對照：' + p + ' 過、' + f + ' 失敗');
 process.exit(f ? 1 : 0);

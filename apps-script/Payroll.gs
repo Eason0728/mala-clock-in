@@ -732,42 +732,43 @@ function payAsOfEmp_(e, asOf) {
   return out;
 }
 
-/* 請款摘要（r3 起；r8 Codex 第五次改成只比「實際參與請款計價與歸屬」的值）：鎖月比對草稿 vs 重算時，連「向誰請、請多少」一起比。
-   只在跨店請款生效月份（PAY_XCLAIM_FROM）以後比；更早的月份、沒有跨店的人摘要是空字串，鎖月行為跟正式版相同。
-   - 逐筆請款 xsup：門市代碼（沒有代碼才用店名）、時數、請款時薪、指定金額與否、差額時數（有差額時數才看差額費率）、加成時數與金額、金額；
-     不看工號、正職旗標、沒用到的差額費率（2026-11 起請款用請款時薪、差額時數 0）。
-   - 加成段 xclaim／cross_ot：門市代碼（沒有才用店名）＋各段時數，不看店名文字。
-   - 每一類先轉成字串再排序（穩定排序）：支援列、對照表只是換了順序不算不同。數值都是引擎已取兩位的值。
-   金額與歸屬完全相同就不擋；任何一筆金額、時數、歸屬門市不同才擋。 */
-function payXclaimNorm_(o) {
-  const r2 = function (v) { return payR2(payNum(v)); };
-  const key = function (c, nm) { const k = payXsupCode_(c); return k ? [k, ''] : ['', String(nm == null ? '' : nm).trim()]; };
-  const srt = function (arr) { return arr.map(function (x) { return JSON.stringify(x); }).sort(); };
-  const xc = (o.xclaim || []).map(function (c) { return key(c.code, c.name).concat(['h43', 'h53', 'r43', 'r53', 'r83', 'd8', 'hx'].map(function (k) { return r2(c[k]); })); });
-  const cx = (o.cross_ot || []).map(function (c) { return key(c.code, c.name).concat([r2(c.h43), r2(c.h53)]); });
-  /* 逐筆請款照「被支援門市」合計後再比：同店拆幾筆、列的先後（加成會掛在同店第一筆沒指定金額的列）都不影響請款，
-     合計的時數、指定金額、加成時數與金額、金額、差額時數有任何不同才算不同；請款時薪取那家店用到的（去重排序）、差額費率只在有差額時數時看。 */
-  const by = {}, order = [];
-  (o.xsup || []).forEach(function (x) {
-    const k = JSON.stringify(key(x.code, x.store));
-    if (!by[k]) { by[k] = { h: 0, fx: 0, oh: 0, oa: 0, amt: 0, gh: 0, rates: {}, grs: {} }; order.push(k); }
-    const b = by[k], gH = r2(x.gapH);
-    b.h += r2(x.hours); b.oh += r2(x.otH); b.oa += r2(x.otAdd); b.amt += r2(x.amount); b.gh += gH;
-    if (x.fixed) b.fx += r2(x.fixedAmt != null ? x.fixedAmt : x.amount);
-    b.rates[String(r2(x.rate))] = 1; if (gH > 0) b.grs[String(payNum(x.gapRate))] = 1;
-  });
-  const xs = order.map(function (k) {
-    const b = by[k];
-    return JSON.parse(k).concat([r2(b.h), r2(b.fx), r2(b.oh), r2(b.oa), r2(b.amt), r2(b.gh), Object.keys(b.rates).sort().join('/'), Object.keys(b.grs).sort().join('/')]);
-  });
-  return [String(o.xr || ''), srt(xc), srt(cx), srt(xs)];
-}
-function payXclaimSig_(ym, oi) {
-  if (!payXclaimOn_(ym)) return '';
+/* 請款比對（r3 起；r9 Codex 第六次定案：只比結果、不比費率）：鎖月「草稿 vs 重算」時，連「向誰請、請多少」一起比。
+   只看草稿列存的請款逐筆 ot_info.xsup（它已經是加成歸屬、指定金額、請款時薪都算完的結果），照被支援門市（正規化代碼；沒有代碼用店名）合計：
+   時數、指定金額合計與有沒有指定、加成時數、加成金額、最終請款金額。費率、xr／xclaim／cross_ot 都不另外比——
+   它們有影響請款時一定會反映在上面這幾個數字；沒影響（例如全是指定金額）就不該擋。
+   金額容差 0.05 元、時數 0.005 小時：同店多筆按時數計價、加成換掛到另一筆時，逐筆取兩位再加總可能差 0.01。
+   只在跨店請款生效月份（PAY_XCLAIM_FROM）以後比；更早的月份、沒有請款的人都是空的，鎖月行為跟正式版相同。
+   上線前的舊草稿沒有 xsup＝空的：重算有請款就會不同（要求重算一次，既有設計）。 */
+function payXclaimAgg_(oi) {
   let o = oi; if (typeof oi === 'string') { try { o = JSON.parse(oi || '{}'); } catch (e) { o = {}; } }
   o = o || {};
-  if (!o.xr && !(o.xclaim && o.xclaim.length) && !(o.cross_ot && o.cross_ot.length) && !(o.xsup && o.xsup.length)) return '';
-  return JSON.stringify(payXclaimNorm_(o));
+  const r2 = function (v) { return payR2(payNum(v)); }, out = {};
+  (o.xsup || []).forEach(function (x) {
+    const c = payXsupCode_(x.code), k = c ? 'C:' + c : 'N:' + String(x.store == null ? '' : x.store).trim();
+    const b = out[k] = out[k] || { h: 0, fx: 0, hasFx: false, oh: 0, oa: 0, amt: 0 };
+    const fx = x.fixedAmt != null ? r2(x.fixedAmt) : (x.fixed ? r2(x.amount) : 0);   // 合併列（一人超過 2 萬字）存 fixedAmt，混合的也照它
+    b.h += r2(x.hours); b.fx += fx; b.hasFx = b.hasFx || !!x.fixed || fx > 0; b.oh += r2(x.otH); b.oa += r2(x.otAdd); b.amt += r2(x.amount);
+  });
+  Object.keys(out).forEach(function (k) { const b = out[k]; ['h', 'fx', 'oh', 'oa', 'amt'].forEach(function (f) { b[f] = payR2(b[f]); }); });
+  return out;
+}
+/** 兩份 ot_info 的請款結果相同嗎（容差見上）。生效月份以前一律相同。 */
+function payXclaimSame_(ym, a, b) {
+  if (!payXclaimOn_(ym)) return true;
+  const A = payXclaimAgg_(a), B = payXclaimAgg_(b), keys = {};
+  Object.keys(A).concat(Object.keys(B)).forEach(function (k) { keys[k] = 1; });
+  const Z = { h: 0, fx: 0, hasFx: false, oh: 0, oa: 0, amt: 0 };
+  return Object.keys(keys).every(function (k) {
+    const x = A[k] || Z, y = B[k] || Z;
+    return Math.abs(x.h - y.h) <= 0.005 && Math.abs(x.oh - y.oh) <= 0.005 && x.hasFx === y.hasFx &&
+      Math.abs(x.fx - y.fx) <= 0.05 && Math.abs(x.oa - y.oa) <= 0.05 && Math.abs(x.amt - y.amt) <= 0.05;
+  });
+}
+/** 請款摘要字串（給測試與人看；鎖月比對用 payXclaimSame_）：照門市排好的合計，沒有請款＝''。 */
+function payXclaimSig_(ym, oi) {
+  if (!payXclaimOn_(ym)) return '';
+  const A = payXclaimAgg_(oi), ks = Object.keys(A).sort();
+  return ks.length ? JSON.stringify(ks.map(function (k) { const b = A[k]; return [k, b.h, b.fx, b.hasFx, b.oh, b.oa, b.amt]; })) : '';
 }
 /** 鎖定前用最新資料試算一次，和草稿比（2026-10 起，見 PAY_LOCK_RECHECK_FROM）。回 { list } 差異名單；算不出來回 { error }。
  *  草稿裡有、現在算不到的人不算差異（主檔已改離職的人，重算會讓整列消失）。 */
@@ -791,15 +792,15 @@ function payLockStale_(body, ym, st) {
     if (!old) { list.push({ name: r.name, is_new: true, new_net: r.net }); return; }
     const money = ['gross', 'deduction', 'net'].some(function (k) { return Math.abs(payNum(old[k]) - payNum(r[k])) >= 0.5; });
     if (money || gate(old.ot_info) !== gate(r.ot_info)) list.push({ name: r.name, old_net: payNum(old.net), new_net: payNum(r.net), money: money });
-    else if (payXclaimSig_(ym, old.ot_info) !== payXclaimSig_(ym, r.ot_info)) claim = true;
+    else if (!payXclaimSame_(ym, old.ot_info, r.ot_info)) claim = true;   // r9：只比請款結果（payXclaimSame_）
   });
   /* r7（Codex 第四次）：請款跟薪資草稿綁在同一份資料——算草稿時每人這次實際採計的請款逐筆存在草稿列 ot_info.xsup（handlePayrollCalc）。
      鎖月的請款快照＝「實際被定案的草稿列」各自存的 xsup 合起來（照草稿順序），不再另外組。
-     仍在重算名單的人：上面比對已把 xsup 放進請款摘要（payXclaimSig_），草稿存的跟這次重算不同就擋（既有句子）；
+     仍在重算名單的人：上面比對（payXclaimSame_，照門市合計的請款結果）草稿存的跟這次重算不同就擋（既有句子）；
      草稿有、重算沒有的人（主檔改停用／離職，正式版照草稿定案）：不比、直接用草稿存的那份。
      退路：上線前的舊草稿沒有 xsup、而且這個人不在重算名單 → 用他的草稿結果＋已存檔／這次帶來的支援列＋自動帶入補算（sup_legacy，finalize 記稽核）。
      在重算名單、舊草稿沒有 xsup 的人：重算有 xsup 時摘要不同已擋；重算也沒有＝沒有支援，不用補。 */
-  let supRows = null, supErr = '', supLegacy = [];
+  let supRows = null, supErr = '', supLegacy = [], supUnknown = [];
   if (payXclaimOn_(ym)) {
     try {
       const inCalc = {};
@@ -840,15 +841,17 @@ function payLockStale_(body, ym, st) {
           if (XS && !src.support_error) sup = payMergeSupport_(sup, XS.byEmp[id.trim()], mAll[id.trim()] || { emp_id: id }, ctx).support;
           const one = {}; one[r.emp_id] = sup;
           perEmp[id] = paySupRowsStore_(paySupClaimRows_(ym, [r], mSt, one, cfgL));
-          // r8（驗收員）：只在這個人真的有支援（補算出請款、現在有支援列／自動帶入，或草稿當時有支援時數）才記稽核
-          if (perEmp[id].length || sup.length || payNum(r.support_hours) > 0) supLegacy.push(id + (r.name ? '（' + r.name + '）' : ''));
+          // r8（驗收員）：只在這個人真的有支援（補算出請款、現在有支援列／自動帶入，或草稿當時有支援時數）才點名；
+          // r9：其他走退路的人（舊草稿只有指定金額、支援時數 0、支援列又清掉了這種）辨識不到 → 只記人數與工號
+          if (perEmp[id].length || sup.length || payNum(r.support_hours) > 0) supLegacy.push(id);
+          else supUnknown.push(id);
         });
       }
       supRows = [];
       runs.forEach(function (rw) { supRows = supRows.concat(perEmp[String(rw.emp_id)] || []); });
     } catch (e) { supRows = null; supErr = String((e && e.message) || e); }
   }
-  return { list: list, claim: claim, sup_rows: supRows, sup_err: supErr, sup_legacy: supLegacy };
+  return { list: list, claim: claim, sup_rows: supRows, sup_err: supErr, sup_legacy: supLegacy, sup_unknown: supUnknown };
 }
 
 /* ═══════════════════ 計算引擎（與 ~/mala-payroll 已驗證版本同一套公式）═══════════════════ */
@@ -4907,7 +4910,7 @@ function handlePayrollFinalize(body) {
        快照完全由後端從定案的草稿列產生，畫面那份不用了；草稿有、重算沒有的人照正式版放行。 */
     if (stale.claim)
       return { ok: false, error: 'stale_run', list: [], message: '試算後資料有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。' };
-    LOCK_SUP = { rows: stale.sup_rows, err: stale.sup_err || '', legacy: stale.sup_legacy || [] };
+    LOCK_SUP = { rows: stale.sup_rows, err: stale.sup_err || '', legacy: stale.sup_legacy || [], unknown: stale.sup_unknown || [] };
   }
   /* 補休帳是負的不能鎖定（Eason 2026-11-01：不自動扣，擋住鎖定）。解鎖不擋。 */
   if (lock && ym >= PAY_COMP_MONTHLY_FROM) {
@@ -5010,7 +5013,15 @@ function handlePayrollFinalize(body) {
         savedSnap = paySnapView_(pnlSnapshotUpsert_(ym, stF, snapIn));
         // r8：快照寫成功後才記（寫失敗只會有下面 catch 的 pnl_snapshot_fail 一筆，不會互相矛盾）
         if (LOCK_SUP && !LOCK_SUP.rows && LOCK_SUP.err) xaud('xclaim_snap_fail', '已採用畫面送的請款快照（後端組請款失敗：' + LOCK_SUP.err + '）');
-        if (LOCK_SUP && LOCK_SUP.rows && LOCK_SUP.legacy.length) xaud('xclaim_snap_legacy', '這幾位同仁照上線前的舊草稿定案，請款是用鎖月當下的支援列補算（不含休息日／例假／國定假日／選舉日的加成，支援列被改過或清掉也補不回來），可能與草稿當時不同，請重算或人工核對：' + LOCK_SUP.legacy.join('、'));
+        /* 舊草稿退路（r9）：工號比姓名短，原因欄 300 字一筆最多放 15 個工號、超過分多筆；第一筆寫總人數。 */
+        if (LOCK_SUP && LOCK_SUP.rows && LOCK_SUP.legacy.length) {
+          const L = LOCK_SUP.legacy;
+          for (let i0 = 0; i0 < L.length; i0 += 15) xaud('xclaim_snap_legacy', (i0 === 0 ? '共 ' + L.length + ' 位同仁照上線前的舊草稿定案，請款是用鎖月當下的支援列補算（不含休息日／例假／國定假日／選舉日的加成，支援列被改過或清掉也補不回來），請重算或人工核對。' : '（續）') + '工號：' + L.slice(i0, i0 + 15).join('、'));
+        }
+        if (LOCK_SUP && LOCK_SUP.rows && LOCK_SUP.unknown.length) {
+          const U = LOCK_SUP.unknown;
+          for (let i0 = 0; i0 < U.length; i0 += 15) xaud('xclaim_snap_legacy', (i0 === 0 ? '有 ' + U.length + ' 位舊草稿同仁無法判斷當時有無支援（照草稿定案、請款補算為 0），請核對。' : '（續）') + '工號：' + U.slice(i0, i0 + 15).join('、'));
+        }
       } catch (snapErr) {
         payAppend('audit', [{ ts: nowTaipeiIso(), ym: ym, action: 'pnl_snapshot_fail',
                               operator: String(body.operator || 'admin'),

@@ -402,7 +402,7 @@ console.log('\n══ e5) 計時跨店支援整條鏈（主算、損益估算；
     const fp1 = 'x';
     chk('  #210 r3 正常重算後立刻鎖（帶畫面請款指紋）→ 鎖得下去', [lockOf(w1, { xclaim_fp: fp1 }).ok, w1.DB.run[0].status], [true, 'final']);
     const w2 = mk({}); calcW(w2);
-    w2.DB.run.forEach((r) => { const o = JSON.parse(r.ot_info || '{}'); delete o.xr; delete o.xclaim; r.ot_info = JSON.stringify(o); });   // 上線前的舊草稿：只差 xr／xclaim
+    w2.DB.run.forEach((r) => { const o = JSON.parse(r.ot_info || '{}'); delete o.xr; delete o.xclaim; delete o.xsup; r.ot_info = JSON.stringify(o); });   // 上線前的舊草稿：沒有 xr／xclaim／xsup（r9 起只比請款結果 xsup）   // 上線前的舊草稿：只差 xr／xclaim
     const l2 = lockOf(w2);
     chk('  #210 r3 舊草稿只差請款欄 → stale_run、沒鎖、沿用既有句子', [l2.ok, l2.error, w2.DB.run[0].status, l2.message], [false, 'stale_run', 'draft', '試算後資料有改過，不能直接鎖定。請重新計算、確認新數字後再鎖定。']);
     const w3 = mk({}); calcW(w3);
@@ -504,7 +504,7 @@ console.log('\n══ e5) 計時跨店支援整條鏈（主算、損益估算；
       const wN = mk({}); wN.sb.__AP = { SSLHQ: {} }; wN.DB.input = inp(2600); wN.DB.run = JSON.parse(JSON.stringify(wM.DB.run)); wN.DB.item = JSON.parse(JSON.stringify(wM.DB.item));
       deact(wN); if (clearInput) wN.DB.input = [];
       const l = lockOf(wN, { cost_snapshot: snapIn() });
-      return [l.ok, 'xsup' in JSON.parse(wM.DB.run[0].ot_info || '{}'), snapOf(wN).sup_code, (wN.DB.audit || []).filter((x) => x.action === 'xclaim_snap_legacy').map((x) => /甲君/.test(x.reason) && /E1/.test(x.reason) && /不含休息日／例假／國定假日／選舉日的加成/.test(x.reason) && /請重算或人工核對/.test(x.reason))];
+      return [l.ok, 'xsup' in JSON.parse(wM.DB.run[0].ot_info || '{}'), snapOf(wN).sup_code, (wN.DB.audit || []).filter((x) => x.action === 'xclaim_snap_legacy').map((x) => /^共 1 位/.test(x.reason) && /工號：E1/.test(x.reason) && /不含休息日／例假／國定假日／選舉日的加成/.test(x.reason) && /請重算或人工核對/.test(x.reason))];
     };
     chk('  #210 r8-3 正式版算的舊草稿（沒有 xsup）＋停用後鎖：走退路補算 2,600、稽核點名 E1（甲君）、寫明請核對', !!mainSrc && oldDraft(false), [true, false, { SSLHQ: 2600 }, [true]]);
     chk('  #210 r8-3 同上但已清除手動工時：薪資照草稿定案、請款補不回來（0）、稽核點名請核對', !!mainSrc && oldDraft(true), [true, false, null, [true]]);
@@ -512,7 +512,7 @@ console.log('\n══ e5) 計時跨店支援整條鏈（主算、損益估算；
       const wM = mk({ gs: mainSrc }); wM.sb.__AP = { SSLHQ: {} }; calcW(wM);
       const wN = mk({}); wN.sb.__AP = { SSLHQ: {} }; wN.DB.run = JSON.parse(JSON.stringify(wM.DB.run)); wN.DB.item = JSON.parse(JSON.stringify(wM.DB.item)); deact(wN);
       const l = lockOf(wN, { cost_snapshot: snapIn() });
-      chk('  #210 r8-3 舊草稿、停用、沒有任何支援 → 照鎖、不記退路稽核', [!!mainSrc, l.ok, (wN.DB.audit || []).filter((x) => x.action === 'xclaim_snap_legacy').length], [true, true, 0]);
+      chk('  #210 r8-3／r9 舊草稿、停用、沒有任何支援 → 照鎖、不點名；只記一筆「無法判斷當時有無支援」人數', [!!mainSrc, l.ok, (wN.DB.audit || []).filter((x) => x.action === 'xclaim_snap_legacy').map((x) => /^有 1 位舊草稿同仁無法判斷當時有無支援/.test(x.reason) && /E1/.test(x.reason))], [true, true, [true]]);
     }
     // r8 擋項 2：只改不影響 11 月請款的欄位、只換支援列順序 → 不擋；真的改了時數 → 擋
     const ftP = { patch: (m) => { m[0].is_full_time = 'true'; m[0].base = 34000; m[0].wage = 0; m[0].gap_rate = 100; } };
@@ -523,6 +523,17 @@ console.log('\n══ e5) 計時跨店支援整條鏈（主算、損益估算；
     const rowsA = [{ code: 'SSLHQ', store: '支援店', hours: 3, rate: 200, amount: '', keep: true }, { code: 'SSLHQ', store: '支援店', hours: 5, rate: 200, amount: '', keep: true }];
     const wS = mk(ftP); wS.DB.input = inp2(rowsA); calcW(wS); wS.DB.input = inp2(rowsA.slice().reverse());
     chk('  #210 r8-2b 只交換兩筆支援列順序（加成改掛另一筆，合計相同）→ 鎖得下去', lockOf(wS, { cost_snapshot: snapIn() }).ok, true);
+    // r9（Codex 第六次）：指定金額照填、只改了影響請款時薪但不影響薪資的主檔欄位（績效上限 100→200，扣 3 天＝績效 0）→ 不擋；按時數計價 → 請款真的變了、擋
+    const capCase = (rows) => {
+      const w = mk({ patch: (m) => { m[0].is_full_time = 'true'; m[0].base = 34000; m[0].wage = 0; m[0].attend_cap = 100; } }); w.sb.__AP = { SSLHQ: {} };
+      w.DB.input = [Object.assign(inp2(rows)[0], { deduct_days: 3 })]; const c0 = calcW(w);
+      w.DB.master[0].attend_cap = 200;
+      const c1 = w.F('handlePayrollCalc')({ admin_key: 'x', ym: '2026-11', store: 'SSLGF', dry_run: true, inputs: {} });
+      const l = lockOf(w, { cost_snapshot: snapIn() });
+      return [c0.results[0].net === c1.results[0].net, l.ok, l.error || ''];
+    };
+    chk('  #210 r9-1 Codex 例子：指定 2,600、只改績效上限（薪資不變）→ 鎖得下去', capCase([{ code: 'SSLHQ', store: '支援店', hours: 8, rate: 200, amount: 2600, keep: true }]), [true, true, '']);
+    chk('  #210 r9-2 同例但按時數計價：請款金額真的變了 → 擋（既有句子）', capCase([{ code: 'SSLHQ', store: '支援店', hours: 8, rate: 200, amount: '', keep: true }]), [true, false, 'stale_run']);
     const wH = mk(ftP); wH.sb.__AP = { SSLHQ: {} }; wH.DB.input = inp2(rowsA); calcW(wH); wH.DB.input = inp2([rowsA[0], Object.assign({}, rowsA[1], { hours: 6 })]);
     const lH = lockOf(wH, { cost_snapshot: snapIn() });
     chk('  #210 r8-2c 改了某筆時數沒重算 → 仍被擋（既有句子）', [lH.ok, lH.error, /^試算後資料有改過/.test(lH.message)], [false, 'stale_run', true]);
