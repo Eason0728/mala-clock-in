@@ -21,7 +21,7 @@ function sandbox(over) {
   const sb = Object.assign({
     console, STORE: 'MZTJS', MASTER: [], EMBED: true, LOCAL_HOST: false, SCOPE: '*', scopeLimited: () => false,
     $: () => null, esc: (s) => String(s), toast: (m, bad) => calls.push(['toast', m, !!bad]),
-    renderEmp() {}, renderAtt() {}, vClear() {}, confirm: () => true, ym: () => '2026-11', writeFence() {},
+    renderEmp() {}, renderAtt() {}, vClear() {}, confirm: () => true, ym: () => '2026-11', writeFence() {}, loadingStop: () => false, get wpost() { return this.post; },
     post: async () => ({ ok: false })
   }, over || {});
   vm.createContext(sb);

@@ -15,7 +15,7 @@ function fn(name) {   // 抽出 function name(...) {...}（含 async）
   for (; j < html.length; j++) { if (html[j] === '{') d++; else if (html[j] === '}') { d--; if (!d) break; } }
   return html.slice(m.index, j + 1);
 }
-const names = ['scopeLimited', 'pickScopedStore', 'applyScopeUi', 'boot'];
+const names = ['scopeLimited', 'pickScopedStore', 'applyScopeUi', 'bootRun'];
 const src = names.map(fn);
 ok(src.every(Boolean), '找得到 scopeLimited／pickScopedStore／applyScopeUi／boot');
 const ownIds = (/const SCOPE_OWN_IDS=(\[[^\]]*\])/.exec(html) || [])[1] || '[]';
@@ -50,7 +50,7 @@ function load({ EMBED, SCOPE, master, perCall }) {
     `\nthis.set=(k,v)=>{ if(k==='SCOPE')SCOPE=v; if(k==='EMBED')EMBED=v; if(k==='STORE')STORE=v; };
      this.get=()=>({SCOPE,STORE});
      Object.defineProperty(this,'STORE',{get:()=>STORE});
-     this.api={scopeLimited,pickScopedStore,applyScopeUi,boot};`, ctx);
+     this.api={scopeLimited,pickScopedStore,applyScopeUi,boot:bootRun};`, ctx);
   return ctx;
 }
 
@@ -80,7 +80,7 @@ function load({ EMBED, SCOPE, master, perCall }) {
   ok(t.mainEl.innerHTML.includes('尚未指派負責門市，請洽系統管理者'), 'emptyMsg：空名單顯示說明');
 
   // noHolSync（字串＋實跑）
-  ok(/if\s*\(!scopeLimited\(\)\)\s*syncHol\(/.test(fn('boot')), 'noHolSync：boot 內有 if(!scopeLimited()) syncHol(');
+  ok(/if\s*\(!scopeLimited\(\)\)\s*syncHol\(/.test(fn('bootRun')), 'noHolSync：boot 內有 if(!scopeLimited()) syncHol(');
   t = load({ EMBED: true, SCOPE: '*', master: { ok: true, scope: ['CF'], stores: [{ code: 'CF' }], master: [], config: {} } });
   await t.api.boot();
   ok(t.syncHolN === 0 && !t.calls.some(c => c.action === 'payroll_holiday_sync'), 'noHolSync：有範圍限制時 boot 不呼叫 syncHol');
@@ -126,7 +126,7 @@ function load({ EMBED, SCOPE, master, perCall }) {
       const c = { $: () => ({ classList: { add() {}, remove() {} }, style: {} }), toast() {}, ym: () => '2026-10', doCalc: async () => {}, setTimeout() {}, supCrossBlock: () => false, XSUP_FROM: '2026-11', attSendable: () => true, attForeign: () => false, dataStop: () => false, ATT_FOREIGN_MSG: '',   // 表單是這個店月的（讀取失敗擋存檔另見 tests/ui/pay-html-followups-e2e.py）
         post: async (a, b) => { sent.push({ a, b }); return { ok: true, count: 0 }; } };
       vm.createContext(c);
-      vm.runInContext(`let EMBED=${embed}; let SCOPE=${JSON.stringify(scope)}; let ATT_DIRTY=true; let STATUS='draft'; let STORE='SSLGF'; function writeFence(){}
+      vm.runInContext(`let EMBED=${embed}; let SCOPE=${JSON.stringify(scope)}; let ATT_DIRTY=true; let STATUS='draft'; let STORE='SSLGF'; function writeFence(){} function loadingStop(){return false} function wpost(...a){return post(...a)}
         let MASTER=[{emp_id:'T002',name:'測試乙'},{emp_id:3,name:'數字編號'}];
         let ATT={T002:{hours:8},'3':{hours:1},PUNCH9:{hours:5},T001:{hours:2}};
         ${fn('scopeLimited')}\n${saveSrc}\nthis.go=saveAtt;`, c);
@@ -148,7 +148,7 @@ function load({ EMBED, SCOPE, master, perCall }) {
   {
     const bsSrc = fn('bootstrapFromRoster');
     const runBs = async (resp) => {
-      const c = { toasts: [], confirm: () => true, boot: async () => {}, post: async () => resp };
+      const c = { toasts: [], confirm: () => true, boot: async () => {}, loadingStop: () => false, post: async () => resp, get wpost() { return this.post; } };
       c.toast = (m) => c.toasts.push(m);
       vm.createContext(c); vm.runInContext(bsSrc + '\nthis.go=bootstrapFromRoster;', c);
       await c.go(); return c.toasts.join('|');

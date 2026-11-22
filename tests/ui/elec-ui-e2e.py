@@ -149,12 +149,13 @@ try:
             ok(bname + ' 舊後端 unknown_action → 「儲存失敗：unknown_action」', pg.inner_text('#msg') == '儲存失敗：unknown_action', pg.inner_text('#msg'))
             shot(pg, bname, 'ui-4-oldbackend.png')
             pg.unroute('**/*')
-            # Codex 第五次 B1：A 店月（11 月）存檔在途 → 切到 B（12 月）也存名單 → 切回 A：A 仍擋匯出與鎖定（B 的請求解不掉 A）
+            # 第四輪（讀寫互斥）取代原本的 Codex 第五次 B1：A 店月（11 月）存檔在途 → 切到 B（12 月）：B 的月資料讀取排隊、B 不能存；A 回來後 A 自己重算成功才放行
             def setym(v): pg.evaluate("$('ym').value='%s'; $('ym').dispatchEvent(new Event('change'))" % v); pg.wait_for_timeout(2500)
             time.sleep(3)
-            h5 = {}
+            h5, seen5 = {}, []
             def hold5(route):
                 body = json.loads(route.request.post_data or '{}')
+                seen5.append((body.get('action'), body.get('ym')))
                 if body.get('action') == 'payroll_hol_emp_set' and body.get('ym') == '2026-11' and 'a' not in h5: h5['a'] = route; return
                 route.continue_()
             pg.route('**/*', hold5)
@@ -162,20 +163,19 @@ try:
             for _ in range(50):
                 if 'a' in h5: break
                 pg.wait_for_timeout(100)
-            setym('2026-12'); pg.click('button[data-p="cfg"]'); pg.wait_for_timeout(400)
-            pg.fill('#elecDate', '2026-12-05'); pg.locator('#elecList .elec-ck').nth(0).check()
-            pg.click('#elecSave'); pg.wait_for_selector('#elecAsk', timeout=4000); pg.click('#elecAskYes')   # 7B：12/05 不在投票日清單 → 先按確認框（細節見 elec-date-confirm-e2e.py）
-            pg.wait_for_function("document.getElementById('msg').textContent.indexOf('2026-12-05')>=0", timeout=8000)
-            setym('2026-11'); pg.click('button[data-p="run"]'); pg.wait_for_timeout(400)
-            pg.evaluate('exportExcel()'); pg.wait_for_timeout(200); m5 = pg.inner_text('#msg')
-            n5, d5, c5 = pg.evaluate('RESULTS.length'), pg.is_disabled('#lockBtn'), pg.is_disabled('#calcBtn')
-            ok(bname + ' A（11 月）存檔在途、B（12 月）存完、切回 A：A 仍不顯示舊數字、匯出擋、鎖定與重新計算鈕停用', 'a' in h5 and n5 == 0 and '請先計算' in m5 and d5 and c5, (list(h5), n5, m5, d5, c5))
-            setym('2026-10')
-            ok(bname + ' A 存檔在途時切到 10 月（沒有名單的月份）：鎖定、重新計算鈕不受影響', not pg.is_disabled('#lockBtn') and not pg.is_disabled('#calcBtn'), (pg.is_disabled('#lockBtn'), pg.is_disabled('#calcBtn')))
-            setym('2026-11'); pg.click('button[data-p="run"]'); pg.wait_for_timeout(300)
+            k5 = len(seen5)
+            setym('2026-12')
+            ok(bname + ' A（11 月）存檔在途：切到 12 月的月資料讀取排隊、沒有發出（讀寫互斥），畫面是讀取中',
+               'a' in h5 and ('payroll_month', '2026-12') not in seen5[k5:] and pg.evaluate('!!LOAD_INFLIGHT'), (list(h5), seen5[k5:]))
+            pg.click('button[data-p="cfg"]'); pg.wait_for_timeout(300)
+            pg.evaluate("$('msg').textContent=''; saveElec(null); 0"); pg.wait_for_timeout(500)
+            ok(bname + ' 讀取中按「儲存選舉假名單」：不送 payroll_hol_emp_set（12 月）、提示「讀取中…」', ('payroll_hol_emp_set', '2026-12') not in seen5[k5:] and pg.inner_text('#msg') == '讀取中…', (seen5[k5:], pg.inner_text('#msg')))
             if 'a' in h5: h5['a'].continue_()
-            pg.wait_for_function("document.getElementById('msg').textContent.indexOf('已儲存選舉假名單（2026-11-28')>=0", timeout=8000); pg.wait_for_timeout(800)
-            ok(bname + ' A 的存檔回來、A 自己重算成功 → 才放行（結果回來、鎖定鈕恢復）', pg.evaluate('RESULTS.length') > 0 and not pg.is_disabled('#lockBtn'), pg.evaluate('RESULTS.length'))
+            pg.wait_for_function("document.getElementById('msg').textContent.indexOf('已儲存選舉假名單（2026-11-28')>=0", timeout=10000); pg.wait_for_timeout(3000)
+            ok(bname + ' A 的存檔回來後：12 月讀取在 A 的寫入結束後才發出、讀取結束', ('payroll_month', '2026-12') in seen5[k5:] and not pg.evaluate('!!LOAD_INFLIGHT'), (seen5[k5:], pg.evaluate('!!LOAD_INFLIGHT')))
+            setym('2026-11'); pg.click('button[data-p="run"]'); pg.wait_for_timeout(400)
+            n5, d5, c5 = pg.evaluate('RESULTS.length'), pg.is_disabled('#lockBtn'), pg.is_disabled('#calcBtn')
+            ok(bname + ' 切回 A（11 月）：A 的重算已完成、結果回來、鎖定與重新計算鈕可用', n5 > 0 and not d5 and not c5 and not pg.evaluate('monBlocked()'), (n5, d5, c5))
             pg.unroute('**/*')
             # Codex 第五次 B2：A 存檔回來時人在 B → A 背景重算在途時切回 A：A 先擋；背景重算完成後重讀 A 才放行
             time.sleep(3)
