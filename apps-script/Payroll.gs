@@ -3583,13 +3583,10 @@ function handlePayrollBootstrap(body) {
     message: '門市 ' + stBs + ' 尚未連結打卡系統，沒有名冊可帶入。請在「員工設定」手動新增同仁，或先到 參數設定 → 門市設定 填入打卡試算表 ID。' };
   const roster = payClockRead(stBs, 'roster');
   const prefix = (function () { const r = payStoreRow(stBs); return r ? String(r.emp_prefix || '') : ''; })();
-  /* 主檔追加放進寫鎖（2026-11-22 Codex 複審）：存主檔（鎖內整張覆寫）寫入失敗還原時，才不會把同時帶入的新同仁清掉；
-     「已經在主檔」也在鎖內重讀才判斷，兩台同時按不會重複帶入。名冊（打卡試算表）在鎖外先讀好，鎖只包讀主檔＋追加那一下。 */
-  let add = [];
-  if (!payWriteLocked_(['master'], function () {
+  const pick = function (masterRows) {   // 名冊裡在職、還不在本店主檔的人
     const existing = {};
-    payRead('master').forEach(function (m) { if (payStore(m.store) === stBs) existing[String(m.emp_id)] = true; });
-    add = roster
+    masterRows.forEach(function (m) { if (payStore(m.store) === stBs) existing[String(m.emp_id)] = true; });
+    return roster
       .filter(function (r) { return String(r.active).toLowerCase() === 'true' && !existing[prefix + String(r.emp_id)]; })
       .map(function (r) {
         return { emp_id: prefix + r.emp_id, name: r.name, is_full_time: 'false', wage: 0, base: 0, ot_rate: 0,
@@ -3597,7 +3594,15 @@ function handlePayrollBootstrap(body) {
                  labor_ins: 0, health_ins: 0, group_ins: 0, pension: 0, dormitory: 0,
                  hire_date: '', leave_date: '', active: 'true', updated_at: nowTaipeiIso(), store: stBs };
       });
-    payAppend('master', add);
+  };
+  /* 兩段（2026-11-22 Codex 第三輪）：先在鎖外判斷，沒有人要加就直接回 0 人（跟改版前一樣，不等鎖、不會回忙碌）；
+     有人要加才進寫鎖、鎖內重讀主檔再判斷一次（別台剛加完就回 0 人）再追加——存主檔（鎖內整張覆寫）失敗還原時才不會清掉剛帶入的人，
+     兩台同時按也不會重複帶入。 */
+  let add = pick(payRead('master'));
+  if (!add.length) return { ok: true, added: 0, names: [] };
+  if (!payWriteLocked_(['master'], function () {
+    add = pick(payRead('master'));
+    if (add.length) payAppend('master', add);
   })) return PAY_BUSY_;
   return { ok: true, added: add.length, names: add.map(function (a) { return a.name; }) };
 }

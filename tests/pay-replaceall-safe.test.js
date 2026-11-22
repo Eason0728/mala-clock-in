@@ -44,7 +44,8 @@ function world(src, opt) {
   const sb = {
     console: { log() {}, error() {}, warn() {} }, Logger: { log() {} },
     // opt.lock：幾個環境共用一把會互斥的寫鎖（模擬兩個執行搶同一把鎖；拿不到就回 false＝忙碌）
-    LockService: { getScriptLock: () => (opt.lock ? { tryLock() { if (opt.lock.held) return false; opt.lock.held = true; return true; }, releaseLock() { opt.lock.held = false; } }
+    // opt.lock.tries：拿鎖次數；opt.lock.onTry：下一次拿鎖前先跑一次（模擬另一個執行剛好在這時做完一件事）
+    LockService: { getScriptLock: () => (opt.lock ? { tryLock() { opt.lock.tries = (opt.lock.tries || 0) + 1; const f = opt.lock.onTry; if (f) { opt.lock.onTry = null; f(); } if (opt.lock.held) return false; opt.lock.held = true; return true; }, releaseLock() { opt.lock.held = false; } }
                                                   : { tryLock: () => true, releaseLock() {} }) },
     CacheService: { getScriptCache: () => ({ get: () => null, put() {}, remove() {} }) },
     PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty() {} }) },
@@ -690,11 +691,79 @@ function runMasterInterleave(src) {
   W.vm(`payHasClock = function () { return true; }; payClockRead = function () { return [{ emp_id: 'E0', name: '測試0', active: 'true' }, { emp_id: 'N9', name: '測試新人', active: 'true' }]; };`);
   const r1 = W.vm('handlePayrollBootstrap({ admin_key: "k", store: "SSLGF" })'), r2 = W.vm('handlePayrollBootstrap({ admin_key: "k", store: "SSLGF" })');
   sec('L 主檔交錯：還原不清掉同時帶入的同仁', r1.ok && r1.added === 1 && r1.names[0] === '測試新人' && r2.ok && r2.added === 0, '帶入照常：第一次加 1 人、再按加 0 人（回應格式不變）');
+  W.vm(`payClockRead = function () { return [{ emp_id: 'E0', name: '測試0', active: 'true' }, { emp_id: 'N9', name: '測試新人', active: 'true' }, { emp_id: 'N8', name: '測試新人二', active: 'true' }]; };`);   // 有人要加才會拿鎖
   lock.held = true;
   const r3 = W.vm('handlePayrollBootstrap({ admin_key: "k", store: "SSLGF" })');
   lock.held = false;
   const busy = W.vm('PAY_BUSY_');
-  sec('L 主檔交錯：還原不清掉同時帶入的同仁', JSON.stringify(r3) === JSON.stringify(busy), '別台正在存薪資資料時回忙碌：' + JSON.stringify(r3));
+  sec('L 主檔交錯：還原不清掉同時帶入的同仁', JSON.stringify(r3) === JSON.stringify(busy), '有人要加、別台正在存薪資資料時回忙碌：' + JSON.stringify(r3));
+}
+
+/* M 從打卡名冊帶入的兩段式（Codex 第三輪 BLOCKER）：沒有人要加 → 不拿鎖、回應跟改版前逐字相同、別人持鎖也立刻回 0 人；
+   有人要加 → 鎖內重讀再加；追加已套用但鎖尾送出失敗 → 錯誤往上丟、主檔是完整新內容、再按一次 0 人不重複；兩台同時帶入不重複。 */
+function bsWorld(src, lock, roster, ss) {
+  const W = world(src, { lock, ss });
+  if (!ss) {
+    W.replace('master', [{ emp_id: 'E0', name: '測試0', store: 'SSLGF', active: 'true' }, { emp_id: 'E1', name: '測試1', store: 'SSLGF', active: 'true' }]);
+    W.replace('store', [{ code: 'SSLGF', name: '測試店甲', active: 'true' }]);
+  }
+  W.sb.__ROSTER = roster;
+  W.vm(`payHasClock = function () { return true; }; payClockRead = function () { return JSON.parse(JSON.stringify(__ROSTER)); };`);
+  W.bs = () => W.vm('handlePayrollBootstrap({ admin_key: "k", store: "SSLGF" })');
+  W.ids = () => { W.vm('payInvalidate("master")'); return W.vm('payRead("master")').map((m) => String(m.emp_id)); };
+  return W;
+}
+function runBootstrapTwoPhase(src) {
+  const ALL_IN = [{ emp_id: 'E0', name: '測試0', active: 'true' }, { emp_id: 'E1', name: '測試1', active: 'true' }, { emp_id: 'X9', name: '離職者', active: 'false' }];
+  const ONE_NEW = ALL_IN.concat([{ emp_id: 'N9', name: '測試新人', active: 'true' }]);
+  // 零追加：不拿鎖、回應與改版前逐字相同；別人持鎖也立刻回 0 人
+  {
+    const lock = { held: false, tries: 0 };
+    const W = bsWorld(src, lock, ALL_IN);
+    lock.tries = 0;
+    const r = W.bs();
+    let base = null;
+    if (baseSrc) { const B = bsWorld(baseSrc, null, ALL_IN); base = B.bs(); }
+    sec('M 帶入兩段式', lock.tries === 0, '全員已在主檔：沒有拿鎖（拿鎖 ' + lock.tries + ' 次）');
+    if (base) sec('M 帶入兩段式', JSON.stringify(r) === JSON.stringify(base), '全員已在主檔：回應跟改版前逐字相同（' + JSON.stringify(r) + '）');
+    lock.held = true;
+    const r2 = W.bs();
+    lock.held = false;
+    sec('M 帶入兩段式', JSON.stringify(r2) === '{"ok":true,"added":0,"names":[]}', '別人持鎖時全員已在主檔：立刻回 0 人、不回忙碌（' + JSON.stringify(r2) + '）');
+    W.F.flushN = 0; W.F.flushThrowAt = 1;   // 零追加路徑沒有任何送出，就算送出會失敗也照樣成功
+    let e0 = null, r3 = null;
+    try { r3 = W.bs(); } catch (e) { e0 = e; }
+    W.F.flushThrowAt = 0;
+    sec('M 帶入兩段式', !e0 && r3 && r3.ok && r3.added === 0, '全員已在主檔、送出會失敗：照樣回 0 人（Codex 重現的情況）');
+  }
+  // 有人要加：追加已套用、鎖尾送出失敗 → 錯誤往上丟、主檔完整新內容、再按一次 0 人不重複
+  {
+    const lock = { held: false };
+    const W = bsWorld(src, lock, ONE_NEW);
+    W.F.flushN = 0; W.F.flushThrowAt = 1;   // 帶入鎖內只有追加（不另外送出），第 1 次送出＝鎖尾那次
+    let err = null;
+    try { W.bs(); } catch (e) { err = e; }
+    W.F.flushThrowAt = 0;
+    const ids1 = W.ids();
+    const r2 = W.bs();
+    const ids2 = W.ids();
+    sec('M 帶入兩段式', !!err && !lock.held, '有人要加、鎖尾送出失敗：錯誤往上丟、鎖有放掉');
+    sec('M 帶入兩段式', ids1.join(',') === 'E0,E1,N9', '有人要加、鎖尾送出失敗：主檔是完整新內容（' + ids1.join(',') + '）');
+    sec('M 帶入兩段式', r2.ok && r2.added === 0 && ids2.filter((x) => x === 'N9').length === 1, '再按一次：0 人、不重複');
+  }
+  // 兩台同時帶入：B 在鎖外判斷完（看到有人要加）、拿鎖之前，A 整個做完 → B 鎖內重讀後回 0 人，不重複
+  {
+    const lock = { held: false };
+    const A = bsWorld(src, lock, ONE_NEW);
+    const B = bsWorld(src, lock, ONE_NEW, A.ss);
+    B.vm('CONFIG.ADMIN_KEY = "k";');
+    let rA = null;
+    lock.onTry = () => { rA = A.bs(); };   // B 第一次拿鎖前，A 先完整帶入一次
+    const rB = B.bs();
+    const ids = A.ids();
+    sec('M 帶入兩段式', rA && rA.added === 1 && rB.ok && rB.added === 0 && ids.filter((x) => x === 'N9').length === 1,
+        `兩台同時帶入：A 加 ${rA && rA.added} 人、B 鎖內重讀後加 ${rB.added} 人、主檔 N9 只有 1 筆`);
+  }
 }
 
 /* F10 資料已完整套用、但 paySafePut_ 自己的送出（flush）丟錯 → 走還原 → 整張（含表頭列）逐格＝寫入前 */
@@ -770,6 +839,7 @@ runAfterCommit(CUR);
 runInterleave(CUR);
 runFormula(CUR);
 runMasterInterleave(CUR);
+runBootstrapTwoPhase(CUR);
 runOwnFlushFail(CUR);
 runManyLocked(CUR);
 if (!process.env.PAYRA_SRC || process.env.PAYRA_N1) runTwoTableWindow(CUR);
