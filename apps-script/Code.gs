@@ -1720,6 +1720,7 @@ function handleRecentHires(body) {
  *   attempts＝該日該員工 status!=='ok' 的事件筆數（A4，rejected 開頭或 pending 都算，主管頁揭露透明度）。
  *   排序：有打卡的在前（依當日第一筆打卡時間），沒打卡的在後（依名冊順序）。
  *   名冊外（或已離職）但當天有事件的 emp_id 補在最後，防禦用。
+ *   名冊外（或已離職）、當天沒打卡但有核定紀錄（approved 分頁）的 emp_id 再補在最後（2026-11-22）。
  */
 /** 7A 自動加入的人（LineHub.gs → 管理系統同步員 svc_add）在名冊的 created_by（與同步員的 SUPPORT_CREATED_BY 同字串） */
 const FIRST_SUPPORT_CREATED_BY = 'LINE 自動（首次支援）';
@@ -1814,7 +1815,20 @@ function handleMgrDay(body) {
     if (!seen[emp]) {
       const roster = findRosterByEmpId(rosterRows, emp);
       listed.push({ emp_id: emp, name: roster ? String(roster.name) : emp, rosterIdx: listed.length });
+      seen[emp] = true;
     }
+  });
+  // 名冊停用（離職）或名冊已沒有這個人、當天沒打卡，但那天在 approved 分頁有核定列：也補在最後，主管回頭看那天才看得到已核定的結果
+  // （2026-11-22 Eason：同仁離職後，離職日以前核定過的日子不能從清單消失；例：整天請假核定 0 小時、出差核定 8 小時）。
+  // 「有效核定列」＝approvedMap[date] 讀得到的列（同一人同一天取最新一筆，與下面 out.approved 同一份）；作廢申請／打回核定時那幾列已搬去
+  // approved_revoked 分頁（Requests.gs reqRevokeFinal_），不在 approved 分頁，所以不會因為已作廢的核定被補進來。核定是否有效不在這裡重新判斷。
+  // 姓名：名冊有這個人（含停用列）用名冊的；名冊完全沒有才用核定列上的 name。
+  Object.keys(approvedMap[date] || {}).sort().forEach(function (emp) {
+    if (!emp || seen[emp]) return;
+    const roster = findRosterByEmpId(rosterRows, emp);
+    const rec = approvedMap[date][emp];
+    listed.push({ emp_id: emp, name: roster ? String(roster.name) : (String(rec.name || '').trim() || emp), rosterIdx: listed.length });
+    seen[emp] = true;
   });
 
   // 排序：有打卡的在前（依第一筆打卡時間），沒打卡的在後（依名冊順序）
