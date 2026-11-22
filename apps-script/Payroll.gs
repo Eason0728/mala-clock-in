@@ -1572,7 +1572,7 @@ function payOtCrossDays_(col, xEntry, legacy) {
   });
   return out;
 }
-/** att.ot_own_h＝本店逐日核定；att.ot_forms＝{ot:{日期:已核准加班單時數}, trip:{日期:true}}；
+/** att.ot_own_h＝本店逐日核定；att.ot_forms＝{ot:{日期:已核准加班單時數}, trip:{日期:true}, trip_h:{日期:已核准出差單時數}}；
  *  att.ot_cross＝payOtCrossNeed_ 的結果、att.ot_forms_x＝{門市代碼: 該店加班單}（讀不到的店不檢查）。沒帶（舊呼叫端）＝不檢查。
  *  opt.ft（2026-11-22 Eason D5，payCalcOne 傳入；沒帶＝照舊）：跨店那天照打卡端現行要求——
  *    只有「正職、原單位班表那格是上班日 W」才照跨店拆（同 Requests.gs reqFt8_：sched_ft＝正職且那天 W）；
@@ -1635,10 +1635,13 @@ function payOtFormCheck_(att, opt) {
     if (need > 0 && have + PAY_OT_FORM_TOL_H < need) out.missing.push({ date: d, need: need, have: have });
   });
   const dl = att.daily || {};
+  /* 平日出差有加班單（只提醒）：2026-11-23 主管定只在「整天出差」才提醒——出差＋本店上班合計超過 8 小時照現行算加班。
+     整天出差＝當天已核准出差單時數合計＝本店核定時數（核定 0／還沒核定／沒有 trip_h＝不算整天出差）。 */
   Object.keys(f.trip).sort().forEach(function (d) {
     if (d < PAY_OT_FORM_FROM || !(payNum(f.ot[d]) > 0)) return;
     const kind = payOtKindOf((dl.sched || {})[d] || null, !!(dl.hol || {})[d]);
-    if (kind !== 'H' && kind !== 'R' && kind !== 'HOL') out.trip_ot.push(d);
+    const ownH = payR2(payNum(own[d])), tripH = payR2(payNum((f.trip_h || {})[d]));
+    if (kind !== 'H' && kind !== 'R' && kind !== 'HOL' && ownH > 0 && tripH === ownH) out.trip_ot.push(d);
   });
   if (base) {
     const old = {}, newDates = {}, kept = {};
@@ -4342,8 +4345,9 @@ function payOtFormsMonth_(st, ym) {
     if ((kind !== 'ot' && kind !== 'trip') || String(d).slice(0, 7) !== ym) return;
     const nm = String(r.name || '').trim(), id = String(r.emp_id || '').trim();
     [nm].concat(id ? ['id:' + id] : []).forEach(function (k) {
-      const x = out[k] = out[k] || { ot: {}, trip: {} };
-      if (kind === 'ot') x.ot[d] = payR2(payNum(x.ot[d]) + payNum(r.hours)); else x.trip[d] = true;
+      const x = out[k] = out[k] || { ot: {}, trip: {}, trip_h: {} };
+      if (kind === 'ot') x.ot[d] = payR2(payNum(x.ot[d]) + payNum(r.hours));
+      else { x.trip[d] = true; x.trip_h[d] = payR2(payNum(x.trip_h[d]) + payNum(r.hours)); }   // trip_h：出差單時數逐日合計（整天出差判斷用）
     });
   });
   return out;
