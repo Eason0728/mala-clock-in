@@ -143,6 +143,17 @@ def _hol_emp_for(data, store):
             for r in _pay(data, 'hol_emp') if str(r.get('store') or 'SSLGF') == st]
 
 
+def _elec_vote_days(ym):
+    """投票日清單（7B，2026-11-22）：直接讀 apps-script/Payroll.gs 的 PAY_ELEC_VOTE_DAYS（假後端不另寫一份）。讀不到就報錯（不默默當空）。"""
+    import re
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'apps-script', 'Payroll.gs'), encoding='utf-8').read()
+    m = re.search(r"^var PAY_ELEC_VOTE_DAYS = \[([^\]]*)\];", src, re.M)
+    if not m:
+        raise RuntimeError('Payroll.gs 找不到 PAY_ELEC_VOTE_DAYS')
+    days = re.findall(r"'(\d{4}-\d{2}-\d{2})'", m.group(1))
+    return [d for d in days if d[:8] == str(ym) + '-']
+
+
 def h_hol_emp_set(data, body):
     """照抄正式 handlePayrollHolEmpSet 的合約（簡化）：整份取代本店該月；已鎖定月份擋。不算薪資（mock 的計算沒有選舉假）。"""
     ym, st = str(body.get('ym', '')), str(body.get('store') or 'SSLGF')
@@ -154,9 +165,18 @@ def h_hol_emp_set(data, body):
     date = str(body.get('date') or '')
     if ids and date[:7] != ym:
         return {'ok': False, 'error': 'bad_date', 'message': '選舉日期要填 ' + ym + ' 裡的日期'}
+    # 7B：清單外日期要 confirm_off_list 是布林 true（同正式版；說明文字同 payElecOffListMsg_）
+    days = _elec_vote_days(ym)
+    off = bool(ids) and date not in days   # 上面已確認 date 在 ym 裡
+    if off and body.get('confirm_off_list') is not True:
+        return {'ok': False, 'error': 'elec_date_unconfirmed', 'date': date, 'vote_days': days,
+                'message': date + ' 不在投票日清單' + ('（本月投票日是 ' + '、'.join(days) + '）' if days else '') + '。選錯日期會讓名單上的人選舉日加發算錯。'}
     keep = [r for r in _pay(data, 'hol_emp') if not (str(r.get('ym')) == ym and str(r.get('store') or 'SSLGF') == st)]
     data['payroll']['hol_emp'] = keep + [{'ym': ym, 'date': date, 'store': st, 'emp_id': str(i), 'name': '', 'note': ''} for i in ids]
-    return {'ok': True, 'count': len(ids), 'ym': ym, 'date': date if ids else '', 'store': st}
+    out = {'ok': True, 'count': len(ids), 'ym': ym, 'date': date if ids else '', 'store': st}
+    if off:
+        out['off_list'] = True
+    return out
 
 
 def h_master_set(data, body):
@@ -259,6 +279,8 @@ def h_month(data, body):
     he = _hol_emp_for(data, body.get('store', ''))
     if he:
         out['hol_emp'] = he
+    if ym >= '2026-11':   # 同正式版 payElecOn_：名單能用的月份才帶本月投票日
+        out['elec_vote_days'] = _elec_vote_days(ym)
     return out
 
 

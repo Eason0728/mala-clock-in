@@ -3644,7 +3644,23 @@ function handlePayrollMasterSet(body) {
   return { ok: true, count: mine.length, store: stMs };
 }
 
-/** {action:'payroll_hol_emp_set', admin_key, store, ym, date, emp_ids:[...], note?, operator?}
+/* ── 選舉假名單的投票日清單（2026-11-22 Eason 選項 7B）──
+ * 清單內的日期直接存；清單外的日期要前端帶 confirm_off_list:true（只認布林 true；字串 "true"、1、"yes"、缺少一律當沒確認＝擋），
+ * 存成功時操作紀錄那一列的說明多記「（不在投票日清單）」。只管存名單，不影響任何金額算法、誰能勾。
+ * 之後有補選、公投：在這裡加日期（YYYY-MM-DD）即可，邏輯不用改。前端顯示的投票日一律由 payroll_month 的 elec_vote_days 帶出（不另寫一份）。 */
+var PAY_ELEC_VOTE_DAYS = ['2026-11-28'];
+/** 某月的投票日（照清單順序；沒有回空陣列）。 */
+function payElecVoteDaysOf_(ym) {
+  const p = String(ym || '') + '-';
+  return PAY_ELEC_VOTE_DAYS.filter(function (d) { return String(d).slice(0, 8) === p; });
+}
+/** 清單外日期沒確認時的說明（舊版畫面也看得懂）：沿用確認框前兩句。
+ *  TODO（主管未定，2026-11-22）：該月清單沒有日期時「（本月投票日是 …）」怎麼寫還沒定案，暫時省略括號那段。 */
+function payElecOffListMsg_(date, days) {
+  return date + ' 不在投票日清單' + (days.length ? '（本月投票日是 ' + days.join('、') + '）' : '') + '。選錯日期會讓名單上的人選舉日加發算錯。';
+}
+
+/** {action:'payroll_hol_emp_set', admin_key, store, ym, date, emp_ids:[...], note?, operator?, confirm_off_list?}
  *  存某店某月的選舉假名單（整份取代該店該月的列；emp_ids 空陣列＝清除）。2026-11-22 Eason 定案（一次選舉一份）。
  *  權限比照薪資主檔：管理金鑰＋門市範圍（payScopeGuard_ 檢查每個 emp_id 都在負責門市主檔）；已鎖定月份不能改（payMonthLocked_）。
  *  每個編號都要在本店主檔；日期要是該月的真實日期。只記人數到操作紀錄，不記姓名。 */
@@ -3671,6 +3687,11 @@ function handlePayrollHolEmpSet(body) {
   const notIn = ids.filter(function (id) { return !Object.prototype.hasOwnProperty.call(nameOf, id); });
   if (notIn.length) return { ok: false, error: 'not_in_master', emp_ids: notIn, message: '下面這些編號不在本店薪資主檔，這次沒有儲存：' + notIn.join('、') };
   if (payMonthLocked_(payRead('run'), ym, st)) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '選舉假名單') };
+  // 投票日清單（7B）：既有檢查都過了才看。清除名單（沒勾人）不看日期。只認布林 true，其他值一律當沒確認。
+  const voteDays = payElecVoteDaysOf_(ym);
+  const offList = ids.length > 0 && PAY_ELEC_VOTE_DAYS.indexOf(date) < 0;
+  if (offList && body.confirm_off_list !== true)
+    return { ok: false, error: 'elec_date_unconfirmed', date: date, vote_days: voteDays, message: payElecOffListMsg_(date, voteDays) };
   const now = nowTaipeiIso(), note = String(body.note == null ? '' : body.note).slice(0, 100);
   const rows = ids.map(function (id) { return { ym: ym, date: date, store: st, emp_id: id, name: nameOf[id], note: note, updated_at: now }; });
   let lockedNow = false, snapBefore = null, snapAfter = null;
@@ -3685,8 +3706,9 @@ function handlePayrollHolEmpSet(body) {
   })) return PAY_BUSY_;
   if (lockedNow) return { ok: false, error: 'locked', message: payLockedMsg_(ym, '選舉假名單') };
   payAppend('audit', [{ ts: now, ym: ym, action: 'hol_emp_set', operator: String(body.operator || 'admin'),
-                        reason: st + ' 選舉假名單 ' + (date || '（清除）') + ' 共 ' + rows.length + ' 人', store: st }]);
+                        reason: st + ' 選舉假名單 ' + (date || '（清除）') + (offList ? '（不在投票日清單）' : '') + ' 共 ' + rows.length + ' 人', store: st }]);
   const res = { ok: true, count: rows.length, ym: ym, date: ids.length ? date : '', store: st };
+  if (offList) res.off_list = true;   // 只有清單外日期才帶（清單內回應形狀不變）
   // 損益月中估算有 600 秒快取（同年月／門市／截止日）：名單改了就清掉這一格（Codex S4）
   try { var pk = 'pnlestimate|' + ym + '|' + st + '|' + pnlAsOfDate_(ym, todayTaipeiStr()); CacheService.getScriptCache().remove(pk); if (payXclaimOn_(ym)) CacheService.getScriptCache().remove(pk + '|' + PAY_XCLAIM_VER); } catch (e) { /* 清不掉就等它過期 */ }
   /* 選舉假那天的加班不能抵補休（Eason 2026-11-22 00:40）：勾選的人那天的加班如果已經拿去抵補休，補休帳會變負、本月鎖不了。
@@ -4942,6 +4964,7 @@ function handlePayrollMonth(body) {
   // 選舉假名單：只帶本店本月、有才加屬性（Codex B5：沒有名單時連值為 undefined 的屬性都不加）
   const heM = payHolEmpFor_(stM, ym);
   if (heM) resM.hol_emp = heM;
+  if (payElecOn_(ym)) resM.elec_vote_days = payElecVoteDaysOf_(ym);   // 本月投票日（可能是空陣列）；名單能用的月份才帶，前端說明行與確認框只讀這一份
   if (elecStale) resM.elec_stale = true;   // 草稿不是用現在的名單算的（只有這種情況才帶）
   if (elecRecalc && !elecStale) resM.elec_recalc = true;   // 這次開頁因名單改過重算了草稿：前端丟掉先前預抓的趨勢（Codex 第四次 B3）
   if (heM && payElecOn_(ym)) { const od = payElecOtherDates_(payHolEmpRows_(), ym, stM); if (od.length) resM.hol_emp_other_dates = od; }   // 直接編表多出的日期（畫面提醒，Codex 複審 S3）

@@ -164,7 +164,8 @@ try:
                 pg.wait_for_timeout(100)
             setym('2026-12'); pg.click('button[data-p="cfg"]'); pg.wait_for_timeout(400)
             pg.fill('#elecDate', '2026-12-05'); pg.locator('#elecList .elec-ck').nth(0).check()
-            pg.click('#elecSave'); pg.wait_for_function("document.getElementById('msg').textContent.indexOf('2026-12-05')>=0", timeout=8000)
+            pg.click('#elecSave'); pg.wait_for_selector('#elecAsk', timeout=4000); pg.click('#elecAskYes')   # 7B：12/05 不在投票日清單 → 先按確認框（細節見 elec-date-confirm-e2e.py）
+            pg.wait_for_function("document.getElementById('msg').textContent.indexOf('2026-12-05')>=0", timeout=8000)
             setym('2026-11'); pg.click('button[data-p="run"]'); pg.wait_for_timeout(400)
             pg.evaluate('exportExcel()'); pg.wait_for_timeout(200); m5 = pg.inner_text('#msg')
             n5, d5, c5 = pg.evaluate('RESULTS.length'), pg.is_disabled('#lockBtn'), pg.is_disabled('#calcBtn')
