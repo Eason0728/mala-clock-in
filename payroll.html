@@ -944,7 +944,7 @@ async function saveAtt(){
   if(ym()>=XSUP_FROM){ const t={}; Object.keys(sendAtt||{}).forEach(k=>{ if(attSendable(sendAtt[k])) t[k]=sendAtt[k]; }); sendAtt=t; }
   const r=await post('payroll_input_set',{ym:ym(),inputs:sendAtt});
   if(!r.ok){b.disabled=false;b.textContent='儲存工時';toast('儲存失敗：'+(r.message||r.error||''),true);return}
-  await doCalc();   // 存完用新工時重算帶出數字
+  await doCalc(undefined,true);   // 存完用新工時重算帶出數字（true＝工時已存：這個月讀取失敗時重算後可以重新載入）
   ATT_DIRTY=false;   // 存好了，解除未儲存提醒
   b.classList.add('done'); b.textContent='✓ 存檔完成';
   toast(ym()+' 工時已儲存（'+r.count+' 人）');
@@ -1112,7 +1112,7 @@ async function loadMonth(pre,preSeq,preGen){   // pre＝開頁時先發出去的
     return true;
   } finally { if(LOAD_INFLIGHT&&LOAD_INFLIGHT.seq===seq) LOAD_INFLIGHT=null; setBusy(false); }
 }
-async function doCalc(pendSeq){   // 回 true＝重算成功並已套到畫面（選舉假存檔後要知道，Codex 複審 K3）；pendSeq＝選舉假存檔觸發的重算（序號相符才套用並解除該店月的待確認）
+async function doCalc(pendSeq,inputsSaved){   // 回 true＝重算成功並已套到畫面（選舉假存檔後要知道，Codex 複審 K3）；pendSeq＝選舉假存檔觸發的重算（序號相符才套用並解除該店月的待確認）；inputsSaved＝saveAtt 剛存好工時才叫的（出勤表單＝試算表）
   if(supCrossBlock('重新計算')) return false;
   setBusy(true);
   try{
@@ -1137,8 +1137,10 @@ async function doCalc(pendSeq){   // 回 true＝重算成功並已套到畫面�
     LEAVE_MM=r.leave_mismatch||[];
     vClear();   // 重算後儀表板／集團總覽的數字會變
     renderRun();renderSlipSel();toast('已重新計算');
-    /* 這個月先前讀取失敗（旗標還在）、也沒有月資料在路上：重算成功後重新載入這個月，載入成功才解開（規則同切月份重新載入；2026-11-22 後續 PR） */
-    if(STORE+'|'+ym()===reqKey&&monUnsure()&&!(LOAD_INFLIGHT&&LOAD_INFLIGHT.key===reqKey)) await loadMonth();
+    /* 這個月先前讀取失敗（旗標還在）、也沒有月資料在路上：重算成功後重新載入這個月，載入成功才解開（規則同切月份重新載入；2026-11-22 後續 PR）。
+       出勤表單有尚未儲存的編輯（且不是剛存好）就不重新載入（Codex 複審 2026-11-22 BLOCKER）：重新載入會把表單換回試算表的值、清掉「儲存工時 ●」，
+       草稿卻是用未存的編輯算的；所以留著編輯與未存標記，匯出、列印、鎖定照擋，等按「儲存工時」（存好→重算→這裡重新載入）成功才解開 */
+    if(STORE+'|'+ym()===reqKey&&monUnsure()&&!(LOAD_INFLIGHT&&LOAD_INFLIGHT.key===reqKey)&&(!ATT_DIRTY||inputsSaved)) await loadMonth();
     return true;
   } finally { setBusy(false); }
 }
@@ -1764,7 +1766,7 @@ async function toggleLock(){
       const here=()=>STORE+'|'+ym()===lockKey;
       if(st&&st.ok&&st.ym===lockYm){
         if(st.status==='final'){ const ok=here()?await loadMonth():true; toast(ok?'已鎖定（剛才的回應在路上斷了，重新讀取後確認這個月已經鎖定）':'已鎖定，但重新讀取這個月失敗：請重新整理頁面、確認金額後再匯出',!ok); }
-        else if(st.status==='mixed') toast('這個月有一部分已鎖定、一部分還是草稿，請重新整理頁面看狀態；重新整理後還是這樣請找資訊部',true);   // 字句草稿，Eason 尚未確認
+        else if(st.status==='mixed'){ MON_UNSURE[lockKey]=1; toast('這個月有一部分已鎖定、一部分還是草稿，請重新整理頁面看狀態；重新整理後還是這樣請找資訊部',true); }   // 字句草稿，Eason 尚未確認。一部分已鎖定＝畫面上的草稿不確定跟後端一致：同「狀態查不到」設讀取失敗旗標（匯出、列印、鎖定擋，重新載入成功才解開；Codex 複審殘餘）
         else if(st.status==='none') toast('這個月還沒有計算結果，沒有鎖定成功；請重新整理頁面看狀態',true);   // 字句草稿，Eason 尚未確認
         else toast('連線中斷：重新讀取後這個月仍是草稿，沒有鎖定成功，請再按一次「鎖定本月」',true);
       /* 只有「後端不認得這個動作」（舊版 Apps Script 回 unknown_action）或「管理系統代轉還沒放行」（dzy#157 未上線：代轉回 403，
