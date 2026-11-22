@@ -719,10 +719,10 @@
   /* 按鍵亮了之後：另一邊的答案回來時補公告、比對、送開頁秒數。這裡出任何錯都不影響畫面。
      stGen＝畫面世代號：同仁一按打卡、或重新讀狀態就 +1。晚回來的那份只在「世代沒變」（畫面還停在開頁那一刻）時才准動畫面，
      否則只記比對——不然會把剛顯示的「打卡成功」、10 分鐘鎖蓋回開頁時的樣子（2026-11-16 Fable 審查 高 1）。 */
-  var stGen = 0, omPending = null;
+  var stGen = 0, omPending = null, saSeq = 0;   // saSeq：這一頁第幾次畫出開頁狀態（第 1 次＝開頁那一次；打卡被擋、重新定位後的重讀是第 2 次起）
   window.addEventListener('pagehide', function () { if (omPending) omPending(); });   // 打完卡畫面自動關掉時，還沒送的開頁秒數趕快送（只掛一次）
   /* 比對紀錄（2026-11-23 驗收：11/17–11/22 七店 34 筆 diff 全部是同仁已按打卡後 Google 才回來，量法記錯）：
-     只記「這一場開頁還沒動過」（stGen 沒變）時回來的那份；按過打卡、重讀過才回來的不記 same／diff，status 標 cmp_late。
+     只記開頁那一次、而且「這一場開頁還沒動過」（stGen 沒變）時回來的那份；按過打卡、重讀過才回來的，以及重讀那幾次的比對，都不記 same／diff，status 標 cmp_late。
      不一樣時 status 帶是誰落後與兩邊最後一張卡的類型（光復 open_timing 的 status 欄只收 a-z 與底線、最多 40 字，不帶時間與個資）：
      diff_<mold＝mini 較舊｜gold＝Google 較舊｜same＝最後一張卡相同、別的不同>_m<i 上班｜o 下班｜n 沒有>_g<同左>。 */
   function lastOf(s) { return s && s.guard && s.guard.last ? s.guard.last : null; }
@@ -736,10 +736,10 @@
   function msgSame(a, b) { return a.t === b.t && a.c === b.c && a.h === b.h && a.k === b.k; }
   function msgPut(m) { $('msg').textContent = m.t; $('msg').className = m.c; $('hint').textContent = m.h; offerHelp(m.k); }
   function statusAfter(f, src, shown) {
-    var gen = stGen, key0 = stKey(shown), sent = false, msg0 = msgSnap();   // msg0：剛畫完開頁狀態那一刻的訊息
+    var gen = stGen, key0 = stKey(shown), sent = false, msg0 = msgSnap(), first = ++saSeq === 1;   // msg0：剛畫完開頁狀態那一刻的訊息
     var send = function () { if (sent) return; sent = true; if (omPending === send) omPending = null; om.g = f.gMs; om.mini = f.mMs; omReport('ready', om.cmp || ''); };
     var note = function (m, g) {   // m＝mini 那份、g＝Google 那份（其中一份就是畫面上的 shown）
-      if (gen !== stGen) { om.cmp = 'cmp_late'; return; }
+      if (!first || gen !== stGen) { if (!om.match) om.cmp = 'cmp_late'; return; }   // 重讀的那幾次（例：打卡被擋後）也不記：那時 Google 常還沒抄到剛打的卡
       var same = stKey(src === 'google' ? m : g) === key0;
       om.match = same ? 'same' : 'diff'; om.cmp = same ? '' : diffClass(m, g);
     };
