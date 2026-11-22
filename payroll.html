@@ -1164,6 +1164,33 @@ function supClaimRate(ymv, r, m, cfg){
   }
   return (r.earn||[]).filter(x=>x.item_key==='hourly_wage'||x.item_key==='pt_attend_plus'||x.item_key==='pt_tenure_plus').reduce((s,x)=>s+n(x.rate),0);
 }
+/* 跨店請款的加成（2026-11-22 N4、定案 D1–D4）：引擎 ot_info 有 xr 戳記才用新公式——xclaim 每家店的
+   平日 1.34／1.67 段（現行）＋休息日三段、例假／國定假日／選舉日超過 8 小時那段、正職加發（d8）、計時加倍（hx）；
+   沒有 xr（2026-10 以前、鎖定時存的舊 ot_info）照 2026-11-18 舊公式（cross_ot 的 h43／h53）。後端 pnlSupXAdd_ 逐字同一套。 */
+/* r3（Codex 擋項 1）：xclaim／cross_ot 已是「這個人、這家店、整月」合計 → 每家店只入帳一次，給同店第一筆沒有指定金額的支援列（拆成好幾筆不重複請）；
+   全部是指定金額＝整筆以填的為準、不加（既有語意）。兩邊都有門市代碼只比代碼。回 [{h,add}]，跟 sup 同順序。 */
+function supXAddAll(r, sup, rts){
+  const oi=r.ot_info||{};
+  const out=sup.map(()=>({h:0,add:0}));
+  const hit=(c,x)=>{const cc=String(c.code==null?'':c.code).trim().toUpperCase(),xc=String(x.code==null?'':x.code).trim().toUpperCase(); return (cc&&xc)?cc===xc:(!!c.name&&c.name===x.store);};   // r5：代碼去空白、大寫再比（同後端 payXsupCode_）
+  const list=oi.xr?(oi.xclaim||[]):(oi.cross_ot||[]);
+  list.forEach(c=>{
+    // r4：優先給有門市代碼的列（快照門市彙總只收有代碼的列）；同店都沒代碼才給第一筆
+    let i=sup.findIndex(x=>!n(x.amount)&&hit(c,x)&&String(x.code||'').trim());
+    if(i<0) i=sup.findIndex(x=>!n(x.amount)&&hit(c,x));
+    if(i<0) return;
+    const h=oi.xr?n(c.h43)+n(c.h53)+n(c.r43)+n(c.r53)+n(c.r83)+n(c.d8)+n(c.hx):n(c.h43)+n(c.h53);
+    const m=oi.xr?n(c.h43)*0.34+n(c.h53)*0.67+n(c.r43)*0.34+n(c.r53)*0.67+n(c.r83)*1.67+n(c.d8)+n(c.hx):n(c.h43)*0.34+n(c.h53)*0.67;
+    out[i].h+=h; out[i].add+=m*rts[i];
+  });
+  return out;
+}
+/** 請款逐筆裡沒有門市代碼的筆數（2026-11 起才算；鎖定快照只存門市合計的舊月份不算） */
+function supNoCodeN(g){
+  if(!(String(typeof ym==='function'?ym():'')>=SUP_CLAIM_FROM)) return 0;
+  // code＝null：本版上線前鎖的快照逐筆明細本來就沒有 code 欄（舊快照），不算「沒有門市代碼」、不提醒
+  return (g.sup||[]).filter(x=>!x.storeOnly&&x.code!==null&&!String(x.code||'').trim()).length;
+}
 function costTotals(){
   // dorm／dormBy：宿舍代扣（2026-08-24 Eason 改口徑）——從薪資費用扣除，並在下方獨立列成租金收入。
   // ⚠ 兩邊都看得到是刻意的，但**損益表只能取一邊**：薪資費用已經扣過了，租金收入那區只是明細，
@@ -1200,14 +1227,14 @@ function costTotals(){
       const gapH=r.base_hours!=null?Math.max(0,n(r.base_hours)-n(r.total_hours)):0;
       const alloc=allocGapHours(sup.map(x=>n(x.hours)), gapH);
       const cr=supClaimRate(typeof ym==='function'?ym():'', r, MASTER.find(m=>String(m.emp_id)===String(r.emp_id))||{}, CFG);
+      const xadd=supXAddAll(r, sup, sup.map(x=>cr!=null?cr:n(x.rate)));
       sup.forEach((x,i)=>{
         const h=n(x.hours), rt=cr!=null?cr:n(x.rate);
         const t1=(cr==null&&gapRate>0)?alloc[i]:0, t2=h-t1;
-        // 跨店加班加成（2026-11-18 Eason：超過 8 小時的加班算支援單位，只加加成那段；補休抵掉的不加）：引擎 ot_info.cross_ot 給每家店吸收的 1.34／1.67 時數
-        const cpx=((r.ot_info||{}).cross_ot||[]).find(c=>(c.code&&x.code&&String(c.code)===String(x.code))||(c.name&&c.name===x.store));
-        const otH=cpx?n(cpx.h43)+n(cpx.h53):0, otAdd=cpx?(n(cpx.h43)*0.34+n(cpx.h53)*0.67)*rt:0;
+        // 跨店加班加成（2026-11-18 平日；2026-11-22 加休息日／例假／國定假日／選舉日）：只加加成那段、補休抵掉的不加；每家店只入帳一次，見 supXAddAll
+        const otH=xadd[i].h, otAdd=xadd[i].add;
         const amt=n(x.amount)||(t1*gapRate+t2*rt+otAdd);   // 金額欄有填＝以填的為準（特殊協議）
-        g.sup.push({emp_id:String(r.emp_id),name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',
+        g.sup.push({emp_id:String(r.emp_id),name:r.name,ft:r.is_full_time,store:x.store||'（未指定）',code:String(x.code||''),
                     hours:h,rate:rt,gapH:t1,gapRate:gapRate,otH:otH,otAdd:otAdd,amount:amt,fixed:!!n(x.amount)});
         g.supTotal+=amt;
       });
@@ -1263,11 +1290,12 @@ function costTotals(){
     g.snap=S; g.ye=n(S.yearend);
     const D=S.detail;
     const nameOf=id=>(RESULTS.find(r=>String(r.emp_id)===String(id))||{}).name||id;
-    if(D&&Array.isArray(D.sup)) g.sup=D.sup.map(x=>({emp_id:x.emp_id,name:nameOf(x.emp_id),ft:!!x.ft,store:x.store||'（未指定）',
-      hours:n(x.hours),rate:n(x.rate),gapH:n(x.gapH),gapRate:n(x.gapRate),amount:n(x.amount),fixed:!!x.fixed}));
+    // r4：逐筆明細因一格字數上限被截過（sup_trunc）→ 改用門市合計那種既有顯示，合計才不會少
+    if(D&&Array.isArray(D.sup)&&!D.sup_trunc) g.sup=D.sup.map(x=>({emp_id:x.emp_id,name:nameOf(x.emp_id),ft:!!x.ft,store:x.store||'（未指定）',code:(x&&Object.prototype.hasOwnProperty.call(x,'code'))?String(x.code||''):null,
+      hours:n(x.hours),rate:n(x.rate),gapH:n(x.gapH),gapRate:n(x.gapRate),otH:n(x.otH),otAdd:n(x.otAdd),amount:n(x.amount),fixed:!!x.fixed}));
     // 2026-09-25～11-13 之間鎖的月份：快照只有「門市合計」，沒有逐筆明細
     else g.sup=Object.keys(S.support||{}).map(st=>({store:st,amount:n(S.support[st]),storeOnly:true}));
-    g.supTotal=g.sup.reduce((a,x)=>a+n(x.amount),0);
+    g.supTotal=(D&&D.sup_trunc&&D.sup_total!=null)?n(D.sup_total):g.sup.reduce((a,x)=>a+n(x.amount),0);   // r5：截斷時用截斷前的合計
   }
   return g;
 }
@@ -1360,8 +1388,10 @@ function costRows(g){
             ? `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H（金額指定）`
             : (x.gapH>0
                 ? `${esc(x.name)} → ${esc(x.store)}　缺口 ${r2(x.gapH)}H×${nf(x.gapRate)} ＋ ${r2(x.hours-x.gapH)}H×${nf(x.rate)}`
-                : `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H × ${nf(x.rate)}`)+(n(x.otAdd)>0?`　＋加班加成 ${r2(x.otH)}H（${nf(Math.round(x.otAdd))}）`:''), x.amount]))
-        .concat([['s','請款小計',g.supTotal]]):[]),
+                : `${esc(x.name)} → ${esc(x.store)}　${r2(x.hours)}H × ${nf(x.rate)}`)+(n(x.otAdd)>0?`　＋加班／假日加成 ${r2(x.otH)}H（${nf(Math.round(x.otAdd))}）`:''), x.amount]))
+        .concat([['s','請款小計',g.supTotal]])
+        // 沒有門市代碼的支援列（舊手填列）：損益端點的他店支援人力成本（xsup_cost）認不出是哪家，不會算進去（2026-11-22）
+        .concat(supNoCodeN(g)?[['h','有 '+supNoCodeN(g)+' 筆支援列沒有門市代碼，這幾筆不會算進被支援門市的損益成本']]:[]):[]),
   ];
 }
 /* 損益系統快照（T14，mala-pnl-auto#15，Eason 2026-09-25 選方案 C）：按「鎖定本月」時，
@@ -1406,8 +1436,8 @@ function costDetail(g){
   const {mark}=costCo(g);
   return {v:1, co_auto:mark,
     emp:(g.emp||[]).map(e=>Object.assign({},e,{co_labor:r2(e.co_labor),co_health:r2(e.co_health),co_pension:r2(e.co_pension),yearend:r2(e.yearend)})),
-    sup:(g.sup||[]).map(x=>({emp_id:x.emp_id,ft:!!x.ft,store:x.store,hours:r2(n(x.hours)),rate:n(x.rate),gapH:r2(n(x.gapH)),
-                             gapRate:n(x.gapRate),amount:r2(n(x.amount)),fixed:!!x.fixed}))};
+    sup:(g.sup||[]).map(x=>({emp_id:x.emp_id,ft:!!x.ft,store:x.store,code:String(x.code||''),hours:r2(n(x.hours)),rate:n(x.rate),gapH:r2(n(x.gapH)),
+                             gapRate:n(x.gapRate),amount:r2(n(x.amount)),fixed:!!x.fixed,otH:r2(n(x.otH)),otAdd:r2(n(x.otAdd))}))};   // otH／otAdd（r3）：鎖定後請款明細照樣顯示加成   // code（2026-11-22）：被支援門市的損益成本（pnlPayroll xsup_cost）用
 }
 function renderCost(){
   const card=$('costCard'); if(!card) return;
@@ -1635,7 +1665,7 @@ function renderOtInfo(t){
   // 請假單和請假登記對不上（1113 紅燈 a1）：鎖定時會擋
   LEAVE_MM.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：${md(x.date)} ${esc(x.type)} ${x.side==='request'?'有已核准的請假單，請假登記沒有（請主管把那天重新核定一次）':'請假登記有，卻沒有已核准的請假單（請同仁補請假單，或主管重新核定改掉登記）'}——<b>處理前不能鎖定</b></li>`));
   SAME_NAME.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：打卡名冊有同名的人（${x.emp_ids.map(esc).join('、')}），本月 ${x.rows} 筆請假只有姓名，系統依在職與到離職日算給 ${x.to.map(esc).join('、')}，請確認沒有歸錯人</li>`));
-  RESULTS.forEach(r=>{const o=r.ot_info; if(!o) return; const nm=esc(r.name);
+  RESULTS.forEach(r=>{const o=r.ot_info; if(!o||o.ot_h===undefined) return; const nm=esc(r.name);   // r8：只有請款逐筆 xsup 的 ot_info（沒有逐日資料）＝當作沒有，提醒區同正式版
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
     if(o.elec_warn) rows.push(o.elec_warn.reason==='hol_manual'
       ? `<li><b class="bad">${nm}</b>：選舉日出勤沒有自動加發（這個月手填的國定假日時數和打卡不同，分不出是不是選舉日；請確認後用自訂加薪補）</li>`
@@ -1689,7 +1719,7 @@ async function toggleLock(){
     // 更重要的動作），接住並印警告，照常送出鎖定請求（不帶 cost_snapshot，效果等同
     // 「沒有算出快照」，跟沒按過計算是同一種安全的退路）。
     if(lock && RESULTS.length){
-      try{ const g=costTotals(); body.cost_snapshot=Object.assign(costStable(g),{detail:costDetail(g)}); }
+      try{ const g=costTotals(); body.cost_snapshot=Object.assign(costStable(g),{detail:costDetail(g)}); }   // 2026-11 起請款欄位由後端從定案草稿換掉（r7），這裡照舊送
       catch(e){ console.warn('pnlPayroll 快照計算失敗，鎖定照常送出，這次不會有快照可讀：',e); }
     }
     const r=await post('payroll_finalize',body,lock?{noToast:true,noRetry:true}:undefined);

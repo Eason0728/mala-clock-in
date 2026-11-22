@@ -102,6 +102,13 @@ let pass = 0, fail = 0, compared = 0, rowsCompared = 0;
 const chk = (n, cond, detail) => { cond ? pass++ : fail++; if (!cond || detail) console.log((cond ? '✓ ' : '✗ ') + n + (detail ? '：' + detail : '')); };
 const DB_OLD = freshDB(), DB_NEW = freshDB();
 const sOld = ctx(OLD, DB_OLD, CLOCK), sNew = ctx(NEW, DB_NEW, CLOCK);
+/* 跨店請款 #210 r8：2026-11 起每列草稿多 ot_info.xsup（請款逐筆，沒有支援＝[]，不進應發扣款）；跟舊版比對時拿掉（拿掉後 ot_info 空的就當沒有） */
+const NX = (k, v) => {
+  if (k !== 'ot_info' || v == null || v === '') return v;
+  let o = v; const str = typeof v === 'string'; if (str) { try { o = JSON.parse(v); } catch (e) { return v; } }
+  if (!o || typeof o !== 'object' || !('xsup' in o)) return v;
+  o = Object.assign({}, o); delete o.xsup; if (!Object.keys(o).length) return undefined; return str ? JSON.stringify(o) : o;
+};
 const strip = (rows) => rows.map((r) => { const o = Object.assign({}, r); delete o.run_at; return o; });
 let e09Diff = 0;
 /* 薪酬挑錯第 2 項（Eason 2026-11-11 確認）：這個月在職天數 0、又沒有任何時數與加扣項的人不產生列。
@@ -115,7 +122,7 @@ MONTHS.forEach((ym) => {
   chk(ym + ' 兩版都算得出來', A.ok && B.ok, A.ok && B.ok ? '' : JSON.stringify([A.error, B.error]));
   A.results.forEach((ra) => {
     const rb = B.results.find((x) => x.emp_id === ra.emp_id);
-    const same = JSON.stringify(ra) === JSON.stringify(rb);
+    const same = JSON.stringify(ra, NX) === JSON.stringify(rb, NX);
     if (ra.emp_id === 'E09') { if (!same) e09Diff++; return; }
     if (NOT_HIRED_YET[ym + '|' + ra.emp_id]) {
       notHiredSeen++;
@@ -130,7 +137,7 @@ MONTHS.forEach((ym) => {
     const a = strip(DB_OLD[k].filter((r) => r.ym === ym && r.emp_id !== 'E09' && !NOT_HIRED_YET[ym + '|' + r.emp_id]));
     const b = strip(DB_NEW[k].filter((r) => r.ym === ym && r.emp_id !== 'E09'));   // 新版不濾：還沒到職的人月本來就不該有列
     rowsCompared += a.length;
-    chk(ym + ' 寫入的 ' + k + ' 列相同（' + a.length + ' 列）', JSON.stringify(a) === JSON.stringify(b));
+    chk(ym + ' 寫入的 ' + k + ' 列相同（' + a.length + ' 列）', JSON.stringify(a, NX) === JSON.stringify(b, NX));
   });
   // 定案（讓後面的月份讀得到補休存入）
   DB_OLD.run.forEach((r) => { if (r.ym === ym) r.status = 'final'; });

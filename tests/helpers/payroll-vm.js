@@ -23,7 +23,7 @@ function load(opt) {
     __COUNT: {},
   };
   vm.createContext(sandbox);
-  vm.runInContext(C + '\n' + P + '\n' + R, sandbox, { filename: 'clock.gs' });
+  vm.runInContext(C + '\n' + (opt.payrollSrc || P) + '\n' + R, sandbox, { filename: 'clock.gs' });   // payrollSrc：拿別版 Payroll.gs 對拆（2026-11-22 #210 不變量測試）
   vm.runInContext(`
     payRead = function(kind){ __COUNT['payRead:'+kind]=(__COUNT['payRead:'+kind]||0)+1; return (__DATA[kind]||[]).map(function(r){return Object.assign({},r)}); };
     payReplaceAll = function(kind, rows){ __DATA[kind]=rows.map(function(r){return Object.assign({},r)}); };
