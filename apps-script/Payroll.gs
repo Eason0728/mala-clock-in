@@ -5572,7 +5572,8 @@ function handlePayrollCompPeriod(body) {
      舊觸發器用 payroll_comp_trigger_setup 清掉（現在只刪不建）。
    鎖月時「補休帳是負的不能鎖定」（handlePayrollFinalize → payCompNegatives／payCompNegLine）是鎖月規則，不是提醒，照舊。
    原本的 payCompCheckRun_（檢查＋通知）、payCompPushManagers_（私訊值班主管）沒有其他呼叫者，一起刪掉（要找回看 git 歷史 49dc85e）。 */
-var PAY_NOTIFY_INBOX_URL = 'https://script.google.com/macros/s/AKfycbyZ-sVl9KbKhotjsFhKg9Id7j4qgNRf6wSlSCacoBe7lATkuJFb9_ShCaicAJuLOak/exec';   // 通知匣（payInboxNotify_ 用：每日重算失敗、月加班同步、單日超過 10 小時）
+// 通知匣網址（payInboxNotify_ 用：每日重算失敗、月加班同步、單日超過 10 小時）
+var PAY_NOTIFY_INBOX_URL = 'https://script.google.com/macros/s/AKfycbyZ-sVl9KbKhotjsFhKg9Id7j4qgNRf6wSlSCacoBe7lATkuJFb9_ShCaicAJuLOak/exec';
 function payCompCheckDaily() { return; }
 /** 通知匣一般件；成功判準 ok===true && added===true。任何情況都不拋例外。 */
 function payInboxNotify_(title, text, keyEvent, from, prefix) {
