@@ -963,7 +963,7 @@
     // 本月補休帳：薪資主檔查得到的正職才有，一直顯示、選之前就看得到；主檔還沒建的人只在選了補休時提示
     if (lt.common.indexOf('補休') >= 0 && comp().allowed) {
       qx.push(h('div', { class: 'rq-quota rq-comp-bal' + (Number(comp().balance_h) < 0 ? ' rq-comp-neg' : ''), text: '補休：' + compText() }));
-      if (lv.type === '補休') qx.push(h('div', { class: 'rq-muted', text: '可以先休、之後再用加班補回來；當月要補平（20、25 號會檢查），剩的照加班費發。' }));
+      if (lv.type === '補休') qx.push(h('div', { class: 'rq-muted', text: '可以先休、之後再用加班補回來；當月要補平，剩的照加班費發。' }));
     } else if (lv.type === '補休') {
       qx.push(h('div', { class: 'rq-muted', text: compBlocked() ? '補休只有正職可以請。' : '可以先休、之後再用加班補回來，由主管審核。本月補休帳要等薪資資料建好才看得到。' }));
     }
