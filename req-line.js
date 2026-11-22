@@ -216,6 +216,8 @@
   /** 營運系統的回應一律包一層 { ok:true, data:<line-req 的回傳> }（mala-store-ops server/index.js 路由收尾；讀取那條 miniPeek／viaMini 也是拆 r.data）。
    *  拆出裡面那層：外層不是 ok:true 或裡面不是物件（伺服器錯誤、被擋、回應怪）→ null＝當 mini 沒收，由呼叫端改送 Google。 */
   function miniReply(r) { return r && r.ok === true && r.data && typeof r.data === 'object' ? r.data : null; }
+  /** 送出成功訊息「：摘要」那一段。回應沒有 summary（mini 的同單號重送 { ok:true, dup:true }）就不接，畫面與聊天只留「已送出」，不出現 undefined；有 summary 時字串與以前逐字相同（Google 的成功回應一定有，Requests.gs:841、866、868、1049）。 */
+  function sumTail(r) { return r && r.summary ? '：' + r.summary : ''; }
 
   /* ── 開頁 ── */
   /* 手機記住的開頁資料（2026-11-06）：只記店別清單、上次用的店、假別清單；額度與補休帳會變，不記。
@@ -1430,13 +1432,13 @@
         }
         if (!r || !r.ok) { out.appendChild(msgBox((r && r.message) || '送出沒有成功，請再試一次', 'err')); if (r && r.seg) markSegBad(r.seg); return; }
         reset();
-        tellChat('申請已送出：' + r.summary);
+        tellChat('申請已送出' + sumTail(r));
         var two = r.requests && r.requests.length >= 2;   // 一次填多段：變成好幾張單（2026-11-18 兩段；2026-11-21 加班最多四段）
         var warns = [];
         (two ? r.requests : [r.request]).forEach(function (q) { ((q && q.warns) || []).forEach(function (w) { if (warns.indexOf(w) < 0) warns.push(w); }); });
         // 先把剛送出的列畫出來、立刻切到「我的申請」，伺服器最新清單在背景重讀（2026-11-18；以前同步等 req_info 約 3.5 秒才換畫面）
         if (st.store && sentCode !== null && st.store.code === sentCode) adoptRows(two ? r.requests : [r.request]);
-        st.flash = { cls: 'ok', text: '✓ 已送出：' + r.summary
+        st.flash = { cls: 'ok', text: '✓ 已送出' + sumTail(r)
           + (two ? '\n會變成 ' + r.requests.length + ' 張' + ({ ot: '加班單', leave: '假單', trip: '出差單' }[r.request && r.request.kind] || '單') + '，等主管審核'
                  : r.request && r.request.kind === 'miss' ? '\n等打卡門市的店長審核' : '\n等主管審核')
           + (warns.length ? '\n' + warns.map(function (w) { return '⚠ ' + w; }).join('\n') : '') };

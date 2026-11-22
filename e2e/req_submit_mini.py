@@ -74,6 +74,8 @@ class Mini:
             return J({'ok': True, 'data': {'ok': False, 'error': 'off'}})
         if m == 'syncing':
             return J({'ok': True, 'data': {'ok': True, 'src': 'mini', 'data': {'ok': False, 'error': 'mini_syncing', 'message': SYNC_MSG}}})
+        if m == 'dup':    # 兩個同單號請求幾乎同時進來、第二個在交易裡才撞到：{ ok:true, dup:true }，沒有 summary／request（duty.js:2437）
+            return J({'ok': True, 'data': {'ok': True, 'src': 'mini', 'data': {'ok': True, 'dup': True}}})
         # taken：mini 收下，內容是「同 Google 回應」
         if op == 'submit':
             res = self.fake.submit(dict(b['body'], action='req_submit'))
@@ -85,13 +87,24 @@ class Mini:
         return J({'ok': True, 'data': {'ok': True, 'src': 'mini', 'data': res}})
 
 
-def open_page(br, fake, mini, tab, extra='&submit_mini=1'):
+def flag_source(value):
+    """req-line.js 內容，把 SUBMIT_MINI 明確設成 true／false（開關關的情境不靠檔案裡的預設值，疊在別的 PR 上也要照樣跑）。"""
+    code = open(os.path.join(CL.ROOT, 'req-line.js'), encoding='utf-8').read()
+    new, n = re.subn(r'var SUBMIT_MINI = (true|false);', 'var SUBMIT_MINI = %s;' % ('true' if value else 'false'), code)
+    assert n == 1, '找不到 var SUBMIT_MINI'
+    return new
+
+
+def open_page(br, fake, mini, tab, extra='&submit_mini=1', flag=None):
     ctx = br.new_context(viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True)
     p = ctx.new_page()
     p.add_init_script(CL.LOG_JS)
     p.route('**/api', fake.handler)
     p.route('**/api/*', fake.handler)
     p.route('http://mini.test/**', mini.handler)
+    if flag is not None:
+        js = flag_source(flag)
+        p.route('**/req-line.js', lambda r: r.fulfill(status=200, content_type='application/javascript', body=js))
     p.add_init_script("window.confirm = function () { return true; };")
     p.goto(CL.url((HQ['lat'], HQ['lng']), in_client=True, extra='&view=req&tab=%s&mini_req=%s%s' % (tab, MINI_URL, extra)))
     p.wait_for_selector('#reqView .rq-tabs', timeout=10000)
@@ -115,10 +128,10 @@ def do_submit(p):
     R2.submit(p)
 
 
-def run_submit(br, mode, extra='&submit_mini=1'):
+def run_submit(br, mode, extra='&submit_mini=1', flag=None):
     f = R2.Fake()
     m = Mini(f, mode)
-    p = open_page(br, f, m, 'ot', extra)
+    p = open_page(br, f, m, 'ot', extra, flag)
     do_submit(p)
     return f, m, p
 
@@ -219,23 +232,40 @@ def main():
                 p.context.close()
 
             # ── 6. 開關關著（沒帶 ?submit_mini=1）：行為跟改動前一樣，完全不碰 mini 的送出，只送 Google 1 次、body 沒有 req_id ──
-            f, m, p = run_submit(br, 'taken', extra='')
+            f, m, p = run_submit(br, 'taken', extra='', flag=False)
             R2.wait_mine(p)
             gs = f.submits()
-            ok('開關關（預設）・送出：mini 收到 0 次 submit、Google 1 次、body 沒有 req_id', len(m.ops('submit')) == 0 and len(gs) == 1 and 'req_id' not in gs[0]['body'], (len(m.ops('submit')), gs))
+            ok('開關關（明確指定 false）・送出：mini 收到 0 次 submit、Google 1 次、body 沒有 req_id', len(m.ops('submit')) == 0 and len(gs) == 1 and 'req_id' not in gs[0]['body'], (len(m.ops('submit')), gs))
             want = {'kind': 'ot', 'date': R2.TODAY, 'start': '11:00', 'end': '14:00', 'reason': '假日來客多', 'action': 'req_submit', 'id_token': 'MOCK_ID_TOKEN_U1'}
-            ok('開關關（預設）・送出：給 Google 的內容只有原本那些欄位', gs[0]['body'] == want, gs[0]['body'])
+            ok('開關關（明確指定 false）・送出：給 Google 的內容只有原本那些欄位', gs[0]['body'] == want, gs[0]['body'])
             RESULT_ROWS.append(('開關關・送出', len(m.ops('submit')), len(gs)))
             p.context.close()
             f = R2.Fake()
             seed_pending(f)
             m = Mini(f, 'taken')
-            p = open_page(br, f, m, 'mine', extra='')
+            p = open_page(br, f, m, 'mine', extra='', flag=False)
             p.locator('#reqView .rq-link:has-text("取消這筆申請")').first.click()
             p.wait_for_function("document.getElementById('reqView').textContent.indexOf('已取消') >= 0", timeout=8000)
             cc = [c for c in f.calls if c['action'] == 'req_cancel']
-            ok('開關關（預設）・取消：mini 收到 0 次 cancel、Google 1 次 req_cancel、body 沒有 req_id', len(m.ops('cancel')) == 0 and len(cc) == 1 and 'req_id' not in cc[0]['body'], (len(m.ops('cancel')), cc))
+            ok('開關關（明確指定 false）・取消：mini 收到 0 次 cancel、Google 1 次 req_cancel、body 沒有 req_id', len(m.ops('cancel')) == 0 and len(cc) == 1 and 'req_id' not in cc[0]['body'], (len(m.ops('cancel')), cc))
             RESULT_ROWS.append(('開關關・取消', len(m.ops('cancel')), len(cc)))
+            p.context.close()
+
+            # ── 7. mini 說同單號已收過（dup、沒有 summary）→ 當成功；畫面與 LINE 聊天都只有「已送出」、不出現 undefined；Google 0 次 ──
+            f, m, p = run_submit(br, 'dup')
+            R2.wait_mine(p)
+            t = R2.txt(p)
+            sent = p.evaluate('window.__sent || []')
+            ok('送出・dup 沒有 summary：畫面「✓ 已送出」、沒有 undefined、沒有冒號後面那段', '✓ 已送出' in t and 'undefined' not in t and '✓ 已送出：' not in t, t[:200])
+            ok('送出・dup 沒有 summary：LINE 聊天只送「申請已送出」、沒有 undefined', [x.get('text') for x in sent] == ['申請已送出'], sent)
+            ok('送出・dup：mini 1 次、Google 0 次', len(m.ops('submit')) == 1 and gcount(f, 'req_submit') == 0, (len(m.ops('submit')), gcount(f, 'req_submit')))
+            RESULT_ROWS.append(('送出・dup（沒有 summary）', len(m.ops('submit')), gcount(f, 'req_submit')))
+            p.context.close()
+            # 有 summary 的一般收下：聊天與畫面字串跟以前一樣（有冒號＋摘要）
+            f, m, p = run_submit(br, 'taken')
+            R2.wait_mine(p)
+            sent = p.evaluate('window.__sent || []')
+            ok('送出・一般收下（有 summary）：聊天「申請已送出：…」、畫面「✓ 已送出：…」跟以前一樣', len(sent) == 1 and sent[0]['text'].startswith('申請已送出：') and '✓ 已送出：' in R2.txt(p), sent)
             p.context.close()
 
             br.close()

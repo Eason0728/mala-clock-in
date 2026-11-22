@@ -21,8 +21,9 @@ const J = (x) => JSON.parse(JSON.stringify(x));
 
 /** 建一個載入 req-line.js 的沙盒。opts: {flag, host, search, mini, post(url, body, ms)→Promise}。fake timers 用真的 setTimeout（測試只等 3 秒）。 */
 function load(opts) {
-  const code = opts.flag === undefined ? src : src.replace('var SUBMIT_MINI = false;', 'var SUBMIT_MINI = ' + opts.flag + ';');
-  assert(code !== src || opts.flag === undefined, '找不到 var SUBMIT_MINI = false;');
+  // flag 明確給 true／false＝不靠檔案裡的預設值（預設值之後可能被改，疊在別的 PR 上也要照樣跑）；不給＝用檔案裡的預設值
+  const code = opts.flag === undefined ? src : src.replace(/var SUBMIT_MINI = (true|false);/, 'var SUBMIT_MINI = ' + opts.flag + ';');
+  assert(opts.flag === undefined || /var SUBMIT_MINI = (true|false);/.test(src), '找不到 var SUBMIT_MINI = …;');
   const calls = [], beacons = [];
   const E = { MINI_REQ_API: opts.mini === undefined ? MINI : opts.mini,
     post: function (url, body, ms) { calls.push({ url, body, ms, narg: arguments.length }); return opts.post(url, body, ms, calls.length); } };
@@ -32,7 +33,7 @@ function load(opts) {
     fetch: function () { return Promise.resolve(); },
     location: { hostname: opts.host || 'example.github.io', search: opts.search || '' } };
   vm.createContext(sb);
-  vm.runInContext(code.replace(TAIL, TAIL + ' window.__t = { sendReq: sendReq, setE: function (e) { E = e; }, submitMiniOn: submitMiniOn };'), sb, { filename: 'req-line.js' });
+  vm.runInContext(code.replace(TAIL, TAIL + ' window.__t = { sendReq: sendReq, setE: function (e) { E = e; }, submitMiniOn: submitMiniOn, sumTail: sumTail };'), sb, { filename: 'req-line.js' });
   sb.window.__t.setE(E);
   return { T: sb.window.__t, calls, beacons, E };
 }
@@ -61,12 +62,12 @@ const ok = async (name, fn) => { await fn(); n++; console.log('✓ ' + name); };
 
 (async () => {
   await ok('預設開關是 false（上線檔案）；沒設 ?submit_mini 也不開', () => {
-    assert(/var SUBMIT_MINI = false;/.test(src));
+    assert(/\n  var SUBMIT_MINI = false;\n/.test(src));
     assert.strictEqual(load({ post: () => Promise.resolve(G_OK) }).T.submitMiniOn(), false);
   });
 
   await ok('(a) 開關關：送出只打 Google、body 是原物件（沒有 req_id）、不打 mini、不給逾時參數', async () => {
-    const c = load({ post: () => Promise.resolve(G_OK) }), body = mkBody(), before = JSON.stringify(body);
+    const c = load({ flag: false, post: () => Promise.resolve(G_OK) }), body = mkBody(), before = JSON.stringify(body);
     const r = await c.T.sendReq('submit', GURL, body);
     assert.strictEqual(c.calls.length, 1); assert.strictEqual(c.calls[0].url, GURL);
     assert.strictEqual(c.calls[0].body, body, '同一個物件');
@@ -75,17 +76,17 @@ const ok = async (name, fn) => { await fn(); n++; console.log('✓ ' + name); };
     assert.strictEqual(r, G_OK); assert.strictEqual(c.beacons.length, 0);
   });
   await ok('(a) 開關關：取消一樣只打 Google；Google 失敗照舊丟出去', async () => {
-    const c = load({ post: () => Promise.reject(new Error('boom')) });
+    const c = load({ flag: false, post: () => Promise.reject(new Error('boom')) });
     await assert.rejects(() => c.T.sendReq('cancel', GURL, { action: 'req_cancel', id_token: 'TOK', id: 'R1' }), /boom/);
     assert.strictEqual(c.calls.length, 1); assert.strictEqual('req_id' in c.calls[0].body, false);
   });
   await ok('開關關：就算網址帶 ?submit_mini=1，非 localhost 也不開；localhost 才開', () => {
     const p = () => Promise.resolve(G_OK);
-    assert.strictEqual(load({ host: 'example.github.io', search: '?submit_mini=1', post: p }).T.submitMiniOn(), false);
-    assert.strictEqual(load({ host: 'localhost', search: '?submit_mini=1', post: p }).T.submitMiniOn(), true);
-    assert.strictEqual(load({ host: '127.0.0.1', search: '?submit_mini=1', post: p }).T.submitMiniOn(), true);
-    assert.strictEqual(load({ host: 'localhost', search: '?submit_mini=0', post: p }).T.submitMiniOn(), false);
-    assert.strictEqual(load({ host: 'localhost', search: '', post: p }).T.submitMiniOn(), false);
+    assert.strictEqual(load({ flag: false, host: 'example.github.io', search: '?submit_mini=1', post: p }).T.submitMiniOn(), false);
+    assert.strictEqual(load({ flag: false, host: 'localhost', search: '?submit_mini=1', post: p }).T.submitMiniOn(), true);
+    assert.strictEqual(load({ flag: false, host: '127.0.0.1', search: '?submit_mini=1', post: p }).T.submitMiniOn(), true);
+    assert.strictEqual(load({ flag: false, host: 'localhost', search: '?submit_mini=0', post: p }).T.submitMiniOn(), false);
+    assert.strictEqual(load({ flag: false, host: 'localhost', search: '', post: p }).T.submitMiniOn(), false);
   });
   await ok('開關開但 E.MINI_REQ_API 空 → 不開，照舊只打 Google', async () => {
     const c = load({ flag: true, mini: '', post: () => Promise.resolve(G_OK) });
@@ -280,9 +281,9 @@ const ok = async (name, fn) => { await fn(); n++; console.log('✓ ' + name); };
     assert.strictEqual((await c.T.sendReq('submit', GURL, mkBody())).summary, 'ok'); assert.strictEqual(gCalls(c).length, 0);
   });
 
-  await ok('開關關（預設）＋網址沒帶參數：送出／取消各只發一個 E.post(url, body)——同網址、同一個 body 物件、兩個參數、不碰 mini、沒有 beacon／fetch；連送兩次順序不變', async () => {
+  await ok('開關關（明確指定 false）＋網址沒帶參數：送出／取消各只發一個 E.post(url, body)——同網址、同一個 body 物件、兩個參數、不碰 mini、沒有 beacon／fetch；連送兩次順序不變', async () => {
     for (const reply of [() => Promise.resolve(G_OK), () => Promise.resolve(M_TAKEN({ ok: true, summary: '不該用到' })), () => Promise.reject(new Error('boom'))]) {
-      const c = load({ post: (url) => url === GURL ? reply() : Promise.resolve(G_OK) });
+      const c = load({ flag: false, post: (url) => url === GURL ? reply() : Promise.resolve(G_OK) });
       const b1 = mkBody(), b2 = { action: 'req_cancel', id_token: 'TOK', id: 'R1' }, snap1 = JSON.stringify(b1), snap2 = JSON.stringify(b2);
       await Promise.resolve(c.T.sendReq('submit', GURL, b1)).catch(() => {});
       await Promise.resolve(c.T.sendReq('cancel', GURL, b2)).catch(() => {});
@@ -294,9 +295,23 @@ const ok = async (name, fn) => { await fn(); n++; console.log('✓ ' + name); };
       assert.strictEqual(c.beacons.length, 0);
     }
   });
-  await ok('開關關：程式裡「關著就第一行直接 E.post」那一行沒變、SUBMIT_MINI 預設 false', () => {
+  await ok('開關關：程式裡「關著就第一行直接 E.post」那一行沒變', () => {
     assert(/function sendReq\(op, url, body\) \{\n    if \(!submitMiniOn\(\)\) return E\.post\(url, body\);\n/.test(src));
-    assert(/\n  var SUBMIT_MINI = false;\n/.test(src));
+  });
+  await ok('送出成功訊息：有 summary 與以前逐字相同；沒有 summary（mini 的 dup:true）只留「已送出」、不出現 undefined；兩處（畫面、LINE 聊天）都走同一個 sumTail', () => {
+    const T = load({ flag: false, post: () => Promise.resolve(G_OK) }).T;
+    assert.strictEqual('✓ 已送出' + T.sumTail({ ok: true, summary: '11/25 特休假 整天 8 小時' }), '✓ 已送出：11/25 特休假 整天 8 小時');
+    assert.strictEqual('申請已送出' + T.sumTail(G_OK), '申請已送出：G 回的');
+    for (const r of [{ ok: true, dup: true }, { ok: true, summary: '' }, { ok: true, summary: undefined }, null, undefined]) {
+      assert.strictEqual('✓ 已送出' + T.sumTail(r), '✓ 已送出', JSON.stringify(r)); assert.strictEqual('申請已送出' + T.sumTail(r), '申請已送出');
+      assert(!/undefined/.test('✓ 已送出' + T.sumTail(r)));
+    }
+    assert(/tellChat\('申請已送出' \+ sumTail\(r\)\);/.test(src)); assert(/text: '✓ 已送出' \+ sumTail\(r\)\n/.test(src));
+    assert.strictEqual(src.split('\n').filter((l) => /r\.summary/.test(l)).length, 1, 'req-line.js 只有 sumTail 那一行直接讀 r.summary');
+  });
+  await ok('真形狀：mini 同單號重送 dup（沒有 summary）→ sendReq 照樣回那份 data（不送 Google）', async () => {
+    const { c, r } = await sendBoth(null, 'submit', () => Promise.resolve(M_TAKEN({ ok: true, dup: true })));
+    assert.strictEqual(gCalls(c).length, 0); assert.strictEqual(r.summary, undefined); assert.strictEqual(c.T.sumTail(r), '');
   });
 
   console.log('\n通過 ' + n + ' 條，失敗 0');
