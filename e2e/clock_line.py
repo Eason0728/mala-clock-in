@@ -1554,7 +1554,7 @@ G_MINI_OK = {'ok': True, 'type': 'out', 'ts': '2026-10-16T09:01:05+08:00', 'gree
 
 def g_open(ctx, hq, conf, mini, after=None, mini_ms=0, g=None):
     S = {'conf': conf, 'mini': mini, 'after': after or {'ok': True, 'state': 'done', 'extras': {}}, 'g': g or G_OK, 'mini_hits': [], 'after_hits': [], 'g_posts': [], 'conf_hits': 0}
-    u = url(hq, extra='&retry_ms=50&g_api=' + G_URL)
+    u = url(hq, extra='&retry_ms=50&st_only=0&g_api=' + G_URL)   # st_only=0：正式檔 ST_ONLY_MINI 已開店，這裡測開關關的路徑
 
     def conf_h(route):
         S['conf_hits'] += 1
@@ -1649,7 +1649,7 @@ def open_fast(ctx, hq, mini_st, conf='gw', pre_js='', wait_who=True, extra=''):
         route.fulfill(status=200, body=json.dumps({'ok': True, 'state': 'done', 'extras': {}}), content_type='text/plain')
     p.route(re.compile(r'relay-mock-(g|alt)/clock/after$'), after_h)
     S['t0'] = time.time()
-    p.goto(url(hq, extra='&keep_store=1&retry_ms=50&g_conf_ms=600&g_api=' + G_URL + '&g_alt=' + ALT_URL + extra))
+    p.goto(url(hq, extra='&keep_store=1&retry_ms=50&g_conf_ms=600&st_only=0&g_api=' + G_URL + '&g_alt=' + ALT_URL + extra))   # st_only=0 同上
     if wait_who:
         p.wait_for_function('document.getElementById("who").textContent === "測試一" && document.getElementById("btns").hidden === false', timeout=10000)   # 開頁狀態畫出來了（鍵亮不亮照防呆）
         S['ready_s'] = time.time() - S['t0']

@@ -90,7 +90,7 @@ def main():
             mini_old = dict(real, role='primary', notices=[])   # 快速通道還沒換版：沒有 notices_ok
 
             # ── 1. 開關關（沒設）：跟現在一樣，開頁同時問 mini 與 Google ──
-            p, S = open_p2b(ctx, mini_ok, None, g_delay=2500)
+            p, S = open_p2b(ctx, mini_ok, '0', g_delay=2500)   # 正式檔已有店開 cmp：本機用 ?st_only=0 明確測「開關關」（＝瑞光、文心現在的做法）
             p.on('pageerror', lambda e: errs.append(str(e)))
             p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
             g = g_status_calls(p)

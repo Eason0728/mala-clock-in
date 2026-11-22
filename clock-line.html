@@ -258,7 +258,8 @@
      true＝只問 mini：mini 回了（而且公告也由 mini 帶，notices_ok）就完全不問 Google。
      mini 先跑 ST_HEDGE_MS；這段時間沒回、連不上、回的不能用、沒帶公告，就馬上問 Google（＝跟現在一樣誰先回用誰）。開頁時已知 mini 連不上也直接照現在。
      退回：這裡改回 false 重發頁面（≤10 分鐘）。 */
-  var ST_ONLY_MINI = {};   // 例：{ mztjs: "cmp" }（店碼；小辛辣光復＝""）
+  // 2026-11-23 七家 mini 核定店一起先試跑比對（"cmp"）；瑞光 mztrg、文心 mztwx 不列＝照現在。店碼對 STORES（小辛辣光復＝""）
+  var ST_ONLY_MINI = { "": "cmp", "cf": "cmp", "hq": "cmp", "mztjs": "cmp", "mztgf": "cmp", "mztlzl": "cmp", "mztmc": "cmp" };
   var ST_HEDGE_MS = (isLocalHost && +qs('st_hedge_ms')) || 1200, ST_CMP_DELAY_MS = (isLocalHost && +qs('st_cmp_ms')) || 1500;
   if (isLocalHost && qs('st_only') !== null && qs('st_only') !== '') {   // 本機測試：?st_only=cmp|1|0 套用到每一家店
     var so = qs('st_only'); ST_ONLY_MINI = { '*': so === 'cmp' ? 'cmp' : so === '1' };
