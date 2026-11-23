@@ -225,7 +225,7 @@ console.log('\n════ 七、開關 ════');
   check('G80', '收卡關著時只帶 grace:true → 不會打開收卡', [q({ grace: true }), m.props.REST_CAP_ON], [{ ok: true, on: false, trigger: 0, grace: false }, undefined]);
   check('G81', "on:true（沒帶 grace）→ 跟改版前一樣寫 '1'、回應沒有 grace 欄", [q({ on: true }), m.props.REST_CAP_ON], [{ ok: true, on: true, trigger: 1 }, '1']);
   check('G82', "grace:true → '2'、觸發器不動", [q({ grace: true }), m.props.REST_CAP_ON], [{ ok: true, on: true, trigger: 1, grace: true }, '2']);
-  check('G83', '只查 → 回 grace:true', q({}), { ok: true, on: true, trigger: 1, grace: true });
+  check('G83', '只查（不帶 grace）→ 回應跟 38d0340 同形狀、沒有 grace 欄；只查寬限：帶 grace:null → 回 grace:true、不改值', [q({}), q({ grace: null }), m.props.REST_CAP_ON], [{ ok: true, on: true, trigger: 1 }, { ok: true, on: true, trigger: 1, grace: true }, '2']);
   check('G84', "grace:false → '1'", [q({ grace: false }), m.props.REST_CAP_ON], [{ ok: true, on: true, trigger: 1, grace: false }, '1']);
   check('G85', "on:true＋grace:true → '2'、觸發器一支", [q({ on: true, grace: true }), m.props.REST_CAP_ON], [{ ok: true, on: true, trigger: 1, grace: true }, '2']);
   check('G86', "on:true 沒帶 grace → 回到 '1'（重開收卡會把寬限關掉，上線清單有寫）", [q({ on: true }).grace, m.props.REST_CAP_ON], [undefined, '1']);
@@ -804,9 +804,11 @@ const tt = (hm) => T(D + 'T' + hm + ':00');
   {
     const m = nine((mm) => boom(mm, 'SS_3'));
     const r1 = m.sb.capGraceSingle_(ME);
+    const r1b = m.sb.capGraceSingle_(ME);   // 同一次執行：記住失敗、不重開
+    m.sb.CAP_SINGLE_MEMO_ = null;          // 下一次執行（Google 每次執行全域變數歸零）
     m.peers.SS_3.sh.roster.getDataRange = function () { return { getValues: () => m.peers.SS_3.sh.roster.values.map((r) => r.slice()) }; };
     const r2 = m.sb.capGraceSingle_(ME);
-    check('S13', '讀取失敗不快取：第一次失敗 → 照舊；那家店恢復後下一次就重讀、判單店（不用等 10 分鐘）', [r1, r2], [false, true]);
+    check('S13', '讀取失敗不寫跨執行快取：第一次失敗 → 照舊（同一次執行再問仍照舊、不重開）；那家店恢復後下一次執行就重讀、判單店（不用等 10 分鐘）', [r1, r1b, r2], [false, false, true]);
   }
 }
 {
@@ -814,7 +816,7 @@ const tt = (hm) => T(D + 'T' + hm + ':00');
    * 暖快取後把 cgs: 那一鍵改壞（[]、[{a:1}]、舊格式字串陣列、n 不符、店別不符、元素空字串、版本不對）→ 一律重讀 → 仍判多店、照舊；
    * 真的 0 人（{n:0, names:[]}）是合法快取。 */
   const twinPeer = { SS_P: { roster: [OTHER, { emp_id: 'P02', name: '測試一', key: 'KQ', device_id: 'DQ', active: 'TRUE' }] } };
-  const keyP = 'cgs:' + 'SS_P'.slice(-12);
+  const keyP = 'cgs:SS_P';   // #232 審查第一輪第 2 條起用完整試算表 ID
   const bad = [
     ['空陣列 []', '[]'], ['元素不是字串 [{"a":1}]', '[{"a":1}]'], ['舊格式字串陣列', '["別人"]'],
     ['n 跟 names 不符', JSON.stringify({ v: 1, store: 'SS_P', n: 2, names: ['別人'] })],
@@ -829,6 +831,7 @@ const tt = (hm) => T(D + 'T' + hm + ':00');
     m.sb.capGraceSingle_(ME);
     const r0 = reads;
     m.cache[keyP] = { v: val, exp: Infinity };
+    m.sb.CAP_SINGLE_MEMO_ = null;   // 下一次執行
     const single = m.sb.capGraceSingle_(ME);
     return label + ':' + (reads - r0) + ':' + single;
   });
@@ -841,6 +844,142 @@ const tt = (hm) => T(D + 'T' + hm + ':00');
   const m2 = worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [OTHER, { emp_id: 'P03', name: '', key: 'KZ', device_id: 'DZ', active: 'TRUE' }] } } });
   m2.sb.capGraceSingle_(ME);
   check('S14c', '名冊有一列名字空白：不放進清單（快取元素都是非空字串）', JSON.parse(m2.cache[keyP].v).names, ['別人']);
+}
+
+/* ════ 十四、#232 獨立審查第一輪四條＋殘餘 ════ */
+console.log('\n════ 十四、#232 審查第一輪：必要欄位、完整試算表 ID、同次執行記住名冊、cap_set ════');
+{
+  /* F：班表快取的必要欄位（從 capGraceDayEnd_／capSchedShiftOf_ 反推）。每個欄位各刪一次、各改錯型別一次 → 重讀 1 次、照寬限。
+   * 班別 id／start／end；segs 每段 start／end；W 格 t、s。 */
+  const segWorld = (fn) => {   // 兩段 09–13＋14–18、08:55 上班沒打卡 → 滿 10＝19:00、比 18:00 晚 60 → 寬限
+    const m = world(D + 'T19:00:00', [['08:55:00', 'in']], { sched: two(['09:00', '13:00'], ['14:00', '18:00']) });
+    let reads = 0; const sh = m.self.sh.sched_pub, gdr = sh.getDataRange; sh.getDataRange = function () { reads++; return gdr.apply(this, arguments); };
+    status(m); const r0 = reads;
+    fn(m.cache); m.setNow(D + 'T19:01:00');
+    const s = status(m).cap, r1 = reads - r0;
+    m.sb.capSweep();
+    return [r0, r1, s.grace_hm || null, !!s.locked, sysHm(m), reads - r0 - r1];
+  };
+  const OKW = [1, 1, '19:00', false, [], 0];
+  const FIELDS = [
+    ['F1★', '班別 end 不見', (o) => { delete o.shifts[0].end; }],
+    ['F2★', '班別 end 是數字', (o) => { o.shifts[0].end = 1800; }],
+    ['F3★', '班別 start 不見', (o) => { delete o.shifts[0].start; }],
+    ['F4★', '班別 start 是空字串', (o) => { o.shifts[0].start = ''; }],
+    ['F5★', '班別 id 不見', (o) => { delete o.shifts[0].id; }],
+    ['F6', '班別 id 是物件', (o) => { o.shifts[0].id = { a: 1 }; }],
+    ['F7★', 'W 格 s 不見', (o) => { delete o.rows[0].cells[19].s; }],
+    ['F8★', 'W 格 s 是空字串', (o) => { o.rows[0].cells[19].s = ''; }],
+    ['F9★', 'W 格 s 是 true', (o) => { o.rows[0].cells[19].s = true; }],
+    ['F10', 'W 格 t 不見', (o) => { delete o.rows[0].cells[19].t; }],
+    ['F11', 'W 格 t 是數字', (o) => { o.rows[0].cells[19].t = 1; }],
+    ['F12★', '班別多了 bad 標記（好的班別被標壞）', (o) => { o.shifts[0].bad = 1; }],
+    ['F13★', 'W 格同時有 s 和 bad', (o) => { o.rows[0].cells[19].bad = 1; }],
+  ];
+  FIELDS.forEach(([id, label, f]) => check(id, '快取' + label + ' → 重讀 1 次、照寬限', corrupt((c) => edit(c, f)), OKW));
+  const SEGF = [
+    ['F20★', 'segs 第二段 end 不見', (o) => { delete o.shifts[0].segs[1].end; }],
+    ['F21★', 'segs 第二段 end 是 null', (o) => { o.shifts[0].segs[1].end = null; }],
+    ['F22★', 'segs 第一段 start 不見', (o) => { delete o.shifts[0].segs[0].start; }],
+    ['F23★', 'segs 第一段 start 是數字', (o) => { o.shifts[0].segs[0].start = 900; }],
+  ];
+  SEGF.forEach(([id, label, f]) => check(id, '快取（兩段班）' + label + ' → 重讀 1 次、照寬限', segWorld((c) => edit(c, f)), OKW));
+  // 發布資料本身缺必要欄位：快取存成帶 bad 的合法形狀 → 第二次 0 次重讀；判斷照舊（讀不到）
+  const PUB = [
+    ['F30', '班別缺 end', [{ id: 'A', name: '班', start: '09:00' }], { t: 'W', s: 'A' }],
+    ['F31', '班別缺 id', [{ name: '班', start: '09:00', end: '18:00' }], { t: 'W', s: 'A' }],
+    ['F32', 'W 格缺 s', [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], { t: 'W' }],
+    ['F33', 'segs 有一段缺 end', [{ id: 'A', name: '班', start: '09:00', end: '18:00', segs: [{ start: '09:00', end: '13:00' }, { start: '14:00' }] }], { t: 'W', s: 'A' }],
+    ['F34', 'start 是數字', [{ id: 'A', name: '班', start: 900, end: '18:00' }], { t: 'W', s: 'A' }],
+  ];
+  PUB.forEach(([id, label, shifts, cell]) => {
+    const m = world(D + 'T19:00:00', [['08:55:00', 'in']], { sched: schedOf(shifts, cell) });
+    let reads = 0; const sh = m.self.sh.sched_pub, gdr = sh.getDataRange; sh.getDataRange = function () { reads++; return gdr.apply(this, arguments); };
+    m.sb.capGraceSched_('', 'T01'); const r1 = reads;
+    m.sb.capGraceSched_('', 'T01');
+    check(id, '發布資料本身' + label + '：快取合格（第二次讀 0 次）、判斷照舊代記', [r1, reads - r1, autoAt(m, D + 'T19:10:00')], [1, 0, [['11-20 19:00'], true, null]]);
+  });
+  {
+    const m = world(D + 'T19:05:00', [['08:55:00', 'in']], { sched: schedOf([{ id: 'B', name: '壞', start: '10:00' }, { id: 'A', name: '班', start: '09:00', end: '18:00' }], { t: 'W', s: 'A' }) });
+    check('F35', '同一期另一個班別壞（缺 end）不影響本人的班別 A → 照寬限', autoAt(m, D + 'T19:05:00'), [[], false, '19:00']);
+  }
+}
+{
+  /* I：名冊快取用完整試算表 ID（#232 審查第一輪第 2 條）。九家店，兩家 ID 後 12 碼相同（A123456789012、B123456789012），
+   * 排在前面那家是空名冊、後面那家有同名在職 → 多店 → 照舊。 */
+  const ids = ['SS_1', 'SS_2', 'SS_3', 'SS_4', 'SS_5', 'SS_6', 'A123456789012', 'B123456789012'];
+  const peers = {};
+  ids.forEach((id, i) => { peers[id] = { roster: id === 'A123456789012' ? [] : id === 'B123456789012' ? [{ emp_id: 'P9', name: '測試一', key: 'KP9', device_id: 'DP9', active: 'TRUE' }] : [Object.assign({}, OTHER, { emp_id: 'P' + i })] }; });
+  const m = make({ now: T(D + 'T19:05:00'), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: '2' }, self: { roster: [ME], events: [[D + 'T08:55:00', 'E01', 'in']] }, peers });
+  m.run(CAP_SRC_REAL);
+  m.sb.REST_PEERS_ = ids.map((id, i) => ({ code: 'p' + i, ss: id })).concat([{ code: 'gf', ss: 'SELF' }]);
+  const sh = m.self.insertSheet('sched_pub'); sh.appendRow(SP_HEAD); sh.appendRow(['', 'T01', 1, JSON.stringify(schedFor('E01', [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], { t: 'W', s: 'A' })), 'op', '']);
+  check('I1★', '兩家店 ID 後 12 碼相同（前一家空名冊、後一家有同名在職）→ 多店 → 照舊 19:00 代記；快取鍵是完整 ID',
+    [st2(m), Object.keys(m.cache).filter((k) => /^cgs:/.test(k)).sort().slice(0, 2)], ['LOCK19:00', ['cgs:A123456789012', 'cgs:B123456789012']]);
+}
+{
+  /* O：一次掃描對每家店最多開一次（#232 審查第一輪第 3 條）。九家店、本店 12 位單店同仁都 09:00 上班、排 09–18，19:05 掃描。
+   * 比 38d0340（開關 '1'）多出來的開啟次數：每家店最多 1 次（寬限第一次讀名冊）。 */
+  const twelve = Array.from({ length: 12 }, (_, i) => ({ emp_id: 'E' + (i + 1), name: '同仁' + (i + 1), key: 'K' + i, device_id: 'D' + i, active: 'TRUE' }));
+  const mk = (src, cap, mod) => {
+    const peers = {};
+    for (let i = 1; i <= 8; i++) peers['SS_' + i] = { roster: [Object.assign({}, OTHER, { emp_id: 'P' + i })] };
+    const m = make({ now: T(D + 'T19:05:00'), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: cap }, self: { roster: twelve, events: twelve.map((p) => [D + 'T09:00:00', p.emp_id, 'in']) }, peers });
+    m.run(src);
+    m.sb.REST_PEERS_ = Object.keys(peers).map((id, i) => ({ code: 'p' + i, ss: id })).concat([{ code: 'gf', ss: 'SELF' }]);
+    const sh = m.self.insertSheet('sched_pub'); sh.appendRow(SP_HEAD);
+    sh.appendRow(['', 'T01', 1, JSON.stringify({ start: '2026-11-01', shifts: [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], rows: twelve.map((p) => ({ emp_id: p.emp_id, cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: 'A' } : { t: 'R' })) })) }), 'op', '']);
+    const cnt = {}, orig = m.sb.SpreadsheetApp.openById;
+    m.sb.SpreadsheetApp = Object.assign({}, m.sb.SpreadsheetApp, { openById: (id) => { cnt[id] = (cnt[id] || 0) + 1; if (m.__dead === id) throw new Error('打不開'); return orig(id); } });
+    if (mod) mod(m);
+    m.sb.capSweep();
+    return { cnt, sys: m.self.sh.events.values.filter((r) => r.indexOf('system_cap') >= 0).length };
+  };
+  const extra = (a, b) => Object.keys(Object.assign({}, a.cnt, b.cnt)).filter((k) => k !== 'SELF').map((k) => (a.cnt[k] || 0) - (b.cnt[k] || 0));
+  const dead = (m) => { m.__dead = 'SS_5'; };
+  const nb = mk(CAP_SRC_REAL, '2', dead), ob = mk(OLDSRC, '1', dead);
+  check('O1★', '一家店打不開：12 人都照舊代記；對每家店的開啟次數比 38d0340 最多多 1 次（打不開那家：新 ' + nb.cnt.SS_5 + '／舊 ' + ob.cnt.SS_5 + '）',
+    [nb.sys, ob.sys, Math.max.apply(null, extra(nb, ob)) <= 1], [12, 12, true]);
+  const noPut = (m) => { const c = m.sb.CacheService.getScriptCache(); m.sb.CacheService = { getScriptCache: () => Object.assign({}, c, { put: (k, v, t) => { if (/^cgs:/.test(k)) throw new Error('寫不進去'); return c.put(k, v, t); } }) }; };
+  const np = mk(CAP_SRC_REAL, '2', noPut), op = mk(OLDSRC, '1', noPut);
+  check('O2★', '名冊快取寫不進去：12 人都寬限（不寫卡）；對每家店的開啟次數比 38d0340 最多多 1 次（SS_1：新 ' + np.cnt.SS_1 + '／舊 ' + op.cnt.SS_1 + '）',
+    [np.sys, Math.max.apply(null, extra(np, op)) <= 1], [0, true]);
+}
+{
+  /* C：cap_set 沒帶 grace 鍵 → 跟 38d0340 逐字相同（屬性 '1'、'0'、沒設 × {}、{on:true}、{on:false}） */
+  const run = (src, prop, body) => {
+    const m = world(D + 'T09:00:00', [], { props: { REST_CAP_ON: prop } });
+    if (src) m.run(src);
+    if (prop === undefined) delete m.props.REST_CAP_ON;
+    const trig = [];
+    m.sb.ScriptApp = { getProjectTriggers: () => trig.slice(), deleteTrigger: (t) => { trig.splice(trig.indexOf(t), 1); },
+      newTrigger: (fn) => ({ timeBased: () => ({ everyMinutes: () => ({ create: () => { trig.push({ getHandlerFunction: () => fn }); } }) }) }) };
+    return JSON.stringify([m.sb.handleCapSet_(Object.assign({ admin_key: 'ADM' }, body)), m.props.REST_CAP_ON === undefined ? null : m.props.REST_CAP_ON, trig.length]);
+  };
+  const diffs = [];
+  ['1', '0', undefined].forEach((prop) => [{}, { on: true }, { on: false }].forEach((b) => { const a = run(null, prop, b), o = run(OLDSRC, prop, b); if (a !== o) diffs.push([prop, b, a, o]); }));
+  check('C1', 'cap_set 沒帶 grace 鍵：屬性 1／0／沒設 × 只查／開／關，回應、屬性、觸發器都跟 38d0340 逐字相同', diffs, []);
+  check('C2★', "cap_set 屬性 '2'、沒帶 grace 鍵只查 → 沒有 grace 欄（帶了 grace 鍵才多回）", JSON.parse(run(null, '2', {}))[0], { ok: true, on: true, trigger: 0 });
+}
+{
+  /* H：名冊表頭（#232 審查殘餘）：別家店名冊缺 name 或 active 表頭、或 REST_PEERS_ 誤填成一份「有 roster 分頁、但表頭不對」的試算表 → 讀取失敗 → 照舊。
+   * 有正確表頭、0 列在職才算「那家店沒人」（S4）。 */
+  const hdr = (fn) => { const m = worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [OTHER] } } }); fn(m.peers.SS_P.sh.roster.values); return st2(m); };
+  check('H1★', '別家店名冊 active 表頭改名 → 照舊', hdr((v) => { v[0] = v[0].map((h) => (h === 'active' ? 'enabled' : h)); }), 'LOCK19:00');
+  check('H2★', '別家店名冊 name 表頭改名 → 照舊', hdr((v) => { v[0] = v[0].map((h) => (h === 'name' ? '姓名' : h)); }), 'LOCK19:00');
+  check('H3★', '誤填成別份試算表（roster 分頁只有 [foo] 表頭、沒有資料）→ 照舊', hdr((v) => { v.length = 0; v.push(['foo']); }), 'LOCK19:00');
+  check('H4', '本店名冊裡找不到這個人（例：名字改了）→ 照舊', worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [OTHER] } } }).sb.capGraceSingle_({ emp_id: 'E01', name: '不存在' }), false);
+}
+{
+  /* Q：判斷順序（#232 審查殘餘）：先問「快取已確定多店」，是的話不讀班表。多店者有快取 → 讀班表 0 次；單店者冷快取 → 照舊讀 1 次。 */
+  const m = worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [OTHER, { emp_id: 'P02', name: '測試一', key: 'KQ', device_id: 'DQ', active: 'TRUE' }] } } });
+  m.cache['cgs:SS_P'] = { v: JSON.stringify({ v: 1, store: 'SS_P', n: 2, names: ['別人', '測試一'] }), exp: Infinity };
+  let reads = 0; const sh = m.self.sh.sched_pub, g = sh.getDataRange; sh.getDataRange = function () { reads++; return g.apply(this, arguments); };
+  const s1 = st2(m);
+  const m2 = worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [OTHER] } } });
+  let r2 = 0; const sh2 = m2.self.sh.sched_pub, g2 = sh2.getDataRange; sh2.getDataRange = function () { r2++; return g2.apply(this, arguments); };
+  const s2 = st2(m2);
+  check('Q1', '多店者、名冊快取已有 → 不讀班表（0 次）、照舊鎖；單店者冷快取 → 讀班表 1 次、寬限', [s1, reads, s2, r2], ['LOCK19:00', 0, 'grace19:00', 1]);
 }
 
 done();
