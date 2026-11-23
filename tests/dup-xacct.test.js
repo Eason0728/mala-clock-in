@@ -205,7 +205,7 @@ function calcLines(over, pay) {
   eq(x.l3, [], '12 月的單不進 11 月');
 }
 
-console.log('\n══ ③-3 驗收補（2026-11-23）：對照計薪店不一致、對照表讀不到、只認 confirmed、② 集中一處 ══');
+console.log('\n══ ③-3 驗收補（2026-11-23）：對照計薪店不一致、對照表讀不到、認人跟引擎同一口徑、各帶入路徑、② 集中一處 ══');
 {
   // 第 1 項：主檔計薪門市跟對照表 pay_store 不一致（三個總部代號共用總部打卡表）→ 照樣認進來，不靜默排除
   for (const [pay, xpay] of [['MZTHQ', 'HQ'], ['HQ', 'MZTHQ'], ['HQ', 'SSLHQ'], ['MZTHQ', 'SSLGF']]) {
@@ -224,11 +224,50 @@ console.log('\n══ ③-3 驗收補（2026-11-23）：對照計薪店不一致
     eq([r.ok, (r.results || []).every((x) => x.ot_info && x.ot_info.dup_xacct_err === true)], [true, true], '對照表讀不到：計算照樣完成、每人記 dup_xacct_err（不當空表）');
     eq(lock(s, 'HQ').error, 'dup_xacct_check_failed', '　鎖定擋 dup_xacct_check_failed');
   }
-  // 第 3 項：只認 state＝confirmed（空白不算；大小寫、前後空白容忍）
-  for (const [st, want] of [['', 0], [null, 0], [undefined, 0], ['Confirmed ', 1], ['CONFIRMED', 1]]) {
-    const o = st === undefined ? { state: undefined } : { state: st };
-    const x = calcLines({ xmap: [XROW('DZY010', 'HQ', 'HQ', 'HQ-03'), XROW('DZY010', 'HQ', 'MZTGF', 'MZTGF01', o)] });
-    eq(x.l3.length, want, `墨竹亭光復帳號對照 state=${JSON.stringify(st)} → ${want ? '算同一人' : '不算（只認已確認）'}`);
+  // 認人口徑跟引擎（跨店支援自動帶入）共用 payXsupConfirmed_：引擎認的就認（含 state 空白），引擎不認的（大小寫不同）也不認
+  for (const [st, want] of [['', true], [null, true], [undefined, true], ['confirmed ', true], ['Confirmed', false], ['CONFIRMED', false]]) {
+    const xm = [XROW('DZY010', 'HQ', 'HQ', 'HQ-03', { state: st }), XROW('DZY010', 'HQ', 'MZTGF', 'MZTGF01', { state: st })];
+    const x = calcLines({ xmap: xm });
+    const h = x.r.results.find((y) => y.emp_id === 'HQ-03');
+    const sup = Number(h.support_hours) || 0;
+    eq([sup > 0, x.l3.map((y) => y[0]), lock(x.s, 'HQ').error], want ? [true, [true], 'dup_xacct'] : [false, [], undefined],
+      `對照 state=${JSON.stringify(st)}：引擎${want ? '有' : '沒有'}帶入墨竹亭光復時數 → 重複檢查${want ? '認得、兩張整天出差擋' : '也不認、可鎖'}（跟引擎一致）`);
+  }
+  // pay_store 不一致、引擎沒帶入 → ① 只提醒可鎖；金額跟「墨竹亭光復沒有那張單」時完全相同（證明沒有重複算）
+  {
+    const xm = [XROW('DZY010', 'MZTHQ', 'HQ', 'HQ-03'), XROW('DZY010', 'MZTHQ', 'MZTGF', 'MZTGF01')];
+    const a = calcLines({ xmap: xm });
+    const b = calcLines({ xmap: xm, clock: (c) => { c['ck-gf'].requests = []; c['ck-gf'].approved = []; } });
+    const pick = (x) => { const h = x.r.results.find((y) => y.emp_id === 'HQ-03'); return [h.gross, h.deduction, h.net, h.total_hours, h.support_hours, h.ot_paid_hours]; };
+    eq([a.l3.map((y) => y[0]), pick(a)], [[false], pick(b)], 'pay_store 不一致（主檔 HQ／對照 MZTHQ）：只提醒；應發、扣款、實付、時數跟沒有第二張單時逐項相同');
+    eq([lock(a.s, 'HQ').ok], [true], '　可以鎖');
+  }
+  // 其他帶入路徑：總部 Mirror（央廚帳號的核定抄進本店打卡表）→ 時數實際進計薪 → ① 要擋（not_support、pay_store 不一致都一樣）
+  for (const [label, xpay] of [['對照計薪店一致', 'HQ'], ['對照計薪店不一致', 'MZTHQ']]) {
+    const sc = scene('HQ', { xmap: [XROW('DZY027', xpay, 'HQ', 'HQ-03'), XROW('DZY027', xpay, 'CF', 'HQ-03', { not_support: 'true' })],
+      clock: (c) => {
+        c['ck-gf'].requests = []; c['ck-gf'].approved = [];
+        c['ck-cf'] = { roster: [], events: [], leave: [], approved: [AP('2026-11-05', 'HQ-03', 8)], requests: [RQ('rq-cf-1', 'HQ-03', '2026-11-05', 'trip')] };
+        c['ck-hq'].approved = [Object.assign(AP('2026-11-05', 'HQ-03', 8), { mirror_src: 'CF', entered_at: '2026-11-06T04:00:00+08:00' })];
+      } });
+    sc.data.store.push({ code: 'CF', name: '央廚', clock_ss_id: 'ck-cf', emp_prefix: '', active: 'true', support_group: '*' });
+    let s = env(sc);
+    let r = s.post('handlePayrollCalc', { ym: '2026-11', store: 'HQ' });
+    eq([linesOf(r, 'HQ-03').map((y) => y[0]), lock(s, 'HQ').error], [[true], 'dup_xacct'], `Mirror 路徑（${label}、央廚帳號 not_support）：央廚核定抄進總部表、時數進計薪 → 兩張整天出差擋`);
+    const sc2 = J(sc);
+    sc2.clock['ck-hq'].approved = [AP('2026-11-05', 'HQ-03', 8)];
+    s = env(sc2);
+    r = s.post('handlePayrollCalc', { ym: '2026-11', store: 'HQ' });
+    eq(linesOf(r, 'HQ-03').map((y) => y[0]), [false], `　對照組（${label}）：總部表沒有抄自央廚的核定 → 央廚帳號時數沒進計薪 → 只提醒`);
+  }
+  // 手填的跨店支援時數（沒有日期、對不回哪個帳號哪一天）：現況＝重複檢查看不出來，① 只提醒、可鎖（待主管定，不自己定規則）
+  {
+    const xm = [XROW('DZY010', 'MZTHQ', 'HQ', 'HQ-03'), XROW('DZY010', 'MZTHQ', 'MZTGF', 'MZTGF01')];
+    const s = env(scene('HQ', { xmap: xm }));
+    const inputs = { 'HQ-03': { support: [{ code: 'MZTGF', store: '墨竹亭光復', hours: 8, rate: 240, amount: '' }] } };
+    const r = s.post('handlePayrollCalc', { ym: '2026-11', store: 'HQ', inputs });
+    const h = r.results.find((y) => y.emp_id === 'HQ-03');
+    eq([Number(h.support_hours), linesOf(r, 'HQ-03').map((y) => y[0])], [8, [false]], '【現況，待主管定】pay_store 不一致＋會計手填墨竹亭光復 8 小時：支援時數 8 進了薪資，但手填沒有日期／帳號 → 重複檢查只提醒');
   }
   // 第 5 項：② 集中在 PAY_DUP_R2_ANY_TRIP_ 一行
   {

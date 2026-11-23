@@ -3311,6 +3311,10 @@ function payXsupLateEarly_(entry) {
  * 回 { empty, synced_at, byEmp:{ 本店emp_id: { stores:[{code,name,hours,days,pending_days}], cross:[…], dup:[code] } },
  *      unmapped:[{emp_no,acct_store,emp_id}], dup_pay:[{emp_id,code}], pending:[{emp_id,code,days}] }；ym < 生效月回 null。
  */
+/** 打卡對照哪些列算數——跨店支援自動帶入與跨帳號重複檢查（payDupXacctStore_）共用這兩支，認人口徑只有一份（2026-11-23 驗收）：
+ *  payXsupPayRows_＝排除 acct_only；payXsupConfirmed_＝state 是 confirmed（空白當 confirmed，同改版前的寫法；大小寫不同不算）。 */
+function payXsupPayRows_(xmap) { return (xmap || []).filter(function (r) { return !payXsupBool_(r.acct_only); }); }
+function payXsupConfirmed_(r) { return String(r.state || 'confirmed').trim() === 'confirmed'; }
 function paySupportAutoCore_(ym, home, d) {
   if (!payXsupOn_(ym)) return null;
   home = payXsupCode_(home);
@@ -3318,14 +3322,14 @@ function paySupportAutoCore_(ym, home, d) {
   const homeKey = payXsupClockKey_(home, storeBy);
   const homeGroup = storeBy[home] ? storeBy[home].support_group : '';
   // acct_only 列只給打卡店提醒：不算「已同步」、不進計薪（Fable 複審 #4）
-  const xmap = (d.xmap || []).filter(function (r) { return !payXsupBool_(r.acct_only); });
+  const xmap = payXsupPayRows_(d.xmap);
   let synced = '';
   xmap.forEach(function (r) { const t = String(r.synced_at || ''); if (t > synced) synced = t; });
   const out = { empty: !xmap.length, synced_at: synced, byEmp: {}, unmapped: [], dup_pay: [], dup_acct: [], pending: [] };
   // 同一個打卡帳號確認給兩個人（GPT #6）：兩邊都不帶入、列提醒，否則 8H 會發成 16H
   const owners = {};
   xmap.forEach(function (r) {
-    if (String(r.state || 'confirmed').trim() !== 'confirmed') return;
+    if (!payXsupConfirmed_(r)) return;
     const k = (payXsupClockKey_(r.acct_store, storeBy) || payXsupCode_(r.acct_store)) + '|' + payXsupId_(r.emp_id);
     (owners[k] = owners[k] || {})[String(r.emp_no)] = true;
   });
@@ -3368,7 +3372,7 @@ function paySupportAutoCore_(ym, home, d) {
     if (payXsupCode_(r.pay_store) !== home) return;
     const state = String(r.state || 'confirmed').trim();
     if (state === 'suggested') { out.unmapped.push({ emp_no: String(r.emp_no), acct_store: payXsupCode_(r.acct_store), emp_id: String(r.emp_id) }); return; }
-    if (state !== 'confirmed') return;
+    if (!payXsupConfirmed_(r)) return;
     (groups[String(r.emp_no)] = groups[String(r.emp_no)] || []).push(r);
   });
   Object.keys(groups).forEach(function (no) {
@@ -4605,13 +4609,14 @@ function payDupXacctStore_(ym, st, master, XSUP) {
   const home = payXsupCode_(st), homeKey = payXsupClockKey_(home, storeBy);
   /* 對照表讀不到＝丟例外（呼叫端改成 dup_xacct_check_failed 擋鎖定）：不可以當空表、只剩本店帳號被檢查（驗收 2026-11-23 第 2 項）。 */
   const xmap = payRead('xmap') || [];
-  /* 認人只看「已確認」：state 必須是 confirmed（空白不算；同打卡端 AttDigest.gs 的口徑，驗收第 3 項）；acct_only 不算（同跨店支援帶入）。
+  /* 認人口徑跟跨店支援自動帶入（引擎）共用同一支：payXsupPayRows_（排除 acct_only）＋payXsupConfirmed_（state 空白也算 confirmed、大小寫不同不算）。
+     打卡端 AttDigest.gs（行政群清單）嚴格要 confirmed，state 空白的帳號兩邊會不一樣（見 PR 說明已知差異）。
      不看 pay_store（驗收第 1 項）：對照表的計薪店跟薪資主檔不一致（例：主檔 MZTHQ、對照寫 HQ，三個總部代號 HQ／MZTHQ／SSLHQ 共用總部打卡表）時，
      照樣用「本店打卡表裡的帳號＝這位主檔同仁」把整組認進來。哪個帳號的時數進這次計薪仍照引擎（XSUP）判斷，所以不會多擋也不會少擋：
      pay_store 不一致時引擎沒有帶入支援時數，① 只提醒；② ③ 照擋。 */
   const groups = {};
-  xmap.forEach(function (r) {
-    if (payXsupBool_(r.acct_only) || String(r.state == null ? '' : r.state).trim().toLowerCase() !== 'confirmed') return;
+  payXsupPayRows_(xmap).forEach(function (r) {
+    if (!payXsupConfirmed_(r)) return;
     (groups[String(r.emp_no)] = groups[String(r.emp_no)] || []).push(r);
   });
   const isHomeAcct = function (code) { const k = payXsupClockKey_(code, storeBy); return homeKey ? k === homeKey : payXsupCode_(code) === home; };
@@ -4624,6 +4629,7 @@ function payDupXacctStore_(ym, st, master, XSUP) {
   };
   const nameOf = function (code) { return String((storeBy[payXsupCode_(code)] || {}).name || code); };
   const out = {};
+  let homeAppr = null;   // 本店 approved（同 payCollect 的讀法），Mirror 那條路才用
   (master || []).forEach(function (e) {
     const raw = String(e.emp_id == null ? '' : e.emp_id).trim(), mid = payXsupId_(raw);
     if (!mid) return;
@@ -4641,6 +4647,20 @@ function payDupXacctStore_(ym, st, master, XSUP) {
     const accts = [{ key: (homeKey || home) + '|home', store: hStore, store_name: nameOf(hStore), acct: hx.length ? String(hx[0].emp_id).trim() : raw, role: 'home',
                      rows: reqOf(home).filter(function (q) { return homeIds[payXsupId_(q.emp_id)]; }) }];
     const entry = XSUP && XSUP.byEmp ? XSUP.byEmp[raw] : null;
+    /* 支援帳號的時數「實際有沒有進這次計薪」看引擎結果，兩條路：
+       ①跨店支援自動帶入：在 XSUP.byEmp[工號].stores（同單位、非 not_support／dup_pay／dup_acct；pay_store 不一致時引擎沒帶入＝不在這裡）；
+       ②總部 Mirror：央廚帳號的核定被抄進本店打卡表（mirror_src），payCollect 讀本店 approved（buildLatestApprovedMap）時就算進本店時數（not_support 的人也一樣）。
+       手填的跨店支援時數沒有日期、也不知道是哪個帳號，對不回來（見 PR 說明，待主管定）。 */
+    const mirrored = function (S, ck) {
+      if (!homeAppr) homeAppr = buildLatestApprovedMap(payClockRead(home, 'approved') || []);
+      return Object.keys(homeAppr).some(function (d) {
+        if (String(d).slice(0, 7) !== ym) return false;
+        return Object.keys(homeAppr[d]).some(function (id) {
+          const rec = homeAppr[d][id], m = payXsupCode_(rec && rec.mirror_src);
+          return !!m && homeIds[payXsupId_(id)] && (m === S || payXsupClockKey_(m, storeBy) === ck) && payNum(rec.approved_hours) > 0;
+        });
+      });
+    };
     const seenK = {};
     rows.forEach(function (r) {
       const S = payXsupCode_(r.acct_store);
@@ -4650,9 +4670,9 @@ function payDupXacctStore_(ym, st, master, XSUP) {
       const eid = payXsupId_(r.emp_id), key = ck + '|' + eid;
       if (seenK[key]) return;
       seenK[key] = true;
-      const inPay = !!entry && (entry.stores || []).some(function (s) {
+      const inPay = (!!entry && (entry.stores || []).some(function (s) {
         return payXsupClockKey_(s.code, storeBy) === ck && (s.acct == null || payXsupId_(s.acct) === eid);
-      });
+      })) || mirrored(S, ck);
       accts.push({ key: key, store: S, store_name: nameOf(S), acct: String(r.emp_id).trim(), role: inPay ? 'pay' : 'remind',
                    rows: reqOf(S).filter(function (q) { return payXsupId_(q.emp_id) === eid; }) });
     });
