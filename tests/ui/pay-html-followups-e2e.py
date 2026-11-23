@@ -364,18 +364,21 @@ try:
                 del held[:]; pg.wait_for_timeout(2500)
                 k = len(seen); pg.focus('#calcBtn'); pg.keyboard.press('Enter'); pg.wait_for_timeout(2000)
                 ok(bname + ' G4 對照：讀取回來之後重新計算照送', not pg.evaluate('!!LOAD_INFLIGHT') and 'payroll_calc' in [x.get('action') for x in seen[k:]], [x.get('action') for x in seen[k:]])
-                # G5 第二輪審查：同店月的背景讀取在跑時存獎金 → 程式自己的重算不可被丟掉，讀取結束後補送 payroll_calc、才顯示「獎金已儲存」
+                # G5 第四輪（讀寫互斥）：同店月的背景讀取在跑時按儲存 → 不送、提示「讀取中…」、畫面資料還在；讀取結束後再按 → 照常存、重算
                 fresh()
                 cfg['hold_month'] = ('2026-11',)
                 pg.evaluate("window.__lm=loadMonth(); 0"); pg.wait_for_timeout(300)
-                k = len(seen); pg.evaluate("window.__sb=saveBonus(null); 0"); pg.wait_for_timeout(800)
-                mid = [x.get('action') for x in seen[k:]]; clear_msg()
+                bonus_before = pg.evaluate("JSON.stringify(BONUS)")
+                k = len(seen); clear_msg(); pg.evaluate("window.__sb=saveBonus(null); 0"); pg.wait_for_timeout(600)
+                mid = [x.get('action') for x in seen[k:]]; m_mid = msg()
                 cfg['hold_month'] = ()
                 for r in list(held): r.continue_()
-                del held[:]; pg.wait_for_timeout(3500)
+                del held[:]; pg.wait_for_timeout(3000)
+                ok(bname + ' G5 背景讀取在跑時按儲存：沒有送 payroll_bonus_set、提示「讀取中…」、畫面獎金資料還在；讀取結束後旗標清掉',
+                   'payroll_bonus_set' not in mid and m_mid == '讀取中…' and pg.evaluate("JSON.stringify(BONUS)") == bonus_before and not pg.evaluate('readBusy()'), (mid, m_mid))
+                k = len(seen); pg.evaluate("window.__sb=saveBonus(null); 0"); pg.wait_for_timeout(3000)
                 aft = [x.get('action') for x in seen[k:]]
-                ok(bname + ' G5 背景讀取在跑時存獎金：存檔請求先送、重算等讀取結束後才送（讀取結束後有 payroll_calc），最後不在讀取中',
-                   'payroll_bonus_set' in mid and 'payroll_calc' not in mid and 'payroll_calc' in aft and not pg.evaluate('!!LOAD_INFLIGHT'), (mid, aft))
+                ok(bname + ' G6 讀取結束後再按儲存 → 存獎金、重算都送出', 'payroll_bonus_set' in aft and 'payroll_calc' in aft, aft)
             b.close()
 finally:
     proc.terminate()

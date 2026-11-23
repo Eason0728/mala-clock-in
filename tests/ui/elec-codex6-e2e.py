@@ -104,24 +104,17 @@ try:
                 def routeA(route):
                     bd = act(route); a = bd.get('action'); seenA.append((a, bd.get('ym')))
                     if a == 'payroll_calc' and bd.get('ym') == '2026-11' and 'c' not in hA: hA['c'] = route; return
-                    if a == 'payroll_month' and bd.get('ym') == '2026-11' and 'c' in hA and 'm' not in hA:
-                        j = route.fetch().json()   # 重算還沒寫進去：這份是舊草稿
-                        if j.get('run') and j['run'].get('results'): j['run']['results'][0]['name'] = OLD
-                        hA['m'] = (route, j); return
                     route.continue_()
                 pg.route('**/*', routeA)
                 pg.click('#elecSave')
                 until(lambda: 'c' in hA)
-                setym('2026-10'); setym('2026-11', 600)
-                until(lambda: 'm' in hA)
-                hA['c'].continue_(); pg.wait_for_timeout(1500)
-                ok(bname + ' A 重算先回來、切回的月資料還在路上：匯出與鎖定先擋', 'm' in hA and blocked() and pg.is_disabled('#lockBtn'), (list(hA), blocked()))
                 k = len(seenA)
-                if 'm' in hA: hA['m'][0].fulfill(status=200, content_type='application/json', body=json.dumps(hA['m'][1]))
-                pg.wait_for_timeout(3000)
+                setym('2026-10', 600); setym('2026-11', 600)
+                ok(bname + ' A 重算在途：切回 11 月的月資料讀取排隊、沒有發出（讀寫互斥，舊月資料不可能晚到），匯出與鎖定先擋',
+                   'c' in hA and ('payroll_month', '2026-11') not in seenA[k:] and pg.evaluate('!!LOAD_INFLIGHT') and blocked() and pg.is_disabled('#lockBtn'), (list(hA), seenA[k:], blocked()))
+                hA['c'].continue_(); pg.wait_for_timeout(3500)
                 again = ('payroll_month', '2026-11') in seenA[k:]
-                ok(bname + ' A 晚到的舊月資料沒有蓋掉重算結果（畫面沒有舊資料）', pg.evaluate('RESULTS.length') > 0 and not res_has_old(), (pg.evaluate('RESULTS.length'), res_has_old()))
-                ok(bname + ' A 丟掉舊月資料後重讀一次（payroll_month 11 月），重讀成功才放行匯出與鎖定', again and not blocked() and not pg.is_disabled('#lockBtn'), (seenA[k:], blocked()))
+                ok(bname + ' A 重算結束後才發月資料讀取；讀完放行（畫面是重算後的結果、沒有舊資料、匯出與鎖定恢復）', again and pg.evaluate('RESULTS.length') > 0 and not res_has_old() and not blocked() and not pg.is_disabled('#lockBtn'), (seenA[k:], blocked(), pg.evaluate('RESULTS.length')))
                 pg.unroute('**/*')
 
             # ── B（13b 鎖定成功、重讀失敗）──
