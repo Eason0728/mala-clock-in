@@ -8118,7 +8118,7 @@ function handlePnlLaborEstimate_(body) {
  *     拼起來的就不是同一個時間點的資料，影子比對反而會誤判；量超過上限回 too_many_rows、不截斷。
  *   ・錯誤：unauthorized｜scope_forbidden｜whitelist_version_mismatch｜bad_ym｜no_sheet（master／store／run 分頁不存在，帶 table）｜
  *     too_many_rows（帶 table）｜read_failed（開試算表、查分頁、讀格子丟例外；不回任何細節）。
- * ⚠ 完全唯讀：只用 getSheetByName＋readSheetAsObjects 讀格子；不經 paySheet（分頁不存在會建分頁）、不經 payRead（不進請求內快取）、
+ * ⚠ 完全唯讀：只用 getSheetByName、getLastRow／getLastColumn、getRange(...).getValues() 讀格子（有上限，見 payShadowReadBounded_；不用整張讀的 readSheetAsObjects）；不經 paySheet（分頁不存在會建分頁）、不經 payRead（不進請求內快取）、
  *   不寫任何分頁、不寫指令碼屬性、不建觸發器、不取鎖、不碰 CacheService、不寫 payroll_audit、不重算——
  *   payroll_month 在草稿過期時會自動重算寫回，這支不走那條路：分頁上是什麼就給什麼（過期草稿也照給），沒有就回空陣列。
  *   payroll_ 開頭、不在 DutyFeed.gs 的 DUTY_FEED_PAYROLL_WRITES_ → 自動算唯讀，不記變動。
@@ -8148,7 +8148,8 @@ const PAY_SHADOW_W2_ = {
   config: PAY_SHADOW_W1_.config,
   holiday: PAY_SHADOW_W1_.holiday,
   store: PAY_SHADOW_W1_.store,
-  run: PAY_SHADOW_W1_.run,
+  /* run 多 status（draft／final）、run_at（這份結果什麼時候算的）：同店月草稿與已鎖並存、草稿過期時，mini 才分得出該拿哪一份比（Codex 217 r1 §4，2026-11-23） */
+  run: PAY_SHADOW_W1_.run.concat(['status', 'run_at']),
   item: PAY_SHADOW_W1_.item,
   leave_type: ['code', 'name', 'pay_ratio', 'count_absent', 'offset_shortfall', 'cap_days', 'cap_basis', 'over_ratio',
     'merge_into', 'cap_per_month', 'tenure_months', 'under_ratio', 'active', 'sort', 'store', 'min_unit',
@@ -8162,8 +8163,8 @@ const PAY_SHADOW_W2_ = {
   hol_emp: ['ym', 'date', 'store', 'emp_id'],   // 不出 name／note／updated_at（2026-11-23 主管同意的前提）
 };
 const PAY_SHADOW_WHITELISTS_ = { w1: PAY_SHADOW_W1_, w2: PAY_SHADOW_W2_ };
-/* 每張表怎麼讀：month＝'ym' 只回這個月；'year2' 只回 ym 去年 1 月到今年 12 月（手填工時：曆年請假上限、週年制特休要看前面的月份，
-   再早的用不到，不多抄）；false＝整張。need＝分頁不存在要回 no_sheet（其他分頁不存在＝空陣列）。
+/* 每張表怎麼讀：month＝'ym' 只回這個月；'year2' 只回 ym 去年 1 月到今年 12 月（手填工時：曆年請假上限 payLeaveUsedBefore 看同年 1 月起、
+   週年制特休 payAnnualInfo 的 usedIn 看週年期（最早約 ym 往前 12 個月）的 annual_h，再早的用不到，不多抄；資料範圍待主管核定，Codex 217 r1 擋項一）；false＝整張。need＝分頁不存在要回 no_sheet（其他分頁不存在＝空陣列）。
    max＝筆數上限（超過回 too_many_rows、不截斷）；master／config／store／run 2,000、item 60,000 照契約 4.2b，其餘依各表性質另定。 */
 const PAY_SHADOW_TABLES_ = {
   master:     { month: false,   need: true,  max: 2000 },
@@ -8191,31 +8192,120 @@ function handlePayrollShadowExport(body) {
   const raw = {};
   try {
     const ss = getSS();
+    /* 第一輪：只查分頁與列數、欄數（getLastRow／getLastColumn），一格都不取值。任何一張超過上限就立刻停（Codex 217 r1 擋項三）。 */
+    const shs = {};
     for (let i = 0; i < names.length; i++) {
-      const t = names[i];
+      const t = names[i], spec = PAY_SHADOW_TABLES_[t];
       const sh = ss.getSheetByName(PAY_SHEET_NAME[t]);
       if (!sh) {
-        if (PAY_SHADOW_TABLES_[t].need) return { ok: false, error: 'no_sheet', table: t };
-        raw[t] = [];
+        if (spec.need) return { ok: false, error: 'no_sheet', table: t };
         continue;
       }
-      raw[t] = readSheetAsObjects(sh).rows;
+      const lr = Number(sh.getLastRow()) || 0, lc = Number(sh.getLastColumn()) || 0;
+      if (lc > PAY_SHADOW_MAX_COLS_) return { ok: false, error: 'too_many_rows', table: t, limit: 'cols' };
+      if (Math.max(0, lr - 1) > (spec.month ? PAY_SHADOW_RAW_MAX_ROWS_ : spec.max)) return { ok: false, error: 'too_many_rows', table: t, limit: 'rows' };
+      shs[t] = { sh: sh, lr: lr, lc: lc };
+    }
+    /* 第二輪：有上限地讀（表頭 → 月份欄 → 只取需要的列段與欄段）；累計取值格數有預算，超過就停、後面的表不讀。 */
+    const budget = { left: PAY_SHADOW_CELL_BUDGET_ };
+    for (let i = 0; i < names.length; i++) {
+      const t = names[i];
+      if (!shs[t]) { raw[t] = []; continue; }
+      const got = payShadowReadBounded_(shs[t], wl[t], PAY_SHADOW_TABLES_[t], ym, budget);
+      if (got.error) return { ok: false, error: 'too_many_rows', table: t, limit: got.error };
+      raw[t] = got.rows;
     }
   } catch (e) {
     return { ok: false, error: 'read_failed' };
   }
-  const tables = {}, counts = {};
+  const tables = {}, counts = {}, flags = { input_support_bad: 0, input_add_more_bad: 0, config_keys_dropped: 0 };
   for (let i = 0; i < names.length; i++) {
     const t = names[i], spec = PAY_SHADOW_TABLES_[t];
-    const rows = raw[t].filter(function (r) { return payShadowInRange_(r, spec.month, ym); });
-    if (rows.length > spec.max) return { ok: false, error: 'too_many_rows', table: t };
+    let rows = raw[t];
+    if (t === 'config') {   // 參數只出薪資計算會讀的鍵（PAY_SHADOW_CONFIG_KEYS_）；其他鍵不出、只計數（Codex 217 r1 殘餘風險）
+      rows = rows.filter(function (r) {
+        const ok = Object.prototype.hasOwnProperty.call(PAY_SHADOW_CONFIG_KEYS_, String(r && r.key));
+        if (!ok) flags.config_keys_dropped++;
+        return ok;
+      });
+    }
+    if (rows.length > spec.max) return { ok: false, error: 'too_many_rows', table: t, limit: 'rows' };
     const childCode = t === 'leave_span' ? payShadowChildCodes_(rows) : null;
-    tables[t] = rows.map(function (r) { return payShadowPick_(t, r, wl[t], childCode); });
+    tables[t] = rows.map(function (r) { return payShadowPick_(t, r, wl[t], childCode, flags); });
     counts[t] = tables[t].length;
   }
   return { ok: true, format: PAY_SHADOW_FORMAT_, whitelist_version: ver, ym: ym,
-           generated_at: nowTaipeiIso(), counts: counts, tables: tables };
+           generated_at: nowTaipeiIso(), counts: counts, flags: flags, tables: tables };
 }
+
+/* 讀取上限（Codex 217 r1 擋項三，2026-11-23）：
+   ・PAY_SHADOW_MAX_COLS_：任何一張表欄數 > 60 → too_many_rows（limit:'cols'），不取值。薪資分頁最寬的是 run／input（PAY_SHEETS 不到 40 欄），留一倍餘裕。
+   ・整張回的表：列數（扣表頭）> 該表 max → 不取值就回（limit:'rows'）。
+   ・分月份的表：列數 > PAY_SHADOW_RAW_MAX_ROWS_（200,000）→ 不取值就回；沒超過先只讀「表頭＋月份那一欄」，篩出這次要的列，
+     超過該表 max 就停；再只讀「第一筆到最後一筆符合的列」×「白名單欄位所在的欄段」。
+   ・PAY_SHADOW_CELL_BUDGET_：一次請求累計取值格數上限 3,000,000（＝Google 試算表單一檔 1,000 萬格上限的 3 成）；每次取值前先扣，不夠就停（limit:'cells'）。
+   月份篩選只能縮到「列段」：同一月份的列不保證排在一起（重算是整段刪掉再接在最後），列段中間夾的別月份列照樣會被取值、再丟掉。 */
+const PAY_SHADOW_MAX_COLS_ = 60;
+const PAY_SHADOW_RAW_MAX_ROWS_ = 200000;
+const PAY_SHADOW_CELL_BUDGET_ = 3000000;
+
+/* 參數表只出這些鍵＝計算真的會讀的：PAY_CONFIG_DEFAULT 全部（含 payCfgPos_ 的分母類）＋ot_meal_fixed（加班誤餐費，payCfgNum）＋
+   公司負擔五項 PNL_CO_ITEMS（人事成本用）。鍵要逐字相同（payConfig 也是逐字比 r.key）。日後計算多讀一個參數鍵，要在這裡加，否則影子會少那個鍵。 */
+const PAY_SHADOW_CONFIG_KEYS_ = (function () {
+  const o = {};
+  PAY_CONFIG_DEFAULT.forEach(function (d) { o[d[0]] = true; });
+  ['ot_meal_fixed', 'co_labor', 'co_health', 'co_pension', 'co_owner', 'co_group'].forEach(function (k) { o[k] = true; });
+  return o;
+})();
+
+/** 有上限地讀一張表 → {rows:[{欄:值}]}｜{error:'rows'|'cells'}。只放白名單的欄（與 readSheetAsObjects 同語意：同名欄後面的蓋前面的、沒有的欄＝undefined）。 */
+function payShadowReadBounded_(info, cols, spec, ym, budget) {
+  const sh = info.sh, lr = info.lr, lc = info.lc;
+  if (lr < 2 || lc < 1) return { rows: [] };
+  function take(r, c, nr, nc) {
+    budget.left -= nr * nc;
+    if (budget.left < 0) return null;
+    return sh.getRange(r, c, nr, nc).getValues();
+  }
+  const head = take(1, 1, 1, lc);
+  if (!head) return { error: 'cells' };
+  const at = {};   // 欄名 → 欄號（1 起算；同名取最後一欄）
+  head[0].forEach(function (h, i) { at[String(h)] = i + 1; });
+  const want = cols.slice();
+  if (spec.month && want.indexOf('ym') < 0) want.push('ym');
+  const idx = want.filter(function (c) { return at[c] !== undefined; }).map(function (c) { return at[c]; });
+  if (!idx.length) return { rows: lr >= 2 ? payShadowBlankRows_(lr - 1) : [] };
+  let r0 = 2, r1 = lr, keep = null;
+  if (spec.month) {
+    if (at.ym === undefined) return { rows: [] };
+    const ymCol = take(2, at.ym, lr - 1, 1);
+    if (!ymCol) return { error: 'cells' };
+    keep = {};
+    let n = 0;
+    ymCol.forEach(function (row, i) {
+      if (!payShadowInRange_({ ym: row[0] }, spec.month, ym)) return;
+      keep[i + 2] = true; n++;
+      if (n === 1) r0 = i + 2;
+      r1 = i + 2;
+    });
+    if (n > spec.max) return { error: 'rows' };
+    if (!n) return { rows: [] };
+  }
+  const c0 = Math.min.apply(null, idx), c1 = Math.max.apply(null, idx);
+  const vals = take(r0, c0, r1 - r0 + 1, c1 - c0 + 1);
+  if (!vals) return { error: 'cells' };
+  const names = Object.keys(at).filter(function (k) { return want.indexOf(k) >= 0; });
+  const rows = [];
+  vals.forEach(function (v, i) {
+    if (keep && !keep[r0 + i]) return;
+    const o = {};
+    names.forEach(function (k) { o[k] = v[at[k] - c0]; });
+    rows.push(o);
+  });
+  return { rows: rows };
+}
+/** 表頭裡一個白名單欄都沒有：照原本「每列都是空物件」的語意回（列數不變），不取值。 */
+function payShadowBlankRows_(n) { const a = []; for (let i = 0; i < n; i++) a.push({}); return a; }
 
 /** ym 合法＝YYYY-MM（月份 01–12），且在 cur（台北本月）往前 3 個月到 cur 之間。 */
 function payShadowYmOk_(ym, cur) {
@@ -8251,17 +8341,53 @@ function payShadowVal_(v) {
 }
 
 /** 照白名單逐欄挑出來組新物件。分頁上沒有這一欄（undefined）＝不放這個鍵。 */
-function payShadowPick_(table, r, cols, childCode) {
+function payShadowPick_(table, r, cols, childCode, flags) {
   const o = {};
   for (let i = 0; i < cols.length; i++) {
     const c = cols[i];
     if (!r || r[c] === undefined) continue;
     let v = r[c];
-    if (table === 'input' && c === 'custom_add_more') v = payShadowAddMore_(v);
+    if (table === 'input' && c === 'custom_add_more') { v = payShadowAddMore_(v); if (flags && (v === '!' || v === '{}')) flags.input_add_more_bad++; }
+    else if (table === 'input' && c === 'support') { v = payShadowSupport_(v); if (flags && (v === '!' || v === '{}')) flags.input_support_bad++; }
     else if (table === 'leave_span' && c === 'child') v = childCode[payShadowChildKey_(r)] || '';
+    else if (table === 'run' && c === 'run_at' && Object.prototype.toString.call(v) === '[object Date]') { o[c] = payShadowTs_(v); continue; }
     o[c] = payShadowVal_(v);
   }
   return o;
+}
+
+/* 跨店支援（手填工時 support 欄，JSON 字串）：內層每個物件也逐欄挑，只留計算會讀的鍵（Codex 217 r1 擋項二，2026-11-23）。
+   會讀的鍵：store／code（paySupportCode_ 認門市）、hours、rate、amount（payCalcOne 支援加項、payMergeSupport_、國定假日／選舉日加倍）、
+   auto（payXsupIsAuto_）、keep／auto_h（payMergeSupport_ 差異不再提醒）、cross（handlePayrollGet 濾掉跨品牌列）。＝paySupportStrip_ 存檔白名單＋auto、cross。
+   值只留字串／數字／布林／null（物件、陣列一律丟掉）。2026-11 生效前的支援是原樣存的，內層多出來的鍵（例：電話）不送出。
+   解析不了 → '!'、解析得了但不是陣列 → '{}'（照樣解析不了／照樣不是陣列，計算端一樣走 support_error；不帶原文），並計入 flags.input_support_bad；
+   陣列裡不是物件的元素 → null（計算端 payNum(null.hours) 前都先判 x &&，跟原值一樣不算）。 */
+const PAY_SHADOW_SUPPORT_KEYS_ = ['store', 'code', 'hours', 'rate', 'amount', 'auto', 'keep', 'auto_h', 'cross'];
+function payShadowSupport_(v) {
+  if (v === '' || v == null) return v;
+  let arr;
+  try { arr = JSON.parse(String(v)); } catch (e) { return '!'; }
+  if (!Array.isArray(arr)) return '{}';
+  return JSON.stringify(arr.map(function (x) {
+    if (!x || typeof x !== 'object' || Array.isArray(x)) return null;
+    const o = {};
+    PAY_SHADOW_SUPPORT_KEYS_.forEach(function (k) {
+      if (!Object.prototype.hasOwnProperty.call(x, k)) return;
+      const y = x[k];
+      if (y === null || typeof y === 'string' || typeof y === 'boolean') o[k] = y;
+      else if (typeof y === 'number') o[k] = isFinite(y) ? y : null;
+    });
+    return o;
+  }));
+}
+
+/** 時間儲存格 → 台北 'YYYY-MM-DDTHH:mm:ss+08:00'（run_at 被試算表轉成日期時不能只留日期）。 */
+function payShadowTs_(d) {
+  const ms = d.getTime();
+  if (typeof ms !== 'number' || isNaN(ms)) return null;
+  const t = new Date(ms + 8 * 3600000);
+  return t.getUTCFullYear() + '-' + ('0' + (t.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + t.getUTCDate()).slice(-2) + 'T' +
+    ('0' + t.getUTCHours()).slice(-2) + ':' + ('0' + t.getUTCMinutes()).slice(-2) + ':' + ('0' + t.getUTCSeconds()).slice(-2) + '+08:00';
 }
 
 /** 第二筆以後的自訂加薪（JSON 字串）只留金額：[{label, amt}] → [{amt: payNum(amt)}]，筆數與順序不變（名目文字不送出）。

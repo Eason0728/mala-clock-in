@@ -72,15 +72,30 @@ const SHEET_READS = new Set(['getName', 'getSheetId', 'getDataRange', 'getLastRo
 const RANGE_READS = new Set(['getValues', 'getDisplayValues', 'getNumRows', 'getNumColumns', 'getValue']);
 function book(sheets) {
   const w = { sheets, writes: [], reads: 0, opens: 0, props: { SOME_PROP: 'v' }, triggers: [{ fn: 'payAsOfDaily' }] };
-  const rangeOf = (name) => new Proxy({}, { get: (_, m) => RANGE_READS.has(m)
-    ? () => (m === 'getValues' ? sheets[name].map((r) => r.slice()) : 0)
-    : (...a) => { w.writes.push(name + '.range.' + String(m)); return rangeOf(name); } });
+  /* getRange(列, 欄, 列數, 欄數)：取那一塊（跟真的一樣，超出表的格子補 ''）；w.cells 累計取值格數、w.gets 記每次取值的範圍（擋項三的測試用）。
+     range 上除了讀以外的方法一律算寫入。getLastColumn＝最寬那一列的欄數；只有 [[]] 的分頁＝0 列 0 欄。 */
+  w.cells = 0; w.gets = [];
+  const width = (name) => sheets[name].reduce((m, r) => Math.max(m, r.length), 0);
+  const lastRow = (name) => (width(name) ? sheets[name].length : 0);
+  const rangeOf = (name, box) => new Proxy({}, { get: (_, m) => RANGE_READS.has(m)
+    ? () => {
+      if (m !== 'getValues') return 0;
+      const b = box || [1, 1, lastRow(name), width(name)];
+      w.cells += b[2] * b[3]; w.gets.push(name + '@' + b.join(','));
+      const out = [];
+      for (let i = 0; i < b[2]; i++) { const src = sheets[name][b[0] - 1 + i] || []; const row = []; for (let j = 0; j < b[3]; j++) { const v = src[b[1] - 1 + j]; row.push(v === undefined ? '' : v); } out.push(row); }
+      return out;
+    }
+    : (...a) => { w.writes.push(name + '.range.' + String(m)); return rangeOf(name, box); } });
   const sheetOf = (name) => new Proxy({}, { get: (_, m) => {
     if (m === 'getDataRange') return () => rangeOf(name);
+    if (m === 'getRange') return (r, c, nr, nc) => rangeOf(name, [r, c, nr === undefined ? 1 : nr, nc === undefined ? 1 : nc]);
     if (m === 'getName') return () => name;
     if (m === 'getSheetId') return () => Object.keys(sheets).indexOf(name);
+    if (m === 'getLastRow') return () => lastRow(name);
+    if (m === 'getLastColumn') return () => width(name);
     if (SHEET_READS.has(m)) return () => sheets[name].length;
-    return (...a) => { w.writes.push(name + '.' + String(m)); return m === 'getRange' ? rangeOf(name) : undefined; };
+    return (...a) => { w.writes.push(name + '.' + String(m)); return undefined; };
   } });
   w.ss = new Proxy({}, { get: (_, m) => {
     if (m === 'getSheetByName') return (n) => { w.reads++; return Object.prototype.hasOwnProperty.call(sheets, n) ? sheetOf(n) : null; };
@@ -139,7 +154,7 @@ function baseSheets(opt) {
     { code: 'CF', name: '測試店二', clock_ss_id: 'SECRET-SSID', dzy_node: 'SECRET-NODE', emp_prefix: 'C', active: true, sort: 2, brand: 'SECRET-BRAND', support_group: 'sxl' }]);
   const run = [];
   ['2026-11', '2026-10'].forEach((ym) => people.forEach(([id, nm, ft], i) => run.push({ ym, emp_id: id, name: nm, is_full_time: ft, ratio: 1, total_hours: 176, base_hours: 160,
-    surplus_hours: 16, ot_paid_hours: 2, gross: 40000 + i, deduction: 1200, net: 38800 + i, status: ym === '2026-10' ? 'final' : 'draft', run_at: 'SECRET-RUNAT',
+    surplus_hours: 16, ot_paid_hours: 2, gross: 40000 + i, deduction: 1200, net: 38800 + i, status: ym === '2026-10' ? 'final' : 'draft', run_at: '2026-11-21T06:10:00+08:00',
     support_hours: 0, store: i === 2 ? 'CF' : 'SSLGF', support_auto_h: 0, ot_info: '{"SECRET":1}', as_of: ym === '2026-11' ? '2026-11-21' : '', elec_fp: 'SECRET-FP' })));
   s[PS.N.run] = tab('run', run);
   const item = [];
@@ -278,10 +293,10 @@ console.log('══ 3) 唯讀 ══');
   chk('  靜態：沒有寫入類／建分頁／重算／其他服務的呼叫', (code.match(BAD) || [null])[0], null);
   const own = new Set((code.match(/function\s+([A-Za-z_$][\w$]*)/g) || []).map((s) => s.replace(/function\s+/, '')));
   const KW = new Set(['if', 'for', 'while', 'function', 'return', 'catch', 'switch', 'typeof']);
-  const BUILTIN = new Set(['String', 'Number', 'Object', 'Array', 'JSON', 'isFinite', 'Boolean']);
+  const BUILTIN = new Set(['String', 'Number', 'Object', 'Array', 'JSON', 'isFinite', 'Boolean', 'Date', 'isNaN']);
   const called = new Set();
   code.replace(/(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(/g, (m, id) => { if (!KW.has(id) && !BUILTIN.has(id) && !own.has(id)) called.add(id); return m; });
-  chk('  靜態：呼叫到的外部函式只有這幾支唯讀的', [...called].sort(), ['checkAdmin', 'getSS', 'nowTaipeiIso', 'payNum', 'payTaipeiYmd_', 'readSheetAsObjects', 'todayTaipeiStr']);
+  chk('  靜態：呼叫到的外部函式只有這幾支唯讀的', [...called].sort(), ['checkAdmin', 'getSS', 'nowTaipeiIso', 'payNum', 'payTaipeiYmd_', 'todayTaipeiStr']);   // r2 起不再用整張讀的 readSheetAsObjects（擋項三）
 }
 
 console.log('══ 4) 月份、空月份、不存在的分頁 ══');
@@ -333,7 +348,7 @@ console.log('══ 5) 一次回齊、不重不漏；超過上限不截斷 ═�
   const mk = (n) => world(baseSheets({ mut: (s) => { const t = s[PS.N.run]; const h = t[0]; t.length = 1; for (let i = 0; i < n; i++) { const row = h.map(() => ''); row[0] = '2026-11'; row[1] = 'P' + i; t.push(row); } } }));
   const a = ask(mk(2000)), b = ask(mk(2001));
   chk('  run 剛好 2,000 列 → ok、2,000 列', [a.ok, a.counts && a.counts.run], [true, 2000]);
-  chk('  run 2,001 列 → too_many_rows、不回 tables', b, { ok: false, error: 'too_many_rows', table: 'run' });
+  chk('  run 2,001 列 → too_many_rows、不回 tables', b, { ok: false, error: 'too_many_rows', table: 'run', limit: 'rows' });
   chk('  上限照契約 4.2b：master／config／store／run 2,000、item 60,000', JSON.parse(w.F("JSON.stringify(['master','config','store','run','item'].map(function(k){return PAY_SHADOW_TABLES_[k].max;}))")), [2000, 2000, 2000, 2000, 60000]);
 }
 
@@ -341,7 +356,7 @@ console.log('══ 6) 回應形狀與值 ══');
 {
   const w = world(baseSheets());
   const r = ask(w);
-  chk('  頂層鍵＝ok、format、whitelist_version、ym、generated_at、counts、tables', Object.keys(r), ['ok', 'format', 'whitelist_version', 'ym', 'generated_at', 'counts', 'tables']);
+  chk('  頂層鍵＝ok、format、whitelist_version、ym、generated_at、counts、flags、tables', Object.keys(r), ['ok', 'format', 'whitelist_version', 'ym', 'generated_at', 'counts', 'flags', 'tables']);
   chk('  generated_at 是台北時間 ISO', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$/.test(r.generated_at), true);
   chk('  counts＝每張表的列數', Object.keys(r.tables).every((t) => r.counts[t] === r.tables[t].length), true);
   let bad = [];
@@ -374,7 +389,7 @@ console.log('══ 7) 轉換：自訂加薪只留金額、留停子女換代號
   chk('  原值解析不了 → 照樣解析不了（不帶原文）', [sumOf(inp('E2', '2026-11').custom_add_more), inp('E2', '2026-11').custom_add_more], ['parse_error', '!']);
   chk('  原值不是陣列 → 照樣不是陣列', [sumOf(inp('E2', '2026-10').custom_add_more), inp('E2', '2026-10').custom_add_more], ['not_array', '{}']);
   chk('  空白照原樣', inp('E1', '2025-01').custom_add_more, '');
-  chk('  support（跨店支援 JSON）原樣', inp('E1', '2026-11').support, '[{"code":"CF","store":"測試店二","hours":4,"rate":200,"amount":"","auto":true}]');
+  chk('  support（跨店支援 JSON）逐欄挑（鍵照計算會讀的順序，值不變）', inp('E1', '2026-11').support, '[{"store":"測試店二","code":"CF","hours":4,"rate":200,"amount":"","auto":true}]');
   const sp = r.tables.leave_span;
   chk('  留停子女代號：同一人依原值排序 A→c1、B→c2（前後空白算同一個）、空白照空白、別人自己從 c1 起', sp.map((x) => x.emp_id + ':' + x.child), ['E1:c2', 'E1:c1', 'E1:c1', 'E1:', 'E2:c1']);
   /* 育嬰額度（payParentalUsage）用原值與代號各算一次：每個子女的用量一樣（名稱不同、數字相同） */
@@ -448,11 +463,17 @@ console.log('══ 8) 草稿過期也不重算、不寫回（對照組 payroll_
     const names = JSON.parse(vm.runInContext('JSON.stringify(PAY_SHEET_NAME)', w.sb)), heads = JSON.parse(vm.runInContext('JSON.stringify(PAY_SHEETS)', w.sb));
     const kindOf = (nm) => Object.keys(names).find((k) => names[k] === nm);
     const c = { insert: 0, mut: 0 };
+    const this_vals = (k) => { const cols = heads[k].slice(); (w.DB[k] || []).forEach((r) => Object.keys(r).forEach((x) => { if (cols.indexOf(x) < 0) cols.push(x); }));
+      return [cols].concat((w.DB[k] || []).map((r) => cols.map((x) => (r[x] === undefined || r[x] === null ? '' : r[x])))); };
     w.sb.SpreadsheetApp.openById = () => ({
       getSheetByName: (nm) => { const k = kindOf(nm); if (!k || !(k in w.DB)) return null;
         return { getDataRange: () => ({ getValues: () => { const cols = heads[k].slice(); (w.DB[k] || []).forEach((r) => Object.keys(r).forEach((x) => { if (cols.indexOf(x) < 0) cols.push(x); }));
           return [cols].concat((w.DB[k] || []).map((r) => cols.map((x) => (r[x] === undefined || r[x] === null ? '' : r[x])))); } }),
-          getRange: () => { c.mut++; return { setValues() { c.mut++; }, setNumberFormat() { c.mut++; } }; }, getSheetId: () => 1, getName: () => nm, setFrozenRows() { c.mut++; }, getMaxRows: () => 1000 }; },
+          /* getRange 本身不算寫入（r2 起匯出用 getRange(...).getValues() 有上限地讀）；setValues／setNumberFormat 才算 */
+          getRange: (r0, c0, nr, nc) => ({ getValues: () => { const all = this_vals(k); const o = []; for (let i = 0; i < (nr || 1); i++) { const src = all[r0 - 1 + i] || []; const row = []; for (let j = 0; j < (nc || 1); j++) row.push(src[c0 - 1 + j] === undefined ? '' : src[c0 - 1 + j]); o.push(row); } return o; },
+            setValues() { c.mut++; }, setNumberFormat() { c.mut++; } }),
+          getLastRow: () => this_vals(k).length, getLastColumn: () => this_vals(k)[0].length,
+          getSheetId: () => 1, getName: () => nm, setFrozenRows() { c.mut++; }, getMaxRows: () => 1000 }; },
       insertSheet: () => { c.insert++; return null; },
     });
     vm.runInContext(`(function(){ const R = payReplaceAll, A = payAppend, M = handlePayrollCalc;
@@ -477,6 +498,87 @@ console.log('══ 8) 草稿過期也不重算、不寫回（對照組 payroll_
   const wm = mk(); fake(wm); const bm = JSON.stringify(wm.DB);
   vm.runInContext('PAYROLL_HANDLERS', wm.sb).payroll_month({ admin_key: 'good', ym: '2026-11', store: 'SSLGF' });
   chk('  對照組：同情境 payroll_month 會重算（重算 ≥1、寫表 ≥1、資料庫有變）', [wm.sb.__W.calc >= 1, wm.sb.__W.write >= 1, JSON.stringify(wm.DB) !== bm], [true, true, true]);
+}
+
+console.log('══ 9) Codex 217 r1 修正：支援內層逐欄挑、參數鍵白名單、run 帶 status／run_at、讀取有上限 ══');
+{
+  const col = (k, c) => PS.S[k].indexOf(c);
+  /* ── 擋項二：support 內層物件逐欄挑 ── */
+  const supRows = (s) => { const t = s[PS.N.input];
+    const add = (ym, emp, sup) => { const r = PS.S.input.map(() => ''); r[col('input', 'ym')] = ym; r[col('input', 'emp_id')] = emp; r[col('input', 'store')] = 'SSLGF'; r[col('input', 'support')] = sup; t.push(r); };
+    add('2026-10', 'S1', '[{"hours":1,"phone":"TEST-PHONE","store":"測試店二","rate":180,"memo":"SECRET-MEMO","nested":{"a":"SECRET-N"},"keep":"true","auto_h":2,"cross":true,"amount":[9]}]');
+    add('2026-10', 'S2', 'SECRET-PHONE{壞掉');
+    add('2026-10', 'S3', '{"phone":"SECRET-PHONE"}');
+    add('2026-10', 'S4', '[1,"SECRET-PHONE",null,[2]]');
+    add('2026-10', 'S5', '');
+  };
+  const ws = world(baseSheets({ mut: supRows }));
+  const rs = ask(ws);
+  const sup = (emp) => (rs.tables.input.find((x) => x.emp_id === emp) || {}).support;
+  chk('  support 內層只留計算會讀的鍵（store、code、hours、rate、amount、auto、keep、auto_h、cross）；電話、memo、巢狀值不出',
+    JSON.parse(sup('S1')), [{ store: '測試店二', hours: 1, rate: 180, keep: 'true', auto_h: 2, cross: true }]);
+  chk('  回應裡沒有 TEST-PHONE／SECRET-PHONE／SECRET-MEMO／SECRET-N', /TEST-PHONE|SECRET-PHONE|SECRET-MEMO|SECRET-N/.test(JSON.stringify(rs)), false);
+  chk('  解析不了 → \'!\'、不是陣列 → \'{}\'、元素不是物件 → null、空白照原樣', [sup('S2'), sup('S3'), sup('S4'), sup('S5')], ['!', '{}', '[null,null,null,null]', '']);
+  chk('  flags.input_support_bad＝2（S2、S3）', (rs.flags || {}).input_support_bad, 2);
+  chk('  解析不了／不是陣列，計算端照樣是 support_error（JSON.parse 丟例外／不是陣列）',
+    [(() => { try { JSON.parse('!'); return 'parsed'; } catch (e) { return 'error'; } })(), Array.isArray(JSON.parse('{}'))], ['error', false]);
+  /* 掃一遍：所有匯出的字串值裡「看起來像 JSON」（[ 或 { 開頭）的只會出現在 input.support、input.custom_add_more */
+  const jsonish = [];
+  for (const t of Object.keys(rs.tables)) rs.tables[t].forEach((row) => Object.keys(row).forEach((k) => { const v = row[k]; if (typeof v === 'string' && /^\s*[\[{]/.test(v)) jsonish.push(t + '.' + k); }));
+  chk('  像 JSON 的值只出現在 input.support、input.custom_add_more', [...new Set(jsonish)].sort(), ['input.custom_add_more', 'input.support']);
+  chk('  計算端讀 support 內層的鍵都在挑選清單裡（paySupportStrip_ 存檔白名單＋auto、cross）',
+    ['store', 'code', 'hours', 'rate', 'amount', 'auto', 'keep', 'auto_h', 'cross'].every((k) => JSON.parse(ws.F("typeof PAY_SHADOW_SUPPORT_KEYS_ === 'undefined' ? '[]' : JSON.stringify(PAY_SHADOW_SUPPORT_KEYS_)")).indexOf(k) >= 0)
+      && /const o = \{ store: s\.store == null \? '' : s\.store, hours: s\.hours, rate: s\.rate, amount: s\.amount == null \? '' : s\.amount \};/.test(GS), true);
+
+  /* ── 參數鍵白名單 ── */
+  const wc = world(baseSheets({ mut: (s) => { const t = s[PS.N.config];
+    t.push(['svc_token', 'SECRET-TOKEN', '', '']); t.push(['ot_meal_fixed', 120, 'SECRET-NOTE', 'CF']); t.push([' daily_hours', 9, '', '']); } }));
+  const rc = ask(wc), rc1 = ask(wc, { whitelist_version: 'w1' });
+  chk('  參數只出計算會讀的鍵（daily_hours、late_deduct、ot_meal_fixed）；未知鍵與前後多空白的鍵不出', rc.tables.config.map((x) => x.key), ['daily_hours', 'late_deduct', 'ot_meal_fixed']);
+  chk('  w1 一樣篩、flags.config_keys_dropped＝2、回應沒有 SECRET-TOKEN', [rc1.tables.config.map((x) => x.key), (rc.flags || {}).config_keys_dropped, /SECRET-TOKEN/.test(JSON.stringify(rc) + JSON.stringify(rc1))],
+    [['daily_hours', 'late_deduct', 'ot_meal_fixed'], 2, false]);
+  /* 計算端用到的參數鍵（cfg.X、(cfg || {}).X、payCfgNum／payCfgPos_(cfg, 'X')）全部在白名單裡 */
+  const used = new Set();
+  GS.replace(/\(cfg \|\| \{\}\)\.([a-z][a-z_0-9]+)|\b[a-zA-Z]*[cC]fg[A-Za-z]*\.([a-z][a-z_0-9]+)|payCfg[A-Za-z_]*\([^,()]+, *'([a-z_0-9]+)'/g, (m, a, b, c) => { used.add(a || b || c); return m; });
+  const allow = JSON.parse(wc.F("typeof PAY_SHADOW_CONFIG_KEYS_ === 'undefined' ? '{}' : JSON.stringify(PAY_SHADOW_CONFIG_KEYS_)"));
+  chk('  計算端讀的參數鍵都在 PAY_SHADOW_CONFIG_KEYS_（' + used.size + ' 個）', [...used].filter((k) => !allow[k]), []);
+
+  /* ── run 帶 status、run_at（w2）；w1 不變 ── */
+  const wr = world(baseSheets({ mut: (s) => { s[PS.N.run][1][col('run', 'run_at')] = D('2026-11-20T22:10:05Z'); } }));
+  const rr = ask(wr), rr1 = ask(wr, { whitelist_version: 'w1' });
+  chk('  w2 run 有 status、run_at；日期時間儲存格轉台北 ISO（不只留日期）', [rr.tables && rr.tables.run[0].status, rr.tables.run[0].run_at, rr.tables.run[1].run_at], ['draft', '2026-11-21T06:10:05+08:00', '2026-11-21T06:10:00+08:00']);
+  chk('  w1 run 沒有 status、run_at（跟 mini 目前的 w1 相同）', ['status', 'run_at'].filter((k) => k in rr1.tables.run[0]), []);
+  chk('  w2 回應 mini 的檢查邏輯吃得下（拿 PAY_SHADOW_W2_ 當 mini 的 w2）', miniCheckExport(rr, '2026-11', W2(wr), 'w2').ok, true);
+
+  /* ── 擋項三：讀取有上限 ── */
+  const big = (k, n, ymv) => (s) => { const t = s[k]; const proto = t[1].slice(); for (let i = 0; i < n; i++) { const r = proto.slice(); if (ymv) r[t[0].indexOf('ym')] = typeof ymv === 'function' ? ymv(i) : ymv; t.push(r); } };
+  const wm = world(baseSheets({ mut: big(PS.N.master, 2000) }));
+  const rm = ask(wm);
+  chk('  主檔 2,001 列 → too_many_rows（limit rows）、一格都沒取值、只查了 1 張分頁（後面 11 張不查）', [rm, wm.cells, wm.reads], [{ ok: false, error: 'too_many_rows', table: 'master', limit: 'rows' }, 0, 1]);
+  const wk = world(baseSheets({ mut: (s) => { const t = s[PS.N.master]; for (let i = t[0].length; i < 61; i++) t.forEach((r, j) => r.push(j ? 'x' : 'pad' + i)); } }));
+  chk('  主檔 61 欄 → too_many_rows（limit cols）、一格都沒取值', [ask(wk), wk.cells], [{ ok: false, error: 'too_many_rows', table: 'master', limit: 'cols' }, 0]);
+  const wi = world(baseSheets({ mut: (s) => { const t = s[PS.N.input]; const r = t[0].map(() => ''); r[t[0].indexOf('ym')] = '2020-01'; for (let i = 0; i < 200001; i++) t.push(r); } }));
+  chk('  手填工時 20 萬零 5 列（第 8 張表）→ too_many_rows、全部 12 張一格都沒取值', [ask(wi), wi.cells], [{ ok: false, error: 'too_many_rows', table: 'input', limit: 'rows' }, 0]);
+  const wb = world(baseSheets({ mut: big(PS.N.bonus, 20000, '2026-11') }));
+  const rb = ask(wb);
+  chk('  獎金這個月 20,001 列 → too_many_rows；只取了獎金的表頭與月份欄、後面的表（留停、打卡對照、選舉假）一格都沒讀',
+    [rb, wb.gets.filter((g) => g.startsWith(PS.N.bonus)).length, wb.gets.some((g) => /payroll_leave_span|payroll_xmap|payroll_hol_emp/.test(g))], [{ ok: false, error: 'too_many_rows', table: 'bonus', limit: 'rows' }, 2, false]);
+  /* 月份篩選縮小取值範圍：item 前面塞 30,000 列舊月份，這個月的 9 列在最後 → 只取表頭＋月份欄＋最後 9 列的欄段 */
+  const wo = world(baseSheets({ mut: (s) => { const t = s[PS.N.item]; const cur = t.slice(1).filter((r) => r[t[0].indexOf('ym')] === '2026-11'); const old = t.slice(1).filter((r) => r[t[0].indexOf('ym')] !== '2026-11');
+    t.length = 1; for (let i = 0; i < 30000; i++) t.push(old[i % old.length].slice()); cur.forEach((r) => t.push(r)); } }));
+  const ro = ask(wo), ig = wo.gets.filter((g) => g.startsWith(PS.N.item + '@'));
+  const itemCells = ig.reduce((a, g) => { const b = g.split('@')[1].split(',').map(Number); return a + b[2] * b[3]; }, 0);
+  chk('  item 3 萬列舊月份＋9 列本月 → 回 9 列；item 取值＝表頭 1 列＋月份欄 30,009 格＋9 列（格數遠小於整張）',
+    [ro.ok && ro.counts.item, ig.length, ig[2] && ig[2].split('@')[1].split(',').slice(0, 1)[0] === '30002', itemCells < 30009 + 200, itemCells < 30010 * PS.S.item.length / 2], [9, 3, true, true, true]);
+  /* 累計格數預算：手填工時 12 萬列、第一列與最後一列是本月、中間都是舊月份 → 列段 12 萬列 × 欄段 > 300 萬格 → 不取那一段就停 */
+  const wg = world(baseSheets({ mut: (s) => { const t = s[PS.N.input]; const blank = t[0].map(() => ''); const yi = t[0].indexOf('ym');
+    const a = blank.slice(); a[yi] = '2026-11'; const o = blank.slice(); o[yi] = '2020-01'; t.length = 1; t.push(a); for (let i = 0; i < 120000; i++) t.push(o); t.push(a.slice()); } }));
+  const rg = ask(wg);
+  chk('  列段超過累計 300 萬格 → too_many_rows（limit cells）、那一段沒取值（取值總格數 < 20 萬）', [rg, wg.cells < 200000], [{ ok: false, error: 'too_many_rows', table: 'input', limit: 'cells' }, true]);
+  chk('  靜態：匯出那段不再呼叫 readSheetAsObjects／getDataRange（整張讀）', /readSheetAsObjects\(|getDataRange\(/.test(GS.slice(GS.indexOf('function handlePayrollShadowExport'), GS.indexOf('function payShadowYmOk_'))), false);
+
+  /* ── 不改的兩點（附反證）：year2 收 '2026-00'、Date 型 ym 照原值輸出——都跟計算端同一套判斷 ── */
+  chk('  計算端 payLeaveUsedBefore 的月份判斷也是 /^\\d{4}-\\d{2}$/（收 2026-00），匯出 year2 用同一個', [/!\/\^\\d\{4\}-\\d\{2\}\$\/\.test\(m\) \|\| m\.slice\(0, 4\) !== year \|\| m >= ym/.test(GS), /if \(!\/\^\\d\{4\}-\\d\{2\}\$\/\.test\(m\)\) return false;/.test(GS)], [true, true]);
 }
 
 console.log('\n' + (fail ? '❌' : '✅') + ' payroll-shadow-export：' + pass + ' 過、' + fail + ' 失敗');
