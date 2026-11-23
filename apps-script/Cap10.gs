@@ -20,7 +20,12 @@
        當天還沒有任何打卡時數的人，不會因為假單被擋上班卡；假單本身就 ≥ 10 小時（資料異常，例如同一趟出差兩家店各核一次）不拿來即時收卡；
        同一筆假兩個管道各建一張且時段相同＝重疊部分只算一次。
      ⑥同一段上班只會有一張系統下班卡：寫之前看這段上班（最後一張上班卡之後）有沒有別處寫好的系統卡或本人的下班卡，有就不寫（capWrite_）。
-     設計與試算：~/加盟名單平台/_brain_out/cap10-newdef/design.md
+     ⑦15 分鐘緩衝（2026-11-23 主管定 A）：每張卡各自取整到 15 分——上班卡往後進位、下班卡往前捨去到 :00／:15／:30／:45 再相減，
+       跟核定頁「參考時數」同一支（Code.gs approvedHoursOfShift）；正在上班那段算到「現在」往前捨去；取整後滿 10 小時才收卡，
+       系統卡寫在第一個滿 10 的刻度上（例 08:56:17–14:32:46、17:25:58 上班 → 5.5＋4.5，22:00 收；原始秒數是 21:49:29）。不需要班表。
+       已知：22:00–22:14 按下班的人，按下去那一刻已滿 10，會寫 22:00 的系統卡、本人那張下班卡不收（核定一樣 10 小時、同段只有一張卡）。
+       「你今天已經上班 X 小時」的 X 顯示取整後的時數（小數兩位，例 9.75）。
+     設計與試算：~/加盟名單平台/_brain_out/cap10-newdef/design.md、buffer15.md
    - 總開關：指令碼屬性 REST_CAP_ON 恰為 '1'。任何一步出錯一律不擋、不寫（不能讓打卡因為這道檢查壞掉）。
    九店整檔共用；動作掛在 Liff.gs LIFF_HANDLERS，不改各店 程式碼.js。 */
 var CAP_H = 10;
@@ -67,7 +72,23 @@ function capBreakMs_(a, b, brk) {
   }
   return sum;
 }
-function capSegMs_(s, brk) { return (s.out - s.in) - (s.store ? 0 : capBreakMs_(s.in, s.out, brk)); }
+/* 15 分鐘緩衝（2026-11-23 主管定 A）：每張卡各自取整到 15 分——上班卡往後進位、下班卡往前捨去到 :00／:15／:30／:45 再相減，
+   取整後滿 10 小時才收卡；跟核定頁「參考 X 小時」同一套：直接呼叫 Code.gs（各店 程式碼.js）的 approvedHoursOfShift，不另寫一份取整。
+   （快速通道擋卡引擎也載入 程式碼.js，兩邊一定同一支。）沒有那支函式＝丟錯，capCheck_ 接住後不擋不寫。 */
+function capGridMs_(a, b) {
+  if (typeof approvedHoursOfShift !== 'function') throw new Error('少了 approvedHoursOfShift（Code.gs）');
+  return Math.round(approvedHoursOfShift(new Date(a).toISOString(), new Date(b).toISOString()) * 3600000);
+}
+/** 上班卡取整後的時刻：用台北隔天 00:00（一定在刻度上、比這張卡晚）倒推，取整規則全在 approvedHoursOfShift。 */
+function capGridIn_(ms) { var g = capMs_(capDay_(ms + 86400000) + 'T00:00:00+08:00'); return g - capGridMs_(ms, g); }
+/** 下班卡（或「現在」）取整後的時刻：用台北當天 00:00（在刻度上、不晚於這張卡）往後推。 */
+function capGridOut_(ms) { var g = capMs_(capDay_(ms) + 'T00:00:00+08:00'); return g + capGridMs_(g, ms); }
+/** 一段打卡算數的區間 {a, b, ms}：上班取整、下班取整（b ≤ a＝0）；本店的段再扣不打卡休息（央廚、總部；休息帶在刻度上，扣的就是取整後區間跟休息重疊的部分）。 */
+function capSegSpan_(s, brk) {
+  var a = capGridIn_(s.in), b = capGridOut_(s.out);
+  if (!(b > a)) return { a: a, b: a, ms: 0 };
+  return { a: a, b: b, ms: (b - a) - (s.store ? 0 : capBreakMs_(a, b, brk)) };
+}
 function capFillIn_(ev, nextMs, fill) {
   var end = fill ? fill('in', ev) : null;
   if (end && end > ev.ms) return { in: ev.ms, out: Math.min(end, nextMs), filled: true, store: ev.store };
@@ -148,15 +169,17 @@ function capLiveLeaves_(leaves, day, openMs, brk) {
   return l;
 }
 
-/** 第一個「當日出勤 ≥ 10 小時」的時刻。tot 隨時間只增不減：平常每毫秒最多增 1 毫秒（碰到不打卡休息、假單時段重疊會停著不增），
- *  只有在假單核准那一刻（jumps）會一下子跳上去。所以往後跳「還差多少」不會跳過頭——中間碰到核准時刻就先停在那裡再算。
- *  80 次還沒到回 null（不收卡，下次再算）。 */
+/** 第一個「當日出勤 ≥ 10 小時」的時刻。打卡取整到 15 分（2026-11-23 緩衝 A）之後，tot 是階梯：只在 15 分刻度（正在上班那段的下班取整往前進一格）
+ *  和假單核准那一刻（jumps）會變，其他時間不動；只增不減，從 t 到 T 最多增「T 取整 − t 取整」（碰到不打卡休息、假單時段重疊會增得更少）。
+ *  所以下一個可能滿的時刻＝「t 取整＋還差多少」再進位到刻度，中間碰到核准時刻就先停在那裡再算；不會跳過第一個滿 10 的刻度。
+ *  （原本「往後跳還差多少」在階梯上會跳過頭，2026-11-23 改。）200 次還沒到回 null（不收卡，下次再算）。 */
 function capReach_(tot, from, jumps) {
   var need = CAP_H * 3600000, t = from;
-  for (var i = 0; i < 80; i++) {
+  for (var i = 0; i < 200; i++) {
     var v = tot(t);
     if (v >= need) return t;
-    var nt = t + (need - v), j = null;
+    var nt = capGridIn_(capGridOut_(t) + (need - v)), j = null;
+    if (!(nt > t)) nt = t + 60000;   // 保險：一定往後走
     (jumps || []).forEach(function (d) { if (d > t && d <= nt && (j === null || d < j)) j = d; });
     t = j !== null ? j : nt;
   }
@@ -165,17 +188,16 @@ function capReach_(tot, from, jumps) {
 
 /** 某一天到 t 為止的出勤（2026-11-23 新定義）→ {punch, leave, total}（毫秒）。
  *  segs＝已完成的段（孤單卡不算），open＝正在上班那段 {ms, store}（算到 t；沒有給 null）。
- *  punch：本店的段扣不打卡休息時段（央廚、總部），其他店不扣班表休息；leave：capLeaveMs_。 */
+ *  punch：每段取整到 15 分（capSegSpan_，正在上班那段的「下班」＝t 往前捨去），本店的段扣不打卡休息時段（央廚、總部），其他店不扣班表休息；
+ *  leave：capLeaveMs_，跟打卡重疊用的是取整後真正算進去的區間（沒算進去的零頭不拿來扣假單，核定＝參考時數＋請假時數）。 */
 function capDayMs_(segs, open, t, day, brk, leaves) {
   var punch = 0, work = [];
+  var add = function (s) { var g = capSegSpan_(s, brk); punch += g.ms; if (g.b > g.a) work.push([g.a, g.b]); };
   segs.forEach(function (s) {
     if (s.lone || s.out > t || capDay_(s.in) !== day) return;
-    punch += capSegMs_(s, brk); work.push([s.in, s.out]);
+    add(s);
   });
-  if (open && t > open.ms && capDay_(open.ms) === day) {
-    var o = { in: open.ms, out: t, store: open.store };
-    punch += capSegMs_(o, brk); work.push([o.in, o.out]);
-  }
+  if (open && t > open.ms && capDay_(open.ms) === day) add({ in: open.ms, out: t, store: open.store });
   var leave = capLeaveMs_(leaves, day, work, brk, t);
   return { punch: punch, leave: leave, total: punch + leave };
 }
@@ -404,6 +426,14 @@ function capEventsFor_(ss, me, nowMs, ownRows, peerEvs) {
   return mine.concat(peers);
 }
 
+/** 毫秒 → 小時，取到小數兩位（取整到 15 分後一定是 .25 的倍數：9.75、10、8.5） */
+function capH2_(ms) { return Math.round(ms / 36000) / 100; }
+/** 「已經上班 X 小時」那句（擋上班卡、Rest.gs 提醒共用；2026-11-23 改字，待主管看）：X＝取整後打卡時數；有算進去的請假／出差就講出來，
+ *  不然打卡 8＋假 2 會只看到「已經上班 8 小時」卻不能打卡、不知道原因。 */
+function capDayText_(punchMs, leaveMs) {
+  return '你今天已經上班 ' + capH2_(punchMs) + ' 小時' + (leaveMs > 0 ? '，加上已核准的請假／出差 ' + capH2_(leaveMs) + ' 小時' : '') + '，已滿 ' + CAP_H + ' 小時';
+}
+
 /** 打卡頁提醒（Rest.gs restCheckIn_）用：這個人今天已完成的出勤（新定義，跟收卡同一支 capJudge_ 算）→ {total, punch}（毫秒）。
  *  Rest.gs 只在 REST_CAP_ON 開著時叫（關著＝提醒跟改版前一樣）；出錯回 null（Rest.gs 退回原本的打卡加總）。 */
 function capTodayMs_(ss, me, nowMs, ownRows, peerEvs) {
@@ -458,8 +488,9 @@ function capCheck_(ss, me, nowMs, ownRows) {
   try {
     var now = nowMs || Date.now();
     var r = capJudge_(capEventsFor_(ss, me, now, ownRows), now, capMakeFill_(me.emp_id), capBreak_(), capLeavesFor_(ss, me, now));
-    // today_h 是畫面上「你今天已經上班 X 小時」的 X：顯示實際打卡時數（判斷用 today_ms＝含假單的新定義）
-    var st = { locked: false, in_block: false, today_h: Math.round(r.today_punch_ms / 360000) / 10 };
+    // today_h 是畫面上「你今天已經上班 X 小時」的 X：打卡時數取整到 15 分後的小時數（2026-11-23 主管：顯示取整後的時數，跟核定參考時數一樣，例 9.75）；
+    // 判斷用 today_ms＝含假單的新定義
+    var st = { locked: false, in_block: false, today_h: capH2_(r.today_punch_ms) };
     var sys = null;
     if (r.lock) sys = r.sys;
     else if (r.due) {
@@ -479,7 +510,7 @@ function capCheck_(ss, me, nowMs, ownRows) {
     }
     if (!r.open && r.today_ms >= CAP_H * 3600000 && r.today_punch_ms > 0) {   // 今天還沒有任何打卡時數＝不會因為假單擋上班卡
       st.in_block = true;
-      st.reason = '你今天已經上班 ' + st.today_h + ' 小時（一天最多 ' + CAP_H + ' 小時）';
+      st.reason = capDayText_(r.today_punch_ms, r.today_ms - r.today_punch_ms);
       st.hint = '今天不能再打上班卡';
     }
     return st;

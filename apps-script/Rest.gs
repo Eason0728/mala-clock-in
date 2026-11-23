@@ -4,7 +4,7 @@
      ①這張上班卡跟上一段班同一天（段落歸上班卡那天，跨夜算前一天）→ 當天已打卡加總滿 10 小時：
        2026-11-06 Eason 改成**不擋、只提醒**（code 'cap'、warn:true；打卡照收，畫面多一句）
        2026-11-23 時數改用新定義（Eason）：打卡時數（央廚／總部扣不打卡休息，其他店不扣班表休息）＋已核准請假、出差，
-       跟滿 10 小時收卡同一支（Cap10.gs capTodayMs_）；總部鏡像列不算
+       跟滿 10 小時收卡同一支（Cap10.gs capTodayMs_）；總部鏡像列不算；打卡時數每張卡取整到 15 分（同核定參考時數），「X 小時」顯示取整後的數（同日主管定）
      ②上一段班在前一天以前 → 距離那張下班卡不到 11 小時就擋（照舊）
    - 跨店一起算：同一個人（姓名去空白）在別家店的打卡也算，別家店的試算表 ID 在 RestConfig.gs（只放 ~/mala-gas，不進公開 repo）。
    - 上一段忘了打下班卡（沒有下班時間）＝算不出間隔，不擋。沒有例外（主管 QR 也擋）。
@@ -56,7 +56,7 @@ function restSegments_(evs) {
 }
 
 /** 純判斷：段落＋現在 → null（可以打）或 {code:'cap'|'gap', reason, hint, until}（until＝幾點起可以打，毫秒；cap 沒有）。
- *  day（2026-11-23）：Cap10.gs capTodayMs_ 的 {total, punch}——判斷用 total（新定義），畫面上的「已經上班 X 小時」顯示 punch（實際打卡）；
+ *  day（2026-11-23）：Cap10.gs capTodayMs_ 的 {total, punch}——判斷用 total（新定義），畫面上的「已經上班 X 小時」顯示 punch（打卡取整到 15 分後）；
  *  沒給（舊呼叫、REST_CAP_ON 沒開、Cap10 算失敗）＝照舊用今天的段落加總。 */
 function restJudge_(segs, nowMs, day) {
   var today = restDay_(nowMs), done = segs.filter(function (s) { return s.out <= nowMs; });
@@ -67,7 +67,10 @@ function restJudge_(segs, nowMs, day) {
     var ok = day && typeof day.total === 'number' && isFinite(day.total) && typeof day.punch === 'number' && isFinite(day.punch);
     var h = ok ? day.total / 3600000 : raw, shown = ok ? day.punch / 3600000 : raw;
     if (h >= REST_DAY_MAX_H) {
-      return { code: 'cap', warn: true, reason: '你今天已經上班 ' + (Math.round(shown * 10) / 10) + ' 小時（一天最多 ' + REST_DAY_MAX_H + ' 小時）',
+      // 收卡開關開著（day 有值）：時數取整到 15 分、字跟擋上班卡同一句（Cap10.gs capDayText_，2026-11-23）；沒開＝跟改版前一字不差
+      var txt = (ok && typeof capDayText_ === 'function') ? capDayText_(day.punch, day.total - day.punch)
+        : '你今天已經上班 ' + (Math.round(shown * 10) / 10) + ' 小時（一天最多 ' + REST_DAY_MAX_H + ' 小時）';
+      return { code: 'cap', warn: true, reason: txt,
                hint: '再上班會超過 10 小時，請先跟店長確認', until: null };
     }
     return null;   // 同一天的第二段（二段班中間休息回來）不看間隔

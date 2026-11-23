@@ -5881,7 +5881,7 @@ function handlePayrollCompPeriod(body) {
      舊觸發器用 payroll_comp_trigger_setup 清掉（現在只刪不建）。
    鎖月時「補休帳是負的不能鎖定」（handlePayrollFinalize → payCompNegatives／payCompNegLine）是鎖月規則，不是提醒，照舊。
    原本的 payCompCheckRun_（檢查＋通知）、payCompPushManagers_（私訊值班主管）沒有其他呼叫者，一起刪掉（要找回看 git 歷史 49dc85e）。 */
-// 通知匣網址（payInboxNotify_ 用：每日重算失敗、月加班同步、單日超過 10 小時）
+// 通知匣網址（payInboxNotify_ 用：每日重算失敗、月加班同步、當日出勤滿 10 小時）
 var PAY_NOTIFY_INBOX_URL = 'https://script.google.com/macros/s/AKfycbyZ-sVl9KbKhotjsFhKg9Id7j4qgNRf6wSlSCacoBe7lATkuJFb9_ShCaicAJuLOak/exec';
 function payCompCheckDaily() { return; }
 /** 通知匣一般件；成功判準 ok===true && added===true。任何情況都不拋例外。 */
@@ -5970,7 +5970,7 @@ function payDayLoadOver_(date, stores) {
 function payYesterday_() {
   return Utilities.formatDate(new Date(Date.now() - 86400000), 'Asia/Taipei', 'yyyy-MM-dd');
 }
-/** {action:'payroll_rest_check', admin_key, date?} → 那天（預設昨天）各店核定超過 10 小時的人（唯讀）。 */
+/** {action:'payroll_rest_check', admin_key, date?} → 那天（預設昨天）當日出勤（核定＋請假）滿 10 小時的人（唯讀；2026-11-23 起新定義）。 */
 function handlePayrollRestCheck(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : payYesterday_();
@@ -5995,12 +5995,21 @@ function payRestOverRun_(date) {
   const by = {};
   list.forEach(function (x) { (by[x.store_name] = by[x.store_name] || []).push(x); });
   const lines = Object.keys(by).map(function (st) {
-    return '【' + st + '】\n' + by[st].map(function (x) { return x.name + ' ' + x.hours + ' 小時（' + x.periods + '）'; }).join('\n');
+    return '【' + st + '】\n' + by[st].map(payRestOverLine_).join('\n');
   });
-  const inbox = payInboxNotify_(md + ' 核定超過 ' + PAY_DAY_MAX_H + ' 小時：' + list.length + ' 人',
-    md + ' 各店核定工時超過一天 ' + PAY_DAY_MAX_H + ' 小時（照實核定、已照付）：\n' + lines.join('\n') +
-    '\n\n請提醒店長排班與下班時間控制在 ' + PAY_DAY_MAX_H + ' 小時內。', 'restover-' + date, '超時檢查', 'restover');
+  const msg = payRestOverText_(md, list.length, lines);
+  const inbox = payInboxNotify_(msg.title, msg.text, 'restover-' + date, '超時檢查', 'restover');
   return { list: list, inbox: inbox };
+}
+/* 09:00 通知匣的字（2026-11-23 主管定第 9 點：標題「M/D 當日出勤滿 10 小時：N 人」、每人「X 小時（核定 a＋請假 b；時段）」）。
+   內文第一行、最後一句是跟著新定義改的建議字（待主管看）。 */
+function payRestOverLine_(x) {
+  return x.name + ' ' + x.hours + ' 小時（核定 ' + x.approved_h + '＋請假 ' + x.leave_h + (x.periods ? '；' + x.periods : '') + '）';
+}
+function payRestOverText_(md, n, lines) {
+  return { title: md + ' 當日出勤滿 ' + PAY_DAY_MAX_H + ' 小時：' + n + ' 人',
+           text: md + ' 各店當日出勤（核定＋已核准請假）滿一天 ' + PAY_DAY_MAX_H + ' 小時（照實核定、已照付）：\n' + lines.join('\n') +
+                 '\n\n請提醒店長排班與下班時間控制在未滿 ' + PAY_DAY_MAX_H + ' 小時（含請假）。' };
 }
 /** {action:'payroll_rest_trigger_setup', admin_key} → 建每天 09:00 的 payRestOverDaily（同名先刪，重跑不疊）。 */
 function handlePayrollRestTriggerSetup(body) {

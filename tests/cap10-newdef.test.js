@@ -183,7 +183,7 @@ console.log('\n════ 滿 10 含剛好 10、已核准才算、擋上班卡
     { reqs: [['leave', D, '17:00', '19:00', 2]] });
   const s = status(m);
   check('N11c', '打卡 8＋假 2＝剛好 10 → 擋上班卡（in_block）', s.cap.in_block, true);
-  check('N11d★', '擋上班卡那句的「已經上班 X 小時」顯示實際打卡 8（不是含假的 10；第 4 項）', m.sb.capCheck_(m.self, ME, T(D + 'T19:30:00'), null).reason, '你今天已經上班 8 小時（一天最多 10 小時）');
+  check('N11d★', '擋上班卡那句的「已經上班 X 小時」顯示打卡 8（取整後；不是含假的 10）＋講出假 2（2026-11-23 改字，待主管看）', m.sb.capCheck_(m.self, ME, T(D + 'T19:30:00'), null).reason, '你今天已經上班 8 小時，加上已核准的請假／出差 2 小時，已滿 10 小時');
 }
 {
   const m = world(D + 'T19:30:00', [[D + 'T08:00:00', 'E01', 'in'], [D + 'T12:00:00', 'E01', 'out'], [D + 'T13:00:00', 'E01', 'in'], [D + 'T17:00:00', 'E01', 'out']],
@@ -319,7 +319,7 @@ const restReason = (m) => { const s = m.sb.restStatus_(m.self, ME); return s.war
 {
   const m = world(D + 'T19:00:00', [[D + 'T09:00:00', 'E01', 'in'], [D + 'T17:00:00', 'E01', 'out']], { props: { REST_RULE_ON: '1', REST_CAP_ON: '1' }, reqs: [['leave', D, '17:00', '19:00', 2]] });
   check('N18b', '收卡開關開著：門市打卡 8＋假 2 → 提醒', restWarn(m), 'cap');
-  check('N18c★', '提醒那句的 X 顯示實際打卡 8（判斷用含假的 10；第 4 項）', restReason(m), '你今天已經上班 8 小時（一天最多 10 小時）');
+  check('N18c★', '提醒那句的 X 顯示打卡 8（判斷用含假的 10），字跟擋上班卡同一句（2026-11-23 改字，待主管看）', restReason(m), '你今天已經上班 8 小時，加上已核准的請假／出差 2 小時，已滿 10 小時');
 }
 {
   const m = world(D + 'T19:00:00', [[D + 'T13:00:00', 'E01', 'in'], [D + 'T18:00:00', 'E01', 'out']], { props: { REST_RULE_ON: '1', REST_CAP_ON: '1' } });
