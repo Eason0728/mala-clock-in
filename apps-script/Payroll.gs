@@ -8110,7 +8110,7 @@ function handlePnlLaborEstimate_(body) {
  *   ・只限總管理金鑰：checkAdmin；帶門市範圍（scope 陣列）的金鑰由 PAY_SCOPE_ADMIN_ONLY 擋（scope_forbidden），主管金鑰、沒金鑰、錯金鑰 → unauthorized。
  *   ・先驗金鑰，再看版本、月份，最後才讀分頁：金鑰不對什麼都不回（月份在不在、分頁在不在、筆數都不回）。
  *   ・ym 只收台北時間「本月往前 3 個月」到「本月」；其他（含未來月份、格式不對）→ bad_ym。
- * 回應：{ok:true, format:'payshadow-v1', whitelist_version, ym, generated_at, counts:{分頁:筆數}, tables:{分頁:[列]}}
+ * 回應：{ok:true, format:'payshadow-v1', whitelist_version, ym, generated_at, counts:{分頁:筆數}, flags:{只有計數}, tables:{分頁:[列]}}
  *   ・每一列都是「照白名單逐欄挑出來組的新物件」（不是拿原列刪欄位）：分頁上多出來的欄、名單外的欄一律不會出現。
  *     分頁上沒有的欄（舊表頭）就不放這個鍵（跟這邊讀到 undefined 一樣）。
  *   ・值只會是字串、數字、布林或 null；日期儲存格一律轉台北日期 'YYYY-MM-DD'。
@@ -8208,17 +8208,21 @@ function handlePayrollShadowExport(body) {
     }
     /* 第二輪：有上限地讀（表頭 → 月份欄 → 只取需要的列段與欄段）；累計取值格數有預算，超過就停、後面的表不讀。 */
     const budget = { left: PAY_SHADOW_CELL_BUDGET_ };
+    var changed = 0;   // 月份欄篩過之後、第二次讀到的那一列月份已不在範圍內 → 丟掉的筆數（Codex 217 r2 新擋項一）
     for (let i = 0; i < names.length; i++) {
       const t = names[i];
       if (!shs[t]) { raw[t] = []; continue; }
-      const got = payShadowReadBounded_(shs[t], wl[t], PAY_SHADOW_TABLES_[t], ym, budget, curYm);
+      const got = payShadowReadBounded_(shs[t], wl[t], PAY_SHADOW_TABLES_[t], ym, budget, curYm, PAY_SHADOW_REQUIRED_[t] || []);
+      if (got.error === 'bad_header') return { ok: false, error: 'bad_header', table: t, missing: got.missing };
       if (got.error) return { ok: false, error: 'too_many_rows', table: t, limit: got.error };
       raw[t] = got.rows;
+      changed += got.changed || 0;
     }
   } catch (e) {
     return { ok: false, error: 'read_failed' };
   }
-  const tables = {}, counts = {}, flags = { input_support_bad: 0, input_add_more_bad: 0, config_keys_dropped: 0 };
+  const tables = {}, counts = {}, flags = { input_support_bad: 0, input_add_more_bad: 0, config_keys_dropped: 0,
+                                         rows_changed_during_read: changed, rows_ym_nonstandard: 0 };
   for (let i = 0; i < names.length; i++) {
     const t = names[i], spec = PAY_SHADOW_TABLES_[t];
     let rows = raw[t];
@@ -8229,11 +8233,22 @@ function handlePayrollShadowExport(body) {
         return ok;
       });
     }
+    if (spec.month) {
+      /* 輸出的月份一律是正規化後的 YYYY-MM（Codex 217 r2 殘餘風險）。計算端對 run／item／holiday／bonus／input 一律用
+         String(r.ym) === ym 逐字比：月份格是 Date 或前後有空白的列，Google 本來就不算 → 不出（計入 flags.rows_ym_nonstandard），
+         出了反而讓 mini 多算。hol_emp 計算端用 payYmStr_（Date 轉台北年月、去空白）→ 照它正規化後輸出。 */
+      rows = rows.filter(function (r) {
+        const norm = payShadowYmOf_(r.ym);
+        if (t !== 'hol_emp' && String(r.ym) !== norm) { flags.rows_ym_nonstandard++; return false; }
+        r.ym = norm;
+        return true;
+      });
+    }
     if (rows.length > spec.max) return { ok: false, error: 'too_many_rows', table: t, limit: 'rows' };
     const childCode = t === 'leave_span' ? payShadowChildCodes_(rows) : null;
     tables[t] = rows.map(function (r) {
       /* 手填工時：請求月那一列照白名單全出；其他月份（早於或晚於請求月）只出 PAY_SHADOW_INPUT_EARLY_（沒有金額） */
-      const cols = (t === 'input' && payShadowYmOf_(r && r.ym) !== ym) ? PAY_SHADOW_INPUT_EARLY_.filter(function (c) { return wl[t].indexOf(c) >= 0; }) : wl[t];
+      const cols = (t === 'input' && r.ym !== ym) ? PAY_SHADOW_INPUT_EARLY_.filter(function (c) { return wl[t].indexOf(c) >= 0; }) : wl[t];
       return payShadowPick_(t, r, cols, childCode, flags);
     });
     counts[t] = tables[t].length;
@@ -8262,10 +8277,13 @@ const PAY_SHADOW_CONFIG_KEYS_ = (function () {
   return o;
 })();
 
-/** 有上限地讀一張表 → {rows:[{欄:值}]}｜{error:'rows'|'cells'}。只放白名單的欄（與 readSheetAsObjects 同語意：同名欄後面的蓋前面的、沒有的欄＝undefined）。 */
-function payShadowReadBounded_(info, cols, spec, ym, budget, curYm) {
+/** 有上限地讀一張表 → {rows:[{欄:值}], changed}｜{error:'rows'|'cells'}｜{error:'bad_header', missing:[欄名]}。
+ *  只放白名單的欄（與 readSheetAsObjects 同語意：同名欄後面的蓋前面的、沒有的欄＝undefined）。
+ *  必要欄（PAY_SHADOW_REQUIRED_）有任何一個不在表頭 → bad_header（不回空物件列、也不回空陣列冒充「沒有資料」；Codex 217 r2 新擋項二）。
+ *  分月份的表：先讀月份欄篩列號，第二次讀列段時再對「實際讀到的那一列」驗一次月份，不在範圍內就丟掉、計 changed（Codex 217 r2 新擋項一）。 */
+function payShadowReadBounded_(info, cols, spec, ym, budget, curYm, required) {
   const sh = info.sh, lr = info.lr, lc = info.lc;
-  if (lr < 2 || lc < 1) return { rows: [] };
+  if (lr < 1 || lc < 1) return { rows: [], changed: 0 };
   function take(r, c, nr, nc) {
     budget.left -= nr * nc;
     if (budget.left < 0) return null;
@@ -8275,13 +8293,14 @@ function payShadowReadBounded_(info, cols, spec, ym, budget, curYm) {
   if (!head) return { error: 'cells' };
   const at = {};   // 欄名 → 欄號（1 起算；同名取最後一欄）
   head[0].forEach(function (h, i) { at[String(h)] = i + 1; });
+  const missing = (required || []).filter(function (c) { return at[c] === undefined; });
+  if (missing.length) return { error: 'bad_header', missing: missing };
+  if (lr < 2) return { rows: [], changed: 0 };
   const want = cols.slice();
   if (spec.month && want.indexOf('ym') < 0) want.push('ym');
   const idx = want.filter(function (c) { return at[c] !== undefined; }).map(function (c) { return at[c]; });
-  if (!idx.length) return { rows: lr >= 2 ? payShadowBlankRows_(lr - 1) : [] };
   let r0 = 2, r1 = lr, keep = null;
   if (spec.month) {
-    if (at.ym === undefined) return { rows: [] };
     const ymCol = take(2, at.ym, lr - 1, 1);
     if (!ymCol) return { error: 'cells' };
     keep = {};
@@ -8293,23 +8312,29 @@ function payShadowReadBounded_(info, cols, spec, ym, budget, curYm) {
       r1 = i + 2;
     });
     if (n > spec.max) return { error: 'rows' };
-    if (!n) return { rows: [] };
+    if (!n) return { rows: [], changed: 0 };
   }
   const c0 = Math.min.apply(null, idx), c1 = Math.max.apply(null, idx);
   const vals = take(r0, c0, r1 - r0 + 1, c1 - c0 + 1);
   if (!vals) return { error: 'cells' };
   const names = Object.keys(at).filter(function (k) { return want.indexOf(k) >= 0; });
   const rows = [];
+  let changed = 0;
   vals.forEach(function (v, i) {
     if (keep && !keep[r0 + i]) return;
+    if (spec.month && !payShadowInRange_({ ym: v[at.ym - c0] }, spec.month, ym, curYm)) { changed++; return; }   // 兩次讀取之間月份被改掉
     const o = {};
     names.forEach(function (k) { o[k] = v[at[k] - c0]; });
     rows.push(o);
   });
-  return { rows: rows };
+  return { rows: rows, changed: changed };
 }
-/** 表頭裡一個白名單欄都沒有：照原本「每列都是空物件」的語意回（列數不變），不取值。 */
-function payShadowBlankRows_(n) { const a = []; for (let i = 0; i < n; i++) a.push({}); return a; }
+/* 每張表的必要欄（白名單裡的邏輯欄名）：分月份的表要有 ym，再加計算用來對人／對鍵的欄。表頭缺任何一個 → bad_header。 */
+const PAY_SHADOW_REQUIRED_ = {
+  master: ['emp_id'], config: ['key', 'value'], holiday: ['ym'], store: ['code'],
+  run: ['ym', 'emp_id'], item: ['ym', 'emp_id'], leave_type: ['code'], input: ['ym', 'emp_id'],
+  bonus: ['ym', 'emp_id'], leave_span: ['emp_id'], xmap: ['emp_id'], hol_emp: ['ym', 'emp_id'],
+};
 
 /** ym 合法＝YYYY-MM（月份 01–12），且在 cur（台北本月）往前 3 個月到 cur 之間。 */
 function payShadowYmOk_(ym, cur) {
@@ -8342,7 +8367,7 @@ function payShadowInRange_(r, mode, ym, curYm) {
      ②payAnnualInfo 的 usedIn（週年制特休）：週年期 [ps, pe)。本期 q＝payAnnualQuota(到職日, ym) 的 ps 最早 ym−11；
        但屆滿折算 settle 與離職當月改用的上一期＝payAnnualQuota(到職日, 上個月)，ps 最早落在 ym−12
        （例：11/15 到職、ym＝2026-11 → settle.ps＝2025-11-15，2025-11 的 annual_h 依 payAnnualManualShare_ 可能算進去）。所以要 13 個月。
-   ・早於請求月的列只出：工號、門市、月份、hours_manual（payInputSupportOnly_ 判斷「僅 support」列）、support（內層逐欄挑）、
+   ・早於請求月的列只出：工號、門市、月份、hours_manual（payInputSupportOnly_ 判斷「僅 support」列）、
      五個假別時數（payLeaveUsedBefore 的 legacyCol 與 usedIn 的 annual_h）。計算端讀早期列只用到這些，沒有任何金額欄。
    ・與計算端的差異：計算端月份只驗 /^\d{4}-\d{2}$/（收 2026-00）；這裡嚴格到 01–12，所以萬一手填表真有 2026-00 這種列（寫入端
      handlePayrollInputSet 也只驗兩位數），Google 會把它算進當年的曆年上限、mini 不會 → 影子會出差異（寧可報差異，不送不合理的月份）。
@@ -8350,7 +8375,9 @@ function payShadowInRange_(r, mode, ym, curYm) {
      Google 回頭重算舊月份時，usedIn 的週年期 [ps, pe) 會算到請求月之後月份的 annual_h（只有這一欄；payLeaveUsedBefore 只看請求月以前）。
      晚於本月的列（預先填的）不出。請求月＝本月時沒有「之後」的列。 */
 const PAY_SHADOW_INPUT_BACK_ = 12;
-const PAY_SHADOW_INPUT_EARLY_ = ['ym', 'emp_id', 'store', 'hours_manual', 'support', 'personal_h', 'sick_h', 'menstrual_h', 'disaster_h', 'annual_h'];
+/* support 不在早期欄（Codex 217 r2）：計算讀非請求月的手填列從不讀 support 的內容——「僅 support 列」的判斷 payInputSupportOnly_
+   只看 hours_manual（'0'＝僅 support）。support 內層有費率、金額，非請求月不帶金額 → 整欄不出（9 欄）。 */
+const PAY_SHADOW_INPUT_EARLY_ = ['ym', 'emp_id', 'store', 'hours_manual', 'personal_h', 'sick_h', 'menstrual_h', 'disaster_h', 'annual_h'];
 
 /** 一格的值 → 字串／數字／布林／null（日期儲存格＝台北 'YYYY-MM-DD'；NaN／Infinity＝null；其他型別轉字串）。 */
 function payShadowVal_(v) {

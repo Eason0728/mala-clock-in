@@ -81,6 +81,7 @@ function book(sheets) {
     ? () => {
       if (m !== 'getValues') return 0;
       const b = box || [1, 1, lastRow(name), width(name)];
+      if (w.beforeGet) w.beforeGet(name, b);   // 測試用：模擬兩次讀取之間儲存格被改
       w.cells += b[2] * b[3]; w.gets.push(name + '@' + b.join(','));
       const out = [];
       for (let i = 0; i < b[2]; i++) { const src = sheets[name][b[0] - 1 + i] || []; const row = []; for (let j = 0; j < b[3]; j++) { const v = src[b[1] - 1 + j]; row.push(v === undefined ? '' : v); } out.push(row); }
@@ -509,11 +510,11 @@ console.log('══ 9) Codex 217 r1 修正：支援內層逐欄挑、參數鍵�
   /* ── 擋項二：support 內層物件逐欄挑 ── */
   const supRows = (s) => { const t = s[PS.N.input];
     const add = (ym, emp, sup) => { const r = PS.S.input.map(() => ''); r[col('input', 'ym')] = ym; r[col('input', 'emp_id')] = emp; r[col('input', 'store')] = 'SSLGF'; r[col('input', 'support')] = sup; t.push(r); };
-    add('2026-10', 'S1', '[{"hours":1,"phone":"TEST-PHONE","store":"測試店二","rate":180,"memo":"SECRET-MEMO","nested":{"a":"SECRET-N"},"keep":"true","auto_h":2,"cross":true,"amount":[9]}]');
-    add('2026-10', 'S2', 'SECRET-PHONE{壞掉');
-    add('2026-10', 'S3', '{"phone":"SECRET-PHONE"}');
-    add('2026-10', 'S4', '[1,"SECRET-PHONE",null,[2]]');
-    add('2026-10', 'S5', '');
+    add('2026-11', 'S1', '[{"hours":1,"phone":"TEST-PHONE","store":"測試店二","rate":180,"memo":"SECRET-MEMO","nested":{"a":"SECRET-N"},"keep":"true","auto_h":2,"cross":true,"amount":[9]}]');
+    add('2026-11', 'S2', 'SECRET-PHONE{壞掉');
+    add('2026-11', 'S3', '{"phone":"SECRET-PHONE"}');
+    add('2026-11', 'S4', '[1,"SECRET-PHONE",null,[2]]');
+    add('2026-11', 'S5', '');
   };
   const ws = world(baseSheets({ mut: supRows }));
   const rs = ask(ws);
@@ -588,7 +589,7 @@ console.log('══ 9) Codex 217 r1 修正：支援內層逐欄挑、參數鍵�
 console.log('══ 10) 手填工時範圍（主管 11/23 方案 b）：13 個月、早期月份不出金額、裁切後照樣算得一樣 ══');
 {
   const IN = PS.S.input;
-  const EARLY = ['ym', 'emp_id', 'store', 'hours_manual', 'support', 'personal_h', 'sick_h', 'menstrual_h', 'disaster_h', 'annual_h'];
+  const EARLY = ['ym', 'emp_id', 'store', 'hours_manual', 'personal_h', 'sick_h', 'menstrual_h', 'disaster_h', 'annual_h'];   // r3：support 不出（9 欄）
   const AMT = ['wage_override', 'dorm_override', 'custom_add_amt', 'custom_ded_amt', 'custom_add_more', 'extra_ot', 'hours', 'deduct_days', 'full_attend', 'work_days', 'meal_on', 'holiday_h'];
   const mkIn = (rows) => (s) => { s[PS.N.input] = tab('input', rows); };
   const full = (ym, emp, extra) => Object.assign({ ym, emp_id: emp, store: 'SSLGF', hours: 160, extra_ot: 3, personal_h: 0, sick_h: 0, menstrual_h: 0, disaster_h: 0, annual_h: 0,
@@ -602,25 +603,28 @@ console.log('══ 10) 手填工時範圍（主管 11/23 方案 b）：13 個�
   const r = ask(w);
   const got = r.tables.input.map((x) => x.ym);
   const clean = got.filter((m) => m.trim() === m).sort();
-  chk('  請求 2026-11 → 只回 2025-11～2026-11（13 個月，含剛好 12 個月前的 2025-11）＋前後空白的 2026-05', [clean[0], clean.slice(-1)[0], clean.length, got.length], ['2025-11', '2026-11', 13, 14]);
-  chk('  2025-10 以前、2026-12（請求月之後）、2026-00、2026-13 都不出；前後空白的 2026-05 照原值出',
-    [clean.some((m) => !(m > '2025-10')), got.indexOf('2026-12') >= 0, got.indexOf('2026-00') >= 0, got.indexOf('2026-13') >= 0, got.indexOf(' 2026-05 ') >= 0], [false, false, false, false, true]);
+  chk('  請求 2026-11 → 只回 2025-11～2026-11（13 個月，含剛好 12 個月前的 2025-11）', [clean[0], clean.slice(-1)[0], clean.length, got.length], ['2025-11', '2026-11', 13, 13]);
+  chk('  2025-10 以前、2026-12（請求月之後）、2026-00、2026-13 都不出；前後空白的 " 2026-05 "（計算端逐字比、本來就不算）也不出、計入 flags.rows_ym_nonstandard',
+    [clean.some((m) => !(m > '2025-10')), got.indexOf('2026-12') >= 0, got.indexOf('2026-00') >= 0, got.indexOf('2026-13') >= 0, got.some((m) => /\s/.test(m)), (r.flags || {}).rows_ym_nonstandard], [false, false, false, false, false, 1]);
   const cur = r.tables.input.find((x) => x.ym === '2026-11'), old = r.tables.input.filter((x) => x.ym.trim() !== '2026-11');
   chk('  請求月那一列照 w2 全出（含金額欄）', [Object.keys(cur).sort().join(), cur.custom_add_amt, cur.wage_override, cur.custom_add_more], [W2(w).input.filter((c) => IN.indexOf(c) >= 0).sort().join(), 777, 210, '[{"amt":99}]']);
-  chk('  早期月份的列只有：工號、門市、月份、hours_manual、support、五個假別時數', [...new Set(old.map((x) => Object.keys(x).sort().join()))], [EARLY.slice().sort().join()]);
+  chk('  早期月份的列只有：工號、門市、月份、hours_manual、五個假別時數（9 欄，沒有 support）', [...new Set(old.map((x) => Object.keys(x).sort().join()))], [EARLY.slice().sort().join()]);
   chk('  早期月份沒有任何金額類欄（加扣金額、覆寫金額、自訂加薪…）', old.some((x) => AMT.some((c) => c in x)), false);
-  chk('  早期月份的 support 也逐欄挑（沒有電話）', [old[0].support, /SECRET-PHONE/.test(JSON.stringify(r))], ['[{"store":"測試店二","hours":2,"rate":200}]', false]);
+  chk('  早期月份沒有 support；整列序列化後不含 rate、amount、加扣金額、覆寫金額類鍵名；回應沒有 SECRET-PHONE',
+    [old.some((x) => 'support' in x), old.some((x) => /rate|amount|amt|_override|custom_|extra_ot/.test(JSON.stringify(x))), /SECRET-PHONE/.test(JSON.stringify(r))], [false, false, false]);
   const wy = world(baseSheets({ mut: mkIn(inRange('2025-10', '2027-02').map((m) => full(m, 'E1'))) }), '2027-01-05');
   const gy = ask(wy, { ym: '2027-01' }).tables.input.map((x) => x.ym).sort();
   chk('  跨年：請求 2027-01 → 2026-01～2027-01（2025-12 不出、2027-02 不出）', [gy[0], gy.slice(-1)[0], gy.length], ['2026-01', '2027-01', 13]);
   const r10 = ask(w, { ym: '2026-10' }), g10 = r10.tables.input.map((x) => x.ym).filter((m) => m.trim() === m).sort();
   const after = r10.tables.input.find((x) => x.ym === '2026-11') || {};
   chk('  請求 2026-10、本月 2026-11 → 2025-10～2026-11（請求月之後到本月也出），2026-12（預先填的）不出', [g10[0], g10.slice(-1)[0], g10.indexOf('2026-12') >= 0], ['2025-10', '2026-11', false]);
-  chk('  請求月之後（2026-11）的列只有那 10 欄、沒有金額；請求月 2026-10 那列照 w2 全出',
+  chk('  請求 2026-10：非請求月的列（含之後的 2026-11）序列化後不含 rate、amount、support',
+    [r10.tables.input.filter((x) => x.ym !== '2026-10').some((x) => /rate|amount|support/.test(JSON.stringify(x)))], [false]);
+  chk('  請求月之後（2026-11）的列只有那 9 欄、沒有金額；請求月 2026-10 那列照 w2 全出',
     [Object.keys(after).sort().join(), AMT.some((c) => c in after), (r10.tables.input.find((x) => x.ym === '2026-10') || {}).custom_add_amt], [EARLY.slice().sort().join(), false, 777]);
   chk('  請求 2026-11（＝本月）→ 沒有之後的列', clean.filter((m) => m > '2026-11'), []);
   const gy12 = ask(wy, { ym: '2026-12' }).tables.input, gy12m = gy12.map((x) => x.ym).sort();
-  chk('  跨年：本月 2027-01、請求 2026-12 → 2025-12～2027-01；2027-01 那列只有 10 欄；2027-02 不出',
+  chk('  跨年：本月 2027-01、請求 2026-12 → 2025-12～2027-01；2027-01 那列只有 9 欄；2027-02 不出',
     [gy12m[0], gy12m.slice(-1)[0], gy12m.length, Object.keys(gy12.find((x) => x.ym === '2027-01') || {}).sort().join()], ['2025-12', '2027-01', 14, EARLY.slice().sort().join()]);
 
   /* ── 夠不夠算：同一份資料，「完整手填表」與「只給匯出內容」跑請求月的 payLeaveUsedBefore（曆年上限）與 payAnnualInfo（週年制特休），結果要一樣 ── */
@@ -679,6 +683,80 @@ console.log('══ 10) 手填工時範圍（主管 11/23 方案 b）：13 個�
       chk('    反證：少給剛好 12 個月前的 2025-11 → 週年制結果不同（C3 或 F5）', engine(cut12, ym, today) !== a, true);
     }
   }
+}
+
+console.log('══ 11) Codex 217 r2 修正：讀取中月份被改、必要表頭、月份正規化、非請求月不帶金額全面掃描 ══');
+{
+  const col = (k, c) => PS.S[k].indexOf(c);
+  /* ── 新擋項一：月份欄篩過之後、第二次讀列段前那一格被改掉 ── */
+  const wc = world(baseSheets());
+  let n = 0;
+  wc.beforeGet = (name, b) => {
+    if (b[3] === 1 || b[0] === 1) return;   // 表頭、月份欄那兩次不動；第二次讀列段前才改
+    const t = wc.sheets[name];
+    if (name === PS.N.input) t.forEach((r, i) => { if (i && r[col('input', 'emp_id')] === 'E2' && r[col('input', 'ym')] === '2026-10') { r[col('input', 'ym')] = '2026-12'; n++; } });
+    if (name === PS.N.run) t.forEach((r, i) => { if (i && r[col('run', 'emp_id')] === 'E1' && r[col('run', 'ym')] === '2026-11') { r[col('run', 'ym')] = '2026-10'; n++; } });
+    if (name === PS.N.bonus) t.forEach((r, i) => { if (i && r[col('bonus', 'ym')] === '2026-11') { r[col('bonus', 'ym')] = '2024-01'; n++; } });
+  };
+  const rc = ask(wc);
+  chk('  第二次讀到的月份已不在範圍（input 改成 2026-12、run 改成 2026-10、bonus 改成 2024-01）→ 那幾列不出、flags.rows_changed_during_read＝3',
+    [n, rc.ok, rc.tables.input.some((x) => x.ym === '2026-12' || x.emp_id === 'E2' && x.ym === '2026-10'), rc.tables.run.some((x) => x.emp_id === 'E1'), rc.tables.bonus.length, (rc.flags || {}).rows_changed_during_read],
+    [3, true, false, false, 0, 3]);
+  /* 範圍內換月份（請求 2026-10 時 2026-10 那列被改成 2026-11）→ 照實際讀到的月份出、而且變成非請求月 9 欄 */
+  const wd = world(baseSheets());
+  wd.beforeGet = (name, b) => { if (name !== PS.N.input || b[3] === 1 || b[0] === 1) return; wd.sheets[name].forEach((r, i) => { if (i && r[col('input', 'ym')] === '2026-10') r[col('input', 'ym')] = '2026-11'; }); };
+  const rd = ask(wd, { ym: '2026-10' });
+  const e2 = rd.tables.input.filter((x) => x.emp_id === 'E2');
+  chk('  範圍內換月份 → 照實際讀到的 2026-11 出、欄位依它不是請求月只出 9 欄（沒有 custom_add_more）', [e2.map((x) => x.ym).sort(), e2.some((x) => 'custom_add_more' in x), (rd.flags || {}).rows_changed_during_read], [['2026-11', '2026-11'], false, 0]);
+
+  /* ── 新擋項二：必要表頭 ── */
+  const ren = (k, from, to) => (s) => { const h = s[PS.N[k]][0]; h[h.indexOf(from)] = to; };
+  chk('  run 沒有 ym 表頭 → bad_header、missing [ym]', ask(world(baseSheets({ mut: ren('run', 'ym', 'ym_old') }))), { ok: false, error: 'bad_header', table: 'run', missing: ['ym'] });
+  chk('  主檔沒有 emp_id 表頭 → bad_header、missing [emp_id]', ask(world(baseSheets({ mut: ren('master', 'emp_id', 'EMP') }))), { ok: false, error: 'bad_header', table: 'master', missing: ['emp_id'] });
+  const one = (s) => { s[PS.N.run] = [['renamed_col'], ['SECRET-VAL']]; };
+  chk('  w1：run 只有一個改名的表頭＋一筆資料（Codex 重現）→ bad_header、不回 [{}]', ask(world(baseSheets({ mut: one })), { whitelist_version: 'w1' }), { ok: false, error: 'bad_header', table: 'run', missing: ['ym', 'emp_id'] });
+  chk('  選填分頁（hol_emp）只有表頭、但表頭不對 → 也是 bad_header（不回空陣列冒充沒資料）', ask(world(baseSheets({ mut: (s) => { s[PS.N.hol_emp] = [['x', 'y']]; } }))), { ok: false, error: 'bad_header', table: 'hol_emp', missing: ['ym', 'emp_id'] });
+  const rn = ask(world(baseSheets()));
+  chk('  正常匯出：任何一張表都沒有空物件列', Object.keys(rn.tables).filter((t) => rn.tables[t].some((x) => !Object.keys(x).length)), []);
+
+  /* ── 殘餘風險：月份正規化 ── */
+  const wn = world(baseSheets({ mut: (s) => {
+    const h = s[PS.N.hol_emp]; h[1][col('hol_emp', 'ym')] = ' 2026-11 '; h[2][col('hol_emp', 'ym')] = D('2026-10-31T16:00:00Z');
+    const r = s[PS.N.run]; r[1][col('run', 'ym')] = ' 2026-11 ';
+    const it = s[PS.N.input]; it[1][col('input', 'ym')] = D('2026-10-31T16:00:00Z');
+  } }));
+  const rr = ask(wn);
+  const yms = []; Object.keys(rr.tables).forEach((t) => rr.tables[t].forEach((x) => { if ('ym' in x) yms.push(x.ym); }));
+  chk('  所有表輸出的 ym 都是 YYYY-MM（沒有空白、沒有完整日期）', yms.filter((m) => !/^\d{4}-\d{2}$/.test(m)), []);
+  chk('  hol_emp（計算端用 payYmStr_ 正規化）→ 空白、Date 都轉成 2026-11 照出', rr.tables.hol_emp.map((x) => x.ym), ['2026-11', '2026-11']);
+  chk('  run、input（計算端逐字比，這種列本來就不算）→ 不出、計入 flags.rows_ym_nonstandard＝2', [rr.tables.run.length, rr.tables.input.filter((x) => x.emp_id === 'E1' && x.ym === '2026-11').length, (rr.flags || {}).rows_ym_nonstandard], [2, 0, 2]);
+  chk('  請求月那一列的其他欄位不受影響（E2 2026-11 照全欄位出）', Object.keys(rr.tables.input.find((x) => x.emp_id === 'E2' && x.ym === '2026-11') || {}).length > 9, true);
+
+  /* ── 全面掃描：非請求月不帶金額 ──
+     每張表的每個「金額類」欄都塞 987654（時數、旗標、鍵欄用別的值），請求 2026-10、本月 2026-11。
+     已核定本來就含金額的：master（底薪、津貼、勞健保…）、run（gross／deduction／net）、item（rate／amount）、bonus（amount）、config（參數 value）、
+     以及 input「請求月那一列」。其他表、input 的非請求月列一個都不能有。 */
+  const M = 987654;
+  const MONEY = {
+    master: ['wage', 'base', 'ot_rate', 'skill_allow', 'night_allow', 'mgr_allow', 'editor_allow', 'attend_cap', 'meal_allow', 'labor_ins', 'health_ins', 'group_ins', 'pension', 'co_labor', 'co_health', 'co_pension', 'dormitory', 'gap_rate'],
+    config: ['value'], run: ['gross', 'deduction', 'net'], item: ['rate', 'amount'], bonus: ['amount'],
+    input: PS.S.input.filter((c) => ['ym', 'emp_id', 'store', 'hours_manual', 'personal_h', 'sick_h', 'menstrual_h', 'disaster_h', 'annual_h', 'support', 'custom_add_more', 'updated_at', 'custom_add_label', 'custom_ded_label'].indexOf(c) < 0),
+  };
+  const wm = world(baseSheets({ mut: (s) => {
+    Object.keys(MONEY).forEach((k) => { const t = s[PS.N[k]]; for (let i = 1; i < t.length; i++) MONEY[k].forEach((c) => { const j = t[0].indexOf(c); if (j >= 0) t[i][j] = M; }); });
+    const t = s[PS.N.input];
+    for (let i = 1; i < t.length; i++) { t[i][col('input', 'support')] = '[{"store":"測試店二","hours":8,"rate":' + M + ',"amount":' + M + '}]'; t[i][col('input', 'custom_add_more')] = '[{"amt":' + M + '}]'; }
+    const add = (ym) => { const r = t[1].slice(); r[col('input', 'ym')] = ym; r[col('input', 'emp_id')] = 'EX'; t.push(r); };
+    ['2025-10', '2026-03', '2026-09', '2026-11'].forEach(add);   // 早於與晚於請求月
+  } }));
+  const rm = ask(wm, { ym: '2026-10' });
+  const has = (x) => JSON.stringify(x).indexOf(String(M)) >= 0;
+  const where = Object.keys(rm.tables).filter((t) => t !== 'input' && rm.tables[t].some(has)).sort();
+  const inpReq = rm.tables.input.filter((x) => x.ym === '2026-10'), inpOther = rm.tables.input.filter((x) => x.ym !== '2026-10');
+  chk('  含 987654 的表＝已核定含金額的 bonus、config、item、master、run（其他表沒有）', where, ['bonus', 'config', 'item', 'master', 'run']);
+  chk('  input 請求月的列有金額（' + inpReq.length + ' 列）', inpReq.length > 0 && inpReq.every(has), true);
+  chk('  input 非請求月的列（' + inpOther.length + ' 列：2025-10、2026-03、2026-09、2026-11）一個 987654 都沒有、也沒有 rate／amount 鍵名',
+    [inpOther.map((x) => x.ym).filter((m) => ['2025-10', '2026-03', '2026-09', '2026-11'].indexOf(m) >= 0).length >= 4, inpOther.some(has), inpOther.some((x) => /rate|amount|amt/.test(JSON.stringify(x)))], [true, false, false]);
 }
 
 console.log('\n' + (fail ? '❌' : '✅') + ' payroll-shadow-export：' + pass + ' 過、' + fail + ' 失敗');
