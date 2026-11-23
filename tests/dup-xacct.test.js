@@ -22,6 +22,10 @@ const J = (x) => JSON.parse(JSON.stringify(x));
 
 console.log('══ ① 純函式：共用案例檔 ══');
 {
+  const h = require('crypto').createHash('sha256').update(fs.readFileSync(path.join(__dirname, 'fixtures', 'dup-xacct-cases-v1.json'))).digest('hex');
+  eq(h, '490bd6b3e78856ff1c74c289d1fc5a4355d4eb74c2b1d34a122bb070ea0fa71f', '共用案例檔跟 mala-store-ops 那份逐字相同（sha256 釘住；兩邊要一起改）');
+}
+{
   const s = load({ data: {}, clock: {} });
   for (const c of CASES.cases) {
     let got;
