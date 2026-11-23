@@ -4692,6 +4692,15 @@ function payDupXacctStore_(ym, st, master, XSUP, supBy) {
   });
   return out;
 }
+/** 回應要不要帶 dup_xacct_on（畫面顯示跨帳號重複提醒的唯一依據）：開關開著、而且結果裡真的有 dup_xacct／dup_xacct_err 才帶。
+ *  開關關著（草稿留著開著時的舊旗標也一樣）或沒有重複＝不帶，回應跟主線逐字相同。 */
+function payDupXacctShow_(ym, results) {
+  if (!payDupXacctOn_(ym)) return false;
+  return (results || []).some(function (r) {
+    let o = r && r.ot_info; if (typeof o === 'string') { try { o = JSON.parse(o || '{}'); } catch (e) { o = {}; } }
+    return !!o && ((Array.isArray(o.dup_xacct) && o.dup_xacct.length > 0) || !!o.dup_xacct_err);
+  });
+}
 var PAY_DUP_XACCT_MSG_ = '不能鎖定：下面的同仁同一天在兩個打卡帳號重複申請出差或請假，薪資會重複計算工時。請先請人資作廢多出來的那張、該帳號重新核定，再按「重新計算」後鎖定。';
 /** 鎖定前比對（payLockStale_）用：只看會擋鎖定的那幾筆與檢查失敗旗標；草稿與重算都沒有＝回 null（比對字串跟改版前相同） */
 function payDupXacctGate_(o) {
@@ -4990,6 +4999,7 @@ function handlePayrollCalc(body) {
     if (ASOF_INFO) dres.asof = ASOF_INFO;
     if (NOT_IN.length) dres.not_in_payroll = NOT_IN;
     if (ZERO_ROWS.length) dres.zero_ratio_with_data = ZERO_ROWS;
+    if (payDupXacctShow_(ym, results)) dres.dup_xacct_on = true;   // 跨帳號重複檢查開著才帶（畫面只在有這個旗標時顯示那類提醒；關著時回應形狀跟主線相同，Codex 第二輪）
     return dres;
   }
   let lockedMeanwhile = false;
@@ -5022,6 +5032,7 @@ function handlePayrollCalc(body) {
   if (ASOF_INFO) res.asof = ASOF_INFO;   // 月中草稿才帶
   if (NOT_IN.length) res.not_in_payroll = NOT_IN;   // 沒有就不帶（回應形狀與改版前相同）
   if (ZERO_ROWS.length) res.zero_ratio_with_data = ZERO_ROWS;   // 沒有就不帶
+  if (payDupXacctShow_(ym, results)) res.dup_xacct_on = true;   // 跨帳號重複檢查開著才帶（同上）
   /* 請假單和請假登記對不上（1113 紅燈 a1）：畫面先標紅，鎖定時會擋。讀不到不影響試算；沒有就不帶。 */
   try { const LM = payLeaveMismatch_(ym, st); if (LM.length) res.leave_mismatch = LM; } catch (e) { Logger.log('leave_mismatch in calc: ' + e); }
   return res;
@@ -5222,6 +5233,7 @@ function handlePayrollMonth(body) {
   if (heM) resM.hol_emp = heM;
   if (payElecOn_(ym)) resM.elec_vote_days = payElecVoteDaysOf_(ym);   // 本月投票日（可能是空陣列）；名單能用的月份才帶，前端說明行與確認框只讀這一份
   if (elecStale) resM.elec_stale = true;   // 草稿不是用現在的名單算的（只有這種情況才帶）
+  if (payDupXacctShow_(ym, run ? run.results : null)) resM.dup_xacct_on = true;   // 跨帳號重複檢查開著才帶：關著時草稿上留著的舊 dup_xacct 畫面不顯示（Codex 第二輪），回應跟主線相同
   if (elecRecalc && !elecStale) resM.elec_recalc = true;   // 這次開頁因名單改過重算了草稿：前端丟掉先前預抓的趨勢（Codex 第四次 B3）
   if (heM && payElecOn_(ym)) { const od = payElecOtherDates_(payHolEmpRows_(), ym, stM); if (od.length) resM.hol_emp_other_dates = od; }   // 直接編表多出的日期（畫面提醒，Codex 複審 S3）
   return resM;

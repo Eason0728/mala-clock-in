@@ -315,6 +315,21 @@ console.log('\n══ ③-4 Codex 第一輪 ══');
     eq([JSON.stringify(lb) === JSON.stringify(la), lb.ok, lb.status], [true, true, 'final'], 'P1：關開關後直接鎖，回應跟 main 逐字相同、鎖成功（沒有 stale_run）');
     eq(JSON.stringify(b.__DATA.run) === JSON.stringify(a.__DATA.run) && JSON.stringify(b.__DATA.audit) === JSON.stringify(a.__DATA.audit), true, '　鎖定後 run／稽核跟 main 逐字相同');
   }
+  // Codex 第二輪：開著算的草稿 → 關開關 → 讀月資料／讀草稿的回應跟 main 逐字相同（沒有 dup_xacct_on → 畫面不顯示那類提醒）
+  if (OLDSRC) {
+    const sc = scene('HQ');
+    const on = env(sc); const rc = on.post('handlePayrollCalc', { ym: '2026-11', store: 'HQ' });
+    eq(rc.dup_xacct_on, true, '開著、有重複：計算回應帶 dup_xacct_on');
+    eq(on.post('handlePayrollMonth', { ym: '2026-11', store: 'HQ' }).dup_xacct_on, true, '開著、有重複：讀月資料也帶 dup_xacct_on');
+    const a = env(sc, { src: OLDSRC }), b = env(sc, { from: '9999-12' });
+    a.__DATA.run = J(on.__DATA.run); a.__DATA.item = J(on.__DATA.item); b.__DATA.run = J(on.__DATA.run); b.__DATA.item = J(on.__DATA.item);
+    const ma = a.post('handlePayrollMonth', { ym: '2026-11', store: 'HQ' }), mb = b.post('handlePayrollMonth', { ym: '2026-11', store: 'HQ' });
+    eq([JSON.stringify(mb) === JSON.stringify(ma), 'dup_xacct_on' in mb], [true, false], '關開關：讀月資料（payroll_month）回應跟 main 逐字相同、不帶 dup_xacct_on');
+    eq(JSON.stringify(b.post('handlePayrollGet', { ym: '2026-11' })) === JSON.stringify(a.post('handlePayrollGet', { ym: '2026-11' })), true, '關開關：讀草稿（payroll_get）回應跟 main 逐字相同');
+    const html = fs.readFileSync(path.join(__dirname, '..', 'payroll.html'), 'utf8');
+    eq([/if\(DUPX_ON\) \(o\.dup_xacct\|\|\[\]\)\.forEach/.test(html), /if\(DUPX_ON&&o\.dup_xacct_err\)/.test(html), (html.match(/DUPX_ON=!!r\.dup_xacct_on/g) || []).length], [true, true, 3],
+      '畫面：提醒區兩行都要 DUPX_ON；DUPX_ON 只從後端回應的 dup_xacct_on 來（計算、讀月資料、重算三處）');
+  }
   // P2-1：對照表分頁不存在（讀回 0 列）→ 引擎自動帶入 0 小時，金額跟沒有第二張單時相同；沒有手填支援 → 照常可鎖
   {
     const a = calcLines({ xmap: [] });
