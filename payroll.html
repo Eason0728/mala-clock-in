@@ -1834,6 +1834,9 @@ function renderOtInfo(t){
     if(o.no_show&&o.no_show.length) rows.push(`<li>${nm}：有排班、沒核定也沒請假 ${list(o.no_show)}（系統不扣，請確認要補請假或扣款）</li>`);
     if(o.support_leave&&o.support_leave.length) o.support_leave.forEach(x=>rows.push(`<li><b style="color:#b7791f">${nm}</b>：<span style="color:#b7791f">${md(x.date)} 在${esc(x.store_name)}記了${esc(x.type)} ${r2(x.hours)} 小時（支援店記的假，薪資沒扣，請確認）</span></li>`));
     if(o.manual_sup_h>0) rows.push(`<li>${nm}：手填的跨店支援有 ${r2(o.manual_sup_h)} 小時沒有日期，沒算進逐日加班</li>`);
+    // 跨帳號重複出差／請假（2026-11-23）：後端組好白話（line）；pay＝會讓薪資重複、鎖定時擋，其他只提醒
+    (o.dup_xacct||[]).forEach(x=>rows.push(x.pay?`<li><b class="bad">${nm}</b>：${esc(x.line)}——<b>處理前不能鎖定</b></li>`:`<li><b style="color:#b7791f">${nm}</b>：<span style="color:#b7791f">${esc(x.line)}</span></li>`));
+    if(o.dup_xacct_err) rows.push(`<li><b class="bad">${nm}</b>：跨帳號重複出差／請假的檢查沒有做完，請按「重新計算」——<b>處理前不能鎖定</b></li>`);
   });
   box.innerHTML=rows.length?`<div class="card" style="border-left:4px solid #b4762a"><h3 style="margin:0 0 6px">${(NOT_IN_PAY.length||ZERO_RATIO.length)?'在職狀態、工號、加班與班表提醒':(ROSTER_MISS.length||SAME_NAME.length?'工號、加班與班表提醒':'加班與班表提醒')}</h3><ul style="margin:0;padding-left:20px;line-height:1.8">${rows.join('')}</ul></div>`:'';
 }
@@ -1901,7 +1904,7 @@ async function toggleLock(){
     else if(r.ok&&lock){ if(STORE+'|'+ym()===lockKey) STATUS=r.status; const ok=await loadMonth(); toast(ok?'已鎖定':'已鎖定，但重新讀取這個月失敗：請重新整理頁面、確認金額後再匯出',!ok); }   // 重讀失敗：留著讀取錯誤、匯出與鎖定鈕先擋（Codex 第六次 13b）
     else if(r.ok){STATUS=r.status;COST_SNAP=(lock&&r.cost_snap)||null;vClear();renderRun();renderElec();toast(lock?'已鎖定':'已解鎖'); if(!lock&&STORE+'|'+ym()===lockKey) await loadMonth();}   // 解鎖成功也重讀（跟鎖定一樣以後端為準，2026-11-23）
     // 補休帳是負的不能鎖定（2026-11-01）：名單可能好幾行，用對話框列清楚
-    else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='ot_form_missing'||r.error==='sched_missing'||r.error==='unapproved'||r.error==='leave_mismatch')) alert(r.message);
+    else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='ot_form_missing'||r.error==='sched_missing'||r.error==='unapproved'||r.error==='leave_mismatch'||r.error==='dup_xacct'||r.error==='dup_xacct_check_failed')) alert(r.message);
     else if(lock&&r.error==='stale_run'){ alert(r.message+'\n\n按確定後系統會自動重新計算，請看過新數字再按一次鎖定。'); await doCalcAfterLoad(lockKey); }
     else if(lock&&r.message) lockBlockedBox(r.error,r.message);   // 待辦 17（Eason 2026-11-22 選 5A）：鎖定被擋改成要按「知道了」才關的視窗（原本紅字 2.6 秒就消失）
   } finally {

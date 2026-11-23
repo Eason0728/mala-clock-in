@@ -890,7 +890,8 @@ function payLockStale_(body, ym, st) {
   const gate = function (raw) {
     let o = raw; if (typeof raw === 'string') { try { o = JSON.parse(raw || '{}'); } catch (e) { o = {}; } }
     o = o || {};
-    return JSON.stringify([payNum(o.comp_over_h), o.ot_form_missing || []]);
+    const dg = payDupXacctGate_(o);   // 跨帳號重複（2026-11-23）：草稿與重算都沒有＝不加，比對字串跟改版前相同
+    return JSON.stringify(dg ? [payNum(o.comp_over_h), o.ot_form_missing || [], dg] : [payNum(o.comp_over_h), o.ot_form_missing || []]);
   };
   let claim = false;   // r3：只有請款不同（不列進名單，finalize 用既有「試算後資料有改過」那句擋）
   const cum = {};   // r10：逐人容差內的差額照被支援門市累加（分）——指定金額、加成金額、最終金額三項都看（指定金額或加成各自正負抵銷時，最終金額看不出來）
@@ -4456,6 +4457,210 @@ function payUnapprovedAll_(ym, st) {
   return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.emp_id < b.emp_id ? -1 : a.emp_id > b.emp_id ? 1 : 0); });
 }
 
+/* ═══════════════════ 跨帳號重複出差／請假（2026-11-23 主管定案；設計 _brain_out/dup-trip-leave/design.md 方案 A，第一階段）═══════════════════
+ * 同一個人（打卡對照 payroll_xmap 裡 confirmed 的列，跟跨店支援自動帶入同一份）同一天有兩張已核准、沒作廢的出差／請假單（補休也算），
+ * 而且時段重疊（任一張只填時數＝整天；跨夜照 Requests.gs reqOverlap_ 的 B29；剛好接在一起不算）→ 偵測出來。
+ * 鎖月只擋「會讓薪資重複的」三種（主管定案 A）：
+ *   ① 兩個帳號都是出差，兩邊時數都進這次計薪（本店帳號，或 paySupportAutoCore_ 會帶入時數的同單位支援帳號：confirmed、不是 not_support／dup_pay）；
+ *   ② 一張出差、一張請假，請假那張在計薪那家店（本店帳號）；
+ *   ③ 同一個帳號裡兩張重疊的已核准單。
+ * 其他重複（例：支援店的假不扣薪、跨單位出差）只在計算結果提醒、不擋。
+ * 金額算法一律不動：這裡只偵測，結果放進草稿 ot_info.dup_xacct，handlePayrollFinalize 照它擋（同 ot_form_missing 的做法）。
+ * 開關 PAY_DUP_XACCT_FROM（保護性檢查）：ym ≥ 這個月份才偵測、才擋；要退回＝改成很後面的月份（例 '9999-12'），薪資後端換版。
+ *   填錯值（不是 YYYY-MM）＝照上線月份 2026-11 維持擋，不會因為打錯字就默默不擋。關著時 handlePayrollCalc／finalize 跟改版前逐位元組相同、不多讀任何分頁。
+ * 第二階段（主管核准時擋，mala-store-ops）重用：payDupOverlap_、payDupXacctCore_ 是純函式（不碰試算表、不用 Apps Script API），
+ *   mala-store-ops server/dup-xacct.js 是同義移植；兩邊共用案例檔 tests/fixtures/dup-xacct-cases-v1.json（兩份必須逐字相同）。 */
+var PAY_DUP_XACCT_FROM = '2026-11';
+var PAY_DUP_XACCT_DEFAULT_ = '2026-11';
+function payDupXacctOn_(ym) {
+  let f = String(PAY_DUP_XACCT_FROM == null ? '' : PAY_DUP_XACCT_FROM).trim();
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(f)) f = PAY_DUP_XACCT_DEFAULT_;   // 填錯值＝維持擋
+  ym = String(ym == null ? '' : ym);
+  return /^\d{4}-\d{2}$/.test(ym) && ym >= f;
+}
+function payDupMin_(hm) { const m = /^(\d{2}):(\d{2})$/.exec(String(hm == null ? '' : hm)); return m ? (+m[1]) * 60 + (+m[2]) : null; }
+/** 兩張單的時段有沒有重疊。任一張沒有完整起訖（只填時數）＝整天，一定重疊（同 Requests.gs reqSameThing_ 口徑）；
+ *  end ≤ start＝跨夜到隔天；另一段寫凌晨時間也當同一個凌晨比（同 reqOverlap_ B29）；剛好接在一起（12:00 接 12:00）不算。 */
+function payDupOverlap_(a, b) {
+  let s1 = payDupMin_(a && a.start), e1 = payDupMin_(a && a.end), s2 = payDupMin_(b && b.start), e2 = payDupMin_(b && b.end);
+  if (s1 === null || e1 === null || s2 === null || e2 === null) return true;
+  if (e1 <= s1) e1 += 1440;
+  if (e2 <= s2) e2 += 1440;
+  return (s1 < e2 && s2 < e1) || (s1 < e2 + 1440 && s2 + 1440 < e1) || (s1 + 1440 < e2 && s2 < e1 + 1440);
+}
+var PAY_DUP_ROLE_ORDER_ = { home: 0, pay: 1, remind: 2 };
+/**
+ * 純函式。accts：[{ key, store, store_name, acct, role, rows:[{ id, kind, status, date, leave_type, start, end, hours, voided_at, mirror_src }] }]
+ *   key＝打卡表＋帳號（共用同一份打卡表的門市給同一個 key）；role：home＝計薪那家店的帳號、pay＝時數會帶進這次計薪的支援帳號、remind＝其他。
+ *   rows 的 date＝'YYYY-MM-DD'、start／end＝'HH:MM' 或空白（呼叫端先正規化）。
+ * opt：{ ym?（只看這個月）, statuses?（預設 ['approved']；第二階段核准當下可帶 ['approved','pending']） }
+ * 回 [{ date, kind:'trip'|'leave'|'mixed', cats, pay, approved, a, b }]，依日期、帳號（本店→帶入→其他）排序；
+ *   cats：'a'＝兩個帳號、'b'＝同一帳號同類、'c'＝一張出差一張請假（'a' 可以同時是 'c'）；pay＝會讓薪資重複（①②③，鎖月擋）。
+ */
+function payDupXacctCore_(accts, opt) {
+  opt = opt || {};
+  const sts = opt.statuses || ['approved'];
+  const T = function (v) { return String(v == null ? '' : v).trim(); };
+  const items = [], seen = {};
+  (accts || []).forEach(function (A) {
+    ((A && A.rows) || []).forEach(function (r) {
+      const kind = T(r.kind), d = T(r.date).slice(0, 10), st = T(r.status);
+      if ((kind !== 'trip' && kind !== 'leave') || sts.indexOf(st) < 0) return;
+      if (T(r.voided_at) || T(r.mirror_src)) return;   // 作廢的、總部 Mirror 抄自央廚的列不算
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || (opt.ym && d.slice(0, 7) !== String(opt.ym))) return;
+      const uk = T(A.key) + '|' + T(r.id);
+      if (T(r.id)) { if (seen[uk]) return; seen[uk] = true; }   // 同一份表同一張單只算一次
+      items.push({ A: A, r: r, kind: kind, date: d, st: st });
+    });
+  });
+  const ord = function (x) {
+    const o = PAY_DUP_ROLE_ORDER_[T(x.A.role)];
+    return [x.date, o == null ? 9 : o, T(x.A.store), T(x.A.acct), T(x.r.start), T(x.r.id)];
+  };
+  items.sort(function (x, y) {
+    const a = ord(x), b = ord(y);
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+    return 0;
+  });
+  const side = function (x) {
+    const full = payDupMin_(x.r.start) !== null && payDupMin_(x.r.end) !== null, h = Number(x.r.hours);
+    return { key: T(x.A.key), store: T(x.A.store), store_name: T(x.A.store_name) || T(x.A.store), acct: T(x.A.acct), role: T(x.A.role), id: T(x.r.id),
+             kind: x.kind, type: x.kind === 'trip' ? '出差' : T(x.r.leave_type), start: full ? T(x.r.start) : '', end: full ? T(x.r.end) : '',
+             hours: isFinite(h) ? Math.round(h * 100) / 100 : 0, status: x.st };
+  };
+  const inPay = function (role) { return role === 'home' || role === 'pay'; };
+  const out = [];
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length && items[j].date === items[i].date; j++) {
+      const x = items[i], y = items[j];
+      if (!payDupOverlap_(x.r, y.r)) continue;
+      const same = T(x.A.key) === T(y.A.key);
+      const cats = same ? [x.kind === y.kind ? 'b' : 'c'] : (x.kind === y.kind ? ['a'] : ['a', 'c']);
+      let pay;
+      if (same) pay = true;                                                           // ③
+      else if (x.kind === 'trip' && y.kind === 'trip') pay = inPay(T(x.A.role)) && inPay(T(y.A.role));   // ①
+      else if (x.kind !== y.kind) pay = T((x.kind === 'leave' ? x : y).A.role) === 'home';                // ②
+      else pay = false;                                                               // 請假＋請假、不同帳號：只提醒
+      out.push({ date: x.date, kind: x.kind === y.kind ? x.kind : 'mixed', cats: cats, pay: pay,
+                 approved: x.st === 'approved' && y.st === 'approved', a: side(x), b: side(y) });
+    }
+  }
+  return out;
+}
+/** 'HH:MM'（容忍 Sheets 轉成 Date、'9:00'）；不合法回 ''（同 Requests.gs reqHm_） */
+function payDupHm_(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, 'Asia/Taipei', 'HH:mm');
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(v).trim());
+  if (!m) return '';
+  const h = +m[1], mi = +m[2];
+  return (h <= 23 && mi <= 59) ? ('0' + h).slice(-2) + ':' + m[2] : '';
+}
+/** requests 分頁一列 → payDupXacctCore_ 吃的形狀 */
+function payDupRow_(r) {
+  const S = function (v) { return String(v == null ? '' : v).trim(); };
+  return { id: S(r.id), emp_id: S(r.emp_id), kind: S(r.kind), status: S(r.status), date: normCellDate(r.date), leave_type: S(r.leave_type),
+           start: payDupHm_(r.start), end: payDupHm_(r.end), hours: payNum(r.hours),
+           voided_at: (r.voided_at === null || r.voided_at === undefined || r.voided_at === '') ? '' : S(normCellTs(r.voided_at)), mirror_src: S(r.mirror_src) };
+}
+function payDupMd_(d) { return (+String(d).slice(5, 7)) + '/' + (+String(d).slice(8, 10)); }
+function payDupSpan_(s) { return (s.start && s.end ? s.start + '–' + s.end + ' ' : '整天 ') + payR2(payNum(s.hours)) + ' 小時'; }
+/** 一筆重複的白話（會計看）。code＝管理系統員工代號（打卡對照的 emp_no；沒有對照用薪資主檔工號）。
+ *  pay（鎖月擋）：「11/5 DZY010 出差：總部（HQ-03）整天 8 小時＋墨竹亭光復（MZTGF01）整天 8 小時」（design.md 草稿）。
+ *  只提醒、出差＋支援店的假：design.md 草稿原句。其他只提醒的：同一個句型的延伸（待主管看過，見 PR 說明「待預覽文字」）。 */
+function payDupXacctLine_(x, code) {
+  const a = x.a, b = x.b, md = payDupMd_(x.date);
+  if (x.pay) {
+    const one = a.type === b.type;
+    const sideTxt = function (s) { return s.store_name + '（' + s.acct + '）' + (one ? '' : s.type + ' ') + payDupSpan_(s); };
+    return md + ' ' + code + ' ' + (one ? a.type : a.type + '＋' + b.type) + '：' + sideTxt(a) + '＋' + sideTxt(b);
+  }
+  if (x.kind === 'mixed') {
+    const L = a.kind === 'leave' ? a : b, T = a.kind === 'leave' ? b : a;
+    return '提醒：' + md + ' ' + L.store_name + '帳號（' + L.acct + '）登記了' + L.type + ' ' + payR2(payNum(L.hours)) + ' 小時，跟' + T.store_name + '的出差時段重疊。支援店的假不會扣薪，請確認是不是重複申請。';
+  }
+  return '提醒：' + md + ' ' + b.store_name + '帳號（' + b.acct + '）登記了' + b.type + ' ' + payDupSpan_(b) + '，跟' + a.store_name + '帳號（' + a.acct + '）的' + a.type + '時段重疊，請確認是不是重複申請。';
+}
+/** 存進草稿 ot_info.dup_xacct 的一筆（只留畫面與鎖月要用的欄位） */
+function payDupXacctSlim_(x, code) {
+  const s = function (v) { return { store: v.store, acct: v.acct, kind: v.kind, type: v.type, start: v.start, end: v.end, hours: v.hours }; };
+  return { date: x.date, pay: !!x.pay, cats: x.cats, line: payDupXacctLine_(x, code), a: s(x.a), b: s(x.b) };
+}
+/**
+ * 這次計薪每位同仁的跨帳號重複（handlePayrollCalc 用）。開關沒開回 null、什麼都不讀。
+ * master＝這次計薪名單；XSUP＝paySupportAuto_ 的結果：支援帳號在 XSUP.byEmp[工號].stores 裡（同一份打卡表）＝時數會帶進這次計薪（role pay），
+ *   跟引擎同一個判斷；跨單位、not_support、dup_pay、dup_acct、沒有 XSUP（2026-11 以前）＝remind。
+ * 本店帳號＝薪資主檔工號（原樣、去掉 emp_prefix，同 payUnapprovedAll_）＋打卡對照裡同一份打卡表的帳號。對照沒確認、acct_only 的列不算同一人。
+ * 回 { 工號: [payDupXacctSlim_…] }，沒有重複的人不列。讀不到分頁會丟例外（呼叫端接住、改成擋鎖定）。
+ */
+function payDupXacctStore_(ym, st, master, XSUP) {
+  if (!payDupXacctOn_(ym)) return null;
+  const storeBy = payXsupStoreBy_(payRead('store'));
+  const home = payXsupCode_(st), homeKey = payXsupClockKey_(home, storeBy);
+  let xmap = [];
+  try { xmap = payRead('xmap'); } catch (e) { xmap = []; }
+  const groups = {};
+  xmap.forEach(function (r) {
+    if (payXsupBool_(r.acct_only) || String(r.state || 'confirmed').trim() !== 'confirmed' || payXsupCode_(r.pay_store) !== home) return;
+    (groups[String(r.emp_no)] = groups[String(r.emp_no)] || []).push(r);
+  });
+  const isHomeAcct = function (code) { const k = payXsupClockKey_(code, storeBy); return homeKey ? k === homeKey : payXsupCode_(code) === home; };
+  const prefix = String((storeBy[home] || {}).emp_prefix || '').trim();
+  const reqCache = {};
+  const reqOf = function (code) {   // 同一份打卡表只整理一次（payClockRead 本身也有請求內快取）
+    const k = payXsupClockKey_(code, storeBy) || payXsupCode_(code);
+    if (!reqCache[k]) reqCache[k] = (payClockRead(code, 'requests') || []).map(payDupRow_);
+    return reqCache[k];
+  };
+  const nameOf = function (code) { return String((storeBy[payXsupCode_(code)] || {}).name || code); };
+  const out = {};
+  (master || []).forEach(function (e) {
+    const raw = String(e.emp_id == null ? '' : e.emp_id).trim(), mid = payXsupId_(raw);
+    if (!mid) return;
+    const homeIds = {};
+    homeIds[mid] = true;
+    if (prefix && raw.indexOf(prefix) === 0 && raw.length > prefix.length) homeIds[payXsupId_(raw.slice(prefix.length))] = true;
+    let no = '', rows = [];
+    Object.keys(groups).some(function (k) {
+      if (!groups[k].some(function (r) { return isHomeAcct(r.acct_store) && homeIds[payXsupId_(r.emp_id)]; })) return false;
+      no = k; rows = groups[k]; return true;
+    });
+    const hx = rows.filter(function (r) { return isHomeAcct(r.acct_store); });
+    hx.forEach(function (r) { homeIds[payXsupId_(r.emp_id)] = true; });
+    const hStore = hx.length ? payXsupCode_(hx[0].acct_store) : home;
+    const accts = [{ key: (homeKey || home) + '|home', store: hStore, store_name: nameOf(hStore), acct: hx.length ? String(hx[0].emp_id).trim() : raw, role: 'home',
+                     rows: reqOf(home).filter(function (q) { return homeIds[payXsupId_(q.emp_id)]; }) }];
+    const entry = XSUP && XSUP.byEmp ? XSUP.byEmp[raw] : null;
+    const seenK = {};
+    rows.forEach(function (r) {
+      const S = payXsupCode_(r.acct_store);
+      if (isHomeAcct(S)) return;
+      const ck = payXsupClockKey_(S, storeBy);
+      if (!ck) return;   // 那家店沒有打卡表＝沒有申請單可看
+      const eid = payXsupId_(r.emp_id), key = ck + '|' + eid;
+      if (seenK[key]) return;
+      seenK[key] = true;
+      const inPay = !!entry && (entry.stores || []).some(function (s) {
+        return payXsupClockKey_(s.code, storeBy) === ck && (s.acct == null || payXsupId_(s.acct) === eid);
+      });
+      accts.push({ key: key, store: S, store_name: nameOf(S), acct: String(r.emp_id).trim(), role: inPay ? 'pay' : 'remind',
+                   rows: reqOf(S).filter(function (q) { return payXsupId_(q.emp_id) === eid; }) });
+    });
+    const list = payDupXacctCore_(accts, { ym: ym });
+    if (!list.length) return;
+    const code = no || raw;
+    out[raw] = list.map(function (x) { return payDupXacctSlim_(x, code); });
+  });
+  return out;
+}
+var PAY_DUP_XACCT_MSG_ = '不能鎖定：下面的同仁同一天在兩個打卡帳號重複申請出差或請假，薪資會重複計算工時。請先請人資作廢多出來的那張、該帳號重新核定，再按「重新計算」後鎖定。';
+/** 鎖定前比對（payLockStale_）用：只看會擋鎖定的那幾筆與檢查失敗旗標；草稿與重算都沒有＝回 null（比對字串跟改版前相同） */
+function payDupXacctGate_(o) {
+  const l = Array.isArray(o && o.dup_xacct) ? o.dup_xacct.filter(function (x) { return x && x.pay; }).map(function (x) { return String(x.line); }) : [];
+  if (!l.length && !(o && o.dup_xacct_err)) return null;
+  return [l, !!(o && o.dup_xacct_err)];
+}
+
 /** 鎖定前檢查（1113 紅燈 a1）：本店 requests 分頁已核准的請假單（kind=leave，含補休）與出差單（kind=trip，對 leave 的「出差」）
  *  vs leave 分頁的假別列，依「姓名＋日期＋假別」兩邊比，只比有沒有（時數不比）。
  *  leave 分頁只有 日期／姓名／假別／時數 四欄、沒有來源欄；寫入的只有值班核定（replaceLeaveRows）與手填，
@@ -4680,6 +4885,19 @@ function handlePayrollCalc(body) {
     results.push(one);
     SUP_BY[String(e.emp_id)] = att.support || [];
   });
+
+  /* 跨帳號重複出差／請假（2026-11-23，payDupXacctStore_）：只偵測、不動金額；結果進草稿 ot_info.dup_xacct，鎖定時 pay:true 的擋。
+     開關沒開＝這段完全不做事、不多讀任何分頁。偵測丟例外＝每人記 dup_xacct_err，鎖定時擋（保護性：寧可擋，不默默放行）。 */
+  if (!AM.day1 && payDupXacctOn_(ym)) {
+    let DUPX = null, dupErr = false;
+    try { DUPX = payDupXacctStore_(ym, st, master, XSUP) || {}; } catch (err) { dupErr = true; Logger.log('dup_xacct in calc: ' + err); }
+    results.forEach(function (r) {
+      const l = DUPX ? DUPX[String(r.emp_id).trim()] : null;
+      if (!dupErr && !(l && l.length)) return;
+      if (!r.ot_info) r.ot_info = {};
+      if (dupErr) r.ot_info.dup_xacct_err = true; else r.ot_info.dup_xacct = l;
+    });
+  }
 
   /* r7：每人這次實際採計的請款逐筆存進 ot_info.xsup（跟 payroll.html costDetail 的 sup 同形狀、同取位），鎖月快照只從這裡來。
      2026-11 起、有支援列的人才有；沒有 ot_info（沒有逐日資料）的人只為它建一個 ot_info。 */
@@ -5133,6 +5351,24 @@ function handlePayrollFinalize(body) {
     if (over.length) return { ok: false, error: 'comp_over', list: over,
       message: '下面的同仁補休比可以抵的加班多，不能鎖定（休息日第 3 小時起、例假、國定假日、選舉日的加班不能抵）。請把多請的補休改成其他假別：\n' +
         over.map(function (x) { return x.name + '：' + x.h + ' 小時'; }).join('\n') };
+  }
+  /* 跨帳號重複出差／請假不能鎖定（2026-11-23 主管定案 A：只擋會讓薪資重複的①②③，payDupXacctCore_ 的 pay:true）。
+     看草稿 ot_info（上面 payLockStale_ 已用最新資料重算比對過；草稿之後才多出或作廢的重複會先回 stale_run 重算）。
+     放在「缺加班單」前面：重複出差多出來的時數會被當成缺加班單，先講真正的原因。開關沒開（payDupXacctOn_）＝整段不看。解鎖不擋。 */
+  if (lock && payDupXacctOn_(ym)) {
+    const dRuns = payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === stF; }).map(function (r) {
+      let o = {}; try { o = JSON.parse(r.ot_info || '{}') || {}; } catch (e) { o = {}; }
+      return { name: r.name, emp_id: String(r.emp_id), err: !!o.dup_xacct_err, list: (Array.isArray(o.dup_xacct) ? o.dup_xacct : []).filter(function (x) { return x && x.pay; }) };
+    });
+    if (dRuns.some(function (x) { return x.err; })) return { ok: false, error: 'dup_xacct_check_failed', list: [],
+      message: '檢查「跨帳號重複出差／請假」失敗，這次沒有鎖定，請按「重新計算」後再鎖定一次' };
+    const dup = dRuns.filter(function (x) { return x.list.length; });
+    if (dup.length) {
+      const lines = [];
+      dup.forEach(function (x) { x.list.forEach(function (y) { lines.push('・' + y.line); }); });
+      return { ok: false, error: 'dup_xacct', list: dup.map(function (x) { return { name: x.name, emp_id: x.emp_id, list: x.list }; }),
+        message: PAY_DUP_XACCT_MSG_ + '\n' + lines.slice(0, 30).join('\n') + (lines.length > 30 ? '\n…共 ' + lines.length + ' 筆' : '') };
+    }
   }
   /* 超過 8H 沒有核准的加班單不能鎖定（出勤規範 4-2，2026-11-11 起算）。解鎖不擋。 */
   if (lock && payOtDailyOn(ym)) {
