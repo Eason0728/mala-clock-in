@@ -28,6 +28,16 @@
        「你今天已經上班 X 小時」的 X 顯示取整後的時數（小數兩位，例 9.75）。
      設計與試算：~/加盟名單平台/_brain_out/cap10-newdef/design.md、buffer15.md
    - 總開關：指令碼屬性 REST_CAP_ON 恰為 '1'。任何一步出錯一律不擋、不寫（不能讓打卡因為這道檢查壞掉）。
+   - 2026-11-24 主管定案「做系統主動代記」「可以，照算忘刷」（班表寬限，設計 docs/cap10-newdef/sched-grace.md）：
+     REST_CAP_ON 恰為 '2'＝收卡照開＋這條規則；其他任何值＝跟 '1'／關著完全一樣（'2' 以外的路徑逐位元組不變）。
+     ①只管「系統主動代記」：定時掃描 capSweep、開打卡頁（liff_status）兩條路，在「滿 10 小時那一刻（第一個滿 10 的 15 分刻度）
+       比當天班表最後一段的下班時間晚超過 30 分鐘」時不寫系統卡、不鎖（當成忘刷下班，同仁走忘打卡單）。剛好晚 30 分照舊代記。
+     ②本人按下班：照舊（寫在滿 10 那一刻、回 cap_locked）。③本人按上班（LINE、舊 liff_clock、舊連結 clock.html 同一支 capBlock_）
+       而前一段開著、已滿 10、又符合①：不寫、放行這次上班（前一段照既有流程變「下班忘刷卡」）。不符合①照舊。
+     ④班表：同一家店、同一個工號、那段上班卡那天（capSchedEnd_），兩段／三段取最後一段的下班，跨午夜照實際結束時刻；
+       只認上班格（t＝W）；讀不到、沒排、例假、休息日、請假、國定假日、格式怪、上班卡比那天班表下班還晚 → 一律照舊代記。
+     ⑤正在上班那段在別家店（本店只擋不寫）不套用，照舊。取整、休息、假單全部不動。
+     屬性用 REST_CAP_ON 的值（而不是新屬性）：mini 擋卡引擎只拉 RELAYG_PROPS_ 那三個屬性，新屬性 mini 看不到、兩邊會判得不一樣。
    九店整檔共用；動作掛在 Liff.gs LIFF_HANDLERS，不改各店 程式碼.js。 */
 var CAP_H = 10;
 var CAP_LOCK_H = 11;             // 跟兩班間隔 REST_GAP_H 同一個時間（Eason 第 4 題）
@@ -42,9 +52,15 @@ var CAP_SCHED_CACHE_S = 300;
 var CAP_LEAVE_CACHE_S = 60;      // 申請表（已核准的請假、出差）快取秒數
 // 這段上班開始之後才核准的單，算不算進即時收卡（預設 false＝不算、只進事後通知；待主管決定，true＝從核准那一刻起算、可能當場收卡）
 var CAP_LIVE_LATE_OK = false;
+var CAP_GRACE_MIN = 30;          // 班表寬限（2026-11-24）：滿 10 那一刻比班表下班晚「超過」這麼多分鐘，系統不主動代記
+var CAP_GRACE_VAL = '2';         // REST_CAP_ON 是這個值＝收卡開著＋班表寬限
 
 function capOn_() {
-  try { return PropertiesService.getScriptProperties().getProperty('REST_CAP_ON') === '1'; } catch (e) { return false; }
+  try { var v = PropertiesService.getScriptProperties().getProperty('REST_CAP_ON'); return v === '1' || v === CAP_GRACE_VAL; } catch (e) { return false; }
+}
+/** 班表寬限開著（REST_CAP_ON 恰為 '2'）；讀不到＝關。 */
+function capGraceOn_() {
+  try { return PropertiesService.getScriptProperties().getProperty('REST_CAP_ON') === CAP_GRACE_VAL; } catch (e) { return false; }
 }
 function capMs_(ts) { var t = new Date(String(ts)).getTime(); return isNaN(t) ? NaN : t; }
 function capDay_(ms) { return Utilities.formatDate(new Date(ms), 'Asia/Taipei', 'yyyy-MM-dd'); }
@@ -418,6 +434,56 @@ function capMakeFill_(empId) {
   return fn;
 }
 
+/* ── 班表寬限（2026-11-24，檔頭④）── */
+
+/** 'HH:MM'（00:00～24:00）→ 第幾分鐘；不合法回 NaN。 */
+function capGraceHm_(v) {
+  var m = /^(\d{1,2}):(\d{2})$/.exec(String(v === null || v === undefined ? '' : v).trim());
+  if (!m || +m[2] > 59 || +m[1] * 60 + +m[2] > 1440) return NaN;
+  return +m[1] * 60 + +m[2];
+}
+/** 這段上班（上班卡 inMs）那天、本店班表最後一段的下班時刻（毫秒）；任何不確定回 null（＝照舊代記）。
+ *  同 capMakeFill_ 讀的那份（capSelf_／capSchedPub_，本店代碼、同一個工號、上班卡那天）；只認上班格 t＝W；
+ *  分段照順序接（下一段開始早於上一段結束＝過了午夜、加一天；結束不晚於開始＝跨午夜、加一天），取最後一段的結束；
+ *  上班卡已經比那天班表下班還晚（這段不是那個班）也回 null。 */
+function capSchedEnd_(empId, inMs) {
+  try {
+    var me = capSelf_();
+    if (!me.code) return null;
+    var pub = capSchedPub_();
+    var d = capDay_(inMs), pi = capSchedPeriod_(d);
+    if (!pub || !pi) return null;
+    var data = pub[(me.code === 'gf' ? '' : me.code) + '|' + pi.p];
+    if (!data || !data.rows) return null;
+    var row = null;
+    data.rows.forEach(function (r) { if (String(r.emp_id) === String(empId)) row = r; });
+    var cell = row && row.cells ? row.cells[pi.idx] : null;
+    if (!cell || String(cell.t) !== 'W') return null;
+    var sh = capSchedShiftOf_(data, row, pi.idx);
+    if (!sh) return null;
+    var parts = sh.segs ? sh.segs.map(function (x) { return [x.start, x.end]; }) : [[sh.start, sh.end]];
+    if (!parts.length) return null;
+    var prev = -Infinity, end = null;
+    for (var i = 0; i < parts.length; i++) {
+      var a = capGraceHm_(parts[i][0]), b = capGraceHm_(parts[i][1]);
+      if (isNaN(a) || isNaN(b) || a === b) return null;
+      if (a < prev) a += 1440;
+      if (a < prev) return null;
+      while (b <= a) b += 1440;
+      prev = b; end = b;
+    }
+    var base = capMs_(d + 'T00:00:00+08:00');
+    if (isNaN(base) || end === null) return null;
+    var endMs = base + end * 60000;
+    return inMs < endMs ? endMs : null;
+  } catch (e) { return null; }
+}
+/** 滿 10 那一刻 atMs 比班表下班晚超過 CAP_GRACE_MIN 分鐘 → true（系統不主動代記）；讀不到班表＝false（照舊）。 */
+function capGraceLate_(empId, inMs, atMs) {
+  var end = capSchedEnd_(empId, inMs);
+  return end !== null && atMs - end > CAP_GRACE_MIN * 60000;
+}
+
 /* ── 讀寫 ── */
 
 /** 本店不打卡休息時段（央廚 12:00–13:00、總部 14:00–15:00；其他店空白＝null） */
@@ -496,8 +562,10 @@ function capWrite_(ss, empId, atMs, inMs) {
 }
 
 /** 這個人現在的狀態（必要時順便寫系統卡）→ null（開關關著或出錯）或
- *  {locked, sys, until, in_block, today_h, reason, hint}。locked＝上下班都不能打；in_block＝只擋上班卡。 */
-function capCheck_(ss, me, nowMs, ownRows) {
+ *  {locked, sys, until, in_block, today_h, reason, hint}。locked＝上下班都不能打；in_block＝只擋上班卡。
+ *  mode（2026-11-24 班表寬限）：'auto'＝系統主動代記（掃描、開頁）、'in'／'out'＝本人按上班／下班；沒給＝跟改版前一樣。
+ *  寬限開著、mode 是 auto 或 in、這段在本店、滿 10 那一刻晚於班表下班超過 30 分 → 不寫、不鎖，回的 st 多 grace（滿 10 那一刻）。 */
+function capCheck_(ss, me, nowMs, ownRows, mode) {
   if (!capOn_()) return null;
   try {
     var now = nowMs || Date.now();
@@ -508,6 +576,11 @@ function capCheck_(ss, me, nowMs, ownRows) {
     var sys = null;
     if (r.lock) sys = r.sys;
     else if (r.due) {
+      // 班表寬限（檔頭①③）：本人按下班（'out'）不套用；寬限關著時這行永遠不成立（capGraceOn_ 在前、只讀屬性）
+      if ((mode === 'auto' || mode === 'in') && !r.due.store && capGraceOn_() && capGraceLate_(me.emp_id, r.due.in, r.due.at)) {
+        st.grace = r.due.at;
+        return st;
+      }
       sys = r.due.at;
       if (!r.due.store) {   // 正在上班那段在別家店：那家店寫，這裡只擋
         var w = capWrite_(ss, me.emp_id, r.due.at, r.due.in);
@@ -533,16 +606,18 @@ function capCheck_(ss, me, nowMs, ownRows) {
 
 /** 打卡前的檢查：擋＝{reason, hint, until}，放行＝null。 */
 function capBlock_(ss, me, type, ownRows) {
-  var st = capCheck_(ss, me, Date.now(), ownRows);
+  var st = capCheck_(ss, me, Date.now(), ownRows, type === 'in' || type === 'out' ? type : undefined);
   if (!st) return null;
   if (st.locked) return { reason: st.reason, hint: st.hint, until: st.until };
   if (type === 'in' && st.in_block) return { reason: st.reason, hint: st.hint, until: null };
   return null;
 }
 
-/** liff_status 用：{locked, in_block, reason, hint, until, sys_hm} 或 {locked:false}。 */
+/** liff_status 用：{locked, in_block, reason, hint, until, sys_hm} 或 {locked:false}。
+ *  班表寬限沒代記時多 grace_hm＝滿 10 那一刻（'HH:MM'，按下班會記在這個時間；畫面要不要顯示、字怎麼寫待主管確認，clock-line.html 現在不讀）。 */
 function capStatusFor_(ss, me, ownRows) {
-  var st = capCheck_(ss, me, Date.now(), ownRows);
+  var st = capCheck_(ss, me, Date.now(), ownRows, 'auto');
+  if (st && st.grace && !st.locked && !st.in_block) return { locked: false, in_block: false, grace_hm: capHm_(st.grace) };
   if (!st || (!st.locked && !st.in_block)) return { locked: false, in_block: false };
   return { locked: st.locked, in_block: st.in_block, reason: st.reason, hint: st.hint, until: st.until || null,
            sys_hm: st.sys ? capHm_(st.sys) : null };
@@ -584,25 +659,31 @@ function capSweep() {
       var me = null;
       roster.forEach(function (r) { if (String(r.emp_id) === id) me = r; });
       if (!me) me = { emp_id: id, name: '' };
-      capCheck_(ss, me, now, rows);
+      capCheck_(ss, me, now, rows, 'auto');   // 系統主動代記（班表寬限套用；寬限關著＝跟改版前一樣）
     });
   } catch (e) { Logger.log('CAP 掃描失敗：' + e); }
 }
 
 /** {action:'cap_set', admin_key, on?:true|false} → 開／關這家店的滿 10 小時收卡（指令碼屬性 REST_CAP_ON＋觸發器 capSweep）。
- *  不帶 on＝只查。管理金鑰空字串一律擋。 */
+ *  不帶 on＝只查。管理金鑰空字串一律擋。
+ *  班表寬限（2026-11-24）：grace:true|false。帶 on:true 時一起決定寫 '2'（寬限）或 '1'；沒帶 on、收卡開著時只改這一項（不動觸發器）；
+ *  收卡關著時帶 grace 不會打開收卡。沒帶 grace 的 on:true 照舊寫 '1'（＝寬限關掉）。回應只在寬限開著或有帶 grace 時多 grace 欄。 */
 function handleCapSet_(body) {
   if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   var props = PropertiesService.getScriptProperties();
   if (body.on === true || body.on === false) {
     ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === CAP_SWEEP_FN) ScriptApp.deleteTrigger(t); });
     if (body.on) {
-      props.setProperty('REST_CAP_ON', '1');
+      props.setProperty('REST_CAP_ON', body.grace === true ? CAP_GRACE_VAL : '1');
       ScriptApp.newTrigger(CAP_SWEEP_FN).timeBased().everyMinutes(CAP_SWEEP_MIN).create();
     } else props.deleteProperty('REST_CAP_ON');
+  } else if ((body.grace === true || body.grace === false) && capOn_()) {
+    props.setProperty('REST_CAP_ON', body.grace ? CAP_GRACE_VAL : '1');
   }
   var n = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === CAP_SWEEP_FN; }).length;
-  return { ok: true, on: capOn_(), trigger: n };
+  var out = { ok: true, on: capOn_(), trigger: n };
+  if (capGraceOn_() || body.grace === true || body.grace === false) out.grace = capGraceOn_();
+  return out;
 }
 
 /** mgr_day 回應加上系統卡：每人 cap_sys＝['19:00']（那天 00:00 到隔天 06:00 的系統卡），考勤管理拿來標示。 */
