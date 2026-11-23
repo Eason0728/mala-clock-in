@@ -2779,8 +2779,9 @@ function reqPeerWorked_(name, date) {
    正職且出勤日（sched_ft；支援帳號看原單位）、是不是支援帳號（sched_support）由營運系統伺服器讀排班與管理系統身分帶入，只有營運系統個人帳號代轉才採信；
    沒帶（舊值班核定頁、讀不到排班、央廚沒勾正職計時）＝這條不檢查。
    同一天兩家店（Eason 第 5 題＋D）：別家當天有打卡、還沒核定 → 先放行；別家已核定 → 兩家（上班＋出差＋假單）相加要滿 8。
-   別家還沒核定（沒打卡）、只有已核准假單／出差單 → 這家＋那些單相加要滿 8（出差單：2026-11-23 Eason 定案，原本只算假單，
-   「原單位只有出差單＋別單位支援有打卡」會兩邊互卡；別家已核定就用核定時數、不再加出差單，見 reqPeerAdd_）。
+   別家還沒核定（沒打卡）、只有已核准假單 → 這家＋假單相加要滿 8。別家沒核定也沒打卡、有已核准出差單 → 當成那家已核定出差那麼多小時
+   （2026-11-23 Eason 定案＋同日複審後大腦裁示：滿 8 合計、超過 8 要加班單、跨店加班歸屬都跟那家已核定時一樣，不隨核定先後而變；
+   原本「原單位只有出差單＋別單位支援有打卡」會兩邊互卡；別家已核定就用核定時數、不再加出差單，見 reqPeerAdd_）。
    加班算在被支援那家：知道這家是支援帳號（sched_support true）→ 加班單要有「兩家合計超過 8」那麼多；
    這家是原單位（false）→ 這家不用開加班單，改看被支援那家已核准的加班單夠不夠。 */
 var REQ_FT8_FROM_DEFAULT_ = '2026-11-01';
@@ -2795,7 +2796,7 @@ function reqFt8From_() {
   return reqIsDate_(v) ? v : REQ_FT8_FROM_DEFAULT_;
 }
 /** 別家店這個人這天：worked（有成功上班卡或已核定）、pending（有上班卡但還沒核定）、work（已核定上班＋出差）、leave（已核准假單）、ot（已核准加班單）、names（店代碼）；
- *  別家還沒核定又有已核准出差單時才多 trip（時數）、tnames（店代碼）兩欄（2026-11-23 Eason 定案）。
+ *  別家沒核定、沒打卡、有已核准出差單時才多 trip（時數，已算進 work）、tnames（店代碼）兩欄，by 那家多 trip（2026-11-23 Eason 定案）。
  *  REST_PEERS_ 依姓名對在職同仁（名冊用打卡快速通道同一份 6 小時快取；fresh＝不用快取）。只開名冊有同名在職同仁的店。
  *  鏡像列（mirror_src，總部從央廚抄來的）一律不看。讀不到的店當作還沒核定（先放行），不誤擋。（2026-11-13 審查修正） */
 function reqPeerRoster_(p, fresh) {
@@ -2906,17 +2907,22 @@ function reqPeerOne_(ids, date, events, day, reqs) {
   if (tp > 0) res.tp = tp;
   return res;
 }
-/* 別家還沒核定時，算它已核准的出差單（2026-11-23 Eason 定案）：跟已核准假單一樣加進「滿 8 小時」的跨店合計（out.trip、店名 out.tnames）。
-   別家已核定（c.r > 0）＝用核定時數（本來就含登記的出差），不再加出差單。只有出差單（沒卡、沒核定、沒假單）不算「在別家上班」：
-   不進 names／by、不設 worked，所以跨店加班歸屬（reqFt8Split_）完全不受影響。出差單之後作廢不打回別家已核定的那天（維持只打回開單那家）。 */
+/* 別家還沒核定時，算它已核准的出差單（2026-11-23 Eason 定案）：別家這天沒核定、也沒打卡，只有已核准出差單（可另有假單）
+   ＝當成那家已核定出差 tp 小時（主管原則「出差等同打卡」）：進 by[code].work、out.work、設 worked，所以「滿 8 小時」合計、
+   超過 8 要加班單、跨店加班歸屬（reqFt8Split_）、ot_void 都跟那家已核定時一樣，不隨哪家先核而變（2026-11-23 複審擋項後大腦裁示）。
+   不是 pending（不走「別家有卡還沒核定＝先放行」）。店代碼另記 out.tnames、時數 out.trip（訊息寫「◯◯出差單」），只有出差單的店不列在 names。
+   別家已核定（c.r > 0）＝用核定時數（本來就含登記的出差），不再加；別家有卡還沒核定＝照舊先放行，不看出差單。
+   出差單之後作廢不打回別家已核定的那天（維持只打回開單那家）。沒有出差單時這支跟以前逐字相同。 */
 function reqPeerAdd_(out, code, c) {
-  var tp = c.r > 0 ? 0 : Number(c.tp) || 0;
-  if (tp > 0) { out.trip = (out.trip || 0) + tp; (out.tnames = out.tnames || []).push(code); if (!c.w && !Number(c.lv)) return; }
-  out.names.push(code);
+  var tp = c.r > 0 || c.w ? 0 : Number(c.tp) || 0;
+  if (tp > 0) { out.trip = (out.trip || 0) + tp; (out.tnames = out.tnames || []).push(code); }
+  if (!(tp > 0) || Number(c.lv)) out.names.push(code);
   if (!out.by) out.by = {};
-  out.by[code] = { work: c.r > 0 ? Math.round((Number(c.work) || 0) * 100) / 100 : 0, ot: Number(c.ot) || 0, pending: !(c.r > 0) && !!c.w, fs: c.fs == null || c.fs === '' || !isFinite(Number(c.fs)) ? null : Number(c.fs) };
+  out.by[code] = { work: c.r > 0 ? Math.round((Number(c.work) || 0) * 100) / 100 : tp, ot: Number(c.ot) || 0, pending: !(c.r > 0) && !!c.w, fs: c.fs == null || c.fs === '' || !isFinite(Number(c.fs)) ? null : Number(c.fs) };
+  if (tp > 0) out.by[code].trip = tp;
   out.leave += Number(c.lv) || 0; out.ot += Number(c.ot) || 0;
   if (c.r > 0) { out.worked = true; out.work += Number(c.work) || 0; }
+  else if (tp > 0) { out.worked = true; out.work += tp; }
   else if (c.w) { out.worked = true; out.pending = true; }
 }
 /* ── 別家店摘要由 Mac mini 帶來（2026-11-15 Eason「核定前檢查加快」A）──
@@ -2989,19 +2995,20 @@ function reqFt8_(date, approvedHours, otHave, opt, okRows) {
   var f = reqBindFmt_, r2 = function (x) { return Math.round(x * 100) / 100; };
   if (own < REQ_FT8_H - 0.005) {
     var pr = getPeer();
-    if (!pr.worked && !pr.leave && !pr.trip && !pr.failed && !opt.peer && !opt.preview) pr = getPeer(true);   // 擋之前不用快取再找一次（當天剛加的支援帳號）；撤銷試算不做（太慢）
+    var tOnly = function (p) { return !!p.trip && !Object.keys(p.by || {}).some(function (k) { return !p.by[k].trip; }); };   // 別家只有「只有出差單」的店
+    if ((!pr.worked || tOnly(pr)) && !pr.leave && !pr.failed && !opt.peer && !opt.preview) pr = getPeer(true);   // 擋之前不用快取再找一次（當天剛加的支援帳號）；撤銷試算不做（太慢）；別家只有出差單也照樣重找
     if (pr.failed) { /* 別家讀不到：滿 8 小時先放行 */ }
-    else if (!pr.worked && !pr.leave && !pr.trip) {
+    else if (!pr.worked && !pr.leave) {
       out.gap = r2(REQ_FT8_H - own);
       out.probs.push({ rule: 'ft8', text: '正職上班日要滿 ' + REQ_FT8_H + ' 小時（上班 ' + f(work) + '＋出差 ' + f(trip) + '＋假單 ' + f(leaveH) + '＝' + f(own) +
         ' 小時），還差 ' + f(out.gap) + ' 小時，要有已核准的假單或補休單' });
     } else if (!pr.pending) {
-      var ptp = Number(pr.trip) || 0;   // 別家還沒核定的已核准出差單（2026-11-23 Eason 定案，見 reqPeerAdd_）
-      var comb = r2(own + pr.work + pr.leave + ptp);
+      var ptp = Number(pr.trip) || 0;   // 別家還沒核定的已核准出差單（2026-11-23 Eason 定案，見 reqPeerAdd_；已算在 pr.work 裡）
+      var comb = r2(own + pr.work + pr.leave);
       if (comb < REQ_FT8_H - 0.005) {
         out.gap = r2(REQ_FT8_H - comb);
         out.probs.push({ rule: 'ft8', text: '正職上班日要滿 ' + REQ_FT8_H + ' 小時：這家 ' + f(own) +
-          ((pr.names || []).length || !ptp ? '＋' + reqFt8StoreNames_(pr.names) + ' ' + f(r2(pr.work + pr.leave)) : '') +
+          ((pr.names || []).length || !ptp ? '＋' + reqFt8StoreNames_(pr.names) + ' ' + f(r2(pr.work - ptp + pr.leave)) : '') +
           (ptp ? '＋' + reqFt8StoreNames_(pr.tnames || []) + '出差單 ' + f(ptp) : '') +
           '＝' + f(comb) + ' 小時，還差 ' + f(out.gap) + ' 小時，要有已核准的假單或補休單' });
       }
@@ -3014,6 +3021,7 @@ function reqFt8_(date, approvedHours, otHave, opt, okRows) {
   // 別家讀不到（failed）＝照單店規則，不拿掉任何加班檢查（2026-11-13 審查 1、3、4）
   if (support || home) {
     var p2 = getPeer(), tol = REQ_STRICT_TOL_MIN / 60 + 0.005;
+    var tx = Number(p2.trip) > 0 ? '（含' + reqFt8StoreNames_(p2.tnames || []) + '出差單 ' + f(Number(p2.trip)) + ' 小時）' : '';   // 合計裡有別家還沒核定的出差單（2026-11-23）
     if (p2.worked && !p2.failed) {
       if (support) out.drop = ['ot_hours', 'ot_void', 'ot_in_sched'];
       else out.drop = ['ot_void'];      // 原單位：別家還沒核定前照單店規則；都核定了改下面看
@@ -3024,13 +3032,13 @@ function reqFt8_(date, approvedHours, otHave, opt, okRows) {
         if (home) out.drop = ['ot_void', 'ot_hours'];
         if (hereNeed > 0.005 && otHave + 0.005 < hereNeed) {
           out.otNeed = hereNeed;
-          out.probs.push({ rule: 'ot_hours', text: '兩家上班合計 ' + f(x.comb) + ' 小時，超過 ' + REQ_FT8_H + ' 的部分要在這家' + (support ? '（被支援）' : '（原單位）') + '開 ' + f(hereNeed) + ' 小時加班單（已核准 ' + f(otHave) + ' 小時）' +
+          out.probs.push({ rule: 'ot_hours', text: '兩家上班合計 ' + f(x.comb) + ' 小時' + tx + '，超過 ' + REQ_FT8_H + ' 的部分要在這家' + (support ? '（被支援）' : '（原單位）') + '開 ' + f(hereNeed) + ' 小時加班單（已核准 ' + f(otHave) + ' 小時）' +
             (x.atSup > 0.005 && !x.selfAbs ? '；另外 ' + f(x.atSup) + ' 小時算在 ' + reqFt8StoreNames_([x.abs]) : '') });
         }
-        if (otHave > hereNeed + tol) out.probs.push({ rule: 'ot_hours', text: '兩家上班合計 ' + f(x.comb) + ' 小時，這家應有的加班是 ' + f(hereNeed) + ' 小時，已核准的加班單 ' + f(otHave) + ' 小時太多，請作廢或改單' +
+        if (otHave > hereNeed + tol) out.probs.push({ rule: 'ot_hours', text: '兩家上班合計 ' + f(x.comb) + ' 小時' + tx + '，這家應有的加班是 ' + f(hereNeed) + ' 小時，已核准的加班單 ' + f(otHave) + ' 小時太多，請作廢或改單' +
           (x.atSup > 0.005 && !x.selfAbs ? '（' + f(x.atSup) + ' 小時加班要開在 ' + reqFt8StoreNames_([x.abs]) + '）' : '') });
         if (!x.selfAbs && x.atSup > 0.005 && x.absOt + 0.005 < x.atSup) {
-          out.probs.push({ rule: 'ot_peer', text: '兩家上班合計 ' + f(x.comb) + ' 小時，超過 ' + REQ_FT8_H + ' 的 ' + f(x.atSup) + ' 小時要在被支援的 ' + reqFt8StoreNames_([x.abs]) +
+          out.probs.push({ rule: 'ot_peer', text: '兩家上班合計 ' + f(x.comb) + ' 小時' + tx + '，超過 ' + REQ_FT8_H + ' 的 ' + f(x.atSup) + ' 小時要在被支援的 ' + reqFt8StoreNames_([x.abs]) +
             ' 開加班單（那邊已核准 ' + f(x.absOt) + ' 小時）' });
         }
       }

@@ -1,7 +1,9 @@
 // 正職上班日滿 8 小時：別家還沒核定時，算它已核准的出差單（2026-11-23 Eason 定案）。
 // 實例（2026-11-06，人名與工號不進公開 repo）：總部原單位有已核准出差單 3.25 小時、沒核定；金山支援帳號打卡 15:23–17:01、17:50–21:19，要核 4.75 被擋。
 // 規則：別家還沒核定 → 它已核准的出差單加進合計（同已核准假單）；別家已核定 → 用核定時數（已含登記的出差），不再加出差單。
-// 待審、退回、作廢、本人取消的出差單不算；只有出差單不算「在別家上班」，不碰跨店加班歸屬；讀不到別家照舊放行。
+// 待審、退回、作廢、本人取消的出差單不算；讀不到別家照舊放行。
+// 別家沒核定、沒打卡、只有出差單＝當成那家已核定出差那麼多小時（同日複審後大腦裁示）：超過 8 要加班單、跨店加班歸屬、ot_void 都跟那家已核定時一樣，
+// 不隨哪家先核而變；也不走「別家有卡還沒核定＝先放行」。
 // 舊版對照：預設拿 473c6cb（這次改動前的 origin/main）的 Requests.gs，可用 FT8TRIP_BASE 換。
 const assert = require('assert');
 const fs = require('fs');
@@ -197,27 +199,98 @@ ok('讀不到另一家＝放行（現況不變）：別家打不開時新舊都�
   assert.strictEqual(jsCheck(OLD(b, 'mztjs'), 3), null);
   const sb = NEW(b, 'mztjs'); assert.strictEqual(sb.reqPeerDay_(NM, D).failed, true);
 });
-ok('支援那家超過 8 小時沒加班單：仍被加班單檢查擋（總部只有出差單不算「在別家上班」，加班單檢查沒有被拿掉），新舊逐字相同', () => {
+// ── 複審擋項（2026-11-23）：出差單也要算進「超過 8 要加班單」，兩種核定順序下兩家被要求的單要完全一樣 ──
+const T4 = tripReq({ start: '09:00', end: '13:00', hours: 4 });
+const JS_AP = (h, p) => [[D, 'MZTJST15', NM, h, p || '15:30-17:00,18:00-21:15', 'x', '']];
+const HQ_AP = (h) => [[D, 'HQ-T4', NM, h, '', 'x', '']];
+const OT = (emp, a, b, h) => ({ id: 'o' + emp + a, emp_id: emp, name: NM, kind: 'ot', date: D, start: a, end: b, hours: h, status: 'approved' });
+const need = (r) => (r ? J({ rules: rules(r).sort(), ot: r.need.ot_hours, lv: r.need.leave_hours }) : null);
+ok('總部出差單 4（沒核定）＋金山 4.75＝8.75：金山先核就要在金山開 0.75 小時加班單（跟總部先核時一模一樣），字多「（含總部出差單 4 小時）」', () => {
+  const tripOnly = jsCheck(NEW(chenBooks({ hqReqs: [T4] }), 'mztjs'), 4.75);
+  const hqFirst = jsCheck(NEW(chenBooks({ hqReqs: [T4], hqApproved: HQ_AP(4) }), 'mztjs'), 4.75);
+  const oldHqFirst = jsCheck(OLD(chenBooks({ hqReqs: [T4], hqApproved: HQ_AP(4) }), 'mztjs'), 4.75);
+  assert.deepStrictEqual(need(tripOnly), { rules: ['ot_hours'], ot: 0.75, lv: 0 });
+  assert.deepStrictEqual(need(tripOnly), need(hqFirst));
+  assert.strictEqual(JSON.stringify(hqFirst), JSON.stringify(oldHqFirst), '總部已核定時新舊逐字相同');
+  assert.deepStrictEqual(J(tripOnly.probs.map((p) => p.text)), ['兩家上班合計 8.75 小時（含總部出差單 4 小時），超過 8 的部分要在這家（被支援）開 0.75 小時加班單（已核准 0 小時）']);
+  // 之後總部核 4（金山已核定 4.75、沒加班單）：照現有規則擋 ot_peer，跟舊版逐字相同
+  const b = chenBooks({ hqReqs: [T4], jsApproved: JS_AP(4.75) });
+  assert.deepStrictEqual(rules(hqCheck(NEW(b, 'hq'), 4)), ['ot_peer']);
+  assert.strictEqual(JSON.stringify(hqCheck(NEW(b, 'hq'), 4)), JSON.stringify(hqCheck(OLD(b, 'hq'), 4)));
+});
+ok('先在金山開好 0.75 小時加班單：金山先核過（不再誤說「請先把加班單作廢」）、之後總部核 4 也過；總部先核的順序結果一樣', () => {
+  const ot = OT('MZTJST15', '20:30', '21:15', 0.75);
+  assert.strictEqual(jsCheck(NEW(chenBooks({ hqReqs: [T4], jsReqs: [ot] }), 'mztjs'), 4.75), null);
+  assert.strictEqual(hqCheck(NEW(chenBooks({ hqReqs: [T4], jsReqs: [ot], jsApproved: JS_AP(4.75) }), 'hq'), 4), null);
+  assert.strictEqual(hqCheck(NEW(chenBooks({ hqReqs: [T4], jsReqs: [ot] }), 'hq'), 4), null, '總部先核（金山有卡沒核）照舊先放行');
+  assert.strictEqual(jsCheck(NEW(chenBooks({ hqReqs: [T4], jsReqs: [ot], hqApproved: HQ_AP(4) }), 'mztjs'), 4.75), null);
+  assert.ok(rules(jsCheck(OLD(chenBooks({ hqReqs: [T4], jsReqs: [ot] }), 'mztjs'), 4.75)).includes('ot_void'), '舊版金山先核會誤判 ot_void');
+});
+ok('合計剛好 8（3.25＋4.75）不要求加班單；開了加班單反而要作廢（跟總部已核定時一樣）', () => {
+  assert.strictEqual(jsCheck(NEW(chenBooks(), 'mztjs'), 4.75), null);
+  const ot = OT('MZTJST15', '20:30', '21:15', 0.75);
+  const a = jsCheck(NEW(chenBooks({ jsReqs: [ot] }), 'mztjs'), 4.75), b = jsCheck(NEW(chenBooks({ jsReqs: [ot], hqApproved: HQ_AP(3.25) }), 'mztjs'), 4.75);
+  assert.deepStrictEqual(need(a), need(b)); assert.ok(rules(a).includes('ot_hours'), JSON.stringify(a));
+});
+ok('加班單開在錯的那家（開在總部、該開在金山）：兩種順序要求一樣——金山要 0.75；總部後核被說加班單太多＋金山要開', () => {
+  const otHq = OT('HQ-T4', '12:15', '13:00', 0.75);
+  const a = jsCheck(NEW(chenBooks({ hqReqs: [T4, otHq] }), 'mztjs'), 4.75), b = jsCheck(NEW(chenBooks({ hqReqs: [T4, otHq], hqApproved: HQ_AP(4) }), 'mztjs'), 4.75);
+  assert.deepStrictEqual(need(a), { rules: ['ot_hours'], ot: 0.75, lv: 0 }); assert.deepStrictEqual(need(a), need(b));
+  const h = hqCheck(NEW(chenBooks({ hqReqs: [T4, otHq], jsApproved: JS_AP(4.75) }), 'hq'), 4);
+  assert.strictEqual(JSON.stringify(h), JSON.stringify(hqCheck(OLD(chenBooks({ hqReqs: [T4, otHq], jsApproved: JS_AP(4.75) }), 'hq'), 4)));
+  assert.ok(rules(h).includes('ot_peer') && rules(h).includes('ot_hours'), JSON.stringify(h));
+});
+ok('不走「先放行」：金山 9 小時沒加班單＋總部只有出差單 3.25 → 照「總部已核定 3.25」要 4.25 小時加班單，不是放行', () => {
   const b = chenBooks({ jsEvents: [[D + 'T11:55:00+08:00', 'MZTJST15', 'in', 'ok', ''], [D + 'T21:20:00+08:00', 'MZTJST15', 'out', 'ok', '']] });
   const run = (sb) => sb.reqBindCheck_(sb.getSS(), 'MZTJST15', D, 9, [P('12:00', '21:00')], [S('11:55', '21:20')], null,
     { sched_ft: true, sched_day: 'W', sched_support: true, sched_home: 'hq', name: NM, rows: [], leaves: [], trip_hours: 0, acting: true, own_fs: 720 });
-  const nw = run(NEW(b, 'mztjs')), od = run(OLD(b, 'mztjs'));
-  assert.ok(nw && rules(nw).includes('ot_hours'), JSON.stringify(nw));
-  assert.strictEqual(nw.need.ot_hours, 1);
-  assert.strictEqual(JSON.stringify(nw), JSON.stringify(od));
-  const pr = NEW(b, 'mztjs').reqPeerDay_(NM, D);
-  assert.strictEqual(pr.worked, false); assert.deepStrictEqual(J(pr.names), []); assert.deepStrictEqual(J(Object.keys(pr.by)), []);
-  assert.strictEqual(pr.trip, 3.25); assert.deepStrictEqual(J(pr.tnames), ['hq']);
-});
-ok('出差單不觸發跨店加班歸屬：金山 6＋總部出差單 3.25＝9.25，金山這邊不要求加班單（同已核准假單的現況；總部核定時才看兩家核定合計）', () => {
-  const b = chenBooks();
-  const run = (sb) => sb.reqBindCheck_(sb.getSS(), 'MZTJST15', D, 6, [P('15:30', '21:30')], [S('15:23', '21:31')], null,
-    { sched_ft: true, sched_day: 'W', sched_support: true, sched_home: 'hq', name: NM, rows: [], leaves: [], trip_hours: 0, acting: true, own_fs: 930 });
   const nw = run(NEW(b, 'mztjs'));
-  assert.strictEqual(nw, null, JSON.stringify(nw));
-  assert.deepStrictEqual(rules(run(OLD(b, 'mztjs'))), ['ft8'], '舊版是被「滿 8 小時」擋');
-  const ft = NEW(b, 'mztjs').reqFt8_(D, 6, 0, { sched_ft: true, sched_day: 'W', sched_support: true, sched_home: 'hq', name: NM }, []);
-  assert.deepStrictEqual(J(ft.drop), []); assert.strictEqual(ft.otNeed, 0); assert.strictEqual(ft.cross, undefined);
+  const b2 = chenBooks({ jsEvents: b.mztjs.events, hqApproved: HQ_AP(3.25) });
+  assert.deepStrictEqual(need(nw), { rules: ['ot_hours'], ot: 4.25, lv: 0 });
+  assert.deepStrictEqual(need(nw), need(run(NEW(b2, 'mztjs'))));
+  const pr = NEW(b, 'mztjs').reqPeerDay_(NM, D);
+  assert.strictEqual(pr.worked, true); assert.strictEqual(pr.pending, false, '只有出差單的那家不是 pending');
+  assert.deepStrictEqual(J(pr.names), []); assert.deepStrictEqual(J(pr.by), { hq: { work: 3.25, ot: 0, pending: false, fs: null, trip: 3.25 } });
+  assert.strictEqual(pr.work, 3.25); assert.strictEqual(pr.trip, 3.25); assert.deepStrictEqual(J(pr.tnames), ['hq']);
+});
+ok('原單位那邊也一樣：總部（原單位）核、金山（支援）只有出差單 2 沒核定 → 跟金山已核定 2 時要求相同', () => {
+  const b = chenBooks({ jsEvents: [], jsReqs: [{ id: 'j1', emp_id: 'MZTJST15', name: NM, kind: 'trip', date: D, leave_type: '出差', start: '18:00', end: '20:00', hours: 2, status: 'approved' }],
+    hqEvents: [[D + 'T08:55:00+08:00', 'HQ-T4', 'in', 'ok', ''], [D + 'T16:05:00+08:00', 'HQ-T4', 'out', 'ok', '']], hqReqs: [] });
+  const run = (sb, h) => sb.reqBindCheck_(sb.getSS(), 'HQ-T4', D, h, [P('09:00', '16:00')], [S('08:55', '16:05')], null,
+    { sched_ft: true, sched_day: 'W', sched_support: false, name: NM, rows: [], leaves: [], trip_hours: 0, acting: true, own_fs: 540 });
+  const b2 = chenBooks({ jsEvents: [], jsReqs: b.mztjs.requests, jsApproved: JS_AP(2, ''), hqEvents: b.hq.events, hqReqs: [] });
+  const a = run(NEW(b, 'hq'), 7), c = run(NEW(b2, 'hq'), 7);
+  assert.deepStrictEqual(need(a), need(c)); assert.ok(rules(a).includes('ot_peer'), JSON.stringify(a));
+});
+ok('重找別家：第三家當天剛加的支援帳號（名冊快取裡還沒有）有打卡，別家有出差單時照樣重找 → 先放行（跟舊版一樣）', () => {
+  const books = () => { const b = chenBooks({ hqReqs: [tripReq({ hours: 2 })] });
+    b.mztgf = { roster: [['MZTGFT88', NM, 'true']], events: [[D + 'T10:00:00+08:00', 'MZTGFT88', 'in', 'ok', ''], [D + 'T12:00:00+08:00', 'MZTGFT88', 'out', 'ok', '']], approved: [], requests: [] }; return b; };
+  const stale = (sb) => { sb.CacheService = { getScriptCache: () => ({ get: (k) => (k === 'rpr:ss-mztgf' ? JSON.stringify([['別人', 'X1']]) : null), put() {} }) }; return sb; };
+  assert.strictEqual(jsCheck(stale(OLD(books(), 'mztjs')), 4.75), null);
+  assert.strictEqual(jsCheck(stale(NEW(books(), 'mztjs')), 4.75), null);
+  // 沒有第三家時：重找後仍只有總部出差單 2 → 照算 6.75 擋
+  const b = chenBooks({ hqReqs: [tripReq({ hours: 2 })] });
+  assert.deepStrictEqual(ft8Text(jsCheck(stale(NEW(b, 'mztjs')), 4.75)), [MSG('：這家 4.75＋總部出差單 2＝6.75 小時，還差 1.25 小時')]);
+});
+ok('隨機 1500 組：別家「只有出差單、沒核定」vs「已核定那麼多小時出差」，這家被要求的單（規則、加班時數、還差幾小時、過或擋）完全相同', () => {
+  const R = rnd(1123);
+  const pick = (a) => a[Math.floor(R() * a.length)];
+  let n2 = 0, blocked = 0;
+  for (let i = 0; i < 1500; i++) {
+    const tp = pick([0.5, 1, 2, 3.25, 4, 6, 8]), h = pick([2, 3.75, 4.75, 5, 6, 8, 9]), otH = pick([0, 0, 0.75, 1, 2]);
+    const sup = pick([true, false, null]), home = pick(['hq', '']), lvH = pick([0, 0, 1]);
+    const reqs = [tripReq({ hours: tp })].concat(lvH ? [{ id: 'l', emp_id: 'HQ-T4', name: NM, kind: 'leave', leave_type: '事假', date: D, start: '', end: '', hours: lvH, status: 'approved' }] : []);
+    const jsReqs = otH ? [OT('MZTJST15', '21:15', '23:59', otH)] : [];
+    const mk = (ap) => chenBooks({ hqReqs: reqs, jsReqs, hqApproved: ap });
+    const end = (m) => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+    const run = (sb) => sb.reqBindCheck_(sb.getSS(), 'MZTJST15', D, h, [P('12:00', end(720 + h * 60))], [S('11:58', end(720 + h * 60 + 2))], null,
+      { sched_ft: true, sched_day: 'W', sched_support: sup, sched_home: home, name: NM, rows: sb.reqRows_(sb.getSS()), leaves: [], trip_hours: 0, acting: true, own_fs: 720, diff_reason: 'x', force_ot_punch: false });
+    const a = run(NEW(mk([]), 'mztjs')), b = run(NEW(mk(HQ_AP(tp)), 'mztjs'));
+    assert.deepStrictEqual(need(a), need(b), JSON.stringify({ tp, h, otH, sup, home, lvH, a: a && a.message, b: b && b.message }));
+    n2++; if (a) blocked++;
+  }
+  assert.ok(blocked > 200 && blocked < n2, '過、擋都要有（擋 ' + blocked + '／' + n2 + '）');
+  console.log('   （擋 ' + blocked + '／' + n2 + '）');
 });
 ok('總部那邊（原單位）：金山已核定 6、總部出差 3.25 → 合計 9.25 照現有跨店加班規則要金山開 1.25 小時加班單（新舊逐字相同）', () => {
   const b = chenBooks({ jsApproved: [[D, 'MZTJST15', NM, 6, '15:30-21:30', 'x', '']] });
@@ -243,7 +316,7 @@ ok('Mac mini 帶來的別家摘要（peer_given）：新版摘要多帶 tp、收
   assert.deepStrictEqual(['a', 'b', 'c', 'd'].map((k) => g.by.hq[k].tp), [undefined, undefined, undefined, 2.5]);
   assert.deepStrictEqual(J(Object.keys(g.by.hq.a)), ['w', 'r', 'work', 'lv', 'ot', 'fs']);
 });
-ok('上線途中混著新舊版：別家還是舊版（摘要沒有 tp）或收的那邊還是舊版（不認 tp），結果都等於舊版的「擋」，不會誤放', () => {
+ok('上線途中混著新舊版（滿 8 小時這條）：別家還是舊版（摘要沒有 tp）或收的那邊還是舊版（不認 tp），結果等於舊版的「擋」', () => {
   const b = chenBooks();
   const oldDig = OLD(b, 'hq'); const d0 = oldDig.reqPeerDigest_(oldDig.SpreadsheetApp.openById('ss-hq'), D);
   assert.strictEqual(d0[NM], undefined, '舊版摘要不放只有出差單的人');
