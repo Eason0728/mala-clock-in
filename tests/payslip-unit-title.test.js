@@ -65,13 +65,14 @@ function world(src, { storeList, store, results, payday }) {
   vm.createContext(ctx);
   const consts = ['n', 'r2', 'nf', 'rf', 'esc', 'xlsText', 'ym', 'isExpHoury', 'expQtyUnit'].map(k => constOf(src, k));
   const exp = (/^const EXP_HOURY_FIX=.*$/m.exec(src) || [''])[0];
-  const fns = ['renderSlip', 'renderSlipSel', 'renderExport', 'expSub', 'exportExcel', 'unitName', 'unitTitle'].map(k => fnOf(src, k)).filter(Boolean);
+  const fns = ['renderSlip', 'renderSlipSel', 'renderExport', 'expSub', 'exportExcel', 'unitName', 'unitTitle', 'setResults', 'resultsUnit'].map(k => fnOf(src, k)).filter(Boolean);
   vm.runInContext(
     `let RESULTS=${JSON.stringify(results)}, STATUS='final', ASOF=null, ANNUAL={}, CFG=${JSON.stringify({ payday })}, STORE=${JSON.stringify(store)}, STORE_LIST=${JSON.stringify(storeList)};
-     const mdOf=d=>d;\n${letOf(src, 'SLIP_STORE')}\n${consts.join('\n')}\n${exp}\n${fns.join('\n')}
+     const mdOf=d=>d;\n${consts.join('\n')}\n${exp}\n${fns.join('\n')}
+     if(typeof setResults==='function') setResults(RESULTS, STORE);   // 新版：結果帶著單位；舊版（比對用）沒有這支
      this.api={renderSlip,renderSlipSel,renderExport,exportExcel,
        set:(k,v)=>{ if(k==='STORE')STORE=v; if(k==='STORE_LIST')STORE_LIST=v; if(k==='RESULTS')RESULTS=v; },
-       slipStore:()=>typeof SLIP_STORE==='undefined'?undefined:SLIP_STORE};`, ctx);
+       setResults:(l,st)=>setResults(l,st), getResults:()=>RESULTS};`, ctx);
   return ctx;
 }
 const subOf = h => (/<div class="sub">([\s\S]*?)<\/div>/.exec(h) || [])[1];
@@ -139,15 +140,40 @@ const subOf = h => (/<div class="sub">([\s\S]*?)<\/div>/.exec(h) || [])[1];
     ok(!/<img/.test(sub) && /&lt;img/.test(sub), '單位名稱進畫面前有轉義');
   }
 
-  // ⑥ 切門市等回應期間：舊結果的薪資單抬頭仍是舊結果自己的單位，不掛上新門市的名字
+  // ⑥ 單位跟著結果走：不管畫面上的 STORE 是什麼、誰先重畫，三處標題都是結果自己的單位
   {
     const w = world(html, { storeList: STORE_LIST, store: 'MZTJS', results: [RESULT], payday: 10 });
-    w.api.renderSlipSel();                // 結果屬於 MZTJS
-    w.api.set('STORE', 'CF');             // 使用者剛切到央廚，央廚的結果還沒回來
-    w.api.renderSlip();                   // 這時在舊結果上換人／重畫
-    ok(subOf(w.els.slipWrap.innerHTML).startsWith('墨竹亭 · 新竹金山店 ｜ '), '切門市等回應時，舊結果的薪資單抬頭不會變成新門市的名字');
-    w.api.renderSlipSel();                // 央廚結果回來、重畫
-    ok(subOf(w.els.slipWrap.innerHTML).startsWith('央廚 ｜ '), '新結果回來後抬頭換成新單位');
+    const titles = async () => {
+      w.api.renderSlip(); w.api.renderExport(); w.api.exportExcel();
+      const x = await w.blobs[w.blobs.length - 1].text();
+      return [subOf(w.els.slipWrap.innerHTML).split(' ｜ ')[0], (/font-weight:900[^"]*">(.*?) 薪資明細/.exec(w.els.exportDetail.innerHTML) || [])[1], (/<h3>(.*?) 薪資明細/.exec(x) || [])[1]];
+    };
+    w.api.renderSlipSel();
+    ok((await titles()).every(t => t === '墨竹亭 · 新竹金山店'), '結果是金山的 → 三處標題都是金山');
+    w.api.set('STORE', 'CF');   // 使用者剛切到央廚、央廚的結果還沒回來；沒人呼叫 renderSlipSel
+    ok((await titles()).every(t => t === '墨竹亭 · 新竹金山店'), '切到央廚但結果還沒回來：三處標題仍是金山（舊結果配舊單位）');
+    w.api.setResults([RESULT], 'CF');   // 央廚結果回來；故意不呼叫 renderSlipSel，直接重畫匯出頁（真實流程 renderRun 先於 renderSlipSel）
+    w.api.renderExport();
+    ok(/font-weight:900[^"]*">央廚 薪資明細/.test(w.els.exportDetail.innerHTML), '央廚結果一回來，匯出明細頁立刻是央廚（不靠 renderSlipSel 先跑）');
+    ok((await titles()).every(t => t === '央廚'), '三處標題都是央廚');
+    w.api.set('STORE', 'MZTJS');   // 畫面代號又被改回別的，結果沒變
+    ok((await titles()).every(t => t === '央廚'), '改 STORE 不影響標題，只看結果自己的單位');
+    // 沒經 setResults 的直接賦值：沒有單位 → 印「（未知單位）」，不會印成目前的 STORE
+    w.api.set('RESULTS', [RESULT]);
+    ok((await titles()).every(t => t === '（未知單位）'), '直接賦值的結果沒有單位 → 三處印（未知單位），不會印成別的單位');
+    // 單位在陣列上、不進 JSON，也不改變陣列內容
+    w.api.setResults([RESULT], 'CF');
+    ok(!('unit' in JSON.parse(JSON.stringify(w.api.getResults()))) && w.api.getResults().length === 1, '單位記號不進序列化、不影響陣列內容');
+  }
+
+  // ⑥-2 靜態把關：結果只能經 setResults 存；三處標題的取名只讀 resultsUnit()，不讀 STORE
+  {
+    const code = html.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    const direct = (code.match(/\bRESULTS\s*=(?!=)\s*[^;\n]*/g) || []).filter(x => !/^RESULTS\s*=\s*\[\]\s*$/.test(x.trim()) && !/^RESULTS=a$/.test(x.trim()) && !/^RESULTS=\[\],?\s*STATUS/.test(x.trim()));
+    ok(direct.length === 0, 'payroll.html 沒有直接 RESULTS=… 賦值（只有清空與 setResults 內那一行）', direct.join(' | '));
+    const uses = code.split('unitTitle(').slice(1).filter(x => !/^code\)\{/.test(x));   // 除掉函式定義本身
+    ok(uses.length === 3 && uses.every(x => x.startsWith('resultsUnit()))')), '三處標題都只用 unitTitle(resultsUnit())，沒有讀 STORE', uses.map(x => x.slice(0, 30)).join(' | '));
+    ok(!/SLIP_STORE/.test(html), '沒有第二個要靠呼叫順序更新的單位變數');
   }
 
   // ⑦ 匯出（PDF 列印用的明細頁、Excel 標題）同一個抬頭
