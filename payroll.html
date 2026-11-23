@@ -1812,10 +1812,10 @@ function renderOtInfo(t){
   LEAVE_MM.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：${md(x.date)} ${esc(x.type)} ${x.side==='request'?'有已核准的請假單，請假登記沒有（請主管把那天重新核定一次）':'請假登記有，卻沒有已核准的請假單（請同仁補請假單，或主管重新核定改掉登記）'}——<b>處理前不能鎖定</b></li>`));
   SAME_NAME.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：打卡名冊有同名的人（${x.emp_ids.map(esc).join('、')}），本月 ${x.rows} 筆請假只有姓名，系統依在職與到離職日算給 ${x.to.map(esc).join('、')}，請確認沒有歸錯人</li>`));
   /* 班表排了「國定假日假」、薪資國定假日清單沒有那天（2026-12 起，後端 hol_sched_gap；只提示、不擋鎖定、不改金額）。
-     ⚠ 提示文字是新擬的（甲版），待主管確認；乙版見 PR 說明。姓名照本區慣例列出，每天最多 5 位、其餘寫「等 N 人」。 */
+     提示文字＝2026-11-23 主管同意修正後的長版（逐字照定稿）。姓名照本區慣例列出，每天最多 5 位，超過時在姓名後加「等」（人數已寫在前面）。 */
   if(HOL_GAP.length){
     const days=HOL_GAP.map(x=>{const nm=(x.names||[]).slice(0,5).map(esc).join('、');return `${md(x.date)}（${Number(x.n)||0} 人：${nm}${(Number(x.n)||0)>5?' 等':''}）`}).join('、');
-    rows.push(`<li><b style="color:#b7791f">國定假日清單可能漏了日子</b>：<span style="color:#b7791f">班表有同仁排了「國定假日假」，但「2 參數設定」的國定假日雙薪日沒有這幾天：${days}。薪資會把這幾天當一般日——那天有上班的同仁不會算國定假日加給；排了這天國定假日假的正職，還會被當成國定假日調移，同一期（28 天）其他國定假日上班的加給會被抵掉。請先核對雙薪日，清單漏了請找資訊部同步後再重新計算；如果只是個別同仁把國定假日調到這天休，可以不用處理。</span></li>`);
+    rows.push(`<li><b style="color:#b7791f">國定假日清單可能漏了日子</b>：<span style="color:#b7791f">班表有同仁排了「國定假日假」，但「2 參數設定」的國定假日雙薪日沒有這幾天：${days}。影響有兩種：①那天有上班的同仁，不會算國定假日加給。②排了這天國定假日假的正職，系統會當成他把國定假日調到這天休，他本人在同一期（28 天）其他國定假日上班時就不再加給。請先核對雙薪日：清單漏了，請找資訊部同步後再重新計算；如果同仁本來就是把國定假日調到這天休，照現況即可。這個提醒不會擋鎖定。</span></li>`);
   }
   RESULTS.forEach(r=>{const o=r.ot_info; if(!o||o.ot_h===undefined) return; const nm=esc(r.name);   // r8：只有請款逐筆 xsup 的 ot_info（沒有逐日資料）＝當作沒有，提醒區同正式版
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
