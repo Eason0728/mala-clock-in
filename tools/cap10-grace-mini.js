@@ -185,6 +185,40 @@ const ok = (id, label, got, want) => { const pass = JSON.stringify(got) === JSON
     }
     await app.stop(); await g.close(); fs.rmSync(dir, { recursive: true, force: true });
   }
+  // ⑨ mini 重啟與名冊副本（#232 驗收第 2 點）：多店者（光復＋金山都在職），08:55 在光復上班、光復班表 09–18，19:05 在光復（mini）開頁。
+  //   M22：副本存在磁碟（gDbPath 是檔案，正式就是這樣）——拉過一次後重啟、還沒再拉，引擎從資料庫重建金山名冊 → 判多店 → 照 38d0340 鎖 19:00。
+  //   M23（已知殘餘，要改快速通道）：資料庫裡金山「從沒拉成功過」（新裝、新增店、資料庫被清）→ 引擎預建的空 roster 看起來＝沒人 → mini 判單店、給寬限。
+  for (const [id, pullJsFirst] of [['M22', true], ['M23', false]]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap10-grace-mini-r-'));
+    const JS = { lat: 25.2, lng: 121.6 }, KEY_JS = 'j'.repeat(32);
+    const stores = [{ code: '', dir: 'fake-gf', ss: 'SS_GF', lat: GF.lat, lng: GF.lng, radius_m: 20, relayKey: KEY_GF },
+      { code: 'mztjs', dir: 'fake-js', ss: 'SS_JS', lat: JS.lat, lng: JS.lng, radius_m: 20, relayKey: KEY_JS }];
+    buildGasRoot(REPO, dir, stores); patchSingle(dir, stores);
+    let now = T('08:00:00');
+    const g = makeFakeGoogle({ gasRoot: dir, stores, now, tokens: { TOK1: SUB1 }, seed: {
+      gf: { roster: [{ emp_id: 'E01', name: '測試一', key: 'K1', device_id: 'D1', active: 'TRUE', line_user_id: SUB1 }],
+            events: [{ ts: D + 'T08:55:00+08:00', emp_id: 'E01', type: 'in', lat: GF.lat, lng: GF.lng, distance_m: 0, within_range: true, device_id: 'D1', device_match: true, status: 'ok', accuracy_m: 5 }],
+            props: { REQ_BIND_FROM: 'off', REST_CAP_ON: '2' } },
+      mztjs: { roster: [{ emp_id: 'B07', name: '測試一', key: 'KB', device_id: 'DB', active: 'TRUE' }], events: [], props: { REQ_BIND_FROM: 'off', REST_CAP_ON: '2' } } } });
+    const port = await g.listen(0), base = 'http://127.0.0.1:' + port;
+    const cfg = buildConfig({ STORE_GF_URL: base + '/s/gf', STORE_GF_RELAY_KEY: KEY_GF, STORE_MZTJS_URL: base + '/s/mztjs', STORE_MZTJS_RELAY_KEY: KEY_JS,
+      LINE_CHANNEL_ID: '2011292256', ADMIN_KEY: ADMIN, G_ENABLED: '1', G_GAS_ROOT: dir },
+      [{ code: '', name: '光復', lat: GF.lat, lng: GF.lng, radius_m: 20, gas_dir: 'fake-gf' }, { code: 'mztjs', name: '金山', lat: JS.lat, lng: JS.lng, radius_m: 20, gas_dir: 'fake-js' }]);
+    g.eng.sandbox('').SpreadsheetApp.openById('SS_GF').setSheet('sched_pub', [SP_HEAD, ['', 'T01', 1, JSON.stringify(SCHED), 'op', '']]);
+    const gdb = path.join(dir, 'g.db');
+    const mk = () => createApp(cfg, { dbPath: ':memory:', gDbPath: gdb, gasRoot: dir, now: () => now, verifyUrl: base + '/line/verify', snapDir: path.join(dir, 'snap'),
+      backupDir: path.join(dir, 'bak'), log: () => {}, remoteOpts: { tries: 1, timeoutMs: 5000, echoMs: 10, retryMs: 10 } });
+    let app = mk();
+    await app.primary.pull('', { full: true }); if (pullJsFirst) await app.primary.pull('mztjs', { full: true });
+    await app.primary.setPrimary(true, ['']);
+    await app.stop();
+    app = mk();   // 重啟：不再拉金山
+    now = T('19:05:00'); g.setNow(now); await app.primary.pull('', { sheets: true });
+    const s = await app.primary.handleStatus({ store: 'gf', id_token: 'TOK1' });
+    ok(id, pullJsFirst ? '重啟後還沒再拉：金山名冊從磁碟重建（不是空的）→ 多店者照 38d0340 鎖 19:00' : '【已知殘餘】金山名冊從沒拉成功過：mini 看到空名冊＝當成沒人 → 多店者被判單店、給寬限（要改快速通道才擋得住）',
+      [s.cap && s.cap.locked, s.cap && s.cap.grace_hm || null], pullJsFirst ? [true, null] : [false, '19:00']);
+    await app.stop(); await g.close(); fs.rmSync(dir, { recursive: true, force: true });
+  }
   // ⑦ 凌晨才刷進跨夜班（審查第一輪第 2 條）：11/20 18:00–02:00、11/21 例假；11/21 00:05 上班，10:20 mini 開頁、Google 掃描
   {
     const w = await setup('2');

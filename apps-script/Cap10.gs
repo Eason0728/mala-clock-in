@@ -635,21 +635,28 @@ function capGraceLate_(empId, inMs, atMs) {
    ①REST_PEERS_（各店 RestConfig）至少列了 CAP_SINGLE_STORES 家不同的試算表，而且認得出本店（清單漏列別家店時會把跨店的人當單店，所以少於預期就照舊）；
    ②每一家店（含本店）的名冊都「讀取成功」：打得開試算表、有 roster 分頁、讀回來是列陣列。讀到 0 位在職＝成功（那家店沒人，例：瑞光、文心目前沒人用打卡）；
    ③本店在職名單裡有這個姓名；④其他每一家店的在職名單裡都沒有這個姓名。同一家店兩位同名＝還是只在一家（只看別家店有沒有）。
-   名冊快取：只快取讀取成功的結果（鍵 cgs:<試算表 ID 後 12 碼>＝在職姓名清單，CAP_SINGLE_CACHE_S 秒）；讀取失敗不快取（下一次重試）並記 log。
+   名冊快取：只快取讀取成功的結果（鍵 cgs:<試算表 ID 後 12 碼>＝{v, store, n, names}，CAP_SINGLE_CACHE_S 秒；內容不對＝重讀）；讀取失敗不快取（下一次重試）並記 log。
    （不用 rpr: 那份 6 小時快取：它分不出空名冊與讀取失敗，而且別家店剛把人加進名冊時，6 小時內兩店會一邊判單店、一邊判多店；10 分鐘把這個窗口縮小。）
    只有「滿 10、晚超過 30 分、本店那一段、開頁／掃描／按上班」才會走到這裡（capCheck_ 裡排在班表判斷之後），平常打卡不讀別家店名冊。 */
 var CAP_SINGLE_CACHE_S = 600;
 var CAP_SINGLE_STORES = 9;         // 九店：REST_PEERS_ 少於這麼多家不同的試算表＝清單不齊＝照舊（加開門市時要一起改）
-/** 一家店在職姓名清單（去空白）；讀取失敗丟例外（呼叫端＝照舊）。成功（含空）才快取。 */
+/** 一家店在職姓名清單（去空白、去掉空名字）；讀取失敗丟例外（呼叫端＝照舊）。成功（含 0 人）才快取。
+ *  快取值＝{v:1, store:<試算表 ID 後 12 碼>, n:<人數>, names:[非空字串…]}（2026-11-23 #232 驗收）：版本、店別、n 與 names 長度、每個元素都要對，
+ *  不對（例：被改成 []、元素不是字串、舊格式）＝當成沒有快取、重讀；真的 0 人＝{n:0, names:[]}，合法。 */
 function capGraceRosterNames_(ssId) {
-  var cache = CacheService.getScriptCache(), ck = 'cgs:' + String(ssId).slice(-12);
-  try { var hit = cache.get(ck), v = hit ? JSON.parse(hit) : null; if (Array.isArray(v)) return v; } catch (e) {}
+  var cache = CacheService.getScriptCache(), tail = String(ssId).slice(-12), ck = 'cgs:' + tail;
+  try {
+    var hit = cache.get(ck), v = hit ? JSON.parse(hit) : null;
+    if (v && typeof v === 'object' && v.v === 1 && v.store === tail && Array.isArray(v.names) && v.n === v.names.length &&
+        v.names.every(function (x) { return typeof x === 'string' && x !== ''; })) return v.names;
+  } catch (e) {}
   var sh = SpreadsheetApp.openById(ssId).getSheetByName('roster');
-  if (!sh) throw new Error('沒有 roster 分頁：' + String(ssId).slice(-6));
+  if (!sh) throw new Error('沒有 roster 分頁：' + tail.slice(-6));
   var rows = readSheetAsObjects(sh).rows;
-  if (!Array.isArray(rows)) throw new Error('roster 讀回來不是列：' + String(ssId).slice(-6));
-  var names = rows.filter(function (r) { return r && String(r.active).toLowerCase() === 'true'; }).map(function (r) { return restName_(r.name); });
-  try { cache.put(ck, JSON.stringify(names), CAP_SINGLE_CACHE_S); } catch (e) {}
+  if (!Array.isArray(rows)) throw new Error('roster 讀回來不是列：' + tail.slice(-6));
+  var names = rows.filter(function (r) { return r && String(r.active).toLowerCase() === 'true'; })
+    .map(function (r) { return restName_(r.name); }).filter(function (x) { return x !== ''; });
+  try { cache.put(ck, JSON.stringify({ v: 1, store: tail, n: names.length, names: names }), CAP_SINGLE_CACHE_S); } catch (e) {}
   return names;
 }
 function capGraceSingle_(me) {

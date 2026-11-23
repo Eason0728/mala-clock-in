@@ -809,5 +809,38 @@ const tt = (hm) => T(D + 'T' + hm + ':00');
     check('S13', '讀取失敗不快取：第一次失敗 → 照舊；那家店恢復後下一次就重讀、判單店（不用等 10 分鐘）', [r1, r2], [false, true]);
   }
 }
+{
+  /* S14（#232 驗收第 1 點）：名冊快取內容不對就重讀。別家店 SS_P 其實有同名在職（多店）→ 正確答案是照舊。
+   * 暖快取後把 cgs: 那一鍵改壞（[]、[{a:1}]、舊格式字串陣列、n 不符、店別不符、元素空字串、版本不對）→ 一律重讀 → 仍判多店、照舊；
+   * 真的 0 人（{n:0, names:[]}）是合法快取。 */
+  const twinPeer = { SS_P: { roster: [OTHER, { emp_id: 'P02', name: '測試一', key: 'KQ', device_id: 'DQ', active: 'TRUE' }] } };
+  const keyP = 'cgs:' + 'SS_P'.slice(-12);
+  const bad = [
+    ['空陣列 []', '[]'], ['元素不是字串 [{"a":1}]', '[{"a":1}]'], ['舊格式字串陣列', '["別人"]'],
+    ['n 跟 names 不符', JSON.stringify({ v: 1, store: 'SS_P', n: 2, names: ['別人'] })],
+    ['店別不符', JSON.stringify({ v: 1, store: 'SS_X', n: 1, names: ['別人'] })],
+    ['元素是空字串', JSON.stringify({ v: 1, store: 'SS_P', n: 1, names: [''] })],
+    ['版本不對', JSON.stringify({ v: 2, store: 'SS_P', n: 1, names: ['別人'] })],
+    ['合法格式但被改成 0 人', JSON.stringify({ v: 1, store: 'SS_P', n: 0, names: [] })],
+  ];
+  const got = bad.map(([label, val]) => {
+    const m = worldS(D + 'T19:05:00', { peers: twinPeer });
+    let reads = 0; const sh = m.peers.SS_P.sh.roster, g = sh.getDataRange; sh.getDataRange = function () { reads++; return g.apply(this, arguments); };
+    m.sb.capGraceSingle_(ME);
+    const r0 = reads;
+    m.cache[keyP] = { v: val, exp: Infinity };
+    const single = m.sb.capGraceSingle_(ME);
+    return label + ':' + (reads - r0) + ':' + single;
+  });
+  // 最後一種「合法格式、0 人」本身是合法快取（瑞光、文心真的 0 人時就是這個值），所以不重讀——被人改成這樣不在防範範圍（跟 #231 驗收判為不擋的「格式合法的竄改」同類）
+  check('S14★', '名冊快取內容不對（7 種）→ 重讀 1 次、仍判多店（false）；合法格式的 0 人不重讀',
+    got, bad.map(([label], i) => label + ':' + (i < 7 ? 1 : 0) + ':' + (i < 7 ? false : true)));
+  const m = worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [] } } });
+  m.sb.capGraceSingle_(ME);
+  check('S14b', '真的 0 人的店：快取存 {v:1, store, n:0, names:[]}，下一次不重讀', JSON.parse(m.cache[keyP].v), { v: 1, store: 'SS_P', n: 0, names: [] });
+  const m2 = worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [OTHER, { emp_id: 'P03', name: '', key: 'KZ', device_id: 'DZ', active: 'TRUE' }] } } });
+  m2.sb.capGraceSingle_(ME);
+  check('S14c', '名冊有一列名字空白：不放進清單（快取元素都是非空字串）', JSON.parse(m2.cache[keyP].v).names, ['別人']);
+}
 
 done();
