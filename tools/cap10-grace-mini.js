@@ -156,6 +156,21 @@ const ok = (id, label, got, want) => { const pass = JSON.stringify(got) === JSON
     const caps = (c) => g.events(c).filter((e) => String(e.source) === 'system_cap').length ? ['x'] : [];
     ok(id, twin ? '同名兩工號（金山 B07 09–18／B08 10–20、B07 上班）：光復（mini）開頁用打卡列對到 B07 → 不鎖、grace_hm 19:00' : withSched ? '跨店：金山班表 09–18 → 光復（mini）開頁不鎖、grace_hm 19:00、兩店 Google 都沒有系統卡' : '跨店：金山沒發布 → 光復（mini）開頁照舊鎖、sys_hm 19:00（本店只擋不寫）',
       [s.cap && s.cap.locked, s.cap && s.cap.grace_hm || null, s.cap && s.cap.sys_hm || null, caps(''), caps('mztjs')], want);
+    if (withSched) {   // M17／M18（2026-11-23 主管退回）：金山判寬限時本人在光復（mini）按下班 → 系統卡寫在光復、記在 19:00、cap_locked；抄回後金山掃描不寫、再按不多寫
+      now = T('19:10:00'); g.setNow(now);
+      const pr = (n) => p.handlePunch({ id_token: 'TOK1', store: 'gf', lat: GF.lat, lng: GF.lng, accuracy: 8, type: 'out', req_id: 'r' + String(90 + n).padStart(16, '0'), confirm_same: true });
+      const r1 = await pr(1);
+      const mHm = () => p.gs.all('').filter((r) => String(r.data.source || '') === 'system_cap').map((r) => String(r.data.ts).slice(11, 16));
+      const m1 = mHm();
+      await p.pushAll(); await p.pull('', { full: true }); await p.pull('mztjs', { full: true });
+      g.eng.sandbox('mztjs').capSweep();
+      now = T('19:20:00'); g.setNow(now);
+      const r2 = await pr(2);
+      const s2 = await p.handleStatus({ store: 'gf', id_token: 'TOK1' });
+      const gHm = (c) => g.events(c).filter((e) => String(e.source) === 'system_cap').map((e) => String(e.ts).slice(11, 16));
+      ok(id === 'M12' ? 'M17' : 'M18', (twin ? '同名兩工號：' : '') + '金山判寬限、本人在光復（mini）19:10 按下班 → cap_locked、系統卡寫在光復 19:00；抄回後光復 Google 一張、金山掃描不寫；19:20 再按仍擋、不多寫；開頁鎖 19:00',
+        [r1.status, m1, gHm(''), gHm('mztjs'), r2.status, mHm(), s2.cap.locked, s2.cap.sys_hm], ['cap_locked', ['19:00'], ['19:00'], [], 'cap_locked', ['19:00'], true, '19:00']);
+    }
     await app.stop(); await g.close(); fs.rmSync(dir, { recursive: true, force: true });
   }
   // ⑦ 凌晨才刷進跨夜班（審查第一輪第 2 條）：11/20 18:00–02:00、11/21 例假；11/21 00:05 上班，10:20 mini 開頁、Google 掃描

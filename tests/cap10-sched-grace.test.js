@@ -512,12 +512,48 @@ function fourQ(opt) {
     [[!!s1.locked, s1.grace_hm || null, s1.sys_hm || null], bSysQ(wB), [!!s2.locked, s2.sys_hm || null]], [[false, null, null], ['19:00 B07', '19:00 B08'], [true, '19:00']]);
 }
 {
-  const m = worldQ('A', { b: schedQ('A', 'C') });
-  const r = punch(m, 'out');
+  /* Q6（2026-11-23 主管退回：本人按下班不可放寬 10 小時上限）：別家店那段、本人在 A 店按下班——
+   *   38d0340 未滿 10 時在 A 店按下班＝下班卡寫進 A 店 events、跟 B 店上班卡配成一段；這裡照同一個做法、時間改成滿 10 那一刻：
+   *   B 店判寬限（不會代記）或對不到工號 → 系統卡寫在 A 店 19:00、回 cap_locked；之後 B 頁、A 頁都鎖在 19:00，B 店掃描、再按一次都不多寫。
+   *   B 店沒發布（B 店會照舊代記）→ 跟 38d0340 一樣：回 cap_locked、A 店不寫（B 店掃描寫）。 */
+  const ENTRY = [
+    ['LINE', (m) => { const r = punch(m, 'out'); return [r.ok, r.status || null]; }],
+    ['liff_clock', (m) => { const r = m.sb.handleLiffClockGuarded_(Object.assign({ id_token: 'TOK_U1', type: 'out' }, HERE)); return [r.ok, r.error === 'guard_blocked' && /系統在 19:00 幫你記了下班卡/.test(r.reason || '')]; }],
+    ['舊 clock', (m) => { const j = oldClock(m, 'out'); return [j.status, j.rest && j.rest.code]; }],
+  ];
+  const WANT = { LINE: [false, 'cap_locked'], liff_clock: [false, true], '舊 clock': ['rejected_rest', 'cap10'] };
+  const aSys = (m) => m.self.sh.events.values.filter(isSys).map((r) => String(r[0]).slice(11, 16) + ' ' + r[1]);
+  /** A 店按下班之後：把 A 店的表（含 source 欄）放進 B 店視角的 SS_A，看 B 頁、B 店掃描 */
+  const bAfter = (mA, opt) => {
+    const wB = worldQ('B', opt);
+    wB.peers.SS_A.sh.events.values.length = 0;
+    mA.self.sh.events.values.forEach((r) => wB.peers.SS_A.sh.events.values.push(r.slice()));
+    const c = status(wB).cap;
+    wB.sb.capSweep();
+    return [[!!c.locked, c.sys_hm || null], bSysQ(wB)];
+  };
+  const cases = [
+    ['Q6★', 'B 店判寬限（同名兩工號、用打卡列對到 B07）', { b: schedQ('A', 'C') }],
+    ['Q6b★', '對不到工號（同名兩人同一秒上班）', { b: schedQ('A', 'C'), bEvents: [[D + 'T09:00:00', 'B07', 'in'], [D + 'T09:00:00', 'B08', 'in']] }],
+  ];
+  cases.forEach(([id, label, opt]) => ENTRY.forEach(([en, fn]) => {
+    const m = worldQ('A', opt);
+    const r = fn(m);
+    const sys1 = aSys(m);
+    const ca = status(m).cap;
+    m.setNow(D + 'T19:20:00');
+    const r2 = fn(m);
+    const after = bAfter(m, opt);
+    check(id + ' ' + en, label + '：19:10 在 A 店按下班（' + en + '）→ 系統卡寫在 A 店 19:00、擋下（鎖）；A 頁鎖 19:00；19:20 再按仍擋、不多寫；B 頁鎖 19:00、B 店掃描不寫',
+      [r, sys1, [!!ca.locked, ca.sys_hm || null], r2, aSys(m), after[0], after[1]],
+      [WANT[en], ['19:00 E01'], [true, '19:00'], WANT[en], ['19:00 E01'], [true, '19:00'], []]);
+  }));
   const m2 = worldQ('A', {});
-  const r2 = punch(m2, 'out');
-  check('Q6★', '別家店那段、本人在 A 店按下班：那家店判寬限（不會寫）→ 不回 cap_locked、放行；那家店沒發布 → 照舊 cap_locked',
-    [[r.ok, r.status || null], [r2.ok, r2.status || null], sysRows(m).length + sysRows(m2).length], [[true, null], [false, 'cap_locked'], 0]);
+  const rr = punch(m2, 'out');
+  check('Q6c', 'B 店沒發布（B 店會照舊代記）→ 跟 38d0340 一樣：回 cap_locked、A 店不寫（卡由 B 店寫）', [[rr.ok, rr.status || null], aSys(m2)], [[false, 'cap_locked'], []]);
+  const m3 = worldX(D + 'T19:10:00', { b: B918 });
+  const r3 = punch(m3, 'out');
+  check('Q6d★', '單一工號（X1 情境）在 A 店按下班 → 系統卡寫在 A 店 19:00、cap_locked、B 店不寫', [[r3.ok, r3.status || null], aSys(m3), bSys(m3)], [[false, 'cap_locked'], ['19:00 E01'], 0]);
 }
 {
   const m = worldQ('A', { b: schedQ('A', 'C'), cap: '1' });
