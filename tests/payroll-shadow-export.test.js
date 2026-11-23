@@ -314,7 +314,7 @@ console.log('══ 4) 月份、空月份、不存在的分頁 ══');
     [e.ok, e.tables.run, e.tables.item, e.tables.holiday, e.tables.bonus, e.counts.run, e.counts.item, e.counts.master, e.counts.store], [true, [], [], [], [], 0, 0, 3, 2]);
   const r = ask(w);
   chk('  2026-11：run／item／holiday／bonus 只回這個月', [r.tables.run.length, r.tables.item.length, r.tables.holiday.map((x) => x.ym), r.tables.bonus.length, r.tables.run.every((x) => x.ym === '2026-11')], [3, 9, ['2026-11'], 1, true]);
-  chk('  手填工時回「去年 1 月～今年 12 月」：2025-01、2026-10、2026-11（2024-12 和格式不對的不回）', r.tables.input.map((x) => x.ym).sort(), ['2025-01', '2026-10', '2026-11', '2026-11']);
+  chk('  手填工時只回 ym 往前 12 個月到 ym（主管 11/23 方案 b）：2026-10、2026-11（2025-01、2024-12、格式不對的不回）', r.tables.input.map((x) => x.ym).sort(), ['2026-10', '2026-11', '2026-11']);
   chk('  主檔、參數、門市、假別、留停、打卡對照整張回', [r.counts.master, r.counts.config, r.counts.store, r.counts.leave_type, r.counts.leave_span, r.counts.xmap], [3, 2, 2, 1, 5, 1]);
   for (const k of ['master', 'store', 'run']) {
     const wm = world(baseSheets({ mut: (s) => { delete s[PS.N[k]]; } }));
@@ -387,8 +387,11 @@ console.log('══ 7) 轉換：自訂加薪只留金額、留停子女換代號
   const orig = w.sheets[PS.N.input][1][PS.S.input.indexOf('custom_add_more')];
   chk('  這邊的算法（x && payNum(x.amt)）算出的加薪合計跟原值一樣：1700', [sumOf(orig), sumOf(inp('E1', '2026-11').custom_add_more)], [1700, 1700]);
   chk('  原值解析不了 → 照樣解析不了（不帶原文）', [sumOf(inp('E2', '2026-11').custom_add_more), inp('E2', '2026-11').custom_add_more], ['parse_error', '!']);
-  chk('  原值不是陣列 → 照樣不是陣列', [sumOf(inp('E2', '2026-10').custom_add_more), inp('E2', '2026-10').custom_add_more], ['not_array', '{}']);
-  chk('  空白照原樣', inp('E1', '2025-01').custom_add_more, '');
+  /* 2026-10 那列在請求 2026-11 時是「早期月份」、不出 custom_add_more（方案 b）→ 改請求 2026-10 來看 */
+  const r10 = ask(w, { ym: '2026-10' }), inp10 = (emp) => r10.tables.input.find((x) => x.emp_id === emp && x.ym === '2026-10') || {};
+  chk('  原值不是陣列 → 照樣不是陣列（請求 2026-10）', [sumOf(inp10('E2').custom_add_more), inp10('E2').custom_add_more], ['not_array', '{}']);
+  const wb0 = world(baseSheets({ mut: (s) => { const t = s[PS.N.input]; t.forEach((r, i) => { if (i && r[0] === '2025-01') r[0] = '2026-09'; }); } }));
+  chk('  空白照原樣（請求 2026-09）', (ask(wb0, { ym: '2026-09' }).tables.input.find((x) => x.ym === '2026-09') || {}).custom_add_more, '');
   chk('  support（跨店支援 JSON）逐欄挑（鍵照計算會讀的順序，值不變）', inp('E1', '2026-11').support, '[{"store":"測試店二","code":"CF","hours":4,"rate":200,"amount":"","auto":true}]');
   const sp = r.tables.leave_span;
   chk('  留停子女代號：同一人依原值排序 A→c1、B→c2（前後空白算同一個）、空白照空白、別人自己從 c1 起', sp.map((x) => x.emp_id + ':' + x.child), ['E1:c2', 'E1:c1', 'E1:c1', 'E1:', 'E2:c1']);
@@ -578,7 +581,97 @@ console.log('══ 9) Codex 217 r1 修正：支援內層逐欄挑、參數鍵�
   chk('  靜態：匯出那段不再呼叫 readSheetAsObjects／getDataRange（整張讀）', /readSheetAsObjects\(|getDataRange\(/.test(GS.slice(GS.indexOf('function handlePayrollShadowExport'), GS.indexOf('function payShadowYmOk_'))), false);
 
   /* ── 不改的兩點（附反證）：year2 收 '2026-00'、Date 型 ym 照原值輸出——都跟計算端同一套判斷 ── */
-  chk('  計算端 payLeaveUsedBefore 的月份判斷也是 /^\\d{4}-\\d{2}$/（收 2026-00），匯出 year2 用同一個', [/!\/\^\\d\{4\}-\\d\{2\}\$\/\.test\(m\) \|\| m\.slice\(0, 4\) !== year \|\| m >= ym/.test(GS), /if \(!\/\^\\d\{4\}-\\d\{2\}\$\/\.test\(m\)\) return false;/.test(GS)], [true, true]);
+  /* 主管 11/23 方案 b 之後：匯出改用嚴格月份（01–12），跟計算端（只驗兩位數）刻意不同——差異寫在 PAY_SHADOW_INPUT_BACK_ 的註解 */
+  chk('  計算端月份判斷仍只驗兩位數；匯出 win13 改嚴格 01–12（刻意不同，註解有寫）', [GS.indexOf("!/^\\d{4}-\\d{2}$/.test(m) || m.slice(0, 4) !== year || m >= ym") >= 0, GS.indexOf("if (!/^\\d{4}-(0[1-9]|1[0-2])$/.test(m)) return false;") >= 0], [true, true]);
+}
+
+console.log('══ 10) 手填工時範圍（主管 11/23 方案 b）：13 個月、早期月份不出金額、裁切後照樣算得一樣 ══');
+{
+  const IN = PS.S.input;
+  const EARLY = ['ym', 'emp_id', 'store', 'hours_manual', 'support', 'personal_h', 'sick_h', 'menstrual_h', 'disaster_h', 'annual_h'];
+  const AMT = ['wage_override', 'dorm_override', 'custom_add_amt', 'custom_ded_amt', 'custom_add_more', 'extra_ot', 'hours', 'deduct_days', 'full_attend', 'work_days', 'meal_on', 'holiday_h'];
+  const mkIn = (rows) => (s) => { s[PS.N.input] = tab('input', rows); };
+  const full = (ym, emp, extra) => Object.assign({ ym, emp_id: emp, store: 'SSLGF', hours: 160, extra_ot: 3, personal_h: 0, sick_h: 0, menstrual_h: 0, disaster_h: 0, annual_h: 0,
+    holiday_h: 0, deduct_days: 0, full_attend: 1, work_days: 22, wage_override: 210, dorm_override: 1500, meal_on: 1, custom_add_label: 'SECRET-LABEL', custom_add_amt: 777,
+    custom_ded_label: 'SECRET-LABEL', custom_ded_amt: 333, hours_manual: '1', custom_add_more: '[{"label":"SECRET-LABEL","amt":99}]',
+    support: '[{"store":"測試店二","hours":2,"rate":200,"phone":"SECRET-PHONE"}]', updated_at: 'SECRET-UPDATED' }, extra || {});
+  const months = []; for (let y = 2024; y <= 2027; y++) for (let m = 1; m <= 12; m++) months.push(y + '-' + String(m).padStart(2, '0'));
+  const inRange = (lo, hi) => months.filter((m) => !(m < lo) && !(m > hi));
+  const rows = inRange('2025-06', '2026-12').map((m) => full(m, 'E1')).concat([full('2026-00', 'E1'), full('2026-13', 'E1'), full(' 2026-05 ', 'E1')]);
+  const w = world(baseSheets({ mut: mkIn(rows) }));
+  const r = ask(w);
+  const got = r.tables.input.map((x) => x.ym);
+  const clean = got.filter((m) => m.trim() === m).sort();
+  chk('  請求 2026-11 → 只回 2025-11～2026-11（13 個月，含剛好 12 個月前的 2025-11）＋前後空白的 2026-05', [clean[0], clean.slice(-1)[0], clean.length, got.length], ['2025-11', '2026-11', 13, 14]);
+  chk('  2025-10 以前、2026-12（請求月之後）、2026-00、2026-13 都不出；前後空白的 2026-05 照原值出',
+    [clean.some((m) => !(m > '2025-10')), got.indexOf('2026-12') >= 0, got.indexOf('2026-00') >= 0, got.indexOf('2026-13') >= 0, got.indexOf(' 2026-05 ') >= 0], [false, false, false, false, true]);
+  const cur = r.tables.input.find((x) => x.ym === '2026-11'), old = r.tables.input.filter((x) => x.ym.trim() !== '2026-11');
+  chk('  請求月那一列照 w2 全出（含金額欄）', [Object.keys(cur).sort().join(), cur.custom_add_amt, cur.wage_override, cur.custom_add_more], [W2(w).input.filter((c) => IN.indexOf(c) >= 0).sort().join(), 777, 210, '[{"amt":99}]']);
+  chk('  早期月份的列只有：工號、門市、月份、hours_manual、support、五個假別時數', [...new Set(old.map((x) => Object.keys(x).sort().join()))], [EARLY.slice().sort().join()]);
+  chk('  早期月份沒有任何金額類欄（加扣金額、覆寫金額、自訂加薪…）', old.some((x) => AMT.some((c) => c in x)), false);
+  chk('  早期月份的 support 也逐欄挑（沒有電話）', [old[0].support, /SECRET-PHONE/.test(JSON.stringify(r))], ['[{"store":"測試店二","hours":2,"rate":200}]', false]);
+  const wy = world(baseSheets({ mut: mkIn(inRange('2025-10', '2027-02').map((m) => full(m, 'E1'))) }), '2027-01-05');
+  const gy = ask(wy, { ym: '2027-01' }).tables.input.map((x) => x.ym).sort();
+  chk('  跨年：請求 2027-01 → 2026-01～2027-01（2025-12 不出、2027-02 不出）', [gy[0], gy.slice(-1)[0], gy.length], ['2026-01', '2027-01', 13]);
+  const g10 = ask(w, { ym: '2026-10' }).tables.input.map((x) => x.ym).filter((m) => m.trim() === m).sort();
+  chk('  請求 2026-10 → 2025-10～2026-10', [g10[0], g10.slice(-1)[0]], ['2025-10', '2026-10']);
+
+  /* ── 夠不夠算：同一份資料，「完整手填表」與「只給匯出內容」跑請求月的 payLeaveUsedBefore（曆年上限）與 payAnnualInfo（週年制特休），結果要一樣 ── */
+  const P = [
+    ['A1', '年初到職', '2025-01-02', ''],
+    ['B2', '年中到職', '2023-06-20', ''],
+    ['C3', '跨年週年期、本月屆滿折算（settle 期從 ym−12 月中開始）', '2020-11-15', ''],
+    ['D4', '當年已請滿病假、事假上限', '2019-03-10', ''],
+    ['F5', '離職當月、週年日還沒到（改用上一期，從 ym−12 開始）', '2021-11-20', '2026-11-10'],
+    ['G6', '週年日是 1 號（期別剛好整月切）', '2022-12-01', ''],
+  ];
+  const engine = (sheets, ym, today) => {
+    const x = world(sheets, today);
+    vm.runInContext('payClockRead = function () { return []; }; payLeaveDupNames_ = function () { return {}; };', x.sb);
+    const master = JSON.parse(vm.runInContext("JSON.stringify(payRead('master').filter(function (m) { return payStore(m.store) === 'SSLGF'; }))", x.sb));
+    const LT = [{ code: 'sick', cap_days: 30, cap_basis: 'calendar' }, { code: 'personal', cap_days: 14, cap_basis: 'calendar' },
+      { code: 'menstrual', cap_days: 3, cap_basis: 'calendar', merge_into: 'sick' }, { code: 'disaster', cap_days: 5, cap_basis: 'calendar' }];
+    const cfg = x.F('payConfig')('SSLGF');
+    return JSON.stringify({ used: x.F('payLeaveUsedBefore')(ym, 'SSLGF', LT, cfg, master), annual: x.F('payAnnualInfo')(ym, 'SSLGF') });
+  };
+  const peopleSheets = (inputRows) => baseSheets({ mut: (s) => {
+    s[PS.N.master] = tab('master', P.map(([id, nm, hire, left]) => ({ emp_id: id, name: '人' + id, is_full_time: 'true', base: 34000, hire_date: hire, leave_date: left, active: true, store: 'SSLGF', labor_ins: 700 })));
+    s[PS.N.input] = tab('input', inputRows);
+  } });
+  const hrs = (m, i) => { const k = (Number(m.slice(5, 7)) * 7 + i * 3) % 11; return { annual_h: k % 3 ? 8 : 4, sick_h: k * 2, personal_h: k % 4 ? 8 : 0, menstrual_h: k % 2 ? 8 : 0, disaster_h: k === 5 ? 8 : 0 }; };
+  const allRows = [];
+  inRange('2024-01', '2027-01').forEach((m) => P.forEach(([id], i) => {
+    const h = hrs(m, i);
+    if (id === 'D4' && m.slice(0, 4) === '2026') { h.sick_h = 80; h.personal_h = 24; }   // 2026 年每月病假 10 天、事假 3 天 → 早就超過上限
+    allRows.push(full(m, id, h));
+  }));
+  for (const [ym, today] of [['2026-11', '2026-11-22'], ['2026-10', '2026-11-22'], ['2026-09', '2026-11-22'], ['2027-01', '2027-01-05']]) {
+    const fullSheets = peopleSheets(allRows.filter((x) => !(x.ym > today.slice(0, 7))));   // 正式表不會有「今天以後」的月份
+    const exp = world(fullSheets, today).post({ action: 'payroll_shadow_export', admin_key: ADMIN, ym, whitelist_version: 'w2' });
+    const cut = peopleSheets(((exp.tables || {}).input || []).filter((x) => !(x.ym > ym)));
+    const a = engine(fullSheets, ym, today), b = engine(cut, ym, today);
+    const A = JSON.parse(a);
+    if (ym === today.slice(0, 7)) {
+      chk('  ' + ym + '（本月）：完整手填表 vs 只給匯出內容 → 曆年上限已用、週年制特休（額度、已用、折算）逐人相同（6 種人）', a === b, true);
+    } else {
+      /* 請求「上個月以前」：完整表裡有請求月之後（到本月）的列。計算端的週年期 usedIn 會把週年期內「之後月份」的 annual_h 也算進已用，
+         匯出照定案不給請求月之後的列 → 只有這一處會不同（已知、待主管決定）。只看到請求月為止的完整表則逐人相同。 */
+      const upto = peopleSheets(allRows.filter((x) => !(x.ym > ym)));
+      chk('  ' + ym + '（過去月份）：完整表只到請求月 vs 只給匯出內容 → 逐人相同（6 種人）', engine(upto, ym, today) === b, true);
+      const B = JSON.parse(b), diff = [];
+      Object.keys(A.used).forEach((k) => { if (JSON.stringify(A.used[k]) !== JSON.stringify(B.used[k])) diff.push('used.' + k); });
+      Object.keys(A.annual).forEach((k) => { if (JSON.stringify(A.annual[k]) !== JSON.stringify(B.annual[k])) diff.push('annual.' + k + ':' + Object.keys(A.annual[k] || {}).filter((f) => JSON.stringify(A.annual[k][f]) !== JSON.stringify((B.annual[k] || {})[f])).join('/')); });
+      chk('  ' + ym + '（過去月份）已知差異：完整表含之後月份時，只有週年制特休的已用／剩餘會不同（曆年上限相同）', [diff.length > 0, diff.every((d) => /^annual\./.test(d))], [true, true]);
+      console.log('      差異：' + diff.join('，'));
+    }
+    if (ym === '2026-11') {
+      chk('    前提：C3 本月屆滿折算、F5 離職改用上一期、D4 病假早已超過上限、A1 年初到職有特休',
+        [!!A.annual.C3 && A.annual.C3.payout_h !== undefined, A.annual.F5 && A.annual.F5.ps, A.used.D4.sick.used_before_days > 30, !!A.annual.A1 && A.annual.A1.days > 0], [true, '2025-11-20', true, true]);
+      /* 反證：只給 12 個月（不含 2025-11）就算不一樣 → 13 個月是必要的 */
+      const cut12 = peopleSheets(((exp.tables || {}).input || []).filter((x) => !(x.ym > ym) && !(x.ym < '2025-12')));
+      chk('    反證：少給剛好 12 個月前的 2025-11 → 週年制結果不同（C3 或 F5）', engine(cut12, ym, today) !== a, true);
+    }
+  }
 }
 
 console.log('\n' + (fail ? '❌' : '✅') + ' payroll-shadow-export：' + pass + ' 過、' + fail + ' 失敗');

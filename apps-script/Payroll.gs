@@ -8163,8 +8163,7 @@ const PAY_SHADOW_W2_ = {
   hol_emp: ['ym', 'date', 'store', 'emp_id'],   // 不出 name／note／updated_at（2026-11-23 主管同意的前提）
 };
 const PAY_SHADOW_WHITELISTS_ = { w1: PAY_SHADOW_W1_, w2: PAY_SHADOW_W2_ };
-/* 每張表怎麼讀：month＝'ym' 只回這個月；'year2' 只回 ym 去年 1 月到今年 12 月（手填工時：曆年請假上限 payLeaveUsedBefore 看同年 1 月起、
-   週年制特休 payAnnualInfo 的 usedIn 看週年期（最早約 ym 往前 12 個月）的 annual_h，再早的用不到，不多抄；資料範圍待主管核定，Codex 217 r1 擋項一）；false＝整張。need＝分頁不存在要回 no_sheet（其他分頁不存在＝空陣列）。
+/* 每張表怎麼讀：month＝'ym' 只回這個月；'win13' 只回 ym 往前 12 個月到 ym（共 13 個月，手填工時；主管 2026-11-23 定案方案 b，見 PAY_SHADOW_INPUT_EARLY_）；false＝整張。need＝分頁不存在要回 no_sheet（其他分頁不存在＝空陣列）。
    max＝筆數上限（超過回 too_many_rows、不截斷）；master／config／store／run 2,000、item 60,000 照契約 4.2b，其餘依各表性質另定。 */
 const PAY_SHADOW_TABLES_ = {
   master:     { month: false,   need: true,  max: 2000 },
@@ -8174,7 +8173,7 @@ const PAY_SHADOW_TABLES_ = {
   run:        { month: 'ym',    need: true,  max: 2000 },
   item:       { month: 'ym',    need: false, max: 60000 },
   leave_type: { month: false,   need: false, max: 2000 },
-  input:      { month: 'year2', need: false, max: 60000 },
+  input:      { month: 'win13', need: false, max: 60000 },
   bonus:      { month: 'ym',    need: false, max: 20000 },
   leave_span: { month: false,   need: false, max: 5000 },
   xmap:       { month: false,   need: false, max: 5000 },
@@ -8231,7 +8230,11 @@ function handlePayrollShadowExport(body) {
     }
     if (rows.length > spec.max) return { ok: false, error: 'too_many_rows', table: t, limit: 'rows' };
     const childCode = t === 'leave_span' ? payShadowChildCodes_(rows) : null;
-    tables[t] = rows.map(function (r) { return payShadowPick_(t, r, wl[t], childCode, flags); });
+    tables[t] = rows.map(function (r) {
+      /* 手填工時早於請求月的列只出 PAY_SHADOW_INPUT_EARLY_（沒有金額）；請求月那一列照白名單全出 */
+      const cols = (t === 'input' && payShadowYmOf_(r && r.ym) < ym) ? PAY_SHADOW_INPUT_EARLY_.filter(function (c) { return wl[t].indexOf(c) >= 0; }) : wl[t];
+      return payShadowPick_(t, r, cols, childCode, flags);
+    });
     counts[t] = tables[t].length;
   }
   return { ok: true, format: PAY_SHADOW_FORMAT_, whitelist_version: ver, ym: ym,
@@ -8325,11 +8328,24 @@ function payShadowInRange_(r, mode, ym) {
   if (!mode) return true;
   const m = payShadowYmOf_(r && r.ym);
   if (mode === 'ym') return m === ym;
-  /* year2：ym 去年 1 月到今年 12 月（字串比較，格式不對的月份不回——這邊的計算也認不得） */
-  if (!/^\d{4}-\d{2}$/.test(m)) return false;
-  const y = Number(ym.slice(0, 4));
-  return m >= (y - 1) + '-01' && m <= y + '-12';
+  /* win13：ym 往前 12 個月到 ym（含兩端，共 13 個月）。月份要嚴格 YYYY-MM（01–12）；2026-00 這種不回。 */
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(m)) return false;
+  const diff = (Number(ym.slice(0, 4)) * 12 + Number(ym.slice(5, 7))) - (Number(m.slice(0, 4)) * 12 + Number(m.slice(5, 7)));
+  return diff >= 0 && diff <= PAY_SHADOW_INPUT_BACK_;
 }
+/* 手填工時的範圍與早期月份欄位（主管 2026-11-23 定案方案 b「只抄最近 12 個月、舊月份不抄金額」）：
+   ・往前幾個月：13 個月（ym−12～ym）。計算端讀請求月以前手填列的只有兩處：
+     ①payLeaveUsedBefore（曆年上限）：同年 1 月～上個月 → 最早 ym−11；
+     ②payAnnualInfo 的 usedIn（週年制特休）：週年期 [ps, pe)。本期 q＝payAnnualQuota(到職日, ym) 的 ps 最早 ym−11；
+       但屆滿折算 settle 與離職當月改用的上一期＝payAnnualQuota(到職日, 上個月)，ps 最早落在 ym−12
+       （例：11/15 到職、ym＝2026-11 → settle.ps＝2025-11-15，2025-11 的 annual_h 依 payAnnualManualShare_ 可能算進去）。所以要 13 個月。
+   ・早於請求月的列只出：工號、門市、月份、hours_manual（payInputSupportOnly_ 判斷「僅 support」列）、support（內層逐欄挑）、
+     五個假別時數（payLeaveUsedBefore 的 legacyCol 與 usedIn 的 annual_h）。計算端讀早期列只用到這些，沒有任何金額欄。
+   ・與計算端的差異：計算端月份只驗 /^\d{4}-\d{2}$/（收 2026-00）；這裡嚴格到 01–12，所以萬一手填表真有 2026-00 這種列（寫入端
+     handlePayrollInputSet 也只驗兩位數），Google 會把它算進當年的曆年上限、mini 不會 → 影子會出差異（寧可報差異，不送不合理的月份）。
+   ・請求月之後的列不出：Google 回頭重算舊月份時，週年期也會算到之後月份的 annual_h；mini 拉上個月時就少了本月那一列（見 r2 回覆）。 */
+const PAY_SHADOW_INPUT_BACK_ = 12;
+const PAY_SHADOW_INPUT_EARLY_ = ['ym', 'emp_id', 'store', 'hours_manual', 'support', 'personal_h', 'sick_h', 'menstrual_h', 'disaster_h', 'annual_h'];
 
 /** 一格的值 → 字串／數字／布林／null（日期儲存格＝台北 'YYYY-MM-DD'；NaN／Infinity＝null；其他型別轉字串）。 */
 function payShadowVal_(v) {
