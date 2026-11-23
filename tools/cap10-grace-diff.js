@@ -102,12 +102,14 @@ function runOp(m, op) {
 function schedEndOf(s, inMs) {
   if (s.sc.kind !== 'work') return null;
   const day = iso(inMs).slice(0, 10);
-  if (day !== D) return null;
   const sh = s.sc.data.shifts[0], parts = sh.segs ? sh.segs.map((x) => [x.start, x.end]) : [[sh.start, sh.end]];
   const mm = (v) => +v.slice(0, 2) * 60 + +v.slice(3, 5);
   let prev = -Infinity, end = null;
   for (const [x, y] of parts) { let a = mm(x), b = mm(y); if (a < prev) a += 1440; while (b <= a) b += 1440; prev = b; end = b; }
   const endMs = BASE + end * 60000;
+  // 2026-11-23 審查第一輪第 2 條：11/21 凌晨的上班卡落在 11/20 跨夜那段（還沒到下班）→ 用 11/20 那段；11/21 是例假（其他情況＝照舊）
+  if (day === iso(BASE + 86400000).slice(0, 10)) return endMs > BASE + 86400000 && inMs < endMs ? endMs : null;
+  if (day !== D) return null;
   return inMs < endMs ? endMs : null;
 }
 function graceSituation(m, s, now) {
@@ -142,7 +144,7 @@ const scen = [];
 for (let i = 0; i < N; i++) scen.push(Object.assign(genScenario(false), { long: false }));
 for (let i = 0; i < NL; i++) scen.push(Object.assign(genScenario(true), { long: true }));
 
-const VALS = ['', '0', '3', 'true', 'on', ' 1', '2 ', ' 2', '02', null];
+const VALS = ['', '0', '3', 'true', 'on', ' 1', '2 ', ' 2', '02', null, 2];   // 2＝數字 2（不是字串 '2'）
 let other = { same: 0, diff: [] };
 let off = { same: 0, diff: [] }, on = { same: 0, allowed: 0, bad: [], byOp: {} }, ops = 0, graceSeen = 0;
 scen.forEach((s, idx) => {
@@ -159,7 +161,7 @@ scen.forEach((s, idx) => {
 });
 console.log('情境 ' + scen.length + '（一般 ' + N + '、長工時 ' + NL + '），步驟共 ' + ops);
 console.log("第一輪 兩邊 '1'：完全相同 " + off.same + '／' + scen.length + '，不同 ' + off.diff.length);
-console.log("第三輪 兩邊同一個其他值（'', '0', '3', 'true', 'on', ' 1', '2 ', ' 2', '02', 沒設）：完全相同 " + other.same + '／' + scen.length + '，不同 ' + other.diff.length);
+console.log("第三輪 兩邊同一個其他值（'', '0', '3', 'true', 'on', ' 1', '2 ', ' 2', '02', 沒設, 數字 2）：完全相同 " + other.same + '／' + scen.length + '，不同 ' + other.diff.length);
 console.log("第二輪 舊 '1'／新 '2'：完全相同 " + on.same + '，差異都在寬限情境 ' + on.allowed + ' ' + JSON.stringify(on.byOp) + '，不該有的差異 ' + on.bad.length);
 off.diff.slice(0, 3).forEach((x) => console.log('  第一輪不同 #' + x[0], JSON.stringify(x[1]).slice(0, 400)));
 on.bad.slice(0, 3).forEach((x) => console.log('  第二輪不該有 #' + x[0], JSON.stringify(x[1]).slice(0, 400), JSON.stringify(x[2].ops)));

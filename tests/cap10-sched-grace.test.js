@@ -6,7 +6,8 @@
  *      晚「超過」30 分鐘 → 不寫系統卡、不鎖（當成忘刷下班）。剛好 30 分照舊代記。
  *   3. 本人按下班：照舊——系統卡寫在滿 10 那一刻、回 cap_locked。
  *   4. 本人按上班、前一段開著已滿 10、又符合第 2 點 → 不寫、放行；不符合照舊（寫卡、擋）。舊連結、liff_clock 同一支。
- *   5. 班表：本店、同一個工號、那段上班卡那天；只認上班格 W；分段取最後一段；跨午夜照實際結束。讀不到／沒排／例假／休息日／請假／
+ *   5. 班表：那段所在的那家店、那家店的工號（2026-11-23 起別家店也判，見「十、」）、那段上班卡那天（落在前一天跨夜段裡＝前一天）；
+ *      只認上班格 W；分段取最後一段；跨午夜照實際結束。讀不到／沒排／例假／休息日／請假／
  *      國定假日／讀取失敗／上班卡比班表下班還晚 → 照舊代記。
  *   6. 取整、央廚總部固定休息、假單：照 38d0340。
  *
@@ -163,8 +164,14 @@ FALL.forEach(([id, label, opt]) => {
 });
 {
   const m = world(D + 'T19:10:00', [['08:55:00', 'in']], { sched: one('09:00', '18:00') });
-  m.sb.capSchedPub_ = () => { throw new Error('讀取失敗'); };
+  // 2026-11-23 審查第一輪：寬限改讀 capGraceSched_（店＋期快取），丟錯的位置改在讀 sched_pub 那一步（兩條讀法都會碰到）
+  m.self.sh.sched_pub.getDataRange = () => { throw new Error('讀取失敗'); };
   check('G50', '讀班表丟錯 → 照舊代記', autoAt(m, D + 'T19:10:00'), [['11-20 19:00'], true, null]);
+}
+{
+  const m = world(D + 'T19:10:00', [['08:55:00', 'in']], { sched: one('09:00', '18:00') });
+  m.sb.capGraceSched_ = () => { throw new Error('讀取失敗'); };
+  check('G50b', '寬限讀班表那支丟錯 → 照舊代記', autoAt(m, D + 'T19:10:00'), [['11-20 19:00'], true, null]);
 }
 {
   const m = world(D2 + 'T00:10:00', [['14:00:00', 'in']], { sched: one('09:00', '13:00') });
@@ -253,5 +260,181 @@ NINE.forEach(([id, label, evs, sched, now, cfg, want]) => {
   const got = autoAt(m, now);
   check(id + (want.length ? '' : '★'), label, got[0], want);
 });
+
+/* ════ 十、獨立審查第一輪（codex-231-r1）三條擋項 ════
+ * X 跨店：同仁在 B 店（代碼 mzt、B 店工號 B07）支援，09:00 在 B 店刷上班；19:00 從 A 店（光復＝自己）開頁或按上班。
+ *   規則：用「那一段所在門市」的班表（sched_pub 的 mzt 列）＋B 店名冊同名在職的工號判斷；讀不到 B 店那一期、B 店名冊對不到人 → 照舊（鎖、sys_hm）。
+ *   手算：X1 B 店 09–18、滿 10＝19:00、晚 60 → 不鎖、grace_hm 19:00、兩店都沒有系統卡。X2 B 店沒發布（A 店自己有 E01 09–18）→ 不拿 A 店的、照舊鎖 19:00。
+ *         X3 B 店班表上的工號是 E01（A 店工號）、B 店名冊是 B07 → 對不到 → 照舊鎖。X4 19:30 在 A 店按上班 → 放行、不寫。X5 開關 '1' → 照舊鎖。
+ *         X6 B 店 09:00–18:30 → 晚 30（剛好）→ 照舊鎖。
+ * Y 凌晨才刷進跨夜班：11/20 排 18:00–隔日 02:00（11/21 例假 R）。
+ *   規則：上班卡落在「前一天班表最後一段跨過午夜、且上班卡早於那段下班」→ 用前一天那段的下班；否則用當天班表（同改前）。
+ *   手算：Y1 11/21 00:05 上班（取整 00:15）→ 滿 10＝10:15、比 02:00 晚 8 小時 15 分 → 不代記。Y2 03:00 才刷（已過 02:00）→ 用 11/21（R）→ 照舊 13:00 代記。
+ *         Y3 前一天 09–18（沒跨夜）、00:05 上班 → 用 11/21（R）→ 照舊 10:15。Y4 01:30 上班、11/21 另有 09–18 → 用前一天 02:00 → 滿 10＝11:30 晚 570 → 不代記。
+ *         Y5 前一天 15:00–24:00（剛好到午夜不算跨夜）→ 用 11/21（R）→ 照舊。
+ * Z 快取：整份 sched_pub 很大（> 90,000 字）時，寬限判斷只在第一次讀表，之後 5 分鐘內用「店＋期」的快取（太大分塊）；快取寫不進去 → 同一次執行只讀一次。 */
+console.log('\n════ 十、審查第一輪：跨店、凌晨跨夜班、班表快取 ════');
+const SP_HEAD = ['store', 'period', 'seq', 'data', 'last_op', 'updated_at'];
+const schedFor = (emp, shifts, cell, c20) => ({ start: '2026-11-01', shifts: shifts, rows: [{ emp_id: emp, name: '測試一',
+  cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? cell : i === 20 && c20 ? c20 : { t: 'R' })) }] });
+/** A 店＝光復（自己，代碼 gf）、B 店＝SS_B（代碼 mzt）。opt.b：B 店 sched_pub 資料（null＝沒有）；opt.a：A 店（E01）資料；opt.bEvents */
+function worldX(now, opt) {
+  const m = make({ now: T(now), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: opt.cap === undefined ? '2' : opt.cap },
+    self: { roster: [ME], events: opt.aEvents || [] },
+    peers: { SS_B: { roster: [{ emp_id: 'B07', name: '測試 一', key: 'KB', device_id: 'DB', active: 'TRUE' }], events: opt.bEvents || [[D + 'T09:00:00', 'B07', 'in']] } } });
+  m.run(R('apps-script/Cap10.gs'));
+  m.sb.REST_PEERS_ = [{ code: 'mzt', ss: 'SS_B' }, { code: 'gf', ss: 'SELF' }];
+  const sh = m.self.insertSheet('sched_pub');
+  sh.appendRow(SP_HEAD);
+  if (opt.a) sh.appendRow(['', 'T01', 1, JSON.stringify(opt.a), 'op', '']);
+  if (opt.b) sh.appendRow(['mzt', 'T01', 1, JSON.stringify(opt.b), 'op', '']);
+  return m;
+}
+const bSys = (m) => m.peers.SS_B.sh.events.values.filter((r) => r.indexOf('system_cap') >= 0).length;
+const sOf = (m) => { const s = status(m).cap; return [!!s.locked, s.grace_hm || null, s.sys_hm || null, sysRows(m).length, bSys(m)]; };
+const B918 = schedFor('B07', [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], { t: 'W', s: 'A' });
+check('X1★', '跨店：B 店 09–18（B 店工號 B07）、19:00 從 A 店開頁 → 不鎖、grace_hm 19:00、兩店都沒有系統卡',
+  sOf(worldX(D + 'T19:00:00', { b: B918 })), [false, '19:00', null, 0, 0]);
+check('X2', '跨店：B 店沒發布（A 店自己有 E01 09–18 也不拿來用）→ 照舊鎖、sys_hm 19:00',
+  sOf(worldX(D + 'T19:00:00', { a: schedFor('E01', [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], { t: 'W', s: 'A' }) })), [true, null, '19:00', 0, 0]);
+check('X3', '跨店：B 店班表上寫的是 A 店工號 E01（B 店名冊是 B07）→ 對不到人 → 照舊鎖',
+  sOf(worldX(D + 'T19:00:00', { b: schedFor('E01', [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], { t: 'W', s: 'A' }) })), [true, null, '19:00', 0, 0]);
+{
+  const m = worldX(D + 'T19:30:00', { b: B918 });
+  const r = punch(m, 'in');
+  check('X4★', '跨店：19:30 在 A 店按上班 → 放行（A 店一張上班卡）、兩店都不寫系統卡', [r.ok, m.events().filter((e) => e.type === 'in').length, sysRows(m).length, bSys(m)], [true, 1, 0, 0]);
+}
+check('X5', "跨店：開關 '1' → 跟 38d0340 一樣鎖、sys_hm 19:00", sOf(worldX(D + 'T19:00:00', { b: B918, cap: '1' })), [true, null, '19:00', 0, 0]);
+check('X6', '跨店：B 店 09:00–18:30 → 滿 10 晚 30（剛好）→ 照舊鎖',
+  sOf(worldX(D + 'T19:00:00', { b: schedFor('B07', [{ id: 'A', name: '班', start: '09:00', end: '18:30' }], { t: 'W', s: 'A' }) })), [true, null, '19:00', 0, 0]);
+{
+  const m = worldX(D + 'T19:00:00', { b: B918 });
+  check('X7', 'capSchedEnd_ 直接算：B 店那段 → 11-20 18:00；名字對不到 → null',
+    [new Date(m.sb.capSchedEnd_('E01', T(D + 'T09:00:00'), 'mzt', '測試一') + 8 * 3600000).toISOString().slice(5, 16), m.sb.capSchedEnd_('E01', T(D + 'T09:00:00'), 'mzt', '別人')],
+    ['11-20T18:00', null]);
+}
+
+{
+  // X8：跨店＋凌晨跨夜班情境，開關不是 '2' 時（'1'、沒設、'0'、'3'、' 2'、數字 2）與 38d0340 的 Cap10.gs 逐步比對：每一步回應＋A、B 兩店 events＋屬性
+  const OLD = require('child_process').execFileSync('git', ['-C', require('path').join(__dirname, '..'), 'show', '38d0340:apps-script/Cap10.gs'], { encoding: 'utf8' });
+  const NIGHT_X = schedOf([{ id: 'N', name: '夜', start: '18:00', end: '02:00' }], { t: 'W', s: 'N' });
+  const OPS = ['status', 'sweep', 'punch_in', 'punch_out', 'lclock_in', 'lclock_out', 'old_in', 'old_out'];
+  const runOp = (m, op) => {
+    const post = (b) => JSON.parse(m.sb.doPost({ postData: { contents: JSON.stringify(b) } }).text);
+    if (op === 'status') return m.sb.handleLiffStatus_({ id_token: 'TOK_U1' });
+    if (op === 'sweep') { m.sb.capSweep(); return null; }
+    if (op.startsWith('punch_')) return m.sb.handleLiffPunch_(Object.assign({ id_token: 'TOK_U1', type: op.slice(6), confirm_same: true }, HERE));
+    if (op.startsWith('lclock_')) return m.sb.handleLiffClockGuarded_(Object.assign({ id_token: 'TOK_U1', type: op.slice(7) }, HERE));
+    return post(Object.assign({ action: 'clock', key: 'K1', type: op.slice(4), device_id: 'D1' }, HERE));
+  };
+  const scen = [
+    { name: '跨店 B 09–18', mk: (cap, src) => { const m = worldX(D + 'T19:00:00', { b: B918, cap: cap }); if (src) m.run(src); m.sb.REST_PEERS_ = [{ code: 'mzt', ss: 'SS_B' }, { code: 'gf', ss: 'SELF' }]; return m; }, times: ['T19:00:00', 'T19:30:00', 'T20:10:00'].map((x) => D + x) },
+    { name: '跨店 B 沒發布', mk: (cap, src) => { const m = worldX(D + 'T19:00:00', { cap: cap }); if (src) m.run(src); m.sb.REST_PEERS_ = [{ code: 'mzt', ss: 'SS_B' }, { code: 'gf', ss: 'SELF' }]; return m; }, times: ['T19:00:00', 'T19:30:00'].map((x) => D + x) },
+    { name: '凌晨跨夜班', mk: (cap, src) => { const m = world(D2 + 'T10:15:00', [[D2 + 'T00:05:00', 'in']], { sched: NIGHT_X, props: { REST_CAP_ON: cap } }); if (src) m.run(src); return m; }, times: ['T10:15:00', 'T10:40:00', 'T11:20:00'].map((x) => D2 + x) },
+  ];
+  let same = 0, diff = [];
+  ['1', null, '0', '3', ' 2', 2].forEach((cap) => scen.forEach((sc) => OPS.forEach((op0) => {
+    const a = sc.mk(cap, OLD), b = sc.mk(cap, null);
+    if (cap === null) { delete a.props.REST_CAP_ON; delete b.props.REST_CAP_ON; }
+    let ok = true;
+    sc.times.forEach((t, i) => {
+      const op = i === 0 ? op0 : OPS[(OPS.indexOf(op0) + i * 3) % OPS.length];
+      a.setNow(t); b.setNow(t);
+      const ra = JSON.stringify(runOp(a, op)), rb = JSON.stringify(runOp(b, op));
+      const ta = JSON.stringify([a.self.sh.events.values, a.peers.SS_B ? a.peers.SS_B.sh.events.values : null, a.props]), tb = JSON.stringify([b.self.sh.events.values, b.peers.SS_B ? b.peers.SS_B.sh.events.values : null, b.props]);
+      if (ok && (ra !== rb || ta !== tb)) { ok = false; diff.push([String(cap), sc.name, op, t, ra.slice(0, 160), rb.slice(0, 160)]); }
+    });
+    if (ok) same++;
+  })));
+  check('X8', "跨店／凌晨跨夜班：開關 '1'、沒設、'0'、'3'、' 2'、數字 2 × 3 種情境 × 8 種起手動作（開頁、掃描、LINE 上下班、liff_clock 上下班、舊連結上下班）與 38d0340 逐步相同",
+    [same, diff.slice(0, 2)], [6 * 3 * 8, []]);
+}
+const NIGHT = schedOf([{ id: 'N', name: '夜', start: '18:00', end: '02:00' }], { t: 'W', s: 'N' });
+{
+  const m = world(D2 + 'T10:15:00', [[D2 + 'T00:05:00', 'in']], { sched: NIGHT });
+  check('Y1★', '11/20 18:00–02:00、11/21 例假；11/21 00:05 上班、10:15 掃描＋開頁 → 用 11/20 那段 02:00、晚 8 小時 15 分 → 不代記',
+    autoAt(m, D2 + 'T10:15:00'), [[], false, '10:15']);
+}
+{
+  const m = world(D2 + 'T13:05:00', [[D2 + 'T03:00:00', 'in']], { sched: NIGHT });
+  check('Y2', '03:00 才刷（已過前一天那段的 02:00）→ 用 11/21（例假）→ 照舊 13:00 代記', autoAt(m, D2 + 'T13:05:00'), [['11-21 13:00'], true, null]);
+}
+{
+  const m = world(D2 + 'T10:20:00', [[D2 + 'T00:05:00', 'in']], { sched: one('09:00', '18:00') });
+  check('Y3', '前一天 09–18（沒跨夜）、00:05 上班 → 用 11/21（例假）→ 照舊 10:15 代記', autoAt(m, D2 + 'T10:20:00'), [['11-21 10:15'], true, null]);
+}
+{
+  const sc = schedOf([{ id: 'N', name: '夜', start: '18:00', end: '02:00' }, { id: 'A', name: '班', start: '09:00', end: '18:00' }], { t: 'W', s: 'N' }, { t: 'W', s: 'A' });
+  const m = world(D2 + 'T11:35:00', [[D2 + 'T01:30:00', 'in']], { sched: sc });
+  check('Y4★', '01:30 上班、11/21 另有 09–18 → 上班卡落在前一天跨夜段 → 用 02:00、滿 10＝11:30 → 不代記', autoAt(m, D2 + 'T11:35:00'), [[], false, '11:30']);
+}
+{
+  const m = world(D2 + 'T10:20:00', [[D2 + 'T00:05:00', 'in']], { sched: one('15:00', '24:00') });
+  check('Y5', '前一天 15:00–24:00（剛好到午夜不算跨夜）→ 用 11/21（例假）→ 照舊 10:15 代記', autoAt(m, D2 + 'T10:20:00'), [['11-21 10:15'], true, null]);
+}
+{
+  const m = world(D2 + 'T10:15:00', [], { sched: NIGHT });
+  const hm = (ms) => (ms === null ? null : new Date(ms + 8 * 3600000).toISOString().slice(5, 16).replace('T', ' '));
+  check('Y6', 'capSchedEnd_ 直接算：11/21 00:05 → 11-21 02:00；02:00 整 → null（用 11/21 例假）；11/20 18:00 → 11-21 02:00',
+    [hm(m.sb.capSchedEnd_('E01', T(D2 + 'T00:05:00'))), hm(m.sb.capSchedEnd_('E01', T(D2 + 'T02:00:00'))), hm(m.sb.capSchedEnd_('E01', T(D + 'T18:00:00')))],
+    ['11-21 02:00', null, '11-21 02:00']);
+}
+
+/** 班表很大：本店（光復）E01 09–18 一列＋其他 n 家店、每家 per 人 */
+function bigWorld(now, n, per, selfPer) {
+  const m = world(now, [['08:55:00', 'in']], { sched: undefined });
+  m.sb.REST_PEERS_ = [{ code: 'gf', ss: 'SELF' }];
+  const sh = m.self.insertSheet('sched_pub');
+  sh.appendRow(SP_HEAD);
+  const mk = (emp0, cnt, lastE01) => ({ start: '2026-11-01', shifts: [{ id: 'A', name: '早班', start: '09:00', end: '18:00' }, { id: 'B', name: '晚班', start: '14:00', end: '23:00' }],
+    stations: [{ id: 's1', name: '內場' }],
+    rows: Array.from({ length: cnt }, (_, k) => ({ emp_id: (lastE01 && k === cnt - 1) ? 'E01' : emp0 + k, name: '同仁名字' + k,
+      cells: Array.from({ length: 28 }, (_, i) => (i % 7 === 6 ? { t: 'R' } : { t: 'W', s: i % 2 ? 'A' : 'B', st: 's1' })) })) });
+  sh.appendRow(['', 'T01', 1, JSON.stringify(mk('G', selfPer || 1, true)), 'op', '']);
+  for (let i = 0; i < n; i++) sh.appendRow(['st' + i, 'T01', 1, JSON.stringify(mk('S' + i + '_', per)), 'op', '']);
+  // 照 Google 的單鍵上限：值超過 100KB（UTF-8）就丟錯
+  const c = m.sb.CacheService.getScriptCache(), put = c.put, putAll = c.putAll;
+  const tooBig = (v) => Buffer.byteLength(String(v), 'utf8') > 100 * 1024;
+  m.sb.CacheService = { getScriptCache: () => Object.assign({}, c, {
+    put: (k, v, t) => { if (tooBig(v)) throw new Error('Argument too large: value'); return put(k, v, t); },
+    putAll: (o, t) => { Object.keys(o).forEach((k) => { if (tooBig(o[k])) throw new Error('Argument too large: value'); }); return putAll(o, t); } }) };
+  let reads = 0;
+  const gdr = sh.getDataRange;
+  sh.getDataRange = function () { reads++; return gdr.apply(this, arguments); };
+  return { m, reads: () => reads, size: () => sh.values.slice(1).reduce((s, r) => s + String(r[3]).length, 0) };
+}
+{
+  const w = bigWorld(D + 'T19:00:00', 12, 30);
+  const s1 = status(w.m).cap, r1 = w.reads();
+  w.m.setNow(D + 'T19:01:00');
+  const s2 = status(w.m).cap, r2 = w.reads() - r1;
+  w.m.setNow(D + 'T19:02:00'); w.m.sb.capSweep();
+  const r3 = w.reads() - r1 - r2;
+  check('Z1★', '整份班表 ' + (w.size() > 90000 ? '> 90,000 字' : '（太小，測試寫錯）') + '：19:00 開頁讀 1 次、19:01 再開頁讀 0 次、19:02 掃描讀 0 次，結果都是 grace_hm 19:00',
+    [w.size() > 90000, r1, r2, r3, s1.grace_hm, s2.grace_hm, sysRows(w.m).length], [true, 1, 0, 0, '19:00', '19:00', 0]);
+  w.m.setNow(D + 'T19:06:00');
+  const s4 = status(w.m).cap;
+  check('Z2', '快取 5 分鐘到期後（19:06）才再讀 1 次', [w.reads() - r1 - r2 - r3, s4.grace_hm], [1, '19:00']);
+}
+{
+  const w = bigWorld(D + 'T19:00:00', 0, 0, 400);   // 本店一期就 400 人（E01 在最後）：單鍵放不下 → 分塊
+  const s1 = status(w.m).cap, r1 = w.reads();
+  w.m.setNow(D + 'T19:01:00');
+  const s2 = status(w.m).cap;
+  check('Z3', '單一店＋期就超過單鍵上限（' + (w.size() > 102400 ? '> 100KB' : '太小') + '）→ 分塊快取：第二次開頁讀 0 次、E01（最後一塊）照樣判到',
+    [w.size() > 102400, r1, w.reads() - r1, s1.grace_hm, s2.grace_hm], [true, 1, 0, '19:00', '19:00']);
+}
+{
+  const w = bigWorld(D + 'T19:00:00', 12, 30);
+  const c = w.m.sb.CacheService.getScriptCache();
+  w.m.sb.CacheService = { getScriptCache: () => Object.assign({}, c, { put: () => { throw new Error('快取壞了'); }, putAll: () => { throw new Error('快取壞了'); } }) };
+  // 同一次執行（掃描）裡判三個人：快取完全寫不進去 → 同次執行記住，只讀 1 次
+  w.m.self.sh.roster.appendRow(['E02', '測試二', 'K2', 'D2', '', 'TRUE']);
+  w.m.self.sh.roster.appendRow(['E03', '測試三', 'K3', 'D3', '', 'TRUE']);
+  w.m.self.sh.events.appendRow([D + 'T08:55:00+08:00', 'E02', 'in', 24.7840945, 121.0157448, 5, true, 'D2', true, 'ok', 10]);
+  w.m.self.sh.events.appendRow([D + 'T08:55:00+08:00', 'E03', 'in', 24.7840945, 121.0157448, 5, true, 'D3', true, 'ok', 10]);
+  w.m.sb.capSweep();
+  check('Z4', '快取寫不進去：同一次掃描判 3 個人只讀 1 次', w.reads(), 1);
+}
 
 done();
