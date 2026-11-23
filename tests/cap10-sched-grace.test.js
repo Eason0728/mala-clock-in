@@ -309,9 +309,9 @@ check('X6', '跨店：B 店 09:00–18:30 → 滿 10 晚 30（剛好）→ 照�
   sOf(worldX(D + 'T19:00:00', { b: schedFor('B07', [{ id: 'A', name: '班', start: '09:00', end: '18:30' }], { t: 'W', s: 'A' }) })), [true, null, '19:00', 0, 0]);
 {
   const m = worldX(D + 'T19:00:00', { b: B918 });
-  check('X7', 'capSchedEnd_ 直接算：B 店那段 → 11-20 18:00；名字對不到 → null',
+  check('X7', 'capSchedEnd_ 直接算：B 店那段 → 11-20 18:00；名字對不到 → unsure',
     [new Date(m.sb.capSchedEnd_('E01', T(D + 'T09:00:00'), 'mzt', '測試一') + 8 * 3600000).toISOString().slice(5, 16), m.sb.capSchedEnd_('E01', T(D + 'T09:00:00'), 'mzt', '別人')],
-    ['11-20T18:00', null]);
+    ['11-20T18:00', 'unsure']);   // 2026-11-23 第二輪：別家店對不到人＝unsure（不鎖不提示），不是 null（照舊）
 }
 
 {
@@ -435,6 +435,149 @@ function bigWorld(now, n, per, selfPer) {
   w.m.self.sh.events.appendRow([D + 'T08:55:00+08:00', 'E03', 'in', 24.7840945, 121.0157448, 5, true, 'D3', true, 'ok', 10]);
   w.m.sb.capSweep();
   check('Z4', '快取寫不進去：同一次掃描判 3 個人只讀 1 次', w.reads(), 1);
+}
+
+/* ════ 十一、第二輪驗收（verify-231b）兩條擋項 ════
+ * Q 同名兩個工號：B 店（代碼 mzt）名冊有同名在職的 B07、B08；B07 在 B 店 11/20 09:00 上班；19:10。
+ *   規則：A 店判別家店那段時，同名不只一個 → 讀 B 店打卡列，找上班卡時間剛好是那一段的工號（B07），用他的班表——跟 B 店自己用本人工號判的一樣。
+ *   還是分不出（兩人同一秒都有上班卡）→ A 店不鎖、不回 grace_hm（B 店自己決定寫不寫；寫了 A 店下次讀到卡才鎖）＝不會「沒卡卻鎖」。
+ *   手算：Q1 B07 09–18／B08 10–20（下班不同）→ B07 滿 10＝19:00、晚 60 → A 頁、B 頁都不鎖、grace_hm 19:00；A 店按上班放行；B 店掃描不寫。
+ *         Q2 兩人都 09–18（下班相同）→ 同 Q1。Q3 B07 09–19／B08 10–20 → B07 晚 0 → 照舊：A 頁鎖（sys 19:00、卡由 B 店寫＝跟 38d0340 一樣）、B 店掃描寫卡。
+ *         Q4 兩人同一秒 09:00 上班（分不出）→ A 頁不鎖不提示、A 按上班放行；B 頁（B07）grace 19:00；B 店掃描 B07 不寫、B08 照舊寫。
+ *         Q5 同 Q4 但 B 店沒發布 → A 頁先不鎖（還沒卡）、B 掃描寫卡 → A 頁讀到卡才鎖。
+ *         Q6 別家店那段、本人在 A 店按下班：那家店判寬限（不會寫）→ A 店不回 cap_locked（放行）；那家店沒發布 → 照舊 cap_locked。
+ * K 快取內容壞：暖快取後把資料塊／目錄改壞 → 一律重讀 sched_pub 一次（並重寫快取，下一次 0 次），結果照寬限（grace_hm 19:00、掃描不寫）；
+ *   重讀本身丟錯、或重讀發現真的沒發布 → 照舊代記。 */
+console.log('\n════ 十一、第二輪驗收：同名兩工號、快取內容壞 ════');
+const B07R = { emp_id: 'B07', name: '測試一', key: 'KB', device_id: 'DB', active: 'TRUE', line_user_id: 'U1' };
+const B08R = { emp_id: 'B08', name: '測試 一', key: 'KB8', device_id: 'DB8', active: 'TRUE' };
+const shiftsQ = [{ id: 'A', name: '早', start: '09:00', end: '18:00' }, { id: 'C', name: '晚', start: '10:00', end: '20:00' }, { id: 'E', name: '長', start: '09:00', end: '19:00' }];
+const schedQ = (s7, s8) => ({ start: '2026-11-01', shifts: shiftsQ, rows: [['B07', s7], ['B08', s8]].map(([id, sid]) => ({ emp_id: id, name: '測試一',
+  cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: sid } : { t: 'R' })) })) });
+/** view 'A'：自己＝光復（gf，E01），B 店是 SS_B；view 'B'：自己＝B 店（mzt，B07／B08），光復是 SS_A（sched_pub 在光復）。 */
+function worldQ(view, opt) {
+  const bEvents = opt.bEvents || [[D + 'T09:00:00', 'B07', 'in']];
+  const aSpec = { roster: [ME], events: opt.aEvents || [] }, bSpec = { roster: [B07R, B08R], events: bEvents };
+  const m = make({ now: T(opt.now || D + 'T19:10:00'), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: opt.cap || '2' },
+    self: view === 'A' ? aSpec : bSpec, peers: view === 'A' ? { SS_B: bSpec } : { SS_A: aSpec } });
+  m.run(R('apps-script/Cap10.gs'));
+  m.sb.REST_PEERS_ = view === 'A' ? [{ code: 'mzt', ss: 'SS_B' }, { code: 'gf', ss: 'SELF' }] : [{ code: 'mzt', ss: 'SELF' }, { code: 'gf', ss: 'SS_A' }];
+  const gfBook = view === 'A' ? m.self : m.peers.SS_A;
+  const sh = gfBook.insertSheet('sched_pub');
+  sh.appendRow(SP_HEAD);
+  if (opt.b) sh.appendRow(['mzt', 'T01', 1, JSON.stringify(opt.b), 'op', '']);
+  m.bBook = view === 'A' ? m.peers.SS_B : m.self;
+  return m;
+}
+const isSys = (r) => r.indexOf('system_cap') >= 0;
+const bSysQ = (m) => m.bBook.sh.events.values.filter(isSys).map((r) => String(r[0]).slice(11, 16) + ' ' + r[1]);
+/** 四個角度：A 頁、B 頁、A 店按上班、B 店掃描後 B 店的系統卡 */
+function fourQ(opt) {
+  const sA = worldQ('A', opt), sB = worldQ('B', opt), pA = worldQ('A', opt), wB = worldQ('B', opt);
+  const ca = status(sA).cap, cb = status(sB).cap, r = punch(pA, 'in');
+  wB.sb.capSweep();
+  return { aPage: [!!ca.locked, ca.grace_hm || null, ca.sys_hm || null], bPage: [!!cb.locked, cb.grace_hm || null, cb.sys_hm || null],
+    aIn: [r.ok, r.status || null], bSweep: bSysQ(wB), sysAnywhere: bSysQ(sA).length + bSysQ(pA).length };
+}
+{
+  const q = fourQ({ b: schedQ('A', 'C') });
+  check('Q1★', '同名兩工號、下班不同（B07 09–18／B08 10–20）：A 頁＝B 頁＝不鎖、grace_hm 19:00；A 店按上班放行；B 店掃描不寫', q,
+    { aPage: [false, '19:00', null], bPage: [false, '19:00', null], aIn: [true, null], bSweep: [], sysAnywhere: 0 });
+}
+{
+  const q = fourQ({ b: schedQ('A', 'A') });
+  check('Q2', '同名兩工號、下班相同（都 09–18）：四個角度同 Q1', q,
+    { aPage: [false, '19:00', null], bPage: [false, '19:00', null], aIn: [true, null], bSweep: [], sysAnywhere: 0 });
+}
+{
+  const q = fourQ({ b: schedQ('E', 'C') });
+  check('Q3', '同名兩工號、B07 09–19（晚 0 → 照舊）：A 頁、B 頁都鎖 sys 19:00；A 按上班擋；B 店掃描寫 19:00 B07', q,
+    { aPage: [true, null, '19:00'], bPage: [true, null, '19:00'], aIn: [false, 'cap_locked'], bSweep: ['19:00 B07'], sysAnywhere: 0 });
+}
+{
+  const ev = [[D + 'T09:00:00', 'B07', 'in'], [D + 'T09:00:00', 'B08', 'in']];
+  const q = fourQ({ b: schedQ('A', 'C'), bEvents: ev });
+  check('Q4★', '同名兩人同一秒上班（A 店分不出）：A 頁不鎖不提示；A 按上班放行；B 頁（B07）grace 19:00；B 店掃描 B07 不寫、B08（10–20）照舊寫', q,
+    { aPage: [false, null, null], bPage: [false, '19:00', null], aIn: [true, null], bSweep: ['19:00 B08'], sysAnywhere: 0 });
+}
+{
+  const ev = [[D + 'T09:00:00', 'B07', 'in'], [D + 'T09:00:00', 'B08', 'in']];
+  const m = worldQ('A', { bEvents: ev });   // B 店沒發布
+  const s1 = status(m).cap;
+  const wB = worldQ('B', { bEvents: ev }); wB.sb.capSweep();
+  m.bBook.sh.events.values[0] = wB.bBook.sh.events.values[0].slice();   // 表頭多了 source 欄（capWrite_ 補的）
+  wB.bBook.sh.events.values.filter(isSys).forEach((r) => m.bBook.sh.events.values.push(r));   // B 店掃描寫的卡＝A 店讀得到的 B 店打卡列
+  const s2 = status(m).cap;
+  check('Q5★', '同 Q4 但 B 店沒發布：A 頁先不鎖（還沒有卡）；B 店掃描寫卡後 A 頁讀到卡才鎖、sys 19:00',
+    [[!!s1.locked, s1.grace_hm || null, s1.sys_hm || null], bSysQ(wB), [!!s2.locked, s2.sys_hm || null]], [[false, null, null], ['19:00 B07', '19:00 B08'], [true, '19:00']]);
+}
+{
+  const m = worldQ('A', { b: schedQ('A', 'C') });
+  const r = punch(m, 'out');
+  const m2 = worldQ('A', {});
+  const r2 = punch(m2, 'out');
+  check('Q6★', '別家店那段、本人在 A 店按下班：那家店判寬限（不會寫）→ 不回 cap_locked、放行；那家店沒發布 → 照舊 cap_locked',
+    [[r.ok, r.status || null], [r2.ok, r2.status || null], sysRows(m).length + sysRows(m2).length], [[true, null], [false, 'cap_locked'], 0]);
+}
+{
+  const m = worldQ('A', { b: schedQ('A', 'C'), cap: '1' });
+  const c = status(m).cap;
+  check('Q7', "開關 '1'：同名兩工號跟 38d0340 一樣 A 頁鎖 sys 19:00", [!!c.locked, c.sys_hm], [true, '19:00']);
+}
+
+/** 暖快取後改壞再開頁：[第一次讀幾次, 第二次讀幾次, grace_hm, 鎖, 掃描後系統卡, 掃描讀幾次] */
+function corrupt(fn) {
+  const m = world(D + 'T19:00:00', [['08:55:00', 'in']], { sched: one('09:00', '18:00') });
+  let reads = 0;
+  const sh = m.self.sh.sched_pub, gdr = sh.getDataRange;
+  sh.getDataRange = function () { reads++; return gdr.apply(this, arguments); };
+  status(m);
+  const r0 = reads;
+  fn(m.cache);
+  m.setNow(D + 'T19:01:00');
+  const s = status(m).cap, r1 = reads - r0;
+  m.sb.capSweep();
+  const r2 = reads - r0 - r1;
+  return [r0, r1, s.grace_hm || null, !!s.locked, sysHm(m), r2];
+}
+const CI = 'capgr1:i', C0 = 'capgr1:d:|T01:0';
+const setv = (c, k, v) => { if (c[k]) c[k].v = v; else c[k] = { v: v, exp: Infinity }; };
+const edit = (c, f) => { const o = JSON.parse(c[C0].v); f(o); setv(c, C0, JSON.stringify(o)); };
+const KASES = [
+  ['K1★', '資料塊改成 {壞', (c) => setv(c, C0, '{壞')],
+  ['K2★', '資料塊改成 null', (c) => setv(c, C0, 'null')],
+  ['K3★', '資料塊改成 {}', (c) => setv(c, C0, '{}')],
+  ['K4★', '目錄改成 []', (c) => setv(c, CI, '[]')],
+  ['K5', '目錄說 2 塊（第 2 塊不存在）', (c) => setv(c, CI, JSON.stringify({ v: 1, k: { '|T01': 2 } }))],
+  ['K6★', '資料塊是別期的（k 不對）', (c) => edit(c, (o) => { o.k = 'mzt|T01'; })],
+  ['K7★', '資料塊 rows 不是陣列', (c) => edit(c, (o) => { o.rows = 'x'; })],
+  ['K8★', '資料塊某列 cells 不是陣列', (c) => edit(c, (o) => { o.rows[0].cells = {}; })],
+  ['K9★', '資料塊編號 i 不對', (c) => edit(c, (o) => { o.i = 3; })],
+  ['K10★', '資料塊 shifts 不見', (c) => edit(c, (o) => { delete o.shifts; })],
+  ['K11', '目錄 JSON 壞', (c) => setv(c, CI, '{壞')],
+  ['K12', '目錄 null', (c) => setv(c, CI, 'null')],
+  ['K13★', '目錄塊數是字串 "1"', (c) => setv(c, CI, JSON.stringify({ v: 1, k: { '|T01': '1' } }))],
+  ['K14★', '目錄是舊格式（沒有 v，直接 {店|期: 塊數}）', (c) => setv(c, CI, JSON.stringify({ '|T01': 1 }))],
+  ['K15', '資料塊空字串', (c) => setv(c, C0, '')],
+  ['K16★', '資料塊是數字 0', (c) => setv(c, C0, '0')],
+  ['K17★', '資料塊某列是 null', (c) => edit(c, (o) => { o.rows[0] = null; })],
+];
+KASES.forEach(([id, label, fn]) => {
+  check(id, '快取' + label + ' → 重讀 1 次、照寬限（grace_hm 19:00、不鎖、掃描不寫）、重寫後掃描 0 次', corrupt(fn), [1, 1, '19:00', false, [], 0]);
+});
+{
+  const m = world(D + 'T19:00:00', [['08:55:00', 'in']], { sched: one('09:00', '18:00') });
+  status(m);
+  setv(m.cache, C0, '{壞');
+  m.self.sh.sched_pub.getDataRange = () => { throw new Error('讀取失敗'); };
+  check('K20', '快取壞＋重讀 sched_pub 本身丟錯 → 照舊代記（19:00、鎖）', autoAt(m, D + 'T19:01:00'), [['11-20 19:00'], true, null]);
+}
+{
+  const m = world(D + 'T19:00:00', [['08:55:00', 'in']], { sched: one('09:00', '18:00') });
+  status(m);
+  m.self.sh.sched_pub.values.length = 1;   // 取消發布（表裡沒有這期）
+  setv(m.cache, C0, '{壞');
+  check('K21', '快取壞＋重讀發現真的沒發布 → 照舊代記', autoAt(m, D + 'T19:01:00'), [['11-20 19:00'], true, null]);
 }
 
 done();

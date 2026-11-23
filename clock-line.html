@@ -512,7 +512,7 @@
      開頁回 cap.grace_hm（'HH:MM'＝滿 10 那一刻）。只在有這個欄位、而且沒鎖（cap.locked 不是 true）時提示；字句主管 2026-11-23 選短版，逐字不改。 */
   function capGraceHm(s) {
     var c = s && s.cap;
-    return c && c.locked !== true && typeof c.grace_hm === 'string' && /^\d\d:\d\d$/.test(c.grace_hm) ? c.grace_hm : '';
+    return c && c.locked !== true && typeof c.grace_hm === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(c.grace_hm) ? c.grace_hm : '';   // 時 00–23、分 00–59，不合就不顯示
   }
   function capGraceText(hm) { return '已滿 10 小時：按下班會記在 ' + hm + '，之後今天不能再打上班卡。早就下班了？請送忘打卡單補實際時間。'; }
   function restBlocked() {

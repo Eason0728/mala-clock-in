@@ -6,7 +6,7 @@
 #   A 有 grace_hm '19:00' → 整句逐字、時間 19:00；上班／下班鍵照常可按；手機寬（390、320）不破版、訊息不蓋到打卡鍵
 #   B 沒有 grace_hm（cap 只有 locked:false、in_block:false＝現在後端的樣子）→ 不出現；訊息列、提示列、兩顆鍵與「原樣回應」完全相同
 #   C locked:true＋grace_hm（不該同時出現，防呆）→ 不出現，照舊顯示鎖住的原因
-#   D grace_hm 格式怪（'7點'）→ 不出現
+#   D grace_hm 格式怪或超出範圍（'7點'、'25:99'、'24:00'、'23:60'、'9:30'）→ 不出現；'00:00' 照常顯示
 import glob, json, os, socket, sys, time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -106,10 +106,14 @@ def main():
                 vc = view(p)
                 ok(tag + 'C locked:true：不出現寬限提示、照舊顯示鎖住原因', '按下班會記在' not in vc['msg'] + vc['hint'] and vc['msg'] == LOCK_REASON, vc)
                 p.close()
-                # D 格式怪
-                p = open_with(ctx, {'locked': False, 'in_block': False, 'grace_hm': '7點'})
-                vd = view(p)
-                ok(tag + 'D grace_hm 格式怪：不出現、跟原樣相同', vd == base, (vd, base))
+                # D 格式怪／超出範圍（2026-11-23 第二輪驗收：'25:99' 原本會顯示）
+                for bad in ('7點', '25:99', '24:00', '23:60', '9:30'):
+                    p = open_with(ctx, {'locked': False, 'in_block': False, 'grace_hm': bad})
+                    vd = view(p)
+                    ok(tag + 'D grace_hm %r：不出現、跟原樣相同' % bad, vd == base, (vd, base))
+                    p.close()
+                p = open_with(ctx, {'locked': False, 'in_block': False, 'grace_hm': '00:00'})
+                ok(tag + 'D grace_hm 00:00（跨午夜滿 10）：照常顯示', view(p)['msg'] == TEXT.replace('19:00', '00:00'), view(p))
                 p.close()
                 ok(tag + '頁面沒有錯誤', not errs, errs)
                 br.close()
