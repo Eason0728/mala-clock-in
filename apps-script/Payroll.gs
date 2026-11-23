@@ -8163,7 +8163,7 @@ const PAY_SHADOW_W2_ = {
   hol_emp: ['ym', 'date', 'store', 'emp_id'],   // 不出 name／note／updated_at（2026-11-23 主管同意的前提）
 };
 const PAY_SHADOW_WHITELISTS_ = { w1: PAY_SHADOW_W1_, w2: PAY_SHADOW_W2_ };
-/* 每張表怎麼讀：month＝'ym' 只回這個月；'win13' 只回 ym 往前 12 個月到 ym（共 13 個月，手填工時；主管 2026-11-23 定案方案 b，見 PAY_SHADOW_INPUT_EARLY_）；false＝整張。need＝分頁不存在要回 no_sheet（其他分頁不存在＝空陣列）。
+/* 每張表怎麼讀：month＝'ym' 只回這個月；'win13' 只回 ym 往前 12 個月 ～ 台北本月（手填工時；主管 2026-11-23 定案方案 b＋大腦補請求月之後到本月，見 PAY_SHADOW_INPUT_EARLY_）；false＝整張。need＝分頁不存在要回 no_sheet（其他分頁不存在＝空陣列）。
    max＝筆數上限（超過回 too_many_rows、不截斷）；master／config／store／run 2,000、item 60,000 照契約 4.2b，其餘依各表性質另定。 */
 const PAY_SHADOW_TABLES_ = {
   master:     { month: false,   need: true,  max: 2000 },
@@ -8185,7 +8185,8 @@ function handlePayrollShadowExport(body) {
   const ver = String((body && body.whitelist_version) || '');
   if (!Object.prototype.hasOwnProperty.call(PAY_SHADOW_WHITELISTS_, ver)) return { ok: false, error: 'whitelist_version_mismatch' };
   const ym = String((body && body.ym) || '');
-  if (!payShadowYmOk_(ym, String(todayTaipeiStr()).slice(0, 7))) return { ok: false, error: 'bad_ym' };
+  const curYm = String(todayTaipeiStr()).slice(0, 7);   // 台北本月：月份檢查與手填工時範圍（win13 的上界）共用這一個時鐘
+  if (!payShadowYmOk_(ym, curYm)) return { ok: false, error: 'bad_ym' };
   const wl = PAY_SHADOW_WHITELISTS_[ver];
   const names = Object.keys(wl);
   const raw = {};
@@ -8210,7 +8211,7 @@ function handlePayrollShadowExport(body) {
     for (let i = 0; i < names.length; i++) {
       const t = names[i];
       if (!shs[t]) { raw[t] = []; continue; }
-      const got = payShadowReadBounded_(shs[t], wl[t], PAY_SHADOW_TABLES_[t], ym, budget);
+      const got = payShadowReadBounded_(shs[t], wl[t], PAY_SHADOW_TABLES_[t], ym, budget, curYm);
       if (got.error) return { ok: false, error: 'too_many_rows', table: t, limit: got.error };
       raw[t] = got.rows;
     }
@@ -8231,8 +8232,8 @@ function handlePayrollShadowExport(body) {
     if (rows.length > spec.max) return { ok: false, error: 'too_many_rows', table: t, limit: 'rows' };
     const childCode = t === 'leave_span' ? payShadowChildCodes_(rows) : null;
     tables[t] = rows.map(function (r) {
-      /* 手填工時早於請求月的列只出 PAY_SHADOW_INPUT_EARLY_（沒有金額）；請求月那一列照白名單全出 */
-      const cols = (t === 'input' && payShadowYmOf_(r && r.ym) < ym) ? PAY_SHADOW_INPUT_EARLY_.filter(function (c) { return wl[t].indexOf(c) >= 0; }) : wl[t];
+      /* 手填工時：請求月那一列照白名單全出；其他月份（早於或晚於請求月）只出 PAY_SHADOW_INPUT_EARLY_（沒有金額） */
+      const cols = (t === 'input' && payShadowYmOf_(r && r.ym) !== ym) ? PAY_SHADOW_INPUT_EARLY_.filter(function (c) { return wl[t].indexOf(c) >= 0; }) : wl[t];
       return payShadowPick_(t, r, cols, childCode, flags);
     });
     counts[t] = tables[t].length;
@@ -8262,7 +8263,7 @@ const PAY_SHADOW_CONFIG_KEYS_ = (function () {
 })();
 
 /** 有上限地讀一張表 → {rows:[{欄:值}]}｜{error:'rows'|'cells'}。只放白名單的欄（與 readSheetAsObjects 同語意：同名欄後面的蓋前面的、沒有的欄＝undefined）。 */
-function payShadowReadBounded_(info, cols, spec, ym, budget) {
+function payShadowReadBounded_(info, cols, spec, ym, budget, curYm) {
   const sh = info.sh, lr = info.lr, lc = info.lc;
   if (lr < 2 || lc < 1) return { rows: [] };
   function take(r, c, nr, nc) {
@@ -8286,7 +8287,7 @@ function payShadowReadBounded_(info, cols, spec, ym, budget) {
     keep = {};
     let n = 0;
     ymCol.forEach(function (row, i) {
-      if (!payShadowInRange_({ ym: row[0] }, spec.month, ym)) return;
+      if (!payShadowInRange_({ ym: row[0] }, spec.month, ym, curYm)) return;
       keep[i + 2] = true; n++;
       if (n === 1) r0 = i + 2;
       r1 = i + 2;
@@ -8324,14 +8325,16 @@ function payShadowYmOf_(v) {
   return v == null ? '' : String(v).trim();
 }
 
-function payShadowInRange_(r, mode, ym) {
+function payShadowInRange_(r, mode, ym, curYm) {
   if (!mode) return true;
   const m = payShadowYmOf_(r && r.ym);
   if (mode === 'ym') return m === ym;
-  /* win13：ym 往前 12 個月到 ym（含兩端，共 13 個月）。月份要嚴格 YYYY-MM（01–12）；2026-00 這種不回。 */
+  /* win13：ym 往前 12 個月 ～ 台北本月 curYm（含兩端）。月份要嚴格 YYYY-MM（01–12）；2026-00 這種、晚於本月（預先填的下個月）不回。
+     curYm 沒給（不該發生）＝上界就是 ym。 */
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(m)) return false;
-  const diff = (Number(ym.slice(0, 4)) * 12 + Number(ym.slice(5, 7))) - (Number(m.slice(0, 4)) * 12 + Number(m.slice(5, 7)));
-  return diff >= 0 && diff <= PAY_SHADOW_INPUT_BACK_;
+  function n(s) { return Number(s.slice(0, 4)) * 12 + Number(s.slice(5, 7)); }
+  const hi = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(curYm || '')) && n(curYm) > n(ym) ? n(curYm) : n(ym);
+  return n(m) >= n(ym) - PAY_SHADOW_INPUT_BACK_ && n(m) <= hi;
 }
 /* 手填工時的範圍與早期月份欄位（主管 2026-11-23 定案方案 b「只抄最近 12 個月、舊月份不抄金額」）：
    ・往前幾個月：13 個月（ym−12～ym）。計算端讀請求月以前手填列的只有兩處：
@@ -8343,7 +8346,9 @@ function payShadowInRange_(r, mode, ym) {
      五個假別時數（payLeaveUsedBefore 的 legacyCol 與 usedIn 的 annual_h）。計算端讀早期列只用到這些，沒有任何金額欄。
    ・與計算端的差異：計算端月份只驗 /^\d{4}-\d{2}$/（收 2026-00）；這裡嚴格到 01–12，所以萬一手填表真有 2026-00 這種列（寫入端
      handlePayrollInputSet 也只驗兩位數），Google 會把它算進當年的曆年上限、mini 不會 → 影子會出差異（寧可報差異，不送不合理的月份）。
-   ・請求月之後的列不出：Google 回頭重算舊月份時，週年期也會算到之後月份的 annual_h；mini 拉上個月時就少了本月那一列（見 r2 回覆）。 */
+   ・請求月之後到台北本月的列也出（只出上面那 10 欄、沒有金額；大腦 2026-11-23 依主管「非請求月不抄金額」原則定案）：
+     Google 回頭重算舊月份時，usedIn 的週年期 [ps, pe) 會算到請求月之後月份的 annual_h（只有這一欄；payLeaveUsedBefore 只看請求月以前）。
+     晚於本月的列（預先填的）不出。請求月＝本月時沒有「之後」的列。 */
 const PAY_SHADOW_INPUT_BACK_ = 12;
 const PAY_SHADOW_INPUT_EARLY_ = ['ym', 'emp_id', 'store', 'hours_manual', 'support', 'personal_h', 'sick_h', 'menstrual_h', 'disaster_h', 'annual_h'];
 

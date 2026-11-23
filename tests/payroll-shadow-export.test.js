@@ -613,8 +613,15 @@ console.log('══ 10) 手填工時範圍（主管 11/23 方案 b）：13 個�
   const wy = world(baseSheets({ mut: mkIn(inRange('2025-10', '2027-02').map((m) => full(m, 'E1'))) }), '2027-01-05');
   const gy = ask(wy, { ym: '2027-01' }).tables.input.map((x) => x.ym).sort();
   chk('  跨年：請求 2027-01 → 2026-01～2027-01（2025-12 不出、2027-02 不出）', [gy[0], gy.slice(-1)[0], gy.length], ['2026-01', '2027-01', 13]);
-  const g10 = ask(w, { ym: '2026-10' }).tables.input.map((x) => x.ym).filter((m) => m.trim() === m).sort();
-  chk('  請求 2026-10 → 2025-10～2026-10', [g10[0], g10.slice(-1)[0]], ['2025-10', '2026-10']);
+  const r10 = ask(w, { ym: '2026-10' }), g10 = r10.tables.input.map((x) => x.ym).filter((m) => m.trim() === m).sort();
+  const after = r10.tables.input.find((x) => x.ym === '2026-11') || {};
+  chk('  請求 2026-10、本月 2026-11 → 2025-10～2026-11（請求月之後到本月也出），2026-12（預先填的）不出', [g10[0], g10.slice(-1)[0], g10.indexOf('2026-12') >= 0], ['2025-10', '2026-11', false]);
+  chk('  請求月之後（2026-11）的列只有那 10 欄、沒有金額；請求月 2026-10 那列照 w2 全出',
+    [Object.keys(after).sort().join(), AMT.some((c) => c in after), (r10.tables.input.find((x) => x.ym === '2026-10') || {}).custom_add_amt], [EARLY.slice().sort().join(), false, 777]);
+  chk('  請求 2026-11（＝本月）→ 沒有之後的列', clean.filter((m) => m > '2026-11'), []);
+  const gy12 = ask(wy, { ym: '2026-12' }).tables.input, gy12m = gy12.map((x) => x.ym).sort();
+  chk('  跨年：本月 2027-01、請求 2026-12 → 2025-12～2027-01；2027-01 那列只有 10 欄；2027-02 不出',
+    [gy12m[0], gy12m.slice(-1)[0], gy12m.length, Object.keys(gy12.find((x) => x.ym === '2027-01') || {}).sort().join()], ['2025-12', '2027-01', 14, EARLY.slice().sort().join()]);
 
   /* ── 夠不夠算：同一份資料，「完整手填表」與「只給匯出內容」跑請求月的 payLeaveUsedBefore（曆年上限）與 payAnnualInfo（週年制特休），結果要一樣 ── */
   const P = [
@@ -624,6 +631,8 @@ console.log('══ 10) 手填工時範圍（主管 11/23 方案 b）：13 個�
     ['D4', '當年已請滿病假、事假上限', '2019-03-10', ''],
     ['F5', '離職當月、週年日還沒到（改用上一期，從 ym−12 開始）', '2021-11-20', '2026-11-10'],
     ['G6', '週年日是 1 號（期別剛好整月切）', '2022-12-01', ''],
+    ['H7', '10 月屆滿折算（回頭重算 2026-10 時要用到 11 月的 annual_h）', '2019-10-20', ''],
+    ['J8', '9 月屆滿折算（回頭重算 2026-09）', '2018-09-25', ''],
   ];
   const engine = (sheets, ym, today) => {
     const x = world(sheets, today);
@@ -648,21 +657,19 @@ console.log('══ 10) 手填工時範圍（主管 11/23 方案 b）：13 個�
   for (const [ym, today] of [['2026-11', '2026-11-22'], ['2026-10', '2026-11-22'], ['2026-09', '2026-11-22'], ['2027-01', '2027-01-05']]) {
     const fullSheets = peopleSheets(allRows.filter((x) => !(x.ym > today.slice(0, 7))));   // 正式表不會有「今天以後」的月份
     const exp = world(fullSheets, today).post({ action: 'payroll_shadow_export', admin_key: ADMIN, ym, whitelist_version: 'w2' });
-    const cut = peopleSheets(((exp.tables || {}).input || []).filter((x) => !(x.ym > ym)));
+    const cut = peopleSheets((exp.tables || {}).input || []);   // mini 拿到的＝匯出內容（含請求月之後到本月、只有 10 欄的列）
     const a = engine(fullSheets, ym, today), b = engine(cut, ym, today);
     const A = JSON.parse(a);
-    if (ym === today.slice(0, 7)) {
-      chk('  ' + ym + '（本月）：完整手填表 vs 只給匯出內容 → 曆年上限已用、週年制特休（額度、已用、折算）逐人相同（6 種人）', a === b, true);
-    } else {
-      /* 請求「上個月以前」：完整表裡有請求月之後（到本月）的列。計算端的週年期 usedIn 會把週年期內「之後月份」的 annual_h 也算進已用，
-         匯出照定案不給請求月之後的列 → 只有這一處會不同（已知、待主管決定）。只看到請求月為止的完整表則逐人相同。 */
-      const upto = peopleSheets(allRows.filter((x) => !(x.ym > ym)));
-      chk('  ' + ym + '（過去月份）：完整表只到請求月 vs 只給匯出內容 → 逐人相同（6 種人）', engine(upto, ym, today) === b, true);
-      const B = JSON.parse(b), diff = [];
+    chk('  ' + ym + (ym === today.slice(0, 7) ? '（本月）' : '（過去月份；完整表裡本月已有 annual_h）') + '：完整手填表 vs 只給匯出內容 → 曆年上限已用、週年制特休（額度、已用、剩餘、折算）逐人相同（8 種人）', a === b, true);
+    if (ym !== today.slice(0, 7)) {
+      /* 反證：拿掉請求月之後到本月的列（8571a64 的做法）→ 週年制特休已用／剩餘不同，所以這幾列是必要的；而且只差在 annual 那邊 */
+      const noAfter = peopleSheets(((exp.tables || {}).input || []).filter((x) => !(x.ym > ym)));
+      const B = JSON.parse(engine(noAfter, ym, today)), diff = [];
       Object.keys(A.used).forEach((k) => { if (JSON.stringify(A.used[k]) !== JSON.stringify(B.used[k])) diff.push('used.' + k); });
-      Object.keys(A.annual).forEach((k) => { if (JSON.stringify(A.annual[k]) !== JSON.stringify(B.annual[k])) diff.push('annual.' + k + ':' + Object.keys(A.annual[k] || {}).filter((f) => JSON.stringify(A.annual[k][f]) !== JSON.stringify((B.annual[k] || {})[f])).join('/')); });
-      chk('  ' + ym + '（過去月份）已知差異：完整表含之後月份時，只有週年制特休的已用／剩餘會不同（曆年上限相同）', [diff.length > 0, diff.every((d) => /^annual\./.test(d))], [true, true]);
-      console.log('      差異：' + diff.join('，'));
+      Object.keys(A.annual).forEach((k) => { if (JSON.stringify(A.annual[k]) !== JSON.stringify(B.annual[k])) diff.push('annual.' + k); });
+      chk('    反證：不給請求月之後的列 → 週年制特休不同、曆年上限相同', [diff.length > 0, diff.every((d) => /^annual\./.test(d))], [true, true]);
+      const settler = ym === '2026-10' ? 'H7' : 'J8';
+      chk('    前提：' + settler + ' 在 ' + ym + ' 屆滿折算（payout_h 有值）', !!A.annual[settler] && A.annual[settler].payout_h !== undefined, true);
     }
     if (ym === '2026-11') {
       chk('    前提：C3 本月屆滿折算、F5 離職改用上一期、D4 病假早已超過上限、A1 年初到職有特休',
