@@ -355,4 +355,61 @@ const checkH = (m) => { const sb = m.sb, ss = sb.getSS(), who = sb.readSheetAsOb
   check('Q5', "名冊兩份快取不一致（rpr: 還認得、cgs: 說沒有）：'4' 有別家店的卡 → 不給寬限、照舊鎖；'2' 照 #232", [mk('4'), mk('2')], ['LOCK19:00', 'grace19:00']);
 }
 
+console.log('\n════ 九、#234 獨立審查第二輪 ════');
+{
+  /* S1（第 3 條仍在）：請求中途時鐘推進 0.5／1.1／5／60 秒，'1'／'2' 的 REST_CAP_ON 讀取次數都跟 #232 一樣（開頁；含 Rest.gs 叫 capTodayMs_ 的路徑） */
+  const reads = (src, cap, dt, rest) => {
+    const m = world('A', { capA: cap, capB: cap, aEv: [[D + 'T07:00:00', 'E01', 'in'], [D + 'T08:00:00', 'E01', 'out'], [D + 'T17:30:00', 'E01', 'in']] }, src);
+    if (rest) m.props.REST_RULE_ON = '1';
+    let n = 0; const P = m.sb.PropertiesService;
+    m.sb.PropertiesService = { getScriptProperties: () => { const o = P.getScriptProperties(); return Object.assign({}, o, { getProperty: (k) => { if (k === 'REST_CAP_ON') n++; return o.getProperty(k); } }); } };
+    const lf = m.sb.capLeavesFor_;
+    m.sb.capLeavesFor_ = function () { const r = lf.apply(this, arguments); m.sb.__now += dt; return r; };   // 模擬前置讀取耗時
+    m.sb.handleLiffStatus_({ id_token: 'TOK_U1' });
+    return n;
+  };
+  const got = [], want = [];
+  ['1', '2'].forEach((cap) => [500, 1100, 5000, 60000].forEach((dt) => [false, true].forEach((rest) => {
+    got.push(cap + '/' + dt + '/' + rest + ':' + reads(CAP_SRC, cap, dt, rest)); want.push(cap + '/' + dt + '/' + rest + ':' + reads(SRC_232, cap, dt, rest));
+  })));
+  check('S1★', "請求中途推進 0.5／1.1／5／60 秒（有沒有 Rest.gs 路徑）：'1'／'2' 開頁讀 REST_CAP_ON 的次數都跟 #232 一樣", got, want);
+}
+{
+  /* S2：快速通道模式（全域變數不歸零）連續兩個請求、中間改屬性 → 第二個請求用新值 */
+  const W = pair(Object.assign({ capA: '3', capB: '3' }, GAP));
+  const p1 = page(W.A);   // '3'：補時 → 19:00 收卡
+  const W2 = pair(Object.assign({ capA: '3', capB: '3' }, GAP));
+  W2.A.sb.capOn_();                        // 前一個請求留下的值（'3'）
+  W2.A.props.REST_CAP_ON = '1';            // 中間改成 '1'
+  const p2 = page(W2.A);                   // 第二個請求：照 '1'（38d0340：A 不收）
+  const m = W2.A, sb = m.sb, ss = sb.getSS(), who = sb.readSheetAsObjects(ss.getSheetByName('roster')).rows[0];
+  m.props.REST_CAP_ON = '3'; sb.capOn_(); m.props.REST_CAP_ON = '1';
+  sb.capOn_(); const t1 = sb.capTodayMs_(ss, who, sb.Date.now(), null);   // Rest.gs 的順序：capOn_ 再 capTodayMs_ → 用 '1'
+  m.props.REST_CAP_ON = '3';
+  const t2 = sb.capTodayMs_(ss, who, sb.Date.now(), null);                 // 沒有先叫 capOn_（記號已用掉）→ 自己讀 → '3'
+  check('S2', "快速通道連續請求：第一個 '3' 收卡；中間改 '1'，第二個請求照 '1' 不收；capTodayMs_ 用緊接著的 capOn_ 那次的值、用過就清",
+    [p1, p2, t1.total / 3600000, t2.total / 3600000], ['LOCK19:00', 'free', 0, 8.5]);
+}
+{
+  /* S3（殘餘 1）：'4' 不給寬限只看「今天、有效、不是系統卡」的別家店打卡。昨天的卡、退回的卡、系統卡都不影響（跟 '2' 一樣給寬限）；今天有效的卡 → 不給。 */
+  const mk = (cap, bEvents) => {
+    const aSpec = { roster: [ME], events: [[D + 'T08:55:00', 'E01', 'in']] }, bSpec = { roster: [B07], events: bEvents };
+    const m = make({ now: T(D + 'T19:05:00'), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: cap }, self: aSpec, peers: { SS_B: bSpec } });
+    m.run(CAP_SRC); m.sb.REST_PEERS_ = [{ code: 'mzt', ss: 'SS_B' }, { code: 'gf', ss: 'SELF' }];
+    const sh = m.self.insertSheet('sched_pub'); sh.appendRow(SP_HEAD); sh.appendRow(['', 'T01', 1, JSON.stringify(SA918), 'op', '']);
+    m.cache['cgs:SS_B'] = { v: JSON.stringify({ v: 1, store: 'SS_B', n: 1, names: ['別人'] }), exp: Infinity };   // 10 分鐘那份說 B 店沒有這個人
+    return m;
+  };
+  const sysOut = (m) => { const v = m.peers.SS_B.sh.events.values; v[0] = v[0].concat(['source']); v.push([D + 'T06:00:00+08:00', 'B07', 'out', 24.78, 121.01, 5, true, 'system', '', 'ok', '', 'system_cap']); return m; };
+  const rows = [
+    ['昨天的下班卡', [['2026-11-19T22:00:00', 'B07', 'out']]],
+    ['今天被退回的卡', [[D + 'T06:00:00', 'B07', 'in', 'rejected_rest']]],
+  ];
+  const got = rows.map(([label, ev]) => label + ':' + page(mk('4', ev)) + '/' + page(mk('2', ev)));
+  got.push('今天的系統卡:' + page(sysOut(mk('4', []))) + '/' + page(sysOut(mk('2', []))));
+  got.push('今天有效的上下班卡:' + page(mk('4', [[D + 'T06:00:00', 'B07', 'in'], [D + 'T06:10:00', 'B07', 'out']])));
+  check('S3★', "'4' 只在今天別家店有本人有效打卡（非退回、非系統卡）時才不給寬限；昨天的卡、退回的卡、系統卡都跟 '2' 一樣給寬限",
+    got, ['昨天的下班卡:grace19:00/grace19:00', '今天被退回的卡:grace19:00/grace19:00', '今天的系統卡:grace19:00/grace19:00', '今天有效的上下班卡:LOCK19:00']);
+}
+
 done();
