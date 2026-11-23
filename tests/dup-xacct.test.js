@@ -302,6 +302,54 @@ console.log('\n══ ③-3 驗收補（2026-11-23）：對照計薪店不一致
   }
 }
 
+console.log('\n══ ③-4 Codex 第一輪 ══');
+{
+  // P1：開著算的草稿帶重複旗標 → 關開關 → 直接鎖：跟 main 拿同一份草稿鎖定逐字相同（不多一次 stale_run）
+  if (OLDSRC) {
+    const sc = scene('HQ');
+    const on = env(sc); on.post('handlePayrollCalc', { ym: '2026-11', store: 'HQ' });
+    eq(JSON.parse(on.__DATA.run.find((x) => x.emp_id === 'HQ-03').ot_info).dup_xacct.length, 1, 'P1 前提：開著算的草稿帶了 dup_xacct');
+    const a = env(sc, { src: OLDSRC }), b = env(sc, { from: '9999-12' });
+    a.__DATA.run = J(on.__DATA.run); b.__DATA.run = J(on.__DATA.run);
+    const la = lock(a, 'HQ'), lb = lock(b, 'HQ');
+    eq([JSON.stringify(lb) === JSON.stringify(la), lb.ok, lb.status], [true, true, 'final'], 'P1：關開關後直接鎖，回應跟 main 逐字相同、鎖成功（沒有 stale_run）');
+    eq(JSON.stringify(b.__DATA.run) === JSON.stringify(a.__DATA.run) && JSON.stringify(b.__DATA.audit) === JSON.stringify(a.__DATA.audit), true, '　鎖定後 run／稽核跟 main 逐字相同');
+  }
+  // P2-1：對照表分頁不存在（讀回 0 列）→ 引擎自動帶入 0 小時，金額跟沒有第二張單時相同；沒有手填支援 → 照常可鎖
+  {
+    const a = calcLines({ xmap: [] });
+    const b = calcLines({ xmap: [], clock: (c) => { c['ck-gf'].requests = []; c['ck-gf'].approved = []; } });
+    const pick = (x) => { const h = x.r.results.find((y) => y.emp_id === 'HQ-03'); return [h.gross, h.deduction, h.net, h.total_hours, h.support_hours]; };
+    eq([pick(a), a.l3, lock(a.s, 'HQ').ok], [pick(b), [], true], 'P2 對照表沒有資料：引擎支援時數 0、金額跟沒有第二張單逐項相同，可鎖');
+    const s = env(scene('HQ', { xmap: [] }));
+    const inputs = { 'HQ-03': { support: [{ code: 'MZTGF', store: '墨竹亭光復', hours: 8, rate: 240, amount: '' }] } };
+    const r = s.post('handlePayrollCalc', { ym: '2026-11', store: 'HQ', inputs });
+    eq([Number(r.results.find((y) => y.emp_id === 'HQ-03').support_hours), linesOf(r, 'HQ-03'), s.post('handlePayrollFinalize', { ym: '2026-11', store: 'HQ', lock: true, inputs }).ok],
+      [8, [], true], '【現況，待定】P2 對照表沒有資料＋手填支援 8 小時：手填時數進計薪、但認不出人 → 偵測不到、可鎖（對照表沒資料＝「還沒同步」，主線 support-auto-regression 要求這種狀態跟改版前逐項相同）');
+  }
+  // P2-2：申請分頁不存在 ≡ 分頁存在但空的（requests 分頁是第一張申請單送出時才建，Requests.gs reqSheet_(ss, true)）
+  {
+    const miss = calcLines({ clock: (c) => { delete c['ck-gf'].requests; } });
+    const empty = calcLines({ clock: (c) => { c['ck-gf'].requests = []; } });
+    const pick = (x) => { const h = x.r.results.find((y) => y.emp_id === 'HQ-03'); return [h.support_hours, x.l3, h.net]; };
+    eq([pick(miss), lock(miss.s, 'HQ').ok], [pick(empty), lock(empty.s, 'HQ').ok], 'P2 支援店沒有 requests 分頁：結果跟「有分頁但沒有任何申請單」完全相同（新店沒有申請單不擋）');
+    eq(Number(miss.r.results.find((y) => y.emp_id === 'HQ-03').support_hours), 8, '　（那天的核定照樣帶入 8 小時＝主管直接核定、沒有申請單的情況，屬已知限制「只看申請分頁」，有沒有分頁都一樣）');
+    const R = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Requests.gs'), 'utf8');
+    eq(/function reqSheet_\(ss, create\) \{\s*var sh = ss\.getSheetByName\(REQ_SHEET_\);\s*if \(!sh && create\) \{\s*sh = ss\.insertSheet\(REQ_SHEET_\);/.test(R), true, '　佐證：requests 分頁是送單時才建（reqSheet_ create 才 insertSheet）');
+  }
+  // P3：草稿算完後同仁退出名單 → 重算跳過此人，舊草稿列照定案；跟 main 同一個行為（已知限制）
+  if (OLDSRC) {
+    const sc = scene('HQ', { clock: (c) => { c['ck-gf'].requests = []; } });
+    const on = env(sc); on.post('handlePayrollCalc', { ym: '2026-11', store: 'HQ' });
+    const sc2 = J(sc); sc2.data.master[0].active = 'false'; sc2.data.master[0].leave_date = '2026-10-31';
+    sc2.clock['ck-gf'].requests = [RQ('rq-gf-1', 'MZTGF01', '2026-11-05', 'trip')];
+    const a = env(sc2, { src: OLDSRC }), b = env(sc2);
+    a.__DATA.run = J(on.__DATA.run); b.__DATA.run = J(on.__DATA.run);
+    const la = lock(a, 'HQ'), lb = lock(b, 'HQ');
+    eq([JSON.stringify(lb) === JSON.stringify(la), lb.ok], [true, true], 'P3（已知限制）：草稿後才退出名單的人，本版跟 main 一樣照草稿定案');
+  }
+}
+
 console.log('\n══ ④ 開關關：跟 origin/main 逐位元組相同 ══');
 let OLD = null;
 try { OLD = cp.execFileSync('git', ['-C', path.join(__dirname, '..'), 'show', 'origin/main:apps-script/Payroll.gs'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }

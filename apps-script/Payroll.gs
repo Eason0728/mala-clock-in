@@ -890,7 +890,7 @@ function payLockStale_(body, ym, st) {
   const gate = function (raw) {
     let o = raw; if (typeof raw === 'string') { try { o = JSON.parse(raw || '{}'); } catch (e) { o = {}; } }
     o = o || {};
-    const dg = payDupXacctGate_(o);   // 跨帳號重複（2026-11-23）：草稿與重算都沒有＝不加，比對字串跟改版前相同
+    const dg = payDupXacctOn_(ym) ? payDupXacctGate_(o) : null;   // 跨帳號重複（2026-11-23）：開關關著一律不看（草稿留著開著時的舊旗標也不看，Codex P1）；草稿與重算都沒有＝不加，比對字串跟改版前相同
     return JSON.stringify(dg ? [payNum(o.comp_over_h), o.ot_form_missing || [], dg] : [payNum(o.comp_over_h), o.ot_form_missing || []]);
   };
   let claim = false;   // r3：只有請款不同（不列進名單，finalize 用既有「試算後資料有改過」那句擋）
