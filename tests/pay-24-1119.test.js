@@ -203,7 +203,7 @@ function front(fetchPlan, monthStatus) {
   const ctx = {
     EMBED: false, API: 'https://example.invalid/exec', ADMIN_KEY: 'k', STORE: 'SSLGF', location: { pathname: '/' }, JSON, console,
     ASOF: null, STATUS: 'draft', RESULTS: [], COST_SNAP: null, ELEC_PEND: {}, MON_UNSURE: {}, LOCK_BUSY: false, elecBtns() {}, /* 選舉假：店月名單存檔待確認（Codex 第五次） */ CALC_INPUTS: () => ({}), $: () => null, ym: () => '2026-10',
-    vClear() {}, renderRun() {}, setInterval: () => 1, clearInterval() {}, prompt: () => '', alert() {}, doCalc: async () => {},
+    vClear() {}, renderRun() {}, setInterval: () => 1, clearInterval() {}, prompt: () => '', alert() {}, loadingStop: () => false, doCalc: async () => {},
     costStable() { return {}; }, costTotals() { return {}; }, costDetail() { return []; },
     toast: (m, bad) => log.toast.push((bad ? '!' : '') + m),
     fetch: async (url, opt) => {

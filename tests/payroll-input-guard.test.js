@@ -107,7 +107,7 @@ for (const [needle, label] of [
   ['esc(A.support_error)', '支援資料錯誤訊息'], ['${esc(STORE)}', '對帳區門市代碼'], ['bad.map(x=>esc(x.name||x.code))', '缺打卡試算表的門市名'],
 ]) ok(html.includes(needle), label + ' 有轉義');
 ok(!/讀取失敗：'\+\(r\.error\|\|''\)\+'/.test(html), '讀取失敗訊息有轉義');
-ok(/toast\('儲存失敗：'\+\(r\.message\|\|r\.error\|\|''\),true\);return false}\s*\n\s*renderEmp\(\)/.test(html), '主檔存檔失敗會顯示中文說明');
+ok(/toast\('儲存失敗：'\+\(r\.message\|\|r\.error\|\|''\),true\);return false}\s*\n\s*(?:writeFence\(\);[^\n]*\n\s*)?renderEmp\(\)/.test(html), '主檔存檔失敗會顯示中文說明');
 
 console.log(`\n${pass} 過、${fail} 失敗`);
 process.exit(fail ? 1 : 0);

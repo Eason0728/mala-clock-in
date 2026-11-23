@@ -124,7 +124,8 @@ console.log('\n══ 6) 重算時送出的工時來源（前端）══');
   const HTML = fs2.readFileSync(require('path').join(__dirname, '..', 'payroll.html'), 'utf8');
   const grab = sig => { const i = HTML.indexOf(sig); return HTML.slice(i, HTML.indexOf('\n}', i) + 2); };
 
-  chk('  有 CALC_INPUTS 這個判斷', /const CALC_INPUTS = \(\) => ATT_DIRTY \? ATT : \{\};/.test(HTML), true);
+  // 2026-11-23：表單不是畫面上這個店月的（讀取失敗留下的別月表單，attForeign）一律送 {}
+  chk('  有 CALC_INPUTS 這個判斷', /const CALC_INPUTS = \(\) => \(ATT_DIRTY && !attForeign\(\)\) \? ATT : \{\};/.test(HTML), true);
   chk('  payroll_calc 不可以再直接送 ATT', /payroll_calc',\{ym:ym\(\),inputs:ATT\}/.test(HTML), false);
   chk('  兩處都改用 CALC_INPUTS（手動重算＋切月份自動試算）',
       (HTML.match(/payroll_calc',\{ym:ym\(\),inputs:CALC_INPUTS\(\)\}/g) || []).length, 2);
@@ -137,10 +138,11 @@ console.log('\n══ 6) 重算時送出的工時來源（前端）══');
   /* ⚠ CALC_INPUTS 一定要從 payroll.html 抓出來，不可以在這裡寫死一份——
      寫死的話這兩條實跑測的是「測試自己寫的邏輯」，把程式改壞也照樣綠（2026-09-03 踩過）。 */
   const calcLine = (HTML.match(/const CALC_INPUTS = [^\n]+/) || [''])[0];
-  const src = [grab('async function autoCalc(){'), calcLine, grab('async function doCalc(')].join('\n');
-  const sentWith = dirty => {
+  const foreignLine = (HTML.match(/function attForeign\(\)\{[^\n]+/) || [''])[0];   // 一樣從 payroll.html 抓，不寫死
+  const src = [grab('async function autoCalc(){'), foreignLine, calcLine, grab('async function doCalc(')].join('\n');
+  const sentWith = (dirty, attKey) => {
     let sent = null;
-    const ctx = { console, ATT: SUP, ATT_DIRTY: dirty, STATUS: 'draft', RESULTS: [], CFG: {}, STORE: 'SSLGF', ELEC_PEND: {},   // doCalc 核對回應的店月（選舉假 Codex 複審 S5）；名單存檔待確認的店月不套用（第四、五次）
+    const ctx = { console, loadingStop: () => false, ATT: SUP, ATT_DIRTY: dirty, ATT_KEY: attKey === undefined ? 'SSLGF|2026-08' : attKey, STATUS: 'draft', RESULTS: [], CFG: {}, STORE: 'SSLGF', ELEC_PEND: {},   // doCalc 核對回應的店月（選舉假 Codex 複審 S5）；名單存檔待確認的店月不套用（第四、五次）
       ym: () => '2026-08', setBusy(){}, vClear(){}, renderRun(){}, renderSlipSel(){}, toast(){},
       supCrossBlock(){ return false; },   // 跨品牌手填擋重算（2026-11-05，support-auto.test 另守）
       post: async (a2, b2) => { sent = b2.inputs; return { ok: true, results: [], config: {} }; } };
@@ -158,6 +160,9 @@ console.log('\n══ 6) 重算時送出的工時來源（前端）══');
       /async function switchStore[\s\S]{0,200}?confirmLeaveAtt\('切換門市'\)/.test(HTML), true);
   chk('  沒有未存變更 → 送 {}（以試算表為準）', sentWith(false), {});
   chk('  有未存變更 → 照送影本（行為不變）', sentWith(true), SUP);
+  chk('  表單是上個月讀來的（這個月讀取失敗）、又有未存變更 → 也送 {}（不可以拿上個月的表單算這個月，2026-11-23）', sentWith(true, 'SSLGF|2026-07'), {});
+  chk('  表單是別家門市的 → 送 {}', sentWith(true, 'CF|2026-08'), {});
+  chk('  一次都沒讀成功（ATT_KEY 空白）→ 送 {}', sentWith(true, ''), {});
 }
 
 console.log(`\n${fail ? '❌ 有失敗' : '✅ 工時門市隔離與支援防護全部正確'}（${pass}/${pass + fail}）`);

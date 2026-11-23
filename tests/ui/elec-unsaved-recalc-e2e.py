@@ -8,6 +8,8 @@
 # 規則：
 #   J  這個月讀取失敗（旗標在）時，出勤表單有尚未儲存的編輯 → 按「重新計算」成功後不自動重新載入：未存編輯與「儲存工時 ●」都還在，
 #      匯出（Excel／CSV／PDF）、薪資單列印、鎖定照擋（提示同一句）；按「儲存工時」→ 存好、重算、重新載入成功 → 才解開
+#      2026-11-23 改前提：原本是「切到 10 月讀取失敗、在留著的 11 月表單上編輯」——那正是「讀取失敗後存到錯月份」的問題（11 月的表單會存進 10 月），
+#      現在那種情況表單會收起來、不能存（見 tests/ui/pay-html-followups-e2e.py 的 A）。改成同一個月：先編輯、按鎖定回應斷掉且狀態查不到 → 旗標在、表單仍是這個月的
 #   K  沒有未存編輯：#214 第 5 點照舊（重算成功 → 自動重新載入 → 成功才解開）
 #   L  鎖定的回應斷掉、狀態查詢回 mixed（一部分已鎖定）→ 提示照舊，並設讀取失敗旗標（匯出、列印、鎖定擋）；重新載入成功才解開
 import json, os, shutil, socket, subprocess, sys, time, urllib.request
@@ -123,6 +125,8 @@ try:
                     bd = act(route); a = bd.get('action'); seen.append(a)
                     if a == 'payroll_month' and bd.get('ym') == '2026-10' and cfg['fail']:
                         fulfill(route, {'ok': False, 'error': 'server_error', 'message': '讀取失敗（測試）'}); return
+                    if a in ('payroll_finalize', 'payroll_status') and cfg.get('lockfail'):   # J 的前提：鎖定回應斷掉、狀態也查不到
+                        fulfill(route, {'ok': False, 'error': 'timeout', 'message': '等候逾時，請稍後再試'}); return
                     if a == 'payroll_calc':   # 正式後端只拿 inputs 來算、不存：記下前端送了什麼，送給假後端時拿掉
                         calls.append(bd); bd2 = dict(bd); bd2['inputs'] = {}
                         resp = route.fetch(post_data=json.dumps(bd2)); route.fulfill(response=resp); return
@@ -130,15 +134,21 @@ try:
                     route.continue_()
                 pg.route('**/*', routeJ)
                 ha0 = att('hours')
-                setym('2026-10')
-                pg.click('button[data-p="att"]'); pg.wait_for_timeout(300)
-                hb_att, hb_form = att('hours'), form_hours()
-                print('  [%s %s 觀察] 月份 A（11 月）載入後 ATT 工時=%s；切到月份 B（10 月）讀取失敗後：ATT 工時=%s、表單顯示=%s（10 月已存=%s）→ %s'
-                      % (bname, case, ha0, hb_att, hb_form, H_B, '仍是月份 A 的表單' if str(hb_att) == str(H_A) else '不是月份 A 的表單'))
-                ok(bname + ' ' + case + ' 前提：切到 10 月讀取失敗 → 讀取失敗旗標在', blocked() in (True, None), blocked())
                 if edit:
                     put = set_custom_add(500)
-                    ok(bname + ' J 前提：在出勤表單填自訂加薪 500（不按儲存）→ 未存標記「儲存工時 ●」', put and dirty() and dot() and att('custom_add_amt') == 500, (put, dirty(), dot(), att('custom_add_amt')))
+                    ok(bname + ' J 前提：在 11 月出勤表單填自訂加薪 500（不按儲存）→ 未存標記「儲存工時 ●」', put and dirty() and dot() and att('custom_add_amt') == 500, (put, dirty(), dot(), att('custom_add_amt')))
+                    cfg['lockfail'] = True
+                    pg.click('button[data-p="run"]'); pg.wait_for_timeout(300)
+                    pg.click('#lockBtn'); pg.wait_for_timeout(2500)
+                    cfg['lockfail'] = False
+                    ok(bname + ' J 前提：鎖定回應斷掉、狀態查不到 → 讀取失敗旗標在（表單仍是 11 月的、500 還在）', blocked() in (True, None) and att('custom_add_amt') == 500 and dirty(), (blocked(), att('custom_add_amt')))
+                else:
+                    setym('2026-10')
+                    pg.click('button[data-p="att"]'); pg.wait_for_timeout(300)
+                    hb_att, hb_form = att('hours'), form_hours()
+                    print('  [%s %s 觀察] 月份 A（11 月）載入後 ATT 工時=%s；切到月份 B（10 月）讀取失敗後：ATT 工時=%s、表單顯示=%s（10 月已存=%s）→ %s'
+                          % (bname, case, ha0, hb_att, hb_form, H_B, '仍是月份 A 的表單' if str(hb_att) == str(H_A) else '不是月份 A 的表單'))
+                    ok(bname + ' ' + case + ' 前提：切到 10 月讀取失敗 → 讀取失敗旗標在', blocked() in (True, None), blocked())
                 cfg['fail'] = False   # 之後重新載入 10 月會成功
                 pg.click('button[data-p="run"]'); pg.wait_for_timeout(300)
                 k = len(seen); kc = len(calls)
@@ -168,8 +178,8 @@ try:
                     print('  [%s J 觀察] 儲存工時送出 ym=%s、該同仁工時=%s、自訂加薪=%s（10 月已存=%s，月份 A＝%s）'
                           % (bname, sv[0].get('ym') if sv else None, sv_emp.get('hours'), sv_emp.get('custom_add_amt'), H_B, H_A))
                     re3 = 'payroll_input_set' in aft3 and 'payroll_month' in aft3[aft3.index('payroll_input_set') + 1:]
-                    ok(bname + ' J 按「儲存工時」→ 送出含 500 的存檔、重算、重新載入成功 → 解開（擋解除、鎖定鈕可按、● 清掉）',
-                       re3 and sv_emp.get('custom_add_amt') == 500 and blocked() is False and not dirty() and not dot() and not pg.is_disabled('#lockBtn'),
+                    ok(bname + ' J 按「儲存工時」→ 送出含 500 的 11 月存檔、重算、重新載入成功 → 解開（擋解除、鎖定鈕可按、● 清掉）',
+                       re3 and sv and sv[0].get('ym') == '2026-11' and sv_emp.get('custom_add_amt') == 500 and blocked() is False and not dirty() and not dot() and not pg.is_disabled('#lockBtn'),
                        (aft3, sv_emp, blocked(), dirty(), dot()))
                     clear_msg(); pg.evaluate('exportCSV()'); pg.wait_for_timeout(200)
                     ok(bname + ' J 解開後匯出不再被擋', msg() != UNSURE_TXT, msg())
