@@ -447,8 +447,8 @@ function liffMissedDetail_(events, empId, type, ts) {
   if (type === 'in') {
     if (!prev || prev.type !== 'in') return none;
     return { date: prev.ts.slice(0, 10), miss_type: 'out', text: failedOther
-      ? '你 ' + md(prev.ts) + ' ' + liffHm_(prev.ts) + ' 上班後的下班卡沒有打成功（不在範圍內），請跟主管說實際下班時間'
-      : '你 ' + md(prev.ts) + ' ' + liffHm_(prev.ts) + ' 上班後沒有打下班卡，請跟主管說實際下班時間' };
+      ? '你 ' + md(prev.ts) + ' ' + liffHm_(prev.ts) + ' 上班後的下班卡沒有打成功（不在範圍內），請送忘打卡單補實際時間'
+      : '你 ' + md(prev.ts) + ' ' + liffHm_(prev.ts) + ' 上班後沒有打下班卡，請送忘打卡單補實際時間' };
   }
   if (prev && prev.type === 'in') return none;
   // （2026-11-04 夜間 QA）凌晨（≤ REQ_EARLY_OUT_HM）的孤兒下班卡歸前一天（同 Requests.gs dayOf），
