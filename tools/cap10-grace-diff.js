@@ -5,7 +5,8 @@
  *   第一輪：兩邊 REST_CAP_ON='1'（寬限關著）→ 一定全部一樣。
  *   第二輪：舊 '1'、新 '2'（寬限開著）→ 第一個不一樣的那一步，必須是「有班表、滿 10 那一刻晚於班表下班超過 30 分、本店這段、
  *           而且那一步是開頁／掃描／按上班」（之後兩邊的表已經不同，不再比）；其他任何差異都算錯。
- * 用法：node tools/cap10-grace-diff.js [--old <舊 Cap10.gs 路徑>] [--new <新 Cap10.gs 路徑>] [--n 400] [--long 1000] [--seed 20261124]
+ *   第四輪（2026-11-23）：兩家店同步隨機＋名冊／打卡列隨機丟例外（判準見第四輪說明）。
+ * 用法：node tools/cap10-grace-diff.js [--old <舊 Cap10.gs 路徑>] [--new <新 Cap10.gs 路徑>] [--n 400] [--long 1000] [--n4 600] [--seed 20261124]
  *   沒給 --old 就用 git show 38d0340:apps-script/Cap10.gs。只用假資料（gs-sandbox），不連網路、不讀金鑰。 */
 'use strict';
 const path = require('path'), fs = require('fs'), { execFileSync } = require('child_process');
@@ -166,4 +167,96 @@ console.log("第二輪 舊 '1'／新 '2'：完全相同 " + on.same + '，差異
 off.diff.slice(0, 3).forEach((x) => console.log('  第一輪不同 #' + x[0], JSON.stringify(x[1]).slice(0, 400)));
 on.bad.slice(0, 3).forEach((x) => console.log('  第二輪不該有 #' + x[0], JSON.stringify(x[1]).slice(0, 400), JSON.stringify(x[2].ops)));
 other.diff.slice(0, 3).forEach((x) => console.log('  第三輪不同 #' + x[0] + ' 值=' + JSON.stringify(x[1]), JSON.stringify(x[2]).slice(0, 300)));
-process.exit(off.diff.length || on.bad.length || other.diff.length ? 1 : 0);
+
+/* 第四輪（2026-11-23 第三次驗收）：兩家店同步隨機——同仁在 B 店（mzt，B07）11/20 09:00 上班，A 店（光復，E01）與 B 店各跑自己的程式，
+ * 每一步後把兩店 events 同步。隨機：B 店班表（09–18＝B 判寬限／09–21＝B 照舊代記／沒發布）、同名（沒有／B08 同名但沒上班／B08 同一秒上班）、
+ * A 店讀 B 店名冊或打卡列時隨機丟例外、動作序列（A 開頁、A 按上班／下班 × LINE／liff_clock／舊 clock、B 開頁、B 掃描）。開關 '2'。
+ * 判準：①任何時刻 E01＋B07 的系統卡 ≤ 1 張、B08 ≤ 1 張；②最後（同步＋B 掃描）兩店頁面鎖不鎖一致、鎖的時間一致；
+ *       ③頁面說鎖在 HH:MM，就真的有那張系統卡；④09:00 那段之後的第一張卡不可以是本人下班卡（＝超過 10 小時），是上班卡（被放行）只在 B 判寬限、A 分得出人時；
+ *       ⑤B 照舊代記（09–21、沒發布）時，最後一定有一張 19:00 的系統卡。 */
+const NR = +arg('--n4', 600);
+const ME_A = { emp_id: 'E01', name: '測試一', key: 'K1', device_id: 'D1', active: 'TRUE', line_user_id: 'U1' };
+const B07 = { emp_id: 'B07', name: '測試一', key: 'KB', device_id: 'DB', active: 'TRUE', line_user_id: 'U1' };
+const B08 = { emp_id: 'B08', name: '測試 一', key: 'KB8', device_id: 'DB8', active: 'TRUE' };
+const SH4 = [{ id: 'A', name: '早', start: '09:00', end: '18:00' }, { id: 'X', name: '長', start: '09:00', end: '21:00' }];
+const sched4 = (sid) => ({ start: '2026-11-01', shifts: SH4, rows: ['B07', 'B08'].map((id) => ({ emp_id: id, name: '測試一', cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: sid } : { t: 'R' })) })) });
+function world4(view, sc) {
+  const bEv = [[D + 'T09:00:00', 'B07', 'in']].concat(sc.twin === 'same' ? [[D + 'T09:00:00', 'B08', 'in']] : []);
+  const aSpec = { roster: [ME_A], events: [] }, bSpec = { roster: sc.twin ? [B07, B08] : [B07], events: bEv };
+  const m = make({ now: T(D + 'T19:00:00'), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: '2' }, self: view === 'A' ? aSpec : bSpec, peers: view === 'A' ? { SS_B: bSpec } : { SS_A: aSpec } });
+  m.run(NEW);
+  m.sb.REST_PEERS_ = view === 'A' ? [{ code: 'mzt', ss: 'SS_B' }, { code: 'gf', ss: 'SELF' }] : [{ code: 'mzt', ss: 'SELF' }, { code: 'gf', ss: 'SS_A' }];
+  const sh = (view === 'A' ? m.self : m.peers.SS_A).insertSheet('sched_pub');
+  sh.appendRow(['store', 'period', 'seq', 'data', 'last_op', 'updated_at']);
+  if (sc.sid) sh.appendRow(['mzt', 'T01', 1, JSON.stringify(sched4(sc.sid)), 'op', '']);
+  if (view === 'A') {   // A 店在 capGraceWho_ 裡讀 B 店名冊／打卡列：m.__fail 為真時丟例外
+    const orig = m.sb.capGraceWho_; let inWho = false;
+    m.sb.capGraceWho_ = function () { inWho = true; try { return orig.apply(this, arguments); } finally { inWho = false; } };
+    ['roster', 'events'].forEach((nm) => { const s = m.peers.SS_B.sh[nm]; ['getDataRange', 'getRange', 'getLastRow'].forEach((fn) => { const o = s[fn]; if (o) s[fn] = function () { if (inWho && m.__fail === nm) throw new Error('隨機讀取失敗'); return o.apply(this, arguments); }; }); });
+    const c = m.sb.CacheService.getScriptCache();
+    m.sb.CacheService = { getScriptCache: () => Object.assign({}, c, { get: (k) => (inWho && m.__fail === 'roster' && /^rpr:/.test(k) ? null : c.get(k)) }) };
+  }
+  return m;
+}
+const cp4 = (dst, src) => { dst.length = 0; src.forEach((r) => dst.push(r.slice())); };
+function sync4(W, from) {
+  if (from === 'A') { cp4(W.B.peers.SS_A.sh.events.values, W.A.self.sh.events.values); cp4(W.B.self.sh.events.values, W.A.peers.SS_B.sh.events.values); }
+  else { cp4(W.A.self.sh.events.values, W.B.peers.SS_A.sh.events.values); cp4(W.A.peers.SS_B.sh.events.values, W.B.self.sh.events.values); }
+}
+const rowsOf = (bk) => { const v = bk.sh.events.values, h = v[0]; return v.slice(1).map((r) => { const o = {}; h.forEach((k, i) => { o[k] = r[i]; }); return o; }); };
+const evs4 = (W) => rowsOf(W.A.self).map((e) => Object.assign({ st: 'A' }, e)).concat(rowsOf(W.B.self).map((e) => Object.assign({ st: 'B' }, e)))
+  .map((e) => Object.assign(e, { ms: Date.parse(String(e.ts)) })).sort((a, b) => a.ms - b.ms);
+const sysOf = (W, id) => evs4(W).filter((e) => e.source === 'system_cap' && (!id || String(e.emp_id) === id));
+const page4 = (m) => { const c = (m.sb.handleLiffStatus_({ id_token: 'TOK_U1' }).cap) || {}; return c.locked ? 'LOCK' + c.sys_hm : 'free'; };
+const OPS4 = ['A_status', 'A_in_line', 'A_in_lclock', 'A_in_old', 'A_out_line', 'A_out_lclock', 'A_out_old', 'B_status', 'B_sweep'];
+function op4(W, op) {
+  const m = op[0] === 'A' ? W.A : W.B, sb = m.sb;
+  const post = (b) => JSON.parse(sb.doPost({ postData: { contents: JSON.stringify(b) } }).text);
+  const ty = /_in_/.test(op) ? 'in' : 'out';
+  if (op.endsWith('status')) sb.handleLiffStatus_({ id_token: 'TOK_U1' });
+  else if (op === 'B_sweep') sb.capSweep();
+  else if (op.endsWith('_line')) sb.handleLiffPunch_(Object.assign({ id_token: 'TOK_U1', type: ty, confirm_same: true }, HERE));
+  else if (op.endsWith('_lclock')) sb.handleLiffClockGuarded_(Object.assign({ id_token: 'TOK_U1', type: ty }, HERE));
+  else post(Object.assign({ action: 'clock', key: 'K1', type: ty, device_id: 'D1' }, HERE));
+  sync4(W, op[0]);
+}
+const bad4 = [];
+let n4 = 0, unsureOps = 0;
+for (let k = 0; k < NR; k++) {
+  const sc = { sid: pick(['A', 'A', 'X', 'X', null]), twin: pick([false, false, 'roster', 'same']) };
+  const W = { A: world4('A', sc), B: world4('B', sc) };
+  let t = T(D + 'T19:0' + ri(1, 9) + ':00');
+  const steps = [], n = ri(2, 6);
+  let why = '';
+  for (let i = 0; i < n && !why; i++) {
+    const op = pick(OPS4), fail = rnd() < 0.4 ? pick(['roster', 'events']) : null;
+    W.A.__fail = fail; W.A.setNow(t); W.B.setNow(t);
+    if (fail && op[0] === 'A') unsureOps++;
+    op4(W, op); steps.push(op + (fail ? '!' + fail : '') + '@' + iso(t).slice(11, 16));
+    W.A.__fail = null;
+    const c1 = sysOf(W, 'E01').length + sysOf(W, 'B07').length, c2 = sysOf(W, 'B08').length;
+    if (c1 > 1 || c2 > 1) why = '①系統卡超過 1 張 ' + JSON.stringify(sysOf(W).map((e) => e.st + String(e.ts).slice(11, 16) + e.emp_id));
+    t += ri(1, 25) * 60000;
+  }
+  if (!why) {   // 收尾：B 掃描、兩店開頁
+    W.A.setNow(t); W.B.setNow(t);
+    op4(W, 'B_sweep');
+    const pa = page4(W.A), pb = page4(W.B), sys = sysOf(W);
+    const hasAt = (hm) => sys.some((e) => String(e.ts).slice(11, 16) === hm);
+    const c1 = sysOf(W, 'E01').length + sysOf(W, 'B07').length;
+    const seg = evs4(W).filter((e) => (e.type === 'in' || e.type === 'out') && String(e.status).indexOf('rejected_') !== 0 && e.ms > T(D + 'T09:00:00') && String(e.emp_id) !== 'B08');
+    const first = seg[0];
+    if (c1 > 1) why = '①系統卡超過 1 張';
+    else if (pa !== pb) why = '②兩店頁面不一致 A=' + pa + ' B=' + pb;
+    else if (pa.startsWith('LOCK') && !hasAt(pa.slice(4))) why = '③頁面鎖 ' + pa + ' 卻沒有那張卡';
+    else if (first && first.type === 'out' && first.source !== 'system_cap') why = '④超過 10 小時：第一張是本人下班卡 ' + first.st + String(first.ts).slice(11, 16);
+    else if (first && first.type === 'in' && !(sc.sid === 'A' && sc.twin !== 'same')) why = '④上班被放行但 B 不會判寬限或 A 分不出人 ' + first.st + String(first.ts).slice(11, 16);
+    else if (sc.sid !== 'A' && !hasAt('19:00')) why = '⑤B 照舊代記卻沒有 19:00 的卡';
+  }
+  n4++;
+  if (why) bad4.push([k, JSON.stringify(sc), steps.join(' '), why]);
+}
+console.log('第四輪 兩店同步隨機（名冊／打卡列隨機丟例外）：' + n4 + ' 組、A 店讀取丟例外的動作 ' + unsureOps + ' 次，違反判準 ' + bad4.length);
+bad4.slice(0, 5).forEach((x) => console.log('  第四輪 #' + x[0] + ' ' + x[1] + ' ' + x[2] + ' → ' + x[3]));
+process.exit(off.diff.length || on.bad.length || other.diff.length || bad4.length ? 1 : 0);
+

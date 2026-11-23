@@ -497,8 +497,8 @@ function fourQ(opt) {
 {
   const ev = [[D + 'T09:00:00', 'B07', 'in'], [D + 'T09:00:00', 'B08', 'in']];
   const q = fourQ({ b: schedQ('A', 'C'), bEvents: ev });
-  check('Q4★', '同名兩人同一秒上班（A 店分不出）：A 頁不鎖不提示；A 按上班放行；B 頁（B07）grace 19:00；B 店掃描 B07 不寫、B08（10–20）照舊寫', q,
-    { aPage: [false, null, null], bPage: [false, '19:00', null], aIn: [true, null], bSweep: ['19:00 B08'], sysAnywhere: 0 });
+  check('Q4★', '同名兩人同一秒上班（A 店分不出）：A 頁不鎖不提示；A 按上班＝判不了＝照舊擋（第三次驗收）；B 頁（B07）grace 19:00；B 店掃描 B07 不寫、B08（10–20）照舊寫', q,
+    { aPage: [false, null, null], bPage: [false, '19:00', null], aIn: [false, 'cap_locked'], bSweep: ['19:00 B08'], sysAnywhere: 0 });
 }
 {
   const ev = [[D + 'T09:00:00', 'B07', 'in'], [D + 'T09:00:00', 'B08', 'in']];
@@ -614,6 +614,89 @@ KASES.forEach(([id, label, fn]) => {
   m.self.sh.sched_pub.values.length = 1;   // 取消發布（表裡沒有這期）
   setv(m.cache, C0, '{壞');
   check('K21', '快取壞＋重讀發現真的沒發布 → 照舊代記', autoAt(m, D + 'T19:01:00'), [['11-20 19:00'], true, null]);
+}
+
+/* ════ 十二、第三次驗收（verify-231b dbg4）：A 店對不到工號（unsure）時按上班 ════
+ * 規則：對不到工號＝判不了＝照舊收卡。A 店按上班（LINE、liff_clock、舊 clock）→ 系統卡寫在 A 店、滿 10 那一刻（19:00）、擋下這次上班並鎖；
+ *   之後 B 店掃描、兩店開頁、再按上班／下班都不多寫，兩店頁面都鎖在 19:00。開頁（auto）照舊不鎖不提示；B 店照舊代記時 B 寫了卡、A 讀到就鎖。
+ * 兩家店各跑自己的程式（A 視角、B 視角兩個沙盒），每一步後把兩店 events 同步（syncQ），模擬兩邊各自讀寫同一份試算表。
+ * 對不到工號的兩種來源：A 店讀 B 店名冊丟例外（單一工號 B07）、同名兩人同一秒上班（B07、B08 都排同一班）。
+ * B 店班表：09–18（B 判寬限、不會代記）、09–21（滿 10 時刻早於下班 → B 照舊代記）。 */
+console.log('\n════ 十二、第三次驗收：對不到工號時按上班照舊收卡（兩店同步模擬）════');
+/** A 店在 capGraceWho_ 裡讀 B 店名冊／打卡列時丟例外（名冊快取也當沒有） */
+function hookWho(m, kind) {
+  const orig = m.sb.capGraceWho_; let inWho = false;
+  m.sb.capGraceWho_ = function () { inWho = true; try { return orig.apply(this, arguments); } finally { inWho = false; } };
+  const sh = m.peers.SS_B.sh[kind];
+  ['getDataRange', 'getRange', 'getLastRow'].forEach((fn) => { const o = sh[fn]; if (o) sh[fn] = function () { if (inWho) throw new Error('讀取失敗'); return o.apply(this, arguments); }; });
+  const c = m.sb.CacheService.getScriptCache();
+  m.sb.CacheService = { getScriptCache: () => Object.assign({}, c, { get: (k) => (inWho && /^rpr:/.test(k) ? null : c.get(k)) }) };
+}
+const cpRows = (dst, src) => { dst.length = 0; src.forEach((r) => dst.push(r.slice())); };
+function pairQ(opt) {
+  const W = { A: worldQ('A', opt), B: worldQ('B', opt) };
+  if (opt.hook) hookWho(W.A, opt.hook);
+  return W;
+}
+function syncQ(W, from) {
+  const aA = W.A.self.sh.events.values, aB = W.B.peers.SS_A.sh.events.values, bA = W.A.peers.SS_B.sh.events.values, bB = W.B.self.sh.events.values;
+  if (from === 'A') { cpRows(aB, aA); cpRows(bB, bA); } else { cpRows(aA, aB); cpRows(bA, bB); }
+}
+const setNowQ = (W, t) => { W.A.setNow(t); W.B.setNow(t); };
+const cardsQ = (W) => W.A.self.sh.events.values.filter(isSys).map((r) => 'A' + String(r[0]).slice(11, 16) + r[1])
+  .concat(W.B.self.sh.events.values.filter(isSys).map((r) => 'B' + String(r[0]).slice(11, 16) + r[1]));
+const pageQ = (m) => { const c = status(m).cap || {}; return c.locked ? 'LOCK' + c.sys_hm : c.grace_hm ? 'grace' + c.grace_hm : 'free'; };
+const IN_ENTRY = [
+  ['LINE', (m) => { const r = punch(m, 'in'); return r.ok ? 'ok' : r.status; }],
+  ['liff_clock', (m) => { const r = m.sb.handleLiffClockGuarded_(Object.assign({ id_token: 'TOK_U1', type: 'in' }, HERE)); return r.ok ? 'ok' : r.error + (/系統在 19:00 幫你記了下班卡/.test(r.reason || '') ? ':19:00' : ''); }],
+  ['舊 clock', (m) => { const j = oldClock(m, 'in'); return j.status + (j.rest ? ':' + j.rest.code : ''); }],
+];
+const IN_WANT = { LINE: 'cap_locked', liff_clock: 'guard_blocked:19:00', '舊 clock': 'rejected_rest:cap10' };
+const twinEv = [[D + 'T09:00:00', 'B07', 'in'], [D + 'T09:00:00', 'B08', 'in']];
+const UNS = [
+  ['名冊丟例外', { hook: 'roster' }],
+  ['同名同秒', { bEvents: twinEv }],
+];
+const BS = [['B 判寬限（09–18）', 'A', false], ['B 照舊代記（09–21）', 'X', true]];
+const shiftsU = shiftsQ.concat([{ id: 'X', name: '長長', start: '09:00', end: '21:00' }]);
+const schedU = (sid) => ({ start: '2026-11-01', shifts: shiftsU, rows: ['B07', 'B08'].map((id) => ({ emp_id: id, name: '測試一',
+  cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: sid } : { t: 'R' })) })) });
+let un = 0;
+UNS.forEach(([ulab, uopt]) => BS.forEach(([blab, sid]) => IN_ENTRY.forEach(([en, fn]) => {
+  const opt = Object.assign({ b: schedU(sid) }, uopt);
+  const W = pairQ(opt);
+  setNowQ(W, D + 'T19:10:00');
+  const r = fn(W.A); syncQ(W, 'A');
+  const c1 = cardsQ(W);
+  W.B.sb.capSweep(); syncQ(W, 'B');
+  const pages = [pageQ(W.A), pageQ(W.B)];
+  setNowQ(W, D + 'T19:20:00');
+  const again = [fn(W.A)]; syncQ(W, 'A');
+  again.push(punch(W.A, 'out').status || 'ok'); syncQ(W, 'A');
+  W.B.sb.capSweep(); syncQ(W, 'B');
+  un++;
+  check('U' + un + '★', ulab + '＋' + blab + '：19:10 在 A 店按上班（' + en + '）→ 擋下、系統卡寫在 A 店 19:00；B 掃描不多寫；兩店頁面都鎖 19:00；19:20 再按上班／下班仍擋、不多寫',
+    [r, c1, pages, again, cardsQ(W)], [IN_WANT[en], ['A19:00E01'], ['LOCK19:00', 'LOCK19:00'], [IN_WANT[en], 'cap_locked'], ['A19:00E01']]);
+})));
+UNS.forEach(([ulab, uopt]) => BS.forEach(([blab, sid, bWrites]) => {
+  const W = pairQ(Object.assign({ b: schedU(sid) }, uopt));
+  setNowQ(W, D + 'T19:10:00');
+  const a1 = pageQ(W.A); syncQ(W, 'A');
+  W.B.sb.capSweep(); syncQ(W, 'B');
+  setNowQ(W, D + 'T19:11:00');
+  const after = [pageQ(W.A), pageQ(W.B)];
+  const twin = !!uopt.bEvents;
+  const wantCards = bWrites ? (twin ? ['B19:00B07', 'B19:00B08'] : ['B19:00B07']) : [];
+  const wantPages = bWrites ? ['LOCK19:00', 'LOCK19:00'] : ['free', 'grace19:00'];
+  un++;
+  check('U' + un, ulab + '＋' + blab + '：A 店先開頁（不鎖不提示）→ B 店掃描' + (bWrites ? '照舊寫卡 → A 頁讀到卡也鎖 19:00' : '不寫 → A 頁不鎖、B 頁 grace（兩邊都沒鎖、沒有卡）'),
+    [a1, cardsQ(W), after], ['free', wantCards, wantPages]);
+}));
+{
+  const c = (fn) => corrupt(fn);
+  check('K22★', '快取資料塊 rows 改成 null → 當壞快取重讀（照寬限）', c((cc) => edit(cc, (o) => { o.rows = null; })), [1, 1, '19:00', false, [], 0]);
+  const m = world(D + 'T19:10:00', [['08:55:00', 'in']], { sched: { start: '2026-11-01', shifts: [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], rows: 'x' } });
+  check('K23', 'sched_pub 那期 rows 本身不是陣列（資料壞）→ 照舊代記（不會每次重讀）', autoAt(m, D + 'T19:10:00'), [['11-20 19:00'], true, null]);
 }
 
 done();

@@ -39,7 +39,7 @@
        只認上班格（t＝W）；讀不到、沒排、例假、休息日、請假、國定假日、格式怪、上班卡比那天班表下班還晚 → 一律照舊代記。
      ⑤正在上班那段在別家店（本店只擋不寫）：用那家店的班表＋那一段的工號判斷（同名多人時讀那家店打卡列、對上班卡時間；2026-11-23 審查第一輪、第二輪驗收），
        符合就不鎖（開頁、按上班）；本人在本店按下班 → 系統卡寫在本店、記在滿 10 那一刻並鎖（同 38d0340 未滿 10 時跨店按下班寫在本店的做法）；那家店沒發布 → 照舊；
-       對不到是哪個工號 → 不鎖、不回 grace（那家店自己決定寫不寫，寫了讀到卡才鎖＝不會沒卡卻鎖）。取整、休息、假單全部不動。
+       對不到是哪個工號 → 開頁、掃描不鎖不回 grace（那家店寫了卡讀到才鎖）；按上班／下班＝判不了＝照舊收卡：系統卡寫在本店、滿 10 那一刻、擋並鎖。取整、休息、假單全部不動。
        寬限用的班表另有「店＋期」快取（capGraceSched_，5 分鐘）；補缺卡的 capSchedPub_ 不動。
      屬性用 REST_CAP_ON 的值（而不是新屬性）：mini 擋卡引擎只拉 RELAYG_PROPS_ 那三個屬性，新屬性 mini 看不到、兩邊會判得不一樣。
    九店整檔共用；動作掛在 Liff.gs LIFF_HANDLERS，不改各店 程式碼.js。 */
@@ -459,7 +459,7 @@ var CAP_GRACE_MEMO_ = null;      // {exp, idx, objs}：快取寫不進去時同�
 var CAP_GRACE_UNSURE = 'unsure'; // 別家店那一段對不到是哪個工號（capGraceWho_）
 
 /* 快取格式（2026-11-23 第二輪驗收擋項 2：內容壞掉一律當沒有快取、重讀一次）：
-   目錄 capgr1:i ＝ {v:1, k:{'店|期': 塊數}}；資料塊 capgr1:d:<店|期>:<第幾塊> ＝ {v:1, k:'店|期', i, n, shifts:[…], rows:[…]|null}。
+   目錄 capgr1:i ＝ {v:1, k:{'店|期': 塊數}}；資料塊 capgr1:d:<店|期>:<第幾塊> ＝ {v:1, k:'店|期', i, n, shifts:[…], rows:[…]}（rows 不是陣列＝壞，含 null）。
    讀回來解析失敗、型別不對、缺欄、塊數或編號跟目錄對不上 → 重讀 sched_pub 並重寫快取；只有重讀本身失敗（丟錯／打不開光復試算表）或真的沒發布才「照舊代記」。 */
 function capGraceBytes_(s) { return encodeURIComponent(s).replace(/%[0-9A-F]{2}/g, 'x').length; }
 function capGraceObj_(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
@@ -470,7 +470,6 @@ function capGraceIdxOk_(x) {
 }
 function capGraceChunkOk_(x, k, i, n) {
   if (!capGraceObj_(x) || x.v !== 1 || x.k !== k || x.i !== i || x.n !== n || !Array.isArray(x.shifts)) return false;
-  if (x.rows === null) return n === 1;
   return Array.isArray(x.rows) && x.rows.every(function (r) {
     return capGraceObj_(r) && typeof r.emp_id === 'string' && Array.isArray(r.cells) && r.cells.every(function (c) { return c === null || capGraceObj_(c); });
   });
@@ -517,7 +516,7 @@ function capGraceLoad_() {
       if (!d) continue;
       try { data = JSON.parse(d); } catch (e) { continue; }
       var slim = capGraceSlim_(data);
-      if (!slim) continue;
+      if (!slim || !slim.rows) continue;   // rows 不是陣列（資料本身壞）＝當成沒發布這期（同 capSchedEnd_ 原本的 !data.rows → 照舊）
       var k = String(vals[r][0]) + '|' + String(vals[r][1]), parts = capGraceSplit_(k, slim);
       idx[k] = parts.length;
       parts.forEach(function (o) { objs[CAP_GRACE_CK + 'd:' + k + ':' + o.i] = o; });
@@ -536,7 +535,6 @@ function capGraceLoad_() {
   return { idx: idx, objs: objs };
 }
 function capGraceJoin_(objs) {
-  if (objs[0].rows === null) return { shifts: objs[0].shifts };   // 那一期的 rows 不是陣列（資料本身壞）＝讀不到這期
   var rows = [];
   objs.forEach(function (o) { rows = rows.concat(o.rows); });
   return { shifts: objs[0].shifts, rows: rows };
@@ -756,12 +754,12 @@ function capCheck_(ss, me, nowMs, ownRows, mode) {
       var g = (mode === 'auto' || mode === 'in' || (mode === 'out' && r.due.store)) && capGraceOn_()
         ? capGraceJudge_(me.emp_id, r.due.in, r.due.at, r.due.store, me.name) : '';
       if (mode !== 'out' && g === 'late') { st.grace = r.due.at; return st; }
-      if (mode !== 'out' && g === CAP_GRACE_UNSURE) return st;
+      if (mode === 'auto' && g === CAP_GRACE_UNSURE) return st;   // 開頁、掃描：對不到工號＝不鎖不提示（沒有卡就不說有卡；那家店寫了卡，下一次讀到就鎖）
       sys = r.due.at;
-      // 本人按下班一律照主管定案「記在滿 10 那一刻並鎖卡」。卡寫在哪：
+      // 本人按下班一律照主管定案「記在滿 10 那一刻並鎖卡」；本人按上班而對不到工號（unsure）＝判不了＝照舊擋、收卡（2026-11-23 第三次驗收）。卡寫在哪：
       //  本店那段 → 本店（同 38d0340）；
       //  別家店那段、那家店會照舊代記（g＝''）→ 那家店寫、這裡只擋（同 38d0340）；
-      //  別家店那段、那家店因寬限不會代記（'late'）或對不到是哪個工號（unsure）→ 寫在這家店（2026-11-23 主管退回：不可放寬 10 小時上限）：
+      //  別家店那段、按下班而那家店因寬限不會代記（'late'），或按上班／下班而對不到是哪個工號（unsure）→ 寫在這家店（不可放寬 10 小時上限、也不可沒卡卻鎖）：
       //   38d0340 未滿 10 時在這家店按下班，就是把下班卡寫進這家店的 events、跟那家店的上班卡配成一段（capSegs_ 依姓名合併兩店的卡），這裡照同一個做法、時間改成滿 10 那一刻；
       //   寫了之後那家店的掃描、兩家店開頁都會讀到這張系統卡（lastSys）而鎖住、不會再寫第二張。
       if (!r.due.store || g === 'late' || g === CAP_GRACE_UNSURE) {
