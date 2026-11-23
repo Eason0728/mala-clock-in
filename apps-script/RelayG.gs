@@ -318,6 +318,7 @@ function handleRelayAppend_(body) {
       tail.forEach(function (e) {
         if (String(e.emp_id) === String(row.emp_id) && String(e.source || '') === 'system_cap' && Math.abs(new Date(String(e.ts)).getTime() - atMs) <= 60000) found = e;
       });
+      if (!found) found = relayGCapSameSeg_(sh, row.emp_id, atMs);
     }
     if (!found) {
       var mk = relayGMarkGet_(reqId);
@@ -353,6 +354,23 @@ function handleRelayAppend_(body) {
     relayGMarkPut_(reqId, { state: 'done', out: { ok: true, dup: false, row: out.row, date: out.date, emp_id: out.emp_id, extras: {} } });
     return out;
   } finally { lock.releaseLock(); }
+}
+/** 系統卡（2026-11-23 #223 Codex 擋項一）：同一段上班（這張系統卡之前最後一張算數的上班卡之後）Google 已有系統卡 → 回那一張（最早的），沒有回 null。
+ *  Google 因假單先收（例 18:45）、mini 看不到假單又沒拉回、照打卡算出另一個時間（19:00）抄過來時，時間差超過 60 秒也算同一張。
+ *  只在 relay_append 收系統卡、單號與 ±60 秒都沒對到時才讀（鎖內；往前 16 小時＝配對上限）。算數＝非 rejected_*、不是總部鏡像列。 */
+function relayGCapSameSeg_(sh, empId, atMs) {
+  var rows = readEventsSince(sh, atMs - 16 * 3600000).rows, lastIn = -Infinity, hit = null;
+  var mine = rows.filter(function (e) {
+    return String(e.emp_id) === String(empId) && String(e.status || '').indexOf('rejected_') !== 0 && !String(e.mirror_src || '');
+  }).map(function (e) { var ts = normCellTs(e.ts); return { e: e, ts: ts, ms: new Date(String(ts)).getTime() }; }).filter(function (x) { return !isNaN(x.ms); });
+  mine.forEach(function (x) { if (String(x.e.type) === 'in' && x.ms < atMs && x.ms > lastIn) lastIn = x.ms; });
+  if (lastIn === -Infinity) return null;   // 往前 16 小時找不到上班卡：不猜（照舊寫）
+  mine.forEach(function (x) {
+    if (String(x.e.type) === 'out' && String(x.e.source || '') === 'system_cap' && x.ms > lastIn && (!hit || x.ms < hit.ms)) hit = x;
+  });
+  if (!hit) return null;
+  var o = {}; Object.keys(hit.e).forEach(function (k) { o[k] = hit.e[k]; }); o.ts = hit.ts;
+  return o;
 }
 function relayGDupOut_(e, reqId) {
   return { ok: true, dup: true, row: { ts: String(e.ts), status: String(e.status), type: String(e.type), source: String(e.source || '') },

@@ -9,6 +9,7 @@
    - 寫卡時機：①每 15 分鐘觸發器 capSweep（cap_set 開時才建）②同仁開打卡頁或按打卡的當下，所以觸發器晚一點也不會讓人多打。
    - 當天已經打滿 10 小時（自己打了下班卡）也不能再打上班卡。
    - 央廚、總部中午休息不打卡（CONFIG.NO_PUNCH_BREAK_START／END）：本店的段落扣掉休息時段再算，跟核定比對打卡時數同一套（2026-11-14 試算抓到：不扣的話做 9 小時就被收卡）。
+     2026-11-23 起別家店（央廚、總部）的段落與假單也扣那家店的休息（CAP_PEER_BRK_；Codex 擋項二：原本一般門市把央廚 08–14 算 6 小時）。
    - 2026-11-23 Eason 新定義（取代 11/14「班別有輸入休息的分鐘數，也要自動扣除」）：
      「當日出勤滿十小時是有打卡的時數＋假單時數＋出差。如果班表是像央廚或總部有固定休息一小時不列入打卡就要扣除，其餘門市單位則不扣除班表的休息時間。」
      ①其他店不再扣班表休息（capDed_ 拿掉）；②加上這一天**已核准**的請假單、出差單（requests 分頁，本店工號＋別家店同名在職）；
@@ -83,11 +84,22 @@ function capGridMs_(a, b) {
 function capGridIn_(ms) { var g = capMs_(capDay_(ms + 86400000) + 'T00:00:00+08:00'); return g - capGridMs_(ms, g); }
 /** 下班卡（或「現在」）取整後的時刻：用台北當天 00:00（在刻度上、不晚於這張卡）往後推。 */
 function capGridOut_(ms) { var g = capMs_(capDay_(ms) + 'T00:00:00+08:00'); return g + capGridMs_(g, ms); }
-/** 一段打卡算數的區間 {a, b, ms}：上班取整、下班取整（b ≤ a＝0）；本店的段再扣不打卡休息（央廚、總部；休息帶在刻度上，扣的就是取整後區間跟休息重疊的部分）。 */
+/* 別家店的不打卡休息（2026-11-23 #223 Codex 擋項二）：一般門市判定時讀到央廚、總部的段，也要扣那家店的固定休息。
+   各店的休息設定在各自 程式碼.js 的 CONFIG（別家店讀不到），跨店設定 REST_PEERS_ 只有 {code, ss}，所以這裡另存一份：
+   鍵＝REST_PEERS_ 的店代碼；只有央廚、總部有。⚠ 跟 cf／hq 的 CONFIG.NO_PUNCH_BREAK_START／END 是兩份，改一邊要改另一邊
+   （上線前核對指令見 docs/cap10-newdef/rollout.md）。本店的段照舊用本店 CONFIG（capBreak_），不查這張表。 */
+var CAP_PEER_BRK_ = { cf: { s: '12:00', e: '13:00' }, hq: { s: '14:00', e: '15:00' } };
+/** 某一段／某張單該扣的休息時段：本店（store ''）＝brk（本店設定）；別家店＝CAP_PEER_BRK_ 那家（沒有＝null 不扣）。 */
+function capBrkOf_(store, brk) {
+  if (!store) return brk;
+  return Object.prototype.hasOwnProperty.call(CAP_PEER_BRK_, store) ? CAP_PEER_BRK_[store] : null;
+}
+/** 一段打卡算數的區間 {a, b, ms}：上班取整、下班取整（b ≤ a＝0）；再扣那家店的不打卡休息（央廚、總部；本店照本店設定、別家店照 CAP_PEER_BRK_；
+ *  休息帶在刻度上，扣的就是取整後區間跟休息重疊的部分）。 */
 function capSegSpan_(s, brk) {
   var a = capGridIn_(s.in), b = capGridOut_(s.out);
   if (!(b > a)) return { a: a, b: a, ms: 0 };
-  return { a: a, b: b, ms: (b - a) - (s.store ? 0 : capBreakMs_(a, b, brk)) };
+  return { a: a, b: b, ms: (b - a) - capBreakMs_(a, b, capBrkOf_(s.store, brk)) };
 }
 function capFillIn_(ev, nextMs, fill) {
   var end = fill ? fill('in', ev) : null;
@@ -227,7 +239,7 @@ function capMinus_(a, b, used) {
 }
 /** 某一天、到 t 為止已核准（dec ≤ t）的請假、出差算多少毫秒。work＝那天的打卡區間（正在上班那段算到 t）。
  *  有時段的單（照開始時間先後）：時段扣掉打卡區間、扣掉前面已算過的單（重疊不重複算，同一筆假重複建單也只算一次）；
- *  本店的單（store ''）再扣不打卡休息時段；最多算單上時數。只填時數的單不在這裡算（capLiveLeaves_ 已排除；傳進來就略過）。 */
+ *  再扣那家店的不打卡休息時段（本店照本店設定、別家店照 CAP_PEER_BRK_）；最多算單上時數。只填時數的單不在這裡算（capLiveLeaves_ 已排除；傳進來就略過）。 */
 function capLeaveMs_(leaves, day, work, brk, t) {
   var list = (leaves || []).filter(function (l) { return l && l.day === day && l.ms > 0 && !(l.dec > t); });
   if (!list.length) return 0;
@@ -236,7 +248,7 @@ function capLeaveMs_(leaves, day, work, brk, t) {
   list.forEach(function (l) {
     if (l.a === null || l.b === null) return;
     var len = 0;
-    capMinus_(l.a, l.b, used).forEach(function (f) { len += (f[1] - f[0]) - (l.store ? 0 : capBreakMs_(f[0], f[1], brk)); });
+    capMinus_(l.a, l.b, used).forEach(function (f) { len += (f[1] - f[0]) - capBreakMs_(f[0], f[1], capBrkOf_(l.store, brk)); });
     sum += Math.min(l.ms, Math.max(0, len));
     used = capUnion_(used.concat([[l.a, l.b]]));
   });

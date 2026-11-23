@@ -339,6 +339,45 @@ const restReason = (m) => { const s = m.sb.restStatus_(m.self, ME); return s.war
   check('N18f', '同一個人：收卡算的今日時數＝提醒算的（9 小時，同一支 capJudge_）', [st.cap.in_block, d.total / 3600000, d.punch / 3600000], [false, 9, 9]);
 }
 
+console.log('\n════ 別家店（央廚 cf、總部 hq）的固定休息也扣（Codex 第一輪擋項二；CAP_PEER_BRK_）════');
+{
+  const CKME = { emp_id: 'C07', name: '測試一', key: 'KC', device_id: 'DC', active: 'TRUE' };
+  // 一般門市判定（本店 CONFIG 沒有休息）；別家店照正式 RestConfig 用店代碼 cf／hq
+  const peerWorld = (now, selfEvs, code, peerEvs, o) => {
+    o = o || {};
+    const m = world(now, selfEvs, { peers: { PSS: { roster: [CKME], events: peerEvs } } });
+    m.sb.REST_PEERS_ = [{ code: code, ss: 'PSS' }, { code: 'gf', ss: 'SELF' }];
+    if (o.reqs) reqs(m, m.self, o.reqs, 'E01');
+    if (o.peerReqs) reqs(m, m.peers.PSS, o.peerReqs, 'C07');
+    return m;
+  };
+  const sysFirst = (m, from, to) => { for (let t = T(from); t <= T(to); t += 60000) { m.setNow(t); m.sb.capSweep(); const r = sysRows(m); if (r.length) return String(r[0][0]).slice(11, 16); } return null; };
+  const CK = [[D + 'T08:00:00', 'C07', 'in'], [D + 'T14:00:00', 'C07', 'out']];
+  check('X1★', '央廚 08–14（12–13 休息）＋假 14–15＋15:00 門市上班 → 5＋1＋4，19:00 收（改前把央廚算 6、18:00 收）',
+    sysFirst(peerWorld(D + 'T15:00:00', [[D + 'T15:00:00', 'E01', 'in']], 'cf', CK, { reqs: [['leave', D, '14:00', '15:00', 1]] }), D + 'T17:30:00', D + 'T21:00:00'), '19:00');
+  check('X2★', '同上沒有假單 → 5＋5，20:00 收（改前 19:00）',
+    sysFirst(peerWorld(D + 'T15:00:00', [[D + 'T15:00:00', 'E01', 'in']], 'cf', CK), D + 'T18:30:00', D + 'T21:00:00'), '20:00');
+  check('X3★', '總部 08–16（14–15 休息）＋16:01 門市上班（取整 16:15）→ 7＋3，19:15 收（改前 18:15）',
+    sysFirst(peerWorld(D + 'T16:01:00', [[D + 'T16:01:00', 'E01', 'in']], 'hq', [[D + 'T08:00:00', 'C07', 'in'], [D + 'T16:00:00', 'C07', 'out']]), D + 'T17:30:00', D + 'T20:00:00'), '19:15');
+  check('X4', '央廚 13:00–17:00 沒跨到 12–13 → 不扣：4＋6，17:30 上班 23:30 收',
+    sysFirst(peerWorld(D + 'T17:30:00', [[D + 'T17:30:00', 'E01', 'in']], 'cf', [[D + 'T13:00:00', 'C07', 'in'], [D + 'T17:00:00', 'C07', 'out']]), D + 'T23:00:00', D + 'T23:59:00'), '23:30');
+  {
+    const m = peerWorld(D + 'T15:00:00', [], 'cf', []);
+    const seg = { in: T(D + 'T10:00:00'), out: T(D + 'T12:30:00') };
+    const cross = m.sb.capSegSpan_(Object.assign({ store: 'cf' }, seg), null).ms / 3600000;
+    const own = m.sb.capSegSpan_(Object.assign({ store: '' }, seg), CF.NO_PUNCH_BREAK_START ? { s: CF.NO_PUNCH_BREAK_START, e: CF.NO_PUNCH_BREAK_END } : null).ms / 3600000;
+    check('X5★', '央廚 10:00–12:30 只跨到一部分休息：跨店算＝央廚本店算＝2 小時（同一支 capBreakMs_；改前跨店 2.5）', [cross, own], [2, 2]);
+    check('X5b', '不在表上的別家店（一般門市代碼）不扣；表只有央廚、總部兩家', [m.sb.capSegSpan_(Object.assign({ store: 'mztjs' }, seg), { s: '12:00', e: '13:00' }).ms / 3600000, JSON.stringify(m.sb.CAP_PEER_BRK_)],
+      [2.5, JSON.stringify({ cf: { s: '12:00', e: '13:00' }, hq: { s: '14:00', e: '15:00' } })]);
+  }
+  check('X6★', '央廚申請的假 11:00–14:00（單上寫 3 小時）跨到 12–13 → 只算 2；14:00 門市上班 2＋8，22:00 收（改前算 3、21:00 收）',
+    sysFirst(peerWorld(D + 'T14:00:00', [[D + 'T14:00:00', 'E01', 'in']], 'cf', [], { peerReqs: [['leave', D, '11:00', '14:00', 3]] }), D + 'T20:30:00', D + 'T23:00:00'), '22:00');
+  {
+    const m = world(D + 'T19:00:00', [[D + 'T08:00:00', 'E01', 'in']], { config: CF });
+    check('X7', '央廚本店的段照舊用本店設定：08:00 上班、扣 12–13，19:00 收', sysAt(m, D + 'T19:00:00'), '19:00');
+  }
+}
+
 console.log('\n════ 假單時段格式（Codex 第一輪殘餘風險：capHmMin_ 只收整格時:分）════');
 {
   const m = world(D + 'T17:00:00', [[D + 'T09:00:00', 'E01', 'in']], { reqs: [['leave', D, '06:00x', '08:00x', 2]] });
