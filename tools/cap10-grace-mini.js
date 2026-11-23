@@ -219,6 +219,41 @@ const ok = (id, label, got, want) => { const pass = JSON.stringify(got) === JSON
       [s.cap && s.cap.locked, s.cap && s.cap.grace_hm || null], pullJsFirst ? [true, null] : [false, '19:00']);
     await app.stop(); await g.close(); fs.rmSync(dir, { recursive: true, force: true });
   }
+  // ⑩ 跨店補時（2026-11-24）：金山（mztjs，B07）09:00 上班沒打下班、金山班表 09–18；17:30 到光復（E01）上班。光復由 mini 處理。
+  //   M24：光復 '3' → mini 開頁用金山的班表把那張補到 17:30 → 19:00 滿 10 → mini 寫光復 19:00、鎖；抄回後金山（Google）掃描不寫。
+  //   M25：光復 '1'（38d0340）→ mini 開頁不鎖、不寫（現行缺口）。快速通道那一側有金山的打卡列副本與光復 sched_pub 副本（金山班表在裡面），夠用。
+  for (const [id, cap] of [['M24', '3'], ['M25', '1']]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap10-grace-mini-f-'));
+    const JS = { lat: 25.2, lng: 121.6 }, KEY_JS = 'j'.repeat(32);
+    const stores = [{ code: '', dir: 'fake-gf', ss: 'SS_GF', lat: GF.lat, lng: GF.lng, radius_m: 20, relayKey: KEY_GF },
+      { code: 'mztjs', dir: 'fake-js', ss: 'SS_JS', lat: JS.lat, lng: JS.lng, radius_m: 20, relayKey: KEY_JS }];
+    buildGasRoot(REPO, dir, stores); patchSingle(dir, stores);
+    let now = T('08:00:00');
+    const ev = (ts, emp, dev, loc) => ({ ts, emp_id: emp, type: 'in', lat: loc.lat, lng: loc.lng, distance_m: 0, within_range: true, device_id: dev, device_match: true, status: 'ok', accuracy_m: 5 });
+    const g = makeFakeGoogle({ gasRoot: dir, stores, now, tokens: { TOK1: SUB1 }, seed: {
+      gf: { roster: [{ emp_id: 'E01', name: '測試一', key: 'K1', device_id: 'D1', active: 'TRUE', line_user_id: SUB1 }], events: [ev(D + 'T17:30:00+08:00', 'E01', 'D1', GF)], props: { REQ_BIND_FROM: 'off', REST_CAP_ON: cap } },
+      mztjs: { roster: [{ emp_id: 'B07', name: '測試一', key: 'KB', device_id: 'DB', active: 'TRUE' }], events: [ev(D + 'T09:00:00+08:00', 'B07', 'DB', JS)], props: { REQ_BIND_FROM: 'off', REST_CAP_ON: cap } } } });
+    const port = await g.listen(0), base = 'http://127.0.0.1:' + port;
+    const cfg = buildConfig({ STORE_GF_URL: base + '/s/gf', STORE_GF_RELAY_KEY: KEY_GF, STORE_MZTJS_URL: base + '/s/mztjs', STORE_MZTJS_RELAY_KEY: KEY_JS,
+      LINE_CHANNEL_ID: '2011292256', ADMIN_KEY: ADMIN, G_ENABLED: '1', G_GAS_ROOT: dir },
+      [{ code: '', name: '光復', lat: GF.lat, lng: GF.lng, radius_m: 20, gas_dir: 'fake-gf' }, { code: 'mztjs', name: '金山', lat: JS.lat, lng: JS.lng, radius_m: 20, gas_dir: 'fake-js' }]);
+    const bSched = { start: '2026-11-01', shifts: SCHED.shifts, rows: [{ emp_id: 'B07', name: '測試一', cells: SCHED.rows[0].cells }] };
+    g.eng.sandbox('').SpreadsheetApp.openById('SS_GF').setSheet('sched_pub', [SP_HEAD, ['mztjs', 'T01', 1, JSON.stringify(bSched), 'op', '']]);
+    const app = createApp(cfg, { dbPath: ':memory:', gDbPath: ':memory:', gasRoot: dir, now: () => now, verifyUrl: base + '/line/verify', snapDir: path.join(dir, 'snap'),
+      backupDir: path.join(dir, 'bak'), log: () => {}, remoteOpts: { tries: 1, timeoutMs: 5000, echoMs: 10, retryMs: 10 } });
+    const p = app.primary;
+    await p.pull('', { full: true }); await p.pull('mztjs', { full: true }); await p.setPrimary(true, ['']);
+    now = T('19:05:00'); g.setNow(now); await p.pull('', { sheets: true }); await p.pull('mztjs', { sheets: true });
+    const s = await p.handleStatus({ store: 'gf', id_token: 'TOK1' });
+    const mHm = () => p.gs.all('').filter((r) => String(r.data.source || '') === 'system_cap').map((r) => String(r.data.ts).slice(11, 16));
+    const m1 = mHm();
+    await p.pushAll(); await p.pull('', { full: true }); await p.pull('mztjs', { full: true });
+    g.eng.sandbox('mztjs').capSweep();
+    const gHm = (c) => g.events(c).filter((e) => String(e.source) === 'system_cap').map((e) => String(e.ts).slice(11, 16));
+    ok(id, cap === '3' ? "光復 '3'：mini 開頁補上金山那段 → 鎖 19:00、mini 寫光復 19:00；抄回後光復 Google 一張、金山掃描不寫" : "光復 '1'（38d0340）：mini 開頁不鎖、不寫（現行缺口）",
+      [s.cap && s.cap.locked, s.cap && s.cap.sys_hm || null, m1, gHm(''), gHm('mztjs')], cap === '3' ? [true, '19:00', ['19:00'], ['19:00'], []] : [false, null, [], [], []]);
+    await app.stop(); await g.close(); fs.rmSync(dir, { recursive: true, force: true });
+  }
   // ⑦ 凌晨才刷進跨夜班（審查第一輪第 2 條）：11/20 18:00–02:00、11/21 例假；11/21 00:05 上班，10:20 mini 開頁、Google 掃描
   {
     const w = await setup('2');
