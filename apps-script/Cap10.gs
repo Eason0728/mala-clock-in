@@ -242,11 +242,13 @@ function capLeaveMs_(leaves, day, work, brk, t) {
   });
   return sum;
 }
-/** 'HH:MM'（或 Sheets 轉成的日期物件）→ 當天第幾分鐘；不合法回 null */
+/** 'HH:MM'／'H:MM'（或 Sheets 轉成的日期物件）→ 當天第幾分鐘；不合法回 null。
+ *  整格要剛好是時:分（2026-11-23 Codex 審查殘餘風險）：'06:00x' 這種壞格式原本取前綴當 06:00、可能誤收；現在回 null＝當成沒填時段（不進即時收卡）。
+ *  正式資料只有 Sheets 時間物件、'HH:MM'、空白三種（11/23 唯讀查 mini 申請副本 591 列），都照收。 */
 function capHmMin_(v) {
   if (v === null || v === undefined || v === '') return null;
   if (Object.prototype.toString.call(v) === '[object Date]') v = Utilities.formatDate(v, 'Asia/Taipei', 'HH:mm');
-  var m = /^(\d{1,2}):(\d{2})/.exec(String(v).trim());
+  var m = /^(\d{1,2}):(\d{2})$/.exec(String(v).trim());
   if (!m || +m[1] > 23 || +m[2] > 59) return null;
   return (+m[1]) * 60 + (+m[2]);
 }

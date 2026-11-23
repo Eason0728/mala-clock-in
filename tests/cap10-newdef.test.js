@@ -339,6 +339,24 @@ const restReason = (m) => { const s = m.sb.restStatus_(m.self, ME); return s.war
   check('N18f', '同一個人：收卡算的今日時數＝提醒算的（9 小時，同一支 capJudge_）', [st.cap.in_block, d.total / 3600000, d.punch / 3600000], [false, 9, 9]);
 }
 
+console.log('\n════ 假單時段格式（Codex 第一輪殘餘風險：capHmMin_ 只收整格時:分）════');
+{
+  const m = world(D + 'T17:00:00', [[D + 'T09:00:00', 'E01', 'in']], { reqs: [['leave', D, '06:00x', '08:00x', 2]] });
+  check('F1★', '壞格式時段 06:00x–08:00x（2 小時）＝當成沒填時段：17:00 不收（改前取前綴當 06:00–08:00、17:00 誤收）', [status(m).cap.locked, sysRows(m).length], [false, 0]);
+  check('F1b', '只算打卡：19:00 才收', sysAt(m, D + 'T19:00:00'), '19:00');
+}
+{
+  const m = world(D + 'T17:00:00', [[D + 'T09:00:00', 'E01', 'in']], { reqs: [['leave', D, '6:00', ' 08:00 ', 2]] });
+  check('F2', '正常寫法 6:00／前後空白 08:00 照收：打卡 8＋假 2，17:00 收', sysAt(m, D + 'T17:00:00'), '17:00');
+}
+{
+  const m = world(D + 'T09:00:00', []);
+  const f = (v) => m.sb.capHmMin_(v);
+  check('F3', '格式表：HH:MM、H:MM、Sheets 時間物件收；HH:MM:SS、06:00x、24:00、12:60、全形冒號、空白回 null',
+    [f('09:30'), f('9:30'), f(new m.sb.Date('1899-12-30T09:30:00+08:00')), f('09:30:00'), f('06:00x'), f('24:00'), f('12:60'), f('09：30'), f('')],
+    [570, 570, 570, null, null, null, null, null, null]);
+}
+
 console.log('\n════ 09:00 通知匣（Payroll.gs payDayLoadOver_；事後：只填時數的假照算）════');
 {
   const code = R('apps-script/Code.gs'), pay = R('apps-script/Payroll.gs');
