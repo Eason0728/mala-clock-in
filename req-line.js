@@ -185,10 +185,10 @@
     return s;
   }
   /** 影子回報（Google 回來後告訴 mini 結果，fire-and-forget）。 */
-  function shadowNote(url, idToken, reqId, r) {
+  function shadowNote(url, reqId, r) {   // 不帶 LINE 登入憑證：營運系統只用店別＋req_id 找影子紀錄（server/proxy/duty.js:2402-2409 不驗身分）
     try {
       var g = { ok: !!(r && r.ok), error: (r && r.error) || '', message: (r && r.message) || '' };
-      var body = JSON.stringify({ op: 'shadow_note', url: url, id_token: idToken, req_id: reqId, g: g });
+      var body = JSON.stringify({ op: 'shadow_note', url: url, req_id: reqId, g: g });
       try { if (navigator.sendBeacon && navigator.sendBeacon(E.MINI_REQ_API, new Blob([body], { type: 'text/plain' }))) return; } catch (e) {}
       try { fetch(E.MINI_REQ_API, { method: 'POST', body: body, mode: 'no-cors', keepalive: true }).catch(function () {}); } catch (e) {}
     } catch (e) {}
@@ -201,17 +201,24 @@
     Object.keys(body).forEach(function (k) { if (k !== 'action' && k !== 'id_token') mb[k] = body[k]; });
     var toG = function (shadow) {
       var gb = op === 'submit' ? Object.assign({}, body, { req_id: reqId }) : body;   // 只有送出帶單號給 Google（取消用申請單 id，g-line.md 只定義 req_submit 的 req_id）
-      return E.post(url, gb).then(function (r) { if (shadow) shadowNote(url, body.id_token, reqId, r); return r; });
+      return E.post(url, gb).then(function (r) { if (shadow) shadowNote(url, reqId, r); return r; });
     };
     var capT, cap = new Promise(function (res, rej) { capT = setTimeout(function () { rej(new Error('mini_timeout')); }, SUBMIT_MINI_MS); });   // 舊手機沒有 AbortController 也最多等這麼久
     var mp;
     try { mp = E.post(E.MINI_REQ_API, { op: op, url: url, id_token: body.id_token, req_id: reqId, body: mb }, SUBMIT_MINI_MS); } catch (e) { mp = Promise.reject(e); }
     return Promise.race([mp, cap]).then(function (r) {
       clearTimeout(capT);
-      if (r && r.ok === true && r.src === 'mini' && r.data && typeof r.data === 'object') return r.data;
-      return toG(!!(r && r.ok === false && r.error === 'mini_off' && r.shadow === true));
+      var d = miniReply(r);
+      if (d && d.ok === true && d.src === 'mini' && isObj(d.data) && typeof d.data.ok === 'boolean') return d.data;   // 最內層是 Google 形狀的回應：非陣列物件、有布林 ok；否則當 mini 沒收，改送 Google
+      return toG(!!(d && d.ok === false && d.error === 'mini_off' && d.shadow === true));
     }, function () { clearTimeout(capT); return toG(false); });
   }
+  /** 營運系統的回應一律包一層 { ok:true, data:<line-req 的回傳> }（mala-store-ops server/index.js 路由收尾；讀取那條 miniPeek／viaMini 也是拆 r.data）。
+   *  拆出裡面那層：外層不是 ok:true 或裡面不是物件（伺服器錯誤、被擋、回應怪）→ null＝當 mini 沒收，由呼叫端改送 Google。 */
+  function isObj(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
+  function miniReply(r) { return r && r.ok === true && isObj(r.data) ? r.data : null; }
+  /** 送出成功訊息「：摘要」那一段。回應沒有 summary（mini 的同單號重送 { ok:true, dup:true }）就不接，畫面與聊天只留「已送出」，不出現 undefined；有 summary 時字串與以前逐字相同（Google 的成功回應一定有，Requests.gs:841、866、868、1049）。 */
+  function sumTail(r) { return r && r.summary ? '：' + r.summary : ''; }
 
   /* ── 開頁 ── */
   /* 手機記住的開頁資料（2026-11-06）：只記店別清單、上次用的店、假別清單；額度與補休帳會變，不記。
@@ -1426,13 +1433,13 @@
         }
         if (!r || !r.ok) { out.appendChild(msgBox((r && r.message) || '送出沒有成功，請再試一次', 'err')); if (r && r.seg) markSegBad(r.seg); return; }
         reset();
-        tellChat('申請已送出：' + r.summary);
+        tellChat('申請已送出' + sumTail(r));
         var two = r.requests && r.requests.length >= 2;   // 一次填多段：變成好幾張單（2026-11-18 兩段；2026-11-21 加班最多四段）
         var warns = [];
         (two ? r.requests : [r.request]).forEach(function (q) { ((q && q.warns) || []).forEach(function (w) { if (warns.indexOf(w) < 0) warns.push(w); }); });
         // 先把剛送出的列畫出來、立刻切到「我的申請」，伺服器最新清單在背景重讀（2026-11-18；以前同步等 req_info 約 3.5 秒才換畫面）
         if (st.store && sentCode !== null && st.store.code === sentCode) adoptRows(two ? r.requests : [r.request]);
-        st.flash = { cls: 'ok', text: '✓ 已送出：' + r.summary
+        st.flash = { cls: 'ok', text: '✓ 已送出' + sumTail(r)
           + (two ? '\n會變成 ' + r.requests.length + ' 張' + ({ ot: '加班單', leave: '假單', trip: '出差單' }[r.request && r.request.kind] || '單') + '，等主管審核'
                  : r.request && r.request.kind === 'miss' ? '\n等打卡門市的店長審核' : '\n等主管審核')
           + (warns.length ? '\n' + warns.map(function (w) { return '⚠ ' + w; }).join('\n') : '') };
