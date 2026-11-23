@@ -5914,7 +5914,7 @@ function handlePayrollCompTriggerSetup(body) {
   return { ok: true, removed: removed, triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
 }
 
-/* 單日核定超過 10 小時（2026-11-01 Eason）：照實核定、不擋，每天 09:00 把各店「前一天」核定超過 10 小時的人列進通知匣（一般件）。
+/* 單日核定超過 10 小時（2026-11-01 Eason；2026-11-23 起改「當日出勤滿 10 小時」，見下）：照實核定、不擋，每天 09:00 把各店「前一天」的人列進通知匣（一般件）。
    打卡端的上班卡擋法在 Rest.gs；這裡只看主管實際核了幾小時（approved 分頁，同一天多筆取最新）。
    總部的 HQ- 同仁由央廚表鏡像過去（Mirror.js），兩家店同一人同一天只列一次。觸發器用 payroll_rest_trigger_setup 建。 */
 var PAY_DAY_MAX_H = 10;
