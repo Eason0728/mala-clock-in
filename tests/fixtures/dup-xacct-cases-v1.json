@@ -1,0 +1,287 @@
+{
+  "_note": "跨帳號重複出差／請假判斷的共用案例（2026-11-23，_brain_out/dup-trip-leave/design.md）。mala-clock-in tests/fixtures 與 mala-store-ops test/fixtures 兩份必須逐字相同。輸入＝payDupXacctCore_／dup-xacct.findDups 的 accts、opt；expect 每筆 [date, kind, cats, pay, approved, a.id, b.id]。全部虛構。",
+  "cases": [
+    {
+      "name": "設計 1：DZY010 11/5 總部帳號整天出差 8 小時＋墨竹亭光復帳號整天出差 8 小時，都已核准 → (a)，鎖月擋",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R-HQ-1", "kind": "trip", "status": "approved", "date": "2026-11-05", "leave_type": "", "start": "", "end": "", "hours": 8, "voided_at": "", "mirror_src": "" }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R-GF-1", "kind": "trip", "status": "approved", "date": "2026-11-05", "leave_type": "", "start": "", "end": "", "hours": 8, "voided_at": "", "mirror_src": "" }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-05", "trip", ["a"], true, true, "R-HQ-1", "R-GF-1"]]
+    },
+    {
+      "name": "設計 2：總部出差 09:00–12:00＋墨竹亭光復出差 14:00–18:00 → 不重疊",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-06", "leave_type": "", "start": "09:00", "end": "12:00", "hours": 3 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "trip", "status": "approved", "date": "2026-11-06", "leave_type": "", "start": "14:00", "end": "18:00", "hours": 4 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": []
+    },
+    {
+      "name": "設計 3：總部出差只填 8 小時＋金山帳號事假 14:00–18:00 → (a)+(c)，事假在支援店＝只提醒",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-07", "leave_type": "", "start": "", "end": "", "hours": 8 }] },
+        { "key": "ID-JS|MZTJS14", "store": "MZTJS", "store_name": "墨竹亭金山", "acct": "MZTJS14", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "leave", "status": "approved", "date": "2026-11-07", "leave_type": "事假", "start": "14:00", "end": "18:00", "hours": 4 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-07", "mixed", ["a", "c"], false, true, "R1", "R2"]]
+    },
+    {
+      "name": "設計 4：同一帳號補休 15:00–16:30＋補休 23:15–23:30 → 不重疊",
+      "accts": [
+        { "key": "LOCAL|home", "store": "SSLGF", "store_name": "小辛辣光復", "acct": "E01", "role": "home",
+          "rows": [
+            { "id": "R1", "kind": "leave", "status": "approved", "date": "2026-11-04", "leave_type": "補休", "start": "15:00", "end": "16:30", "hours": 1.5 },
+            { "id": "R2", "kind": "leave", "status": "approved", "date": "2026-11-04", "leave_type": "補休", "start": "23:15", "end": "23:30", "hours": 0.25 }
+          ] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": []
+    },
+    {
+      "name": "設計 5：同一帳號出差 15:30–17:30＋補休 13:30–14:30 → 不重疊",
+      "accts": [
+        { "key": "ID-GF|home", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF08", "role": "home",
+          "rows": [
+            { "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-06", "leave_type": "", "start": "15:30", "end": "17:30", "hours": 2 },
+            { "id": "R2", "kind": "leave", "status": "approved", "date": "2026-11-06", "leave_type": "補休", "start": "13:30", "end": "14:30", "hours": 1 }
+          ] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": []
+    },
+    {
+      "name": "設計 6：跨夜 A 帳號出差 22:00–01:00＋B 帳號請假 00:00–02:00 → 凌晨那一小時重疊；請假在支援帳號＝只提醒",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-08", "leave_type": "", "start": "22:00", "end": "01:00", "hours": 3 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "leave", "status": "approved", "date": "2026-11-08", "leave_type": "事假", "start": "00:00", "end": "02:00", "hours": 2 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-08", "mixed", ["a", "c"], false, true, "R1", "R2"]]
+    },
+    {
+      "name": "設計 6 變化：跨夜，請假在計薪那家店 → (a)+(c)，鎖月擋（②）",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R2", "kind": "leave", "status": "approved", "date": "2026-11-08", "leave_type": "事假", "start": "00:00", "end": "02:00", "hours": 2 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-08", "leave_type": "", "start": "22:00", "end": "01:00", "hours": 3 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-08", "mixed", ["a", "c"], true, true, "R2", "R1"]]
+    },
+    {
+      "name": "設計 7：A 帳號出差 09:00–17:00 已核准＋B 帳號出差 10:00–12:00 審核中 → 鎖月只看已核准，不算",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-09", "leave_type": "", "start": "09:00", "end": "17:00", "hours": 8 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "trip", "status": "pending", "date": "2026-11-09", "leave_type": "", "start": "10:00", "end": "12:00", "hours": 2 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": []
+    },
+    {
+      "name": "設計 7 第二階段：同上，核准當下把審核中也算進來 → 命中、approved=false",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-09", "leave_type": "", "start": "09:00", "end": "17:00", "hours": 8 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "trip", "status": "pending", "date": "2026-11-09", "leave_type": "", "start": "10:00", "end": "12:00", "hours": 2 }] }
+      ],
+      "opt": { "ym": "2026-11", "statuses": ["approved", "pending"] },
+      "expect": [["2026-11-09", "trip", ["a"], true, false, "R1", "R2"]]
+    },
+    {
+      "name": "設計 9：小辛辣光復 E01 出差 8 小時＋墨竹亭金山支援帳號出差 8 小時（跨單位，remind）→ (a)，只提醒",
+      "accts": [
+        { "key": "LOCAL|home", "store": "SSLGF", "store_name": "小辛辣光復", "acct": "E01", "role": "home",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-10", "leave_type": "", "start": "", "end": "", "hours": 8 }] },
+        { "key": "ID-JS|MZTJS20", "store": "MZTJS", "store_name": "墨竹亭金山", "acct": "MZTJS20", "role": "remind",
+          "rows": [{ "id": "R2", "kind": "trip", "status": "approved", "date": "2026-11-10", "leave_type": "", "start": "", "end": "", "hours": 8 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-10", "trip", ["a"], false, true, "R1", "R2"]]
+    },
+    {
+      "name": "設計 10：總部表裡 Mirror 抄自央廚的列（mirror_src=CF）先排除 → 不算",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-01", "role": "home",
+          "rows": [
+            { "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-11", "leave_type": "", "start": "", "end": "", "hours": 8 },
+            { "id": "R1m", "kind": "trip", "status": "approved", "date": "2026-11-11", "leave_type": "", "start": "", "end": "", "hours": 8, "mirror_src": "CF" }
+          ] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": []
+    },
+    {
+      "name": "出差＋計薪那家店請假（都只填時數）→ (a)+(c)，鎖月擋（②）",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "leave", "status": "approved", "date": "2026-11-12", "leave_type": "特休假", "start": "", "end": "", "hours": 8 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "trip", "status": "approved", "date": "2026-11-12", "leave_type": "", "start": "", "end": "", "hours": 8 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-12", "mixed", ["a", "c"], true, true, "R1", "R2"]]
+    },
+    {
+      "name": "請假在計薪那家店＋跨單位（remind）帳號出差 → ②照主管定案 A 字面擋（PAY_DUP_R2_ANY_TRIP_ / R2_ANY_TRIP＝true；改 false 時這案變只提醒）",
+      "accts": [
+        { "key": "LOCAL|home", "store": "SSLGF", "store_name": "小辛辣光復", "acct": "E01", "role": "home",
+          "rows": [{ "id": "R1", "kind": "leave", "status": "approved", "date": "2026-11-12", "leave_type": "事假", "start": "", "end": "", "hours": 8 }] },
+        { "key": "ID-JS|MZTJS20", "store": "MZTJS", "store_name": "墨竹亭金山", "acct": "MZTJS20", "role": "remind",
+          "rows": [{ "id": "R2", "kind": "trip", "status": "approved", "date": "2026-11-12", "leave_type": "", "start": "", "end": "", "hours": 8 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-12", "mixed", ["a", "c"], true, true, "R1", "R2"]]
+    },
+    {
+      "name": "同一帳號兩張重疊：出差 09:00–12:00＋事假 11:00–13:00 → (c)，鎖月擋（③）",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [
+            { "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-13", "leave_type": "", "start": "09:00", "end": "12:00", "hours": 3 },
+            { "id": "R2", "kind": "leave", "status": "approved", "date": "2026-11-13", "leave_type": "事假", "start": "11:00", "end": "13:00", "hours": 2 }
+          ] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-13", "mixed", ["c"], true, true, "R1", "R2"]]
+    },
+    {
+      "name": "同一帳號兩張重疊：事假 09:00–12:00＋病假 10:00–11:00 → (b)，鎖月擋（③，同類不同假別也算）",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [
+            { "id": "R1", "kind": "leave", "status": "approved", "date": "2026-11-14", "leave_type": "事假", "start": "09:00", "end": "12:00", "hours": 3 },
+            { "id": "R2", "kind": "leave", "status": "approved", "date": "2026-11-14", "leave_type": "病假", "start": "10:00", "end": "11:00", "hours": 1 }
+          ] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-14", "leave", ["b"], true, true, "R1", "R2"]]
+    },
+    {
+      "name": "同一個支援帳號（remind）裡兩張重疊 → 也算③，鎖月擋（主管定案原文「同一個帳號裡兩張重疊的已核准單」）",
+      "accts": [
+        { "key": "ID-JS|MZTJS20", "store": "MZTJS", "store_name": "墨竹亭金山", "acct": "MZTJS20", "role": "remind",
+          "rows": [
+            { "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-15", "leave_type": "", "start": "09:00", "end": "12:00", "hours": 3 },
+            { "id": "R2", "kind": "leave", "status": "approved", "date": "2026-11-15", "leave_type": "事假", "start": "11:00", "end": "13:00", "hours": 2 }
+          ] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-15", "mixed", ["c"], true, true, "R1", "R2"]]
+    },
+    {
+      "name": "剛好接在一起：出差 08:00–12:00＋另一帳號出差 12:00–18:00 → 不算",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-16", "leave_type": "", "start": "08:00", "end": "12:00", "hours": 4 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "trip", "status": "approved", "date": "2026-11-16", "leave_type": "", "start": "12:00", "end": "18:00", "hours": 6 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": []
+    },
+    {
+      "name": "只填時數沒填起訖：出差 09:00–10:00＋另一帳號出差只填 1 小時 → 當整天，重疊，鎖月擋",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-17", "leave_type": "", "start": "09:00", "end": "10:00", "hours": 1 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "trip", "status": "approved", "date": "2026-11-17", "leave_type": "", "start": "", "end": "", "hours": 1 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-17", "trip", ["a"], true, true, "R1", "R2"]]
+    },
+    {
+      "name": "只填開始、沒填結束 → 也當整天",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-17", "leave_type": "", "start": "09:00", "end": "10:00", "hours": 1 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "trip", "status": "approved", "date": "2026-11-17", "leave_type": "", "start": "20:00", "end": "", "hours": 1 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-17", "trip", ["a"], true, true, "R1", "R2"]]
+    },
+    {
+      "name": "其中一張已作廢（status voided）、一張退回、一張 voided_at 有值 → 都不算",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-18", "leave_type": "", "start": "", "end": "", "hours": 8 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [
+            { "id": "R2", "kind": "trip", "status": "voided", "date": "2026-11-18", "leave_type": "", "start": "", "end": "", "hours": 8, "voided_at": "2026-11-20T10:00:00+08:00" },
+            { "id": "R3", "kind": "trip", "status": "rejected", "date": "2026-11-18", "leave_type": "", "start": "", "end": "", "hours": 8 },
+            { "id": "R4", "kind": "trip", "status": "approved", "date": "2026-11-18", "leave_type": "", "start": "", "end": "", "hours": 8, "voided_at": "2026-11-20T10:00:00+08:00" }
+          ] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": []
+    },
+    {
+      "name": "請假＋請假、不同帳號 → (a)，只提醒",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "leave", "status": "approved", "date": "2026-11-19", "leave_type": "事假", "start": "", "end": "", "hours": 8 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "leave", "status": "approved", "date": "2026-11-19", "leave_type": "事假", "start": "", "end": "", "hours": 8 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-19", "leave", ["a"], false, true, "R1", "R2"]]
+    },
+    {
+      "name": "出差＋出差，兩個都是會帶入的支援帳號（本店沒有單）→ ①，鎖月擋",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home", "rows": [] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-20", "leave_type": "", "start": "", "end": "", "hours": 8 }] },
+        { "key": "ID-JS|MZTJS14", "store": "MZTJS", "store_name": "墨竹亭金山", "acct": "MZTJS14", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "trip", "status": "approved", "date": "2026-11-20", "leave_type": "", "start": "", "end": "", "hours": 8 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-20", "trip", ["a"], true, true, "R1", "R2"]]
+    },
+    {
+      "name": "不同天、不同月 → 不算；同一份表同一張單出現兩次只算一次",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [
+            { "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-21", "leave_type": "", "start": "", "end": "", "hours": 8 },
+            { "id": "R1", "kind": "trip", "status": "approved", "date": "2026-11-21", "leave_type": "", "start": "", "end": "", "hours": 8 },
+            { "id": "R9", "kind": "trip", "status": "approved", "date": "2026-12-01", "leave_type": "", "start": "", "end": "", "hours": 8 }
+          ] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [
+            { "id": "R2", "kind": "trip", "status": "approved", "date": "2026-11-22", "leave_type": "", "start": "", "end": "", "hours": 8 },
+            { "id": "R3", "kind": "trip", "status": "approved", "date": "2026-12-01", "leave_type": "", "start": "", "end": "", "hours": 8 }
+          ] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": []
+    },
+    {
+      "name": "加班單、忘打卡單不看",
+      "accts": [
+        { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
+          "rows": [{ "id": "R1", "kind": "ot", "status": "approved", "date": "2026-11-23", "leave_type": "", "start": "18:00", "end": "20:00", "hours": 2 }] },
+        { "key": "ID-GF|MZTGF01", "store": "MZTGF", "store_name": "墨竹亭光復", "acct": "MZTGF01", "role": "pay",
+          "rows": [{ "id": "R2", "kind": "miss", "status": "approved", "date": "2026-11-23", "leave_type": "", "start": "18:00", "end": "", "hours": "" }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": []
+    }
+  ]
+}

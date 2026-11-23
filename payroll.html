@@ -693,6 +693,7 @@ let SAME_NAME=[];   // 本月有請假、名冊同名的人（payroll_month same
 let ASOF=null;   // 本月草稿算到哪一天（後端 asof：{as_of,days_elapsed,days_in_month,run_at,unapproved} 或 {day1:true}）；其他月份 null
 let ROSTER_MISS=[];   // 主檔工號在打卡名冊找不到的人（payroll_month roster_mismatch，2026-11-06）
 let ZERO_RATIO=[];   // 本月在職天數 0 卻有一列薪資的人（payroll_month／payroll_calc 的 zero_ratio_with_data，2026-11-11）
+let DUPX_ON=false;   // 後端回 dup_xacct_on（跨帳號重複檢查開著）才顯示那類提醒；關著時草稿留著的舊提醒不顯示
 let LEAVE_MM=[];   // 請假單和請假登記對不上（payroll_calc 的 leave_mismatch，1113 紅燈 a1）：鎖定前要先處理
 let NOT_IN_PAY=[];   // 主檔已停用、離職日不在本月、本月卻有時數的人（payroll_month／payroll_calc 的 not_in_payroll，2026-11-11）
 let SUPA=null;   // 跨店支援自動帶入（2026-11 起後端 payroll_month 回的 support_auto；之前的月份是 null）
@@ -860,7 +861,7 @@ async function autoCalc(){
   if(STATUS==='final' || RESULTS.length) return;
   const reqStore=STORE;   // 結果是這個單位的：等回應時畫面可能已切走，標題跟著結果走
   const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
-  if(r&&r.ok){setResults(r.results,reqStore);STATUS='draft';ELEC_STALE=false;asofFromCalc(r);CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];renderRun();renderSlipSel()}
+  if(r&&r.ok){setResults(r.results,reqStore);STATUS='draft';ELEC_STALE=false;asofFromCalc(r);CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;renderRun();renderSlipSel()}
 }
 /* ═════ 未儲存提醒（2026-08-23）═════
  * 出勤資料的所有輸入（含跨店支援明細）都只寫在瀏覽器記憶體，按「儲存工時」才進試算表。
@@ -1171,7 +1172,7 @@ async function loadMonth(pre,preSeq,preGen,opts){   // pre＝開頁時先發出�
     SAME_NAME=r.same_name||[];
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
-    LEAVE_MM=r.leave_mismatch||[];
+    LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
     SUPA=r.support_auto||null; SUP_OPEN={};
     ROSTER_MISS=r.roster_mismatch||[];
@@ -1246,7 +1247,7 @@ async function doCalc(pendSeq,inputsSaved,auto){   // 回 true＝重算成功並
     asofFromCalc(r);
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
-    LEAVE_MM=r.leave_mismatch||[];
+    LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;
     vClear();   // 重算後儀表板／集團總覽的數字會變
     renderRun();renderSlipSel();toast('已重新計算');
     /* 這個月先前讀取失敗（旗標還在）、也沒有月資料在路上：重算成功後重新載入這個月，載入成功才解開（規則同切月份重新載入；2026-11-22 後續 PR）。
@@ -1834,6 +1835,9 @@ function renderOtInfo(t){
     if(o.no_show&&o.no_show.length) rows.push(`<li>${nm}：有排班、沒核定也沒請假 ${list(o.no_show)}（系統不扣，請確認要補請假或扣款）</li>`);
     if(o.support_leave&&o.support_leave.length) o.support_leave.forEach(x=>rows.push(`<li><b style="color:#b7791f">${nm}</b>：<span style="color:#b7791f">${md(x.date)} 在${esc(x.store_name)}記了${esc(x.type)} ${r2(x.hours)} 小時（支援店記的假，薪資沒扣，請確認）</span></li>`));
     if(o.manual_sup_h>0) rows.push(`<li>${nm}：手填的跨店支援有 ${r2(o.manual_sup_h)} 小時沒有日期，沒算進逐日加班</li>`);
+    // 跨帳號重複出差／請假（2026-11-23）：後端組好白話（line）；pay＝會讓薪資重複、鎖定時擋，其他只提醒
+    if(DUPX_ON) (o.dup_xacct||[]).forEach(x=>rows.push(x.pay?`<li><b class="bad">${nm}</b>：${esc(x.line)}——<b>處理前不能鎖定</b></li>`:`<li><b style="color:#b7791f">${nm}</b>：<span style="color:#b7791f">${esc(x.line)}</span></li>`));
+    if(DUPX_ON&&o.dup_xacct_err) rows.push(`<li><b class="bad">${nm}</b>：跨帳號重複出差／請假的檢查沒有做完，請按「重新計算」——<b>處理前不能鎖定</b></li>`);
   });
   box.innerHTML=rows.length?`<div class="card" style="border-left:4px solid #b4762a"><h3 style="margin:0 0 6px">${(NOT_IN_PAY.length||ZERO_RATIO.length)?'在職狀態、工號、加班與班表提醒':(ROSTER_MISS.length||SAME_NAME.length?'工號、加班與班表提醒':'加班與班表提醒')}</h3><ul style="margin:0;padding-left:20px;line-height:1.8">${rows.join('')}</ul></div>`:'';
 }
@@ -1901,7 +1905,7 @@ async function toggleLock(){
     else if(r.ok&&lock){ if(STORE+'|'+ym()===lockKey) STATUS=r.status; const ok=await loadMonth(); toast(ok?'已鎖定':'已鎖定，但重新讀取這個月失敗：請重新整理頁面、確認金額後再匯出',!ok); }   // 重讀失敗：留著讀取錯誤、匯出與鎖定鈕先擋（Codex 第六次 13b）
     else if(r.ok){STATUS=r.status;COST_SNAP=(lock&&r.cost_snap)||null;vClear();renderRun();renderElec();toast(lock?'已鎖定':'已解鎖'); if(!lock&&STORE+'|'+ym()===lockKey) await loadMonth();}   // 解鎖成功也重讀（跟鎖定一樣以後端為準，2026-11-23）
     // 補休帳是負的不能鎖定（2026-11-01）：名單可能好幾行，用對話框列清楚
-    else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='ot_form_missing'||r.error==='sched_missing'||r.error==='unapproved'||r.error==='leave_mismatch')) alert(r.message);
+    else if(lock&&(r.error==='comp_negative'||r.error==='comp_over'||r.error==='ot_form_missing'||r.error==='sched_missing'||r.error==='unapproved'||r.error==='leave_mismatch'||r.error==='dup_xacct'||r.error==='dup_xacct_check_failed')) alert(r.message);
     else if(lock&&r.error==='stale_run'){ alert(r.message+'\n\n按確定後系統會自動重新計算，請看過新數字再按一次鎖定。'); await doCalcAfterLoad(lockKey); }
     else if(lock&&r.message) lockBlockedBox(r.error,r.message);   // 待辦 17（Eason 2026-11-22 選 5A）：鎖定被擋改成要按「知道了」才關的視窗（原本紅字 2.6 秒就消失）
   } finally {
