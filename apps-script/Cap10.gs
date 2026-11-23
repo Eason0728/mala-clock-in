@@ -468,23 +468,40 @@ function capGraceIdxOk_(x) {
   if (!capGraceObj_(x) || x.v !== 1 || !capGraceObj_(x.k)) return false;
   return Object.keys(x.k).every(function (k) { var n = x.k[k]; return typeof n === 'number' && n >= 1 && n <= 1000 && Math.floor(n) === n; });
 }
+/* 內層也要合格（2026-11-23 審查第二輪第 4 條）：capGraceSlim_ 一定產出這個形狀，所以快取裡只要有一處不是，就是被改壞了 → 重讀。
+   班次：物件、id／start／end 是基本值或沒有、segs 沒有或是「每個元素都是 {start, end} 基本值」的陣列；
+   列：{emp_id 字串, cells 陣列}；格：null 或 {t 字串, s 基本值或沒有}。 */
+function capGracePrim_(v) { return v === undefined || v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'; }
+function capGraceShiftOk_(x) {
+  if (!capGraceObj_(x) || !capGracePrim_(x.id) || !capGracePrim_(x.start) || !capGracePrim_(x.end)) return false;
+  return x.segs === undefined || (Array.isArray(x.segs) && x.segs.every(function (g) { return capGraceObj_(g) && capGracePrim_(g.start) && capGracePrim_(g.end); }));
+}
+function capGraceCellOk_(c) { return c === null || (capGraceObj_(c) && typeof c.t === 'string' && capGracePrim_(c.s)); }
 function capGraceChunkOk_(x, k, i, n) {
-  if (!capGraceObj_(x) || x.v !== 1 || x.k !== k || x.i !== i || x.n !== n || !Array.isArray(x.shifts)) return false;
+  if (!capGraceObj_(x) || x.v !== 1 || x.k !== k || x.i !== i || x.n !== n || !Array.isArray(x.shifts) || !x.shifts.every(capGraceShiftOk_)) return false;
   return Array.isArray(x.rows) && x.rows.every(function (r) {
-    return capGraceObj_(r) && typeof r.emp_id === 'string' && Array.isArray(r.cells) && r.cells.every(function (c) { return c === null || capGraceObj_(c); });
+    return capGraceObj_(r) && typeof r.emp_id === 'string' && Array.isArray(r.cells) && r.cells.every(capGraceCellOk_);
   });
 }
-/** sched_pub 一格（一店一期）→ 只留判斷用的欄位 {shifts, rows|null}；不是物件回 null（同 capSchedPub_ 的 !data）。 */
+/** sched_pub 一格（一店一期）→ 只留判斷用的欄位 {shifts, rows|null}；不是物件回 null（同 capSchedPub_ 的 !data）。
+ *  一律正規化成 capGraceChunkOk_ 認得的形狀（發布資料本身怪的地方換成「判斷結果一樣是讀不到」的值，免得每次都被當壞快取重讀）：
+ *  班次清單有不是物件的 → 整期當讀不到（原本讀 null.id 丟錯＝照舊）；id／start／end 不是基本值 → 沒有；segs 不是陣列 → []（沒有段＝照舊）；
+ *  段不是物件 → {}；格的 t → 字串（沒有＝''，不是 'W'＝照舊，同原本 String(undefined)）；s 不是基本值 → 沒有。 */
 function capGraceSlim_(data) {
   if (!capGraceObj_(data)) return null;
+  // 班次清單裡有不是物件的（原本 capSchedShiftOf_ 讀 null.id 會丟錯＝照舊）→ 整期當讀不到（rows null＝capGraceLoad_ 不收這期＝照舊）
+  if (Array.isArray(data.shifts) && !data.shifts.every(capGraceObj_)) return { shifts: [], rows: null };
+  var pv = function (v) { return capGracePrim_(v) ? v : undefined; };
   var shifts = Array.isArray(data.shifts) ? data.shifts.map(function (x) {
-    if (!x || typeof x !== 'object') return x;
-    var o = { id: x.id, start: x.start, end: x.end };
-    if (x.segs) o.segs = Array.isArray(x.segs) ? x.segs.map(function (g) { return g && typeof g === 'object' ? { start: g.start, end: g.end } : g; }) : x.segs;
+    if (!capGraceObj_(x)) return {};
+    var o = { id: pv(x.id), start: pv(x.start), end: pv(x.end) };
+    if (x.segs) o.segs = Array.isArray(x.segs) ? x.segs.map(function (g) { return capGraceObj_(g) ? { start: pv(g.start), end: pv(g.end) } : {}; }) : [];
     return o;
   }) : [];
   var rows = Array.isArray(data.rows) ? data.rows.map(function (r) {
-    return { emp_id: String(r && r.emp_id), cells: r && Array.isArray(r.cells) ? r.cells.map(function (c) { return c && typeof c === 'object' ? { t: c.t, s: c.s } : null; }) : [] };
+    return { emp_id: String(r && r.emp_id), cells: r && Array.isArray(r.cells) ? r.cells.map(function (c) {
+      return capGraceObj_(c) ? { t: c.t === undefined || c.t === null ? '' : String(c.t), s: pv(c.s) } : null;
+    }) : [] };
   }) : null;
   return { shifts: shifts, rows: rows };
 }

@@ -597,6 +597,16 @@ const KASES = [
   ['K15', '資料塊空字串', (c) => setv(c, C0, '')],
   ['K16★', '資料塊是數字 0', (c) => setv(c, C0, '0')],
   ['K17★', '資料塊某列是 null', (c) => edit(c, (o) => { o.rows[0] = null; })],
+  // 審查第二輪第 4 條：內層缺欄／型別錯
+  ['K30★', '當天班表格缺 t', (c) => edit(c, (o) => { delete o.rows[0].cells[19].t; })],
+  ['K31★', 'shifts[0] 是 null', (c) => edit(c, (o) => { o.shifts[0] = null; })],
+  ['K32★', '班表格 t 是數字', (c) => edit(c, (o) => { o.rows[0].cells[19].t = 1; })],
+  ['K33★', '班表格 s 是物件', (c) => edit(c, (o) => { o.rows[0].cells[19].s = { x: 1 }; })],
+  ['K34★', '班次 start 是陣列', (c) => edit(c, (o) => { o.shifts[0].start = ['09:00']; })],
+  ['K35★', '班次 segs 不是陣列', (c) => edit(c, (o) => { o.shifts[0].segs = 'x'; })],
+  ['K36★', '班次 segs 元素是 null', (c) => edit(c, (o) => { o.shifts[0].segs = [null]; })],
+  ['K37★', 'shifts 元素是字串', (c) => edit(c, (o) => { o.shifts.push('A'); })],
+  ['K38★', '列的 emp_id 是數字', (c) => edit(c, (o) => { o.rows[0].emp_id = 1; })],
 ];
 KASES.forEach(([id, label, fn]) => {
   check(id, '快取' + label + ' → 重讀 1 次、照寬限（grace_hm 19:00、不鎖、掃描不寫）、重寫後掃描 0 次', corrupt(fn), [1, 1, '19:00', false, [], 0]);
@@ -697,6 +707,26 @@ UNS.forEach(([ulab, uopt]) => BS.forEach(([blab, sid, bWrites]) => {
   check('K22★', '快取資料塊 rows 改成 null → 當壞快取重讀（照寬限）', c((cc) => edit(cc, (o) => { o.rows = null; })), [1, 1, '19:00', false, [], 0]);
   const m = world(D + 'T19:10:00', [['08:55:00', 'in']], { sched: { start: '2026-11-01', shifts: [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], rows: 'x' } });
   check('K23', 'sched_pub 那期 rows 本身不是陣列（資料壞）→ 照舊代記（不會每次重讀）', autoAt(m, D + 'T19:10:00'), [['11-20 19:00'], true, null]);
+}
+{
+  // 發布資料本身內層怪（格沒有 t、班次有 null、segs 不是陣列、start 是物件）：正規化後快取合格 → 第二次 0 次重讀；判斷照舊代記（同原本讀不到）
+  const odd = [
+    ['K40', '那格沒有 t', { start: '2026-11-01', shifts: [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], rows: [{ emp_id: 'E01', cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { s: 'A' } : { t: 'R' })) }] }],
+    ['K41', 'shifts 第一個是 null（班別 A 在第二個；原本讀到 null 丟錯＝照舊）', { start: '2026-11-01', shifts: [null, { id: 'A', name: '班', start: '09:00', end: '18:00' }], rows: [{ emp_id: 'E01', cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: 'A' } : { t: 'R' })) }] }],
+    ['K42', 'segs 不是陣列', { start: '2026-11-01', shifts: [{ id: 'A', name: '班', start: '09:00', end: '18:00', segs: 'x' }], rows: [{ emp_id: 'E01', cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: 'A' } : { t: 'R' })) }] }],
+    ['K43', 'start 是物件', { start: '2026-11-01', shifts: [{ id: 'A', name: '班', start: { h: 9 }, end: '18:00' }], rows: [{ emp_id: 'E01', cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: 'A' } : { t: 'R' })) }] }],
+  ];
+  odd.forEach(([id, label, sc, want]) => {
+    const m = world(D + 'T19:00:00', [['08:55:00', 'in']], { sched: sc });
+    let reads = 0;
+    const sh = m.self.sh.sched_pub, gdr = sh.getDataRange;
+    sh.getDataRange = function () { reads++; return gdr.apply(this, arguments); };
+    m.sb.capGraceSched_('', 'T01');
+    const r1 = reads;
+    m.sb.capGraceSched_('', 'T01');
+    const late = m.sb.capGraceLate_('E01', T(D + 'T08:55:00'), T(D + 'T19:00:00'));
+    check(id, '發布資料本身' + label + '：快取合格（第二次讀 0 次）、判斷照舊（讀不到）', [r1, reads - r1, late], [1, 0, false]);
+  });
 }
 
 done();
