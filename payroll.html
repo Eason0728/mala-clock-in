@@ -3387,7 +3387,22 @@ async function saveElec(btn){
 }
 
 /* ═════ 薪資單 ═════ */
+/* 薪資單／匯出抬頭的單位名稱（2026-11-23）：取這份結果所屬計薪單位在「門市設定」（STORE_LIST）填的名稱——
+   與側欄、門市下拉、出勤紀錄匯出同一個來源。以前抬頭寫死成小辛辣新竹光復店，每個單位的薪資單都印成同一個。
+   ⚠ 名稱取不到（門市表讀不到、該列名稱空白）時印計薪單位代號，絕不退回印光復店；連代號都沒有才印「（未知單位）」。
+   名稱第一個空格前當品牌：「麻的小辛辣 新竹光復店」→「麻的小辛辣 · 新竹光復店」；沒有空格（央廚）就整串。 */
+let SLIP_STORE='';   // 目前 RESULTS 所屬的計薪單位（renderSlipSel 每次重畫薪資單時記，切門市等回應期間舊結果不會掛上新門市的名字）
+function unitName(code){
+  const c=String(code==null?'':code).trim();
+  const st=(STORE_LIST||[]).find(x=>String(x.code).trim()===c);
+  return String((st&&st.name)||'').trim()||c||'（未知單位）';
+}
+function unitTitle(code){
+  const nm=unitName(code), sp=nm.search(/[\s　]/);
+  return sp>0?nm.slice(0,sp)+' · '+nm.slice(sp+1).trim():nm;
+}
 function renderSlipSel(){
+  SLIP_STORE=STORE;
   const s=$('slipSel'),cur=s.value;
   s.innerHTML=RESULTS.map(r=>`<option value="${esc(r.emp_id)}">${esc(r.name)}</option>`).join('');
   if(cur&&RESULTS.some(r=>r.emp_id===cur))s.value=cur;
@@ -3405,7 +3420,7 @@ function renderSlip(){
   const line=x=>`<tr><td>${esc(x.item_label)}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+rf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   w.innerHTML=`<div class="slip">
     <h3>薪 資 明 細 表</h3>
-    <div class="sub">麻的小辛辣 · 新竹光復店 ｜ ${ym().replace('-','年')}月 ｜ 發薪日 每月 ${CFG.payday} 日</div>
+    <div class="sub">${esc(unitTitle(SLIP_STORE||STORE))} ｜ ${ym().replace('-','年')}月 ｜ 發薪日 每月 ${CFG.payday} 日</div>
     <div class="who"><div>姓名 <b style="font-size:16px">${esc(r.name)}</b>
       <span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span></div>
       <div style="text-align:right;font-size:13px">核定總時數 <b>${r.total_hours}</b> H
@@ -3448,7 +3463,7 @@ function renderExport(){
   const w=$('exportDetail'); if(!w) return;
   if(!RESULTS.length){ w.innerHTML='<div class="card"><div style="text-align:center;padding:34px;color:#8a817a">此月份尚無資料，請先到「月結」計算</div></div>'; return; }
   const row=x=>`<tr><td style="padding:4px 0;border-bottom:1px dotted var(--line)">${esc(x.item_label)}${expSub(x)?` <span style="color:#8a817a;font-size:12px">${expSub(x)}</span>`:''}</td><td style="text-align:right;border-bottom:1px dotted var(--line)">${nf(x.amount)}</td></tr>`;
-  let h=`<div class="card"><div style="font-size:18px;font-weight:900">麻的小辛辣 薪資明細</div>
+  let h=`<div class="card"><div style="font-size:18px;font-weight:900">${esc(unitTitle(SLIP_STORE||STORE))} 薪資明細</div>
     <div style="color:#8a817a;margin:4px 0 16px">${ym().replace('-','年')}月　${STATUS==='final'?'已鎖定':'草稿'}${(STATUS!=='final'&&ASOF&&ASOF.as_of)?'（月中數字，只算到 '+mdOf(ASOF.as_of)+'）':''}　共 ${RESULTS.length} 人</div>`;
   RESULTS.forEach(r=>{
     h+=`<div class="exp-person" style="border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px">
@@ -3490,7 +3505,7 @@ function exportExcel(){
   });
   cost+='</table>';
   const html=`<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>
-    <h3>麻的小辛辣 薪資明細 ${ym()}（${STATUS==='final'?'已鎖定':'草稿'}${(STATUS!=='final'&&ASOF&&ASOF.as_of)?'，月中數字只算到 '+mdOf(ASOF.as_of):''}）</h3>
+    <h3>${esc(unitTitle(SLIP_STORE||STORE))} 薪資明細 ${ym()}（${STATUS==='final'?'已鎖定':'草稿'}${(STATUS!=='final'&&ASOF&&ASOF.as_of)?'，月中數字只算到 '+mdOf(ASOF.as_of):''}）</h3>
     <h4>彙總</h4>${sum}<br><h4>逐筆明細</h4>${det}<br><h4>人事成本分類（對應損益表）</h4>${cost}</body></html>`;
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob(['﻿'+html],{type:'application/vnd.ms-excel;charset=utf-8'}));
