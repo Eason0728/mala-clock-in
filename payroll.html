@@ -694,6 +694,7 @@ let ASOF=null;   // 本月草稿算到哪一天（後端 asof：{as_of,days_elap
 let ROSTER_MISS=[];   // 主檔工號在打卡名冊找不到的人（payroll_month roster_mismatch，2026-11-06）
 let ZERO_RATIO=[];   // 本月在職天數 0 卻有一列薪資的人（payroll_month／payroll_calc 的 zero_ratio_with_data，2026-11-11）
 let DUPX_ON=false;   // 後端回 dup_xacct_on（跨帳號重複檢查開著）才顯示那類提醒；關著時草稿留著的舊提醒不顯示
+let HOL_GAP=[];   // 班表排了國定假日假、薪資國定假日清單沒有的日子（payroll_month／payroll_calc 的 hol_sched_gap，2026-12 起；只提示）
 let LEAVE_MM=[];   // 請假單和請假登記對不上（payroll_calc 的 leave_mismatch，1113 紅燈 a1）：鎖定前要先處理
 let NOT_IN_PAY=[];   // 主檔已停用、離職日不在本月、本月卻有時數的人（payroll_month／payroll_calc 的 not_in_payroll，2026-11-11）
 let SUPA=null;   // 跨店支援自動帶入（2026-11 起後端 payroll_month 回的 support_auto；之前的月份是 null）
@@ -861,7 +862,7 @@ async function autoCalc(){
   if(STATUS==='final' || RESULTS.length) return;
   const reqStore=STORE;   // 結果是這個單位的：等回應時畫面可能已切走，標題跟著結果走
   const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
-  if(r&&r.ok){setResults(r.results,reqStore);STATUS='draft';ELEC_STALE=false;asofFromCalc(r);CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;renderRun();renderSlipSel()}
+  if(r&&r.ok){setResults(r.results,reqStore);STATUS='draft';ELEC_STALE=false;asofFromCalc(r);CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;HOL_GAP=r.hol_sched_gap||[];renderRun();renderSlipSel()}
 }
 /* ═════ 未儲存提醒（2026-08-23）═════
  * 出勤資料的所有輸入（含跨店支援明細）都只寫在瀏覽器記憶體，按「儲存工時」才進試算表。
@@ -1172,7 +1173,7 @@ async function loadMonth(pre,preSeq,preGen,opts){   // pre＝開頁時先發出�
     SAME_NAME=r.same_name||[];
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
-    LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;
+    LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;HOL_GAP=r.hol_sched_gap||[];
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
     SUPA=r.support_auto||null; SUP_OPEN={};
     ROSTER_MISS=r.roster_mismatch||[];
@@ -1247,7 +1248,7 @@ async function doCalc(pendSeq,inputsSaved,auto){   // 回 true＝重算成功並
     asofFromCalc(r);
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
-    LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;
+    LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;HOL_GAP=r.hol_sched_gap||[];
     vClear();   // 重算後儀表板／集團總覽的數字會變
     renderRun();renderSlipSel();toast('已重新計算');
     /* 這個月先前讀取失敗（旗標還在）、也沒有月資料在路上：重算成功後重新載入這個月，載入成功才解開（規則同切月份重新載入；2026-11-22 後續 PR）。
@@ -1810,6 +1811,12 @@ function renderOtInfo(t){
   // 請假單和請假登記對不上（1113 紅燈 a1）：鎖定時會擋
   LEAVE_MM.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：${md(x.date)} ${esc(x.type)} ${x.side==='request'?'有已核准的請假單，請假登記沒有（請主管把那天重新核定一次）':'請假登記有，卻沒有已核准的請假單（請同仁補請假單，或主管重新核定改掉登記）'}——<b>處理前不能鎖定</b></li>`));
   SAME_NAME.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：打卡名冊有同名的人（${x.emp_ids.map(esc).join('、')}），本月 ${x.rows} 筆請假只有姓名，系統依在職與到離職日算給 ${x.to.map(esc).join('、')}，請確認沒有歸錯人</li>`));
+  /* 班表排了「國定假日假」、薪資國定假日清單沒有那天（2026-12 起，後端 hol_sched_gap；只提示、不擋鎖定、不改金額）。
+     ⚠ 提示文字是新擬的（甲版），待主管確認；乙版見 PR 說明。姓名照本區慣例列出，每天最多 5 位、其餘寫「等 N 人」。 */
+  if(HOL_GAP.length){
+    const days=HOL_GAP.map(x=>{const nm=(x.names||[]).slice(0,5).map(esc).join('、');return `${md(x.date)}（${Number(x.n)||0} 人：${nm}${(Number(x.n)||0)>5?' 等':''}）`}).join('、');
+    rows.push(`<li><b style="color:#b7791f">國定假日清單可能漏了日子</b>：<span style="color:#b7791f">班表有同仁排了「國定假日假」，但「2 參數設定」的國定假日雙薪日沒有這幾天：${days}。薪資會把這幾天當一般日——那天有上班的同仁不會算國定假日加給；排了這天國定假日假的正職，還會被當成國定假日調移，同一期（28 天）其他國定假日上班的加給會被抵掉。請先核對雙薪日，清單漏了請找資訊部同步後再重新計算；如果只是個別同仁把國定假日調到這天休，可以不用處理。</span></li>`);
+  }
   RESULTS.forEach(r=>{const o=r.ot_info; if(!o||o.ot_h===undefined) return; const nm=esc(r.name);   // r8：只有請款逐筆 xsup 的 ot_info（沒有逐日資料）＝當作沒有，提醒區同正式版
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
     if(o.elec_warn) rows.push(o.elec_warn.reason==='hol_manual'
