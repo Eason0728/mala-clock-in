@@ -159,16 +159,23 @@ console.log('\n════ 五、開關沒開（\'1\'、\'2\'、其他值）跟
     const caps = pk([['1', '1'], ['2', '2'], ['1', '2'], ['0', undefined], ['5', '1']]);
     const opt = Object.assign({ capA: caps[0], capB: caps[1] }, pk([GAP, { bEv: [[D + 'T09:00:00', 'B07', 'in']], bSched: SB918 }, { aEv: [[D + 'T08:55:00', 'E01', 'in']], aSched: SA918, bSched: SB918 }]));
     const N = pair(opt), O = pair(opt, SRC_232);
+    // 讀取次數也要一樣（#234 審查）：REST_CAP_ON 屬性讀取、開啟試算表、讀整張分頁
+    const inst = (m) => { m.__n = { prop: 0, open: 0, read: 0 }; const P = m.sb.PropertiesService, S = m.sb.SpreadsheetApp;
+      m.sb.PropertiesService = { getScriptProperties: () => { const o = P.getScriptProperties(); return Object.assign({}, o, { getProperty: (k) => { if (k === 'REST_CAP_ON') m.__n.prop++; return o.getProperty(k); } }); } };
+      m.sb.SpreadsheetApp = Object.assign({}, S, { openById: (id) => { m.__n.open++; return S.openById(id); } });
+      [m.self].concat(Object.values(m.peers)).forEach((bk) => Object.values(bk.sh).forEach((sh) => { const g = sh.getDataRange; sh.getDataRange = function () { m.__n.read++; return g.apply(this, arguments); }; })); };
+    [N.A, N.B, O.A, O.B].forEach(inst);
     let t = T(D + 'T18:5' + Math.floor(rnd() * 9) + ':00'), diff = null;
     for (let i = 0, n = 2 + Math.floor(rnd() * 5); i < n && !diff; i++) {
       const o = pk(OPS); setNow(N, t); setNow(O, t);
       const rn = op(N, o), ro = op(O, o);
-      if (rn !== ro || JSON.stringify([N.A.self.sh.events.values, N.B.self.sh.events.values]) !== JSON.stringify([O.A.self.sh.events.values, O.B.self.sh.events.values])) diff = [k, caps, o];
+      if (rn !== ro || JSON.stringify([N.A.self.sh.events.values, N.B.self.sh.events.values]) !== JSON.stringify([O.A.self.sh.events.values, O.B.self.sh.events.values]) ||
+          JSON.stringify([N.A.__n, N.B.__n]) !== JSON.stringify([O.A.__n, O.B.__n])) diff = [k, caps, o, JSON.stringify([N.A.__n, N.B.__n, O.A.__n, O.B.__n])];
       t += (1 + Math.floor(rnd() * 40)) * 60000;
     }
     if (diff) bad.push(diff); else same++;
   }
-  check('P8', "開關 '1'／'2'／'0'／沒設／'5' 的兩店隨機 120 串：每一步回應與兩店打卡列都跟 ddd0cd0（#232）一樣", [same, bad.slice(0, 2)], [120, []]);
+  check('P8', "開關 '1'／'2'／'0'／沒設／'5' 的兩店隨機 120 串：每一步回應、兩店打卡列、屬性讀取／開試算表／讀分頁次數都跟 ddd0cd0（#232）一樣", [same, bad.slice(0, 2)], [120, []]);
 }
 
 console.log('\n════ 六、兩店同步隨機：不變量 ════');
@@ -181,6 +188,9 @@ console.log('\n════ 六、兩店同步隨機：不變量 ════');
   let seed = 424242; const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
   const pk = (xs) => xs[Math.floor(rnd() * xs.length)], ri = (a, b) => a + Math.floor(rnd() * (b - a + 1));
   const hm = (min) => ('0' + Math.floor(min / 60)).slice(-2) + ':' + ('0' + (min % 60)).slice(-2);
+  const whoOf = (m) => { const sb = m.sb, ss = sb.getSS(); return [sb, ss, sb.readSheetAsObjects(ss.getSheetByName('roster')).rows.filter((r) => r.line_user_id === 'U1')[0]]; };
+  const realToday = (m) => { const [sb, ss, who] = whoOf(m); sb.capOn_(); const d = sb.capTodayMs_(ss, who, sb.Date.now(), null); return d ? [d.total, d.punch] : null; };
+  const realHours = (m) => { const [sb, ss, who] = whoOf(m); const st = sb.capCheck_(ss, who, sb.Date.now(), null, 'auto'); return st ? st.today_h : null; };
   const bad = []; let n = 0, eqChecked = 0, fails = 0;
   for (let k = 0; k < 500; k++) {
     const caps = pk([['3', '3'], ['4', '4'], ['3', '4'], ['3', '1'], ['1', '3'], ['4', '2'], ['2', '3']]);
@@ -216,8 +226,9 @@ console.log('\n════ 六、兩店同步隨機：不變量 ════');
       const c = cards(W).filter((x) => !/B08$/.test(x));
       if (c.length > 1) why = '①系統卡超過 1 張 ' + JSON.stringify(c);
       if (!why && /[34]/.test(caps[0]) && /[34]/.test(caps[1]) && !fail && shape !== 'twin') {
-        const fa = judgeFill(W.A), fb = judgeFill(W.B); eqChecked++;
-        if (fa.today !== fb.today || fa.due !== fb.due || fa.reach !== fb.reach || fa.lock !== fb.lock) why = '②兩店算出不同的數字 A=' + JSON.stringify(fa) + ' B=' + JSON.stringify(fb);
+        // #234 審查第 1 條：比實際回傳的數字（capTodayMs_＝提醒用的今日出勤），不是直接比補時版 capJudge_；每一步兩店資料都已同步
+        const fa = realToday(W.A), fb = realToday(W.B); eqChecked++;
+        if (JSON.stringify(fa) !== JSON.stringify(fb)) why = '②兩店 capTodayMs_ 回傳不同 A=' + JSON.stringify(fa) + ' B=' + JSON.stringify(fb);
       }
       t += ri(1, 40) * 60000;
     }
@@ -234,6 +245,10 @@ console.log('\n════ 六、兩店同步隨機：不變量 ════');
         if (shape !== 'twin' && !(r.due && r.due.store && !/[34]/.test(ownerCap))) why = '④' + v + ' 頁鎖 ' + p + ' 卻沒有卡（那段的店開關 ' + ownerCap + '）';
       });
       if (!why && c.length === 1 && !(pg[0] === 'LOCK' + c[0].slice(1) && pg[1] === 'LOCK' + c[0].slice(1))) why = '③有卡 ' + c[0] + ' 但頁面 ' + JSON.stringify(pg);
+      if (!why && shape !== 'twin' && /[34]/.test(caps[0]) && /[34]/.test(caps[1])) {   // 收斂後：capTodayMs_ 與 capCheck_ 的 today_h 兩店一樣
+        const ta = realToday(W.A), tb = realToday(W.B), ha = realHours(W.A), hb = realHours(W.B);
+        if (JSON.stringify(ta) !== JSON.stringify(tb) || ha !== hb) why = '②收斂後兩店數字不同 A=' + JSON.stringify([ta, ha]) + ' B=' + JSON.stringify([tb, hb]);
+      }
       if (!why && shape !== 'twin' && /[34]/.test(caps[0]) && /[34]/.test(caps[1]) && pg[0].replace(/^grace.*/, 'free') !== pg[1].replace(/^grace.*/, 'free')) why = '⑤兩店都開、收斂後兩頁不同 ' + JSON.stringify(pg);
     }
     n++;
@@ -255,6 +270,89 @@ console.log('\n════ 七、cap_set 的 fill ════');
     [q({ fill: true }).fill, m.props.REST_CAP_ON, q({ grace: true }).grace, m.props.REST_CAP_ON, q({ grace: false }).grace, m.props.REST_CAP_ON, q({ fill: false }).fill, m.props.REST_CAP_ON,
       q({ on: true, grace: true, fill: true }), m.props.REST_CAP_ON, q({})],
     [true, '3', true, '4', false, '3', false, '1', { ok: true, on: true, trigger: 1, grace: true, fill: true }, '4', { ok: true, on: true, trigger: 1 }]);
+}
+
+console.log('\n════ 八、#234 獨立審查第一輪 ════');
+const todayOf = (m) => { const sb = m.sb, ss = sb.getSS(), who = sb.readSheetAsObjects(ss.getSheetByName('roster')).rows.filter((r) => r.line_user_id === 'U1')[0];
+  sb.capOn_(); const d = sb.capTodayMs_(ss, who, sb.Date.now(), null); return d ? [d.total, d.punch] : null; };
+const checkH = (m) => { const sb = m.sb, ss = sb.getSS(), who = sb.readSheetAsObjects(ss.getSheetByName('roster')).rows.filter((r) => r.line_user_id === 'U1')[0];
+  const st = sb.capCheck_(ss, who, sb.Date.now(), null, 'auto'); return st ? st.today_h : null; };
+{
+  /* Q1（審查第 1 條）：已收卡、同步之後，兩店算出的當日時數要一樣（都用補過的）。四個時點：
+   *   a 收卡前（兩店資料相同）；b 收卡後、同步前（寫卡那家）；c 同步後（另一家）＝b；d 收斂後兩家、capCheck_ 的 today_h 也一樣。 */
+  const W = pair(Object.assign({ capA: '3', capB: '3', now: D + 'T18:55:00' }, GAP));
+  const a = [todayOf(W.A), todayOf(W.B)];
+  setNow(W, T(D + 'T19:05:00'));
+  W.A.sb.handleLiffStatus_({ id_token: 'TOK_U1' });   // A 寫 19:00（還沒同步給 B）
+  const b = todayOf(W.A);
+  sync(W, 'A');
+  const c = [todayOf(W.A), todayOf(W.B)];
+  setNow(W, T(D + 'T19:40:00')); settle(W);
+  const d = [todayOf(W.A), todayOf(W.B), checkH(W.A), checkH(W.B)];
+  check('Q1★', '兩店 \'3\'：收卡前兩店一樣；A 寫卡後（未同步）的時數＝同步後 B 的；同步後、收斂後兩店 capTodayMs_／capCheck_ 都一樣（10 小時）',
+    [a[0] && a[1] && a[0].join() === a[1].join(), b.join() === c[1].join(), c[0].join() === c[1].join(), d[0].join() === d[1].join(), d[2] === d[3], d[0][0] / 3600000],
+    [true, true, true, true, true, 10]);
+}
+{
+  /* Q2（審查第 2 條，Rest 不改）：打卡頁的「滿 10 小時」提醒（Rest.gs restJudge_）只看成段的班；別家店只有下班卡那段補出來的時數不會觸發提醒，
+   * 但收卡判定（cap.in_block）會擋上班並顯示原因，打卡頁 clock-line.html 先顯示 cap 的原因（render 的優先順序），所以同仁看到的是同一句。
+   * 本店只有下班卡的那段現在（38d0340）也是這樣，不是新規則才有。 */
+  const opt = { capA: '3', capB: '3', now: D + 'T20:00:00', aEv: [[D + 'T18:00:00', 'E01', 'out']], aSched: sched([{ id: 'P', name: '午', start: '13:00', end: '18:00' }], { E01: { 19: 'P' } }), reqsB: [[D, '08:00', '13:00', 5]],
+    hook: (m, v) => { if (v === 'B') m.props.REST_RULE_ON = '1'; } };
+  const W = pair(opt);
+  const s = W.B.sb.handleLiffStatus_({ id_token: 'TOK_U1' });
+  check('Q2', "B 開頁：cap.in_block＝true、原因含請假 5 小時（擋上班卡、畫面顯示這句）；rest 沒有 warn（Rest 只看成段的班，現行同樣）",
+    [s.cap.in_block, /請假／出差 5 小時/.test(s.cap.reason || ''), JSON.stringify(s.rest)], [true, true, '{"blocked":false}']);
+}
+{
+  /* Q3（審查第 3 條）：開關 '1'／'2' 時 REST_CAP_ON 的讀取次數跟 #232 一樣（開頁、cap_set、Rest 叫 capTodayMs_） */
+  const countReads = (src, cap, fn) => {
+    const m = world('A', Object.assign({}, GAP, { capA: cap, capB: cap }), src);
+    m.props.REST_RULE_ON = '1';
+    let n = 0; const P = m.sb.PropertiesService;
+    m.sb.PropertiesService = { getScriptProperties: () => { const o = P.getScriptProperties(); return Object.assign({}, o, { getProperty: (k) => { if (k === 'REST_CAP_ON') n++; return o.getProperty(k); } }); } };
+    const trig = [];
+    m.sb.ScriptApp = { getProjectTriggers: () => trig.slice(), deleteTrigger: () => {}, newTrigger: (f) => ({ timeBased: () => ({ everyMinutes: () => ({ create: () => { trig.push({ getHandlerFunction: () => f }); } }) }) }) };
+    fn(m);
+    return n;
+  };
+  const cases = [
+    ['開頁', (m) => m.sb.handleLiffStatus_({ id_token: 'TOK_U1' })],
+    ['掃描', (m) => m.sb.capSweep()],
+    ['cap_set grace:true', (m) => m.sb.handleCapSet_({ admin_key: 'ADM', grace: true })],
+    ['cap_set 只查', (m) => m.sb.handleCapSet_({ admin_key: 'ADM' })],
+    ['LINE 按上班', (m) => m.sb.handleLiffPunch_(Object.assign({ id_token: 'TOK_U1', type: 'in', confirm_same: true }, HERE))],
+  ];
+  const got = [], want = [];
+  ['1', '2'].forEach((cap) => cases.forEach(([label, fn]) => { got.push(cap + ' ' + label + ':' + countReads(CAP_SRC, cap, fn)); want.push(cap + ' ' + label + ':' + countReads(SRC_232, cap, fn)); }));
+  check('Q3★', "開關 '1'／'2'：開頁、掃描、cap_set、LINE 按上班的 REST_CAP_ON 讀取次數跟 #232 一樣", got, want);
+}
+{
+  /* Q4（審查第 4 條）：sched_pub 超過舊整表快取上限、本店有兩張上班卡（中間沒下班）、'3'／'4' → 連續開頁 sched_pub 讀 1、0、0 次 */
+  const big = (cap, src) => {
+    const peersRows = [];
+    for (let k = 0; k < 6; k++) peersRows.push(['mzt', 'T0' + (k + 2), 1, JSON.stringify({ start: '2026-11-01', shifts: SH, rows: Array.from({ length: 40 }, (_, i) => ({ emp_id: 'Z' + i, name: '同仁名字' + i, cells: cellsOf(Object.fromEntries(Array.from({ length: 28 }, (_, j) => [j, { t: 'W', s: 'A' }]))) })) }), 'op', '']);
+    const m = world('A', { capA: cap, capB: cap, now: D + 'T18:00:00', aEv: [[D + 'T09:00:00', 'E01', 'in'], [D + 'T17:30:00', 'E01', 'in']], aSched: SA918 }, src);
+    const sh = m.self.sh.sched_pub; peersRows.forEach((r) => sh.appendRow(r));
+    let reads = 0; const g = sh.getDataRange; sh.getDataRange = function () { reads++; return g.apply(this, arguments); };
+    const out = [];
+    for (let i = 0; i < 3; i++) { m.sb.handleLiffStatus_({ id_token: 'TOK_U1' }); out.push(reads); }
+    return out;
+  };
+  check('Q4★', "sched_pub 超過舊整表快取上限：'3'／'4' 連續開頁三次 sched_pub 累計讀取 1、1、1（快取暖了就不再讀）；'1'／'2' 跟 #232 一樣",
+    [big('3'), big('4'), JSON.stringify(big('1')) === JSON.stringify(big('1', SRC_232)), JSON.stringify(big('2')) === JSON.stringify(big('2', SRC_232))], [[1, 1, 1], [1, 1, 1], true, true]);
+}
+{
+  /* Q5（審查殘餘：兩份名冊快取版本不同）：'4' 下有別家店的卡＝多店，不給寬限；同樣情況 '2'（#232）照 cgs: 判單店給寬限（'2' 不改） */
+  const mk = (cap) => {
+    const aSpec = { roster: [ME], events: [[D + 'T08:55:00', 'E01', 'in']] }, bSpec = { roster: [B07], events: [[D + 'T06:00:00', 'B07', 'in'], [D + 'T06:10:00', 'B07', 'out']] };   // 06:00–06:10 取整後 0 小時（不影響滿 10 時刻）
+    const m = make({ now: T(D + 'T19:05:00'), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: cap }, self: aSpec, peers: { SS_B: bSpec } });
+    m.run(CAP_SRC); m.sb.REST_PEERS_ = [{ code: 'mzt', ss: 'SS_B' }, { code: 'gf', ss: 'SELF' }];
+    const sh = m.self.insertSheet('sched_pub'); sh.appendRow(SP_HEAD); sh.appendRow(['', 'T01', 1, JSON.stringify(SA918), 'op', '']);
+    m.cache['cgs:SS_B'] = { v: JSON.stringify({ v: 1, store: 'SS_B', n: 1, names: ['別人'] }), exp: Infinity };   // 10 分鐘那份已刷新、說 B 店沒有這個人
+    return page(m);
+  };
+  check('Q5', "名冊兩份快取不一致（rpr: 還認得、cgs: 說沒有）：'4' 有別家店的卡 → 不給寬限、照舊鎖；'2' 照 #232", [mk('4'), mk('2')], ['LOCK19:00', 'grace19:00']);
 }
 
 done();
