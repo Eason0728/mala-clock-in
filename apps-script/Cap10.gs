@@ -504,7 +504,7 @@ function capCheck_(ss, me, nowMs, ownRows) {
     if (sys !== null) {
       var until = sys + CAP_LOCK_H * 3600000;
       st.locked = true; st.sys = sys; st.until = until;
-      st.reason = '今天已滿 ' + CAP_H + ' 小時，系統在 ' + (capDay_(sys) === capDay_(now) ? '' : capMd_(sys) + ' ') + capHm_(sys) + ' 幫你記了下班卡';
+      st.reason = '今天出勤（含已核准請假、出差）已滿 ' + CAP_H + ' 小時，系統在 ' + (capDay_(sys) === capDay_(now) ? '' : capMd_(sys) + ' ') + capHm_(sys) + ' 幫你記了下班卡';
       st.hint = (capDay_(until) === capDay_(now) ? '' : capMd_(until) + ' ') + capHm_(until) + ' 以後才能再打卡';
       return st;
     }

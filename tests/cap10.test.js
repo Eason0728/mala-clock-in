@@ -62,7 +62,7 @@ console.log('\n════ 二、一段班：滿 10 小時系統收卡 ══�
   check('C16', '再開一次頁：不重寫系統卡', sysRows(m).length, 1);
   const p = punch(m, 'out');
   check('C17', '19:04 按下班 → 不收（cap_locked），不多寫列', [p.ok, p.status, m.events().length], [false, 'cap_locked', 2]);
-  check('C18', '原因講清楚', [p.reason, p.hint], ['今天已滿 10 小時，系統在 19:00 幫你記了下班卡', '11/21 06:00 以後才能再打卡']);
+  check('C18', '原因講清楚', [p.reason, p.hint], ['今天出勤（含已核准請假、出差）已滿 10 小時，系統在 19:00 幫你記了下班卡', '11/21 06:00 以後才能再打卡']);
   m.setNow('2026-11-21T05:59:00');
   check('C19', '隔天 05:59 打上班 → 還鎖著', punch(m, 'in').status, 'cap_locked');
   m.setNow('2026-11-21T06:00:00');
@@ -205,7 +205,7 @@ console.log('\n════ 六、觸發器、舊連結、考勤管理 ═══
   check('C61', '觸發器再跑一次不重寫', sysRows(m).length, 1);
   const r = m.sb.doPost({ postData: { contents: JSON.stringify(Object.assign({ action: 'clock', key: 'K1', type: 'out', device_id: 'D1' }, HERE)) } });
   const j = JSON.parse(r.text);
-  check('C62', '舊連結 clock 動作 → rejected_rest＋原因', [j.status, j.rest && j.rest.code, j.rest && j.rest.reason], ['rejected_rest', 'cap10', '今天已滿 10 小時，系統在 19:00 幫你記了下班卡']);
+  check('C62', '舊連結 clock 動作 → rejected_rest＋原因', [j.status, j.rest && j.rest.code, j.rest && j.rest.reason], ['rejected_rest', 'cap10', '今天出勤（含已核准請假、出差）已滿 10 小時，系統在 19:00 幫你記了下班卡']);
   const k = JSON.parse(m.sb.doPost({ postData: { contents: JSON.stringify(Object.assign({ action: 'clock', key: 'K2', type: 'out', device_id: 'D2' }, HERE)) } }).text);
   check('C63', '舊連結：沒滿的人照常打', k.status, 'ok');
   const day = JSON.parse(m.sb.doPost({ postData: { contents: JSON.stringify({ action: 'mgr_day', mgr_key: 'MK', date: D }) } }).text);

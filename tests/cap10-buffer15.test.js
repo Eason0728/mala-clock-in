@@ -102,7 +102,7 @@ console.log('\n════ 已知行為：22:00–22:14 按下班 → 寫 22:00
 {
   const m = world(D + 'T22:07:00', REAL);
   const r = punch(m, 'out');
-  check('W15a', '22:07 按下班：被擋（cap_locked），原因寫系統 22:00 記了下班卡', [r.ok, r.status, r.reason], [false, 'cap_locked', '今天已滿 10 小時，系統在 22:00 幫你記了下班卡']);
+  check('W15a', '22:07 按下班：被擋（cap_locked），原因寫系統 22:00 記了下班卡', [r.ok, r.status, r.reason], [false, 'cap_locked', '今天出勤（含已核准請假、出差）已滿 10 小時，系統在 22:00 幫你記了下班卡']);
   check('W15b', '只有一張卡：系統卡 22:00（沒有 22:07 的本人下班卡）', [sysRows(m).length, m.self.sh.events.values.filter((x) => x[2] === 'out').length], [1, 2]);
   check('W15c', '核定參考時數仍是 10（不是 10.0x，也沒有多一段）', refHours(m), 10);
   m.setNow(T(D + 'T22:14:59'));
