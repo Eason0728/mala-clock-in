@@ -4489,6 +4489,9 @@ function payDupOverlap_(a, b) {
   return (s1 < e2 && s2 < e1) || (s1 < e2 + 1440 && s2 + 1440 < e1) || (s1 + 1440 < e2 && s2 < e1 + 1440);
 }
 var PAY_DUP_ROLE_ORDER_ = { home: 0, pay: 1, remind: 2 };
+/* ②「請假在計薪那家店＋另一帳號出差」：true＝出差那張不論在哪個帳號都擋（照主管定案 A 字面，現行）；
+   false＝出差那個帳號的時數不進這次計薪（跨單位、not_support…）時只提醒。待主管確認，要改只動這一行（mala-store-ops server/dup-xacct.js 同名常數一起改）。 */
+var PAY_DUP_R2_ANY_TRIP_ = true;
 /**
  * 純函式。accts：[{ key, store, store_name, acct, role, rows:[{ id, kind, status, date, leave_type, start, end, hours, voided_at, mirror_src }] }]
  *   key＝打卡表＋帳號（共用同一份打卡表的門市給同一個 key）；role：home＝計薪那家店的帳號、pay＝時數會帶進這次計薪的支援帳號、remind＝其他。
@@ -4539,7 +4542,10 @@ function payDupXacctCore_(accts, opt) {
       let pay;
       if (same) pay = true;                                                           // ③
       else if (x.kind === 'trip' && y.kind === 'trip') pay = inPay(T(x.A.role)) && inPay(T(y.A.role));   // ①
-      else if (x.kind !== y.kind) pay = T((x.kind === 'leave' ? x : y).A.role) === 'home';                // ②
+      else if (x.kind !== y.kind) {                                                    // ②
+        const lv = x.kind === 'leave' ? x : y, tr = x.kind === 'leave' ? y : x;
+        pay = T(lv.A.role) === 'home' && (PAY_DUP_R2_ANY_TRIP_ || inPay(T(tr.A.role)));
+      }
       else pay = false;                                                               // 請假＋請假、不同帳號：只提醒
       out.push({ date: x.date, kind: x.kind === y.kind ? x.kind : 'mixed', cats: cats, pay: pay,
                  approved: x.st === 'approved' && y.st === 'approved', a: side(x), b: side(y) });
@@ -4597,11 +4603,15 @@ function payDupXacctStore_(ym, st, master, XSUP) {
   if (!payDupXacctOn_(ym)) return null;
   const storeBy = payXsupStoreBy_(payRead('store'));
   const home = payXsupCode_(st), homeKey = payXsupClockKey_(home, storeBy);
-  let xmap = [];
-  try { xmap = payRead('xmap'); } catch (e) { xmap = []; }
+  /* 對照表讀不到＝丟例外（呼叫端改成 dup_xacct_check_failed 擋鎖定）：不可以當空表、只剩本店帳號被檢查（驗收 2026-11-23 第 2 項）。 */
+  const xmap = payRead('xmap') || [];
+  /* 認人只看「已確認」：state 必須是 confirmed（空白不算；同打卡端 AttDigest.gs 的口徑，驗收第 3 項）；acct_only 不算（同跨店支援帶入）。
+     不看 pay_store（驗收第 1 項）：對照表的計薪店跟薪資主檔不一致（例：主檔 MZTHQ、對照寫 HQ，三個總部代號 HQ／MZTHQ／SSLHQ 共用總部打卡表）時，
+     照樣用「本店打卡表裡的帳號＝這位主檔同仁」把整組認進來。哪個帳號的時數進這次計薪仍照引擎（XSUP）判斷，所以不會多擋也不會少擋：
+     pay_store 不一致時引擎沒有帶入支援時數，① 只提醒；② ③ 照擋。 */
   const groups = {};
   xmap.forEach(function (r) {
-    if (payXsupBool_(r.acct_only) || String(r.state || 'confirmed').trim() !== 'confirmed' || payXsupCode_(r.pay_store) !== home) return;
+    if (payXsupBool_(r.acct_only) || String(r.state == null ? '' : r.state).trim().toLowerCase() !== 'confirmed') return;
     (groups[String(r.emp_no)] = groups[String(r.emp_no)] || []).push(r);
   });
   const isHomeAcct = function (code) { const k = payXsupClockKey_(code, storeBy); return homeKey ? k === homeKey : payXsupCode_(code) === home; };

@@ -137,6 +137,17 @@
       "expect": [["2026-11-12", "mixed", ["a", "c"], true, true, "R1", "R2"]]
     },
     {
+      "name": "請假在計薪那家店＋跨單位（remind）帳號出差 → ②照主管定案 A 字面擋（PAY_DUP_R2_ANY_TRIP_ / R2_ANY_TRIP＝true；改 false 時這案變只提醒）",
+      "accts": [
+        { "key": "LOCAL|home", "store": "SSLGF", "store_name": "小辛辣光復", "acct": "E01", "role": "home",
+          "rows": [{ "id": "R1", "kind": "leave", "status": "approved", "date": "2026-11-12", "leave_type": "事假", "start": "", "end": "", "hours": 8 }] },
+        { "key": "ID-JS|MZTJS20", "store": "MZTJS", "store_name": "墨竹亭金山", "acct": "MZTJS20", "role": "remind",
+          "rows": [{ "id": "R2", "kind": "trip", "status": "approved", "date": "2026-11-12", "leave_type": "", "start": "", "end": "", "hours": 8 }] }
+      ],
+      "opt": { "ym": "2026-11" },
+      "expect": [["2026-11-12", "mixed", ["a", "c"], true, true, "R1", "R2"]]
+    },
+    {
       "name": "同一帳號兩張重疊：出差 09:00–12:00＋事假 11:00–13:00 → (c)，鎖月擋（③）",
       "accts": [
         { "key": "ID-HQ|home", "store": "HQ", "store_name": "總部", "acct": "HQ-03", "role": "home",
