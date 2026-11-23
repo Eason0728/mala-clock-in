@@ -25,6 +25,10 @@
  *   9 筆實例（2026-11 系統收卡，時間取新規則刻度）見「九、」。 */
 'use strict';
 const { make, T, at, check, done, R } = require('./helpers/gs-sandbox');
+// 測試世界只有 1～3 家店：把「REST_PEERS_ 至少 9 家」的門檻換成 1（門檻本身的測試在十三、S10 用原值）
+const CAP_SRC_REAL = R('apps-script/Cap10.gs');
+const CAP_SRC = CAP_SRC_REAL.replace('var CAP_SINGLE_STORES = 9;', 'var CAP_SINGLE_STORES = 1;');
+if (CAP_SRC === CAP_SRC_REAL) throw new Error('找不到 CAP_SINGLE_STORES');
 const ME = { emp_id: 'E01', name: '測試一', key: 'K1', device_id: 'D1', active: 'TRUE', line_user_id: 'U1' };
 const D = '2026-11-20', D2 = '2026-11-21';
 const HERE = Object.assign({ accuracy: 10 }, at(3));
@@ -42,7 +46,7 @@ function world(now, events, opt) {
   opt = opt || {};
   const m = make({ now: T(now), props: Object.assign({ REQ_BIND_FROM: 'off', REST_CAP_ON: '2' }, opt.props || {}),
     self: { roster: [ME], events: (events || []).map((e) => [e[0].length <= 8 ? D + 'T' + e[0] : e[0], 'E01', e[1]]) }, config: opt.config });
-  m.run(R('apps-script/Cap10.gs'));
+  m.run(CAP_SRC);
   if (opt.sched !== undefined) {   // 光復就是自己（gf）：班表放在自己試算表的 sched_pub
     m.sb.REST_PEERS_ = (m.sb.REST_PEERS_ || []).filter((p) => p.ss !== 'SELF').concat([{ code: 'gf', ss: 'SELF' }]);
     const sh = m.self.insertSheet('sched_pub');
@@ -282,7 +286,7 @@ function worldX(now, opt) {
   const m = make({ now: T(now), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: opt.cap === undefined ? '2' : opt.cap },
     self: { roster: [ME], events: opt.aEvents || [] },
     peers: { SS_B: { roster: [{ emp_id: 'B07', name: '測試 一', key: 'KB', device_id: 'DB', active: 'TRUE' }], events: opt.bEvents || [[D + 'T09:00:00', 'B07', 'in']] } } });
-  m.run(R('apps-script/Cap10.gs'));
+  m.run(CAP_SRC);
   m.sb.REST_PEERS_ = [{ code: 'mzt', ss: 'SS_B' }, { code: 'gf', ss: 'SELF' }];
   const sh = m.self.insertSheet('sched_pub');
   sh.appendRow(SP_HEAD);
@@ -293,26 +297,6 @@ function worldX(now, opt) {
 const bSys = (m) => m.peers.SS_B.sh.events.values.filter((r) => r.indexOf('system_cap') >= 0).length;
 const sOf = (m) => { const s = status(m).cap; return [!!s.locked, s.grace_hm || null, s.sys_hm || null, sysRows(m).length, bSys(m)]; };
 const B918 = schedFor('B07', [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], { t: 'W', s: 'A' });
-check('X1★', '跨店：B 店 09–18（B 店工號 B07）、19:00 從 A 店開頁 → 不鎖、grace_hm 19:00、兩店都沒有系統卡',
-  sOf(worldX(D + 'T19:00:00', { b: B918 })), [false, '19:00', null, 0, 0]);
-check('X2', '跨店：B 店沒發布（A 店自己有 E01 09–18 也不拿來用）→ 照舊鎖、sys_hm 19:00',
-  sOf(worldX(D + 'T19:00:00', { a: schedFor('E01', [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], { t: 'W', s: 'A' }) })), [true, null, '19:00', 0, 0]);
-check('X3', '跨店：B 店班表上寫的是 A 店工號 E01（B 店名冊是 B07）→ 對不到人 → 照舊鎖',
-  sOf(worldX(D + 'T19:00:00', { b: schedFor('E01', [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], { t: 'W', s: 'A' }) })), [true, null, '19:00', 0, 0]);
-{
-  const m = worldX(D + 'T19:30:00', { b: B918 });
-  const r = punch(m, 'in');
-  check('X4★', '跨店：19:30 在 A 店按上班 → 放行（A 店一張上班卡）、兩店都不寫系統卡', [r.ok, m.events().filter((e) => e.type === 'in').length, sysRows(m).length, bSys(m)], [true, 1, 0, 0]);
-}
-check('X5', "跨店：開關 '1' → 跟 38d0340 一樣鎖、sys_hm 19:00", sOf(worldX(D + 'T19:00:00', { b: B918, cap: '1' })), [true, null, '19:00', 0, 0]);
-check('X6', '跨店：B 店 09:00–18:30 → 滿 10 晚 30（剛好）→ 照舊鎖',
-  sOf(worldX(D + 'T19:00:00', { b: schedFor('B07', [{ id: 'A', name: '班', start: '09:00', end: '18:30' }], { t: 'W', s: 'A' }) })), [true, null, '19:00', 0, 0]);
-{
-  const m = worldX(D + 'T19:00:00', { b: B918 });
-  check('X7', 'capSchedEnd_ 直接算：B 店那段 → 11-20 18:00；名字對不到 → unsure',
-    [new Date(m.sb.capSchedEnd_('E01', T(D + 'T09:00:00'), 'mzt', '測試一') + 8 * 3600000).toISOString().slice(5, 16), m.sb.capSchedEnd_('E01', T(D + 'T09:00:00'), 'mzt', '別人')],
-    ['11-20T18:00', 'unsure']);   // 2026-11-23 第二輪：別家店對不到人＝unsure（不鎖不提示），不是 null（照舊）
-}
 
 {
   // X8：跨店＋凌晨跨夜班情境，開關不是 '2' 時（'1'、沒設、'0'、'3'、' 2'、數字 2）與 38d0340 的 Cap10.gs 逐步比對：每一步回應＋A、B 兩店 events＋屬性
@@ -460,7 +444,7 @@ function worldQ(view, opt) {
   const aSpec = { roster: [ME], events: opt.aEvents || [] }, bSpec = { roster: [B07R, B08R], events: bEvents };
   const m = make({ now: T(opt.now || D + 'T19:10:00'), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: opt.cap || '2' },
     self: view === 'A' ? aSpec : bSpec, peers: view === 'A' ? { SS_B: bSpec } : { SS_A: aSpec } });
-  m.run(R('apps-script/Cap10.gs'));
+  m.run(CAP_SRC);
   m.sb.REST_PEERS_ = view === 'A' ? [{ code: 'mzt', ss: 'SS_B' }, { code: 'gf', ss: 'SELF' }] : [{ code: 'mzt', ss: 'SELF' }, { code: 'gf', ss: 'SS_A' }];
   const gfBook = view === 'A' ? m.self : m.peers.SS_A;
   const sh = gfBook.insertSheet('sched_pub');
@@ -478,87 +462,6 @@ function fourQ(opt) {
   wB.sb.capSweep();
   return { aPage: [!!ca.locked, ca.grace_hm || null, ca.sys_hm || null], bPage: [!!cb.locked, cb.grace_hm || null, cb.sys_hm || null],
     aIn: [r.ok, r.status || null], bSweep: bSysQ(wB), sysAnywhere: bSysQ(sA).length + bSysQ(pA).length };
-}
-{
-  const q = fourQ({ b: schedQ('A', 'C') });
-  check('Q1★', '同名兩工號、下班不同（B07 09–18／B08 10–20）：A 頁＝B 頁＝不鎖、grace_hm 19:00；A 店按上班放行；B 店掃描不寫', q,
-    { aPage: [false, '19:00', null], bPage: [false, '19:00', null], aIn: [true, null], bSweep: [], sysAnywhere: 0 });
-}
-{
-  const q = fourQ({ b: schedQ('A', 'A') });
-  check('Q2', '同名兩工號、下班相同（都 09–18）：四個角度同 Q1', q,
-    { aPage: [false, '19:00', null], bPage: [false, '19:00', null], aIn: [true, null], bSweep: [], sysAnywhere: 0 });
-}
-{
-  const q = fourQ({ b: schedQ('E', 'C') });
-  check('Q3', '同名兩工號、B07 09–19（晚 0 → 照舊）：A 頁、B 頁都鎖 sys 19:00；A 按上班擋；B 店掃描寫 19:00 B07', q,
-    { aPage: [true, null, '19:00'], bPage: [true, null, '19:00'], aIn: [false, 'cap_locked'], bSweep: ['19:00 B07'], sysAnywhere: 0 });
-}
-{
-  const ev = [[D + 'T09:00:00', 'B07', 'in'], [D + 'T09:00:00', 'B08', 'in']];
-  const q = fourQ({ b: schedQ('A', 'C'), bEvents: ev });
-  check('Q4★', '同名兩人同一秒上班（A 店分不出）：A 頁不鎖不提示；A 按上班＝判不了＝照舊擋（第三次驗收）；B 頁（B07）grace 19:00；B 店掃描 B07 不寫、B08（10–20）照舊寫', q,
-    { aPage: [false, null, null], bPage: [false, '19:00', null], aIn: [false, 'cap_locked'], bSweep: ['19:00 B08'], sysAnywhere: 0 });
-}
-{
-  const ev = [[D + 'T09:00:00', 'B07', 'in'], [D + 'T09:00:00', 'B08', 'in']];
-  const m = worldQ('A', { bEvents: ev });   // B 店沒發布
-  const s1 = status(m).cap;
-  const wB = worldQ('B', { bEvents: ev }); wB.sb.capSweep();
-  m.bBook.sh.events.values[0] = wB.bBook.sh.events.values[0].slice();   // 表頭多了 source 欄（capWrite_ 補的）
-  wB.bBook.sh.events.values.filter(isSys).forEach((r) => m.bBook.sh.events.values.push(r));   // B 店掃描寫的卡＝A 店讀得到的 B 店打卡列
-  const s2 = status(m).cap;
-  check('Q5★', '同 Q4 但 B 店沒發布：A 頁先不鎖（還沒有卡）；B 店掃描寫卡後 A 頁讀到卡才鎖、sys 19:00',
-    [[!!s1.locked, s1.grace_hm || null, s1.sys_hm || null], bSysQ(wB), [!!s2.locked, s2.sys_hm || null]], [[false, null, null], ['19:00 B07', '19:00 B08'], [true, '19:00']]);
-}
-{
-  /* Q6（2026-11-23 主管退回：本人按下班不可放寬 10 小時上限）：別家店那段、本人在 A 店按下班——
-   *   38d0340 未滿 10 時在 A 店按下班＝下班卡寫進 A 店 events、跟 B 店上班卡配成一段；這裡照同一個做法、時間改成滿 10 那一刻：
-   *   B 店判寬限（不會代記）或對不到工號 → 系統卡寫在 A 店 19:00、回 cap_locked；之後 B 頁、A 頁都鎖在 19:00，B 店掃描、再按一次都不多寫。
-   *   B 店沒發布（B 店會照舊代記）→ 跟 38d0340 一樣：回 cap_locked、A 店不寫（B 店掃描寫）。 */
-  const ENTRY = [
-    ['LINE', (m) => { const r = punch(m, 'out'); return [r.ok, r.status || null]; }],
-    ['liff_clock', (m) => { const r = m.sb.handleLiffClockGuarded_(Object.assign({ id_token: 'TOK_U1', type: 'out' }, HERE)); return [r.ok, r.error === 'guard_blocked' && /系統在 19:00 幫你記了下班卡/.test(r.reason || '')]; }],
-    ['舊 clock', (m) => { const j = oldClock(m, 'out'); return [j.status, j.rest && j.rest.code]; }],
-  ];
-  const WANT = { LINE: [false, 'cap_locked'], liff_clock: [false, true], '舊 clock': ['rejected_rest', 'cap10'] };
-  const aSys = (m) => m.self.sh.events.values.filter(isSys).map((r) => String(r[0]).slice(11, 16) + ' ' + r[1]);
-  /** A 店按下班之後：把 A 店的表（含 source 欄）放進 B 店視角的 SS_A，看 B 頁、B 店掃描 */
-  const bAfter = (mA, opt) => {
-    const wB = worldQ('B', opt);
-    wB.peers.SS_A.sh.events.values.length = 0;
-    mA.self.sh.events.values.forEach((r) => wB.peers.SS_A.sh.events.values.push(r.slice()));
-    const c = status(wB).cap;
-    wB.sb.capSweep();
-    return [[!!c.locked, c.sys_hm || null], bSysQ(wB)];
-  };
-  const cases = [
-    ['Q6★', 'B 店判寬限（同名兩工號、用打卡列對到 B07）', { b: schedQ('A', 'C') }],
-    ['Q6b★', '對不到工號（同名兩人同一秒上班）', { b: schedQ('A', 'C'), bEvents: [[D + 'T09:00:00', 'B07', 'in'], [D + 'T09:00:00', 'B08', 'in']] }],
-  ];
-  cases.forEach(([id, label, opt]) => ENTRY.forEach(([en, fn]) => {
-    const m = worldQ('A', opt);
-    const r = fn(m);
-    const sys1 = aSys(m);
-    const ca = status(m).cap;
-    m.setNow(D + 'T19:20:00');
-    const r2 = fn(m);
-    const after = bAfter(m, opt);
-    check(id + ' ' + en, label + '：19:10 在 A 店按下班（' + en + '）→ 系統卡寫在 A 店 19:00、擋下（鎖）；A 頁鎖 19:00；19:20 再按仍擋、不多寫；B 頁鎖 19:00、B 店掃描不寫',
-      [r, sys1, [!!ca.locked, ca.sys_hm || null], r2, aSys(m), after[0], after[1]],
-      [WANT[en], ['19:00 E01'], [true, '19:00'], WANT[en], ['19:00 E01'], [true, '19:00'], []]);
-  }));
-  const m2 = worldQ('A', {});
-  const rr = punch(m2, 'out');
-  check('Q6c', 'B 店沒發布（B 店會照舊代記）→ 跟 38d0340 一樣：回 cap_locked、A 店不寫（卡由 B 店寫）', [[rr.ok, rr.status || null], aSys(m2)], [[false, 'cap_locked'], []]);
-  const m3 = worldX(D + 'T19:10:00', { b: B918 });
-  const r3 = punch(m3, 'out');
-  check('Q6d★', '單一工號（X1 情境）在 A 店按下班 → 系統卡寫在 A 店 19:00、cap_locked、B 店不寫', [[r3.ok, r3.status || null], aSys(m3), bSys(m3)], [[false, 'cap_locked'], ['19:00 E01'], 0]);
-}
-{
-  const m = worldQ('A', { b: schedQ('A', 'C'), cap: '1' });
-  const c = status(m).cap;
-  check('Q7', "開關 '1'：同名兩工號跟 38d0340 一樣 A 頁鎖 sys 19:00", [!!c.locked, c.sys_hm], [true, '19:00']);
 }
 
 /** 暖快取後改壞再開頁：[第一次讀幾次, 第二次讀幾次, grace_hm, 鎖, 掃描後系統卡, 掃描讀幾次] */
@@ -672,36 +575,6 @@ const shiftsU = shiftsQ.concat([{ id: 'X', name: '長長', start: '09:00', end: 
 const schedU = (sid) => ({ start: '2026-11-01', shifts: shiftsU, rows: ['B07', 'B08'].map((id) => ({ emp_id: id, name: '測試一',
   cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: sid } : { t: 'R' })) })) });
 let un = 0;
-UNS.forEach(([ulab, uopt]) => BS.forEach(([blab, sid]) => IN_ENTRY.forEach(([en, fn]) => {
-  const opt = Object.assign({ b: schedU(sid) }, uopt);
-  const W = pairQ(opt);
-  setNowQ(W, D + 'T19:10:00');
-  const r = fn(W.A); syncQ(W, 'A');
-  const c1 = cardsQ(W);
-  W.B.sb.capSweep(); syncQ(W, 'B');
-  const pages = [pageQ(W.A), pageQ(W.B)];
-  setNowQ(W, D + 'T19:20:00');
-  const again = [fn(W.A)]; syncQ(W, 'A');
-  again.push(punch(W.A, 'out').status || 'ok'); syncQ(W, 'A');
-  W.B.sb.capSweep(); syncQ(W, 'B');
-  un++;
-  check('U' + un + '★', ulab + '＋' + blab + '：19:10 在 A 店按上班（' + en + '）→ 擋下、系統卡寫在 A 店 19:00；B 掃描不多寫；兩店頁面都鎖 19:00；19:20 再按上班／下班仍擋、不多寫',
-    [r, c1, pages, again, cardsQ(W)], [IN_WANT[en], ['A19:00E01'], ['LOCK19:00', 'LOCK19:00'], [IN_WANT[en], 'cap_locked'], ['A19:00E01']]);
-})));
-UNS.forEach(([ulab, uopt]) => BS.forEach(([blab, sid, bWrites]) => {
-  const W = pairQ(Object.assign({ b: schedU(sid) }, uopt));
-  setNowQ(W, D + 'T19:10:00');
-  const a1 = pageQ(W.A); syncQ(W, 'A');
-  W.B.sb.capSweep(); syncQ(W, 'B');
-  setNowQ(W, D + 'T19:11:00');
-  const after = [pageQ(W.A), pageQ(W.B)];
-  const twin = !!uopt.bEvents;
-  const wantCards = bWrites ? (twin ? ['B19:00B07', 'B19:00B08'] : ['B19:00B07']) : [];
-  const wantPages = bWrites ? ['LOCK19:00', 'LOCK19:00'] : ['free', 'grace19:00'];
-  un++;
-  check('U' + un, ulab + '＋' + blab + '：A 店先開頁（不鎖不提示）→ B 店掃描' + (bWrites ? '照舊寫卡 → A 頁讀到卡也鎖 19:00' : '不寫 → A 頁不鎖、B 頁 grace（兩邊都沒鎖、沒有卡）'),
-    [a1, cardsQ(W), after], ['free', wantCards, wantPages]);
-}));
 {
   const c = (fn) => corrupt(fn);
   check('K22★', '快取資料塊 rows 改成 null → 當壞快取重讀（照寬限）', c((cc) => edit(cc, (o) => { o.rows = null; })), [1, 1, '19:00', false, [], 0]);
@@ -727,6 +600,214 @@ UNS.forEach(([ulab, uopt]) => BS.forEach(([blab, sid, bWrites]) => {
     const late = m.sb.capGraceLate_('E01', T(D + 'T08:55:00'), T(D + 'T19:00:00'));
     check(id, '發布資料本身' + label + '：快取合格（第二次讀 0 次）、判斷照舊（讀不到）', [r1, reads - r1, late], [1, 0, false]);
   });
+}
+
+/* ════ 十三、方案甲：只給「姓名只在本店名冊在職」的同仁（2026-11-23 主管定案「排除跨店的人」）════
+ * 規則：姓名（去空白）在兩家以上門市名冊在職（active＝true）→ 不論開關、不論哪家店、哪個入口，整段照 38d0340；
+ *   別家店名冊讀不到、或讀到 0 位在職 → 判不了 → 照舊；正在上班那段在別家店 → 照舊。只在本店 → 走同店寬限（跨夜、班表快取、grace_hm）。
+ * 手算：S1 同店兩位同名（E01、E02 都 08:55 上班、都排 09–18）→ 兩人都還是「只在一家」→ 19:05 開頁都 grace 19:00、掃描不寫；E01 按下班只寫 E01 的 19:00，E02 不受影響。
+ *       S2 別家店有同名但停用 → 只在一家 → grace。S3 別家店同名（名字中間有空白）在職 → 多店 → 照舊 19:00 代記。
+ *       S4 別家店名冊是空的（讀取成功、0 位在職）→ 那家店沒人 → grace（2026-11-23 大腦更正）。S5 別家店名冊讀取丟例外 → 照舊。S6 別家店沒有 roster 分頁 → 照舊。
+ *       S7 名冊快取：第一次判斷每家別家店讀 1 次，10 分鐘內 0 次，過了再讀。S8 沒晚超過 30 分（09–19 班）→ 不讀任何別家店名冊。 */
+console.log('\n════ 十三、方案甲：只在一家名冊才給寬限 ════');
+const ME2 = { emp_id: 'E02', name: '測試一', key: 'K2', device_id: 'D2', active: 'TRUE', line_user_id: 'U2' };
+/** 本店＝光復（gf）＋別家店 peers（{SS_P: {roster:[…]}}）；班表 sched 放本店 sched_pub（rows 依 opt.rows） */
+function worldS(now, opt) {
+  const m = make({ now: T(now), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: opt.cap || '2' },
+    self: { roster: opt.roster || [ME], events: (opt.events || [['08:55:00', 'E01', 'in']]).map((e) => [D + 'T' + e[0], e[1], e[2]]) }, peers: opt.peers || {} });
+  m.run(CAP_SRC);
+  m.sb.REST_PEERS_ = Object.keys(opt.peers || {}).map((id, i) => ({ code: 'p' + i, ss: id })).concat([{ code: 'gf', ss: 'SELF' }]);
+  const sh = m.self.insertSheet('sched_pub');
+  sh.appendRow(SP_HEAD);
+  const shifts = [{ id: 'A', name: '班', start: '09:00', end: opt.end || '18:00' }];
+  sh.appendRow(['', 'T01', 1, JSON.stringify({ start: '2026-11-01', shifts, rows: (opt.emps || ['E01']).map((id) => ({ emp_id: id, name: '測試一',
+    cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: 'A' } : { t: 'R' })) })) }), 'op', '']);
+  return m;
+}
+const OTHER = { emp_id: 'P01', name: '別人', key: 'KP', device_id: 'DP', active: 'TRUE' };
+const st2 = (m, tok) => { const c = m.sb.handleLiffStatus_({ id_token: tok || 'TOK_U1' }).cap; return c.locked ? 'LOCK' + c.sys_hm : c.grace_hm ? 'grace' + c.grace_hm : 'free'; };
+{
+  const m = worldS(D + 'T19:05:00', { roster: [ME, ME2], emps: ['E01', 'E02'], events: [['08:55:00', 'E01', 'in'], ['08:55:00', 'E02', 'in']], peers: { SS_P: { roster: [OTHER] } } });
+  const a = [st2(m, 'TOK_U1'), st2(m, 'TOK_U2')];
+  m.sb.capSweep();
+  const swept = sysHm(m);
+  m.setNow(D + 'T19:30:00');
+  const r = punch(m, 'out');
+  const sysIds = m.self.sh.events.values.filter((x) => x.indexOf('system_cap') >= 0).map((x) => String(x[0]).slice(11, 16) + ' ' + x[1]);
+  check('S1★', '同店兩位同名（E01、E02）：兩人都還是只在一家 → 開頁都 grace 19:00、掃描不寫；E01 按下班只寫 E01 19:00、E02 照樣 grace',
+    [a, swept, r.status, sysIds, st2(m, 'TOK_U2')], [['grace19:00', 'grace19:00'], [], 'cap_locked', ['19:00 E01'], 'grace19:00']);
+}
+const SCASE = [
+  ['S2★', '別家店有同名但停用 → 只在一家 → grace', { peers: { SS_P: { roster: [OTHER, { emp_id: 'P02', name: '測試一', key: 'KQ', device_id: 'DQ', active: 'FALSE' }] } } }, 'grace19:00'],
+  ['S3', '別家店同名（名字中間有空白）在職 → 多店 → 照舊 19:00 代記', { peers: { SS_P: { roster: [OTHER, { emp_id: 'P02', name: '測試 一', key: 'KQ', device_id: 'DQ', active: 'TRUE' }] } } }, 'LOCK19:00'],
+  ['S3b', '別家店同名、active 寫 true（小寫）→ 也算在職（同打卡端條件）→ 照舊', { peers: { SS_P: { roster: [OTHER, { emp_id: 'P02', name: '測試一', key: 'KQ', device_id: 'DQ', active: 'true' }] } } }, 'LOCK19:00'],
+  ['S4★', '別家店名冊是空的（只有表頭；讀取成功、那家店沒人）→ 不影響 → grace', { peers: { SS_P: { roster: [] } } }, 'grace19:00'],
+  ['S4b★', '別家店名冊只有停用的人（0 位在職＝那家店沒人）→ grace', { peers: { SS_P: { roster: [Object.assign({}, OTHER, { active: 'FALSE' })] } } }, 'grace19:00'],
+  ['S2b', '三家店（另兩家都有人、都沒有這個姓名）→ 只在一家 → grace', { peers: { SS_P: { roster: [OTHER] }, SS_Q: { roster: [Object.assign({}, OTHER, { emp_id: 'Q01' })] } } }, 'grace19:00'],
+  ['S3c', '三家店、第二家有同名在職 → 照舊', { peers: { SS_P: { roster: [OTHER] }, SS_Q: { roster: [{ emp_id: 'Q02', name: '測試一', key: 'KQ', device_id: 'DQ', active: 'TRUE' }] } } }, 'LOCK19:00'],
+];
+SCASE.forEach(([id, label, opt, want]) => { const m = worldS(D + 'T19:05:00', opt); check(id, label, st2(m), want); });
+{
+  const m = worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [OTHER] } } });
+  m.peers.SS_P.sh.roster.getDataRange = () => { throw new Error('讀取失敗'); };
+  check('S5', '別家店名冊讀取丟例外 → 照舊 19:00 代記', st2(m), 'LOCK19:00');
+  const m2 = worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [OTHER] } } });
+  delete m2.peers.SS_P.sh.roster;
+  check('S6', '別家店沒有 roster 分頁 → 照舊', st2(m2), 'LOCK19:00');
+  const m3 = worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [OTHER] } } });
+  m3.sb.REST_PEERS_.push({ code: 'zz', ss: 'SS_NOPE' });
+  check('S6b', 'REST_PEERS_ 有一家打不開（沒權限）→ 照舊', st2(m3), 'LOCK19:00');
+}
+{
+  const m = worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [OTHER] }, SS_Q: { roster: [Object.assign({}, OTHER, { emp_id: 'Q01' })] } } });
+  const cnt = { SS_P: 0, SS_Q: 0 };
+  ['SS_P', 'SS_Q'].forEach((id) => { const sh = m.peers[id].sh.roster, g = sh.getDataRange; sh.getDataRange = function () { cnt[id]++; return g.apply(this, arguments); }; });
+  const reads = () => cnt.SS_P + cnt.SS_Q;
+  m.sb.capGraceSingle_(ME); const r1 = reads();
+  m.sb.capGraceSingle_(ME); const r2 = reads() - r1;
+  m.setNow(D + 'T19:16:00'); m.sb.capGraceSingle_(ME); const r3 = reads() - r1 - r2;
+  check('S7', '別家店名冊快取 10 分鐘：第一次每家讀 1 次（共 2）、馬上再判 0 次、11 分鐘後再讀 2 次', [r1, r2, r3], [2, 0, 2]);
+  const m2 = worldS(D + 'T19:05:00', { end: '19:00', peers: { SS_P: { roster: [OTHER] } } });
+  let n2 = 0; const sh2 = m2.peers.SS_P.sh.roster, g2 = sh2.getDataRange; sh2.getDataRange = function () { n2++; return g2.apply(this, arguments); };
+  m2.sb.capSweep(); const s = st2(m2);
+  // restPeerEvents_ 本來就會讀別家店名冊（rpr: 快取 6 小時）——這裡只數寬限多讀的：先把 rpr: 快取放好
+  check('S8', '沒晚超過 30 分（09–19 班、滿 10＝19:00）→ 照舊代記，寬限不讀別家店名冊（只剩 restPeerEvents_ 原本那 1 次）', [s, n2], ['LOCK19:00', 1]);
+  const m3 = worldS(D + 'T19:05:00', { peers: { SS_P: { roster: [OTHER] } } });
+  check('S9', '名字空白（掃描時名冊找不到這個工號）→ 照舊', m3.sb.capGraceSingle_({ emp_id: 'E01', name: '' }), false);
+}
+
+/* 多店名冊者：兩家店各跑自己的程式（新版）與 38d0340，逐步比對。新版的開關 '2' 對應 38d0340 的 '1'（38d0340 把 '2' 當成關）。
+ * A＝光復（E01 測試一），B＝mzt（B07 測試一，名冊另有 opt.bExtra）。每一步：回應、兩店 events 都要一樣。 */
+function worldM(view, opt, src, cap) {
+  const aSpec = { roster: [ME], events: opt.aEvents || [] }, bSpec = { roster: [B07R].concat(opt.bExtra || []), events: opt.bEvents || [] };
+  const m = make({ now: T(D + 'T19:00:00'), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: cap }, self: view === 'A' ? aSpec : bSpec, peers: view === 'A' ? { SS_B: bSpec } : { SS_A: aSpec } });
+  m.run(src);
+  m.sb.REST_PEERS_ = view === 'A' ? [{ code: 'mzt', ss: 'SS_B' }, { code: 'gf', ss: 'SELF' }] : [{ code: 'mzt', ss: 'SELF' }, { code: 'gf', ss: 'SS_A' }];
+  const sh = (view === 'A' ? m.self : m.peers.SS_A).insertSheet('sched_pub');
+  sh.appendRow(SP_HEAD);
+  (opt.sched || []).forEach((x) => sh.appendRow([x[0], 'T01', 1, JSON.stringify(x[1]), 'op', '']));
+  return m;
+}
+const OLDSRC = require('child_process').execFileSync('git', ['-C', require('path').join(__dirname, '..'), 'show', '38d0340:apps-script/Cap10.gs'], { encoding: 'utf8' });
+const mapOld = (c) => (c === '2' ? '1' : c);
+function pairM(opt, src, capA, capB) { return { A: worldM('A', opt, src, capA), B: worldM('B', opt, src, capB) }; }
+function syncM(W, from) {
+  if (from === 'A') { cpRows(W.B.peers.SS_A.sh.events.values, W.A.self.sh.events.values); cpRows(W.B.self.sh.events.values, W.A.peers.SS_B.sh.events.values); }
+  else { cpRows(W.A.self.sh.events.values, W.B.peers.SS_A.sh.events.values); cpRows(W.A.peers.SS_B.sh.events.values, W.B.self.sh.events.values); }
+}
+const OPSM = ['A_status', 'A_sweep', 'A_in_line', 'A_out_line', 'A_in_lclock', 'A_out_lclock', 'A_in_old', 'A_out_old', 'B_status', 'B_sweep', 'B_in_line', 'B_out_line'];
+function opM(W, op) {
+  const m = op[0] === 'A' ? W.A : W.B, sb = m.sb, ty = /_in_/.test(op) ? 'in' : 'out';
+  const tok = 'TOK_U1';
+  let r;
+  if (op.endsWith('status')) r = sb.handleLiffStatus_({ id_token: tok });
+  else if (op.endsWith('sweep')) { sb.capSweep(); r = null; }
+  else if (op.endsWith('_line')) r = sb.handleLiffPunch_(Object.assign({ id_token: tok, type: ty, confirm_same: true }, HERE));
+  else if (op.endsWith('_lclock')) r = sb.handleLiffClockGuarded_(Object.assign({ id_token: tok, type: ty }, HERE));
+  else r = JSON.parse(sb.doPost({ postData: { contents: JSON.stringify(Object.assign({ action: 'clock', key: op[0] === 'A' ? 'K1' : 'KB', type: ty, device_id: op[0] === 'A' ? 'D1' : 'DB' }, HERE)) } }).text);
+  syncM(W, op[0]);
+  return JSON.stringify(r);
+}
+/** 新版（capA, capB）與 38d0340（對應開關）跑同一串動作；回第一個不一樣的步驟或 null */
+function cmpM(opt, capA, capB, steps) {
+  const N = pairM(opt, CAP_SRC, capA, capB), O = pairM(opt, OLDSRC, mapOld(capA), mapOld(capB));
+  for (let i = 0; i < steps.length; i++) {
+    const [t, op] = steps[i];
+    [N.A, N.B, O.A, O.B].forEach((m) => m.setNow(t));
+    const rn = opM(N, op), ro = opM(O, op);
+    const en = JSON.stringify([N.A.self.sh.events.values, N.B.self.sh.events.values]), eo = JSON.stringify([O.A.self.sh.events.values, O.B.self.sh.events.values]);
+    if (rn !== ro || en !== eo) return { i, op, t: iso(t).slice(11, 16), rn: rn.slice(0, 200), ro: ro.slice(0, 200) };
+  }
+  return null;
+}
+const schB = (emp, end) => ['mzt', schedFor(emp, [{ id: 'A', name: '班', start: '09:00', end: end }], { t: 'W', s: 'A' })];
+const schA = (end) => ['', schedFor('E01', [{ id: 'A', name: '班', start: '09:00', end: end }], { t: 'W', s: 'A' })];
+const tt = (hm) => T(D + 'T' + hm + ':00');
+{
+  // 審查第二輪三條的重現：多店者 → 跟 38d0340 一樣
+  const r1 = cmpM({ bEvents: [[D + 'T09:00:00', 'B07', 'in']], sched: [schB('B07', '18:00')] }, '2', '2',
+    [[tt('19:30'), 'A_in_line'], [tt('20:30'), 'B_sweep'], [tt('20:31'), 'A_status'], [tt('22:30'), 'B_sweep'], [tt('22:30'), 'A_sweep'], [tt('22:31'), 'A_status'], [tt('22:31'), 'B_status'], [tt('22:32'), 'A_out_line']]);
+  check('R1', '審查第二輪第 1 條（B 09–18、09:00 在 B 上班、19:30 到 A 按上班…22:30 在 A 按下班）：多店者每一步都跟 38d0340 一樣', r1, null);
+  const r2a = cmpM({ bEvents: [[D + 'T09:00:00', 'B07', 'in']], sched: [schB('B07', '18:00')] }, '1', '2',
+    [[tt('19:00'), 'A_status'], [tt('19:00'), 'B_status'], [tt('19:05'), 'B_sweep'], [tt('20:00'), 'A_status'], [tt('20:00'), 'B_status'], [tt('20:10'), 'A_out_line']]);
+  const r2b = cmpM({ bEvents: [[D + 'T09:00:00', 'B07', 'in']], sched: [schB('B07', '18:00')] }, '2', '1',
+    [[tt('19:00'), 'A_status'], [tt('19:00'), 'B_status'], [tt('19:10'), 'A_out_line'], [tt('19:15'), 'B_sweep'], [tt('19:20'), 'B_status']]);
+  check('R2', "審查第二輪第 2 條（逐店開啟：A '1'／B '2' 與反過來）：多店者兩種組合每一步都跟 38d0340 一樣", [r2a, r2b], [null, null]);
+  const B08S = { emp_id: 'B08', name: '測試一', key: 'KB8', device_id: 'DB8', active: 'TRUE' };
+  const sched3 = ['mzt', { start: '2026-11-01', shifts: [{ id: 'A', name: '早', start: '09:00', end: '18:00' }, { id: 'C', name: '晚', start: '10:00', end: '20:00' }],
+    rows: [['B07', 'A'], ['B08', 'C']].map(([id, sid]) => ({ emp_id: id, name: '測試一', cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: sid } : { t: 'R' })) })) }];
+  const r3 = cmpM({ bExtra: [B08S], bEvents: [[D + 'T09:00:00', 'B07', 'in'], [D + 'T08:45:00', 'B08', 'in']], sched: [sched3] }, '2', '2',
+    [[tt('19:10'), 'A_status'], [tt('19:10'), 'A_out_line'], [tt('19:15'), 'B_sweep'], [tt('19:16'), 'B_status']]);
+  check('R3', '審查第二輪第 3 條（同名 B07／B08、上班差 15 分、B07 在 A 按下班）：多店者每一步都跟 38d0340 一樣（A 不再寫卡、B 照舊）', r3, null);
+}
+{
+  // 多店者隨機：段在 B／段在 A／兩邊都有、班表會晚／不會晚／沒發布、四種開關組合 × 隨機動作
+  let seedM = 20261123;
+  const rndM = () => { seedM = (seedM * 1103515245 + 12345) % 2147483648; return seedM / 2147483648; };
+  const pk = (xs) => xs[Math.floor(rndM() * xs.length)];
+  let same = 0; const bad = [];
+  for (let k = 0; k < 160; k++) {
+    const where = pk(['B', 'A', 'both']);
+    const opt = {
+      aEvents: where === 'A' ? [[D + 'T08:55:00', 'E01', 'in']] : where === 'both' ? [[D + 'T07:00:00', 'E01', 'in'], [D + 'T09:00:00', 'E01', 'out']] : [],
+      bEvents: where === 'A' ? [] : [[D + 'T' + pk(['09:00', '10:00', '11:30']) + ':00', 'B07', 'in']],
+      sched: [pk([schB('B07', '18:00'), schB('B07', '21:00'), null]), pk([schA('18:00'), schA('21:00'), null])].filter(Boolean),
+    };
+    const caps = pk([['2', '2'], ['1', '2'], ['2', '1'], ['1', '1'], ['2', undefined]]);
+    let t = tt('18:5' + Math.floor(rndM() * 9)); const steps = [];
+    for (let i = 0, n = 2 + Math.floor(rndM() * 5); i < n; i++) { steps.push([t, pk(OPSM)]); t += (1 + Math.floor(rndM() * 50)) * 60000; }
+    const r = cmpM(opt, caps[0], caps[1], steps);
+    if (r) bad.push([k, where, caps, r]); else same++;
+  }
+  check('R4', '多店名冊者隨機 160 串（段在 B／A／兩店都有、班表會晚／不會晚／沒發布、A／B 開關四種組合、12 種動作）：每一步回應與兩店 events 都跟 38d0340 一樣', [same, bad.slice(0, 2)], [160, []]);
+}
+{
+  // 單店者在兩店世界：只在 A 名冊（B 名冊只有別人）→ A 開關 '2' 照寬限；B 的開關不影響
+  const optS = { aEvents: [[D + 'T08:55:00', 'E01', 'in']], sched: [schA('18:00')] };
+  const mk = (capA, capB) => {
+    const aSpec = { roster: [ME], events: optS.aEvents }, bSpec = { roster: [Object.assign({}, OTHER, { emp_id: 'B09' })], events: [] };
+    const m = make({ now: T(D + 'T19:05:00'), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: capA }, self: aSpec, peers: { SS_B: bSpec } });
+    m.run(CAP_SRC);
+    m.sb.REST_PEERS_ = [{ code: 'mzt', ss: 'SS_B' }, { code: 'gf', ss: 'SELF' }];
+    const sh = m.self.insertSheet('sched_pub'); sh.appendRow(SP_HEAD); sh.appendRow(['', 'T01', 1, JSON.stringify(schA('18:00')[1]), 'op', '']);
+    return m;
+  };
+  check('R5', "單店者（只在 A 名冊）：A '2' → grace 19:00；A '1' → 照舊鎖（B 店開關不相干）", [st2(mk('2', '1')), st2(mk('1', '2'))], ['grace19:00', 'LOCK19:00']);
+}
+{
+  /* 九家店世界（REST_PEERS_ 九家、門檻用原值 9）：2026-11-23 大腦更正——別家店名冊讀取成功但 0 位在職＝那家店沒人（瑞光、文心目前就是），不影響寬限；
+   * 讀取失敗（打不開、沒有 roster 分頁、丟例外）＝判不了＝照舊；失敗不快取。 */
+  const nine = (mod) => {
+    const peers = {};
+    for (let i = 1; i <= 8; i++) peers['SS_' + i] = { roster: i === 7 || i === 8 ? [] : [Object.assign({}, OTHER, { emp_id: 'P' + i })] };   // 第 7、8 家空名冊
+    const m = make({ now: T(D + 'T19:05:00'), props: { REQ_BIND_FROM: 'off', REST_CAP_ON: '2' }, self: { roster: [ME], events: [[D + 'T08:55:00', 'E01', 'in']] }, peers });
+    m.run(CAP_SRC_REAL);
+    m.sb.REST_PEERS_ = Object.keys(peers).map((id, i) => ({ code: 'p' + i, ss: id })).concat([{ code: 'gf', ss: 'SELF' }]);
+    const sh = m.self.insertSheet('sched_pub'); sh.appendRow(SP_HEAD); sh.appendRow(['', 'T01', 1, JSON.stringify(schedFor('E01', [{ id: 'A', name: '班', start: '09:00', end: '18:00' }], { t: 'W', s: 'A' })), 'op', '']);
+    if (mod) mod(m);
+    return m;
+  };
+  const boom = (m, id) => { m.peers[id].sh.roster.getDataRange = () => { throw new Error('讀取失敗'); }; };
+  check('S11★', '九家店、兩家空名冊、其餘正常、沒有同名 → 只在一家 → grace 19:00', st2(nine()), 'grace19:00');
+  check('S12', '九家店、一家讀取丟例外 → 照舊', st2(nine((m) => boom(m, 'SS_3'))), 'LOCK19:00');
+  check('S12b', '九家店、一家沒有 roster 分頁 → 照舊', st2(nine((m) => { delete m.peers.SS_4.sh.roster; })), 'LOCK19:00');
+  check('S12c', '九家店、空名冊＋另一家丟例外 → 照舊', st2(nine((m) => boom(m, 'SS_8'))), 'LOCK19:00');
+  check('S12d', '九家店、自己這家店的名冊讀取丟例外（開頁本身用快取以外的路徑）→ 寬限判斷照舊', nine((m) => {
+    const sh = m.self.sh.roster, g = sh.getDataRange; let n = 0;
+    sh.getDataRange = function () { n++; if (m.__boomSelf) throw new Error('讀取失敗'); return g.apply(this, arguments); };
+    m.__boomSelf = true;
+  }).sb.capGraceSingle_(ME), false);
+  check('S12e', '九家店、另一家有同名在職 → 照舊', st2(nine((m) => { m.peers.SS_2.sh.roster.values.push(['P22', '測試一', 'k', 'd', '', 'TRUE']); })), 'LOCK19:00');
+  check('S10', 'REST_PEERS_ 只有 8 家（少列一家）→ 清單不齊 → 照舊', st2(nine((m) => { m.sb.REST_PEERS_ = m.sb.REST_PEERS_.filter((p) => p.ss !== 'SS_5'); })), 'LOCK19:00');
+  check('S10b', 'REST_PEERS_ 同一家列兩次（湊成 10 列但只有 9 家）→ 照算 9 家 → grace', st2(nine((m) => { m.sb.REST_PEERS_.push({ code: 'dup', ss: 'SS_1' }); })), 'grace19:00');
+  check('S10c', 'REST_PEERS_ 沒有本店（文心現在的清單就是少列自己）→ 照舊', st2(nine((m) => { m.sb.REST_PEERS_ = m.sb.REST_PEERS_.filter((p) => p.ss !== 'SELF').concat([{ code: 'x9', ss: 'SS_9' }]); m.peers.SS_9 = m.peers.SS_1; })), 'LOCK19:00');
+  {
+    const m = nine((mm) => boom(mm, 'SS_3'));
+    const r1 = m.sb.capGraceSingle_(ME);
+    m.peers.SS_3.sh.roster.getDataRange = function () { return { getValues: () => m.peers.SS_3.sh.roster.values.map((r) => r.slice()) }; };
+    const r2 = m.sb.capGraceSingle_(ME);
+    check('S13', '讀取失敗不快取：第一次失敗 → 照舊；那家店恢復後下一次就重讀、判單店（不用等 10 分鐘）', [r1, r2], [false, true]);
+  }
 }
 
 done();

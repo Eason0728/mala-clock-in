@@ -19,11 +19,16 @@ const D = '2026-11-20', T = (hms) => Date.parse(D + 'T' + hms + '+08:00');
 const SCHED = { start: '2026-11-01', shifts: [{ id: 'A', name: '班', start: '09:00', end: '18:00' }],
   rows: [{ emp_id: 'E01', name: '測試一', cells: Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: 'A' } : { t: 'R' })) }] };
 const SP_HEAD = ['store', 'period', 'seq', 'data', 'last_op', 'updated_at'];
+/** 方案甲：產生的程式資料夾只有 1～2 家店，把 Cap10.js「REST_PEERS_ 至少 9 家」的門檻換成 1（mini 與假 Google 載同一份） */
+function patchSingle(dir, stores) {
+  stores.forEach((st) => { const f = path.join(dir, st.dir, 'Cap10.js'); const src = fs.readFileSync(f, 'utf8'), out = src.replace('var CAP_SINGLE_STORES = 9;', 'var CAP_SINGLE_STORES = 1;');
+    if (out === src) throw new Error('找不到 CAP_SINGLE_STORES'); fs.writeFileSync(f, out); });
+}
 
 async function setup(cap) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap10-grace-mini-'));
   const stores = [{ code: '', dir: 'fake-gf', ss: 'SS_GF', lat: GF.lat, lng: GF.lng, radius_m: 20, relayKey: KEY_GF }];
-  buildGasRoot(REPO, dir, stores);
+  buildGasRoot(REPO, dir, stores); patchSingle(dir, stores);
   let now = T('08:00:00');
   const g = makeFakeGoogle({ gasRoot: dir, stores, now, tokens: { TOK1: SUB1 }, seed: {
     gf: { roster: [{ emp_id: 'E01', name: '測試一', key: 'K1', device_id: 'D1', active: 'TRUE', line_user_id: SUB1 }],
@@ -126,20 +131,24 @@ const ok = (id, label, got, want) => { const pass = JSON.stringify(got) === JSON
     ok('M11', "REST_CAP_ON='1'：mini 開頁照舊寫 19:00（引擎拉到的屬性是 '1'）", [s.cap.sys_hm, w.mCaps()], ['19:00', ['19:00']]);
     await w.close();
   }
-  // ⑥ 跨店（2026-11-23 審查第一輪第 1 條）：同仁在金山（mztjs，工號 B07）09:00 上班、光復（E01）19:05 開頁；班表在光復 sched_pub 的 mztjs 列
-  // M15（2026-11-23 第二輪驗收擋項 1）：金山名冊同名兩人 B07（09–18）、B08（10–20），B07 上班 → 光復（mini）用打卡列對到 B07，跟金山一樣不鎖
-  for (const [id, withSched, want, twin] of [['M12', true, [false, '19:00', null, [], []]], ['M13', false, [true, null, '19:00', [], []]], ['M15', true, [false, '19:00', null, [], []], true], ['M19', true, [false, null, null, [], []], 'same']]) {
+  // ⑥ 兩店世界（方案甲，2026-11-23 主管定案「排除跨店的人」）：同仁姓名同時在光復與金山名冊在職＝多店 → 不論金山班表，一律照 38d0340：
+  //   光復（mini）開頁鎖 19:00（卡由金山寫）；M15／M19 同名兩人（上班差 15 分／同一秒）也一樣。M21：只在光復名冊（金山名冊只有別人）→ 光復照寬限。
+  for (const [id, withSched, want, twin, single] of [['M12', true, [true, null, '19:00', [], []]], ['M13', false, [true, null, '19:00', [], []]], ['M15', true, [true, null, '19:00', [], []], true],
+    ['M19', true, [true, null, '19:00', [], []], 'same'], ['M21', true, [false, '19:00', null, [], []], false, true]]) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap10-grace-mini-x-'));
     const JS = { lat: 25.2, lng: 121.6 }, KEY_JS = 'j'.repeat(32);
     const stores = [{ code: '', dir: 'fake-gf', ss: 'SS_GF', lat: GF.lat, lng: GF.lng, radius_m: 20, relayKey: KEY_GF },
       { code: 'mztjs', dir: 'fake-js', ss: 'SS_JS', lat: JS.lat, lng: JS.lng, radius_m: 20, relayKey: KEY_JS }];
-    buildGasRoot(REPO, dir, stores);
+    buildGasRoot(REPO, dir, stores); patchSingle(dir, stores);
     let now = T('08:00:00');
     const bSched = { start: '2026-11-01', shifts: SCHED.shifts.concat([{ id: 'C', name: '晚', start: '10:00', end: '20:00' }]), rows: [{ emp_id: 'B07', name: '測試一', cells: SCHED.rows[0].cells }] };
     if (twin) bSched.rows.push({ emp_id: 'B08', name: '測試一', cells: SCHED.rows[0].cells.map((c) => (c.t === 'W' ? { t: 'W', s: 'C' } : c)) });
     const g = makeFakeGoogle({ gasRoot: dir, stores, now, tokens: { TOK1: SUB1 }, seed: {
-      gf: { roster: [{ emp_id: 'E01', name: '測試一', key: 'K1', device_id: 'D1', active: 'TRUE', line_user_id: SUB1 }], events: [], props: { REQ_BIND_FROM: 'off', REST_CAP_ON: '2' } },
-      mztjs: { roster: [{ emp_id: 'B07', name: '測試一', key: 'KB', device_id: 'DB', active: 'TRUE' }].concat(twin ? [{ emp_id: 'B08', name: '測試 一', key: 'KB8', device_id: 'DB8', active: 'TRUE' }] : []),
+      gf: { roster: [{ emp_id: 'E01', name: '測試一', key: 'K1', device_id: 'D1', active: 'TRUE', line_user_id: SUB1 }],
+            events: single ? [{ ts: D + 'T08:55:00+08:00', emp_id: 'E01', type: 'in', lat: GF.lat, lng: GF.lng, distance_m: 0, within_range: true, device_id: 'D1', device_match: true, status: 'ok', accuracy_m: 5 }] : [],
+            props: { REQ_BIND_FROM: 'off', REST_CAP_ON: '2' } },
+      mztjs: single ? { roster: [{ emp_id: 'X99', name: '別人', key: 'KX', device_id: 'DX', active: 'TRUE' }], events: [], props: { REQ_BIND_FROM: 'off', REST_CAP_ON: '2' } } : {
+               roster: [{ emp_id: 'B07', name: '測試一', key: 'KB', device_id: 'DB', active: 'TRUE' }].concat(twin ? [{ emp_id: 'B08', name: '測試 一', key: 'KB8', device_id: 'DB8', active: 'TRUE' }] : []),
                events: [{ ts: D + 'T09:00:00+08:00', emp_id: 'B07', type: 'in', lat: JS.lat, lng: JS.lng, distance_m: 0, within_range: true, device_id: 'DB', device_match: true, status: 'ok', accuracy_m: 5 }]
                  .concat(twin === 'same' ? [{ ts: D + 'T09:00:00+08:00', emp_id: 'B08', type: 'in', lat: JS.lat, lng: JS.lng, distance_m: 0, within_range: true, device_id: 'DB8', device_match: true, status: 'ok', accuracy_m: 5 }] : []),
                props: { REQ_BIND_FROM: 'off', REST_CAP_ON: '2' } } } });
@@ -150,28 +159,29 @@ const ok = (id, label, got, want) => { const pass = JSON.stringify(got) === JSON
     const app = createApp(cfg, { dbPath: ':memory:', gDbPath: ':memory:', gasRoot: dir, now: () => now, verifyUrl: base + '/line/verify', snapDir: path.join(dir, 'snap'),
       backupDir: path.join(dir, 'bak'), log: () => {}, remoteOpts: { tries: 1, timeoutMs: 5000, echoMs: 10, retryMs: 10 } });
     const p = app.primary, book = g.eng.sandbox('').SpreadsheetApp.openById('SS_GF');
-    book.setSheet('sched_pub', withSched ? [SP_HEAD, ['mztjs', 'T01', 1, JSON.stringify(bSched), 'op', '']] : [SP_HEAD]);
+    book.setSheet('sched_pub', single ? [SP_HEAD, ['', 'T01', 1, JSON.stringify(SCHED), 'op', '']] : withSched ? [SP_HEAD, ['mztjs', 'T01', 1, JSON.stringify(bSched), 'op', '']] : [SP_HEAD]);
     await p.pull('', { full: true }); await p.pull('mztjs', { full: true }); await p.setPrimary(true, ['', 'mztjs']);
     now = T('19:05:00'); g.setNow(now); await p.pull('', { sheets: true }); await p.pull('mztjs', { sheets: true });
     const s = await p.handleStatus({ store: 'gf', id_token: 'TOK1' });
     const caps = (c) => g.events(c).filter((e) => String(e.source) === 'system_cap').length ? ['x'] : [];
-    ok(id, twin === 'same' ? '同名兩人同一秒在金山上班（光復分不出是誰）：光復（mini）開頁不鎖、不回 grace_hm' : twin ? '同名兩工號（金山 B07 09–18／B08 10–20、B07 上班）：光復（mini）開頁用打卡列對到 B07 → 不鎖、grace_hm 19:00' : withSched ? '跨店：金山班表 09–18 → 光復（mini）開頁不鎖、grace_hm 19:00、兩店 Google 都沒有系統卡' : '跨店：金山沒發布 → 光復（mini）開頁照舊鎖、sys_hm 19:00（本店只擋不寫）',
+    ok(id, single ? '單店者（只在光復名冊、金山名冊只有別人）：光復（mini）開頁照寬限 grace_hm 19:00' : (twin === 'same' ? '多店者、金山同名兩人同一秒上班' : twin ? '多店者、金山同名兩人上班差 15 分' : withSched ? '多店者、金山班表 09–18（單店者會判寬限）' : '多店者、金山沒發布') + '：光復（mini）開頁照 38d0340 鎖 19:00（卡由金山寫）',
       [s.cap && s.cap.locked, s.cap && s.cap.grace_hm || null, s.cap && s.cap.sys_hm || null, caps(''), caps('mztjs')], want);
-    if (withSched) {   // M17／M18（2026-11-23 主管退回）：金山判寬限時本人在光復（mini）按下班 → 系統卡寫在光復、記在 19:00、cap_locked；抄回後金山掃描不寫、再按不多寫
+    if (withSched && !single) {   // M17／M18／M20：多店者在光復（mini）按下班／上班 → 照 38d0340：cap_locked、光復不寫；抄回後金山（Google）掃描寫 19:00 一張；再按仍擋
       now = T('19:10:00'); g.setNow(now);
-      const ty = twin === 'same' ? 'in' : 'out';   // M20：分不出是誰時按上班＝照舊收卡（2026-11-23 第三次驗收）
+      const ty = twin === 'same' ? 'in' : 'out';
       const pr = (n) => p.handlePunch({ id_token: 'TOK1', store: 'gf', lat: GF.lat, lng: GF.lng, accuracy: 8, type: ty, req_id: 'r' + String(90 + n).padStart(16, '0'), confirm_same: true });
       const r1 = await pr(1);
       const mHm = () => p.gs.all('').filter((r) => String(r.data.source || '') === 'system_cap').map((r) => String(r.data.ts).slice(11, 16));
       const m1 = mHm();
       await p.pushAll(); await p.pull('', { full: true }); await p.pull('mztjs', { full: true });
       g.eng.sandbox('mztjs').capSweep();
+      await p.pull('mztjs', { full: true });
       now = T('19:20:00'); g.setNow(now);
       const r2 = await pr(2);
       const s2 = await p.handleStatus({ store: 'gf', id_token: 'TOK1' });
       const gHm = (c) => g.events(c).filter((e) => String(e.source) === 'system_cap').map((e) => String(e.ts).slice(11, 16));
-      ok(id === 'M12' ? 'M17' : id === 'M15' ? 'M18' : 'M20', (twin === 'same' ? '分不出是誰、本人在光復（mini）19:10 按上班' : (twin ? '同名兩工號：' : '') + '金山判寬限、本人在光復（mini）19:10 按下班') + ' → cap_locked、系統卡寫在光復 19:00；抄回後光復 Google 一張、金山掃描不寫；19:20 再按仍擋、不多寫；開頁鎖 19:00',
-        [r1.status, m1, gHm(''), gHm('mztjs'), r2.status, mHm(), s2.cap.locked, s2.cap.sys_hm], ['cap_locked', ['19:00'], ['19:00'], [], 'cap_locked', ['19:00'], true, '19:00']);
+      ok(id === 'M12' ? 'M17' : id === 'M15' ? 'M18' : 'M20', '多店者在光復（mini）19:10 按' + (ty === 'in' ? '上班' : '下班') + ' → 照 38d0340：cap_locked、光復不寫；金山掃描寫 19:00；19:20 再按仍擋；開頁鎖 19:00',
+        [r1.status, m1, gHm(''), gHm('mztjs').length >= 1, r2.status, mHm(), s2.cap.locked, s2.cap.sys_hm], ['cap_locked', [], [], true, 'cap_locked', [], true, '19:00']);
     }
     await app.stop(); await g.close(); fs.rmSync(dir, { recursive: true, force: true });
   }
