@@ -14,7 +14,7 @@
 
 ## 步驟（照 `~/加盟名單平台/_brain_out/pay212-deploy/` 的上線包形狀做一份 `dupx-deploy`）
 
-1. **主管先看「待預覽文字」**（PR 說明有完整清單；design.md 沒有草稿的句子都在那裡）。改字＝改 `Payroll.gs` 的 `payDupXacctLine_`／`PAY_DUP_XACCT_MSG_`／finalize 那段、`payroll.html` 兩行，跑 `node tests/dup-xacct.test.js` 更新期望值。
+1. 新擬文字主管 2026-11-23 已看過同意（PR 說明清單）。之後要改字＝改 `Payroll.gs` 的 `payDupXacctLine_`／`PAY_DUP_XACCT_MSG_`／finalize 那段、`payroll.html` 兩行，跑 `node tests/dup-xacct.test.js` 更新期望值。
 2. **跟另外三個 PR 的先後**：#217（檔尾新增＋handler 表兩行）、#223（`payRestOverList_` 約 5633–5680 行）、#224（`payOtFormCheck_`、`payOtFormsMonth_`、`payroll.html` 1714 行）跟本 PR 沒有改到同一段，誰先合都行；後合的要 rebase 到新主線、重跑 `node tests/run-all.js`。上線包要比「主線上的 `Payroll.gs` sha1＝要推的版本」。
 3. 合併本 PR → Pages 自動發布 `payroll.html`。
 4. 上線包「只檢查」：clasp pull 光復專案、比對服務中 `薪資.js`＝上一版（目前 @324，以當時服務中為準）、其他檔原樣；用乾淨 worktree 跑 `node tests/run-all.js`（期望全部通過、`dup-xacct.test.js` 0 失敗）。
@@ -38,8 +38,8 @@
 - 只看申請分頁；主管沒等單、直接核定成出差的（沒有申請單）看不到。
 - 認人口徑跟跨店支援自動帶入共用同一支（`payXsupPayRows_`＋`payXsupConfirmed_`）：state 空白算 confirmed、大小寫不同不算——引擎帶入時數的帳號重複檢查一定認得。
 - 支援時數「有沒有進這次計薪」看引擎結果，兩條路都算：跨店支援自動帶入（`XSUP.byEmp[工號].stores`）、總部 Mirror（央廚核定抄進本店打卡表，payCollect 照算）。
-- **手填的跨店支援時數**（薪資頁「跨店支援」欄，只有門市、時數，沒有日期與帳號）對不回是哪個帳號哪一天：現況重複檢查看不出來，① 只提醒、可鎖。**待主管定**（例：手填了同一家店的支援時數就當那家店帳號的時數進計薪 → 擋）。
-- ② 現行：計薪店請假＋另一帳號出差，不論出差帳號時數進不進計薪都擋（`PAY_DUP_R2_ANY_TRIP_ = true`，待主管確認；改成跨單位只提醒＝把它改 `false`，mala-store-ops `server/dup-xacct.js` 的 `R2_ANY_TRIP` 一起改）。
+- **手填的跨店支援時數**（薪資頁「跨店支援」欄，只有門市、時數，沒有日期與帳號）對不回是哪個帳號哪一天。**主管 2026-11-23 定案保守擋**：同一位同仁這個月有手填支援（任何一家店、時數 > 0）＋① 兩帳號同一天都出差 → 擋（原本只提醒的那種也擋；只限 ①）。可能誤擋（手填時數其實跟那天無關），解法是作廢重複的那張。
+- ② 現行：計薪店請假＋另一帳號出差，不論出差帳號時數進不進計薪都擋（`PAY_DUP_R2_ANY_TRIP_ = true`，主管 2026-11-23 定案維持；之後要改成跨單位只提醒＝把它改 `false`，mala-store-ops `server/dup-xacct.js` 的 `R2_ANY_TRIP` 一起改）。
 
 ## 行政群清單與薪資鎖月可能講不一樣（可以接受：清單是提醒，鎖月才是把關）
 | 情況 | 薪資鎖月 | 行政群清單 |
@@ -47,6 +47,7 @@
 | 對照表 `pay_store` 跟主檔計薪門市不一致（引擎沒帶入支援時數） | ① 只提醒、可鎖 | 依 pay_store 判斷，可能寫「請作廢一張」 |
 | 支援帳號標 `not_support`／打卡店主檔也有他（dup_pay） | 引擎沒帶入 → ① 只提醒（Mirror 帶入的除外） | mini 看不到這兩個標記 → 寫「請作廢一張」 |
 | 對照 `state` 空白 | 跟引擎一樣當已確認 → 會擋 | 打卡端只送 confirmed → 不列 |
+| 這個月有手填跨店支援＋① 兩帳號出差（引擎沒帶入） | 保守擋 | 看不到手填資料 → 依 pay_store 判斷，可能寫「請確認是不是重複申請」 |
 
 ## 退回
 

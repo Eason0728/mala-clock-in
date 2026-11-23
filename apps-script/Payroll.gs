@@ -4494,7 +4494,7 @@ function payDupOverlap_(a, b) {
 }
 var PAY_DUP_ROLE_ORDER_ = { home: 0, pay: 1, remind: 2 };
 /* ②「請假在計薪那家店＋另一帳號出差」：true＝出差那張不論在哪個帳號都擋（照主管定案 A 字面，現行）；
-   false＝出差那個帳號的時數不進這次計薪（跨單位、not_support…）時只提醒。待主管確認，要改只動這一行（mala-store-ops server/dup-xacct.js 同名常數一起改）。 */
+   false＝出差那個帳號的時數不進這次計薪（跨單位、not_support…）時只提醒。主管 2026-11-23 定案維持 true；要改只動這一行（mala-store-ops server/dup-xacct.js 同名常數一起改）。 */
 var PAY_DUP_R2_ANY_TRIP_ = true;
 /**
  * 純函式。accts：[{ key, store, store_name, acct, role, rows:[{ id, kind, status, date, leave_type, start, end, hours, voided_at, mirror_src }] }]
@@ -4603,7 +4603,11 @@ function payDupXacctSlim_(x, code) {
  * 本店帳號＝薪資主檔工號（原樣、去掉 emp_prefix，同 payUnapprovedAll_）＋打卡對照裡同一份打卡表的帳號。對照沒確認、acct_only 的列不算同一人。
  * 回 { 工號: [payDupXacctSlim_…] }，沒有重複的人不列。讀不到分頁會丟例外（呼叫端接住、改成擋鎖定）。
  */
-function payDupXacctStore_(ym, st, master, XSUP) {
+/** 這位同仁這次計薪實際採用的支援列裡，有沒有手填（不是自動帶入）且時數 > 0 的跨店支援（任何一家店）。0、空白＝當沒有。 */
+function payDupHasManualSup_(support) {
+  return (Array.isArray(support) ? support : []).some(function (x) { return x && typeof x === 'object' && !payXsupIsAuto_(x) && payNum(x.hours) > 0; });
+}
+function payDupXacctStore_(ym, st, master, XSUP, supBy) {
   if (!payDupXacctOn_(ym)) return null;
   const storeBy = payXsupStoreBy_(payRead('store'));
   const home = payXsupCode_(st), homeKey = payXsupClockKey_(home, storeBy);
@@ -4650,7 +4654,7 @@ function payDupXacctStore_(ym, st, master, XSUP) {
     /* 支援帳號的時數「實際有沒有進這次計薪」看引擎結果，兩條路：
        ①跨店支援自動帶入：在 XSUP.byEmp[工號].stores（同單位、非 not_support／dup_pay／dup_acct；pay_store 不一致時引擎沒帶入＝不在這裡）；
        ②總部 Mirror：央廚帳號的核定被抄進本店打卡表（mirror_src），payCollect 讀本店 approved（buildLatestApprovedMap）時就算進本店時數（not_support 的人也一樣）。
-       手填的跨店支援時數沒有日期、也不知道是哪個帳號，對不回來（見 PR 說明，待主管定）。 */
+       手填的跨店支援時數沒有日期、也不知道是哪個帳號，對不回來 → 下面「保守擋」（主管 2026-11-23 定案）。 */
     const mirrored = function (S, ck) {
       if (!homeAppr) homeAppr = buildLatestApprovedMap(payClockRead(home, 'approved') || []);
       return Object.keys(homeAppr).some(function (d) {
@@ -4677,6 +4681,11 @@ function payDupXacctStore_(ym, st, master, XSUP) {
                    rows: reqOf(S).filter(function (q) { return payXsupId_(q.emp_id) === eid; }) });
     });
     const list = payDupXacctCore_(accts, { ym: ym });
+    /* 主管 2026-11-23 定案（保守擋）：手填的跨店支援時數沒有日期與帳號、對不回是哪一天，所以這個月有手填支援（任何一家店、> 0）時，
+       ①「兩個帳號同一天都是出差」原本因為另一帳號時數沒經自動帶入／Mirror 進計薪而只提醒的，改成擋。只限①，其他只提醒的不動。 */
+    if (supBy && payDupHasManualSup_(supBy[raw] || supBy[String(e.emp_id)])) list.forEach(function (x) {
+      if (!x.pay && x.kind === 'trip' && x.cats.length === 1 && x.cats[0] === 'a') x.pay = true;
+    });
     if (!list.length) return;
     const code = no || raw;
     out[raw] = list.map(function (x) { return payDupXacctSlim_(x, code); });
@@ -4920,7 +4929,7 @@ function handlePayrollCalc(body) {
      開關沒開＝這段完全不做事、不多讀任何分頁。偵測丟例外＝每人記 dup_xacct_err，鎖定時擋（保護性：寧可擋，不默默放行）。 */
   if (!AM.day1 && payDupXacctOn_(ym)) {
     let DUPX = null, dupErr = false;
-    try { DUPX = payDupXacctStore_(ym, st, master, XSUP) || {}; } catch (err) { dupErr = true; Logger.log('dup_xacct in calc: ' + err); }
+    try { DUPX = payDupXacctStore_(ym, st, master, XSUP, SUP_BY) || {}; } catch (err) { dupErr = true; Logger.log('dup_xacct in calc: ' + err); }
     results.forEach(function (r) {
       const l = DUPX ? DUPX[String(r.emp_id).trim()] : null;
       if (!dupErr && !(l && l.length)) return;

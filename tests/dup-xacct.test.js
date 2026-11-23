@@ -108,6 +108,8 @@ const dupOf = (r, id) => { const x = (r.results || []).find((y) => y.emp_id === 
 const linesOf = (r, id) => (dupOf(r, id) || []).map((x) => [x.pay, x.line]);
 const lock = (s, st) => s.post('handlePayrollFinalize', { ym: '2026-11', store: st, lock: true });
 
+let OLDSRC = null;
+try { OLDSRC = cp.execFileSync('git', ['-C', path.join(__dirname, '..'), 'show', 'origin/main:apps-script/Payroll.gs'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) { OLDSRC = null; }
 console.log('\n══ ③-1 設計案例 1：DZY010 11/5 兩個帳號各一張整天出差（計薪門市是 HQ 或 MZTHQ 都要擋）══');
 for (const pay of ['HQ', 'MZTHQ']) {
   const s = env(scene(pay));
@@ -260,14 +262,33 @@ console.log('\n══ ③-3 驗收補（2026-11-23）：對照計薪店不一致
     r = s.post('handlePayrollCalc', { ym: '2026-11', store: 'HQ' });
     eq(linesOf(r, 'HQ-03').map((y) => y[0]), [false], `　對照組（${label}）：總部表沒有抄自央廚的核定 → 央廚帳號時數沒進計薪 → 只提醒`);
   }
-  // 手填的跨店支援時數（沒有日期、對不回哪個帳號哪一天）：現況＝重複檢查看不出來，① 只提醒、可鎖（待主管定，不自己定規則）
+  // 手填的跨店支援時數（沒有日期、對不回哪個帳號哪一天）：主管 2026-11-23 定案保守擋——這個月有手填支援（> 0）＋① 兩帳號都出差 → 擋
   {
     const xm = [XROW('DZY010', 'MZTHQ', 'HQ', 'HQ-03'), XROW('DZY010', 'MZTHQ', 'MZTGF', 'MZTGF01')];
-    const s = env(scene('HQ', { xmap: xm }));
-    const inputs = { 'HQ-03': { support: [{ code: 'MZTGF', store: '墨竹亭光復', hours: 8, rate: 240, amount: '' }] } };
-    const r = s.post('handlePayrollCalc', { ym: '2026-11', store: 'HQ', inputs });
-    const h = r.results.find((y) => y.emp_id === 'HQ-03');
-    eq([Number(h.support_hours), linesOf(r, 'HQ-03').map((y) => y[0])], [8, [false]], '【現況，待主管定】pay_store 不一致＋會計手填墨竹亭光復 8 小時：支援時數 8 進了薪資，但手填沒有日期／帳號 → 重複檢查只提醒');
+    const SUP = (h) => ({ 'HQ-03': { support: [{ code: 'MZTGF', store: '墨竹亭光復', hours: h, rate: 240, amount: '' }] } });
+    const run1 = (sc, inputs, src) => { const s = env(sc, { src }); const r = s.post('handlePayrollCalc', { ym: '2026-11', store: 'HQ', inputs }); return { s, r }; };
+    let { s, r } = run1(scene('HQ', { xmap: xm }), SUP(8));
+    eq([Number(r.results.find((y) => y.emp_id === 'HQ-03').support_hours), linesOf(r, 'HQ-03')], [8, [[true, '11/5 DZY010 出差：總部（HQ-03）整天 8 小時＋墨竹亭光復（MZTGF01）整天 8 小時']]],
+      '有手填支援 8 小時＋① 兩帳號整天出差（pay_store 不一致、引擎沒帶入）→ 擋，訊息沿用既有那一行');
+    let L = s.post('handlePayrollFinalize', { ym: '2026-11', store: 'HQ', lock: true, inputs: SUP(8) });
+    eq([L.error, L.message], ['dup_xacct', '不能鎖定：下面的同仁同一天在兩個打卡帳號重複申請出差或請假，薪資會重複計算工時。請先請人資作廢多出來的那張、該帳號重新核定，再按「重新計算」後鎖定。\n・11/5 DZY010 出差：總部（HQ-03）整天 8 小時＋墨竹亭光復（MZTGF01）整天 8 小時'], '　鎖定擋 dup_xacct，句子不變');
+    for (const h of [0, '', null]) {
+      ({ s, r } = run1(scene('HQ', { xmap: xm }), SUP(h)));
+      eq(linesOf(r, 'HQ-03').map((y) => y[0]), [false], `手填支援時數 ${JSON.stringify(h)} → 當沒有，維持只提醒`);
+    }
+    ({ s, r } = run1(scene('HQ', { xmap: xm }), undefined));
+    eq([linesOf(r, 'HQ-03').map((y) => y[0]), lock(s, 'HQ').ok], [[false], true], '沒有手填支援＋pay_store 不一致的 ① → 維持只提醒、可鎖');
+    // 只限 ①：手填支援＋支援店請假（只提醒那類）→ 仍只提醒
+    ({ s, r } = run1(scene('HQ', { xmap: xm, clock: (c) => { c['ck-gf'].requests = [RQ('rq-gf-2', 'MZTGF01', '2026-11-05', 'leave', { leave_type: '事假', start: '14:00', end: '18:00', hours: 4 })]; } }), SUP(8)));
+    eq(linesOf(r, 'HQ-03').map((y) => y[0]), [false], '手填支援＋本店出差／支援店請假 → 不在範圍，仍只提醒');
+    // 有手填支援但沒有重複 → 不擋、計算回應與 run 跟 GitHub main 逐字相同
+    if (OLDSRC) {
+      const sc = scene('HQ', { xmap: xm, clock: (c) => { c['ck-gf'].requests = []; } });
+      const a = run1(sc, SUP(8), OLDSRC), b = run1(sc, SUP(8));
+      eq(JSON.stringify(b.r) === JSON.stringify(a.r) && JSON.stringify(b.s.__DATA.run) === JSON.stringify(a.s.__DATA.run), true, '有手填支援但沒有重複：計算回應、run 跟 main 逐字相同');
+      const Lb = b.s.post('handlePayrollFinalize', { ym: '2026-11', store: 'HQ', lock: true, inputs: SUP(8) });
+      eq([Lb.ok, Lb.status], [true, 'final'], '　可以鎖');
+    }
   }
   // 第 5 項：② 集中在 PAY_DUP_R2_ANY_TRIP_ 一行
   {
