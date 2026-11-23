@@ -51,6 +51,44 @@ def open_p2b(ctx, mini_st, st_only, g_delay=0, extra='', wait=True):
     return p, S
 
 
+def open_two(ctx, mini_st, g_st, st_only, extra='', punch_fake=None, g_delay=0):
+    """兩邊都用假的（2026-11-23）：mini_st＝mini 回的開頁狀態、g_st＝Google liff_status 回的（物件）；正本名單空＝按打卡直送 Google liff_punch（可用 punch_fake 假回應）。"""
+    on = {'ok': True, 'v': 1, 'primary': [], 'wait_ms': 3000}
+    hits = []
+
+    def st_h(route):
+        hits.append(time.time())
+        route.fulfill(status=200, body=json.dumps(mini_st), content_type='text/plain')
+    p = ctx.new_page()
+    p.add_init_script(C.LOG_JS)
+    pre = 'window.__fake.liff_status = %s;' % json.dumps(g_st)
+    if punch_fake is not None:
+        pre += 'window.__fake.liff_punch = %s;' % json.dumps(punch_fake)
+    if g_delay:
+        pre += 'window.__delay = {liff_status: %d};' % g_delay   # 只延後開頁那一次（用過就歸零）
+    p.add_init_script(pre)
+    p.route(C.G_URL + '/config', lambda r: r.fulfill(status=200, body=json.dumps(on), content_type='application/json'))
+    p.route(C.G_URL + '/status', st_h)
+    p.goto(C.url((C.HQ['lat'], C.HQ['lng']), extra='&retry_ms=50&g_conf_ms=600&g_api=' + C.G_URL + '&st_only=' + st_only + extra))
+    p.wait_for_function('document.getElementById("who").textContent === "測試一" && document.getElementById("btns").hidden === false', timeout=10000)
+    return p, hits
+
+
+def two_states(real):
+    """新（Google 有、mini 還沒拉到）：最後一張下班卡、上班鍵亮；舊：最後一張上班卡（較早）、下班鍵亮。鎖都過期。"""
+    new = json.loads(json.dumps(real)); new.setdefault('guard', {})['lock'] = {}
+    new['guard']['blocked'] = 'out'; new['guard']['last'] = {'type': 'out', 'hm': '18:00', 'ts': '2099-01-01T18:00:00+08:00'}
+    new['today'] = [{'type': 'in', 'hm': '09:00', 'status': 'ok'}, {'type': 'out', 'hm': '18:00', 'status': 'ok'}]
+    old = json.loads(json.dumps(new)); old['guard']['blocked'] = 'in'; old['guard']['last'] = {'type': 'in', 'hm': '09:00', 'ts': '2099-01-01T09:00:00+08:00'}
+    old['today'] = [{'type': 'in', 'hm': '09:00', 'status': 'ok'}]
+    mk = lambda s: dict(s, role='primary', notices_ok=True)
+    return new, old, mk(new), mk(old)
+
+
+def btns(p):
+    return (p.is_disabled('#btnIn'), p.is_disabled('#btnOut'))
+
+
 def g_status_calls(p):
     return [x for x in C.calls(p) if x['action'] == 'liff_status']
 
@@ -90,7 +128,7 @@ def main():
             mini_old = dict(real, role='primary', notices=[])   # 快速通道還沒換版：沒有 notices_ok
 
             # ── 1. 開關關（沒設）：跟現在一樣，開頁同時問 mini 與 Google ──
-            p, S = open_p2b(ctx, mini_ok, None, g_delay=2500)
+            p, S = open_p2b(ctx, mini_ok, '0', g_delay=2500)   # 正式檔已有店開 cmp：本機用 ?st_only=0 明確測「開關關」（＝瑞光、文心現在的做法）
             p.on('pageerror', lambda e: errs.append(str(e)))
             p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
             g = g_status_calls(p)
@@ -171,6 +209,89 @@ def main():
             p.on('pageerror', lambda e: errs.append(str(e)))
             p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
             C.ok('7 mini 沒綁定：照 Google 的', opens(p)[0].get('st_src') == 'google', opens(p)[0])
+            p.close()
+
+            # ── 8–11（2026-11-23 驗收補）：Google 較新的校正、量法、被拒後訊息 ──
+            G_NEW, G_OLD, M_NEW, M_OLD = two_states(real_status())
+            REJ = {'ok': False, 'type': 'out', 'status': 'guard', 'reason': '（測試）後端擋下', 'hint': '（測試）怎麼辦'}
+            # 8. cmp：mini 舊、Google 新 → 約 0.8 秒後改用 Google 的（上班亮、下班灰）；比對記 diff_mold
+            p, _ = open_two(ctx, M_OLD, G_NEW, 'cmp', extra='&st_cmp_ms=800')
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            b0 = btns(p)
+            p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+            o = opens(p)[0]
+            C.ok('8 cmp mini 舊 Google 新：先照 mini（上班灰、下班亮）', b0 == (True, False), b0)
+            C.ok('8 cmp mini 舊 Google 新：之後改用 Google 的（上班亮、下班灰）', btns(p) == (False, True), btns(p))
+            C.ok('8 cmp mini 舊 Google 新：比對 diff、status 標 mini 較舊', [o.get('st_match'), o.get('status')] == ['diff', 'diff_mold_mi_go'], o)
+            p.close()
+            # 9. cmp：mini 新、Google 舊 → 一直用 mini 的；比對記 diff_gold
+            p, _ = open_two(ctx, M_NEW, G_OLD, 'cmp', extra='&st_cmp_ms=800')
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+            p.wait_for_timeout(500)
+            o = opens(p)[0]
+            C.ok('9 cmp mini 新 Google 舊：用 mini 的（上班亮、下班灰）', btns(p) == (False, True), btns(p))
+            C.ok('9 cmp mini 新 Google 舊：比對 diff、status 標 Google 較舊', [o.get('st_match'), o.get('status')] == ['diff', 'diff_gold_mo_gi'], o)
+            p.close()
+            # 10. 量法：同仁在 Google 回來之前就按了打卡 → 不記 same／diff，status 標 cmp_late（三種模式一致；這裡用 cmp 與 0）
+            for mode in ('cmp', '0'):
+                p, _ = open_two(ctx, M_OLD, G_NEW, mode, extra='&st_cmp_ms=1500', punch_fake=REJ, g_delay=(2500 if mode == '0' else 0))   # 開關關：開頁那次 Google 晚回來
+                p.on('pageerror', lambda e: errs.append(str(e)))
+                C.force_out(p)
+                p.wait_for_function('(window.__open || []).length >= 1', timeout=10000)
+                o = opens(p)[0]
+                C.ok('10 量法（%s）：按了打卡之後才回來的比對不記 same／diff、標 cmp_late' % mode, [o.get('st_match'), o.get('status')] == ['', 'cmp_late'], o)
+                p.close()
+            # 11. cmp：開頁照 mini（舊）、按下班被後端擋 → 重讀後 Google 較新把畫面校正，失敗原因要留著（跟開關關一樣）
+            for mode in ('cmp', '0'):
+                p, _ = open_two(ctx, M_OLD, G_NEW, mode, extra='&st_cmp_ms=1500', punch_fake=REJ, g_delay=(1500 if mode == '0' else 0))   # 開關關：開頁那次 mini 先回
+                p.on('pageerror', lambda e: errs.append(str(e)))
+                C.force_out(p)
+                C.wait_msg(p, '（測試）後端擋下', timeout=8000)
+                p.wait_for_timeout(3500)
+                C.ok('11 被擋後重讀（%s）：失敗原因還在' % mode, '（測試）後端擋下' in C.msg(p) and '（測試）怎麼辦' in C.msg(p), C.msg(p))
+                C.ok('11 被擋後重讀（%s）：按鍵照 Google 較新的（上班亮、下班灰）' % mode, btns(p) == (False, True), btns(p))
+                p.close()
+
+            # 12. 開關關：mini 先回、Google 慢回、Google 較新 → 先照 mini、Google 回來後改用 Google 的（瑞光、文心走這條，原本沒有測試保護）
+            p, _ = open_two(ctx, M_OLD, G_NEW, '0', g_delay=1500)   # g_delay：開頁那次 Google 晚 1.5 秒回來（mini 先回）
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            b0 = btns(p)
+            C.ok('12 開關關 mini 先 Google 慢且較新：先照 mini（上班灰、下班亮）', b0 == (True, False), b0)
+            p.wait_for_function('(window.__open || []).length >= 1', timeout=10000)
+            o = opens(p)[0]
+            C.ok('12 開關關：開頁狀態先用的是 mini', o.get('st_src') == 'mini', o)
+            C.ok('12 開關關 Google 較新：畫面最後以 Google 為準（上班亮、下班灰）', btns(p) == (False, True), btns(p))
+            C.ok('12 開關關 Google 較新：比對 diff、status 標 mini 較舊', [o.get('st_match'), o.get('status')] == ['diff', 'diff_mold_mi_go'], o)
+            p.close()
+
+            # 13–15. diff_g_reject（Google 明確說「這個人現在不能在這家店打卡」）只在「開頁第一次、同仁還沒動手、沒重讀」時才記成開頁樣本
+            G_REJ = {'ok': False, 'error': 'not_bound'}
+            # 13. 開頁第一次：照記 diff_g_reject，按鍵照舊收回
+            p, _ = open_two(ctx, M_OLD, G_REJ, 'cmp', extra='&st_cmp_ms=800')
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            p.wait_for_function('(window.__open || []).length >= 1', timeout=8000)
+            o = opens(p)[0]
+            C.ok('13 Google 說不能打卡（開頁第一次）：比對 diff、status＝diff_g_reject', [o.get('st_match'), o.get('status')] == ['diff', 'diff_g_reject'], o)
+            p.wait_for_timeout(500)
+            C.ok('13 Google 說不能打卡（開頁第一次）：兩顆鍵都收回', btns(p) == (True, True), btns(p))
+            p.close()
+            # 14. 同仁按了打卡（卡住不回）之後 Google 才說不能打卡：不記成開頁樣本、標 cmp_late
+            p, _ = open_two(ctx, M_OLD, G_REJ, 'cmp', extra='&st_cmp_ms=1500', punch_fake='hang')
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            C.force_out(p)
+            p.wait_for_function('(window.__open || []).length >= 1', timeout=10000)
+            o = opens(p)[0]
+            C.ok('14 按了打卡之後 Google 才說不能打卡：不記 diff_g_reject、標 cmp_late', [o.get('st_match'), o.get('status')] == ['', 'cmp_late'], o)
+            p.close()
+            # 15. 按打卡被擋、重讀之後 Google 才說不能打卡：重讀那次不記成開頁樣本、標 cmp_late
+            #     （開頁那次的 Google 不回；重讀那次的 Google 說不能打卡，它的回報先送出）
+            p, _ = open_two(ctx, M_OLD, ['hang', G_REJ], 'cmp', extra='&st_cmp_ms=800', punch_fake=REJ)
+            p.on('pageerror', lambda e: errs.append(str(e)))
+            C.force_out(p)
+            p.wait_for_function('(window.__open || []).length >= 1', timeout=12000)
+            o = opens(p)[0]
+            C.ok('15 重讀之後 Google 才說不能打卡：不記 diff_g_reject、標 cmp_late', [o.get('st_match'), o.get('status')] == ['', 'cmp_late'], o)
             p.close()
 
             C.ok('P2-B：以上各情境頁面沒有程式錯誤', errs == [], errs)
