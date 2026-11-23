@@ -318,6 +318,7 @@ function handleRelayAppend_(body) {
       tail.forEach(function (e) {
         if (String(e.emp_id) === String(row.emp_id) && String(e.source || '') === 'system_cap' && Math.abs(new Date(String(e.ts)).getTime() - atMs) <= 60000) found = e;
       });
+      if (!found) found = relayGCapSameSeg_(sh, row.emp_id, atMs);
     }
     if (!found) {
       var mk = relayGMarkGet_(reqId);
@@ -353,6 +354,33 @@ function handleRelayAppend_(body) {
     relayGMarkPut_(reqId, { state: 'done', out: { ok: true, dup: false, row: out.row, date: out.date, emp_id: out.emp_id, extras: {} } });
     return out;
   } finally { lock.releaseLock(); }
+}
+/** 系統卡（2026-11-23 #223 Codex 擋項一）：抄來的系統卡所屬那一段上班 Google 已有系統卡 → 回那一張（最早的），沒有回 null。
+ *  Google 因假單先收（例 18:45）、mini 看不到假單又沒拉回、照打卡算出另一個時間（19:00）抄過來時，時間差超過 60 秒也算同一張。
+ *  「那一段」用抄來那張的時間 atMs 定位（Codex 第二輪）：起點＝atMs 之前、往前 16 小時內（含剛好 16 小時，同配對上限 CAP_PAIR_H／
+ *  MONTHLY_PAIR_WINDOW_HOURS 的 ≤）最後一張算數的上班卡；終點＝atMs 之後第一張算數的上班卡（沒有＝到資料尾）。只有落在這兩張之間的系統卡才算同段
+ *  （晚到的舊卡不會被下一段班的系統卡擋掉）。往前 16 小時內找不到上班卡＝不猜、照舊寫。readEventsSince 只是讀到夠舊就停，讀回來的列這裡再逐列用時間篩。
+ *  算數＝非 rejected_*、不是總部鏡像列。只在 relay_append 收系統卡、單號與 ±60 秒都沒對到時才讀（鎖內）。
+ *  不看 REST_CAP_ON（2026-11-23 大腦定）：關閉後 mini 到下次拉回前還可能抄來系統卡，照舊寫入會變成同段兩張（孤單下班卡＝上班忘刷卡）；
+ *  開關關著一段時間後兩邊都不產生系統卡，這裡走不到。要完全回到舊行為得換回舊 RelayG.js（docs/cap10-newdef/rollout.md 第 5 節）。 */
+function relayGCapSameSeg_(sh, empId, atMs) {
+  var lo = atMs - 16 * 3600000;
+  var rows = readEventsSince(sh, lo).rows, lastIn = -Infinity, nextIn = Infinity, hit = null;
+  var mine = rows.filter(function (e) {
+    return String(e.emp_id) === String(empId) && String(e.status || '').indexOf('rejected_') !== 0 && !String(e.mirror_src || '');
+  }).map(function (e) { var ts = normCellTs(e.ts); return { e: e, ts: ts, ms: new Date(String(ts)).getTime() }; }).filter(function (x) { return !isNaN(x.ms); });
+  mine.forEach(function (x) {
+    if (String(x.e.type) !== 'in') return;
+    if (x.ms < atMs && x.ms >= lo && x.ms > lastIn) lastIn = x.ms;
+    if (x.ms > atMs && x.ms < nextIn) nextIn = x.ms;
+  });
+  if (lastIn === -Infinity) return null;   // 往前 16 小時內找不到上班卡：不猜（照舊寫）
+  mine.forEach(function (x) {
+    if (String(x.e.type) === 'out' && String(x.e.source || '') === 'system_cap' && x.ms > lastIn && x.ms < nextIn && (!hit || x.ms < hit.ms)) hit = x;
+  });
+  if (!hit) return null;
+  var o = {}; Object.keys(hit.e).forEach(function (k) { o[k] = hit.e[k]; }); o.ts = hit.ts;
+  return o;
 }
 function relayGDupOut_(e, reqId) {
   return { ok: true, dup: true, row: { ts: String(e.ts), status: String(e.status), type: String(e.type), source: String(e.source || '') },
