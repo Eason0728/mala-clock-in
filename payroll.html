@@ -149,7 +149,7 @@ input:focus,select:focus{outline:2px solid var(--gold);outline-offset:-1px;borde
  padding:11px 22px;border-radius:10px;font-weight:700;display:none;z-index:99;box-shadow:0 8px 24px rgba(0,0,0,.25)}
 .slip{max-width:760px;margin:0 auto;padding:34px 38px;background:#fff}
 .slip h3{font-size:19px;font-weight:900;text-align:center;letter-spacing:2px}
-.slip .sub{text-align:center;color:var(--muted);font-size:12.5px;margin-bottom:20px}
+.slip .sub{text-align:center;color:var(--muted);font-size:12.5px;margin-bottom:20px;overflow-wrap:anywhere}   /* 單位名稱很長（含一長串英數）時換行，不撐破版面 */
 .slip .who{display:flex;justify-content:space-between;border-top:2px solid var(--black);
  border-bottom:1px solid var(--line);padding:10px 0;margin-bottom:16px}
 .slipcols{display:grid;grid-template-columns:1fr 1fr;gap:26px}
@@ -858,8 +858,9 @@ async function bootRun(){
 /* 切月份/開啟時自動帶出當月數字：未鎖定且尚未算過就靜默試算一次（未設紅字等失敗則安靜略過，不跳錯誤）*/
 async function autoCalc(){
   if(STATUS==='final' || RESULTS.length) return;
+  const reqStore=STORE;   // 結果是這個單位的：等回應時畫面可能已切走，標題跟著結果走
   const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
-  if(r&&r.ok){RESULTS=r.results;STATUS='draft';ELEC_STALE=false;asofFromCalc(r);CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];renderRun();renderSlipSel()}
+  if(r&&r.ok){setResults(r.results,reqStore);STATUS='draft';ELEC_STALE=false;asofFromCalc(r);CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];renderRun();renderSlipSel()}
 }
 /* ═════ 未儲存提醒（2026-08-23）═════
  * 出勤資料的所有輸入（含跨店支援明細）都只寫在瀏覽器記憶體，按「儲存工時」才進試算表。
@@ -1087,8 +1088,9 @@ function renderAsof(){
   el.innerHTML=out.join('');
 }
 async function loadRun(){
+  const reqStore=STORE;
   const r=await post('payroll_get',{ym:ym()});
-  if(r.ok&&r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'}
+  if(r.ok&&r.run){setResults(r.run.results||[],reqStore);STATUS=r.run.status||'draft'}
   else{RESULTS=[];STATUS='draft'}
   COST_SNAP=(r.ok&&r.run&&r.run.status==='final'&&r.run.cost_snap)||null;
   renderRun();renderSlipSel();
@@ -1190,7 +1192,7 @@ async function loadMonth(pre,preSeq,preGen,opts){   // pre＝開頁時先發出�
     if(r.holidays) applyHol(r.holidays);
     if(r.config){CFG=r.config;CFG_DIRTY={};CFG_ST=STORE}
     if(r.config||r.holidays) renderCfg();
-    if(r.run){RESULTS=r.run.results||[];STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}
+    if(r.run){setResults(r.run.results||[],STORE);STATUS=r.run.status||'draft'} else {RESULTS=[];STATUS='draft'}   // 上面已 STORE=r.store：這份結果屬於 STORE
     ELEC_STALE=(!!r.elec_stale||!!ELEC_PEND[reqKey])&&STATUS!=='final'; if(ELEC_STALE) RESULTS=[];   // 這個店月的名單存檔／存後重算還沒確認：一樣不顯示舊數字
     if(r.elec_recalc&&DASH_PREFETCH&&DASH_PREFETCH.key===reqKey) DASH_PREFETCH=null;   // 開頁預抓的趨勢可能是重算前讀的：丟掉，進儀表板時重抓（Codex 第四次 B3）   // 草稿是舊名單算的：不顯示、不匯出，重算成功才回來（Codex 第三次 B1）
     HOLEMP=Array.isArray(r.hol_emp)?r.hol_emp:[]; HOLEMP_OTHER=Array.isArray(r.hol_emp_other_dates)?r.hol_emp_other_dates:[]; ELEC_DAYS=Array.isArray(r.elec_vote_days)?r.elec_vote_days.map(String):null; ELEC_KEY=STORE+'|'+ym(); renderElec();   // ELEC_DAYS＝本月投票日（後端 PAY_ELEC_VOTE_DAYS，唯一來源）；舊後端沒帶＝null（不顯示說明、不跳確認框）   // 選舉假名單隨門市、月份、鎖定狀態重畫
@@ -1240,7 +1242,7 @@ async function doCalc(pendSeq,inputsSaved,auto){   // 回 true＝重算成功並
     if(LOAD_INFLIGHT&&LOAD_INFLIGHT.key===reqKey) MON_UNSURE[reqKey]=1;   // 有月資料在路上：重讀套用成功前匯出、鎖定先擋
     if(pendSeq&&ELEC_PEND[reqKey]===pendSeq) delete ELEC_PEND[reqKey];   // 該店月存後重算成功（序號相符）才解除
     elecBtns();
-    RESULTS=r.results;STATUS='draft';CFG=r.config||CFG;COST_SNAP=null;ELEC_STALE=false;
+    setResults(r.results,STORE);STATUS='draft';CFG=r.config||CFG;COST_SNAP=null;ELEC_STALE=false;   // 上面已確認 STORE+'|'+ym() 仍是發出時的店月：這份結果屬於 STORE
     asofFromCalc(r);
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
@@ -3387,6 +3389,28 @@ async function saveElec(btn){
 }
 
 /* ═════ 薪資單 ═════ */
+/* 薪資單／匯出抬頭的單位名稱（2026-11-23）：取這份結果所屬計薪單位在「門市設定」（STORE_LIST）填的名稱——
+   與側欄、門市下拉、出勤紀錄匯出同一個來源。以前抬頭寫死成小辛辣新竹光復店，每個單位的薪資單都印成同一個。
+   ⚠ 名稱取不到（門市表讀不到、該列名稱空白）時印計薪單位代號，絕不退回印光復店；連代號都沒有才印「（未知單位）」。
+   名稱第一個空格前當品牌：「麻的小辛辣 新竹光復店」→「麻的小辛辣 · 新竹光復店」；沒有空格（央廚）就整串。 */
+/* ⚠ 「這份結果是哪個單位的」跟著結果本身走（2026-11-23 驗收修正）：結果一律用 setResults(陣列, 單位代號) 存，單位記在陣列上（resultsUnit）；
+   薪資單、匯出明細頁、Excel 三處標題只讀 resultsUnit()，不讀 STORE、不靠誰先重畫。所以呼叫順序怎麼調、切門市等回應時怎麼穿插，標題都跟畫面上那份資料同一個單位。
+   不是經 setResults 存的結果（直接 RESULTS=…）沒有單位 → 標題印「（未知單位）」，寧可看得出缺，也不會印成別的單位（tests/payslip-unit-title.test.js 另外擋住直接賦值）。 */
+function setResults(list,store){
+  const a=Array.isArray(list)?list:[];
+  Object.defineProperty(a,'unit',{value:String(store==null?'':store),enumerable:false,configurable:true});
+  RESULTS=a;
+}
+function resultsUnit(){ return (RESULTS&&RESULTS.unit)||''; }
+function unitName(code){
+  const c=String(code==null?'':code).trim();
+  const st=(STORE_LIST||[]).find(x=>String(x.code).trim()===c);
+  return String((st&&st.name)||'').trim()||c||'（未知單位）';
+}
+function unitTitle(code){
+  const nm=unitName(code), sp=nm.search(/[\s　]/);
+  return sp>0?nm.slice(0,sp)+' · '+nm.slice(sp+1).trim():nm;
+}
 function renderSlipSel(){
   const s=$('slipSel'),cur=s.value;
   s.innerHTML=RESULTS.map(r=>`<option value="${esc(r.emp_id)}">${esc(r.name)}</option>`).join('');
@@ -3405,7 +3429,7 @@ function renderSlip(){
   const line=x=>`<tr><td>${esc(x.item_label)}${x.qty!=null?` <span style="color:#8a817a">${r2(x.qty)}${qtyUnit(x.item_key)}${x.rate?' × '+rf(x.rate):''}</span>`:''}</td><td>${nf(x.amount)}</td></tr>`;
   w.innerHTML=`<div class="slip">
     <h3>薪 資 明 細 表</h3>
-    <div class="sub">麻的小辛辣 · 新竹光復店 ｜ ${ym().replace('-','年')}月 ｜ 發薪日 每月 ${CFG.payday} 日</div>
+    <div class="sub">${esc(unitTitle(resultsUnit()))} ｜ ${ym().replace('-','年')}月 ｜ 發薪日 每月 ${CFG.payday} 日</div>
     <div class="who"><div>姓名 <b style="font-size:16px">${esc(r.name)}</b>
       <span class="tag ${r.is_full_time?'ft':'pt'}">${r.is_full_time?'正職':'計時'}</span></div>
       <div style="text-align:right;font-size:13px">核定總時數 <b>${r.total_hours}</b> H
@@ -3448,7 +3472,7 @@ function renderExport(){
   const w=$('exportDetail'); if(!w) return;
   if(!RESULTS.length){ w.innerHTML='<div class="card"><div style="text-align:center;padding:34px;color:#8a817a">此月份尚無資料，請先到「月結」計算</div></div>'; return; }
   const row=x=>`<tr><td style="padding:4px 0;border-bottom:1px dotted var(--line)">${esc(x.item_label)}${expSub(x)?` <span style="color:#8a817a;font-size:12px">${expSub(x)}</span>`:''}</td><td style="text-align:right;border-bottom:1px dotted var(--line)">${nf(x.amount)}</td></tr>`;
-  let h=`<div class="card"><div style="font-size:18px;font-weight:900">麻的小辛辣 薪資明細</div>
+  let h=`<div class="card"><div style="font-size:18px;font-weight:900;overflow-wrap:anywhere">${esc(unitTitle(resultsUnit()))} 薪資明細</div>
     <div style="color:#8a817a;margin:4px 0 16px">${ym().replace('-','年')}月　${STATUS==='final'?'已鎖定':'草稿'}${(STATUS!=='final'&&ASOF&&ASOF.as_of)?'（月中數字，只算到 '+mdOf(ASOF.as_of)+'）':''}　共 ${RESULTS.length} 人</div>`;
   RESULTS.forEach(r=>{
     h+=`<div class="exp-person" style="border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px">
@@ -3490,7 +3514,7 @@ function exportExcel(){
   });
   cost+='</table>';
   const html=`<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>
-    <h3>麻的小辛辣 薪資明細 ${ym()}（${STATUS==='final'?'已鎖定':'草稿'}${(STATUS!=='final'&&ASOF&&ASOF.as_of)?'，月中數字只算到 '+mdOf(ASOF.as_of):''}）</h3>
+    <h3>${esc(unitTitle(resultsUnit()))} 薪資明細 ${ym()}（${STATUS==='final'?'已鎖定':'草稿'}${(STATUS!=='final'&&ASOF&&ASOF.as_of)?'，月中數字只算到 '+mdOf(ASOF.as_of):''}）</h3>
     <h4>彙總</h4>${sum}<br><h4>逐筆明細</h4>${det}<br><h4>人事成本分類（對應損益表）</h4>${cost}</body></html>`;
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob(['﻿'+html],{type:'application/vnd.ms-excel;charset=utf-8'}));

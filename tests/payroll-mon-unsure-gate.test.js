@@ -88,7 +88,7 @@ let done5;
     const log = { reload: 0 };
     const ctx = { loadingStop: () => false, get wpost() { return this.post; }, STORE: 'S', ym: () => '2026-10', MON_UNSURE: unsure ? { 'S|2026-10': 1 } : {}, RES_GEN: {}, ELEC_PEND: {}, LOAD_INFLIGHT: null, ATT_DIRTY: dirty, ATT: { e: { custom_add_amt: 500 } },
       RESULTS: [], STATUS: 'draft', CFG: {}, COST_SNAP: null, ELEC_STALE: false, NOT_IN_PAY: [], ZERO_RATIO: [], LEAVE_MM: [],
-      supCrossBlock: () => false, setBusy() {}, elecBtns() {}, asofFromCalc() {}, vClear() {}, renderRun() {}, renderSlipSel() {}, toast() {}, alert() {},
+      setResults(l) { ctx.RESULTS = l; }, supCrossBlock: () => false, setBusy() {}, elecBtns() {}, asofFromCalc() {}, vClear() {}, renderRun() {}, renderSlipSel() {}, toast() {}, alert() {},
       CALC_INPUTS: () => (ctx.ATT_DIRTY ? ctx.ATT : {}), post: async () => ({ ok: true, results: [{ emp_id: 'e' }] }),
       loadMonth: async () => { log.reload++; delete ctx.MON_UNSURE['S|2026-10']; ctx.ATT_DIRTY = false; return true; } };
     ctx.monUnsure = () => !!ctx.MON_UNSURE[ctx.STORE + '|' + ctx.ym()];
