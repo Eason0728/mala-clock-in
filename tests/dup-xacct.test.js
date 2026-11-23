@@ -3,7 +3,7 @@
  *  ①純函式 payDupXacctCore_ 跑共用案例檔 fixtures/dup-xacct-cases-v1.json（mala-store-ops 跑同一份）
  *  ②payDupOverlap_ 跟 Requests.gs reqOverlap_（B29）逐格一致
  *  ③整條 handlePayrollCalc → ot_info.dup_xacct → handlePayrollFinalize：會讓薪資重複的擋、其他只提醒
- *  ④開關關（PAY_DUP_XACCT_FROM 很後面）：計算結果、寫進 run／item、鎖定回應、讀了哪些分頁，跟 origin/main 逐位元組相同
+ *  ④開關關（PAY_DUP_XACCT_FROM 很後面）：計算結果、寫進 run／item、鎖定回應、讀了哪些分頁，跟 #226 之前的版本（f8237f9，固定基準）逐位元組相同
  *  ⑤開關填錯值＝維持擋；偵測失敗＝擋（保護性）
  * 全部虛構門市與同仁；期望值手寫。
  */
@@ -108,8 +108,19 @@ const dupOf = (r, id) => { const x = (r.results || []).find((y) => y.emp_id === 
 const linesOf = (r, id) => (dupOf(r, id) || []).map((x) => [x.pay, x.line]);
 const lock = (s, st) => s.post('handlePayrollFinalize', { ym: '2026-11', store: st, lock: true });
 
-let OLDSRC = null;
-try { OLDSRC = cp.execFileSync('git', ['-C', path.join(__dirname, '..'), 'show', 'origin/main:apps-script/Payroll.gs'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) { OLDSRC = null; }
+// 「改動前」的基準：固定成 PR #226 合併之前的 Payroll.gs（f8237f9，sha1 前綴 76049aabde24）。
+// 不能再用 origin/main——#226 合併後 origin/main 就是本版自己，基準會跟著變、比對失去意義而變紅（2026-11-23 主線 1a982a3）。
+// CI 的 checkout 是 fetch-depth: 0，取得到這個 commit；取不到或內容不對就直接失敗，不靜悄悄跳過。
+const BASE_COMMIT = 'f8237f9aeda3a5443e4bdaee541da6a3d4ec7ac5', BASE_SHA1 = '76049aabde24';
+function loadBase() {
+  let src;
+  try { src = cp.execFileSync('git', ['-C', path.join(__dirname, '..'), 'show', BASE_COMMIT + ':apps-script/Payroll.gs'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }); }
+  catch (e) { throw new Error('取不到比對基準 ' + BASE_COMMIT.slice(0, 7) + ':apps-script/Payroll.gs（淺層複製？請 git fetch --unshallow；CI 要 fetch-depth: 0）：' + String(e.message).split('\n')[0]); }
+  const sha = require('crypto').createHash('sha1').update(src).digest('hex');
+  if (sha.slice(0, BASE_SHA1.length) !== BASE_SHA1) throw new Error('比對基準內容不對：sha1 ' + sha.slice(0, 12) + '，應為 ' + BASE_SHA1);
+  return src;
+}
+const OLDSRC = loadBase();
 console.log('\n══ ③-1 設計案例 1：DZY010 11/5 兩個帳號各一張整天出差（計薪門市是 HQ 或 MZTHQ 都要擋）══');
 for (const pay of ['HQ', 'MZTHQ']) {
   const s = env(scene(pay));
@@ -365,10 +376,8 @@ console.log('\n══ ③-4 Codex 第一輪 ══');
   }
 }
 
-console.log('\n══ ④ 開關關：跟 origin/main 逐位元組相同 ══');
-let OLD = null;
-try { OLD = cp.execFileSync('git', ['-C', path.join(__dirname, '..'), 'show', 'origin/main:apps-script/Payroll.gs'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
-catch (e) { console.log('⚠ 取不到 origin/main，跳過逐位元組比對'); }
+console.log('\n══ ④ 開關關：跟 #226 之前的版本（f8237f9）逐位元組相同 ══');
+const OLD = OLDSRC;   // 同一份固定基準；取不到已在上面直接失敗
 if (OLD) {
   const NEWSRC = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Payroll.gs'), 'utf8');
   eq(OLD !== NEWSRC, true, '基準與本版確實不同（比對有意義）');
