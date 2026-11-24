@@ -289,21 +289,29 @@ function pubWorld(src, cap, ev, now) {
     [JSON.stringify(on) === JSON.stringify(oo), /locked/.test(JSON.stringify(on)), JSON.stringify(n1) === JSON.stringify(o1)], [true, false, true]);
   show('F6a-v', '回應（新／舊，\'2\'）', { new: on, old: oo });
 }
-{
-  // 隨機時序：兩位同仁、開頁／掃描／按卡／正式重新發布任意交錯（整張不到 90000 字），每一步甲的判斷與回應新舊都要一樣
-  let sd = 4242; const r0 = () => { sd = (sd * 1103515245 + 12345) % 2147483648; return sd / 2147483648; };
+/** 隨機時序：兩位同仁、開頁／掃描／按卡／今日出勤／正式重新發布任意交錯。
+ *  big＝另放 6 期大班表讓整張超過 90000 字（舊版補缺卡不快取＝每次讀最新）。
+ *  每一步只比回應與打卡列（不在中途另外叫補缺卡：那本身會把快取暖起來、把時序抹平）；沒有差異時最後再比一次甲的判斷。
+ *  有差異時（只在 big 允許）要同時符合「已接受的那一種」：①新版補缺卡命名空間最後一次載入早於最近一次重新發布、而且還沒過 5 分鐘（新版讀的是舊快取）；
+ *  ②同一步「新版但補缺卡快取永遠讀不到（＝每次讀最新）」那一份跟舊版完全一樣（差異只來自補缺卡快取）。符合就記為已接受、這串到此為止；不符合就算錯。
+ *  （②只在 big 比：整張不到 90000 字時舊版本來就快取 5 分鐘，「每次讀最新」不是舊版的行為。） */
+function runF6(nb, big, seed0) {
+  let sd = seed0; const r0 = () => { sd = (sd * 1103515245 + 12345) % 2147483648; return sd / 2147483648; };
   const pick = (xs) => xs[Math.floor(r0() * xs.length)];
   const OPS6 = ['sweep', 'st1', 'st2', 'pub', 'pub', 'in1', 'out1', 'today1', 'in2'];
-  const NB = 400;
-  let same = 0, pubs = 0; const bad = [];
-  for (let k = 0; k < NB; k++) {
+  let same = 0, pubs = 0, accepted = 0; const bad = [];
+  const mk = (src, cap, ev) => { const m = pubWorld(src, cap, ev, D + 'T19:30:00'); if (big) for (let k = 0; k < 6; k++) { const b = BIG(k); m.__sp.appendRow([b[0], b[1], 1, JSON.stringify(b[2]), 'op', '']); } return m; };
+  for (let k = 0; k < nb; k++) {
     const cap = pick(['1', '2']);
     const ev = [[D + 'T08:00:00', 'E02', 'in'], [D + 'T09:00:00', 'E01', 'in']].concat(r0() < 0.5 ? [[D + 'T14:00:00', 'E01', 'out']] : []).concat(r0() < 0.6 ? [[D + 'T' + pick(['18', '19', '20']) + ':00:00', 'E01', 'out']] : []);
-    const start = T(D + 'T19:30:00'), N = pubWorld(NEW, cap, ev, D + 'T19:30:00'), O = pubWorld(OLD, cap, ev, D + 'T19:30:00');
-    let seq = 1, t = start, diff = null; const s0 = pick(['A', 'P', 'Q']); publish(N, s0, seq); publish(O, s0, seq);
+    const N = mk(NEW, cap, ev), O = mk(OLD, cap, ev), F = mk(NEW, cap, ev);
+    // F：補缺卡命名空間永遠讀不到（每次讀最新）；N：記下補缺卡命名空間最後一次載入的時間
+    { const c = F.sb.CacheService.getScriptCache(); F.sb.CacheService = { getScriptCache: () => Object.assign({}, c, { get: (x) => (/^capfl1:/.test(x) ? null : c.get(x)), getAll: (ks) => (ks.some((x) => /^capfl1:/.test(x)) ? {} : c.getAll(ks)) }) }; }
+    { const c = N.sb.CacheService.getScriptCache(); N.__fillAt = -Infinity; N.sb.CacheService = { getScriptCache: () => Object.assign({}, c, { putAll: (o, t) => { if (Object.keys(o).some((x) => /^capfl1:/.test(x))) N.__fillAt = N.sb.__now; return c.putAll(o, t); } }) }; }
+    let seq = 1, t = T(D + 'T19:30:00'), diff = null, lastPub = -Infinity; const s0 = pick(['A', 'P', 'Q']); [N, O, F].forEach((m) => publish(m, s0, seq));
     const steps = [];
     for (let i = 0, n = 4 + Math.floor(r0() * 6); i < n && !diff; i++) {
-      t += (1 + Math.floor(r0() * 4)) * 60000; N.setNow(t); O.setNow(t);
+      t += (1 + Math.floor(r0() * 4)) * 60000; [N, O, F].forEach((m) => m.setNow(t));
       const o = pick(OPS6); steps.push(o);
       const doOp = (m) => {
         const sb = m.sb;
@@ -313,18 +321,38 @@ function pubWorld(src, cap, ev, now) {
         if (o === 'today1') { return sb.capOn_() ? sb.capTodayMs_(sb.getSS(), meRow(m), sb.__now) : 'off'; }
         return sb.handleLiffPunch_(Object.assign({ id_token: o === 'in2' ? 'TOK_U2' : 'TOK_U1', type: o === 'out1' ? 'out' : 'in', confirm_same: true }, HERE));
       };
-      if (o === 'pub') { seq++; pubs++; const sid = pick(['A', 'P', 'Q']); publish(N, sid, seq); publish(O, sid, seq); }
-      // 每一步只比回應與打卡列（不在中途另外叫補缺卡：那本身會把快取暖起來、把時序抹平）；最後才比一次甲的判斷
-      const rn = JSON.stringify(doOp(N)), ro = JSON.stringify(doOp(O));
-      if (rn !== ro) diff = o + ' 回應 ' + rn.slice(0, 160) + ' vs ' + ro.slice(0, 160);
-      else if (JSON.stringify(N.self.sh.events.values) !== JSON.stringify(O.self.sh.events.values)) diff = o + ' 打卡列不同';
+      if (o === 'pub') { seq++; pubs++; lastPub = t; const sid = pick(['A', 'P', 'Q']); [N, O, F].forEach((m) => publish(m, sid, seq)); }
+      const stale = N.__fillAt < lastPub && t - N.__fillAt < CAP_TTL_MS;   // 這一步之前：新版補缺卡快取是重新發布前載入、還沒到期
+      const rn = JSON.stringify(doOp(N)), ro = JSON.stringify(doOp(O)), rf = JSON.stringify(doOp(F));
+      const evN = JSON.stringify(N.self.sh.events.values), evO = JSON.stringify(O.self.sh.events.values), evF = JSON.stringify(F.self.sh.events.values);
+      if (big && (rf !== ro || evF !== evO)) { diff = o + ' 每次讀最新的新版跟舊版不同 ' + rf.slice(0, 120) + ' vs ' + ro.slice(0, 120); break; }
+      if (rn !== ro || evN !== evO) {
+        if (big && stale) { accepted++; diff = 'accepted'; break; }
+        diff = o + (big ? '（不是已接受的那一種）' : '') + ' 回應 ' + rn.slice(0, 140) + ' vs ' + ro.slice(0, 140);
+      }
     }
-    if (!diff) { const jn = JSON.stringify(judge(N)), jo = JSON.stringify(judge(O)); if (jn !== jo) diff = '最後判斷 ' + jn.slice(0, 160) + ' vs ' + jo.slice(0, 160); }
-    if (diff) bad.push([k, cap, steps.join(','), diff]); else same++;
+    if (!diff) { const jn = JSON.stringify(judge(N)), jo = JSON.stringify(judge(O)), jf = JSON.stringify(judge(F));
+      if (big && jf !== jo) diff = '最後判斷（每次讀最新）不同 ' + jf.slice(0, 120) + ' vs ' + jo.slice(0, 120);
+      else if (jn !== jo) diff = (big && N.__fillAt < lastPub && N.sb.__now - N.__fillAt < CAP_TTL_MS) ? 'accepted' : '最後判斷 ' + jn.slice(0, 120) + ' vs ' + jo.slice(0, 120);
+      if (diff === 'accepted') accepted++; }
+    if (diff && diff !== 'accepted') bad.push([k, cap, steps.join(','), diff]); else if (!diff) same++;
   }
-  bad.slice(0, 3).forEach((x) => console.log('  ✗ ' + JSON.stringify(x)));
-  check('F6b★', '隨機時序 ' + NB + ' 串（開頁、掃描、按卡、今日出勤、正式重新發布任意交錯；\'1\'／\'2\'）：每一步回應、打卡列與最後甲的判斷新舊都一樣（CAP_FILL_NEW=ad022fc 時要抓到差異）', [same, bad.length], [NB, 0]);
-  show('F6b-c', '涵蓋：重新發布次數', pubs);
+  return { same, accepted, bad, pubs };
+}
+const CAP_TTL_MS = 300 * 1000;
+{
+  const r = runF6(400, false, 4242);
+  r.bad.slice(0, 3).forEach((x) => console.log('  ✗ ' + JSON.stringify(x)));
+  check('F6b★', '隨機時序 400 串（整張不到 90000 字；開頁、掃描、按卡、今日出勤、正式重新發布任意交錯；\'1\'／\'2\'）：每一步回應、打卡列與最後甲的判斷新舊都一樣（CAP_FILL_NEW=ad022fc 時要抓到差異）', [r.same, r.bad.length], [400, 0]);
+  show('F6b-c', '涵蓋：重新發布次數', r.pubs);
+}
+{
+  const r = runF6(150, true, 9090);
+  r.bad.slice(0, 3).forEach((x) => console.log('  ✗ ' + JSON.stringify(x)));
+  check('F6c★', '隨機時序 150 串（整張超過 90000 字）：新舊差異只准是已接受的那一種（新版補缺卡快取在重新發布前載入、未滿 5 分鐘；同一步「每次讀最新」的新版＝舊版），其他任何差異 0',
+    [r.bad.length, r.same + r.accepted], [0, 150]);
+  check('F6c-c', '涵蓋：已接受那一種真的出現過（≥ 1 串）、其餘串新舊完全相同', r.accepted >= 1, true);
+  show('F6c-n', '完全相同／已接受的差異／重新發布次數', { same: r.same, accepted: r.accepted, pubs: r.pubs });
 }
 
 console.log('\n════ F5 手改 sched_pub 才會有的壞資料：大腦接受的已知差異共 6 類（4 類少補、2 類多補；釘住新版行為） ════');
