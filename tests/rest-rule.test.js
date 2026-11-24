@@ -171,11 +171,11 @@ ok('rest_rule_set：管理金鑰才能開關；不帶 on 只查；開了才擋',
   assert.strictEqual(m.sb.restCheckIn_(self, { emp_id: 'E01', name: '王 小明' }).code, 'gap');
   assert.strictEqual(m.sb.handleRestRuleSet_({ admin_key: 'ADM', on: false }).on, false);
 });
-ok('每日超時檢查：各店前一天核定超過 10 小時的人（同一天多筆取最新；總部鏡像同一人只列一次；剛好 10 小時不列）', () => {
+ok('每日超時檢查：各店前一天當日出勤滿 10 小時的人（2026-11-23 新定義：核定＋請假、剛好 10 小時也列；同一天多筆取最新；總部鏡像列不算）', () => {
   const pay = fs.readFileSync(ROOT + '/apps-script/Payroll.gs', 'utf8');
   const sb = { Date, String, Number, Math, JSON, isNaN, PAY_DAY_MAX_H: 10 };
   vm.createContext(sb);
-  vm.runInContext(['buildLatestApprovedMap', 'normCellDate', 'normCellTs'].map(f => extract(code, f)).join('\n') + '\n' + extract(pay, 'payRestOverList_'), sb);
+  vm.runInContext(['buildLatestApprovedMap', 'normCellDate', 'normCellTs'].map(f => extract(code, f)).join('\n') + '\n' + extract(pay, 'payRestOverList_') + '\n' + extract(pay, 'payDayLoadOver_'), sb);
   const A = {
     CF: [{ date: '2026-11-01', emp_id: 'CF03', name: '張 三', approved_hours: 11, periods: '07:00-18:00', entered_at: '2026-11-01T20:00:00+08:00' },
          { date: '2026-11-01', emp_id: 'CF04', name: '李四', approved_hours: 12, periods: '07:00-19:00', entered_at: '2026-11-01T20:00:00+08:00' },
@@ -183,11 +183,11 @@ ok('每日超時檢查：各店前一天核定超過 10 小時的人（同一天
          { date: '2026-11-01', emp_id: 'HQ-01', name: '吳五', approved_hours: 10.5, periods: '08:00-18:30', entered_at: '2026-11-01T20:00:00+08:00' },
          { date: '2026-11-01', emp_id: 'CF05', name: '陳六', approved_hours: 10, periods: '08:00-18:00', entered_at: '2026-11-01T20:00:00+08:00' },
          { date: '2026-10-31', emp_id: 'CF03', name: '張 三', approved_hours: 13, periods: '', entered_at: '2026-10-31T20:00:00+08:00' }],
-    HQ: [{ date: '2026-11-01', emp_id: 'HQ-01', name: '吳五', approved_hours: 10.5, periods: '08:00-18:30', entered_at: '2026-11-01T20:00:00+08:00' }],
+    HQ: [{ date: '2026-11-01', emp_id: 'HQ-01', name: '吳五', approved_hours: 10.5, periods: '08:00-18:30', entered_at: '2026-11-01T20:00:00+08:00', mirror_src: 'CF' }],
     MZTJS: [] };
   Object.assign(sb, { payStoreList: () => [{ code: 'CF', name: '央廚' }, { code: 'HQ', name: '總部' }, { code: 'MZTJS', name: '金山' }, { code: 'X', name: '沒打卡' }],
-    payHasClock: (c) => c !== 'X', payClockRead: (c) => A[c], payStore: (c) => c, payNum: (v) => Number(v) || 0 });
+    payHasClock: (c) => c !== 'X', payClockRead: (c, nm) => (nm === 'leave' ? [] : A[c]), payStore: (c) => c, payNum: (v) => Number(v) || 0 });
   const r = Array.from(sb.payRestOverList_('2026-11-01')).map(x => x.store + ':' + x.name + ':' + x.hours);
-  assert.deepStrictEqual(r, ['CF:張 三:11', 'CF:吳五:10.5']);
+  assert.deepStrictEqual(r, ['CF:張 三:11', 'CF:吳五:10.5', 'CF:陳六:10']);
 });
 console.log(`\n${n} 項全部通過`);

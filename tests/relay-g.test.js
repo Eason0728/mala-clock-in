@@ -72,6 +72,82 @@ const doPost = (m, body) => JSON.parse(m.sb.doPost({ postData: { contents: JSON.
   check('C1', '同人同時刻的系統卡已存在＝當成同一張', [r.ok, r.dup, rows(m).length], [true, true, 1]);
 }
 
+// ── 系統卡同一段上班只留一張（2026-11-23 #223 Codex 擋項一）：Google 因假單先收 18:45、mini 照打卡算 19:00 抄過來 ──
+const CAPROW = (ts, emp) => ({ ts, emp_id: emp || 'E01', type: 'out', lat: '', lng: '', distance_m: '', within_range: '', device_match: '', status: 'ok', accuracy_m: '', source: 'system_cap' });
+const capWorld = (now, evs, sys) => {
+  const m = world(now, evs);
+  const sh = m.self.sh.events; sh.values[0].push('source');
+  (sys || []).forEach((ts) => sh.values.push([ts, 'E01', 'out', '', '', '', '', 'system', '', 'ok', '', 'system_cap']));
+  sh.values.sort((a, b) => (a === sh.values[0] ? -1 : b === sh.values[0] ? 1 : String(a[0]).localeCompare(String(b[0]))));
+  return m;
+};
+{
+  const m = capWorld('2026-11-20T19:00:06', [['2026-11-20T09:00:00', 'E01', 'in']], ['2026-11-20T18:45:00+08:00']);
+  const r = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: 'cap:E01:2026-11-20T19:00:00+08:00', row: CAPROW('2026-11-20T19:00:00+08:00') });
+  check('C2★', '同一段上班 Google 已有 18:45 系統卡、mini 抄來 19:00 → 當重複、回 18:45 那張、不多寫（改前寫成兩張）',
+    [r.ok, r.dup, r.row && r.row.ts, r.row && r.row.source, rows(m).filter((x) => x.source === 'system_cap').length], [true, true, '2026-11-20T18:45:00+08:00', 'system_cap', 1]);
+}
+{
+  const m = capWorld('2026-11-21T02:00:06', [['2026-11-20T05:00:00', 'E01', 'in'], ['2026-11-20T16:00:00', 'E01', 'in']], ['2026-11-20T15:00:00+08:00']);
+  const r = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: 'cap:E01:2026-11-21T02:00:00+08:00', row: CAPROW('2026-11-21T02:00:00+08:00') });
+  check('C3', '前一段上班的系統卡（在最後一張上班卡之前）不算同一段 → 照寫', [r.ok, r.dup, rows(m).filter((x) => x.source === 'system_cap').length], [true, false, 2]);
+}
+{
+  const m = capWorld('2026-11-20T19:00:06', [['2026-11-20T09:00:00', 'E02', 'in'], ['2026-11-20T09:00:00', 'E01', 'in', 'rejected_rest']], []);
+  m.self.sh.events.values.push(['2026-11-20T18:45:00+08:00', 'E02', 'out', '', '', '', '', 'system', '', 'ok', '', 'system_cap']);
+  const r = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: 'cap:E01:2026-11-20T19:00:00+08:00', row: CAPROW('2026-11-20T19:00:00+08:00') });
+  check('C4', '別人的系統卡、被擋的上班卡都不算 → 往前 16 小時找不到這個人的上班卡＝照寫（不猜）', [r.ok, r.dup, rows(m).filter((x) => x.source === 'system_cap').length], [true, false, 2]);
+}
+{
+  const m = capWorld('2026-11-20T19:00:06', [['2026-11-20T09:00:00', 'E01', 'in']], ['2026-11-20T18:45:00+08:00']);
+  m.self.sh.events.values[2][9] = 'rejected_x';
+  const r = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: 'cap:E01:2026-11-20T19:00:00+08:00', row: CAPROW('2026-11-20T19:00:00+08:00') });
+  check('C5', '已有的那張是被擋的（rejected_*）不算 → 照寫', [r.ok, r.dup], [true, false]);
+}
+{
+  // 順序反過來：mini 先寫 19:00（只看打卡）、Google 的掃描後來才因假單算出 18:45 → capWrite_ 看到這段已有系統卡就不寫，最後留 19:00（比規則晚 15 分）
+  const m = capWorld('2026-11-20T19:00:06', [['2026-11-20T09:00:00', 'E01', 'in']], []);
+  m.run(R('apps-script/Cap10.gs')); m.props.REST_CAP_ON = '1';
+  const rq = m.self.insertSheet('requests');
+  rq.appendRow(['id', 'created_at', 'emp_id', 'name', 'kind', 'date', 'leave_type', 'start', 'end', 'hours', 'miss_type', 'reason', 'attach_id', 'status', 'decided_at']);
+  rq.appendRow(['r1', '', 'E01', '', 'leave', '2026-11-20', '特休假', '08:45', '09:00', 0.25, '', '', '', 'approved', '2026-11-19T15:00:00+08:00']);
+  const r = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: 'cap:E01:2026-11-20T19:00:00+08:00', row: CAPROW('2026-11-20T19:00:00+08:00') });
+  m.setNow('2026-11-20T19:07:00'); m.sb.capSweep();
+  const st = m.sb.handleLiffStatus_({ id_token: 'TOK_U1' }).cap;
+  check('C6', 'mini 先寫 19:00、Google 19:07 掃描（因假單應 18:45）→ 不再寫；只留 19:00 一張、打卡頁講 19:00',
+    [r.dup, rows(m).filter((x) => x.source === 'system_cap').map((x) => String(x.ts).slice(11, 16)), st.sys_hm], [false, ['19:00'], '19:00']);
+}
+
+// ── Codex 第二輪（2026-11-23）：關閉過渡期、晚到的舊卡、16 小時邊界 ──
+const sysTs = (m) => rows(m).filter((x) => x.source === 'system_cap').map((x) => String(x.ts));
+const lone = (m) => m.sb.pairShifts(rows(m).map((x) => Object.assign({}, x, { ts: m.sb.normCellTs(x.ts) }))).unmatchedOuts.map((e) => String(e.ts).slice(11, 16));
+{
+  // REST_CAP_ON 已關（world 沒給這個屬性）、mini 還沒拉回新屬性就抄來 19:00：去重不跟開關走
+  const send = (m) => m.sb.handleRelayAppend_({ relay_key: KEY, req_id: 'cap:E01:2026-11-20T19:00:00+08:00', row: CAPROW('2026-11-20T19:00:00+08:00') });
+  const nw = capWorld('2026-11-20T19:00:06', [['2026-11-20T09:00:00', 'E01', 'in']], ['2026-11-20T18:45:00+08:00']);
+  const old = capWorld('2026-11-20T19:00:06', [['2026-11-20T09:00:00', 'E01', 'in']], ['2026-11-20T18:45:00+08:00']);
+  old.sb.relayGCapSameSeg_ = () => null;   // 改動前（base／main RelayG）的行為：只比單號與 ±60 秒
+  const rn = send(nw), ro = send(old);
+  check('C7', '關閉過渡期也去重（設計如此）：開關關著、mini 抄來同段 19:00 → 新版回重複、只留 18:45、沒有孤單下班卡；改動前的寫法會變兩張＋19:00 孤單（上班忘刷卡）',
+    [nw.props.REST_CAP_ON === undefined, rn.dup, sysTs(nw).length, lone(nw), ro.dup, sysTs(old).length, lone(old)], [true, true, 1, [], false, 2, ['19:00']]);
+}
+{
+  const m = capWorld('2026-11-21T19:30:00', [['2026-11-20T09:00:00', 'E01', 'in'], ['2026-11-21T09:00:00', 'E01', 'in']], ['2026-11-21T19:00:00+08:00']);
+  const r = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: 'cap:E01:2026-11-20T19:00:00+08:00', row: CAPROW('2026-11-20T19:00:00+08:00') });
+  check('C8★', '晚到的舊卡：11/20 那段的 19:00 系統卡等到 11/21 那段已收卡後才抄來 → 照寫，不被隔天那段的 19:00 擋掉（段的終點＝下一張上班卡）',
+    [r.ok, r.dup, sysTs(m).sort()], [true, false, ['2026-11-20T19:00:00+08:00', '2026-11-21T19:00:00+08:00']]);
+}
+{
+  const m = capWorld('2026-11-20T19:00:06', [['2026-11-20T03:00:00', 'E01', 'in']], ['2026-11-20T18:45:00+08:00']);
+  const r = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: 'cap:E01:2026-11-20T19:00:00+08:00', row: CAPROW('2026-11-20T19:00:00+08:00') });
+  check('C9', '上班卡剛好在 16 小時前（03:00 → 19:00）＝同一段（同配對上限的 ≤）→ 重複、回 18:45', [r.dup, r.row && r.row.ts, sysTs(m).length], [true, '2026-11-20T18:45:00+08:00', 1]);
+}
+{
+  const m = capWorld('2026-11-20T19:00:06', [['2026-11-20T02:59:59', 'E01', 'in']], ['2026-11-20T18:45:00+08:00']);
+  const r = m.sb.handleRelayAppend_({ relay_key: KEY, req_id: 'cap:E01:2026-11-20T19:00:00+08:00', row: CAPROW('2026-11-20T19:00:00+08:00') });
+  check('C10★', '上班卡在 16 小時又 1 秒前（短表全讀回來也一樣）＝往前 16 小時內找不到上班卡 → 照寫（逐列篩，不靠讀表停止點）', [r.dup, sysTs(m).length], [false, 2]);
+}
+
 // ── 手機改送 Google（liff_punch 帶 req_id）──
 {
   const m = world('2026-11-20T09:00:00', [['2026-11-20T08:00:00', 'E01', 'in']]);
