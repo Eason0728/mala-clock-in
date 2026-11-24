@@ -2403,8 +2403,8 @@ def liff_missed_note(events, emp_id, typ, ts):
         if not prev or prev[2] != "in":
             return ""
         d = f"{int(prev[1][5:7])}/{int(prev[1][8:10])} {prev[1][11:16]}"
-        return (f"你 {d} 上班後的下班卡沒有打成功（不在範圍內），請跟主管說實際下班時間" if failed
-                else f"你 {d} 上班後沒有打下班卡，請跟主管說實際下班時間")
+        return (f"你 {d} 上班後的下班卡沒有打成功（不在範圍內），請送忘打卡單補實際時間" if failed
+                else f"你 {d} 上班後沒有打下班卡，請送忘打卡單補實際時間")
     if prev and prev[2] == "in":
         return ""
     return ("你這次的上班卡沒有打成功（不在範圍內），請跟主管說實際上班時間" if failed
