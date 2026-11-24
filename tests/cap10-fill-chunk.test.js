@@ -281,13 +281,18 @@ function pubWorld(src, cap, ev, now) {
     m.setNow(T(D + 'T20:15:00')); m.sb.capSweep();             // 掃描處理乙（寬限暖起 capgr1:）；甲最後一張是下班卡、這輪不檢查甲
     m.setNow(T(D + 'T20:16:00')); publish(m, 'Q', 2);          // 甲改成 18:00–20:00
     m.setNow(T(D + 'T20:17:00'));
+    const before = m.self.sh.events.values.length;
     const r = m.sb.handleLiffPunch_(Object.assign({ id_token: 'TOK_U1', type: 'in', confirm_same: true }, HERE));
-    return [r.status || (r.ok ? 'ok' : r.error), r.cap_locked ? 'locked' : ''];
+    const added = m.self.sh.events.values.slice(before).map((x) => [String(x[0]).slice(11, 16), x[1], x[2]]);
+    return { ok: r.ok === true, status: r.status || null, added, rows: m.self.sh.events.values.length - 1 };
   };
   const on = run(NEW, '2'), oo = run(OLD, '2'), n1 = run(NEW, '1'), o1 = run(OLD, '1');
-  check('F6a★', "掃描只暖寬限 → 正式重新發布 → 甲 20:17 按 LINE 上班：新版跟舊版一樣接受（不是 cap_locked）；'1' 也一樣",
-    [JSON.stringify(on) === JSON.stringify(oo), /locked/.test(JSON.stringify(on)), JSON.stringify(n1) === JSON.stringify(o1)], [true, false, true]);
-  show('F6a-v', '回應（新／舊，\'2\'）', { new: on, old: oo });
+  // #238 審查第 2 輪：明確斷言甲 20:17 的上班卡兩版都收下、只寫 1 列（甲的上班卡）、整張打卡列數一樣
+  const want = (x) => [x.ok, x.status, JSON.stringify(x.added)];
+  check('F6a★', "掃描只暖寬限 → 正式重新發布 → 甲 20:17 按 LINE 上班：新舊兩版、'1'／'2' 都回 ok（不是 cap_locked）、這次只寫甲 20:17 上班 1 列、整張列數相同",
+    [want(on), want(oo), want(n1), want(o1), on.rows === oo.rows && n1.rows === o1.rows],
+    [[true, null, '[["20:17","E01","in"]]'], [true, null, '[["20:17","E01","in"]]'], [true, null, '[["20:17","E01","in"]]'], [true, null, '[["20:17","E01","in"]]'], true]);
+  show('F6a-v', '回應摘要（新／舊，\'2\'）', { new: on, old: oo });
 }
 /** 隨機時序：兩位同仁、開頁／掃描／按卡／今日出勤／正式重新發布任意交錯。
  *  big＝另放 6 期大班表讓整張超過 90000 字（舊版補缺卡不快取＝每次讀最新）。
