@@ -1,19 +1,29 @@
 /* 跨店支援自動帶入 回歸守門（2026-11-05）：生效月（2026-11）之前，薪資結果必須一毛不差、逐項相同。
  *
  * 做法照 tests/comp-regression.test.js：同一份假資料分別餵
- *   ①改動前的 Payroll.gs（git origin/main）②現在的 Payroll.gs，
+ *   ①改動前的 Payroll.gs（PR #52 合併之前的主線 56326db，固定基準）②現在的 Payroll.gs，
  * 跑 handlePayrollCalc 與 payroll_month（整條鏈：payCollect → payInputsBase → payCalcOne → 寫 run／item），
  * 逐人比對 earn／ded／gross／net（整份 results）、payroll_month 的 inputs，與寫進 run／item 的每一列（run_at 除外）。
  *   ·2026-09、2026-10：多店（光復＋央廚），含手填跨店支援（中文名、舊格式）、手動列、計時、月中到職。
  *   ·2026-11 但沒有任何打卡對照（xmap 空）：也要逐項相同（上線當下還沒同步＝什麼都不變）。
  *   ·對照組：2026-11 放進 xmap 後，帶入的那位一定要變——證明比對真的有在比。
- * 沒有 git 或取不到 origin/main 時跳過並說明，不算失敗。全部虛構資料。 */
+ * 取不到固定基準或內容不對就直接失敗，不跳過（CI 是 fetch-depth: 0）。全部虛構資料。 */
 'use strict';
 const fs = require('fs'), vm = require('vm'), path = require('path'), cp = require('child_process');
 const ROOT = path.join(__dirname, '..');
-let OLD;
-try { OLD = cp.execFileSync('git', ['-C', ROOT, 'show', 'origin/main:apps-script/Payroll.gs'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
-catch (e) { console.log('⚠ 取不到 git 基準 origin/main，跳過回歸比對'); process.exit(0); }
+// 「改動前」的基準：固定成 PR #52（跨店支援自動帶入）合併之前的 Payroll.gs（56326db，sha1 前綴 65ec13a77a88）。
+// 不能再用 origin/main——#52 早已合併，origin/main 就是本版自己，基準會跟著變、比對失去意義，取不到時還靜悄悄跳過（2026-11-23，同 #228）。
+// CI 的 checkout 是 fetch-depth: 0，取得到這個 commit；取不到或內容不對就直接失敗，不靜悄悄跳過。
+const BASE_COMMIT = '56326db8eed6262c4345a6f499c5f7505903c776', BASE_SHA1 = '65ec13a77a88';
+function loadBase() {
+  let src;
+  try { src = cp.execFileSync('git', ['-C', ROOT, 'show', BASE_COMMIT + ':apps-script/Payroll.gs'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }); }
+  catch (e) { throw new Error('取不到比對基準 ' + BASE_COMMIT.slice(0, 7) + ':apps-script/Payroll.gs（淺層複製？請 git fetch --unshallow；CI 要 fetch-depth: 0）：' + String(e.message).split('\n')[0]); }
+  const sha = require('crypto').createHash('sha1').update(src).digest('hex');
+  if (sha.slice(0, BASE_SHA1.length) !== BASE_SHA1) throw new Error('比對基準內容不對：sha1 ' + sha.slice(0, 12) + '，應為 ' + BASE_SHA1);
+  return src;
+}
+const OLD = loadBase();
 const NEW = fs.readFileSync(path.join(ROOT, 'apps-script', 'Payroll.gs'), 'utf8');
 const C = fs.readFileSync(path.join(ROOT, 'apps-script', 'Code.gs'), 'utf8');
 if (OLD === NEW) console.log('⚠ 基準與現在的 Payroll.gs 相同（還沒改動？）——照跑，結果必然相同');

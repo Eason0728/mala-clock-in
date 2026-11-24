@@ -5945,7 +5945,7 @@ function handlePayrollCompPeriod(body) {
      舊觸發器用 payroll_comp_trigger_setup 清掉（現在只刪不建）。
    鎖月時「補休帳是負的不能鎖定」（handlePayrollFinalize → payCompNegatives／payCompNegLine）是鎖月規則，不是提醒，照舊。
    原本的 payCompCheckRun_（檢查＋通知）、payCompPushManagers_（私訊值班主管）沒有其他呼叫者，一起刪掉（要找回看 git 歷史 49dc85e）。 */
-// 通知匣網址（payInboxNotify_ 用：每日重算失敗、月加班同步、單日超過 10 小時）
+// 通知匣網址（payInboxNotify_ 用：每日重算失敗、月加班同步、當日出勤滿 10 小時）
 var PAY_NOTIFY_INBOX_URL = 'https://script.google.com/macros/s/AKfycbyZ-sVl9KbKhotjsFhKg9Id7j4qgNRf6wSlSCacoBe7lATkuJFb9_ShCaicAJuLOak/exec';
 function payCompCheckDaily() { return; }
 /** 通知匣一般件；成功判準 ok===true && added===true。任何情況都不拋例外。 */
@@ -5978,30 +5978,63 @@ function handlePayrollCompTriggerSetup(body) {
   return { ok: true, removed: removed, triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
 }
 
-/* 單日核定超過 10 小時（2026-11-01 Eason）：照實核定、不擋，每天 09:00 把各店「前一天」核定超過 10 小時的人列進通知匣（一般件）。
+/* 單日核定超過 10 小時（2026-11-01 Eason；2026-11-23 起改「當日出勤滿 10 小時」，見下）：照實核定、不擋，每天 09:00 把各店「前一天」的人列進通知匣（一般件）。
    打卡端的上班卡擋法在 Rest.gs；這裡只看主管實際核了幾小時（approved 分頁，同一天多筆取最新）。
    總部的 HQ- 同仁由央廚表鏡像過去（Mirror.js），兩家店同一人同一天只列一次。觸發器用 payroll_rest_trigger_setup 建。 */
 var PAY_DAY_MAX_H = 10;
+/* 2026-11-23 Eason 新定義：當日出勤＝核定時數（已含出差）＋已核准請假時數（leave 分頁，出差那列不重算）；「滿 10」含剛好 10 小時。
+   同一人（姓名去空白）跨店加總；總部鏡像列（mirror_src 有值）不算（原本靠「同名只列一次」擋重複，改加總後要明確排除）。
+   設計：~/加盟名單平台/_brain_out/cap10-newdef/design.md §6.2 */
 function payRestOverList_(date) {
-  const out = [], seen = {};
+  const stores = [];
   payStoreList().forEach(function (s) {
     if (!payHasClock(s.code)) return;
-    const day = buildLatestApprovedMap(payClockRead(s.code, 'approved'))[date] || {};
+    var leave = [];
+    try { leave = payClockRead(s.code, 'leave') || []; } catch (e) { leave = []; }   // 讀不到請假＝少算（只會少列，不會多列）
+    stores.push({ store: payStore(s.code), store_name: String(s.name || s.code), approved: payClockRead(s.code, 'approved'), leave: leave });
+  });
+  return payDayLoadOver_(date, stores);
+}
+/** 純計算（測試、試算共用）：stores＝[{store, store_name, approved:列, leave:列}]（店序）→ 當日出勤滿 10 小時的人。
+ *  每人一筆：store／store_name＝核定時數最多那家（一樣多取店序前面），hours＝核定＋請假合計，approved_h、leave_h 分開帶；
+ *  periods：只有一家＝那家的時段（同以前）；跨店＝各家「店名 時段」用「；」接。 */
+function payDayLoadOver_(date, stores) {
+  const by = {}, order = [];
+  const nmOf = function (v) { return String(v == null ? '' : v).replace(/\s/g, ''); };
+  const r2 = function (x) { return Math.round(x * 100) / 100; };
+  stores.forEach(function (s, si) {
+    const own = (s.approved || []).filter(function (r) { return !String(r.mirror_src || '').trim(); });
+    const day = buildLatestApprovedMap(own)[date] || {};
     Object.keys(day).forEach(function (emp) {
-      const r = day[emp], h = payNum(r.approved_hours);
-      const nm = String(r.name || emp).replace(/\s/g, ''), k = nm + '|' + date;
-      if (h <= PAY_DAY_MAX_H || seen[k]) return;
-      seen[k] = true;
-      out.push({ store: payStore(s.code), store_name: String(s.name || s.code), emp_id: emp, name: String(r.name || emp),
-                 hours: h, periods: String(r.periods || '') });
+      const r = day[emp], nm = nmOf(r.name || emp);
+      if (!by[nm]) { by[nm] = { name: String(r.name || emp), parts: [], leave_h: 0 }; order.push(nm); }
+      by[nm].parts.push({ si: si, store: s.store, store_name: s.store_name, emp_id: emp, h: payNum(r.approved_hours), periods: String(r.periods || '') });
     });
+  });
+  stores.forEach(function (s) {
+    (s.leave || []).forEach(function (l) {
+      if (String(l.mirror_src || '').trim() || normCellDate(l['日期']) !== date) return;
+      const t = String(l['假別'] || '').trim(), h = Number(l['時數']);
+      if (!t || t === '出差' || l['時數'] === '' || l['時數'] == null || !isFinite(h) || h <= 0) return;   // 出差時數已在核定時數裡
+      const nm = nmOf(l['姓名']);
+      if (by[nm]) by[nm].leave_h += h;   // 只看那天有核定的人（沒核定＝還沒進「核定」通知）
+    });
+  });
+  const out = [];
+  order.forEach(function (nm) {
+    const p = by[nm], ap = p.parts.reduce(function (a, x) { return a + x.h; }, 0), tot = r2(ap + p.leave_h);
+    if (tot < PAY_DAY_MAX_H) return;
+    const main = p.parts.slice().sort(function (a, b) { return (b.h - a.h) || (a.si - b.si); })[0];
+    out.push({ store: main.store, store_name: main.store_name, emp_id: main.emp_id, name: p.name, hours: tot,
+               approved_h: r2(ap), leave_h: r2(p.leave_h),
+               periods: p.parts.length > 1 ? p.parts.map(function (x) { return x.store_name + ' ' + x.periods; }).join('；') : main.periods });
   });
   return out;
 }
 function payYesterday_() {
   return Utilities.formatDate(new Date(Date.now() - 86400000), 'Asia/Taipei', 'yyyy-MM-dd');
 }
-/** {action:'payroll_rest_check', admin_key, date?} → 那天（預設昨天）各店核定超過 10 小時的人（唯讀）。 */
+/** {action:'payroll_rest_check', admin_key, date?} → 那天（預設昨天）當日出勤（核定＋請假）滿 10 小時的人（唯讀；2026-11-23 起新定義）。 */
 function handlePayrollRestCheck(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : payYesterday_();
@@ -6026,12 +6059,21 @@ function payRestOverRun_(date) {
   const by = {};
   list.forEach(function (x) { (by[x.store_name] = by[x.store_name] || []).push(x); });
   const lines = Object.keys(by).map(function (st) {
-    return '【' + st + '】\n' + by[st].map(function (x) { return x.name + ' ' + x.hours + ' 小時（' + x.periods + '）'; }).join('\n');
+    return '【' + st + '】\n' + by[st].map(payRestOverLine_).join('\n');
   });
-  const inbox = payInboxNotify_(md + ' 核定超過 ' + PAY_DAY_MAX_H + ' 小時：' + list.length + ' 人',
-    md + ' 各店核定工時超過一天 ' + PAY_DAY_MAX_H + ' 小時（照實核定、已照付）：\n' + lines.join('\n') +
-    '\n\n請提醒店長排班與下班時間控制在 ' + PAY_DAY_MAX_H + ' 小時內。', 'restover-' + date, '超時檢查', 'restover');
+  const msg = payRestOverText_(md, list.length, lines);
+  const inbox = payInboxNotify_(msg.title, msg.text, 'restover-' + date, '超時檢查', 'restover');
   return { list: list, inbox: inbox };
+}
+/* 09:00 通知匣的字（2026-11-23 主管定第 9 點：標題「M/D 當日出勤滿 10 小時：N 人」、每人「X 小時（核定 a＋請假 b；時段）」）。
+   內文第一行、最後一句是跟著新定義改的建議字（待主管看）。 */
+function payRestOverLine_(x) {
+  return x.name + ' ' + x.hours + ' 小時（核定 ' + x.approved_h + '＋請假 ' + x.leave_h + (x.periods ? '；' + x.periods : '') + '）';
+}
+function payRestOverText_(md, n, lines) {
+  return { title: md + ' 當日出勤滿 ' + PAY_DAY_MAX_H + ' 小時：' + n + ' 人',
+           text: md + ' 各店當日出勤（核定＋已核准請假）滿一天 ' + PAY_DAY_MAX_H + ' 小時（照實核定、已照付）：\n' + lines.join('\n') +
+                 '\n\n請提醒店長排班與下班時間控制在未滿 ' + PAY_DAY_MAX_H + ' 小時（含請假）。' };
 }
 /** {action:'payroll_rest_trigger_setup', admin_key} → 建每天 09:00 的 payRestOverDaily（同名先刪，重跑不疊）。 */
 function handlePayrollRestTriggerSetup(body) {
