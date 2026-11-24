@@ -115,7 +115,7 @@ const holRows = (s) => J(s.__DATA.holiday).map((r) => ({ ym: String(r.ym), red_d
 function runAll(s, how) {
   const out = { pre: {} };
   if (how === 'sync') out.pre.sync = J(HANDLERS(s).payroll_holiday_sync({ admin_key: KEY, years: [2026, 2027], operator: 'auto (薪資頁開啟)', store: 'SSLGF' }));
-  else out.pre.publish = J(HANDLERS(s).payroll_holiday_publish(Object.assign(J(how), { svcKey: SVC })));
+  else out.pre.publish = J(HANDLERS(s).payroll_holiday_publish(Object.assign(J(how), { svcKey: SVC, confirmed_by: '人資主管' })));
   out.pre.hol = holRows(s);
   out.pre.audit = J(s.__DATA.audit);
   out.pre.fetch = s.__FETCH.slice();

@@ -17,7 +17,9 @@ const J = (x) => JSON.parse(JSON.stringify(x));
 const KEY = 'test-admin-key', SVC = 'test-hol-svc-key';
 const PUSH = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'hol-publish-v1.json'), 'utf8'));
 delete PUSH._note;
-const push = (over) => Object.assign(J(PUSH), { svcKey: SVC }, over || {});
+// 正式推送一定要帶確認人（獨立審查第 1 輪殘餘 b）；推送夾具是營運系統 payrollRows() 原樣（sha256 釘住），確認人在這裡補
+const CONF = { svcKey: SVC, confirmed_by: '人資主管' };
+const push = (over) => Object.assign(J(PUSH), CONF, over || {});
 
 const G = (ym, red, dates, o) => Object.assign({ ym, red_days: red, note: '依人事行政總處115年中華民國政府行政機關辦公日曆表', dates: dates || '', store: '' }, o || {});
 /** 正式環境 2026-11-24 的樣子：2026-05～12 集團列（照 115 年行事曆），沒有 2027 */
@@ -36,7 +38,10 @@ function env(opt) {
   vm.runInContext(`CONFIG.ADMIN_KEY = ${JSON.stringify(KEY)};
     currentYmTaipei = function () { return __NOWYM; };
     var __ra = payReplaceAll; payReplaceAll = function (k, rows) { __W++; return __ra(k, rows); };
-    payWriteLocked_ = function (kinds, fn) { if (!__LOCK) return false; fn(); return true; };`, s);
+    payWriteLocked_ = function (kinds, fn) { if (!__LOCK) return false; fn(); return true; };
+    // 不建分頁的讀（試推、同版本不寫、本店專屬清單、只收推送時的同步）：假資料庫有這張表＝分頁存在。分頁真的不存在的情境在 hol-publish-nocreate.test.js 用真的 paySheet 驗
+    payReadNoCreate_ = function (kind) { return (__DATA[kind] || []).map(function (r) { return Object.assign({}, r); }); };
+    SpreadsheetApp.openById = function () { return { getSheetByName: function (n) { return { name: n }; } }; };`, s);
   s.H = vm.runInContext('PAYROLL_HANDLERS', s);
   s.pub = (body) => J(s.H.payroll_holiday_publish(body));
   s.hol = () => J(s.__DATA.holiday);
@@ -74,7 +79,7 @@ console.log('\n══ 2) 合格推送（H1：正式環境 2026-11 收第一版�
   eq(s.hol().filter((x) => String(x.ym) < '2026-05').length, 0, '2026-01～04（薪酬系統之前）不建列');
   eq(s.__W, 1, '分頁只整張寫一次');
   const a = s.__DATA.audit;
-  eq([a.length, a[0].action, a[0].operator, a[0].store, a[0].ym], [1, 'holiday_publish', 'mini', '', ''], '稽核一筆 holiday_publish（operator＝mini）');
+  eq([a.length, a[0].action, a[0].operator, a[0].store, a[0].ym], [1, 'holiday_publish', 'mini（人資主管確認）', '', ''], '稽核一筆 holiday_publish（operator＝mini＋確認人）');
   eq(a[0].reason, '營運系統節日表 版本 2027-1（發布 2026-11-24T20:52:47+08:00）：新增 2027-01、2027-02、2027-03、2027-04、2027-05、2027-06、2027-07、2027-08、2027-09、2027-10、2027-11、2027-12', '稽核寫哪一版、何時發布、改了哪幾個月');
   const st = JSON.parse(s.__PROPS.PAY_HOL_PUB);
   eq([st.version, st.published_at, st.years, typeof st.hash, st.received_at.slice(0, 10)], ['2027-1', '2026-11-24T20:52:47+08:00', ['2026', '2027'], 'string', '2026-11-24'], '版本記在 PAY_HOL_PUB');
@@ -101,14 +106,18 @@ console.log('\n══ 2) 合格推送（H1：正式環境 2026-11 收第一版�
   eq(old.error, 'bad_payload', '版本 2027-0（第 0 版）格式不對');
   const pre = J(PUSH); pre.version = '2026-9';
   for (const y of ['2027']) for (let m = 1; m <= 12; m++) delete pre.rows[y + '-' + ('0' + m).slice(-2)];
-  const rb = s.pub(Object.assign(pre, { svcKey: SVC }));
+  const rb = s.pub(Object.assign(pre, CONF));
   eq([rb.ok, rb.error, rb.current], [false, 'version_rollback', '2027-1'], '版本 2026-9 比目前 2027-1 舊 → version_rollback');
-  const cf = J(PUSH); cf.rows['2027-06'].note = '改過的說明';
-  const rc = s.pub(Object.assign(cf, { svcKey: SVC }));
-  eq([rc.ok, rc.error], [false, 'version_conflict'], '同版本 2027-1 內容不同（連說明也算）→ version_conflict');
-  eq([JSON.stringify(s.hol()) === b, s.__W - wB, s.__DATA.audit.length - aB, s.__PROPW.length - pB], [true, 0, 0, 0], '倒退、衝突：分頁、稽核、屬性都沒動');
+  const cf = J(PUSH); cf.rows['2027-06'].dates = '';
+  const rc = s.pub(Object.assign(cf, CONF));
+  eq([rc.ok, rc.error], [false, 'version_conflict'], '同版本 2027-1 加發日不同 → version_conflict');
+  // 殘餘 d：說明（note）不算進指紋——營運系統只換來源標題時維持同版（holidays-import 的 source 更新），薪資寫分頁本來也不看說明
+  const cn = J(PUSH); cn.rows['2027-06'].note = '改過的說明';
+  const rn = s.pub(Object.assign(cn, CONF));
+  eq([rn.ok, rn.error, rn.added, rn.changed, rn.drift], [true, undefined, false, [], []], '同版本只改說明 → 當成同一份內容（ok、不寫、沒有 drift），不回 version_conflict');
+  eq([JSON.stringify(s.hol()) === b, s.__W - wB, s.__DATA.audit.length - aB, s.__PROPW.length - pB], [true, 0, 0, 0], '倒退、衝突、同版只改說明：分頁、稽核、屬性都沒動');
   const up = J(PUSH); up.version = '2027-2'; up.rows['2027-06'].note = '改過的說明';
-  const ru = s.pub(Object.assign(up, { svcKey: SVC }));
+  const ru = s.pub(Object.assign(up, CONF));
   eq([ru.ok, ru.added, ru.current, ru.changed, JSON.parse(s.__PROPS.PAY_HOL_PUB).version], [true, true, '2027-1', [], '2027-2'], '升版 2027-2（只改說明）→ 收下、記新版本、沒有月份要改（說明不影響薪資）');
   eq(s.__DATA.audit[s.__DATA.audit.length - 1].reason.slice(-6), '沒有月份要改', '升版沒有月份要改也留一筆稽核');
 }
@@ -308,6 +317,69 @@ console.log('\n══ 7) 開關預設時：既有動作的行為照舊（細部�
   eq([r.ok, r.count, r.store, !!s.row('2027-06', 'CF')], [true, 1, 'CF', true], '開關預設：payroll_holiday_set 照舊可存（含本店專屬）');
   const r2 = J(s.H.payroll_holiday_sync({ admin_key: KEY, years: [2026], store: 'SSLGF' }));
   eq([r2.ok, r2.hol_source, r2.hol_pub, s.__FETCH > 0], [true, undefined, undefined, true], '開關預設：開頁同步照舊連人事行政總處、回應沒有新欄位');
+}
+
+console.log('\n══ 獨立審查第 1 輪（2026-11-25）殘餘 a～c ══');
+console.log('── b：正式推送一定要帶確認人 ──');
+{
+  const s = env({ props: MINI }), b = JSON.stringify(s.hol());
+  const noC = (over) => { const p = push(over); delete p.confirmed_by; return p; };
+  const r1 = s.pub(noC()), r2 = s.pub(push({ confirmed_by: '' }));
+  eq([r1.ok, r1.error, r1.problems, r2.error], [false, 'bad_payload', ['正式推送要帶 confirmed_by（確認這一版的人）'], 'bad_payload'], '金鑰正確但沒帶／空白 confirmed_by 的正式推送 → bad_payload 拒收');
+  untouched(s, b, '沒帶確認人');
+  s.pub(push());
+  const a0 = s.__DATA.audit.length;
+  eq(s.pub(noC({ reapply: true })).error, 'bad_payload', 'reapply 也是正式寫入，沒帶確認人一樣拒收');
+  eq(s.__DATA.audit.length - a0, 0, 'reapply 被拒：沒有稽核');
+  const d = env({ props: MINI }), bd = JSON.stringify(d.hol());
+  const rd = d.pub(noC({ dry_run: true }));
+  eq([rd.ok, rd.dry_run, rd.would_change.length], [true, true, 12], '試推可以不帶確認人（營運系統還沒人確認的版本只能試推）');
+  untouched(d, bd, '沒帶確認人的試推');
+  const g = env({}), bg = JSON.stringify(g.hol());
+  eq(g.pub(noC({ dry_run: true })).ok, true, '開關照舊（gov）時試推不帶確認人照樣可以');
+  untouched(g, bg, 'gov 試推');
+}
+console.log('── a：版本紀錄最後才寫；顯示資料寫失敗時同版重送能補齊 ──');
+{
+  const failOn = (s, key, times) => { const orig = s.PropertiesService.getScriptProperties; let n = 0;
+    s.PropertiesService = { getScriptProperties: () => { const p = orig(); return { getProperty: p.getProperty,
+      setProperty: (k, v) => { if (k === key && n++ < times) throw new Error('模擬屬性寫入失敗：' + k); return p.setProperty(k, v); } }; } }; };
+  // a1：顯示資料（PAY_HOL_PUB_VIEW）寫失敗 → 版本沒有記；同版重送 → 兩個都補上、分頁不會再改
+  const s = env({ props: MINI });
+  failOn(s, 'PAY_HOL_PUB_VIEW', 1);
+  let threw = false; try { s.pub(push()); } catch (e) { threw = true; }
+  eq([threw, s.__PROPS.PAY_HOL_PUB, s.__PROPS.PAY_HOL_PUB_VIEW, s.__W], [true, undefined, undefined, 1], '顯示資料寫失敗：分頁已寫，但版本沒記（寫完的記號沒落下）');
+  const r = s.pub(push());
+  eq([r.ok, r.added, r.changed, s.__W], [true, true, [], 1], '同版重送：仍當新版本收、分頁相同不再寫');
+  eq([JSON.parse(s.__PROPS.PAY_HOL_PUB).version, JSON.parse(s.__PROPS.PAY_HOL_PUB_VIEW).moved['2027-02-07']], ['2027-1', '2027-02-10'], '版本與顯示資料都補齊');
+  // a2：版本（PAY_HOL_PUB）寫失敗 → 顯示資料已寫；同版重送 → 版本補上
+  const s2 = env({ props: MINI });
+  failOn(s2, 'PAY_HOL_PUB', 1);
+  threw = false; try { s2.pub(push()); } catch (e) { threw = true; }
+  eq([threw, s2.__PROPS.PAY_HOL_PUB, typeof s2.__PROPS.PAY_HOL_PUB_VIEW], [true, undefined, 'string'], '記版本失敗：顯示資料已寫、版本沒記');
+  const r2 = s2.pub(push());
+  eq([r2.ok, r2.added, JSON.parse(s2.__PROPS.PAY_HOL_PUB).version], [true, true, '2027-1'], '同版重送：版本補上');
+  // a3：順序本身——正常推送時 VIEW 在 PUB 之前寫
+  const s3 = env({ props: MINI });
+  s3.pub(push());
+  eq(s3.__PROPW.filter((k) => /^PAY_HOL_PUB/.test(k)), ['PAY_HOL_PUB_VIEW', 'PAY_HOL_PUB'], '寫屬性順序：先顯示資料、最後版本');
+}
+console.log('── c：服務金鑰定時比對、錯誤回應不帶金鑰 ──');
+{
+  const s = env({ props: MINI });
+  const ct = (a, b) => vm.runInContext('payHolCtEq_', s)(a, b);
+  eq([ct(SVC, SVC), ct(SVC, SVC + 'x'), ct(SVC + 'x', SVC), ct(SVC.slice(0, -1), SVC), ct('', SVC), ct(SVC, ''), ct('', ''),
+      ct(SVC.replace(/.$/, 'X'), SVC), ct('X' + SVC.slice(1), SVC)],
+     [true, false, false, false, false, false, true, false, false], 'payHolCtEq_：相同才 true；多一字、少一字、空字串、頭尾一字不同都 false');
+  const src = vm.runInContext('payHolCtEq_.toString()', s);
+  eq([/return\s+false/.test(src), /break/.test(src), /===\s*b\b|b\s*===|indexOf|startsWith/.test(src)], [false, false, false], 'payHolCtEq_ 不提前結束（沒有中途 return false／break、不用 === 直接比字串）');
+  const svcSrc = vm.runInContext('payHolPubSvcOk_.toString()', s);
+  eq([/payHolCtEq_\(/.test(svcSrc), /svcKey\s*===\s*key/.test(svcSrc)], [true, false], 'payHolPubSvcOk_ 走 payHolCtEq_、不再用 ===');
+  const same = SVC.replace(/.$/, 'X');
+  const outs = [s.pub(push({ svcKey: same })), s.pub(push({ svcKey: SVC + 'x' })), s.pub(push({ svcKey: '' })), s.pub(Object.assign(push(), { svcKey: undefined, admin_key: KEY }))];
+  eq(outs.map((o) => o.error), ['unauthorized', 'unauthorized', 'unauthorized', 'unauthorized'], '同長度錯一字、多一字、空白、只帶管理金鑰 → unauthorized');
+  const txt = JSON.stringify(outs.concat([s.pub(push({ v: 2 })), s.pub(push({ dry_run: 'yes' }))]));
+  eq([txt.indexOf(SVC), txt.indexOf(KEY), /https?:\/\//.test(txt), /PAY_HOL_SVC_KEY/.test(txt)], [-1, -1, false, false], '拒收回應（金鑰錯、內容不合格）不含金鑰、管理金鑰、任何網址或金鑰屬性名');
 }
 
 console.log(`\n${fail ? '❌' : '✅'} hol-publish：${pass} 通過、${fail} 失敗`);

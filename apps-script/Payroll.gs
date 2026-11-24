@@ -4016,7 +4016,16 @@ function payHolSource_() {
 function payHolPubSvcOk_(body) {
   let key = '';
   try { key = String(PropertiesService.getScriptProperties().getProperty('PAY_HOL_SVC_KEY') || ''); } catch (e) { key = ''; }
-  return !!key && typeof body.svcKey === 'string' && body.svcKey === key;
+  return !!key && typeof body.svcKey === 'string' && payHolCtEq_(body.svcKey, key);
+}
+/** 定時比對（獨立審查第 1 輪殘餘 c）：Apps Script 沒有內建的定時比較，自己寫。不論在哪一個字元不同、長度差多少，
+ *  都跑滿「較長那一邊」的長度、不提前結束；長度不同另外記進結果。只回 true／false，不回傳或記錄任何一邊的內容。 */
+function payHolCtEq_(a, b) {
+  a = String(a); b = String(b);
+  const n = Math.max(a.length, b.length);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < n; i++) diff |= (i < a.length ? a.charCodeAt(i) : 0) ^ (i < b.length ? b.charCodeAt(i) : 0);
+  return diff === 0;
 }
 function payHolPubState_() {
   try {
@@ -4140,7 +4149,9 @@ function payHolPubValidate_(body, nowYm) {
   }
   if (P.length) return { ok: false, error: 'bad_payload', problems: P,
     message: '節日表推送內容不合格，整份沒有收（薪資的節日資料沒有變動）：' + P.slice(0, 3).join('；') + (P.length > 3 ? '…等 ' + P.length + ' 項' : '') };
-  const canon = Object.keys(rows).sort().map(function (k) { const r = rows[k]; return [k, r.red_days, r.dates, r.note].join('|'); }).join('\n');
+  /* 指紋只算紅字天數與加發日，不算說明（note）（獨立審查第 1 輪殘餘 d）：營運系統只在節日內容變時升版，來源標題更新（note＝「依人事行政總處＋標題」）
+     維持同版；薪資這邊寫分頁也本來就不看說明（payHolPubPlan_ 的 differs）。說明算進指紋會讓同版只換標題被當成 version_conflict。 */
+  const canon = Object.keys(rows).sort().map(function (k) { const r = rows[k]; return [k, r.red_days, r.dates].join('|'); }).join('\n');
   return { ok: true, version: ver, rows: rows, years: years, hash: payHolPubHash_(canon),
            meta: { published_at: pubAt, confirmed_by: confirmedBy, source: source }, view: view };
 }
@@ -4185,7 +4196,7 @@ function payHolPubPlan_(all, rows, nowYm, runsFn) {
            past_missing: pastMissing.sort(), own_rows: own };
 }
 
-/** {action:'payroll_holiday_publish', svcKey, v:1, version, published_at, confirmed_by?, source?, rows:{YYYY-MM:{ym,red_days,note,dates}}, moved?, names?, dry_run?, reapply?}
+/** {action:'payroll_holiday_publish', svcKey, v:1, version, published_at, confirmed_by（正式推送必填、試推選填）, source?, rows:{YYYY-MM:{ym,red_days,note,dates}}, moved?, names?, dry_run?, reapply?}
  *  格式與回應見 docs/holiday-publish/README.md。 */
 function handlePayrollHolidayPublish(body) {
   body = body || {};
@@ -4194,6 +4205,10 @@ function handlePayrollHolidayPublish(body) {
   const chk = payHolPubValidate_(body, nowYm);
   if (!chk.ok) return chk;
   const mode = payHolSource_(), dry = body.dry_run === true;
+  // 正式推送（含 reapply）一定要帶確認人（獨立審查第 1 輪殘餘 b；已定案「人資主管確認過的版本才生效」）。試推可以不帶。
+  // 錯誤碼沿用 bad_payload（營運系統已認得、列為拒收不重送），不另開新碼。
+  if (!dry && !chk.meta.confirmed_by) return { ok: false, error: 'bad_payload', problems: ['正式推送要帶 confirmed_by（確認這一版的人）'],
+    message: '節日表推送沒有帶確認人，整份沒有收（薪資的節日資料沒有變動）：人資主管確認過的版本才能正式推送' };
   if (mode !== 'mini' && !dry) return { ok: false, error: 'hol_source_gov', mode: mode,
     message: '薪資的節日資料目前還是自己向人事行政總處抓（PAY_HOL_SOURCE 不是 mini），這次只接受試推（dry_run），沒有寫入' };
   const st0 = payHolPubState_();
@@ -4203,11 +4218,14 @@ function handlePayrollHolidayPublish(body) {
   if (same && st0.hash !== chk.hash) return { ok: false, error: 'version_conflict', version: chk.version,
     message: '節日表版本 ' + chk.version + ' 內容跟上次收到的同版本不一樣（同一版本不能改內容，請營運系統升版再發布），沒有收' };
   const apply = !same || body.reapply === true;
+  /* 不寫的路徑（試推、同版本沒帶 reapply）一律用 payReadNoCreate_：payRead → paySheet 在分頁不存在時會建分頁、寫表頭、凍結首列，
+     試推（gov 也會收）因此有寫入、開關照舊時行為跟改動前不同（獨立審查第 1 輪擋項 1）。分頁不存在＝當成沒有列，照樣算出預覽。 */
+  const ro = dry || !apply, rd = ro ? payReadNoCreate_ : payRead;
   let plan = null, wrote = false;
   const work = function () {
-    const all = payRead('holiday');
-    plan = payHolPubPlan_(all, chk.rows, nowYm, function () { return payRead('run'); });
-    if (dry || !apply) return;
+    const all = rd('holiday');
+    plan = payHolPubPlan_(all, chk.rows, nowYm, function () { return rd('run'); });
+    if (ro) return;
     const changed = plan.added.concat(plan.updated).sort();
     if (changed.length) payReplaceAll('holiday', plan.out);
     const parts = [];
@@ -4221,7 +4239,7 @@ function handlePayrollHolidayPublish(body) {
       reason: '營運系統節日表 ' + (same ? '重新套用 ' : '') + '版本 ' + chk.version + '（發布 ' + chk.meta.published_at + '）：' + parts.join('；'), store: '' }]);
     wrote = true;
   };
-  if (dry) work();
+  if (ro) work();   // 只讀：不取寫鎖
   else if (!payWriteLocked_(['holiday', 'run'], work)) return PAY_BUSY_;
   // 這次沒跟上這一版的月份（已鎖定、已經過去內容不同、已經過去缺列）：記下來給薪資頁版本行顯示
   const lag = plan ? { locked: plan.skipped_locked, past: plan.skipped_past, missing: plan.past_missing } : null;
@@ -4230,13 +4248,16 @@ function handlePayrollHolidayPublish(body) {
     PropertiesService.getScriptProperties().setProperty(PAY_HOL_PUB_PROP_, JSON.stringify(st1));
   }
   if (wrote && !same) {   // 分頁與稽核都寫好了才記版本（記版本失敗：下次同版本重送會再比一次、補記，不會重複改分頁）
+    /* 順序：先寫顯示資料、最後才記版本（獨立審查第 1 輪殘餘 a）。版本紀錄＝這一版「全部寫完」的記號：
+       顯示資料寫失敗 → 版本沒記 → 同版重送仍當新版本，分頁相同不會再改，顯示資料與版本會補齊；
+       以前先記版本，顯示資料寫失敗時同版重送回「沒變」、補不回來。 */
     const props = PropertiesService.getScriptProperties();
-    props.setProperty(PAY_HOL_PUB_PROP_, JSON.stringify({ version: chk.version, hash: chk.hash, published_at: chk.meta.published_at,
-      confirmed_by: chk.meta.confirmed_by, source: chk.meta.source, received_at: nowTaipeiIso(), years: chk.years, lag: lag }));
     let v = JSON.stringify(chk.view);
     if (v.length > 8500) v = JSON.stringify({ moved: chk.view.moved });   // 屬性單格上限約 9KB；名稱放不下就只留補假對照
     if (v.length > 8500) v = '{}';
     props.setProperty(PAY_HOL_PUB_VIEW_PROP_, v);
+    props.setProperty(PAY_HOL_PUB_PROP_, JSON.stringify({ version: chk.version, hash: chk.hash, published_at: chk.meta.published_at,
+      confirmed_by: chk.meta.confirmed_by, source: chk.meta.source, received_at: nowTaipeiIso(), years: chk.years, lag: lag }));
   }
   const changed = plan.added.concat(plan.updated).sort();
   const res = { ok: true, mode: mode, dry_run: dry, version: chk.version, current: st0 ? st0.version : '',
@@ -4272,7 +4293,9 @@ function payHolMiniInfo_(list, years) {
 }
 /** payroll_holiday_sync 在 PAY_HOL_SOURCE=mini 時：不連外、不寫，只回分頁現況＋收到的版本（回應形狀同現行，多 hol_source／hol_pub／hol_missing）。 */
 function payHolSyncMini_(years, body) {
-  const list = payHolidayList(payStore(body.store)), info = payHolMiniInfo_(list, years);
+  // 唯讀：節日分頁不存在＝沒有列，不經 payHolidayList → payRead → paySheet 建分頁（獨立審查第 1 輪擋項 1）
+  const has = !!getSS().getSheetByName(PAY_SHEET_NAME.holiday);
+  const list = has ? payHolidayList(payStore(body.store)) : [], info = payHolMiniInfo_(list, years);
   return { ok: true, changed: [], status: [], names: info.names, moved: info.moved,
            skipped_locked: [], message: info.hol_message, sync_from: PAY_HOL_SYNC_FROM, double_from: PAY_HOL_DOUBLE_FROM,
            holidays: list, hol_source: 'mini', hol_pub: info.hol_pub, hol_missing: info.hol_missing };
@@ -4282,7 +4305,7 @@ function payHolSyncMini_(years, body) {
  *  回 {ok, count, rows:[{ym, store, red_days, dates, note, global_red_days, global_dates, same_as_global}]}，依月份、門市排序。 */
 function handlePayrollHolidayOwnList(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
-  const all = payRead('holiday'), glob = {};
+  const all = payReadNoCreate_('holiday'), glob = {};   // 唯讀：分頁不存在不建（獨立審查第 1 輪擋項 1）
   all.forEach(function (h) { const k = String(h.ym); if (String(h.store || '') === '' && !glob[k]) glob[k] = h; });
   const rows = all.filter(function (h) { return String(h.store || '') !== ''; }).map(function (h) {
     const k = String(h.ym), g = glob[k] || null;
@@ -5603,7 +5626,7 @@ function handlePayrollStatus(body) {
   }
   return { ok: true, ym: ym, store: st, status: status, rows: mine.length, run_at: at, elec_stale: elecStale };
 }
-/** 讀分頁但不建分頁（只給 payroll_status 用）：分頁不存在＝[]；開試算表、查分頁、讀格子丟例外 → 照樣丟給呼叫端。
+/** 讀分頁但不建分頁（payroll_status；節日表推送的試推／不寫路徑與 payroll_holiday_own_list，2026-11-25）：分頁不存在＝[]；開試算表、查分頁、讀格子丟例外 → 照樣丟給呼叫端。
  *  用這一次 getSheetByName 拿到的分頁物件直接讀格子（同 payRead 的 readSheetAsObjects＋stripRowIndex），不經 payRead／paySheet：
  *  以前預查丟例外會被吞掉、落回 payRead → paySheet，分頁不存在時就建分頁＋寫表頭（Codex 複審 SHOULD-FIX 2，2026-11-22）。
  *  不讀也不寫請求內快取（PAY_READ_CACHE／PAY_RAW_CACHE）；payRead／paySheet 給其他路徑的行為不變。 */
