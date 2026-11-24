@@ -12,6 +12,7 @@ var RELAYG_MARK_TTL_S_ = 900;          // 「這張單號寫好了」記號留 1
 var RELAYG_PENDING_TTL_S_ = 120;       // 「手機改送的那張正在寫」記號最多留 2 分鐘（liff_punch 中途出錯沒清掉也不會卡太久；Fable 審查 B4）
 var RELAYG_TS_BACK_MS_ = 3 * 86400000, RELAYG_TS_AHEAD_MS_ = 2 * 60000;   // relay_append 收的時間範圍：3 天前～2 分鐘後（審查 C2）
 // relay_pull 只給 mini 擋卡要的欄（審查 D1：不給名冊的建立人、移除人等；以後表上新增的欄也不會自動流出）
+// 例外只有一格：建立人＝首次支援記號那幾列帶 created_by（見 relayGFirstSupportMark_；其他建立人照樣不帶）。
 var RELAYG_EVENT_COLS_ = ['ts', 'emp_id', 'type', 'lat', 'lng', 'distance_m', 'within_range', 'device_id', 'device_match', 'status', 'accuracy_m', 'source', 'req_id', 'mirror_src'];
 var RELAYG_ROSTER_COLS_ = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active', 'shift_in', 'shift_out', 'removed_at', 'line_user_id', 'line_bound_at', 'line_ok_at'];
 var RELAYG_PULL_MAX_ = 4000;           // relay_pull 一次最多回幾列
@@ -86,6 +87,15 @@ function relayGRowOut_(r, key, cols, memo) {
   });
   o.__row = r.__rowIndex;
   return o;
+}
+/** 名冊 created_by 給 mini 的值（2026-11-24 修「首次支援的人在 Mac mini 核定一直回 stale_ver」）：
+ *  mgr_day 的 first_support（Code.gs：created_by＝FIRST_SUPPORT_CREATED_BY 而且從沒核定過）會進版本號（DutyFeed.gs dutyVerOf_ 的 fs）。
+ *  mini 核定引擎用同一份程式、讀這裡給的名冊副本算；副本沒有 created_by 時 mini 一律算 false，Google 算 true → 兩邊版本永遠不同。
+ *  只在「建立人剛好是首次支援記號」時回那個記號（mini 照同一條式子算出同一個結果）；其他建立人（主管姓名、管理系統帳號）回 null＝不帶，照審查 D1 不離開試算表。
+ *  這家店的 程式碼.js 沒有這個常數 → 也回 null（跟改之前一樣不帶）。 */
+function relayGFirstSupportMark_(v) {
+  if (typeof FIRST_SUPPORT_CREATED_BY !== 'string' || !FIRST_SUPPORT_CREATED_BY) return null;
+  return String(v) === FIRST_SUPPORT_CREATED_BY ? FIRST_SUPPORT_CREATED_BY : null;
 }
 /** 寫進表的值：數字欄轉數字、是非欄轉 true／false、其他是文字的話開頭 = + - @ 換成全形（同 handleClock，擋公式；審查 C1） */
 function relayGNum_(v) { if (v === '' || v === null || v === undefined) return ''; var n = Number(v); return isFinite(n) ? n : ''; }
@@ -259,6 +269,8 @@ function handleRelayPull_(body) {
       var o = relayGRowOut_(r, key, RELAYG_ROSTER_COLS_, rmemo);
       o.key = r.key ? 'h:' + relayGHash_(r.key, key) : '';
       o.line_user_id = r.line_user_id ? 'h:' + relayGHash_(r.line_user_id, key) : '';
+      var fsm = relayGFirstSupportMark_(r.created_by);
+      if (fsm !== null) o.created_by = fsm;   // 只有首次支援記號那幾列才有這格（mini 算 first_support 跟 Google 一樣）
       return o;
     }) : [];
   }
