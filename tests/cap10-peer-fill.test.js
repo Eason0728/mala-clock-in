@@ -15,7 +15,7 @@
  *   P6 A 開、B 關：A 寫 19:00；B（關）讀到卡鎖 → 收斂。
  *   P7 '4'：多店者照補時（不給寬限）；單店者照 #232 寬限。 */
 'use strict';
-const { make, T, at, check, show, done, R } = require('./helpers/gs-sandbox');
+const { make, T, at, check, done, R } = require('./helpers/gs-sandbox');
 const CAP_SRC_REAL = R('apps-script/Cap10.gs');
 const CAP_SRC = CAP_SRC_REAL.replace('var CAP_SINGLE_STORES = 9;', 'var CAP_SINGLE_STORES = 1;');   // 沙盒兩家店
 const git = (ref) => require('child_process').execFileSync('git', ['-C', require('path').join(__dirname, '..'), 'show', ref + ':apps-script/Cap10.gs'], { encoding: 'utf8' });
@@ -154,20 +154,16 @@ console.log('\n════ 五、開關沒開（\'1\'、\'2\'、其他值）跟
 {
   let seed = 20261124; const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
   const pk = (xs) => xs[Math.floor(rnd() * xs.length)];
-  let same = 0; const bad = [], schedRd = { n: 0, o: 0, more: 0, less: 0 };
+  let same = 0; const bad = [];
   for (let k = 0; k < 120; k++) {
     const caps = pk([['1', '1'], ['2', '2'], ['1', '2'], ['0', undefined], ['5', '1']]);
     const opt = Object.assign({ capA: caps[0], capB: caps[1] }, pk([GAP, { bEv: [[D + 'T09:00:00', 'B07', 'in']], bSched: SB918 }, { aEv: [[D + 'T08:55:00', 'E01', 'in']], aSched: SA918, bSched: SB918 }]));
     const N = pair(opt), O = pair(opt, SRC_232);
     // 讀取次數也要一樣（#234 審查）：REST_CAP_ON 屬性讀取、開啟試算表、讀整張分頁
-    // 2026-11-25（補缺卡改讀分塊快取）：'1'／'2' 的補缺卡改讀 capGraceSched_，載入班表（capGraceLoad_／舊的 capSchedPub_）裡面的開試算表／讀分頁
-    // 另記在 sched（快取時機不同、刻意改的；次數另見 tests/cap10-fill-chunk.test.js），其餘開試算表、讀分頁、屬性讀取仍要逐步相同。
-    const inst = (m) => { m.__n = { prop: 0, open: 0, read: 0 }; m.__s = { open: 0, read: 0 }; m.__in = 0; const P = m.sb.PropertiesService, S = m.sb.SpreadsheetApp;
-      const bump = (k) => { if (m.__in) m.__s[k]++; else m.__n[k]++; };
+    const inst = (m) => { m.__n = { prop: 0, open: 0, read: 0 }; const P = m.sb.PropertiesService, S = m.sb.SpreadsheetApp;
       m.sb.PropertiesService = { getScriptProperties: () => { const o = P.getScriptProperties(); return Object.assign({}, o, { getProperty: (k) => { if (k === 'REST_CAP_ON') m.__n.prop++; return o.getProperty(k); } }); } };
-      m.sb.SpreadsheetApp = Object.assign({}, S, { openById: (id) => { bump('open'); return S.openById(id); } });
-      ['capGraceLoad_', 'capSchedPub_'].forEach((fn) => { const f = m.sb[fn]; if (typeof f === 'function') m.sb[fn] = function () { m.__in++; try { return f.apply(this, arguments); } finally { m.__in--; } }; });
-      [m.self].concat(Object.values(m.peers)).forEach((bk) => Object.values(bk.sh).forEach((sh) => { const g = sh.getDataRange; sh.getDataRange = function () { bump('read'); return g.apply(this, arguments); }; })); };
+      m.sb.SpreadsheetApp = Object.assign({}, S, { openById: (id) => { m.__n.open++; return S.openById(id); } });
+      [m.self].concat(Object.values(m.peers)).forEach((bk) => Object.values(bk.sh).forEach((sh) => { const g = sh.getDataRange; sh.getDataRange = function () { m.__n.read++; return g.apply(this, arguments); }; })); };
     [N.A, N.B, O.A, O.B].forEach(inst);
     let t = T(D + 'T18:5' + Math.floor(rnd() * 9) + ':00'), diff = null;
     for (let i = 0, n = 2 + Math.floor(rnd() * 5); i < n && !diff; i++) {
@@ -178,11 +174,8 @@ console.log('\n════ 五、開關沒開（\'1\'、\'2\'、其他值）跟
       t += (1 + Math.floor(rnd() * 40)) * 60000;
     }
     if (diff) bad.push(diff); else same++;
-    const sn = N.A.__s.read + N.B.__s.read, so = O.A.__s.read + O.B.__s.read;
-    schedRd.n += sn; schedRd.o += so; if (sn > so) schedRd.more++; if (sn < so) schedRd.less++;
   }
-  check('P8', "開關 '1'／'2'／'0'／沒設／'5' 的兩店隨機 120 串：每一步回應、兩店打卡列、屬性讀取、（載入班表以外的）開試算表／讀分頁次數都跟 ddd0cd0（#232）一樣", [same, bad.slice(0, 2)], [120, []]);
-  show('P8b', '同 120 串載入班表讀 sched_pub 的次數（新／舊合計、新比舊多的串數、少的串數；快取時機不同，刻意改的）', schedRd);
+  check('P8', "開關 '1'／'2'／'0'／沒設／'5' 的兩店隨機 120 串：每一步回應、兩店打卡列、屬性讀取／開試算表／讀分頁次數都跟 ddd0cd0（#232）一樣", [same, bad.slice(0, 2)], [120, []]);
 }
 
 console.log('\n════ 六、兩店同步隨機：不變量 ════');
@@ -346,7 +339,7 @@ const checkH = (m) => { const sb = m.sb, ss = sb.getSS(), who = sb.readSheetAsOb
     for (let i = 0; i < 3; i++) { m.sb.handleLiffStatus_({ id_token: 'TOK_U1' }); out.push(reads); }
     return out;
   };
-  // 2026-11-25（補缺卡改讀分塊快取）：'1'／'2' 也改成 1、1、1；#232 原本的整表快取放不下 → 每次開頁都重讀整張（1、2、3）
+  // 2026-11-25（#238 補缺卡改讀分塊快取）：'1'／'2' 改成 1、1、1；#232 原本的整表快取放不下 → 每次開頁都重讀整張（1、2、3）
   check('Q4★', "sched_pub 超過舊整表快取上限：'1'～'4' 連續開頁三次 sched_pub 累計讀取都是 1、1、1（快取暖了就不再讀）；#232 的 '1'／'2' 是 1、2、3（每次重讀）",
     [big('3'), big('4'), big('1'), big('2'), big('1', SRC_232), big('2', SRC_232)], [[1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 2, 3], [1, 2, 3]]);
 }

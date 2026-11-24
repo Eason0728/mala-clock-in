@@ -17,7 +17,8 @@ const { make, T, at, check, show, done, R } = require('./helpers/gs-sandbox');
 
 const BASE = process.env.CAP_FILL_BASE || '0bf30bd';
 const single = (s) => { const o = s.replace('var CAP_SINGLE_STORES = 9;', 'var CAP_SINGLE_STORES = 1;'); if (o === s) throw new Error('找不到 CAP_SINGLE_STORES'); return o; };   // 沙盒兩家店：'2' 寬限才會真的生效
-const NEW = single(R('apps-script/Cap10.gs'));
+// CAP_FILL_NEW＝git 版本：拿那一版當「新版」跑（例 CAP_FILL_NEW=ad022fc 重現 #238 審查第 1 輪擋項，F6 要紅）
+const NEW = single(process.env.CAP_FILL_NEW ? execFileSync('git', ['-C', path.join(__dirname, '..'), 'show', process.env.CAP_FILL_NEW + ':apps-script/Cap10.gs'], { encoding: 'utf8' }) : R('apps-script/Cap10.gs'));
 const OLD = single(execFileSync('git', ['-C', path.join(__dirname, '..'), 'show', BASE + ':apps-script/Cap10.gs'], { encoding: 'utf8' }));
 if (NEW.indexOf('function capSchedPub_') >= 0) throw new Error('新版還有 capSchedPub_');
 if (OLD.indexOf('function capSchedPub_') < 0) throw new Error('舊版（' + BASE + '）沒有 capSchedPub_，CAP_FILL_BASE 指錯');
@@ -52,6 +53,16 @@ function world(src, view, opt) {
   const g = sh.getDataRange; sh.getDataRange = function () { m.__reads++; return g.apply(this, arguments); };
   m.__sp = sh;
   return m;
+}
+/** 依鍵前綴數讀快取次數：{capgr1:{get,getAll,keys}, capfl1:…, capsched:…} */
+function countCache(m) {
+  const c = m.sb.CacheService.getScriptCache(), calls = {};
+  ['capgr1', 'capfl1', 'capsched'].forEach((p) => { calls[p] = { get: 0, getAll: 0, keys: 0 }; });
+  const pre = (k) => String(k).split(':')[0];
+  m.sb.CacheService = { getScriptCache: () => Object.assign({}, c, {
+    get: (k) => { if (calls[pre(k)]) calls[pre(k)].get++; return c.get(k); },
+    getAll: (ks) => { const p0 = ks.length ? pre(ks[0]) : ''; if (calls[p0]) { calls[p0].getAll++; calls[p0].keys += ks.length; } return c.getAll(ks); } }) };
+  return calls;
 }
 const fillAt = (m, kind, hms, emp) => hmOf(m.sb.capMakeFill_(emp || 'E01')(kind, { ms: T(hms), store: '' }));
 const page = (m) => { const c = (m.sb.handleLiffStatus_({ id_token: 'TOK_U1' }).cap) || {}; return c.locked ? 'LOCK' + c.sys_hm : c.grace_hm ? 'grace' + c.grace_hm : 'free'; };
@@ -172,18 +183,33 @@ console.log('\n════ F2 整張 sched_pub 超過 90000 字：\'1\'／\'2\'
   const ev6 = [].concat(...ppl.map((p) => [[D + 'T09:00:00', p.emp_id, 'in'], [D + 'T17:30:00', p.emp_id, 'in']]));
   const sweep = (src, cap) => {
     const m = world(src, 'gf', { cap, now: D + 'T18:30:00', ev: ev6, pub: pub6, roster: ppl });
-    const c = m.sb.CacheService.getScriptCache(), calls = { get: 0, getAll: 0, chunks: 0 };
-    m.sb.CacheService = { getScriptCache: () => Object.assign({}, c, {
-      get: (k) => { if (/^capgr1:/.test(k)) calls.get++; return c.get(k); },
-      getAll: (ks) => { if (ks.some((k) => /^capgr1:/.test(k))) { calls.getAll++; calls.chunks += ks.length; } return c.getAll(ks); } }) };
-    m.sb.capSweep(); const r1 = m.__reads, c1 = Object.assign({}, calls);
+    const calls = countCache(m);
+    m.sb.capSweep(); const r1 = m.__reads, c1 = JSON.parse(JSON.stringify(calls));
     m.setNow(T(D + 'T18:45:00')); m.sb.capSweep();
     return { reads: [r1, m.__reads - r1], cache1: c1 };
   };
   const sn = sweep(NEW, '1'), so = sweep(OLD, '1'), s2 = sweep(NEW, '2');
   check('F2c★', "定時掃描（6 人都要補）：新版第一輪讀整張 1 次、15 分後第二輪 1 次（快取 5 分鐘已過）；舊版每人各讀 1 次＝6、6",
     [sn.reads, s2.reads, so.reads], [[1, 1], [1, 1], [6, 6]]);
-  show('F2d', "新版 '1' 一輪掃描讀快取的次數（目錄 get、資料塊 getAll、getAll 合計鍵數）", sn.cache1);
+  check('F2d', "一輪掃描（6 人各一張孤單卡）讀快取：新版補缺卡命名空間 capfl1: 目錄 get 6、資料塊 getAll 5（第一人讀表）；舊版整表 capsched:v1 get 6",
+    [sn.cache1.capfl1, so.cache1.capsched], [{ get: 6, getAll: 5, keys: 5 }, { get: 6, getAll: 0, keys: 0 }]);
+  // 一人多張孤單卡：同一個補缺卡函式內同一店＋期只讀一次快取（同原本 pub 只讀一次）
+  const multi = (src) => {
+    const m = world(src, 'gf', { cap: '1', now: D + 'T17:00:00', pub: [['', 'T01', one(SH, 'E01', { 18: { t: 'W', s: 'N' }, 19: { t: 'W', s: 'S' } })]],
+      ev: [['2026-11-19T18:00:00', 'E01', 'in'], [D + 'T09:00:00', 'E01', 'in'], [D + 'T12:00:00', 'E01', 'in'], [D + 'T13:00:00', 'E01', 'out'], [D + 'T15:00:00', 'E01', 'out'], [D + 'T16:00:00', 'E01', 'in']] });
+    let fills = 0; const f0 = m.sb.capMakeFill_;
+    const sb = m.sb, ss = sb.getSS(), me = meRow(m), now = sb.__now, ev = sb.capEventsFor_(ss, me, now, null);
+    const fn = f0('E01'), wrapped = (k, e) => { fills++; return fn(k, e); };
+    sb.capJudge_(ev, now, wrapped, sb.capBreak_(), sb.capLeavesFor_(ss, me, now));   // 暖快取
+    const calls = countCache(m); fills = 0;
+    const fn2 = f0('E01'), w2 = (k, e) => { fills++; return fn2(k, e); };
+    sb.capJudge_(ev, now, w2, sb.capBreak_(), sb.capLeavesFor_(ss, me, now));
+    return { fills, capfl1: calls.capfl1, capsched: calls.capsched };
+  };
+  const mn = multi(NEW), mo = multi(OLD);
+  show('F2e', '一人多張孤單卡、快取已暖：一次判斷叫補缺卡幾次、新版 capfl1: 讀快取次數、舊版 capsched:v1 讀快取次數', { new: mn, old: mo });
+  check('F2f', '一人多張孤單卡（同一期）：新版一次判斷讀快取 2 次（目錄 1、資料塊 1）、舊版 1 次，不隨孤單卡張數增加',
+    [mn.fills >= 2, mn.capfl1.get + mn.capfl1.getAll, mo.capsched.get], [true, 2, 1]);
 }
 
 console.log('\n════ F3 讀別家店／本店那一塊（鍵對不對） ════');
@@ -214,6 +240,91 @@ console.log('\n════ F4 班表重新發布後多久跟上 ════');
     [run(NEW, false), run(OLD, false)], [['18:00', '18:00', '18:00', '21:00'], ['18:00', '18:00', '18:00', '21:00']]);
   check('F4b', '整張超過 90000 字：舊版不快取、重新發布立刻讀到；新版跟不到 90000 時一樣最慢 5 分鐘（＝寬限、跨店補時現在的新鮮度）',
     [run(NEW, true), run(OLD, true)], [['18:00', '18:00', '18:00', '21:00'], ['18:00', '21:00', '21:00', '21:00']]);
+}
+
+{
+  // F4c（#238 審查第 1 輪擋項的函式層版本）：寬限先把 capgr1: 暖起來（讀到舊班），重新發布後補缺卡第一次讀 → 要讀到新班（跟舊版一樣）
+  const pubA = one(SH, 'E01', { 19: { t: 'W', s: 'A' } }), pubL = one(SH, 'E01', { 19: { t: 'W', s: 'L' } });
+  const run = (src) => {
+    const m = world(src, 'gf', { cap: '2', now: D + 'T19:00:00', pub: [['', 'T01', pubA]] });
+    m.sb.capGraceSched_('', 'T01');                           // 寬限（別人開頁／掃描）暖了 capgr1:
+    m.__sp.values[1][3] = JSON.stringify(pubL);               // 19:01 重新發布（A → L）
+    m.setNow(T(D + 'T19:02:00'));
+    return [fillAt(m, 'in', D + 'T09:00:00'), m.sb.capGraceSched_('', 'T01').rows[0].cells[19].s];
+  };
+  check('F4c★', '寬限先暖了快取、之後重新發布：補缺卡第一次讀到新班（21:00），跟舊版一樣；寬限自己那份照舊 5 分鐘內仍是舊班（A）',
+    [run(NEW), run(OLD)], [['21:00', 'A'], ['21:00', 'A']]);
+}
+
+console.log('\n════ F6 快取由誰、何時暖起（#238 審查第 1 輪擋項）：新版不可比舊版更常讀到舊班表 ════');
+const SP = R('apps-script/SchedPub.gs');
+const ME2 = { emp_id: 'E02', name: '測試二', key: 'K2', device_id: 'D2', active: 'TRUE', line_user_id: 'U2' };
+/** 經正式發布流程（handleSchedPublish_）發布光復 T01：甲（E01）當天班別 sid、乙（E02）排 A */
+function publish(m, sid, seq) {
+  const cells = (s0) => Array.from({ length: 28 }, (_, i) => (i === 19 ? { t: 'W', s: s0 } : { t: 'R' }));
+  const shifts = [{ id: 'A', name: '早', start: '09:00', end: '18:00' }, { id: 'P', name: '午', start: '14:00', end: '20:00' }, { id: 'Q', name: '晚', start: '18:00', end: '20:00' }];
+  const r = m.sb.handleSchedPublish_({ svcKey: 'SVC', v: 1, store: '', period: 'T01', seq, op_id: 'op' + seq, start: '2026-11-01', days: 28, shifts,
+    rows: [{ emp_id: 'E01', name: '測試一', cells: cells(sid) }, { emp_id: 'E02', name: '測試二', cells: cells('A') }] });
+  if (!r.ok) throw new Error('發布失敗 ' + JSON.stringify(r));
+}
+function pubWorld(src, cap, ev, now) {
+  const m = world(src, 'gf', { cap, now, ev, roster: [ME, ME2] });
+  m.props.SCHED_SVC_KEY = 'SVC'; m.run(SP);
+  return m;
+}
+{
+  // 審查重現：整張不到 90000 字、'2'。甲 09:00 上班、14:00 下班、20:00 下班（缺上班卡）；乙 08:00 上班還在上班（20:15 已滿 10）
+  const ev = [[D + 'T08:00:00', 'E02', 'in'], [D + 'T09:00:00', 'E01', 'in'], [D + 'T14:00:00', 'E01', 'out'], [D + 'T20:00:00', 'E01', 'out']];
+  const run = (src, cap) => {
+    const m = pubWorld(src, cap, ev, D + 'T19:30:00');
+    publish(m, 'P', 1);                                        // 甲 14:00–20:00
+    m.setNow(T(D + 'T20:15:00')); m.sb.capSweep();             // 掃描處理乙（寬限暖起 capgr1:）；甲最後一張是下班卡、這輪不檢查甲
+    m.setNow(T(D + 'T20:16:00')); publish(m, 'Q', 2);          // 甲改成 18:00–20:00
+    m.setNow(T(D + 'T20:17:00'));
+    const r = m.sb.handleLiffPunch_(Object.assign({ id_token: 'TOK_U1', type: 'in', confirm_same: true }, HERE));
+    return [r.status || (r.ok ? 'ok' : r.error), r.cap_locked ? 'locked' : ''];
+  };
+  const on = run(NEW, '2'), oo = run(OLD, '2'), n1 = run(NEW, '1'), o1 = run(OLD, '1');
+  check('F6a★', "掃描只暖寬限 → 正式重新發布 → 甲 20:17 按 LINE 上班：新版跟舊版一樣接受（不是 cap_locked）；'1' 也一樣",
+    [JSON.stringify(on) === JSON.stringify(oo), /locked/.test(JSON.stringify(on)), JSON.stringify(n1) === JSON.stringify(o1)], [true, false, true]);
+  show('F6a-v', '回應（新／舊，\'2\'）', { new: on, old: oo });
+}
+{
+  // 隨機時序：兩位同仁、開頁／掃描／按卡／正式重新發布任意交錯（整張不到 90000 字），每一步甲的判斷與回應新舊都要一樣
+  let sd = 4242; const r0 = () => { sd = (sd * 1103515245 + 12345) % 2147483648; return sd / 2147483648; };
+  const pick = (xs) => xs[Math.floor(r0() * xs.length)];
+  const OPS6 = ['sweep', 'st1', 'st2', 'pub', 'pub', 'in1', 'out1', 'today1', 'in2'];
+  const NB = 400;
+  let same = 0, pubs = 0; const bad = [];
+  for (let k = 0; k < NB; k++) {
+    const cap = pick(['1', '2']);
+    const ev = [[D + 'T08:00:00', 'E02', 'in'], [D + 'T09:00:00', 'E01', 'in']].concat(r0() < 0.5 ? [[D + 'T14:00:00', 'E01', 'out']] : []).concat(r0() < 0.6 ? [[D + 'T' + pick(['18', '19', '20']) + ':00:00', 'E01', 'out']] : []);
+    const start = T(D + 'T19:30:00'), N = pubWorld(NEW, cap, ev, D + 'T19:30:00'), O = pubWorld(OLD, cap, ev, D + 'T19:30:00');
+    let seq = 1, t = start, diff = null; const s0 = pick(['A', 'P', 'Q']); publish(N, s0, seq); publish(O, s0, seq);
+    const steps = [];
+    for (let i = 0, n = 4 + Math.floor(r0() * 6); i < n && !diff; i++) {
+      t += (1 + Math.floor(r0() * 4)) * 60000; N.setNow(t); O.setNow(t);
+      const o = pick(OPS6); steps.push(o);
+      const doOp = (m) => {
+        const sb = m.sb;
+        if (o === 'sweep') { sb.capSweep(); return null; }
+        if (o === 'st1' || o === 'st2') return sb.handleLiffStatus_({ id_token: o === 'st1' ? 'TOK_U1' : 'TOK_U2' });
+        if (o === 'pub') return null;
+        if (o === 'today1') { return sb.capOn_() ? sb.capTodayMs_(sb.getSS(), meRow(m), sb.__now) : 'off'; }
+        return sb.handleLiffPunch_(Object.assign({ id_token: o === 'in2' ? 'TOK_U2' : 'TOK_U1', type: o === 'out1' ? 'out' : 'in', confirm_same: true }, HERE));
+      };
+      if (o === 'pub') { seq++; pubs++; const sid = pick(['A', 'P', 'Q']); publish(N, sid, seq); publish(O, sid, seq); }
+      // 每一步只比回應與打卡列（不在中途另外叫補缺卡：那本身會把快取暖起來、把時序抹平）；最後才比一次甲的判斷
+      const rn = JSON.stringify(doOp(N)), ro = JSON.stringify(doOp(O));
+      if (rn !== ro) diff = o + ' 回應 ' + rn.slice(0, 160) + ' vs ' + ro.slice(0, 160);
+      else if (JSON.stringify(N.self.sh.events.values) !== JSON.stringify(O.self.sh.events.values)) diff = o + ' 打卡列不同';
+    }
+    if (!diff) { const jn = JSON.stringify(judge(N)), jo = JSON.stringify(judge(O)); if (jn !== jo) diff = '最後判斷 ' + jn.slice(0, 160) + ' vs ' + jo.slice(0, 160); }
+    if (diff) bad.push([k, cap, steps.join(','), diff]); else same++;
+  }
+  bad.slice(0, 3).forEach((x) => console.log('  ✗ ' + JSON.stringify(x)));
+  check('F6b★', '隨機時序 ' + NB + ' 串（開頁、掃描、按卡、今日出勤、正式重新發布任意交錯；\'1\'／\'2\'）：每一步回應、打卡列與最後甲的判斷新舊都一樣（CAP_FILL_NEW=ad022fc 時要抓到差異）', [same, bad.length], [NB, 0]);
+  show('F6b-c', '涵蓋：重新發布次數', pubs);
 }
 
 console.log('\n════ F5 手改 sched_pub 才會有的壞資料：大腦接受的已知差異共 6 類（4 類少補、2 類多補；釘住新版行為） ════');
