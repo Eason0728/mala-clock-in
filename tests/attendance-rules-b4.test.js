@@ -92,7 +92,8 @@ chk('15 分鐘內算有', C({ ot_own_h: { '2026-11-12': 10 }, ot_forms: { ot: { 
 chk('超過 15 分鐘算不足', C({ ot_own_h: { '2026-11-12': 10 }, ot_forms: { ot: { '2026-11-12': 1.5 }, trip: {} }, daily }).missing.length, 1);
 chk('沒超過 8H 不用單', C({ ot_own_h: { '2026-11-12': 8 }, ot_forms: { ot: {}, trip: {} }, daily }).missing, []);
 chk('沒帶資料不檢查', C({ daily }).missing, []);
-chk('平日出差有加班單列出', C({ ot_own_h: {}, ot_forms: { ot: { '2026-11-12': 2 }, trip: { '2026-11-12': true } }, daily }).trip_ot, ['2026-11-12']);
+chk('平日整天出差有加班單列出（2026-11-23 起只看整天出差）', C({ ot_own_h: { '2026-11-12': 8 }, ot_forms: { ot: { '2026-11-12': 2 }, trip: { '2026-11-12': true }, trip_h: { '2026-11-12': 8 } }, daily }).trip_ot, ['2026-11-12']);
+chk('平日出差＋上班有加班單不列（2026-11-23）', C({ ot_own_h: { '2026-11-12': 9 }, ot_forms: { ot: { '2026-11-12': 1 }, trip: { '2026-11-12': true }, trip_h: { '2026-11-12': 1 } }, daily }).trip_ot, []);
 chk('休息日出差可報加班', C({ ot_own_h: {}, ot_forms: { ot: { '2026-11-13': 2 }, trip: { '2026-11-13': true } }, daily }).trip_ot, []);
 
 // 2-8 曠職
