@@ -724,7 +724,7 @@ function applyScopeUi(){
   }
   const hide=el=>{ if(el) el.style.display='none'; };
   hide(document.querySelector('#nav button[data-p="group"]'));
-  hide($('storeCard')); hide($('holSync'));
+  hide($('storeCard')); if(HOLSYNC.hol_source!=='mini') hide($('holSync'));   // 只收推送時版本行要看得到（holMiniUi）
   hide($('bootstrapBtn'));   // 從打卡名冊建立：會把整個打卡名冊寫進主檔，限系統管理者（後端回 admin_only，fix2-3）
   SCOPE_OWN_IDS.forEach(id=>{ const e=$(id); if(e){ e.checked=true; e.disabled=true; } });
   if(typeof renderCfgScope==='function') renderCfgScope();
@@ -849,7 +849,7 @@ async function bootRun(){
   // ⚠ 門市下拉一定要在這裡先建好：若等到 loadMonth，該門市讀取失敗就會提早 return，
   //    下拉永遠是空的 → 使用者被鎖在壞掉的門市、切不回來（踩過）
   if(m.stores&&m.stores.length){STORE_LIST=m.stores;STORES_OK=true;renderStoreSel()}
-  applyHol(m.holidays);
+  applyHol(m.holidays,m);
   renderEmp(); renderCfg();
   applyScopeUi();
   await loadMonth(monP,monSeq,monGen);
@@ -3170,13 +3170,24 @@ async function saveCfg(btn,label,card){
    本月與未來的月份跟著行事曆走、已經過去的月份不動、補假不算國定假日、雙薪生效（2026-08）前不寫日期。
    頁面一打開就在背景同步一次（boot），同步到的月份如果正好是現在這個月而且還沒算過，會重載一次。 */
 let GOVNAMES={}, HOLSYNC={}, HOL_SYNCING=null;
-function applyHol(list){
+function applyHol(list,resp){   // resp＝整包回應（payroll_master_get／payroll_holiday_sync）：後端回 hol_source:'mini' 時換成「節日表由營運系統發布」的畫面
   HOL={}; HOLD={}; HOLSRC={}; HOLN={};
   // 紅字天數那格空白不顯示成 0（F17，2026-11-19：空白時計算會擋下）；null＝空白，其他照原樣給 renderHol 判斷
   const add=(k,h)=>{ const rv=h.red_days; HOL[k]=(rv==null||String(rv).trim()==='')?null:(isNaN(Number(String(rv).replace(/[\uFF10-\uFF19]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).trim()))?String(rv):n(rv)); HOLD[k]=String(h.dates||''); HOLN[k]=String(h.note||'');
     HOLSRC[k]=h._src==='own'?'own':'global'; };
   if(Array.isArray(list)) list.forEach(h=>{ if(h&&h.ym!=null) add(String(h.ym),h); });
   else if(list) Object.keys(list).forEach(k=>add(k,{red_days:list[k]}));   // 相容舊物件格式 {ym:red_days}
+  if(resp&&resp.hol_source==='mini') holMiniUi(resp);
+}
+/* 節日表改由營運系統發布（後端 PAY_HOL_SOURCE=mini 才會回 hol_source:'mini'，2026-11-24）：
+   說明段落換成新說法、紅字天數表上方顯示版本行；共用登入（有門市範圍、不呼叫 syncHol）也從 payroll_master_get 拿到同一份。開關預設時這裡不會被呼叫。 */
+const HOL_MINI_HINT='基本工時 ＝ (當月天數 − 紅字天數) × 每日工時。<br>紅字天數與國定假日由<b>營運系統的節日表</b>發布過來（照人事行政總處行事曆、人資主管確認後生效），薪資這邊不再自己抓、也不能手動改。已經過去、已鎖定的月份不會被改動。<br>國定假日碰到週末、有補假的，<b>雙薪算在補假那天</b>（例：國慶 10/10 週六 → 10/9 週五雙薪）。';
+function holMiniUi(r){
+  if(r!==HOLSYNC) HOLSYNC=Object.assign({},HOLSYNC,{hol_source:'mini',hol_pub:r.hol_pub||null,message:r.hol_message!=null?r.hol_message:(r.message||''),
+    names:r.names||{},moved:r.moved||{},double_from:r.double_from||HOLSYNC.double_from,status:[]});
+  GOVNAMES=HOLSYNC.names||{};
+  const h=$('holHint'); if(h) h.innerHTML=HOL_MINI_HINT;
+  const st=$('holSync'); if(st) st.style.display='';   // 共用登入原本把狀態列藏起來（舊的同步狀態它看不到）；只收推送時版本行大家都要看得到
 }
 function holDateList(k){
   // 存法＝逗號分隔（後端 payHolidayDates 用 [,，\s]+ 切）；舊資料寫成 2026/10/10 也轉成標準格式
@@ -3228,6 +3239,11 @@ function holSyncHtml(s){
   if(s&&s.hol_source==='mini'){
     const p=s.hol_pub, d=p&&/^\d{4}-\d{2}-\d{2}/.test(String(p.published_at||''))?String(p.published_at).slice(0,10):'';
     const ml=[p?`節日表版本 ${esc(p.version)}，營運系統 ${esc(d)} 發布`:'⚠ 節日表改由營運系統發布，薪資還沒有收到任何一版'];
+    const lg=(p&&p.lag)||{}, arr=x=>Array.isArray(x)?x.map(String):[];
+    const lagM=arr(lg.locked).concat(arr(lg.past),arr(lg.missing)).sort(), miss=arr(lg.missing).sort();
+    const lst=a=>a.slice(0,6).map(esc).join('、')+(a.length>6?' 等':'');
+    if(lagM.length) ml[0]+=`；其中 ${lagM.length} 個月因已鎖定或已經過去，沒有跟著這一版更新：${lst(lagM)}`;
+    if(miss.length) ml.push(`⚠ ${lst(miss)} 沒有節日資料、不能計算薪資（已經過去的月份不會自動補），請聯絡資訊部處理`);
     if(s.message) ml.push('⚠ '+esc(s.message));
     return ml.join('<br>');
   }
@@ -3242,17 +3258,16 @@ function holSyncHtml(s){
 async function syncHol(){
   if(HOL_SYNCING) return HOL_SYNCING;
   const ys=[new Date().getFullYear()];   // 只帶今年（Eason 2026-09-18：明年不用）
-  const st=$('holSync'); if(st) st.textContent='正在對照人事行政總處的辦公日曆表…';
+  const mini=HOLSYNC.hol_source==='mini';   // 開頁時 payroll_master_get 已經告訴我們是不是只收推送
+  const st=$('holSync'); if(st) st.textContent=mini?'正在讀取節日表…':'正在對照人事行政總處的辦公日曆表…';
   HOL_SYNCING=(async()=>{
     if(WRITING>0) await writeIdle();   // 規則二：背景同步等寫入結束再開始
     const hs=STORE;
     const r=await post('payroll_holiday_sync',{years:ys,operator:'auto (薪資頁開啟)'});
-    if(!r.ok){ if(st) st.textContent='⚠ 暫時連不上人事行政總處，先顯示目前的資料；重新整理會再試一次'; return; }
+    if(!r.ok){ if(st) st.textContent=mini?'⚠ 暫時讀不到節日表，先顯示目前的資料；重新整理會再試一次':'⚠ 暫時連不上人事行政總處，先顯示目前的資料；重新整理會再試一次'; return; }
     if(WRITING>0) await writeIdle();
     const staleStore=(STORE!==hs);   // 等的期間切了店：這份紅字天數是舊店的，不套到新店畫面；但下面對「目前」店月的重載判斷照做
-    if(!staleStore){ HOLSYNC=r; GOVNAMES=r.names||{}; applyHol(r.holidays); }
-    // 節日表改由營運系統發布（只有後端回 hol_source:'mini' 才換說明；沒開時說明照舊）
-    if(r.hol_source==='mini'&&$('holHint')) $('holHint').innerHTML='基本工時 ＝ (當月天數 − 紅字天數) × 每日工時。<br>紅字天數與國定假日由<b>營運系統的節日表</b>發布過來（照人事行政總處行事曆、人資主管確認後生效），薪資這邊不再自己抓、也不能手動改。已經過去、已鎖定的月份不會被改動。<br>國定假日碰到週末、有補假的，<b>雙薪算在補假那天</b>（例：國慶 10/10 週六 → 10/9 週五雙薪）。';
+    if(!staleStore){ HOLSYNC=r; GOVNAMES=r.names||{}; applyHol(r.holidays,r); }
     if(r.changed&&r.changed.length){
       toast('已依人事行政總處自動帶入紅字天數：'+r.changed.join('、'));
       // 正在看的月份剛被補上、又還沒算過 → 重載一次，才會自動試算

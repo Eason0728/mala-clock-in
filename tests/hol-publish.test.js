@@ -237,7 +237,7 @@ console.log('\n══ 6) 只收推送時：薪資頁同步、算薪、手動覆�
   const s = env({ props: MINI }), b = JSON.stringify(s.hol());
   let r = J(s.H.payroll_holiday_sync({ admin_key: KEY, years: [2026], operator: 'auto', store: 'SSLGF' }));
   eq([r.ok, r.changed, r.status, r.hol_source, r.hol_pub, s.__FETCH], [true, [], [], 'mini', null, 0], '開薪資頁：不連人事行政總處、hol_pub＝null');
-  eq(r.message, '節日表改由營運系統發布，但薪資還沒有收到任何一版；請先到營運系統確認並發布節日表。', '還沒收到任何一版的提示');
+  eq(r.message, '請先到營運系統確認並發布節日表。', '還沒收到任何一版的提示（版本行另寫「還沒有收到任何一版」）');
   eq(r.holidays.map((h) => h.ym), ['2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11', '2026-12'], '照樣回分頁現況給畫面');
   untouched(s, b, '只收推送時開薪資頁');
   eq(J(s.H.payroll_holiday_sync({ admin_key: 'x', years: [2026] })).error, 'unauthorized', '金鑰錯照舊 unauthorized');
@@ -268,6 +268,37 @@ console.log('\n══ 6) 只收推送時：薪資頁同步、算薪、手動覆�
     [true, 2, [['2026-10', 'HQ', 11, '2026-10-09, 2026-10-26', 11, true], ['2026-12', 'CF', 10, '2026-12-25', 9, false]]], '本店專屬清單：列出兩筆、標出跟集團列是否相同');
   eq([JSON.stringify(so.hol()) === bo, so.__W, so.__DATA.audit.length, so.__PROPW, so.__PROPR - rp], [true, 0, 0, [], 0], '本店專屬清單唯讀：不寫分頁、稽核、屬性，也不讀屬性');
   eq(J(so.H.payroll_holiday_own_list({ admin_key: 'x' })).error, 'unauthorized', '本店專屬清單要管理金鑰');
+}
+
+console.log('\n══ 6b) 只收推送、已經過去的月份缺列（凍結：推送不補）══');
+{
+  // 今天 2026-12，分頁沒有 2026-09
+  const s = env({ props: MINI, nowYm: '2026-12', holiday: PROD().filter((x) => x.ym !== '2026-09') });
+  const r = s.pub(push());
+  eq([r.ok, r.past_missing, !!s.row('2026-09')], [true, ['2026-09'], false], '推送回 past_missing:[2026-09]、不補');
+  eq(JSON.parse(s.__PROPS.PAY_HOL_PUB).lag, { locked: [], past: [], missing: ['2026-09'] }, '沒跟上的月份記在版本紀錄（給畫面）');
+  const c = J(s.H.payroll_calc({ admin_key: KEY, ym: '2026-09', store: 'SSLGF', inputs: {} }));
+  eq([c.ok, c.error, c.hol_past, s.__FETCH], [false, 'no_holiday', true, 0], '算 2026-09：擋下、標出是已經過去的月份、不連外');
+  eq(c.message, '薪資計算（2026-09）：這個月已經過去，節日表不會自動補上這個月的紅字天數與國定假日，這次沒有計算。請聯絡資訊部處理。', '過去月份缺資料的提示：不叫人去營運系統發布');
+  const c2 = J(s.H.payroll_calc({ admin_key: KEY, ym: '2028-02', store: 'SSLGF', inputs: {} }));
+  eq([c2.error, c2.hol_past, /請先到營運系統確認並發布 2028 年節日表/.test(c2.message)], ['no_holiday', undefined, true], '未來月份缺資料：照舊請營運系統發布');
+  for (const ym of ['2026-10', '2026-12', '2027-02']) {
+    const ck = J(s.H.payroll_calc({ admin_key: KEY, ym, store: 'SSLGF', inputs: {} }));
+    eq([ck.ok, ck.error], [true, undefined], '其他月份（' + ym + '）照常算得出來');
+  }
+  const y = J(s.H.payroll_holiday_sync({ admin_key: KEY, years: [2026], store: 'SSLGF' }));
+  eq([y.hol_pub.lag.missing, y.hol_missing], [['2026-09'], ['2026-09']], '開薪資頁：版本資料帶出 2026-09 沒跟上、今年缺 2026-09');
+  const m = J(s.H.payroll_master_get({ admin_key: KEY, store: 'SSLGF' }));
+  eq([m.ok, m.hol_source, m.hol_pub.version, m.hol_pub.lag.missing, m.hol_missing, m.double_from, typeof m.names], [true, 'mini', '2027-1', ['2026-09'], ['2026-09'], '2026-08', 'object'], 'payroll_master_get（共用登入也讀）帶同一份版本資料');
+  // reapply 也更新沒跟上的月份
+  s.__DATA.holiday.push(G('2026-09', 10, '2026-09-25, 2026-09-28'));
+  const r2 = s.pub(push({ reapply: true }));
+  eq([r2.past_missing, JSON.parse(s.__PROPS.PAY_HOL_PUB).lag.missing, JSON.parse(s.__PROPS.PAY_HOL_PUB).version], [[], [], '2027-1'], 'reapply：資訊部補好之後重套，沒跟上的月份清掉、版本不變');
+}
+{
+  const g = env({});
+  const m = J(g.H.payroll_master_get({ admin_key: KEY, store: 'SSLGF' }));
+  eq(Object.keys(m).filter((k) => /^hol_|^names$|^moved$|^double_from$/.test(k)), [], '開關預設：payroll_master_get 沒有多任何欄位');
 }
 
 console.log('\n══ 7) 開關預設時：既有動作的行為照舊（細部對照在 hol-publish-equiv）══');

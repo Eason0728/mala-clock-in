@@ -130,6 +130,7 @@ function runAll(s, how) {
     const month = s.post('handlePayrollMonth', { ym, store: st.code });
     out.calc[k] = { inputs, calc, run, item, month };
   }));
+  out.master = STORES.map((st) => s.post('handlePayrollMasterGet', { store: st.code }));
   out.auditAfter = J(s.__DATA.audit).filter((a) => a.action !== 'holiday_sync' && a.action !== 'holiday_publish');
   out.fetchAfter = s.__FETCH.length - out.pre.fetch.length;
   return out;
@@ -163,6 +164,8 @@ function sameAs(B, label, opt) {
   const diff = KEYS.filter((k) => JSON.stringify(B.calc[k]) !== JSON.stringify(A.calc[k]));
   eq(diff, [], label + `：${KEYS.length} 組（4 單位 × 8 個月）inputs／calc／run／item／month 逐字相同`);
   eq(B.auditAfter, A.auditAfter, label + '：試算期間其他稽核相同');
+  const strip = (m) => { const o = Object.assign({}, m); ['hol_source', 'hol_pub', 'hol_message', 'hol_missing', 'names', 'moved', 'double_from'].forEach((k) => { if (opt.skipPre) delete o[k]; }); return o; };
+  eq(B.master.map(strip), A.master, label + '：4 單位 payroll_master_get 逐字相同' + (opt.skipPre ? '（扣掉只收推送多帶的版本欄位）' : ''));
   eq(B.fetchAfter, A.fetchAfter, label + '：試算期間對外連線次數相同（' + A.fetchAfter + '）');
 }
 

@@ -3615,11 +3615,14 @@ function handlePayrollBootstrap(body) {
 function handlePayrollMasterGet(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   const stG = payStore(body.store);
-  return { ok: true, store: stG,
+  const out = { ok: true, store: stG,
            master: payRead('master').filter(function (m) { return payStore(m.store) === stG; }),
            config: payConfig(stG), config_src: payConfigSource(stG),
            stores: payRead('store').filter(function (x) { return String(x.active).toLowerCase() !== 'false'; }),
            holidays: payHolidayList(stG) };
+  // 節日表改由營運系統發布（PAY_HOL_SOURCE=mini）：多帶版本與顯示資料，讓不呼叫 payroll_holiday_sync 的共用登入（有門市範圍）也看得到版本行；開關預設時回應不變
+  if (payHolSource_() === 'mini') Object.assign(out, payHolMiniInfo_(out.holidays, [Number(currentYmTaipei().slice(0, 4))]));
+  return out;
 }
 /** 本店本月的選舉假名單（給薪資頁卡片，只隨 payroll_month 回）：只回認得的那一個日期的列；沒有回 null。不回姓名（畫面用主檔對）。 */
 function payHolEmpFor_(st, ym) {
@@ -4220,10 +4223,16 @@ function handlePayrollHolidayPublish(body) {
   };
   if (dry) work();
   else if (!payWriteLocked_(['holiday', 'run'], work)) return PAY_BUSY_;
+  // 這次沒跟上這一版的月份（已鎖定、已經過去內容不同、已經過去缺列）：記下來給薪資頁版本行顯示
+  const lag = plan ? { locked: plan.skipped_locked, past: plan.skipped_past, missing: plan.past_missing } : null;
+  if (wrote && same) {   // reapply：版本不變，只更新「沒跟上的月份」
+    const st1 = Object.assign({}, st0, { lag: lag });
+    PropertiesService.getScriptProperties().setProperty(PAY_HOL_PUB_PROP_, JSON.stringify(st1));
+  }
   if (wrote && !same) {   // 分頁與稽核都寫好了才記版本（記版本失敗：下次同版本重送會再比一次、補記，不會重複改分頁）
     const props = PropertiesService.getScriptProperties();
     props.setProperty(PAY_HOL_PUB_PROP_, JSON.stringify({ version: chk.version, hash: chk.hash, published_at: chk.meta.published_at,
-      confirmed_by: chk.meta.confirmed_by, source: chk.meta.source, received_at: nowTaipeiIso(), years: chk.years }));
+      confirmed_by: chk.meta.confirmed_by, source: chk.meta.source, received_at: nowTaipeiIso(), years: chk.years, lag: lag }));
     let v = JSON.stringify(chk.view);
     if (v.length > 8500) v = JSON.stringify({ moved: chk.view.moved });   // 屬性單格上限約 9KB；名稱放不下就只留補假對照
     if (v.length > 8500) v = '{}';
@@ -4239,23 +4248,34 @@ function handlePayrollHolidayPublish(body) {
   return res;
 }
 
-/** payroll_holiday_sync 在 PAY_HOL_SOURCE=mini 時：不連外、不寫，只回分頁現況＋收到的版本（回應形狀同現行，多 hol_source／hol_pub／hol_missing）。 */
-function payHolSyncMini_(years, body) {
-  const st = payStore(body.store);
-  const pub = payHolPubState_(), view = payHolPubView_();
-  const list = payHolidayList(st), has = {};
-  list.forEach(function (h) { has[String(h.ym)] = true; });
+/** 只收推送時某月沒有節日資料的回應（算薪用）。ym 已經過去＝推送不會補（凍結），請資訊部處理；本月或未來＝請營運系統發布。 */
+function payHolNoRowMsg_(ym, nowYm) {
+  if (String(ym) < String(nowYm)) return { ok: false, error: 'no_holiday', hol_source: 'mini', hol_past: true,
+    message: '薪資計算（' + ym + '）：這個月已經過去，節日表不會自動補上這個月的紅字天數與國定假日，這次沒有計算。請聯絡資訊部處理。' };
+  return { ok: false, error: 'no_holiday', hol_source: 'mini',
+    message: '薪資計算（' + ym + '）：還沒有這個月的節日資料，這次沒有計算。請先到營運系統確認並發布 ' + String(ym).slice(0, 4) + ' 年節日表，再重新計算。' };
+}
+/** 只收推送時給畫面的資料（payroll_holiday_sync、payroll_master_get 共用）：list＝該店有效的紅字天數清單；years＝要檢查缺列的年份。 */
+function payHolMiniInfo_(list, years) {
+  const pub = payHolPubState_(), view = payHolPubView_(), has = {};
+  (list || []).forEach(function (h) { has[String(h.ym)] = true; });
   const missing = [];
   years.forEach(function (y) { for (let m = 1; m <= 12; m++) { const k = y + '-' + ('0' + m).slice(-2); if (k >= PAY_HOL_SYNC_FROM && !has[k]) missing.push(k); } });
   const nowYm = currentYmTaipei();
   let msg = '';
-  if (!pub) msg = '節日表改由營運系統發布，但薪資還沒有收到任何一版；請先到營運系統確認並發布節日表。';
+  if (!pub) msg = '請先到營運系統確認並發布節日表。';   // 版本行已經寫「還沒有收到任何一版」
   else if (!has[nowYm]) msg = '還沒有 ' + nowYm + ' 的節日資料，這個月不能計算薪資；請先到營運系統確認並發布 ' + nowYm.slice(0, 4) + ' 年節日表。';
-  return { ok: true, changed: [], status: [], names: view.names || {}, moved: view.moved || {},
-           skipped_locked: [], message: msg, sync_from: PAY_HOL_SYNC_FROM, double_from: PAY_HOL_DOUBLE_FROM,
-           holidays: list, hol_source: 'mini',
-           hol_pub: pub ? { version: pub.version, published_at: pub.published_at, confirmed_by: pub.confirmed_by || '', source: pub.source || '', received_at: pub.received_at || '' } : null,
-           hol_missing: missing };
+  const lag = pub && pub.lag && typeof pub.lag === 'object' ? pub.lag : null;
+  return { hol_source: 'mini', names: view.names || {}, moved: view.moved || {}, double_from: PAY_HOL_DOUBLE_FROM, hol_message: msg, hol_missing: missing,
+           hol_pub: pub ? { version: pub.version, published_at: pub.published_at, confirmed_by: pub.confirmed_by || '', source: pub.source || '', received_at: pub.received_at || '',
+                            lag: { locked: (lag && lag.locked) || [], past: (lag && lag.past) || [], missing: (lag && lag.missing) || [] } } : null };
+}
+/** payroll_holiday_sync 在 PAY_HOL_SOURCE=mini 時：不連外、不寫，只回分頁現況＋收到的版本（回應形狀同現行，多 hol_source／hol_pub／hol_missing）。 */
+function payHolSyncMini_(years, body) {
+  const list = payHolidayList(payStore(body.store)), info = payHolMiniInfo_(list, years);
+  return { ok: true, changed: [], status: [], names: info.names, moved: info.moved,
+           skipped_locked: [], message: info.hol_message, sync_from: PAY_HOL_SYNC_FROM, double_from: PAY_HOL_DOUBLE_FROM,
+           holidays: list, hol_source: 'mini', hol_pub: info.hol_pub, hol_missing: info.hol_missing };
 }
 
 /** {action:'payroll_holiday_own_list', admin_key} → 現有的「本店專屬」紅字天數列（唯讀，給主管看；第 4 題：舊的不動、列出來）。
@@ -5066,8 +5086,8 @@ function handlePayrollCalc(body) {
 
   let holiday = payHolidayRow(ym, payStore(body.store));
   // 節日表改由營運系統發布（PAY_HOL_SOURCE=mini）時不自己同步：缺列就說清楚要去營運系統發布，不當成沒有節日（開關沒開時這一行不成立、照舊）
-  if (!holiday && payHolSource_() === 'mini') return { ok: false, error: 'no_holiday', hol_source: 'mini',
-    message: '薪資計算（' + ym + '）：還沒有這個月的節日資料，這次沒有計算。請先到營運系統確認並發布 ' + ym.slice(0, 4) + ' 年節日表，再重新計算。' };
+  //   已經過去的月份：推送依規則不補（已過去月份凍結），叫人去營運系統發布也補不回來 → 請資訊部處理（docs/holiday-publish/README.md 附錄 B）
+  if (!holiday && payHolSource_() === 'mini') return payHolNoRowMsg_(ym, currentYmTaipei());
   if (!holiday) {   // 紅字天數改成自動帶入（2026-09-18）：沒有就先依人事行政總處同步該年再找一次
     try { payHolidaySync([Number(ym.slice(0, 4))]); } catch (e) { Logger.log('holiday sync in calc: ' + e); }
     holiday = payHolidayRow(ym, payStore(body.store));
