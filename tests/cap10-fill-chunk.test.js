@@ -5,10 +5,10 @@
  *      孤單上班卡找開始差 2 小時內的時段、用它的結束；孤單下班卡找結束差 2 小時內的、用它的開始；凌晨 06:00 以前的下班卡算前一天。別家店的卡不補。
  *   2. 原本班表整張 sched_pub 一個快取鍵（capsched:v1），整張超過 90000 字就不快取 → 每次要補都重讀整張；
  *      改成跟班表寬限（#232）、跨店補時（#234）同一份「店＋期」分塊快取（capgr1:），5 分鐘。
- *   3. 正常資料（正式發布流程 SchedPub.gs 寫出來的）補出來的時間、收卡結果逐筆相同；只有手改 sched_pub 分頁造出的五種壞資料不同（F5，大腦已接受）。
+ *   3. 正常資料（正式發布流程 SchedPub.gs 寫出來的）補出來的時間、收卡結果逐筆相同；只有手改 sched_pub 分頁造出的壞資料不同：已知 6 類（4 類少補、2 類多補；F5，大腦已接受）。
  * 手算：
  *   F3 金山（mzt）本人 E01：光復那列排 A 09–18、金山那列排 L 09–21；09:00 上班沒下班 → 金山補到 21:00（讀金山那塊），不是 18:00。
- *   F5-4 班表列有 null：09:00、17:30 兩張上班卡、班表 A 09–18，19:05 開頁：舊版整期讀列丟錯 → 09:00 那張孤單、只算 17:30–19:00＝1.5 小時、不鎖；
+ *   F5-5x 班表列有 null：09:00、17:30 兩張上班卡、班表 A 09–18，19:05 開頁：舊版整期讀列丟錯 → 09:00 那張孤單、只算 17:30–19:00＝1.5 小時、不鎖；
  *        新版跳過 null 列 → 09:00–17:30＝8.5 ＋ 1.5＝10 → 19:00 收卡、鎖。
  * 舊版＝git show ${CAP_FILL_BASE:-0bf30bd}:apps-script/Cap10.gs（這次改之前的主線）。 */
 'use strict';
@@ -62,7 +62,8 @@ function judge(m) {
   const ev = sb.capEventsFor_(ss, me, now, null);
   const r = sb.capJudge_(ev, now, sb.capMakeFill_(me.emp_id), sb.capBreak_(), sb.capLeavesFor_(ss, me, now));
   const segs = sb.capSegs_(ev, now, sb.capMakeFill_(me.emp_id));
-  return { r, filled: (segs.segs || []).filter((x) => x.filled).length };
+  const dawn = (segs.segs || []).filter((x) => x.filled && /^05:/.test(hmOf(x.out))).length;   // 清晨 05:00–05:59 的下班卡補出來的段（06:00 前算前一天）
+  return { r, filled: (segs.segs || []).filter((x) => x.filled).length, dawn };
 }
 
 console.log('\n════ F1 正常資料：新舊兩版逐筆相同（開關 \'1\'、\'2\' 各跑；隨機串） ════');
@@ -87,35 +88,43 @@ function genChain(cap) {
   const day = pk([D, D, '2026-11-29']);                       // 11-29＝T02 第一天（前一天 11-28 是 T01 最後一格）：跨期
   const per = day === D ? 'T01' : 'T02', idx = day === D ? 19 : 0, prevPer = 'T01', prevIdx = day === D ? 18 : 27;
   const rs = ri(24, 60) * 15, len = ri(16, 48) * 15;          // 隨機班別 06:00–15:00 開始、4–12 小時
-  const shifts = SH.concat([{ id: 'X', name: '隨機', start: hm(rs), end: hm((rs + len) % 1440) }]);
-  const cell = () => { const r = rnd(); if (r < 0.15) return { t: 'R' }; if (r < 0.2) return { t: 'H', s: pk(['A', 'L']) }; if (r < 0.25) return { t: 'W', s: 'Q' }; return { t: 'W', s: pk(['A', 'N', 'S', 'L', 'X']) }; };
+  const shifts = SH.concat([{ id: 'X', name: '隨機', start: hm(rs), end: hm((rs + len) % 1440) }, { id: 'M', name: '大夜', start: '20:00', end: '05:30' }]);
+  const cell = () => { const r = rnd(); if (r < 0.15) return { t: 'R' }; if (r < 0.2) return { t: 'H', s: pk(['A', 'L']) }; if (r < 0.25) return { t: 'W', s: 'Q' }; return { t: 'W', s: pk(['A', 'N', 'S', 'L', 'X', 'M']) }; };
   const pub = [];
+  const dawnOut = rnd() < 0.35;                                // 清晨 05:00–06:00 的孤單下班卡（06:00 前算前一天，前一天排大夜 20:00–05:30 才補得到）
   const mine = {}; mine[idx] = cell();
-  const prev = {}; prev[prevIdx] = cell();
+  const prev = {}; prev[prevIdx] = dawnOut && rnd() < 0.7 ? { t: 'W', s: 'M' } : cell();
   if (per === prevPer) { Object.assign(mine, prev); if (rnd() > 0.1) pub.push([alias, per, one(shifts, 'E01', mine)]); }
   else { if (rnd() > 0.1) pub.push([alias, per, one(shifts, 'E01', mine)]); if (rnd() > 0.1) pub.push([alias, prevPer, one(shifts, 'E01', prev)]); }
   const o2 = {}; o2[idx] = { t: 'W', s: 'L' };
-  pub.push([other, per, one(SH, 'E01', o2)]);                  // 另一家店同工號排別的班（鍵對錯就會補錯）
+  const oth = one(SH, 'E01', o2);                              // 另一家店同工號排別的班（鍵對錯就會補錯）
+  oth.rows.push({ emp_id: 'B07', name: '測試一', cells: cellsOf(Object.fromEntries([[idx, { t: 'W', s: 'A' }]])) });   // 另一家店也排了本人（B07）：跨店補時開著就補得到那張卡；'1'／'2' 照舊不補
+  pub.push([other, per, oth]);
   if (rnd() < 0.25) for (let k = 0; k < 6; k++) pub.push(BIG(k));   // 整張超過 90000 字：舊版每次重讀整張
   const ev = [], base = T(day + 'T00:00:00');
   let t = base - 18 * 3600000 + ri(0, 20) * 900000;
   for (let i = 0, n = ri(1, 4); i < n; i++) { ev.push([iso(t), 'E01', pk(['in', 'in', 'out'])]); t += ri(1, 40) * 900000; }
-  const pev = rnd() < 0.3 ? [[iso(base + ri(28, 60) * 900000), 'B07', 'in']] : [];
+  if (dawnOut) { ev.push([iso(base + ri(301, 359) * 60000), 'E01', 'out']); ev.sort((a, b) => T(a[0]) - T(b[0])); t = Math.max(t, base + 360 * 60000); }
+  const pev = rnd() < 0.3 ? [[iso(base + 9 * 3600000 + ri(-4, 4) * 900000), 'B07', 'in']] : [];   // 07:00–11:00 在另一家店上班（那家店班表 A 09–18）
   let now = Math.max(t, base + ri(56, 84) * 900000);
   const steps = [];
   for (let i = 0, n = ri(3, 6); i < n; i++) { steps.push([now, pk(OPS)]); now += ri(1, 40) * 60000; }
-  return { view, opt: { cap, ev: ev.filter((e) => T(e[0]) <= steps[0][0]), pev, pub, now: iso(steps[0][0]) }, steps, big: pub.length > 6 };
+  return { view, opt: { cap, ev: ev.filter((e) => T(e[0]) <= steps[0][0]), pev, pub, now: iso(steps[0][0]) }, steps, big: pub.length > 6, peerCode: view === 'gf' ? 'mzt' : 'gf' };
 }
 function runChains(srcNew, n, cap) {
-  let same = 0, filled = 0, bigN = 0, ops = 0; const bad = [];
+  let same = 0, filled = 0, bigN = 0, ops = 0, dawn = 0, peerOk = 0; const bad = [];
   for (let k = 0; k < n; k++) {
     const c = genChain(cap), N = world(srcNew, c.view, c.opt), O = world(OLD, c.view, c.opt);
     if (c.big) bigN++;
+    if (c.opt.pev.length) {   // 前提確認（另開一份，不碰 N／O 的快取）：跨店補時版（帶姓名）補得到別家店那張卡＝「別家店補卡會成功」的情境真的有出現
+      const P = world(srcNew, c.view, c.opt);
+      if (P.sb.capMakeFillAll_(meRow(P))('in', { ms: T(c.opt.pev[0][0]), store: c.peerCode })) peerOk++;
+    }
     let diff = null;
     for (const [t, o] of c.steps) {
       N.setNow(t); O.setNow(t); ops++;
       const jn = judge(N), jo = judge(O);
-      filled += jn.filled ? 1 : 0;
+      filled += jn.filled ? 1 : 0; dawn += jn.dawn ? 1 : 0;
       const rn = JSON.stringify(op(N, o)), ro = JSON.stringify(op(O, o));
       if (JSON.stringify(jn) !== JSON.stringify(jo)) diff = 'judge ' + JSON.stringify(jn.r) + ' vs ' + JSON.stringify(jo.r);
       else if (rn !== ro) diff = o + ' 回應 ' + rn + ' vs ' + ro;
@@ -125,7 +134,7 @@ function runChains(srcNew, n, cap) {
     }
     if (!diff) same++;
   }
-  return { same, bad, filled, bigN, ops };
+  return { same, bad, filled, bigN, ops, dawn, peerOk };
 }
 const N1 = 300;
 const res = {};
@@ -133,9 +142,11 @@ const res = {};
   const r = runChains(NEW, N1, cap); res[cap] = r;
   r.bad.slice(0, 3).forEach((x) => console.log('  ✗ ' + JSON.stringify(x)));
   check('F1-' + cap, "開關 '" + cap + "'：隨機 " + N1 + " 串（開頁、掃描、LINE／舊連結上下班、今日出勤），每一步的判斷、回應、打卡列、屬性都跟舊版相同", [r.same, r.bad.length], [N1, 0]);
-  show('F1-' + cap + 'c', '涵蓋：步數、有用班表補出時段的步數、整張超過 90000 字的串數', { ops: r.ops, filled: r.filled, big: r.bigN });
+  show('F1-' + cap + 'c', '涵蓋：步數、有用班表補出時段的步數、清晨 05 點多下班卡補出的步數、整張超過 90000 字的串數、別家店那張卡跨店補時版補得到的串數', { ops: r.ops, filled: r.filled, dawn: r.dawn, big: r.bigN, peerOk: r.peerOk });
 });
-check('F1c', '涵蓋夠：兩個開關合計補出時段的步數 ≥ 300、超過 90000 字的串 ≥ 100', [res['1'].filled + res['2'].filled >= 300, res['1'].bigN + res['2'].bigN >= 100], [true, true]);
+const sum = (k) => res['1'][k] + res['2'][k];
+check('F1c', '涵蓋夠：補出時段的步數 ≥ 300、清晨 05 點多下班卡補出 ≥ 50 步、超過 90000 字的串 ≥ 100、別家店補卡會成功的串 ≥ 50（兩個開關合計）',
+  [sum('filled') >= 300, sum('dawn') >= 50, sum('bigN') >= 100, sum('peerOk') >= 50], [true, true, true, true]);
 {
   // 反向對照：比對工具要抓得到差異（把「差 2 小時內」故意改成 1 小時）
   const broken = NEW.replace('var CAP_SCHED_TOL_MIN = 120;', 'var CAP_SCHED_TOL_MIN = 60;');
@@ -205,29 +216,46 @@ console.log('\n════ F4 班表重新發布後多久跟上 ════');
     [run(NEW, true), run(OLD, true)], [['18:00', '18:00', '18:00', '21:00'], ['18:00', '21:00', '21:00', '21:00']]);
 }
 
-console.log('\n════ F5 手改 sched_pub 才會有的壞資料：大腦接受的五種差異（釘住新版行為） ════');
+console.log('\n════ F5 手改 sched_pub 才會有的壞資料：大腦接受的已知差異共 6 類（4 類少補、2 類多補；釘住新版行為） ════');
 {
   const row = (map) => ({ emp_id: 'E01', name: '測試一', cells: cellsOf(map) });
-  const A19 = { 19: { t: 'W', s: 'A' } };
+  const A19 = { 19: { t: 'W', s: 'A' } }, S19 = { 19: { t: 'W', s: 'S' } };
+  const P = (shifts, rows) => ({ start: '2026-11-01', shifts, rows });
+  const good = ['', 'T01', one(SH, 'E01', A19)];
   const cases = [
-    ['F5-1', '分段班其中一段缺下班時間', [['', 'T01', { start: '2026-11-01', shifts: [{ id: 'S', start: '09:00', end: '20:00', segs: [{ start: '09:00', end: '13:00' }, { start: '16:00' }] }], rows: [row({ 19: { t: 'W', s: 'S' } })] }]], '13:00', null, '少補'],
-    ['F5-2', '班別時間是數字（9、18）', [['', 'T01', { start: '2026-11-01', shifts: [{ id: 'A', start: 9, end: 18 }], rows: [row(A19)] }]], '18:00', null, '少補'],
-    ['F5-3', '班別清單混了數字', [['', 'T01', { start: '2026-11-01', shifts: [5, { id: 'A', start: '09:00', end: '18:00' }], rows: [row(A19)] }]], '18:00', null, '少補'],
-    ['F5-4', '班表列有 null', [['', 'T01', { start: '2026-11-01', shifts: SH, rows: [null, row(A19)] }]], null, '18:00', '多補'],
-    ['F5-5', '同店同期兩列、後面那列 rows 不是陣列', [['', 'T01', one(SH, 'E01', A19)], ['', 'T01', { start: '2026-11-01', shifts: SH, rows: {} }]], null, '18:00', '多補'],
+    // 第 1 類（少補）分段班其中一段缺欄
+    ['F5-1', '第 1 類：分段班其中一段缺下班時間', [['', 'T01', P([{ id: 'S', start: '09:00', end: '20:00', segs: [{ start: '09:00', end: '13:00' }, { start: '16:00' }] }], [row(S19)])]], '13:00', null],
+    // 第 2 類（少補）時間或代號型別不對
+    ['F5-2a', '第 2 類：班別時間是數字（9、18）', [['', 'T01', P([{ id: 'A', start: 9, end: 18 }], [row(A19)])]], '18:00', null],
+    ['F5-2b', '第 2 類：分段的開始／結束是數字', [['', 'T01', P([{ id: 'S', start: '09:00', end: '20:00', segs: [{ start: 9, end: 13 }, { start: 16, end: 20 }] }], [row(S19)])]], '13:00', null],
+    ['F5-2c', '第 2 類：分段班的班別開始／結束是數字（分段是字串）', [['', 'T01', P([{ id: 'S', start: 9, end: 20, segs: [{ start: '09:00', end: '13:00' }, { start: '16:00', end: '20:00' }] }], [row(S19)])]], '13:00', null],
+    ['F5-2d', '第 2 類：班別代號是布林（格子 s 也是 true）', [['', 'T01', P([{ id: true, start: '09:00', end: '18:00' }], [row({ 19: { t: 'W', s: true } })])]], '18:00', null],
+    // 第 3 類（少補）班別清單混了非物件
+    ['F5-3', '第 3 類：班別清單混了數字', [['', 'T01', P([5, { id: 'A', start: '09:00', end: '18:00' }], [row(A19)])]], '18:00', null],
+    // 第 4 類（少補）列的 cells 是物件不是陣列
+    ['F5-4', '第 4 類：列的 cells 是物件（{"19":{…}}）不是陣列', [['', 'T01', P(SH, [{ emp_id: 'E01', name: '測試一', cells: { 19: { t: 'W', s: 'A' } } }])]], '18:00', null],
+    // 第 5 類（多補）班表列有 null
+    ['F5-5', '第 5 類：班表列有 null', [['', 'T01', P(SH, [null, row(A19)])]], null, '18:00'],
+    // 第 6 類（多補）同店同期兩列、後列新版讀不出來 → 新版改用前列
+    ['F5-6a', '第 6 類：同店同期兩列、後列 rows 不是陣列（{}）', [good, ['', 'T01', P(SH, {})]], null, '18:00'],
+    ['F5-6b', '第 6 類：同店同期兩列、後列整格是 null', [good, ['', 'T01', 'null']], null, '18:00'],
+    ['F5-6c', '第 6 類：同店同期兩列、後列整格是 []', [good, ['', 'T01', '[]']], null, '18:00'],
+    ['F5-6d', '第 6 類：同店同期兩列、後列整格是字串 "x"', [good, ['', 'T01', '"x"']], null, '18:00'],
+    ['F5-6e', '第 6 類：同店同期兩列、後列整格是 {}（沒有 rows）', [good, ['', 'T01', '{}']], null, '18:00'],
+    ['F5-6f', '第 6 類：同店同期兩列、後列班別清單有 null', [good, ['', 'T01', P([null, SH[3]], [row({ 19: { t: 'W', s: 'L' } })])]], null, '18:00'],
+    ['F5-6g', '第 6 類：同店同期兩列、後列班別清單混數字（舊版照後列的 L 班補、新版改用前列的 A 班）', [good, ['', 'T01', P([5, SH[3]], [row({ 19: { t: 'W', s: 'L' } })])]], '21:00', '18:00'],
   ];
-  cases.forEach(([id, desc, pub, oldV, newV, dir]) => {
+  cases.forEach(([id, desc, pub, oldV, newV]) => {
     const got = [OLD, NEW].map((src) => fillAt(world(src, 'gf', { cap: '1', pub }), 'in', D + 'T09:00:00'));
-    check(id, desc + '：09:00 孤單上班卡 → 舊版補到 ' + oldV + '、新版 ' + newV + '（' + dir + '）', got, [oldV, newV]);
+    check(id, desc + '：09:00 孤單上班卡 → 舊版 ' + oldV + '、新版 ' + newV, got, [oldV, newV]);
   });
   // 多補會不會變成多代記：09:00、17:30 兩張上班卡，19:05 開頁
   const ev = [[D + 'T09:00:00', 'E01', 'in'], [D + 'T17:30:00', 'E01', 'in']];
   const e2e = (pub) => [OLD, NEW].map((src) => { const m = world(src, 'gf', { cap: '1', pub, ev }); const p = page(m); return [p, m.self.sh.events.values.filter((r) => r.indexOf('system_cap') >= 0).length]; });
-  check('F5-4b', "班表列有 null，開關 '1' 19:05 開頁：舊版 1.5 小時不鎖、沒寫卡；新版 10 小時 19:00 收卡（多代記一張）",
-    e2e(cases[3][2]), [['free', 0], ['LOCK19:00', 1]]);
-  check('F5-5b', "同店同期兩列（後列壞），開關 '1' 19:05 開頁：舊版不鎖；新版用前列補 → 19:00 收卡",
-    e2e(cases[4][2]), [['free', 0], ['LOCK19:00', 1]]);
-  check('F5-0', '對照：同一情境的正常班表新舊都 19:00 收卡', e2e([['', 'T01', one(SH, 'E01', A19)]]), [['LOCK19:00', 1], ['LOCK19:00', 1]]);
+  const pubOf = (id) => cases.filter((c) => c[0] === id)[0][2];
+  check('F5-5x', "第 5 類（班表列有 null），開關 '1' 19:05 開頁：舊版 1.5 小時不鎖、沒寫卡；新版 10 小時 19:00 收卡（多代記一張）", e2e(pubOf('F5-5')), [['free', 0], ['LOCK19:00', 1]]);
+  check('F5-6x', "第 6 類（同店同期兩列、後列 rows 不是陣列），開關 '1' 19:05 開頁：舊版不鎖；新版用前列補 → 19:00 收卡", e2e(pubOf('F5-6a')), [['free', 0], ['LOCK19:00', 1]]);
+  check('F5-0', '對照：同一情境的正常班表新舊都 19:00 收卡', e2e([good]), [['LOCK19:00', 1], ['LOCK19:00', 1]]);
 }
 
 done();

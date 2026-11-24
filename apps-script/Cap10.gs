@@ -415,9 +415,12 @@ function capSchedShiftOf_(data, row, idx) {
  *  2026-11-25 起班表改讀 capGraceSched_（店＋期分塊快取）＝capMakeFillAll_ 的「只補本店」：原本的整表快取（capSchedPub_、鍵 capsched:v1）
  *  整張超過 90000 字就不快取、每次重讀整張 sched_pub；舊期不清、估 12 月到明年 1 月超過（docs/cap10-newdef/fill-chunk-cache.md）。補法一個字沒改。 */
 function capMakeFill_(empId) {
+  // 第二個參數 true（只補本店）在這裡功能上多餘：沒傳 name，capPeerId_ 本來就配不到別家店的工號；留著是把「'1'／'2' 不補別家店」寫明，別刪。
   var all = capMakeFillAll_({ emp_id: empId }, true);
   return function (kind, ev) {
-    try { if (ev.store) return null; } catch (e) { return null; }   // 別家店的卡先擋（原本的第一行）：不叫 capSelf_，開試算表次數跟原本一樣
+    // 這行只影響開試算表次數、不影響結果：別家店的卡在這裡先擋就不叫 capSelf_（getSS），跟原本第一行一樣；
+    // 拿掉的話第一次遇到別家店的卡會多開一次試算表（tests/cap10-peer-fill.test.js P8 會紅），別刪。
+    try { if (ev.store) return null; } catch (e) { return null; }
     return all(kind, ev);
   };
 }

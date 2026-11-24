@@ -35,7 +35,7 @@
 5. **03:20 前**重啟快速通道：`~/dzy-minikit/kit/bin/update-all.sh --restart clock-relay --dry-run` → 拿掉 `--dry-run`；跑完另開指令確認 `/clock/g-health` green、九店 `Cap10.js`／`Rest.js` 載入指紋＝mala-gas。
    - `RelayG.js` 不用額外步驟，但一定要先做完第 4 步：重啟前檢查（`ops/g-ops.js` restart-pre）比「雲端服務中＝mala-gas」用的是核定引擎那份 18 檔清單（`engine.js` `DUTY_FILES`，含 `RelayG.js`），mala-gas 沒 commit 新 `RelayG.js` 會被擋下；重啟後驗證另比核定引擎（`G_DUTY_ENGINE=1`）載入的 18 檔＝mala-gas。打卡引擎（`g-health` 的 files）不載入 `RelayG.js`。
    - 快速通道**不用改程式**（覆核過）：`server/lib/engine.js:11` 打卡引擎載入 `程式碼.js、Liff.js、Rest.js、RestConfig.js、Cap10.js`，`approvedHoursOfShift` 在 `程式碼.js`，引擎裡就有；mala-clock-relay `server` 測試以本分支跑 213 過／3 敗，與 origin/main 完全相同（3 敗是 predict.test.js 既有的測試環境問題）。
-6. `REST_CAP_ON` 不用動（九店都是 '1'）；主管已決定不發門市通知。
+6. `REST_CAP_ON` 不用動（上線當下九店都是 '1'；2026-11-25 03:14 起九店 '2'）；主管已決定不發門市通知。
 
 ## 3. 同一段上班幾張系統卡（換完之後；快速通道重啟前後都一樣）
 mini 看不到假單，「因假單才滿 10」只有 Google 算得出來，所以 Google 與 mini 可能算出不同的收卡時間（例 Google 18:45、mini 19:00）。修正後的保證：
