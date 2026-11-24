@@ -1,0 +1,108 @@
+{
+ "result": {
+  "datasetId": 14718,
+  "title": "中華民國政府行政機關辦公日曆表",
+  "distribution": [
+   {
+    "resourceDescription": "106年中華民國政府行政機關辦公日曆表",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/f9efbeb6-af1b-4adf-9034-3c8a95a5a192.csv&nfix=&name=106%e5%b9%b4%e6%94%bf%e5%ba%9c%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8.csv"
+   },
+   {
+    "resourceDescription": "107年中華民國政府行政機關辦公日曆表",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/d645842e-7b26-43e4-9f08-1172c61dde91.csv&nfix=&name=107%e6%94%bf%e5%ba%9c%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8(%e6%95%b8%e5%ad%97%e7%89%88).csv"
+   },
+   {
+    "resourceDescription": "108年中華民國政府行政機關辦公日曆表",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/5f2ff9c5-a235-4819-8c62-f064fc5bffb8.csv&nfix=&name=108%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8.csv"
+   },
+   {
+    "resourceDescription": "109年中華民國政府行政機關辦公日曆表",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/4d215402-15c7-4ad9-ab90-a33f34a63f5b.csv&nfix=&name=109%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8.csv"
+   },
+   {
+    "resourceDescription": "110年中華民國政府行政機關辦公日曆表",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/daec35f0-ae43-4466-aa26-bafb39aa8e0a.csv&nfix=&name=110%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8.csv"
+   },
+   {
+    "resourceDescription": "110年中華民國政府行政機關辦公日曆表_Google行事曆專用",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/541450de-69ad-4649-9d9d-13453a58de71.csv&nfix=&name=110%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8_Google%e8%a1%8c%e4%ba%8b%e6%9b%86%e5%b0%88%e7%94%a8.csv"
+   },
+   {
+    "resourceDescription": "111年中華民國政府行政機關辦公日曆表",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/cbe02c09-d3ce-4912-ace4-69b7129efa9f.csv&nfix=&name=111%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8.csv"
+   },
+   {
+    "resourceDescription": "111年中華民國政府行政機關辦公日曆表_Google行事曆專用",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/9fa61fa1-f44c-4f07-9060-72e8b824560d.csv&nfix=&name=111%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8_Google%e8%a1%8c%e4%ba%8b%e6%9b%86%e5%b0%88%e7%94%a8.csv"
+   },
+   {
+    "resourceDescription": "112年中華民國政府行政機關辦公日曆表",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/dd89fe8c-25f5-4035-a31e-7c14b44a74d7.csv&nfix=&name=112%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8.csv"
+   },
+   {
+    "resourceDescription": "112年中華民國政府行政機關辦公日曆表_Google行事曆專用",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/e9c1fba9-6ae4-4f08-a8eb-a5bf51f79b0c.csv&nfix=&name=112%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8_Google%e8%a1%8c%e4%ba%8b%e6%9b%86%e5%b0%88%e7%94%a8.csv"
+   },
+   {
+    "resourceDescription": "113年中華民國政府行政機關辦公日曆表",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/777152e9-fdd1-4a61-876c-2733e7692538.csv&nfix=&name=113年中華民國政府行政機關辦公日曆表.csv"
+   },
+   {
+    "resourceDescription": "113年中華民國政府行政機關辦公日曆表_Google行事曆專用",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/82b44c5e-6afa-4c94-a9d9-bab82e348cb8.csv&nfix=&name=113年中華民國政府行政機關辦公日曆表_Google"
+   },
+   {
+    "resourceDescription": "114年中華民國政府行政機關辦公日曆表",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/22f9fcbc-fbb2-4387-8bcf-73b2279666c2.csv&nfix=&name=114年中華民國政府行政機關辦公日曆表.csv"
+   },
+   {
+    "resourceDescription": "114年中華民國政府行政機關辦公日曆表_Google行事曆專用",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202407/06b25c90-d7a6-4d8f-9a49-e69ce32488b7.csv&nfix=&name=114年中華民國政府行政機關辦公日曆表_Google"
+   },
+   {
+    "resourceDescription": "114年中華民國政府行政機關辦公日曆表(1141020更新)",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202510/b84cb88a-803c-4621-a843-d637b2775615.csv&nfix=&name=114%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8(1141020%e6%9b%b4%e6%96%b0).csv"
+   },
+   {
+    "resourceDescription": "115年中華民國政府行政機關辦公日曆表",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202506/a52331bd-a189-466b-b0f0-cae3062bbf74.csv&nfix=&name=115%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8.csv"
+   },
+   {
+    "resourceDescription": "114年中華民國政府行政機關辦公日曆表_Google行事曆專用(修正版)",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202507/1f5a099f-a657-4448-bd84-5fe6504ba4c4.csv&nfix=&name=114%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8_Google%e8%a1%8c%e4%ba%8b%e6%9b%86%e5%b0%88%e7%94%a8(%e4%bf%ae%e6%ad%a3%e7%89%88).csv"
+   },
+   {
+    "resourceDescription": "115年中華民國政府行政機關辦公日曆表_Google行事曆專用",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202507/0e62ddf8-c983-44b7-b0ea-c190a142cdd0.csv&nfix=&name=115%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8_Google%e8%a1%8c%e4%ba%8b%e6%9b%86%e5%b0%88%e7%94%a8.csv"
+   },
+   {
+    "resourceDescription": "116年中華民國政府行政機關辦公日曆表",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202607/f538b1ff-ba60-4c63-9477-10db8e6612d1.csv&nfix=&name=116%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8_utf8bom.csv"
+   },
+   {
+    "resourceDescription": "116年中華民國政府行政機關辦公日曆表_Google行事曆專用",
+    "resourceFormat": "CSV",
+    "resourceDownloadUrl": "https://www.dgpa.gov.tw/FileConversion?filename=dgpa/files/202607/b5150f0e-3528-4489-91ac-f14b1357cd00.csv&nfix=&name=116%e5%b9%b4%e4%b8%ad%e8%8f%af%e6%b0%91%e5%9c%8b%e6%94%bf%e5%ba%9c%e8%a1%8c%e6%94%bf%e6%a9%9f%e9%97%9c%e8%be%a6%e5%85%ac%e6%97%a5%e6%9b%86%e8%a1%a8_Google%e8%a1%8c%e4%ba%8b%e6%9b%86%e5%b0%88%e7%94%a8_utf8bom.csv"
+   }
+  ]
+ }
+}

@@ -3779,6 +3779,9 @@ function handlePayrollConfigSet(body) {
 function handlePayrollHolidaySet(body) {
   if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   if (!Array.isArray(body.holidays)) return { ok: false, error: 'holidays_required' };
+  // 節日表改由營運系統發布（PAY_HOL_SOURCE=mini）：集團列只能由營運系統發布、本店專屬不再接受新的（第 4 題），整批覆寫一律擋（開關沒開時照舊）
+  if (payHolSource_() === 'mini') return { ok: false, error: 'hol_source_mini',
+    message: '節日表現在由營運系統發布，薪資這邊不能手動改紅字天數或國定假日；要改請到營運系統確認並發布新版。' };
   const stH = String(body.store || '');   // 空白＝集團共用；有值＝該門市專屬
   const mine = body.holidays.map(function (h) { h.store = stH; return h; });
   // 已鎖定月份那一列的 red_days／dates 有變動、被刪、或新增 → 整批不存（薪酬挑錯第 1 項）。在寫鎖內用最新資料比對。
@@ -3965,11 +3968,310 @@ function handlePayrollHolidaySync(body) {
   const years = (Array.isArray(body.years) ? body.years : [body.year])
     .map(Number).filter(function (y, i, a) { return y >= 2017 && y <= 2100 && a.indexOf(y) === i; });
   if (!years.length) return { ok: false, error: 'bad_year' };
+  if (payHolSource_() === 'mini') return payHolSyncMini_(years, body);   // 節日表改由營運系統發布：不連人事行政總處、不寫分頁（見下方「節日表由營運系統發布」）
   const r = payHolidaySync(years, body.operator);
   return { ok: true, changed: r.changed, status: r.status, names: r.names, moved: r.moved,
            skipped_locked: r.skipped_locked, message: r.message,   // 已有門市鎖定而沒有同步的月份與說明（沒有就是 []、''）
            sync_from: PAY_HOL_SYNC_FROM, double_from: PAY_HOL_DOUBLE_FROM,
            holidays: payHolidayList(payStore(body.store)) };
+}
+
+/* ═══════════════════ 節日表由營運系統發布（節日表只留一份，第 2 個改動，2026-11-24） ═══════════════════
+ * 主管裁示：「整個系統只會有一份節日表，節日表的日期都是參照行政院人事處頒布的行事曆」。
+ * 正本在營運系統（mala-store-ops server/holidays/master.json，人資主管確認後生效），由營運系統推送每月「紅字天數＋國定假日加發日」過來。
+ * 這一段只換「payroll_holiday 分頁的資料從哪裡來」；讀分頁的計算（payHolidayRow／payHolidayDates／payRedDaysCheck_ 與所有用到它們的地方）一個字都沒改。
+ * 說明文件：docs/holiday-publish/README.md。
+ *
+ * 開關：指令碼屬性 PAY_HOL_SOURCE
+ *   沒設、'gov'、其他任何值 ＝ 現行做法（薪資頁打開與算薪缺列時自己向人事行政總處抓行事曆、payHolidaySync 寫分頁）。跟改版前逐步相同。
+ *   'mini'（不分大小寫、前後空白不算）＝ 只收營運系統推送：
+ *     ・payroll_holiday_sync（薪資頁打開時背景呼叫）：不連外、不寫分頁，只回目前分頁內容＋收到的版本；缺本月資料時 message 說明。
+ *     ・payroll_calc 該月沒有列：不再自己同步，回 no_holiday 並說明要去營運系統發布（不會當成沒有節日）。
+ *     ・payroll_holiday_set（手動整批覆寫）：擋下（第 4 題：本店專屬不再接受新的；集團列只能由營運系統發布）。
+ *   改回預設（刪掉屬性或設 gov）＝ 立即退回現行做法，分頁內容不用搬。
+ *
+ * 推送動作 payroll_holiday_publish（服務金鑰，指令碼屬性 PAY_HOL_SVC_KEY；沒設＝全部拒絕）：
+ *   ・PAY_HOL_SOURCE 不是 mini 時只接受 dry_run（試推：回報會改哪些月份，不寫入）。
+ *   ・內容整份檢查，不合格整份拒收（bad_payload，分頁一格不動）；版本不能倒退（version_rollback）；同版本內容不同（version_conflict）。
+ *   ・同版本同內容重送：不寫入、回 added:false（reapply:true 才把分頁跟這一版對齊）。
+ *   ・只動「集團共用」列（store 空白）、只動本月與未來的月份；已經過去的月份一律不動（有差異、缺列都只回報）；
+ *     使用集團列的門市已鎖定的月份跳過（payHolidaySyncLockedYms_，同 payHolidaySync）；本店專屬列一律不碰。
+ *   ・寫入在寫鎖內（payWriteLocked_），成功後記一筆稽核 holiday_publish，版本記在指令碼屬性 PAY_HOL_PUB。 */
+const PAY_HOL_PUB_PROP_ = 'PAY_HOL_PUB';          // 目前生效的版本 {version, hash, published_at, confirmed_by, source, received_at, years}
+const PAY_HOL_PUB_VIEW_PROP_ = 'PAY_HOL_PUB_VIEW'; // 薪資頁顯示用 {moved, names}（只影響畫面上的節日名稱與「替哪天補假」）
+const PAY_HOL_PUB_V_ = 1;
+const PAY_HOL_PUB_MAX_ROWS_ = 240;                // 最多 20 年
+const PAY_HOL_PUB_YEAR_MIN_ = 105, PAY_HOL_PUB_YEAR_MAX_ = 130;   // 整年紅字天數合理範圍（106～116 年原檔每年 115～121 天）
+const PAY_HOL_PUB_WKND_LO_ = 3, PAY_HOL_PUB_WKND_HI_ = 9;        // 每月紅字天數＝週末天數 −3 ～ ＋9（補行上班最多讓週末少幾天、連假最多多幾天）
+
+/** 節日資料來源：'mini'＝只收營運系統推送；其他一律 'gov'（現行做法）。每次都當場讀屬性（改完下一個請求就生效）。 */
+function payHolSource_() {
+  let v = '';
+  try { v = String(PropertiesService.getScriptProperties().getProperty('PAY_HOL_SOURCE') || ''); } catch (e) { v = ''; }
+  return v.trim().toLowerCase() === 'mini' ? 'mini' : 'gov';
+}
+function payHolPubSvcOk_(body) {
+  let key = '';
+  try { key = String(PropertiesService.getScriptProperties().getProperty('PAY_HOL_SVC_KEY') || ''); } catch (e) { key = ''; }
+  return !!key && typeof body.svcKey === 'string' && body.svcKey === key;
+}
+function payHolPubState_() {
+  try {
+    const raw = PropertiesService.getScriptProperties().getProperty(PAY_HOL_PUB_PROP_);
+    const o = raw ? JSON.parse(raw) : null;
+    return o && typeof o === 'object' && typeof o.version === 'string' ? o : null;
+  } catch (e) { return null; }
+}
+function payHolPubView_() {
+  try {
+    const raw = PropertiesService.getScriptProperties().getProperty(PAY_HOL_PUB_VIEW_PROP_);
+    const o = raw ? JSON.parse(raw) : null;
+    return o && typeof o === 'object' ? o : {};
+  } catch (e) { return {}; }
+}
+/** 版本比大小：'2027-3' → [2027, 3]。a<b 回負數、相同回 0、a>b 回正數。 */
+function payHolVerCmp_(a, b) {
+  const pa = String(a).split('-').map(Number), pb = String(b).split('-').map(Number);
+  return (pa[0] - pb[0]) || (pa[1] - pb[1]);
+}
+/** 內容指紋（同版本重送判斷用；不是安全用途）：53 位元 cyrb53，對同一份字串永遠相同。 */
+function payHolPubHash_(s) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+}
+const PAY_HOL_DATE_RE_ = /^\d{4}-\d{2}-\d{2}$/;
+function payHolIsDate_(s) {
+  if (typeof s !== 'string' || !PAY_HOL_DATE_RE_.test(s)) return false;
+  const p = s.split('-').map(Number), d = new Date(Date.UTC(p[0], p[1] - 1, p[2]));
+  return d.getUTCFullYear() === p[0] && d.getUTCMonth() === p[1] - 1 && d.getUTCDate() === p[2];
+}
+/** 某月週末（六、日）天數 */
+function payHolWeekends_(ym) {
+  const y = +ym.slice(0, 4), m = +ym.slice(5, 7), n = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  let c = 0;
+  for (let d = 1; d <= n; d++) { const w = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); if (w === 0 || w === 6) c++; }
+  return c;
+}
+
+/** 推送內容檢查（純函式，不讀寫任何東西）。nowYm＝台北本月。
+ *  合格回 {ok:true, version, rows:{ym:{ym,red_days,note,dates}}（全部月份）, years:[…], hash, meta:{published_at, confirmed_by, source}, view:{moved, names}}；
+ *  不合格回 {ok:false, error:'bad_payload', problems:[…], message}（problems 最多列 20 條）。 */
+function payHolPubValidate_(body, nowYm) {
+  const P = [];
+  const bad = function (m) { if (P.length < 20) P.push(m); };
+  const isObj = function (o) { return !!o && typeof o === 'object' && !Array.isArray(o); };
+  if (body.v !== PAY_HOL_PUB_V_) bad('v 要是 ' + PAY_HOL_PUB_V_);
+  const ver = body.version;
+  const vm_ = typeof ver === 'string' ? /^(\d{4})-([1-9]\d{0,3})$/.exec(ver) : null;
+  if (!vm_) bad('version 格式要是「西元年-第幾版」，例 2027-3');
+  const pubAt = body.published_at;
+  if (typeof pubAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?([+-]\d{2}:\d{2}|Z)$/.test(pubAt) || !payHolIsDate_(pubAt.slice(0, 10))) bad('published_at 要是含時區的時間，例 2026-12-01T06:10:00+08:00');
+  const optStr = function (k, max) { const v = body[k]; if (v === undefined || v === null || v === '') return ''; if (typeof v !== 'string' || v.length > max) { bad(k + ' 要是 ' + max + ' 字以內的文字'); return ''; } return v; };
+  const confirmedBy = optStr('confirmed_by', 40), source = optStr('source', 200);
+  if (body.dry_run !== undefined && typeof body.dry_run !== 'boolean') bad('dry_run 只能是 true／false');
+  if (body.reapply !== undefined && typeof body.reapply !== 'boolean') bad('reapply 只能是 true／false');
+  const rowsIn = body.rows;
+  const rows = {}, byYear = {};
+  if (!isObj(rowsIn)) bad('rows 要是以月份為鍵的物件（營運系統 payrollRows().rows）');
+  else {
+    const keys = Object.keys(rowsIn);
+    if (!keys.length) bad('rows 是空的：不接受空表');
+    if (keys.length > PAY_HOL_PUB_MAX_ROWS_) bad('rows 超過 ' + PAY_HOL_PUB_MAX_ROWS_ + ' 個月');
+    keys.slice(0, PAY_HOL_PUB_MAX_ROWS_).forEach(function (k) {
+      const r = rowsIn[k];
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || +k.slice(0, 4) < 2017 || +k.slice(0, 4) > 2100) { bad('月份鍵 ' + String(k).slice(0, 20) + ' 格式不對（要 YYYY-MM，2017～2100 年）'); return; }
+      if (!isObj(r)) { bad(k + ' 那一列不是物件'); return; }
+      const extra = Object.keys(r).filter(function (x) { return ['ym', 'red_days', 'note', 'dates', 'store'].indexOf(x) < 0; });
+      if (extra.length) bad(k + ' 有不認得的欄位：' + extra.slice(0, 5).join('、'));
+      if (r.store !== undefined && r.store !== '') bad(k + ' 帶了門市（store）：本店專屬節日不再接受新的，推送只能是集團共用');
+      if (r.ym !== k) bad(k + ' 那一列的 ym 跟鍵不同');
+      const n = new Date(Date.UTC(+k.slice(0, 4), +k.slice(5, 7), 0)).getUTCDate(), wk = payHolWeekends_(k);
+      const rd = r.red_days;
+      if (typeof rd !== 'number' || !Number.isInteger(rd)) bad(k + ' 的 red_days 要是整數');
+      else if (rd < Math.max(0, wk - PAY_HOL_PUB_WKND_LO_) || rd > Math.min(n, wk + PAY_HOL_PUB_WKND_HI_)) bad(k + ' 的紅字天數 ' + rd + ' 不合理（這個月週末 ' + wk + ' 天，合理範圍 ' + Math.max(0, wk - PAY_HOL_PUB_WKND_LO_) + '～' + Math.min(n, wk + PAY_HOL_PUB_WKND_HI_) + '）');
+      if (r.note !== undefined && (typeof r.note !== 'string' || r.note.length > 200)) bad(k + ' 的 note 要是 200 字以內的文字');
+      const ds = r.dates;
+      let list = [];
+      if (typeof ds !== 'string') bad(k + ' 的 dates 要是文字（逗號加空白分隔的 YYYY-MM-DD，沒有就空字串）');
+      else if (ds !== '') {
+        if (!/^\d{4}-\d{2}-\d{2}(, \d{4}-\d{2}-\d{2})*$/.test(ds)) bad(k + ' 的 dates 格式不對（要「YYYY-MM-DD, YYYY-MM-DD」）');
+        else {
+          list = ds.split(', ');
+          list.forEach(function (d) { if (!payHolIsDate_(d)) bad(k + ' 的 dates 有不存在的日期 ' + d); else if (d.slice(0, 7) !== k) bad(k + ' 的 dates 有別的月份的日期 ' + d); });
+          for (let i = 1; i < list.length; i++) if (!(list[i - 1] < list[i])) { bad(k + ' 的 dates 要由小到大、不能重複'); break; }
+          if (k < PAY_HOL_DOUBLE_FROM) bad(k + ' 在國定假日加發生效（' + PAY_HOL_DOUBLE_FROM + '）之前，dates 要是空的');
+          if (typeof rd === 'number' && list.length > rd) bad(k + ' 的加發日 ' + list.length + ' 天比紅字天數 ' + rd + ' 還多');
+        }
+      }
+      rows[k] = { ym: k, red_days: rd, note: typeof r.note === 'string' ? r.note : '', dates: typeof ds === 'string' ? ds : '' };
+      (byYear[k.slice(0, 4)] = byYear[k.slice(0, 4)] || []).push(k);
+    });
+  }
+  const years = Object.keys(byYear).sort();
+  years.forEach(function (y) {
+    if (byYear[y].length !== 12) bad(y + ' 年只有 ' + byYear[y].length + ' 個月：一年要整年 12 個月一起送，不接受半套');
+    else {
+      let t = 0; byYear[y].forEach(function (k) { if (typeof rows[k].red_days === 'number') t += rows[k].red_days; });
+      if (t < PAY_HOL_PUB_YEAR_MIN_ || t > PAY_HOL_PUB_YEAR_MAX_) bad(y + ' 年紅字天數合計 ' + t + ' 天不合理（合理範圍 ' + PAY_HOL_PUB_YEAR_MIN_ + '～' + PAY_HOL_PUB_YEAR_MAX_ + '）');
+    }
+  });
+  for (let i = 1; i < years.length; i++) if (+years[i] !== +years[i - 1] + 1) { bad('年份中間斷掉（' + years[i - 1] + '→' + years[i] + '）'); break; }
+  const nowY = String(nowYm).slice(0, 4);
+  if (years.length && years.indexOf(nowY) < 0) bad('沒有今年（' + nowY + '）的資料');
+  if (vm_ && years.length && vm_[1] !== years[years.length - 1]) bad('version 的年份 ' + vm_[1] + ' 跟內容最後一年 ' + years[years.length - 1] + ' 不同');
+  // 顯示用（選填）：moved＝{週末節日:補假日}、names＝{日期:原檔備註}
+  const view = {};
+  if (body.moved !== undefined) {
+    if (!isObj(body.moved) || Object.keys(body.moved).length > 400) bad('moved 要是 {日期:日期} 物件（最多 400 筆）');
+    else { Object.keys(body.moved).forEach(function (k) { if (!payHolIsDate_(k) || !payHolIsDate_(body.moved[k])) bad('moved 有不是日期的內容'); }); view.moved = body.moved; }
+  }
+  if (body.names !== undefined) {
+    if (!isObj(body.names) || Object.keys(body.names).length > 1000) bad('names 要是 {日期:名稱} 物件（最多 1000 筆）');
+    else { Object.keys(body.names).forEach(function (k) { const v = body.names[k]; if (!payHolIsDate_(k) || typeof v !== 'string' || v.length > 40) bad('names 有不是「日期:40 字以內名稱」的內容'); }); view.names = body.names; }
+  }
+  if (P.length) return { ok: false, error: 'bad_payload', problems: P,
+    message: '節日表推送內容不合格，整份沒有收（薪資的節日資料沒有變動）：' + P.slice(0, 3).join('；') + (P.length > 3 ? '…等 ' + P.length + ' 項' : '') };
+  const canon = Object.keys(rows).sort().map(function (k) { const r = rows[k]; return [k, r.red_days, r.dates, r.note].join('|'); }).join('\n');
+  return { ok: true, version: ver, rows: rows, years: years, hash: payHolPubHash_(canon),
+           meta: { published_at: pubAt, confirmed_by: confirmedBy, source: source }, view: view };
+}
+
+/** 套用計畫（純函式）：all＝holiday 分頁全部列；rows＝推送的全部月份；runs＝payroll_run 全部列（只在有候選月份時才用）。
+ *  規則照 payHolidaySync（只動集團列、本月與未來、鎖定跳過），差別：已經過去的月份連缺列也不補（第 9 題「一律不動」）。
+ *  回 {out（寫回整張用）, added, updated, skipped_locked, skipped_past（過去月份內容跟推送不同）, past_missing（過去月份缺列）, own_rows}。 */
+function payHolPubPlan_(all, rows, nowYm, runsFn) {
+  const want = {};
+  Object.keys(rows).forEach(function (k) { if (k >= PAY_HOL_SYNC_FROM) want[k] = rows[k]; });
+  const differs = function (r, w) { return !(payRedDaysCheck_(r, String(r.ym)).ok && payNum(r.red_days) === w.red_days && payHolidayDates(r).join(', ') === w.dates); };
+  const seen = {}, cand = [], skippedPast = [], pastMissing = [];
+  let own = 0;
+  all.forEach(function (r) {
+    if (String(r.store || '') !== '') { own++; return; }
+    const k = String(r.ym);
+    if (!want[k] || seen[k]) return;
+    seen[k] = true;
+    if (!differs(r, want[k])) return;
+    if (k < nowYm) skippedPast.push(k); else cand.push(k);
+  });
+  Object.keys(want).forEach(function (k) { if (seen[k]) return; if (k < nowYm) pastMissing.push(k); else cand.push(k); });
+  const skipped = cand.length ? payHolidaySyncLockedYms_(cand, all, runsFn()) : [];
+  const isSkipped = {}, isCand = {};
+  skipped.forEach(function (k) { isSkipped[k] = true; });
+  cand.forEach(function (k) { if (!isSkipped[k]) isCand[k] = true; });
+  const done = {}, updated = [], added = [];
+  const out = all.map(function (r) {
+    const k = String(r.ym);
+    if (String(r.store || '') !== '' || !isCand[k] || done[k]) return r;
+    done[k] = true; updated.push(k);
+    const w = want[k];
+    return { ym: k, red_days: w.red_days, note: w.note, dates: w.dates, store: '' };
+  });
+  Object.keys(isCand).sort().forEach(function (k) {
+    if (done[k]) return;
+    const w = want[k];
+    out.push({ ym: k, red_days: w.red_days, note: w.note, dates: w.dates, store: '' });
+    added.push(k);
+  });
+  return { out: out, added: added.sort(), updated: updated.sort(), skipped_locked: skipped, skipped_past: skippedPast.sort(),
+           past_missing: pastMissing.sort(), own_rows: own };
+}
+
+/** {action:'payroll_holiday_publish', svcKey, v:1, version, published_at, confirmed_by?, source?, rows:{YYYY-MM:{ym,red_days,note,dates}}, moved?, names?, dry_run?, reapply?}
+ *  格式與回應見 docs/holiday-publish/README.md。 */
+function handlePayrollHolidayPublish(body) {
+  body = body || {};
+  if (!payHolPubSvcOk_(body)) return { ok: false, error: 'unauthorized' };
+  const nowYm = currentYmTaipei();
+  const chk = payHolPubValidate_(body, nowYm);
+  if (!chk.ok) return chk;
+  const mode = payHolSource_(), dry = body.dry_run === true;
+  if (mode !== 'mini' && !dry) return { ok: false, error: 'hol_source_gov', mode: mode,
+    message: '薪資的節日資料目前還是自己向人事行政總處抓（PAY_HOL_SOURCE 不是 mini），這次只接受試推（dry_run），沒有寫入' };
+  const st0 = payHolPubState_();
+  if (st0 && payHolVerCmp_(chk.version, st0.version) < 0) return { ok: false, error: 'version_rollback', version: chk.version, current: st0.version,
+    message: '節日表版本 ' + chk.version + ' 比薪資目前用的 ' + st0.version + ' 舊，沒有收' };
+  const same = !!(st0 && payHolVerCmp_(chk.version, st0.version) === 0);
+  if (same && st0.hash !== chk.hash) return { ok: false, error: 'version_conflict', version: chk.version,
+    message: '節日表版本 ' + chk.version + ' 內容跟上次收到的同版本不一樣（同一版本不能改內容，請營運系統升版再發布），沒有收' };
+  const apply = !same || body.reapply === true;
+  let plan = null, wrote = false;
+  const work = function () {
+    const all = payRead('holiday');
+    plan = payHolPubPlan_(all, chk.rows, nowYm, function () { return payRead('run'); });
+    if (dry || !apply) return;
+    const changed = plan.added.concat(plan.updated).sort();
+    if (changed.length) payReplaceAll('holiday', plan.out);
+    const parts = [];
+    if (plan.added.length) parts.push('新增 ' + plan.added.join('、'));
+    if (plan.updated.length) parts.push('內容有變 ' + plan.updated.join('、'));
+    if (!changed.length) parts.push('沒有月份要改');
+    if (plan.skipped_locked.length) parts.push('已鎖定跳過 ' + plan.skipped_locked.join('、'));
+    if (plan.skipped_past.length || plan.past_missing.length) parts.push('已經過去的月份不動 ' + plan.skipped_past.concat(plan.past_missing).sort().join('、'));
+    payAppend('audit', [{ ts: nowTaipeiIso(), ym: '', action: 'holiday_publish',
+      operator: 'mini' + (chk.meta.confirmed_by ? '（' + chk.meta.confirmed_by + '確認）' : ''),
+      reason: '營運系統節日表 ' + (same ? '重新套用 ' : '') + '版本 ' + chk.version + '（發布 ' + chk.meta.published_at + '）：' + parts.join('；'), store: '' }]);
+    wrote = true;
+  };
+  if (dry) work();
+  else if (!payWriteLocked_(['holiday', 'run'], work)) return PAY_BUSY_;
+  if (wrote && !same) {   // 分頁與稽核都寫好了才記版本（記版本失敗：下次同版本重送會再比一次、補記，不會重複改分頁）
+    const props = PropertiesService.getScriptProperties();
+    props.setProperty(PAY_HOL_PUB_PROP_, JSON.stringify({ version: chk.version, hash: chk.hash, published_at: chk.meta.published_at,
+      confirmed_by: chk.meta.confirmed_by, source: chk.meta.source, received_at: nowTaipeiIso(), years: chk.years }));
+    let v = JSON.stringify(chk.view);
+    if (v.length > 8500) v = JSON.stringify({ moved: chk.view.moved });   // 屬性單格上限約 9KB；名稱放不下就只留補假對照
+    if (v.length > 8500) v = '{}';
+    props.setProperty(PAY_HOL_PUB_VIEW_PROP_, v);
+  }
+  const changed = plan.added.concat(plan.updated).sort();
+  const res = { ok: true, mode: mode, dry_run: dry, version: chk.version, current: st0 ? st0.version : '',
+    added: dry ? !same : (!same && wrote),
+    months_new: plan.added, months_changed: plan.updated, skipped_locked: plan.skipped_locked,
+    skipped_past: plan.skipped_past, past_missing: plan.past_missing, own_rows: plan.own_rows };
+  if (dry) res.would_change = changed; else res.changed = apply ? changed : [];
+  if (same && !apply) res.drift = changed;   // 同版本重送：分頁跟這一版不同的月份（沒有寫；要對齊帶 reapply:true）
+  return res;
+}
+
+/** payroll_holiday_sync 在 PAY_HOL_SOURCE=mini 時：不連外、不寫，只回分頁現況＋收到的版本（回應形狀同現行，多 hol_source／hol_pub／hol_missing）。 */
+function payHolSyncMini_(years, body) {
+  const st = payStore(body.store);
+  const pub = payHolPubState_(), view = payHolPubView_();
+  const list = payHolidayList(st), has = {};
+  list.forEach(function (h) { has[String(h.ym)] = true; });
+  const missing = [];
+  years.forEach(function (y) { for (let m = 1; m <= 12; m++) { const k = y + '-' + ('0' + m).slice(-2); if (k >= PAY_HOL_SYNC_FROM && !has[k]) missing.push(k); } });
+  const nowYm = currentYmTaipei();
+  let msg = '';
+  if (!pub) msg = '節日表改由營運系統發布，但薪資還沒有收到任何一版；請先到營運系統確認並發布節日表。';
+  else if (!has[nowYm]) msg = '還沒有 ' + nowYm + ' 的節日資料，這個月不能計算薪資；請先到營運系統確認並發布 ' + nowYm.slice(0, 4) + ' 年節日表。';
+  return { ok: true, changed: [], status: [], names: view.names || {}, moved: view.moved || {},
+           skipped_locked: [], message: msg, sync_from: PAY_HOL_SYNC_FROM, double_from: PAY_HOL_DOUBLE_FROM,
+           holidays: list, hol_source: 'mini',
+           hol_pub: pub ? { version: pub.version, published_at: pub.published_at, confirmed_by: pub.confirmed_by || '', source: pub.source || '', received_at: pub.received_at || '' } : null,
+           hol_missing: missing };
+}
+
+/** {action:'payroll_holiday_own_list', admin_key} → 現有的「本店專屬」紅字天數列（唯讀，給主管看；第 4 題：舊的不動、列出來）。
+ *  回 {ok, count, rows:[{ym, store, red_days, dates, note, global_red_days, global_dates, same_as_global}]}，依月份、門市排序。 */
+function handlePayrollHolidayOwnList(body) {
+  if (!checkAdmin(body)) return { ok: false, error: 'unauthorized' };
+  const all = payRead('holiday'), glob = {};
+  all.forEach(function (h) { const k = String(h.ym); if (String(h.store || '') === '' && !glob[k]) glob[k] = h; });
+  const rows = all.filter(function (h) { return String(h.store || '') !== ''; }).map(function (h) {
+    const k = String(h.ym), g = glob[k] || null;
+    const ds = payHolidayDates(h).join(', '), gds = g ? payHolidayDates(g).join(', ') : '';
+    return { ym: k, store: String(h.store), red_days: h.red_days, dates: ds, note: String(h.note || ''),
+             global_red_days: g ? g.red_days : null, global_dates: g ? gds : null,
+             same_as_global: !!g && String(payNum(g.red_days)) === String(payNum(h.red_days)) && gds === ds };
+  }).sort(function (a, b) { return a.ym < b.ym ? -1 : a.ym > b.ym ? 1 : (a.store < b.store ? -1 : a.store > b.store ? 1 : 0); });
+  return { ok: true, count: rows.length, rows: rows };
 }
 
 /** 只歸集不計算——讓管理者先看工時對不對，再按計算 */
@@ -4763,6 +5065,9 @@ function handlePayrollCalc(body) {
   }
 
   let holiday = payHolidayRow(ym, payStore(body.store));
+  // 節日表改由營運系統發布（PAY_HOL_SOURCE=mini）時不自己同步：缺列就說清楚要去營運系統發布，不當成沒有節日（開關沒開時這一行不成立、照舊）
+  if (!holiday && payHolSource_() === 'mini') return { ok: false, error: 'no_holiday', hol_source: 'mini',
+    message: '薪資計算（' + ym + '）：還沒有這個月的節日資料，這次沒有計算。請先到營運系統確認並發布 ' + ym.slice(0, 4) + ' 年節日表，再重新計算。' };
   if (!holiday) {   // 紅字天數改成自動帶入（2026-09-18）：沒有就先依人事行政總處同步該年再找一次
     try { payHolidaySync([Number(ym.slice(0, 4))]); } catch (e) { Logger.log('holiday sync in calc: ' + e); }
     holiday = payHolidayRow(ym, payStore(body.store));
@@ -7176,6 +7481,7 @@ const PAY_SCOPE_ADMIN_ONLY = ['payroll_group', 'payroll_store_set', 'payroll_hol
                               'payroll_comp_check', 'payroll_comp_trigger_setup', 'payroll_comp_period',   // 補休檢查看全部門市（2026-11-01）
                               'payroll_rest_check', 'payroll_rest_trigger_setup',   // 超時檢查看全部門市（2026-11-01）
                               'payroll_ot_preview', 'payroll_ot_month_sync',
+                              'payroll_holiday_publish', 'payroll_holiday_own_list',   // 節日表由營運系統發布（2026-11-24）：集團功能，帶門市範圍一律擋
                               'payroll_migrate_store', 'payroll_item_upsert', 'payroll_leave_span_set'];   // 這三個沒有逐列比對門市，只給全權管理者（2026-11-10 資安審計）   // 加班費新舊並列試算（2026-11-06）只給總管理
 
 function payScopeNorm_(v) { return payStore(String(v == null ? '' : v).trim()).toUpperCase(); }
@@ -7323,6 +7629,8 @@ const PAYROLL_HANDLERS = {
   payroll_hol_emp_set:  handlePayrollHolEmpSet,   // 選舉假名單（2026-11-22）；讀取併在 payroll_master_get 的 hol_emp
   payroll_gov_holidays: handlePayrollGovHolidays,
   payroll_holiday_sync: handlePayrollHolidaySync,
+  payroll_holiday_publish:  handlePayrollHolidayPublish,   // 營運系統推送節日表（服務金鑰 PAY_HOL_SVC_KEY，2026-11-24）
+  payroll_holiday_own_list: handlePayrollHolidayOwnList,   // 現有本店專屬紅字天數列（唯讀，2026-11-24）
   payroll_inputs:      handlePayrollInputs,
   payroll_input_set:    handlePayrollInputSet,
   payroll_month:        handlePayrollMonth,

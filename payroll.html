@@ -523,7 +523,7 @@ html.embed.ui-new .monthbar{border-left-color:#0066cc}
   </div>
   <div class="card">
     <h2>紅字天數（行政院行事曆）</h2>
-    <p class="hint">基本工時 ＝ (當月天數 − 紅字天數) × 每日工時。<br>
+    <p class="hint" id="holHint">基本工時 ＝ (當月天數 − 紅字天數) × 每日工時。<br>
       紅字天數與國定假日<b>全部自動帶入</b>：每次打開薪資頁都會對照人事行政總處的「政府行政機關辦公日曆表」，
       今年整年自動填好，不必手動輸入。已經過去的月份不會被改動。<br>
       國定假日碰到週末、有補假的，<b>雙薪算在補假那天</b>（例：國慶 10/10 週六 → 10/9 週五雙薪）。</p>
@@ -3224,6 +3224,13 @@ function renderHol(){
 }
 /* 同步狀態列的內容：每年一行行事曆狀態；後端有說明（已有門市鎖定而沒有同步的月份，薪酬挑錯第 1 項補洞）再多一行。文字都經 esc。 */
 function holSyncHtml(s){
+  /* 節日表改由營運系統發布（後端 PAY_HOL_SOURCE=mini 才會回 hol_source:'mini'，2026-11-24）：紅字天數表上方一行版本；沒開時這段不成立、照舊。 */
+  if(s&&s.hol_source==='mini'){
+    const p=s.hol_pub, d=p&&/^\d{4}-\d{2}-\d{2}/.test(String(p.published_at||''))?String(p.published_at).slice(0,10):'';
+    const ml=[p?`節日表版本 ${esc(p.version)}，營運系統 ${esc(d)} 發布`:'⚠ 節日表改由營運系統發布，薪資還沒有收到任何一版'];
+    if(s.message) ml.push('⚠ '+esc(s.message));
+    return ml.join('<br>');
+  }
   const lines=((s&&s.status)||[]).map(x=>x.ok
     ? `✓ ${esc(x.year)} 年已依人事行政總處《${esc(x.title)}》自動帶入`
     : x.error==='not_published'
@@ -3244,6 +3251,8 @@ async function syncHol(){
     if(WRITING>0) await writeIdle();
     const staleStore=(STORE!==hs);   // 等的期間切了店：這份紅字天數是舊店的，不套到新店畫面；但下面對「目前」店月的重載判斷照做
     if(!staleStore){ HOLSYNC=r; GOVNAMES=r.names||{}; applyHol(r.holidays); }
+    // 節日表改由營運系統發布（只有後端回 hol_source:'mini' 才換說明；沒開時說明照舊）
+    if(r.hol_source==='mini'&&$('holHint')) $('holHint').innerHTML='基本工時 ＝ (當月天數 − 紅字天數) × 每日工時。<br>紅字天數與國定假日由<b>營運系統的節日表</b>發布過來（照人事行政總處行事曆、人資主管確認後生效），薪資這邊不再自己抓、也不能手動改。已經過去、已鎖定的月份不會被改動。<br>國定假日碰到週末、有補假的，<b>雙薪算在補假那天</b>（例：國慶 10/10 週六 → 10/9 週五雙薪）。';
     if(r.changed&&r.changed.length){
       toast('已依人事行政總處自動帶入紅字天數：'+r.changed.join('、'));
       // 正在看的月份剛被補上、又還沒算過 → 重載一次，才會自動試算
