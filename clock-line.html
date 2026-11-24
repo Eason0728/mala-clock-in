@@ -508,6 +508,13 @@
     if (c.locked) return !c.until || Date.now() + clockSkew < c.until;
     return t === 'in' && !!c.in_block;
   }
+  /* 班表寬限（2026-11-23，後端 Cap10.gs REST_CAP_ON='2'）：已滿 10 小時、但滿 10 那一刻比班表下班晚超過 30 分，系統沒代記下班卡，
+     開頁回 cap.grace_hm（'HH:MM'＝滿 10 那一刻）。只在有這個欄位、而且沒鎖（cap.locked 不是 true）時提示；字句主管 2026-11-23 選短版，逐字不改。 */
+  function capGraceHm(s) {
+    var c = s && s.cap;
+    return c && c.locked !== true && typeof c.grace_hm === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(c.grace_hm) ? c.grace_hm : '';   // 時 00–23、分 00–59，不合就不顯示
+  }
+  function capGraceText(hm) { return '已滿 10 小時：按下班會記在 ' + hm + '，之後今天不能再打上班卡。早就下班了？請送忘打卡單補實際時間。'; }
   function restBlocked() {
     var r = status && status.rest;
     if (!r || !r.blocked) return false;
@@ -550,6 +557,7 @@
       say(bindNote, bindNote ? 'ok' : '', ''); bindNote = '';   // 剛跨單位加入名冊：顯示一次
       if (capBlocked('in') || capBlocked('out')) say(s.cap.reason, 'warn', s.cap.hint);
       else if (restBlocked()) say(s.rest.reason, 'warn', s.rest.hint);
+      else if (capGraceHm(s)) say(capGraceText(capGraceHm(s)), 'warn', '');   // 班表寬限沒代記（2026-11-23 主管選短版）；後端沒給 grace_hm＝這行不成立、畫面跟以前一樣
       else if (s.rest && s.rest.warn && s.guard && s.guard.blocked !== 'in') say(s.rest.warn.reason, 'warn', s.rest.warn.hint);   // 滿 10 小時：只提醒，上班鍵照常可按
     } else {
       var r = s.result || {};

@@ -28,6 +28,21 @@
        「你今天已經上班 X 小時」的 X 顯示取整後的時數（小數兩位，例 9.75）。
      設計與試算：~/加盟名單平台/_brain_out/cap10-newdef/design.md、buffer15.md
    - 總開關：指令碼屬性 REST_CAP_ON 恰為 '1'。任何一步出錯一律不擋、不寫（不能讓打卡因為這道檢查壞掉）。
+   - 2026-11-24 主管定案「做系統主動代記」「可以，照算忘刷」（班表寬限，設計 docs/cap10-newdef/sched-grace.md）：
+     REST_CAP_ON 恰為 '2'＝收卡照開＋這條規則；其他任何值＝跟 '1'／關著完全一樣（'2' 以外的路徑逐位元組不變）。
+     ①只管「系統主動代記」：定時掃描 capSweep、開打卡頁（liff_status）兩條路，在「滿 10 小時那一刻（第一個滿 10 的 15 分刻度）
+       比當天班表最後一段的下班時間晚超過 30 分鐘」時不寫系統卡、不鎖（當成忘刷下班，同仁走忘打卡單）。剛好晚 30 分照舊代記。
+     ②本人按下班：照舊（寫在滿 10 那一刻、回 cap_locked）。③本人按上班（LINE、舊 liff_clock、舊連結 clock.html 同一支 capBlock_）
+       而前一段開著、已滿 10、又符合①：不寫、放行這次上班（前一段照既有流程變「下班忘刷卡」）。不符合①照舊。
+     ④班表：本店、本人工號（capSchedEnd_），兩段／三段取最後一段的下班，跨午夜照實際結束時刻；
+       日期：上班卡落在「前一天班表最後一段跨過午夜、還沒到那段下班」→ 用前一天那段，否則用上班卡那天（2026-11-23 審查第一輪）；
+       只認上班格（t＝W）；讀不到、沒排、例假、休息日、請假、國定假日、格式怪、上班卡比那天班表下班還晚 → 一律照舊代記。
+     ⑤只適用「姓名只在本店名冊在職」的同仁、而且正在上班那段在本店（2026-11-23 主管定案「排除跨店的人」，capGraceSingle_）：
+       姓名在兩家以上門市名冊在職、別家店名冊讀不到或是空的、那段在別家店 → 整段照 38d0340（不論開關、不論哪個入口）。
+       取整、休息、假單全部不動。寬限用的班表另有「店＋期」快取（capGraceSched_，5 分鐘，內容壞一律重讀）；補缺卡的 capSchedPub_ 不動。
+   - 2026-11-24 跨店補時（主管「現行版本就有的跨店時數漏算。繼續做」，設計 docs/cap10-newdef/peer-fill.md）：REST_CAP_ON '3'＝收卡＋跨店補時、'4'＝再加班表寬限；
+     別家店那段缺卡也用那家店的班表補（capMakeFillAll_）；只在本店那段／沒在上班時用（capFillPick_），別家店那段照 38d0340。'1'／'2' 不變。
+     屬性用 REST_CAP_ON 的值（而不是新屬性）：mini 擋卡引擎只拉 RELAYG_PROPS_ 那三個屬性，新屬性 mini 看不到、兩邊會判得不一樣。
    九店整檔共用；動作掛在 Liff.gs LIFF_HANDLERS，不改各店 程式碼.js。 */
 var CAP_H = 10;
 var CAP_LOCK_H = 11;             // 跟兩班間隔 REST_GAP_H 同一個時間（Eason 第 4 題）
@@ -42,9 +57,26 @@ var CAP_SCHED_CACHE_S = 300;
 var CAP_LEAVE_CACHE_S = 60;      // 申請表（已核准的請假、出差）快取秒數
 // 這段上班開始之後才核准的單，算不算進即時收卡（預設 false＝不算、只進事後通知；待主管決定，true＝從核准那一刻起算、可能當場收卡）
 var CAP_LIVE_LATE_OK = false;
+var CAP_GRACE_MIN = 30;          // 班表寬限（2026-11-24）：滿 10 那一刻比班表下班晚「超過」這麼多分鐘，系統不主動代記
+var CAP_GRACE_VAL = '2';         // REST_CAP_ON 是這個值＝收卡開著＋班表寬限
 
+/* 屬性讀取次數（2026-11-24 #234 審查第 3 條、第二輪）：不用時間當記憶的界線，讀到的值明確往下傳。
+   - capCheck_：開頭讀一次（＝#232 的 capOn_ 那一次），收卡開關、跨店補時都用這個值；寬限照 #232 在判斷當下另讀一次（capGraceOn_）。
+   - handleCapSet_：判斷「收卡開著」時讀到的值，就拿來決定保留的寬限／補時；組回應時讀到的值，就拿來回 fill。
+   - capTodayMs_（只有 Rest.gs 叫，而且 Rest.gs 一定是 capOn_() && … && capTodayMs_(…) 緊接著叫）：capOn_ 把讀到的值放進 CAP_PROP_TOKEN_，
+     capTodayMs_ 拿來用一次就清掉；沒有就自己讀。值只留到下一個 capTodayMs_ 為止，跟時間無關；快速通道上每個請求的 Rest.gs 都會先叫 capOn_ 重新放。
+   '1'／'2' 的屬性讀取次數在任何耗時下都跟 #232 一樣。 */
+var CAP_PROP_TOKEN_ = null;        // {v}：capOn_ 剛讀到的值，給緊接著的 capTodayMs_ 用一次
+function capPropRead_() { return PropertiesService.getScriptProperties().getProperty('REST_CAP_ON'); }
+function capOnV_(v) { return v === '1' || v === CAP_GRACE_VAL || v === '3' || v === '4'; }
+function capGraceV_(v) { return v === CAP_GRACE_VAL || v === '4'; }
+function capFillV_(v) { return v === '3' || v === '4'; }
 function capOn_() {
-  try { return PropertiesService.getScriptProperties().getProperty('REST_CAP_ON') === '1'; } catch (e) { return false; }
+  try { var v = capPropRead_(); CAP_PROP_TOKEN_ = { v: v }; return capOnV_(v); } catch (e) { CAP_PROP_TOKEN_ = null; return false; }
+}
+/** 班表寬限開著（REST_CAP_ON 恰為 '2'，或 '4'＝寬限＋跨店補時）；讀不到＝關。 */
+function capGraceOn_() {
+  try { return capGraceV_(capPropRead_()); } catch (e) { return false; }
 }
 function capMs_(ts) { var t = new Date(String(ts)).getTime(); return isNaN(t) ? NaN : t; }
 function capDay_(ms) { return Utilities.formatDate(new Date(ms), 'Asia/Taipei', 'yyyy-MM-dd'); }
@@ -418,6 +450,383 @@ function capMakeFill_(empId) {
   return fn;
 }
 
+/* ── 跨店補時（2026-11-24 主管「現行版本就有的跨店時數漏算。繼續做」；REST_CAP_ON '3'／'4'）──
+   38d0340 用班表補缺卡只補本店的卡（capMakeFill_ 的 if (ev.store) return null）：同仁在 B 店上班、忘刷下班、再到 A 店上班，
+   A 店把 B 店那張沒下班的上班卡當孤單卡、不計時數，可以再上滿 10 小時。開關開著時：
+   ①補缺卡改成本店、別家店的卡都用「那家店」的已發布班表補（判法跟 capMakeFill_ 一樣：孤單上班卡找開始差 2 小時內的時段、用它的結束；
+     孤單下班卡找結束差 2 小時內的、用它的開始；凌晨 06:00 以前的下班卡算前一天）。
+   ②別家店的工號：那家店名冊同名在職只有一個工號才補（rpr: 名冊快取＝restPeerEvents_ 依姓名挑那家店打卡列用的同一份）；同名多人、名冊／班表讀不到 → 不補（＝現狀）。
+   ③班表一律讀 capGraceSched_（店＋期快取），本店的卡、別家店的卡同一種讀法 → 兩家店對同一張卡補出同一個時間。
+   ④只有「正在上班那段在本店」（本店會寫系統卡）或「沒有正在上班」（只決定本店擋不擋上班）時才用補過的結果；
+     正在上班那段在別家店（本店只擋不寫）時照 38d0340 算——寫卡的那家店開著才會寫，本店只照舊擋，所以兩家店開關不同時不會比現在多出「沒卡卻鎖」。 */
+var CAP_FILL_A = '3';            // 收卡＋跨店補時
+var CAP_FILL_B = '4';            // 收卡＋班表寬限＋跨店補時
+/** 跨店補時開著（REST_CAP_ON 恰為 '3' 或 '4'）；讀不到＝關。 */
+function capFillOn_() {
+  try { return capFillV_(capPropRead_()); } catch (e) { return false; }
+}
+/** '4' 不給寬限的條件（#234 審查殘餘）：今天在別家店有本人有效的打卡（上班／下班、不是退回、不是系統卡）。
+ *  系統卡不算：那是規則自己寫的（可能是昨天那段延續下來），不代表今天人在那家店；退回、作廢的不算；別家店的鏡像列 capEventsFor_ 已排除。 */
+function capPeerPunchToday_(ev, nowMs) {
+  var today = capDay_(nowMs);
+  return (ev || []).some(function (e) {
+    if (!e || !e.store || (e.type !== 'in' && e.type !== 'out') || String(e.status || '').indexOf('rejected_') === 0 || String(e.source || '') === CAP_SRC) return false;
+    var ms = capMs_(e.ts);
+    return !isNaN(ms) && ms <= nowMs && capDay_(ms) === today;
+  });
+}
+/** 別家店（REST_PEERS_ 代碼 code）名冊裡跟這個姓名同名在職的唯一工號；沒有、不只一個、讀不到 → null（不補）。memo：同一個補缺卡函式內記住。 */
+function capPeerId_(code, name, memo) {
+  if (Object.prototype.hasOwnProperty.call(memo, code)) return memo[code];
+  var id = null;
+  try {
+    var nm = restName_(name), p = null;
+    (typeof REST_PEERS_ === 'undefined' ? [] : REST_PEERS_).forEach(function (x) { if (x && x.code === code) p = x; });
+    if (nm && p && p.ss) {
+      var cache = CacheService.getScriptCache(), ck = 'rpr:' + p.ss.slice(-12), hit = cache.get(ck), roster = hit ? JSON.parse(hit) : null;
+      if (!Array.isArray(roster)) {   // 同 restPeerEvents_：名冊快取 6 小時、格式 [[姓名去空白, 工號]]
+        roster = readSheetAsObjects(SpreadsheetApp.openById(p.ss).getSheetByName('roster')).rows
+          .filter(function (r) { return String(r.active).toLowerCase() === 'true'; })
+          .map(function (r) { return [restName_(r.name), String(r.emp_id)]; });
+        try { cache.put(ck, JSON.stringify(roster), REST_PEER_CACHE_S); } catch (e) {}
+      }
+      var ids = roster.filter(function (r) { return Array.isArray(r) && r[0] === nm; }).map(function (r) { return String(r[1]); });
+      if (ids.length === 1) id = ids[0];
+    }
+  } catch (e) { id = null; }
+  memo[code] = id;
+  return id;
+}
+/** fill(kind, ev) 給 capJudge_（跨店補時版）：本店的卡用本人工號、別家店的卡用 capPeerId_；班表讀 capGraceSched_。補不出來回 null。
+ *  ownOnly＝只補本店的卡（＝38d0340 的補法，但班表一樣讀 capGraceSched_：#234 審查第 4 條，開了跨店補時不可因為整表快取放不下而每次重讀整張表）。 */
+function capMakeFillAll_(me, ownOnly) {
+  var self = null, ids = {};
+  return function (kind, ev) {
+    try {
+      if (self === null) self = capSelf_();
+      var code, empId;
+      if (!ev.store) { if (!self.code) return null; code = self.code; empId = String(me.emp_id); }
+      else if (ownOnly) return null;
+      else { code = ev.store; empId = capPeerId_(code, me.name, ids); if (!empId) return null; }
+      var alias = code === 'gf' ? '' : code;
+      var d = (kind === 'out' && capHm_(ev.ms) <= '06:00') ? capDay_(ev.ms - 86400000) : capDay_(ev.ms);
+      var pi = capSchedPeriod_(d);
+      if (!pi) return null;
+      var data = capGraceSched_(alias, pi.p);
+      if (!data) return null;
+      var pub = {};
+      pub[alias + '|' + pi.p] = data;
+      var segs = capSchedSegs_(pub, alias, empId, d), tol = CAP_SCHED_TOL_MIN * 60000, best = null;
+      segs.forEach(function (s) {
+        var diff = Math.abs((kind === 'in' ? s[0] : s[1]) - ev.ms);
+        if (diff <= tol && (!best || diff < best.diff)) best = { diff: diff, v: kind === 'in' ? s[1] : s[0] };
+      });
+      return best ? best.v : null;
+    } catch (e) { return null; }
+  };
+}
+/** 跨店補時：r0＝只補本店（38d0340 的補法）、r1＝本店＋別家店都補。
+ *  時數（today_ms、today_punch_ms）一律用 r1——兩家店對同一個人算出同一個數字（#234 審查第 1 條：已收卡之後也一樣）。
+ *  只有「已滿 10、正在上班那段在別家店」（本店只擋不寫）時，判斷（due／open／reach）照 r0：寫卡的店開著才會寫，本店只照舊擋，開關不同步不會多出沒卡卻鎖。
+ *  鎖住（11 小時內有系統卡）兩者的鎖相同，用 r1（時數是補過的）。 */
+function capFillPick_(r0, r1) {
+  if (!r1) return r0;
+  if (!r1.lock && r1.due && r1.due.store) {
+    var o = { today_ms: r1.today_ms, today_punch_ms: r1.today_punch_ms };
+    ['lock', 'sys', 'until', 'due', 'open', 'reach'].forEach(function (k) { if (Object.prototype.hasOwnProperty.call(r0, k)) o[k] = r0[k]; });
+    return o;
+  }
+  return r1;
+}
+
+/* ── 班表寬限（2026-11-24，檔頭④）── */
+
+/** 'HH:MM'（00:00～24:00）→ 第幾分鐘；不合法回 NaN。 */
+function capGraceHm_(v) {
+  var m = /^(\d{1,2}):(\d{2})$/.exec(String(v === null || v === undefined ? '' : v).trim());
+  if (!m || +m[2] > 59 || +m[1] * 60 + +m[2] > 1440) return NaN;
+  return +m[1] * 60 + +m[2];
+}
+/* 寬限用的班表（2026-11-23 審查第一輪第 3 條）：不用 capSchedPub_ 那份「整張一個快取鍵」（整份超過單鍵上限就每次重讀整張表），
+   改成「店＋期」一鍵、只留判斷用得到的欄位（工號、每格 t／s、班別 id／start／end／segs），一期還是太大就照人切成幾塊；
+   另存一個目錄鍵（有哪些店＋期、各幾塊）。快取時間同 CAP_SCHED_CACHE_S（5 分鐘）。
+   快取寫不進去（Google 單鍵上限、快取服務出錯）→ 記 log＋同一次執行記在 CAP_GRACE_MEMO_，同一次執行不重讀。
+   （mini 擋卡引擎的 CacheService 是記憶體 Map、沒有大小上限、寫入不會失敗，所以 mini 不會用到 CAP_GRACE_MEMO_；
+    它的 status／punch 不會在每次之間把全域變數放回初值，所以這個記憶只在快取寫入失敗時才設，而且帶到期時間。）
+   capMakeFill_（補缺卡，'1' 也走）仍用 capSchedPub_，一個字沒改。 */
+var CAP_GRACE_CK = 'capgr1:';
+var CAP_GRACE_CHUNK_B = 90000;   // 一個快取值的上限（UTF-8 位元組；Google 單鍵 100KB，留餘裕）
+var CAP_GRACE_MEMO_ = null;      // {exp, idx, objs}：快取寫不進去時同一次執行用
+
+/* 快取格式（2026-11-23 第二輪驗收擋項 2：內容壞掉一律當沒有快取、重讀一次）：
+   目錄 capgr1:i ＝ {v:1, k:{'店|期': 塊數}}；資料塊 capgr1:d:<店|期>:<第幾塊> ＝ {v:1, k:'店|期', i, n, shifts:[…], rows:[…]}（rows 不是陣列＝壞，含 null）。
+   讀回來解析失敗、型別不對、缺欄、塊數或編號跟目錄對不上 → 重讀 sched_pub 並重寫快取；只有重讀本身失敗（丟錯／打不開光復試算表）或真的沒發布才「照舊代記」。 */
+function capGraceBytes_(s) { return encodeURIComponent(s).replace(/%[0-9A-F]{2}/g, 'x').length; }
+function capGraceObj_(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
+function capGraceParse_(s) { if (typeof s !== 'string' || !s) return undefined; try { return JSON.parse(s); } catch (e) { return undefined; } }
+function capGraceIdxOk_(x) {
+  if (!capGraceObj_(x) || x.v !== 1 || !capGraceObj_(x.k)) return false;
+  return Object.keys(x.k).every(function (k) { var n = x.k[k]; return typeof n === 'number' && n >= 1 && n <= 1000 && Math.floor(n) === n; });
+}
+/* 內層也要合格（2026-11-23 審查第二輪第 4 條；#232 審查第一輪第 1 條改成「下游實際會用到的欄位都要在、型別要對」）：
+   capGraceSlim_ 一定產出下面的形狀，快取裡只要有一處不是，就是被改壞了 → 重讀。必要欄位從下游反推（capGraceDayEnd_、capSchedShiftOf_）：
+   - 格：t（字串；capGraceDayEnd_ 比 'W'）；t＝'W' 時 s（非空字串或非 0 數字；capSchedShiftOf_ 用 !cell.s 擋、用 x.id === cell.s 找班別）。
+     發布資料本身 W 格缺 s → 正規化成 {t:'W', bad:1}（下游 !cell.s＝讀不到＝照舊）；不是 W 的格 s 可有可無（基本值）。
+   - 班別：id（非空字串或非 0 數字）、start、end（非空字串；capSchedShiftOf_ 要 sh.start && sh.end、capGraceHm_ 解析）；
+     有 segs 時是陣列、每段 start、end 都是非空字串。發布資料本身缺任何一項 → 正規化成 {id?, bad:1}（下游找到也是讀不到＝照舊）。
+   - 列：emp_id 字串、cells 陣列；資料塊：v、k、i、n、shifts 陣列、rows 陣列。
+   所以「被改壞」（缺欄、錯型別）一定不合格 → 重讀；「發布資料本身缺」在快取裡是帶 bad 的合法形狀 → 不會每次重讀、判斷照舊。 */
+function capGracePrim_(v) { return v === undefined || v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'; }
+function capGraceStr_(v) { return typeof v === 'string' && v !== ''; }
+function capGraceKey_(v) { return capGraceStr_(v) || (typeof v === 'number' && isFinite(v) && v !== 0); }
+function capGraceSegsOk_(segs) { return Array.isArray(segs) && segs.every(function (g) { return capGraceObj_(g) && capGraceStr_(g.start) && capGraceStr_(g.end); }); }
+function capGraceShiftOk_(x) {
+  if (!capGraceObj_(x)) return false;
+  if (x.bad === 1) return (x.id === undefined || capGraceKey_(x.id)) && Object.keys(x).every(function (k) { return k === 'id' || k === 'bad'; });
+  return x.bad === undefined && capGraceKey_(x.id) && capGraceStr_(x.start) && capGraceStr_(x.end) && (x.segs === undefined || capGraceSegsOk_(x.segs));
+}
+function capGraceCellOk_(c) {
+  if (c === null) return true;
+  if (!capGraceObj_(c) || typeof c.t !== 'string') return false;
+  if (c.t === 'W') return (c.bad === undefined && capGraceKey_(c.s)) || (c.bad === 1 && c.s === undefined);
+  return c.bad === undefined && capGracePrim_(c.s);
+}
+function capGraceChunkOk_(x, k, i, n) {
+  if (!capGraceObj_(x) || x.v !== 1 || x.k !== k || x.i !== i || x.n !== n || !Array.isArray(x.shifts) || !x.shifts.every(capGraceShiftOk_)) return false;
+  return Array.isArray(x.rows) && x.rows.every(function (r) {
+    return capGraceObj_(r) && typeof r.emp_id === 'string' && Array.isArray(r.cells) && r.cells.every(capGraceCellOk_);
+  });
+}
+/** sched_pub 一格（一店一期）→ 只留判斷用的欄位 {shifts, rows|null}；不是物件回 null（同 capSchedPub_ 的 !data）。
+ *  一律正規化成 capGraceChunkOk_ 認得的形狀：發布資料本身缺必要欄位的班別／W 格標 bad（下游判斷＝讀不到＝照舊，跟原本一樣），免得每次都被當壞快取重讀。
+ *  班次清單有不是物件的 → 整期當讀不到（原本讀 null.id 丟錯＝照舊）。 */
+function capGraceSlim_(data) {
+  if (!capGraceObj_(data)) return null;
+  if (Array.isArray(data.shifts) && !data.shifts.every(capGraceObj_)) return { shifts: [], rows: null };
+  var pv = function (v) { return capGracePrim_(v) ? v : undefined; };
+  var shifts = Array.isArray(data.shifts) ? data.shifts.map(function (x) {
+    var segsOk = !x.segs || capGraceSegsOk_(x.segs);
+    if (!capGraceKey_(x.id) || !capGraceStr_(x.start) || !capGraceStr_(x.end) || !segsOk) return capGraceKey_(x.id) ? { id: x.id, bad: 1 } : { bad: 1 };
+    var o = { id: x.id, start: x.start, end: x.end };
+    if (x.segs) o.segs = x.segs.map(function (g) { return { start: g.start, end: g.end }; });
+    return o;
+  }) : [];
+  var rows = Array.isArray(data.rows) ? data.rows.map(function (r) {
+    return { emp_id: String(r && r.emp_id), cells: r && Array.isArray(r.cells) ? r.cells.map(function (c) {
+      if (!capGraceObj_(c)) return null;
+      var t = c.t === undefined || c.t === null ? '' : String(c.t);
+      if (t === 'W') return capGraceKey_(c.s) ? { t: t, s: c.s } : { t: t, bad: 1 };
+      return { t: t, s: pv(c.s) };
+    }) : [] };
+  }) : null;
+  return { shifts: shifts, rows: rows };
+}
+/** 精簡後的一期 → 資料塊物件陣列（放不進一鍵就照列切塊，每塊都帶 shifts 與 k／i／n）。 */
+function capGraceSplit_(k, slim) {
+  var groups = [slim.rows];
+  if (slim.rows && slim.rows.length > 1 && capGraceBytes_(JSON.stringify(slim)) > CAP_GRACE_CHUNK_B - 200) {
+    groups = [];
+    var cur = [], head = capGraceBytes_(JSON.stringify({ v: 1, k: k, i: 0, n: 0, shifts: slim.shifts, rows: [] })) + 40, size = head;
+    slim.rows.forEach(function (r) {
+      var b = capGraceBytes_(JSON.stringify(r)) + 1;
+      if (cur.length && size + b > CAP_GRACE_CHUNK_B) { groups.push(cur); cur = []; size = head; }
+      cur.push(r); size += b;
+    });
+    if (cur.length) groups.push(cur);
+  }
+  return groups.map(function (rows, i) { return { v: 1, k: k, i: i, n: groups.length, shifts: slim.shifts, rows: rows }; });
+}
+/** 讀一次 sched_pub（光復試算表）→ {idx:{'店|期': 塊數}, objs:{快取鍵: 資料塊}}，順便寫快取；打不開光復試算表回 null，讀表丟錯往外丟。 */
+function capGraceLoad_() {
+  var me = capSelf_(), ss = null;
+  try { ss = me.isGf ? getSS() : (me.gfSs ? SpreadsheetApp.openById(me.gfSs) : null); } catch (e) { ss = null; }
+  if (!ss) return null;
+  var sh = ss.getSheetByName('sched_pub'), idx = {}, objs = {};
+  if (sh) {
+    var vals = sh.getDataRange().getValues();
+    for (var r = 1; r < vals.length; r++) {
+      var d = String(vals[r][3] || ''), data = null;
+      if (!d) continue;
+      try { data = JSON.parse(d); } catch (e) { continue; }
+      var slim = capGraceSlim_(data);
+      if (!slim || !slim.rows) continue;   // rows 不是陣列（資料本身壞）＝當成沒發布這期（同 capSchedEnd_ 原本的 !data.rows → 照舊）
+      var k = String(vals[r][0]) + '|' + String(vals[r][1]), parts = capGraceSplit_(k, slim);
+      idx[k] = parts.length;
+      parts.forEach(function (o) { objs[CAP_GRACE_CK + 'd:' + k + ':' + o.i] = o; });
+    }
+  }
+  var put = {}, bad = 0, cache = CacheService.getScriptCache();
+  put[CAP_GRACE_CK + 'i'] = JSON.stringify({ v: 1, k: idx });
+  Object.keys(objs).forEach(function (key) { put[key] = JSON.stringify(objs[key]); });
+  try { cache.putAll(put, CAP_SCHED_CACHE_S); } catch (e) {
+    Object.keys(put).forEach(function (key) { try { cache.put(key, put[key], CAP_SCHED_CACHE_S); } catch (x) { bad++; } });
+  }
+  if (bad) {
+    Logger.log('CAP 寬限班表快取寫不進去 ' + bad + ' 鍵（這次執行內記住，下一次執行會再讀一次 sched_pub）');
+    CAP_GRACE_MEMO_ = { exp: Date.now() + CAP_SCHED_CACHE_S * 1000, idx: idx, objs: objs };
+  }
+  return { idx: idx, objs: objs };
+}
+function capGraceJoin_(objs) {
+  var rows = [];
+  objs.forEach(function (o) { rows = rows.concat(o.rows); });
+  return { shifts: objs[0].shifts, rows: rows };
+}
+function capGracePick_(L, k) {
+  if (!Object.prototype.hasOwnProperty.call(L.idx, k)) return null;
+  var objs = [];
+  for (var i = 0; i < L.idx[k]; i++) objs.push(L.objs[CAP_GRACE_CK + 'd:' + k + ':' + i]);
+  return capGraceJoin_(objs);
+}
+/** 某店（sched_pub 的店別：光復＝''）某期精簡後的班表 {shifts, rows}；沒發布回 null。重讀 sched_pub 丟的錯往外丟（呼叫端＝照舊）。 */
+function capGraceSched_(alias, period) {
+  var k = alias + '|' + period, cache = CacheService.getScriptCache(), m = CAP_GRACE_MEMO_;
+  if (m && m.exp > Date.now()) return capGracePick_(m, k);
+  var idx;
+  try { idx = capGraceParse_(cache.get(CAP_GRACE_CK + 'i')); } catch (e) { idx = undefined; }
+  if (capGraceIdxOk_(idx)) {
+    if (!Object.prototype.hasOwnProperty.call(idx.k, k)) return null;
+    var n = idx.k[k], keys = [], got = null;
+    for (var i = 0; i < n; i++) keys.push(CAP_GRACE_CK + 'd:' + k + ':' + i);
+    try { got = cache.getAll(keys); } catch (e) { got = null; }
+    var objs = keys.map(function (x) { return got && Object.prototype.hasOwnProperty.call(got, x) ? capGraceParse_(got[x]) : undefined; });
+    if (objs.every(function (o, j) { return capGraceChunkOk_(o, k, j, n); })) return capGraceJoin_(objs);
+    if (objs.some(function (o) { return o !== undefined; })) Logger.log('CAP 寬限班表快取內容不對（' + k + '），重讀 sched_pub');
+  } else if (idx !== undefined) Logger.log('CAP 寬限班表快取目錄不對，重讀 sched_pub');
+  var L = capGraceLoad_();
+  return L ? capGracePick_(L, k) : null;
+}
+/** 本人這一段（本店）在班表上的某天最後一段下班時刻（毫秒，跨午夜照實際）；只認上班格 t＝W；
+ *  分段照順序接（下一段開始早於上一段結束＝過了午夜、加一天；結束不晚於開始＝跨午夜、加一天）。沒排、讀不到、格式怪 → null。 */
+function capGraceDayEnd_(alias, empId, d) {
+  var pi = capSchedPeriod_(d);
+  if (!pi) return null;
+  var data = capGraceSched_(alias, pi.p);
+  if (!data || !data.rows) return null;
+  var base = capMs_(d + 'T00:00:00+08:00');
+  if (isNaN(base)) return null;
+  var row = null;
+  data.rows.forEach(function (r) { if (String(r.emp_id) === String(empId)) row = r; });
+  var cell = row && row.cells ? row.cells[pi.idx] : null;
+  if (!cell || String(cell.t) !== 'W') return null;
+  var sh = capSchedShiftOf_(data, row, pi.idx);
+  if (!sh) return null;
+  var parts = sh.segs ? sh.segs.map(function (x) { return [x.start, x.end]; }) : [[sh.start, sh.end]];
+  if (!parts.length) return null;
+  var prev = -Infinity, end = null;
+  for (var i = 0; i < parts.length; i++) {
+    var a = capGraceHm_(parts[i][0]), b = capGraceHm_(parts[i][1]);
+    if (isNaN(a) || isNaN(b) || a === b) return null;
+    if (a < prev) a += 1440;
+    if (a < prev) return null;
+    while (b <= a) b += 1440;
+    prev = b; end = b;
+  }
+  return end === null ? null : base + end * 60000;
+}
+/** 這段上班（本店、上班卡 inMs）對到的班表下班時刻（毫秒）；任何不確定回 null（＝照舊代記）。
+ *  日期歸屬（2026-11-23 審查第一輪第 2 條）：上班卡那天的「前一天」班表最後一段跨過午夜、且上班卡早於那段下班 → 用前一天那段；
+ *  否則用上班卡那天的班表，且上班卡要早於那天班表下班（不然這段不是那個班＝null）。 */
+function capSchedEnd_(empId, inMs) {
+  try {
+    var me = capSelf_();
+    if (!me.code) return null;
+    var alias = me.code === 'gf' ? '' : me.code;
+    var d = capDay_(inMs), base = capMs_(d + 'T00:00:00+08:00');
+    if (isNaN(base)) return null;
+    var prev = capGraceDayEnd_(alias, empId, capDay_(base - 43200000));
+    if (prev !== null && prev > base && inMs < prev) return prev;
+    var end = capGraceDayEnd_(alias, empId, d);
+    return end !== null && inMs < end ? end : null;
+  } catch (e) { return null; }
+}
+/** 滿 10 那一刻 atMs 比班表下班晚超過 CAP_GRACE_MIN 分鐘 → true（系統不主動代記）；讀不到班表＝false（照舊）。 */
+function capGraceLate_(empId, inMs, atMs) {
+  var end = capSchedEnd_(empId, inMs);
+  return end !== null && atMs - end > CAP_GRACE_MIN * 60000;
+}
+
+/* 只在一家門市名冊在職（2026-11-23 主管定案「排除跨店的人」，方案甲）：寬限只給「姓名只在本店名冊在職」的同仁。
+   「在職」＝打卡端同一個條件 String(active).toLowerCase() === 'true'（Liff.gs liffRosterByLine_、Code.gs findRosterByKey、Rest.gs restPeerEvents_）；
+   姓名比法＝restName_（去掉所有空白，同 restPeerEvents_ 依姓名合併別家店的卡）。
+   判定單店的條件（任何一條不成立＝判不了＝照舊代記，＝38d0340 行為）：
+   ①REST_PEERS_（各店 RestConfig）至少列了 CAP_SINGLE_STORES 家不同的試算表，而且認得出本店（清單漏列別家店時會把跨店的人當單店，所以少於預期就照舊）；
+   ②每一家店（含本店）的名冊都「讀取成功」：打得開試算表、有 roster 分頁、讀回來是列陣列。讀到 0 位在職＝成功（那家店沒人，例：瑞光、文心目前沒人用打卡）；
+   ③本店在職名單裡有這個姓名；④其他每一家店的在職名單裡都沒有這個姓名。同一家店兩位同名＝還是只在一家（只看別家店有沒有）。
+   名冊快取：只快取讀取成功的結果（鍵 cgs:<完整試算表 ID>＝{v, store, n, names}，CAP_SINGLE_CACHE_S 秒；內容不對＝重讀）；讀取失敗不快取（下一次執行重試）並記 log；
+   同一次執行內成功、失敗都記住（CAP_SINGLE_MEMO_，60 秒到期）。
+   （不用 rpr: 那份 6 小時快取：它分不出空名冊與讀取失敗，而且別家店剛把人加進名冊時，6 小時內兩店會一邊判單店、一邊判多店；10 分鐘把這個窗口縮小。）
+   只有「滿 10、晚超過 30 分、本店那一段、開頁／掃描／按上班」才會走到這裡（capCheck_ 裡排在班表判斷之後），平常打卡不讀別家店名冊。 */
+var CAP_SINGLE_CACHE_S = 600;
+var CAP_SINGLE_STORES = 9;         // 九店：REST_PEERS_ 少於這麼多家不同的試算表＝清單不齊＝照舊（加開門市時要一起改）
+var CAP_SINGLE_MEMO_MS = 60000;    // 同一次執行內記住各店名冊結果（成功、失敗都記）；快速通道的全域變數不會在請求之間歸零，所以帶 60 秒到期
+var CAP_SINGLE_MEMO_ = null;       // {exp, m:{試算表 ID: {ok:[姓名]}|{err:'…'}}}
+/** 快取裡這家店的名冊（不開試算表）：同一次執行的記憶（成功的）或跨執行快取（內容要合格）；沒有回 null，記憶裡是失敗就丟錯。
+ *  跨執行快取：鍵 cgs:<完整試算表 ID>，值 {v:1, store:<完整試算表 ID>, n, names:[非空字串]}（#232 審查第一輪第 2 條：不再只用後 12 碼）。 */
+function capGraceRosterCached_(ssId) {
+  var now = Date.now();
+  if (!CAP_SINGLE_MEMO_ || !(CAP_SINGLE_MEMO_.exp > now)) CAP_SINGLE_MEMO_ = { exp: now + CAP_SINGLE_MEMO_MS, m: {} };
+  var mm = CAP_SINGLE_MEMO_.m;
+  if (Object.prototype.hasOwnProperty.call(mm, ssId)) { if (mm[ssId].err) throw new Error(mm[ssId].err); return mm[ssId].ok; }
+  try {
+    var hit = CacheService.getScriptCache().get('cgs:' + ssId), v = hit ? JSON.parse(hit) : null;
+    if (v && typeof v === 'object' && v.v === 1 && v.store === String(ssId) && Array.isArray(v.names) && v.n === v.names.length &&
+        v.names.every(function (x) { return typeof x === 'string' && x !== ''; })) { mm[ssId] = { ok: v.names }; return v.names; }
+  } catch (e) {}
+  return null;
+}
+/** 一家店在職姓名清單（去空白、去掉空名字）；讀取失敗丟例外（呼叫端＝照舊）。
+ *  讀取成功＝打得開、有 roster 分頁、表頭有 name 與 active（#232 審查殘餘：誤填成別份試算表或表頭改名不可當成「0 人」）、讀回來是列；0 位在職也是成功。
+ *  成功才寫跨執行快取（CAP_SINGLE_CACHE_S）；成功、失敗都記在同一次執行的記憶（一次掃描對每家店最多開一次）。 */
+function capGraceRosterNames_(ssId) {
+  var hit = capGraceRosterCached_(ssId);
+  if (hit) return hit;
+  var mm = CAP_SINGLE_MEMO_.m;
+  try {
+    var sh = SpreadsheetApp.openById(ssId).getSheetByName('roster');
+    if (!sh) throw new Error('沒有 roster 分頁：' + String(ssId).slice(-6));
+    var res = readSheetAsObjects(sh), heads = (res && res.headers) || [];
+    if (heads.indexOf('name') < 0 || heads.indexOf('active') < 0) throw new Error('roster 表頭缺 name／active：' + String(ssId).slice(-6));
+    if (!Array.isArray(res.rows)) throw new Error('roster 讀回來不是列：' + String(ssId).slice(-6));
+    var names = res.rows.filter(function (r) { return r && String(r.active).toLowerCase() === 'true'; })
+      .map(function (r) { return restName_(r.name); }).filter(function (x) { return x !== ''; });
+    mm[ssId] = { ok: names };
+    try { CacheService.getScriptCache().put('cgs:' + ssId, JSON.stringify({ v: 1, store: String(ssId), n: names.length, names: names }), CAP_SINGLE_CACHE_S); } catch (e) {}
+    return names;
+  } catch (e) { mm[ssId] = { err: String(e && e.message || e) }; throw e; }
+}
+/** 快取已經確定是多店（別家店的快取名冊裡有這個姓名）→ true；不開任何試算表，不確定就 false。
+ *  capCheck_ 先問這個：多店者有快取時就不用讀班表（單店者多的只是幾次快取讀取）。 */
+function capGraceMultiCached_(me) {
+  try {
+    var nm = (typeof restName_ === 'function') ? restName_(me && me.name) : '';
+    if (!nm || typeof REST_PEERS_ === 'undefined' || !Array.isArray(REST_PEERS_)) return false;
+    var selfId = getSS().getId();
+    return REST_PEERS_.some(function (p) {
+      if (!p || !p.ss || p.ss === selfId) return false;
+      try { var names = capGraceRosterCached_(p.ss); return !!names && names.indexOf(nm) !== -1; } catch (e) { return false; }
+    });
+  } catch (e) { return false; }
+}
+function capGraceSingle_(me) {
+  try {
+    var nm = (typeof restName_ === 'function') ? restName_(me && me.name) : '';
+    if (!nm || typeof REST_PEERS_ === 'undefined' || !Array.isArray(REST_PEERS_)) return false;
+    var selfId = getSS().getId(), seen = {}, n = 0, selfIn = false;
+    for (var i = 0; i < REST_PEERS_.length; i++) {
+      var p = REST_PEERS_[i];
+      if (!p || !p.ss) return false;
+      if (seen[p.ss]) continue;
+      seen[p.ss] = true; n++;
+      var has = capGraceRosterNames_(p.ss).indexOf(nm) !== -1;
+      if (p.ss === selfId) selfIn = has;
+      else if (has) return false;
+    }
+    if (n < CAP_SINGLE_STORES) { Logger.log('CAP 寬限：REST_PEERS_ 只有 ' + n + ' 家（少於 ' + CAP_SINGLE_STORES + '），照舊'); return false; }
+    return selfIn;
+  } catch (e) { Logger.log('CAP 寬限讀名冊失敗（照舊）：' + e); return false; }
+}
+
 /* ── 讀寫 ── */
 
 /** 本店不打卡休息時段（央廚 12:00–13:00、總部 14:00–15:00；其他店空白＝null） */
@@ -452,7 +861,11 @@ function capDayText_(punchMs, leaveMs) {
  *  Rest.gs 只在 REST_CAP_ON 開著時叫（關著＝提醒跟改版前一樣）；出錯回 null（Rest.gs 退回原本的打卡加總）。 */
 function capTodayMs_(ss, me, nowMs, ownRows, peerEvs) {
   try {
-    var r = capJudge_(capEventsFor_(ss, me, nowMs, ownRows, peerEvs), nowMs, capMakeFill_(me.emp_id), capBreak_(), capLeavesFor_(ss, me, nowMs));
+    var ev = capEventsFor_(ss, me, nowMs, ownRows, peerEvs), brk = capBreak_(), lv = capLeavesFor_(ss, me, nowMs);
+    var tk = CAP_PROP_TOKEN_; CAP_PROP_TOKEN_ = null;
+    var fillOn = tk ? capFillV_(tk.v) : capFillOn_();   // Rest.gs 緊接著 capOn_ 叫：用那次讀到的值、用過就清（不靠時間）
+    var r = capJudge_(ev, nowMs, fillOn ? capMakeFillAll_(me, true) : capMakeFill_(me.emp_id), brk, lv);
+    if (fillOn) r = capFillPick_(r, capJudge_(ev, nowMs, capMakeFillAll_(me), brk, lv));   // 跨店補時（'3'／'4'）
     return { total: r.today_ms, punch: r.today_punch_ms };
   } catch (e) { Logger.log('CAP 今日出勤計算失敗（提醒改用打卡加總）：' + e); return null; }
 }
@@ -496,18 +909,32 @@ function capWrite_(ss, empId, atMs, inMs) {
 }
 
 /** 這個人現在的狀態（必要時順便寫系統卡）→ null（開關關著或出錯）或
- *  {locked, sys, until, in_block, today_h, reason, hint}。locked＝上下班都不能打；in_block＝只擋上班卡。 */
-function capCheck_(ss, me, nowMs, ownRows) {
-  if (!capOn_()) return null;
+ *  {locked, sys, until, in_block, today_h, reason, hint}。locked＝上下班都不能打；in_block＝只擋上班卡。
+ *  mode（2026-11-24 班表寬限）：'auto'＝系統主動代記（掃描、開頁）、'in'／'out'＝本人按上班／下班；沒給＝跟改版前一樣。
+ *  寬限開著、mode 是 auto 或 in、滿 10 那一刻晚於「那段所在門市」班表下班超過 30 分 → 不寫、不鎖，回的 st 多 grace（滿 10 那一刻）。 */
+function capCheck_(ss, me, nowMs, ownRows, mode) {
+  var cv;
+  try { cv = capPropRead_(); } catch (e) { return null; }   // 這次請求讀一次（＝#232 的 capOn_），往下傳
+  if (!capOnV_(cv)) return null;
   try {
     var now = nowMs || Date.now();
-    var r = capJudge_(capEventsFor_(ss, me, now, ownRows), now, capMakeFill_(me.emp_id), capBreak_(), capLeavesFor_(ss, me, now));
+    var ev = capEventsFor_(ss, me, now, ownRows), brk = capBreak_(), lv = capLeavesFor_(ss, me, now);
+    var fillOn = capFillV_(cv);
+    var r = capJudge_(ev, now, fillOn ? capMakeFillAll_(me, true) : capMakeFill_(me.emp_id), brk, lv);
+    if (fillOn) r = capFillPick_(r, capJudge_(ev, now, capMakeFillAll_(me), brk, lv));   // 跨店補時（'3'／'4'，見 capFillPick_）
     // today_h 是畫面上「你今天已經上班 X 小時」的 X：打卡時數取整到 15 分後的小時數（2026-11-23 主管：顯示取整後的時數，跟核定參考時數一樣，例 9.75）；
     // 判斷用 today_ms＝含假單的新定義
     var st = { locked: false, in_block: false, today_h: capH2_(r.today_punch_ms) };
     var sys = null;
     if (r.lock) sys = r.sys;
     else if (r.due) {
+      // 班表寬限（檔頭①③⑤）：只停「系統主動代記」（auto 掃描／開頁、in 按上班）；只對本店那一段、而且姓名只在本店名冊在職的同仁；
+      // 寬限關著時這行永遠不成立（capGraceOn_ 在前、只讀屬性）。其他情況（含跨店、多店名冊）下面整段跟 38d0340 一樣。
+      // '4'（寬限＋補時）：有別家店的卡＝多店，不給寬限（兩份名冊快取版本不同時偏安全；#234 審查殘餘）
+      if ((mode === 'auto' || mode === 'in') && !r.due.store && capGraceOn_() && !(fillOn && capPeerPunchToday_(ev, now)) && !capGraceMultiCached_(me) && capGraceLate_(me.emp_id, r.due.in, r.due.at) && capGraceSingle_(me)) {
+        st.grace = r.due.at;
+        return st;
+      }
       sys = r.due.at;
       if (!r.due.store) {   // 正在上班那段在別家店：那家店寫，這裡只擋
         var w = capWrite_(ss, me.emp_id, r.due.at, r.due.in);
@@ -533,16 +960,18 @@ function capCheck_(ss, me, nowMs, ownRows) {
 
 /** 打卡前的檢查：擋＝{reason, hint, until}，放行＝null。 */
 function capBlock_(ss, me, type, ownRows) {
-  var st = capCheck_(ss, me, Date.now(), ownRows);
+  var st = capCheck_(ss, me, Date.now(), ownRows, type === 'in' || type === 'out' ? type : undefined);
   if (!st) return null;
   if (st.locked) return { reason: st.reason, hint: st.hint, until: st.until };
   if (type === 'in' && st.in_block) return { reason: st.reason, hint: st.hint, until: null };
   return null;
 }
 
-/** liff_status 用：{locked, in_block, reason, hint, until, sys_hm} 或 {locked:false}。 */
+/** liff_status 用：{locked, in_block, reason, hint, until, sys_hm} 或 {locked:false}。
+ *  班表寬限沒代記時多 grace_hm＝滿 10 那一刻（'HH:MM'，按下班會記在這個時間；畫面要不要顯示、字怎麼寫待主管確認，clock-line.html 現在不讀）。 */
 function capStatusFor_(ss, me, ownRows) {
-  var st = capCheck_(ss, me, Date.now(), ownRows);
+  var st = capCheck_(ss, me, Date.now(), ownRows, 'auto');
+  if (st && st.grace && !st.locked && !st.in_block) return { locked: false, in_block: false, grace_hm: capHm_(st.grace) };
   if (!st || (!st.locked && !st.in_block)) return { locked: false, in_block: false };
   return { locked: st.locked, in_block: st.in_block, reason: st.reason, hint: st.hint, until: st.until || null,
            sys_hm: st.sys ? capHm_(st.sys) : null };
@@ -584,25 +1013,39 @@ function capSweep() {
       var me = null;
       roster.forEach(function (r) { if (String(r.emp_id) === id) me = r; });
       if (!me) me = { emp_id: id, name: '' };
-      capCheck_(ss, me, now, rows);
+      capCheck_(ss, me, now, rows, 'auto');   // 系統主動代記（班表寬限套用；寬限關著＝跟改版前一樣）
     });
   } catch (e) { Logger.log('CAP 掃描失敗：' + e); }
 }
 
 /** {action:'cap_set', admin_key, on?:true|false} → 開／關這家店的滿 10 小時收卡（指令碼屬性 REST_CAP_ON＋觸發器 capSweep）。
- *  不帶 on＝只查。管理金鑰空字串一律擋。 */
+ *  不帶 on＝只查。管理金鑰空字串一律擋。
+ *  班表寬限（2026-11-24）：grace:true|false。帶 on:true 時一起決定寫 '2'（寬限）或 '1'；沒帶 on、收卡開著時只改這一項（不動觸發器）；
+ *  收卡關著時帶 grace 不會打開收卡。沒帶 grace 的 on:true 照舊寫 '1'（＝寬限關掉）。回應只在請求帶了 grace 鍵時多 grace 欄（只查：帶 grace:null）。 */
 function handleCapSet_(body) {
   if (!body.admin_key || !checkAdmin(body)) return { ok: false, error: 'unauthorized' };
   var props = PropertiesService.getScriptProperties();
+  // 屬性值＝(寬限, 跨店補時)：'1' 都關、'2' 寬限、'3' 補時、'4' 兩者（2026-11-24 跨店補時加 fill）
+  var val = function (g, f) { return g ? (f ? CAP_FILL_B : CAP_GRACE_VAL) : (f ? CAP_FILL_A : '1'); };
+  var hasG = body.grace === true || body.grace === false, hasF = body.fill === true || body.fill === false;
   if (body.on === true || body.on === false) {
     ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === CAP_SWEEP_FN) ScriptApp.deleteTrigger(t); });
     if (body.on) {
-      props.setProperty('REST_CAP_ON', '1');
+      props.setProperty('REST_CAP_ON', val(body.grace === true, body.fill === true));
       ScriptApp.newTrigger(CAP_SWEEP_FN).timeBased().everyMinutes(CAP_SWEEP_MIN).create();
     } else props.deleteProperty('REST_CAP_ON');
+  } else if (hasG || hasF) {
+    var cur = null;
+    try { cur = capPropRead_(); } catch (e) { cur = null; }   // 判斷「收卡開著」的這一次讀取（＝#232 的 capOn_），也拿來決定保留的寬限／補時
+    if (capOnV_(cur)) props.setProperty('REST_CAP_ON', val(hasG ? body.grace : capGraceV_(cur), hasF ? body.fill : capFillV_(cur)));
   }
   var n = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === CAP_SWEEP_FN; }).length;
-  return { ok: true, on: capOn_(), trigger: n };
+  var now2 = null;
+  try { now2 = capPropRead_(); } catch (e) { now2 = null; }   // 組回應的這一次讀取（＝#232 的 capOn_），也拿來回 fill
+  var out = { ok: true, on: capOnV_(now2), trigger: n };
+  if (Object.prototype.hasOwnProperty.call(body, 'grace')) out.grace = capGraceOn_();
+  if (Object.prototype.hasOwnProperty.call(body, 'fill')) out.fill = capFillV_(now2);     // 帶了 fill 鍵才多回（2026-11-24 跨店補時）   // 只有請求帶了 grace 鍵才多回（沒帶＝跟 38d0340 逐字相同；#232 審查第一輪第 4 條）
+  return out;
 }
 
 /** mgr_day 回應加上系統卡：每人 cap_sys＝['19:00']（那天 00:00 到隔天 06:00 的系統卡），考勤管理拿來標示。 */

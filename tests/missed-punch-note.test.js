@@ -32,18 +32,18 @@ const ev = (ts, type, status, emp) => ({ ts, type, status: status || 'ok', emp_i
 
 ok('上班：上一張算數的卡也是上班 → 告知那天沒打下班卡（日期時間）', () => {
   assert.strictEqual(note([ev('2026-10-07T08:30:00+08:00', 'in')], 'in'),
-    '你 10/7 08:30 上班後沒有打下班卡，請跟主管說實際下班時間');
+    '你 10/7 08:30 上班後沒有打下班卡，請送忘打卡單補實際時間');
 });
 ok('上班：上一張是下班＝正常，不提', () => {
   assert.strictEqual(note([ev('2026-10-07T08:30:00+08:00', 'in'), ev('2026-10-07T17:30:00+08:00', 'out')], 'in'), '');
 });
 ok('上班：下班卡有按但被超出範圍擋下 → 說「沒有打成功」', () => {
   assert.strictEqual(note([ev('2026-10-07T08:30:00+08:00', 'in'), ev('2026-10-07T17:30:00+08:00', 'out', 'rejected_out_of_range')], 'in'),
-    '你 10/7 08:30 上班後的下班卡沒有打成功（不在範圍內），請跟主管說實際下班時間');
+    '你 10/7 08:30 上班後的下班卡沒有打成功（不在範圍內），請送忘打卡單補實際時間');
 });
 ok('上班：連按被擋（rejected_duplicate）不算「有按下班」也不算上一張', () => {
   assert.strictEqual(note([ev('2026-10-07T08:30:00+08:00', 'in'), ev('2026-10-07T08:30:05+08:00', 'in', 'rejected_duplicate')], 'in'),
-    '你 10/7 08:30 上班後沒有打下班卡，請跟主管說實際下班時間');
+    '你 10/7 08:30 上班後沒有打下班卡，請送忘打卡單補實際時間');
 });
 ok('上班：超過 7 天前的漏卡不提（月底多半已處理）', () => {
   assert.strictEqual(note([ev('2026-09-30T08:30:00+08:00', 'in')], 'in'), '');
@@ -88,7 +88,7 @@ ok('liffPunchFor_ 打卡成功回傳 missed（用打卡前讀的 events，不多
   sb.handleClock = () => ({ ok: true, status: 'ok', ts: NOW_TS });
   const r = sb.liffPunchFor_('U1', { emp_id: 'E01', key: 'k', device_id: 'd' }, {}, 'in', {});
   assert.strictEqual(r.ok, true);
-  assert.strictEqual(r.missed, '你 10/7 08:30 上班後沒有打下班卡，請跟主管說實際下班時間');
+  assert.strictEqual(r.missed, '你 10/7 08:30 上班後沒有打下班卡，請送忘打卡單補實際時間');
   assert.strictEqual(reads, 1);
 });
 ok('liffPunchFor_ 打卡失敗不帶 missed', () => {

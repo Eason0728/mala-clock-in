@@ -219,7 +219,7 @@ def missed_detail(evs, type_, ts):
             return {'text': '', 'date': '', 'miss_type': ''}
         head = '你 %s %s 上班後' % (md_of(prev['ts']), prev['ts'][11:16])
         return {'date': prev['ts'][:10], 'miss_type': 'out',
-                'text': head + ('的下班卡沒有打成功（不在範圍內），請跟主管說實際下班時間' if failed else '沒有打下班卡，請跟主管說實際下班時間')}
+                'text': head + ('的下班卡沒有打成功（不在範圍內），請送忘打卡單補實際時間' if failed else '沒有打下班卡，請送忘打卡單補實際時間')}
     if prev and prev['type'] == 'in':
         return {'text': '', 'date': '', 'miss_type': ''}
     return {'date': ts[:10], 'miss_type': 'in',
