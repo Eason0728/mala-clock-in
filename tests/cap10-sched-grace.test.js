@@ -211,7 +211,7 @@ console.log('\n════ 七、開關 ════');
   const r = punch(m, 'in');
   check('G71', "REST_CAP_ON='1'：隔天 05:30 按上班 → 照舊寫 00:00、cap_locked", [r.status, sysHm(m)], ['cap_locked', ['11-21 00:00']]);
 }
-['3', 'on', '', ' 2', '2 '].forEach((v, i) => {
+['5', 'on', '', ' 2', '2 '].forEach((v, i) => {   // '3'／'4' 從 2026-11-24 起是跨店補時（tests/cap10-peer-fill.test.js）
   const m = world(D + 'T19:10:00', [['08:55:00', 'in']], { sched: one('09:00', '18:00'), props: { REST_CAP_ON: v } });
   check('G7' + (2 + i), "REST_CAP_ON='" + v + "'：收卡關著（同改版前）→ 不寫、不擋", [autoAt(m, D + 'T19:10:00'), punch(m, 'out').ok], [[[], false, null], true]);
 });
@@ -317,7 +317,7 @@ const B918 = schedFor('B07', [{ id: 'A', name: '班', start: '09:00', end: '18:0
     { name: '凌晨跨夜班', mk: (cap, src) => { const m = world(D2 + 'T10:15:00', [[D2 + 'T00:05:00', 'in']], { sched: NIGHT_X, props: { REST_CAP_ON: cap } }); if (src) m.run(src); return m; }, times: ['T10:15:00', 'T10:40:00', 'T11:20:00'].map((x) => D2 + x) },
   ];
   let same = 0, diff = [];
-  ['1', null, '0', '3', ' 2', 2].forEach((cap) => scen.forEach((sc) => OPS.forEach((op0) => {
+  ['1', null, '0', '5', ' 2', 2].forEach((cap) => scen.forEach((sc) => OPS.forEach((op0) => {
     const a = sc.mk(cap, OLD), b = sc.mk(cap, null);
     if (cap === null) { delete a.props.REST_CAP_ON; delete b.props.REST_CAP_ON; }
     let ok = true;
@@ -330,7 +330,7 @@ const B918 = schedFor('B07', [{ id: 'A', name: '班', start: '09:00', end: '18:0
     });
     if (ok) same++;
   })));
-  check('X8', "跨店／凌晨跨夜班：開關 '1'、沒設、'0'、'3'、' 2'、數字 2 × 3 種情境 × 8 種起手動作（開頁、掃描、LINE 上下班、liff_clock 上下班、舊連結上下班）與 38d0340 逐步相同",
+  check('X8', "跨店／凌晨跨夜班：開關 '1'、沒設、'0'、'5'、' 2'、數字 2 × 3 種情境 × 8 種起手動作（開頁、掃描、LINE 上下班、liff_clock 上下班、舊連結上下班）與 38d0340 逐步相同",
     [same, diff.slice(0, 2)], [6 * 3 * 8, []]);
 }
 const NIGHT = schedOf([{ id: 'N', name: '夜', start: '18:00', end: '02:00' }], { t: 'W', s: 'N' });
