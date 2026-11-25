@@ -694,6 +694,7 @@ let ASOF=null;   // 本月草稿算到哪一天（後端 asof：{as_of,days_elap
 let ROSTER_MISS=[];   // 主檔工號在打卡名冊找不到的人（payroll_month roster_mismatch，2026-11-06）
 let ZERO_RATIO=[];   // 本月在職天數 0 卻有一列薪資的人（payroll_month／payroll_calc 的 zero_ratio_with_data，2026-11-11）
 let DUPX_ON=false;   // 後端回 dup_xacct_on（跨帳號重複檢查開著）才顯示那類提醒；關著時草稿留著的舊提醒不顯示
+let HOL_GAP=[];   // 班表排了國定假日假、薪資國定假日清單沒有的日子（payroll_month／payroll_calc 的 hol_sched_gap，2026-12 起；只提示）
 let LEAVE_MM=[];   // 請假單和請假登記對不上（payroll_calc 的 leave_mismatch，1113 紅燈 a1）：鎖定前要先處理
 let NOT_IN_PAY=[];   // 主檔已停用、離職日不在本月、本月卻有時數的人（payroll_month／payroll_calc 的 not_in_payroll，2026-11-11）
 let SUPA=null;   // 跨店支援自動帶入（2026-11 起後端 payroll_month 回的 support_auto；之前的月份是 null）
@@ -861,7 +862,7 @@ async function autoCalc(){
   if(STATUS==='final' || RESULTS.length) return;
   const reqStore=STORE;   // 結果是這個單位的：等回應時畫面可能已切走，標題跟著結果走
   const r=await post('payroll_calc',{ym:ym(),inputs:CALC_INPUTS()});
-  if(r&&r.ok){setResults(r.results,reqStore);STATUS='draft';ELEC_STALE=false;asofFromCalc(r);CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;renderRun();renderSlipSel()}
+  if(r&&r.ok){setResults(r.results,reqStore);STATUS='draft';ELEC_STALE=false;asofFromCalc(r);CFG=r.config||CFG;NOT_IN_PAY=r.not_in_payroll||[];ZERO_RATIO=r.zero_ratio_with_data||[];LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;HOL_GAP=r.hol_sched_gap||[];renderRun();renderSlipSel()}
 }
 /* ═════ 未儲存提醒（2026-08-23）═════
  * 出勤資料的所有輸入（含跨店支援明細）都只寫在瀏覽器記憶體，按「儲存工時」才進試算表。
@@ -1172,7 +1173,7 @@ async function loadMonth(pre,preSeq,preGen,opts){   // pre＝開頁時先發出�
     SAME_NAME=r.same_name||[];
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
-    LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;
+    LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;HOL_GAP=r.hol_sched_gap||[];
     ATT=r.inputs||{}; ANNUAL=r.annual||{}; BONUS=(r.bonuses||[]).map(b=>Object.assign({},b));
     SUPA=r.support_auto||null; SUP_OPEN={};
     ROSTER_MISS=r.roster_mismatch||[];
@@ -1247,7 +1248,7 @@ async function doCalc(pendSeq,inputsSaved,auto){   // 回 true＝重算成功並
     asofFromCalc(r);
     NOT_IN_PAY=r.not_in_payroll||[];
     ZERO_RATIO=r.zero_ratio_with_data||[];
-    LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;
+    LEAVE_MM=r.leave_mismatch||[];DUPX_ON=!!r.dup_xacct_on;HOL_GAP=r.hol_sched_gap||[];
     vClear();   // 重算後儀表板／集團總覽的數字會變
     renderRun();renderSlipSel();toast('已重新計算');
     /* 這個月先前讀取失敗（旗標還在）、也沒有月資料在路上：重算成功後重新載入這個月，載入成功才解開（規則同切月份重新載入；2026-11-22 後續 PR）。
@@ -1810,6 +1811,12 @@ function renderOtInfo(t){
   // 請假單和請假登記對不上（1113 紅燈 a1）：鎖定時會擋
   LEAVE_MM.forEach(x=>rows.push(`<li class="bad"><b class="bad">${esc(x.name)}</b>：${md(x.date)} ${esc(x.type)} ${x.side==='request'?'有已核准的請假單，請假登記沒有（請主管把那天重新核定一次）':'請假登記有，卻沒有已核准的請假單（請同仁補請假單，或主管重新核定改掉登記）'}——<b>處理前不能鎖定</b></li>`));
   SAME_NAME.forEach(x=>rows.push(`<li><b class="bad">${esc(x.name)}</b>：打卡名冊有同名的人（${x.emp_ids.map(esc).join('、')}），本月 ${x.rows} 筆請假只有姓名，系統依在職與到離職日算給 ${x.to.map(esc).join('、')}，請確認沒有歸錯人</li>`));
+  /* 班表排了「國定假日假」、薪資國定假日清單沒有那天（2026-12 起，後端 hol_sched_gap；只提示、不擋鎖定、不改金額）。
+     提示文字＝2026-11-23 主管同意修正後的長版（逐字照定稿）。姓名照本區慣例列出，每天最多 5 位，超過時在姓名後加「等」（人數已寫在前面）。 */
+  if(HOL_GAP.length){
+    const days=HOL_GAP.map(x=>{const nm=(x.names||[]).slice(0,5).map(esc).join('、');return `${md(x.date)}（${Number(x.n)||0} 人：${nm}${(Number(x.n)||0)>5?' 等':''}）`}).join('、');
+    rows.push(`<li><b style="color:#b7791f">國定假日清單可能漏了日子</b>：<span style="color:#b7791f">班表有同仁排了「國定假日假」，但「2 參數設定」的國定假日雙薪日沒有這幾天：${days}。影響有兩種：①那天有上班的同仁，不會算國定假日加給。②排了這天國定假日假的正職，系統會當成他把國定假日調到這天休，他本人在同一期（28 天）其他國定假日上班時就不再加給。請先核對雙薪日：清單漏了，請找資訊部同步後再重新計算；如果同仁本來就是把國定假日調到這天休，照現況即可。這個提醒不會擋鎖定。</span></li>`);
+  }
   RESULTS.forEach(r=>{const o=r.ot_info; if(!o||o.ot_h===undefined) return; const nm=esc(r.name);   // r8：只有請款逐筆 xsup 的 ot_info（沒有逐日資料）＝當作沒有，提醒區同正式版
     if(o.missing&&o.missing.length) rows.push(`<li><b class="bad">${nm}</b>：${o.missing.length} 天在班表上查不到（${list(o.missing)}）——<b>補發布班表前不能鎖定</b></li>`);
     if(o.elec_warn) rows.push(o.elec_warn.reason==='hol_manual'
@@ -1824,7 +1831,7 @@ function renderOtInfo(t){
       if(pH>=46) rows.push(`<li><b class="bad">${nm}</b>：這一期（28 天）加班 ${r2(pH)} 小時，已滿 46 小時（休息日和超過 8 小時的上班卡會被擋）</li>`);
       else if(pH>36) rows.push(`<li><b style="color:#b7791f">${nm}</b>：這一期（28 天）加班 ${r2(pH)} 小時，超過 36 小時</li>`); }
     if(o.ot_form_missing&&o.ot_form_missing.length) rows.push(`<li><b class="bad">${nm}</b>：超過 8 小時卻沒有足夠的已核准加班單 ${o.ot_form_missing.map(x=>md(x.date)+(x.store_name?'（要在'+x.store_name+'開）':'')).join('、')}——<b>補單前不能鎖定</b></li>`);
-    if(o.trip_ot&&o.trip_ot.length) rows.push(`<li><b class="bad">${nm}</b>：平日出差不得報加班，${list(o.trip_ot)} 有加班單，請確認</li>`);
+    if(o.trip_ot&&o.trip_ot.length) rows.push(`<li><b class="bad">${nm}</b>：${list(o.trip_ot)} 整天出差，平日出差不得報加班，請確認加班單</li>`);
     if(o.absent_alert) rows.push(`<li><b class="bad">${nm}</b>：有排班沒來 ${o.no_show.length} 天（最長連續 ${o.absent_streak} 天），已達連續 3 天或當月 6 天，請確認是否曠職</li>`);
     if(o.marriage_cross) rows.push(`<li><b style="color:#b7791f">${nm}</b>：婚假跨月，前面月份已請 ${r2(o.marriage_cross.prior_days)} 天、本月 ${r2(o.marriage_cross.month_days)} 天，還沒填結婚日、無法累計 14 天，請確認是否同一次結婚並補填結婚日</li>`);
     if(o.short_8h&&o.short_8h.length) rows.push(`<li><b style="color:#b7791f">${nm}</b>：墨竹亭全時每日要滿 8 小時（含出差、請假），${o.short_8h.slice(0,12).map(x=>md(x.date)+' '+r2(x.h)+'H').join('、')}${o.short_8h.length>12?` 等 ${o.short_8h.length} 天`:''} 不足，請確認</li>`);
