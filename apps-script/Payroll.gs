@@ -4157,7 +4157,7 @@ function payHolPubValidate_(body, nowYm) {
 }
 
 /** 套用計畫（純函式）：all＝holiday 分頁全部列；rows＝推送的全部月份；runs＝payroll_run 全部列（只在有候選月份時才用）。
- *  規則照 payHolidaySync（只動集團列、本月與未來、鎖定跳過），差別：已經過去的月份連缺列也不補（第 9 題「一律不動」）。
+ *  規則照 payHolidaySync（只動集團列、本月與未來、鎖定跳過），差別：已經過去的月份連缺列也不補（第 9 題「一律不動」；2026-11-25 主管再定案：整月沒有資料也不補）。
  *  回 {out（寫回整張用）, added, updated, skipped_locked, skipped_past（過去月份內容跟推送不同）, past_missing（過去月份缺列）, own_rows}。 */
 function payHolPubPlan_(all, rows, nowYm, runsFn) {
   const want = {};
@@ -4266,13 +4266,27 @@ function handlePayrollHolidayPublish(body) {
     skipped_past: plan.skipped_past, past_missing: plan.past_missing, own_rows: plan.own_rows };
   if (dry) res.would_change = changed; else res.changed = apply ? changed : [];
   if (same && !apply) res.drift = changed;   // 同版本重送：分頁跟這一版不同的月份（沒有寫；要對齊帶 reapply:true）
-  return res;
+  return Object.assign(res, payHolPastRefusal_(plan));
 }
 
-/** 只收推送時某月沒有節日資料的回應（算薪用）。ym 已經過去＝推送不會補（凍結），請資訊部處理；本月或未來＝請營運系統發布。 */
+/** 已經過去的月份一律不寫（主管 2026-11-25 定案＝方案乙：「過去的月份整月沒有節日資料時，不補上。」）。
+ *  推送是整份節日表（今年 1 月起都在裡面），不能因為過去月份整份拒收（本月與未來照常寫）；過去月份在回應裡逐月講明拒絕：
+ *  有月份＝{past_code:'hol_past_frozen', past_refused:[月份], past_message:白話}；沒有＝{}（回應跟以前逐字相同）。
+ *  試推、正式推送、reapply 都一樣。「已經過去」沿用 payHolPubPlan_ 的判斷（月份 < 台北本月 currentYmTaipei()）。 */
+function payHolPastRefusal_(plan) {
+  const miss = (plan && plan.past_missing) || [], diff = (plan && plan.skipped_past) || [];
+  if (!miss.length && !diff.length) return {};
+  const parts = [];
+  if (miss.length) parts.push(miss.join('、') + ' 整月沒有節日資料，不會補上，這幾個月不能在系統裡計算薪資，要在系統外處理');
+  if (diff.length) parts.push(diff.join('、') + ' 跟這一版不同，不會改，維持原本的內容（已發的薪資不變），要改只能在系統外處理');
+  return { past_code: 'hol_past_frozen', past_refused: miss.concat(diff).sort(),
+    past_message: '已經過去的月份不寫入節日資料（整月沒有資料也不補）：' + parts.join('；') + '。' };
+}
+
+/** 只收推送時某月沒有節日資料的回應（算薪用）。ym 已經過去＝推送與任何管道都不補（方案乙），只能系統外處理；本月或未來＝請營運系統發布。 */
 function payHolNoRowMsg_(ym, nowYm) {
   if (String(ym) < String(nowYm)) return { ok: false, error: 'no_holiday', hol_source: 'mini', hol_past: true,
-    message: '薪資計算（' + ym + '）：這個月已經過去，節日表不會自動補上這個月的紅字天數與國定假日，這次沒有計算。請聯絡資訊部處理。' };
+    message: '薪資計算（' + ym + '）：這個月已經過去、整月沒有節日資料；已經過去的月份不會補上紅字天數與國定假日，這次沒有計算。這個月的薪資要在系統外處理，請聯絡資訊部。' };
   return { ok: false, error: 'no_holiday', hol_source: 'mini',
     message: '薪資計算（' + ym + '）：還沒有這個月的節日資料，這次沒有計算。請先到營運系統確認並發布 ' + String(ym).slice(0, 4) + ' 年節日表，再重新計算。' };
 }
@@ -5109,7 +5123,7 @@ function handlePayrollCalc(body) {
 
   let holiday = payHolidayRow(ym, payStore(body.store));
   // 節日表改由營運系統發布（PAY_HOL_SOURCE=mini）時不自己同步：缺列就說清楚要去營運系統發布，不當成沒有節日（開關沒開時這一行不成立、照舊）
-  //   已經過去的月份：推送依規則不補（已過去月份凍結），叫人去營運系統發布也補不回來 → 請資訊部處理（docs/holiday-publish/README.md 附錄 B）
+  //   已經過去的月份：一律不補（主管 2026-11-25 定案，方案乙），叫人去營運系統發布也補不回來 → 系統外處理（docs/holiday-publish/README.md 第 3 節）
   if (!holiday && payHolSource_() === 'mini') return payHolNoRowMsg_(ym, currentYmTaipei());
   if (!holiday) {   // 紅字天數改成自動帶入（2026-09-18）：沒有就先依人事行政總處同步該年再找一次
     try { payHolidaySync([Number(ym.slice(0, 4))]); } catch (e) { Logger.log('holiday sync in calc: ' + e); }

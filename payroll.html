@@ -3243,7 +3243,7 @@ function holSyncHtml(s){
     const lagM=arr(lg.locked).concat(arr(lg.past),arr(lg.missing)).sort(), miss=arr(lg.missing).sort();
     const lst=a=>a.slice(0,6).map(esc).join('、')+(a.length>6?' 等':'');
     if(lagM.length) ml[0]+=`；其中 ${lagM.length} 個月因已鎖定或已經過去，沒有跟著這一版更新：${lst(lagM)}`;
-    if(miss.length) ml.push(`⚠ ${lst(miss)} 沒有節日資料、不能計算薪資（已經過去的月份不會自動補），請聯絡資訊部處理`);
+    if(miss.length) ml.push(`⚠ ${lst(miss)} 沒有節日資料、不能計算薪資（已經過去的月份不會補上，要在系統外處理），請聯絡資訊部`);
     if(s.message) ml.push('⚠ '+esc(s.message));
     return ml.join('<br>');
   }
