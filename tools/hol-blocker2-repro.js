@@ -13,9 +13,11 @@
  * 這支在乙的規則下要全部成立（綠）：
  *   1 正式推送遇到過去月份缺列：不寫，回明確拒絕碼 past_code='hol_past_frozen'＋past_refused 月份＋白話 past_message
  *   2 同版 reapply（過去月份被別的管道改過、跟確認版不同）：不寫，同樣回拒絕碼與月份，不是單純成功
- *   3 算薪擋下的白話不再暗示有補的流程（不寫「自動補」）、講明要系統外處理
+ *   3 算薪擋下的白話：系統不會補、要人工到 payroll_holiday 分頁補（系統外處理）
  *   4 文件與程式沒有那個附錄、沒有「切回 gov 補過去月份」的步驟
  *   5 不論哪一步，推送／reapply 對過去月份零寫入
+ * 第 2 輪（Codex 擋項，主管 2026-11-25「甲，也套用」）：現行做法（gov）開頁同步、算薪也不補過去缺列，算薪同一句擋下、分頁零寫入。
+ *   例：node tools/hol-blocker2-repro.js d26637a   → 第 3 節紅
  * 用法：node tools/hol-blocker2-repro.js [git 版本，預設工作目錄的檔案]
  *   例：node tools/hol-blocker2-repro.js dedbcaf   → 應該紅（舊版沒有拒絕碼、文件還有那個附錄）
  * 全部虛構資料、不連網（人事行政總處原檔用 tests/fixtures/holidays 夾具，由假 UrlFetchApp 回）。
@@ -82,15 +84,25 @@ chk(s.__W === w0, '分頁沒有整張重寫（其他月份都相同，這次沒�
 console.log('\n── 2 算 2027-03：擋下 ──');
 const c1 = J(H.payroll_calc({ admin_key: KEY, ym: '2027-03', store: 'SSLGF', inputs: {} }));
 chk(c1.error === 'no_holiday' && c1.hol_past === true && s.__FETCH === 0, '只收推送：擋下（no_holiday、hol_past）、不連外', c1);
-chk(!/自動補/.test(c1.message) && /系統外/.test(c1.message), '擋下的白話不暗示有補的流程（沒有「自動補」）、講明系統外處理', c1.message);
+chk(/系統不會補上/.test(c1.message) && /人工/.test(c1.message) && /系統外/.test(c1.message) && !/附錄/.test(c1.message), '擋下的白話：系統不會補、要人工補（系統外處理）、不指向附錄', c1.message);
 
-console.log('\n── 3 已刪的舊流程「切 gov 補列」（現在文件已禁止；gov 行為照主線不變，這裡只是模擬有人照舊做）──');
+console.log('\n── 3 Codex 第 2 輪：現行做法（gov）也不補過去月份（主管 2026-11-25「甲，也套用」）──');
 s.__PROPS.PAY_HOL_SOURCE = 'gov';
+const hb = JSON.stringify(s.__DATA.holiday), w2 = s.__W, f2 = s.__FETCH, a2 = s.__DATA.audit.length;
+const y3 = J(H.payroll_holiday_sync({ admin_key: KEY, years: [2027], store: 'SSLGF', operator: 'auto (薪資頁開啟)' }));
+chk(!row('2027-03') && JSON.stringify(y3.past_missing) === '["2027-03"]', 'gov 開頁同步：已經過去的 2027-03 缺列不補、回 past_missing', { changed: y3.changed, past_missing: y3.past_missing, row: row('2027-03') });
 const c2 = J(H.payroll_calc({ admin_key: KEY, ym: '2027-03', store: 'SSLGF', inputs: {} }));
-const filled = row('2027-03');
-console.log('   gov 算薪觸發舊同步補列：' + JSON.stringify(filled && { red_days: filled.red_days, dates: filled.dates }) + '（calc ok=' + c2.ok + '）');
-chk(!!filled && /2027-03-15/.test(filled.dates), '（前提）舊同步把原檔的 3/15 補進 2027-03＝跟確認版不同', filled);
+chk(c2.error === 'no_holiday' && c2.hol_past === true && c2.message === c1.message, 'gov 算 2027-03：不同步、直接擋下，跟只收推送同一句', { error: c2.error, hol_past: c2.hol_past, ok: c2.ok });
+chk(JSON.stringify(s.__DATA.holiday) === hb && s.__W === w2 && s.__DATA.audit.length === a2, 'gov 開頁＋算薪：節日分頁前後逐字相同、沒有重寫、沒有稽核', { rewrites: s.__W - w2 });
+console.log('   gov 連外次數（開頁同步照舊抓行事曆、算薪不抓）：' + (s.__FETCH - f2));
 s.__PROPS.PAY_HOL_SOURCE = 'mini';
+
+console.log('\n── 3b 過去月份有列、跟確認版不同（2027-03 當月 gov 同步時補進原檔的 3/15，到 4 月才切 mini）→ 同版 reapply ──');
+s.__NOWYM = '2027-03'; s.__PROPS.PAY_HOL_SOURCE = 'gov';
+J(H.payroll_holiday_sync({ admin_key: KEY, years: [2027], store: 'SSLGF', operator: 'auto (薪資頁開啟)' }));
+const filled = row('2027-03');
+chk(!!filled && /2027-03-15/.test(filled.dates), '（前提）2027-03 還是本月時 gov 同步補了原檔的 3/15＝跟確認版不同', filled);
+s.__NOWYM = '2027-04'; s.__PROPS.PAY_HOL_SOURCE = 'mini';
 const before = JSON.stringify(row('2027-03')), w1 = s.__W;
 const r2 = pub(push({ reapply: true }));
 chk(r2.ok && JSON.stringify(r2.skipped_past) === '["2027-03"]', '同版 reapply：2027-03 列在 skipped_past', r2);
@@ -100,7 +112,7 @@ pastRefusal(r2, '2027-03', '同版 reapply');
 console.log('\n── 4 文件與程式：沒有那個附錄、沒有切 gov 補過去月份的步驟 ──');
 chk(!/附錄 ?B/.test(DOC) && !/附錄 ?B/.test(PAY), 'docs/holiday-publish/README.md 與 Payroll.gs 沒有那個附錄（字樣 0 筆）', (DOC.match(/附錄 ?B/g) || []).length + (PAY.match(/附錄 ?B/g) || []).length);
 chk(!/暫時切回現行做法/.test(DOC), '文件沒有「暫時切回現行做法」補列的步驟');
-chk(/不要用切回 ?`?gov`? 的方式補/.test(DOC), '文件明講不要用切回 gov 的方式補過去月份');
+chk(/切回[^。]{0,20}gov[^。]{0,10}也不會補/.test(DOC), '文件明講切回 gov 也不會補過去月份');
 
-console.log('\n' + (fail ? '✗ 擋項 2 重現：' + fail + ' 項不符乙（' + pass + ' 項符合）' : '✓ 擋項 2 重現：' + pass + ' 項全部符合乙'));
+console.log('\n' + (fail ? '✗ 擋項重現：' + fail + ' 項不符定案（' + pass + ' 項符合）' : '✓ 擋項重現：' + pass + ' 項全部符合定案'));
 process.exit(fail ? 1 : 0);

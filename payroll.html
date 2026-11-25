@@ -3167,7 +3167,7 @@ async function saveCfg(btn,label,card){
 /* ═════ 紅字天數 ═════
    2026-09-18 Eason：「直接帶入整年度，不用再手動輸入，日曆也不需要」→ 這張表改成唯讀。
    寫入全部在後端 payroll_holiday_sync（依人事行政總處辦公日曆表；規則見 Payroll.gs 的 payHolidaySync）：
-   本月與未來的月份跟著行事曆走、已經過去的月份不動、補假不算國定假日、雙薪生效（2026-08）前不寫日期。
+   本月與未來的月份跟著行事曆走、已經過去的月份不動（缺了也不補，主管 2026-11-25 定案；後端回的 message 會列出那幾個月）、補假不算國定假日、雙薪生效（2026-08）前不寫日期。
    頁面一打開就在背景同步一次（boot），同步到的月份如果正好是現在這個月而且還沒算過，會重載一次。 */
 let GOVNAMES={}, HOLSYNC={}, HOL_SYNCING=null;
 function applyHol(list,resp){   // resp＝整包回應（payroll_master_get／payroll_holiday_sync）：後端回 hol_source:'mini' 時換成「節日表由營運系統發布」的畫面
@@ -3243,7 +3243,7 @@ function holSyncHtml(s){
     const lagM=arr(lg.locked).concat(arr(lg.past),arr(lg.missing)).sort(), miss=arr(lg.missing).sort();
     const lst=a=>a.slice(0,6).map(esc).join('、')+(a.length>6?' 等':'');
     if(lagM.length) ml[0]+=`；其中 ${lagM.length} 個月因已鎖定或已經過去，沒有跟著這一版更新：${lst(lagM)}`;
-    if(miss.length) ml.push(`⚠ ${lst(miss)} 沒有節日資料、不能計算薪資（已經過去的月份不會補上，要在系統外處理），請聯絡資訊部`);
+    if(miss.length) ml.push(`⚠ ${lst(miss)} 沒有節日資料、不能計算薪資（已經過去的月份系統不會補上），請聯絡資訊部人工到薪資試算表的 payroll_holiday 分頁補上`);
     if(s.message) ml.push('⚠ '+esc(s.message));
     return ml.join('<br>');
   }

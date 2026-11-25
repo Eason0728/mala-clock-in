@@ -288,7 +288,7 @@ console.log('\n══ 6b) 只收推送、已經過去的月份缺列（凍結：
   eq(JSON.parse(s.__PROPS.PAY_HOL_PUB).lag, { locked: [], past: [], missing: ['2026-09'] }, '沒跟上的月份記在版本紀錄（給畫面）');
   const c = J(s.H.payroll_calc({ admin_key: KEY, ym: '2026-09', store: 'SSLGF', inputs: {} }));
   eq([c.ok, c.error, c.hol_past, s.__FETCH], [false, 'no_holiday', true, 0], '算 2026-09：擋下、標出是已經過去的月份、不連外');
-  eq(c.message, '薪資計算（2026-09）：這個月已經過去、整月沒有節日資料；已經過去的月份不會補上紅字天數與國定假日，這次沒有計算。這個月的薪資要在系統外處理，請聯絡資訊部。', '過去月份缺資料的提示：不叫人去營運系統發布');
+  eq(c.message, '薪資計算（2026-09）：這個月已經過去、整月沒有節日資料；已經過去的月份系統不會補上紅字天數與國定假日，這次沒有計算。要算這個月，請聯絡資訊部人工到薪資試算表的 payroll_holiday 分頁補上這個月（系統外處理）。', '過去月份缺資料的提示：不叫人去營運系統發布');
   const c2 = J(s.H.payroll_calc({ admin_key: KEY, ym: '2028-02', store: 'SSLGF', inputs: {} }));
   eq([c2.error, c2.hol_past, /請先到營運系統確認並發布 2028 年節日表/.test(c2.message)], ['no_holiday', undefined, true], '未來月份缺資料：照舊請營運系統發布');
   for (const ym of ['2026-10', '2026-12', '2027-02']) {
