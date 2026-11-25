@@ -30,11 +30,15 @@
  *   群組綁定靠：一次性碼（30 分鐘、碼錯 5 次即失效）＋發話群必須就是剛 join 的那個群（ATT_JOIN_LAST）＋
  *   綁定成功／被踢出都送通知匣（含群組 ID 末 6 碼），降低被偽造事件綁走的風險。
  *
+ * 精簡版面（2026-11-25，mini 開關 ATT_DIGEST_FMT=compact）：payload.fmt==='compact' 的批次，寄放時每列多寫第 13 欄 fmt='compact'（分頁只有 12 欄會補欄；其他值＝12 欄＝舊版面）；
+ *   帶出時每批各照自己的 fmt：有內容的批次全部精簡才「不加結尾句、標題日期去前導 0」，有一批舊版就整則照舊；店序表認簡稱（ATT_ALERT_SHORT_FULL）。
+ *   對照 fixture tests/fixtures/att-alert-compact-v1.json（mala-store-ops test/fixtures 同名檔逐字相同）。
  * 訊息版面（attAlertRenderMessage_）是 mini 端 server/att-digest-rules.js renderMessage 的逐行移植，
  * 同一份資料必須產生一樣的字串（tests/att-alert.test.js 把 mini 的輸出寫死在測試裡比對）。
  */
 var ATT_ALERT_SHEET = 'att_alert_queue';
 var ATT_ALERT_HEADERS = ['id', 'run_date', 'batch_id', 'seq', 'section', 'store', 'line', 'status', 'created_at', 'inflight_at', 'delivered_at', 'webhook_event_id'];
+var ATT_ALERT_FMT_COL = 13;           // 第 13 欄 fmt（2026-11-25）：mini 送精簡版面（payload.fmt='compact'）的批次每列寫 'compact'；舊列、舊分頁沒有這一欄＝舊版面
 var ATT_ALERT_LINE_LIMIT = 5000;      // LINE 單則字數上限
 var ATT_ALERT_MAX_MESSAGES = 5;
 var ATT_ALERT_RECENT_DAYS = 3;        // 最近幾天的 daily 依日期分段
@@ -58,6 +62,10 @@ var ATT_ALERT_SECTIONS = ['daily', 'state', 'sched', 'failed', 'notes', 'guard',
 // 只有 notice／comp 的批次（旁支批次）：不取代當天考勤異常列、不改當天狀態機（ATT_STATE_RUN）（09:30 保底照常判斷 mini 今天有沒有送考勤）。
 var ATT_ALERT_SIDE = ['notice', 'comp'];
 
+// 精簡版面的簡稱表（2026-11-25）：跟 mini server/att-digest-compact.js 同一份對照（去掉「墨竹亭」；小辛辣光復、央廚、總部保留全名）；
+// 順序＝mini 的 STORE_ORDER（九單位）。測試 tests/att-alert-compact.test.js 把九單位的簡稱逐一寫死比對。
+var ATT_ALERT_ORDER9 = ['小辛辣光復', '央廚', '總部', '墨竹亭金山', '墨竹亭光復', '墨竹亭六張犁', '墨竹亭台中美村', '墨竹亭內湖瑞光', '墨竹亭台中文心'];
+var ATT_ALERT_SHORT_FULL = { '金山': '墨竹亭金山', '光復': '墨竹亭光復', '六張犁': '墨竹亭六張犁', '台中美村': '墨竹亭台中美村', '內湖瑞光': '墨竹亭內湖瑞光', '台中文心': '墨竹亭台中文心' };
 var ATT_ALERT_STORE_LABEL = { gf: '小辛辣光復', cf: '央廚', hq: '總部', mztjs: '墨竹亭金山', mztgf: '墨竹亭光復', mztlzl: '墨竹亭六張犁', mztmc: '墨竹亭台中美村' };
 
 // ───────────────────────── 小工具 ─────────────────────────
@@ -78,6 +86,8 @@ function attAlertRunDateOk_(d) {
 function attAlertAddDays_(d, n) { return new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10); }
 function attAlertWeekday_(d) { return new Date(Date.parse(d + 'T00:00:00Z')).getUTCDay(); }
 function attAlertMmdd_(d) { return d.slice(5, 7) + '/' + d.slice(8, 10); }
+/** 日期去前導 0（精簡版面）：'2026-11-04' → '11/4' */
+function attAlertMd_(d) { return Number(d.slice(5, 7)) + '/' + Number(d.slice(8, 10)); }
 /** 儲存格 → 字串（Date 物件轉台北日期時間；null → ''）。不用 instanceof（跨 realm 會判 false） */
 function attAlertCell_(v) {
   if (v === null || v === undefined) return '';
@@ -167,11 +177,13 @@ function attAlertSheet_() {
 function attAlertReadRows_(sh) {
   var last = sh.getLastRow();
   if (last < 2) return [];
-  var vals = sh.getRange(2, 1, last - 1, ATT_ALERT_HEADERS.length).getValues();
+  var width = Math.min(ATT_ALERT_FMT_COL, sh.getMaxColumns());   // 舊分頁可能只有 12 欄（沒有 fmt 欄）
+  var vals = sh.getRange(2, 1, last - 1, width).getValues();
   var out = [];
   for (var i = 0; i < vals.length; i++) {
     var o = { row: i + 2 };
     for (var c = 0; c < ATT_ALERT_HEADERS.length; c++) o[ATT_ALERT_HEADERS[c]] = attAlertCell_(vals[i][c]);
+    o.fmt = width >= ATT_ALERT_FMT_COL ? attAlertCell_(vals[i][ATT_ALERT_FMT_COL - 1]) : '';
     if (!o.id) continue;
     out.push(o);
   }
@@ -195,7 +207,20 @@ function attAlertAppend_(sh, matrix) {
   var start = Math.max(sh.getLastRow(), 1) + 1;
   var need = start + matrix.length - 1;
   if (sh.getMaxRows() < need) sh.insertRowsAfter(sh.getMaxRows(), need - sh.getMaxRows());
-  sh.getRange(start, 1, matrix.length, ATT_ALERT_HEADERS.length).setNumberFormat('@').setValues(matrix);
+  sh.getRange(start, 1, matrix.length, matrix[0].length).setNumberFormat('@').setValues(matrix);   // 精簡版的列多一欄（fmt）；其餘 12 欄
+}
+/** 精簡版批次要寫第 13 欄：分頁不夠寬就補欄、第 1 列補欄名 fmt。失敗回 false（呼叫端改寫 12 欄＝當舊版面，不讓整批寄放失敗）。 */
+function attAlertEnsureFmtCol_(sh) {
+  try {
+    var have = sh.getMaxColumns();
+    if (have < ATT_ALERT_FMT_COL) sh.insertColumnsAfter(have, ATT_ALERT_FMT_COL - have);
+    var h = sh.getRange(1, ATT_ALERT_FMT_COL);
+    if (attAlertCell_(h.getValue()) !== 'fmt') h.setNumberFormat('@').setValue('fmt');
+    return true;
+  } catch (e) {
+    console.warn('att-alert 補 fmt 欄失敗，這批照舊版面帶出：' + e);
+    return false;
+  }
 }
 
 // ───────────────────────── att_alert_start ─────────────────────────
@@ -303,8 +328,12 @@ function handleAttAlertEnqueue(b) {
     }
     if (attAlertBatchHas_(p, batSt, b.batch_id)) return { ok: true, dup: true };
     var iso = attAlertIso_(now);
+    // 精簡版面（mini payload.fmt==='compact'，其他值＝舊版面）：每列多寫一欄 fmt='compact'，帶出時每一批各照自己的版面排（見 attAlertRenderMessage_）
+    var compact = b.fmt === 'compact' && spec.length > 0 && attAlertEnsureFmtCol_(sh);
     var matrix = spec.map(function (s, n) {
-      return [b.batch_id + '#' + n, b.run_date, b.batch_id, seq, s[0], s[1], s[2], 'pending', iso, '', '', ''];
+      var row = [b.batch_id + '#' + n, b.run_date, b.batch_id, seq, s[0], s[1], s[2], 'pending', iso, '', '', ''];
+      if (compact) row.push('compact');
+      return row;
     });
     // 寫入順序（出事時留下的是「可重送」的狀態）：①新批列 pending → ②舊列 superseded → ③狀態機 → ④批次記錄
     attAlertAppend_(sh, matrix);
@@ -348,8 +377,12 @@ function attAlertStoreLabel_(x) {
 }
 function attAlertStoreOrder_(a, b) {
   var order = Object.keys(ATT_ALERT_STORE_LABEL).map(function (c) { return ATT_ALERT_STORE_LABEL[c]; });
-  var ia = order.indexOf(a), ib = order.indexOf(b);
-  return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  var idx = function (x) {
+    var i = order.indexOf(x);
+    if (i < 0 && ATT_ALERT_SHORT_FULL[x]) i = ATT_ALERT_ORDER9.indexOf(ATT_ALERT_SHORT_FULL[x]);   // 精簡版的簡稱：照全名的位置排（跟 mini 的 STORE_ORDER 一樣）
+    return i < 0 ? 99 : i;
+  };
+  return idx(a) - idx(b);
 }
 function attAlertMergeByStore_(entries) {
   var m = {}, keys = [];
@@ -397,6 +430,18 @@ function attAlertRenderMessage_(batches, opts) {
   var latest = list[list.length - 1];
   var today = opts.today || latest.run_date;
   var recentFrom = attAlertAddDays_(today, -(ATT_ALERT_RECENT_DAYS - 1));
+  // 精簡版面（2026-11-25，payload.fmt==='compact'；寄放時寫在列的 fmt 欄）：每一批各照自己的版面排。行內文字是 mini 組好的、原樣印；
+  // 只有「整則共用」的三件事要判斷：標題日期、結尾句、older 段落標題的日期。規則：有內容的批次（不是 empty、至少一行）**全部**是精簡版才用精簡版（標題日期去 0、不加結尾句）；
+  // 只要有一批是舊版（切換當天還沒帶出的舊批）就整則照舊（日期補 0、加結尾句）。older 段落標題的日期則看「那一天的所有批」是不是都精簡。沒有任何精簡批＝跟之前逐字相同。
+  var hasContent = function (b) {
+    if (b.empty) return false;
+    var some = function (arr) { return (arr || []).some(function (e) { return e && (e.lines || []).length; }); };
+    return some(b.daily) || some(b.state) || (b.sched || []).length > 0 || (b.failed_stores || []).length > 0 || (b.notes || []).length > 0;
+  };
+  var contentBatches = list.filter(hasContent), dateCompact = {};
+  contentBatches.forEach(function (b) { dateCompact[b.run_date] = (b.run_date in dateCompact ? dateCompact[b.run_date] : true) && b.fmt === 'compact'; });
+  var compactAll = contentBatches.length > 0 && contentBatches.every(function (b) { return b.fmt === 'compact'; });
+  var dd = compactAll ? attAlertMd_ : attAlertMmdd_;
   if (opts.info) { opts.info.latest = latest.run_date; opts.info.recentFrom = recentFrom; }   // GAS 專有：讓呼叫端知道哪些列被印出
 
   var dailyBy = {};   // run_date → entries
@@ -421,7 +466,7 @@ function attAlertRenderMessage_(batches, opts) {
   var earlier = [];
   Object.keys(dailyBy).filter(function (x) { return x !== latest.run_date; }).sort().reverse().forEach(function (d) {
     attAlertMergeByStore_(dailyBy[d]).forEach(function (e) {
-      if (d >= recentFrom) sections.push({ head: '▍' + attAlertMmdd_(d) + ' ' + e.store, bullets: e.lines });
+      if (d >= recentFrom) sections.push({ head: '▍' + (dateCompact[d] ? attAlertMd_ : attAlertMmdd_)(d) + ' ' + e.store, bullets: e.lines });
       else e.lines.forEach(function (l) { earlier.push(e.store + ' ' + l); });
     });
   });
@@ -440,15 +485,16 @@ function attAlertRenderMessage_(batches, opts) {
   var first = list.map(function (b) { return b.run_date; }).sort()[0];
   var lastDate = opts.lastDate || latest.run_date;   // lastDate 是 GAS 專有（保底列的日期要進標題區間）
   var title = first === lastDate
-    ? '【考勤異常】' + attAlertMmdd_(lastDate) + '（' + WD[attAlertWeekday_(lastDate)] + '）'
-    : '【考勤異常】' + attAlertMmdd_(first) + '–' + attAlertMmdd_(lastDate);
-  var tail = ['請各單位到「考勤管理」處理。'];
+    ? '【考勤異常】' + dd(lastDate) + '（' + WD[attAlertWeekday_(lastDate)] + '）'
+    : '【考勤異常】' + dd(first) + '–' + dd(lastDate);
+  var tail = compactAll ? [] : ['請各單位到「考勤管理」處理。'];
   if (failed.length) {
     tail.unshift('⚠ 這些單位今天資料查不到：' + failed.map(function (f) { return f.reason === '資料查不到' ? f.store : f.store + '（' + f.reason + '）'; }).join('、'));
   }
-  (latest.empty ? [] : (latest.notes || [])).forEach(function (n) { tail.splice(tail.length - 1, 0, '⚠ ' + n); });   // 註記放在「請各單位…」之前
-  guardLines.forEach(function (g) { tail.splice(tail.length - 1, 0, '⚠ ' + g); });
-  var tailText = '\n\n' + tail.join('\n');
+  var insTail = function (t) { tail.splice(compactAll ? tail.length : tail.length - 1, 0, t); };   // 舊版：放在「請各單位…」之前；精簡版沒有那句，接在後面
+  (latest.empty ? [] : (latest.notes || [])).forEach(function (n) { insTail('⚠ ' + n); });
+  guardLines.forEach(function (g) { insTail('⚠ ' + g); });
+  var tailText = tail.length ? '\n\n' + tail.join('\n') : '';
   var total = live.reduce(function (n, s) { return n + s.bullets.length; }, 0);
 
   // 單一 bullet 過長：截斷到放得進一則（上限 4990 字＋「…」）
@@ -507,6 +553,7 @@ function attAlertRowsToBatches_(rows) {
       var n = r.seq === '' ? NaN : Number(r.seq);
       b = map[r.batch_id] = { run_date: r.run_date, daily: [], state: [], sched: [], failed_stores: [], notes: [] };
       if (isFinite(n)) b.seq = n;
+      if (r.fmt === 'compact') b.fmt = 'compact';
       batches.push(b);
     }
     if (r.section === 'daily') addTo(b.daily, r.store, r.line);
