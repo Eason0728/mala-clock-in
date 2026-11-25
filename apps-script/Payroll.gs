@@ -4290,6 +4290,49 @@ function payHolMoved_(ym, st, master, holDates, idx) {
 function payHolKeep_(holDates, moved) {
   return moved ? (holDates || []).filter(function (d) { return !moved[String(d).trim()]; }) : holDates;
 }
+/* ── 班表排了「國定假日假」、薪資國定假日清單卻沒有那一天（2026-11-23 主管：「做薪資端加『班表排了國定假日假、但薪資節日表沒有那一天』的提示」）──
+ * 只提示：不動任何金額、不擋試算、不擋鎖定。只做這個方向（清單有、班表沒排＝不提示）。
+ * 班表＝handlePayrollCalc 已讀的 SCHED（paySchedMonth_，引擎逐日判斷用的同一份；跨店發布、總部／央廚照它的找法）；
+ * 清單＝HOLD（payHolidayDates(payroll_holiday 該月那列)，雙薪判斷 HOLSET／payDailyFor_ 用的同一份）。不多讀任何分頁。
+ * 每人存在草稿 ot_info.hol_gap（日期陣列，只在有的時候加）；回應另帶彙總 hol_sched_gap [{date, n, names}]（開關開著、而且有才帶）。
+ * 開關 PAY_HOL_GAP_FROM：ym ≥ 這個月份才偵測與帶；之前的月份與改版前逐位元組相同。填錯值（不是 YYYY-MM）照 2026-12。
+ * 要停用＝改成很後面的月份（例 '9999-12'）重新上線；關掉後草稿上留著的 hol_gap 畫面也不顯示（只有回應帶 hol_sched_gap 才顯示）。 */
+var PAY_HOL_GAP_FROM = '2026-12';
+var PAY_HOL_GAP_DEFAULT_ = '2026-12';
+function payHolGapOn_(ym) {
+  let f = String(PAY_HOL_GAP_FROM == null ? '' : PAY_HOL_GAP_FROM).trim();
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(f)) f = PAY_HOL_GAP_DEFAULT_;
+  ym = String(ym == null ? '' : ym);
+  return /^\d{4}-\d{2}$/.test(ym) && ym >= f;
+}
+/** 純函式。sched＝這個人本月班表格子 {date: {t, l}}（paySchedMonth_ 的一人份）；holDates＝薪資國定假日清單；dates＝要看的日子（在職日）。
+ *  回「班表那格是 L＋國、這天又不在清單裡」的日子（照 dates 的順序）。日別判斷跟 payOtKindOf 的 L＋國 同一個寫法。 */
+function payHolGap_(sched, holDates, dates) {
+  const hol = {};
+  (holDates || []).forEach(function (d) { hol[String(d).trim()] = true; });
+  return (dates || []).filter(function (d) {
+    const c = (sched || {})[d];
+    return !!(c && String(c.t) === 'L' && String(c.l || '') === '國' && !hol[String(d)]);
+  });
+}
+/** 回應用的彙總（payroll_calc／payroll_month 帶 hol_sched_gap）：[{date, n, names}] 依日期；開關沒開或沒有任何一天 → null（不帶）。
+ *  results 的 ot_info 可以是物件或 JSON 字串（payroll_month 讀草稿）。 */
+function payHolGapView_(ym, results) {
+  if (!payHolGapOn_(ym)) return null;
+  const by = {};
+  (results || []).forEach(function (r) {
+    let o = r && r.ot_info; if (typeof o === 'string') { try { o = JSON.parse(o || '{}'); } catch (e) { o = {}; } }
+    const g = (o && Array.isArray(o.hol_gap)) ? o.hol_gap : [];
+    g.forEach(function (d) {
+      d = String(d);
+      if (d.slice(0, 7) !== ym) return;
+      const b = by[d] = by[d] || { date: d, n: 0, names: [] };
+      b.n++; b.names.push(String((r.name != null && String(r.name).trim() !== '') ? r.name : r.emp_id));
+    });
+  });
+  const out = Object.keys(by).sort().map(function (k) { return by[k]; });
+  return out.length ? out : null;
+}
 /** 一個人的逐日資料（給 payCalcOne 的 att.daily）。col＝打卡歸集（day_h／day_leave）；xEntry＝跨店支援自動帶入（同品牌別店，含逐日）；
  *  supportH＝這次計薪採用的支援時數合計（手填＋帶入），多出逐日帶入的部分沒有日期 → 只列提醒 manual_sup_h。 */
 function payDailyFor_(e, ym, col, xEntry, sched, holDates, until, supportH, elecDates) {
@@ -4951,6 +4994,24 @@ function handlePayrollCalc(body) {
     });
   }
 
+  /* 班表排了國定假日假、薪資國定假日清單沒有那天（2026-12 起，payHolGap_）：只提示，不動金額、不擋試算與鎖定。
+     用上面已讀的 SCHED（引擎同一份班表）與 HOLD（雙薪判斷同一份清單），不多讀任何分頁；看整個月的在職日（月中草稿也先提醒還沒到的日子）。
+     出錯只記 log、不提示（提示不能讓試算失敗）。開關沒開／2026-11 以前（沒有 SCHED）＝整段不做事。 */
+  if (!AM.day1 && SCHED && HOLD && payHolGapOn_(ym)) {
+    try {
+      const mByG = {};
+      master.forEach(function (m) { mByG[String(m.emp_id)] = m; });
+      results.forEach(function (r) {
+        const e = mByG[String(r.emp_id)];
+        if (!e) return;
+        const g = payHolGap_(SCHED[String(r.emp_id)], HOLD, payEmpDates_(e, ym));
+        if (!g.length) return;
+        if (!r.ot_info) r.ot_info = {};
+        r.ot_info.hol_gap = g;
+      });
+    } catch (err) { Logger.log('hol_gap in calc: ' + err); }
+  }
+
   /* r7：每人這次實際採計的請款逐筆存進 ot_info.xsup（跟 payroll.html costDetail 的 sup 同形狀、同取位），鎖月快照只從這裡來。
      2026-11 起、有支援列的人才有；沒有 ot_info（沒有逐日資料）的人只為它建一個 ot_info。 */
   if (payXclaimOn_(ym)) {
@@ -5004,6 +5065,7 @@ function handlePayrollCalc(body) {
     if (NOT_IN.length) dres.not_in_payroll = NOT_IN;
     if (ZERO_ROWS.length) dres.zero_ratio_with_data = ZERO_ROWS;
     if (payDupXacctShow_(ym, results)) dres.dup_xacct_on = true;   // 跨帳號重複檢查開著才帶（畫面只在有這個旗標時顯示那類提醒；關著時回應形狀跟主線相同，Codex 第二輪）
+    { const hg = payHolGapView_(ym, results); if (hg) dres.hol_sched_gap = hg; }   // 班表排國定假日假、清單沒有的日子（2026-12 起、有才帶）
     return dres;
   }
   let lockedMeanwhile = false;
@@ -5037,6 +5099,7 @@ function handlePayrollCalc(body) {
   if (NOT_IN.length) res.not_in_payroll = NOT_IN;   // 沒有就不帶（回應形狀與改版前相同）
   if (ZERO_ROWS.length) res.zero_ratio_with_data = ZERO_ROWS;   // 沒有就不帶
   if (payDupXacctShow_(ym, results)) res.dup_xacct_on = true;   // 跨帳號重複檢查開著才帶（同上）
+  { const hg = payHolGapView_(ym, results); if (hg) res.hol_sched_gap = hg; }   // 班表排國定假日假、清單沒有的日子（2026-12 起、有才帶；只提示）
   /* 請假單和請假登記對不上（1113 紅燈 a1）：畫面先標紅，鎖定時會擋。讀不到不影響試算；沒有就不帶。 */
   try { const LM = payLeaveMismatch_(ym, st); if (LM.length) res.leave_mismatch = LM; } catch (e) { Logger.log('leave_mismatch in calc: ' + e); }
   return res;
@@ -5238,6 +5301,7 @@ function handlePayrollMonth(body) {
   if (payElecOn_(ym)) resM.elec_vote_days = payElecVoteDaysOf_(ym);   // 本月投票日（可能是空陣列）；名單能用的月份才帶，前端說明行與確認框只讀這一份
   if (elecStale) resM.elec_stale = true;   // 草稿不是用現在的名單算的（只有這種情況才帶）
   if (payDupXacctShow_(ym, run ? run.results : null)) resM.dup_xacct_on = true;   // 跨帳號重複檢查開著才帶：關著時草稿上留著的舊 dup_xacct 畫面不顯示（Codex 第二輪），回應跟主線相同
+  { const hg = payHolGapView_(ym, run ? run.results : null); if (hg) resM.hol_sched_gap = hg; }   // 班表排國定假日假、清單沒有的日子：從草稿／鎖定列的 ot_info.hol_gap 彙總，不另讀班表（2026-12 起、有才帶；已鎖定月份照樣帶，同其他提醒）
   if (elecRecalc && !elecStale) resM.elec_recalc = true;   // 這次開頁因名單改過重算了草稿：前端丟掉先前預抓的趨勢（Codex 第四次 B3）
   if (heM && payElecOn_(ym)) { const od = payElecOtherDates_(payHolEmpRows_(), ym, stM); if (od.length) resM.hol_emp_other_dates = od; }   // 直接編表多出的日期（畫面提醒，Codex 複審 S3）
   return resM;
