@@ -3788,16 +3788,30 @@ function handlePayrollHolidaySet(body) {
   const stH = String(body.store || '');   // 空白＝集團共用；有值＝該門市專屬
   const mine = body.holidays.map(function (h) { h.store = stH; return h; });
   // 已鎖定月份那一列的 red_days／dates 有變動、被刪、或新增 → 整批不存（薪酬挑錯第 1 項）。在寫鎖內用最新資料比對。
-  let lockedYms = [];
+  let lockedYms = [], pastNew = [];
   if (!payWriteLocked_(['holiday', 'run'], function () {
     const all = payRead('holiday');
     lockedYms = payHolidayLockedYms_(all, mine, stH, payRead('run'));
     if (lockedYms.length) return;
+    pastNew = payHolSetPastNew_(all, mine, stH, currentYmTaipei());
+    if (pastNew.length) return;
     payReplaceAll('holiday', all.filter(function (h) { return String(h.store || '') !== stH; }).concat(mine));
   })) return PAY_BUSY_;
   if (lockedYms.length) return { ok: false, error: 'locked', yms: lockedYms,
     message: payLockedMsg_(lockedYms.join('、'), '紅字天數') };
+  if (pastNew.length) return { ok: false, error: 'hol_past_add', yms: pastNew,
+    message: '已經過去的月份不能新增紅字天數：' + pastNew.join('、') + '（過去月份缺了不補，主管 2026-11-25 定案），整批沒有儲存。要補請資訊部人工到薪資試算表的 payroll_holiday 分頁處理。' };
   return { ok: true, count: mine.length, store: stH };
+}
+
+/** 整批儲存（payroll_holiday_set）要新增的「已經過去的月份」列（Codex 節日表第 2 輪；主管 2026-11-25「甲，也套用」：過去月份缺了不補）。
+ *  同一個儲存範圍（stH：空白＝集團共用、有值＝該門市專屬）裡原本沒有、這次要新增，而且月份 < 台北本月（nowYm＝currentYmTaipei()）的月份，排序回傳。
+ *  只擋新增；既有過去列的修改／刪除照舊只受鎖定檢查（payHolidayLockedYms_）管。獨立一段：要拿掉這條限制，刪這個函式與 handlePayrollHolidaySet 裡的兩處呼叫即可。 */
+function payHolSetPastNew_(all, mine, stH, nowYm) {
+  const had = {}, out = [];
+  all.forEach(function (h) { if (String(h.store || '') === stH) had[String(h.ym)] = true; });
+  mine.forEach(function (h) { const k = String(h.ym); if (k < String(nowYm) && !had[k] && out.indexOf(k) < 0) out.push(k); });
+  return out.sort();
 }
 
 /** 人事行政總處「中華民國政府行政機關辦公日曆表」（政府資料開放平臺 dataset 14718）。

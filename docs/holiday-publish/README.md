@@ -96,10 +96,14 @@
 |---|---|---|---|---|
 | `payHolidaySync`（`payroll_holiday_sync`） | 薪資頁打開時背景呼叫（帶今年） | gov | **不會**（2026-11-25 起） | 不會（原本就不動） |
 | `payHolidaySync`（`payroll_calc` 該月沒有列） | 按計算 | gov | **不會**：過去月份缺列直接擋下、不同步 | 不會 |
-| `handlePayrollHolidaySet`（`payroll_holiday_set`，整批覆寫某個門市或集團的全部列） | 薪資頁 2026-09-18 起**沒有呼叫**（紅字天數表改唯讀）；只剩帶管理金鑰直接打 API、`mock/` 假後端 | gov（mini 擋 `hol_source_mini`） | 見下面「整批儲存」 | **會**（只擋已鎖定月份；沒鎖的過去月份可以被改、也可以因為整批沒帶到而被刪掉） |
+| `handlePayrollHolidaySet`（`payroll_holiday_set`，整批覆寫某個門市或集團的全部列） | 薪資頁 2026-09-18 起**沒有呼叫**（紅字天數表改唯讀）；只剩帶管理金鑰直接打 API、`mock/` 假後端 | gov（mini 擋 `hol_source_mini`） | **不會**：要新增過去月份的列（同一個儲存範圍原本沒有）→ 整批不存、回 `hol_past_add`＋`yms`（見下面「整批儲存」） | **會**（只擋已鎖定月份；沒鎖的過去月份可以被改、也可以因為整批沒帶到而被刪掉） |
 | `handlePayrollHolidayPublish`（`payroll_holiday_publish`） | 營運系統推送 | 正式寫入只在 mini（gov 只收試推） | 不會 | 不會 |
 | `paySheet`／`ensurePayrollSheets`（`payroll_setup`、任何讀取在分頁不存在時） | — | 兩種 | 不會（只建分頁、寫表頭） | 不會 |
 | 人工直接改試算表 | 資訊部 | 兩種 | **會**（這就是「人工在節日表補上」） | 會 |
+
+**整批儲存擋新增過去月份（獨立 commit，待大腦／主管決定要不要留）**：Codex 第 2 輪建議擋，先照做成「禁止」（`payHolSetPastNew_`，`tests/hol-past-set.test.js`）。查到的事實：薪資頁 2026-09-18（`0f98bc5`「紅字天數改成整年自動帶入…拿掉手動輸入與日曆」）起就沒有呼叫 `payroll_holiday_set`，紅字天數表唯讀；現在只有帶管理金鑰直接打 API 與 `mock/` 假後端會用到。也就是說它**不是**畫面上的正規途徑，資訊部本來就是直接改試算表（`payRedDaysCheck_` 擋下紅字空白時的白話也是「請管理者到薪資試算表的 payroll_holiday 分頁補上」）。
+- 留著「禁止」：人工補過去月份只剩直接改試算表；不會有人用 API 繞過規則。代價：要補時沒有寫鎖與稽核紀錄（試算表本身有版本紀錄）。
+- 拿掉「禁止」（刪 `payHolSetPastNew_` 與 `handlePayrollHolidaySet` 裡兩處呼叫、刪 `tests/hol-past-set.test.js`）：資訊部可以用 API 補（有寫鎖、會擋鎖定月份；但這支 API 是整批覆寫，要帶齊那個範圍的所有列，漏帶會刪掉既有列，而且它本來就不寫稽核）。
 
 不寫這張分頁：`payroll_migrate_store`（只動 master／input／run／item／audit）、`payroll_holiday_own_list`、只收推送時的 `payroll_holiday_sync`、`payroll_master_get`、`payroll_gov_holidays`（唯讀）、`payReplaceKeep_`／`payReplaceMany_`（沒有 holiday 的呼叫者）。
 

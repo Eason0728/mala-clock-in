@@ -57,7 +57,8 @@ function world(src, opt) {
   const ss = opt.ss || createSpreadsheet({ DateCtor: vm.runInContext('Date', sb), defaultMaxCols: 40, defaultMaxRows: opt.maxRows || 1000 });   // opt.ss：跟另一個環境共用同一份試算表（另一個執行）
   sb.SpreadsheetApp.getActive = () => ss; sb.SpreadsheetApp.openById = () => ss;
   sb.__SS = ss;
-  vm.runInContext(`getSS = function () { return __SS; }; CONFIG.ADMIN_KEY = 'k'; nowTaipeiIso = function () { return '2026-11-22T09:00:00+08:00'; };`, sb);
+  // 台北本月釘在 2026-11（跟 nowTaipeiIso 一致）：整批儲存會擋「新增已經過去的月份」（2026-11-25），不釘的話跟著真實時鐘走；改版前後兩邊都釘
+  vm.runInContext(`getSS = function () { return __SS; }; CONFIG.ADMIN_KEY = 'k'; nowTaipeiIso = function () { return '2026-11-22T09:00:00+08:00'; }; currentYmTaipei = function () { return '2026-11'; };`, sb);
 
   function exec(op) {
     for (const f of F.faults) {
