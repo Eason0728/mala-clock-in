@@ -494,6 +494,8 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
   const LTYPES = payLeaveTypes(store);
   const LTMAP = {};
   LTYPES.forEach(function (t) { LTMAP[t.code] = t; });
+  // 曠職生效日（2026-11-26；這支會被測試單獨抽出來跑，所以就地判斷有沒有那支）：null＝關，下面曠職的處理全部不作用
+  const KZF = (typeof payKzFrom_ === 'function') ? payKzFrom_() : null;
   const roster   = payClockRead(store, 'roster');
   const approved = payClockRead(store, 'approved');
   const events   = payClockRead(store, 'events');
@@ -620,9 +622,14 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     const t = String(l['假別'] || '');
     const s = slot(emp);
     // 改版前這裡是寫死的關鍵字比對（含『事』→全扣…），新增假別必漏改；現在一律查假別表。
-    const code = payLeaveCode(t, LTYPES);
+    let code = payLeaveCode(t, LTYPES);
+    // 曠職（開關開著才有這種假別）：生效日之前的日子照改之前（對不到假別＝不扣款、算缺勤日），不回溯（第 11 題）
+    const kzLeave = !!(KZF && code && payIsKzType(LTMAP[code]));
+    if (kzLeave && d < KZF) code = null;
+    const kzDay = kzLeave && !!code;
     const lt = code ? LTMAP[code] : null;
     if (code) s.leaves[code] = payR2((s.leaves[code] || 0) + h);
+    if (kzDay) (s.kz_days = s.kz_days || []).push({ date: d, h: payR2(h) });   // 扣款（payKzDeduct_）與薪資頁「已認定」用
     // 舊的五個欄位繼續維護：工時分頁的手動輸入欄與既有報表都還在讀它們
     if (code === 'personal')       s.personal_h += h;
     else if (code === 'menstrual') { s.menstrual_h += h; s._mens[d] = payR2((s._mens[d] || 0) + h); }
@@ -633,7 +640,8 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     // 這種假對全勤的影響：attend_effect 留空＝沿用 count_absent（改版前行為）
     let ae = lt ? (lt.attend_effect || (lt.count_absent ? 'deduct' : 'none')) : 'deduct';
     if (code === 'personal' && payRules3On_(ym) && !payIsSslStore_(store)) ae = 'void';   // 非小辛辣：當月有事假績效整筆取消（3-3，Eason 2026-11-08 確認）
-    if (ae === 'void') s.attend_void = true;          // 例：央廚／總部「有事假就沒全勤」
+    if (ae === 'void' && kzDay) s.kz_void = true;     // 曠職整筆歸零另外記，名稱寫「（當月有曠職）」（句 20）
+    else if (ae === 'void') s.attend_void = true;     // 例：央廚／總部「有事假就沒全勤」
     s._lh[d] = payR2((s._lh[d] || 0) + h);
     // 病假一年 30 天內不扣全勤（出勤認定清單 C6，2026-11 起）：先記下病假日，超過的天數由計算端（知道今年已用幾天）加回缺勤
     if (ae === 'deduct' || ae === 'void') { markDay(emp, d); s._ld[d] = true; }
@@ -676,6 +684,11 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
       o.trip_noform = (o._tripNo || []).sort();
     }
     delete o._tripNo;
+    if (o.kz_days) {   // 同一天兩列（手填）合併、依日期
+      const kd = {};
+      o.kz_days.forEach(function (x) { kd[x.date] = payR2((kd[x.date] || 0) + payNum(x.h)); });
+      o.kz_days = Object.keys(kd).sort().map(function (d) { return { date: d, h: kd[d] }; });
+    }
     delete o._lh; delete o._mens;
     out[emp].deduct_days = Object.keys(leaveOnly ? out[emp]._ld : out[emp]._days).length;
     out[emp].work_days = Object.keys(out[emp]._wd).length;
@@ -887,11 +900,14 @@ function payLockStale_(body, ym, st) {
   if (!calc || !calc.ok) return { error: String((calc && (calc.message || calc.error)) || 'calc_failed') };
   const byId = {}, list = [];
   runs.forEach(function (r) { byId[String(r.emp_id)] = r; });
+  const kzOn = payKzMonth_(ym, payKzFrom_());
   const gate = function (raw) {
     let o = raw; if (typeof raw === 'string') { try { o = JSON.parse(raw || '{}'); } catch (e) { o = {}; } }
     o = o || {};
     const dg = payDupXacctOn_(ym) ? payDupXacctGate_(o) : null;   // 跨帳號重複（2026-11-23）：開關關著一律不看（草稿留著開著時的舊旗標也不看，Codex P1）；草稿與重算都沒有＝不加，比對字串跟改版前相同
-    return JSON.stringify(dg ? [payNum(o.comp_over_h), o.ot_form_missing || [], dg] : [payNum(o.comp_over_h), o.ot_form_missing || []]);
+    const base = dg ? [payNum(o.comp_over_h), o.ot_form_missing || [], dg] : [payNum(o.comp_over_h), o.ot_form_missing || []];
+    if (kzOn) base.push(o.kz_suspect || []);   // 曠職（2026-11-26）：疑似清單跟草稿不同＝要重算（開關關著不加，比對字串跟改版前相同）
+    return JSON.stringify(base);
   };
   let claim = false;   // r3：只有請款不同（不列進名單，finalize 用既有「試算後資料有改過」那句擋）
   const cum = {};   // r10：逐人容差內的差額照被支援門市累加（分）——指定金額、加成金額、最終金額三項都看（指定金額或加成各自正負抵銷時，最終金額看不出來）
@@ -1440,6 +1456,50 @@ function payCompDefaultType() {
            attend_effect: '', count_meal_day: true, sort: 9990,
            note: '補休：用當月核准的加班抵（每月加減結算，不跨月）；全薪、不扣全勤，時數不抵不足（程式內建）' };
 }
+/* ══ 曠職（2026-11-26 主管定案；合約 docs/kuangzhi/contract.md 第 7、8 節）══
+ * 生效日開關在 Code.gs kzFrom_()（指令碼屬性 KUANGZHI_FROM；沒設／壞值＝關＝這一段全部不作用，跟改之前逐字相同）。
+ * 開著時：假別表沒有曠職列就補內建列（仿補休）；績效走假別設定的「對全勤」（內建＝整筆歸零，名稱「績效獎金（當月有曠職）」）；
+ * 扣款只走 payKzDeduct_（一般假別的「時數 × 扣款時薪 ×（1 − 給薪比例）」不套到曠職）。 */
+var PAY_KZ_CODE = 'absent';
+var PAY_KZ_NAME = '曠職';
+// 第 6 題主管改定「全薪÷ 30 × 曠職天數」：全薪含哪些項目、半天班怎麼算、取整都還沒定 → 先放佔位（金額 0）。
+// ⚠ 上線前一定要換成主管確認的算法並改成 false：tools/kuangzhi-release-check.js 在 true 時結束碼 1，deploy-to-clasp.py --apply 會拒絕。
+var KUANGZHI_DEDUCT_PENDING = true;
+var KUANGZHI_DEDUCT_PENDING_TEXT = '曠職扣款算法待確認';
+var PAY_KZ_NOTE = '曠職：主管在核定頁認定的無故缺勤。只能由「認定曠職」按鈕產生，一般假別下拉與同仁請假單都選不到。';   // 句 23
+var PAY_KZ_LATE_STORES_RE_ = /^MZT(RG|WX)$/i;   // 瑞光、文心：2027-01-01 前不算疑似（第 3-6 題；同 Code.gs KZ_LATE_STORES_RE_）
+var PAY_KZ_LATE_STORES_FROM_ = '2027-01-01';
+/** 生效日（Code.gs kzFrom_；薪資測試只抽 Payroll 一段時沒有那支 → 當成關） */
+function payKzFrom_() { try { return typeof kzFrom_ === 'function' ? kzFrom_() : null; } catch (e) { return null; } }
+/** 這個月有沒有 ≥ 生效日的日子 */
+function payKzMonth_(ym, from) { return !!from && /^\d{4}-\d{2}$/.test(String(ym || '')) && String(ym) >= String(from).slice(0, 7); }
+function payIsKzType(t) { return !!t && (String(t.code) === PAY_KZ_CODE || String(t.name == null ? '' : t.name).trim() === PAY_KZ_NAME); }
+function payKzDefaultType() {
+  return { code: PAY_KZ_CODE, name: PAY_KZ_NAME, pay_ratio: 0, count_absent: true, offset_shortfall: false,
+           cap_days: null, cap_basis: '', over_ratio: 0, merge_into: '', cap_per_month: null,
+           tenure_months: null, under_ratio: 0, min_unit: 'hour', window_before: null, window_days: null, window_max: null,
+           attend_effect: 'void',      // 第 7 題 C：當月有曠職，績效獎金整筆歸零（各店可在假別設定改）
+           count_meal_day: true, sort: 9980, note: PAY_KZ_NOTE };
+}
+/** 開關開著、表上（含停用列）沒有曠職列 → 補內建列（排最後）。開關關＝原樣 */
+function payWithKzType(list, seen) {
+  if (!payKzFrom_() || seen || list.some(payIsKzType)) return list;
+  return list.concat([payKzDefaultType()]);
+}
+/** 曠職扣多少——唯一的計算處（合約第 7 節）。e＝薪資主檔一人；days＝[{date, h}] 認定的曠職日與各自的班表時數；回扣款列陣列。
+ *  ⚠ 待主管確認（KUANGZHI_DEDUCT_PENDING）：先回一列金額 0 的佔位，名稱用佔位字；確認後只改這裡。 */
+function payKzDeduct_(e, ym, days, cfg) {
+  if (!days || !days.length) return [];
+  if (KUANGZHI_DEDUCT_PENDING) return [{ item_key: 'absent_deduct', item_label: KUANGZHI_DEDUCT_PENDING_TEXT, qty: null, rate: null, amount: 0 }];
+  return [];
+}
+/** 上線檢查（tools/kuangzhi-release-check.js 叫）：回還沒解決的問題陣列（空＝可以上線） */
+function payKzReleaseProblems_() {
+  const out = [];
+  if (KUANGZHI_DEDUCT_PENDING) out.push('曠職扣款算法還是「待主管確認」佔位（Payroll.gs KUANGZHI_DEDUCT_PENDING）');
+  return out;
+}
+
 /** 某人某月的補休帳（純計算）：ots＝[{date,h}] 本月核准加班；leaves＝[{date,h}] leave 分頁補休；reqs＝[{date,h}] 審核中／已核准補休申請。
  *  回 {ot_h, used_h, balance_h}（balance 可為負）。 */
 function payCompMonthCalc(ots, leaves, reqs, kinds) {
@@ -2388,6 +2448,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     if (!h) return;
     const t = LTM[code];
     if (!t) return;   // 對不到假別＝不扣款，與改版前的 other_h 行為相同
+    if (payIsKzType(t) && payKzFrom_()) return;   // 曠職不走一般假別扣款，只走 payKzDeduct_（下面）
     let ratio = t.pay_ratio;
     if (t.tenure_months != null && tenureM != null && tenureM < t.tenure_months) ratio = t.under_ratio;
     if (code === 'menstrual' && String(ym) < PAY_MENSTRUAL_FULL_FROM) ratio = 0.5;   // 3 次內全薪從 2026-11 起，之前月份照舊半薪
@@ -2417,6 +2478,9 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     const label = t.name + (ratio === 0 ? '(無薪)' : '') + (overH > 0 ? '（含逾上限 ' + payR2(overH / dayH) + ' 日）' : '');
     push(ded, code + '_leave', label, h, (overH > 0 ? null : r1), amt);
   });
+
+  // 曠職扣款（2026-11-26）：唯一計算處 payKzDeduct_；沒有曠職＝不加任何列
+  if (att.kz_days && att.kz_days.length && payKzFrom_()) payKzDeduct_(e, ym, att.kz_days, cfg).forEach(function (x) { ded.push(x); });
 
   // 勞保與宿舍折算；健保、團保、退休金算整月。
   // ⚠ 2026-08-23 修正：規則正本「勞保、宿舍×P」不分正職計時——原本這兩行乘的是 pr（計時恆為 1），
@@ -2462,6 +2526,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
     out.ot_info.trip_ot = chk.trip_ot;
     out.ot_info.absent_alert = otS.no_show_streak >= 3 || otS.no_show.length >= 6;
     out.ot_info.absent_streak = otS.no_show_streak;
+    if (att.kz_scan) payKzOtInfo_(out.ot_info, att);   // 曠職（2026-11-26）：只有開關開、這個月有 ≥ 生效日的日子才有 kz_scan
     if (out._trip_noform) out.ot_info.trip_noform = out._trip_noform;   // 出差沒有申請單（看不到地點）：沒給出差餐費，只提醒
     delete out._trip_noform;
     out.ot_info.short_8h = ft ? payMztShortDays_(e, att.daily) : [];
@@ -2562,6 +2627,7 @@ function payDayBefore(dstr) {
 /** 全勤是否整筆歸零；回歸零原因字串，沒歸零回空字串。
  *  參數全部可依門市覆寫（payroll_config 的 store 欄），預設 0／空＝不啟用。 */
 function payAttendVoid(att, cfg, ym) {
+  if (att.kz_void) return '當月有曠職';   // 第 7 題 C（2026-11-26）：句 20「績效獎金（當月有曠職）」
   if (att.attend_void) return '請假未達全勤';
   // 2026-11 起忘刷一律以天計（Eason 2026-11-10：同一天不管漏幾張、整段沒打都算 1 次）；10 月以前照門市設定
   const unit = (ym && payRules3On_(ym)) ? 'day' : String((cfg || {}).attend_forget_unit || 'punch');
@@ -2846,9 +2912,11 @@ function payLeaveTypes(store) {
   try { rows = payRead('leave_type'); } catch (err) { rows = []; }
   const pick = {};
   let compOff = false;   // 表上有補休列但停用了 → 尊重設定，不補內建列
+  let kzSeen = false;    // 曠職（2026-11-26）：表上（這家店或集團共用）已有曠職列（含停用）→ 以表為準，不補內建列
   rows.forEach(function (r) {
     const code = String(r.code || '').trim();
     if (!code) return;
+    if (payIsKzType({ code: code, name: r.name }) && (!String(r.store || '').trim() || payStore(r.store) === st)) kzSeen = true;
     if (payBool(r.active) === false && String(r.active).trim() !== '') {
       if (payIsCompType({ code: code, name: r.name }) && (!String(r.store || '').trim() || payStore(r.store) === st)) compOff = true;
       return;
@@ -2887,9 +2955,9 @@ function payLeaveTypes(store) {
   const list = Object.keys(pick).map(function (k) { return pick[k]; });
   if (list.length) {
     list.sort(function (a, b) { return (a.sort || 0) - (b.sort || 0); });
-    return compOff ? list : payWithCompType(list);
+    return payWithKzType(compOff ? list : payWithCompType(list), kzSeen);
   }
-  return payWithCompType(PAY_LEAVE_DEFAULTS.map(function (d, i) {
+  return payWithKzType(payWithCompType(PAY_LEAVE_DEFAULTS.map(function (d, i) {
     return {
       code: d[0], name: d[1], pay_ratio: d[2], count_absent: d[3], offset_shortfall: d[4],
       cap_days: (d[5] === '' ? null : d[5]), cap_basis: d[6], over_ratio: d[7], merge_into: d[8],
@@ -2903,7 +2971,7 @@ function payLeaveTypes(store) {
       count_meal_day: (d[17] === false ? false : true),
       sort: (i + 1) * 10, note: d[16],
     };
-  }));
+  })), false);
 }
 /** 補休（2026-10-09）：假別表沒有補休這列時，補上程式內建的那列（排最後）——Eason 還沒加表也能請、能算。
  *  表上已經有（code＝comp 或名稱＝補休）就完全以表為準。放最後是為了不影響其他假別名稱的比對順序（payLeaveCode）。 */
@@ -4476,6 +4544,8 @@ function payInputsBase(ym, store, cutoffDate) {
     if (col.forget_dates) sv.forget_dates = col.forget_dates;
     if (col.trip_noform) sv.trip_noform = col.trip_noform;
     if (col.menstrual_times) sv.menstrual_times = col.menstrual_times;
+    if (col.kz_void) sv.kz_void = true;       // 曠職（2026-11-26）：只有歸集值
+    if (col.kz_days) sv.kz_days = col.kz_days;
     if (leaveOnly && base[emp]) sv.deduct_days = payNum(col.deduct_days);
     // 2026-11 起逐日加班：每天的核定／請假時數只有打卡算得出來（手動列沒有日期）；
     // 病假 30 天內不扣全勤也改了缺勤天數的算法，有打卡資料的人一律取歸集值
@@ -4748,6 +4818,84 @@ function payDailyFor_(e, ym, col, xEntry, sched, holDates, until, supportH, elec
   }
   return out;
 }
+/* ── 曠職：疑似清單（2026-11-26；合約第 3 節）──
+ * 事實由薪資這端自己的資料填，判定一律交給 Code.gs kzSuspect_（營運系統搬同一份、跑同一份案例檔）。 */
+/** 這家店這個月每人「那天有沒有東西」：{ emp_id: { punch:{date:1}, ap:{date:1}, lv:{date:1}, rq:{date:1} } }。payClockRead 有快取，不多開試算表。 */
+function payKzFacts_(st, ym) {
+  const by = {};
+  const one = function (id) { id = String(id == null ? '' : id).trim(); return id ? (by[id] = by[id] || { punch: {}, ap: {}, lv: {}, rq: {} }) : null; };
+  const inYm = function (d) { return String(d).slice(0, 7) === ym; };
+  (payClockRead(st, 'events') || []).forEach(function (e) {   // 不分狀態（被擋的、新手機待核准的也算有來過）；隔天 06:00 前的下班卡算前一天
+    const ts = String(normCellTs(e.ts) || ''), x = one(e.emp_id);
+    if (!x || !ts) return;
+    const d = tsDateStr(ts);
+    if (inYm(d)) x.punch[d] = 1;
+    if (String(e.type) === 'out' && tsHm(ts) <= LONE_EARLY_OUT_HM) { const p = addDaysStr(d, -1); if (inYm(p)) x.punch[p] = 1; }
+  });
+  const ap = buildLatestApprovedMap(payClockRead(st, 'approved') || []);
+  Object.keys(ap).forEach(function (d) { if (inYm(d)) Object.keys(ap[d]).forEach(function (id) { const x = one(id); if (x) x.ap[d] = 1; }); });
+  const pick = payLeavePicker_(st, payClockRead(st, 'roster') || []);
+  (payClockRead(st, 'leave') || []).forEach(function (l) {
+    const d = normCellDate(l['日期']);
+    if (!inYm(d)) return;
+    const x = one(pick(l['姓名'], d));
+    if (x) x.lv[d] = 1;
+  });
+  (payClockRead(st, 'requests') || []).forEach(function (r) {
+    const k = String(r.kind || ''), stt = String(r.status || ''), d = normCellDate(r.date);
+    if ((k !== 'leave' && k !== 'trip' && k !== 'miss') || (stt !== 'pending' && stt !== 'approved') || String(r.voided_at || '').trim() || !inYm(d)) return;
+    const x = one(r.emp_id);
+    if (x) x.rq[d] = 1;
+  });
+  return by;
+}
+/** 一個人：daily＝payDailyFor_ 的結果（dates 已照月中截止）；f＝payKzFacts_ 的一人份；kzDays＝已認定 [{date,h}]。
+ *  回 { from, suspect:[日期], suspect_streak, marked_streak }。連續＝班表上班日依序算，中間別的上班日會斷、休假日不算也不斷。 */
+function payKzScan_(daily, f, from, st, kzDays) {
+  f = f || {}; daily = daily || {};
+  const elec = daily.elec || {}, hol = daily.hol || {}, sched = daily.sched || {};
+  const marked = {};
+  (kzDays || []).forEach(function (x) { if (x && x.date >= from) marked[x.date] = true; });
+  const late = PAY_KZ_LATE_STORES_RE_.test(String(st || ''));
+  const out = { from: from, suspect: [], suspect_streak: 0, marked_streak: 0 };
+  let runS = 0, runM = 0;
+  (daily.dates || []).forEach(function (d) {
+    if (d < from || (daily.until && d > daily.until)) return;
+    const cell = sched[d];
+    const work = !!cell && String(cell.t || '') === 'W';
+    const sus = typeof kzSuspect_ === 'function' && kzSuspect_({
+      work: work, hol: !!hol[d] && !elec[d],
+      punch: !!(f.punch || {})[d], approved: !!(f.ap || {})[d] || payNum((daily.day_h || {})[d]) > 0,
+      leave: !!(f.lv || {})[d] || payNum((daily.day_leave || {})[d]) > 0, req: !!(f.rq || {})[d],
+      excluded: late && d < PAY_KZ_LATE_STORES_FROM_, date: d, from: from, until: daily.until || '' });
+    if (sus) out.suspect.push(d);
+    if (marked[d]) { runM++; out.marked_streak = Math.max(out.marked_streak, runM); runS = 0; }
+    else if (sus) { runS++; out.suspect_streak = Math.max(out.suspect_streak, runS); runM = 0; }
+    else if (work) { runS = 0; runM = 0; }
+  });
+  return out;
+}
+/** 曠職的 ot_info（payCalcOne 叫）：舊的「有排班沒核定」只留生效日之前的日子；新增疑似、已認定、待確認。沒有的欄位不帶。 */
+function payKzOtInfo_(oi, att) {
+  const sc = att.kz_scan, from = sc.from, daily = att.daily || {};
+  const pre = payOtDailySum(Object.assign({}, daily, { dates: (daily.dates || []).filter(function (d) { return d < from; }), extra_ot: 0, comp_h: 0 }));
+  oi.no_show = pre.no_show;
+  oi.absent_alert = pre.no_show_streak >= 3 || pre.no_show.length >= 6;
+  oi.absent_streak = pre.no_show_streak;
+  if (sc.suspect.length) {
+    oi.kz_suspect = sc.suspect.slice();
+    oi.kz_suspect_streak = sc.suspect_streak;
+    oi.kz_suspect_alert = sc.suspect_streak >= 3 || sc.suspect.length >= 6;   // 第 10 題 B：句 19
+  }
+  const mk = (att.kz_days || []).filter(function (x) { return x.date >= from; });
+  if (mk.length) {
+    oi.kz_marked = mk.map(function (x) { return { date: x.date, h: x.h }; });
+    oi.kz_marked_streak = sc.marked_streak;
+    oi.kz_marked_alert = sc.marked_streak >= 3 || mk.length >= 6;          // 第 10 題 B：句 18
+    if (KUANGZHI_DEDUCT_PENDING) oi.kz_pending = true;
+  }
+}
+
 /** 支援店記的假（只提醒，薪資沒扣，Eason 2026-11-10）：同品牌支援店（paySupportAutoCore_ 的 entry.stores）的 leave 分頁，
  *  這位同仁在「支援當天」（那家店有核定支援時數的日子）記的假。純函式。leaveBy＝{店代碼: leave 分頁列 | null（讀不到就略過）}。
  *  回 [{date, store, store_name, type, hours}]，依日期。 */
@@ -5160,6 +5308,7 @@ function payLeaveMismatch_(ym, st) {
   payRead('master').forEach(function (m) { if (payStore(m.store) === st) byName[String(m.name || '').trim()] = String(m.emp_id); });
   const has = function (name) { return Object.prototype.hasOwnProperty.call(byName, name); };
   const reqs = {}, leaves = {}, info = {};
+  const kzF = payKzFrom_();   // 曠職（2026-11-26）：生效日起認定的曠職沒有假單，不算「登記有、單沒有」；開關關＝照舊
   payClockRead(st, 'requests').forEach(function (r) {
     if (String(r.status) !== 'approved' || (r.kind !== 'leave' && r.kind !== 'trip')) return;
     const date = normCellDate(r.date), name = String(r.name || '').trim();
@@ -5170,6 +5319,7 @@ function payLeaveMismatch_(ym, st) {
   payClockRead(st, 'leave').forEach(function (l) {
     const date = normCellDate(l['日期']), name = String(l['姓名'] || '').trim(), type = String(l['假別'] || '').trim();
     if (date.slice(0, 7) !== ym || !type || !has(name)) return;
+    if (kzF && type === PAY_KZ_NAME && date >= kzF) return;
     const k = name + '|' + date + '|' + type; leaves[k] = true; info[k] = { name: name, date: date, type: type };
   });
   const out = [];
@@ -5256,6 +5406,9 @@ function handlePayrollCalc(body) {
   const ELEC_FP = payElecFp_(ELEC_ROWS, ym, st);   // 寫回前在寫鎖內比對（Codex B1）
   const ELEC_ON = {};   // 工號 → 實際套用的選舉日（給 payOtMonthSync_ 的休息日旗標）
   const UNTIL = DAILY ? (ASOF || payYesterday_()) : '';
+  // 曠職（2026-11-26）：開關開、這個月有 ≥ 生效日的日子才讀（payClockRead 有快取）；關＝null，下面全部不作用
+  const KZF = DAILY ? payKzFrom_() : null;
+  const KZ_FACTS = payKzMonth_(ym, KZF) ? payKzFacts_(st, ym) : null;
   const OT_FORMS_X = {};   // 支援店的加班單（跨店超過 8 小時由做到超過的那家開）；迴圈外讀
   if (XSUP && OT_FORMS) Object.keys(XSUP.byEmp).forEach(function (id) {
     (XSUP.byEmp[id].stores || []).forEach(function (s) {
@@ -5317,6 +5470,8 @@ function handlePayrollCalc(body) {
       menstrual_times: c.menstrual_times || null,
       trip_meal_days: payNum(c.trip_meal_days), trip_noform: c.trip_noform || [],   // ①出差餐費（只看歸集值）
     };
+    if (c.kz_void) att.kz_void = true;      // 曠職（2026-11-26）：只有歸集值、手動列蓋不掉；沒有就不加欄位
+    if (c.kz_days) att.kz_days = c.kz_days;
     const ZERO_DAYS = payRatio(eC, ym) <= 0;   // 這個月在職天數 0（還沒到職／上個月以前已離職）
     if (XSUP && c.support_error) XSA.warn.support_error.push(String(e.emp_id));   // 支援欄壞掉：一律不帶入（審查 #2）
     else if (XSUP) {
@@ -5351,6 +5506,7 @@ function handlePayrollCalc(body) {
         att._miss_later = att.daily.dates.filter(function (d) { const cell = att.daily.sched[d]; return d > ASOF && !(cell && String(cell.t || '')); });
         att.daily.dates = att.daily.dates.filter(function (d) { return d <= ASOF; });
       }
+      if (KZ_FACTS) att.kz_scan = payKzScan_(att.daily, KZ_FACTS[id.trim()], KZF, st, att.kz_days);   // 曠職疑似清單（月中已照 as_of 截掉）
       if (XSUP) att.sup_hol = ASOF ? paySupportHolDouble_(att.support, XSUP.byEmp[id.trim()], HOLD, XCTX.storeBy, ASOF)
                                    : paySupportHolDouble_(att.support, XSUP.byEmp[id.trim()], HOLD, XCTX.storeBy);
       if (XSUP && XSUP.byEmp[id.trim()]) {
@@ -5919,6 +6075,19 @@ function handlePayrollFinalize(body) {
     if (lm.length) return { ok: false, error: 'leave_mismatch', list: lm,
       message: '下面 ' + lm.length + ' 筆請假單和請假登記對不上，不能鎖定（請假單有、請假登記沒有＝請主管把那天重新核定一次；請假登記有、請假單沒有＝請同仁補請假單，或主管重新核定改掉那天的登記）：\n' +
         lm.slice(0, 30).map(payLeaveMismatchLine_).join('\n') + (lm.length > 30 ? '\n…共 ' + lm.length + ' 筆' : '') };
+  }
+  /* 疑似曠職還沒處理不能鎖定（2026-11-26 開工確認第 8 題 A）：開關開、這個月有 ≥ 生效日的日子才看；看草稿 ot_info.kz_suspect
+     （上面 payLockStale_ 已用最新資料重算比對過，疑似清單跟草稿不同會先回 stale_run）。訊息＝句 22。解鎖不擋。 */
+  if (lock && payKzMonth_(ym, payKzFrom_())) {
+    const kzList = [];
+    payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === stF; }).forEach(function (r) {
+      let o = {}; try { o = JSON.parse(r.ot_info || '{}') || {}; } catch (e) { o = {}; }
+      (o.kz_suspect || []).forEach(function (d) { kzList.push({ date: String(d), name: String(r.name || ''), emp_id: String(r.emp_id) }); });
+    });
+    kzList.sort(function (a, b) { return a.date.localeCompare(b.date) || a.name.localeCompare(b.name); });
+    if (kzList.length) return { ok: false, error: 'kz_suspect', list: kzList,
+      message: '下面 ' + kzList.length + ' 天是疑似曠職還沒處理，不能鎖定（請主管補單、核定，或認定曠職；班表排錯的請先改班表並發布）：' +
+        kzList.map(function (x) { return (+x.date.slice(5, 7)) + '/' + (+x.date.slice(8, 10)) + ' ' + x.name; }).join('、') };
   }
   /* 打卡正本在 Mac mini 時（G＋備援，RelayG.gs）：mini 和 Google 這個月的打卡筆數要一致才能鎖（Eason 2026-11-15 選「擋下」）。解鎖不擋。 */
   if (lock && typeof payGReconBlock_ === 'function' && typeof relayGMode_ === 'function' && relayGMode_().on) {   // 沒切換＝完全不看、不多開試算表（Fable 審查 A2）
@@ -7286,7 +7455,8 @@ function payLeaveFlatRows(store, types, nameToEmp, pickEmp, ym) {
 var MY_LEAVE_ALWAYS = ['personal', 'sick'];
 function payMyLeaveQuota(empId, empName, ym, store) {
   const st = payStore(store);
-  const types = payLeaveTypes(st);
+  const kzHide = !!payKzFrom_();   // 曠職（2026-11-26）：同仁的假別額度卡不列（同仁只在 LINE 出勤班表看到曠職）
+  const types = payLeaveTypes(st).filter(function (t) { return !(kzHide && payIsKzType(t)); });
   const cfg = payConfig(st);
   const dayH = payLeaveDayHours(cfg);
   // 兩個來源都要（leave 分頁＋手動工時），只有本人的列
@@ -7404,10 +7574,12 @@ function handlePayrollLeaveTypeGet(body) {
     const rs = String(r.store || '').trim();
     return rs === '' || payStore(rs) === st;
   });
-  return { ok: true, store: st, types: payLeaveTypes(st),
+  const res = { ok: true, store: st, types: payLeaveTypes(st),
            is_default: mine.length === 0,
            store_specific: raw.some(function (r) { return String(r.store || '').trim() === st; }),
            rule_parental: PAY_PARENTAL };
+  if (payKzFrom_()) res.kz_on = true;   // 曠職（2026-11-26）：假別設定頁在曠職列下面顯示句 23（開關關＝回應不變）
+  return res;
 }
 
 /** {action:'payroll_leave_type_set', admin_key, store, types:[...]} → 只換該店範圍，保留他店。
@@ -7533,7 +7705,9 @@ function handlePayrollLeaveOptions(body) {
     return Object.assign({ ok: true, store: st, ym: ym, lock_only: true }, typeof lk === 'boolean' ? { locked: lk } : {});
   }
   const compOn = payCompStoreOn_(st);
-  const types = payLeaveTypes(st).filter(function (t) { return compOn || !payIsCompType(t); });
+  // 曠職（2026-11-26）：開關開著時不出現在任何下拉（核定頁、打卡端主管頁、LINE 額度卡；只能由「認定曠職」產生）
+  const kzHide = !!payKzFrom_();
+  const types = payLeaveTypes(st).filter(function (t) { return (compOn || !payIsCompType(t)) && !(kzHide && payIsKzType(t)); });
   const cfg = payConfig(st);
   const master = payRead('master').filter(function (m) {
     return String(m.active).toLowerCase() === 'true' && payStore(m.store) === st;
@@ -8540,6 +8714,8 @@ function handlePnlLaborEstimate_(body) {
       xsup_early_min: XS ? payXsupLateEarly_(XS.byEmp[String(e.emp_id).trim()]).early : 0,
       trip_meal_days: payNum(c.trip_meal_days),
     };
+    if (c.kz_void) a.kz_void = true;      // 曠職（2026-11-26）：跟 handlePayrollCalc 同一套（沒有就不加欄位）
+    if (c.kz_days) a.kz_days = c.kz_days;
     if (XS && payRules4On_(ym)) {
       const xp = payXsupPerf_(XS.byEmp[String(e.emp_id).trim()], c, payPerfLeaveOnly_(st, ym, payConfig(st)));
       att.xsup_deduct_days = xp.deduct_days; att.xsup_forget_day = xp.forget_day; att.xsup_forget_punch = xp.forget_punch;

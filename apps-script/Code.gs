@@ -1989,6 +1989,8 @@ function leftCascadeRun_(res) {
  *  忘了同步三家店後端的白名單，主管選了就被擋成 bad_leave_type。改為白名單外自動查表放行。
  *  查不到／連不上＝照舊擋下（防呆不放水）；白名單內的常用假別完全不走這段，零額外延遲。 */
 function leaveTypeAllowedByPayroll(leaveType, mgrKey) {
+  // 曠職（2026-11-26）：開關開著時不當一般假別放行（一般核定、主管代開都選不到；只能由「認定曠職」那條路產生）。開關關＝照舊查表
+  if (String(leaveType == null ? '' : leaveType).trim() === KZ_TYPE && kzFrom_()) return false;
   // 薪資模組掛在同一個專案（光復）→ 直接查函式，不用打網路
   try {
     if (typeof payLeaveTypes === 'function') {
@@ -2048,6 +2050,112 @@ function payLockedBlock_(dateStr, staff, ss) {
   return { ok: false, error: 'pay_locked', message: staff ? payLockedStaffMsg_(dateStr) : payLockedMgrMsg_(dateStr) };
 }
 
+/* ══ 曠職（2026-11-26 主管定案：開工確認 13 題照推薦；合約 docs/kuangzhi/contract.md）══
+ * 主管在營運系統核定頁按「認定曠職」→ 沿用 mgr_approve 送來「0 個上班時段＋假別曠職」＋營運系統伺服器帶的已發布班表事實 kz_sched。
+ * 這裡再驗一次（合約第 2-2 節），通過才寫「核定 0 小時（狀態字照舊『全天請假』）＋leave 一列 曠職（時數＝班表時數）」。
+ * 只有人按才會產生：沒有任何排程、重算路徑會寫曠職（不可降的標準）。
+ * 生效日開關 KUANGZHI_FROM（指令碼屬性）：沒設、空白、不是真的日期＝關，跟改之前逐字相同；早於 2026-12-01 當 2026-12-01（第 11 題不回溯）。
+ * 這一段的字（KZ_MSG_）逐字照開工確認頁〈新文字逐句表〉，不可自己改。 */
+var KZ_TYPE = '曠職';
+var KZ_FLOOR_ = '2026-12-01';        // 第 11 題 A：12/1 起的日子適用、11 月以前不回溯
+var KZ_LATE_STORES_RE_ = /^MZT(RG|WX)$/i;   // 瑞光、文心：打卡正式上線（2027-01-01）前不算（第 3-6 題）
+var KZ_LATE_STORES_FROM_ = '2027-01-01';
+var KZ_SELF_DAYS_ = 4;               // 同仁自己補單最多補到 4 天前（Requests.gs REQ_LEAVE_PAST_DAYS／REQ_MISS_DAYS；沒載入 Requests 時才用）
+var KZ_MSG_ = {
+  ok: '已認定 {日期} 曠職（{N} 小時）',                                    // 句 8
+  punch: '這天有打卡紀錄，不能認定曠職',                                   // 句 9
+  req: '這天有待審或已核准的請假、出差或忘打卡單，請先處理那張單',          // 句 10
+  notwork: '這天班表不是上班日，不能認定曠職',                             // 句 11
+  early: '同仁還能自己補單到 {日期}，請之後再認定',                        // 句 12
+  mixed: '曠職不能跟其他假別或上班時段一起核定',                           // 句 13
+};
+/** 生效日：日期字串或 null（關）。每次都重讀屬性（Mac mini 核定引擎的屬性會被 relay_pull 整份換掉，不能記在變數裡）。 */
+function kzFrom_() {
+  var v = '';
+  try { v = String(PropertiesService.getScriptProperties().getProperty('KUANGZHI_FROM') || '').trim(); } catch (e) { v = ''; }
+  if (!isRealDateStr_(v)) return null;
+  return v < KZ_FLOOR_ ? KZ_FLOOR_ : v;
+}
+/** 這一天在生效日（含）之後。from 可以帶進來（同一個請求讀過一次就不再讀）。 */
+function kzOn_(date, from) {
+  var f = from === undefined ? kzFrom_() : from;
+  return !!f && isRealDateStr_(date) && String(date) >= f;
+}
+function kzMd_(d) { return (+String(d).slice(5, 7)) + '/' + (+String(d).slice(8, 10)); }
+function kzNum_(h) { return String(Math.round(Number(h) * 100) / 100); }
+/** 同仁自己還能補單到哪天（含）：日期＋補單期限（同 Requests.gs reqPastCheck_／忘打卡 REQ_MISS_DAYS，取兩者大的） */
+function kzSelfUntil_(date, today) {
+  var lim = KZ_SELF_DAYS_;
+  if (typeof reqPastLimit_ === 'function') {
+    lim = Math.max(reqPastLimit_(date, today), reqPastLimit_(date, today, typeof REQ_MISS_DAYS !== 'undefined' ? REQ_MISS_DAYS : KZ_SELF_DAYS_));
+  }
+  return addDaysStr(date, lim);
+}
+/** 過了同仁自補期限才能認定（第 4 題 A） */
+function kzCanMark_(date, today) { return String(today) > kzSelfUntil_(date, today); }
+/** 疑似曠職的判定（純函式；營運系統逐字搬一份、跑同一份案例檔 tests/fixtures/kuangzhi-cases-v1.json）。
+ *  f：{ work, hol, punch, approved, leave, req, excluded, date, from, until }，每一項由呼叫端用自己的資料填（合約第 3 節）。 */
+function kzSuspect_(f) {
+  f = f || {};
+  if (!f.from || !f.date || String(f.date) < String(f.from)) return false;
+  if (f.until && String(f.date) > String(f.until)) return false;
+  return f.work === true && !f.hol && !f.punch && !f.approved && !f.leave && !f.req && !f.excluded;
+}
+/** 請求有沒有帶曠職（新版 leaves 陣列，或舊呼叫端的 leave_type） */
+function kzRequested_(body) {
+  var list = Array.isArray(body && body.leaves) ? body.leaves : [{ type: body && body.leave_type }];
+  return list.some(function (x) { return !!x && String(x.type == null ? '' : x.type).trim() === KZ_TYPE; });
+}
+/** 營運系統帶的已發布班表事實（只有個人帳號代轉才採信，呼叫端判）：形狀對才回 {work, hours, xpunch, xreq}，否則 null */
+function kzSchedOf_(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  var h = v.hours;
+  if (typeof v.work !== 'boolean' || typeof h !== 'number' || !isFinite(h) || h <= 0 || h > 24 ||
+      typeof v.xpunch !== 'boolean' || typeof v.xreq !== 'boolean') return null;
+  return { work: v.work, hours: Math.round(h * 100) / 100, xpunch: v.xpunch, xreq: v.xreq };
+}
+/** 認定曠職的前段檢查（合約第 2-2 節 A、B、C、E）。回 {res} ＝要直接回的錯誤；{plan}＝通過，之後再查打卡、核定、期限。
+ *  只有「開關開、日期 ≥ 生效日、請求帶了曠職」才會進來；其餘照改之前的流程（曠職在白名單外 → bad_leave_type）。 */
+function kzApprovePre_(body, mgr, date, reqRows) {
+  var raw = Array.isArray(body.leaves) ? body.leaves : [{ type: body.leave_type, hours: body.leave_hours }];
+  var types = raw.map(function (x) { return String((x && x.type) == null ? '' : x.type).trim(); }).filter(Boolean);
+  var kzN = types.filter(function (t) { return t === KZ_TYPE; }).length;
+  var periodsGiven = Array.isArray(body.periods) ? body.periods.length > 0 : (body.periods != null && body.periods !== '');
+  if (types.length > kzN || periodsGiven) return { res: { ok: false, error: 'kz_mixed', message: KZ_MSG_.mixed } };            // A 句 13
+  if (kzN > 1) return { res: { ok: false, error: 'dup_leave_type', message: '同一個假別選了兩次：' + KZ_TYPE } };
+  // B：不是個人帳號代轉（門市登入、舊值班頁）、或沒有申請表可查 → 跟改之前一樣（曠職不在白名單）
+  var acting = typeof reqMgrActing_ === 'function' && reqMgrActing_(mgr, body);
+  if (!acting || !reqRows) return { res: { ok: false, error: 'bad_leave_type' } };
+  var ks = kzSchedOf_(body.kz_sched);
+  var late = KZ_LATE_STORES_RE_.test(String((typeof CONFIG !== 'undefined' && CONFIG.PAYROLL_STORE) || '')) && date < KZ_LATE_STORES_FROM_;
+  if (!ks || ks.work !== true || late) return { res: { ok: false, error: 'kz_not_workday', message: KZ_MSG_.notwork } };       // C 句 11
+  var emp = String(body.emp_id);
+  var hasReq = ks.xreq || reqRows.some(function (r) {
+    var k = String(r.kind || ''), s = String(r.status || '');
+    return String(r.emp_id) === emp && String(r.date).slice(0, 10) === date && (k === 'leave' || k === 'trip' || k === 'miss')
+      && (s === 'pending' || s === 'approved') && !String(r.voided_at || '').trim();
+  });
+  if (hasReq) return { res: { ok: false, error: 'kz_has_req', message: KZ_MSG_.req } };                                     // E 句 10
+  return { plan: ks };
+}
+/** 後段（讀過 events、approved 之後）：D 打卡、F 已有核定或登記、G 自補期限。回錯誤物件或 null。 */
+function kzApprovePost_(ss, plan, empId, name, date, eventRows, prevRec) {
+  var next = addDaysStr(date, 1);
+  var punched = plan.xpunch || eventRows.some(function (e) {
+    if (String(e.emp_id) !== String(empId)) return false;
+    var d = tsDateStr(e.ts);
+    return d === date || (d === next && String(e.type) === 'out' && tsHm(e.ts) <= LONE_EARLY_OUT_HM);   // 隔天 06:00 前的下班卡算前一天（同 loneOutDate_）
+  });
+  if (punched) return { ok: false, error: 'kz_has_punch', message: KZ_MSG_.punch };                                          // D 句 9
+  if (prevRec || leaveRowsOf(ss, date, name).length) return { ok: false, error: 'kz_day_done' };                            // F（逐句表沒有這句：不帶字）
+  var today = todayTaipeiStr();
+  if (!kzCanMark_(date, today)) {
+    var until = kzSelfUntil_(date, today);
+    return { ok: false, error: 'kz_too_early', message: KZ_MSG_.early.replace('{日期}', kzMd_(until)), until: until };        // G 句 12
+  }
+  return null;
+}
+
 function handleMgrApprove(body) {
   const ss = getSS();
   const mgrSheet = ss.getSheetByName('managers');
@@ -2081,6 +2189,13 @@ function handleMgrApprove(body) {
   // 這天還有待審的申請就不能核定（2026-11-20 Eason 第 13 題 A：原本只有營運系統畫面擋，直接打打卡後端繞得過）。
   // 核定、重新核定、整天請假、只檢查（dry_run）都擋；規則與字句同營運系統 web/modules/duty/pend-gate.js。沒載入 Requests 的環境（mini 預判引擎）不擋
   const reqRowsAll = typeof reqRows_ === 'function' && typeof reqPendBlock_ === 'function' ? reqRows_(ss) : null;
+  // 認定曠職（2026-11-26）：開關開、日期 ≥ 生效日、帶了曠職才走；其餘照改之前（曠職不在白名單 → 下面 bad_leave_type）
+  let kzPlan = null;
+  if (kzRequested_(body) && kzOn_(date)) {
+    const kzPre = kzApprovePre_(body, mgr, date, reqRowsAll);
+    if (kzPre.res) return kzPre.res;
+    kzPlan = kzPre.plan;
+  }
   if (reqRowsAll) {
     const pendBlock = reqPendBlock_(reqRowsAll, String(body.emp_id), date);
     if (pendBlock) return pendBlock;
@@ -2093,7 +2208,9 @@ function handleMgrApprove(body) {
     : [{ type: body.leave_type, hours: body.leave_hours }];
   if (rawLeaves.length > MAX_LEAVES_PER_DAY) return { ok: false, error: 'too_many_leaves', message: '一天最多記 ' + MAX_LEAVES_PER_DAY + ' 種假別' };
   const leaves = [];
-  for (let i = 0; i < rawLeaves.length; i++) {
+  // 曠職：時數＝營運系統帶的班表時數（送來的 hours 不採用）；不走白名單（曠職不在任何下拉、只能由這條路產生）
+  if (kzPlan) leaves.push({ type: KZ_TYPE, hours: kzPlan.hours });
+  for (let i = 0; i < (kzPlan ? 0 : rawLeaves.length); i++) {
     const x = rawLeaves[i] || {};
     const t = String(x.type || '').trim();
     if (!t) continue;
@@ -2135,6 +2252,10 @@ function handleMgrApprove(body) {
   const approvedMapAll = buildLatestApprovedMap(readSheetAsObjects(approvedSheet).rows);
   if (typeof chkT_ === 'function') chkT_('approved_total', Date.now() - tAp);
   const prevRec = (approvedMapAll[date] || {})[String(body.emp_id)];
+  if (kzPlan) {
+    const kzPost = kzApprovePost_(ss, kzPlan, String(body.emp_id), String(roster.name), date, eventRows, prevRec);
+    if (kzPost) return kzPost;
+  }
   if (body.dup_ignore !== undefined && body.dup_ignore !== null && !Array.isArray(body.dup_ignore)) {
     return { ok: false, error: 'bad_dup_ignore', message: '重複打卡的選擇格式不對' };
   }
@@ -2237,14 +2358,17 @@ function handleMgrApprove(body) {
         own_fs: rawPeriods && rawPeriods.length ? rawPeriods.reduce(function (m, p) { var x = /^(\d{1,2}):(\d{2})/.exec(String(p.start || '')); var v = x ? Number(x[1]) * 60 + Number(x[2]) : null; return v == null ? m : (m == null || v < m ? v : m); }, null) : null,
         sched_day: acting ? String(body.sched_day || '') : '', sched_spans: acting && Array.isArray(body.sched_spans) ? body.sched_spans : [], diff_reason: body.diff_reason, acting: acting,
         late_min: body.late_min,   // 主管認定的遲到分鐘：被免掉的遲到要有單（2026-11-15 考勤挑錯 B1）
+        kz: !!kzPlan,              // 認定曠職（2026-11-26）：通過 kzApprovePre_／Post_ 的曠職登記不要求假單
         // 那天這位同仁「新手機待核准」的卡有幾張（2026-11-11 B35）：少卡被擋時訊息請主管先核准裝置
         pending_device: eventRows.filter(function (e) { return String(e.emp_id) === String(body.emp_id) && e.status === 'pending_device_approval' && tsDateStr(e.ts) === date; }).length });
     if (bind) return bind;
   }
   // 只檢查不寫入（2026-11-14 考勤管理好上手第 1 項，營運系統 docs/duty-easy/）：上面所有檢查都跑過、會不會被擋已經知道，這裡停下、什麼都不寫
   if (body.dry_run === true) {
-    return { ok: true, dry_run: true, date: date, emp_id: body.emp_id, name: roster.name, periods: rawPeriods,
+    const dry = { ok: true, dry_run: true, date: date, emp_id: body.emp_id, name: roster.name, periods: rawPeriods,
              approved_hours: approvedHours, leaves: leaves, status_text: statusText };
+    if (kzPlan) dry.kz = { hours: kzPlan.hours };
+    return dry;
   }
   // 規則乙的競態（2026-11-21 出勤核定舊問題 3，Codex 20261121-rules-ab 問題 5）：開頭的待審檢查到這裡中間跑了一長串檢查，同仁可能剛好送出一張單
   //（送申請是在 ScriptLock 裡寫入的）。寫入前拿同一把鎖、鎖內重讀申請表再判一次，沒有待審才寫；搶不到回 busy、什麼都不寫。
@@ -2273,13 +2397,18 @@ function handleMgrApprove(body) {
     replaceLeaveRows(ss, date, String(roster.name), leaves);
   } finally { if (pendLock) pendLock.releaseLock(); }
 
-  return {
+  const done = {
     ok: true, date: date, emp_id: body.emp_id, name: roster.name,
     periods: rawPeriods, approved_hours: approvedHours, leaves: leaves,
     leave_type: leaves[0] ? leaves[0].type : '', leave_hours: leaves[0] ? leaves[0].hours : '',
     status_text: statusText, manager_name: actor, entered_at: enteredAt,
     dup_ignore: rawPeriods.length ? dupList : [],
   };
+  if (kzPlan) {   // 句 8
+    done.kz = { hours: kzPlan.hours };
+    done.message = KZ_MSG_.ok.replace('{日期}', kzMd_(date)).replace('{N}', kzNum_(kzPlan.hours));
+  }
+  return done;
 }
 
 /** 'yyyy-MM-dd' 而且真的有這天（同 Requests.gs reqIsDate_）。 */
