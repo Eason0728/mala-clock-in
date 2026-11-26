@@ -74,6 +74,8 @@ export function lateLeadClock(periods, segs, brk, reqs, date, from) {
     if (fc === null || t < fc.t) fc = { t, isIn }; else if (t === fc.t && !isIn) fc.isIn = false;
   }
   if (!fc || !fc.isIn) return null;
+  // 2026-11-26 第六輪（縮小範圍版）：當天有任何一段完整打卡整段落在休息帶內（上班卡 ≥ 休息開始、下班卡 ≤ 休息結束）＝不套（同打卡端 Code.gs lateLeadOf_ 開頭）
+  if ((segs || []).some((x) => { if (!x) return false; const i = toMin(x.in), o = toMin(x.out); return i != null && o != null && !x.cross && o > i && i >= bs && o <= be; })) return null;
   let n = 0;
   while (n < ps.length && ps[n][1] <= fc.t) n++;
   if (n === 0 || n === ps.length) return null;
@@ -228,7 +230,8 @@ export function lateLeadShapeOk(segs, reqs, brk) {
     const a = toMin(x.in), b = toMin(x.out);
     return inBrk(a) || inBrk(b) || (a != null && b != null && a < bs && b > be);
   });
-  if (brkPunch && docs.length) return false;
+  // 第六輪縮小範圍版：① 拿掉（休息帶內有完整打卡段的日子 lateLeadClock 已一律不套；10 種子×1.5 萬對照拿掉後仍全 0）。brkPunch 留著沒用到
+  void brkPunch;
   // ② 請假／出差單的時數換成分鐘不是整數（例 16:10–18:00 填 1.83 小時＝109.8 分）：前端「上班＋假滿 8 小時就不再多算」那段用時數算，
   //    新規則把上午補滿後常剛好碰到上限，會切出不到 1 分鐘的時段（18:45–18:45.2），打卡端回「時段格式不對」。主線遇到同樣情形也會這樣（既有），
   //    但新規則碰到的機會多很多，所以這種日子照主線（第五輪亂數對照 s20261127:1920、s33:14460）
@@ -409,23 +412,8 @@ function corePass(o, pin) {
     if (x.in == null && x.out != null) { const s = S.find((y) => y[1] >= x.out - TOL) || S[0]; if (s && (x.cross || s[1] > 1440 || s[0] < x.out || x.out + 1440 - s[1] < s[0] - x.out)) x.in = s[0]; x.guess = true; }
     if (x.out == null && x.in != null) { const s = S.find((y) => y[0] <= x.in + TOL && y[1] > x.in) || S[S.length - 1]; if (s && (s[1] > x.in || s[0] + 1440 - x.in < x.in - s[1])) x.out = s[1]; x.guess = true; }
   }
-  // 2026-11-26 第三輪（Codex 第一輪擋項 2）上午整段沒到：整段落在不打卡休息帶裡的打卡（例 12:16–12:27、13:00–17:00 的前一段）不算上班時間、也不當成班別休息的空檔。
-  //   休息帶本來就不算時數；打卡端（Code.gs lateLeadOf_）照當天第一張卡判「上午整段沒到」、記遲到，這段只是「有多出的打卡段」。
-  //   沒拿掉時同一筆打卡三種班表寫法三種預填：一段 08–17 休 60＝當成 12:27 出去休息 60 分、扣到 13:27（打卡端判不到、要 2 張忘打卡單）；一段沒填休息分鐘＝只預填 13–17；
-  //   兩段 08–12／13–17＝8 小時遲到 240。確認頁第 1 題 A「不管班表寫成一段或兩段，結果一樣」＋逐句表第 3 句「上午整段沒來、休息時間或之後才打上班卡，算遲到」→ 三種都 8 小時、遲到 240。
-  //   只在：知道日期而且生效日起（同 LATE_LEAD_FROM）、班表蓋過休息帶（BRKcut）而且休息帶前面有一段班（一段班蓋過休息帶，或兩段班中間空檔在休息帶裡）、
-  //   當天第一張卡是上班卡而且在休息開始以後（前面整段沒有卡）、沒有任何卡（含忘打卡單補的、照班表猜的）落在休息開始以前、拿掉後休息結束以後還有卡、
-  //   休息帶前面那段班沒有整段被已核准假單／出差單蓋掉（整段請假＝照請假，第 4 題「跟現在一樣」）。其他一律照舊。
+  // 2026-11-26 第六輪：第三輪「休息帶裡整段的打卡不算」拿掉——縮小範圍後有這種打卡的日子打卡端一律不套、前端照主線（lateLeadClock），用不到了
   const llOn = lateLeadOn(o);
-  if (llOn && BRKcut.length && firstCard && firstCard.isIn && firstCard.t >= BRKcut[0][0] && !untimedLeave) {
-    const bS = BRKcut[0][0], bE = BRKcut[0][1];
-    const lead = S.some((s, k) => s[0] < bS && (s[1] >= bE || (s[1] >= bS && S[k + 1] && S[k + 1][0] > s[1] && S[k + 1][0] <= bE)))
-      && total(minus(intersect(S, [[0, bS]]), LVraw)) > 0;
-    const before = raw.some((x) => (x.in != null && x.in < bS) || (x.out != null && !x.cross && x.out <= bS));
-    const inBrk = (x) => x.in != null && x.out != null && !x.cross && !x.guess && !x.fromReq.in && !x.fromReq.out && x.in >= bS && x.out > x.in && x.out <= bE;
-    const keep = raw.filter((x) => !inBrk(x));
-    if (lead && !before && keep.length < raw.length && keep.some((x) => (x.in != null && x.in >= bE) || (x.out != null && (x.cross || x.out > bE)))) raw.splice(0, raw.length, ...keep);
-  }
   let W = merge(raw.filter((x) => x.in != null && x.out != null).map((x) => span(x.in, x.out)));
   if (!W.length) {
     if (!S.length || zeroOnly) return [null, []];                     // 沒打卡也沒班：沒得算；只有同一分鐘的上下班卡＝有打卡但 0 分鐘，不照班表填（卡沒有缺，打卡端不會要忘打卡單）

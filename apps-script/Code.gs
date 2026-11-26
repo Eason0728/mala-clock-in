@@ -2999,6 +2999,11 @@ function lateLeadOf_(periods, punchSegments, breakWindow) {
   if (!breakWindow || !periods || periods.length < 2) return null;
   // 休息帶長度 0（12:00–12:00）會被 noPunchBreakWindow 當成跨夜 24 小時：不套（那支函式給別的呼叫端用，不改它）
   if (!(breakWindow.endMs - breakWindow.startMs > 0 && breakWindow.endMs - breakWindow.startMs < 86400000)) return null;
+  // 2026-11-26 第六輪（縮小範圍版，待主管決定；Codex 第三輪）：當天有任何一段「完整的一進一出」整段落在休息帶內
+  //   （上班卡 ≥ 休息開始、下班卡 ≤ 休息結束；下班卡剛好等於休息結束也算）→ 不套，整天照主線（核定、綁單、缺卡張數、每天重算都走這裡）。
+  //   理由：主線遇到這種卡會把休息帶隔開的兩段併成一塊、拿這段卡去配（breakBlocksFor_：這段卡跟休息帶前後兩段都不重疊〔下班卡＝休息結束時跟下一段重疊 0〕，
+  //   整塊沒配到完整打卡段才併）；新規則拿掉前導段後這段卡就配不到，綁單會多要忘打卡單。單張卡、從休息帶當中打到休息帶之後的卡不受影響。
+  if ((punchSegments || []).some(function (s) { return s && s.inMs != null && s.outMs != null && s.outMs > s.inMs && s.inMs >= breakWindow.startMs && s.outMs <= breakWindow.endMs; })) return null;
   const sorted = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
   let first = null;   // 當天第一張卡 { t, isIn }；同一分鐘有下班卡當成下班卡（不套，偏保守）
   (punchSegments || []).forEach(function (s) {
