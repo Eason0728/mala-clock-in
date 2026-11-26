@@ -46,7 +46,7 @@ function mk(Htxt, opt) {
     if (a === 'payroll_input_set') SRV.att = clone(body.inputs);
   };
   const ctx = { STORE: 'S', _ym: '2026-10', ym: () => ctx._ym, RES_GEN: {}, LOAD_SEQ: 0, LOAD_INFLIGHT: null, LOAD_WAITERS: [], VGEN: 0, DASH_PREFETCH: null, MON_UNSURE: {}, ELEC_PEND: {}, HOLEMP: [], HOLEMP_OTHER: [], ELEC_DAYS: null, ELEC_KEY: '', ELEC_STALE: false,
-    WRITING: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, setInterval, clearInterval, XSYNC_MAX_MS: 6 * 3600 * 1000, HOL_SYNCING: null, ONCE: {},
+    WRITING: 0, WRITE_WAITERS: [], BOOT_BUSY: 0, setTimeout, setInterval, clearInterval, XSYNC_MAX_MS: 6 * 3600 * 1000, HOL_SYNCING: null, HOLSYNC: {}, ONCE: {},
     OT_PERIOD: {}, HAS_CLOCK: true, SAME_NAME: [], NOT_IN_PAY: [], ZERO_RATIO: [], LEAVE_MM: [], ANNUAL: {}, SUPA: null, SUP_OPEN: {}, ROSTER_MISS: [], ATT_DIRTY: false, CFGSRC: {}, QUOTA: null, QUOTA_KEY: '', RESULTS: [], STATUS: 'draft', ASOF: null, COST_SNAP: null,
     STORES_OK: true, LOCK_BUSY: false, XSUP_FROM: '2026-11', SYNC_BUSY: false, LT_VER: 0, LEV_VER: 0, LT_IS_DEFAULT: false,
     ATT: clone(SRV.att), BONUS: clone(SRV.bonus), MASTER: clone(SRV.master), CFG: clone(SRV.cfg), STORE_LIST: clone(SRV.stores), CFG_DIRTY: { daily_hours: 8 }, CFG_OBSOLETE: [], CFG_POS: {}, CFG_CARDS: { cfg: { own: 'cfgOwn', scope: 'cfgScope', keys: () => ['daily_hours', 'meal'] } },
@@ -254,6 +254,20 @@ const counts = (log, a) => log.posts.filter(x => x === a).length;
       const before = counts(t.log, 'payroll_month'); t.ctx.ATT_DIRTY = dirty; t.release('payroll_holiday_sync'); await sh; await settle();
       const reloaded = counts(t.log, 'payroll_month') === before + 1, last = (t.log.bodies.payroll_month || []).slice(-1)[0] || {};
       ok(reloaded === wantReload && (!wantReload || (last._store === 'X' && last._ym === t.ctx._ym)) && JSON.stringify(t.ctx._appliedHol) === JSON.stringify([{ d: 'newStore' }]), 'F6b 紅字同步完成時已切店（' + lab + '）：舊店紅字不套到新店；目前店月' + (wantReload ? '有重載（紅字是新的）' : '不重載（有未存工時，維持原規則）'), { before, posts: t.log.posts, last, hol: t.ctx._appliedHol }); } }
+  { // F6c 紅字同步的「載入中」與「失敗」字（2026-11-24 節日表只留一份）：開關預設（gov）照舊、只收推送（mini）講節日表
+    for (const [mode, hs, loading, failed] of [
+      ['開關預設', {}, '正在對照人事行政總處的辦公日曆表…', '⚠ 暫時連不上人事行政總處，先顯示目前的資料；重新整理會再試一次'],
+      ['只收推送', { hol_source: 'mini' }, '正在讀取節日表…', '⚠ 暫時讀不到節日表，先顯示目前的資料；重新整理會再試一次']]) {
+      const t = mk(H, { hold: ['payroll_holiday_sync'] }); t.ctx.HOLSYNC = hs;
+      const el = { style: {}, textContent: '' }, base = t.ctx.$; t.ctx.$ = (id) => (id === 'holSync' ? el : base(id));
+      const sh = t.ctx.syncHol(); await settle();
+      const during = el.textContent;
+      t.release('payroll_holiday_sync'); await sh; await settle();
+      const t2 = mk(H, {}); t2.ctx.HOLSYNC = hs; const el2 = { style: {}, textContent: '' }, b2 = t2.ctx.$; t2.ctx.$ = (id) => (id === 'holSync' ? el2 : b2(id));
+      const p2 = t2.ctx.post; t2.ctx.post = (a, b) => (a === 'payroll_holiday_sync' ? Promise.resolve({ ok: false, error: 'timeout' }) : p2(a, b));
+      await t2.ctx.syncHol(); await settle();
+      ok(during === loading && el2.textContent === failed, 'F6c ' + mode + '：載入中「' + loading + '」、失敗「' + failed + '」', { during, failedText: el2.textContent });
+    } }
   { // F7 正常情況（重讀成功）：請求序列與 6a60970 相同
     let OLD2 = null; try { OLD2 = cp.execSync('git show 6a60970:payroll.html', { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 }).toString('utf8'); } catch (e) { OLD2 = null; }
     if (!OLD2) { console.log('（找不到 6a60970：略過 F7，這不算通過）'); fail++; }

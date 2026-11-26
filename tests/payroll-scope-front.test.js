@@ -21,7 +21,7 @@ ok(src.every(Boolean), '找得到 scopeLimited／pickScopedStore／applyScopeUi�
 const ownIds = (/const SCOPE_OWN_IDS=(\[[^\]]*\])/.exec(html) || [])[1] || '[]';
 
 function mkEl() { return { style: {}, checked: false, disabled: false, innerHTML: '', textContent: '' }; }
-function load({ EMBED, SCOPE, master, perCall }) {
+function load({ EMBED, SCOPE, master, perCall, holMode }) {
   const els = {}, calls = [];
   const $ = id => els[id] || (els[id] = mkEl());
   ['cfgOwn', 'attOwn', 'ptOwn', 'coOwn', 'ltOwn', 'storeCard', 'holSync', 'nav'].forEach($);
@@ -46,6 +46,7 @@ function load({ EMBED, SCOPE, master, perCall }) {
   ctx.syncXmap = () => {};   // 打卡對照背景同步（2026-11-05，跨店支援自動帶入）：這支只測 scope
   vm.createContext(ctx);
   vm.runInContext(`let EMBED=${EMBED}; let SCOPE=${JSON.stringify(SCOPE)}; let STORE='SSLGF'; let STORE_LIST=[]; let MASTER, CFG, DASH_PREFETCH;
+    let HOLSYNC=${JSON.stringify(holMode === 'mini' ? { hol_source: 'mini' } : {})};   // 頁面上的全域（紅字同步狀態）；節日表只收推送時 hol_source:'mini'
     const SCOPE_OWN_IDS=${ownIds};\n` + src.join('\n') +
     `\nthis.set=(k,v)=>{ if(k==='SCOPE')SCOPE=v; if(k==='EMBED')EMBED=v; if(k==='STORE')STORE=v; };
      this.get=()=>({SCOPE,STORE});
@@ -72,6 +73,9 @@ function load({ EMBED, SCOPE, master, perCall }) {
   t = load({ EMBED: true, SCOPE: ['CF'] }); t.api.applyScopeUi();
   ok(['cfgOwn', 'attOwn', 'ptOwn', 'coOwn', 'ltOwn'].every(id => t.els[id].checked === true && t.els[id].disabled === true), 'ownLocked：五個勾選框勾選＋鎖住');
   ok(t.groupBtn.style.display === 'none' && t.els.storeCard.style.display === 'none' && t.els.holSync.style.display === 'none', '藏集團總覽鈕、門市設定區、紅字同步區');
+  // 節日表只收推送（2026-11-24）：紅字同步區改放版本行，共用登入也要看得到；其他照藏
+  t = load({ EMBED: true, SCOPE: ['CF'], holMode: 'mini' }); t.api.applyScopeUi();
+  ok(t.groupBtn.style.display === 'none' && t.els.storeCard.style.display === 'none' && t.els.holSync.style.display !== 'none', '節日表只收推送：藏集團總覽鈕、門市設定區，紅字同步區（版本行）不藏');
   t = load({ EMBED: true, SCOPE: '*' }); t.api.applyScopeUi();
   ok(!t.els.cfgOwn.disabled && !t.groupBtn.style.display && !t.els.storeCard.style.display, "SCOPE='*'：畫面不動");
 

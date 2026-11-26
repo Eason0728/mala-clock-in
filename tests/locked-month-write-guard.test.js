@@ -24,7 +24,8 @@ const bnRow = (ym, store, emp, amount) => ({ ym, store, emp_id: emp, bonus_type:
 function env(data) {
   const d = Object.assign({ master: [ftEmp(), ptEmp()], config: [], holiday: [], run: [], item: [], input: [], bonus: [], audit: [], store: [] }, data);
   const s = load({ data: d, clock: { SSLGF: { roster: [], approved: [], events: [], leave: [], requests: [] } }, today: '2026-11-10' });
-  vm.runInContext(`CONFIG.ADMIN_KEY = ${JSON.stringify(KEY)};`, s);
+  // 台北本月釘在 2026-11（跟 today 一致）：整批儲存會擋「新增已經過去的月份」（2026-11-25），不釘的話跟著真實時鐘走
+  vm.runInContext(`CONFIG.ADMIN_KEY = ${JSON.stringify(KEY)}; currentYmTaipei = function () { return '2026-11'; };`, s);
   s.post = (fn, body) => JSON.parse(JSON.stringify(s.call(fn, Object.assign({ admin_key: KEY }, body))));
   return s;
 }
