@@ -58,7 +58,10 @@ function statusNow(m, sc, manual) {
   const segs = punch.segments.map((s) => ({ in: s.in, out: s.out, inMs: s.in ? sb.hmToMs(D, s.in) : null, outMs: s.out ? sb.hmToMs(s.cross ? D1 : D, s.out) : null }));
   sb.markWorkingSeg_(punch, D, segs);
   const bw = sb.noPunchBreakWindow(D);
-  const trig = typeof sb.reqLateLeadOn_ === 'function' ? sb.reqLateLeadOn_(sb.reqRows_(m.self), 'E01', D, pms, segs, bw) : null;
+  const rows = sb.reqRows_(m.self);
+  let trig = typeof sb.reqLateLeadOn_ === 'function' ? sb.reqLateLeadOn_(rows, 'E01', D, pms, segs, bw) : null;
+  // 第六輪不變式：新規則判不過、主線判得過＝照主線（同 handleMgrApprove／每天重算的 reqLateLeadKeep_）
+  if (trig && typeof sb.reqLateLeadKeep_ === 'function' && !sb.reqLateLeadKeep_(D, pms, segs, bw, sb.lateLeadDayRows_(rows, 'E01', D), sc.late_min == null ? '' : sc.late_min)) trig = false;
   let st = sb.computeApprovalStatus(pms, segs, false, false, bw, false, trig === true);
   if (manual) st = sb.applyManualLate(st, sc.late_min == null ? '' : sc.late_min);
   return { st, trig };

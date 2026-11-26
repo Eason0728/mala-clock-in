@@ -95,7 +95,7 @@ export function lateLeadClock(periods, segs, brk, reqs, date, from) {
  *  「{08:00–12:00} 整段沒有打卡、{12:47} 才到：算遲到 {240} 分（休息 {12:00–13:00} 不算），薪資照扣。」——分鐘＝核定時段裡、第一張上班卡之前的分鐘數 */
 export function lateLeadNote(periods, segs, brk, reqs, date, from) {
   const c = lateLeadClock(periods, segs, brk, reqs, date, from);
-  if (!c) return '';
+  if (!c || !clockKeep(c, periods, segs, reqs, brk, date)) return '';      // 第六輪：打卡端因不變式照主線的那份也不寫（同 corePeriods）
   const min = total(intersect(c.ps, [[0, c.fc.t]]));
   return c.lead.map(([a, b]) => toHm(a) + '–' + toHm(b)).join('、') + ' 整段沒有打卡、' + toHm(c.fc.t) + ' 才到：算遲到 ' + min + ' 分（休息 ' + toHm(c.bs) + '–' + toHm(c.be) + ' 不算），薪資照扣。';
 }
@@ -220,15 +220,8 @@ export function lateLeadShapeOk(segs, reqs, brk) {
   const bs = toMin(brk && brk.start), be = toMin(brk && brk.end);
   if (bs == null || be == null || be <= bs) return true;                       // 沒有休息帶：新規則本來就不會套，閘不用管
   const docs = (reqs || []).filter((r) => r && r.pending !== true && (r.kind === 'leave' || r.kind === 'trip' || r.kind === 'miss'));
-  // ① 休息帶裡有打卡（任一張卡落在休息帶，或打卡段跨過休息帶）又同時有任何已核准的請假／出差／忘打卡單：
-  //    前端「休息帶裡的打卡不算」與打卡端（打卡段照原樣配時段、單據補卡）在這種組合下對不齊（第五輪 (a)(b1)(b2)、第四輪變體 6 都在這裡）
-  const inBrk = (t) => t != null && t >= bs && t < be;
-  const brkPunch = (segs || []).some((x) => {
-    if (!x) return false;
-    const a = toMin(x.in), b = toMin(x.out);
-    return inBrk(a) || inBrk(b) || (a != null && b != null && a < bs && b > be);
-  });
-  if (brkPunch && docs.length) return false;
+  // ①（第五輪「休息帶裡有打卡又有單據＝照主線」）2026-11-26 第六輪拿掉：改成照抄打卡端的不變式判斷（clockKeep／clockKeepStrict，見 corePeriods），
+  //   10 種子 × 1.5 萬組＋格點的對照拿掉後 (a)–(e) 仍全 0，新規則預填的日子多回來（亂數裡閘擋回主線的從約 9% 降到約 1%，只剩 ②）
   // ② 請假／出差單的時數換成分鐘不是整數（例 16:10–18:00 填 1.83 小時＝109.8 分）：前端「上班＋假滿 8 小時就不再多算」那段用時數算，
   //    新規則把上午補滿後常剛好碰到上限，會切出不到 1 分鐘的時段（18:45–18:45.2），打卡端回「時段格式不對」。主線遇到同樣情形也會這樣（既有），
   //    但新規則碰到的機會多很多，所以這種日子照主線（第五輪亂數對照 s20261127:1920、s33:14460）
@@ -245,15 +238,15 @@ export function corePeriods(o) {
   const segs = Array.isArray(o.segs) ? o.segs : [], reqs = Array.isArray(o.reqs) ? o.reqs : [];
   const date = String(o.date || (o.plan && o.plan.date) || '');
   const clock = (x) => (x && Array.isArray(x.periods) && x.periods.length ? lateLeadClock(x.periods, segs, o.brk, reqs, date, o.lateLeadFrom) : null);
-  let out = r, c = clock(r);
-  if ((o.lateLeadGate !== false && !lateLeadShapeOk(segs, reqs, o.brk)) || !c) out = null;      // o.lateLeadGate＝false：只給量測閘擋掉多少的測試用                   // 總閘沒過、新版算不出時段、打卡端不會套 → 照主線
-  else {
-    // 打卡端綁單（Requests.gs reqOverCreditMin_）拿「當天第一段完整打卡」比其餘段開頭：第一段是休息帶裡打的那段（比其餘段開頭還早）時，
-    //   休息後晚回來那段不算遲到、算「核定比打卡多」，滿 30 分（REQ_STRICT_DIFF_MIN）就擋 → 照主線（第四輪）
-    const rest = c.ps.slice(c.lead.length), full = clockFullSegs(segs, reqs);
-    if (full.length && full[0][0] < rest[0][0] && clockUncovered(rest, full, c.bs, c.be) >= 30) out = null;
-  }
-  if (!out) { out = corePeriodsRaw(Object.assign({}, o, { lateLeadFrom: null })); c = clock(out); }
+  // 2026-11-26 第六輪（不變式；主管選維持範圍）：打卡端套不套＝lateLeadClock 成立、而且 clockKeep（照抄 Requests.gs reqLateLeadKeep_：
+  //   新規則讓缺卡／核定比打卡多判不過、主線判得過＝這份照主線）。第四輪「休息帶裡打一段、休息後晚回來 ≥30 分」那條是這裡的一個特例，併進來
+  const sends = (x) => { const k = clock(x); return k && clockKeep(k, x.periods, segs, reqs, o.brk, date) ? k : null; };
+  // 新規則的預填只在「打卡端照新規則判得過那兩條」時才用（clockKeep 的 strict 版）；判不過就改給主線的預填——主線預填是不同的時段，常常核得了
+  //   （第四輪變體 6：休息帶裡打一段、休息後晚回來 ≥30 分；第六輪對照又找到同類 16 組）
+  const sendsNew = (x) => { const k = clock(x); return k && clockKeepStrict(k, x.periods, segs, reqs, o.brk, date) ? k : null; };
+  let out = r, c = sendsNew(r);
+  if ((o.lateLeadGate !== false && !lateLeadShapeOk(segs, reqs, o.brk)) || !c) out = null;      // o.lateLeadGate＝false：只給量測閘擋掉多少的測試用；總閘沒過、新版算不出時段、打卡端不會套 → 照主線
+  if (!out) { out = corePeriodsRaw(Object.assign({}, o, { lateLeadFrom: null })); c = sends(out); }
   if (!c) return out;
   // 卡片顯示的遲到＝這份預填送出去時打卡端狀態的遲到：前導段合計（核定時段裡、第一張卡之前）＋其餘段照打卡端 computeApprovalStatus 的比法
   const late = total(c.lead) + clockRestLate(c.ps.slice(c.lead.length), segs);
@@ -264,29 +257,127 @@ export function corePeriods(o) {
   if (late > 0) fixed.notes.splice(at >= 0 ? at : 0, 0, '遲到 ' + late + ' 分（薪資照扣）');
   return fixed;
 }
-/** 打卡端綁單拿來比的完整打卡段（分鐘、跨夜加 1440，依上班時間排序）：真的卡＋已核准忘打卡單，照 Requests.gs reqSegsWithMiss_ 補——
- *  整段（both）加一段、補上班（in）補到第一段缺上班卡的、補下班（out）補到第一段缺下班卡的；補完還缺卡的不算（同 reqOverSegsKnown_，還在上班那種營運系統拿不到，不算） */
-function clockFullSegs(segs, reqs) {
-  const out = (segs || []).filter(Boolean).map((x) => ({ in: toMin(x.in), out: toMin(x.out), cross: !!x.cross }));
-  for (const r of reqs || []) {
-    if (!r || r.pending === true || r.kind !== 'miss') continue;
+/* ── 打卡端「新規則會不會讓這份送出核定不了」的照抄（2026-11-26 第六輪，Requests.gs reqLateLeadCoreOk_／reqLateLeadKeep_）──
+ * 打卡端只在綁單兩條（缺卡張數 reqBindMissCards_、核定比打卡多 reqOverCreditMin_）新規則判不過、主線判得過時，這份送出照主線。下面逐支照抄（分鐘為單位）：
+ *   breakBlocksFor_／loneCardsForPeriods_（Code.gs）、reqBindMissCards_、reqSegsWithMiss_、reqOverCreditMin_、reqOverSegsKnown_、reqLeaveBackMs_／reqLeaveStartMs_（Requests.gs）。
+ * 營運系統拿不到、照預設的：綁單／加嚴起算日（打卡端指令碼屬性 REQ_BIND_FROM／REQ_STRICT_FROM，預設都是 2026-11-01）、還在上班那張卡（working）、
+ *   中途離開比照遲到（兩邊都關）、主管還沒填的遲到欄（預填當下一律空白）。見 progress.md 第六輪。 */
+const CLOCK_BIND_FROM = '2026-11-01', CLOCK_STRICT_FROM = '2026-11-01', CLOCK_STRICT_DIFF_MIN = 30, CLOCK_NEAR = 240;
+const gapByBrk = (a, b, bw) => !!bw && a < bw[1] && b > bw[0];      // Code.gs gapExplainedByBreak
+function clockLone(ps, full, cards) {                                     // Code.gs loneCardsForPeriods_（ps：[{s,e}]）
+  const open = ps.map((p, i) => i).filter((i) => !full.some((f) => Math.min(ps[i].e, f.out) - Math.max(ps[i].s, f.in) > 0));
+  if (!open.length || !cards.length || cards.length > 8) return {};
+  let best = {}, bestN = 0, bestD = Infinity;
+  const dist = (c, i) => { const d = c.in != null ? Math.abs(c.in - ps[i].s) : Math.abs(c.out - ps[i].e); return d <= CLOCK_NEAR ? d : null; };
+  const walk = (ci, pick, n, tot) => {
+    if (ci === cards.length) { if (n > bestN || (n === bestN && n > 0 && tot < bestD)) { bestN = n; bestD = tot; best = Object.assign({}, pick); } return; }
+    walk(ci + 1, pick, n, tot);
+    for (const i of open) { if (pick[i]) continue; const d = dist(cards[ci], i); if (d === null) continue; pick[i] = cards[ci]; walk(ci + 1, pick, n + 1, tot + d); delete pick[i]; }
+  };
+  walk(0, {}, 0, 0);
+  return best;
+}
+function clockBlocks(ps, segs, bw) {                                      // Code.gs breakBlocksFor_
+  const sorted = ps.slice().sort((a, b) => a.s - b.s);
+  if (!bw) return sorted;
+  const merged = [];
+  sorted.forEach((p, k) => { const l = merged[merged.length - 1]; if (l && p.s > l.e && gapByBrk(l.e, p.s, bw)) { l.e = Math.max(l.e, p.e); l.last = k; } else merged.push({ s: p.s, e: p.e, first: k, last: k }); });
+  if (merged.length === sorted.length) return sorted;
+  const full = segs.filter((x) => x.in != null && x.out != null), cards = segs.filter((x) => (x.in == null) !== (x.out == null));
+  const hasFull = (b) => full.some((f) => Math.min(b.e, f.out) - Math.max(b.s, f.in) > 0);
+  const blocks = [];
+  merged.forEach((b) => { const parts = sorted.slice(b.first, b.last + 1); if (parts.length > 1 && parts.some(hasFull)) parts.forEach((x) => blocks.push(x)); else blocks.push({ s: b.s, e: b.e }); });
+  if (blocks.length === sorted.length) return sorted;
+  const used = (bs) => Object.keys(clockLone(bs, full, cards)).length;
+  return used(sorted) > used(blocks) ? sorted : blocks;
+}
+function clockMissCards(ps, segs, bw) {                                   // Requests.gs reqBindMissCards_
+  const bl = clockBlocks(ps, segs, bw);
+  const full = segs.filter((x) => x.in != null && x.out != null), cards = segs.filter((x) => (x.in == null) !== (x.out == null));
+  const ordered = bl.map((p) => { let best = -1, bo = 0; full.forEach((f, i) => { const ov = Math.min(p.e, f.out) - Math.max(p.s, f.in); if (ov > bo) { bo = ov; best = i; } }); return { p, idx: best }; });
+  const lone = clockLone(bl, full, cards);
+  let n = 0;
+  ordered.forEach((x, i) => { if (x.idx === -1) n += lone[i] ? 1 : 2; });
+  ordered.sort((a, b) => a.p.s - b.p.s);
+  let maxEnd = null, prevIdx = -1;
+  ordered.forEach((x) => { if (maxEnd !== null && x.p.s > maxEnd && x.idx !== -1 && x.idx === prevIdx && !gapByBrk(maxEnd, x.p.s, bw)) n += 2; if (maxEnd === null || x.p.e > maxEnd) maxEnd = x.p.e; prevIdx = x.idx; });
+  return n;
+}
+function clockSegsWithMiss(segs, ok) {                                    // Requests.gs reqSegsWithMiss_
+  const out = segs.map((x) => ({ in: x.in, out: x.out }));
+  for (const r of ok) {
+    if (r.kind !== 'miss') continue;
     const a = toMin(r.start), b = toMin(r.end), t = String(r.miss_type || '');
-    if (t === 'both' && a != null && b != null) out.push({ in: a, out: b > a ? b : b + 1440, cross: false });
+    if (t === 'both' && a != null && b != null) out.push({ in: a, out: b > a ? b : b + 1440 });
     else if (t === 'in' && a != null) { const x = out.find((y) => y.in == null); if (x) x.in = a; }
     else if (t === 'out' && b != null) { const x = out.find((y) => y.out == null); if (x) x.out = x.in != null && b <= x.in ? b + 1440 : b; }
+    else if (t === 'break' && a != null && b != null) { const x = out.find((y) => y.in != null && y.out != null && y.in < b && y.out > a); if (x) { out.push({ in: a, out: x.out }); x.out = b; } }
   }
-  return out.filter((x) => x.in != null && x.out != null).map((x) => [x.in, x.out + (x.cross || x.out <= x.in ? 1440 : 0)]).sort((x, y) => x[0] - y[0]);
+  return out;
 }
-/** 其餘段沒被打卡蓋到的分鐘（扣掉休息帶）——Requests.gs reqOverCreditMin_ 的 over（不含前導段，前導段兩邊各加一次會抵銷） */
-function clockUncovered(ps, full, bs, be) {
-  const inB = (a, b) => Math.max(0, Math.min(b, be) - Math.max(a, bs));
+function clockOverMin(ps0, segs, bw, lateGiven, backs, starts, leadMin) {      // Requests.gs reqOverCreditMin_（中途離開比照遲到關著＝0）
+  if (!ps0.length || !segs.length || segs.some((x) => x.in == null || x.out == null)) return null;
+  const ps = ps0.slice().sort((a, b) => a.s - b.s), ss = segs.slice().sort((a, b) => a.in - b.in);
+  const inB = (a, b) => (bw ? Math.max(0, Math.min(b, bw[1]) - Math.max(a, bw[0])) : 0);
   let over = 0;
-  for (const p of ps) {
-    let cov = 0, covB = 0;
-    for (const f of full) { const a = Math.max(p[0], f[0]), b = Math.min(p[1], f[1]); if (b > a) { cov += b - a; covB += inB(a, b); } }
-    over += (p[1] - p[0] - inB(p[0], p[1])) - (cov - covB);
+  ps.forEach((p) => {
+    const cov = ss.reduce((acc, x) => acc + Math.max(0, Math.min(p.e, x.out) - Math.max(p.s, x.in)), 0);
+    const covB = ss.reduce((acc, x) => { const a = Math.max(p.s, x.in), b = Math.min(p.e, x.out); return acc + (b > a ? inB(a, b) : 0); }, 0);
+    over += (p.e - p.s - inB(p.s, p.e)) - (cov - covB);
+  });
+  let late = Math.max(0, Math.min(ss[0].in, ps[0].e) - ps[0].s);
+  late -= inB(ps[0].s, ps[0].s + late);
+  if (backs.length) ps.slice(1).forEach((p) => {
+    if (!backs.some((e) => e <= p.s && (p.s - e) - inB(e, p.s) <= 0)) return;
+    if (ss.some((x) => x.in <= p.s && x.out > p.s)) return;
+    const ins = ss.filter((x) => x.in > p.s && x.in < p.e).map((x) => x.in);
+    if (!ins.length) return;
+    const first = Math.min(...ins); late += (first - p.s) - inB(p.s, first);
+  });
+  if (leadMin > 0) { over += leadMin; late += leadMin; }
+  if (lateGiven != null) late = Math.min(late, Math.max(0, lateGiven));
+  let early = 0;
+  if (starts.length) ps.forEach((p) => {
+    if (!starts.some((t) => t >= p.e && (t - p.e) - inB(p.e, t) <= 0)) return;
+    if (ss.some((x) => x.in < p.e && x.out >= p.e)) return;
+    const outs = ss.filter((x) => x.out > p.s && x.out < p.e).map((x) => x.out);
+    if (!outs.length) return;
+    const last = Math.max(...outs); early += (p.e - last) - inB(last, p.e);
+  });
+  return Math.max(0, Math.round(over - late - early));
+}
+function clockCoreOk(date, ps, segs, bw, ok, lead) {                       // Requests.gs reqLateLeadCoreOk_（主管遲到欄空白）
+  const bindOn = date >= CLOCK_BIND_FROM && ps.length > 0, strict = date >= CLOCK_STRICT_FROM;
+  const bp = lead ? lead.rest : ps, leadMin = lead ? lead.leadMin : 0;
+  const miss = bindOn ? clockMissCards(bp, segs, bw) : 0;
+  const missHave = ok.reduce((a, r) => a + (r.kind !== 'miss' ? 0 : (r.miss_type === 'break' || r.miss_type === 'both') ? 2 : 1), 0);
+  const tripOk = ok.some((r) => r.kind === 'trip'), loneCard = segs.some((x) => (x.in == null) !== (x.out == null));
+  if (bindOn && !(tripOk && !loneCard) && miss > missHave) return false;
+  if (!strict) return true;
+  const sm = clockSegsWithMiss(segs, ok);
+  const backs = [], starts = [];
+  for (const r of ok) {
+    if (r.kind !== 'leave' && r.kind !== 'trip') continue;
+    const a = toMin(r.start), b = toMin(r.end);
+    if (a == null || b == null || a === b) continue;
+    const e = b <= a ? b + 1440 : b;
+    backs.push(e, e - 1440, e + 1440); starts.push(a, a - 1440, a + 1440);
   }
-  return over;
+  let over = clockOverMin(bp, sm, bw, null, backs, starts, leadMin);
+  if (over == null && !(bindOn && miss > missHave) && ps.length) { const known = sm.filter((x) => x.in != null && x.out != null); if (known.length) over = clockOverMin(bp, known, bw, null, backs, starts, leadMin); }
+  return !(over != null && over >= CLOCK_STRICT_DIFF_MIN);
+}
+/** c＝lateLeadClock 的結果；這份送出打卡端最後會不會真的套新規則（Requests.gs reqLateLeadKeep_） */
+function clockKeep(c, periods, segs0, reqs, brk, date) { return clockKeepAny(c, segs0, reqs, date, false); }
+/** 同上、但只認「新規則那兩條判得過」（給新規則預填用；判不過就改給主線預填） */
+function clockKeepStrict(c, periods, segs0, reqs, brk, date) { return clockKeepAny(c, segs0, reqs, date, true); }
+function clockKeepAny(c, segs0, reqs, date, strictNew) {
+  const segs = (segs0 || []).filter(Boolean).map((x) => { const a = toMin(x.in), b0 = toMin(x.out); return { in: a, out: b0 == null ? null : b0 + (x.cross || (a != null && b0 <= a) ? 1440 : 0) }; });
+  const ok = (reqs || []).filter((r) => r && r.pending !== true);
+  const ps = c.ps.map(([s, e]) => ({ s, e })), bw = [c.bs, c.be];
+  const lead = { rest: c.ps.slice(c.lead.length).map(([s, e]) => ({ s, e })), leadMin: total(c.lead) };
+  if (clockCoreOk(date, ps, segs, bw, ok, lead)) return true;
+  return strictNew ? false : !clockCoreOk(date, ps, segs, bw, ok, null);
 }
 /** 其餘段的遲到分鐘，照 Code.gs computeApprovalStatus（新規則那條用其餘段比、不併休息帶、沒有中途離開比照遲到）：
  *  每段拿重疊最多的完整打卡段，上班卡比那段開頭晚＝遲到；一段都沒配到完整打卡段時照 loneCardsForPeriods_ 配單張卡（4 小時內、配到最多張、距離最短），單張上班卡比開頭晚＝遲到 */

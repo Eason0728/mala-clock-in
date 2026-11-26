@@ -18,7 +18,7 @@ const fs = require('fs'), os = require('os'), path = require('path'), crypto = r
 const { execFileSync, spawn } = require('child_process');
 const { check, show, done, ROOT } = require('./helpers/gs-sandbox');
 
-const FROZEN_SHA = '8e518c8f84f9457ab6a662eaf438dd98db3cfb8a8684cdf5f2883c2f88c0b7fe';      // fixtures/storeops-core-calc.js（＝mala-store-ops web/modules/duty/core-calc.js）
+const FROZEN_SHA = '06ca9456a3088a91a1be83e1113dfd9ab46173238a20aeae67e139021d9e789f';      // fixtures/storeops-core-calc.js（＝mala-store-ops web/modules/duty/core-calc.js）
 const SO = process.env.STOREOPS_ROOT;
 const newPath = SO ? path.join(SO, 'web', 'modules', 'duty', 'core-calc.js') : path.join(__dirname, 'fixtures', 'storeops-core-calc.js');
 const oldPath = SO ? path.join(SO, 'test', 'fixtures', 'core-calc-before-latelead.mjs') : path.join(__dirname, 'fixtures', 'storeops-core-calc-before.mjs');
@@ -54,9 +54,11 @@ for (const brk of [[720, 780], [840, 900]]) {
   const P = [['morning', [[S + 5, E]]], ['brkIn16', [[bs + 16, E]]], ['brkIn47', [[bs + 47, E]]], ['atBs', [[bs, E]]], ['atBe', [[be, E]]], ['late20', [[be + 20, E]]],
     ['brkSeg', [[bs + 16, bs + 27], [be, E]]], ['brkSegLate', [[bs + 16, bs + 27], [be + 20, E]]], ['brkSegEarlyBack', [[bs + 30, bs + 45], [be - 10, E]]], ['brkSegAtBs', [[bs, bs + 10], [be, E]]],
     ['brkSegLate16', [[bs + 27, bs + 42], [be + 16, E + 54]]], ['brkStraddleOnly', [[bs + 42, be + 13]]], ['brkStraddleLoneOut', [[bs + 42, be + 13], [null, E + 97]]],
+    ['brkFullThenBack11', [[bs + 30, bs + 45], [be + 11, E]]],      // Codex 第三輪：休息帶內完整一進一出、休息後 11 分回來（配下午假單緊接休息帶結束）
+    ['brkFullToBe', [[bs + 30, be]]], ['brkFullToBeBack', [[bs + 30, be], [be + 5, E]]],             // 下班卡剛好等於休息帶結束（邊界）
     ['loneIn', [[bs + 47, null]]], ['loneOut', [[null, E]]], ['morningPart', [[S + 30, bs - 60], [be, E]]], ['straddle', [[bs + 50, be + 5], [be + 15, E]]]];
   const R = [['none', []], ['missIn', [MI(S)]], ['missOut', [MO(E)]], ['missBoth', [MB(S, bs)]], ['missTwo', [MI(S), MO(bs)]], ['missBreakAM', [MBRK(S + 120, S + 150)]], ['missBreakPM', [MBRK(be + 60, be + 90)]],
-    ['leaveAM', [L(S, bs)]], ['leaveMid', [L(S + 120, S + 180)]], ['leaveHead', [L(S, S + 60)]], ['leavePM', [L(be + 30, E - 60)]], ['leavePMend', [L(be + 48, E)]],
+    ['leaveAM', [L(S, bs)]], ['leaveMid', [L(S + 120, S + 180)]], ['leaveHead', [L(S, S + 60)]], ['leavePM', [L(be + 30, E - 60)]], ['leaveAfterBrk', [L(be + 10, be + 70)]], ['leavePMend', [L(be + 48, E)]],
     ['tripAM', [TRIP(S, bs)]], ['tripDay', [TRIP(S, E)]], ['tripPM', [TRIP(be, E)]], ['missInLeave', [MI(S), L(S + 120, S + 180)]], ['ot', [{ kind: 'ot', start: hm(E), end: hm(E + 60), hours: 1 }]]];
   for (const date of ['2026-11-20', '2026-12-03', '2026-10-28'])
     for (const pk of ['one', 'one0', 'two'])
@@ -65,7 +67,7 @@ for (const brk of [[720, 780], [840, 900]]) {
 }
 const nGrid = list.length;
 // 亂數（多個種子）
-const SEEDS = String(process.env.LATE_XCHECK_SEEDS || '20261127,11,22,33,44').split(',').map(Number).filter((x) => x);
+const SEEDS = String(process.env.LATE_XCHECK_SEEDS || '20261127,11,22,33,44,55,66,77,88,99').split(',').map(Number).filter((x) => x);
 const NPER = Number(process.env.LATE_XCHECK_N || 15000);
 for (const sd of SEEDS) {
   let seed = sd;
@@ -97,6 +99,7 @@ function schedMin(c) { const bs = toM(c.brk.start), be = toM(c.brk.end); return 
 
 // 前端預填（這一版、改動前），再組打卡端要的輸入
 const leavesOf = (reqs) => reqs.filter((r) => r.kind === 'leave' || r.kind === 'trip').map((r) => ({ type: r.kind === 'trip' ? '出差' : r.leave_type, hours: Number(r.hours) || 0 }));
+const PREV = process.env.LATE_XCHECK_PREV ? require(process.env.LATE_XCHECK_PREV) : null, narrow = { prev: 0, gone: 0 };
 const gate = { grid: { would: 0, gated: 0 }, rnd: { would: 0, gated: 0 } };      // 新規則會套的日子裡，被總閘擋回主線的有幾組
 const thrown = [];      // 營運系統算預填丟例外（新版丟、改動前不丟＝新問題）
 const fe = list.map((c) => {
@@ -105,6 +108,11 @@ const fe = list.map((c) => {
   const n0 = tryIt(NEW), m0 = tryIt(OLD);
   if (n0 && n0.throw) thrown.push([c.tag, 'NEW: ' + n0.throw, m0 && m0.throw ? 'OLD 也丟: ' + m0.throw : 'OLD 正常']);
   const n = n0 && n0.throw ? null : n0, m = m0 && m0.throw ? null : m0;
+  // 縮小範圍的量測（第六輪）：前一版（LATE_XCHECK_PREV）預填會套新規則的日子，這一版有幾組改回主線
+  if (PREV && c.date >= NEW.LATE_LEAD_FROM && /^s\d/.test(c.tag)) {
+    let p = null; try { p = PREV.corePeriods(o()); } catch (e) { p = null; }
+    if (p && p.periods.length && PREV.lateLeadClock(p.periods, c.punches, c.brk, c.reqs, c.date)) { narrow.prev++; if (!(n && n.periods.length && NEW.lateLeadClock(n.periods, c.punches, c.brk, c.reqs, c.date))) narrow.gone++; }
+  }
   // 閘擋回主線的量測：不開閘時新規則會套（預填拿去問 lateLeadClock 成立），開閘後卻照主線
   if (typeof NEW.lateLeadShapeOk === 'function' && c.date >= NEW.LATE_LEAD_FROM) {
     let g = null; try { g = NEW.corePeriods(Object.assign(o(), { lateLeadGate: false })); } catch (e) { g = null; }
@@ -142,35 +150,39 @@ async function runCI(root, items) {
   return [].concat(...res);
 }
 (async () => {
-  const [ciN, ciM] = await Promise.all([runCI(ROOT, fe.map((x) => x.inN)), runCI(base, fe.map((x) => x.inM))]);
+  const ciN = await runCI(ROOT, fe.map((x) => x.inN)), ciM = await runCI(base, fe.map((x) => x.inM));
+  const ciD = await runCI(ROOT, fe.map((x) => x.inM));      // (d) 主線前端的預填直接送這一版打卡端（模擬主管用舊畫面或手動填）
   fs.rmSync(base, { recursive: true, force: true });
-  const clockOnly = [];
-  const bad = { a: [], b: [], c: [] }, cnt = { all: list.length, grid: nGrid, trig: 0, trigOk: 0, nt: 0, otLong: 0, seeds: {} };
+  const bad = { a: [], b: [], c: [], d: [], e: [] }, cnt = { all: list.length, grid: nGrid, trig: 0, trigOk: 0, nt: 0, otLong: 0, seeds: {} };
   list.forEach((c, i) => {
     const f = fe[i], yn = f.inN ? ciN[i] : null, ym = f.inM ? ciM[i] : null, sk = c.tag.split(':')[0];
     const fail = (k, x) => { bad[k].push(x); if (/^s\d/.test(sk)) cnt.seeds[sk] = (cnt.seeds[sk] || 0) + 1; };
+    const yd = f.inM ? ciD[i] : null;
+    if (yd && ym && ym.ok && !yd.ok && !((yd.trig && (c.lateKind === '0' || c.lateKind === 'less')) || (yd.rules === 'ot_hours' && schedMin(c) > 480))) fail('d', [c.tag, ps(f.m) + ' 新版打卡端 ' + yd.error + ':' + yd.rules, '主線打卡端 ok']);
+    // (e) 同一份（主線前端的預填）兩版打卡端都過、這一版沒套新規則 → 狀態字逐字相同（只有確認頁定案要套新規則的才會不同）
+    if (yd && ym && ym.ok && yd.ok && !yd.trig && yd.st !== ym.st) fail('e', [c.tag, ps(f.m), '主線 ' + ym.st, '這一版 ' + yd.st]);
     if (!yn) { if (ps(f.n) !== ps(f.m)) fail('c', [c.tag, ps(f.n), ps(f.m)]); return; }
     if (yn.trig) { cnt.trig++; if (yn.ok) cnt.trigOk++; } else cnt.nt++;
     const otLong = yn.rules === 'ot_hours' && f.n.hours > 8 && schedMin(c) > 480;              // 班表本身超過 8 小時：新規則核滿班表＝超過 8 小時要加班單（第 8 題照現行）
     const sanctioned = (yn.trig && (c.lateKind === '0' || c.lateKind === 'less')) || otLong;      // 第 4 題：填得比系統少，免掉的那段要有單
     if (!yn.ok && ym && ym.ok && otLong) cnt.otLong++;
-    // 前端預填跟主線逐字相同、只因打卡端新規則（打卡端這輪不准改）在同一份時段上被擋：前端已經照主線、沒有更好的做法 → 另外列（交大腦），不算前端擋項
-    const sameAsMain = !yn.ok && ym && ym.ok && !sanctioned && ps(f.n) === ps(f.m);
-    if (sameAsMain) clockOnly.push([c.tag, ps(f.n) + ' ' + yn.error + ':' + yn.rules]);
-    if (!yn.ok && ym && ym.ok && !sanctioned && !sameAsMain) fail('a', [c.tag, ps(f.n) + ' ' + yn.error + ':' + yn.rules, ps(f.m) + ' ok']);
+    // 2026-11-26 第六輪（Codex 第三輪殘餘風險）：拿掉「預填跟主線相同、只因打卡端新規則被擋」的豁免——主線能核、新版照預填核不了，一律算失敗
+    if (!yn.ok && ym && ym.ok && !sanctioned) fail('a', [c.tag, ps(f.n) + ' ' + yn.error + ':' + yn.rules, ps(f.m) + ' ok']);
     if (yn.trig && yn.ok && c.lateKind === '' && lateSum(yn.st) !== f.n.late) fail('b', [c.tag, ps(f.n), '卡片 ' + f.n.late, '打卡端 ' + yn.st]);
     if (!yn.trig && JSON.stringify(f.n) !== JSON.stringify(f.m)) fail('c', [c.tag, ps(f.n) + ' late ' + (f.n && f.n.late), ps(f.m) + ' late ' + (f.m && f.m.late)]);
   });
-  if (process.env.LATE_XCHECK_DUMP) { const tags = new Set([].concat(bad.a, bad.b, bad.c).map((x) => x[0])); fs.writeFileSync(process.env.LATE_XCHECK_DUMP, JSON.stringify(Object.assign({ sc: list.filter((c) => tags.has(c.tag)) }, bad), null, 1)); }      // 除錯用：整份不一致清單
+  if (process.env.LATE_XCHECK_DUMP) { const tags = new Set([].concat(bad.a, bad.b, bad.c, bad.d, bad.e).map((x) => x[0])); fs.writeFileSync(process.env.LATE_XCHECK_DUMP, JSON.stringify(Object.assign({ sc: list.filter((c) => tags.has(c.tag)) }, bad), null, 1)); }      // 除錯用：整份不一致清單
   show('XC1', '組數：全部／其中格點／打卡端套新規則／其中過了／沒套／（不算擋項）班表超過 8 小時、新規則核滿班表要加班單、主線不用；種子 ' + SEEDS.join(',') + ' × ' + NPER, [cnt.all, cnt.grid, cnt.trig, cnt.trigOk, cnt.nt, cnt.otLong]);
   show('XC1g', '總閘（lateLeadShapeOk）：不開閘時新規則會套的組數／其中被閘擋回主線的（格點、亂數）', gate);
+  if (PREV) show('XC1n', '（縮小範圍量測）亂數裡前一版預填會套新規則的組數／這一版改回主線的', narrow);
   show('XC1s', '各種子不一致組數（沒有＝0）', cnt.seeds);
   check('XC2', '組數夠（全部 ≥ 5000、套新規則 ≥ 300、沒套 ≥ 3000）', [cnt.all >= 5000, cnt.trig >= 300, cnt.nt >= 3000], [true, true, true]);
   check('XCx', '營運系統新版算預填不丟例外（改動前也丟的照列、不算新問題）：新版才丟的 ' + thrown.filter((x) => x[2] === 'OLD 正常').length + ' 組', thrown.filter((x) => x[2] === 'OLD 正常').slice(0, 6), []);
   if (thrown.length) show('XCx2', '（對照）改動前也丟例外的組數', thrown.filter((x) => x[2] !== 'OLD 正常').length);
   check('XCa', '(a) 這一版預填送打卡端被擋、主線同情境不擋（主管填的遲到比系統少、班表超過 8 小時除外）：' + bad.a.length + ' 組', bad.a.slice(0, 6), []);
-  show('XCa2', '（不算前端擋項，交大腦）前端預填跟主線逐字相同、只因打卡端新規則在同一份時段被擋：' + clockOnly.length + ' 組', clockOnly.slice(0, 6));
   check('XCb', '(b) 打卡端套新規則、過了、遲到欄空白：卡片的遲到分鐘＝打卡端狀態的遲到分鐘：不一致 ' + bad.b.length + ' 組', bad.b.slice(0, 6), []);
   check('XCc', '(c) 打卡端沒套新規則：這一版預填跟改動前預填逐字相同：不同 ' + bad.c.length + ' 組', bad.c.slice(0, 6), []);
+  check('XCd', '(d) 主線前端的預填直接送這一版打卡端：主線打卡端過、這一版不過（主管填得比系統少、班表超過 8 小時除外）：' + bad.d.length + ' 組', bad.d.slice(0, 6), []);
+  check('XCe', '(e) 同一份預填兩版打卡端都過、這一版最後沒套新規則：狀態字跟主線逐字相同：不同 ' + bad.e.length + ' 組', bad.e.slice(0, 6), []);
   done();
 })().catch((e) => { console.error(e); process.exit(1); });

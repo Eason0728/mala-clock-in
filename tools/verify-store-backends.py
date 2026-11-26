@@ -34,7 +34,8 @@ FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'is
          'leftCascadeAfter_',   # 2026-11-11 B13：設離職連帶停用別店同一支 LINE 的列（沒套到＝那家店設離職不會通知光復）
          'lateLeadOf_', 'lateLeadMerge_', 'lateLeadRecheck_', 'lateLeadBreakOk_', 'sysLateMin_',   # 2026-11-26 上午整段沒到改算遲到
          'lateLeadReqRows_',   # 2026-11-26 第三輪：每天重算讀申請表（跟核定同一個判斷）
-         'lateLeadApprAtMap_']   # 2026-11-26 第三輪之二：每列的主管核定時間（換版時間判斷）
+         'lateLeadApprAtMap_',   # 2026-11-26 第三輪之二：每列的主管核定時間（換版時間判斷）
+         'lateLeadDayRows_', 'lateLeadGivenOf_']   # 2026-11-26 第六輪：不變式判斷（每天重算用）
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
     # 2026-11-20 多一個 gapLate 參數（二段班中途離開比照遲到）；沒套到＝那家店核定狀態照舊、待審單不擋
@@ -45,6 +46,9 @@ EXACT = {
     '中途離開比照遲到：每天重算看原狀態':      "st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; })];",
     '上午整段沒到改算遲到：核定與綁單同一個判斷': 'late_lead: lateLead,',
     '上午整段沒到改算遲到：每天重算跟核定同一個判斷（看申請表）': "const llMode = llAfter ? lateLeadRecheck_(date, st0, periods, punchWithMs, lateLeadReqRows_(ss, reqCache, date, periods, punchWithMs), String(empId)) : 'off';",
+    '上午整段沒到改算遲到：不變式（新規則判不過、主線判得過＝照主線，第六輪）': '&& !reqLateLeadKeep_(date, periods, punchWithMs, noPunchBreakWindow(date), lateLeadDayRows_(reqRowsAll, body.emp_id, date), body.late_min)) lateLead = false;',
+    '上午整段沒到改算遲到：不變式的保險（綁單照主線過得了就照主線）': "const bind0 = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, punchMs, noPunchBreakWindow(date), Object.assign({}, bindOpt, { late_lead: false }));",
+    '上午整段沒到改算遲到：每天重算走同一個不變式判斷': 'if (typeof reqLateLeadKeep_ === \'function\' && !reqLateLeadKeep_(date, periods, punchWithMs, noPunchBreakWindow(date), lateLeadDayRows_(reqRows, empId, date), lateLeadGivenOf_(st0))) return \'off\';',
     '上午整段沒到改算遲到：換版前核定的列夜裡照舊（第三輪之二）': "const llAfter = typeof reqLateLeadAfterCutover_ === 'function' && reqLateLeadAfterCutover_(apprAt);",
     '上午整段沒到改算遲到：休息帶設定不完整不套': 'function lateLeadBreakOk_() {',
     '出差在假別白名單':                      "'出差'",
@@ -82,6 +86,8 @@ REQ_EXACT = {
     # 換版時間（2026-11-26 第三輪之二）：＝九店換版那一晚的 01:00；換版改期要跟 Requests.gs 那一行一起改（bughunt-t02 拿這裡對 repo 的 Requests.gs）
     '上午整段沒到改算遲到：換版時間常數':     "var REQ_LATE_LEAD_CUTOVER_ = '2026-11-30T01:00:00+08:00';",
     '上午整段沒到改算遲到：換版時間判斷':     'function reqLateLeadAfterCutover_(enteredAt) {',
+    '上午整段沒到改算遲到：不變式判斷（第六輪）': 'function reqLateLeadKeep_(date, periods, segs, breakWindow, okRows, lateMin) {',
+    '上午整段沒到改算遲到：不變式那兩條（第六輪）': 'function reqLateLeadCoreOk_(date, periods, segs, breakWindow, okRows, lateMin, lateLead) {',
     '上午整段沒到改算遲到：判斷入口':         'function reqLateLeadOn_(rows, empId, date, periods, segs, breakWindow) {',
     '上午整段沒到改算遲到：忘打卡單優先':     'return !!ll && !reqLeadMissForm_(rows, empId, date, ll.lead);',
     '上午整段沒到改算遲到：綁單用其餘段':     "var lead = opt.late_lead === true && typeof lateLeadOf_ === 'function' ? lateLeadOf_(periods, segs || [], breakWindow) : null;",

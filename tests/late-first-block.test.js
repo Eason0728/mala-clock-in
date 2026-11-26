@@ -48,7 +48,10 @@ function statusOf(m, c) {
   const ev = sb.readSheetAsObjects(m.self.getSheetByName('events')).rows.map((e) => { e.ts = sb.normCellTs(e.ts); return e; });
   const segs = sb.dayPunchSegments(ev, 'CF15', D).segments.map((s) => ({ in: s.in, out: s.out, inMs: s.in ? sb.hmToMs(D, s.in) : null, outMs: s.out ? sb.hmToMs(D, s.out) : null }));
   const bw = sb.noPunchBreakWindow(D);
-  const lead = sb.reqLateLeadOn_(sb.reqRows_(m.self), 'CF15', D, pms, segs, bw);
+  const rows = sb.reqRows_(m.self);
+  let lead = sb.reqLateLeadOn_(rows, 'CF15', D, pms, segs, bw);
+  // 第六輪不變式（同 handleMgrApprove）：新規則讓缺卡／核定比打卡多判不過、主線判得過＝照主線
+  if (lead && typeof sb.reqLateLeadKeep_ === 'function' && !sb.reqLateLeadKeep_(D, pms, segs, bw, sb.lateLeadDayRows_(rows, 'CF15', D), '')) lead = false;
   return { lead, status: sb.computeApprovalStatus(pms, segs, false, false, bw, false, lead) };
 }
 
@@ -255,6 +258,24 @@ if (base) {
   check('C9', '測試沒有寫死換版日期（只從 REQ_LATE_LEAD_CUTOVER_ 推）', new RegExp('2026-11-' + '30T01').test(fs.readFileSync(__filename, 'utf8') + fs.readFileSync(path.join(__dirname, 'helpers', 'late-lead-corpus.js'), 'utf8') + fs.readFileSync(path.join(__dirname, 'helpers', 'late-lead-flow.js'), 'utf8')), false);
 }
 
+console.log('\n════ 七之四、不變式（第六輪，Codex 第三輪；主管選維持範圍）：主線核得了的，新版也核得了 ════');
+{
+  // Codex 第三輪：08–17 沒填休息、12:30–12:45（休息帶內完整一進一出）、13:11–17:00、事假 13:10–14:10，送主線預填 08–12／13:00–13:10／14:10–17:00
+  const k = { date: '2026-12-03', brk: CF15.brk, punches: [{ in: '12:30', out: '12:45' }, { in: '13:11', out: '17:00' }], reqs: [{ kind: 'leave', leave_type: '事假', start: '13:10', end: '14:10', hours: 1 }],
+    leaves: [{ type: '事假', hours: 1 }], periods: [{ start: '08:00', end: '12:00' }, { start: '13:00', end: '13:10' }, { start: '14:10', end: '17:00' }] };
+  const r1 = env(k).sb.handleMgrApprove({ mgr_key: 'MK', date: k.date, emp_id: 'CF15', periods: P(k.periods), leaves: k.leaves, dry_run: true, diff_reason: '上班卡：休息時間就到' });
+  check('K1', 'Codex 第三輪：新規則會讓 13:00–13:10 配不到卡、主線判得過 → 這份照主線、核得了（狀態＝主線）', [r1.ok, r1.status_text, r1.late_lead], [true, '遲到270分、早退25分', false]);
+  const r2 = env(CF15).sb.handleMgrApprove({ mgr_key: 'MK', date: CF15.date, emp_id: 'CF15', periods: P(CF15.periods), leaves: [], dry_run: true });
+  check('K2', '基本情況 12:47–17:00：主線要 2 張忘打卡單、新規則判得過 → 套新規則、遲到 240', [r2.ok, r2.status_text, r2.late_lead], [true, '遲到240分', true]);
+  const c4 = CASES.cases.find((c) => c.id === 'L10');
+  const r3 = env(c4).sb.handleMgrApprove({ mgr_key: 'MK', date: c4.date, emp_id: 'CF15', periods: P(c4.periods), leaves: [], dry_run: true });
+  check('K3', '12:47 只有上班卡、沒有單：新規則、主線都判不過 → 回新規則的訊息（要 1 張，不是主線的 3 張）', [r3.ok, r3.need && r3.need.miss_cards], [false, 1]);
+  // 每天重算：同一份照主線核定的列，重算用同一個判斷 → 仍照主線（核定時間在換版後）
+  const m = env(k, { now: '2026-12-05T05:00:00', approved: [[k.date, 'CF15', '測試甲', k.periods.map((p) => p.start + '-' + p.end).join(','), 7, '遲到270分、下班忘刷卡', '值班主管', CUTOVER, '', '']] });
+  m.sb.recheckPendingApprovalStatuses();
+  check('K4', '照主線核定的列（換版後核定）夜裡重算：不變式判斷用現在的打卡與申請再判一次＝照主線（主線重算的結果）', m.approved().slice(-1)[0][5], '遲到270分、早退25分');
+}
+
 console.log('\n════ 八、亂數對照：改版前（' + BASE + '）vs 這一版 ════');
 {
   if (base) {
@@ -308,14 +329,19 @@ if (base) {
     const x = a[i];
     if (J(x.sc) !== J(y.sc)) throw new Error('兩版流程情境不同 #' + i);
     if (y.ap.ok) cnt.cls[y.sc.cls] = (cnt.cls[y.sc.cls] || 0) + 1;
-    if (!y.trig) { cnt.nt++; if (y.ap.ok) cnt.ntOk++; if (J(x.ap) !== J(y.ap) || x.st !== y.st || x.fixed !== y.fixed) y1.push(i); }
-    else { cnt.t++; if (y.ap.ok) { cnt.tOk++; if (!(y.st === y.fresh || (y.st === y.ap.st && !FILTER.test(y.ap.st)))) y2.push(i); } }
+    // 第六輪：核定當下的選擇（含不變式 reqLateLeadKeep_）＝y.trig；重算時的選擇用現在的打卡與申請再判一次＝y.trigNow（＝主管現在重新核定會得到的選擇）。
+    //   核定時不套的：核定回應＝主線；重算時也不套的：重算後的狀態＝主線。重算時會套的（例 人還在上班時核定、之後打了下班卡）：重算後＝現在重新核定的狀態
+    if (!y.trig) { cnt.nt++; if (y.ap.ok) cnt.ntOk++; if (J(x.ap) !== J(y.ap) || (!y.trigNow && y.ap.ok && (x.st !== y.st || x.fixed !== y.fixed))) y1.push(i); }
+    else { cnt.t++; if (y.ap.ok) cnt.tOk++; }
+    // 重算後只能是兩種之一：主管現在重新核定會得到的狀態（fresh），或核定當下照主線的那一列照主線重算（＝主線重算的結果）；沒進重算名單的維持原狀
+    if (y.ap.ok && !(y.st === y.fresh || (y.st === y.ap.st && !FILTER.test(y.ap.st)) || (!y.trig && y.st === x.st))) y2.push(i);
+    if (y.ap.ok && y.trig !== y.trigNow) cnt.flip = (cnt.flip || 0) + 1;
   });
   show('Y0', '流程數：核定不套新規則（含被擋）／其中核定成功／核定套新規則／其中核定成功；核定成功的各類（none 都沒有、form 忘打卡單、manual 主管認定、both 兩者）', [cnt.nt, cnt.ntOk, cnt.t, cnt.tOk, cnt.cls]);
   check('Y1a', '三類都有涵蓋到（核定成功的 form、manual、both 各至少 50 組；不套的成功至少 300、套的成功至少 100）',
     [['form', 'manual', 'both'].every((k) => (cnt.cls[k] || 0) >= 50), cnt.ntOk >= 300, cnt.tOk >= 100], [true, true, true]);
-  check('Y1', '核定當下不套新規則的（忘打卡單、生效日前、不是那種打卡…）：核定回應、05:00 重算後的狀態、改了幾筆 與主線逐筆相同', y1.slice(0, 5).map((i) => [i, a[i].st, b[i].st]), []);
-  check('Y2', '核定當下套新規則的：05:00 重算後＝主管現在重新核定的狀態（沒進重算名單的維持原狀）', y2.slice(0, 5).map((i) => [i, b[i].ap.st, b[i].st, b[i].fresh]), []);
+  check('Y1', '核定當下不套新規則的（忘打卡單、生效日前、不是那種打卡、新規則會被擋而主線不會…）：核定回應＝主線；重算時也不套的，05:00 重算後的狀態、改了幾筆＝主線', y1.slice(0, 5).map((i) => [i, a[i].st, b[i].st]), []);
+  check('Y2', '05:00 重算後＝主管現在重新核定的狀態，或核定當下照主線的列＝主線重算的結果（沒進重算名單的維持原狀）', y2.slice(0, 5).map((i) => [i, b[i].ap.st, b[i].st, b[i].fresh]), []);
   // 換版當下：主線（舊程式）核定、日期在生效日以後的列，拿給這一版夜裡重算。
   // 已知例外（未修，回報大腦：靠換版時間解）：核定時還在上班（「上班中」）而且「主管填了遲到」或「第一張卡剛好是休息開始那一分鐘」——舊程式寫的狀態跟新規則一字不差，又沒有單可看。
   const okRows = a.filter((x) => x.ap.ok);
@@ -371,7 +397,7 @@ console.log('\n════ 十之二、休息中打了短短一段再回來（�
   check('G2', G.points.length + ' 點 × 班表一段休 60／一段沒填休息／兩段：打卡端核定狀態、遲到、缺卡張數、要不要選原因、選了原因後 8 小時＝案例（營運系統那邊同一份驗預填）', bad, []);
   check('G3', '共用案例檔 sha256（mala-store-ops test/server/late-lead.test.js 釘同一個值；兩份逐字相同）',
     require('crypto').createHash('sha256').update(fs.readFileSync(path.join(__dirname, 'fixtures', 'late-lead-cases-v1.json'))).digest('hex'),
-    '5063f48e38ba6a35c4d89d9ac44381a7715745bc860d587b82094bac79f19495');
+    '2ecfdbea7df4e821c8c7748d65662920626e51768ba411a4524a0ad121551e76');
 }
 
 console.log('\n════ 九、薪資：遲到 240 分流進薪資、計時不多發不重複扣 ════');
