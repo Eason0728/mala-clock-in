@@ -3703,6 +3703,15 @@ function lateLeadReqRows_(ss, cache, date, periods, punchWithMs) {
   if (cache.rows === undefined) { try { cache.rows = typeof reqRows_ === 'function' ? reqRows_(ss) : null; } catch (e) { cache.rows = null; } }
   return cache.rows;
 }
+/** 這一列核定當下同仁是不是還在上班（2026-11-26 第八輪方案 B）：只拿打卡時間 ≤ 核定時間（apprAt＝lateLeadApprAtMap_ 的主管核定時間）的卡，
+ *  用核定時同一支判斷（dayPunchSegments＋workingInHm_：最後一張是沒配對的上班卡、16 小時內）。是＝這列夜裡一律照主線（核定當下 reqLateLeadOn_ 也因 working 照主線）。
+ *  讀不到核定時間＝false（換版時間那條已經照主線）。 */
+function lateLeadWorkingAt_(eventRows, empId, date, apprAt) {
+  const t = Date.parse(String(apprAt == null ? '' : apprAt).trim());
+  if (!isFinite(t)) return false;
+  const ev = (eventRows || []).filter(function (e) { return tsMs(e.ts) <= t; });
+  return !!workingInHm_(dayPunchSegments(ev, empId, date), t);
+}
 /** 狀態字串裡系統算的遲到分鐘合計（「遲到N分」；主管認定的「(認定)」不算） */
 function sysLateMin_(st) {
   return String(st || '').split('、').reduce(function (a, x) { const m = /^遲到(\d+)分$/.exec(x); return a + (m ? Number(m[1]) : 0); }, 0);
@@ -3745,7 +3754,8 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec, 
   //   核定時間：呼叫端帶的 reqCache.apprAt（lateLeadApprAtMap_，跳過系統重算列）；沒帶就只認這列本身是主管核定列時的 entered_at
   const apprAt = reqCache && reqCache.apprAt ? reqCache.apprAt[date + '|' + String(empId)]
     : (String(rec.manager_name || '').slice(-RECHECK_MARK.length) === RECHECK_MARK ? '' : normCellTs(rec.entered_at));
-  const llAfter = typeof reqLateLeadAfterCutover_ === 'function' && reqLateLeadAfterCutover_(apprAt);
+  // 第八輪方案 B：核定當下同仁還在上班的列（lateLeadWorkingAt_）＝這筆核定與之後每天重算都照主線；下班後主管重新核定（新的核定時間）才套新規則
+  const llAfter = typeof reqLateLeadAfterCutover_ === 'function' && reqLateLeadAfterCutover_(apprAt) && !lateLeadWorkingAt_(eventRows, empId, date, apprAt);
   const llMode = llAfter ? lateLeadRecheck_(date, st0, periods, punchWithMs, lateLeadReqRows_(ss, reqCache, date, periods, punchWithMs), String(empId)) : 'off';
   let st = computeApprovalStatus.apply(null, casArgs.concat([llMode === 'on']));
   if (llMode === 'cmp') {

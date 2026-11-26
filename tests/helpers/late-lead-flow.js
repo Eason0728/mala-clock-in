@@ -45,9 +45,13 @@ function flow(sc) {
   let rc;
   try { rc = m.sb.recheckPendingApprovalStatuses(); } catch (e) { return { ap, trig, throw: String(e.message) }; }
   const last = m.approved().slice(-1)[0];
-  // 主管現在重新核定會得到的狀態（同一組時段、同一個遲到欄；不看綁單擋不擋）：核定當下有套新規則的列，夜裡重算後要等於這個
+  // 主管現在重新核定會得到的狀態（同一組時段、同一個遲到欄）。第八輪（Codex 第四輪殘餘風險）：走正式核定的 dry_run（含綁單被擋時換回主線的那道保險），
+  //   不再自己拼；被擋（重新核定也送不出）時 freshOk＝false，fresh 退回拼出來的狀態（只供對照，不能當「重新核定的結果」）
   const fresh = statusNow(m, sc, true);
-  return { ap, trig, fixed: rc.fixed, st: last[5], fresh: fresh.st, trigNow: fresh.trig };
+  let fr = null;
+  try { fr = m.sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: 'E01', periods: sc.periods, leaves: sc.leaves || [], late_min: sc.late_min == null ? '' : sc.late_min, diff_reason: '測試', dry_run: true }); } catch (e) { fr = null; }
+  const freshOk = !!(fr && fr.ok);
+  return { ap, trig, fixed: rc.fixed, st: last[5], fresh: freshOk ? fr.status_text : fresh.st, freshOk, trigNow: freshOk && typeof fr.late_lead === 'boolean' ? fr.late_lead : fresh.trig };
 }
 /** 用沙盒現在的時間與資料算核定狀態（同 handleMgrApprove 的算法，不跑綁單）；trig＝這一版核定會不會套新規則（改版前沒有這個函式＝null） */
 function statusNow(m, sc, manual) {

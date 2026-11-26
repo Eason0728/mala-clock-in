@@ -2626,6 +2626,10 @@ function reqLeadMissForm_(rows, empId, date, lead) {
 function reqLateLeadOn_(rows, empId, date, periods, segs, breakWindow) {
   // 休息帶設定長度 0、反向、缺一邊＝不套（Code.gs lateLeadBreakOk_，2026-11-26 驗收第 3 項）
   if (!reqLateLeadDay_(date) || typeof lateLeadOf_ !== 'function' || typeof lateLeadBreakOk_ !== 'function' || !lateLeadBreakOk_()) return false;
+  // 2026-11-26 第八輪方案 B（Codex 第四輪兩擋項；主管「可以，照推薦」）：同仁還在上班（Code.gs markWorkingSeg_ 標的 working：這天最後一張是沒配對的上班卡、16 小時內）＝不套，
+  //   整份照主線。核定與每天重算都經過這裡；核定當下上班中的列，之後每天重算也照主線（Code.gs recomputeApprovalStatusOf 的 lateLeadWorkingAt_）。
+  //   營運系統 core-calc.js clockKeepAny 同一條（clockWorking）。
+  if ((segs || []).some(function (s) { return s && s.working; })) return false;
   var ll = lateLeadOf_(periods || [], segs || [], breakWindow);
   return !!ll && !reqLeadMissForm_(rows, empId, date, ll.lead);
 }

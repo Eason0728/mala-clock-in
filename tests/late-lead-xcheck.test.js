@@ -6,6 +6,9 @@
  *       班表本身超過 8 小時要加班單（第 8 題照現行，見 progress.md 第五輪）。
  *   (b) 打卡端有套新規則、而且過了、主管沒填遲到 → 卡片顯示的遲到分鐘（預填 late）＝打卡端狀態的遲到分鐘。
  *   (c) 打卡端沒套新規則 → 這一版預填跟改動前預填逐字相同。
+ * 2026-11-26 第八輪（Codex 第四輪擋項 1：舊對照前後端共用同一個「現在」所以抓不到）：每組可帶 openAt＝卡片開啟時刻（營運系統算預填用），
+ *   打卡端在 openAt 先檢查一次、再在 now（送出時刻）檢查；(b) 用開卡時的卡片比送出時寫進去的。唯一准許的不一致＝已知行為「16 小時界線」：
+ *   開卡時同仁還在上班、開卡時那次檢查被擋（送出鈕灰）、送出時已滿 16 小時（XCb16，逐組斷言這三個條件）。
  * 輸入：休息帶（央廚 12–13、總部 14–15）× 日期（生效日後兩天、生效日前一天）× 班表三種寫法（一段休 60、一段沒填休息、兩段）
  *   × 打卡樣態 × 單據（無、補上班、補下班、補中間休息、兩張、上午整段假／部分假／開頭假、下午部分假、上午出差、整天出差、下午出差、補上班＋部分假、加班）
  *   × 主管遲到欄（空白、0、比系統少、比系統多）；另加亂數：LATE_XCHECK_SEEDS（逗號分隔，預設 5 個）× LATE_XCHECK_N（每個種子幾組，預設 15000）。
@@ -18,7 +21,7 @@ const fs = require('fs'), os = require('os'), path = require('path'), crypto = r
 const { execFileSync, spawn } = require('child_process');
 const { check, show, done, ROOT, T } = require('./helpers/gs-sandbox');
 
-const FROZEN_SHA = '843b282bdc3f563c6fa0f399d68a838901e69015556ca5c0ae3f19de89f6c70a';      // fixtures/storeops-core-calc.js（＝mala-store-ops web/modules/duty/core-calc.js）
+const FROZEN_SHA = '8bd63105b5c0003902c33a952a82603a4cca06403dea59f1ed6aba7ab3360bd4';      // fixtures/storeops-core-calc.js（＝mala-store-ops web/modules/duty/core-calc.js）
 const SO = process.env.STOREOPS_ROOT;
 const newPath = SO ? path.join(SO, 'web', 'modules', 'duty', 'core-calc.js') : path.join(__dirname, 'fixtures', 'storeops-core-calc.js');
 const oldPath = SO ? path.join(SO, 'test', 'fixtures', 'core-calc-before-latelead.mjs') : path.join(__dirname, 'fixtures', 'storeops-core-calc-before.mjs');
@@ -42,10 +45,10 @@ const MI = (a) => ({ kind: 'miss', miss_type: 'in', start: hm(a), end: '' }), MO
 const MB = (a, b) => ({ kind: 'miss', miss_type: 'both', start: hm(a), end: hm(b) });
 const MBRK = (out, back) => ({ kind: 'miss', miss_type: 'break', start: hm(back), end: hm(out) });      // 中間休息沒打卡：end＝出去、start＝回來
 
-function scen(brk, date, planKind, S, E, punches, reqs, lateKind, tag, now) {
+function scen(brk, date, planKind, S, E, punches, reqs, lateKind, tag, now, openAt) {
   const [bs, be] = brk;
   const plan = planKind === 'one' ? [{ start: hm(S), end: hm(E), break_min: 60 }] : planKind === 'one0' ? [{ start: hm(S), end: hm(E) }] : [{ start: hm(S), end: hm(bs) }, { start: hm(be), end: hm(E) }];
-  return { tag, now: now || '2026-12-20T10:00:00', brk: { start: hm(bs), end: hm(be) }, date, plan, punches: punches.map(([a, b]) => ({ in: a == null ? null : hm(a), out: b == null ? null : hm(b) })), reqs, lateKind };
+  return { tag, now: now || '2026-12-20T10:00:00', openAt: openAt || null, brk: { start: hm(bs), end: hm(be) }, date, plan, punches: punches.map(([a, b]) => ({ in: a == null ? null : hm(a), out: b == null ? null : hm(b) })), reqs, lateKind };
 }
 const list = [];
 // 格點
@@ -83,6 +86,23 @@ for (const brk of [[720, 780], [840, 900]]) {
         }
       }
 }
+// 第八輪：卡片開啟時刻 ≠ 送出時刻（Codex 第四輪擋項 1）。開卡在上班卡後 dt 分、送出再晚 gap 分；含跨過其餘段開頭（12:17 上班、12:57 開、13:07 送）與 16 小時界線
+const addMin = (date, t) => { const d1 = new Date(Date.parse(date + 'T00:00:00Z') + 86400000 * Math.floor(t / 1440)).toISOString().slice(0, 10); return d1 + 'T' + hm(((t % 1440) + 1440) % 1440) + ':30'; };
+for (const brk of [[720, 780], [840, 900]]) {
+  const [bs, be] = brk, S = bs === 720 ? 480 : 540, E = S + 540;
+  const W = [['wIn01', [[bs + 1, null]]], ['wIn17', [[bs + 17, null]]], ['wIn45', [[bs + 45, null]]], ['wIn59', [[be - 1, null]]], ['wAtBe', [[be, null]]], ['wLate20', [[be + 20, null]]],
+    ['wBrkSegBack11', [[bs + 30, bs + 45], [be + 11, null]]], ['wMorning', [[S + 5, null]]]];
+  const R = [['none', []], ['missOut', [MO(E)]], ['leaveAfterBrk', [L(be + 10, be + 70)]], ['missBoth', [MB(S, bs)]]];
+  for (const date of ['2026-12-03'])
+    for (const pk of ['one', 'two'])
+      for (const [pn, pu] of W) {
+        const lastIn = pu[pu.length - 1][0];
+        for (const dt of [1, 20, 40, 58, 300, 955, 958]) for (const gap of [1, 3, 10, 60, 240]) {
+          const o = lastIn + dt, t = o + gap;
+          for (const [rn, rq] of R) list.push(scen(brk, date, pk, S, E, pu, rq, '', [hm(bs), date, pk, pn, 'open+' + dt, 'gap' + gap, rn].join('|'), addMin(date, t), addMin(date, o)));
+        }
+      }
+}
 const nGrid = list.length;
 // 亂數（多個種子）
 const SEEDS = String(process.env.LATE_XCHECK_SEEDS || '20261127,11,22,33,44,55,66,77,88,99').split(',').map(Number).filter((x) => x);
@@ -111,13 +131,16 @@ for (const sd of SEEDS) {
       else if (q < 0.68) rq.push({ kind: 'ot', start: hm(E), end: hm(E + 60), hours: 1 });
     }
     const date = pick(['2026-11-20', '2026-12-03', '2026-10-28']);
-    let now;
+    let now, openAt = null;
     if (rnd() < 0.2 && segs.length) {      // 第七輪：約兩成核定時刻落在最後一張卡之後 0～18 小時（最後一張是沒配對的上班卡時＝上班中）
       const lastT = Math.max(...segs.map(([a, b]) => (b != null ? b : a))), t = lastT + ri(0, 1080);
       const d1 = t >= 1440 ? new Date(Date.parse(date + 'T00:00:00Z') + 86400000 * Math.floor(t / 1440)).toISOString().slice(0, 10) : date;
-      now = d1 + 'T' + hm(t % 1440) + ':' + String(ri(0, 59)).padStart(2, '0');
+      const sec = String(ri(0, 59)).padStart(2, '0');
+      now = d1 + 'T' + hm(t % 1440) + ':' + sec;
+      // 第八輪：一半的組開卡比送出早 1～300 分，但不早於最後一張卡（卡片看到的打卡＝送出時的打卡；資料中途變了由版本檢查擋，不在這裡）
+      if (rnd() < 0.5 && t > lastT) { const o = t - Math.min(t - lastT, ri(1, 300)); openAt = addMin(date, o).slice(0, 17) + sec; }
     }
-    list.push(scen(brk, date, pick(['one', 'one0', 'two']), S, E, segs, rq, pick(['', '', '', '0', 'less', 'more']), 's' + sd + ':' + i, now));
+    list.push(scen(brk, date, pick(['one', 'one0', 'two']), S, E, segs, rq, pick(['', '', '', '0', 'less', 'more']), 's' + sd + ':' + i, now, openAt));
   }
 }
 function schedMin(c) { const bs = toM(c.brk.start), be = toM(c.brk.end); return c.plan.reduce((a, p) => a + toM(p.end) - toM(p.start) - Math.max(0, Math.min(toM(p.end), be) - Math.max(toM(p.start), bs)), 0); }
@@ -128,7 +151,7 @@ const PREV = process.env.LATE_XCHECK_PREV ? require(process.env.LATE_XCHECK_PREV
 const gate = { grid: { would: 0, gated: 0 }, rnd: { would: 0, gated: 0 } };      // 新規則會套的日子裡，被總閘擋回主線的有幾組
 const thrown = [];      // 營運系統算預填丟例外（新版丟、改動前不丟＝新問題）
 const fe = list.map((c) => {
-  const o = () => ({ segs: c.punches.map((x) => Object.assign({ cross: false }, x)), plan: { work: true, segs: c.plan, date: c.date }, reqs: c.reqs.map((x) => Object.assign({}, x)), brk: c.brk, now: T(c.now) });
+  const o = () => ({ segs: c.punches.map((x) => Object.assign({ cross: false }, x)), plan: { work: true, segs: c.plan, date: c.date }, reqs: c.reqs.map((x) => Object.assign({}, x)), brk: c.brk, now: T(c.openAt || c.now) });      // 第八輪：卡片在開卡時刻算
   const tryIt = (F) => { try { return F.corePeriods(o()); } catch (e) { return { throw: String(e && e.message || e).slice(0, 80) }; } };
   const n0 = tryIt(NEW), m0 = tryIt(OLD);
   if (n0 && n0.throw) thrown.push([c.tag, 'NEW: ' + n0.throw, m0 && m0.throw ? 'OLD 也丟: ' + m0.throw : 'OLD 正常']);
@@ -145,7 +168,7 @@ const fe = list.map((c) => {
     if (would) { const k = /^s\d/.test(c.tag) ? 'rnd' : 'grid'; gate[k].would++; if (!NEW.lateLeadShapeOk(c.punches, c.reqs, c.brk)) gate[k].gated++; }
   }
   const lm = (r) => (c.lateKind === '' ? '' : c.lateKind === '0' ? '0' : c.lateKind === 'less' ? String(Math.max(0, (r ? r.late : 0) - 30)) : String((r ? r.late : 0) + 30));
-  const inOf = (r) => (r && r.periods.length ? { now: c.now, date: c.date, brk: c.brk, punches: c.punches, reqs: c.reqs, leaves: leavesOf(c.reqs), periods: r.periods, late_min: lm(r), sched_spans: c.plan } : null);
+  const inOf = (r) => (r && r.periods.length ? { now: c.now, openAt: c.openAt, date: c.date, brk: c.brk, punches: c.punches, reqs: c.reqs, leaves: leavesOf(c.reqs), periods: r.periods, late_min: lm(r), sched_spans: c.plan } : null);
   return { n, m, inN: inOf(n), inM: inOf(m) };
 });
 // 打卡端只檢查：切成幾份平行跑（每份一個子行程，GS_ROOT 決定版本）
@@ -178,7 +201,7 @@ async function runCI(root, items) {
   const ciN = await runCI(ROOT, fe.map((x) => x.inN)), ciM = await runCI(base, fe.map((x) => x.inM));
   const ciD = await runCI(ROOT, fe.map((x) => x.inM));      // (d) 主線前端的預填直接送這一版打卡端（模擬主管用舊畫面或手動填）
   fs.rmSync(base, { recursive: true, force: true });
-  const bad = { a: [], b: [], c: [], d: [], e: [] }, cnt = { all: list.length, grid: nGrid, trig: 0, trigOk: 0, nt: 0, otLong: 0, seeds: {} };
+  const bad = { a: [], b: [], c: [], d: [], e: [] }, cnt = { all: list.length, grid: nGrid, trig: 0, trigOk: 0, nt: 0, otLong: 0, seeds: {}, drift: 0, r16: [], r16bad: [] };
   list.forEach((c, i) => {
     const f = fe[i], yn = f.inN ? ciN[i] : null, ym = f.inM ? ciM[i] : null, sk = c.tag.split(':')[0];
     const fail = (k, x) => { bad[k].push(x); if (/^s\d/.test(sk)) cnt.seeds[sk] = (cnt.seeds[sk] || 0) + 1; };
@@ -193,7 +216,12 @@ async function runCI(root, items) {
     if (!yn.ok && ym && ym.ok && otLong) cnt.otLong++;
     // 2026-11-26 第六輪（Codex 第三輪殘餘風險）：拿掉「預填跟主線相同、只因打卡端新規則被擋」的豁免——主線能核、新版照預填核不了，一律算失敗
     if (!yn.ok && ym && ym.ok && !sanctioned) fail('a', [c.tag, ps(f.n) + ' ' + yn.error + ':' + yn.rules, ps(f.m) + ' ok']);
-    if (yn.trig && yn.ok && c.lateKind === '' && lateSum(yn.st) !== f.n.late) fail('b', [c.tag, ps(f.n), '卡片 ' + f.n.late, '打卡端 ' + yn.st]);
+    if (c.openAt) cnt.drift++;
+    if (yn.trig && yn.ok && c.lateKind === '' && lateSum(yn.st) !== f.n.late) {
+      // 已知行為「16 小時界線」（第八輪）：開卡時還在上班（照主線預填）、開卡時那次檢查被擋、送出時已滿 16 小時——三個條件都成立才准許，否則照樣算 (b) 失敗
+      const r16 = !!c.openAt && yn.wOpen === true && yn.okOpen === false && yn.wNow === false;
+      if (r16) cnt.r16.push([c.tag, '卡片 ' + f.n.late, '打卡端 ' + yn.st]); else fail('b', [c.tag, ps(f.n), '卡片 ' + f.n.late, '打卡端 ' + yn.st]);
+    }
     if (!yn.trig && JSON.stringify(f.n) !== JSON.stringify(f.m)) fail('c', [c.tag, ps(f.n) + ' late ' + (f.n && f.n.late), ps(f.m) + ' late ' + (f.m && f.m.late)]);
   });
   if (process.env.LATE_XCHECK_DUMP) { const tags = new Set([].concat(bad.a, bad.b, bad.c, bad.d, bad.e).map((x) => x[0])); fs.writeFileSync(process.env.LATE_XCHECK_DUMP, JSON.stringify(Object.assign({ sc: list.filter((c) => tags.has(c.tag)) }, bad), null, 1)); }      // 除錯用：整份不一致清單
@@ -205,7 +233,10 @@ async function runCI(root, items) {
   check('XCx', '營運系統新版算預填不丟例外（改動前也丟的照列、不算新問題）：新版才丟的 ' + thrown.filter((x) => x[2] === 'OLD 正常').length + ' 組', thrown.filter((x) => x[2] === 'OLD 正常').slice(0, 6), []);
   if (thrown.length) show('XCx2', '（對照）改動前也丟例外的組數', thrown.filter((x) => x[2] !== 'OLD 正常').length);
   check('XCa', '(a) 這一版預填送打卡端被擋、主線同情境不擋（主管填的遲到比系統少、班表超過 8 小時除外）：' + bad.a.length + ' 組', bad.a.slice(0, 6), []);
-  check('XCb', '(b) 打卡端套新規則、過了、遲到欄空白：卡片的遲到分鐘＝打卡端狀態的遲到分鐘：不一致 ' + bad.b.length + ' 組', bad.b.slice(0, 6), []);
+  check('XCb', '(b) 打卡端套新規則、過了、遲到欄空白：卡片（開卡時算）的遲到分鐘＝打卡端（送出時）狀態的遲到分鐘：不一致 ' + bad.b.length + ' 組（不含 XCb16 准許的）', bad.b.slice(0, 6), []);
+  check('XCb0', '第八輪：開卡≠送出的組數夠（≥ 3000）', cnt.drift >= 3000, true);
+  show('XCb16', '已知行為「16 小時界線」：開卡時上班中且檢查被擋、送出時已滿 16 小時，卡片（主線）≠寫入（新規則）的組數（逐組驗過三個條件）', [cnt.r16.length, cnt.r16.slice(0, 3)]);
+  check('XCb16a', '已知行為「16 小時界線」格點裡確實出現（釘住：消失或變多都要重看；組數見 XCb16）', cnt.r16.filter((x) => !/^s\d/.test(x[0])).length > 0, true);
   check('XCc', '(c) 打卡端沒套新規則：這一版預填跟改動前預填逐字相同：不同 ' + bad.c.length + ' 組', bad.c.slice(0, 6), []);
   check('XCd', '(d) 主線前端的預填直接送這一版打卡端：主線打卡端過、這一版不過（主管填得比系統少、班表超過 8 小時除外）：' + bad.d.length + ' 組', bad.d.slice(0, 6), []);
   check('XCe', '(e) 同一份預填兩版打卡端都過、這一版最後沒套新規則：狀態字跟主線逐字相同：不同 ' + bad.e.length + ' 組', bad.e.slice(0, 6), []);

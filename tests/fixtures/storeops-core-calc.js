@@ -244,7 +244,7 @@ export function corePeriods(o) {
   // 2026-11-26 第六輪（不變式；主管選維持範圍）：打卡端套不套＝lateLeadClock 成立、而且 clockKeep（照抄 Requests.gs reqLateLeadKeep_：
   //   新規則讓缺卡／核定比打卡多判不過、主線判得過＝這份照主線）。第四輪「休息帶裡打一段、休息後晚回來 ≥30 分」那條是這裡的一個特例，併進來
   // 2026-11-26 第七輪：「現在幾點」決定那張沒配對的上班卡算不算「還在上班」（打卡端 markWorkingSeg_：16 小時內）。o.now（毫秒）由畫面帶 Date.now()；
-  //   沒帶（伺服器、測試）＝不認上班中（結果不隨跑的時間變）
+  //   沒帶（伺服器、測試）＝不認上班中（結果不隨跑的時間變）。第八輪方案 B：還在上班＝整份照主線（clockKeepAny），now 只用在這一個判斷
   const nowMs = Number.isFinite(o.now) ? o.now : null;
   const sends = (x) => { const k = clock(x); return k && clockKeep(k, x.periods, segs, reqs, o.brk, date, nowMs) ? k : null; };
   // 新規則的預填只在「打卡端照新規則判得過那兩條」時才用（clockKeep 的 strict 版）；判不過就改給主線的預填——主線預填是不同的時段，常常核得了
@@ -352,12 +352,10 @@ function clockOverMin(ps0, segs, bw, lateGiven, backs, starts, leadMin) {      /
   });
   return Math.max(0, Math.round(over - late - early));
 }
-function clockCoreOk(date, ps, segs, bw, ok, lead, wk) {                   // Requests.gs reqLateLeadCoreOk_（主管遲到欄空白；wk＝還在上班那張卡，見 clockWorking）
+function clockCoreOk(date, ps, segs, bw, ok, lead) {                   // Requests.gs reqLateLeadCoreOk_（主管遲到欄空白；還在上班的日子不會走到這裡＝第八輪方案 B，所以不照抄 reqWorkingSegs_）
   const bindOn = date >= CLOCK_BIND_FROM && ps.length > 0, strict = date >= CLOCK_STRICT_FROM;
   const bp = lead ? lead.rest : ps, leadMin = lead ? lead.leadMin : 0;
-  // 缺卡張數用的打卡段：還在上班那張卡當成「打到現在」（Requests.gs reqWorkingSegs_）
-  const segsW = wk ? segs.map((x, i) => (i === wk.idx ? { in: x.in, out: Math.max(wk.nowMin, x.in + 1) } : x)) : segs;
-  const miss = bindOn ? clockMissCards(bp, segsW, bw) : 0;
+  const miss = bindOn ? clockMissCards(bp, segs, bw) : 0;
   const missHave = ok.reduce((a, r) => a + (r.kind !== 'miss' ? 0 : (r.miss_type === 'break' || r.miss_type === 'both') ? 2 : 1), 0);
   const tripOk = ok.some((r) => r.kind === 'trip'), loneCard = segs.some((x) => (x.in == null) !== (x.out == null));
   if (bindOn && !(tripOk && !loneCard) && miss > missHave) return false;
@@ -372,9 +370,9 @@ function clockCoreOk(date, ps, segs, bw, ok, lead, wk) {                   // Re
     backs.push(e, e - 1440, e + 1440); starts.push(a, a - 1440, a + 1440);
   }
   let over = clockOverMin(bp, sm, bw, null, backs, starts, leadMin);
-  // 有沒配對的卡：完整打卡段＋已核准忘打卡單補的卡照算；還在上班那張當成打 16 小時（Requests.gs reqOverSegsKnown_，REQ_PAIR_MS）
+  // 有沒配對的卡：完整打卡段＋已核准忘打卡單補的卡照算（Requests.gs reqOverSegsKnown_；還在上班那張當 16 小時的那條在方案 B 下走不到）
   if (over == null && !(bindOn && miss > missHave) && ps.length) {
-    const known = sm.map((x, i) => (x.in != null && x.out != null ? x : (wk && i === wk.idx && x.in != null && x.out == null ? { in: x.in, out: x.in + 960 } : null))).filter(Boolean);
+    const known = sm.filter((x) => x.in != null && x.out != null);
     if (known.length) over = clockOverMin(bp, known, bw, null, backs, starts, leadMin);
   }
   return !(over != null && over >= CLOCK_STRICT_DIFF_MIN);
@@ -388,9 +386,11 @@ function clockKeepAny(c, segs0, reqs, date, strictNew, nowMs) {
   const ok = (reqs || []).filter((r) => r && r.pending !== true);
   const ps = c.ps.map(([s, e]) => ({ s, e })), bw = [c.bs, c.be];
   const lead = { rest: c.ps.slice(c.lead.length).map(([s, e]) => ({ s, e })), leadMin: total(c.lead) };
-  const wk = clockWorking(segs, date, nowMs);
-  if (clockCoreOk(date, ps, segs, bw, ok, lead, wk)) return true;
-  return strictNew ? false : !clockCoreOk(date, ps, segs, bw, ok, null, wk);
+  // 2026-11-26 第八輪方案 B（Codex 第四輪兩擋項；主管「可以，照推薦」）：同仁還在上班（clockWorking＝打卡端 markWorkingSeg_）＝打卡端不套（Requests.gs reqLateLeadOn_ 同一條），整份照主線。
+  //   還在上班時不再算「上班中那張卡打到現在」（第七輪那段拿掉）：那是唯一會隨開卡→送出時間改變新規則判斷的地方（擋項 1）
+  if (clockWorking(segs, date, nowMs)) return false;
+  if (clockCoreOk(date, ps, segs, bw, ok, lead)) return true;
+  return strictNew ? false : !clockCoreOk(date, ps, segs, bw, ok, null);
 }
 /** 還在上班的那張卡（打卡端 Code.gs markWorkingSeg_／inStillWorking_：這天最後一張卡是沒配對的上班卡、離現在 0～16 小時）→ { idx, nowMin }（nowMin＝現在離這天 00:00 幾分鐘）；沒有回 null。
  *  營運系統只到分鐘、用這台電腦的時間（打卡端用含秒的打卡時間與 Google 的時間），剛好 16 小時那一分鐘、或電腦時間不準時可能跟打卡端不同（見 progress.md 第七輪） */
