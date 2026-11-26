@@ -339,8 +339,9 @@ const checkH = (m) => { const sb = m.sb, ss = sb.getSS(), who = sb.readSheetAsOb
     for (let i = 0; i < 3; i++) { m.sb.handleLiffStatus_({ id_token: 'TOK_U1' }); out.push(reads); }
     return out;
   };
-  check('Q4★', "sched_pub 超過舊整表快取上限：'3'／'4' 連續開頁三次 sched_pub 累計讀取 1、1、1（快取暖了就不再讀）；'1'／'2' 跟 #232 一樣",
-    [big('3'), big('4'), JSON.stringify(big('1')) === JSON.stringify(big('1', SRC_232)), JSON.stringify(big('2')) === JSON.stringify(big('2', SRC_232))], [[1, 1, 1], [1, 1, 1], true, true]);
+  // 2026-11-25（#238 補缺卡改讀分塊快取）：'1'／'2' 改成 1、1、1；#232 原本的整表快取放不下 → 每次開頁都重讀整張（1、2、3）
+  check('Q4★', "sched_pub 超過舊整表快取上限：'1'～'4' 連續開頁三次 sched_pub 累計讀取都是 1、1、1（快取暖了就不再讀）；#232 的 '1'／'2' 是 1、2、3（每次重讀）",
+    [big('3'), big('4'), big('1'), big('2'), big('1', SRC_232), big('2', SRC_232)], [[1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 2, 3], [1, 2, 3]]);
 }
 {
   /* Q5（審查殘餘：兩份名冊快取版本不同）：'4' 下有別家店的卡＝多店，不給寬限；同樣情況 '2'（#232）照 cgs: 判單店給寬限（'2' 不改） */
