@@ -107,17 +107,28 @@ console.log('══ 例 1～12（開關開著）══');
   const m = world({ props: ON, approved: [AP('2026-11-18', 'MZTGF06', '示意乙', '12:00-20:00', 8)], reqs: [{ id: 'O1', emp_id: 'MZTGF06', name: '示意乙', kind: 'ot', date: '2026-11-18', start: '20:00', end: '22:00', hours: 2 }] });
   const r = dec(m, 'O1');
   check('ex2-a', '加班 20:00–22:00 不在核定 12:00–20:00 → 打回', [r.reopened, r.revoked.approved, apRows(m).length, r.message], [true, 1, 0, '11/18 原本已核定，已打回待核定，請重新核定這天']);
-  const cases = [['20:00', '21:55', false], ['20:00', '22:15', false], ['20:00', '22:16', true], ['11:45', '12:30', false], ['11:44', '12:30', true]];
-  cases.forEach(([a, b, want], i) => {
-    const m2 = world({ props: ON, approved: [AP('2026-11-18', 'MZTGF06', '示意乙', '12:00-22:00', 10)], reqs: [{ id: 'O2', emp_id: 'MZTGF06', name: '示意乙', kind: 'ot', date: '2026-11-18', start: a, end: b, hours: 1 }] });
+  // 2026-11-26 獨立審查第 1 項：跟核定檢查同一個口徑——核定 10 小時（一般日應有加班 2 小時），這天所有已核准加班單（含這張）每張都在時段內（±15 分）、合計 2～2.25 小時才算已包含
+  const OTX = (id, a, b, h, st) => ({ id, emp_id: 'MZTGF06', name: '示意乙', kind: 'ot', date: '2026-11-18', start: a, end: b, hours: h, status: st || 'pending' });
+  const cases = [[[], '20:00', '22:00', 2, false, '時段內、時數剛好'], [[], '20:00', '22:15', 2.25, false, '晚 15 分、多 15 分內'], [[], '20:00', '22:16', 2.27, true, '超出時段 16 分'],
+    [[], '20:00', '21:55', 1.92, true, '時數不夠（應有 2）'], [[OTX('P1', '20:00', '21:00', 1, 'approved')], '21:00', '22:00', 1, false, '兩張加班單合計 2'],
+    [[OTX('P1', '20:00', '22:00', 2, 'approved')], '18:00', '20:00', 2, true, '已有 2 小時加班單、再補 2 小時（合計 4 比應有 2 多）']];
+  cases.forEach(([pre, a, b, h, want, why], i) => {
+    const m2 = world({ props: ON, approved: [AP('2026-11-18', 'MZTGF06', '示意乙', '12:00-22:00', 10)], reqs: pre.concat([OTX('O2', a, b, h)]) });
     const r2 = dec(m2, 'O2');
-    check('ex2-b' + i, '核定 12:00–22:00、加班 ' + a + '–' + b + ' → ' + (want ? '打回' : '已包含（15 分容許）'),
+    check('ex2-b' + i, '核定 12:00–22:00、' + why + '：加班 ' + a + '–' + b + ' → ' + (want ? '打回' : '已包含'),
       want ? [!!r2.reopened, apRows(m2).length] : [r2.day_ok, r2.message, 'warn' in r2, apRows(m2).length],
       want ? [true, 0] : [true, '11/18 的核定已經包含這張單，不用重新核定', false, 1]);
   });
   // 跨夜：核定 18:00–02:00，凌晨加班 00:30–01:30（日期算前一天）→ 已包含
-  const m3 = world({ props: ON, approved: [AP('2026-11-18', 'MZTGF06', '示意乙', '18:00-02:00', 8)], reqs: [{ id: 'O3', emp_id: 'MZTGF06', name: '示意乙', kind: 'ot', date: '2026-11-18', start: '00:30', end: '01:30', hours: 1 }] });
-  check('ex2-c', '跨夜核定 18:00–02:00、加班 00:30–01:30 → 已包含', dec(m3, 'O3').day_ok, true);
+  const m3 = world({ props: ON, approved: [AP('2026-11-18', 'MZTGF06', '示意乙', '16:00-02:00', 10)], reqs: [{ id: 'O3', emp_id: 'MZTGF06', name: '示意乙', kind: 'ot', date: '2026-11-18', start: '00:00', end: '02:00', hours: 2 }] });
+  check('ex2-c', '跨夜核定 16:00–02:00（10 小時）、加班 00:00–02:00 2 小時 → 已包含', dec(m3, 'O3').day_ok, true);
+  const m3b = world({ props: ON, approved: [AP('2026-11-18', 'MZTGF06', '示意乙', '18:00-02:00', 8)], reqs: [{ id: 'O3', emp_id: 'MZTGF06', name: '示意乙', kind: 'ot', date: '2026-11-18', start: '00:30', end: '01:30', hours: 1 }] });
+  check('ex2-c2', '核定 8 小時（沒超過 8）卻有加班單（核定檢查會要作廢）→ 不算已包含、打回', !!dec(m3b, 'O3').reopened, true);
+  // 加班時間格子在正式試算表是時間（Date），reqRows_ 先轉成 HH:mm（reqHm_），跟填文字一樣判（審查「其餘」：掃描工具讀副本的台北 ISO 字串取時分＝同一個值）
+  const m3c = world({ props: ON, approved: [AP('2026-11-18', 'MZTGF06', '示意乙', '12:00-22:00', 10)], reqs: [] });
+  m3c.sb.reqSheet_(m3c.sb.getSS(), true).appendRow(m3c.run('REQ_HEADERS_').map((k) => ({ id: 'O9', created_at: '2026-11-27T09:00:00+08:00', status: 'pending', emp_id: 'MZTGF06', name: '示意乙', kind: 'ot', date: '2026-11-18', hours: 2,
+    start: new m3c.sb.Date(H.T('1899-12-30T20:00:00')), end: new m3c.sb.Date(H.T('1899-12-30T22:00:00')) })[k] ?? ''));
+  check('ex2-c3', '加班起訖是試算表時間格子（Date）→ 轉成 20:00–22:00 照判 → 已包含', dec(m3c, 'O9').day_ok, true);
   // 兩段核定（中間休息）：加班落在第二段 → 已包含；跨過休息空檔 → 打回
   const m4 = world({ props: ON, approved: [AP('2026-11-18', 'MZTGF06', '示意乙', '09:00-13:00,14:00-20:00', 10)], reqs: [{ id: 'O4', emp_id: 'MZTGF06', name: '示意乙', kind: 'ot', date: '2026-11-18', start: '18:00', end: '20:00', hours: 2 }, { id: 'O5', emp_id: 'MZTGF06', name: '示意乙', kind: 'ot', date: '2026-11-18', start: '12:00', end: '15:00', hours: 3 }] });
   check('ex2-d', '兩段核定、加班 18:00–20:00 在第二段 → 已包含', dec(m4, 'O4').day_ok, true);
@@ -146,7 +157,18 @@ console.log('══ 例 1～12（開關開著）══');
   const r2 = dec(m2, 'T5');
   check('ex4-c', '登記出差 4、單 8 → 時數不同 → 打回；假別登記一起搬（leave 1）', [r2.reopened, r2.revoked.approved, r2.revoked.leave, r2.revoked.before.leaves, lvBak(m2).length], [true, 1, 1, [{ type: '出差', hours: 4 }], 1]);
   const m3 = world(Object.assign({}, base, { leave: [['2026-11-20', '示意丁', '出差', 4]], reqs: [TRIP8('T6', 'MZTJS11', '2026-11-20', { name: '示意丁', hours: '' })] }));
-  check('ex4-d', '單沒填時數、登記有出差 → 已包含', dec(m3, 'T6').day_ok, true);
+  check('ex4-d', '單沒填時數、登記出差 4 → 同核定檢查口徑（單的時數空白算 0，跟登記 4 不同）→ 打回', !!dec(m3, 'T6').reopened, true);
+  // 審查重現：出差 09–11（2 小時）已核准、核定登記出差 2；再補 14–16 出差 2 小時 → 合計 4 ≠ 登記 2 → 打回（以前會被同一列重複匹配成已包含）
+  const TRP = (id, a, b, st) => TRIP8(id, 'MZTJS11', '2026-11-20', { name: '示意丁', start: a, end: b, hours: 2, status: st || 'pending' });
+  const m7 = world(Object.assign({}, base, { leave: [['2026-11-20', '示意丁', '出差', 2]], reqs: [TRP('T10', '09:00', '11:00', 'approved'), TRP('T11', '14:00', '16:00')] }));
+  check('ex4-i', '第二張同假別同時數的出差單：合計 4 ≠ 登記 2 → 打回', [!!dec(m7, 'T11').reopened, 'day_ok' in dec(world(Object.assign({}, base, { leave: [['2026-11-20', '示意丁', '出差', 2]], reqs: [TRP('T10', '09:00', '11:00', 'approved'), TRP('T11', '14:00', '16:00')] })), 'T11')], [true, false]);
+  const m8 = world(Object.assign({}, base, { leave: [['2026-11-20', '示意丁', '出差', 4]], reqs: [TRP('T10', '09:00', '11:00', 'approved'), TRP('T11', '14:00', '16:00')] }));
+  check('ex4-j', '登記出差 4、兩張 2 小時（一張已核准）→ 合計 4＝登記 4 → 已包含', dec(m8, 'T11').day_ok, true);
+  const m9 = world(Object.assign({}, base, { leave: [['2026-11-20', '示意丁', '出差', 2], ['2026-11-20', '示意丁', '出差', 2]], reqs: [TRP('T10', '09:00', '11:00', 'approved'), TRP('T11', '14:00', '16:00')] }));
+  check('ex4-k', '登記兩列出差各 2（合計 4）、兩張單合計 4 → 已包含', dec(m9, 'T11').day_ok, true);
+  const mA = world(Object.assign({}, base, { leave: [['2026-11-20', '示意丁', '出差', 2]], reqs: [TRP('T10', '09:00', '11:00'), TRP('T11', '14:00', '16:00')] }));
+  const rA = batch(mA, ['T10', 'T11']);
+  check('ex4-l', '批次同時核准兩張（登記 2）：第一張合計 2＝2 已包含、第二張合計 4 → 打回', [(rA.day_ok_items || []).map((x) => x.id), (rA.warn_items || []).filter((x) => x.reopened).map((x) => x.id)], [['T10'], ['T11']]);
   const m4 = world(Object.assign({}, base, { leave: [['2026-11-20', '示意丁', '出差', 7.995]], reqs: [TRIP8('T7', 'MZTJS11', '2026-11-20', { name: '示意丁' })] }));
   check('ex4-e', '時數差 < 0.01 算相同', dec(m4, 'T7').day_ok, true);
   const m5 = world(Object.assign({}, base, { leave: [['2026-11-20', '示意丁', '出差', '']], reqs: [TRIP8('T8', 'MZTJS11', '2026-11-20', { name: '示意丁' })] }));
@@ -451,6 +473,41 @@ console.log('\n══ 打回做到一半失敗：每一個寫入步驟各失敗�
   hook(bc, 8);      // 改版前的寫入順序：插核定留底、表頭、留底列、刪核定、插假別留底、表頭、留底列、刪假別（第 8 次）
   const rc = J(bc.sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'J8', reason: '錯' }));
   check('half-ctl', '對照組：改版前在刪假別時失敗 → revoke_failed 但核定列已搬走、假別還在（半套）', [rc.error, live(bc, 'MZTJS07', '示意甲') !== lv0, apRows(bc).length, lvRows(bc).length], ['revoke_failed', true, 0, 1]);
+}
+
+console.log('\n══ 鏡像假別登記不搬（獨立審查第 2 項）＋留底分頁四種狀態跟改版前逐格相同（第 3 項）══');
+{
+  const snap = (m) => JSON.stringify(Object.keys(m.self.sh).sort().map((nm) => [nm, m.self.sh[nm].values]));
+  const withMirrorLeave = (m, rows) => { const lv = m.self.sh.leave.values; lv[0] = ['日期', '姓名', '假別', '時數', 'mirror_src']; rows.forEach((r) => lv.push(r.slice())); return m; };
+  // 同人同日：本店核定＋總部鏡像核定；假別登記：本店出差 2＋從央廚抄來的出差 2（mirror_src=CF）
+  const fx = (o) => withMirrorLeave(world(Object.assign({ approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '09:00-18:00', 8, '正常', '央廚', '2026-11-21T20:00:00+08:00', 'CF'), AP('2026-11-20', 'MZTJS07', '示意甲', '10:00-13:00', 3, '正常', '店長', '2026-11-21T19:00:00+08:00')] }, o)),
+    [['2026-11-20', '示意甲', '出差', 2, ''], ['2026-11-20', '示意甲', '出差', 2, 'CF']]);
+  const m = fx({ props: ON, reqs: [TRIP8('MR1', 'MZTJS07', '2026-11-20', { name: '示意甲' })] });
+  const r = dec(m, 'MR1');
+  check('mir-a', '補單打回：搬本店核定與本店假別登記；鏡像核定與鏡像假別登記都留著', [r.reopened, r.revoked.approved, r.revoked.leave, apRows(m).map((x) => x[10]), lvRows(m).map((x) => x[4])], [true, 1, 1, ['CF'], ['CF']]);
+  const mc = fx({ props: ON, reqs: [TRIP8('MR2', 'MZTJS07', '2026-11-20', { name: '示意甲', hours: 2 })] });
+  check('mir-b', '已包含的判斷只看本店登記（本店出差 2＝單 2 → 已包含；鏡像那筆不算進合計）', dec(mc, 'MR2').day_ok, true);
+  // 作廢：改版前會把鏡像假別登記一起搬走（同一個問題），這次一起改成不搬——回報說明的行為差異
+  const v = fx({ reqs: [TRIP8('MV', 'MZTJS07', '2026-11-20', { name: '示意甲', status: 'approved' })] });
+  const vb = fx({ base: true, reqs: [TRIP8('MV', 'MZTJS07', '2026-11-20', { name: '示意甲', status: 'approved' })] });
+  const rv = J(v.sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'MV', reason: '錯' })), rvb = J(vb.sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'MV', reason: '錯' }));
+  check('mir-c', '作廢（同人同日有鏡像假別登記）：改版前搬 2 列假別（含鏡像）、現在只搬本店那 1 列', [rvb.revoked, rv.revoked, lvRows(vb).length, lvRows(v).map((x) => x[4])], [{ approved: 1, leave: 2 }, { approved: 1, leave: 1 }, 0, ['CF']]);
+
+  // 留底分頁四種狀態：作廢的回應與所有分頁跟改版前逐格相同
+  const AH2 = AH.concat(['revoked_at', 'revoke_reason']), LH2 = ['日期', '姓名', '假別', '時數', 'emp_id', 'revoked_at', 'revoke_reason'];
+  const OLDROW = ['2026-11-01', 'X1', '舊', '09:00-10:00', 1, '正常', '店長', '2026-11-02T10:00:00+08:00', '', '', '', '2026-11-03T00:00:00+08:00', '舊的作廢'];
+  const states = { 不存在: null, 存在且空: [], 存在有表頭: [AH2], 存在有資料: [AH2, OLDROW] };
+  const lstates = { 不存在: null, 存在且空: [], 存在有表頭: [LH2], 存在有資料: [LH2, ['2026-11-01', '舊', '事假', 1, 'X1', '2026-11-03T00:00:00+08:00', '舊的作廢']] };
+  Object.keys(states).forEach((k, i) => {
+    const mk = (base) => {
+      const w = world({ base, approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '', 8, '出差')], leave: [['2026-11-20', '示意甲', '出差', 8]], reqs: [TRIP8('VS', 'MZTJS07', '2026-11-20', { name: '示意甲', status: 'approved' })] });
+      if (states[k]) { w.self.insertSheet('approved_revoked').values.push(...states[k].map((x) => x.slice())); w.self.insertSheet('leave_revoked').values.push(...lstates[k].map((x) => x.slice())); }
+      return w;
+    };
+    const a = mk(false), b = mk(true);
+    const ra = J(a.sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'VS', reason: '錯' })), rb = J(b.sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'VS', reason: '錯' }));
+    check('bak-' + i, '作廢、留底分頁「' + k + '」：回應與所有分頁跟改版前逐格相同', [JSON.stringify(ra) === JSON.stringify(rb), snap(a) === snap(b)], [true, true]);
+  });
 }
 
 done();
