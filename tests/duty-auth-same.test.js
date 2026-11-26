@@ -23,6 +23,7 @@ Object.keys(a.sheets).forEach((k) => check('S91-' + k, '試算表「' + k + '」
 check('S92', '分頁清單相同', Object.keys(b.sheets), Object.keys(a.sheets));
 check('S93', '暫存區記號相同（不含變動紀錄 dfeed_；新版沒有留 dwb: 記號）', b.cacheKeys, a.cacheKeys);
 const extra = {}; Object.keys(a.reads).forEach((k) => { extra[k] = b.reads[k] - a.reads[k]; });
-check('S94', '屬性讀取次數差：核定、審單各多 1 次 getProperties()；送單、讀當天 0 次', extra, { approve: 1, decide: 1, submit: 0, day: 0 });
+// 2026-11-26 補單核准後打回：審單（核准請假／出差／加班單）多讀 1 次指令碼屬性 REQ_REOPEN_ON（開關關著回應、寫入不變，S01～S93 照樣逐字相同；tests/reopen-after-slip.test.js）
+check('S94', '屬性讀取次數差：核定多 1 次 getProperties()；審單多 1 次 getProperties()＋1 次 REQ_REOPEN_ON；送單、讀當天 0 次', extra, { approve: 1, decide: 2, submit: 0, day: 0 });
 fs.rmSync(base, { recursive: true, force: true });
 done();
