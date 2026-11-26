@@ -32,6 +32,8 @@ function sheet(name, rows) {
     },
     appendRow(row) { data.push(row.slice()); },
     getLastColumn() { return data[0] ? data[0].length : 0; },
+    getLastRow() { return data.length; },      // 2026-11-26 打回改成先讀再寫、出錯倒回（Requests.gs reqMoveApply_）：留底分頁要看最後一列、倒回時刪列（同真的試算表）
+    deleteRow(r) { data.splice(r - 1, 1); },
   };
 }
 function makeEnv(now) {

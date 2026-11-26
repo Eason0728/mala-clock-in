@@ -1616,6 +1616,9 @@ function handleMgrReqPending_(body) {
   var events = liffEvents_(ss), upc = reqUpperCache_(ss);
   var hideHome = !reqMgrActing_(reqMgr_(body), body);   // 不算支援的人：本店主管連申請都看不到（2026-10-29）
   if (hideHome) rows = rows.filter(function (r) { return reqUpperWhy_(r.emp_id, ss, upc) !== 'home'; });
+  // 補單核准後打回（2026-11-26 第 5 題 A）：開關開著時，現在核准會打回那天的單標 day_approved:true（跟核准時同一個判斷）；
+  //   開關關著不讀、不加（回應跟以前一樣）；讀不到就不標，不影響清單
+  var reopenOn = reqReopenOn_(), reopenMemo = { reqs: all }, todayR = todayTaipeiStr();
   var items = rows.sort(function (a, b) { return a.created_at < b.created_at ? -1 : 1; }).map(function (r) {
     var o = reqPublic_(r);
     o.summary = reqSummary_(r);
@@ -1624,6 +1627,9 @@ function handleMgrReqPending_(body) {
     if (why) o.upper_kind = why;
     o.attach_id = String(r.attach_id || '');   // 主管看附件用（經光復 line_hub_attach_get，會再核對主管金鑰）
     if (reqDayDiff_(r.date, todayTaipeiStr()) <= 0) o.punches = reqDayPunches_(events, r.emp_id, r.date);   // 還沒到的日期沒有打卡可看，不顯示「沒有任何打卡」
+    if (reopenOn && reqAffectsDay_(r) && String(r.date || '').slice(0, 10) <= todayR) {
+      try { if (reqReopenJudge_(ss, r, reopenMemo).act === 'reopen') o.day_approved = true; } catch (e) {}
+    }
     return o;
   });
   return { ok: true, items: items };
@@ -1651,6 +1657,119 @@ function reqDayWarnMsgOf_(r, dates) {
 }
 function reqDayWarnMsg_(dates) {
   return dates.map(function (d) { return (+d.slice(5, 7)) + '/' + (+d.slice(8, 10)); }).join('、') + ' 已經核定過，請重新核定一次，假別才會寫進薪資';
+}
+
+/* ── 核定之後才核准的補單：自動把那天打回待核定（2026-11-26 主管「照推薦」1A 2A 3A 4A 5A 6A 7A 8A 9A；
+   設計 ~/加盟名單平台/_brain_out/reapprove-after-slip/design.md）──
+   主管核准請假、出差、加班單（1A）時，開單這家店的那一天已經有主管核定（不算總部鏡像列），而且那天的核定還沒包含這張單（2A），
+   就照「作廢打回」同一套（reqRevokeFinal_）把那位同仁那一天的核定與假別登記搬到留底分頁，那天回到待核定，單子照常核准。
+   打回失敗＝單子也不核准（請再按一次），不會出現「單核准了、那天卻沒打回」的半套。
+   開關：指令碼屬性 REQ_REOPEN_ON，去頭尾空白後剛好是 '1' 才打回；沒設、空白、0、true、打錯字＝照今天只提醒（回應與寫入逐位元組相同）。
+   mini 核定引擎看得到這個屬性（RelayG.gs RELAYG_PROPS_），兩邊判斷一樣。 */
+var REQ_REOPEN_PROP_ = 'REQ_REOPEN_ON';
+var REQ_REOPEN_FAIL_MSG_ = '這天的核定沒有打回成功，這張還沒核准，請再按一次';      // 真的去打回、搬資料時出錯（逐句表第 7 句）
+var REQ_REOPEN_READ_MSG_ = '這天的核定讀不到，這張還沒核准，請再按一次';      // 判斷時就讀不到核定資料、還沒開始打回（主管 2026-11-26 定案新句）；錯誤碼同 revoke_failed
+function reqReopenOn_() {
+  var v = null;
+  try { v = reqProp_(REQ_REOPEN_PROP_); } catch (e) { v = null; }
+  return String(v == null ? '' : v).trim() === '1';
+}
+/** 鎖月狀態確定「沒鎖」才打回（2026-11-26 補單打回驗收第 2 項，大腦裁定保守解讀第 7 題）：讀不到鎖月＝照常核准、不打回、照今天的提醒。
+ *  本店讀得到（光復有薪資模組）＝看本店：沒鎖才打回；其他店打卡端讀不到鎖月 → 看營運系統代轉時帶的 pay_unlocked（它先向光復問過、確定沒鎖的月份 ['YYYY-MM'…]）。
+ *  已鎖的月份核准本身就被 reqPayLock_ 擋下，走不到這裡。直接打 Google 的舊值班核定頁不帶 pay_unlocked＝光復以外的店不打回。 */
+function reqReopenLockOk_(r, body, ss) {
+  var d = String(r.date || '').slice(0, 10), lk;
+  try { lk = typeof payLockedFor_ === 'function' ? payLockedFor_(d, ss) : undefined; } catch (e) { lk = undefined; }
+  if (lk === false) return true;
+  if (lk === true) return false;
+  var ok = body && Array.isArray(body.pay_unlocked) ? body.pay_unlocked.map(String) : [];
+  return ok.indexOf(d.slice(0, 7)) >= 0;
+}
+function reqMD_(d) { return (+String(d).slice(5, 7)) + '/' + (+String(d).slice(8, 10)); }
+function reqReopenMsg_(d) { return reqMD_(d) + ' 原本已核定，已打回待核定，請重新核定這天'; }
+function reqDayOkMsg_(d) { return reqMD_(d) + ' 的核定已經包含這張單，不用重新核定'; }
+/** 判斷用的表（approved、leave）：批次共用一份 memo（批次開頭在鎖內讀；打回過的人日另外記，不再判） */
+function reqReopenRows_(ss, memo, nm) {
+  if (memo && memo[nm]) return memo[nm];
+  var sh = ss.getSheetByName(nm), rows = sh ? readSheetAsObjects(sh).rows : [];
+  if (memo) memo[nm] = rows;
+  return rows;
+}
+/** 這人這天在這家店自己的核定（mirror_src 空白），依 entered_at 取最新一筆；沒有回 null。同 buildLatestApprovedMap 的 >=（同一秒取後寫的） */
+function reqDayOwnLatest_(rows, emp, date) {
+  var best = null;
+  rows.forEach(function (x) {
+    if (normCellDate(x.date) !== date || String(x.emp_id) !== emp || String(x.mirror_src || '').trim()) return;
+    if (!best || normCellTs(x.entered_at) >= normCellTs(best.entered_at)) best = x;
+  });
+  return best;
+}
+/** 核定已經包含這張單嗎（2A）——跟核定時的檢查同一個口徑（2026-11-26 獨立審查第 1 項）：把這張單當成已核准，
+ *  請假／出差＝這人這天這個假別「所有已核准單的時數合計」等於核定裡登記的合計（直接用 reqStrictLeaveProbs_，差 > 0.005 小時算不同）；
+ *  加班＝這天所有已核准加班單（含這張）每張都落在核定時段內、前後可差 15 分（reqStrictSlotOk_），而且加班單時數合計跟核定應有的加班時數相符
+ *  （reqStrictOtNeed_，打卡端不知道班表＝當一般日；不足、多超過 15 分、核定沒超過 8 小時卻有加班單，都算不包含）。
+ *  以前只找「同假別同時數的任一列」，第二張同樣時數的單會重複用到第一張的登記（審查重現：出差 09–11 已核定登記 2 小時，再補 14–16 會被當成已包含）。
+ *  核定沒有時段（整天請假、出差）或時段讀不懂＝加班單不包含；拿不準一律不包含（照樣打回）。登記只看本店的（總部鏡像列 mirror_src 不算）。
+ *  memo（選填）：reqs＝申請列（批次、待審清單共用一份）、okIds＝這一批已核准的單號。 */
+function reqDayOkSlips_(ss, r, memo) {
+  var date = String(r.date || '').slice(0, 10), emp = String(r.emp_id), id = String(r.id);
+  var reqs = memo && memo.reqs ? memo.reqs : reqRows_(ss), okIds = (memo && memo.okIds) || {};
+  return reqs.filter(function (x) {
+    return String(x.emp_id) === emp && String(x.date).slice(0, 10) === date && String(x.id) !== id && (x.status === 'approved' || okIds[String(x.id)]);
+  }).concat([r]);
+}
+function reqDayCovers_(ss, r, latest, memo) {
+  var date = String(r.date || '').slice(0, 10), kind = String(r.kind);
+  var slips = reqDayOkSlips_(ss, r, memo);
+  if (kind === 'ot') {
+    var ps = [], bad = false;
+    parsePeriodsStr(String(latest.periods == null ? '' : latest.periods)).forEach(function (p) {
+      var a = reqMin_(String(p.start || '').trim()), b = reqMin_(String(p.end || '').trim());
+      if (a === null || b === null) { bad = true; return; }
+      var s = reqHmMs_(date, String(p.start).trim()), e = reqHmMs_(date, String(p.end).trim());
+      if (e <= s) e += 86400000;
+      ps.push({ startMs: s, endMs: e });
+    });
+    if (bad || !ps.length) return false;
+    var merged = reqStrictMerged_(ps), ots = slips.filter(function (x) { return x.kind === 'ot'; });
+    if (!ots.every(function (x) { return reqStrictSlotOk_(date, String(x.start), String(x.end), merged); })) return false;
+    var have = ots.reduce(function (t, x) { return t + (Number(x.hours) || 0); }, 0);
+    var need = reqStrictOtNeed_(latest.approved_hours, '').need;      // 同 reqBindCheck_ 規則 2（一般日）
+    return need > 0.005 && have + 0.005 >= need && have <= need + REQ_STRICT_TOL_MIN / 60 + 0.005;
+  }
+  var name = reqFinalName_(ss, r);
+  if (!name || !reqLeaveOwner_(ss, String(r.emp_id), name)) return false;
+  var typeOf = function (x) { return x.kind === 'trip' ? '出差' : String(x.leave_type); };      // 同 reqStrictLeaveProbs_ 的假別寫法
+  var type = typeOf(r);
+  if (!String(type).trim()) return false;
+  var oks = slips.filter(function (x) { return (x.kind === 'leave' || x.kind === 'trip') && typeOf(x) === type; });
+  var leaves = reqReopenRows_(ss, memo, 'leave').filter(function (x) {
+    return normCellDate(x['日期']) === date && String(x['姓名'] || '').trim() === name && !String(x.mirror_src || '').trim() && String(x['假別']) === type;
+  }).map(function (x) { return { type: String(x['假別']), hours: x['時數'] }; });
+  if (!leaves.length) return false;
+  return reqStrictLeaveProbs_(oks, leaves).length === 0;
+}
+/** 開關開著、種類是請假／出差／加班時才叫。回 {act}：'reopen'＝要打回；'covered'＝核定已包含；'old_warn'＝只有總部鏡像核定（照今天提醒）；'none'＝那天沒有核定 */
+function reqReopenJudge_(ss, r, memo) {
+  var date = String(r.date || '').slice(0, 10), emp = String(r.emp_id);
+  var rows = reqReopenRows_(ss, memo, 'approved');
+  var latest = reqDayOwnLatest_(rows, emp, date);
+  if (latest) return { act: reqDayCovers_(ss, r, latest, memo) ? 'covered' : 'reopen' };
+  var any = rows.some(function (x) { return normCellDate(x.date) === date && String(x.emp_id) === emp; });
+  return { act: any ? 'old_warn' : 'none' };
+}
+/** 打回（同作廢打回 reqRevokeFinal_，多回原核定摘要 before）。丟例外＝呼叫端回 revoke_failed、單子不核准 */
+function reqReopenDay_(ss, r, actor, group) {
+  var list = group && group.length ? group : [r];      // 批次整組打回：留底理由列出這一組每一張（2026-11-26 審查第二輪）
+  return reqRevokeFinal_(ss, String(r.emp_id), reqFinalName_(ss, r), String(r.date || '').slice(0, 10),
+    '核准申請 ' + list.map(function (x) { return String(x.id); }).join('、') + '（' + actor + '）後打回：' + list.map(reqSummary_).join('；'), { detail: true });
+}
+/** 打回後回應多帶的欄（只有開關開著、真的打回時才有；開關關著回應不變） */
+function reqReopenOut_(o, r, dd, revoked) {
+  o.warn = REQ_DAY_WARN_; o.warn_dates = [dd]; o.message = reqReopenMsg_(dd);
+  o.reopened = true; o.revoked = revoked;
+  o.date = dd; o.emp_id = String(r.emp_id); o.kind = String(r.kind); o.summary = reqSummary_(r);
+  return o;
 }
 
 /** {action:'mgr_req_decide', mgr_key, id, decision:'approve'|'reject', reason?} */
@@ -1684,9 +1803,26 @@ function handleMgrReqDecide_(body, viaAuth) {
       var anMsgD = reqAnnualBlockMsg_(r, reqAnnualFromEmp_(r.emp_id, body.mgr_key));
       if (anMsgD) return { ok: false, error: 'annual_not_eligible', message: anMsgD };
     }
+    // 補單核准後打回（2026-11-26，開關 REQ_REOPEN_ON）：先判、要打回就先打回，打回失敗單子也不核准；開關關著整段不跑
+    var rj = null;
+    if (decision === 'approve' && reqAffectsDay_(r) && reqReopenOn_() && reqReopenLockOk_(r, body, ss)) {
+      var judged = false;
+      try {
+        rj = reqReopenJudge_(ss, r, {});
+        judged = true;
+        if (rj.act === 'reopen') rj.revoked = reqReopenDay_(ss, r, actor);
+      } catch (errR) { console.log('mgr_req_decide 打回核定失敗：' + errR); return { ok: false, error: 'revoke_failed', message: judged ? REQ_REOPEN_FAIL_MSG_ : REQ_REOPEN_READ_MSG_ }; }
+    }
     reqSetCells_(sh, r.__rowIndex, { status: decision === 'approve' ? 'approved' : 'rejected', decided_at: nowTaipeiIso(),
                                      decided_by: actor, reject_reason: decision === 'reject' ? reason : '' });
     var out = { ok: true, id: String(r.id), status: decision === 'approve' ? 'approved' : 'rejected' };
+    if (rj) {
+      var dR = String(r.date || '').slice(0, 10);
+      if (rj.act === 'reopen') reqReopenOut_(out, r, dR, rj.revoked);
+      else if (rj.act === 'covered') { out.day_ok = true; out.message = reqDayOkMsg_(dR); }
+      else if (rj.act === 'old_warn') { out.warn = REQ_DAY_WARN_; out.warn_dates = [dR]; out.message = reqDayWarnMsgOf_(r, [dR]); }
+      return out;
+    }
     if (decision === 'approve' && reqAffectsDay_(r)) {
       var dd = String(r.date || '').slice(0, 10);
       try { if (reqDayApproved_(reqApprovedMap_(ss), r)) { out.warn = REQ_DAY_WARN_; out.warn_dates = [dd]; out.message = reqDayWarnMsgOf_(r, [dd]); } }
@@ -1780,19 +1916,84 @@ function reqLeaveOwner_(ss, emp, name) {
   });
   return owner === null || owner === String(emp);
 }
-function reqRevokeFinal_(ss, emp, name, date, why) {
+/* 打回要嘛整天做完、要嘛什麼都沒變（2026-11-26 補單打回驗收第 1 項）：以前先搬核定、再搬假別登記，第二步出錯會留下
+   「核定列已搬走、假別登記還在原處」——再按一次時那天看起來沒核定，單子直接核准，舊假別登記留著（重核又會再寫一筆）。
+   現在：先讀好兩張表要搬的列（不寫）→ 寫留底（核定、假別）→ 刪原列（核定、假別，各自由下往上）；任何一步丟例外，
+   就把已經做的倒回去（剛刪的原列照原順序補回表尾、剛寫的留底列刪掉）再丟出去，呼叫端回 revoke_failed、單子不核准／不作廢；
+   再按一次會從頭完整做一次。正常情況的寫入結果跟以前逐格相同（只是先寫兩邊的留底、再刪兩邊的原列）。
+   表頭只在新建留底分頁時寫（同以前）；這次新建的分頁倒回時整張刪掉。 */
+function reqMovePlan_(sh, bakName, extraHead, match, extraVals) {
+  if (!sh) return null;
+  var vals = sh.getDataRange().getValues();
+  if (!vals.length) return null;
+  var head = vals[0], drop = [];
+  for (var i = 1; i < vals.length; i++) {
+    if (!match(vals[i], head)) continue;
+    var keep = vals[i].slice(0, head.length); while (keep.length < head.length) keep.push('');
+    drop.push({ row: i + 1, vals: keep });
+  }
+  return { sh: sh, bakName: bakName, head: head, extraHead: extraHead, extraVals: extraVals, drop: drop };
+}
+function reqMoveApply_(ss, plans) {
+  var undo = [];
+  if (!plans.some(function (p) { return p && p.drop.length; })) return plans.map(function () { return 0; });   // 沒有要搬的＝什麼都不寫（同以前）
+  try {
+    plans.forEach(function (p) {
+      if (!p || !p.drop.length) return;
+      // 表頭只在「這次新建分頁」時寫（跟以前一樣；已存在的分頁不論空不空都不補表頭，2026-11-26 獨立審查第 3 項）。
+      //   倒回：這次新建的分頁整張刪掉（不留原本不存在的空分頁）；原本就在的分頁只刪這次追加的列
+      var bak = ss.getSheetByName(p.bakName), base = 0;
+      if (!bak) {
+        bak = ss.insertSheet(p.bakName);
+        undo.push(function () { if (typeof ss.deleteSheet === 'function') ss.deleteSheet(bak); else for (var r = bak.getLastRow(); r > 0; r--) bak.deleteRow(r); });
+        bak.appendRow(p.head.concat(p.extraHead));
+      } else {
+        base = bak.getLastRow();
+        undo.push(function () { for (var r = bak.getLastRow(); r > base; r--) bak.deleteRow(r); });
+      }
+      p.drop.forEach(function (d) { bak.appendRow(d.vals.concat(p.extraVals)); });
+    });
+    SpreadsheetApp.flush();
+    plans.forEach(function (p) {
+      if (!p || !p.drop.length) return;
+      var gone = [];
+      undo.push(function () { for (var i = gone.length - 1; i >= 0; i--) p.sh.appendRow(gone[i]); });   // 刪的時候由下往上，補回時倒過來＝原本的先後
+      for (var j = p.drop.length - 1; j >= 0; j--) { p.sh.deleteRow(p.drop[j].row); gone.push(p.drop[j].vals); }
+    });
+    SpreadsheetApp.flush();
+  } catch (e) {
+    for (var u = undo.length - 1; u >= 0; u--) { try { undo[u](); } catch (e2) { console.log('打回倒回失敗：' + e2); } }
+    try { SpreadsheetApp.flush(); } catch (e3) {}
+    throw e;
+  }
+  return plans.map(function (p) { return p ? p.drop.length : 0; });
+}
+function reqRevokeFinal_(ss, emp, name, date, why, opt) {
   var now = nowTaipeiIso();
-  var a = reqMoveRows_(ss, ss.getSheetByName('approved'), BIND_REVOKE_SHEET_, ['revoked_at', 'revoke_reason'], function (row, h) {
-    var im = h.indexOf('mirror_src');
-    return normCellDate(row[h.indexOf('date')]) === date && String(row[h.indexOf('emp_id')]) === emp && !(im >= 0 && String(row[im] || '').trim());
-  }, [now, why]);
+  var detail = !!(opt && opt.detail);   // 補單打回（2026-11-26）才帶 opt.detail；作廢不帶＝回應跟以前一樣
   // 假別紀錄只有姓名、沒有編號：同名的人照薪資的算法（Payroll.gs nameToEmp）算給名冊最後一位同名的人。
   // 作廢的不是那一位＝這些假別紀錄不是他的，不搬（2026-11-15 考勤挑錯 B14：原本作廢甲的單會把同名乙那天的假別搬走）
   if (name && !reqLeaveOwner_(ss, emp, name)) name = '';
-  var l = !name ? 0 : reqMoveRows_(ss, ss.getSheetByName('leave'), REQ_LEAVE_REVOKE_SHEET_, ['emp_id', 'revoked_at', 'revoke_reason'], function (row, h) {
-    return normCellDate(row[h.indexOf('日期')]) === date && String(row[h.indexOf('姓名')] || '').trim() === name;
+  var pa = reqMovePlan_(ss.getSheetByName('approved'), BIND_REVOKE_SHEET_, ['revoked_at', 'revoke_reason'], function (row, h) {
+    var im = h.indexOf('mirror_src');
+    return normCellDate(row[h.indexOf('date')]) === date && String(row[h.indexOf('emp_id')]) === emp && !(im >= 0 && String(row[im] || '').trim());
+  }, [now, why]);
+  var pl = !name ? null : reqMovePlan_(ss.getSheetByName('leave'), REQ_LEAVE_REVOKE_SHEET_, ['emp_id', 'revoked_at', 'revoke_reason'], function (row, h) {
+    var im = h.indexOf('mirror_src');      // 總部從央廚抄來的假別登記（Mirror.gs 加 mirror_src）跟鏡像核定一樣不動（2026-11-26 獨立審查第 2 項）
+    return normCellDate(row[h.indexOf('日期')]) === date && String(row[h.indexOf('姓名')] || '').trim() === name && !(im >= 0 && String(row[im] || '').trim());
   }, [emp, now, why]);
-  return { approved: a, leave: l };
+  var n = reqMoveApply_(ss, [pa, pl]);
+  if (!detail) return { approved: n[0], leave: n[1] };
+  var objs = function (p) { return !p ? [] : p.drop.map(function (d) { var o = {}; p.head.forEach(function (k, c) { o[k] = d.vals[c]; }); return o; }); };
+  var apRows = objs(pa), lvRows = objs(pl);
+  // before＝被搬走的最新一筆核定摘要（第 3 題 A 的說明行用）；沒有搬到核定列＝null
+  var last = null;
+  apRows.forEach(function (x) { if (!last || normCellTs(x.entered_at) >= normCellTs(last.entered_at)) last = x; });
+  var num = function (v) { return v === '' || v === null || v === undefined || !isFinite(Number(v)) ? '' : Number(v); };
+  var before = last ? { periods: String(last.periods == null ? '' : last.periods), approved_hours: num(last.approved_hours), status_text: String(last.status_text == null ? '' : last.status_text),
+    manager_name: String(last.manager_name == null ? '' : last.manager_name), entered_at: String(normCellTs(last.entered_at) || ''),
+    leaves: lvRows.map(function (x) { return { type: String(x['假別'] == null ? '' : x['假別']).trim(), hours: num(x['時數']) }; }) } : null;
+  return { approved: n[0], leave: n[1], before: before };
 }
 
 /* ── 舊資料：申請已作廢或核定被打回，假別紀錄還留著（2026-11-14 Eason 4A：先只讀列清單，確認後才清）──
@@ -1886,6 +2087,7 @@ function handleMgrReqDecideBatch_(body, viaAuth) {
     var byId = {};
     reqRows_(ss).forEach(function (x) { byId[String(x.id)] = x; });
     var now = nowTaipeiIso(), done = [], skipped = [], warnItems = [], apMap = null, annualFromBy = {};
+    var reopenOn = null, reopenMemo = { reqs: Object.keys(byId).map(function (k) { return byId[k]; }) }, dayOkItems = [], oks = [];   // 補單核准後打回（2026-11-26）；okIds＝這一批已核准的（申請列是批次開頭讀的）
     var upc = reqMgrActing_(mgr, body) ? null : reqUpperCache_(ss);
     var blind = reqKeyBlind_(mgr, ss);   // 這把鑰匙對不到名冊上的人：加班、請假、出差不給核（2026-11-15）
     ids.forEach(function (id) {
@@ -1906,8 +2108,52 @@ function handleMgrReqDecideBatch_(body, viaAuth) {
         var anMsgB = reqAnnualBlockMsg_(r, annualFromBy[ek]);
         if (anMsgB) { skipped.push({ id: id, reason: anMsgB }); return; }
       }
+      oks.push({ id: id, r: r });
+    });
+    // 補單核准後打回（2026-11-26，開關 REQ_REOPEN_ON；獨立審查第二輪）：先決定每個「同人同日」這一組實際會核准的單（上面各自檢查都過的），
+    //   再用「原本已核准的＋這一組全部」一次判斷——每個人日只判一次、只打回一次，組內每張的結果一致（整組已包含＝都進 day_ok_items；整組要打回＝都標打回）。
+    //   打回失敗＝整組都不核准（進 skipped）。開關關著、或沒有請假／出差／加班單＝整段不跑，下面照原本逐筆寫入與提醒。
+    var grp = {}, order = [];
+    oks.forEach(function (it) {
+      if (!reqAffectsDay_(it.r)) return;
+      if (reopenOn === null) reopenOn = reqReopenOn_();
+      if (!reopenOn || !reqReopenLockOk_(it.r, body, ss)) return;      // 鎖月讀不到＝這筆照今天的提醒
+      var k = String(it.r.date || '').slice(0, 10) + '|' + String(it.r.emp_id);
+      if (!grp[k]) { grp[k] = { items: [], act: null }; order.push(k); }
+      grp[k].items.push(it); it.g = grp[k];
+    });
+    var failIds = {};
+    order.forEach(function (k) {
+      var g = grp[k], first = g.items[0].r, judgedG = false;
+      try {
+        var memoG = { reqs: reopenMemo.reqs, okIds: {} };
+        if (reopenMemo.approved) memoG.approved = reopenMemo.approved;
+        if (reopenMemo.leave) memoG.leave = reopenMemo.leave;
+        g.items.forEach(function (it) { memoG.okIds[String(it.id)] = true; });      // 這一組全部當成已核准
+        var rows = reqReopenRows_(ss, memoG, 'approved');
+        reopenMemo.approved = memoG.approved; reopenMemo.leave = memoG.leave;
+        var date = k.slice(0, 10), emp = k.slice(11), latest = reqDayOwnLatest_(rows, emp, date);
+        if (latest) g.act = g.items.every(function (it) { return reqDayCovers_(ss, it.r, latest, memoG); }) ? 'covered' : 'reopen';
+        else g.act = rows.some(function (x) { return normCellDate(x.date) === date && String(x.emp_id) === emp; }) ? 'old_warn' : 'none';
+        judgedG = true;
+        if (g.act === 'reopen') g.revoked = reqReopenDay_(ss, first, actor, g.items.map(function (it) { return it.r; }));
+      } catch (errB) {
+        console.log('mgr_req_decide_batch 打回核定失敗：' + errB);
+        g.items.forEach(function (it) { failIds[it.id] = true; skipped.push({ id: it.id, reason: judgedG ? REQ_REOPEN_FAIL_MSG_ : REQ_REOPEN_READ_MSG_ }); });
+      }
+    });
+    oks.forEach(function (it) {
+      var id = it.id, r = it.r;
+      if (failIds[id]) return;
       reqSetCells_(sh, r.__rowIndex, { status: 'approved', decided_at: now, decided_by: actor, reject_reason: '' });
       done.push(id);
+      if (it.g) {
+        var dB = String(r.date || '').slice(0, 10);
+        if (it.g.act === 'reopen') warnItems.push(reqReopenOut_({ id: id }, r, dB, it.g.revoked));
+        else if (it.g.act === 'covered') dayOkItems.push({ id: id, day_ok: true, message: reqDayOkMsg_(dB) });   // 另列，舊畫面只看 warn_items＝跟今天一樣安靜
+        else if (it.g.act === 'old_warn') warnItems.push({ id: id, warn: REQ_DAY_WARN_, warn_dates: [dB], message: reqDayWarnMsgOf_(r, [dB]) });
+        return;
+      }
       if (reqAffectsDay_(r)) {
         try { if (!apMap) apMap = reqApprovedMap_(ss); } catch (e) { apMap = {}; }
         if (reqDayApproved_(apMap, r)) {
@@ -1918,6 +2164,7 @@ function handleMgrReqDecideBatch_(body, viaAuth) {
     });
     var outB = { ok: true, done: done, skipped: skipped };
     if (warnItems.length) outB.warn_items = warnItems;   // 只列有提醒的那幾筆；沒有就不帶（回應形狀同改版前）
+    if (dayOkItems.length) outB.day_ok_items = dayOkItems;   // 核定已包含這張單（開關開著才可能有）
     return outB;
   } finally { lock.releaseLock(); }
 }
