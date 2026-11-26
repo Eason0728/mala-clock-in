@@ -62,8 +62,10 @@ function world(o) {
   });
   return m;
 }
-const dec = (m, id, x) => J(m.sb.handleMgrReqDecide_(Object.assign({ mgr_key: 'MK', id, decision: 'approve' }, x || {})));
-const batch = (m, ids) => J(m.sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids, decision: 'approve' }));
+// 沙盒沒有薪資模組＝打卡端自己讀不到鎖月 → 照營運系統代轉時帶的 pay_unlocked（先向光復確認過沒鎖的月份）；測試預設帶 11、12 月（鎖月讀不到另有一段測試）
+const UNL = ['2026-11', '2026-12'];
+const dec = (m, id, x) => J(m.sb.handleMgrReqDecide_(Object.assign({ mgr_key: 'MK', id, decision: 'approve', pay_unlocked: UNL }, x || {})));
+const batch = (m, ids) => J(m.sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids, decision: 'approve', pay_unlocked: UNL }));
 const st = (m, id) => m.sb.reqRows_(m.sb.getSS()).find((x) => String(x.id) === String(id)).status;
 const sheetVals = (m, nm) => { const s = m.self.sh[nm]; return s ? s.values.map((r) => r.slice()) : null; };
 const apRows = (m) => (sheetVals(m, 'approved') || []).slice(1);
@@ -264,7 +266,7 @@ console.log('\n══ 不重複打回、退回、同名 ══');
   const r2 = dec(m, 'D2');
   check('dup-c', '同一天第二張單另外核准：那天已沒核定 → 不打回、不提醒', [r2.ok, 'warn' in r2, 'reopened' in r2, bakRows(m).length], [true, false, false, 1]);
   const m2 = world({ props: ON, approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '10:00-13:00', 3)], reqs: [TRIP8('D3', 'MZTJS07', '2026-11-20', { name: '示意甲' })] });
-  const rj = J(m2.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: 'D3', decision: 'reject', reason: '日期錯了' }));
+  const rj = J(m2.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: 'D3', decision: 'reject', reason: '日期錯了', pay_unlocked: UNL }));
   check('dup-d', '退回：不打回、不提醒', [rj.ok, rj.status, 'warn' in rj, 'reopened' in rj, apRows(m2).length], [true, 'rejected', false, false, 1]);
   // 同名：名冊最後一位同名的是 E06；E05 的出差單、登記是「同名 出差 8」→ 不是他的登記 → 不算包含 → 打回；假別登記不搬（B14 同規則）
   const m3 = world({ props: ON, approved: [AP('2026-11-20', 'E05', '同名', '', 8, '出差')], leave: [['2026-11-20', '同名', '出差', 8]], reqs: [TRIP8('N1', 'E05', '2026-11-20', { name: '同名' })] });
@@ -287,14 +289,14 @@ console.log('\n══ mini 引擎路徑與開關帶到引擎 ══');
   const g0 = world(Object.assign({ relay: true, props: { RELAY_KEY: KEY } }, fx()));
   check('mini-b', '沒設開關 → relay_pull 的 props 跟以前一樣（不帶這個鍵）', J(g0.sb.handleRelayPull_({ relay_key: KEY, with: { props: true } })).props, {});
   const eng = world(Object.assign({ props: Object.assign({ REQ_BIND_FROM: 'off' }, pulled) }, fx()));      // 引擎沙盒：屬性只看拉回來的 props
-  const rg = dec(g, 'G1'), re = J(eng.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: 'G1', decision: 'approve' }, true));      // viaAuth＝引擎／寫回那條
+  const rg = dec(g, 'G1'), re = J(eng.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: 'G1', decision: 'approve', pay_unlocked: UNL }, true));      // viaAuth＝引擎／寫回那條
   check('mini-c', '引擎（viaAuth）與 Google 判同一份資料：回應逐字相同（含 reopened／revoked）', JSON.stringify(re), JSON.stringify(rg));
   check('mini-d', '引擎路徑也真的打回', [re.reopened, apRows(eng).length], [true, 0]);
   const engOff = world(Object.assign({ props: { REQ_BIND_FROM: 'off' } }, fx()));
-  const ro = J(engOff.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: 'G1', decision: 'approve' }, true));
+  const ro = J(engOff.sb.handleMgrReqDecide_({ mgr_key: 'MK', id: 'G1', decision: 'approve', pay_unlocked: UNL }, true));
   check('mini-e', '引擎沒拿到開關 → 照今天只提醒、不打回', [ro.warn, 'reopened' in ro, apRows(engOff).length], ['already_approved_day', false, 1]);
   const gb = world(Object.assign({ relay: true, props: { REQ_REOPEN_ON: '1', RELAY_KEY: KEY } }, fx())), eb = world(Object.assign({ props: Object.assign({ REQ_BIND_FROM: 'off' }, pulled) }, fx()));
-  const b1 = J(gb.sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids: ['G1'], decision: 'approve' })), b2 = J(eb.sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids: ['G1'], decision: 'approve' }, true));
+  const b1 = J(gb.sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids: ['G1'], decision: 'approve', pay_unlocked: UNL })), b2 = J(eb.sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids: ['G1'], decision: 'approve', pay_unlocked: UNL }, true));
   check('mini-f', '批次：引擎與 Google 回應逐字相同（含 warn_items 的 reopened／revoked）', [JSON.stringify(b2) === JSON.stringify(b1), (b1.warn_items || [])[0] && b1.warn_items[0].reopened], [true, true]);
 }
 
@@ -351,8 +353,8 @@ console.log('\n══ 開關關著：回應與寫入跟改版前逐位元組相�
     const run = (m) => {
       const out = [];
       out.push(J(m.sb.handleMgrReqPending_({ mgr_key: 'MK' })));
-      if (useBatch) out.push(J(m.sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids, decision: 'approve' })));
-      else ids.forEach((id, i) => out.push(J(m.sb.handleMgrReqDecide_(i % 4 === 3 ? { mgr_key: 'MK', id, decision: 'reject', reason: '錯' } : { mgr_key: 'MK', id, decision: 'approve' }))));
+      if (useBatch) out.push(J(m.sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids, decision: 'approve', pay_unlocked: UNL })));
+      else ids.forEach((id, i) => out.push(J(m.sb.handleMgrReqDecide_(i % 4 === 3 ? { mgr_key: 'MK', id, decision: 'reject', reason: '錯', pay_unlocked: UNL } : { mgr_key: 'MK', id, decision: 'approve', pay_unlocked: UNL }))));
       out.push(Object.keys(m.self.sh).sort().map((nm) => [nm, m.self.sh[nm].values]));
       return JSON.stringify(out);
     };
@@ -365,6 +367,90 @@ console.log('\n══ 開關關著：回應與寫入跟改版前逐位元組相�
   const fxOn = { props: ON, approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '10:00-13:00', 3)], reqs: [TRIP8('C1', 'MZTJS07', '2026-11-20', { name: '示意甲' })] };
   const a2 = world(fxOn), b2 = world(Object.assign({ base: true }, fxOn));
   check('off-eq-ctl', '對照組：開關開著時跟改版前不同（比對有效）', JSON.stringify(dec(a2, 'C1')) === JSON.stringify(dec(b2, 'C1')), false);
+}
+
+console.log('\n══ 鎖月狀態讀不到：照常核准、不打回、照今天的提醒（2026-11-26 驗收第 2 項，大腦裁定保守解讀第 7 題）══');
+{
+  const fx = () => world({ props: ON, approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '10:00-13:00', 3)], reqs: [TRIP8('K1', 'MZTJS07', '2026-11-20', { name: '示意甲' }), TRIP8('K2', 'MZTJS07', '2026-11-20', { name: '示意甲', hours: 4 })] });
+  const OLD = ['already_approved_day', '11/20 已經核定過，請重新核定一次，假別才會寫進薪資', false, 1];
+  const pk = (m, r) => [r.warn, r.message, 'reopened' in r, apRows(m).length];
+  let m = fx(); check('lock-a', '打卡端讀不到鎖月、沒帶 pay_unlocked → 照今天提醒、不打回', pk(m, dec(m, 'K1', { pay_unlocked: undefined })), OLD);
+  m = fx(); check('lock-b', '帶的是別的月份（2026-12）→ 不打回', pk(m, dec(m, 'K1', { pay_unlocked: ['2026-12'] })), OLD);
+  m = fx(); check('lock-c', 'pay_unlocked 格式不對（字串）→ 不打回', pk(m, dec(m, 'K1', { pay_unlocked: '2026-11' })), OLD);
+  m = fx(); const rb = J(m.sb.handleMgrReqDecideBatch_({ mgr_key: 'MK', ids: ['K1', 'K2'], decision: 'approve' }));
+  check('lock-d', '批次沒帶 → 兩張都照今天提醒、不打回', [rb.done, (rb.warn_items || []).map((x) => [x.id, x.message, 'reopened' in x]), apRows(m).length],
+    [['K1', 'K2'], [['K1', OLD[1], false], ['K2', OLD[1], false]], 1]);
+  m = fx(); m.run('payLockedFor_ = function () { return false; };');
+  check('lock-e', '本店讀得到、確定沒鎖（光復有薪資模組）→ 不用帶也打回', !!dec(m, 'K1', { pay_unlocked: undefined }).reopened, true);
+  m = fx(); m.run('payLockedFor_ = function () { return undefined; };');
+  check('lock-f', '本店讀不到、營運系統說 11 月沒鎖 → 打回', !!dec(m, 'K1').reopened, true);
+  m = fx(); m.run('payLockedFor_ = function () { return true; };');
+  const rl = dec(m, 'K1');
+  check('lock-g', '已鎖月（就算帶了 pay_unlocked）→ 核准本身被擋、不打回', [rl.error, apRows(m).length, st(m, 'K1')], ['pay_locked', 1, 'pending']);
+  m = fx(); m.run('payLockedFor_ = function () { return undefined; };');
+  check('lock-h', '本店讀不到（payLockedFor_ 回 undefined，它自己吃掉例外）、也沒帶 → 照今天提醒（不卡核准）', pk(m, dec(m, 'K1', { pay_unlocked: undefined })), OLD);
+}
+
+console.log('\n══ 打回做到一半失敗：每一個寫入步驟各失敗一次 → 單子不核准、不留半套 → 再按一次＝跟一次成功逐格相同（驗收第 1 項）══');
+{
+  const snap = (m) => JSON.stringify(Object.keys(m.self.sh).sort().map((nm) => [nm, m.self.sh[nm].values]));
+  const live = (m, emp, name) => JSON.stringify([apRows(m).filter((x) => x[1] === emp && !x[10]).map((x) => x.join('|')).sort(), lvRows(m).filter((x) => x[1] === name).map((x) => x.join('|')).sort()]);
+  // 寫入計數：插分頁、加列、刪列（留底分頁是中途才建的，建的時候也包起來）；第 failAt 次丟例外（只丟一次）
+  function hook(m, failAt) {
+    const st0 = { n: 0, fired: false };
+    const wrap = (sh) => {
+      if (sh.__hooked) return sh; sh.__hooked = true;
+      const ap = sh.appendRow, dl = sh.deleteRow;
+      sh.appendRow = (row) => { if (++st0.n === failAt && !st0.fired) { st0.fired = true; throw new Error('注入失敗 #' + failAt); } return ap(row); };
+      sh.deleteRow = (r) => { if (++st0.n === failAt && !st0.fired) { st0.fired = true; throw new Error('注入失敗 #' + failAt); } return dl(r); };
+      return sh;
+    };
+    Object.keys(m.self.sh).forEach((k) => wrap(m.self.sh[k]));
+    const ins = m.self.insertSheet;
+    m.self.insertSheet = (nm) => { if (++st0.n === failAt && !st0.fired) { st0.fired = true; throw new Error('注入失敗 #' + failAt); } return wrap(ins(nm)); };
+    return st0;
+  }
+  const scenarios = [
+    { label: '補單打回（出差單）', act: (m) => dec(m, 'J1'), emp: 'MZTJS07', name: '示意甲',
+      fx: () => world({ props: ON, approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '10:00-13:00', 3, '正常', '店長', '2026-11-21T19:00:00+08:00'), AP('2026-11-20', 'MZTGF06', '示意乙', '10:00-18:00', 8),
+          AP('2026-11-20', 'MZTJS07', '示意甲', '10:00-14:00', 4, '正常', '店長', '2026-11-21T20:00:00+08:00'), AP('2026-11-20', 'MZTJS07', '示意甲', '09:00-18:00', 8, '正常', '央廚', '2026-11-21T21:00:00+08:00', 'CF'), AP('2026-11-21', 'MZTJS07', '示意甲', '10:00-18:00', 8)],
+        leave: [['2026-11-20', '示意甲', '事假', 2], ['2026-11-20', '示意乙', '事假', 1], ['2026-11-20', '示意甲', '出差', 4], ['2026-11-21', '示意甲', '出差', 8]],
+        reqs: [TRIP8('J1', 'MZTJS07', '2026-11-20', { name: '示意甲' })] }) },
+    { label: '作廢（原本就用這支）', act: (m) => J(m.sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'J2', reason: '改單' })), emp: 'MZTJS07', name: '示意甲',
+      fx: () => world({ approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '', 8, '出差'), AP('2026-11-20', 'MZTGF06', '示意乙', '10:00-18:00', 8)], leave: [['2026-11-20', '示意甲', '出差', 8], ['2026-11-20', '示意乙', '事假', 1]],
+        reqs: [TRIP8('J2', 'MZTJS07', '2026-11-20', { name: '示意甲', status: 'approved' })] }) },
+  ];
+  scenarios.forEach((sc, si) => {
+    const ref = sc.fx(), cnt = hook(ref, Infinity), r0 = sc.act(ref), S1 = snap(ref), N = cnt.n;
+    check('half-' + si + '-ref', sc.label + '：一次成功的寫入次數（插分頁＋加列＋刪列）', N > 0 && r0.ok === true, true, 'N=' + N);
+    let allOk = true; const bad = [];
+    for (let k = 1; k <= N; k++) {
+      const m = sc.fx(), live0 = live(m, sc.emp, sc.name), h = hook(m, k);
+      const r1 = sc.act(m);
+      const halfOk = r1.error === 'revoke_failed' && h.fired && live(m, sc.emp, sc.name) === live0 && st(m, sc.id || (si === 0 ? 'J1' : 'J2')) === (si === 0 ? 'pending' : 'approved');
+      const r2 = sc.act(m);
+      const sameOk = JSON.stringify(r2) === JSON.stringify(r0) && snap(m) === S1;
+      if (!halfOk || !sameOk) { allOk = false; bad.push({ k, halfOk, sameOk, r1: r1.error }); }
+    }
+    check('half-' + si, sc.label + '：第 1～' + N + ' 次寫入各失敗一次 → 回 revoke_failed、單子沒變、核定列與假別登記都還在原表（沒有半套）→ 再按一次：回應與所有分頁跟一次成功逐格相同', [allOk, bad.slice(0, 3)], [true, []]);
+  });
+  // 作廢路徑正常情況：回應與所有分頁跟改版前（REOPEN_BASE）逐格相同
+  const vfx = scenarios[1].fx;
+  const a = vfx(), b = world(Object.assign({ base: true }, { approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '', 8, '出差'), AP('2026-11-20', 'MZTGF06', '示意乙', '10:00-18:00', 8)], leave: [['2026-11-20', '示意甲', '出差', 8], ['2026-11-20', '示意乙', '事假', 1]],
+    reqs: [TRIP8('J2', 'MZTJS07', '2026-11-20', { name: '示意甲', status: 'approved' })] }));
+  const va = scenarios[1].act(a), vb = scenarios[1].act(b);
+  check('half-void-eq', '作廢正常情況：回應與所有分頁跟改版前逐格相同', [JSON.stringify(va) === JSON.stringify(vb), snap(a) === snap(b)], [true, true]);
+  const a2 = scenarios[0].fx(), b2 = world({ base: true, approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '10:00-13:00', 3)], leave: [['2026-11-20', '示意甲', '出差', 4]], reqs: [TRIP8('J9', 'MZTJS07', '2026-11-20', { name: '示意甲', status: 'approved' })] });
+  const a3 = world({ approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '10:00-13:00', 3)], leave: [['2026-11-20', '示意甲', '出差', 4]], reqs: [TRIP8('J9', 'MZTJS07', '2026-11-20', { name: '示意甲', status: 'approved' })] });
+  const v2 = J(a3.sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'J9', reason: '錯' })), v3 = J(b2.sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'J9', reason: '錯' }));
+  check('half-void-eq2', '作廢（核定＋假別各一列）正常情況：跟改版前逐格相同', [JSON.stringify(v2) === JSON.stringify(v3), snap(a3) === snap(b2)], [true, true]);
+  void a2;
+  // 對照組：改版前的作廢（先搬核定、再搬假別）在「刪假別那一步」失敗 → 留下半套（核定列已搬走、假別還在）——證明上面的檢查抓得到
+  const bc = world({ base: true, approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '', 8, '出差')], leave: [['2026-11-20', '示意甲', '出差', 8]], reqs: [TRIP8('J8', 'MZTJS07', '2026-11-20', { name: '示意甲', status: 'approved' })] });
+  const lv0 = live(bc, 'MZTJS07', '示意甲');
+  hook(bc, 8);      // 改版前的寫入順序：插核定留底、表頭、留底列、刪核定、插假別留底、表頭、留底列、刪假別（第 8 次）
+  const rc = J(bc.sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'J8', reason: '錯' }));
+  check('half-ctl', '對照組：改版前在刪假別時失敗 → revoke_failed 但核定列已搬走、假別還在（半套）', [rc.error, live(bc, 'MZTJS07', '示意甲') !== lv0, apRows(bc).length, lvRows(bc).length], ['revoke_failed', true, 0, 1]);
 }
 
 done();

@@ -1673,6 +1673,17 @@ function reqReopenOn_() {
   try { v = reqProp_(REQ_REOPEN_PROP_); } catch (e) { v = null; }
   return String(v == null ? '' : v).trim() === '1';
 }
+/** 鎖月狀態確定「沒鎖」才打回（2026-11-26 補單打回驗收第 2 項，大腦裁定保守解讀第 7 題）：讀不到鎖月＝照常核准、不打回、照今天的提醒。
+ *  本店讀得到（光復有薪資模組）＝看本店：沒鎖才打回；其他店打卡端讀不到鎖月 → 看營運系統代轉時帶的 pay_unlocked（它先向光復問過、確定沒鎖的月份 ['YYYY-MM'…]）。
+ *  已鎖的月份核准本身就被 reqPayLock_ 擋下，走不到這裡。直接打 Google 的舊值班核定頁不帶 pay_unlocked＝光復以外的店不打回。 */
+function reqReopenLockOk_(r, body, ss) {
+  var d = String(r.date || '').slice(0, 10), lk;
+  try { lk = typeof payLockedFor_ === 'function' ? payLockedFor_(d, ss) : undefined; } catch (e) { lk = undefined; }
+  if (lk === false) return true;
+  if (lk === true) return false;
+  var ok = body && Array.isArray(body.pay_unlocked) ? body.pay_unlocked.map(String) : [];
+  return ok.indexOf(d.slice(0, 7)) >= 0;
+}
 function reqMD_(d) { return (+String(d).slice(5, 7)) + '/' + (+String(d).slice(8, 10)); }
 function reqReopenMsg_(d) { return reqMD_(d) + ' 原本已核定，已打回待核定，請重新核定這天'; }
 function reqDayOkMsg_(d) { return reqMD_(d) + ' 的核定已經包含這張單，不用重新核定'; }
@@ -1777,7 +1788,7 @@ function handleMgrReqDecide_(body, viaAuth) {
     }
     // 補單核准後打回（2026-11-26，開關 REQ_REOPEN_ON）：先判、要打回就先打回，打回失敗單子也不核准；開關關著整段不跑
     var rj = null;
-    if (decision === 'approve' && reqAffectsDay_(r) && reqReopenOn_()) {
+    if (decision === 'approve' && reqAffectsDay_(r) && reqReopenOn_() && reqReopenLockOk_(r, body, ss)) {
       try {
         rj = reqReopenJudge_(ss, r, null);
         if (rj.act === 'reopen') rj.revoked = reqReopenDay_(ss, r, actor);
@@ -1857,7 +1868,7 @@ function reqFinalCount_(ss, emp, name, date) {
   return { approved: a, leave: l };
 }
 /** 把一張分頁裡符合 match 的列搬到留底分頁（先寫留底、再由下往上刪）。回搬了幾列。 */
-function reqMoveRows_(ss, sh, bakName, extraHead, match, extraVals, sink) {
+function reqMoveRows_(ss, sh, bakName, extraHead, match, extraVals) {
   if (!sh) return 0;
   var vals = sh.getDataRange().getValues();
   if (!vals.length) return 0;
@@ -1867,7 +1878,6 @@ function reqMoveRows_(ss, sh, bakName, extraHead, match, extraVals, sink) {
     var keep = vals[i].slice(0, head.length); while (keep.length < head.length) keep.push('');
     drop.push({ row: i + 1, vals: keep });
   }
-  if (sink) drop.forEach(function (d) { var o = {}; head.forEach(function (k, c) { o[k] = d.vals[c]; }); sink.push(o); });   // 補單打回要原核定摘要（只讀，不影響搬法）
   if (!drop.length) return 0;
   var bak = ss.getSheetByName(bakName);
   if (!bak) { bak = ss.insertSheet(bakName); bak.appendRow(head.concat(extraHead)); }
@@ -1887,20 +1897,69 @@ function reqLeaveOwner_(ss, emp, name) {
   });
   return owner === null || owner === String(emp);
 }
+/* 打回要嘛整天做完、要嘛什麼都沒變（2026-11-26 補單打回驗收第 1 項）：以前先搬核定、再搬假別登記，第二步出錯會留下
+   「核定列已搬走、假別登記還在原處」——再按一次時那天看起來沒核定，單子直接核准，舊假別登記留著（重核又會再寫一筆）。
+   現在：先讀好兩張表要搬的列（不寫）→ 寫留底（核定、假別）→ 刪原列（核定、假別，各自由下往上）；任何一步丟例外，
+   就把已經做的倒回去（剛刪的原列照原順序補回表尾、剛寫的留底列刪掉）再丟出去，呼叫端回 revoke_failed、單子不核准／不作廢；
+   再按一次會從頭完整做一次。正常情況的寫入結果跟以前逐格相同（只是先寫兩邊的留底、再刪兩邊的原列）。
+   留底分頁已經存在但是空的（上一次建了分頁、表頭沒寫進去）＝先補表頭。 */
+function reqMovePlan_(sh, bakName, extraHead, match, extraVals) {
+  if (!sh) return null;
+  var vals = sh.getDataRange().getValues();
+  if (!vals.length) return null;
+  var head = vals[0], drop = [];
+  for (var i = 1; i < vals.length; i++) {
+    if (!match(vals[i], head)) continue;
+    var keep = vals[i].slice(0, head.length); while (keep.length < head.length) keep.push('');
+    drop.push({ row: i + 1, vals: keep });
+  }
+  return { sh: sh, bakName: bakName, head: head, extraHead: extraHead, extraVals: extraVals, drop: drop };
+}
+function reqMoveApply_(ss, plans) {
+  var undo = [];
+  if (!plans.some(function (p) { return p && p.drop.length; })) return plans.map(function () { return 0; });   // 沒有要搬的＝什麼都不寫（同以前）
+  try {
+    plans.forEach(function (p) {
+      if (!p || !p.drop.length) return;
+      var bak = ss.getSheetByName(p.bakName);
+      if (!bak) bak = ss.insertSheet(p.bakName);
+      var base = bak.getLastRow();
+      undo.push(function () { for (var r = bak.getLastRow(); r > base; r--) bak.deleteRow(r); });
+      if (base === 0) bak.appendRow(p.head.concat(p.extraHead));
+      p.drop.forEach(function (d) { bak.appendRow(d.vals.concat(p.extraVals)); });
+    });
+    SpreadsheetApp.flush();
+    plans.forEach(function (p) {
+      if (!p || !p.drop.length) return;
+      var gone = [];
+      undo.push(function () { for (var i = gone.length - 1; i >= 0; i--) p.sh.appendRow(gone[i]); });   // 刪的時候由下往上，補回時倒過來＝原本的先後
+      for (var j = p.drop.length - 1; j >= 0; j--) { p.sh.deleteRow(p.drop[j].row); gone.push(p.drop[j].vals); }
+    });
+    SpreadsheetApp.flush();
+  } catch (e) {
+    for (var u = undo.length - 1; u >= 0; u--) { try { undo[u](); } catch (e2) { console.log('打回倒回失敗：' + e2); } }
+    try { SpreadsheetApp.flush(); } catch (e3) {}
+    throw e;
+  }
+  return plans.map(function (p) { return p ? p.drop.length : 0; });
+}
 function reqRevokeFinal_(ss, emp, name, date, why, opt) {
   var now = nowTaipeiIso();
-  var detail = !!(opt && opt.detail), apRows = detail ? [] : null, lvRows = detail ? [] : null;   // 補單打回（2026-11-26）才帶 opt.detail；作廢不帶＝跟以前一樣
-  var a = reqMoveRows_(ss, ss.getSheetByName('approved'), BIND_REVOKE_SHEET_, ['revoked_at', 'revoke_reason'], function (row, h) {
-    var im = h.indexOf('mirror_src');
-    return normCellDate(row[h.indexOf('date')]) === date && String(row[h.indexOf('emp_id')]) === emp && !(im >= 0 && String(row[im] || '').trim());
-  }, [now, why], apRows);
+  var detail = !!(opt && opt.detail);   // 補單打回（2026-11-26）才帶 opt.detail；作廢不帶＝回應跟以前一樣
   // 假別紀錄只有姓名、沒有編號：同名的人照薪資的算法（Payroll.gs nameToEmp）算給名冊最後一位同名的人。
   // 作廢的不是那一位＝這些假別紀錄不是他的，不搬（2026-11-15 考勤挑錯 B14：原本作廢甲的單會把同名乙那天的假別搬走）
   if (name && !reqLeaveOwner_(ss, emp, name)) name = '';
-  var l = !name ? 0 : reqMoveRows_(ss, ss.getSheetByName('leave'), REQ_LEAVE_REVOKE_SHEET_, ['emp_id', 'revoked_at', 'revoke_reason'], function (row, h) {
+  var pa = reqMovePlan_(ss.getSheetByName('approved'), BIND_REVOKE_SHEET_, ['revoked_at', 'revoke_reason'], function (row, h) {
+    var im = h.indexOf('mirror_src');
+    return normCellDate(row[h.indexOf('date')]) === date && String(row[h.indexOf('emp_id')]) === emp && !(im >= 0 && String(row[im] || '').trim());
+  }, [now, why]);
+  var pl = !name ? null : reqMovePlan_(ss.getSheetByName('leave'), REQ_LEAVE_REVOKE_SHEET_, ['emp_id', 'revoked_at', 'revoke_reason'], function (row, h) {
     return normCellDate(row[h.indexOf('日期')]) === date && String(row[h.indexOf('姓名')] || '').trim() === name;
-  }, [emp, now, why], lvRows);
-  if (!detail) return { approved: a, leave: l };
+  }, [emp, now, why]);
+  var n = reqMoveApply_(ss, [pa, pl]);
+  if (!detail) return { approved: n[0], leave: n[1] };
+  var objs = function (p) { return !p ? [] : p.drop.map(function (d) { var o = {}; p.head.forEach(function (k, c) { o[k] = d.vals[c]; }); return o; }); };
+  var apRows = objs(pa), lvRows = objs(pl);
   // before＝被搬走的最新一筆核定摘要（第 3 題 A 的說明行用）；沒有搬到核定列＝null
   var last = null;
   apRows.forEach(function (x) { if (!last || normCellTs(x.entered_at) >= normCellTs(last.entered_at)) last = x; });
@@ -1908,7 +1967,7 @@ function reqRevokeFinal_(ss, emp, name, date, why, opt) {
   var before = last ? { periods: String(last.periods == null ? '' : last.periods), approved_hours: num(last.approved_hours), status_text: String(last.status_text == null ? '' : last.status_text),
     manager_name: String(last.manager_name == null ? '' : last.manager_name), entered_at: String(normCellTs(last.entered_at) || ''),
     leaves: lvRows.map(function (x) { return { type: String(x['假別'] == null ? '' : x['假別']).trim(), hours: num(x['時數']) }; }) } : null;
-  return { approved: a, leave: l, before: before };
+  return { approved: n[0], leave: n[1], before: before };
 }
 
 /* ── 舊資料：申請已作廢或核定被打回，假別紀錄還留著（2026-11-14 Eason 4A：先只讀列清單，確認後才清）──
@@ -2028,7 +2087,7 @@ function handleMgrReqDecideBatch_(body, viaAuth) {
       var rjB = null;
       if (reqAffectsDay_(r)) {
         if (reopenOn === null) reopenOn = reqReopenOn_();
-        if (reopenOn) {
+        if (reopenOn && reqReopenLockOk_(r, body, ss)) {      // 鎖月讀不到＝這筆照今天的提醒（下面原本那段）
           var rk = String(r.date || '').slice(0, 10) + '|' + String(r.emp_id);
           if (reopened[rk]) rjB = { act: 'already' };
           else {
