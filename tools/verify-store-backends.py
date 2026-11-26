@@ -32,7 +32,7 @@ FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'is
          'noPunchDayAbnormal_', 'inStillWorking_', 'openInWorking_', 'markWorkingSeg_',
          'reactXbrandCheck_',   # 2026-11-13 F10：恢復在職擋跨品牌
          'leftCascadeAfter_',   # 2026-11-11 B13：設離職連帶停用別店同一支 LINE 的列（沒套到＝那家店設離職不會通知光復）
-         'lateLeadOf_', 'lateLeadMerge_', 'lateLeadRecheck_']   # 2026-11-26 上午整段沒到改算遲到
+         'lateLeadOf_', 'lateLeadMerge_', 'lateLeadRecheck_', 'lateLeadBreakOk_', 'sysLateMin_']   # 2026-11-26 上午整段沒到改算遲到
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
     # 2026-11-20 多一個 gapLate 參數（二段班中途離開比照遲到）；沒套到＝那家店核定狀態照舊、待審單不擋
@@ -40,9 +40,10 @@ EXACT = {
     'computeApprovalStatus 有 isTrip＋休息帶＋gapLate＋lateLead 參數': 'hadUnrecordedAttempts, isTrip, breakWindow, gapLate, lateLead, segOff_)',
     '待審單不能核定（打卡後端）':            'const pendBlock = reqPendBlock_(reqRowsAll, String(body.emp_id), date);',
     '中途離開比照遲到：只有個人帳號＋二段班才套': 'reqMgrActing_(mgr, body) && reqGapLateDay_(date, body.sched_spans),',
-    '中途離開比照遲到：每天重算看原狀態':      "st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; }),",
+    '中途離開比照遲到：每天重算看原狀態':      "st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; })];",
     '上午整段沒到改算遲到：核定與綁單同一個判斷': 'late_lead: lateLead,',
-    '上午整段沒到改算遲到：每天重算看原狀態＋忘打卡單': 'lateLeadRecheck_(ss, date, empId, st0, periods, punchWithMs, reqRowsOpt));',
+    '上午整段沒到改算遲到：每天重算看原狀態':   'const llMode = lateLeadRecheck_(date, st0, periods, punchWithMs);',
+    '上午整段沒到改算遲到：休息帶設定不完整不套': 'function lateLeadBreakOk_() {',
     '出差在假別白名單':                      "'出差'",
     '名冊有 shift_in／shift_out':            "'shift_in', 'shift_out'",
     '名冊有 created_at／created_by':         "'created_at', 'created_by'",
@@ -70,6 +71,17 @@ EXACT = {
     '上班中：月表看 16 小時':                'if (d === todayStr || openInWorking_(paired, e)) {',
     '上班中：核定狀態不標忘刷':              'add(c.working ? WORKING_NOTE : (multi ? segMissNote(outNo[pi], SEG_FORGOT_OUT)',
     '上班中：每日重算會回頭改':              'statusText.indexOf(WORKING_NOTE) === -1) return;',
+}
+
+# 各店 Requests.js 必須有的精確片段（2026-11-26 驗收第 4 項：只換 程式碼.js、漏換 Requests.js 時，上午整段沒到改算遲到會靜默不啟用）
+REQ_EXACT = {
+    '上午整段沒到改算遲到：生效日常數':       "var REQ_LATE_LEAD_FROM_ = '2026-12-01';",
+    '上午整段沒到改算遲到：判斷入口':         'function reqLateLeadOn_(rows, empId, date, periods, segs, breakWindow) {',
+    '上午整段沒到改算遲到：忘打卡單優先':     'return !!ll && !reqLeadMissForm_(rows, empId, date, ll.lead);',
+    '上午整段沒到改算遲到：綁單用其餘段':     "var lead = opt.late_lead === true && typeof lateLeadOf_ === 'function' ? lateLeadOf_(periods, segs || [], breakWindow) : null;",
+    '上午整段沒到改算遲到：缺卡張數用其餘段': 'var miss = bindOn ? reqBindMissCards_(bindPeriods, reqWorkingSegs_(segs, date), breakWindow) : 0;',
+    '上午整段沒到改算遲到：核定比打卡多帶前導段': 'reqGapLateMs_(date, bindPeriods, segsMiss, opt.sched_spans, breakWindow, ok), leadMs) : null;',
+    '上午整段沒到改算遲到：reqOverCreditMin_ 收前導段分鐘': 'function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts, gapMs, leadMs) {',
 }
 
 # 各店專屬設定：CONFIG 的不打卡休息帶必須與 tools/build-store-pages.py 的 mgr_break 一致。
@@ -123,6 +135,15 @@ for st in STORES:
             got = float(m.group(1)) if m else None
             if got is None or abs(got - float(want)) > 1e-9:
                 msgs.append(f'    ⚠ {key} ＝ {got}，tools/stores.json 是 {want}'); ok = False
+
+    # Requests.js（2026-11-26）：跟 程式碼.js 要同一批換，缺片段＝那家店新規則靜默不啟用
+    rf = GAS / st / 'Requests.js'
+    if not rf.exists():
+        msgs.append(f'    ⚠ 找不到 {rf.name}'); ok = False
+    else:
+        rsrc = rf.read_text(encoding='utf-8')
+        miss_r = [k for k, v in REQ_EXACT.items() if v not in rsrc]
+        if miss_r: msgs.append(f'    缺 Requests.js 片段：{"、".join(miss_r)}'); ok = False
 
     # 機敏值必須是真值不是佔位符（覆蓋錯會把正式金鑰洗掉）
     if 'PASTE_' in src:

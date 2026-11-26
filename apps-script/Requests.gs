@@ -2615,7 +2615,8 @@ function reqLeadMissForm_(rows, empId, date, lead) {
 /** 這次核定要不要套（Code.gs handleMgrApprove 決定 computeApprovalStatus 的 lateLead 與 reqBindCheck_ 的 late_lead）：
  *  生效日起、lateLeadOf_ 有前導段、前導段沒有已核准忘打卡單。出差、打卡未入帳由呼叫端先排除。rows＝申請表（reqRows_） */
 function reqLateLeadOn_(rows, empId, date, periods, segs, breakWindow) {
-  if (!reqLateLeadDay_(date) || typeof lateLeadOf_ !== 'function') return false;
+  // 休息帶設定長度 0、反向、缺一邊＝不套（Code.gs lateLeadBreakOk_，2026-11-26 驗收第 3 項）
+  if (!reqLateLeadDay_(date) || typeof lateLeadOf_ !== 'function' || typeof lateLeadBreakOk_ !== 'function' || !lateLeadBreakOk_()) return false;
   var ll = lateLeadOf_(periods || [], segs || [], breakWindow);
   return !!ll && !reqLeadMissForm_(rows, empId, date, ll.lead);
 }
