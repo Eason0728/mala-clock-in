@@ -35,6 +35,25 @@ try {
   // 對照組：開關開時帶曠職的請求「應該」跟主線不同（證明上面的比對抓得到差異）
   const kzOn = on.find((x) => x.name === '曠職、個人帳號、班表事實齊全'), kzBase = base.find((x) => x.name === '曠職、個人帳號、班表事實齊全');
   eq([kzBase.res.error, kzOn.res.ok, kzOn.res.message], ['bad_leave_type', true, '已認定 12/3 曠職（8 小時）'], '對照組：開關開時認定曠職成功、主線是 bad_leave_type（比對有效）');
+
+  console.log('\n══ 三、mgr_day 的 entered_at（合約 v1.2）：只有「那天有曠職登記、開關開、日期 ≥ 生效日」才多帶 ══');
+  const pick = (arr, nm) => arr.find((x) => x.name === nm);
+  ['mgr_day：生效日前的曠職登記（11/20）', 'mgr_day：別的假別（病假）'].forEach((nm) => eq(pick(on, nm), pick(base, nm), '開關開：' + nm + '＝主線（含 with_ver 版本）'));
+  for (const nm of ['mgr_day：那天有曠職登記', 'mgr_day：那天有曠職登記（with_ver）']) {
+    const a = pick(on, nm).res, b = pick(base, nm).res;
+    const e1a = a.employees.find((x) => x.emp_id === 'E01'), e1b = b.employees.find((x) => x.emp_id === 'E01');
+    eq(e1a.approved.entered_at, '2026-12-08T09:00:00+08:00', '開關開：' + nm + '：曠職那人 approved 帶 entered_at（＝核定列的時間）');
+    eq(Object.keys(e1a.approved), Object.keys(e1b.approved).concat(['entered_at']), '開關開：' + nm + '：approved 只多 entered_at 一欄、加在最後');
+    const strip = (r) => { const c = JSON.parse(JSON.stringify(r)); c.employees.forEach((x) => { if (x.approved) delete x.approved.entered_at; if (x.emp_id === 'E01') delete x.ver; }); return c; };
+    eq(strip(a), strip(b), '開關開：' + nm + '：拿掉 entered_at（與曠職那人的 ver）後跟主線逐字相同（沒曠職的人、ver 都不變）');
+    eq(e1b.approved.entered_at, undefined, '對照：主線 ' + nm + ' 沒有 entered_at');
+  }
+  const va = pick(on, 'mgr_day：那天有曠職登記（with_ver）').res.employees, vb = pick(base, 'mgr_day：那天有曠職登記（with_ver）').res.employees;
+  const verOf = (arr, id) => arr.find((x) => x.emp_id === id).ver;
+  eq([typeof verOf(va, 'E01'), verOf(va, 'E01') !== verOf(vb, 'E01'), verOf(va, 'E02') === verOf(vb, 'E02')],
+    ['string', true, true], '開關開：with_ver 版本只有曠職那人不同、沒曠職的人跟主線相同');
+  const on15 = runAt(ROOT, { KUANGZHI_FROM: '2026-12-15' });
+  eq(pick(on15, 'mgr_day：那天有曠職登記'), pick(base, 'mgr_day：那天有曠職登記'), '開關開但生效日 12/15（那天 12/3 在生效日前）：跟主線逐字相同');
 } finally {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 }

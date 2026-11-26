@@ -33,6 +33,7 @@ function run(name, o, body, how) {
     else if (how === 'allowed') res = m.sb.leaveTypeAllowedByPayroll(body.type, 'AK');
     else if (how === 'validate') res = m.sb.reqValidate_(body, ME, [], '2026-12-08', [], body.__proxy === true);
     else if (how === 'recent') res = m.sb.handleMyRecent(body);
+    else if (how === 'day') res = m.sb.handleMgrDay(body);
     else res = m.sb.handleMgrApprove(body);
   } catch (e) { res = { threw: String(e && e.message) }; }
   if (res && res.timing) delete res.timing;   // 只檢查的分段計時（毫秒）每次不同
@@ -60,4 +61,11 @@ run('同仁請假單：曠職', {}, { kind: 'leave', leave_type: '曠職', date:
 run('主管代開：曠職（光復）', { payroll: true }, { kind: 'leave', leave_type: '曠職', date: D, hours: 8, __proxy: true, mgr_key: 'AK' }, 'validate');
 run('打卡頁最近 40 天', { events: PUNCH, approved: [[D, 'E01', '測試一', '10:00-18:00', 8, '正常', '店長甲', '2026-12-04T09:00:00+08:00']] }, { key: 'K1', device_id: 'D1' }, 'recent');
 run('打卡頁最近 40 天（有一筆手填的曠職登記）', { approved: [[D, 'E01', '測試一', '', 0, '全天請假', '店長甲', '2026-12-08T09:00:00+08:00']], leave: [[D, '測試一', '曠職', 8]] }, { key: 'K1', device_id: 'D1' }, 'recent');
+// 合約 v1.2（2026-11-26）：mgr_day 的 approved 只在「那天有曠職登記、開關開、日期 ≥ 生效日」才多帶 entered_at（with_ver 版本跟著變）
+const KZ_DAY = { approved: [[D, 'E01', '測試一', '', 0, '全天請假', '店長甲', '2026-12-08T09:00:00+08:00'], [D, 'E02', '測試二', '10:00-18:00', 8, '正常', '店長甲', '2026-12-04T09:00:00+08:00']],
+  leave: [[D, '測試一', '曠職', 8]], events: [[D + 'T10:00:00', 'E02', 'in'], [D + 'T18:00:00', 'E02', 'out']] };
+run('mgr_day：那天有曠職登記', KZ_DAY, { mgr_key: 'AK', date: D }, 'day');
+run('mgr_day：那天有曠職登記（with_ver）', KZ_DAY, { mgr_key: 'MK', date: D, with_ver: true }, 'day');
+run('mgr_day：生效日前的曠職登記（11/20）', { approved: [['2026-11-20', 'E01', '測試一', '', 0, '全天請假', '店長甲', '2026-11-26T09:00:00+08:00']], leave: [['2026-11-20', '測試一', '曠職', 8]] }, { mgr_key: 'AK', date: '2026-11-20', with_ver: true }, 'day');
+run('mgr_day：別的假別（病假）', { approved: [[D, 'E01', '測試一', '', 0, '全天請假', '店長甲', '2026-12-08T09:00:00+08:00']], leave: [[D, '測試一', '病假', 8]] }, { mgr_key: 'AK', date: D, with_ver: true }, 'day');
 process.stdout.write(JSON.stringify(out));
