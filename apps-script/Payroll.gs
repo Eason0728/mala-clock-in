@@ -4867,7 +4867,9 @@ function payKzFacts_(st, ym) {
   return by;
 }
 /** 一個人：daily＝payDailyFor_ 的結果（dates 已照月中截止）；f＝payKzFacts_ 的一人份；kzDays＝已認定 [{date,h}]。
- *  回 { from, suspect:[日期], suspect_streak, marked_streak }。連續＝班表上班日依序算，中間別的上班日會斷、休假日不算也不斷。 */
+ *  回 { from, suspect:[日期], suspect_streak, marked_streak }。連續＝班表上班日依序算，中間別的上班日會斷、休假日不算也不斷。
+ *  排除的上班日（瑞光文心上線前、班表格子帶有效 x）不列疑似，連續也照「別的上班日」斷開（跟改之前的瑞光文心同一個處理）。
+ *  x 只影響疑似；已認定的曠職（leave 分頁）照算、照扣。 */
 function payKzScan_(daily, f, from, st, kzDays) {
   f = f || {}; daily = daily || {};
   const elec = daily.elec || {}, hol = daily.hol || {}, sched = daily.sched || {};
@@ -4884,7 +4886,8 @@ function payKzScan_(daily, f, from, st, kzDays) {
       work: work, hol: !!hol[d] && !elec[d],
       punch: !!(f.punch || {})[d], approved: !!(f.ap || {})[d] || payNum((daily.day_h || {})[d]) > 0,
       leave: !!(f.lv || {})[d] || payNum((daily.day_leave || {})[d]) > 0, req: !!(f.rq || {})[d],
-      excluded: late && d < PAY_KZ_LATE_STORES_FROM_, date: d, from: from, until: daily.until || '' });
+      // 排除：瑞光文心上線前（薪資自己看得到），或已發布班表那格帶了有效的排除代號 x（合約 v1.2：總監、總部同仁開關關、支援帳號列等由營運系統判）
+      excluded: (late && d < PAY_KZ_LATE_STORES_FROM_) || (typeof kzPubX_ === 'function' && kzPubX_(cell) !== ''), date: d, from: from, until: daily.until || '' });
     if (sus) out.suspect.push(d);
     if (marked[d]) { runM++; out.marked_streak = Math.max(out.marked_streak, runM); runS = 0; }
     else if (sus) { runS++; out.suspect_streak = Math.max(out.suspect_streak, runS); runM = 0; }
