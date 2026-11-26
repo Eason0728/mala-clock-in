@@ -492,6 +492,24 @@ if (base) {
   check('B10-2', '夜間不換算法：①主線→作廢單＝主線重算 ②新規則→作廢單＝新規則 ③主線→補單＝主線重算 ④新規則→補單＝新規則；各自第二晚＝第一晚',
     B.map((y, i) => [y.trig, y.trig ? y.st === y.nightNew : y.st === A[i].st, y.st2 === y.st]), [[false, true, true], [true, true, true], [false, true, true], [true, true, true]]);
   show('B10-2n', '四例：核定／夜／現在重新核定', B.map((y) => [y.ap.st, y.st, y.fresh]));
+  // 第十輪補（驗收員 R1 標籤差 36 組）：夜間重算只處理狀態含「該段無打卡／打卡未入帳／第…段／忘刷卡／上班中」的列（recheckPendingApprovalStatuses 既有的篩選，主線同樣）；
+  //   核定寫「遲到240分」這種沒有那些字的列，之後才補的卡不會讓它被重算（所以不會多出「有多出的打卡段」）——新規則列與主線列一樣
+  {
+    const L3 = [fl({ before: [['12:47', 'in'], ['17:00', 'out']], approveAt: '2026-12-03T18:00:00', after: [['23:20', 'in']] }),
+      fl({ before: [['08:00', 'in'], ['17:00', 'out']], approveAt: '2026-12-03T18:00:00', after: [['23:20', 'in']] })];
+    const A3 = flowRun(base, L3), B3 = flowRun(ROOT, L3);
+    check('B10-3', '核定狀態沒有重算關鍵字的列：之後補卡、夜裡不重算（新規則列＝核定「遲到240分」；主線列兩版都＝核定「正常」）',
+      [B3[0].trig, B3[0].ap.st, B3[0].st, B3[0].fixed, B3[1].ap.st, B3[1].st, A3[1].st], [true, '遲到240分', '遲到240分', 0, '正常', '正常', '正常']);
+  }
+  // 第十輪補（驗收員：兩邊都擋時的訊息 285 組）：訊息怎麼選＝看這份送出走哪條路——
+  //   新規則路徑（新規則那兩條〔遲到欄當空白〕判得過＝套新規則）：被別的規則擋就回新規則綁單本身的訊息（例 主管填遲到 0 → 第 4 題 over_credit，不是主線的缺卡）；
+  //   主線路徑：照主線的訊息，只有「新規則那份擋的規則是主線子集、而且要的忘打卡單比較少」才換成新規則那份（K3）。兩條路的訊息都是既有字串。
+  {
+    const c = { date: D, brk: BRK, punches: [{ in: '12:47', out: '17:00' }], reqs: [], periods: PER };
+    const r0 = env(c).sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: 'CF15', periods: PER, leaves: [], late_min: '0', dry_run: true, diff_reason: '測試' });
+    const [bm] = flowRun(base, [fl({ before: [['12:47', 'in'], ['17:00', 'out']], approveAt: '2026-12-10T10:00:00', late_min: '0' })]);
+    check('B10-4', '新規則路徑、主管填遲到 0：新版回第 4 題 over_credit（新規則綁單本身的訊息），主線回缺卡＋over_credit——不是「選訊息」那條（新規則那份不是主線的子集也照回）', [r0.ok, (r0.probs || []).map((p) => p.rule).join(','), bm.ap.ok, bm.ap.rules], [false, 'over_credit', false, 'miss,over_credit']);
+  }
 }
 
 console.log('\n════ 八、亂數對照：改版前（' + BASE + '）vs 這一版 ════');
