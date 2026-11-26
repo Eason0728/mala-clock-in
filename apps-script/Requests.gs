@@ -2679,9 +2679,11 @@ function reqLateLeadCoreOk_(date, periods, segs, breakWindow, okRows, lateMin, l
   }
   return !(overMin != null && overMin >= REQ_STRICT_DIFF_MIN);
 }
-/** 這份送出要不要真的套新規則（呼叫端先確定 reqLateLeadOn_ 成立）：新規則那兩條判得過，或主線也判不過 → 套；新規則判不過、主線判得過 → 照主線 */
+/** 這份送出要不要真的套新規則（呼叫端先確定 reqLateLeadOn_ 成立）：新規則那兩條判得過 → 套；判不過 → 照主線。
+ *  2026-11-27 第十輪：拿掉第六輪的「兩邊都判不過也套新規則」——那條讓「主線判不過（不看班表、不看上班中）」跟「主線實際送出」可能不同，
+ *  綁單保險換回主線時卡片（新規則）≠寫入（主線）（第九輪加驗 2 組）。兩邊都判不過時的訊息改由 Code.gs handleMgrApprove 比較後選（要的單較少的那份）。 */
 function reqLateLeadKeep_(date, periods, segs, breakWindow, okRows, lateMin) {
-  return reqLateLeadCoreOk_(date, periods, segs, breakWindow, okRows, lateMin, true) || !reqLateLeadCoreOk_(date, periods, segs, breakWindow, okRows, lateMin, false);
+  return reqLateLeadCoreOk_(date, periods, segs, breakWindow, okRows, lateMin, true);
 }
 /** 中途離開又回來、被核定蓋住的空檔合計（ms），算進「核定比打卡多」的遲到。不適用回 0。
  *  periods：[{startMs,endMs}]；segs：打卡＋已核准忘打卡單補的卡（reqSegsWithMiss_）；spans：營運系統帶的班表 [{start,end,break_min}]；okRows：這天已核准的申請 */

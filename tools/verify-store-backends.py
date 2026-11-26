@@ -36,7 +36,7 @@ FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'is
          'lateLeadReqRows_',   # 2026-11-26 第三輪：每天重算讀申請表（跟核定同一個判斷）
          'lateLeadApprAtMap_',   # 2026-11-26 第三輪之二：每列的主管核定時間（換版時間判斷）
          'lateLeadDayRows_', 'lateLeadGivenOf_',   # 2026-11-26 第六輪：不變式判斷（每天重算用）
-         'lateLeadOpenAt_']   # 2026-11-27 第九輪方案 B：核定當下還沒下班的列夜裡照主線（不看現在時間）
+         'lateLeadOpenAt_', 'lateLeadDataAt_']   # 第九輪：核定當下還沒下班；第十輪：核定時的資料（夜間不換算法）
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
     # 2026-11-20 多一個 gapLate 參數（二段班中途離開比照遲到）；沒套到＝那家店核定狀態照舊、待審單不擋
@@ -46,11 +46,11 @@ EXACT = {
     '中途離開比照遲到：只有個人帳號＋二段班才套': 'reqMgrActing_(mgr, body) && reqGapLateDay_(date, body.sched_spans),',
     '中途離開比照遲到：每天重算看原狀態':      "st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; })];",
     '上午整段沒到改算遲到：核定與綁單同一個判斷': 'late_lead: lateLead,',
-    '上午整段沒到改算遲到：每天重算跟核定同一個判斷（看申請表；核定當下還沒下班照主線，第九輪）': "const llMode = llAfter && !lateLeadOpenAt_(eventRows, empId, date, apprAt, llRows) ? lateLeadRecheck_(date, st0, periods, llSegs, llRows, String(empId)) : 'off';",
-    '上午整段沒到改算遲到：不變式（新規則判不過、主線判得過＝照主線，第六輪）': '&& !reqLateLeadKeep_(date, periods, llSegsMs, noPunchBreakWindow(date), lateLeadDayRows_(reqRowsAll, body.emp_id, date), body.late_min)) lateLead = false;',
+    '上午整段沒到改算遲到：每天重算不換算法（用核定時的資料重做核定判斷，第十輪）': "const llMode = llRows ? lateLeadRecheck_(date, st0, periods, llRows, String(empId), eventRows, apprAt, casArgs.slice(2)) : 'off';",
+    '上午整段沒到改算遲到：不變式（新規則判不過、主線判得過＝照主線，第六輪）': "&& !reqLateLeadKeep_(date, periods, llSegsMs, noPunchBreakWindow(date), lateLeadDayRows_(reqRowsAll, body.emp_id, date), '')) lateLead = false;",
     '上午整段沒到改算遲到：還沒下班照主線（第九輪方案 B）': 'llOpen = lateLead && typeof reqLateLeadOpen_ === \'function\' && reqLateLeadOpen_(punchWithMs, lateLeadDayRows_(reqRowsAll, body.emp_id, date), date);',
     '上午整段沒到改算遲到：不變式的保險（綁單照主線過得了就照主線）': "const bind0 = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, punchMs, noPunchBreakWindow(date), Object.assign({}, bindOpt, { late_lead: false }));",
-    '上午整段沒到改算遲到：每天重算走同一個不變式判斷': 'if (typeof reqLateLeadKeep_ === \'function\' && !reqLateLeadKeep_(date, periods, punchWithMs, noPunchBreakWindow(date), lateLeadDayRows_(reqRows, empId, date), lateLeadGivenOf_(st0))) return \'off\';',
+    '上午整段沒到改算遲到：每天重算走同一個不變式判斷（核定時的資料）': "if (typeof reqLateLeadKeep_ === 'function' && !reqLateLeadKeep_(date, periods, d.segs, bw, d.ok, '')) return 'off';",
     '上午整段沒到改算遲到：換版前核定的列夜裡照舊（第三輪之二）': "const llAfter = typeof reqLateLeadAfterCutover_ === 'function' && reqLateLeadAfterCutover_(apprAt);",
     '上午整段沒到改算遲到：休息帶設定不完整不套': 'function lateLeadBreakOk_() {',
     '出差在假別白名單':                      "'出差'",

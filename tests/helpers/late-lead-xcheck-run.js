@@ -49,7 +49,7 @@ function one(c) {
   let trig = typeof sb.reqLateLeadOn_ === 'function' ? (!hasTrip && sb.reqLateLeadOn_(rows, 'E01', D, pms, llSegs, bw)) : null;
   if (trig && typeof sb.reqLateLeadOpen_ === 'function' && sb.reqLateLeadOpen_(segs, sb.lateLeadDayRows_(rows, 'E01', D), D)) trig = false;      // 第九輪：還沒下班＝照主線
   // 第六輪不變式：新規則判不過、主線判得過＝照主線（reqLateLeadKeep_）；核定過了就看回應的 late_lead（含綁單保險換回主線的那種）
-  if (trig && typeof sb.reqLateLeadKeep_ === 'function' && !sb.reqLateLeadKeep_(D, pms, llSegs, bw, sb.lateLeadDayRows_(rows, 'E01', D), c.late_min == null ? '' : c.late_min)) trig = false;
+  if (trig && typeof sb.reqLateLeadKeep_ === 'function' && !sb.reqLateLeadKeep_(D, pms, llSegs, bw, sb.lateLeadDayRows_(rows, 'E01', D), '')) trig = false;      // 第十輪：遲到欄當空白判（同 handleMgrApprove）
   if (r.ok && typeof r.late_lead === 'boolean') trig = r.late_lead;
   const st = sb.applyManualLate(sb.computeApprovalStatus(pms, trig === true ? llSegs : segs, false, hasTrip, bw, false, trig === true), c.late_min == null ? '' : c.late_min);      // 被擋的日子也算得出來
   return { ok: !!r.ok, error: r.error || '', rules: (r.probs || []).map((p) => p.rule).join(','), st: r.ok ? r.status_text : st, trig, okOpen, wOpen, wNow };

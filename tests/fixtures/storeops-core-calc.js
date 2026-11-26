@@ -379,8 +379,11 @@ function clockCoreOk(date, ps, segs, bw, ok, lead) {                   // Reques
 function clockKeep(c, periods, segs0, reqs, brk, date) { return clockKeepAny(c, segs0, reqs, date, false); }
 /** 同上、但只認「新規則那兩條判得過」（給新規則預填用；判不過就改給主線預填） */
 function clockKeepStrict(c, periods, segs0, reqs, brk, date) { return clockKeepAny(c, segs0, reqs, date, true); }
+function clockSegsMin(segs0) { return (segs0 || []).filter(Boolean).map((x) => { const a = toMin(x.in), b0 = toMin(x.out); return { in: a, out: b0 == null ? null : b0 + (x.cross || (a != null && b0 <= a) ? 1440 : 0) }; }); }
+/** 還沒下班（clockOpen）的對外版本（2026-11-27 第十輪）：segs＝打卡段 [{in,out,cross}]（HH:MM）、reqs＝申請（pending:true 不算）。給共用案例檔 late-lead-open-cases-v1.json 對照用 */
+export function lateLeadOpen(segs0, reqs) { return clockOpen(clockSegsMin(segs0), (reqs || []).filter((r) => r && r.pending !== true)); }
 function clockKeepAny(c, segs0, reqs, date, strictNew) {
-  const segs = (segs0 || []).filter(Boolean).map((x) => { const a = toMin(x.in), b0 = toMin(x.out); return { in: a, out: b0 == null ? null : b0 + (x.cross || (a != null && b0 <= a) ? 1440 : 0) }; });
+  const segs = clockSegsMin(segs0);
   const ok = (reqs || []).filter((r) => r && r.pending !== true);
   const ps = c.ps.map(([s, e]) => ({ s, e })), bw = [c.bs, c.be];
   const lead = { rest: c.ps.slice(c.lead.length).map(([s, e]) => ({ s, e })), leadMin: total(c.lead) };
@@ -388,8 +391,8 @@ function clockKeepAny(c, segs0, reqs, date, strictNew) {
   //   （Requests.gs reqLateLeadOpen_ 同一條）。2026-11-27 第九輪：不看現在時間、不看 16 小時——第八輪用「上班中 16 小時」，開卡與送出各看各的現在，界線前後卡片≠寫入。
   //   新規則那條路徑也不算「上班中那張卡打到現在／當 16 小時」（打卡端 reqLateLeadSegs_ 同樣拿掉 working），所以整條判斷跟現在幾點無關
   if (clockOpen(segs, ok)) return false;
-  if (clockCoreOk(date, ps, segs, bw, ok, lead)) return true;
-  return strictNew ? false : !clockCoreOk(date, ps, segs, bw, ok, null);
+  // 2026-11-27 第十輪：只看新規則那兩條判不判得過（Requests.gs reqLateLeadKeep_ 同步拿掉「兩邊都判不過也套新規則」；strictNew 現在跟一般版一樣）
+  return clockCoreOk(date, ps, segs, bw, ok, lead);
 }
 /** 還沒下班（照抄 Requests.gs reqLateLeadOpen_，2026-11-27 第九輪）：這天最後一張卡（照時間）是沒配對的上班卡，而且已核准的忘打卡單補不上那張下班卡
  *  （clockSegsWithMiss 補完那一段仍沒有下班時間）。segs＝分鐘的打卡段；ok＝已核准申請。不看現在時間。 */

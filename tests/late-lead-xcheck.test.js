@@ -22,7 +22,7 @@ const fs = require('fs'), os = require('os'), path = require('path'), crypto = r
 const { execFileSync, spawn } = require('child_process');
 const { check, show, done, ROOT, T } = require('./helpers/gs-sandbox');
 
-const FROZEN_SHA = '4842a3404b669b82326baec91cd452a78fa71230244b903adb2f69331fab479d';      // fixtures/storeops-core-calc.js（＝mala-store-ops web/modules/duty/core-calc.js）
+const FROZEN_SHA = 'c0107bd9335ed12a3833786585b17b77d0ff13abd81e06bd66f5cf7ec55fd264';      // fixtures/storeops-core-calc.js（＝mala-store-ops web/modules/duty/core-calc.js）
 const SO = process.env.STOREOPS_ROOT;
 const newPath = SO ? path.join(SO, 'web', 'modules', 'duty', 'core-calc.js') : path.join(__dirname, 'fixtures', 'storeops-core-calc.js');
 const oldPath = SO ? path.join(SO, 'test', 'fixtures', 'core-calc-before-latelead.mjs') : path.join(__dirname, 'fixtures', 'storeops-core-calc-before.mjs');
@@ -94,7 +94,10 @@ for (const brk of [[720, 780], [840, 900]]) {
   const [bs, be] = brk, S = bs === 720 ? 480 : 540, E = S + 540;
   const W = [['wIn01', [[bs + 1, null]]], ['wIn17', [[bs + 17, null]]], ['wIn45', [[bs + 45, null]]], ['wIn59', [[be - 1, null]]], ['wAtBe', [[be, null]]], ['wLate20', [[be + 20, null]]],
     ['wBrkSegBack11', [[bs + 30, bs + 45], [be + 11, null]]], ['wMorning', [[S + 5, null]]]];
-  const R = [['none', []], ['missOut', [MO(E)]], ['leaveAfterBrk', [L(be + 10, be + 70)]], ['missBoth', [MB(S, bs)]], ['missBrkPM', [MBRK(be + 60, be + 90)]], ['missOutLeave', [MO(E), L(be + 10, be + 70)]]];
+  const R = [['none', []], ['missOut', [MO(E)]], ['leaveAfterBrk', [L(be + 10, be + 70)]], ['missBoth', [MB(S, bs)]], ['missBrkPM', [MBRK(be + 60, be + 90)]], ['missOutLeave', [MO(E), L(be + 10, be + 70)]],
+    // 第十輪：「還沒下班」定義的各種單據組合（共用案例檔 late-lead-open-cases-v1.json 同一套）：上班＋下班兩種順序、下班早於上班卡、兩張下班、整段蓋住上班卡、驗收員 r9 那型（上班＋事假＋下班）
+    ['missIn+Out', [MI(be + 83), MO(E)]], ['missOut+In', [MO(E), MI(be + 83)]], ['missOutEarly', [MO(S + 60)]], ['missTwoOut', [MO(E), MO(E)]],
+    ['missBothCover', [MB(bs - 60, E)]], ['missIn+Leave+Out', [MI(be + 83), L(be + 15, be + 121), MO(E)]]];
   for (const date of ['2026-12-03'])
     for (const pk of ['one', 'two'])
       for (const [pn, pu] of W) {
@@ -105,6 +108,9 @@ for (const brk of [[720, 780], [840, 900]]) {
         }
       }
 }
+// 第十輪：驗收員第九輪加驗的兩組 I2（逐字照重現檔）
+list.push(Object.assign(scen([840, 900], '2026-11-30', 'one', 540, 1140, [[845, null]], [MI(983), L(915, 1021, '事假'), MO(1140)], '', 'v9:repro-i2-a', '2026-11-30T14:46:56', '2026-11-30T14:18:44')));
+list.push(Object.assign(scen([840, 900], '2026-11-01', 'one0', 540, 1020, [[886, null]], [MO(1020), L(958, 990, '事假'), MO(1020)], '', 'v9:repro-i2-b', '2026-11-01T14:57:30', '2026-11-01T14:47:00')));
 const nGrid = list.length;
 // 亂數（多個種子）
 const SEEDS = String(process.env.LATE_XCHECK_SEEDS || '20261127,11,22,33,44,55,66,77,88,99').split(',').map(Number).filter((x) => x);
@@ -220,6 +226,8 @@ async function runCI(root, items) {
     if (!yn.ok && ym && ym.ok && !sanctioned) fail('a', [c.tag, ps(f.n) + ' ' + yn.error + ':' + yn.rules, ps(f.m) + ' ok']);
     if (c.openAt) { cnt.drift++; if (yn.wOpen === true && yn.wNow === false) cnt.d16++; }      // d16：開卡時還在 16 小時內、送出時已過（第八輪出事的那類）
     if (yn.trig && yn.ok && c.lateKind === '' && lateSum(yn.st) !== f.n.late) fail('b', [c.tag, ps(f.n), '卡片 ' + f.n.late, '打卡端 ' + yn.st]);
+    // 6.1#9（主線既有）：非整數分鐘假單讓預填時段帶小數（例 17:00–17:0.1999…）→ 打卡端 bad_periods、什麼都不寫；時段跟主線一樣、只差卡片遲到分鐘＝不比（計數）
+    if (!yn.trig && yn.error === 'bad_periods' && ps(f.n) === ps(f.m) && JSON.stringify(f.n) !== JSON.stringify(f.m)) { cnt.badPer = (cnt.badPer || 0) + 1; return; }
     if (!yn.trig && JSON.stringify(f.n) !== JSON.stringify(f.m)) fail('c', [c.tag, ps(f.n) + ' late ' + (f.n && f.n.late), ps(f.m) + ' late ' + (f.m && f.m.late)]);
   });
   if (process.env.LATE_XCHECK_DUMP) { const tags = new Set([].concat(bad.a, bad.b, bad.c, bad.d, bad.e).map((x) => x[0])); fs.writeFileSync(process.env.LATE_XCHECK_DUMP, JSON.stringify(Object.assign({ sc: list.filter((c) => tags.has(c.tag)) }, bad), null, 1)); }      // 除錯用：整份不一致清單
@@ -233,8 +241,10 @@ async function runCI(root, items) {
   check('XCa', '(a) 這一版預填送打卡端被擋、主線同情境不擋（主管填的遲到比系統少、班表超過 8 小時除外）：' + bad.a.length + ' 組', bad.a.slice(0, 6), []);
   check('XCb', '(b) 打卡端套新規則、過了、遲到欄空白：卡片（開卡時算）的遲到分鐘＝打卡端（送出時）狀態的遲到分鐘：不一致 ' + bad.b.length + ' 組（沒有例外類別）', bad.b.slice(0, 6), []);
   check('XCb0', '開卡≠送出的組數夠（≥ 10000），其中開卡時在 16 小時內、送出時已過的 ≥ 500（第九輪）', [cnt.drift >= 10000, cnt.d16 >= 500], [true, true]);
+  show('XCc9', '（6.1#9）非整數分鐘假單、時段帶小數、打卡端 bad_periods 不寫入：時段同主線、卡片遲到不同的組數（不比）', cnt.badPer || 0);
   show('XCb0n', '開卡≠送出組數／其中跨 16 小時', [cnt.drift, cnt.d16]);
   check('XCc', '(c) 打卡端沒套新規則：這一版預填跟改動前預填逐字相同：不同 ' + bad.c.length + ' 組', bad.c.slice(0, 6), []);
+  check('XCv9', '驗收員第九輪 2 組（v9:repro-i2-a／b）：(a)(b)(c)(d)(e) 都沒有它們', [].concat(bad.a, bad.b, bad.c, bad.d, bad.e).filter((x) => /^v9:/.test(x[0])).map((x) => x[0]), []);
   check('XCd', '(d) 主線前端的預填直接送這一版打卡端：主線打卡端過、這一版不過（主管填得比系統少、班表超過 8 小時除外）：' + bad.d.length + ' 組', bad.d.slice(0, 6), []);
   check('XCe', '(e) 同一份預填兩版打卡端都過、這一版最後沒套新規則：狀態字跟主線逐字相同：不同 ' + bad.e.length + ' 組', bad.e.slice(0, 6), []);
   done();

@@ -86,6 +86,8 @@ for (let i = 0; i < N; i++) {
   let trig = hasNew ? sb.reqLateLeadOn_(sb.reqRows_(m.self), 'E01', D, pms, segMs, bw) : null;
   // 第九輪（方案 B）：還沒下班（最後一張是沒配對的上班卡、已核准的單補不上下班卡）＝核定照主線（同 handleMgrApprove 的 reqLateLeadOpen_）
   if (trig && typeof sb.reqLateLeadOpen_ === 'function' && sb.reqLateLeadOpen_(segMs, sb.lateLeadDayRows_(sb.reqRows_(m.self), 'E01', D), D)) trig = false;
+  // 第十輪：新規則那兩條判不過＝照主線（同 handleMgrApprove 的 reqLateLeadKeep_）
+  if (trig && typeof sb.reqLateLeadKeep_ === 'function' && !sb.reqLateLeadKeep_(D, pms, segMs, bw, sb.lateLeadDayRows_(sb.reqRows_(m.self), 'E01', D), '')) trig = false;      // 第十輪：遲到欄當空白判（同 handleMgrApprove）
   const st = sb.computeApprovalStatus(pms, segMs, false, false, bw, false, trig === true);
   let inv = null;
   if (trig) {
@@ -101,7 +103,8 @@ for (let i = 0; i < N; i++) {
   // 核定時間（2026-11-26 第三輪之二，換版時間 REQ_LATE_LEAD_CUTOVER_；改版前沒有這個常數＝不看）：前三種＝換版前核定（主線舊程式寫的），第四種＝換版後（這一版寫的），
   //   第五種＝舊程式寫的狀態、核定時間卻在換版後（換版時間設錯時的安全網：第三輪那套遲到分鐘比對）
   const cut = typeof sb.REQ_LATE_LEAD_CUTOVER_ === 'string' ? Date.parse(sb.REQ_LATE_LEAD_CUTOVER_) : 0;      // 改版前沒有這個常數、也不看核定時間
-  const before = iso(cut - 60000), after = iso(cut);
+  // 第十輪（夜間不換算法）：換版後那兩列的核定時間要晚於這天的打卡（夜裡用核定時已有的卡重做判斷），取「換版時間」與「隔天 06:00」較晚的
+  const before = iso(cut - 60000), after = iso(Math.max(cut, T(D1 + 'T06:00:00')));
   const rec = ST0.map((s0) => [s0, before]).concat([[stMain, before], [st, after], [stMain, after]]).map(([s0, at]) => {
     try { return sb.recomputeApprovalStatusOf(m.self, evRows, rosterRows, D, 'E01', { periods: periods.map((p) => p.start + '-' + p.end).join(','), status_text: s0, name: '測試一', manager_name: '值班主管', entered_at: at }).newStatusText; }
     catch (e) { return 'throw:' + e.message; }

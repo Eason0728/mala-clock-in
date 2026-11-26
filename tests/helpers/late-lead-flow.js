@@ -55,7 +55,25 @@ function flow(sc) {
   let fr = null;
   try { fr = m.sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: 'E01', periods: sc.periods, leaves: sc.leaves || [], late_min: sc.late_min == null ? '' : sc.late_min, diff_reason: '測試', dry_run: true }); } catch (e) { fr = null; }
   const freshOk = !!(fr && fr.ok);
-  return { ap, trig, fixed: rc.fixed, st: last[5], fresh: freshOk ? fr.status_text : fresh.st, freshOk, trigNow: freshOk && typeof fr.late_lead === 'boolean' ? fr.late_lead : fresh.trig };
+  // 第十輪（夜間不換算法）：新規則對當下打卡的狀態（不看上班中、主管認定的遲到原樣蓋回）＝核定時套新規則的列夜裡該有的結果
+  const nightNew = newRuleNow(m, sc);
+  // 第二晚（中間沒有任何卡或單的變動）：N1＝跟第一晚相同
+  m.setNow(nextDay(sc.recheckAt.slice(0, 10)) + sc.recheckAt.slice(10));
+  let st2 = null;
+  try { m.sb.recheckPendingApprovalStatuses(); st2 = m.approved().slice(-1)[0][5]; } catch (e) { st2 = 'throw:' + String(e.message); }
+  return { ap, trig, fixed: rc.fixed, st: last[5], st2, nightNew, fresh: freshOk ? fr.status_text : fresh.st, freshOk, trigNow: freshOk && typeof fr.late_lead === 'boolean' ? fr.late_lead : fresh.trig };
+}
+/** 新規則對沙盒現在的打卡算的狀態（同 recomputeApprovalStatusOf 套新規則那條：拿掉上班中標記、主管認定的遲到原樣蓋回）；改版前＝null */
+function newRuleNow(m, sc) {
+  const sb = m.sb, D = sc.date, D1 = nextDay(D);
+  if (typeof sb.reqLateLeadSegs_ !== 'function') return null;
+  const pms = sc.periods.map((p) => { const s = sb.hmToMs(D, p.start); let e = sb.hmToMs(D, p.end); if (e <= s) e += 86400000; return { start: p.start, end: p.end, startMs: s, endMs: e }; });
+  const ev = sb.readSheetAsObjects(m.self.getSheetByName('events')).rows.map((e) => { e.ts = sb.normCellTs(e.ts); return e; });
+  const segs = sb.dayPunchSegments(ev, 'E01', D).segments.map((s) => ({ in: s.in, out: s.out, inMs: s.in ? sb.hmToMs(D, s.in) : null, outMs: s.out ? sb.hmToMs(s.cross ? D1 : D, s.out) : null }));
+  let st = sb.computeApprovalStatus(pms, segs, false, false, sb.noPunchBreakWindow(D), false, true);
+  const lm = sc.late_min == null ? '' : String(sc.late_min);
+  if (lm !== '') { const kept = st.split('、').filter((x) => x && x !== '正常' && x.indexOf('遲到') !== 0); kept.push(sb.applyManualLate('', lm)); st = kept.join('、'); }
+  return st;
 }
 /** 用沙盒現在的時間與資料算核定狀態（同 handleMgrApprove 的算法，不跑綁單）；trig＝這一版核定會不會套新規則（改版前沒有這個函式＝null） */
 function statusNow(m, sc, manual) {
@@ -72,7 +90,7 @@ function statusNow(m, sc, manual) {
   // 第九輪：還沒下班＝照主線（同 handleMgrApprove 的 reqLateLeadOpen_）
   if (trig && typeof sb.reqLateLeadOpen_ === 'function' && sb.reqLateLeadOpen_(segs, sb.lateLeadDayRows_(rows, 'E01', D), D)) trig = false;
   // 第六輪不變式：新規則判不過、主線判得過＝照主線（同 handleMgrApprove／每天重算的 reqLateLeadKeep_）
-  if (trig && typeof sb.reqLateLeadKeep_ === 'function' && !sb.reqLateLeadKeep_(D, pms, llSegs, bw, sb.lateLeadDayRows_(rows, 'E01', D), sc.late_min == null ? '' : sc.late_min)) trig = false;
+  if (trig && typeof sb.reqLateLeadKeep_ === 'function' && !sb.reqLateLeadKeep_(D, pms, llSegs, bw, sb.lateLeadDayRows_(rows, 'E01', D), '')) trig = false;      // 第十輪：遲到欄當空白判（同 handleMgrApprove）
   let st = sb.computeApprovalStatus(pms, trig === true ? llSegs : segs, false, false, bw, false, trig === true);
   if (manual) st = sb.applyManualLate(st, sc.late_min == null ? '' : sc.late_min);
   return { st, trig };
