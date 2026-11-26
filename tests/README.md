@@ -49,8 +49,8 @@ node tests/run-all.js
 | `helpers/sheets-like.js` | 假試算表本體（不是測試，run-all 不會跑它）：寫入字串照 Sheets 規則轉型、`setNumberFormat('@')` 鎖文字、在 vm 的 Date realm 建 Date、格線範圍外丟例外；每條規則標 [已查證] 或 [推定]＋出處，見檔頭 | 要模擬正式試算表時用這個，不要再寫「把字串原樣存起來」的假 sheet |
 | `kuangzhi-approve.test.js` | 曠職打卡端（2026-11-26 開工確認 13 題照推薦；合約 `docs/kuangzhi/contract.md`）：共用案例檔 `fixtures/kuangzhi-cases-v1.json`（營運系統跑同一份，sha256 釘住）；認定成功（核定 0＋leave 曠職＝班表時數、句 8）、句 9–13 各種擋、kz_day_done、自補期限、權限（只收個人帳號代轉）、生效日與壞值、只檢查不寫、重新核定解除、一般下拉／代開／同仁請假單選不到、打卡頁與 LINE 出勤班表顯示曠職、不會自動寫、relay_pull 帶開關 | 認定曠職會扣錢：擋的條件與字一個都不能錯 |
 | `kuangzhi-equiv.test.js` | 曠職開關沒設／空白／壞值時，打卡端核定、只檢查、白名單查表、同仁請假單、代開、打卡頁跟主線 `f21cc25`（`KZ_BASE` 可換）逐字相同；開關開時沒帶曠職的請求也相同。`git archive` 解基準版到暫存（`KZ_TMP`） | 紅線「空白＝今天的行為逐字不變」 |
-| `kuangzhi-payroll.test.js` | 曠職薪資端：開關關＝12／11 月試算、假別設定、下拉、鎖定、草稿列跟主線逐字相同；開關開、沒曠職的月份金額每一欄相同；手算 H1–H8（績效歸零、計時滿勤、扣款佔位 0、按天遞減設定）；疑似清單規則、鎖月擋句 22、stale_run、請假對不上豁免；生效日在月中；假別表自動補內建列、既有列不變 | 不可降的標準 1（沒曠職的月份 100% 相同）、手算對照 |
-| `kuangzhi-release-check.test.js` | 曠職扣款還是「待主管確認」佔位時 `tools/kuangzhi-release-check.js` 一定失敗；旗標改 false 的版本通過 | 主管改定第 6-1 題細節未定，不能帶著佔位上線 |
+| `kuangzhi-payroll.test.js` | 曠職薪資端：開關關＝12／11 月試算、假別設定、下拉、鎖定、草稿列跟主線逐字相同；開關開、沒曠職的月份金額每一欄相同；手算 H1–H8（績效歸零、計時滿勤、扣款＝全薪÷30×曠職天數、按天遞減設定）；疑似清單規則、鎖月擋句 22（KUANGZHI_LOCK_BLOCK=on 才擋；關著鎖定跟主線相同）、stale_run、請假對不上豁免；生效日在月中；假別表自動補內建列、既有列不變 | 不可降的標準 1（沒曠職的月份 100% 相同）、手算對照 |
+| `kuangzhi-release-check.test.js` | `tools/kuangzhi-release-check.js`：佔位旗標已拿掉＝通過；又出現佔位旗標的版本一定失敗 | 不能帶著佔位上線 |
 
 ## 改引擎之前先跑 engine-diff
 

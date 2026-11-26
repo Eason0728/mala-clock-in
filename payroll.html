@@ -1845,7 +1845,6 @@ function renderOtInfo(t){
     if(o.kz_suspect_alert) rows.push(`<li><b class="bad">${nm}</b>：疑似曠職 ${o.kz_suspect.length} 天（最長連續 ${Number(o.kz_suspect_streak)||0} 天），已達連續 3 天或當月 6 天，請確認是否曠職</li>`);
     if(o.kz_marked&&o.kz_marked.length) rows.push(`<li>${nm}：已認定曠職 ${o.kz_marked.length} 天 ${list(o.kz_marked.map(x=>x.date))}</li>`);
     if(o.kz_marked_alert) rows.push(`<li><b class="bad">${nm}</b>：已認定曠職連續 ${Number(o.kz_marked_streak)||0} 天／本月 ${o.kz_marked.length} 天，已達連續 3 天或當月 6 天，後續怎麼處理請人資確認</li>`);
-    if(o.kz_pending) rows.push(`<li><b class="bad">${nm}</b>：曠職扣款算法待確認</li>`);   // 待主管確認的佔位（上線前會換掉）
     if(o.support_leave&&o.support_leave.length) o.support_leave.forEach(x=>rows.push(`<li><b style="color:#b7791f">${nm}</b>：<span style="color:#b7791f">${md(x.date)} 在${esc(x.store_name)}記了${esc(x.type)} ${r2(x.hours)} 小時（支援店記的假，薪資沒扣，請確認）</span></li>`));
     if(o.manual_sup_h>0) rows.push(`<li>${nm}：手填的跨店支援有 ${r2(o.manual_sup_h)} 小時沒有日期，沒算進逐日加班</li>`);
     // 跨帳號重複出差／請假（2026-11-23）：後端組好白話（line）；pay＝會讓薪資重複、鎖定時擋，其他只提醒

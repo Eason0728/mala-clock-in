@@ -900,13 +900,13 @@ function payLockStale_(body, ym, st) {
   if (!calc || !calc.ok) return { error: String((calc && (calc.message || calc.error)) || 'calc_failed') };
   const byId = {}, list = [];
   runs.forEach(function (r) { byId[String(r.emp_id)] = r; });
-  const kzOn = payKzMonth_(ym, payKzFrom_());
+  const kzOn = payKzMonth_(ym, payKzFrom_()) && payKzLockBlockOn_();
   const gate = function (raw) {
     let o = raw; if (typeof raw === 'string') { try { o = JSON.parse(raw || '{}'); } catch (e) { o = {}; } }
     o = o || {};
     const dg = payDupXacctOn_(ym) ? payDupXacctGate_(o) : null;   // 跨帳號重複（2026-11-23）：開關關著一律不看（草稿留著開著時的舊旗標也不看，Codex P1）；草稿與重算都沒有＝不加，比對字串跟改版前相同
     const base = dg ? [payNum(o.comp_over_h), o.ot_form_missing || [], dg] : [payNum(o.comp_over_h), o.ot_form_missing || []];
-    if (kzOn) base.push(o.kz_suspect || []);   // 曠職（2026-11-26）：疑似清單跟草稿不同＝要重算（開關關著不加，比對字串跟改版前相同）
+    if (kzOn) base.push(o.kz_suspect || []);   // 曠職（2026-11-26）：疑似清單跟草稿不同＝要重算（只有鎖月擋開關開著才加，比對字串跟改版前相同）
     return JSON.stringify(base);
   };
   let claim = false;   // r3：只有請款不同（不列進名單，finalize 用既有「試算後資料有改過」那句擋）
@@ -1462,10 +1462,11 @@ function payCompDefaultType() {
  * 扣款只走 payKzDeduct_（一般假別的「時數 × 扣款時薪 ×（1 − 給薪比例）」不套到曠職）。 */
 var PAY_KZ_CODE = 'absent';
 var PAY_KZ_NAME = '曠職';
-// 第 6 題主管改定「全薪÷ 30 × 曠職天數」：全薪含哪些項目、半天班怎麼算、取整都還沒定 → 先放佔位（金額 0）。
-// ⚠ 上線前一定要換成主管確認的算法並改成 false：tools/kuangzhi-release-check.js 在 true 時結束碼 1，deploy-to-clasp.py --apply 會拒絕。
-var KUANGZHI_DEDUCT_PENDING = true;
-var KUANGZHI_DEDUCT_PENDING_TEXT = '曠職扣款算法待確認';
+// 第 6 題主管定案（2026-11-26）：「第六題，使用全薪÷ 30 × 曠職天數」＋兩點「都照建議」：
+//   全薪＝跟事假扣款時薪同一組（底薪＋職能＋夜間＋店長加給＋績效上限，payLeaveFullPay_）；半天班按班表時數比例（8 小時 1 天、4 小時 0.5 天）。
+//   既有做法：金額最後一步四捨五入到元、月中到職不折算。計時（全薪 0）＝金額 0（6-4）；不連帶扣例假休息日（6-3）。
+var PAY_KZ_DAY_DIV = 30;                       // 全薪 ÷ 30（主管原話）
+var PAY_KZ_LABEL = '曠職(無薪) {N}天';         // 薪資單扣款列名稱（逐句表句 21 的 H 換成天；大腦正在請主管確認，要改只改這裡）
 var PAY_KZ_NOTE = '曠職：主管在核定頁認定的無故缺勤。只能由「認定曠職」按鈕產生，一般假別下拉與同仁請假單都選不到。';   // 句 23
 var PAY_KZ_LATE_STORES_RE_ = /^MZT(RG|WX)$/i;   // 瑞光、文心：2027-01-01 前不算疑似（第 3-6 題；同 Code.gs KZ_LATE_STORES_RE_）
 var PAY_KZ_LATE_STORES_FROM_ = '2027-01-01';
@@ -1486,18 +1487,31 @@ function payWithKzType(list, seen) {
   if (!payKzFrom_() || seen || list.some(payIsKzType)) return list;
   return list.concat([payKzDefaultType()]);
 }
+/** 曠職天數：每個曠職日「班表時數 ÷ 每日基本工時（參數 daily_hours，預設 8）」、單日最多 1 天，當月加總。 */
+function payKzDays_(days, cfg) {
+  const dh = payCfgPos_(cfg, 'daily_hours');
+  return (days || []).reduce(function (t, x) { return t + Math.min(1, Math.max(0, payNum(x && x.h)) / dh); }, 0);
+}
 /** 曠職扣多少——唯一的計算處（合約第 7 節）。e＝薪資主檔一人；days＝[{date, h}] 認定的曠職日與各自的班表時數；回扣款列陣列。
- *  ⚠ 待主管確認（KUANGZHI_DEDUCT_PENDING）：先回一列金額 0 的佔位，名稱用佔位字；確認後只改這裡。 */
+ *  扣款＝全薪 ÷ 30 × 曠職天數，最後一步才四捨五入到元（不先把每天的金額取整）。全薪不因月中到職折算；計時全薪 0 → 照印一列 $0。 */
 function payKzDeduct_(e, ym, days, cfg) {
   if (!days || !days.length) return [];
-  if (KUANGZHI_DEDUCT_PENDING) return [{ item_key: 'absent_deduct', item_label: KUANGZHI_DEDUCT_PENDING_TEXT, qty: null, rate: null, amount: 0 }];
-  return [];
+  const n = payKzDays_(days, cfg), full = payLeaveFullPay_(e);
+  const shown = Math.round(n * 10) / 10;   // 名稱顯示到小數一位、整數不帶小數點
+  return [{ item_key: 'absent_deduct', item_label: PAY_KZ_LABEL.replace('{N}', String(shown)), qty: payR2(n), rate: payR2(full / PAY_KZ_DAY_DIV),
+            amount: payRoundLast_(full / PAY_KZ_DAY_DIV * n) }];
 }
-/** 上線檢查（tools/kuangzhi-release-check.js 叫）：回還沒解決的問題陣列（空＝可以上線） */
+/** 上線檢查（tools/kuangzhi-release-check.js 叫）：回還沒解決的問題陣列（空＝可以上線）。佔位旗標已拿掉；舊版（還有旗標）一律不過 */
 function payKzReleaseProblems_() {
   const out = [];
-  if (KUANGZHI_DEDUCT_PENDING) out.push('曠職扣款算法還是「待主管確認」佔位（Payroll.gs KUANGZHI_DEDUCT_PENDING）');
+  if (typeof KUANGZHI_DEDUCT_PENDING !== 'undefined') out.push('曠職扣款還有「待主管確認」佔位旗標（Payroll.gs KUANGZHI_DEDUCT_PENDING）');
+  if (typeof payLeaveFullPay_ !== 'function') out.push('找不到全薪基數 payLeaveFullPay_');
   return out;
+}
+/** 疑似曠職沒處理擋鎖月（第 8 題 A）：先用獨立開關包住、預設不擋只提醒（2026-11-26 大腦：等合約 v1.2 排除名單兩端做完再開）。
+ *  光復指令碼屬性 KUANGZHI_LOCK_BLOCK＝on 才擋；沒設、空白、其他值＝不擋（鎖定與草稿比對跟主線相同）。 */
+function payKzLockBlockOn_() {
+  try { return String(PropertiesService.getScriptProperties().getProperty('KUANGZHI_LOCK_BLOCK') || '').trim().toLowerCase() === 'on'; } catch (e) { return false; }
 }
 
 /** 某人某月的補休帳（純計算）：ots＝[{date,h}] 本月核准加班；leaves＝[{date,h}] leave 分頁補休；reqs＝[{date,h}] 審核中／已核准補休申請。
@@ -2209,6 +2223,11 @@ function payLeaveDeduct_(ym, withinH, overH, rate, ratio, overRatio) {
            unit: payR2(rate * (1 - ratio)) };
 }
 
+/** 請假扣款與曠職扣款共用的「全薪」：底薪＋職能＋夜間＋店長加給＋績效上限（未折算；2026-11-26 從請假扣款時薪抽出來，算式不變） */
+function payLeaveFullPay_(e) {
+  return payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) + payNum(e.mgr_allow) + payNum(e.attend_cap);
+}
+
 function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   cfg = payRules3Cfg_(cfg, e.store, ym);
   // 假別規則一律由 ltypes（payroll_leave_type）決定；不傳時退回內建預設，
@@ -2388,9 +2407,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
   }
 
   // 請假扣款：費率用「未折算」的全額（費率是職位時薪，不因月中到職而改變）
-  const rateRaw =
-    (payNum(e.base) + payNum(e.skill_allow) + payNum(e.night_allow) +
-     payNum(e.mgr_allow) + payNum(e.attend_cap)) / payCfgPos_(cfg, 'leave_div_days') / payCfgPos_(cfg, 'leave_div_hours');
+  const rateRaw = payLeaveFullPay_(e) / payCfgPos_(cfg, 'leave_div_days') / payCfgPos_(cfg, 'leave_div_hours');
   const rate = payR0(rateRaw);
   /* 請假扣款：一律查假別表算，不再逐種假寫死。
    *   扣款率 ＝ rate ×（1 − 給薪比例）：事假 0%→全扣、病假 50%→扣一半、特休 100%→不扣。
@@ -4892,7 +4909,6 @@ function payKzOtInfo_(oi, att) {
     oi.kz_marked = mk.map(function (x) { return { date: x.date, h: x.h }; });
     oi.kz_marked_streak = sc.marked_streak;
     oi.kz_marked_alert = sc.marked_streak >= 3 || mk.length >= 6;          // 第 10 題 B：句 18
-    if (KUANGZHI_DEDUCT_PENDING) oi.kz_pending = true;
   }
 }
 
@@ -6078,7 +6094,7 @@ function handlePayrollFinalize(body) {
   }
   /* 疑似曠職還沒處理不能鎖定（2026-11-26 開工確認第 8 題 A）：開關開、這個月有 ≥ 生效日的日子才看；看草稿 ot_info.kz_suspect
      （上面 payLockStale_ 已用最新資料重算比對過，疑似清單跟草稿不同會先回 stale_run）。訊息＝句 22。解鎖不擋。 */
-  if (lock && payKzMonth_(ym, payKzFrom_())) {
+  if (lock && payKzMonth_(ym, payKzFrom_()) && payKzLockBlockOn_()) {   // KUANGZHI_LOCK_BLOCK＝on 才擋（預設不擋、只在薪資頁提醒）
     const kzList = [];
     payRead('run').filter(function (r) { return String(r.ym) === ym && payStore(r.store) === stF; }).forEach(function (r) {
       let o = {}; try { o = JSON.parse(r.ot_info || '{}') || {}; } catch (e) { o = {}; }
