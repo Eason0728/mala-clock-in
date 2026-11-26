@@ -12,7 +12,7 @@
  *   …其餘見各段。全部虛構姓名工號。 */
 'use strict';
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
-const { make, T, check, show, done } = require('./helpers/gs-sandbox');
+const { make, T, check, show, done, R } = require('./helpers/gs-sandbox');
 const CASES = require('./fixtures/kuangzhi-cases-v1.json');
 
 const D = '2026-12-03';
@@ -233,5 +233,13 @@ console.log('\n══ 十四、系統不會自己寫曠職（不可降的標準�
   const code = SRC[0][1];
   check('K14b', 'Code.gs 裡把曠職放進 leaves 的只有 kzPlan 那一行', (code.match(/leaves\.push\(\{ type: KZ_TYPE/g) || []).length, 1);
   check('K14c', '曠職字面只出現在常數、說明與判斷（沒有其他寫入）', SRC.filter(([f, s]) => f !== 'Code.gs' && f !== 'Payroll.gs' && f !== 'Requests.gs' && /'曠職'/.test(s)).map(([f]) => f), []);
+}
+console.log('\n══ 十五、Mac mini 核定引擎看得到同一個開關（合約第 6 節）══');
+{
+  const pull = (props) => { const m = make({ now: T('2026-12-08T10:00:00'), props: Object.assign({ REQ_BIND_FROM: 'off', RELAY_KEY: 'RELAY-KEY-0123456789abcdef' }, props), self: { roster: [ME], events: [] } });
+    m.run(R('apps-script/RelayG.gs'));
+    return m.sb.handleRelayPull_({ relay_key: 'RELAY-KEY-0123456789abcdef', with: { props: true } }).props; };
+  check('K15', 'relay_pull 帶 KUANGZHI_FROM 原值（有設才帶）', pull({ KUANGZHI_FROM: '2026-12-01' }).KUANGZHI_FROM, '2026-12-01');
+  check('K15b', '沒設 → props 沒有這個鍵（回應跟以前一樣）', Object.prototype.hasOwnProperty.call(pull({}), 'KUANGZHI_FROM'), false);
 }
 done();

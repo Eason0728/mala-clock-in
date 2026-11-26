@@ -6084,7 +6084,7 @@ function handlePayrollFinalize(body) {
       let o = {}; try { o = JSON.parse(r.ot_info || '{}') || {}; } catch (e) { o = {}; }
       (o.kz_suspect || []).forEach(function (d) { kzList.push({ date: String(d), name: String(r.name || ''), emp_id: String(r.emp_id) }); });
     });
-    kzList.sort(function (a, b) { return a.date.localeCompare(b.date) || a.name.localeCompare(b.name); });
+    kzList.sort(function (a, b) { return a.date.localeCompare(b.date) || a.emp_id.localeCompare(b.emp_id); });   // 日期、工號（不靠姓名的語系排序）
     if (kzList.length) return { ok: false, error: 'kz_suspect', list: kzList,
       message: '下面 ' + kzList.length + ' 天是疑似曠職還沒處理，不能鎖定（請主管補單、核定，或認定曠職；班表排錯的請先改班表並發布）：' +
         kzList.map(function (x) { return (+x.date.slice(5, 7)) + '/' + (+x.date.slice(8, 10)) + ' ' + x.name; }).join('、') };

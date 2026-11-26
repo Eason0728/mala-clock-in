@@ -1,0 +1,309 @@
+/**
+ * 曠職：薪資端（2026-11-26 主管定案；開工確認第 5–8、10、11 題；合約 docs/kuangzhi/contract.md 第 7、8 節）
+ * 規則白話（照推薦＋主管改定第 6-1 題）：
+ *   ‧開關 KUANGZHI_FROM 沒設／壞值：薪資每一欄、ot_info、假別表、下拉、鎖定回應跟主線 f21cc25 逐字相同（①）。
+ *   ‧開著、生效日起：leave 分頁「曠職」→ 假別 absent。績效走假別設定的對全勤（內建＝整筆歸零，名稱「績效獎金（當月有曠職）」）；
+ *     計時滿勤加給不給（缺勤 1 天）。扣款只走 payKzDeduct_：目前「待主管確認」佔位（金額 0、名稱「曠職扣款算法待確認」）。
+ *   ‧疑似曠職（已發布班表上班日、沒打卡、沒核定、沒登記、沒有待審或已核准的請假出差忘打卡單、不是國定假日）只提醒、不動金額；
+ *     生效日起有疑似沒處理 → 鎖月擋（句 22）。已認定的曠職不被「請假單和請假登記對不上」擋。
+ *   ‧沒有曠職的月份：金額每一欄跟主線相同（不可降的標準 1）。
+ * 手算（示意薪資，不是任何同仁）：正職底薪 32,000、績效上限 2,000、其他加給 0、每日倒扣 100；12 月班表週一到週五上班（A 班 8 小時）、週六休息日、週日例假，12/25 國定假日。
+ *   H1 曠職 1 天（12/10）：底薪 32,000 不變；績效 0（績效獎金（當月有曠職））；扣款列「曠職扣款算法待確認」0 → 應發 34,000 − 2,000 ＝ 32,000
+ *   H2 短班 4 小時曠職：同 H1（扣多少待主管確認）
+ *   H3 12/16 到職、曠職 1 天：績效 0、扣款 0；底薪＝沒有曠職時的同一個數
+ *   H4 連續 3 天曠職（12/9–12/11）：績效 0；已認定連續 3 天／本月 3 天（句 18）
+ *   H5 計時（小辛辣，滿勤勾選、時數 ≥ 100）：沒曠職有滿勤加給 時數×10；曠職 1 天 → 沒有滿勤加給
+ *   H6 疑似（12/15 沒處理）：金額跟主線相同；鎖月擋句 22「下面 1 天是疑似曠職還沒處理…：12/15 測試甲」；認定後可以鎖
+ *   H7 認定後重新核定成病假 8 小時：曠職沒了、扣款列沒了；病假扣 8 × 142 × 0.5 ＝ 568
+ *   H8 小辛辣假別表把曠職設「按天遞減」：績效 2,000 − 100 ＝ 1,900
+ * 全部虛構門市與同仁（測試甲～丁）。
+ */
+'use strict';
+const fs = require('fs'), path = require('path'), vm = require('vm'), cp = require('child_process');
+
+let pass = 0, fail = 0;
+const eq = (got, want, m) => {
+  const g = JSON.stringify(got), w = JSON.stringify(want);
+  if (g === w) { pass++; console.log('✓ ' + m); } else { fail++; console.log('✗ ' + m + '\n   實際 ' + g.slice(0, 2000) + '\n   規則要 ' + w.slice(0, 2000)); }
+};
+const J = (x) => JSON.parse(JSON.stringify(x));
+const KEY = 'test-admin-key';
+const ROOT = path.join(__dirname, '..');
+const AS = path.join(ROOT, 'apps-script');
+const BASE = process.env.KZ_BASE || 'f21cc25';
+const cur = (f) => fs.readFileSync(path.join(AS, f), 'utf8');
+const old = (f) => cp.execFileSync('git', ['-C', ROOT, 'show', BASE + ':apps-script/' + f], { encoding: 'utf8', maxBuffer: 64 << 20 });
+const SRC = { now: { C: cur('Code.gs'), P: cur('Payroll.gs'), R: cur('Requests.gs'), SP: cur('SchedPub.gs') },
+              base: { C: old('Code.gs'), P: old('Payroll.gs'), R: old('Requests.gs'), SP: old('SchedPub.gs') } };
+
+/** 跟 helpers/payroll-vm.js 同一套假環境，但 Code／Payroll／Requests／SchedPub 可以換版本 */
+function load(src, opt) {
+  const props = opt.props || {};
+  const sb = {
+    console, Logger: { log() {} },
+    SpreadsheetApp: { getActive: () => ({ getSheetByName: () => null }), openById: () => ({ getSheetByName: () => null }), flush() {} },
+    Utilities: { formatDate: (d) => { const p = (n) => ('0' + n).slice(-2); const t = new Date(d.getTime() + 8 * 3600000); return t.getUTCFullYear() + '-' + p(t.getUTCMonth() + 1) + '-' + p(t.getUTCDate()); } },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => (k in props ? props[k] : null), setProperty() {} }) },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
+    CacheService: { getScriptCache: () => ({ get: () => null, put() {} }) },
+    __DATA: J(opt.data), __CLOCK: J(opt.clock), __TODAY: opt.today || '2027-01-05', __PUB: J(opt.pub || {}), __COUNT: {},
+  };
+  vm.createContext(sb);
+  vm.runInContext(src.C + '\n' + src.P + '\n' + src.R + '\n' + src.SP, sb, { filename: 'clock.gs' });
+  vm.runInContext(`
+    payRead = function(kind){ __COUNT['payRead:'+kind]=(__COUNT['payRead:'+kind]||0)+1; return (__DATA[kind]||[]).map(function(r){return Object.assign({},r)}); };
+    payReplaceAll = function(kind, rows){ __DATA[kind]=rows.map(function(r){return Object.assign({},r)}); };
+    payAppend = function(kind, rows){ __DATA[kind]=(__DATA[kind]||[]).concat(rows); };
+    payWriteLocked_ = function(kinds, fn){ fn(); return true; };
+    payClockRead = function(store, sheet){ __COUNT['clock:'+sheet]=(__COUNT['clock:'+sheet]||0)+1; return ((__CLOCK[store]||{})[sheet]||[]).map(function(r){return Object.assign({},r)}); };
+    payHasClock = function(){ return true; };
+    payEmpStoresMap = function(){ return {}; };
+    todayTaipeiStr = function(){ return __TODAY; };
+    nowTaipeiIso = function(){ return __TODAY+'T09:00:00+08:00'; };
+    payYesterday_ = function(){ var d=new Date(__TODAY+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()-1); return d.toISOString().slice(0,10); };
+    schedPubLoad_ = function(){ return JSON.parse(JSON.stringify(__PUB)); };
+    CONFIG.ADMIN_KEY = ${JSON.stringify(KEY)};
+    paySchedMissingAll_=function(){return [];}; payUnapprovedAll_=function(){return [];}; payCompNegatives=function(){return [];};
+  `, sb);
+  sb.post = (fn, body) => J(vm.runInContext(fn, sb)(Object.assign({ admin_key: KEY }, body)));
+  sb.call = (fn, ...a) => J(vm.runInContext(fn, sb)(...a));
+  return sb;
+}
+
+/* ── 班表：期別 T02＝11/29–12/26、T03＝12/27–2027/01/23；週一～五 W（A 班 10:00–19:00 休 60＝8 小時）、週六 H、週日 R ── */
+const PERIODS = { T01: '2026-11-01', T02: '2026-11-29', T03: '2026-12-27' };
+const addDays = (d, n) => new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) + n * 86400000).toISOString().slice(0, 10);
+const dow = (d) => new Date(d + 'T00:00:00Z').getUTCDay();
+const cellOf = (d, marks) => (marks && marks[d]) || (dow(d) === 0 ? { t: 'R' } : dow(d) === 6 ? { t: 'H' } : { t: 'W', s: 'A' });
+function pubRows(code, people) {
+  const out = {};
+  Object.keys(PERIODS).forEach((p) => {
+    out[code + '|' + p] = { shifts: [{ id: 'A', name: 'A 班', start: '10:00', end: '19:00', break_min: 60 }],
+      rows: people.map((x) => ({ emp_id: x.id, name: x.name, cells: Array.from({ length: 28 }, (_, i) => cellOf(addDays(PERIODS[p], i), x.marks)) })) };
+  });
+  return out;
+}
+const ft = (o) => Object.assign({ emp_id: 'E01', name: '測試甲', is_full_time: 'true', base: 32000, skill_allow: 0, night_allow: 0, mgr_allow: 0, attend_cap: 2000,
+  ot_rate: 240, wage: 0, labor_ins: 0, health_ins: 0, group_ins: 0, pension: 0, dormitory: 0, hire_date: '2021-06-15', leave_date: '', meal_allow: 0, active: 'true', store: 'SSLGF' }, o || {});
+const pt = (o) => ft(Object.assign({ emp_id: 'P01', name: '測試丙', is_full_time: 'false', base: 0, attend_cap: 0, wage: 200 }, o || {}));
+const AP = (date, id, h, st) => ({ date, emp_id: id, name: '', periods: h ? '10:00-' + (10 + h + 1) + ':00' : '', approved_hours: h, status_text: st || (h ? '正常' : '全天請假'), manager_name: '店長甲', entered_at: date + 'T23:00:00+08:00' });
+const LV = (date, name, type, h) => ({ '日期': date, '姓名': name, '假別': type, '時數': h });
+const decDays = () => { const o = []; for (let i = 1; i <= 31; i++) o.push('2026-12-' + ('0' + i).slice(-2)); return o; };
+const workDays = (marks) => decDays().filter((d) => cellOf(d, marks).t === 'W' && d !== '2026-12-25');
+const HOL = () => [{ ym: '2026-11', red_days: 9, note: '', dates: '', store: '' }, { ym: '2026-12', red_days: 9, note: '', dates: '2026-12-25', store: '' }];
+const STORES = () => [{ code: 'SSLGF', name: '小辛辣光復', clock_ss_id: '', emp_prefix: '', active: 'true', support_group: 'sxl' }];
+
+/** o：master（陣列）、skip（{emp:[日期]} 不核定的上班日）、extraAp、leave、requests、events、marks、leaveType、ym 用不到 */
+function scene(o) {
+  o = o || {};
+  const master = o.master || [ft()];
+  const approved = [];
+  master.forEach((m) => workDays((o.marks || {})[m.emp_id]).forEach((d) => {
+    if (((o.skip || {})[m.emp_id] || []).indexOf(d) < 0) approved.push(AP(d, m.emp_id, m.is_full_time === 'true' ? 8 : 6));
+  }));
+  (o.extraAp || []).forEach((x) => approved.push(x));
+  const people = master.map((m) => ({ id: m.emp_id, name: m.name, marks: (o.marks || {})[m.emp_id] }));
+  return {
+    data: { master, xmap: [], store: STORES(), holiday: HOL(), config: o.config || [], run: [], item: [], input: [], bonus: [], audit: [],
+            leave_type: o.leaveType || [], leave_span: [], leave_event: [], cost_snapshot: [] },
+    clock: { SSLGF: { roster: master.map((m) => ({ emp_id: m.emp_id, name: m.name, active: 'true' })), events: o.events || [], approved,
+                      leave: o.leave || [], requests: o.requests || [] } },
+    pub: pubRows('', people),
+  };
+}
+const envOf = (sc, which, props, today) => load(SRC[which], { data: sc.data, clock: sc.clock, pub: sc.pub, props: props || {}, today });
+const ON = { KUANGZHI_FROM: '2026-12-01' };
+const calc = (s, ym, inputs) => s.post('handlePayrollCalc', { ym: ym || '2026-12', store: 'SSLGF', inputs: inputs || {} });
+const one = (r, id) => (r.results || []).find((x) => x.emp_id === (id || 'E01'));
+const item = (x, key) => [].concat(x.earn, x.ded).find((i) => i.item_key === key);
+const money = (r) => (r.results || []).map((x) => [x.emp_id, x.gross, x.deduction, x.net, x.earn.map((i) => [i.item_key, i.item_label, i.qty, i.amount]), x.ded.map((i) => [i.item_key, i.item_label, i.qty, i.amount])]);
+const lock = (s, ym) => s.post('handlePayrollFinalize', { ym: ym || '2026-12', store: 'SSLGF', lock: true, operator: '測試' });
+const KZ_NAME = '績效獎金（當月有曠職）', PEND = '曠職扣款算法待確認';
+
+console.log('══ ① 開關沒設／壞值：跟主線 ' + BASE + ' 逐字相同（驗收 1）══');
+{
+  // 一個月裡什麼都有：疑似（12/15 沒來沒單）、手填的「曠職」登記（12/10，今天的系統當成對不到假別）、事假、遲到
+  const sc = scene({ master: [ft(), ft({ emp_id: 'E02', name: '測試乙' }), pt()], skip: { E01: ['2026-12-10', '2026-12-15'], E02: ['2026-12-11'] },
+    extraAp: [AP('2026-12-10', 'E01', 0), AP('2026-12-11', 'E02', 0)],
+    leave: [LV('2026-12-10', '測試甲', '曠職', 8), LV('2026-12-11', '測試乙', '事假', 8)],
+    requests: [{ id: 'R1', emp_id: 'E02', name: '測試乙', kind: 'leave', leave_type: '事假', date: '2026-12-11', hours: 8, status: 'approved', voided_at: '' }] });
+  const base = envOf(sc, 'base');
+  const bCalc = calc(base), bNov = calc(base, '2026-11'), bLT = base.post('handlePayrollLeaveTypeGet', { store: 'SSLGF' });
+  const bOpt = base.post('handlePayrollLeaveOptions', { store: 'SSLGF', ym: '2026-12' });
+  calc(base); const bLock = lock(base);
+  for (const [label, props] of [['沒設', {}], ['空白', { KUANGZHI_FROM: '' }], ['on', { KUANGZHI_FROM: 'on' }], ['2026-12-32', { KUANGZHI_FROM: '2026-12-32' }], ['2026/12/01', { KUANGZHI_FROM: '2026/12/01' }]]) {
+    const s = envOf(sc, 'now', props);
+    eq(calc(s), bCalc, `${label}：12 月試算整個回應（金額、明細、ot_info、提醒）相同`);
+    eq(calc(s, '2026-11'), bNov, `${label}：11 月試算相同`);
+    eq(s.post('handlePayrollLeaveTypeGet', { store: 'SSLGF' }), bLT, `${label}：假別設定頁回應相同（沒有曠職列、沒有 kz_on）`);
+    eq(s.post('handlePayrollLeaveOptions', { store: 'SSLGF', ym: '2026-12' }), bOpt, `${label}：核定頁假別下拉回應相同`);
+    calc(s); eq(lock(s), bLock, `${label}：鎖定回應相同`);
+    eq(s.__DATA.run.map((r) => [r.emp_id, r.gross, r.net, r.ot_info]), base.__DATA.run.map((r) => [r.emp_id, r.gross, r.net, r.ot_info]), `${label}：寫進 run 的草稿列相同`);
+  }
+  eq(bCalc.ok, true, '對照：主線試算成功（比對有東西）');
+}
+
+console.log('\n══ ② 開關開、沒有曠職的月份：金額每一欄跟主線相同（不可降的標準 1）══');
+{
+  const clean = scene({ master: [ft(), pt()] });
+  eq(calc(envOf(clean, 'now', ON)), calc(envOf(clean, 'base')), '12 月全勤（沒有疑似、沒有曠職）：整個回應相同');
+  const susp = scene({ master: [ft(), pt()], skip: { E01: ['2026-12-15'], P01: ['2026-12-16'] } });
+  const a = calc(envOf(susp, 'now', ON)), b = calc(envOf(susp, 'base'));
+  eq(money(a), money(b), '有疑似、沒有曠職：每人應發、扣款、實發、每一列明細相同');
+  eq([one(a).ot_info.kz_suspect, one(a).ot_info.no_show, one(b).ot_info.no_show], [['2026-12-15'], [], ['2026-12-15']], '差別只在提醒：舊的「有排班沒核定」換成疑似曠職清單');
+  const nov = scene({ master: [ft()], skip: { E01: [] }, leave: [LV('2026-11-20', '測試甲', '曠職', 8)], extraAp: [AP('2026-11-20', 'E01', 0)] });
+  eq(calc(envOf(nov, 'now', ON), '2026-11'), calc(envOf(nov, 'base'), '2026-11'), '11 月（生效日之前）有手填曠職登記：照改之前，整個回應相同（第 11 題不回溯）');
+}
+
+/** H 系列共用：E01 12/10 認定曠職（核定 0＋leave 曠職 8）；sh＝短班時數 */
+const kzScene = (days, o) => {
+  o = o || {};
+  const h = o.h || 8;
+  return scene(Object.assign({ skip: { E01: days }, extraAp: days.map((d) => AP(d, 'E01', 0)), leave: days.map((d) => LV(d, '測試甲', '曠職', h)) }, o));
+};
+console.log('\n══ ③ 手算對照（績效、扣款佔位）══');
+{
+  const n0 = one(calc(envOf(scene(), 'now', ON)));
+  eq([item(n0, 'base_salary').amount, item(n0, 'attend_bonus').item_label, item(n0, 'attend_bonus').amount, n0.gross], [32000, '績效獎金', 2000, 34000], 'H0 對照：全勤 底薪 32,000＋績效 2,000＝34,000');
+  const r1 = one(calc(envOf(kzScene(['2026-12-10']), 'now', ON)));
+  eq([item(r1, 'base_salary').amount, item(r1, 'attend_bonus').item_label, item(r1, 'attend_bonus').amount, item(r1, 'absent_deduct'), r1.gross, r1.deduction],
+    [32000, KZ_NAME, 0, { item_key: 'absent_deduct', item_label: PEND, qty: null, rate: null, amount: 0 }, 32000, 0], 'H1 曠職 1 天：底薪不變、績效 0（句 20）、扣款佔位 0 → 應發 32,000');
+  eq([r1.ot_info.kz_marked, r1.ot_info.kz_pending, r1.ot_info.kz_marked_alert, r1.ot_info.kz_suspect, r1.ot_info.no_show], [[{ date: '2026-12-10', h: 8 }], true, false, undefined, []], 'H1 ot_info：已認定 12/10、待確認旗標、沒有疑似');
+  eq(r1.ded.filter((x) => /_leave$/.test(x.item_key)), [], 'H1 一般假別扣款（時數×扣款時薪）沒有套到曠職');
+  const r2 = one(calc(envOf(kzScene(['2026-12-10'], { h: 4 }), 'now', ON)));
+  eq([item(r2, 'attend_bonus').amount, item(r2, 'absent_deduct').amount, r2.gross, r2.ot_info.kz_marked], [0, 0, 32000, [{ date: '2026-12-10', h: 4 }]], 'H2 短班 4 小時：同 H1（扣多少待主管確認）');
+  const mid = (sc) => one(calc(envOf(sc, 'now', ON)));
+  const r3n = mid(scene({ master: [ft({ hire_date: '2026-12-16' })] })), r3 = mid(kzScene(['2026-12-17'], { master: [ft({ hire_date: '2026-12-16' })] }));
+  eq([item(r3, 'attend_bonus').amount, item(r3, 'absent_deduct').amount, item(r3, 'base_salary').amount === item(r3n, 'base_salary').amount], [0, 0, true], 'H3 月中到職、曠職 1 天：績效 0、扣款 0、底薪跟沒曠職時一樣');
+  const r4 = one(calc(envOf(kzScene(['2026-12-09', '2026-12-10', '2026-12-11']), 'now', ON)));
+  eq([item(r4, 'attend_bonus').amount, r4.ot_info.kz_marked.length, r4.ot_info.kz_marked_streak, r4.ot_info.kz_marked_alert], [0, 3, 3, true], 'H4 連續 3 天：績效 0、連續 3 天、到門檻（句 18）');
+  const r4b = one(calc(envOf(kzScene(['2026-12-04', '2026-12-08', '2026-12-10']), 'now', ON)));
+  eq([r4b.ot_info.kz_marked_streak, r4b.ot_info.kz_marked_alert], [1, false], 'H4b 3 天但中間有上班日：連續 1 天、沒到門檻');
+  const r4c = one(calc(envOf(kzScene(['2026-12-11', '2026-12-14']), 'now', ON)));
+  eq(r4c.ot_info.kz_marked_streak, 2, 'H4c 週五＋下週一（中間是休息日、例假）：連續 2 天（休假日不斷）');
+  // H5 計時滿勤加給：P01 每個上班日 6 小時（22 天＝132 小時 ≥ 100）
+  const ptSc = (days) => scene({ master: [pt()], skip: { P01: days }, extraAp: days.map((d) => AP(d, 'P01', 0)), leave: days.map((d) => LV(d, '測試丙', '曠職', 6)) });
+  const r5n = one(calc(envOf(ptSc([]), 'now', ON), '2026-12', { P01: { full_attend: true } }), 'P01');
+  const r5 = one(calc(envOf(ptSc(['2026-12-10']), 'now', ON), '2026-12', { P01: { full_attend: true } }), 'P01');
+  eq([!!item(r5n, 'pt_attend_plus'), item(r5n, 'pt_attend_plus') && item(r5n, 'pt_attend_plus').amount], [true, 1320], 'H5 對照：計時沒曠職有滿勤加給 132 小時（22 個上班日 × 6）× 10 ＝ 1,320');
+  eq([item(r5, 'pt_attend_plus'), item(r5, 'absent_deduct').amount, r5.ot_info.kz_marked], [undefined, 0, [{ date: '2026-12-10', h: 6 }]], 'H5 計時曠職 1 天：沒有滿勤加給（第 7 題 C）、扣款佔位 0（6-4 計時不另外處理）');
+  // H8 小辛辣假別表把曠職設「按天遞減」
+  const LT = [
+    { code: 'personal', name: '事假', pay_ratio: 0, count_absent: true, offset_shortfall: true, active: true, sort: 10, store: '' },
+    { code: 'absent', name: '曠職', pay_ratio: 0, count_absent: true, offset_shortfall: false, attend_effect: 'deduct', active: true, sort: 20, store: '' },
+  ];
+  const r8 = one(calc(envOf(kzScene(['2026-12-10'], { leaveType: LT }), 'now', ON)));
+  eq([item(r8, 'attend_bonus').item_label, item(r8, 'attend_bonus').amount, item(r8, 'absent_deduct').amount], ['績效獎金', 1900, 0], 'H8 假別表把曠職設按天遞減：2,000 − 100 ＝ 1,900');
+  const r8b = one(calc(envOf(kzScene(['2026-12-10'], { leaveType: [Object.assign({}, LT[1], { pay_ratio: 1, attend_effect: 'void' })] }), 'now', ON)));
+  eq([item(r8b, 'attend_bonus').amount, item(r8b, 'absent_deduct').amount, r8b.ded.filter((x) => /_leave$/.test(x.item_key))], [0, 0, []], 'H8b 假別表曠職給薪比例怎麼設都不走一般扣款（只走 payKzDeduct_）');
+}
+
+console.log('\n══ ④ 疑似曠職：只提醒、鎖月擋（第 3、8 題）══');
+{
+  const sc = scene({ skip: { E01: ['2026-12-15'] } });
+  const s = envOf(sc, 'now', ON);
+  const r = calc(s);
+  eq([one(r).ot_info.kz_suspect, one(r).ot_info.kz_suspect_alert, one(r).gross], [['2026-12-15'], false, 34000], 'H6 12/15 疑似：列進清單、金額不動（績效照給）');
+  const L = lock(s);
+  eq([L.ok, L.error, L.message], [false, 'kz_suspect', '下面 1 天是疑似曠職還沒處理，不能鎖定（請主管補單、核定，或認定曠職；班表排錯的請先改班表並發布）：12/15 測試甲'], 'H6 鎖月擋，句 22 逐字');
+  // 認定後：核定 0＋leave 曠職 → 不再疑似、可以鎖、也不被「請假單和請假登記對不上」擋
+  const sc2 = kzScene(['2026-12-15']);
+  const s2 = envOf(sc2, 'now', ON);
+  calc(s2);
+  const L2 = lock(s2);
+  eq([L2.ok, L2.error || ''], [true, ''], 'H6b 認定後可以鎖（沒有疑似、請假對不上豁免曠職）');
+  eq(s2.call('payLeaveMismatch_', '2026-12', 'SSLGF'), [], 'H6c 「請假單和請假登記對不上」不列曠職');
+  // 兩人兩天
+  const sc3 = scene({ master: [ft(), ft({ emp_id: 'E02', name: '測試乙' })], skip: { E01: ['2026-12-18'], E02: ['2026-12-17', '2026-12-18'] } });
+  const s3 = envOf(sc3, 'now', ON); calc(s3);
+  eq(lock(s3).message, '下面 3 天是疑似曠職還沒處理，不能鎖定（請主管補單、核定，或認定曠職；班表排錯的請先改班表並發布）：12/17 測試乙、12/18 測試甲、12/18 測試乙', 'H6d 多人多天：照日期、姓名排');
+  // 草稿之後才補了單：疑似清單跟草稿不同 → stale_run（要重算）
+  const s4 = envOf(scene({ skip: { E01: ['2026-12-15'] } }), 'now', ON); calc(s4);
+  s4.__CLOCK.SSLGF.requests.push({ id: 'R9', emp_id: 'E01', name: '測試甲', kind: 'leave', leave_type: '病假', date: '2026-12-15', hours: 8, status: 'pending', voided_at: '' });
+  eq(lock(s4).error, 'stale_run', 'H6e 試算後同仁補了單：疑似清單變了 → 先擋 stale_run 要求重算');
+  // 規則細節（第 3 題）
+  const rule = (o) => one(calc(envOf(scene(Object.assign({ skip: { E01: ['2026-12-15'] } }, o)), 'now', ON))).ot_info.kz_suspect;
+  eq(rule({ events: [{ ts: '2026-12-15T10:02:00+08:00', emp_id: 'E01', type: 'in', status: 'ok' }] }), undefined, '3-4 只有上班卡：不算疑似');
+  eq(rule({ events: [{ ts: '2026-12-15T10:02:00+08:00', emp_id: 'E01', type: 'in', status: 'rejected' }] }), undefined, '被擋的卡也算有打卡：不算疑似');
+  eq(rule({ events: [{ ts: '2026-12-16T05:30:00+08:00', emp_id: 'E01', type: 'out', status: 'ok' }] }), undefined, '隔天 05:30 下班卡算前一天：不算疑似');
+  eq(rule({ requests: [{ id: 'R1', emp_id: 'E01', name: '測試甲', kind: 'miss', date: '2026-12-15', status: 'pending', voided_at: '' }] }), undefined, '3-3 有待審忘打卡單：不算疑似');
+  eq(rule({ requests: [{ id: 'R1', emp_id: 'E01', name: '測試甲', kind: 'leave', leave_type: '病假', date: '2026-12-15', status: 'rejected', voided_at: '' }] }), ['2026-12-15'], '被退回的單：回到疑似');
+  eq(rule({ requests: [{ id: 'R1', emp_id: 'E01', name: '測試甲', kind: 'ot', date: '2026-12-15', status: 'approved', voided_at: '' }] }), ['2026-12-15'], '加班單不算「有單」：仍是疑似');
+  eq(rule({ marks: { E01: { '2026-12-15': { t: 'H', s: 'A' } } } }), undefined, '3-1 休息日排班沒來：不算疑似');
+  eq(rule({ marks: { E01: { '2026-12-15': { t: 'L', l: '特' } } } }), undefined, '班表排請假：不算疑似');
+  eq(one(calc(envOf(scene({ skip: { E01: ['2026-12-25'] } }), 'now', ON))).ot_info.kz_suspect, undefined, '3-6 國定假日（12/25）排上班沒來：不算疑似');
+  const rg = scene({ skip: { E01: ['2026-12-15'] } });
+  rg.data.store = [{ code: 'MZTRG', name: '墨竹亭瑞光', clock_ss_id: '', emp_prefix: '', active: 'true', support_group: 'mzt' }];
+  rg.data.master = rg.data.master.map((m) => Object.assign({}, m, { store: 'MZTRG' }));
+  rg.clock = { MZTRG: rg.clock.SSLGF }; rg.pub = pubRows('mztrg', [{ id: 'E01', name: '測試甲' }]);
+  eq(one(load(SRC.now, { data: rg.data, clock: rg.clock, pub: rg.pub, props: ON }).post('handlePayrollCalc', { ym: '2026-12', store: 'MZTRG' })).ot_info.kz_suspect, undefined, '3-6 瑞光 2027-01-01 前：不算疑似');
+  const half = envOf(scene({ skip: { E01: ['2026-12-15'] } }), 'now', ON, '2026-12-10');
+  eq(one(half.post('handlePayrollCalc', { ym: '2026-12', store: 'SSLGF' })).ot_info.kz_suspect, undefined, '月中草稿（今天 12/10、算到 12/9）：12/15 還沒到，不列');
+  // 第 10 題 B：疑似達門檻（句 19）
+  const r10 = one(calc(envOf(scene({ skip: { E01: ['2026-12-14', '2026-12-15', '2026-12-16'] } }), 'now', ON)));
+  eq([r10.ot_info.kz_suspect_streak, r10.ot_info.kz_suspect_alert, r10.ot_info.absent_alert], [3, true, false], '第 10 題 B：疑似連續 3 天到門檻（句 19）；舊的紅字不再出現');
+}
+
+console.log('\n══ ⑤ 生效日在月中（開關設 2026-12-15）══');
+{
+  const sc = scene({ skip: { E01: ['2026-12-08', '2026-12-10', '2026-12-16'] }, extraAp: [AP('2026-12-10', 'E01', 0)], leave: [LV('2026-12-10', '測試甲', '曠職', 8)] });
+  const r = one(calc(envOf(sc, 'now', { KUANGZHI_FROM: '2026-12-15' })));
+  eq([r.ot_info.no_show, r.ot_info.kz_suspect, r.ot_info.kz_marked, item(r, 'attend_bonus').item_label, item(r, 'attend_bonus').amount, item(r, 'absent_deduct')],
+    [['2026-12-08'], ['2026-12-16'], undefined, '績效獎金', 1900, undefined], '12/15 之前：舊提醒、12/10 的曠職登記照改之前（對不到假別＝缺勤 1 天倒扣 100）；12/15 起：疑似');
+}
+
+console.log('\n══ ⑥ 重新核定成病假（第 12 題 A）══');
+{
+  const sc = scene({ skip: { E01: ['2026-12-10'] }, extraAp: [AP('2026-12-10', 'E01', 0)], leave: [LV('2026-12-10', '測試甲', '病假', 8)],
+    requests: [{ id: 'R1', emp_id: 'E01', name: '測試甲', kind: 'leave', leave_type: '病假', date: '2026-12-10', hours: 8, status: 'approved', voided_at: '' }] });
+  const r = one(calc(envOf(sc, 'now', ON)));
+  eq([item(r, 'absent_deduct'), item(r, 'sick_leave') && item(r, 'sick_leave').amount, item(r, 'sick_leave') && item(r, 'sick_leave').item_label, r.ot_info.kz_marked, r.ot_info.kz_pending],
+    [undefined, 568, '病假', undefined, undefined], 'H7 曠職改成病假 8 小時：曠職、佔位都沒了；病假扣 8 × 142 × 0.5 ＝ 568');
+}
+
+console.log('\n══ ⑦ 假別表與下拉（第 5 題 A：表上有資料也自動補；選不到）══');
+{
+  const TBL = [{ code: 'personal', name: '事假', pay_ratio: 0, count_absent: true, offset_shortfall: true, active: true, sort: 10, store: '', note: '自訂' },
+               { code: 'sick', name: '病假', pay_ratio: 0.5, count_absent: true, offset_shortfall: true, active: true, sort: 20, store: '', note: '' }];
+  const s = envOf(scene({ leaveType: TBL }), 'now', ON);
+  const lt = s.call('payLeaveTypes', 'SSLGF');
+  eq(lt.map((t) => t.code), ['personal', 'sick', 'comp', 'absent'], '表上有資料（沒有曠職）：自動補內建曠職列（排最後）');
+  eq(lt.filter((t) => t.code === 'absent').map((t) => [t.name, t.pay_ratio, t.count_absent, t.offset_shortfall, t.attend_effect, t.count_meal_day, t.note]),
+    [['曠職', 0, true, false, 'void', true, '曠職：主管在核定頁認定的無故缺勤。只能由「認定曠職」按鈕產生，一般假別下拉與同仁請假單都選不到。']], '內建曠職列：對全勤＝整筆歸零、說明＝句 23');
+  const base = envOf(scene({ leaveType: TBL }), 'base').call('payLeaveTypes', 'SSLGF');
+  eq(lt.filter((t) => t.code !== 'absent'), base, '表上既有的各列設定值一個都沒變');
+  eq(s.__DATA.leave_type, TBL, '假別表本身沒有被寫（只在計算時補）');
+  const off = envOf(scene({ leaveType: TBL.concat([{ code: 'absent', name: '曠職', active: false, store: '' }]) }), 'now', ON).call('payLeaveTypes', 'SSLGF');
+  eq(off.some((t) => t.code === 'absent'), false, '表上有曠職但停用：尊重設定、不補');
+  const opt = s.post('handlePayrollLeaveOptions', { store: 'SSLGF', ym: '2026-12' });
+  eq([opt.ok, opt.types.some((t) => t.name === '曠職')], [true, false], '核定頁假別下拉（payroll_leave_options）：沒有曠職');
+  const get = s.post('handlePayrollLeaveTypeGet', { store: 'SSLGF' });
+  eq([get.kz_on, get.types.some((t) => t.code === 'absent')], [true, true], '假別設定頁：看得到曠職列、帶 kz_on（畫面顯示句 23）');
+  const q = s.call('payMyLeaveQuota', 'E01', '測試甲', '2026-12', 'SSLGF');
+  eq(JSON.stringify(q).indexOf('曠職'), -1, '同仁的假別額度卡：不列曠職');
+}
+
+console.log('\n══ ⑧ 扣款隔離與上線檢查（主管改定第 6-1 題，待確認）══');
+{
+  const s = envOf(scene(), 'now', ON);
+  eq(s.call('payKzDeduct_', ft(), '2026-12', [{ date: '2026-12-10', h: 8 }, { date: '2026-12-11', h: 4 }], {}), [{ item_key: 'absent_deduct', item_label: PEND, qty: null, rate: null, amount: 0 }], '待確認時：不管幾天幾小時，金額都是 0、名稱是佔位字');
+  eq(s.call('payKzDeduct_', ft(), '2026-12', [], {}), [], '沒有曠職：不加任何列');
+  eq(s.call('payKzReleaseProblems_').length, 1, '旗標還在：上線檢查有 1 個問題');
+  const P = cur('Payroll.gs');
+  eq((P.match(/payKzDeduct_\(/g) || []).length, 2, '扣多少只有一個地方算（payKzDeduct_ 定義＋一處呼叫）');
+}
+
+console.log('\n══ ⑨ 薪資頁字逐字照逐句表（句 16–20、22、23）══');
+{
+  const H = fs.readFileSync(path.join(ROOT, 'payroll.html'), 'utf8'), P = cur('Payroll.gs');
+  [['句 16', '：疑似曠職（有排班、沒打卡、沒有任何單）${list(o.kz_suspect)}——請主管到核定頁處理（補單或認定曠職）</li>'],
+   ['句 17', '：已認定曠職 ${o.kz_marked.length} 天 ${list(o.kz_marked.map(x=>x.date))}</li>'],
+   ['句 18', '：已認定曠職連續 ${Number(o.kz_marked_streak)||0} 天／本月 ${o.kz_marked.length} 天，已達連續 3 天或當月 6 天，後續怎麼處理請人資確認</li>'],
+   ['句 19', '：疑似曠職 ${o.kz_suspect.length} 天（最長連續 ${Number(o.kz_suspect_streak)||0} 天），已達連續 3 天或當月 6 天，請確認是否曠職</li>'],
+   ['句 23', '曠職：主管在核定頁認定的無故缺勤。只能由「認定曠職」按鈕產生，一般假別下拉與同仁請假單都選不到。']].forEach(([k, t]) => eq(H.indexOf(t) > 0, true, k + ' 在 payroll.html'));
+  eq(P.indexOf("'當月有曠職'") > 0 && P.indexOf("'（' + voidReason + '）'") > 0, true, '句 20：績效獎金（當月有曠職）');
+  eq(P.indexOf("' 天是疑似曠職還沒處理，不能鎖定（請主管補單、核定，或認定曠職；班表排錯的請先改班表並發布）：'") > 0, true, '句 22 在 Payroll.gs');
+}
+
+console.log('\n' + pass + ' 過、' + fail + ' 失敗');
+if (fail) process.exit(1);
