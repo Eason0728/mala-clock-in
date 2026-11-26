@@ -371,7 +371,7 @@ console.log('\n════ 十之二、休息中打了短短一段再回來（�
   check('G2', G.points.length + ' 點 × 班表一段休 60／一段沒填休息／兩段：打卡端核定狀態、遲到、缺卡張數、要不要選原因、選了原因後 8 小時＝案例（營運系統那邊同一份驗預填）', bad, []);
   check('G3', '共用案例檔 sha256（mala-store-ops test/server/late-lead.test.js 釘同一個值；兩份逐字相同）',
     require('crypto').createHash('sha256').update(fs.readFileSync(path.join(__dirname, 'fixtures', 'late-lead-cases-v1.json'))).digest('hex'),
-    '05584fbd5dbd2e66f08333796aa7ab9ef0eac02f8dcfd97c5108a4a3e9ddbfa9');
+    '3c9cf1db23fabea33c9acf062386e58f9d91b8f95fb850b0ebf836f220d896c2');
 }
 
 console.log('\n════ 九、薪資：遲到 240 分流進薪資、計時不多發不重複扣 ════');

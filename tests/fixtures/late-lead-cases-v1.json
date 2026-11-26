@@ -113,6 +113,14 @@
       "periods": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "late": 240, "ok": false, "error": "need_diff_reason", "status": "遲到240分、有多出的打卡段", "lead": true, "need_miss": 0 },
     { "id": "L22", "desc": "同 L20、班表兩段 08–12、13–17：跟 L20 一樣（第 1 題 A）", "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" },
       "plan": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "punches": [{ "in": "12:16", "out": "12:27" }, { "in": "13:00", "out": "17:00" }], "reqs": [], "leaves": [],
-      "periods": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "late": 240, "ok": false, "error": "need_diff_reason", "status": "遲到240分、有多出的打卡段", "lead": true, "need_miss": 0 }
+      "periods": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "late": 240, "ok": false, "error": "need_diff_reason", "status": "遲到240分、有多出的打卡段", "lead": true, "need_miss": 0 },
+    { "id": "L23", "desc": "休息中短打 12:16–12:27、13:00 回來＋上午有已核准 08:00 上班忘打卡單（Codex 第二輪擋項 1）、班表兩段：打卡端照忘打卡單不套新規則 → 營運系統照主線只預填 13–17（不再預填 8 小時被擋）", "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" },
+      "plan": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "punches": [{ "in": "12:16", "out": "12:27" }, { "in": "13:00", "out": "17:00" }],
+      "reqs": [{ "kind": "miss", "miss_type": "in", "start": "08:00", "end": "" }], "leaves": [],
+      "periods": [{ "start": "13:00", "end": "17:00" }], "late": 0, "ok": false, "error": "need_diff_reason", "status": "有多出的打卡段", "lead": false, "need_miss": 0 },
+    { "id": "L24", "desc": "同樣打卡＋上午有已核准事假 10:00–11:00（Codex 第二輪擋項 2）、班表兩段：核 08–10、11–12、13–17＝7 小時，遲到 180（假單時段不算遲到，卡片＝打卡端）", "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" },
+      "plan": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "punches": [{ "in": "12:16", "out": "12:27" }, { "in": "13:00", "out": "17:00" }],
+      "reqs": [{ "kind": "leave", "leave_type": "事假", "start": "10:00", "end": "11:00", "hours": 1 }], "leaves": [{ "type": "事假", "hours": 1 }],
+      "periods": [{ "start": "08:00", "end": "10:00" }, { "start": "11:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "late": 180, "ok": false, "error": "need_diff_reason", "status": "遲到180分、有多出的打卡段", "lead": true, "need_miss": 0 }
   ]
 }
