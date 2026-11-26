@@ -242,4 +242,25 @@ console.log('\n══ 十五、Mac mini 核定引擎看得到同一個開關（�
   check('K15', 'relay_pull 帶 KUANGZHI_FROM 原值（有設才帶）', pull({ KUANGZHI_FROM: '2026-12-01' }).KUANGZHI_FROM, '2026-12-01');
   check('K15b', '沒設 → props 沒有這個鍵（回應跟以前一樣）', Object.prototype.hasOwnProperty.call(pull({}), 'KUANGZHI_FROM'), false);
 }
+console.log('\n══ 十六、LINE 出勤班表那天顯示「曠職」（第 9 題 A、句 15）══');
+{
+  const mk = (props) => {
+    const m = make({ now: T('2026-12-08T10:00:00'), hub: true, props: Object.assign({ KUANGZHI_FROM: '2026-12-01' }, props || {}),
+      self: { roster: [ME], events: [], leave: [[D, '測試一', '曠職', 8], ['2026-12-04', '測試一', '病假', 8], ['2026-11-20', '測試一', '曠職', 8], [D, '測試二', '曠職', 8]] } });
+    m.run(R('apps-script/Sched.gs'));
+    m.run('lineHubSS_ = function () { return SpreadsheetApp.openById("SELF"); };');
+    return m;
+  };
+  const days = () => Array.from({ length: 31 }, (_, i) => ({ d: i + 1, code: 'A', label: 'A 班', segs: [['10:00', '19:00']], hours: 8, work: true, rest: false }));
+  const ds = days(); mk().sb.schedKzMark_(ds, [{ st: { code: '' }, row: { name: '測試一' } }], '2026-12');
+  check('K16', '12/3 標 kz（本人、曠職、生效日起）；12/4 病假、別人的曠職不標', ds.filter((x) => x.kz).map((x) => x.d), [3]);
+  const ds2 = days(); mk().sb.schedKzMark_(ds2, [{ st: { code: '' }, row: { name: '測試一' } }], '2026-11');
+  check('K16b', '11 月（生效日之前）的曠職登記不標', ds2.filter((x) => x.kz).length, 0);
+  const ds3 = days(); const m3 = mk(); delete m3.props.KUANGZHI_FROM; m3.sb.schedKzMark_(ds3, [{ st: { code: '' }, row: { name: '測試一' } }], '2026-12');
+  check('K16c', '開關關：一天都不標（回應跟以前一樣）', JSON.stringify(ds3) === JSON.stringify(days()), true);
+  const ds4 = days(); const m4 = mk(); m4.run('lineHubSS_ = function () { throw new Error("讀不到"); };'); m4.sb.schedKzMark_(ds4, [{ st: { code: '' }, row: { name: '測試一' } }], '2026-12');
+  check('K16d', '讀不到那家店：不標、不擋開頁', ds4.filter((x) => x.kz).length, 0);
+  const js = fs.readFileSync(path.join(__dirname, '..', 'sched-line.js'), 'utf8');
+  check('K16e', '前端：後端帶 kz:true 那天多一行「曠職」（沒帶＝畫面不變）', /if \(d\.kz === true\) rows\.push\(h\('div', \{ class: 'sc-row', id: 'scKz' \}, \[h\('span', \{ text: '曠職' \}\)\]\)\);/.test(js), true);
+}
 done();
