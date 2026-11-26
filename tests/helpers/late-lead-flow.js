@@ -31,7 +31,7 @@ function flow(sc) {
     m.self.sh.approved.values.push([D, 'E01', '測試一', sc.periods.map((p) => p.start + '-' + p.end).join(','), 0, sc.st0, '值班主管', sc.approveAt + '+08:00', '', '測試']);
     ap = { ok: true, error: '', st: sc.st0, rules: '' };
   } else try {
-    const r = m.sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: 'E01', periods: sc.periods, leaves: [], late_min: sc.late_min == null ? '' : sc.late_min, diff_reason: '測試' });
+    const r = m.sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: 'E01', periods: sc.periods, leaves: sc.leaves || [], late_min: sc.late_min == null ? '' : sc.late_min, diff_reason: '測試' });
     ap = { ok: !!r.ok, error: r.error || '', st: r.status_text || '', rules: (r.probs || []).map((p) => p.rule).join(',') };
   } catch (e) { ap = { ok: false, error: 'throw:' + String(e.message) }; }
   if (!ap.ok) return { ap, trig };

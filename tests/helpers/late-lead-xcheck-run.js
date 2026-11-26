@@ -1,6 +1,6 @@
 // 上午整段沒到改算遲到（2026-11-26 第四輪）前後端一致性對照的打卡端那半：營運系統預填出來的時段送進這一版（GS_ROOT）的核定檢查。
 // 不是測試本身（run-all 只跑 *.test.js）；tests/late-lead-xcheck.test.js 呼叫。輸入 LATE_XCHECK_IN＝JSON 檔（陣列），輸出 stdout JSON。
-// 每筆：date、brk {start,end}、punches [{in,out}]、reqs [已核准申請]、leaves [{type,hours}]（核定時一起登記的假）、periods [{start,end}]（營運系統預填）、late_min、sched_spans（班表）
+// 每筆：now（核定時刻，沒給＝2026-12-20 10:00）、date、brk {start,end}、punches [{in,out}]、reqs [已核准申請]、leaves [{type,hours}]（核定時一起登記的假）、periods [{start,end}]（營運系統預填）、late_min、sched_spans（班表）
 // 回：ok、error、rules（被擋的規則）、st（核定狀態；被擋的日子也照核定算法直接算）、trig（這一版核定會不會套新規則；改版前＝null）。只用假資料、不連網路。
 'use strict';
 const fs = require('fs');
@@ -10,7 +10,8 @@ const ME = { emp_id: 'E01', name: '測試一', key: 'K1', device_id: 'D1', activ
 function one(c) {
   const D = c.date, evs = [];
   (c.punches || []).forEach((s) => { if (s.in) evs.push([D + 'T' + s.in + ':00', 'E01', 'in']); if (s.out) evs.push([D + 'T' + s.out + ':00', 'E01', 'out']); });
-  const m = make({ now: T('2026-12-20T10:00:00'), props: { REQ_STRICT_FROM: '2026-11-01', REQ_BIND_FROM: '2026-10-01' },
+  const m = make({ now: T(c.now || '2026-12-20T10:00:00'),      // now：核定時刻（第七輪：可以落在上班中）
+    props: { REQ_STRICT_FROM: '2026-11-01', REQ_BIND_FROM: '2026-10-01' },
     config: { NO_PUNCH_BREAK_START: c.brk.start, NO_PUNCH_BREAK_END: c.brk.end }, self: { roster: [ME], events: evs } });
   const sh = m.sb.reqSheet_(m.self, true);
   (c.reqs || []).forEach((r, k) => {

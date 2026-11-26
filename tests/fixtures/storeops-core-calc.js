@@ -93,9 +93,9 @@ export function lateLeadClock(periods, segs, brk, reqs, date, from) {
 /** ② 核定卡片灰字（第 10 題逐句表第 1 句）。periods＝這次要送的核定時段 [{start,end}]；segs＝打卡段；brk＝不打卡休息帶；reqs＝已核准申請；date＝核定的日子。
  *  條件＝lateLeadClock（跟打卡端同一套）；不適用回 ''。
  *  「{08:00–12:00} 整段沒有打卡、{12:47} 才到：算遲到 {240} 分（休息 {12:00–13:00} 不算），薪資照扣。」——分鐘＝核定時段裡、第一張上班卡之前的分鐘數 */
-export function lateLeadNote(periods, segs, brk, reqs, date, from) {
+export function lateLeadNote(periods, segs, brk, reqs, date, from, now) {
   const c = lateLeadClock(periods, segs, brk, reqs, date, from);
-  if (!c || !clockKeep(c, periods, segs, reqs, brk, date)) return '';      // 第六輪：打卡端因不變式照主線的那份也不寫（同 corePeriods）
+  if (!c || !clockKeep(c, periods, segs, reqs, brk, date, now)) return '';      // 第六輪：打卡端因不變式照主線的那份也不寫（同 corePeriods）；第七輪：now＝現在時間（毫秒，畫面帶），決定上班中那張卡
   const min = total(intersect(c.ps, [[0, c.fc.t]]));
   return c.lead.map(([a, b]) => toHm(a) + '–' + toHm(b)).join('、') + ' 整段沒有打卡、' + toHm(c.fc.t) + ' 才到：算遲到 ' + min + ' 分（休息 ' + toHm(c.bs) + '–' + toHm(c.be) + ' 不算），薪資照扣。';
 }
@@ -233,19 +233,25 @@ export function corePeriods(o) {
   //   打卡端不會套（例：上午有已核准的單張忘打卡單、出差、預填出來的時段沒有前導段）→ 整個照主線重算（lateLeadFrom: null＝跟改之前逐字相同）。
   // 2026-11-26 第五輪：再加總閘 lateLeadShapeOk（沒把握的形狀一律照主線）；不論新規則預填或照主線預填，只要這份預填送出去打卡端會套新規則，
   //   卡片顯示的遲到一律改成打卡端的算法（照主線預填時打卡端仍可能套，例 07–16 班、只打 12:42–13:13＋下午事假＝打卡端 300）。
-  const r = corePeriodsRaw(o);
-  if (!lateLeadOn(o)) return r;
+  if (!lateLeadOn(o)) return corePeriodsRaw(o);
   const segs = Array.isArray(o.segs) ? o.segs : [], reqs = Array.isArray(o.reqs) ? o.reqs : [];
+  // 2026-11-26 第七輪：總閘沒過就不跑新規則那條算法（例 0.98 小時假單，新規則那條會切出碎段、甚至丟例外）；新規則那條丟例外一律照主線（主線丟就照主線丟＝跟改之前一樣）
+  const gateOk = o.lateLeadGate === false || lateLeadShapeOk(segs, reqs, o.brk);
+  let r = null;
+  if (gateOk) { try { r = corePeriodsRaw(o); } catch (e) { r = null; } }
   const date = String(o.date || (o.plan && o.plan.date) || '');
   const clock = (x) => (x && Array.isArray(x.periods) && x.periods.length ? lateLeadClock(x.periods, segs, o.brk, reqs, date, o.lateLeadFrom) : null);
   // 2026-11-26 第六輪（不變式；主管選維持範圍）：打卡端套不套＝lateLeadClock 成立、而且 clockKeep（照抄 Requests.gs reqLateLeadKeep_：
   //   新規則讓缺卡／核定比打卡多判不過、主線判得過＝這份照主線）。第四輪「休息帶裡打一段、休息後晚回來 ≥30 分」那條是這裡的一個特例，併進來
-  const sends = (x) => { const k = clock(x); return k && clockKeep(k, x.periods, segs, reqs, o.brk, date) ? k : null; };
+  // 2026-11-26 第七輪：「現在幾點」決定那張沒配對的上班卡算不算「還在上班」（打卡端 markWorkingSeg_：16 小時內）。o.now（毫秒）由畫面帶 Date.now()；
+  //   沒帶（伺服器、測試）＝不認上班中（結果不隨跑的時間變）
+  const nowMs = Number.isFinite(o.now) ? o.now : null;
+  const sends = (x) => { const k = clock(x); return k && clockKeep(k, x.periods, segs, reqs, o.brk, date, nowMs) ? k : null; };
   // 新規則的預填只在「打卡端照新規則判得過那兩條」時才用（clockKeep 的 strict 版）；判不過就改給主線的預填——主線預填是不同的時段，常常核得了
   //   （第四輪變體 6：休息帶裡打一段、休息後晚回來 ≥30 分；第六輪對照又找到同類 16 組）
-  const sendsNew = (x) => { const k = clock(x); return k && clockKeepStrict(k, x.periods, segs, reqs, o.brk, date) ? k : null; };
+  const sendsNew = (x) => { const k = clock(x); return k && clockKeepStrict(k, x.periods, segs, reqs, o.brk, date, nowMs) ? k : null; };
   let out = r, c = sendsNew(r);
-  if ((o.lateLeadGate !== false && !lateLeadShapeOk(segs, reqs, o.brk)) || !c) out = null;      // o.lateLeadGate＝false：只給量測閘擋掉多少的測試用；總閘沒過、新版算不出時段、打卡端不會套 → 照主線
+  if (!gateOk || !c) out = null;      // o.lateLeadGate＝false：只給量測閘擋掉多少的測試用；總閘沒過、新版算不出時段或丟例外、打卡端不會套 → 照主線
   if (!out) { out = corePeriodsRaw(Object.assign({}, o, { lateLeadFrom: null })); c = sends(out); }
   if (!c) return out;
   // 卡片顯示的遲到＝這份預填送出去時打卡端狀態的遲到：前導段合計（核定時段裡、第一張卡之前）＋其餘段照打卡端 computeApprovalStatus 的比法
@@ -346,10 +352,12 @@ function clockOverMin(ps0, segs, bw, lateGiven, backs, starts, leadMin) {      /
   });
   return Math.max(0, Math.round(over - late - early));
 }
-function clockCoreOk(date, ps, segs, bw, ok, lead) {                       // Requests.gs reqLateLeadCoreOk_（主管遲到欄空白）
+function clockCoreOk(date, ps, segs, bw, ok, lead, wk) {                   // Requests.gs reqLateLeadCoreOk_（主管遲到欄空白；wk＝還在上班那張卡，見 clockWorking）
   const bindOn = date >= CLOCK_BIND_FROM && ps.length > 0, strict = date >= CLOCK_STRICT_FROM;
   const bp = lead ? lead.rest : ps, leadMin = lead ? lead.leadMin : 0;
-  const miss = bindOn ? clockMissCards(bp, segs, bw) : 0;
+  // 缺卡張數用的打卡段：還在上班那張卡當成「打到現在」（Requests.gs reqWorkingSegs_）
+  const segsW = wk ? segs.map((x, i) => (i === wk.idx ? { in: x.in, out: Math.max(wk.nowMin, x.in + 1) } : x)) : segs;
+  const miss = bindOn ? clockMissCards(bp, segsW, bw) : 0;
   const missHave = ok.reduce((a, r) => a + (r.kind !== 'miss' ? 0 : (r.miss_type === 'break' || r.miss_type === 'both') ? 2 : 1), 0);
   const tripOk = ok.some((r) => r.kind === 'trip'), loneCard = segs.some((x) => (x.in == null) !== (x.out == null));
   if (bindOn && !(tripOk && !loneCard) && miss > missHave) return false;
@@ -364,20 +372,35 @@ function clockCoreOk(date, ps, segs, bw, ok, lead) {                       // Re
     backs.push(e, e - 1440, e + 1440); starts.push(a, a - 1440, a + 1440);
   }
   let over = clockOverMin(bp, sm, bw, null, backs, starts, leadMin);
-  if (over == null && !(bindOn && miss > missHave) && ps.length) { const known = sm.filter((x) => x.in != null && x.out != null); if (known.length) over = clockOverMin(bp, known, bw, null, backs, starts, leadMin); }
+  // 有沒配對的卡：完整打卡段＋已核准忘打卡單補的卡照算；還在上班那張當成打 16 小時（Requests.gs reqOverSegsKnown_，REQ_PAIR_MS）
+  if (over == null && !(bindOn && miss > missHave) && ps.length) {
+    const known = sm.map((x, i) => (x.in != null && x.out != null ? x : (wk && i === wk.idx && x.in != null && x.out == null ? { in: x.in, out: x.in + 960 } : null))).filter(Boolean);
+    if (known.length) over = clockOverMin(bp, known, bw, null, backs, starts, leadMin);
+  }
   return !(over != null && over >= CLOCK_STRICT_DIFF_MIN);
 }
 /** c＝lateLeadClock 的結果；這份送出打卡端最後會不會真的套新規則（Requests.gs reqLateLeadKeep_） */
-function clockKeep(c, periods, segs0, reqs, brk, date) { return clockKeepAny(c, segs0, reqs, date, false); }
+function clockKeep(c, periods, segs0, reqs, brk, date, nowMs) { return clockKeepAny(c, segs0, reqs, date, false, nowMs); }
 /** 同上、但只認「新規則那兩條判得過」（給新規則預填用；判不過就改給主線預填） */
-function clockKeepStrict(c, periods, segs0, reqs, brk, date) { return clockKeepAny(c, segs0, reqs, date, true); }
-function clockKeepAny(c, segs0, reqs, date, strictNew) {
+function clockKeepStrict(c, periods, segs0, reqs, brk, date, nowMs) { return clockKeepAny(c, segs0, reqs, date, true, nowMs); }
+function clockKeepAny(c, segs0, reqs, date, strictNew, nowMs) {
   const segs = (segs0 || []).filter(Boolean).map((x) => { const a = toMin(x.in), b0 = toMin(x.out); return { in: a, out: b0 == null ? null : b0 + (x.cross || (a != null && b0 <= a) ? 1440 : 0) }; });
   const ok = (reqs || []).filter((r) => r && r.pending !== true);
   const ps = c.ps.map(([s, e]) => ({ s, e })), bw = [c.bs, c.be];
   const lead = { rest: c.ps.slice(c.lead.length).map(([s, e]) => ({ s, e })), leadMin: total(c.lead) };
-  if (clockCoreOk(date, ps, segs, bw, ok, lead)) return true;
-  return strictNew ? false : !clockCoreOk(date, ps, segs, bw, ok, null);
+  const wk = clockWorking(segs, date, nowMs);
+  if (clockCoreOk(date, ps, segs, bw, ok, lead, wk)) return true;
+  return strictNew ? false : !clockCoreOk(date, ps, segs, bw, ok, null, wk);
+}
+/** 還在上班的那張卡（打卡端 Code.gs markWorkingSeg_／inStillWorking_：這天最後一張卡是沒配對的上班卡、離現在 0～16 小時）→ { idx, nowMin }（nowMin＝現在離這天 00:00 幾分鐘）；沒有回 null。
+ *  營運系統只到分鐘、用這台電腦的時間（打卡端用含秒的打卡時間與 Google 的時間），剛好 16 小時那一分鐘、或電腦時間不準時可能跟打卡端不同（見 progress.md 第七輪） */
+function clockWorking(segs, date, nowMs) {
+  if (!Number.isFinite(nowMs) || !/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) return null;
+  let idx = -1, last = null;
+  segs.forEach((x, i) => { const t = x.out != null ? x.out : x.in; if (t != null && (last === null || t >= last)) { last = t; idx = i; } });
+  if (idx < 0 || segs[idx].in == null || segs[idx].out != null) return null;
+  const day0 = Date.parse(String(date) + 'T00:00:00+08:00'), age = nowMs - (day0 + segs[idx].in * 60000);
+  return age >= 0 && age <= 16 * 3600000 ? { idx, nowMin: (nowMs - day0) / 60000 } : null;
 }
 /** 其餘段的遲到分鐘，照 Code.gs computeApprovalStatus（新規則那條用其餘段比、不併休息帶、沒有中途離開比照遲到）：
  *  每段拿重疊最多的完整打卡段，上班卡比那段開頭晚＝遲到；一段都沒配到完整打卡段時照 loneCardsForPeriods_ 配單張卡（4 小時內、配到最多張、距離最短），單張上班卡比開頭晚＝遲到 */

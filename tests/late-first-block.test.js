@@ -274,6 +274,23 @@ console.log('\n════ 七之四、不變式（第六輪，Codex 第三輪�
   const m = env(k, { now: '2026-12-05T05:00:00', approved: [[k.date, 'CF15', '測試甲', k.periods.map((p) => p.start + '-' + p.end).join(','), 7, '遲到270分、下班忘刷卡', '值班主管', CUTOVER, '', '']] });
   m.sb.recheckPendingApprovalStatuses();
   check('K4', '照主線核定的列（換版後核定）夜裡重算：不變式判斷用現在的打卡與申請再判一次＝照主線（主線重算的結果）', m.approved().slice(-1)[0][5], '遲到270分、早退25分');
+  if (base) {
+    // 已知行為（第七輪，驗收員）：兩邊都擋的送出，新版要的缺卡張數可能比主線多——07–18 一段、只打 12:47–13:00、下午事假 13:10–14:59、送 07–12／13:00–13:10、遲到填 0
+    const kb = { date: '2026-12-03', brk: { start: '12:00', end: '13:00' }, periods: [{ start: '07:00', end: '12:00' }, { start: '13:00', end: '13:10' }],
+      reqs: [{ kind: 'leave', leave_type: '事假', start: '13:10', end: '14:59', hours: 1.82 }], leaves: [{ type: '事假', hours: 1.82 }], late_min: '0', before: [['12:47', 'in'], ['13:00', 'out']], approveAt: '2026-12-03T20:00:00', after: [], recheckAt: '2026-12-04T05:00:00' };
+    const rule = (r) => (r.ap.ok ? 'ok' : r.ap.error + ':' + r.ap.rules);
+    const [b5] = flowRun(base, [kb]), [n5] = flowRun(ROOT, [kb]);
+    check('K5', '已知行為：兩邊都擋，新版多要缺卡（新：缺卡＋核定比打卡多；主線：只有核定比打卡多）', [rule(n5), rule(b5)], ['need_request:miss,over_credit', 'need_request:over_credit']);
+    const kb2 = Object.assign({}, kb, { reqs: kb.reqs.concat([{ kind: 'miss', miss_type: 'both', start: '07:00', end: '12:00' }]) });
+    const [b6] = flowRun(base, [kb2]), [n6] = flowRun(ROOT, [kb2]);
+    check('K5b', '同上補一張上午整段忘打卡單 → 兩版都過', [n6.ap.ok, b6.ap.ok], [true, true]);
+    // 已知行為（夜間翻轉）：12:00 上班、12:17 人還在上班就核定（兩版都寫「遲到240分、上班中」，新版此時照主線），之後補打 17:00 下班卡 → 新版夜裡照新規則
+    const kf = { date: '2026-12-03', brk: { start: '12:00', end: '13:00' }, periods: [{ start: '08:00', end: '12:00' }, { start: '13:00', end: '17:00' }], reqs: [], late_min: '',
+      before: [['12:00', 'in']], approveAt: '2026-12-03T12:17:00', after: [['17:00', 'out']], recheckAt: '2026-12-04T05:00:00', cut: 'after' };
+    const [bf] = flowRun(base, [kf]), [nf] = flowRun(ROOT, [kf]);
+    check('K6', '已知行為（夜間翻轉）：上班中核定時照主線、補下班卡後夜裡照新規則（＝現在重新核定）；主線是第一段上下班無打卡', [nf.ap.st, nf.trig, nf.st, nf.fresh, bf.st],
+      ['遲到240分、上班中', false, '遲到240分', '遲到240分', '第一段上班無打卡、第一段下班無打卡']);
+  }
 }
 
 console.log('\n════ 八、亂數對照：改版前（' + BASE + '）vs 這一版 ════');

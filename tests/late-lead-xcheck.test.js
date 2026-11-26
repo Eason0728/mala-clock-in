@@ -16,9 +16,9 @@
 'use strict';
 const fs = require('fs'), os = require('os'), path = require('path'), crypto = require('crypto');
 const { execFileSync, spawn } = require('child_process');
-const { check, show, done, ROOT } = require('./helpers/gs-sandbox');
+const { check, show, done, ROOT, T } = require('./helpers/gs-sandbox');
 
-const FROZEN_SHA = '06ca9456a3088a91a1be83e1113dfd9ab46173238a20aeae67e139021d9e789f';      // fixtures/storeops-core-calc.js（＝mala-store-ops web/modules/duty/core-calc.js）
+const FROZEN_SHA = '843b282bdc3f563c6fa0f399d68a838901e69015556ca5c0ae3f19de89f6c70a';      // fixtures/storeops-core-calc.js（＝mala-store-ops web/modules/duty/core-calc.js）
 const SO = process.env.STOREOPS_ROOT;
 const newPath = SO ? path.join(SO, 'web', 'modules', 'duty', 'core-calc.js') : path.join(__dirname, 'fixtures', 'storeops-core-calc.js');
 const oldPath = SO ? path.join(SO, 'test', 'fixtures', 'core-calc-before-latelead.mjs') : path.join(__dirname, 'fixtures', 'storeops-core-calc-before.mjs');
@@ -42,10 +42,10 @@ const MI = (a) => ({ kind: 'miss', miss_type: 'in', start: hm(a), end: '' }), MO
 const MB = (a, b) => ({ kind: 'miss', miss_type: 'both', start: hm(a), end: hm(b) });
 const MBRK = (out, back) => ({ kind: 'miss', miss_type: 'break', start: hm(back), end: hm(out) });      // 中間休息沒打卡：end＝出去、start＝回來
 
-function scen(brk, date, planKind, S, E, punches, reqs, lateKind, tag) {
+function scen(brk, date, planKind, S, E, punches, reqs, lateKind, tag, now) {
   const [bs, be] = brk;
   const plan = planKind === 'one' ? [{ start: hm(S), end: hm(E), break_min: 60 }] : planKind === 'one0' ? [{ start: hm(S), end: hm(E) }] : [{ start: hm(S), end: hm(bs) }, { start: hm(be), end: hm(E) }];
-  return { tag, brk: { start: hm(bs), end: hm(be) }, date, plan, punches: punches.map(([a, b]) => ({ in: a == null ? null : hm(a), out: b == null ? null : hm(b) })), reqs, lateKind };
+  return { tag, now: now || '2026-12-20T10:00:00', brk: { start: hm(bs), end: hm(be) }, date, plan, punches: punches.map(([a, b]) => ({ in: a == null ? null : hm(a), out: b == null ? null : hm(b) })), reqs, lateKind };
 }
 const list = [];
 // 格點
@@ -64,6 +64,24 @@ for (const brk of [[720, 780], [840, 900]]) {
     for (const pk of ['one', 'one0', 'two'])
       for (const [pn, pu] of P) for (const [rn, rq] of R) for (const lk of ['', '0', 'less', 'more'])
         list.push(scen(brk, date, pk, S, E, pu, rq, lk, [hm(bs), date, pk, pn, rn, lk || 'blank'].join('|')));
+}
+// 第七輪：核定時刻落在上班中（當天最後一張是沒配對的上班卡；前後端用同一個「現在」）
+for (const brk of [[720, 780], [840, 900]]) {
+  const [bs, be] = brk, S = bs === 720 ? 480 : 540, E = S + 540;
+  const W = [['wIn17', [[bs + 17, null]]], ['wIn47', [[bs + 47, null]]], ['wAtBe', [[be, null]]], ['wLate20', [[be + 20, null]]], ['wBrkSegBack11', [[bs + 30, bs + 45], [be + 11, null]]],
+    ['wBrkSegBack0', [[bs + 16, bs + 27], [be, null]]], ['wMorning', [[S + 5, null]]], ['wStraddle', [[bs + 50, be + 5], [be + 15, null]]]];
+  const R = [['none', []], ['missOut', [MO(E)]], ['missIn', [MI(S)]], ['leaveMid', [L(S + 120, S + 180)]], ['leaveAfterBrk', [L(be + 10, be + 70)]], ['tripPM', [TRIP(be, E)]], ['missBoth', [MB(S, bs)]]];
+  for (const date of ['2026-11-20', '2026-12-03'])
+    for (const pk of ['one', 'one0', 'two'])
+      for (const [pn, pu] of W) {
+        const lastIn = pu[pu.length - 1][0];
+        for (const dt of [5, 23, 90, 300, 959, 961]) {      // 上班卡後幾分鐘核定（959／961＝16 小時前後）
+          const t = lastIn + dt, d1 = t >= 1440 ? new Date(Date.parse(date + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10) : date;
+          const now = d1 + 'T' + hm(t % 1440) + ':30';      // 30 秒：避開剛好整分鐘
+          for (const [rn, rq] of R) for (const lk of ['', 'more'])
+            list.push(scen(brk, date, pk, S, E, pu, rq, lk, [hm(bs), date, pk, pn, '+' + dt, rn, lk || 'blank'].join('|'), now));
+        }
+      }
 }
 const nGrid = list.length;
 // 亂數（多個種子）
@@ -92,7 +110,14 @@ for (const sd of SEEDS) {
       else if (q < 0.61) rq.push(TRIP(be, E));
       else if (q < 0.68) rq.push({ kind: 'ot', start: hm(E), end: hm(E + 60), hours: 1 });
     }
-    list.push(scen(brk, pick(['2026-11-20', '2026-12-03', '2026-10-28']), pick(['one', 'one0', 'two']), S, E, segs, rq, pick(['', '', '', '0', 'less', 'more']), 's' + sd + ':' + i));
+    const date = pick(['2026-11-20', '2026-12-03', '2026-10-28']);
+    let now;
+    if (rnd() < 0.2 && segs.length) {      // 第七輪：約兩成核定時刻落在最後一張卡之後 0～18 小時（最後一張是沒配對的上班卡時＝上班中）
+      const lastT = Math.max(...segs.map(([a, b]) => (b != null ? b : a))), t = lastT + ri(0, 1080);
+      const d1 = t >= 1440 ? new Date(Date.parse(date + 'T00:00:00Z') + 86400000 * Math.floor(t / 1440)).toISOString().slice(0, 10) : date;
+      now = d1 + 'T' + hm(t % 1440) + ':' + String(ri(0, 59)).padStart(2, '0');
+    }
+    list.push(scen(brk, date, pick(['one', 'one0', 'two']), S, E, segs, rq, pick(['', '', '', '0', 'less', 'more']), 's' + sd + ':' + i, now));
   }
 }
 function schedMin(c) { const bs = toM(c.brk.start), be = toM(c.brk.end); return c.plan.reduce((a, p) => a + toM(p.end) - toM(p.start) - Math.max(0, Math.min(toM(p.end), be) - Math.max(toM(p.start), bs)), 0); }
@@ -103,7 +128,7 @@ const PREV = process.env.LATE_XCHECK_PREV ? require(process.env.LATE_XCHECK_PREV
 const gate = { grid: { would: 0, gated: 0 }, rnd: { would: 0, gated: 0 } };      // 新規則會套的日子裡，被總閘擋回主線的有幾組
 const thrown = [];      // 營運系統算預填丟例外（新版丟、改動前不丟＝新問題）
 const fe = list.map((c) => {
-  const o = () => ({ segs: c.punches.map((x) => Object.assign({ cross: false }, x)), plan: { work: true, segs: c.plan, date: c.date }, reqs: c.reqs.map((x) => Object.assign({}, x)), brk: c.brk });
+  const o = () => ({ segs: c.punches.map((x) => Object.assign({ cross: false }, x)), plan: { work: true, segs: c.plan, date: c.date }, reqs: c.reqs.map((x) => Object.assign({}, x)), brk: c.brk, now: T(c.now) });
   const tryIt = (F) => { try { return F.corePeriods(o()); } catch (e) { return { throw: String(e && e.message || e).slice(0, 80) }; } };
   const n0 = tryIt(NEW), m0 = tryIt(OLD);
   if (n0 && n0.throw) thrown.push([c.tag, 'NEW: ' + n0.throw, m0 && m0.throw ? 'OLD 也丟: ' + m0.throw : 'OLD 正常']);
@@ -120,7 +145,7 @@ const fe = list.map((c) => {
     if (would) { const k = /^s\d/.test(c.tag) ? 'rnd' : 'grid'; gate[k].would++; if (!NEW.lateLeadShapeOk(c.punches, c.reqs, c.brk)) gate[k].gated++; }
   }
   const lm = (r) => (c.lateKind === '' ? '' : c.lateKind === '0' ? '0' : c.lateKind === 'less' ? String(Math.max(0, (r ? r.late : 0) - 30)) : String((r ? r.late : 0) + 30));
-  const inOf = (r) => (r && r.periods.length ? { date: c.date, brk: c.brk, punches: c.punches, reqs: c.reqs, leaves: leavesOf(c.reqs), periods: r.periods, late_min: lm(r), sched_spans: c.plan } : null);
+  const inOf = (r) => (r && r.periods.length ? { now: c.now, date: c.date, brk: c.brk, punches: c.punches, reqs: c.reqs, leaves: leavesOf(c.reqs), periods: r.periods, late_min: lm(r), sched_spans: c.plan } : null);
   return { n, m, inN: inOf(n), inM: inOf(m) };
 });
 // 打卡端只檢查：切成幾份平行跑（每份一個子行程，GS_ROOT 決定版本）
