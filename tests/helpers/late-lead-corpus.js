@@ -2,7 +2,7 @@
 // tests/late-first-block.test.js 用改版前（git show）與這一版各跑一次逐筆比。不是測試本身（run-all 只跑 *.test.js）。
 // 只用假資料：工號 E01、假金鑰 MK；不連網路。情境數 LATE_LEAD_N（預設 3000）、種子 LATE_LEAD_SEED（預設 20261126）。
 'use strict';
-const { make, T } = require('./gs-sandbox');
+const { make, T, iso } = require('./gs-sandbox');
 const N = Number(process.env.LATE_LEAD_N) || 3000;
 let seed = Number(process.env.LATE_LEAD_SEED) || 20261126;
 const rnd = () => { seed |= 0; seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -96,8 +96,12 @@ for (let i = 0; i < N; i++) {
   // 每天重算：同一筆核定換幾種原狀態
   const rosterRows = sb.readSheetAsObjects(m.self.getSheetByName('roster')).rows;
   const stMain = sb.computeApprovalStatus(pms, segMs, false, false, bw, false);      // 不帶 lateLead＝改版前的判法（新版也要跟改版前逐字相同）
-  const rec = ST0.concat([stMain, st]).map((s0) => {
-    try { return sb.recomputeApprovalStatusOf(m.self, evRows, rosterRows, D, 'E01', { periods: periods.map((p) => p.start + '-' + p.end).join(','), status_text: s0, name: '測試一' }).newStatusText; }
+  // 核定時間（2026-11-26 第三輪之二，換版時間 REQ_LATE_LEAD_CUTOVER_；改版前沒有這個常數＝不看）：前三種＝換版前核定（主線舊程式寫的），第四種＝換版後（這一版寫的），
+  //   第五種＝舊程式寫的狀態、核定時間卻在換版後（換版時間設錯時的安全網：第三輪那套遲到分鐘比對）
+  const cut = typeof sb.REQ_LATE_LEAD_CUTOVER_ === 'string' ? Date.parse(sb.REQ_LATE_LEAD_CUTOVER_) : 0;      // 改版前沒有這個常數、也不看核定時間
+  const before = iso(cut - 60000), after = iso(cut);
+  const rec = ST0.map((s0) => [s0, before]).concat([[stMain, before], [st, after], [stMain, after]]).map(([s0, at]) => {
+    try { return sb.recomputeApprovalStatusOf(m.self, evRows, rosterRows, D, 'E01', { periods: periods.map((p) => p.start + '-' + p.end).join(','), status_text: s0, name: '測試一', manager_name: '值班主管', entered_at: at }).newStatusText; }
     catch (e) { return 'throw:' + e.message; }
   });
   out.push({ i, sc, dry, st, stMain, trig, inv, rec });

@@ -3660,6 +3660,17 @@ function lateLeadRecheck_(date, st0, periods, punchWithMs, reqRows, empId) {
   return 'cmp';
 }
 /** 每天重算用的申請表（整批只讀一次，而且只在真的需要時才讀：生效日起、休息帶設定完整、現在的打卡是那種日子）。cache＝呼叫端帶的 {}，同一批共用 */
+/** 每天重算用：同一天同一人「最後一筆主管核定列」的核定時間（entered_at），系統重算寫的列（manager_name 結尾是 RECHECK_MARK）不算。
+ *  回 { 'yyyy-MM-dd|工號': entered_at }。給 Requests.gs reqLateLeadAfterCutover_ 判斷這列是不是換版後才核定的（2026-11-26 第三輪之二） */
+function lateLeadApprAtMap_(approvedRows) {
+  const out = {};
+  (approvedRows || []).forEach(function (r) {
+    if (String(r.manager_name || '').slice(-RECHECK_MARK.length) === RECHECK_MARK) return;
+    const k = normCellDate(r.date) + '|' + String(r.emp_id), t = normCellTs(r.entered_at);
+    if (!(k in out) || t >= out[k]) out[k] = t;
+  });
+  return out;
+}
 function lateLeadReqRows_(ss, cache, date, periods, punchWithMs) {
   if (typeof reqLateLeadDay_ !== 'function' || !reqLateLeadDay_(date) || !lateLeadBreakOk_() || !lateLeadOf_(periods, punchWithMs, noPunchBreakWindow(date))) return null;
   if (!cache) cache = {};
@@ -3704,7 +3715,12 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec, 
     // 每天重算沒有班表：照原狀態有沒有「中途離開N分」判斷（核定當下有套才會有），重算結果才跟核定當下一樣；開關改了也不回頭改已核定的
     st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; })];
   // 上午整段沒到改算遲到（2026-11-26）：見 lateLeadRecheck_
-  const llMode = lateLeadRecheck_(date, st0, periods, punchWithMs, lateLeadReqRows_(ss, reqCache, date, periods, punchWithMs), String(empId));
+  // 換版時間（Requests.gs REQ_LATE_LEAD_CUTOVER_，2026-11-26 第三輪之二）：這列的核定時間早於換版時間、或讀不到 → 一律照舊判法（＝主線重算；主管定案「已核定的不回頭改」）。
+  //   核定時間：呼叫端帶的 reqCache.apprAt（lateLeadApprAtMap_，跳過系統重算列）；沒帶就只認這列本身是主管核定列時的 entered_at
+  const apprAt = reqCache && reqCache.apprAt ? reqCache.apprAt[date + '|' + String(empId)]
+    : (String(rec.manager_name || '').slice(-RECHECK_MARK.length) === RECHECK_MARK ? '' : normCellTs(rec.entered_at));
+  const llAfter = typeof reqLateLeadAfterCutover_ === 'function' && reqLateLeadAfterCutover_(apprAt);
+  const llMode = llAfter ? lateLeadRecheck_(date, st0, periods, punchWithMs, lateLeadReqRows_(ss, reqCache, date, periods, punchWithMs), String(empId)) : 'off';
   let st = computeApprovalStatus.apply(null, casArgs.concat([llMode === 'on']));
   if (llMode === 'cmp') {
     const stNew = computeApprovalStatus.apply(null, casArgs.concat([true])), l0 = sysLateMin_(st0);
@@ -3727,7 +3743,8 @@ function recheckPendingApprovalStatuses() {
   const approvedSheet = ss.getSheetByName('approved');
   if (!approvedSheet) return { checked: 0, fixed: 0 };
 
-  const approvedMap = buildLatestApprovedMap(readSheetAsObjects(approvedSheet).rows);
+  const approvedRowsAll = readSheetAsObjects(approvedSheet).rows;
+  const approvedMap = buildLatestApprovedMap(approvedRowsAll);
   const today = todayTaipeiStr();
   const dates = [];
   for (let i = 1; i <= RECHECK_STATUS_DAYS; i++) dates.push(addDaysStr(today, -i));
@@ -3736,7 +3753,8 @@ function recheckPendingApprovalStatuses() {
   const eventRows = dropDupIgnored_(readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; }),
     dupIgnoreSet_(approvedMap));
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
-  const reqCache = {};   // 上午整段沒到改算遲到（2026-11-26 第三輪）：申請表整批只讀一次、需要時才讀（lateLeadReqRows_）
+  // 上午整段沒到改算遲到（2026-11-26 第三輪）：申請表整批只讀一次、需要時才讀（lateLeadReqRows_）；apprAt＝每列的主管核定時間（換版時間判斷，第三輪之二）
+  const reqCache = { apprAt: lateLeadApprAtMap_(approvedRowsAll) };
 
   let checked = 0;
   let fixed = 0;
@@ -3837,12 +3855,13 @@ function backfillMissingPunchGroups(fromDate, toDate, apply) {
   const approvedSheet = ss.getSheetByName('approved');
   if (!approvedSheet) return { ok: false, error: 'no_approved_sheet' };
 
-  const approvedMap = buildLatestApprovedMap(readSheetAsObjects(approvedSheet).rows);
+  const approvedRowsAll = readSheetAsObjects(approvedSheet).rows;
+  const approvedMap = buildLatestApprovedMap(approvedRowsAll);
   // 主管認定的重複卡先拿掉（2026-11-06），重算才不會又把它當忘刷
   const eventRows = dropDupIgnored_(readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; }),
     dupIgnoreSet_(approvedMap));
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
-  const reqCache = {};   // 同 recheckPendingApprovalStatuses（2026-11-26 第三輪）
+  const reqCache = { apprAt: lateLeadApprAtMap_(approvedRowsAll) };   // 同 recheckPendingApprovalStatuses（2026-11-26 第三輪、第三輪之二）
 
   const hits = [];
   const skipped = [];

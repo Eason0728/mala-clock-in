@@ -17,6 +17,7 @@ const fs = require('fs'), os = require('os'), path = require('path'), vm = requi
 const { execFileSync } = require('child_process');
 const { make, T, check, show, done, ROOT } = require('./helpers/gs-sandbox');
 const CASES = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'late-lead-cases-v1.json'), 'utf8'));
+const CUTOVER = make({}).run('REQ_LATE_LEAD_CUTOVER_');      // 換版時間（Requests.gs 一處定義；測試一律從這裡推，改期只改程式那一行）
 const ME = { emp_id: 'CF15', name: '測試甲', key: 'K1', device_id: 'D1', active: 'TRUE' };
 const P = (list) => list.map((p) => ({ start: p.start, end: p.end }));
 const lateSum = (st) => String(st || '').split('、').reduce((a, n) => { const g = /^遲到(\d+)分/.exec(n); return a + (g ? Number(g[1]) : 0); }, 0);
@@ -135,7 +136,8 @@ console.log('\n════ 六、lateLeadOf_ 邊界 ════');
 console.log('\n════ 七、每天 05:00 重算（第 5 題 A：已核定的一筆都不動） ════');
 {
   const rec = (c, st, now, extraEvents) => {
-    const m = env(c, { now, extraEvents, approved: [[c.date, 'CF15', '測試甲', c.periods.map((p) => p.start + '-' + p.end).join(','), 8, st, '值班主管', c.date + 'T20:00:00+08:00', '', '']] });
+    // 核定時間＝換版時間（REQ_LATE_LEAD_CUTOVER_）本身＝換版後核定的列（第三輪之二；換版前核定的見七之三）
+    const m = env(c, { now, extraEvents, approved: [[c.date, 'CF15', '測試甲', c.periods.map((p) => p.start + '-' + p.end).join(','), 8, st, '值班主管', CUTOVER, '', '']] });
     const out = m.sb.recheckPendingApprovalStatuses();
     return { fixed: out.fixed, last: m.approved().slice(-1)[0][5] };
   };
@@ -167,7 +169,7 @@ console.log('\n════ 七、每天 05:00 重算（第 5 題 A：已核定�
   //   2026-11-26 第三輪改：夜裡重算跟核定用同一個判斷（reqLateLeadOn_，看現在的申請表，同出差看現在的出差單）→ 照忘打卡單（舊判法）＝主管現在重新核定的結果（R9b），
   //   也＝主線重算這一列的結果（主線重算本來就只用舊判法）。第二輪「夜裡不改」那條拿掉：它要靠不讀申請表，結果擋項 1 那類（核定當下就有忘打卡單）分不出來。
   const cBb = Object.assign({}, cA, { punches: [{ in: '12:47', out: null }], reqs: [{ kind: 'miss', miss_type: 'in', start: '09:00', end: '' }] });
-  check('R9a', '(b) 核定時沒有單＝「遲到180分、下班忘刷卡」，事後補了上午的忘打卡單 → 夜裡照忘打卡單（舊判法，＝R9b 重新核定、＝主線重算）', rec(cBb, '遲到180分、下班忘刷卡', '2026-12-05T05:00:00'), { fixed: 1, last: '遲到227分、下班忘刷卡' });
+  check('R9a', '【已知行為，大腦 11/26 接受】(b) 換版後新規則核定「遲到180分、下班忘刷卡」，事後補了上午的忘打卡單 → 夜裡照忘打卡單（確認頁第 4 題表「上午有已核准的忘打卡單 → 照忘打卡單」；舊判法 227＝R9b 重新核定＝主線重算）', rec(cBb, '遲到180分、下班忘刷卡', '2026-12-05T05:00:00'), { fixed: 1, last: '遲到227分、下班忘刷卡' });
   check('R9b', '(b) 主管重新核定（帶這張忘打卡單）→ 照舊判法「遲到227分、下班忘刷卡」（main 對這種卡的既有結果）', statusOf(env(cBb), cBb), { lead: false, status: '遲到227分、下班忘刷卡' });
   console.log('\n── 休息帶設定長度 0、反向、缺一邊：一律不套（驗收第 3 項）──');
   for (const [k, bs, be] of [['B1', '12:00', '12:00'], ['B2', '13:00', '12:00'], ['B3', '12:00', ''], ['B4', '', '13:00']]) {
@@ -221,6 +223,38 @@ if (base) {
   check('R10d', '整段忘打卡單＋主管填 0 → 核定與重算＝主線', pickR(B[3]), pickR(A[3]));
 }
 
+console.log('\n════ 七之三、換版時間（REQ_LATE_LEAD_CUTOVER_＝' + CUTOVER + '；第三輪之二）：換版前核定的列夜裡一律＝主線重算 ════');
+if (base) {
+  const cutMs = Date.parse(CUTOVER);
+  check('C0', '換版時間是合法的時間、晚於生效日（Requests.gs 一處定義）', [Number.isFinite(cutMs), cutMs > Date.parse(make({}).run('REQ_LATE_LEAD_FROM_') + 'T00:00:00+08:00')], [true, true]);
+  // A．12:00 整到＋下班忘刷卡、之後才補到下班卡；B．主管填遲到＋單張上班卡、之後才補到下班卡（第三輪回報的兩類）
+  const resid = (name, inHm, late, st0) => ({ name, date: '2026-11-20', brk: { start: '12:00', end: '13:00' }, periods: [{ start: '09:00', end: '12:00' }, { start: '13:00', end: '18:00' }],
+    reqs: [{ kind: 'miss', miss_type: 'out', start: '', end: '18:00' }], late_min: late, st0, before: [[inHm, 'in']], approveAt: '2026-11-21T10:00:00', after: [['18:00', 'out']], recheckAt: '2026-11-28T05:00:00' });
+  const RA = resid('A', '12:00', '', '遲到180分、下班忘刷卡'), RB = resid('B', '12:18', '198', '下班忘刷卡、遲到198分(認定)');
+  const L = [Object.assign({}, RA, { cut: 'before' }), Object.assign({}, RB, { cut: 'before' }), Object.assign({}, RA, { cut: 'after' }), Object.assign({}, RB, { cut: 'after' })];
+  const A0 = flowRun(base, L), B0 = flowRun(ROOT, L);
+  check('C1', 'A 類、換版前核定 → 夜裡重算＝主線（「第一段上班無打卡、第一段下班無打卡」）', B0[0].st, A0[0].st);
+  check('C2', 'B 類、換版前核定 → 夜裡重算＝主線（保留兩條忘刷、遲到198分(認定)）', B0[1].st, A0[1].st);
+  check('C3', 'A／B 類、換版後才核定（主管換版後自己送出）→ 照新規則（第三輪的結果）', [B0[2].st, B0[3].st], ['遲到180分', '遲到198分(認定)']);
+  // 用真的常數：核定時間＝換版前 1 秒／剛好換版時間／讀不到；最後一列是系統重算列時看它前面那筆主管核定列
+  const rowAt = (st, at, mgr) => [RA.date, 'CF15', '測試甲', '09:00-12:00,13:00-18:00', 8, st, mgr || '值班主管', at, '', ''];
+  const recAt = (rows) => {
+    const c = { date: RA.date, brk: RA.brk, punches: [{ in: '12:00', out: '18:00' }], reqs: [], periods: RA.periods };
+    const m = env(c, { now: '2026-11-28T05:00:00', approved: rows });
+    m.sb.recheckPendingApprovalStatuses();
+    return m.approved().slice(-1)[0][5];
+  };
+  const { iso } = require('./helpers/gs-sandbox');
+  check('C4', '核定時間＝換版時間前 1 秒 → 照舊判法（主線）', recAt([rowAt('遲到180分、下班忘刷卡', iso(cutMs - 1000))]), '第一段上班無打卡、第一段下班無打卡');
+  check('C5', '核定時間＝剛好換版時間 → 照新規則', recAt([rowAt('遲到180分、下班忘刷卡', CUTOVER)]), '遲到180分');
+  check('C6', '核定時間讀不到（空白、亂碼）→ 照舊判法（保守）', [recAt([rowAt('遲到180分、下班忘刷卡', '')]), recAt([rowAt('遲到180分、下班忘刷卡', '不是時間')])], ['第一段上班無打卡、第一段下班無打卡', '第一段上班無打卡、第一段下班無打卡']);
+  check('C7', '換版前主管核定、換版後系統重算寫過一列（最後一列是系統重算列）→ 看主管核定那筆＝照舊判法',
+    recAt([rowAt('遲到180分、上班中', iso(cutMs - 3600000)), rowAt('遲到180分、下班忘刷卡', iso(cutMs + 3600000), '值班主管（系統重算）')]), '第一段上班無打卡、第一段下班無打卡');
+  check('C8', '換版前核定、換版後主管自己重新送出（新的主管核定列）→ 照新規則',
+    recAt([rowAt('遲到180分、下班忘刷卡', iso(cutMs - 3600000)), rowAt('遲到180分、下班忘刷卡', iso(cutMs + 3600000))]), '遲到180分');
+  check('C9', '測試沒有寫死換版日期（只從 REQ_LATE_LEAD_CUTOVER_ 推）', new RegExp('2026-11-' + '30T01').test(fs.readFileSync(__filename, 'utf8') + fs.readFileSync(path.join(__dirname, 'helpers', 'late-lead-corpus.js'), 'utf8') + fs.readFileSync(path.join(__dirname, 'helpers', 'late-lead-flow.js'), 'utf8')), false);
+}
+
 console.log('\n════ 八、亂數對照：改版前（' + BASE + '）vs 這一版 ════');
 {
   if (base) {
@@ -256,13 +290,17 @@ console.log('\n════ 八、亂數對照：改版前（' + BASE + '）vs �
     check('X6', '觸發的情境：夜裡重算這一版自己寫的狀態 → 不變', idem.slice(0, 5), []);
     check('X7', '觸發的情境：遲到分鐘＝前導段＋其餘段的遲到、沒有多一筆遲到、沒有「第一段」', inv.slice(0, 5), []);
     check('X8', '舊版會寫的狀態（換版前用舊程式核定的列）拿給新版夜裡重算：全部情境跟改版前的重算逐字相同（含休息中打卡被併成一塊那類）', recOld.slice(0, 5), []);
+    const recOldAfter = []; a.forEach((x, i) => { if (x.rec[2] !== b[i].rec[4]) recOldAfter.push(i); });
+    check('X8b', '（換版時間設錯的安全網）舊版會寫的狀態、核定時間卻在換版後：照第三輪那套也跟改版前的重算逐字相同', recOldAfter.slice(0, 5), []);
     show('X9', '（對照）上一項不同的筆數／其中觸發又沒有「第一段、未入帳」的', [recOld.length, recOldBad.length, recOldFilter]);
   }
 }
 
 console.log('\n════ 八之二、亂數流程對照（2026-11-26 第三輪）：核定當下有已核准忘打卡單／主管認定／兩者都有／都沒有 × 核定後才補卡 → 05:00 重算 ════');
 if (base) {
-  const a = flowRun(base), b = flowRun(ROOT);
+  // 這一版的核定都當成換版後（cut: 'after'）；主線那份同一組情境（主線不看換版時間）
+  const corpusOf = (cut) => JSON.parse(execFileSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(require(' + JSON.stringify(path.join(__dirname, 'helpers', 'late-lead-flow.js')) + ').corpus(Number(process.env.LATE_FLOW_N) || 3000, Number(process.env.LATE_FLOW_SEED) || 20261126)))'], { encoding: 'utf8', maxBuffer: 256 << 20 })).map((sc) => Object.assign(sc, { cut }));
+  const a = flowRun(base, corpusOf('after')), b = flowRun(ROOT, corpusOf('after'));
   const FILTER = /該段無打卡|打卡未入帳|第|忘刷卡|上班中/;      // recheckPendingApprovalStatuses 會重算的原狀態
   const J = JSON.stringify;
   const cnt = { nt: 0, ntOk: 0, t: 0, tOk: 0, cls: {} }, y1 = [], y2 = [];
@@ -281,12 +319,18 @@ if (base) {
   // 換版當下：主線（舊程式）核定、日期在生效日以後的列，拿給這一版夜裡重算。
   // 已知例外（未修，回報大腦：靠換版時間解）：核定時還在上班（「上班中」）而且「主管填了遲到」或「第一張卡剛好是休息開始那一分鐘」——舊程式寫的狀態跟新規則一字不差，又沒有單可看。
   const okRows = a.filter((x) => x.ap.ok);
-  const c = flowRun(ROOT, okRows.map((x) => Object.assign({}, x.sc, { st0: x.ap.st })));
+  // Y3：換版前用舊程式核定的列（核定時間早於換版時間）→ 這一版夜裡重算一律照舊判法＝主線，要 0 差異（第三輪之二；第三輪是 17 筆）
+  const c = flowRun(ROOT, okRows.map((x) => Object.assign({}, x.sc, { st0: x.ap.st, cut: 'before' })));
+  const diff = []; c.forEach((y, k) => { if (y.st !== okRows[k].st || y.fixed !== okRows[k].fixed) diff.push(k); });
+  show('Y3', '（換版前核定）舊程式核定的列筆數（日期都在生效日以後或 10 月）／其中核定時還在上班的／主管填遲到的', [okRows.length, okRows.filter((x) => /上班中/.test(x.ap.st)).length, okRows.filter((x) => x.sc.late_min !== '').length]);
+  check('Y3b', '（換版前核定）舊程式核定的列拿給這一版重算：跟主線重算逐筆相同（狀態、改了幾筆）', diff.slice(0, 5).map((k) => [okRows[k].sc, okRows[k].ap.st, okRows[k].st, c[k].st]), []);
+  // Y3c：同一批舊程式狀態、但核定時間被當成換版後（換版時間設錯才會發生）＝第三輪的做法：只剩兩類已知例外
+  const c2 = flowRun(ROOT, okRows.map((x) => Object.assign({}, x.sc, { st0: x.ap.st, cut: 'after' })));
   const known = (x) => /上班中/.test(x.ap.st) && (x.sc.late_min !== '' || (x.sc.brk && x.sc.before[0][0] === x.sc.brk.start));
-  const diff = [], unknown = [];
-  c.forEach((y, k) => { if (y.st !== okRows[k].st) { diff.push(k); if (!known(okRows[k])) unknown.push(k); } });
-  show('Y3', '（換版當下）舊程式核定的列 ' + okRows.length + ' 筆拿給這一版重算、跟主線重算不同的筆數／其中屬已知例外的／已知例外那種形狀的總筆數', [diff.length, diff.length - unknown.length, okRows.filter(known).length]);
-  check('Y3b', '（換版當下）跟主線重算不同的，全部屬已知例外（上班中核定＋主管填遲到，或 12:00 整到）', unknown.slice(0, 5).map((k) => [okRows[k].sc, okRows[k].ap.st, okRows[k].st, c[k].st]), []);
+  const diff2 = [], unknown = [];
+  c2.forEach((y, k) => { if (y.st !== okRows[k].st) { diff2.push(k); if (!known(okRows[k])) unknown.push(k); } });
+  show('Y3c', '（換版時間設錯的對照）同一批當成換版後核定：跟主線不同的筆數／其中屬已知例外的', [diff2.length, diff2.length - unknown.length]);
+  check('Y3d', '（換版時間設錯的對照）跟主線不同的全部屬已知例外（上班中核定＋主管填遲到，或 12:00 整到）', unknown.slice(0, 5).map((k) => [okRows[k].sc, okRows[k].ap.st, okRows[k].st, c2[k].st]), []);
 }
 if (base) fs.rmSync(base, { recursive: true, force: true });
 

@@ -4,10 +4,10 @@
 // 輸出：stdout 印 JSON 陣列。只用假資料（工號 E01、假金鑰 MK），不連網路。
 // 情境欄位：date、brk {start,end}|null、periods [{start,end}]、reqs [申請單]、late_min、
 //   before [[HH:MM, 'in'|'out']]（核定前就有的卡）、approveAt（核定時間 'YYYY-MM-DDTHH:MM:SS'）、
-//   st0（有給＝不跑核定，直接放一列舊程式寫的狀態，模擬換版前核定的列）、after [[HH:MM, 'in'|'out']]（核定後才打／才入帳的卡）、recheckAt（重算時間）、voidAfter（核定後把申請單都作廢，可省略）
+//   st0（有給＝不跑核定，直接放一列舊程式寫的狀態，模擬換版前核定的列）、cut（'after'｜'before'：核定在換版時間之後／之前，見 flow 開頭）、after [[HH:MM, 'in'|'out']]（核定後才打／才入帳的卡）、recheckAt（重算時間）、voidAfter（核定後把申請單都作廢，可省略）
 'use strict';
 const fs = require('fs');
-const { make, T } = require('./gs-sandbox');
+const { make, T, iso } = require('./gs-sandbox');
 const ME = { emp_id: 'E01', name: '測試一', key: 'K1', device_id: 'D1', active: 'TRUE' };
 const nextDay = (d) => { const x = new Date(Date.parse(d + 'T00:00:00Z') + 86400000); return x.toISOString().slice(0, 10); };
 
@@ -17,6 +17,8 @@ function flow(sc) {
   const m = make({ now: T(sc.approveAt), props: { REQ_STRICT_FROM: '2026-11-01' },
     config: sc.brk ? { NO_PUNCH_BREAK_START: sc.brk.start, NO_PUNCH_BREAK_END: sc.brk.end } : {},
     self: { roster: [ME], events: (sc.before || []).map((e) => [ts(e[0]), 'E01', e[1]]) } });
+  // 換版時間（第三輪之二）：cut 'after'＝這次核定在換版後（沙盒的換版時間設成核定前一分鐘）、'before'＝在換版前（設成核定後一分鐘）；沒給＝照程式的常數
+  if (sc.cut === 'after' || sc.cut === 'before') m.run('REQ_LATE_LEAD_CUTOVER_ = ' + JSON.stringify(iso(T(sc.approveAt) + (sc.cut === 'after' ? -60000 : 60000))) + ';');
   const sh = m.sb.reqSheet_(m.self, true);
   (sc.reqs || []).forEach((r, k) => {
     const row = Object.assign({ id: 'R' + k, created_at: D + 'T08:00:00+08:00', emp_id: 'E01', name: '測試一', date: D, status: 'approved', decided_at: D + 'T09:00:00+08:00' }, r);
