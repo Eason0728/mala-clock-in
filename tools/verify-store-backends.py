@@ -32,17 +32,18 @@ FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'is
          'noPunchDayAbnormal_', 'inStillWorking_', 'openInWorking_', 'markWorkingSeg_',
          'reactXbrandCheck_',   # 2026-11-13 F10：恢復在職擋跨品牌
          'leftCascadeAfter_',   # 2026-11-11 B13：設離職連帶停用別店同一支 LINE 的列（沒套到＝那家店設離職不會通知光復）
-         'lateLeadOf_', 'lateLeadMerge_', 'lateLeadRecheck_', 'lateLeadBreakOk_', 'sysLateMin_']   # 2026-11-26 上午整段沒到改算遲到
+         'lateLeadOf_', 'lateLeadMerge_', 'lateLeadRecheck_', 'lateLeadBreakOk_', 'sysLateMin_',   # 2026-11-26 上午整段沒到改算遲到
+         'lateLeadReqRows_']   # 2026-11-26 第三輪：每天重算讀申請表（跟核定同一個判斷）
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
     # 2026-11-20 多一個 gapLate 參數（二段班中途離開比照遲到）；沒套到＝那家店核定狀態照舊、待審單不擋
-    # 2026-11-26 再多 lateLead（上午整段沒到改算遲到）；沒套到＝那家店 12/1 起的這種日子照舊要 2 張忘打卡單，跟 Mac mini 判得不一樣
+    # 2026-11-26 再多 lateLead（上午整段沒到改算遲到）；沒套到＝那家店 11/1 起的這種日子照舊要 2 張忘打卡單，跟 Mac mini 判得不一樣
     'computeApprovalStatus 有 isTrip＋休息帶＋gapLate＋lateLead 參數': 'hadUnrecordedAttempts, isTrip, breakWindow, gapLate, lateLead, segOff_)',
     '待審單不能核定（打卡後端）':            'const pendBlock = reqPendBlock_(reqRowsAll, String(body.emp_id), date);',
     '中途離開比照遲到：只有個人帳號＋二段班才套': 'reqMgrActing_(mgr, body) && reqGapLateDay_(date, body.sched_spans),',
     '中途離開比照遲到：每天重算看原狀態':      "st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; })];",
     '上午整段沒到改算遲到：核定與綁單同一個判斷': 'late_lead: lateLead,',
-    '上午整段沒到改算遲到：每天重算看原狀態':   'const llMode = lateLeadRecheck_(date, st0, periods, punchWithMs);',
+    '上午整段沒到改算遲到：每天重算跟核定同一個判斷（看申請表）': 'const llMode = lateLeadRecheck_(date, st0, periods, punchWithMs, lateLeadReqRows_(ss, reqCache, date, periods, punchWithMs), String(empId));',
     '上午整段沒到改算遲到：休息帶設定不完整不套': 'function lateLeadBreakOk_() {',
     '出差在假別白名單':                      "'出差'",
     '名冊有 shift_in／shift_out':            "'shift_in', 'shift_out'",
@@ -75,7 +76,7 @@ EXACT = {
 
 # 各店 Requests.js 必須有的精確片段（2026-11-26 驗收第 4 項：只換 程式碼.js、漏換 Requests.js 時，上午整段沒到改算遲到會靜默不啟用）
 REQ_EXACT = {
-    '上午整段沒到改算遲到：生效日常數':       "var REQ_LATE_LEAD_FROM_ = '2026-12-01';",
+    '上午整段沒到改算遲到：生效日常數':       "var REQ_LATE_LEAD_FROM_ = '2026-11-01';",
     '上午整段沒到改算遲到：判斷入口':         'function reqLateLeadOn_(rows, empId, date, periods, segs, breakWindow) {',
     '上午整段沒到改算遲到：忘打卡單優先':     'return !!ll && !reqLeadMissForm_(rows, empId, date, ll.lead);',
     '上午整段沒到改算遲到：綁單用其餘段':     "var lead = opt.late_lead === true && typeof lateLeadOf_ === 'function' ? lateLeadOf_(periods, segs || [], breakWindow) : null;",

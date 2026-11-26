@@ -2595,8 +2595,8 @@ function reqGapLateScope_() {
 
 /* ── 上午整段沒到改算遲到（2026-11-26 主管「央廚這類『休息前整段沒到』改判遲到。都照推薦」；判斷本體 Code.gs lateLeadOf_）──
    生效日寫死、不做指令碼屬性開關（第 9 題 A）：Mac mini 核定引擎看不到 Google 的 REQ_* 屬性，用屬性會兩邊判得不一樣。
-   ⚠ 營運系統 web/modules/duty/core-calc.js 的 LATE_LEAD_FROM 要同一天。2026-11-30 以前的日子核定、重新核定、每天重算都照舊（第 5 題 A）。 */
-var REQ_LATE_LEAD_FROM_ = '2026-12-01';
+   ⚠ 營運系統 web/modules/duty/core-calc.js 的 LATE_LEAD_FROM 要同一天。2026-10-31 以前的日子核定、重新核定、每天重算都照舊（第 5 題 A）。 */
+var REQ_LATE_LEAD_FROM_ = '2026-11-01';   // 2026-11-26 主管改：原定 2026-12-01，改成 11/1 起（「上午整段沒到要算遲到，要從11/1開始」）
 function reqLateLeadDay_(date) { return reqIsDate_(String(date)) && String(date) >= REQ_LATE_LEAD_FROM_; }
 /** 前導段時間裡有沒有已核准的忘打卡單（同仁主張上午有來＝照忘打卡單，第 4 題）：單上的上班／下班時間落在前導段（含頭尾），或整段單（both）跟前導段重疊 */
 function reqLeadMissForm_(rows, empId, date, lead) {

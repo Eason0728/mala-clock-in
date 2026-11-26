@@ -1,14 +1,15 @@
 {
   "version": 1,
-  "effective_from": "2026-12-01",
-  "about": "上午整段沒到改算遲到（2026-11-26 主管定案；生效日 2026-12-01）共用案例。mala-clock-in tests/fixtures/ 與 mala-store-ops test/fixtures/ 兩份必須逐字相同。工號、時間都是假的。",
+  "effective_from": "2026-11-01",
+  "about": "上午整段沒到改算遲到（2026-11-26 主管定案；生效日 2026-11-01，原定 2026-12-01、11/26 主管改）共用案例。mala-clock-in tests/fixtures/ 與 mala-store-ops test/fixtures/ 兩份必須逐字相同。工號、時間都是假的。",
   "fields": {
     "date": "核定的日子", "brk": "不打卡休息帶", "plan": "班表（營運系統 plan.segs）", "punches": "打卡段（in／out，缺卡＝null）",
     "reqs": "已核准的申請（kind／miss_type／start／end／leave_type／hours）", "leaves": "核定時一起登記的假（打卡端 body.leaves）",
     "periods": "營運系統預填的核定時段（也是打卡端核定送的時段）", "late": "營運系統預填說明「遲到 N 分」的 N（0＝沒有）",
     "ok": "打卡端只檢查（dry_run）會不會過（error＝被擋的原因；need_diff_reason 的案例帶原因再送一次要過）", "status": "打卡端核定狀態（computeApprovalStatus，照核定當下的判斷）", "lead": "新規則有沒有套", "need_miss": "要幾張忘打卡單（沒擋寫 0）",
     "effective_from": "生效日：打卡端 Requests.gs REQ_LATE_LEAD_FROM_、營運系統 core-calc.js LATE_LEAD_FROM 都要等於這個值（兩邊測試釘住）",
-    "grid": "到達時間逐點：班表寫一段（08–17 休 60）或兩段（08–12、13–17）結果都要一樣；need_reason＝上班卡比 13:00 早超過 30 分、照 11/16 卡差規則要選原因"
+    "grid": "到達時間逐點：班表寫一段（08–17 休 60）或兩段（08–12、13–17）結果都要一樣；need_reason＝上班卡比 13:00 早超過 30 分、照 11/16 卡差規則要選原因",
+    "grid_brk_punch": "休息中打了短短一段再回來（2026-11-26 第三輪、Codex 第一輪擋項 2）：上午整段沒來、第一張上班卡在休息時間裡（逐句表第 3 句）→ 算遲到；班表寫一段（休 60）、一段（沒填休息分鐘）、兩段三種寫法，營運系統預填、遲到分鐘、要不要選原因、打卡端狀態逐點相同。seg＝休息中那段打卡、back＝回來的上班卡（之後 out 下班）；status＝打卡端選了原因後的狀態"
   },
   "grid": { "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" }, "out": "17:00",
     "plans": [[{ "start": "08:00", "end": "17:00", "break_min": 60 }], [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }]],
@@ -30,11 +31,24 @@
       { "t": "13:05", "late": 245, "need_reason": false },
       { "t": "13:10", "late": 250, "need_reason": false }
     ] },
+  "grid_brk_punch": { "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" }, "out": "17:00",
+    "plans": [[{ "start": "08:00", "end": "17:00", "break_min": 60 }], [{ "start": "08:00", "end": "17:00" }], [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }]],
+    "periods": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }],
+    "points": [
+      { "seg": ["12:16", "12:27"], "back": "13:00", "late": 240, "need_reason": true, "status": "遲到240分、有多出的打卡段" },
+      { "seg": ["12:00", "12:10"], "back": "13:00", "late": 240, "need_reason": true, "status": "遲到240分、有多出的打卡段" },
+      { "seg": ["12:05", "12:40"], "back": "13:00", "late": 240, "need_reason": true, "status": "遲到240分、有多出的打卡段" },
+      { "seg": ["12:10", "12:20"], "back": "12:35", "late": 240, "need_reason": true, "status": "遲到240分、有多出的打卡段" },
+      { "seg": ["12:30", "12:45"], "back": "12:50", "late": 240, "need_reason": true, "status": "遲到240分、有多出的打卡段" },
+      { "seg": ["12:40", "12:50"], "back": "13:00", "late": 240, "need_reason": true, "status": "遲到240分、有多出的打卡段" },
+      { "seg": ["12:16", "12:27"], "back": "13:05", "late": 245, "need_reason": true, "status": "遲到245分、有多出的打卡段" },
+      { "seg": ["12:16", "12:27"], "back": "13:20", "late": 260, "need_reason": true, "status": "遲到260分、有多出的打卡段" }
+    ] },
   "cases": [
     { "id": "L01", "desc": "個案縮影：12:47 到、17:00 走、沒有單（12/3）", "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" },
       "plan": [{ "start": "08:00", "end": "17:00", "break_min": 60 }], "punches": [{ "in": "12:47", "out": "17:00" }], "reqs": [], "leaves": [],
       "periods": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "late": 240, "ok": true, "status": "遲到240分", "lead": true, "need_miss": 0 },
-    { "id": "L02", "desc": "同一筆資料、生效日前（11/25）：打卡端照舊要 2 張忘打卡單；營運系統說明照舊 287（跟主線逐字相同）", "date": "2026-11-25", "brk": { "start": "12:00", "end": "13:00" },
+    { "id": "L02", "desc": "同一筆資料、生效日前（10/29；原本用 11/25，生效日改 11/1 後 11/25 變成生效日後）：打卡端照舊要 2 張忘打卡單（正式的綁單 11/1 起才擋，打卡端測試把綁單起算日提前到 10/1 才看得到這個對照）；營運系統說明照舊 287（跟主線逐字相同）", "date": "2026-10-29", "brk": { "start": "12:00", "end": "13:00" },
       "plan": [{ "start": "08:00", "end": "17:00", "break_min": 60 }], "punches": [{ "in": "12:47", "out": "17:00" }], "reqs": [], "leaves": [],
       "periods": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "late": 287, "ok": false, "status": "第一段上班無打卡、第一段下班無打卡", "lead": false, "need_miss": 2 },
     { "id": "L03", "desc": "13:20 才到：上午 240＋下午晚到 20", "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" },
@@ -55,7 +69,7 @@
     { "id": "L08", "desc": "班表寫兩段 08–12、13–17（空檔就是休息帶），12:47 到：跟寫一段一樣（第 1 題 A）", "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" },
       "plan": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "punches": [{ "in": "12:47", "out": "17:00" }], "reqs": [], "leaves": [],
       "periods": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "late": 240, "ok": true, "status": "遲到240分", "lead": true, "need_miss": 0 },
-    { "id": "L09", "desc": "班表寫兩段、生效日前：照舊只預填 13–17、4 小時、不記遲到", "date": "2026-11-28", "brk": { "start": "12:00", "end": "13:00" },
+    { "id": "L09", "desc": "班表寫兩段、生效日前：照舊只預填 13–17、4 小時、不記遲到", "date": "2026-10-28", "brk": { "start": "12:00", "end": "13:00" },
       "plan": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "punches": [{ "in": "12:47", "out": "17:00" }], "reqs": [], "leaves": [],
       "periods": [{ "start": "13:00", "end": "17:00" }], "late": 0, "ok": true, "status": "正常", "lead": false, "need_miss": 0 },
     { "id": "L10", "desc": "只打 12:47 上班卡、忘了下班卡：遲到 240、下班忘刷卡，要 1 張忘打卡單", "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" },
@@ -90,6 +104,15 @@
       "periods": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "late": 240, "ok": true, "status": "遲到240分", "lead": true, "need_miss": 0 },
     { "id": "L18", "desc": "真的二段班（沒有休息帶，10–14、16:30–20:30），16:30 才到：不適用", "date": "2026-12-03", "brk": { "start": "", "end": "" },
       "plan": [{ "start": "10:00", "end": "14:00" }, { "start": "16:30", "end": "20:30" }], "punches": [{ "in": "16:30", "out": "20:30" }], "reqs": [], "leaves": [],
-      "periods": [{ "start": "16:30", "end": "20:30" }], "late": 0, "ok": true, "status": "正常", "lead": false, "need_miss": 0 }
+      "periods": [{ "start": "16:30", "end": "20:30" }], "late": 0, "ok": true, "status": "正常", "lead": false, "need_miss": 0 },
+    { "id": "L20", "desc": "休息中短短打一段 12:16–12:27、13:00 回來（Codex 第一輪擋項 2）、班表一段 08–17 休 60：8 小時、遲到 240（逐句表第 3 句）；12:16 比 13:00 早 44 分要選原因", "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" },
+      "plan": [{ "start": "08:00", "end": "17:00", "break_min": 60 }], "punches": [{ "in": "12:16", "out": "12:27" }, { "in": "13:00", "out": "17:00" }], "reqs": [], "leaves": [],
+      "periods": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "late": 240, "ok": false, "error": "need_diff_reason", "status": "遲到240分、有多出的打卡段", "lead": true, "need_miss": 0 },
+    { "id": "L21", "desc": "同 L20、班表一段 08–17 沒填休息分鐘：跟 L20 一樣（第 1 題 A）", "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" },
+      "plan": [{ "start": "08:00", "end": "17:00" }], "punches": [{ "in": "12:16", "out": "12:27" }, { "in": "13:00", "out": "17:00" }], "reqs": [], "leaves": [],
+      "periods": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "late": 240, "ok": false, "error": "need_diff_reason", "status": "遲到240分、有多出的打卡段", "lead": true, "need_miss": 0 },
+    { "id": "L22", "desc": "同 L20、班表兩段 08–12、13–17：跟 L20 一樣（第 1 題 A）", "date": "2026-12-03", "brk": { "start": "12:00", "end": "13:00" },
+      "plan": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "punches": [{ "in": "12:16", "out": "12:27" }, { "in": "13:00", "out": "17:00" }], "reqs": [], "leaves": [],
+      "periods": [{ "start": "08:00", "end": "12:00" }, { "start": "13:00", "end": "17:00" }], "late": 240, "ok": false, "error": "need_diff_reason", "status": "遲到240分、有多出的打卡段", "lead": true, "need_miss": 0 }
   ]
 }

@@ -13,7 +13,7 @@ const ME = { emp_id: 'E01', name: '測試一', key: 'K1', device_id: 'D1', activ
 
 function scenario() {
   const brk = pick([[720, 780], [720, 780], [840, 900], null]);
-  const date = rnd() < 0.3 ? '2026-11-27' : '2026-12-04';
+  const date = rnd() < 0.3 ? '2026-10-27' : pick(['2026-11-04', '2026-11-25', '2026-12-04']);      // 生效日 2026-11-01（原定 12/1）：10 月＝生效日前
   const S = pick([420, 480, 540, 600]);
   const bs = brk ? brk[0] : 720, be = brk ? brk[1] : 780;
   const E = Math.min(1290, be + pick([180, 240, 300, 360]));
