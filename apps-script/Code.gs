@@ -1851,6 +1851,9 @@ function handleMgrDay(body) {
     const v = r ? r[col] : '';
     return normShiftTime(v) || normShiftTime(fallback) || '';
   }
+  // 曠職生效日：真的有人那天登記曠職才讀一次指令碼屬性（沒有就不讀，跟改之前一樣）
+  let kzDayOn;
+  function kzOnDay() { if (kzDayOn === undefined) kzDayOn = kzOn_(date); return kzDayOn; }
 
   const employees = listed.map(function (item) {
     const hasPunch = !!firstTs[item.emp_id];
@@ -1887,6 +1890,9 @@ function handleMgrDay(body) {
         dup_ignore: dupIgnoreList_(rec.dup_ignore),
         diff_reason: String(rec.diff_reason || ''),
       };
+      // 曠職（合約 v1.2 第 2-3 節，句 14 的 {日期}）：開關開、日期 ≥ 生效日、那天 leave 有「曠職」才多帶 entered_at；其他情況回應逐字不變。
+      // 會進 with_ver 的版本雜湊（DutyFeed.gs dutyVerOf_ 的 ap）：只有那天有曠職登記的人版本會不同，其他人、開關關都不變。
+      if (out.leaves.some(function (l) { return l && l.type === KZ_TYPE; }) && kzOnDay()) out.approved.entered_at = String(normCellTs(rec.entered_at) || '');
     }
     return out;
   });
