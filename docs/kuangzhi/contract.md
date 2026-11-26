@@ -1,6 +1,6 @@
 # 曠職：打卡端（第一階段）⇄ 營運系統（第二階段）介面合約
 
-- 版本：v1（2026-11-26，資深工程師，分支 `feat/kuangzhi`，以 mala-clock-in `origin/main` f21cc25 為底）
+- 版本：v1.1（2026-11-26，資深工程師，分支 `feat/kuangzhi`，以 mala-clock-in `origin/main` f21cc25 為底；v1.1＝照實作更新第 2-2 節檢查順序、第 7 節上線檢查的掛法、第 2-3 節顯示）
 - 依據：`_brain_out/kuangzhi/kickoff.html`（主管 13 題「都照推薦」＋「開工」）、同資料夾 `design.md`；
   主管開工後改定第 6-1 題：「第六題，使用全薪÷ 30 × 曠職天數」（細節待主管確認，見第 7 節）。
 - 這份是兩階段的唯一介面約定。第二階段（營運系統）照這份做；要改這份，兩邊一起改、版本號加一。
@@ -60,19 +60,22 @@
 
 ### 2-2 打卡端的檢查順序與回應（訊息逐字＝逐句表）
 
-先跑既有的：主管鑰匙 → 核定人姓名 → 日期格式 → **鎖月（`pay_locked`）** → 名冊 → 遲到分鐘格式。之後：
+先跑既有的：主管鑰匙 → 核定人姓名 → 日期格式 → **鎖月（`pay_locked`）** → 名冊 → 遲到分鐘格式。
+**開關關、或日期早於生效日**：完全不進下面這段，照今天的流程走（曠職不在白名單 → `{ok:false, error:'bad_leave_type'}`，前面有待審單就先回 `pending_request`，跟今天逐字一樣）。
+開關開、日期 ≥ 生效日、請求帶了曠職，依序檢查（程式：`Code.gs kzApprovePre_`、`kzApprovePost_`）：
 
 | 順序 | 條件 | 回應 |
 |---|---|---|
-| A | `leaves` 裡有 `曠職`，同時還有別的假別、或 `periods` 不是空的 | `{ok:false, error:'kz_mixed', message:句13}` |
-| B | 開關關、日期早於生效日、不是個人帳號代轉 | `{ok:false, error:'bad_leave_type'}`（＝今天的回應，沒有 message） |
+| A | `leaves` 裡有 `曠職`，同時還有別的假別、或 `periods` 不是空的 | `{ok:false, error:'kz_mixed', message:句13}`；曠職選兩次＝既有 `dup_leave_type`「同一個假別選了兩次：曠職」 |
+| B | 不是個人帳號代轉（門市鑰匙、沒帶 acting_name） | `{ok:false, error:'bad_leave_type'}`（＝今天的回應，沒有 message） |
 | C | `kz_sched` 不採信／形狀不對／`work!==true`／瑞光文心上線前 | `{ok:false, error:'kz_not_workday', message:句11}` |
-| D | 本店 events 那天有任何一筆（不分狀態；隔天 06:00 前的下班卡算前一天），或 `kz_sched.xpunch!==false` | `{ok:false, error:'kz_has_punch', message:句9}` |
-| E | 本店 requests 那天有待審或已核准（沒作廢）的 請假／出差／忘打卡單，或 `kz_sched.xreq!==false` | `{ok:false, error:'kz_has_req', message:句10}` |
-| F | 那天已經有核定紀錄、或 leave 分頁那天有任何一列（含已認定的曠職） | `{ok:false, error:'kz_day_done'}`（**沒有 message**：逐句表沒有這句，見第 9 節待決） |
-| G | 還在同仁自補期限內：`今天 − 日期 ≤ 4 天`（同 `Requests.gs reqPastLimit_`，含未來日期） | `{ok:false, error:'kz_too_early', message:句12, until:'YYYY-MM-DD'}`，句 12 的 {日期}＝`until` 寫成 `M/D` |
+| E | 本店 requests 那天有待審或已核准（沒作廢）的 請假／出差／忘打卡單，或 `kz_sched.xreq===true` | `{ok:false, error:'kz_has_req', message:句10}` |
+| （既有） | 那天還有其他待審單（例：加班單） | 既有 `pending_request`「這天還有待審的申請，請先審單（審完才能核定）」 |
+| D | 本店 events 那天有任何一筆（不分狀態；隔天 06:00 前的下班卡算前一天），或 `kz_sched.xpunch===true` | `{ok:false, error:'kz_has_punch', message:句9}` |
+| F | 那天已經有核定紀錄、或 leave 分頁那天有任何一列（含已認定的曠職；同一天按第二次也是這個） | `{ok:false, error:'kz_day_done'}`（**沒有 message**：逐句表沒有這句，見第 9 節待決） |
+| G | 還在同仁自補期限內：`今天 ≤ 日期＋4 天`（同 `Requests.gs reqPastLimit_`，含未來日期） | `{ok:false, error:'kz_too_early', message:句12, until:'YYYY-MM-DD'}`，句 12 的 {日期}＝`until` 寫成 `M/D` |
 
-之後照既有流程走（待審單擋、綁單檢查、只檢查停在這裡、鎖內重讀待審、寫入）。綁單檢查（`reqBindCheck_`）
+之後照既有流程走（綁單檢查、只檢查停在這裡、鎖內重讀待審、寫入）。綁單檢查（`reqBindCheck_`）
 對這一筆的「登記了曠職、沒有已核准的假單」不擋（只有通過上面檢查的曠職才豁免）。
 
 成功：
@@ -90,7 +93,9 @@
 - `approved`：一列，periods 空、approved_hours 0、status_text `全天請假`（**資料上的狀態字不新增**，避開 kickoff 第 5 題 B 的風險）、
   manager_name＝acting_name、entered_at＝現在。
 - `leave`：同日同人既有列全刪，加一列 `[日期, 姓名, '曠職', 班表時數]`。
-- 畫面要顯示「曠職」不是「全天請假」：看 leave 那天假別是 `曠職`（句 15）。打卡頁的「最近 40 天」由後端把那天的狀態換成 `曠職`（本分支做）；
+- 畫面要顯示「曠職」不是「全天請假」：看 leave 那天假別是 `曠職`（句 15）。本分支已做：
+  打卡頁「最近 40 天」（`my_recent` 把那天列出來、`approved_status:'曠職'`；九店頁面不用改）、
+  LINE 出勤班表（`line_hub_sched` 那天帶 `kz:true`，`sched-line.js` 點那天多一行「曠職」）。
   營運系統核定卡、完整核定頁（第二階段）照 leave 判斷。句 14 的 {日期} {職稱}：用 approved 的 entered_at、manager_name，職稱由營運系統查。
 
 ### 2-4 改判（第 12 題 A）
@@ -164,8 +169,9 @@
 - 打卡端只有一個地方算曠職扣多少：`Payroll.gs payKzDeduct_(e, ym, days, cfg)`（輸入：薪資主檔一人、`[{date, h}]` 曠職日與各自的班表時數、參數；輸出：扣款列陣列）。
   其他地方只呼叫它。一般假別扣款（時數 × 扣款時薪 ×（1 − 給薪比例））**不會**套到曠職（不論假別表怎麼設）。
 - 現在是佔位：旗標 `KUANGZHI_DEDUCT_PENDING = true`，回一列 `{item_key:'absent_deduct', item_label:'曠職扣款算法待確認', amount:0}`；
-  薪資頁提醒區多一行「{姓名}：曠職扣款算法待確認」。`tools/kuangzhi-release-check.js` 在旗標還在時結束碼 1，
-  `tools/deploy-to-clasp.py --apply` 會先跑它、不過就不寫入。上線前一定換成主管確認的算法。
+  薪資頁提醒區多一行「{姓名}：曠職扣款算法待確認」。`tools/kuangzhi-release-check.js` 在旗標還在時結束碼 1（測試釘住）。
+  **上線清單要加「先跑 `node tools/kuangzhi-release-check.js`」**；本分支沒有把它掛進 `deploy-to-clasp.py`
+  （掛進去會讓既有的 `tests/deploy-new-ok.test.js` 失敗，要不要掛由大腦決定）。上線前一定換成主管確認的算法。
 - 第 6-2（扣幾小時）：目前沒有任何地方依賴；第 6-3（例假休息日不連帶扣）、6-4（計時不另外處理）照推薦。
 - 逐句表句 21「曠職(無薪) {N}H」是第 6 題選 B 的字，現在待定，薪資單那一列先用上面的佔位字。
 
@@ -186,3 +192,5 @@
    薪資的疑似清單與鎖月擋現在**不會**排除它們。若這些人在已發布班表上有「上班」格又沒打卡，鎖月會被擋。
    選項：(a) 營運系統發布班表時不把這些人日發成 W；(b) 發布資料加一個排除欄、打卡端收；(c) 上線前唯讀數 11 月筆數再定（第 8 題本來就要數）。
 5. 門市登入（不帶 acting_name）不能認定（第 2-2 節 B）：本分支解讀第 1、2 題「每一筆都有人按、有紀錄（誰）」。
+6. 句 24（考勤手冊新增一段）屬營運系統 `web/duty-guide.html`（考勤管理操作手冊），第二階段加；打卡端的 `payroll-guide.html`（薪資結算手冊）
+   第 207 行「有排班沒來達連續 3 天…系統不會自動扣」沒改（逐句表沒有它的新字；開關開之後這句部分過時）。
