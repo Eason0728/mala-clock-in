@@ -261,7 +261,12 @@ console.log('══ 例 1～12（開關開著）══');
   const m3 = world({ props: ON, approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '10:00-13:00', 3)], reqs: [TRIP8('E4', 'MZTJS07', '2026-11-20', { name: '示意甲' })] });
   m3.self.sh.approved.getDataRange = () => { throw new Error('讀取逾時'); };
   const r3 = dec(m3, 'E4');
-  check('ex12-c', '判斷時讀不到核定 → revoke_failed、單子仍待審', [r3.error, st(m3, 'E4')], ['revoke_failed', 'pending']);
+  check('ex12-c', '判斷時讀不到核定（還沒開始打回）→ revoke_failed、新句「這天的核定讀不到…」、單子仍待審', [r3.error, r3.message, st(m3, 'E4')], ['revoke_failed', '這天的核定讀不到，這張還沒核准，請再按一次', 'pending']);
+  const m4 = world({ props: ON, approved: [AP('2026-11-20', 'MZTJS07', '示意甲', '10:00-13:00', 3)], reqs: [TRIP8('E5', 'MZTJS07', '2026-11-20', { name: '示意甲' }), TRIP8('E6', 'MZTJS07', '2026-11-20', { name: '示意甲', hours: 4 })] });
+  m4.self.sh.approved.getDataRange = () => { throw new Error('讀取逾時'); };
+  const rb4 = batch(m4, ['E5', 'E6']);
+  check('ex12-d', '批次判斷時讀不到核定 → 整組進 skipped、理由是新句、都還待審', [rb4.done, rb4.skipped.map((x) => x.id + ':' + x.reason), st(m4, 'E5')],
+    [[], ['E5:這天的核定讀不到，這張還沒核准，請再按一次', 'E6:這天的核定讀不到，這張還沒核准，請再按一次'], 'pending']);
 }
 
 console.log('\n══ 開關各種值 ══');

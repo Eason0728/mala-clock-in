@@ -1667,7 +1667,8 @@ function reqDayWarnMsg_(dates) {
    開關：指令碼屬性 REQ_REOPEN_ON，去頭尾空白後剛好是 '1' 才打回；沒設、空白、0、true、打錯字＝照今天只提醒（回應與寫入逐位元組相同）。
    mini 核定引擎看得到這個屬性（RelayG.gs RELAYG_PROPS_），兩邊判斷一樣。 */
 var REQ_REOPEN_PROP_ = 'REQ_REOPEN_ON';
-var REQ_REOPEN_FAIL_MSG_ = '這天的核定沒有打回成功，這張還沒核准，請再按一次';
+var REQ_REOPEN_FAIL_MSG_ = '這天的核定沒有打回成功，這張還沒核准，請再按一次';      // 真的去打回、搬資料時出錯（逐句表第 7 句）
+var REQ_REOPEN_READ_MSG_ = '這天的核定讀不到，這張還沒核准，請再按一次';      // 判斷時就讀不到核定資料、還沒開始打回（主管 2026-11-26 定案新句）；錯誤碼同 revoke_failed
 function reqReopenOn_() {
   var v = null;
   try { v = reqProp_(REQ_REOPEN_PROP_); } catch (e) { v = null; }
@@ -1805,10 +1806,12 @@ function handleMgrReqDecide_(body, viaAuth) {
     // 補單核准後打回（2026-11-26，開關 REQ_REOPEN_ON）：先判、要打回就先打回，打回失敗單子也不核准；開關關著整段不跑
     var rj = null;
     if (decision === 'approve' && reqAffectsDay_(r) && reqReopenOn_() && reqReopenLockOk_(r, body, ss)) {
+      var judged = false;
       try {
         rj = reqReopenJudge_(ss, r, {});
+        judged = true;
         if (rj.act === 'reopen') rj.revoked = reqReopenDay_(ss, r, actor);
-      } catch (errR) { console.log('mgr_req_decide 打回核定失敗：' + errR); return { ok: false, error: 'revoke_failed', message: REQ_REOPEN_FAIL_MSG_ }; }
+      } catch (errR) { console.log('mgr_req_decide 打回核定失敗：' + errR); return { ok: false, error: 'revoke_failed', message: judged ? REQ_REOPEN_FAIL_MSG_ : REQ_REOPEN_READ_MSG_ }; }
     }
     reqSetCells_(sh, r.__rowIndex, { status: decision === 'approve' ? 'approved' : 'rejected', decided_at: nowTaipeiIso(),
                                      decided_by: actor, reject_reason: decision === 'reject' ? reason : '' });
@@ -2121,7 +2124,7 @@ function handleMgrReqDecideBatch_(body, viaAuth) {
     });
     var failIds = {};
     order.forEach(function (k) {
-      var g = grp[k], first = g.items[0].r;
+      var g = grp[k], first = g.items[0].r, judgedG = false;
       try {
         var memoG = { reqs: reopenMemo.reqs, okIds: {} };
         if (reopenMemo.approved) memoG.approved = reopenMemo.approved;
@@ -2132,10 +2135,11 @@ function handleMgrReqDecideBatch_(body, viaAuth) {
         var date = k.slice(0, 10), emp = k.slice(11), latest = reqDayOwnLatest_(rows, emp, date);
         if (latest) g.act = g.items.every(function (it) { return reqDayCovers_(ss, it.r, latest, memoG); }) ? 'covered' : 'reopen';
         else g.act = rows.some(function (x) { return normCellDate(x.date) === date && String(x.emp_id) === emp; }) ? 'old_warn' : 'none';
+        judgedG = true;
         if (g.act === 'reopen') g.revoked = reqReopenDay_(ss, first, actor, g.items.map(function (it) { return it.r; }));
       } catch (errB) {
         console.log('mgr_req_decide_batch 打回核定失敗：' + errB);
-        g.items.forEach(function (it) { failIds[it.id] = true; skipped.push({ id: it.id, reason: REQ_REOPEN_FAIL_MSG_ }); });
+        g.items.forEach(function (it) { failIds[it.id] = true; skipped.push({ id: it.id, reason: judgedG ? REQ_REOPEN_FAIL_MSG_ : REQ_REOPEN_READ_MSG_ }); });
       }
     });
     oks.forEach(function (it) {
