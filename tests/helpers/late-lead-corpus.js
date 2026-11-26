@@ -83,7 +83,9 @@ for (let i = 0; i < N; i++) {
   const segMs = punch.segments.map((s) => ({ in: s.in, out: s.out, inMs: s.in ? sb.hmToMs(D, s.in) : null, outMs: s.out ? sb.hmToMs(s.cross ? D1 : D, s.out) : null }));
   const bw = sb.noPunchBreakWindow(D);
   const hasNew = typeof sb.reqLateLeadOn_ === 'function';
-  const trig = hasNew ? sb.reqLateLeadOn_(sb.reqRows_(m.self), 'E01', D, pms, segMs, bw) : null;
+  let trig = hasNew ? sb.reqLateLeadOn_(sb.reqRows_(m.self), 'E01', D, pms, segMs, bw) : null;
+  // 第九輪（方案 B）：還沒下班（最後一張是沒配對的上班卡、已核准的單補不上下班卡）＝核定照主線（同 handleMgrApprove 的 reqLateLeadOpen_）
+  if (trig && typeof sb.reqLateLeadOpen_ === 'function' && sb.reqLateLeadOpen_(segMs, sb.lateLeadDayRows_(sb.reqRows_(m.self), 'E01', D), D)) trig = false;
   const st = sb.computeApprovalStatus(pms, segMs, false, false, bw, false, trig === true);
   let inv = null;
   if (trig) {

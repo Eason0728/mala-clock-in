@@ -37,6 +37,10 @@ function flow(sc) {
   if (!ap.ok) return { ap, trig };
   // 核定後才打的卡（同一天的成功卡，直接加進 events，跟 gs-sandbox evRow 同格式）
   (sc.after || []).forEach((e) => { m.self.sh.events.values.push([ts(e[0]) + '+08:00', 'E01', e[1], 24.7840945, 121.0157448, 5, true, 'D1', true, 'ok', 10]); });
+  if (sc.addReqAfter) {      // 第九輪：核定後才核准的申請單（decided_at＝重算前一刻）
+    const row = Object.assign({ id: 'RA', created_at: sc.recheckAt + '+08:00', emp_id: 'E01', name: '測試一', date: D, status: 'approved', decided_at: iso(T(sc.recheckAt) - 60000) }, sc.addReqAfter);
+    sh.appendRow(m.sb.reqHeads_(sh).map((h) => (row[h] === undefined ? '' : row[h])));
+  }
   if (sc.voidAfter) {
     const si = m.sb.reqHeads_(sh).indexOf('status');
     sh.values.slice(1).forEach((row) => { row[si] = 'voided'; });
@@ -63,10 +67,13 @@ function statusNow(m, sc, manual) {
   sb.markWorkingSeg_(punch, D, segs);
   const bw = sb.noPunchBreakWindow(D);
   const rows = sb.reqRows_(m.self);
-  let trig = typeof sb.reqLateLeadOn_ === 'function' ? sb.reqLateLeadOn_(rows, 'E01', D, pms, segs, bw) : null;
+  const llSegs = typeof sb.reqLateLeadSegs_ === 'function' ? sb.reqLateLeadSegs_(segs) : segs;      // 第九輪：新規則那條路徑不看上班中（同 handleMgrApprove）
+  let trig = typeof sb.reqLateLeadOn_ === 'function' ? sb.reqLateLeadOn_(rows, 'E01', D, pms, llSegs, bw) : null;
+  // 第九輪：還沒下班＝照主線（同 handleMgrApprove 的 reqLateLeadOpen_）
+  if (trig && typeof sb.reqLateLeadOpen_ === 'function' && sb.reqLateLeadOpen_(segs, sb.lateLeadDayRows_(rows, 'E01', D), D)) trig = false;
   // 第六輪不變式：新規則判不過、主線判得過＝照主線（同 handleMgrApprove／每天重算的 reqLateLeadKeep_）
-  if (trig && typeof sb.reqLateLeadKeep_ === 'function' && !sb.reqLateLeadKeep_(D, pms, segs, bw, sb.lateLeadDayRows_(rows, 'E01', D), sc.late_min == null ? '' : sc.late_min)) trig = false;
-  let st = sb.computeApprovalStatus(pms, segs, false, false, bw, false, trig === true);
+  if (trig && typeof sb.reqLateLeadKeep_ === 'function' && !sb.reqLateLeadKeep_(D, pms, llSegs, bw, sb.lateLeadDayRows_(rows, 'E01', D), sc.late_min == null ? '' : sc.late_min)) trig = false;
+  let st = sb.computeApprovalStatus(pms, trig === true ? llSegs : segs, false, false, bw, false, trig === true);
   if (manual) st = sb.applyManualLate(st, sc.late_min == null ? '' : sc.late_min);
   return { st, trig };
 }

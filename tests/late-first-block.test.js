@@ -50,6 +50,8 @@ function statusOf(m, c) {
   const bw = sb.noPunchBreakWindow(D);
   const rows = sb.reqRows_(m.self);
   let lead = sb.reqLateLeadOn_(rows, 'CF15', D, pms, segs, bw);
+  // 第九輪（方案 B，同 handleMgrApprove）：還沒下班（最後一張是沒配對的上班卡、已核准的單補不上下班卡）＝照主線
+  if (lead && typeof sb.reqLateLeadOpen_ === 'function' && sb.reqLateLeadOpen_(segs, sb.lateLeadDayRows_(rows, 'CF15', D), D)) lead = false;
   // 第六輪不變式（同 handleMgrApprove）：新規則讓缺卡／核定比打卡多判不過、主線判得過＝照主線
   if (lead && typeof sb.reqLateLeadKeep_ === 'function' && !sb.reqLateLeadKeep_(D, pms, segs, bw, sb.lateLeadDayRows_(rows, 'CF15', D), '')) lead = false;
   return { lead, status: sb.computeApprovalStatus(pms, segs, false, false, bw, false, lead) };
@@ -150,13 +152,16 @@ console.log('\n════ 七、每天 05:00 重算（第 5 題 A：已核定�
   check('R1b', '同上、忘打卡單後來被作廢也不改（看原狀態）',
     rec(CF15, '第一段上班無打卡、第一段下班無打卡', '2026-12-05T05:00:00'), { fixed: 0, last: '第一段上班無打卡、第一段下班無打卡' });
   const c4 = CASES.cases.find((c) => c.id === 'L10');
-  check('R2', '「遲到240分、上班中」過了 16 小時沒打下班卡 → 「遲到240分、下班忘刷卡」', rec(c4, '遲到240分、上班中', '2026-12-05T05:00:00'), { fixed: 1, last: '遲到240分、下班忘刷卡' });
+  // 第九輪（方案 B，主管「可以，照推薦」）：沒有下班卡、也沒有已核准的下班忘打卡單＝還沒下班＝照主線重算；有那張單＝視同已下班＝新規則
+  check('R2', '「遲到240分、上班中」過了 16 小時沒打下班卡、也沒有下班忘打卡單 → 還沒下班＝照主線重算', rec(c4, '遲到240分、上班中', '2026-12-05T05:00:00'), { fixed: 1, last: '第一段上班無打卡、第一段下班無打卡、第二段下班忘刷卡' });
+  check('R2b', '同上、有已核准的下班忘打卡單（17:00）→ 視同已下班＝新規則「遲到240分、下班忘刷卡」（K3：忘打下班卡只要 1 張單）',
+    rec(Object.assign({}, c4, { reqs: [{ kind: 'miss', miss_type: 'out', start: '', end: '17:00', decided_at: '2026-12-03T10:00:00+08:00' }] }), '遲到240分、上班中', '2026-12-05T05:00:00'), { fixed: 1, last: '遲到240分、下班忘刷卡' });
   check('R3', '「遲到240分、下班忘刷卡」之後補到下班卡（待核准裝置被核准）→ 「遲到240分」', rec(c4, '遲到240分、下班忘刷卡', '2026-12-05T05:00:00', [['2026-12-03T17:00:00', 'CF15', 'out']]), { fixed: 1, last: '遲到240分' });
   check('R4', '「打卡未入帳，主管補登」後來卡都入帳 → 照舊判法（跟改之前一樣「第一段…」），不改成遲到',
     rec(CF15, '打卡未入帳，主管補登', '2026-12-05T05:00:00'), { fixed: 1, last: '第一段上班無打卡、第一段下班無打卡' });
   const c11 = Object.assign({}, CF15, { date: '2026-10-29' });
   check('R5', '生效日前（10/29）「第一段上班無打卡、第一段下班無打卡」→ 不改（跟改之前一樣）', rec(c11, '第一段上班無打卡、第一段下班無打卡', '2026-11-05T05:00:00'), { fixed: 0, last: '第一段上班無打卡、第一段下班無打卡' });
-  check('R6', '主管認定的遲到「遲到240分(認定)、上班中」→ 認定保留、改「下班忘刷卡」', rec(c4, '遲到240分(認定)、上班中', '2026-12-05T05:00:00'), { fixed: 1, last: '下班忘刷卡、遲到240分(認定)' });
+  check('R6', '主管認定的遲到「遲到240分(認定)、上班中」、沒有下班卡也沒有單（第九輪：還沒下班＝照主線）→ 認定保留', rec(c4, '遲到240分(認定)、上班中', '2026-12-05T05:00:00'), { fixed: 1, last: '第一段上班無打卡、第一段下班無打卡、第二段下班忘刷卡、遲到240分(認定)' });
   // 亂數對照查到的：前導段有已核准忘打卡單、單張上班卡被舊判法併進同一塊（09–12、13–18、12:18 上班沒下班）→ 原狀態沒有「第一段」
   const cB2 = { date: '2026-12-03', brk: CF15.brk, punches: [{ in: '12:18', out: null }], reqs: [{ kind: 'miss', miss_type: 'in', start: '09:00', end: '' }], periods: [{ start: '09:00', end: '12:00' }, { start: '13:00', end: '18:00' }], leaves: [] };
   const so = statusOf(env(cB2), cB2);
@@ -294,35 +299,43 @@ console.log('\n════ 七之四、不變式（第六輪，Codex 第三輪�
   }
 }
 
-console.log('\n════ 七之五、第八輪方案 B（Codex 第四輪兩擋項；主管「可以，照推薦」）：同仁還在上班就核定＝這筆與之後每晚重算都照主線 ════');
+console.log('\n════ 七之五、方案 B（第八輪 Codex 第四輪兩擋項、第九輪第八輪加驗；主管「可以，照推薦」）：同仁還沒下班就核定＝這筆與之後每晚重算都照主線（不看現在時間） ════');
 if (base) {
   const FE = require('./fixtures/storeops-core-calc.js'), FE0 = require('./fixtures/storeops-core-calc-before.mjs');      // 營運系統前端（這一版凍結副本／改動前）
   const D = '2026-12-03', BRK = { start: '12:00', end: '13:00' }, PER = [{ start: '08:00', end: '12:00' }, { start: '13:00', end: '17:00' }];
   const PLAN1 = { work: true, segs: [{ start: '08:00', end: '17:00', break_min: 60 }], date: D };
-  const card = (segs, now) => FE.corePeriods({ segs: segs.map((x) => Object.assign({ cross: false }, x)), plan: PLAN1, reqs: [], brk: BRK, now: T(now) });
+  const segsFe = (pu) => pu.map((x) => Object.assign({ cross: false }, x));
+  const card = (pu, plan, reqs, brk) => FE.corePeriods({ segs: segsFe(pu), plan, reqs: (reqs || []).map((x) => Object.assign({}, x)), brk });
+  const card0 = (pu, plan, reqs, brk) => FE0.corePeriods({ segs: segsFe(pu), plan, reqs: (reqs || []).map((x) => Object.assign({}, x)), brk });
   const flow1 = (o) => Object.assign({ date: D, brk: BRK, periods: PER, reqs: [], late_min: '', after: [], recheckAt: '2026-12-04T05:00:00' }, o);
-  // 擋項 1：12:17 只有上班卡、無單；12:40 開卡、13:01 照原預填送出
+  const pstr = (r) => r.periods.map((p) => p.start + '-' + p.end).join(',');
+  /** 開卡時刻 t1 算卡片（前端不看時間）、打卡端在 t1 檢查、t2 送出（真的寫入）：回卡片與寫入 */
+  const openSubmit = (o) => {
+    const c = card(o.pu, { work: true, segs: o.plan, date: o.d }, o.rq, o.brk);
+    const m = env({ date: o.d, brk: o.brk, punches: o.pu, reqs: o.rq, periods: c.periods }, { now: o.t1 });
+    const leaves = (o.rq || []).filter((r) => r.kind === 'leave' || r.kind === 'trip').map((r) => ({ type: r.kind === 'trip' ? '出差' : r.leave_type, hours: Number(r.hours) || 0 }));
+    const d1 = m.sb.handleMgrApprove({ mgr_key: 'MK', date: o.d, emp_id: 'CF15', periods: c.periods, leaves, dry_run: true, diff_reason: '測試' });
+    m.setNow(o.t2);
+    const w = m.sb.handleMgrApprove({ mgr_key: 'MK', date: o.d, emp_id: 'CF15', periods: c.periods, leaves, diff_reason: '測試' });
+    return { c, c0: card0(o.pu, { work: true, segs: o.plan, date: o.d }, o.rq, o.brk), d1, w };
+  };
+  // 擋項 1（Codex 第四輪）：12:17 只有上班卡、無單；12:40 開卡、13:01 照原預填送出
   {
-    const c = card([{ in: '12:17', out: null }], '2026-12-03T12:40:00');
-    check('B8-1a', '擋項 1：12:40 開卡＝照主線預填 08–12／13–17、卡片遲到 257（＝改動前前端）', [c.periods.map((p) => p.start + '-' + p.end).join(','), c.late, JSON.stringify(c) === JSON.stringify(FE0.corePeriods({ segs: [{ in: '12:17', out: null, cross: false }], plan: PLAN1, reqs: [], brk: BRK }))],
-      ['08:00-12:00,13:00-17:00', 257, true]);
-    const m = env({ date: D, brk: BRK, punches: [{ in: '12:17', out: null }], reqs: [], periods: PER }, { now: '2026-12-03T12:40:00' });
-    const d1 = m.sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: 'CF15', periods: PER, leaves: [], dry_run: true, diff_reason: '測試' });
-    m.setNow('2026-12-03T13:01:00');
-    const w = m.sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: 'CF15', periods: PER, leaves: [], diff_reason: '測試' });
-    check('B8-1b', '擋項 1：12:40 檢查＝主線狀態（沒有遲到）；13:01 送出＝被擋、要 2 張忘打卡單、什麼都沒寫（＝主線，不再寫「遲到240分、上班中」）',
-      [d1.ok, d1.status_text, d1.late_lead, w.ok, w.error, w.need && w.need.miss_cards, m.approved().length], [true, '第一段上班無打卡、第一段下班無打卡、上班中', false, false, 'need_request', 2, 0]);
+    const r = openSubmit({ d: D, brk: BRK, plan: PLAN1.segs, pu: [{ in: '12:17', out: null }], rq: [], t1: '2026-12-03T12:40:00', t2: '2026-12-03T13:01:00' });
+    check('B8-1a', '擋項 1：開卡＝照主線預填 08–12／13–17、卡片遲到 257（＝改動前前端，逐字）', [pstr(r.c), r.c.late, JSON.stringify(r.c) === JSON.stringify(r.c0)], ['08:00-12:00,13:00-17:00', 257, true]);
+    check('B8-1b', '擋項 1：12:40 檢查＝主線狀態（沒有遲到）；13:01 送出＝被擋、什麼都沒寫；訊息照新規則（要 1 張下班忘打卡單，不是主線的 2 張）',
+      [r.d1.ok, r.d1.status_text, r.d1.late_lead, r.w.ok, r.w.error, r.w.need && r.w.need.miss_cards], [true, '第一段上班無打卡、第一段下班無打卡、上班中', false, false, 'need_request', 1]);
     const [b13] = flowRun(base, [flow1({ before: [['12:17', 'in']], approveAt: '2026-12-03T13:01:00' })]);
     check('B8-1c', '擋項 1 主線同操作：13:01 送出也被擋（缺卡）', [b13.ap.ok, b13.ap.error], [false, 'need_request']);
   }
-  // 擋項 2：K6 的上班卡改 12:01；12:17 送出 → 17:00 下班卡 → 隔天 05:00 重算
+  // 擋項 2（Codex 第四輪）：K6 的上班卡改 12:01；12:17 送出 → 17:00 下班卡 → 隔天 05:00 重算
   {
     const sc = flow1({ before: [['12:01', 'in']], approveAt: '2026-12-03T12:17:00', after: [['17:00', 'out']], cut: 'after' });
     const [b2] = flowRun(base, [sc]), [n2] = flowRun(ROOT, [sc]);
-    check('B8-2', '擋項 2：上班中核定＝主線；夜裡＝主線重算（逐字）；重新核定（正式 dry_run）才是 240——方案 B 刻意的結果（2.7 第 8 項改寫）',
+    check('B8-2', '擋項 2：還沒下班就核定＝主線；夜裡＝主線重算（逐字）；重新核定（正式 dry_run）才是 240——方案 B 刻意的結果（2.7 第 8 項改寫）',
       [n2.ap.st, n2.st, n2.st === b2.st, n2.fresh, n2.freshOk], ['第一段上班無打卡、第一段下班無打卡、上班中', '第一段上班無打卡、第一段下班無打卡', true, '遲到240分', true]);
   }
-  // 下班後主管重新核定 → 新規則，之後夜裡也是新規則（鎖只看最後一筆主管核定列的核定時間）
+  // 下班後主管重新核定 → 新規則，之後夜裡也是新規則；lateLeadOpenAt_ 用核定當下已有的卡與已核准的單
   {
     const m = env({ date: D, brk: BRK, punches: [{ in: '12:01', out: null }], reqs: [], periods: PER }, { now: '2026-12-03T12:17:00' });
     const a1 = m.sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: 'CF15', periods: PER, leaves: [], diff_reason: '測試' });
@@ -331,29 +344,59 @@ if (base) {
     const a2 = m.sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: 'CF15', periods: PER, leaves: [], diff_reason: '測試' });
     m.setNow('2026-12-04T05:00:00'); m.sb.recheckPendingApprovalStatuses();
     const ev = m.sb.readSheetAsObjects(m.self.getSheetByName('events')).rows.map((e) => { e.ts = m.sb.normCellTs(e.ts); return e; });
-    check('B8-3', '上班中核定（主線）→ 下班後主管重新核定＝遲到240分 → 夜裡維持；lateLeadWorkingAt_：12:17 是上班中、18:00 不是、讀不到時間＝false',
-      [a1.status_text, a2.status_text, m.approved().slice(-1)[0][5],
-        m.sb.lateLeadWorkingAt_(ev, 'CF15', D, '2026-12-03T12:17:00+08:00'), m.sb.lateLeadWorkingAt_(ev, 'CF15', D, '2026-12-03T18:00:00+08:00'), m.sb.lateLeadWorkingAt_(ev, 'CF15', D, '')],
-      ['第一段上班無打卡、第一段下班無打卡、上班中', '遲到240分', '遲到240分', true, false, false]);
+    const at = (t, rows) => m.sb.lateLeadOpenAt_(ev, 'CF15', D, t, rows || []);
+    const MO = (dec, st, vo) => [{ emp_id: 'CF15', date: D, kind: 'miss', miss_type: 'out', start: '', end: '17:00', status: st || 'approved', decided_at: dec, voided_at: vo || '' }];
+    check('B8-3', '還沒下班核定（主線）→ 下班後重新核定＝遲到240分 → 夜裡維持；lateLeadOpenAt_：12:17 還沒下班、18:00 已下班、讀不到時間＝false；下班忘打卡單 12:10 核准＝當時已補上、13:00 才核准＝當時沒有、12:10 核准 13:00 作廢＝當時有',
+      [a1.status_text, a2.status_text, m.approved().slice(-1)[0][5], at('2026-12-03T12:17:00+08:00'), at('2026-12-03T18:00:00+08:00'), at(''),
+        at('2026-12-03T12:17:00+08:00', MO('2026-12-03T12:10:00+08:00')), at('2026-12-03T12:17:00+08:00', MO('2026-12-03T13:00:00+08:00')),
+        at('2026-12-03T12:17:00+08:00', MO('2026-12-03T12:10:00+08:00', 'voided', '2026-12-03T13:00:00+08:00'))],
+      ['第一段上班無打卡、第一段下班無打卡、上班中', '遲到240分', '遲到240分', true, false, false, false, true, false]);
   }
-  // 已知行為「16 小時界線」（第八輪，送審包 6.1）：12:17 上班、當天已核准下班忘打卡單 17:00；隔天 04:15（上班卡後 15 小時 58 分）開卡＝上班中照主線、卡片 257、檢查被擋（送出鈕灰）；
-  //   04:18（滿 16 小時）有動作觸發重新檢查、沒重新預填就送出 → 寫入新規則「遲到240分、下班忘刷卡」≠卡片 257
+  // 第九輪：第八輪加驗的「16 小時界線」——還沒下班改成不看時間後，開卡時刻與送出時刻怎麼取，卡片都＝寫入（或兩邊都照主線）
   {
-    const miss = [{ kind: 'miss', miss_type: 'out', start: '', end: '17:00' }];
-    const c = FE.corePeriods({ segs: [{ in: '12:17', out: null, cross: false }], plan: PLAN1, reqs: miss, brk: BRK, now: T('2026-12-04T04:15:00') });
-    const m = env({ date: D, brk: BRK, punches: [{ in: '12:17', out: null }], reqs: miss, periods: PER }, { now: '2026-12-04T04:15:00' });
-    const d0 = m.sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: 'CF15', periods: c.periods, leaves: [], dry_run: true, diff_reason: '測試' });
-    m.setNow('2026-12-04T04:18:00');
-    const w = m.sb.handleMgrApprove({ mgr_key: 'MK', date: D, emp_id: 'CF15', periods: c.periods, leaves: [], diff_reason: '測試' });
-    check('B8-4', '已知行為「16 小時界線」：開卡卡片 257、開卡檢查被擋；滿 16 小時後送出寫「遲到240分、下班忘刷卡」（卡片≠寫入；條件：開卡時上班中＋開卡檢查被擋＋送出時滿 16 小時）',
-      [c.late, d0.ok, w.ok, w.status_text], [257, false, true, '遲到240分、下班忘刷卡']);
-    const c2 = FE.corePeriods({ segs: [{ in: '12:17', out: null, cross: false }], plan: PLAN1, reqs: miss, brk: BRK, now: T('2026-12-04T04:18:00') });
-    check('B8-4b', '同上、04:18 重新開卡（重新預填）→ 卡片 240＝寫入（落差只在「開卡跨過 16 小時、沒重新預填」）', c2.late, 240);
+    const cases = [
+      // 驗收員最小例 1（沒有下班忘打卡單）：總部 07–16 休 60、打卡 14:42–15:05＋15:15 上班卡、隔天 07:06 開卡、07:21 送出（第八輪：卡片 462、寫入 420）
+      ['V1', { d: '2026-12-31', brk: { start: '14:00', end: '15:00' }, plan: [{ start: '07:00', end: '16:00', break_min: 60 }], pu: [{ in: '14:42', out: '15:05' }, { in: '15:15', out: null }], rq: [], t1: '2027-01-01T07:06:00', t2: '2027-01-01T07:21:06' }],
+      // 驗收員最小例 2（開卡檢查通過的那 5 組之一）：央廚 09–18 休 60、12:03 上班卡、已核准下班忘打卡單 18:00、12:04 開卡、隔天 04:03 送出（第八輪：卡片 183、寫入 180）
+      ['V2', { d: '2026-11-01', brk: BRK, plan: [{ start: '09:00', end: '18:00', break_min: 60 }], pu: [{ in: '12:03', out: null }], rq: [{ kind: 'miss', miss_type: 'out', start: '', end: '18:00' }], t1: '2026-11-01T12:04:00', t2: '2026-11-02T04:03:30' }],
+      // 5 組的其他三組（中間休息沒打卡單；補不上那張下班卡＝還沒下班＝照主線）
+      ['V3', { d: '2026-11-29', brk: BRK, plan: [{ start: '07:30', end: '16:30', break_min: 60 }], pu: [{ in: '12:35', out: null }], rq: [{ kind: 'miss', miss_type: 'break', start: '15:22', end: '14:22' }], t1: '2026-11-29T23:22:00', t2: '2026-11-30T04:38:22' }],
+      ['V4', { d: '2026-12-31', brk: { start: '11:30', end: '12:30' }, plan: [{ start: '10:00', end: '18:00' }], pu: [{ in: '11:41', out: null }], rq: [{ kind: 'miss', miss_type: 'break', start: '15:51', end: '14:51' }], t1: '2026-12-31T12:04:26', t2: '2027-01-01T03:44:00' }],
+      ['V5', { d: '2026-12-03', brk: BRK, plan: [{ start: '09:30', end: '18:30' }], pu: [{ in: '13:09', out: null }], rq: [{ kind: 'miss', miss_type: 'break', start: '13:33', end: '13:13' }], t1: '2026-12-03T13:09:00', t2: '2026-12-04T05:10:00' }],
+      // 第八輪 B8-4（已知行為，現在拿掉）：12:17 上班、已核准下班忘打卡單 17:00、隔天 04:15 開卡、04:18 送出
+      ['V6', { d: D, brk: BRK, plan: PLAN1.segs, pu: [{ in: '12:17', out: null }], rq: [{ kind: 'miss', miss_type: 'out', start: '', end: '17:00' }], t1: '2026-12-04T04:15:00', t2: '2026-12-04T04:18:00' }],
+    ];
+    const res = cases.map(([id, o]) => {
+      const r = openSubmit(o);
+      const wrote = r.w.ok ? lateSum(r.w.status_text) : null;
+      // 一致＝送不出（什麼都沒寫），或寫入的遲到＝卡片；照主線的（卡片＝改動前前端）寫入也要等於主線那份（下面另比）
+      return [id, r.c.late, r.w.ok ? r.w.status_text : 'blocked:' + r.w.error, !r.w.ok || wrote === r.c.late || JSON.stringify(r.c) === JSON.stringify(r.c0)];
+    });
+    check('B9-1', '第八輪加驗的 16 小時類（驗收員兩個最小例＋開卡檢查通過那 5 組的另外三組＋第八輪 B8-4）：卡片＝寫入，或照主線（卡片＝改動前前端）', res.map((x) => x[3]), res.map(() => true));
+    show('B9-1n', '各例：卡片遲到／寫入', res.map((x) => x.slice(0, 3)));
+    check('B9-1v', '逐值：V1 還沒下班＝照主線（卡片 462＝改動前、送出被擋或寫主線）；V2、V6 有下班忘打卡單＝已下班＝新規則（卡片 180／240＝寫入）；V3–V5 中間休息單補不上下班卡＝照主線',
+      [res[1][1], res[1][2], res[5][1], res[5][2]], [180, '遲到180分、下班忘刷卡', 240, '遲到240分、下班忘刷卡']);
+    // 照主線的那幾例：送出時打卡端也跟主線（f21cc25）同一個結果
+    const mainOf = (o) => { const c0 = card0(o.pu, { work: true, segs: o.plan, date: o.d }, o.rq, o.brk); const [b] = flowRun(base, [{ date: o.d, brk: o.brk, periods: c0.periods, reqs: o.rq, late_min: '', before: o.pu.flatMap((p) => [].concat(p.in ? [[p.in, 'in']] : [], p.out ? [[p.out, 'out']] : [])), approveAt: o.t2, after: [], recheckAt: o.t2 }]); return b.ap.ok ? b.ap.st : 'blocked:' + b.ap.error; };
+    check('B9-1m', 'V1、V3、V4、V5（還沒下班）：送出結果＝主線同一份送出', [0, 2, 3, 4].map((k) => res[k][2]), [0, 2, 3, 4].map((k) => mainOf(cases[k][1])));
   }
-  // 上班中核定的流程掃描（r8/scan2 改寫）：主線核得了新版一定核得了、沒人重新核定遲到不變多、整條流程（核定＋兩晚重算）與主線逐字相同
+  // 第九輪：開卡在 16 小時前、送出在 16 小時後／隔天（一段班、12:01～13:20 上班卡 × 有沒有下班忘打卡單 × 開卡 1 分～15 小時 59 分 × 送出再晚 2 分～26 小時）：卡片＝寫入或照主線
+  {
+    const hmx = (x) => String(Math.floor(x / 60) % 24).padStart(2, '0') + ':' + String(x % 60).padStart(2, '0');
+    const iso = (min) => { const dd = new Date(Date.parse(D + 'T00:00:00Z') + 86400000 * Math.floor(min / 1440)).toISOString().slice(0, 10); return dd + 'T' + hmx(min) + ':00'; };
+    let n = 0, bad = [];
+    for (const ins of [721, 737, 765, 779, 800]) for (const rq of [[], [{ kind: 'miss', miss_type: 'out', start: '', end: '17:00' }]]) for (const od of [1, 30, 300, 958, 959]) for (const gap of [2, 5, 60, 1000, 1560]) {
+      const o = { d: D, brk: BRK, plan: PLAN1.segs, pu: [{ in: hmx(ins), out: null }], rq, t1: iso(ins + od), t2: iso(ins + od + gap) };
+      const r = openSubmit(o); n++;
+      const same0 = JSON.stringify(r.c) === JSON.stringify(r.c0);
+      if (r.w.ok && lateSum(r.w.status_text) !== r.c.late && !same0) bad.push([o.pu[0].in, rq.length ? '下班忘打卡單' : '無單', o.t1, o.t2, '卡片 ' + r.c.late, r.w.status_text]);
+    }
+    check('B9-2', '開卡／送出跨 16 小時、跨日 ' + n + ' 組：卡片＝寫入（照主線的除外，另由 B9-1m／對照 (c) 驗）', bad.slice(0, 4), []);
+  }
+  // 還沒下班核定的流程掃描（r8/scan2 改寫）：主線核得了新版一定核得了、沒人重新核定遲到不變多；核定當下還沒下班的整條流程（核定＋重算）與主線逐字相同
   {
     const hmx = (x) => String(Math.floor(x / 60)).padStart(2, '0') + ':' + String(x % 60).padStart(2, '0');
-    const L = [];
+    const L = [], openAp = [];
     for (const ins of [710, 720, 721, 737, 765, 779, 780, 785, 800, 840]) for (const pre of ['none', 'brkshort']) for (const rq of ['none', 'pmleave', 'missout']) for (const ad of [1, 17, 45, 90, 300]) for (const after of ['17:00', '16:30', '']) for (const lm of ['', '240', '0']) {
       if (pre === 'brkshort' && ins < 745) continue;
       const before = (pre === 'brkshort' ? [['12:05', 'in'], ['12:15', 'out']] : []).concat([[hmx(ins), 'in']]);
@@ -361,23 +404,36 @@ if (base) {
       if (after && Number(after.slice(0, 2)) * 60 + Number(after.slice(3)) <= appr) continue;
       const reqs = rq === 'pmleave' ? [{ kind: 'leave', leave_type: '事假', start: '13:00', end: '14:00', hours: 1 }] : rq === 'missout' ? [{ kind: 'miss', miss_type: 'out', start: '', end: '17:00' }] : [];
       L.push(flow1({ before, reqs, late_min: lm, leaves: rq === 'pmleave' ? [{ type: '事假', hours: 1 }] : [], approveAt: D + 'T' + hmx(appr) + ':00', after: after ? [[after, 'out']] : [], cut: 'after' }));
+      openAp.push(rq !== 'missout');      // 核定當下：最後一張是沒配對的上班卡；沒有下班忘打卡單＝還沒下班
     }
     const A = flowRun(base, L), B = flowRun(ROOT, L);
-    let i1 = [], up = [], diff = [], trigW = [], nOk = 0;
+    let i1 = [], up = [], diff = [], trigOpen = [], nOk = 0, nOpen = 0;
     B.forEach((y, i) => {
       const x = A[i];
       if (x.ap.ok && !y.ap.ok) i1.push(i);
       if (!y.ap.ok) return;
       nOk++;
-      if (y.trig) trigW.push(i);
       const night = y.fixed ? y.st : y.ap.st;
       if (lateSum(night) > lateSum(y.ap.st)) up.push(i);
+      if (!openAp[i]) return;
+      nOpen++;
+      if (y.trig) trigOpen.push(i);
       if (x.ap.ok && (x.ap.st !== y.ap.st || x.st !== y.st)) diff.push(i);
     });
-    check('B8-5a', '流程組數夠（流程 ≥ 1500、核定成功 ≥ 150；遲到欄空白／主管填 240／填 0 三種；主線同樣大多被擋）', [L.length >= 1500, nOk >= 150], [true, true]);
-    show('B8-5n', '流程數／新版核定成功', [L.length, nOk]);
-    check('B8-5', '上班中核定：主線核得了新版核不了＝0、核定時套了新規則＝0、沒人重新核定遲到變多＝0、核定＋重算跟主線逐字不同＝0',
-      [i1.length, trigW.length, up.length, diff.length], [0, 0, 0, 0]);
+    check('B8-5a', '流程組數夠（流程 ≥ 1500、核定成功 ≥ 300、其中核定當下還沒下班 ≥ 75；還沒下班時主線大多被擋）', [L.length >= 1500, nOk >= 300, nOpen >= 75], [true, true, true]);
+    show('B8-5n', '流程數／新版核定成功／其中還沒下班', [L.length, nOk, nOpen]);
+    check('B8-5', '主線核得了新版核不了＝0、沒人重新核定遲到變多＝0；核定當下還沒下班：套了新規則＝0、核定＋重算跟主線逐字不同＝0',
+      [i1.length, up.length, trigOpen.length, diff.length], [0, 0, 0, 0]);
+  }
+  // 第八輪加驗 N1 的 2 組（不改，既有設計）：核定時套新規則（遲到 120），之後主管核准前導段的上班忘打卡單 → 夜裡照單（＝主線重算＝現在重新核定）163
+  {
+    const sc = { date: '2026-11-02', brk: BRK, periods: [{ start: '10:00', end: '12:00' }, { start: '13:00', end: '13:01' }], late_min: '',
+      reqs: [{ kind: 'miss', miss_type: 'break', start: '13:49', end: '13:19' }, { kind: 'leave', leave_type: '事假', start: '13:01', end: '14:48', hours: 1.78 }], leaves: [{ type: '事假', hours: 1.78 }],
+      before: [['12:43', 'in'], ['12:47', 'out'], ['13:46', 'in'], ['14:00', 'out']], approveAt: '2026-11-03T06:03:00', after: [], recheckAt: '2026-11-04T05:00:00', cut: 'after',
+      addReqAfter: { kind: 'miss', miss_type: 'in', start: '10:00', end: '' } };
+    const [b] = flowRun(base, [sc]), [n] = flowRun(ROOT, [sc]);
+    check('B9-3', 'N1 邊角（既有設計：核定後才補的前導段忘打卡單＝有人動手，夜裡照單）：核定 120 → 補單後夜裡＝主線重算＝現在重新核定（163）',
+      [n.ap.st, n.st, n.st === b.st, n.st === n.fresh, n.freshOk], ['遲到120分、該段無打卡、有多出的打卡段', '遲到163分、早退14分、有多出的打卡段', true, true, true]);
   }
 }
 
@@ -387,7 +443,7 @@ console.log('\n════ 八、亂數對照：改版前（' + BASE + '）vs �
     const run = (root) => JSON.parse(execFileSync(process.execPath, [path.join(__dirname, 'helpers', 'late-lead-corpus.js')], { env: Object.assign({}, process.env, { GS_ROOT: root }), encoding: 'utf8', maxBuffer: 256 << 20 }));
     const a = run(base), b = run(ROOT);
     const J = JSON.stringify;
-    let nt = 0, t = 0, diffNT = [], mainDiff = [], rec01 = [], recOld = [], recOldBad = [], recOldFilter = 0, idem = [], inv = [], trigOk = 0;
+    let msgN = 0, nt = 0, t = 0, diffNT = [], mainDiff = [], rec01 = [], recOld = [], recOldBad = [], recOldFilter = 0, idem = [], inv = [], trigOk = 0;
     const FILTER = /該段無打卡|打卡未入帳|第|忘刷卡|上班中/;      // recheckPendingApprovalStatuses 會重算的原狀態
     a.forEach((x, i) => {
       const y = b[i];
@@ -399,7 +455,12 @@ console.log('\n════ 八、亂數對照：改版前（' + BASE + '）vs �
         if (!y.trig || /第一段上班無打卡|打卡未入帳/.test(x.stMain)) recOldBad.push(i);
         if (FILTER.test(x.stMain)) recOldFilter++;
       }
-      if (!y.trig) { nt++; if (J(x.dry) !== J(y.dry) || x.st !== y.st || x.rec[3] !== y.rec[3]) diffNT.push(i); }
+      // 第九輪：還沒下班照主線、兩邊都擋時，擋的規則不比主線多、要的忘打卡單比主線少 → 訊息照新規則（K3：12:47 到忘了下班卡要 1 張不是 3 張）；其餘逐字＝主線
+      const msgNew = !y.trig && x.dry.ok === false && y.dry.ok === false && y.dry.rules.every((r) => x.dry.rules.indexOf(r) !== -1)
+        && y.dry.need && x.dry.need && y.dry.need.miss_cards < x.dry.need.miss_cards
+        && J(Object.assign({}, y.dry.need, { miss_cards: 0 }, y.dry.rules.indexOf('over_credit') < 0 ? { over_min: 0 } : {})) === J(Object.assign({}, x.dry.need, { miss_cards: 0 }, x.dry.rules.indexOf('over_credit') < 0 ? { over_min: 0 } : {}));      // over_min 只在擋 over_credit 時顯示
+      if (msgNew) msgN++;
+      if (!y.trig) { nt++; if ((!msgNew && J(x.dry) !== J(y.dry)) || x.st !== y.st || x.rec[3] !== y.rec[3]) diffNT.push(i); }
       else {
         t++;
         if (y.rec[3] !== y.st) idem.push(i);
@@ -413,6 +474,7 @@ console.log('\n════ 八、亂數對照：改版前（' + BASE + '）vs �
     check('X3', '不觸發的情境：只檢查回應（擋不擋、張數、分鐘、狀態）、核定狀態、夜裡重算 與改版前逐筆相同', diffNT.slice(0, 5), []);
     check('X4', '不帶 lateLead 的核定狀態：全部情境（含觸發的）與改版前逐字相同', mainDiff.slice(0, 5), []);
     check('X5', '夜裡重算「第一段上班無打卡…」「打卡未入帳，主管補登」：全部情境與改版前相同（一筆都不改判）', rec01.slice(0, 5), []);
+    show('X3m', '（第九輪）還沒下班、兩邊都擋、訊息照新規則（要的忘打卡單比主線少、其餘逐字相同）的組數', msgN);
     check('X6', '觸發的情境：夜裡重算這一版自己寫的狀態 → 不變', idem.slice(0, 5), []);
     check('X7', '觸發的情境：遲到分鐘＝前導段＋其餘段的遲到、沒有多一筆遲到、沒有「第一段」', inv.slice(0, 5), []);
     check('X8', '舊版會寫的狀態（換版前用舊程式核定的列）拿給新版夜裡重算：全部情境跟改版前的重算逐字相同（含休息中打卡被併成一塊那類）', recOld.slice(0, 5), []);
@@ -503,7 +565,7 @@ console.log('\n════ 十之二、休息中打了短短一段再回來（�
   check('G2', G.points.length + ' 點 × 班表一段休 60／一段沒填休息／兩段：打卡端核定狀態、遲到、缺卡張數、要不要選原因、選了原因後 8 小時＝案例（營運系統那邊同一份驗預填）', bad, []);
   check('G3', '共用案例檔 sha256（mala-store-ops test/server/late-lead.test.js 釘同一個值；兩份逐字相同）',
     require('crypto').createHash('sha256').update(fs.readFileSync(path.join(__dirname, 'fixtures', 'late-lead-cases-v1.json'))).digest('hex'),
-    '2ecfdbea7df4e821c8c7748d65662920626e51768ba411a4524a0ad121551e76');
+    '09540fb7b284533dd20e53caeddcfa6ba3d0ac6042d1ad47e7122a6f291e5cf1');
 }
 
 console.log('\n════ 九、薪資：遲到 240 分流進薪資、計時不多發不重複扣 ════');

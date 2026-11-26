@@ -2626,12 +2626,27 @@ function reqLeadMissForm_(rows, empId, date, lead) {
 function reqLateLeadOn_(rows, empId, date, periods, segs, breakWindow) {
   // 休息帶設定長度 0、反向、缺一邊＝不套（Code.gs lateLeadBreakOk_，2026-11-26 驗收第 3 項）
   if (!reqLateLeadDay_(date) || typeof lateLeadOf_ !== 'function' || typeof lateLeadBreakOk_ !== 'function' || !lateLeadBreakOk_()) return false;
-  // 2026-11-26 第八輪方案 B（Codex 第四輪兩擋項；主管「可以，照推薦」）：同仁還在上班（Code.gs markWorkingSeg_ 標的 working：這天最後一張是沒配對的上班卡、16 小時內）＝不套，
-  //   整份照主線。核定與每天重算都經過這裡；核定當下上班中的列，之後每天重算也照主線（Code.gs recomputeApprovalStatusOf 的 lateLeadWorkingAt_）。
-  //   營運系統 core-calc.js clockKeepAny 同一條（clockWorking）。
-  if ((segs || []).some(function (s) { return s && s.working; })) return false;
   var ll = lateLeadOf_(periods || [], segs || [], breakWindow);
   return !!ll && !reqLeadMissForm_(rows, empId, date, ll.lead);
+}
+/* ── 還沒下班（2026-11-27 第九輪；方案 B，主管「可以，照推薦」：同仁還沒打下班卡就核定的日子照現行算法、下班後重新核定才算遲到）──
+   ＝這天最後一張卡（照時間）是沒配對的上班卡，而且已核准的忘打卡單補不上那張下班卡（reqSegsWithMiss_ 補完那一段仍沒有下班時間）。
+   **不看現在時間、不看 16 小時**（第八輪用 working＝16 小時，開卡與送出各看各的「現在」，界線前後卡片≠寫入；第八輪加驗 138 組）。
+   成立＝新規則不套、這份整份照主線（Code.gs handleMgrApprove）；夜間：現在還沒下班、或核定當下還沒下班（lateLeadOpenAt_）＝照主線。
+   有已核准的下班忘打卡單補上＝視同已下班＝照一般判斷（K3：忘打下班卡只要 1 張單）。營運系統 core-calc.js clockOpen 同一條。
+   segs＝打卡段 [{inMs,outMs}]；okRows＝這天已核准的申請；date＝這天 */
+function reqLateLeadOpen_(segs, okRows, date) {
+  segs = segs || [];
+  var at = function (x) { return x.outMs != null ? x.outMs : x.inMs; }, k = -1;
+  segs.forEach(function (x, i) { if (at(x) != null && (k < 0 || at(x) >= at(segs[k]))) k = i; });
+  if (k < 0 || segs[k].inMs == null || segs[k].outMs != null) return false;
+  var filled = reqSegsWithMiss_(segs, okRows || [], date);
+  return !filled[k] || filled[k].outMs == null;
+}
+/* 新規則那條路徑用的打卡段：拿掉「上班中」標記（working）——只有已核准下班忘打卡單補上、卻還在 16 小時內的那張卡會有標記；
+   新規則不看現在時間（reqWorkingSegs_ 不延伸、reqOverSegsKnown_ 不當 16 小時、狀態不寫上班中），前後端、開卡與送出都一樣。主線那條路徑照舊用原本的段。 */
+function reqLateLeadSegs_(segs) {
+  return (segs || []).map(function (x) { return { in: x.in, out: x.out, inMs: x.inMs, outMs: x.outMs }; });
 }
 /* ── 不變式（2026-11-26 第六輪，Codex 第三輪；主管選「維持範圍、繼續修」）：同一份送出，主線核得了的，新版也一定核得了 ──
    新規則在綁單只改兩條：缺卡張數、核定比打卡多（用其餘段＋前導段分鐘算，見 reqBindCheck_ late_lead）。其他每一條（加班、滿 8 小時、假單、卡差…）新舊一樣。
