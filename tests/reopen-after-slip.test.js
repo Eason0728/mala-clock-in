@@ -168,7 +168,7 @@ console.log('══ 例 1～12（開關開著）══');
   check('ex4-k', '登記兩列出差各 2（合計 4）、兩張單合計 4 → 已包含', dec(m9, 'T11').day_ok, true);
   const mA = world(Object.assign({}, base, { leave: [['2026-11-20', '示意丁', '出差', 2]], reqs: [TRP('T10', '09:00', '11:00'), TRP('T11', '14:00', '16:00')] }));
   const rA = batch(mA, ['T10', 'T11']);
-  check('ex4-l', '批次同時核准兩張（登記 2）：第一張合計 2＝2 已包含、第二張合計 4 → 打回', [(rA.day_ok_items || []).map((x) => x.id), (rA.warn_items || []).filter((x) => x.reopened).map((x) => x.id)], [['T10'], ['T11']]);
+  check('ex4-l', '批次同時核准兩張（登記 2；2026-11-26 審查第二輪：整組一次判）：整組合計 4≠2 → 兩張都標打回、沒有 day_ok_items、只搬一次', [rA.day_ok_items || null, (rA.warn_items || []).filter((x) => x.reopened).map((x) => x.id), bakRows(mA).length], [null, ['T10', 'T11'], 1]);
   const m4 = world(Object.assign({}, base, { leave: [['2026-11-20', '示意丁', '出差', 7.995]], reqs: [TRIP8('T7', 'MZTJS11', '2026-11-20', { name: '示意丁' })] }));
   check('ex4-e', '時數差 < 0.01 算相同', dec(m4, 'T7').day_ok, true);
   const m5 = world(Object.assign({}, base, { leave: [['2026-11-20', '示意丁', '出差', '']], reqs: [TRIP8('T8', 'MZTJS11', '2026-11-20', { name: '示意丁' })] }));
@@ -184,8 +184,8 @@ console.log('══ 例 1～12（開關開著）══');
     reqs: [TRIP8('B1', 'MZTJS07', '2026-11-19', { name: '示意甲', hours: 4 }), { id: 'B2', emp_id: 'MZTJS07', name: '示意甲', kind: 'leave', date: '2026-11-19', leave_type: '事假', hours: 4, start: '14:00', end: '18:00' }] });
   const r = batch(m, ['B1', 'B2']);
   check('ex5-a', '兩張都核准', [r.done, r.skipped], [['B1', 'B2'], []]);
-  check('ex5-b', 'warn_items 只有第一張（打回）；第二張不重打、不提醒', (r.warn_items || []).map((x) => [x.id, x.reopened, x.revoked.approved, x.message]),
-    [['B1', true, 1, '11/19 原本已核定，已打回待核定，請重新核定這天']]);
+  check('ex5-b', '整組一次判、只打回一次；兩張的訊息一致（都標打回、同一句）', (r.warn_items || []).map((x) => [x.id, x.reopened, x.revoked.approved, x.message]),
+    [['B1', true, 1, '11/19 原本已核定，已打回待核定，請重新核定這天'], ['B2', true, 1, '11/19 原本已核定，已打回待核定，請重新核定這天']]);
   check('ex5-c', 'approved_revoked 只多那天那一列', [bakRows(m).length, apRows(m).length], [1, 0]);
   const m2 = world({ props: ON, approved: [AP('2026-11-19', 'MZTJS07', '示意甲', '10:00-18:00', 8), AP('2026-11-19', 'MZTGF06', '示意乙', '10:00-18:00', 8)],
     reqs: [TRIP8('B3', 'MZTJS07', '2026-11-19', { name: '示意甲', hours: 4 }), TRIP8('B4', 'MZTGF06', '2026-11-19', { name: '示意乙', hours: 4 })] });
@@ -508,6 +508,57 @@ console.log('\n══ 鏡像假別登記不搬（獨立審查第 2 項）＋留�
     const ra = J(a.sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'VS', reason: '錯' })), rb = J(b.sb.handleMgrReqVoid_({ mgr_key: 'MK', id: 'VS', reason: '錯' }));
     check('bak-' + i, '作廢、留底分頁「' + k + '」：回應與所有分頁跟改版前逐格相同', [JSON.stringify(ra) === JSON.stringify(rb), snap(a) === snap(b)], [true, true]);
   });
+}
+
+console.log('\n══ 批次：同人同日整組一次判（獨立審查第二輪 BLOCKER 1）══');
+{
+  const snap = (m) => JSON.stringify(Object.keys(m.self.sh).sort().map((nm) => [nm, m.self.sh[nm].values]));
+  const B = '2026-11-20';
+  const TR = (id, a, b, x) => TRIP8(id, 'MZTJS11', B, Object.assign({ name: '示意丁', start: a, end: b, hours: 2 }, x || {}));
+  const base0 = (leave, reqs, more) => world(Object.assign({ props: ON, approved: [AP(B, 'MZTJS11', '示意丁', '10:00-12:00', 2, '正常', '店長', B + 'T21:00:00+08:00')].concat((more && more.approved) || []), leave, reqs }, more && more.x));
+  // 登記 4、兩張 2 小時一起核准 → 整組合計 4＝4 → 保留核定、兩張都 day_ok
+  let m = base0([['2026-11-20', '示意丁', '出差', 4]], [TR('G1', '09:00', '11:00'), TR('G2', '14:00', '16:00')]);
+  let r = batch(m, ['G1', 'G2']);
+  check('grp-a', '登記 4：兩張都 day_ok、沒有打回、核定與登記都在', [r.done, (r.day_ok_items || []).map((x) => x.id), (r.warn_items || []).length, apRows(m).length, lvRows(m).length, sheetVals(m, 'approved_revoked')], [['G1', 'G2'], ['G1', 'G2'], 0, 1, 1, null]);
+  // 登記 2 → 整組合計 4≠2 → 只打回一次、沒有 day_ok_items、兩張訊息一致
+  m = base0([['2026-11-20', '示意丁', '出差', 2]], [TR('G1', '09:00', '11:00'), TR('G2', '14:00', '16:00')]);
+  r = batch(m, ['G1', 'G2']);
+  check('grp-b', '登記 2：只打回一次、沒有 day_ok_items、兩張都標打回同一句', [r.day_ok_items || null, (r.warn_items || []).map((x) => x.id + ':' + x.message), bakRows(m).length, lvBak(m).length],
+    [null, ['G1:11/20 原本已核定，已打回待核定，請重新核定這天', 'G2:11/20 原本已核定，已打回待核定，請重新核定這天'], 1, 1]);
+  // 三張其中一張被別的檢查擋（病假沒附證明）→ 不算進合計：出差 2＋2＝登記 4 → 已包含；病假那張進 skipped
+  m = base0([['2026-11-20', '示意丁', '出差', 4]], [TR('G1', '09:00', '11:00'), TR('G2', '14:00', '16:00'), { id: 'G3', emp_id: 'MZTJS11', name: '示意丁', kind: 'leave', date: B, leave_type: '病假', hours: 2, start: '16:00', end: '18:00' }]);
+  r = batch(m, ['G1', 'G2', 'G3']);
+  check('grp-c', '三張其中一張被擋（病假沒附證明）：不算進合計，另外兩張整組已包含', [r.done, r.skipped.map((x) => x.id), (r.day_ok_items || []).map((x) => x.id), apRows(m).length], [['G1', 'G2'], ['G3'], ['G1', 'G2'], 1]);
+  // 同批兩個人各自獨立；同人兩天各自獨立
+  m = world({ props: ON, approved: [AP(B, 'MZTJS11', '示意丁', '', 4, '出差'), AP(B, 'MZTJS07', '示意甲', '10:00-13:00', 3), AP('2026-11-21', 'MZTJS11', '示意丁', '', 2, '出差')],
+    leave: [[B, '示意丁', '出差', 4], ['2026-11-21', '示意丁', '出差', 2]],
+    reqs: [TR('P1', '09:00', '11:00'), TR('P2', '14:00', '16:00'), TRIP8('P3', 'MZTJS07', B, { name: '示意甲' }), TRIP8('P4', 'MZTJS11', '2026-11-21', { name: '示意丁', hours: 2 }), TRIP8('P5', 'MZTJS11', '2026-11-21', { name: '示意丁', hours: 2 })] });
+  r = batch(m, ['P1', 'P3', 'P4', 'P2', 'P5']);
+  check('grp-d', '兩個人、同人兩天各自判：丁 11/20 已包含（2＋2＝4）、甲打回、丁 11/21 打回（2＋2≠2）', [(r.day_ok_items || []).map((x) => x.id), (r.warn_items || []).map((x) => x.id), bakRows(m).map((x) => x[0] + x[1])],
+    [['P1', 'P2'], ['P3', 'P4', 'P5'], [B + 'MZTJS07', '2026-11-21MZTJS11']]);
+  // 混合：同人同日一張請假一張加班——兩種都包含才算整組已包含
+  const mixed = (lvH, otH) => world({ props: ON, approved: [AP(B, 'MZTGF06', '示意乙', '12:00-22:00', 10)], leave: [[B, '示意乙', '事假', lvH]],
+    reqs: [{ id: 'X1', emp_id: 'MZTGF06', name: '示意乙', kind: 'leave', date: B, leave_type: '事假', hours: 2, start: '09:00', end: '11:00' }, { id: 'X2', emp_id: 'MZTGF06', name: '示意乙', kind: 'ot', date: B, start: '20:00', end: '22:00', hours: otH }] });
+  m = mixed(2, 2); r = batch(m, ['X1', 'X2']);
+  check('grp-e', '混合（事假 2＝登記 2、加班 2＝應有 2）→ 兩張都 day_ok', [(r.day_ok_items || []).map((x) => x.id), (r.warn_items || []).length], [['X1', 'X2'], 0]);
+  m = mixed(2, 1); r = batch(m, ['X1', 'X2']);
+  check('grp-f', '混合（事假相符、加班不足）→ 整組打回、兩張都標打回、只搬一次', [r.day_ok_items || null, (r.warn_items || []).map((x) => x.id), bakRows(m).length], [null, ['X1', 'X2'], 1]);
+  // 打回失敗：整組都不核准
+  m = base0([['2026-11-20', '示意丁', '出差', 2]], [TR('G1', '09:00', '11:00'), TR('G2', '14:00', '16:00')]);
+  m.self.sh.approved.deleteRow = () => { throw new Error('試算表忙碌'); };
+  r = batch(m, ['G1', 'G2']);
+  check('grp-g', '整組打回失敗 → 兩張都進 skipped（逐字理由）、都還待審', [r.done, r.skipped.map((x) => x.id + ':' + x.reason), st(m, 'G1'), st(m, 'G2')],
+    [[], ['G1:這天的核定沒有打回成功，這張還沒核准，請再按一次', 'G2:這天的核定沒有打回成功，這張還沒核准，請再按一次'], 'pending', 'pending']);
+  // 批次 vs 逐張單筆核准（同一批資料，最終分頁）
+  const cmp = (lvH) => {
+    const a = base0([['2026-11-20', '示意丁', '出差', lvH]], [TR('G1', '09:00', '11:00'), TR('G2', '14:00', '16:00')]);
+    const b = base0([['2026-11-20', '示意丁', '出差', lvH]], [TR('G1', '09:00', '11:00'), TR('G2', '14:00', '16:00')]);
+    const ra = batch(a, ['G1', 'G2']), r1 = dec(b, 'G1'), r2 = dec(b, 'G2');
+    const noWhy = (m) => snap(m).replace(/核准申請 [^"]*/g, '');      // 留底理由：批次列出整組（G1、G2），逐張寫觸發的那張
+    return { same: noWhy(a) === noWhy(b), why: bakRows(a).map((x) => x[x.length - 1]), batch: [(ra.day_ok_items || []).length, (ra.warn_items || []).filter((x) => x.reopened).length], single: [!!r1.day_ok, !!r1.reopened, !!r2.day_ok, !!r2.reopened] };
+  };
+  check('grp-h', '批次 vs 逐張（登記 4）：批次保留核定（整組 4＝4）；逐張第一張只看自己 2≠4 就打回 → 最終分頁不同', cmp(4), { same: false, why: [], batch: [2, 0], single: [false, true, false, false] });
+  check('grp-i', '批次 vs 逐張（登記 2）：最終分頁除了留底理由都相同（都打回一次）；批次理由列出整組，逐張時第一張說已包含、第二張打回', cmp(2), { same: true, why: ['核准申請 G1、G2（值班主管）後打回：11/20 出差 09:00–11:00 2 小時；11/20 出差 14:00–16:00 2 小時'], batch: [0, 2], single: [true, false, false, true] });
 }
 
 done();
