@@ -710,12 +710,14 @@ function handleMyRecent(body) {
   const approvedSheet = ss.getSheetByName('approved');
   const approvedRows = approvedSheet ? readSheetAsObjects(approvedSheet).rows : [];
   const approvedMap = buildLatestApprovedMap(approvedRows);
+  const days = buildRecentDays(eventRows, roster.emp_id, todayTaipeiStr(), approvedMap);
+  kzRecentDays_(ss, days, roster, approvedMap, todayTaipeiStr());   // 曠職（2026-11-26）：開關關＝什麼都不做
   return {
     ok: true,
     emp_id: roster.emp_id,
     name: roster.name,
     device_state: deviceState,
-    days: buildRecentDays(eventRows, roster.emp_id, todayTaipeiStr(), approvedMap),
+    days: days,
     // 本月／上月核定時數合計（2026-07-31 新增）。獨立於 days 計算——days 只有 40 天視窗，
     // 蓋不滿整個上月；這裡直接掃 approved 分頁全部日期，與月表合計同源。
     month_totals: monthTotalsFor(approvedMap, roster.emp_id, eventRows, todayTaipeiStr()),
@@ -2154,6 +2156,29 @@ function kzApprovePost_(ss, plan, empId, name, date, eventRows, prevRec) {
     return { ok: false, error: 'kz_too_early', message: KZ_MSG_.early.replace('{日期}', kzMd_(until)), until: until };        // G 句 12
   }
   return null;
+}
+
+/** 打卡頁「最近 40 天」：已認定曠職的那天（沒有打卡，原本不會列）列出來、狀態顯示「曠職」（句 15），不是「全天請假」。
+ *  開關關、沒有曠職登記＝days 原樣不動（不多讀 leave 分頁）。days 就地修改。 */
+function kzRecentDays_(ss, days, roster, approvedMap, todayStr) {
+  const from = kzFrom_();
+  if (!from) return;
+  const sh = ss.getSheetByName('leave');
+  if (!sh) return;
+  const startStr = addDaysStr(todayStr, -(RECENT_DAYS_WINDOW - 1));
+  const nm = String(roster.name || '').trim(), hit = {};
+  readSheetAsObjects(sh).rows.forEach(function (r) {
+    const d = normCellDate(r['日期']);
+    if (String(r['姓名'] || '').trim() === nm && String(r['假別'] || '').trim() === KZ_TYPE && d >= from && d >= startStr && d <= todayStr) hit[d] = true;
+  });
+  Object.keys(hit).forEach(function (d) {
+    const rec = ((approvedMap || {})[d] || {})[String(roster.emp_id)];
+    let c = days.filter(function (x) { return x.date === d; })[0];
+    if (!c) { c = { date: d, segments: [], reference: 0, notes: [] }; days.push(c); }
+    c.approved = rec ? Math.round(Number(rec.approved_hours) * 100) / 100 : (c.approved == null ? null : c.approved);
+    c.approved_status = KZ_TYPE;
+  });
+  days.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
 }
 
 function handleMgrApprove(body) {

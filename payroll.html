@@ -1840,6 +1840,12 @@ function renderOtInfo(t){
     if(o.rdo&&o.rdo.length) rows.push(`<li><b>${nm}</b>：例假出勤 ${list(o.rdo)}——要另給補假，並在 24 小時內報主管機關</li>`);
     if(o.trip_noform&&o.trip_noform.length) rows.push(`<li><b style="color:#b7791f">${nm}</b>：出差 ${list(o.trip_noform)} 沒有出差申請單（看不到地點），沒給出差餐費；要給請在自訂加薪補</li>`);
     if(o.no_show&&o.no_show.length) rows.push(`<li>${nm}：有排班、沒核定也沒請假 ${list(o.no_show)}（系統不扣，請確認要補請假或扣款）</li>`);
+    // 曠職（2026-11-26，開工確認第 7、8、10 題；字逐字照逐句表 16–19 句）：後端只在開關開、生效日起的日子才帶這些欄位
+    if(o.kz_suspect&&o.kz_suspect.length) rows.push(`<li>${nm}：疑似曠職（有排班、沒打卡、沒有任何單）${list(o.kz_suspect)}——請主管到核定頁處理（補單或認定曠職）</li>`);
+    if(o.kz_suspect_alert) rows.push(`<li><b class="bad">${nm}</b>：疑似曠職 ${o.kz_suspect.length} 天（最長連續 ${Number(o.kz_suspect_streak)||0} 天），已達連續 3 天或當月 6 天，請確認是否曠職</li>`);
+    if(o.kz_marked&&o.kz_marked.length) rows.push(`<li>${nm}：已認定曠職 ${o.kz_marked.length} 天 ${list(o.kz_marked.map(x=>x.date))}</li>`);
+    if(o.kz_marked_alert) rows.push(`<li><b class="bad">${nm}</b>：已認定曠職連續 ${Number(o.kz_marked_streak)||0} 天／本月 ${o.kz_marked.length} 天，已達連續 3 天或當月 6 天，後續怎麼處理請人資確認</li>`);
+    if(o.kz_pending) rows.push(`<li><b class="bad">${nm}</b>：曠職扣款算法待確認</li>`);   // 待主管確認的佔位（上線前會換掉）
     if(o.support_leave&&o.support_leave.length) o.support_leave.forEach(x=>rows.push(`<li><b style="color:#b7791f">${nm}</b>：<span style="color:#b7791f">${md(x.date)} 在${esc(x.store_name)}記了${esc(x.type)} ${r2(x.hours)} 小時（支援店記的假，薪資沒扣，請確認）</span></li>`));
     if(o.manual_sup_h>0) rows.push(`<li>${nm}：手填的跨店支援有 ${r2(o.manual_sup_h)} 小時沒有日期，沒算進逐日加班</li>`);
     // 跨帳號重複出差／請假（2026-11-23）：後端組好白話（line）；pay＝會讓薪資重複、鎖定時擋，其他只提醒
@@ -2147,7 +2153,7 @@ function addSupportFor(emp){
 /* ═════ 假別設定（2026-08-22）═════
  * 這張表是「值班核定下拉／薪資扣款／額度上限」共同的正本。
  * 改版前假別是寫死在三個地方用關鍵字比對的，新增一種假必漏改；現在改資料驅動。 */
-let LT_LIST = [], LT_IS_DEFAULT = false;
+let LT_LIST = [], LT_IS_DEFAULT = false, LT_KZ_ON = false;   // LT_KZ_ON：曠職開關開著（後端 payroll_leave_type 帶 kz_on，2026-11-26）
 const LT_BASIS = [['','（無上限）'],['calendar','曆年'],['event','事件別'],['child','每子女'],['tenure','年資']];
 
 function renderLeaveTypes(){
@@ -2198,6 +2204,8 @@ function renderLeaveTypes(){
     });
     h+=`<td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
          onclick="LT_LIST.splice(${i},1);renderLeaveTypes()">移除</button></td></tr>`;
+    // 曠職列說明（句 23，逐字）：只有開關開著才顯示
+    if(LT_KZ_ON&&(r.code==='absent'||String(r.name||'').trim()==='曠職')) h+=`<tr><td colspan="${cols.length+1}" style="text-align:left;font-size:12.5px;color:#7a6a58">曠職：主管在核定頁認定的無故缺勤。只能由「認定曠職」按鈕產生，一般假別下拉與同仁請假單都選不到。</td></tr>`;
   });
   t.innerHTML=h+'</tbody>';
 }
@@ -2226,7 +2234,7 @@ async function loadLeaveTypes1(){
   const r=await post('payroll_leave_type_get');   // post() 會自動帶 admin_key 與 store
   if(!r||!r.ok) return;
   if(STORE!==st||ver!==LT_VER) return;   // 等回應時已切店（或開頁時店碼才定下來）、或這之間有寫入（版本變了＝這份是寫入前發出的）：這份是發出當下那家店的，整個丟掉、不改清單也不改旗標（2026-11-23）
-  LT_LIST=r.types||[]; LT_IS_DEFAULT=!!r.is_default; LT_ST=st;
+  LT_LIST=r.types||[]; LT_IS_DEFAULT=!!r.is_default; LT_ST=st; LT_KZ_ON=r.kz_on===true;
   const own=$('ltOwn'); if(own) own.checked=!LT_IS_DEFAULT && !!r.store_specific;
   renderLeaveTypes();
   applyScopeUi();   // 有負責門市限制時「只套用到目前門市」強制勾選
