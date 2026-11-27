@@ -8,7 +8,7 @@
  *   ‧人員只收 emp_id、name、cells（營運系統那端已白名單；這裡再丟掉其他欄位，不寫進試算表）。
  *   ‧每天的午餐／晚餐備註（2026-10-26，全店共用）：notes [{d, lunch, dinner}] 選填，舊版營運系統不帶也照收；
  *     只收本期 28 天內的日期、每格最多 SCHED_PUB_NOTE_MAX 字，存成 { 'yyyy-MM-dd': {lunch, dinner} }。
- *   ‧曠職排除代號（2026-11-26，曠職合約 v1.2）：cell 選填 x，只在 W 格、而且是 Code.gs KZ_PUB_X_ 四個代號之一才存，其他丟掉。
+ *   ‧曠職排除代號（2026-11-26，曠職合約 v1.2）：cell 選填 x，只在 W 格、而且是 Code.gs KZ_PUB_X_ 的代號之一（v1.3 起五個：dir／hq_off／away／late／hol）才存，其他丟掉。
  *     只給薪資掃疑似曠職用（Payroll.gs payKzScan_）；同仁看的班表（schedPubDay_）不輸出。不改版本號（舊版直接丟掉這欄）。
  * 存放：光復打卡試算表分頁 sched_pub，一店一期一列：store｜period｜seq｜data｜last_op｜updated_at。
  * 讀取（出勤班表）：schedPubLoad_()，快取 SCHED_PUB_CACHE_SEC 秒，寫入時清快取。 */
@@ -63,7 +63,7 @@ function schedPubClean_(b) {
       if (c.s) o.s = String(c.s);
       if (c.l) o.l = String(c.l).slice(0, 4);
       if (c.s && c.w) o.w = String(c.w).slice(0, SCHED_PUB_STATION_ID_MAX);   // 站別只跟著上班格（有班別）存
-      var kx = typeof kzPubX_ === 'function' ? kzPubX_(c) : '';   // 曠職排除代號（合約 v1.2）：只有 W 格、四個代號之一才存；其他一律丟掉
+      var kx = typeof kzPubX_ === 'function' ? kzPubX_(c) : '';   // 曠職排除代號（合約 v1.2／v1.3）：只有 W 格、KZ_PUB_X_ 代號之一才存；其他一律丟掉
       if (kx) o.x = kx;
       return o;
     }) };

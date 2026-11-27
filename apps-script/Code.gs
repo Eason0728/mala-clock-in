@@ -2110,10 +2110,12 @@ function kzSuspect_(f) {
   return f.work === true && !f.hol && !f.punch && !f.approved && !f.leave && !f.req && !f.excluded;
 }
 /** 已發布班表一格的「不算疑似曠職」原因代號 x（合約 v1.2 第 3 節；營運系統只在已經是 W 的格子帶）：
- *  dir＝總監層級、hq_off＝總部「同仁」開關關掉、away＝支援帳號列、late＝瑞光文心上線前。
+ *  dir＝總監層級、hq_off＝總部「同仁」開關關掉、away＝支援帳號列、late＝瑞光文心上線前、
+ *  hol＝營運系統節日表的國定假日（v1.3，2026-11-27 主管選 A：節日當天與補假日都不記曠職、以營運系統節日表為準；
+ *  薪資自己的國定假日清單把週末節日配到補假日，例 2027-02-06、02-07、02-28 不在清單裡，由營運系統標）。
  *  這是放寬用的欄位（有它就不列疑似）：不認得的值、不是字串、格子不是 W → 一律當沒有，回 ''（照舊判、寧可列疑似）。
  *  SchedPub.gs 收發布時用它挑出要存的 x；Payroll.gs payKzScan_ 掃疑似時再判一次（sched_pub 被手改也不會放寬）。 */
-var KZ_PUB_X_ = { dir: 1, hq_off: 1, away: 1, late: 1 };
+var KZ_PUB_X_ = { dir: 1, hq_off: 1, away: 1, late: 1, hol: 1 };
 function kzPubX_(cell) {
   if (!cell || typeof cell !== 'object' || String(cell.t) !== 'W' || typeof cell.x !== 'string') return '';
   return Object.prototype.hasOwnProperty.call(KZ_PUB_X_, cell.x) ? cell.x : '';

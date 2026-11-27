@@ -286,5 +286,73 @@ console.log('\n══ 五、容量：每格都帶 x 的最壞情況離 too_big�
   eq(m.shapes.map((s) => [s.max_no_x, s.max_x]), [[77, 47], [34, 27], [20, 17]], '一期最多人數（不帶 x → 全部帶 x）：短代號 77→47、總部支援門市班 34→27、最長代號 20→17');
 }
 
+console.log('\n══ 六、合約 v1.3：國定假日 x=hol（2026-11-27 主管選 A：節日當天與補假日都不記曠職，以營運系統節日表為準）══');
+/* 手算（假資料，正職全薪 34,000；開關 12/1；薪資國定假日清單＝薪資現行算法：週末節日配到補假日）：
+ *   薪資清單 2027-01：1/1；2027-02：2/4、2/5、2/8、2/9、2/10；2027-03：3/1（2/6、2/7、2/28 是週末節日，不在清單）
+ *   營運系統節日表（isHoliday）另外還有 2/6、2/7、2/28 → 發布班表時 W 格帶 x='hol'
+ *   H1 2/6、2/7、2/28 排 W 沒來、沒帶 x（改之前營運系統送的）→ 薪資列疑似（＝這次要修的不一致）
+ *   H2 同上、帶 x='hol'                                      → 不列疑似（跟營運系統一致）
+ *   H3 補假日 2/9、2/10、3/1 排 W 沒來：沒帶 x 也不列（薪資清單有）、帶 x 也不列
+ *   H4 一般上班日 2/2、2/17、3/2 排 W 沒來（沒有 x）          → 照列疑似
+ *   H5 帶不帶 hol 只差在疑似清單：金額、國定假日加發、其他 ot_info 逐字相同
+ *   H6 開關關：sched_pub 有 hol 也跟主線逐字相同 */
+{
+  const P2 = { T04: '2027-01-24', T05: '2027-02-21', T06: '2027-03-21' };
+  const HOL2 = () => [{ ym: '2027-01', red_days: 10, note: '', dates: '2027-01-01', store: '' },
+    { ym: '2027-02', red_days: 12, note: '', dates: '2027-02-04,2027-02-05,2027-02-08,2027-02-09,2027-02-10', store: '' },
+    { ym: '2027-03', red_days: 9, note: '', dates: '2027-03-01', store: '' }];
+  const FEST = ['2027-02-06', '2027-02-07', '2027-02-28'], SUB = ['2027-02-09', '2027-02-10', '2027-03-01'], NORM = ['2027-02-02', '2027-02-17', '2027-03-02'];
+  const OTHER_HOL = ['2027-01-01', '2027-02-04', '2027-02-05', '2027-02-08'];
+  const SO_HOL = new Set([...FEST, ...SUB, ...OTHER_HOL]);   // 營運系統 isHoliday 在 1～3 月的日子
+  // E01：週一～五 W；週末節日那三天也排 W（假資料）；skip＝那天沒有核定（沒來）
+  const isWk = (d) => dow(d) !== 0 && dow(d) !== 6;
+  const cell2 = (d, withHol) => {
+    const c = (isWk(d) || FEST.indexOf(d) !== -1) ? { t: 'W', s: 'A' } : dow(d) === 0 ? { t: 'R' } : { t: 'H' };
+    if (withHol && c.t === 'W' && SO_HOL.has(d)) c.x = 'hol';
+    return c;
+  };
+  const scene2 = (withHol, skip) => {
+    const master = [ft()], approved = [];
+    for (let d = '2027-01-01'; d <= '2027-03-31'; d = addDays(d, 1)) if (cell2(d).t === 'W' && skip.indexOf(d) < 0) approved.push(AP(d, 'E01', 8));   // 沒在 skip＝有來（國定假日排 W 也有來）
+    const pub = {};
+    Object.keys(P2).forEach((p) => { pub['|' + p] = { shifts: [{ id: 'A', name: 'A 班', start: '10:00', end: '19:00', break_min: 60 }],
+      rows: [{ emp_id: 'E01', name: '測試甲', cells: Array.from({ length: 28 }, (_, i) => cell2(addDays(P2[p], i), withHol)) }] }; });
+    return { data: { master, xmap: [], store: [{ code: 'SSLGF', name: '小辛辣光復', clock_ss_id: '', emp_prefix: '', active: 'true', support_group: 'sxl' }], holiday: HOL2(), config: [], run: [], item: [], input: [], bonus: [], audit: [],
+        leave_type: [], leave_span: [], leave_event: [], cost_snapshot: [] },
+      clock: { SSLGF: { roster: [{ emp_id: 'E01', name: '測試甲', active: 'true' }], events: [], approved, leave: [], requests: [] } }, pub };
+  };
+  const run2 = (withHol, skip, which, props, ym) => { const sc = scene2(withHol, skip); return calc(load(which || 'now', { data: sc.data, clock: sc.clock, pub: sc.pub, props: props || ON, today: '2027-04-05' }), ym); };
+  const sus2 = (withHol, skip) => ['2027-02', '2027-03'].map((ym) => (one(run2(withHol, skip, 'now', ON, ym)).ot_info.kz_suspect || [])).reduce((a, b) => a.concat(b), []);
+  // 收發布：W 格的 hol 留下；H 格、大寫、後面有空白丟掉
+  {
+    const s = schedEnv('now', {});
+    const pl = payloadOf(false);
+    pl.op_id = 'op-hol'; pl.rows[0].cells[3] = { t: 'W', s: 'A', x: 'hol' }; pl.rows[0].cells[6] = { t: 'H', s: 'A', x: 'hol' }; pl.rows[0].cells[7] = { t: 'W', s: 'A', x: 'HOL' }; pl.rows[0].cells[8] = { t: 'W', s: 'A', x: 'hol ' };
+    eq(J(s.handleSchedPublish_(pl)), { ok: true, seq: 1 }, '收發布（帶 hol）成功');
+    const c = JSON.parse(stored(s)[0]).rows[0].cells;
+    eq([c[3], c[6], c[7], c[8]], [{ t: 'W', s: 'A', x: 'hol' }, { t: 'H', s: 'A' }, { t: 'W', s: 'A' }, { t: 'W', s: 'A' }], 'W 格的 hol 存下來；H 格的 hol、大寫 HOL、後面有空白的都丟掉');
+    eq([s.kzPubX_({ t: 'W', x: 'hol' }), s.kzPubX_({ t: 'H', x: 'hol' }), s.kzPubX_({ t: 'W', x: 'holiday' })], ['hol', '', ''], 'kzPubX_：W 格 hol 認得；非 W、不認得的字一律空');
+  }
+  const ALLSKIP = FEST.concat(SUB, NORM);
+  eq(sus2(false, ALLSKIP), FEST.concat(NORM).sort(), 'H1 沒帶 hol：週末節日 2/6、2/7、2/28 被列疑似（修之前跟營運系統不一致）、補假日不列、一般日照列');
+  eq(sus2(true, ALLSKIP), NORM.slice().sort(), 'H2＋H4 帶 hol：2/6、2/7、2/28 不列疑似；一般上班日 2/2、2/17、3/2 照列');
+  eq([sus2(false, SUB), sus2(true, SUB)], [[], []], 'H3 補假日 2/9、2/10、3/1 沒來：帶不帶 hol 都不列（薪資清單有）');
+  FEST.forEach((d) => eq([sus2(false, [d]), sus2(true, [d])], [[d], []], 'H1／H2 只有 ' + d + ' 沒來：沒帶 hol 疑似、帶了不疑似'));
+  NORM.forEach((d) => eq(sus2(true, [d]), [d], 'H4 一般上班日 ' + d + ' 沒來：帶 hol 的班表照列疑似'));
+  // H5：帶不帶 hol 只差在疑似清單（全部人都來的月份整個回應相同；有疑似的月份拿掉 kz_* 後相同）
+  const strip = (r) => JSON.parse(JSON.stringify(r), (k, v) => (/^kz_/.test(k) ? undefined : v));
+  ['2027-01', '2027-02', '2027-03'].forEach((ym) => {
+    eq(run2(true, [], 'now', ON, ym), run2(false, [], 'now', ON, ym), 'H5 ' + ym + ' 大家都有來：帶不帶 hol 整個試算回應逐字相同（國定假日加發、底薪、金額都不受影響）');
+    eq(strip(run2(true, ALLSKIP, 'now', ON, ym)), strip(run2(false, ALLSKIP, 'now', ON, ym)), 'H5 ' + ym + ' 有人沒來：拿掉 kz_* 欄位後逐字相同（只差疑似清單）');
+  });
+  { const r = one(run2(true, [], 'now', ON, '2027-02'));
+    eq([r.ot_info.hol, r.earn.map((x) => x.item_key + ':' + x.amount)], [['2027-02-04', '2027-02-05', '2027-02-08', '2027-02-09', '2027-02-10'], ['base_salary:32000', 'ot_hol:6000', 'attend_bonus:2000']], 'H5 對照（手算：月工資 32,000＋績效上限 2,000＋伙食 2,000＝36,000 ÷240＝150 元 × 8 小時 × 5 天＝6,000）：2 月國定假日加發照薪資自己的清單（2/4、2/5、2/8、2/9、2/10，沒有 2/6、2/7）——hol 不影響加發日'); }
+  { const r = one(run2(true, ALLSKIP, 'now', ON, '2027-02')); eq([r.ot_info.kz_suspect, r.ot_info.kz_suspect_streak], [['2027-02-02', '2027-02-17'], 1], 'H2 2 月疑似 2/2、2/17、最長連續 1'); }
+  // H6：開關關，sched_pub 有 hol 也跟主線一樣
+  for (const [nm, props] of [['沒設', {}], ['空白', { KUANGZHI_FROM: '' }], ['壞值', { KUANGZHI_FROM: 'on' }]]) {
+    ['2027-02', '2027-03'].forEach((ym) => eq(run2(true, ALLSKIP, 'now', props, ym), run2(true, ALLSKIP, 'base', {}, ym), 'H6 開關' + nm + '：' + ym + ' 試算跟主線 ' + BASE + ' 逐字相同（sched_pub 有 hol）'));
+  }
+}
+
 console.log('\n' + pass + ' 過、' + fail + ' 失敗');
 if (fail) process.exit(1);
