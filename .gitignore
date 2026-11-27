@@ -17,3 +17,4 @@ reports/
 e2e/artifacts/
 mock/mock_data_*.json
 __pycache__/
+.mutant-*/

@@ -43,6 +43,8 @@ const X = (emp_no, pay_store, acct_store, emp_id, extra) => Object.assign({ emp_
  *   bindReply：(payload, defaultReply) => 回覆（模擬店端失敗）
  *   dutyMgrs：{ 店代碼: { emp_id: true } }（reqLocalDutyMgrs_）
  */
+/** Math.random 固定序列（共用對照表的版本號用到亂數；等價測試要逐筆比對） */
+function seededMath() { let x = 12345; const M = Object.create(Math); M.random = () => { x = (x * 1103515245 + 12345) % 2147483648; return x / 2147483648; }; return M; }
 function make(opts) {
   opts = opts || {};
   const sheets = opts.sheets || {};
@@ -67,7 +69,7 @@ function make(opts) {
   const codeSrc = fs.readFileSync(ROOT + '/apps-script/Code.gs', 'utf8');
   const SRC = [opts.liffSrc || fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8'), LH, extract(codeSrc, 'lastCountedEvent'), extract(codeSrc, 'normShiftTime')].join('\n');
   const sb = {
-    console, Date: FakeDate, JSON, Math, String, Number, Object, Array, RegExp, isNaN, isFinite, parseInt,
+    console, Date: FakeDate, JSON, Math: seededMath(), String, Number, Object, Array, RegExp, isNaN, isFinite, parseInt,
     CONFIG: { LINE_CHANNEL_ID: '2011292256', ALTERNATION_LOOKBACK_HOURS: 12 },
     LINE_HUB_STORES_CONFIG: STORES.map(s => ({ code: s.code, name: s.name, api: 'https://' + (s.code || 'gf') + '/exec', ss_id: s.code ? 'SS_' + s.code : '', lat: s.lat, lng: s.lng, radius_m: s.radius_m })),
     LINE_HUB_BOT_TOKEN: 'BOT',

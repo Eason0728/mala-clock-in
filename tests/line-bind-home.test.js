@@ -4,7 +4,9 @@
 // 開關 LINE_BIND_HOME_ON 只有 '1' 才開。手算對照案例 H1～H6 寫在各條測試名稱前。
 const assert = require('assert');
 const { make, R, X, init, codes, payStores, isoAgo } = require('./helpers/line-bind-home-harness');
-let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
+let n = 0; const bad = [];
+// 變異測試（tools/line-bind-home-mutate.js）帶 LINE_BIND_HOME_KEEP_GOING=1：一條失敗不中斷，最後列出哪幾條紅
+const ok = (name, fn) => { try { fn(); n++; console.log('✓ ' + name); } catch (e) { if (process.env.LINE_BIND_HOME_KEEP_GOING !== '1') throw e; bad.push(name); console.log('✗ ' + name); } };
 const ON = { LINE_BIND_HOME_ON: '1' };
 const TAG = '（不到場加綁）';
 
@@ -216,4 +218,5 @@ ok('預覽（編輯器函式 lineBindHomePreview）：列出會加綁的人（�
   NO_BIND(m); assert.ok(!Object.keys(m.cache).some(k => /^lbh:/.test(k)));
   assert.ok(!m.trace.filter(t => /^log:/.test(t)).some(t => /測試|U\d/.test(t)), '紀錄不可以有姓名或 LINE 帳號');
 });
+if (bad.length) { console.log('\n' + n + ' 過、' + bad.length + ' 失敗'); process.exit(1); }
 console.log('\n' + n + ' 過、0 失敗');
