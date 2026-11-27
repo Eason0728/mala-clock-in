@@ -40,6 +40,8 @@ const M = [
   ['i6 連帶停用：判斷出錯當成主店帳號', "catch (e) { kind = 'unknown'; }", "catch (e) { kind = 'home'; }"],
   ['i7 連帶停用：對到兩個人當成主店帳號', "if (el.length > 1) return 'unknown';", "if (el.length > 1) return 'home';"],
   ['i8 連帶停用：主店不只一種當成主店帳號', "if (hm.reason === 'home_ambiguous') return 'unknown';", "if (hm.reason === 'home_ambiguous') return 'home';"],
+  ['i9 連帶停用：改回「人加店」（主店整家留著，不看是哪一列）', "return ids.length === 1 && ids[0] === lineBindHomeId_(row.emp_id) ? 'home' : 'stop';", "return 'home';"],
+  ['i10 連帶停用：主店兩個帳號對到同一人也保護（歧義不照停）', "return ids.length === 1 && ids[0] === lineBindHomeId_(row.emp_id) ? 'home' : 'stop';", "return ids.indexOf(lineBindHomeId_(row.emp_id)) >= 0 ? 'home' : 'stop';"],
   ['開關 改成「不是 0 就開」', "return PropertiesService.getScriptProperties().getProperty(name) === '1';", "return PropertiesService.getScriptProperties().getProperty(name) !== '0';"],
   ['次數限制拿掉', "if (lineHubThrottled_('bind', userId, 5, 600)) return { act: false, reason: 'too_many' };", ''],
 ];

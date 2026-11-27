@@ -6,6 +6,9 @@
 // ③原始碼：基準檔的每一個函式在新檔都逐字存在，只有 handleLineHubReqInit_ 多了掛勾那兩行、lineHubLeftCascade_ 多了開關包住的保護段（基準的行一行不少、順序不變）；Liff.gs 沒動。
 // ④設離職連帶停用 lineHubLeftCascade_（光復直接做、別店經 line_hub_left 進來）：開關關（沒設／各種錯值）時，含「加綁過的主店帳號」在內的每個情境
 //   停用結果、名冊、對外動作都跟基準相同（第一輪驗收擋項：原本不看開關）；開關開時只有「確定是主店帳號」那一列不同。
+// ⚠ 基準：預設 f21cc25＝本分支開出來時的主線（也是光復服務中那份）。主線換了之後（例：判遲到 #242 上線、本分支併入新主線），
+//   要把下面的預設基準改成新主線，或執行時設 LINE_BIND_HOME_BASE=<新主線 commit>；否則 ③（其他後端檔要跟基準相同）等會紅，
+//   紅的時候訊息會寫明「基準已不是這條分支的分岔點」。
 const assert = require('assert');
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -13,9 +16,27 @@ const H = require('./helpers/line-bind-home-harness');
 const { make, R, X } = H;
 const BASE = process.env.LINE_BIND_HOME_BASE || 'f21cc25';
 const git = (args) => execFileSync('git', args, { cwd: H.ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-const OLD = git(['show', BASE + ':apps-script/LineHub.gs']);
+// 基準過期的提示：基準不是目前 HEAD 與 origin/main 的分岔點時，任何一條失敗都附上原因（只看本機已有的 origin/main，不 fetch）
+const BASE_HINT = (() => {
+  const sha = (r) => { try { return git(['rev-parse', '--verify', '-q', r + '^{commit}']).trim(); } catch (e) { return ''; } };
+  const b = sha(BASE), mb = (() => { try { return git(['merge-base', 'HEAD', 'origin/main']).trim(); } catch (e) { return ''; } })();
+  if (!b) return '比對基準 ' + BASE + ' 在本機找不到。';
+  if (mb && mb !== b) return '比對基準 ' + BASE + ' 已不是這條分支與主線的分岔點（目前分岔點 ' + mb.slice(0, 7) + '）：主線換了，'
+    + '請把本檔預設基準改成新主線，或設 LINE_BIND_HOME_BASE=' + mb.slice(0, 7) + ' 再跑；這種情況的紅不代表新程式有錯。';
+  return '';
+})();
+let OLD;
+try { OLD = git(['show', BASE + ':apps-script/LineHub.gs']); }
+catch (e) { throw new Error('讀不到基準 ' + BASE + ' 的 apps-script/LineHub.gs。' + BASE_HINT + '（主線換了之後要把預設基準改成新主線，或設 LINE_BIND_HOME_BASE）'); }
 const NEW = fs.readFileSync(H.ROOT + '/apps-script/LineHub.gs', 'utf8');
-let n = 0; const ok = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
+let n = 0;
+const ok = (name, fn) => {
+  try { fn(); } catch (e) {
+    if (BASE_HINT) { console.error('✗ ' + name + '\n【基準可能過期】' + BASE_HINT); e.message = '【基準可能過期】' + BASE_HINT + '\n' + e.message; e.stack = e.message + '\n' + String(e.stack || ''); }
+    throw e;
+  }
+  n++; console.log('✓ ' + name);
+};
 const J = (x) => JSON.parse(JSON.stringify(x === undefined ? null : x));
 
 // 情境：總部同仁（會被加綁的那種）、一般同仁、兩家都綁、沒綁、憑證錯、對照讀不到、通知開著…
@@ -150,8 +171,11 @@ const CASC = {
   home_leaves: { src: ['hq', 'H09'], sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; } },
   non_home_other: { sheets: (x) => { x.mztgf = { roster: [R('F05', '測試甲', { line_user_id: 'U1' })] }; } },
   nobody_else: {},
+  home_two_rows_one_mapped: { sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; x.hq.roster.push(R('H12', '測試甲', { line_user_id: 'U1' })); } },   // 第二輪加驗：只留 H09
+  home_two_rows_both_mapped: { sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; x.hq.roster.push(R('H12', '測試甲', { line_user_id: 'U1' })); },
+                               xmapAdd: [X('DZY901', 'MZTHQ', 'HQ', 'H12')] },                                                                     // 歧義：照停
 };
-const CASC_ON_DIFF = ['home_bound', 'home_bound_left', 'home_and_support'];   // 開關開：只有這三個（確定是主店帳號）跟基準不同
+const CASC_ON_DIFF = ['home_bound', 'home_bound_left', 'home_and_support', 'home_two_rows_one_mapped'];   // 開關開：只有這三個（確定是主店帳號）跟基準不同
 function cascCfg(c) {
   return () => {
     const base = scenes().candidate(); if (c.sheets) c.sheets(base.sheets);
@@ -199,6 +223,7 @@ ok('④-對照組：開關 "1" 時加綁過的主店帳號，基準會連帶停�
     const a = run(OLD, cascCfg(c), { LINE_BIND_HOME_ON: '1' }, cascRun(c)), b = run(NEW, cascCfg(c), { LINE_BIND_HOME_ON: '1' }, cascRun(c));
     assert.strictEqual(a.sheets.hq.roster[0].active, false, k); assert.strictEqual(b.sheets.hq.roster[0].active, 'true', k);
     if (k === 'home_and_support') { assert.strictEqual(a.sheets.mztjs.roster[1].active, false); assert.strictEqual(b.sheets.mztjs.roster[1].active, false); }
+    if (k === 'home_two_rows_one_mapped') { assert.strictEqual(a.sheets.hq.roster[2].active, false); assert.strictEqual(b.sheets.hq.roster[2].active, false, '主店不在對照的那列照停'); }
     const a0 = run(OLD, cascCfg(c), {}, cascRun(c)), b0 = run(NEW, cascCfg(c), {}, cascRun(c));
     assert.strictEqual(a0.sheets.hq.roster[0].active, false, k); assert.strictEqual(b0.sheets.hq.roster[0].active, false, k + ' 開關沒設要照停');
   });

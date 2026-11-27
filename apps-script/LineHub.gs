@@ -2294,7 +2294,9 @@ function lineHubBindHomeAuto_(userId, body, mine) {
 }
 /** 設離職連帶停用的「主店帳號保護」（只在開關 LINE_BIND_HOME_ON 開著時由 lineHubLeftCascade_ 呼叫）：別家店那一列不是支援列（src_store 空白）時，問對照它是不是這個人的主店帳號。
  *  cache＝這次連帶共用的 {xi}（只現讀一次對照）。回 'home'（確定是主店帳號：不停用）、'stop'（照舊停用）、'unknown'（判斷不了：呼叫端一樣照舊停用）。
- *  人＝「設離職那一列」與「這一列」在對照裡的工號（兩者合起來恰好一個）；對照裡兩列都查不到＝這套保護沒有依據，照舊停用（跟改版前一樣）。 */
+ *  人＝「設離職那一列」與「這一列」在對照裡的工號（兩者合起來恰好一個）；對照裡兩列都查不到＝這套保護沒有依據，照舊停用（跟改版前一樣）。
+ *  以「列」為單位（第二輪加驗）：只保護對照裡這個人在主店「唯一」的那個帳號（工號對到的那一列）；主店其他綁同一支 LINE、不在對照裡的列照停；
+ *  對照裡這個人在主店有兩個以上帳號＝判斷不了（照停）。 */
 function lineHubLeftHomeKind_(src, srcEmpId, st, row, cache) {
   if (!('xi' in cache)) cache.xi = lineBindHomeXmapBuild_();
   if (!cache.xi) return 'unknown';
@@ -2307,7 +2309,9 @@ function lineHubLeftHomeKind_(src, srcEmpId, st, row, cache) {
   if (el.length > 1) return 'unknown';
   var hm = lineBindHomeHomeOf_(ix.byEmp[el[0]]);
   if (hm.reason === 'home_ambiguous') return 'unknown';
-  return hm.code !== undefined && String(hm.code) === String(st.code) ? 'home' : 'stop';
+  if (hm.code === undefined || String(hm.code) !== String(st.code)) return 'stop';
+  var ids = Object.keys(ix.byEmp[el[0]].accts['c:' + st.code] || {});                  // 主店有兩個帳號對到同一人（歧義）＝不保護、照停
+  return ids.length === 1 && ids[0] === lineBindHomeId_(row.emp_id) ? 'home' : 'stop';   // 只保護工號對到的那一列
 }
 /** 編輯器手動執行（主管開 LINE_BIND_HOME_ON 之前先看）：開關打開後「下次開申請頁就會加綁」的有哪些、其他人卡在哪一條。
  *  不綁定、不寫試算表、不記每人判斷結果（會把現讀的對照索引放進快取 10 分鐘）。只印店代碼與工號，不印姓名、不印 LINE 帳號。 */

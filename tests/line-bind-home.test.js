@@ -278,6 +278,21 @@ ok('驗收1 加綁後原店（六張犁）設離職 → 總部主店帳號仍在
   s2.sheets.hq.roster.push(R('H30', '測試甲', { line_user_id: 'U1', src_store: 'mztlzl' }));
   const r2 = cascade(s2, 'mztlzl', 'L01');
   assert.deepStrictEqual(stoppedOf(r2), ['H30'], '主店裡的支援列照停'); assert.strictEqual(s2.sheets.hq.roster[0].active, 'true');
+  // 就算對照把那個支援列當成他在主店唯一的帳號，支援列一律照停（不問對照）
+  const s3 = base({ xmap: (x) => x.filter(r => r.emp_id !== 'H09').concat([X('DZY901', 'MZTHQ', 'HQ', 'H30')]) });
+  s3.sheets.hq.roster.push(R('H30', '測試甲', { line_user_id: 'U1', src_store: 'mztlzl' }));
+  assert.deepStrictEqual(stoppedOf(cascade(s3, 'mztlzl', 'L01')), ['H30'], '支援列照停');
+});
+ok('驗收1 以列為單位（第二輪加驗）：主店兩列綁同一支 LINE、只有 H09 在對照 → 只留 H09、H12 照停；兩列都對到同一人（兩個工號＝歧義）→ 兩列都照停；只有 H12 在對照 → 只留 H12', () => {
+  const two = (o) => { const m = base(o); m.sheets.hq.roster[0].line_user_id = 'U1'; m.sheets.hq.roster.push(R('H12', '測試甲', { line_user_id: 'U1' })); return m; };
+  const a = two(); const ra = cascade(a, 'mztlzl', 'L01');
+  assert.deepStrictEqual(stoppedOf(ra), ['H12']); assert.strictEqual(a.sheets.hq.roster[0].active, 'true'); assert.strictEqual(a.sheets.hq.roster[2].active, false);
+  const b = two({ xmap: (x) => x.concat([X('DZY901', 'MZTHQ', 'HQ', 'H12')]) }); const rb = cascade(b, 'mztlzl', 'L01');
+  assert.deepStrictEqual(stoppedOf(rb), ['H09', 'H12'], '主店兩個帳號都對到他＝判斷不了，照停'); assert.strictEqual(rb.ok, true); assert.deepStrictEqual(rb.failed, []);
+  const c = two({ xmap: (x) => x.filter(r => r.emp_id !== 'H09').concat([X('DZY901', 'MZTHQ', 'HQ', 'H12')]) }); const rc = cascade(c, 'mztlzl', 'L01');
+  assert.deepStrictEqual(stoppedOf(rc), ['H09']); assert.strictEqual(c.sheets.hq.roster[2].active, 'true');
+  const d = base({ xmap: (x) => x.filter(r => r.emp_id !== 'H09') }); d.sheets.hq.roster[0].line_user_id = 'U1';
+  assert.deepStrictEqual(stoppedOf(cascade(d, 'mztlzl', 'L01')), ['H09'], '主店那列不在對照裡＝沒有依據，照停');
 });
 ok('驗收1 主店（總部）自己設離職 → 六張犁那列照舊連帶停用（人真的走了）', () => {
   const m = base(); m.sheets.hq.roster[0].line_user_id = 'U1'; m.sheets.hq.roster[0].active = 'false';
