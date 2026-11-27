@@ -100,9 +100,29 @@ function handleLineHubSched_(body) {
     base.status = published ? 'no_schedule' : 'not_locked';
     return base;
   }
+  schedKzMark_(days, all, ym);   // 曠職（2026-11-26）：開關關＝什麼都不做
   var s = schedSummarize_(days, ym, today);
   base.status = 'ready'; base.days = days; base.summary = s.summary; base.next = s.next;
   return base;
+}
+
+/** 曠職（2026-11-26，開工確認第 9 題 A）：認定後同仁在出勤班表那天看到「曠職」（句 15）。
+ *  讀這位同仁綁的每一家打卡店 leave 分頁、這個月、生效日起、假別＝曠職的日子 → 那天加 kz:true（前端 sched-line.js 顯示）。
+ *  開關關、讀不到就不標（不擋開頁）；不改班表本身。days 就地修改。 */
+function schedKzMark_(days, all, ym) {
+  var from = typeof kzFrom_ === 'function' ? kzFrom_() : null;
+  if (!from || typeof lineHubSS_ !== 'function') return;
+  (all || []).forEach(function (x) {
+    var rows;
+    try { var sh = lineHubSS_(x.st).getSheetByName('leave'); rows = sh ? readSheetAsObjects(sh).rows : []; } catch (e) { rows = []; }
+    var nm = String(x.row.name || '').trim();
+    rows.forEach(function (r) {
+      var d = normCellDate(r['日期']);
+      if (String(r['姓名'] || '').trim() !== nm || String(r['假別'] || '').trim() !== KZ_TYPE || d < from || d.slice(0, 7) !== ym) return;
+      var day = days[parseInt(d.slice(8, 10), 10) - 1];
+      if (day) day.kz = true;
+    });
+  });
 }
 
 /* ══ 訂貨小幫手讀光復班表（2026-10-13）══
