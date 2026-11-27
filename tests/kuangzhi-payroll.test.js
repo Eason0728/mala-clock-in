@@ -339,5 +339,42 @@ console.log('\n══ ⑨ 薪資頁字逐字照逐句表（句 16–20、22、23
   eq(P.indexOf("' 天是疑似曠職還沒處理，不能鎖定（請主管補單、核定，或認定曠職；班表排錯的請先改班表並發布）：'") > 0, true, '句 22 在 Payroll.gs');
 }
 
+console.log('\n══ ⑨ 驗收第二輪補：同日兩列、鎖月後試算、月中截止（2026-11-27；只加測試、程式不變）══');
+{
+  // 1a 合約第 7 節：「曠職天數＝每個認定曠職的日子『那天的班表時數 ÷ 每日基本工時』，單日最多 1 天，當月加總」（例：9 小時也是 1 天）
+  //    → 同一人同一天兩列曠職（手填 8＋8）合併成那天 16 小時 → 封頂 1 天 → 34,000 ÷ 30 × 1 ＝ 1,133（不是 2 天 2,267）
+  //    （正常路徑同一天按第二次會被擋 kz_day_done，合約 2-2 F；兩列只會來自手改 leave 分頁）
+  const two = (rows) => item(one(calc(envOf(scene({ skip: { E01: [...new Set(rows.map((r) => r[0]))] },
+    extraAp: [...new Set(rows.map((r) => r[0]))].map((d) => AP(d, 'E01', 0)), leave: rows.map((r) => LV(r[0], '測試甲', '曠職', r[1])) }), 'now', ON))), 'absent_deduct');
+  const d1 = two([['2026-12-10', 8], ['2026-12-10', 8]]);
+  eq([d1.item_label, d1.qty, d1.amount], ['曠職(無薪) 1天', 1, 1133], '1a 同一天兩列 8＋8：合併成那天、單日最多 1 天 → 1 天 1,133');
+  const d2 = two([['2026-12-10', 8], ['2026-12-11', 8]]);
+  eq([d2.item_label, d2.qty, d2.amount], ['曠職(無薪) 2天', 2, 2267], '1a 對照：兩天各 8 小時 → 2 天 2,267（34,000÷30×2＝2,266.67→2,267）');
+  const d3 = two([['2026-12-10', 4], ['2026-12-10', 2]]);
+  eq([d3.qty, d3.amount], [0.75, 850], '1a 同一天兩列 4＋2：合併 6 小時 → 0.75 天 850（34,000÷30×0.75＝850）');
+
+  // 1b 已鎖定月份不能再改（Payroll.gs「薪酬挑錯第 1 項，Eason 2026-11-11 確認」；確認頁紅線「不動已鎖定月份」）：
+  //    鎖定後再試算 → 回 locked、不重算；run／item 分頁的曠職扣款列不變
+  const s = envOf(scene({ skip: { E01: ['2026-12-10'] }, extraAp: [AP('2026-12-10', 'E01', 0)], leave: [LV('2026-12-10', '測試甲', '曠職', 8)] }), 'now', ON);
+  const r0 = calc(s); const L = lock(s);
+  const snap = () => JSON.stringify([s.__DATA.run, s.__DATA.item]);
+  const before = snap();
+  const kzItems = s.__DATA.item.filter((i) => i.emp_id === 'E01' && i.item_key === 'absent_deduct').map((i) => +i.amount);
+  eq([r0.ok, L.ok, kzItems], [true, true, [1133]], '1b 試算＋鎖定成功，item 分頁曠職扣款 1,133');
+  // 鎖定後把 leave 改掉（例如有人事後手改），再試算也不能改到已鎖定的錢
+  s.__CLOCK.SSLGF.leave = [];
+  const again = calc(s);
+  eq([again.ok, again.error, again.message], [false, 'locked', '2026-12 已鎖定，請先解鎖再重算'], '1b 鎖定後再試算：一進來就回 locked（不重算；字是既有的「已鎖定，請先解鎖再重算」）');
+  eq(snap(), before, '1b 鎖定後再試算：run 與 item 分頁逐字不變（曠職扣款照鎖定時的 1,133）');
+
+  // 2 月中截止（daily.until）：「整月試算」（dry_run＋full_month，月加班同步、加班試算用）不走月中截斷，逐日日子含今天以後；
+  //   疑似只能算到昨天（UNTIL＝昨天）。今天 12/10：12/8 沒來＝疑似；12/15、12/22 還沒到＝不列
+  const mid = envOf(scene({ skip: { E01: ['2026-12-08', '2026-12-15', '2026-12-22'] } }), 'now', ON, '2026-12-10');
+  const rm = one(mid.post('handlePayrollCalc', { ym: '2026-12', store: 'SSLGF', dry_run: true, full_month: true }));
+  eq([rm.ot_info.kz_suspect, rm.ot_info.kz_suspect_streak], [['2026-12-08'], 1], '2 今天 12/10 整月試算：只列 12/8（12/15、12/22 在昨天之後不列）');
+  const full = one(envOf(scene({ skip: { E01: ['2026-12-08', '2026-12-15', '2026-12-22'] } }), 'now', ON).post('handlePayrollCalc', { ym: '2026-12', store: 'SSLGF', dry_run: true, full_month: true }));
+  eq(full.ot_info.kz_suspect, ['2026-12-08', '2026-12-15', '2026-12-22'], '2 對照：今天 2027-01-05（月份已過完）三天都列');
+}
+
 console.log('\n' + pass + ' 過、' + fail + ' 失敗');
 if (fail) process.exit(1);
