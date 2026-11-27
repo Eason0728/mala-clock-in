@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 不到場加綁主店（2026-11-27）變異測試：把四個條件 (a)(b)(c)(d) 與開關、次數限制各自拿掉，
+// 不到場加綁主店（2026-11-27）變異測試：把四個條件 (a)(b)(c)(d)、開關、次數限制、驗收修正（同店兩列、未來日期、放行前現讀、斷路、連帶停用保護）各自拿掉，
 // 跑 tests/line-bind-home.test.js，每個變異至少要有一條測試變紅。不在 run-all（要跑十幾次測試檔）。
 //   node tools/line-bind-home-mutate.js [暫存資料夾]    （沒給就在 repo 裡建 .mutant-*，跑完刪掉）
 const fs = require('fs'), path = require('path'), { spawnSync } = require('child_process');
@@ -17,25 +17,40 @@ const M = [
   ['c1 對照要 confirmed 拿掉', "if (String(r.state == null ? '' : r.state).trim().toLowerCase() !== 'confirmed') return;", ''],
   ['c2 對到不同工號不擋', "if (el.length > 1) return no('mapped_multi');", ''],
   ['c3 目標列改用姓名找（不靠對照工號）',
-    "var t = homeRows.filter(function (r) { return lineBindHomeId_(r.emp_id) === ids[0]; });",
+    "var t = homeRows.filter(function (r) { return lineBindHomeId_(r.emp_id) === p.target_id; });",
     "var t = homeRows.filter(function (r) { return String(r.name) === String(src.row.name) && !r.line_user_id; });"],
   ['c4 acct_only 不排除', "if (r.acct_only === true || String(r.acct_only == null ? '' : r.acct_only).trim().toLowerCase() === 'true') return;", ''],
-  ['c5 同步日期不檢查', 'if (!(lineBindHomeMs_(r.synced_at) >= lim)) return;', ''],
+  ['c5 同步日期不檢查', 'if (!(t >= lim && t <= now + LINE_BIND_HOME_FUTURE_MS)) return;', ''],
+  ['c6 未來日期不擋（驗收 3）', 'if (!(t >= lim && t <= now + LINE_BIND_HOME_FUTURE_MS)) return;', 'if (!(t >= lim)) return;'],
+  ['c7 放行前不現讀對照（驗收 4）', 'var d = lineBindHomeDecide_(userId, mine, lineBindHomeXmap_(), lineBindHomeXmapBuild_);', 'var d = lineBindHomeDecide_(userId, mine, lineBindHomeXmap_());'],
   ['d1 目標店改成「任何一家有對照帳號、還沒綁的店」（不看主店）',
-    'var homeCode = ent.homes[hk[0]];',
+    'var homeCode = hm.code;',
     "var homeCode = null; Object.keys(ent.accts).forEach(function (k) { var cc = k.slice(2); if (homeCode === null && !mine.some(function (m) { return String(m.st.code) === cc; })) homeCode = cc; });"],
-  ['d2 主店不只一種不擋', "if (hk.length !== 1) return no('home_ambiguous');", ''],
+  ['d2 主店不只一種不擋', "if (hk.length !== 1) return { reason: 'home_ambiguous' };", ''],
+  ['e1 同店兩列綁同一支 LINE：兩道都拿掉（驗收 2）', "if (per[pc]) return no('line_conflict');", '', "if (srcRows.filter(function (r) { return lineHubActive_(r) && String(r.line_user_id || '') === uid; }).length > 1) return no('line_conflict');", ''],
+  ['e2 同店兩列：只拿掉即時重讀那一道', "if (srcRows.filter(function (r) { return lineHubActive_(r) && String(r.line_user_id || '') === uid; }).length > 1) return no('line_conflict');", ''],
+  ['h1 慢的主店不記斷路（驗收 5）', "if (!j || Date.now() - t1 > LINE_BIND_HOME_SLOW_MS) c.put('lbhs:' + code, '1', LINE_BIND_HOME_SLOW_TTL);", ''],
+  ['h2 判斷太久照打主店', "if (Date.now() - t0 > LINE_BIND_HOME_BUDGET_MS) return { act: false, reason: 'slow_reads' };", ''],
+  ['h3 同一家同時不限一筆', "if (c.get('lbhs:' + code) || c.get('lbhq:' + code)) return { act: false, reason: 'home_slow' };", "if (c.get('lbhs:' + code)) return { act: false, reason: 'home_slow' };"],
+  ['i1 連帶停用不保護主店帳號（驗收 1）', "return kind === 'stop';", 'return true;'],
+  ['i2 連帶停用：對照讀不到照樣停用', "if (!cache.xi) return 'unknown';", "if (!cache.xi) return 'stop';"],
+  ['i3 連帶停用：支援列也問對照', "if (String(r.src_store || '').trim()) return true;\n        var kind", "var kind"],
   ['開關 改成「不是 0 就開」', "return PropertiesService.getScriptProperties().getProperty(name) === '1';", "return PropertiesService.getScriptProperties().getProperty(name) !== '0';"],
   ['次數限制拿掉', "if (lineHubThrottled_('bind', userId, 5, 600)) return { act: false, reason: 'too_many' };", ''],
 ];
 const dir = process.argv[2] ? path.resolve(process.argv[2]) : fs.mkdtempSync(path.join(ROOT, '.mutant-'));
 fs.mkdirSync(dir, { recursive: true });
 let survived = 0;
-for (const [name, from, to] of M) {
-  const cnt = SRC.split(from).length - 1;
-  if (cnt !== 1) { console.log('✗ 找不到（或不只一處）要變異的那一行：' + name + '（' + cnt + ' 處）'); survived++; continue; }
+for (const [name, ...pairs] of M) {
+  let src = SRC, bad = false;
+  for (let i = 0; i < pairs.length; i += 2) {
+    const cnt = src.split(pairs[i]).length - 1;
+    if (cnt !== 1) { console.log('✗ 找不到（或不只一處）要變異的那一行：' + name + '（' + cnt + ' 處）'); bad = true; break; }
+    src = src.replace(pairs[i], pairs[i + 1]);
+  }
+  if (bad) { survived++; continue; }
   const f = path.join(dir, 'LineHub.mut.gs');
-  fs.writeFileSync(f, SRC.replace(from, to));
+  fs.writeFileSync(f, src);
   const r = spawnSync('node', [ROOT + '/tests/line-bind-home.test.js'], { encoding: 'utf8', env: Object.assign({}, process.env, { LINE_BIND_HOME_SRC: f, LINE_BIND_HOME_KEEP_GOING: '1' }) });
   const red = (r.stdout || '').split('\n').filter(l => l.indexOf('✗ ') === 0).map(l => l.slice(2, 40));
   if (r.status === 0) { survived++; console.log('✗ 活下來（沒有測試變紅）：' + name); }

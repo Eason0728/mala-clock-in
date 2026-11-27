@@ -64,7 +64,8 @@ function make(opts) {
       if (code === '' && nm === 'payroll_xmap') return opts.xmap === undefined ? null : fakeSheet(opts.xmap, nm);
       return (sheets[code] && sheets[code][nm]) ? fakeSheet(sheets[code][nm], nm) : null;
     } });
-  class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(NOW); } static now() { return NOW; } }
+  const clock = { off: 0 };   // 測試可以撥快時間（模擬主店後端很慢）
+  class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(NOW + clock.off); } static now() { return NOW + clock.off; } }
   const LH = opts.src || (process.env.LINE_BIND_HOME_SRC ? fs.readFileSync(process.env.LINE_BIND_HOME_SRC, 'utf8') : fs.readFileSync(ROOT + '/apps-script/LineHub.gs', 'utf8'));
   const codeSrc = fs.readFileSync(ROOT + '/apps-script/Code.gs', 'utf8');
   const SRC = [opts.liffSrc || fs.readFileSync(ROOT + '/apps-script/Liff.gs', 'utf8'), LH, extract(codeSrc, 'lastCountedEvent'), extract(codeSrc, 'normShiftTime')].join('\n');
@@ -130,7 +131,7 @@ function make(opts) {
       else if (target.line_user_id && String(target.line_user_id) !== uid) rep = { ok: false, error: 'already_bound_other_user' };
       else if (String(target.line_user_id) === uid) rep = { ok: true, name: target.name, emp_id: target.emp_id, already: true };
       else rep = null;
-      if (opts.bindReply) { const r2 = opts.bindReply(p, rep); if (r2) return r2; }
+      if (opts.bindReply) { const r2 = opts.bindReply(p, rep, clock); if (r2) return r2; }
       if (rep) return rep;
       target.line_user_id = uid;
       let type = p.via === 'name' ? 'bind_name' : p.via === 'auto' ? 'bind_auto' : 'bind';
@@ -144,10 +145,14 @@ function make(opts) {
   // 光復本機（店代碼 ''）照 lineHubCallStore_ 直接呼叫 LIFF_HANDLERS
   sb.LIFF_HANDLERS.liff_bind = (p) => { storeCalls.push({ code: '', body: p }); trace.push('store::liff_bind:' + JSON.stringify(p)); return storeReply('', p); };
   const rosterRead = sb.lineHubRoster_;
-  sb.lineHubRoster_ = (st) => { counters.roster++; trace.push('roster:' + st.code); if (opts.rosterThrow && opts.rosterThrow(st)) throw new Error('讀不到'); return rosterRead(st); };
+  sb.lineHubRoster_ = (st) => { counters.roster++; trace.push('roster:' + st.code); if (opts.rosterThrow && opts.rosterThrow(st)) throw new Error('讀不到'); if (opts.rosterDelay) clock.off += opts.rosterDelay(st) || 0; return rosterRead(st); };
   sb.lineHubPayPick_ = () => null;   // 申請頁的假別／額度不在本案範圍
+  // 設離職連帶停用（lineHubLeftCascade_）用到的 Code.gs 寫入函式：直接改假名冊
+  sb.setRosterCell = (sh, ri, col, val) => { trace.push('write:' + sh.__name + ':' + ri + ':' + col); sh.__rows[ri - 2][col] = val; return true; };
+  sb.ensureRosterHeaders = () => {}; sb.nowTaipeiIso = () => isoAgo(0);
+  sb.SpreadsheetApp.flush = () => {};
   sb.reqLocalDutyMgrs_ = (ss) => ({ emps: (opts.dutyMgrs || {})[String(ss.getId()).replace('SS_', '')] || {} });
-  return { sb, sheets, props, cache, trace, pushes, storeCalls, counters };
+  return { sb, sheets, props, cache, trace, pushes, storeCalls, counters, clock };
 }
 
 const R = (emp_id, name, extra) => Object.assign({ emp_id, name, key: 'k' + emp_id, active: 'true', line_user_id: '', src_store: '' }, extra || {});

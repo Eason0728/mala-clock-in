@@ -93,11 +93,16 @@ ok('②-對照組：開關開時申請頁開頁確實不一樣（證明比對有
   const a = run(OLD, sc.candidate, { LINE_BIND_HOME_ON: '1' }, f), b = run(NEW, sc.candidate, { LINE_BIND_HOME_ON: '1' }, f);
   assert.notDeepStrictEqual(b.out, a.out); assert.notDeepStrictEqual(b.sheets, a.sheets);
 });
-ok('③ 原始碼：基準的每個函式在新檔逐字存在；handleLineHubReqInit_ 只多掛勾兩行；Liff.gs 與基準相同', () => {
+ok('③ 原始碼：基準的每個函式在新檔逐字存在；handleLineHubReqInit_ 只多掛勾兩行；lineHubLeftCascade_ 只改一行、其餘新增；Liff.gs 等其他後端檔與基準相同', () => {
   const names = (src) => [...src.matchAll(/^function ([A-Za-z0-9_$]+)\(/gm)].map(m => m[1]);
   const oldNames = names(OLD);
   oldNames.forEach(nm => {
     const a = H.extract(OLD, nm), b = H.extract(NEW, nm);
+    if (nm === 'lineHubLeftCascade_') {   // 驗收第 1 點：主店帳號不連帶停用——只准改這一行、其餘只多不少
+      const al0 = a.split('\n'), bl0 = b.split('\n');
+      assert.deepStrictEqual(al0.filter(l => bl0.indexOf(l) < 0).map(x => x.trim()), ['var now = nowTaipeiIso();']);
+      return;
+    }
     if (nm !== 'handleLineHubReqInit_') { assert.strictEqual(b, a, nm + ' 有改動'); return; }
     const al = a.split('\n'), bl = b.split('\n');
     const added = bl.filter(l => al.indexOf(l) < 0);
@@ -107,8 +112,37 @@ ok('③ 原始碼：基準的每個函式在新檔逐字存在；handleLineHubRe
     assert.strictEqual(bl.length, al.length + 2);
   });
   const fresh = names(NEW).filter(x => oldNames.indexOf(x) < 0).sort();
-  assert.deepStrictEqual(fresh, ['lineBindHomeCode_', 'lineBindHomeDecide_', 'lineBindHomeDo_', 'lineBindHomeId_', 'lineBindHomeMs_', 'lineBindHomeOn_', 'lineBindHomePreview', 'lineBindHomeXmap_', 'lineHubBindHomeAuto_']);
+  assert.deepStrictEqual(fresh, ['lineBindHomeCode_', 'lineBindHomeDecide_', 'lineBindHomeDo_', 'lineBindHomeHomeOf_', 'lineBindHomeId_', 'lineBindHomeIndex_', 'lineBindHomeMs_', 'lineBindHomeOn_', 'lineBindHomePlan_', 'lineBindHomePreview', 'lineBindHomeXmapBuild_', 'lineBindHomeXmapKeep_', 'lineBindHomeXmap_', 'lineHubBindHomeAuto_', 'lineHubLeftHomeKind_']);
   const lf = git(['diff', '--stat', BASE, '--', 'apps-script/Liff.gs', 'apps-script/Code.gs', 'apps-script/Requests.gs', 'apps-script/Payroll.gs']).trim();
   assert.strictEqual(lf, '', '其他後端檔不可以動：' + lf);
+});
+ok('④ 設離職連帶停用：沒有「主店帳號」的情境（只有支援列、對照查不到、主店自己離職）停用結果與名冊跟基準相同；只有支援列時連對外動作都相同', () => {
+  let cnt = 0;
+  const cases = {
+    support_only: { trace: true, sheets: (x) => { x.mztjs.roster = [R('J20', '測試甲', { line_user_id: 'U1', src_store: 'mztlzl' })]; } },
+    unmapped_rows: { sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; }, make: { xmap: [] } },
+    home_leaves: { src: ['hq', 'H09'], sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; x.hq.roster[0].active = 'false'; } },
+    non_home_other: { sheets: (x) => { x.mztgf = { roster: [R('F05', '測試甲', { line_user_id: 'U1' })] }; } },
+  };
+  Object.keys(cases).forEach(k => ['TOK_U1'].forEach(() => [{}, { LINE_BIND_HOME_ON: '1' }].forEach(props => {
+    const c = cases[k];
+    const cfg = () => { const base = scenes().candidate(); if (c.sheets) c.sheets(base.sheets); return Object.assign(base, c.make || {}); };
+    const f = (m, out) => {
+      const src = m.sb.lineHubStores_().filter(s => s.code === (c.src ? c.src[0] : 'mztlzl'))[0];
+      if (!c.src) m.sheets.mztlzl.roster[0].active = 'false';
+      out.push(m.sb.lineHubLeftCascade_(src, c.src ? c.src[1] : 'L01', 'U1', '店長甲'));
+    };
+    const a = run(OLD, cfg, props, f), b = run(NEW, cfg, props, f);
+    assert.deepStrictEqual(b.out, a.out, k); assert.deepStrictEqual(b.sheets, a.sheets, k);
+    if (c.trace) assert.deepStrictEqual(b.trace, a.trace, k + ' 對外動作');
+    cnt++;
+  })));
+  console.log('   （' + cnt + ' 組）');
+});
+ok('④-對照組：加綁後的主店帳號，基準會連帶停用、新版留著（證明比對有效）', () => {
+  const cfg = () => { const base = scenes().candidate(); base.sheets.hq.roster[0].line_user_id = 'U1'; return base; };
+  const f = (m, out) => { m.sheets.mztlzl.roster[0].active = 'false'; out.push(m.sb.lineHubLeftCascade_(m.sb.lineHubStores_().filter(s => s.code === 'mztlzl')[0], 'L01', 'U1', '店長甲')); };
+  const a = run(OLD, cfg, {}, f), b = run(NEW, cfg, {}, f);
+  assert.strictEqual(a.sheets.hq.roster[0].active, false); assert.strictEqual(b.sheets.hq.roster[0].active, 'true');
 });
 console.log('\n' + n + ' 過、0 失敗');
