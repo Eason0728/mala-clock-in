@@ -153,7 +153,7 @@ ok('③ 原始碼：基準的每個函式在新檔逐字存在；handleLineHubRe
     assert.strictEqual(bl.length, al.length + 2);
   });
   const fresh = names(NEW).filter(x => oldNames.indexOf(x) < 0).sort();
-  assert.deepStrictEqual(fresh, ['lineBindHomeCode_', 'lineBindHomeDecide_', 'lineBindHomeDo_', 'lineBindHomeHomeOf_', 'lineBindHomeId_', 'lineBindHomeIndex_', 'lineBindHomeMs_', 'lineBindHomeOn_', 'lineBindHomePlan_', 'lineBindHomePreview', 'lineBindHomeXmapBuild_', 'lineBindHomeXmapKeep_', 'lineBindHomeXmap_', 'lineHubBindHomeAuto_', 'lineHubLeftHomeKind_']);
+  assert.deepStrictEqual(fresh, ['lineBindHomeCode_', 'lineBindHomeDecide_', 'lineBindHomeDo_', 'lineBindHomeHomeOf_', 'lineBindHomeIdClash_', 'lineBindHomeIdLoose_', 'lineBindHomeId_', 'lineBindHomeIndex_', 'lineBindHomeMs_', 'lineBindHomeOn_', 'lineBindHomePlan_', 'lineBindHomePreview', 'lineBindHomeRecheck_', 'lineBindHomeUndo_', 'lineBindHomeXmapBuild_', 'lineBindHomeXmapKeep_', 'lineBindHomeXmap_', 'lineHubBindHomeAuto_', 'lineHubLeftHomeKind_']);
   const lf = git(['diff', '--stat', BASE, '--', 'apps-script/Liff.gs', 'apps-script/Code.gs', 'apps-script/Requests.gs', 'apps-script/Payroll.gs']).trim();
   assert.strictEqual(lf, '', '其他後端檔不可以動：' + lf);
 });

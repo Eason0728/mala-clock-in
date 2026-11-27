@@ -55,7 +55,14 @@ function make(opts) {
   const fakeSheet = (rows, nm) => {
     const H = [...new Set(rows.flatMap(o => Object.keys(o)))];
     return { __rows: rows, __name: nm, getLastRow: () => rows.length + 1, getLastColumn: () => Math.max(1, H.length),
-      getRange: (r, c, nr) => ({ getValues: () => r === 1 ? [H] : rows.slice(r - 2, r - 2 + nr).map(o => H.map(h => o[h])) }) };
+      getRange: (r, c, nr) => ({ getValues: () => r === 1 ? [H] : rows.slice(r - 2, r - 2 + nr).map(o => H.map(h => o[h])) }),
+      // 撤回綁定（lineBindHomeUndo_）寫 liff_bind_log 用：新分頁第一列＝表頭；之後照表頭（或既有列的欄位）存成物件
+      appendRow: (arr) => {
+        trace.push('append:' + nm);
+        if (!rows.length && !rows.__hdr) { rows.__hdr = arr.slice(); return; }
+        const hdr = rows.__hdr || [...new Set(rows.flatMap(o => Object.keys(o)))];
+        const o = {}; hdr.forEach((h, i) => { o[h] = arr[i]; }); rows.push(o);
+      } };
   };
   const ssOf = (code) => ({
     getId: () => 'SS_' + code,
@@ -63,7 +70,8 @@ function make(opts) {
       trace.push('sheet:' + code + ':' + nm);
       if (code === '' && nm === 'payroll_xmap') return opts.xmap === undefined ? null : fakeSheet(opts.xmap, nm);
       return (sheets[code] && sheets[code][nm]) ? fakeSheet(sheets[code][nm], nm) : null;
-    } });
+    },
+    insertSheet: (nm) => { trace.push('insert:' + code + ':' + nm); sheets[code] = sheets[code] || {}; sheets[code][nm] = []; return fakeSheet(sheets[code][nm], nm); } });
   const clock = { off: 0 };   // 測試可以撥快時間（模擬主店後端很慢）
   class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(NOW + clock.off); } static now() { return NOW + clock.off; } }
   const LH = opts.src || (process.env.LINE_BIND_HOME_SRC ? fs.readFileSync(process.env.LINE_BIND_HOME_SRC, 'utf8') : fs.readFileSync(ROOT + '/apps-script/LineHub.gs', 'utf8'));

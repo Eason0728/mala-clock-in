@@ -207,7 +207,7 @@ ok('高頻路徑：沒有候選人的人第二次開頁只多一次快取讀取�
   const t0 = m.trace.length, r0 = m.counters.roster; init(m, 'TOK_U2');
   const extra = m.trace.slice(t0).filter(t => /lbh|payRead|payStoreList/.test(t));
   assert.deepStrictEqual(extra, ['cget:lbh:U2']); assert.strictEqual(m.counters.roster, r0, '不多讀名冊');
-  init(m, 'TOK_U1'); assert.strictEqual(m.counters.payRead, 2, 'U1 篩選用同一份索引（不重讀）；真的要綁前現讀一次＝第 2 次');
+  init(m, 'TOK_U1'); assert.strictEqual(m.counters.payRead, 3, 'U1 篩選用同一份索引（不重讀）；真的要綁前現讀一次＝第 2 次；寫入後確認再現讀一次＝第 3 次');
   const f = base({ make: { rosterThrow: (st) => st.code === 'hq' && f.__armed } }); f.sb.handleLineHubWarm_(); f.__armed = true;
   const rf = init(f); assert.strictEqual(rf.ok, true); NO_BIND(f, '名冊讀不到'); assert.strictEqual(f.cache['lbh:U1'], 'unreachable');
 });
@@ -332,6 +332,81 @@ ok('驗收1 開關關（沒設、空白、只有空白、ON、true、"1 "、" 1"
   });
   const on = base(); on.sheets.hq.roster[0].line_user_id = 'U1';
   cascade(on, 'mztlzl', 'L01'); assert.strictEqual(on.sheets.hq.roster[0].active, 'true', '對照組：開關 "1" 才保護');
+});
+// ── Codex 第一輪（對 2614c30）三個擋項＋兩條殘餘風險（第三輪修正）──
+ok('C1 工號不去前導零：原店 0007（離職、對照指向總部 H09）與 7（在職、同名、綁 U1、沒有對照）→ 7 開頁不綁 H09', () => {
+  const m = base({ sheets: (s) => { s.mztlzl.roster = [R('0007', '測試甲', { active: 'false' }), R('7', '測試甲', { line_user_id: 'U1' })]; },
+                   xmap: () => [X('DZY901', 'MZTHQ', 'MZTLZL', '0007'), X('DZY901', 'MZTHQ', 'HQ', 'H09')] });
+  assert.deepStrictEqual(codes(REJ(m, 'TOK_U1', 'C1')), ['mztlzl']); assert.strictEqual(m.sheets.hq.roster[0].line_user_id, '');
+});
+ok('C1 同一店名冊有「去前導零後相同、原字串不同」的兩列（0007、7）＝歧義：對照指向 7 也不綁；主店那邊有 09 與 9 也不綁', () => {
+  const a = base({ sheets: (s) => { s.mztlzl.roster = [R('0007', '測試甲'), R('7', '測試甲', { line_user_id: 'U1' })]; },
+                   xmap: () => [X('DZY901', 'MZTHQ', 'MZTLZL', '7'), X('DZY901', 'MZTHQ', 'HQ', 'H09')] });
+  assert.deepStrictEqual(codes(REJ(a, 'TOK_U1', '來源歧義')), ['mztlzl']); assert.strictEqual(a.cache['lbh:U1'], 'id_ambiguous');
+  const b = base({ sheets: (s) => { s.hq.roster = [R('9', '測試甲'), R('09', '測試乙')]; },
+                   xmap: (x) => [X('DZY901', 'MZTHQ', 'MZTLZL', 'L01'), X('DZY901', 'MZTHQ', 'HQ', '9')] });
+  assert.deepStrictEqual(codes(REJ(b, 'TOK_U1', '目標歧義')), ['mztlzl']); assert.strictEqual(b.cache['lbh:U1'], 'id_ambiguous');
+});
+ok('C1 連帶停用也用原字串（驗收 N11）：主店 009 綁 U1、對照寫 9 → 照停；主店名冊同時有 9（對照）與 09 → 9 也照停', () => {
+  const a = base({ sheets: (s) => { s.hq.roster = [R('009', '測試甲', { line_user_id: 'U1' })]; },
+                   xmap: () => [X('DZY901', 'MZTHQ', 'MZTLZL', 'L01'), X('DZY901', 'MZTHQ', 'HQ', '9')] });
+  assert.deepStrictEqual(stoppedOf(cascade(a, 'mztlzl', 'L01')), ['009']);
+  const b = base({ sheets: (s) => { s.hq.roster = [R('9', '測試甲', { line_user_id: 'U1' }), R('09', '測試乙')]; },
+                   xmap: () => [X('DZY901', 'MZTHQ', 'MZTLZL', 'L01'), X('DZY901', 'MZTHQ', 'HQ', '9')] });
+  assert.deepStrictEqual(stoppedOf(cascade(b, 'mztlzl', 'L01')), ['9']);
+  const c = base({ sheets: (s) => { s.mztlzl.roster.push(R('0L01', '測試丁')); s.hq.roster[0].line_user_id = 'U1'; } });   // 對照組：不相干的工號不算歧義
+  assert.deepStrictEqual(stoppedOf(cascade(c, 'mztlzl', 'L01')), []);
+});
+function raceBase(o) {
+  let mref = null, fired = false;
+  const m = base(Object.assign({}, o, { make: Object.assign({ bindReply: () => {
+    if (!fired && mref) { fired = true; if (o && o.during) o.during(mref); }
+    return null;
+  } }, (o && o.make) || {}) }));
+  mref = m; return m;
+}
+const leaveL01 = (m) => { m.sheets.mztlzl.roster[0].active = 'false'; m.sb.lineHubLeftCascade_(m.sb.lineHubStores_().filter(s => s.code === 'mztlzl')[0], 'L01', 'U1', '店長甲'); };
+ok('C2 目標列是支援列（src_store 有值）→ 不綁、不打主店', () => {
+  const m = base({ sheets: (s) => { s.hq.roster[0].src_store = 'mztlzl'; } });
+  assert.deepStrictEqual(codes(REJ(m, 'TOK_U1', '支援列')), ['mztlzl']); assert.strictEqual(m.cache['lbh:U1'], 'home_support');
+});
+ok('C2 交錯：放行之後、主店寫入之前，原店設離職且連帶停用先跑完 → 寫入後現讀不成立 → 撤回綁定（留紀錄）、回應不含主店、之後不再自動綁', () => {
+  const m = raceBase({ during: leaveL01 });
+  const r = init(m, 'TOK_U1');
+  assert.strictEqual(binds(m).length, 1, '有送出加綁');
+  assert.strictEqual(m.sheets.hq.roster[0].line_user_id, '', '要撤回'); assert.strictEqual(m.sheets.hq.roster[0].active, 'true');
+  assert.ok(!(codes(r) || []).includes('hq'));
+  const lg = m.sheets.hq.liff_bind_log; assert.ok(/^unbind_by:/.test(lg[lg.length - 1].type), JSON.stringify(lg));
+  assert.strictEqual(m.cache['lbh:U1'], 'recheck_failed');
+  delete m.cache['lbh:U1']; m.sheets.mztlzl.roster[0].active = 'true';
+  init(m, 'TOK_U1'); assert.strictEqual(binds(m).length, 1, '撤回過不再綁'); assert.strictEqual(m.cache['lbh:U1'], 'unbound_before');
+});
+ok('C2 交錯：寫入期間對照被改成未確認 → 撤回；什麼都沒變 → 留著（對照組）', () => {
+  const m = raceBase({ during: (x) => { const orig = x.sb.payRead; x.sb.payRead = (k) => orig(k).map(r => r.emp_id === 'H09' ? Object.assign({}, r, { state: 'suggested' }) : r); } });
+  const r = init(m, 'TOK_U1'); assert.strictEqual(binds(m).length, 1);
+  assert.strictEqual(m.sheets.hq.roster[0].line_user_id, '', '要撤回'); assert.ok(!(codes(r) || []).includes('hq'));
+  const k = raceBase({ during: () => {} });
+  const rk = init(k, 'TOK_U1'); assert.deepStrictEqual(codes(rk), ['mztlzl', 'hq']); assert.strictEqual(k.sheets.hq.roster[0].line_user_id, 'U1');
+  assert.ok(!(k.sheets.hq.liff_bind_log || []).some(x => /^unbind/.test(x.type)));
+});
+ok('C3 主店別名：同一人 L01 的 pay_store＝MZTHQ、H09 的＝HQ（同一份總部打卡表）＝主店不只一種 → 連帶停用照停 H09；開頁不綁', () => {
+  const xm = () => [X('DZY901', 'MZTHQ', 'MZTLZL', 'L01'), X('DZY901', 'HQ', 'HQ', 'H09')];
+  const a = base({ xmap: xm }); a.sheets.hq.roster[0].line_user_id = 'U1';
+  const ra = cascade(a, 'mztlzl', 'L01'); assert.deepStrictEqual(stoppedOf(ra), ['H09']); assert.strictEqual(a.sheets.hq.roster[0].active, false);
+  const b = base({ xmap: xm }); assert.deepStrictEqual(codes(REJ(b, 'TOK_U1', '別名')), ['mztlzl']); assert.strictEqual(b.cache['lbh:U1'], 'home_ambiguous');
+});
+ok('C4a 共用對照表過期（5 分鐘內另一店剛綁上同一支 LINE、對到別人）→ 寫入後現讀全部名冊發現 → 撤回', () => {
+  const m = base({ make: { props: {} } });
+  init(m, 'TOK_U1');                                                       // 開關關時先開一次頁：共用對照表與每人快取只有六張犁
+  m.sheets.mztjs = { roster: [R('J05', '測試甲', { line_user_id: 'U1' })] };   // 之後金山綁上 U1，對照是另一個人
+  m.props.LINE_BIND_HOME_ON = '1';
+  const xm = m.sb.payRead; m.sb.payRead = (k) => xm(k).concat([X('DZY999', 'MZTJS', 'MZTJS', 'J05')]);
+  const r = init(m, 'TOK_U1');
+  assert.strictEqual(m.sheets.hq.roster[0].line_user_id, '', '要撤回'); assert.ok(!(codes(r) || []).includes('hq'));
+});
+ok('C4b 目標帳號被確認對照同時指給兩個人 → 不綁', () => {
+  const m = base({ xmap: (x) => x.concat([X('DZY777', 'HQ', 'HQ', 'H09')]) });
+  assert.deepStrictEqual(codes(REJ(m, 'TOK_U1', '目標兩人')), ['mztlzl']); assert.strictEqual(m.cache['lbh:U1'], 'xmap_ambiguous');
 });
 ok('預覽（編輯器函式 lineBindHomePreview）：列出會加綁的人（店代碼:工號）、其他人原因；不綁定、不記每人結果、不印姓名', () => {
   const m = base({ make: { props: {} } });
