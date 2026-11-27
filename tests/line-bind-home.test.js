@@ -273,20 +273,50 @@ ok('驗收1 加綁後原店（六張犁）設離職 → 總部主店帳號仍在
   assert.strictEqual(m.sheets.hq.roster[0].active, 'true', '主店帳號不可以停用');
   assert.deepStrictEqual(stoppedOf(r), ['F05', 'J20']); assert.strictEqual(r.ok, true);
   assert.strictEqual(m.sheets.mztjs.roster[0].active, false); assert.strictEqual(m.sheets.mztgf.roster[0].active, false);
+  // 主店（總部）名冊裡的支援列（src_store 有值）不算主店帳號：照舊停用，主店本人那列留著
+  const s2 = base(); s2.sheets.hq.roster[0].line_user_id = 'U1';
+  s2.sheets.hq.roster.push(R('H30', '測試甲', { line_user_id: 'U1', src_store: 'mztlzl' }));
+  const r2 = cascade(s2, 'mztlzl', 'L01');
+  assert.deepStrictEqual(stoppedOf(r2), ['H30'], '主店裡的支援列照停'); assert.strictEqual(s2.sheets.hq.roster[0].active, 'true');
 });
 ok('驗收1 主店（總部）自己設離職 → 六張犁那列照舊連帶停用（人真的走了）', () => {
   const m = base(); m.sheets.hq.roster[0].line_user_id = 'U1'; m.sheets.hq.roster[0].active = 'false';
   const r = cascade(m, 'hq', 'H09');
   assert.deepStrictEqual(stoppedOf(r), ['L01']); assert.strictEqual(m.sheets.mztlzl.roster[0].active, false);
 });
-ok('驗收1 對照讀不到 → 不是支援列的不停用、列進「讀不到」請總部檢查；支援列照舊停用；對照裡兩邊都查不到 → 照舊停用', () => {
-  const m = base({ make: { xmapThrow: true }, sheets: (s) => { s.mztjs = { roster: [R('J20', '測試甲', { line_user_id: 'U1', src_store: 'mztlzl' })] }; } });
-  m.sheets.hq.roster[0].line_user_id = 'U1';
-  const r = cascade(m, 'mztlzl', 'L01');
-  assert.strictEqual(m.sheets.hq.roster[0].active, 'true'); assert.deepStrictEqual(stoppedOf(r), ['J20']);
-  assert.strictEqual(r.ok, false); assert.deepStrictEqual(r.failed, ['鼎兆元 總部']); assert.ok(/請通知總部檢查/.test(r.message));
-  const u = base({ xmap: () => [] }); u.sheets.hq.roster[0].line_user_id = 'U1';
-  const ru = cascade(u, 'mztlzl', 'L01'); assert.deepStrictEqual(stoppedOf(ru), ['H09'], '沒有對照依據＝跟改版前一樣');
+ok('驗收1 判斷不了一律照停（第一輪修正）：對照讀不到（丟例外／沒有分頁）、對到兩個人、主店不只一種、判斷時出錯 → 主店帳號照舊停用，不列進「讀不到」；對照裡兩邊都查不到 → 照舊停用', () => {
+  const sup = (s) => { s.mztjs = { roster: [R('J20', '測試甲', { line_user_id: 'U1', src_store: 'mztlzl' })] }; };
+  const cases = {
+    xmap_throw: { make: { xmapThrow: true }, sheets: sup },
+    xmap_no_sheet: { make: { xmap: undefined }, sheets: sup },
+    two_people: { xmap: (x) => x.concat([X('DZY999', 'HQ', 'MZTLZL', 'L01')]) },
+    home_ambiguous: { xmap: (x) => x.concat([X('DZY901', 'MZTJS', 'MZTJS', 'J77')]) },
+    no_mapping: { xmap: () => [] },
+  };
+  Object.keys(cases).forEach(k => {
+    const m = base(cases[k]); m.sheets.hq.roster[0].line_user_id = 'U1';
+    const r = cascade(m, 'mztlzl', 'L01');
+    assert.strictEqual(m.sheets.hq.roster[0].active, false, k + '：判斷不了要照停');
+    assert.ok(stoppedOf(r).indexOf('H09') >= 0, k); assert.strictEqual(r.ok, true, k); assert.deepStrictEqual(r.failed, [], k);
+    if (cases[k].sheets) assert.deepStrictEqual(stoppedOf(r), ['H09', 'J20'], k);
+  });
+  const e = base(); e.sheets.hq.roster[0].line_user_id = 'U1';
+  e.sb.lineHubLeftHomeKind_ = () => { throw new Error('壞了'); };
+  const re = cascade(e, 'mztlzl', 'L01');
+  assert.deepStrictEqual(stoppedOf(re), ['H09'], '判斷出錯要照停'); assert.strictEqual(re.ok, true);
+});
+ok('驗收1 開關關（沒設、空白、只有空白、ON、true、"1 "、" 1"、0、yes、亂字、全形１）→ 連帶停用完全照改版前：加綁過的主店帳號也照停、不讀對照', () => {
+  [undefined, '', ' ', 'ON', 'on', 'true', '1 ', ' 1', '0', 'yes', '亂字x', '１'].forEach(v => {
+    const props = v === undefined ? {} : { LINE_BIND_HOME_ON: v };
+    const m = base({ make: { props }, sheets: (s) => { s.mztjs = { roster: [R('J20', '測試甲', { line_user_id: 'U1', src_store: 'mztlzl' })] }; } });
+    m.sheets.hq.roster[0].line_user_id = 'U1'; m.sheets.mztlzl.roster[0].active = 'false';
+    const r = cascade(m, 'mztlzl', 'L01'), tag = JSON.stringify(v);
+    assert.deepStrictEqual(stoppedOf(r), ['H09', 'J20'], tag); assert.strictEqual(m.sheets.hq.roster[0].active, false, tag);
+    assert.strictEqual(r.ok, true, tag); assert.deepStrictEqual(r.failed, [], tag);
+    assert.strictEqual(m.counters.payRead, 0, tag + ' 關著不可以讀對照'); assert.strictEqual(m.counters.payStoreList, 0, tag);
+  });
+  const on = base(); on.sheets.hq.roster[0].line_user_id = 'U1';
+  cascade(on, 'mztlzl', 'L01'); assert.strictEqual(on.sheets.hq.roster[0].active, 'true', '對照組：開關 "1" 才保護');
 });
 ok('預覽（編輯器函式 lineBindHomePreview）：列出會加綁的人（店代碼:工號）、其他人原因；不綁定、不記每人結果、不印姓名', () => {
   const m = base({ make: { props: {} } });

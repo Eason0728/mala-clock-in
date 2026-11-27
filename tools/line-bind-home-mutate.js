@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 不到場加綁主店（2026-11-27）變異測試：把四個條件 (a)(b)(c)(d)、開關、次數限制、驗收修正（同店兩列、未來日期、放行前現讀、斷路、連帶停用保護）各自拿掉，
+// 不到場加綁主店（2026-11-27）變異測試：把四個條件 (a)(b)(c)(d)、開關、次數限制、驗收修正（同店兩列、未來日期、放行前現讀、斷路、連帶停用保護與它的開關、判斷不了照停）各自拿掉，
 // 跑 tests/line-bind-home.test.js，每個變異至少要有一條測試變紅。不在 run-all（要跑十幾次測試檔）。
 //   node tools/line-bind-home-mutate.js [暫存資料夾]    （沒給就在 repo 裡建 .mutant-*，跑完刪掉）
 const fs = require('fs'), path = require('path'), { spawnSync } = require('child_process');
@@ -32,9 +32,14 @@ const M = [
   ['h1 慢的主店不記斷路（驗收 5）', "if (!j || Date.now() - t1 > LINE_BIND_HOME_SLOW_MS) c.put('lbhs:' + code, '1', LINE_BIND_HOME_SLOW_TTL);", ''],
   ['h2 判斷太久照打主店', "if (Date.now() - t0 > LINE_BIND_HOME_BUDGET_MS) return { act: false, reason: 'slow_reads' };", ''],
   ['h3 同一家同時不限一筆', "if (c.get('lbhs:' + code) || c.get('lbhq:' + code)) return { act: false, reason: 'home_slow' };", "if (c.get('lbhs:' + code)) return { act: false, reason: 'home_slow' };"],
-  ['i1 連帶停用不保護主店帳號（驗收 1）', "return kind === 'stop';", 'return true;'],
-  ['i2 連帶停用：對照讀不到照樣停用', "if (!cache.xi) return 'unknown';", "if (!cache.xi) return 'stop';"],
-  ['i3 連帶停用：支援列也問對照', "if (String(r.src_store || '').trim()) return true;\n        var kind", "var kind"],
+  ['i1 連帶停用不保護主店帳號（驗收 1）', "return kind !== 'home';", 'return true;'],
+  ['i2 連帶停用：對照讀不到當成主店帳號（不停）', "if (!cache.xi) return 'unknown';", "if (!cache.xi) return 'home';"],
+  ['i3 連帶停用：支援列也問對照', "if (String(r.src_store || '').trim()) return true;\n          var kind;", "var kind;"],
+  ['i4 連帶停用不看開關（第一輪驗收擋項）', "if (homeKeep === undefined) homeKeep = lineBindHomeOn_('LINE_BIND_HOME_ON') ? {} : null;", 'if (homeKeep === undefined) homeKeep = {};'],
+  ['i5 連帶停用：判斷不了改回「不停用」（9618ea9 的做法）', "return kind !== 'home';", "return kind === 'stop';"],
+  ['i6 連帶停用：判斷出錯當成主店帳號', "catch (e) { kind = 'unknown'; }", "catch (e) { kind = 'home'; }"],
+  ['i7 連帶停用：對到兩個人當成主店帳號', "if (el.length > 1) return 'unknown';", "if (el.length > 1) return 'home';"],
+  ['i8 連帶停用：主店不只一種當成主店帳號', "if (hm.reason === 'home_ambiguous') return 'unknown';", "if (hm.reason === 'home_ambiguous') return 'home';"],
   ['開關 改成「不是 0 就開」', "return PropertiesService.getScriptProperties().getProperty(name) === '1';", "return PropertiesService.getScriptProperties().getProperty(name) !== '0';"],
   ['次數限制拿掉', "if (lineHubThrottled_('bind', userId, 5, 600)) return { act: false, reason: 'too_many' };", ''],
 ];

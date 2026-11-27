@@ -3,7 +3,9 @@
 //   唯一差別是多讀一次指令碼屬性 LINE_BIND_HOME_ON。
 // ②開關「開」也一樣：打卡頁開頁、打卡、輸入全名綁定（現行到場綁定與跨店支援自動加入）、額度、預熱這些動作完全不經過新程式，
 //   回應與對外動作逐筆相同。
-// ③原始碼：基準檔的每一個函式在新檔都逐字存在，只有 handleLineHubReqInit_ 多了掛勾那兩行；Liff.gs 沒動。
+// ③原始碼：基準檔的每一個函式在新檔都逐字存在，只有 handleLineHubReqInit_ 多了掛勾那兩行、lineHubLeftCascade_ 多了開關包住的保護段（基準的行一行不少、順序不變）；Liff.gs 沒動。
+// ④設離職連帶停用 lineHubLeftCascade_（光復直接做、別店經 line_hub_left 進來）：開關關（沒設／各種錯值）時，含「加綁過的主店帳號」在內的每個情境
+//   停用結果、名冊、對外動作都跟基準相同（第一輪驗收擋項：原本不看開關）；開關開時只有「確定是主店帳號」那一列不同。
 const assert = require('assert');
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -93,14 +95,32 @@ ok('②-對照組：開關開時申請頁開頁確實不一樣（證明比對有
   const a = run(OLD, sc.candidate, { LINE_BIND_HOME_ON: '1' }, f), b = run(NEW, sc.candidate, { LINE_BIND_HOME_ON: '1' }, f);
   assert.notDeepStrictEqual(b.out, a.out); assert.notDeepStrictEqual(b.sheets, a.sheets);
 });
-ok('③ 原始碼：基準的每個函式在新檔逐字存在；handleLineHubReqInit_ 只多掛勾兩行；lineHubLeftCascade_ 只改一行、其餘新增；Liff.gs 等其他後端檔與基準相同', () => {
+const CASCADE_ADDED = [
+  'var homeKeep;   // 不到場加綁（2026-11-27）：開關 LINE_BIND_HOME_ON 開著才保護主店帳號；undefined＝還沒讀開關、null＝關（與改版前完全相同）',
+  '// 主店帳號不連帶停用（2026-11-27；只在開關開著時）：支援列（src_store 有值）照舊停用；其他列問對照，',
+  '// 「確定」是這個人的主店帳號才留著；判斷不了（對照讀不到、對到兩個人、主店不只一種、出錯）＝照舊停用（設離職是保護性動作）。',
+  "if (homeKeep === undefined) homeKeep = lineBindHomeOn_('LINE_BIND_HOME_ON') ? {} : null;",
+  'if (homeKeep) {',
+  'hit = hit.filter(function (r) {',
+  "if (String(r.src_store || '').trim()) return true;",
+  'var kind;',
+  "try { kind = lineHubLeftHomeKind_(src, srcEmpId, st, r, homeKeep); } catch (e) { kind = 'unknown'; }",
+  "return kind !== 'home';",
+  '});',
+  'if (!hit.length) return;',
+  '}',
+];
+ok('③ 原始碼：基準的每個函式在新檔逐字存在；handleLineHubReqInit_ 只多掛勾兩行；lineHubLeftCascade_ 只多開關包住的保護段；Liff.gs 等其他後端檔與基準相同', () => {
   const names = (src) => [...src.matchAll(/^function ([A-Za-z0-9_$]+)\(/gm)].map(m => m[1]);
   const oldNames = names(OLD);
   oldNames.forEach(nm => {
     const a = H.extract(OLD, nm), b = H.extract(NEW, nm);
-    if (nm === 'lineHubLeftCascade_') {   // 驗收第 1 點：主店帳號不連帶停用——只准改這一行、其餘只多不少
-      const al0 = a.split('\n'), bl0 = b.split('\n');
-      assert.deepStrictEqual(al0.filter(l => bl0.indexOf(l) < 0).map(x => x.trim()), ['var now = nowTaipeiIso();']);
+    if (nm === 'lineHubLeftCascade_') {   // 主店帳號保護：基準的行一行不少、順序不變；多出來的只有下面這段（全部在開關判斷裡）
+      const al0 = a.split('\n'), bl0 = b.split('\n'), extra = [];
+      let i = 0;
+      bl0.forEach(l => { if (i < al0.length && l === al0[i]) i++; else extra.push(l.trim()); });
+      assert.strictEqual(i, al0.length, 'lineHubLeftCascade_ 基準的行有被改或刪');
+      assert.deepStrictEqual(extra, CASCADE_ADDED);
       return;
     }
     if (nm !== 'handleLineHubReqInit_') { assert.strictEqual(b, a, nm + ' 有改動'); return; }
@@ -116,33 +136,71 @@ ok('③ 原始碼：基準的每個函式在新檔逐字存在；handleLineHubRe
   const lf = git(['diff', '--stat', BASE, '--', 'apps-script/Liff.gs', 'apps-script/Code.gs', 'apps-script/Requests.gs', 'apps-script/Payroll.gs']).trim();
   assert.strictEqual(lf, '', '其他後端檔不可以動：' + lf);
 });
-ok('④ 設離職連帶停用：沒有「主店帳號」的情境（只有支援列、對照查不到、主店自己離職）停用結果與名冊跟基準相同；只有支援列時連對外動作都相同', () => {
-  let cnt = 0;
-  const cases = {
-    support_only: { trace: true, sheets: (x) => { x.mztjs.roster = [R('J20', '測試甲', { line_user_id: 'U1', src_store: 'mztlzl' })]; } },
-    unmapped_rows: { sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; }, make: { xmap: [] } },
-    home_leaves: { src: ['hq', 'H09'], sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; x.hq.roster[0].active = 'false'; } },
-    non_home_other: { sheets: (x) => { x.mztgf = { roster: [R('F05', '測試甲', { line_user_id: 'U1' })] }; } },
+// 連帶停用的情境：src＝[設離職的店, 工號]（預設六張犁 L01）；via＝'left' 走別店通知光復那條（handleLineHubLeft_）
+const CASC = {
+  home_bound: { sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; } },                                       // 第一輪擋項：主店帳號加綁過
+  home_bound_left: { via: 'left', sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; } },
+  home_and_support: { sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; x.mztjs.roster.push(R('J21', '測試甲', { line_user_id: 'U1', src_store: 'mztlzl' })); } },
+  home_xmap_throw: { sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; }, make: { xmapThrow: true } },
+  home_no_xmap_sheet: { sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; }, make: { xmap: undefined } },
+  home_two_people: { sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; }, xmapAdd: [X('DZY999', 'HQ', 'MZTLZL', 'L01')] },
+  home_ambiguous: { sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; }, xmapAdd: [X('DZY901', 'MZTJS', 'MZTJS', 'J77')] },
+  support_only: { trace: true, sheets: (x) => { x.mztjs.roster = [R('J20', '測試甲', { line_user_id: 'U1', src_store: 'mztlzl' })]; } },
+  unmapped_rows: { sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; }, make: { xmap: [] } },
+  home_leaves: { src: ['hq', 'H09'], sheets: (x) => { x.hq.roster[0].line_user_id = 'U1'; } },
+  non_home_other: { sheets: (x) => { x.mztgf = { roster: [R('F05', '測試甲', { line_user_id: 'U1' })] }; } },
+  nobody_else: {},
+};
+const CASC_ON_DIFF = ['home_bound', 'home_bound_left', 'home_and_support'];   // 開關開：只有這三個（確定是主店帳號）跟基準不同
+function cascCfg(c) {
+  return () => {
+    const base = scenes().candidate(); if (c.sheets) c.sheets(base.sheets);
+    if (c.xmapAdd) base.xmap = base.xmap.concat(c.xmapAdd);
+    return Object.assign(base, c.make || {});
   };
-  Object.keys(cases).forEach(k => ['TOK_U1'].forEach(() => [{}, { LINE_BIND_HOME_ON: '1' }].forEach(props => {
-    const c = cases[k];
-    const cfg = () => { const base = scenes().candidate(); if (c.sheets) c.sheets(base.sheets); return Object.assign(base, c.make || {}); };
-    const f = (m, out) => {
-      const src = m.sb.lineHubStores_().filter(s => s.code === (c.src ? c.src[0] : 'mztlzl'))[0];
-      if (!c.src) m.sheets.mztlzl.roster[0].active = 'false';
-      out.push(m.sb.lineHubLeftCascade_(src, c.src ? c.src[1] : 'L01', 'U1', '店長甲'));
-    };
-    const a = run(OLD, cfg, props, f), b = run(NEW, cfg, props, f);
-    assert.deepStrictEqual(b.out, a.out, k); assert.deepStrictEqual(b.sheets, a.sheets, k);
-    if (c.trace) assert.deepStrictEqual(b.trace, a.trace, k + ' 對外動作');
+}
+function cascRun(c) {
+  return (m, out) => {
+    const sc = c.src ? c.src[0] : 'mztlzl', se = c.src ? c.src[1] : 'L01';
+    const row = m.sheets[sc].roster.find(r => r.emp_id === se);
+    row.active = 'false'; row.removed_at = H.isoAgo(0); row.removed_by = '店長甲';
+    if (c.via === 'left') out.push(m.sb.handleLineHubLeft_({ emp_id: se, removed_at: row.removed_at }));
+    else out.push(m.sb.lineHubLeftCascade_(m.sb.lineHubStores_().filter(s => s.code === sc)[0], se, 'U1', '店長甲'));
+  };
+}
+const CASC_OFF = [undefined, '', ' ', 'ON', 'on', 'true', 'TRUE', '1 ', ' 1', '0', 'yes', '亂字x', '１', '01'];
+ok('④ 設離職連帶停用，開關關（沒設／空白／ON／true／"1 "／0／亂字…）：每個情境（含加綁過的主店帳號、別店通知光復那條）回應、名冊、私訊跟基準逐字相同，對外動作只多讀一次 LINE_BIND_HOME_ON', () => {
+  let cnt = 0;
+  Object.keys(CASC).forEach(k => CASC_OFF.forEach(v => {
+    const props = Object.assign({ LINE_BIND_HOME_NOTIFY: '1' }, v === undefined ? {} : { LINE_BIND_HOME_ON: v });
+    const a = run(OLD, cascCfg(CASC[k]), props, cascRun(CASC[k])), b = run(NEW, cascCfg(CASC[k]), props, cascRun(CASC[k]));
+    const tag = k + ' ' + JSON.stringify(v);
+    assert.deepStrictEqual(b.out, a.out, tag); assert.deepStrictEqual(b.sheets, a.sheets, tag); assert.deepStrictEqual(b.pushes, a.pushes, tag);
+    assert.deepStrictEqual(dropProp(b.trace), a.trace, tag + ' 對外動作');
+    assert.ok(b.trace.length - a.trace.length <= 1, tag + ' 屬性最多多讀一次');
     cnt++;
-  })));
+  }));
   console.log('   （' + cnt + ' 組）');
 });
-ok('④-對照組：加綁後的主店帳號，基準會連帶停用、新版留著（證明比對有效）', () => {
-  const cfg = () => { const base = scenes().candidate(); base.sheets.hq.roster[0].line_user_id = 'U1'; return base; };
-  const f = (m, out) => { m.sheets.mztlzl.roster[0].active = 'false'; out.push(m.sb.lineHubLeftCascade_(m.sb.lineHubStores_().filter(s => s.code === 'mztlzl')[0], 'L01', 'U1', '店長甲')); };
-  const a = run(OLD, cfg, {}, f), b = run(NEW, cfg, {}, f);
-  assert.strictEqual(a.sheets.hq.roster[0].active, false); assert.strictEqual(b.sheets.hq.roster[0].active, 'true');
+ok('④-開 開關 "1"：沒有「確定是主店帳號」的情境（判斷不了、對照查不到、只有支援列、主店自己離職…）停用結果與名冊跟基準相同；只有支援列時連對外動作都相同', () => {
+  let cnt = 0;
+  Object.keys(CASC).filter(k => CASC_ON_DIFF.indexOf(k) < 0).forEach(k => {
+    const c = CASC[k];
+    const a = run(OLD, cascCfg(c), { LINE_BIND_HOME_ON: '1' }, cascRun(c)), b = run(NEW, cascCfg(c), { LINE_BIND_HOME_ON: '1' }, cascRun(c));
+    assert.deepStrictEqual(b.out, a.out, k); assert.deepStrictEqual(b.sheets, a.sheets, k);
+    if (c.trace) assert.deepStrictEqual(dropProp(b.trace), a.trace, k + ' 對外動作');
+    cnt++;
+  });
+  console.log('   （' + cnt + ' 組）');
+});
+ok('④-對照組：開關 "1" 時加綁過的主店帳號，基準會連帶停用、新版留著；支援列兩邊都停（證明比對有效）；開關沒設時兩邊都停', () => {
+  CASC_ON_DIFF.forEach(k => {
+    const c = CASC[k];
+    const a = run(OLD, cascCfg(c), { LINE_BIND_HOME_ON: '1' }, cascRun(c)), b = run(NEW, cascCfg(c), { LINE_BIND_HOME_ON: '1' }, cascRun(c));
+    assert.strictEqual(a.sheets.hq.roster[0].active, false, k); assert.strictEqual(b.sheets.hq.roster[0].active, 'true', k);
+    if (k === 'home_and_support') { assert.strictEqual(a.sheets.mztjs.roster[1].active, false); assert.strictEqual(b.sheets.mztjs.roster[1].active, false); }
+    const a0 = run(OLD, cascCfg(c), {}, cascRun(c)), b0 = run(NEW, cascCfg(c), {}, cascRun(c));
+    assert.strictEqual(a0.sheets.hq.roster[0].active, false, k); assert.strictEqual(b0.sheets.hq.roster[0].active, false, k + ' 開關沒設要照停');
+  });
 });
 console.log('\n' + n + ' 過、0 失敗');

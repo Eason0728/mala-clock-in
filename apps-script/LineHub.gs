@@ -807,7 +807,8 @@ function lineHubLeftCascade_(src, srcEmpId, uid, by) {
   if (!src || !uid) return out;
   var who = String(by || '').replace(/[\r\n]/g, ' ').replace(/^[=+\-@\s]+/, '').slice(0, 40);
   var note = '連帶停用：' + src.name + ' 設離職（' + String(srcEmpId) + (who ? '／' + who : '') + '）';
-  var now = nowTaipeiIso(), guard = {};
+  var now = nowTaipeiIso();
+  var homeKeep;   // 不到場加綁（2026-11-27）：開關 LINE_BIND_HOME_ON 開著才保護主店帳號；undefined＝還沒讀開關、null＝關（與改版前完全相同）
   lineHubStores_().forEach(function (st) {
     if (String(st.code) === String(src.code)) return;
     try {
@@ -817,17 +818,18 @@ function lineHubLeftCascade_(src, srcEmpId, uid, by) {
         return lineHubActive_(r) && String(r.line_user_id || '').trim() === uid;   // 只認 LINE 完全相同
       });
       if (!hit.length) return;
-      // 主店帳號不連帶停用（2026-11-27 驗收第 1 點）：支援列（src_store 有值）照舊停用；其他列問對照是不是這個人的主店帳號，
-      // 是＝留著；判斷不了（對照讀不到、對到兩個人、主店不只一種）＝不停用、列進「讀不到」請總部檢查；對照裡查不到＝照舊停用。
-      var unsure = false;
-      hit = hit.filter(function (r) {
-        if (String(r.src_store || '').trim()) return true;
-        var kind = lineHubLeftHomeKind_(src, srcEmpId, st, r, guard);
-        if (kind === 'unknown') unsure = true;
-        return kind === 'stop';
-      });
-      if (unsure) out.failed.push(st.name);
-      if (!hit.length) return;
+      // 主店帳號不連帶停用（2026-11-27；只在開關開著時）：支援列（src_store 有值）照舊停用；其他列問對照，
+      // 「確定」是這個人的主店帳號才留著；判斷不了（對照讀不到、對到兩個人、主店不只一種、出錯）＝照舊停用（設離職是保護性動作）。
+      if (homeKeep === undefined) homeKeep = lineBindHomeOn_('LINE_BIND_HOME_ON') ? {} : null;
+      if (homeKeep) {
+        hit = hit.filter(function (r) {
+          if (String(r.src_store || '').trim()) return true;
+          var kind;
+          try { kind = lineHubLeftHomeKind_(src, srcEmpId, st, r, homeKeep); } catch (e) { kind = 'unknown'; }
+          return kind !== 'home';
+        });
+        if (!hit.length) return;
+      }
       ensureRosterHeaders(sh);
       hit.forEach(function (r) {
         setRosterCell(sh, r.__rowIndex, 'active', false);
@@ -2087,7 +2089,8 @@ function handleLineHubReqQuota_(body) {
  * 紀錄：沿用店端 liff_bind（via:'name'＋via_store）→ 主店 liff_bind_log 寫 bind_name@<原店名>（不到場加綁）；九店 Liff.js 不用改。
  * 次數：沿用綁定的次數限制 lineHubThrottled_('bind', …, 5, 600)（與輸入全名綁定共用）；每人的判斷結果記 30 分鐘（暫時讀不到的記 5 分鐘）。
  * 主店後端卡住：預算＋斷路（見 LINE_BIND_HOME_BUDGET_MS），Apps Script 的 UrlFetchApp 本身不能設逾時。
- * 設離職連帶停用（lineHubLeftCascade_）：別家店不是支援列、而且對照說是這個人主店的那一列，不連帶停用（lineHubLeftHomeKind_；不看開關）。
+ * 設離職連帶停用（lineHubLeftCascade_）：開關開著時，別家店不是支援列、而且對照「確定」是這個人主店的那一列不連帶停用（lineHubLeftHomeKind_）；
+ *   判斷不了＝照舊停用；開關關著＝與改版前完全相同（關掉開關後，已加綁的主店帳號不受這個保護）。
  * 測試：tests/line-bind-home.test.js、tests/line-bind-home-equiv.test.js；變異 tools/line-bind-home-mutate.js。 */
 var LINE_BIND_HOME_TAG = '（不到場加綁）';
 var LINE_BIND_HOME_TTL = 1800, LINE_BIND_HOME_RETRY_TTL = 300;
@@ -2289,8 +2292,8 @@ function lineHubBindHomeAuto_(userId, body, mine) {
     return out;
   } catch (e) { return null; }
 }
-/** 設離職連帶停用的「主店帳號保護」（驗收第 1 點）：別家店那一列不是支援列（src_store 空白）時，問對照它是不是這個人的主店帳號。
- *  cache＝這次連帶共用的 {xi}（只現讀一次對照）。回 'home'（主店帳號：不可停用）、'stop'（照舊停用）、'unknown'（判斷不了：不停用、列進讀不到）。
+/** 設離職連帶停用的「主店帳號保護」（只在開關 LINE_BIND_HOME_ON 開著時由 lineHubLeftCascade_ 呼叫）：別家店那一列不是支援列（src_store 空白）時，問對照它是不是這個人的主店帳號。
+ *  cache＝這次連帶共用的 {xi}（只現讀一次對照）。回 'home'（確定是主店帳號：不停用）、'stop'（照舊停用）、'unknown'（判斷不了：呼叫端一樣照舊停用）。
  *  人＝「設離職那一列」與「這一列」在對照裡的工號（兩者合起來恰好一個）；對照裡兩列都查不到＝這套保護沒有依據，照舊停用（跟改版前一樣）。 */
 function lineHubLeftHomeKind_(src, srcEmpId, st, row, cache) {
   if (!('xi' in cache)) cache.xi = lineBindHomeXmapBuild_();
