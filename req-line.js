@@ -277,7 +277,7 @@
       touchHooked = true;
       ['input', 'change', 'click'].forEach(function (ev) { $root.addEventListener(ev, function () { if (st.init) st.touched = true; }, true); });
     }
-    st.init = null; st.info = null; st.infoErr = false; st.quota = null; st.quotaReady = false; st.touched = false; st.storeManual = false;
+    st.tripHomeDone = false; st.homeAck = null; st.init = null; st.info = null; st.infoErr = false; st.quota = null; st.quotaReady = false; st.touched = false; st.storeManual = false;
     st.src = {}; st.peekAt = {}; st.infoReal = false; st.tm = { t0: Date.now(), ms: {}, src: {}, sent: false };
     st.syncing = false; st.cancelling = {}; st.cancelErr = null; st.flash = null; st.syncNote = '';
     st.initWait = null; st.quotaWait = null; st.infoWait = null; st.initFailed = false; st.quotaErr = false; st.gateWait = false; st.gateNote = null; st.gateSkip = false;
@@ -382,6 +382,27 @@
     $root.appendChild(msgBox(text, 'err'));
     $root.appendChild(h('button', { type: 'button', class: 'primary rq-retry', text: '重新讀取', on: { click: function () { open(st.openOpts || {}); } } }));
   }
+  /* ── 主要單位（2026-11-27 Eason 3A：出差單常開到支援店的帳號，核定與薪資歸屬要作廢重開）──
+   * 資料來源＝後端 line_hub_req_init 本來就回的 stores[].support（名冊 src_store 有值＝自動加入的支援帳號；空＝原單位，2026-11-18 起），不改後端。
+   * 判斷不出來（少於兩家、任何一家沒有 support 欄位＝舊的記住資料、原單位不是剛好一家＝店長手動建的支援帳號也會算原單位）一律回 null＝畫面跟以前一模一樣。
+   * HOME_UNIT_ON＝false 整段關掉（退回只要發布網站）。 */
+  var HOME_UNIT_ON = true;
+  function homeOf(stores) {
+    if (!HOME_UNIT_ON || !stores || stores.length < 2) return null;
+    if (stores.some(function (s) { return typeof s.support !== 'boolean'; })) return null;
+    var homes = stores.filter(function (s) { return s.support === false; });
+    return homes.length === 1 ? homes[0] : null;
+  }
+  /** 單位下拉的字：主要單位後面加「（主要單位）」，其他照舊 */
+  function storeLabel(s, home) { return home && s === home ? s.name + '（主要單位）' : String(s.name); }
+  /** 出差分頁：選的是主要單位時，日期下面的灰字（不問打卡、不查各店的卡） */
+  function tripHomeNote(home) { return '這張出差單會開在你的主要單位「' + home.name + '」。要改開在別的單位，請在上面選。'; }
+  /** 送出前提醒（出差單、選的不是主要單位）：window.confirm 的全文 */
+  function tripAskText(cur, home) {
+    return '這張出差單會開在「' + cur.name + '」，不是你的主要單位「' + home.name + '」。\n\n開在別的單位，核定和薪資歸屬會對不上，之後要作廢重開。\n\n確定要開在「' + cur.name + '」嗎？';
+  }
+  function tripAskCancelText(home) { return '沒有送出：出差單請在上面改選「' + home.name + '」（你的主要單位）'; }
+
   /** 依序找第一個對得上的店代碼（光復的代碼是空字串，所以不能用 truthy 判斷）；都沒有回第一家。 */
   function pickStore(stores, codes) {
     for (var i = 0; i < codes.length; i++) {
@@ -520,12 +541,14 @@
     if (st.init.stores.length < 2 || !date) return;
     var key = date + '|' + (range ? range.join('-') : '');
     box.dataset.key = key;
+    var tripHome = st.tab === 'trip' ? homeOf(st.init.stores) : null;   // 出差單：有主要單位就不依打卡自動換店（2026-11-27）
+    if (tripHome && st.store === tripHome) { box.className = 'rq-auto-store'; box.textContent = tripHomeNote(tripHome); return; }
     box.textContent = '查這天在哪家打卡…'; box.className = 'rq-muted';
     daysFor(date).then(function (res) {
       if (!res || !box.isConnected || box.dataset.key !== key) return;
       if (st.tab === 'ot' && otAbsorb(res, st.init.stores, date === taipeiToday(0) ? nowMinTaipei() : null)) { box.textContent = ''; box.className = ''; return; }   // 兩家合計超過 8 小時：以防呆（otAbsorbHint）為準，不再自動換店、不寫「送到這家」
       var dc = storeByDay(res, st.store.code, date, range), picked = pickedOn(date);
-      if (dc.pick !== null && !picked) { switchStore(dc.pick); render(); return; }      // 光復的店代碼是空字串，不能用 truthy 判斷（2026-11-16）
+      if (dc.pick !== null && !picked && !tripHome) { switchStore(dc.pick); render(); return; }      // 光復的店代碼是空字串，不能用 truthy 判斷（2026-11-16）
       box.textContent = ''; box.className = '';
       if (!dc.note) return;
       if (dc.note.kind === 'multi') {
@@ -547,7 +570,20 @@
   /** 送出前核對（加班、請假、出差）：要自己選卻還沒選 → 擋；選的店那天（那段時間）沒打卡、別家有 → 確認。
    *  兩段（body.segments，2026-11-18）：兩段在不同家店打卡 → 擋，請分開送（兩張單會送到同一家店）；否則兩段合起來照同一套看。 */
   function storeGuard(body) {
+    return storeGuardPunch(body).then(tripHomeAsk);
+  }
+  /** 出差單送出前（2026-11-27）：選的不是主要單位 → 提醒一次（同一張單按取消後再送、或確定後送出失敗再送，不再問）；其他分頁、只有一家、判斷不出主要單位都不問 */
+  function tripHomeAsk(body) {
+    if (!body || body.kind !== 'trip' || !st.store) return body;
+    var hu = homeOf(st.init.stores);
+    if (!hu || st.store === hu || st.homeAck === st.store.code) return body;
+    if (!window.confirm(tripAskText(st.store, hu))) throw new Error(tripAskCancelText(hu));
+    st.homeAck = st.store.code;
+    return body;
+  }
+  function storeGuardPunch(body) {
     if (!body || body.kind === 'miss' || st.init.stores.length < 2) return Promise.resolve(body);
+    var tripHome = body.kind === 'trip' ? homeOf(st.init.stores) : null;   // 出差單有主要單位：不依打卡擋、不問「你是在別家打卡」，改由 tripHomeAsk 管
     var two = body.segments && body.segments.length >= 2;
     var ranges = two ? body.segments.map(function (g) { return [g.start, g.end]; }) : [body.start && body.end ? [body.start, body.end] : null];
     return daysFor(body.date).then(function (res) {
@@ -559,8 +595,8 @@
         if (dc.must && !must) must = dc;
         dc.expect.forEach(function (c) { if (expect.indexOf(c) < 0) expect.push(c); });
       });
-      if (must && !picked) throw new Error(shortMd(body.date) + ' 你在 ' + must.note.all.join('、') + ' 都有打卡，請先在上面選這張要送到哪一家');
-      if (expect.length && expect.indexOf(st.store.code) === -1) {
+      if (must && !picked && !tripHome) throw new Error(shortMd(body.date) + ' 你在 ' + must.note.all.join('、') + ' 都有打卡，請先在上面選這張要送到哪一家');
+      if (!tripHome && expect.length && expect.indexOf(st.store.code) === -1) {
         var names = res.filter(function (x) { return expect.indexOf(x.code) !== -1; }).map(function (x) { return x.name; }).join('、');
         if (!window.confirm((ranges[0] ? '這段時間' : shortMd(body.date) + ' ') + '你是在' + names + '打卡，確定要送到「' + st.store.name + '」嗎？')) throw new Error('沒有送出：請在上面改成要送的店');
       }
@@ -819,21 +855,33 @@
 
   /* ── 畫面 ── */
   function render() {
+    // 出差分頁：預設選主要單位（2026-11-27）。每次進出差分頁只套一次；這一天同仁已手動選過店就不動；不改「最近用的店」記憶（不呼叫 cachePut）
+    if (st.tab === 'trip' && !st.tripHomeDone) {
+      var hs0 = homeOf(st.init.stores);
+      if (hs0) {
+        st.tripHomeDone = true;
+        if (st.store !== hs0 && !pickedOn(tp.date || taipeiToday(0))) {
+          st.store = hs0; st.info = null; st.infoErr = false; st.infoReal = false; st.peekAt.info = 0;
+          loadInfo().then(render, function () { st.infoErr = true; render(); });
+        }
+      }
+    }
     $root.innerHTML = '';
     var head = h('div', { class: 'rq-head' }, [h('b', { text: st.store.emp_name || '' }), ' ']);
+    var homeU = homeOf(st.init.stores);
     if (st.init.stores.length > 1) {
       var sel = h('select', { class: 'rq-store', on: { change: function () {
         st.store = st.init.stores[+sel.value]; st.info = null; st.infoErr = false; st.infoReal = false; st.peekAt.info = 0; st.storeManual = true; cachePut();
         var dNow = ({ leave: lv.date, ot: ot.date, trip: tp.date })[st.tab]; if (dNow) { st.picked = st.picked || {}; st.picked[dNow] = st.store.code; }      // 這一天手動選過店：不再自動換（2026-11-15）
         if (st.tab === 'miss') render();   // 忘打卡：各店那天的卡已經一起查好了，先換畫面
         loadInfo().then(render, function () { alert('讀不到這家店的資料'); });
-      } } }, st.init.stores.map(function (s, i) { return h('option', { value: i, text: s.name, selected: s === st.store }); }));
+      } } }, st.init.stores.map(function (s, i) { return h('option', { value: i, text: storeLabel(s, homeU), selected: s === st.store }); }));
       head.appendChild(sel);
     } else head.appendChild(h('span', { class: 'rq-muted', text: st.store.name }));
     $root.appendChild(head);
     $root.appendChild(h('div', { class: 'rq-tabs' }, TABS.map(function (t) {
       return h('button', { type: 'button', class: t[0] === st.tab ? 'on' : '', 'data-tab': t[0], text: t[1],
-                           on: { click: function () { st.tab = t[0]; st.flash = null; st.syncNote = ''; st.cancelErr = null; st.gateNote = null; render(); } } });
+                           on: { click: function () { st.tab = t[0]; st.tripHomeDone = false; st.flash = null; st.syncNote = ''; st.cancelErr = null; st.gateNote = null; render(); } } });
     })));
     if (st.tab === 'mine' && st.flash) $root.appendChild(msgBox(st.flash.text, st.flash.cls));   // 送出後的「✓ 已送出」：背景重讀完重畫也留著，離開分頁才收
     if (st.tab === 'mine' && st.syncNote) $root.appendChild(h('div', { class: 'rq-muted rq-sync-note', text: st.syncNote }));
@@ -1153,7 +1201,7 @@
       if (two) { var ck = segCheck('trip', two, segMax('trip')); if (ck) return Promise.reject(segErr(ck)); body.segments = two; }
       else if (tp.mode === 'day') body.hours = tp.hours; else { body.start = tp.start; body.end = tp.end; }
       return Promise.resolve(body);
-    }, function () { tp = tpBlank(); }));
+    }, function () { tp = tpBlank(); st.homeAck = null; }));
     p.appendChild(out);
     p.appendChild(h('div', { class: 'rq-note', text: '出差時數會算進當天工時，由你的主管審核。' }));
     if (tpSegs()) p.appendChild(h('div', { class: 'rq-note', text: '兩段在不同地點，請分開送。' }));
