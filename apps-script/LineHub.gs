@@ -1979,6 +1979,8 @@ function handleLineHubReqInit_(body) {
   if (lineHubThrottled_('rqi', userId, 20, 60)) return { ok: false, error: 'too_many' };
   var mine = lineHubMineFast_(userId, false);   // 共用對照表（2026-11-18）：不用每次逐店讀名冊
   if (!mine.length) return { ok: false, error: 'not_bound' };
+  var withHome = lineHubBindHomeAuto_(userId, body, mine);   // 不到場加綁主店（2026-11-27）：開關關＝回 null、什麼都不做
+  if (withHome) mine = withHome;
   // support（2026-11-18，一次填兩段的加班防呆）：名冊 src_store 有值＝自動加入的支援帳號；沒有＝原單位。申請頁用它找「該吸收加班的那家」，舊申請頁不認得這欄位照常用。
   var stores = mine.map(function (x) { return { code: String(x.st.code), name: String(x.st.name), emp_id: String(x.row.emp_id), emp_name: String(x.row.name), support: !!String(x.row.src_store || '').trim() }; });
   var names = [];
@@ -2053,6 +2055,186 @@ function handleLineHubReqQuota_(body) {
   if (!lineHubMineFast_(userId, false).length) return { ok: false, error: 'not_bound' };
   var qc = lineHubReqQuota_(userId);
   return { ok: true, quota: lineHubQuotaOut_(qc.quota), comp: qc.comp, annual_from: qc.annual_from || '', ft: qc.ft === true || qc.ft === false ? qc.ft : null };
+}
+
+/* ══ 不到場加綁主店帳號（2026-11-27；主管：「我要身份是總部同仁時，都可以直接開立總部的單，不需要在總部打卡過」）══
+ * 規則（大腦提出、主管同意）：同一支 LINE 已經在集團某家店綁定、姓名相同、而且管理系統確認是同一個人時，
+ * 允許不到場就加綁他的主店帳號；綁定後通知主店主管（另一個開關）。規則不寫死總部，任何人的主店都一樣。
+ * 觸發：申請頁開頁（line_hub_req_init）時伺服器自己判斷，成立就直接加綁，「同一次」回應的單位清單就含主店；
+ *       不出確認框、不加畫面文字。打卡頁（line_hub_status／line_quick_clock）不觸發（打卡要 5 秒內，不多連外）。
+ * 四個條件全部成立才加綁；任何一項查不到、讀不到＝這次不加綁，開頁其餘照舊：
+ *  (a) 這支 LINE（id_token 驗過的身分，不收前端帶的任何 id）現在綁在某家店名冊的在職列——加綁前即時重讀那一列；
+ *  (b) 目標列在另一家店名冊、在職、姓名與已綁那列「逐字相同」（不去空白、不轉全半形）、line_user_id 是空的；
+ *      那家店名冊沒有任何一列（含離職）綁過這支 LINE；那一列沒被主管「解除」過 LINE 綁定（解除過就不再自動綁）；
+ *  (c) 光復薪資的打卡對照快照 payroll_xmap（管理系統同步來；只認 confirmed、排除 acct_only、35 天內同步的列）
+ *      把「已綁那列」與「目標列」對到同一個 DZY 工號，而且這支 LINE 綁的其他列沒有對到別的工號；
+ *  (d) 目標店＝這個 DZY 的主店：快照 pay_store（管理系統主要單位的薪酬代碼）→ 薪資門市表 clock_ss_id → 同一份打卡表的那家店
+ *      （lineHubPayHubMap_；總部三個名單單位 HQ／SSLHQ／MZTHQ 共用總部打卡表就都對到總部）；這個人的 pay_store 不只一種＝不判斷。
+ * 總開關：指令碼屬性 LINE_BIND_HOME_ON === '1'（沒設、其他任何值＝關；關著時開頁回應與改版前逐字相同，只多讀這一個屬性）。
+ * 通知：LINE_BIND_HOME_NOTIFY === '1' 才私訊主店值班主管（沿用 lineHubBindAwayNotify_，文字不變；預設不送）。
+ * 紀錄：沿用店端 liff_bind（via:'name'＋via_store）→ 主店 liff_bind_log 寫 bind_name@<原店名>（不到場加綁）；九店 Liff.js 不用改。
+ * 次數：沿用綁定的次數限制 lineHubThrottled_('bind', …, 5, 600)（與輸入全名綁定共用）；每人的判斷結果記 30 分鐘（暫時讀不到的記 5 分鐘）。
+ * 測試：tests/line-bind-home.test.js、tests/line-bind-home-equiv.test.js；變異 tools/line-bind-home-mutate.js。 */
+var LINE_BIND_HOME_TAG = '（不到場加綁）';
+var LINE_BIND_HOME_TTL = 1800, LINE_BIND_HOME_RETRY_TTL = 300;
+var LINE_BIND_HOME_RETRY = { xmap_unreadable: 1, unreachable: 1, bind_failed: 1, too_many: 1 };
+var LINE_BIND_HOME_XMAP_TTL = 600, LINE_BIND_HOME_XMAP_FAIL_TTL = 60, LINE_BIND_HOME_XMAP_MAX_DAYS = 35;
+function lineBindHomeOn_(name) {
+  try { return PropertiesService.getScriptProperties().getProperty(name) === '1'; } catch (e) { return false; }
+}
+/** 打卡編號比對（同 Payroll.gs payXsupId_：去空白、純數字去前導零） */
+function lineBindHomeId_(v) { var t = String(v == null ? '' : v).trim(); return /^\d+$/.test(t) ? t.replace(/^0+(?=\d)/, '') : t; }
+function lineBindHomeCode_(v) { return String(v == null ? '' : v).trim().toUpperCase(); }
+function lineBindHomeMs_(v) {
+  if (v && typeof v.getTime === 'function') return v.getTime();
+  var t = Date.parse(String(normCellTs(v) || ''));
+  return isNaN(t) ? NaN : t;
+}
+/** 對照索引 {at, rows:[[emp_no, 主店的打卡店代碼|null, 這個帳號的打卡店代碼|null, emp_id]]}。
+ *  只讀 payroll_xmap 與薪資門市表（分頁不存在就不讀，不建分頁）；快取 10 分鐘（lbhx）。讀不到回 null 並留記號 60 秒（lbhxf），期間不重讀。
+ *  ⚠ 光復的打卡店代碼是空字串，一律用 === null 判斷「對不到」，不能用 truthy。 */
+function lineBindHomeXmap_() {
+  var c = CacheService.getScriptCache();
+  try { var hit = c.get('lbhx'); if (hit) { var o = JSON.parse(hit); if (o && Array.isArray(o.rows)) return o; } } catch (e) { /* 壞掉就重讀 */ }
+  if (c.get('lbhxf')) return null;
+  var out = null;
+  try {
+    if (typeof PAY_SHEET_NAME === 'undefined' || typeof payRead !== 'function' || typeof payStoreList !== 'function') throw new Error('no_payroll');
+    if (!getSS().getSheetByName(PAY_SHEET_NAME.xmap)) throw new Error('no_xmap');   // payRead 找不到分頁會自己建（寫入），這裡不准
+    var toClock = lineHubPayHubMap_(), payClock = {};
+    payStoreList().forEach(function (s) {
+      var k = lineBindHomeCode_(s.code);
+      if (k && !Object.prototype.hasOwnProperty.call(payClock, k)) payClock[k] = toClock(s);
+    });
+    var clockOf = function (v) { var k = lineBindHomeCode_(v); return Object.prototype.hasOwnProperty.call(payClock, k) ? payClock[k] : null; };
+    var lim = Date.now() - LINE_BIND_HOME_XMAP_MAX_DAYS * 86400000, rows = [];
+    (payRead('xmap') || []).forEach(function (r) {
+      if (String(r.state == null ? '' : r.state).trim().toLowerCase() !== 'confirmed') return;
+      if (r.acct_only === true || String(r.acct_only == null ? '' : r.acct_only).trim().toLowerCase() === 'true') return;
+      if (!(lineBindHomeMs_(r.synced_at) >= lim)) return;
+      var no = String(r.emp_no == null ? '' : r.emp_no).trim(), id = lineBindHomeId_(r.emp_id);
+      if (!no || !id) return;
+      rows.push([no, clockOf(r.pay_store), clockOf(r.acct_store), id]);
+    });
+    out = { at: Date.now(), rows: rows };
+  } catch (e) { out = null; }
+  if (!out) { try { c.put('lbhxf', '1', LINE_BIND_HOME_XMAP_FAIL_TTL); } catch (e) { /* 只是少一次節流 */ } return null; }
+  try { var s = JSON.stringify(out); if (s.length < 90000) c.put('lbhx', s, LINE_BIND_HOME_XMAP_TTL); } catch (e) { /* 存不進就每次讀 */ }
+  return out;
+}
+/** 判斷（不寫入）：mine＝這支 LINE 綁的在職列 [{st, row:{emp_id,name,src_store}}]（可能是 5 分鐘內的快取，(a) 會即時重讀）；xi＝lineBindHomeXmap_()。
+ *  回 {act:true, emp_no, src:{st,row}, home:{st,row}} 或 {act:false, reason}。 */
+function lineBindHomeDecide_(userId, mine, xi) {
+  var no = function (r) { return { act: false, reason: r }; };
+  var uid = String(userId || '');
+  if (!uid || !mine || !mine.length) return no('not_bound');
+  if (!xi || !Array.isArray(xi.rows)) return no('xmap_unreadable');
+  var keyOf = function (code, id) { return String(code) + '|' + lineBindHomeId_(id); };
+  var byAcct = {}, byEmp = {};
+  xi.rows.forEach(function (x) {
+    var e = byEmp[x[0]] = byEmp[x[0]] || { homes: {}, accts: {} };
+    e.homes[x[1] === null ? 'none' : 'c:' + x[1]] = x[1];
+    if (x[2] === null) return;
+    (byAcct[keyOf(x[2], x[3])] = byAcct[keyOf(x[2], x[3])] || {})[x[0]] = true;
+    (e.accts['c:' + x[2]] = e.accts['c:' + x[2]] || {})[x[3]] = true;
+  });
+  var names = {};
+  mine.forEach(function (m) { names[String(m.row.name == null ? '' : m.row.name)] = true; });
+  if (Object.keys(names).length !== 1) return no('name_mismatch');                       // (b) 這支 LINE 綁的列名字不一致
+  var emps = {}, mapped = [];
+  for (var i = 0; i < mine.length; i++) {
+    var hit = byAcct[keyOf(mine[i].st.code, mine[i].row.emp_id)];
+    if (!hit) continue;
+    var ks = Object.keys(hit);
+    if (ks.length !== 1) return no('xmap_ambiguous');
+    emps[ks[0]] = true; mapped.push(mine[i]);
+  }
+  var el = Object.keys(emps);
+  if (!el.length) return no('not_mapped');                                                // (c) 查不到對照
+  if (el.length > 1) return no('mapped_multi');                                           // (c) 對到不同工號
+  var empNo = el[0], ent = byEmp[empNo], hk = Object.keys(ent.homes);
+  if (hk.length !== 1) return no('home_ambiguous');                                       // (d)
+  var homeCode = ent.homes[hk[0]];
+  if (homeCode === null) return no('no_home_store');                                      // (d)
+  if (mine.some(function (m) { return String(m.st.code) === String(homeCode); })) return no('already');
+  var ids = Object.keys(ent.accts['c:' + homeCode] || {});
+  if (!ids.length) return no('no_home_account');                                          // (c)(d) 主店沒有對到這個工號的帳號
+  if (ids.length > 1) return no('home_account_multi');
+  var homeSt = lineHubStores_().filter(function (s) { return String(s.code) === String(homeCode); })[0];
+  if (!homeSt) return no('no_home_store');
+  if (lineHubCrossedBound_(mine, homeSt)) return no('cross_brand');
+  var src = mapped[0], srcRows, homeRows;
+  try { srcRows = lineHubRoster_(src.st); homeRows = lineHubRoster_(homeSt); } catch (e) { return no('unreachable'); }
+  if (!srcRows || !homeRows) return no('unreachable');
+  var s = srcRows.filter(function (r) { return String(r.emp_id) === String(src.row.emp_id); });
+  if (s.length !== 1 || !lineHubActive_(s[0]) || String(s[0].line_user_id || '') !== uid) return no('src_changed');   // (a)
+  s = s[0];
+  if (homeRows.some(function (r) { return String(r.line_user_id || '') === uid; })) return no('home_line_seen');        // (b)
+  var t = homeRows.filter(function (r) { return lineBindHomeId_(r.emp_id) === ids[0]; });
+  if (t.length !== 1) return no('home_row_missing');
+  t = t[0];
+  if (!lineHubActive_(t)) return no('home_inactive');                                     // (b)
+  if (String(t.line_user_id || '')) return no('home_taken');                              // (b)
+  if (!String(t.key == null ? '' : t.key).trim()) return no('home_no_key');
+  var sn = String(s.name == null ? '' : s.name);
+  if (!sn || sn !== String(t.name == null ? '' : t.name)) return no('name_mismatch');    // (b) 逐字相同
+  var log;
+  try { log = lineHubSheetRows_(lineHubSS_(homeSt), LIFF_BIND_LOG_SHEET_); } catch (e) { return no('unreachable'); }
+  if (log.some(function (r) { return String(r.emp_id) === String(t.emp_id) && String(r.type || '').indexOf('unbind') === 0; })) return no('unbound_before');
+  return { act: true, emp_no: empNo, src: { st: src.st, row: s }, home: { st: homeSt, row: t } };
+}
+/** 加綁（判斷成立之後）：店端 liff_bind 照舊用同仁自己的 id_token 再驗一次身分、鎖內重讀名冊。 */
+function lineBindHomeDo_(userId, body, d) {
+  if (lineHubThrottled_('bind', userId, 5, 600)) return { act: false, reason: 'too_many' };
+  var j = lineHubCallStore_(d.home.st, { action: 'liff_bind', id_token: body.id_token, key: String(d.home.row.key),
+                                         via: 'name', via_store: String(d.src.st.name).slice(0, 22) + LINE_BIND_HOME_TAG });
+  if (!j || !j.ok) return { act: false, reason: 'bind_failed' };
+  lineHubForget_(userId);
+  if (!j.already && lineBindHomeOn_('LINE_BIND_HOME_NOTIFY')) lineHubBindAwayNotify_(d.home, d.src.st, userId);   // 送不出去不影響綁定
+  return { act: true };
+}
+/** 申請頁開頁掛勾：開關關＝null（什麼都不做）；成立並綁好＝回加上主店那一列的 mine（照店家清單順序），否則 null。任何例外＝null。 */
+function lineHubBindHomeAuto_(userId, body, mine) {
+  if (!lineBindHomeOn_('LINE_BIND_HOME_ON')) return null;
+  try {
+    var c = CacheService.getScriptCache(), ck = 'lbh:' + userId;
+    if (c.get(ck)) return null;
+    var d = lineBindHomeDecide_(userId, mine, lineBindHomeXmap_());
+    var res = d.act ? lineBindHomeDo_(userId, body, d) : d;
+    try { c.put(ck, res.act ? 'done' : res.reason, LINE_BIND_HOME_RETRY[res.reason] ? LINE_BIND_HOME_RETRY_TTL : LINE_BIND_HOME_TTL); } catch (e) { /* 下次再判斷一次 */ }
+    if (!res.act) return null;
+    var order = lineHubStores_().map(function (s) { return String(s.code); });
+    var add = { st: d.home.st, row: { emp_id: String(d.home.row.emp_id), name: String(d.home.row.name), src_store: String(d.home.row.src_store || '') } };
+    var at = order.indexOf(String(d.home.st.code)), out = [], put = false;
+    mine.forEach(function (m) {
+      if (!put && order.indexOf(String(m.st.code)) > at) { out.push(add); put = true; }
+      out.push(m);
+    });
+    if (!put) out.push(add);
+    return out;
+  } catch (e) { return null; }
+}
+/** 編輯器手動執行（主管開 LINE_BIND_HOME_ON 之前先看）：開關打開後「下次開申請頁就會加綁」的有哪些、其他人卡在哪一條。
+ *  不綁定、不寫試算表、不記每人判斷結果（只會把對照索引放進快取 10 分鐘）。只印店代碼與工號，不印姓名、不印 LINE 帳號。 */
+function lineBindHomePreview() {
+  var idx = lineHubIdxBuild_();
+  if (!idx) { Logger.log('有店的名冊讀不到，請稍後再執行一次'); return null; }
+  var xi = lineBindHomeXmap_(), stores = lineHubStores_(), count = {}, acts = [];
+  if (!xi) Logger.log('讀不到打卡對照快照（payroll_xmap）：開關打開也不會加綁任何人');
+  Object.keys(idx.m).forEach(function (uid) {
+    var mine = [];
+    idx.m[uid].forEach(function (x) {
+      var st = stores.filter(function (s) { return String(s.code) === String(x.c); })[0];
+      if (x.a && st) mine.push({ st: st, row: { emp_id: x.e, name: x.n, src_store: x.s } });
+    });
+    if (!mine.length) return;
+    var d = lineBindHomeDecide_(uid, mine, xi), k = d.act ? 'will_bind' : d.reason;
+    count[k] = (count[k] || 0) + 1;
+    if (d.act) acts.push((d.src.st.code || 'gf') + ':' + d.src.row.emp_id + ' → ' + (d.home.st.code || 'gf') + ':' + d.home.row.emp_id);
+  });
+  Logger.log('會加綁 ' + acts.length + ' 位：' + (acts.join('、') || '（無）'));
+  Logger.log('各原因人數：' + JSON.stringify(count));
+  return { will_bind: acts, count: count };
 }
 
 /** {action:'line_hub_pay_lock', id_token, store, ym} → {ok, store, ym, locked?}（Eason 2026-11-16 回「要補」）
