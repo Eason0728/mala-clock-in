@@ -57,6 +57,11 @@
   /* 加班請假／忘打卡申請頁（req-line.js，2026-10-09）*/
   .rq-head { font-size: 16px; margin-bottom: 10px; display: flex; gap: 8px; align-items: center; }
   .rq-store, .rq-special, .rq-date { padding: 8px; font-size: 15px; border: 1px solid var(--line); border-radius: 8px; background: #fff; max-width: 100%; }
+  /* 綁兩家以上的單位下拉（2026-11-27）：iPhone 原生下拉看起來像純文字，加標籤、箭頭、明顯框線；只有一家時不出現 */
+  .rq-store-lbl { font-size: 14px; color: var(--muted); white-space: nowrap; }
+  .rq-store.rq-dd { -webkit-appearance: none; appearance: none; min-width: 0; flex: 0 1 auto; padding: 7px 32px 7px 10px; border: 2px solid var(--in); color: var(--ink);
+    background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%232a6b5e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 11px center / 12px 8px; }
+  .rq-store-hint { font-size: 12px; color: var(--muted); margin: -4px 0 10px; }
   .rq-tabs { display: flex; background: #e6eeeb; border-radius: 10px; padding: 3px; margin-bottom: 12px; }
   .rq-tabs button { flex: 1; min-width: 0; border: 0; background: transparent; padding: 9px 0; font-size: 13px; border-radius: 8px; color: var(--muted); white-space: nowrap; }
   .ot-hint { margin-top: 10px; background: #fff6e0; color: #6b4c00; border-radius: 10px; padding: 9px 12px; font-size: 14px; line-height: 1.6; }

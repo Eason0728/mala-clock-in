@@ -822,7 +822,8 @@
     $root.innerHTML = '';
     var head = h('div', { class: 'rq-head' }, [h('b', { text: st.store.emp_name || '' }), ' ']);
     if (st.init.stores.length > 1) {
-      var sel = h('select', { class: 'rq-store', on: { change: function () {
+      head.appendChild(h('span', { class: 'rq-store-lbl', text: '申請單位：' }));   // 2026-11-27 讓同仁看得出單位可以點開切換
+      var sel = h('select', { class: 'rq-store rq-dd', on: { change: function () {
         st.store = st.init.stores[+sel.value]; st.info = null; st.infoErr = false; st.infoReal = false; st.peekAt.info = 0; st.storeManual = true; cachePut();
         var dNow = ({ leave: lv.date, ot: ot.date, trip: tp.date })[st.tab]; if (dNow) { st.picked = st.picked || {}; st.picked[dNow] = st.store.code; }      // 這一天手動選過店：不再自動換（2026-11-15）
         if (st.tab === 'miss') render();   // 忘打卡：各店那天的卡已經一起查好了，先換畫面
@@ -831,6 +832,8 @@
       head.appendChild(sel);
     } else head.appendChild(h('span', { class: 'rq-muted', text: st.store.name }));
     $root.appendChild(head);
+    var hqS = st.init.stores.length > 1 && st.store.code !== 'hq' ? st.init.stores.filter(function (s) { return s.code === 'hq'; })[0] : null;
+    if (hqS) $root.appendChild(h('div', { class: 'rq-store-hint', text: '點上方單位可切換到 ' + hqS.name }));
     $root.appendChild(h('div', { class: 'rq-tabs' }, TABS.map(function (t) {
       return h('button', { type: 'button', class: t[0] === st.tab ? 'on' : '', 'data-tab': t[0], text: t[1],
                            on: { click: function () { st.tab = t[0]; st.flash = null; st.syncNote = ''; st.cancelErr = null; st.gateNote = null; render(); } } });
