@@ -1279,7 +1279,7 @@ function renderStats(){
       新增假別會自動產生新的 key（family_leave、parental_leave…）——所以這裡改成
       「凡是 _leave 結尾的都算」，不要再逐一列舉，否則每加一種假就會漏扣一次。 */
 // 遲到不計薪與不足倒扣一樣是「真的少領」，要從薪資費用扣回（請假類靠 /_leave$/ 自動涵蓋）
-const COST_REDUCE_EXTRA=['shortfall_hours','late_deduct','early_deduct'];
+const COST_REDUCE_EXTRA=['shortfall_hours','late_deduct','early_deduct','absent_deduct'];   // absent_deduct：曠職扣款（2026-11-28），跟請假扣款一樣扣回
 function isCostReduceKey(k){ return /_leave$/.test(String(k)) || COST_REDUCE_EXTRA.indexOf(k)>=0; }
 /** 缺口時數由各支援列「平均分擔」；某列時數不夠就把餘額讓給還有餘裕的列 */
 function allocGapHours(hoursArr, gap){
