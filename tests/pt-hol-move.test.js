@@ -59,9 +59,10 @@ function world(people, opt) {
   });
   const DB = { master, run: [], item: [], config: [], leave_type: [], bonus: [], input: J(opt.input || []), xmap: [], audit: [],
     holiday: opt.holiday || HOLROWS(), store: [{ code: st, name: '測試店', clock_ss_id: '', emp_prefix: '', active: 'true', support_group: 'sxl' }] };
+  if (opt.elec) DB.hol_emp = opt.elec.map((x) => ({ ym: x.date.slice(0, 7), date: x.date, store: st, emp_id: x.id, name: '', note: '', updated_at: '' }));   // 選舉假名單 [{id, date}]
   const CLOCK = { roster: master.map((m) => ({ emp_id: m.emp_id, name: m.name, active: true })), approved, events: [], leave: [], requests: [] };
   const sb = { console, Logger: { log() {} },
-    SpreadsheetApp: { flush: () => {}, getActive: () => null, openById: () => ({ getSheetByName: (n) => (n === 'payroll_hol_emp' ? null : {}) }) },
+    SpreadsheetApp: { flush: () => {}, getActive: () => null, openById: () => ({ getSheetByName: (n) => (n === 'payroll_hol_emp' && !opt.elec ? null : {}) }) },
     Utilities: { formatDate: () => opt.today || '2027-06-15' },
     PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperty() {} }) },
     CacheService: { getScriptCache: () => ({ get: () => null, put() {}, remove() {} }) },
@@ -346,6 +347,69 @@ console.log('\n══ ⑫ 損益月中估算（handlePnlLaborEstimate_）同一�
     const n = world(J(p), { today: '2026-12-27', from: '9999-12' }), o = world(J(p), { today: '2026-12-27', gs: GS_BASE });
     return [J(n.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2026-12', store: 'SSLGF' })), J(o.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2026-12', store: 'SSLGF' }))]; })();
   chk('  開關關著（9999-12）：估算跟基準逐位元組相同', JSON.stringify(x[0]) === JSON.stringify(x[1]), true);
+}
+
+console.log('\n══ ⑬ 驗收員補洞（2026-11-28）：每一處新判斷都要有測試守著 ══');
+{
+  // M4 加班月表同步（payOtMonthSync_）：今天 2027-02-06（春節週六），計時當天是國定假日 → 休息日旗標 TRUE；正職 2/6 不在雙薪日 → FALSE
+  const w = world([P({}, { '2027-02-01': 6 }), { id: 'E01', ft: true, cells: {}, hours: { '2027-02-01': 8 } }], { today: '2027-02-06' });
+  w.sb.__OTPUT = [];
+  w.F(`(function(){ payClockSS = function(){ return { getSheetByName: function(){ return { getLastRow: function(){ return 0; }, getLastColumn: function(){ return 0; }, getMaxRows: function(){ return 1000; }, insertRowsAfter: function(){},
+    getRange: function(){ return { getValues: function(){ return []; }, setNumberFormat: function(){} }; } }; } }; };
+    paySafePut_ = function(sh, r0, nc, h, values){ globalThis.__OTPUT.push(JSON.parse(JSON.stringify(values))); return function(){}; }; })()`);
+  const res = J(w.F('payOtMonthSync_')());
+  const rows = (w.sb.__OTPUT[0] || []).slice(1).reduce((o, r) => { o[r[0]] = r[2]; return o; }, {});
+  chk('M4 加班月表同步：今天 2/6 計時休息日旗標 TRUE（認節日當天）、正職 FALSE（正職雙薪日是 2/9）', [res.ok, rows['測試甲'], rows['測試乙']], [true, 'TRUE', 'FALSE']);
+}
+{
+  // M6 損益月中估算的跨店支援補發：12/20 排 L國、12/25 去支援店 5H → 估算不含支援加倍（沒排 L國 時含 5×200＝1,000）
+  const est = (cells) => { const w = world([P(cells, { '2026-12-01': 6 })], { today: '2026-12-27', sup: { P01: { '2026-12-25': 5 } } });
+    return J(w.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2026-12', store: 'SSLGF' })); };
+  const num = (r) => { const m = JSON.stringify(r).match(/"(?:gross|labor_total|total)":(\d+(?:\.\d+)?)/); return m ? Number(m[1]) : NaN; };
+  const a = est({}), b = est({ '2026-12-20': GUO });
+  chk('M6 損益估算：12/20 排 L國、12/25 去支援 5H → 比沒排 L國 少支援補發加倍 1,000', [a.ok, b.ok, num(a) - num(b)], [true, true, 1000]);
+}
+{
+  // M11 跨開關月份的對照不換：開關 2027-05 時，5 月開、4 月不開 → 勞動節 5/1（補假 4/30 在 4 月、照舊規則已加倍）不加進 5 月計時清單
+  const w = world([], { from: '2027-05' });
+  chk('M11 開關 2027-05：5 月開著，但對照到的 4/30 在 4 月（開關之前）→ 5 月計時清單不加 5/1（不重複給）', J(w.F('payPtHolDates_')('2027-05', 'SSLGF', [])), []);
+  const w2 = world([], { from: '2027-04' });
+  chk('  （對照組）開關 2027-04：兩邊都開 → 5 月加 5/1', J(w2.F('payPtHolDates_')('2027-05', 'SSLGF', [])), ['2027-05-01']);
+  // 2027-12-31 補 2028 元旦：開關 2028-01 時 12 月不開 → 1 月不加 2028-01-01
+  const w3 = world([], { from: '2028-01', holiday: HOLROWS().concat([{ ym: '2027-12', red_days: 9, note: '', dates: '2027-12-24, 2027-12-31', store: '' }]) });
+  chk('M11 開關 2028-01：12/31 在 2027-12（開關之前）→ 2028-01 計時清單不加元旦', J(w3.F('payPtHolDates_')('2028-01', 'SSLGF', [])), []);
+}
+{
+  // M12 抵法裡本期跨到的別月份也要換成計時清單：T07＝4/18～5/15；計時 5/10 排 1 天 L國、5/1 上班 7H。
+  //   計時清單：4 月只有 4/4、4/5（不在 T07），5 月 5/1 → 本期只有 5/1 → 抵掉 5/1 → 0。用正職清單會多一個 4/30（比 5/1 早，先被抵）→ 5/1 照給（錯）
+  const w = world([P({ '2027-05-10': GUO }, { '2027-05-01': 7, '2027-04-30': 6 })]);
+  chk('M12 T07 跨 4／5 月：5/10 排 L國 → 抵掉 5/1（4/30 對計時不是國定假日，不能先被抵）→ 5 月國定假日加倍 0', holItems(w.by(w.calc('2027-05'), 'P01')), []);
+  const w2 = world([P({}, { '2027-05-01': 7 })]);
+  chk('  （對照組）沒排 L國 → 5/1 照給 7×210', holItems(w2.by(w2.calc('2027-05'), 'P01')), ['國定假日加倍 7×210=1470']);
+}
+// M13／M14 選舉日（名單上的日子）：計時用計時清單判斷「是不是國定假日」與「國定假日時數有沒有被手改」
+function elecCase(fn) {
+  // 甲：選舉日放在 2/6（春節週六，計時的國定假日）→ 以國定假日為準，不另加選舉日；用正職清單會多一筆選舉日加倍
+  const a = fn([P({}, { '2027-02-06': 5, '2027-02-01': 6 })], [{ id: 'P01', date: '2027-02-06' }]);
+  // 乙：選舉日 2/12（平日上班）6H，另 2/6 上 5H、2/9（補假）上 6H；國定假日時數＝計時清單 5H → 沒手改 → 選舉日照發 6H
+  //     用正職清單比對（2/9 的 6H）會誤判成手改、選舉日停發
+  const b = fn([P({}, { '2027-02-12': 6, '2027-02-06': 5, '2027-02-09': 6 })], [{ id: 'P01', date: '2027-02-12' }]);
+  return [a, b];
+}
+{
+  const run = (ppl, elec) => { const w = world(ppl, { elec }); return holItems(w.by(w.calc('2027-02'), 'P01')); };
+  const [a, b] = elecCase(run);
+  chk('M14 主計算：選舉日在計時的國定假日 2/6 → 只有國定假日加倍 5H、沒有選舉日那列', a, ['國定假日加倍 5×200=1000']);
+  chk('M14 主計算：選舉日 2/12、國定假日時數沒手改 → 國定假日 5H＋選舉日 6H', b, ['國定假日加倍 5×200=1000', '選舉日出勤 6×200=1200']);
+}
+{
+  const num = (r) => { const m = JSON.stringify(r).match(/"(?:gross|labor_total|total)":(\d+(?:\.\d+)?)/); return m ? Number(m[1]) : NaN; };
+  const est = (ppl, elec) => { const w = world(ppl, { elec, today: '2027-02-27' }); return num(J(w.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2027-02', store: 'SSLGF' }))); };
+  const [a, b] = elecCase(est);
+  const a0 = est([P({}, { '2027-02-06': 5, '2027-02-01': 6 })], [{ id: 'X99', date: '2027-02-06' }]);
+  const b0 = est([P({}, { '2027-02-12': 6, '2027-02-06': 5, '2027-02-09': 6 })], [{ id: 'X99', date: '2027-02-12' }]);
+  chk('M13 損益估算：選舉日在計時的國定假日 2/6 → 跟沒勾選相同（不另加選舉日）', a - a0, 0);
+  chk('M13 損益估算：選舉日 2/12、國定假日時數沒手改 → 比沒勾選多選舉日 6×200＝1,200', b - b0, 1200);
 }
 
 console.log(`\n${pass} 項通過、${fail} 項失敗`);
