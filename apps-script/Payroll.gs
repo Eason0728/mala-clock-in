@@ -4896,18 +4896,13 @@ function payKzScan_(daily, f, from, st, kzDays) {
   });
   return out;
 }
-/** 曠職的 ot_info（payCalcOne 叫）：舊的「有排班沒核定」只留生效日之前的日子；新增疑似、已認定、待確認。沒有的欄位不帶。 */
+/** 曠職的 ot_info（payCalcOne 叫）：只加「已認定」（kz_marked／kz_marked_streak／kz_marked_alert）。沒有的欄位不帶。
+ *  乙（2026-11-28 主管定案，過渡到丙）：薪資頁**不出疑似曠職清單**（kz_suspect／kz_suspect_streak／kz_suspect_alert 一律不帶）——
+ *  payKzScan_ 看不到別品牌帳號的打卡與單，會誤列；疑似以營運系統核定頁為準。「有排班沒核定」（no_show／absent_alert／absent_streak）照改版前：
+ *  呼叫端（payCalcOne）已用整月算好，這裡不再改（原本只留生效日之前的日子）。金額不經過這裡（扣款只看已認定的曠職列，payKzDeduct_）。
+ *  連帶：鎖月擋與草稿過時比對讀的是草稿 ot_info.kz_suspect → 乙期間一律是空的 → KUANGZHI_LOCK_BLOCK 開了也等同關（不擋）；合約寫明乙期間不開。 */
 function payKzOtInfo_(oi, att) {
-  const sc = att.kz_scan, from = sc.from, daily = att.daily || {};
-  const pre = payOtDailySum(Object.assign({}, daily, { dates: (daily.dates || []).filter(function (d) { return d < from; }), extra_ot: 0, comp_h: 0 }));
-  oi.no_show = pre.no_show;
-  oi.absent_alert = pre.no_show_streak >= 3 || pre.no_show.length >= 6;
-  oi.absent_streak = pre.no_show_streak;
-  if (sc.suspect.length) {
-    oi.kz_suspect = sc.suspect.slice();
-    oi.kz_suspect_streak = sc.suspect_streak;
-    oi.kz_suspect_alert = sc.suspect_streak >= 3 || sc.suspect.length >= 6;   // 第 10 題 B：句 19
-  }
+  const sc = att.kz_scan, from = sc.from;
   const mk = (att.kz_days || []).filter(function (x) { return x.date >= from; });
   if (mk.length) {
     oi.kz_marked = mk.map(function (x) { return { date: x.date, h: x.h }; });
