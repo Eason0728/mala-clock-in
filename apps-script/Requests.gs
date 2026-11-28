@@ -3330,7 +3330,9 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   var otGaps = missBad ? reqOtGapHints_(date, otRows, periods, reqWorkingSegs_(segs, date) || []) : [];
   if (missBad && otGaps.length && miss - missHave <= 2 * otGaps.length) { otGaps.forEach(function (t) { add('ot_gap', t); }); missBad = false; }
   else if (missBad) add('miss', '少了 ' + miss + ' 張打卡，要有忘打卡單（已核准 ' + missHave + ' 張）');
-  if (strict) reqStrictLeaveProbs_(ok, opt.leaves).forEach(function (t) { add('leave', t); });
+  // 認定曠職（2026-11-26，Code.gs kzApprovePre_／Post_ 已驗過）：曠職沒有假單，登記不要求單（只有 opt.kz 為真時才拿掉；其他假別照舊）
+  var leavesForReq = opt.kz ? (opt.leaves || []).filter(function (x) { return String(x && x.type) !== '曠職'; }) : opt.leaves;
+  if (strict) reqStrictLeaveProbs_(ok, leavesForReq).forEach(function (t) { add('leave', t); });
   if (strict) reqLeaveOverlapProbs_(date, ok, periods).forEach(function (t) { add('leave_overlap', t); });   // 2026-11-18 Eason：核定上班不能跟已核准假單／出差單時段重疊
   // 正職上班日滿 8 小時＋跨店加班算被支援那家（2026-11-13 Eason，見 reqFt8_ 檔頭）
   var ft8 = reqFt8_(date, approvedHours, otHave, opt, ok);

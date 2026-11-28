@@ -17,7 +17,7 @@ var RELAYG_EVENT_COLS_ = ['ts', 'emp_id', 'type', 'lat', 'lng', 'distance_m', 'w
 var RELAYG_ROSTER_COLS_ = ['emp_id', 'name', 'key', 'device_id', 'device_bound_at', 'active', 'shift_in', 'shift_out', 'removed_at', 'line_user_id', 'line_bound_at', 'line_ok_at'];
 var RELAYG_PULL_MAX_ = 4000;           // relay_pull 一次最多回幾列
 var RELAYG_SHEETS_ = ['ot_month', 'sched_pub'];   // mini 擋卡規則會讀的其他分頁（Rest.gs 加班上限、Cap10.gs 班表）
-var RELAYG_PROPS_ = ['REST_RULE_ON', 'REST_CAP_ON', 'REST_OT_ON'];
+var RELAYG_PROPS_ = ['REST_RULE_ON', 'REST_CAP_ON', 'REST_OT_ON', 'KUANGZHI_FROM'];   // KUANGZHI_FROM（2026-11-26 曠職生效日）：mini 核定引擎跟 Google 同一個開關（有設才帶）
 // P2-B 開頁只問 mini（2026-11-21）：公告副本跟 sheets 同一趟帶。只給打卡頁要的欄（不給 created_by）；分頁不存在也回表頭（mini 才知道「這家店沒有公告」）
 var RELAYG_NOTICE_COLS_ = ['id', 'text', 'active', 'ends_on', 'created_at'];
 // P3-1 原始列副本（2026-11-21，契約 dzy-mini-playbook docs/clock-to-mini/contracts/r-line.md）：with.rows／with.fp 才回，沒帶＝回應不變。
@@ -171,7 +171,7 @@ function relayGRowsOut_(ss, out, wantRows) {
  * {action:'relay_pull', relay_key, from_row?:資料第幾列起（1＝第一張卡）, with?:{roster,sheets,props,rows,fp}}
  * → {ok, v, now, total, from_row, events:[…], last:{row, ts, emp_id, type}, roster?, sheets?, props?, rows?, managers?, fp?, config}
  * rows／fp（P3-1）：approved、leave、requests 全部列＋主管名單白名單欄＋每天指紋；fp 只回指紋。格式見 r-line.md。
- * props：REST_* 三個原值（有設才帶）＋DUTY_VER_STRICT:'1'（Google 實際採用 strict 時才帶，見 relayGVerStrictOut_；不帶 DUTY_AUTH）。
+ * props：REST_* 三個與 KUANGZHI_FROM 的原值（有設才帶）＋DUTY_VER_STRICT:'1'（Google 實際採用 strict 時才帶，見 relayGVerStrictOut_；不帶 DUTY_AUTH）。
  * 唯讀。金鑰、裝置碼、LINE 帳號一律回 HMAC（'h:'＋十六進位），mini 拿不到原文。
  */
 /* P5-1 標示（2026-11-21，設計 6.2 的 5-1；不改分頁名、不改表頭文字＝只在第一格加「註記」）：
