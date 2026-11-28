@@ -1653,6 +1653,23 @@ function reqDayWarnMsg_(dates) {
   return dates.map(function (d) { return (+d.slice(5, 7)) + '/' + (+d.slice(8, 10)); }).join('、') + ' 已經核定過，請重新核定一次，假別才會寫進薪資';
 }
 
+/* 曠職（2026-11-28）：已認定曠職的那天（開關開、日期在生效日起、那天有核定、那人那天請假登記有「曠職」）才核准忘打卡單，也帶同一個提醒 already_approved_day。
+   不帶 message：上面兩句的句尾（假別、加班單）都不是在講忘打卡單 → 營運系統顯示它既有的「那天已經核定過，請重新核定一次」。
+   開關關、那天不是已認定曠職、沒載入曠職程式（typeof 防）＝照改之前（忘打卡單不提醒）。只是提醒：不改任何資料。 */
+function reqKzMissDay_(ss, r, approvedMap) {
+  if (!reqIsMiss_(r) || typeof kzOn_ !== 'function' || typeof KZ_TYPE === 'undefined') return false;
+  var d = String(r.date || '').slice(0, 10);
+  if (!kzOn_(d) || !(approvedMap[d] && approvedMap[d][String(r.emp_id)])) return false;
+  var sh = ss.getSheetByName('leave'), rsh = ss.getSheetByName('roster');
+  if (!sh) return false;
+  var ro = rsh ? findRosterByEmpId(readSheetAsObjects(rsh).rows, r.emp_id) : null;   // 請假登記用名冊姓名寫（同 handleMgrApprove）
+  var nm = String((ro && ro.name) || '').trim();
+  if (!nm) return false;
+  return readSheetAsObjects(sh).rows.some(function (x) {
+    return normCellDate(x['日期']) === d && String(x['姓名'] || '').trim() === nm && String(x['假別'] || '').trim() === KZ_TYPE;
+  });
+}
+
 /** {action:'mgr_req_decide', mgr_key, id, decision:'approve'|'reject', reason?} */
 function handleMgrReqDecide_(body, viaAuth) {
   // 2026-11-21 P3-3：先過 dutyAuthRun_（DutyFeed.gs：DUTY_AUTH＝mini 只收簽名寫回、同一個寫回單號只寫一次；開關全空＝直接回來照原本流程）
@@ -1691,6 +1708,10 @@ function handleMgrReqDecide_(body, viaAuth) {
       var dd = String(r.date || '').slice(0, 10);
       try { if (reqDayApproved_(reqApprovedMap_(ss), r)) { out.warn = REQ_DAY_WARN_; out.warn_dates = [dd]; out.message = reqDayWarnMsgOf_(r, [dd]); } }
       catch (e) {}   // 讀不到核定紀錄不影響核准
+    }
+    else if (decision === 'approve' && reqIsMiss_(r)) {   // 曠職（2026-11-28）：已認定曠職的那天才核准忘打卡單
+      try { if (reqKzMissDay_(ss, r, reqApprovedMap_(ss))) { out.warn = REQ_DAY_WARN_; out.warn_dates = [String(r.date || '').slice(0, 10)]; } }
+      catch (e) {}   // 讀不到不影響核准
     }
     return out;
   } finally { lock.releaseLock(); }
@@ -1914,6 +1935,10 @@ function handleMgrReqDecideBatch_(body, viaAuth) {
           var dd = String(r.date || '').slice(0, 10);
           warnItems.push({ id: id, warn: REQ_DAY_WARN_, warn_dates: [dd], message: reqDayWarnMsgOf_(r, [dd]) });
         }
+      }
+      else if (reqIsMiss_(r)) {   // 曠職（2026-11-28）：已認定曠職的那天才核准忘打卡單（不帶 message，同 handleMgrReqDecide_）
+        try { if (!apMap) apMap = reqApprovedMap_(ss); } catch (e) { apMap = {}; }
+        try { if (reqKzMissDay_(ss, r, apMap)) warnItems.push({ id: id, warn: REQ_DAY_WARN_, warn_dates: [String(r.date || '').slice(0, 10)] }); } catch (e) {}
       }
     });
     var outB = { ok: true, done: done, skipped: skipped };
