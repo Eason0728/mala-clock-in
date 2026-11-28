@@ -32,7 +32,14 @@ eq(fB({ hol_source: 'mini', hol_pub: { version: '<b>1</b>', published_at: 'x' } 
 
 // 說明文字只有 mini 才換
 eq(BR.indexOf('<p class="hint" id="holHint">基本工時') > 0, true, '說明段落多了 id（文字沒變）');
-eq(BR.replace(' id="holHint"', '').indexOf(BASE.slice(BASE.indexOf('<p class="hint">基本工時'), BASE.indexOf('</p>', BASE.indexOf('<p class="hint">基本工時')))) > 0, true, '說明段落原文跟主線相同');
+/* 計時國定假日（2026-11-28 定案，PR #247）改了說明段落最後一句（計時認節日當天、排到同期別天）：其他字跟主線相同、那一句換成定稿新句 */
+const HINT_OLD_PT = '國定假日碰到週末、有補假的，<b>雙薪算在補假那天</b>（例：國慶 10/10 週六 → 10/9 週五雙薪）。';
+const HINT_NEW_PT = '國定假日碰到週末、有補假的，<b>正職雙薪算在補假那天</b>（例：國慶 10/10 週六 → 10/9 週五雙薪）；<b>計時認節日當天</b>，節日當天上班才雙倍、補假那天上班不加倍（2026-12 月份薪資起）。<br>計時把國定假日假排到同一期（28 天）別天的，原國定假日當天上班不加倍（同正職，2026-12 月份薪資起）。';
+{
+  const basePara = BASE.slice(BASE.indexOf('<p class="hint">基本工時'), BASE.indexOf('</p>', BASE.indexOf('<p class="hint">基本工時')));
+  eq(basePara.split(HINT_OLD_PT).length, 2, '主線說明段落有那一句舊字（前提）');
+  eq(BR.replace(' id="holHint"', '').indexOf(basePara.replace(HINT_OLD_PT, HINT_NEW_PT)) > 0, true, '說明段落：只有計時那一句換成新句，其他原文跟主線相同');
+}
 
 // 有月份沒跟上這一版（鎖定／已經過去／缺列）：版本行後面帶出（推薦的 A 版文字）
 eq(fB({ hol_source: 'mini', hol_pub: Object.assign({}, PUB, { lag: { locked: ['2026-12'], past: ['2026-10'], missing: [] } }) }),
