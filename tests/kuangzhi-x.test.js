@@ -174,8 +174,13 @@ function load(which, opt) {
     } else schedPubLoad_ = function(){ return JSON.parse(JSON.stringify(__PUB)); };
     CONFIG.ADMIN_KEY = ${JSON.stringify(KEY)};
     paySchedMissingAll_=function(){return [];}; payUnapprovedAll_=function(){return [];}; payCompNegatives=function(){return [];};
+    __SCAN = {};
+    if (typeof payCalcOne === 'function') { var __pcOrig = payCalcOne; payCalcOne = function(e, ym, att){ if (att && att.kz_scan) __SCAN[String(e.emp_id)] = JSON.parse(JSON.stringify(att.kz_scan)); return __pcOrig.apply(this, arguments); }; }
   `, sb);
   sb.post = (fn, body) => J(vm.runInContext(fn, sb)(Object.assign({ admin_key: KEY }, body)));
+  // 乙（2026-11-28）：薪資回應不再帶 kz_suspect；這裡改看 payKzScan_ 掃出來的疑似（x 的規則就是掃描規則，丙會沿用）
+  sb.scan = (id) => (sb.__SCAN || {})[id || 'E01'] || null;
+  sb.sus = (id) => { const sc = sb.scan(id); return sc && sc.suspect.length ? sc.suspect : undefined; };
   return sb;
 }
 const PERIODS = { T01: '2026-11-01', T02: '2026-11-29', T03: '2026-12-27' };
@@ -215,31 +220,32 @@ const calc = (s, ym) => s.post('handlePayrollCalc', { ym: ym || '2026-12', store
 const lock = (s) => s.post('handlePayrollFinalize', { ym: '2026-12', store: 'SSLGF', lock: true, operator: '測試' });
 const one = (r, id) => (r.results || []).find((x) => x.emp_id === (id || 'E01'));
 const W15 = (x) => ({ E01: { '2026-12-15': Object.assign({ t: 'W', s: 'A' }, x === undefined ? {} : { x }) } });
-const sus15 = (x, props) => one(calc(env(scene({ skip: { E01: ['2026-12-15'] }, marks: W15(x) }), 'now', props || ON))).ot_info.kz_suspect;
+const susOf = (s, ym) => { calc(s, ym); return s.sus(); };      // 乙：試算後看掃描結果
+const sus15 = (x, props) => susOf(env(scene({ skip: { E01: ['2026-12-15'] }, marks: W15(x) }), 'now', props || ON));
 
 console.log('\n══ 三、薪資掃疑似：有效 x ＝排除；其他照舊（C1–C6）══');
 {
   eq(sus15(undefined), ['2026-12-15'], 'C1 沒有 x：12/15 疑似');
-  { const s = env(scene({ skip: { E01: ['2026-12-15'] }, marks: W15() }), 'now', ONL); calc(s); eq(lock(s).error, 'kz_suspect', 'C1 沒有 x：鎖月擋（KUANGZHI_LOCK_BLOCK=on）'); }
+  { const s = env(scene({ skip: { E01: ['2026-12-15'] }, marks: W15() }), 'now', ONL); const r = calc(s); eq([one(r).ot_info.kz_suspect, lock(s).ok], [undefined, true], 'C1 乙：回應不帶疑似；KUANGZHI_LOCK_BLOCK=on 也不擋（等同關）'); }
   ['dir', 'hq_off', 'away', 'late'].forEach((x) => eq(sus15(x), undefined, 'C2 x=' + x + '：不列疑似'));
   { const s = env(scene({ skip: { E01: ['2026-12-15'] }, marks: W15('hq_off') }), 'now', ONL); const r = calc(s); const L = lock(s);
     eq([one(r).gross, L.ok, L.error || ''], [34000, true, ''], 'C2 x=hq_off：金額 34,000 不變、鎖得下去（不擋鎖月）'); }
   for (const [nm, x] of [['zzz', 'zzz'], ['空字串', ''], ['數字 1', 1], ['null', null], ['true', true], ['陣列', ['dir']], ['物件', { dir: 1 }], ['大寫 DIR', 'DIR'], ['前面空白', ' dir'], ['__proto__', '__proto__'], ['constructor', 'constructor'], ['hasOwnProperty', 'hasOwnProperty']]) {
     eq(sus15(x), ['2026-12-15'], 'C3 x=' + nm + '：不認得／型別不對 → 照舊列疑似');
   }
-  { const s = env(scene({ skip: { E01: ['2026-12-15'] }, marks: W15('zzz') }), 'now', ONL); calc(s); eq(lock(s).error, 'kz_suspect', 'C3 x=zzz：照舊擋鎖月'); }
+  { const s = env(scene({ skip: { E01: ['2026-12-15'] }, marks: W15('zzz') }), 'now', ONL); calc(s); eq([s.sus(), lock(s).ok], [['2026-12-15'], true], 'C3 x=zzz：掃描照列疑似；乙：開關開著也不擋鎖月'); }
   // 格子不是 W：x 不起作用（結果跟沒帶 x 一模一樣）
   for (const c of [{ t: 'H', s: 'A' }, { t: 'L', l: '特' }, { t: 'R' }]) {
     const a = calc(env(scene({ skip: { E01: ['2026-12-15'] }, marks: { E01: { '2026-12-15': Object.assign({ x: 'dir' }, c) } } }), 'now', ON));
     const b = calc(env(scene({ skip: { E01: ['2026-12-15'] }, marks: { E01: { '2026-12-15': c } } }), 'now', ON));
     eq(a, b, '格子 ' + c.t + ' 帶 x=dir：整個試算回應跟沒帶 x 相同');
   }
-  { const r = one(calc(env(scene({ skip: { E01: ['2026-12-14'] }, marks: { E01: { '2026-12-14': { t: 'H', s: 'A', x: 'dir' }, '2026-12-15': { t: 'W', s: 'A', x: 'dir' } } } }), 'now', ON)));
-    eq(r.ot_info.kz_suspect, undefined, '對照：W 格的 x 起作用、H 格的 x 不影響（12/14 休息日排班本來就不算）'); }
+  { const s = env(scene({ skip: { E01: ['2026-12-14'] }, marks: { E01: { '2026-12-14': { t: 'H', s: 'A', x: 'dir' }, '2026-12-15': { t: 'W', s: 'A', x: 'dir' } } } }), 'now', ON);
+    eq(susOf(s), undefined, '對照：W 格的 x 起作用、H 格的 x 不影響（12/14 休息日排班本來就不算）'); }
   const skip3 = { E01: ['2026-12-14', '2026-12-15', '2026-12-16'] };
-  const r4 = one(calc(env(scene({ skip: skip3, marks: W15('dir') }), 'now', ON))), r4n = one(calc(env(scene({ skip: skip3 }), 'now', ON)));
-  eq([r4.ot_info.kz_suspect, r4.ot_info.kz_suspect_streak, r4.ot_info.kz_suspect_alert], [['2026-12-14', '2026-12-16'], 1, false], 'C4 12/14–16 沒來、12/15 x=dir：疑似 12/14、12/16，最長連續 1（排除的上班日斷開）');
-  eq([r4n.ot_info.kz_suspect.length, r4n.ot_info.kz_suspect_streak, r4n.ot_info.kz_suspect_alert], [3, 3, true], 'C4 對照：沒有 x 是連續 3 天、到門檻');
+  const s4 = env(scene({ skip: skip3, marks: W15('dir') }), 'now', ON), s4n = env(scene({ skip: skip3 }), 'now', ON); calc(s4); calc(s4n);
+  eq([s4.sus(), s4.scan().suspect_streak], [['2026-12-14', '2026-12-16'], 1], 'C4 12/14–16 沒來、12/15 x=dir：疑似 12/14、12/16，最長連續 1（排除的上班日斷開）');
+  eq([s4n.sus().length, s4n.scan().suspect_streak], [3, 3], 'C4 對照：沒有 x 是連續 3 天');
   const kz = scene({ skip: { E01: ['2026-12-10'] }, extraAp: [AP('2026-12-10', 'E01', 0)], leave: [LV('2026-12-10', '測試甲', '曠職', 8)], marks: { E01: { '2026-12-10': { t: 'W', s: 'A', x: 'dir' } } } });
   const r5 = one(calc(env(kz, 'now', ON)));
   const ded = r5.ded.find((i) => i.item_key === 'absent_deduct');
@@ -248,7 +254,7 @@ console.log('\n══ 三、薪資掃疑似：有效 x ＝排除；其他照舊�
   eq([one(c6('dir')).ot_info.no_show, c6('dir')], [['2026-12-08'], c6()], 'C6 生效日 12/15、12/08 沒來且 x=dir：照舊列在「有排班沒核定」，整個回應跟沒 x 相同');
   // 真的讀表路徑（sched_pub 分頁字串 → schedPubLoad_ → paySchedMonth_ → payDailyFor_ → payKzScan_）
   const sheetOf = (x) => { const sc = scene({ skip: { E01: ['2026-12-15'] }, marks: W15(x) }); return [['store', 'period', 'seq', 'data', 'last_op', 'updated_at']].concat(Object.keys(sc.pub).map((k) => [k.split('|')[0], k.split('|')[1], 1, JSON.stringify(sc.pub[k]), 'op', ''])); };
-  const viaSheet = (x) => one(calc(env(scene({ skip: { E01: ['2026-12-15'] } }), 'now', ON, { pubSheet: sheetOf(x) }))).ot_info.kz_suspect;
+  const viaSheet = (x) => susOf(env(scene({ skip: { E01: ['2026-12-15'] } }), 'now', ON, { pubSheet: sheetOf(x) }));
   eq([viaSheet('hq_off'), viaSheet('zzz'), viaSheet(undefined)], [undefined, ['2026-12-15'], ['2026-12-15']], '從 sched_pub 分頁讀起：hq_off 排除、zzz 與沒有 x 照舊疑似（確認薪資讀班表的路徑拿得到 x）');
   // 收發布 → 存 → 薪資：發布時被丟掉的 x 到了薪資也不會出現
   const s0 = schedEnv('now', {}); s0.handleSchedPublish_(payloadOf(true));
@@ -322,7 +328,8 @@ console.log('\n══ 六、合約 v1.3：國定假日 x=hol（2026-11-27 主管
       clock: { SSLGF: { roster: [{ emp_id: 'E01', name: '測試甲', active: 'true' }], events: [], approved, leave: [], requests: [] } }, pub };
   };
   const run2 = (withHol, skip, which, props, ym) => { const sc = scene2(withHol, skip); return calc(load(which || 'now', { data: sc.data, clock: sc.clock, pub: sc.pub, props: props || ON, today: '2027-04-05' }), ym); };
-  const sus2 = (withHol, skip) => ['2027-02', '2027-03'].map((ym) => (one(run2(withHol, skip, 'now', ON, ym)).ot_info.kz_suspect || [])).reduce((a, b) => a.concat(b), []);
+  const load2 = (withHol, skip, which, props) => { const sc = scene2(withHol, skip); return load(which || 'now', { data: sc.data, clock: sc.clock, pub: sc.pub, props: props || ON, today: '2027-04-05' }); };
+  const sus2 = (withHol, skip) => ['2027-02', '2027-03'].map((ym) => (susOf(load2(withHol, skip), ym) || [])).reduce((a, b) => a.concat(b), []);
   // 收發布：W 格的 hol 留下；H 格、大寫、後面有空白丟掉
   {
     const s = schedEnv('now', {});
@@ -347,7 +354,7 @@ console.log('\n══ 六、合約 v1.3：國定假日 x=hol（2026-11-27 主管
   });
   { const r = one(run2(true, [], 'now', ON, '2027-02'));
     eq([r.ot_info.hol, r.earn.map((x) => x.item_key + ':' + x.amount)], [['2027-02-04', '2027-02-05', '2027-02-08', '2027-02-09', '2027-02-10'], ['base_salary:32000', 'ot_hol:6000', 'attend_bonus:2000']], 'H5 對照（手算：月工資 32,000＋績效上限 2,000＋伙食 2,000＝36,000 ÷240＝150 元 × 8 小時 × 5 天＝6,000）：2 月國定假日加發照薪資自己的清單（2/4、2/5、2/8、2/9、2/10，沒有 2/6、2/7）——hol 不影響加發日'); }
-  { const r = one(run2(true, ALLSKIP, 'now', ON, '2027-02')); eq([r.ot_info.kz_suspect, r.ot_info.kz_suspect_streak], [['2027-02-02', '2027-02-17'], 1], 'H2 2 月疑似 2/2、2/17、最長連續 1'); }
+  { const s = load2(true, ALLSKIP); calc(s, '2027-02'); eq([s.sus(), s.scan().suspect_streak], [['2027-02-02', '2027-02-17'], 1], 'H2 2 月疑似 2/2、2/17、最長連續 1'); }
   // H6：開關關，sched_pub 有 hol 也跟主線一樣
   for (const [nm, props] of [['沒設', {}], ['空白', { KUANGZHI_FROM: '' }], ['壞值', { KUANGZHI_FROM: 'on' }]]) {
     ['2027-02', '2027-03'].forEach((ym) => eq(run2(true, ALLSKIP, 'now', props, ym), run2(true, ALLSKIP, 'base', {}, ym), 'H6 開關' + nm + '：' + ym + ' 試算跟主線 ' + BASE + ' 逐字相同（sched_pub 有 hol）'));
