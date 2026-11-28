@@ -4367,6 +4367,51 @@ function handlePayrollHolidayOwnList(body) {
   return { ok: true, count: rows.length, rows: rows };
 }
 
+/* ═══ 計時國定假日照「門市另設表」給班表（2026-11-28 主管定案「吃門市另設表」；Codex 第 2 輪擋項 2）═══
+ * 計時的節日當天與 N 照該單位的本店專屬列（沒有專屬列照集團），薪資（payPtHolDates_）跟班表要同一份。
+ * 換算只在這裡做一次：本店專屬列存的是正職雙薪日（含補假日），計時清單照 payPtHolDates_ 換回節日當天
+ *   （專屬列少了某個補假日＝它替的那個節日計時也不算；多放的日子不在對照表＝照原樣算計時國定假日）。
+ * {action:'payroll_holiday_pt_own', svcKey, v:1}（營運系統每天讀；金鑰同節日表推送 PAY_HOL_SVC_KEY；唯讀，分頁不存在不建）
+ *   → { ok, v:1, from, units:[{ unit, sched, prefix, pt:[{id, name}], months:{ 'YYYY-MM':[計時國定假日] } }] }
+ *   只列「計時清單跟集團計時清單不同」的單位與月份（專屬列那個月與前後一個月：補假可能跨月）；只看 PAY_PT_HOL_MOVE_FROM 起的月份。
+ *   sched＝班表發布代號（paySchedCode_）、prefix＝工號前綴、pt＝這個單位主檔的計時同仁（!payIsFt），營運系統照 payHolMovedCore_ 的找法對班表上的人。
+ *   沒有任何專屬列＝units:[]，不多讀其他分頁。 */
+function payPtOwnUnits_(all, master, stores) {
+  const own = {};
+  all.forEach(function (h) { const s = String(h.store || ''); if (s !== '') (own[s] = own[s] || {})[String(h.ym)] = true; });
+  const shift = function (ym, n) { const y = +ym.slice(0, 4), m = +ym.slice(5, 7) - 1 + n; return (y + Math.floor(m / 12)) + '-' + pad2(((m % 12) + 12) % 12 + 1); };
+  const units = [];
+  Object.keys(own).sort().forEach(function (st) {
+    const cand = {};
+    Object.keys(own[st]).forEach(function (ym) {
+      if (!/^\d{4}-\d{2}$/.test(ym)) return;
+      [-1, 0, 1].forEach(function (n) { const m = shift(ym, n); if (payPtHolOn_(m)) cand[m] = true; });
+    });
+    const months = {};
+    Object.keys(cand).sort().forEach(function (ym) {
+      const mine = payPtHolDates_(ym, st, payHolidayDates(payHolidayRow(ym, st))).map(function (d) { return String(d).trim(); }).sort();
+      const glob = payPtHolDates_(ym, '', payHolidayDates(payHolidayRow(ym, ''))).map(function (d) { return String(d).trim(); }).sort();
+      if (mine.join(',') !== glob.join(',')) months[ym] = mine;
+    });
+    if (!Object.keys(months).length) return;
+    const yms = Object.keys(months);
+    const pt = master.filter(function (m) { return payStore(m.store) === st && !payIsFt(m) && yms.some(function (ym) { return payInRosterYm_(m, ym); }); })
+      .map(function (m) { return { id: String(m.emp_id).trim(), name: String(m.name || '').trim() }; })
+      .sort(function (a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; });
+    const srow = stores.filter(function (s) { return String(s.code) === payStore(st); })[0] || {};
+    units.push({ unit: st, sched: paySchedCode_(st), prefix: String(srow.emp_prefix || '').trim(), pt: pt, months: months });
+  });
+  return units;
+}
+function handlePayrollHolidayPtOwn(body) {
+  body = body || {};
+  if (!payHolPubSvcOk_(body)) return { ok: false, error: 'unauthorized' };
+  const all = payReadNoCreate_('holiday');
+  const anyOwn = all.some(function (h) { return String(h.store || '') !== ''; });
+  const units = anyOwn ? payPtOwnUnits_(all, payReadNoCreate_('master'), payReadNoCreate_('store')) : [];
+  return { ok: true, v: 1, from: String(PAY_PT_HOL_MOVE_FROM == null ? '' : PAY_PT_HOL_MOVE_FROM).trim(), units: units };
+}
+
 /** 只歸集不計算——讓管理者先看工時對不對，再按計算 */
 /** 讀 payroll_input 分頁的手動工時覆蓋（某月）→ {emp_id:{hours,extra_ot,...,support:[]}} */
 function paySavedInputs(ym, store) {
@@ -7759,7 +7804,7 @@ const PAY_SCOPE_ADMIN_ONLY = ['payroll_group', 'payroll_store_set', 'payroll_hol
                               'payroll_comp_check', 'payroll_comp_trigger_setup', 'payroll_comp_period',   // 補休檢查看全部門市（2026-11-01）
                               'payroll_rest_check', 'payroll_rest_trigger_setup',   // 超時檢查看全部門市（2026-11-01）
                               'payroll_ot_preview', 'payroll_ot_month_sync',
-                              'payroll_holiday_publish', 'payroll_holiday_own_list',   // 節日表由營運系統發布（2026-11-24）：集團功能，帶門市範圍一律擋
+                              'payroll_holiday_publish', 'payroll_holiday_own_list', 'payroll_holiday_pt_own',   // 節日表由營運系統發布（2026-11-24）：集團功能，帶門市範圍一律擋
                               'payroll_migrate_store', 'payroll_item_upsert', 'payroll_leave_span_set'];   // 這三個沒有逐列比對門市，只給全權管理者（2026-11-10 資安審計）   // 加班費新舊並列試算（2026-11-06）只給總管理
 
 function payScopeNorm_(v) { return payStore(String(v == null ? '' : v).trim()).toUpperCase(); }
@@ -7909,6 +7954,7 @@ const PAYROLL_HANDLERS = {
   payroll_holiday_sync: handlePayrollHolidaySync,
   payroll_holiday_publish:  handlePayrollHolidayPublish,   // 營運系統推送節日表（服務金鑰 PAY_HOL_SVC_KEY，2026-11-24）
   payroll_holiday_own_list: handlePayrollHolidayOwnList,   // 現有本店專屬紅字天數列（唯讀，2026-11-24）
+  payroll_holiday_pt_own:   handlePayrollHolidayPtOwn,     // 計時國定假日照門市另設表給班表（唯讀，金鑰同推送 PAY_HOL_SVC_KEY，2026-11-28）
   payroll_inputs:      handlePayrollInputs,
   payroll_input_set:    handlePayrollInputSet,
   payroll_month:        handlePayrollMonth,

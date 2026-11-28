@@ -493,5 +493,63 @@ console.log('\n══ ⑭ 上限＝本期在職國定假日天數：多排的 L�
     chk('K10 開關關著（9999-12）：整份回應與寫入跟基準逐位元組相同', JSON.stringify([off.calc('2027-04'), off.DB.run, off.DB.item]) === JSON.stringify([base.calc('2027-04'), base.DB.run, base.DB.item]), true); }
 }
 
+console.log('\n══ ⑮ 計時國定假日照「門市另設表」（本店專屬列；2026-11-28 主管「吃門市另設表」；Codex 第 2 輪擋項 2）══');
+/* 白話：計時的國定假日（哪幾天是節日當天、N 幾天）照該單位的本店專屬列；沒有專屬列照集團。正職照舊。
+ *   專屬列存的是正職雙薪日（含補假日）；換成計時的節日當天照 payPtHolDates_：專屬列少了某個補假日＝它替的節日計時也不算；多放的日子照原樣算。
+ *   班表（mala-store-ops）每天用 payroll_holiday_pt_own 讀同一份換算結果，C3／C4／C7 與 N 跟這裡同源。
+ * 手算（總部 HQ、2027-02、T04＝1/24～2/20、時薪 200、沒有加給；「加倍」＝國定假日加發 時數×時薪，當天另有本薪 時數×時薪）：
+ *   O1（Codex E1）HQ 專屬 2 月列 2/4 2/5 2/8 2/9（少 2/10）→ 計時 2/4 2/5 2/6 2/8（2/7 不算）、N＝4；
+ *      L國 2/4 2/5 2/6 2/9、2/8 上班 6H → 對掉 2/4 2/5 2/6，2/9 移走抵 2/8 → 2/8 不加倍：加發 0（當天本薪 1,200）。
+ *      沒有專屬列（集團）：計時 2/4～2/8、2/9 抵 2/7 → 2/8 加倍 6×200＝1,200（當天 2,400）
+ *   O2（多放一天）專屬列＝集團＋2/11 → 計時 2/4～2/8、2/11，N＝6；L國 2/4～2/8、2/11 上班 6H → 2/11 沒被抵 → 加倍 1,200。集團：2/11 不是節日 → 0
+ *   O3（少放一天）專屬列 2/5 2/8 2/9 2/10（少 2/4）→ 計時 2/5～2/8，N＝4；L國 2/5～2/8、2/4 上班 6H → 2/4 不是節日 → 0。集團：2/4 沒被抵 → 1,200
+ *   O4 跨月：HQ 專屬 3 月列沒有 3/1 → 2/28（和平紀念日，補假 3/1）計時不算 → 2 月清單少 2/28
+ *   O5 正職同一份資料（含專屬列）跟基準 4ae34b2 逐欄相同 */
+{
+  const G = (ds) => Object.fromEntries(ds.map((d) => [d, GUO]));
+  const ownRow = (ym, dates, st) => ({ ym, red_days: 13, note: '', dates, store: st || 'HQ' });
+  const withOwn = (...rows) => HOLROWS().concat(rows);
+  const hq = (cells, hours, hol) => world([P(cells, hours)], Object.assign({ store: 'HQ', pub: 'hq' }, hol ? { holiday: hol } : {}));
+  const pay = (w) => holItems(w.by(w.calc('2027-02'), 'P01'));
+  const O1 = withOwn(ownRow('2027-02', '2027-02-04, 2027-02-05, 2027-02-08, 2027-02-09'));
+  const O2 = withOwn(ownRow('2027-02', '2027-02-04, 2027-02-05, 2027-02-08, 2027-02-09, 2027-02-10, 2027-02-11'));
+  const O3 = withOwn(ownRow('2027-02', '2027-02-05, 2027-02-08, 2027-02-09, 2027-02-10'));
+  const c1 = [G(['2027-02-04', '2027-02-05', '2027-02-06', '2027-02-09']), { '2027-02-08': 6 }];
+  const c2 = [G(['2027-02-04', '2027-02-05', '2027-02-06', '2027-02-07', '2027-02-08']), { '2027-02-11': 6 }];
+  const c3 = [G(['2027-02-05', '2027-02-06', '2027-02-07', '2027-02-08']), { '2027-02-04': 6 }];
+  chk('O1 HQ 專屬列少 2/10：2/9 L國 抵 2/8 → 2/8 不加倍', pay(hq(...c1, O1)), []);
+  chk('O1   沒有專屬列（集團）：2/9 抵 2/7 → 2/8 加倍 1,200', pay(hq(...c1)), ['國定假日加倍 6×200=1200']);
+  chk('O2 專屬列多放 2/11：2/11 上班加倍 1,200', pay(hq(...c2, O2)), ['國定假日加倍 6×200=1200']);
+  chk('O2   集團：2/11 不是節日 → 0', pay(hq(...c2)), []);
+  chk('O3 專屬列少放 2/4：2/4 上班 → 0', pay(hq(...c3, O3)), []);
+  chk('O3   集團：2/4 沒被抵 → 1,200', pay(hq(...c3)), ['國定假日加倍 6×200=1200']);
+  // payroll_holiday_pt_own（給班表的同一份換算結果）
+  const act = (w, body) => { vm.runInContext('payReadNoCreate_ = function(k){ return payRead(k); };', w.sb); return J(w.F('handlePayrollHolidayPtOwn')(body)); };
+  const auth = (w) => { vm.runInContext('payHolPubSvcOk_ = function(b){ return !!b && b.svcKey === "K"; };', w.sb); return w; };
+  { const w = hq(...c1, O1); chk('動作：沒設 PAY_HOL_SVC_KEY／金鑰不對 → unauthorized', act(w, { svcKey: 'K' }), { ok: false, error: 'unauthorized' }); }
+  { const w = auth(hq(...c1, O1));
+    chk('O1 動作回 HQ 2 月計時清單（2/7 不在）＋計時同仁名單；1 月、3 月跟集團相同不列', act(w, { svcKey: 'K' }),
+      { ok: true, v: 1, from: '2026-12', units: [{ unit: 'HQ', sched: 'hq', prefix: '', pt: [{ id: 'P01', name: '測試甲' }],
+        months: { '2027-02': ['2027-02-04', '2027-02-05', '2027-02-06', '2027-02-08', '2027-02-28'] } }] }); }
+  { const w = auth(hq(...c2, O2)); chk('O2 動作：2 月清單多 2/11', act(w, { svcKey: 'K' }).units[0].months, { '2027-02': ['2027-02-04', '2027-02-05', '2027-02-06', '2027-02-07', '2027-02-08', '2027-02-11', '2027-02-28'] }); }
+  { const w = auth(hq(...c3, O3)); chk('O3 動作：2 月清單少 2/4', act(w, { svcKey: 'K' }).units[0].months, { '2027-02': ['2027-02-05', '2027-02-06', '2027-02-07', '2027-02-08', '2027-02-28'] }); }
+  { const w = auth(hq({}, {}, withOwn(ownRow('2027-03', ''))));
+    chk('O4 跨月：HQ 專屬 3 月列沒有 3/1 → 2 月清單少 2/28（2 月沒有專屬列也列出）；3 月計時清單跟集團一樣都是空的不列', act(w, { svcKey: 'K' }).units[0].months,
+      { '2027-02': ['2027-02-04', '2027-02-05', '2027-02-06', '2027-02-07', '2027-02-08'] }); }
+  { const w = auth(hq({}, {}, withOwn(ownRow('2027-02', HOLROWS().find((r) => r.ym === '2027-02').dates))));
+    chk('專屬列跟集團一樣 → units 空的', act(w, { svcKey: 'K' }).units, []); }
+  { const w = auth(hq({}, {}, withOwn(ownRow('2026-10', '2026-10-09'))));
+    chk('專屬列只在開關以前的月份（2026-10）→ 不列（11 月也在開關前）', act(w, { svcKey: 'K' }).units, []); }
+  { const w = auth(hq({}, {})); w.sb.__READS = {};
+    const r = act(w, { svcKey: 'K' });
+    chk('沒有任何專屬列 → units 空的，只讀節日分頁（不讀主檔、門市）', [r.units, Object.keys(w.sb.__READS).sort()], [[], ['holiday']]); }
+  { const w = auth(world([{ id: 'E01', ft: true }, P()], { store: 'MZTHQ', pub: 'hq', holiday: withOwn(ownRow('2027-02', '2027-02-04, 2027-02-05, 2027-02-08, 2027-02-09', 'MZTHQ')) }));
+    const u = act(w, { svcKey: 'K' }).units;
+    chk('MZTHQ 專屬列 → unit MZTHQ、sched mzthq（班表在總部 hq，營運系統照工號＋姓名找）、pt 只有計時（正職 E01 不列）', u.map((x) => [x.unit, x.sched, x.pt]), [['MZTHQ', 'mzthq', [{ id: 'P01', name: '測試乙' }]]]); }
+  { const ppl = [{ id: 'E01', ft: true, cells: G(['2027-02-15']), hours: { '2027-02-08': 8, '2027-02-10': 8 } }, P(...c1)];
+    const x = both(ppl, '2027-02', { store: 'HQ', pub: 'hq', holiday: O1 });
+    chk('O5 正職（含 HQ 專屬列）：結果與明細跟基準逐欄相同', sameFt(x, ['E01']), true); }
+}
+
 console.log(`\n${pass} 項通過、${fail} 項失敗`);
 process.exit(fail ? 1 : 0);
