@@ -176,6 +176,16 @@ console.log('\n══ 九、多天：只撤送出的那天（C4）══');
   check('R9a', '撤 12/10 → 12/9 不動', [empty(m).kz_revoked, dayRows(m, '2026-12-09'), dayRows(m, D)], [true, [1, 1], [0, 0]]);
 }
 
+console.log('\n══ 九之二、總部鏡像列（mirror_src）：原店才撤，這裡不撤（驗收員變異 V2）══');
+{
+  // 總部的核定是從原店抄來的鏡像列（0 小時、沒有時段、而且是最新那筆），請假登記也有曠職：這裡撤會變成「核定還在（鏡像列不搬）、曠職登記沒了」的半套
+  const m = env({ approved: [], leave: [[D, '測試甲', '曠職', 8]] });
+  m.self.sh.approved.values[0].push('mirror_src');
+  m.self.sh.approved.values.push([D, 'E01', '測試甲', '', 0, '全天請假', '店長丙', D + 'T20:00:00+08:00', '', '', 'SSLXX']);
+  check('R10', '最新核定是鏡像列 → 不撤、bad_periods', empty(m), BAD);
+  check('R10a', '鏡像核定與曠職登記都還在、沒有留底分頁', [dayRows(m), !!m.self.sh.approved_revoked, !!m.self.sh.leave_revoked], [[1, 1], false, false]);
+}
+
 // ── 十、薪資：用上面真的寫出來的列算薪（C1～C5 金額）──
 const ROOT = path.join(__dirname, '..'), AS = path.join(ROOT, 'apps-script');
 const SRC = ['Code.gs', 'Payroll.gs', 'Requests.gs', 'SchedPub.gs'].map((f) => fs.readFileSync(path.join(AS, f), 'utf8')).join('\n');
