@@ -2125,13 +2125,24 @@ function kzRequested_(body) {
   var list = Array.isArray(body && body.leaves) ? body.leaves : [{ type: body && body.leave_type }];
   return list.some(function (x) { return !!x && String(x.type == null ? '' : x.type).trim() === KZ_TYPE; });
 }
-/** 營運系統帶的已發布班表事實（只有個人帳號代轉才採信，呼叫端判）：形狀對才回 {work, hours, xpunch, xreq}，否則 null */
+/** 營運系統帶的已發布班表事實（只有個人帳號代轉才採信，呼叫端判）：形狀對才回 {work, hours, xpunch, xreq, end}，否則 null。
+ *  end（合約 v1.4，2026-11-28）：那一班整天最後一段的下班時間（毫秒）；沒帶＝undefined（舊營運系統，照自補期限）、帶了但不是有限數字＝null（當作讀不出、還不能認定）。 */
 function kzSchedOf_(v) {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   var h = v.hours;
   if (typeof v.work !== 'boolean' || typeof h !== 'number' || !isFinite(h) || h <= 0 || h > 24 ||
       typeof v.xpunch !== 'boolean' || typeof v.xreq !== 'boolean') return null;
-  return { work: v.work, hours: Math.round(h * 100) / 100, xpunch: v.xpunch, xreq: v.xreq };
+  var end = v.end === undefined ? undefined : (typeof v.end === 'number' && isFinite(v.end) ? v.end : null);
+  return { work: v.work, hours: Math.round(h * 100) / 100, xpunch: v.xpunch, xreq: v.xreq, end: end };
+}
+/** 認定時點（合約 v1.4，2026-11-28 主管定案「那一班的下班時間過後，主管就可以認定曠職」，取代第 4 題 A 的自補期限）：
+ *  營運系統帶 end（已發布班表那一班整天最後一段的下班時間，跨午夜＝隔天）→ 現在 ≥ end 才可以；end 不在「那天 00:00～隔天 24:00」或讀不出＝還不能。
+ *  沒帶 end（舊營運系統）→ 照舊等同仁自補期限（比較嚴，不會放鬆）。回 true＝可以認定。 */
+function kzShiftOver_(plan, date, nowMs, today) {
+  if (plan.end === undefined) return kzCanMark_(date, today);
+  var d0 = Date.parse(String(date) + 'T00:00:00+08:00');
+  if (plan.end === null || !isFinite(d0) || plan.end < d0 || plan.end > d0 + 2 * 86400000) return false;
+  return Number(nowMs) >= plan.end;
 }
 /** 認定曠職的前段檢查（合約第 2-2 節 A、B、C、E）。回 {res} ＝要直接回的錯誤；{plan}＝通過，之後再查打卡、核定、期限。
  *  只有「開關開、日期 ≥ 生效日、請求帶了曠職」才會進來；其餘照改之前的流程（曠職在白名單外 → bad_leave_type）。 */
@@ -2157,7 +2168,7 @@ function kzApprovePre_(body, mgr, date, reqRows) {
   if (hasReq) return { res: { ok: false, error: 'kz_has_req', message: KZ_MSG_.req } };                                     // E 句 10
   return { plan: ks };
 }
-/** 後段（讀過 events、approved 之後）：D 打卡、F 已有核定或登記、G 自補期限。回錯誤物件或 null。 */
+/** 後段（讀過 events、approved 之後）：D 打卡、F 已有核定或登記、G 認定時點（v1.4：那一班下班後；沒帶 end 才照自補期限）。回錯誤物件或 null。 */
 function kzApprovePost_(ss, plan, empId, name, date, eventRows, prevRec) {
   var next = addDaysStr(date, 1);
   var punched = plan.xpunch || eventRows.some(function (e) {
@@ -2168,9 +2179,14 @@ function kzApprovePost_(ss, plan, empId, name, date, eventRows, prevRec) {
   if (punched) return { ok: false, error: 'kz_has_punch', message: KZ_MSG_.punch };                                          // D 句 9
   if (prevRec || leaveRowsOf(ss, date, name).length) return { ok: false, error: 'kz_day_done' };                            // F（逐句表沒有這句：不帶字）
   var today = todayTaipeiStr();
+  if (plan.end !== undefined) {
+    // G（v1.4）：那一班還沒下班。營運系統畫面下班前不給按鈕，走到這裡＝畫面資料舊了；句 12（自補期限）講的不是這件事 → 不帶字，營運系統換成既有的字（正式句子待主管定）
+    if (!kzShiftOver_(plan, date, new Date().getTime(), today)) return { ok: false, error: 'kz_too_early' };
+    return null;
+  }
   if (!kzCanMark_(date, today)) {
     var until = kzSelfUntil_(date, today);
-    return { ok: false, error: 'kz_too_early', message: KZ_MSG_.early.replace('{日期}', kzMd_(until)), until: until };        // G 句 12
+    return { ok: false, error: 'kz_too_early', message: KZ_MSG_.early.replace('{日期}', kzMd_(until)), until: until };        // G 句 12（沒帶 end 的舊營運系統）
   }
   return null;
 }
