@@ -2786,6 +2786,13 @@ function reqPeerWorked_(name, date) {
    這家是原單位（false）→ 這家不用開加班單，改看被支援那家已核准的加班單夠不夠。 */
 var REQ_FT8_FROM_DEFAULT_ = '2026-11-01';
 var REQ_FT8_H = 8;
+/* 投票日不檢查「不滿 8 小時」（2026-11-29 主管定案 D「投票日全放行」）：選舉日出勤由薪資另外加發、11 月起正職沒有不足時數倒扣，
+   所以投票日正職核定不足 8 小時不用補假單／補休單。只跳過 reqFt8_ 的「不滿 8」那段；跨店加班歸屬、超過 8 小時要加班單等照舊。
+   不分有沒有在薪資選舉假名單、不讀名單。九店都有這個檔，這裡是打卡端唯一一份投票日清單（mini 核定引擎載入同一份 Requests.js）。
+   光復 Payroll.gs 的 PAY_ELEC_VOTE_DAYS 要跟這份相同（tests/vote-day-ft8.test.js 鎖住；營運系統 web/modules/duty/vote-days.js 也鎖同一份）。
+   之後加補選、公投：這裡、PAY_ELEC_VOTE_DAYS、營運系統 vote-days.js 三處一起加（測試會擋不一致）。 */
+var REQ_VOTE_DAYS_ = ['2026-11-28'];
+function reqVoteDay_(date) { return REQ_VOTE_DAYS_.indexOf(String(date || '')) >= 0; }
 var REQ_FT8_STORE_NAMES_ = { gf: '小辛辣新竹光復', mztjs: '墨竹亭新竹金山', mztgf: '墨竹亭新竹光復', mztlzl: '墨竹亭台北六張犁', mztmc: '墨竹亭台中美村',
   mztrg: '墨竹亭內湖瑞光', mztwx: '墨竹亭台中文心', hq: '總部', cf: '中央廚房' };
 function reqFt8StoreNames_(codes) { return codes.map(function (c) { return REQ_FT8_STORE_NAMES_[c] || c; }).join('、') || '別家店'; }
@@ -2993,7 +3000,7 @@ function reqFt8_(date, approvedHours, otHave, opt, okRows) {
   var peer = opt.peer || null;
   var getPeer = function (fresh) { if (!peer || fresh) peer = reqPeerDay_(opt.name, date, fresh); return peer; };
   var f = reqBindFmt_, r2 = function (x) { return Math.round(x * 100) / 100; };
-  if (own < REQ_FT8_H - 0.005) {
+  if (own < REQ_FT8_H - 0.005 && !reqVoteDay_(date)) {   // 投票日不檢查不滿 8（2026-11-29 主管定案 D，見 REQ_VOTE_DAYS_）
     var pr = getPeer();
     var tOnly = function (p) { return !!p.trip && !Object.keys(p.by || {}).some(function (k) { return !p.by[k].trip; }); };   // 別家只有「只有出差單」的店
     if ((!pr.worked || tOnly(pr)) && !pr.leave && !pr.failed && !opt.peer && !opt.preview) pr = getPeer(true);   // 擋之前不用快取再找一次（當天剛加的支援帳號）；撤銷試算不做（太慢）；別家只有出差單也照樣重找
