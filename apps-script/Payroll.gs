@@ -4677,9 +4677,12 @@ var PAY_PT_HOL_ACTUAL_YEARS_ = [2026, 2027];   // 已經照辦公日曆表補齊
 /** 計時這個月的國定假日清單（節日當天）。ftDates＝該店該月 payroll_holiday 那列的雙薪日（payHolidayDates，正職用）。
  *  補假日換回它替的節日：補假日在本月而且在正職清單 → 拿掉；節日在本月、它的補假日在那個月的正職清單 → 加上（補假可能在別的月）。
  *  一組對照只在兩邊月份都套用新規則時才換（跨開關月份不重複給、也不兩邊都沒給）。開關沒開或這個月沒有要換的 → 原樣回 ftDates（同一個陣列）。 */
+/* 總部（HQ、MZTHQ）計時不套用第 5 條「節日當天」，照舊認補假日（待主管定案的備案，2026-11-28；排 L國 的抵法仍照同一套）。 */
+var PAY_PT_HOL_ACTUAL_OFF_STORES_ = ['HQ', 'MZTHQ'];
 function payPtHolDates_(ym, st, ftDates) {
   ym = String(ym);
   if (!payPtHolOn_(ym)) return ftDates;
+  if (PAY_PT_HOL_ACTUAL_OFF_STORES_.indexOf(payStore(st)) >= 0) return ftDates;   // 總部：照正職雙薪日（補假日）
   const ft = (ftDates || []).map(function (d) { return String(d).trim(); });
   const rm = {}, add = [];
   let other = null;

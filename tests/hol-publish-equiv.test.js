@@ -205,8 +205,8 @@ console.log('\n══ 計時調移開著（上線值 2026-12）：跟主線只�
   eq(D.pre.hol, A.pre.hol, '開著：payroll_holiday 分頁逐列相同（計時清單不寫分頁）');
   const ftOf = (x) => ({ r: (x.calc.results || []).filter((r) => /-F1$/.test(r.emp_id)), i: x.item.filter((r) => /-F1$/.test(r.emp_id)), run: x.run.filter((r) => /-F1$/.test(r.emp_id)), inp: Object.keys(x.inputs.inputs || {}).filter((k) => /-F1$/.test(k)).map((k) => x.inputs.inputs[k]) });
   eq(KEYS.filter((k) => JSON.stringify(ftOf(D.calc[k])) !== JSON.stringify(ftOf(A.calc[k]))), [], '開著：4 單位 × 8 個月 正職的出勤資料、試算、run、item 逐字相同');
-  eq(KEYS.filter((k) => JSON.stringify(calcPart(D.calc[k])) !== JSON.stringify(calcPart(A.calc[k]))), STORES.map((st) => [st.code + ' 2027-02', st.code + ' 2027-03']).reduce((a, b) => a.concat(b), []),
-    '開著：有差別的只有 2027-02（春節 2/6、2/7 週末，補 2/9、2/10）與 2027-03（2/28 週日補 3/1）');
+  eq(KEYS.filter((k) => JSON.stringify(calcPart(D.calc[k])) !== JSON.stringify(calcPart(A.calc[k]))), STORES.filter((st) => st.code !== 'HQ').map((st) => [st.code + ' 2027-02', st.code + ' 2027-03']).reduce((a, b) => a.concat(b), []),
+    '開著：有差別的只有 2027-02（春節 2/6、2/7 週末，補 2/9、2/10）與 2027-03（2/28 週日補 3/1）；總部（HQ）不套用節日當天，8 個月都跟主線相同');
   const holOf = (x) => { const r = (x.calc.results || []).find((y) => /-P1$/.test(y.emp_id)); return r.earn.filter((i) => i.item_key === 'holiday_double').reduce((a, i) => a + i.qty, 0); };
   const k2 = 'SSLGF 2027-02', k3 = 'SSLGF 2027-03';
   // 計時 SSLGF：每天 4+(k%5) 小時、k%4===3 的日子沒上班（k＝日期−1）。2/4 k3 休、2/5 k4 8H、2/6 k5 4H、2/7 k6 5H、2/8 k7 休、2/9 k8 7H、2/10 k9 8H、2/28 k27 休；3/1 k0 4H
