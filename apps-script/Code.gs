@@ -2136,12 +2136,14 @@ function kzSchedOf_(v) {
   return { work: v.work, hours: Math.round(h * 100) / 100, xpunch: v.xpunch, xreq: v.xreq, end: end };
 }
 /** 認定時點（合約 v1.4，2026-11-28 主管定案「那一班的下班時間過後，主管就可以認定曠職」，取代第 4 題 A 的自補期限）：
- *  營運系統帶 end（已發布班表那一班整天最後一段的下班時間，跨午夜＝隔天）→ 現在 ≥ end 才可以；end 不在「那天 00:00～隔天 24:00」或讀不出＝還不能。
+ *  營運系統帶 end（已發布班表那一班整天最後一段的下班時間）→ 現在 ≥ end 才可以；end 不在「那天 00:00～當天 24:00（＝隔天 00:00）」或讀不出＝還不能。
+ *  跨午夜的班（end 晚於隔天 00:00）一律不能認定（外部審查第一輪擋項 1，2026-11-28 保守做法）：打卡歸屬是「打卡那天」，跨午夜那段的上班卡會被算到隔天，
+ *  下面 kzApprovePost_ 查不到 → 會把有來的人認定曠職。營運系統 server/kuangzhi.js kzCrossDay 同一條（名單不標、認定前就擋）。
  *  沒帶 end（舊營運系統）→ 照舊等同仁自補期限（比較嚴，不會放鬆）。回 true＝可以認定。 */
 function kzShiftOver_(plan, date, nowMs, today) {
   if (plan.end === undefined) return kzCanMark_(date, today);
   var d0 = Date.parse(String(date) + 'T00:00:00+08:00');
-  if (plan.end === null || !isFinite(d0) || plan.end < d0 || plan.end > d0 + 2 * 86400000) return false;
+  if (plan.end === null || !isFinite(d0) || plan.end < d0 || plan.end > d0 + 86400000) return false;
   return Number(nowMs) >= plan.end;
 }
 /** 認定曠職的前段檢查（合約第 2-2 節 A、B、C、E）。回 {res} ＝要直接回的錯誤；{plan}＝通過，之後再查打卡、核定、期限。
