@@ -4732,10 +4732,14 @@ function payHolMovedPt_(ym, st, master, ptDates, idx) {
   });
   if (!any) return {};
   return payHolMovedCore_(ym, st, master, ptDates, idx, function (m) { return !payIsFt(m); },
-    function (mo) { return payPtHolDates_(mo, st, payHolidayDates(payHolidayRow(mo, st))); });
+    function (mo) { return payPtHolDates_(mo, st, payHolidayDates(payHolidayRow(mo, st))); }, true);
 }
-/** 抵法本體（正職、計時共用）。pick(m)＝這個人要不要算；otherMonth(mo)＝本期跨到的別月份的國定假日清單。 */
-function payHolMovedCore_(ym, st, master, holDates, idx, pick, otherMonth) {
+/** 抵法本體（正職、計時共用）。pick(m)＝這個人要不要算；otherMonth(mo)＝本期跨到的別月份的國定假日清單。
+ *  cap（只有計時傳 true，2026-11-28 定案第 3 條「上限＝本期在職國定假日天數」；Codex 第 2 輪擋項 1）：這一期只採計在職日的 L國、依日期先後前 N 筆，
+ *  N＝本期國定假日落在在職日的天數（到職／離職看主檔 hire_date／leave_date）；第 N+1 筆起當作沒排（不對掉也不抵任何節日）。
+ *  跟班表 mala-store-ops rules.js ptHolChecks 同一套（C7 擋的就是第 N+1 筆）：央廚（只提醒）、總部（違反照存）的班表多排了也會發布，薪資這裡不能採計。
+ *  被抵的節日照舊由早到晚、含到職前的（主管「中途到職照現在的算法就好」）。正職不傳 cap＝跟改版前逐位元組相同。 */
+function payHolMovedCore_(ym, st, master, holDates, idx, pick, otherMonth, cap) {
   const out = {};
   if (typeof schedPubPeriodOf_ !== 'function' || !(holDates || []).length) return out;
   idx = idx || paySchedIndex_();
@@ -4764,8 +4768,13 @@ function payHolMovedCore_(ym, st, master, holDates, idx, pick, otherMonth) {
         for (let j = 0; j < ids.length && !row; j++) { const x = idx[keys[k]].byId[ids[j]]; if (x && String(x.name || '').trim() === name) row = x; }
       }
       if (!row) return;
-      const guo = [];
+      let guo = [];
       (row.cells || []).forEach(function (c, i) { if (c && String(c.t) === 'L' && String(c.l || '') === '國') guo.push(schedPubAddDays_(r.start, i)); });
+      if (cap) {
+        const hs = payDateStr(m.hire_date), ls = payDateStr(m.leave_date);
+        const on = function (d) { return !(/^\d{4}-\d{2}-\d{2}$/.test(hs) && d < hs) && !(/^\d{4}-\d{2}-\d{2}$/.test(ls) && d > ls); };   // 同 payEmpDates_
+        guo = guo.filter(on).sort().slice(0, hols.filter(on).length);
+      }
       let left = guo.filter(function (d) { return hols.indexOf(d) === -1; }).length;
       hols.forEach(function (d) {
         if (guo.indexOf(d) !== -1 || left <= 0) return;

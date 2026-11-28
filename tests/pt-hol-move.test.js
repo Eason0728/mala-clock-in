@@ -49,7 +49,7 @@ function world(people, opt) {
     x.name = name;
     master.push({ emp_id: x.id, name, store: st, is_full_time: x.ft ? 'true' : 'false', base: x.ft ? 34000 : 0, skill_allow: 0, night_allow: 0, mgr_allow: 0,
       editor_allow: 0, attend_cap: 0, ot_rate: 0, wage: x.ft ? 0 : 200, labor_ins: 0, health_ins: 0, group_ins: 0, pension: 0, dormitory: 0,
-      hire_date: x.ft ? '2020-01-01' : '2026-10-01', leave_date: '', meal_allow: 0, active: 'true' });
+      hire_date: x.hire || (x.ft ? '2020-01-01' : '2026-10-01'), leave_date: x.leave || '', meal_allow: 0, active: 'true' });
     Object.keys(x.hours || {}).forEach((d) => approved.push({ date: d, emp_id: x.id, name, approved_hours: x.hours[d],
       periods: '10:00-' + (10 + x.hours[d]) + ':00', status_text: '正常', entered_at: d + 'T22:00:00+08:00', manager_name: '主管' }));
   });
@@ -447,6 +447,50 @@ function elecCase(fn) {
   const b0 = est([P({}, { '2027-02-12': 6, '2027-02-06': 5, '2027-02-09': 6 })], [{ id: 'X99', date: '2027-02-12' }]);
   chk('M13 損益估算：選舉日在計時的國定假日 2/6 → 跟沒勾選相同（不另加選舉日）', a - a0, 0);
   chk('M13 損益估算：選舉日 2/12、國定假日時數沒手改 → 比沒勾選多選舉日 6×200＝1,200', b - b0, 1200);
+}
+
+console.log('\n══ ⑭ 上限＝本期在職國定假日天數：多排的 L國 不採計（Codex 第 2 輪擋項 1；央廚只提醒、總部違反照存，多排的班表會發布）══');
+/* 白話：計時同一 28 天期的 L國，只採計「在職日、依日期先後的前 N 筆」，N＝本期國定假日（節日當天）落在在職日的天數；第 N+1 筆起當作沒排。
+ *   採計的照原抵法（當天的對掉、其餘由早到晚抵本期節日，含到職前的）。跟班表 C7 擋的那一筆同一條線（mala-store-ops rules.js ptHolChecks）。
+ * 手算（時薪 200、沒有加給；「加倍」＝國定假日加發 時數×時薪，當天另有本薪 時數×時薪）：
+ *   K1 央廚 CF 2027-04（T06＝3/21～4/17；計時節日 4/4 週日、4/5 週一）4/5 到職 → 在職節日只有 4/5、N＝1；L國 4/7、4/8；4/5 上班 6H
+ *      → 只採計 4/7，抵最早的 4/4（到職前）→ 4/5 加倍 6×200＝1,200（當天合計 2,400）。改前兩筆都採計、4/4 4/5 都被抵 → 0（少 1,200）
+ *   K2 同 K1 只排 4/7 → 1,200（改前改後一樣，對照）
+ *   K3 同 K1 但 2026-10 到職（N＝2）、L國 4/7 4/8 4/9 → 採計 2 筆抵 4/4、4/5 → 0（整期在職時上限碰不到被抵的天數，改前改後一樣）
+ *   K4 門市 2027-02（T04＝1/24～2/20；計時節日 2/4～2/8）2/6 到職 → N＝3（2/6 2/7 2/8）；L國 2/10～2/14 五筆；2/8 上班 6H
+ *      → 採計 2/10 2/11 2/12 抵 2/4 2/5 2/6 → 2/8 加倍 6×200＝1,200。改前五筆抵滿 2/4～2/8 → 0
+ *   K5 K1 手填國定假日時數 6 → 抵掉的只有 4/4（當天 0H）→ 扣 0 → 6×200＝1,200。改前抵 4/4 4/5、扣 6 → 0
+ *   K6 K1 損益月中估算同一套 → 比改前多 1,200
+ *   K7 當天的 L國 也算在 N 裡：同 K1 但 L國 排 4/5（節日當天）、4/7 → 依日期前 1 筆＝4/5，4/7 不採計 → 不抵 4/4；沒有人在節日上班 → 抵掉的清單是空的 */
+{
+  const G = (ds) => Object.fromEntries(ds.map((d) => [d, GUO]));
+  const cf = (cells, hours, extra, opt) => world([P(cells, hours, extra)], Object.assign({ store: 'CF', pub: 'cf' }, opt || {}));
+  const K1 = [G(['2027-04-07', '2027-04-08']), { '2027-04-05': 6 }, { hire: '2027-04-05' }];
+  { const w = cf(...K1); chk('K1 央廚 4/5 到職、L國 4/7 4/8、4/5 上班 6H → 只採計 4/7（抵 4/4）→ 4/5 加倍 1,200', holItems(w.by(w.calc('2027-04'), 'P01')), ['國定假日加倍 6×200=1200']); }
+  { const w = cf(...K1); chk('K1   抵掉的清單只有 4/4（payHolMovedPt_）', J(w.F('payHolMovedPt_')('2027-04', 'CF', w.F('payRead')('master'), w.F('payPtHolDates_')('2027-04', 'CF', ['2027-04-05', '2027-04-06', '2027-04-30']))), { P01: { '2027-04-04': true } }); }
+  { const w = cf(G(['2027-04-07']), { '2027-04-05': 6 }, { hire: '2027-04-05' }); chk('K2 同 K1 只排 4/7 → 1,200（對照，改前改後一樣）', holItems(w.by(w.calc('2027-04'), 'P01')), ['國定假日加倍 6×200=1200']); }
+  { const w = cf(G(['2027-04-07', '2027-04-08', '2027-04-09']), { '2027-04-05': 6 }); chk('K3 整期在職（N＝2）、L國 4/7 4/8 4/9 → 4/4 4/5 都被抵 → 0', holItems(w.by(w.calc('2027-04'), 'P01')), []); }
+  { const w = world([P(G(['2027-02-10', '2027-02-11', '2027-02-12', '2027-02-13', '2027-02-14']), { '2027-02-08': 6 }, { hire: '2027-02-06' })]);
+    chk('K4 門市 2/6 到職（N＝3）、L國 2/10～2/14 五筆、2/8 上班 6H → 採計 3 筆抵 2/4 2/5 2/6 → 2/8 加倍 1,200', holItems(w.by(w.calc('2027-02'), 'P01')), ['國定假日加倍 6×200=1200']); }
+  { const inp = [{ ym: '2027-04', emp_id: 'P01', store: 'CF', hours: 6, extra_ot: 0, personal_h: 0, sick_h: 0, annual_h: 0, deduct_days: 0, support: '[]', updated_at: '', menstrual_h: 0, disaster_h: 0,
+      full_attend: 0, work_days: 0, wage_override: 0, dorm_override: '', meal_on: 0, custom_add_label: '', custom_add_amt: 0, custom_ded_label: '', custom_ded_amt: 0, holiday_h: 6, custom_add_more: '[]', hours_manual: '1' }];
+    const w = cf(...K1, { input: inp });
+    chk('K5 K1 手填國定假日時數 6 → 抵掉的 4/4 當天 0H、不扣 → 1,200', holItems(w.by(w.calc('2027-04'), 'P01')), ['國定假日加倍 6×200=1200']); }
+  { const est = (cells) => { const w = cf(cells, { '2027-04-05': 6 }, { hire: '2027-04-05' }, { today: '2027-04-18' }); return J(w.F('handlePnlLaborEstimate_')({ key: 'k', ym: '2027-04', store: 'CF' })); };
+    const num = (r) => { const m = JSON.stringify(r).match(/"(?:gross|labor_total|total)":(\d+(?:\.\d+)?)/); return m ? Number(m[1]) : NaN; };
+    const one = est(G(['2027-04-07'])), two = est(K1[0]);
+    chk('K6 損益月中估算：多排的 4/8 不採計 → 跟只排 4/7 一樣（都含 4/5 加倍）', [one.ok, two.ok, num(two) - num(one)], [true, true, 0]); }
+  { const w = cf(G(['2027-04-05', '2027-04-07']), {}, { hire: '2027-04-05' });
+    chk('K7 當天的 L國 也算進 N：L國 4/5 4/7、N＝1 → 只採計 4/5（當天）→ 4/7 不抵 4/4 → 沒有抵掉的日子', J(w.F('payHolMovedPt_')('2027-04', 'CF', w.F('payRead')('master'), ['2027-04-04', '2027-04-05'])), {}); }
+  { // 離職：K8 2027-02 T04、2/5 離職 → N＝2（2/4 2/5）；L國 1/26 1/27 1/28 → 採計 2 筆抵 2/4 2/5（離職後的 2/6～2/8 不會被抵，本來就沒上班）
+    const w = world([P(G(['2027-01-26', '2027-01-27', '2027-01-28']), {}, { leave: '2027-02-05' })]);
+    chk('K8 2/5 離職（N＝2）、L國 1/26 1/27 1/28 → 只抵 2/4 2/5', J(w.F('payHolMovedPt_')('2027-02', 'SSLGF', w.F('payRead')('master'), w.F('payPtHolDates_')('2027-02', 'SSLGF', HOLROWS().find((r) => r.ym === '2027-02').dates.split(', ')))), { P01: { '2027-02-04': true, '2027-02-05': true } }); }
+  // 正職、開關關著：同一份資料跟基準逐位元組相同（cap 只在計時路徑）
+  { const ppl = [{ id: 'E01', ft: true, cells: G(['2027-04-07', '2027-04-08']), hours: { '2027-04-05': 8, '2027-04-06': 8 }, hire: '2027-04-05' }, P(...K1)];
+    const x = both(ppl, '2027-04', { store: 'CF', pub: 'cf' });
+    chk('K9 正職 4/5 到職、L國 4/7 4/8（正職不設上限，照改版前）：結果與明細跟基準逐欄相同', sameFt(x, ['E01']), true);
+    const off = world(J(ppl), { store: 'CF', pub: 'cf', from: '9999-12' }), base = world(J(ppl), { store: 'CF', pub: 'cf', gs: GS_BASE });
+    chk('K10 開關關著（9999-12）：整份回應與寫入跟基準逐位元組相同', JSON.stringify([off.calc('2027-04'), off.DB.run, off.DB.item]) === JSON.stringify([base.calc('2027-04'), base.DB.run, base.DB.item]), true); }
 }
 
 console.log(`\n${pass} 項通過、${fail} 項失敗`);
