@@ -1665,6 +1665,7 @@ function reqKzMissDay_(ss, r, approvedMap) {
   var ro = rsh ? findRosterByEmpId(readSheetAsObjects(rsh).rows, r.emp_id) : null;   // 請假登記用名冊姓名寫（同 handleMgrApprove）
   var nm = String((ro && ro.name) || '').trim();
   if (!nm) return false;
+  if (typeof kzMarkedDay_ === 'function') return kzMarkedDay_(ss, d, String(r.emp_id), nm, approvedMap);   // 已認定曠職的共用口徑（Code.gs，2026-11-29 抽出；同撤銷認定）
   return readSheetAsObjects(sh).rows.some(function (x) {
     return normCellDate(x['日期']) === d && String(x['姓名'] || '').trim() === nm && String(x['假別'] || '').trim() === KZ_TYPE;
   });
