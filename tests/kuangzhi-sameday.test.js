@@ -94,6 +94,12 @@ console.log('\n══ 七、當天認定後才補打卡：不會自己改，主�
   check('S7b', '補打卡後 leave 仍有曠職（要主管重新核定）', m.self.sh.leave.values.slice(1).map((r) => r[2]), ['曠職']);
   m.setNow('2026-12-03T17:30:00');
   check('S7c', '再按一次認定 → 先撞「這天有打卡」句 9（不會重複寫）', brief(ap(m, { end: E17 })), [false, 'kz_has_punch', '這天有打卡紀錄，不能認定曠職']);
+  // 外部審查第二輪 A：主管手動修改填時段重新核定（網頁開關開著時不把曠職跟時段一起送）→ 成功、曠職被移除
+  const r8 = m.sb.handleMgrApprove({ mgr_key: 'AK', acting_name: '店長甲', date: D, emp_id: 'E01', periods: [{ start: '09:01', end: '17:01' }], leaves: [], late_min: '', diff_reason: '同仁其實有來（測試）' });
+  check('S7d', '重新核定只帶時段 09:01–17:01（8 小時、附差異原因）→ 成功', [r8.ok, r8.error || ''], [true, '']);
+  check('S7e', '重新核定後 leave 那天沒有曠職（扣款跟著沒了）', m.self.sh.leave.values.slice(1).filter((r) => String(r[0]).slice(0, 10) === D || (r[0] instanceof Date)).map((r) => r[2]), []);
+  const r9 = m.sb.handleMgrApprove({ mgr_key: 'AK', acting_name: '店長甲', date: D, emp_id: 'E01', periods: [{ start: '08:00', end: '17:00' }], leaves: [{ type: '曠職', hours: 8 }], late_min: '' });
+  check('S7f', '對照：時段跟曠職一起送 → kz_mixed（網頁不再這樣送）', [r9.ok, r9.error], [false, 'kz_mixed']);
 }
 
 done();

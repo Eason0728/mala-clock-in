@@ -392,7 +392,7 @@ console.log('\n══ ⑨ 曠職假別鎖（2026-11-28 主管定案外部審查�
     over_ratio: 0, merge_into: '', cap_per_month: '', tenure_months: '', under_ratio: 0, min_unit: 'hour', window_before: '', window_days: '', window_max: '',
     attend_effect: 'void', count_meal_day: 'true', sort: 9980, note: '', active }, extra || {});
   const PERS = LT('事假', 'true', { code: 'personal', attend_effect: '', sort: 10 });
-  const UI = (r) => Object.assign({}, r, { active: r.active !== 'false', count_absent: r.count_absent === 'true', offset_shortfall: r.offset_shortfall === 'true' });      // 網頁送的形狀（布林）
+  const UI = (r) => Object.assign({}, r, { active: r.active !== 'false', count_absent: r.count_absent === 'true', offset_shortfall: r.offset_shortfall === 'true', count_meal_day: r.count_meal_day !== 'false' });      // 網頁送的形狀（布林）
   const MSG = '「曠職」是系統認定曠職用的假別，不能改名、停用或刪除。';
   const save = (s, types, store) => s.post('handlePayrollLeaveTypeSet', { store: store === undefined ? '' : store, types: types.map(UI) });
   const after = (s) => { const r = one(calc(s)); const d = (r.ded || []).find((i) => i.item_key === 'absent_deduct'); const ab = item(r, 'attend_bonus'); return [d ? d.amount : 0, ab && ab.item_label, ab && ab.amount]; };
@@ -452,6 +452,30 @@ console.log('\n══ ⑨ 曠職假別鎖（2026-11-28 主管定案外部審查�
       'L-既有兩列同名、這次動了曠職列（對全勤）但沒修掉同名：擋');
     const r3 = save(s, [PERS, LT('曠職', 'true'), LT('病假', 'true', { code: 'sick', attend_effect: '', sort: 20 })]);
     eq(r3.ok, true, 'L-既有兩列同名、把事假改回事假：照存（修好的路）'); eq(after(s), KEEP, 'L-修好後重算：扣款 1,133、績效歸零'); }
+  // 外部審查第二輪 B（2026-11-28）：曠職列只能調「對全勤」；併入、可抵不足、算餐費日鎖住，而且計算端對既有壞設定免疫
+  { const XP = LT('有薪假', 'true', { code: 'xpaid', pay_ratio: 1, cap_days: 1, cap_basis: 'calendar', over_ratio: 0, attend_effect: 'none', sort: 30 });
+    const ON11 = { KUANGZHI_FROM: '2026-11-01' };
+    const mk = (kzRow) => { const sc = scene({ skip: { E01: ['2026-11-20', '2026-12-15'] }, extraAp: [AP('2026-11-20', 'E01', 0), AP('2026-12-15', 'E01', 0)],
+      leave: [LV('2026-11-20', '測試甲', '曠職', 8), LV('2026-12-15', '測試甲', '有薪假', 8)] }); sc.data.leave_type = [PERS, kzRow, XP]; return envOf(sc, 'now', ON11); };
+    const decXp = (s) => { const r = one(calc(s, '2026-12')); const d = (r.ded || []).find((i) => i.item_key === 'xpaid_leave'); return d ? d.amount : 0; };
+    eq(decXp(mk(LT('曠職', 'true'))), 0, 'B-對照：曠職列沒有併入 → 12 月有薪假 1 天在額度內，不扣');
+    eq(decXp(mk(LT('曠職', 'true', { merge_into: 'xpaid' }))), 0, 'B-既有曠職列「併入」有薪假（開開關前就設好）：11 月的曠職不吃 12 月額度，照樣不扣（計算端免疫）');
+    const s1 = mk(LT('曠職', 'true'));
+    eq(save(s1, [PERS, LT('曠職', 'true', { merge_into: 'xpaid' }), XP]).error, 'kz_type_locked', 'B-存檔把曠職列設成併入有薪假：擋');
+    eq(save(s1, [PERS, LT('曠職', 'true', { offset_shortfall: 'true' }), XP]).error, 'kz_type_locked', 'B-存檔把曠職列勾「可抵不足」：擋');
+    eq(save(s1, [PERS, LT('曠職', 'true', { count_meal_day: 'false' }), XP]).error, 'kz_type_locked', 'B-存檔把曠職列設成不算餐費日：擋');
+    eq(save(s1, [PERS, LT('曠職', 'true', { pay_ratio: 1, cap_days: 3, over_ratio: 0.5, tenure_months: 6, under_ratio: 0.5, window_days: 7, min_unit: 'day' }), XP]).ok, true,
+      'B-曠職列的給薪比例、額度、年資、期限、最小單位（計算端不看）：照存');
+    { const r = one(calc(s1, '2026-11')); const d = (r.ded || []).find((i) => i.item_key === 'absent_deduct'); const ab = item(r, 'attend_bonus');
+      eq([d ? d.amount : 0, ab && ab.item_label, ab && ab.amount, decXp(s1)], [1133, KZ_NAME, 0, 0], 'B-照存後重算：11 月曠職扣款 1,133、績效歸零仍在；12 月有薪假照樣不扣（那些欄位不影響）'); }
+    eq(save(s1, [PERS, LT('曠職', 'true', { attend_effect: 'deduct', count_absent: 'true' }), XP]).ok, true, 'B-曠職列的「對全勤」：照存（主管可調）'); }
+  { // 既有壞設定：可抵不足、不算餐費日 → 金額與提醒跟好設定逐字相同；反方向：別的假別併入曠職 → 曠職扣款與績效不變
+    const base = envT([PERS, LT('曠職', 'true')]); const good = calc(base);
+    eq(money(calc(envT([PERS, LT('曠職', 'true', { offset_shortfall: 'true' })]))), money(good), 'B-既有曠職列勾了可抵不足：金額跟好設定逐字相同（曠職時數不抵不足）');
+    const cm = calc(envT([PERS, LT('曠職', 'true', { count_meal_day: 'false' })]));
+    eq([money(cm), one(cm).ot_info.trip_noform], [money(good), one(good).ot_info.trip_noform], 'B-既有曠職列設不算餐費日：金額與「出差沒申請單」提醒跟好設定相同');
+    const rv = calc(envT([LT('事假', 'true', { code: 'personal', attend_effect: '', sort: 10, merge_into: 'absent', cap_days: 0 }), LT('曠職', 'true')]));
+    eq(money(rv), money(good), 'B-反方向：事假「併入」曠職：曠職扣款、績效、金額跟沒併入相同'); }
   // 開關關：跟主線逐字相同（存得進去、表一樣、回應一樣）
   for (const [nm, next] of cases) {
     const a = envT([PERS, LT('曠職', 'true')], {}), b = (() => { const sc = kzScene(['2026-12-10']); sc.data.leave_type = [PERS, LT('曠職', 'true')]; return envOf(sc, 'base'); })();
