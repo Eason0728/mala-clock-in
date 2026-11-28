@@ -31,14 +31,28 @@ FUNCS = ['handleClock', 'handleMgrDay', 'handleMgrApprove', 'normShiftTime', 'is
          # 2026-11-11 B04（該段無打卡算異常）、B34（上班卡之後 16 小時內都算上班中）
          'noPunchDayAbnormal_', 'inStillWorking_', 'openInWorking_', 'markWorkingSeg_',
          'reactXbrandCheck_',   # 2026-11-13 F10：恢復在職擋跨品牌
-         'leftCascadeAfter_']   # 2026-11-11 B13：設離職連帶停用別店同一支 LINE 的列（沒套到＝那家店設離職不會通知光復）
+         'leftCascadeAfter_',   # 2026-11-11 B13：設離職連帶停用別店同一支 LINE 的列（沒套到＝那家店設離職不會通知光復）
+         'lateLeadOf_', 'lateLeadMerge_', 'lateLeadRecheck_', 'lateLeadBreakOk_', 'sysLateMin_',   # 2026-11-26 上午整段沒到改算遲到
+         'lateLeadReqRows_',   # 2026-11-26 第三輪：每天重算讀申請表（跟核定同一個判斷）
+         'lateLeadApprAtMap_',   # 2026-11-26 第三輪之二：每列的主管核定時間（換版時間判斷）
+         'lateLeadDayRows_', 'lateLeadGivenOf_',   # 2026-11-26 第六輪：不變式判斷（每天重算用）
+         'lateLeadOpenAt_', 'lateLeadDataAt_']   # 第九輪：核定當下還沒下班；第十輪：核定時的資料（夜間不換算法）
 # 精確片段：只查函式名會被子字串誤判，這些要比對完整寫法
 EXACT = {
     # 2026-11-20 多一個 gapLate 參數（二段班中途離開比照遲到）；沒套到＝那家店核定狀態照舊、待審單不擋
-    'computeApprovalStatus 有 isTrip＋休息帶＋gapLate 參數': 'hadUnrecordedAttempts, isTrip, breakWindow, gapLate)',
+    # 2026-11-26 再多 lateLead（上午整段沒到改算遲到）；沒套到＝那家店 11/1 起的這種日子照舊要 2 張忘打卡單，跟 Mac mini 判得不一樣
+    'computeApprovalStatus 有 isTrip＋休息帶＋gapLate＋lateLead 參數': 'hadUnrecordedAttempts, isTrip, breakWindow, gapLate, lateLead, segOff_)',
     '待審單不能核定（打卡後端）':            'const pendBlock = reqPendBlock_(reqRowsAll, String(body.emp_id), date);',
-    '中途離開比照遲到：只有個人帳號＋二段班才套': 'reqMgrActing_(mgr, body) && reqGapLateDay_(date, body.sched_spans));',
-    '中途離開比照遲到：每天重算看原狀態':      "st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; }));",
+    '中途離開比照遲到：只有個人帳號＋二段班才套': 'reqMgrActing_(mgr, body) && reqGapLateDay_(date, body.sched_spans),',
+    '中途離開比照遲到：每天重算看原狀態':      "st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; })];",
+    '上午整段沒到改算遲到：核定與綁單同一個判斷': 'late_lead: lateLead,',
+    '上午整段沒到改算遲到：每天重算不換算法（用核定時的資料重做核定判斷，第十輪）': "const llMode = llRows ? lateLeadRecheck_(date, st0, periods, llRows, String(empId), eventRows, apprAt, casArgs.slice(2)) : 'off';",
+    '上午整段沒到改算遲到：不變式（新規則判不過、主線判得過＝照主線，第六輪）': "&& !reqLateLeadKeep_(date, periods, llSegsMs, noPunchBreakWindow(date), lateLeadDayRows_(reqRowsAll, body.emp_id, date), '')) lateLead = false;",
+    '上午整段沒到改算遲到：還沒下班照主線（第九輪方案 B）': 'llOpen = lateLead && typeof reqLateLeadOpen_ === \'function\' && reqLateLeadOpen_(punchWithMs, lateLeadDayRows_(reqRowsAll, body.emp_id, date), date);',
+    '上午整段沒到改算遲到：不變式的保險（綁單照主線過得了就照主線）': "const bind0 = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, punchMs, noPunchBreakWindow(date), Object.assign({}, bindOpt, { late_lead: false }));",
+    '上午整段沒到改算遲到：每天重算走同一個不變式判斷（核定時的資料）': "if (typeof reqLateLeadKeep_ === 'function' && !reqLateLeadKeep_(date, periods, d.segs, bw, d.ok, '')) return 'off';",
+    '上午整段沒到改算遲到：換版前核定的列夜裡照舊（第三輪之二）': "const llAfter = typeof reqLateLeadAfterCutover_ === 'function' && reqLateLeadAfterCutover_(apprAt);",
+    '上午整段沒到改算遲到：休息帶設定不完整不套': 'function lateLeadBreakOk_() {',
     '出差在假別白名單':                      "'出差'",
     '名冊有 shift_in／shift_out':            "'shift_in', 'shift_out'",
     '名冊有 created_at／created_by':         "'created_at', 'created_by'",
@@ -66,6 +80,24 @@ EXACT = {
     '上班中：月表看 16 小時':                'if (d === todayStr || openInWorking_(paired, e)) {',
     '上班中：核定狀態不標忘刷':              'add(c.working ? WORKING_NOTE : (multi ? segMissNote(outNo[pi], SEG_FORGOT_OUT)',
     '上班中：每日重算會回頭改':              'statusText.indexOf(WORKING_NOTE) === -1) return;',
+}
+
+# 各店 Requests.js 必須有的精確片段（2026-11-26 驗收第 4 項：只換 程式碼.js、漏換 Requests.js 時，上午整段沒到改算遲到會靜默不啟用）
+REQ_EXACT = {
+    '上午整段沒到改算遲到：生效日常數':       "var REQ_LATE_LEAD_FROM_ = '2026-11-01';",
+    # 換版時間（2026-11-26 第三輪之二）：＝九店換版那一晚的 01:00；換版改期要跟 Requests.gs 那一行一起改（bughunt-t02 拿這裡對 repo 的 Requests.gs）
+    '上午整段沒到改算遲到：換版時間常數':     "var REQ_LATE_LEAD_CUTOVER_ = '2026-11-30T01:00:00+08:00';",
+    '上午整段沒到改算遲到：換版時間判斷':     'function reqLateLeadAfterCutover_(enteredAt) {',
+    '上午整段沒到改算遲到：不變式判斷（第六輪）': 'function reqLateLeadKeep_(date, periods, segs, breakWindow, okRows, lateMin) {',
+    '上午整段沒到改算遲到：不變式那兩條（第六輪）': 'function reqLateLeadCoreOk_(date, periods, segs, breakWindow, okRows, lateMin, lateLead) {',
+    '上午整段沒到改算遲到：判斷入口':         'function reqLateLeadOn_(rows, empId, date, periods, segs, breakWindow) {',
+    '上午整段沒到改算遲到：還沒下班的判斷（第九輪方案 B，不看現在時間）': 'function reqLateLeadOpen_(segs, okRows, date) {',
+    '上午整段沒到改算遲到：新規則路徑不看上班中（第九輪）': 'function reqLateLeadSegs_(segs) {',
+    '上午整段沒到改算遲到：忘打卡單優先':     'return !!ll && !reqLeadMissForm_(rows, empId, date, ll.lead);',
+    '上午整段沒到改算遲到：綁單用其餘段':     "var lead = opt.late_lead === true && typeof lateLeadOf_ === 'function' ? lateLeadOf_(periods, segs || [], breakWindow) : null;",
+    '上午整段沒到改算遲到：缺卡張數用其餘段': 'var miss = bindOn ? reqBindMissCards_(bindPeriods, reqWorkingSegs_(segs, date), breakWindow) : 0;',
+    '上午整段沒到改算遲到：核定比打卡多帶前導段': 'reqGapLateMs_(date, bindPeriods, segsMiss, opt.sched_spans, breakWindow, ok), leadMs) : null;',
+    '上午整段沒到改算遲到：reqOverCreditMin_ 收前導段分鐘': 'function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts, gapMs, leadMs) {',
 }
 
 # 各店專屬設定：CONFIG 的不打卡休息帶必須與 tools/build-store-pages.py 的 mgr_break 一致。
@@ -119,6 +151,15 @@ for st in STORES:
             got = float(m.group(1)) if m else None
             if got is None or abs(got - float(want)) > 1e-9:
                 msgs.append(f'    ⚠ {key} ＝ {got}，tools/stores.json 是 {want}'); ok = False
+
+    # Requests.js（2026-11-26）：跟 程式碼.js 要同一批換，缺片段＝那家店新規則靜默不啟用
+    rf = GAS / st / 'Requests.js'
+    if not rf.exists():
+        msgs.append(f'    ⚠ 找不到 {rf.name}'); ok = False
+    else:
+        rsrc = rf.read_text(encoding='utf-8')
+        miss_r = [k for k, v in REQ_EXACT.items() if v not in rsrc]
+        if miss_r: msgs.append(f'    缺 Requests.js 片段：{"、".join(miss_r)}'); ok = False
 
     # 機敏值必須是真值不是佔位符（覆蓋錯會把正式金鑰洗掉）
     if 'PASTE_' in src:
