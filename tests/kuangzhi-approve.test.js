@@ -4,7 +4,7 @@
  *   ‧擋：跟別的假別或上班時段一起（句 13）、班表不是上班日（句 11）、有任何打卡（句 9）、有待審或已核准的請假出差忘打卡單（句 10）、
  *     那天已經有核定或登記（kz_day_done，逐句表沒有字）、還在同仁自補期限內（句 12）。
  *   ‧通過：approved 一列 0 小時（狀態字照舊「全天請假」）＋leave 一列 曠職（時數＝班表時數，送來的 hours 不採用）；回句 8。
- *   ‧開關 KUANGZHI_FROM：沒設／壞值＝跟主線一樣（kuangzhi-equiv.test.js 逐字比）；早於 12/1 當 12/1；日期早於生效日＝bad_leave_type。
+ *   ‧開關 KUANGZHI_FROM：沒設／壞值＝跟主線一樣（kuangzhi-equiv.test.js 逐字比）；早於 11/1 當 11/1（2026-11-28 改，原 12/1）；日期早於生效日＝bad_leave_type。
  *   ‧一般核定、主管代開、同仁請假單都選不到曠職；重新核定成別的假＝曠職消失（第 12 題）。
  * 手算預期（今天 12/8，12/3 班表 10:00–19:00 扣休息 1 小時＝8 小時）：
  *   K1 認定成功 → 核定 0、全天請假、leave [12/3 測試一 曠職 8]、「已認定 12/3 曠職（8 小時）」
@@ -51,7 +51,7 @@ console.log('══ 零、共用案例檔（mala-store-ops 跑同一份）══
 {
   const h = crypto.createHash('sha256').update(fs.readFileSync(path.join(__dirname, 'fixtures', 'kuangzhi-cases-v1.json'))).digest('hex');
   show('C0', '案例檔 sha256（營運系統那份要逐字相同；改了兩邊一起改並更新這裡）', h);
-  check('C0b', '案例檔 sha256 釘住（兩個 repo 一起改）', h, '1cc5b5e2ec6a540fd11ba94429fc1d120e5fb39dde3f58265a17fba3d811168d');
+  check('C0b', '案例檔 sha256 釘住（兩個 repo 一起改）', h, 'fd21e240df2b037a4365ef20b6c0f555d1155563e0c57c1a4bad6f8882067cb1');
   const m = env();
   CASES.from.forEach((c, i) => {
     if (c.raw === null) delete m.props.KUANGZHI_FROM; else m.props.KUANGZHI_FROM = c.raw;
@@ -148,10 +148,14 @@ console.log('\n══ 七、誰可以按（第 2 題 A＋第 1 題「每一筆�
   check('K7c', '錯的鑰匙 → unauthorized（照舊）', brief(ap(env(), { mgr_key: 'NOPE' })), [false, 'unauthorized', '']);
 }
 
-console.log('\n══ 八、生效日（第 11 題 A：12/1 起、不回溯）══');
+console.log('\n══ 八、生效日（下限 11/1：2026-11-28 主管定案，推翻原第 11 題 A 的 12/1）══');
 {
   check('K8', '開關 2026-12-10、日期 12/3 → bad_leave_type', brief(ap(env({ props: { KUANGZHI_FROM: '2026-12-10' } }))), [false, 'bad_leave_type', '']);
-  check('K8b', '開關 2026-11-01（早於 12/1）、日期 11/25 → bad_leave_type（當成 12/1）', brief(ap(env({ props: { KUANGZHI_FROM: '2026-11-01' } }), { date: '2026-11-25' })), [false, 'bad_leave_type', '']);
+  // 下限 11/1（2026-11-28 主管定案「算進 11 月」，推翻原第 11 題 A 的 12/1）
+  check('K8b', '開關 2026-11-01、日期 11/25 → 可以認定（11 月算進來）', [ap(env({ props: { KUANGZHI_FROM: '2026-11-01' } }), { date: '2026-11-25' }).ok], [true]);
+  check('K8b2', '開關 2026-10-01（早於 11/1＝當 11/1）、日期 10/31 → bad_leave_type', brief(ap(env({ props: { KUANGZHI_FROM: '2026-10-01' } }), { date: '2026-10-31' })), [false, 'bad_leave_type', '']);
+  check('K8b3', '開關 2026-10-01（當 11/1）、日期 11/1 → 可以認定', [ap(env({ props: { KUANGZHI_FROM: '2026-10-01' } }), { date: '2026-11-01' }).ok], [true]);
+  check('K8b4', '開關 2026-10-01 讀成 11/1', env({ props: { KUANGZHI_FROM: '2026-10-01' } }).sb.kzFrom_(), '2026-11-01');
   check('K8c', '開關 2026-11-01、日期 12/3 → 可以認定', ap(env({ props: { KUANGZHI_FROM: '2026-11-01' } })).ok, true);
   ['', 'on', '2026-12-32', '2026/12/01'].forEach((v, i) => check('K8d-' + i, '開關壞值「' + v + '」→ bad_leave_type', brief(ap(env({ props: { KUANGZHI_FROM: v } }))), [false, 'bad_leave_type', '']));
   check('K8e', '沒設開關 → bad_leave_type', brief(ap(env({ noProp: true }))), [false, 'bad_leave_type', '']);
