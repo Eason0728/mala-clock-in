@@ -14,6 +14,11 @@
  * 假資料全部虛構（姓名「測試甲」、身分證／帳號是明顯的假字串），不碰正式試算表。
  * PAY_GS_OVERRIDE＝改用別份 Payroll.gs（只給變異測試用）。 */
 'use strict';
+/* 閃避 node v24.21（V8 的 Sparkplug 基準碼 frame ＋ 主執行緒 Mark-Compact 時「ClearStaleLeftTrimmedPointerVisitor」）偶發 SIGSEGV（exit 139）：
+ * 原始碼大到某個大小、剛好在第 9 節之後的「對照組 payroll_month 重算」那行附近收垃圾時約 25～50% 機率崩，與斷言對錯無關（2026-11-28 查，堆疊在 V8 原生碼）。
+ * 只關掉「背景執行緒並行標記」這個 GC 選項：不改 JS 語意、不改任何斷言的算法，斷言失敗時一樣會失敗；產品程式（apps-script/）完全沒動。
+ * 實測（node v24.21.0、本機 30～100 次）：不加＝崩 8/30；加了＝0/160。 */
+try { require('v8').setFlagsFromString('--no-concurrent-marking'); } catch (e) { /* 設不進去就照原樣跑 */ }
 const fs = require('fs'), vm = require('vm'), path = require('path');
 const ROOT = path.join(__dirname, '..');
 const rd = (f) => fs.readFileSync(path.join(ROOT, 'apps-script', f), 'utf8');
