@@ -647,7 +647,7 @@ function payCollect(ym, minH, store, holidayDates, cutoffDate) {
     if (ae === 'deduct' || ae === 'void') { markDay(emp, d); s._ld[d] = true; }
     // 出差之類「不算餐費出勤日」的，把當天從餐費天數扣掉
     // 時數留白＝整天出差（出差是整天的旗標，舊資料多半不填時數）→ 記成 Infinity，當天一定不算
-    if (lt && lt.count_meal_day === false) s._trip[d] = (s._trip[d] || 0) + (h > 0 ? h : Infinity);
+    if (lt && lt.count_meal_day === false && !kzDay) s._trip[d] = (s._trip[d] || 0) + (h > 0 ? h : Infinity);   // 認定的曠職不走這條（外部審查第二輪 B：曠職列被設成不算餐費日也不影響）
   });
 
   // attend_deduct_basis='leave'：缺勤天數只算請假日（央廚／總部）；忘刷／遲到只走門檻歸零
@@ -1498,6 +1498,9 @@ function payKzTypeOk_(rows, store) {
   const list = payLeaveTypes(store, rows || []);
   const named = list.filter(function (x) { return payKzNm_(x.name) === PAY_KZ_NAME; });
   if (named.length !== 1 || String(named[0].code) !== PAY_KZ_CODE || String(named[0].name).trim() !== PAY_KZ_NAME) return false;
+  // 外部審查第二輪 B：曠職列只能調「對全勤」（attend_effect／count_absent）；會讓曠職影響別的假別或金額的欄位要是預設值：
+  //   併入（merge_into）空白、可抵不足（offset_shortfall）不勾、算餐費日（count_meal_day）不關。給薪比例、額度、年資、期限等欄位計算端本來就不看（曠職不走一般假別扣款）。
+  if (String(named[0].merge_into || '').trim() !== '' || named[0].offset_shortfall === true || named[0].count_meal_day === false) return false;
   if (list.some(function (x) { return String(x.code) === PAY_KZ_CODE && String(x.name).trim() !== PAY_KZ_NAME; })) return false;
   return payLeaveCode(PAY_KZ_NAME, list) === PAY_KZ_CODE;
 }
@@ -2312,6 +2315,7 @@ function payCalcOne(e, ym, att, cfg, redDays, ltypes) {
       // 補休（2026-11-01 改制）：不算出勤時數，休掉的時數直接從當月加班扣（假別表就算勾了可抵不足也一樣）；
       // 改制前的月份照舊制（補休視同出勤），不看內建列已經改成不抵
       if (c === PAY_COMP_CODE || payIsCompType(t)) { if (!compMonthly) paidLeave += payNum(LMAP[c]); return; }
+      if ((typeof payKzFrom_ === 'function' && typeof payIsKzType === 'function' && payKzFrom_() && payIsKzType(t))) return;   // 曠職（外部審查第二輪 B，2026-11-28）：開關開著時曠職時數一律不抵不足（曠職列被勾「可抵不足」也一樣；預設本來就不抵）
       if (!t || t.offset_shortfall) paidLeave += payNum(LMAP[c]);
     });
     // 淨時數＝上班＋支援＋可抵扣假 − 基本（Eason 2026-10-02 定案）：正→加班、負→不足倒扣。
@@ -2862,6 +2866,7 @@ function payLeaveUsedBefore(ym, store, ltypes, cfg, master) {
     // ③ 併入：家庭照顧假（出勤規範 3-11）、生理假都是逾上限的部分才併入
     (ltypes || []).forEach(function (t) {
       if (!t.merge_into) return;
+      if ((typeof payKzFrom_ === 'function' && typeof payIsKzType === 'function' && payKzFrom_() && payIsKzType(t))) return;   // 曠職（外部審查第二輪 B，2026-11-28）：開關開著時曠職列的「併入」一律不算——認定的曠職不能吃別的假別額度
       const u = acc[t.code] || 0;
       if (!u) return;
       const add = (t.cap_days == null) ? u : Math.max(0, u - t.cap_days);
@@ -3221,6 +3226,7 @@ function payLeaveUsage(empId, ym, types, cfg, storesMap, leavesByStore, spans) {
   const merged = {};
   types.forEach(function (t) {
     if (!t.merge_into) return;
+    if ((typeof payKzFrom_ === 'function' && typeof payIsKzType === 'function' && payKzFrom_() && payIsKzType(t))) return;   // 曠職列的「併入」開關開著時不算（同上，額度卡與送單擋的口徑也一樣）
     const u = used[t.code] || 0;
     const cap = t.cap_days;
     const over = (cap == null) ? 0 : Math.max(0, u - cap);

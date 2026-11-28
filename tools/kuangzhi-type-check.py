@@ -9,13 +9,17 @@
 判定：
   ‧有「代碼 absent、名稱不是曠職」的列 → 不通過（被改名；一般核定選得到、會被當曠職扣）
   ‧名稱是「曠職」的生效列不只一列（名稱先全形半形統一、拿掉空白再比），或唯一那列代碼不是 absent → 不通過（歸集或全勤可能改由別列決定）
-  ‧名稱「曠職」的生效列恰好一列、代碼 absent → 通過
+  ‧唯一那列的「併入」有填、勾了「可抵不足」、或「算餐費日」關掉 → 不通過（會讓曠職影響別的假別或金額；開關打開後計算端也會忽略，但要改回預設）
+  ‧回應標 is_default（這家沒有任何自訂假別列）→ 未確認：分不出「真的沒有自訂列（用內建，OK）」和「讀假別表失敗、用內建組出來的回應」，請在光復試算表 payroll_leave_type 分頁確認
+  ‧名稱「曠職」的生效列恰好一列、代碼 absent、上面三個欄位都是預設 → 通過
   ‧看不到曠職列：開關已開 → 不通過（表上有停用的曠職列把內建列蓋掉）；開關還沒開 → 未確認（沒有曠職列＝開開關後用內建＝OK；或有停用的曠職列＝不 OK）
     → 開關打開後、任何人認定之前立刻再跑一次（那時看不到＝確定不通過，要馬上把開關關回去或改好）。
 管理金鑰：同 late-first-block/deploy/props_check.py，用 ~/dzy-mini-playbook/docs/clock-to-mini/p1s3/lib.py 的 load_admin_key（在這個行程裡讀、只進記憶體、不印、不落檔、不上命令列）。
 用法：python3 tools/kuangzhi-type-check.py            （全部單位）
       python3 tools/kuangzhi-type-check.py --self-test  （不連網路，只跑判定的手算案例）
-注意：payroll_leave_type_get 讀表時，若光復試算表沒有 payroll_leave_type 分頁會照既有行為建一張空的（薪資頁開頁也一樣）；正式環境有在用假別設定、應已存在。"""
+注意（不是完全唯讀的兩種情況）：payroll_leave_type_get 讀表時，若光復試算表沒有 payroll_leave_type 分頁，會照既有行為建一張只有表頭的空分頁（薪資頁開頁也一樣）；
+  正式環境有在用假別設定、應已存在。讀表失敗時這支 GET 會用內建假別組出成功回應（is_default:true）——本工具把 is_default 一律判「未確認」。
+  不建表、又分得出讀表失敗的現成讀法只有 payroll_shadow_export（w2，總管理金鑰、一次回整份薪資資料），本工具不用它（會把薪資內容讀進記憶體）。"""
 import importlib.util
 import pathlib
 import re
@@ -44,8 +48,9 @@ def verdict(resp):
     lines = []
     for t in kz:
         name0 = str(t.get('name', '')).strip()
-        lines.append('曠職列：存在（代碼 %s）｜名稱是曠職：%s｜啟用：是｜對全勤欄位 attend_effect＝%s' % (
-            str(t.get('code', '')).strip() or '（空）', '是' if name0 == KZ_NAME else '否', str(t.get('attend_effect', '')).strip() or '（空白＝照 count_absent）'))
+        lines.append('曠職列：存在（代碼 %s）｜名稱是曠職：%s｜啟用：是｜對全勤欄位 attend_effect＝%s｜併入＝%s｜可抵不足＝%s｜算餐費日＝%s' % (
+            str(t.get('code', '')).strip() or '（空）', '是' if name0 == KZ_NAME else '否', str(t.get('attend_effect', '')).strip() or '（空白＝照 count_absent）',
+            str(t.get('merge_into', '') or '').strip() or '（空白）', '是' if t.get('offset_shortfall') is True else '否', '否' if t.get('count_meal_day') is False else '是'))
     lines.append('同名「曠職」生效列數：%d' % len(named))
     alias = [t for t in kz if str(t.get('code', '')).strip() == KZ_CODE and str(t.get('name', '')).strip() != KZ_NAME]
     if alias:
@@ -55,7 +60,14 @@ def verdict(resp):
     if len(named) == 1 and str(named[0].get('code', '')).strip() != KZ_CODE:
         return '不通過', lines + ['叫「曠職」的列代碼不是 absent → 改成 absent，或把它改名（改名後開關打開會用內建曠職列）']
     if len(named) == 1:
+        t = named[0]
+        if str(t.get('merge_into', '') or '').strip() or t.get('offset_shortfall') is True or t.get('count_meal_day') is False:
+            return '不通過', lines + ['曠職列的「併入」「可抵不足」「算餐費日」要是預設（空白／不勾／算）→ 改回']
+        if resp.get('is_default') is True:
+            return '未確認', lines + ['這家沒有任何自訂假別列（is_default）：可能真的沒有（用內建，OK），也可能讀假別表失敗 → 到光復試算表 payroll_leave_type 分頁確認']
         return '通過', lines
+    if resp.get('is_default') is True:
+        return '未確認', ['這家沒有任何自訂假別列（is_default）：可能真的沒有（用內建），也可能讀假別表失敗 → 到光復試算表 payroll_leave_type 分頁確認']
     if on:
         return '不通過', ['曠職列：生效清單看不到（開關已開）＝表上有停用的曠職列蓋掉內建列 → 把它改回啟用']
     return '未確認', ['曠職列：生效清單看不到（開關還沒開）＝沒有曠職列（開開關後用內建，OK）或有停用的曠職列（不 OK）→ 開關打開後、認定前立刻再跑一次']
@@ -70,6 +82,11 @@ def self_test():
         ({'ok': True, 'types': [T(), K(name='無故缺勤')]}, '不通過'),
         ({'ok': True, 'types': [T(), K(code='kz1'), K(name='缺勤')]}, '不通過'),
         ({'ok': True, 'types': [T(), K(code='kz1')]}, '不通過'),
+        ({'ok': True, 'types': [T(), K(merge_into='xpaid')]}, '不通過'),
+        ({'ok': True, 'types': [T(), K(offset_shortfall=True)]}, '不通過'),
+        ({'ok': True, 'types': [T(), K(count_meal_day=False)]}, '不通過'),
+        ({'ok': True, 'types': [T(), K()], 'kz_on': True, 'is_default': True}, '未確認'),
+        ({'ok': True, 'types': [T()], 'is_default': True}, '未確認'),
         ({'ok': True, 'types': [T(name='曠職'), K()]}, '不通過'),
         ({'ok': True, 'types': [T(), K(), K(code='k2', name='曠　職')]}, '不通過'),
         ({'ok': True, 'types': [T()]}, '未確認'),
