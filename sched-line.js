@@ -136,6 +136,8 @@
       });
       rows.push(h('div', { class: 'sc-row sc-total' }, [h('span', { text: '合計' }), h('span', { text: hrs(d.hours) })]));
     }
+    // 曠職（2026-11-26，句 15）：主管認定後那天多一行「曠職」；後端沒帶 kz＝畫面跟以前一樣
+    if (d.kz === true) rows.push(h('div', { class: 'sc-row', id: 'scKz' }, [h('span', { text: '曠職' })]));
     // 店長寫的當天午餐／晚餐備註（全店共用，2026-10-26）
     if (d.note) [['lunch', '午餐備註'], ['dinner', '晚餐備註']].forEach(function (k) {
       if (d.note[k[0]]) rows.push(h('div', { class: 'sc-row sc-note', id: 'scNote-' + k[0] }, [h('span', { text: k[1] }), h('span', { text: d.note[k[0]] })]));

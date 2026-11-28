@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "note": "曠職共用案例檔（2026-11-26）。mala-clock-in 與 mala-store-ops 放同一份、測試釘 sha256，要改兩邊一起改。判定正本 apps-script/Code.gs kzSuspect_／kzSelfUntil_／kzCanMark_／kzFrom_。全部虛構。",
+  "from": [
+    { "name": "沒設", "raw": null, "expect": null },
+    { "name": "空白", "raw": "", "expect": null },
+    { "name": "只有空白", "raw": "   ", "expect": null },
+    { "name": "on 不是日期", "raw": "on", "expect": null },
+    { "name": "不存在的日期", "raw": "2026-12-32", "expect": null },
+    { "name": "斜線格式", "raw": "2026/12/01", "expect": null },
+    { "name": "前後空白的合法日期", "raw": " 2026-12-01 ", "expect": "2026-12-01" },
+    { "name": "12/1", "raw": "2026-12-01", "expect": "2026-12-01" },
+    { "name": "比 12/1 晚", "raw": "2026-12-15", "expect": "2026-12-15" },
+    { "name": "11/1（2026-11-28 主管定案：下限 11/1，推翻原第 11 題 A 的 12/1）", "raw": "2026-11-01", "expect": "2026-11-01" },
+    { "name": "10/31 比下限早＝當 11/1", "raw": "2026-10-31", "expect": "2026-11-01" },
+    { "name": "更早（2026-01-01）＝當 11/1", "raw": "2026-01-01", "expect": "2026-11-01" },
+    { "name": "11/15", "raw": "2026-11-15", "expect": "2026-11-15" },
+    { "name": "2 月 29 日不存在（2027）", "raw": "2027-02-29", "expect": null }
+  ],
+  "self_until": [
+    { "name": "開工確認例：12/3 的班，12/7 還能補", "date": "2026-12-03", "today": "2026-12-07", "until": "2026-12-07", "can_mark": false },
+    { "name": "開工確認例：12/8 起可以認定", "date": "2026-12-03", "today": "2026-12-08", "until": "2026-12-07", "can_mark": true },
+    { "name": "畫面 1：12/5 的班，補單到 12/9", "date": "2026-12-05", "today": "2026-12-08", "until": "2026-12-09", "can_mark": false },
+    { "name": "當天", "date": "2026-12-10", "today": "2026-12-10", "until": "2026-12-14", "can_mark": false },
+    { "name": "未來的日子", "date": "2026-12-20", "today": "2026-12-10", "until": "2026-12-24", "can_mark": false },
+    { "name": "跨年", "date": "2026-12-30", "today": "2027-01-04", "until": "2027-01-03", "can_mark": true },
+    { "name": "跨月剛好最後一天", "date": "2026-12-28", "today": "2027-01-01", "until": "2027-01-01", "can_mark": false }
+  ],
+  "suspect": [
+    { "name": "上班日什麼都沒有＝疑似", "f": { "work": true, "date": "2026-12-03", "from": "2026-12-01", "until": "2026-12-07" }, "expect": true },
+    { "name": "休息日排班（work=false）不算（3-1 A）", "f": { "work": false, "date": "2026-12-05", "from": "2026-12-01" }, "expect": false },
+    { "name": "國定假日不算（3-6）", "f": { "work": true, "hol": true, "date": "2026-12-25", "from": "2026-12-01" }, "expect": false },
+    { "name": "有任何打卡不算（3-4 A）", "f": { "work": true, "punch": true, "date": "2026-12-03", "from": "2026-12-01" }, "expect": false },
+    { "name": "有核定不算", "f": { "work": true, "approved": true, "date": "2026-12-03", "from": "2026-12-01" }, "expect": false },
+    { "name": "有請假出差登記不算（含已認定曠職）", "f": { "work": true, "leave": true, "date": "2026-12-03", "from": "2026-12-01" }, "expect": false },
+    { "name": "有待審或已核准的請假出差忘打卡單不算（3-3 A）", "f": { "work": true, "req": true, "date": "2026-12-03", "from": "2026-12-01" }, "expect": false },
+    { "name": "排除名單不算（3-6）", "f": { "work": true, "excluded": true, "date": "2026-12-03", "from": "2026-12-01" }, "expect": false },
+    { "name": "生效日之前不算（第 11 題）", "f": { "work": true, "date": "2026-11-30", "from": "2026-12-01" }, "expect": false },
+    { "name": "開關關（from 空）不算", "f": { "work": true, "date": "2026-12-03", "from": null }, "expect": false },
+    { "name": "超過計算截止日不算", "f": { "work": true, "date": "2026-12-09", "from": "2026-12-01", "until": "2026-12-08" }, "expect": false },
+    { "name": "截止日當天算", "f": { "work": true, "date": "2026-12-08", "from": "2026-12-01", "until": "2026-12-08" }, "expect": true },
+    { "name": "work 要是 true（字串 'true' 不算）", "f": { "work": "true", "date": "2026-12-03", "from": "2026-12-01" }, "expect": false },
+    { "name": "沒有 until＝不限", "f": { "work": true, "date": "2026-12-31", "from": "2026-12-01" }, "expect": true }
+  ]
+}
