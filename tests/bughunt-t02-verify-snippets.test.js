@@ -16,9 +16,9 @@ function pyList(name) {
   return (m[1].match(/'([^']+)'/g) || []).map((s) => s.slice(1, -1));
 }
 // EXACT = { '說明': "片段" 或 '片段', ... }
-function pyExact() {
-  const m = /^EXACT = \{([\s\S]*?)^\}/m.exec(tool);
-  if (!m) throw new Error('找不到 EXACT');
+function pyExact(name) {
+  const m = new RegExp('^' + (name || 'EXACT') + ' = \\{([\\s\\S]*?)^\\}', 'm').exec(tool);
+  if (!m) throw new Error('找不到 ' + (name || 'EXACT'));
   const out = [];
   m[1].split('\n').forEach((line) => {
     const x = /^\s*'([^']+)':\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/.exec(line);
@@ -34,6 +34,13 @@ const missE = exact.filter((e) => code.indexOf(e[1]) === -1).map((e) => e[0]);
 chk('檢查工具列的每個動作，repo 的 Code.gs 都有', missA.length === 0, '缺：' + missA.join('、'));
 chk('檢查工具列的每個函式，repo 的 Code.gs 都有', missF.length === 0, '缺：' + missF.join('、'));
 chk('檢查工具列的每個精確片段，repo 的 Code.gs 都有', missE.length === 0, '缺：' + missE.join('、'));
+// 2026-11-26：Requests.js 也查（只換 程式碼.js、漏換 Requests.js 時上午整段沒到改算遲到會靜默不啟用）
+const reqSrc = fs.readFileSync(path.join(ROOT, 'apps-script/Requests.gs'), 'utf8');
+const reqExact = pyExact('REQ_EXACT');
+chk('讀得到 Requests.js 片段清單（' + reqExact.length + '）', reqExact.length >= 5);
+const missR = reqExact.filter((e) => reqSrc.indexOf(e[1]) === -1).map((e) => e[0]);
+chk('檢查工具列的每個 Requests.js 片段，repo 的 Requests.gs 都有', missR.length === 0, '缺：' + missR.join('、'));
+chk('檢查工具真的去讀各店 Requests.js', /GAS \/ st \/ 'Requests\.js'/.test(tool));
 // B01 的修正也要列入檢查，否則哪一家沒套到不會被發現
 chk('檢查工具有列 B01 的函式 breakBlocksFor_', funcs.indexOf('breakBlocksFor_') !== -1);
 chk('檢查工具有列「核定狀態改用 breakBlocksFor_」的片段', exact.some((e) => e[1].indexOf('breakBlocksFor_(sortedP, punchSegments') !== -1));

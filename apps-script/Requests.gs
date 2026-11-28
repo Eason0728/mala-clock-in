@@ -2592,6 +2592,99 @@ function reqGapLateScope_() {
   try { v = String(reqProp_('REQ_GAP_LATE_SCOPE') || ''); } catch (e) {}
   return v === 'all' || v === 'multi' ? v : REQ_GAP_LATE_SCOPE_DEFAULT_;
 }
+
+/* ── 上午整段沒到改算遲到（2026-11-26 主管「央廚這類『休息前整段沒到』改判遲到。都照推薦」；判斷本體 Code.gs lateLeadOf_）──
+   生效日寫死、不做指令碼屬性開關（第 9 題 A）：Mac mini 核定引擎看不到 Google 的 REQ_* 屬性，用屬性會兩邊判得不一樣。
+   ⚠ 營運系統 web/modules/duty/core-calc.js 的 LATE_LEAD_FROM 要同一天。2026-10-31 以前的日子核定、重新核定、每天重算都照舊（第 5 題 A）。 */
+var REQ_LATE_LEAD_FROM_ = '2026-11-01';   // 2026-11-26 主管改：原定 2026-12-01，改成 11/1 起（「上午整段沒到要算遲到，要從11/1開始」）
+function reqLateLeadDay_(date) { return reqIsDate_(String(date)) && String(date) >= REQ_LATE_LEAD_FROM_; }
+/* 換版時間（2026-11-26 大腦裁定方向①；主管定案「11 月已核定的同類日子不回頭改，新規則只用在上線後才核定、或主管自己重新核定的日子」）：
+   ＝九店換版那一晚的 01:00（台灣時間）；換版改期就要跟著改（tools/verify-store-backends.py 的 REQ_EXACT 同一行要一起改，bughunt-t02 會抓沒同步）。
+   只給每天 05:00 重算用（Code.gs recomputeApprovalStatusOf）：這一列的核定時間（同一天同一人最後一筆「主管核定」列的 entered_at，系統重算寫的列不算）
+   早於這個時間、或讀不到 → 一律照舊判法（＝主線重算）；等於或晚於 → 照新規則那套（lateLeadRecheck_）。核定本身不看這個時間（換版後主管重新送出＝新規則）。 */
+var REQ_LATE_LEAD_CUTOVER_ = '2026-11-30T01:00:00+08:00';
+function reqLateLeadAfterCutover_(enteredAt) {
+  var t = Date.parse(String(enteredAt == null ? '' : enteredAt).trim()), c = Date.parse(REQ_LATE_LEAD_CUTOVER_);
+  return isFinite(t) && isFinite(c) && t >= c;
+}
+/** 前導段時間裡有沒有已核准的忘打卡單（同仁主張上午有來＝照忘打卡單，第 4 題）：單上的上班／下班時間落在前導段（含頭尾），或整段單（both）跟前導段重疊 */
+function reqLeadMissForm_(rows, empId, date, lead) {
+  return (rows || []).some(function (r) {
+    if (String(r.emp_id) !== String(empId) || String(r.date).slice(0, 10) !== String(date) || r.status !== 'approved' || r.kind !== 'miss') return false;
+    var a = reqHm_(r.start), b = reqHm_(r.end), ts = [];
+    if (a) ts.push(reqHmMs_(date, a));
+    if (b) ts.push(reqHmMs_(date, b));
+    return (lead || []).some(function (p) {
+      if (ts.some(function (t) { return t >= p.startMs && t <= p.endMs; })) return true;
+      if (a && b && String(r.miss_type || '') === 'both') { var s = reqHmMs_(date, a), e = reqHmMs_(date, b); if (e <= s) e += 86400000; return s < p.endMs && e > p.startMs; }
+      return false;
+    });
+  });
+}
+/** 這次核定要不要套（Code.gs handleMgrApprove 決定 computeApprovalStatus 的 lateLead 與 reqBindCheck_ 的 late_lead）：
+ *  生效日起、lateLeadOf_ 有前導段、前導段沒有已核准忘打卡單。出差、打卡未入帳由呼叫端先排除。rows＝申請表（reqRows_） */
+function reqLateLeadOn_(rows, empId, date, periods, segs, breakWindow) {
+  // 休息帶設定長度 0、反向、缺一邊＝不套（Code.gs lateLeadBreakOk_，2026-11-26 驗收第 3 項）
+  if (!reqLateLeadDay_(date) || typeof lateLeadOf_ !== 'function' || typeof lateLeadBreakOk_ !== 'function' || !lateLeadBreakOk_()) return false;
+  var ll = lateLeadOf_(periods || [], segs || [], breakWindow);
+  return !!ll && !reqLeadMissForm_(rows, empId, date, ll.lead);
+}
+/* ── 還沒下班（2026-11-27 第九輪；方案 B，主管「可以，照推薦」：同仁還沒打下班卡就核定的日子照現行算法、下班後重新核定才算遲到）──
+   ＝這天最後一張卡（照時間）是沒配對的上班卡，而且已核准的忘打卡單補不上那張下班卡（reqSegsWithMiss_ 補完那一段仍沒有下班時間）。
+   **不看現在時間、不看 16 小時**（第八輪用 working＝16 小時，開卡與送出各看各的「現在」，界線前後卡片≠寫入；第八輪加驗 138 組）。
+   成立＝新規則不套、這份整份照主線（Code.gs handleMgrApprove）；夜間：現在還沒下班、或核定當下還沒下班（lateLeadOpenAt_）＝照主線。
+   有已核准的下班忘打卡單補上＝視同已下班＝照一般判斷（K3：忘打下班卡只要 1 張單）。營運系統 core-calc.js clockOpen 同一條。
+   segs＝打卡段 [{inMs,outMs}]；okRows＝這天已核准的申請；date＝這天 */
+function reqLateLeadOpen_(segs, okRows, date) {
+  segs = segs || [];
+  var at = function (x) { return x.outMs != null ? x.outMs : x.inMs; }, k = -1;
+  segs.forEach(function (x, i) { if (at(x) != null && (k < 0 || at(x) >= at(segs[k]))) k = i; });
+  if (k < 0 || segs[k].inMs == null || segs[k].outMs != null) return false;
+  var filled = reqSegsWithMiss_(segs, okRows || [], date);
+  return !filled[k] || filled[k].outMs == null;
+}
+/* 新規則那條路徑用的打卡段：拿掉「上班中」標記（working）——只有已核准下班忘打卡單補上、卻還在 16 小時內的那張卡會有標記；
+   新規則不看現在時間（reqWorkingSegs_ 不延伸、reqOverSegsKnown_ 不當 16 小時、狀態不寫上班中），前後端、開卡與送出都一樣。主線那條路徑照舊用原本的段。 */
+function reqLateLeadSegs_(segs) {
+  return (segs || []).map(function (x) { return { in: x.in, out: x.out, inMs: x.inMs, outMs: x.outMs }; });
+}
+/* ── 不變式（2026-11-26 第六輪，Codex 第三輪；主管選「維持範圍、繼續修」）：同一份送出，主線核得了的，新版也一定核得了 ──
+   新規則在綁單只改兩條：缺卡張數、核定比打卡多（用其餘段＋前導段分鐘算，見 reqBindCheck_ late_lead）。其他每一條（加班、滿 8 小時、假單、卡差…）新舊一樣。
+   所以只要這兩條「新規則判不過、主線判得過」，這份送出就不套新規則、整份照主線（狀態字、遲到都是主線的結果）；兩邊都判不過＝照新規則（回新規則的訊息，
+   主管照著補比較對：例 12:47 到忘了下班卡，新規則要 1 張、主線要 3 張）。
+   這兩條在這裡用「不看班表」的版本判（班表 sched_spans 只在營運系統個人登入才有、每天重算拿不到）：核定與每天 05:00 重算用同一支、同樣的輸入判得一樣。
+   不看班表只會讓「核定比打卡多」算得比較嚴（班表開頭／中段結束是放寬用的），所以這裡判得過，正式綁單這兩條一定也過。
+   date、periods（核定時段 ms）、segs（打卡段 ms，可帶 working）、breakWindow、okRows（這天這位同仁已核准的申請）、lateMin（主管填的遲到欄，原字串） */
+function reqLateLeadCoreOk_(date, periods, segs, breakWindow, okRows, lateMin, lateLead) {
+  periods = periods || []; segs = segs || []; okRows = okRows || [];
+  var from = reqBindFrom_(), strictFrom = reqStrictFrom_();
+  var bindOn = !!(from && date >= from && periods.length);
+  var strict = !!(from && strictFrom && date >= strictFrom);
+  var lead = lateLead === true && typeof lateLeadOf_ === 'function' ? lateLeadOf_(periods, segs, breakWindow) : null;
+  var bp = lead ? lead.rest : periods, leadMs = lead ? lead.leadMin * 60000 : 0;
+  // 缺卡張數（同 reqBindCheck_：出差日只有湊不成完整一段的卡才要；缺卡其實是加班單沒接上也一樣算擋）
+  var miss = bindOn ? reqBindMissCards_(bp, reqWorkingSegs_(segs, date), breakWindow) : 0;
+  var missHave = okRows.reduce(function (a, r) { return a + (r.kind !== 'miss' ? 0 : (r.miss_type === 'break' || r.miss_type === 'both') ? 2 : 1); }, 0);
+  var tripOk = okRows.some(function (r) { return r.kind === 'trip'; });
+  var loneCard = segs.some(function (s) { return (s.inMs == null) !== (s.outMs == null); });
+  if (bindOn && !(tripOk && !loneCard) && miss > missHave) return false;
+  // 核定比打卡多（同 reqBindCheck_，班表那兩組時間不帶）
+  if (!strict) return true;
+  var segsMiss = reqSegsWithMiss_(segs, okRows, date);
+  var backs = reqLeaveBackMs_(date, okRows), starts = reqLeaveStartMs_(date, okRows), given = reqLateGiven_(lateMin);
+  var overMin = reqOverCreditMin_(bp, segsMiss, breakWindow, given, backs, starts, reqGapLateMs_(date, bp, segsMiss, [], breakWindow, okRows), leadMs);
+  if (overMin == null && !(bindOn && miss > missHave) && periods.length && reqLoneOverOn_()) {
+    var segsKnown = reqOverSegsKnown_(segsMiss, segs);
+    if (segsKnown.length) overMin = reqOverCreditMin_(bp, segsKnown, breakWindow, given, backs, starts, reqGapLateMs_(date, bp, segsKnown, [], breakWindow, okRows), leadMs);
+  }
+  return !(overMin != null && overMin >= REQ_STRICT_DIFF_MIN);
+}
+/** 這份送出要不要真的套新規則（呼叫端先確定 reqLateLeadOn_ 成立）：新規則那兩條判得過 → 套；判不過 → 照主線。
+ *  2026-11-27 第十輪：拿掉第六輪的「兩邊都判不過也套新規則」——那條讓「主線判不過（不看班表、不看上班中）」跟「主線實際送出」可能不同，
+ *  綁單保險換回主線時卡片（新規則）≠寫入（主線）（第九輪加驗 2 組）。兩邊都判不過時的訊息改由 Code.gs handleMgrApprove 比較後選（要的單較少的那份）。 */
+function reqLateLeadKeep_(date, periods, segs, breakWindow, okRows, lateMin) {
+  return reqLateLeadCoreOk_(date, periods, segs, breakWindow, okRows, lateMin, true);
+}
 /** 中途離開又回來、被核定蓋住的空檔合計（ms），算進「核定比打卡多」的遲到。不適用回 0。
  *  periods：[{startMs,endMs}]；segs：打卡＋已核准忘打卡單補的卡（reqSegsWithMiss_）；spans：營運系統帶的班表 [{start,end,break_min}]；okRows：這天已核准的申請 */
 function reqGapLateMs_(date, periods, segs, spans, breakWindow, okRows) {
@@ -2638,7 +2731,7 @@ function reqGapLateMs_(date, periods, segs, spans, breakWindow, okRows) {
   });
   return total;
 }
-function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts, gapMs) {
+function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts, gapMs, leadMs) {
   if (!periods.length || !segs.length || segs.some(function (s) { return s.inMs == null || s.outMs == null; })) return null;
   var ps = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
   var ss = segs.slice().sort(function (a, b) { return a.inMs - b.inMs; });
@@ -2663,6 +2756,9 @@ function reqOverCreditMin_(periods, segs, breakWindow, lateGiven, backs, starts,
   });
   // 2026-11-20 Eason 第 11 題 B：中途離開又回來、被核定蓋住的空檔＝遲到（reqGapLateMs_ 算好帶進來；沒帶＝跟改之前一樣）。主管填遲到分鐘時合計受下面同一個上限
   if (Number(gapMs) > 0) late += Number(gapMs);
+  // 2026-11-26 上午整段沒到改算遲到：periods 是其餘段（reqBindCheck_ late_lead），前導段整段是核定、沒打卡、算遲到——
+  // 兩邊各加前導段分鐘（沒填遲到分鐘＝抵銷、跟只算其餘段一樣）；主管填遲到分鐘時一起受下面的上限（填 0＝前導段 240 分要有單）。沒帶＝跟改之前一樣
+  if (Number(leadMs) > 0) { over += Number(leadMs); late += Number(leadMs); }
   // 2026-11-15（考勤挑錯 B1）：主管有填遲到分鐘（0＝認定不計遲到、N＝認定遲到 N 分）時，只有他認的那 N 分鐘算遲到（薪資照扣）；
   // 被免掉的遲到分鐘＝沒打卡卻要算的時間，照樣要有單。原本整段都當遲到扣掉，只打 5 分鐘卡、遲到填 0 就核得出 8 小時。沒填＝系統照實標遲到，不變。
   if (lateGiven != null) late = Math.min(late, Math.max(0, lateGiven) * 60000);
@@ -3220,7 +3316,11 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   if (otPunchOn && otRows.length && !(Number(opt.trip_hours) > 0) && !ok.some(function (r) { return r.kind === 'trip'; })) {
     reqOtPunchProbs_(date, otRows, reqWorkingSegs_(segs || [], date) || [], ok, String(opt.name || (otRows[0] || {}).name || ''), opt.peer_cards).forEach(function (p) { add(p.rule, p.text); });
   }
-  var miss = bindOn ? reqBindMissCards_(periods, reqWorkingSegs_(segs, date), breakWindow) : 0;
+  // 上午整段沒到改算遲到（2026-11-26，Code.gs lateLeadOf_）：呼叫端判斷要套（late_lead）時，缺卡張數、核定比打卡多改用其餘段算，前導段整段當遲到；
+  // 加班時數、正職滿 8 小時、加班單時段、假單重疊、卡差原因照原本的核定時段（8 小時）。沒帶＝跟改之前一樣
+  var lead = opt.late_lead === true && typeof lateLeadOf_ === 'function' ? lateLeadOf_(periods, segs || [], breakWindow) : null;
+  var bindPeriods = lead ? lead.rest : periods, leadMs = lead ? lead.leadMin * 60000 : 0;
+  var miss = bindOn ? reqBindMissCards_(bindPeriods, reqWorkingSegs_(segs, date), breakWindow) : 0;
   var missHave = ok.reduce(function (a, r) { return a + (r.kind !== 'miss' ? 0 : (r.miss_type === 'break' || r.miss_type === 'both') ? 2 : 1); }, 0);
   var tripOk = ok.some(function (r) { return r.kind === 'trip'; });
   // 出差日：當天有打卡、湊不成完整一段就算忘刷，要忘打卡單；整天沒打卡、或打卡都成段（另一段是出差）不算（2026-11-10 Eason）
@@ -3244,13 +3344,13 @@ function reqBindCheck_(ss, empId, date, approvedHours, periods, segs, breakWindo
   // 已核准的忘打卡單補的卡算「有打卡」（2026-11-15 Eason：游家輝 11/11 忘打卡單補 18:30–20:15 仍被算成整段沒打卡；
   // 同營運系統 core-calc.js 的「打卡＋單」）。只用在這條「核定比打卡多」，其他檢查照舊看真的卡
   var segsMiss = strict ? reqSegsWithMiss_(segs || [], ok, date) : null;
-  var overMin = strict ? reqOverCreditMin_(periods, segsMiss, breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok).concat(reqSchedMidEndMs_(date, opt.sched_spans)),
-    reqGapLateMs_(date, periods, segsMiss, opt.sched_spans, breakWindow, ok)) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）；2026-11-20：二段班中途離開的空檔算遲到（最後一個參數）
+  var overMin = strict ? reqOverCreditMin_(bindPeriods, segsMiss, breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok).concat(reqSchedMidEndMs_(date, opt.sched_spans)),
+    reqGapLateMs_(date, bindPeriods, segsMiss, opt.sched_spans, breakWindow, ok), leadMs) : null;   // 2026-11-18：中間假單結束後晚回來算遲到（backs）；2026-11-20：二段班中途離開的空檔算遲到（最後一個參數）
   // 2026-11-21 舊問題 1：有沒配對的卡、忘打卡單那條又沒擋到 → 用完整打卡段（＋已核准忘打卡單補的卡）照算，不再整個跳過（見 reqLoneOverOn_ 檔頭）
   if (strict && overMin == null && !(bindOn && miss > missHave) && periods.length && reqLoneOverOn_()) {
     var segsKnown = reqOverSegsKnown_(segsMiss, segs);
-    if (segsKnown.length) overMin = reqOverCreditMin_(periods, segsKnown, breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok).concat(reqSchedMidEndMs_(date, opt.sched_spans)),
-      reqGapLateMs_(date, periods, segsKnown, opt.sched_spans, breakWindow, ok));
+    if (segsKnown.length) overMin = reqOverCreditMin_(bindPeriods, segsKnown, breakWindow, reqLateGiven_(opt.late_min), reqLeaveBackMs_(date, ok).concat(reqSchedStartMs_(date, opt.sched_spans)), reqLeaveStartMs_(date, ok).concat(reqSchedMidEndMs_(date, opt.sched_spans)),
+      reqGapLateMs_(date, bindPeriods, segsKnown, opt.sched_spans, breakWindow, ok), leadMs);
   }
   if (overMin != null && overMin >= REQ_STRICT_DIFF_MIN) add('over_credit', '核定比打卡多 ' + overMin + ' 分鐘（沒有打卡的時間要有忘打卡單、假單或補休單）');
   if (opt.preview) return { probs: probs, diff_min: diffMin, over_min: overMin, ot_have: otHave, ot_need: otNeed, ft8_gap: ft8 ? ft8.gap : 0 };

@@ -2153,6 +2153,9 @@ function handleMgrApprove(body) {
 
   let approvedHours, periodsStr, statusText;
   let periodsMs = [], punchMs = [];   // 核定綁申請單用（整天請假時是空的）
+  let lateLead = false;               // 上午整段沒到改算遲到（2026-11-26）：核定狀態與綁單檢查用同一個判斷
+  let statusFor = null;               // 照 lateLead 算核定狀態（第六輪：綁單保險要換回主線時重算用）
+  let llOpen = false, llSegsMs = null, llBase = false;   // 第九輪：還沒下班（照主線）／新規則那條路徑用的打卡段（不看現在時間）／第十輪：這天是那種日子（reqLateLeadOn_）
   if (rawPeriods.length === 0) {
     // 整天請假：沒有任何上班時段，但必須有假別；核定 0 小時、狀態標「全天請假」
     // （沒假別的空送出仍擋掉）。這樣月表那天顯示核定 0h＋假別，而非誤導的「待核定」。
@@ -2210,16 +2213,33 @@ function handleMgrApprove(body) {
       };
     });
     markWorkingSeg_(punch, date, punchWithMs);   // B34：還在上班的那張上班卡（16 小時內）不算忘刷、不算少一張
-    statusText = computeApprovalStatus(periods, punchWithMs,
-      unresolvedAttemptCount_(eventRows, body.emp_id, date) > 0,
-      hasTrip,
-      noPunchBreakWindow(date),
-      // 中途離開又回來比照遲到（2026-11-20）：上線日起、營運系統個人帳號代轉（才收得到班表）、當天班表兩段以上才套；
-      // 門市登入、舊值班頁、單段班＝跟 main 完全一樣（2026-11-20 複審）
-      typeof reqGapLateDay_ === 'function' && typeof reqMgrActing_ === 'function' && reqMgrActing_(mgr, body) && reqGapLateDay_(date, body.sched_spans));
-    // 主管手動認定的遲到分鐘覆蓋系統判定（打卡沒入帳時系統算不出來）
-    statusText = applyManualLate(statusText, body.late_min);
-    statusText = applyDupNote_(statusText, dupList);
+    const unresolved = unresolvedAttemptCount_(eventRows, body.emp_id, date) > 0;
+    // 上午整段沒到改算遲到（2026-11-26）：2026-11-01 起的日子、不是出差／打卡未入帳、前導段沒有已核准忘打卡單才套（Requests.gs reqLateLeadOn_）。
+    // 門市登入、舊值班頁一樣套（不看班表）。沒載入 Requests 的環境＝不套（跟 main 一樣）。同一個值傳給下面的 reqBindCheck_
+    // 第九輪（方案 B）：新規則那條路徑一律用拿掉「上班中」標記的段（reqLateLeadSegs_，不看現在時間）；還沒下班（reqLateLeadOpen_）＝整份照主線
+    llSegsMs = typeof reqLateLeadSegs_ === 'function' ? reqLateLeadSegs_(punchWithMs) : punchWithMs;
+    lateLead = !hasTrip && !unresolved && !!reqRowsAll && typeof reqLateLeadOn_ === 'function'
+      && reqLateLeadOn_(reqRowsAll, String(body.emp_id), date, periods, llSegsMs, noPunchBreakWindow(date));
+    llBase = lateLead;
+    llOpen = lateLead && typeof reqLateLeadOpen_ === 'function' && reqLateLeadOpen_(punchWithMs, lateLeadDayRows_(reqRowsAll, body.emp_id, date), date);
+    if (llOpen) lateLead = false;
+    // 不變式（2026-11-26 第六輪，Requests.gs reqLateLeadKeep_）：新規則讓這份送出在缺卡／核定比打卡多判不過、主線判得過 → 這份照主線。每天重算用同一支判斷
+    if (lateLead && typeof reqLateLeadKeep_ === 'function'
+        && !reqLateLeadKeep_(date, periods, llSegsMs, noPunchBreakWindow(date), lateLeadDayRows_(reqRowsAll, body.emp_id, date), '')) lateLead = false;      // 第十輪：遲到欄一律當空白判（跟營運系統預填當下一樣；主管填的遲到另由綁單第 4 題規則管）
+    statusFor = function (ll) {
+      let st = computeApprovalStatus(periods, ll ? llSegsMs : punchWithMs,
+        unresolved,
+        hasTrip,
+        noPunchBreakWindow(date),
+        // 中途離開又回來比照遲到（2026-11-20）：上線日起、營運系統個人帳號代轉（才收得到班表）、當天班表兩段以上才套；
+        // 門市登入、舊值班頁、單段班＝跟 main 完全一樣（2026-11-20 複審）
+        typeof reqGapLateDay_ === 'function' && typeof reqMgrActing_ === 'function' && reqMgrActing_(mgr, body) && reqGapLateDay_(date, body.sched_spans),
+        ll);
+      // 主管手動認定的遲到分鐘覆蓋系統判定（打卡沒入帳時系統算不出來）
+      st = applyManualLate(st, body.late_min);
+      return applyDupNote_(st, dupList);
+    };
+    statusText = statusFor(lateLead);
     periodsStr = rawPeriods.map(function (p) { return p.start + '-' + p.end; }).join(',');
     periodsMs = periods; punchMs = punchWithMs;
   }
@@ -2227,8 +2247,7 @@ function handleMgrApprove(body) {
   // sched_day（那天班表 H／R／W）只有營運系統個人帳號代轉時才採信，由營運系統伺服器讀排班資料帶入、前端送的會被蓋掉
   if (typeof reqBindCheck_ === 'function') {
     const acting = reqMgrActing_(mgr, body);
-    const bind = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, punchMs, noPunchBreakWindow(date),
-      { leaves: leaves, trip_hours: tripHours, name: String(roster.name || ''),
+    const bindOpt = { leaves: leaves, trip_hours: tripHours, name: String(roster.name || ''),
         rows: reqRowsAll || undefined,   // 上面待審檢查讀過的申請表，不再讀一次（2026-11-20）
         // 正職上班日滿 8 小時（2026-11-13）：正職與否、是不是支援帳號只信營運系統個人帳號代轉帶來的（伺服器讀排班與管理系統身分填）
         sched_ft: acting && body.sched_ft === true, sched_support: acting && typeof body.sched_support === 'boolean' ? body.sched_support : null,
@@ -2237,14 +2256,30 @@ function handleMgrApprove(body) {
         own_fs: rawPeriods && rawPeriods.length ? rawPeriods.reduce(function (m, p) { var x = /^(\d{1,2}):(\d{2})/.exec(String(p.start || '')); var v = x ? Number(x[1]) * 60 + Number(x[2]) : null; return v == null ? m : (m == null || v < m ? v : m); }, null) : null,
         sched_day: acting ? String(body.sched_day || '') : '', sched_spans: acting && Array.isArray(body.sched_spans) ? body.sched_spans : [], diff_reason: body.diff_reason, acting: acting,
         late_min: body.late_min,   // 主管認定的遲到分鐘：被免掉的遲到要有單（2026-11-15 考勤挑錯 B1）
+        late_lead: lateLead,       // 上午整段沒到改算遲到（2026-11-26）：缺卡張數、核定比打卡多改用其餘段算，前導段分鐘當遲到
         // 那天這位同仁「新手機待核准」的卡有幾張（2026-11-11 B35）：少卡被擋時訊息請主管先核准裝置
-        pending_device: eventRows.filter(function (e) { return String(e.emp_id) === String(body.emp_id) && e.status === 'pending_device_approval' && tsDateStr(e.ts) === date; }).length });
+        pending_device: eventRows.filter(function (e) { return String(e.emp_id) === String(body.emp_id) && e.status === 'pending_device_approval' && tsDateStr(e.ts) === date; }).length };
+    let bind = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, lateLead && llSegsMs ? llSegsMs : punchMs, noPunchBreakWindow(date), bindOpt);
+    // 第九輪／第十輪：照主線（還沒下班，或新規則那兩條判不過）、主線被擋時，訊息照新規則那份（例 12:47 到忘了下班卡：要 1 張下班忘打卡單，不是主線的 3 張；
+    //   補了那張就視同已下班＝新規則，K3）；新規則這時判得過也不寫（照主線的送出一律不寫新規則）＝回主線的訊息
+    if (bind && llBase && !lateLead && llSegsMs) {
+      const bindNew = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, llSegsMs, noPunchBreakWindow(date), Object.assign({}, bindOpt, { late_lead: true }));
+      // 只在新規則那份「擋的規則不比主線多、要的忘打卡單比主線少」時才換訊息（其他情形照主線的訊息，跟主線逐字相同）
+      const rulesOf = function (b) { return ((b && b.probs) || []).map(function (p) { return p.rule; }); };
+      if (bindNew && rulesOf(bindNew).every(function (r) { return rulesOf(bind).indexOf(r) !== -1; })
+          && bindNew.need && bind.need && Number(bindNew.need.miss_cards) < Number(bind.need.miss_cards)) bind = bindNew;
+    }
+    // 不變式的保險（2026-11-26 第六輪）：套了新規則還是被擋、同一份照主線卻過得了 → 照主線（上面不看班表的判斷擋不到、只差在班表放寬的那種）
+    if (bind && lateLead && statusFor) {
+      const bind0 = reqBindCheck_(ss, String(body.emp_id), date, approvedHours, periodsMs, punchMs, noPunchBreakWindow(date), Object.assign({}, bindOpt, { late_lead: false }));
+      if (!bind0) { lateLead = false; statusText = statusFor(false); bind = null; }
+    }
     if (bind) return bind;
   }
   // 只檢查不寫入（2026-11-14 考勤管理好上手第 1 項，營運系統 docs/duty-easy/）：上面所有檢查都跑過、會不會被擋已經知道，這裡停下、什麼都不寫
   if (body.dry_run === true) {
     return { ok: true, dry_run: true, date: date, emp_id: body.emp_id, name: roster.name, periods: rawPeriods,
-             approved_hours: approvedHours, leaves: leaves, status_text: statusText };
+             approved_hours: approvedHours, leaves: leaves, status_text: statusText, late_lead: lateLead };   // late_lead：這份最後有沒有套新規則（第六輪，給對照測試看；畫面不用）
   }
   // 規則乙的競態（2026-11-21 出勤核定舊問題 3，Codex 20261121-rules-ab 問題 5）：開頭的待審檢查到這裡中間跑了一長串檢查，同仁可能剛好送出一張單
   //（送申請是在 ScriptLock 裡寫入的）。寫入前拿同一把鎖、鎖內重讀申請表再判一次，沒有待審才寫；搶不到回 busy、什麼都不寫。
@@ -2978,6 +3013,55 @@ function breakBlocksFor_(periods, punchSegments, breakWindow) {
   return loneUsed(plain) > loneUsed(blocks) ? plain : blocks;
 }
 
+/* ── 上午整段沒到改算遲到（2026-11-26 主管「央廚這類『休息前整段沒到』改判遲到。都照推薦」；設計 _brain_out/late-first-block/design.md）──
+ * 被不打卡休息帶（央廚 12–13、總部 14–15）切開的一個班，休息帶前面那幾段整段都沒有打卡、當天第一張卡是休息帶當中或之後才打的上班卡
+ * → 不再當成缺卡，記遲到：遲到分鐘＝核定時段裡、第一張上班卡之前的分鐘數（休息帶本來就不在核定時段裡，所以自然不算）。
+ * 觸發條件（全部成立；生效日、已核准忘打卡單、出差、打卡未入帳由呼叫端判斷）：
+ *   ① 這家店有不打卡休息帶、核定時段兩段以上；
+ *   ② 前導段＝依時間排序後、結束時間 ≤ 當天第一張卡的那幾段（至少一段，但不是全部）；
+ *   ③ 前導段最後一段的結束 → 下一段的開始，中間有空檔、而且空檔整個落在休息帶裡（08–12／13–17 成立；08–11／14–17、08–12／12–17 不成立）；
+ *   ④ 當天第一張卡是上班卡（第一張是單張下班卡＝不知道幾點到，不套），而且早於下一段的結束。
+ * 回 { lead:[前導段], rest:[其餘段], leadMin:前導段分鐘合計 } 或 null（不適用）。純函式，Requests.gs reqLateLeadOn_／reqBindCheck_ 共用。 */
+function lateLeadOf_(periods, punchSegments, breakWindow) {
+  if (!breakWindow || !periods || periods.length < 2) return null;
+  // 休息帶長度 0（12:00–12:00）會被 noPunchBreakWindow 當成跨夜 24 小時：不套（那支函式給別的呼叫端用，不改它）
+  if (!(breakWindow.endMs - breakWindow.startMs > 0 && breakWindow.endMs - breakWindow.startMs < 86400000)) return null;
+  const sorted = periods.slice().sort(function (a, b) { return a.startMs - b.startMs; });
+  let first = null;   // 當天第一張卡 { t, isIn }；同一分鐘有下班卡當成下班卡（不套，偏保守）
+  (punchSegments || []).forEach(function (s) {
+    if (!s) return;
+    const isIn = s.inMs != null, t = isIn ? s.inMs : s.outMs;
+    if (t == null) return;
+    if (first === null || t < first.t) first = { t: t, isIn: isIn };
+    else if (t === first.t && !isIn) first.isIn = false;
+  });
+  if (!first || !first.isIn) return null;
+  let n = 0;
+  while (n < sorted.length && sorted[n].endMs <= first.t) n++;
+  if (n === 0 || n === sorted.length) return null;
+  const last = sorted[n - 1], next = sorted[n];
+  if (!(last.endMs < next.startMs && last.endMs >= breakWindow.startMs && next.startMs <= breakWindow.endMs)) return null;
+  if (!(first.t < next.endMs)) return null;
+  const lead = sorted.slice(0, n);
+  const leadMin = Math.round(lead.reduce(function (a, p) { return a + (p.endMs - p.startMs); }, 0) / 60000);
+  return { lead: lead, rest: sorted.slice(n), leadMin: leadMin };
+}
+/** 新規則的入口（Requests.gs reqLateLeadOn_、每天重算）先看休息帶設定：開始、結束都要是 HH:MM、而且結束晚於開始。
+ *  長度 0（12:00–12:00）、反向（13:00–12:00，noPunchBreakWindow 會當成跨夜）、缺一邊 → 不套（跟 main 一樣） */
+function lateLeadBreakOk_() {
+  const re = /^([01]\d|2[0-3]):[0-5]\d$/;
+  const bs = String(CONFIG.NO_PUNCH_BREAK_START || '').trim(), be = String(CONFIG.NO_PUNCH_BREAK_END || '').trim();
+  return re.test(bs) && re.test(be) && be > bs;
+}
+/** 其餘段的狀態併上前導段的分鐘：併進第一個「遲到N分」；沒有就加在最前面、取代「正常」（同一天只有一個遲到被加大，不多一筆） */
+function lateLeadMerge_(statusText, leadMin) {
+  const notes = String(statusText || '').split('、').filter(function (x) { return x && x !== '正常'; });
+  const i = notes.map(function (x) { return /^遲到\d+分$/.test(x); }).indexOf(true);
+  if (i >= 0) notes[i] = '遲到' + (Number(/^遲到(\d+)分$/.exec(notes[i])[1]) + leadMin) + '分';
+  else notes.unshift('遲到' + leadMin + '分');
+  return notes.join('、');
+}
+
 /** 一段核定時段蓋到的完整打卡段（兩段以上才回）：{ idx:[fullSegs 的 index], inMs:第一張上班卡, outMs:最後一張下班卡, gapMs:中間空檔合計（扣掉不打卡休息帶） }。
  *  只有一段或沒有＝null（照原本比法）。給 computeApprovalStatus 的 gapLate 用。 */
 function gapLateSpan_(p, fullSegs, breakWindow) {
@@ -3001,7 +3085,15 @@ function gapLateSpan_(p, fullSegs, breakWindow) {
  *   空檔落在不打卡休息帶的分鐘不算。蓋到的每一段打卡都算用掉（不再標「有多出的打卡段」）；結尾照舊比最後一段的下班卡記早退。
  *   沒帶（false）＝改之前：只拿重疊最大的一段比，其他段算「有多出的打卡段」（例：16:00–20:00 打卡 15:58–16:03、17:24–20:00 → 遲到84分、有多出的打卡段）。
  *   核定時段可不可以這樣蓋（核定比打卡多）由 Requests.gs reqOverCreditMin_ 把關，這裡只照核定時段記狀態。 */
-function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip, breakWindow, gapLate) {
+/* lateLead（2026-11-26 上午整段沒到改算遲到，見 lateLeadOf_）：呼叫端決定（Requests.gs reqLateLeadOn_：2026-11-01 起、前導段沒有已核准忘打卡單；
+ *   每天重算看原狀態，見 recomputeApprovalStatusOf）。true 且不是出差／打卡未入帳、lateLeadOf_ 有值 → 用其餘段比、段號沿用原始時段，
+ *   前導段分鐘併進「遲到N分」。沒帶（false）＝跟改之前逐字相同。segOff_ 只給這裡自己遞迴用（其餘段的段號往後挪幾段）。 */
+function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, isTrip, breakWindow, gapLate, lateLead, segOff_) {
+  if (lateLead === true && !isTrip && !hadUnrecordedAttempts && breakWindow) {
+    const ll = lateLeadOf_(periods, punchSegments, breakWindow);
+    if (ll) return lateLeadMerge_(computeApprovalStatus(ll.rest, punchSegments, false, false, breakWindow, gapLate, false, ll.lead.length), ll.leadMin);
+  }
+  const off = segOff_ > 0 ? segOff_ : 0;
   const fullSegs = punchSegments.filter(function (s) { return s.inMs != null && s.outMs != null; });
   const legacy = !!(isTrip || hadUnrecordedAttempts);   // 出差、打卡未入帳：照舊標示，不冤枉人
   // 段號照店長輸入的核定時段（依時間先後）；規定不打卡的休息帶（央廚）隔開的兩段併成一塊，和補單張數一致
@@ -3017,7 +3109,7 @@ function computeApprovalStatus(periods, punchSegments, hadUnrecordedAttempts, is
   const inNo = [], outNo = [];
   periods.forEach(function (p, pi) {
     const b = blocks.filter(function (x) { return x.startMs <= p.startMs && x.endMs >= p.endMs; })[0];
-    inNo[pi] = b ? b.firstNo : pi + 1; outNo[pi] = b ? b.lastNo : pi + 1;
+    inNo[pi] = (b ? b.firstNo : pi + 1) + off; outNo[pi] = (b ? b.lastNo : pi + 1) + off;
   });
   const notes = [];
   const add = function (n) { if (notes.indexOf(n) === -1) notes.push(n); };
@@ -3577,7 +3669,101 @@ const RECHECK_MARK = '（系統重算）';
  * （manual_late＝原狀態有主管認定的遲到，已原樣保留在新狀態裡；2026-11-11 以前這種日子回 skip:'manual_late'）
  * （newStatusText 可能與原本相同，由呼叫端決定要不要寫）。
  */
-function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) {
+/* 上午整段沒到改算遲到（2026-11-26，主管第 5 題 A「已核定的一筆都不動」）：每天重算要跟核定當下用同一種判法。
+ *   回 'off'＝照舊判法（＝main 的重算）；'on'＝照新規則；'cmp'＝看原狀態的遲到分鐘決定（見 recomputeApprovalStatusOf）。
+ *   ① 核定當下的判斷原樣再算一次：Requests.gs reqLateLeadOn_（生效日、休息帶設定、lateLeadOf_、前導段有沒有已核准忘打卡單）不成立 → 'off'。
+ *      2026-11-26 第三輪（Codex 第一輪擋項 1）：核定當下照忘打卡單（舊判法）判的列，狀態字可能跟新規則一字不差
+ *      （12:00 到、還在上班＝兩種都是「遲到180分、上班中」；主管填遲到＝兩種都是「上班中、遲到N分(認定)」），光看狀態分不出來，
+ *      所以讀申請表——跟出差（isTripDay）一樣看重算當下的申請表。reqRows＝申請表（呼叫端整批只讀一次；拿不到＝null＝'off'，同核定時沒讀到申請表不套）。
+ *   以下三條只會往「照舊」推（安全網）：
+ *   ② 原狀態有「第一段上班無打卡」→ 'off'（第 5 題 A 原文「夜裡重算看到原本寫『上午沒打卡』的就照舊」；忘打卡單後來被作廢也照舊）。
+ *   ③ 原狀態「打卡未入帳，主管補登」→ 'off'（未入帳不套；卡後來入帳也照舊）。
+ *   ④ 原狀態有主管認定的遲到 → 'on'（遲到那項會被認定原樣蓋回）；其他 → 'cmp'：原狀態系統算的遲到分鐘＝新規則算的才照新規則，否則照舊判法
+ *      （換版前用舊程式核定、日期在生效日以後的列：09–12／13–18、12:18 只有上班卡＝舊「遲到198分」≠新 180 → 照舊）。 */
+/* 2026-11-27 第十輪（第九輪加驗；大腦定義）：**夜間重算不換算法**——核定當時照主線的列，夜間永遠用主線對當下的打卡與單據重算；
+ *   核定當時套新規則的列，夜間永遠用新規則對當下的打卡與單據重算（新規則那條不看上班中）；換算法只發生在主管重新核定。沒有例外。
+ *   核定當時用哪一套：用核定時已有的卡與核定時已核准的單（lateLeadDataAt_）把核定的判斷重做一次（reqLateLeadOn_、還沒下班、reqLateLeadKeep_），
+ *   原狀態有「第一段上班無打卡」「打卡未入帳，主管補登」→ 主線；原狀態的系統遲到分鐘只跟其中一套（核定時資料上）相同 → 那一套；分不出來才重做判斷。
+ *   reqRows＝申請表（null＝當作照主線）；eventRows／apprAt＝打卡與主管核定時間；casRest＝computeApprovalStatus 第 3 個以後的參數。回 'on'／'off'。 */
+function lateLeadRecheck_(date, st0, periods, reqRows, empId, eventRows, apprAt, casRest) {
+  st0 = String(st0 || '');
+  if (typeof reqLateLeadOn_ !== 'function' || typeof reqLateLeadOpen_ !== 'function' || !reqRows) return 'off';
+  if (st0.indexOf(segMissNote(1, SEG_MISS_IN)) !== -1 || st0.indexOf(NOT_RECORDED_NOTE) !== -1) return 'off';
+  const d = lateLeadDataAt_(eventRows, empId, date, apprAt, reqRows);
+  if (!d) return 'off';
+  const bw = noPunchBreakWindow(date);
+  if (!reqLateLeadOn_(d.ok, empId, date, periods, d.segs, bw)) return 'off';
+  // 先看原狀態的遲到分鐘：只跟其中一套在核定時資料上會寫的相同 → 就是那一套（核定後才入帳、打卡時間卻早於核定的卡，會讓下面重做的判斷看到核定時沒有的卡）
+  const manual = st0.split('、').some(function (x) { return x.indexOf(MANUAL_LATE_MARK) !== -1 || x === NO_LATE_NOTE; });
+  if (!manual) {
+    const rest = casRest || [false, false, bw, false], l0 = sysLateMin_(st0);
+    const mNew = sysLateMin_(computeApprovalStatus.apply(null, [periods, d.segs].concat(rest).concat([true]))) === l0;
+    const mMain = sysLateMin_(computeApprovalStatus.apply(null, [periods, d.segs].concat(rest).concat([false]))) === l0;
+    if (mNew !== mMain) return mNew ? 'on' : 'off';
+  }
+  // 分不出來（兩套分鐘一樣，或主管填了遲到）：重做核定的判斷——還沒下班、新規則那兩條判不過 → 主線
+  if (reqLateLeadOpen_(d.segs, d.ok, date)) return 'off';
+  if (typeof reqLateLeadKeep_ === 'function' && !reqLateLeadKeep_(date, periods, d.segs, bw, d.ok, '')) return 'off';      // 同核定：遲到欄當空白判
+  return 'on';
+}
+/** 這天這位同仁已核准的申請（同 Requests.gs reqBindCheck_ 的 ok） */
+function lateLeadDayRows_(rows, empId, date) {
+  return (rows || []).filter(function (r) { return String(r.emp_id) === String(empId) && String(r.date) === String(date) && r.status === 'approved'; });
+}
+/** 原狀態裡主管認定的遲到換回當初遲到欄填的字（「遲到N分(認定)」→ N、「主管認定不計遲到」→ 0、沒有 → ''），同 applyManualLate 的反向 */
+function lateLeadGivenOf_(st) {
+  const xs = String(st || '').split('、');
+  if (xs.indexOf(NO_LATE_NOTE) !== -1) return '0';
+  const m = xs.map(function (x) { return /^遲到(\d+)分\(認定\)$/.exec(x); }).filter(function (x) { return x; })[0];
+  return m ? m[1] : '';
+}
+/** 每天重算用的申請表（整批只讀一次，而且只在真的需要時才讀：生效日起、休息帶設定完整、現在的打卡是那種日子）。cache＝呼叫端帶的 {}，同一批共用 */
+/** 每天重算用：同一天同一人「最後一筆主管核定列」的核定時間（entered_at），系統重算寫的列（manager_name 結尾是 RECHECK_MARK）不算。
+ *  回 { 'yyyy-MM-dd|工號': entered_at }。給 Requests.gs reqLateLeadAfterCutover_ 判斷這列是不是換版後才核定的（2026-11-26 第三輪之二） */
+function lateLeadApprAtMap_(approvedRows) {
+  const out = {};
+  (approvedRows || []).forEach(function (r) {
+    if (String(r.manager_name || '').slice(-RECHECK_MARK.length) === RECHECK_MARK) return;
+    const k = normCellDate(r.date) + '|' + String(r.emp_id), t = normCellTs(r.entered_at);
+    if (!(k in out) || t >= out[k]) out[k] = t;
+  });
+  return out;
+}
+function lateLeadReqRows_(ss, cache, date, periods, punchWithMs) {
+  if (typeof reqLateLeadDay_ !== 'function' || !reqLateLeadDay_(date) || !lateLeadBreakOk_() || !lateLeadOf_(periods, punchWithMs, noPunchBreakWindow(date))) return null;
+  if (!cache) cache = {};
+  if (cache.rows === undefined) { try { cache.rows = typeof reqRows_ === 'function' ? reqRows_(ss) : null; } catch (e) { cache.rows = null; } }
+  return cache.rows;
+}
+/** 這一列核定當時的資料（2026-11-27 第十輪，夜間重做核定時的判斷用）：打卡時間 ≤ 核定時間的卡（不帶上班中標記）、核定時已核准的單
+ *  （decided_at ≤ 核定時間；之後才作廢的算當時有、之後才核准的算當時沒有；回傳的單一律標 approved）。讀不到核定時間＝null。reqRows＝申請表（null＝沒有單）。 */
+function lateLeadDataAt_(eventRows, empId, date, apprAt, reqRows) {
+  const t = Date.parse(String(apprAt == null ? '' : apprAt).trim());
+  if (!isFinite(t)) return null;
+  const ev = (eventRows || []).filter(function (e) { return tsMs(e.ts) <= t; });
+  const segs = dayPunchSegments(ev, empId, date).segments.map(function (s) {
+    return { in: s.in, out: s.out, inMs: s.in ? hmToMs(date, s.in) : null, outMs: s.out ? hmToMs(s.cross ? addDaysStr(date, 1) : date, s.out) : null };
+  });
+  const ok = (reqRows || []).filter(function (r) {
+    if (String(r.emp_id) !== String(empId) || String(r.date).slice(0, 10) !== String(date)) return false;
+    if (r.status !== 'approved' && r.status !== 'voided') return false;
+    const d = Date.parse(String(r.decided_at || '').trim());
+    if (isFinite(d) && d > t) return false;                                   // 核定之後才核准的單：當時沒有
+    if (r.status === 'voided') { const v = Date.parse(String(r.voided_at || '').trim()); return isFinite(d) && isFinite(v) && v > t; }   // 核定之後才作廢：當時有
+    return true;
+  }).map(function (r) { return Object.assign({}, r, { status: 'approved', date: String(r.date).slice(0, 10) }); });
+  return { segs: segs, ok: ok };
+}
+/** 這一列核定當下同仁是不是還沒下班（第九輪；同 Requests.gs reqLateLeadOpen_，用 lateLeadDataAt_ 的資料）。讀不到核定時間＝false。 */
+function lateLeadOpenAt_(eventRows, empId, date, apprAt, reqRows) {
+  const d = lateLeadDataAt_(eventRows, empId, date, apprAt, reqRows);
+  return !!d && typeof reqLateLeadOpen_ === 'function' && reqLateLeadOpen_(d.segs, d.ok, date);
+}
+/** 狀態字串裡系統算的遲到分鐘合計（「遲到N分」；主管認定的「(認定)」不算） */
+function sysLateMin_(st) {
+  return String(st || '').split('、').reduce(function (a, x) { const m = /^遲到(\d+)分$/.exec(x); return a + (m ? Number(m[1]) : 0); }, 0);
+}
+function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec, reqCache) {
   const rawPeriods = parsePeriodsStr(rec.periods);
   if (!rawPeriods.length) return { skip: 'no_periods' }; // 整天請假無時段，跳過
 
@@ -3604,12 +3790,26 @@ function recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec) 
   //   再把主管認定的那一項（遲到N分(認定)／主管認定不計遲到）原樣放回去，系統算的遲到照舊被它取代。
   const st0 = String(rec.status_text || '');
   const manualNote = st0.split('、').filter(function (x) { return x.indexOf(MANUAL_LATE_MARK) !== -1 || x === NO_LATE_NOTE; })[0] || '';
-  let st = computeApprovalStatus(periods, punchWithMs,
+  const casArgs = [periods, punchWithMs,
     unresolvedAttemptCount_(eventRows, empId, date) > 0,
     isTripDay(ss, date, rosterNow ? rosterNow.name : rec.name),
     noPunchBreakWindow(date),
     // 每天重算沒有班表：照原狀態有沒有「中途離開N分」判斷（核定當下有套才會有），重算結果才跟核定當下一樣；開關改了也不回頭改已核定的
-    st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; }));
+    st0.split('、').some(function (x) { return x.indexOf(GAP_LATE_NOTE) === 0; })];
+  // 上午整段沒到改算遲到（2026-11-26）：見 lateLeadRecheck_
+  // 換版時間（Requests.gs REQ_LATE_LEAD_CUTOVER_，2026-11-26 第三輪之二）：這列的核定時間早於換版時間、或讀不到 → 一律照舊判法（＝主線重算；主管定案「已核定的不回頭改」）。
+  //   核定時間：呼叫端帶的 reqCache.apprAt（lateLeadApprAtMap_，跳過系統重算列）；沒帶就只認這列本身是主管核定列時的 entered_at
+  const apprAt = reqCache && reqCache.apprAt ? reqCache.apprAt[date + '|' + String(empId)]
+    : (String(rec.manager_name || '').slice(-RECHECK_MARK.length) === RECHECK_MARK ? '' : normCellTs(rec.entered_at));
+  // 第九輪方案 B：核定當下同仁還沒下班的列（lateLeadOpenAt_：核定時已有的卡與已核准的單）＝這筆核定與之後每天重算都照主線；下班後主管重新核定（新的核定時間）才看新規則
+  const llSegs = typeof reqLateLeadSegs_ === 'function' ? reqLateLeadSegs_(punchWithMs) : punchWithMs;      // 新規則那條路徑：不看現在時間
+  const llAfter = typeof reqLateLeadAfterCutover_ === 'function' && reqLateLeadAfterCutover_(apprAt);
+  // 第十輪：夜間不換算法——核定當時用哪一套就用哪一套（lateLeadRecheck_ 用核定時的資料重做判斷），對當下的打卡重算；申請表只在核定時的打卡是那種日子才讀
+  const atData = llAfter ? lateLeadDataAt_(eventRows, empId, date, apprAt, null) : null;
+  const llRows = atData ? lateLeadReqRows_(ss, reqCache, date, periods, atData.segs) : null;
+  const llMode = llRows ? lateLeadRecheck_(date, st0, periods, llRows, String(empId), eventRows, apprAt, casArgs.slice(2)) : 'off';
+  const casNew = [periods, llSegs].concat(casArgs.slice(2));
+  let st = computeApprovalStatus.apply(null, llMode === 'on' ? casNew.concat([true]) : casArgs.concat([false]));
   if (manualNote) {
     const kept = st.split('、').filter(function (x) { return x && x !== '正常' && x.indexOf('遲到') !== 0; });
     kept.push(manualNote);
@@ -3627,7 +3827,8 @@ function recheckPendingApprovalStatuses() {
   const approvedSheet = ss.getSheetByName('approved');
   if (!approvedSheet) return { checked: 0, fixed: 0 };
 
-  const approvedMap = buildLatestApprovedMap(readSheetAsObjects(approvedSheet).rows);
+  const approvedRowsAll = readSheetAsObjects(approvedSheet).rows;
+  const approvedMap = buildLatestApprovedMap(approvedRowsAll);
   const today = todayTaipeiStr();
   const dates = [];
   for (let i = 1; i <= RECHECK_STATUS_DAYS; i++) dates.push(addDaysStr(today, -i));
@@ -3636,6 +3837,8 @@ function recheckPendingApprovalStatuses() {
   const eventRows = dropDupIgnored_(readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; }),
     dupIgnoreSet_(approvedMap));
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
+  // 上午整段沒到改算遲到（2026-11-26 第三輪）：申請表整批只讀一次、需要時才讀（lateLeadReqRows_）；apprAt＝每列的主管核定時間（換版時間判斷，第三輪之二）
+  const reqCache = { apprAt: lateLeadApprAtMap_(approvedRowsAll) };
 
   let checked = 0;
   let fixed = 0;
@@ -3654,7 +3857,7 @@ function recheckPendingApprovalStatuses() {
       if (statusText.indexOf(NO_PUNCH_NOTE) === -1 && statusText.indexOf(NOT_RECORDED_NOTE) === -1 &&
           statusText.indexOf(MISSING_GROUP_PREFIX) === -1 && statusText.indexOf('忘刷卡') === -1 &&
           statusText.indexOf(WORKING_NOTE) === -1) return;
-      const r = recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec);
+      const r = recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec, reqCache);
       if (r.skip === 'no_periods') return;
       checked++;
       if (r.skip) return;
@@ -3736,11 +3939,13 @@ function backfillMissingPunchGroups(fromDate, toDate, apply) {
   const approvedSheet = ss.getSheetByName('approved');
   if (!approvedSheet) return { ok: false, error: 'no_approved_sheet' };
 
-  const approvedMap = buildLatestApprovedMap(readSheetAsObjects(approvedSheet).rows);
+  const approvedRowsAll = readSheetAsObjects(approvedSheet).rows;
+  const approvedMap = buildLatestApprovedMap(approvedRowsAll);
   // 主管認定的重複卡先拿掉（2026-11-06），重算才不會又把它當忘刷
   const eventRows = dropDupIgnored_(readSheetAsObjects(ss.getSheetByName('events')).rows.map(function (e) { e.ts = normCellTs(e.ts); return e; }),
     dupIgnoreSet_(approvedMap));
   const rosterRows = readSheetAsObjects(ss.getSheetByName('roster')).rows;
+  const reqCache = { apprAt: lateLeadApprAtMap_(approvedRowsAll) };   // 同 recheckPendingApprovalStatuses（2026-11-26 第三輪、第三輪之二）
 
   const hits = [];
   const skipped = [];
@@ -3757,7 +3962,7 @@ function backfillMissingPunchGroups(fromDate, toDate, apply) {
       if (parsePeriodsStr(rec.periods).length < 2) return;           // 單段班不可能少刷一整組
       scanned++;
 
-      const r = recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec);
+      const r = recomputeApprovalStatusOf(ss, eventRows, rosterRows, date, empId, rec, reqCache);
       if (r.skip) return;
       if (r.manual_late) {   // 回填只補「少刷」字樣，主管認定過的日子照舊不自動改
         skipped.push({ date: date, emp_id: empId, name: rec.name, from: statusText, reason: '主管手動認定，不自動改' });

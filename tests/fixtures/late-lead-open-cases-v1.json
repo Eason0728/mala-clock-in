@@ -1,0 +1,4313 @@
+{
+ "version": 1,
+ "date": "2026-12-03",
+ "about": "「還沒下班」共用案例（2026-11-27 第十輪）。mala-clock-in tests/fixtures/ 與 mala-store-ops test/fixtures/ 兩份必須逐字相同；打卡端 Requests.gs reqLateLeadOpen_、營運系統 core-calc.js lateLeadOpen 逐案要等於 open。",
+ "rule": "還沒下班＝這天最後一張卡（上班卡用上班時間、單張下班卡用下班時間，取最晚的那張）是沒有下班卡的上班卡，而且把這天已核准的忘打卡單補上去之後（順序不影響結果），那一段仍然沒有下班時間。補法（同 reqSegsWithMiss_）：下班忘打卡單（out）補給「第一段沒有下班卡的打卡段」，下班時間不晚於上班卡就當隔天；上班忘打卡單（in）補給「第一段沒有上班卡的打卡段」；整段（both）另外加一段、不補既有的段；中間休息（break）只切開蓋住它的完整段。假單、出差單、待審的單都不算。",
+ "cases": [
+  {
+   "id": "O001",
+   "punches": "只有上班卡",
+   "forms": "沒有單",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [],
+   "open": true
+  },
+  {
+   "id": "O002",
+   "punches": "只有上班卡",
+   "forms": "下班忘打卡 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O003",
+   "punches": "只有上班卡",
+   "forms": "下班忘打卡 16:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "16:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O004",
+   "punches": "只有上班卡",
+   "forms": "下班忘打卡 14:05（同一分鐘）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "14:05"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O005",
+   "punches": "只有上班卡",
+   "forms": "下班忘打卡 10:00（早於上班卡）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "10:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O006",
+   "punches": "只有上班卡",
+   "forms": "上班忘打卡 16:23",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O007",
+   "punches": "只有上班卡",
+   "forms": "上班忘打卡 07:30",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "07:30",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O008",
+   "punches": "只有上班卡",
+   "forms": "整段忘打卡 15:00–16:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "15:00",
+     "end": "16:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O009",
+   "punches": "只有上班卡",
+   "forms": "整段忘打卡 13:00–19:00（蓋住上班卡）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "13:00",
+     "end": "19:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O010",
+   "punches": "只有上班卡",
+   "forms": "中間休息 15:00 出 15:30 回",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O011",
+   "punches": "只有上班卡",
+   "forms": "上班 16:23＋下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O012",
+   "punches": "只有上班卡",
+   "forms": "下班 19:00＋上班 16:23",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O013",
+   "punches": "只有上班卡",
+   "forms": "兩張下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O014",
+   "punches": "只有上班卡",
+   "forms": "下班 19:00＋事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O015",
+   "punches": "只有上班卡",
+   "forms": "上班 16:23＋事假 15:15–17:01＋下班 19:00（驗收員 r9 例）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O016",
+   "punches": "只有上班卡",
+   "forms": "只有事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O017",
+   "punches": "只有上班卡",
+   "forms": "中間休息＋下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O018",
+   "punches": "只有上班卡",
+   "forms": "下班 19:00＋中間休息",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O019",
+   "punches": "只有上班卡",
+   "forms": "下班忘打卡 01:00（隔天）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "01:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O020",
+   "punches": "只有上班卡",
+   "forms": "待審的下班忘打卡（不算）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00",
+     "pending": true
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O021",
+   "punches": "上午一段＋上班卡",
+   "forms": "沒有單",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [],
+   "open": true
+  },
+  {
+   "id": "O022",
+   "punches": "上午一段＋上班卡",
+   "forms": "下班忘打卡 19:00",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O023",
+   "punches": "上午一段＋上班卡",
+   "forms": "下班忘打卡 16:00",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "16:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O024",
+   "punches": "上午一段＋上班卡",
+   "forms": "下班忘打卡 14:05（同一分鐘）",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "14:05"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O025",
+   "punches": "上午一段＋上班卡",
+   "forms": "下班忘打卡 10:00（早於上班卡）",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "10:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O026",
+   "punches": "上午一段＋上班卡",
+   "forms": "上班忘打卡 16:23",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O027",
+   "punches": "上午一段＋上班卡",
+   "forms": "上班忘打卡 07:30",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "07:30",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O028",
+   "punches": "上午一段＋上班卡",
+   "forms": "整段忘打卡 15:00–16:00",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "15:00",
+     "end": "16:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O029",
+   "punches": "上午一段＋上班卡",
+   "forms": "整段忘打卡 13:00–19:00（蓋住上班卡）",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "13:00",
+     "end": "19:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O030",
+   "punches": "上午一段＋上班卡",
+   "forms": "中間休息 15:00 出 15:30 回",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O031",
+   "punches": "上午一段＋上班卡",
+   "forms": "上班 16:23＋下班 19:00",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O032",
+   "punches": "上午一段＋上班卡",
+   "forms": "下班 19:00＋上班 16:23",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O033",
+   "punches": "上午一段＋上班卡",
+   "forms": "兩張下班 19:00",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O034",
+   "punches": "上午一段＋上班卡",
+   "forms": "下班 19:00＋事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O035",
+   "punches": "上午一段＋上班卡",
+   "forms": "上班 16:23＋事假 15:15–17:01＋下班 19:00（驗收員 r9 例）",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O036",
+   "punches": "上午一段＋上班卡",
+   "forms": "只有事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O037",
+   "punches": "上午一段＋上班卡",
+   "forms": "中間休息＋下班 19:00",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O038",
+   "punches": "上午一段＋上班卡",
+   "forms": "下班 19:00＋中間休息",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O039",
+   "punches": "上午一段＋上班卡",
+   "forms": "下班忘打卡 01:00（隔天）",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "01:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O040",
+   "punches": "上午一段＋上班卡",
+   "forms": "待審的下班忘打卡（不算）",
+   "segs": [
+    {
+     "in": "08:00",
+     "out": "11:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00",
+     "pending": true
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O041",
+   "punches": "一段完整",
+   "forms": "沒有單",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [],
+   "open": false
+  },
+  {
+   "id": "O042",
+   "punches": "一段完整",
+   "forms": "下班忘打卡 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O043",
+   "punches": "一段完整",
+   "forms": "下班忘打卡 16:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "16:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O044",
+   "punches": "一段完整",
+   "forms": "下班忘打卡 14:05（同一分鐘）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "14:05"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O045",
+   "punches": "一段完整",
+   "forms": "下班忘打卡 10:00（早於上班卡）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "10:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O046",
+   "punches": "一段完整",
+   "forms": "上班忘打卡 16:23",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O047",
+   "punches": "一段完整",
+   "forms": "上班忘打卡 07:30",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "07:30",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O048",
+   "punches": "一段完整",
+   "forms": "整段忘打卡 15:00–16:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "15:00",
+     "end": "16:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O049",
+   "punches": "一段完整",
+   "forms": "整段忘打卡 13:00–19:00（蓋住上班卡）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "13:00",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O050",
+   "punches": "一段完整",
+   "forms": "中間休息 15:00 出 15:30 回",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O051",
+   "punches": "一段完整",
+   "forms": "上班 16:23＋下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O052",
+   "punches": "一段完整",
+   "forms": "下班 19:00＋上班 16:23",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O053",
+   "punches": "一段完整",
+   "forms": "兩張下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O054",
+   "punches": "一段完整",
+   "forms": "下班 19:00＋事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O055",
+   "punches": "一段完整",
+   "forms": "上班 16:23＋事假 15:15–17:01＋下班 19:00（驗收員 r9 例）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O056",
+   "punches": "一段完整",
+   "forms": "只有事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O057",
+   "punches": "一段完整",
+   "forms": "中間休息＋下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O058",
+   "punches": "一段完整",
+   "forms": "下班 19:00＋中間休息",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O059",
+   "punches": "一段完整",
+   "forms": "下班忘打卡 01:00（隔天）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "01:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O060",
+   "punches": "一段完整",
+   "forms": "待審的下班忘打卡（不算）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "16:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00",
+     "pending": true
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O061",
+   "punches": "完整段後又上班卡",
+   "forms": "沒有單",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [],
+   "open": true
+  },
+  {
+   "id": "O062",
+   "punches": "完整段後又上班卡",
+   "forms": "下班忘打卡 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O063",
+   "punches": "完整段後又上班卡",
+   "forms": "下班忘打卡 16:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "16:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O064",
+   "punches": "完整段後又上班卡",
+   "forms": "下班忘打卡 14:05（同一分鐘）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "14:05"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O065",
+   "punches": "完整段後又上班卡",
+   "forms": "下班忘打卡 10:00（早於上班卡）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "10:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O066",
+   "punches": "完整段後又上班卡",
+   "forms": "上班忘打卡 16:23",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O067",
+   "punches": "完整段後又上班卡",
+   "forms": "上班忘打卡 07:30",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "07:30",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O068",
+   "punches": "完整段後又上班卡",
+   "forms": "整段忘打卡 15:00–16:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "15:00",
+     "end": "16:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O069",
+   "punches": "完整段後又上班卡",
+   "forms": "整段忘打卡 13:00–19:00（蓋住上班卡）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "13:00",
+     "end": "19:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O070",
+   "punches": "完整段後又上班卡",
+   "forms": "中間休息 15:00 出 15:30 回",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O071",
+   "punches": "完整段後又上班卡",
+   "forms": "上班 16:23＋下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O072",
+   "punches": "完整段後又上班卡",
+   "forms": "下班 19:00＋上班 16:23",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O073",
+   "punches": "完整段後又上班卡",
+   "forms": "兩張下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O074",
+   "punches": "完整段後又上班卡",
+   "forms": "下班 19:00＋事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O075",
+   "punches": "完整段後又上班卡",
+   "forms": "上班 16:23＋事假 15:15–17:01＋下班 19:00（驗收員 r9 例）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O076",
+   "punches": "完整段後又上班卡",
+   "forms": "只有事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O077",
+   "punches": "完整段後又上班卡",
+   "forms": "中間休息＋下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O078",
+   "punches": "完整段後又上班卡",
+   "forms": "下班 19:00＋中間休息",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O079",
+   "punches": "完整段後又上班卡",
+   "forms": "下班忘打卡 01:00（隔天）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "01:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O080",
+   "punches": "完整段後又上班卡",
+   "forms": "待審的下班忘打卡（不算）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": "15:00"
+    },
+    {
+     "in": "15:30",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00",
+     "pending": true
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O081",
+   "punches": "兩張沒配對上班卡",
+   "forms": "沒有單",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [],
+   "open": true
+  },
+  {
+   "id": "O082",
+   "punches": "兩張沒配對上班卡",
+   "forms": "下班忘打卡 19:00",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O083",
+   "punches": "兩張沒配對上班卡",
+   "forms": "下班忘打卡 16:00",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "16:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O084",
+   "punches": "兩張沒配對上班卡",
+   "forms": "下班忘打卡 14:05（同一分鐘）",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "14:05"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O085",
+   "punches": "兩張沒配對上班卡",
+   "forms": "下班忘打卡 10:00（早於上班卡）",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "10:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O086",
+   "punches": "兩張沒配對上班卡",
+   "forms": "上班忘打卡 16:23",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O087",
+   "punches": "兩張沒配對上班卡",
+   "forms": "上班忘打卡 07:30",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "07:30",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O088",
+   "punches": "兩張沒配對上班卡",
+   "forms": "整段忘打卡 15:00–16:00",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "15:00",
+     "end": "16:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O089",
+   "punches": "兩張沒配對上班卡",
+   "forms": "整段忘打卡 13:00–19:00（蓋住上班卡）",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "13:00",
+     "end": "19:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O090",
+   "punches": "兩張沒配對上班卡",
+   "forms": "中間休息 15:00 出 15:30 回",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O091",
+   "punches": "兩張沒配對上班卡",
+   "forms": "上班 16:23＋下班 19:00",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O092",
+   "punches": "兩張沒配對上班卡",
+   "forms": "下班 19:00＋上班 16:23",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O093",
+   "punches": "兩張沒配對上班卡",
+   "forms": "兩張下班 19:00",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O094",
+   "punches": "兩張沒配對上班卡",
+   "forms": "下班 19:00＋事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O095",
+   "punches": "兩張沒配對上班卡",
+   "forms": "上班 16:23＋事假 15:15–17:01＋下班 19:00（驗收員 r9 例）",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O096",
+   "punches": "兩張沒配對上班卡",
+   "forms": "只有事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O097",
+   "punches": "兩張沒配對上班卡",
+   "forms": "中間休息＋下班 19:00",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O098",
+   "punches": "兩張沒配對上班卡",
+   "forms": "下班 19:00＋中間休息",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O099",
+   "punches": "兩張沒配對上班卡",
+   "forms": "下班忘打卡 01:00（隔天）",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "01:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O100",
+   "punches": "兩張沒配對上班卡",
+   "forms": "待審的下班忘打卡（不算）",
+   "segs": [
+    {
+     "in": "09:00",
+     "out": null
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00",
+     "pending": true
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O101",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "沒有單",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [],
+   "open": true
+  },
+  {
+   "id": "O102",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "下班忘打卡 19:00",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O103",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "下班忘打卡 16:00",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "16:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O104",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "下班忘打卡 14:05（同一分鐘）",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "14:05"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O105",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "下班忘打卡 10:00（早於上班卡）",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "10:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O106",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "上班忘打卡 16:23",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O107",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "上班忘打卡 07:30",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "07:30",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O108",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "整段忘打卡 15:00–16:00",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "15:00",
+     "end": "16:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O109",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "整段忘打卡 13:00–19:00（蓋住上班卡）",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "13:00",
+     "end": "19:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O110",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "中間休息 15:00 出 15:30 回",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O111",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "上班 16:23＋下班 19:00",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O112",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "下班 19:00＋上班 16:23",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O113",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "兩張下班 19:00",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O114",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "下班 19:00＋事假 15:15–17:01",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O115",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "上班 16:23＋事假 15:15–17:01＋下班 19:00（驗收員 r9 例）",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O116",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "只有事假 15:15–17:01",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O117",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "中間休息＋下班 19:00",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O118",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "下班 19:00＋中間休息",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O119",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "下班忘打卡 01:00（隔天）",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "01:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O120",
+   "punches": "單張下班卡＋上班卡",
+   "forms": "待審的下班忘打卡（不算）",
+   "segs": [
+    {
+     "in": null,
+     "out": "08:00"
+    },
+    {
+     "in": "14:05",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00",
+     "pending": true
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O121",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "沒有單",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [],
+   "open": false
+  },
+  {
+   "id": "O122",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "下班忘打卡 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O123",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "下班忘打卡 16:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "16:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O124",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "下班忘打卡 14:05（同一分鐘）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "14:05"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O125",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "下班忘打卡 10:00（早於上班卡）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "10:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O126",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "上班忘打卡 16:23",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O127",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "上班忘打卡 07:30",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "07:30",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O128",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "整段忘打卡 15:00–16:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "15:00",
+     "end": "16:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O129",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "整段忘打卡 13:00–19:00（蓋住上班卡）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "13:00",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O130",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "中間休息 15:00 出 15:30 回",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O131",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "上班 16:23＋下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O132",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "下班 19:00＋上班 16:23",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O133",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "兩張下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O134",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "下班 19:00＋事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O135",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "上班 16:23＋事假 15:15–17:01＋下班 19:00（驗收員 r9 例）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O136",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "只有事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O137",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "中間休息＋下班 19:00",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O138",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "下班 19:00＋中間休息",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O139",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "下班忘打卡 01:00（隔天）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "01:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O140",
+   "punches": "上班卡＋之後單張下班卡",
+   "forms": "待審的下班忘打卡（不算）",
+   "segs": [
+    {
+     "in": "14:05",
+     "out": null
+    },
+    {
+     "in": null,
+     "out": "18:00"
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00",
+     "pending": true
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O141",
+   "punches": "沒有卡",
+   "forms": "沒有單",
+   "segs": [],
+   "reqs": [],
+   "open": false
+  },
+  {
+   "id": "O142",
+   "punches": "沒有卡",
+   "forms": "下班忘打卡 19:00",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O143",
+   "punches": "沒有卡",
+   "forms": "下班忘打卡 16:00",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "16:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O144",
+   "punches": "沒有卡",
+   "forms": "下班忘打卡 14:05（同一分鐘）",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "14:05"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O145",
+   "punches": "沒有卡",
+   "forms": "下班忘打卡 10:00（早於上班卡）",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "10:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O146",
+   "punches": "沒有卡",
+   "forms": "上班忘打卡 16:23",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O147",
+   "punches": "沒有卡",
+   "forms": "上班忘打卡 07:30",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "07:30",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O148",
+   "punches": "沒有卡",
+   "forms": "整段忘打卡 15:00–16:00",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "15:00",
+     "end": "16:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O149",
+   "punches": "沒有卡",
+   "forms": "整段忘打卡 13:00–19:00（蓋住上班卡）",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "13:00",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O150",
+   "punches": "沒有卡",
+   "forms": "中間休息 15:00 出 15:30 回",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O151",
+   "punches": "沒有卡",
+   "forms": "上班 16:23＋下班 19:00",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O152",
+   "punches": "沒有卡",
+   "forms": "下班 19:00＋上班 16:23",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O153",
+   "punches": "沒有卡",
+   "forms": "兩張下班 19:00",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O154",
+   "punches": "沒有卡",
+   "forms": "下班 19:00＋事假 15:15–17:01",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O155",
+   "punches": "沒有卡",
+   "forms": "上班 16:23＋事假 15:15–17:01＋下班 19:00（驗收員 r9 例）",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O156",
+   "punches": "沒有卡",
+   "forms": "只有事假 15:15–17:01",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O157",
+   "punches": "沒有卡",
+   "forms": "中間休息＋下班 19:00",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O158",
+   "punches": "沒有卡",
+   "forms": "下班 19:00＋中間休息",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O159",
+   "punches": "沒有卡",
+   "forms": "下班忘打卡 01:00（隔天）",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "01:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O160",
+   "punches": "沒有卡",
+   "forms": "待審的下班忘打卡（不算）",
+   "segs": [],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00",
+     "pending": true
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O161",
+   "punches": "深夜上班卡",
+   "forms": "沒有單",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [],
+   "open": true
+  },
+  {
+   "id": "O162",
+   "punches": "深夜上班卡",
+   "forms": "下班忘打卡 19:00",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O163",
+   "punches": "深夜上班卡",
+   "forms": "下班忘打卡 16:00",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "16:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O164",
+   "punches": "深夜上班卡",
+   "forms": "下班忘打卡 14:05（同一分鐘）",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "14:05"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O165",
+   "punches": "深夜上班卡",
+   "forms": "下班忘打卡 10:00（早於上班卡）",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "10:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O166",
+   "punches": "深夜上班卡",
+   "forms": "上班忘打卡 16:23",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O167",
+   "punches": "深夜上班卡",
+   "forms": "上班忘打卡 07:30",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "07:30",
+     "end": ""
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O168",
+   "punches": "深夜上班卡",
+   "forms": "整段忘打卡 15:00–16:00",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "15:00",
+     "end": "16:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O169",
+   "punches": "深夜上班卡",
+   "forms": "整段忘打卡 13:00–19:00（蓋住上班卡）",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "both",
+     "start": "13:00",
+     "end": "19:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O170",
+   "punches": "深夜上班卡",
+   "forms": "中間休息 15:00 出 15:30 回",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O171",
+   "punches": "深夜上班卡",
+   "forms": "上班 16:23＋下班 19:00",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O172",
+   "punches": "深夜上班卡",
+   "forms": "下班 19:00＋上班 16:23",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O173",
+   "punches": "深夜上班卡",
+   "forms": "兩張下班 19:00",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O174",
+   "punches": "深夜上班卡",
+   "forms": "下班 19:00＋事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O175",
+   "punches": "深夜上班卡",
+   "forms": "上班 16:23＋事假 15:15–17:01＋下班 19:00（驗收員 r9 例）",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "in",
+     "start": "16:23",
+     "end": ""
+    },
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O176",
+   "punches": "深夜上班卡",
+   "forms": "只有事假 15:15–17:01",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "leave",
+     "leave_type": "事假",
+     "start": "15:15",
+     "end": "17:01",
+     "hours": 1.77
+    }
+   ],
+   "open": true
+  },
+  {
+   "id": "O177",
+   "punches": "深夜上班卡",
+   "forms": "中間休息＋下班 19:00",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O178",
+   "punches": "深夜上班卡",
+   "forms": "下班 19:00＋中間休息",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00"
+    },
+    {
+     "kind": "miss",
+     "miss_type": "break",
+     "start": "15:30",
+     "end": "15:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O179",
+   "punches": "深夜上班卡",
+   "forms": "下班忘打卡 01:00（隔天）",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "01:00"
+    }
+   ],
+   "open": false
+  },
+  {
+   "id": "O180",
+   "punches": "深夜上班卡",
+   "forms": "待審的下班忘打卡（不算）",
+   "segs": [
+    {
+     "in": "23:10",
+     "out": null
+    }
+   ],
+   "reqs": [
+    {
+     "kind": "miss",
+     "miss_type": "out",
+     "start": "",
+     "end": "19:00",
+     "pending": true
+    }
+   ],
+   "open": true
+  }
+ ]
+}
