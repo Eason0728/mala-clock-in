@@ -386,5 +386,55 @@ console.log('\n══ ⑨ 驗收第二輪補：同日兩列、鎖月後試算、
   eq(fullS.sus(), ['2026-12-08', '2026-12-15', '2026-12-22'], '2 對照：今天 2027-01-05（月份已過完）三天都列');
 }
 
+console.log('\n══ ⑨ 曠職假別鎖（2026-11-28 主管定案外部審查擋項 2 選 B）：開關開著不能改名、停用、刪除；驗證＝存檔後重算，扣款與績效歸零仍在 ══');
+{
+  const LT = (name, active, extra) => Object.assign({ store: '', code: 'absent', name, pay_ratio: 0, count_absent: 'true', offset_shortfall: 'false', cap_days: '', cap_basis: '',
+    over_ratio: 0, merge_into: '', cap_per_month: '', tenure_months: '', under_ratio: 0, min_unit: 'hour', window_before: '', window_days: '', window_max: '',
+    attend_effect: 'void', count_meal_day: 'true', sort: 9980, note: '', active }, extra || {});
+  const PERS = LT('事假', 'true', { code: 'personal', attend_effect: '', sort: 10 });
+  const UI = (r) => Object.assign({}, r, { active: r.active !== 'false', count_absent: r.count_absent === 'true' });      // 網頁送的形狀（布林）
+  const MSG = '「曠職」是系統認定曠職用的假別，不能改名、停用或刪除。';
+  const save = (s, types, store) => s.post('handlePayrollLeaveTypeSet', { store: store === undefined ? '' : store, types: types.map(UI) });
+  const after = (s) => { const r = one(calc(s)); const d = (r.ded || []).find((i) => i.item_key === 'absent_deduct'); const ab = item(r, 'attend_bonus'); return [d ? d.amount : 0, ab && ab.item_label, ab && ab.amount]; };
+  const KEEP = [1133, KZ_NAME, 0];      // 34,000 ÷ 30 × 1；績效（當月有曠職）0
+  const envT = (rows, props) => { const sc = kzScene(['2026-12-10']); sc.data.leave_type = rows; return envOf(sc, 'now', props || ON); };
+  const cases = [
+    ['改名「無故缺勤」', [PERS, LT('無故缺勤', 'true')]],
+    ['停用', [PERS, LT('曠職', 'false')]],
+    ['刪掉曠職列（另有事假）', [PERS]],
+    ['曠職列改成別的代碼又改名', [PERS, LT('無故缺勤', 'true', { code: 'x9' })]],
+  ];
+  for (const [nm, next] of cases) {
+    const s = envT([PERS, LT('曠職', 'true')]);
+    const r = save(s, next);
+    eq([r.ok, r.error, r.message], [false, 'kz_type_locked', MSG], 'L-' + nm + '：擋下、句子（暫用）');
+    eq(after(s), KEEP, 'L-' + nm + '：存檔被擋 → 重算扣款 1,133、績效（當月有曠職）0 仍在');
+    eq(s.__DATA.leave_type.map((x) => [x.code, x.name, x.active]), [['personal', '事假', 'true'], ['absent', '曠職', 'true']], 'L-' + nm + '：假別表沒被改');
+  }
+  { const s = envT([PERS, LT('曠職', 'true')]); const r = save(s, [Object.assign({}, PERS, { pay_ratio: 0.5 }), LT('曠職', 'true', { attend_effect: 'deduct' })]);
+    eq(r.ok, true, 'L-改事假給薪比例、曠職對全勤改 deduct（名稱與啟用不變）：照存');
+    const a = after(s); eq([a[0], a[1]], [1133, '績效獎金'], 'L-照存後重算：扣款 1,133 仍在（對全勤照表上設定）'); }
+  { const s = envT([]); const r = save(s, [PERS]);
+    eq(r.ok, true, 'L-原本沒有曠職列（用內建）、存一張只有事假的表：照存（內建列照補）'); eq(after(s), KEEP, 'L-內建列照扣、績效歸零'); }
+  { const s = envT([]); const r = save(s, [PERS, LT('無故缺勤', 'true')]);
+    eq([r.ok, r.error], [false, 'kz_type_locked'], 'L-原本用內建、新增一列代碼 absent 叫別的名字（會蓋掉內建、又能被一般核定選到）：擋'); }
+  { const s = envT([PERS, LT('曠職', 'true', { code: 'kz1' })]); const r = save(s, [PERS, LT('曠職', 'true', { code: 'kz1' }), LT('無故缺勤', 'true')]);
+    eq([r.ok, r.error], [false, 'kz_type_locked'], 'L-自訂列（kz1 曠職）還在、另加代碼 absent 叫別的名字（一般核定選得到、又會被當曠職扣全薪÷30）：擋'); }
+  { const s = envT([PERS, LT('曠職', 'true', { code: 'kz1' })]); const r = save(s, [PERS, LT('缺勤', 'true', { code: 'kz1' })]);
+    eq([r.ok, r.error], [false, 'kz_type_locked'], 'L-既有自訂列（代碼 kz1、名稱曠職）改名：擋'); eq(after(s), KEEP, 'L-既有自訂列：擋下後重算照扣'); }
+  { const s = envT([PERS, LT('曠職', 'false')]);
+    eq(after(s), [0, '績效獎金', 1900], 'L-開開關前就停用的店（另有事假）：已認定的扣款本來就不見（要靠上線前檢查，存檔鎖救不了）');
+    eq(save(s, [PERS]).error, 'kz_type_locked', 'L-這種店存檔：原本那列（停用）存了之後不在 → 擋（要先把曠職改回啟用）');
+    const r = save(s, [PERS, LT('曠職', 'true')]); eq(r.ok, true, 'L-改回啟用：照存'); eq(after(s), KEEP, 'L-改回後重算：扣款 1,133、績效歸零回來'); }
+  { const s = envT([PERS, LT('曠職', 'true')]); s.__DATA.leave_type.push(LT('曠職', 'true', { store: 'SSLGF' }), Object.assign({}, PERS, { store: 'SSLGF' }));
+    eq(save(s, [PERS], 'SSLGF').error, 'kz_type_locked', 'L-門市專屬範圍刪掉自己的曠職列：擋');
+    eq(save(s, [PERS, LT('無故缺勤', 'true')], '').error, 'kz_type_locked', 'L-集團共用範圍改名：擋（就算這家有自己的曠職列）'); }
+  // 開關關：跟主線逐字相同（存得進去、表一樣、回應一樣）
+  for (const [nm, next] of cases) {
+    const a = envT([PERS, LT('曠職', 'true')], {}), b = (() => { const sc = kzScene(['2026-12-10']); sc.data.leave_type = [PERS, LT('曠職', 'true')]; return envOf(sc, 'base'); })();
+    eq([save(a, next), a.__DATA.leave_type], [save(b, next), b.__DATA.leave_type], 'L-開關關、' + nm + '：回應與存下的表跟主線 ' + BASE + ' 逐字相同');
+  }
+}
+
 console.log('\n' + pass + ' 過、' + fail + ' 失敗');
 if (fail) process.exit(1);

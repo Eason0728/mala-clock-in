@@ -1482,6 +1482,38 @@ function payKzDefaultType() {
            attend_effect: 'void',      // 第 7 題 C：當月有曠職，績效獎金整筆歸零（各店可在假別設定改）
            count_meal_day: true, sort: 9980, note: PAY_KZ_NOTE };
 }
+/** 曠職假別鎖（2026-11-28 主管定案外部審查擋項 2 選 B）：開關開著時，假別設定不能把「曠職」改名、停用、刪除，也不能存成讓認定的曠職歸集不到的樣子。
+ *  字集中在這裡（暫用，主管確認中；之後只換這一行）。 */
+var PAY_KZ_TYPE_LOCK_MSG = '「曠職」是系統認定曠職用的假別，不能改名、停用或刪除。';
+/** 這份假別表（rows＝payroll_leave_type 全部列）在這家店（store）開關開著時，認定寫的「曠職」歸集得到嗎：
+ *  payLeaveCode('曠職') 對到的那列是曠職類（payIsKzType）、名稱就是「曠職」，而且生效清單裡沒有「代碼 absent、名稱不是曠職」的列
+ *  （那種列會被一般核定選到、又被當成曠職扣全薪÷30）。只讀、不寫。開關關時這支沒有人叫。 */
+function payKzTypeOk_(rows, store) {
+  const list = payLeaveTypes(store, rows || []);
+  const code = payLeaveCode(PAY_KZ_NAME, list);
+  const t = list.filter(function (x) { return x.code === code; })[0];
+  if (!t || !payIsKzType(t) || String(t.name).trim() !== PAY_KZ_NAME) return false;
+  return !list.some(function (x) { return String(x.code) === PAY_KZ_CODE && String(x.name).trim() !== PAY_KZ_NAME; });
+}
+/** 存假別設定前的曠職鎖（開關開著才檢查；關＝回 null，跟主線一樣）：
+ *  ①這次存的範圍（st）原本有的曠職類列（代碼 absent 或名稱曠職，含停用的），存了之後要還在、名稱「曠職」、啟用——擋改名、停用、刪除；
+ *  ②受影響的每家店（st 有值＝那家；空白＝集團共用，所有門市＋預設店）原本歸集得到的，存了之後也要歸集得到（payKzTypeOk_）——擋「另有其他假別＋停用曠職列」之類的形狀。
+ *  原本就歸集不到的店（開開關前就改名或停用）不在②擋（擋了就什麼都存不了）；那種店靠上線前檢查 tools/kuangzhi-type-check.py 先改好。 */
+function payKzTypeLockCheck_(oldRows, newRows, st) {
+  if (!payKzFrom_()) return null;
+  const inScope = function (r) { return String(r.store || '').trim() === st; };
+  const deny = { ok: false, error: 'kz_type_locked', message: PAY_KZ_TYPE_LOCK_MSG };
+  const olds = (oldRows || []).filter(function (r) { return inScope(r) && String(r.code || '').trim() && payIsKzType({ code: String(r.code).trim(), name: r.name }); });
+  for (let i = 0; i < olds.length; i++) {
+    const code = String(olds[i].code).trim();
+    const hit = (newRows || []).filter(function (r) { return inScope(r) && String(r.code || '').trim() === code; })[0];
+    if (!hit || String(hit.name || '').trim() !== PAY_KZ_NAME || (payBool(hit.active) === false && String(hit.active).trim() !== '')) return deny;
+  }
+  let stores = [st];
+  if (!st) { stores = ['']; try { payRead('store').forEach(function (x) { const c = String(x.code || '').trim(); if (c && stores.indexOf(c) < 0) stores.push(c); }); } catch (e) { /* 讀不到門市表：只看預設店 */ } }
+  for (let j = 0; j < stores.length; j++) if (payKzTypeOk_(oldRows, stores[j]) && !payKzTypeOk_(newRows, stores[j])) return deny;
+  return null;
+}
 /** 開關開著、表上（含停用列）沒有曠職列 → 補內建列（排最後）。開關關＝原樣 */
 function payWithKzType(list, seen) {
   if (!payKzFrom_() || seen || list.some(payIsKzType)) return list;
@@ -2920,13 +2952,14 @@ function payWinNum_(v, allowZero) {
 
 /** 讀假別表；表不存在或全空 → 回內建預設（系統不會因為沒建表而壞掉）。
  *  依門市覆寫：該店專屬列（store 有填）優先於集團共用列（store 空白），與參數設定同一套規則。 */
-function payLeaveTypes(store) {
+function payLeaveTypes(store, rowsOverride) {
   // ⚠ payroll_mock.js 只抽「payR0 → Handlers」這段，payStore／payRead 不在切片內，
   //    所以兩者都要包 try——本機測試才不會 ReferenceError，且自動退回內建預設。
+  //    rowsOverride（2026-11-28 曠職假別鎖）：只有存檔前模擬「存了之後」才帶；其他呼叫一律不帶＝照舊讀表
   let st = '';
   try { st = payStore(store); } catch (err) { st = String(store || ''); }
   let rows = [];
-  try { rows = payRead('leave_type'); } catch (err) { rows = []; }
+  try { rows = rowsOverride !== undefined ? rowsOverride : payRead('leave_type'); } catch (err) { rows = []; }
   const pick = {};
   let compOff = false;   // 表上有補休列但停用了 → 尊重設定，不補內建列
   let kzSeen = false;    // 曠職（2026-11-26）：表上（這家店或集團共用）已有曠職列（含停用）→ 以表為準，不補內建列
@@ -7191,6 +7224,7 @@ function payIsInsSelfKey(k) {
 function payIsReduceKey(k) {
   const s = String(k);
   return /_leave$/.test(s) || s === 'shortfall_hours' || s === 'late_deduct' || s === 'early_deduct'
+      || s === 'absent_deduct'   // 曠職扣款（2026-11-28 外部審查殘餘：跟請假扣款一樣是真的少領，成本要扣回）
       || s === 'dormitory' || payIsInsSelfKey(s);
 }
 
@@ -7638,6 +7672,8 @@ function handlePayrollLeaveTypeSet(body) {
   /* 讀不到就不寫（2026-11-22 寫入防壞，同 #210 成本快照）：以前讀失敗當成空表，整張覆寫會把別家店的列清掉；現在讓錯誤直接回給呼叫端 */
   const rows = payRead('leave_type');
   const kept = rows.filter(function (r) { return String(r.store || '').trim() !== st; });
+  const kzLock = payKzTypeLockCheck_(rows, kept.concat(incoming), st);   // 曠職假別鎖（開關開著才檢查；關＝null）
+  if (kzLock) return kzLock;
   payReplaceAll('leave_type', kept.concat(incoming));
   payAppend('audit', [{ ts: nowTaipeiIso(), ym: '', action: 'leave_type_set',
                         operator: String(body.operator || 'admin'),
@@ -8424,7 +8460,7 @@ function pnlAllocGapHours_(hoursArr, gap) {
 }
 
 var PNL_CO_ITEMS = ['co_labor', 'co_health', 'co_pension', 'co_owner', 'co_group'];
-var PNL_COST_REDUCE_EXTRA = ['shortfall_hours', 'late_deduct', 'early_deduct'];
+var PNL_COST_REDUCE_EXTRA = ['shortfall_hours', 'late_deduct', 'early_deduct', 'absent_deduct'];   // absent_deduct：曠職扣款（2026-11-28）
 function pnlIsCostReduceKey_(k) { return /_leave$/.test(String(k)) || PNL_COST_REDUCE_EXTRA.indexOf(k) >= 0; }
 var PNL_INS_SELF_KEYS = ['labor_ins', 'health_ins', 'group_ins', 'pension'];
 
