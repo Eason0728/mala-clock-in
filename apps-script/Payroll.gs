@@ -1485,25 +1485,34 @@ function payKzDefaultType() {
 /** 曠職假別鎖（2026-11-28 主管定案外部審查擋項 2 選 B）：開關開著時，假別設定不能把「曠職」改名、停用、刪除，也不能存成讓認定的曠職歸集不到的樣子。
  *  字集中在這裡（暫用，主管確認中；之後只換這一行）。 */
 var PAY_KZ_TYPE_LOCK_MSG = '「曠職」是系統認定曠職用的假別，不能改名、停用或刪除。';
-/** 這份假別表（rows＝payroll_leave_type 全部列）在這家店（store）開關開著時，認定寫的「曠職」歸集得到嗎：
- *  payLeaveCode('曠職') 對到的那列是曠職類（payIsKzType）、名稱就是「曠職」，而且生效清單裡沒有「代碼 absent、名稱不是曠職」的列
- *  （那種列會被一般核定選到、又被當成曠職扣全薪÷30）。只讀、不寫。開關關時這支沒有人叫。 */
+/** 名稱比對用的正規化：全形半形統一（NFKC）、拿掉所有空白（含全形空白）。只給曠職假別鎖判斷「是不是叫曠職」用。 */
+function payKzNm_(v) { let x = String(v == null ? '' : v); try { x = x.normalize('NFKC'); } catch (e) { /* 舊環境沒有 normalize：只去空白 */ } return x.replace(/\s+/g, ''); }
+/** 這家店（store）生效清單裡的曠職類列（代碼 absent，或名稱正規化後是曠職），只看會影響歸集與全勤的內容。比對「這次存檔有沒有動到曠職類列」用。 */
+function payKzRowsOf_(rows, store) {
+  return payLeaveTypes(store, rows || []).filter(function (x) { return String(x.code) === PAY_KZ_CODE || payKzNm_(x.name) === PAY_KZ_NAME; });
+}
+/** 這份假別表（rows＝payroll_leave_type 全部列）在這家店（store）開關開著時合不合規：
+ *  生效清單裡「名稱正規化後是曠職」的列恰好一列、而且就是代碼 absent 那列（表上沒有曠職列時＝內建列，也是 absent），
+ *  沒有「代碼 absent、名稱不是曠職」的別名列，而且 payLeaveCode('曠職') 對到的就是它（認定寫的曠職歸集到它、全勤照它）。只讀、不寫。 */
 function payKzTypeOk_(rows, store) {
   const list = payLeaveTypes(store, rows || []);
-  const code = payLeaveCode(PAY_KZ_NAME, list);
-  const t = list.filter(function (x) { return x.code === code; })[0];
-  if (!t || !payIsKzType(t) || String(t.name).trim() !== PAY_KZ_NAME) return false;
-  return !list.some(function (x) { return String(x.code) === PAY_KZ_CODE && String(x.name).trim() !== PAY_KZ_NAME; });
+  const named = list.filter(function (x) { return payKzNm_(x.name) === PAY_KZ_NAME; });
+  if (named.length !== 1 || String(named[0].code) !== PAY_KZ_CODE || String(named[0].name).trim() !== PAY_KZ_NAME) return false;
+  if (list.some(function (x) { return String(x.code) === PAY_KZ_CODE && String(x.name).trim() !== PAY_KZ_NAME; })) return false;
+  return payLeaveCode(PAY_KZ_NAME, list) === PAY_KZ_CODE;
 }
 /** 存假別設定前的曠職鎖（開關開著才檢查；關＝回 null，跟主線一樣）：
- *  ①這次存的範圍（st）原本有的曠職類列（代碼 absent 或名稱曠職，含停用的），存了之後要還在、名稱「曠職」、啟用——擋改名、停用、刪除；
- *  ②受影響的每家店（st 有值＝那家；空白＝集團共用，所有門市＋預設店）原本歸集得到的，存了之後也要歸集得到（payKzTypeOk_）——擋「另有其他假別＋停用曠職列」之類的形狀。
- *  原本就歸集不到的店（開開關前就改名或停用）不在②擋（擋了就什麼都存不了）；那種店靠上線前檢查 tools/kuangzhi-type-check.py 先改好。 */
+ *  ①這次存的範圍（st）原本有的「代碼 absent」列（含停用的），存了之後要還在、名稱「曠職」、啟用——擋改名、停用、刪除。
+ *    其他代碼卻叫曠職的列不保護（它們本來就不合規；改掉名字＝修好，歸集回到 absent 那列或內建列）；
+ *  ②受影響的每家店（st 有值＝那家；空白＝集團共用，所有門市＋預設店）：這次存檔動到了那家的曠職類列（payKzRowsOf_ 前後不同）→ 存完那家必須合規（payKzTypeOk_）。
+ *     擋：把別的假別改名叫曠職、新增一列叫曠職但代碼不同、新增代碼 absent 的別名、讓歸集或全勤改由別列決定。
+ *     原本就不合規的店（開開關前就兩列同名、改名或停用）：這次沒動到曠職類列＝照存（合法的一般存檔不會被擋死）；動到了就要一次改到合規。
+ *  那種既有不合規的店靠上線前檢查 tools/kuangzhi-type-check.py 先改好。 */
 function payKzTypeLockCheck_(oldRows, newRows, st) {
   if (!payKzFrom_()) return null;
   const inScope = function (r) { return String(r.store || '').trim() === st; };
   const deny = { ok: false, error: 'kz_type_locked', message: PAY_KZ_TYPE_LOCK_MSG };
-  const olds = (oldRows || []).filter(function (r) { return inScope(r) && String(r.code || '').trim() && payIsKzType({ code: String(r.code).trim(), name: r.name }); });
+  const olds = (oldRows || []).filter(function (r) { return inScope(r) && String(r.code || '').trim() === PAY_KZ_CODE; });
   for (let i = 0; i < olds.length; i++) {
     const code = String(olds[i].code).trim();
     const hit = (newRows || []).filter(function (r) { return inScope(r) && String(r.code || '').trim() === code; })[0];
@@ -1511,7 +1520,10 @@ function payKzTypeLockCheck_(oldRows, newRows, st) {
   }
   let stores = [st];
   if (!st) { stores = ['']; try { payRead('store').forEach(function (x) { const c = String(x.code || '').trim(); if (c && stores.indexOf(c) < 0) stores.push(c); }); } catch (e) { /* 讀不到門市表：只看預設店 */ } }
-  for (let j = 0; j < stores.length; j++) if (payKzTypeOk_(oldRows, stores[j]) && !payKzTypeOk_(newRows, stores[j])) return deny;
+  for (let j = 0; j < stores.length; j++) {
+    const touched = JSON.stringify(payKzRowsOf_(oldRows, stores[j])) !== JSON.stringify(payKzRowsOf_(newRows, stores[j]));
+    if (touched && !payKzTypeOk_(newRows, stores[j])) return deny;
+  }
   return null;
 }
 /** 開關開著、表上（含停用列）沒有曠職列 → 補內建列（排最後）。開關關＝原樣 */

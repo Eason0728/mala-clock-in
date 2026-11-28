@@ -8,7 +8,8 @@
   不印金額、給薪比例、其他假別的任何內容；不寫任何東西。
 判定：
   ‧有「代碼 absent、名稱不是曠職」的列 → 不通過（被改名；一般核定選得到、會被當曠職扣）
-  ‧有名稱「曠職」的列（在生效清單＝啟用中）→ 通過
+  ‧名稱是「曠職」的生效列不只一列（名稱先全形半形統一、拿掉空白再比），或唯一那列代碼不是 absent → 不通過（歸集或全勤可能改由別列決定）
+  ‧名稱「曠職」的生效列恰好一列、代碼 absent → 通過
   ‧看不到曠職列：開關已開 → 不通過（表上有停用的曠職列把內建列蓋掉）；開關還沒開 → 未確認（沒有曠職列＝開開關後用內建＝OK；或有停用的曠職列＝不 OK）
     → 開關打開後、任何人認定之前立刻再跑一次（那時看不到＝確定不通過，要馬上把開關關回去或改好）。
 管理金鑰：同 late-first-block/deploy/props_check.py，用 ~/dzy-mini-playbook/docs/clock-to-mini/p1s3/lib.py 的 load_admin_key（在這個行程裡讀、只進記憶體、不印、不落檔、不上命令列）。
@@ -17,12 +18,19 @@
 注意：payroll_leave_type_get 讀表時，若光復試算表沒有 payroll_leave_type 分頁會照既有行為建一張空的（薪資頁開頁也一樣）；正式環境有在用假別設定、應已存在。"""
 import importlib.util
 import pathlib
+import re
 import sys
+import unicodedata
 
 sys.dont_write_bytecode = True
 UNITS = ['SSLGF', 'CF', 'HQ', 'SSLHQ', 'MZTHQ', 'MZTJS', 'MZTGF', 'MZTLZL', 'MZTMC', 'MZTRG', 'MZTWX']   # 薪資單位代碼（營運系統 duty.js STORES.pay＋總部三個薪酬單位）
 KZ_NAME, KZ_CODE = '曠職', 'absent'
 P1S3 = pathlib.Path.home() / 'dzy-mini-playbook' / 'docs' / 'clock-to-mini' / 'p1s3' / 'lib.py'
+
+
+def nm(v):
+    """名稱正規化（同 Payroll.gs payKzNm_：NFKC、拿掉所有空白）"""
+    return re.sub(r'\s+', '', unicodedata.normalize('NFKC', str(v if v is not None else '')))
 
 
 def verdict(resp):
@@ -31,16 +39,22 @@ def verdict(resp):
         return '未確認', ['讀不到（回應不是成功的假別清單）']
     on = resp.get('kz_on') is True
     types = [t for t in resp['types'] if isinstance(t, dict)]
-    kz = [t for t in types if str(t.get('code', '')).strip() == KZ_CODE or str(t.get('name', '')).strip() == KZ_NAME]
+    kz = [t for t in types if str(t.get('code', '')).strip() == KZ_CODE or nm(t.get('name', '')) == KZ_NAME]
+    named = [t for t in types if nm(t.get('name', '')) == KZ_NAME]
     lines = []
     for t in kz:
-        nm = str(t.get('name', '')).strip()
+        name0 = str(t.get('name', '')).strip()
         lines.append('曠職列：存在（代碼 %s）｜名稱是曠職：%s｜啟用：是｜對全勤欄位 attend_effect＝%s' % (
-            str(t.get('code', '')).strip() or '（空）', '是' if nm == KZ_NAME else '否', str(t.get('attend_effect', '')).strip() or '（空白＝照 count_absent）'))
+            str(t.get('code', '')).strip() or '（空）', '是' if name0 == KZ_NAME else '否', str(t.get('attend_effect', '')).strip() or '（空白＝照 count_absent）'))
+    lines.append('同名「曠職」生效列數：%d' % len(named))
     alias = [t for t in kz if str(t.get('code', '')).strip() == KZ_CODE and str(t.get('name', '')).strip() != KZ_NAME]
     if alias:
         return '不通過', lines + ['代碼 absent 的列被改了名字：認定的曠職歸集不到、這個名字在一般核定選得到又會被當曠職扣 → 改回「曠職」']
-    if any(str(t.get('name', '')).strip() == KZ_NAME for t in kz):
+    if len(named) > 1:
+        return '不通過', lines + ['不只一列叫「曠職」：扣款與全勤可能照別列算 → 只留代碼 absent 那列叫曠職，其他列改名']
+    if len(named) == 1 and str(named[0].get('code', '')).strip() != KZ_CODE:
+        return '不通過', lines + ['叫「曠職」的列代碼不是 absent → 改成 absent，或把它改名（改名後開關打開會用內建曠職列）']
+    if len(named) == 1:
         return '通過', lines
     if on:
         return '不通過', ['曠職列：生效清單看不到（開關已開）＝表上有停用的曠職列蓋掉內建列 → 把它改回啟用']
@@ -55,7 +69,9 @@ def self_test():
         ({'ok': True, 'types': [T(), K()], 'kz_on': True}, '通過'),
         ({'ok': True, 'types': [T(), K(name='無故缺勤')]}, '不通過'),
         ({'ok': True, 'types': [T(), K(code='kz1'), K(name='缺勤')]}, '不通過'),
-        ({'ok': True, 'types': [T(), K(code='kz1')]}, '通過'),
+        ({'ok': True, 'types': [T(), K(code='kz1')]}, '不通過'),
+        ({'ok': True, 'types': [T(name='曠職'), K()]}, '不通過'),
+        ({'ok': True, 'types': [T(), K(), K(code='k2', name='曠　職')]}, '不通過'),
         ({'ok': True, 'types': [T()]}, '未確認'),
         ({'ok': True, 'types': [T()], 'kz_on': True}, '不通過'),
         ({'ok': False, 'error': 'unauthorized'}, '未確認'),

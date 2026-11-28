@@ -52,7 +52,7 @@ node tests/run-all.js
 | `kuangzhi-payroll.test.js` | 曠職薪資端：開關關＝12／11 月試算、假別設定、下拉、鎖定、草稿列跟主線逐字相同；開關開、沒曠職的月份金額每一欄相同；手算 H1–H8（績效歸零、計時滿勤、扣款＝全薪÷30×曠職天數、按天遞減設定）；疑似清單規則、鎖月擋句 22（KUANGZHI_LOCK_BLOCK=on 才擋；關著鎖定跟主線相同）、stale_run、請假對不上豁免；生效日在月中；假別表自動補內建列、既有列不變 | 不可降的標準 1（沒曠職的月份 100% 相同）、手算對照 |
 | `kuangzhi-sameday.test.js` | 曠職 v1.4 認定時點（2026-11-28 主管定案「那一班的下班時間過後就可以認定」）：一段班、兩段班（看最後一段）、跨午夜的班一律不能認定（外部審查擋項 1）、end 不合理或讀不出一律不通過、沒帶 end 照舊自補期限句 12、國定假日／沒發布照舊句 11、打卡先於時點判、認定後補打卡不會自己改 | 認定會扣錢：時點只能比主管定的晚、不能早 |
 | `kuangzhi-cost.test.js` | 曠職扣款 absent_deduct 進成本口徑：成本分類頁、損益估算、儀表板三處都扣回；沒有曠職扣款時三處輸出跟改之前（KZ_COST_BASE，預設 f0ff8428）逐字相同；有的話只差那一筆 | 成本報表與損益推送要跟實發一致 |
-| `kuangzhi-type-check.test.js` | 上線前檢查 tools/kuangzhi-type-check.py 的判定（--self-test，不連網路）：改名＝不通過、啟用的曠職列＝通過、看不到＝開關開不通過／沒開未確認；不印給薪欄位 | 開開關前九店都要通過 |
+| `kuangzhi-type-check.test.js` | 上線前檢查 tools/kuangzhi-type-check.py 的判定（--self-test，不連網路）：改名＝不通過、同名曠職列超過一列或代碼不是 absent＝不通過、恰好一列 absent＝通過、看不到＝開關開不通過／沒開未確認；不印給薪欄位 | 開開關前九店都要通過 |
 | `kuangzhi-x.test.js` | 曠職合約 v1.2 打卡端：sched_pub 格子的排除代號 x（只收 W 格上的 dir／hq_off／away／late，怪值、非字串、非 W 丟掉；too_big 含 x）；LINE 出勤班表、sched_day_roster、schedPubDaysFor_ 不輸出 x（對 `f21cc25` 逐字）；薪資掃疑似 C1–C6（有效 x 不列疑似、不擋鎖月；怪值照舊；連續被排除日斷開；已認定照扣；生效日前不作用；從 sched_pub 分頁讀起的真路徑）；開關關 sched_pub 有 x 也跟主線逐字相同；容量（`tools/kuangzhi-x-capacity.js`）；v1.3 第六節：國定假日 `hol`（2027-02-06、02-07、02-28 帶 hol 不列疑似、補假日不列、一般上班日照列；帶不帶 hol 金額與國定假日加發逐字相同；開關關跟主線相同） | x 是放寬欄位：只能在五個代號（v1.3 加 hol）、W 格時放寬，其他一律照舊列疑似 |
 | `kuangzhi-release-check.test.js` | `tools/kuangzhi-release-check.js`：佔位旗標已拿掉＝通過；又出現佔位旗標的版本一定失敗 | 不能帶著佔位上線 |
 

@@ -392,7 +392,7 @@ console.log('\n══ ⑨ 曠職假別鎖（2026-11-28 主管定案外部審查�
     over_ratio: 0, merge_into: '', cap_per_month: '', tenure_months: '', under_ratio: 0, min_unit: 'hour', window_before: '', window_days: '', window_max: '',
     attend_effect: 'void', count_meal_day: 'true', sort: 9980, note: '', active }, extra || {});
   const PERS = LT('事假', 'true', { code: 'personal', attend_effect: '', sort: 10 });
-  const UI = (r) => Object.assign({}, r, { active: r.active !== 'false', count_absent: r.count_absent === 'true' });      // 網頁送的形狀（布林）
+  const UI = (r) => Object.assign({}, r, { active: r.active !== 'false', count_absent: r.count_absent === 'true', offset_shortfall: r.offset_shortfall === 'true' });      // 網頁送的形狀（布林）
   const MSG = '「曠職」是系統認定曠職用的假別，不能改名、停用或刪除。';
   const save = (s, types, store) => s.post('handlePayrollLeaveTypeSet', { store: store === undefined ? '' : store, types: types.map(UI) });
   const after = (s) => { const r = one(calc(s)); const d = (r.ded || []).find((i) => i.item_key === 'absent_deduct'); const ab = item(r, 'attend_bonus'); return [d ? d.amount : 0, ab && ab.item_label, ab && ab.amount]; };
@@ -421,7 +421,7 @@ console.log('\n══ ⑨ 曠職假別鎖（2026-11-28 主管定案外部審查�
   { const s = envT([PERS, LT('曠職', 'true', { code: 'kz1' })]); const r = save(s, [PERS, LT('曠職', 'true', { code: 'kz1' }), LT('無故缺勤', 'true')]);
     eq([r.ok, r.error], [false, 'kz_type_locked'], 'L-自訂列（kz1 曠職）還在、另加代碼 absent 叫別的名字（一般核定選得到、又會被當曠職扣全薪÷30）：擋'); }
   { const s = envT([PERS, LT('曠職', 'true', { code: 'kz1' })]); const r = save(s, [PERS, LT('缺勤', 'true', { code: 'kz1' })]);
-    eq([r.ok, r.error], [false, 'kz_type_locked'], 'L-既有自訂列（代碼 kz1、名稱曠職）改名：擋'); eq(after(s), KEEP, 'L-既有自訂列：擋下後重算照扣'); }
+    eq(r.ok, true, 'L-既有自訂列（代碼 kz1、名稱曠職；不合規：曠職要是代碼 absent）改名：照存＝修好（內建曠職列接手）'); eq(after(s), KEEP, 'L-既有自訂列改名後重算：內建列照扣、績效歸零'); }
   { const s = envT([PERS, LT('曠職', 'false')]);
     eq(after(s), [0, '績效獎金', 1900], 'L-開開關前就停用的店（另有事假）：已認定的扣款本來就不見（要靠上線前檢查，存檔鎖救不了）');
     eq(save(s, [PERS]).error, 'kz_type_locked', 'L-這種店存檔：原本那列（停用）存了之後不在 → 擋（要先把曠職改回啟用）');
@@ -429,6 +429,29 @@ console.log('\n══ ⑨ 曠職假別鎖（2026-11-28 主管定案外部審查�
   { const s = envT([PERS, LT('曠職', 'true')]); s.__DATA.leave_type.push(LT('曠職', 'true', { store: 'SSLGF' }), Object.assign({}, PERS, { store: 'SSLGF' }));
     eq(save(s, [PERS], 'SSLGF').error, 'kz_type_locked', 'L-門市專屬範圍刪掉自己的曠職列：擋');
     eq(save(s, [PERS, LT('無故缺勤', 'true')], '').error, 'kz_type_locked', 'L-集團共用範圍改名：擋（就算這家有自己的曠職列）'); }
+  // 驗收補（2026-11-28）：別的假別改名叫曠職、另一列也叫曠職 → 擋（存檔後重算扣款與績效歸零仍在）
+  { const s = envT([PERS, LT('曠職', 'true')]); const r = save(s, [Object.assign({}, PERS, { name: '曠職' }), LT('曠職', 'true')]);
+    eq([r.ok, r.error], [false, 'kz_type_locked'], 'L-事假改名叫曠職（兩列同名）：擋'); eq(after(s), KEEP, 'L-事假改名被擋：重算扣款 1,133、績效（當月有曠職）0 仍在'); }
+  { const s = envT([PERS, LT('曠職', 'true')]);
+    eq(save(s, [PERS, LT('曠職', 'true'), LT('曠職', 'true', { code: 'k2', attend_effect: '' })]).error, 'kz_type_locked', 'L-新增一列叫曠職、代碼不同：擋');
+    eq(save(s, [PERS, LT('曠職', 'true'), LT('曠　職', 'true', { code: 'k3', attend_effect: '' })]).error, 'kz_type_locked', 'L-新增一列叫「曠　職」（全形空白）：正規化後同名，擋');
+    eq(after(s), KEEP, 'L-新增同名列被擋：重算照扣、績效歸零'); }
+  { const s = envT([PERS, LT('曠職', 'true')]);
+    eq(save(s, [Object.assign({}, PERS, { name: '曠職', store: 'SSLGF' })], 'SSLGF').error, 'kz_type_locked', 'L-單店範圍：門市自己的事假列叫曠職（跟集團的曠職同名）：擋');
+    eq(after(s), KEEP, 'L-單店範圍被擋：重算照扣'); }
+  { const s = envT([PERS, LT('曠職', 'true')]); s.__DATA.store = STORES().concat([{ code: 'CF', name: '央廚', clock_ss_id: '', emp_prefix: '', active: 'true', support_group: 'cf' }]);
+    s.__DATA.leave_type.push(LT('其他', 'true', { code: 'x', store: 'SSLGF', attend_effect: '' }));
+    eq(save(s, [PERS, LT('曠職', 'true'), LT('曠職', 'true', { code: 'x', attend_effect: '' })], '').error, 'kz_type_locked',
+      'L-集團共用範圍新增代碼 x 叫曠職：預設店（光復）有自己的 x 蓋掉、看不出來，央廚會兩列同名 → 要看所有門市才擋得到'); }
+  { // 既有狀態就兩列同名（開開關前）：沒動到曠職類列的一般存檔照存；動到就要一次改到合規
+    const dup = [Object.assign({}, PERS, { name: '曠職' }), LT('曠職', 'true')];
+    const s = envT(dup);
+    const r1 = save(s, dup.concat([LT('病假', 'true', { code: 'sick', attend_effect: '', sort: 20 })]));
+    eq(r1.ok, true, 'L-既有兩列同名、這次只加病假（沒動到曠職類列）：照存（不把合法存檔擋死）');
+    eq(save(s, [Object.assign({}, PERS, { name: '曠職' }), LT('曠職', 'true', { attend_effect: 'deduct' }), LT('病假', 'true', { code: 'sick', attend_effect: '', sort: 20 })]).error, 'kz_type_locked',
+      'L-既有兩列同名、這次動了曠職列（對全勤）但沒修掉同名：擋');
+    const r3 = save(s, [PERS, LT('曠職', 'true'), LT('病假', 'true', { code: 'sick', attend_effect: '', sort: 20 })]);
+    eq(r3.ok, true, 'L-既有兩列同名、把事假改回事假：照存（修好的路）'); eq(after(s), KEEP, 'L-修好後重算：扣款 1,133、績效歸零'); }
   // 開關關：跟主線逐字相同（存得進去、表一樣、回應一樣）
   for (const [nm, next] of cases) {
     const a = envT([PERS, LT('曠職', 'true')], {}), b = (() => { const sc = kzScene(['2026-12-10']); sc.data.leave_type = [PERS, LT('曠職', 'true')]; return envOf(sc, 'base'); })();
