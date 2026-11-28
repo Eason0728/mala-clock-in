@@ -79,6 +79,9 @@ function env(sc, opt) {
     schedPubLoad_ = function () { __PUBN++; if (__PUBTHROW) throw new Error('sched_pub 讀不到'); return JSON.parse(JSON.stringify(__PUB)); };
     paySchedMissingAll_=function(){return [];};payUnapprovedAll_=function(){return [];};payCompNegatives=function(){return [];};payLeaveMismatch_=function(){return [];};`, s);
   if (opt.from !== undefined) vm.runInContext('PAY_HOL_GAP_FROM = ' + JSON.stringify(opt.from) + ';', s);
+  /* ptOff：計時國定假日調移（2026-11-28 定案，PAY_PT_HOL_MOVE_FROM；tests/pt-hol-move.test.js）關掉。這支比的是「黃字提示不動金額」跟 473c6cb，
+     那版還沒有計時調移；計時丙 12/24 排了國定假日假，開著時 12/25 對他是一般上班日（沒上班多一筆 no_show 提醒、班表那段多讀主檔），是新規則本身的差別、不是提示造成的。 */
+  if (opt.ptOff) vm.runInContext("PAY_PT_HOL_MOVE_FROM = '9999-12';", s);
   s.post = (fn, body) => J(s.call(fn, Object.assign({ admin_key: KEY }, body)));
   return s;
 }
@@ -229,7 +232,7 @@ const MK = { E01: { '2026-12-25': GUO }, E02: { '2026-12-24': GUO }, P01: { '202
 console.log('\n══ ③ 只提示：金額、明細列、鎖定跟 473c6cb 相同；不多讀 ══');
 for (const st of ['SSLGF']) {
   const sc = scene(MK);
-  const a = env(sc, { src: OLDP }), b = env(sc);
+  const a = env(sc, { src: OLDP }), b = env(sc, { ptOff: true });
   const ra = calc(a, '2026-12'), rb = calc(b, '2026-12');
   eq(rb.hol_sched_gap !== undefined && ra.hol_sched_gap === undefined, true, '前提：新版有提示、基準沒有');
   eq(JSON.stringify(strip(rb)) === JSON.stringify(ra), true, '拿掉提示資料後，計算回應（含每人應發／扣款／實付／明細）跟 473c6cb 逐字相同');
@@ -244,11 +247,11 @@ for (const st of ['SSLGF']) {
 }
 {
   const sc = scene(MK);
-  const a = env(sc, { src: OLDP }), b = env(sc);
+  const a = env(sc, { src: OLDP }), b = env(sc, { ptOff: true });
   calc(a, '2026-12'); calc(b, '2026-12');
   eq(JSON.stringify(b.post('payLockStale_', { ym: '2026-12', store: 'SSLGF' })), JSON.stringify(a.post('payLockStale_', { ym: '2026-12', store: 'SSLGF' })), '鎖定前重算比對（payLockStale_）回傳相同（hol_gap 不進比對字串）');
   // 提示那段出錯：不影響試算（只記 log）
-  const c = env(sc); vm.runInContext("payHolGap_ = function () { throw new Error('壞掉'); };", c);
+  const c = env(sc, { ptOff: true }); vm.runInContext("payHolGap_ = function () { throw new Error('壞掉'); };", c);
   const rc = calc(c, '2026-12');
   eq([rc.ok, rc.hol_sched_gap, JSON.stringify(strip(rc)) === JSON.stringify(calc(env(sc, { src: OLDP }), '2026-12'))], [true, undefined, true], '提示那段丟例外 → 試算照常成功、不提示、金額照舊');
 }
@@ -259,7 +262,7 @@ function sameAll(ym, label, opt) {
   // 每個月都放「國定假日假在清單沒有的日子」：11/20、10/20、9/20、12/24
   const mk = { E01: { [ym + '-20']: GUO }, E02: { [ym + '-24']: GUO }, P01: { [ym + '-24']: GUO } };
   const sc = scene(mk);
-  const a = env(sc, { src: OLDP }), b = env(sc, opt);
+  const a = env(sc, { src: OLDP }), b = env(sc, Object.assign({ ptOff: ym >= '2026-12' }, opt));   // 2026-09～11 開著計時調移照樣要逐位元組相同（開關之前的月份）
   const steps = [
     ['payroll_month（沒草稿、自動試算）', (s) => s.post('handlePayrollMonth', { ym, store: 'SSLGF' })],
     ['payroll_calc', (s) => calc(s, ym)],

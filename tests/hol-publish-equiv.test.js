@@ -79,9 +79,12 @@ function world() {
 }
 
 /** 一個薪資後端（vm）。src＝Payroll.gs 原文；props＝指令碼屬性（可寫） */
-function env(src, props) {
+function env(src, props, opt) {
   const w = world();
   const s = load({ data: J(w.data), clock: {}, today: '2026-11-24', payrollSrc: src });
+  /* 計時國定假日調移（2026-11-28 定案，PAY_PT_HOL_MOVE_FROM；tests/pt-hol-move.test.js）：這支比的是「節日來源不同、薪資逐字相同」，基準 64c9b52 還沒有這條規則，
+     本分支一律把開關關掉（'9999-12'）再比；開著時跟主線的差別只在計時、只在有週末節日的月份，另在最後一段「計時調移開著」單獨比。 */
+  if (src !== BASE_SRC && !(opt && opt.ptOn)) vm.runInContext("PAY_PT_HOL_MOVE_FROM = '9999-12';", s);
   s.__CK = J(w.ck); s.__FETCH = []; s.__PROPS = Object.assign({}, props || {}); s.__NOWYM = '2026-11'; s.__PROPW = [];
   s.PropertiesService = { getScriptProperties: () => ({
     getProperty: (k) => (Object.prototype.hasOwnProperty.call(s.__PROPS, k) ? s.__PROPS[k] : null),
@@ -194,6 +197,21 @@ console.log('\n══ 丙 本分支、只收推送（推送＝營運系統正本
   const r = J(HANDLERS(s).payroll_holiday_sync({ admin_key: KEY, years: [2026], operator: 'auto (薪資頁開啟)', store: 'SSLGF' }));
   eq([r.ok, r.changed, r.hol_source, r.hol_pub && r.hol_pub.version, s.__FETCH.length - n, JSON.stringify(holRows(s)) === h], [true, [], 'mini', '2027-1', 0, true], '只收推送：之後開薪資頁不連外、不寫分頁、回版本 2027-1');
   eq([r.moved['2027-02-06'], r.names['2027-02-09']], ['2027-02-09', '補假'], '只收推送：畫面要的補假對照與節日名稱由推送帶來');
+}
+
+console.log('\n══ 計時調移開著（上線值 2026-12）：跟主線只差在計時、只差在有週末節日的月份 ══');
+{
+  const D = runAll(env(BR, { PAY_HOL_SVC_KEY: SVC }, { ptOn: true }), 'sync');
+  eq(D.pre.hol, A.pre.hol, '開著：payroll_holiday 分頁逐列相同（計時清單不寫分頁）');
+  const ftOf = (x) => ({ r: (x.calc.results || []).filter((r) => /-F1$/.test(r.emp_id)), i: x.item.filter((r) => /-F1$/.test(r.emp_id)), run: x.run.filter((r) => /-F1$/.test(r.emp_id)), inp: Object.keys(x.inputs.inputs || {}).filter((k) => /-F1$/.test(k)).map((k) => x.inputs.inputs[k]) });
+  eq(KEYS.filter((k) => JSON.stringify(ftOf(D.calc[k])) !== JSON.stringify(ftOf(A.calc[k]))), [], '開著：4 單位 × 8 個月 正職的出勤資料、試算、run、item 逐字相同');
+  eq(KEYS.filter((k) => JSON.stringify(calcPart(D.calc[k])) !== JSON.stringify(calcPart(A.calc[k]))), STORES.map((st) => [st.code + ' 2027-02', st.code + ' 2027-03']).reduce((a, b) => a.concat(b), []),
+    '開著：有差別的只有 2027-02（春節 2/6、2/7 週末，補 2/9、2/10）與 2027-03（2/28 週日補 3/1）');
+  const holOf = (x) => { const r = (x.calc.results || []).find((y) => /-P1$/.test(y.emp_id)); return r.earn.filter((i) => i.item_key === 'holiday_double').reduce((a, i) => a + i.qty, 0); };
+  const k2 = 'SSLGF 2027-02', k3 = 'SSLGF 2027-03';
+  // 計時 SSLGF：每天 4+(k%5) 小時、k%4===3 的日子沒上班（k＝日期−1）。2/4 k3 休、2/5 k4 8H、2/6 k5 4H、2/7 k6 5H、2/8 k7 休、2/9 k8 7H、2/10 k9 8H、2/28 k27 休；3/1 k0 4H
+  eq([holOf(A.calc[k2]), holOf(D.calc[k2])], [23, 17], '手算 2027-02 計時國定假日加倍時數：主線 2/5＋2/9＋2/10＝8＋7＋8＝23；開著 2/5＋2/6＋2/7＝8＋4＋5＝17（2/28 沒上班）');
+  eq([holOf(A.calc[k3]), holOf(D.calc[k3])], [4, 0], '手算 2027-03：主線 3/1 補假 4H；開著 3/1 是一般日 0');
 }
 
 console.log('\n══ 反證：比對真的抓得到不同 ══');

@@ -4438,6 +4438,18 @@ function payInputsBase(ym, store, cutoffDate) {
   const holDates = payHolidayDates(holRow);
   const cfgSt = payConfig(st);
   const base = payCollect(ym, payCfgPos_(cfgSt, 'meal_min_hours'), st, holDates, cutoffDate);
+  /* 計時的國定假日時數改用節日當天（2026-11-28 主管定案第 5 條，PAY_PT_HOL_MOVE_FROM 起）：payCollect 用的是正職的雙薪日（逢週末＝補假日），
+     計時那份這個月跟正職不同時（有週末節日要換回）才重算＝計時清單那幾天的本店核定時數（day_h，跟 payCollect 累加 holiday_h 同一份時數、同一個截止日）。
+     出勤資料畫面、手填沒填時的沿用值、計算都吃這一份。兩份相同（例 2026-12、2027-01 沒有週末節日）＝這段什麼都不做、不多讀主檔。 */
+  const ptHol = payPtHolDates_(ym, st, holDates);
+  if (ptHol !== holDates) {
+    const ftBy = {};
+    payRead('master').forEach(function (m) { if (payStore(m.store) === st) ftBy[String(m.emp_id)] = payIsFt(m); });
+    Object.keys(base).forEach(function (emp) {
+      if (ftBy[emp] !== false || !base[emp].day_h) return;   // 正職、主檔找不到的人、沒有逐日資料：照舊
+      base[emp].holiday_h = payR2(ptHol.reduce(function (t, d) { return t + payNum(base[emp].day_h[d]); }, 0));
+    });
+  }
   const saved = paySavedInputs(ym, st);
   /* 每日倒扣只算請假日的門市（央廚／總部，2026-10-10）：有打卡資料的人，缺勤天數一律取歸集值。
      手動列存的 deduct_days 是按「儲存工時」當下、用舊口徑（忘刷／遲到也算）算出的快照，
@@ -4635,10 +4647,95 @@ function paySchedMonth_(ym, st, master, idx) {
   });
   return out;
 }
+/* ═══ 計時同仁的國定假日（2026-11-28 主管定案；班表端同時在 mala-store-ops 開放計時排「國定假日假」）═══
+ * ①計時在同一個 28 天週期有排 L國，原國定假日當天上班當一般上班日、不給「國定假日加倍」——照正職 payHolMoved_ 的抵法（payHolMovedPt_）。
+ * ②計時排 L國 那天維持 0 元，不新增任何給薪項目（程式本來就沒有，只有上班時數才有錢）。
+ * ⑤計時的國定假日一律認「節日當天」：逢週末時計時要節日當天上班才加倍，補假那天上班是一般日（payPtHolDates_）。正職完全不變（照 payroll_holiday 的雙薪日＝補假日）。
+ * ⑥開關 PAY_PT_HOL_MOVE_FROM：ym ≥ 這個月份才套；之前的月份與改版前逐位元組相同。
+ *   這是放寬性規則：填錯值（不是 YYYY-MM）＝整個不開、維持現行。要停用＝改成很後面的月份（例 '9999-12'）重新上線。
+ * 手填國定假日時數：同期有抵掉的日子時，那幾天本店核定時數從國定假日時數扣掉（最少 0），跟自動算的一致（payPtHolMovedOwnH_）。 */
+var PAY_PT_HOL_MOVE_FROM = '2026-12';
+function payPtHolOn_(ym) {
+  const f = String(PAY_PT_HOL_MOVE_FROM == null ? '' : PAY_PT_HOL_MOVE_FROM).trim();
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(f)) return false;   // 填錯＝不開（維持現行）
+  ym = String(ym == null ? '' : ym);
+  return /^\d{4}-\d{2}$/.test(ym) && ym >= f;
+}
+/* 逢週末的國定假日 → 正職雙薪改到的補假日（{節日:補假日}）。照人事行政總處 115、116 年辦公日曆表（tests/fixtures/holidays 原檔）用 payHolidayDoublePlan 算出，
+ * tests/pt-hol-move.test.js 會拿原檔重算逐筆比對（與營運系統節日正本推送的 moved 也相同）。
+ * 最後一筆：116 年檔 2027-12-31 是補假（替 2028 元旦週六；116 年單獨算配不到，所以正職 2027-12 照算 12/31），計時改算 2028-01-01。
+ * ⚠ 薪資分頁只存正職的雙薪日、沒有存「哪天是替哪個節日補的」，所以計時要靠這張表換回節日當天。
+ *   每年人事行政總處公布新年度辦公日曆表後要補上那一年（tests/pt-hol-move.test.js 每年 10 月起會提醒明年還沒補）；沒補的年份計時照正職的雙薪日算（現行）。 */
+var PAY_PT_HOL_ACTUAL_ = {
+  '2026-02-15': '2026-02-20', '2026-02-28': '2026-02-27', '2026-04-04': '2026-04-03', '2026-04-05': '2026-04-06',
+  '2026-10-10': '2026-10-09', '2026-10-25': '2026-10-26',
+  '2027-02-06': '2027-02-09', '2027-02-07': '2027-02-10', '2027-02-28': '2027-03-01', '2027-04-04': '2027-04-06',
+  '2027-05-01': '2027-04-30', '2027-10-10': '2027-10-11', '2027-12-25': '2027-12-24',
+  '2028-01-01': '2027-12-31',
+};
+var PAY_PT_HOL_ACTUAL_YEARS_ = [2026, 2027];   // 已經照辦公日曆表補齊的年份（提醒用）
+/** 計時這個月的國定假日清單（節日當天）。ftDates＝該店該月 payroll_holiday 那列的雙薪日（payHolidayDates，正職用）。
+ *  補假日換回它替的節日：補假日在本月而且在正職清單 → 拿掉；節日在本月、它的補假日在那個月的正職清單 → 加上（補假可能在別的月）。
+ *  一組對照只在兩邊月份都套用新規則時才換（跨開關月份不重複給、也不兩邊都沒給）。開關沒開或這個月沒有要換的 → 原樣回 ftDates（同一個陣列）。 */
+function payPtHolDates_(ym, st, ftDates) {
+  ym = String(ym);
+  if (!payPtHolOn_(ym)) return ftDates;
+  const ft = (ftDates || []).map(function (d) { return String(d).trim(); });
+  const rm = {}, add = [];
+  let other = null;
+  Object.keys(PAY_PT_HOL_ACTUAL_).forEach(function (h) {
+    const b = PAY_PT_HOL_ACTUAL_[h];
+    if (h.slice(0, 7) !== ym && b.slice(0, 7) !== ym) return;
+    if (!payPtHolOn_(h.slice(0, 7)) || !payPtHolOn_(b.slice(0, 7))) return;
+    if (b.slice(0, 7) === ym) { if (ft.indexOf(b) >= 0) { rm[b] = true; if (h.slice(0, 7) === ym) add.push(h); } return; }
+    // 節日在本月、補假在別的月：看那個月的正職清單有沒有那天（本店專屬列優先，同 payHolidayRow）
+    other = other || {};
+    const mo = b.slice(0, 7);
+    if (!(mo in other)) other[mo] = payHolidayDates(payHolidayRow(mo, st)).map(function (d) { return String(d).trim(); });
+    if (other[mo].indexOf(b) >= 0) add.push(h);
+  });
+  if (!Object.keys(rm).length && !add.length) return ftDates;
+  return ft.filter(function (d) { return !rm[d]; }).concat(add)
+    .filter(function (d, i, a) { return a.indexOf(d) === i; }).sort();
+}
+/** 計時同期排 L國 抵掉的國定假日，本店那幾天的核定時數合計（從國定假日時數扣掉用）。moved＝payHolMovedPt_ 的一人份；col＝打卡歸集（day_h）。 */
+function payPtHolMovedOwnH_(col, moved, ym) {
+  if (!moved) return 0;
+  return payR2(Object.keys(moved).reduce(function (t, d) {
+    return String(d).slice(0, 7) === String(ym) ? t + payNum(((col && col.day_h) || {})[d]) : t;
+  }, 0));
+}
 /** 國定假日調移（2026-11-10 Eason）：正職在同一個 28 天週期有排「國定假日假」（班表 L＋國），原本的國定假日當天上班就當一般上班日，不給雙薪。
  *  先把排在國定假日當天的國定假日假對掉那天，剩下的依日期先後抵本期其他國定假日。計時不適用。沒有班表模組回 {}。
  *  回 { emp_id: { 'YYYY-MM-DD': true } }（只列本月、這次不給雙薪的國定假日） */
 function payHolMoved_(ym, st, master, holDates, idx) {
+  return payHolMovedCore_(ym, st, master, holDates, idx, function (m) { return payBool(m.is_full_time); },
+    function (mo) { return payHolidayDates(payHolidayRow(mo, st)); });
+}
+/** 計時版（2026-11-28 主管定案，PAY_PT_HOL_MOVE_FROM 起）：同一套抵法，只看計時同仁（跟 payCalcOne 同一個正職判斷 payIsFt），
+ *  清單用計時自己的國定假日（節日當天，payPtHolDates_）；本期跨到的別月份也換成計時清單。開關沒開回 {}。 */
+function payHolMovedPt_(ym, st, master, ptDates, idx) {
+  if (!payPtHolOn_(ym)) return {};
+  if (typeof schedPubPeriodOf_ !== 'function' || !(ptDates || []).length) return {};
+  idx = idx || paySchedIndex_();
+  /* 先看班表上有沒有「可能是計時同仁」的 L國（本店那期任何人的，或別店那期跟計時同名的人的；比 payHolMovedCore_ 的對人方式寬）：
+     沒有就不用算，也不多讀任何分頁（大部分月份、大部分門市都是這樣）。 */
+  const code = paySchedCode_(st), names = {}, ps = {};
+  (master || []).forEach(function (m) { if (!payIsFt(m)) names[String(m.name || '').trim()] = true; });
+  ptDates.forEach(function (d) { d = String(d).trim(); if (d.slice(0, 7) === ym && schedPubPeriodOf_(d)) ps[schedPubPeriodOf_(d)] = true; });
+  const guoRow = function (r) { return (r && r.cells || []).some(function (c) { return c && String(c.t) === 'L' && String(c.l || '') === '國'; }); };
+  const any = Object.keys(names).length && Object.keys(idx).some(function (k) {
+    const p = k.split('|')[1];
+    if (!ps[p]) return false;
+    const own = k === code + '|' + p, by = idx[k].byId || {};
+    return Object.keys(by).some(function (id) { return guoRow(by[id]) && (own || names[String(by[id].name || '').trim()]); });
+  });
+  if (!any) return {};
+  return payHolMovedCore_(ym, st, master, ptDates, idx, function (m) { return !payIsFt(m); },
+    function (mo) { return payPtHolDates_(mo, st, payHolidayDates(payHolidayRow(mo, st))); });
+}
+/** 抵法本體（正職、計時共用）。pick(m)＝這個人要不要算；otherMonth(mo)＝本期跨到的別月份的國定假日清單。 */
+function payHolMovedCore_(ym, st, master, holDates, idx, pick, otherMonth) {
   const out = {};
   if (typeof schedPubPeriodOf_ !== 'function' || !(holDates || []).length) return out;
   idx = idx || paySchedIndex_();
@@ -4650,13 +4747,13 @@ function payHolMoved_(ym, st, master, holDates, idx) {
     const r = periods[p];
     const yms = r.start.slice(0, 7) === r.end.slice(0, 7) ? [r.start.slice(0, 7)] : [r.start.slice(0, 7), r.end.slice(0, 7)];
     let all = [];
-    yms.forEach(function (mo) { all = all.concat(mo === ym ? holDates.map(function (x) { return String(x).trim(); }) : payHolidayDates(payHolidayRow(mo, st))); });
+    yms.forEach(function (mo) { all = all.concat(mo === ym ? holDates.map(function (x) { return String(x).trim(); }) : otherMonth(mo)); });
     const hols = [];
     all.forEach(function (d) { if (d >= r.start && d <= r.end && hols.indexOf(d) === -1) hols.push(d); });
     hols.sort();
     if (!hols.length) return;
     master.forEach(function (m) {
-      if (!payBool(m.is_full_time)) return;
+      if (!pick(m)) return;
       const id = String(m.emp_id).trim(), name = String(m.name || '').trim(), ids = [id];
       if (prefix && id.indexOf(prefix) === 0 && id.length > prefix.length) ids.push(id.slice(prefix.length));
       let row = null;
@@ -4814,7 +4911,8 @@ function payOtMonthSync_() {
           Object.keys(x._ot_days || {}).forEach(function (d) { if (d >= range.start && d <= range.end) row.h = payR2(row.h + payNum(x._ot_days[d])); });
           if (m !== ym) return;
           const elecToday = ((r._elec || {})[String(x.emp_id)] || []).indexOf(today) >= 0;   // 選舉假套用的那天跟國定假日一樣算休息日
-          const kind = payOtKindOf(((r._sched || {})[String(x.emp_id)] || {})[today] || null, (r._hol || []).map(String).indexOf(today) >= 0 || elecToday);
+          const holL = (r._hol_pt && x.is_full_time === false) ? r._hol_pt : r._hol;   // 計時認節日當天（2026-11-28 定案；跟正職相同時沒有 _hol_pt）
+          const kind = payOtKindOf(((r._sched || {})[String(x.emp_id)] || {})[today] || null, (holL || []).map(String).indexOf(today) >= 0 || elecToday);
           if (kind === 'H' || kind === 'R' || kind === 'HOL') row.rest = true; else if (kind) row.work = true;
         });
       });
@@ -5252,6 +5350,9 @@ function handlePayrollCalc(body) {
   const SCHED = DAILY ? paySchedMonth_(ym, st, master, SIDX) : null;
   const HOLD = DAILY ? payHolidayDates(holiday) : null;
   const HOLMV = DAILY ? payHolMoved_(ym, st, master, HOLD, SIDX) : {};
+  // 計時（2026-11-28 定案，PAY_PT_HOL_MOVE_FROM 起）：國定假日認節日當天（HOLD_PT）、同期排 L國 照正職的抵法（HOLMV_PT）。開關沒開＝HOLD_PT 就是 HOLD、HOLMV_PT 空
+  const HOLD_PT = DAILY ? payPtHolDates_(ym, st, HOLD) : null;
+  const HOLMV_PT = DAILY ? payHolMovedPt_(ym, st, master, HOLD_PT, SIDX) : {};
   const ELEC_ROWS = (DAILY && payElecOn_(ym)) ? payHolEmpRows_() : [];   // 選舉假名單（分頁不存在＝空，不建分頁；2026-11 前不讀）
   const ELEC_FP = payElecFp_(ELEC_ROWS, ym, st);   // 寫回前在寫鎖內比對（Codex B1）
   const ELEC_ON = {};   // 工號 → 實際套用的選舉日（給 payOtMonthSync_ 的休息日旗標）
@@ -5336,23 +5437,29 @@ function handlePayrollCalc(body) {
     if (DAILY) {
       const id = String(e.emp_id);
       const supH = (att.support || []).reduce(function (t, x) { return t + payNum(x && x.hours); }, 0);
-      const elecOn = payElecApply_(payElecDates_(ELEC_ROWS, ym, st, id), SCHED[id], HOLD);   // 選舉假：勾選＋上班日＋不是國定假日
+      // 這個人的國定假日清單與抵掉的日子：正職＝HOLD／HOLMV（不變）；計時在開關之後＝節日當天 HOLD_PT／HOLMV_PT（2026-11-28 定案）
+      const PTN = !payIsFt(e) && payPtHolOn_(ym);
+      const HL = PTN ? HOLD_PT : HOLD, MV = PTN ? HOLMV_PT[id] : HOLMV[id];
+      const elecOn = payElecApply_(payElecDates_(ELEC_ROWS, ym, st, id), SCHED[id], HL);   // 選舉假：勾選＋上班日＋不是國定假日
       if (elecOn.length) ELEC_ON[id] = elecOn;
-      att.daily = payDailyFor_(e, ym, c, XSUP ? XSUP.byEmp[id.trim()] : null, SCHED[id], payHolKeep_(HOLD, HOLMV[id]), UNTIL, supH, elecOn);
+      att.daily = payDailyFor_(e, ym, c, XSUP ? XSUP.byEmp[id.trim()] : null, SCHED[id], payHolKeep_(HL, MV), UNTIL, supH, elecOn);
       if (elecOn.length) {
         const cut = function (ds) { return ASOF ? ds.filter(function (d) { return d <= ASOF; }) : ds; };
         att.elec_h = payElecOwnH_(c, cut(elecOn));   // 計時加倍用（本店時數）
-        if (payR2(payNum(att.holiday_h)) !== payElecOwnH_(c, cut(HOLD))) att.elec_hol_manual = true;   // 國定假日時數被手改過（Codex B3）
+        if (payR2(payNum(att.holiday_h)) !== payElecOwnH_(c, cut(HL))) att.elec_hol_manual = true;   // 國定假日時數被手改過（Codex B3）
         if (!Object.keys(att.daily.day_h || {}).length && (payNum(att.hours) > 0 || supH > 0)) att.elec_nodaily = true;   // 純手填工時（含只手填支援、本店 0，Codex 第三次）：沒有逐日資料判斷不了選舉日時數（Codex 複審 K4a）
         else { const nd = payElecSupNoDate_(att.support, XSUP ? XSUP.byEmp[id.trim()] : null, XCTX ? XCTX.storeBy : {}); if (nd.length) att.elec_sup_nodate = nd; }   // 有逐日資料、但有沒有日期的手填支援（只提醒）
-        if (XSUP) att.sup_elec = paySupportElecDouble_(att.support, XSUP.byEmp[id.trim()], HOLD, elecOn, XCTX.storeBy, ASOF || undefined);
+        if (XSUP) att.sup_elec = paySupportElecDouble_(att.support, XSUP.byEmp[id.trim()], PTN ? payHolKeep_(HL, MV) : HOLD, elecOn, XCTX.storeBy, ASOF || undefined);
       }
+      // 計時同期排 L國 抵掉的國定假日：那幾天的本店核定時數不加倍（自動帶的、手填的都一樣，最少 0；2026-11-28 定案第 1 條）
+      if (PTN && MV) att.holiday_h = payR2(Math.max(0, payNum(att.holiday_h) - payPtHolMovedOwnH_(c, MV, ym)));
       if (ASOF) {   // 月中只算到 as_of；之後「班表查不到」的日子照舊提醒（月底前要補發布，不然到時候鎖不了），不影響金額
         att._miss_later = att.daily.dates.filter(function (d) { const cell = att.daily.sched[d]; return d > ASOF && !(cell && String(cell.t || '')); });
         att.daily.dates = att.daily.dates.filter(function (d) { return d <= ASOF; });
       }
-      if (XSUP) att.sup_hol = ASOF ? paySupportHolDouble_(att.support, XSUP.byEmp[id.trim()], HOLD, XCTX.storeBy, ASOF)
-                                   : paySupportHolDouble_(att.support, XSUP.byEmp[id.trim()], HOLD, XCTX.storeBy);
+      const HS = PTN ? payHolKeep_(HL, MV) : HOLD;   // 計時去別店支援的加倍：節日當天、抵掉的那天不補發（正職照舊 HOLD）
+      if (XSUP) att.sup_hol = ASOF ? paySupportHolDouble_(att.support, XSUP.byEmp[id.trim()], HS, XCTX.storeBy, ASOF)
+                                   : paySupportHolDouble_(att.support, XSUP.byEmp[id.trim()], HS, XCTX.storeBy);
       if (XSUP && XSUP.byEmp[id.trim()]) {
         const sl = paySupportLeaveList_(XSUP.byEmp[id.trim()], e.name, SUP_LEAVE_ROWS, ym);
         if (sl.length) att.support_leave = sl;
@@ -5401,7 +5508,7 @@ function handlePayrollCalc(body) {
       results.forEach(function (r) {
         const e = mByG[String(r.emp_id)];
         if (!e) return;
-        const g = payHolGap_(SCHED[String(r.emp_id)], HOLD, payEmpDates_(e, ym));
+        const g = payHolGap_(SCHED[String(r.emp_id)], (!payIsFt(e) && payPtHolOn_(ym)) ? HOLD_PT : HOLD, payEmpDates_(e, ym));   // 計時比對節日當天（2026-11-28 定案）
         if (!g.length) return;
         if (!r.ot_info) r.ot_info = {};
         r.ot_info.hol_gap = g;
@@ -5457,6 +5564,7 @@ function handlePayrollCalc(body) {
   if (body.dry_run) {   // 唯讀試算（payroll_ot_preview）：不寫 run／item
     const dres = { ok: true, ym: ym, store: st, results: results, red_days: redDays, dry_run: true };
     if (typeof SCHED !== 'undefined') { dres._sched = SCHED; dres._hol = HOLD; }   // 只給 payOtMonthSync_；試算回應不帶
+    if (HOLD_PT && HOLD_PT !== HOLD) dres._hol_pt = HOLD_PT;   // 計時的國定假日（節日當天）跟正職不同時才帶（同上，只給 payOtMonthSync_）
     if (Object.keys(ELEC_ON).length) dres._elec = ELEC_ON;   // 選舉假套用的日子（同上，只給 payOtMonthSync_；沒有就不帶）
     if (ASOF_INFO) dres.asof = ASOF_INFO;
     if (NOT_IN.length) dres.not_in_payroll = NOT_IN;
@@ -8519,6 +8627,7 @@ function handlePnlLaborEstimate_(body) {
   var PNL_SCHED = null;
 
   var PNL_HOLMV = {};
+  var PNL_HOLD_PT = null, PNL_HOLMV_PT = {};
   var PNL_ELEC = null;
   var results = master.map(function (e) {
     var c = att[String(e.emp_id)] || {};
@@ -8547,20 +8656,24 @@ function handlePnlLaborEstimate_(body) {
     // 虛擬離職日＝昨天，借用 payRatio 既有的「月中到職/離職才折算」機制算出「已過天數÷當月
     // 天數」；員工本來就有更早的到職日或離職日時，取較早的那個（字串比較，'YYYY-MM-DD' 可直接比大小）。
     if (payOtDailyOn(ym)) {   // 跟 handlePayrollCalc 同一套逐日加班（班表、國定假日、同品牌支援逐日合計），只算到 as_of
-      if (!PNL_SCHED) { const pidx = paySchedIndex_(); PNL_SCHED = paySchedMonth_(ym, st, master, pidx); PNL_HOLMV = payHolMoved_(ym, st, master, holDates, pidx); }
+      if (!PNL_SCHED) { const pidx = paySchedIndex_(); PNL_SCHED = paySchedMonth_(ym, st, master, pidx); PNL_HOLMV = payHolMoved_(ym, st, master, holDates, pidx);
+        PNL_HOLD_PT = payPtHolDates_(ym, st, holDates); PNL_HOLMV_PT = payHolMovedPt_(ym, st, master, PNL_HOLD_PT, pidx); }   // 計時（同 handlePayrollCalc，2026-11-28 定案）
+      var PTN = !payIsFt(e) && payPtHolOn_(ym);
+      var HL = PTN ? PNL_HOLD_PT : holDates, MV = PTN ? PNL_HOLMV_PT[String(e.emp_id)] : PNL_HOLMV[String(e.emp_id)];
       var supH = (a.support || []).reduce(function (t, x) { return t + payNum(x && x.hours); }, 0);
       if (PNL_ELEC === null) PNL_ELEC = payElecOn_(ym) ? payHolEmpRows_() : [];   // 選舉假名單（同 handlePayrollCalc）
-      var elecOn = payElecApply_(payElecDates_(PNL_ELEC, ym, st, String(e.emp_id)), PNL_SCHED[String(e.emp_id)], holDates);
-      a.daily = payDailyFor_(e, ym, c, XS ? XS.byEmp[String(e.emp_id).trim()] : null, PNL_SCHED[String(e.emp_id)], payHolKeep_(holDates, PNL_HOLMV[String(e.emp_id)]), asOf, supH, elecOn);
+      var elecOn = payElecApply_(payElecDates_(PNL_ELEC, ym, st, String(e.emp_id)), PNL_SCHED[String(e.emp_id)], HL);
+      a.daily = payDailyFor_(e, ym, c, XS ? XS.byEmp[String(e.emp_id).trim()] : null, PNL_SCHED[String(e.emp_id)], payHolKeep_(HL, MV), asOf, supH, elecOn);
       a.daily.dates = a.daily.dates.filter(function (d) { return d <= asOf; });
-      if (XS) a.sup_hol = paySupportHolDouble_(a.support, XS.byEmp[String(e.emp_id).trim()], holDates, payXsupStoreBy_(payRead('store')), asOf);
+      if (XS) a.sup_hol = paySupportHolDouble_(a.support, XS.byEmp[String(e.emp_id).trim()], PTN ? payHolKeep_(HL, MV) : holDates, payXsupStoreBy_(payRead('store')), asOf);
       if (elecOn.length) {
         a.elec_h = payElecOwnH_(c, elecOn.filter(function (d) { return d <= asOf; }));
-        if (payR2(payNum(a.holiday_h)) !== payElecOwnH_(c, holDates.filter(function (d) { return d <= asOf; }))) a.elec_hol_manual = true;   // 同 handlePayrollCalc（Codex B3）
+        if (payR2(payNum(a.holiday_h)) !== payElecOwnH_(c, HL.filter(function (d) { return d <= asOf; }))) a.elec_hol_manual = true;   // 同 handlePayrollCalc（Codex B3）
         if (!Object.keys(a.daily.day_h || {}).length && (payNum(a.hours) > 0 || supH > 0)) a.elec_nodaily = true;   // 同 handlePayrollCalc（含只手填支援）
         else { var ndE = payElecSupNoDate_(a.support, XS ? XS.byEmp[String(e.emp_id).trim()] : null, payXsupStoreBy_(payRead('store'))); if (ndE.length) a.elec_sup_nodate = ndE; }   // 同 handlePayrollCalc
-        if (XS) a.sup_elec = paySupportElecDouble_(a.support, XS.byEmp[String(e.emp_id).trim()], holDates, elecOn, payXsupStoreBy_(payRead('store')), asOf);   // 與國定假日共用採計時數（Codex B2）
+        if (XS) a.sup_elec = paySupportElecDouble_(a.support, XS.byEmp[String(e.emp_id).trim()], PTN ? payHolKeep_(HL, MV) : holDates, elecOn, payXsupStoreBy_(payRead('store')), asOf);   // 與國定假日共用採計時數（Codex B2）
       }
+      if (PTN && MV) a.holiday_h = payR2(Math.max(0, payNum(a.holiday_h) - payPtHolMovedOwnH_(c, MV, ym)));   // 同 handlePayrollCalc（計時同期排 L國 抵掉的那天不加倍）
       // 跨店請款的加班加成（2026-11-22 a6）：月中估算原本沒有 ot_cross，請款一直少了加成；跟 handlePayrollCalc 同一套（XS 已截到 asOf）
       if (XS && XS.byEmp[String(e.emp_id).trim()]) {
         a.ot_xdays = payOtCrossDays_(c, XS.byEmp[String(e.emp_id).trim()]);
