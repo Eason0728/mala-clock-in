@@ -197,6 +197,10 @@
 - 推送不接受也不碰；只收推送時 `payroll_holiday_set` 擋下＝不再有新的；舊的照舊優先。
 - 唯讀清單：`{action:'payroll_holiday_own_list', admin_key}` → `{ok, count, rows:[{ym, store, red_days, dates, note, global_red_days, global_dates, same_as_global}]}`（只讀分頁；有門市範圍的帳號不能用）。
 - 開關預設時 `payroll_holiday_set` 照舊可用（跟主線相同）。
+- **計時國定假日照門市另設表**（2026-11-28 主管「吃門市另設表」，Codex 第 2 輪擋項 2）：計時的節日當天與 N 照該單位的本店專屬列（沒有照集團），薪資與班表同源；正職照舊。
+  - 換算只在薪資做一次（`payPtHolDates_`）：專屬列存的是正職雙薪日（含補假日）；少了某個補假日＝它替的節日計時也不算（例 HQ 2 月少 2/10 → 計時 2/7 不算）；多放的日子照原樣算。
+  - 給班表：`{action:'payroll_holiday_pt_own', svcKey, v:1}`（金鑰同推送 `PAY_HOL_SVC_KEY`、唯讀、分頁不存在不建、帶門市範圍擋）→ `{ok, v:1, from, units:[{unit, sched, prefix, pt:[{id,name}], months:{ym:[計時國定假日]}}]}`。只列計時清單跟集團計時清單不同的單位與月份（專屬列那月與前後一月）；沒有任何專屬列＝`units:[]`、只讀節日分頁。
+  - 營運系統每天 06:00–08:00 讀一次（`HOL_PT_OWN_ON=1` 才讀；mala-store-ops `server/holiday-pt-own.js`），讀不到照上次成功的資料、從沒成功過照集團。測試：`tests/pt-hol-move.test.js` ⑮。
 
 ## A-4 薪資頁（`payroll.html`）
 
