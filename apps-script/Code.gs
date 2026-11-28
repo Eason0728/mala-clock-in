@@ -2065,6 +2065,7 @@ function payLockedBlock_(dateStr, staff, ss) {
  * 生效日開關 KUANGZHI_FROM（指令碼屬性）：沒設、空白、不是真的日期＝關，跟改之前逐字相同；早於 2026-11-01 當 2026-11-01（2026-11-28 主管定案「算進 11 月」，推翻原第 11 題 A 的 12/1）。
  * 這一段的字（KZ_MSG_）逐字照開工確認頁〈新文字逐句表〉，不可自己改。 */
 var KZ_TYPE = '曠職';
+var KZ_REVOKE_WHY_ = '撤銷認定曠職';   // 撤銷認定的留底理由（approved_revoked／leave_revoked 的 revoke_reason 欄；不是畫面字），後面接（核定人）
 var KZ_FLOOR_ = '2026-11-01';        // 下限 11/1（2026-11-28 主管定案「算進 11 月」，推翻原第 11 題 A 的 12/1；營運系統 server/kuangzhi.js KZ_FLOOR 同值）
 var KZ_LATE_STORES_RE_ = /^MZT(RG|WX)$/i;   // 瑞光、文心：打卡正式上線（2027-01-01）前不算（第 3-6 題）
 var KZ_LATE_STORES_FROM_ = '2027-01-01';
@@ -2216,6 +2217,35 @@ function kzRecentDays_(ss, days, roster, approvedMap, todayStr) {
   days.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
 }
 
+/** 已認定曠職（共用口徑，2026-11-29 抽出）：開關開、日期在生效日起、那天這人有核定、那人那天請假登記（用名冊姓名）有「曠職」。
+ *  Requests.gs reqKzMissDay_（認定後才核准忘打卡單的提醒）與下面 kzRevokePlan_（撤銷認定）共用這一支，不各寫一套。 */
+function kzMarkedDay_(ss, date, empId, name, approvedMap) {
+  if (!kzOn_(date) || !(approvedMap && approvedMap[date] && approvedMap[date][String(empId)])) return false;
+  var sh = ss.getSheetByName('leave');
+  var nm = String(name || '').trim();
+  if (!sh || !nm) return false;
+  return readSheetAsObjects(sh).rows.some(function (x) {
+    return normCellDate(x['日期']) === date && String(x['姓名'] || '').trim() === nm && String(x['假別'] || '').trim() === KZ_TYPE;
+  });
+}
+/** 撤銷認定曠職（2026-11-29 主管定案「選 B」：不加按鈕，手動修改什麼都不填也可以送出，送出就等於撤銷）。
+ *  只有「那天已認定曠職（kzMarkedDay_）、薪資月份未鎖（呼叫前 payLockedBlock_ 已擋）」而且這次送的是「空時段＋無假別」才回 true；
+ *  其他一律 false＝呼叫端照改之前回 bad_periods（逐位元組相同）。另外保守多看三件（任何一件不成立＝不撤銷）：
+ *  ①那天最新一筆核定就是認定曠職那一筆的樣子（沒有時段、0 小時），不是總部鏡像列（mirror_src，原店才撤）；
+ *  ②請假登記照薪資的算法屬於這位（同名的人算名冊最後一位，Requests.gs reqLeaveOwner_）——不然撤到的是別人的曠職；
+ *  ③有打回核定的程式（Requests.gs reqRevokeFinal_；沒載入的環境不撤）；④營運系統個人帳號代轉（同認定，門市共用登入不能撤）。 */
+function kzRevokePlan_(ss, date, empId, name, approvedMap, prevRec, mgr, body) {
+  if (!kzFrom_()) return false;                                   // 開關關：不多讀任何分頁
+  if (typeof reqRevokeFinal_ !== 'function') return false;
+  // 跟認定同一個口徑（kzApprovePre_ B）：只有營運系統個人帳號代轉才算（門市共用登入、舊值班頁不能撤，也才記得到是誰撤的）
+  if (!(typeof reqMgrActing_ === 'function' && reqMgrActing_(mgr, body))) return false;
+  if (!prevRec || String(prevRec.mirror_src || '').trim()) return false;
+  if (String(prevRec.periods == null ? '' : prevRec.periods).trim() !== '' || Number(prevRec.approved_hours) !== 0) return false;
+  if (!kzMarkedDay_(ss, date, empId, name, approvedMap)) return false;
+  if (typeof reqLeaveOwner_ === 'function' && !reqLeaveOwner_(ss, String(empId), String(name || '').trim())) return false;
+  return true;
+}
+
 function handleMgrApprove(body) {
   const ss = getSS();
   const mgrSheet = ss.getSheetByName('managers');
@@ -2333,6 +2363,7 @@ function handleMgrApprove(body) {
   const tripHours = leaves.reduce(function (a, x) { return a + (x.type === TRIP_NOTE && x.hours !== '' ? x.hours : 0); }, 0);
 
   let approvedHours, periodsStr, statusText;
+  let kzRevoke = false;               // 撤銷認定曠職（2026-11-29 選 B）：只有 kzRevokePlan_ 通過才 true；不檢查綁單、不寫新核定，改把那天打回未核定
   let periodsMs = [], punchMs = [];   // 核定綁申請單用（整天請假時是空的）
   let lateLead = false;               // 上午整段沒到改算遲到（2026-11-26）：核定狀態與綁單檢查用同一個判斷
   let statusFor = null;               // 照 lateLead 算核定狀態（第六輪：綁單保險要換回主線時重算用）
@@ -2340,8 +2371,15 @@ function handleMgrApprove(body) {
   if (rawPeriods.length === 0) {
     // 整天請假：沒有任何上班時段，但必須有假別；核定 0 小時、狀態標「全天請假」
     // （沒假別的空送出仍擋掉）。這樣月表那天顯示核定 0h＋假別，而非誤導的「待核定」。
-    if (!leaves.length) return { ok: false, error: 'bad_periods' };
-    if (hasTrip) {
+    if (!leaves.length) {
+      // 撤銷認定曠職（2026-11-29 選 B）：只有已認定曠職、月份未鎖（上面已擋）才走；其他照舊 bad_periods
+      if (!(Array.isArray(body.periods) && body.periods.length === 0 && multiLeave
+            && kzRevokePlan_(ss, date, String(body.emp_id), String(roster.name), approvedMapAll, prevRec, mgr, body))) return { ok: false, error: 'bad_periods' };
+      kzRevoke = true;
+      approvedHours = '';
+      periodsStr = '';
+      statusText = '';
+    } else if (hasTrip) {
       // 整天出差：核定＝出差時數。沒填時數＝當天 0 工時（正職月底會被不足倒扣），硬擋。
       if (!(tripHours > 0)) return { ok: false, error: 'trip_needs_hours' };
       approvedHours = tripHours;
@@ -2426,7 +2464,7 @@ function handleMgrApprove(body) {
   }
   // 核定綁定申請單（2026-11-06）＋核定加嚴（2026-11-16 起，Requests.gs reqBindCheck_）：單對不上＝整天送不出；舊 Requests 沒有就不擋。
   // sched_day（那天班表 H／R／W）只有營運系統個人帳號代轉時才採信，由營運系統伺服器讀排班資料帶入、前端送的會被蓋掉
-  if (typeof reqBindCheck_ === 'function') {
+  if (typeof reqBindCheck_ === 'function' && !kzRevoke) {
     const acting = reqMgrActing_(mgr, body);
     const bindOpt = { leaves: leaves, trip_hours: tripHours, name: String(roster.name || ''),
         rows: reqRowsAll || undefined,   // 上面待審檢查讀過的申請表，不再讀一次（2026-11-20）
@@ -2463,6 +2501,7 @@ function handleMgrApprove(body) {
     const dry = { ok: true, dry_run: true, date: date, emp_id: body.emp_id, name: roster.name, periods: rawPeriods,
              approved_hours: approvedHours, leaves: leaves, status_text: statusText, late_lead: lateLead };   // late_lead：這份最後有沒有套新規則（第六輪，給對照測試看；畫面不用）
     if (kzPlan) dry.kz = { hours: kzPlan.hours };   // 認定曠職的試核定（放在 late_lead 後面；kzPlan 成立時 late_lead 一定是 false）
+    if (kzRevoke) dry.kz_revoke = true;
     return dry;
   }
   // 規則乙的競態（2026-11-21 出勤核定舊問題 3，Codex 20261121-rules-ab 問題 5）：開頭的待審檢查到這裡中間跑了一長串檢查，同仁可能剛好送出一張單
@@ -2474,7 +2513,7 @@ function handleMgrApprove(body) {
   const verLock = typeof REQ_APPROVE_VER_LOCK_ !== 'undefined' && REQ_APPROVE_VER_LOCK_ === true && typeof body.base_ver === 'string' && body.base_ver !== '' && typeof dutyVerGuard_ === 'function';
   const pendLock = pendOn || verLock ? LockService.getScriptLock() : null;
   if (pendLock && !pendLock.tryLock(10000)) return { ok: false, error: 'busy', message: '系統忙碌，請再按一次' };
-  let enteredAt;
+  let enteredAt, kzRevoked = null;
   try {
     if (pendLock && pendOn) {
       const pendAgain = reqPendBlock_(reqRows_(ss), String(body.emp_id), date);
@@ -2484,13 +2523,25 @@ function handleMgrApprove(body) {
       const staleAgain = dutyVerGuard_(body, true);
       if (staleAgain) return staleAgain;
     }
+    if (kzRevoke) {
+      // 撤銷：那天這人的核定（approved）與請假登記（leave）整天搬到既有留底分頁 approved_revoked／leave_revoked（同作廢申請打回核定，
+      //   Requests.gs reqRevokeFinal_：revoked_at＝何時、revoke_reason 寫誰撤銷），那天回到未核定＝跟從沒認定過一樣；薪資讀不到曠職列＝扣款與績效一併消失
+      kzRevoked = reqRevokeFinal_(ss, String(body.emp_id), String(roster.name).trim(), date, KZ_REVOKE_WHY_ + '（' + actor + '）');
+    } else {
     enteredAt = nowTaipeiIso();
     empIdColText_(approvedSheet);
     appendApprovedRow_(approvedSheet, [date, body.emp_id, roster.name, periodsStr, approvedHours, statusText, actor, enteredAt],
       rawPeriods.length ? dupList : [],
       rawPeriods.length && typeof reqCleanDiffReason_ === 'function' ? reqCleanDiffReason_(body.diff_reason) : '');
     replaceLeaveRows(ss, date, String(roster.name), leaves);
+    }
   } finally { if (pendLock) pendLock.releaseLock(); }
+
+  if (kzRevoke) {
+    return { ok: true, date: date, emp_id: body.emp_id, name: roster.name, periods: [], approved_hours: '', leaves: [],
+      leave_type: '', leave_hours: '', status_text: '', manager_name: actor, entered_at: '', dup_ignore: [],
+      kz_revoked: true, revoked: kzRevoked };
+  }
 
   const done = {
     ok: true, date: date, emp_id: body.emp_id, name: roster.name,
